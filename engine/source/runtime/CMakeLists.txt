@@ -1,6 +1,6 @@
 
 # PackageProject.cmake will be used to make our target installable
-set(TARGET_NAME PiccoloRuntime)
+set(TARGET_NAME ZentiaRuntime)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

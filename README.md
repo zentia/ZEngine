@@ -1,27 +1,27 @@
-# Piccolo Engine (formerly Pilot Engine)
+# Zentia Engine (formerly Zentia Engine)
 
 <p align="center">
-  <a href="https://games104.boomingtech.com">
-    <img src="engine/source/editor/resource/PiccoloEngine.png" width="400" alt="Piccolo Engine logo">
+  <a href="https://zentia.github.io">
+    <img src="engine/source/editor/resource/ZentiaEngine.png" width="400" alt="Zentia Engine logo">
   </a>
 </p>
 
-**Piccolo Engine** is a tiny game engine used for the [GAMES104](https://games104.boomingtech.com) course.
+**Zentia Engine** is a tiny game engine.
 
 ## Continuous build status
 
 |    Build Type     |                                                                                      Status                                                                                      |
 | :---------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| **Build Windows** | [![Build Windows](https://github.com/BoomingTech/Piccolo/actions/workflows/build_windows.yml/badge.svg)](https://github.com/BoomingTech/Piccolo/actions/workflows/build_windows.yml) |
-|  **Build Linux**  |    [![Build Linux](https://github.com/BoomingTech/Piccolo/actions/workflows/build_linux.yml/badge.svg)](https://github.com/BoomingTech/Piccolo/actions/workflows/build_linux.yml)    |
-|  **Build macOS**  |    [![Build macOS](https://github.com/BoomingTech/Piccolo/actions/workflows/build_macos.yml/badge.svg)](https://github.com/BoomingTech/Piccolo/actions/workflows/build_macos.yml)    |
+| **Build Windows** | [![Build Windows](https://github.com/zentia/zentia_engine/actions/workflows/build_windows.yml/badge.svg)](https://github.com/zentia/Piccolo/zentia_engine/workflows/build_windows.yml) |
+|  **Build Linux**  |    [![Build Linux](https://github.com/zentia/zentia_engine/actions/workflows/build_linux.yml/badge.svg)](https://github.com/zentia/zentia_engine/actions/workflows/build_linux.yml)    |
+|  **Build macOS**  |    [![Build macOS](https://github.com/zentia/zentia_engine/actions/workflows/build_macos.yml/badge.svg)](https://github.com/zentia/zentia_engine/actions/workflows/build_macos.yml)    |
 
 ## Prerequisites
 
-To build Piccolo, you must first install the following tools.
+To build Zentia, you must first install the following tools.
 
 ### Windows 10/11
-- Visual Studio 2019 (or more recent)
+- Visual Studio 2022 (or more recent)
 - CMake 3.19 (or more recent)
 - Git 2.1 (or more recent)
 
@@ -50,10 +50,10 @@ sudo apt install mesa-vulkan-drivers
 ```
 - [NVIDIA driver](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#runfile) (The AMD and Intel driver is open-source, and thus is installed automatically by mesa-vulkan-drivers)
 
-## Build Piccolo
+## Build Zentia
 
 ### Build on Windows
-You may execute the **build_windows.bat**. This batch file will generate the projects, and build the **Release** config of **Piccolo Engine** automatically. After successful build, you can find the PiccoloEditor.exe at the **bin** directory.
+You may execute the **build_windows.bat**. This batch file will generate the projects, and build the **Release** config of **Zentia Engine** automatically. After successful build, you can find the PiccoloEditor.exe at the **bin** directory.
 
 Or you can use the following command to generate the **Visual Studio** project firstly, then open the solution in the build directory and build it manually.
 ```
@@ -64,7 +64,7 @@ cmake -S . -B build
 
 > The following build instructions only tested on specific hardware of x86_64, and do not support M1 chips. For M1 compatible, we will release later.
 
-To compile Piccolo, you must have the most recent version of Xcode installed.
+To compile Zentia, you must have the most recent version of Xcode installed.
 Then run 'cmake' from the project's root directory, to generate a project of Xcode.
 
 ```
