@@ -94,7 +94,7 @@ namespace Zentia
         GObjectID                       m_go_id {k_invalid_gobject_id};
         std::vector<GameObjectPartDesc> m_object_parts;
     };
-} // namespace Piccolo
+} // namespace Zentia
 
 template<>
 struct std::hash<Zentia::GameObjectPartId>

@@ -42,4 +42,4 @@ namespace Zentia
         JPH::DebugRenderer* m_debug_renderer {nullptr};
 #endif
     };
-} // namespace Piccolo
+} // namespace Zentia

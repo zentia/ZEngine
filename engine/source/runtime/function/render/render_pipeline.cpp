@@ -253,4 +253,4 @@ namespace Zentia
         MainCameraPass& main_camera_pass = *(static_cast<MainCameraPass*>(m_main_camera_pass.get()));
         main_camera_pass.m_selected_axis = selected_axis;
     }
-} // namespace Piccolo
+} // namespace Zentia

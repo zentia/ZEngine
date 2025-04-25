@@ -12,7 +12,7 @@
 
 namespace Zentia
 {
-    void RigidBodyComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
+    void RigidBodyComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
     {
         m_parent_object = parent_object;
 
@@ -84,4 +84,4 @@ namespace Zentia
         physics_scene->getShapeBoundingBoxes(m_rigidbody_id, out_bounding_boxes);
     }
 
-} // namespace Piccolo
+} // namespace Zentia

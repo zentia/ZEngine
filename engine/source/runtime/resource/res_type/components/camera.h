@@ -60,4 +60,4 @@ namespace Zentia
 
         ~CameraComponentRes();
     };
-} // namespace Piccolo
+} // namespace Zentia

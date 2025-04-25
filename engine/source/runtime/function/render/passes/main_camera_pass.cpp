@@ -2724,4 +2724,4 @@ namespace Zentia
 
     void MainCameraPass::setParticlePass(std::shared_ptr<ParticlePass> pass) { m_particle_pass = pass; }
 
-} // namespace Piccolo
+} // namespace Zentia

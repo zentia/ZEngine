@@ -128,4 +128,4 @@ namespace Zentia
         bool isReadyToSwap() const;
         void swap();
     };
-} // namespace Piccolo
+} // namespace Zentia

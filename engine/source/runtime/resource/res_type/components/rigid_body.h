@@ -47,4 +47,4 @@ namespace Zentia
         float                       m_inverse_mass;
         int                         m_actor_type;
     };
-} // namespace Piccolo
+} // namespace Zentia

@@ -30,4 +30,4 @@ namespace Zentia
         std::shared_ptr<RHI>                m_rhi;
         std::shared_ptr<RenderResourceBase> m_render_resource;
     };
-} // namespace Piccolo
+} // namespace Zentia

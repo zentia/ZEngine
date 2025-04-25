@@ -205,4 +205,4 @@ namespace Zentia
 
         std::vector<ParticleEmitterTransformDesc> m_emitter_transform_indices;
     };
-} // namespace Piccolo
+} // namespace Zentia

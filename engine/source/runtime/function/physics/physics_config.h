@@ -24,4 +24,4 @@ namespace Zentia
 
         float m_update_frequency {60.f};
     };
-} // namespace Piccolo
+} // namespace Zentia

@@ -98,4 +98,4 @@ namespace Zentia
 
         std::vector<uint32_t> m_pending_remove_bodies;
     };
-} // namespace Piccolo
+} // namespace Zentia

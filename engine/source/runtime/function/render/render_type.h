@@ -1821,7 +1821,7 @@ namespace Zentia
         std::shared_ptr<TextureData> m_occlusion_texture;
         std::shared_ptr<TextureData> m_emissive_texture;
     };
-} // namespace Piccolo
+} // namespace Zentia
 
 template<>
 struct std::hash<Zentia::MeshSourceDesc>

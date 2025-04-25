@@ -25,9 +25,9 @@ namespace Zentia
         void showCameraInfo(std::shared_ptr<Level> level) const;
 
     private:
-        void drawBones(std::shared_ptr<GObject> object) const;
-        void drawBonesName(std::shared_ptr<GObject> object) const;
-        void drawBoundingBox(std::shared_ptr<GObject> object) const;
-        void drawCameraInfo(std::shared_ptr<GObject> object) const;
+        void drawBones(std::shared_ptr<AActor> object) const;
+        void drawBonesName(std::shared_ptr<AActor> object) const;
+        void drawBoundingBox(std::shared_ptr<AActor> object) const;
+        void drawCameraInfo(std::shared_ptr<AActor> object) const;
     };
-} // namespace Piccolo
+} // namespace Zentia

@@ -5,7 +5,7 @@
 
 namespace Zentia
 {
-    void AnimationComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
+    void AnimationComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
     {
         m_parent_object = parent_object;
 
@@ -27,4 +27,4 @@ namespace Zentia
     const AnimationResult& AnimationComponent::getResult() const { return m_animation_res.animation_result; }
 
     const Skeleton& AnimationComponent::getSkeleton() const { return m_skeleton; }
-} // namespace Piccolo
+} // namespace Zentia

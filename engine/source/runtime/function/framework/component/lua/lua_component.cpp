@@ -4,7 +4,7 @@
 namespace Zentia
 {
 
-    bool find_component_field(std::weak_ptr<GObject>     game_object,
+    bool find_component_field(std::weak_ptr<AActor>     game_object,
                               const char*                field_name,
                               Reflection::FieldAccessor& field_accessor,
                               void*&                     target_instance)
@@ -49,7 +49,7 @@ namespace Zentia
     }
 
     template<typename T>
-    void LuaComponent::set(std::weak_ptr<GObject> game_object, const char* name, T value)
+    void LuaComponent::set(std::weak_ptr<AActor> game_object, const char* name, T value)
     {
         LOG_INFO(name);
         Reflection::FieldAccessor field_accessor;
@@ -65,7 +65,7 @@ namespace Zentia
     }
 
     template<typename T>
-    T LuaComponent::get(std::weak_ptr<GObject> game_object, const char* name)
+    T LuaComponent::get(std::weak_ptr<AActor> game_object, const char* name)
     {
 
         LOG_INFO(name);
@@ -82,7 +82,7 @@ namespace Zentia
         }
     }
 
-    void LuaComponent::invoke(std::weak_ptr<GObject> game_object, const char* name)
+    void LuaComponent::invoke(std::weak_ptr<AActor> game_object, const char* name)
     {
         LOG_INFO(name);
 
@@ -145,7 +145,7 @@ namespace Zentia
         delete[] methods;
     }
 
-    void LuaComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
+    void LuaComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
     {
         m_parent_object = parent_object;
         m_lua_state.open_libraries(sol::lib::base);
@@ -161,4 +161,4 @@ namespace Zentia
         m_lua_state.script(m_lua_script);
     }
 
-} // namespace Piccolo
+} // namespace Zentia

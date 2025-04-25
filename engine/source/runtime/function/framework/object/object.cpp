@@ -29,7 +29,7 @@ namespace Zentia
         }
     }
 
-    GObject::~GObject()
+    AActor::~AActor()
     {
         for (auto& component : m_components)
         {
@@ -38,7 +38,7 @@ namespace Zentia
         m_components.clear();
     }
 
-    void GObject::tick(float delta_time)
+    void AActor::tick(float delta_time)
     {
         for (auto& component : m_components)
         {
@@ -49,7 +49,7 @@ namespace Zentia
         }
     }
 
-    bool GObject::hasComponent(const std::string& compenent_type_name) const
+    bool AActor::hasComponent(const std::string& compenent_type_name) const
     {
         for (const auto& component : m_components)
         {
@@ -60,7 +60,7 @@ namespace Zentia
         return false;
     }
 
-    bool GObject::load(const ObjectInstanceRes& object_instance_res)
+    bool AActor::load(const ObjectInstanceRes& object_instance_res)
     {
         // clear old components
         m_components.clear();
@@ -101,7 +101,7 @@ namespace Zentia
         return true;
     }
 
-    void GObject::save(ObjectInstanceRes& out_object_instance_res)
+    void AActor::save(ObjectInstanceRes& out_object_instance_res)
     {
         out_object_instance_res.m_name       = m_name;
         out_object_instance_res.m_definition = m_definition_url;
@@ -109,4 +109,4 @@ namespace Zentia
         out_object_instance_res.m_instanced_components = m_components;
     }
 
-} // namespace Piccolo
+} // namespace Zentia

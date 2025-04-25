@@ -88,4 +88,4 @@ namespace Zentia
     const std::filesystem::path& ConfigManager::getJoltPhysicsAssetFolder() const { return m_jolt_physics_asset_folder; }
 #endif
 
-} // namespace Piccolo
+} // namespace Zentia

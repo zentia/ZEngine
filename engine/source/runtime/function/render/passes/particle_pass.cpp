@@ -347,7 +347,7 @@ namespace Zentia
                                      m_particle_billboard_texture_resource->m_format);
         }
 
-        // piccolo texture
+        // Zentia texture
         {
             std::shared_ptr<TextureData> m_zentia_logo_texture_resource = m_render_resource->loadTexture(
                 m_particle_manager->getGlobalParticleRes().m_zentia_logo_texture_path, true);
@@ -1972,4 +1972,4 @@ namespace Zentia
     {
         m_emitter_transform_indices = transform_indices;
     }
-} // namespace Piccolo
+} // namespace Zentia

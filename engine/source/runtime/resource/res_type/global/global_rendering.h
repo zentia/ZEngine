@@ -63,4 +63,4 @@ namespace Zentia
         CameraConfig     m_camera_config;
         DirectionalLight m_directional_light;
     };
-} // namespace Piccolo
+} // namespace Zentia

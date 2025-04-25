@@ -18,4 +18,4 @@ namespace Zentia
     private:
         static std::atomic<ParticleEmitterID> m_next_id;
     };
-} // namespace Piccolo
+} // namespace Zentia

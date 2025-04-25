@@ -51,4 +51,4 @@ namespace Zentia
 
         Reflection::ReflectionPtr<ControllerConfig> m_controller_config;
     };
-} // namespace Piccolo
+} // namespace Zentia

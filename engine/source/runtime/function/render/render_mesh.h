@@ -81,4 +81,4 @@ namespace Zentia
             return attribute_descriptions;
         }
     };
-} // namespace Piccolo
+} // namespace Zentia

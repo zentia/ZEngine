@@ -39,4 +39,4 @@ namespace Zentia
         }
         return layouts;
     }
-} // namespace Piccolo
+} // namespace Zentia

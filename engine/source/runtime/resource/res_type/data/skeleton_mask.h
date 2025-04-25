@@ -15,4 +15,4 @@ namespace Zentia
         std::vector<int> enabled;
     };
 
-} // namespace Piccolo
+} // namespace Zentia

@@ -21,4 +21,4 @@ namespace Zentia
         Vector2    m_life;  // life base & variance
         Vector4    m_color; // color rgba
     };
-} // namespace Piccolo
+} // namespace Zentia

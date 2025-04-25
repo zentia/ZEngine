@@ -68,4 +68,4 @@ namespace Zentia
         std::shared_ptr<BufferData> m_buffer;
     };
 
-} // namespace Piccolo
+} // namespace Zentia

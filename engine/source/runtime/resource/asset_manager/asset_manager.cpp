@@ -12,4 +12,4 @@ namespace Zentia
     {
         return std::filesystem::absolute(g_runtime_global_context.m_config_manager->getRootFolder() / relative_path);
     }
-} // namespace Piccolo
+} // namespace Zentia

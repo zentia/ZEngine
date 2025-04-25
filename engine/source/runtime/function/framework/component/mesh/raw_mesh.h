@@ -43,4 +43,4 @@ namespace Zentia
         RawIndexBuffer  index_buffer;
         MaterialTexture material_texture;
     };
-} // namespace Piccolo
+} // namespace Zentia

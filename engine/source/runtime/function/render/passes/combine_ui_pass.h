@@ -24,4 +24,4 @@ namespace Zentia
         void setupPipelines();
         void setupDescriptorSet();
     };
-} // namespace Piccolo
+} // namespace Zentia

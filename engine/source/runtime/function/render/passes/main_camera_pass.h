@@ -120,4 +120,4 @@ namespace Zentia
         std::vector<RHIFramebuffer*> m_swapchain_framebuffers;
         std::shared_ptr<ParticlePass> m_particle_pass;
     };
-} // namespace Piccolo
+} // namespace Zentia

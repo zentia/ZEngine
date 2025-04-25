@@ -45,4 +45,4 @@ namespace Zentia
     };
 
     extern RuntimeGlobalContext g_runtime_global_context;
-} // namespace Piccolo
+} // namespace Zentia

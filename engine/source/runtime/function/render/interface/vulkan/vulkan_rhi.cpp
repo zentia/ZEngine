@@ -3607,4 +3607,4 @@ namespace Zentia
         m_current_frame_index = index;
     }
 
-} // namespace Piccolo
+} // namespace Zentia

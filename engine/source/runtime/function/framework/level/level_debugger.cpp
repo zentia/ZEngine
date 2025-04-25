@@ -50,7 +50,7 @@ namespace Zentia
 
     void LevelDebugger::showBones(std::shared_ptr<Level> level, GObjectID go_id) const
     {
-        std::shared_ptr<GObject> gobject = level->getGObjectByID(go_id).lock();
+        std::shared_ptr<AActor> gobject = level->getGObjectByID(go_id).lock();
         drawBones(gobject);
     }
 
@@ -65,7 +65,7 @@ namespace Zentia
 
     void LevelDebugger::showBonesName(std::shared_ptr<Level> level, GObjectID go_id) const
     {
-        std::shared_ptr<GObject> gobject = level->getGObjectByID(go_id).lock();
+        std::shared_ptr<AActor> gobject = level->getGObjectByID(go_id).lock();
         drawBonesName(gobject);
     }
 
@@ -80,16 +80,16 @@ namespace Zentia
 
     void LevelDebugger::showBoundingBox(std::shared_ptr<Level> level, GObjectID go_id) const
     {
-        std::shared_ptr<GObject> gobject = level->getGObjectByID(go_id).lock();
+        std::shared_ptr<AActor> gobject = level->getGObjectByID(go_id).lock();
         drawBoundingBox(gobject);
     }
 
     void LevelDebugger::showCameraInfo(std::shared_ptr<Level> level) const
     {
-        std::shared_ptr<GObject> gobject = level->getCurrentActiveCharacter().lock()->getObject().lock();
+        std::shared_ptr<AActor> gobject = level->getCurrentActiveCharacter().lock()->getObject().lock();
         drawCameraInfo(gobject);
     }
-    void LevelDebugger::drawBones(std::shared_ptr<GObject> object) const
+    void LevelDebugger::drawBones(std::shared_ptr<AActor> object) const
     {
         const TransformComponent* transform_component =
             object->tryGetComponentConst<TransformComponent>("TransformComponent");
@@ -146,7 +146,7 @@ namespace Zentia
         }
     }
 
-    void LevelDebugger::drawBonesName(std::shared_ptr<GObject> object) const
+    void LevelDebugger::drawBonesName(std::shared_ptr<AActor> object) const
     {
         const TransformComponent* transform_component =
             object->tryGetComponentConst<TransformComponent>("TransformComponent");
@@ -188,7 +188,7 @@ namespace Zentia
         }
     }
 
-    void LevelDebugger::drawBoundingBox(std::shared_ptr<GObject> object) const
+    void LevelDebugger::drawBoundingBox(std::shared_ptr<AActor> object) const
     {
         const RigidBodyComponent* rigidbody_component =
             object->tryGetComponentConst<RigidBodyComponent>("RigidBodyComponent");
@@ -212,7 +212,7 @@ namespace Zentia
         }
     }
 
-    void LevelDebugger::drawCameraInfo(std::shared_ptr<GObject> object) const
+    void LevelDebugger::drawCameraInfo(std::shared_ptr<AActor> object) const
     {
         const CameraComponent* camera_component = object->tryGetComponentConst<CameraComponent>("CameraComponent");
         if (camera_component == nullptr)
@@ -247,4 +247,4 @@ namespace Zentia
         buffer << "camera direction : (" << direction.x << "," << direction.y << "," << direction.z << ")";
         debug_draw_group->addText(buffer.str(), Vector4(1.0f, 0.0f, 0.0f, 1.0f), Vector3(-1.0f, -0.2f, 0.0f), 10, true);
     }
-} // namespace Piccolo
+} // namespace Zentia

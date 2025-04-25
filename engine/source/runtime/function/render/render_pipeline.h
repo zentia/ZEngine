@@ -23,4 +23,4 @@ namespace Zentia
 
         void setSelectedAxis(size_t selected_axis);
     };
-} // namespace Piccolo
+} // namespace Zentia

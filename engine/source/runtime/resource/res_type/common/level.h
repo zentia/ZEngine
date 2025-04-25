@@ -18,4 +18,4 @@ namespace Zentia
 
         std::vector<ObjectInstanceRes> m_objects;
     };
-} // namespace Piccolo
+} // namespace Zentia

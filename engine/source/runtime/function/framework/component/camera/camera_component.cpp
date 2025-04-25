@@ -17,7 +17,7 @@
 
 namespace Zentia
 {
-    void CameraComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
+    void CameraComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
     {
         m_parent_object = parent_object;
 
@@ -203,4 +203,4 @@ namespace Zentia
         camera_swap_data.m_view_matrix = desired_mat;
         swap_context.getLogicSwapData().m_camera_swap_data = camera_swap_data;
     }
-} // namespace Piccolo
+} // namespace Zentia

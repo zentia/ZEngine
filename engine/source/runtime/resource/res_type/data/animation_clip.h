@@ -49,4 +49,4 @@ namespace Zentia
         std::string   skeleton_file_path;
     };
 
-} // namespace Piccolo
+} // namespace Zentia

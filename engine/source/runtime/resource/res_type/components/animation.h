@@ -43,4 +43,4 @@ namespace Zentia
         AnimationResult animation_result;
     };
 
-} // namespace Piccolo
+} // namespace Zentia

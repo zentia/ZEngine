@@ -24,4 +24,4 @@ namespace Zentia
     private:
         WindowUI* m_window_ui;
     };
-} // namespace Piccolo
+} // namespace Zentia

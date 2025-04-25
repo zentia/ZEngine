@@ -33,4 +33,4 @@ namespace Zentia
                                            // build process
     };
 
-} // namespace Piccolo
+} // namespace Zentia

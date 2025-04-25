@@ -39,4 +39,4 @@ namespace Zentia
 
         std::vector<Reflection::ReflectionPtr<Component>> m_instanced_components;
     };
-} // namespace Piccolo
+} // namespace Zentia

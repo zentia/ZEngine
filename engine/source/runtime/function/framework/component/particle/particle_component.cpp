@@ -11,7 +11,7 @@
 
 namespace Zentia
 {
-    void ParticleComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
+    void ParticleComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
     {
         m_parent_object = parent_object;
 
@@ -57,4 +57,4 @@ namespace Zentia
             logic_swap_data.updateParticleTransform(m_transform_desc);
         }
     }
-}; // namespace Piccolo
+}; // namespace Zentia

@@ -13,7 +13,7 @@
 
 namespace Zentia
 {
-    void MeshComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
+    void MeshComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
     {
         m_parent_object = parent_object;
 
@@ -102,4 +102,4 @@ namespace Zentia
             transform_component->setDirtyFlag(false);
         }
     }
-} // namespace Piccolo
+} // namespace Zentia

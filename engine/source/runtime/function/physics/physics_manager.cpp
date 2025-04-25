@@ -117,4 +117,4 @@ namespace Zentia
         m_renderer->EndFrame();
     }
 #endif
-} // namespace Piccolo
+} // namespace Zentia

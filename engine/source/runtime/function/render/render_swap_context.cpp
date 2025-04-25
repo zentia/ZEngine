@@ -166,4 +166,4 @@ namespace Zentia
             m_emitter_transform_request = request;
         }
     }
-} // namespace Piccolo
+} // namespace Zentia

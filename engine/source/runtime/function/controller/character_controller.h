@@ -34,4 +34,4 @@ namespace Zentia
         Capsule        m_capsule;
         RigidBodyShape m_rigidbody_shape;
     };
-} // namespace Piccolo
+} // namespace Zentia

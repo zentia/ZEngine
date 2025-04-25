@@ -44,4 +44,4 @@ namespace Zentia
         std::vector<float>       blend_ratio;
     };
 
-} // namespace Piccolo
+} // namespace Zentia

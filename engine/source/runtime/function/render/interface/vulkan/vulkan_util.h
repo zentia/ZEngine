@@ -112,4 +112,4 @@ namespace Zentia
         static VkSampler                               m_nearest_sampler;
         static VkSampler                               m_linear_sampler;
     };
-} // namespace Piccolo
+} // namespace Zentia

@@ -310,10 +310,9 @@ namespace Zentia
             ImGuiID left_file_content = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.30f, nullptr, &left_other);
 
             ImGuiID left_game_engine;
-            ImGuiID left_asset =
-                ImGui::DockBuilderSplitNode(left_other, ImGuiDir_Left, 0.30f, nullptr, &left_game_engine);
+            ImGuiID left_asset = ImGui::DockBuilderSplitNode(left_other, ImGuiDir_Left, 0.30f, nullptr, &left_game_engine);
 
-            ImGui::DockBuilderDockWindow("World Objects", left_asset);
+            ImGui::DockBuilderDockWindow("Outliner", left_asset);
             ImGui::DockBuilderDockWindow("Components Details", right);
             ImGui::DockBuilderDockWindow("File Content", left_file_content);
             ImGui::DockBuilderDockWindow("Game Engine", left_game_engine);
@@ -325,7 +324,7 @@ namespace Zentia
 
         if (ImGui::BeginMenuBar())
         {
-            if (ImGui::BeginMenu("Menu"))
+            if (ImGui::BeginMenu("File"))
             {
                 if (ImGui::MenuItem("Reload Current Level"))
                 {
@@ -376,12 +375,40 @@ namespace Zentia
                 }
                 ImGui::EndMenu();
             }
+            if (ImGui::BeginMenu("Edit"))
+            {
+                ImGui::EndMenu();
+            }
             if (ImGui::BeginMenu("Window"))
             {
-                ImGui::MenuItem("World Objects", nullptr, &m_asset_window_open);
+                ImGui::MenuItem("Outliner", nullptr, &m_asset_window_open);
                 ImGui::MenuItem("Game", nullptr, &m_game_engine_window_open);
                 ImGui::MenuItem("File Content", nullptr, &m_file_content_window_open);
                 ImGui::MenuItem("Detail", nullptr, &m_detail_window_open);
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Tools"))
+            {
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Build"))
+            {
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Select"))
+            {
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Actor"))
+            {
+                if (ImGui::MenuItem("Place Actor"))
+                {
+                    
+                }
+                ImGui::EndMenu();
+            }
+            if (ImGui::BeginMenu("Help"))
+            {
                 ImGui::EndMenu();
             }
             ImGui::EndMenuBar();
@@ -399,14 +426,13 @@ namespace Zentia
         if (!*p_open)
             return;
 
-        if (!ImGui::Begin("World Objects", p_open, window_flags))
+        if (!ImGui::Begin("Outliner", p_open, window_flags))
         {
             ImGui::End();
             return;
         }
 
-        std::shared_ptr<Level> current_active_level =
-            g_runtime_global_context.m_world_manager->getCurrentActiveLevel().lock();
+        std::shared_ptr<Level> current_active_level = g_runtime_global_context.m_world_manager->getCurrentActiveLevel().lock();
         if (current_active_level == nullptr)
             return;
 
@@ -414,12 +440,11 @@ namespace Zentia
         for (auto& id_object_pair : all_gobjects)
         {
             const GObjectID          object_id = id_object_pair.first;
-            std::shared_ptr<GObject> object    = id_object_pair.second;
+            std::shared_ptr<AActor> object    = id_object_pair.second;
             const std::string        name      = object->getName();
             if (name.size() > 0)
             {
-                if (ImGui::Selectable(name.c_str(),
-                                      g_editor_global_context.m_scene_manager->getSelectedObjectID() == object_id))
+                if (ImGui::Selectable(name.c_str(), g_editor_global_context.m_scene_manager->getSelectedObjectID() == object_id))
                 {
                     if (g_editor_global_context.m_scene_manager->getSelectedObjectID() != object_id)
                     {
@@ -431,8 +456,17 @@ namespace Zentia
                     }
                     break;
                 }
+                if (ImGui::BeginPopupContextItem(name.c_str()))
+                {
+                    if (ImGui::MenuItem("Place Actor"))
+                    {
+                        
+                    }
+                    ImGui::EndPopup();
+                }
             }
         }
+        
         ImGui::End();
     }
 
@@ -541,7 +575,7 @@ namespace Zentia
             return;
         }
 
-        std::shared_ptr<GObject> selected_object = g_editor_global_context.m_scene_manager->getSelectedGObject().lock();
+        std::shared_ptr<AActor> selected_object = g_editor_global_context.m_scene_manager->getSelectedGObject().lock();
         if (selected_object == nullptr)
         {
             ImGui::End();

@@ -16,7 +16,7 @@
 
 namespace Zentia
 {
-    void MotorComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
+    void MotorComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
     {
         m_parent_object = parent_object;
 
@@ -213,7 +213,7 @@ namespace Zentia
                 break;
         }
 
-        // Piccolo-hack: motor level simulating jump, character always above z-plane
+        // Zentia-hack: motor level simulating jump, character always above z-plane
         if (m_jump_state == JumpState::falling && final_position.z + m_desired_displacement.z <= 0.f)
         {
             final_position.z = 0.f;
@@ -224,4 +224,4 @@ namespace Zentia
         m_target_position = final_position;
     }
 
-} // namespace Piccolo
+} // namespace Zentia

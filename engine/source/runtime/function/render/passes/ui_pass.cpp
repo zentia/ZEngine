@@ -104,4 +104,4 @@ namespace Zentia
             m_rhi->popEvent(m_rhi->getCurrentCommandBuffer());
         }
     }
-} // namespace Piccolo
+} // namespace Zentia

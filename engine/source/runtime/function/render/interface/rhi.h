@@ -175,4 +175,4 @@ namespace Zentia
     };
 
     inline RHI::~RHI() = default;
-} // namespace Piccolo
+} // namespace Zentia

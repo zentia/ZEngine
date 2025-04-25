@@ -167,4 +167,4 @@ namespace Zentia
             m_game_command |= (unsigned int)GameCommand::invalid;
         }
     }
-} // namespace Piccolo
+} // namespace Zentia

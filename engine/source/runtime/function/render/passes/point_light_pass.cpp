@@ -699,4 +699,4 @@ namespace Zentia
         m_rhi->cmdEndRenderPassPFN(m_rhi->getCurrentCommandBuffer());
     }
 
-} // namespace Piccolo
+} // namespace Zentia

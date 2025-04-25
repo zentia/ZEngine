@@ -29,4 +29,4 @@ namespace Zentia
     }
 
     CameraComponentRes::~CameraComponentRes() { ZENTIA_REFLECTION_DELETE(m_parameter); }
-} // namespace Piccolo
+} // namespace Zentia

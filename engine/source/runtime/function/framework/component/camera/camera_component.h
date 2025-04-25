@@ -26,7 +26,7 @@ namespace Zentia
     public:
         CameraComponent() = default;
 
-        void postLoadResource(std::weak_ptr<GObject> parent_object) override;
+        void postLoadResource(std::weak_ptr<AActor> parent_object) override;
 
         void tick(float delta_time) override;
 
@@ -51,4 +51,4 @@ namespace Zentia
         Vector3 m_up {Vector3::UNIT_Z};
         Vector3 m_left {Vector3::UNIT_X};
     };
-} // namespace Piccolo
+} // namespace Zentia

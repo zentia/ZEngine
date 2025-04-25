@@ -16,4 +16,4 @@ namespace Zentia
         }
         return files;
     }
-} // namespace Piccolo
+} // namespace Zentia

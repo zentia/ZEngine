@@ -110,4 +110,4 @@ namespace Zentia
 
         m_fovy = Radian(Math::atan(Math::tan(Radian(Degree(m_fovx) * 0.5f)) / m_aspect) * 2.0f).valueDegrees();
     }
-} // namespace Piccolo
+} // namespace Zentia

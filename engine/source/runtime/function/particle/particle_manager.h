@@ -33,4 +33,4 @@ namespace Zentia
     private:
         GlobalParticleRes m_global_particle_res;
     };
-} // namespace Piccolo
+} // namespace Zentia

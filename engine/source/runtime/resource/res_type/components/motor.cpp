@@ -5,4 +5,4 @@
 namespace Zentia
 {
     MotorComponentRes::~MotorComponentRes() {  }
-} // namespace Piccolo
+} // namespace Zentia

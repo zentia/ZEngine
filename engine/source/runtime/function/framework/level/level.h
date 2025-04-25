@@ -9,11 +9,11 @@
 namespace Zentia
 {
     class Character;
-    class GObject;
+    class AActor;
     class ObjectInstanceRes;
     class PhysicsScene;
 
-    using LevelObjectsMap = std::unordered_map<GObjectID, std::shared_ptr<GObject>>;
+    using LevelObjectsMap = std::unordered_map<GObjectID, std::shared_ptr<AActor>>;
 
     /// The main class to manage all game objects
     class Level
@@ -32,7 +32,7 @@ namespace Zentia
 
         const LevelObjectsMap& getAllGObjects() const { return m_gobjects; }
 
-        std::weak_ptr<GObject>   getGObjectByID(GObjectID go_id) const;
+        std::weak_ptr<AActor>   getGObjectByID(GObjectID go_id) const;
         std::weak_ptr<Character> getCurrentActiveCharacter() const { return m_current_active_character; }
 
         GObjectID createObject(const ObjectInstanceRes& object_instance_res);
@@ -53,4 +53,4 @@ namespace Zentia
 
         std::weak_ptr<PhysicsScene> m_physics_scene;
     };
-} // namespace Piccolo
+} // namespace Zentia

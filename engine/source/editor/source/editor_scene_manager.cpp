@@ -21,7 +21,7 @@ namespace Zentia
 
     void EditorSceneManager::tick(float delta_time)
     {
-        std::shared_ptr<GObject> selected_gobject = getSelectedGObject().lock();
+        std::shared_ptr<AActor> selected_gobject = getSelectedGObject().lock();
         if (selected_gobject)
         {
             TransformComponent* transform_component = selected_gobject->tryGetComponent(TransformComponent);
@@ -208,7 +208,7 @@ namespace Zentia
 
     void EditorSceneManager::drawSelectedEntityAxis()
     {
-        std::shared_ptr<GObject> selected_object = getSelectedGObject().lock();
+        std::shared_ptr<AActor> selected_object = getSelectedGObject().lock();
 
         if (g_is_editor_mode && selected_object != nullptr)
         {
@@ -239,9 +239,9 @@ namespace Zentia
         }
     }
 
-    std::weak_ptr<GObject> EditorSceneManager::getSelectedGObject() const
+    std::weak_ptr<AActor> EditorSceneManager::getSelectedGObject() const
     {
-        std::weak_ptr<GObject> selected_object;
+        std::weak_ptr<AActor> selected_object;
         if (m_selected_gobject_id != k_invalid_gobject_id)
         {
             std::shared_ptr<Level> level = g_runtime_global_context.m_world_manager->getCurrentActiveLevel().lock();
@@ -260,7 +260,7 @@ namespace Zentia
 
         m_selected_gobject_id = selected_gobject_id;
 
-        std::shared_ptr<GObject> selected_gobject = getSelectedGObject().lock();
+        std::shared_ptr<AActor> selected_gobject = getSelectedGObject().lock();
         if (selected_gobject)
         {
             const TransformComponent* transform_component = selected_gobject->tryGetComponentConst(TransformComponent);
@@ -282,7 +282,7 @@ namespace Zentia
     void EditorSceneManager::onDeleteSelectedGObject()
     {
         // delete selected entity
-        std::shared_ptr<GObject> selected_object = getSelectedGObject().lock();
+        std::shared_ptr<AActor> selected_object = getSelectedGObject().lock();
         if (selected_object != nullptr)
         {
             std::shared_ptr<Level> current_active_level =
@@ -307,7 +307,7 @@ namespace Zentia
                                         size_t    cursor_on_axis,
                                         Matrix4x4 model_matrix)
     {
-        std::shared_ptr<GObject> selected_object = getSelectedGObject().lock();
+        std::shared_ptr<AActor> selected_object = getSelectedGObject().lock();
         if (selected_object == nullptr)
             return;
 

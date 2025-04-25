@@ -51,4 +51,4 @@ namespace Zentia
         std::vector<SkeletonBinding> bind;
     };
 
-} // namespace Piccolo
+} // namespace Zentia

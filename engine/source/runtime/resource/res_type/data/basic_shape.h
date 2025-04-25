@@ -44,4 +44,4 @@ namespace Zentia
         float m_radius {0.3f};
         float m_half_height {0.7f};
     };
-} // namespace Piccolo
+} // namespace Zentia

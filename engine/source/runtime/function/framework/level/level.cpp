@@ -29,10 +29,10 @@ namespace Zentia
         GObjectID object_id = ObjectIDAllocator::alloc();
         ASSERT(object_id != k_invalid_gobject_id);
 
-        std::shared_ptr<GObject> gobject;
+        std::shared_ptr<AActor> gobject;
         try
         {
-            gobject = std::make_shared<GObject>(object_id);
+            gobject = std::make_shared<AActor>(object_id);
         }
         catch (const std::bad_alloc&)
         {
@@ -77,7 +77,7 @@ namespace Zentia
         // create active character
         for (const auto& object_pair : m_gobjects)
         {
-            std::shared_ptr<GObject> object = object_pair.second;
+            std::shared_ptr<AActor> object = object_pair.second;
             if (object == nullptr)
                 continue;
 
@@ -162,7 +162,7 @@ namespace Zentia
         }
     }
 
-    std::weak_ptr<GObject> Level::getGObjectByID(GObjectID go_id) const
+    std::weak_ptr<AActor> Level::getGObjectByID(GObjectID go_id) const
     {
         auto iter = m_gobjects.find(go_id);
         if (iter != m_gobjects.end())
@@ -170,7 +170,7 @@ namespace Zentia
             return iter->second;
         }
 
-        return std::weak_ptr<GObject>();
+        return std::weak_ptr<AActor>();
     }
 
     void Level::deleteGObjectByID(GObjectID go_id)
@@ -178,7 +178,7 @@ namespace Zentia
         auto iter = m_gobjects.find(go_id);
         if (iter != m_gobjects.end())
         {
-            std::shared_ptr<GObject> object = iter->second;
+            std::shared_ptr<AActor> object = iter->second;
             if (object)
             {
                 if (m_current_active_character && m_current_active_character->getObjectID() == object->getID())
@@ -191,4 +191,4 @@ namespace Zentia
         m_gobjects.erase(go_id);
     }
 
-} // namespace Piccolo
+} // namespace Zentia

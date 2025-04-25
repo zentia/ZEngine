@@ -1033,4 +1033,4 @@ namespace Zentia
         vkDestroySampler(device, m_linear_sampler, nullptr);
         m_linear_sampler = VK_NULL_HANDLE;
     }
-} // namespace Piccolo
+} // namespace Zentia

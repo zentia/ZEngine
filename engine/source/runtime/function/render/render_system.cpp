@@ -442,4 +442,4 @@ namespace Zentia
             m_swap_context.resetEmitterTransformSwapData();
         }
     }
-} // namespace Piccolo
+} // namespace Zentia

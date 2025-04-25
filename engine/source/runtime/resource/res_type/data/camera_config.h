@@ -28,4 +28,4 @@ namespace Zentia
         float      m_z_far;
         float      m_z_near;
     };
-} // namespace Piccolo
+} // namespace Zentia

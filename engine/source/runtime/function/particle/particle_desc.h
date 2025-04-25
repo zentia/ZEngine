@@ -39,4 +39,4 @@ namespace Zentia
             m_color(component_res.m_color)
         {}
     };
-} // namespace Piccolo
+} // namespace Zentia

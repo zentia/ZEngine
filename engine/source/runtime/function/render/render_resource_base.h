@@ -51,4 +51,4 @@ namespace Zentia
 
         std::unordered_map<MeshSourceDesc, AxisAlignedBox> m_bounding_box_cache_map;
     };
-} // namespace Piccolo
+} // namespace Zentia

@@ -30,4 +30,4 @@ namespace Zentia
         MeshDirectionalLightShadowPerframeStorageBufferObject
             m_mesh_directional_light_shadow_perframe_storage_buffer_object;
     };
-} // namespace Piccolo
+} // namespace Zentia

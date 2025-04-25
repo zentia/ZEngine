@@ -24,4 +24,4 @@ namespace Zentia
     {
         m_ui_pass->initializeUIRenderBackend(window_ui);
     }
-} // namespace Piccolo
+} // namespace Zentia

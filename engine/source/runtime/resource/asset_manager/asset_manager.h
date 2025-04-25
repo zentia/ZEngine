@@ -69,4 +69,4 @@ namespace Zentia
         std::filesystem::path getFullPath(const std::string& relative_path) const;
 
     };
-} // namespace Piccolo
+} // namespace Zentia

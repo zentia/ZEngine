@@ -22,4 +22,4 @@ namespace Zentia
         std::string m_particle_billboard_texture_path;
         std::string m_zentia_logo_texture_path;
     };
-} // namespace Piccolo
+} // namespace Zentia

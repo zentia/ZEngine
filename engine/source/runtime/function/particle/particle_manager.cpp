@@ -64,4 +64,4 @@ namespace Zentia
     }
 
     const GlobalParticleRes& ParticleManager::getGlobalParticleRes() { return m_global_particle_res; }
-} // namespace Piccolo
+} // namespace Zentia

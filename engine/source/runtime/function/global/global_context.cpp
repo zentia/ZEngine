@@ -91,4 +91,4 @@ namespace Zentia
 
         m_particle_manager.reset();
     }
-} // namespace Piccolo
+} // namespace Zentia

@@ -19,4 +19,4 @@ namespace Zentia
         // the default level for this world, which should be first loading level
         std::string m_default_level_url;
     };
-} // namespace Piccolo
+} // namespace Zentia

@@ -27,7 +27,7 @@ namespace Zentia
     public:
         MotorComponent() = default;
 
-        void postLoadResource(std::weak_ptr<GObject> parent_object) override;
+        void postLoadResource(std::weak_ptr<AActor> parent_object) override;
 
         ~MotorComponent() override;
 
@@ -70,4 +70,4 @@ namespace Zentia
         META(Enable)
         bool m_is_moving {false};
     };
-} // namespace Piccolo
+} // namespace Zentia

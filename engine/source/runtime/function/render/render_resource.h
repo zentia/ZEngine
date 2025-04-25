@@ -187,4 +187,4 @@ namespace Zentia
                                VulkanMesh&          now_mesh);
         void updateTextureImageData(std::shared_ptr<RHI> rhi, const TextureDataToUpdate& texture_data);
     };
-} // namespace Piccolo
+} // namespace Zentia

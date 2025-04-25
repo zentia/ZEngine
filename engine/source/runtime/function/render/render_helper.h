@@ -82,4 +82,4 @@ namespace Zentia
     bool BoxIntersectsWithSphere(BoundingBox const& b, BoundingSphere const& s);
 
     Matrix4x4 CalculateDirectionalLightCamera(RenderScene& scene, RenderCamera& camera);
-} // namespace Piccolo
+} // namespace Zentia

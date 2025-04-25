@@ -40,4 +40,4 @@ namespace Zentia
 
         RHIDescriptorSetLayout* _per_mesh_layout = nullptr;
     };
-} // namespace Piccolo
+} // namespace Zentia

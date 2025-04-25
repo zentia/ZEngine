@@ -13,13 +13,13 @@
 namespace Zentia
 {
     /// GObject : Game Object base class
-    class GObject : public std::enable_shared_from_this<GObject>
+    class AActor : public std::enable_shared_from_this<AActor>
     {
         typedef std::unordered_set<std::string> TypeNameSet;
 
     public:
-        GObject(GObjectID id) : m_id {id} {}
-        virtual ~GObject();
+        AActor(GObjectID id) : m_id {id} {}
+        virtual ~AActor();
 
         virtual void tick(float delta_time);
 
@@ -74,4 +74,4 @@ namespace Zentia
         // in editor, and it's polymorphism
         std::vector<Reflection::ReflectionPtr<Component>> m_components;
     };
-} // namespace Piccolo
+} // namespace Zentia

@@ -5,7 +5,7 @@
 
 namespace Zentia
 {
-    void TransformComponent::postLoadResource(std::weak_ptr<GObject> parent_gobject)
+    void TransformComponent::postLoadResource(std::weak_ptr<AActor> parent_gobject)
     {
         m_parent_object       = parent_gobject;
         m_transform_buffer[0] = m_transform;
@@ -64,4 +64,4 @@ namespace Zentia
         }
     }
 
-} // namespace Piccolo
+} // namespace Zentia

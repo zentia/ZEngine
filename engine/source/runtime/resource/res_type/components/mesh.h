@@ -23,4 +23,4 @@ namespace Zentia
     public:
         std::vector<SubMeshRes> m_sub_meshes;
     };
-} // namespace Piccolo
+} // namespace Zentia

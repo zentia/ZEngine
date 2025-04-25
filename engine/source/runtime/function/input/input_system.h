@@ -50,4 +50,4 @@ namespace Zentia
         int m_last_cursor_x {0};
         int m_last_cursor_y {0};
     };
-} // namespace Piccolo
+} // namespace Zentia

@@ -38,4 +38,4 @@ namespace Zentia
 
         return file_pure_name;
     }
-} // namespace Piccolo
+} // namespace Zentia

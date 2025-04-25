@@ -15,4 +15,4 @@ namespace Zentia
         std::string m_occlusion_texture_file;
         std::string m_emissive_texture_file;
     };
-} // namespace Piccolo
+} // namespace Zentia

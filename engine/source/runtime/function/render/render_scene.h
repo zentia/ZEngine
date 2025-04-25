@@ -71,4 +71,4 @@ namespace Zentia
         void updateVisibleObjectsAxis(std::shared_ptr<RenderResource> render_resource);
         void updateVisibleObjectsParticle(std::shared_ptr<RenderResource> render_resource);
     };
-} // namespace Piccolo
+} // namespace Zentia

@@ -272,4 +272,4 @@ namespace Zentia
         RHIFormat emissive_image_format;
         VulkanPBRMaterial* now_material;
     };
-} // namespace Piccolo
+} // namespace Zentia

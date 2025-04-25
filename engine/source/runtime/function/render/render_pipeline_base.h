@@ -51,4 +51,4 @@ namespace Zentia
         std::shared_ptr<RenderPassBase> m_particle_pass;
 
     };
-} // namespace Piccolo
+} // namespace Zentia
