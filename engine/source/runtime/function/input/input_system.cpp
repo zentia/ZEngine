@@ -10,7 +10,7 @@
 
 #include <GLFW/glfw3.h>
 
-namespace Piccolo
+namespace Zentia
 {
     unsigned int k_complement_control_command = 0xFFFFFFFF;
 

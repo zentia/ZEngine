@@ -3,7 +3,7 @@
 #include "runtime/function/animation/animation_system.h"
 #include "runtime/function/framework/object/object.h"
 
-namespace Piccolo
+namespace Zentia
 {
     void AnimationComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
     {

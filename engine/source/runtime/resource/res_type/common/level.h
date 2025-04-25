@@ -5,7 +5,7 @@
 
 #include "runtime/resource/res_type/common/object.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(LevelRes)
     CLASS(LevelRes, Fields)

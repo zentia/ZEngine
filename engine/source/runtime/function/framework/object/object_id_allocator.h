@@ -3,7 +3,7 @@
 #include <atomic>
 #include <limits>
 
-namespace Piccolo
+namespace Zentia
 {
     using GObjectID = std::size_t;
 

@@ -2,7 +2,7 @@
 
 #include "runtime/core/base/macro.h"
 
-namespace Piccolo
+namespace Zentia
 {
     MotorComponentRes::~MotorComponentRes() {  }
 } // namespace Piccolo

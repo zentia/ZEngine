@@ -15,7 +15,7 @@
 
 #include "_generated/serializer/all_serializer.h"
 
-namespace Piccolo
+namespace Zentia
 {
     bool shouldComponentTick(std::string component_type_name)
     {
@@ -33,7 +33,7 @@ namespace Piccolo
     {
         for (auto& component : m_components)
         {
-            PICCOLO_REFLECTION_DELETE(component);
+            ZENTIA_REFLECTION_DELETE(component);
         }
         m_components.clear();
     }

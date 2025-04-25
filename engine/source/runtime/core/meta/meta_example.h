@@ -2,7 +2,7 @@
 
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(BaseTest)
     CLASS(BaseTest, Fields)
@@ -32,4 +32,4 @@ namespace Piccolo
     public:
         std::vector<Reflection::ReflectionPtr<BaseTest>> m_test_base_array;
     };
-} // namespace Piccolo
+} // namespace Zentia

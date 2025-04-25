@@ -24,7 +24,7 @@
 //           0       0       1
 // where t > 0 indicates a counterclockwise rotation in the xy-plane.
 
-namespace Piccolo
+namespace Zentia
 {
     /** A 3x3 matrix which can represent rotations around axes.
     @note
@@ -365,4 +365,4 @@ namespace Piccolo
         static const Matrix3x3 ZERO;
         static const Matrix3x3 IDENTITY;
     };
-} // namespace Piccolo
+} // namespace ZENTIA

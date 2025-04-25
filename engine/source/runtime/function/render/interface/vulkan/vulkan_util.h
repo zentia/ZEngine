@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     class VulkanUtil
     {

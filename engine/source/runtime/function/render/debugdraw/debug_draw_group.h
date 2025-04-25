@@ -5,7 +5,7 @@
 #include <mutex>
 #include <list>
 
-namespace Piccolo
+namespace Zentia
 {
     class DebugDrawGroup
     {

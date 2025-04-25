@@ -4,7 +4,7 @@
 
 #include "runtime/function/framework/component/component.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(RigidBodyComponent)
     CLASS(RigidBodyComponent : public Component, WhiteListFields)

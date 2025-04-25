@@ -1,7 +1,7 @@
 #include "runtime/function/framework/component/lua/lua_component.h"
 #include "runtime/core/base/macro.h"
 #include "runtime/function/framework/object/object.h"
-namespace Piccolo
+namespace Zentia
 {
 
     bool find_component_field(std::weak_ptr<GObject>     game_object,

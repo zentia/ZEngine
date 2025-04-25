@@ -1,5 +1,5 @@
 #pragma once
-namespace Piccolo
+namespace Zentia
 {
     namespace Reflection
     {
@@ -10,4 +10,4 @@ namespace Piccolo
             static void metaUnregister();
         };
     } // namespace Reflection
-} // namespace Piccolo
+} // namespace Zentia

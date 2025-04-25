@@ -9,7 +9,7 @@
 #include <functional>
 
 #include "rhi_struct.h"
-namespace Piccolo
+namespace Zentia
 {
     class WindowSystem;
 

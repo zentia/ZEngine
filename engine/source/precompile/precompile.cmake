@@ -52,7 +52,7 @@ COMMAND
   ${CMAKE_COMMAND} -E echo "************************************************************* "
 
 COMMAND
-    ${PRECOMPILE_PARSER} "${ZENTIA_PRECOMPILE_PARAMS_PATH}"  "${PARSER_INPUT}"  "${ENGINE_ROOT_DIR}/source" ${sys_include} "Piccolo" 0
+    ${PRECOMPILE_PARSER} "${ZENTIA_PRECOMPILE_PARAMS_PATH}"  "${PARSER_INPUT}"  "${ENGINE_ROOT_DIR}/source" ${sys_include} "Zentia" 0
 ### BUILDING ====================================================================================
 COMMAND
     ${CMAKE_COMMAND} -E echo "+++ Precompile finished +++"

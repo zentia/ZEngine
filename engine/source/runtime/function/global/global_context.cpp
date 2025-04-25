@@ -19,7 +19,7 @@
 #include "runtime/function/render/render_system.h"
 #include "runtime/function/render/window_system.h"
 
-namespace Piccolo
+namespace Zentia
 {
     RuntimeGlobalContext g_runtime_global_context;
 

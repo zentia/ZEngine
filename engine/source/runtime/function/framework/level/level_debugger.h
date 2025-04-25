@@ -2,7 +2,7 @@
 #include "runtime/function/framework/level/level.h"
 #include "runtime/function/framework/object/object.h"
 
-namespace Piccolo
+namespace Zentia
 {
     class LevelDebugger
     {

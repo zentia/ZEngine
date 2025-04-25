@@ -72,7 +72,7 @@ layout(set = 0, binding = 6) buffer AliveBufferNext { ivec4 alivelistnext[]; };
 
 layout(set = 0, binding = 7) buffer EmitterInfoBuffer { EmitterInfo emitterinfo; };
 
-layout(set = 0, binding = 10) uniform sampler2D piccolotexture;
+layout(set = 0, binding = 10) uniform sampler2D zentiatexture;
 
 // Gold Noise ©2015 dcerisano@standard3d.com
 // - based on the Golden Ratio
@@ -126,7 +126,7 @@ void main()
                 particle.pos.y   = emitterinfo.pos.y + rotated_pos.y;
                 particle.pos.z   = emitterinfo.pos.z + rotated_pos.z;
 
-                vec4 color = texture(piccolotexture, vec2(1.0 - rnd0, 1.0 - rnd1));
+                vec4 color = texture(zentiatexture, vec2(1.0 - rnd0, 1.0 - rnd1));
                 if (color.w > 0.9)
                 {
                     particle.color = color;

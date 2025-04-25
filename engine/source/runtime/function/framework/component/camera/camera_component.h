@@ -6,7 +6,7 @@
 
 #include "runtime/function/framework/component/component.h"
 
-namespace Piccolo
+namespace Zentia
 {
     class RenderCamera;
 

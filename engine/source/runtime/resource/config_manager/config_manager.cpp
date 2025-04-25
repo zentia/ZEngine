@@ -6,7 +6,7 @@
 #include <fstream>
 #include <string>
 
-namespace Piccolo
+namespace Zentia
 {
     void ConfigManager::initialize(const std::filesystem::path& config_file_path)
     {

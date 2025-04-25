@@ -12,12 +12,12 @@
 #include "runtime/function/render/window_system.h"
 #include "runtime/function/render/debugdraw/debug_draw_manager.h"
 
-namespace Piccolo
+namespace Zentia
 {
     bool                            g_is_editor_mode {false};
     std::unordered_set<std::string> g_editor_tick_component_types {};
 
-    void PiccoloEngine::startEngine(const std::string& config_file_path)
+    void ZentiaEngine::startEngine(const std::string& config_file_path)
     {
         Reflection::TypeMetaRegister::metaRegister();
 
@@ -26,7 +26,7 @@ namespace Piccolo
         LOG_INFO("engine start");
     }
 
-    void PiccoloEngine::shutdownEngine()
+    void ZentiaEngine::shutdownEngine()
     {
         LOG_INFO("engine shutdown");
 
@@ -35,10 +35,10 @@ namespace Piccolo
         Reflection::TypeMetaRegister::metaUnregister();
     }
 
-    void PiccoloEngine::initialize() {}
-    void PiccoloEngine::clear() {}
+    void ZentiaEngine::initialize() {}
+    void ZentiaEngine::clear() {}
 
-    void PiccoloEngine::run()
+    void ZentiaEngine::run()
     {
         std::shared_ptr<WindowSystem> window_system = g_runtime_global_context.m_window_system;
         ASSERT(window_system);
@@ -50,7 +50,7 @@ namespace Piccolo
         }
     }
 
-    float PiccoloEngine::calculateDeltaTime()
+    float ZentiaEngine::calculateDeltaTime()
     {
         float delta_time;
         {
@@ -65,7 +65,7 @@ namespace Piccolo
         return delta_time;
     }
 
-    bool PiccoloEngine::tickOneFrame(float delta_time)
+    bool ZentiaEngine::tickOneFrame(float delta_time)
     {
         logicalTick(delta_time);
         calculateFPS(delta_time);
@@ -84,26 +84,26 @@ namespace Piccolo
 
 
         g_runtime_global_context.m_window_system->setTitle(
-            std::string("Piccolo - " + std::to_string(getFPS()) + " FPS").c_str());
+            std::string("Zentia - " + std::to_string(getFPS()) + " FPS").c_str());
 
         const bool should_window_close = g_runtime_global_context.m_window_system->shouldClose();
         return !should_window_close;
     }
 
-    void PiccoloEngine::logicalTick(float delta_time)
+    void ZentiaEngine::logicalTick(float delta_time)
     {
         g_runtime_global_context.m_world_manager->tick(delta_time);
         g_runtime_global_context.m_input_system->tick();
     }
 
-    bool PiccoloEngine::rendererTick(float delta_time)
+    bool ZentiaEngine::rendererTick(float delta_time)
     {
         g_runtime_global_context.m_render_system->tick(delta_time);
         return true;
     }
 
-    const float PiccoloEngine::s_fps_alpha = 1.f / 100;
-    void        PiccoloEngine::calculateFPS(float delta_time)
+    const float ZentiaEngine::s_fps_alpha = 1.f / 100;
+    void        ZentiaEngine::calculateFPS(float delta_time)
     {
         m_frame_count++;
 
@@ -118,4 +118,4 @@ namespace Piccolo
 
         m_fps = static_cast<int>(1.f / m_average_duration);
     }
-} // namespace Piccolo
+} // namespace Zentia

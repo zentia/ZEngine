@@ -7,7 +7,7 @@
 #include <array>
 #include "interface/rhi.h"
 
-namespace Piccolo
+namespace Zentia
 {
     struct MeshVertex
     {

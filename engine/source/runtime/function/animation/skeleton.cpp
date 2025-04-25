@@ -4,7 +4,7 @@
 
 #include "runtime/function/animation/utilities.h"
 
-namespace Piccolo
+namespace Zentia
 {
     Skeleton::~Skeleton() { delete[] m_bones; }
 
@@ -164,4 +164,4 @@ namespace Piccolo
     {
         return m_bone_count;
     }
-} // namespace Piccolo
+} // namespace Zentia

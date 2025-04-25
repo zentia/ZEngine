@@ -3,7 +3,7 @@
 #include "runtime/function/global/global_context.h"
 #include "runtime/function/render/render_system.h"
 
-namespace Piccolo
+namespace Zentia
 {
     DebugDrawGroup::~DebugDrawGroup() { clear(); }
     void DebugDrawGroup::initialize()

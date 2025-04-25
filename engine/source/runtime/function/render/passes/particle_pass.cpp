@@ -16,7 +16,7 @@
 #include <particlebillboard_frag.h>
 #include <particlebillboard_vert.h>
 
-namespace Piccolo
+namespace Zentia
 {
     void ParticleEmitterBufferBatch::freeUpBatch(std::shared_ptr<RHI> rhi)
     {
@@ -349,15 +349,15 @@ namespace Piccolo
 
         // piccolo texture
         {
-            std::shared_ptr<TextureData> m_piccolo_logo_texture_resource = m_render_resource->loadTexture(
-                m_particle_manager->getGlobalParticleRes().m_piccolo_logo_texture_path, true);
-            m_rhi->createGlobalImage(m_piccolo_logo_texture_image,
-                                     m_piccolo_logo_texture_image_view,
-                                     m_piccolo_logo_texture_vma_allocation,
-                                     m_piccolo_logo_texture_resource->m_width,
-                                     m_piccolo_logo_texture_resource->m_height,
-                                     m_piccolo_logo_texture_resource->m_pixels,
-                                     m_piccolo_logo_texture_resource->m_format);
+            std::shared_ptr<TextureData> m_zentia_logo_texture_resource = m_render_resource->loadTexture(
+                m_particle_manager->getGlobalParticleRes().m_zentia_logo_texture_path, true);
+            m_rhi->createGlobalImage(m_zentia_logo_texture_image,
+                                     m_zentia_logo_texture_image_view,
+                                     m_zentia_logo_texture_vma_allocation,
+                                     m_zentia_logo_texture_resource->m_width,
+                                     m_zentia_logo_texture_resource->m_height,
+                                     m_zentia_logo_texture_resource->m_pixels,
+                                     m_zentia_logo_texture_resource->m_format);
         }
 
         m_rhi->createImage(m_rhi->getSwapchainInfo().extent.width,
@@ -894,11 +894,11 @@ namespace Piccolo
             }
 
             {
-                RHIDescriptorSetLayoutBinding& piccolo_texture_layout_binding = particle_layout_bindings[10];
-                piccolo_texture_layout_binding.binding                        = 10;
-                piccolo_texture_layout_binding.descriptorType  = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-                piccolo_texture_layout_binding.descriptorCount = 1;
-                piccolo_texture_layout_binding.stageFlags      = RHI_SHADER_STAGE_COMPUTE_BIT;
+                RHIDescriptorSetLayoutBinding& zentia_texture_layout_binding = particle_layout_bindings[10];
+                zentia_texture_layout_binding.binding                        = 10;
+                zentia_texture_layout_binding.descriptorType  = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                zentia_texture_layout_binding.descriptorCount = 1;
+                zentia_texture_layout_binding.stageFlags      = RHI_SHADER_STAGE_COMPUTE_BIT;
             }
 
             RHIDescriptorSetLayoutCreateInfo particle_descriptor_layout_create_info;
@@ -1397,10 +1397,10 @@ namespace Piccolo
                     throw std::runtime_error("create sampler error");
                 }
 
-                RHIDescriptorImageInfo piccolo_texture_image_info = {};
-                piccolo_texture_image_info.sampler                = sampler;
-                piccolo_texture_image_info.imageView              = m_piccolo_logo_texture_image_view;
-                piccolo_texture_image_info.imageLayout            = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                RHIDescriptorImageInfo zentia_texture_image_info = {};
+                zentia_texture_image_info.sampler                = sampler;
+                zentia_texture_image_info.imageView              = m_zentia_logo_texture_image_view;
+                zentia_texture_image_info.imageLayout            = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
                 {
                     RHIWriteDescriptorSet& descriptorset = computeWriteDescriptorSets[10];
@@ -1408,7 +1408,7 @@ namespace Piccolo
                     descriptorset.dstSet                 = m_descriptor_infos[eid * 3].descriptor_set;
                     descriptorset.descriptorType         = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
                     descriptorset.dstBinding             = 10;
-                    descriptorset.pImageInfo             = &piccolo_texture_image_info;
+                    descriptorset.pImageInfo             = &zentia_texture_image_info;
                     descriptorset.descriptorCount        = 1;
                 }
 

@@ -9,7 +9,7 @@
 #include <memory>
 #include <optional>
 
-namespace Piccolo
+namespace Zentia
 {
     class WindowSystem;
     class RHI;

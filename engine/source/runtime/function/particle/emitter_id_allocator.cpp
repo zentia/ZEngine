@@ -2,7 +2,7 @@
 
 #include "core/base/macro.h"
 
-namespace Piccolo
+namespace Zentia
 {
     std::atomic<ParticleEmitterID> ParticleEmitterIDAllocator::m_next_id {0};
 

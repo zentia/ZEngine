@@ -14,7 +14,7 @@
 #include <map>
 #include <stdexcept>
 
-namespace Piccolo
+namespace Zentia
 {
     void PickPass::initialize(const RenderPassInitInfo* init_info)
     {

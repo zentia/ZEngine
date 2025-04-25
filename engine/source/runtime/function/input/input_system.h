@@ -2,7 +2,7 @@
 
 #include "runtime/core/math/math.h"
 
-namespace Piccolo
+namespace Zentia
 {
     enum class GameCommand : unsigned int
     {

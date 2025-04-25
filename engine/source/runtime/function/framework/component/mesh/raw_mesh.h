@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     enum class PrimitiveType
     {

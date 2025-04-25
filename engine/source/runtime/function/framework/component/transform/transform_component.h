@@ -6,7 +6,7 @@
 #include "runtime/function/framework/component/component.h"
 #include "runtime/function/framework/object/object.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(TransformComponent)
     CLASS(TransformComponent : public Component, WhiteListFields)

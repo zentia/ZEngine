@@ -4,7 +4,7 @@
 #include "runtime/core/math/vector4.h"
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(ParticleComponentRes)
         CLASS(ParticleComponentRes, Fields)

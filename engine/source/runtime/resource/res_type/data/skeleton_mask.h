@@ -2,7 +2,7 @@
 #include "runtime/core/meta/reflection/reflection.h"
 #include <string>
 #include <vector>
-namespace Piccolo
+namespace Zentia
 {
 
     REFLECTION_TYPE(BoneBlendMask)

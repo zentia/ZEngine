@@ -10,22 +10,22 @@
 #include "editor/include/editor_scene_manager.h"
 #include "editor/include/editor_ui.h"
 
-namespace Piccolo
+namespace Zentia
 {
     void registerEdtorTickComponent(std::string component_type_name)
     {
         g_editor_tick_component_types.insert(component_type_name);
     }
 
-    PiccoloEditor::PiccoloEditor()
+    ZentiaEditor::ZentiaEditor()
     {
         registerEdtorTickComponent("TransformComponent");
         registerEdtorTickComponent("MeshComponent");
     }
 
-    PiccoloEditor::~PiccoloEditor() {}
+    ZentiaEditor::~ZentiaEditor() {}
 
-    void PiccoloEditor::initialize(PiccoloEngine* engine_runtime)
+    void ZentiaEditor::initialize(ZentiaEngine* engine_runtime)
     {
         assert(engine_runtime);
 
@@ -46,9 +46,9 @@ namespace Piccolo
         m_editor_ui->initialize(ui_init_info);
     }
 
-    void PiccoloEditor::clear() { g_editor_global_context.clear(); }
+    void ZentiaEditor::clear() { g_editor_global_context.clear(); }
 
-    void PiccoloEditor::run()
+    void ZentiaEditor::run()
     {
         assert(m_engine_runtime);
         assert(m_editor_ui);
@@ -62,4 +62,4 @@ namespace Piccolo
                 return;
         }
     }
-} // namespace Piccolo
+} // namespace Zentia

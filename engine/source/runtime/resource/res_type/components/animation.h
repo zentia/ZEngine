@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
 
     REFLECTION_TYPE(AnimationResultElement)

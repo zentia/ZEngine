@@ -10,7 +10,7 @@
 #include "runtime/function/global/global_context.h"
 #include "runtime/function/physics/physics_scene.h"
 
-namespace Piccolo
+namespace Zentia
 {
     void RigidBodyComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
     {

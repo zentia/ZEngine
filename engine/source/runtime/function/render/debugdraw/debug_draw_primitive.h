@@ -5,7 +5,7 @@
 
 #include <array>
 
-namespace Piccolo
+namespace Zentia
 {
 
     static const float k_debug_draw_infinity_life_time = -2.f;

@@ -13,7 +13,7 @@
 #include <optional>
 #include <string>
 
-namespace Piccolo
+namespace Zentia
 {
     struct LevelIBLResourceDesc
     {

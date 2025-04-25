@@ -3,7 +3,7 @@
 #include "runtime/function/render/render_entity.h"
 #include "runtime/function/render/render_type.h"
 
-namespace Piccolo
+namespace Zentia
 {
     class EditorTranslationAxis : public RenderEntity
     {
@@ -25,4 +25,4 @@ namespace Piccolo
         EditorScaleAxis();
         RenderMeshData m_mesh_data;
     };
-} // namespace Piccolo
+} // namespace Zentia

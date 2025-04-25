@@ -5,7 +5,7 @@
 #include "runtime/function/render/render_pass.h"
 #include "runtime/function/render/render_resource.h"
 
-namespace Piccolo
+namespace Zentia
 {
     struct ParticlePassInitInfo : RenderPassInitInfo
     {
@@ -129,9 +129,9 @@ namespace Piccolo
         RHIImageView*   m_particle_billboard_texture_image_view = nullptr;
         VmaAllocation m_particle_billboard_texture_vma_allocation;
 
-        RHIImage*       m_piccolo_logo_texture_image = nullptr;
-        RHIImageView*   m_piccolo_logo_texture_image_view = nullptr;
-        VmaAllocation m_piccolo_logo_texture_vma_allocation;
+        RHIImage*       m_zentia_logo_texture_image = nullptr;
+        RHIImageView*   m_zentia_logo_texture_image_view = nullptr;
+        VmaAllocation m_zentia_logo_texture_vma_allocation;
 
         RHIRenderPass* m_render_pass = nullptr;
 

@@ -6,7 +6,7 @@
 #include "runtime/core/math/transform.h"
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Piccolo
+namespace Zentia
 {
     enum class RigidBodyShapeType : unsigned char
     {

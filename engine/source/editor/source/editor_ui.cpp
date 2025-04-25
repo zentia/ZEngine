@@ -29,16 +29,16 @@
 #include <imgui_internal.h>
 #include <stb_image.h>
 
-namespace Piccolo
+namespace Zentia
 {
     std::vector<std::pair<std::string, bool>> g_editor_node_state_array;
     int                                       g_node_depth = -1;
     void                                      DrawVecControl(const std::string& label,
-                                                             Piccolo::Vector3&    values,
+                                                             Zentia::Vector3&    values,
                                                              float              resetValue  = 0.0f,
                                                              float              columnWidth = 100.0f);
     void                                      DrawVecControl(const std::string& label,
-                                                             Piccolo::Quaternion& values,
+                                                             Zentia::Quaternion& values,
                                                              float              resetValue  = 0.0f,
                                                              float              columnWidth = 100.0f);
 
@@ -476,7 +476,7 @@ namespace Piccolo
                         {
                             m_editor_ui_creator["TreeNodePush"]("[" + std::to_string(index) + "]", nullptr);
                             auto object_instance = Reflection::ReflectionInstance(
-                                Piccolo::Reflection::TypeMeta::newMetaFromName(item_type_meta_item.getTypeName().c_str()),
+                                Zentia::Reflection::TypeMeta::newMetaFromName(item_type_meta_item.getTypeName().c_str()),
                                 array_accessor.get(index, field_instance));
                             createClassUI(object_instance);
                             m_editor_ui_creator["TreeNodePop"]("[" + std::to_string(index) + "]", nullptr);
@@ -563,7 +563,7 @@ namespace Piccolo
         {
             m_editor_ui_creator["TreeNodePush"](("<" + component_ptr.getTypeName() + ">").c_str(), nullptr);
             auto object_instance = Reflection::ReflectionInstance(
-                Piccolo::Reflection::TypeMeta::newMetaFromName(component_ptr.getTypeName().c_str()),
+                Zentia::Reflection::TypeMeta::newMetaFromName(component_ptr.getTypeName().c_str()),
                 component_ptr.operator->());
             createClassUI(object_instance);
             m_editor_ui_creator["TreeNodePop"](("<" + component_ptr.getTypeName() + ">").c_str(), nullptr);
@@ -977,7 +977,7 @@ namespace Piccolo
 
     void EditorUI::preRender() { showEditorUI(); }
 
-    void DrawVecControl(const std::string& label, Piccolo::Vector3& values, float resetValue, float columnWidth)
+    void DrawVecControl(const std::string& label, Zentia::Vector3& values, float resetValue, float columnWidth)
     {
         ImGui::PushID(label.c_str());
 
@@ -1033,7 +1033,7 @@ namespace Piccolo
         ImGui::PopID();
     }
 
-    void DrawVecControl(const std::string& label, Piccolo::Quaternion& values, float resetValue, float columnWidth)
+    void DrawVecControl(const std::string& label, Zentia::Quaternion& values, float resetValue, float columnWidth)
     {
         ImGui::PushID(label.c_str());
 
@@ -1100,4 +1100,4 @@ namespace Piccolo
         ImGui::Columns(1);
         ImGui::PopID();
     }
-} // namespace Piccolo
+} // namespace Zentia

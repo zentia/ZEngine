@@ -11,7 +11,7 @@
 #include <optional>
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     class RenderResource;
     class RenderCamera;

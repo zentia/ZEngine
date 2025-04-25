@@ -9,7 +9,7 @@
 #include "runtime/function/render/render_swap_context.h"
 #include "runtime/function/render/render_system.h"
 
-namespace Piccolo
+namespace Zentia
 {
     void ParticleComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
     {

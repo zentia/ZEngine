@@ -7,9 +7,9 @@
 
 #include <memory>
 
-namespace Piccolo
+namespace Zentia
 {
-    class PiccoloEditor;
+    class ZentiaEditor;
     class RenderCamera;
     class RenderEntity;
 

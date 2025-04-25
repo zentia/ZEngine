@@ -4,7 +4,7 @@
 #include "runtime/core/math/vector3.h"
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(Transform)
     CLASS(Transform, Fields)
@@ -28,4 +28,4 @@ namespace Piccolo
             return temp;
         }
     };
-} // namespace Piccolo
+} // namespace ZENTIA

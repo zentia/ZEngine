@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(GameObjectMeshDesc)
     STRUCT(GameObjectMeshDesc, Fields)
@@ -97,7 +97,7 @@ namespace Piccolo
 } // namespace Piccolo
 
 template<>
-struct std::hash<Piccolo::GameObjectPartId>
+struct std::hash<Zentia::GameObjectPartId>
 {
-    size_t operator()(const Piccolo::GameObjectPartId& rhs) const noexcept { return rhs.getHashValue(); }
+    size_t operator()(const Zentia::GameObjectPartId& rhs) const noexcept { return rhs.getHashValue(); }
 };

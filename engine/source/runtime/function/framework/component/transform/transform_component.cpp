@@ -3,7 +3,7 @@
 #include "runtime/engine.h"
 #include "runtime/function/framework/component/rigidbody/rigidbody_component.h"
 
-namespace Piccolo
+namespace Zentia
 {
     void TransformComponent::postLoadResource(std::weak_ptr<GObject> parent_gobject)
     {

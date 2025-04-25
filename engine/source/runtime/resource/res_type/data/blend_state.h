@@ -4,7 +4,7 @@
 #include "runtime/resource/res_type/data/animation_skeleton_node_map.h"
 #include <string>
 #include <vector>
-namespace Piccolo
+namespace Zentia
 {
 
     REFLECTION_TYPE(BoneBlendWeight)

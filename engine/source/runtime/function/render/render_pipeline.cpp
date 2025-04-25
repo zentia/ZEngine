@@ -15,7 +15,7 @@
 
 #include "runtime/core/base/macro.h"
 
-namespace Piccolo
+namespace Zentia
 {
     void RenderPipeline::initialize(RenderPipelineInitInfo init_info)
     {

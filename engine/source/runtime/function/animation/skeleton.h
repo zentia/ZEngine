@@ -4,7 +4,7 @@
 
 #include "runtime/function/animation/node.h"
 
-namespace Piccolo
+namespace Zentia
 {
     class SkeletonData;
     class BlendStateWithClipData;
@@ -26,4 +26,4 @@ namespace Piccolo
         const Bone*     getBones() const;
         int32_t         getBonesCount() const;
     };
-} // namespace Piccolo
+} // namespace Zentia

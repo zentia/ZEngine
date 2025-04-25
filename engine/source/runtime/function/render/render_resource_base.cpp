@@ -18,7 +18,7 @@
 #include <filesystem>
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     std::shared_ptr<TextureData> RenderResourceBase::loadTextureHDR(std::string file, int desired_channels)
     {
@@ -52,7 +52,7 @@ namespace Piccolo
         texture->m_depth        = 1;
         texture->m_array_layers = 1;
         texture->m_mip_levels   = 1;
-        texture->m_type         = PICCOLO_IMAGE_TYPE::PICCOLO_IMAGE_TYPE_2D;
+        texture->m_type         = ZENTIA_IMAGE_TYPE::ZENTIA_IMAGE_TYPE_2D;
 
         return texture;
     }
@@ -77,7 +77,7 @@ namespace Piccolo
         texture->m_depth        = 1;
         texture->m_array_layers = 1;
         texture->m_mip_levels   = 1;
-        texture->m_type         = PICCOLO_IMAGE_TYPE::PICCOLO_IMAGE_TYPE_2D;
+        texture->m_type         = ZENTIA_IMAGE_TYPE::ZENTIA_IMAGE_TYPE_2D;
 
         return texture;
     }

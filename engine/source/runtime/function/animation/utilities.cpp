@@ -2,7 +2,7 @@
 
 #include "runtime/function/animation/node.h"
 
-namespace Piccolo
+namespace Zentia
 {
     Bone* find_by_index(Bone* bones, int key, int size, bool is_flat)
     {
@@ -51,4 +51,4 @@ namespace Piccolo
             return it->index;
         return std::numeric_limits<int>::max();
     }
-} // namespace Piccolo
+} // namespace Zentia

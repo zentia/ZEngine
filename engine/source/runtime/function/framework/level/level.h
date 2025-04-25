@@ -6,7 +6,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace Piccolo
+namespace Zentia
 {
     class Character;
     class GObject;

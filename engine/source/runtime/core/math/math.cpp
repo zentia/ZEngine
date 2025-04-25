@@ -1,7 +1,7 @@
 #include "runtime/core/math/math.h"
 #include "runtime/core/math/matrix4.h"
 
-namespace Piccolo
+namespace Zentia
 {
     Math::AngleUnit Math::k_AngleUnit;
 
@@ -233,4 +233,4 @@ namespace Piccolo
         return proj_matrix;
     }
 
-} // namespace Piccolo
+} // namespace ZENTIA

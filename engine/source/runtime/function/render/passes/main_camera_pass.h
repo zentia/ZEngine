@@ -9,7 +9,7 @@
 #include "runtime/function/render/passes/ui_pass.h"
 #include "runtime/function/render/passes/particle_pass.h"
 
-namespace Piccolo
+namespace Zentia
 {
     class RenderResourceBase;
 

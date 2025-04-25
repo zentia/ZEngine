@@ -14,7 +14,7 @@
 #include "runtime/function/input/input_system.h"
 #include "runtime/function/physics/physics_scene.h"
 
-namespace Piccolo
+namespace Zentia
 {
     void MotorComponent::postLoadResource(std::weak_ptr<GObject> parent_object)
     {

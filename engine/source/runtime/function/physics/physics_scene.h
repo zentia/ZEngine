@@ -15,7 +15,7 @@ namespace JPH
 #endif
 } // namespace JPH
 
-namespace Piccolo
+namespace Zentia
 {
     class Transform;
     class RigidBodyComponentRes;

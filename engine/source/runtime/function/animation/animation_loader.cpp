@@ -10,7 +10,7 @@
 
 #include "_generated/serializer/all_serializer.h"
 
-namespace Piccolo
+namespace Zentia
 {
     namespace
     {
@@ -21,7 +21,7 @@ namespace Piccolo
             RawBone raw_bone;
             raw_bone.index                    = skeleton_data->bones_map.size();
             raw_bone.parent_index             = parent_index;
-            std::shared_ptr<RawBone> bone_ptr = std::make_shared<Piccolo::RawBone>();
+            std::shared_ptr<RawBone> bone_ptr = std::make_shared<Zentia::RawBone>();
             *bone_ptr                         = raw_bone;
             skeleton_data->bones_map.push_back(*bone_ptr);
             return bone_ptr;
@@ -71,32 +71,32 @@ namespace Piccolo
         }
     } // namespace
 
-    std::shared_ptr<Piccolo::AnimationClip> AnimationLoader::loadAnimationClipData(std::string animation_clip_url)
+    std::shared_ptr<Zentia::AnimationClip> AnimationLoader::loadAnimationClipData(std::string animation_clip_url)
     {
         AnimationAsset animation_clip;
         g_runtime_global_context.m_asset_manager->loadAsset(animation_clip_url, animation_clip);
-        return std::make_shared<Piccolo::AnimationClip>(animation_clip.clip_data);
+        return std::make_shared<Zentia::AnimationClip>(animation_clip.clip_data);
     }
 
-    std::shared_ptr<Piccolo::SkeletonData> AnimationLoader::loadSkeletonData(std::string skeleton_data_url)
+    std::shared_ptr<Zentia::SkeletonData> AnimationLoader::loadSkeletonData(std::string skeleton_data_url)
     {
         SkeletonData data;
         g_runtime_global_context.m_asset_manager->loadAsset(skeleton_data_url, data);
-        return std::make_shared<Piccolo::SkeletonData>(data);
+        return std::make_shared<Zentia::SkeletonData>(data);
     }
 
-    std::shared_ptr<Piccolo::AnimSkelMap> AnimationLoader::loadAnimSkelMap(std::string anim_skel_map_url)
+    std::shared_ptr<Zentia::AnimSkelMap> AnimationLoader::loadAnimSkelMap(std::string anim_skel_map_url)
     {
         AnimSkelMap data;
         g_runtime_global_context.m_asset_manager->loadAsset(anim_skel_map_url, data);
-        return std::make_shared<Piccolo::AnimSkelMap>(data);
+        return std::make_shared<Zentia::AnimSkelMap>(data);
     }
 
-    std::shared_ptr<Piccolo::BoneBlendMask> AnimationLoader::loadSkeletonMask(std::string skeleton_mask_file_url)
+    std::shared_ptr<Zentia::BoneBlendMask> AnimationLoader::loadSkeletonMask(std::string skeleton_mask_file_url)
     {
         BoneBlendMask data;
         g_runtime_global_context.m_asset_manager->loadAsset(skeleton_mask_file_url, data);
-        return std::make_shared<Piccolo::BoneBlendMask>(data);
+        return std::make_shared<Zentia::BoneBlendMask>(data);
     }
 
-} // namespace Piccolo
+} // namespace Zentia

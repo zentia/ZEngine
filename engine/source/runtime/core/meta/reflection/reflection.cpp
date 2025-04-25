@@ -2,7 +2,7 @@
 #include <cstring>
 #include <map>
 
-namespace Piccolo
+namespace Zentia
 {
     namespace Reflection
     {
@@ -383,4 +383,4 @@ namespace Piccolo
             return *this;
         }
     } // namespace Reflection
-} // namespace Piccolo
+} // namespace Zentia

@@ -11,7 +11,7 @@
 
 #include "_generated/serializer/all_serializer.h"
 
-namespace Piccolo
+namespace Zentia
 {
     class AssetManager
     {

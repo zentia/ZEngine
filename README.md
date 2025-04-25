@@ -12,7 +12,7 @@
 
 |    Build Type     |                                                                                      Status                                                                                      |
 | :---------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| **Build Windows** | [![Build Windows](https://github.com/zentia/zentia_engine/actions/workflows/build_windows.yml/badge.svg)](https://github.com/zentia/Piccolo/zentia_engine/workflows/build_windows.yml) |
+| **Build Windows** | [![Build Windows](https://github.com/zentia/zentia_engine/actions/workflows/build_windows.yml/badge.svg)](https://github.com/zentia/zentia_engine/workflows/build_windows.yml) |
 |  **Build Linux**  |    [![Build Linux](https://github.com/zentia/zentia_engine/actions/workflows/build_linux.yml/badge.svg)](https://github.com/zentia/zentia_engine/actions/workflows/build_linux.yml)    |
 |  **Build macOS**  |    [![Build macOS](https://github.com/zentia/zentia_engine/actions/workflows/build_macos.yml/badge.svg)](https://github.com/zentia/zentia_engine/actions/workflows/build_macos.yml)    |
 
@@ -53,7 +53,7 @@ sudo apt install mesa-vulkan-drivers
 ## Build Zentia
 
 ### Build on Windows
-You may execute the **build_windows.bat**. This batch file will generate the projects, and build the **Release** config of **Zentia Engine** automatically. After successful build, you can find the PiccoloEditor.exe at the **bin** directory.
+You may execute the **build_windows.bat**. This batch file will generate the projects, and build the **Release** config of **Zentia Engine** automatically. After successful build, you can find the ZentiaEditor.exe at the **bin** directory.
 
 Or you can use the following command to generate the **Visual Studio** project firstly, then open the solution in the build directory and build it manually.
 ```
@@ -86,7 +86,7 @@ For documentation, please refer to the Wiki section.
 ## Extra
 
 ### Vulkan Validation Layer: Validation Error
-We have noticed some developers on Windows encounted PiccoloEditor.exe could run normally but reported an exception Vulkan Validation Layer: Validation Error
+We have noticed some developers on Windows encounted ZentiaEditor.exe could run normally but reported an exception Vulkan Validation Layer: Validation Error
 when debugging. You can solve this problem by installing Vulkan SDK (official newest version will do).
 
 ### Generate Compilation Database
@@ -110,4 +110,4 @@ cmake -S . -B build -DENABLE_PHYSICS_DEBUG_RENDERER=ON
 
 Note:
 1. Please clean the build directory before regenerating the solution. We've encountered building problems in regenerating directly with previous CMakeCache.
-2. Physics Debug Renderer will run when you start PiccoloEditor. We've synced the camera position between both scenes. But the initial camera mode in Physics Debug Renderer is wrong. Scrolling down the mouse wheel once will change the camera of Physics Debug Renderer to the correct mode.
+2. Physics Debug Renderer will run when you start ZentiaEditor. We've synced the camera position between both scenes. But the initial camera mode in Physics Debug Renderer is wrong. Scrolling down the mouse wheel once will change the camera of Physics Debug Renderer to the correct mode.

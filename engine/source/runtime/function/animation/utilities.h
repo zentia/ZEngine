@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     class Bone;
     class RawBone;
@@ -26,4 +26,4 @@ namespace Piccolo
     Bone*                    find_by_index(Bone* bones, int key, int size, bool is_flat = false);
     std::shared_ptr<RawBone> find_by_index(std::vector<std::shared_ptr<RawBone>>& bones, int key, bool is_flat = false);
     int                      find_index_by_name(const SkeletonData& skeleton, const std::string& name);
-} // namespace Piccolo
+} // namespace Zentia

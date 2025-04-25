@@ -15,7 +15,7 @@
 #include "runtime/function/render/render_camera.h"
 #include "runtime/function/render/render_system.h"
 
-namespace Piccolo
+namespace Zentia
 {
     void EditorSceneManager::initialize() {}
 
@@ -575,4 +575,4 @@ namespace Piccolo
     {
         return g_editor_global_context.m_render_system->getGuidOfPickedMesh(picked_uv);
     }
-} // namespace Piccolo
+} // namespace Zentia

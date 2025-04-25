@@ -1,6 +1,6 @@
 #include "runtime/function/render/render_camera.h"
 
-namespace Piccolo
+namespace Zentia
 {
     void RenderCamera::setCurrentCameraType(RenderCameraType type)
     {

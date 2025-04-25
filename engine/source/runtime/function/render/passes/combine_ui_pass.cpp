@@ -8,7 +8,7 @@
 
 #include <stdexcept>
 
-namespace Piccolo
+namespace Zentia
 {
     void CombineUIPass::initialize(const RenderPassInitInfo* init_info)
     {

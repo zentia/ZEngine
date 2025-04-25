@@ -8,7 +8,7 @@
 
 #include <stdexcept>
 
-namespace Piccolo
+namespace Zentia
 {
     void ToneMappingPass::initialize(const RenderPassInitInfo* init_info)
     {

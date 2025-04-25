@@ -9,5 +9,5 @@
   },
   "max_life": 0.04,
   "particle_billboard_texture_path": "asset/texture/default/spark.HDR",
-  "piccolo_logo_texture_path": "resource/PiccoloEditorBigIcon.png"
+  "zentia_logo_texture_path": "resource/ZentiaEditorBigIcon.png"
 }

@@ -2,7 +2,7 @@
 #include "runtime/core/math/vector3.h"
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(Geometry)
     CLASS(Geometry, Fields)

@@ -4,7 +4,7 @@
 #include "runtime/core/math/vector3.h"
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(Vector4)
     CLASS(Vector4, Fields)
@@ -194,4 +194,4 @@ namespace Piccolo
         static const Vector4 UNIT_SCALE;
     };
 
-} // namespace Piccolo
+} // namespace Zentia

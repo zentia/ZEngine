@@ -15,7 +15,7 @@
 #include <vector>
 #include <cmath>
 
-namespace Piccolo
+namespace Zentia
 {
     class RHI;
     class RenderPassBase;

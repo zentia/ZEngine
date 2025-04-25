@@ -4,26 +4,26 @@
 
 #include <memory>
 
-namespace Piccolo
+namespace Zentia
 {
     class EditorUI;
-    class PiccoloEngine;
+    class ZentiaEngine;
 
-    class PiccoloEditor 
+    class ZentiaEditor 
     {
         friend class EditorUI;
 
     public:
-        PiccoloEditor();
-        virtual ~PiccoloEditor();
+        ZentiaEditor();
+        virtual ~ZentiaEditor();
 
-        void initialize(PiccoloEngine* engine_runtime);
+        void initialize(ZentiaEngine* engine_runtime);
         void clear();
 
         void run();
 
     protected:
         std::shared_ptr<EditorUI> m_editor_ui;
-        PiccoloEngine* m_engine_runtime{ nullptr };
+        ZentiaEngine* m_engine_runtime{ nullptr };
     };
-} // namespace Piccolo
+} // namespace Zentia

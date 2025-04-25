@@ -7,7 +7,7 @@
 #include "runtime/function/render/render_system.h"
 #include "runtime/function/render/interface/rhi.h"
 
-namespace Piccolo
+namespace Zentia
 {
     
     class DebugDrawFont

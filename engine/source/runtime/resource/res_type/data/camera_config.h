@@ -4,7 +4,7 @@
 #include "runtime/core/math/vector2.h"
 #include "runtime/core/math/vector3.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(CameraPose)
     CLASS(CameraPose, Fields)

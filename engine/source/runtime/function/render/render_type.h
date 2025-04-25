@@ -10,7 +10,7 @@
 /// <summary>
 /// RHI Type
 /// </summary>
-namespace Piccolo
+namespace Zentia
 {
 #define RHI_MAX_EXTENSION_NAME_SIZE        256U
 #define RHI_MAX_DESCRIPTION_SIZE           256U
@@ -1681,12 +1681,12 @@ namespace Piccolo
     typedef uint32_t RHISampleMask;
 }
 
-namespace Piccolo
+namespace Zentia
 {
-    enum class PICCOLO_IMAGE_TYPE : uint8_t
+    enum class ZENTIA_IMAGE_TYPE : uint8_t
     {
-        PICCOLO_IMAGE_TYPE_UNKNOWM = 0,
-        PICCOLO_IMAGE_TYPE_2D
+        ZENTIA_IMAGE_TYPE_UNKNOWM = 0,
+        ZENTIA_IMAGE_TYPE_2D
     };
 
     enum class RENDER_PIPELINE_TYPE : uint8_t
@@ -1729,7 +1729,7 @@ namespace Piccolo
         void*    m_pixels {nullptr};
 
         RHIFormat m_format = RHI_FORMAT_MAX_ENUM;
-        PICCOLO_IMAGE_TYPE   m_type { PICCOLO_IMAGE_TYPE::PICCOLO_IMAGE_TYPE_UNKNOWM};
+        ZENTIA_IMAGE_TYPE   m_type { ZENTIA_IMAGE_TYPE::ZENTIA_IMAGE_TYPE_UNKNOWM};
 
         TextureData() = default;
         ~TextureData()
@@ -1824,12 +1824,12 @@ namespace Piccolo
 } // namespace Piccolo
 
 template<>
-struct std::hash<Piccolo::MeshSourceDesc>
+struct std::hash<Zentia::MeshSourceDesc>
 {
-    size_t operator()(const Piccolo::MeshSourceDesc& rhs) const noexcept { return rhs.getHashValue(); }
+    size_t operator()(const Zentia::MeshSourceDesc& rhs) const noexcept { return rhs.getHashValue(); }
 };
 template<>
-struct std::hash<Piccolo::MaterialSourceDesc>
+struct std::hash<Zentia::MaterialSourceDesc>
 {
-    size_t operator()(const Piccolo::MaterialSourceDesc& rhs) const noexcept { return rhs.getHashValue(); }
+    size_t operator()(const Zentia::MaterialSourceDesc& rhs) const noexcept { return rhs.getHashValue(); }
 };

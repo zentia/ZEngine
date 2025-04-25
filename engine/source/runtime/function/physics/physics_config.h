@@ -4,7 +4,7 @@
 
 #include "core/math/vector3.h"
 
-namespace Piccolo
+namespace Zentia
 {
     class PhysicsConfig
     {

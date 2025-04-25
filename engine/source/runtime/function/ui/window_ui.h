@@ -2,7 +2,7 @@
 
 #include <memory>
 
-namespace Piccolo
+namespace Zentia
 {
     class WindowSystem;
     class RenderSystem;

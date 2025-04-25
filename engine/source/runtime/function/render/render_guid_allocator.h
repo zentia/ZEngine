@@ -2,7 +2,7 @@
 
 #include <unordered_map>
 
-namespace Piccolo
+namespace Zentia
 {
     static const size_t s_invalid_guid = 0;
 

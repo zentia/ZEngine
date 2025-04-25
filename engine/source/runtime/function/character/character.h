@@ -7,7 +7,7 @@
 
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     class Character
     {

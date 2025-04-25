@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace Piccolo
+namespace Zentia
 {
     void GameObjectResourceDesc::add(GameObjectDesc& desc) { m_game_object_descs.push_back(desc); }
 

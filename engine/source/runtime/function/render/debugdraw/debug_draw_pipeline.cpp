@@ -4,7 +4,7 @@
 #include <debugdraw_frag.h>
 #include "runtime/function/global/global_context.h"
 #include "runtime/function/render/render_system.h"
-namespace Piccolo
+namespace Zentia
 {
     void DebugDrawPipeline::initialize()
     {

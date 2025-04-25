@@ -60,7 +60,7 @@ set_target_properties("${TARGET_NAME}" PROPERTIES FOLDER "Engine" )
 
 #     set_target_properties(${HEADER_NAME} PROPERTIES FOLDER "Shaders/generated" )
 #     # Add the custom target like a dependencies of the project
-#     add_dependencies(${PICCOLO_NAME} ${HEADER_NAME})
+#     add_dependencies(${ZENTIA_NAME} ${HEADER_NAME})
 
 #     message(STATUS "Generating build commands for ${SHADER}")
 # endforeach()

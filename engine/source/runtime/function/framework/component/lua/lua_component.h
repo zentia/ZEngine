@@ -2,7 +2,7 @@
 #include "sol/sol.hpp"
 #include "runtime/function/framework/component/component.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(LuaComponent)
     CLASS(LuaComponent : public Component, WhiteListFields)

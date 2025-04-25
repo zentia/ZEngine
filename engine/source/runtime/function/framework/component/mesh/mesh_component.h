@@ -8,7 +8,7 @@
 
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     class RenderSwapContext;
 

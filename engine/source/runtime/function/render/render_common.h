@@ -10,7 +10,7 @@
 #include <vk_mem_alloc.h>
 #include <vulkan/vulkan.h>
 
-namespace Piccolo
+namespace Zentia
 {
     static const uint32_t s_point_light_shadow_map_dimension       = 2048;
     static const uint32_t s_directional_light_shadow_map_dimension = 4096;

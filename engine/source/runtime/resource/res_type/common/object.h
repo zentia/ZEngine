@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     class Component;
 

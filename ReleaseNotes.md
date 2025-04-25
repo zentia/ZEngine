@@ -33,7 +33,7 @@
 - 修复了渲染结果无法跟随ImGUI窗口移动的bug #345
 
 ## What's Changed
-* fix compilation by @OlorinMedas in https://github.com/BoomingTech/Piccolo/pull/280
+* fix compilation by @OlorinMedas in https://github.com/BoomingTech/Zentia/pull/280
 * Add hash_combine by @ShenMian in https://github.com/BoomingTech/Piccolo/pull/281
 * Fix the misalignment of rotation in <TransformComponent> by @Killyice in https://github.com/BoomingTech/Piccolo/pull/283
 * Reduce unnecessary copies of memory data to improve rendering performance by @kwbm in https://github.com/BoomingTech/Piccolo/pull/296

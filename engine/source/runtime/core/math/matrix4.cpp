@@ -1,7 +1,7 @@
 
 #include "runtime/core/math/matrix4.h"
 
-namespace Piccolo
+namespace Zentia
 {
 
     const Matrix4x4 Matrix4x4::ZERO(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
@@ -187,4 +187,4 @@ namespace Piccolo
                        v.x * mat[0][2] + v.y * mat[1][2] + v.z * mat[2][2] + v.w * mat[3][2],
                        v.x * mat[0][3] + v.y * mat[1][3] + v.z * mat[2][3] + v.w * mat[3][3]);
     }
-} // namespace Piccolo
+} // namespace ZENTIA

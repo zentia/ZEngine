@@ -2,7 +2,7 @@
 
 #include "runtime/core/math/math.h"
 
-namespace Piccolo
+namespace Zentia
 {
     //-----------------------------------------------------------------------
     Node::Node(const std::string name) { m_name = name; }
@@ -242,4 +242,4 @@ namespace Piccolo
         }
         return std::numeric_limits<size_t>().max();
     }
-} // namespace Piccolo
+} // namespace Zentia

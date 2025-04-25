@@ -1,6 +1,6 @@
 #include "editor/include/axis.h"
 
-namespace Piccolo
+namespace Zentia
 {
     EditorTranslationAxis::EditorTranslationAxis()
     {
@@ -652,4 +652,4 @@ namespace Piccolo
         index_data[start_index + 11 * 3 + 2] = (uint16_t)(start_vertex_index + 2);
     }
 
-} // namespace Piccolo
+} // namespace Zentia

@@ -1,7 +1,7 @@
 #pragma once
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Piccolo
+namespace Zentia
 {
     REFLECTION_TYPE(MaterialRes)
     CLASS(MaterialRes, Fields)

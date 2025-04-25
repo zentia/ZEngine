@@ -1,4 +1,4 @@
-namespace Piccolo
+namespace Zentia
 {
     class RenderDebugConfig
     {

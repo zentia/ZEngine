@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-namespace Piccolo
+namespace Zentia
 {
     class LogSystem;
     class InputSystem;

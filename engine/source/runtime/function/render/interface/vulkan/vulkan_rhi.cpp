@@ -8,8 +8,8 @@
 #include <cmath>
 
 // https://gcc.gnu.org/onlinedocs/cpp/Stringizing.html
-#define PICCOLO_XSTR(s) PICCOLO_STR(s)
-#define PICCOLO_STR(s) #s
+#define ZENTIA_XSTR(s) ZENTIA_STR(s)
+#define ZENTIA_STR(s) #s
 
 #if defined(__GNUC__)
 // https://gcc.gnu.org/onlinedocs/cpp/Common-Predefined-Macros.html
@@ -74,7 +74,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace Piccolo
+namespace Zentia
 {
     VulkanRHI::~VulkanRHI()
     {
@@ -107,12 +107,12 @@ namespace Piccolo
 #if defined(__GNUC__)
         // https://gcc.gnu.org/onlinedocs/cpp/Common-Predefined-Macros.html
 #if defined(__linux__)
-        char const* vk_layer_path = PICCOLO_XSTR(PICCOLO_VK_LAYER_PATH);
+        char const* vk_layer_path = ZENTIA_XSTR(ZENTIA_VK_LAYER_PATH);
         setenv("VK_LAYER_PATH", vk_layer_path, 1);
 #elif defined(__MACH__)
         // https://developer.apple.com/library/archive/documentation/Porting/Conceptual/PortingUnix/compiling/compiling.html
-        char const* vk_layer_path    = PICCOLO_XSTR(PICCOLO_VK_LAYER_PATH);
-        char const* vk_icd_filenames = PICCOLO_XSTR(PICCOLO_VK_ICD_FILENAMES);
+        char const* vk_layer_path    = ZENTIA_XSTR(ZENTIA_VK_LAYER_PATH);
+        char const* vk_icd_filenames = ZENTIA_XSTR(ZENTIA_VK_ICD_FILENAMES);
         setenv("VK_LAYER_PATH", vk_layer_path, 1);
         setenv("VK_ICD_FILENAMES", vk_icd_filenames, 1);
 #else
@@ -120,7 +120,7 @@ namespace Piccolo
 #endif
 #elif defined(_MSC_VER)
         // https://docs.microsoft.com/en-us/cpp/preprocessor/predefined-macros
-        char const* vk_layer_path = PICCOLO_XSTR(PICCOLO_VK_LAYER_PATH);
+        char const* vk_layer_path = ZENTIA_XSTR(ZENTIA_VK_LAYER_PATH);
         SetEnvironmentVariableA("VK_LAYER_PATH", vk_layer_path);
         SetEnvironmentVariableA("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", "1");
 #else
@@ -632,9 +632,9 @@ namespace Piccolo
         // app info
         VkApplicationInfo appInfo {};
         appInfo.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName   = "piccolo_renderer";
+        appInfo.pApplicationName   = "zentia_renderer";
         appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.pEngineName        = "Piccolo";
+        appInfo.pEngineName        = "Zentia";
         appInfo.engineVersion      = VK_MAKE_VERSION(1, 0, 0);
         appInfo.apiVersion         = m_vulkan_api_version;
 
@@ -2716,7 +2716,7 @@ namespace Piccolo
     {
         switch (type)
         {
-        case Piccolo::Default_Sampler_Linear:
+        case Zentia::Default_Sampler_Linear:
             if (m_linear_sampler == nullptr)
             {
                 m_linear_sampler = new VulkanSampler();
@@ -2725,7 +2725,7 @@ namespace Piccolo
             return m_linear_sampler;
             break;
 
-        case Piccolo::Default_Sampler_Nearest:
+        case Zentia::Default_Sampler_Nearest:
             if (m_nearest_sampler == nullptr)
             {
                 m_nearest_sampler = new VulkanSampler();
@@ -3126,11 +3126,11 @@ namespace Piccolo
     {
         switch (type)
         {
-        case Piccolo::Default_Sampler_Linear:
+        case Zentia::Default_Sampler_Linear:
             VulkanUtil::destroyLinearSampler(m_device);
             delete(m_linear_sampler);
             break;
-        case Piccolo::Default_Sampler_Nearest:
+        case Zentia::Default_Sampler_Nearest:
             VulkanUtil::destroyNearestSampler(m_device);
             delete(m_nearest_sampler);
             break;
@@ -3328,7 +3328,7 @@ namespace Piccolo
         }
     }
 
-    Piccolo::QueueFamilyIndices VulkanRHI::findQueueFamilies(VkPhysicalDevice physicalm_device) // for device and surface
+    Zentia::QueueFamilyIndices VulkanRHI::findQueueFamilies(VkPhysicalDevice physicalm_device) // for device and surface
     {
         QueueFamilyIndices indices;
         uint32_t           queue_family_count = 0;
@@ -3409,7 +3409,7 @@ namespace Piccolo
         return true;
     }
 
-    Piccolo::SwapChainSupportDetails VulkanRHI::querySwapChainSupport(VkPhysicalDevice physicalm_device)
+    Zentia::SwapChainSupportDetails VulkanRHI::querySwapChainSupport(VkPhysicalDevice physicalm_device)
     {
         SwapChainSupportDetails details_result;
 

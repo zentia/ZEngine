@@ -8,7 +8,7 @@
 #include "debug_draw_font.h"
 
 
-namespace Piccolo
+namespace Zentia
 {
     class DebugDrawManager
     {

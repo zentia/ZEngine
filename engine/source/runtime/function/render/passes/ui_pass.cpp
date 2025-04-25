@@ -9,7 +9,7 @@
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_vulkan.h>
 
-namespace Piccolo
+namespace Zentia
 {
     void UIPass::initialize(const RenderPassInitInfo* init_info)
     {

@@ -13,7 +13,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     void PointLightShadowPass::initialize(const RenderPassInitInfo* init_info)
     {

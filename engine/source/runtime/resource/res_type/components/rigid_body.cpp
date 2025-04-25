@@ -2,7 +2,7 @@
 
 #include "runtime/core/base/macro.h"
 
-namespace Piccolo
+namespace Zentia
 {
     RigidBodyShape::RigidBodyShape(const RigidBodyShape& res) :
         m_local_transform(res.m_local_transform)
@@ -10,8 +10,8 @@ namespace Piccolo
         if (res.m_geometry.getTypeName() == "Box")
         {
             m_type     = RigidBodyShapeType::box;
-            m_geometry = PICCOLO_REFLECTION_NEW(Box);
-            PICCOLO_REFLECTION_DEEP_COPY(Box, m_geometry, res.m_geometry);
+            m_geometry = ZENTIA_REFLECTION_NEW(Box);
+            ZENTIA_REFLECTION_DEEP_COPY(Box, m_geometry, res.m_geometry);
         }
         else
         {
@@ -21,6 +21,6 @@ namespace Piccolo
 
     RigidBodyShape::~RigidBodyShape()
     {
-        PICCOLO_REFLECTION_DELETE(m_geometry);
+        ZENTIA_REFLECTION_DELETE(m_geometry);
     }
 } // namespace Piccolo

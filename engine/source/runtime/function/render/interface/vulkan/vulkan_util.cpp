@@ -7,7 +7,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace Piccolo
+namespace Zentia
 {
     std::unordered_map<uint32_t, VkSampler> VulkanUtil::m_mipmap_sampler_map;
     VkSampler                               VulkanUtil::m_nearest_sampler = VK_NULL_HANDLE;

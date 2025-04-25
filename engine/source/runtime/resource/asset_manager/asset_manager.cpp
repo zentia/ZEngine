@@ -6,7 +6,7 @@
 
 #include <filesystem>
 
-namespace Piccolo
+namespace Zentia
 {
     std::filesystem::path AssetManager::getFullPath(const std::string& relative_path) const
     {

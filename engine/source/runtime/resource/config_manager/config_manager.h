@@ -2,7 +2,7 @@
 
 #include <filesystem>
 
-namespace Piccolo
+namespace Zentia
 {
     struct EngineInitParams;
 

@@ -8,7 +8,7 @@
 #include <memory>
 #include <string>
 
-namespace Piccolo
+namespace Zentia
 {
     class AnimationLoader
     {
@@ -18,4 +18,4 @@ namespace Piccolo
         std::shared_ptr<AnimSkelMap>   loadAnimSkelMap(std::string anim_skel_map_url);
         std::shared_ptr<BoneBlendMask> loadSkeletonMask(std::string skeleton_mask_file_url);
     };
-} // namespace Piccolo
+} // namespace Zentia

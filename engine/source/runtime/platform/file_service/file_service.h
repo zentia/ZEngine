@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <vector>
 
-namespace Piccolo
+namespace Zentia
 {
     class FileSystem 
     {

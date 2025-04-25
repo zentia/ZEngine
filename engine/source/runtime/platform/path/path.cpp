@@ -2,7 +2,7 @@
 
 using namespace std;
 
-namespace Piccolo
+namespace Zentia
 {
     const filesystem::path Path::getRelativePath(const filesystem::path& directory,
                                                  const filesystem::path& file_path)

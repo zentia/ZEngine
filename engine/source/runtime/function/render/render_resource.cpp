@@ -13,7 +13,7 @@
 
 #include <stdexcept>
 
-namespace Piccolo
+namespace Zentia
 {
     void RenderResource::clear()
     {
