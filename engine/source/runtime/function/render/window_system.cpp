@@ -22,14 +22,14 @@ namespace Zentia
         m_height = create_info.height;
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        m_window = glfwCreateWindow(create_info.width, create_info.height, create_info.title, nullptr, nullptr);
+        m_window = glfwCreateWindow(create_info.width, create_info.height, create_info.title, nullptr, nullptr);    
         if (!m_window)
         {
             LOG_FATAL(__FUNCTION__, "failed to create window");
             glfwTerminate();
             return;
         }
-
+        
         // Setup input callbacks
         glfwSetWindowUserPointer(m_window, this);
         glfwSetKeyCallback(m_window, keyCallback);
@@ -44,6 +44,7 @@ namespace Zentia
         glfwSetWindowCloseCallback(m_window, windowCloseCallback);
 
         glfwSetInputMode(m_window, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
+        glfwMaximizeWindow(m_window);
     }
 
     void WindowSystem::pollEvents() const { glfwPollEvents(); }

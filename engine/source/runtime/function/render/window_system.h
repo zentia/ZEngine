@@ -14,7 +14,7 @@ namespace Zentia
         int         width {1280};
         int         height {720};
         const char* title {"Zentia"};
-        bool        is_fullscreen {false};
+        bool        is_fullscreen {true};
     };
 
     class WindowSystem
