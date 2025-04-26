@@ -27,7 +27,7 @@ namespace Zentia
     public:
         MotorComponent() = default;
 
-        void postLoadResource(std::weak_ptr<AActor> parent_object) override;
+        void postLoadResource(AActor* parent_object) override;
 
         ~MotorComponent() override;
 

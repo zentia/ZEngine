@@ -145,7 +145,7 @@ namespace Zentia
         delete[] methods;
     }
 
-    void LuaComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
+    void LuaComponent::postLoadResource(AActor* parent_object)
     {
         m_parent_object = parent_object;
         m_lua_state.open_libraries(sol::lib::base);

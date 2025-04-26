@@ -17,7 +17,7 @@
 
 namespace Zentia
 {
-    void CameraComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
+    void CameraComponent::postLoadResource(AActor* parent_object)
     {
         m_parent_object = parent_object;
 
@@ -47,7 +47,7 @@ namespace Zentia
 
     void CameraComponent::tick(float delta_time)
     {
-        if (!m_parent_object.lock())
+        if (!m_parent_object)
             return;
 
         std::shared_ptr<Level> current_level = g_runtime_global_context.m_world_manager->getCurrentActiveLevel().lock();
@@ -55,7 +55,7 @@ namespace Zentia
         if (current_character == nullptr)
             return;
 
-        if (current_character->getObjectID() != m_parent_object.lock()->getID())
+        if (current_character->getObjectID() != m_parent_object->getID())
             return;
 
         switch (m_camera_mode)

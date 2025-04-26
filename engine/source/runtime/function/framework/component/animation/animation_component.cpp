@@ -5,7 +5,7 @@
 
 namespace Zentia
 {
-    void AnimationComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
+    void AnimationComponent::postLoadResource(AActor* parent_object)
     {
         m_parent_object = parent_object;
 

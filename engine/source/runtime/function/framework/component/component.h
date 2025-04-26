@@ -10,7 +10,7 @@ namespace Zentia
     {
         REFLECTION_BODY(Component)
     protected:
-        std::weak_ptr<AActor> m_parent_object;
+        AActor* m_parent_object;
         bool                   m_is_dirty {false};
         bool                   m_is_scale_dirty {false};
 
@@ -19,7 +19,7 @@ namespace Zentia
         virtual ~Component() {}
 
         // Instantiating the component after definition loaded
-        virtual void postLoadResource(std::weak_ptr<AActor> parent_object) { m_parent_object = parent_object; }
+        virtual void postLoadResource(AActor* parent_object) { m_parent_object = parent_object; }
 
         virtual void tick(float delta_time) {};
 

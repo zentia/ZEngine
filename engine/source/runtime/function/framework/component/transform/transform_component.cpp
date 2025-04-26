@@ -5,7 +5,7 @@
 
 namespace Zentia
 {
-    void TransformComponent::postLoadResource(std::weak_ptr<AActor> parent_gobject)
+    void TransformComponent::postLoadResource(AActor* parent_gobject)
     {
         m_parent_object       = parent_gobject;
         m_transform_buffer[0] = m_transform;
@@ -53,10 +53,10 @@ namespace Zentia
 
     void TransformComponent::tryUpdateRigidBodyComponent()
     {
-        if (!m_parent_object.lock())
+        if (!m_parent_object)
             return;
 
-        RigidBodyComponent* rigid_body_component = m_parent_object.lock()->tryGetComponent(RigidBodyComponent);
+        RigidBodyComponent* rigid_body_component = m_parent_object->tryGetComponent(RigidBodyComponent);
         if (rigid_body_component)
         {
             rigid_body_component->updateGlobalTransform(m_transform_buffer[m_current_index], m_is_scale_dirty);

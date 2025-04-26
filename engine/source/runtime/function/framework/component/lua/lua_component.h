@@ -12,7 +12,7 @@ namespace Zentia
     public:
         LuaComponent() = default;
 
-        void postLoadResource(std::weak_ptr<AActor> parent_object) override;
+        void postLoadResource(AActor* parent_object) override;
 
         void tick(float delta_time) override;
 

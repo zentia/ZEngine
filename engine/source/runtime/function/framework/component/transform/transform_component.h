@@ -16,7 +16,7 @@ namespace Zentia
     public:
         TransformComponent() = default;
 
-        void postLoadResource(std::weak_ptr<AActor> parent_object) override;
+        void postLoadResource(AActor* parent_object) override;
 
         Vector3    getPosition() const { return m_transform_buffer[m_current_index].m_position; }
         Vector3    getScale() const { return m_transform_buffer[m_current_index].m_scale; }

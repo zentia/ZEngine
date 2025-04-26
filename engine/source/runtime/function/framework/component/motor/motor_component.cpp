@@ -16,7 +16,7 @@
 
 namespace Zentia
 {
-    void MotorComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
+    void MotorComponent::postLoadResource(AActor* parent_object)
     {
         m_parent_object = parent_object;
 
@@ -33,7 +33,7 @@ namespace Zentia
             LOG_ERROR("invalid controller type, not able to move");
         }
 
-        const TransformComponent* transform_component = parent_object.lock()->tryGetComponentConst(TransformComponent);
+        const TransformComponent* transform_component = parent_object->tryGetComponentConst(TransformComponent);
 
         m_target_position = transform_component->getPosition();
     }
@@ -52,7 +52,7 @@ namespace Zentia
 
     void MotorComponent::tickPlayerMotor(float delta_time)
     {
-        if (!m_parent_object.lock())
+        if (!m_parent_object)
             return;
 
         std::shared_ptr<Level> current_level = g_runtime_global_context.m_world_manager->getCurrentActiveLevel().lock();
@@ -60,11 +60,10 @@ namespace Zentia
         if (current_character == nullptr)
             return;
 
-        if (current_character->getObjectID() != m_parent_object.lock()->getID())
+        if (current_character->getObjectID() != m_parent_object->getID())
             return;
 
-        TransformComponent* transform_component =
-            m_parent_object.lock()->tryGetComponent<TransformComponent>("TransformComponent");
+        TransformComponent* transform_component = m_parent_object->tryGetComponent<TransformComponent>("TransformComponent");
 
         Radian turn_angle_yaw = g_runtime_global_context.m_input_system->m_cursor_delta_yaw;
 

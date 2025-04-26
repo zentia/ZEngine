@@ -12,11 +12,11 @@
 
 namespace Zentia
 {
-    void RigidBodyComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
+    void RigidBodyComponent::postLoadResource(AActor* parent_object)
     {
         m_parent_object = parent_object;
 
-        const TransformComponent* parent_transform = m_parent_object.lock()->tryGetComponentConst(TransformComponent);
+        const TransformComponent* parent_transform = m_parent_object->tryGetComponentConst(TransformComponent);
         if (parent_transform == nullptr)
         {
             LOG_ERROR("No transform component in the object");

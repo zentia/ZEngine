@@ -1,9 +1,10 @@
 #pragma once
 #include "Light.h"
 
-
-class ADirectionalLight : public ALight
+REFLECTION_TYPE(ADirectionalLight)
+CLASS(ADirectionalLight : public ALight)
 {
+    REFLECTION_BODY(ADirectionalLight)
 public:
     
 };

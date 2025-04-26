@@ -13,7 +13,7 @@
 
 namespace Zentia
 {
-    void MeshComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
+    void MeshComponent::postLoadResource(AActor* parent_object)
     {
         m_parent_object = parent_object;
 
@@ -58,12 +58,12 @@ namespace Zentia
 
     void MeshComponent::tick(float delta_time)
     {
-        if (!m_parent_object.lock())
+        if (!m_parent_object)
             return;
 
-        TransformComponent*       transform_component = m_parent_object.lock()->tryGetComponent(TransformComponent);
+        TransformComponent*       transform_component = m_parent_object->tryGetComponent(TransformComponent);
         const AnimationComponent* animation_component =
-            m_parent_object.lock()->tryGetComponentConst(AnimationComponent);
+            m_parent_object->tryGetComponentConst(AnimationComponent);
 
         if (transform_component->isDirty())
         {
@@ -97,7 +97,7 @@ namespace Zentia
             RenderSwapContext& render_swap_context = g_runtime_global_context.m_render_system->getSwapContext();
             RenderSwapData&    logic_swap_data     = render_swap_context.getLogicSwapData();
 
-            logic_swap_data.addDirtyGameObject(GameObjectDesc {m_parent_object.lock()->getID(), dirty_mesh_parts});
+            logic_swap_data.addDirtyGameObject(GameObjectDesc {m_parent_object->getID(), dirty_mesh_parts});
 
             transform_component->setDirtyFlag(false);
         }

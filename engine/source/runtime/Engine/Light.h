@@ -7,8 +7,10 @@ namespace Zentia
     class ULightComponent;
 }
 
-class ALight : public Zentia::AActor
+REFLECTION_TYPE(ALight)
+CLASS(ALight : public Zentia::AActor)
 {
+    REFLECTION_BODY(ALight)
 public:
 private:
     TObjectPtr<Zentia::ULightComponent> LightComponent;

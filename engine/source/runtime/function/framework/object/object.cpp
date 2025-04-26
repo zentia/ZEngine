@@ -73,7 +73,7 @@ namespace Zentia
         {
             if (component)
             {
-                component->postLoadResource(weak_from_this());
+                component->postLoadResource(this);
             }
         }
 
@@ -93,7 +93,7 @@ namespace Zentia
             if (hasComponent(type_name))
                 continue;
 
-            loaded_component->postLoadResource(weak_from_this());
+            loaded_component->postLoadResource(this);
 
             m_components.push_back(loaded_component);
         }

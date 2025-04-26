@@ -1,4 +1,4 @@
-# Zentia Engine (formerly Zentia Engine)
+# MiniUnrealEngine (formerly MiniUnrealEngine)
 
 <p align="center">
   <a href="https://zentia.github.io">
@@ -50,7 +50,7 @@ sudo apt install mesa-vulkan-drivers
 ```
 - [NVIDIA driver](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html#runfile) (The AMD and Intel driver is open-source, and thus is installed automatically by mesa-vulkan-drivers)
 
-## Build Zentia
+## Build MiniUnrealEngine
 
 ### Build on Windows
 You may execute the **build_windows.bat**. This batch file will generate the projects, and build the **Release** config of **Zentia Engine** automatically. After successful build, you can find the ZentiaEditor.exe at the **bin** directory.

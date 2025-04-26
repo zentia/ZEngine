@@ -10,11 +10,14 @@
 #include <unordered_set>
 #include <vector>
 
+#include "CoreUObject/UObject/Object.h"
+
 namespace Zentia
 {
-    /// GObject : Game Object base class
-    class AActor : public std::enable_shared_from_this<AActor>
+    REFLECTION_TYPE(AActor)
+    CLASS(AActor : public UObject)
     {
+        REFLECTION_BODY(AActor)
         typedef std::unordered_set<std::string> TypeNameSet;
 
     public:

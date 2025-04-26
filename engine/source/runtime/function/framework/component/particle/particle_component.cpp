@@ -11,7 +11,7 @@
 
 namespace Zentia
 {
-    void ParticleComponent::postLoadResource(std::weak_ptr<AActor> parent_object)
+    void ParticleComponent::postLoadResource(AActor* parent_object)
     {
         m_parent_object = parent_object;
 
@@ -27,8 +27,7 @@ namespace Zentia
 
     void ParticleComponent::computeGlobalTransform()
     {
-        TransformComponent* transform_component =
-            m_parent_object.lock()->tryGetComponent<TransformComponent>("TransformComponent");
+        TransformComponent* transform_component =    m_parent_object->tryGetComponent<TransformComponent>("TransformComponent");
 
         Matrix4x4 global_transform_matrix = transform_component->getMatrix() * m_local_transform;
 
@@ -49,7 +48,7 @@ namespace Zentia
 
         logic_swap_data.addTickParticleEmitter(m_transform_desc.m_id);
 
-        TransformComponent* transform_component = m_parent_object.lock()->tryGetComponent(TransformComponent);
+        TransformComponent* transform_component = m_parent_object->tryGetComponent(TransformComponent);
         if (transform_component->isDirty())
         {
             computeGlobalTransform();
