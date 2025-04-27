@@ -1,0 +1,1 @@
+REGISTER_TYPE(0, None)
