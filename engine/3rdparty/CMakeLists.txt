@@ -77,6 +77,5 @@ if(NOT TARGET Jolt)
     endif()
 endif()
 
-if(NOT TARGET BqLog)
-    include(BqLog.cmake)
-endif()
+add_subdirectory(BqLog/src)
+add_subdirectory(Puerts/unity/native/papi-quickjs)

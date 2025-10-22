@@ -17,12 +17,12 @@ int main(int argc, char** argv)
     std::filesystem::path executable_path(argv[0]);
     std::filesystem::path config_file_path = executable_path.parent_path() / "ZEditor.ini";
 
-    Z::ZentiaEngine* engine = new Z::ZentiaEngine();
+    Z::ZEngine* engine = new Z::ZEngine();
 
     engine->startEngine(config_file_path.generic_string());
     engine->initialize();
 
-    Z::ZentiaEditor* editor = new Z::ZentiaEditor();
+    Z::ZEditor* editor = new Z::ZEditor();
     editor->initialize(engine);
 
     editor->run();

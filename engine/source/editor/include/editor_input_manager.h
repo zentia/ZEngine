@@ -8,7 +8,7 @@
 
 namespace Z
 {
-    class ZentiaEditor;
+    class ZEditor;
 
     enum class EditorCommand : unsigned int
     {

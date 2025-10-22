@@ -17,15 +17,15 @@ namespace Z
         g_editor_tick_component_types.insert(component_type_name);
     }
 
-    ZentiaEditor::ZentiaEditor()
+    ZEditor::ZEditor()
     {
         registerEdtorTickComponent("TransformComponent");
         registerEdtorTickComponent("MeshComponent");
     }
 
-    ZentiaEditor::~ZentiaEditor() {}
+    ZEditor::~ZEditor() {}
 
-    void ZentiaEditor::initialize(ZentiaEngine* engine_runtime)
+    void ZEditor::initialize(ZEngine* engine_runtime)
     {
         assert(engine_runtime);
 
@@ -46,9 +46,9 @@ namespace Z
         m_editor_ui->initialize(ui_init_info);
     }
 
-    void ZentiaEditor::clear() { g_editor_global_context.clear(); }
+    void ZEditor::clear() { g_editor_global_context.clear(); }
 
-    void ZentiaEditor::run()
+    void ZEditor::run()
     {
         assert(m_engine_runtime);
         assert(m_editor_ui);

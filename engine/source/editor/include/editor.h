@@ -7,23 +7,23 @@
 namespace Z
 {
     class EditorUI;
-    class ZentiaEngine;
+    class ZEngine;
 
-    class ZentiaEditor 
+    class ZEditor 
     {
         friend class EditorUI;
 
     public:
-        ZentiaEditor();
-        virtual ~ZentiaEditor();
+        ZEditor();
+        virtual ~ZEditor();
 
-        void initialize(ZentiaEngine* engine_runtime);
+        void initialize(ZEngine* engine_runtime);
         void clear();
 
         void run();
 
     protected:
         std::shared_ptr<EditorUI> m_editor_ui;
-        ZentiaEngine* m_engine_runtime{ nullptr };
+        ZEngine* m_engine_runtime{ nullptr };
     };
 } // namespace Zentia

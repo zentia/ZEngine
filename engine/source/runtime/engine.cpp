@@ -17,7 +17,7 @@ namespace Z
     bool                            g_is_editor_mode {false};
     std::unordered_set<std::string> g_editor_tick_component_types {};
 
-    void ZentiaEngine::startEngine(const std::string& config_file_path)
+    void ZEngine::startEngine(const std::string& config_file_path)
     {
         Reflection::TypeMetaRegister::metaRegister();
 
@@ -26,7 +26,7 @@ namespace Z
         LOG_INFO("engine start");
     }
 
-    void ZentiaEngine::shutdownEngine()
+    void ZEngine::shutdownEngine()
     {
         LOG_INFO("engine shutdown");
 
@@ -35,10 +35,10 @@ namespace Z
         Reflection::TypeMetaRegister::metaUnregister();
     }
 
-    void ZentiaEngine::initialize() {}
-    void ZentiaEngine::clear() {}
+    void ZEngine::initialize() {}
+    void ZEngine::clear() {}
 
-    void ZentiaEngine::run()
+    void ZEngine::run()
     {
         std::shared_ptr<WindowSystem> window_system = g_runtime_global_context.m_window_system;
         ASSERT(window_system);
@@ -50,7 +50,7 @@ namespace Z
         }
     }
 
-    float ZentiaEngine::calculateDeltaTime()
+    float ZEngine::calculateDeltaTime()
     {
         float delta_time;
         {
@@ -65,7 +65,7 @@ namespace Z
         return delta_time;
     }
 
-    bool ZentiaEngine::tickOneFrame(float delta_time)
+    bool ZEngine::tickOneFrame(float delta_time)
     {
         logicalTick(delta_time);
         calculateFPS(delta_time);
@@ -90,20 +90,20 @@ namespace Z
         return !should_window_close;
     }
 
-    void ZentiaEngine::logicalTick(float delta_time)
+    void ZEngine::logicalTick(float delta_time)
     {
         g_runtime_global_context.m_world_manager->tick(delta_time);
         g_runtime_global_context.m_input_system->tick();
     }
 
-    bool ZentiaEngine::rendererTick(float delta_time)
+    bool ZEngine::rendererTick(float delta_time)
     {
         g_runtime_global_context.m_render_system->tick(delta_time);
         return true;
     }
 
-    const float ZentiaEngine::s_fps_alpha = 1.f / 100;
-    void        ZentiaEngine::calculateFPS(float delta_time)
+    const float ZEngine::s_fps_alpha = 1.f / 100;
+    void        ZEngine::calculateFPS(float delta_time)
     {
         m_frame_count++;
 

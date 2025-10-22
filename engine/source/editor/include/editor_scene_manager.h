@@ -9,7 +9,7 @@
 
 namespace Z
 {
-    class ZentiaEditor;
+    class ZEditor;
     class RenderCamera;
     class RenderEntity;
 

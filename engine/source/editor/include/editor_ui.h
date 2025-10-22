@@ -15,7 +15,7 @@
 
 namespace Z
 {
-    class ZentiaEditor;
+    class ZEditor;
     class WindowSystem;
     class RenderSystem;
 
