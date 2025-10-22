@@ -1,7 +1,7 @@
 #pragma once
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(MaterialRes)
     CLASS(MaterialRes, Fields)
@@ -15,4 +15,4 @@ namespace Zentia
         std::string m_occlusion_texture_file;
         std::string m_emissive_texture_file;
     };
-} // namespace Zentia
+} // namespace Z

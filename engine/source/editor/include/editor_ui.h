@@ -13,7 +13,7 @@
 #include <map>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     class ZentiaEditor;
     class WindowSystem;
@@ -59,4 +59,4 @@ namespace Zentia
         bool m_scene_lights_window_open      = true;
         bool m_scene_lights_data_window_open = true;
     };
-} // namespace Zentia
+} // namespace Z

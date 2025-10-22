@@ -3,7 +3,7 @@
 #include <atomic>
 #include <limits>
 
-namespace Zentia
+namespace Z
 {
     using ParticleEmitterID = std::size_t;
 

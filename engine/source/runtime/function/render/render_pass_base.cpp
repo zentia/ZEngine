@@ -2,7 +2,7 @@
 
 #include "runtime/core/base/macro.h"
 
-namespace Zentia
+namespace Z
 {
     void RenderPassBase::postInitialize() {}
     void RenderPassBase::setCommonInfo(RenderPassCommonInfo common_info)

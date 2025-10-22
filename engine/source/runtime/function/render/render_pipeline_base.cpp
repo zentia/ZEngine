@@ -3,7 +3,7 @@
 #include "runtime/core/base/macro.h"
 #include "runtime/function/global/global_context.h"
 
-namespace Zentia
+namespace Z
 {
     void RenderPipelineBase::preparePassData(std::shared_ptr<RenderResourceBase> render_resource)
     {

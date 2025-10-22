@@ -8,7 +8,7 @@
 
 #include <stdexcept>
 
-namespace Zentia
+namespace Z
 {
     void ColorGradingPass::initialize(const RenderPassInitInfo* init_info)
     {

@@ -29,7 +29,7 @@
 #include "Jolt/Physics/Collision/ShapeCast.h"
 #include "Jolt/Physics/PhysicsSystem.h"
 
-namespace Zentia
+namespace Z
 {
     PhysicsScene::PhysicsScene(const Vector3& gravity)
     {

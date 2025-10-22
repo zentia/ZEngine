@@ -6,7 +6,7 @@
 
 #include "runtime/resource/res_type/data/camera_config.h"
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(SkyBoxIrradianceMap)
     CLASS(SkyBoxIrradianceMap, Fields)

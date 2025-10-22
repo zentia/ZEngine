@@ -14,7 +14,7 @@
 #include <map>
 #include <stdexcept>
 
-namespace Zentia
+namespace Z
 {
     void PickPass::initialize(const RenderPassInitInfo* init_info)
     {

@@ -5,7 +5,7 @@
 #include <vulkan/vulkan.h>
 #include <optional>
 
-namespace Zentia
+namespace Z
 {
     class VulkanBuffer : public RHIBuffer
     {

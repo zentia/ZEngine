@@ -7,19 +7,19 @@
 #include <unordered_set>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
 
 #if defined(__REFLECTION_PARSER__)
 #define META(...) __attribute__((annotate(#__VA_ARGS__)))
 #define CLASS(class_name, ...) class __attribute__((annotate(#__VA_ARGS__))) class_name
 #define STRUCT(struct_name, ...) struct __attribute__((annotate(#__VA_ARGS__))) struct_name
-//#define CLASS(class_name,...) class __attribute__((annotate(#__VA_ARGS__))) class_name:public Reflection::object
+// #define CLASS(class_name,...) class __attribute__((annotate(#__VA_ARGS__))) class_name:public Reflection::object
 #else
 #define META(...)
 #define CLASS(class_name, ...) class class_name
 #define STRUCT(struct_name, ...) struct struct_name
-//#define CLASS(class_name,...) class class_name:public Reflection::object
+// #define CLASS(class_name,...) class class_name:public Reflection::object
 #endif // __REFLECTION_PARSER__
 
 #define REFLECTION_BODY(class_name) \
@@ -42,23 +42,21 @@ namespace Zentia
 #define REGISTER_ARRAY_TO_MAP(name, value) TypeMetaRegisterinterface::registerToArrayMap(name, value);
 #define UNREGISTER_ALL TypeMetaRegisterinterface::unregisterAll();
 
-#define ZENTIA_REFLECTION_NEW(name, ...) Reflection::ReflectionPtr(#name, new name(__VA_ARGS__));
-#define ZENTIA_REFLECTION_DELETE(value) \
+#define Z_REFLECTION_NEW(name, ...) Reflection::ReflectionPtr(#name, new name(__VA_ARGS__));
+#define Z_REFLECTION_DELETE(value) \
     if (value) \
     { \
         delete value.operator->(); \
         value.getPtrReference() = nullptr; \
     }
-#define ZENTIA_REFLECTION_DEEP_COPY(type, dst_ptr, src_ptr) \
+#define Z_REFLECTION_DEEP_COPY(type, dst_ptr, src_ptr) \
     *static_cast<type*>(dst_ptr) = *static_cast<type*>(src_ptr.getPtr());
 
 #define TypeMetaDef(class_name, ptr) \
-    Zentia::Reflection::ReflectionInstance(Zentia::Reflection::TypeMeta::newMetaFromName(#class_name), \
-                                            (class_name*)ptr)
+    Z::Reflection::ReflectionInstance(Z::Reflection::TypeMeta::newMetaFromName(#class_name), (class_name*)ptr)
 
 #define TypeMetaDefPtr(class_name, ptr) \
-    new Zentia::Reflection::ReflectionInstance(Zentia::Reflection::TypeMeta::newMetaFromName(#class_name), \
-                                                (class_name*)ptr)
+    new Z::Reflection::ReflectionInstance(Z::Reflection::TypeMeta::newMetaFromName(#class_name), (class_name*)ptr)
 
     template<typename T, typename U, typename = void>
     struct is_safely_castable : std::false_type
@@ -132,7 +130,7 @@ namespace Zentia
 
             int getBaseClassReflectionInstanceList(ReflectionInstance*& out_list, void* instance);
 
-            FieldAccessor getFieldByName(const char* name);
+            FieldAccessor  getFieldByName(const char* name);
             MethodAccessor getMethodByName(const char* name);
 
             bool isValid() { return m_is_valid; }
@@ -369,4 +367,4 @@ namespace Zentia
 
     } // namespace Reflection
 
-} // namespace Zentia
+} // namespace Z

@@ -2,7 +2,7 @@
 
 #include "core/base/macro.h"
 
-namespace Zentia
+namespace Z
 {
     std::atomic<GObjectID> ObjectIDAllocator::m_next_id {0};
 

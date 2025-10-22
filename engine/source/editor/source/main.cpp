@@ -15,14 +15,14 @@
 int main(int argc, char** argv)
 {
     std::filesystem::path executable_path(argv[0]);
-    std::filesystem::path config_file_path = executable_path.parent_path() / "ZentiaEditor.ini";
+    std::filesystem::path config_file_path = executable_path.parent_path() / "ZEditor.ini";
 
-    Zentia::ZentiaEngine* engine = new Zentia::ZentiaEngine();
+    Z::ZentiaEngine* engine = new Z::ZentiaEngine();
 
     engine->startEngine(config_file_path.generic_string());
     engine->initialize();
 
-    Zentia::ZentiaEditor* editor = new Zentia::ZentiaEditor();
+    Z::ZentiaEditor* editor = new Z::ZentiaEditor();
     editor->initialize(engine);
 
     editor->run();

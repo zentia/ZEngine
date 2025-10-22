@@ -15,7 +15,7 @@ namespace JPH
 }
 #endif
 
-namespace Zentia
+namespace Z
 {
     class PhysicsScene;
 

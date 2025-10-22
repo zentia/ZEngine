@@ -5,7 +5,7 @@
 #include <tuple>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     class Path
     {

@@ -3,7 +3,7 @@
 #include "runtime/core/math/matrix4.h"
 #include "runtime/core/math/vector3.h"
 
-namespace Zentia
+namespace Z
 {
     const Quaternion Quaternion::ZERO(0, 0, 0, 0);
     const Quaternion Quaternion::IDENTITY(1, 0, 0, 0);

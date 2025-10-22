@@ -2,7 +2,7 @@
 #include "runtime/core/math/quaternion.h"
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(CameraParameter)
     CLASS(CameraParameter, Fields)

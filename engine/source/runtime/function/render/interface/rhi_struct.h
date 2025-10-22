@@ -2,7 +2,7 @@
 
 #include "runtime/function/render/render_type.h"
 #include <optional>
-namespace Zentia
+namespace Z
 {
     /////////////////////////////////////////////////
     #define RHI_DELETE_PTR(x) delete x; x = nullptr;

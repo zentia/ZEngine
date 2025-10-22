@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <string>
 
-namespace Zentia
+namespace Z
 {
     class Level;
     class LevelDebugger;

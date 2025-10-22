@@ -3,7 +3,7 @@
 #include "runtime/function/render/interface/rhi.h"
 #include "debug_draw_primitive.h"
 
-namespace Zentia
+namespace Z
 {
 
     struct DebugDrawFrameBufferAttachment

@@ -3,7 +3,7 @@
 
 #include "runtime/core/math/vector3.h"
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(Color)
     CLASS(Color, Fields)

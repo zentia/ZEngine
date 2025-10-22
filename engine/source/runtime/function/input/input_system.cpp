@@ -10,7 +10,7 @@
 
 #include <GLFW/glfw3.h>
 
-namespace Zentia
+namespace Z
 {
     unsigned int k_complement_control_command = 0xFFFFFFFF;
 

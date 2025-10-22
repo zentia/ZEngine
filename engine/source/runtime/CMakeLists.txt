@@ -1,6 +1,6 @@
 
 # PackageProject.cmake will be used to make our target installable
-set(TARGET_NAME ZentiaRuntime)
+set(TARGET_NAME ZRuntime)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -46,7 +46,6 @@ target_link_libraries(${TARGET_NAME} PRIVATE tinyobjloader stb)
 target_link_libraries(${TARGET_NAME} PUBLIC glfw)
 target_link_libraries(${TARGET_NAME} PUBLIC imgui)
 target_link_libraries(${TARGET_NAME} PUBLIC Jolt)
-target_link_libraries(${TARGET_NAME} PUBLIC lua_static sol2)
 target_link_libraries(${TARGET_NAME} PUBLIC ${vulkan_lib})
 target_link_libraries(${TARGET_NAME} PRIVATE $<BUILD_INTERFACE:json11>)
 
@@ -105,4 +104,4 @@ string(TOLOWER ${TARGET_NAME}/version.h VERSION_HEADER_LOCATION)
 
 ### precompile
 # set global vari used by precompile
-set(ZENTIA_RUNTIME_HEADS "${HEADER_FILES}" PARENT_SCOPE)
+set(Z_RUNTIME_HEADS "${HEADER_FILES}" PARENT_SCOPE)

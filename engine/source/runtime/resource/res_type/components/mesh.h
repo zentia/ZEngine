@@ -2,7 +2,7 @@
 #include "runtime/core/math/transform.h"
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(SubMeshRes)
     CLASS(SubMeshRes, Fields)

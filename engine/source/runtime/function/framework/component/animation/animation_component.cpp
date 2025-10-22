@@ -3,7 +3,7 @@
 #include "runtime/function/animation/animation_system.h"
 #include "runtime/function/framework/object/object.h"
 
-namespace Zentia
+namespace Z
 {
     void AnimationComponent::postLoadResource(AActor* parent_object)
     {

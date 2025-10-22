@@ -14,7 +14,7 @@ namespace JPH
     class Shape;
 }
 
-namespace Zentia
+namespace Z
 {
     class RigidBodyShape;
 

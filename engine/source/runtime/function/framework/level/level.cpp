@@ -13,7 +13,7 @@
 #include "runtime/function/physics/physics_scene.h"
 #include <limits>
 
-namespace Zentia
+namespace Z
 {
     void Level::clear()
     {

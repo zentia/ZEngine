@@ -2,7 +2,7 @@
 
 #include "runtime/function/render/render_pipeline_base.h"
 
-namespace Zentia
+namespace Z
 {
     class RenderPipeline : public RenderPipelineBase
     {

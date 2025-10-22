@@ -6,7 +6,7 @@
 #include "runtime/function/global/global_context.h"
 #include "runtime/function/input/input_system.h"
 
-namespace Zentia
+namespace Z
 {
     Character::Character(std::shared_ptr<AActor> character_object) { setObject(character_object); }
 

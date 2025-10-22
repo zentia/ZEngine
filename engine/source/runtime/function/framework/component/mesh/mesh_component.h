@@ -8,7 +8,7 @@
 
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     class RenderSwapContext;
 

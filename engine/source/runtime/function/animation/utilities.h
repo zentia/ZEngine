@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     class Bone;
     class RawBone;

@@ -6,19 +6,19 @@
   </a>
 </p>
 
-**Zentia Engine** is a tiny game engine.
+**Z Engine** is a tiny game engine.
 
 ## Continuous build status
 
 |    Build Type     |                                                                                      Status                                                                                      |
 | :---------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
-| **Build Windows** | [![Build Windows](https://github.com/zentia/zentia_engine/actions/workflows/build_windows.yml/badge.svg)](https://github.com/zentia/zentia_engine/workflows/build_windows.yml) |
-|  **Build Linux**  |    [![Build Linux](https://github.com/zentia/zentia_engine/actions/workflows/build_linux.yml/badge.svg)](https://github.com/zentia/zentia_engine/actions/workflows/build_linux.yml)    |
-|  **Build macOS**  |    [![Build macOS](https://github.com/zentia/zentia_engine/actions/workflows/build_macos.yml/badge.svg)](https://github.com/zentia/zentia_engine/actions/workflows/build_macos.yml)    |
+| **Build Windows** | [![Build Windows](https://github.com/zentia/ZEngine/actions/workflows/build_windows.yml/badge.svg)](https://github.com/zentia/ZEngine/workflows/build_windows.yml) |
+|  **Build Linux**  |    [![Build Linux](https://github.com/zentia/ZEngine/actions/workflows/build_linux.yml/badge.svg)](https://github.com/zentia/ZEngine/actions/workflows/build_linux.yml)    |
+|  **Build macOS**  |    [![Build macOS](https://github.com/zentia/ZEngine/actions/workflows/build_macos.yml/badge.svg)](https://github.com/zentia/ZEngine/actions/workflows/build_macos.yml)    |
 
 ## Prerequisites
 
-To build Zentia, you must first install the following tools.
+To build Z, you must first install the following tools.
 
 ### Windows 10/11
 - Visual Studio 2022 (or more recent)

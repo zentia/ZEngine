@@ -2,7 +2,7 @@
 
 #include "runtime/function/animation/node.h"
 
-namespace Zentia
+namespace Z
 {
     Bone* find_by_index(Bone* bones, int key, int size, bool is_flat)
     {

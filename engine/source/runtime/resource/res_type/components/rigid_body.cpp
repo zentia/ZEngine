@@ -2,16 +2,15 @@
 
 #include "runtime/core/base/macro.h"
 
-namespace Zentia
+namespace Z
 {
-    RigidBodyShape::RigidBodyShape(const RigidBodyShape& res) :
-        m_local_transform(res.m_local_transform)
+    RigidBodyShape::RigidBodyShape(const RigidBodyShape& res) : m_local_transform(res.m_local_transform)
     {
         if (res.m_geometry.getTypeName() == "Box")
         {
             m_type     = RigidBodyShapeType::box;
-            m_geometry = ZENTIA_REFLECTION_NEW(Box);
-            ZENTIA_REFLECTION_DEEP_COPY(Box, m_geometry, res.m_geometry);
+            m_geometry = Z_REFLECTION_NEW(Box);
+            Z_REFLECTION_DEEP_COPY(Box, m_geometry, res.m_geometry);
         }
         else
         {
@@ -19,8 +18,5 @@ namespace Zentia
         }
     }
 
-    RigidBodyShape::~RigidBodyShape()
-    {
-        ZENTIA_REFLECTION_DELETE(m_geometry);
-    }
-} // namespace Zentia
+    RigidBodyShape::~RigidBodyShape() { Z_REFLECTION_DELETE(m_geometry); }
+} // namespace Z

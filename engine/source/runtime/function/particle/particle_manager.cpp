@@ -8,7 +8,7 @@
 #include "runtime/resource/asset_manager/asset_manager.h"
 #include "runtime/resource/config_manager/config_manager.h"
 
-namespace Zentia
+namespace Z
 {
     void ParticleManager::initialize()
     {

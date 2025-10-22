@@ -17,7 +17,7 @@
 #include "TestFramework/Utils/Log.h"
 #endif
 
-namespace Zentia
+namespace Z
 {
     void PhysicsManager::initialize()
     {

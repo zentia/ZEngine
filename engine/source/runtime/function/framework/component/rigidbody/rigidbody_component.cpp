@@ -10,7 +10,7 @@
 #include "runtime/function/global/global_context.h"
 #include "runtime/function/physics/physics_scene.h"
 
-namespace Zentia
+namespace Z
 {
     void RigidBodyComponent::postLoadResource(AActor* parent_object)
     {

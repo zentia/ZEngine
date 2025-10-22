@@ -3,7 +3,7 @@
 #include "runtime/function/render/render_system.h"
 #include "runtime/core/math/math_headers.h"
 
-namespace Zentia
+namespace Z
 {
     void DebugDrawManager::initialize()
     {

@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     class EditorFileNode;
     using EditorFileNodeArray = std::vector<std::shared_ptr<EditorFileNode>>;

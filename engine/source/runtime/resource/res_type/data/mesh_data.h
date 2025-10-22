@@ -3,7 +3,7 @@
 
 #include <string>
 #include <vector>
-namespace Zentia
+namespace Z
 {
 
     REFLECTION_TYPE(Vertex)
@@ -51,4 +51,4 @@ namespace Zentia
         std::vector<SkeletonBinding> bind;
     };
 
-} // namespace Zentia
+} // namespace Z

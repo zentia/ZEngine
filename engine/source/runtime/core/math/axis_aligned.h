@@ -4,7 +4,7 @@
 #include "runtime/core/meta/reflection/reflection.h"
 #include <limits>
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(AxisAlignedBox)
     CLASS(AxisAlignedBox, Fields)

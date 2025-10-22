@@ -2,7 +2,7 @@
 
 #include <filesystem>
 
-namespace Zentia
+namespace Z
 {
     struct EngineInitParams;
 
@@ -42,4 +42,4 @@ namespace Zentia
         std::string m_global_rendering_res_url;
         std::string m_global_particle_res_url;
     };
-} // namespace Zentia
+} // namespace Z

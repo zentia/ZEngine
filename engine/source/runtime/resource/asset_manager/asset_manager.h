@@ -11,7 +11,7 @@
 
 #include "_generated/serializer/all_serializer.h"
 
-namespace Zentia
+namespace Z
 {
     class AssetManager
     {
@@ -21,7 +21,7 @@ namespace Zentia
         {
             // read json file to string
             std::filesystem::path asset_path = getFullPath(asset_url);
-            std::ifstream asset_json_file(asset_path);
+            std::ifstream         asset_json_file(asset_path);
             if (!asset_json_file)
             {
                 LOG_ERROR("open file: {} failed!", asset_path.generic_string());
@@ -67,6 +67,5 @@ namespace Zentia
         }
 
         std::filesystem::path getFullPath(const std::string& relative_path) const;
-
     };
-} // namespace Zentia
+} // namespace Z

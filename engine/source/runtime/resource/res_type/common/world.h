@@ -2,7 +2,7 @@
 #include "runtime/core/meta/reflection/reflection.h"
 #include <string>
 #include <vector>
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(WorldRes)
     CLASS(WorldRes, Fields)

@@ -18,7 +18,7 @@
 #include <filesystem>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     std::shared_ptr<TextureData> RenderResourceBase::loadTextureHDR(std::string file, int desired_channels)
     {

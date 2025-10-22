@@ -5,9 +5,9 @@
 #include "runtime/function/render/render_resource.h"
 #include "runtime/function/render/interface/vulkan/vulkan_rhi.h"
 
-Zentia::VisiableNodes Zentia::RenderPass::m_visiable_nodes;
+Z::VisiableNodes Z::RenderPass::m_visiable_nodes;
 
-namespace Zentia
+namespace Z
 {
     void RenderPass::initialize(const RenderPassInitInfo* init_info)
     {

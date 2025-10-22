@@ -26,7 +26,7 @@ if (NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/${GENERATED_SHADER_FOLDER}/spv)
   file(MAKE_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/${GENERATED_SHADER_FOLDER}/spv)
 endif()
 
-include(${ZENTIA_ROOT_DIR}/cmake/ShaderCompile.cmake)
+include(${Z_ROOT_DIR}/cmake/ShaderCompile.cmake)
 
 compile_shader(
   "${SHADER_FILES}"

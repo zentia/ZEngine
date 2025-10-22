@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <stdexcept>
 
-namespace Zentia
+namespace Z
 {
 
     class LogSystem final
@@ -61,4 +61,4 @@ namespace Zentia
         std::shared_ptr<spdlog::logger> m_logger;
     };
 
-} // namespace Zentia
+} // namespace Z

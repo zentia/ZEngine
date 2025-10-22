@@ -4,7 +4,7 @@
 
 #include <memory>
 
-namespace Zentia
+namespace Z
 {
     class EditorUI;
     class ZentiaEngine;

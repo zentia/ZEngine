@@ -3,7 +3,7 @@
 #include "runtime/core/math/vector2.h"
 #include "runtime/function/render/render_pass.h"
 
-namespace Zentia
+namespace Z
 {
     class RenderResourceBase;
 

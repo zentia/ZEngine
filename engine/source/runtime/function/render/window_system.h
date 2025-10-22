@@ -7,13 +7,13 @@
 #include <functional>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     struct WindowCreateInfo
     {
         int         width {1280};
         int         height {720};
-        const char* title {"Zentia"};
+        const char* title {"Z"};
         bool        is_fullscreen {true};
     };
 

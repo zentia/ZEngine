@@ -2,7 +2,7 @@
 #include "runtime/function/render/render_camera.h"
 #include "runtime/function/render/render_scene.h"
 
-namespace Zentia
+namespace Z
 {
     ClusterFrustum CreateClusterFrustumFromMatrix(Matrix4x4 mat,
                                                   float     x_left,

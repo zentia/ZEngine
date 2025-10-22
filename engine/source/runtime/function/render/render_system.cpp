@@ -20,7 +20,7 @@
 
 #include "runtime/function/render/interface/vulkan/vulkan_rhi.h"
 
-namespace Zentia
+namespace Z
 {
     RenderSystem::~RenderSystem()
     {

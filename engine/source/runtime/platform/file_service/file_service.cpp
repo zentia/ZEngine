@@ -2,7 +2,7 @@
 
 using namespace std;
 
-namespace Zentia
+namespace Z
 {
     vector<filesystem::path> FileSystem::getFiles(const filesystem::path& directory)
     {

@@ -12,7 +12,7 @@
 
 #include "CoreUObject/UObject/Object.h"
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(AActor)
     CLASS(AActor : public UObject)

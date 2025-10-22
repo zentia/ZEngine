@@ -6,7 +6,7 @@
 #include "runtime/core/math/vector3.h"
 #include "runtime/core/math/vector4.h"
 
-namespace Zentia
+namespace Z
 {
     /** Class encapsulating a standard 4x4 homogeneous matrix.
     @remarks

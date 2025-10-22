@@ -5,7 +5,7 @@
 #include "runtime/function/render/render_pass.h"
 #include "runtime/function/render/render_resource.h"
 
-namespace Zentia
+namespace Z
 {
     struct ParticlePassInitInfo : RenderPassInitInfo
     {

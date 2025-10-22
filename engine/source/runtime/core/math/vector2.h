@@ -6,7 +6,7 @@
 #include <cassert>
 #include <cmath>
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(Vector2)
     CLASS(Vector2, Fields)

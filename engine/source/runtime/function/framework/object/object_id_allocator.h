@@ -3,7 +3,7 @@
 #include <atomic>
 #include <limits>
 
-namespace Zentia
+namespace Z
 {
     using GObjectID = std::size_t;
 
@@ -17,4 +17,4 @@ namespace Zentia
     private:
         static std::atomic<GObjectID> m_next_id;
     };
-} // namespace Zentia
+} // namespace Z

@@ -19,7 +19,7 @@
 #include <skybox_frag.h>
 #include <skybox_vert.h>
 
-namespace Zentia
+namespace Z
 {
     void MainCameraPass::initialize(const RenderPassInitInfo* init_info)
     {

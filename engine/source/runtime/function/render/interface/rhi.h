@@ -9,7 +9,7 @@
 #include <functional>
 
 #include "rhi_struct.h"
-namespace Zentia
+namespace Z
 {
     class WindowSystem;
 

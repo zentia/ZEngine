@@ -24,7 +24,7 @@
 //           0       0       1
 // where t > 0 indicates a counterclockwise rotation in the xy-plane.
 
-namespace Zentia
+namespace Z
 {
     /** A 3x3 matrix which can represent rotations around axes.
     @note

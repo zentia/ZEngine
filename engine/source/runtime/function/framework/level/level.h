@@ -6,7 +6,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace Zentia
+namespace Z
 {
     class Character;
     class AActor;

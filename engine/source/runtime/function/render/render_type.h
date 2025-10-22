@@ -10,7 +10,7 @@
 /// <summary>
 /// RHI Type
 /// </summary>
-namespace Zentia
+namespace Z
 {
 #define RHI_MAX_EXTENSION_NAME_SIZE        256U
 #define RHI_MAX_DESCRIPTION_SIZE           256U
@@ -1681,7 +1681,7 @@ namespace Zentia
     typedef uint32_t RHISampleMask;
 }
 
-namespace Zentia
+namespace Z
 {
     enum class ZENTIA_IMAGE_TYPE : uint8_t
     {
@@ -1824,12 +1824,12 @@ namespace Zentia
 } // namespace Zentia
 
 template<>
-struct std::hash<Zentia::MeshSourceDesc>
+struct std::hash<Z::MeshSourceDesc>
 {
-    size_t operator()(const Zentia::MeshSourceDesc& rhs) const noexcept { return rhs.getHashValue(); }
+    size_t operator()(const Z::MeshSourceDesc& rhs) const noexcept { return rhs.getHashValue(); }
 };
 template<>
-struct std::hash<Zentia::MaterialSourceDesc>
+struct std::hash<Z::MaterialSourceDesc>
 {
-    size_t operator()(const Zentia::MaterialSourceDesc& rhs) const noexcept { return rhs.getHashValue(); }
+    size_t operator()(const Z::MaterialSourceDesc& rhs) const noexcept { return rhs.getHashValue(); }
 };

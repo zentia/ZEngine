@@ -6,7 +6,7 @@
 #include "runtime/function/render/render_system.h"
 #include "runtime/function/render/window_system.h"
 
-namespace Zentia
+namespace Z
 {
     EditorGlobalContext g_editor_global_context;
 

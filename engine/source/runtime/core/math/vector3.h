@@ -6,7 +6,7 @@
 
 #include <cassert>
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(Vector3)
     CLASS(Vector3, Fields)

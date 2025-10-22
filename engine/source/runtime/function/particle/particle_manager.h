@@ -10,7 +10,7 @@
 
 #include <memory>
 
-namespace Zentia
+namespace Z
 {
     class ParticlePass;
     class ParticleManager

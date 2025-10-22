@@ -1,7 +1,7 @@
 #pragma once
 #include "runtime/core/meta/reflection/reflection.h"
 
-namespace Zentia
+namespace Z
 {
     class AActor;
     // Component

@@ -16,7 +16,7 @@
 #include <particlebillboard_frag.h>
 #include <particlebillboard_vert.h>
 
-namespace Zentia
+namespace Z
 {
     void ParticleEmitterBufferBatch::freeUpBatch(std::shared_ptr<RHI> rhi)
     {
@@ -347,7 +347,7 @@ namespace Zentia
                                      m_particle_billboard_texture_resource->m_format);
         }
 
-        // Zentia texture
+        // Z texture
         {
             std::shared_ptr<TextureData> m_zentia_logo_texture_resource = m_render_resource->loadTexture(
                 m_particle_manager->getGlobalParticleRes().m_zentia_logo_texture_path, true);
@@ -1521,7 +1521,6 @@ namespace Zentia
                                             0,
                                             0);
 
-
             m_rhi->cmdDispatch(m_compute_command_buffer, 1, 1, 1);
 
             m_rhi->popEvent(m_compute_command_buffer); // end particle kickoff label
@@ -1972,4 +1971,4 @@ namespace Zentia
     {
         m_emitter_transform_indices = transform_indices;
     }
-} // namespace Zentia
+} // namespace Z

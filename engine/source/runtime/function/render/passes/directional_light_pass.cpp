@@ -10,7 +10,7 @@
 
 #include <stdexcept>
 
-namespace Zentia
+namespace Z
 {
     void DirectionalLightShadowPass::initialize(const RenderPassInitInfo* init_info)
     {

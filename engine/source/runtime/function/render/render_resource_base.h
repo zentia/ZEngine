@@ -8,7 +8,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace Zentia
+namespace Z
 {
     class RHI;
     class RenderScene;

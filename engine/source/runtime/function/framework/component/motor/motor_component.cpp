@@ -14,7 +14,7 @@
 #include "runtime/function/input/input_system.h"
 #include "runtime/function/physics/physics_scene.h"
 
-namespace Zentia
+namespace Z
 {
     void MotorComponent::postLoadResource(AActor* parent_object)
     {
@@ -63,7 +63,8 @@ namespace Zentia
         if (current_character->getObjectID() != m_parent_object->getID())
             return;
 
-        TransformComponent* transform_component = m_parent_object->tryGetComponent<TransformComponent>("TransformComponent");
+        TransformComponent* transform_component =
+            m_parent_object->tryGetComponent<TransformComponent>("TransformComponent");
 
         Radian turn_angle_yaw = g_runtime_global_context.m_input_system->m_cursor_delta_yaw;
 
@@ -212,7 +213,7 @@ namespace Zentia
                 break;
         }
 
-        // Zentia-hack: motor level simulating jump, character always above z-plane
+        // Z-hack: motor level simulating jump, character always above z-plane
         if (m_jump_state == JumpState::falling && final_position.z + m_desired_displacement.z <= 0.f)
         {
             final_position.z = 0.f;
@@ -223,4 +224,4 @@ namespace Zentia
         m_target_position = final_position;
     }
 
-} // namespace Zentia
+} // namespace Z

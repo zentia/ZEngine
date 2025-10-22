@@ -2,7 +2,7 @@
 
 #include "runtime/function/render/interface/rhi.h"
 
-namespace Zentia
+namespace Z
 {
     class RHI;
     class RenderResourceBase;

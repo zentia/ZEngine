@@ -1,6 +1,6 @@
 #include "runtime/core/math/vector2.h"
 
-namespace Zentia
+namespace Z
 {
     const Vector2 Vector2::ZERO(0, 0);
     const Vector2 Vector2::UNIT_X(1, 0);

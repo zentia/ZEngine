@@ -2,7 +2,7 @@
 #include "core/meta/reflection/reflection.h"
 #include "function/framework/component/component.h"
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(ULightComponent)
     CLASS(ULightComponent : public Component, WhiteListFields)

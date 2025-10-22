@@ -7,7 +7,7 @@
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
 #include "Jolt/Physics/Collision/Shape/StaticCompoundShape.h"
 
-namespace Zentia
+namespace Z
 {
     BPLayerInterfaceImpl::BPLayerInterfaceImpl()
     {

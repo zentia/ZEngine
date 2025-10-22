@@ -5,7 +5,7 @@
 #include "runtime/function/controller/character_controller.h"
 #include "runtime/function/framework/component/component.h"
 
-namespace Zentia
+namespace Z
 {
     enum class MotorState : unsigned char
     {

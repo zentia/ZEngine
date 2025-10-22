@@ -11,7 +11,7 @@
 
 #include "_generated/serializer/all_serializer.h"
 
-namespace Zentia
+namespace Z
 {
     WorldManager::~WorldManager() { clear(); }
 

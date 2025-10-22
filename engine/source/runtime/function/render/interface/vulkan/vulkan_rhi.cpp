@@ -74,7 +74,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace Zentia
+namespace Z
 {
     VulkanRHI::~VulkanRHI()
     {
@@ -632,9 +632,9 @@ namespace Zentia
         // app info
         VkApplicationInfo appInfo {};
         appInfo.sType              = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-        appInfo.pApplicationName   = "zentia_renderer";
+        appInfo.pApplicationName   = "z_renderer";
         appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.pEngineName        = "Zentia";
+        appInfo.pEngineName        = "Z";
         appInfo.engineVersion      = VK_MAKE_VERSION(1, 0, 0);
         appInfo.apiVersion         = m_vulkan_api_version;
 
@@ -665,7 +665,7 @@ namespace Zentia
         // create m_vulkan_context._instance
         if (vkCreateInstance(&instance_create_info, nullptr, &m_instance) != VK_SUCCESS)
         {
-            LOG_ERROR("vk create instance");
+            LOG_FATAL("vk create instance failed!");
         }
     }
 
@@ -2716,7 +2716,7 @@ namespace Zentia
     {
         switch (type)
         {
-        case Zentia::Default_Sampler_Linear:
+        case Z::Default_Sampler_Linear:
             if (m_linear_sampler == nullptr)
             {
                 m_linear_sampler = new VulkanSampler();
@@ -2725,7 +2725,7 @@ namespace Zentia
             return m_linear_sampler;
             break;
 
-        case Zentia::Default_Sampler_Nearest:
+        case Z::Default_Sampler_Nearest:
             if (m_nearest_sampler == nullptr)
             {
                 m_nearest_sampler = new VulkanSampler();
@@ -3126,11 +3126,11 @@ namespace Zentia
     {
         switch (type)
         {
-        case Zentia::Default_Sampler_Linear:
+        case Z::Default_Sampler_Linear:
             VulkanUtil::destroyLinearSampler(m_device);
             delete(m_linear_sampler);
             break;
-        case Zentia::Default_Sampler_Nearest:
+        case Z::Default_Sampler_Nearest:
             VulkanUtil::destroyNearestSampler(m_device);
             delete(m_nearest_sampler);
             break;
@@ -3328,7 +3328,7 @@ namespace Zentia
         }
     }
 
-    Zentia::QueueFamilyIndices VulkanRHI::findQueueFamilies(VkPhysicalDevice physicalm_device) // for device and surface
+    Z::QueueFamilyIndices VulkanRHI::findQueueFamilies(VkPhysicalDevice physicalm_device) // for device and surface
     {
         QueueFamilyIndices indices;
         uint32_t           queue_family_count = 0;
@@ -3409,7 +3409,7 @@ namespace Zentia
         return true;
     }
 
-    Zentia::SwapChainSupportDetails VulkanRHI::querySwapChainSupport(VkPhysicalDevice physicalm_device)
+    Z::SwapChainSupportDetails VulkanRHI::querySwapChainSupport(VkPhysicalDevice physicalm_device)
     {
         SwapChainSupportDetails details_result;
 

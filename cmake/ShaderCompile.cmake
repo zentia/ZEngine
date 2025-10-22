@@ -29,7 +29,7 @@ function(compile_shader SHADERS TARGET_NAME SHADER_INCLUDE_FOLDER GENERATED_DIR 
         add_custom_command(
             OUTPUT ${CPP_FILE}
             COMMAND ${CMAKE_COMMAND} -DPATH=${SPV_FILE} -DHEADER="${CPP_FILE}" 
-                -DGLOBAL="${GLOBAL_SHADER_VAR}" -P "${ZENTIA_ROOT_DIR}/cmake/GenerateShaderCPPFile.cmake"
+                -DGLOBAL="${GLOBAL_SHADER_VAR}" -P "${Z_ROOT_DIR}/cmake/GenerateShaderCPPFile.cmake"
             DEPENDS ${SPV_FILE}
             WORKING_DIRECTORY "${working_dir}")
 

@@ -1,6 +1,6 @@
 #include "debug_draw_context.h"
 
-namespace Zentia
+namespace Z
 {
     DebugDrawGroup* DebugDrawContext::tryGetOrCreateDebugDrawGroup(const std::string& name)
     {

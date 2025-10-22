@@ -2,7 +2,7 @@
 
 #include "debug_draw_group.h"
 
-namespace Zentia
+namespace Z
 {
     class DebugDrawContext
     {

@@ -10,7 +10,7 @@
 #include "editor/include/editor_scene_manager.h"
 #include "editor/include/editor_ui.h"
 
-namespace Zentia
+namespace Z
 {
     void registerEdtorTickComponent(std::string component_type_name)
     {
@@ -62,4 +62,4 @@ namespace Zentia
                 return;
         }
     }
-} // namespace Zentia
+} // namespace Z

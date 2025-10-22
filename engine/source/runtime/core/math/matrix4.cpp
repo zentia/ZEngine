@@ -1,7 +1,7 @@
 
 #include "runtime/core/math/matrix4.h"
 
-namespace Zentia
+namespace Z
 {
 
     const Matrix4x4 Matrix4x4::ZERO(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);

@@ -1,6 +1,6 @@
 #include "runtime/core/math/matrix3.h"
 
-namespace Zentia
+namespace Z
 {
     const Matrix3x3 Matrix3x3::ZERO(0, 0, 0, 0, 0, 0, 0, 0, 0);
     const Matrix3x3 Matrix3x3::IDENTITY(1, 0, 0, 0, 1, 0, 0, 0, 1);

@@ -5,7 +5,7 @@
 
 #include "runtime/resource/res_type/data/skeleton_data.h"
 
-namespace Zentia
+namespace Z
 {
     class Node
     {

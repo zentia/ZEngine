@@ -12,7 +12,7 @@
 #include "runtime/function/global/global_context.h"
 #include "runtime/function/render/debugdraw/debug_draw_manager.h"
 #include "runtime/function/render/render_debug_config.h"
-namespace Zentia
+namespace Z
 {
     void LevelDebugger::tick(std::shared_ptr<Level> level) const
     {
@@ -247,4 +247,4 @@ namespace Zentia
         buffer << "camera direction : (" << direction.x << "," << direction.y << "," << direction.z << ")";
         debug_draw_group->addText(buffer.str(), Vector4(1.0f, 0.0f, 0.0f, 1.0f), Vector3(-1.0f, -0.2f, 0.0f), 10, true);
     }
-} // namespace Zentia
+} // namespace Z

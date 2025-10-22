@@ -10,7 +10,7 @@
 #include <memory>
 #include <string>
 
-namespace Zentia
+namespace Z
 {
     class AnimationManager
     {

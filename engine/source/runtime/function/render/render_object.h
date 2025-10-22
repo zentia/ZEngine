@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(GameObjectMeshDesc)
     STRUCT(GameObjectMeshDesc, Fields)
@@ -97,7 +97,7 @@ namespace Zentia
 } // namespace Zentia
 
 template<>
-struct std::hash<Zentia::GameObjectPartId>
+struct std::hash<Z::GameObjectPartId>
 {
-    size_t operator()(const Zentia::GameObjectPartId& rhs) const noexcept { return rhs.getHashValue(); }
+    size_t operator()(const Z::GameObjectPartId& rhs) const noexcept { return rhs.getHashValue(); }
 };

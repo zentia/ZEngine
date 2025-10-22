@@ -3,7 +3,7 @@
 #include "runtime/engine.h"
 #include "runtime/function/framework/component/rigidbody/rigidbody_component.h"
 
-namespace Zentia
+namespace Z
 {
     void TransformComponent::postLoadResource(AActor* parent_gobject)
     {

@@ -4,7 +4,7 @@
 #include "runtime/function/framework/component/component.h"
 #include "runtime/resource/res_type/components/animation.h"
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(AnimationComponent)
     CLASS(AnimationComponent : public Component, WhiteListFields)

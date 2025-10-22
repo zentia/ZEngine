@@ -5,7 +5,7 @@
 
 #include "runtime/resource/res_type/common/object.h"
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(LevelRes)
     CLASS(LevelRes, Fields)
@@ -18,4 +18,4 @@ namespace Zentia
 
         std::vector<ObjectInstanceRes> m_objects;
     };
-} // namespace Zentia
+} // namespace Z

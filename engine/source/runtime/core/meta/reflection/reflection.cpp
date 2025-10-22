@@ -2,7 +2,7 @@
 #include <cstring>
 #include <map>
 
-namespace Zentia
+namespace Z
 {
     namespace Reflection
     {

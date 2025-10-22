@@ -5,7 +5,7 @@
 #include "debug_draw_font.h"
 
 #include <queue>
-namespace Zentia
+namespace Z
 {
     class DebugDrawAllocator
     {

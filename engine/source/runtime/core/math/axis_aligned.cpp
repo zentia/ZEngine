@@ -1,6 +1,6 @@
 #include "runtime/core/math/axis_aligned.h"
 
-namespace Zentia
+namespace Z
 {
     AxisAlignedBox::AxisAlignedBox(const Vector3& center, const Vector3& half_extent) { update(center, half_extent); }
 
@@ -21,4 +21,4 @@ namespace Zentia
         m_max_corner  = center + half_extent;
     }
 
-} // namespace Zentia
+} // namespace Z

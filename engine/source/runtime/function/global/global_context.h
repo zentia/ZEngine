@@ -3,7 +3,7 @@
 #include <memory>
 #include <string>
 
-namespace Zentia
+namespace Z
 {
     class LogSystem;
     class InputSystem;

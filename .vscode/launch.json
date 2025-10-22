@@ -5,10 +5,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch ZentiaEditor (Visual Studio debugger)",
+            "name": "Launch ZEditor (Visual Studio debugger)",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/ZentiaEditor.exe",
+            "program": "${workspaceFolder}/bin/ZEditor.exe",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/bin",
@@ -22,11 +22,11 @@
             "preLaunchTask": "build ZEngine"
         },
         {
-            "name": "Attach to ZentiaEditor",
+            "name": "Attach to ZEditor",
             "type": "cppvsdbg",
             "request": "attach",
             "processId": "${command:pickProcess}",
-            "program": "${workspaceFolder}/bin/ZentiaEditor.exe",
+            "program": "${workspaceFolder}/bin/ZEditor.exe",
             "cwd": "${workspaceFolder}/bin"
         }
 

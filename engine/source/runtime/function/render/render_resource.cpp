@@ -13,7 +13,7 @@
 
 #include <stdexcept>
 
-namespace Zentia
+namespace Z
 {
     void RenderResource::clear()
     {

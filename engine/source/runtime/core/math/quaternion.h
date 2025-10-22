@@ -5,7 +5,7 @@
 
 #include <cassert>
 
-namespace Zentia
+namespace Z
 {
     class Matrix3x3;
     class Vector3;

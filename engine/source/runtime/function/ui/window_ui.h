@@ -2,7 +2,7 @@
 
 #include <memory>
 
-namespace Zentia
+namespace Z
 {
     class WindowSystem;
     class RenderSystem;

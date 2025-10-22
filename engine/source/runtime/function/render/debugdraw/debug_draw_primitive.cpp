@@ -1,7 +1,7 @@
 #include "debug_draw_primitive.h"
-namespace Zentia
+namespace Z
 {
-    bool Zentia::DebugDrawPrimitive::isTimeOut(float delta_time)
+    bool Z::DebugDrawPrimitive::isTimeOut(float delta_time)
     {
         if (m_time_type == _debugDrawTimeType_infinity)
         {
@@ -24,7 +24,7 @@ namespace Zentia
         return false;
     }
 
-    void Zentia::DebugDrawPrimitive::setTime(float in_life_time)
+    void Z::DebugDrawPrimitive::setTime(float in_life_time)
     {
         if (fabs(in_life_time - k_debug_draw_infinity_life_time) < 1e-6)
         {

@@ -1,6 +1,6 @@
 #include "serializer.h"
 #include <assert.h>
-namespace Zentia
+namespace Z
 {
 
     template<>

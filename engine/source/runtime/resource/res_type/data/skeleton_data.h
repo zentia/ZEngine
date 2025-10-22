@@ -4,7 +4,7 @@
 
 #include <string>
 #include <vector>
-namespace Zentia
+namespace Z
 {
 
     REFLECTION_TYPE(RawBone)

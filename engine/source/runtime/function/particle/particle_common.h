@@ -6,7 +6,7 @@
 #include "runtime/core/math/vector4.h"
 #include <limits>
 
-namespace Zentia
+namespace Z
 {
     // max particle pool size
     static constexpr int   s_max_particles{ 300000 };

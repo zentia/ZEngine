@@ -2,7 +2,7 @@
 
 #include "runtime/function/render/render_pass.h"
 
-namespace Zentia
+namespace Z
 {
     struct CombineUIPassInitInfo : RenderPassInitInfo
     {

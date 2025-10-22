@@ -15,7 +15,7 @@
 		{
 			"label": "build ZEngine",
 			"type": "shell",
-			"command": "cmake --build build --config Release",
+			"command": "cmake --build build --config Debug",
 			"group": "build",
 			"presentation": {
 				"reveal": "always",

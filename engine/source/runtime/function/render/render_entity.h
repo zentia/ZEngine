@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     class RenderEntity
     {

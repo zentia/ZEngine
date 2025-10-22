@@ -1,7 +1,7 @@
 #include "runtime/core/math/math.h"
 #include "runtime/core/math/matrix4.h"
 
-namespace Zentia
+namespace Z
 {
     Math::AngleUnit Math::k_AngleUnit;
 

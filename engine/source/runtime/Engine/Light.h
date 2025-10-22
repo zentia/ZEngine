@@ -2,16 +2,16 @@
 #include "CoreUObject/UObject/ObjectPtr.h"
 #include "function/framework/object/object.h"
 
-namespace Zentia
+namespace Z
 {
     class ULightComponent;
 }
 
 REFLECTION_TYPE(ALight)
-CLASS(ALight : public Zentia::AActor)
+CLASS(ALight : public Z::AActor)
 {
     REFLECTION_BODY(ALight)
 public:
 private:
-    TObjectPtr<Zentia::ULightComponent> LightComponent;
+    TObjectPtr<Z::ULightComponent> LightComponent;
 };

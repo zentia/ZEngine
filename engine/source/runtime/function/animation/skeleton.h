@@ -4,7 +4,7 @@
 
 #include "runtime/function/animation/node.h"
 
-namespace Zentia
+namespace Z
 {
     class SkeletonData;
     class BlendStateWithClipData;

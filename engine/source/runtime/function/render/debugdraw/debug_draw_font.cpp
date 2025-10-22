@@ -7,7 +7,7 @@
 #define STB_TRUETYPE_IMPLEMENTATION
 #include <stb_truetype.h>
 
-namespace Zentia
+namespace Z
 {
     void DebugDrawFont::loadFont()
     {

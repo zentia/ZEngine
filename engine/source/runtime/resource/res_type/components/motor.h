@@ -4,7 +4,7 @@
 #include "runtime/core/meta/reflection/reflection.h"
 #include "runtime/resource/res_type/data/basic_shape.h"
 
-namespace Zentia
+namespace Z
 {
     enum class ControllerType : unsigned char
     {

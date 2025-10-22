@@ -4,7 +4,7 @@
 
 #include "runtime/function/animation/utilities.h"
 
-namespace Zentia
+namespace Z
 {
     Skeleton::~Skeleton() { delete[] m_bones; }
 

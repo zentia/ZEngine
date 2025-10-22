@@ -12,7 +12,7 @@
 #include "runtime/function/render/window_system.h"
 #include "runtime/function/render/debugdraw/debug_draw_manager.h"
 
-namespace Zentia
+namespace Z
 {
     bool                            g_is_editor_mode {false};
     std::unordered_set<std::string> g_editor_tick_component_types {};
@@ -84,7 +84,7 @@ namespace Zentia
 
 
         g_runtime_global_context.m_window_system->setTitle(
-            std::string("Zentia - " + std::to_string(getFPS()) + " FPS").c_str());
+            std::string("Z - " + std::to_string(getFPS()) + " FPS").c_str());
 
         const bool should_window_close = g_runtime_global_context.m_window_system->shouldClose();
         return !should_window_close;

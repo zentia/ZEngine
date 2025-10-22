@@ -4,7 +4,7 @@
 
 #include <cassert>
 
-namespace Zentia
+namespace Z
 {
     template<typename...>
     inline constexpr bool always_false = false;

@@ -1,6 +1,6 @@
 #include "light_component.h"
 
-namespace Zentia
+namespace Z
 {
 
 }

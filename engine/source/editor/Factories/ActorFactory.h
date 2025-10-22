@@ -5,7 +5,7 @@
 #include "CoreUObject/Templates/SubclassOf.h"
 #include "CoreUObject/UObject/Object.h"
 
-namespace Zentia
+namespace Z
 {
     class AActor;
 }
@@ -20,5 +20,5 @@ public:
     std::string DisplayName;
 
     META(Enable)
-    TSubclassOf<Zentia::AActor> NewActorClass;
+    TSubclassOf<Z::AActor> NewActorClass;
 };

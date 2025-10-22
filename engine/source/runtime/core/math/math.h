@@ -8,7 +8,7 @@
 
 #define CMP(x, y) (fabsf(x - y) < FLT_EPSILON * fmaxf(1.0f, fmaxf(fabsf(x), fabsf(y))))
 
-namespace Zentia
+namespace Z
 {
     static const float Math_POS_INFINITY = std::numeric_limits<float>::infinity();
     static const float Math_NEG_INFINITY = -std::numeric_limits<float>::infinity();

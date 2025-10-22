@@ -1,6 +1,6 @@
 #pragma once
 
-namespace Zentia
+namespace Z
 {
     struct EditorGlobalContextInitInfo
     {

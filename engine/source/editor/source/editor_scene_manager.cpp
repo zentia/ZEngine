@@ -15,7 +15,7 @@
 #include "runtime/function/render/render_camera.h"
 #include "runtime/function/render/render_system.h"
 
-namespace Zentia
+namespace Z
 {
     void EditorSceneManager::initialize() {}
 

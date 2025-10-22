@@ -3,5 +3,10 @@
   "cmake.configureArgs": ["-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
   "cmake.generator": "Ninja",
   "C_Cpp.intelliSenseEngine": "Default",
+  "files.associations": {
+    "future": "cpp",
+    "system_error": "cpp",
+    "filesystem": "cpp"
+  },
   
 }

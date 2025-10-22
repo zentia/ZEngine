@@ -15,7 +15,7 @@
 
 #include "_generated/serializer/all_serializer.h"
 
-namespace Zentia
+namespace Z
 {
     bool shouldComponentTick(std::string component_type_name)
     {
@@ -33,7 +33,7 @@ namespace Zentia
     {
         for (auto& component : m_components)
         {
-            ZENTIA_REFLECTION_DELETE(component);
+            Z_REFLECTION_DELETE(component);
         }
         m_components.clear();
     }
@@ -82,7 +82,8 @@ namespace Zentia
 
         ObjectDefinitionRes definition_res;
 
-        const bool is_loaded_success = g_runtime_global_context.m_asset_manager->loadAsset(m_definition_url, definition_res);
+        const bool is_loaded_success =
+            g_runtime_global_context.m_asset_manager->loadAsset(m_definition_url, definition_res);
         if (!is_loaded_success)
             return false;
 
@@ -109,4 +110,4 @@ namespace Zentia
         out_object_instance_res.m_instanced_components = m_components;
     }
 
-} // namespace Zentia
+} // namespace Z

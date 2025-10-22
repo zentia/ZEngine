@@ -7,7 +7,7 @@
 
 #include <memory>
 
-namespace Zentia
+namespace Z
 {
     class ZentiaEditor;
     class RenderCamera;

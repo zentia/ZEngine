@@ -29,16 +29,16 @@
 #include <imgui_internal.h>
 #include <stb_image.h>
 
-namespace Zentia
+namespace Z
 {
     std::vector<std::pair<std::string, bool>> g_editor_node_state_array;
     int                                       g_node_depth = -1;
     void                                      DrawVecControl(const std::string& label,
-                                                             Zentia::Vector3&    values,
+                                                             Z::Vector3&    values,
                                                              float              resetValue  = 0.0f,
                                                              float              columnWidth = 100.0f);
     void                                      DrawVecControl(const std::string& label,
-                                                             Zentia::Quaternion& values,
+                                                             Z::Quaternion& values,
                                                              float              resetValue  = 0.0f,
                                                              float              columnWidth = 100.0f);
 
@@ -510,7 +510,7 @@ namespace Zentia
                         {
                             m_editor_ui_creator["TreeNodePush"]("[" + std::to_string(index) + "]", nullptr);
                             auto object_instance = Reflection::ReflectionInstance(
-                                Zentia::Reflection::TypeMeta::newMetaFromName(item_type_meta_item.getTypeName().c_str()),
+                                Z::Reflection::TypeMeta::newMetaFromName(item_type_meta_item.getTypeName().c_str()),
                                 array_accessor.get(index, field_instance));
                             createClassUI(object_instance);
                             m_editor_ui_creator["TreeNodePop"]("[" + std::to_string(index) + "]", nullptr);
@@ -597,7 +597,7 @@ namespace Zentia
         {
             m_editor_ui_creator["TreeNodePush"](("<" + component_ptr.getTypeName() + ">").c_str(), nullptr);
             auto object_instance = Reflection::ReflectionInstance(
-                Zentia::Reflection::TypeMeta::newMetaFromName(component_ptr.getTypeName().c_str()),
+                Z::Reflection::TypeMeta::newMetaFromName(component_ptr.getTypeName().c_str()),
                 component_ptr.operator->());
             createClassUI(object_instance);
             m_editor_ui_creator["TreeNodePop"](("<" + component_ptr.getTypeName() + ">").c_str(), nullptr);
@@ -1011,7 +1011,7 @@ namespace Zentia
 
     void EditorUI::preRender() { showEditorUI(); }
 
-    void DrawVecControl(const std::string& label, Zentia::Vector3& values, float resetValue, float columnWidth)
+    void DrawVecControl(const std::string& label, Z::Vector3& values, float resetValue, float columnWidth)
     {
         ImGui::PushID(label.c_str());
 
@@ -1067,7 +1067,7 @@ namespace Zentia
         ImGui::PopID();
     }
 
-    void DrawVecControl(const std::string& label, Zentia::Quaternion& values, float resetValue, float columnWidth)
+    void DrawVecControl(const std::string& label, Z::Quaternion& values, float resetValue, float columnWidth)
     {
         ImGui::PushID(label.c_str());
 

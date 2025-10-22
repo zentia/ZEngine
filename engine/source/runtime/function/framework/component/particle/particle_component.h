@@ -8,7 +8,7 @@
 #include "runtime/core/math/matrix4.h"
 #include "runtime/core/math/transform.h"
 
-namespace Zentia
+namespace Z
 {
     REFLECTION_TYPE(ParticleComponent)
     CLASS(ParticleComponent : public Component, WhiteListFields)

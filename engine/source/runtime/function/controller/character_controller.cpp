@@ -7,12 +7,12 @@
 #include "runtime/function/global/global_context.h"
 #include "runtime/function/physics/physics_scene.h"
 
-namespace Zentia
+namespace Z
 {
     CharacterController::CharacterController(const Capsule& capsule) : m_capsule(capsule)
     {
         m_rigidbody_shape                                    = RigidBodyShape();
-        m_rigidbody_shape.m_geometry                         = ZENTIA_REFLECTION_NEW(Capsule);
+        m_rigidbody_shape.m_geometry                         = Z_REFLECTION_NEW(Capsule);
         *static_cast<Capsule*>(m_rigidbody_shape.m_geometry) = m_capsule;
 
         m_rigidbody_shape.m_type = RigidBodyShapeType::capsule;
@@ -41,4 +41,4 @@ namespace Zentia
 
         return final_position;
     }
-} // namespace Zentia
+} // namespace Z

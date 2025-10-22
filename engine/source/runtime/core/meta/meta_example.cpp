@@ -6,7 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-namespace Zentia
+namespace Z
 {
     void metaExample()
     {
@@ -77,4 +77,4 @@ namespace Zentia
             }
         }
     }
-} // namespace Zentia
+} // namespace Z

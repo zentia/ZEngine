@@ -6,7 +6,7 @@
 #include <memory>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     class RHI;
     class RenderResourceBase;

@@ -5,7 +5,7 @@
 #include "{{headfile_name}}"
 {{/include_headfiles}}
 
-namespace Zentia{
+namespace Z{
 namespace Reflection{
     void TypeMetaRegister::metaRegister(){
         {{#sourefile_names}}TypeWrappersRegister::{{sourefile_name_upper_camel_case}}();

@@ -6,7 +6,7 @@
 
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     struct PointLight
     {

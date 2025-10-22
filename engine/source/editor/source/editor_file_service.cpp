@@ -8,7 +8,7 @@
 
 #include "runtime/function/global/global_context.h"
 
-namespace Zentia
+namespace Z
 {
     /// helper function: split the input string with separator, and filter the substring
     std::vector<std::string>
@@ -45,9 +45,10 @@ namespace Zentia
 
     void EditorFileService::buildEngineFileTree()
     {
-        std::string                              asset_folder = g_runtime_global_context.m_config_manager->getAssetFolder().generic_string();
-        const std::vector<std::filesystem::path> file_paths = g_runtime_global_context.m_file_system->getFiles(asset_folder);
-        std::vector<std::vector<std::string>>    all_file_segments;
+        std::string asset_folder = g_runtime_global_context.m_config_manager->getAssetFolder().generic_string();
+        const std::vector<std::filesystem::path> file_paths =
+            g_runtime_global_context.m_file_system->getFiles(asset_folder);
+        std::vector<std::vector<std::string>> all_file_segments;
         for (const auto& path : file_paths)
         {
             const std::filesystem::path& relative_path = Path::getRelativePath(asset_folder, path);
@@ -139,4 +140,4 @@ namespace Zentia
         }
         return nullptr;
     }
-} // namespace Zentia
+} // namespace Z

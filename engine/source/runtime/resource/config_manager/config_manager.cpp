@@ -6,7 +6,7 @@
 #include <fstream>
 #include <string>
 
-namespace Zentia
+namespace Z
 {
     void ConfigManager::initialize(const std::filesystem::path& config_file_path)
     {
@@ -85,7 +85,10 @@ namespace Zentia
     const std::string& ConfigManager::getGlobalParticleResUrl() const { return m_global_particle_res_url; }
 
 #ifdef ENABLE_PHYSICS_DEBUG_RENDERER
-    const std::filesystem::path& ConfigManager::getJoltPhysicsAssetFolder() const { return m_jolt_physics_asset_folder; }
+    const std::filesystem::path& ConfigManager::getJoltPhysicsAssetFolder() const
+    {
+        return m_jolt_physics_asset_folder;
+    }
 #endif
 
-} // namespace Zentia
+} // namespace Z

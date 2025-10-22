@@ -4,7 +4,7 @@
 
 #include <mutex>
 
-namespace Zentia
+namespace Z
 {
     enum class RenderCameraType : int
     {

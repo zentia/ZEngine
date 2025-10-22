@@ -2,7 +2,7 @@
 {{#include_headfiles}}
 #include "{{headfile_name}}"
 {{/include_headfiles}}
-namespace Zentia{
+namespace Z{
     {{#class_defines}}
     template<>
     Json Serializer::write(const {{class_name}}& instance){

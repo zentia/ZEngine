@@ -11,7 +11,7 @@
 #include "runtime/function/render/render_swap_context.h"
 #include "runtime/function/render/render_system.h"
 
-namespace Zentia
+namespace Z
 {
     void MeshComponent::postLoadResource(AActor* parent_object)
     {

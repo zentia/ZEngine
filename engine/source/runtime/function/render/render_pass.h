@@ -9,7 +9,7 @@
 #include <memory>
 #include <vector>
 
-namespace Zentia
+namespace Z
 {
     class VulkanRHI;
 

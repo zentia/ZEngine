@@ -1,5 +1,5 @@
 #pragma once
-namespace Zentia
+namespace Z
 {
     namespace Reflection
     {
