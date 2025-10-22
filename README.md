@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="https://zentia.github.io">
-    <img src="engine/source/editor/resource/ZentiaEngine.png" width="400" alt="Zentia Engine logo">
+    <img src="engine/source/editor/resource/ZentiaEngine.png" width="400" alt="Z Engine logo">
   </a>
 </p>
 
@@ -64,7 +64,7 @@ cmake -S . -B build
 
 > The following build instructions only tested on specific hardware of x86_64, and do not support M1 chips. For M1 compatible, we will release later.
 
-To compile Zentia, you must have the most recent version of Xcode installed.
+To compile Z Engine, you must have the most recent version of Xcode installed.
 Then run 'cmake' from the project's root directory, to generate a project of Xcode.
 
 ```
@@ -111,3 +111,88 @@ cmake -S . -B build -DENABLE_PHYSICS_DEBUG_RENDERER=ON
 Note:
 1. Please clean the build directory before regenerating the solution. We've encountered building problems in regenerating directly with previous CMakeCache.
 2. Physics Debug Renderer will run when you start ZentiaEditor. We've synced the camera position between both scenes. But the initial camera mode in Physics Debug Renderer is wrong. Scrolling down the mouse wheel once will change the camera of Physics Debug Renderer to the correct mode.
+
+## Coding Style Guide
+
+### C++ Naming Conventions
+
+#### Namespaces
+- Use uppercase initials, keep names short
+- Example: `namespace Z`
+
+#### Classes
+- Use PascalCase (capitalize first letter of each word)
+- Use nouns or noun phrases
+- Example: `class MemoryManager`, `class RuntimeGlobalContext`
+
+#### Functions
+- Use camelCase (first word lowercase, capitalize first letter of subsequent words)
+- Begin with verbs or verb phrases
+- Example: `initialize()`, `createObject()`, `destroyObject()`
+
+#### Member Variables
+- Prefix with `m_` followed by camelCase
+- Example: `m_windowSystem`, `m_configManager`
+
+#### Static Members
+- Prefix with `s_` followed by camelCase
+- Example: `s_instance`
+
+#### Constants
+- Use all uppercase with underscores
+- Example: `MAX_BUFFER_SIZE`, `DEFAULT_WINDOW_WIDTH`
+
+#### Enums
+- Enum type names use PascalCase
+- Enum values use UPPER_CASE
+- Example:
+```cpp
+enum class RenderType {
+    FORWARD,
+    DEFERRED,
+    HYBRID
+};
+```
+
+#### Parameters and Local Variables
+- Use camelCase
+- Be descriptive but concise
+- Example: `float deltaTime`, `int frameCount`
+
+#### Interface Classes
+- Prefix with 'I' followed by PascalCase
+- Example: `class IRenderer`, `class ISystem`
+
+#### File Names
+- Use lowercase with underscores
+- Headers use .h extension
+- Source files use .cpp extension
+- Example: `memory_manager.h`, `render_system.cpp`
+
+#### Macros
+- Use all uppercase with underscores
+- Add project prefix for project-specific macros
+- Example: `Z_ASSERT`, `Z_ENABLE_LOGGING`
+
+#### Template Parameters
+- Use simple capital letters or meaningful PascalCase names
+- Example:
+```cpp
+template<typename T>
+template<typename KeyType, typename ValueType>
+```
+
+#### Boolean Variables
+- Prefix with is, has, can, should, etc.
+- Example: `isVisible`, `hasChildren`, `canUpdate`
+
+#### Private Methods
+- Follow normal function naming rules
+- Optionally use underscore suffix for private
+- Example: `calculateBounds_`, `updateInternal_`
+
+### General Principles
+1. Maintain consistency throughout the project
+2. New code should follow existing conventions
+3. Refactor inconsistent naming during major updates
+4. Prioritize clarity and readability over brevity
