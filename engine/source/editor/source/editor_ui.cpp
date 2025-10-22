@@ -21,9 +21,9 @@
 #include "runtime/function/global/global_context.h"
 #include "runtime/function/input/input_system.h"
 #include "runtime/function/render/render_camera.h"
+#include "runtime/function/render/render_debug_config.h"
 #include "runtime/function/render/render_system.h"
 #include "runtime/function/render/window_system.h"
-#include "runtime/function/render/render_debug_config.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -33,14 +33,12 @@ namespace Z
 {
     std::vector<std::pair<std::string, bool>> g_editor_node_state_array;
     int                                       g_node_depth = -1;
-    void                                      DrawVecControl(const std::string& label,
-                                                             Z::Vector3&    values,
-                                                             float              resetValue  = 0.0f,
-                                                             float              columnWidth = 100.0f);
-    void                                      DrawVecControl(const std::string& label,
-                                                             Z::Quaternion& values,
-                                                             float              resetValue  = 0.0f,
-                                                             float              columnWidth = 100.0f);
+    void
+    DrawVecControl(const std::string& label, Z::Vector3& values, float resetValue = 0.0f, float columnWidth = 100.0f);
+    void DrawVecControl(const std::string& label,
+                        Z::Quaternion&     values,
+                        float              resetValue  = 0.0f,
+                        float              columnWidth = 100.0f);
 
     EditorUI::EditorUI()
     {
@@ -119,8 +117,8 @@ namespace Z
                 g_editor_global_context.m_scene_manager->drawSelectedEntityAxis();
             }
         };
-        m_editor_ui_creator["bool"] = [this](const std::string& name, void* value_ptr)  -> void {
-            if(g_node_depth == -1)
+        m_editor_ui_creator["bool"] = [this](const std::string& name, void* value_ptr) -> void {
+            if (g_node_depth == -1)
             {
                 std::string label = "##" + name;
                 ImGui::Text("%s", name.c_str());
@@ -129,7 +127,7 @@ namespace Z
             }
             else
             {
-                if(g_editor_node_state_array[g_node_depth].second)
+                if (g_editor_node_state_array[g_node_depth].second)
                 {
                     std::string full_label = "##" + getLeafUINodeParentLabel() + name;
                     ImGui::Text("%s", name.c_str());
@@ -272,6 +270,7 @@ namespace Z
         showEditorGameWindow(&m_game_engine_window_open);
         showEditorFileContentWindow(&m_file_content_window_open);
         showEditorDetailWindow(&m_detail_window_open);
+        showEditorConsoleWindow(&m_console_window_open);
     }
 
     void EditorUI::showEditorMenu(bool* p_open)
@@ -310,11 +309,13 @@ namespace Z
             ImGuiID left_file_content = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.30f, nullptr, &left_other);
 
             ImGuiID left_game_engine;
-            ImGuiID left_asset = ImGui::DockBuilderSplitNode(left_other, ImGuiDir_Left, 0.30f, nullptr, &left_game_engine);
+            ImGuiID left_asset =
+                ImGui::DockBuilderSplitNode(left_other, ImGuiDir_Left, 0.30f, nullptr, &left_game_engine);
 
             ImGui::DockBuilderDockWindow("Outliner", left_asset);
             ImGui::DockBuilderDockWindow("Components Details", right);
             ImGui::DockBuilderDockWindow("File Content", left_file_content);
+            ImGui::DockBuilderDockWindow("Console", left_file_content);
             ImGui::DockBuilderDockWindow("Game Engine", left_game_engine);
 
             ImGui::DockBuilderFinish(main_docking_id);
@@ -340,29 +341,42 @@ namespace Z
                 {
                     if (ImGui::BeginMenu("Animation"))
                     {
-                        if (ImGui::MenuItem(g_runtime_global_context.m_render_debug_config->animation.show_skeleton ? "off skeleton" : "show skeleton"))
+                        if (ImGui::MenuItem(g_runtime_global_context.m_render_debug_config->animation.show_skeleton ?
+                                                "off skeleton" :
+                                                "show skeleton"))
                         {
-                            g_runtime_global_context.m_render_debug_config->animation.show_skeleton = !g_runtime_global_context.m_render_debug_config->animation.show_skeleton;
+                            g_runtime_global_context.m_render_debug_config->animation.show_skeleton =
+                                !g_runtime_global_context.m_render_debug_config->animation.show_skeleton;
                         }
-                        if (ImGui::MenuItem(g_runtime_global_context.m_render_debug_config->animation.show_bone_name ? "off bone name" : "show bone name"))
+                        if (ImGui::MenuItem(g_runtime_global_context.m_render_debug_config->animation.show_bone_name ?
+                                                "off bone name" :
+                                                "show bone name"))
                         {
-                            g_runtime_global_context.m_render_debug_config->animation.show_bone_name = !g_runtime_global_context.m_render_debug_config->animation.show_bone_name;
+                            g_runtime_global_context.m_render_debug_config->animation.show_bone_name =
+                                !g_runtime_global_context.m_render_debug_config->animation.show_bone_name;
                         }
                         ImGui::EndMenu();
                     }
                     if (ImGui::BeginMenu("Camera"))
                     {
-                        if (ImGui::MenuItem(g_runtime_global_context.m_render_debug_config->camera.show_runtime_info ? "off runtime info" : "show runtime info"))
+                        if (ImGui::MenuItem(g_runtime_global_context.m_render_debug_config->camera.show_runtime_info ?
+                                                "off runtime info" :
+                                                "show runtime info"))
                         {
-                            g_runtime_global_context.m_render_debug_config->camera.show_runtime_info = !g_runtime_global_context.m_render_debug_config->camera.show_runtime_info;
+                            g_runtime_global_context.m_render_debug_config->camera.show_runtime_info =
+                                !g_runtime_global_context.m_render_debug_config->camera.show_runtime_info;
                         }
                         ImGui::EndMenu();
                     }
                     if (ImGui::BeginMenu("Game Object"))
                     {
-                        if (ImGui::MenuItem(g_runtime_global_context.m_render_debug_config->gameObject.show_bounding_box ? "off bounding box" : "show bounding box"))
+                        if (ImGui::MenuItem(
+                                g_runtime_global_context.m_render_debug_config->gameObject.show_bounding_box ?
+                                    "off bounding box" :
+                                    "show bounding box"))
                         {
-                            g_runtime_global_context.m_render_debug_config->gameObject.show_bounding_box = !g_runtime_global_context.m_render_debug_config->gameObject.show_bounding_box;
+                            g_runtime_global_context.m_render_debug_config->gameObject.show_bounding_box =
+                                !g_runtime_global_context.m_render_debug_config->gameObject.show_bounding_box;
                         }
                         ImGui::EndMenu();
                     }
@@ -384,6 +398,7 @@ namespace Z
                 ImGui::MenuItem("Outliner", nullptr, &m_asset_window_open);
                 ImGui::MenuItem("Game", nullptr, &m_game_engine_window_open);
                 ImGui::MenuItem("File Content", nullptr, &m_file_content_window_open);
+                ImGui::MenuItem("Console", nullptr, &m_console_window_open);
                 ImGui::MenuItem("Detail", nullptr, &m_detail_window_open);
                 ImGui::EndMenu();
             }
@@ -403,7 +418,6 @@ namespace Z
             {
                 if (ImGui::MenuItem("Place Actor"))
                 {
-                    
                 }
                 ImGui::EndMenu();
             }
@@ -432,19 +446,21 @@ namespace Z
             return;
         }
 
-        std::shared_ptr<Level> current_active_level = g_runtime_global_context.m_world_manager->getCurrentActiveLevel().lock();
+        std::shared_ptr<Level> current_active_level =
+            g_runtime_global_context.m_world_manager->getCurrentActiveLevel().lock();
         if (current_active_level == nullptr)
             return;
 
         const LevelObjectsMap& all_gobjects = current_active_level->getAllGObjects();
         for (auto& id_object_pair : all_gobjects)
         {
-            const GObjectID          object_id = id_object_pair.first;
+            const GObjectID         object_id = id_object_pair.first;
             std::shared_ptr<AActor> object    = id_object_pair.second;
-            const std::string        name      = object->getName();
+            const std::string       name      = object->getName();
             if (name.size() > 0)
             {
-                if (ImGui::Selectable(name.c_str(), g_editor_global_context.m_scene_manager->getSelectedObjectID() == object_id))
+                if (ImGui::Selectable(name.c_str(),
+                                      g_editor_global_context.m_scene_manager->getSelectedObjectID() == object_id))
                 {
                     if (g_editor_global_context.m_scene_manager->getSelectedObjectID() != object_id)
                     {
@@ -460,13 +476,12 @@ namespace Z
                 {
                     if (ImGui::MenuItem("Place Actor"))
                     {
-                        
                     }
                     ImGui::EndPopup();
                 }
             }
         }
-        
+
         ImGui::End();
     }
 
@@ -531,12 +546,10 @@ namespace Z
             auto ui_creator_iterator = m_editor_ui_creator.find(field.getFieldTypeName());
             if (ui_creator_iterator == m_editor_ui_creator.end())
             {
-                Reflection::TypeMeta field_meta =
-                    Reflection::TypeMeta::newMetaFromName(field.getFieldTypeName());
+                Reflection::TypeMeta field_meta = Reflection::TypeMeta::newMetaFromName(field.getFieldTypeName());
                 if (field.getTypeMeta(field_meta))
                 {
-                    auto child_instance =
-                        Reflection::ReflectionInstance(field_meta, field.get(instance.m_instance));
+                    auto child_instance = Reflection::ReflectionInstance(field_meta, field.get(instance.m_instance));
                     m_editor_ui_creator["TreeNodePush"](field_meta.getTypeName(), nullptr);
                     createClassUI(child_instance);
                     m_editor_ui_creator["TreeNodePop"](field_meta.getTypeName(), nullptr);
@@ -547,14 +560,12 @@ namespace Z
                     {
                         continue;
                     }
-                    m_editor_ui_creator[field.getFieldTypeName()](field.getFieldName(),
-                                                                         field.get(instance.m_instance));
+                    m_editor_ui_creator[field.getFieldTypeName()](field.getFieldName(), field.get(instance.m_instance));
                 }
             }
             else
             {
-                m_editor_ui_creator[field.getFieldTypeName()](field.getFieldName(),
-                                                                     field.get(instance.m_instance));
+                m_editor_ui_creator[field.getFieldTypeName()](field.getFieldName(), field.get(instance.m_instance));
             }
         }
         delete[] fields;
@@ -602,6 +613,26 @@ namespace Z
             createClassUI(object_instance);
             m_editor_ui_creator["TreeNodePop"](("<" + component_ptr.getTypeName() + ">").c_str(), nullptr);
         }
+        ImGui::End();
+    }
+
+    void EditorUI::showEditorConsoleWindow(bool* p_open)
+    {
+        ImGuiWindowFlags window_flags = ImGuiWindowFlags_None;
+
+        const ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+
+        if (!*p_open)
+            return;
+
+        if (!ImGui::Begin("Console", p_open, window_flags))
+        {
+            ImGui::End();
+            return;
+        }
+
+        // console log content
+
         ImGui::End();
     }
 
@@ -768,15 +799,18 @@ namespace Z
         //                        |                                            |
         //                        O--------------------------------------------O
 
-        Vector2 render_target_window_pos = { 0.0f, 0.0f };
-        Vector2 render_target_window_size = { 0.0f, 0.0f };
+        Vector2 render_target_window_pos  = {0.0f, 0.0f};
+        Vector2 render_target_window_size = {0.0f, 0.0f};
 
         auto menu_bar_rect = ImGui::GetCurrentWindow()->MenuBarRect();
 
-        render_target_window_pos.x = ImGui::GetWindowPos().x;
-        render_target_window_pos.y = menu_bar_rect.Max.y;
+        render_target_window_pos.x  = ImGui::GetWindowPos().x;
+        render_target_window_pos.y  = menu_bar_rect.Max.y;
         render_target_window_size.x = ImGui::GetWindowSize().x;
-        render_target_window_size.y = (ImGui::GetWindowSize().y + ImGui::GetWindowPos().y) - menu_bar_rect.Max.y; // coord of right bottom point of full window minus coord of right bottom point of menu bar window.
+        render_target_window_size.y =
+            (ImGui::GetWindowSize().y + ImGui::GetWindowPos().y) -
+            menu_bar_rect.Max
+                .y; // coord of right bottom point of full window minus coord of right bottom point of menu bar window.
 
         // if (new_window_pos != m_engine_window_pos || new_window_size != m_engine_window_size)
         {
@@ -785,13 +819,16 @@ namespace Z
             // Return value from ImGui::GetMainViewport()->DpiScal is always the same as first frame.
             // glfwGetMonitorContentScale and glfwSetWindowContentScaleCallback are more adaptive.
             float dpi_scale = main_viewport->DpiScale;
-            g_runtime_global_context.m_render_system->updateEngineContentViewport(render_target_window_pos.x * dpi_scale,
+            g_runtime_global_context.m_render_system->updateEngineContentViewport(
+                render_target_window_pos.x * dpi_scale,
                 render_target_window_pos.y * dpi_scale,
                 render_target_window_size.x * dpi_scale,
                 render_target_window_size.y * dpi_scale);
 #else
-            g_runtime_global_context.m_render_system->updateEngineContentViewport(
-                render_target_window_pos.x, render_target_window_pos.y, render_target_window_size.x, render_target_window_size.y);
+            g_runtime_global_context.m_render_system->updateEngineContentViewport(render_target_window_pos.x,
+                                                                                  render_target_window_pos.y,
+                                                                                  render_target_window_size.x,
+                                                                                  render_target_window_size.y);
 #endif
             g_editor_global_context.m_input_manager->setEngineWindowPos(render_target_window_pos);
             g_editor_global_context.m_input_manager->setEngineWindowSize(render_target_window_size);
@@ -1134,4 +1171,4 @@ namespace Z
         ImGui::Columns(1);
         ImGui::PopID();
     }
-} // namespace Zentia
+} // namespace Z

@@ -18,6 +18,7 @@
 #include "runtime/function/render/render_debug_config.h"
 #include "runtime/function/render/render_system.h"
 #include "runtime/function/render/window_system.h"
+#include <core/memory/memory_manager.h>
 
 namespace Z
 {
@@ -90,5 +91,17 @@ namespace Z
         m_config_manager.reset();
 
         m_particle_manager.reset();
+    }
+
+    void RuntimeGlobalContext::initialize()
+    {
+        MemoryManager::initialize();
+        // ... 其他初始化
+    }
+
+    void RuntimeGlobalContext::shutdown()
+    {
+        // ... 其他清理
+        MemoryManager::shutdown();
     }
 } // namespace Zentia

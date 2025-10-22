@@ -24,11 +24,12 @@ namespace Z
     class RuntimeGlobalContext
     {
     public:
+        static void initialize();
         // create all global systems and initialize these systems
         void startSystems(const std::string& config_file_path);
         // destroy all global systems
         void shutdownSystems();
-
+        static void shutdown();
     public:
         std::shared_ptr<LogSystem>         m_logger_system;
         std::shared_ptr<InputSystem>       m_input_system;
@@ -45,4 +46,4 @@ namespace Z
     };
 
     extern RuntimeGlobalContext g_runtime_global_context;
-} // namespace Zentia
+} // namespace Z

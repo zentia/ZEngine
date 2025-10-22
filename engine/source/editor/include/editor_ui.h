@@ -38,7 +38,7 @@ namespace Z
         void showEditorFileContentWindow(bool* p_open);
         void showEditorGameWindow(bool* p_open);
         void showEditorDetailWindow(bool* p_open);
-
+        void showEditorConsoleWindow(bool* p_open);
         void setUIColorStyle();
 
     public:
@@ -58,5 +58,6 @@ namespace Z
         bool m_detail_window_open            = true;
         bool m_scene_lights_window_open      = true;
         bool m_scene_lights_data_window_open = true;
+        bool m_console_window_open           = true;
     };
 } // namespace Z

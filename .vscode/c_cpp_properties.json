@@ -1,28 +1,31 @@
 {
-  "configurations": [
-    {
-      "name": "Win-clang-cl",
-      "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/Llvm/x64/bin/clang-cl.exe",
-      "compileCommands": "${workspaceFolder}/build/compile_commands.json",
-      "intelliSenseMode": "windows-clang-x64",
-      "cStandard": "c11",
-      "cppStandard": "c++17",
-      "includePath": [
-        "${workspaceFolder}/**",
-        "${workspaceFolder}/engine/**",
-        "${workspaceFolder}/engine/3rdparty/**",
-        "${workspaceFolder}/build/**"
-      ],
-      "browse": {
-        "path": [
-          "${workspaceFolder}/engine",
-          "${workspaceFolder}/engine/3rdparty",
-          "${workspaceFolder}/build"
-        ],
-        "limitSymbolsToIncludedHeaders": false,
-        "databaseFilename": "${workspaceFolder}/.vscode/browse.vc.db"
-      }
-    }
-  ],
-  "version": 4
+    "configurations": [
+        {
+            "name": "Win-clang-cl",
+            "compilerPath": "C:/Program Files/Microsoft Visual Studio/2022/Professional/VC/Tools/Llvm/x64/bin/clang-cl.exe",
+            "compileCommands": [
+                "${workspaceFolder}/build/compile_commands.json"
+            ],
+            "intelliSenseMode": "windows-clang-x64",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "${workspaceFolder}/engine/**",
+                "${workspaceFolder}/engine/3rdparty/**",
+                "${workspaceFolder}/build/**",
+                "${workspaceFolder}/engine/3rdparty/mimalloc/doc"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/engine",
+                    "${workspaceFolder}/engine/3rdparty",
+                    "${workspaceFolder}/build"
+                ],
+                "limitSymbolsToIncludedHeaders": false,
+                "databaseFilename": "${workspaceFolder}/.vscode/browse.vc.db"
+            }
+        }
+    ],
+    "version": 4
 }

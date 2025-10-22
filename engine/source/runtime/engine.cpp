@@ -20,7 +20,7 @@ namespace Z
     void ZEngine::startEngine(const std::string& config_file_path)
     {
         Reflection::TypeMetaRegister::metaRegister();
-
+        RuntimeGlobalContext::initialize();
         g_runtime_global_context.startSystems(config_file_path);
 
         LOG_INFO("engine start");
@@ -31,7 +31,7 @@ namespace Z
         LOG_INFO("engine shutdown");
 
         g_runtime_global_context.shutdownSystems();
-
+        RuntimeGlobalContext::shutdown();
         Reflection::TypeMetaRegister::metaUnregister();
     }
 

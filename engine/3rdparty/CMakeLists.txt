@@ -2,11 +2,6 @@ set(third_party_folder "ThirdParty")
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
-if(NOT TARGET imgui)
-    include(imgui.cmake)
-    set_target_properties(imgui PROPERTIES FOLDER ${third_party_folder}/imgui)
-endif()
-
 if(NOT TARGET glfw)
     option(GLFW_BUILD_EXAMPLES "" OFF)
     option(GLFW_BUILD_TESTS "" OFF)
@@ -75,6 +70,14 @@ if(NOT TARGET Jolt)
     else()
         target_compile_options(Jolt PRIVATE "-Wall")
     endif()
+endif()
+
+if(NOT TARGET mimalloc-static)
+    set(MI_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(MI_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    add_subdirectory(mimalloc)
+    set_target_properties(mimalloc-static PROPERTIES FOLDER ${third_party_folder}/mimalloc)
 endif()
 
 add_subdirectory(BqLog/src)
