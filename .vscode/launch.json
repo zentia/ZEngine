@@ -1,0 +1,34 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch ZentiaEditor (Visual Studio debugger)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/bin/ZentiaEditor.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${workspaceFolder}/bin",
+            "environment": [
+                {
+                    "name": "PATH",
+                    "value": "${env:PATH};${workspaceFolder}\\engine\\3rdparty\\VulkanSDK\\bin\\Win32"
+                }
+            ],
+            "console": "integratedTerminal",
+            "preLaunchTask": "build ZEngine"
+        },
+        {
+            "name": "Attach to ZentiaEditor",
+            "type": "cppvsdbg",
+            "request": "attach",
+            "processId": "${command:pickProcess}",
+            "program": "${workspaceFolder}/bin/ZentiaEditor.exe",
+            "cwd": "${workspaceFolder}/bin"
+        }
+
+    ]
+}

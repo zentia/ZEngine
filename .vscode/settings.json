@@ -1,0 +1,7 @@
+{
+  "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+  "cmake.configureArgs": ["-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
+  "cmake.generator": "Ninja",
+  "C_Cpp.intelliSenseEngine": "Default",
+  
+}

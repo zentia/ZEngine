@@ -29,23 +29,33 @@ set_target_properties(${TARGET_NAME} PROPERTIES FOLDER "Tools")
 if (CMAKE_HOST_WIN32)
     set(LLVM_LIBRARY_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/LLVM/lib/x64)
     set(LLVM_SHARED_LIBRARY_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/LLVM/bin/x64)
-    set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} /O2 /Ob2")
+    # Apply MSVC specific optimization flags only for Release-like configurations
+    target_compile_options(${TARGET_NAME} PRIVATE
+        $<$<AND:$<CXX_COMPILER_ID:MSVC>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:/O2;/Ob2>
+    )
     target_link_libraries(${TARGET_NAME}  ${LLVM_LIBRARY_DIR}/libclang.lib)
 elseif(${CMAKE_HOST_SYSTEM_NAME} STREQUAL "Linux")
     set(LLVM_LIBRARY_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/LLVM/lib/Linux)
     set(LLVM_SHARED_LIBRARY_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/LLVM/bin/Linux)
-    set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O3")
+    # Use -O3 for non-MSVC compilers (clang/gcc) only for Release-like configurations
+    target_compile_options(${TARGET_NAME} PRIVATE
+        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-O3>
+    )
     target_link_libraries(${TARGET_NAME}  ${LLVM_SHARED_LIBRARY_DIR}/libclang.so.12)
 elseif(${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "arm64") 
     # link to XCode Toolchains' universal binary libclang.dylib 
     set(LLVM_LIBRARY_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/LLVM/lib/macOS)
     set(LLVM_SHARED_LIBRARY_DIR  ${OSX_DEVELOPER_ROOT}/Toolchains/XcodeDefault.xctoolchain/usr/lib)
-    set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O3")
+    target_compile_options(${TARGET_NAME} PRIVATE
+        $<$<AND:$<NOT:$<CXX_COMPILER_ID:MSVC>>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>:-O3>
+    )
     target_link_libraries(${TARGET_NAME}  ${LLVM_SHARED_LIBRARY_DIR}/libclang.dylib)    
 else()
     set(LLVM_LIBRARY_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/LLVM/lib/macOS)
     set(LLVM_SHARED_LIBRARY_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/3rd_party/LLVM/bin/macOS)
-    set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -O3")
+    target_compile_options(${TARGET_NAME} PRIVATE
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3>
+    )
     target_link_libraries(${TARGET_NAME}  ${LLVM_SHARED_LIBRARY_DIR}/libclang.dylib)
 endif()
 

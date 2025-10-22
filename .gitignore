@@ -11,7 +11,6 @@ CPM_*.cmake
 CMakeSettings.json
 
 # Visual Studio Code
-.vscode/
 *.code-workspace
 
 # CLion
@@ -430,3 +429,5 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+.vscode/BROWSE.VC.DB-wal
+.vscode/BROWSE.VC.DB-shm

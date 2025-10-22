@@ -1,12 +1,12 @@
 #pragma once
 #include "ObjectMacros.h"
-#include "Package.h"
 
 class FGCReconstructionGuard;
-enum EObjectFlags : int;
+enum EObjectFlags;
 class FName;
 class UClass;
 class UObject;
+class UPackage; // forward declaration to avoid circular include
 
 class UObjectBase
 {
