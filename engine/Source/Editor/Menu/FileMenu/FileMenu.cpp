@@ -18,7 +18,7 @@ void FileMenu::BuildZSlateMenu(ZSlate::SMenu& menu, float scale)
         GET_SYSTEM(RenderSystem)->ClearForLevelReloading();
         GET_SYSTEM(EditorSceneManager)->OnGObjectSelected(k_invalid_gobject_id);
     }, scale);
-    menu.AddItem("Save Current Level", []() { GET_SYSTEM(WorldManager)->SaveCurrentLevel(); }, scale);
+    menu.AddItem("Save Scene    Ctrl+S", []() { GET_SYSTEM(WorldManager)->SaveCurrentLevel(); }, scale);
 
     {
         std::shared_ptr<ZSlate::SMenu> debug = menu.AddSubMenu("Debug", scale);

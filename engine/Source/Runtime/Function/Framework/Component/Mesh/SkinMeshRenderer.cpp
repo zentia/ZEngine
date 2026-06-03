@@ -2,7 +2,7 @@
 
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Function/Framework/Component/Animation/AnimationComponent.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 
 IMPLEMENT_REGISTER_CLASS(SkinMeshRenderer)
 IMPLEMENT_OBJECT_SERIALIZE(SkinMeshRenderer)
@@ -31,7 +31,7 @@ namespace
     }
 }  // namespace
 
-GameObjectDesc SkinMeshRenderer::BuildGameObjectDesc(const TransformComponent* transform_component) const
+GameObjectDesc SkinMeshRenderer::BuildGameObjectDesc(const Transform* transform_component) const
 {
     std::vector<GameObjectPartDesc> render_parts = BuildRenderParts(transform_component);
     const AnimationComponent* animation_component = m_ParentObject != nullptr ? m_ParentObject->tryGetComponentConst(AnimationComponent) : nullptr;
@@ -64,7 +64,7 @@ void SkinMeshRenderer::Tick(float delta_time)
         return;
     }
 
-    TransformComponent* transform_component = m_ParentObject->tryGetComponent(TransformComponent);
+    Transform* transform_component = m_ParentObject->tryGetComponent(Transform);
     SubmitRenderState();
     if (transform_component != nullptr)
     {

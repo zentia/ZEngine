@@ -21,6 +21,7 @@
 #include "Runtime/Slate/Widgets/SButton.h"
 #include "Runtime/Slate/Widgets/SEditableTextBox.h"
 #include "Runtime/Slate/Widgets/SMenu.h"
+#include "Runtime/Slate/Widgets/SDropTarget.h"
 #include "Runtime/Slate/Widgets/SScrollBox.h"
 #include "Runtime/Slate/Widgets/SSpacer.h"
 #include "Runtime/Slate/Widgets/STextBlock.h"
@@ -230,6 +231,20 @@ void ZSlateProjectWindow::AddNodeRows(EditorFileNode* node, int depth, float sca
             m_HasPendingContext = true;
         };
 
+        // Drop target: a Hierarchy GameObject dragged here creates a .prefab under
+        // the folder that owns this row (or the parent folder for asset rows).
+        row->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) {
+            return op != nullptr && op->PayloadType == EditorDragDrop::kZSlateAssetPayloadGObjectId &&
+                   op->Id != 0;
+        };
+        row->OnDropHandler = [this, node_ptr](const std::shared_ptr<FDragDropOperation>& op) {
+            if (op == nullptr)
+                return;
+            const std::filesystem::path folder = ProjectWindowHelpers::ResolveDropTargetFolder(node_ptr);
+            ProjectAssetActions::RequestPrefabCreate(Ctx(), static_cast<GObjectID>(op->Id), folder);
+            m_ForceRebuild = true;
+        };
+
         // Drag source: a `.zasset` row can be dragged onto the Scene viewport to
         // instantiate it (Prefab / MeshData). The op carries the absolute path;
         // the cross-window channel (SlateInputRouter -> SetActiveDragOperation)
@@ -334,7 +349,23 @@ void ZSlateProjectWindow::Rebuild(float scale)
     auto list = std::make_shared<SScrollBox>();
     for (EditorFileNode* r : m_EditorFileService.getEditorRootNodes())
         AddNodeRows(r, 0, scale, list);
-    column->AddSlot(list).Fill();
+
+    // Catch-all drop target for blank space: create the prefab under the current
+    // selection's folder (or Assets/ when nothing is selected).
+    auto drop = std::make_shared<SDropTarget>();
+    drop->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) {
+        return op != nullptr && op->PayloadType == EditorDragDrop::kZSlateAssetPayloadGObjectId &&
+               op->Id != 0;
+    };
+    drop->OnDropHandler = [this](const std::shared_ptr<FDragDropOperation>& op) {
+        if (op == nullptr)
+            return;
+        const std::filesystem::path folder = ProjectWindowHelpers::ResolveDropTargetFolder(m_SelectedNode);
+        ProjectAssetActions::RequestPrefabCreate(Ctx(), static_cast<GObjectID>(op->Id), folder);
+        m_ForceRebuild = true;
+    };
+    drop->SetContent(list);
+    column->AddSlot(drop).Fill();
 
     root->SetContent(column);
     m_Root = root;
@@ -547,7 +578,6 @@ void ZSlateProjectWindow::OnGUI()
     }
     else
     {
-        m_HasPendingContext = false;
         m_Input.ProcessMouse(m_Root, mouse, over_canvas, left_down, wheel, right_down);
 
         if (m_Input.HasKeyboardFocus())
@@ -572,6 +602,7 @@ void ZSlateProjectWindow::OnGUI()
                 OpenContextMenuFor(m_PendingContextNode, m_PendingContextPos, ui_scale);
             else
                 OpenCreateMenu(mouse, ui_scale);
+            m_HasPendingContext = false;
         }
     }
 

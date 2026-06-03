@@ -1,5 +1,6 @@
 #include "ZSlateHierarchyWindow.h"
 
+#include "Editor/EditorDragDrop/EditorDragDrop.h"
 #include "Editor/EditorHierarchy/EditorHierarchyReparent.h"
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
@@ -9,7 +10,7 @@
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Slate/Application/SlateApplication.h"
@@ -181,7 +182,7 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
     const std::string row_name(object->GetName().c_str());
     row->OnDragDetectedHandler = [object_id, row_name](const Vector2&) -> std::shared_ptr<FDragDropOperation> {
         auto op = std::make_shared<FDragDropOperation>();
-        op->PayloadType = "GObjectID";
+        op->PayloadType = EditorDragDrop::kZSlateAssetPayloadGObjectId;
         op->Id = static_cast<uint64_t>(object_id);
         op->DecoratorText = row_name;
         return op;
@@ -189,7 +190,7 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
 
     // Drop target: accept another object (not self, not a cycle) and reparent it.
     row->CanAcceptDrop = [object_id](const std::shared_ptr<FDragDropOperation>& op) {
-        if (op == nullptr || op->PayloadType != "GObjectID")
+        if (op == nullptr || op->PayloadType != EditorDragDrop::kZSlateAssetPayloadGObjectId)
             return false;
         const auto dragged = static_cast<GObjectID>(op->Id);
         if (dragged == object_id)
@@ -199,10 +200,13 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
             return false;
         return !EditorHierarchyReparent::WouldCreateCycle(lvl, dragged, object_id);
     };
-    row->OnDropHandler = [object_id](const std::shared_ptr<FDragDropOperation>& op) {
+    row->OnDropHandler = [this, object_id](const std::shared_ptr<FDragDropOperation>& op) {
         Level* lvl = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
-        if (lvl != nullptr && op != nullptr)
-            EditorHierarchyReparent::Reparent(lvl, static_cast<GObjectID>(op->Id), object_id);
+        if (lvl != nullptr && op != nullptr &&
+            EditorHierarchyReparent::Reparent(lvl, static_cast<GObjectID>(op->Id), object_id))
+        {
+            NotifyHierarchyStructureChanged(object_id);
+        }
     };
 
     auto hb = std::make_shared<SHorizontalBox>();
@@ -284,7 +288,7 @@ void ZSlateHierarchyWindow::Rebuild(Level* level, const TreeData& tree, GObjectI
     // by the deeper row target first (reparent-under).
     auto blank_drop = std::make_shared<SDropTarget>();
     blank_drop->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) {
-        if (op == nullptr || op->PayloadType != "GObjectID")
+        if (op == nullptr || op->PayloadType != EditorDragDrop::kZSlateAssetPayloadGObjectId)
             return false;
         Level* lvl = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
         if (lvl == nullptr)
@@ -295,10 +299,13 @@ void ZSlateHierarchyWindow::Rebuild(Level* level, const TreeData& tree, GObjectI
             return false;
         return EditorHierarchyReparent::GetParentId(dragged) != k_invalid_gobject_id;
     };
-    blank_drop->OnDropHandler = [](const std::shared_ptr<FDragDropOperation>& op) {
+    blank_drop->OnDropHandler = [this](const std::shared_ptr<FDragDropOperation>& op) {
         Level* lvl = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
-        if (lvl != nullptr && op != nullptr)
-            EditorHierarchyReparent::Reparent(lvl, static_cast<GObjectID>(op->Id), k_invalid_gobject_id);
+        if (lvl != nullptr && op != nullptr &&
+            EditorHierarchyReparent::Reparent(lvl, static_cast<GObjectID>(op->Id), k_invalid_gobject_id))
+        {
+            NotifyHierarchyStructureChanged(k_invalid_gobject_id);
+        }
     };
 
     auto list = std::make_shared<SScrollBox>();
@@ -315,10 +322,10 @@ GObjectID ZSlateHierarchyWindow::CreateEmpty(Level* level, GObjectID parent)
     if (level == nullptr)
         return k_invalid_gobject_id;
 
-    // Unity "Create Empty": a GameObject with just a TransformComponent.
+    // Unity "Create Empty": a GameObject with just a Transform.
     GameObject empty_template;
     empty_template.SetName("GameObject");
-    empty_template.addComponent(MemoryManager::CreateObject<TransformComponent>());
+    empty_template.addComponent(MemoryManager::CreateObject<Transform>());
 
     const GObjectID created = level->CreateObject(empty_template);
     if (created == k_invalid_gobject_id)
@@ -327,8 +334,16 @@ GObjectID ZSlateHierarchyWindow::CreateEmpty(Level* level, GObjectID parent)
     if (parent != k_invalid_gobject_id)
         EditorHierarchyReparent::Reparent(level, created, parent);
 
+    NotifyHierarchyStructureChanged(parent);
     EditorSelection::SelectGameObject(created);
     return created;
+}
+
+void ZSlateHierarchyWindow::NotifyHierarchyStructureChanged(GObjectID expand_parent_id)
+{
+    m_ForceRebuild = true;
+    if (expand_parent_id != k_invalid_gobject_id)
+        m_Collapsed.erase(expand_parent_id);
 }
 
 void ZSlateHierarchyWindow::DeleteObject(GObjectID object_id)
@@ -340,6 +355,7 @@ void ZSlateHierarchyWindow::DeleteObject(GObjectID object_id)
         return;
     scene_manager->OnGObjectSelected(object_id);
     scene_manager->OnDeleteSelectedGObject();
+    NotifyHierarchyStructureChanged(k_invalid_gobject_id);
 }
 
 void ZSlateHierarchyWindow::OpenContextMenu(GObjectID context_object, const Vector2& screen_pos, float scale)
@@ -382,21 +398,18 @@ void ZSlateHierarchyWindow::OnGUI()
     Level* level = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
     const TreeData tree = BuildTree(level);
     const GObjectID selected = EditorSelection::GetActiveGameObjectId();
-
     const uint64_t signature = ComputeSignature(level, tree, selected);
-    const bool needs_rebuild =
-        (m_Root == nullptr) || (ui_scale != m_BuiltScale) || (signature != m_BuiltSignature);
+    const bool needs_rebuild = m_ForceRebuild || (m_Root == nullptr) || (ui_scale != m_BuiltScale) ||
+                               (signature != m_BuiltSignature);
     if (needs_rebuild)
     {
         Rebuild(level, tree, selected, ui_scale);
         m_BuiltScale = ui_scale;
         m_BuiltSignature = signature;
+        m_ForceRebuild = false;
         m_Input.Reset();
     }
 
-    // Native dock hosting is unconditional: ReconcileNativeTreeWithOpenWindows (run
-    // before any panel OnGUI) guarantees an open window is in the dock tree, so the
-    // leaf rect always comes from NativeRect().
     const float* native_rect = NativeRect();
     Vector2 pos(native_rect[0], native_rect[1]);
     Vector2 avail(native_rect[2], native_rect[3]);
@@ -408,10 +421,8 @@ void ZSlateHierarchyWindow::OnGUI()
     const UIRect region(pos.x, pos.y, avail.x, avail.y);
     const FGeometry geometry(Vector2(pos.x, pos.y), Vector2(avail.x, avail.y));
 
-    // P9: the native RHI backend paints into the shared BatchedUIRenderer (frame managed by
-    // ZSlateEditorOverlay around WindowUI::PreRender), clipped to this panel. The legacy
-    // per-window SlateImGuiRenderer fallback was retired.
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
+    if (m_Root != nullptr)
     {
         BatchedUIRenderer& renderer = overlay.GetRenderer();
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
@@ -424,12 +435,6 @@ void ZSlateHierarchyWindow::OnGUI()
         renderer.popClipRect();
     }
 
-    // P11a: input / hover / wheel come from the GLFW-backed EditorSlateHost (the
-    // transitional r.ZSlate.NativeInput CVar was retired in P10c, so the old
-    // ImGui::GetIO() fallback branches were dead and are gone). The panel
-    // registers its canvas as a Panels-layer surface so HoveredSurface can occlude
-    // it under a Foreground dropdown/popup -- the native equivalent of
-    // ImGui::IsItemHovered's focus semantics.
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
     host.BeginSurface(surface_id, region, ZSlate::ESurfaceLayer::Panels);
@@ -442,23 +447,12 @@ void ZSlateHierarchyWindow::OnGUI()
 
     if (m_Popup.IsOpen())
     {
-        // Paint the popup as a foreground overlay so it can overflow the panel
-        // like a real menu. Clamp to the native display rect (== the editor's
-        // full-window viewport work area).
         const UIRect viewport_rect(host.GetDisplayPos().x, host.GetDisplayPos().y,
                                    host.GetDisplaySize().x, host.GetDisplaySize().y);
-
-        {
-            // Append the popup into the shared batch after the panel content so it
-            // draws on top (the native overlay is composited after all ImGui).
-            m_Popup.Render(overlay.GetRenderer(), mouse, left_down, wheel, viewport_rect, 1);
-        }
+        m_Popup.Render(overlay.GetRenderer(), mouse, left_down, wheel, viewport_rect, 1);
     }
-    else
+    else if (m_Root != nullptr)
     {
-        // Normal tree routing. Reset pending context before routing so the row's
-        // OnRightClicked (fired on the up edge) lands in a clean slot.
-        m_HasPendingContext = false;
         m_Input.ProcessMouse(m_Root, mouse, over_canvas, left_down, wheel, right_down);
 
         if (right_up_edge && over_canvas)
@@ -467,6 +461,7 @@ void ZSlateHierarchyWindow::OnGUI()
                 OpenContextMenu(m_PendingContextObject, m_PendingContextPos, ui_scale);
             else
                 OpenContextMenu(k_invalid_gobject_id, mouse, ui_scale);
+            m_HasPendingContext = false;
         }
     }
 

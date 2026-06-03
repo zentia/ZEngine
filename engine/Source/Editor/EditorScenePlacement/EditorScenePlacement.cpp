@@ -8,7 +8,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Render/RenderSystem.h"
@@ -355,7 +355,7 @@ namespace EditorScenePlacement
         GameObject object_template;
         object_template.SetName(object_name.c_str());
 
-        TransformComponent* transform_component = MemoryManager::CreateObject<TransformComponent>();
+        Transform* transform_component = MemoryManager::CreateObject<Transform>();
         object_template.addComponent(transform_component);
 
         MeshRenderer* mesh_renderer = MemoryManager::CreateObject<MeshRenderer>();

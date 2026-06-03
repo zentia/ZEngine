@@ -5,7 +5,7 @@
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
 
 class GameObject;
-class TransformComponent;
+class Transform;
 
 // =====================================================================================
 // PrefabRefComponent (Runtime) — Phase 3a: Nested Prefab support.
@@ -18,7 +18,7 @@ class TransformComponent;
 //   2. Instantiates it via PrefabUtility::Instantiate (recursive — nested-of-nested
 //      works automatically).
 //   3. Reparents the instantiated subtree under the host GameObject's
-//      TransformComponent (worldPositionStays = false, so the host's local pose is
+//      Transform (worldPositionStays = false, so the host's local pose is
 //      respected by the nested root).
 //
 // Mirrors Unity's Nested Prefab concept (Editor/Src/Prefabs/PrefabInstance.cpp's
@@ -30,7 +30,7 @@ class TransformComponent;
 //   * m_ReferencedPrefab — PPtr<PrefabAsset> to the prefab to expand here.
 //
 // IMPORTANT: a PrefabRefComponent should be the ONLY component on its host
-// GameObject (besides its TransformComponent). Mixing other components on the host
+// GameObject (besides its Transform). Mixing other components on the host
 // works at runtime, but the editor's nested-prefab GUI assumes the install point
 // is "thin".
 // =====================================================================================

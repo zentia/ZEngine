@@ -66,7 +66,7 @@ bool Editor::Initialize()
         return false;
     }
 
-    registerEdtorTickComponent("TransformComponent");
+    registerEdtorTickComponent("Transform");
 
     registerEdtorTickComponent("MeshRenderer");
     registerEdtorTickComponent("SkinMeshRenderer");

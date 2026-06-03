@@ -53,6 +53,11 @@ public:
     void OnGUI() override;
     bool SupportsNativeHosting() const override { return true; }
 
+    // Poll BqLog's console buffer (LogSystem keeps buffer mode on) and merge into
+    // m_LogEntries. Called every frame from EditorUI::ProcessDeferredWork so logs
+    // keep flowing even when the Console tab is inactive or OnGUI is skipped.
+    static void PumpBufferedLogsIfOpen();
+
     static void BQ_STDCALL
     ConsoleCallback(uint64_t log_id, int32_t category_idx, bq::log_level log_level, const char* content, int32_t length);
 
@@ -69,6 +74,7 @@ private:
     void CloseMenu();
     void ExecuteCommand(const std::string& command);
     void DrainPending();
+    void PollConsoleBuffer();
     void BootstrapBufferedLogs();
     void FreeEntries(std::vector<LogEntry>& entries);
 

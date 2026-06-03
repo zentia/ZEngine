@@ -110,13 +110,17 @@ void SlateInputRouter::ProcessMouse(const std::shared_ptr<SWidget>& root,
     }
 
     // ---- Drag-drop gesture in flight: route to drop targets, not normal hover.
-    if (m_DragOp != nullptr)
+    // Cross-window drags publish the op to GActiveDragOperation(); only the source
+    // router owns m_DragOp, but any hovered panel can accept the drop.
+    const std::shared_ptr<FDragDropOperation> drag_op =
+        m_DragOp != nullptr ? m_DragOp : GetActiveDragOperation();
+    if (drag_op != nullptr)
     {
         // Find the deepest widget that accepts the operation as a drop target.
         SWidget* target = nullptr;
         for (auto it = new_path.rbegin(); it != new_path.rend(); ++it)
         {
-            if ((*it)->OnDragOver(mouse_screen, m_DragOp).IsHandled())
+            if ((*it)->OnDragOver(mouse_screen, drag_op).IsHandled())
             {
                 target = *it;
                 break;
@@ -125,17 +129,18 @@ void SlateInputRouter::ProcessMouse(const std::shared_ptr<SWidget>& root,
         if (target != m_DragOverTarget)
         {
             if (m_DragOverTarget != nullptr)
-                m_DragOverTarget->OnDragLeave(m_DragOp);
+                m_DragOverTarget->OnDragLeave(drag_op);
             if (target != nullptr)
-                target->OnDragEnter(m_DragOp);
+                target->OnDragEnter(drag_op);
             m_DragOverTarget = target;
         }
 
         if (!left_down && m_PrevLeftDown)
         {
             if (m_DragOverTarget != nullptr)
-                m_DragOverTarget->OnDrop(mouse_screen, m_DragOp);
-            EndDrag();
+                m_DragOverTarget->OnDrop(mouse_screen, drag_op);
+            if (m_DragOp != nullptr)
+                EndDrag();
         }
 
         m_PrevLeftDown = left_down;

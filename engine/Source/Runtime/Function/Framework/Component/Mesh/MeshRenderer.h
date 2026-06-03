@@ -11,5 +11,5 @@ public:
     MeshRenderer() = default;
 
 private:
-    GameObjectDesc BuildGameObjectDesc(const TransformComponent* transform_component) const override;
+    GameObjectDesc BuildGameObjectDesc(const Transform* transform_component) const override;
 };

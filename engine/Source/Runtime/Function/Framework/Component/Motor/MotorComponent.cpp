@@ -6,7 +6,7 @@
 #include "Runtime/Function/Controller/CharacterController.h"
 #include "Runtime/Function/Framework/Component/Animation/AnimationComponent.h"
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Input/InputSystem.h"
@@ -29,9 +29,9 @@ void MotorComponent::PostLoadResource(GameObject* parent_object)
         LOG_ERROR(ZMotor, "invalid controller type, not able to move");
     }
 
-    const TransformComponent* transform_component = parent_object->tryGetComponentConst(TransformComponent);
+    const Transform* transform_component = parent_object->tryGetComponentConst(Transform);
 
-    m_TargetPosition = transform_component->GetPosition();
+    m_TargetPosition = transform_component->GetLocalPosition();
 }
 
 void MotorComponent::GetOffStuckDead()
@@ -65,8 +65,8 @@ void MotorComponent::TickPlayerMotor(float delta_time)
     if (current_character->GetObjectID() != m_ParentObject->GetID())
         return;
 
-    TransformComponent* transform_component =
-        m_ParentObject->tryGetComponent<TransformComponent>("TransformComponent");
+    Transform* transform_component =
+        m_ParentObject->tryGetComponent<Transform>("Transform");
 
     Radian turn_angle_yaw = GET_SYSTEM(InputSystem)->m_CursorDeltaYaw;
 
@@ -77,11 +77,11 @@ void MotorComponent::TickPlayerMotor(float delta_time)
 
     CalculatedDesiredHorizontalMoveSpeed(command, delta_time);
     CalculatedDesiredVerticalMoveSpeed(command, delta_time);
-    CalculatedDesiredMoveDirection(command, transform_component->getRotation());
+    CalculatedDesiredMoveDirection(command, transform_component->GetLocalRotation());
     CalculateDesiredDisplacement(delta_time);
-    CalculateTargetPosition(transform_component->GetPosition());
+    CalculateTargetPosition(transform_component->GetLocalPosition());
 
-    transform_component->SetPosition(m_TargetPosition);
+    transform_component->SetLocalPosition(m_TargetPosition);
 }
 
 void MotorComponent::CalculatedDesiredHorizontalMoveSpeed(unsigned int command, float delta_time)

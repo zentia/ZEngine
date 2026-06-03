@@ -1,7 +1,7 @@
 #include "Runtime/Function/Render/RenderScene.h"
 
 #include "Runtime/Function/Framework/Component/Light/LightComponent.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Render/RenderHelper.h"
 #include "Runtime/Function/Render/RenderPass.h"
@@ -133,7 +133,7 @@ void RenderScene::SyncPointLightsFromLevel(Level* level)
         {
             continue;
         }
-        TransformComponent* transform = game_object->tryGetComponent(TransformComponent);
+        Transform* transform = game_object->tryGetComponent(Transform);
         if (transform == nullptr)
         {
             continue;

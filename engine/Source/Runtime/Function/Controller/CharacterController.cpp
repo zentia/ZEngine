@@ -1,5 +1,7 @@
 #include "Runtime/Function/Controller/CharacterController.h"
 
+#include "Runtime/Core/Math/LocalTransform.h"
+
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
@@ -16,7 +18,7 @@ void CharacterController::Initialize(const PPtr<Capsule> capsule)
     orientation.FromAngleAxis(Radian(Degree(90.f)), Vector3::UNIT_X);
 
     m_RigidbodyShape->m_LocalTransform =
-        Transform(Vector3(0, 0, capsule->m_HalfHeight + capsule->m_Radius), orientation, Vector3::UNIT_SCALE);
+        LocalTransform(Vector3(0, 0, capsule->m_HalfHeight + capsule->m_Radius), orientation, Vector3::UNIT_SCALE);
 }
 
 Vector3 CharacterController::move(const Vector3& current_position, const Vector3& displacement)
@@ -26,7 +28,7 @@ Vector3 CharacterController::move(const Vector3& current_position, const Vector3
 
     Vector3 final_position = current_position + displacement;
 
-    Transform final_transform = Transform(final_position, Quaternion::IDENTITY, Vector3::UNIT_SCALE);
+    LocalTransform final_transform = LocalTransform(final_position, Quaternion::IDENTITY, Vector3::UNIT_SCALE);
 
     if (physics_scene->IsOverlap(*m_RigidbodyShape, final_transform.getMatrix()))
     {

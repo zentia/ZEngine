@@ -2,7 +2,7 @@
 
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/Macro.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
@@ -10,7 +10,7 @@ void RigidBodyComponent::PostLoadResource(GameObject* parent_object)
 {
     m_ParentObject = parent_object;
 
-    const TransformComponent* parent_transform = m_ParentObject->tryGetComponentConst(TransformComponent);
+    const Transform* parent_transform = m_ParentObject->tryGetComponentConst(Transform);
     if (parent_transform == nullptr)
     {
         LOG_ERROR(ZRigidBody, "No transform component in the object");
@@ -20,7 +20,7 @@ void RigidBodyComponent::PostLoadResource(GameObject* parent_object)
     std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
     ASSERT(physics_scene);
 
-    m_RigidbodyId = physics_scene->CreateRigidBody(parent_transform->getTransformConst(), m_RigidbodyRes);
+    m_RigidbodyId = physics_scene->CreateRigidBody(parent_transform->GetLocalTransformConst(), m_RigidbodyRes);
 }
 
 RigidBodyComponent::~RigidBodyComponent()
@@ -31,7 +31,7 @@ RigidBodyComponent::~RigidBodyComponent()
     physics_scene->RemoveRigidBody(m_RigidbodyId);
 }
 
-void RigidBodyComponent::CreateRigidBody(const Transform& global_transform)
+void RigidBodyComponent::CreateRigidBody(const LocalTransform& global_transform)
 {
     std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
     ASSERT(physics_scene);
@@ -47,7 +47,7 @@ void RigidBodyComponent::RemoveRigidBody()
     physics_scene->RemoveRigidBody(m_RigidbodyId);
 }
 
-void RigidBodyComponent::UpdateGlobalTransform(const Transform& transform, bool is_scale_dirty)
+void RigidBodyComponent::UpdateGlobalTransform(const LocalTransform& transform, bool is_scale_dirty)
 {
     if (is_scale_dirty)
     {

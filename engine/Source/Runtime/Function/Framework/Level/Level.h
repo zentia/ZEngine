@@ -10,6 +10,7 @@ class CameraComponent;
 class Character;
 class ObjectInstanceRes;
 class PhysicsScene;
+#include "Runtime/Function/Framework/Component/Transform/TransformSceneRoots.h"
 
 using LevelObjectsMap = std::unordered_map<GObjectID, std::shared_ptr<GameObject>>;
 
@@ -40,6 +41,10 @@ public:
 
     std::weak_ptr<PhysicsScene> getPhysicsScene() const { return m_PhysicsScene; }
 
+    TransformSceneRoots& GetTransformSceneRoots() { return m_TransformSceneRoots; }
+    const TransformSceneRoots& GetTransformSceneRoots() const { return m_TransformSceneRoots; }
+    void RebuildAllTransformHierarchies();
+
 protected:
     void clear();
     void FlushRenderDeletes();
@@ -53,4 +58,6 @@ protected:
     std::shared_ptr<Character> m_CurrentActiveCharacter;
 
     std::weak_ptr<PhysicsScene> m_PhysicsScene;
+
+    TransformSceneRoots m_TransformSceneRoots;
 };

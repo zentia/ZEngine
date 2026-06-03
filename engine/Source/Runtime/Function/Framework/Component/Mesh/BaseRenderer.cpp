@@ -1,7 +1,8 @@
 #include "BaseRenderer.h"
 
 #include "Runtime/BaseClasses/GameObject.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
+#include "Runtime/Function/Framework/Component/Transform/TransformChangeDispatch.h"
 #include "Runtime/Function/Render/RenderSwapContext.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
@@ -21,6 +22,37 @@ INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(BaseRenderer)
 
 namespace
 {
+    void EnsureRendererTransformDispatchRegistered()
+    {
+        static bool registered = false;
+        if (registered)
+        {
+            return;
+        }
+        registered = true;
+
+        GetTransformChangeDispatch().RegisterBatchCallback(
+            Transform::GetRendererChangeSystem(),
+            [](const TransformChange* changes, size_t count)
+            {
+                for (size_t i = 0; i < count; ++i)
+                {
+                    Transform* transform_component = changes[i].access.hierarchy->transform_pointers[changes[i].access.index];
+                    if (transform_component == nullptr || transform_component->GetParentObject() == nullptr)
+                    {
+                        continue;
+                    }
+
+                    BaseRenderer* renderer = transform_component->GetParentObject()->tryGetComponent(BaseRenderer);
+                    if (renderer != nullptr)
+                    {
+                        renderer->RefreshRenderStateFromTransformDispatch();
+                        transform_component->setDirtyFlag(false);
+                    }
+                }
+            });
+    }
+
     bool shouldLogMaterialDebug(const eastl::string& material_asset)
     {
         return material_asset.find("white.material.json") != eastl::string::npos;
@@ -161,10 +193,23 @@ void BaseRenderer::MigrateLegacyMaterialAssets()
     }
 }
 
+void BaseRenderer::RefreshRenderStateFromTransformDispatch() const
+{
+    SubmitRenderState();
+}
+
 void BaseRenderer::PostLoadResource(GameObject* parent_object)
 {
     Component::PostLoadResource(parent_object);
     MigrateLegacyMaterialAssets();
+
+    EnsureRendererTransformDispatchRegistered();
+    if (Transform* transform_component = parent_object != nullptr ? parent_object->tryGetComponent(Transform) : nullptr)
+    {
+        transform_component->EnsureTransformHierarchyExists();
+        transform_component->SetDispatchInterested(Transform::GetRendererChangeSystem(), true);
+    }
+
     SubmitRenderState();
 }
 
@@ -178,9 +223,10 @@ void BaseRenderer::OnSerializedFieldsUpdated()
     }
 }
 
-std::vector<GameObjectPartDesc> BaseRenderer::BuildRenderParts(const TransformComponent* transform_component) const
+std::vector<GameObjectPartDesc> BaseRenderer::BuildRenderParts(const Transform* transform_component) const
 {
-    const Matrix4x4 object_transform = transform_component != nullptr ? transform_component->getMatrix() : Matrix4x4::IDENTITY;
+    const Matrix4x4 object_transform =
+        transform_component != nullptr ? transform_component->GetLocalToWorldMatrix() : Matrix4x4::IDENTITY;
 
     std::vector<GameObjectPartDesc> render_parts;
     render_parts.reserve(m_SubMeshes.size());
@@ -208,7 +254,7 @@ GameObjectDesc BaseRenderer::BuildGameObjectDescFromParts(const std::vector<Game
     return GameObjectDesc {m_ParentObject != nullptr ? m_ParentObject->GetID() : k_invalid_gobject_id, render_parts};
 }
 
-GameObjectDesc BaseRenderer::BuildGameObjectDesc(const TransformComponent* transform_component) const
+GameObjectDesc BaseRenderer::BuildGameObjectDesc(const Transform* transform_component) const
 {
     return BuildGameObjectDescFromParts(BuildRenderParts(transform_component));
 }
@@ -220,7 +266,7 @@ void BaseRenderer::SubmitRenderState() const
         return;
     }
 
-    const TransformComponent* transform_component = m_ParentObject->tryGetComponent(TransformComponent);
+    const Transform* transform_component = m_ParentObject->tryGetComponent(Transform);
 
     RenderSwapContext& render_swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
     render_swap_context.GetLogicSwapData().AddDirtyGameObject(BuildGameObjectDesc(transform_component));
@@ -235,7 +281,7 @@ void BaseRenderer::Tick(float delta_time)
         return;
     }
 
-    TransformComponent* transform_component = m_ParentObject->tryGetComponent(TransformComponent);
+    Transform* transform_component = m_ParentObject->tryGetComponent(Transform);
     if (transform_component == nullptr)
     {
         return;

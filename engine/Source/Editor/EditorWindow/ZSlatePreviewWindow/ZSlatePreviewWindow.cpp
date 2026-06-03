@@ -259,8 +259,18 @@ void ZSlatePreviewWindow::BuildMaterial(const std::filesystem::path& asset_path,
         return;
     }
 
-    Material material;
-    if (!LoadMaterialDefinitionForInspector(material, asset_path))
+    Material material_from_disk;
+    const Material* preview_material = nullptr;
+    const Material* live_material = nullptr;
+    if (TryGetInspectorLiveMaterialForPreview(asset_path, live_material))
+    {
+        preview_material = live_material;
+    }
+    else if (LoadMaterialDefinitionForInspector(material_from_disk, asset_path))
+    {
+        preview_material = &material_from_disk;
+    }
+    else
     {
         column->AddSlot(MakeText("Unable to load material asset.", 14.0f * scale, kDimColor)).AutoSize();
         m_Root = WrapPanel(column, scale);
@@ -269,7 +279,7 @@ void ZSlatePreviewWindow::BuildMaterial(const std::filesystem::path& asset_path,
 
     const uint32_t pixel_size =
         static_cast<uint32_t>(std::clamp(static_cast<int>(256.0f * scale + 0.5f), 128, 512));
-    const MaterialPreviewResult frame = RenderMaterialPreviewToTexture(material, pixel_size);
+    const MaterialPreviewResult frame = RenderMaterialPreviewToTexture(*preview_material, pixel_size);
     if (!frame.ok || frame.texture_handle == nullptr)
     {
         const std::string msg = frame.error.empty() ? "Material preview unavailable." : frame.error;
@@ -396,9 +406,13 @@ void ZSlatePreviewWindow::OnGUI()
     }
 
     const std::string asset_key = (kind == PreviewKind::None) ? std::string() : asset_path.generic_string();
+    const uint64_t material_preview_revision =
+        (kind == PreviewKind::Material) ? GetInspectorLiveMaterialPreviewRevision() : 0;
     const bool rebuild = m_ForceRebuild || (m_Root == nullptr) || (ui_scale != m_BuiltScale) ||
                          (kind != m_BuiltKind) || (asset_key != m_BuiltAssetPath) ||
-                         (kind == PreviewKind::Shader && shader_handle != m_BuiltShaderHandle);
+                         (kind == PreviewKind::Shader && shader_handle != m_BuiltShaderHandle) ||
+                         (kind == PreviewKind::Material &&
+                          material_preview_revision != m_BuiltMaterialPreviewRevision);
     if (rebuild)
     {
         m_ForceRebuild = false;
@@ -427,6 +441,7 @@ void ZSlatePreviewWindow::OnGUI()
         m_BuiltKind = kind;
         m_BuiltAssetPath = asset_key;
         m_BuiltShaderHandle = shader_handle;
+        m_BuiltMaterialPreviewRevision = material_preview_revision;
         m_Input.Reset();
     }
 

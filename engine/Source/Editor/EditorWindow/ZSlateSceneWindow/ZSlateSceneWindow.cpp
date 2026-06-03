@@ -403,7 +403,7 @@ void ZSlateSceneWindow::OpenContextMenu(const Vector2& anchor, float scale)
             GET_SYSTEM(RenderSystem)->SetSkyboxVisible(ViewportType::scene, !cur);
         }, s);
         menu.AddSeparator(s);
-        menu.AddItem("Save Current Level", []() { GET_SYSTEM(WorldManager)->SaveCurrentLevel(); }, s);
+        menu.AddItem("Save Scene    Ctrl+S", []() { GET_SYSTEM(WorldManager)->SaveCurrentLevel(); }, s);
         menu.AddItem("Reload Current Level", []() {
             GET_SYSTEM(WorldManager)->ReloadCurrentLevel();
             GET_SYSTEM(RenderSystem)->ClearForLevelReloading();

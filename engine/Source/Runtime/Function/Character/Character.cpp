@@ -2,7 +2,7 @@
 
 #include "Runtime/Application/Application.h"
 #include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Input/InputSystem.h"
 
 Character::Character(std::shared_ptr<GameObject> character_object)
@@ -25,10 +25,10 @@ void Character::SetObject(std::shared_ptr<GameObject> gobject)
     m_CharacterObject = gobject;
     if (m_CharacterObject)
     {
-        const TransformComponent* transform_component = m_CharacterObject->tryGetComponentConst(TransformComponent);
+        const Transform* transform_component = m_CharacterObject->tryGetComponentConst(Transform);
         if (transform_component)
         {
-            const Transform& transform = transform_component->getTransformConst();
+            const LocalTransform& transform = transform_component->GetLocalTransformConst();
             m_Position = transform.m_Position;
             m_Rotation = transform.m_Rotation;
         }
@@ -54,11 +54,11 @@ void Character::Tick(float delta_time)
         }
     }
 
-    TransformComponent* transform_component = m_CharacterObject->tryGetComponent(TransformComponent);
+    Transform* transform_component = m_CharacterObject->tryGetComponent(Transform);
 
     if (m_RotationDirty)
     {
-        transform_component->SetRotation(m_RotationBuffer);
+        transform_component->SetLocalRotation(m_RotationBuffer);
         m_RotationDirty = false;
     }
 
@@ -71,7 +71,7 @@ void Character::Tick(float delta_time)
     if (motor_component->getIsMoving())
     {
         m_RotationBuffer = m_Rotation;
-        transform_component->SetRotation(m_RotationBuffer);
+        transform_component->SetLocalRotation(m_RotationBuffer);
         m_RotationDirty = true;
     }
 

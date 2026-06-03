@@ -7,7 +7,9 @@
 
 #include <string>
 
-class Texture2D; of one editable material property row, shared by the
+class Texture2D;
+
+// Description of one editable material property row, shared by the
 // legacy ImGui drawer and the native ZSlate inspector. Each row carries the row
 // kind plus raw pointers into the live Material fields/property structs, so a
 // UI layer can render an editor widget and write back without duplicating the

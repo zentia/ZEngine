@@ -10,7 +10,7 @@
 // same orientation across both the ImGui and ZSlate inspectors.
 //
 // The "hint" map keys a remembered euler triple by an opaque pointer (the
-// TransformComponent address). It prevents the displayed degrees from jumping
+// Transform address). It prevents the displayed degrees from jumping
 // when a rotation can be expressed by multiple euler triples (gimbal aliasing):
 // while the stored rotation still matches, GetEulerHint returns the last
 // user-entered degrees instead of re-deriving a (possibly different) triple.

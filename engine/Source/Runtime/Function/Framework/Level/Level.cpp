@@ -4,7 +4,6 @@
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Core/Base/Macro.h"
-#include "Runtime/Core/JsonSerialize/JSONWrite.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Character/Character.h"
 #include "Runtime/Function/Particle/ParticleManager.h"
@@ -13,91 +12,91 @@
 #include "Runtime/Function/Render/RenderObject.h"
 #include "Runtime/Function/Render/RenderSwapContext.h"
 #include "Runtime/Function/Render/RenderSystem.h"
+#include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Common/Level.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
+#include "Runtime/Function/Framework/Component/Transform/TransformChangeDispatch.h"
+#include "Runtime/Function/Framework/Component/Transform/TransformSceneRoots.h"
 
-#include <fstream>
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <limits>
 #include <memory>
-#include <sstream>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace
 {
-    std::string EscapeJSONString(const char* value)
+    std::string LowerExtension(const std::filesystem::path& path)
     {
-        std::string result;
-        if (value == nullptr)
+        std::string extension = path.extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return extension;
+    }
+
+    std::filesystem::path ResolveLevelLoadPath(const eastl::string& level_url)
+    {
+        AssetManager* asset_manager = GET_SYSTEM(AssetManager).get();
+        if (asset_manager == nullptr)
         {
-            return result;
+            return {};
         }
 
-        for (const char* c = value; *c != '\0'; ++c)
+        const std::filesystem::path rel(level_url.c_str());
+        if (rel.is_absolute())
         {
-            switch (*c)
+            return rel.lexically_normal();
+        }
+
+        if (const auto project_info = GET_SYSTEM(ProjectInfo))
+        {
+            const std::filesystem::path project_content = project_info->GetProjectContent();
+            if (!project_content.empty())
             {
-                case '\\':
-                    result += "\\\\";
-                    break;
-                case '"':
-                    result += "\\\"";
-                    break;
-                case '\n':
-                    result += "\\n";
-                    break;
-                case '\r':
-                    result += "\\r";
-                    break;
-                case '\t':
-                    result += "\\t";
-                    break;
-                default:
-                    result += *c;
-                    break;
+                std::error_code ec;
+                const std::filesystem::path project_path =
+                    std::filesystem::absolute(project_content / rel, ec).lexically_normal();
+                if (std::filesystem::exists(project_path, ec))
+                {
+                    return project_path;
+                }
             }
         }
-        return result;
+
+        return asset_manager->GetFullPath(level_url);
     }
 
-    void WriteIndent(std::ostream& output, int indent)
+    std::filesystem::path ResolveLevelSavePath(const eastl::string& level_url)
     {
-        for (int i = 0; i < indent; ++i)
+        AssetManager* asset_manager = GET_SYSTEM(AssetManager).get();
+        if (asset_manager == nullptr)
         {
-            output << ' ';
+            return {};
         }
-    }
 
-    void WriteJSONKeyString(std::ostream& output, const char* key, const char* value, int indent, bool trailing_comma)
-    {
-        WriteIndent(output, indent);
-        output << "\"" << key << "\": \"" << EscapeJSONString(value) << "\"";
-        if (trailing_comma)
+        std::filesystem::path level_path = asset_manager->ResolveProjectContentPath(level_url);
+        const std::string extension = LowerExtension(level_path);
+        if (extension == ".json")
         {
-            output << ',';
+            // Legacy engine paths like asset/level/1-1.level.json -> Assets/.../1-1.scene
+            const std::filesystem::path stem_path = level_path.stem();
+            if (LowerExtension(stem_path) == ".level")
+            {
+                level_path = level_path.parent_path() / (stem_path.stem().string() + ".scene");
+            }
+            else
+            {
+                level_path.replace_extension(".scene");
+            }
         }
-        output << '\n';
-    }
 
-    template<typename T>
-    std::string SerializeValueToJSON(T& value)
-    {
-        JSONWrite writer(kNoTransferInstructionFlags);
-        JSONSerializeTraits<T>::Transfer(value, writer);
-        eastl::string output;
-        writer.OutputToString(output);
-        return output.c_str();
+        return level_path;
     }
-
-    std::string SerializeObjectToJSON(Object& object)
-    {
-        JSONWrite writer(kNoTransferInstructionFlags);
-        object.VirtualRedirectTransfer(writer);
-        eastl::string output;
-        writer.OutputToString(output);
-        return output.c_str();
-    }
-
 }  // namespace
 
 void Level::FlushRenderDeletes()
@@ -123,6 +122,7 @@ void Level::FlushRenderDeletes()
 void Level::clear()
 
 {
+    m_TransformSceneRoots.Clear();
     m_CurrentActiveCharacter.reset();
     m_Gobjects.clear();
 
@@ -169,8 +169,8 @@ bool Level::load(const eastl::string& levelPath)
 
     m_LevelResUrl = levelPath;
 
-    const std::filesystem::path level_full_path = GET_SYSTEM(AssetManager)->GetFullPath(levelPath);
-    if (level_full_path.extension() == ".scene")
+    const std::filesystem::path level_full_path = ResolveLevelLoadPath(levelPath);
+    if (LowerExtension(level_full_path) == ".scene")
     {
         std::vector<std::pair<int64_t, Object*>> entries;
         if (!GET_SYSTEM(AssetManager)->ReadObjectsFromYaml(level_full_path, entries))
@@ -221,6 +221,7 @@ bool Level::load(const eastl::string& levelPath)
         }
 
         m_IsLoaded = true;
+        RebuildAllTransformHierarchies();
         LOG_INFO(ZLevel, "level load succeed (yaml)");
         return true;
     }
@@ -254,6 +255,7 @@ bool Level::load(const eastl::string& levelPath)
     }
 
     m_IsLoaded = true;
+    RebuildAllTransformHierarchies();
 
     LOG_INFO(ZLevel, "level load succeed");
 
@@ -292,9 +294,22 @@ bool Level::save()
         saved_objects.emplace_back(std::move(saved_object));
     }
 
+    AssetManager* asset_manager = GET_SYSTEM(AssetManager).get();
+    if (asset_manager == nullptr)
+    {
+        LOG_ERROR(ZLevel, "failed to save {}, AssetManager unavailable", m_LevelResUrl.c_str());
+        return false;
+    }
+
+    const std::filesystem::path level_path = ResolveLevelSavePath(m_LevelResUrl);
+    if (level_path.empty())
+    {
+        LOG_ERROR(ZLevel, "failed to resolve save path for {}", m_LevelResUrl.c_str());
+        return false;
+    }
+
     bool is_save_success = false;
-    const std::filesystem::path level_path = GET_SYSTEM(AssetManager)->GetFullPath(m_LevelResUrl);
-    if (level_path.extension() == ".scene")
+    if (LowerExtension(level_path) == ".scene")
     {
         // YAML multi-object graph: a LevelRes header (fileID 1) carrying scene
         // settings, then every live GameObject and its Components as their own
@@ -339,94 +354,23 @@ bool Level::save()
             }
         }
 
-        is_save_success = GET_SYSTEM(AssetManager)
-                              ->WriteObjectsToYaml(level_path, graph_objects.data(), graph_ids.data(), graph_objects.size());
+        is_save_success =
+            asset_manager->WriteObjectsToYaml(level_path, graph_objects.data(), graph_ids.data(), graph_objects.size());
 
         MemoryManager::DestroyObject(header);
     }
-    else if (level_path.extension() == ".json")
-    {
-        std::ofstream output(level_path);
-        if (!output)
-        {
-            LOG_ERROR(ZLevel, "failed to open level file for writing {}", level_path.string());
-            is_save_success = false;
-        }
-        else
-        {
-            output << "{\n";
-            WriteIndent(output, 2);
-            output << "\"gravity\": " << SerializeValueToJSON(output_level_res.m_Gravity) << ",\n";
-
-            WriteJSONKeyString(output, "character_name", output_level_res.m_CharacterName.c_str(), 2, true);
-            WriteIndent(output, 2);
-            output << "\"objects\": [\n";
-            for (size_t object_index = 0; object_index < output_objects.size(); ++object_index)
-            {
-                GameObject* object = output_objects[object_index];
-                if (object == nullptr)
-                {
-                    continue;
-                }
-
-                WriteIndent(output, 4);
-                output << "{\n";
-                WriteJSONKeyString(output, "name", object->GetName().c_str(), 6, true);
-                WriteIndent(output, 6);
-                output << "\"instanced_components\": [\n";
-                std::vector<ImmediatePtr<Component>> components = object->getComponents();
-                for (size_t component_index = 0; component_index < components.size(); ++component_index)
-                {
-                    Component* component = components[component_index];
-                    if (component == nullptr)
-                    {
-                        continue;
-                    }
-
-                    WriteIndent(output, 8);
-                    output << "{\n";
-                    WriteJSONKeyString(output, "$typeName", component->GetTypeName(), 10, true);
-                    WriteIndent(output, 10);
-                    output << "\"$context\": " << SerializeObjectToJSON(*component) << '\n';
-                    WriteIndent(output, 8);
-                    output << "}";
-                    if (component_index + 1 < components.size())
-                    {
-                        output << ',';
-                    }
-                    output << '\n';
-                }
-                WriteIndent(output, 6);
-                output << "],\n";
-                WriteJSONKeyString(output, "definition", object->getDefinitionUrl().c_str(), 6, false);
-                WriteIndent(output, 4);
-                output << "}";
-                if (object_index + 1 < output_objects.size())
-                {
-                    output << ',';
-                }
-                output << '\n';
-            }
-            WriteIndent(output, 2);
-            output << "]\n";
-            output << "}\n";
-            output.flush();
-            is_save_success = true;
-        }
-    }
     else
     {
-        is_save_success = GET_SYSTEM(AssetManager)->saveAsset(output_level_res, m_LevelResUrl);
+        is_save_success = asset_manager->WriteObjectToDiskThreadSafe(level_path, output_level_res);
     }
 
     if (!is_save_success)
-
     {
-        LOG_ERROR(ZLevel, "failed to save {}", m_LevelResUrl.c_str());
+        LOG_ERROR(ZLevel, "failed to save {}", level_path.generic_string());
     }
     else
     {
-        LOG_INFO(ZLevel, "level save succeed");
+        LOG_INFO(ZLevel, "level save succeed -> {}", level_path.generic_string());
     }
 
     return is_save_success;
@@ -456,6 +400,40 @@ void Level::Tick(float delta_time)
     if (physics_scene)
     {
         physics_scene->Tick(delta_time);
+    }
+
+    GetTransformChangeDispatch().DispatchChanges();
+}
+
+void Level::RebuildAllTransformHierarchies()
+{
+    m_TransformSceneRoots.Clear();
+
+    std::unordered_set<Transform*> rebuilt_roots;
+    for (const auto& id_object_pair : m_Gobjects)
+    {
+        const std::shared_ptr<GameObject>& gobject = id_object_pair.second;
+        if (gobject == nullptr)
+        {
+            continue;
+        }
+
+        Transform* transform = gobject->tryGetComponent(Transform);
+        if (transform == nullptr)
+        {
+            continue;
+        }
+
+        if (transform->GetParent() == nullptr)
+        {
+            m_TransformSceneRoots.OnTransformBecameRoot(transform);
+        }
+
+        Transform* root = transform->GetRoot();
+        if (root != nullptr && rebuilt_roots.insert(root).second)
+        {
+            root->RebuildTransformHierarchy();
+        }
     }
 }
 

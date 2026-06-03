@@ -42,7 +42,7 @@
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 #include "Runtime/Core/YamlSerialize/YAMLUtility.h"
 #include "Runtime/Core/YamlSerialize/YamlObjectGraph.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/RegisterRuntime.h"
 #include "Runtime/Resource/Asset/RuntimeAssetManager.h"
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
@@ -251,13 +251,13 @@ static void scenario_Y4_tricky_strings()
 
 // ---------------------------------------------------------------------
 // Y5: multi-object graph round-trip (the scene / prefab path).
-// Produces a GameObject + a TransformComponent through ObjectManager so
+// Produces a GameObject + a Transform through ObjectManager so
 // both have valid InstanceIDs, links them via the ImmediatePtr container,
 // then exercises WriteObjectGraph -> YAML -> ReadObjectGraph and asserts:
 //   - both objects are produced back by their class-name tag,
 //   - the GameObject's name survived (GameObject::Transfer),
 //   - the GameObject's component ImmediatePtr resolved to a *new*
-//     TransformComponent in the read graph (local fileID ref + the
+//     Transform in the read graph (local fileID ref + the
 //     IPPtrResolver + ImmediatePtr::Transfer round-trip).
 // ---------------------------------------------------------------------
 static void scenario_Y5_object_graph()
@@ -272,10 +272,10 @@ static void scenario_Y5_object_graph()
     }
 
     GameObject* go = static_cast<GameObject*>(om->Produce(TypeOf<GameObject>(), 0));
-    TransformComponent* tc = static_cast<TransformComponent*>(om->Produce(TypeOf<TransformComponent>(), 0));
+    Transform* tc = static_cast<Transform*>(om->Produce(TypeOf<Transform>(), 0));
     if (go == nullptr || tc == nullptr)
     {
-        Check(false, "Y5", "failed to Produce GameObject / TransformComponent");
+        Check(false, "Y5", "failed to Produce GameObject / Transform");
         return;
     }
     om->AllocateAndAssignInstanceID(go);
@@ -327,8 +327,8 @@ static void scenario_Y5_object_graph()
     if (comps.size() == 1)
     {
         Component* c = comps[0];
-        Check(c != nullptr && c->GetType() == TypeOf<TransformComponent>(), "Y5",
-              "resolved component is not a TransformComponent");
+        Check(c != nullptr && c->GetType() == TypeOf<Transform>(), "Y5",
+              "resolved component is not a Transform");
     }
 }
 
@@ -336,7 +336,7 @@ static void scenario_Y5_object_graph()
 // Y6: prefab graph round-trip (the .prefab path). Mirrors
 // PrefabUtility::SaveAsPrefabAsset's flattened object list: a PrefabAsset
 // header (fileID 1) whose m_RootGameObject ImmediatePtr points at the root
-// GameObject, plus the GameObject + its TransformComponent. Verifies:
+// GameObject, plus the GameObject + its Transform. Verifies:
 //   - PrefabAsset produced back, m_RootGameObject ImmediatePtr resolved,
 //   - the resolved root is the same-fileID GameObject (not the source one).
 // ---------------------------------------------------------------------
@@ -353,10 +353,10 @@ static void scenario_Y6_prefab_graph()
 
     PrefabAsset* prefab = static_cast<PrefabAsset*>(om->Produce(TypeOf<PrefabAsset>(), 0));
     GameObject* root = static_cast<GameObject*>(om->Produce(TypeOf<GameObject>(), 0));
-    TransformComponent* tc = static_cast<TransformComponent*>(om->Produce(TypeOf<TransformComponent>(), 0));
+    Transform* tc = static_cast<Transform*>(om->Produce(TypeOf<Transform>(), 0));
     if (prefab == nullptr || root == nullptr || tc == nullptr)
     {
-        Check(false, "Y6", "failed to Produce PrefabAsset / GameObject / TransformComponent");
+        Check(false, "Y6", "failed to Produce PrefabAsset / GameObject / Transform");
         return;
     }
     om->AllocateAndAssignInstanceID(prefab);
@@ -413,8 +413,8 @@ static void scenario_Y6_prefab_graph()
 // ---------------------------------------------------------------------
 // Y7: multi-LEVEL Transform hierarchy round-trip (root -> child ->
 // grandchild). This is the serialization half of the PrefabPostLoadDriver
-// multi-level fix: each level is its own GameObject + TransformComponent,
-// linked through PPtr<TransformComponent> m_Children / m_Parent. After the
+// multi-level fix: each level is its own GameObject + Transform,
+// linked through PPtr<Transform> m_Children / m_Parent. After the
 // graph round-trip we assert the full 3-deep chain resolves back, proving
 // the child-Transform PPtr sequence (not just a single level) survives and
 // that the driver's owner map can therefore reach grandchildren.
@@ -431,15 +431,15 @@ static void scenario_Y7_multilevel_hierarchy()
     }
 
     GameObject* gos[3] = {nullptr, nullptr, nullptr};
-    TransformComponent* tcs[3] = {nullptr, nullptr, nullptr};
+    Transform* tcs[3] = {nullptr, nullptr, nullptr};
     const char* names[3] = {"Root", "Child", "Grandchild"};
     for (int i = 0; i < 3; ++i)
     {
         gos[i] = static_cast<GameObject*>(om->Produce(TypeOf<GameObject>(), 0));
-        tcs[i] = static_cast<TransformComponent*>(om->Produce(TypeOf<TransformComponent>(), 0));
+        tcs[i] = static_cast<Transform*>(om->Produce(TypeOf<Transform>(), 0));
         if (gos[i] == nullptr || tcs[i] == nullptr)
         {
-            Check(false, "Y7", "failed to Produce GameObject / TransformComponent");
+            Check(false, "Y7", "failed to Produce GameObject / Transform");
             return;
         }
         om->AllocateAndAssignInstanceID(gos[i]);
@@ -493,19 +493,19 @@ static void scenario_Y7_multilevel_hierarchy()
     if (read_root == nullptr)
         return;
 
-    TransformComponent* root_tc = read_root->tryGetComponent(TransformComponent);
-    Check(root_tc != nullptr, "Y7", "root TransformComponent did not resolve");
+    Transform* root_tc = read_root->tryGetComponent(Transform);
+    Check(root_tc != nullptr, "Y7", "root Transform did not resolve");
     if (root_tc == nullptr)
         return;
 
     Check(root_tc->GetChildCount() == 1, "Y7", "root should have exactly 1 child Transform");
-    TransformComponent* child_tc = root_tc->GetChild(0);
+    Transform* child_tc = root_tc->GetChild(0);
     Check(child_tc != nullptr, "Y7", "child Transform PPtr did not resolve");
     if (child_tc == nullptr)
         return;
 
     Check(child_tc->GetChildCount() == 1, "Y7", "child should have exactly 1 grandchild Transform");
-    TransformComponent* grandchild_tc = child_tc->GetChild(0);
+    Transform* grandchild_tc = child_tc->GetChild(0);
     Check(grandchild_tc != nullptr, "Y7", "grandchild Transform PPtr did not resolve (depth-2 link lost)");
     if (grandchild_tc != nullptr)
     {
@@ -517,7 +517,7 @@ static void scenario_Y7_multilevel_hierarchy()
 // Y8: DISK round-trip through the real AssetManager scene API. Mirrors
 // Level::save / Level::load exactly: a LevelRes header (fileID 1, carrying
 // gravity + character name) followed by a multi-level GameObject hierarchy
-// (root->child->grandchild) and each GameObject's TransformComponent, written
+// (root->child->grandchild) and each GameObject's Transform, written
 // to a temp .scene file via AssetManager::WriteObjectsToYaml and read back via
 // ReadObjectsFromYaml. Proves the full editor save/load path -- file I/O +
 // the writer/reader external-ref hooks (no externals here, so they no-op) +
@@ -546,15 +546,15 @@ static void scenario_Y8_assetmanager_disk_roundtrip()
     header->m_CharacterName = "Hero";
 
     GameObject* gos[3] = {nullptr, nullptr, nullptr};
-    TransformComponent* tcs[3] = {nullptr, nullptr, nullptr};
+    Transform* tcs[3] = {nullptr, nullptr, nullptr};
     const char* names[3] = {"SceneRoot", "SceneChild", "SceneGrandchild"};
     for (int i = 0; i < 3; ++i)
     {
         gos[i] = static_cast<GameObject*>(om->Produce(TypeOf<GameObject>(), 0));
-        tcs[i] = static_cast<TransformComponent*>(om->Produce(TypeOf<TransformComponent>(), 0));
+        tcs[i] = static_cast<Transform*>(om->Produce(TypeOf<Transform>(), 0));
         if (gos[i] == nullptr || tcs[i] == nullptr)
         {
-            Check(false, "Y8", "failed to Produce GameObject / TransformComponent");
+            Check(false, "Y8", "failed to Produce GameObject / Transform");
             return;
         }
         om->AllocateAndAssignInstanceID(gos[i]);
@@ -641,11 +641,11 @@ static void scenario_Y8_assetmanager_disk_roundtrip()
     Check(read_root != nullptr, "Y8", "read SceneRoot GameObject not found");
     if (read_root != nullptr)
     {
-        TransformComponent* root_tc = read_root->tryGetComponent(TransformComponent);
-        Check(root_tc != nullptr, "Y8", "root TransformComponent did not resolve from disk");
+        Transform* root_tc = read_root->tryGetComponent(Transform);
+        Check(root_tc != nullptr, "Y8", "root Transform did not resolve from disk");
         if (root_tc != nullptr && root_tc->GetChildCount() == 1)
         {
-            TransformComponent* child_tc = root_tc->GetChild(0);
+            Transform* child_tc = root_tc->GetChild(0);
             Check(child_tc != nullptr && child_tc->GetChildCount() == 1, "Y8",
                   "child->grandchild link lost across disk round-trip");
         }

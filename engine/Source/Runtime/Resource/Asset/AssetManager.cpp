@@ -13,6 +13,7 @@
 #include "Runtime/Core/YamlSerialize/YamlObjectGraph.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
+#include "Runtime/Resource/ResType/Data/Material.h"
 
 #include <algorithm>
 #include <cctype>
@@ -114,18 +115,89 @@ namespace
         return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
     }
 
+    std::filesystem::path NormalizeAuthoringWritePath(const std::filesystem::path& path, const Object& object)
+    {
+        if (object.GetType() == TypeOf<Material>())
+        {
+            std::filesystem::path mat_path = path;
+            mat_path.replace_extension(".mat");
+            return mat_path;
+        }
+        return path;
+    }
+
+    std::filesystem::path ResolveExternalAssetPath(const std::string& stored_path)
+    {
+        if (stored_path.empty())
+        {
+            return {};
+        }
+
+        std::error_code ec;
+        std::filesystem::path candidate(stored_path);
+        if (candidate.is_absolute())
+        {
+            const std::filesystem::path abs = candidate.lexically_normal();
+            if (std::filesystem::exists(abs, ec))
+            {
+                return abs;
+            }
+        }
+
+        if (const auto project = GET_SYSTEM(ProjectInfo))
+        {
+            const std::filesystem::path root = project->GetProjectRoot();
+            if (!root.empty())
+            {
+                const std::filesystem::path from_root =
+                    (std::filesystem::absolute(root, ec) / candidate).lexically_normal();
+                if (std::filesystem::exists(from_root, ec))
+                {
+                    return from_root;
+                }
+            }
+        }
+
+        if (std::filesystem::exists(candidate, ec))
+        {
+            return candidate.lexically_normal();
+        }
+
+        return {};
+    }
+
+    std::string StoreExternalAssetPath(const std::filesystem::path& absolute_path)
+    {
+        std::error_code ec;
+        const std::filesystem::path normalized =
+            std::filesystem::absolute(absolute_path, ec).lexically_normal();
+
+        if (const auto project = GET_SYSTEM(ProjectInfo))
+        {
+            const std::filesystem::path root = project->GetProjectRoot();
+            if (!root.empty())
+            {
+                const std::filesystem::path abs_root =
+                    std::filesystem::absolute(root, ec).lexically_normal();
+                const std::filesystem::path rel = normalized.lexically_relative(abs_root);
+                const std::string rel_str = rel.generic_string();
+                if (!rel_str.empty() && rel_str != "." && rel_str.rfind("..", 0) != 0)
+                {
+                    return rel_str;
+                }
+            }
+        }
+
+        return normalized.generic_string();
+    }
+
     ZYaml::GraphReaderExternHook MakeYamlReaderHook(AssetManager* self)
     {
         return [self](const FileIdentifier& ref, int64_t pathID) -> int32_t {
             std::filesystem::path target_path;
             if (!ref.pathName.empty())
             {
-                std::error_code ec;
-                std::filesystem::path candidate(ref.pathName);
-                if (std::filesystem::exists(candidate, ec))
-                {
-                    target_path = std::move(candidate);
-                }
+                target_path = ResolveExternalAssetPath(ref.pathName);
             }
             if (target_path.empty() && !ref.guid.empty())
             {
@@ -240,6 +312,28 @@ std::filesystem::path AssetManager::GetFullPath(const eastl::string& relative_pa
     }
 
     return engine_path;
+}
+
+std::filesystem::path AssetManager::ResolveProjectContentPath(const eastl::string& relative_path) const
+{
+    const std::filesystem::path rel(relative_path.c_str());
+    if (rel.is_absolute())
+    {
+        return std::filesystem::absolute(rel).lexically_normal();
+    }
+
+    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    if (project_info != nullptr)
+    {
+        const std::filesystem::path project_content = project_info->GetProjectContent();
+        if (!project_content.empty())
+        {
+            std::error_code ec;
+            return std::filesystem::absolute(project_content / rel, ec).lexically_normal();
+        }
+    }
+
+    return GetFullPath(relative_path);
 }
 
 std::filesystem::path AssetManager::GetEditorResourcePath(const std::string& relative_path) const
@@ -742,10 +836,7 @@ Object* AssetManager::ReadObject(std::filesystem::path& path, const Type* type)
         std::filesystem::path target_path;
         if (!ref.pathName.empty())
         {
-            std::error_code ec;
-            std::filesystem::path candidate(ref.pathName);
-            if (std::filesystem::exists(candidate, ec))
-                target_path = std::move(candidate);
+            target_path = ResolveExternalAssetPath(ref.pathName);
         }
         if (target_path.empty() && !ref.guid.empty())
         {
@@ -801,8 +892,22 @@ void AssetManager::UnloadStream(const std::filesystem::path& path)
 
 bool AssetManager::WriteObjectToDiskThreadSafe(const std::filesystem::path& path, Object& object)
 {
+    const std::filesystem::path write_path = NormalizeAuthoringWritePath(path, object);
+    if (write_path != path && object.GetType() == TypeOf<Material>())
+    {
+        LOG_INFO(ZAsset,
+                 "Material assets are YAML (.mat); redirecting write from {} to {}",
+                 path.generic_string(),
+                 write_path.generic_string());
+    }
+
     Object* objects[] = {&object};
-    return WriteObjectsToDiskThreadSafe(path, objects, nullptr, 1);
+    const int64_t file_ids[] = {1};
+    if (IsYamlAuthoringAssetPath(write_path))
+    {
+        return WriteObjectsToYaml(write_path, objects, file_ids, 1);
+    }
+    return WriteObjectsToDiskThreadSafe(write_path, objects, file_ids, 1);
 }
 
 bool AssetManager::WriteObjectToDiskWithGuid(const std::filesystem::path& path, Object& object, const std::string& guid)
@@ -845,7 +950,7 @@ bool AssetManager::WriteObjectsToYaml(const std::filesystem::path& path, Object*
 
         outRef.guid = std::move(guid);
         outRef.type = std::move(asset_type);
-        outRef.pathName = target_path.lexically_normal().generic_string();
+        outRef.pathName = StoreExternalAssetPath(target_path);
         outPathID = target_lfid;
         return true;
     };

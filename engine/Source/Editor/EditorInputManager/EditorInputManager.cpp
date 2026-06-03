@@ -232,6 +232,10 @@ void EditorInputManager::OnKeyInEditorMode(int key, int scancode, int action, in
                 m_EditorCommand |= (unsigned int)EditorCommand::camera_left;
                 break;
             case GLFW_KEY_S:
+                if ((mods & GLFW_MOD_CONTROL) || (mods & GLFW_MOD_SUPER))
+                {
+                    break;
+                }
                 m_EditorCommand |= (unsigned int)EditorCommand::camera_back;
                 break;
             case GLFW_KEY_D:
@@ -345,6 +349,16 @@ void EditorInputManager::OnKey(int key, int scancode, int action, int mods)
             case GLFW_KEY_F10:
                 GET_SYSTEM(Editor)->RequestStepFrame();
                 return;
+            case GLFW_KEY_S:
+                if (g_isEditorMode && ((mods & GLFW_MOD_CONTROL) || (mods & GLFW_MOD_SUPER)))
+                {
+                    if (auto world = GET_SYSTEM(WorldManager))
+                    {
+                        world->SaveCurrentLevel();
+                    }
+                    return;
+                }
+                break;
             default:
                 break;
         }

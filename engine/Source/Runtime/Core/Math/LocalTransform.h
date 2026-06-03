@@ -3,19 +3,21 @@
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
-#include "Runtime/Function/Framework/Component/Component.h"
 
-class Transform
+// Serializable local TRS (position / rotation / scale). Used by mesh sub-assets,
+// rigid-body shapes, skeleton binding poses, and the Transform component's
+// serialized "transform" field. Not the scene-graph Component (see Transform.h).
+class LocalTransform
 {
 public:
-    DECLARE_SERIALIZE(Transform);
+    DECLARE_SERIALIZE(LocalTransform);
 
     Vector3 m_Position {Vector3::ZERO};
     Vector3 m_Scale {Vector3::UNIT_SCALE};
     Quaternion m_Rotation {Quaternion::IDENTITY};
 
-    Transform() = default;
-    Transform(const Vector3& position, const Quaternion& rotation, const Vector3& scale)
+    LocalTransform() = default;
+    LocalTransform(const Vector3& position, const Quaternion& rotation, const Vector3& scale)
         : m_Position {position}, m_Scale {scale}, m_Rotation {rotation}
     {
     }
@@ -29,7 +31,7 @@ public:
 };
 
 template<typename TransferFunction>
-void Transform::Transfer(TransferFunction& transfer)
+void LocalTransform::Transfer(TransferFunction& transfer)
 {
     transfer.Transfer(m_Position, "m_position");
     transfer.Transfer(m_Scale, "m_scale");

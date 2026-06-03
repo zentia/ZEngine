@@ -6,7 +6,7 @@
 #include "Runtime/Core/Math/MathHeaders.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Character/Character.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Input/InputSystem.h"
@@ -192,10 +192,10 @@ void CameraComponent::ApplyToGameRenderCamera(RenderCamera& render_camera) const
 
     if (!use_runtime_camera_pose && m_ParentObject != nullptr)
     {
-        const TransformComponent* transform_component = m_ParentObject->tryGetComponentConst(TransformComponent);
+        const Transform* transform_component = m_ParentObject->tryGetComponentConst(Transform);
         if (transform_component != nullptr)
         {
-            const Quaternion rotation = transform_component->getRotation();
+            const Quaternion rotation = transform_component->GetRotation();
             position = transform_component->GetPosition();
             forward = rotation * Vector3::NEGATIVE_UNIT_Y;
             up = rotation * Vector3::UNIT_Z;

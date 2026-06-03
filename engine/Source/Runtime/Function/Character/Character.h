@@ -1,7 +1,6 @@
 #pragma once
 
 #include "Runtime/BaseClasses/GameObject.h"
-#include "Runtime/Core/Math/Transform.h"
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 
 #include <vector>

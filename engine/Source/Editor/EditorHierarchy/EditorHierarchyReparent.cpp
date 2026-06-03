@@ -2,7 +2,7 @@
 
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/Macro.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 
 namespace EditorHierarchyReparent
@@ -14,13 +14,13 @@ namespace EditorHierarchyReparent
             return k_invalid_gobject_id;
         }
 
-        TransformComponent* transform = object->tryGetComponent(TransformComponent);
+        Transform* transform = object->tryGetComponent(Transform);
         if (transform == nullptr)
         {
             return k_invalid_gobject_id;
         }
 
-        TransformComponent* parent_transform = transform->GetParent();
+        Transform* parent_transform = transform->GetParent();
         if (parent_transform == nullptr)
         {
             return k_invalid_gobject_id;
@@ -85,7 +85,7 @@ namespace EditorHierarchyReparent
 
         if (new_parent_id == k_invalid_gobject_id)
         {
-            if (TransformComponent* child_transform = child_object->tryGetComponent(TransformComponent))
+            if (Transform* child_transform = child_object->tryGetComponent(Transform))
             {
                 child_transform->SetParent(nullptr, true);
                 return true;
@@ -100,8 +100,8 @@ namespace EditorHierarchyReparent
             return false;
         }
 
-        TransformComponent* child_transform = child_object->tryGetComponent(TransformComponent);
-        TransformComponent* parent_transform = parent_object->tryGetComponent(TransformComponent);
+        Transform* child_transform = child_object->tryGetComponent(Transform);
+        Transform* parent_transform = parent_object->tryGetComponent(Transform);
         if (child_transform == nullptr || parent_transform == nullptr)
         {
             LOG_WARNING(ZEditor,

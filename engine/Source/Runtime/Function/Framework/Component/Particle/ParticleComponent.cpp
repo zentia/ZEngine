@@ -1,7 +1,7 @@
 #include "Runtime/Function/Framework/Component/Particle/ParticleComponent.h"
 
 #include "Runtime/Core/Base/Macro.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Particle/ParticleManager.h"
 #include "Runtime/Function/Render/RenderSwapContext.h"
 #include "Runtime/Function/Render/RenderSystem.h"
@@ -21,10 +21,10 @@ namespace Runtime
 
     void ParticleComponent::ComputeGlobalTransform()
     {
-        TransformComponent* transform_component =
-            m_ParentObject->tryGetComponent<TransformComponent>("TransformComponent");
+        Transform* transform_component =
+            m_ParentObject->tryGetComponent<Transform>("Transform");
 
-        Matrix4x4 global_transform_matrix = transform_component->getMatrix() * m_LocalTransform;
+        Matrix4x4 global_transform_matrix = transform_component->GetLocalToWorldMatrix() * m_LocalTransform;
 
         Vector3 position, scale;
         Quaternion rotation;
@@ -43,7 +43,7 @@ namespace Runtime
 
         logic_swap_data.AddTickParticleEmitter(m_TransformDesc.m_Id);
 
-        TransformComponent* transform_component = m_ParentObject->tryGetComponent(TransformComponent);
+        Transform* transform_component = m_ParentObject->tryGetComponent(Transform);
         if (transform_component->IsDirty())
         {
             ComputeGlobalTransform();

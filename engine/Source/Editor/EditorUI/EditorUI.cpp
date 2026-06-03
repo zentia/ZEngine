@@ -8,6 +8,7 @@
 #include "Editor/FloatingPanel/FloatingPanelManager.h"
 #include "Editor/EditorUI/EditorWindowRegistry.h"
 #include "Editor/EditorWindow/EditorWindow.h"
+#include "Editor/EditorWindow/ZSlateConsoleWindow/ZSlateConsoleWindow.h"
 #include "Editor/EditorWindow/ZSlateProjectWindow/ZSlateProjectWindow.h"
 #include "Editor/Menu/MenuController.h"
 #include "Editor/Platform/Interface/GUIView.h"
@@ -15,7 +16,7 @@
 #include "Runtime/Core/Base/Factory.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Input/InputSystem.h"
 #include "Runtime/Function/Render/RenderCamera.h"
@@ -375,6 +376,8 @@ void EditorUI::PreRender()
 
 void EditorUI::ProcessDeferredWork()
 {
+    ZSlateConsoleWindow::PumpBufferedLogsIfOpen();
+
     if (ZSlateProjectWindow* project_window = GetWindow<ZSlateProjectWindow>())
     {
         project_window->ExecutePendingImportDialog();

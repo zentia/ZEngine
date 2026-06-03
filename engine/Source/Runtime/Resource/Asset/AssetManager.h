@@ -30,7 +30,6 @@ enum class AssetFormat
 
 class Object;
 class Remapper;
-class MaterialRes;
 class ShaderRes;
 struct StreamNameSpace
 
@@ -181,6 +180,9 @@ public:
     }
 
     std::filesystem::path GetFullPath(const eastl::string& relative_path) const;
+    // Authoring assets (scenes, materials, prefabs) are written under the open
+    // project's content root, not the engine asset tree.
+    std::filesystem::path ResolveProjectContentPath(const eastl::string& relative_path) const;
     std::filesystem::path GetEditorResourcePath(const std::string& relative_path) const;
     std::string GetAssetTypeName(const std::filesystem::path& asset_path) const;
 

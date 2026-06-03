@@ -46,6 +46,11 @@ namespace EditorPropertyDrawer
             return "Component";
         }
 
+        if (std::strcmp(raw_type_name, "Transform") == 0)
+        {
+            return "Transform";
+        }
+
         std::string label(raw_type_name);
         constexpr const char* suffixes[] = {"Component", "Parameter", "Res"};
         for (const char* suffix : suffixes)

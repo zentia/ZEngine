@@ -3,7 +3,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Character/Character.h"
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/Level/LevelDebugger.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
@@ -125,9 +125,9 @@ Vector3 WorldManager::GetWorldPartitionStreamingSource() const
         {
             if (GameObject* camera_object = camera->GetParentObject())
             {
-                if (TransformComponent* transform = camera_object->tryGetComponent(TransformComponent))
+                if (Transform* transform = camera_object->tryGetComponent(Transform))
                 {
-                    return transform->GetWorldPosition();
+                    return transform->GetPosition();
                 }
             }
         }

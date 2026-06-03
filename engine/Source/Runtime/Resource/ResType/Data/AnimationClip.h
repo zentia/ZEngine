@@ -1,5 +1,6 @@
 #pragma once
-#include "Runtime/Core/Math/Transform.h"
+#include "Runtime/Core/Math/Quaternion.h"
+#include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 
 #include <vector>

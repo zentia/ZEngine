@@ -463,6 +463,23 @@ namespace
         return true;
     }
 
+    bool writeMaterialAssetToDisk(const std::filesystem::path& path, Material& material)
+    {
+        std::filesystem::path write_path = path;
+        write_path.replace_extension(".mat");
+
+        const std::filesystem::path parent_path = write_path.parent_path();
+        if (!parent_path.empty())
+        {
+            std::error_code ec;
+            std::filesystem::create_directories(parent_path, ec);
+        }
+
+        Object* objects[] = {&material};
+        const int64_t file_ids[] = {1};
+        return GET_SYSTEM(AssetManager)->WriteObjectsToYaml(write_path, objects, file_ids, 1);
+    }
+
     void createMaterialFromShader(ProjectWindowContext& ctx, const std::filesystem::path& shader_path)
     {
         if (shader_path.empty())
@@ -496,10 +513,10 @@ namespace
         material->m_ShaderPptr = PPtr<ShaderRes>();
         initializeMaterialDefaultsFromShader(*material, shader_properties);
 
-        const std::filesystem::path material_path = buildMaterialPathFromShader(shader_path);
+        const std::filesystem::path material_write_path = buildMaterialPathFromShader(shader_path);
         const bool material_created =
-            GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(material_path, *material) &&
-            std::filesystem::exists(material_path);
+            writeMaterialAssetToDisk(material_write_path, *material) &&
+            std::filesystem::exists(material_write_path);
 
         MemoryManager::DestroyObject(material);
 
@@ -510,14 +527,14 @@ namespace
         }
 
         Material* saved_material =
-            GET_SYSTEM(AssetManager)->ReadObject<Material>(const_cast<std::filesystem::path&>(material_path));
+            GET_SYSTEM(AssetManager)->ReadObject<Material>(const_cast<std::filesystem::path&>(material_write_path));
         if (saved_material != nullptr)
         {
             saved_material->SetShaderByName(shader_name);
-            GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(material_path, *saved_material);
+            writeMaterialAssetToDisk(material_write_path, *saved_material);
         }
 
-        ProjectAssetActions::RefreshProjectSelection(ctx, material_path);
+        ProjectAssetActions::RefreshProjectSelection(ctx, material_write_path);
     }
 }  // namespace
 
@@ -1152,7 +1169,7 @@ namespace ProjectAssetActions
 
             Material* material = MemoryManager::CreateObject<Material>();
             const bool material_created = material != nullptr &&
-                                          GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(new_file_path, *material) &&
+                                          writeMaterialAssetToDisk(new_file_path, *material) &&
                                           std::filesystem::exists(new_file_path);
             MemoryManager::DestroyObject(material);
             if (!material_created)

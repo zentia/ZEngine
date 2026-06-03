@@ -138,7 +138,7 @@ AnimationResult Skeleton::OutputAnimationResult()
         //	scale,
         //	conjugate( bone->_getDerivedTOrientation())
         //);
-        auto objMat = Transform(bone->_getDerivedPosition(), bone->_getDerivedOrientation(), bone->_getDerivedScale())
+        auto objMat = LocalTransform(bone->_getDerivedPosition(), bone->_getDerivedOrientation(), bone->_getDerivedScale())
                           .getMatrix();
 
         auto resMat = objMat * bone->_getInverseTpose();

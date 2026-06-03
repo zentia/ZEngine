@@ -1,6 +1,6 @@
 #include "MeshRenderer.h"
 
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 
 IMPLEMENT_REGISTER_CLASS(MeshRenderer)
 IMPLEMENT_OBJECT_SERIALIZE(MeshRenderer)
@@ -12,7 +12,7 @@ void MeshRenderer::Transfer(TransferFunction& transfer)
 }
 INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(MeshRenderer)
 
-GameObjectDesc MeshRenderer::BuildGameObjectDesc(const TransformComponent* transform_component) const
+GameObjectDesc MeshRenderer::BuildGameObjectDesc(const Transform* transform_component) const
 {
     return BuildGameObjectDescFromParts(BuildRenderParts(transform_component));
 }

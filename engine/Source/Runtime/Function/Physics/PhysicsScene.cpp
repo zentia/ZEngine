@@ -1,5 +1,7 @@
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
+#include "Runtime/Core/Math/LocalTransform.h"
+
 #include "Jolt/Core/Factory.h"
 #include "Jolt/Core/JobSystem.h"
 #include "Jolt/Core/JobSystemThreadPool.h"
@@ -65,7 +67,7 @@ PhysicsScene::~PhysicsScene()
     JPH::Factory::sInstance = nullptr;
 }
 
-uint32_t PhysicsScene::CreateRigidBody(const Transform& global_transform,
+uint32_t PhysicsScene::CreateRigidBody(const LocalTransform& global_transform,
                                        const RigidBodyComponentRes& rigidbody_actor_res)
 {
     JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
@@ -73,7 +75,7 @@ uint32_t PhysicsScene::CreateRigidBody(const Transform& global_transform,
     struct JPHShapeData
     {
         JPH::Shape* shape {nullptr};
-        Transform local_transform;
+        LocalTransform local_transform;
         Vector3 global_position;
         Vector3 global_scale;
         Quaternion global_rotation;
@@ -146,7 +148,7 @@ void PhysicsScene::RemoveRigidBody(uint32_t body_id)
     m_PendingRemoveBodies.push_back(body_id);
 }
 
-void PhysicsScene::UpdateRigidBodyGlobalTransform(uint32_t body_id, const Transform& global_transform)
+void PhysicsScene::UpdateRigidBodyGlobalTransform(uint32_t body_id, const LocalTransform& global_transform)
 {
     JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
 

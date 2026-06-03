@@ -15,5 +15,5 @@ public:
     void Tick(float delta_time) override;
 
 private:
-    GameObjectDesc BuildGameObjectDesc(const TransformComponent* transform_component) const override;
+    GameObjectDesc BuildGameObjectDesc(const Transform* transform_component) const override;
 };

@@ -6,7 +6,7 @@
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/PrefabRefComponent.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
 
@@ -19,7 +19,7 @@
 namespace
 {
     /// Drives PostLoadResource() across the freshly-deserialised prefab subtree using the
-    /// canonical scene-graph topology (TransformComponent.m_Children).
+    /// canonical scene-graph topology (Transform.m_Children).
     ///
     /// We can't rely on Component::m_ParentObject being valid until PostLoadResource()
     /// runs — and postLoadResource is exactly what we're trying to invoke. Resolution: do
@@ -30,7 +30,7 @@ namespace
     public:
         /// `known_gameobjects`, when non-empty, is the COMPLETE set of GameObjects in the
         /// prefab graph (the YAML reader has this directly). Seeding the
-        /// TransformComponent -> owning-GameObject map from it lets VisitGameObject
+        /// Transform -> owning-GameObject map from it lets VisitGameObject
         /// resolve every child Transform's owner, lifting the single-level restriction.
         /// When empty (legacy binary path, which has no flat list), the driver falls back
         /// to root-only discovery and the old Phase-1 multi-level limitation applies.
@@ -58,7 +58,7 @@ namespace
         void BuildOwnerMap(GameObject* root, const std::vector<GameObject*>& known_gameobjects)
         {
             // Preferred path: the caller handed us every GameObject in the graph (YAML
-            // reader). Map each one's TransformComponent -> owner so the DFS below can
+            // reader). Map each one's Transform -> owner so the DFS below can
             // resolve arbitrary-depth child Transforms. tryGetComponent reads m_Components,
             // which InstantiateFromPath rebuilt before calling us.
             for (GameObject* go : known_gameobjects)
@@ -67,7 +67,7 @@ namespace
                 {
                     continue;
                 }
-                TransformComponent* tc = go->tryGetComponent(TransformComponent);
+                Transform* tc = go->tryGetComponent(Transform);
                 if (tc != nullptr)
                 {
                     m_TransformToOwner[tc] = go;
@@ -87,7 +87,7 @@ namespace
                     continue;
                 }
 
-                TransformComponent* tc = go->tryGetComponent(TransformComponent);
+                Transform* tc = go->tryGetComponent(Transform);
                 if (tc != nullptr)
                 {
                     m_TransformToOwner[tc] = go;
@@ -106,7 +106,7 @@ namespace
                 return;
             }
 
-            // 2a) Initialise every Component before descending. TransformComponent uses
+            // 2a) Initialise every Component before descending. Transform uses
             //     this to seed its double-buffered transform; other Components capture the
             //     parent GameObject pointer here (Component::m_ParentObject).
             for (ImmediatePtr<Component>& component_ptr : go->getComponents())
@@ -121,7 +121,7 @@ namespace
             // 2a') Phase 3a — Nested-Prefab expansion.
             //      If `go` carries a PrefabRefComponent that hasn't yet been expanded,
             //      load the referenced PrefabAsset, instantiate it, and reparent the
-            //      result under `go`'s TransformComponent. This recurses naturally —
+            //      result under `go`'s Transform. This recurses naturally —
             //      the freshly instantiated nested root will go through its own
             //      `PrefabUtility::Instantiate` call (so any further PrefabRefComponents
             //      inside it expand on their own).
@@ -131,23 +131,23 @@ namespace
             //     Transform's owning GameObject must already live in the same .prefab
             //     SerializedFile (cross-file children require Phase 3's nested-prefab
             //     resolution). We therefore lazily extend m_TransformToOwner as we walk:
-            //     once we know `go` owns its own TransformComponent, we descend into the
+            //     once we know `go` owns its own Transform, we descend into the
             //     children and require that each child Transform belongs to a GameObject
             //     reachable through that child's m_ParentObject back-pointer (which the
             //     postLoadResource above just set on the *parent* component, not the child).
             //
             //     To resolve children we therefore postLoadResource the child GameObject
-            //     by searching m_KnownGameobjects for one whose TransformComponent
+            //     by searching m_KnownGameobjects for one whose Transform
             //     matches.
 
-            TransformComponent* tc = go->tryGetComponent(TransformComponent);
+            Transform* tc = go->tryGetComponent(Transform);
             if (tc == nullptr)
             {
                 return;
             }
             for (size_t i = 0, count = tc->GetChildCount(); i < count; ++i)
             {
-                TransformComponent* child_tc = tc->GetChild(i);
+                Transform* child_tc = tc->GetChild(i);
                 if (child_tc == nullptr)
                 {
                     continue;
@@ -157,7 +157,7 @@ namespace
                 {
                     // First time we see this child Transform — its owning GameObject was
                     // populated lazily by the prefab loader through ImmediatePtr resolution
-                    // (each TransformComponent records its owning GameObject via
+                    // (each Transform records its owning GameObject via
                     // `m_ParentObject`, but only after postLoadResource ran on the *child*
                     // — which is precisely what we're about to do). Fall back to the
                     // child Component's just-set m_ParentObject: postLoadResource sets it
@@ -178,7 +178,7 @@ namespace
 
         std::unordered_set<GameObject*> m_Visited;
         std::unordered_set<GameObject*> m_KnownGameobjects;
-        std::unordered_map<TransformComponent*, GameObject*> m_TransformToOwner;
+        std::unordered_map<Transform*, GameObject*> m_TransformToOwner;
 
         /// Phase 3a — expand every PrefabRefComponent on `go` exactly once. We
         /// loop over the components looking for one whose IsExpanded() is false;
@@ -232,11 +232,11 @@ namespace
                 // Reparent the nested root under `go`. worldPositionStays=false so
                 // the nested root's authored local pose is preserved relative to
                 // the install point.
-                TransformComponent* host_tc = go->tryGetComponent(TransformComponent);
+                Transform* host_tc = go->tryGetComponent(Transform);
                 if (host_tc == nullptr)
                 {
                     LOG_WARNING(ZPrefab,
-                                "PrefabRefComponent on '{}': host has no TransformComponent — cannot reparent nested",
+                                "PrefabRefComponent on '{}': host has no Transform — cannot reparent nested",
                                 go->GetName().c_str());
                     ref->MarkExpanded();
                     continue;
@@ -353,16 +353,16 @@ GameObject* PrefabUtility::InstantiateFromPath(const std::filesystem::path& pref
     return Instantiate(asset);
 }
 
-void PrefabUtility::SetInstantiatedRootParent(GameObject* instantiated_root, TransformComponent* parent, bool worldPositionStays)
+void PrefabUtility::SetInstantiatedRootParent(GameObject* instantiated_root, Transform* parent, bool worldPositionStays)
 {
     if (instantiated_root == nullptr)
     {
         return;
     }
-    TransformComponent* root_transform = instantiated_root->tryGetComponent(TransformComponent);
+    Transform* root_transform = instantiated_root->tryGetComponent(Transform);
     if (root_transform == nullptr)
     {
-        LOG_ERROR(ZPrefab, "Instantiated root '{}' has no TransformComponent; cannot reparent", instantiated_root->GetName().c_str());
+        LOG_ERROR(ZPrefab, "Instantiated root '{}' has no Transform; cannot reparent", instantiated_root->GetName().c_str());
         return;
     }
     root_transform->SetParent(parent, worldPositionStays);
@@ -389,7 +389,7 @@ namespace
     class PrefabSubtreeFlattener
     {
     public:
-        /// Returns false if any GameObject in the subtree is missing a TransformComponent
+        /// Returns false if any GameObject in the subtree is missing a Transform
         /// or has a child Transform whose owning GameObject can't be resolved.
         bool Run(GameObject* root, std::vector<Object*>& out_objects)
         {
@@ -426,7 +426,7 @@ namespace
             }
 
             // 2) Recurse into Transform children.
-            TransformComponent* tc = go->tryGetComponent(TransformComponent);
+            Transform* tc = go->tryGetComponent(Transform);
             if (tc == nullptr)
             {
                 // A Prefab whose root has no Transform isn't writable — children are
@@ -434,7 +434,7 @@ namespace
                 // GameObject sourced from a Level (Level::CreateObject guarantees a
                 // Transform is present unless the user intentionally stripped one).
                 LOG_WARNING(ZPrefab,
-                            "PrefabUtility::SaveAsPrefabAsset: GameObject '{}' has no TransformComponent; "
+                            "PrefabUtility::SaveAsPrefabAsset: GameObject '{}' has no Transform; "
                             "its descendants (if any) cannot be serialised",
                             go->GetName().c_str());
                 return true;
@@ -442,7 +442,7 @@ namespace
 
             for (size_t i = 0, count = tc->GetChildCount(); i < count; ++i)
             {
-                TransformComponent* child_tc = tc->GetChild(i);
+                Transform* child_tc = tc->GetChild(i);
                 if (child_tc == nullptr)
                 {
                     continue;

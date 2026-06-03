@@ -63,6 +63,68 @@ namespace
     }
 }  // namespace
 
+namespace
+{
+    struct InspectorLiveMaterialPreviewBridge
+    {
+        std::filesystem::path path;
+        const Material* live_material = nullptr;
+        uint64_t preview_revision = 0;
+    };
+
+    InspectorLiveMaterialPreviewBridge& GetLiveMaterialPreviewBridge()
+    {
+        static InspectorLiveMaterialPreviewBridge bridge;
+        return bridge;
+    }
+
+    bool PathsEquivalentForInspector(const std::filesystem::path& lhs, const std::filesystem::path& rhs)
+    {
+        if (lhs.empty() || rhs.empty())
+        {
+            return false;
+        }
+
+        std::error_code ec;
+        if (std::filesystem::equivalent(lhs, rhs, ec) && !ec)
+        {
+            return true;
+        }
+
+        return lhs.lexically_normal().generic_string() == rhs.lexically_normal().generic_string();
+    }
+}  // namespace
+
+void SetInspectorLiveMaterialSource(const std::filesystem::path& asset_path, const Material* live_material)
+{
+    InspectorLiveMaterialPreviewBridge& bridge = GetLiveMaterialPreviewBridge();
+    bridge.path = asset_path.lexically_normal();
+    bridge.live_material = live_material;
+}
+
+void NotifyInspectorLiveMaterialPreviewChanged()
+{
+    ++GetLiveMaterialPreviewBridge().preview_revision;
+}
+
+uint64_t GetInspectorLiveMaterialPreviewRevision()
+{
+    return GetLiveMaterialPreviewBridge().preview_revision;
+}
+
+bool TryGetInspectorLiveMaterialForPreview(const std::filesystem::path& asset_path, const Material*& out_material)
+{
+    out_material = nullptr;
+    const InspectorLiveMaterialPreviewBridge& bridge = GetLiveMaterialPreviewBridge();
+    if (bridge.live_material == nullptr || !PathsEquivalentForInspector(bridge.path, asset_path))
+    {
+        return false;
+    }
+
+    out_material = bridge.live_material;
+    return true;
+}
+
 std::string ResolveInspectorAssetType(const std::filesystem::path& asset_path, const std::string& selected_asset_type)
 {
     std::string resolved_type = NormalizeInspectorAssetType(selected_asset_type);

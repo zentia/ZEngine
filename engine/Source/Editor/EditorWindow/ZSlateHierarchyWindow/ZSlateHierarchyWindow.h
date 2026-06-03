@@ -61,6 +61,7 @@ private:
     void OpenContextMenu(GObjectID context_object, const Vector2& screen_pos, float scale);
     GObjectID CreateEmpty(Level* level, GObjectID parent);
     void DeleteObject(GObjectID object_id);
+    void NotifyHierarchyStructureChanged(GObjectID expand_parent_id = k_invalid_gobject_id);
 
     std::shared_ptr<ZSlate::SWidget> m_Root;
     std::unordered_set<GObjectID> m_Collapsed;
@@ -81,4 +82,5 @@ private:
 
     float m_BuiltScale {-1.0f};
     uint64_t m_BuiltSignature {0};
+    bool m_ForceRebuild {true};
 };

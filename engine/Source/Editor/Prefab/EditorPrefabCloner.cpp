@@ -6,7 +6,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Serialize/TransferUtility.h"
 #include "Runtime/Function/Framework/Component/Component.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 
 #include <unordered_set>
 #include <vector>
@@ -82,12 +82,12 @@ namespace prefab_editor
 
                 // Descend into the Transform child chain — this is the canonical scene-
                 // graph topology for prefab subtrees.
-                TransformComponent* tc = go->tryGetComponent(TransformComponent);
+                Transform* tc = go->tryGetComponent(Transform);
                 if (tc != nullptr)
                 {
                     for (size_t i = 0, count = tc->GetChildCount(); i < count; ++i)
                     {
-                        TransformComponent* child_tc = tc->GetChild(i);
+                        Transform* child_tc = tc->GetChild(i);
                         if (child_tc == nullptr)
                         {
                             continue;
@@ -101,7 +101,7 @@ namespace prefab_editor
                         GameObject* child_go = nullptr;
                         // Component has m_ParentObject as a protected raw pointer; we
                         // can't access it directly from here, but the convention is
-                        // that any TransformComponent in a well-formed scene tree has
+                        // that any Transform in a well-formed scene tree has
                         // an owning GO. We rely on the caller having driven
                         // postLoadResource for the source asset; since we can't
                         // observe m_ParentObject protected member, we fall back to
@@ -112,21 +112,21 @@ namespace prefab_editor
                         // worklist as a "pending" entry. We'll resolve owning-GO via
                         // a second-pass map below.
                         // -- simpler: after the first DFS over GOs, enumerate every
-                        //    GO's own TransformComponent and register {tc → go} into a
+                        //    GO's own Transform and register {tc → go} into a
                         //    table; then for each child_tc look up the owning GO.
                         (void)child_tc;
                     }
                 }
             }
 
-            // Second pass: for every TransformComponent we recorded among `components`,
+            // Second pass: for every Transform we recorded among `components`,
             // map it back to its owning GameObject. Then walk the child chains again to
             // realise the BFS expansion. (This is the simplest way to avoid touching the
             // protected Component::m_ParentObject member.)
-            std::unordered_map<TransformComponent*, GameObject*> tc_to_owner;
+            std::unordered_map<Transform*, GameObject*> tc_to_owner;
             for (size_t i = 0; i < result.components.size(); ++i)
             {
-                if (auto* tc = dynamic_cast<TransformComponent*>(result.components[i]))
+                if (auto* tc = dynamic_cast<Transform*>(result.components[i]))
                 {
                     tc_to_owner[tc] = result.component_owners[i];
                 }
@@ -144,14 +144,14 @@ namespace prefab_editor
                 {
                     continue;
                 }
-                TransformComponent* tc = go->tryGetComponent(TransformComponent);
+                Transform* tc = go->tryGetComponent(Transform);
                 if (tc == nullptr)
                 {
                     continue;
                 }
                 for (size_t i = 0, count = tc->GetChildCount(); i < count; ++i)
                 {
-                    TransformComponent* child_tc = tc->GetChild(i);
+                    Transform* child_tc = tc->GetChild(i);
                     if (child_tc == nullptr)
                     {
                         continue;
@@ -175,7 +175,7 @@ namespace prefab_editor
                         {
                             result.components.push_back(comp);
                             result.component_owners.push_back(child_go);
-                            if (auto* ctc = dynamic_cast<TransformComponent*>(comp))
+                            if (auto* ctc = dynamic_cast<Transform*>(comp))
                             {
                                 tc_to_owner[ctc] = child_go;
                             }
@@ -214,24 +214,24 @@ namespace prefab_editor
             }
         }
 
-        /// Re-wire TransformComponent.m_Parent and m_Children PPtrs to point at the
-        /// clone-side TransformComponents. Does so by inspecting the SOURCE transform's
+        /// Re-wire Transform.m_Parent and m_Children PPtrs to point at the
+        /// clone-side Transforms. Does so by inspecting the SOURCE transform's
         /// pointer structure and translating each PPtr through ptr_map.
         void RebuildCloneTransformLinks(
-            TransformComponent* source_tc,
-            TransformComponent* clone_tc,
+            Transform* source_tc,
+            Transform* clone_tc,
             const std::unordered_map<Object*, Object*>& ptr_map)
         {
             // m_Parent: SetParent rebuilds both the parent's children list and the child's
             // local-pose <-> world-pose accounting. Since the clone hierarchy is being
             // built from scratch, we want worldPositionStays=false (keep local pose
             // verbatim — the round-trip already copied the local Transform fields).
-            if (TransformComponent* src_parent = source_tc->GetParent())
+            if (Transform* src_parent = source_tc->GetParent())
             {
                 auto it = ptr_map.find(static_cast<Object*>(src_parent));
                 if (it != ptr_map.end())
                 {
-                    clone_tc->SetParent(static_cast<TransformComponent*>(it->second), /*worldPositionStays=*/false);
+                    clone_tc->SetParent(static_cast<Transform*>(it->second), /*worldPositionStays=*/false);
                 }
                 // If the parent isn't in ptr_map, the source parent lives outside the
                 // cloned subtree — leave the clone parent unset (subtree root case).
@@ -310,19 +310,19 @@ namespace prefab_editor
             RebuildCloneComponents(src_go, clone_go, result.ptr_map);
         }
 
-        //    3b) TransformComponent.m_Parent + m_Children — relink via SetParent calls,
+        //    3b) Transform.m_Parent + m_Children — relink via SetParent calls,
         //        which is the official entry point that maintains the parent's
         //        children list invariant.
         for (size_t i = 0; i < walk.components.size(); ++i)
         {
             Component* src_comp = walk.components[i];
-            auto* src_tc = dynamic_cast<TransformComponent*>(src_comp);
+            auto* src_tc = dynamic_cast<Transform*>(src_comp);
             if (src_tc == nullptr)
                 continue;
             auto it = result.ptr_map.find(static_cast<Object*>(src_tc));
             if (it == result.ptr_map.end())
                 continue;
-            auto* clone_tc = static_cast<TransformComponent*>(it->second);
+            auto* clone_tc = static_cast<Transform*>(it->second);
             RebuildCloneTransformLinks(src_tc, clone_tc, result.ptr_map);
         }
 

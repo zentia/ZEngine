@@ -8,7 +8,7 @@
 class GameObject;
 class Component;
 class Object;
-class TransformComponent;
+class Transform;
 
 // =====================================================================================
 // EditorPrefabCloner — structural deep-clone of a prefab subtree, paired with a
@@ -21,7 +21,7 @@ class TransformComponent;
 //
 // Why a hand-rolled cloner instead of a generic round-trip:
 //   - PPtr<T>::Transfer is a no-op in ZEngine, so a serialise+deserialise round
-//     trip wipes every PPtr to InstanceID=0. A prefab's TransformComponent.m_Parent
+//     trip wipes every PPtr to InstanceID=0. A prefab's Transform.m_Parent
 //     and m_Children chain is entirely PPtrs — losing them would flatten the
 //     hierarchy.
 //   - ImmediatePtr<T>::Transfer only emits LocalSerializedObjectIdentifier metadata
@@ -39,7 +39,7 @@ class TransformComponent;
 //   3) Manually re-wire pointers using `ptr_map`:
 //          - GameObject.m_Components ImmediatePtrs ← look up each component's
 //            clone counterpart in ptr_map.
-//          - TransformComponent.m_Parent / m_Children PPtrs ← same lookup.
+//          - Transform.m_Parent / m_Children PPtrs ← same lookup.
 //          - Component.m_ParentObject raw pointer ← reset via postLoadResource
 //            during PrefabPostLoadDriver's pass.
 //

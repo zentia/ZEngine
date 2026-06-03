@@ -3,7 +3,7 @@
 #include "ObjectDefines.h"
 #include "Runtime/Application/Application.h"
 #include "Runtime/Function/Framework/Component/Component.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 
 #include <cassert>

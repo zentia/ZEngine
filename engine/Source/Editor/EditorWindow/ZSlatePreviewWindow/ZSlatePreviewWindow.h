@@ -57,5 +57,6 @@ private:
     PreviewKind m_BuiltKind {PreviewKind::None};
     std::string m_BuiltAssetPath;
     void* m_BuiltShaderHandle {nullptr};
+    uint64_t m_BuiltMaterialPreviewRevision {0};
     bool m_ForceRebuild {false};
 };

@@ -157,11 +157,24 @@ void ZSlateConsoleWindow::DrainPending()
     m_PendingEntries.clear();
 }
 
-void ZSlateConsoleWindow::BootstrapBufferedLogs()
+void ZSlateConsoleWindow::PollConsoleBuffer()
 {
     while (bq::log::fetch_and_remove_console_buffer(&ConsoleCallback))
     {
     }
+}
+
+void ZSlateConsoleWindow::PumpBufferedLogsIfOpen()
+{
+    if (s_Instance == nullptr || !s_Instance->m_Open)
+        return;
+    s_Instance->PollConsoleBuffer();
+    s_Instance->DrainPending();
+}
+
+void ZSlateConsoleWindow::BootstrapBufferedLogs()
+{
+    PollConsoleBuffer();
     DrainPending();
     m_FilterDirty = true;
 }
@@ -450,6 +463,7 @@ void ZSlateConsoleWindow::OnGUI()
         m_Input.Reset();
     }
 
+    PollConsoleBuffer();
     DrainPending();
     RebuildSearchMatcher();
 

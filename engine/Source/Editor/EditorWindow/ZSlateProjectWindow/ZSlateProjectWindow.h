@@ -42,8 +42,9 @@ class SMenu;
 // ProjectDragDrop) via an owned ProjectWindowContext, so behaviour stays in
 // lockstep. Only the rendering + input layer is reimplemented on ZSlate.
 //
-// Out of scope for V1: cross-window drag (project asset -> Scene placement,
-// Hierarchy GameObject -> prefab create). OS file drop import IS supported.
+// Cross-window drag: Hierarchy GameObject -> Project creates a .prefab (Unity-style).
+// Project .zasset -> Scene placement is handled by ZSlateSceneWindow. OS file drop
+// import is also supported.
 class ZSlateProjectWindow : public EditorWindow
 {
 public:

@@ -5,7 +5,7 @@
 #include <filesystem>
 
 class PrefabAsset;
-class TransformComponent;
+class Transform;
 class Level;
 
 // =====================================================================================
@@ -46,8 +46,8 @@ public:
     static GameObject* InstantiateFromPath(const std::filesystem::path& prefab_path);
 
     /// Re-parent the freshly instantiated root under `parent` (Transform-based).
-    /// `worldPositionStays` follows Unity semantics (see TransformComponent::SetParent).
-    static void SetInstantiatedRootParent(GameObject* instantiated_root, TransformComponent* parent, bool worldPositionStays = true);
+    /// `worldPositionStays` follows Unity semantics (see Transform::SetParent).
+    static void SetInstantiatedRootParent(GameObject* instantiated_root, Transform* parent, bool worldPositionStays = true);
 
     // -----------------------------------------------------------------------------
     // Authoring (Hierarchy → Project drag-and-drop, "Save as Prefab")
@@ -56,7 +56,7 @@ public:
     ///
     /// Behaviour mirrors Unity's "drag a GameObject from Hierarchy into Project":
     ///   * The provided `root` and every GameObject reachable through its
-    ///     TransformComponent.m_Children chain (plus all their Components) is
+    ///     Transform.m_Children chain (plus all their Components) is
     ///     packaged into a fresh PrefabAsset and written to `prefab_path` via the
     ///     binary SerializedFile pipeline (`AssetManager::WriteObjectsToDiskThreadSafe`).
     ///   * The PrefabAsset is the first object in the file (fileID=1); the root
@@ -68,7 +68,7 @@ public:
     ///     reside in its original Level; this function only reads the subtree.
     ///   * Returns true on a successful disk write (file present + writer reported
     ///     no error). Returns false on any precondition failure (null root, no
-    ///     TransformComponent on root, AssetManager rejected the path, …).
+    ///     Transform on root, AssetManager rejected the path, …).
     ///
     /// `prefab_path` should already include the `.zasset` extension. The caller is
     /// responsible for picking a non-colliding filename — the Editor wrapper in

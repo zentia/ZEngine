@@ -12,11 +12,11 @@ public:
     void PostLoadResource(GameObject* parent_object) override;
 
     void Tick(float delta_time) override {}
-    void UpdateGlobalTransform(const Transform& transform, bool is_scale_dirty);
+    void UpdateGlobalTransform(const LocalTransform& transform, bool is_scale_dirty);
     void GetShapeBoundingBoxes(std::vector<AxisAlignedBox>& out_boudning_boxes) const;
 
 protected:
-    void CreateRigidBody(const Transform& global_transform);
+    void CreateRigidBody(const LocalTransform& global_transform);
     void RemoveRigidBody();
 
     RigidBodyComponentRes m_RigidbodyRes;

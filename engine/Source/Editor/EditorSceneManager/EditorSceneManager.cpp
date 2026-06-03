@@ -7,7 +7,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Math/AxisAligned.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Input/InputSystem.h"
@@ -109,9 +109,9 @@ namespace
             return false;
         }
 
-        const TransformComponent* transform_component = game_object.tryGetComponentConst(TransformComponent);
+        const Transform* transform_component = game_object.tryGetComponentConst(Transform);
         const Matrix4x4 world_matrix =
-            transform_component != nullptr ? transform_component->getMatrix() : Matrix4x4::IDENTITY;
+            transform_component != nullptr ? transform_component->GetLocalToWorldMatrix() : Matrix4x4::IDENTITY;
 
         AxisAlignedBox combined_bounds;
         bool has_bounds = false;
@@ -162,7 +162,7 @@ void EditorSceneManager::Tick(float delta_time)
     std::shared_ptr<GameObject> selected_gobject = GetSelectedGObject().lock();
     if (selected_gobject)
     {
-        TransformComponent* transform_component = selected_gobject->tryGetComponent(TransformComponent);
+        Transform* transform_component = selected_gobject->tryGetComponent(Transform);
         if (transform_component)
         {
             transform_component->setDirtyFlag(true);
@@ -357,12 +357,12 @@ void EditorSceneManager::DrawSelectedEntityAxis()
 
     if (g_isEditorMode && selected_object != nullptr)
     {
-        const TransformComponent* transform_component = selected_object->tryGetComponentConst(TransformComponent);
+        const Transform* transform_component = selected_object->tryGetComponentConst(Transform);
 
         Vector3 scale;
         Quaternion rotation;
         Vector3 translation;
-        transform_component->getMatrix().Decomposition(translation, scale, rotation);
+        transform_component->GetLocalToWorldMatrix().Decomposition(translation, scale, rotation);
         Matrix4x4 translation_matrix = Matrix4x4::GetTrans(translation);
         Matrix4x4 scale_matrix = Matrix4x4::BuildScaleMatrix(1.0f, 1.0f, 1.0f);
         Matrix4x4 axis_model_matrix = translation_matrix * scale_matrix;
@@ -477,10 +477,10 @@ void EditorSceneManager::OnGObjectSelected(GObjectID selected_gobject_id, GObjec
     std::shared_ptr<GameObject> selected_gobject = GetSelectedGObject().lock();
     if (selected_gobject)
     {
-        const TransformComponent* transform_component = selected_gobject->tryGetComponentConst(TransformComponent);
+        const Transform* transform_component = selected_gobject->tryGetComponentConst(Transform);
         if (transform_component != nullptr)
         {
-            m_SelectedObjectMatrix = transform_component->getMatrix();
+            m_SelectedObjectMatrix = transform_component->GetLocalToWorldMatrix();
         }
     }
 
@@ -530,10 +530,10 @@ void EditorSceneManager::OnGObjectRangeSelected(GObjectID end_object_id,
     std::shared_ptr<GameObject> selected_gobject = GetSelectedGObject().lock();
     if (selected_gobject)
     {
-        const TransformComponent* transform_component = selected_gobject->tryGetComponentConst(TransformComponent);
+        const Transform* transform_component = selected_gobject->tryGetComponentConst(Transform);
         if (transform_component != nullptr)
         {
-            m_SelectedObjectMatrix = transform_component->getMatrix();
+            m_SelectedObjectMatrix = transform_component->GetLocalToWorldMatrix();
         }
     }
 
@@ -642,13 +642,13 @@ void EditorSceneManager::FocusSelectedGObject()
         return;
     }
 
-    const TransformComponent* transform_component = selected_object->tryGetComponentConst(TransformComponent);
+    const Transform* transform_component = selected_object->tryGetComponentConst(Transform);
     if (transform_component == nullptr)
     {
         return;
     }
 
-    Vector3 target_position = transform_component->GetPosition();
+    Vector3 target_position = transform_component->GetLocalPosition();
     float focus_radius = 0.0f;
     if (TryGetSelectedMeshWorldBounds(*selected_object, target_position, focus_radius))
     {
@@ -769,7 +769,7 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
     Vector2 axis_z_direction_uv = axis_z_clip_uv - model_origin_clip_uv;
     axis_z_direction_uv.normalise();
 
-    TransformComponent* transform_component = selected_object->tryGetComponent(TransformComponent);
+    Transform* transform_component = selected_object->tryGetComponent(Transform);
 
     Matrix4x4 new_model_matrix(Matrix4x4::IDENTITY);
     if (m_AxisMode == EditorAxisMode::TranslateMode)  // translate
@@ -814,9 +814,9 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
 
         GET_SYSTEM(RenderSystem)->SetVisibleAxis(m_TranslationAxis);
 
-        transform_component->SetPosition(new_translation);
-        transform_component->SetRotation(new_rotation);
-        transform_component->SetScale(new_scale);
+        transform_component->SetLocalPosition(new_translation);
+        transform_component->SetLocalRotation(new_rotation);
+        transform_component->SetLocalScale(new_scale);
     }
     else if (m_AxisMode == EditorAxisMode::RotateMode)  // rotate
     {
@@ -877,9 +877,9 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
 
         new_model_matrix.Decomposition(new_translation, new_scale, new_rotation);
 
-        transform_component->SetPosition(new_translation);
-        transform_component->SetRotation(new_rotation);
-        transform_component->SetScale(new_scale);
+        transform_component->SetLocalPosition(new_translation);
+        transform_component->SetLocalRotation(new_rotation);
+        transform_component->SetLocalScale(new_scale);
         m_ScaleAixs.m_ModelMatrix = new_model_matrix;
     }
     else if (m_AxisMode == EditorAxisMode::ScaleMode)  // scale
@@ -924,9 +924,9 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
         Vector3 new_translation;
         new_model_matrix.Decomposition(new_translation, new_scale, new_rotation);
 
-        transform_component->SetPosition(new_translation);
-        transform_component->SetRotation(new_rotation);
-        transform_component->SetScale(new_scale);
+        transform_component->SetLocalPosition(new_translation);
+        transform_component->SetLocalRotation(new_rotation);
+        transform_component->SetLocalScale(new_scale);
     }
     setSelectedObjectMatrix(new_model_matrix);
 }

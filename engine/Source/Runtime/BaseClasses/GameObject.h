@@ -39,9 +39,18 @@ public:
 
     typedef std::vector<ComponentPair> Container;
     GameObject()
-        : m_Id(0) {}
+        : m_Id(0)
+    {
+        // Level::CreateObject uses make_shared<GameObject>; unlike components
+        // created via MemoryManager::CreateObject, we must seed m_CachedTypeIndex
+        // here so YAML scene save can call GetTypeName() on live GameObjects.
+        InitializeRuntimeTypeInfo();
+    }
     GameObject(GObjectID id)
-        : m_Id {id} {}
+        : m_Id(id)
+    {
+        InitializeRuntimeTypeInfo();
+    }
     virtual ~GameObject();
 
     virtual void Tick(float delta_time);

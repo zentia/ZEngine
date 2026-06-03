@@ -6,7 +6,7 @@
 
 #include <vector>
 
-class TransformComponent;
+class Transform;
 
 class BaseRenderer : public Component
 {
@@ -31,15 +31,17 @@ public:
     void OnSerializedFieldsUpdated() override;
     void Tick(float delta_time) override;
 
+    void RefreshRenderStateFromTransformDispatch() const;
+
 protected:
-    std::vector<GameObjectPartDesc> BuildRenderParts(const TransformComponent* transform_component) const;
+    std::vector<GameObjectPartDesc> BuildRenderParts(const Transform* transform_component) const;
     GameObjectDesc BuildGameObjectDescFromParts(const std::vector<GameObjectPartDesc>& render_parts) const;
     void SubmitRenderState() const;
     eastl::string ResolveMaterialAsset(size_t sub_mesh_index) const;
     void MigrateLegacyMaterialAssets();
 
 protected:
-    virtual GameObjectDesc BuildGameObjectDesc(const TransformComponent* transform_component) const;
+    virtual GameObjectDesc BuildGameObjectDesc(const Transform* transform_component) const;
 
 private:
     std::vector<SubMeshRes> m_SubMeshes;

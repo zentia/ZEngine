@@ -26,7 +26,7 @@ namespace JPH
 #endif
 }  // namespace JPH
 
-class Transform;
+class LocalTransform;
 class RigidBodyComponentRes;
 class RigidBodyShape;
 
@@ -59,10 +59,10 @@ public:
 
     const Vector3& getGravity() const { return m_Config.m_Gravity; }
 
-    uint32_t CreateRigidBody(const Transform& global_transform, const RigidBodyComponentRes& rigidbody_actor_res);
+    uint32_t CreateRigidBody(const LocalTransform& global_transform, const RigidBodyComponentRes& rigidbody_actor_res);
     void RemoveRigidBody(uint32_t body_id);
 
-    void UpdateRigidBodyGlobalTransform(uint32_t body_id, const Transform& global_transform);
+    void UpdateRigidBodyGlobalTransform(uint32_t body_id, const LocalTransform& global_transform);
 
     void Tick(float delta_time);
 

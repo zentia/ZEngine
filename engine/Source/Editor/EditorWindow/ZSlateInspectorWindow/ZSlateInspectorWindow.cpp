@@ -48,7 +48,7 @@
 #include "Runtime/Core/Serialize/TypeTreeCache.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
-#include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Components/Mesh.h"  // SubMeshRes
 #include "Runtime/Resource/ResType/Data/Material.h"    // Material
@@ -174,6 +174,61 @@ namespace
     eastl::string s_mat_shader_name;
     std::filesystem::path s_mat_shader_path;
     bool s_mat_dirty = false;
+    std::string s_mat_status;
+
+    void MarkMaterialEdited()
+    {
+        s_mat_dirty = true;
+        NotifyInspectorLiveMaterialPreviewChanged();
+    }
+
+    bool SaveCachedMaterialToDisk()
+    {
+        if (!s_mat_loaded || s_mat_cached_path.empty())
+        {
+            return false;
+        }
+
+        auto asset_mgr = GET_SYSTEM(AssetManager);
+        if (asset_mgr == nullptr)
+        {
+            return false;
+        }
+
+        std::filesystem::path save_path = s_mat_cached_path;
+        save_path.replace_extension(".mat");
+        if (!asset_mgr->WriteObjectToDiskThreadSafe(save_path, MatRef()))
+        {
+            return false;
+        }
+
+        if (save_path != s_mat_cached_path)
+        {
+            s_mat_cached_path = save_path;
+        }
+        return true;
+    }
+
+    void ReloadCachedMaterialFromDisk()
+    {
+        s_mat_shader_loaded = false;
+        s_mat_shader_name.clear();
+        s_mat_shader_path.clear();
+        s_mat_dirty = false;
+        s_mat_status.clear();
+
+        if (s_mat_cached_path.empty() || !std::filesystem::exists(s_mat_cached_path))
+        {
+            s_mat_loaded = false;
+            return;
+        }
+
+        s_mat_loaded = LoadMaterialDefinitionForInspector(MatRef(), s_mat_cached_path);
+        if (s_mat_loaded)
+        {
+            SanitizeMaterialShaderBindingForInspector(MatRef());
+        }
+    }
 
     // --- native DataTable inspector ------------------------------------------
     // Mirrors the legacy ImGui drawer's per-cell reflection (RowColumn /
@@ -796,7 +851,7 @@ namespace
                     std::vector<SubMeshRes> subs = r->getSubMeshes();
                     if (s >= subs.size())
                         return;
-                    Transform& t = subs[s].m_Transform;
+                    LocalTransform& t = subs[s].m_Transform;
                     Vector3 v;
                     v.x = ParseFloat(p0->Text);
                     v.y = ParseFloat(p1->Text);
@@ -866,7 +921,7 @@ namespace
 
                 if (s < subs.size())
                 {
-                    const Transform& t = subs[s].m_Transform;
+                    const LocalTransform& t = subs[s].m_Transform;
                     const Vector3& p = t.m_Position;
                     const Vector3& sc = t.m_Scale;
                     const Vector3 euler = EditorEuler::GetEulerHint(euler_key, t.m_Rotation);
@@ -1408,9 +1463,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
         .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
 
     // Reload material when the selected asset changes. Editing mutates s_mat in
-    // place; OnGUI flushes it to disk on gesture end (see the Material flush
-    // block there). We deliberately do NOT reload on external mtime change while
-    // the same asset stays selected, to avoid clobbering pending in-memory edits.
+    // place; the user commits with Apply (see button row below).
     if (s_mat_cached_path != asset_path)
     {
         s_mat_cached_path = asset_path;
@@ -1419,12 +1472,26 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
         s_mat_shader_name.clear();
         s_mat_shader_path.clear();
         s_mat_dirty = false;
+        s_mat_status.clear();
         if (std::filesystem::exists(asset_path))
         {
             s_mat_loaded = LoadMaterialDefinitionForInspector(s_mat, asset_path);
             if (s_mat_loaded)
                 SanitizeMaterialShaderBindingForInspector(s_mat);
         }
+        else
+        {
+            SetInspectorLiveMaterialSource({}, nullptr);
+        }
+    }
+
+    if (s_mat_loaded)
+    {
+        SetInspectorLiveMaterialSource(s_mat_cached_path, &s_mat);
+    }
+    else
+    {
+        SetInspectorLiveMaterialSource({}, nullptr);
     }
 
     AddFieldRow(column, "Name",
@@ -1488,7 +1555,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                                             return;
                                         MatRef().SetShaderByName(shader_opts[static_cast<size_t>(idx)].c_str());
                                         s_mat_shader_loaded = false;  // force shader def reload on rebuild
-                                        s_mat_dirty = true;
+                                        MarkMaterialEdited();
                                     },
                                     scale),
                     0, scale);
@@ -1503,16 +1570,22 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
             auto variant_box = std::make_shared<SVerticalBox>();
             for (const std::string& kw : keywords)
             {
+                auto row = std::make_shared<SHorizontalBox>();
                 auto cb = std::make_shared<SCheckBox>();
                 cb->Checked = s_mat.IsShaderKeywordEnabled(kw.c_str());
                 cb->BoxSize = 16.0f * scale;
                 const std::string kw_copy = kw;
                 cb->OnCheckStateChanged = [this, kw_copy](bool checked) {
                     MatRef().SetShaderKeywordEnabled(kw_copy.c_str(), checked);
-                    s_mat_dirty = true;
+                    MarkMaterialEdited();
                     m_ForceRebuild = true;  // refresh the active-variant string
                 };
-                AddFieldRow(variant_box, kw, cb, 0, scale);
+                row->AddSlot(cb).AutoSize().SetVAlign(EVerticalAlignment::Center);
+                row->AddSlot(MakeText(kw.c_str(), 13.0f * scale, kValueColor))
+                    .AutoSize()
+                    .SetVAlign(EVerticalAlignment::Center)
+                    .SetPadding(FMargin(6.0f * scale, 0.0f, 0.0f, 0.0f));
+                variant_box->AddSlot(row).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 3.0f * scale));
             }
             if (!s_mat.m_EnabledShaderKeywords.empty())
             {
@@ -1528,7 +1601,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                 clear_btn->SetContent(MakeText("Clear All Keywords", 13.0f * scale, kValueColor));
                 clear_btn->OnClicked = [this]() {
                     MatRef().ClearShaderKeywords();
-                    s_mat_dirty = true;
+                    MarkMaterialEdited();
                     m_ForceRebuild = true;
                 };
                 variant_box->AddSlot(clear_btn).AutoSize();
@@ -1552,7 +1625,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
         bool created = false;
         rows = EnumerateShaderMaterialRows(s_mat, s_mat_shader, created);
         if (created)
-            s_mat_dirty = true;  // materialised default properties -> persist
+            MarkMaterialEdited();  // materialised default properties -> user Apply
     }
     else
     {
@@ -1586,7 +1659,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                     color_ptr->z = b;
                     if (alpha_ptr != nullptr)
                         *alpha_ptr = a;
-                    s_mat_dirty = true;
+                    MarkMaterialEdited();
                 };
 
                 auto area = std::make_shared<SExpandableArea>();
@@ -1615,7 +1688,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                 df->FontSize = 14.0f * scale;
                 df->OnValueChanged = [value_ptr](float v) {
                     *value_ptr = v;
-                    s_mat_dirty = true;
+                    MarkMaterialEdited();
                 };
                 AddFieldRow(column, row.label, df, 0, scale);
                 break;
@@ -1630,7 +1703,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                 cb->BoxSize = 16.0f * scale;
                 cb->OnCheckStateChanged = [bool_ptr](bool checked) {
                     *bool_ptr = checked;
-                    s_mat_dirty = true;
+                    MarkMaterialEdited();
                 };
                 AddFieldRow(column, row.label, cb, 0, scale);
                 break;
@@ -1647,7 +1720,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                 box->Text = Material::ResolveTextureAssetPath(*tex_ptr).c_str();
                 box->OnTextCommitted = [tex_ptr](const std::string& s) {
                     Material::AssignTextureFromAssetPath(*tex_ptr, s.c_str());
-                    s_mat_dirty = true;
+                    MarkMaterialEdited();
                 };
                 AddFieldRow(column, row.label, box, 0, scale);
                 break;
@@ -1664,12 +1737,62 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                 box->Text = str_ptr->c_str();
                 box->OnTextCommitted = [str_ptr](const std::string& s) {
                     str_ptr->assign(s.c_str());
-                    s_mat_dirty = true;
+                    MarkMaterialEdited();
                 };
                 AddFieldRow(column, row.label, box, 0, scale);
                 break;
             }
         }
+    }
+
+    {
+        auto apply = std::make_shared<SButton>();
+        apply->Padding = FMargin(10.0f * scale, 4.0f * scale);
+        apply->SetContent(MakeText("Apply", 14.0f * scale, kValueColor));
+        apply->OnClicked = [this]() {
+            if (!s_mat_dirty)
+            {
+                s_mat_status = "No pending changes.";
+                return;
+            }
+            if (SaveCachedMaterialToDisk())
+            {
+                s_mat_dirty = false;
+                s_mat_status = "Material saved.";
+            }
+            else
+            {
+                s_mat_status = "Save failed (see log).";
+            }
+            m_ForceRebuild = true;
+        };
+
+        auto revert = std::make_shared<SButton>();
+        revert->Padding = FMargin(10.0f * scale, 4.0f * scale);
+        revert->SetContent(MakeText("Revert", 14.0f * scale, kValueColor));
+        revert->OnClicked = [this]() {
+            ReloadCachedMaterialFromDisk();
+            s_mat_status = "Changes discarded.";
+            m_ForceRebuild = true;
+        };
+
+        auto button_row = std::make_shared<SHorizontalBox>();
+        button_row->AddSlot(apply).AutoSize();
+        button_row->AddSlot(revert).AutoSize().SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+        column->AddSlot(button_row).AutoSize().SetPadding(FMargin(0.0f, 12.0f * scale, 0.0f, 0.0f));
+    }
+
+    if (!s_mat_status.empty())
+    {
+        column->AddSlot(MakeText(s_mat_status.c_str(), 13.0f * scale, kValueColor))
+            .AutoSize()
+            .SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 0.0f));
+    }
+    if (s_mat_dirty)
+    {
+        column->AddSlot(MakeText("Unsaved material changes.", 13.0f * scale, UIColor(1.0f, 0.85f, 0.2f, 1.0f)))
+            .AutoSize()
+            .SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
     }
 
     wrap(column);
@@ -2189,20 +2312,20 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
             auto go = EditorSelection::GetActiveGameObject().lock();
             if (!go)
                 return;
-            TransformComponent* xf = go->tryGetComponent(TransformComponent);
+            Transform* xf = go->tryGetComponent(Transform);
             if (xf == nullptr)
                 return;
             if (which == 0)
             {
-                Vector3 p = xf->GetPosition();
+                Vector3 p = xf->GetLocalPosition();
                 p[static_cast<size_t>(axis)] = value;
-                xf->SetPosition(p);
+                xf->SetLocalPosition(p);
             }
             else if (which == 1)
             {
-                Vector3 sc = xf->GetScale();
+                Vector3 sc = xf->GetLocalScale();
                 sc[static_cast<size_t>(axis)] = value;
-                xf->SetScale(sc);
+                xf->SetLocalScale(sc);
             }
             else
             {
@@ -2211,7 +2334,7 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
                     degrees[static_cast<size_t>(a)] =
                         m_RotationFields[static_cast<size_t>(a)] ? ParseFloat(m_RotationFields[static_cast<size_t>(a)]->Text) : 0.0f;
                 const Quaternion rot = EditorEuler::MakeQuaternionFromEulerDegrees(degrees);
-                xf->SetRotation(rot);
+                xf->SetLocalRotation(rot);
                 EditorEuler::SetEulerHint(xf, degrees, rot);
             }
             if (auto scene = GET_SYSTEM(EditorSceneManager))
@@ -2256,7 +2379,7 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
     // Generic sections for every other component.
     if (auto go = EditorSelection::GetActiveGameObject().lock())
     {
-        TransformComponent* xf = go->tryGetComponent(TransformComponent);
+        Transform* xf = go->tryGetComponent(Transform);
         auto comps = go->getComponents();
         for (size_t i = 0; i < comps.size(); ++i)
         {
@@ -2288,13 +2411,13 @@ void ZSlateInspectorWindow::SyncFromSelection()
     if (m_NameLabel)
         m_NameLabel->Text = std::string(go->GetName().c_str());
 
-    TransformComponent* xf = go->tryGetComponent(TransformComponent);
+    Transform* xf = go->tryGetComponent(Transform);
     if (xf == nullptr)
         return;
 
-    const Vector3 p = xf->GetPosition();
-    const Vector3 sc = xf->GetScale();
-    const Vector3 euler = EditorEuler::GetEulerHint(xf, xf->getRotation());
+    const Vector3 p = xf->GetLocalPosition();
+    const Vector3 sc = xf->GetLocalScale();
+    const Vector3 euler = EditorEuler::GetEulerHint(xf, xf->GetLocalRotation());
     for (int a = 0; a < 3; ++a)
     {
         const size_t i = static_cast<size_t>(a);
@@ -2526,17 +2649,5 @@ void ZSlateInspectorWindow::OnGUI()
                     m_Input.ProcessKey(key);
             }
         }
-    }
-
-    // Native Material inspector: flush in-memory edits to the .zasset once the
-    // user finishes a drag/click gesture. Widget callbacks (drag-float, color
-    // picker, checkbox, text commit) mutate s_mat and set s_mat_dirty above; we
-    // persist here only when no mouse button is held, so a continuous color /
-    // value drag rewrites the file once on release instead of every frame.
-    if (native_kind == NativeAssetKind::Material && s_mat_dirty && s_mat_loaded && !host.IsLeftDown() && !host.IsRightDown())
-    {
-        if (auto asset_mgr = GET_SYSTEM(AssetManager))
-            asset_mgr->WriteObjectToDiskThreadSafe(s_mat_cached_path, MatRef());
-        s_mat_dirty = false;
     }
 }
