@@ -15,7 +15,7 @@
 //
 // Backends:
 //   BC1 / BC3 / BC7 : richgel999 bc7enc_rdo  (desktop / WebGL)
-//   ASTC 4x4 LDR    : ARM astc-encoder       (mobile)
+//   ASTC 4x4/6x6/8x8 LDR : ARM astc-encoder  (mobile)
 //
 // Keep this header free of third-party includes -- the encoder headers and
 // stb_image_resize2 are pulled in by the .cpp only.
@@ -34,6 +34,8 @@ namespace TextureCompressor
         BC3,       // RGBA, 16 bytes / 4x4 block          (desktop alpha)
         BC7,       // RGBA, 16 bytes / 4x4 block, HQ      (desktop default)
         ASTC_4x4,  // RGBA, 16 bytes / 4x4 block          (mobile)
+        ASTC_6x6,  // RGBA, 16 bytes / 6x6 block
+        ASTC_8x8,  // RGBA, 16 bytes / 8x8 block
     };
 
     struct Options

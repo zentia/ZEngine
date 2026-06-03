@@ -1441,7 +1441,7 @@ cook paths, `MaterialRes` texture PPtrs, or `RenderResourceBase::LoadTexture`.
 Conventions (do not re-litigate):
 
 - **One source image -> per-platform cooked variants.** No `.meta`, no ETC2.
-  BC1/BC3/BC7 on desktop + WebGL, ASTC LDR on mobile (Android / iOS).
+  BC1/BC3/BC7 on desktop + WebGL, ASTC LDR on mobile (Android / iOS / OHOS).
 - **`Texture2D`** stores a concatenated mip chain (`m_Pixels` + `m_MipOffsets`)
   and a real `RHIFormat` ordinal in `m_Format` (incl. BC*/ASTC). New `Transfer`
   nodes are append-only; old single-mip RGBA8 `.zasset` still load (SafeBinaryRead
@@ -1472,7 +1472,7 @@ Conventions (do not re-litigate):
   is never sampleable on the DX12 editor -> verify ASTC cooks by file inspection,
   not rendering.
 - **Entry points**: `Build -> Cook Textures for <Platform>` (MenuController) and
-  console `asset.cook <standalone|android|ios|webgl>` (EditorConsoleCommands).
+  console `asset.cook <standalone|android|ios|ohos|webgl>` (EditorConsoleCommands).
   Startup `TextureImporter::ImportProjectTextures()` (in `EditorAssetManager::
   Initialize`) seeds the editor-platform `Assets/<stem>.zasset` for any source
   image lacking one (A2 first-time seeding, idempotent).

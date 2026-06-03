@@ -53,9 +53,11 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <optional>
 #include <random>
 #include <sstream>
 #include <stb_image.h>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -144,10 +146,9 @@ namespace
     }
 
     // Map the import-settings format enum onto the TextureCompressor backend
-    // family. The editor preview build target is desktop (Standalone), so only
-    // the BC* / RGBA8 families are reachable here; ASTC is produced by the
-    // Phase 6 mobile cook, which selects it directly. RGB8 / RGBA16F decode to
-    // RGBA8 (stb_image force-4-channel) and pass through uncompressed.
+    // family. BC* for desktop / WebGL; ASTC for mobile cooks (Android / iOS /
+    // OHOS). RGB8 / RGBA16F decode to RGBA8 (stb force-4-channel) and pass
+    // through uncompressed.
     TextureCompressor::Format mapToCompressorFormat(TextureImporterSettings::Format f)
     {
         switch (f)
@@ -155,6 +156,9 @@ namespace
             case TextureImporterSettings::Format::BC7: return TextureCompressor::Format::BC7;
             case TextureImporterSettings::Format::BC1: return TextureCompressor::Format::BC1;
             case TextureImporterSettings::Format::BC3: return TextureCompressor::Format::BC3;
+            case TextureImporterSettings::Format::ASTC4x4: return TextureCompressor::Format::ASTC_4x4;
+            case TextureImporterSettings::Format::ASTC6x6: return TextureCompressor::Format::ASTC_6x6;
+            case TextureImporterSettings::Format::ASTC8x8: return TextureCompressor::Format::ASTC_8x8;
             case TextureImporterSettings::Format::RGBA8:
             case TextureImporterSettings::Format::RGB8:
             case TextureImporterSettings::Format::RGBA16F:
@@ -182,6 +186,81 @@ namespace
         mix(static_cast<uint64_t>(static_cast<uint32_t>(s.max_size)));
         mix(static_cast<uint64_t>(static_cast<uint32_t>(s.compression_quality)));
         return h;
+    }
+
+    bool isSourceImageExtension(std::string ext)
+    {
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".bmp";
+    }
+
+    std::string normalisePathKey(const std::filesystem::path& path)
+    {
+        std::error_code ec;
+        std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
+        if (ec)
+        {
+            canonical = std::filesystem::absolute(path, ec);
+            if (ec)
+            {
+                canonical = path;
+            }
+        }
+        return canonical.generic_string();
+    }
+
+    // Source path: SourceAssetRegistry first, then sibling image next to the
+    // .zasset (pre-PR-AI3 imports that never recorded a registry entry).
+    std::optional<std::filesystem::path> resolveSourcePathForZasset(
+        const std::filesystem::path& zasset_abs,
+        const SourceAssetRegistry* source_registry)
+    {
+        if (source_registry != nullptr)
+        {
+            if (const std::optional<SourceAssetRegistry::Entry> entry = source_registry->Lookup(zasset_abs))
+            {
+                if (!entry->source_path.empty())
+                {
+                    const std::filesystem::path src(entry->source_path);
+                    std::error_code ec;
+                    if (std::filesystem::exists(src, ec) && !ec)
+                    {
+                        return src;
+                    }
+                }
+            }
+        }
+
+        static const char* kSiblingExts[] = {".png", ".jpg", ".jpeg", ".tga", ".bmp"};
+        std::error_code ec;
+        for (const char* ext : kSiblingExts)
+        {
+            std::filesystem::path candidate = zasset_abs;
+            candidate.replace_extension(ext);
+            if (std::filesystem::exists(candidate, ec) && !ec)
+            {
+                return candidate;
+            }
+        }
+        return std::nullopt;
+    }
+
+    TextureImporterSettings::PlatformSettings effectiveSettingsForCook(
+        const std::filesystem::path& zasset_abs,
+        TextureImporterSettings::BuildTarget target,
+        EditorAssetManager* editor_mgr,
+        const TextureImporterSettings& defaults)
+    {
+        if (editor_mgr != nullptr)
+        {
+            if (const std::optional<TextureImporterSettings> stored =
+                    editor_mgr->GetTextureImportSettingsRegistry().Lookup(zasset_abs))
+            {
+                return stored->GetEffective(target);
+            }
+        }
+        return defaults.GetEffective(target);
     }
 
     // -------- DDC value blob (cooked Texture2D payload) ----------------------
@@ -247,6 +326,208 @@ namespace
         }
         out.pixels.assign(b.begin() + static_cast<std::ptrdiff_t>(off), b.end());
         out.format = TextureCompressor::FromRhiFormatOrdinal(out.rhi_format);
+        return true;
+    }
+
+    std::optional<std::filesystem::path> cookedOutputPathForZasset(const std::filesystem::path& zasset_abs,
+                                                                   const std::filesystem::path& platform_root,
+                                                                   const std::filesystem::path& content_root)
+    {
+        std::error_code ec;
+        const std::filesystem::path rel = std::filesystem::relative(zasset_abs, content_root, ec);
+        if (ec || rel.empty())
+        {
+            return std::nullopt;
+        }
+        return platform_root / rel;
+    }
+
+    bool writeCookedTextureObject(const TextureCompressor::CompressedTexture& cooked,
+                                  const std::filesystem::path& out_path,
+                                  const std::string& source_guid,
+                                  AssetManager& asset_mgr)
+    {
+        auto* object_manager = GET_SYSTEM(ObjectManager).get();
+        if (object_manager == nullptr)
+        {
+            return false;
+        }
+        Object* produced = object_manager->Produce(TypeOf<Texture2D>(), /*instanceID=*/0);
+        if (produced == nullptr)
+        {
+            return false;
+        }
+        auto* texture = static_cast<Texture2D*>(produced);
+        texture->m_Width = cooked.width;
+        texture->m_Height = cooked.height;
+        texture->m_Format = cooked.rhi_format;
+        texture->m_Pixels = cooked.pixels;
+        texture->m_MipOffsets = cooked.mip_offsets;
+
+        const bool ok = asset_mgr.WriteObjectToDiskWithGuid(out_path, *texture, source_guid);
+        MemoryManager::DestroyObject(produced);
+        return ok;
+    }
+
+    // Reuse the editor-platform .zasset bytes when cooking for the same target
+    // the editor imported with (Standalone on desktop). No source file required.
+    bool copyEditorZassetToCooked(const std::filesystem::path& zasset_abs,
+                                  const std::filesystem::path& out_path,
+                                  const std::string& platform_tag)
+    {
+        std::error_code ec;
+        if (!out_path.parent_path().empty())
+        {
+            std::filesystem::create_directories(out_path.parent_path(), ec);
+        }
+        std::filesystem::copy_file(zasset_abs, out_path, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec)
+        {
+            LOG_ERROR(ZEditor,
+                      "TextureImporter::CookProjectTextures: copy editor zasset failed {} -> {} ({})",
+                      zasset_abs.generic_string(),
+                      out_path.generic_string(),
+                      ec.message());
+            return false;
+        }
+        LOG_INFO(ZEditor,
+                 "TextureImporter: cooked [{}] {} -> {} (editor-zasset-copy)",
+                 platform_tag,
+                 zasset_abs.generic_string(),
+                 out_path.generic_string());
+        return true;
+    }
+
+    // Cook one Texture2D .zasset to Intermediate/Cooked/<platform>/...
+    // Input priority: DDC hit -> editor-zasset copy (same build target) -> encode from source file.
+    bool cookTextureToPlatform(const std::filesystem::path& zasset_abs,
+                               const std::optional<std::filesystem::path>& source_path,
+                               const std::string& source_guid,
+                               const TextureImporterSettings::PlatformSettings& effective,
+                               TextureImporterSettings::BuildTarget cook_target,
+                               const std::string& platform_tag,
+                               const std::filesystem::path& platform_root,
+                               const std::filesystem::path& content_root,
+                               AssetManager& asset_mgr)
+    {
+        const std::optional<std::filesystem::path> out_path_opt =
+            cookedOutputPathForZasset(zasset_abs, platform_root, content_root);
+        if (!out_path_opt.has_value())
+        {
+            LOG_ERROR(ZEditor,
+                      "TextureImporter::CookProjectTextures: cannot compute cooked path for {}",
+                      zasset_abs.generic_string());
+            return false;
+        }
+        const std::filesystem::path& out_path = *out_path_opt;
+
+        std::error_code ec;
+        if (!out_path.parent_path().empty())
+        {
+            std::filesystem::create_directories(out_path.parent_path(), ec);
+        }
+
+        const uint64_t settings_hash = hashEffectiveSettings(effective);
+        const std::string cache_key =
+            Runtime::MakeDDCCacheKey(platform_tag, settings_hash, TextureCompressor::EncoderVersion());
+        const Runtime::DDCKey ddc_key {"Texture", source_guid, cache_key};
+
+        TextureCompressor::CompressedTexture cooked;
+        bool cooked_from_cache = false;
+        if (Runtime::IDerivedDataCache* ddc = Runtime::GetDerivedDataCache())
+        {
+            Runtime::DDCValue cached;
+            if (ddc->get(ddc_key, cached) && unpackCookedBlob(cached.data, cooked))
+            {
+                cooked_from_cache = true;
+            }
+        }
+        if (cooked_from_cache)
+        {
+            if (!writeCookedTextureObject(cooked, out_path, source_guid, asset_mgr))
+            {
+                LOG_ERROR(ZEditor, "TextureImporter::CookProjectTextures: write failed for {}", out_path.generic_string());
+                return false;
+            }
+            LOG_INFO(ZEditor,
+                     "TextureImporter: cooked [{}] {} -> {} ({}, {} mips, guid={}, ddc-hit)",
+                     platform_tag,
+                     zasset_abs.generic_string(),
+                     out_path.generic_string(),
+                     TextureCompressor::ToString(cooked.format),
+                     cooked.mip_offsets.size(),
+                     source_guid);
+            return true;
+        }
+
+        if (cook_target == TextureImporterSettings::EditorPreviewBuildTarget())
+        {
+            return copyEditorZassetToCooked(zasset_abs, out_path, platform_tag);
+        }
+
+        if (!source_path.has_value())
+        {
+            LOG_WARNING(ZEditor,
+                        "TextureImporter::CookProjectTextures: no source for {} (need source file, DDC, or "
+                        "cook for editor platform)",
+                        zasset_abs.generic_string());
+            return false;
+        }
+
+        int width = 0, height = 0, channels = 0;
+        unsigned char* image_data =
+            stbi_load(source_path->generic_string().c_str(), &width, &height, &channels, 4);
+        if (image_data == nullptr || width <= 0 || height <= 0)
+        {
+            LOG_ERROR(ZEditor, "TextureImporter::CookProjectTextures: decode failed for {}",
+                      source_path->generic_string());
+            if (image_data != nullptr)
+            {
+                stbi_image_free(image_data);
+            }
+            return false;
+        }
+        uint32_t out_width = static_cast<uint32_t>(width);
+        uint32_t out_height = static_cast<uint32_t>(height);
+        std::vector<uint8_t> pixel_blob(image_data,
+                                        image_data + static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
+        stbi_image_free(image_data);
+        downscaleRGBA8ToMaxSize(pixel_blob, out_width, out_height, effective.max_size);
+
+        TextureCompressor::Options cook_opts;
+        cook_opts.format = mapToCompressorFormat(effective.format);
+        cook_opts.generate_mips = effective.generate_mipmaps;
+        cook_opts.srgb = effective.sRGB;
+
+        if (!TextureCompressor::Compress(pixel_blob.data(), out_width, out_height, cook_opts, cooked))
+        {
+            LOG_ERROR(ZEditor, "TextureImporter::CookProjectTextures: encode failed for {}",
+                      source_path->generic_string());
+            return false;
+        }
+        if (Runtime::IDerivedDataCache* ddc = Runtime::GetDerivedDataCache())
+        {
+            Runtime::DDCValue value;
+            value.data = packCookedBlob(cooked);
+            value.timestamp = std::time(nullptr);
+            value.version = TextureCompressor::EncoderVersion();
+            ddc->Put(ddc_key, value);
+        }
+
+        if (!writeCookedTextureObject(cooked, out_path, source_guid, asset_mgr))
+        {
+            LOG_ERROR(ZEditor, "TextureImporter::CookProjectTextures: write failed for {}", out_path.generic_string());
+            return false;
+        }
+
+        LOG_INFO(ZEditor,
+                 "TextureImporter: cooked [{}] {} -> {} ({}, {} mips, guid={}, encoded)",
+                 platform_tag,
+                 source_path->generic_string(),
+                 out_path.generic_string(),
+                 TextureCompressor::ToString(cooked.format),
+                 cooked.mip_offsets.size(),
+                 source_guid);
         return true;
     }
 }  // namespace
@@ -505,34 +786,66 @@ int TextureImporter::ImportProjectTextures()
         return 0;
     }
 
-    auto is_source_image_ext = [](std::string ext) {
-        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".bmp";
-    };
-
     TextureImporter importer;
     const std::unique_ptr<AssetImporterSettings> default_settings = importer.GetDefaultSettings();
 
+    auto editor_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+    EditorAssetManager* editor_asset_mgr = editor_mgr.get();
+
     int imported = 0;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(content_root, ec))
+
+    // Primary: SourceAssetRegistry entries (imported textures). Re-seed a missing
+    // .zasset on disk without scanning the whole Assets tree.
+    if (editor_asset_mgr != nullptr)
+    {
+        editor_asset_mgr->GetSourceAssetRegistry().ForEach(
+            [&](const std::filesystem::path& zasset_abs, const SourceAssetRegistry::Entry& entry) {
+                if (entry.source_path.empty())
+                {
+                    return;
+                }
+                if (std::filesystem::exists(zasset_abs, ec) && !ec)
+                {
+                    return;
+                }
+
+                std::filesystem::path output_path = zasset_abs;
+                const std::filesystem::path source_path(entry.source_path);
+                if (!std::filesystem::exists(source_path, ec) || ec)
+                {
+                    LOG_WARNING(ZEditor,
+                                "TextureImporter::ImportProjectTextures: registry source missing for {} ({})",
+                                zasset_abs.generic_string(),
+                                source_path.generic_string());
+                    return;
+                }
+
+                AssetMetadata metadata;
+                if (importer.Import(source_path, output_path, *default_settings, metadata))
+                {
+                    ++imported;
+                }
+            });
+    }
+
+    // Legacy: first-time seeding for source images under Assets/ with no
+    // .zasset sibling yet (not in source_registry until Import records them).
+    for (const auto& dir_entry : std::filesystem::recursive_directory_iterator(content_root, ec))
     {
         if (ec)
         {
             break;
         }
-        if (!entry.is_regular_file())
+        if (!dir_entry.is_regular_file())
         {
             continue;
         }
-        if (!is_source_image_ext(entry.path().extension().string()))
+        if (!isSourceImageExtension(dir_entry.path().extension().string()))
         {
             continue;
         }
 
-        // A2 first-time seeding: cook output lives at <stem>.zasset next to the
-        // source -- the exact slot RenderResourceBase::LoadTexture probes. Skip
-        // if it already exists so warm restarts are O(stat).
-        std::filesystem::path output_path = entry.path();
+        std::filesystem::path output_path = dir_entry.path();
         output_path.replace_extension(".zasset");
         if (std::filesystem::exists(output_path, ec))
         {
@@ -540,7 +853,7 @@ int TextureImporter::ImportProjectTextures()
         }
 
         AssetMetadata metadata;
-        if (importer.Import(entry.path(), output_path, *default_settings, metadata))
+        if (importer.Import(dir_entry.path(), output_path, *default_settings, metadata))
         {
             ++imported;
         }
@@ -548,8 +861,8 @@ int TextureImporter::ImportProjectTextures()
 
     if (imported > 0)
     {
-        LOG_INFO(ZEditor, "TextureImporter: ImportProjectTextures cooked {} source image(s) under {}",
-                 imported, content_root.generic_string());
+        LOG_INFO(ZEditor, "TextureImporter: ImportProjectTextures seeded {} editor-platform texture(s)",
+                 imported);
     }
     return imported;
 }
@@ -585,153 +898,103 @@ int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget ta
         return 0;
     }
 
-    auto is_source_image_ext = [](std::string ext) {
-        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga" || ext == ".bmp";
+    TextureImporterSettings default_texture_settings;
+    {
+        TextureImporter defaults_probe;
+        if (const auto* typed_defaults =
+                dynamic_cast<const TextureImporterSettings*>(defaults_probe.GetDefaultSettings().get()))
+        {
+            default_texture_settings = *typed_defaults;
+        }
+    }
+
+    auto editor_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+    EditorAssetManager* editor_asset_mgr = editor_mgr.get();
+    const SourceAssetRegistry* source_registry =
+        editor_asset_mgr != nullptr ? &editor_asset_mgr->GetSourceAssetRegistry() : nullptr;
+
+    std::unordered_set<std::string> processed_zassets;
+
+    auto tryCookZasset = [&](const std::filesystem::path& zasset_abs) -> bool {
+        const std::string key = normalisePathKey(zasset_abs);
+        if (!processed_zassets.insert(key).second)
+        {
+            return false;
+        }
+
+        std::error_code exists_ec;
+        if (!std::filesystem::exists(zasset_abs, exists_ec) || exists_ec)
+        {
+            return false;
+        }
+
+        std::string source_guid;
+        std::string source_type;
+        asset_mgr->GetAssetGuidAndType(zasset_abs, source_guid, source_type);
+        if (source_guid.empty())
+        {
+            LOG_WARNING(ZEditor,
+                        "TextureImporter::CookProjectTextures: no GUID for {} -- import first; skipping",
+                        zasset_abs.generic_string());
+            return false;
+        }
+
+        const std::optional<std::filesystem::path> source_path =
+            resolveSourcePathForZasset(zasset_abs, source_registry);
+
+        const TextureImporterSettings::PlatformSettings effective =
+            effectiveSettingsForCook(zasset_abs, target, editor_asset_mgr, default_texture_settings);
+
+        return cookTextureToPlatform(zasset_abs,
+                                     source_path,
+                                     source_guid,
+                                     effective,
+                                     target,
+                                     platform_tag,
+                                     platform_root,
+                                     content_root,
+                                     *asset_mgr);
     };
 
-    // Per-asset settings: read texture_import_settings.json overrides when the
-    // editor asset manager exposes them; otherwise defaults (BC7 desktop).
-    TextureImporter importer;
-    const std::unique_ptr<AssetImporterSettings> default_settings = importer.GetDefaultSettings();
-    const TextureImporterSettings* default_texture_settings =
-        dynamic_cast<const TextureImporterSettings*>(default_settings.get());
-
     int cooked_count = 0;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(content_root, ec))
+
+    // Primary: AssetRegistry index of Texture2D .zassets under Assets/.
+    std::vector<std::filesystem::path> texture_zassets;
+    if (editor_asset_mgr != nullptr)
+    {
+        texture_zassets = editor_asset_mgr->GetAssetsByType("Texture2D", content_root);
+    }
+    else
+    {
+        texture_zassets = asset_mgr->GetAssetsByType("Texture2D", content_root);
+    }
+
+    for (const std::filesystem::path& zasset_abs : texture_zassets)
+    {
+        if (tryCookZasset(zasset_abs))
+        {
+            ++cooked_count;
+        }
+    }
+
+    // Legacy: sibling source images whose .zasset was not returned by the registry
+    // index yet (warm-up race) or pre-index imports.
+    for (const auto& dir_entry : std::filesystem::recursive_directory_iterator(content_root, ec))
     {
         if (ec)
         {
             break;
         }
-        if (!entry.is_regular_file() || !is_source_image_ext(entry.path().extension().string()))
+        if (!dir_entry.is_regular_file() || !isSourceImageExtension(dir_entry.path().extension().string()))
         {
             continue;
         }
 
-        const std::filesystem::path source_path = entry.path();
-
-        // The cooked asset reuses the source asset's GUID, read from the
-        // editor-platform .zasset sibling in Assets/. If it isn't imported yet,
-        // skip -- ImportProjectTextures (startup) seeds these.
-        std::filesystem::path editor_zasset = source_path;
+        std::filesystem::path editor_zasset = dir_entry.path();
         editor_zasset.replace_extension(".zasset");
-        std::string source_guid;
-        std::string source_type;
-        asset_mgr->GetAssetGuidAndType(editor_zasset, source_guid, source_type);
-        if (source_guid.empty())
-        {
-            LOG_WARNING(ZEditor,
-                        "TextureImporter::CookProjectTextures: no imported .zasset (GUID) for {} -- run import first; skipping",
-                        source_path.generic_string());
-            continue;
-        }
-
-        const TextureImporterSettings::PlatformSettings effective =
-            default_texture_settings != nullptr ? default_texture_settings->GetEffective(target)
-                                                : TextureImporterSettings::PlatformSettings {};
-
-        // Decode -> RGBA8 -> downscale to max_size.
-        int width = 0, height = 0, channels = 0;
-        unsigned char* image_data = stbi_load(source_path.generic_string().c_str(), &width, &height, &channels, 4);
-        if (image_data == nullptr || width <= 0 || height <= 0)
-        {
-            LOG_ERROR(ZEditor, "TextureImporter::CookProjectTextures: decode failed for {}", source_path.generic_string());
-            if (image_data != nullptr)
-                stbi_image_free(image_data);
-            continue;
-        }
-        uint32_t out_width = static_cast<uint32_t>(width);
-        uint32_t out_height = static_cast<uint32_t>(height);
-        std::vector<uint8_t> pixel_blob(image_data, image_data + static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
-        stbi_image_free(image_data);
-        downscaleRGBA8ToMaxSize(pixel_blob, out_width, out_height, effective.max_size);
-
-        // Cook for `target`, with DDC fast path keyed by (guid, settings, platform, encoderVer).
-        TextureCompressor::Options cook_opts;
-        cook_opts.format = mapToCompressorFormat(effective.format);
-        cook_opts.generate_mips = effective.generate_mipmaps;
-        cook_opts.srgb = effective.sRGB;
-
-        const uint64_t settings_hash = hashEffectiveSettings(effective);
-        const std::string cache_key =
-            Runtime::MakeDDCCacheKey(platform_tag, settings_hash, TextureCompressor::EncoderVersion());
-        const Runtime::DDCKey ddc_key {"Texture", source_guid, cache_key};
-
-        TextureCompressor::CompressedTexture cooked;
-        bool cooked_from_cache = false;
-        if (Runtime::IDerivedDataCache* ddc = Runtime::GetDerivedDataCache())
-        {
-            Runtime::DDCValue cached;
-            if (ddc->get(ddc_key, cached) && unpackCookedBlob(cached.data, cooked))
-            {
-                cooked_from_cache = true;
-            }
-        }
-        if (!cooked_from_cache)
-        {
-            if (!TextureCompressor::Compress(pixel_blob.data(), out_width, out_height, cook_opts, cooked))
-            {
-                LOG_ERROR(ZEditor, "TextureImporter::CookProjectTextures: encode failed for {}", source_path.generic_string());
-                continue;
-            }
-            if (Runtime::IDerivedDataCache* ddc = Runtime::GetDerivedDataCache())
-            {
-                Runtime::DDCValue value;
-                value.data = packCookedBlob(cooked);
-                value.timestamp = std::time(nullptr);
-                value.version = TextureCompressor::EncoderVersion();
-                ddc->Put(ddc_key, value);
-            }
-        }
-
-        // Build the cooked Texture2D and write it with the SOURCE GUID.
-        auto* object_manager = GET_SYSTEM(ObjectManager).get();
-        if (object_manager == nullptr)
-        {
-            continue;
-        }
-        Object* produced = object_manager->Produce(TypeOf<Texture2D>(), /*instanceID=*/0);
-        if (produced == nullptr)
-        {
-            continue;
-        }
-        auto* texture = static_cast<Texture2D*>(produced);
-        texture->m_Width = out_width;
-        texture->m_Height = out_height;
-        texture->m_Format = cooked.rhi_format;
-        texture->m_Pixels = std::move(cooked.pixels);
-        texture->m_MipOffsets = std::move(cooked.mip_offsets);
-
-        const std::filesystem::path rel = std::filesystem::relative(source_path, content_root, ec);
-        std::filesystem::path out_path = platform_root / rel;
-        out_path.replace_extension(".zasset");
-        if (!out_path.parent_path().empty())
-        {
-            std::filesystem::create_directories(out_path.parent_path(), ec);
-        }
-
-        const size_t cooked_mips = texture->m_MipOffsets.size();
-        const TextureCompressor::Format cooked_fmt = cooked.format;
-        const bool ok = asset_mgr->WriteObjectToDiskWithGuid(out_path, *texture, source_guid);
-        MemoryManager::DestroyObject(produced);
-
-        if (ok)
+        if (tryCookZasset(editor_zasset))
         {
             ++cooked_count;
-            LOG_INFO(ZEditor,
-                     "TextureImporter: cooked [{}] {} -> {} ({}, {} mips, guid={}, {})",
-                     platform_tag,
-                     source_path.generic_string(),
-                     out_path.generic_string(),
-                     TextureCompressor::ToString(cooked_fmt),
-                     cooked_mips,
-                     source_guid,
-                     cooked_from_cache ? "ddc-hit" : "encoded");
-        }
-        else
-        {
-            LOG_ERROR(ZEditor, "TextureImporter::CookProjectTextures: write failed for {}", out_path.generic_string());
         }
     }
 

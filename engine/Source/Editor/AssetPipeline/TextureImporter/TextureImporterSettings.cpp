@@ -1,5 +1,7 @@
 #include "TextureImporterSettings.h"
 
+#include "Runtime/Core/Base/Platform.h"
+
 #include "rapidjson/document.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
@@ -9,9 +11,9 @@
 
 namespace
 {
-    const char* kFormatNames[] = {"RGBA8", "RGB8", "RGBA16F", "BC7", "BC1", "BC3"};
+    const char* kFormatNames[] = {"RGBA8", "RGB8", "RGBA16F", "BC7", "BC1", "BC3", "ASTC4x4", "ASTC6x6", "ASTC8x8"};
 
-    const char* kTargetNames[] = {"Default", "Standalone", "Android", "iOS", "WebGL"};
+    const char* kTargetNames[] = {"Default", "Standalone", "Android", "iOS", "OHOS", "WebGL"};
 
     void ReadPlatformObject(const rapidjson::Value& obj, TextureImporterSettings::PlatformSettings& out)
     {
@@ -58,6 +60,8 @@ TextureImporterSettings::BuildTarget TextureImporterSettings::EditorPreviewBuild
 {
 #if defined(__ANDROID__)
     return BuildTarget::Android;
+#elif defined(Z_PLATFORM_OHOS) || defined(__OHOS__)
+    return BuildTarget::OHOS;
 #elif defined(__EMSCRIPTEN__)
     return BuildTarget::WebGL;
 #else
@@ -78,7 +82,7 @@ const char* TextureImporterSettings::BuildTargetDisplayName(BuildTarget target)
 const char* TextureImporterSettings::FormatDisplayName(Format format)
 {
     const int idx = static_cast<int>(format);
-    if (idx >= 0 && idx < static_cast<int>(Format::BC3) + 1)
+    if (idx >= 0 && idx <= static_cast<int>(Format::ASTC8x8))
     {
         return kFormatNames[idx];
     }
@@ -98,6 +102,17 @@ TextureImporterSettings::BuildTarget TextureImporterSettings::BuildTargetFromNam
             return static_cast<BuildTarget>(i);
         }
     }
+    // Aliases for cook console / scripts (canonical JSON key is "OHOS").
+    const std::string lower = [&]() {
+        std::string s(name);
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return s;
+    }();
+    if (lower == "harmonyos" || lower == "openharmony" || lower == "harmony")
+    {
+        return BuildTarget::OHOS;
+    }
     return BuildTarget::Default;
 }
 
@@ -107,11 +122,29 @@ TextureImporterSettings::Format TextureImporterSettings::FormatFromName(const ch
     {
         return Format::RGBA8;
     }
-    for (int i = 0; i <= static_cast<int>(Format::BC3); ++i)
+    for (int i = 0; i <= static_cast<int>(Format::ASTC8x8); ++i)
     {
         if (std::string(name) == kFormatNames[i])
         {
             return static_cast<Format>(i);
+        }
+    }
+    if (name != nullptr)
+    {
+        std::string lower(name);
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower == "astc" || lower == "astc_4x4")
+        {
+            return Format::ASTC4x4;
+        }
+        if (lower == "astc_6x6")
+        {
+            return Format::ASTC6x6;
+        }
+        if (lower == "astc_8x8")
+        {
+            return Format::ASTC8x8;
         }
     }
     return Format::RGBA8;

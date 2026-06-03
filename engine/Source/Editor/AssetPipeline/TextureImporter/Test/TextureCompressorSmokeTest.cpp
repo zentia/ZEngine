@@ -48,6 +48,13 @@ namespace
         return v == 0 ? 1u : v;
     }
 
+    size_t expectedAstcMipBytes(uint32_t block_w, uint32_t block_h, uint32_t w, uint32_t h)
+    {
+        const uint32_t bx = (w + block_w - 1) / block_w;
+        const uint32_t by = (h + block_h - 1) / block_h;
+        return static_cast<size_t>(bx) * by * 16;
+    }
+
     // Expected payload byte size for a single mip of the given format/dims.
     size_t expectedMipBytes(Format f, uint32_t w, uint32_t h)
     {
@@ -58,8 +65,10 @@ namespace
             case Format::RGBA8:    return static_cast<size_t>(w) * h * 4;
             case Format::BC1:      return static_cast<size_t>(bx) * by * 8;
             case Format::BC3:
-            case Format::BC7:
-            case Format::ASTC_4x4: return static_cast<size_t>(bx) * by * 16;
+            case Format::BC7:      return static_cast<size_t>(bx) * by * 16;
+            case Format::ASTC_4x4: return expectedAstcMipBytes(4, 4, w, h);
+            case Format::ASTC_6x6: return expectedAstcMipBytes(6, 6, w, h);
+            case Format::ASTC_8x8: return expectedAstcMipBytes(8, 8, w, h);
         }
         return 0;
     }
@@ -155,11 +164,14 @@ int main()
     runFormat("BC1   64x64 srgb mips", Format::BC1, 64, 64, true, true);
     runFormat("BC3   64x64 srgb mips", Format::BC3, 64, 64, true, true);
     runFormat("BC7   64x64 srgb mips", Format::BC7, 64, 64, true, true);
-    runFormat("ASTC  64x64 srgb mips", Format::ASTC_4x4, 64, 64, true, true);
+    runFormat("ASTC4x4 64x64 srgb mips", Format::ASTC_4x4, 64, 64, true, true);
+    runFormat("ASTC6x6 64x64 srgb mips", Format::ASTC_6x6, 64, 64, true, true);
+    runFormat("ASTC8x8 64x64 srgb mips", Format::ASTC_8x8, 64, 64, true, true);
 
     // Non-power-of-two with partial edge blocks, linear (data texture), mips on.
     runFormat("BC7   40x24 linear mips", Format::BC7, 40, 24, false, true);
-    runFormat("ASTC  40x24 linear mips", Format::ASTC_4x4, 40, 24, false, true);
+    runFormat("ASTC4x4 40x24 linear mips", Format::ASTC_4x4, 40, 24, false, true);
+    runFormat("ASTC6x6 40x24 linear mips", Format::ASTC_6x6, 40, 24, false, true);
 
     // Single-mip path.
     runFormat("BC7   16x16 no-mips", Format::BC7, 16, 16, false, false);

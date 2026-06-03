@@ -188,6 +188,9 @@ void MenuController::EnsureZSlateMenuEntries()
                            menu.AddItem("Cook Textures for iOS", []() {
                                TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget::iOS);
                            }, scale);
+                           menu.AddItem("Cook Textures for HarmonyOS", []() {
+                               TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget::OHOS);
+                           }, scale);
                            menu.AddItem("Cook Textures for WebGL", []() {
                                TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget::WebGL);
                            }, scale);

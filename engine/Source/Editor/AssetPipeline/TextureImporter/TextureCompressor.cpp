@@ -51,7 +51,7 @@ namespace
         return count;
     }
 
-    // Bytes per encoded 4x4 block.
+    // Bytes per encoded block (BCn / ASTC are all 128-bit payloads).
     uint32_t BlockBytes(Format f)
     {
         switch (f)
@@ -59,8 +59,26 @@ namespace
             case Format::BC1: return 8;
             case Format::BC3:
             case Format::BC7:
-            case Format::ASTC_4x4: return 16;
+            case Format::ASTC_4x4:
+            case Format::ASTC_6x6:
+            case Format::ASTC_8x8: return 16;
             case Format::RGBA8: default: return 0;  // not block-based
+        }
+    }
+
+    bool IsAstcFormat(Format f)
+    {
+        return f == Format::ASTC_4x4 || f == Format::ASTC_6x6 || f == Format::ASTC_8x8;
+    }
+
+    void AstcBlockFootprint(Format f, uint32_t& block_w, uint32_t& block_h)
+    {
+        switch (f)
+        {
+            case Format::ASTC_6x6: block_w = block_h = 6; return;
+            case Format::ASTC_8x8: block_w = block_h = 8; return;
+            case Format::ASTC_4x4:
+            default:               block_w = block_h = 4; return;
         }
     }
 
@@ -128,17 +146,21 @@ namespace
         }
     }
 
-    // Encode all mips of one image into an ASTC 4x4 LDR block stream. astcenc
+    // Encode all mips into an ASTC LDR block stream (4x4 / 6x6 / 8x8). astcenc
     // handles block tiling + edge padding internally, so we feed each mip
     // whole. Returns false on encoder error.
     bool EncodeAstcAllMips(const std::vector<std::vector<uint8_t>>& mips,
-                           uint32_t width, uint32_t height, bool srgb,
+                           uint32_t width, uint32_t height, bool srgb, Format astc_fmt,
                            std::vector<uint8_t>& out_blob,
                            std::vector<uint32_t>& out_offsets)
     {
+        uint32_t block_w = 4;
+        uint32_t block_h = 4;
+        AstcBlockFootprint(astc_fmt, block_w, block_h);
+
         astcenc_config config {};
         const astcenc_profile profile = srgb ? ASTCENC_PRF_LDR_SRGB : ASTCENC_PRF_LDR;
-        if (astcenc_config_init(profile, 4, 4, 1, ASTCENC_PRE_MEDIUM, 0, &config) != ASTCENC_SUCCESS)
+        if (astcenc_config_init(profile, block_w, block_h, 1, ASTCENC_PRE_MEDIUM, 0, &config) != ASTCENC_SUCCESS)
         {
             return false;
         }
@@ -156,8 +178,8 @@ namespace
         {
             const uint32_t w = MipDim(width, level);
             const uint32_t h = MipDim(height, level);
-            const uint32_t blocksX = (w + 3) / 4;
-            const uint32_t blocksY = (h + 3) / 4;
+            const uint32_t blocksX = (w + block_w - 1) / block_w;
+            const uint32_t blocksY = (h + block_h - 1) / block_h;
             const size_t outLen = static_cast<size_t>(blocksX) * blocksY * 16;
 
             out_offsets.push_back(static_cast<uint32_t>(out_blob.size()));
@@ -195,6 +217,8 @@ uint32_t ToRhiFormatOrdinal(Format f, bool srgb)
         case Format::BC3:      return srgb ? RHI_FORMAT_BC3_SRGB_BLOCK : RHI_FORMAT_BC3_UNORM_BLOCK;
         case Format::BC7:      return srgb ? RHI_FORMAT_BC7_SRGB_BLOCK : RHI_FORMAT_BC7_UNORM_BLOCK;
         case Format::ASTC_4x4: return srgb ? RHI_FORMAT_ASTC_4x4_SRGB_BLOCK : RHI_FORMAT_ASTC_4x4_UNORM_BLOCK;
+        case Format::ASTC_6x6: return srgb ? RHI_FORMAT_ASTC_6x6_SRGB_BLOCK : RHI_FORMAT_ASTC_6x6_UNORM_BLOCK;
+        case Format::ASTC_8x8: return srgb ? RHI_FORMAT_ASTC_8x8_SRGB_BLOCK : RHI_FORMAT_ASTC_8x8_UNORM_BLOCK;
         default:               return RHI_FORMAT_R8G8B8A8_UNORM;
     }
 }
@@ -213,6 +237,10 @@ Format FromRhiFormatOrdinal(uint32_t o)
         case RHI_FORMAT_BC7_SRGB_BLOCK:        return Format::BC7;
         case RHI_FORMAT_ASTC_4x4_UNORM_BLOCK:
         case RHI_FORMAT_ASTC_4x4_SRGB_BLOCK:   return Format::ASTC_4x4;
+        case RHI_FORMAT_ASTC_6x6_UNORM_BLOCK:
+        case RHI_FORMAT_ASTC_6x6_SRGB_BLOCK:   return Format::ASTC_6x6;
+        case RHI_FORMAT_ASTC_8x8_UNORM_BLOCK:
+        case RHI_FORMAT_ASTC_8x8_SRGB_BLOCK:   return Format::ASTC_8x8;
         default:                               return Format::RGBA8;
     }
 }
@@ -225,12 +253,14 @@ const char* ToString(Format f)
         case Format::BC1:      return "BC1";
         case Format::BC3:      return "BC3";
         case Format::BC7:      return "BC7";
-        case Format::ASTC_4x4: return "ASTC_4x4";
+        case Format::ASTC_4x4: return "ASTC4x4";
+        case Format::ASTC_6x6: return "ASTC6x6";
+        case Format::ASTC_8x8: return "ASTC8x8";
         default:               return "?";
     }
 }
 
-uint32_t EncoderVersion() { return 1; }
+uint32_t EncoderVersion() { return 2; }
 
 bool Compress(const uint8_t* src_rgba8, uint32_t width, uint32_t height,
               const Options& opts, CompressedTexture& out)
@@ -268,9 +298,9 @@ bool Compress(const uint8_t* src_rgba8, uint32_t width, uint32_t height,
         }
     }
 
-    if (opts.format == Format::ASTC_4x4)
+    if (IsAstcFormat(opts.format))
     {
-        return EncodeAstcAllMips(mips, width, height, opts.srgb, out.pixels, out.mip_offsets);
+        return EncodeAstcAllMips(mips, width, height, opts.srgb, opts.format, out.pixels, out.mip_offsets);
     }
 
     for (uint32_t level = 0; level < mipCount; ++level)

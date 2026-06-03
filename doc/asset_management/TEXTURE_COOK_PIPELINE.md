@@ -21,16 +21,46 @@ import overrides, expressed without sidecar files.
 | Stable identity | GUID in `.meta` | package GUID | GUID in the `.zasset` `AssetFileHeader` (176-byte prefix) |
 
 - **Source image** (`.png` / `.jpg` / `.jpeg` / `.tga` / `.bmp`) is the
-  authoring artifact. It is a transient input to import; per the Project window
-  rules it is never surfaced in the asset tree.
-- **Editor-platform `.zasset`** lives next to the source as
-  `<dir>/<stem>.zasset`. It holds the cooked variant for the editor's preview
+  authoring **master** (kept on disk long-term). Per Project window rules it is
+  never surfaced under `Assets/`; recommended layout is peer roots
+  `Textures/` and `Models/` (see section 1.1). Import records the absolute
+  source path in `source_registry.json` (`SourceAssetRegistry`).
+- **Editor-platform `.zasset`** lives under `<Project>/Assets/...` (import
+  product, not beside the source file when sources live outside Assets). It holds
+  the cooked variant for the editor's preview
   build target (`Standalone` -> BC7 on the Windows DX12 editor). This is the
   file the editor preview and scene materials consume.
 - **Per-platform cooked `.zasset`** lives under
   `<Project>/Intermediate/Cooked/<Platform>/<rel>.zasset`. Produced by the cook
   step (Build menu / `asset.cook`). Reuses the **source asset's GUID** so player
   builds resolve references identically.
+
+### 1.1 Source directory layout (recommended)
+
+Mirror `Scripts/` / `Shaders/` / `Data/` -- **peer roots of `Assets/`, checked
+into VCS**, each with its own Project-window extension whitelist:
+
+| Root | Extensions | Product |
+|------|------------|---------|
+| `Textures/` | `.png`, `.jpg`, `.jpeg`, `.tga`, `.bmp` | `Assets/<mapped>.zasset` via Import |
+| `Models/` | `.fbx`, `.obj`, `.gltf`, `.glb` | mesh `.zasset` under `Assets/` |
+
+**Prefer two roots** (`Textures/` + `Models/`) over one combined `Art/` folder:
+importers, watchers, and whitelist rules stay simple (same reason `Data/` is not
+folded into `Shaders/`).
+
+A single `Art/Textures` + `Art/Models` tree is fine if you want one Project
+window node; functionally identical because cook/reimport resolve paths through
+`source_registry.json`, not "sibling of `.zasset`".
+
+**Do not require** sources under `Assets/` -- that fights the Content Browser
+model (only `.zasset` / scenes / prefabs appear there). The legacy
+`sibling-image-next-to-zasset` fallback in `resolveSourcePathForZasset` exists
+only for old imports.
+
+Scaffolding (`ProjectInfo::GetTexturesRoot()` / `GetModelsRoot()`) can land in a
+follow-up PR; until then, create the folders manually or via `.zproject` fields
+once added.
 
 ---
 
@@ -62,7 +92,7 @@ RGBA8 mip0). Covered by the T1/T2 scenarios in
 
 - **BC1 / BC3 / BC7** via `bc7enc_rdo` (vendored under `engine/3rdparty/`, MIT).
   Desktop + WebGL.
-- **ASTC LDR** via ARM `astc-encoder` (Apache-2.0). Mobile (Android / iOS).
+- **ASTC LDR** via ARM `astc-encoder` (Apache-2.0). Mobile (Android / iOS / OHOS).
 - Output `CompressedTexture { width, height, rhi_format, mip_offsets, pixels }`
   matches the Phase 1 `Texture2D` layout exactly.
 - `EncoderVersion()` is folded into the DDC cache key so an encoder bump
@@ -164,16 +194,25 @@ references would not resolve in a player build.
 
 ### Cook walk
 
-`TextureImporter::CookProjectTextures(BuildTarget)`:
+`TextureImporter::CookProjectTextures(BuildTarget)` (registry-driven):
 
-1. Walk `<Project>/Assets/` for source images.
-2. Read the source GUID from the editor `Assets/<stem>.zasset` header
-   (`GetAssetGuidAndType`); skip with a warning if the texture isn't imported.
-3. `GetEffective(target)` -> cook options; decode + downscale + DDC-keyed encode
-   (BC on desktop/WebGL, ASTC on mobile).
-4. Write the cooked `Texture2D` to
-   `<Project>/Intermediate/Cooked/<Platform>/<rel>.zasset` via
-   `WriteObjectToDiskWithGuid(out_path, texture, source_guid)`.
+1. Enumerate `Texture2D` `.zasset` files under `<Project>/Assets/` via
+   `EditorAssetManager::GetAssetsByType("Texture2D", content_root)`.
+2. Resolve the source image via `SourceAssetRegistry` (fallback: sibling image
+   next to the `.zasset` for pre-PR-AI3 imports).
+3. Per-asset `texture_import_settings.json` overrides -> `GetEffective(target)`.
+4. Cook input priority (no source required for steps 4a/4b):
+   - **DDC hit** for `(guid, platform, settings, encoderVer)` -> write cooked
+     `.zasset` without reading the source file.
+   - **Editor platform** (`Standalone` on desktop): copy the editor
+     `Assets/.../*.zasset` into `Intermediate/Cooked/<Platform>/` (same bytes/GUID).
+   - **Else**: decode source -> encode -> DDC `Put` -> write via
+     `WriteObjectToDiskWithGuid`.
+5. Output path mirrors the **editor `.zasset` relative path** under
+   `Intermediate/Cooked/<Platform>/`, not the source file path.
+
+A legacy pass still walks `Assets/` for stray source images to catch registry
+warm-up races; primary authority is the AssetRegistry index.
 
 `ProjectInfo::EnsureScriptsScaffold` creates `Intermediate/Cooked/` (gitignored);
 the per-platform subdir is made on demand. Paths come from
@@ -182,8 +221,8 @@ the per-platform subdir is made on demand. Paths come from
 ### Entry points
 
 - **Build menu** (`MenuController.cpp`): `Build -> Cook Textures for
-  Standalone | Android | iOS | WebGL`.
-- **Console** (`EditorConsoleCommands.cpp`): `asset.cook <standalone|android|ios|webgl>`.
+  Standalone | Android | iOS | HarmonyOS | WebGL`.
+- **Console** (`EditorConsoleCommands.cpp`): `asset.cook <standalone|android|ios|ohos|webgl>`.
 
 ---
 

@@ -115,8 +115,10 @@ namespace
     std::string s_tex_status;
 
     const int kTexMaxSizeChoices[] = {32, 64, 128, 256, 512, 1024, 2048, 4096, 8192};
-    const char* kTexFormatLabels[] = {"RGBA8", "RGB8", "RGBA16F", "BC7", "BC1 (DXT1)", "BC3 (DXT5)"};
-    const char* kTexPlatformLabels[] = {"Default", "PC (Standalone)", "Android", "iOS", "WebGL"};
+    const char* kTexFormatLabels[] = {
+        "RGBA8", "RGB8", "RGBA16F", "BC7", "BC1 (DXT1)", "BC3 (DXT5)", "ASTC4x4", "ASTC6x6", "ASTC8x8"};
+    const char* kTexPlatformLabels[] = {
+        "Default", "PC (Standalone)", "Android", "iOS", "HarmonyOS (OHOS)", "WebGL"};
 
     int TexMaxSizeToIndex(int max_size)
     {
@@ -1211,8 +1213,9 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
         AddFieldRow(column, "Max Size", MakeText(std::to_string(eff.max_size).c_str(), 14.0f * scale, kDimColor), 0,
                     scale);
         AddFieldRow(column, "Format",
-                    MakeText(kTexFormatLabels[std::clamp(static_cast<int>(eff.format), 0, 5)], 14.0f * scale,
-                             kDimColor),
+                    MakeText(kTexFormatLabels[std::clamp(static_cast<int>(eff.format), 0,
+                                                           static_cast<int>(std::size(kTexFormatLabels)) - 1)],
+                             14.0f * scale, kDimColor),
                     0, scale);
         AddFieldRow(column, "sRGB", MakeText(eff.sRGB ? "true" : "false", 14.0f * scale, kDimColor), 0, scale);
         AddFieldRow(column, "Generate Mip Maps", MakeText(eff.generate_mipmaps ? "true" : "false", 14.0f * scale, kDimColor),
@@ -1241,7 +1244,8 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
 
         // Format combo.
         {
-            const int idx = std::clamp(static_cast<int>(editable->format), 0, 5);
+            const int idx =
+                std::clamp(static_cast<int>(editable->format), 0, static_cast<int>(std::size(kTexFormatLabels)) - 1);
             std::vector<std::string> opts(std::begin(kTexFormatLabels), std::end(kTexFormatLabels));
             AddFieldRow(column, "Format",
                         MakeComboButton(opts[static_cast<size_t>(idx)], opts,
@@ -1301,11 +1305,20 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
 
         if (editable->format == TextureImporterSettings::Format::BC7 ||
             editable->format == TextureImporterSettings::Format::BC1 ||
-            editable->format == TextureImporterSettings::Format::BC3)
+            editable->format == TextureImporterSettings::Format::BC3 ||
+            editable->format == TextureImporterSettings::Format::ASTC4x4 ||
+            editable->format == TextureImporterSettings::Format::ASTC6x6 ||
+            editable->format == TextureImporterSettings::Format::ASTC8x8)
         {
+            const bool is_astc =
+                editable->format == TextureImporterSettings::Format::ASTC4x4 ||
+                editable->format == TextureImporterSettings::Format::ASTC6x6 ||
+                editable->format == TextureImporterSettings::Format::ASTC8x8;
+            const char* hint = is_astc
+                                   ? "ASTC cooks for mobile; not sampleable in the DX12 editor preview."
+                                   : "BC block compression is wired for import and cook.";
             column
-                ->AddSlot(MakeText("BC payloads are stored as RGBA8 until block compression is wired.",
-                                   12.0f * scale, kDimColor))
+                ->AddSlot(MakeText(hint, 12.0f * scale, kDimColor))
                 .AutoSize()
                 .SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
         }

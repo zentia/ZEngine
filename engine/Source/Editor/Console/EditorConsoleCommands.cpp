@@ -177,7 +177,7 @@ namespace
         // (source GUID preserved) to Intermediate/Cooked/<Platform>/.
         if (args.empty())
         {
-            LOG_ERROR(ZConsole, "Usage: asset.cook <standalone|android|ios|webgl>");
+            LOG_ERROR(ZConsole, "Usage: asset.cook <standalone|android|ios|ohos|webgl>");
             return false;
         }
 
@@ -204,7 +204,7 @@ namespace
         }
         else
         {
-            LOG_ERROR(ZConsole, "asset.cook: unknown platform '{}' (standalone|android|ios|webgl)", args[0]);
+            LOG_ERROR(ZConsole, "asset.cook: unknown platform '{}' (standalone|android|ios|ohos|webgl)", args[0]);
             return false;
         }
 
@@ -393,7 +393,7 @@ void RegisterEditorConsoleCommands(ConsoleManager& console)
                             CmdAssetReimport);
     console.RegisterCommand("asset.count", "Print AssetRegistry asset count", CmdAssetCount);
     console.RegisterCommand("asset.cook",
-                            "Cook project textures for a platform. Usage: asset.cook <standalone|android|ios|webgl>",
+                            "Cook project textures for a platform. Usage: asset.cook <standalone|android|ios|ohos|webgl>",
                             CmdAssetCook);
     console.RegisterCommand("play", "Enter play mode (editor)", CmdPlay);
     console.RegisterCommand("pause", "Pause play mode (editor)", CmdPause);

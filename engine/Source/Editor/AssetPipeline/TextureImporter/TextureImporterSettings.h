@@ -18,7 +18,10 @@ public:
         RGBA16F,
         BC7,
         BC1,
-        BC3
+        BC3,
+        ASTC4x4,  // ASTC 4x4 LDR (mobile default)
+        ASTC6x6,  // ASTC 6x6 LDR
+        ASTC8x8   // ASTC 8x8 LDR (lower quality, smaller)
     };
 
     // Mirrors Unity's platform tabs (subset we can cook toward today).
@@ -28,6 +31,7 @@ public:
         Standalone,
         Android,
         iOS,
+        OHOS,   // HarmonyOS / OpenHarmony (mobile, ASTC cook target)
         WebGL,
         Count
     };
@@ -43,7 +47,7 @@ public:
         bool generate_mipmaps = true;
         bool sRGB = true;
         int max_size = 4096;
-        // 0 = fastest/lowest, 100 = best quality (reserved for BC encoders).
+        // 0 = fastest/lowest, 100 = best quality (BC / ASTC encoders).
         int compression_quality = 50;
     };
 
