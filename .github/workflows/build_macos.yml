@@ -1,0 +1,26 @@
+name: Build macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 120
+    strategy:
+      matrix:
+        configuration: [debug, release]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          brew install ninja glslang spirv-tools
+
+      - name: Build
+        run: ./build_macos.sh ${{ matrix.configuration }} ninja --target ZEditor --jobs $(sysctl -n hw.ncpu)

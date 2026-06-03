@@ -1,0 +1,44 @@
+{
+  "configurations": [
+    {
+      "name": "Win32",
+      "includePath": [
+        "${workspaceRoot}/**",
+        "${workspaceRoot}/engine/**",
+        "${workspaceRoot}/engine/3rdparty/**",
+        "${workspaceRoot}/engine/3rdparty/puerts/unity/native/EASTL/include",
+        "${workspaceRoot}/build/**"
+      ],
+      "defines": ["EASTL_OPENSOURCE=1"],
+      "intelliSenseMode": "windows-msvc-x64",
+      "compilerPath": ""
+    },
+    {
+      "name": "x64-Debug",
+      "includePath": [
+        "${workspaceRoot}/**",
+        "${workspaceRoot}/engine/**",
+        "${workspaceRoot}/engine/3rdparty/**",
+        "${workspaceRoot}/engine/3rdparty/puerts/unity/native/EASTL/include",
+        "${workspaceRoot}/build/**"
+      ],
+      "defines": ["EASTL_OPENSOURCE=1"],
+      "intelliSenseMode": "windows-msvc-x64",
+      "compilerPath": ""
+    },
+    {
+      "name": "x64-Release",
+      "includePath": [
+        "${workspaceRoot}/**",
+        "${workspaceRoot}/engine/**",
+        "${workspaceRoot}/engine/3rdparty/**",
+        "${workspaceRoot}/engine/3rdparty/puerts/unity/native/EASTL/include",
+        "${workspaceRoot}/build/**"
+      ],
+      "defines": ["EASTL_OPENSOURCE=1"],
+      "intelliSenseMode": "windows-msvc-x64",
+      "compilerPath": ""
+    }
+  ],
+  "version": 4
+}

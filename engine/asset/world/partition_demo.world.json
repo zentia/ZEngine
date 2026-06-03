@@ -1,0 +1,24 @@
+{
+  "name": "PartitionDemo",
+  "level_urls": [
+    "asset/level/1-1.level.json"
+  ],
+  "default_level_url": "asset/level/1-1.level.json",
+  "enable_world_partition": true,
+  "async_cell_loading": true,
+  "cell_size": 2000.0,
+  "loading_range": 1,
+  "grid_origin": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+  },
+  "cell_level_url_pattern": "asset/level/1-1.level.json",
+  "partition_cells": [
+    {
+      "coord_x": 0,
+      "coord_y": 0,
+      "level_url": "asset/level/1-1.level.json"
+    }
+  ]
+}

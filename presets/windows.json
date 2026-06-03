@@ -1,0 +1,173 @@
+{
+    "version": 4,
+    "configurePresets": [
+        {
+            "name": "windows_except_vscode",
+            "hidden": true,
+            "condition": {
+                "type": "allOf",
+                "conditions": [
+                    {
+                        "type": "equals",
+                        "lhs": "${hostSystemName}",
+                        "rhs": "Windows"
+                    },
+                    {
+                        "type": "equals",
+                        "lhs": "$env{VSCODE_NLS_CONFIG}",
+                        "rhs": ""
+                    }
+                ]
+            }
+        },
+        {
+            "name": "windows_visual_studio",
+            "displayName": "Windows Visual Studio (MSVC)",
+            "inherits": "windows_except_vscode",
+            "generator": "Visual Studio 17 2022",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_VS_GENERATE_DEVELOPER_COMMAND_PROMPT": "ON",
+                "CMAKE_VS_INCLUDE_INSTALL_TO_DEFAULT_BUILD": "OFF",
+                "CMAKE_VS_INCLUDE_PACKAGE_TO_DEFAULT_BUILD": "OFF",
+                "CMAKE_VS_MSBUILD_COMMAND": "",
+                "CMAKE_VS_DEVENV_COMMAND": ""
+            }
+        },
+        {
+            "name": "windows_visual_studio_clangcl",
+            "displayName": "Windows Visual Studio (ClangCL)",
+            "inherits": "windows_visual_studio",
+            "toolset": "ClangCL",
+            "binaryDir": "${sourceDir}/build/build_win_clangcl"
+        },
+
+        {
+            "name": "windows_visual_studio_fast",
+            "displayName": "Windows Visual Studio (Fast Build)",
+            "inherits": "windows_visual_studio",
+            "cacheVariables": {
+                "USE_UNITY_BUILD": "ON"
+            }
+        },
+
+        {
+            "name": "windows_ninja",
+            "displayName": "Windows Ninja",
+            "inherits": "windows_except_vscode",
+            "generator": "Ninja Multi-Config",
+            "toolchainFile": "${sourceDir}/toolchain/clang-cl.cmake",
+            "binaryDir": "${sourceDir}/build/build_win_ninja"
+        },
+        {
+            "name": "windows_vscode",
+            "displayName": "Windows VSCode",
+            "generator": "Ninja",
+            "hidden": true,
+            "toolchainFile": "${sourceDir}/toolchain/clang-cl.cmake",
+            "binaryDir": "${sourceDir}/build/build_vscode/${presetName}",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Windows"
+            }
+        },
+        {
+            "name": "windows_vscode_debug",
+            "displayName": "Windows VSCode Debug",
+            "inherits": "windows_vscode",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "windows_vscode_profile",
+            "displayName": "Windows VSCode Profile",
+            "inherits": "windows_vscode",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Profile"
+            }
+        },
+        {
+            "name": "windows_vscode_release",
+            "displayName": "Windows VSCode Release",
+            "inherits": "windows_vscode",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "windows_ci",
+            "displayName": "Windows CI",
+            "configurePreset": "windows_ninja",
+            "configuration": "RelWithDebInfo",
+            "targets": [
+                "ZEditor"
+            ],
+            "nativeToolOptions": [
+                "-j",
+                "0"
+            ]
+        },
+        {
+            "name": "windows_editor",
+            "displayName": "Windows Editor",
+            "configurePreset": "windows_visual_studio",
+            "configuration": "RelWithDebInfo",
+            "targets": [
+                "ZEditor"
+            ],
+            "nativeToolOptions": [
+                "-j",
+                "0"
+            ]
+        },
+        {
+            "name": "windows_editor_clangcl",
+            "displayName": "Windows Editor (ClangCL)",
+            "configurePreset": "windows_visual_studio_clangcl",
+            "configuration": "RelWithDebInfo",
+            "targets": [
+                "ZEditor"
+            ],
+            "nativeToolOptions": [
+                "-j",
+                "0"
+            ]
+        },
+
+        {
+            "name": "windows_pc",
+            "displayName": "Windows PC",
+            "configurePreset": "windows_visual_studio",
+            "configuration": "RelWithDebInfo",
+            "targets": [
+                "ZEditor"
+            ],
+            "nativeToolOptions": [
+                "-j",
+                "0"
+            ]
+        },
+        {
+            "name": "windows_pc_v8_debug",
+            "displayName": "Windows PC (V8 DebugV8)",
+            "description": "PAPI_TYPE=v8 + custom DebugV8 config: /MT + /Od + /Zi, ABI-compatible with vendored wee8.lib (MT_StaticRelease). Stock --config Debug fails to link under V8; use this for full single-step debugging instead. Requires -DPAPI_TYPE=v8 at configure time.",
+            "configurePreset": "windows_visual_studio",
+            "configuration": "DebugV8",
+            "targets": [
+                "ZEditor"
+            ],
+            "nativeToolOptions": [
+                "-j",
+                "0"
+            ]
+        }
+    ]
+}
+

@@ -1,0 +1,9 @@
+{
+    "version": 4,
+    "include": [
+        "windows.json",
+        "linux.json",
+        "macos.json",
+        "web.json"
+    ]
+}

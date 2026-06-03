@@ -1,0 +1,110 @@
+{
+    "version": 4,
+    "configurePresets": [
+        {
+            "name": "linux_make_debug",
+            "displayName": "Linux Make Debug",
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "USE_CCACHE": "ON"
+            },
+            "environment": {
+                "CC": "clang",
+                "CXX": "clang++"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux_make_release",
+            "displayName": "Linux Make Release",
+            "generator": "Unix Makefiles",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "USE_CCACHE": "ON"
+            },
+            "environment": {
+                "CC": "clang",
+                "CXX": "clang++"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux_ninja_debug",
+            "displayName": "Linux Ninja Debug",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "USE_CCACHE": "ON"
+            },
+            "environment": {
+                "CC": "clang",
+                "CXX": "clang++"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        },
+        {
+            "name": "linux_ninja_release",
+            "displayName": "Linux Ninja Release",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "USE_CCACHE": "ON"
+            },
+            "environment": {
+                "CC": "clang",
+                "CXX": "clang++"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Linux"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "linux_editor_debug",
+            "displayName": "Linux Editor Debug",
+            "configurePreset": "linux_ninja_debug",
+            "targets": [
+                "ZEditor"
+            ],
+            "nativeToolOptions": [
+                "-j"
+            ]
+        },
+        {
+            "name": "linux_editor_release",
+            "displayName": "Linux Editor Release",
+            "configurePreset": "linux_ninja_release",
+            "targets": [
+                "ZEditor"
+            ],
+            "nativeToolOptions": [
+                "-j"
+            ]
+        }
+    ]
+}
+

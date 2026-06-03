@@ -1,0 +1,97 @@
+﻿#pragma once
+
+#include "Runtime/UI/Render/UiAffine2D.h"
+#include "Runtime/UI/Core/UITypes.h"
+
+#include <cstdint>
+#include <vector>
+
+struct UiVertex
+{
+    float pos[2] {};
+    float uv[2] {0.0f, 0.0f};
+    float color[4] {1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+struct UiDrawCommand
+{
+    void* texture_id {nullptr};
+    uint32_t index_offset {0};
+    uint32_t index_count {0};
+    // Clip rect active when this command was recorded (UI-space pixels). Consumers
+    // that support GPU scissor (e.g. the editor native overlay) use it for per-
+    // command clipping; the runtime UIPass currently ignores it (its quads are
+    // already CPU-clamped in appendTexturedQuad). has_clip=false => unclipped.
+    UIRect clip_rect {0.0f, 0.0f, 0.0f, 0.0f};
+    bool has_clip {false};
+};
+
+// CPU-side geometry collected by BatchedUIRenderer during UISystem::PreRender().
+class UiRenderBatch
+{
+public:
+    void clear();
+    bool empty() const { return m_Indices.empty(); }
+
+    void pushClipRect(const UIRect& clip_rect, bool intersect_with_current);
+    void popClipRect();
+
+    // Forces the next draw to open a fresh UiDrawCommand instead of merging into
+    // the current one. Used to keep per-window command ranges disjoint so the
+    // editor overlay can submit windows in z-order.
+    void forceNewCommand();
+
+    void pushTransform(const UiAffine2D& transform);
+    void popTransform();
+
+    void drawQuad(const UIRect& rect, const UIColor& color, void* white_texture_id);
+    void drawRect(const UIRect& rect, const UIColor& color, float thickness, void* white_texture_id);
+    // Solid convex polygon (>= 3 ordered points), fan-triangulated. Samples the
+    // white texel (uv 0,0). Per-vertex clipping is NOT done here -- the recorded
+    // command carries the active clip rect, so the editor overlay's GPU scissor
+    // clips it (the runtime UIPass ignores clip, but never calls this).
+    void drawConvexPoly(const Vector2* points, int count, const UIColor& color, void* white_texture_id);
+    void drawTexturedQuad(const UIRect& rect,
+                          void* texture_id,
+                          const UIColor& color,
+                          const Vector2& uv0,
+                          const Vector2& uv1,
+                          void* white_texture_id);
+
+    const std::vector<UiVertex>& getVertices() const { return m_Vertices; }
+    const std::vector<uint16_t>& getIndices() const { return m_Indices; }
+    const std::vector<UiDrawCommand>& getCommands() const { return m_Commands; }
+    const UIRect& getActiveClipRect() const { return m_ActiveClip; }
+
+private:
+    void beginCommand(void* texture_id, void* white_texture_id);
+    void transformPoint(float x, float y, float& out_x, float& out_y) const;
+    void appendTexturedQuad(float x0,
+                            float y0,
+                            float x1,
+                            float y1,
+                            const UIColor& color,
+                            float uv0x,
+                            float uv0y,
+                            float uv1x,
+                            float uv1y,
+                            void* texture_id,
+                            void* white_texture_id);
+    void appendOutline(float x0,
+                       float y0,
+                       float x1,
+                       float y1,
+                       const UIColor& color,
+                       float thickness,
+                       void* white_texture_id);
+
+    std::vector<UiVertex> m_Vertices;
+    std::vector<uint16_t> m_Indices;
+    std::vector<UiDrawCommand> m_Commands;
+    std::vector<UIRect> m_ClipStack;
+    std::vector<UiAffine2D> m_TransformStack;
+    UiAffine2D m_ActiveTransform = UiAffine2D::Identity();
+    UIRect m_ActiveClip {0.0f, 0.0f, 0.0f, 0.0f};
+    bool m_HasClip {false};
+    void* m_CurrentTexture {nullptr};
+};

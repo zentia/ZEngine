@@ -1,0 +1,10 @@
+{
+    "version": 4,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 24
+    },
+    "include": [
+        "presets/entry.json"
+    ]
+}

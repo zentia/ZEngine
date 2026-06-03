@@ -1,0 +1,86 @@
+{
+    "version": 4,
+    "configurePresets": [
+        {
+            "name": "macos_xcode_debug",
+            "displayName": "macOS Xcode Debug",
+            "generator": "Xcode",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos_xcode_release",
+            "displayName": "macOS Xcode Release",
+            "generator": "Xcode",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos_ninja_debug",
+            "displayName": "macOS Ninja Debug",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "USE_CCACHE": "ON"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "macos_ninja_release",
+            "displayName": "macOS Ninja Release",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "USE_CCACHE": "ON"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "macos_editor_debug",
+            "displayName": "macOS Editor Debug",
+            "configurePreset": "macos_xcode_debug",
+            "configuration": "Debug",
+            "targets": [
+                "ZEditor"
+            ]
+        },
+        {
+            "name": "macos_editor_release",
+            "displayName": "macOS Editor Release",
+            "configurePreset": "macos_xcode_release",
+            "configuration": "Release",
+            "targets": [
+                "ZEditor"
+            ]
+        }
+    ]
+}
+

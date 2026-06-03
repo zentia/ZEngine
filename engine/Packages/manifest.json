@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "description": "Built-in ZEngine packages shipped with the engine (UPM Editor manifest analogue).",
+  "packages": {
+    "com.zengine.core": {
+      "version": "0.1.0",
+      "displayName": "ZEngine Core",
+      "path": "engine/Source/Runtime"
+    },
+    "com.zengine.render.rhi": {
+      "version": "0.1.0",
+      "displayName": "ZEngine Render RHI",
+      "path": "engine/Source/Runtime"
+    },
+    "com.zengine.ugui": {
+      "version": "1.0.0",
+      "displayName": "ZEngine UGUI",
+      "path": "engine/Source/Runtime/UGUI"
+    }
+  }
+}

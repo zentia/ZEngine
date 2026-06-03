@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+    <!--
+        EASTL string visualizers for this project.
+        We keep multiple compatible views for the same type because Visual Studio can expose
+        eastl::compressed_pair internals differently depending on debug info / toolset.
+        The debugger will try higher-priority entries first and fall back if one doesn't validate.
+    -->
+
+    <!-- Preferred path observed in the current debugger tree: mPair.base.mFirst -->
+    <Type Name="eastl::basic_string&lt;char,eastl::allocator&gt;" Priority="High">
+        <AlternativeType Name="eastl::string"/>
+        <AlternativeType Name="eastl::string8"/>
+        <DisplayString Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0 &amp;&amp; mPair.base.mFirst.heap.mpBegin != 0">{mPair.base.mFirst.heap.mpBegin,s}</DisplayString>
+        <DisplayString Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0 &amp;&amp; mPair.base.mFirst.heap.mpBegin == 0">(empty)</DisplayString>
+        <DisplayString Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">{mPair.base.mFirst.sso.mData,s}</DisplayString>
+        <StringView Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0 &amp;&amp; mPair.base.mFirst.heap.mpBegin != 0">mPair.base.mFirst.heap.mpBegin,s</StringView>
+        <StringView Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">mPair.base.mFirst.sso.mData,s</StringView>
+        <Expand>
+            <Synthetic Name="[value]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0 &amp;&amp; mPair.base.mFirst.heap.mpBegin != 0">
+                <DisplayString>{mPair.base.mFirst.heap.mpBegin,s}</DisplayString>
+            </Synthetic>
+            <Synthetic Name="[value]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">
+                <DisplayString>{mPair.base.mFirst.sso.mData,s}</DisplayString>
+            </Synthetic>
+            <Item Name="[size]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0">mPair.base.mFirst.heap.mnSize</Item>
+            <Item Name="[size]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">(23 - (mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x7F))</Item>
+            <Item Name="[capacity]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0">(mPair.base.mFirst.heap.mnCapacity &amp; 0x7FFFFFFFFFFFFFFF)</Item>
+            <Item Name="[capacity]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">23</Item>
+            <Item Name="[storage]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0">heap</Item>
+            <Item Name="[storage]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">sso</Item>
+        </Expand>
+    </Type>
+
+    <Type Name="eastl::basic_string&lt;wchar_t,eastl::allocator&gt;" Priority="High">
+        <AlternativeType Name="eastl::wstring"/>
+        <DisplayString Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0 &amp;&amp; mPair.base.mFirst.heap.mpBegin != 0">{mPair.base.mFirst.heap.mpBegin,su}</DisplayString>
+        <DisplayString Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0 &amp;&amp; mPair.base.mFirst.heap.mpBegin == 0">(empty)</DisplayString>
+        <DisplayString Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">{mPair.base.mFirst.sso.mData,su}</DisplayString>
+        <StringView Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0 &amp;&amp; mPair.base.mFirst.heap.mpBegin != 0">mPair.base.mFirst.heap.mpBegin,su</StringView>
+        <StringView Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">mPair.base.mFirst.sso.mData,su</StringView>
+        <Expand>
+            <Synthetic Name="[value]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0 &amp;&amp; mPair.base.mFirst.heap.mpBegin != 0">
+                <DisplayString>{mPair.base.mFirst.heap.mpBegin,su}</DisplayString>
+            </Synthetic>
+            <Synthetic Name="[value]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">
+                <DisplayString>{mPair.base.mFirst.sso.mData,su}</DisplayString>
+            </Synthetic>
+            <Item Name="[size]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0">mPair.base.mFirst.heap.mnSize</Item>
+            <Item Name="[size]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">(11 - (mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x7F))</Item>
+            <Item Name="[capacity]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0">(mPair.base.mFirst.heap.mnCapacity &amp; 0x7FFFFFFFFFFFFFFF)</Item>
+            <Item Name="[capacity]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">11</Item>
+            <Item Name="[storage]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) != 0">heap</Item>
+            <Item Name="[storage]" Condition="(mPair.base.mFirst.sso.mRemainingSizeField.mnRemainingSize &amp; 0x80) == 0">sso</Item>
+        </Expand>
+    </Type>
+
+    <!-- Fallback path for builds where compressed_pair internals are flattened differently -->
+    <Type Name="eastl::basic_string&lt;char,eastl::allocator&gt;" Priority="MediumLow">
+        <AlternativeType Name="eastl::string"/>
+        <AlternativeType Name="eastl::string8"/>
+        <DisplayString Condition="((((eastl::compressed_pair_imp&lt;eastl::basic_string&lt;char,eastl::allocator&gt;::Layout,eastl::allocator,0&gt;&amp;)mPair).mFirst.sso.mRemainingSizeField.mnRemainingSize) &amp; 0x80) != 0 &amp;&amp; ((eastl::compressed_pair_imp&lt;eastl::basic_string&lt;char,eastl::allocator&gt;::Layout,eastl::allocator,0&gt;&amp;)mPair).mFirst.heap.mpBegin != 0">{((eastl::compressed_pair_imp&lt;eastl::basic_string&lt;char,eastl::allocator&gt;::Layout,eastl::allocator,0&gt;&amp;)mPair).mFirst.heap.mpBegin,s}</DisplayString>
+        <DisplayString Condition="((((eastl::compressed_pair_imp&lt;eastl::basic_string&lt;char,eastl::allocator&gt;::Layout,eastl::allocator,0&gt;&amp;)mPair).mFirst.sso.mRemainingSizeField.mnRemainingSize) &amp; 0x80) == 0">{((eastl::compressed_pair_imp&lt;eastl::basic_string&lt;char,eastl::allocator&gt;::Layout,eastl::allocator,0&gt;&amp;)mPair).mFirst.sso.mData,s}</DisplayString>
+    </Type>
+
+    <Type Name="eastl::basic_string&lt;wchar_t,eastl::allocator&gt;" Priority="MediumLow">
+        <AlternativeType Name="eastl::wstring"/>
+        <DisplayString Condition="((((eastl::compressed_pair_imp&lt;eastl::basic_string&lt;wchar_t,eastl::allocator&gt;::Layout,eastl::allocator,0&gt;&amp;)mPair).mFirst.sso.mRemainingSizeField.mnRemainingSize) &amp; 0x80) != 0 &amp;&amp; ((eastl::compressed_pair_imp&lt;eastl::basic_string&lt;wchar_t,eastl::allocator&gt;::Layout,eastl::allocator,0&gt;&amp;)mPair).mFirst.heap.mpBegin != 0">{((eastl::compressed_pair_imp&lt;eastl::basic_string&lt;wchar_t,eastl::allocator&gt;::Layout,eastl::allocator,0&gt;&amp;)mPair).mFirst.heap.mpBegin,su}</DisplayString>
+        <DisplayString Condition="((((eastl::compressed_pair_imp&lt;eastl::basic_string&lt;wchar_t,eastl::allocator&gt;::Layout,eastl::allocator,0&gt;&amp;)mPair).mFirst.sso.mRemainingSizeField.mnRemainingSize) &amp; 0x80) == 0">{((eastl::compressed_pair_imp&lt;eastl::basic_string&lt;wchar_t,eastl::allocator&gt;::Layout,eastl::allocator,0&gt;&amp;)mPair).mFirst.sso.mData,su}</DisplayString>
+    </Type>
+</AutoVisualizer>

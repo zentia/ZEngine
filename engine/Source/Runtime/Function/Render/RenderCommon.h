@@ -1,0 +1,190 @@
+#pragma once
+
+#include "Interface/RHI.h"
+#include "Runtime/Core/Math/Matrix4.h"
+#include "Runtime/Core/Math/Vector3.h"
+#include "Runtime/Core/Math/Vector4.h"
+#include "Runtime/Function/Render/RenderGPUResource.h"
+#include "Runtime/Function/Render/RenderType.h"
+
+static const uint32_t s_PointLightShadowMapDimension = 2048;
+static const uint32_t s_DirectionalLightShadowMapDimension = 4096;
+
+// TODO: 64 may not be the best
+static uint32_t const s_MeshPerDrawcallMaxInstanceCount = 64;
+static uint32_t const s_MeshVertexBlendingMaxJointCount = 1024;
+static uint32_t const s_MaxPointLightCount = 15;
+// should sync the macros in "shader_include/constants.h"
+
+struct VulkanSceneDirectionalLight
+{
+    Vector3 direction;
+    float _padding_direction;
+    Vector3 color;
+    float _padding_color;
+};
+
+struct VulkanScenePointLight
+{
+    Vector3 position;
+    float radius;
+    Vector3 intensity;
+    float _padding_intensity;
+};
+
+struct MeshPerframeStorageBufferObject
+{
+    Matrix4x4 proj_view_matrix;
+    Vector3 camera_position;
+    float _padding_camera_position;
+    Vector3 ambient_light;
+    float _padding_ambient_light;
+    uint32_t point_light_num;
+    uint32_t show_skybox {1};
+    uint32_t _padding_point_light_num_2;
+    uint32_t _padding_point_light_num_3;
+    VulkanScenePointLight scene_point_lights[s_MaxPointLightCount];
+    VulkanSceneDirectionalLight scene_directional_light;
+    Matrix4x4 directional_light_proj_view;
+};
+
+struct RenderMeshInstance
+{
+    float enable_vertex_blending;
+    float _padding_enable_vertex_blending_1;
+    float _padding_enable_vertex_blending_2;
+    float _padding_enable_vertex_blending_3;
+    Matrix4x4 model_matrix;
+};
+
+struct MeshPerdrawcallStorageBufferObject
+{
+    RenderMeshInstance mesh_instances[s_MeshPerDrawcallMaxInstanceCount];
+};
+
+struct MeshPerdrawcallVertexBlendingStorageBufferObject
+{
+    Matrix4x4 joint_matrices[s_MeshVertexBlendingMaxJointCount * s_MeshPerDrawcallMaxInstanceCount];
+};
+
+struct MeshPerMaterialUniformBufferObject
+{
+    Vector4 baseColorFactor {0.0f, 0.0f, 0.0f, 0.0f};
+
+    float metallicFactor = 0.0f;
+    float roughnessFactor = 0.0f;
+    float normalScale = 0.0f;
+    float occlusionStrength = 0.0f;
+
+    Vector3 emissiveFactor = {0.0f, 0.0f, 0.0f};
+    uint32_t is_blend = 0;
+    uint32_t is_double_sided = 0;
+};
+
+struct MeshPointLightShadowPerframeStorageBufferObject
+{
+    uint32_t point_light_num;
+    uint32_t _padding_point_light_num_1;
+    uint32_t _padding_point_light_num_2;
+    uint32_t _padding_point_light_num_3;
+    Vector4 point_lights_position_and_radius[s_MaxPointLightCount];
+};
+
+struct MeshPointLightShadowPerdrawcallStorageBufferObject
+{
+    RenderMeshInstance mesh_instances[s_MeshPerDrawcallMaxInstanceCount];
+};
+
+struct MeshPointLightShadowPerdrawcallVertexBlendingStorageBufferObject
+{
+    Matrix4x4 joint_matrices[s_MeshVertexBlendingMaxJointCount * s_MeshPerDrawcallMaxInstanceCount];
+};
+
+struct MeshDirectionalLightShadowPerframeStorageBufferObject
+{
+    Matrix4x4 light_proj_view;
+};
+
+struct MeshDirectionalLightShadowPerdrawcallStorageBufferObject
+{
+    RenderMeshInstance mesh_instances[s_MeshPerDrawcallMaxInstanceCount];
+};
+
+struct MeshDirectionalLightShadowPerdrawcallVertexBlendingStorageBufferObject
+{
+    Matrix4x4 joint_matrices[s_MeshVertexBlendingMaxJointCount * s_MeshPerDrawcallMaxInstanceCount];
+};
+
+struct AxisStorageBufferObject
+{
+    Matrix4x4 model_matrix = Matrix4x4::IDENTITY;
+    uint32_t selected_axis = 3;
+};
+
+struct ParticleBillboardPerframeStorageBufferObject
+{
+    Matrix4x4 proj_view_matrix;
+    Vector3 right_direction;
+    float _padding_right_position;
+    Vector3 up_direction;
+    float _padding_up_direction;
+    Vector3 foward_direction;
+    float _padding_forward_position;
+};
+
+struct ParticleCollisionPerframeStorageBufferObject
+{
+    Matrix4x4 view_matrix;
+    Matrix4x4 proj_view_matrix;
+    Matrix4x4 proj_inv_matrix;
+};
+
+// TODO: 4096 may not be the best
+static constexpr int s_ParticleBillboardBufferSize = 4096;
+struct ParticleBillboardPerdrawcallStorageBufferObject
+{
+    Vector4 positions[s_ParticleBillboardBufferSize];
+    Vector4 sizes[s_ParticleBillboardBufferSize];
+    Vector4 colors[s_ParticleBillboardBufferSize];
+};
+
+struct MeshInefficientPickPerframeStorageBufferObject
+{
+    Matrix4x4 proj_view_matrix;
+    uint32_t rt_width;
+    uint32_t rt_height;
+};
+
+struct MeshInefficientPickPerdrawcallStorageBufferObject
+{
+    Matrix4x4 model_matrices[s_MeshPerDrawcallMaxInstanceCount];
+    uint32_t node_ids[s_MeshPerDrawcallMaxInstanceCount];
+    float enable_vertex_blendings[s_MeshPerDrawcallMaxInstanceCount];
+};
+
+struct MeshInefficientPickPerdrawcallVertexBlendingStorageBufferObject
+{
+    Matrix4x4 joint_matrices[s_MeshVertexBlendingMaxJointCount * s_MeshPerDrawcallMaxInstanceCount];
+};
+
+// nodes
+struct RenderMeshNode
+{
+    const Matrix4x4* model_matrix {nullptr};
+    const Matrix4x4* joint_matrices {nullptr};
+    uint32_t joint_count {0};
+    RenderMeshGPUResource* ref_mesh {nullptr};
+    RenderMaterialGPUResource* ref_material {nullptr};
+
+    uint32_t node_id;
+    bool enable_vertex_blending {false};
+};
+
+struct RenderAxisNode
+{
+    Matrix4x4 model_matrix {Matrix4x4::IDENTITY};
+    RenderMeshGPUResource* ref_mesh {nullptr};
+
+    uint32_t node_id;
+    bool enable_vertex_blending {false};
+};

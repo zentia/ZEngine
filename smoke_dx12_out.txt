@@ -1,0 +1,11 @@
+[Bq]set base dir type 0: E:\Engine\ZEngine
+[Bq]set base dir type 1: E:\Engine\ZEngine
+[Bq]file_manager is constructed
+[Bq]base dir type 0: E:\Engine\ZEngine
+[Bq]base dir type 1: E:\Engine\ZEngine
+[Bq]Hardware AVX2 support:true
+[Bq]Hardware CRC32 support:true
+[Bq]log_manager is constructed
+[Bq]invalid time_zone string default local time, use local time as default.
+[Bq]invalid time_zone string default local time, use local time as default.
+[Bq]open  file:I:/ZEngineDemo/Saved/Logs/engine_20260602_1.log success, idx:0, seq:1, counter:1

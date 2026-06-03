@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<!--
+  ZEngine WebLauncher shell.
+
+  This is the HTML shell consumed by emcc via -sSHELL_FILE=. The body hosts
+  a single <canvas id="canvas"> which the C++ side targets through
+  emscripten_webgl_create_context("#canvas", ...).
+
+  A few small details that matter:
+    * The canvas keeps a fixed buffer size (CSS controls layout size). If you
+      need DPR-aware rendering, call Module.canvas.width = ... in JS or use
+      emscripten_set_canvas_element_size from C++.
+    * Module.print / printErr forward stdout/stderr to the on-page <pre>.
+    * {{{ SCRIPT }}} is replaced by emcc with the generated <script> tag for
+      the produced .js loader.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>ZEngine Web</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: #1a1a1a; color: #ddd;
+                 font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono",
+                              Menlo, monospace; }
+    #app       { display: flex; flex-direction: column; height: 100vh; }
+    #canvas    { display: block; width: 100%; flex: 1 1 auto;
+                 image-rendering: pixelated; outline: none; background: #000; }
+    #log       { flex: 0 0 25%; max-height: 25%; overflow: auto;
+                 margin: 0; padding: 6px 10px; font-size: 12px; line-height: 1.35;
+                 background: #111; border-top: 1px solid #333; white-space: pre-wrap; }
+    .err       { color: #ff7676; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <canvas id="canvas" width="1280" height="720" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+    <pre id="log"></pre>
+  </div>
+
+  <script>
+    var logEl = document.getElementById('log');
+    function append(line, isErr) {
+      var span = document.createElement('span');
+      if (isErr) span.className = 'err';
+      span.textContent = line + '\n';
+      logEl.appendChild(span);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    var Module = {
+      canvas: (function () {
+        var c = document.getElementById('canvas');
+        // Prevent WebGL context loss from triggering the page's default UI.
+        c.addEventListener('webglcontextlost', function (e) {
+          append('[shell] WebGL context lost', true);
+          e.preventDefault();
+        }, false);
+        return c;
+      })(),
+      print:    function (text) { console.log(text);   append(text, false); },
+      printErr: function (text) { console.error(text); append(text, true);  },
+      onAbort:  function (what) { append('[shell] abort: ' + what, true); }
+    };
+
+    window.addEventListener('error', function (ev) {
+      append('[shell] window error: ' + ev.message, true);
+    });
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>

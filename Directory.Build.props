@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Win64 + PAPI_TYPE=v8: vendored wee8.lib was built with MSVC 14.44 STL vectorized
+  helpers (__std_min_8u, __std_find_end_2, ...). Link with an older default toolset
+  (14.38/14.39) causes LNK2019 on those symbols. Override at MSBuild level so both
+  cmake build and Visual Studio IDE pick up 14.44 without per-session env vars.
+
+  Requires VS 2022 with the 14.44.35207 component installed (VS Installer:
+  MSVC v143 VS 2022 C++ x64/x86 build tools, latest 14.4x). See AGENTS.md 2.7.
+-->
+<Project>
+  <PropertyGroup>
+    <_ZWee8Lib>$(MSBuildThisFileDirectory)engine\3rdparty\puerts\unity\native\papi-v8\.backends\papi-v8\Lib\Win64\wee8.lib</_ZWee8Lib>
+    <_ZV8Toolset>14.44.35207</_ZV8Toolset>
+    <!--
+      Detect whether the v8 toolset is ACTUALLY installed in any standard VS 2022
+      edition. We must check installation (not just the vendored wee8.lib) because:
+        * boxes without 14.44 (e.g. only 14.39) would otherwise fail the CMake
+          VCTargetsPath probe with MSB8052 ('14.44.35207' not compatible with v143),
+        * MSBuild < 17.10 maps 14.44 to platform toolset v144, which it doesn't know.
+      $(VCInstallDir) is not yet defined when Directory.Build.props is imported, so we
+      probe the well-known install paths directly.
+    -->
+    <_ZV8ToolsetInstalled Condition="Exists('C:\Program Files\Microsoft Visual Studio\2022\Professional\VC\Tools\MSVC\$(_ZV8Toolset)') or Exists('C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\$(_ZV8Toolset)') or Exists('C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\$(_ZV8Toolset)') or Exists('C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Tools\MSVC\$(_ZV8Toolset)')">true</_ZV8ToolsetInstalled>
+  </PropertyGroup>
+  <!--
+    Win64 + PAPI_TYPE=v8: vendored wee8.lib was built with MSVC 14.44 STL vectorized
+    helpers (__std_min_8u, __std_find_end_2, ...). Linking with an older default
+    toolset (14.38/14.39) causes LNK2019 on those symbols. Force 14.44 ONLY when it is
+    both needed (wee8.lib present) and available (14.44 installed). Callers can still
+    override by setting VCToolsVersion in the environment / on the command line.
+  -->
+  <PropertyGroup Condition="'$(VCToolsVersion)' == '' and Exists('$(_ZWee8Lib)') and '$(_ZV8ToolsetInstalled)' == 'true'">
+    <VCToolsVersion>$(_ZV8Toolset)</VCToolsVersion>
+  </PropertyGroup>
+</Project>

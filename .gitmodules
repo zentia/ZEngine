@@ -1,0 +1,38 @@
+[submodule "engine/3rdparty/mimalloc"]
+	path = engine/3rdparty/mimalloc
+	url = https://github.com/microsoft/mimalloc.git
+[submodule "tools/renderdoc"]
+	path = tools/renderdoc
+	url = https://github.com/baldurk/renderdoc.git
+[submodule "engine/3rdparty/puerts"]
+	path = engine/3rdparty/puerts
+	url = https://github.com/Tencent/puerts
+[submodule "engine/3rdparty/bqlog"]
+	path = engine/3rdparty/bqlog
+	url = https://github.com/tencent/bqlog
+[submodule "engine/3rdparty/glfw"]
+	path = engine/3rdparty/glfw
+	url = https://github.com/glfw/glfw.git
+[submodule "engine/3rdparty/JoltPhysics"]
+	path = engine/3rdparty/JoltPhysics
+	url = https://github.com/zentia/JoltPhysics.git
+	branch = master
+[submodule "engine/3rdparty/tinyobjloader"]
+	path = engine/3rdparty/tinyobjloader
+	url = https://github.com/tinyobjloader/tinyobjloader.git
+[submodule "engine/3rdparty/curl"]
+	path = engine/3rdparty/curl
+	url = https://github.com/curl/curl.git
+[submodule "engine/3rdparty/minizip-ng"]
+	path = engine/3rdparty/minizip-ng
+	url = https://github.com/zlib-ng/minizip-ng
+[submodule "engine/3rdparty/lmdb"]
+	path = engine/3rdparty/lmdb
+	url = https://github.com/LMDB/lmdb.git
+[submodule "engine/3rdparty/rapidjson"]
+	path = engine/3rdparty/rapidjson
+	url = https://github.com/Tencent/rapidjson.git
+	branch = master
+[submodule "engine/3rdparty/xxHash"]
+	path = engine/3rdparty/xxHash
+	url = https://github.com/Cyan4973/xxHash.git

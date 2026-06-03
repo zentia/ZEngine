@@ -1,0 +1,263 @@
+# =============================================================================
+# ZEngine Code Format Configuration
+# Game Engine Hybrid Style - Optimized for readability and debugging
+# =============================================================================
+---
+Language:        Cpp
+Standard:        c++17
+
+# Based on a mix of styles, customized for game engine development
+# BasedOnStyle: None (fully custom)
+
+# -----------------------------------------------------------------------------
+# Macro Handling
+# -----------------------------------------------------------------------------
+StatementMacros:
+  - Meta
+  - CLASS
+  - STRUCT
+  - REFLECTION_TYPE
+  - REFLECTION_BODY
+  - Z_ASSERT
+  - Z_CHECK
+  - Z_VERIFY
+
+AttributeMacros:
+  - EXPORT_RUNTIME
+  - EXPORT_EDITOR
+
+# -----------------------------------------------------------------------------
+# Indentation
+# -----------------------------------------------------------------------------
+IndentWidth:     4
+TabWidth:        4
+UseTab:          Never
+AccessModifierOffset: -4
+IndentCaseLabels: true
+IndentCaseBlocks: false
+IndentGotoLabels: true
+IndentPPDirectives: BeforeHash
+IndentExternBlock: AfterExternBlock
+IndentWrappedFunctionNames: false
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
+NamespaceIndentation: All
+
+# -----------------------------------------------------------------------------
+# Line Width & Breaking
+# -----------------------------------------------------------------------------
+ColumnLimit:     0
+PenaltyBreakAssignment: 2
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakComment: 300
+PenaltyBreakFirstLessLess: 120
+PenaltyBreakString: 1000
+PenaltyBreakTemplateDeclaration: 10
+PenaltyExcessCharacter: 1000000
+PenaltyReturnTypeOnItsOwnLine: 60
+
+# -----------------------------------------------------------------------------
+# Brace Wrapping (Allman Style - Common in Game Engines)
+# -----------------------------------------------------------------------------
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel:  true
+  AfterClass:      true
+  AfterControlStatement: Always
+  AfterEnum:       true
+  AfterFunction:   true
+  AfterNamespace:  true
+  AfterObjCDeclaration: true
+  AfterStruct:     true
+  AfterUnion:      true
+  AfterExternBlock: true
+  BeforeCatch:     true
+  BeforeElse:      true
+  BeforeLambdaBody: false
+  BeforeWhile:     false
+  IndentBraces:    false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+  SplitEmptyNamespace: true
+
+# -----------------------------------------------------------------------------
+# Breaking Rules
+# -----------------------------------------------------------------------------
+AlwaysBreakAfterDefinitionReturnType: None
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: false
+AlwaysBreakTemplateDeclarations: Yes
+BreakBeforeBinaryOperators: None
+BreakBeforeInheritanceComma: false
+BreakInheritanceList: BeforeColon
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: BeforeColon
+BreakStringLiterals: true
+
+# -----------------------------------------------------------------------------
+# Alignment
+# -----------------------------------------------------------------------------
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignConsecutiveMacros: true
+AlignEscapedNewlines: Left
+AlignOperands: Align
+AlignTrailingComments: true
+
+# -----------------------------------------------------------------------------
+# Short Statements
+# -----------------------------------------------------------------------------
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: Inline
+AllowShortLoopsOnASingleLine: false
+
+# -----------------------------------------------------------------------------
+# Arguments & Parameters
+# -----------------------------------------------------------------------------
+BinPackArguments: false
+BinPackParameters: false
+
+# -----------------------------------------------------------------------------
+# Pointer & Reference Alignment
+# -----------------------------------------------------------------------------
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# -----------------------------------------------------------------------------
+# Spacing
+# -----------------------------------------------------------------------------
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: false
+SpaceAroundPointerQualifiers: Default
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCaseColon: false
+SpaceBeforeCpp11BracedList: true
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceBeforeSquareBrackets: false
+SpaceInEmptyBlock: false
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 2
+SpacesInAngles: Never
+SpacesInCStyleCastParentheses: false
+SpacesInConditionalStatement: false
+SpacesInContainerLiterals: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# -----------------------------------------------------------------------------
+# Empty Lines
+# -----------------------------------------------------------------------------
+EmptyLineBeforeAccessModifier: Always
+EmptyLineAfterAccessModifier: Never
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1
+
+# -----------------------------------------------------------------------------
+# Includes
+# -----------------------------------------------------------------------------
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Precompiled header
+  - Regex:           '^"pch\.h"'
+    Priority:        -2
+  # Main header (same name as .cpp)
+  - Regex:           '^".*\.h"'
+    Priority:        1
+  # Engine runtime headers
+  - Regex:           '^"runtime/.*"'
+    Priority:        2
+  # Engine editor headers
+  - Regex:           '^"editor/.*"'
+    Priority:        3
+  # Third party headers (EASTL, etc.)
+  - Regex:           '^"(EASTL|glm|spdlog|imgui)/.*"'
+    Priority:        4
+  # C++ standard library
+  - Regex:           '^<.*>'
+    Priority:        5
+  # Other headers
+  - Regex:           '.*'
+    Priority:        6
+IncludeIsMainRegex: '([-_](test|unittest))?$'
+IncludeIsMainSourceRegex: ''
+
+# -----------------------------------------------------------------------------
+# Comments
+# -----------------------------------------------------------------------------
+CommentPragmas:  '^ IWYU pragma:'
+FixNamespaceComments: true
+ReflowComments:  true
+
+# -----------------------------------------------------------------------------
+# Using Declarations
+# -----------------------------------------------------------------------------
+SortUsingDeclarations: true
+
+# -----------------------------------------------------------------------------
+# Miscellaneous
+# -----------------------------------------------------------------------------
+CompactNamespaces: false
+Cpp11BracedListStyle: true
+DeriveLineEnding: true
+DisableFormat:   false
+ExperimentalAutoDetectBinPacking: false
+InsertTrailingCommas: None
+
+# -----------------------------------------------------------------------------
+# ForEach Macros
+# -----------------------------------------------------------------------------
+ForEachMacros:
+  - foreach
+  - Q_FOREACH
+  - BOOST_FOREACH
+  - ZENGINE_FOREACH
+
+# -----------------------------------------------------------------------------
+# Raw String Formats
+# -----------------------------------------------------------------------------
+RawStringFormats:
+  - Language:        Cpp
+    Delimiters:
+      - cc
+      - CC
+      - cpp
+      - Cpp
+      - CPP
+      - 'c++'
+      - 'C++'
+    CanonicalDelimiter: ''
+  - Language:        TextProto
+    Delimiters:
+      - pb
+      - proto
+      - PROTO
+    CanonicalDelimiter: pb
+
+# -----------------------------------------------------------------------------
+# Objective-C (not used, but keep for completeness)
+# -----------------------------------------------------------------------------
+ObjCBinPackProtocolList: Never
+ObjCBlockIndentWidth: 4
+ObjCSpaceAfterProperty: false
+ObjCSpaceBeforeProtocolList: true
+
+# -----------------------------------------------------------------------------
+# Java (not used, but keep for completeness)
+# -----------------------------------------------------------------------------
+BreakAfterJavaFieldAnnotations: false
+JavaScriptQuotes: Leave
+JavaScriptWrapImports: true
+...

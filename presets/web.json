@@ -1,0 +1,68 @@
+{
+    "version": 4,
+    "configurePresets": [
+        {
+            "name": "web_base",
+            "hidden": true,
+            "generator": "Ninja",
+            "toolchainFile": "${sourceDir}/cmake/EmscriptenToolchain.cmake",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "USE_CCACHE": "OFF",
+                "GLFW_BUILD_WAYLAND": "OFF",
+                "GLFW_BUILD_X11": "OFF"
+            }
+        },
+        {
+            "name": "web_ninja_debug",
+            "displayName": "Web (Emscripten) Ninja Debug",
+            "inherits": "web_base",
+            "binaryDir": "${sourceDir}/build/build_web_debug",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "web_ninja_release",
+            "displayName": "Web (Emscripten) Ninja Release",
+            "inherits": "web_base",
+            "binaryDir": "${sourceDir}/build/build_web_release",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "web_ninja_relwithdebinfo",
+            "displayName": "Web (Emscripten) Ninja RelWithDebInfo",
+            "inherits": "web_base",
+            "binaryDir": "${sourceDir}/build/build_web_relwithdebinfo",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "web_runtime_debug",
+            "displayName": "Web Runtime Debug",
+            "configurePreset": "web_ninja_debug",
+            "targets": [
+                "ZRuntime"
+            ],
+            "nativeToolOptions": [
+                "-j"
+            ]
+        },
+        {
+            "name": "web_runtime_release",
+            "displayName": "Web Runtime Release",
+            "configurePreset": "web_ninja_release",
+            "targets": [
+                "ZRuntime"
+            ],
+            "nativeToolOptions": [
+                "-j"
+            ]
+        }
+    ]
+}

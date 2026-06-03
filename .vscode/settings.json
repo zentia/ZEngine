@@ -1,0 +1,85 @@
+{
+  // 关闭内联建议（AI 补全）
+  "editor.inlineSuggest.enabled": false,
+  
+  // 关闭触发字符时的建议
+  "editor.suggestOnTriggerCharacters": false,
+  
+  // 关闭所有快速建议
+  "editor.quickSuggestions": {
+    "other": false,
+    "comments": false,
+    "strings": false
+  },
+  
+  // 关闭 Tab 补全
+  "editor.tabCompletion": "off",
+  
+  // 关闭提交字符时接受建议
+  "editor.acceptSuggestionOnCommitCharacter": false,
+  
+  // 关闭回车时接受建议
+  "editor.acceptSuggestionOnEnter": "off",
+  
+  // 关闭单词建议
+  "editor.suggest.showWords": false,
+  
+  // 关闭关键字建议
+  "editor.suggest.showKeywords": false,
+  
+  // 关闭代码片段建议
+  "editor.suggest.showSnippets": false,
+  
+  // 关闭基于单词的建议
+  "editor.wordBasedSuggestions": "off",
+  
+  // 关闭参数提示
+  "editor.parameterHints.enabled": false,
+  
+  // 关闭悬停提示（可选，如果需要可以设为 true）
+  "editor.hover.enabled": "off",
+  
+  // 关闭自动完成
+  "editor.quickSuggestionsDelay": 0,
+  
+  // 关闭所有建议
+  "editor.suggest.enabled": false,
+  
+  // Cursor 特定设置 - 禁用 AI 功能
+  "cursor.general.enableAI": false,
+  "cursor.chat.enabled": false,
+  
+  // 关闭代码补全
+  "editor.codeActionsOnSave": {},
+  
+  // 关闭自动导入
+  "editor.suggest.autoImports": false,
+  
+  // 关闭所有语言服务的建议
+  "editor.suggest.showClasses": false,
+  "editor.suggest.showColors": false,
+  "editor.suggest.showConstants": false,
+  "editor.suggest.showConstructors": false,
+  "editor.suggest.showEnums": false,
+  "editor.suggest.showEvents": false,
+  "editor.suggest.showFields": false,
+  "editor.suggest.showFiles": false,
+  "editor.suggest.showFolders": false,
+  "editor.suggest.showFunctions": false,
+  "editor.suggest.showInterfaces": false,
+  "editor.suggest.showIssues": false,
+  "editor.suggest.showMethods": false,
+  "editor.suggest.showModules": false,
+  "editor.suggest.showOperators": false,
+  "editor.suggest.showProperties": false,
+  "editor.suggest.showReferences": false,
+  "editor.suggest.showStructs": false,
+  "editor.suggest.showTypeParameters": false,
+  "editor.suggest.showUnits": false,
+  "editor.suggest.showUsers": false,
+  "editor.suggest.showValues": false,
+  "editor.suggest.showVariables": false,
+  "editor.suggest.showText": false,
+  "dotnet.defaultSolution": "build/ZEngine.sln",
+  "java.configuration.updateBuildConfiguration": "interactive"
+}
