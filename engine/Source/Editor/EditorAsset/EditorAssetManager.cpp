@@ -845,7 +845,7 @@ void EditorAssetManager::FlushPendingShaderInvalidations()
     const auto now = std::chrono::steady_clock::now();
 
     // Move the elapsed entries out under the lock, then act on them
-    // outside the lock. Same pattern as ProjectWindow's drop-import
+    // outside the lock. Same pattern as Content Browser drop-import
     // drain (PR-AI1): we never want to hold a debounce mutex while
     // calling into the DX12 compiler in case it ever grew a callback
     // that re-entered queueShaderInvalidation.
@@ -930,7 +930,7 @@ void EditorAssetManager::FlushPendingShaderInvalidations()
 void EditorAssetManager::RecordImportSource(const std::filesystem::path& zasset_abs_path,
                                             const std::filesystem::path& source_abs_path)
 {
-    // Thin wrapper so AssetsMenu / ProjectWindow don't need to learn the
+    // Thin wrapper so AssetsMenu / Content Browser don't need to learn the
     // SourceAssetRegistry type. This also gives us a single funnel for
     // future "did the importer succeed?" checks if we ever want to gate
     // the registry write on import success.

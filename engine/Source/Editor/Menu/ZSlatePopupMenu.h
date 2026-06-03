@@ -9,7 +9,7 @@
 // friendly), outside-click dismiss, and item-fire teardown.
 //
 // This replaces the per-window inline single-level SMenu plumbing that
-// ZSlateHierarchyWindow / ZSlateProjectWindow each duplicated (m_Menu +
+// ZSlateHierarchyWindow / ZSlateContentBrowserWindow each duplicated (m_Menu +
 // m_MenuOpen + m_MenuInput + Open/Close), and lifts them to full submenu
 // support for free.
 //

@@ -458,8 +458,10 @@ namespace
                      int depth,
                      float scale)
     {
+        // Wide enough for "Compression Quality" / "Generate Mip Maps" at 14px.
+        constexpr float kLabelColumnWidth = 168.0f;
         auto row = std::make_shared<SHorizontalBox>();
-        row->AddSlot(MakeLabelBox(label, scale, 118.0f * scale))
+        row->AddSlot(MakeLabelBox(label, scale, kLabelColumnWidth * scale))
             .AutoSize()
             .SetVAlign(EVerticalAlignment::Center);
         row->AddSlot(content).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);

@@ -1,5 +1,7 @@
 #include "Editor/EditorLayout/ZSlateDock/DockTree.h"
 
+#include "Editor/EditorLayout/EditorLayoutWindowIds.h"
+
 #include <algorithm>
 #include <rapidjson/document.h>
 #include <rapidjson/stringbuffer.h>
@@ -440,7 +442,10 @@ namespace EditorDock
                     for (const auto& t : in["tabs"].GetArray())
                     {
                         if (t.IsString())
-                            node->Tabs.push_back(DockTab {t.GetString()});
+                        {
+                            node->Tabs.push_back(
+                                DockTab {EditorLayoutWindowIds::RemapLegacyPanelTitle(t.GetString())});
+                        }
                     }
                 }
                 if (node->ActiveTab >= static_cast<int>(node->Tabs.size()))

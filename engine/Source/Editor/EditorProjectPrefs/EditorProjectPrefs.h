@@ -22,4 +22,8 @@ public:
 namespace EditorProjectPrefKeys
 {
     inline constexpr const char* LastOpenedScene = "LastOpenedScene";
+    // UE ContentBrowser: VerticalSplitter.FixedSlotSize0 (~230 px path tree).
+    inline constexpr const char* ContentBrowserPathViewWidth = "ContentBrowser.PathViewWidth";
+    // "List" or "Tile" (UE default is Tile).
+    inline constexpr const char* ContentBrowserViewMode = "ContentBrowser.ViewMode";
 }

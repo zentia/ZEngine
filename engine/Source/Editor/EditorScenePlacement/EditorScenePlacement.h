@@ -15,14 +15,14 @@ namespace EditorScenePlacement
     bool IsMeshDataZAsset(const std::filesystem::path& absolute_zasset_path);
 
     // Project-relative path stored on SubMeshRes::m_MeshAsset (e.g. "Models/Foo.zasset").
-    std::string MakeProjectRelativeAssetPath(const std::filesystem::path& absolute_path);
+    std::string MakeContentRelativeAssetPath(const std::filesystem::path& absolute_path);
 
     // Create a GameObject + MeshRenderer referencing the mesh .zasset. Selects and frames it.
     bool InstantiateMeshAssetInCurrentLevel(const std::filesystem::path& absolute_zasset_path,
                                             GObjectID parent_gobject_id = k_invalid_gobject_id);
 
     // Dispatches by .zasset header type (MeshData vs Prefab only). Returns true when spawned.
-    bool InstantiateDroppedProjectAsset(const std::filesystem::path& absolute_zasset_path,
+    bool InstantiateDroppedContentBrowserAsset(const std::filesystem::path& absolute_zasset_path,
                                        GObjectID parent_gobject_id = k_invalid_gobject_id);
 
     // Deferred drop (safe outside UI tree walks). Last request wins per frame.

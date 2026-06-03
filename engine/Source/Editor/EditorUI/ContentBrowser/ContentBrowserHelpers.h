@@ -7,20 +7,25 @@
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 class GameObject;
 struct EditorFileNode;
 
-namespace ProjectWindowHelpers
+namespace ContentBrowserHelpers
 {
     bool IsFolderNode(const EditorFileNode* node);
-    eastl::string GetProjectDisplayName(const EditorFileNode* node);
+    eastl::string GetContentBrowserDisplayName(const EditorFileNode* node);
 
     std::filesystem::path GetEditorSourceAssetFolder();
-    std::filesystem::path NormalizeProjectPath(const std::filesystem::path& path);
+    std::filesystem::path NormalizeContentBrowserPath(const std::filesystem::path& path);
 
-    EditorFileNode* FindProjectNodeByPath(EditorFileNode* node, const std::filesystem::path& path);
-    EditorFileNode* FindProjectNodeAcrossRoots(EditorFileService& service, const std::filesystem::path& path);
+    EditorFileNode* FindContentBrowserNodeByPath(EditorFileNode* node, const std::filesystem::path& path);
+    EditorFileNode* FindContentBrowserNodeAcrossRoots(EditorFileService& service, const std::filesystem::path& path);
+    EditorFileNode* FindParentFolderNode(EditorFileService& service, const EditorFileNode* node);
+
+    // Root-to-leaf folder chain for breadcrumb navigation (includes `folder`).
+    std::vector<EditorFileNode*> CollectFolderBreadcrumbChain(EditorFileService& service, EditorFileNode* folder);
 
     bool IsShaderAssetNode(const EditorFileNode* node);
     bool IsZassetProductNode(const EditorFileNode* node);

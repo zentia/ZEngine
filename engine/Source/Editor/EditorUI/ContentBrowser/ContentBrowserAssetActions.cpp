@@ -1,8 +1,8 @@
-#include "Editor/EditorUI/ProjectWindow/ProjectAssetActions.h"
+#include "Editor/EditorUI/ContentBrowser/ContentBrowserAssetActions.h"
 
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
-#include "Editor/EditorUI/ProjectWindow/ProjectWindowHelpers.h"
+#include "Editor/EditorUI/ContentBrowser/ContentBrowserHelpers.h"
 #include "Editor/EditorWindow/PreviewWindow/MeshDataPreview.h"
 #include "Editor/Menu/AssetsMenu.h"
 #include "Editor/Platform/Interface/EditorUtility.h"
@@ -42,7 +42,7 @@
 
 namespace
 {
-    using namespace ProjectWindowHelpers;
+    using namespace ContentBrowserHelpers;
 
     std::string normalizeShaderPropertyKey(const char* property_name)
     {
@@ -480,7 +480,7 @@ namespace
         return GET_SYSTEM(AssetManager)->WriteObjectsToYaml(write_path, objects, file_ids, 1);
     }
 
-    void createMaterialFromShader(ProjectWindowContext& ctx, const std::filesystem::path& shader_path)
+    void createMaterialFromShader(ContentBrowserContext& ctx, const std::filesystem::path& shader_path)
     {
         if (shader_path.empty())
         {
@@ -534,18 +534,18 @@ namespace
             writeMaterialAssetToDisk(material_write_path, *saved_material);
         }
 
-        ProjectAssetActions::RefreshProjectSelection(ctx, material_write_path);
+        ContentBrowserAssetActions::RefreshContentBrowserSelection(ctx, material_write_path);
     }
 }  // namespace
 
-namespace ProjectAssetActions
+namespace ContentBrowserAssetActions
 {
-    void RequestImportDialog(ProjectWindowContext& ctx)
+    void RequestImportDialog(ContentBrowserContext& ctx)
     {
         ctx.pending_import_dialog = true;
     }
 
-    void ExecutePendingImportDialog(ProjectWindowContext& ctx)
+    void ExecutePendingImportDialog(ContentBrowserContext& ctx)
     {
         if (!ctx.pending_import_dialog)
         {
@@ -679,15 +679,15 @@ namespace ProjectAssetActions
 #endif
     }
 
-    void OnMenuItemDelete(ProjectWindowContext& ctx, EditorFileNode* node)
+    void OnMenuItemDelete(ContentBrowserContext& ctx, EditorFileNode* node)
     {
         if (node == nullptr || node->m_FilePath.empty())
         {
             return;
         }
 
-        const std::filesystem::path asset_root_path = NormalizeProjectPath(GetEditorSourceAssetFolder());
-        const std::filesystem::path target_path = NormalizeProjectPath(node->m_FilePath.c_str());
+        const std::filesystem::path asset_root_path = NormalizeContentBrowserPath(GetEditorSourceAssetFolder());
+        const std::filesystem::path target_path = NormalizeContentBrowserPath(node->m_FilePath.c_str());
         if (target_path == asset_root_path)
         {
             return;
@@ -697,7 +697,7 @@ namespace ProjectAssetActions
         ctx.has_pending_delete = true;
     }
 
-    void ExecutePendingDelete(ProjectWindowContext& ctx)
+    void ExecutePendingDelete(ContentBrowserContext& ctx)
     {
         if (!ctx.has_pending_delete)
         {
@@ -755,7 +755,7 @@ namespace ProjectAssetActions
         EditorFileNode* fallback_node = nullptr;
         if (EditorFileNode* editor_root_node = ctx.file_service.getEditorRootNode())
         {
-            fallback_node = FindProjectNodeByPath(editor_root_node, fallback_path);
+            fallback_node = FindContentBrowserNodeByPath(editor_root_node, fallback_path);
             if (fallback_node == nullptr)
             {
                 fallback_node = editor_root_node;
@@ -766,7 +766,7 @@ namespace ProjectAssetActions
         GET_SYSTEM(EditorSceneManager)->OnAssetSelected(std::filesystem::path(), "");
     }
 
-    void RequestPrefabCreate(ProjectWindowContext& ctx, GObjectID source_id, std::filesystem::path target_folder)
+    void RequestPrefabCreate(ContentBrowserContext& ctx, GObjectID source_id, std::filesystem::path target_folder)
     {
         if (source_id == k_invalid_gobject_id)
         {
@@ -777,7 +777,7 @@ namespace ProjectAssetActions
         ctx.has_pending_prefab_create = true;
     }
 
-    void ExecutePendingPrefabCreate(ProjectWindowContext& ctx)
+    void ExecutePendingPrefabCreate(ContentBrowserContext& ctx)
     {
         if (!ctx.has_pending_prefab_create)
         {
@@ -800,14 +800,14 @@ namespace ProjectAssetActions
             BuildUniquePrefabAssetPath(target_folder, dropped_go->GetName());
         if (PrefabUtility::SaveAsPrefabAsset(dropped_go, prefab_path))
         {
-            RefreshProjectSelection(ctx, prefab_path);
+            RefreshContentBrowserSelection(ctx, prefab_path);
         }
     }
 
-    void RefreshProjectSelection(ProjectWindowContext& ctx, const std::filesystem::path& asset_path)
+    void RefreshContentBrowserSelection(ContentBrowserContext& ctx, const std::filesystem::path& asset_path)
     {
         ctx.file_service.BuildEngineFileTree();
-        if (EditorFileNode* new_asset_node = FindProjectNodeByPath(ctx.file_service.getEditorRootNode(), asset_path))
+        if (EditorFileNode* new_asset_node = FindContentBrowserNodeByPath(ctx.file_service.getEditorRootNode(), asset_path))
         {
             ctx.selected_node = new_asset_node;
             GET_SYSTEM(EditorSceneManager)
@@ -820,7 +820,7 @@ namespace ProjectAssetActions
         }
     }
 
-    void RequestMaterialFromShader(ProjectWindowContext& ctx, EditorFileNode* node)
+    void RequestMaterialFromShader(ContentBrowserContext& ctx, EditorFileNode* node)
     {
         if (!IsShaderAssetNode(node) || node->m_FilePath.empty())
         {
@@ -831,7 +831,7 @@ namespace ProjectAssetActions
         ctx.has_pending_material_from_shader = true;
     }
 
-    void ExecutePendingMaterialFromShader(ProjectWindowContext& ctx)
+    void ExecutePendingMaterialFromShader(ContentBrowserContext& ctx)
     {
         if (!ctx.has_pending_material_from_shader)
         {
@@ -845,7 +845,7 @@ namespace ProjectAssetActions
         createMaterialFromShader(ctx, shader_path);
     }
 
-    bool CanRenameNode(const ProjectWindowContext& ctx, const EditorFileNode* node)
+    bool CanRenameNode(const ContentBrowserContext& ctx, const EditorFileNode* node)
     {
         (void)ctx;
         if (node == nullptr || node->m_FilePath.empty() || node->m_NodeDepth < 0)
@@ -856,24 +856,24 @@ namespace ProjectAssetActions
         return !IsProtectedRenamePath(node->m_FilePath.c_str());
     }
 
-    bool IsNodeRenaming(const ProjectWindowContext& ctx, const EditorFileNode* node)
+    bool IsNodeRenaming(const ContentBrowserContext& ctx, const EditorFileNode* node)
     {
         if (!ctx.is_renaming || node == nullptr || node->m_FilePath.empty() || ctx.renaming_target_path.empty())
         {
             return false;
         }
 
-        return NormalizeProjectPath(node->m_FilePath.c_str()) == NormalizeProjectPath(ctx.renaming_target_path);
+        return NormalizeContentBrowserPath(node->m_FilePath.c_str()) == NormalizeContentBrowserPath(ctx.renaming_target_path);
     }
 
-    void OnMenuItemRename(ProjectWindowContext& ctx, EditorFileNode* node)
+    void OnMenuItemRename(ContentBrowserContext& ctx, EditorFileNode* node)
     {
         if (!CanRenameNode(ctx, node))
         {
             return;
         }
 
-        ctx.renaming_target_path = NormalizeProjectPath(node->m_FilePath.c_str());
+        ctx.renaming_target_path = NormalizeContentBrowserPath(node->m_FilePath.c_str());
         ctx.is_renaming = true;
         ctx.rename_focus_pending = true;
 
@@ -897,7 +897,7 @@ namespace ProjectAssetActions
         ctx.selected_node = node;
     }
 
-    void CancelRename(ProjectWindowContext& ctx)
+    void CancelRename(ContentBrowserContext& ctx)
     {
         ctx.is_renaming = false;
         ctx.rename_focus_pending = false;
@@ -905,7 +905,7 @@ namespace ProjectAssetActions
         std::memset(ctx.rename_buffer.data(), 0, ctx.rename_buffer.size());
     }
 
-    void CommitRename(ProjectWindowContext& ctx)
+    void CommitRename(ContentBrowserContext& ctx)
     {
         if (!ctx.is_renaming || ctx.renaming_target_path.empty())
         {
@@ -945,7 +945,7 @@ namespace ProjectAssetActions
         }
 
         const std::filesystem::path new_path = old_path.parent_path() / new_file_name;
-        if (NormalizeProjectPath(new_path) == NormalizeProjectPath(old_path))
+        if (NormalizeContentBrowserPath(new_path) == NormalizeContentBrowserPath(old_path))
         {
             CancelRename(ctx);
             return;
@@ -994,7 +994,7 @@ namespace ProjectAssetActions
         CancelRename(ctx);
         ctx.asset_tree_dirty = true;
 
-        if (EditorFileNode* renamed_node = FindProjectNodeAcrossRoots(ctx.file_service, new_path))
+        if (EditorFileNode* renamed_node = FindContentBrowserNodeAcrossRoots(ctx.file_service, new_path))
         {
             ctx.selected_node = renamed_node;
             if (!IsFolderNode(renamed_node))
@@ -1030,7 +1030,7 @@ namespace ProjectAssetActions
         glfwSetClipboardString(glfw_window, text);
     }
 
-    void OnMenuItemReimport(ProjectWindowContext& ctx, EditorFileNode* node)
+    void OnMenuItemReimport(ContentBrowserContext& ctx, EditorFileNode* node)
     {
         if (node == nullptr || node->m_FilePath.empty())
         {
@@ -1044,12 +1044,12 @@ namespace ProjectAssetActions
             return;
         }
 
-        const std::filesystem::path zasset_path = NormalizeProjectPath(node->m_FilePath.c_str());
+        const std::filesystem::path zasset_path = NormalizeContentBrowserPath(node->m_FilePath.c_str());
         if (editor_asset_mgr->reimportAsset(zasset_path.generic_string(), nullptr))
         {
             MeshDataPreview::InvalidatePreview(zasset_path);
             ctx.file_service.BuildEngineFileTree();
-            RefreshProjectSelection(ctx, zasset_path);
+            RefreshContentBrowserSelection(ctx, zasset_path);
             LOG_INFO(ZEditor, "Reimport ok: {}", zasset_path.generic_string());
         }
         else
@@ -1060,7 +1060,7 @@ namespace ProjectAssetActions
         }
     }
 
-    void CreateNewAsset(ProjectWindowContext& ctx, const std::string& asset_type)
+    void CreateNewAsset(ContentBrowserContext& ctx, const std::string& asset_type)
     {
         if (ctx.selected_node == nullptr)
         {
@@ -1221,6 +1221,6 @@ namespace ProjectAssetActions
             }
         }
 
-        RefreshProjectSelection(ctx, new_file_path);
+        RefreshContentBrowserSelection(ctx, new_file_path);
     }
 }

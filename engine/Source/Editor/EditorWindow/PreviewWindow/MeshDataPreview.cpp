@@ -9,12 +9,19 @@
 #include "Runtime/UI/Render/UiGpuResources.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
+#include <cstring>
+#include <deque>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace
@@ -72,6 +79,23 @@ namespace
         std::shared_ptr<MeshPreviewGeometry> geometry;
     };
 
+    struct MeshThumbnailEntry
+    {
+        void* texture_handle {nullptr};
+        std::filesystem::file_time_type write_time = std::filesystem::file_time_type::min();
+        uint32_t pixel_size {0};
+        uint64_t cached_signature {0};
+        PreviewRaster raster;
+    };
+
+    struct MeshPreviewCamera
+    {
+        float yaw_radians {0.6f};
+        float pitch_radians {-0.35f};
+        float zoom {1.0f};
+        Vec2f pan_offset {};
+    };
+
     MeshPreviewState& previewState()
     {
         static MeshPreviewState state;
@@ -82,6 +106,31 @@ namespace
     {
         static std::unordered_map<std::string, MeshPreviewCacheEntry> cache;
         return cache;
+    }
+
+    std::unordered_map<std::string, MeshThumbnailEntry>& thumbnailCache()
+    {
+        static std::unordered_map<std::string, MeshThumbnailEntry> cache;
+        return cache;
+    }
+
+    struct PendingMeshThumbnail
+    {
+        std::string key;
+        std::filesystem::path path;
+        uint32_t pixel_size {0};
+    };
+
+    std::deque<PendingMeshThumbnail>& pendingMeshThumbnails()
+    {
+        static std::deque<PendingMeshThumbnail> queue;
+        return queue;
+    }
+
+    std::unordered_set<std::string>& pendingMeshThumbnailKeys()
+    {
+        static std::unordered_set<std::string> keys;
+        return keys;
     }
 
     std::filesystem::file_time_type fileWriteTime(const std::filesystem::path& path)
@@ -396,6 +445,298 @@ namespace
                   [](const MeshPreviewTriangle& lhs, const MeshPreviewTriangle& rhs) { return lhs.depth < rhs.depth; });
         return !out_triangles.empty();
     }
+
+    std::shared_ptr<MeshPreviewGeometry> loadCachedGeometry(const std::filesystem::path& asset_path, std::string& out_error)
+    {
+        out_error.clear();
+        if (asset_path.empty())
+        {
+            out_error = "Invalid asset path";
+            return nullptr;
+        }
+
+        const std::string cache_key = asset_path.lexically_normal().generic_string();
+        const auto write_time = fileWriteTime(asset_path);
+
+        MeshPreviewCacheEntry& cache_entry = meshCache()[cache_key];
+        if (cache_entry.write_time != write_time || cache_entry.geometry == nullptr)
+        {
+            if (!loadMeshData(asset_path, cache_entry.geometry, out_error))
+            {
+                cache_entry.geometry.reset();
+                cache_entry.write_time = std::filesystem::file_time_type::min();
+                return nullptr;
+            }
+            cache_entry.write_time = write_time;
+            previewState().cached_signature = 0;
+        }
+
+        return cache_entry.geometry;
+    }
+
+    uint64_t computeThumbnailSignature(const std::filesystem::path& asset_path,
+                                       const MeshPreviewCamera& camera,
+                                       uint32_t pixel_size,
+                                       float radius,
+                                       size_t vertex_count,
+                                       size_t index_count)
+    {
+        const auto write_time = fileWriteTime(asset_path);
+        uint64_t signature = static_cast<uint64_t>(write_time.time_since_epoch().count());
+        signature ^= static_cast<uint64_t>(vertex_count) * 1315423911ULL;
+        signature ^= static_cast<uint64_t>(index_count) * 2654435761ULL;
+        signature ^= static_cast<uint64_t>(pixel_size) * 40503ULL;
+        signature ^= static_cast<uint64_t>(static_cast<int>(camera.zoom * 1000.0f));
+        signature ^= static_cast<uint64_t>(static_cast<int>(camera.yaw_radians * 10000.0f));
+        signature ^= static_cast<uint64_t>(static_cast<int>(camera.pitch_radians * 10000.0f));
+        signature ^= static_cast<uint64_t>(static_cast<int>(camera.pan_offset.x * 4.0f));
+        signature ^= static_cast<uint64_t>(static_cast<int>(camera.pan_offset.y * 4.0f));
+        signature ^= static_cast<uint64_t>(static_cast<int>(radius * 100.0f));
+        return signature;
+    }
+
+    bool rasterizeMeshPreview(const MeshPreviewGeometry& mesh,
+                              const MeshPreviewCamera& camera,
+                              uint32_t pixel_size,
+                              PreviewRaster& raster,
+                              size_t& out_triangle_count)
+    {
+        const float size_f = static_cast<float>(pixel_size);
+        const Vec2f center {size_f * 0.5f + camera.pan_offset.x, size_f * 0.5f + camera.pan_offset.y};
+        const float radius = size_f * 0.36f * camera.zoom;
+
+        std::vector<MeshPreviewTriangle> triangles;
+        if (!buildPreviewTriangles(mesh, camera.yaw_radians, camera.pitch_radians, center, radius, triangles,
+                                   out_triangle_count))
+        {
+            return false;
+        }
+
+        if (raster.Width() != pixel_size || raster.Height() != pixel_size)
+        {
+            raster.Resize(pixel_size, pixel_size);
+        }
+
+        drawBackground(raster);
+        for (const MeshPreviewTriangle& tri : triangles)
+        {
+            raster.FillTriangle(tri.p0.x, tri.p0.y, tri.p1.x, tri.p1.y, tri.p2.x, tri.p2.y, tri.color);
+        }
+        return true;
+    }
+
+    struct MeshRasterWorkItem
+    {
+        std::string key;
+        std::filesystem::path path;
+        uint32_t pixel_size {0};
+        std::filesystem::file_time_type write_time {};
+        uint64_t signature {0};
+        std::shared_ptr<MeshPreviewGeometry> geometry;
+    };
+
+    struct MeshRasterWorkResult
+    {
+        std::string key;
+        std::filesystem::path path;
+        uint32_t pixel_size {0};
+        std::filesystem::file_time_type write_time {};
+        uint64_t signature {0};
+        std::vector<uint8_t> rgba;
+        bool ok {false};
+    };
+
+    class MeshThumbnailWorker
+    {
+    public:
+        ~MeshThumbnailWorker()
+        {
+            {
+                std::lock_guard<std::mutex> lock(m_JobMutex);
+                m_Stop = true;
+            }
+            m_JobCv.notify_all();
+            if (m_Thread.joinable())
+            {
+                m_Thread.join();
+            }
+        }
+
+        void Enqueue(MeshRasterWorkItem item)
+        {
+            EnsureStarted();
+            {
+                std::lock_guard<std::mutex> lock(m_JobMutex);
+                m_Jobs.push_back(std::move(item));
+            }
+            m_JobCv.notify_one();
+        }
+
+        bool TryPopResult(MeshRasterWorkResult& out)
+        {
+            std::lock_guard<std::mutex> lock(m_ResultMutex);
+            if (m_Results.empty())
+            {
+                return false;
+            }
+            out = std::move(m_Results.front());
+            m_Results.pop_front();
+            return true;
+        }
+
+        void RemoveKey(const std::string& key)
+        {
+            {
+                std::lock_guard<std::mutex> lock(m_JobMutex);
+                m_Jobs.erase(std::remove_if(m_Jobs.begin(),
+                                            m_Jobs.end(),
+                                            [&key](const MeshRasterWorkItem& item) { return item.key == key; }),
+                               m_Jobs.end());
+            }
+            {
+                std::lock_guard<std::mutex> lock(m_ResultMutex);
+                m_Results.erase(std::remove_if(m_Results.begin(),
+                                               m_Results.end(),
+                                               [&key](const MeshRasterWorkResult& item) { return item.key == key; }),
+                                  m_Results.end());
+            }
+        }
+
+        void ClearAll()
+        {
+            {
+                std::lock_guard<std::mutex> lock(m_JobMutex);
+                m_Jobs.clear();
+            }
+            {
+                std::lock_guard<std::mutex> lock(m_ResultMutex);
+                m_Results.clear();
+            }
+        }
+
+    private:
+        void EnsureStarted()
+        {
+            if (m_Started.exchange(true))
+            {
+                return;
+            }
+            m_Thread = std::thread([this]() { Run(); });
+        }
+
+        void Run()
+        {
+            for (;;)
+            {
+                MeshRasterWorkItem job;
+                {
+                    std::unique_lock<std::mutex> lock(m_JobMutex);
+                    m_JobCv.wait(lock, [this]() { return m_Stop || !m_Jobs.empty(); });
+                    if (m_Stop && m_Jobs.empty())
+                    {
+                        return;
+                    }
+                    job = std::move(m_Jobs.front());
+                    m_Jobs.pop_front();
+                }
+
+                MeshRasterWorkResult result;
+                result.key = job.key;
+                result.path = job.path;
+                result.pixel_size = job.pixel_size;
+                result.write_time = job.write_time;
+                result.signature = job.signature;
+
+                if (job.geometry != nullptr)
+                {
+                    PreviewRaster raster;
+                    MeshPreviewCamera camera;
+                    size_t triangle_count = 0;
+                    result.ok =
+                        rasterizeMeshPreview(*job.geometry, camera, job.pixel_size, raster, triangle_count);
+                    if (result.ok)
+                    {
+                        const size_t byte_count =
+                            static_cast<size_t>(job.pixel_size) * static_cast<size_t>(job.pixel_size) * 4U;
+                        result.rgba.resize(byte_count);
+                        std::memcpy(result.rgba.data(), raster.Data(), byte_count);
+                    }
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(m_ResultMutex);
+                    m_Results.push_back(std::move(result));
+                }
+            }
+        }
+
+        std::atomic<bool> m_Stop {false};
+        std::atomic<bool> m_Started {false};
+        std::thread m_Thread;
+        std::mutex m_JobMutex;
+        std::condition_variable m_JobCv;
+        std::deque<MeshRasterWorkItem> m_Jobs;
+        std::mutex m_ResultMutex;
+        std::deque<MeshRasterWorkResult> m_Results;
+    };
+
+    MeshThumbnailWorker& meshThumbnailWorker()
+    {
+        static MeshThumbnailWorker worker;
+        return worker;
+    }
+
+    bool uploadMeshThumbnailResult(const MeshRasterWorkResult& result)
+    {
+        if (!result.ok || result.rgba.empty())
+        {
+            return false;
+        }
+
+        if (fileWriteTime(result.path) != result.write_time)
+        {
+            return false;
+        }
+
+        UiGpuResources* gpu = UiGpuResources::Get();
+        if (gpu == nullptr || !gpu->IsReady())
+        {
+            return false;
+        }
+
+        MeshThumbnailEntry& thumb = thumbnailCache()[result.key];
+        thumb.texture_handle = gpu->UpdateDynamicTexture(thumb.texture_handle,
+                                                         result.rgba.data(),
+                                                         result.pixel_size,
+                                                         result.pixel_size);
+        if (thumb.texture_handle == nullptr)
+        {
+            return false;
+        }
+
+        thumb.write_time = result.write_time;
+        thumb.pixel_size = result.pixel_size;
+        thumb.cached_signature = result.signature;
+        return true;
+    }
+
+    void removePendingMeshThumbnail(const std::string& key)
+    {
+        pendingMeshThumbnailKeys().erase(key);
+        std::deque<PendingMeshThumbnail>& queue = pendingMeshThumbnails();
+        queue.erase(std::remove_if(queue.begin(),
+                                   queue.end(),
+                                   [&key](const PendingMeshThumbnail& item) { return item.key == key; }),
+                    queue.end());
+        meshThumbnailWorker().RemoveKey(key);
+    }
+
+    void clearPendingMeshThumbnails()
+    {
+        pendingMeshThumbnails().clear();
+        pendingMeshThumbnailKeys().clear();
+        meshThumbnailWorker().ClearAll();
+    }
 }  // namespace
 
 namespace MeshDataPreview
@@ -411,8 +752,213 @@ namespace MeshDataPreview
         {
             return;
         }
-        meshCache().erase(asset_path.lexically_normal().generic_string());
+        const std::string key = asset_path.lexically_normal().generic_string();
+        meshCache().erase(key);
+        thumbnailCache().erase(key);
+        removePendingMeshThumbnail(key);
         previewState().cached_signature = 0;
+    }
+
+    void InvalidateAll()
+    {
+        meshCache().clear();
+        thumbnailCache().clear();
+        clearPendingMeshThumbnails();
+        previewState().cached_signature = 0;
+    }
+
+    void* TryGetThumbnailHandle(const std::filesystem::path& asset_path, uint32_t pixel_size)
+    {
+        if (asset_path.empty() || pixel_size == 0)
+            return nullptr;
+
+        const std::string cache_key = asset_path.lexically_normal().generic_string();
+        const auto it = thumbnailCache().find(cache_key);
+        if (it == thumbnailCache().end())
+            return nullptr;
+
+        MeshThumbnailEntry& thumb = it->second;
+        if (thumb.texture_handle == nullptr || thumb.pixel_size != pixel_size)
+            return nullptr;
+        if (thumb.write_time != fileWriteTime(asset_path))
+            return nullptr;
+        return thumb.texture_handle;
+    }
+
+    bool IsThumbnailPending(const std::filesystem::path& asset_path, uint32_t pixel_size)
+    {
+        if (asset_path.empty() || pixel_size == 0)
+            return false;
+
+        const std::string cache_key = asset_path.lexically_normal().generic_string();
+        return pendingMeshThumbnailKeys().count(cache_key) != 0;
+    }
+
+    void RequestThumbnail(const std::filesystem::path& asset_path, uint32_t pixel_size)
+    {
+        if (asset_path.empty() || pixel_size == 0)
+            return;
+
+        if (TryGetThumbnailHandle(asset_path, pixel_size) != nullptr)
+            return;
+
+        const std::string cache_key = asset_path.lexically_normal().generic_string();
+        if (pendingMeshThumbnailKeys().count(cache_key) != 0)
+            return;
+
+        pendingMeshThumbnailKeys().insert(cache_key);
+        pendingMeshThumbnails().push_back(PendingMeshThumbnail {cache_key, asset_path, pixel_size});
+    }
+
+    bool TickPendingThumbnails(int max_per_frame)
+    {
+        if (max_per_frame <= 0)
+            return false;
+
+        bool any_completed = false;
+        int upload_budget = max_per_frame;
+
+        MeshRasterWorkResult result;
+        while (upload_budget > 0 && meshThumbnailWorker().TryPopResult(result))
+        {
+            --upload_budget;
+
+            if (TryGetThumbnailHandle(result.path, result.pixel_size) != nullptr)
+            {
+                pendingMeshThumbnailKeys().erase(result.key);
+                any_completed = true;
+                continue;
+            }
+
+            if (uploadMeshThumbnailResult(result))
+            {
+                pendingMeshThumbnailKeys().erase(result.key);
+                any_completed = true;
+            }
+        }
+
+        constexpr int k_max_submit_per_frame = 4;
+        int submit_budget = k_max_submit_per_frame;
+        while (submit_budget > 0 && !pendingMeshThumbnails().empty())
+        {
+            PendingMeshThumbnail request = pendingMeshThumbnails().front();
+            pendingMeshThumbnails().pop_front();
+            --submit_budget;
+
+            if (TryGetThumbnailHandle(request.path, request.pixel_size) != nullptr)
+            {
+                pendingMeshThumbnailKeys().erase(request.key);
+                any_completed = true;
+                continue;
+            }
+
+            std::string load_error;
+            const std::shared_ptr<MeshPreviewGeometry> geometry = loadCachedGeometry(request.path, load_error);
+            if (geometry == nullptr)
+            {
+                pendingMeshThumbnailKeys().erase(request.key);
+                continue;
+            }
+
+            const auto write_time = fileWriteTime(request.path);
+            MeshPreviewCamera camera;
+            const float size_f = static_cast<float>(request.pixel_size);
+            const float radius = size_f * 0.36f * camera.zoom;
+            const uint64_t signature =
+                computeThumbnailSignature(request.path,
+                                          camera,
+                                          request.pixel_size,
+                                          radius,
+                                          geometry->vertex_buffer.size(),
+                                          geometry->index_buffer.size());
+
+            MeshRasterWorkItem item;
+            item.key = request.key;
+            item.path = request.path;
+            item.pixel_size = request.pixel_size;
+            item.write_time = write_time;
+            item.signature = signature;
+            item.geometry = geometry;
+            meshThumbnailWorker().Enqueue(std::move(item));
+        }
+
+        return any_completed;
+    }
+
+    PreviewFrame RenderThumbnailToTexture(const std::filesystem::path& asset_path, uint32_t pixel_size)
+    {
+        PreviewFrame frame;
+        frame.pixel_size = pixel_size;
+
+        if (asset_path.empty() || pixel_size == 0)
+        {
+            frame.error = "Invalid thumbnail request";
+            return frame;
+        }
+
+        UiGpuResources* gpu = UiGpuResources::Get();
+        if (gpu == nullptr || !gpu->IsReady())
+        {
+            frame.error = "GPU resources unavailable";
+            return frame;
+        }
+
+        std::string load_error;
+        const std::shared_ptr<MeshPreviewGeometry> mesh = loadCachedGeometry(asset_path, load_error);
+        if (mesh == nullptr)
+        {
+            frame.error = "Mesh thumbnail failed: " + load_error;
+            return frame;
+        }
+
+        const std::string cache_key = asset_path.lexically_normal().generic_string();
+        const auto write_time = fileWriteTime(asset_path);
+        MeshThumbnailEntry& thumb = thumbnailCache()[cache_key];
+
+        MeshPreviewCamera camera;
+        const float size_f = static_cast<float>(pixel_size);
+        const float radius = size_f * 0.36f * camera.zoom;
+        const uint64_t signature = computeThumbnailSignature(asset_path, camera, pixel_size, radius,
+                                                             mesh->vertex_buffer.size(), mesh->index_buffer.size());
+
+        const bool size_changed = (thumb.pixel_size != pixel_size) || (thumb.raster.Width() != pixel_size) ||
+                                  (thumb.raster.Height() != pixel_size);
+        if (thumb.texture_handle != nullptr && thumb.write_time == write_time && thumb.cached_signature == signature &&
+            !size_changed)
+        {
+            frame.texture_handle = thumb.texture_handle;
+            frame.vertex_count = mesh->vertex_buffer.size();
+            frame.index_count = mesh->index_buffer.size();
+            frame.triangle_count = mesh->index_buffer.size() / 3;
+            frame.ok = true;
+            return frame;
+        }
+
+        size_t drawn_triangles = 0;
+        if (!rasterizeMeshPreview(*mesh, camera, pixel_size, thumb.raster, drawn_triangles))
+        {
+            frame.error = "Mesh thumbnail: no drawable triangles.";
+            return frame;
+        }
+
+        thumb.texture_handle =
+            gpu->UpdateDynamicTexture(thumb.texture_handle, thumb.raster.Data(), pixel_size, pixel_size);
+        if (thumb.texture_handle == nullptr)
+        {
+            frame.error = "Mesh thumbnail upload failed.";
+            return frame;
+        }
+
+        thumb.write_time = write_time;
+        thumb.pixel_size = pixel_size;
+        thumb.cached_signature = signature;
+
+        frame.texture_handle = thumb.texture_handle;
+        frame.vertex_count = mesh->vertex_buffer.size();
+        frame.index_count = mesh->index_buffer.size();
+        frame.triangle_count = drawn_triangles;
+        frame.ok = true;
+        return frame;
     }
 
     PreviewFrame RenderToTexture(const std::filesystem::path& asset_path, uint32_t pixel_size, const PreviewInput& input)
@@ -433,26 +979,11 @@ namespace MeshDataPreview
             return frame;
         }
 
-        const std::string cache_key = asset_path.lexically_normal().generic_string();
-        const auto write_time = fileWriteTime(asset_path);
-
-        MeshPreviewCacheEntry& cache_entry = meshCache()[cache_key];
-        if (cache_entry.write_time != write_time || cache_entry.geometry == nullptr)
-        {
-            std::string error;
-            if (!loadMeshData(asset_path, cache_entry.geometry, error))
-            {
-                frame.error = "Mesh preview failed: " + error;
-                return frame;
-            }
-            cache_entry.write_time = write_time;
-            previewState().cached_signature = 0;
-        }
-
-        const std::shared_ptr<MeshPreviewGeometry>& mesh = cache_entry.geometry;
+        std::string load_error;
+        const std::shared_ptr<MeshPreviewGeometry> mesh = loadCachedGeometry(asset_path, load_error);
         if (mesh == nullptr)
         {
-            frame.error = "Mesh preview unavailable.";
+            frame.error = "Mesh preview failed: " + load_error;
             return frame;
         }
 
@@ -493,7 +1024,6 @@ namespace MeshDataPreview
         state.zoom = Math::Clamp(state.zoom, 0.55f, 2.40f);
         state.pitch_radians = Math::Clamp(state.pitch_radians, -1.2f, 1.2f);
 
-        const Vec2f center {size_f * 0.5f + state.pan_offset.x, size_f * 0.5f + state.pan_offset.y};
         const float radius = size_f * 0.36f * state.zoom;
 
         const uint64_t signature = computeSignature(asset_path, state, pixel_size, radius, state.vertex_count, state.index_count);
@@ -503,23 +1033,13 @@ namespace MeshDataPreview
             state.cached_signature = signature;
 
             size_t drawn_triangles = 0;
-            if (!buildPreviewTriangles(*mesh, state.yaw_radians, state.pitch_radians, center, radius, state.cached_triangles,
-                                       drawn_triangles))
+            MeshPreviewCamera camera {state.yaw_radians, state.pitch_radians, state.zoom, state.pan_offset};
+            if (!rasterizeMeshPreview(*mesh, camera, pixel_size, state.raster, drawn_triangles))
             {
                 frame.error = "Mesh preview: no drawable triangles.";
                 return frame;
             }
             state.triangle_count = drawn_triangles;
-
-            if (size_changed)
-            {
-                state.raster.Resize(pixel_size, pixel_size);
-            }
-            drawBackground(state.raster);
-            for (const MeshPreviewTriangle& tri : state.cached_triangles)
-            {
-                state.raster.FillTriangle(tri.p0.x, tri.p0.y, tri.p1.x, tri.p1.y, tri.p2.x, tri.p2.y, tri.color);
-            }
 
             state.texture_handle =
                 gpu->UpdateDynamicTexture(state.texture_handle, state.raster.Data(), pixel_size, pixel_size);

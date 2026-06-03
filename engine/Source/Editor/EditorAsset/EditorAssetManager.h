@@ -256,7 +256,7 @@ private:
                                           const AssetImporterSettings* import_settings);
 
 public:
-    // Public so AssetsMenu and ProjectWindow's drop-import can wire the
+    // Public so AssetsMenu and Content Browser drop-import can wire the
     // import-time entry into the registry without round-tripping through
     // a singleton accessor. EditorAssetManager itself is already a
     // SystemRegistry-resident singleton.

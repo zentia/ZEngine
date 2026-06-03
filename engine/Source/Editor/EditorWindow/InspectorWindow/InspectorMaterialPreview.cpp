@@ -789,7 +789,121 @@ void RenderMaterialBitmap(PreviewRaster& raster,
                       PreviewRaster::Pack(110, 110, 118, 255));
 }
 
+    struct MaterialThumbnailEntry
+    {
+        void* texture_handle {nullptr};
+        std::filesystem::file_time_type write_time = std::filesystem::file_time_type::min();
+        uint32_t pixel_size {0};
+        MaterialPreviewState state {};
+        PreviewRaster raster;
+    };
+
+    std::unordered_map<std::string, MaterialThumbnailEntry>& materialThumbnailCache()
+    {
+        static std::unordered_map<std::string, MaterialThumbnailEntry> cache;
+        return cache;
+    }
+
+    std::filesystem::file_time_type materialFileWriteTime(const std::filesystem::path& path)
+    {
+        if (path.empty())
+        {
+            return std::filesystem::file_time_type::min();
+        }
+        std::error_code ec;
+        if (!std::filesystem::exists(path, ec) || ec)
+        {
+            return std::filesystem::file_time_type::min();
+        }
+        return std::filesystem::last_write_time(path, ec);
+    }
+
 }  // namespace
+
+void InvalidateMaterialPreview(const std::filesystem::path& asset_path)
+{
+    if (asset_path.empty())
+    {
+        return;
+    }
+    materialThumbnailCache().erase(asset_path.lexically_normal().generic_string());
+}
+
+void InvalidateAllMaterialPreviews()
+{
+    materialThumbnailCache().clear();
+}
+
+MaterialPreviewResult RenderMaterialThumbnailFromPath(const std::filesystem::path& asset_path, uint32_t pixel_size)
+{
+    MaterialPreviewResult result;
+    result.pixel_size = pixel_size;
+
+    if (asset_path.empty() || pixel_size == 0)
+    {
+        result.error = "Invalid material thumbnail request";
+        return result;
+    }
+
+    UiGpuResources* gpu = UiGpuResources::Get();
+    if (gpu == nullptr || !gpu->IsReady())
+    {
+        result.error = "GPU resources unavailable";
+        return result;
+    }
+
+    const std::string cache_key = asset_path.lexically_normal().generic_string();
+    const auto write_time = materialFileWriteTime(asset_path);
+    MaterialThumbnailEntry& thumb = materialThumbnailCache()[cache_key];
+
+    if (thumb.texture_handle != nullptr && thumb.write_time == write_time && thumb.pixel_size == pixel_size)
+    {
+        result.texture_handle = thumb.texture_handle;
+        result.ok = true;
+        return result;
+    }
+
+    Material material_from_disk;
+    if (!LoadMaterialDefinitionForInspector(material_from_disk, asset_path))
+    {
+        result.error = "Unable to load material asset";
+        return result;
+    }
+
+    const MaterialPreviewTextures textures = ResolveMaterialPreviewTextures(material_from_disk);
+    const bool use_lit_shading = UsesLitMaterialPreview(material_from_disk);
+    result.texture_summary = BuildMaterialPreviewTextureSummary(material_from_disk, textures);
+
+    MaterialPreviewState& state = thumb.state;
+    state.zoom = 1.0f;
+    state.yaw_radians = 0.6f;
+    state.pitch_radians = -0.35f;
+    state.pan_offset = Vector2(0.0f, 0.0f);
+    state.mesh_type = MaterialPreviewMeshType::Sphere;
+    state.cached_signature = 0;
+
+    if (thumb.raster.Width() != pixel_size || thumb.raster.Height() != pixel_size)
+    {
+        thumb.raster.Resize(pixel_size, pixel_size);
+        state.cached_signature = 0;
+    }
+
+    RenderMaterialBitmap(thumb.raster, material_from_disk, textures, state, use_lit_shading);
+
+    thumb.texture_handle = gpu->UpdateDynamicTexture(thumb.texture_handle, thumb.raster.Data(), pixel_size, pixel_size);
+    if (thumb.texture_handle == nullptr)
+    {
+        result.error = "Material thumbnail upload failed.";
+        return result;
+    }
+
+    thumb.write_time = write_time;
+    thumb.pixel_size = pixel_size;
+
+    result.texture_handle = thumb.texture_handle;
+    result.ok = true;
+    return result;
+}
 
 MaterialPreviewResult RenderMaterialPreviewToTexture(const Material& material, uint32_t pixel_size)
 {

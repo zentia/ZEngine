@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Editor/EditorFileService/EditorFileService.h"
-#include "Editor/EditorUI/ProjectWindow/ProjectWindowContext.h"
+#include "Editor/EditorUI/ContentBrowser/ContentBrowserContext.h"
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Editor/Menu/ZSlatePopupMenu.h"  // reusable context-menu overlay
 #include "Runtime/Slate/Core/SlatePaint.h"
@@ -31,49 +31,67 @@ class SEditableTextBox;
 class SMenu;
 }  // namespace ZSlate
 
-// A ZSlate-rendered, dockable Project browser. Mirrors the legacy ImGui
-// ProjectWindow's single-column asset tree (Assets / Scripts / Shaders / Data
-// roots, expand/collapse folders, click to select, double-click .ts/.js/.json to
-// open in the external editor, right-click context menu, inline rename) but emits
-// ZSlate widgets instead of ImGui calls.
-//
-// All scene-edit / asset-pipeline work is delegated to the SAME backend modules
-// the ImGui window uses (ProjectAssetActions / ProjectContextMenu /
-// ProjectDragDrop) via an owned ProjectWindowContext, so behaviour stays in
-// lockstep. Only the rendering + input layer is reimplemented on ZSlate.
-//
-// Cross-window drag: Hierarchy GameObject -> Project creates a .prefab (Unity-style).
-// Project .zasset -> Scene placement is handled by ZSlateSceneWindow. OS file drop
-// import is also supported.
-class ZSlateProjectWindow : public EditorWindow
+// UE-style Content Browser: folder tree (left) + asset list (right).
+class ZSlateContentBrowserWindow : public EditorWindow
 {
 public:
-    explicit ZSlateProjectWindow(EditorUI* editor_ui);
-    ~ZSlateProjectWindow() override;
+    explicit ZSlateContentBrowserWindow(EditorUI* editor_ui);
+    ~ZSlateContentBrowserWindow() override;
     void OnGUI() override;
     bool SupportsNativeHosting() const override { return true; }
     void ExecutePendingImportDialog();
 
 private:
-    ProjectWindowContext& Ctx() { return m_Context; }
+    enum class EContentBrowserRowPanel
+    {
+        FolderTree,
+        AssetList,
+    };
 
-    void Rebuild(float scale);
-    void AddNodeRows(EditorFileNode* node, int depth, float scale, const std::shared_ptr<ZSlate::SScrollBox>& list);
+    enum class EContentBrowserViewMode
+    {
+        List,
+        Tile,
+    };
+
+    ContentBrowserContext& Ctx() { return m_Context; }
+
+    void Rebuild(float scale, float content_width);
+    void AddFolderTreeRows(EditorFileNode* node, int depth, float scale, const std::shared_ptr<ZSlate::SScrollBox>& list);
+    void AddAssetListRows(float scale, const std::shared_ptr<ZSlate::SScrollBox>& list);
+    void AddAssetTileGrid(float scale, float asset_area_width, const std::shared_ptr<ZSlate::SScrollBox>& list);
+    std::shared_ptr<ZSlate::SWidget> BuildAssetTile(EditorFileNode* node, float scale, float tile_w, float tile_h,
+                                                    float thumb_size);
+    void AddItemRow(EditorFileNode* node,
+                    int depth,
+                    float scale,
+                    EContentBrowserRowPanel panel,
+                    const std::shared_ptr<ZSlate::SScrollBox>& list);
     std::shared_ptr<ZSlate::SWidget> BuildToolbar(float scale);
+    std::shared_ptr<ZSlate::SWidget> BuildNavigationBar(float scale);
+    std::shared_ptr<ZSlate::SWidget> BuildThumbnailWidget(EditorFileNode* node, float scale, float thumb_size);
+    void LoadViewPrefs();
+    void SavePathViewWidth(float width);
+    void SetViewMode(EContentBrowserViewMode mode);
 
     bool IsCollapsed(const eastl::string& path) const { return m_Collapsed.count(std::string(path.c_str())) != 0; }
     void ToggleCollapsed(const eastl::string& path);
+    void ExpandAncestorsForFolder(const EditorFileNode* folder);
 
     void SelectNode(EditorFileNode* node);
+    void NavigateToFolder(EditorFileNode* folder);
+    void EnsureBrowsedFolder();
     void OpenContextMenuFor(EditorFileNode* node, const Vector2& screen_pos, float scale);
     void OpenCreateMenu(const Vector2& screen_pos, float scale);
-    void ResolveSelectedFromPath();
+    void RebindSelectionAfterTreeRebuild(const std::string& selected_path, const std::string& browsed_path);
+    void HandleNodeActivated(EditorFileNode* node, EContentBrowserRowPanel panel);
 
-    static ZSlateProjectWindow* s_Instance;
+    static ZSlateContentBrowserWindow* s_Instance;
 
-    // ---- Reused ProjectWindow backing state (drives the shared backend) -----
+    // ---- Content Browser backing state (drives the shared backend) -----
     EditorFileService m_EditorFileService;
     EditorFileNode* m_SelectedNode {nullptr};
+    EditorFileNode* m_BrowsedFolderNode {nullptr};
     eastl::unordered_map<eastl::string, unsigned int> m_NewObjectIndexMap;
     std::filesystem::path m_PendingDeletePath;
     bool m_HasPendingDelete {false};
@@ -91,12 +109,12 @@ private:
     bool m_PendingImportDialog {false};
     bool m_AssetTreeDirty {false};
     uint32_t m_AssetRegistryListenerHandle {0};
-    ProjectWindowContext m_Context;
-
-    std::chrono::time_point<std::chrono::steady_clock> m_LastFileTreeUpdate;
+    ContentBrowserContext m_Context;
 
     // ---- ZSlate view state -------------------------------------------------
     std::unordered_set<std::string> m_Collapsed;   // collapsed folder paths (default open)
+    float m_PathViewWidth {230.0f};
+    EContentBrowserViewMode m_ViewMode {EContentBrowserViewMode::Tile};
 
     // Double-click detection (open external editor / toggle folder).
     EditorFileNode* m_LastClickNode {nullptr};
@@ -121,8 +139,11 @@ private:
     // Rebuild bookkeeping.
     float m_BuiltScale {-1.0f};
     std::string m_BuiltSelectedPath;
+    std::string m_BuiltBrowsedPath;
     std::string m_BuiltRenameKey;
     uint64_t m_CollapseVersion {0};
     uint64_t m_BuiltCollapseVersion {~0ull};
+    EContentBrowserViewMode m_BuiltViewMode {EContentBrowserViewMode::Tile};
+    float m_BuiltContentWidth {-1.0f};
     bool m_ForceRebuild {true};
 };

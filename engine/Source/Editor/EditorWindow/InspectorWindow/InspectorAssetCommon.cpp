@@ -158,6 +158,11 @@ bool IsTexture2DInspectorAssetType(const std::string& resolved_asset_type)
     return resolved_asset_type == "texture2d";
 }
 
+bool IsMaterialInspectorAssetType(const std::string& resolved_asset_type)
+{
+    return resolved_asset_type == "material";
+}
+
 bool IsGenericInspectorZAssetType(const std::filesystem::path& asset_path, const std::string& resolved_asset_type)
 {
     std::string extension = asset_path.extension().string();

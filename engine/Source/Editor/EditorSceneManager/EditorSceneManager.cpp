@@ -2,7 +2,7 @@
 
 #include "Editor/EditorProjectPrefs/EditorProjectPrefs.h"
 #include "Editor/WorldPartition/WorldPartitionEditorDebug.h"
-#include "Editor/EditorUI/ProjectWindow/ProjectWindowHelpers.h"
+#include "Editor/EditorUI/ContentBrowser/ContentBrowserHelpers.h"
 #include "Editor/Platform/Interface/EditorUtility.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "core/Log/LogSystem.h"
@@ -1120,7 +1120,7 @@ namespace
 {
     eastl::string PathToLevelUrl(const std::filesystem::path& path)
     {
-        const std::filesystem::path normalized = ProjectWindowHelpers::NormalizeProjectPath(path);
+        const std::filesystem::path normalized = ContentBrowserHelpers::NormalizeContentBrowserPath(path);
         if (const auto project_info = GET_SYSTEM(ProjectInfo))
         {
             std::error_code ec;
@@ -1172,7 +1172,7 @@ namespace
 
     std::filesystem::path DefaultSceneSaveDirectory()
     {
-        const std::filesystem::path assets_root = ProjectWindowHelpers::GetEditorSourceAssetFolder();
+        const std::filesystem::path assets_root = ContentBrowserHelpers::GetEditorSourceAssetFolder();
         if (assets_root.empty())
         {
             return assets_root;
@@ -1324,14 +1324,14 @@ void EditorSceneManager::SaveActiveSceneAsDialog()
     LOG_INFO(ZEditor, "Save Scene As: {}", save_path.generic_string());
 }
 
-bool EditorSceneManager::OpenSceneFromProjectPath(const eastl::string& project_file_path)
+bool EditorSceneManager::OpenSceneFromContentBrowserPath(const eastl::string& content_browser_file_path)
 {
-    if (project_file_path.empty())
+    if (content_browser_file_path.empty())
     {
         return false;
     }
 
-    std::string extension = std::filesystem::path(project_file_path.c_str()).extension().generic_string();
+    std::string extension = std::filesystem::path(content_browser_file_path.c_str()).extension().generic_string();
     std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
@@ -1340,13 +1340,13 @@ bool EditorSceneManager::OpenSceneFromProjectPath(const eastl::string& project_f
         return false;
     }
 
-    const eastl::string level_url = PathToLevelUrl(project_file_path.c_str());
+    const eastl::string level_url = PathToLevelUrl(content_browser_file_path.c_str());
     if (!OpenSceneInternal(level_url, false))
     {
-        LOG_ERROR(ZEditor, "OpenScene failed: {}", project_file_path.c_str());
+        LOG_ERROR(ZEditor, "OpenScene failed: {}", content_browser_file_path.c_str());
         return false;
     }
 
-    LOG_INFO(ZEditor, "OpenScene: {}", project_file_path.c_str());
+    LOG_INFO(ZEditor, "OpenScene: {}", content_browser_file_path.c_str());
     return true;
 }

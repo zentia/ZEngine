@@ -13,8 +13,8 @@
 #include <string>
 #include <vector>
 
-// Mutable Project-window state passed to extracted UI modules.
-struct ProjectWindowContext
+// Mutable Content Browser state passed to extracted UI modules.
+struct ContentBrowserContext
 {
     EditorFileService& file_service;
     EditorFileNode*& selected_node;

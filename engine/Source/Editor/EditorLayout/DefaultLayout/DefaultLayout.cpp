@@ -175,7 +175,7 @@ void DefaultLayout::BuildNativeBuiltin(BuiltinLayoutType type)
             t.AddTab(*root, kScene);
             if (auto* c = leaf(kScene)) { auto* r = t.SplitLeaf(*c, EDockDir::Right, kInspector, 0.30f); t.AddTab(*r, kPreview); }
             if (auto* c = leaf(kScene)) t.SplitLeaf(*c, EDockDir::Left, kHierarchy, 0.22f);
-            if (auto* c = leaf(kScene)) { auto* b = t.SplitLeaf(*c, EDockDir::Bottom, kProject, 0.32f); t.AddTab(*b, kConsole); t.AddTab(*b, kTimeline); }
+            if (auto* c = leaf(kScene)) { auto* b = t.SplitLeaf(*c, EDockDir::Bottom, kContentBrowser, 0.32f); t.AddTab(*b, kConsole); t.AddTab(*b, kTimeline); }
             break;
         }
         case BuiltinLayoutType::FourSplit:
@@ -183,7 +183,7 @@ void DefaultLayout::BuildNativeBuiltin(BuiltinLayoutType type)
             // Right Inspector/Preview; bottom Project/Console/Timeline; top-left Hierarchy, top-center Scene/Game.
             t.AddTab(*root, kScene); t.AddTab(*root, kGame);
             if (auto* c = leaf(kScene)) { auto* r = t.SplitLeaf(*c, EDockDir::Right, kInspector, 0.28f); t.AddTab(*r, kPreview); }
-            if (auto* c = leaf(kScene)) { auto* b = t.SplitLeaf(*c, EDockDir::Bottom, kProject, 0.42f); t.AddTab(*b, kConsole); t.AddTab(*b, kTimeline); }
+            if (auto* c = leaf(kScene)) { auto* b = t.SplitLeaf(*c, EDockDir::Bottom, kContentBrowser, 0.42f); t.AddTab(*b, kConsole); t.AddTab(*b, kTimeline); }
             if (auto* c = leaf(kScene)) t.SplitLeaf(*c, EDockDir::Left, kHierarchy, 0.25f);
             break;
         }
@@ -195,7 +195,7 @@ void DefaultLayout::BuildNativeBuiltin(BuiltinLayoutType type)
             if (auto* c = leaf(kScene))
             {
                 auto* l = t.SplitLeaf(*c, EDockDir::Left, kHierarchy, 0.20f);
-                if (l) { auto* lb = t.SplitLeaf(*l, EDockDir::Bottom, kProject, 0.45f); t.AddTab(*lb, kConsole); }
+                if (l) { auto* lb = t.SplitLeaf(*l, EDockDir::Bottom, kContentBrowser, 0.45f); t.AddTab(*lb, kConsole); }
             }
             if (auto* c = leaf(kScene)) { auto* b = t.SplitLeaf(*c, EDockDir::Bottom, kTimeline, 0.28f); t.AddTab(*b, kAnimation); t.AddTab(*b, kBlueprint); }
             break;
@@ -204,7 +204,7 @@ void DefaultLayout::BuildNativeBuiltin(BuiltinLayoutType type)
         {
             // Wide bottom bar (Project/Console/Timeline); top Hierarchy | Scene/Game | Inspector/Preview.
             t.AddTab(*root, kScene); t.AddTab(*root, kGame);
-            if (auto* c = leaf(kScene)) { auto* b = t.SplitLeaf(*c, EDockDir::Bottom, kProject, 0.35f); t.AddTab(*b, kConsole); t.AddTab(*b, kTimeline); }
+            if (auto* c = leaf(kScene)) { auto* b = t.SplitLeaf(*c, EDockDir::Bottom, kContentBrowser, 0.35f); t.AddTab(*b, kConsole); t.AddTab(*b, kTimeline); }
             if (auto* c = leaf(kScene)) { auto* r = t.SplitLeaf(*c, EDockDir::Right, kInspector, 0.25f); t.AddTab(*r, kPreview); }
             if (auto* c = leaf(kScene)) t.SplitLeaf(*c, EDockDir::Left, kHierarchy, 0.20f);
             break;
@@ -218,7 +218,7 @@ void DefaultLayout::BuildNativeBuiltin(BuiltinLayoutType type)
             t.AddTab(*root, kScene); t.AddTab(*root, kGame);
             if (auto* c = leaf(kScene)) { auto* r = t.SplitLeaf(*c, EDockDir::Right, kInspector, 0.25f); t.AddTab(*r, kPreview); }
             if (auto* c = leaf(kScene)) t.SplitLeaf(*c, EDockDir::Left, kHierarchy, 0.20f);
-            if (auto* c = leaf(kScene)) { auto* b = t.SplitLeaf(*c, EDockDir::Bottom, kProject, 0.30f); t.AddTab(*b, kConsole); t.AddTab(*b, kPackageManager); }
+            if (auto* c = leaf(kScene)) { auto* b = t.SplitLeaf(*c, EDockDir::Bottom, kContentBrowser, 0.30f); t.AddTab(*b, kConsole); t.AddTab(*b, kPackageManager); }
             break;
         }
     }
@@ -1249,7 +1249,7 @@ void DefaultLayout::ApplyBuiltinWindowStates(BuiltinLayoutType type)
         {EditorLayoutWindowIds::kHierarchy, true},
         {EditorLayoutWindowIds::kInspector, true},
         {EditorLayoutWindowIds::kPreview, true},
-        {EditorLayoutWindowIds::kProject, true},
+        {EditorLayoutWindowIds::kContentBrowser, true},
         {EditorLayoutWindowIds::kConsole, true},
         {EditorLayoutWindowIds::kScene, true},
         {EditorLayoutWindowIds::kGame, true},
@@ -1385,6 +1385,23 @@ bool DefaultLayout::LoadSnapshotFromFile(const std::filesystem::path& file_path,
             {
                 snapshot.window_open_states[iter->name.GetString()] = iter->value.GetBool();
             }
+        }
+    }
+
+    for (auto iter = snapshot.window_open_states.begin(); iter != snapshot.window_open_states.end();)
+    {
+        const std::string remapped = EditorLayoutWindowIds::RemapLegacyPanelTitle(iter->first);
+        if (remapped != iter->first)
+        {
+            if (snapshot.window_open_states.find(remapped) == snapshot.window_open_states.end())
+            {
+                snapshot.window_open_states[remapped] = iter->second;
+            }
+            iter = snapshot.window_open_states.erase(iter);
+        }
+        else
+        {
+            ++iter;
         }
     }
 

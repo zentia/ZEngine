@@ -85,7 +85,7 @@ std::string SanitizeShaderBaseName(const eastl::string& shader_name)
     }
     return sanitized_name.empty() ? "NewShader" : sanitized_name;
 }
-eastl::string MakeProjectRelativeAssetPath(const std::filesystem::path& path)
+eastl::string MakeContentRelativeAssetPath(const std::filesystem::path& path)
 {
     const std::filesystem::path asset_root = GetProjectAssetsPath();
     const std::filesystem::path normalized_path = std::filesystem::absolute(path).lexically_normal();
@@ -111,7 +111,7 @@ std::string MakeInspectorAssetDisplayPath(const eastl::string& stored_path)
         return stored_path.c_str();
     }
 
-    return MakeProjectRelativeAssetPath(resolved_path).c_str();
+    return MakeContentRelativeAssetPath(resolved_path).c_str();
 }
 std::string MakeShaderDisplayPath(const eastl::string& stored_path)
 {
@@ -119,7 +119,7 @@ std::string MakeShaderDisplayPath(const eastl::string& stored_path)
     {
         return "(not set)";
     }
-    return MakeProjectRelativeAssetPath(ResolveProjectAssetPath(stored_path)).c_str();
+    return MakeContentRelativeAssetPath(ResolveProjectAssetPath(stored_path)).c_str();
 }
 
 std::string BuildDefaultVertexShaderSource(const eastl::string& shader_name)
@@ -201,7 +201,7 @@ bool EnsureShaderSourceFile(eastl::string& stored_path, const eastl::string& sha
     if (absolute_path.empty())
     {
         absolute_path = GetDefaultShaderSourcePath(shader_name, is_vertex_shader);
-        stored_path = MakeProjectRelativeAssetPath(absolute_path);
+        stored_path = MakeContentRelativeAssetPath(absolute_path);
     }
 
     return WriteTextFileIfMissing(absolute_path,

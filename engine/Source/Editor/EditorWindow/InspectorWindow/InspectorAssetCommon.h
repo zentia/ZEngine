@@ -21,6 +21,7 @@ bool TryGetInspectorLiveMaterialForPreview(const std::filesystem::path& asset_pa
 // windows to route texture `.zasset` selections. (The old inline bindless ImGui preview
 // that this predicate used to gate was removed; only the type check remains.)
 bool IsTexture2DInspectorAssetType(const std::string& resolved_asset_type);
+bool IsMaterialInspectorAssetType(const std::string& resolved_asset_type);
 bool LoadMaterialDefinitionForInspector(Material& out_material, const std::filesystem::path& asset_path);
 bool MaterialUsesCustomProjectShader(const Material& material);
 

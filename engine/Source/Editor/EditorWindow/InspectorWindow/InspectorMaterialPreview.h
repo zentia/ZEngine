@@ -4,6 +4,7 @@
 #include "Runtime/Resource/ResType/Data/Material.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -56,3 +57,10 @@ struct MaterialPreviewResult
 // now that the Preview window paints through the retained ZSlate widget tree.
 // Requires the native ZSlate backend (the handle is a UiGpuResources handle).
 MaterialPreviewResult RenderMaterialPreviewToTexture(const Material& material, uint32_t pixel_size);
+
+// Fixed-camera material thumbnail for Content Browser tiles. Each asset path keeps
+// its own GPU texture handle (separate from the interactive Preview singleton above).
+MaterialPreviewResult RenderMaterialThumbnailFromPath(const std::filesystem::path& asset_path, uint32_t pixel_size);
+
+void InvalidateMaterialPreview(const std::filesystem::path& asset_path);
+void InvalidateAllMaterialPreviews();

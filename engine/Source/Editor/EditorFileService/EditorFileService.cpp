@@ -88,7 +88,7 @@ std::filesystem::path getEditorSourceAssetFolder()
 
 // Per-root display whitelist (UE Content Browser model).
 //
-// Each top-level root in the Project window has its OWN allowed-extension
+// Each top-level root in the Content Browser has its OWN allowed-extension
 // set, so a misplaced file (e.g. a stray `.ts` dropped into `Assets/`) is
 // silently hidden instead of polluting the wrong tree. This mirrors UE's
 // rule that .uasset lives only under Content/ while .cpp/.h live only
@@ -118,7 +118,7 @@ std::filesystem::path getEditorSourceAssetFolder()
 // Unknown labels fall through to the most permissive set (Assets-root rules)
 // for forward compatibility, but every existing root is enumerated explicitly
 // so a new root must opt in deliberately.
-bool shouldDisplayInProjectWindow(const std::filesystem::path& path,
+bool shouldDisplayInContentBrowser(const std::filesystem::path& path,
                                   const eastl::string& root_label)
 {
     std::string extension = path.extension().string();
@@ -501,7 +501,7 @@ EditorFileNode* EditorFileService::BuildRoot(const std::filesystem::path& root_p
     project_file_paths.reserve(file_paths.size());
     for (const auto& path : file_paths)
     {
-        if (!shouldDisplayInProjectWindow(path, root_label))
+        if (!shouldDisplayInContentBrowser(path, root_label))
         {
             continue;
         }

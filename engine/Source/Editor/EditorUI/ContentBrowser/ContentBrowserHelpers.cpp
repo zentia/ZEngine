@@ -1,4 +1,4 @@
-#include "Editor/EditorUI/ProjectWindow/ProjectWindowHelpers.h"
+#include "Editor/EditorUI/ContentBrowser/ContentBrowserHelpers.h"
 
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Framework/Level/Level.h"
@@ -12,14 +12,14 @@
 #include <cstring>
 #include <fstream>
 
-namespace ProjectWindowHelpers
+namespace ContentBrowserHelpers
 {
     bool IsFolderNode(const EditorFileNode* node)
     {
         return node != nullptr && node->isFolder();
     }
 
-    eastl::string GetProjectDisplayName(const EditorFileNode* node)
+    eastl::string GetContentBrowserDisplayName(const EditorFileNode* node)
     {
         if (node == nullptr)
         {
@@ -104,7 +104,7 @@ namespace ProjectWindowHelpers
         return extension == ".zasset" || extension == ".mat" || extension == ".prefab" || extension == ".scene";
     }
 
-    std::filesystem::path NormalizeProjectPath(const std::filesystem::path& path)
+    std::filesystem::path NormalizeContentBrowserPath(const std::filesystem::path& path)
     {
         std::error_code error_code;
         if (std::filesystem::exists(path, error_code))
@@ -114,21 +114,21 @@ namespace ProjectWindowHelpers
         return std::filesystem::absolute(path).lexically_normal();
     }
 
-    EditorFileNode* FindProjectNodeByPath(EditorFileNode* node, const std::filesystem::path& path)
+    EditorFileNode* FindContentBrowserNodeByPath(EditorFileNode* node, const std::filesystem::path& path)
     {
         if (node == nullptr)
         {
             return nullptr;
         }
 
-        if (!node->m_FilePath.empty() && NormalizeProjectPath(node->m_FilePath.c_str()) == NormalizeProjectPath(path))
+        if (!node->m_FilePath.empty() && NormalizeContentBrowserPath(node->m_FilePath.c_str()) == NormalizeContentBrowserPath(path))
         {
             return node;
         }
 
         for (const std::shared_ptr<EditorFileNode>& child_node : node->m_ChildNodes)
         {
-            if (EditorFileNode* found_node = FindProjectNodeByPath(child_node.get(), path))
+            if (EditorFileNode* found_node = FindContentBrowserNodeByPath(child_node.get(), path))
             {
                 return found_node;
             }
@@ -136,16 +136,46 @@ namespace ProjectWindowHelpers
         return nullptr;
     }
 
-    EditorFileNode* FindProjectNodeAcrossRoots(EditorFileService& service, const std::filesystem::path& path)
+    EditorFileNode* FindContentBrowserNodeAcrossRoots(EditorFileService& service, const std::filesystem::path& path)
     {
         for (EditorFileNode* root : service.getEditorRootNodes())
         {
-            if (EditorFileNode* found = FindProjectNodeByPath(root, path))
+            if (EditorFileNode* found = FindContentBrowserNodeByPath(root, path))
             {
                 return found;
             }
         }
         return nullptr;
+    }
+
+    EditorFileNode* FindParentFolderNode(EditorFileService& service, const EditorFileNode* node)
+    {
+        if (node == nullptr || node->m_FilePath.empty())
+        {
+            return nullptr;
+        }
+
+        const std::filesystem::path parent_path =
+            NormalizeContentBrowserPath(std::filesystem::path(node->m_FilePath.c_str())).parent_path();
+        if (parent_path.empty())
+        {
+            return nullptr;
+        }
+
+        return FindContentBrowserNodeAcrossRoots(service, parent_path);
+    }
+
+    std::vector<EditorFileNode*> CollectFolderBreadcrumbChain(EditorFileService& service, EditorFileNode* folder)
+    {
+        std::vector<EditorFileNode*> chain;
+        EditorFileNode* cursor = folder;
+        while (cursor != nullptr)
+        {
+            chain.push_back(cursor);
+            cursor = FindParentFolderNode(service, cursor);
+        }
+        std::reverse(chain.begin(), chain.end());
+        return chain;
     }
 
     void TrimRenameBufferInPlace(char* buffer, size_t capacity)
@@ -189,7 +219,7 @@ namespace ProjectWindowHelpers
             return true;
         }
 
-        const std::filesystem::path normalized = NormalizeProjectPath(path);
+        const std::filesystem::path normalized = NormalizeContentBrowserPath(path);
         ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr)
         {
@@ -203,7 +233,7 @@ namespace ProjectWindowHelpers
             }
             std::error_code ec;
             const std::filesystem::path abs_root = std::filesystem::absolute(root, ec);
-            return !ec && NormalizeProjectPath(abs_root) == normalized;
+            return !ec && NormalizeContentBrowserPath(abs_root) == normalized;
         };
 
         return is_same_root(project_info->GetProjectContent()) || is_same_root(project_info->GetScriptsRoot()) ||

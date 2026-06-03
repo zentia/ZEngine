@@ -279,7 +279,7 @@ namespace EditorScenePlacement
         return asset_type;
     }
 
-    std::string MakeProjectRelativeAssetPath(const std::filesystem::path& path)
+    std::string MakeContentRelativeAssetPath(const std::filesystem::path& path)
     {
         const std::filesystem::path asset_root = getProjectAssetsPath();
         const std::filesystem::path normalized_path = std::filesystem::absolute(path).lexically_normal();
@@ -345,7 +345,7 @@ namespace EditorScenePlacement
             return false;
         }
 
-        const std::string mesh_asset_path = MakeProjectRelativeAssetPath(absolute_zasset_path);
+        const std::string mesh_asset_path = MakeContentRelativeAssetPath(absolute_zasset_path);
         if (mesh_asset_path.empty())
         {
             return false;
@@ -394,7 +394,7 @@ namespace EditorScenePlacement
         return finalizeCreatedObjectSelection(new_id);
     }
 
-    bool InstantiateDroppedProjectAsset(const std::filesystem::path& absolute_zasset_path,
+    bool InstantiateDroppedContentBrowserAsset(const std::filesystem::path& absolute_zasset_path,
                                         GObjectID parent_gobject_id)
     {
         if (absolute_zasset_path.empty())
@@ -454,6 +454,6 @@ namespace EditorScenePlacement
         s_pending_drop_parent_id = k_invalid_gobject_id;
         s_has_pending_drop = false;
 
-        (void)InstantiateDroppedProjectAsset(path, parent_id);
+        (void)InstantiateDroppedContentBrowserAsset(path, parent_id);
     }
 }  // namespace EditorScenePlacement

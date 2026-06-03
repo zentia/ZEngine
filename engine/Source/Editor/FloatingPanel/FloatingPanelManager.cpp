@@ -1,6 +1,7 @@
 #include "Editor/FloatingPanel/FloatingPanelManager.h"
 
 #include "Editor/EditorLayout/DefaultLayout/DefaultLayout.h"
+#include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/EditorUI/EditorUI.h"
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
@@ -1179,7 +1180,7 @@ void FloatingPanelManager::LoadState()
     {
         if (!entry.IsObject() || !entry.HasMember("title") || !entry["title"].IsString())
             continue;
-        const std::string title = entry["title"].GetString();
+        const std::string title = EditorLayoutWindowIds::RemapLegacyPanelTitle(entry["title"].GetString());
         const int x = entry.HasMember("x") && entry["x"].IsInt() ? entry["x"].GetInt() : 120;
         const int y = entry.HasMember("y") && entry["y"].IsInt() ? entry["y"].GetInt() : 120;
         const int w = entry.HasMember("w") && entry["w"].IsInt() ? entry["w"].GetInt() : 900;

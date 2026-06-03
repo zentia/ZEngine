@@ -62,7 +62,7 @@ public:
 
     // Unity-style scene file ops (.scene under Assets/).
     void SaveActiveSceneAsDialog();
-    bool OpenSceneFromProjectPath(const eastl::string& project_file_path);
+    bool OpenSceneFromContentBrowserPath(const eastl::string& content_browser_file_path);
 
     static std::string GetActiveSceneDisplayName();
     void RefreshMainWindowTitle();

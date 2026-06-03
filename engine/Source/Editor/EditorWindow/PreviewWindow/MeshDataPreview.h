@@ -2,9 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <string>
-
-// Unity/UE-style mesh preview for imported MeshData .zasset products.
+#include <string> for imported MeshData .zasset products.
 // Software-lit orbit view; runs in the native ZSlate Preview window.
 //
 // The preview is software-rasterized into an off-screen RGBA8 bitmap which is
@@ -17,6 +15,7 @@ namespace MeshDataPreview
     bool IsSupportedAssetType(const std::string& resolved_asset_type);
 
     void InvalidatePreview(const std::filesystem::path& asset_path);
+    void InvalidateAll();
 
     // Interaction applied to the orbit camera this frame. The caller gates these
     // to the preview region being hovered/active; deltas are in pixels, wheel in
@@ -48,4 +47,16 @@ namespace MeshDataPreview
     // camera, asset, or size changes. Requires the native ZSlate backend (the
     // handle is a UiGpuResources handle, not an ImGui texture id).
     PreviewFrame RenderToTexture(const std::filesystem::path& asset_path, uint32_t pixel_size, const PreviewInput& input);
+
+    // Fixed-camera thumbnail for Content Browser tiles. Each asset keeps its own
+    // GPU texture handle (separate from the interactive Preview window singleton).
+    PreviewFrame RenderThumbnailToTexture(const std::filesystem::path& asset_path, uint32_t pixel_size);
+
+    // Content Browser async path: worker-thread rasterization + main-thread GPU upload.
+    // Call TickPendingThumbnails once per frame from the Content Browser panel.
+    void RequestThumbnail(const std::filesystem::path& asset_path, uint32_t pixel_size);
+    void* TryGetThumbnailHandle(const std::filesystem::path& asset_path, uint32_t pixel_size);
+    bool IsThumbnailPending(const std::filesystem::path& asset_path, uint32_t pixel_size);
+    // max_per_frame = GPU uploads drained per tick; raster jobs are submitted separately.
+    bool TickPendingThumbnails(int max_per_frame);
 }  // namespace MeshDataPreview

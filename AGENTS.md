@@ -74,7 +74,7 @@ Decided in P1+P2:
   `Intermediate/`. Rationale: registry IS the GUID source of truth; losing
   it on a fresh clone would silently break cross-scene references. We accept
   occasional 3-way merges on this JSON (entries are line-stable).
-- Project window shows `Scripts/` as a **top-level root peer of Assets/**,
+- Content Browser shows `Scripts/` as a **top-level root peer of Assets/**,
   not nested under it.
 
 Decided for Shaders (mirrors Scripts 1:1):
@@ -271,10 +271,10 @@ Decided for Shaders (mirrors Scripts 1:1):
 - **Compatibility strategy B (current)**: `.shader` files under
   `<Project>/Assets/` are still resolved (legacy demo projects rely on
   this), but every match logs a `LOG_WARNING(ZShader, ...)` deprecation
-  notice. New shaders created via the Project window default to
+  notice. New shaders created via the Content Browser default to
   `<Project>/Shaders/`. A future hard-cutover can remove the legacy walk
   once all in-house demos have migrated.
-- Project window shows `Shaders/` as a **top-level root peer of Assets/
+- Content Browser shows `Shaders/` as a **top-level root peer of Assets/
   and Scripts/**, registered in `EditorFileService::buildEngineFileTree`
   right after the Scripts root.
 
@@ -282,7 +282,7 @@ Decided for Data (mirrors Scripts/Shaders, with one twist):
 - `Data/` peer of `Assets/`, `Scripts/`, `Shaders/`. Source location for
   CSV (V1) / XLSX (V2) tables; **checked into VCS**. Created on project
   open by `ProjectInfo::ensureScriptsScaffold()` (the historical name now
-  scaffolds Scripts + Shaders + Data). Project window shows `Data/` as a
+  scaffolds Scripts + Shaders + Data). Content Browser shows `Data/` as a
   top-level root, registered in `EditorFileService::buildEngineFileTree`
   right after the Shaders root.
 - **Compile output goes UNDER `Assets/`, not `Intermediate/`**: the path
@@ -291,7 +291,7 @@ Decided for Data (mirrors Scripts/Shaders, with one twist):
   extension changes. Rationale: the editor's `AssetRegistry` already
   scans the entire content directory, so emitting products under
   `Assets/_Generated/` makes them discoverable with **zero changes** to
-  the registry / Project window / Inspector. The whole `_Generated/`
+  the registry / Content Browser / Inspector. The whole `_Generated/`
   subtree is gitignored via the scaffolding marker block in `.gitignore`
   (an entry `/Assets/_Generated/` was added next to `/Intermediate/`).
   This is the one place where Data deviates from the Scripts/Shaders
@@ -1017,9 +1017,9 @@ this file's pointer block AND `doc/BINDLESS_TEXTURE_PATH.md`:
    bank requires updating all four sites (RHI cpp, constexpr,
    enum, HLSL) in lockstep.
 
-### 2.10 Project window display rules (UE Content Browser model)
+### 2.10 Content Browser display rules (UE Content Browser model)
 
-The Project window applies a **per-root extension whitelist** -- a file is
+The Content Browser applies a **per-root extension whitelist** -- a file is
 shown in a given top-level tree only if its extension belongs to that
 tree's set, even when it physically lives there:
 
@@ -1039,7 +1039,7 @@ get their own top-level root. Source files are **never** surfaced under
 
 **Single source of truth for the rules**:
 `engine/Source/Editor/editor_file_service/editor_file_service.cpp`
-function `shouldDisplayInProjectWindow(path, root_label)`. The
+function `shouldDisplayInContentBrowser(path, root_label)`. The
 `root_label` parameter is the lower-case identifier that
 `EditorFileService::buildEngineFileTree` passes to `buildRoot()`
 (`"asset"`, `"scripts"`, `"shaders"`, `"data"`, `"textures"`, `"models"`).
@@ -1050,7 +1050,7 @@ Adding a new top-level root means adding a new branch here.
 output into one of two places, in priority order:
 
 1. `target_dir / <source-stem>.zasset` -- when `target_dir` is non-empty
-   and lies inside `<Project>/Assets/`. This is what the Project window
+   and lies inside `<Project>/Assets/`. This is what the Content Browser
    passes when the user has a folder selected inside the Assets tree at
    the moment they click Import.
 2. `<Project>/Assets/<source-stem>.zasset` -- the project-content
@@ -1069,7 +1069,7 @@ the OS file manager (Windows Explorer / Finder / Linux file manager) onto
 the editor window auto-imports it via the same code path as the right-click
 "Import…" entry. Wiring is single-direction and minimal:
 `WindowSystem` already calls `glfwSetDropCallback(...)` and forwards into
-the existing `registerOnDropFunc` listener vector; `ProjectWindow`'s ctor
+the existing `registerOnDropFunc` listener vector; `ZSlateContentBrowserWindow`'s ctor
 subscribes one listener that copies the GLFW path strings (which are only
 valid for the duration of the callback per GLFW docs) into a
 mutex-guarded queue, and `executePendingOsDropImports()` drains the queue
@@ -1498,7 +1498,7 @@ Conventions (do not re-litigate):
 | Phase | Status | Summary |
 |-------|--------|---------|
 | P1 | done   | `ProjectInfo` scaffolding (Scripts/, Intermediate/, tsconfig.json, package.json, .gitignore). |
-| P2 | done   | `ScriptAsset` + `ScriptRegistry` (path-deterministic GUID, content-hash rename detection, atomic JSON save) + Project window Scripts root. Smoke test on `I:\ZEngineDemo`: rename preserves GUID, delete removes entry, restart is idempotent. |
+| P2 | done   | `ScriptAsset` + `ScriptRegistry` (path-deterministic GUID, content-hash rename detection, atomic JSON save) + Content Browser Scripts root. Smoke test on `I:\ZEngineDemo`: rename preserves GUID, delete removes entry, restart is idempotent. |
 | P3 | done   | `TypeScriptCompiler` (Editor-only IEngineSystem). Spawns `tsc --watch` (project-local `node_modules/.bin/tsc.cmd` preferred, falls back to PATH; degraded mode if neither). Pipes tsc stdout/stderr line-by-line into ZTSC log category via a worker thread + per-frame `Tick()` drain. Generalised `FileSystemWatcher` to take a `setExtensionFilter()` (default still `{".zasset"}` for legacy callers); compiler watches `.js` under `Intermediate/Scripts/` and exposes `JsChangeHandler` hook for P4. |
 | P4 | done   | Module loader API on `ScriptingManager` (folded into the existing system instead of a separate `ScriptingEngine` class - it already owned the env). `LoadModule/ReloadModule/UnloadModule/IsModuleLoaded/InvokeExportedFunction/PathToModuleId`, plus IIFE `(function(module,exports){...})` wrapper for QuickJS (no native `require`). `ScriptEnv::InstallConsoleAndDebugGlobals()` plumbs `console.{log,info,debug,warn,error}` and `Debug.{Log,LogWarning,LogError}` through native pesapi callbacks into the `ZScripting` log category. `EditorApplication` wires `TypeScriptCompiler::SetOnJsModuleChanged` -> `ReloadModule`/`LoadModule` with 200ms per-module debounce, and at startup scans `js_root/*.js` to load already-compiled modules so cold restarts aren't dependent on tsc re-emitting. Smoke test: `I:\ZEngineDemo\Scripts\P4Smoke.ts` (`console.log` + `Debug.Log` calls) appears in BqLog under `[ZScripting]` on both startup-load and hot-reload paths. |
 | P5 | done   | `Behaviour` abstract Component + `TypeScriptComponent` subclass (serialises `m_script_guid` + `m_class_name` as `eastl::string`; `m_js_instance` stored as `void*` to keep pesapi out of the public header). Lifecycle mapped onto ZEngine's `Component` API: `postLoadResource` -> JS `OnAwake` + `OnStart`, `tick(dt)` -> `OnUpdate(dt)`, dtor -> `OnDestroy` then `pesapi_release_value_ref`. `ScriptEnv::CreateInstance/DestroyInstance/InvokeInstanceMethod*` work around pesapi's missing `new` operator via a JS-side `__zNewInstance(ctor)` shim, and `globalThis.Behaviour` placeholder class is injected by the same shim so user code can `class Foo extends Behaviour` without a real binding. Engine emits `Intermediate/Typings/zengine.d.ts` (declares `Behaviour`, `Debug`, `console`, `__zNewInstance`) on every project open in `ProjectInfo::ensureScriptsScaffold` -- tsc reports 0 errors. Inspector got a minimal "Add TypeScript Behaviour..." popup that lists `ScriptRegistry::getAll()` entries with non-empty `m_default_class_name`, attaches a `TypeScriptComponent` and explicitly fires `postLoadResource` (since `addComponent` doesn't). `EditorApplication::registerEdtorTickComponent("TypeScriptComponent")` makes `OnUpdate` fire in edit mode (Unity `[ExecuteAlways]` equiv). Smoke test: `I:\ZEngineDemo\Scripts\Hello.ts` extends `Behaviour`, throttled `OnUpdate` logs every 60 ticks; `module loaded: Hello` + `[Hello] OnAwake/OnStart` appear in BqLog. `m_serialized_fields` (per-instance script field overrides) deferred to P7. |

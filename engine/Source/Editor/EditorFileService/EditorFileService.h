@@ -89,7 +89,7 @@ public:
     /// keep working unchanged.
     EditorFileNode* getEditorRootNode() { return m_RootNodes.empty() ? nullptr : m_RootNodes.front(); }
 
-    /// All roots in registration order. The Project window iterates this to
+    /// All roots in registration order. The Content Browser iterates this to
     /// draw multiple top-level trees (Assets, Scripts, ...).
     const std::vector<EditorFileNode*>& getEditorRootNodes() const { return m_RootNodes; }
 

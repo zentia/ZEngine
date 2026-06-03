@@ -33,7 +33,7 @@
 //     auto-reimport works.
 //
 // Threading: Initialize / Shutdown / record / lookup / forEach / removeEntry
-// all take an internal mutex. The ProjectWindow drop-import path may call
+// all take an internal mutex. The Content Browser drop-import path may call
 // `Record()` from the editor main thread; the focus-callback driven
 // `EditorAssetManager::tickReimportQueue` calls `ForEach()` from the same
 // thread; both are safe under the same lock.

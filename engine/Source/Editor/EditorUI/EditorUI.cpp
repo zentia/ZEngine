@@ -9,7 +9,7 @@
 #include "Editor/EditorUI/EditorWindowRegistry.h"
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Editor/EditorWindow/ZSlateConsoleWindow/ZSlateConsoleWindow.h"
-#include "Editor/EditorWindow/ZSlateProjectWindow/ZSlateProjectWindow.h"
+#include "Editor/EditorWindow/ZSlateContentBrowserWindow/ZSlateContentBrowserWindow.h"
 #include "Editor/Menu/MenuController.h"
 #include "Editor/Platform/Interface/GUIView.h"
 #include "Editor/Render/Pass/EditorUIPass.h"
@@ -378,9 +378,9 @@ void EditorUI::ProcessDeferredWork()
 {
     ZSlateConsoleWindow::PumpBufferedLogsIfOpen();
 
-    if (ZSlateProjectWindow* project_window = GetWindow<ZSlateProjectWindow>())
+    if (ZSlateContentBrowserWindow* content_browser_window = GetWindow<ZSlateContentBrowserWindow>())
     {
-        project_window->ExecutePendingImportDialog();
+        content_browser_window->ExecutePendingImportDialog();
     }
 
     // Scene/Hierarchy drag-drop must drain here (before Application::TickOneFrame

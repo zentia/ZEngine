@@ -36,9 +36,9 @@ namespace EditorDragDrop
     /// the trailing NUL. The payload is sized as `strlen(path) + 1` so the receiver
     /// can treat `payload->Data` as a C string.
     ///
-    /// Receivers call `EditorScenePlacement::InstantiateDroppedProjectAsset`. The
+    /// Receivers call `EditorScenePlacement::InstantiateDroppedContentBrowserAsset`. The
     /// Project window only starts a drag for known droppable types (prefab, meshdata).
-    constexpr const char* kPayloadProjectPrefab = "ZE_PROJECT_PREFAB";
+    constexpr const char* kPayloadContentBrowserPrefab = "ZE_CONTENT_BROWSER_PREFAB";
 
     // ------------------------------------------------------------------------
     // Native ZSlate drag-drop payload discriminators (FDragDropOperation::

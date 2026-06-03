@@ -72,7 +72,7 @@ public:
     ///
     /// `prefab_path` should already include the `.zasset` extension. The caller is
     /// responsible for picking a non-colliding filename — the Editor wrapper in
-    /// ProjectWindow does that before calling in.
+    /// Content Browser does that before calling in.
     static bool SaveAsPrefabAsset(GameObject* root, const std::filesystem::path& prefab_path);
 
 private:

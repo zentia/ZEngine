@@ -1,7 +1,7 @@
-#include "Editor/EditorUI/ProjectWindow/ProjectDragDrop.h"
+#include "Editor/EditorUI/ContentBrowser/ContentBrowserDragDrop.h"
 
 #include "Editor/EditorAsset/EditorAssetManager.h"
-#include "Editor/EditorUI/ProjectWindow/ProjectWindowHelpers.h"
+#include "Editor/EditorUI/ContentBrowser/ContentBrowserHelpers.h"
 #include "Editor/Menu/AssetsMenu.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
@@ -10,9 +10,9 @@
 #include <filesystem>
 #include <mutex>
 
-namespace ProjectDragDrop
+namespace ContentBrowserDragDrop
 {
-    void OnOsFilesDropped(ProjectWindowContext& ctx, const std::vector<std::string>& paths)
+    void OnOsFilesDropped(ContentBrowserContext& ctx, const std::vector<std::string>& paths)
     {
         if (paths.empty())
         {
@@ -22,7 +22,7 @@ namespace ProjectDragDrop
         ctx.pending_os_drop_imports.insert(ctx.pending_os_drop_imports.end(), paths.begin(), paths.end());
     }
 
-    void ExecutePendingOsDropImports(ProjectWindowContext& ctx)
+    void ExecutePendingOsDropImports(ContentBrowserContext& ctx)
     {
         std::vector<std::string> drops;
         {
@@ -34,7 +34,7 @@ namespace ProjectDragDrop
             drops.swap(ctx.pending_os_drop_imports);
         }
 
-        const std::filesystem::path target_folder = ProjectWindowHelpers::ResolveDropTargetFolder(ctx.selected_node);
+        const std::filesystem::path target_folder = ContentBrowserHelpers::ResolveDropTargetFolder(ctx.selected_node);
 
         auto editor_asset_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
         AssetImportManager* import_manager =

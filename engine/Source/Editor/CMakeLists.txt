@@ -182,7 +182,7 @@ endif()
 # ---------------------------------------------------------------------------
 # ShaderLab side-target.
 #
-# Editor sources (inspector_window, project_window, shader_preview_renderer)
+# Editor sources (inspector_window, content_browser, shader_preview_renderer)
 # unconditionally call ShaderLabParser::ShaderLabParser / ShaderLabParser::Parse.
 #
 # - On Vulkan-capable hosts, ShaderLab/*.cpp is compiled into ZRuntime via
