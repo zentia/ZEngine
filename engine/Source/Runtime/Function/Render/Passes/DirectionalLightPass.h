@@ -6,7 +6,7 @@
 #include <string>
 
 class RenderResourceBase;
-struct VulkanPBRMaterial;
+struct GpuPBRMaterial;
 
 class DirectionalLightShadowPass : public RenderPass
 {
@@ -46,11 +46,11 @@ private:
     void SetupPipelines();
     void SetupDescriptorSet();
     void DrawModel();
-    RHIPipeline* GetOrCreateShadowPipeline(const VulkanPBRMaterial& material);
+    RHIPipeline* GetOrCreateShadowPipeline(const GpuPBRMaterial& material);
 
 private:
     RHIDescriptorSetLayout* m_PerMeshLayout {nullptr};
-    MeshDirectionalLightShadowPerframeStorageBufferObject
-        m_MeshDirectionalLightShadowPerframeStorageBufferObject;
+    DirectionalLightShadowPerFrame
+        m_DirectionalLightShadowPerFrame;
     std::map<ShadowPipelineKey, RHIPipeline*> m_MaterialPipelines;
 };

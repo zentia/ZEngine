@@ -15,7 +15,7 @@
 #include "Runtime/Resource/Preload/PreloadManager.h"
 #include "Runtime/Resource/UserPreferences/UserPreferences.h"
 
-bool g_isEditorMode {false};
+bool g_isPlaying {false};
 
 std::unordered_set<std::string> g_editorTickComponentTypes {};
 

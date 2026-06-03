@@ -16,7 +16,7 @@ static uint32_t const s_MeshVertexBlendingMaxJointCount = 1024;
 static uint32_t const s_MaxPointLightCount = 15;
 // should sync the macros in "shader_include/constants.h"
 
-struct VulkanSceneDirectionalLight
+struct SceneDirectionalLight
 {
     Vector3 direction;
     float _padding_direction;
@@ -24,7 +24,7 @@ struct VulkanSceneDirectionalLight
     float _padding_color;
 };
 
-struct VulkanScenePointLight
+struct ScenePointLight
 {
     Vector3 position;
     float radius;
@@ -32,7 +32,7 @@ struct VulkanScenePointLight
     float _padding_intensity;
 };
 
-struct MeshPerframeStorageBufferObject
+struct MainCameraPerFrame
 {
     Matrix4x4 proj_view_matrix;
     Vector3 camera_position;
@@ -43,8 +43,8 @@ struct MeshPerframeStorageBufferObject
     uint32_t show_skybox {1};
     uint32_t _padding_point_light_num_2;
     uint32_t _padding_point_light_num_3;
-    VulkanScenePointLight scene_point_lights[s_MaxPointLightCount];
-    VulkanSceneDirectionalLight scene_directional_light;
+    ScenePointLight scene_point_lights[s_MaxPointLightCount];
+    SceneDirectionalLight scene_directional_light;
     Matrix4x4 directional_light_proj_view;
 };
 
@@ -57,17 +57,17 @@ struct RenderMeshInstance
     Matrix4x4 model_matrix;
 };
 
-struct MeshPerdrawcallStorageBufferObject
+struct MeshDrawPerDrawcall
 {
     RenderMeshInstance mesh_instances[s_MeshPerDrawcallMaxInstanceCount];
 };
 
-struct MeshPerdrawcallVertexBlendingStorageBufferObject
+struct MeshDrawPerDrawcallVertexBlending
 {
     Matrix4x4 joint_matrices[s_MeshVertexBlendingMaxJointCount * s_MeshPerDrawcallMaxInstanceCount];
 };
 
-struct MeshPerMaterialUniformBufferObject
+struct MeshMaterialUniform
 {
     Vector4 baseColorFactor {0.0f, 0.0f, 0.0f, 0.0f};
 
@@ -81,7 +81,7 @@ struct MeshPerMaterialUniformBufferObject
     uint32_t is_double_sided = 0;
 };
 
-struct MeshPointLightShadowPerframeStorageBufferObject
+struct PointLightShadowPerFrame
 {
     uint32_t point_light_num;
     uint32_t _padding_point_light_num_1;
@@ -90,82 +90,54 @@ struct MeshPointLightShadowPerframeStorageBufferObject
     Vector4 point_lights_position_and_radius[s_MaxPointLightCount];
 };
 
-struct MeshPointLightShadowPerdrawcallStorageBufferObject
-{
-    RenderMeshInstance mesh_instances[s_MeshPerDrawcallMaxInstanceCount];
-};
-
-struct MeshPointLightShadowPerdrawcallVertexBlendingStorageBufferObject
-{
-    Matrix4x4 joint_matrices[s_MeshVertexBlendingMaxJointCount * s_MeshPerDrawcallMaxInstanceCount];
-};
-
-struct MeshDirectionalLightShadowPerframeStorageBufferObject
+struct DirectionalLightShadowPerFrame
 {
     Matrix4x4 light_proj_view;
 };
 
-struct MeshDirectionalLightShadowPerdrawcallStorageBufferObject
-{
-    RenderMeshInstance mesh_instances[s_MeshPerDrawcallMaxInstanceCount];
-};
+// Shadow draw passes reuse the main-camera mesh instance / vertex-blending SSBO layouts.
+using MeshShadowPerDrawcall = MeshDrawPerDrawcall;
+using MeshShadowPerDrawcallVertexBlending = MeshDrawPerDrawcallVertexBlending;
 
-struct MeshDirectionalLightShadowPerdrawcallVertexBlendingStorageBufferObject
-{
-    Matrix4x4 joint_matrices[s_MeshVertexBlendingMaxJointCount * s_MeshPerDrawcallMaxInstanceCount];
-};
-
-struct AxisStorageBufferObject
+struct AxisDrawStorage
 {
     Matrix4x4 model_matrix = Matrix4x4::IDENTITY;
     uint32_t selected_axis = 3;
 };
 
-struct ParticleBillboardPerframeStorageBufferObject
+struct ParticleBillboardPerFrame
 {
     Matrix4x4 proj_view_matrix;
     Vector3 right_direction;
-    float _padding_right_position;
+    float _padding_right_direction;
     Vector3 up_direction;
     float _padding_up_direction;
-    Vector3 foward_direction;
-    float _padding_forward_position;
+    Vector3 forward_direction;
+    float _padding_forward_direction;
 };
 
-struct ParticleCollisionPerframeStorageBufferObject
+struct ParticleCollisionPerFrame
 {
     Matrix4x4 view_matrix;
     Matrix4x4 proj_view_matrix;
     Matrix4x4 proj_inv_matrix;
 };
 
-// TODO: 4096 may not be the best
-static constexpr int s_ParticleBillboardBufferSize = 4096;
-struct ParticleBillboardPerdrawcallStorageBufferObject
-{
-    Vector4 positions[s_ParticleBillboardBufferSize];
-    Vector4 sizes[s_ParticleBillboardBufferSize];
-    Vector4 colors[s_ParticleBillboardBufferSize];
-};
-
-struct MeshInefficientPickPerframeStorageBufferObject
+struct PickPassPerFrame
 {
     Matrix4x4 proj_view_matrix;
     uint32_t rt_width;
     uint32_t rt_height;
 };
 
-struct MeshInefficientPickPerdrawcallStorageBufferObject
+struct PickPassPerDrawcall
 {
     Matrix4x4 model_matrices[s_MeshPerDrawcallMaxInstanceCount];
     uint32_t node_ids[s_MeshPerDrawcallMaxInstanceCount];
     float enable_vertex_blendings[s_MeshPerDrawcallMaxInstanceCount];
 };
 
-struct MeshInefficientPickPerdrawcallVertexBlendingStorageBufferObject
-{
-    Matrix4x4 joint_matrices[s_MeshVertexBlendingMaxJointCount * s_MeshPerDrawcallMaxInstanceCount];
-};
+using PickPassPerDrawcallVertexBlending = MeshDrawPerDrawcallVertexBlending;
 
 // nodes
 struct RenderMeshNode

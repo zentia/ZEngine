@@ -9,7 +9,7 @@
 #include <filesystem>
 #include <string>
 
-extern bool g_isEditorMode;
+extern bool g_isPlaying;
 extern std::unordered_set<std::string> g_editorTickComponentTypes;
 
 class Application : public Object, public IEngineSystem

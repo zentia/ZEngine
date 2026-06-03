@@ -14,7 +14,7 @@ IMPLEMENT_REGISTER_CLASS(GameObject);
 
 bool shouldComponentTick(std::string component_type_name)
 {
-    if (g_isEditorMode)
+    if (!g_isPlaying)
     {
         return g_editorTickComponentTypes.find(component_type_name) != g_editorTickComponentTypes.end();
     }

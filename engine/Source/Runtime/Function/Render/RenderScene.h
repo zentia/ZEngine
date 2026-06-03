@@ -72,6 +72,12 @@ public:
     // Rebuild m_PointLightList from enabled LightComponent instances on the active level.
     void SyncPointLightsFromLevel(Level* level);
 
+    void SetUploadRhi(RHI* rhi) { m_UploadRhi = rhi; }
+
+    // Editor gizmo axis meshes (registered once from RenderSystem::CreateAxis).
+    void RegisterAxisMeshSources(const std::array<size_t, 3>& mesh_asset_ids,
+                                 const std::array<RenderMeshData, 3>& mesh_datas);
+
 private:
     RenderEntity BuildRenderEntity(RHI* rhi,
                                    RenderResourceBase& render_resource,
@@ -88,6 +94,11 @@ private:
     GuidAllocator<MaterialSourceDesc> m_MaterialAssetIdAllocator;
 
     std::unordered_map<uint32_t, GObjectID> m_MeshObjectIdMap;
+
+    RHI* m_UploadRhi {nullptr};
+    bool m_AxisMeshSourcesRegistered {false};
+    std::array<size_t, 3> m_AxisMeshAssetIds {};
+    std::array<RenderMeshData, 3> m_AxisMeshDatas {};
 
     void UpdateVisibleObjectsDirectionalLight(std::shared_ptr<RenderResource> render_resource,
 

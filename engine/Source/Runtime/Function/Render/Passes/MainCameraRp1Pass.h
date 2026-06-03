@@ -82,8 +82,8 @@ public:
     // Stable pointer for RenderResource::m_MaterialDescriptorSetLayout (DX12 init order).
     RHIDescriptorSetLayout*& GetMaterialDescriptorSetLayoutPtr() { return m_MaterialDescriptorSetLayoutPtr; }
 
-    std::array<MeshPerframeStorageBufferObject, 2> m_MeshPerframeStorageBufferObjects;
-    MeshPerframeStorageBufferObject m_MeshPerframeStorageBufferObject;
+    std::array<MainCameraPerFrame, 2> m_MainCameraPerFrameByViewport;
+    MainCameraPerFrame m_MainCameraPerFrame;
     MegaLights::MegaLightsSystem* m_MegaLightsSystem {nullptr};
 
 private:
@@ -105,8 +105,8 @@ private:
     void DrawMegaLightsSpatialDenoise(ViewportType viewport_type);
     void DrawMeshTransparent(ViewportType viewport_type);
 
-    RHIPipeline* GetOrCreateMeshGBufferPipeline(const VulkanPBRMaterial& material);
-    RHIPipeline* GetOrCreateMeshTransparentPipeline(const VulkanPBRMaterial& material);
+    RHIPipeline* GetOrCreateMeshGBufferPipeline(const GpuPBRMaterial& material);
+    RHIPipeline* GetOrCreateMeshTransparentPipeline(const GpuPBRMaterial& material);
 
     RHIShader* LoadBuiltinShader(const char* hlsl_relative_path, ShaderStage stage);
 

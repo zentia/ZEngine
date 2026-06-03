@@ -54,7 +54,7 @@
  * Editor mode
  * -----------
  * Component::Tick is gated by `g_editorTickComponentTypes` when
- * g_isEditorMode is true. TypeScriptComponent registers itself there in
+ * g_isPlaying is false (edit mode). TypeScriptComponent registers itself there in
  * Application::Initialize so OnUpdate fires in Edit mode too -- this
  * matches Unity's `[ExecuteAlways]` and is the simplest way to demo
  * scripting without needing a Play button.

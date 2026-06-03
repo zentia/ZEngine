@@ -17,7 +17,7 @@ std::vector<std::type_index> InputSystem::GetDependencies() const
 
 void InputSystem::OnKey(int key, int scancode, int action, int mods)
 {
-    if (!g_isEditorMode)
+    if (g_isPlaying)
     {
         OnKeyInGameMode(key, scancode, action, mods);
     }

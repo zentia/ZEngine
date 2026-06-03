@@ -1,6 +1,7 @@
 #include "EditorApplication.h"
 
 #include "Editor/Console/EditorConsoleCommands.h"
+#include "Editor/RenderDoc/RenderDoc.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Editor/EditorInputManager/EditorInputManager.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
@@ -104,6 +105,8 @@ bool Editor::Initialize()
     {
         RegisterEditorConsoleCommands(*console);
     }
+
+    Runtime::RenderDoc::Init();
 
 #if defined(_WIN32)
     // IBL cubemap GPU upload runs during RenderSystem::Initialize, before ConsoleWindow
@@ -521,7 +524,7 @@ void Editor::SetPlaybackState(EditorPlaybackState new_state)
 
     m_PlaybackState = new_state;
     m_StepFrameRequested = false;
-    g_isEditorMode = (new_state == EditorPlaybackState::Editing);
+    g_isPlaying = (new_state != EditorPlaybackState::Editing);
 
     GET_SYSTEM(EditorInputManager)->resetEditorCommand();
     GET_SYSTEM(InputSystem)->resetGameCommand();
@@ -618,11 +621,13 @@ void Editor::Run()
                 Z_PROFILE_SCOPE("EditorUI::PrepareGameThreadImGuiFrame");
                 m_EditorUi->PrepareGameThreadImGuiFrame();
             }
+            Runtime::RenderDoc::OnPreFrame();
             {
                 Z_PROFILE_SCOPE("Engine::tickOneFrame");
                 if (!GET_SYSTEM(Application)->TickOneFrame(simulation_delta_time, delta_time, should_update_logic))
                     return;
             }
+            Runtime::RenderDoc::OnPostFrame();
         }
     }
 }

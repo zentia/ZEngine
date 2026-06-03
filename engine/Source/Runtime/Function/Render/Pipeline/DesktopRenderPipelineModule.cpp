@@ -337,8 +337,11 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
             out_draw_list.Add(
                 "MainCamera",
                 [this, post_ui_callbacks, show_skybox]() {
-                    static_cast<DX12MainCameraPass*>(m_Pipeline.m_MainCameraPass.get())
-                        ->Draw(post_ui_callbacks, show_skybox);
+                    DX12MainCameraPass* main_camera_pass =
+                        static_cast<DX12MainCameraPass*>(m_Pipeline.m_MainCameraPass.get());
+                    main_camera_pass->m_IsShowAxis = m_Pipeline.m_IsShowAxis;
+                    main_camera_pass->m_SelectedAxis = m_Pipeline.m_SelectedAxis;
+                    main_camera_pass->Draw(post_ui_callbacks, show_skybox);
                 });
         }
         return;

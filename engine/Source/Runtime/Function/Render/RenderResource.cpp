@@ -116,22 +116,22 @@ void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderMeshData mesh_data,
                                                     RenderMaterialData material_data)
 {
-    GetOrCreateVulkanMesh(rhi, render_entity, mesh_data);
-    GetOrCreateVulkanMaterial(rhi, render_entity, material_data);
+    GetOrCreateMesh(rhi, render_entity, mesh_data);
+    GetOrCreateMaterial(rhi, render_entity, material_data);
 }
 
 void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderEntity render_entity,
                                                     RenderMeshData mesh_data)
 {
-    GetOrCreateVulkanMesh(rhi, render_entity, mesh_data);
+    GetOrCreateMesh(rhi, render_entity, mesh_data);
 }
 
 void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderEntity render_entity,
                                                     RenderMaterialData material_data)
 {
-    GetOrCreateVulkanMaterial(rhi, render_entity, material_data);
+    GetOrCreateMaterial(rhi, render_entity, material_data);
 }
 
 void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_scene,
@@ -147,11 +147,11 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
         (camera->m_CurrentCameraType == RenderCameraType::Game) ? ViewportType::game : ViewportType::scene;
     size_t viewport_index = static_cast<size_t>(viewport_type);
 
-    auto& mesh_perframe_storage_buffer_object = m_MeshPerframeStorageBufferObjects[viewport_index];
+    auto& mesh_perframe_storage_buffer_object = m_MainCameraPerFrameByViewport[viewport_index];
     auto& particle_collision_perframe_storage_buffer_object =
-        m_ParticleCollisionPerframeStorageBufferObjects[viewport_index];
+        m_ParticleCollisionPerFrameByViewport[viewport_index];
     auto& particlebillboard_perframe_storage_buffer_object =
-        m_ParticlebillboardPerframeStorageBufferObjects[viewport_index];
+        m_ParticleBillboardPerFrameByViewport[viewport_index];
 
     // ambient light
     Vector3 ambient_light = render_scene->m_AmbientLight.m_Irradiance;
@@ -168,7 +168,7 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
     mesh_perframe_storage_buffer_object.point_light_num = point_light_num;
     mesh_perframe_storage_buffer_object.show_skybox = 1U;
 
-    m_MeshPointLightShadowPerframeStorageBufferObject.point_light_num = point_light_num;
+    m_PointLightShadowPerFrame.point_light_num = point_light_num;
     // point lights
     for (uint32_t i = 0; i < point_light_num; i++)
     {
@@ -181,7 +181,7 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
         mesh_perframe_storage_buffer_object.scene_point_lights[i].radius = radius;
         mesh_perframe_storage_buffer_object.scene_point_lights[i].intensity = point_light_intensity;
 
-        m_MeshPointLightShadowPerframeStorageBufferObject.point_lights_position_and_radius[i] =
+        m_PointLightShadowPerFrame.point_lights_position_and_radius[i] =
             Vector4(point_light_position, radius);
     }
 
@@ -191,22 +191,22 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
     mesh_perframe_storage_buffer_object.scene_directional_light.color = render_scene->m_DirectionalLight.m_Color;
 
     // pick pass view projection matrix
-    m_MeshInefficientPickPerframeStorageBufferObject.proj_view_matrix = proj_view_matrix;
+    m_PickPassPerFrame.proj_view_matrix = proj_view_matrix;
 
     particlebillboard_perframe_storage_buffer_object.proj_view_matrix = proj_view_matrix;
     particlebillboard_perframe_storage_buffer_object.right_direction = camera->right();
-    particlebillboard_perframe_storage_buffer_object.foward_direction = camera->forward();
+    particlebillboard_perframe_storage_buffer_object.forward_direction = camera->forward();
     particlebillboard_perframe_storage_buffer_object.up_direction = camera->up();
 
-    m_ParticleCollisionPerframeStorageBufferObject = particle_collision_perframe_storage_buffer_object;
-    m_MeshPerframeStorageBufferObject = mesh_perframe_storage_buffer_object;
-    m_ParticlebillboardPerframeStorageBufferObject = particlebillboard_perframe_storage_buffer_object;
+    m_ParticleCollisionPerFrame = particle_collision_perframe_storage_buffer_object;
+    m_MainCameraPerFrame = mesh_perframe_storage_buffer_object;
+    m_ParticleBillboardPerFrame = particlebillboard_perframe_storage_buffer_object;
 
     if (MegaLights::IsEnabled())
     {
         m_MegaLights.Update(*render_scene, camera, viewport_type);
         mesh_perframe_storage_buffer_object.point_light_num = 0;
-        m_MeshPerframeStorageBufferObject.point_light_num = 0;
+        m_MainCameraPerFrame.point_light_num = 0;
     }
 }
 
@@ -328,64 +328,77 @@ void RenderResource::CreateIBLTextures(RHI* rhi,
                        specular_cubemap_miplevels);
 }
 
-VulkanMesh&
-RenderResource::GetOrCreateVulkanMesh(RHI* rhi, RenderEntity entity, RenderMeshData mesh_data)
+GpuMesh&
+RenderResource::GetOrCreateMesh(RHI* rhi, RenderEntity entity, RenderMeshData mesh_data)
 {
     size_t assetid = entity.m_MeshAssetId;
 
-    auto it = m_VulkanMeshes.find(assetid);
-    if (it != m_VulkanMeshes.end())
+    auto it = m_Meshes.find(assetid);
+    if (it != m_Meshes.end() && meshDrawDataIsValid(&it->second))
     {
         return it->second;
     }
-    else
+    if (it != m_Meshes.end())
     {
-        VulkanMesh temp;
-        auto res = m_VulkanMeshes.insert(std::make_pair(assetid, std::move(temp)));
-        assert(res.second);
+        LOG_WARNING(ZRender, "RenderResource: re-uploading mesh asset id {} (GPU buffers were invalid)", assetid);
+        m_Meshes.erase(it);
+    }
 
-        uint32_t index_buffer_size = static_cast<uint32_t>(mesh_data.m_StaticMeshData.m_IndexBuffer->m_Size);
-        void* index_buffer_data = mesh_data.m_StaticMeshData.m_IndexBuffer->m_Data;
+    GpuMesh temp;
+    auto res = m_Meshes.insert(std::make_pair(assetid, std::move(temp)));
+    assert(res.second);
 
-        uint32_t vertex_buffer_size = static_cast<uint32_t>(mesh_data.m_StaticMeshData.m_VertexBuffer->m_Size);
-        MeshVertexDataDefinition* vertex_buffer_data =
-            reinterpret_cast<MeshVertexDataDefinition*>(mesh_data.m_StaticMeshData.m_VertexBuffer->m_Data);
+    uint32_t index_buffer_size = static_cast<uint32_t>(mesh_data.m_StaticMeshData.m_IndexBuffer->m_Size);
+    void* index_buffer_data = mesh_data.m_StaticMeshData.m_IndexBuffer->m_Data;
 
-        VulkanMesh& now_mesh = res.first->second;
+    uint32_t vertex_buffer_size = static_cast<uint32_t>(mesh_data.m_StaticMeshData.m_VertexBuffer->m_Size);
+    MeshVertexDataDefinition* vertex_buffer_data =
+        reinterpret_cast<MeshVertexDataDefinition*>(mesh_data.m_StaticMeshData.m_VertexBuffer->m_Data);
 
-        if (mesh_data.m_SkeletonBindingBuffer)
-        {
-            uint32_t joint_binding_buffer_size = (uint32_t)mesh_data.m_SkeletonBindingBuffer->m_Size;
-            MeshVertexBindingDataDefinition* joint_binding_buffer_data =
-                reinterpret_cast<MeshVertexBindingDataDefinition*>(mesh_data.m_SkeletonBindingBuffer->m_Data);
-            UpdateMeshData(rhi,
-                           true,
-                           index_buffer_size,
-                           index_buffer_data,
-                           vertex_buffer_size,
-                           vertex_buffer_data,
-                           joint_binding_buffer_size,
-                           joint_binding_buffer_data,
-                           now_mesh);
-        }
-        else
-        {
-            UpdateMeshData(rhi,
-                           false,
-                           index_buffer_size,
-                           index_buffer_data,
-                           vertex_buffer_size,
-                           vertex_buffer_data,
-                           0,
-                           NULL,
-                           now_mesh);
-        }
+    GpuMesh& now_mesh = res.first->second;
 
+#if defined(_WIN32)
+    if (rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+    {
+        UploadGpuMeshDx12(rhi, now_mesh, mesh_data);
         return now_mesh;
     }
+#endif
+
+    now_mesh.backend = RenderResourceBackend::Vulkan;
+
+    if (mesh_data.m_SkeletonBindingBuffer)
+    {
+        uint32_t joint_binding_buffer_size = (uint32_t)mesh_data.m_SkeletonBindingBuffer->m_Size;
+        MeshVertexBindingDataDefinition* joint_binding_buffer_data =
+            reinterpret_cast<MeshVertexBindingDataDefinition*>(mesh_data.m_SkeletonBindingBuffer->m_Data);
+        UpdateMeshData(rhi,
+                       true,
+                       index_buffer_size,
+                       index_buffer_data,
+                       vertex_buffer_size,
+                       vertex_buffer_data,
+                       joint_binding_buffer_size,
+                       joint_binding_buffer_data,
+                       now_mesh);
+    }
+    else
+    {
+        UpdateMeshData(rhi,
+                       false,
+                       index_buffer_size,
+                       index_buffer_data,
+                       vertex_buffer_size,
+                       vertex_buffer_data,
+                       0,
+                       NULL,
+                       now_mesh);
+    }
+
+    return now_mesh;
 }
 
-VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
+GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
                                                              RenderEntity entity,
                                                              RenderMaterialData material_data)
 {
@@ -393,8 +406,8 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
 
     size_t assetid = entity.m_MaterialAssetId;
 
-    auto it = m_VulkanPbrMaterials.find(assetid);
-    if (it != m_VulkanPbrMaterials.end())
+    auto it = m_Materials.find(assetid);
+    if (it != m_Materials.end())
     {
         if (entity.m_DoubleSided)
         {
@@ -404,8 +417,8 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
     }
     else
     {
-        VulkanPBRMaterial temp;
-        auto res = m_VulkanPbrMaterials.insert(std::make_pair(assetid, std::move(temp)));
+        GpuPBRMaterial temp;
+        auto res = m_Materials.insert(std::make_pair(assetid, std::move(temp)));
         assert(res.second);
 
         float empty_image[] = {0.5f, 0.5f, 0.5f, 0.5f};
@@ -470,7 +483,7 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
             emissive_image_format = material_data.m_EmissiveTexture->m_Format;
         }
 
-        VulkanPBRMaterial& now_material = res.first->second;
+        GpuPBRMaterial& now_material = res.first->second;
         now_material.shader_name = material_data.m_Shader.c_str();
         now_material.shader_asset_file = material_data.m_ShaderAssetFile.c_str();
         now_material.vertex_shader_file = material_data.m_VertexShaderFile.c_str();
@@ -504,7 +517,7 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
         now_material.shader_passes.reserve(material_data.m_ShaderPasses.size());
         for (const RenderShaderPassData& shader_pass : material_data.m_ShaderPasses)
         {
-            VulkanShaderPassData runtime_shader_pass;
+            GpuShaderPassData runtime_shader_pass;
             runtime_shader_pass.name = shader_pass.m_Name.c_str();
             runtime_shader_pass.light_mode = shader_pass.m_LightMode.c_str();
             runtime_shader_pass.vertex_shader_file = shader_pass.m_VertexShaderFile.c_str();
@@ -526,7 +539,7 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
         {
             // temporary staging buffer
 
-            RHIDeviceSize buffer_size = sizeof(MeshPerMaterialUniformBufferObject);
+            RHIDeviceSize buffer_size = sizeof(MeshMaterialUniform);
 
             RHIBuffer* inefficient_staging_buffer = RHI_NULL_HANDLE;
             RHIDeviceMemory* inefficient_staging_buffer_memory = RHI_NULL_HANDLE;
@@ -541,8 +554,8 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
             void* staging_buffer_data = nullptr;
             rhi->MapMemory(inefficient_staging_buffer_memory, 0, buffer_size, 0, &staging_buffer_data);
 
-            MeshPerMaterialUniformBufferObject& material_uniform_buffer_info =
-                (*static_cast<MeshPerMaterialUniformBufferObject*>(staging_buffer_data));
+            MeshMaterialUniform& material_uniform_buffer_info =
+                (*static_cast<MeshMaterialUniform*>(staging_buffer_data));
             material_uniform_buffer_info.is_blend = entity.m_Blend;
             material_uniform_buffer_info.is_double_sided = entity.m_DoubleSided;
             material_uniform_buffer_info.baseColorFactor = entity.m_BaseColorFactor;
@@ -631,7 +644,7 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
 
         RHIDescriptorBufferInfo material_uniform_buffer_info = {};
         material_uniform_buffer_info.offset = 0;
-        material_uniform_buffer_info.range = sizeof(MeshPerMaterialUniformBufferObject);
+        material_uniform_buffer_info.range = sizeof(MeshMaterialUniform);
         material_uniform_buffer_info.buffer = now_material.material_uniform_buffer;
 
         RHIDescriptorImageInfo base_color_image_info = {};
@@ -711,7 +724,7 @@ void RenderResource::UpdateMeshData(RHI* rhi,
                                     MeshVertexDataDefinition const* vertex_buffer_data,
                                     uint32_t joint_binding_buffer_size,
                                     MeshVertexBindingDataDefinition const* joint_binding_buffer_data,
-                                    VulkanMesh& now_mesh)
+                                    GpuMesh& now_mesh)
 {
     now_mesh.enable_vertex_blending = enable_vertex_blending;
     assert(0 == (vertex_buffer_size % sizeof(MeshVertexDataDefinition)));
@@ -738,7 +751,7 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
                                         MeshVertexBindingDataDefinition const* joint_binding_buffer_data,
                                         uint32_t index_buffer_size,
                                         uint16_t* index_buffer_data,
-                                        VulkanMesh& now_mesh)
+                                        GpuMesh& now_mesh)
 {
     VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi);
 
@@ -749,11 +762,11 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
         assert(0 == (index_buffer_size % sizeof(uint16_t)));
         uint32_t index_count = index_buffer_size / sizeof(uint16_t);
 
-        RHIDeviceSize vertex_position_buffer_size = sizeof(MeshVertex::VulkanMeshVertexPostition) * vertex_count;
+        RHIDeviceSize vertex_position_buffer_size = sizeof(MeshVertex::Position) * vertex_count;
         RHIDeviceSize vertex_varying_enable_blending_buffer_size =
-            sizeof(MeshVertex::VulkanMeshVertexVaryingEnableBlending) * vertex_count;
-        RHIDeviceSize vertex_varying_buffer_size = sizeof(MeshVertex::VulkanMeshVertexVarying) * vertex_count;
-        RHIDeviceSize vertex_joint_binding_buffer_size = sizeof(MeshVertex::VulkanMeshVertexJointBinding) * index_count;
+            sizeof(MeshVertex::VaryingBlending) * vertex_count;
+        RHIDeviceSize vertex_varying_buffer_size = sizeof(MeshVertex::Varying) * vertex_count;
+        RHIDeviceSize vertex_joint_binding_buffer_size = sizeof(MeshVertex::JointBinding) * index_count;
 
         RHIDeviceSize vertex_position_buffer_offset = 0;
         RHIDeviceSize vertex_varying_enable_blending_buffer_offset =
@@ -777,18 +790,18 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
         void* inefficient_staging_buffer_data;
         rhi->MapMemory(inefficient_staging_buffer_memory, 0, RHI_WHOLE_SIZE, 0, &inefficient_staging_buffer_data);
 
-        MeshVertex::VulkanMeshVertexPostition* mesh_vertex_positions =
-            reinterpret_cast<MeshVertex::VulkanMeshVertexPostition*>(
+        MeshVertex::Position* mesh_vertex_positions =
+            reinterpret_cast<MeshVertex::Position*>(
                 reinterpret_cast<uintptr_t>(inefficient_staging_buffer_data) + vertex_position_buffer_offset);
-        MeshVertex::VulkanMeshVertexVaryingEnableBlending* mesh_vertex_blending_varyings =
-            reinterpret_cast<MeshVertex::VulkanMeshVertexVaryingEnableBlending*>(
+        MeshVertex::VaryingBlending* mesh_vertex_blending_varyings =
+            reinterpret_cast<MeshVertex::VaryingBlending*>(
                 reinterpret_cast<uintptr_t>(inefficient_staging_buffer_data) +
                 vertex_varying_enable_blending_buffer_offset);
-        MeshVertex::VulkanMeshVertexVarying* mesh_vertex_varyings =
-            reinterpret_cast<MeshVertex::VulkanMeshVertexVarying*>(
+        MeshVertex::Varying* mesh_vertex_varyings =
+            reinterpret_cast<MeshVertex::Varying*>(
                 reinterpret_cast<uintptr_t>(inefficient_staging_buffer_data) + vertex_varying_buffer_offset);
-        MeshVertex::VulkanMeshVertexJointBinding* mesh_vertex_joint_binding =
-            reinterpret_cast<MeshVertex::VulkanMeshVertexJointBinding*>(
+        MeshVertex::JointBinding* mesh_vertex_joint_binding =
+            reinterpret_cast<MeshVertex::JointBinding*>(
                 reinterpret_cast<uintptr_t>(inefficient_staging_buffer_data) + vertex_joint_binding_buffer_offset);
 
         for (uint32_t vertex_index = 0; vertex_index < vertex_count; ++vertex_index)
@@ -949,10 +962,10 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
         assert(0 == (vertex_buffer_size % sizeof(MeshVertexDataDefinition)));
         uint32_t vertex_count = vertex_buffer_size / sizeof(MeshVertexDataDefinition);
 
-        RHIDeviceSize vertex_position_buffer_size = sizeof(MeshVertex::VulkanMeshVertexPostition) * vertex_count;
+        RHIDeviceSize vertex_position_buffer_size = sizeof(MeshVertex::Position) * vertex_count;
         RHIDeviceSize vertex_varying_enable_blending_buffer_size =
-            sizeof(MeshVertex::VulkanMeshVertexVaryingEnableBlending) * vertex_count;
-        RHIDeviceSize vertex_varying_buffer_size = sizeof(MeshVertex::VulkanMeshVertexVarying) * vertex_count;
+            sizeof(MeshVertex::VaryingBlending) * vertex_count;
+        RHIDeviceSize vertex_varying_buffer_size = sizeof(MeshVertex::Varying) * vertex_count;
 
         RHIDeviceSize vertex_position_buffer_offset = 0;
         RHIDeviceSize vertex_varying_enable_blending_buffer_offset =
@@ -974,15 +987,15 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
         void* inefficient_staging_buffer_data;
         rhi->MapMemory(inefficient_staging_buffer_memory, 0, RHI_WHOLE_SIZE, 0, &inefficient_staging_buffer_data);
 
-        MeshVertex::VulkanMeshVertexPostition* mesh_vertex_positions =
-            reinterpret_cast<MeshVertex::VulkanMeshVertexPostition*>(
+        MeshVertex::Position* mesh_vertex_positions =
+            reinterpret_cast<MeshVertex::Position*>(
                 reinterpret_cast<uintptr_t>(inefficient_staging_buffer_data) + vertex_position_buffer_offset);
-        MeshVertex::VulkanMeshVertexVaryingEnableBlending* mesh_vertex_blending_varyings =
-            reinterpret_cast<MeshVertex::VulkanMeshVertexVaryingEnableBlending*>(
+        MeshVertex::VaryingBlending* mesh_vertex_blending_varyings =
+            reinterpret_cast<MeshVertex::VaryingBlending*>(
                 reinterpret_cast<uintptr_t>(inefficient_staging_buffer_data) +
                 vertex_varying_enable_blending_buffer_offset);
-        MeshVertex::VulkanMeshVertexVarying* mesh_vertex_varyings =
-            reinterpret_cast<MeshVertex::VulkanMeshVertexVarying*>(
+        MeshVertex::Varying* mesh_vertex_varyings =
+            reinterpret_cast<MeshVertex::Varying*>(
                 reinterpret_cast<uintptr_t>(inefficient_staging_buffer_data) + vertex_varying_buffer_offset);
 
         for (uint32_t vertex_index = 0; vertex_index < vertex_count; ++vertex_index)
@@ -1105,7 +1118,7 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
 void RenderResource::UpdateIndexBuffer(RHI* rhi,
                                        uint32_t index_buffer_size,
                                        void* index_buffer_data,
-                                       VulkanMesh& now_mesh)
+                                       GpuMesh& now_mesh)
 {
     VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi);
 
@@ -1206,8 +1219,8 @@ RenderMeshGPUResource& RenderResource::GetEntityMesh(RenderEntity entity)
 {
     size_t assetid = entity.m_MeshAssetId;
 
-    auto it = m_VulkanMeshes.find(assetid);
-    if (it != m_VulkanMeshes.end())
+    auto it = m_Meshes.find(assetid);
+    if (it != m_Meshes.end())
     {
         return it->second;
     }
@@ -1221,8 +1234,8 @@ RenderMaterialGPUResource& RenderResource::GetEntityMaterial(RenderEntity entity
 {
     size_t assetid = entity.m_MaterialAssetId;
 
-    auto it = m_VulkanPbrMaterials.find(assetid);
-    if (it != m_VulkanPbrMaterials.end())
+    auto it = m_Materials.find(assetid);
+    if (it != m_Materials.end())
     {
         return it->second;
     }
@@ -1280,7 +1293,7 @@ void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
     }
 
     // axis
-    rhi->CreateBuffer(sizeof(AxisStorageBufferObject),
+    rhi->CreateBuffer(sizeof(AxisDrawStorage),
                       RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                       RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       m_StorageBuffer.m_AxisInefficientStorageBuffer,
@@ -1306,6 +1319,6 @@ void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
                    0,
                    &m_StorageBuffer.m_AxisInefficientStorageBufferMemoryPointer);
 
-    static_assert(64 >= sizeof(MeshVertex::VulkanMeshVertexJointBinding), "");
+    static_assert(64 >= sizeof(MeshVertex::JointBinding), "");
 }
 #endif  // Z_HAS_VULKAN

@@ -1,7 +1,7 @@
 #include "Runtime/Function/Render/Passes/PointLightPass.h"
 
 #include "Runtime/Core/Base/Macro.h"
-#include "Runtime/Function/Render/Interface/Vulkan/VulkanRenderResource.h"
+#include "Runtime/Function/Render/RenderGpuResources.h"
 #include "Runtime/Function/Render/RenderHelper.h"
 #include "Runtime/Function/Render/RenderMesh.h"
 #include "Runtime/Function/Render/RenderResource.h"
@@ -91,9 +91,9 @@ namespace
         return RHI_COMPARE_OP_LESS;
     }
 
-    const VulkanShaderPassData* FindShaderPassByLightMode(const VulkanPBRMaterial& material, const std::string& light_mode)
+    const GpuShaderPassData* FindShaderPassByLightMode(const GpuPBRMaterial& material, const std::string& light_mode)
     {
-        for (const VulkanShaderPassData& shader_pass : material.shader_passes)
+        for (const GpuShaderPassData& shader_pass : material.shader_passes)
         {
             if (EqualsIgnoreCase(shader_pass.light_mode, light_mode))
             {
@@ -104,8 +104,8 @@ namespace
     }
 
     bool CanUseRuntimeShadowPass(RHI* rhi,
-                                 const VulkanPBRMaterial& material,
-                                 const VulkanShaderPassData* shader_pass)
+                                 const GpuPBRMaterial& material,
+                                 const GpuShaderPassData* shader_pass)
     {
         if (shader_pass == nullptr || shader_pass->vertex_shader_file.empty() || shader_pass->fragment_shader_file.empty())
         {
@@ -148,8 +148,8 @@ namespace
         return true;
     }
 
-    PointLightShadowPass::ShadowPipelineKey BuildShadowPipelineKey(const VulkanPBRMaterial& material,
-                                                                   const VulkanShaderPassData& shader_pass)
+    PointLightShadowPass::ShadowPipelineKey BuildShadowPipelineKey(const GpuPBRMaterial& material,
+                                                                   const GpuShaderPassData& shader_pass)
     {
         PointLightShadowPass::ShadowPipelineKey key;
         key.vertex_shader_file = shader_pass.vertex_shader_file;
@@ -190,11 +190,11 @@ bool PointLightShadowPass::ShadowPipelineKey::operator<(const ShadowPipelineKey&
                     rhs.shader_macros);
 }
 
-RHIPipeline* PointLightShadowPass::GetOrCreateShadowPipeline(const VulkanPBRMaterial& material)
+RHIPipeline* PointLightShadowPass::GetOrCreateShadowPipeline(const GpuPBRMaterial& material)
 {
     RHIPipeline* const default_pipeline =
         !m_RenderPipelines.empty() ? m_RenderPipelines[0].pipeline : nullptr;
-    const VulkanShaderPassData* const shadow_pass = FindShaderPassByLightMode(material, "ShadowCaster");
+    const GpuShaderPassData* const shadow_pass = FindShaderPassByLightMode(material, "ShadowCaster");
     if (!CanUseRuntimeShadowPass(m_Rhi, material, shadow_pass))
     {
         return default_pipeline;
@@ -496,8 +496,8 @@ void PointLightShadowPass::PreparePassData(std::shared_ptr<RenderResourceBase> r
     const RenderResource* vulkan_resource = static_cast<const RenderResource*>(render_resource.get());
     if (vulkan_resource)
     {
-        m_MeshPointLightShadowPerframeStorageBufferObject =
-            vulkan_resource->m_MeshPointLightShadowPerframeStorageBufferObject;
+        m_PointLightShadowPerFrame =
+            vulkan_resource->m_PointLightShadowPerFrame;
     }
 }
 void PointLightShadowPass::Draw()
@@ -868,7 +868,7 @@ void PointLightShadowPass::SetupDescriptorSet()
     mesh_point_light_shadow_perframe_storage_buffer_info.offset = 0;
     // the range means the size actually used by the shader per draw call
     mesh_point_light_shadow_perframe_storage_buffer_info.range =
-        sizeof(MeshPointLightShadowPerframeStorageBufferObject);
+        sizeof(PointLightShadowPerFrame);
     mesh_point_light_shadow_perframe_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
     assert(mesh_point_light_shadow_perframe_storage_buffer_info.range <
@@ -877,7 +877,7 @@ void PointLightShadowPass::SetupDescriptorSet()
     RHIDescriptorBufferInfo mesh_point_light_shadow_perdrawcall_storage_buffer_info = {};
     mesh_point_light_shadow_perdrawcall_storage_buffer_info.offset = 0;
     mesh_point_light_shadow_perdrawcall_storage_buffer_info.range =
-        sizeof(MeshPointLightShadowPerdrawcallStorageBufferObject);
+        sizeof(MeshShadowPerDrawcall);
     mesh_point_light_shadow_perdrawcall_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
     assert(mesh_point_light_shadow_perdrawcall_storage_buffer_info.range <
@@ -886,7 +886,7 @@ void PointLightShadowPass::SetupDescriptorSet()
     RHIDescriptorBufferInfo mesh_point_light_shadow_per_drawcall_vertex_blending_storage_buffer_info = {};
     mesh_point_light_shadow_per_drawcall_vertex_blending_storage_buffer_info.offset = 0;
     mesh_point_light_shadow_per_drawcall_vertex_blending_storage_buffer_info.range =
-        sizeof(MeshPointLightShadowPerdrawcallVertexBlendingStorageBufferObject);
+        sizeof(MeshShadowPerDrawcallVertexBlending);
     mesh_point_light_shadow_per_drawcall_vertex_blending_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
     assert(mesh_point_light_shadow_per_drawcall_vertex_blending_storage_buffer_info.range <
@@ -945,7 +945,7 @@ void PointLightShadowPass::DrawModel()
         uint32_t joint_count {0};
     };
 
-    std::map<VulkanPBRMaterial*, std::map<VulkanMesh*, std::vector<MeshNode>>> point_lights_mesh_drawcall_batch;
+    std::map<GpuPBRMaterial*, std::map<GpuMesh*, std::vector<MeshNode>>> point_lights_mesh_drawcall_batch;
 
     // reorganize mesh
     const std::vector<RenderMeshNode>* visible_nodes = m_VisiableNodes.p_point_lights_visible_mesh_nodes;
@@ -953,8 +953,8 @@ void PointLightShadowPass::DrawModel()
     {
         for (const RenderMeshNode& node : *visible_nodes)
         {
-            auto& mesh_instanced = point_lights_mesh_drawcall_batch[AsVulkanMaterialource(node.ref_material)];
-            auto& mesh_nodes = mesh_instanced[AsVulkanMeshResource(node.ref_mesh)];
+            auto& mesh_instanced = point_lights_mesh_drawcall_batch[AsGpuMaterial(node.ref_material)];
+            auto& mesh_nodes = mesh_instanced[AsGpuMesh(node.ref_mesh)];
 
             MeshNode temp;
             temp.model_matrix = node.model_matrix;
@@ -1000,34 +1000,35 @@ void PointLightShadowPass::DrawModel()
             m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
 
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-            perframe_dynamic_offset + sizeof(MeshPointLightShadowPerframeStorageBufferObject);
+            perframe_dynamic_offset + sizeof(PointLightShadowPerFrame);
 
         assert(
             m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
             (m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersBegin[m_Rhi->GetCurrentFrameIndex()] +
              m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
 
-        MeshPointLightShadowPerframeStorageBufferObject& perframe_storage_buffer_object =
-            (*reinterpret_cast<MeshPointLightShadowPerframeStorageBufferObject*>(
+        PointLightShadowPerFrame& perframe_storage_buffer_object =
+            (*reinterpret_cast<PointLightShadowPerFrame*>(
                 reinterpret_cast<uintptr_t>(
                     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
                 perframe_dynamic_offset));
-        perframe_storage_buffer_object = m_MeshPointLightShadowPerframeStorageBufferObject;
+        perframe_storage_buffer_object = m_PointLightShadowPerFrame;
 
         for (auto& pair1 : point_lights_mesh_drawcall_batch)
         {
-            VulkanPBRMaterial& material = (*pair1.first);
+            GpuPBRMaterial& material = (*pair1.first);
             auto& mesh_instanced = pair1.second;
 
             // TODO: render from near to far
 
             for (auto& pair2 : mesh_instanced)
             {
-                VulkanMesh& mesh = (*pair2.first);
+                GpuMesh& mesh = (*pair2.first);
                 auto& mesh_nodes = pair2.second;
 
                 uint32_t total_instance_count = static_cast<uint32_t>(mesh_nodes.size());
-                if (total_instance_count > 0)
+                const MeshDrawData mesh_draw = getMeshDrawData(&mesh);
+                if (total_instance_count > 0 && mesh_draw)
                 {
                     // bind per mesh
                     m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
@@ -1039,15 +1040,15 @@ void PointLightShadowPass::DrawModel()
                                                     0,
                                                     NULL);
 
-                    RHIBuffer* vertex_buffers[] = {mesh.mesh_vertex_position_buffer};
+                    RHIBuffer* vertex_buffers[] = {mesh_draw.position_buffer};
                     RHIDeviceSize offsets[] = {0};
                     m_Rhi->CmdBindVertexBuffersPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, vertex_buffers, offsets);
                     m_Rhi->CmdBindIndexBufferPFN(
-                        m_Rhi->GetCurrentCommandBuffer(), mesh.mesh_index_buffer, 0, RHI_INDEX_TYPE_UINT16);
+                        m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_buffer, 0, RHI_INDEX_TYPE_UINT16);
 
                     uint32_t drawcall_max_instance_count =
-                        (sizeof(MeshPointLightShadowPerdrawcallStorageBufferObject::mesh_instances) /
-                         sizeof(MeshPointLightShadowPerdrawcallStorageBufferObject::mesh_instances[0]));
+                        (sizeof(MeshShadowPerDrawcall::mesh_instances) /
+                         sizeof(MeshShadowPerDrawcall::mesh_instances[0]));
                     uint32_t drawcall_count =
                         RoundUp(total_instance_count, drawcall_max_instance_count) / drawcall_max_instance_count;
 
@@ -1066,7 +1067,7 @@ void PointLightShadowPass::DrawModel()
                                     m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
                         m_GlobalRenderResource->m_StorageBuffer
                             .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-                            perdrawcall_dynamic_offset + sizeof(MeshPointLightShadowPerdrawcallStorageBufferObject);
+                            perdrawcall_dynamic_offset + sizeof(MeshShadowPerDrawcall);
                         assert(m_GlobalRenderResource->m_StorageBuffer
                                    .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
                                (m_GlobalRenderResource->m_StorageBuffer
@@ -1074,8 +1075,8 @@ void PointLightShadowPass::DrawModel()
                                 m_GlobalRenderResource->m_StorageBuffer
                                     .m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
 
-                        MeshPointLightShadowPerdrawcallStorageBufferObject& perdrawcall_storage_buffer_object =
-                            (*reinterpret_cast<MeshPointLightShadowPerdrawcallStorageBufferObject*>(
+                        MeshShadowPerDrawcall& perdrawcall_storage_buffer_object =
+                            (*reinterpret_cast<MeshShadowPerDrawcall*>(
                                 reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer
                                                                 .m_GlobalUploadRingbufferMemoryPointer) +
                                 perdrawcall_dynamic_offset));
@@ -1108,7 +1109,7 @@ void PointLightShadowPass::DrawModel()
                             m_GlobalRenderResource->m_StorageBuffer
                                 .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
                                 per_drawcall_vertex_blending_dynamic_offset +
-                                sizeof(MeshPointLightShadowPerdrawcallVertexBlendingStorageBufferObject);
+                                sizeof(MeshShadowPerDrawcallVertexBlending);
                             assert(m_GlobalRenderResource->m_StorageBuffer
                                        .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
                                    (m_GlobalRenderResource->m_StorageBuffer
@@ -1116,10 +1117,10 @@ void PointLightShadowPass::DrawModel()
                                     m_GlobalRenderResource->m_StorageBuffer
                                         .m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
 
-                            MeshPointLightShadowPerdrawcallVertexBlendingStorageBufferObject&
+                            MeshShadowPerDrawcallVertexBlending&
                                 per_drawcall_vertex_blending_storage_buffer_object =
                                     (*reinterpret_cast<
-                                        MeshPointLightShadowPerdrawcallVertexBlendingStorageBufferObject*>(
+                                        MeshShadowPerDrawcallVertexBlending*>(
                                         reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer
                                                                         .m_GlobalUploadRingbufferMemoryPointer) +
                                         per_drawcall_vertex_blending_dynamic_offset));
@@ -1158,7 +1159,7 @@ void PointLightShadowPass::DrawModel()
                                                         dynamic_offsets);
 
                         m_Rhi->CmdDrawIndexedPFN(
-                            m_Rhi->GetCurrentCommandBuffer(), mesh.mesh_index_count, current_instance_count, 0, 0, 0);
+                            m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_count, current_instance_count, 0, 0, 0);
                     }
                 }
             }

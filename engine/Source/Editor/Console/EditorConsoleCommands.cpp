@@ -6,6 +6,10 @@
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Editor/EditorWindow/ZSlateInsightsWindow/ZSlateInsightsWindow.h"
+#if defined(_WIN32)
+    #include "Editor/RenderDoc/RenderDoc.h"
+    #include "RenderDocAPI.h"
+#endif
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
 #include "Runtime/Function/Framework/Level/Level.h"
@@ -382,6 +386,58 @@ namespace
         }
         return true;
     }
+
+    bool CmdRenderDocLoad(const std::vector<std::string>&)
+    {
+#if defined(_WIN32)
+        if (!Runtime::RenderDoc::IsInstalled())
+        {
+            LOG_WARNING(ZConsole, "RenderDoc not found. Build tools/renderdoc or pass --renderdoc-dll <path>");
+            return false;
+        }
+
+        Runtime::RenderDoc::Load();
+        if (Runtime::RenderDoc::IsLoaded())
+        {
+            LOG_INFO(ZConsole, "RenderDoc loaded from {}", Z::RenderDocAPI::GetModulePath());
+            return true;
+        }
+
+        LOG_ERROR(ZConsole, "RenderDoc failed to load from {}", Z::RenderDocAPI::GetModulePath());
+        return false;
+#else
+        LOG_WARNING(ZConsole, "RenderDoc is only supported on Windows desktop builds");
+        return false;
+#endif
+    }
+
+    bool CmdRenderDocCapture(const std::vector<std::string>&)
+    {
+#if defined(_WIN32)
+        Runtime::RenderDoc::RequestCapture();
+        return Runtime::RenderDoc::IsSupported();
+#else
+        LOG_WARNING(ZConsole, "RenderDoc is only supported on Windows desktop builds");
+        return false;
+#endif
+    }
+
+    bool CmdRenderDocStatus(const std::vector<std::string>&)
+    {
+#if defined(_WIN32)
+        LOG_INFO(ZConsole, "RenderDoc installed: {}", Runtime::RenderDoc::IsInstalled() ? "yes" : "no");
+        LOG_INFO(ZConsole, "RenderDoc loaded: {}", Runtime::RenderDoc::IsLoaded() ? "yes" : "no");
+        LOG_INFO(ZConsole, "RenderDoc supported (DX12): {}", Runtime::RenderDoc::IsSupported() ? "yes" : "no");
+        if (Runtime::RenderDoc::IsInstalled())
+        {
+            LOG_INFO(ZConsole, "RenderDoc module path: {}", Z::RenderDocAPI::GetModulePath());
+        }
+        return true;
+#else
+        LOG_INFO(ZConsole, "RenderDoc is only supported on Windows desktop builds");
+        return true;
+#endif
+    }
 }  // namespace
 
 void RegisterEditorConsoleCommands(ConsoleManager& console)
@@ -405,4 +461,7 @@ void RegisterEditorConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("insights.dump",
                             "Save current Insights capture to <cwd>/Insights/*.ztrace. Usage: insights.dump [view]",
                             CmdInsightsDump);
+    console.RegisterCommand("renderdoc.load", "Load RenderDoc in-app API", CmdRenderDocLoad);
+    console.RegisterCommand("renderdoc.capture", "Capture the next rendered frame with RenderDoc", CmdRenderDocCapture);
+    console.RegisterCommand("renderdoc.status", "Print RenderDoc integration status", CmdRenderDocStatus);
 }

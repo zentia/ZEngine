@@ -2,7 +2,7 @@
 
 #include "Runtime/Function/Render/RenderResource.h"
 
-#if !defined(Z_HAS_VULKAN)
+#if defined(_WIN32)
 
     #include "Runtime/Core/Base/Macro.h"
     #include "Runtime/Function/Render/MegaLights/MegaLightsSettings.h"
@@ -61,7 +61,7 @@ namespace
         }
     }
 
-    void Dx12UploadMeshNonSkinned(RHI* rhi, RenderResource* resource, VulkanMesh& now_mesh, RenderMeshData& mesh_data)
+    void Dx12UploadMeshNonSkinned(RHI* rhi, RenderResource* resource, GpuMesh& now_mesh, RenderMeshData& mesh_data)
     {
         const uint32_t index_buffer_size = static_cast<uint32_t>(mesh_data.m_StaticMeshData.m_IndexBuffer->m_Size);
         void* index_buffer_data = mesh_data.m_StaticMeshData.m_IndexBuffer->m_Data;
@@ -73,10 +73,10 @@ namespace
         assert(vertex_buffer_size % sizeof(MeshVertexDataDefinition) == 0);
         const uint32_t vertex_count = vertex_buffer_size / sizeof(MeshVertexDataDefinition);
 
-        const RHIDeviceSize position_buffer_size = sizeof(MeshVertex::VulkanMeshVertexPostition) * vertex_count;
+        const RHIDeviceSize position_buffer_size = sizeof(MeshVertex::Position) * vertex_count;
         const RHIDeviceSize varying_blending_size =
-            sizeof(MeshVertex::VulkanMeshVertexVaryingEnableBlending) * vertex_count;
-        const RHIDeviceSize varying_size = sizeof(MeshVertex::VulkanMeshVertexVarying) * vertex_count;
+            sizeof(MeshVertex::VaryingBlending) * vertex_count;
+        const RHIDeviceSize varying_size = sizeof(MeshVertex::Varying) * vertex_count;
 
         const RHIDeviceSize staging_size = position_buffer_size + varying_blending_size + varying_size;
         RHIBuffer* staging_buffer = nullptr;
@@ -86,15 +86,21 @@ namespace
                           RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           staging_buffer,
                           staging_memory);
+        if (staging_buffer == nullptr || staging_memory == nullptr)
+        {
+            LOG_ERROR(ZRender, "RenderResource(DX12): failed to create mesh staging buffer (size={})",
+                      static_cast<uint64_t>(staging_size));
+            return;
+        }
 
         void* staging_ptr = nullptr;
         rhi->MapMemory(staging_memory, 0, staging_size, 0, &staging_ptr);
 
-        auto* positions = reinterpret_cast<MeshVertex::VulkanMeshVertexPostition*>(staging_ptr);
+        auto* positions = reinterpret_cast<MeshVertex::Position*>(staging_ptr);
         auto* blending_varyings =
-            reinterpret_cast<MeshVertex::VulkanMeshVertexVaryingEnableBlending*>(reinterpret_cast<uintptr_t>(staging_ptr) +
+            reinterpret_cast<MeshVertex::VaryingBlending*>(reinterpret_cast<uintptr_t>(staging_ptr) +
                                                                                  position_buffer_size);
-        auto* varyings = reinterpret_cast<MeshVertex::VulkanMeshVertexVarying*>(
+        auto* varyings = reinterpret_cast<MeshVertex::Varying*>(
             reinterpret_cast<uintptr_t>(staging_ptr) + position_buffer_size + varying_blending_size);
 
         for (uint32_t vertex_index = 0; vertex_index < vertex_count; ++vertex_index)
@@ -221,14 +227,14 @@ namespace
     void Dx12UploadMaterialources(RHI* rhi,
                                      RenderResource* resource,
                                      RenderEntity entity,
-                                     VulkanPBRMaterial& material)
+                                     GpuPBRMaterial& material)
     {
         if (rhi == nullptr || resource == nullptr || resource->m_MaterialDescriptorSetLayout == nullptr)
         {
             return;
         }
 
-        MeshPerMaterialUniformBufferObject ubo {};
+        MeshMaterialUniform ubo {};
         ubo.is_blend = entity.m_Blend;
         ubo.is_double_sided = entity.m_DoubleSided;
         ubo.baseColorFactor = entity.m_BaseColorFactor;
@@ -239,7 +245,7 @@ namespace
         ubo.emissiveFactor = entity.m_EmissiveFactor;
 
         Dx12CreateGpuBufferFromStaging(rhi,
-                                       sizeof(MeshPerMaterialUniformBufferObject),
+                                       sizeof(MeshMaterialUniform),
                                        RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                        &ubo,
                                        material.material_uniform_buffer);
@@ -263,7 +269,7 @@ namespace
 
         RHIDescriptorBufferInfo ubo_info {};
         ubo_info.offset = 0;
-        ubo_info.range = sizeof(MeshPerMaterialUniformBufferObject);
+        ubo_info.range = sizeof(MeshMaterialUniform);
         ubo_info.buffer = material.material_uniform_buffer;
 
         RHIDescriptorImageInfo base_color_info {};
@@ -305,6 +311,19 @@ namespace
         rhi->UpdateDescriptorSets(6, writes, 0, nullptr);
     }
 }  // namespace
+
+void RenderResource::UploadGpuMeshDx12(RHI* rhi, GpuMesh& now_mesh, RenderMeshData& mesh_data)
+{
+    now_mesh.backend = RenderResourceBackend::DirectX12;
+    if (mesh_data.m_SkeletonBindingBuffer != nullptr)
+    {
+        LOG_WARNING(ZRender, "RenderResource(DX12): skinned mesh uses rigid upload path for now");
+    }
+
+    Dx12UploadMeshNonSkinned(rhi, this, now_mesh, mesh_data);
+}
+
+#if !defined(Z_HAS_VULKAN)
 
 void RenderResource::clear()
 {
@@ -353,22 +372,22 @@ void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderMeshData mesh_data,
                                                     RenderMaterialData material_data)
 {
-    GetOrCreateVulkanMesh(rhi, render_entity, mesh_data);
-    GetOrCreateVulkanMaterial(rhi, render_entity, material_data);
+    GetOrCreateMesh(rhi, render_entity, mesh_data);
+    GetOrCreateMaterial(rhi, render_entity, material_data);
 }
 
 void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderEntity render_entity,
                                                     RenderMeshData mesh_data)
 {
-    GetOrCreateVulkanMesh(rhi, render_entity, mesh_data);
+    GetOrCreateMesh(rhi, render_entity, mesh_data);
 }
 
 void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderEntity render_entity,
                                                     RenderMaterialData material_data)
 {
-    GetOrCreateVulkanMaterial(rhi, render_entity, material_data);
+    GetOrCreateMaterial(rhi, render_entity, material_data);
 }
 
 void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_scene,
@@ -388,7 +407,7 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
         (camera->m_CurrentCameraType == RenderCameraType::Game) ? ViewportType::game : ViewportType::scene;
     const size_t viewport_index = static_cast<size_t>(viewport_type);
 
-    auto& mesh_perframe_storage_buffer_object = m_MeshPerframeStorageBufferObjects[viewport_index];
+    auto& mesh_perframe_storage_buffer_object = m_MainCameraPerFrameByViewport[viewport_index];
 
     const Vector3 ambient_light = render_scene->m_AmbientLight.m_Irradiance;
     const uint32_t point_light_num = static_cast<uint32_t>(render_scene->m_PointLightList.m_Lights.size());
@@ -399,7 +418,7 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
     mesh_perframe_storage_buffer_object.point_light_num = point_light_num;
     mesh_perframe_storage_buffer_object.show_skybox = 1U;
 
-    m_MeshPointLightShadowPerframeStorageBufferObject.point_light_num = point_light_num;
+    m_PointLightShadowPerFrame.point_light_num = point_light_num;
     for (uint32_t i = 0; i < point_light_num; ++i)
     {
         const Vector3 point_light_position = render_scene->m_PointLightList.m_Lights[i].m_Position;
@@ -411,7 +430,7 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
         mesh_perframe_storage_buffer_object.scene_point_lights[i].radius = radius;
         mesh_perframe_storage_buffer_object.scene_point_lights[i].intensity = point_light_intensity;
 
-        m_MeshPointLightShadowPerframeStorageBufferObject.point_lights_position_and_radius[i] =
+        m_PointLightShadowPerFrame.point_lights_position_and_radius[i] =
             Vector4(point_light_position, radius);
     }
 
@@ -425,14 +444,14 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
         mesh_perframe_storage_buffer_object.point_light_num = 0;
     }
 
-    m_MeshPerframeStorageBufferObject = mesh_perframe_storage_buffer_object;
+    m_MainCameraPerFrame = mesh_perframe_storage_buffer_object;
 }
 
 RenderMeshGPUResource& RenderResource::GetEntityMesh(RenderEntity entity)
 {
     const size_t assetid = entity.m_MeshAssetId;
-    auto it = m_VulkanMeshes.find(assetid);
-    if (it != m_VulkanMeshes.end())
+    auto it = m_Meshes.find(assetid);
+    if (it != m_Meshes.end())
     {
         return it->second;
     }
@@ -442,8 +461,8 @@ RenderMeshGPUResource& RenderResource::GetEntityMesh(RenderEntity entity)
 RenderMaterialGPUResource& RenderResource::GetEntityMaterial(RenderEntity entity)
 {
     const size_t assetid = entity.m_MaterialAssetId;
-    auto it = m_VulkanPbrMaterials.find(assetid);
-    if (it != m_VulkanPbrMaterials.end())
+    auto it = m_Materials.find(assetid);
+    if (it != m_Materials.end())
     {
         return it->second;
     }
@@ -495,7 +514,7 @@ void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
         storage_buffer.m_GlobalUploadRingbuffersEnd[i] = storage_buffer.m_GlobalUploadRingbuffersBegin[i];
     }
 
-    rhi->CreateBuffer(sizeof(AxisStorageBufferObject),
+    rhi->CreateBuffer(sizeof(AxisDrawStorage),
                       RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                       RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                       storage_buffer.m_AxisInefficientStorageBuffer,
@@ -520,38 +539,44 @@ void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
                    &storage_buffer.m_AxisInefficientStorageBufferMemoryPointer);
 }
 
-VulkanMesh& RenderResource::GetOrCreateVulkanMesh(RHI* rhi,
+GpuMesh& RenderResource::GetOrCreateMesh(RHI* rhi,
                                                   RenderEntity entity,
                                                   RenderMeshData mesh_data)
 {
     const size_t assetid = entity.m_MeshAssetId;
-    auto it = m_VulkanMeshes.find(assetid);
-    if (it != m_VulkanMeshes.end())
+    auto it = m_Meshes.find(assetid);
+    if (it != m_Meshes.end() && meshDrawDataIsValid(&it->second))
     {
         return it->second;
     }
+    if (it != m_Meshes.end())
+    {
+        LOG_WARNING(ZRender, "RenderResource(DX12): re-uploading mesh asset id {} (GPU buffers were invalid)", assetid);
+        m_Meshes.erase(it);
+    }
 
-    auto res = m_VulkanMeshes.insert(std::make_pair(assetid, VulkanMesh()));
+    auto res = m_Meshes.insert(std::make_pair(assetid, GpuMesh()));
     assert(res.second);
-    VulkanMesh& now_mesh = res.first->second;
+    GpuMesh& now_mesh = res.first->second;
+    now_mesh.backend = RenderResourceBackend::DirectX12;
 
     if (mesh_data.m_SkeletonBindingBuffer != nullptr)
     {
         LOG_WARNING(ZRender, "RenderResource(DX12): skinned mesh uses rigid upload path for now");
     }
 
-    Dx12UploadMeshNonSkinned(rhi, this, now_mesh, mesh_data);
+    UploadGpuMeshDx12(rhi, now_mesh, mesh_data);
     return now_mesh;
 }
 
-VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
+GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
                                                              RenderEntity entity,
                                                              RenderMaterialData material_data)
 {
     (void)rhi;
     const size_t assetid = entity.m_MaterialAssetId;
-    auto it = m_VulkanPbrMaterials.find(assetid);
-    if (it != m_VulkanPbrMaterials.end())
+    auto it = m_Materials.find(assetid);
+    if (it != m_Materials.end())
     {
         if (entity.m_DoubleSided)
         {
@@ -560,9 +585,9 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
         return it->second;
     }
 
-    auto res = m_VulkanPbrMaterials.insert(std::make_pair(assetid, VulkanPBRMaterial()));
+    auto res = m_Materials.insert(std::make_pair(assetid, GpuPBRMaterial()));
     assert(res.second);
-    VulkanPBRMaterial& material = res.first->second;
+    GpuPBRMaterial& material = res.first->second;
 
     material.shader_name = material_data.m_Shader.c_str();
     material.shader_asset_file = material_data.m_ShaderAssetFile.c_str();
@@ -597,7 +622,7 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
     material.shader_passes.reserve(material_data.m_ShaderPasses.size());
     for (const RenderShaderPassData& shader_pass : material_data.m_ShaderPasses)
     {
-        VulkanShaderPassData runtime_shader_pass;
+        GpuShaderPassData runtime_shader_pass;
         runtime_shader_pass.name = shader_pass.m_Name.c_str();
         runtime_shader_pass.light_mode = shader_pass.m_LightMode.c_str();
         runtime_shader_pass.vertex_shader_file = shader_pass.m_VertexShaderFile.c_str();
@@ -617,3 +642,5 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
 }
 
 #endif  // !Z_HAS_VULKAN
+
+#endif  // _WIN32

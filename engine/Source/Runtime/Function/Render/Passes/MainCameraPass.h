@@ -108,10 +108,10 @@ public:
     std::array<bool, 2> m_IsShowSkybox {true, true};
     bool m_EnableFxaa {false};
     size_t m_SelectedAxis {3};
-    std::array<MeshPerframeStorageBufferObject, 2> m_MeshPerframeStorageBufferObjects;
+    std::array<MainCameraPerFrame, 2> m_MainCameraPerFrameByViewport;
 
-    MeshPerframeStorageBufferObject m_MeshPerframeStorageBufferObject;
-    AxisStorageBufferObject m_AxisStorageBufferObject;
+    MainCameraPerFrame m_MainCameraPerFrame;
+    AxisDrawStorage m_AxisDrawStorage;
     const std::vector<RenderMeshNode>* m_ActiveMainCameraVisibleMeshNodes {nullptr};
     MegaLights::MegaLightsSystem* m_MegaLightsSystem {nullptr};
 
@@ -159,8 +159,8 @@ private:
     void DrawMegaLightsSpatialDenoise(ViewportType viewport_type);
     void DrawSkybox(ViewportType viewport_type);
 
-    RHIPipeline* GetOrCreateMeshGBufferPipeline(const struct VulkanPBRMaterial& material);
-    RHIPipeline* GetOrCreateMeshTransparentPipeline(const struct VulkanPBRMaterial& material);
+    RHIPipeline* GetOrCreateMeshGBufferPipeline(const struct GpuPBRMaterial& material);
+    RHIPipeline* GetOrCreateMeshTransparentPipeline(const struct GpuPBRMaterial& material);
     void DrawAxis();
 
 private:

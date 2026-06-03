@@ -78,7 +78,9 @@ bool RenderSwapContext::IsReadyToSwap() const
              m_SwapData[m_RenderSwapDataIndex].m_CameraSwapData.has_value() ||
              m_SwapData[m_RenderSwapDataIndex].m_ParticleSubmitRequest.has_value() ||
              m_SwapData[m_RenderSwapDataIndex].m_EmitterTickRequest.has_value() ||
-             m_SwapData[m_RenderSwapDataIndex].m_EmitterTransformRequest.has_value());
+             m_SwapData[m_RenderSwapDataIndex].m_EmitterTransformRequest.has_value() ||
+             m_SwapData[m_RenderSwapDataIndex].m_VisibleAxisUpdatePending ||
+             m_SwapData[m_RenderSwapDataIndex].m_SceneViewportUpdatePending);
 }
 
 void RenderSwapContext::ResetLevelRsourceSwapData()
@@ -116,6 +118,17 @@ void RenderSwapContext::ResetEmitterTransformSwapData()
     m_SwapData[m_RenderSwapDataIndex].m_EmitterTransformRequest.reset();
 }
 
+void RenderSwapContext::ResetVisibleAxisSwapData()
+{
+    m_SwapData[m_RenderSwapDataIndex].m_VisibleAxisUpdatePending = false;
+}
+
+void RenderSwapContext::ResetSceneViewportSwapData()
+{
+    m_SwapData[m_RenderSwapDataIndex].m_SceneViewportUpdatePending = false;
+    m_SwapData[m_RenderSwapDataIndex].m_SceneViewportUpdate.reset();
+}
+
 void RenderSwapContext::swap()
 {
     ResetLevelRsourceSwapData();
@@ -125,6 +138,8 @@ void RenderSwapContext::swap()
     ResetEmitterTickSwapData();
     ResetEmitterTransformSwapData();
     ResetPartilceBatchSwapData();
+    ResetVisibleAxisSwapData();
+    ResetSceneViewportSwapData();
     std::swap(m_LogicSwapDataIndex, m_RenderSwapDataIndex);
 }
 

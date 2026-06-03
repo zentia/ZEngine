@@ -213,6 +213,11 @@ elseif(WIN32 AND NOT ZENGINE_USE_VULKAN)
     unset(_WIN_DX12_PASS_FILES)
     unset(_WIN_DX12_PASS_FILES_REG)
     message(STATUS "Runtime(Windows): Vulkan disabled; excluded vulkan/metal/Passes(non-DX12)/VirtualTexture/DebugDrawBuffer/Lumen sources")
+elseif(WIN32 AND ZENGINE_USE_VULKAN)
+    # Win+Vulkan ships both RHIs; mesh upload must dispatch to the DX12 path at runtime.
+    list(APPEND SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/RenderResourceDx12.cpp")
+    list(APPEND REGULAR_SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/RenderResourceDx12.cpp")
+    message(STATUS "Runtime(Windows+Vulkan): including RenderResourceDx12 mesh upload dispatch")
 endif()
 
 if(APPLE)

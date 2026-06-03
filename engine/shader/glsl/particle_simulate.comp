@@ -3,6 +3,7 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "constants.h"
+#include "structures.h"
 
 struct Particle
 {
@@ -58,11 +59,9 @@ layout(std140, binding = 5) buffer DeadBuffer { ivec4 deadbuffer[]; };
 
 layout(std140, binding = 6) buffer AliveBufferNext { ivec4 alivelistnext[]; };
 
-layout(std140, binding = 8) uniform _unused_name_perframe
+layout(std140, binding = 8) uniform _particle_collision_per_frame
 {
-    mat4 view_matrix;
-    mat4 proj_view_matrix;
-    mat4 proj_inv_matrix;
+    ParticleCollisionPerFrame per_frame;
 };
 
 layout(std140, binding = 9) buffer _unsed_name_render_particle { Particle renderParticles[]; };
@@ -86,9 +85,9 @@ void main()
             particle.pos += particle.vel * dt;
 
             // transfrom position to view space
-            vec3 viewSpaceParticlePosition = (view_matrix * vec4(particle.pos, 1)).xyz;
+            vec3 viewSpaceParticlePosition = (per_frame.view_matrix * vec4(particle.pos, 1)).xyz;
 
-            vec4 screenSpaceParticlePosition = proj_view_matrix * vec4(particle.pos, 1);
+            vec4 screenSpaceParticlePosition = per_frame.proj_view_matrix * vec4(particle.pos, 1);
             screenSpaceParticlePosition.xyz /= screenSpaceParticlePosition.w;
 
             // on screen collision
@@ -108,7 +107,7 @@ void main()
                 viewSpacePosOfDepthBuffer.w  = 1;
 
                 // Transform into view space using the inverse projection matrix
-                viewSpacePosOfDepthBuffer = proj_inv_matrix * viewSpacePosOfDepthBuffer;
+                viewSpacePosOfDepthBuffer = per_frame.proj_inv_matrix * viewSpacePosOfDepthBuffer;
                 viewSpacePosOfDepthBuffer.xyz /= viewSpacePosOfDepthBuffer.w;
                 float colliderthickness = 0.5f;
 

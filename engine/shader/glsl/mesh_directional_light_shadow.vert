@@ -5,24 +5,25 @@
 #include "constants.h"
 #include "structures.h"
 
-layout(set = 0, binding = 0) readonly buffer _unused_name_global_set_per_frame_binding_buffer
+layout(set = 0, binding = 0) readonly buffer _directional_light_shadow_per_frame
 {
-    mat4 light_proj_view;
+    DirectionalLightShadowPerFrame per_frame;
 };
 
-layout(set = 0, binding = 1) readonly buffer _unused_name_per_drawcall
+layout(set = 0, binding = 1) readonly buffer _mesh_draw_per_drawcall
 {
-    VulkanMeshInstance mesh_instances[m_mesh_per_drawcall_max_instance_count];
+    MeshDrawPerDrawcall per_drawcall;
 };
 
-layout(set = 0, binding = 2) readonly buffer _unused_name_per_drawcall_vertex_blending
+layout(set = 0, binding = 2) readonly buffer _mesh_draw_vertex_blending
 {
-    mat4 joint_matrices[m_mesh_vertex_blending_max_joint_count * m_mesh_per_drawcall_max_instance_count];
+    MeshDrawPerDrawcallVertexBlending vertex_blending;
 };
+#include "mesh_draw_per_drawcall_access.inl"
 
 layout(set = 1, binding = 0) readonly buffer _unused_name_per_mesh_joint_binding
 {
-    VulkanMeshVertexJointBinding indices_and_weights[];
+    MeshVertexJointBinding indices_and_weights[];
 };
 
 layout(location = 0) in highp vec3 in_position;
@@ -73,5 +74,5 @@ void main()
 
     highp vec3 position_world_space = (model_matrix * vec4(model_position, 1.0)).xyz;
 
-    gl_Position = light_proj_view * vec4(position_world_space, 1.0f);
+    gl_Position = per_frame.light_proj_view * vec4(position_world_space, 1.0f);
 }

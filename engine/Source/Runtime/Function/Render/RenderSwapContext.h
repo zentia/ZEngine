@@ -2,7 +2,9 @@
 
 #include "Runtime/Function/Particle/EmitterIdAllocator.h"
 #include "Runtime/Function/Particle/ParticleDesc.h"
+#include "Runtime/Function/Render/Interface/RHIStruct.h"
 #include "Runtime/Function/Render/RenderCamera.h"
+#include "Runtime/Function/Render/RenderEntity.h"
 #include "Runtime/Function/Render/RenderObject.h"
 #include "Runtime/Resource/ResType/Global/GlobalParticle.h"
 #include "Runtime/Resource/ResType/Global/GlobalRendering.h"
@@ -77,6 +79,12 @@ struct EmitterTransformRequest
     const ParticleEmitterTransformDesc& GetNextEmitterTransformDesc(unsigned int index);
 };
 
+struct ViewportSwapEntry
+{
+    RHIViewport viewport {};
+    RHIRect2D scissor {};
+};
+
 struct RenderSwapData
 {
     std::optional<LevelResourceDesc> m_LevelResourceDesc;
@@ -86,6 +94,10 @@ struct RenderSwapData
     std::optional<ParticleSubmitRequest> m_ParticleSubmitRequest;
     std::optional<EmitterTickRequest> m_EmitterTickRequest;
     std::optional<EmitterTransformRequest> m_EmitterTransformRequest;
+    bool m_VisibleAxisUpdatePending {false};
+    std::optional<RenderEntity> m_VisibleAxis;
+    bool m_SceneViewportUpdatePending {false};
+    std::optional<ViewportSwapEntry> m_SceneViewportUpdate;
 
     void AddDirtyGameObject(GameObjectDesc&& desc);
     void AddDeleteGameObject(GameObjectDesc&& desc);
@@ -115,6 +127,8 @@ public:
     void ResetPartilceBatchSwapData();
     void ResetEmitterTickSwapData();
     void ResetEmitterTransformSwapData();
+    void ResetVisibleAxisSwapData();
+    void ResetSceneViewportSwapData();
 
 private:
     uint8_t m_LogicSwapDataIndex {LogicSwapDataType};

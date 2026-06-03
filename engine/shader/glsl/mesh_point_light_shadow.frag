@@ -6,14 +6,11 @@
 #extension GL_EXT_geometry_shader : enable
 
 #include "constants.h"
+#include "structures.h"
 
-layout(set = 0, binding = 0) readonly buffer _unused_name_global_set_per_frame_binding_buffer
+layout(set = 0, binding = 0) readonly buffer _point_light_shadow_per_frame
 {
-    uint point_light_count;
-    uint _padding_point_light_count_0;
-    uint _padding_point_light_count_1;
-    uint _padding_point_light_count_2;
-    highp vec4 point_lights_position_and_radius[m_max_point_light_count];
+    PointLightShadowPerFrame per_frame;
 };
 
 layout(location = 0) in highp float in_inv_length;
@@ -27,7 +24,7 @@ void main()
     // perspective correct interpolation_
     highp vec3 position_view_space = in_inv_length_position_view_space / in_inv_length;
 
-    highp float point_light_radius = point_lights_position_and_radius[gl_Layer / 2].w;
+    highp float point_light_radius = per_frame.point_lights_position_and_radius[gl_Layer / 2].w;
 
     highp float ratio = length(position_view_space) / point_light_radius;
 

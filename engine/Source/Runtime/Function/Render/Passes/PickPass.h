@@ -21,7 +21,7 @@ public:
     uint32_t Pick(const Vector2& picked_uv);
     void RecreateFramebuffer();
 
-    MeshInefficientPickPerframeStorageBufferObject m_MeshInefficientPickPerframeStorageBufferObject;
+    PickPassPerFrame m_PickPassPerFrame;
 
 private:
     void SetupAttachments();

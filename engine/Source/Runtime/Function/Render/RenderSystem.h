@@ -8,6 +8,8 @@
 #include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/Render/RenderingThread/RHIDrawList.h"
 
+#include "Runtime/Function/Render/Interface/RHIStruct.h"
+
 #include <array>
 #include <atomic>
 #include <functional>
@@ -82,6 +84,8 @@ public:
     GObjectID GetGObjectIDByMeshID(uint32_t mesh_id) const;
 
     EngineContentViewport GetViewport(ViewportType type) const;
+    // Scene-panel viewport published with the current frame's swap data (render thread).
+    bool TryGetRenderSceneViewport(RHIViewport& out_viewport, RHIRect2D& out_scissor) const;
     std::shared_ptr<RenderScene> getRenderScene() const { return m_RenderScene; }
 
     void CreateAxis(std::array<RenderEntity, 3> axis_entities, std::array<RenderMeshData, 3> mesh_datas);
@@ -122,6 +126,10 @@ private:
     std::shared_ptr<RenderResourceBase> m_RenderResource;
     std::shared_ptr<RenderPipelineBase> m_RenderPipeline;
     CameraPreviewRequest m_CameraPreviewRequest;
+
+    RHIViewport m_RenderThreadSceneViewport {};
+    RHIRect2D m_RenderThreadSceneScissor {};
+    bool m_HasRenderThreadSceneViewport {false};
 
     void SyncGameCameraFromMainCamera();
 

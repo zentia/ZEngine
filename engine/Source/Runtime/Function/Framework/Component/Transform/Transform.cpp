@@ -744,7 +744,7 @@ void Transform::Tick(float delta_time)
         TryUpdateRigidBodyComponent();
     }
 
-    if (g_isEditorMode)
+    if (!g_isPlaying)
     {
         m_LocalTransformBuffer[m_NextIndex] = m_LocalTransformBuffer[m_CurrentIndex];
         WriteLocalToSerializedFields();

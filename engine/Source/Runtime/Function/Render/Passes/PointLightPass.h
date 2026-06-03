@@ -6,7 +6,7 @@
 #include <string>
 
 class RenderResourceBase;
-struct VulkanPBRMaterial;
+struct GpuPBRMaterial;
 
 class PointLightShadowPass : public RenderPass
 {
@@ -47,11 +47,11 @@ private:
     void SetupPipelines();
     void SetupDescriptorSet();
     void DrawModel();
-    RHIPipeline* GetOrCreateShadowPipeline(const VulkanPBRMaterial& material);
+    RHIPipeline* GetOrCreateShadowPipeline(const GpuPBRMaterial& material);
 
 private:
     RHIDescriptorSetLayout* m_PerMeshLayout;
     uint32_t m_ActiveShadowExtent {s_PointLightShadowMapDimension};
-    MeshPointLightShadowPerframeStorageBufferObject m_MeshPointLightShadowPerframeStorageBufferObject;
+    PointLightShadowPerFrame m_PointLightShadowPerFrame;
     std::map<ShadowPipelineKey, RHIPipeline*> m_MaterialPipelines;
 };

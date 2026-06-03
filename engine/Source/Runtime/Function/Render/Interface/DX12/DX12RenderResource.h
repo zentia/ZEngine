@@ -1,15 +1,6 @@
 #pragma once
 
-#include "Runtime/Function/Render/RenderGPUResource.h"
+#include "Runtime/Function/Render/RenderGpuResources.h"
 
-struct DX12Mesh : RenderMeshGPUResource
-{
-    DX12Mesh()
-        : RenderMeshGPUResource(RenderResourceBackend::DirectX12) {}
-};
-
-struct DX12PBRMaterial : RenderMaterialGPUResource
-{
-    DX12PBRMaterial()
-        : RenderMaterialGPUResource(RenderResourceBackend::DirectX12) {}
-};
+// DX12 uses the same GpuMesh / GpuPBRMaterial storage as Vulkan (RHI-abstracted fields on the
+// base classes). Do not add parallel empty wrapper types here.

@@ -229,9 +229,9 @@ void DebugDrawManager::PreparePassData(std::shared_ptr<RenderResourceBase> rende
 
     const RenderResource* resource = static_cast<const RenderResource*>(render_resource.get());
     m_ProjViewMatrix =
-        resource->m_MeshPerframeStorageBufferObjects[static_cast<size_t>(ViewportType::game)].proj_view_matrix;
+        resource->m_MainCameraPerFrameByViewport[static_cast<size_t>(ViewportType::game)].proj_view_matrix;
     m_SceneProjViewMatrix =
-        resource->m_MeshPerframeStorageBufferObjects[static_cast<size_t>(ViewportType::scene)].proj_view_matrix;
+        resource->m_MainCameraPerFrameByViewport[static_cast<size_t>(ViewportType::scene)].proj_view_matrix;
 }
 
 void DebugDrawManager::SwapDataToRender()

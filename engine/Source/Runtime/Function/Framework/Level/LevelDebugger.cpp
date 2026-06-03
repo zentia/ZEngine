@@ -14,7 +14,7 @@
 #include "Runtime/Resource/ResType/Components/Animation.h"
 void LevelDebugger::Tick(Level* level) const
 {
-    if (g_isEditorMode)
+    if (!g_isPlaying)
     {
         return;
     }

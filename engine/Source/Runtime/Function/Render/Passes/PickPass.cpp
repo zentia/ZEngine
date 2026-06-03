@@ -1,7 +1,7 @@
 #include "Runtime/Function/Render/Passes/PickPass.h"
 
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
-#include "Runtime/Function/Render/Interface/Vulkan/VulkanRenderResource.h"
+#include "Runtime/Function/Render/RenderGpuResources.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanUtil.h"
 #include "Runtime/Function/Render/RenderHelper.h"
 #include "Runtime/Function/Render/RenderMesh.h"
@@ -33,10 +33,10 @@ void PickPass::PreparePassData(std::shared_ptr<RenderResourceBase> render_resour
     const RenderResource* vulkan_resource = static_cast<const RenderResource*>(render_resource.get());
     if (vulkan_resource)
     {
-        m_MeshInefficientPickPerframeStorageBufferObject.proj_view_matrix =
-            vulkan_resource->m_MeshInefficientPickPerframeStorageBufferObject.proj_view_matrix;
-        m_MeshInefficientPickPerframeStorageBufferObject.rt_width = m_Rhi->GetSwapchainInfo().extent.width;
-        m_MeshInefficientPickPerframeStorageBufferObject.rt_height = m_Rhi->GetSwapchainInfo().extent.height;
+        m_PickPassPerFrame.proj_view_matrix =
+            vulkan_resource->m_PickPassPerFrame.proj_view_matrix;
+        m_PickPassPerFrame.rt_width = m_Rhi->GetSwapchainInfo().extent.width;
+        m_PickPassPerFrame.rt_height = m_Rhi->GetSwapchainInfo().extent.height;
     }
 }
 void PickPass::Draw() {}
@@ -339,14 +339,14 @@ void PickPass::SetupDescriptorSet()
     // the buffer
     mesh_inefficient_pick_perframe_storage_buffer_info.offset = 0;
     // the range means the size actually used by the shader per draw call
-    mesh_inefficient_pick_perframe_storage_buffer_info.range = sizeof(MeshInefficientPickPerframeStorageBufferObject);
+    mesh_inefficient_pick_perframe_storage_buffer_info.range = sizeof(PickPassPerFrame);
     mesh_inefficient_pick_perframe_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
 
     RHIDescriptorBufferInfo mesh_inefficient_pick_perdrawcall_storage_buffer_info = {};
     mesh_inefficient_pick_perdrawcall_storage_buffer_info.offset = 0;
     mesh_inefficient_pick_perdrawcall_storage_buffer_info.range =
-        sizeof(MeshInefficientPickPerdrawcallStorageBufferObject);
+        sizeof(PickPassPerDrawcall);
     mesh_inefficient_pick_perdrawcall_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
     assert(mesh_inefficient_pick_perdrawcall_storage_buffer_info.range <
@@ -355,7 +355,7 @@ void PickPass::SetupDescriptorSet()
     RHIDescriptorBufferInfo mesh_inefficient_pick_perdrawcall_vertex_blending_storage_buffer_info = {};
     mesh_inefficient_pick_perdrawcall_vertex_blending_storage_buffer_info.offset = 0;
     mesh_inefficient_pick_perdrawcall_vertex_blending_storage_buffer_info.range =
-        sizeof(MeshInefficientPickPerdrawcallVertexBlendingStorageBufferObject);
+        sizeof(PickPassPerDrawcallVertexBlending);
     mesh_inefficient_pick_perdrawcall_vertex_blending_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
     assert(mesh_inefficient_pick_perdrawcall_vertex_blending_storage_buffer_info.range <
@@ -427,13 +427,13 @@ uint32_t PickPass::Pick(const Vector2& picked_uv)
         uint32_t node_id;
     };
 
-    std::map<VulkanPBRMaterial*, std::map<VulkanMesh*, std::vector<MeshNode>>> main_camera_mesh_drawcall_batch;
+    std::map<GpuPBRMaterial*, std::map<GpuMesh*, std::vector<MeshNode>>> main_camera_mesh_drawcall_batch;
 
     // reorganize mesh
     for (RenderMeshNode& node : *(m_VisiableNodes.p_main_camera_visible_mesh_nodes))
     {
-        auto& mesh_instanced = main_camera_mesh_drawcall_batch[AsVulkanMaterialource(node.ref_material)];
-        auto& model_nodes = mesh_instanced[AsVulkanMeshResource(node.ref_mesh)];
+        auto& mesh_instanced = main_camera_mesh_drawcall_batch[AsGpuMaterial(node.ref_material)];
+        auto& model_nodes = mesh_instanced[AsGpuMesh(node.ref_mesh)];
 
         MeshNode temp;
         temp.model_matrix = node.model_matrix;
@@ -518,30 +518,31 @@ uint32_t PickPass::Pick(const Vector2& picked_uv)
         RoundUp(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
                 m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-        perframe_dynamic_offset + sizeof(MeshInefficientPickPerframeStorageBufferObject);
+        perframe_dynamic_offset + sizeof(PickPassPerFrame);
     assert(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
            (m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersBegin[m_Rhi->GetCurrentFrameIndex()] +
             m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
 
-    (*reinterpret_cast<MeshInefficientPickPerframeStorageBufferObject*>(
+    (*reinterpret_cast<PickPassPerFrame*>(
         reinterpret_cast<uintptr_t>(
             m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
-        perframe_dynamic_offset)) = m_MeshInefficientPickPerframeStorageBufferObject;
+        perframe_dynamic_offset)) = m_PickPassPerFrame;
 
     for (auto& pair1 : main_camera_mesh_drawcall_batch)
     {
-        VulkanPBRMaterial& material = (*pair1.first);
+        GpuPBRMaterial& material = (*pair1.first);
         auto& mesh_instanced = pair1.second;
 
         // TODO: render from near to far
 
         for (auto& pair2 : mesh_instanced)
         {
-            VulkanMesh& mesh = (*pair2.first);
+            GpuMesh& mesh = (*pair2.first);
             auto& mesh_nodes = pair2.second;
 
             uint32_t total_instance_count = static_cast<uint32_t>(mesh_nodes.size());
-            if (total_instance_count > 0)
+            const MeshDrawData mesh_draw = getMeshDrawData(&mesh);
+            if (total_instance_count > 0 && mesh_draw)
             {
                 // bind per mesh
                 m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
@@ -553,15 +554,15 @@ uint32_t PickPass::Pick(const Vector2& picked_uv)
                                                 0,
                                                 NULL);
 
-                RHIBuffer* vertex_buffers[] = {mesh.mesh_vertex_position_buffer};
+                RHIBuffer* vertex_buffers[] = {mesh_draw.position_buffer};
                 RHIDeviceSize offsets[] = {0};
                 m_Rhi->CmdBindVertexBuffersPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, vertex_buffers, offsets);
                 m_Rhi->CmdBindIndexBufferPFN(
-                    m_Rhi->GetCurrentCommandBuffer(), mesh.mesh_index_buffer, 0, RHI_INDEX_TYPE_UINT16);
+                    m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_buffer, 0, RHI_INDEX_TYPE_UINT16);
 
                 uint32_t drawcall_max_instance_count =
-                    (sizeof(MeshInefficientPickPerdrawcallStorageBufferObject::model_matrices) /
-                     sizeof(MeshInefficientPickPerdrawcallStorageBufferObject::model_matrices[0]));
+                    (sizeof(PickPassPerDrawcall::model_matrices) /
+                     sizeof(PickPassPerDrawcall::model_matrices[0]));
                 uint32_t drawcall_count =
                     RoundUp(total_instance_count, drawcall_max_instance_count) / drawcall_max_instance_count;
 
@@ -580,7 +581,7 @@ uint32_t PickPass::Pick(const Vector2& picked_uv)
                                 m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
                     m_GlobalRenderResource->m_StorageBuffer
                         .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-                        perdrawcall_dynamic_offset + sizeof(MeshInefficientPickPerdrawcallStorageBufferObject);
+                        perdrawcall_dynamic_offset + sizeof(PickPassPerDrawcall);
                     assert(m_GlobalRenderResource->m_StorageBuffer
                                .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
                            (m_GlobalRenderResource->m_StorageBuffer
@@ -588,17 +589,18 @@ uint32_t PickPass::Pick(const Vector2& picked_uv)
                             m_GlobalRenderResource->m_StorageBuffer
                                 .m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
 
-                    MeshInefficientPickPerdrawcallStorageBufferObject& perdrawcall_storage_buffer_object =
-                        (*reinterpret_cast<MeshInefficientPickPerdrawcallStorageBufferObject*>(
+                    PickPassPerDrawcall& perdrawcall_storage_buffer_object =
+                        (*reinterpret_cast<PickPassPerDrawcall*>(
                             reinterpret_cast<uintptr_t>(
                                 m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
                             perdrawcall_dynamic_offset));
                     for (uint32_t i = 0; i < current_instance_count; ++i)
                     {
-                        perdrawcall_storage_buffer_object.model_matrices[i] =
-                            *mesh_nodes[drawcall_max_instance_count * drawcall_index + i].model_matrix;
-                        perdrawcall_storage_buffer_object.node_ids[i] =
-                            mesh_nodes[drawcall_max_instance_count * drawcall_index + i].node_id;
+                        const MeshNode& node = mesh_nodes[drawcall_max_instance_count * drawcall_index + i];
+                        perdrawcall_storage_buffer_object.model_matrices[i] = *node.model_matrix;
+                        perdrawcall_storage_buffer_object.node_ids[i] = node.node_id;
+                        perdrawcall_storage_buffer_object.enable_vertex_blendings[i] =
+                            node.joint_matrices ? 1.0f : -1.0f;
                     }
 
                     // per drawcall vertex blending storage buffer
@@ -612,7 +614,7 @@ uint32_t PickPass::Pick(const Vector2& picked_uv)
                         m_GlobalRenderResource->m_StorageBuffer
                             .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
                             per_drawcall_vertex_blending_dynamic_offset +
-                            sizeof(MeshInefficientPickPerdrawcallVertexBlendingStorageBufferObject);
+                            sizeof(PickPassPerDrawcallVertexBlending);
                         assert(m_GlobalRenderResource->m_StorageBuffer
                                    .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
                                (m_GlobalRenderResource->m_StorageBuffer
@@ -620,9 +622,9 @@ uint32_t PickPass::Pick(const Vector2& picked_uv)
                                 m_GlobalRenderResource->m_StorageBuffer
                                     .m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
 
-                        MeshInefficientPickPerdrawcallVertexBlendingStorageBufferObject&
+                        PickPassPerDrawcallVertexBlending&
                             per_drawcall_vertex_blending_storage_buffer_object =
-                                (*reinterpret_cast<MeshInefficientPickPerdrawcallVertexBlendingStorageBufferObject*>(
+                                (*reinterpret_cast<PickPassPerDrawcallVertexBlending*>(
                                     reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer
                                                                     .m_GlobalUploadRingbufferMemoryPointer) +
                                     per_drawcall_vertex_blending_dynamic_offset));
@@ -657,7 +659,7 @@ uint32_t PickPass::Pick(const Vector2& picked_uv)
                                                     dynamic_offsets);
 
                     m_Rhi->CmdDrawIndexedPFN(
-                        m_Rhi->GetCurrentCommandBuffer(), mesh.mesh_index_count, current_instance_count, 0, 0, 0);
+                        m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_count, current_instance_count, 0, 0, 0);
                 }
             }
         }

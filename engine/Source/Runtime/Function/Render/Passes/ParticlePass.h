@@ -138,12 +138,12 @@ private:
 
     RHIRenderPass* m_RenderPass = nullptr;
 
-    std::array<ParticleBillboardPerframeStorageBufferObject, 2>
-        m_ParticlebillboardPerframeStorageBufferObjects;
-    ParticleBillboardPerframeStorageBufferObject m_ParticlebillboardPerframeStorageBufferObject;
-    std::array<ParticleCollisionPerframeStorageBufferObject, 2>
-        m_ParticleCollisionPerframeStorageBufferObjects;
-    ParticleCollisionPerframeStorageBufferObject m_ParticleCollisionPerframeStorageBufferObject;
+    std::array<ParticleBillboardPerFrame, 2>
+        m_ParticleBillboardPerFrameByViewport;
+    ParticleBillboardPerFrame m_ParticleBillboardPerFrame;
+    std::array<ParticleCollisionPerFrame, 2>
+        m_ParticleCollisionPerFrameByViewport;
+    ParticleCollisionPerFrame m_ParticleCollisionPerFrame;
 
     void* m_ParticleComputeBufferMapped {nullptr};
     void* m_ParticleBillboardUniformBufferMapped {nullptr};

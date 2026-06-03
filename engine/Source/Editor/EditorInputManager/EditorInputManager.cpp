@@ -350,7 +350,7 @@ void EditorInputManager::OnKey(int key, int scancode, int action, int mods)
                 GET_SYSTEM(Editor)->RequestStepFrame();
                 return;
             case GLFW_KEY_S:
-                if (g_isEditorMode && ((mods & GLFW_MOD_CONTROL) || (mods & GLFW_MOD_SUPER)))
+                if (!g_isPlaying && ((mods & GLFW_MOD_CONTROL) || (mods & GLFW_MOD_SUPER)))
                 {
                     if (auto world = GET_SYSTEM(WorldManager))
                     {
@@ -364,7 +364,7 @@ void EditorInputManager::OnKey(int key, int scancode, int action, int mods)
         }
     }
 
-    if (g_isEditorMode)
+    if (!g_isPlaying)
     {
         OnKeyInEditorMode(key, scancode, action, mods);
     }
@@ -377,7 +377,7 @@ void EditorInputManager::OnReset()
 
 void EditorInputManager::OnCursorPos(double xpos, double ypos)
 {
-    if (!g_isEditorMode)
+    if (g_isPlaying)
         return;
 
     std::shared_ptr editor_camera = GET_SYSTEM(EditorSceneManager)->getEditorCamera();
@@ -459,7 +459,7 @@ void EditorInputManager::OnCursorEnter(int entered)
 
 void EditorInputManager::OnScroll(double xoffset, double yoffset)
 {
-    if (!g_isEditorMode)
+    if (g_isPlaying)
     {
         return;
     }
@@ -492,7 +492,7 @@ void EditorInputManager::OnScroll(double xoffset, double yoffset)
 
 void EditorInputManager::OnMouseButtonClicked(int key, int action)
 {
-    if (!g_isEditorMode)
+    if (g_isPlaying)
         return;
 
     std::shared_ptr editor_camera = GET_SYSTEM(EditorSceneManager)->getEditorCamera();

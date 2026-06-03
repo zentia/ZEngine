@@ -5,38 +5,13 @@
 #include "constants.h"
 #include "gbuffer.h"
 #include "megalights_definitions.h"
+#include "structures.h"
 
-struct DirectionalLight
+layout(set = 0, binding = 0) readonly buffer _main_camera_per_frame
 {
-    highp vec3 direction;
-    lowp float _padding_direction;
-    highp vec3 color;
-    lowp float _padding_color;
+    MainCameraPerFrame per_frame;
 };
-
-struct PointLight
-{
-    highp vec3 position;
-    highp float radius;
-    highp vec3 intensity;
-    lowp float _padding_intensity;
-};
-
-layout(set = 0, binding = 0) readonly buffer _mesh_per_frame
-{
-    highp mat4 proj_view_matrix;
-    highp vec3 camera_position;
-    lowp float _padding_camera_position;
-    highp vec3 ambient_light;
-    lowp float _padding_ambient_light;
-    highp uint point_light_num;
-    highp uint show_skybox;
-    uint _padding_point_light_num_2;
-    uint _padding_point_light_num_3;
-    PointLight scene_point_lights[m_max_point_light_count];
-    DirectionalLight scene_directional_light;
-    highp mat4 directional_light_proj_view;
-};
+#include "main_camera_per_frame_access.inl"
 
 layout(set = 0, binding = 8) readonly buffer _ml_lights
 {

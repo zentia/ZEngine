@@ -1,7 +1,7 @@
 #include "Runtime/Function/Render/Passes/DirectionalLightPass.h"
 
 #include "Runtime/Core/Base/Macro.h"
-#include "Runtime/Function/Render/Interface/Vulkan/VulkanRenderResource.h"
+#include "Runtime/Function/Render/RenderGpuResources.h"
 #include "Runtime/Function/Render/Passes/ShadowPassDx12Shaders.h"
 #include "Runtime/Function/Render/RenderHelper.h"
 #include "Runtime/Function/Render/RenderMesh.h"
@@ -90,9 +90,9 @@ namespace
         return RHI_COMPARE_OP_LESS;
     }
 
-    const VulkanShaderPassData* FindShaderPassByLightMode(const VulkanPBRMaterial& material, const std::string& light_mode)
+    const GpuShaderPassData* FindShaderPassByLightMode(const GpuPBRMaterial& material, const std::string& light_mode)
     {
-        for (const VulkanShaderPassData& shader_pass : material.shader_passes)
+        for (const GpuShaderPassData& shader_pass : material.shader_passes)
         {
             if (EqualsIgnoreCase(shader_pass.light_mode, light_mode))
             {
@@ -103,8 +103,8 @@ namespace
     }
 
     bool CanUseRuntimeShadowPass(RHI* rhi,
-                                 const VulkanPBRMaterial& material,
-                                 const VulkanShaderPassData* shader_pass)
+                                 const GpuPBRMaterial& material,
+                                 const GpuShaderPassData* shader_pass)
     {
         if (shader_pass == nullptr || shader_pass->vertex_shader_file.empty() || shader_pass->fragment_shader_file.empty())
         {
@@ -147,8 +147,8 @@ namespace
         return true;
     }
 
-    DirectionalLightShadowPass::ShadowPipelineKey BuildShadowPipelineKey(const VulkanPBRMaterial& material,
-                                                                         const VulkanShaderPassData& shader_pass)
+    DirectionalLightShadowPass::ShadowPipelineKey BuildShadowPipelineKey(const GpuPBRMaterial& material,
+                                                                         const GpuShaderPassData& shader_pass)
     {
         DirectionalLightShadowPass::ShadowPipelineKey key;
         key.vertex_shader_file = shader_pass.vertex_shader_file;
@@ -189,10 +189,10 @@ bool DirectionalLightShadowPass::ShadowPipelineKey::operator<(const ShadowPipeli
                     rhs.shader_macros);
 }
 
-RHIPipeline* DirectionalLightShadowPass::GetOrCreateShadowPipeline(const VulkanPBRMaterial& material)
+RHIPipeline* DirectionalLightShadowPass::GetOrCreateShadowPipeline(const GpuPBRMaterial& material)
 {
     RHIPipeline* const default_pipeline = m_RenderPipelines[0].pipeline;
-    const VulkanShaderPassData* const shadow_pass = FindShaderPassByLightMode(material, "ShadowCaster");
+    const GpuShaderPassData* const shadow_pass = FindShaderPassByLightMode(material, "ShadowCaster");
     if (!CanUseRuntimeShadowPass(m_Rhi, material, shadow_pass))
     {
         return default_pipeline;
@@ -425,8 +425,8 @@ void DirectionalLightShadowPass::PreparePassData(std::shared_ptr<RenderResourceB
     const RenderResource* vulkan_resource = static_cast<const RenderResource*>(render_resource.get());
     if (vulkan_resource)
     {
-        m_MeshDirectionalLightShadowPerframeStorageBufferObject =
-            vulkan_resource->m_MeshDirectionalLightShadowPerframeStorageBufferObject;
+        m_DirectionalLightShadowPerFrame =
+            vulkan_resource->m_DirectionalLightShadowPerFrame;
     }
 }
 void DirectionalLightShadowPass::Draw()
@@ -822,7 +822,7 @@ void DirectionalLightShadowPass::SetupDescriptorSet()
     mesh_directional_light_shadow_perframe_storage_buffer_info.offset = 0;
     // the range means the size actually used by the shader per draw call
     mesh_directional_light_shadow_perframe_storage_buffer_info.range =
-        sizeof(MeshDirectionalLightShadowPerframeStorageBufferObject);
+        sizeof(DirectionalLightShadowPerFrame);
     mesh_directional_light_shadow_perframe_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
     assert(mesh_directional_light_shadow_perframe_storage_buffer_info.range <
@@ -831,7 +831,7 @@ void DirectionalLightShadowPass::SetupDescriptorSet()
     RHIDescriptorBufferInfo mesh_directional_light_shadow_perdrawcall_storage_buffer_info = {};
     mesh_directional_light_shadow_perdrawcall_storage_buffer_info.offset = 0;
     mesh_directional_light_shadow_perdrawcall_storage_buffer_info.range =
-        sizeof(MeshDirectionalLightShadowPerdrawcallStorageBufferObject);
+        sizeof(MeshShadowPerDrawcall);
     mesh_directional_light_shadow_perdrawcall_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
     assert(mesh_directional_light_shadow_perdrawcall_storage_buffer_info.range <
@@ -840,7 +840,7 @@ void DirectionalLightShadowPass::SetupDescriptorSet()
     RHIDescriptorBufferInfo mesh_directional_light_shadow_per_drawcall_vertex_blending_storage_buffer_info = {};
     mesh_directional_light_shadow_per_drawcall_vertex_blending_storage_buffer_info.offset = 0;
     mesh_directional_light_shadow_per_drawcall_vertex_blending_storage_buffer_info.range =
-        sizeof(MeshDirectionalLightShadowPerdrawcallVertexBlendingStorageBufferObject);
+        sizeof(MeshShadowPerDrawcallVertexBlending);
     mesh_directional_light_shadow_per_drawcall_vertex_blending_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
     assert(mesh_directional_light_shadow_per_drawcall_vertex_blending_storage_buffer_info.range <
@@ -903,7 +903,7 @@ void DirectionalLightShadowPass::DrawModel()
         uint32_t joint_count {0};
     };
 
-    std::map<VulkanPBRMaterial*, std::map<VulkanMesh*, std::vector<MeshNode>>> directional_light_mesh_drawcall_batch;
+    std::map<GpuPBRMaterial*, std::map<GpuMesh*, std::vector<MeshNode>>> directional_light_mesh_drawcall_batch;
 
     // reorganize mesh
     const std::vector<RenderMeshNode>* visible_nodes = m_VisiableNodes.p_directional_light_visible_mesh_nodes;
@@ -911,8 +911,8 @@ void DirectionalLightShadowPass::DrawModel()
     {
         for (const RenderMeshNode& node : *visible_nodes)
         {
-            auto& mesh_instanced = directional_light_mesh_drawcall_batch[AsVulkanMaterialource(node.ref_material)];
-            auto& mesh_nodes = mesh_instanced[AsVulkanMeshResource(node.ref_mesh)];
+            auto& mesh_instanced = directional_light_mesh_drawcall_batch[AsGpuMaterial(node.ref_material)];
+            auto& mesh_nodes = mesh_instanced[AsGpuMesh(node.ref_mesh)];
 
             MeshNode temp;
             temp.model_matrix = node.model_matrix;
@@ -965,18 +965,18 @@ void DirectionalLightShadowPass::DrawModel()
             m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
             m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-            perframe_dynamic_offset + sizeof(MeshDirectionalLightShadowPerframeStorageBufferObject);
+            perframe_dynamic_offset + sizeof(DirectionalLightShadowPerFrame);
         assert(
             m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
             (m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersBegin[m_Rhi->GetCurrentFrameIndex()] +
              m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
 
-        MeshDirectionalLightShadowPerframeStorageBufferObject& perframe_storage_buffer_object =
-            (*reinterpret_cast<MeshDirectionalLightShadowPerframeStorageBufferObject*>(
+        DirectionalLightShadowPerFrame& perframe_storage_buffer_object =
+            (*reinterpret_cast<DirectionalLightShadowPerFrame*>(
                 reinterpret_cast<uintptr_t>(
                     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
                 perframe_dynamic_offset));
-        perframe_storage_buffer_object = m_MeshDirectionalLightShadowPerframeStorageBufferObject;
+        perframe_storage_buffer_object = m_DirectionalLightShadowPerFrame;
 
         for (auto& [material, mesh_instanced] : directional_light_mesh_drawcall_batch)
         {
@@ -1009,21 +1009,21 @@ void DirectionalLightShadowPass::DrawModel()
                                                         NULL);
                     }
 
-                    if (mesh->mesh_vertex_position_buffer == nullptr || mesh->mesh_index_buffer == nullptr ||
-                        mesh->mesh_index_count == 0)
+                    const MeshDrawData mesh_draw = getMeshDrawData(mesh);
+                    if (!mesh_draw)
                     {
                         continue;
                     }
 
-                    RHIBuffer* vertex_buffers[] = {mesh->mesh_vertex_position_buffer};
+                    RHIBuffer* vertex_buffers[] = {mesh_draw.position_buffer};
                     RHIDeviceSize offsets[] = {0};
                     m_Rhi->CmdBindVertexBuffersPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, vertex_buffers, offsets);
                     m_Rhi->CmdBindIndexBufferPFN(
-                        m_Rhi->GetCurrentCommandBuffer(), mesh->mesh_index_buffer, 0, RHI_INDEX_TYPE_UINT16);
+                        m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_buffer, 0, RHI_INDEX_TYPE_UINT16);
 
                     uint32_t drawcall_max_instance_count =
-                        (sizeof(MeshDirectionalLightShadowPerdrawcallStorageBufferObject::mesh_instances) /
-                         sizeof(MeshDirectionalLightShadowPerdrawcallStorageBufferObject::mesh_instances[0]));
+                        (sizeof(MeshShadowPerDrawcall::mesh_instances) /
+                         sizeof(MeshShadowPerDrawcall::mesh_instances[0]));
                     uint32_t drawcall_count =
                         RoundUp(total_instance_count, drawcall_max_instance_count) / drawcall_max_instance_count;
 
@@ -1043,7 +1043,7 @@ void DirectionalLightShadowPass::DrawModel()
                         m_GlobalRenderResource->m_StorageBuffer
                             .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
                             perdrawcall_dynamic_offset +
-                            sizeof(MeshDirectionalLightShadowPerdrawcallStorageBufferObject);
+                            sizeof(MeshShadowPerDrawcall);
                         assert(m_GlobalRenderResource->m_StorageBuffer
                                    .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
                                (m_GlobalRenderResource->m_StorageBuffer
@@ -1051,8 +1051,8 @@ void DirectionalLightShadowPass::DrawModel()
                                 m_GlobalRenderResource->m_StorageBuffer
                                     .m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
 
-                        MeshDirectionalLightShadowPerdrawcallStorageBufferObject& perdrawcall_storage_buffer_object =
-                            (*reinterpret_cast<MeshDirectionalLightShadowPerdrawcallStorageBufferObject*>(
+                        MeshShadowPerDrawcall& perdrawcall_storage_buffer_object =
+                            (*reinterpret_cast<MeshShadowPerDrawcall*>(
                                 reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer
                                                                 .m_GlobalUploadRingbufferMemoryPointer) +
                                 perdrawcall_dynamic_offset));
@@ -1085,7 +1085,7 @@ void DirectionalLightShadowPass::DrawModel()
                             m_GlobalRenderResource->m_StorageBuffer
                                 .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
                                 per_drawcall_vertex_blending_dynamic_offset +
-                                sizeof(MeshDirectionalLightShadowPerdrawcallVertexBlendingStorageBufferObject);
+                                sizeof(MeshShadowPerDrawcallVertexBlending);
                             assert(m_GlobalRenderResource->m_StorageBuffer
                                        .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
                                    (m_GlobalRenderResource->m_StorageBuffer
@@ -1093,10 +1093,10 @@ void DirectionalLightShadowPass::DrawModel()
                                     m_GlobalRenderResource->m_StorageBuffer
                                         .m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
 
-                            MeshDirectionalLightShadowPerdrawcallVertexBlendingStorageBufferObject&
+                            MeshShadowPerDrawcallVertexBlending&
                                 per_drawcall_vertex_blending_storage_buffer_object =
                                     (*reinterpret_cast<
-                                        MeshDirectionalLightShadowPerdrawcallVertexBlendingStorageBufferObject*>(
+                                        MeshShadowPerDrawcallVertexBlending*>(
                                         reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer
                                                                         .m_GlobalUploadRingbufferMemoryPointer) +
                                         per_drawcall_vertex_blending_dynamic_offset));
@@ -1128,13 +1128,13 @@ void DirectionalLightShadowPass::DrawModel()
                             perframe_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
                             perframe_info.offset = perframe_dynamic_offset;
                             perframe_info.range =
-                                sizeof(MeshDirectionalLightShadowPerframeStorageBufferObject);
+                                sizeof(DirectionalLightShadowPerFrame);
 
                             RHIDescriptorBufferInfo perdrawcall_info = {};
                             perdrawcall_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
                             perdrawcall_info.offset = perdrawcall_dynamic_offset;
                             perdrawcall_info.range =
-                                sizeof(MeshDirectionalLightShadowPerdrawcallStorageBufferObject);
+                                sizeof(MeshShadowPerDrawcall);
 
                             RHIWriteDescriptorSet dx12_writes[2] = {};
                             dx12_writes[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1176,7 +1176,7 @@ void DirectionalLightShadowPass::DrawModel()
                                                             dynamic_offsets);
                         }
                         m_Rhi->CmdDrawIndexedPFN(
-                            m_Rhi->GetCurrentCommandBuffer(), mesh->mesh_index_count, current_instance_count, 0, 0, 0);
+                            m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_count, current_instance_count, 0, 0, 0);
                     }
                 }
             }

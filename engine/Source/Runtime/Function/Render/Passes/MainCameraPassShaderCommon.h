@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Runtime/Function/Render/Interface/RHI.h"
-#include "Runtime/Function/Render/Interface/Vulkan/VulkanRenderResource.h"
+#include "Runtime/Function/Render/RenderGpuResources.h"
 
 #include <array>
 #include <map>
@@ -19,12 +19,12 @@ namespace MainCameraPassShaderCommon
     template<size_t AttachmentCount>
     void ApplyBlendMode(const std::string& blend, std::array<RHIPipelineColorBlendAttachmentState, AttachmentCount>& attachments);
 
-    const VulkanShaderPassData* FindShaderPassByLightMode(const VulkanPBRMaterial& material, const char* desired_light_mode);
-    const VulkanShaderPassData* FindTransparentShaderPass(const VulkanPBRMaterial& material);
-    bool CanUseRuntimePrimaryShaderPass(RHI* rhi, const VulkanPBRMaterial& material);
+    const GpuShaderPassData* FindShaderPassByLightMode(const GpuPBRMaterial& material, const char* desired_light_mode);
+    const GpuShaderPassData* FindTransparentShaderPass(const GpuPBRMaterial& material);
+    bool CanUseRuntimePrimaryShaderPass(RHI* rhi, const GpuPBRMaterial& material);
     bool CanUseRuntimeShaderPass(RHI* rhi,
-                                 const VulkanPBRMaterial& material,
-                                 const VulkanShaderPassData* shader_pass);
+                                 const GpuPBRMaterial& material,
+                                 const GpuShaderPassData* shader_pass);
 
     struct MeshPipelineKey
     {
@@ -45,6 +45,6 @@ namespace MainCameraPassShaderCommon
         bool operator<(const MeshPipelineKey& rhs) const;
     };
 
-    MeshPipelineKey BuildPipelineKey(const VulkanPBRMaterial& material, const VulkanShaderPassData* shader_pass = nullptr);
+    MeshPipelineKey BuildPipelineKey(const GpuPBRMaterial& material, const GpuShaderPassData* shader_pass = nullptr);
 
 }  // namespace MainCameraPassShaderCommon

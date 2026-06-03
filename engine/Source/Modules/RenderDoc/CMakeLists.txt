@@ -7,5 +7,10 @@ target_include_directories(render_doc PUBLIC
     $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/engine/Source>
     $<INSTALL_INTERFACE:include/render_doc>
 )
-set(renderdoc_lib ${Z_ROOT_DIR}/tools/renderdoc/x64/Development/renderdoc.lib)
-target_link_libraries(render_doc PUBLIC ${renderdoc_lib})
+target_include_directories(render_doc PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/3rdparty/bqlog/include
+)
+if(DEFINED Z_ROOT_DIR)
+    target_compile_definitions(render_doc PRIVATE ZENGINE_REPO_ROOT="${Z_ROOT_DIR}")
+endif()
+target_link_libraries(render_doc PRIVATE BqLog)

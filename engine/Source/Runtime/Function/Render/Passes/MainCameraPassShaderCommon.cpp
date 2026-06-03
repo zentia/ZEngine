@@ -13,9 +13,9 @@ namespace MainCameraPassShaderCommon
             return ToUpperCopy(text).find(ToUpperCopy(token)) != std::string::npos;
         }
 
-        const VulkanShaderPassData* FindForwardShaderPass(const VulkanPBRMaterial& material)
+        const GpuShaderPassData* FindForwardShaderPass(const GpuPBRMaterial& material)
         {
-            if (const VulkanShaderPassData* shader_pass = FindShaderPassByLightMode(material, "ForwardBase"))
+            if (const GpuShaderPassData* shader_pass = FindShaderPassByLightMode(material, "ForwardBase"))
             {
                 return shader_pass;
             }
@@ -143,9 +143,9 @@ namespace MainCameraPassShaderCommon
     template void ApplyBlendMode<1>(const std::string& blend, std::array<RHIPipelineColorBlendAttachmentState, 1>& attachments);
     template void ApplyBlendMode<3>(const std::string& blend, std::array<RHIPipelineColorBlendAttachmentState, 3>& attachments);
 
-    const VulkanShaderPassData* FindShaderPassByLightMode(const VulkanPBRMaterial& material, const char* desired_light_mode)
+    const GpuShaderPassData* FindShaderPassByLightMode(const GpuPBRMaterial& material, const char* desired_light_mode)
     {
-        for (const VulkanShaderPassData& shader_pass : material.shader_passes)
+        for (const GpuShaderPassData& shader_pass : material.shader_passes)
         {
             if (EqualsIgnoreCase(shader_pass.light_mode, desired_light_mode != nullptr ? desired_light_mode : ""))
             {
@@ -155,14 +155,14 @@ namespace MainCameraPassShaderCommon
         return nullptr;
     }
 
-    const VulkanShaderPassData* FindTransparentShaderPass(const VulkanPBRMaterial& material)
+    const GpuShaderPassData* FindTransparentShaderPass(const GpuPBRMaterial& material)
     {
-        if (const VulkanShaderPassData* shader_pass = FindShaderPassByLightMode(material, "Transparent"))
+        if (const GpuShaderPassData* shader_pass = FindShaderPassByLightMode(material, "Transparent"))
         {
             return shader_pass;
         }
 
-        for (const VulkanShaderPassData& shader_pass : material.shader_passes)
+        for (const GpuShaderPassData& shader_pass : material.shader_passes)
         {
             if (IsBlendModeEnabled(shader_pass.blend))
             {
@@ -173,7 +173,7 @@ namespace MainCameraPassShaderCommon
         return nullptr;
     }
 
-    bool CanUseRuntimePrimaryShaderPass(RHI* rhi, const VulkanPBRMaterial& material)
+    bool CanUseRuntimePrimaryShaderPass(RHI* rhi, const GpuPBRMaterial& material)
     {
         if (material.vertex_shader_file.empty() || material.fragment_shader_file.empty())
         {
@@ -217,8 +217,8 @@ namespace MainCameraPassShaderCommon
     }
 
     bool CanUseRuntimeShaderPass(RHI* rhi,
-                                 const VulkanPBRMaterial& material,
-                                 const VulkanShaderPassData* shader_pass)
+                                 const GpuPBRMaterial& material,
+                                 const GpuShaderPassData* shader_pass)
     {
         if (shader_pass == nullptr || shader_pass->vertex_shader_file.empty() || shader_pass->fragment_shader_file.empty())
         {
@@ -256,7 +256,7 @@ namespace MainCameraPassShaderCommon
         return true;
     }
 
-    MeshPipelineKey BuildPipelineKey(const VulkanPBRMaterial& material, const VulkanShaderPassData* shader_pass)
+    MeshPipelineKey BuildPipelineKey(const GpuPBRMaterial& material, const GpuShaderPassData* shader_pass)
     {
         if (shader_pass == nullptr)
         {

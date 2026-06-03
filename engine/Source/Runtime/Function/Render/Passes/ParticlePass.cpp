@@ -320,17 +320,17 @@ void ParticlePass::Draw()
         if (!viewport || viewport->width <= 0.0f || viewport->height <= 0.0f)
             continue;
 
-        m_ParticleCollisionPerframeStorageBufferObject =
-            m_ParticleCollisionPerframeStorageBufferObjects[static_cast<size_t>(viewport_type)];
+        m_ParticleCollisionPerFrame =
+            m_ParticleCollisionPerFrameByViewport[static_cast<size_t>(viewport_type)];
         memcpy(m_SceneUniformBufferMapped,
-               &m_ParticleCollisionPerframeStorageBufferObject,
-               sizeof(ParticleCollisionPerframeStorageBufferObject));
+               &m_ParticleCollisionPerFrame,
+               sizeof(ParticleCollisionPerFrame));
 
-        m_ParticlebillboardPerframeStorageBufferObject =
-            m_ParticlebillboardPerframeStorageBufferObjects[static_cast<size_t>(viewport_type)];
+        m_ParticleBillboardPerFrame =
+            m_ParticleBillboardPerFrameByViewport[static_cast<size_t>(viewport_type)];
         memcpy(m_ParticleBillboardUniformBufferMapped,
-               &m_ParticlebillboardPerframeStorageBufferObject,
-               sizeof(m_ParticlebillboardPerframeStorageBufferObject));
+               &m_ParticleBillboardPerFrame,
+               sizeof(m_ParticleBillboardPerFrame));
 
         m_ViewportParams = *viewport;
         UpdateUniformBuffer(viewport_type);
@@ -1882,7 +1882,7 @@ void ParticlePass::Simulate()
 void ParticlePass::PrepareUniformBuffer()
 {
     RHIDeviceMemory* d_mem;
-    m_Rhi->CreateBuffer(sizeof(m_ParticleCollisionPerframeStorageBufferObject),
+    m_Rhi->CreateBuffer(sizeof(m_ParticleCollisionPerFrame),
                         RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                         RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                         m_SceneUniformBuffer,
@@ -1932,7 +1932,7 @@ void ParticlePass::PrepareUniformBuffer()
 
     {
         RHIDeviceMemory* d_mem;
-        m_Rhi->CreateBuffer(sizeof(m_ParticlebillboardPerframeStorageBufferObject),
+        m_Rhi->CreateBuffer(sizeof(m_ParticleBillboardPerFrame),
                             RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                             RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                             m_ParticleBillboardUniformBuffer,
@@ -1990,15 +1990,15 @@ void ParticlePass::PreparePassData(std::shared_ptr<RenderResourceBase> render_re
     const RenderResource* vulkan_resource = static_cast<const RenderResource*>(render_resource.get());
     if (vulkan_resource)
     {
-        m_ParticleCollisionPerframeStorageBufferObjects =
-            vulkan_resource->m_ParticleCollisionPerframeStorageBufferObjects;
-        m_ParticleCollisionPerframeStorageBufferObject =
-            vulkan_resource->m_ParticleCollisionPerframeStorageBufferObject;
+        m_ParticleCollisionPerFrameByViewport =
+            vulkan_resource->m_ParticleCollisionPerFrameByViewport;
+        m_ParticleCollisionPerFrame =
+            vulkan_resource->m_ParticleCollisionPerFrame;
 
-        m_ParticlebillboardPerframeStorageBufferObjects =
-            vulkan_resource->m_ParticlebillboardPerframeStorageBufferObjects;
-        m_ParticlebillboardPerframeStorageBufferObject =
-            vulkan_resource->m_ParticlebillboardPerframeStorageBufferObject;
+        m_ParticleBillboardPerFrameByViewport =
+            vulkan_resource->m_ParticleBillboardPerFrameByViewport;
+        m_ParticleBillboardPerFrame =
+            vulkan_resource->m_ParticleBillboardPerFrame;
 
         UpdateEmitterTransform();
     }

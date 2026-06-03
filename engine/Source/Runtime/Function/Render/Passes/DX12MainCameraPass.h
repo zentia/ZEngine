@@ -55,6 +55,10 @@ public:
     const BindlessTonemapPass& getTonemapPass() const { return m_TonemapPass; }
     bool isTonemapReady() const { return m_TonemapReady; }
 
+    // Parity with Vulkan MainCameraPass: editor transform gizmo visibility.
+    bool m_IsShowAxis {false};
+    size_t m_SelectedAxis {3};
+
     // DX-B2: shadow maps for RP1 deferred (wired from shadow passes after init).
     RHIImageView* m_PointLightShadowColorImageView {nullptr};
     RHIImageView* m_DirectionalLightShadowColorImageView {nullptr};
@@ -78,9 +82,11 @@ private:
 
     bool SetupSkyboxResources();
     bool SetupSceneGridResources();
+    bool SetupAxisResources();
 
     // ---- Draw helpers ----------------------------------------------------
     void DrawSkybox(ViewportType viewport_type);
+    void DrawAxis();
     void DrawSkyboxPreview();
     void DrawSkyboxWithCamera(const std::shared_ptr<RenderCamera>& camera,
                               const RHIViewport& viewport,
@@ -112,6 +118,15 @@ private:
     bool m_SkyboxReady = false;
     bool m_SkyboxSetupAborted = false;
     bool m_SceneGridReady = false;
+
+    ComPtr<ID3D12RootSignature> m_AxisRootSignature;
+    ComPtr<ID3D12PipelineState> m_AxisPso;
+    RHIBuffer* m_AxisPerFrameConstantBuffer = nullptr;
+    RHIDeviceMemory* m_AxisPerFrameConstantBufferMemory = nullptr;
+    RHIBuffer* m_AxisDrawConstantBuffer = nullptr;
+    RHIDeviceMemory* m_AxisDrawConstantBufferMemory = nullptr;
+    std::array<MainCameraPerFrame, 2> m_MainCameraPerFrameByViewport {};
+    bool m_AxisReady = false;
 
     MainCameraFramebufferResources m_FramebufferResources;
     bool m_FramebufferResourcesReady {false};

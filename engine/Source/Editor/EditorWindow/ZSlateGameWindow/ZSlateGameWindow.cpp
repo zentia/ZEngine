@@ -5,7 +5,7 @@
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"  // native RHI backend
 
-#include "Runtime/Application/Application.h"  // g_isEditorMode
+#include "Runtime/Application/Application.h"  // g_isPlaying
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Slate/Application/SlateApplication.h"
@@ -65,7 +65,7 @@ void ZSlateGameWindow::OnGUI()
     if (ui_scale < 0.5f)
         ui_scale = 1.0f;
 
-    const bool editor_mode = g_isEditorMode;
+    const bool editor_mode = !g_isPlaying;
     const float camera_speed = editor_mode ? GET_SYSTEM(EditorInputManager)->getCameraSpeed() : 0.0f;
 
     const bool rebuild = (m_Root == nullptr) || (editor_mode != m_BuiltEditorMode) ||

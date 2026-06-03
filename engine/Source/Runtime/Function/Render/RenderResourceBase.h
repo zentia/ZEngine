@@ -36,6 +36,12 @@ public:
     virtual void UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_scene,
                                       std::shared_ptr<RenderCamera> camera) = 0;
 
+    virtual bool HasValidMesh(size_t mesh_asset_id) const
+    {
+        (void)mesh_asset_id;
+        return false;
+    }
+
     // TODO: data caching
     std::shared_ptr<TextureData> LoadTextureHDR(eastl::string file, int desired_channels = 4);
     std::shared_ptr<TextureData> LoadTexture(eastl::string file, bool is_srgb = false);

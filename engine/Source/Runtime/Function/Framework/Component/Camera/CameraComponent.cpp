@@ -180,7 +180,7 @@ void CameraComponent::ApplyToGameRenderCamera(RenderCamera& render_camera) const
     Vector3 up = m_Up;
 
     bool use_runtime_camera_pose = false;
-    if (!g_isEditorMode && m_ParentObject != nullptr)
+    if (g_isPlaying && m_ParentObject != nullptr)
     {
         Level* current_level = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
         if (current_level != nullptr)

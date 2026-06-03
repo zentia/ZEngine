@@ -1,34 +1,11 @@
 // MegaLights spatial bilateral denoise (DX12 RP1). Runs after megalights_deferred.
 
-struct PointLight
-{
-    float3 position;
-    float radius;
-    float3 intensity;
-    float _pad;
-};
-
-struct DirectionalLight
-{
-    float3 direction;
-    float _pad0;
-    float3 color;
-    float _pad1;
-};
+#include "../common/scene_lighting_structs.hlsli"
+#include "../common/main_camera_per_frame_access.hlsli"
 
 cbuffer PerFrame : register(b0)
 {
-    float4x4 proj_view_matrix;
-    float3 camera_position;
-    float _pad_camera;
-    float3 ambient_light;
-    float _pad_ambient;
-    uint point_light_num;
-    uint show_skybox;
-    uint2 _pad_pl;
-    PointLight scene_point_lights[16];
-    DirectionalLight scene_directional_light;
-    float4x4 directional_light_proj_view;
+    MainCameraPerFrame per_frame;
 };
 
 Texture2D brdf_lut : register(t3);

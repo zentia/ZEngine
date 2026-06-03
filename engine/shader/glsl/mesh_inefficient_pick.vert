@@ -5,28 +5,25 @@
 #include "constants.h"
 #include "structures.h"
 
-layout(set = 0, binding = 0) readonly buffer _unused_name_perframe
+layout(set = 0, binding = 0) readonly buffer _pick_pass_per_frame
 {
-    mat4 proj_view_matrix;
-    uint rt_width;
-    uint rt_height;
+    PickPassPerFrame per_frame;
 };
 
-layout(set = 0, binding = 1) readonly buffer _unused_name_perdrawcall
+layout(set = 0, binding = 1) readonly buffer _pick_pass_per_drawcall
 {
-    mat4 model_matrices[m_mesh_per_drawcall_max_instance_count];
-    uint node_ids[m_mesh_per_drawcall_max_instance_count];
-    float enable_vertex_blendings[m_mesh_per_drawcall_max_instance_count];
+    PickPassPerDrawcall per_drawcall;
 };
 
-layout(set = 0, binding = 2) readonly buffer _unused_name_per_drawcall_vertex_blending
+layout(set = 0, binding = 2) readonly buffer _pick_pass_vertex_blending
 {
-    mat4 joint_matrices[m_mesh_vertex_blending_max_joint_count * m_mesh_per_drawcall_max_instance_count];
+    MeshDrawPerDrawcallVertexBlending vertex_blending;
 };
+#include "mesh_draw_per_drawcall_access.inl"
 
 layout(set = 1, binding = 0) readonly buffer _unused_name_per_mesh_joint_binding
 {
-    VulkanMeshVertexJointBinding indices_and_weights[];
+    MeshVertexJointBinding indices_and_weights[];
 };
 
 layout(location = 0) in vec3 in_position;
@@ -35,8 +32,8 @@ layout(location = 0) flat out highp uint out_nodeid;
 
 void main()
 {
-    highp mat4 model_matrix = model_matrices[gl_InstanceIndex];
-    highp float enable_vertex_blending = enable_vertex_blendings[gl_InstanceIndex];
+    highp mat4 model_matrix = per_drawcall.model_matrices[gl_InstanceIndex];
+    highp float enable_vertex_blending = per_drawcall.enable_vertex_blendings[gl_InstanceIndex];
 
     highp vec3 model_position;
     if (enable_vertex_blending > 0.0)
@@ -77,7 +74,7 @@ void main()
         model_position = in_position;
     }
 
-    gl_Position = proj_view_matrix * model_matrix * vec4(in_position, 1.0);
+    gl_Position = per_frame.proj_view_matrix * model_matrix * vec4(model_position, 1.0);
 
-    out_nodeid = node_ids[gl_InstanceIndex];
+    out_nodeid = per_drawcall.node_ids[gl_InstanceIndex];
 }

@@ -393,7 +393,7 @@ void Level::Tick(float delta_time)
             id_object_pair.second->Tick(delta_time);
         }
     }
-    if (m_CurrentActiveCharacter && g_isEditorMode == false)
+    if (m_CurrentActiveCharacter && g_isPlaying)
     {
         m_CurrentActiveCharacter->Tick(delta_time);
     }

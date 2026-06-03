@@ -9,14 +9,11 @@
 // https://github.com/powervr-graphics/Native_SDK/blob/R17.1-v4.3/Documentation/Whitepapers/Dual%20Paraboloid%20Environment%20Mapping.Whitepaper.pdf
 
 #include "constants.h"
+#include "structures.h"
 
-layout(set = 0, binding = 0) readonly buffer _unused_name_global_set_per_frame_binding_buffer
+layout(set = 0, binding = 0) readonly buffer _point_light_shadow_per_frame
 {
-    uint point_light_count;
-    uint _padding_point_light_count_0;
-    uint _padding_point_light_count_1;
-    uint _padding_point_light_count_2;
-    highp vec4 point_lights_position_and_radius[m_max_point_light_count];
+    PointLightShadowPerFrame per_frame;
 };
 
 layout(triangles) in;
@@ -29,10 +26,12 @@ layout(location = 1) out highp vec3 out_inv_length_position_view_space;
 
 void main()
 {
-    for (highp int point_light_index = 0; point_light_index < int(point_light_count) && point_light_index < m_max_point_light_count; ++point_light_index)
+    for (highp int point_light_index = 0;
+         point_light_index < int(per_frame.point_light_num) && point_light_index < m_max_point_light_count;
+         ++point_light_index)
     {
-        vec3 point_light_position = point_lights_position_and_radius[point_light_index].xyz;
-        float point_light_radius = point_lights_position_and_radius[point_light_index].w;
+        vec3 point_light_position = per_frame.point_lights_position_and_radius[point_light_index].xyz;
+        float point_light_radius = per_frame.point_lights_position_and_radius[point_light_index].w;
 
         // TODO: find more effificient ways
         // we draw twice, since the gl_Layer of three vetices may not be the same

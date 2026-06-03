@@ -199,6 +199,10 @@ if(TARGET ShaderLab)
     message(STATUS "Editor: linking ShaderLab side-target (parser-only Vulkan-free build)")
 endif()
 
+if(TARGET render_doc)
+    target_link_libraries(${TARGET_NAME} PRIVATE render_doc)
+endif()
+
 # Link to GLFW (from 3rdparty)
 target_link_libraries(${TARGET_NAME} PUBLIC glfw)
 

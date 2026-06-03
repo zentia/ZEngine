@@ -581,6 +581,38 @@ namespace
         return D3D12_RESOURCE_STATE_COMMON;
     }
 
+    void RecordDefaultHeapBufferCopy(ID3D12GraphicsCommandList* command_list,
+                                     ID3D12Resource* src_resource,
+                                     ID3D12Resource* dst_resource,
+                                     uint64_t src_offset,
+                                     uint64_t dst_offset,
+                                     uint64_t size,
+                                     D3D12_RESOURCE_STATES dst_state_after_copy)
+    {
+        if (command_list == nullptr || src_resource == nullptr || dst_resource == nullptr || size == 0)
+        {
+            return;
+        }
+
+        D3D12_RESOURCE_BARRIER to_copy_dest = {};
+        to_copy_dest.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        to_copy_dest.Transition.pResource = dst_resource;
+        to_copy_dest.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        to_copy_dest.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        to_copy_dest.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        command_list->ResourceBarrier(1, &to_copy_dest);
+
+        command_list->CopyBufferRegion(dst_resource, dst_offset, src_resource, src_offset, size);
+
+        D3D12_RESOURCE_BARRIER to_final = {};
+        to_final.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        to_final.Transition.pResource = dst_resource;
+        to_final.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+        to_final.Transition.StateAfter = dst_state_after_copy;
+        to_final.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        command_list->ResourceBarrier(1, &to_final);
+    }
+
     bool IsDX12DepthFormat(RHIFormat format)
     {
         return format == RHI_FORMAT_D16_UNORM || format == RHI_FORMAT_D32_SFLOAT ||
@@ -2849,13 +2881,32 @@ void DX12RHI::CopyBuffer(RHIBuffer* srcBuffer,
 {
     DX12Buffer* src = static_cast<DX12Buffer*>(srcBuffer);
     DX12Buffer* dst = static_cast<DX12Buffer*>(dstBuffer);
-    if (!src || !dst || !m_CommandLists[m_CurrentFrameIndex])
+    if (src == nullptr || dst == nullptr || src->getResource() == nullptr || dst->getResource() == nullptr ||
+        size == 0)
     {
         return;
     }
 
-    m_CommandLists[m_CurrentFrameIndex]->CopyBufferRegion(
-        dst->getResource(), dstOffset, src->getResource(), srcOffset, size);
+    const auto record_copy = [&](ID3D12GraphicsCommandList* command_list) {
+        RecordDefaultHeapBufferCopy(command_list,
+                                    src->getResource(),
+                                    dst->getResource(),
+                                    srcOffset,
+                                    dstOffset,
+                                    size,
+                                    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+    };
+
+    if (m_CommandLists[m_CurrentFrameIndex])
+    {
+        record_copy(m_CommandLists[m_CurrentFrameIndex].Get());
+        return;
+    }
+
+    if (!ExecuteDedicatedUploadCommands(record_copy))
+    {
+        LOG_ERROR(ZRender, "DX12 CopyBuffer: dedicated upload failed (size={})", static_cast<uint64_t>(size));
+    }
 }
 
 void DX12RHI::CreateImage(uint32_t image_width,

@@ -5,50 +5,25 @@
 #include "constants.h"
 #include "structures.h"
 
-struct DirectionalLight
+layout(set = 0, binding = 0) readonly buffer _main_camera_per_frame
 {
-    vec3  direction;
-    float _padding_direction;
-    vec3  color;
-    float _padding_color;
+    MainCameraPerFrame per_frame;
+};
+#include "main_camera_per_frame_access.inl"
+
+layout(set = 0, binding = 1) readonly buffer _mesh_draw_per_drawcall
+{
+    MeshDrawPerDrawcall per_drawcall;
 };
 
-struct PointLight
+layout(set = 0, binding = 2) readonly buffer _mesh_draw_vertex_blending
 {
-    vec3  position;
-    float radius;
-    vec3  intensity;
-    float _padding_intensity;
+    MeshDrawPerDrawcallVertexBlending vertex_blending;
 };
-
-layout(set = 0, binding = 0) readonly buffer _unused_name_perframe
-{
-    mat4             proj_view_matrix;
-    vec3             camera_position;
-    float            _padding_camera_position;
-    vec3             ambient_light;
-    float            _padding_ambient_light;
-    uint             point_light_num;
-    uint             _padding_point_light_num_1;
-    uint             _padding_point_light_num_2;
-    uint             _padding_point_light_num_3;
-    PointLight       scene_point_lights[m_max_point_light_count];
-    DirectionalLight scene_directional_light;
-    highp mat4       directional_light_proj_view;
-};
-
-layout(set = 0, binding = 1) readonly buffer _unused_name_per_drawcall
-{
-    VulkanMeshInstance mesh_instances[m_mesh_per_drawcall_max_instance_count];
-};
-
-layout(set = 0, binding = 2) readonly buffer _unused_name_per_drawcall_vertex_blending
-{
-    highp mat4 joint_matrices[m_mesh_vertex_blending_max_joint_count * m_mesh_per_drawcall_max_instance_count];
-};
+#include "mesh_draw_per_drawcall_access.inl"
 layout(set = 1, binding = 0) readonly buffer _unused_name_per_mesh_joint_binding
 {
-    VulkanMeshVertexJointBinding indices_and_weights[];
+    MeshVertexJointBinding indices_and_weights[];
 };
 
 layout(location = 0) in vec3 in_position; // for some types as dvec3 takes 2 locations

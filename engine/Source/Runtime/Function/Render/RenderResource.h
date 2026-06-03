@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Runtime/Function/Render/Interface/RHI.h"
-#include "Runtime/Function/Render/Interface/Vulkan/VulkanRenderResource.h"
+#include "Runtime/Function/Render/RenderGpuResources.h"
 #include "Runtime/Function/Render/RenderCommon.h"
 #include "Runtime/Function/Render/RenderResourceBase.h"
 #include "Runtime/Function/Render/RenderType.h"
@@ -98,7 +98,7 @@ struct TextureDataToUpdate
     uint32_t normal_roughness_image_miplevels {1};
     uint32_t occlusion_image_miplevels {1};
     uint32_t emissive_image_miplevels {1};
-    VulkanPBRMaterial* now_material;
+    GpuPBRMaterial* now_material;
 };
 
 struct StorageBuffer
@@ -163,29 +163,40 @@ public:
 
     RenderMaterialGPUResource& GetEntityMaterial(RenderEntity entity);
 
+#if defined(_WIN32)
+    // DX12 mesh upload used when Win+Vulkan build runs the DX12 RHI at runtime.
+    void UploadGpuMeshDx12(RHI* rhi, GpuMesh& now_mesh, RenderMeshData& mesh_data);
+#endif
+
+    bool HasValidMesh(size_t mesh_asset_id) const override
+    {
+        const auto it = m_Meshes.find(mesh_asset_id);
+        return it != m_Meshes.end() && meshDrawDataIsValid(&it->second);
+    }
+
     void ResetRingBufferOffset(uint8_t current_frame_index);
 
     // global rendering resource, include IBL data, global storage buffer
     GlobalRenderResource m_GlobalRenderResource;
 
     // storage buffer objects
-    std::array<MeshPerframeStorageBufferObject, 2> m_MeshPerframeStorageBufferObjects;
-    MeshPerframeStorageBufferObject m_MeshPerframeStorageBufferObject;
-    MeshPointLightShadowPerframeStorageBufferObject m_MeshPointLightShadowPerframeStorageBufferObject;
-    MeshDirectionalLightShadowPerframeStorageBufferObject
-        m_MeshDirectionalLightShadowPerframeStorageBufferObject;
-    AxisStorageBufferObject m_AxisStorageBufferObject;
-    MeshInefficientPickPerframeStorageBufferObject m_MeshInefficientPickPerframeStorageBufferObject;
-    std::array<ParticleBillboardPerframeStorageBufferObject, 2>
-        m_ParticlebillboardPerframeStorageBufferObjects;
-    ParticleBillboardPerframeStorageBufferObject m_ParticlebillboardPerframeStorageBufferObject;
-    std::array<ParticleCollisionPerframeStorageBufferObject, 2>
-        m_ParticleCollisionPerframeStorageBufferObjects;
-    ParticleCollisionPerframeStorageBufferObject m_ParticleCollisionPerframeStorageBufferObject;
+    std::array<MainCameraPerFrame, 2> m_MainCameraPerFrameByViewport;
+    MainCameraPerFrame m_MainCameraPerFrame;
+    PointLightShadowPerFrame m_PointLightShadowPerFrame;
+    DirectionalLightShadowPerFrame
+        m_DirectionalLightShadowPerFrame;
+    AxisDrawStorage m_AxisDrawStorage;
+    PickPassPerFrame m_PickPassPerFrame;
+    std::array<ParticleBillboardPerFrame, 2>
+        m_ParticleBillboardPerFrameByViewport;
+    ParticleBillboardPerFrame m_ParticleBillboardPerFrame;
+    std::array<ParticleCollisionPerFrame, 2>
+        m_ParticleCollisionPerFrameByViewport;
+    ParticleCollisionPerFrame m_ParticleCollisionPerFrame;
 
-    // cached mesh and material
-    std::map<size_t, VulkanMesh> m_VulkanMeshes;
-    std::map<size_t, VulkanPBRMaterial> m_VulkanPbrMaterials;
+    // cached mesh and material (shared GpuMesh/GpuPBRMaterial storage for Vulkan and DX12).
+    std::map<size_t, GpuMesh> m_Meshes;
+    std::map<size_t, GpuPBRMaterial> m_Materials;
 
     // descriptor set layout in main camera pass will be used when uploading resource
     RHIDescriptorSetLayout* const* m_MeshDescriptorSetLayout {nullptr};
@@ -208,9 +219,9 @@ private:
                            std::array<std::shared_ptr<TextureData>, 6> irradiance_maps,
                            std::array<std::shared_ptr<TextureData>, 6> specular_maps);
 
-    VulkanMesh& GetOrCreateVulkanMesh(RHI* rhi, RenderEntity entity, RenderMeshData mesh_data);
-    VulkanPBRMaterial&
-    GetOrCreateVulkanMaterial(RHI* rhi, RenderEntity entity, RenderMaterialData material_data);
+    GpuMesh& GetOrCreateMesh(RHI* rhi, RenderEntity entity, RenderMeshData mesh_data);
+    GpuPBRMaterial&
+    GetOrCreateMaterial(RHI* rhi, RenderEntity entity, RenderMaterialData material_data);
 
     void UpdateMeshData(RHI* rhi,
                         bool enable_vertex_blending,
@@ -220,7 +231,7 @@ private:
                         struct MeshVertexDataDefinition const* vertex_buffer_data,
                         uint32_t joint_binding_buffer_size,
                         struct MeshVertexBindingDataDefinition const* joint_binding_buffer_data,
-                        VulkanMesh& now_mesh);
+                        GpuMesh& now_mesh);
     void UpdateVertexBuffer(RHI* rhi,
                             bool enable_vertex_blending,
                             uint32_t vertex_buffer_size,
@@ -229,10 +240,10 @@ private:
                             struct MeshVertexBindingDataDefinition const* joint_binding_buffer_data,
                             uint32_t index_buffer_size,
                             uint16_t* index_buffer_data,
-                            VulkanMesh& now_mesh);
+                            GpuMesh& now_mesh);
     void UpdateIndexBuffer(RHI* rhi,
                            uint32_t index_buffer_size,
                            void* index_buffer_data,
-                           VulkanMesh& now_mesh);
+                           GpuMesh& now_mesh);
     void UpdateTextureImageData(RHI* rhi, const TextureDataToUpdate& texture_data);
 };

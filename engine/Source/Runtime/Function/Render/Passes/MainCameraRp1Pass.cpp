@@ -1,7 +1,7 @@
 #include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
 
 #include "Runtime/Core/Base/Macro.h"
-#include "Runtime/Function/Render/Interface/Vulkan/VulkanRenderResource.h"
+#include "Runtime/Function/Render/RenderGpuResources.h"
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderMesh.h"
 #include "Runtime/Function/Render/MegaLights/MegaLightsSettings.h"
@@ -46,12 +46,6 @@ namespace
 #else
         return "e:/Engine/ZEngine/engine/shader";
 #endif
-    }
-
-    bool MeshBuffersValid(const VulkanMesh& mesh)
-    {
-        return mesh.mesh_vertex_position_buffer != nullptr && mesh.mesh_vertex_varying_enable_blending_buffer != nullptr &&
-               mesh.mesh_vertex_varying_buffer != nullptr && mesh.mesh_index_buffer != nullptr && mesh.mesh_index_count > 0;
     }
 
     RHIPipeline* CreateRuntimeMeshPipeline(RHI* rhi,
@@ -244,8 +238,8 @@ void MainCameraRp1Pass::PreparePassData(std::shared_ptr<RenderResourceBase> rend
     RenderResource* resource = static_cast<RenderResource*>(render_resource.get());
     if (resource != nullptr)
     {
-        m_MeshPerframeStorageBufferObjects = resource->m_MeshPerframeStorageBufferObjects;
-        m_MeshPerframeStorageBufferObject = resource->m_MeshPerframeStorageBufferObject;
+        m_MainCameraPerFrameByViewport = resource->m_MainCameraPerFrameByViewport;
+        m_MainCameraPerFrame = resource->m_MainCameraPerFrame;
         m_MegaLightsSystem = &resource->GetMegaLightsSystem();
     }
 
@@ -1024,18 +1018,18 @@ void MainCameraRp1Pass::SetupDescriptorSets()
     }
     RHIDescriptorBufferInfo mesh_perframe_storage_buffer_info {};
     mesh_perframe_storage_buffer_info.offset = 0;
-    mesh_perframe_storage_buffer_info.range = sizeof(MeshPerframeStorageBufferObject);
+    mesh_perframe_storage_buffer_info.range = sizeof(MainCameraPerFrame);
     mesh_perframe_storage_buffer_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
 
     RHIDescriptorBufferInfo mesh_perdrawcall_storage_buffer_info {};
     mesh_perdrawcall_storage_buffer_info.offset = 0;
-    mesh_perdrawcall_storage_buffer_info.range = sizeof(MeshPerdrawcallStorageBufferObject);
+    mesh_perdrawcall_storage_buffer_info.range = sizeof(MeshDrawPerDrawcall);
     mesh_perdrawcall_storage_buffer_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
 
     RHIDescriptorBufferInfo mesh_per_drawcall_vertex_blending_storage_buffer_info {};
     mesh_per_drawcall_vertex_blending_storage_buffer_info.offset = 0;
     mesh_per_drawcall_vertex_blending_storage_buffer_info.range =
-        sizeof(MeshPerdrawcallVertexBlendingStorageBufferObject);
+        sizeof(MeshDrawPerDrawcallVertexBlending);
     mesh_per_drawcall_vertex_blending_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
 
@@ -1290,7 +1284,7 @@ void MainCameraRp1Pass::SetViewportScissor(ViewportType viewport_type)
 
 void MainCameraRp1Pass::SetPerViewportData(ViewportType viewport_type)
 {
-    m_MeshPerframeStorageBufferObject = m_MeshPerframeStorageBufferObjects[static_cast<size_t>(viewport_type)];
+    m_MainCameraPerFrame = m_MainCameraPerFrameByViewport[static_cast<size_t>(viewport_type)];
 
     if (RenderScene* render_scene = GET_SYSTEM(RenderSystem)->getRenderScene().get())
     {
@@ -1302,7 +1296,7 @@ void MainCameraRp1Pass::SetPerViewportData(ViewportType viewport_type)
     }
 }
 
-RHIPipeline* MainCameraRp1Pass::GetOrCreateMeshGBufferPipeline(const VulkanPBRMaterial& material)
+RHIPipeline* MainCameraRp1Pass::GetOrCreateMeshGBufferPipeline(const GpuPBRMaterial& material)
 {
     RHIPipeline* const default_pipeline = m_RenderPipelines[_render_pipeline_type_mesh_gbuffer].pipeline;
     RHIPipeline* const nocull_pipeline = m_RenderPipelines[_render_pipeline_type_mesh_gbuffer_nocull].pipeline;
@@ -1390,10 +1384,10 @@ RHIPipeline* MainCameraRp1Pass::GetOrCreateMeshGBufferPipeline(const VulkanPBRMa
     return material_pipeline != nullptr ? material_pipeline : default_pipeline;
 }
 
-RHIPipeline* MainCameraRp1Pass::GetOrCreateMeshTransparentPipeline(const VulkanPBRMaterial& material)
+RHIPipeline* MainCameraRp1Pass::GetOrCreateMeshTransparentPipeline(const GpuPBRMaterial& material)
 {
     RHIPipeline* const default_pipeline = m_RenderPipelines[_render_pipeline_type_mesh_transparent].pipeline;
-    const VulkanShaderPassData* const transparent_pass = FindTransparentShaderPass(material);
+    const GpuShaderPassData* const transparent_pass = FindTransparentShaderPass(material);
     if (!CanUseRuntimeShaderPass(m_Rhi, material, transparent_pass))
     {
         return default_pipeline;
@@ -1510,7 +1504,7 @@ void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
             continue;
         }
         SetPerViewportData(viewport_type);
-        m_MeshPerframeStorageBufferObject.show_skybox =
+        m_MainCameraPerFrame.show_skybox =
             skybox_visible[static_cast<size_t>(viewport_type)] ? 1U : 0U;
         DrawMeshGbuffer(viewport_type);
     }
@@ -1526,7 +1520,7 @@ void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
             continue;
         }
         SetPerViewportData(viewport_type);
-        m_MeshPerframeStorageBufferObject.show_skybox =
+        m_MainCameraPerFrame.show_skybox =
             skybox_visible[static_cast<size_t>(viewport_type)] ? 1U : 0U;
         DrawDeferredLighting(viewport_type);
     }
@@ -1542,7 +1536,7 @@ void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
             continue;
         }
         SetPerViewportData(viewport_type);
-        m_MeshPerframeStorageBufferObject.show_skybox =
+        m_MainCameraPerFrame.show_skybox =
             skybox_visible[static_cast<size_t>(viewport_type)] ? 1U : 0U;
         if (skybox_visible[static_cast<size_t>(viewport_type)] && m_SkyboxDrawCallback)
         {
@@ -1568,10 +1562,10 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
     const auto& visible_nodes =
         render_scene ? render_scene->GetMainCameraOpaqueMeshNodes(viewport_type) : (m_ActiveMainCameraVisibleMeshNodes ? *m_ActiveMainCameraVisibleMeshNodes : *(m_VisiableNodes.p_main_camera_visible_mesh_nodes));
 
-    std::map<VulkanPBRMaterial*, std::map<VulkanMesh*, std::vector<MeshNode>>> draw_batches;
+    std::map<GpuPBRMaterial*, std::map<GpuMesh*, std::vector<MeshNode>>> draw_batches;
     for (const RenderMeshNode& node : visible_nodes)
     {
-        auto& mesh_nodes = draw_batches[AsVulkanMaterialource(node.ref_material)][AsVulkanMeshResource(node.ref_mesh)];
+        auto& mesh_nodes = draw_batches[AsGpuMaterial(node.ref_material)][AsGpuMesh(node.ref_mesh)];
         MeshNode temp;
         temp.model_matrix = node.model_matrix;
         if (node.enable_vertex_blending)
@@ -1593,15 +1587,15 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
         RoundUp(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
                 m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-        perframe_dynamic_offset + sizeof(MeshPerframeStorageBufferObject);
+        perframe_dynamic_offset + sizeof(MainCameraPerFrame);
 
-    (*reinterpret_cast<MeshPerframeStorageBufferObject*>(
+    (*reinterpret_cast<MainCameraPerFrame*>(
         reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
-        perframe_dynamic_offset)) = m_MeshPerframeStorageBufferObject;
+        perframe_dynamic_offset)) = m_MainCameraPerFrame;
 
     for (auto& material_batch : draw_batches)
     {
-        VulkanPBRMaterial& material = *material_batch.first;
+        GpuPBRMaterial& material = *material_batch.first;
         RHIPipeline* const material_pipeline = GetOrCreateMeshGBufferPipeline(material);
         if (material_pipeline != bound_pipeline)
         {
@@ -1621,15 +1615,17 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
 
         for (auto& mesh_batch : material_batch.second)
         {
-            VulkanMesh& mesh = *mesh_batch.first;
+            GpuMesh& mesh = *mesh_batch.first;
             auto& mesh_nodes = mesh_batch.second;
-            if (!MeshBuffersValid(mesh))
+
+            const uint32_t total_instance_count = static_cast<uint32_t>(mesh_nodes.size());
+            if (total_instance_count == 0)
             {
                 continue;
             }
 
-            const uint32_t total_instance_count = static_cast<uint32_t>(mesh_nodes.size());
-            if (total_instance_count == 0)
+            const MeshDrawData mesh_draw = getMeshDrawData(&mesh);
+            if (!mesh_draw)
             {
                 continue;
             }
@@ -1643,9 +1639,9 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
                                             0,
                                             nullptr);
 
-            RHIBuffer* vertex_buffers[] = {mesh.mesh_vertex_position_buffer,
-                                           mesh.mesh_vertex_varying_enable_blending_buffer,
-                                           mesh.mesh_vertex_varying_buffer};
+            RHIBuffer* vertex_buffers[] = {mesh_draw.position_buffer,
+                                           mesh_draw.varying_blending_buffer,
+                                           mesh_draw.varying_buffer};
             RHIDeviceSize offsets[] = {0, 0, 0};
             m_Rhi->CmdBindVertexBuffersPFN(m_Rhi->GetCurrentCommandBuffer(),
                                            0,
@@ -1653,11 +1649,11 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
                                            vertex_buffers,
                                            offsets);
             m_Rhi->CmdBindIndexBufferPFN(
-                m_Rhi->GetCurrentCommandBuffer(), mesh.mesh_index_buffer, 0, RHI_INDEX_TYPE_UINT16);
+                m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_buffer, 0, RHI_INDEX_TYPE_UINT16);
 
             const uint32_t drawcall_max_instance_count =
-                static_cast<uint32_t>(sizeof(MeshPerdrawcallStorageBufferObject::mesh_instances) /
-                                      sizeof(MeshPerdrawcallStorageBufferObject::mesh_instances[0]));
+                static_cast<uint32_t>(sizeof(MeshDrawPerDrawcall::mesh_instances) /
+                                      sizeof(MeshDrawPerDrawcall::mesh_instances[0]));
             const uint32_t drawcall_count =
                 RoundUp(total_instance_count, drawcall_max_instance_count) / drawcall_max_instance_count;
 
@@ -1671,10 +1667,10 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
                                 .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
                             m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
                 m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-                    perdrawcall_dynamic_offset + sizeof(MeshPerdrawcallStorageBufferObject);
+                    perdrawcall_dynamic_offset + sizeof(MeshDrawPerDrawcall);
 
-                MeshPerdrawcallStorageBufferObject& perdrawcall_storage_buffer_object =
-                    *reinterpret_cast<MeshPerdrawcallStorageBufferObject*>(reinterpret_cast<uintptr_t>(
+                MeshDrawPerDrawcall& perdrawcall_storage_buffer_object =
+                    *reinterpret_cast<MeshDrawPerDrawcall*>(reinterpret_cast<uintptr_t>(
                                                                                m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
                                                                            perdrawcall_dynamic_offset);
                 for (uint32_t instance_index = 0; instance_index < current_instance_count; ++instance_index)
@@ -1704,10 +1700,10 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
                                 m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
                     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
                         per_drawcall_vertex_blending_dynamic_offset +
-                        sizeof(MeshPerdrawcallVertexBlendingStorageBufferObject);
+                        sizeof(MeshDrawPerDrawcallVertexBlending);
 
-                    MeshPerdrawcallVertexBlendingStorageBufferObject& vertex_blending_object =
-                        *reinterpret_cast<MeshPerdrawcallVertexBlendingStorageBufferObject*>(reinterpret_cast<uintptr_t>(
+                    MeshDrawPerDrawcallVertexBlending& vertex_blending_object =
+                        *reinterpret_cast<MeshDrawPerDrawcallVertexBlending*>(reinterpret_cast<uintptr_t>(
                                                                                                  m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
                                                                                              per_drawcall_vertex_blending_dynamic_offset);
                     for (uint32_t instance_index = 0; instance_index < current_instance_count; ++instance_index)
@@ -1738,7 +1734,7 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
                                                 dynamic_offsets);
 
                 m_Rhi->CmdDrawIndexedPFN(
-                    m_Rhi->GetCurrentCommandBuffer(), mesh.mesh_index_count, current_instance_count, 0, 0, 0);
+                    m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_count, current_instance_count, 0, 0, 0);
             }
         }
     }
@@ -1759,10 +1755,10 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
     const auto& visible_nodes =
         render_scene ? render_scene->GetMainCameraTransparentMeshNodes(viewport_type) : (m_ActiveMainCameraVisibleMeshNodes ? *m_ActiveMainCameraVisibleMeshNodes : *(m_VisiableNodes.p_main_camera_visible_mesh_nodes));
 
-    std::map<VulkanPBRMaterial*, std::map<VulkanMesh*, std::vector<MeshNode>>> draw_batches;
+    std::map<GpuPBRMaterial*, std::map<GpuMesh*, std::vector<MeshNode>>> draw_batches;
     for (const RenderMeshNode& node : visible_nodes)
     {
-        auto& mesh_nodes = draw_batches[AsVulkanMaterialource(node.ref_material)][AsVulkanMeshResource(node.ref_mesh)];
+        auto& mesh_nodes = draw_batches[AsGpuMaterial(node.ref_material)][AsGpuMesh(node.ref_mesh)];
         MeshNode temp;
         temp.model_matrix = node.model_matrix;
         if (node.enable_vertex_blending)
@@ -1784,15 +1780,15 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
         RoundUp(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
                 m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-        perframe_dynamic_offset + sizeof(MeshPerframeStorageBufferObject);
+        perframe_dynamic_offset + sizeof(MainCameraPerFrame);
 
-    (*reinterpret_cast<MeshPerframeStorageBufferObject*>(
+    (*reinterpret_cast<MainCameraPerFrame*>(
         reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
-        perframe_dynamic_offset)) = m_MeshPerframeStorageBufferObject;
+        perframe_dynamic_offset)) = m_MainCameraPerFrame;
 
     for (auto& material_batch : draw_batches)
     {
-        VulkanPBRMaterial& material = *material_batch.first;
+        GpuPBRMaterial& material = *material_batch.first;
         RHIPipeline* const material_pipeline = GetOrCreateMeshTransparentPipeline(material);
         if (material_pipeline != bound_pipeline)
         {
@@ -1812,15 +1808,17 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
 
         for (auto& mesh_batch : material_batch.second)
         {
-            VulkanMesh& mesh = *mesh_batch.first;
+            GpuMesh& mesh = *mesh_batch.first;
             auto& mesh_nodes = mesh_batch.second;
-            if (!MeshBuffersValid(mesh))
+
+            const uint32_t total_instance_count = static_cast<uint32_t>(mesh_nodes.size());
+            if (total_instance_count == 0)
             {
                 continue;
             }
 
-            const uint32_t total_instance_count = static_cast<uint32_t>(mesh_nodes.size());
-            if (total_instance_count == 0)
+            const MeshDrawData mesh_draw = getMeshDrawData(&mesh);
+            if (!mesh_draw)
             {
                 continue;
             }
@@ -1834,9 +1832,9 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
                                             0,
                                             nullptr);
 
-            RHIBuffer* vertex_buffers[] = {mesh.mesh_vertex_position_buffer,
-                                           mesh.mesh_vertex_varying_enable_blending_buffer,
-                                           mesh.mesh_vertex_varying_buffer};
+            RHIBuffer* vertex_buffers[] = {mesh_draw.position_buffer,
+                                           mesh_draw.varying_blending_buffer,
+                                           mesh_draw.varying_buffer};
             RHIDeviceSize offsets[] = {0, 0, 0};
             m_Rhi->CmdBindVertexBuffersPFN(m_Rhi->GetCurrentCommandBuffer(),
                                            0,
@@ -1844,11 +1842,11 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
                                            vertex_buffers,
                                            offsets);
             m_Rhi->CmdBindIndexBufferPFN(
-                m_Rhi->GetCurrentCommandBuffer(), mesh.mesh_index_buffer, 0, RHI_INDEX_TYPE_UINT16);
+                m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_buffer, 0, RHI_INDEX_TYPE_UINT16);
 
             const uint32_t drawcall_max_instance_count =
-                static_cast<uint32_t>(sizeof(MeshPerdrawcallStorageBufferObject::mesh_instances) /
-                                      sizeof(MeshPerdrawcallStorageBufferObject::mesh_instances[0]));
+                static_cast<uint32_t>(sizeof(MeshDrawPerDrawcall::mesh_instances) /
+                                      sizeof(MeshDrawPerDrawcall::mesh_instances[0]));
             const uint32_t drawcall_count =
                 RoundUp(total_instance_count, drawcall_max_instance_count) / drawcall_max_instance_count;
 
@@ -1862,10 +1860,10 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
                                 .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
                             m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
                 m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-                    perdrawcall_dynamic_offset + sizeof(MeshPerdrawcallStorageBufferObject);
+                    perdrawcall_dynamic_offset + sizeof(MeshDrawPerDrawcall);
 
-                MeshPerdrawcallStorageBufferObject& perdrawcall_storage_buffer_object =
-                    *reinterpret_cast<MeshPerdrawcallStorageBufferObject*>(reinterpret_cast<uintptr_t>(
+                MeshDrawPerDrawcall& perdrawcall_storage_buffer_object =
+                    *reinterpret_cast<MeshDrawPerDrawcall*>(reinterpret_cast<uintptr_t>(
                                                                                m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
                                                                            perdrawcall_dynamic_offset);
                 for (uint32_t instance_index = 0; instance_index < current_instance_count; ++instance_index)
@@ -1895,10 +1893,10 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
                                 m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
                     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
                         per_drawcall_vertex_blending_dynamic_offset +
-                        sizeof(MeshPerdrawcallVertexBlendingStorageBufferObject);
+                        sizeof(MeshDrawPerDrawcallVertexBlending);
 
-                    MeshPerdrawcallVertexBlendingStorageBufferObject& vertex_blending_object =
-                        *reinterpret_cast<MeshPerdrawcallVertexBlendingStorageBufferObject*>(reinterpret_cast<uintptr_t>(
+                    MeshDrawPerDrawcallVertexBlending& vertex_blending_object =
+                        *reinterpret_cast<MeshDrawPerDrawcallVertexBlending*>(reinterpret_cast<uintptr_t>(
                                                                                                  m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
                                                                                              per_drawcall_vertex_blending_dynamic_offset);
                     for (uint32_t instance_index = 0; instance_index < current_instance_count; ++instance_index)
@@ -1929,7 +1927,7 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
                                                 dynamic_offsets);
 
                 m_Rhi->CmdDrawIndexedPFN(
-                    m_Rhi->GetCurrentCommandBuffer(), mesh.mesh_index_count, current_instance_count, 0, 0, 0);
+                    m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_count, current_instance_count, 0, 0, 0);
             }
         }
     }
@@ -2047,11 +2045,11 @@ void MainCameraRp1Pass::DrawDeferredLighting(ViewportType viewport_type)
         RoundUp(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
                 m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-        perframe_dynamic_offset + sizeof(MeshPerframeStorageBufferObject);
+        perframe_dynamic_offset + sizeof(MainCameraPerFrame);
 
-    (*reinterpret_cast<MeshPerframeStorageBufferObject*>(
+    (*reinterpret_cast<MainCameraPerFrame*>(
         reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
-        perframe_dynamic_offset)) = m_MeshPerframeStorageBufferObject;
+        perframe_dynamic_offset)) = m_MainCameraPerFrame;
 
     RHIDescriptorSet* descriptor_sets[2] = {m_DescriptorInfos[_mesh_global].descriptor_set,
                                             m_DescriptorInfos[_deferred_lighting].descriptor_set};
@@ -2077,7 +2075,7 @@ void MainCameraRp1Pass::DrawDeferredLighting(ViewportType viewport_type)
 
     if (use_megalights)
     {
-        m_MegaLightsSystem->EndDeferredPass(viewport_type, m_MeshPerframeStorageBufferObject.proj_view_matrix);
+        m_MegaLightsSystem->EndDeferredPass(viewport_type, m_MainCameraPerFrame.proj_view_matrix);
     }
 }
 
@@ -2092,11 +2090,11 @@ void MainCameraRp1Pass::DrawMegaLightsSpatialDenoise(ViewportType viewport_type)
         RoundUp(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
                 m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-        perframe_dynamic_offset + sizeof(MeshPerframeStorageBufferObject);
+        perframe_dynamic_offset + sizeof(MainCameraPerFrame);
 
-    (*reinterpret_cast<MeshPerframeStorageBufferObject*>(
+    (*reinterpret_cast<MainCameraPerFrame*>(
         reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
-        perframe_dynamic_offset)) = m_MeshPerframeStorageBufferObject;
+        perframe_dynamic_offset)) = m_MainCameraPerFrame;
 
     RHIDescriptorSet* descriptor_sets[2] = {m_DescriptorInfos[_mesh_global].descriptor_set,
                                             m_DescriptorInfos[_deferred_lighting].descriptor_set};

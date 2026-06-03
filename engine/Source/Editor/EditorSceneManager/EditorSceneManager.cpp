@@ -181,6 +181,11 @@ void EditorSceneManager::Tick(float delta_time)
             transform_component->setDirtyFlag(true);
         }
     }
+
+    if (!g_isPlaying)
+    {
+        DrawSelectedEntityAxis();
+    }
 }
 
 float intersectPlaneRay(Vector3 normal, float d, Vector3 origin, Vector3 dir)
@@ -368,7 +373,7 @@ void EditorSceneManager::DrawSelectedEntityAxis()
 {
     std::shared_ptr<GameObject> selected_object = GetSelectedGObject().lock();
 
-    if (g_isEditorMode && selected_object != nullptr)
+    if (!g_isPlaying && selected_object != nullptr)
     {
         const Transform* transform_component = selected_object->tryGetComponentConst(Transform);
 

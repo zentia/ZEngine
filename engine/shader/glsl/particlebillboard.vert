@@ -3,13 +3,11 @@
 #extension GL_GOOGLE_include_directive : enable
 
 #include "constants.h"
+#include "structures.h"
 
-layout(set = 0, binding = 0) uniform _unused_name_perframe
+layout(set = 0, binding = 0) uniform _particle_billboard_per_frame
 {
-    mat4 proj_view_matrix;
-    vec3 right_diection;
-    vec3 up_direction;
-    vec3 forward_diection;
+    ParticleBillboardPerFrame per_frame;
 };
 
 struct Particle
@@ -42,27 +40,28 @@ void main()
 
     // viewport-oriented
     vec3  vel_dir      = particle.vel;
-    float projectvel_x = dot(vel_dir, right_diection);
-    float projectvel_y = dot(vel_dir, up_direction);
+    float projectvel_x = dot(vel_dir, per_frame.right_direction);
+    float projectvel_y = dot(vel_dir, per_frame.up_direction);
     float size_x       = particle.size_x;
     float size_y       = particle.size_y;
 
     vec3 world_position;
     if (abs(projectvel_x) < size_x || abs(projectvel_y) < size_y)
     {
-        world_position =
-            size_x * right_diection * model_position.x + size_y * up_direction * model_position.y + anchor_location;
+        world_position = size_x * per_frame.right_direction * model_position.x +
+                         size_y * per_frame.up_direction * model_position.y + anchor_location;
     }
     else
     {
-        vec3 project_dir = normalize(projectvel_x * right_diection + projectvel_y * up_direction);
-        vec3 side_dir    = normalize(cross(forward_diection, project_dir));
+        vec3 project_dir = normalize(projectvel_x * per_frame.right_direction +
+                                     projectvel_y * per_frame.up_direction);
+        vec3 side_dir    = normalize(cross(per_frame.forward_direction, project_dir));
         world_position =
             size_x * side_dir * model_position.x + size_y * project_dir * model_position.y + anchor_location;
     }
 
     // world to NDC
-    gl_Position = proj_view_matrix * vec4(world_position, 1.0);
+    gl_Position = per_frame.proj_view_matrix * vec4(world_position, 1.0);
 
     out_color = particle.color;
     out_uv    = uv_buffer[gl_VertexIndex];

@@ -141,6 +141,10 @@ EngineContentViewport RenderSystem::GetViewport(ViewportType type) const
 
     return {viewport->x, viewport->y, viewport->width, viewport->height};
 }
+bool RenderSystem::TryGetRenderSceneViewport(RHIViewport&, RHIRect2D&) const
+{
+    return false;
+}
 void RenderSystem::CreateAxis(std::array<RenderEntity, 3>, std::array<RenderMeshData, 3>) {}
 void RenderSystem::SetVisibleAxis(std::optional<RenderEntity> axis)
 {
@@ -281,6 +285,7 @@ bool RenderSystem::Initialize()
         m_Cameras.push_back(scene_camera);
 
         m_RenderScene = std::make_shared<RenderScene>();
+        m_RenderScene->SetUploadRhi(m_Rhi);
         m_RenderScene->m_AmbientLight = {global_rendering_res->m_AmbientLight.toVector3()};
         m_RenderScene->m_DirectionalLight.m_Direction =
             global_rendering_res->m_DirectionalLight.m_Direction.normalisedCopy();
@@ -357,6 +362,7 @@ bool RenderSystem::Initialize()
 
     // setup render scene
     m_RenderScene = std::make_shared<RenderScene>();
+    m_RenderScene->SetUploadRhi(m_Rhi);
     m_RenderScene->m_AmbientLight = {global_rendering_res->m_AmbientLight.toVector3()};
     m_RenderScene->m_DirectionalLight.m_Direction =
         global_rendering_res->m_DirectionalLight.m_Direction.normalisedCopy();
@@ -723,6 +729,19 @@ void RenderSystem::UpdateViewport(ViewportType viewport_id, float offset_x, floa
         m_Rhi->UpdateViewport(viewport_id, viewport);
     }
 
+    if (viewport_id == ViewportType::scene)
+    {
+        ViewportSwapEntry entry {};
+        entry.viewport = viewport;
+        entry.scissor.offset = {static_cast<int32_t>(offset_x), static_cast<int32_t>(offset_y)};
+        entry.scissor.extent = {static_cast<uint32_t>(width > 0.0f ? width : 0.0f),
+                                static_cast<uint32_t>(height > 0.0f ? height : 0.0f)};
+
+        RenderSwapData& logic_swap = m_SwapContext.GetLogicSwapData();
+        logic_swap.m_SceneViewportUpdate = entry;
+        logic_swap.m_SceneViewportUpdatePending = true;
+    }
+
     // Update camera aspect based on viewport_id
     // Scene view and Game view have their own cameras
     auto camera = GetCamera(viewport_id);
@@ -730,6 +749,18 @@ void RenderSystem::UpdateViewport(ViewportType viewport_id, float offset_x, floa
     {
         camera->SetAspect(width / height);
     }
+}
+
+bool RenderSystem::TryGetRenderSceneViewport(RHIViewport& out_viewport, RHIRect2D& out_scissor) const
+{
+    if (!m_HasRenderThreadSceneViewport)
+    {
+        return false;
+    }
+
+    out_viewport = m_RenderThreadSceneViewport;
+    out_scissor = m_RenderThreadSceneScissor;
+    return true;
 }
 
 EngineContentViewport RenderSystem::GetViewport(ViewportType type) const
@@ -773,23 +804,35 @@ GObjectID RenderSystem::GetGObjectIDByMeshID(uint32_t mesh_id) const
 void RenderSystem::CreateAxis(std::array<RenderEntity, 3> axis_entities,
                               std::array<RenderMeshData, 3> mesh_datas)
 {
-    if (!m_RenderResource || (m_Rhi && m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12))
+    if (!m_RenderResource || !m_RenderScene)
     {
         return;
     }
 
-    for (int i = 0; i < axis_entities.size(); i++)
+    std::array<size_t, 3> mesh_asset_ids = {axis_entities[0].m_MeshAssetId,
+                                            axis_entities[1].m_MeshAssetId,
+                                            axis_entities[2].m_MeshAssetId};
+    m_RenderScene->RegisterAxisMeshSources(mesh_asset_ids, mesh_datas);
+
+    auto* render_resource = static_cast<RenderResource*>(m_RenderResource.get());
+    for (size_t i = 0; i < axis_entities.size(); ++i)
     {
-        m_RenderResource->UploadGameObjectRenderResource(m_Rhi, axis_entities[i], mesh_datas[i]);
+        render_resource->UploadGameObjectRenderResource(m_Rhi, axis_entities[i], mesh_datas[i]);
+        if (!render_resource->HasValidMesh(axis_entities[i].m_MeshAssetId))
+        {
+            LOG_ERROR(ZRender,
+                      "CreateAxis: failed to upload axis mesh {} (asset id {})",
+                      i,
+                      axis_entities[i].m_MeshAssetId);
+        }
     }
 }
 
 void RenderSystem::SetVisibleAxis(std::optional<RenderEntity> axis)
 {
-    if (m_RenderScene)
-    {
-        m_RenderScene->m_RenderAxis = axis;
-    }
+    RenderSwapData& logic_swap = m_SwapContext.GetLogicSwapData();
+    logic_swap.m_VisibleAxis = axis;
+    logic_swap.m_VisibleAxisUpdatePending = true;
 
     if (!m_RenderPipeline)
     {
@@ -942,6 +985,29 @@ void RenderSystem::ProcessSwapData()
         }
 
         m_SwapContext.ResetGameObjectToDelete();
+    }
+
+    if (swap_data.m_VisibleAxisUpdatePending && m_RenderScene)
+    {
+        m_RenderScene->m_RenderAxis = swap_data.m_VisibleAxis;
+        m_SwapContext.ResetVisibleAxisSwapData();
+    }
+
+    if (swap_data.m_SceneViewportUpdatePending)
+    {
+        if (swap_data.m_SceneViewportUpdate.has_value())
+        {
+            const ViewportSwapEntry& entry = *swap_data.m_SceneViewportUpdate;
+            m_RenderThreadSceneViewport = entry.viewport;
+            m_RenderThreadSceneScissor = entry.scissor;
+            m_HasRenderThreadSceneViewport = entry.viewport.width > 0.0f && entry.viewport.height > 0.0f;
+        }
+        else
+        {
+            m_HasRenderThreadSceneViewport = false;
+        }
+
+        m_SwapContext.ResetSceneViewportSwapData();
     }
 
     for (auto&& camera : m_Cameras)

@@ -1,22 +1,12 @@
 // DX-B3: rigid mesh vertex shader (matches MeshVertex 3-stream layout).
 
-struct MeshInstance
-{
-    float enable_vertex_blending;
-    float3 _pad0;
-    float4x4 model_matrix;
-};
+#include "../common/scene_lighting_structs.hlsli"
+#include "../common/render_storage_structs.hlsli"
+#include "../common/main_camera_per_frame_access.hlsli"
 
 cbuffer PerFrame : register(b0)
 {
-    float4x4 proj_view_matrix;
-    float3 camera_position;
-    float _pad_camera;
-    float3 ambient_light;
-    float _pad_ambient;
-    uint point_light_num;
-    uint show_skybox;
-    uint2 _pad_pl;
+    MainCameraPerFrame per_frame;
 };
 
 StructuredBuffer<MeshInstance> mesh_instances : register(t1);
