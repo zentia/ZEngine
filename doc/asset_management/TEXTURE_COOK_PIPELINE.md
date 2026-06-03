@@ -58,9 +58,9 @@ model (only `.zasset` / scenes / prefabs appear there). The legacy
 `sibling-image-next-to-zasset` fallback in `resolveSourcePathForZasset` exists
 only for old imports.
 
-Scaffolding (`ProjectInfo::GetTexturesRoot()` / `GetModelsRoot()`) can land in a
-follow-up PR; until then, create the folders manually or via `.zproject` fields
-once added.
+`ProjectInfo::GetTexturesRoot()` / `GetModelsRoot()` create the folders on
+project open via `EnsureScriptsScaffold()`; the Project window shows them as
+top-level roots peer of `Assets/`, `Scripts/`, `Shaders/`, and `Data/`.
 
 ---
 

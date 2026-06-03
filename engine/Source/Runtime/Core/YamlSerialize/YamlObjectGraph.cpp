@@ -296,4 +296,141 @@ namespace ZYaml
 
         return true;
     }
+
+    bool PeekPrimaryObjectType(const char* text, int64_t preferredFileID, eastl::string& outType)
+    {
+        outType.clear();
+        if (text == nullptr)
+        {
+            return false;
+        }
+
+        JSONAllocator allocator;
+        GraphDocument master(&allocator, 1024, &allocator);
+        if (!ZYaml::ParseYaml(text, master) || !master.IsObject())
+        {
+            return false;
+        }
+
+        auto objIt = master.FindMember("objects");
+        if (objIt == master.MemberEnd() || !objIt->value.IsArray() || objIt->value.Empty())
+        {
+            return false;
+        }
+
+        const char* fallback = nullptr;
+        for (const GraphValue& entry : objIt->value.GetArray())
+        {
+            if (!entry.IsObject() || !entry.HasMember("type") || !entry["type"].IsString())
+            {
+                continue;
+            }
+            const char* typeName = entry["type"].GetString();
+            if (typeName == nullptr || typeName[0] == '\0')
+            {
+                continue;
+            }
+            const int64_t fileID = entry.HasMember("fileID") ? ReadIntField(entry["fileID"]) : 0;
+            if (fileID == preferredFileID)
+            {
+                outType = typeName;
+                return true;
+            }
+            if (fallback == nullptr)
+            {
+                fallback = typeName;
+            }
+        }
+
+        if (fallback != nullptr)
+        {
+            outType = fallback;
+            return true;
+        }
+        return false;
+    }
+
+    bool ReadSingleObjectFromGraph(const char* text,
+                                   int64_t targetFileID,
+                                   Object* outObject,
+                                   GraphReaderExternHook readerHook)
+    {
+        if (text == nullptr || outObject == nullptr || targetFileID == 0)
+        {
+            return false;
+        }
+
+        JSONAllocator allocator;
+        GraphDocument master(&allocator, 1024, &allocator);
+        if (!ZYaml::ParseYaml(text, master) || !master.IsObject())
+        {
+            return false;
+        }
+
+        YamlGraphResolver resolver({}, std::move(readerHook));
+
+        auto extIt = master.FindMember("externals");
+        if (extIt != master.MemberEnd() && extIt->value.IsArray())
+        {
+            for (const GraphValue& r : extIt->value.GetArray())
+            {
+                if (!r.IsObject())
+                {
+                    continue;
+                }
+                FileIdentifier ref;
+                if (r.HasMember("guid") && r["guid"].IsString())
+                {
+                    ref.guid = r["guid"].GetString();
+                }
+                if (r.HasMember("type") && r["type"].IsString())
+                {
+                    ref.type = r["type"].GetString();
+                }
+                if (r.HasMember("path") && r["path"].IsString())
+                {
+                    ref.pathName = r["path"].GetString();
+                }
+                resolver.AddExternalForRead(ref);
+            }
+        }
+
+        auto objIt = master.FindMember("objects");
+        if (objIt == master.MemberEnd() || !objIt->value.IsArray())
+        {
+            return false;
+        }
+
+        const GraphValue* dataNode = nullptr;
+        for (const GraphValue& entry : objIt->value.GetArray())
+        {
+            if (!entry.IsObject())
+            {
+                continue;
+            }
+            const int64_t fileID = entry.HasMember("fileID") ? ReadIntField(entry["fileID"]) : 0;
+            if (fileID != targetFileID)
+            {
+                continue;
+            }
+            dataNode = entry.HasMember("data") ? &entry["data"] : nullptr;
+            break;
+        }
+
+        if (dataNode == nullptr)
+        {
+            return false;
+        }
+
+        if (outObject->GetInstanceID() == 0)
+        {
+            GET_SYSTEM(ObjectManager)->AllocateAndAssignInstanceID(outObject);
+        }
+        resolver.RegisterLocalObject(outObject->GetInstanceID(), targetFileID);
+
+        ScopedPPtrResolver scope(&resolver);
+        YAMLRead reader(*dataNode, kNoTransferInstructionFlags);
+        outObject->VirtualRedirectTransfer(reader);
+        return true;
+    }
 }  // namespace ZYaml

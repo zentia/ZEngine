@@ -372,11 +372,19 @@ void AssetRegistry::ScanAssetsAsync(const std::filesystem::path& asset_folder)
     m_ScanThread = std::thread([this, asset_folder]() {
         try
         {
-            // 1. 收集所有 .zasset 文件（不需要锁）
+            // 1. Collect registry assets: binary .zasset plus YAML authoring
+            //    files (.mat / .prefab / .scene) under Assets/.
             std::vector<std::filesystem::path> asset_files;
             for (const auto& entry : std::filesystem::recursive_directory_iterator(asset_folder))
             {
-                if (entry.is_regular_file() && entry.path().extension() == ".zasset")
+                if (!entry.is_regular_file())
+                {
+                    continue;
+                }
+                const std::string extension = entry.path().extension().string();
+                std::string ext_lower = extension;
+                std::transform(ext_lower.begin(), ext_lower.end(), ext_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (ext_lower == ".zasset" || ext_lower == ".mat" || ext_lower == ".prefab" || ext_lower == ".scene")
                 {
                     asset_files.push_back(entry.path());
                 }
@@ -537,11 +545,17 @@ void AssetRegistry::IncrementalUpdate(const std::filesystem::path& asset_folder)
 
     m_ScanRoot = asset_folder;
 
-    // 1. 收集所有 .zasset 文件
+    // 1. Collect registry assets under Assets/.
     std::vector<std::filesystem::path> asset_files;
     for (const auto& entry : std::filesystem::recursive_directory_iterator(asset_folder))
     {
-        if (entry.is_regular_file() && entry.path().extension() == ".zasset")
+        if (!entry.is_regular_file())
+        {
+            continue;
+        }
+        std::string ext_lower = entry.path().extension().string();
+        std::transform(ext_lower.begin(), ext_lower.end(), ext_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ext_lower == ".zasset" || ext_lower == ".mat" || ext_lower == ".prefab" || ext_lower == ".scene")
         {
             asset_files.push_back(entry.path());
         }
@@ -1496,6 +1510,18 @@ AssetIndexEntry AssetRegistry::ScanSingleAsset(const std::filesystem::path& asse
         }
 
         // Try to read the asset file header directly
+        std::string ext_lower = asset_path.extension().string();
+        std::transform(ext_lower.begin(), ext_lower.end(), ext_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ext_lower == ".mat" || ext_lower == ".prefab" || ext_lower == ".scene")
+        {
+            entry.asset_type = GET_SYSTEM(AssetManager)->GetAssetTypeName(asset_path);
+            if (!entry.asset_type.empty())
+            {
+                entry.guid = AssetManager::DeriveDeterministicAssetGuid(asset_path);
+            }
+            return entry;
+        }
+
         std::ifstream file(asset_path, std::ios::binary);
         if (file.is_open() && file.good())
         {

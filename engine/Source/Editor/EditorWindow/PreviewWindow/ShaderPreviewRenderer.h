@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-class MaterialRes;
+class Material;
 
 // Native ZSlate variant: renders the same DX12 render-to-texture preview but,
 // instead of issuing an ImGui::Image, adopts the RTT color target into
@@ -23,4 +23,4 @@ struct ShaderPreviewTextureResult
 
 ShaderPreviewTextureResult RenderShaderPreviewToNativeTexture(const std::filesystem::path& selected_asset_path,
                                                               const std::string& resolved_asset_type,
-                                                              const MaterialRes* preview_material);
+                                                              const Material* preview_material);

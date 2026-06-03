@@ -8,6 +8,7 @@
 class ShaderRes;
 class Texture2D;
 
+// Unity MaterialPropertyBlock-style saved property entries (shader-driven extras).
 struct MaterialFloatProperty
 {
     eastl::string m_Name;
@@ -45,17 +46,13 @@ struct MaterialColorProperty
 struct MaterialTextureProperty
 {
     eastl::string m_Name;
-    eastl::string m_TextureFile;
+    PPtr<Texture2D> m_Texture;
 
     static const char* GetTypeString() { return "MaterialTextureProperty"; }
     static bool AllowTransferOptimization() { return false; }
 
     template<typename TransferFunction>
-    void Transfer(TransferFunction& transfer)
-    {
-        transfer.Transfer(m_Name, "name");
-        transfer.Transfer(m_TextureFile, "texture_file");
-    }
+    void Transfer(TransferFunction& transfer);
 };
 
 struct MaterialToggleProperty
@@ -74,36 +71,26 @@ struct MaterialToggleProperty
     }
 };
 
-class MaterialRes : public Object
+// Unity-style material asset: shader + saved properties + built-in PBR slots.
+// Texture and shader bindings are asset references (PPtr), not source file paths.
+class Material : public Object
 {
-    REGISTER_CLASS(MaterialRes)
-    DECLARE_OBJECT_SERIALIZE(MaterialRes)
+    REGISTER_CLASS(Material)
+    DECLARE_OBJECT_SERIALIZE(Material)
 
 public:
-    // PR-SE3a-migrate (shadow phase):
-    //   m_Shader      — legacy by-name reference. KEPT for read-backward-
-    //                   compat: old .zasset files carry this field, and
-    //                   SafeBinaryRead populates it when the on-disk
-    //                   TypeTree has "shader". Also serves as the cheap
-    //                   string accessor so downstream code doesn't need to
-    //                   dereference PPtr on every frame. Always kept in
-    //                   sync with m_ShaderPptr by SetShaderByName().
-    //   m_ShaderGuid — legacy GUID string. Kept for the same read-
-    //                   backward-compat reason; new writes leave it empty.
-    //   m_ShaderPptr — primary reference (PR-SE3a-migrate). When valid,
-    //                   it points at the ShaderRes .zasset in AssetRegistry.
-    //                   When null (old .zasset or built-in "StandardLit"),
-    //                   GetShaderName() falls back to m_Shader.
+    // Built-in / legacy shader name string. Used when m_ShaderPptr is null
+    // (engine shaders such as "StandardLit"). Project shaders resolve via PPtr.
     eastl::string m_Shader {"StandardLit"};
     eastl::string m_ShaderGuid;
     PPtr<ShaderRes> m_ShaderPptr;
+
     std::vector<MaterialFloatProperty> m_FloatProperties;
     std::vector<MaterialColorProperty> m_ColorProperties;
     std::vector<MaterialTextureProperty> m_TextureProperties;
     std::vector<MaterialToggleProperty> m_ToggleProperties;
 
     Vector3 m_BaseColorFactor {1.0f, 1.0f, 1.0f};
-
     float m_AlphaFactor {1.0f};
     float m_MetallicFactor {1.0f};
     float m_RoughnessFactor {1.0f};
@@ -113,38 +100,22 @@ public:
     bool m_IsBlend {false};
     bool m_IsDoubleSided {false};
 
-    eastl::string m_BaseColourTextureFile;
-    eastl::string m_MetallicRoughnessTextureFile;
-    eastl::string m_NormalTextureFile;
-    eastl::string m_OcclusionTextureFile;
-    eastl::string m_EmissiveTextureFile;
-
-    // Texture cook (Phase 5) shadow references. Each PPtr<Texture2D> points at
-    // the cooked Texture2D .zasset for the corresponding *_File above. Shadow
-    // phase (mirrors m_ShaderPptr / PR-SE3a-shadow): written + read for schema
-    // evolution; the path string stays the renderer boundary. When a PPtr is
-    // valid, Get*TextureFile() returns the resolved .zasset path so the cooked
-    // (compressed+mipped) variant is consumed; otherwise it returns the legacy
-    // source-path string. Old .zasset files lack these nodes -> SafeBinaryRead
-    // leaves them null and behaviour is byte-identical.
     PPtr<Texture2D> m_BaseColourTexturePptr;
     PPtr<Texture2D> m_MetallicRoughnessTexturePptr;
     PPtr<Texture2D> m_NormalTexturePptr;
     PPtr<Texture2D> m_OcclusionTexturePptr;
     PPtr<Texture2D> m_EmissiveTexturePptr;
 
-    /// Enabled `#pragma multi_compile` / `shader_feature` keywords for this
-    /// material instance (Inspector toggles). Empty = default variant (no defines).
     std::vector<eastl::string> m_EnabledShaderKeywords;
 
-    // PR-SE3a-migrate accessors
     eastl::string GetShaderName() const;
     void SetShaderByName(const eastl::string& name);
 
-    // Texture cook accessors: return the cooked .zasset path when the matching
-    // PPtr is valid, else the legacy source-path string. The renderer feeds the
-    // result to RenderResourceBase::LoadTexture, which loads a cooked Texture2D
-    // directly when handed a ".zasset" path.
+    // Resolve a Texture2D PPtr to its on-disk .zasset path (project-relative when
+    // possible). Empty when unassigned.
+    static eastl::string ResolveTextureAssetPath(const PPtr<Texture2D>& texture);
+    static bool AssignTextureFromAssetPath(PPtr<Texture2D>& out_texture, const eastl::string& asset_path);
+
     eastl::string GetBaseColourTextureFile() const;
     eastl::string GetMetallicRoughnessTextureFile() const;
     eastl::string GetNormalTextureFile() const;
@@ -154,7 +125,8 @@ public:
     bool IsShaderKeywordEnabled(const eastl::string& keyword) const;
     void SetShaderKeywordEnabled(const eastl::string& keyword, bool enabled);
     void ClearShaderKeywords();
-
-    /// Canonical `k=1;` string for pipeline-cache keys (sorted keywords).
     eastl::string BuildShaderVariantKeyString() const;
 };
+
+// Legacy type name for on-disk .zasset headers written before the Material rename.
+using MaterialRes = Material;

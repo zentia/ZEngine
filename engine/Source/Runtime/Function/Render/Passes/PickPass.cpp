@@ -432,7 +432,7 @@ uint32_t PickPass::Pick(const Vector2& picked_uv)
     // reorganize mesh
     for (RenderMeshNode& node : *(m_VisiableNodes.p_main_camera_visible_mesh_nodes))
     {
-        auto& mesh_instanced = main_camera_mesh_drawcall_batch[AsVulkanMaterialResource(node.ref_material)];
+        auto& mesh_instanced = main_camera_mesh_drawcall_batch[AsVulkanMaterialource(node.ref_material)];
         auto& model_nodes = mesh_instanced[AsVulkanMeshResource(node.ref_mesh)];
 
         MeshNode temp;

@@ -513,6 +513,7 @@ Authoring data uses **text YAML**; DDC-imported data stays **binary `.zasset`**:
 |------|--------|------|
 | Scenes | YAML object graph | `.scene` |
 | Prefabs | YAML object graph | `.prefab` |
+| Materials | YAML object graph | `.mat` |
 | Textures / meshes / animations / etc. | binary `SerializedFile` | `.zasset` |
 
 Full design: **`doc/serialization/TEXT_SERIALIZED_FILE.md`**. Read it before
@@ -1024,26 +1025,25 @@ tree's set, even when it physically lives there:
 
 | Root        | Allowed extensions                                |
 |-------------|---------------------------------------------------|
-| `Assets/`   | `.zasset`, `.json`                                |
+| `Assets/`   | `.zasset`, `.json`, `.scene`, `.prefab`, `.mat` |
 | `Scripts/`  | `.ts`, `.tsx`, `.js`                              |
 | `Shaders/`  | `.hlsl`, `.shader`, `.compute`, `.raytrace`       |
 | `Data/`     | `.csv`, `.xlsx`                                   |
+| `Textures/` | `.png`, `.jpg`, `.jpeg`, `.tga`, `.bmp`          |
+| `Models/`   | `.fbx`, `.obj`, `.gltf`, `.glb`                  |
 
-Source asset files (`.png`, `.fbx`, `.wav`, `.tga`, `.gltf`, `.glb`,
-`.obj`, `.mp3`, ...) are **never** surfaced in the Project window. They
-exist purely as transient inputs to the Import flow, mirroring UE's
-Content Browser policy that source files are invisible to the asset
-registry. Import is the only way they enter the project, and the Import
-flow ALWAYS produces a `.zasset` under `<Project>/Assets/...` (the
-source file itself stays wherever the user picked it from on disk).
+Image and mesh source files surface under `Textures/` and `Models/` (checked
+into VCS). Other source kinds (`.wav`, `.mp3`, ...) remain hidden until they
+get their own top-level root. Source files are **never** surfaced under
+`Assets/` -- only binary products (`.zasset`, scenes, prefabs) appear there.
 
 **Single source of truth for the rules**:
 `engine/Source/Editor/editor_file_service/editor_file_service.cpp`
 function `shouldDisplayInProjectWindow(path, root_label)`. The
 `root_label` parameter is the lower-case identifier that
 `EditorFileService::buildEngineFileTree` passes to `buildRoot()`
-(`"asset"`, `"scripts"`, `"shaders"`, `"data"`). Adding a new top-level
-root means adding a new branch here.
+(`"asset"`, `"scripts"`, `"shaders"`, `"data"`, `"textures"`, `"models"`).
+Adding a new top-level root means adding a new branch here.
 
 **Import product placement (UE rule)**:
 `AssetsMenu::convertAsset(source_path, target_dir)` routes the `.zasset`

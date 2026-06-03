@@ -227,18 +227,18 @@ std::shared_ptr<MaterialPreviewImage> LoadPreviewTextureImage(const eastl::strin
     return cache_entry.image;
 }
 
-MaterialPreviewTextures ResolveMaterialPreviewTextures(const MaterialRes& material)
+MaterialPreviewTextures ResolveMaterialPreviewTextures(const Material& material)
 {
     MaterialPreviewTextures textures;
-    textures.base_color_map = LoadPreviewTextureImage(material.m_BaseColourTextureFile);
-    textures.metallic_roughness_map = LoadPreviewTextureImage(material.m_MetallicRoughnessTextureFile);
-    textures.normal_map = LoadPreviewTextureImage(material.m_NormalTextureFile);
-    textures.occlusion_map = LoadPreviewTextureImage(material.m_OcclusionTextureFile);
-    textures.emission_map = LoadPreviewTextureImage(material.m_EmissiveTextureFile);
+    textures.base_color_map = LoadPreviewTextureImage(material.GetBaseColourTextureFile());
+    textures.metallic_roughness_map = LoadPreviewTextureImage(material.GetMetallicRoughnessTextureFile());
+    textures.normal_map = LoadPreviewTextureImage(material.GetNormalTextureFile());
+    textures.occlusion_map = LoadPreviewTextureImage(material.GetOcclusionTextureFile());
+    textures.emission_map = LoadPreviewTextureImage(material.GetEmissiveTextureFile());
     return textures;
 }
 
-bool UsesLitMaterialPreview(const MaterialRes& material)
+bool UsesLitMaterialPreview(const Material& material)
 {
     return material.GetShaderName().empty() || material.GetShaderName() == "StandardLit";
 }
@@ -266,7 +266,7 @@ MaterialPreviewImageSample SamplePreviewImage(const std::shared_ptr<MaterialPrev
     return sample;
 }
 
-MaterialPreviewSurface EvaluateMaterialPreviewSurface(const MaterialRes& material,
+MaterialPreviewSurface EvaluateMaterialPreviewSurface(const Material& material,
                                                       const MaterialPreviewTextures& textures,
                                                       const MaterialPreviewVertex& vertex)
 {
@@ -449,7 +449,7 @@ MaterialPreviewVertex AveragePreviewVertex(const MaterialPreviewVertex& v0, cons
 }
 
 void AppendMaterialPreviewTriangle(std::vector<MaterialPreviewTriangle>& triangles,
-                                   const MaterialRes& material,
+                                   const Material& material,
                                    const MaterialPreviewTextures& textures,
                                    const MaterialPreviewState& state,
                                    const MaterialPreviewVertex& v0,
@@ -490,7 +490,7 @@ void AppendMaterialPreviewTriangle(std::vector<MaterialPreviewTriangle>& triangl
 }
 
 void AppendSpherePreviewMesh(std::vector<MaterialPreviewTriangle>& triangles,
-                             const MaterialRes& material,
+                             const Material& material,
                              const MaterialPreviewTextures& textures,
                              const MaterialPreviewState& state,
                              float yaw_radians,
@@ -528,7 +528,7 @@ void AppendSpherePreviewMesh(std::vector<MaterialPreviewTriangle>& triangles,
 }
 
 void AppendPlanePreviewMesh(std::vector<MaterialPreviewTriangle>& triangles,
-                            const MaterialRes& material,
+                            const Material& material,
                             const MaterialPreviewTextures& textures,
                             const MaterialPreviewState& state,
                             float yaw_radians,
@@ -558,7 +558,7 @@ void AppendPlanePreviewMesh(std::vector<MaterialPreviewTriangle>& triangles,
 }
 
 void AppendCubePreviewMesh(std::vector<MaterialPreviewTriangle>& triangles,
-                           const MaterialRes& material,
+                           const Material& material,
                            const MaterialPreviewTextures& textures,
                            const MaterialPreviewState& state,
                            float yaw_radians,
@@ -603,7 +603,7 @@ void AppendCubePreviewMesh(std::vector<MaterialPreviewTriangle>& triangles,
     }
 }
 
-std::string BuildMaterialPreviewTextureSummary(const MaterialRes& material, const MaterialPreviewTextures& textures)
+std::string BuildMaterialPreviewTextureSummary(const Material& material, const MaterialPreviewTextures& textures)
 {
     std::string loaded_maps;
     std::string missing_maps;
@@ -627,11 +627,11 @@ std::string BuildMaterialPreviewTextureSummary(const MaterialRes& material, cons
         }
     };
 
-    append_texture_state("Base", material.m_BaseColourTextureFile, textures.base_color_map);
-    append_texture_state("Normal", material.m_NormalTextureFile, textures.normal_map);
-    append_texture_state("MetallicRoughness", material.m_MetallicRoughnessTextureFile, textures.metallic_roughness_map);
-    append_texture_state("Occlusion", material.m_OcclusionTextureFile, textures.occlusion_map);
-    append_texture_state("Emission", material.m_EmissiveTextureFile, textures.emission_map);
+    append_texture_state("Base", material.GetBaseColourTextureFile(), textures.base_color_map);
+    append_texture_state("Normal", material.GetNormalTextureFile(), textures.normal_map);
+    append_texture_state("MetallicRoughness", material.GetMetallicRoughnessTextureFile(), textures.metallic_roughness_map);
+    append_texture_state("Occlusion", material.GetOcclusionTextureFile(), textures.occlusion_map);
+    append_texture_state("Emission", material.GetEmissiveTextureFile(), textures.emission_map);
 
     if (loaded_maps.empty() && missing_maps.empty())
     {
@@ -655,7 +655,7 @@ std::string BuildMaterialPreviewTextureSummary(const MaterialRes& material, cons
     return summary;
 }
 
-uint64_t ComputeMaterialPreviewSignature(const MaterialRes& material, const MaterialPreviewState& state, const Vector2& center, float radius)
+uint64_t ComputeMaterialPreviewSignature(const Material& material, const MaterialPreviewState& state, const Vector2& center, float radius)
 {
     auto hash_combine = [](uint64_t seed, uint64_t value) {
         return seed ^ (value + 0x9e3779b97f4a7c15ULL + (seed << 6) + (seed >> 2));
@@ -688,11 +688,11 @@ uint64_t ComputeMaterialPreviewSignature(const MaterialRes& material, const Mate
     const auto hash_eastl_string = [&](uint64_t seed, const eastl::string& value) {
         return hash_combine(seed, static_cast<uint64_t>(eastl::hash<eastl::string>()(value)));
     };
-    signature = hash_eastl_string(signature, material.m_BaseColourTextureFile);
-    signature = hash_eastl_string(signature, material.m_MetallicRoughnessTextureFile);
-    signature = hash_eastl_string(signature, material.m_NormalTextureFile);
-    signature = hash_eastl_string(signature, material.m_OcclusionTextureFile);
-    signature = hash_eastl_string(signature, material.m_EmissiveTextureFile);
+    signature = hash_eastl_string(signature, material.GetBaseColourTextureFile());
+    signature = hash_eastl_string(signature, material.GetMetallicRoughnessTextureFile());
+    signature = hash_eastl_string(signature, material.GetNormalTextureFile());
+    signature = hash_eastl_string(signature, material.GetOcclusionTextureFile());
+    signature = hash_eastl_string(signature, material.GetEmissiveTextureFile());
 
     if (UsesLitMaterialPreview(material))
     {
@@ -710,7 +710,7 @@ uint64_t ComputeMaterialPreviewSignature(const MaterialRes& material, const Mate
 // bitmap-local pixel space. Mirrors the old ImGui draw order, minus the
 // interactive controls (the native Preview window shows a static view).
 void RenderMaterialBitmap(PreviewRaster& raster,
-                          const MaterialRes& material,
+                          const Material& material,
                           const MaterialPreviewTextures& textures,
                           MaterialPreviewState& state,
                           bool use_lit_shading)
@@ -791,7 +791,7 @@ void RenderMaterialBitmap(PreviewRaster& raster,
 
 }  // namespace
 
-MaterialPreviewResult RenderMaterialPreviewToTexture(const MaterialRes& material, uint32_t pixel_size)
+MaterialPreviewResult RenderMaterialPreviewToTexture(const Material& material, uint32_t pixel_size)
 {
     MaterialPreviewResult result;
     result.pixel_size = pixel_size;

@@ -156,6 +156,7 @@ bool EditorAssetManager::Initialize()
         [this](const std::filesystem::path& p) { OnFileChanged(p); });
     m_FileWatcher.SetOnFileDeleted(
         [this](const std::filesystem::path& p) { OnFileDeleted(p); });
+    m_FileWatcher.SetExtensionFilter({".zasset", ".mat", ".prefab", ".scene"});
     m_FileWatcher.WatchDirectory(projectInfo->GetProjectContent());
 
     // Register asset importers
@@ -408,6 +409,11 @@ EditorAssetManager::GetAssetsByType(const std::string& asset_type, const std::fi
     // of N file-header reads.
     std::vector<std::filesystem::path> indexed = m_AssetRegistry.GetAssetsByTypeAbsolute(asset_type);
 
+    if (indexed.empty() && asset_type == "Material")
+    {
+        indexed = m_AssetRegistry.GetAssetsByTypeAbsolute("MaterialRes");
+    }
+
     if (!indexed.empty() && !search_root.empty())
     {
         // The registry was scanned at the project root (m_WorkingDir),
@@ -522,9 +528,9 @@ bool EditorAssetManager::DeleteAsset(const std::string& asset_path)
     {
         return false;
     }
-    if (abs_path.extension() != ".zasset")
+    if (!AssetManager::IsRegistryIndexedAssetPath(abs_path))
     {
-        LOG_WARNING(ZAsset, "DeleteAsset: not a .zasset path: {}", abs_path.generic_string());
+        LOG_WARNING(ZAsset, "DeleteAsset: not a registry asset path: {}", abs_path.generic_string());
         return false;
     }
 
@@ -582,10 +588,10 @@ bool EditorAssetManager::MoveAsset(const std::string& old_path, const std::strin
     {
         return false;
     }
-    if (old_abs.extension() != ".zasset" || new_abs.extension() != ".zasset")
+    if (!AssetManager::IsRegistryIndexedAssetPath(old_abs) || !AssetManager::IsRegistryIndexedAssetPath(new_abs))
     {
         LOG_WARNING(ZAsset,
-                    "MoveAsset: both paths must be .zasset ({} -> {})",
+                    "MoveAsset: both paths must be registry assets ({} -> {})",
                     old_abs.generic_string(),
                     new_abs.generic_string());
         return false;

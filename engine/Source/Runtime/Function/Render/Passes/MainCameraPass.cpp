@@ -3375,7 +3375,7 @@ void MainCameraPass::DrawMeshGbuffer(ViewportType viewport_type)
     for (const RenderMeshNode& node : main_camera_visible_mesh_nodes)
 
     {
-        auto& mesh_instanced = main_camera_mesh_drawcall_batch[AsVulkanMaterialResource(node.ref_material)];
+        auto& mesh_instanced = main_camera_mesh_drawcall_batch[AsVulkanMaterialource(node.ref_material)];
         auto& mesh_nodes = mesh_instanced[AsVulkanMeshResource(node.ref_mesh)];
 
         MeshNode temp;
@@ -3603,7 +3603,7 @@ void MainCameraPass::DrawMeshTransparent(ViewportType viewport_type)
     // reorganize mesh
     for (const RenderMeshNode& node : main_camera_transparent_mesh_nodes)
     {
-        auto& mesh_instanced = main_camera_mesh_drawcall_batch[AsVulkanMaterialResource(node.ref_material)];
+        auto& mesh_instanced = main_camera_mesh_drawcall_batch[AsVulkanMaterialource(node.ref_material)];
         auto& mesh_nodes = mesh_instanced[AsVulkanMeshResource(node.ref_mesh)];
 
         MeshNode temp;

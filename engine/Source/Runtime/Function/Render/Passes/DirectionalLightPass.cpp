@@ -911,7 +911,7 @@ void DirectionalLightShadowPass::DrawModel()
     {
         for (const RenderMeshNode& node : *visible_nodes)
         {
-            auto& mesh_instanced = directional_light_mesh_drawcall_batch[AsVulkanMaterialResource(node.ref_material)];
+            auto& mesh_instanced = directional_light_mesh_drawcall_batch[AsVulkanMaterialource(node.ref_material)];
             auto& mesh_nodes = mesh_instanced[AsVulkanMeshResource(node.ref_mesh)];
 
             MeshNode temp;

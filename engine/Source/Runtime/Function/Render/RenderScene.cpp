@@ -288,7 +288,7 @@ RenderEntity RenderScene::BuildRenderEntity(std::shared_ptr<RHI> rhi,
 
     render_entity.m_Blend = game_object_part.m_MaterialDesc.m_IsBlend;
     render_entity.m_DoubleSided = game_object_part.m_MaterialDesc.m_IsDoubleSided;
-    // Built-in texture fallback (no project MaterialRes): always render both faces.
+    // Built-in texture fallback (no project Material): always render both faces.
     if (!game_object_part.m_MaterialDesc.m_WithTexture)
     {
         render_entity.m_DoubleSided = true;
@@ -644,7 +644,7 @@ void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource>
         visible_mesh_nodes.emplace_back(temp_node);
 
 #if defined(Z_HAS_VULKAN)
-        VulkanPBRMaterial* vulkan_material = AsVulkanMaterialResource(temp_node.ref_material);
+        VulkanPBRMaterial* vulkan_material = AsVulkanMaterialource(temp_node.ref_material);
         if (vulkan_material != nullptr && ShouldRenderTransparent(entity, *vulkan_material))
         {
             transparent_mesh_nodes.emplace_back(temp_node);

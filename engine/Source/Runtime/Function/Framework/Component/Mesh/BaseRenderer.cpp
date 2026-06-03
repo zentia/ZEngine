@@ -50,7 +50,7 @@ namespace
 
         const std::filesystem::path material_path = GET_SYSTEM(AssetManager)->GetFullPath(material_asset);
         const std::string material_path_string = material_path.generic_string();
-        MaterialRes* material_res = GET_SYSTEM(AssetManager)->loadAsset<MaterialRes>(material_asset);
+        Material* material_res = GET_SYSTEM(AssetManager)->loadAsset<Material>(material_asset);
         if (material_res == nullptr)
         {
             LOG_WARNING(ZRender,

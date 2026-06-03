@@ -101,7 +101,7 @@ namespace ProjectWindowHelpers
         }
         std::string extension = std::filesystem::path(node->m_FilePath.c_str()).extension().generic_string();
         std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return extension == ".zasset";
+        return extension == ".zasset" || extension == ".mat" || extension == ".prefab" || extension == ".scene";
     }
 
     std::filesystem::path NormalizeProjectPath(const std::filesystem::path& path)
@@ -207,7 +207,8 @@ namespace ProjectWindowHelpers
         };
 
         return is_same_root(project_info->GetProjectContent()) || is_same_root(project_info->GetScriptsRoot()) ||
-               is_same_root(project_info->GetShadersRoot()) || is_same_root(project_info->GetDataRoot());
+               is_same_root(project_info->GetShadersRoot()) || is_same_root(project_info->GetDataRoot()) ||
+               is_same_root(project_info->GetTexturesRoot()) || is_same_root(project_info->GetModelsRoot());
     }
 
     void UnloadAssetStreamsUnderPath(const std::filesystem::path& target_path)

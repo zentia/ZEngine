@@ -87,7 +87,78 @@ namespace
         return ToHex64(hi) + ToHex64(lo);
     }
 
+    std::string LowerExtension(const std::filesystem::path& path)
+    {
+        std::string extension = path.extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return extension;
+    }
+
+    bool IsYamlAuthoringAssetExtension(const std::string& extension)
+    {
+        return extension == ".mat" || extension == ".prefab" || extension == ".scene";
+    }
+
+    bool IsRegistryIndexedAssetExtension(const std::string& extension)
+    {
+        return extension == ".zasset" || IsYamlAuthoringAssetExtension(extension);
+    }
+
+    std::string ReadTextFile(const std::filesystem::path& path)
+    {
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+        {
+            return {};
+        }
+        return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    }
+
+    ZYaml::GraphReaderExternHook MakeYamlReaderHook(AssetManager* self)
+    {
+        return [self](const FileIdentifier& ref, int64_t pathID) -> int32_t {
+            std::filesystem::path target_path;
+            if (!ref.pathName.empty())
+            {
+                std::error_code ec;
+                std::filesystem::path candidate(ref.pathName);
+                if (std::filesystem::exists(candidate, ec))
+                {
+                    target_path = std::move(candidate);
+                }
+            }
+            if (target_path.empty() && !ref.guid.empty())
+            {
+                std::filesystem::path resolved;
+                if (self->TryGetPathForGuid(ref.guid, resolved))
+                {
+                    target_path = std::move(resolved);
+                }
+            }
+            if (target_path.empty())
+            {
+                return 0;
+            }
+            return self->GetInstanceIDFromPathAndFileID(target_path, pathID);
+        };
+    }
+
 }  // anonymous namespace
+
+bool AssetManager::IsYamlAuthoringAssetPath(const std::filesystem::path& path)
+{
+    return IsYamlAuthoringAssetExtension(LowerExtension(path));
+}
+
+bool AssetManager::IsRegistryIndexedAssetPath(const std::filesystem::path& path)
+{
+    return IsRegistryIndexedAssetExtension(LowerExtension(path));
+}
+
+std::string AssetManager::DeriveDeterministicAssetGuid(const std::filesystem::path& absolute_path)
+{
+    return DeterministicGuidFromPath(absolute_path);
+}
 
 namespace
 {
@@ -183,6 +254,21 @@ std::string AssetManager::GetAssetTypeName(const std::filesystem::path& asset_pa
         return {};
     }
 
+    if (IsYamlAuthoringAssetPath(asset_path))
+    {
+        const std::string text = ReadTextFile(asset_path);
+        if (text.empty())
+        {
+            return {};
+        }
+        eastl::string type_name;
+        if (!ZYaml::PeekPrimaryObjectType(text.c_str(), 1, type_name))
+        {
+            return {};
+        }
+        return type_name.c_str();
+    }
+
     SerializedFile* serialized_file = MemoryManager::CreateObject<SerializedFile>();
     if (serialized_file->InitializeRead(asset_path, kCacheSize) != kSerializedFileLoadError_None)
     {
@@ -233,7 +319,12 @@ AssetManager::GetAssetsByType(const std::string& asset_type, const std::filesyst
         {
             break;
         }
-        if (!entry.is_regular_file() || entry.path().extension() != ".zasset")
+        if (!entry.is_regular_file())
+        {
+            continue;
+        }
+        const std::string extension = LowerExtension(entry.path());
+        if (!IsRegistryIndexedAssetExtension(extension))
         {
             continue;
         }
@@ -271,6 +362,17 @@ Object* AssetManager::ReadObject(int32_t instanceID)
     std::error_code ec;
     if (!std::filesystem::exists(asset_path, ec))
         return nullptr;
+
+    if (IsYamlAuthoringAssetPath(asset_path))
+    {
+        const std::string type_name = GetAssetTypeName(asset_path);
+        if (type_name.empty())
+            return nullptr;
+        const Type* resolved_type = TypeManager::GetInstance().ClassNameToType(type_name.c_str());
+        if (resolved_type == nullptr)
+            return nullptr;
+        return ReadObject(asset_path, resolved_type);
+    }
 
     // Discover the persistent type stamped inside the .zasset so we
     // can ask TypeManager for the right Type* without needing the
@@ -340,6 +442,13 @@ void AssetManager::GetAssetGuidAndType(const std::filesystem::path& asset_path,
 
     if (asset_path.empty() || !std::filesystem::exists(asset_path))
         return;
+
+    if (IsYamlAuthoringAssetPath(asset_path))
+    {
+        outGuid = DeriveDeterministicAssetGuid(asset_path);
+        outAssetType = GetAssetTypeName(asset_path);
+        return;
+    }
 
     SerializedFile* serialized_file = MemoryManager::CreateObject<SerializedFile>();
     if (serialized_file->InitializeRead(asset_path, kCacheSize) != kSerializedFileLoadError_None)
@@ -568,6 +677,23 @@ Object* AssetManager::ReadObject(std::filesystem::path& path, const Type* type)
             return cached;
     }
 
+    if (IsYamlAuthoringAssetPath(path))
+    {
+        Object* obj = GET_SYSTEM(ObjectManager)->Produce(type, cached_id);
+        if (obj == nullptr)
+        {
+            return nullptr;
+        }
+
+        const std::string text = ReadTextFile(path);
+        if (text.empty() || !ZYaml::ReadSingleObjectFromGraph(text.c_str(), 1, obj, MakeYamlReaderHook(this)))
+        {
+            MemoryManager::DestroyObject(obj);
+            return nullptr;
+        }
+        return obj;
+    }
+
     CachedReader reader;
 
     FileCacherRead serializedFileReader(path, kCacheSize);
@@ -765,26 +891,7 @@ bool AssetManager::ReadObjectsFromYaml(const std::filesystem::path& path, std::v
     // Same reader hook as the binary ReadObject path: map an external
     // (guid/path, pathID) reference back to a runtime InstanceID (lazily).
     AssetManager* self = this;
-    auto readerHook = [self](const FileIdentifier& ref, int64_t pathID) -> int32_t {
-        std::filesystem::path target_path;
-        if (!ref.pathName.empty())
-        {
-            std::error_code ec;
-            std::filesystem::path candidate(ref.pathName);
-            if (std::filesystem::exists(candidate, ec))
-                target_path = std::move(candidate);
-        }
-        if (target_path.empty() && !ref.guid.empty())
-        {
-            std::filesystem::path resolved;
-            if (self->TryGetPathForGuid(ref.guid, resolved))
-                target_path = std::move(resolved);
-        }
-        if (target_path.empty())
-            return 0;
-
-        return self->GetInstanceIDFromPathAndFileID(target_path, pathID);
-    };
+    auto readerHook = MakeYamlReaderHook(self);
 
     std::vector<ZYaml::ObjectGraphEntry> entries;
     if (!ZYaml::ReadObjectGraph(text.c_str(), entries, std::move(readerHook)))
@@ -798,6 +905,11 @@ bool AssetManager::ReadObjectsFromYaml(const std::filesystem::path& path, std::v
 
 bool AssetManager::WriteObjectsToDiskThreadSafe(const std::filesystem::path& path, Object** objects, const int64_t* identifiers, size_t count, TransferInstructionFlags transferFlags)
 {
+    if (IsYamlAuthoringAssetPath(path))
+    {
+        return WriteObjectsToYaml(path, objects, identifiers, count);
+    }
+
     int serializedFileIndex = GET_SYSTEM(AssetManager)->GetSerializedFileIndexFromPath(path);
     if (serializedFileIndex == -1)
         return false;

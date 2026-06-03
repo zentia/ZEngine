@@ -137,6 +137,15 @@ void TypeManager::RegisterType(const TypeRegistrationDesc& desc)
         m_ClassNameStringToType[destination.className] = &destination;
 }
 
+void TypeManager::RegisterClassNameAlias(const char* alias, const Type* type)
+{
+    if (alias == nullptr || alias[0] == '\0' || type == nullptr)
+    {
+        return;
+    }
+    m_ClassNameStringToType[alias] = type;
+}
+
 void TypeManager::FindAllDerivedTypes(const Type* baseType, std::vector<const Type*>& derivedTypes, bool onlyNonAbstrace) const
 {
     const uint32_t typeIndexBegin = baseType->derivedFromInfo.typeIndex;

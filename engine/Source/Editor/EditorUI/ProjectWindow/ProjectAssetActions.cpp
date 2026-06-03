@@ -147,7 +147,7 @@ namespace
         return property_desc;
     }
 
-    bool applyMaterialCompatibilityDefault(MaterialRes& material, const ShaderPropertyDesc& property_desc)
+    bool applyMaterialCompatibilityDefault(Material& material, const ShaderPropertyDesc& property_desc)
     {
         const std::string property_key = normalizeShaderPropertyKey(property_desc.m_Name.c_str());
         const std::string property_type = normalizeShaderPropertyType(property_desc.m_Type);
@@ -195,34 +195,34 @@ namespace
         }
         if (matchesShaderPropertyKey(property_key, {"basemap", "maintex", "albedomap"}))
         {
-            material.m_BaseColourTextureFile = property_desc.m_DefaultTexture;
+            Material::AssignTextureFromAssetPath(material.m_BaseColourTexturePptr, property_desc.m_DefaultTexture);
             return true;
         }
         if (matchesShaderPropertyKey(property_key, {"metallicroughnessmap", "metallicmap"}))
         {
-            material.m_MetallicRoughnessTextureFile = property_desc.m_DefaultTexture;
+            Material::AssignTextureFromAssetPath(material.m_MetallicRoughnessTexturePptr, property_desc.m_DefaultTexture);
             return true;
         }
         if (matchesShaderPropertyKey(property_key, {"normalmap"}))
         {
-            material.m_NormalTextureFile = property_desc.m_DefaultTexture;
+            Material::AssignTextureFromAssetPath(material.m_NormalTexturePptr, property_desc.m_DefaultTexture);
             return true;
         }
         if (matchesShaderPropertyKey(property_key, {"occlusionmap", "aomap"}))
         {
-            material.m_OcclusionTextureFile = property_desc.m_DefaultTexture;
+            Material::AssignTextureFromAssetPath(material.m_OcclusionTexturePptr, property_desc.m_DefaultTexture);
             return true;
         }
         if (matchesShaderPropertyKey(property_key, {"emissionmap", "emissivemap"}))
         {
-            material.m_EmissiveTextureFile = property_desc.m_DefaultTexture;
+            Material::AssignTextureFromAssetPath(material.m_EmissiveTexturePptr, property_desc.m_DefaultTexture);
             return true;
         }
 
         return false;
     }
 
-    void appendMaterialPropertyDefault(MaterialRes& material, const ShaderPropertyDesc& property_desc)
+    void appendMaterialPropertyDefault(Material& material, const ShaderPropertyDesc& property_desc)
     {
         if (property_desc.m_Name.empty())
         {
@@ -249,7 +249,7 @@ namespace
         {
             MaterialTextureProperty property;
             property.m_Name = property_desc.m_Name;
-            property.m_TextureFile = property_desc.m_DefaultTexture;
+            Material::AssignTextureFromAssetPath(property.m_Texture, property_desc.m_DefaultTexture);
             material.m_TextureProperties.push_back(property);
             return;
         }
@@ -269,7 +269,7 @@ namespace
         material.m_FloatProperties.push_back(property);
     }
 
-    void initializeMaterialDefaultsFromShader(MaterialRes& material, const std::vector<ShaderPropertyDesc>& properties)
+    void initializeMaterialDefaultsFromShader(Material& material, const std::vector<ShaderPropertyDesc>& properties)
     {
         material.m_FloatProperties.clear();
         material.m_ColorProperties.clear();
@@ -327,11 +327,11 @@ namespace
     {
         const std::string material_base_name = "New Material";
 
-        std::filesystem::path candidate_path = folder_path / (material_base_name + ".zasset");
+        std::filesystem::path candidate_path = folder_path / (material_base_name + ".mat");
         int counter = 1;
         while (std::filesystem::exists(candidate_path))
         {
-            candidate_path = folder_path / (material_base_name + " " + std::to_string(counter) + ".zasset");
+            candidate_path = folder_path / (material_base_name + " " + std::to_string(counter) + ".mat");
             ++counter;
         }
         return candidate_path;
@@ -415,9 +415,9 @@ namespace
                                            "}\n";
     }
 
-    bool ensureMaterialResTypeReady()
+    bool ensureMaterialTypeReady()
     {
-        Type* material_type = const_cast<Type*>(TypeOf<MaterialRes>());
+        Type* material_type = const_cast<Type*>(TypeOf<Material>());
         if (material_type == nullptr)
         {
             return false;
@@ -425,7 +425,7 @@ namespace
 
         if (material_type->GetFactory() == nullptr || std::strcmp(material_type->GetName(), "[UNREGISTERED]") == 0)
         {
-            RegisterKlass<MaterialRes>();
+            RegisterKlass<Material>();
         }
 
         if (material_type->GetFactory() == nullptr)
@@ -478,13 +478,13 @@ namespace
             return;
         }
 
-        if (!ensureMaterialResTypeReady())
+        if (!ensureMaterialTypeReady())
         {
             LOG_ERROR(ZEditor, "material type is not registered for shader material creation {}", shader_path.generic_string());
             return;
         }
 
-        MaterialRes* material = MemoryManager::CreateObject<MaterialRes>();
+        Material* material = MemoryManager::CreateObject<Material>();
         if (material == nullptr)
         {
             LOG_ERROR(ZEditor, "failed to allocate material asset for shader {}", shader_path.generic_string());
@@ -509,8 +509,8 @@ namespace
             return;
         }
 
-        MaterialRes* saved_material =
-            GET_SYSTEM(AssetManager)->ReadObject<MaterialRes>(const_cast<std::filesystem::path&>(material_path));
+        Material* saved_material =
+            GET_SYSTEM(AssetManager)->ReadObject<Material>(const_cast<std::filesystem::path&>(material_path));
         if (saved_material != nullptr)
         {
             saved_material->SetShaderByName(shader_name);
@@ -701,7 +701,7 @@ namespace ProjectAssetActions
             error_code.clear();
             removed = std::filesystem::remove_all(target_path, error_code) > 0;
         }
-        else if (target_path.extension() == ".zasset")
+        else if (AssetManager::IsRegistryIndexedAssetPath(target_path))
         {
             auto editor_assets = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
             if (editor_assets != nullptr)
@@ -725,7 +725,7 @@ namespace ProjectAssetActions
         if (!removed || error_code)
         {
             const char* detail = error_code ? error_code.message().c_str() : "operation failed";
-            if (!error_code && target_path.extension() == ".zasset")
+            if (!error_code && AssetManager::IsRegistryIndexedAssetPath(target_path))
             {
                 detail = "delete blocked or failed (check ZAsset log for referencers)";
             }
@@ -942,7 +942,7 @@ namespace ProjectAssetActions
         }
 
         bool renamed = false;
-        if (!was_directory && old_path.extension() == ".zasset")
+        if (!was_directory && AssetManager::IsRegistryIndexedAssetPath(old_path))
         {
             auto editor_assets = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
             if (editor_assets != nullptr)
@@ -1102,7 +1102,7 @@ namespace ProjectAssetActions
         }
         else if (asset_type == "Material")
         {
-            extension = ".zasset";
+            extension = ".mat";
             base_name = "New Material";
         }
         else if (asset_type == "Shader")
@@ -1144,13 +1144,13 @@ namespace ProjectAssetActions
         }
         else if (asset_type == "Material")
         {
-            if (!ensureMaterialResTypeReady())
+            if (!ensureMaterialTypeReady())
             {
                 LOG_ERROR(ZEditor, "material type is not registered for asset creation {}", new_file_path.generic_string());
                 return;
             }
 
-            MaterialRes* material = MemoryManager::CreateObject<MaterialRes>();
+            Material* material = MemoryManager::CreateObject<Material>();
             const bool material_created = material != nullptr &&
                                           GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(new_file_path, *material) &&
                                           std::filesystem::exists(new_file_path);

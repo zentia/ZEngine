@@ -789,7 +789,7 @@ void CollectShaderLabKeywords(const std::shared_ptr<ZEngine::ShaderLab::ShaderLa
         return file_path.stem().generic_string() == shader_name.c_str();
     }
 
-    eastl::string GetMaterialAuthoringShaderName(const MaterialRes& material)
+    eastl::string GetMaterialAuthoringShaderName(const Material& material)
     {
         if (!material.m_Shader.empty())
         {
@@ -829,7 +829,7 @@ void CollectShaderLabKeywords(const std::shared_ptr<ZEngine::ShaderLab::ShaderLa
         return std::filesystem::exists(source_abs, source_ec) && !source_ec;
     }
 
-    void SanitizeMaterialShaderBindingForInspector(MaterialRes& material)
+    void SanitizeMaterialShaderBindingForInspector(Material& material)
     {
         const eastl::string authoring_name = GetMaterialAuthoringShaderName(material);
 
@@ -1212,7 +1212,7 @@ void CopyShaderAssetForInspector(ShaderRes& destination, const ShaderRes& source
     destination.m_EnableMetal = source.m_EnableMetal;
 }
 
-MaterialFloatProperty* FindMaterialFloatProperty(MaterialRes& material, const eastl::string& property_name)
+MaterialFloatProperty* FindMaterialFloatProperty(Material& material, const eastl::string& property_name)
 {
     for (MaterialFloatProperty& property : material.m_FloatProperties)
     {
@@ -1224,7 +1224,7 @@ MaterialFloatProperty* FindMaterialFloatProperty(MaterialRes& material, const ea
     return nullptr;
 }
 
-MaterialColorProperty* FindMaterialColorProperty(MaterialRes& material, const eastl::string& property_name)
+MaterialColorProperty* FindMaterialColorProperty(Material& material, const eastl::string& property_name)
 {
     for (MaterialColorProperty& property : material.m_ColorProperties)
     {
@@ -1236,7 +1236,7 @@ MaterialColorProperty* FindMaterialColorProperty(MaterialRes& material, const ea
     return nullptr;
 }
 
-MaterialTextureProperty* FindMaterialTextureProperty(MaterialRes& material, const eastl::string& property_name)
+MaterialTextureProperty* FindMaterialTextureProperty(Material& material, const eastl::string& property_name)
 {
     for (MaterialTextureProperty& property : material.m_TextureProperties)
     {
@@ -1248,7 +1248,7 @@ MaterialTextureProperty* FindMaterialTextureProperty(MaterialRes& material, cons
     return nullptr;
 }
 
-MaterialToggleProperty* FindMaterialToggleProperty(MaterialRes& material, const eastl::string& property_name)
+MaterialToggleProperty* FindMaterialToggleProperty(Material& material, const eastl::string& property_name)
 {
     for (MaterialToggleProperty& property : material.m_ToggleProperties)
     {
@@ -1260,7 +1260,7 @@ MaterialToggleProperty* FindMaterialToggleProperty(MaterialRes& material, const 
     return nullptr;
 }
 
-MaterialFloatProperty& GetOrCreateMaterialFloatProperty(MaterialRes& material, const ShaderPropertyDesc& property_desc, bool& created)
+MaterialFloatProperty& GetOrCreateMaterialFloatProperty(Material& material, const ShaderPropertyDesc& property_desc, bool& created)
 {
     if (MaterialFloatProperty* property = FindMaterialFloatProperty(material, property_desc.m_Name))
     {
@@ -1275,7 +1275,7 @@ MaterialFloatProperty& GetOrCreateMaterialFloatProperty(MaterialRes& material, c
     return material.m_FloatProperties.back();
 }
 
-MaterialColorProperty& GetOrCreateMaterialColorProperty(MaterialRes& material, const ShaderPropertyDesc& property_desc, bool& created)
+MaterialColorProperty& GetOrCreateMaterialColorProperty(Material& material, const ShaderPropertyDesc& property_desc, bool& created)
 {
     if (MaterialColorProperty* property = FindMaterialColorProperty(material, property_desc.m_Name))
     {
@@ -1291,7 +1291,7 @@ MaterialColorProperty& GetOrCreateMaterialColorProperty(MaterialRes& material, c
     return material.m_ColorProperties.back();
 }
 
-MaterialTextureProperty& GetOrCreateMaterialTextureProperty(MaterialRes& material, const ShaderPropertyDesc& property_desc, bool& created)
+MaterialTextureProperty& GetOrCreateMaterialTextureProperty(Material& material, const ShaderPropertyDesc& property_desc, bool& created)
 {
     if (MaterialTextureProperty* property = FindMaterialTextureProperty(material, property_desc.m_Name))
     {
@@ -1301,12 +1301,12 @@ MaterialTextureProperty& GetOrCreateMaterialTextureProperty(MaterialRes& materia
     created = true;
     MaterialTextureProperty property;
     property.m_Name = property_desc.m_Name;
-    property.m_TextureFile = property_desc.m_DefaultTexture;
+    Material::AssignTextureFromAssetPath(property.m_Texture, property_desc.m_DefaultTexture);
     material.m_TextureProperties.push_back(property);
     return material.m_TextureProperties.back();
 }
 
-MaterialToggleProperty& GetOrCreateMaterialToggleProperty(MaterialRes& material, const ShaderPropertyDesc& property_desc, bool& created)
+MaterialToggleProperty& GetOrCreateMaterialToggleProperty(Material& material, const ShaderPropertyDesc& property_desc, bool& created)
 {
     if (MaterialToggleProperty* property = FindMaterialToggleProperty(material, property_desc.m_Name))
     {
@@ -1357,7 +1357,7 @@ std::filesystem::path ResolveShaderLabSourcePathForVariants(const eastl::string&
 
 // --- UI-agnostic material property enumeration (native ZSlate inspector) -----
 
-std::vector<MaterialInspectorRow> EnumerateBuiltInMaterialRows(MaterialRes& material)
+std::vector<MaterialInspectorRow> EnumerateBuiltInMaterialRows(Material& material)
 {
     std::vector<MaterialInspectorRow> rows;
 
@@ -1393,6 +1393,14 @@ std::vector<MaterialInspectorRow> EnumerateBuiltInMaterialRows(MaterialRes& mate
         rows.push_back(r);
     };
 
+    auto add_tex = [&](const char* label, PPtr<Texture2D>* t) {
+        MaterialInspectorRow r;
+        r.kind = MaterialInspectorRowKind::Texture;
+        r.label = label;
+        r.texture = t;
+        rows.push_back(r);
+    };
+
     add_color("Base Color", &material.m_BaseColorFactor, &material.m_AlphaFactor);
     add_float("Metallic", &material.m_MetallicFactor, 0.0f, 1.0f);
     add_float("Roughness", &material.m_RoughnessFactor, 0.0f, 1.0f);
@@ -1401,15 +1409,15 @@ std::vector<MaterialInspectorRow> EnumerateBuiltInMaterialRows(MaterialRes& mate
     add_color("Emission", &material.m_EmissiveFactor, nullptr);
     add_bool("Transparent", &material.m_IsBlend);
     add_bool("Double Sided", &material.m_IsDoubleSided);
-    add_str("Base Map", &material.m_BaseColourTextureFile);
-    add_str("Metallic/Roughness", &material.m_MetallicRoughnessTextureFile);
-    add_str("Normal Map", &material.m_NormalTextureFile);
-    add_str("Occlusion Map", &material.m_OcclusionTextureFile);
-    add_str("Emission Map", &material.m_EmissiveTextureFile);
+    add_tex("Base Map", &material.m_BaseColourTexturePptr);
+    add_tex("Metallic/Roughness", &material.m_MetallicRoughnessTexturePptr);
+    add_tex("Normal Map", &material.m_NormalTexturePptr);
+    add_tex("Occlusion Map", &material.m_OcclusionTexturePptr);
+    add_tex("Emission Map", &material.m_EmissiveTexturePptr);
     return rows;
 }
 
-std::vector<MaterialInspectorRow> EnumerateShaderMaterialRows(MaterialRes& material,
+std::vector<MaterialInspectorRow> EnumerateShaderMaterialRows(Material& material,
                                                               const ShaderRes& shader,
                                                               bool& out_created)
 {
@@ -1448,9 +1456,9 @@ std::vector<MaterialInspectorRow> EnumerateShaderMaterialRows(MaterialRes& mater
             row.kind = MaterialInspectorRowKind::Bool;
             row.boolean = b;
         };
-        auto as_str = [&](eastl::string* s) {
-            row.kind = MaterialInspectorRowKind::String;
-            row.str = s;
+        auto as_tex = [&](PPtr<Texture2D>* t) {
+            row.kind = MaterialInspectorRowKind::Texture;
+            row.texture = t;
         };
 
         if (MatchesPropertyKey(key, {"basecolor", "color", "albedo"}) && type == "color")
@@ -1470,15 +1478,15 @@ std::vector<MaterialInspectorRow> EnumerateShaderMaterialRows(MaterialRes& mater
         else if (MatchesPropertyKey(key, {"doublesided", "isdoublesided"}))
             as_bool(&material.m_IsDoubleSided);
         else if (MatchesPropertyKey(key, {"basemap", "maintex", "albedomap"}))
-            as_str(&material.m_BaseColourTextureFile);
+            as_tex(&material.m_BaseColourTexturePptr);
         else if (MatchesPropertyKey(key, {"metallicroughnessmap", "metallicmap"}))
-            as_str(&material.m_MetallicRoughnessTextureFile);
+            as_tex(&material.m_MetallicRoughnessTexturePptr);
         else if (MatchesPropertyKey(key, {"normalmap"}))
-            as_str(&material.m_NormalTextureFile);
+            as_tex(&material.m_NormalTexturePptr);
         else if (MatchesPropertyKey(key, {"occlusionmap", "aomap"}))
-            as_str(&material.m_OcclusionTextureFile);
+            as_tex(&material.m_OcclusionTexturePptr);
         else if (MatchesPropertyKey(key, {"emissionmap", "emissivemap"}))
-            as_str(&material.m_EmissiveTextureFile);
+            as_tex(&material.m_EmissiveTexturePptr);
         else if (type == "color")
         {
             bool created = false;
@@ -1491,7 +1499,7 @@ std::vector<MaterialInspectorRow> EnumerateShaderMaterialRows(MaterialRes& mater
             bool created = false;
             MaterialTextureProperty& p = GetOrCreateMaterialTextureProperty(material, pd, created);
             out_created = out_created || created;
-            as_str(&p.m_TextureFile);
+            as_tex(&p.m_Texture);
         }
         else if (type == "toggle" || type == "bool")
         {
@@ -2040,12 +2048,12 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidget(const std::filesyste
     return InspectorShaderDetail::BuildShaderInspectorWidgetImpl(asset_path, scale, request_rebuild);
 }
 
-std::vector<MaterialInspectorRow> EnumerateBuiltInMaterialRows(MaterialRes& material)
+std::vector<MaterialInspectorRow> EnumerateBuiltInMaterialRows(Material& material)
 {
     return InspectorShaderDetail::EnumerateBuiltInMaterialRows(material);
 }
 
-std::vector<MaterialInspectorRow> EnumerateShaderMaterialRows(MaterialRes& material,
+std::vector<MaterialInspectorRow> EnumerateShaderMaterialRows(Material& material,
                                                               const ShaderRes& shader,
                                                               bool& out_created)
 {
@@ -2070,7 +2078,7 @@ std::vector<eastl::string> FindProjectShaders()
     return InspectorShaderDetail::FindProjectShaders();
 }
 
-void SanitizeMaterialShaderBindingForInspector(MaterialRes& material)
+void SanitizeMaterialShaderBindingForInspector(Material& material)
 {
     InspectorShaderDetail::SanitizeMaterialShaderBindingForInspector(material);
 }
@@ -2085,7 +2093,7 @@ void SyncLegacyShaderFieldsFromPrimaryPass(ShaderRes& shader)
     InspectorShaderDetail::SyncLegacyShaderFieldsFromPrimaryPass(shader);
 }
 
-eastl::string GetMaterialAuthoringShaderName(const MaterialRes& material)
+eastl::string GetMaterialAuthoringShaderName(const Material& material)
 {
     return InspectorShaderDetail::GetMaterialAuthoringShaderName(material);
 }

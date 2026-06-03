@@ -7,8 +7,8 @@ as human-readable, diff-friendly YAML, while DDC-imported assets (textures,
 meshes, animations, ...) stay binary `.zasset`.
 
 ```
-Authoring data (scene / prefab)   -> YAML   (.scene / .prefab)   text, VCS-friendly
-Imported data (texture/mesh/anim) -> binary (.zasset)           SerializedFile
+Authoring data (scene / prefab / material)   -> YAML   (.scene / .prefab / .mat)   text, VCS-friendly
+Imported data (texture/mesh/anim)            -> binary (.zasset)                    SerializedFile
 ```
 
 This mirrors Unity's split: `.unity` / `.prefab` are YAML; imported assets are

@@ -13,7 +13,7 @@
 //     directly from the source `.png`.
 //
 //   * Route B (this file) replaces that path with the engine's working
-//     SerializedFile-based pipeline, the same one PrefabAsset / MaterialRes /
+//     SerializedFile-based pipeline, the same one PrefabAsset / Material /
 //     XlsxImporter use:
 //
 //         RHIImage <-- (lazy upload at preview time, owned by consumer)
@@ -656,7 +656,7 @@ bool TextureImporter::Import(const std::filesystem::path& source_path,
     // --- 3. Construct Texture2D and copy pixels in --------------------------
     // We MUST go through ObjectManager::Produce -- direct `new Texture2D` is
     // illegal because ObjectManager owns InstanceID assignment / lifetime
-    // bookkeeping (mirrors xlsx_importer / project_window's MaterialRes
+    // bookkeeping (mirrors xlsx_importer / project_window's Material
     // creation paths).
     auto* object_manager = GET_SYSTEM(ObjectManager).get();
     if (object_manager == nullptr)
@@ -680,7 +680,7 @@ bool TextureImporter::Import(const std::filesystem::path& source_path,
     texture->m_MipOffsets = std::move(cooked.mip_offsets);
 
     // --- 4. Serialise to .zasset via the working SerializedFile pipeline ----
-    // This is the same path PrefabAsset / MaterialRes / XlsxImporter use --
+    // This is the same path PrefabAsset / Material / XlsxImporter use --
     // see PrefabUtility::SaveAsPrefab and project_window.cpp's
     // material-from-shader code. WriteObjectToDiskThreadSafe writes a single
     // top-level Object to a fresh `.zasset` file; the SerializedFile header

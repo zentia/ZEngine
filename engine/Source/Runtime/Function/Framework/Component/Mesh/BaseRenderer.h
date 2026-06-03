@@ -20,7 +20,7 @@ public:
     void SetSharedMaterialAssets(const std::vector<eastl::string>& shared_material_assets);
 
     // Editor mesh placement / foliage: force no back-face cull even when the bound
-    // MaterialRes has is_double_sided=false. Not serialized.
+    // Material has is_double_sided=false. Not serialized.
     void SetForceDoubleSided(bool force) { m_ForceDoubleSided = force; }
     bool GetForceDoubleSided() const { return m_ForceDoubleSided; }
 

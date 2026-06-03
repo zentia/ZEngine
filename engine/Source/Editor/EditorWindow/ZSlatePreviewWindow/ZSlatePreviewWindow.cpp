@@ -259,7 +259,7 @@ void ZSlatePreviewWindow::BuildMaterial(const std::filesystem::path& asset_path,
         return;
     }
 
-    MaterialRes material;
+    Material material;
     if (!LoadMaterialDefinitionForInspector(material, asset_path))
     {
         column->AddSlot(MakeText("Unable to load material asset.", 14.0f * scale, kDimColor)).AutoSize();

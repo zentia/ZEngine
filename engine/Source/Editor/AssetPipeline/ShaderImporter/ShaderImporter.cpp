@@ -51,10 +51,10 @@ namespace Runtime
                 return result;
             }
 
-            for (const std::filesystem::path& material_path : asset_mgr->GetAssetsByType("MaterialRes", content_root))
+            for (const std::filesystem::path& material_path : asset_mgr->GetAssetsByType("Material", content_root))
             {
                 std::filesystem::path read_path = material_path;
-                MaterialRes* material = asset_mgr->ReadObject<MaterialRes>(read_path);
+                Material* material = asset_mgr->ReadObject<Material>(read_path);
                 if (material == nullptr)
                 {
                     continue;

@@ -100,7 +100,7 @@ struct VulkanPBRMaterial : RenderMaterialGPUResource
     bool enable_vulkan {true};
     bool enable_metal {false};
 
-    /// Runtime shader defines from MaterialRes keyword toggles (`keyword` -> `"1"`).
+    /// Runtime shader defines from Material keyword toggles (`keyword` -> `"1"`).
     std::map<std::string, std::string> shader_macros;
 
     std::vector<VulkanShaderPassData> shader_passes;
@@ -112,7 +112,7 @@ inline VulkanMesh* AsVulkanMeshResource(RenderMeshGPUResource* resource)
     return static_cast<VulkanMesh*>(resource);
 }
 
-inline VulkanPBRMaterial* AsVulkanMaterialResource(RenderMaterialGPUResource* resource)
+inline VulkanPBRMaterial* AsVulkanMaterialource(RenderMaterialGPUResource* resource)
 {
     assert(resource == nullptr || resource->backend == RenderResourceBackend::Vulkan);
     return static_cast<VulkanPBRMaterial*>(resource);

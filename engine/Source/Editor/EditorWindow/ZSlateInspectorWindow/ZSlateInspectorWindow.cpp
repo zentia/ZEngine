@@ -51,7 +51,7 @@
 #include "Runtime/Function/Framework/Component/Transform/TransformComponent.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Components/Mesh.h"  // SubMeshRes
-#include "Runtime/Resource/ResType/Data/Material.h"    // MaterialRes
+#include "Runtime/Resource/ResType/Data/Material.h"    // Material
 #include "Runtime/Resource/ResType/Data/Shader.h"      // ShaderRes (native Material inspector)
 
 #include <EASTL/string.h>
@@ -151,15 +151,15 @@ namespace
     // MaterialInspectorRow enumerators point into these singletons, so they must
     // outlive the widget tree (they do -- reassigned only on reload -> rebuild).
     //
-    // MaterialRes / ShaderRes are Object subclasses whose ctor runs
+    // Material / ShaderRes are Object subclasses whose ctor runs
     // InitializeRuntimeTypeInfo() against TypeManager; a file-scope static of
     // either would risk a static-init-order fiasco (type registrars may not have
     // run yet). Wrap them in Meyers-singleton accessors so they construct lazily
     // on first OnGUI call -- well after engine init. (Matches the legacy ImGui
     // material drawer, which used function-local statics for the same reason.)
-    MaterialRes& MatRef()
+    Material& MatRef()
     {
-        static MaterialRes s_instance;
+        static Material s_instance;
         return s_instance;
     }
     ShaderRes& MatShaderRef()
@@ -255,7 +255,7 @@ namespace
     // CSV edit session (single in-flight session per inspector; switching asset
     // discards pending edits, matching the legacy ImGui drawer's behaviour).
     // eastl::vector default-ctor does not allocate, so a file-scope static is
-    // safe here (unlike the Object-derived MaterialRes above).
+    // safe here (unlike the Object-derived Material above).
     struct DTEditSession
     {
         std::string asset_key;
@@ -630,9 +630,9 @@ namespace
                              STextBlock* blend,
                              STextBlock* double_sided)
     {
-        MaterialRes* material_res = nullptr;
+        Material* material_res = nullptr;
         if (!material_asset.empty())
-            material_res = GET_SYSTEM(AssetManager)->loadAsset<MaterialRes>(material_asset);
+            material_res = GET_SYSTEM(AssetManager)->loadAsset<Material>(material_asset);
 
         if (material_res != nullptr)
         {
@@ -1387,7 +1387,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
 {
     m_Bindings.clear();
 
-    MaterialRes& s_mat = MatRef();
+    Material& s_mat = MatRef();
     ShaderRes& s_mat_shader = MatShaderRef();
 
     auto wrap = [this, scale](const std::shared_ptr<SVerticalBox>& col) {
@@ -1633,6 +1633,23 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                     s_mat_dirty = true;
                 };
                 AddFieldRow(column, row.label, cb, 0, scale);
+                break;
+            }
+            case MaterialInspectorRowKind::Texture:
+            {
+                PPtr<Texture2D>* tex_ptr = row.texture;
+                if (tex_ptr == nullptr)
+                    break;
+                auto box = std::make_shared<SEditableTextBox>();
+                box->FontSize = 14.0f * scale;
+                box->MinWidth = 120.0f * scale;
+                box->Padding = FMargin(6.0f * scale, 3.0f * scale);
+                box->Text = Material::ResolveTextureAssetPath(*tex_ptr).c_str();
+                box->OnTextCommitted = [tex_ptr](const std::string& s) {
+                    Material::AssignTextureFromAssetPath(*tex_ptr, s.c_str());
+                    s_mat_dirty = true;
+                };
+                AddFieldRow(column, row.label, box, 0, scale);
                 break;
             }
             case MaterialInspectorRowKind::String:

@@ -2,9 +2,9 @@
 
 // =====================================================================================
 // YamlObjectGraph -- a text ("YAML") analogue of SerializedFile's multi-object
-// write/read, used to persist scenes (.scene) and prefabs (.prefab) as
-// human-readable, diff-friendly object graphs while imported DDC assets
-// (textures / meshes / animations) stay binary .zasset.
+// write/read, used to persist scenes (.scene), prefabs (.prefab), and
+// materials (.mat) as human-readable, diff-friendly object graphs while
+// imported DDC assets (textures / meshes / animations) stay binary .zasset.
 //
 // On-disk shape (one block-YAML document):
 //
@@ -80,4 +80,17 @@ namespace ZYaml
     bool ReadObjectGraph(const char* text,
                          std::vector<ObjectGraphEntry>& out,
                          GraphReaderExternHook readerHook = {});
+
+    // Lightweight type sniff for AssetRegistry / GetAssetTypeName. Returns the
+    // `type:` tag of the object with `preferredFileID`, or the first object.
+    bool PeekPrimaryObjectType(const char* text, int64_t preferredFileID, eastl::string& outType);
+
+    // Deserialize a single pre-produced object from a YAML graph document. The
+    // caller must Produce() `outObject` and register its persistent InstanceID
+    // via GetInstanceIDFromPathAndFileID before calling. Only the entry whose
+    // fileID matches `targetFileID` is transferred into `outObject`.
+    bool ReadSingleObjectFromGraph(const char* text,
+                                   int64_t targetFileID,
+                                   Object* outObject,
+                                   GraphReaderExternHook readerHook = {});
 }  // namespace ZYaml

@@ -1571,7 +1571,7 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
     std::map<VulkanPBRMaterial*, std::map<VulkanMesh*, std::vector<MeshNode>>> draw_batches;
     for (const RenderMeshNode& node : visible_nodes)
     {
-        auto& mesh_nodes = draw_batches[AsVulkanMaterialResource(node.ref_material)][AsVulkanMeshResource(node.ref_mesh)];
+        auto& mesh_nodes = draw_batches[AsVulkanMaterialource(node.ref_material)][AsVulkanMeshResource(node.ref_mesh)];
         MeshNode temp;
         temp.model_matrix = node.model_matrix;
         if (node.enable_vertex_blending)
@@ -1762,7 +1762,7 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
     std::map<VulkanPBRMaterial*, std::map<VulkanMesh*, std::vector<MeshNode>>> draw_batches;
     for (const RenderMeshNode& node : visible_nodes)
     {
-        auto& mesh_nodes = draw_batches[AsVulkanMaterialResource(node.ref_material)][AsVulkanMeshResource(node.ref_mesh)];
+        auto& mesh_nodes = draw_batches[AsVulkanMaterialource(node.ref_material)][AsVulkanMeshResource(node.ref_mesh)];
         MeshNode temp;
         temp.model_matrix = node.model_matrix;
         if (node.enable_vertex_blending)

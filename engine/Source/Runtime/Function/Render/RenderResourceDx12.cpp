@@ -218,7 +218,7 @@ namespace
                                1);
     }
 
-    void Dx12UploadMaterialResources(std::shared_ptr<RHI>& rhi,
+    void Dx12UploadMaterialources(std::shared_ptr<RHI>& rhi,
                                      RenderResource* resource,
                                      RenderEntity entity,
                                      VulkanPBRMaterial& material)
@@ -612,7 +612,7 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(std::shared_ptr<RHI
         material.shader_passes.emplace_back(std::move(runtime_shader_pass));
     }
 
-    Dx12UploadMaterialResources(rhi, this, entity, material);
+    Dx12UploadMaterialources(rhi, this, entity, material);
     return material;
 }
 

@@ -84,6 +84,16 @@ public:
     // AGENTS.md "Data pipeline" section.
     eastl::string data_dir {"Data"};  // relative to project root
 
+    // Texture source directory (peer of Assets/, Scripts/, Shaders/, Data/).
+    // Holds user-authored image sources imported into Texture2D .zasset files
+    // under Assets/. **Checked into VCS.** See TEXTURE_COOK_PIPELINE.md 1.1.
+    eastl::string textures_dir {"Textures"};
+
+    // Model source directory (peer of the other source roots). Holds .fbx/.obj/
+    // /.gltf/.glb sources imported into mesh .zasset files under Assets/.
+    // **Checked into VCS.**
+    eastl::string models_dir {"Models"};
+
     // Other
     std::filesystem::path m_WorkingDir;
     /**
@@ -180,6 +190,22 @@ public:
     /// Content/DataTables source step before the .uasset bake.
     std::filesystem::path GetDataRoot() const;
 
+    // -------------------------------------------------------------------------
+    // Texture / model source paths. All return absolute paths.
+    // Empty `project_path` -> empty result (caller must check).
+    // -------------------------------------------------------------------------
+
+    /// User-authored texture source root: <project>/<textures_dir>/.
+    /// Peer of Assets/, Scripts/, Shaders/, Data/; .png/.jpg/.tga/... live here.
+    /// **Checked into VCS.** Imported Texture2D .zasset products land under
+    /// Assets/ (editor-platform variant) and Intermediate/Cooked/ (player).
+    std::filesystem::path GetTexturesRoot() const;
+
+    /// User-authored mesh source root: <project>/<models_dir>/.
+    /// Peer of the other source roots; .fbx/.obj/.gltf/.glb live here.
+    /// **Checked into VCS.** Imported mesh .zasset products land under Assets/.
+    std::filesystem::path GetModelsRoot() const;
+
     /// Generated-asset bucket: <project>/<content_dir>/_Generated/.
     /// Lives UNDER Assets/ on purpose -- the editor's AssetRegistry already
     /// scans the whole content directory, so any .zasset emitted here is
@@ -220,7 +246,7 @@ public:
      *
      * Despite the historical name, this scaffolds **all** per-project source
      * roots that have to exist before the editor opens (Scripts, Shaders,
-     * Data) plus the always-present supporting directories.
+     * Data, Textures, Models) plus the always-present supporting directories.
      *
      * On first project open we create:
      *   - <content>/<scripts>/         (empty user-source folder)
@@ -228,6 +254,8 @@ public:
      *   - <project>/<shaders_dir>/     (empty user-source folder)
      *   - <intermediate>/Shaders/      (empty compile-cache folder)
      *   - <project>/<data_dir>/        (empty user-source folder)
+     *   - <project>/<textures_dir>/    (empty texture-source folder)
+     *   - <project>/<models_dir>/      (empty model-source folder)
      *   - <content>/_Generated/Data/   (empty compile-output folder, under Assets/)
      *   - <project>/AssetRegistry/     (VCS-tracked, holds path<->GUID maps)
      *   - <project>/tsconfig.json      (only if missing)

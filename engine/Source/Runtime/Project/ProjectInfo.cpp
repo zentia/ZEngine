@@ -413,6 +413,30 @@ std::filesystem::path ProjectInfo::GetDataRoot() const
     return project_path / dd;
 }
 
+std::filesystem::path ProjectInfo::GetTexturesRoot() const
+{
+    if (project_path.empty())
+    {
+        return {};
+    }
+    // Peer of Assets/, Scripts/, Shaders/, Data/. Holds image sources;
+    // **checked into VCS**. Imported Texture2D .zasset products live under
+    // Assets/ (editor) and Intermediate/Cooked/ (player builds).
+    const char* td = textures_dir.empty() ? "Textures" : textures_dir.c_str();
+    return project_path / td;
+}
+
+std::filesystem::path ProjectInfo::GetModelsRoot() const
+{
+    if (project_path.empty())
+    {
+        return {};
+    }
+    // Peer of the other source roots. Holds mesh sources; **checked into VCS**.
+    const char* md = models_dir.empty() ? "Models" : models_dir.c_str();
+    return project_path / md;
+}
+
 std::filesystem::path ProjectInfo::GetGeneratedAssetsRoot() const
 {
     if (project_path.empty())
@@ -689,6 +713,41 @@ bool ProjectInfo::EnsureScriptsScaffold()
              "Data scaffold ready (data: {}, generated: {})",
              data_root.generic_string(),
              generated_data.generic_string());
+
+    // 6) Texture / model source roots. Mirrors Data/: user-authored sources
+    //    checked into VCS; imported .zasset products land under Assets/.
+    const std::filesystem::path textures_root = GetTexturesRoot();
+    if (!textures_root.empty())
+    {
+        std::filesystem::create_directories(textures_root, ec);
+        if (ec)
+        {
+            LOG_WARNING(ZProjectInfo,
+                        "ensureScriptsScaffold: failed to create textures dir {}: {}",
+                        textures_root.generic_string(),
+                        ec.message());
+            all_ok = false;
+            ec.clear();
+        }
+    }
+    const std::filesystem::path models_root = GetModelsRoot();
+    if (!models_root.empty())
+    {
+        std::filesystem::create_directories(models_root, ec);
+        if (ec)
+        {
+            LOG_WARNING(ZProjectInfo,
+                        "ensureScriptsScaffold: failed to create models dir {}: {}",
+                        models_root.generic_string(),
+                        ec.message());
+            all_ok = false;
+            ec.clear();
+        }
+    }
+    LOG_INFO(ZProjectInfo,
+             "Texture/model scaffold ready (textures: {}, models: {})",
+             textures_root.generic_string(),
+             models_root.generic_string());
     return all_ok;
 }
 
@@ -703,4 +762,6 @@ void ProjectInfo::Transfer(TransferFunction& transfer)
     transfer.Transfer(intermediate_dir, "intermediate_dir");
     transfer.Transfer(shaders_dir, "shaders_dir");
     transfer.Transfer(data_dir, "data_dir");
+    transfer.Transfer(textures_dir, "textures_dir");
+    transfer.Transfer(models_dir, "models_dir");
 }

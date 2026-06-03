@@ -750,14 +750,13 @@ static void scenario_M1_material_round_trip()
 {
     const auto path = scratchFile("m1_material_rt");
 
-    MaterialRes* src = MemoryManager::CreateObject<MaterialRes>();
+    Material* src = MemoryManager::CreateObject<Material>();
     src->m_Shader = "MyCoolShader";
     src->m_ShaderGuid = "0123456789abcdef0123456789abcdef";
     src->m_ShaderPptr = PPtr<ShaderRes>();  // null in test (no real ShaderRes .zasset)
     src->m_AlphaFactor = 0.75f;
     src->m_MetallicFactor = 0.25f;
     src->m_IsBlend = true;
-    src->m_EmissiveTextureFile = "T_Emissive.zasset";
 
     if (!writeRowToFile(path, src))
     {
@@ -766,7 +765,7 @@ static void scenario_M1_material_round_trip()
         return;
     }
 
-    MaterialRes* dst = MemoryManager::CreateObject<MaterialRes>();
+    Material* dst = MemoryManager::CreateObject<Material>();
     if (!readRowFromFile(path, dst))
     {
         MemoryManager::DestroyObject(src);
@@ -782,20 +781,17 @@ static void scenario_M1_material_round_trip()
          dst->GetShaderName() == "MyCoolShader" &&
          dst->m_AlphaFactor == 0.75f &&
          dst->m_MetallicFactor == 0.25f &&
-         dst->m_IsBlend == true &&
-         dst->m_EmissiveTextureFile == "T_Emissive.zasset");
+         dst->m_IsBlend == true);
 
     if (!match)
     {
         char detail[512];
-        std::snprintf(detail, sizeof(detail), "m_shader='%s' m_shader_guid='%s' alpha=%.6f metallic=%.6f "
-                                              "is_blend=%d emissive='%s'",
+        std::snprintf(detail, sizeof(detail), "m_shader='%s' m_shader_guid='%s' alpha=%.6f metallic=%.6f is_blend=%d",
                       dst->m_Shader.c_str(),
                       dst->m_ShaderGuid.c_str(),
                       static_cast<double>(dst->m_AlphaFactor),
                       static_cast<double>(dst->m_MetallicFactor),
-                      dst->m_IsBlend ? 1 : 0,
-                      dst->m_EmissiveTextureFile.c_str());
+                      dst->m_IsBlend ? 1 : 0);
         reportFail("M1 material round-trip", detail);
     }
     else
@@ -840,7 +836,7 @@ static void scenario_M2_material_old_layout_compat()
     // positional StreamedBinaryRead for a renamed/added field), the
     // file's m_Shader bytes would land in some unrelated field of
     // MaterialRes and the assertion below would fail loudly.
-    MaterialRes* dst = MemoryManager::CreateObject<MaterialRes>();
+    Material* dst = MemoryManager::CreateObject<Material>();
     if (!readRowFromFile(path, dst))
     {
         MemoryManager::DestroyObject(src);
@@ -854,7 +850,7 @@ static void scenario_M2_material_old_layout_compat()
          dst->m_AlphaFactor == 0.42f &&
          dst->m_MetallicFactor == 0.84f &&
          dst->m_IsDoubleSided == true &&
-         dst->m_NormalTextureFile == "T_Norm.zasset");
+         dst->m_NormalTexturePptr.IsNull());
 
     // The CRITICAL assertion: m_ShaderGuid is the field added in
     // PR-SE3a. Old bytes don't contain it. Default-init must hold.
@@ -872,15 +868,14 @@ static void scenario_M2_material_old_layout_compat()
         char detail[512];
         std::snprintf(detail, sizeof(detail), "m_shader='%s' m_shader_guid='%s' (expected empty) "
                                               "pptr_null=%d getter='%s' "
-                                              "alpha=%.6f metallic=%.6f double_sided=%d normal='%s'",
+                                              "alpha=%.6f metallic=%.6f double_sided=%d",
                       dst->m_Shader.c_str(),
                       dst->m_ShaderGuid.c_str(),
                       pptr_null ? 1 : 0,
                       dst->GetShaderName().c_str(),
                       static_cast<double>(dst->m_AlphaFactor),
                       static_cast<double>(dst->m_MetallicFactor),
-                      dst->m_IsDoubleSided ? 1 : 0,
-                      dst->m_NormalTextureFile.c_str());
+                      dst->m_IsDoubleSided ? 1 : 0);
         reportFail("M2 material old-layout-compat", detail);
     }
     else
@@ -993,7 +988,7 @@ static void scenario_M3_material_pptr_evolution()
         }
         else
         {
-            MaterialRes* dst = MemoryManager::CreateObject<MaterialRes>();
+            Material* dst = MemoryManager::CreateObject<Material>();
             if (!readRowFromFile(path, dst))
             {
                 reportFail("M3a old→pptr", "read failed");
@@ -1041,13 +1036,12 @@ static void scenario_M3_material_pptr_evolution()
     {
         const auto path = scratchFile("m3b_pptr_roundtrip");
 
-        MaterialRes* src = MemoryManager::CreateObject<MaterialRes>();
+        Material* src = MemoryManager::CreateObject<Material>();
         src->m_Shader = "RoundTripShader";
         src->m_ShaderGuid = "deadbeefcafebabe";
         src->m_ShaderPptr = PPtr<ShaderRes>();  // null, no ShaderRes in test
         src->m_AlphaFactor = 0.33f;
         src->m_MetallicFactor = 0.77f;
-        src->m_EmissiveTextureFile = "T_Glow.zasset";
 
         if (!writeRowToFile(path, src))
         {
@@ -1056,7 +1050,7 @@ static void scenario_M3_material_pptr_evolution()
         }
         else
         {
-            MaterialRes* dst = MemoryManager::CreateObject<MaterialRes>();
+            Material* dst = MemoryManager::CreateObject<Material>();
             if (!readRowFromFile(path, dst))
             {
                 reportFail("M3b pptr round-trip", "read failed");
@@ -1069,8 +1063,7 @@ static void scenario_M3_material_pptr_evolution()
                      dst->m_ShaderPptr.IsNull() &&
                      dst->GetShaderName() == "RoundTripShader" &&
                      dst->m_AlphaFactor == 0.33f &&
-                     dst->m_MetallicFactor == 0.77f &&
-                     dst->m_EmissiveTextureFile == "T_Glow.zasset");
+                     dst->m_MetallicFactor == 0.77f);
 
                 if (match)
                 {
@@ -1080,14 +1073,13 @@ static void scenario_M3_material_pptr_evolution()
                 {
                     char detail[512];
                     std::snprintf(detail, sizeof(detail), "m_shader='%s' m_shader_guid='%s' pptr_null=%d "
-                                                          "getter='%s' alpha=%.6f metallic=%.6f emissive='%s'",
+                                                          "getter='%s' alpha=%.6f metallic=%.6f",
                                   dst->m_Shader.c_str(),
                                   dst->m_ShaderGuid.c_str(),
                                   dst->m_ShaderPptr.IsNull() ? 1 : 0,
                                   dst->GetShaderName().c_str(),
                                   static_cast<double>(dst->m_AlphaFactor),
-                                  static_cast<double>(dst->m_MetallicFactor),
-                                  dst->m_EmissiveTextureFile.c_str());
+                                  static_cast<double>(dst->m_MetallicFactor));
                     reportFail("M3b pptr round-trip", detail);
                 }
             }

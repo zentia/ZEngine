@@ -36,7 +36,7 @@ namespace
         return asset_type;
     }
 
-    void CopyMaterialAssetForInspector(MaterialRes& destination, const MaterialRes& source)
+    void CopyMaterialAssetForInspector(Material& destination, const Material& source)
     {
         destination.m_Shader = source.m_Shader;
         destination.m_ShaderGuid = source.m_ShaderGuid;
@@ -54,11 +54,11 @@ namespace
         destination.m_EmissiveFactor = source.m_EmissiveFactor;
         destination.m_IsBlend = source.m_IsBlend;
         destination.m_IsDoubleSided = source.m_IsDoubleSided;
-        destination.m_BaseColourTextureFile = source.m_BaseColourTextureFile;
-        destination.m_MetallicRoughnessTextureFile = source.m_MetallicRoughnessTextureFile;
-        destination.m_NormalTextureFile = source.m_NormalTextureFile;
-        destination.m_OcclusionTextureFile = source.m_OcclusionTextureFile;
-        destination.m_EmissiveTextureFile = source.m_EmissiveTextureFile;
+        destination.m_BaseColourTexturePptr = source.m_BaseColourTexturePptr;
+        destination.m_MetallicRoughnessTexturePptr = source.m_MetallicRoughnessTexturePptr;
+        destination.m_NormalTexturePptr = source.m_NormalTexturePptr;
+        destination.m_OcclusionTexturePptr = source.m_OcclusionTexturePptr;
+        destination.m_EmissiveTexturePptr = source.m_EmissiveTexturePptr;
         destination.m_EnabledShaderKeywords = source.m_EnabledShaderKeywords;
     }
 }  // namespace
@@ -76,7 +76,7 @@ std::string ResolveInspectorAssetType(const std::filesystem::path& asset_path, c
     {
         return "shader";
     }
-    if (extension == ".zasset")
+    if (extension == ".zasset" || extension == ".mat")
     {
         const std::string runtime_asset_type =
             NormalizeInspectorAssetType(GET_SYSTEM(AssetManager)->GetAssetTypeName(asset_path));
@@ -107,7 +107,7 @@ bool IsGenericInspectorZAssetType(const std::filesystem::path& asset_path, const
            (resolved_asset_type.empty() || resolved_asset_type == "zasset" || resolved_asset_type == "asset");
 }
 
-bool LoadMaterialDefinitionForInspector(MaterialRes& out_material, const std::filesystem::path& asset_path)
+bool LoadMaterialDefinitionForInspector(Material& out_material, const std::filesystem::path& asset_path)
 {
     if (asset_path.empty() || !std::filesystem::exists(asset_path))
     {
@@ -115,7 +115,7 @@ bool LoadMaterialDefinitionForInspector(MaterialRes& out_material, const std::fi
     }
 
     std::filesystem::path read_path = asset_path;
-    MaterialRes* loaded = GET_SYSTEM(AssetManager)->ReadObject<MaterialRes>(read_path);
+    Material* loaded = GET_SYSTEM(AssetManager)->ReadObject<Material>(read_path);
     if (loaded == nullptr)
     {
         return false;
@@ -126,7 +126,7 @@ bool LoadMaterialDefinitionForInspector(MaterialRes& out_material, const std::fi
     return true;
 }
 
-bool MaterialUsesCustomProjectShader(const MaterialRes& material)
+bool MaterialUsesCustomProjectShader(const Material& material)
 {
     const eastl::string shader_name = !material.m_Shader.empty() ? material.m_Shader : material.GetShaderName();
     return !shader_name.empty() && shader_name != "StandardLit";

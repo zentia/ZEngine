@@ -29,6 +29,9 @@ public:
 
     void RegisterType(const TypeRegistrationDesc& desc);
 
+    /// Map a legacy serialized class name (e.g. "MaterialRes") to an existing Type.
+    void RegisterClassNameAlias(const char* alias, const Type* type);
+
     RuntimeTypeArray& GetRuntimeTypes() { return m_RuntimeTypes; }
     void FindAllDerivedTypes(const Type* baseType, std::vector<const Type*>& derivedTypes, bool onlyNonAbstrace) const;
     void RegisterNonObjectType(uint64_t typeID, Type* type, const char* name, const char* nameSpace);

@@ -8,7 +8,7 @@
 class GameObjectMeshDesc
 {
 public:
-    // 类似 Unity MeshFilter.sharedMesh：场景/组件层仅保存 mesh 资产引用。
+    // Unity MeshFilter.sharedMesh equivalent: mesh asset reference only.
     eastl::string m_MeshAsset;
 };
 
@@ -33,7 +33,7 @@ public:
 class GameObjectMaterialDesc
 {
 public:
-    // Similar to Unity Renderer.sharedMaterials: scene/component layer only stores material asset references.
+    // Unity Renderer.sharedMaterials equivalent: material asset reference only.
     eastl::string m_MaterialAsset;
     eastl::string m_Shader {"StandardLit"};
 
@@ -46,6 +46,7 @@ public:
     bool m_IsBlend {false};
     bool m_IsDoubleSided {false};
 
+    // Resolved Texture2D .zasset paths at the render boundary (from Material PPtr refs).
     eastl::string m_BaseColorTextureFile;
     eastl::string m_MetallicRoughnessTextureFile;
     eastl::string m_NormalTextureFile;
@@ -53,7 +54,6 @@ public:
     eastl::string m_EmissiveTextureFile;
     bool m_WithTexture {false};
 
-    /// Copied from MaterialRes; drives runtime shader variant macros.
     eastl::vector<eastl::string> m_EnabledShaderKeywords;
 };
 

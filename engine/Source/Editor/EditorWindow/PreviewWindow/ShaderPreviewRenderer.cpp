@@ -202,7 +202,7 @@ namespace
         return normalized_key == "occlusion" || normalized_key == "ao" || normalized_key == "occlusionstrength";
     }
 
-    const MaterialFloatProperty* FindPreviewMaterialFloatProperty(const MaterialRes* material, const std::string& property_name)
+    const MaterialFloatProperty* FindPreviewMaterialFloatProperty(const Material* material, const std::string& property_name)
     {
         if (material == nullptr)
         {
@@ -219,7 +219,7 @@ namespace
         return nullptr;
     }
 
-    const MaterialColorProperty* FindPreviewMaterialColorProperty(const MaterialRes* material, const std::string& property_name)
+    const MaterialColorProperty* FindPreviewMaterialColorProperty(const Material* material, const std::string& property_name)
     {
         if (material == nullptr)
         {
@@ -236,7 +236,7 @@ namespace
         return nullptr;
     }
 
-    const MaterialToggleProperty* FindPreviewMaterialToggleProperty(const MaterialRes* material, const std::string& property_name)
+    const MaterialToggleProperty* FindPreviewMaterialToggleProperty(const Material* material, const std::string& property_name)
     {
         if (material == nullptr)
         {
@@ -253,7 +253,7 @@ namespace
         return nullptr;
     }
 
-    std::array<float, 4> ResolvePreviewShaderPropertyValue(const ZEngine::ShaderLab::ShaderProperty& property, const MaterialRes* preview_material)
+    std::array<float, 4> ResolvePreviewShaderPropertyValue(const ZEngine::ShaderLab::ShaderProperty& property, const Material* preview_material)
     {
         using namespace ZEngine::ShaderLab;
 
@@ -375,7 +375,7 @@ namespace
     }
 
     void BuildPreviewMaterialConstantData(const std::shared_ptr<ZEngine::ShaderLab::ShaderLabAsset>& shader_asset,
-                                          const MaterialRes* preview_material,
+                                          const Material* preview_material,
                                           std::vector<uint8_t>& out_data)
     {
         out_data.clear();
@@ -535,7 +535,7 @@ namespace
     bool ResolvePreviewSource(const std::filesystem::path& selected_asset_path,
 
                               const std::string& resolved_asset_type,
-                              const MaterialRes* preview_material,
+                              const Material* preview_material,
                               PreviewSource& out_source,
                               std::string& out_error)
     {
@@ -620,7 +620,7 @@ namespace
 
     bool ResolvePreviewSourceCached(const std::filesystem::path& selected_asset_path,
                                     const std::string& resolved_asset_type,
-                                    const MaterialRes* preview_material,
+                                    const Material* preview_material,
                                     PreviewSource& out_source,
                                     std::string& out_error)
     {
@@ -930,7 +930,7 @@ namespace
         // differs from the pre-loss version.
         ShaderPreviewTextureResult DrawNative(const std::filesystem::path& selected_asset_path,
                                               const std::string& resolved_asset_type,
-                                              const MaterialRes* preview_material)
+                                              const Material* preview_material)
         {
             ShaderPreviewTextureResult result;
             result.handled = true;
@@ -1457,7 +1457,7 @@ namespace
 
 ShaderPreviewTextureResult RenderShaderPreviewToNativeTexture(const std::filesystem::path& selected_asset_path,
                                                               const std::string& resolved_asset_type,
-                                                              const MaterialRes* preview_material)
+                                                              const Material* preview_material)
 {
 #ifdef _WIN32
     // Distinct renderer instance from the ImGui widget so the two paths don't

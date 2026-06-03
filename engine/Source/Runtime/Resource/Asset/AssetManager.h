@@ -76,7 +76,7 @@ public:
             return fileSystem->loadAssetJson<AssetType>(asset_path);
         }
 
-        if (extension == ".zasset")
+        if (extension == ".zasset" || extension == ".mat")
 
         {
             return const_cast<AssetManager*>(this)->ReadObject<AssetType>(asset_path);
@@ -183,6 +183,17 @@ public:
     std::filesystem::path GetFullPath(const eastl::string& relative_path) const;
     std::filesystem::path GetEditorResourcePath(const std::string& relative_path) const;
     std::string GetAssetTypeName(const std::filesystem::path& asset_path) const;
+
+    // True for YAML authoring assets under Assets/ (.mat / .prefab / .scene).
+    // Imported DDC products (.zasset) return false.
+    static bool IsYamlAuthoringAssetPath(const std::filesystem::path& path);
+
+    // True for any file indexed by AssetRegistry under Assets/.
+    static bool IsRegistryIndexedAssetPath(const std::filesystem::path& path);
+
+    // Path-derived GUID for binary .zasset headers and YAML authoring assets
+    // (which carry no embedded GUID). Same FNV-1a scheme as ScriptRegistry.
+    static std::string DeriveDeterministicAssetGuid(const std::filesystem::path& absolute_path);
 
     // Editor-only: enumerate every .zasset whose runtime asset type matches
     // `asset_type` (e.g. "ShaderRes", "PrefabRes"). The base implementation

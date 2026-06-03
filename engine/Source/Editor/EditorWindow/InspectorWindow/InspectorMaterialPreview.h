@@ -55,4 +55,4 @@ struct MaterialPreviewResult
 // handle for display through an SImage. Replaces the old ImGui DrawMaterialPreviewWidget
 // now that the Preview window paints through the retained ZSlate widget tree.
 // Requires the native ZSlate backend (the handle is a UiGpuResources handle).
-MaterialPreviewResult RenderMaterialPreviewToTexture(const MaterialRes& material, uint32_t pixel_size);
+MaterialPreviewResult RenderMaterialPreviewToTexture(const Material& material, uint32_t pixel_size);

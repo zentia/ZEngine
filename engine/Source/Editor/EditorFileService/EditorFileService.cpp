@@ -108,12 +108,16 @@ std::filesystem::path getEditorSourceAssetFolder()
 //                   `.zasset` products land under
 //                   `<Assets>/_Generated/Data/` and surface inside the
 //                   Assets tree via the Assets-root whitelist above.
+//   * `Textures/`-> image source (.png/.jpg/.jpeg/.tga/.bmp). Imported
+//                   Texture2D `.zasset` products land under `Assets/`.
+//   * `Models/`  -> mesh source (.fbx/.obj/.gltf/.glb). Imported mesh
+//                   `.zasset` products land under `Assets/`.
 //
 // The `root_label` is the lower-case identifier passed to BuildRoot()
-// (`"asset"`, `"scripts"`, `"shaders"`, `"data"`). Unknown labels fall
-// through to the most permissive set (Assets-root rules) for forward
-// compatibility, but every existing root is enumerated explicitly so a
-// new root must opt in deliberately.
+// (`"asset"`, `"scripts"`, `"shaders"`, `"data"`, `"textures"`, `"models"`).
+// Unknown labels fall through to the most permissive set (Assets-root rules)
+// for forward compatibility, but every existing root is enumerated explicitly
+// so a new root must opt in deliberately.
 bool shouldDisplayInProjectWindow(const std::filesystem::path& path,
                                   const eastl::string& root_label)
 {
@@ -139,12 +143,26 @@ bool shouldDisplayInProjectWindow(const std::filesystem::path& path,
         return extension == ".csv" || extension == ".xlsx";
     }
 
+    // Textures/ root: image source for Texture2D import.
+    if (root_label == "textures")
+    {
+        return extension == ".png" || extension == ".jpg" || extension == ".jpeg" ||
+               extension == ".tga" || extension == ".bmp";
+    }
+
+    // Models/ root: mesh source for mesh import.
+    if (root_label == "models")
+    {
+        return extension == ".fbx" || extension == ".obj" || extension == ".gltf" ||
+               extension == ".glb";
+    }
+
     // Assets/ root (and any unknown root, conservatively): binary asset
     // products plus legacy .json text assets only. Source files for the
     // other roots are deliberately NOT surfaced here -- they belong in
     // Scripts/, Shaders/, or Data/, even when misplaced.
     return extension == ".json" || extension == ".zasset" ||
-           extension == ".scene" || extension == ".prefab";
+           extension == ".scene" || extension == ".prefab" || extension == ".mat";
 }
 
 // Compute the lower-case file-extension label (no leading dot) used to
@@ -188,7 +206,8 @@ std::string computeFileExtensionLabel(const std::filesystem::path& file_path)
 std::string computeAssetTypeLabelFromRegistry(const std::filesystem::path& file_path,
                                               const std::string& file_extension)
 {
-    if (file_extension != "zasset")
+    if (file_extension != "zasset" && file_extension != "mat" && file_extension != "prefab" &&
+        file_extension != "scene")
     {
         return {};
     }
@@ -314,6 +333,34 @@ std::string computeAssetTypeLabel(const std::filesystem::path& file_path,
         std::transform(stage.begin(), stage.end(), stage.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return stage;
     }
+    if (file_extension == "mat" || file_extension == "prefab" || file_extension == "scene")
+    {
+        std::string cached = computeAssetTypeLabelFromRegistry(file_path, file_extension);
+        if (!cached.empty())
+        {
+            return cached;
+        }
+        const std::string runtime_asset_type = GET_SYSTEM(AssetManager)->GetAssetTypeName(file_path);
+        if (runtime_asset_type.empty())
+        {
+            if (file_extension == "prefab")
+            {
+                return "prefab";
+            }
+            if (file_extension == "scene")
+            {
+                return "level";
+            }
+            return file_extension;
+        }
+        std::string asset_type = runtime_asset_type;
+        if (asset_type.size() > 3 && asset_type.compare(asset_type.size() - 3, 3, "Res") == 0)
+        {
+            asset_type.erase(asset_type.size() - 3);
+        }
+        std::transform(asset_type.begin(), asset_type.end(), asset_type.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return asset_type;
+    }
     return {};
 }
 
@@ -386,6 +433,34 @@ void EditorFileService::BuildEngineFileTree()
             std::error_code ec;
             data_root = std::filesystem::absolute(data_root, ec);
             EditorFileNode* node = BuildRoot(data_root, "data", "Data");
+            if (node != nullptr)
+            {
+                m_RootNodes.push_back(node);
+            }
+        }
+
+        // Root 5: Textures/ (peer of Assets/, Scripts/, Shaders/, Data/).
+        // Holds image sources imported into Texture2D .zasset under Assets/.
+        std::filesystem::path textures_root = project_info->GetTexturesRoot();
+        if (!textures_root.empty())
+        {
+            std::error_code ec;
+            textures_root = std::filesystem::absolute(textures_root, ec);
+            EditorFileNode* node = BuildRoot(textures_root, "textures", "Textures");
+            if (node != nullptr)
+            {
+                m_RootNodes.push_back(node);
+            }
+        }
+
+        // Root 6: Models/ (peer of the other source roots). Holds mesh
+        // sources imported into mesh .zasset under Assets/.
+        std::filesystem::path models_root = project_info->GetModelsRoot();
+        if (!models_root.empty())
+        {
+            std::error_code ec;
+            models_root = std::filesystem::absolute(models_root, ec);
+            EditorFileNode* node = BuildRoot(models_root, "models", "Models");
             if (node != nullptr)
             {
                 m_RootNodes.push_back(node);

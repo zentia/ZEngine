@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-class MaterialRes;
+class Material;
 class ShaderRes;
 
 namespace ZSlate
@@ -39,12 +39,12 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidget(const std::filesyste
 // ----------------------------------------------------------------------------
 
 // Built-in (StandardLit / no custom project shader) property rows.
-std::vector<MaterialInspectorRow> EnumerateBuiltInMaterialRows(MaterialRes& material);
+std::vector<MaterialInspectorRow> EnumerateBuiltInMaterialRows(Material& material);
 
 // Rows reflected from a loaded project shader's properties. `out_created` is set
 // true when enumerating materialised a new default property on the material
 // (caller should persist the asset in that case).
-std::vector<MaterialInspectorRow> EnumerateShaderMaterialRows(MaterialRes& material,
+std::vector<MaterialInspectorRow> EnumerateShaderMaterialRows(Material& material,
                                                               const ShaderRes& shader,
                                                               bool& out_created);
 
@@ -57,8 +57,8 @@ bool LoadProjectShaderDefinitionForInspector(ShaderRes& out_shader,
                                                const eastl::string& shader_name,
                                                std::filesystem::path* resolved_shader_path = nullptr);
 std::vector<eastl::string> FindProjectShaders();
-void SanitizeMaterialShaderBindingForInspector(MaterialRes& material);
+void SanitizeMaterialShaderBindingForInspector(Material& material);
 void EnsureShaderPassCompatibility(ShaderRes& shader);
 void SyncLegacyShaderFieldsFromPrimaryPass(ShaderRes& shader);
-eastl::string GetMaterialAuthoringShaderName(const MaterialRes& material);
+eastl::string GetMaterialAuthoringShaderName(const Material& material);
 bool IsShaderSourceAvailableInProject(const eastl::string& shader_name);
