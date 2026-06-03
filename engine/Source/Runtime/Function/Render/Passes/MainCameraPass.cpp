@@ -195,7 +195,7 @@ namespace
         return nullptr;
     }
 
-    bool CanUseRuntimePrimaryShaderPass(const std::shared_ptr<RHI>& rhi, const VulkanPBRMaterial& material)
+    bool CanUseRuntimePrimaryShaderPass(RHI* rhi, const VulkanPBRMaterial& material)
     {
         if (material.vertex_shader_file.empty() || material.fragment_shader_file.empty())
         {
@@ -238,7 +238,7 @@ namespace
         return true;
     }
 
-    bool CanUseRuntimeShaderPass(const std::shared_ptr<RHI>& rhi,
+    bool CanUseRuntimeShaderPass(RHI* rhi,
                                  const VulkanPBRMaterial& material,
                                  const VulkanShaderPassData* shader_pass)
     {

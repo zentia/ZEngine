@@ -10,7 +10,7 @@ LumenRenderer::~LumenRenderer()
     clear();
 }
 
-bool LumenRenderer::Initialize(std::shared_ptr<RHI> rhi,
+bool LumenRenderer::Initialize(RHI* rhi,
                                std::shared_ptr<RenderResourceBase> render_resource,
                                const LumenConfig& config)
 {

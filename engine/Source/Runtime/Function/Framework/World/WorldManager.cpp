@@ -448,3 +448,118 @@ void WorldManager::SaveCurrentLevel()
 
     active_level->save();
 }
+
+bool WorldManager::IsCurrentLevelDirty() const
+{
+    if (m_WorldPartition.IsEnabled())
+    {
+        for (const auto& level_pair : m_LoadedLevels)
+        {
+            if (level_pair.second != nullptr && level_pair.second->IsDirty())
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    return m_CurrentActiveLevel != nullptr && m_CurrentActiveLevel->IsDirty();
+}
+
+void WorldManager::MarkCurrentLevelDirty()
+{
+    if (m_CurrentActiveLevel != nullptr)
+    {
+        m_CurrentActiveLevel->MarkDirty();
+    }
+}
+
+bool WorldManager::SaveCurrentLevelAs(const eastl::string& new_level_url)
+{
+    if (new_level_url.empty())
+    {
+        LOG_ERROR(ZWorld, "SaveCurrentLevelAs: empty level url");
+        return false;
+    }
+
+    if (m_WorldPartition.IsEnabled())
+    {
+        LOG_WARNING(ZWorld, "SaveCurrentLevelAs: world partition is enabled; saving all loaded levels in place");
+        SaveCurrentLevel();
+        return true;
+    }
+
+    Level* active_level = m_CurrentActiveLevel;
+    if (active_level == nullptr)
+    {
+        LOG_ERROR(ZWorld, "SaveCurrentLevelAs: no active level");
+        return false;
+    }
+
+    const eastl::string old_url = active_level->getLevelResUrl();
+    active_level->setLevelResUrl(new_level_url);
+    if (!active_level->save())
+    {
+        active_level->setLevelResUrl(old_url);
+        LOG_ERROR(ZWorld, "SaveCurrentLevelAs: save failed for {}", new_level_url.c_str());
+        return false;
+    }
+
+    if (old_url != new_level_url)
+    {
+        m_LoadedLevels.erase(old_url);
+        m_LoadedLevels.emplace(new_level_url, active_level);
+
+        if (auto ref_it = m_LevelUrlRefCounts.find(old_url); ref_it != m_LevelUrlRefCounts.end())
+        {
+            m_LevelUrlRefCounts[new_level_url] = ref_it->second;
+            m_LevelUrlRefCounts.erase(ref_it);
+        }
+    }
+
+    LOG_INFO(ZWorld, "SaveCurrentLevelAs: saved -> {}", new_level_url.c_str());
+    return true;
+}
+
+bool WorldManager::OpenScene(const eastl::string& level_url)
+{
+    if (level_url.empty())
+    {
+        LOG_ERROR(ZWorld, "OpenScene: empty level url");
+        return false;
+    }
+
+    if (m_WorldPartition.IsEnabled())
+    {
+        LOG_WARNING(ZWorld, "OpenScene: world partition is enabled; single-scene open is not supported");
+        return false;
+    }
+
+    eastl::vector<eastl::string> urls_to_unload;
+    urls_to_unload.reserve(m_LoadedLevels.size());
+    for (const auto& level_pair : m_LoadedLevels)
+    {
+        urls_to_unload.push_back(level_pair.first);
+    }
+    for (const eastl::string& url : urls_to_unload)
+    {
+        UnloadLevelByUrl(url);
+    }
+
+    if (!LoadLevel(level_url))
+    {
+        LOG_ERROR(ZWorld, "OpenScene: failed to load {}", level_url.c_str());
+        return false;
+    }
+
+    auto iter = m_LoadedLevels.find(level_url);
+    if (iter == m_LoadedLevels.end() || iter->second == nullptr)
+    {
+        LOG_ERROR(ZWorld, "OpenScene: level missing after load {}", level_url.c_str());
+        return false;
+    }
+
+    m_CurrentActiveLevel = iter->second;
+    LOG_INFO(ZWorld, "OpenScene: loaded {}", level_url.c_str());
+    return true;
+}

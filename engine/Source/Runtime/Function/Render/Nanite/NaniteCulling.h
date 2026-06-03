@@ -17,7 +17,7 @@ public:
     ~NaniteCullingSystem();
 
     // 初始化
-    bool Initialize(std::shared_ptr<RHI> rhi, const NaniteConfig& config);
+    bool Initialize(RHI* rhi, const NaniteConfig& config);
 
     // 清理
     void clear();
@@ -49,7 +49,7 @@ public:
                       const NaniteConfig& config);
 
 private:
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     NaniteConfig m_Config;
 
     // GPU裁剪资源
@@ -75,7 +75,7 @@ public:
     ~NaniteHierarchicalZBuffer();
 
     // 初始化
-    bool Initialize(std::shared_ptr<RHI> rhi, uint32_t width, uint32_t height);
+    bool Initialize(RHI* rhi, uint32_t width, uint32_t height);
 
     // 清理
     void clear();
@@ -90,7 +90,7 @@ public:
     bool IsOccluded(const AxisAlignedBox& bounds, const Matrix4x4& transform, float min_z);
 
 private:
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
 
     uint32_t m_Width = 0;
     uint32_t m_Height = 0;

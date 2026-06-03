@@ -49,7 +49,7 @@ namespace ZEngine
             // Pick up the WebGL2 context that the emscripten GLFW shim created
             // inside glfwCreateWindow(). WindowSystem is registered ahead of any
             // RHI in RegisterRuntime.cpp so it has already run at this point.
-            if (!CreateGLContext(GET_SYSTEM(WindowSystem).get()))
+            if (!CreateGLContext(GET_SYSTEM(WindowSystem)))
             {
                 LOG_FATAL(ZRender, "WebGL2RHI: failed to acquire current WebGL2 context");
                 return false;

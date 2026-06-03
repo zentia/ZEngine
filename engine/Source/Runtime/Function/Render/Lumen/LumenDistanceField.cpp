@@ -14,7 +14,7 @@ LumenDistanceField::~LumenDistanceField()
     clear();
 }
 
-bool LumenDistanceField::Initialize(std::shared_ptr<RHI> rhi, const LumenConfig& config)
+bool LumenDistanceField::Initialize(RHI* rhi, const LumenConfig& config)
 {
     m_Rhi = rhi;
     m_Config = config;

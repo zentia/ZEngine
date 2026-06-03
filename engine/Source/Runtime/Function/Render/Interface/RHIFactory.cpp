@@ -30,49 +30,32 @@
 
 #include <memory>
 
-std::shared_ptr<RHI> RHIFactory::CreateRHI(GraphicsAPI api, WindowSystem* window_system)
+RHI* RHIFactory::CreateRHI(GraphicsAPI api, WindowSystem* window_system)
 {
     switch (api)
     {
 #if defined(Z_HAS_VULKAN)
         case GraphicsAPI::Vulkan:
         {
-            auto rhi = std::make_shared<VulkanRHI>();
-            RHIInitInfo init_info;
-            init_info.window_system = window_system;
-            init_info.api = GraphicsAPI::Vulkan;
-            // Note: Initialize() will be called by the engine system manager
-            return rhi;
+            return new VulkanRHI();
         }
 #endif
 #ifdef _WIN32
         case GraphicsAPI::DirectX12:
         {
-            auto rhi = std::make_shared<DX12RHI>();
-            RHIInitInfo init_info;
-            init_info.window_system = window_system;
-            init_info.api = GraphicsAPI::DirectX12;
-            return rhi;
+            return new DX12RHI();
         }
 #endif
 #ifdef __APPLE__
         case GraphicsAPI::Metal:
         {
-            auto rhi = std::make_shared<MetalRHI>();
-            RHIInitInfo init_info;
-            init_info.window_system = window_system;
-            init_info.api = GraphicsAPI::Metal;
-            return rhi;
+            return new MetalRHI();
         }
 #endif
 #ifdef __EMSCRIPTEN__
         case GraphicsAPI::WebGL2:
         {
-            auto rhi = std::make_shared<ZEngine::WebGL2::WebGL2RHI>();
-            RHIInitInfo init_info;
-            init_info.window_system = window_system;
-            init_info.api = GraphicsAPI::WebGL2;
-            return rhi;
+            return new ZEngine::WebGL2::WebGL2RHI();
         }
 #endif
         default:

@@ -19,7 +19,7 @@ public:
     ~LumenReflections();
 
     // 初始化
-    bool Initialize(std::shared_ptr<RHI> rhi, const LumenConfig& config);
+    bool Initialize(RHI* rhi, const LumenConfig& config);
 
     // 清理
     void clear();
@@ -63,7 +63,7 @@ private:
     LumenConfig m_Config;
 
     // RHI
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
 
     // 子系统引用
     LumenRayTracing* m_RayTracing = nullptr;

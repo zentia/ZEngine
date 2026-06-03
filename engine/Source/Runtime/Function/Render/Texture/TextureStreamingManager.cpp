@@ -24,7 +24,7 @@ TextureStreamingManager::~TextureStreamingManager()
     Shutdown();
 }
 
-void TextureStreamingManager::Initialize(std::shared_ptr<RHI> rhi, RenderResourceBase* render_resource)
+void TextureStreamingManager::Initialize(RHI* rhi, RenderResourceBase* render_resource)
 {
     m_Rhi = rhi;
     m_RenderResource = render_resource;

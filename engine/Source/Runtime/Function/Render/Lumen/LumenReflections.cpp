@@ -12,7 +12,7 @@ LumenReflections::~LumenReflections()
     clear();
 }
 
-bool LumenReflections::Initialize(std::shared_ptr<RHI> rhi, const LumenConfig& config)
+bool LumenReflections::Initialize(RHI* rhi, const LumenConfig& config)
 {
     m_Rhi = rhi;
     m_Config = config;

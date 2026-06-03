@@ -20,7 +20,7 @@ public:
     ~LumenSurfaceCacheManager();
 
     // 初始化
-    bool Initialize(std::shared_ptr<RHI> rhi, const LumenConfig& config);
+    bool Initialize(RHI* rhi, const LumenConfig& config);
 
     // 清理
     void clear();
@@ -76,7 +76,7 @@ private:
     LumenConfig m_Config;
 
     // RHI
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
 
     // 页面映射（世界位置 -> 页面ID）
     std::unordered_map<uint64_t, uint32_t> m_PositionToPageMap;

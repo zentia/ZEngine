@@ -22,7 +22,7 @@ public:
     ~LumenRenderer();
 
     // 初始化
-    bool Initialize(std::shared_ptr<RHI> rhi,
+    bool Initialize(RHI* rhi,
                     std::shared_ptr<RenderResourceBase> render_resource,
                     const LumenConfig& config);
 
@@ -65,7 +65,7 @@ private:
     LumenConfig m_Config;
 
     // RHI和资源
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     std::shared_ptr<RenderResourceBase> m_RenderResource;
 
     // 子系统

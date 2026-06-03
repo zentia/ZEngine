@@ -126,7 +126,7 @@ void MobileRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceBa
                 CombineUIPass& combine_ui_pass = *(static_cast<CombineUIPass*>(m_Pipeline.m_CombineUiPass.get()));
                 ParticlePass& particle_pass = *(static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get()));
                 MainCameraPass* main_camera_pass = static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get());
-                VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Pipeline.m_Rhi.get());
+                VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Pipeline.m_Rhi);
 
                 main_camera_pass->Draw(color_grading_pass,
                                        fxaa_pass,
@@ -142,14 +142,14 @@ void MobileRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceBa
     out_draw_list.Add(
         "DebugDraw",
         [this]() {
-            VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Pipeline.m_Rhi.get());
+            VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Pipeline.m_Rhi);
             GET_SYSTEM(DebugDrawManager)->Draw(vulkan_rhi->m_CurrentSwapchainImageIndex);
         });
     #endif
 #endif
 }
 
-void MobileRenderPipelineModule::SubmitDrawLists(std::shared_ptr<RHI> rhi,
+void MobileRenderPipelineModule::SubmitDrawLists(RHI* rhi,
                                                  std::shared_ptr<RenderResourceBase> render_resource,
                                                  const RHIDrawList& draw_list)
 {

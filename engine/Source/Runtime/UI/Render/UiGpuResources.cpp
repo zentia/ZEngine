@@ -116,7 +116,7 @@ void UiGpuResources::ReuploadTextureInPlace(GpuTexture* target,
     delete fresh_tex;
 }
 
-void UiGpuResources::Initialize(const std::shared_ptr<RHI>& rhi)
+void UiGpuResources::Initialize(RHI* rhi)
 {
     if (m_Ready || rhi == nullptr)
     {
@@ -176,7 +176,7 @@ void UiGpuResources::Shutdown()
     m_WhiteTexture.reset();
 
     m_TextureLayout = nullptr;
-    m_Rhi.reset();
+    m_Rhi = nullptr;
     m_Ready = false;
 
     if (s_Instance == this)

@@ -20,7 +20,7 @@ namespace
 #endif
     }
 
-    RHIPipeline* CreateFullscreenPostPipeline(std::shared_ptr<RHI>& rhi,
+    RHIPipeline* CreateFullscreenPostPipeline(RHI* rhi,
                                               RHIShader* vert,
                                               RHIShader* frag,
                                               RHIPipelineLayout* layout,
@@ -118,7 +118,7 @@ bool MainCameraRp2Pass::Initialize(bool enable_fxaa)
         return false;
     }
 
-    const auto render_resource = std::static_pointer_cast<RenderResource>(m_RenderResource);
+    const auto render_resource = static_cast<RenderResource*>(m_RenderResource.get());
     m_GlobalRenderResource = render_resource ? &render_resource->m_GlobalRenderResource : nullptr;
     if (m_GlobalRenderResource == nullptr)
     {

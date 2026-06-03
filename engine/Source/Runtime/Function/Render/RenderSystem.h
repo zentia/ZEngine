@@ -48,7 +48,7 @@ class RenderSystemInitInfo
 public:
     std::string ui_pass_name;
     WindowSystem* window_system;
-    std::shared_ptr<RHI> rhi;
+    RHI* rhi;
 };
 class RenderSystem : public IEngineSystem
 {
@@ -72,7 +72,7 @@ public:
     GetRenderCamera(ViewportType viewportType) const;  // Legacy: returns first camera
     std::shared_ptr<RenderCamera> GetCamera(ViewportType camera_id) const;
     std::vector<std::shared_ptr<RenderCamera>> GetAllCameras();
-    std::shared_ptr<RHI> GetRHI() const;
+    RHI* GetRHI() const;
 
     void InitializeUIRenderBackend(WindowUI* window_ui);
 
@@ -115,7 +115,7 @@ public:
 private:
     RenderSwapContext m_SwapContext;
 
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     // Unity-style: Multiple cameras support
     std::vector<std::shared_ptr<RenderCamera>> m_Cameras;  // Camera ID -> Camera mapping
     std::shared_ptr<RenderScene> m_RenderScene;

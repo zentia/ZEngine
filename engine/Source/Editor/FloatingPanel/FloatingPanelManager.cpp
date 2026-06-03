@@ -387,8 +387,8 @@ void FloatingPanelManager::ProcessPendingFloat()
         return;
 
     DefaultLayout* layout = ResolveLayout();
-    WindowSystem* window_system = GET_SYSTEM(WindowSystem).get();
-    std::shared_ptr<RHI> rhi_base = GET_SYSTEM(RenderSystem) ? GET_SYSTEM(RenderSystem)->GetRHI() : nullptr;
+    WindowSystem* window_system = GET_SYSTEM(WindowSystem);
+    RHI* rhi_base = GET_SYSTEM(RenderSystem) ? GET_SYSTEM(RenderSystem)->GetRHI() : nullptr;
     if (layout == nullptr || window_system == nullptr || rhi_base == nullptr)
     {
         // Not ready yet (e.g. RHI still booting on the first ticks after a session
@@ -396,7 +396,7 @@ void FloatingPanelManager::ProcessPendingFloat()
         return;
     }
     DX12RHI* dx12 = (rhi_base->getGraphicsAPI() == GraphicsAPI::DirectX12)
-                        ? static_cast<DX12RHI*>(rhi_base.get())
+                        ? static_cast<DX12RHI*>(rhi_base)
                         : nullptr;
     if (dx12 == nullptr)
     {
@@ -506,7 +506,7 @@ void FloatingPanelManager::ProcessPendingFloat()
 void FloatingPanelManager::DestroyPanel(FloatingPanel& panel, bool redock)
 {
     auto render_system = GET_SYSTEM(RenderSystem);
-    std::shared_ptr<RHI> rhi_base = render_system ? render_system->GetRHI() : nullptr;
+    RHI* rhi_base = render_system ? render_system->GetRHI() : nullptr;
 
     // Free the per-window GPU ring in the overlay.
 #if defined(_WIN32)
@@ -525,7 +525,7 @@ void FloatingPanelManager::DestroyPanel(FloatingPanel& panel, bool redock)
 
         if (rhi_base->getGraphicsAPI() == GraphicsAPI::DirectX12)
         {
-            static_cast<DX12RHI*>(rhi_base.get())->DestroyFloatingSurface(panel.surface);
+            static_cast<DX12RHI*>(rhi_base)->DestroyFloatingSurface(panel.surface);
             panel.surface = nullptr;
         }
     }
@@ -533,7 +533,7 @@ void FloatingPanelManager::DestroyPanel(FloatingPanel& panel, bool redock)
 
     if (panel.window != nullptr)
     {
-        if (WindowSystem* window_system = GET_SYSTEM(WindowSystem).get())
+        if (WindowSystem* window_system = GET_SYSTEM(WindowSystem))
             window_system->DestroyChildWindow(panel.window);
         panel.window = nullptr;
     }
@@ -791,9 +791,9 @@ void FloatingPanelManager::TickMainThread()
 #if defined(_WIN32)
     // Track child-window resizes -> resize the floating swapchain.
     auto render_system = GET_SYSTEM(RenderSystem);
-    std::shared_ptr<RHI> rhi_base = render_system ? render_system->GetRHI() : nullptr;
+    RHI* rhi_base = render_system ? render_system->GetRHI() : nullptr;
     DX12RHI* dx12 = (rhi_base != nullptr && rhi_base->getGraphicsAPI() == GraphicsAPI::DirectX12)
-                        ? static_cast<DX12RHI*>(rhi_base.get())
+                        ? static_cast<DX12RHI*>(rhi_base)
                         : nullptr;
     if (dx12 != nullptr)
     {
@@ -1038,13 +1038,13 @@ void FloatingPanelManager::BuildBatches()
         layout->SetExternalDockHint(false);
 }
 
-void FloatingPanelManager::DrawSurfaces(const std::shared_ptr<RHI>& rhi)
+void FloatingPanelManager::DrawSurfaces(RHI* rhi)
 {
 #if defined(_WIN32)
     if (rhi == nullptr || m_Panels.empty() || rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
         return;
 
-    DX12RHI* dx12 = static_cast<DX12RHI*>(rhi.get());
+    DX12RHI* dx12 = static_cast<DX12RHI*>(rhi);
     ZSlate::ZSlateEditorOverlay& overlay = ZSlate::ZSlateEditorOverlay::Get();
     const float clear_color[4] = {0.15f, 0.15f, 0.15f, 1.0f};
 

@@ -2,6 +2,13 @@
 
 #include <string>
 
+enum class SceneSavePromptResult
+{
+    Save,
+    DontSave,
+    Cancel,
+};
+
 class EditorUtility
 {
 public:
@@ -26,8 +33,16 @@ public:
                                const std::string& default_directory,
                                const std::string& default_file_name,
                                std::string& out_path);
+    // default_extension: extension without dot (e.g. "scene", "json").
+    // filter_glob: Windows file-type glob (e.g. "*.scene"); nullptr keeps the
+    // legacy layout/json filter set used by layout save.
     static bool SaveFileDialog(const std::string& title,
                                const std::string& default_directory,
                                const std::string& default_file_name,
-                               std::string& out_path);
+                               std::string& out_path,
+                               const char* default_extension = "json",
+                               const char* filter_glob = nullptr);
+
+    // Unity-style unsaved-scene prompt (Save / Don't Save / Cancel).
+    static SceneSavePromptResult PromptUnsavedScene(const std::string& scene_display_name);
 };

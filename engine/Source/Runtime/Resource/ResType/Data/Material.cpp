@@ -37,8 +37,8 @@ namespace
                                            PPtr<ShaderRes>& out_pptr,
                                            eastl::string& out_guid)
     {
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
-        const std::shared_ptr<AssetManager> asset_mgr = GET_SYSTEM(AssetManager);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
+        AssetManager* asset_mgr = GET_SYSTEM(AssetManager);
         if (project_info == nullptr || asset_mgr == nullptr || entry.m_ZassetRelPath.empty())
         {
             return false;
@@ -210,7 +210,7 @@ eastl::string Material::ResolveTextureAssetPath(const PPtr<Texture2D>& texture)
     {
         return {};
     }
-    const std::shared_ptr<AssetManager> asset_mgr = GET_SYSTEM(AssetManager);
+    AssetManager* asset_mgr = GET_SYSTEM(AssetManager);
     if (asset_mgr == nullptr)
     {
         return {};
@@ -232,7 +232,7 @@ bool Material::AssignTextureFromAssetPath(PPtr<Texture2D>& out_texture, const ea
         return true;
     }
 
-    const std::shared_ptr<AssetManager> asset_mgr = GET_SYSTEM(AssetManager);
+    AssetManager* asset_mgr = GET_SYSTEM(AssetManager);
     if (asset_mgr == nullptr)
     {
         return false;
@@ -262,7 +262,7 @@ bool Material::AssignTextureFromAssetPath(PPtr<Texture2D>& out_texture, const ea
         return true;
     }
 
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info != nullptr)
     {
         const std::filesystem::path content_root = project_info->GetProjectContent();
@@ -431,8 +431,8 @@ void Material::SetShaderByName(const eastl::string& name)
         }
     }
 
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
-    const std::shared_ptr<AssetManager> asset_mgr = GET_SYSTEM(AssetManager);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
+    AssetManager* asset_mgr = GET_SYSTEM(AssetManager);
     if (project_info == nullptr || asset_mgr == nullptr)
     {
         return;

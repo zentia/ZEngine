@@ -53,7 +53,7 @@ void EditorUIPass::InitializeUIRenderBackend(WindowUI* window_ui)
 #if defined(_WIN32)
     if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
     {
-        std::shared_ptr<DX12RHI> dx12_rhi = std::static_pointer_cast<DX12RHI>(m_Rhi);
+        DX12RHI* dx12_rhi = static_cast<DX12RHI*>(m_Rhi);
         if (dx12_rhi == nullptr || dx12_rhi->getDevice() == nullptr || dx12_rhi->getCommandQueue() == nullptr ||
             dx12_rhi->GetCbvSrvUavDescriptorHeap() == nullptr)
         {
@@ -181,7 +181,7 @@ void EditorUIPass::Draw()
             }
         }
 
-        std::shared_ptr<DX12RHI> dx12_rhi = std::static_pointer_cast<DX12RHI>(m_Rhi);
+        DX12RHI* dx12_rhi = static_cast<DX12RHI*>(m_Rhi);
         if (dx12_rhi == nullptr || dx12_rhi->IsDeviceRemoved(" before editor UI draw"))
         {
             CompletePreparedImGuiFrameOnEarlyOut();

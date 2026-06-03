@@ -106,7 +106,7 @@ bool FontImporter::Import(const std::filesystem::path& source_path,
         return false;
     }
 
-    auto* object_manager = GET_SYSTEM(ObjectManager).get();
+    auto* object_manager = GET_SYSTEM(ObjectManager);
     if (object_manager == nullptr)
     {
         LOG_ERROR(ZEditor, "FontImporter: ObjectManager unavailable");
@@ -179,7 +179,7 @@ bool FontImporter::Import(const std::filesystem::path& source_path,
 
 bool FontImporter::Reimport(const std::filesystem::path& zasset_path, const AssetImporterSettings& import_settings)
 {
-    if (auto editor_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager)))
+    if (auto editor_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
     {
         return editor_mgr->reimportAsset(zasset_path.generic_string(), &import_settings);
     }

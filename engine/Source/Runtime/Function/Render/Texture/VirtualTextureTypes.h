@@ -206,7 +206,7 @@ public:
     ~PhysicalTexturePool();
 
     // Initialize the physical texture pool
-    bool Initialize(std::shared_ptr<RHI> rhi,
+    bool Initialize(RHI* rhi,
                     uint32_t pool_width_pages,
                     uint32_t pool_height_pages,
                     uint32_t page_size,
@@ -252,7 +252,7 @@ public:
     bool IsSlotAllocated(uint32_t slot_index) const;
 
 private:
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     RHIImage* m_PhysicalTexture;
     RHIImageView* m_PhysicalTextureView;
     VmaAllocation m_Allocation;

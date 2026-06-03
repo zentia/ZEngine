@@ -79,7 +79,7 @@ ZSlateProjectWindow::ZSlateProjectWindow(EditorUI* editor_ui)
 {
     s_Instance = this;
 
-    if (auto asset_manager = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager)))
+    if (auto asset_manager = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
     {
         m_AssetRegistryListenerHandle = asset_manager->RegisterOnAssetUpdated(
             [this, asset_manager](const AssetRegistryChangeEvent& ev) {
@@ -112,7 +112,7 @@ ZSlateProjectWindow::~ZSlateProjectWindow()
 {
     if (m_AssetRegistryListenerHandle != 0)
     {
-        if (auto asset_manager = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager)))
+        if (auto asset_manager = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
             asset_manager->UnregisterOnAssetUpdated(m_AssetRegistryListenerHandle);
     }
     s_Instance = nullptr;
@@ -220,7 +220,11 @@ void ZSlateProjectWindow::AddNodeRows(EditorFileNode* node, int depth, float sca
                 else
                 {
                     const std::string& ext = node_ptr->m_FileExtension;
-                    if (ext == "ts" || ext == "tsx" || ext == "js" || ext == "json")
+                    if (ext == "scene")
+                    {
+                        GET_SYSTEM(EditorSceneManager)->OpenSceneFromProjectPath(node_ptr->m_FilePath);
+                    }
+                    else if (ext == "ts" || ext == "tsx" || ext == "js" || ext == "json")
                         EditorUtility::OpenInExternalEditor(node_ptr->m_FilePath);
                 }
             }

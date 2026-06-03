@@ -59,7 +59,7 @@ public:
 
     void TickMainThread();
     void BuildBatches();
-    void DrawSurfaces(const std::shared_ptr<RHI>& rhi);
+    void DrawSurfaces(RHI* rhi);
 
     FloatingPanelManager(const FloatingPanelManager&) = delete;
     FloatingPanelManager& operator=(const FloatingPanelManager&) = delete;

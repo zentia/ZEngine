@@ -106,7 +106,7 @@ public:
     RHIImageView* getPageTableTextureView() const { return m_PageTableTextureView; }
 
     // Update page table texture (call after modifying page table entries)
-    void UpdatePageTableTexture(std::shared_ptr<RHI> rhi);
+    void UpdatePageTableTexture(RHI* rhi);
 
 private:
     VirtualTextureHandle m_Handle;  // Virtual texture handle

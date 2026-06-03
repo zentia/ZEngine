@@ -84,7 +84,7 @@ namespace
 
     std::filesystem::path GetProjectContentPath()
     {
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr)
         {
             return {};
@@ -101,7 +101,7 @@ namespace
             return {};
         }
 
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr || project_info->GetProjectRoot().empty())
         {
             return {};
@@ -125,7 +125,7 @@ namespace
         }
 
         std::filesystem::path resolved;
-        if (ShaderRegistry* registry = GET_SYSTEM(ShaderRegistry).get())
+        if (ShaderRegistry* registry = GET_SYSTEM(ShaderRegistry))
         {
             if (const ShaderRegistryEntry* entry = registry->FindByName(shader_name))
             {
@@ -935,14 +935,14 @@ namespace
             ShaderPreviewTextureResult result;
             result.handled = true;
 
-            const std::shared_ptr<RHI> rhi = GET_SYSTEM(RenderSystem)->GetRHI();
+            RHI* rhi = GET_SYSTEM(RenderSystem)->GetRHI();
             if (rhi == nullptr || rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
             {
                 result.handled = false;
                 return result;
             }
 
-            const std::shared_ptr<DX12RHI> dx12_rhi = std::static_pointer_cast<DX12RHI>(rhi);
+            DX12RHI* dx12_rhi = static_cast<DX12RHI*>(rhi);
             if (dx12_rhi == nullptr || dx12_rhi->IsDeviceRemoved(" before native shader preview"))
             {
                 result.message = "DX12 device was removed; restart the editor.";
@@ -1023,7 +1023,7 @@ namespace
         // upload command list. Device-side resources are created up front (they only need
         // the device, not a command list), then the draw is recorded inside the one-shot
         // list provided by ExecuteDedicatedUploadCommands.
-        bool RenderNative(const std::shared_ptr<DX12RHI>& dx12_rhi,
+        bool RenderNative(DX12RHI* dx12_rhi,
                           const PreviewSource& preview_source,
                           const std::vector<PreviewVertex>& vertices,
                           const uint32_t texture_size,
@@ -1141,7 +1141,7 @@ namespace
             return true;
         }
 
-        bool ensureRenderTarget(const std::shared_ptr<DX12RHI>& dx12_rhi, const uint32_t texture_size, std::string& out_error)
+        bool ensureRenderTarget(DX12RHI* dx12_rhi, const uint32_t texture_size, std::string& out_error)
         {
             if (m_RenderTarget && m_TextureSize == texture_size)
             {

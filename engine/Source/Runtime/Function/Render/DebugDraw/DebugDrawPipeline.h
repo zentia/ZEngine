@@ -60,5 +60,5 @@ private:
     RHIDescriptorSetLayout* m_DescriptorLayout;
     std::vector<DebugDrawPipelineBase> m_RenderPipelines;
     DebugDrawFramebuffer m_Framebuffer;
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
 };

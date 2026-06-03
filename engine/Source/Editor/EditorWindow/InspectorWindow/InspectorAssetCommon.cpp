@@ -15,7 +15,7 @@ namespace
 {
     std::filesystem::path GetProjectAssetsPath()
     {
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr)
         {
             return {};

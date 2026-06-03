@@ -4,6 +4,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
+#include "Runtime/Function/Framework/World/WorldManager.h"
 
 namespace EditorHierarchyReparent
 {
@@ -88,6 +89,7 @@ namespace EditorHierarchyReparent
             if (Transform* child_transform = child_object->tryGetComponent(Transform))
             {
                 child_transform->SetParent(nullptr, true);
+                GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
                 return true;
             }
 
@@ -111,6 +113,7 @@ namespace EditorHierarchyReparent
         }
 
         child_transform->SetParent(parent_transform, true);
+        GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
         return true;
     }
 

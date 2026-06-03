@@ -19,6 +19,7 @@ void FileMenu::BuildZSlateMenu(ZSlate::SMenu& menu, float scale)
         GET_SYSTEM(EditorSceneManager)->OnGObjectSelected(k_invalid_gobject_id);
     }, scale);
     menu.AddItem("Save Scene    Ctrl+S", []() { GET_SYSTEM(WorldManager)->SaveCurrentLevel(); }, scale);
+    menu.AddItem("Save Scene As...", []() { GET_SYSTEM(EditorSceneManager)->SaveActiveSceneAsDialog(); }, scale);
 
     {
         std::shared_ptr<ZSlate::SMenu> debug = menu.AddSubMenu("Debug", scale);

@@ -63,7 +63,7 @@ void RenderPipelineBase::BuildDrawLists(std::shared_ptr<RenderResourceBase> rend
     out_draw_list.Clear();
 }
 
-void RenderPipelineBase::SubmitDrawLists(std::shared_ptr<RHI> rhi,
+void RenderPipelineBase::SubmitDrawLists(RHI* rhi,
                                          std::shared_ptr<RenderResourceBase> render_resource,
                                          const RHIDrawList& draw_list)
 {
@@ -83,7 +83,7 @@ void RenderPipelineBase::notifySkippedFrameRender() const
     }
 }
 
-void RenderPipelineBase::DeferredRender(std::shared_ptr<RHI> rhi, std::shared_ptr<RenderResourceBase> render_resource)
+void RenderPipelineBase::DeferredRender(RHI* rhi, std::shared_ptr<RenderResourceBase> render_resource)
 {
     RHIDrawList draw_list;
     BuildDrawLists(render_resource, draw_list);

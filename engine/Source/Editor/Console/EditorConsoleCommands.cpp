@@ -23,7 +23,7 @@ namespace
 {
     EditorAssetManager* GetEditorAssetManager()
     {
-        return std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager)).get();
+        return dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
     }
 
     bool CmdObjList(const std::vector<std::string>&)

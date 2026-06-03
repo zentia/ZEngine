@@ -59,6 +59,14 @@ public:
     void OnDeleteSelectedGObject();
 
     void FocusSelectedGObject();
+
+    // Unity-style scene file ops (.scene under Assets/).
+    void SaveActiveSceneAsDialog();
+    bool OpenSceneFromProjectPath(const eastl::string& project_file_path);
+
+    static std::string GetActiveSceneDisplayName();
+    void RefreshMainWindowTitle();
+    bool TryLeaveCurrentScene();
     void MoveEntity(float new_mouse_pos_x,
                     float new_mouse_pos_y,
                     float last_mouse_pos_x,
@@ -109,4 +117,11 @@ private:
     size_t m_SelectedAxis {3};
 
     bool m_IsShowAxis = true;
+
+    bool m_PendingLastSceneRestore {true};
+    std::string m_LastMainWindowTitle;
+
+    void TryRestoreLastOpenedScene();
+    void RecordLastOpenedScene(const eastl::string& level_url);
+    bool OpenSceneInternal(const eastl::string& level_url, bool skip_unsaved_prompt);
 };

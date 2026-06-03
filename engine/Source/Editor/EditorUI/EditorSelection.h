@@ -13,7 +13,7 @@ class GameObject;
 class EditorSelection
 {
 public:
-    static std::shared_ptr<EditorSceneManager> GetSceneManager();
+    static EditorSceneManager* GetSceneManager();
 
     static std::weak_ptr<GameObject> GetActiveGameObject();
     static GObjectID GetActiveGameObjectId();

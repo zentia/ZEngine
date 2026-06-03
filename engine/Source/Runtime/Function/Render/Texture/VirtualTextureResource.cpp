@@ -289,7 +289,7 @@ void VirtualTextureResource::CalculatePagesForMip(uint32_t mip_level, uint32_t& 
     pages_y = (mip_height + m_PageSize - 1) / m_PageSize;
 }
 
-void VirtualTextureResource::UpdatePageTableTexture(std::shared_ptr<RHI> rhi)
+void VirtualTextureResource::UpdatePageTableTexture(RHI* rhi)
 {
     // TODO: Implement page table texture update
     // This would create/update a 2D texture where each texel represents a page table entry

@@ -55,7 +55,7 @@ public:
     virtual void Shutdown() {}
 
     virtual void BuildDrawLists(std::shared_ptr<RenderResourceBase> render_resource, RHIDrawList& out_draw_list) = 0;
-    virtual void SubmitDrawLists(std::shared_ptr<RHI> rhi,
+    virtual void SubmitDrawLists(RHI* rhi,
                                  std::shared_ptr<RenderResourceBase> render_resource,
                                  const RHIDrawList& draw_list) = 0;
     virtual void UpdateAfterRecreate() = 0;

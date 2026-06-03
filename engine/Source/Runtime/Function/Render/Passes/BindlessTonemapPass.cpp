@@ -20,7 +20,7 @@ bool BindlessTonemapPass::InitBackendPipeline(RHIRenderPass* render_pass, const 
     {
 #if defined(_WIN32)
         const std::string root = hlsl_search_root != nullptr ? hlsl_search_root : "";
-        return m_Dx12Pipeline.Initialize(m_Rhi.get(), render_pass, root);
+        return m_Dx12Pipeline.Initialize(m_Rhi, render_pass, root);
 #else
         (void)hlsl_search_root;
         return false;
@@ -29,7 +29,7 @@ bool BindlessTonemapPass::InitBackendPipeline(RHIRenderPass* render_pass, const 
 
 #if defined(Z_HAS_VULKAN)
     (void)hlsl_search_root;
-    return m_VulkanPipeline.Initialize(m_Rhi.get(), render_pass);
+    return m_VulkanPipeline.Initialize(m_Rhi, render_pass);
 #else
     (void)hlsl_search_root;
     return false;
@@ -46,7 +46,7 @@ void BindlessTonemapPass::RecordBackendTonemap(RHICommandBuffer* cmd, uint32_t b
     if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
     {
 #if defined(_WIN32)
-        if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi.get()))
+        if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi))
         {
             dx12_rhi->SetBindlessDescriptorHeaps();
         }

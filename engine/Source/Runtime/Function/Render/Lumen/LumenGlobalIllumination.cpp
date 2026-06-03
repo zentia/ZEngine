@@ -14,7 +14,7 @@ LumenGlobalIllumination::~LumenGlobalIllumination()
     clear();
 }
 
-bool LumenGlobalIllumination::Initialize(std::shared_ptr<RHI> rhi, const LumenConfig& config)
+bool LumenGlobalIllumination::Initialize(RHI* rhi, const LumenConfig& config)
 {
     m_Rhi = rhi;
     m_Config = config;

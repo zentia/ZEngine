@@ -19,7 +19,7 @@ public:
     ~LumenDistanceField();
 
     // 初始化
-    bool Initialize(std::shared_ptr<RHI> rhi, const LumenConfig& config);
+    bool Initialize(RHI* rhi, const LumenConfig& config);
 
     // 清理
     void clear();
@@ -92,7 +92,7 @@ private:
     LumenConfig m_Config;
 
     // RHI
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
 
     // GPU资源（纹理或缓冲区）
     RHIImage* m_DistanceFieldTexture = nullptr;

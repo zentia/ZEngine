@@ -18,7 +18,7 @@ public:
     ~LumenRayTracing();
 
     // 初始化
-    bool Initialize(std::shared_ptr<RHI> rhi, const LumenConfig& config);
+    bool Initialize(RHI* rhi, const LumenConfig& config);
 
     // 清理
     void clear();
@@ -65,7 +65,7 @@ private:
     LumenConfig m_Config;
 
     // RHI
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
 
     // 距离场引用
     LumenDistanceField* m_DistanceField = nullptr;

@@ -53,7 +53,7 @@ namespace
 
     Level* GetActiveLevel()
     {
-        const std::shared_ptr<WorldManager> world_manager = GET_SYSTEM(WorldManager);
+        WorldManager* world_manager = GET_SYSTEM(WorldManager);
         return world_manager != nullptr ? world_manager->getCurrentActiveLevel() : nullptr;
     }
 }  // namespace

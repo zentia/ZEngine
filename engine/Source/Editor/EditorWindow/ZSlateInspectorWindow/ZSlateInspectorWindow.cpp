@@ -1051,7 +1051,7 @@ void ZSlateInspectorWindow::BuildFontAsset(const std::filesystem::path& asset_pa
         reimport->Padding = FMargin(10.0f * scale, 4.0f * scale);
         reimport->SetContent(MakeText("Reimport", 14.0f * scale, kValueColor));
         reimport->OnClicked = [path_str]() {
-            if (auto editor_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager)))
+            if (auto editor_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
                 editor_mgr->reimportAsset(path_str, nullptr);
         };
         auto reimport_row = std::make_shared<SHorizontalBox>();
@@ -1161,7 +1161,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
         .AutoSize()
         .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
 
-    auto editor_asset_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+    auto editor_asset_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
     if (editor_asset_mgr == nullptr)
     {
         column->AddSlot(MakeText("Texture import settings unavailable (EditorAssetManager missing).",
@@ -1393,7 +1393,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
         apply->Padding = FMargin(10.0f * scale, 4.0f * scale);
         apply->SetContent(MakeText("Apply", 14.0f * scale, kValueColor));
         apply->OnClicked = [this, zasset_abs]() {
-            if (auto mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager)))
+            if (auto mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
                 mgr->GetTextureImportSettingsRegistry().Set(zasset_abs, s_tex_settings);
             s_tex_dirty = false;
             s_tex_status = "Import settings saved.";
@@ -1404,7 +1404,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
         reimport->Padding = FMargin(10.0f * scale, 4.0f * scale);
         reimport->SetContent(MakeText("Reimport", 14.0f * scale, kValueColor));
         reimport->OnClicked = [this, zasset_abs, zasset_str]() {
-            auto mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+            auto mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
             if (mgr == nullptr)
                 return;
             mgr->GetTextureImportSettingsRegistry().Set(zasset_abs, s_tex_settings);

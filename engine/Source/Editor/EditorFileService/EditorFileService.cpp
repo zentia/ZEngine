@@ -66,7 +66,7 @@ splitString(std::string input_string, const std::string& separator, const std::s
 
 std::filesystem::path getEditorSourceAssetFolder()
 {
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info != nullptr)
     {
         const std::filesystem::path project_content = project_info->GetProjectContent();
@@ -211,12 +211,12 @@ std::string computeAssetTypeLabelFromRegistry(const std::filesystem::path& file_
     {
         return {};
     }
-    auto am = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+    auto am = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
     if (am == nullptr)
     {
         return {};
     }
-    const AssetRegistry& reg = const_cast<EditorAssetManager*>(am.get())->getAssetRegistry();
+    const AssetRegistry& reg = am->getAssetRegistry();
 
     // Walk the relative shape from the same scan_root the registry used.
     // ProjectInfo::m_WorkingDir is what EditorAssetManager::Initialize
@@ -386,7 +386,7 @@ void EditorFileService::BuildEngineFileTree()
     // Root 2: Scripts/ (peer of Assets/, UE-style placement; see AGENTS.md
     // 2.2). Only added when ProjectInfo can resolve a real Scripts folder
     // path - on the launcher / "no project loaded" screen this stays empty.
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info != nullptr)
     {
         std::filesystem::path scripts_root = project_info->GetScriptsRoot();

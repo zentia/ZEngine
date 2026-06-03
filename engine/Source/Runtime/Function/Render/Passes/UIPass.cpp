@@ -69,7 +69,7 @@ namespace
 #endif
     }
 
-    RHIShader* LoadDx12UiShader(std::shared_ptr<RHI>& rhi, const char* hlsl_relative_path, ShaderStage stage)
+    RHIShader* LoadDx12UiShader(RHI* rhi, const char* hlsl_relative_path, ShaderStage stage)
     {
         const std::string full_path = GetShaderRoot() + "/hlsl/rp2/" + hlsl_relative_path;
         std::vector<uint8_t> binary;

@@ -2,7 +2,7 @@
 
 #include "Runtime/Core/Base/Macro.h"
 
-std::shared_ptr<EditorSceneManager> EditorSelection::GetSceneManager()
+EditorSceneManager* EditorSelection::GetSceneManager()
 {
     return GET_SYSTEM(EditorSceneManager);
 }

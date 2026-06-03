@@ -21,8 +21,8 @@ namespace MainCameraPassShaderCommon
 
     const VulkanShaderPassData* FindShaderPassByLightMode(const VulkanPBRMaterial& material, const char* desired_light_mode);
     const VulkanShaderPassData* FindTransparentShaderPass(const VulkanPBRMaterial& material);
-    bool CanUseRuntimePrimaryShaderPass(const std::shared_ptr<RHI>& rhi, const VulkanPBRMaterial& material);
-    bool CanUseRuntimeShaderPass(const std::shared_ptr<RHI>& rhi,
+    bool CanUseRuntimePrimaryShaderPass(RHI* rhi, const VulkanPBRMaterial& material);
+    bool CanUseRuntimeShaderPass(RHI* rhi,
                                  const VulkanPBRMaterial& material,
                                  const VulkanShaderPassData* shader_pass);
 

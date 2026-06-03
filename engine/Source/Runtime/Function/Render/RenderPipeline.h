@@ -17,11 +17,11 @@ public:
     virtual void Initialize(RenderPipelineInitInfo init_info) override final;
 
     void BuildDrawLists(std::shared_ptr<RenderResourceBase> render_resource, RHIDrawList& out_draw_list) override final;
-    void SubmitDrawLists(std::shared_ptr<RHI> rhi,
+    void SubmitDrawLists(RHI* rhi,
                          std::shared_ptr<RenderResourceBase> render_resource,
                          const RHIDrawList& draw_list) override final;
 
-    virtual void DeferredRender(std::shared_ptr<RHI> rhi,
+    virtual void DeferredRender(RHI* rhi,
                                 std::shared_ptr<RenderResourceBase> render_resource) override final;
 
     void ConsumeParticleSwapData(RenderSwapData& swap_data, RenderSwapContext& swap_context) override;

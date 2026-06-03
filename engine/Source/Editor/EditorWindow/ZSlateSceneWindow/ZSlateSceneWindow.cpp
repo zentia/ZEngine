@@ -277,7 +277,7 @@ std::shared_ptr<SWidget> ZSlateSceneWindow::MakeAxisButton(const char* label,
 
 void ZSlateSceneWindow::BuildToolbar(float scale)
 {
-    EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager).get();
+    EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager);
     const EditorAxisMode mode = scene_manager != nullptr ? scene_manager->getEditorAxisMode() : EditorAxisMode::TranslateMode;
     const bool scene_view_2d = scene_manager != nullptr && scene_manager->IsSceneView2D();
 
@@ -302,7 +302,7 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
         btn->PressedColor = scene_view_2d ? kBtnSelected : kBtnNormal;
         btn->SetContent(MakeText("2D", 13.0f * scale, kBtnText));
         btn->OnClicked = [scene_view_2d]() {
-            EditorSceneManager* sm = GET_SYSTEM(EditorSceneManager).get();
+            EditorSceneManager* sm = GET_SYSTEM(EditorSceneManager);
             if (sm != nullptr)
                 sm->SetSceneView2D(!scene_view_2d);
         };
@@ -404,6 +404,7 @@ void ZSlateSceneWindow::OpenContextMenu(const Vector2& anchor, float scale)
         }, s);
         menu.AddSeparator(s);
         menu.AddItem("Save Scene    Ctrl+S", []() { GET_SYSTEM(WorldManager)->SaveCurrentLevel(); }, s);
+        menu.AddItem("Save Scene As...", []() { GET_SYSTEM(EditorSceneManager)->SaveActiveSceneAsDialog(); }, s);
         menu.AddItem("Reload Current Level", []() {
             GET_SYSTEM(WorldManager)->ReloadCurrentLevel();
             GET_SYSTEM(RenderSystem)->ClearForLevelReloading();
@@ -421,7 +422,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
     auto column = std::make_shared<SVerticalBox>();
 
     std::shared_ptr<RenderCamera> cam = GET_SYSTEM(EditorSceneManager)->getEditorCamera();
-    EditorInputManager* input_manager = GET_SYSTEM(EditorInputManager).get();
+    EditorInputManager* input_manager = GET_SYSTEM(EditorInputManager);
 
     const float label_w = 130.0f * scale;
     const float row_pad = 4.0f * scale;
@@ -594,7 +595,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
             cb->BoxSize = 16.0f * scale;
             cb->Checked = input_manager->isCameraEasingEnabled();
             cb->OnCheckStateChanged = [](bool v) {
-                EditorInputManager* im = GET_SYSTEM(EditorInputManager).get();
+                EditorInputManager* im = GET_SYSTEM(EditorInputManager);
                 if (im != nullptr)
                     im->setCameraEasingEnabled(v);
             };
@@ -605,7 +606,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
             cb->BoxSize = 16.0f * scale;
             cb->Checked = input_manager->isCameraAccelerationEnabled();
             cb->OnCheckStateChanged = [](bool v) {
-                EditorInputManager* im = GET_SYSTEM(EditorInputManager).get();
+                EditorInputManager* im = GET_SYSTEM(EditorInputManager);
                 if (im != nullptr)
                     im->setCameraAccelerationEnabled(v);
             };
@@ -628,7 +629,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
             slider->MinDesiredWidth = 90.0f * scale;
             slider->Value = (smax > smin) ? (speed - smin) / (smax - smin) : 0.0f;
             slider->OnValueChanged = [smin, smax, value_text](float t) {
-                EditorInputManager* im = GET_SYSTEM(EditorInputManager).get();
+                EditorInputManager* im = GET_SYSTEM(EditorInputManager);
                 if (im == nullptr)
                     return;
                 const float v = smin + t * (smax - smin);
@@ -668,7 +669,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
             std::weak_ptr<SEditableTextBox> min_weak = min_box;
             std::weak_ptr<SEditableTextBox> max_weak = max_box;
             auto refresh = [min_weak, max_weak]() {
-                EditorInputManager* im = GET_SYSTEM(EditorInputManager).get();
+                EditorInputManager* im = GET_SYSTEM(EditorInputManager);
                 if (im == nullptr)
                     return;
                 if (auto n = min_weak.lock())
@@ -686,7 +687,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
             };
 
             min_box->OnTextCommitted = [refresh](const std::string& s) {
-                EditorInputManager* im = GET_SYSTEM(EditorInputManager).get();
+                EditorInputManager* im = GET_SYSTEM(EditorInputManager);
                 if (im == nullptr)
                     return;
                 char* end = nullptr;
@@ -696,7 +697,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
                 refresh();
             };
             max_box->OnTextCommitted = [refresh](const std::string& s) {
-                EditorInputManager* im = GET_SYSTEM(EditorInputManager).get();
+                EditorInputManager* im = GET_SYSTEM(EditorInputManager);
                 if (im == nullptr)
                     return;
                 char* end = nullptr;
@@ -868,7 +869,7 @@ void ZSlateSceneWindow::HandleDragDropDrop(bool chrome_capturing, const UIRect& 
 
 void ZSlateSceneWindow::HandleSceneViewNavigation(bool chrome_capturing, const UIRect& work_rect)
 {
-    RHI* rhi = GET_SYSTEM(RHI).get();
+    RHI* rhi = GET_SYSTEM(RHI);
     if (rhi == nullptr || rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
         return;
 
@@ -993,7 +994,7 @@ void ZSlateSceneWindow::ZoomSceneViewCamera(const std::shared_ptr<RenderCamera>&
 
 void ZSlateSceneWindow::MoveSceneViewCameraWithKeyboard(const std::shared_ptr<RenderCamera>& editor_camera) const
 {
-    WindowSystem* window_system = GET_SYSTEM(WindowSystem).get();
+    WindowSystem* window_system = GET_SYSTEM(WindowSystem);
     if (!editor_camera || window_system == nullptr || window_system->GetWindow() == nullptr)
         return;
 
@@ -1085,7 +1086,7 @@ void ZSlateSceneWindow::OnGUI()
         ui_scale = 1.0f;
 
     // Rebuild the toolbar when scale / axis mode / 2D state changes.
-    EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager).get();
+    EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager);
     const int axis_mode = scene_manager != nullptr ? static_cast<int>(scene_manager->getEditorAxisMode()) : 0;
     const bool scene_view_2d = scene_manager != nullptr && scene_manager->IsSceneView2D();
     if (m_Toolbar == nullptr || ui_scale != m_BuiltToolbarScale || axis_mode != m_BuiltAxisMode ||

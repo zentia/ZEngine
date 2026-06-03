@@ -41,7 +41,7 @@ namespace
 
     std::filesystem::path ResolveLevelLoadPath(const eastl::string& level_url)
     {
-        AssetManager* asset_manager = GET_SYSTEM(AssetManager).get();
+        AssetManager* asset_manager = GET_SYSTEM(AssetManager);
         if (asset_manager == nullptr)
         {
             return {};
@@ -73,7 +73,7 @@ namespace
 
     std::filesystem::path ResolveLevelSavePath(const eastl::string& level_url)
     {
-        AssetManager* asset_manager = GET_SYSTEM(AssetManager).get();
+        AssetManager* asset_manager = GET_SYSTEM(AssetManager);
         if (asset_manager == nullptr)
         {
             return {};
@@ -255,6 +255,7 @@ bool Level::load(const eastl::string& levelPath)
     }
 
     m_IsLoaded = true;
+    m_IsDirty = false;
     RebuildAllTransformHierarchies();
 
     LOG_INFO(ZLevel, "level load succeed");
@@ -294,7 +295,7 @@ bool Level::save()
         saved_objects.emplace_back(std::move(saved_object));
     }
 
-    AssetManager* asset_manager = GET_SYSTEM(AssetManager).get();
+    AssetManager* asset_manager = GET_SYSTEM(AssetManager);
     if (asset_manager == nullptr)
     {
         LOG_ERROR(ZLevel, "failed to save {}, AssetManager unavailable", m_LevelResUrl.c_str());
@@ -371,6 +372,7 @@ bool Level::save()
     else
     {
         LOG_INFO(ZLevel, "level save succeed -> {}", level_path.generic_string());
+        m_IsDirty = false;
     }
 
     return is_save_success;

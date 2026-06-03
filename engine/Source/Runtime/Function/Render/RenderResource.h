@@ -138,21 +138,21 @@ class RenderResource : public RenderResourceBase
 public:
     void clear() override final;
 
-    void CreateAndMapStorageBuffer(std::shared_ptr<RHI> rhi);
+    void CreateAndMapStorageBuffer(RHI* rhi);
 
-    virtual void UploadGlobalRenderResource(std::shared_ptr<RHI> rhi,
+    virtual void UploadGlobalRenderResource(RHI* rhi,
                                             LevelResourceDesc level_resource_desc) override final;
 
-    virtual void UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+    virtual void UploadGameObjectRenderResource(RHI* rhi,
                                                 RenderEntity render_entity,
                                                 RenderMeshData mesh_data,
                                                 RenderMaterialData material_data) override final;
 
-    virtual void UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+    virtual void UploadGameObjectRenderResource(RHI* rhi,
                                                 RenderEntity render_entity,
                                                 RenderMeshData mesh_data) override final;
 
-    virtual void UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+    virtual void UploadGameObjectRenderResource(RHI* rhi,
                                                 RenderEntity render_entity,
                                                 RenderMaterialData material_data) override final;
 
@@ -203,16 +203,16 @@ public:
     const MegaLights::MegaLightsSystem& GetMegaLightsSystem() const { return m_MegaLights; }
 
 private:
-    void CreateIBLSamplers(std::shared_ptr<RHI> rhi);
-    void CreateIBLTextures(std::shared_ptr<RHI> rhi,
+    void CreateIBLSamplers(RHI* rhi);
+    void CreateIBLTextures(RHI* rhi,
                            std::array<std::shared_ptr<TextureData>, 6> irradiance_maps,
                            std::array<std::shared_ptr<TextureData>, 6> specular_maps);
 
-    VulkanMesh& GetOrCreateVulkanMesh(std::shared_ptr<RHI> rhi, RenderEntity entity, RenderMeshData mesh_data);
+    VulkanMesh& GetOrCreateVulkanMesh(RHI* rhi, RenderEntity entity, RenderMeshData mesh_data);
     VulkanPBRMaterial&
-    GetOrCreateVulkanMaterial(std::shared_ptr<RHI> rhi, RenderEntity entity, RenderMaterialData material_data);
+    GetOrCreateVulkanMaterial(RHI* rhi, RenderEntity entity, RenderMaterialData material_data);
 
-    void UpdateMeshData(std::shared_ptr<RHI> rhi,
+    void UpdateMeshData(RHI* rhi,
                         bool enable_vertex_blending,
                         uint32_t index_buffer_size,
                         void* index_buffer_data,
@@ -221,7 +221,7 @@ private:
                         uint32_t joint_binding_buffer_size,
                         struct MeshVertexBindingDataDefinition const* joint_binding_buffer_data,
                         VulkanMesh& now_mesh);
-    void UpdateVertexBuffer(std::shared_ptr<RHI> rhi,
+    void UpdateVertexBuffer(RHI* rhi,
                             bool enable_vertex_blending,
                             uint32_t vertex_buffer_size,
                             struct MeshVertexDataDefinition const* vertex_buffer_data,
@@ -230,9 +230,9 @@ private:
                             uint32_t index_buffer_size,
                             uint16_t* index_buffer_data,
                             VulkanMesh& now_mesh);
-    void UpdateIndexBuffer(std::shared_ptr<RHI> rhi,
+    void UpdateIndexBuffer(RHI* rhi,
                            uint32_t index_buffer_size,
                            void* index_buffer_data,
                            VulkanMesh& now_mesh);
-    void UpdateTextureImageData(std::shared_ptr<RHI> rhi, const TextureDataToUpdate& texture_data);
+    void UpdateTextureImageData(RHI* rhi, const TextureDataToUpdate& texture_data);
 };

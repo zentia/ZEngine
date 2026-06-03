@@ -22,7 +22,7 @@ void RenderResource::clear()
     }
 }
 
-void RenderResource::UploadGlobalRenderResource(std::shared_ptr<RHI> rhi, LevelResourceDesc level_resource_desc)
+void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc level_resource_desc)
 {
     Z_PROFILE_SCOPE("RenderResource::uploadGlobalRenderResource");
     // Initialize texture streaming manager
@@ -111,7 +111,7 @@ void RenderResource::UploadGlobalRenderResource(std::shared_ptr<RHI> rhi, LevelR
                            color_grading_map->m_Format);
 }
 
-void RenderResource::UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderEntity render_entity,
                                                     RenderMeshData mesh_data,
                                                     RenderMaterialData material_data)
@@ -120,14 +120,14 @@ void RenderResource::UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
     GetOrCreateVulkanMaterial(rhi, render_entity, material_data);
 }
 
-void RenderResource::UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderEntity render_entity,
                                                     RenderMeshData mesh_data)
 {
     GetOrCreateVulkanMesh(rhi, render_entity, mesh_data);
 }
 
-void RenderResource::UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderEntity render_entity,
                                                     RenderMaterialData material_data)
 {
@@ -210,7 +210,7 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
     }
 }
 
-void RenderResource::CreateIBLSamplers(std::shared_ptr<RHI> rhi)
+void RenderResource::CreateIBLSamplers(RHI* rhi)
 {
     if (rhi == nullptr)
     {
@@ -278,7 +278,7 @@ void RenderResource::CreateIBLSamplers(std::shared_ptr<RHI> rhi)
     }
 }
 
-void RenderResource::CreateIBLTextures(std::shared_ptr<RHI> rhi,
+void RenderResource::CreateIBLTextures(RHI* rhi,
                                        std::array<std::shared_ptr<TextureData>, 6> irradiance_maps,
                                        std::array<std::shared_ptr<TextureData>, 6> specular_maps)
 {
@@ -329,7 +329,7 @@ void RenderResource::CreateIBLTextures(std::shared_ptr<RHI> rhi,
 }
 
 VulkanMesh&
-RenderResource::GetOrCreateVulkanMesh(std::shared_ptr<RHI> rhi, RenderEntity entity, RenderMeshData mesh_data)
+RenderResource::GetOrCreateVulkanMesh(RHI* rhi, RenderEntity entity, RenderMeshData mesh_data)
 {
     size_t assetid = entity.m_MeshAssetId;
 
@@ -385,11 +385,11 @@ RenderResource::GetOrCreateVulkanMesh(std::shared_ptr<RHI> rhi, RenderEntity ent
     }
 }
 
-VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(std::shared_ptr<RHI> rhi,
+VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
                                                              RenderEntity entity,
                                                              RenderMaterialData material_data)
 {
-    VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi.get());
+    VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi);
 
     size_t assetid = entity.m_MaterialAssetId;
 
@@ -703,7 +703,7 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(std::shared_ptr<RHI
     }
 }
 
-void RenderResource::UpdateMeshData(std::shared_ptr<RHI> rhi,
+void RenderResource::UpdateMeshData(RHI* rhi,
                                     bool enable_vertex_blending,
                                     uint32_t index_buffer_size,
                                     void* index_buffer_data,
@@ -730,7 +730,7 @@ void RenderResource::UpdateMeshData(std::shared_ptr<RHI> rhi,
     UpdateIndexBuffer(rhi, index_buffer_size, index_buffer_data, now_mesh);
 }
 
-void RenderResource::UpdateVertexBuffer(std::shared_ptr<RHI> rhi,
+void RenderResource::UpdateVertexBuffer(RHI* rhi,
                                         bool enable_vertex_blending,
                                         uint32_t vertex_buffer_size,
                                         MeshVertexDataDefinition const* vertex_buffer_data,
@@ -740,7 +740,7 @@ void RenderResource::UpdateVertexBuffer(std::shared_ptr<RHI> rhi,
                                         uint16_t* index_buffer_data,
                                         VulkanMesh& now_mesh)
 {
-    VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi.get());
+    VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi);
 
     if (enable_vertex_blending)
     {
@@ -1102,12 +1102,12 @@ void RenderResource::UpdateVertexBuffer(std::shared_ptr<RHI> rhi,
     }
 }
 
-void RenderResource::UpdateIndexBuffer(std::shared_ptr<RHI> rhi,
+void RenderResource::UpdateIndexBuffer(RHI* rhi,
                                        uint32_t index_buffer_size,
                                        void* index_buffer_data,
                                        VulkanMesh& now_mesh)
 {
-    VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi.get());
+    VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi);
 
     // temp staging buffer
     RHIDeviceSize buffer_size = index_buffer_size;
@@ -1148,7 +1148,7 @@ void RenderResource::UpdateIndexBuffer(std::shared_ptr<RHI> rhi,
     rhi->FreeMemory(inefficient_staging_buffer_memory);
 }
 
-void RenderResource::UpdateTextureImageData(std::shared_ptr<RHI> rhi, const TextureDataToUpdate& texture_data)
+void RenderResource::UpdateTextureImageData(RHI* rhi, const TextureDataToUpdate& texture_data)
 {
     // miplevels passthrough: preserve the legacy sentinel 0 for single-mip
     // (uncompressed) uploads -- DX12 treats 0 as 1, Vulkan treats 0 as
@@ -1238,7 +1238,7 @@ void RenderResource::ResetRingBufferOffset(uint8_t current_frame_index)
         m_GlobalRenderResource.m_StorageBuffer.m_GlobalUploadRingbuffersBegin[current_frame_index];
 }
 
-void RenderResource::CreateAndMapStorageBuffer(std::shared_ptr<RHI> rhi)
+void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
 {
     if (rhi == nullptr)
     {

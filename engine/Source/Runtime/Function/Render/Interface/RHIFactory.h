@@ -14,7 +14,7 @@ class RHIFactory
 {
 public:
     // Create RHI instance based on API type
-    static std::shared_ptr<RHI> CreateRHI(GraphicsAPI api, WindowSystem* window_system);
+    static RHI* CreateRHI(GraphicsAPI api, WindowSystem* window_system);
 
     // Get default API based on platform
     static GraphicsAPI GetDefaultAPI();

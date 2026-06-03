@@ -13,7 +13,7 @@ LumenRayTracing::~LumenRayTracing()
     clear();
 }
 
-bool LumenRayTracing::Initialize(std::shared_ptr<RHI> rhi, const LumenConfig& config)
+bool LumenRayTracing::Initialize(RHI* rhi, const LumenConfig& config)
 {
     m_Rhi = rhi;
     m_Config = config;

@@ -39,8 +39,13 @@ void Application::Run()
 {
     while (!GET_SYSTEM(WindowSystem)->ShouldClose())
     {
-        const float DELTA_TIME = CalculateDeltaTime();
-        TickOneFrame(DELTA_TIME);
+        const float delta_time = CalculateDeltaTime();
+        if (!TickOneFrame(delta_time))
+        {
+            break;
+        }
+
+        GET_SYSTEM(WindowSystem)->SetTitle(std::string("Z - " + std::to_string(GetFps()) + " FPS").c_str());
     }
 }
 
@@ -83,7 +88,8 @@ bool Application::TickOneFrame(float simulation_delta_time, float frame_delta_ti
 
     GET_SYSTEM(WindowSystem)->PollEvents();
 
-    GET_SYSTEM(WindowSystem)->SetTitle(std::string("Z - " + std::to_string(GetFps()) + " FPS").c_str());
+    // Window title is owned by the editor (scene name + dirty flag). Standalone
+    // runtime sets the FPS title in Application::Run() after TickOneFrame.
 
     // ZEngine Insights: close out the frame on the trace timeline (records a
     // frame boundary + prunes events outside the retained window). No-op-cheap

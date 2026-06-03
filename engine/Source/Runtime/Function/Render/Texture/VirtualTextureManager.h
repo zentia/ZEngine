@@ -28,7 +28,7 @@ public:
     ~VirtualTextureManager();
 
     // Initialize the virtual texture manager
-    void Initialize(std::shared_ptr<RHI> rhi, RenderResourceBase* render_resource);
+    void Initialize(RHI* rhi, RenderResourceBase* render_resource);
 
     // Shutdown the virtual texture manager
     void Shutdown();
@@ -174,7 +174,7 @@ private:
                                   uint32_t screen_width,
                                   uint32_t screen_height) const;
 
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     RenderResourceBase* m_RenderResource;
 
     // Configuration

@@ -13,7 +13,7 @@
 #include <particlebillboard_frag.h>
 #include <particlebillboard_vert.h>
 
-void ParticleEmitterBufferBatch::FreeUpBatch(std::shared_ptr<RHI> rhi)
+void ParticleEmitterBufferBatch::FreeUpBatch(RHI* rhi)
 {
     rhi->FreeMemory(m_CounterHostMemory);
     rhi->FreeMemory(m_PositionHostMemory);

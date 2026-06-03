@@ -26,7 +26,7 @@ public:
     ~TextureStreamingManager();
 
     // Initialize the streaming manager
-    void Initialize(std::shared_ptr<RHI> rhi, RenderResourceBase* render_resource);
+    void Initialize(RHI* rhi, RenderResourceBase* render_resource);
 
     // Shutdown the streaming manager
     void Shutdown();
@@ -150,7 +150,7 @@ private:
     // Thread-safe texture map access
     std::shared_ptr<StreamableTexture> GetTextureInternal(TextureHandle handle) const;
 
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     RenderResourceBase* m_RenderResource;  // Non-owning pointer
 
     // Texture registry

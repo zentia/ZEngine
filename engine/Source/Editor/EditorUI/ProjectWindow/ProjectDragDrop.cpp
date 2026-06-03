@@ -36,7 +36,7 @@ namespace ProjectDragDrop
 
         const std::filesystem::path target_folder = ProjectWindowHelpers::ResolveDropTargetFolder(ctx.selected_node);
 
-        auto editor_asset_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+        auto editor_asset_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
         AssetImportManager* import_manager =
             editor_asset_mgr != nullptr ? &editor_asset_mgr->getImportManager() : nullptr;
 

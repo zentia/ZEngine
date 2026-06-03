@@ -347,7 +347,7 @@ namespace
                                   const std::string& source_guid,
                                   AssetManager& asset_mgr)
     {
-        auto* object_manager = GET_SYSTEM(ObjectManager).get();
+        auto* object_manager = GET_SYSTEM(ObjectManager);
         if (object_manager == nullptr)
         {
             return false;
@@ -658,7 +658,7 @@ bool TextureImporter::Import(const std::filesystem::path& source_path,
     // illegal because ObjectManager owns InstanceID assignment / lifetime
     // bookkeeping (mirrors xlsx_importer / project_window's Material
     // creation paths).
-    auto* object_manager = GET_SYSTEM(ObjectManager).get();
+    auto* object_manager = GET_SYSTEM(ObjectManager);
     if (object_manager == nullptr)
     {
         LOG_ERROR(ZEditor, "TextureImporter: ObjectManager unavailable");
@@ -750,7 +750,7 @@ bool TextureImporter::Reimport(const std::filesystem::path& zasset_path,
 {
     // PR-AI3: source path lives in SourceAssetRegistry, not in the .zasset
     // header. Delegate to EditorAssetManager::reimportAsset when available.
-    if (auto editor_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager)))
+    if (auto editor_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
     {
         return editor_mgr->reimportAsset(zasset_path.generic_string(), &import_settings);
     }
@@ -768,7 +768,7 @@ std::unique_ptr<AssetImporterSettings> TextureImporter::GetDefaultSettings() con
 
 int TextureImporter::ImportProjectTextures()
 {
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info == nullptr || project_info->project_path.empty())
     {
         return 0;
@@ -789,8 +789,8 @@ int TextureImporter::ImportProjectTextures()
     TextureImporter importer;
     const std::unique_ptr<AssetImporterSettings> default_settings = importer.GetDefaultSettings();
 
-    auto editor_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
-    EditorAssetManager* editor_asset_mgr = editor_mgr.get();
+    auto editor_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
+    EditorAssetManager* editor_asset_mgr = editor_mgr;
 
     int imported = 0;
 
@@ -869,7 +869,7 @@ int TextureImporter::ImportProjectTextures()
 
 int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget target)
 {
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info == nullptr || project_info->project_path.empty())
     {
         return 0;
@@ -892,7 +892,7 @@ int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget ta
     const std::filesystem::path platform_root = cooked_root / platform_tag;
     std::filesystem::create_directories(platform_root, ec);
 
-    const std::shared_ptr<AssetManager> asset_mgr = GET_SYSTEM(AssetManager);
+    AssetManager* asset_mgr = GET_SYSTEM(AssetManager);
     if (asset_mgr == nullptr)
     {
         return 0;
@@ -908,8 +908,8 @@ int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget ta
         }
     }
 
-    auto editor_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
-    EditorAssetManager* editor_asset_mgr = editor_mgr.get();
+    auto editor_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
+    EditorAssetManager* editor_asset_mgr = editor_mgr;
     const SourceAssetRegistry* source_registry =
         editor_asset_mgr != nullptr ? &editor_asset_mgr->GetSourceAssetRegistry() : nullptr;
 

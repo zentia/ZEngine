@@ -110,7 +110,7 @@ bool Editor::Initialize()
     // registers its log callback. Re-emit the summary here so it appears in the Console.
     if (auto render_system = GET_SYSTEM(RenderSystem))
     {
-        if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(render_system->GetRHI().get()))
+        if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(render_system->GetRHI()))
         {
             dx12_rhi->LogDeferredIblCubemapDiagnostics();
         }
@@ -143,7 +143,7 @@ bool Editor::Initialize()
         // lifetime via its system list and shutdown happens AFTER the watcher
         // is torn down, so the raw pointer is safe for the lifetime of the
         // bridge. Avoids copying a shared_ptr per file event.
-        ScriptRegistry* registry = registry_sptr.get();
+        ScriptRegistry* registry = registry_sptr;
         tsc->SetOnJsModuleChanged([scripting, registry](const std::filesystem::path& abs_js_path) {
             if (!scripting)
                 return;
@@ -584,7 +584,7 @@ void Editor::Run()
                 // thread (Win32 ReadDirectoryChangesW etc.) and are buffered
                 // until this drain runs. Cheap when the queue is empty.
                 Z_PROFILE_SCOPE("EditorAssetManager::TickWatcher");
-                if (auto eam = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager)))
+                if (auto eam = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
                     eam->TickWatcher();
             }
             {

@@ -21,7 +21,7 @@ namespace MegaLights
 {
 namespace
 {
-    void DestroyBuffer(std::shared_ptr<RHI> rhi, RHIBuffer*& buffer, RHIDeviceMemory*& memory)
+    void DestroyBuffer(RHI* rhi, RHIBuffer*& buffer, RHIDeviceMemory*& memory)
     {
         if (rhi == nullptr)
         {
@@ -39,7 +39,7 @@ namespace
         }
     }
 
-    void DestroyImage(std::shared_ptr<RHI> rhi, RHIImage*& image, RHIDeviceMemory*& memory, RHIImageView*& view)
+    void DestroyImage(RHI* rhi, RHIImage*& image, RHIDeviceMemory*& memory, RHIImageView*& view)
     {
         if (rhi == nullptr)
         {
@@ -110,7 +110,7 @@ namespace
             return nullptr;
         }
         auto render_resource =
-            std::dynamic_pointer_cast<RenderResource>(render_system->getRenderResource());
+            dynamic_cast<RenderResource*>(render_system->getRenderResource().get());
         if (render_resource == nullptr)
         {
             return nullptr;
@@ -158,7 +158,7 @@ namespace
     }
 }  // namespace
 
-void MegaLightsSystem::Initialize(std::shared_ptr<RHI> rhi)
+void MegaLightsSystem::Initialize(RHI* rhi)
 {
     m_Rhi = std::move(rhi);
     RegisterConsoleVariables();
@@ -620,7 +620,7 @@ void MegaLightsSystem::RebuildTileLists(std::shared_ptr<RenderCamera> camera)
     }
 }
 
-void MegaLightsSystem::Upload(std::shared_ptr<RHI> rhi, ViewportType viewport_type)
+void MegaLightsSystem::Upload(RHI* rhi, ViewportType viewport_type)
 {
     if (rhi == nullptr)
     {

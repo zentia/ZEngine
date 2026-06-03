@@ -28,7 +28,7 @@ namespace
 {
     std::filesystem::path GetProjectAssetRoot()
     {
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info != nullptr)
         {
             const std::filesystem::path project_content = project_info->GetProjectContent();
@@ -103,7 +103,7 @@ namespace
     {
         if (auto render_system = GET_SYSTEM(RenderSystem))
         {
-            if (std::shared_ptr<RHI> rhi = render_system->GetRHI())
+            if (RHI* rhi = render_system->GetRHI())
             {
                 return rhi->getGraphicsAPI() == GraphicsAPI::DirectX12;
             }
@@ -277,7 +277,7 @@ namespace
         // AssetRegistry's by-type reverse index (O(matches)), and the runtime
         // base falls back to a directory walk -- which is the same cost as
         // the previous hand-rolled loop here.
-        std::shared_ptr<AssetManager> asset_manager = GET_SYSTEM(AssetManager);
+        AssetManager* asset_manager = GET_SYSTEM(AssetManager);
         if (asset_manager == nullptr)
         {
             return false;

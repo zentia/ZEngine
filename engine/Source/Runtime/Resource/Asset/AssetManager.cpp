@@ -296,7 +296,7 @@ std::filesystem::path AssetManager::GetFullPath(const eastl::string& relative_pa
         return engine_path;
     }
 
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info != nullptr)
     {
         const std::filesystem::path project_content = project_info->GetProjectContent();
@@ -322,7 +322,7 @@ std::filesystem::path AssetManager::ResolveProjectContentPath(const eastl::strin
         return std::filesystem::absolute(rel).lexically_normal();
     }
 
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info != nullptr)
     {
         const std::filesystem::path project_content = project_info->GetProjectContent();

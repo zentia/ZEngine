@@ -242,7 +242,7 @@ MaterialSourceDesc RenderScene::BuildMaterialSourceDesc(const GameObjectPartDesc
             ""};
 }
 
-RenderEntity RenderScene::BuildRenderEntity(std::shared_ptr<RHI> rhi,
+RenderEntity RenderScene::BuildRenderEntity(RHI* rhi,
                                             RenderResourceBase& render_resource,
                                             GObjectID go_id,
                                             size_t part_index,
@@ -416,7 +416,7 @@ void RenderScene::RemoveStalePartEntities(GObjectID go_id, size_t valid_part_cou
     }
 }
 
-void RenderScene::UpsertGameObject(std::shared_ptr<RHI> rhi, RenderResourceBase& render_resource, const GameObjectDesc& gobject)
+void RenderScene::UpsertGameObject(RHI* rhi, RenderResourceBase& render_resource, const GameObjectDesc& gobject)
 {
     const std::vector<GameObjectPartDesc>& object_parts = gobject.getObjectParts();
     for (size_t part_index = 0; part_index < object_parts.size(); ++part_index)

@@ -66,7 +66,7 @@ void RenderPipeline::BuildDrawLists(std::shared_ptr<RenderResourceBase> render_r
     }
 }
 
-void RenderPipeline::SubmitDrawLists(std::shared_ptr<RHI> rhi,
+void RenderPipeline::SubmitDrawLists(RHI* rhi,
                                      std::shared_ptr<RenderResourceBase> render_resource,
                                      const RHIDrawList& draw_list)
 {
@@ -82,7 +82,7 @@ void RenderPipeline::SubmitDrawLists(std::shared_ptr<RHI> rhi,
     }
 }
 
-void RenderPipeline::DeferredRender(std::shared_ptr<RHI> rhi, std::shared_ptr<RenderResourceBase> render_resource)
+void RenderPipeline::DeferredRender(RHI* rhi, std::shared_ptr<RenderResourceBase> render_resource)
 {
     RHIDrawList draw_list;
     BuildDrawLists(render_resource, draw_list);

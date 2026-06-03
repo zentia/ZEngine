@@ -40,11 +40,11 @@ namespace
     struct ScopedOverlayDescriptorBind
     {
         DX12RHI* rhi {nullptr};
-        explicit ScopedOverlayDescriptorBind(const std::shared_ptr<RHI>& rhi_ptr)
+        explicit ScopedOverlayDescriptorBind(RHI* rhi_ptr)
         {
             if (rhi_ptr != nullptr && rhi_ptr->getGraphicsAPI() == GraphicsAPI::DirectX12)
             {
-                rhi = static_cast<DX12RHI*>(rhi_ptr.get());
+                rhi = static_cast<DX12RHI*>(rhi_ptr);
                 if (rhi->supportsBindlessTextures())
                 {
                     rhi->SetOverlayDescriptorBindActive(true);
@@ -101,7 +101,7 @@ namespace
 #endif
     }
 
-    RHIShader* LoadDx12UiShader(const std::shared_ptr<RHI>& rhi, const char* hlsl_relative_path, ShaderStage stage)
+    RHIShader* LoadDx12UiShader(RHI* rhi, const char* hlsl_relative_path, ShaderStage stage)
     {
         const std::string full_path = GetShaderRoot() + "/hlsl/rp2/" + hlsl_relative_path;
         std::vector<uint8_t> binary;
@@ -244,7 +244,7 @@ void ZSlateEditorOverlay::RecordSelfTest()
                         nullptr);
 }
 
-void ZSlateEditorOverlay::EnsurePipeline(const std::shared_ptr<RHI>& rhi, RHIRenderPass* render_pass, uint32_t subpass)
+void ZSlateEditorOverlay::EnsurePipeline(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass)
 {
     if (m_PipelineReady || rhi == nullptr)
     {
@@ -412,7 +412,7 @@ void ZSlateEditorOverlay::EnsurePipeline(const std::shared_ptr<RHI>& rhi, RHIRen
     m_PipelineReady = true;
 }
 
-void ZSlateEditorOverlay::DestroyGpuBuffers(const std::shared_ptr<RHI>& rhi)
+void ZSlateEditorOverlay::DestroyGpuBuffers(RHI* rhi)
 {
     if (rhi == nullptr)
     {
@@ -445,7 +445,7 @@ void ZSlateEditorOverlay::DestroyGpuBuffers(const std::shared_ptr<RHI>& rhi)
     }
 }
 
-void ZSlateEditorOverlay::EnsureGpuBuffers(const std::shared_ptr<RHI>& rhi, size_t vertex_count, size_t index_count)
+void ZSlateEditorOverlay::EnsureGpuBuffers(RHI* rhi, size_t vertex_count, size_t index_count)
 {
     if (rhi == nullptr)
     {
@@ -498,7 +498,7 @@ void ZSlateEditorOverlay::EnsureGpuBuffers(const std::shared_ptr<RHI>& rhi, size
     m_IndexCapacity[slot] = index_count;
 }
 
-void ZSlateEditorOverlay::UploadBatch(const std::shared_ptr<RHI>& rhi, float display_width, float display_height,
+void ZSlateEditorOverlay::UploadBatch(RHI* rhi, float display_width, float display_height,
                                       float display_pos_x, float display_pos_y)
 {
     const UiRenderBatch& batch = m_Renderer.getBatch();
@@ -548,7 +548,7 @@ void ZSlateEditorOverlay::UploadBatch(const std::shared_ptr<RHI>& rhi, float dis
     rhi->UnmapMemory(m_IndexMemory[slot]);
 }
 
-void ZSlateEditorOverlay::DrawBatch(const std::shared_ptr<RHI>& rhi)
+void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
 {
     if (!m_PipelineReady || rhi == nullptr || m_Pipeline == nullptr)
     {
@@ -709,7 +709,7 @@ void ZSlateEditorOverlay::DrawBatch(const std::shared_ptr<RHI>& rhi)
     rhi->PopEvent(command_buffer);
 }
 
-void ZSlateEditorOverlay::DrawExternalBatchToFloatingSurface(const std::shared_ptr<RHI>& rhi,
+void ZSlateEditorOverlay::DrawExternalBatchToFloatingSurface(RHI* rhi,
                                                              const void* key,
                                                              const UiRenderBatch& batch,
                                                              uint32_t width,
@@ -864,7 +864,7 @@ void ZSlateEditorOverlay::DrawExternalBatchToFloatingSurface(const std::shared_p
     rhi->PopEvent(command_buffer);
 }
 
-void ZSlateEditorOverlay::ReleaseFloatingRing(const std::shared_ptr<RHI>& rhi, const void* key)
+void ZSlateEditorOverlay::ReleaseFloatingRing(RHI* rhi, const void* key)
 {
     if (rhi == nullptr || key == nullptr)
     {
@@ -898,7 +898,7 @@ void ZSlateEditorOverlay::ReleaseFloatingRing(const std::shared_ptr<RHI>& rhi, c
     m_FloatingRings.erase(found);
 }
 
-void ZSlateEditorOverlay::Destroy(const std::shared_ptr<RHI>& rhi)
+void ZSlateEditorOverlay::Destroy(RHI* rhi)
 {
     // The RHI has no DestroyPipeline / DestroyPipelineLayout (the runtime UIPass
     // leaks its pipeline at shutdown too). Only the host-visible GPU buffers are

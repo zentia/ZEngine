@@ -10,7 +10,7 @@ VisiableNodes RenderPass::m_VisiableNodes;
 
 void RenderPass::RefreshGlobalRenderResourcePointer()
 {
-    if (auto render_resource = std::dynamic_pointer_cast<RenderResource>(m_RenderResource))
+    if (auto render_resource = dynamic_cast<RenderResource*>(m_RenderResource.get()))
     {
         m_GlobalRenderResource = &render_resource->m_GlobalRenderResource;
     }
@@ -24,7 +24,7 @@ bool RenderPass::EnsureGlobalRenderResourceReady()
 {
     RefreshGlobalRenderResourcePointer();
 
-    auto render_resource = std::dynamic_pointer_cast<RenderResource>(m_RenderResource);
+    auto render_resource = dynamic_cast<RenderResource*>(m_RenderResource.get());
     if (render_resource == nullptr || m_Rhi == nullptr)
     {
         return false;

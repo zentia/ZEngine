@@ -6,6 +6,7 @@
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
 #include <Windows.h>
+#include <cstring>
 #include <filesystem>
 #include <objbase.h>
 #include <shellapi.h>
@@ -65,6 +66,33 @@ namespace
         return SUCCEEDED(hr);
     }
 
+    std::wstring pathToShellParsingName(const std::string& default_directory)
+    {
+        if (default_directory.empty())
+        {
+            return {};
+        }
+
+        std::error_code ec;
+        std::filesystem::path dir(default_directory);
+        if (dir.is_relative())
+        {
+            dir = std::filesystem::absolute(dir, ec);
+            if (ec)
+            {
+                return {};
+            }
+        }
+
+        dir = dir.lexically_normal();
+        std::filesystem::create_directories(dir, ec);
+
+        // SHCreateItemFromParsingName expects a native absolute path (backslashes on
+        // Windows). generic_string()/forward slashes often fail silently and the
+        // dialog falls back to the OS "last used" folder (usually Documents).
+        return dir.wstring();
+    }
+
     void setDialogFolder(IFileDialog* dialog, const std::string& default_directory)
     {
         if (dialog == nullptr || default_directory.empty())
@@ -72,7 +100,7 @@ namespace
             return;
         }
 
-        std::wstring directory = utf8ToWide(default_directory);
+        const std::wstring directory = pathToShellParsingName(default_directory);
         if (directory.empty())
         {
             return;
@@ -99,7 +127,10 @@ namespace
         return glfwGetWin32Window(glfw_window);
     }
 
-    void setCommonDialogOptions(IFileDialog* dialog, const std::string& title)
+    void setCommonDialogOptions(IFileDialog* dialog,
+                                const std::string& title,
+                                const char* filter_glob,
+                                const char* default_extension)
     {
         if (dialog == nullptr)
         {
@@ -115,11 +146,30 @@ namespace
             }
         }
 
-        COMDLG_FILTERSPEC filter_spec[] = {{L"ZEngine Layout Files", L"*.zlayout.json"},
-                                           {L"JSON Files", L"*.json"},
-                                           {L"All Files", L"*.*"}};
-        dialog->SetFileTypes(ARRAYSIZE(filter_spec), filter_spec);
-        dialog->SetFileTypeIndex(1);
+        COMDLG_FILTERSPEC layout_filters[] = {{L"ZEngine Layout Files", L"*.zlayout.json"},
+                                              {L"JSON Files", L"*.json"},
+                                              {L"All Files", L"*.*"}};
+        COMDLG_FILTERSPEC scene_filters[] = {{L"Scene Files", L"*.scene"}, {L"All Files", L"*.*"}};
+
+        if (filter_glob != nullptr && std::strcmp(filter_glob, "*.scene") == 0)
+        {
+            dialog->SetFileTypes(ARRAYSIZE(scene_filters), scene_filters);
+            dialog->SetFileTypeIndex(1);
+        }
+        else
+        {
+            dialog->SetFileTypes(ARRAYSIZE(layout_filters), layout_filters);
+            dialog->SetFileTypeIndex(1);
+        }
+
+        if (default_extension != nullptr && default_extension[0] != '\0')
+        {
+            const std::wstring wide_ext = utf8ToWide(default_extension);
+            if (!wide_ext.empty())
+            {
+                dialog->SetDefaultExtension(wide_ext.c_str());
+            }
+        }
     }
 }  // namespace
 
@@ -224,7 +274,7 @@ bool EditorUtility::OpenFileDialog(const std::string& title,
         return false;
     }
 
-    setCommonDialogOptions(file_dialog, title);
+    setCommonDialogOptions(file_dialog, title, nullptr, "json");
     setDialogFolder(file_dialog, default_directory);
 
     if (!default_file_name.empty())
@@ -272,7 +322,9 @@ bool EditorUtility::OpenFileDialog(const std::string& title,
 bool EditorUtility::SaveFileDialog(const std::string& title,
                                    const std::string& default_directory,
                                    const std::string& default_file_name,
-                                   std::string& out_path)
+                                   std::string& out_path,
+                                   const char* default_extension,
+                                   const char* filter_glob)
 {
     out_path.clear();
     bool com_initialized = false;
@@ -292,9 +344,8 @@ bool EditorUtility::SaveFileDialog(const std::string& title,
         return false;
     }
 
-    setCommonDialogOptions(file_dialog, title);
+    setCommonDialogOptions(file_dialog, title, filter_glob, default_extension);
     setDialogFolder(file_dialog, default_directory);
-    file_dialog->SetDefaultExtension(L"json");
 
     if (!default_file_name.empty())
     {
@@ -336,4 +387,26 @@ bool EditorUtility::SaveFileDialog(const std::string& title,
     }
 
     return !out_path.empty();
+}
+
+SceneSavePromptResult EditorUtility::PromptUnsavedScene(const std::string& scene_display_name)
+{
+    const std::wstring scene_name = utf8ToWide(scene_display_name.empty() ? "Untitled" : scene_display_name);
+    std::wstring message = L"Save changes to the scene '";
+    message += scene_name;
+    message += L"'?\n\nYour changes will be lost if you don't save them.";
+
+    const int choice = MessageBoxW(getEditorWindowHandle(),
+                                   message.c_str(),
+                                   L"Save Scene?",
+                                   MB_YESNOCANCEL | MB_ICONWARNING | MB_TOPMOST);
+    switch (choice)
+    {
+        case IDYES:
+            return SceneSavePromptResult::Save;
+        case IDNO:
+            return SceneSavePromptResult::DontSave;
+        default:
+            return SceneSavePromptResult::Cancel;
+    }
 }

@@ -38,11 +38,11 @@ void RHIDrawList::ExecuteAll() const
     RHI* rhi = nullptr;
     if (ZEngine::Insights::InsightsTrace::Get().IsCapturing())
     {
-        if (std::shared_ptr<RenderSystem> render_system = GET_SYSTEM(RenderSystem))
+        if (RenderSystem* render_system = GET_SYSTEM(RenderSystem))
         {
             // The RHI object is owned by RenderSystem for the whole frame, so the
             // raw pointer outlives this temporary shared_ptr.
-            rhi = render_system->GetRHI().get();
+            rhi = render_system->GetRHI();
         }
     }
 

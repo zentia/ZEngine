@@ -20,7 +20,7 @@ class UiGpuResources
 public:
     static UiGpuResources* Get();
 
-    void Initialize(const std::shared_ptr<RHI>& rhi);
+    void Initialize(RHI* rhi);
     void Shutdown();
     bool IsReady() const { return m_Ready; }
 
@@ -98,7 +98,7 @@ private:
 
     static UiGpuResources* s_Instance;
 
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     RHIDescriptorSetLayout* m_TextureLayout {nullptr};
 
     std::unique_ptr<GpuTexture> m_WhiteTexture;

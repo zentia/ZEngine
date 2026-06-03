@@ -9,7 +9,7 @@
 
 struct ParticlePassInitInfo : RenderPassInitInfo
 {
-    std::shared_ptr<ParticleManager> m_ParticleManager;
+    ParticleManager* m_ParticleManager;
 };
 
 class ParticleEmitterBufferBatch
@@ -42,7 +42,7 @@ public:
     ParticleEmitterDesc m_EmitterDesc;
 
     uint32_t m_NumParticle {0};
-    void FreeUpBatch(std::shared_ptr<RHI> rhi);
+    void FreeUpBatch(RHI* rhi);
 };
 
 class ParticlePass : public RenderPass
@@ -200,7 +200,7 @@ private:
     };
 
     std::vector<ParticleEmitterBufferBatch> m_EmitterBufferBatches;
-    std::shared_ptr<ParticleManager> m_ParticleManager;
+    ParticleManager* m_ParticleManager;
 
     DefaultRNG m_RandomEngine;
 

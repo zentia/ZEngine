@@ -21,7 +21,7 @@ public:
     ~NaniteRenderer();
 
     // 初始化
-    bool Initialize(std::shared_ptr<RHI> rhi,
+    bool Initialize(RHI* rhi,
                     std::shared_ptr<RenderResourceBase> render_resource,
                     const NaniteConfig& config);
 
@@ -29,7 +29,7 @@ public:
     void clear();
 
     // 渲染一帧
-    void Render(std::shared_ptr<RHI> rhi,
+    void Render(RHI* rhi,
                 std::shared_ptr<RenderScene> render_scene,
                 std::shared_ptr<RenderCamera> camera,
                 const NaniteConfig& config);
@@ -48,7 +48,7 @@ public:
     void SetConfig(const NaniteConfig& config) { m_Config = config; }
 
 private:
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     std::shared_ptr<RenderResourceBase> m_RenderResource;
 
     NaniteConfig m_Config;

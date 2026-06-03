@@ -28,10 +28,18 @@ public:
 
     void ReloadCurrentLevel();
     void SaveCurrentLevel();
+    bool IsCurrentLevelDirty() const;
+    void MarkCurrentLevelDirty();
+    // Save the active level to a new URL (Unity-style Save Scene As). Updates the
+    // loaded-level map when the URL changes.
+    bool SaveCurrentLevelAs(const eastl::string& new_level_url);
+    // Replace the editor's open scene with level_url (single-scene mode; no WP).
+    bool OpenScene(const eastl::string& level_url);
 
     void Tick(float delta_time);
     Level* getCurrentActiveLevel() const { return m_CurrentActiveLevel; }
 
+    bool IsWorldLoaded() const { return m_IsWorldLoaded; }
     bool IsWorldPartitionEnabled() const { return m_WorldPartition.IsEnabled(); }
     size_t GetLoadedWorldPartitionCellCount() const { return m_WorldPartition.GetLoadedCellCount(); }
     size_t GetPendingWorldPartitionCellCount() const { return m_WorldPartition.GetPendingCellCount(); }

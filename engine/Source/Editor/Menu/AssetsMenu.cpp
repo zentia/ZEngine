@@ -16,7 +16,7 @@ namespace
     // exactly the old pre-PR-PW2 contract -- nothing to lose).
     std::filesystem::path resolveProjectContentRoot()
     {
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr)
         {
             return {};
@@ -130,7 +130,7 @@ void AssetsMenu::ConvertAsset(eastl::string path, eastl::string target_dir)
     std::error_code ec;
     std::filesystem::create_directories(output_path.parent_path(), ec);
 
-    auto editor_asset_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+    auto editor_asset_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
     if (editor_asset_mgr == nullptr)
     {
         LOG_ERROR(ZAsset, "EditorAssetManager unavailable; cannot import {}", path.c_str());

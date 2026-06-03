@@ -54,7 +54,7 @@ namespace
                mesh.mesh_vertex_varying_buffer != nullptr && mesh.mesh_index_buffer != nullptr && mesh.mesh_index_count > 0;
     }
 
-    RHIPipeline* CreateRuntimeMeshPipeline(std::shared_ptr<RHI>& rhi,
+    RHIPipeline* CreateRuntimeMeshPipeline(RHI* rhi,
                                            MainCameraRp1Pass& pass,
                                            RHIShader* vert_shader_module,
                                            RHIShader* frag_shader_module,
@@ -179,7 +179,7 @@ bool MainCameraRp1Pass::Initialize()
 
     // SetCommonInfo only fills RenderPassBase::m_RenderResource; mirror
     // RenderPass::Initialize() so SetupDescriptorSets can use the upload ringbuffer.
-    const auto render_resource = std::static_pointer_cast<RenderResource>(m_RenderResource);
+    const auto render_resource = static_cast<RenderResource*>(m_RenderResource.get());
     m_GlobalRenderResource = render_resource ? &render_resource->m_GlobalRenderResource : nullptr;
     if (m_GlobalRenderResource == nullptr)
     {
@@ -471,7 +471,7 @@ void MainCameraRp1Pass::SetupDescriptorSetLayouts()
 
 namespace
 {
-    RHIShader* LoadRp1ShaderFromFile(std::shared_ptr<RHI>& rhi, const char* hlsl_relative_path, ShaderStage stage)
+    RHIShader* LoadRp1ShaderFromFile(RHI* rhi, const char* hlsl_relative_path, ShaderStage stage)
     {
         const std::string full_path = GetRp1ShaderRoot() + "/hlsl/rp1/" + hlsl_relative_path;
         const std::vector<std::string> include_paths = {GetRp1ShaderRoot() + "/hlsl/rp1",
@@ -480,7 +480,7 @@ namespace
         return rhi->CreateShaderModuleFromFile(full_path, stage, include_paths, {}, binary);
     }
 
-    RHIShader* CreateBuiltinVertShader(std::shared_ptr<RHI>& rhi)
+    RHIShader* CreateBuiltinVertShader(RHI* rhi)
     {
         if (rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
         {
@@ -493,7 +493,7 @@ namespace
 #endif
     }
 
-    RHIShader* CreateBuiltinFragShader(std::shared_ptr<RHI>& rhi, const char* dx12_hlsl_path)
+    RHIShader* CreateBuiltinFragShader(RHI* rhi, const char* dx12_hlsl_path)
     {
         if (rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
         {
@@ -516,7 +516,7 @@ namespace
         return nullptr;
     }
 
-    RHIShader* CreateBuiltinDeferredVertShader(std::shared_ptr<RHI>& rhi)
+    RHIShader* CreateBuiltinDeferredVertShader(RHI* rhi)
     {
         if (rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
         {

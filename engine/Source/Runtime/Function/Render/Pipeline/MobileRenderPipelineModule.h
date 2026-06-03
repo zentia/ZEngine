@@ -43,7 +43,7 @@ public:
     void Setup(const RenderPipelineInitInfo& init_info) override;
     void Shutdown() override;
     void BuildDrawLists(std::shared_ptr<RenderResourceBase> render_resource, RHIDrawList& out_draw_list) override;
-    void SubmitDrawLists(std::shared_ptr<RHI> rhi,
+    void SubmitDrawLists(RHI* rhi,
                          std::shared_ptr<RenderResourceBase> render_resource,
                          const RHIDrawList& draw_list) override;
     void UpdateAfterRecreate() override;

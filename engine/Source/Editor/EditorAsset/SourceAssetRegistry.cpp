@@ -30,7 +30,7 @@ namespace
 
 bool SourceAssetRegistry::Initialize()
 {
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info == nullptr)
     {
         // No project loaded yet -- harmless. The next time a project

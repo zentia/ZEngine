@@ -71,7 +71,7 @@ void RenderSystem::Shutdown()
         m_RenderPipeline.reset();
     }
     m_Cameras.clear();
-    m_Rhi.reset();
+    m_Rhi = nullptr;
 }
 void RenderSystem::SwapLogicRenderData() {}
 RenderSwapContext& RenderSystem::GetSwapContext()
@@ -92,7 +92,7 @@ std::vector<std::shared_ptr<RenderCamera>> RenderSystem::GetAllCameras()
 {
     return m_Cameras;
 }
-std::shared_ptr<RHI> RenderSystem::GetRHI() const
+RHI* RenderSystem::GetRHI() const
 {
     return m_Rhi;
 }
@@ -303,7 +303,7 @@ bool RenderSystem::Initialize()
         m_RenderPipeline->Initialize(pipeline_init_info);
 
         render_resource->UploadGlobalRenderResource(m_Rhi, level_resource_desc);
-        if (auto pipeline = std::dynamic_pointer_cast<RenderPipeline>(m_RenderPipeline))
+        if (auto pipeline = dynamic_cast<RenderPipeline*>(m_RenderPipeline.get()))
         {
             pipeline->FinishDx12ShadowPassDescriptorSetup();
         }
@@ -373,11 +373,11 @@ bool RenderSystem::Initialize()
     m_RenderPipeline->Initialize(pipeline_init_info);
 
     // descriptor set layout in main camera pass will be used when uploading resource
-    std::static_pointer_cast<RenderResource>(m_RenderResource)->m_MeshDescriptorSetLayout =
+    static_cast<RenderResource*>(m_RenderResource.get())->m_MeshDescriptorSetLayout =
         &static_cast<RenderPass*>(m_RenderPipeline->m_MainCameraPass.get())
              ->m_DescriptorInfos[MainCameraPass::LayoutType::_per_mesh]
              .layout;
-    std::static_pointer_cast<RenderResource>(m_RenderResource)->m_MaterialDescriptorSetLayout =
+    static_cast<RenderResource*>(m_RenderResource.get())->m_MaterialDescriptorSetLayout =
         &static_cast<RenderPass*>(m_RenderPipeline->m_MainCameraPass.get())
              ->m_DescriptorInfos[MainCameraPass::LayoutType::_mesh_per_material]
              .layout;
@@ -462,7 +462,7 @@ void RenderSystem::ApplyPendingRenderPathChange()
         return;
     }
 
-    auto pipeline = std::dynamic_pointer_cast<RenderPipeline>(m_RenderPipeline);
+    auto pipeline = dynamic_cast<RenderPipeline*>(m_RenderPipeline.get());
     if (!pipeline || !m_Rhi)
     {
         return;
@@ -505,7 +505,7 @@ void RenderSystem::RewireRenderResourceLayoutsAfterPathSwitch()
         // DX12 Setup already re-points the RenderResource layouts (it casts the same
         // render_resource); we only need to finish shadow descriptors + rebind the
         // already-uploaded global IBL/LUT/storage resources to the new main camera.
-        if (auto pipeline = std::dynamic_pointer_cast<RenderPipeline>(m_RenderPipeline))
+        if (auto pipeline = dynamic_cast<RenderPipeline*>(m_RenderPipeline.get()))
         {
             pipeline->FinishDx12ShadowPassDescriptorSetup();
         }
@@ -521,7 +521,7 @@ void RenderSystem::RewireRenderResourceLayoutsAfterPathSwitch()
     if (m_RenderPipeline->m_MainCameraPass)
     {
         auto* main_camera_pass = static_cast<RenderPass*>(m_RenderPipeline->m_MainCameraPass.get());
-        auto render_resource = std::static_pointer_cast<RenderResource>(m_RenderResource);
+        auto render_resource = static_cast<RenderResource*>(m_RenderResource.get());
         render_resource->m_MeshDescriptorSetLayout =
             &main_camera_pass->m_DescriptorInfos[MainCameraPass::LayoutType::_per_mesh].layout;
         render_resource->m_MaterialDescriptorSetLayout =
@@ -656,7 +656,7 @@ void RenderSystem::Shutdown()
         FlushRenderingCommands();
     }
 
-    m_Rhi.reset();
+    m_Rhi = nullptr;
 
     if (m_RenderScene)
     {
@@ -703,7 +703,7 @@ std::vector<std::shared_ptr<RenderCamera>> RenderSystem::GetAllCameras()
     return m_Cameras;
 }
 
-std::shared_ptr<RHI> RenderSystem::GetRHI() const
+RHI* RenderSystem::GetRHI() const
 {
     return m_Rhi;
 }

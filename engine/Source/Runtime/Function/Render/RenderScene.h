@@ -64,7 +64,7 @@ public:
 
     void AddInstanceIdToMap(uint32_t instance_id, GObjectID go_id);
     GObjectID GetGObjectIDByMeshID(uint32_t mesh_id) const;
-    void UpsertGameObject(std::shared_ptr<RHI> rhi, RenderResourceBase& render_resource, const GameObjectDesc& gobject);
+    void UpsertGameObject(RHI* rhi, RenderResourceBase& render_resource, const GameObjectDesc& gobject);
     void DeleteEntityByGObjectID(GObjectID go_id);
 
     void ClearForLevelReloading();
@@ -73,7 +73,7 @@ public:
     void SyncPointLightsFromLevel(Level* level);
 
 private:
-    RenderEntity BuildRenderEntity(std::shared_ptr<RHI> rhi,
+    RenderEntity BuildRenderEntity(RHI* rhi,
                                    RenderResourceBase& render_resource,
                                    GObjectID go_id,
                                    size_t part_index,

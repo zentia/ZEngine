@@ -103,7 +103,7 @@ namespace
         return nullptr;
     }
 
-    bool CanUseRuntimeShadowPass(const std::shared_ptr<RHI>& rhi,
+    bool CanUseRuntimeShadowPass(RHI* rhi,
                                  const VulkanPBRMaterial& material,
                                  const VulkanShaderPassData* shader_pass)
     {

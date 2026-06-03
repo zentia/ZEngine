@@ -68,8 +68,18 @@ bool EditorUtility::OpenFileDialog(const std::string&, const std::string&, const
     return false;
 }
 
-bool EditorUtility::SaveFileDialog(const std::string&, const std::string&, const std::string&, std::string& out_path)
+bool EditorUtility::SaveFileDialog(const std::string&,
+                                   const std::string&,
+                                   const std::string&,
+                                   std::string& out_path,
+                                   const char*,
+                                   const char*)
 {
     out_path.clear();
     return false;
+}
+
+SceneSavePromptResult EditorUtility::PromptUnsavedScene(const std::string&)
+{
+    return SceneSavePromptResult::Cancel;
 }

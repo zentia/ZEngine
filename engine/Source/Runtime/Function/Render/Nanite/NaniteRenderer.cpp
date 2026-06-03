@@ -15,7 +15,7 @@ NaniteRenderer::~NaniteRenderer()
     clear();
 }
 
-bool NaniteRenderer::Initialize(std::shared_ptr<RHI> rhi,
+bool NaniteRenderer::Initialize(RHI* rhi,
                                 std::shared_ptr<RenderResourceBase> render_resource,
                                 const NaniteConfig& config)
 {
@@ -48,7 +48,7 @@ void NaniteRenderer::clear()
     m_RenderBatches.clear();
 }
 
-void NaniteRenderer::Render(std::shared_ptr<RHI> rhi,
+void NaniteRenderer::Render(RHI* rhi,
                             std::shared_ptr<RenderScene> render_scene,
                             std::shared_ptr<RenderCamera> camera,
                             const NaniteConfig& config)

@@ -17,7 +17,7 @@ NaniteCullingSystem::~NaniteCullingSystem()
     clear();
 }
 
-bool NaniteCullingSystem::Initialize(std::shared_ptr<RHI> rhi, const NaniteConfig& config)
+bool NaniteCullingSystem::Initialize(RHI* rhi, const NaniteConfig& config)
 {
     m_Rhi = rhi;
     m_Config = config;
@@ -256,7 +256,7 @@ NaniteHierarchicalZBuffer::~NaniteHierarchicalZBuffer()
     clear();
 }
 
-bool NaniteHierarchicalZBuffer::Initialize(std::shared_ptr<RHI> rhi, uint32_t width, uint32_t height)
+bool NaniteHierarchicalZBuffer::Initialize(RHI* rhi, uint32_t width, uint32_t height)
 {
     m_Rhi = rhi;
     m_Width = width;

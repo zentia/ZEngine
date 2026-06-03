@@ -104,10 +104,10 @@ public:
 
     // Build the UI pipeline once. render_pass == nullptr => DX12 swapchain
     // overlay format; a real pass + subpass => Vulkan editor UI subpass.
-    void EnsurePipeline(const std::shared_ptr<RHI>& rhi, RHIRenderPass* render_pass, uint32_t subpass);
+    void EnsurePipeline(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass);
 
     // Upload + draw the shared batch onto the currently-bound editor UI target.
-    void DrawBatch(const std::shared_ptr<RHI>& rhi);
+    void DrawBatch(RHI* rhi);
 
     // Editor tear-off: upload + draw an EXTERNAL batch (recorded by a floating
     // panel window's own BatchedUIRenderer) onto the currently-bound floating
@@ -117,23 +117,23 @@ public:
     // clobber each other within a frame. The batch is drawn in natural order
     // (no window groups) into a (0,0)..(width,height) coordinate space.
     // ReleaseFloatingRing frees that ring when the window closes.
-    void DrawExternalBatchToFloatingSurface(const std::shared_ptr<RHI>& rhi,
+    void DrawExternalBatchToFloatingSurface(RHI* rhi,
                                             const void* key,
                                             const UiRenderBatch& batch,
                                             uint32_t width,
                                             uint32_t height);
-    void ReleaseFloatingRing(const std::shared_ptr<RHI>& rhi, const void* key);
+    void ReleaseFloatingRing(RHI* rhi, const void* key);
 
     // Dev self-test (M1): records a fixed quad + label into the shared batch so
     // the GPU path can be validated before any real window is wired.
     void RecordSelfTest();
 
-    void Destroy(const std::shared_ptr<RHI>& rhi);
+    void Destroy(RHI* rhi);
 
 private:
-    void EnsureGpuBuffers(const std::shared_ptr<RHI>& rhi, size_t vertex_count, size_t index_count);
-    void DestroyGpuBuffers(const std::shared_ptr<RHI>& rhi);
-    void UploadBatch(const std::shared_ptr<RHI>& rhi, float display_width, float display_height, float display_pos_x,
+    void EnsureGpuBuffers(RHI* rhi, size_t vertex_count, size_t index_count);
+    void DestroyGpuBuffers(RHI* rhi);
+    void UploadBatch(RHI* rhi, float display_width, float display_height, float display_pos_x,
                      float display_pos_y);
 
     BatchedUIRenderer m_Renderer;

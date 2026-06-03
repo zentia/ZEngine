@@ -92,7 +92,7 @@ void TypeScriptComponent::Tick(float delta_time)
     if (m_JsInstance == nullptr)
         return;
 
-    auto* sm = GET_SYSTEM(ScriptingManager).get();
+    auto* sm = GET_SYSTEM(ScriptingManager);
     if (sm == nullptr)
         return;
 
@@ -156,7 +156,7 @@ bool TypeScriptComponent::TryBind()
 
 bool TypeScriptComponent::ResolveScript(std::string& resolved_class_name)
 {
-    auto registry = GET_SYSTEM(ScriptRegistry).get();
+    auto registry = GET_SYSTEM(ScriptRegistry);
     if (registry == nullptr)
     {
         LOG_ERROR(ZScripting,

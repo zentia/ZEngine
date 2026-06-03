@@ -40,7 +40,7 @@ public:
     const size_t GetSizeOfUniformBufferObject() const;
 
 private:
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     struct UniformBufferObject
     {
         Matrix4x4 proj_view_matrix;

@@ -15,7 +15,7 @@ struct RenderPassInitInfo
 
 struct RenderPassCommonInfo
 {
-    std::shared_ptr<RHI> rhi;
+    RHI* rhi;
     std::shared_ptr<RenderResourceBase> render_resource;
 };
 
@@ -36,6 +36,6 @@ public:
     virtual void AppendToDrawList(RHIDrawList& out_draw_list, const RenderPassContext& context);
 
 protected:
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     std::shared_ptr<RenderResourceBase> m_RenderResource;
 };

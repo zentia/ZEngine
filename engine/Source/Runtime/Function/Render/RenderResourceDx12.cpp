@@ -17,7 +17,7 @@
 
 namespace
 {
-    void Dx12CreateGpuBufferFromStaging(std::shared_ptr<RHI>& rhi,
+    void Dx12CreateGpuBufferFromStaging(RHI* rhi,
                                         RHIDeviceSize size,
                                         RHIBufferUsageFlags usage,
                                         const void* src_data,
@@ -61,7 +61,7 @@ namespace
         }
     }
 
-    void Dx12UploadMeshNonSkinned(std::shared_ptr<RHI>& rhi, RenderResource* resource, VulkanMesh& now_mesh, RenderMeshData& mesh_data)
+    void Dx12UploadMeshNonSkinned(RHI* rhi, RenderResource* resource, VulkanMesh& now_mesh, RenderMeshData& mesh_data)
     {
         const uint32_t index_buffer_size = static_cast<uint32_t>(mesh_data.m_StaticMeshData.m_IndexBuffer->m_Size);
         void* index_buffer_data = mesh_data.m_StaticMeshData.m_IndexBuffer->m_Data;
@@ -198,7 +198,7 @@ namespace
         }
     }
 
-    void Dx12CreateWhiteTexture(std::shared_ptr<RHI>& rhi, RHIImage*& image, RHIImageView*& view)
+    void Dx12CreateWhiteTexture(RHI* rhi, RHIImage*& image, RHIImageView*& view)
     {
         image = nullptr;
         view = nullptr;
@@ -218,7 +218,7 @@ namespace
                                1);
     }
 
-    void Dx12UploadMaterialources(std::shared_ptr<RHI>& rhi,
+    void Dx12UploadMaterialources(RHI* rhi,
                                      RenderResource* resource,
                                      RenderEntity entity,
                                      VulkanPBRMaterial& material)
@@ -315,7 +315,7 @@ void RenderResource::clear()
     }
 }
 
-void RenderResource::UploadGlobalRenderResource(std::shared_ptr<RHI> rhi, LevelResourceDesc level_resource_desc)
+void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc level_resource_desc)
 {
     if (m_GlobalRenderResource.m_StorageBuffer.m_GlobalUploadRingbuffer == nullptr)
     {
@@ -348,7 +348,7 @@ void RenderResource::UploadGlobalRenderResource(std::shared_ptr<RHI> rhi, LevelR
                            color_grading_map->m_Format);
 }
 
-void RenderResource::UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderEntity render_entity,
                                                     RenderMeshData mesh_data,
                                                     RenderMaterialData material_data)
@@ -357,14 +357,14 @@ void RenderResource::UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
     GetOrCreateVulkanMaterial(rhi, render_entity, material_data);
 }
 
-void RenderResource::UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderEntity render_entity,
                                                     RenderMeshData mesh_data)
 {
     GetOrCreateVulkanMesh(rhi, render_entity, mesh_data);
 }
 
-void RenderResource::UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+void RenderResource::UploadGameObjectRenderResource(RHI* rhi,
                                                     RenderEntity render_entity,
                                                     RenderMaterialData material_data)
 {
@@ -456,7 +456,7 @@ void RenderResource::ResetRingBufferOffset(uint8_t current_frame_index)
         m_GlobalRenderResource.m_StorageBuffer.m_GlobalUploadRingbuffersBegin[current_frame_index];
 }
 
-void RenderResource::CreateAndMapStorageBuffer(std::shared_ptr<RHI> rhi)
+void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
 {
     if (rhi == nullptr)
     {
@@ -520,7 +520,7 @@ void RenderResource::CreateAndMapStorageBuffer(std::shared_ptr<RHI> rhi)
                    &storage_buffer.m_AxisInefficientStorageBufferMemoryPointer);
 }
 
-VulkanMesh& RenderResource::GetOrCreateVulkanMesh(std::shared_ptr<RHI> rhi,
+VulkanMesh& RenderResource::GetOrCreateVulkanMesh(RHI* rhi,
                                                   RenderEntity entity,
                                                   RenderMeshData mesh_data)
 {
@@ -544,7 +544,7 @@ VulkanMesh& RenderResource::GetOrCreateVulkanMesh(std::shared_ptr<RHI> rhi,
     return now_mesh;
 }
 
-VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(std::shared_ptr<RHI> rhi,
+VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(RHI* rhi,
                                                              RenderEntity entity,
                                                              RenderMaterialData material_data)
 {

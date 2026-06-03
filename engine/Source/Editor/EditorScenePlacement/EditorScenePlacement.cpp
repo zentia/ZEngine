@@ -50,6 +50,7 @@ namespace
         scene_manager->OnGObjectSelected(created_object_id);
         scene_manager->FocusSelectedGObject();
         scene_manager->DrawSelectedEntityAxis();
+        GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
         return true;
     }
 
@@ -84,7 +85,7 @@ namespace
 
     std::string lookupAssetTypeInRegistry(const std::filesystem::path& absolute_zasset_path)
     {
-        auto editor_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+        auto editor_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
         if (editor_mgr == nullptr)
         {
             return {};

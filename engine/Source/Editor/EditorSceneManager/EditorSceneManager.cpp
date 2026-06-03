@@ -1,6 +1,11 @@
 #include "EditorSceneManager.h"
 
+#include "Editor/EditorProjectPrefs/EditorProjectPrefs.h"
 #include "Editor/WorldPartition/WorldPartitionEditorDebug.h"
+#include "Editor/EditorUI/ProjectWindow/ProjectWindowHelpers.h"
+#include "Editor/Platform/Interface/EditorUtility.h"
+#include "Runtime/Project/ProjectInfo.h"
+#include "core/Log/LogSystem.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 
@@ -14,6 +19,7 @@
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/WindowSystem.h"
+#include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Components/Mesh.h"
 #include "Runtime/Resource/ResType/Data/MeshData.h"
@@ -150,6 +156,13 @@ bool EditorSceneManager::Initialize()
 
 void EditorSceneManager::Tick(float delta_time)
 {
+    if (m_PendingLastSceneRestore)
+    {
+        TryRestoreLastOpenedScene();
+    }
+
+    RefreshMainWindowTitle();
+
     if (auto world = GET_SYSTEM(WorldManager))
     {
         if (world->IsWorldPartitionEnabled())
@@ -578,6 +591,7 @@ void EditorSceneManager::OnDeleteSelectedGObject()
         swap_context.GetLogicSwapData().AddDeleteGameObject(GameObjectDesc {selected_object->GetID(), {}});
     }
 
+    GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
     OnGObjectSelected(k_invalid_gobject_id, GObjectSelectionOp::Replace);
 }
 
@@ -929,6 +943,7 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
         transform_component->SetLocalScale(new_scale);
     }
     setSelectedObjectMatrix(new_model_matrix);
+    GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
 }
 
 void EditorSceneManager::UploadAxisResource()
@@ -971,4 +986,367 @@ size_t EditorSceneManager::GetGuidOfPickedMesh(const Vector2& picked_uv) const
     // RenderSystem::GetGuidOfPickedMesh flushes in-flight frames and marshals
     // PickPass GPU readback onto the RHI thread when parallel rendering is on.
     return GET_SYSTEM(RenderSystem)->GetGuidOfPickedMesh(picked_uv);
+}
+
+namespace
+{
+    void AfterSceneOpened(EditorSceneManager& scene_manager);
+}
+
+std::string EditorSceneManager::GetActiveSceneDisplayName()
+{
+    const WorldManager* world = GET_SYSTEM(WorldManager);
+    if (world == nullptr)
+    {
+        return "Untitled";
+    }
+
+    const Level* level = world->getCurrentActiveLevel();
+    if (level == nullptr)
+    {
+        return "Untitled";
+    }
+
+    const eastl::string& url = level->getLevelResUrl();
+    if (url.empty())
+    {
+        return "Untitled";
+    }
+
+    return std::filesystem::path(url.c_str()).stem().string();
+}
+
+void EditorSceneManager::RefreshMainWindowTitle()
+{
+    std::string title = GetActiveSceneDisplayName();
+    if (GET_SYSTEM(WorldManager)->IsCurrentLevelDirty())
+    {
+        title += '*';
+    }
+
+    if (const ProjectInfo* project = GET_SYSTEM(ProjectInfo))
+    {
+        if (!project->name.empty())
+        {
+            title += " - ";
+            title += project->name.c_str();
+        }
+    }
+    title += " - ZEditor";
+
+    if (title == m_LastMainWindowTitle)
+    {
+        return;
+    }
+
+    m_LastMainWindowTitle = title;
+    GET_SYSTEM(WindowSystem)->SetTitle(title.c_str());
+}
+
+bool EditorSceneManager::TryLeaveCurrentScene()
+{
+    WorldManager* world = GET_SYSTEM(WorldManager);
+    if (world == nullptr || !world->IsCurrentLevelDirty())
+    {
+        return true;
+    }
+
+    const SceneSavePromptResult result = EditorUtility::PromptUnsavedScene(GetActiveSceneDisplayName());
+    if (result == SceneSavePromptResult::Cancel)
+    {
+        return false;
+    }
+
+    if (result == SceneSavePromptResult::Save)
+    {
+        Level* level = world->getCurrentActiveLevel();
+        if (level == nullptr)
+        {
+            return false;
+        }
+
+        if (level->getLevelResUrl().empty())
+        {
+            SaveActiveSceneAsDialog();
+        }
+        else
+        {
+            world->SaveCurrentLevel();
+        }
+
+        if (world->IsCurrentLevelDirty())
+        {
+            return false;
+        }
+    }
+    else if (Level* level = world->getCurrentActiveLevel())
+    {
+        level->ClearDirty();
+    }
+
+    return true;
+}
+
+bool EditorSceneManager::OpenSceneInternal(const eastl::string& level_url, bool skip_unsaved_prompt)
+{
+    if (level_url.empty())
+    {
+        return false;
+    }
+
+    if (!skip_unsaved_prompt && !TryLeaveCurrentScene())
+    {
+        return false;
+    }
+
+    WorldManager* world = GET_SYSTEM(WorldManager);
+    if (world == nullptr)
+    {
+        return false;
+    }
+
+    if (!world->OpenScene(level_url))
+    {
+        return false;
+    }
+
+    AfterSceneOpened(*this);
+    RecordLastOpenedScene(level_url);
+    RefreshMainWindowTitle();
+    return true;
+}
+
+namespace
+{
+    eastl::string PathToLevelUrl(const std::filesystem::path& path)
+    {
+        const std::filesystem::path normalized = ProjectWindowHelpers::NormalizeProjectPath(path);
+        if (const auto project_info = GET_SYSTEM(ProjectInfo))
+        {
+            std::error_code ec;
+            const std::filesystem::path content_root =
+                std::filesystem::absolute(project_info->GetProjectContent(), ec).lexically_normal();
+            if (!ec && !content_root.empty())
+            {
+                const std::filesystem::path rel = std::filesystem::relative(normalized, content_root, ec);
+                if (!ec && !rel.empty())
+                {
+                    const std::string rel_str = rel.generic_string();
+                    if (rel_str.rfind("..", 0) != 0)
+                    {
+                        std::string url = rel_str;
+                        std::replace(url.begin(), url.end(), '\\', '/');
+                        return url.c_str();
+                    }
+                }
+            }
+        }
+        return normalized.generic_string().c_str();
+    }
+
+    std::filesystem::path LevelUrlToAbsolutePath(const eastl::string& level_url)
+    {
+        if (level_url.empty())
+        {
+            return {};
+        }
+
+        const ProjectInfo* project = GET_SYSTEM(ProjectInfo);
+        if (project == nullptr)
+        {
+            return {};
+        }
+
+        std::error_code ec;
+        const std::filesystem::path content_root =
+            std::filesystem::absolute(project->GetProjectContent(), ec).lexically_normal();
+        if (ec || content_root.empty())
+        {
+            return {};
+        }
+
+        std::filesystem::path rel(level_url.c_str());
+        rel.replace_extension(".scene");
+        return (content_root / rel).lexically_normal();
+    }
+
+    std::filesystem::path DefaultSceneSaveDirectory()
+    {
+        const std::filesystem::path assets_root = ProjectWindowHelpers::GetEditorSourceAssetFolder();
+        if (assets_root.empty())
+        {
+            return assets_root;
+        }
+
+        std::error_code ec;
+        std::filesystem::create_directories(assets_root, ec);
+        return assets_root;
+    }
+
+    std::string DefaultSceneSaveFileName()
+    {
+        if (const WorldManager* world = GET_SYSTEM(WorldManager))
+        {
+            if (const Level* active = world->getCurrentActiveLevel())
+            {
+                const std::filesystem::path current(active->getLevelResUrl().c_str());
+                if (!current.empty())
+                {
+                    return current.stem().string() + ".scene";
+                }
+            }
+        }
+        return "NewScene.scene";
+    }
+
+    void AfterSceneOpened(EditorSceneManager& scene_manager)
+    {
+        GET_SYSTEM(RenderSystem)->ClearForLevelReloading();
+        scene_manager.OnGObjectSelected(k_invalid_gobject_id);
+    }
+}  // namespace
+
+void EditorSceneManager::TryRestoreLastOpenedScene()
+{
+    WorldManager* world = GET_SYSTEM(WorldManager);
+    if (world == nullptr || !world->IsWorldLoaded())
+    {
+        return;
+    }
+
+    m_PendingLastSceneRestore = false;
+
+    if (world->IsWorldPartitionEnabled())
+    {
+        return;
+    }
+
+    const std::string last_url =
+        EditorProjectPrefs::GetString(EditorProjectPrefKeys::LastOpenedScene);
+    if (last_url.empty())
+    {
+        return;
+    }
+
+    const eastl::string level_url = last_url.c_str();
+    const std::filesystem::path scene_path = LevelUrlToAbsolutePath(level_url);
+    if (scene_path.empty())
+    {
+        return;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(scene_path, ec))
+    {
+        LOG_WARNING(ZEditor, "Last scene missing on disk, skipping restore: {}", scene_path.generic_string());
+        return;
+    }
+
+    if (const Level* active = world->getCurrentActiveLevel())
+    {
+        if (active->getLevelResUrl() == level_url)
+        {
+            return;
+        }
+    }
+
+    if (!OpenSceneInternal(level_url, true))
+    {
+        LOG_WARNING(ZEditor, "Failed to restore last scene: {}", level_url.c_str());
+        return;
+    }
+
+    LOG_INFO(ZEditor, "Restored last scene: {}", level_url.c_str());
+}
+
+void EditorSceneManager::RecordLastOpenedScene(const eastl::string& level_url)
+{
+    if (level_url.empty())
+    {
+        return;
+    }
+
+    EditorProjectPrefs::SetString(EditorProjectPrefKeys::LastOpenedScene, level_url.c_str());
+}
+
+void EditorSceneManager::SaveActiveSceneAsDialog()
+{
+    std::string selected_path;
+    const std::filesystem::path default_directory = DefaultSceneSaveDirectory();
+    const std::string default_file_name = DefaultSceneSaveFileName();
+    if (!EditorUtility::SaveFileDialog("Save Scene As",
+                                       default_directory.string(),
+                                       default_file_name,
+                                       selected_path,
+                                       "scene",
+                                       "*.scene"))
+    {
+        return;
+    }
+
+    std::filesystem::path save_path(selected_path);
+    if (save_path.extension().empty())
+    {
+        save_path += ".scene";
+    }
+    else
+    {
+        std::string ext = save_path.extension().generic_string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ext != ".scene")
+        {
+            save_path.replace_extension(".scene");
+        }
+    }
+
+    std::error_code ec;
+    if (!save_path.parent_path().empty())
+    {
+        std::filesystem::create_directories(save_path.parent_path(), ec);
+    }
+
+    WorldManager* world = GET_SYSTEM(WorldManager);
+    if (world == nullptr)
+    {
+        LOG_ERROR(ZEditor, "Save Scene As: WorldManager unavailable");
+        return;
+    }
+
+    const eastl::string level_url = PathToLevelUrl(save_path);
+    if (!world->SaveCurrentLevelAs(level_url))
+    {
+        LOG_ERROR(ZEditor, "Save Scene As failed: {}", save_path.generic_string());
+        return;
+    }
+
+    RecordLastOpenedScene(level_url);
+    RefreshMainWindowTitle();
+    LOG_INFO(ZEditor, "Save Scene As: {}", save_path.generic_string());
+}
+
+bool EditorSceneManager::OpenSceneFromProjectPath(const eastl::string& project_file_path)
+{
+    if (project_file_path.empty())
+    {
+        return false;
+    }
+
+    std::string extension = std::filesystem::path(project_file_path.c_str()).extension().generic_string();
+    std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (extension != ".scene")
+    {
+        return false;
+    }
+
+    const eastl::string level_url = PathToLevelUrl(project_file_path.c_str());
+    if (!OpenSceneInternal(level_url, false))
+    {
+        LOG_ERROR(ZEditor, "OpenScene failed: {}", project_file_path.c_str());
+        return false;
+    }
+
+    LOG_INFO(ZEditor, "OpenScene: {}", project_file_path.c_str());
+    return true;
 }

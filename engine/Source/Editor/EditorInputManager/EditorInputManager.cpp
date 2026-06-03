@@ -18,7 +18,7 @@ namespace
 {
     bool isKeyDown(int key)
     {
-        WindowSystem* window_system = GET_SYSTEM(WindowSystem).get();
+        WindowSystem* window_system = GET_SYSTEM(WindowSystem);
         return window_system != nullptr && window_system->GetWindow() != nullptr &&
                glfwGetKey(window_system->GetWindow(), key) == GLFW_PRESS;
     }

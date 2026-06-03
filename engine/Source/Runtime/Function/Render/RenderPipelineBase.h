@@ -49,10 +49,10 @@ public:
 
     virtual void PreparePassData(std::shared_ptr<RenderResourceBase> render_resource);
     virtual void BuildDrawLists(std::shared_ptr<RenderResourceBase> render_resource, RHIDrawList& out_draw_list);
-    virtual void SubmitDrawLists(std::shared_ptr<RHI> rhi,
+    virtual void SubmitDrawLists(RHI* rhi,
                                  std::shared_ptr<RenderResourceBase> render_resource,
                                  const RHIDrawList& draw_list);
-    virtual void DeferredRender(std::shared_ptr<RHI> rhi, std::shared_ptr<RenderResourceBase> render_resource);
+    virtual void DeferredRender(RHI* rhi, std::shared_ptr<RenderResourceBase> render_resource);
 
     // Consume logic-thread particle swap payloads on the render thread. Default
     // implementation only clears pending flags (DX12 / backends without ParticlePass).
@@ -80,7 +80,7 @@ public:
     const std::vector<RenderCallback>& getPostUIRenderCallbacks() const { return m_PostUiRenderCallbacks; }
 
     // 获取 RHI（供 Editor 创建 UI Pass 使用）
-    std::shared_ptr<RHI> GetRHI() const { return m_Rhi; }
+    RHI* GetRHI() const { return m_Rhi; }
 
     // 获取 UI subpass 使用的 render pass（供 Editor 创建 UI Pass 使用）
     virtual RHIRenderPass* GetUIRenderPass() const { return nullptr; }
@@ -114,7 +114,7 @@ public:
     virtual std::shared_ptr<RenderResourceBase> GetRenderResource() const { return m_RenderResource; }
 
 protected:
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
 
     // Render resource the pipeline was initialized with. Lives on the base so the
     // active render-path module (friend) can read it (e.g. SubmitDrawLists fallback)

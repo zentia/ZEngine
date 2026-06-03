@@ -534,7 +534,7 @@ bool MeshImporter::Import(const std::filesystem::path& source_path,
                     mesh_geometry.vertex_buffer.size());
     }
 
-    auto* object_manager = GET_SYSTEM(ObjectManager).get();
+    auto* object_manager = GET_SYSTEM(ObjectManager);
 
     if (object_manager == nullptr)
 
@@ -646,7 +646,7 @@ bool MeshImporter::Import(const std::filesystem::path& source_path,
 bool MeshImporter::Reimport(const std::filesystem::path& zasset_path, const AssetImporterSettings& import_settings)
 
 {
-    if (auto editor_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager)))
+    if (auto editor_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
 
     {
         return editor_mgr->reimportAsset(zasset_path.generic_string(), &import_settings);

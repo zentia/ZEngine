@@ -25,9 +25,14 @@ public:
 
     bool save();
 
+    bool IsDirty() const { return m_IsDirty; }
+    void MarkDirty() { m_IsDirty = true; }
+    void ClearDirty() { m_IsDirty = false; }
+
     void Tick(float delta_time);
 
     const eastl::string& getLevelResUrl() const { return m_LevelResUrl; }
+    void setLevelResUrl(const eastl::string& level_res_url) { m_LevelResUrl = level_res_url; }
 
     const LevelObjectsMap& getAllGObjects() const { return m_Gobjects; }
 
@@ -50,6 +55,7 @@ protected:
     void FlushRenderDeletes();
 
     bool m_IsLoaded {false};
+    bool m_IsDirty {false};
     eastl::string m_LevelResUrl;
 
     // all game objects in this level, key: object id, value: object instance

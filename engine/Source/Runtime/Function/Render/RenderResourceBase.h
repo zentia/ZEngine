@@ -19,17 +19,17 @@ public:
 
     virtual void clear() = 0;
 
-    virtual void UploadGlobalRenderResource(std::shared_ptr<RHI> rhi, LevelResourceDesc level_resource_desc) = 0;
+    virtual void UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc level_resource_desc) = 0;
 
-    virtual void UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+    virtual void UploadGameObjectRenderResource(RHI* rhi,
                                                 RenderEntity render_entity,
                                                 RenderMeshData mesh_data,
                                                 RenderMaterialData material_data) = 0;
 
     virtual void
-    UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi, RenderEntity render_entity, RenderMeshData mesh_data) = 0;
+    UploadGameObjectRenderResource(RHI* rhi, RenderEntity render_entity, RenderMeshData mesh_data) = 0;
 
-    virtual void UploadGameObjectRenderResource(std::shared_ptr<RHI> rhi,
+    virtual void UploadGameObjectRenderResource(RHI* rhi,
                                                 RenderEntity render_entity,
                                                 RenderMaterialData material_data) = 0;
 

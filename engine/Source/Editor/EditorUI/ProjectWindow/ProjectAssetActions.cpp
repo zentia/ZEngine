@@ -720,7 +720,7 @@ namespace ProjectAssetActions
         }
         else if (AssetManager::IsRegistryIndexedAssetPath(target_path))
         {
-            auto editor_assets = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+            auto editor_assets = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
             if (editor_assets != nullptr)
             {
                 removed = editor_assets->DeleteAsset(target_path.generic_string());
@@ -961,7 +961,7 @@ namespace ProjectAssetActions
         bool renamed = false;
         if (!was_directory && AssetManager::IsRegistryIndexedAssetPath(old_path))
         {
-            auto editor_assets = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+            auto editor_assets = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
             if (editor_assets != nullptr)
             {
                 renamed = editor_assets->MoveAsset(old_path.generic_string(), new_path.generic_string());
@@ -1037,7 +1037,7 @@ namespace ProjectAssetActions
             return;
         }
 
-        auto editor_asset_mgr = std::dynamic_pointer_cast<EditorAssetManager>(GET_SYSTEM(AssetManager));
+        auto editor_asset_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
         if (editor_asset_mgr == nullptr)
         {
             LOG_WARNING(ZEditor, "Reimport: EditorAssetManager unavailable");
@@ -1085,7 +1085,7 @@ namespace ProjectAssetActions
 
         if (asset_type == "Shader")
         {
-            const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+            ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
             if (project_info != nullptr)
             {
                 std::error_code ec;

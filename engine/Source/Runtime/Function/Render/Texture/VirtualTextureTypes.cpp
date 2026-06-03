@@ -27,7 +27,7 @@ PhysicalTexturePool::~PhysicalTexturePool()
     Shutdown();
 }
 
-bool PhysicalTexturePool::Initialize(std::shared_ptr<RHI> rhi,
+bool PhysicalTexturePool::Initialize(RHI* rhi,
                                      uint32_t pool_width_pages,
                                      uint32_t pool_height_pages,
                                      uint32_t page_size,
@@ -47,7 +47,7 @@ bool PhysicalTexturePool::Initialize(std::shared_ptr<RHI> rhi,
     uint32_t physical_height = pool_height_pages * page_size;
 
     // Create physical texture
-    auto vulkan_rhi = std::static_pointer_cast<VulkanRHI>(rhi);
+    auto vulkan_rhi = static_cast<VulkanRHI*>(rhi);
     if (!vulkan_rhi)
     {
         return false;
@@ -158,7 +158,7 @@ void PhysicalTexturePool::Shutdown()
         m_PhysicalTexture = nullptr;
         m_Allocation = nullptr;
 #else
-        auto vulkan_rhi = std::static_pointer_cast<VulkanRHI>(m_Rhi);
+        auto vulkan_rhi = static_cast<VulkanRHI*>(m_Rhi);
         if (vulkan_rhi)
         {
             VmaAllocator allocator = vulkan_rhi->getVmaAllocator();

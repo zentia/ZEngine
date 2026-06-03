@@ -19,7 +19,7 @@ public:
     }
 
     // 初始化
-    bool Initialize(std::shared_ptr<RHI> rhi, std::shared_ptr<RenderResourceBase> render_resource);
+    bool Initialize(RHI* rhi, std::shared_ptr<RenderResourceBase> render_resource);
 
     // 清理
     void Shutdown();

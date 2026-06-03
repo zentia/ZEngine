@@ -304,7 +304,7 @@ void DX12MainCameraPass::Initialize(const RenderPassInitInfo* init_info)
         m_EnableFxaa = camera_init->enble_fxaa;
     }
 
-    m_FramebufferResourcesReady = m_FramebufferResources.Initialize(m_Rhi.get(), m_EnableFxaa);
+    m_FramebufferResourcesReady = m_FramebufferResources.Initialize(m_Rhi, m_EnableFxaa);
     if (!m_FramebufferResourcesReady)
     {
         LOG_ERROR(ZRender, "DX12MainCameraPass: MainCameraFramebufferResources::initialize failed");
@@ -467,7 +467,7 @@ void DX12MainCameraPass::PreparePassData(std::shared_ptr<RenderResourceBase> ren
 // =====================================================================
 bool DX12MainCameraPass::BuildBindlessProductionRootSignature()
 {
-    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi.get());
+    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi);
     if (!dx12_rhi || !dx12_rhi->getDevice())
     {
         return false;
@@ -556,7 +556,7 @@ bool DX12MainCameraPass::BuildBindlessProductionRootSignature()
 
 bool DX12MainCameraPass::SetupSkyboxResources()
 {
-    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi.get());
+    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi);
     if (!dx12_rhi || !m_BindlessRootSignature)
     {
         return false;
@@ -679,7 +679,7 @@ bool DX12MainCameraPass::SetupSkyboxResources()
 
 bool DX12MainCameraPass::SetupSceneGridResources()
 {
-    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi.get());
+    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi);
     if (!dx12_rhi || !m_BindlessRootSignature)
     {
         return false;
@@ -806,7 +806,7 @@ void DX12MainCameraPass::DrawSkyboxWithCamera(const std::shared_ptr<RenderCamera
         return;
     }
 
-    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi.get());
+    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi);
     if (!dx12_rhi)
     {
         return;
@@ -887,7 +887,7 @@ void DX12MainCameraPass::DrawSceneGrid()
         return;
     }
 
-    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi.get());
+    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi);
     if (!dx12_rhi)
     {
         return;
@@ -1012,7 +1012,7 @@ void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbac
 {
     TryLateInitializeSkybox();
 
-    if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi.get()))
+    if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi))
     {
         if (dx12_rhi->IsDeviceRemoved(" at start of MainCamera draw"))
         {
@@ -1033,7 +1033,7 @@ void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbac
     if (m_Rp2Ready)
     {
         uint32_t swapchain_index = 0;
-        if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi.get()))
+        if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi))
         {
             swapchain_index = dx12_rhi->getCurrentBackBufferIndex();
         }

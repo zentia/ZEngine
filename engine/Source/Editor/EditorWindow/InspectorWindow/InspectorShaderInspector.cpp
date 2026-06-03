@@ -56,7 +56,7 @@ void CopyShaderAssetForInspector(ShaderRes& destination, const ShaderRes& source
 
 std::filesystem::path GetProjectAssetsPath()
 {
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info != nullptr)
     {
         const std::filesystem::path project_content = project_info->GetProjectContent();
@@ -526,7 +526,7 @@ bool WriteTextFileAtomicForInspector(const std::filesystem::path& path, const st
 
 std::filesystem::path ResolveShaderLabImporterOutputPath(const std::filesystem::path& shader_abs_path)
 {
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info == nullptr || shader_abs_path.empty())
     {
         return {};
@@ -535,7 +535,7 @@ std::filesystem::path ResolveShaderLabImporterOutputPath(const std::filesystem::
     std::error_code ec;
     const std::filesystem::path abs_shader = std::filesystem::absolute(shader_abs_path, ec);
 
-    if (ShaderRegistry* registry = GET_SYSTEM(ShaderRegistry).get())
+    if (ShaderRegistry* registry = GET_SYSTEM(ShaderRegistry))
     {
         const std::filesystem::path project_root = project_info->GetProjectRoot();
         if (!project_root.empty())
@@ -620,7 +620,7 @@ bool ReimportShaderLabAfterSourceSave(const std::filesystem::path& shader_abs_pa
     }
 
     if (EditorAssetManager* editor_assets =
-            dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager).get()))
+            dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
     {
         editor_assets->RefreshAsset(output_zasset.generic_string());
     }
@@ -754,7 +754,7 @@ void CollectShaderLabKeywords(const std::shared_ptr<ZEngine::ShaderLab::ShaderLa
     std::vector<std::filesystem::path>
     CollectZAssetsOfType(const std::filesystem::path& assets_path, const std::string& expected_type)
     {
-        std::shared_ptr<AssetManager> asset_manager = GET_SYSTEM(AssetManager);
+        AssetManager* asset_manager = GET_SYSTEM(AssetManager);
         if (asset_manager == nullptr)
         {
             return {};
@@ -805,7 +805,7 @@ void CollectShaderLabKeywords(const std::shared_ptr<ZEngine::ShaderLab::ShaderLa
             return true;
         }
 
-        ShaderRegistry* registry = GET_SYSTEM(ShaderRegistry).get();
+        ShaderRegistry* registry = GET_SYSTEM(ShaderRegistry);
         if (registry == nullptr)
         {
             return false;
@@ -817,7 +817,7 @@ void CollectShaderLabKeywords(const std::shared_ptr<ZEngine::ShaderLab::ShaderLa
             return false;
         }
 
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr || project_info->GetProjectRoot().empty())
         {
             return false;
@@ -918,7 +918,7 @@ bool LoadProjectShaderDefinitionForInspector(ShaderRes& out_shader,
         return false;
     }
 
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info == nullptr)
     {
         return false;
@@ -930,7 +930,7 @@ bool LoadProjectShaderDefinitionForInspector(ShaderRes& out_shader,
         return false;
     }
 
-    if (ShaderRegistry* registry = GET_SYSTEM(ShaderRegistry).get())
+    if (ShaderRegistry* registry = GET_SYSTEM(ShaderRegistry))
     {
         if (const ShaderRegistryEntry* entry = registry->FindByName(shader_name))
         {
@@ -973,7 +973,7 @@ std::vector<eastl::string> FindProjectShaders()
         }
     };
 
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info == nullptr)
     {
         return shaders;
@@ -984,7 +984,7 @@ std::vector<eastl::string> FindProjectShaders()
     // Canonical list: ShaderRegistry entries under <Project>/Shaders/ only.
     // Do not merge ShaderRes .zasset scans here -- stale _Generated products
     // and legacy Assets/ copies duplicate names and break ImGui IDs.
-    if (ShaderRegistry* shader_registry = GET_SYSTEM(ShaderRegistry).get())
+    if (ShaderRegistry* shader_registry = GET_SYSTEM(ShaderRegistry))
     {
         for (ShaderRegistryEntry* entry : shader_registry->GetAll())
         {
@@ -1334,8 +1334,8 @@ std::filesystem::path ResolveShaderLabSourcePathForVariants(const eastl::string&
         return {};
     }
 
-    ShaderRegistry* registry = GET_SYSTEM(ShaderRegistry).get();
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ShaderRegistry* registry = GET_SYSTEM(ShaderRegistry);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (registry == nullptr || project_info == nullptr)
     {
         return {};

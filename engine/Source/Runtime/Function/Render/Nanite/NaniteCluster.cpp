@@ -281,7 +281,7 @@ NaniteClusterManager::~NaniteClusterManager()
     clear();
 }
 
-bool NaniteClusterManager::Initialize(std::shared_ptr<RHI> rhi, const NaniteConfig& config)
+bool NaniteClusterManager::Initialize(RHI* rhi, const NaniteConfig& config)
 {
     m_Rhi = rhi;
     m_Config = config;

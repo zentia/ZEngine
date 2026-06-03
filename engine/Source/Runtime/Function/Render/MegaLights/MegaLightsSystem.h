@@ -18,7 +18,7 @@ namespace MegaLights
 class MegaLightsSystem
 {
 public:
-    void Initialize(std::shared_ptr<RHI> rhi);
+    void Initialize(RHI* rhi);
     void Shutdown();
 
     void Update(const RenderScene& scene, std::shared_ptr<RenderCamera> camera, ViewportType viewport_type);
@@ -59,7 +59,7 @@ private:
     };
 
     void RebuildTileLists(std::shared_ptr<RenderCamera> camera);
-    void Upload(std::shared_ptr<RHI> rhi, ViewportType viewport_type);
+    void Upload(RHI* rhi, ViewportType viewport_type);
     void EnsureHistoryResources(uint32_t width, uint32_t height);
     void DestroyHistoryResources();
     void TransitionHistoryImage(RHICommandBuffer* command_buffer,
@@ -72,7 +72,7 @@ private:
     ViewportHistory& GetViewportHistory(ViewportType viewport_type);
     const ViewportHistory& GetViewportHistory(ViewportType viewport_type) const;
 
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     RHISampler* m_HistorySampler {nullptr};
     std::vector<MegaLightGpu> m_CpuLights;
     std::vector<MegaLightGpu> m_DebugLights;

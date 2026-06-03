@@ -38,8 +38,8 @@ namespace Runtime
         {
             ZEngine::ShaderLab::ShaderLabDx12Compiler::MaterialVariantKeysByShader result;
 
-            const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
-            const std::shared_ptr<AssetManager> asset_mgr = GET_SYSTEM(AssetManager);
+            ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
+            AssetManager* asset_mgr = GET_SYSTEM(AssetManager);
             if (project_info == nullptr || asset_mgr == nullptr)
             {
                 return result;
@@ -237,7 +237,7 @@ namespace Runtime
 
             ConvertShaderLabAssetToShaderRes(*lab_asset, source_path, *shader_res);
 
-            const std::shared_ptr<AssetManager> asset_mgr = GET_SYSTEM(AssetManager);
+            AssetManager* asset_mgr = GET_SYSTEM(AssetManager);
             const bool ok = asset_mgr && asset_mgr->WriteObjectToDiskThreadSafe(output_path, *shader_res);
             MemoryManager::DestroyObject(shader_res);
             if (ok)
@@ -290,7 +290,7 @@ namespace Runtime
 
     int ShaderImporter::ImportProjectShaders()
     {
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr || project_info->project_path.empty())
         {
             return 0;
@@ -377,7 +377,7 @@ namespace Runtime
             }
 
             // Write .zasset
-            const std::shared_ptr<AssetManager> asset_mgr = GET_SYSTEM(AssetManager);
+            AssetManager* asset_mgr = GET_SYSTEM(AssetManager);
             if (asset_mgr == nullptr || !asset_mgr->WriteObjectToDiskThreadSafe(output_path, *shader_res))
             {
                 LOG_WARNING(ZShader, "ShaderImporter: failed to write {}", output_path.generic_string());
@@ -400,7 +400,7 @@ namespace Runtime
     void ShaderImporter::PrecompileShaderVariants(const std::filesystem::path& source_shader_path)
     {
 #if defined(_WIN32)
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr)
         {
             return;
@@ -448,7 +448,7 @@ namespace Runtime
     int ShaderImporter::PrecompileProjectShaderVariants()
     {
 #if defined(_WIN32)
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr)
         {
             return 0;

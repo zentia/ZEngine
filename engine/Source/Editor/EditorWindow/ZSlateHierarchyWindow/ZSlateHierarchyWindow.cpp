@@ -334,6 +334,7 @@ GObjectID ZSlateHierarchyWindow::CreateEmpty(Level* level, GObjectID parent)
     if (parent != k_invalid_gobject_id)
         EditorHierarchyReparent::Reparent(level, created, parent);
 
+    GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
     NotifyHierarchyStructureChanged(parent);
     EditorSelection::SelectGameObject(created);
     return created;

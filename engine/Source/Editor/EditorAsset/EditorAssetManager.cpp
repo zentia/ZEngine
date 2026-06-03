@@ -51,7 +51,7 @@ namespace
     // sources where the cache *is* the source of truth. See AGENTS.md 2.2.)
     std::filesystem::path resolveAssetRegistryCachePath()
     {
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr)
         {
             return {};
@@ -84,7 +84,7 @@ namespace
     std::optional<std::filesystem::path> TryDiscoverMeshSourceForReimport(
         const std::filesystem::path& zasset_abs_path)
     {
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr)
         {
             return std::nullopt;
@@ -321,7 +321,7 @@ bool EditorAssetManager::Initialize()
     // file that no longer exists is harmless and keeps the dispatch
     // table single-rule.
     {
-        const std::shared_ptr<ProjectInfo> proj = projectInfo;
+        const ProjectInfo* proj = projectInfo;
         std::filesystem::path shaders_root = proj ? proj->GetShadersRoot() : std::filesystem::path {};
         if (!shaders_root.empty())
         {
@@ -955,7 +955,7 @@ bool EditorAssetManager::importSourceAsset(const std::filesystem::path& source_p
 
     if (auto importer = m_ImportManager.FindImporter(source_path))
     {
-        if (std::dynamic_pointer_cast<TextureImporter>(importer) != nullptr)
+        if (dynamic_cast<TextureImporter*>(importer.get()) != nullptr)
         {
             const std::filesystem::path zasset_abs = ToAbsoluteZassetPath(output_path);
             TextureImporterSettings stored;
@@ -990,7 +990,7 @@ bool EditorAssetManager::reimportAsset(const std::string& asset_path,
     std::error_code ec;
     if (!zasset_path.is_absolute())
     {
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr)
         {
             LOG_WARNING(ZAsset, "reimportAsset: no project loaded");
@@ -1293,7 +1293,7 @@ std::filesystem::path EditorAssetManager::ToAbsoluteZassetPath(const std::filesy
     {
         return zasset_path;
     }
-    const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info == nullptr)
     {
         return zasset_path;
@@ -1318,7 +1318,7 @@ std::unique_ptr<AssetImporterSettings> EditorAssetManager::ResolveImporterSettin
         return nullptr;
     }
 
-    if (std::dynamic_pointer_cast<TextureImporter>(importer) == nullptr)
+    if (dynamic_cast<TextureImporter*>(importer.get()) == nullptr)
     {
         if (caller_settings != nullptr)
         {

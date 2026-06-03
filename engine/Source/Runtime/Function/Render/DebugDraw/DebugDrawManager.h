@@ -41,7 +41,7 @@ private:
     void DrawWireFrameObject(DebugDrawGroup& debug_draw_group, uint32_t current_swapchain_image_index);
 
     std::mutex m_Mutex;
-    std::shared_ptr<RHI> m_Rhi = nullptr;
+    RHI* m_Rhi = nullptr;
     bool m_RenderEnabled = false;
     DebugDrawPipeline* m_DebugDrawPipeline[DebugDrawPipelineType::_debug_draw_pipeline_type_count] = {};
 

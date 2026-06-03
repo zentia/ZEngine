@@ -38,7 +38,7 @@ namespace ProjectWindowHelpers
 
     std::filesystem::path GetEditorSourceAssetFolder()
     {
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info != nullptr)
         {
             const std::filesystem::path project_content = project_info->GetProjectContent();
@@ -190,7 +190,7 @@ namespace ProjectWindowHelpers
         }
 
         const std::filesystem::path normalized = NormalizeProjectPath(path);
-        const std::shared_ptr<ProjectInfo> project_info = GET_SYSTEM(ProjectInfo);
+        ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
         if (project_info == nullptr)
         {
             return false;
@@ -213,7 +213,7 @@ namespace ProjectWindowHelpers
 
     void UnloadAssetStreamsUnderPath(const std::filesystem::path& target_path)
     {
-        const std::shared_ptr<AssetManager> asset_manager = GET_SYSTEM(AssetManager);
+        AssetManager* asset_manager = GET_SYSTEM(AssetManager);
         if (asset_manager == nullptr || target_path.empty())
         {
             return;

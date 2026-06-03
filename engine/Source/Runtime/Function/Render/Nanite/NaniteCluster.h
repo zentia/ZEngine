@@ -63,7 +63,7 @@ public:
     ~NaniteClusterManager();
 
     // 初始化
-    bool Initialize(std::shared_ptr<RHI> rhi, const NaniteConfig& config);
+    bool Initialize(RHI* rhi, const NaniteConfig& config);
 
     // 清理
     void clear();
@@ -94,7 +94,7 @@ private:
         std::vector<uint32_t> visible_clusters;
     };
 
-    std::shared_ptr<RHI> m_Rhi;
+    RHI* m_Rhi;
     NaniteConfig m_Config;
 
     std::unordered_map<uint64_t, MeshResourceEntry> m_MeshResources;

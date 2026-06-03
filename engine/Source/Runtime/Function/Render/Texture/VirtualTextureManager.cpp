@@ -18,7 +18,7 @@ VirtualTextureManager::~VirtualTextureManager()
     Shutdown();
 }
 
-void VirtualTextureManager::Initialize(std::shared_ptr<RHI> rhi, RenderResourceBase* render_resource)
+void VirtualTextureManager::Initialize(RHI* rhi, RenderResourceBase* render_resource)
 {
     m_Rhi = rhi;
     m_RenderResource = render_resource;

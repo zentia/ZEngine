@@ -70,7 +70,7 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
         // not as separate m_ColorGradingPass / m_FxaaPass / m_UiPass / m_CombineUiPass objects.
         // Shadow passes + main camera mirror the Vulkan pipeline slot layout for DeferredRender.
         RHIDescriptorSetLayout* per_mesh_layout = nullptr;
-        if (!ShadowPassShared::CreatePerMeshDescriptorSetLayout(m_Pipeline.m_Rhi.get(), per_mesh_layout))
+        if (!ShadowPassShared::CreatePerMeshDescriptorSetLayout(m_Pipeline.m_Rhi, per_mesh_layout))
         {
             LOG_ERROR(ZRender, "DesktopRenderPipelineModule(DX12): failed to create shadow per-mesh descriptor layout");
             return;
@@ -97,37 +97,37 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
         m_Pipeline.m_DirectionalLightPass->Initialize(nullptr);
 
         #if defined(_WIN32)
-        if (LogDx12DeviceLost(m_Pipeline.m_Rhi.get(), " PointLightShadowPass::Initialize"))
+        if (LogDx12DeviceLost(m_Pipeline.m_Rhi, " PointLightShadowPass::Initialize"))
         {
             return;
         }
         #endif
 
-        std::static_pointer_cast<PointLightShadowPass>(m_Pipeline.m_PointLightShadowPass)
+        static_cast<PointLightShadowPass*>(m_Pipeline.m_PointLightShadowPass.get())
             ->setPerMeshLayout(per_mesh_layout);
-        std::static_pointer_cast<DirectionalLightShadowPass>(m_Pipeline.m_DirectionalLightPass)
+        static_cast<DirectionalLightShadowPass*>(m_Pipeline.m_DirectionalLightPass.get())
             ->setPerMeshLayout(per_mesh_layout);
 
         m_Pipeline.m_PointLightShadowPass->PostInitialize();
         #if defined(_WIN32)
-        if (LogDx12DeviceLost(m_Pipeline.m_Rhi.get(), " PointLightShadowPass::PostInitialize"))
+        if (LogDx12DeviceLost(m_Pipeline.m_Rhi, " PointLightShadowPass::PostInitialize"))
         {
             return;
         }
         #endif
         m_Pipeline.m_DirectionalLightPass->PostInitialize();
         #if defined(_WIN32)
-        if (LogDx12DeviceLost(m_Pipeline.m_Rhi.get(), " DirectionalLightShadowPass::PostInitialize"))
+        if (LogDx12DeviceLost(m_Pipeline.m_Rhi, " DirectionalLightShadowPass::PostInitialize"))
         {
             return;
         }
         #endif
 
-        auto dx12_main_camera = std::static_pointer_cast<DX12MainCameraPass>(m_Pipeline.m_MainCameraPass);
+        auto dx12_main_camera = static_cast<DX12MainCameraPass*>(m_Pipeline.m_MainCameraPass.get());
         dx12_main_camera->m_PointLightShadowColorImageView =
-            std::static_pointer_cast<RenderPass>(m_Pipeline.m_PointLightShadowPass)->GetFramebufferImageViews()[0];
+            static_cast<RenderPass*>(m_Pipeline.m_PointLightShadowPass.get())->GetFramebufferImageViews()[0];
         dx12_main_camera->m_DirectionalLightShadowColorImageView =
-            std::static_pointer_cast<RenderPass>(m_Pipeline.m_DirectionalLightPass)->m_Framebuffer.attachments[0].view;
+            static_cast<RenderPass*>(m_Pipeline.m_DirectionalLightPass.get())->m_Framebuffer.attachments[0].view;
 
         MainCameraPassInitInfo camera_init_info {};
         camera_init_info.enble_fxaa = init_info.enable_fxaa;
@@ -186,10 +186,10 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
     m_Pipeline.m_DirectionalLightPass->Initialize(nullptr);
     m_Pipeline.m_LumenPass->Initialize(nullptr);
 
-    std::shared_ptr<MainCameraPass> main_camera_pass =
-        std::static_pointer_cast<MainCameraPass>(m_Pipeline.m_MainCameraPass);
-    std::shared_ptr<RenderPass> _main_camera_pass =
-        std::static_pointer_cast<RenderPass>(m_Pipeline.m_MainCameraPass);
+    MainCameraPass* main_camera_pass =
+        static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get());
+    RenderPass* _main_camera_pass =
+        static_cast<RenderPass*>(m_Pipeline.m_MainCameraPass.get());
     std::shared_ptr<ParticlePass> particle_pass =
         std::static_pointer_cast<ParticlePass>(m_Pipeline.m_ParticlePass);
 
@@ -198,21 +198,21 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
     m_Pipeline.m_ParticlePass->Initialize(&particle_init_info);
 
     main_camera_pass->m_PointLightShadowColorImageView =
-        std::static_pointer_cast<RenderPass>(m_Pipeline.m_PointLightShadowPass)->GetFramebufferImageViews()[0];
+        static_cast<RenderPass*>(m_Pipeline.m_PointLightShadowPass.get())->GetFramebufferImageViews()[0];
     main_camera_pass->m_DirectionalLightShadowColorImageView =
-        std::static_pointer_cast<RenderPass>(m_Pipeline.m_DirectionalLightPass)->m_Framebuffer.attachments[0].view;
+        static_cast<RenderPass*>(m_Pipeline.m_DirectionalLightPass.get())->m_Framebuffer.attachments[0].view;
 
     MainCameraPassInitInfo main_camera_init_info;
     main_camera_init_info.enble_fxaa = init_info.enable_fxaa;
     main_camera_pass->SetParticlePass(particle_pass);
     m_Pipeline.m_MainCameraPass->Initialize(&main_camera_init_info);
 
-    std::static_pointer_cast<ParticlePass>(m_Pipeline.m_ParticlePass)->SetupParticlePass();
+    static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get())->SetupParticlePass();
 
     std::vector<RHIDescriptorSetLayout*> descriptor_layouts = _main_camera_pass->GetDescriptorSetLayouts();
-    std::static_pointer_cast<PointLightShadowPass>(m_Pipeline.m_PointLightShadowPass)
+    static_cast<PointLightShadowPass*>(m_Pipeline.m_PointLightShadowPass.get())
         ->setPerMeshLayout(descriptor_layouts[MainCameraPass::LayoutType::_per_mesh]);
-    std::static_pointer_cast<DirectionalLightShadowPass>(m_Pipeline.m_DirectionalLightPass)
+    static_cast<DirectionalLightShadowPass*>(m_Pipeline.m_DirectionalLightPass.get())
         ->setPerMeshLayout(descriptor_layouts[MainCameraPass::LayoutType::_per_mesh]);
 
     m_Pipeline.m_PointLightShadowPass->PostInitialize();
@@ -381,7 +381,7 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
                 CombineUIPass& combine_ui_pass = *(static_cast<CombineUIPass*>(m_Pipeline.m_CombineUiPass.get()));
                 ParticlePass& particle_pass = *(static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get()));
                 MainCameraPass* main_camera_pass = static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get());
-                VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Pipeline.m_Rhi.get());
+                VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Pipeline.m_Rhi);
 
                 main_camera_pass->Draw(color_grading_pass,
                                        fxaa_pass,
@@ -397,14 +397,14 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
     out_draw_list.Add(
         "DebugDraw",
         [this]() {
-            VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Pipeline.m_Rhi.get());
+            VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Pipeline.m_Rhi);
             GET_SYSTEM(DebugDrawManager)->Draw(vulkan_rhi->m_CurrentSwapchainImageIndex);
         });
     #endif
 #endif
 }
 
-void DesktopRenderPipelineModule::SubmitDrawLists(std::shared_ptr<RHI> rhi,
+void DesktopRenderPipelineModule::SubmitDrawLists(RHI* rhi,
                                                   std::shared_ptr<RenderResourceBase> render_resource,
                                                   const RHIDrawList& draw_list)
 {
@@ -441,7 +441,7 @@ void DesktopRenderPipelineModule::SubmitDrawLists(std::shared_ptr<RHI> rhi,
     }
     #endif
     #if defined(Z_HAS_VULKAN)
-    VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(rhi.get());
+    VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(rhi);
     RenderResource* vulkan_resource = static_cast<RenderResource*>(render_resource.get());
 
     vulkan_resource->ResetRingBufferOffset(vulkan_rhi->m_CurrentFrameIndex);
@@ -637,8 +637,7 @@ void DesktopRenderPipelineModule::ConsumeParticleSwapData(RenderSwapData& swap_d
 
     if (swap_data.m_ParticleSubmitRequest.has_value())
     {
-        std::shared_ptr<ParticlePass> particle_pass =
-            std::static_pointer_cast<ParticlePass>(m_Pipeline.m_ParticlePass);
+        ParticlePass* particle_pass = static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get());
 
         int emitter_count = swap_data.m_ParticleSubmitRequest->GetEmitterCount();
         particle_pass->SetEmitterCount(emitter_count);
@@ -655,14 +654,14 @@ void DesktopRenderPipelineModule::ConsumeParticleSwapData(RenderSwapData& swap_d
     }
     if (swap_data.m_EmitterTickRequest.has_value())
     {
-        std::static_pointer_cast<ParticlePass>(m_Pipeline.m_ParticlePass)
+        static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get())
             ->SetTickIndices(swap_data.m_EmitterTickRequest->m_EmitterIndices);
         swap_context.ResetEmitterTickSwapData();
     }
 
     if (swap_data.m_EmitterTransformRequest.has_value())
     {
-        std::static_pointer_cast<ParticlePass>(m_Pipeline.m_ParticlePass)
+        static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get())
             ->SetTransformIndices(swap_data.m_EmitterTransformRequest->m_TransformDescs);
         swap_context.ResetEmitterTransformSwapData();
     }
