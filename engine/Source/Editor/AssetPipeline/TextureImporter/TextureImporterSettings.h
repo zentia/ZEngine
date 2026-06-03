@@ -35,7 +35,11 @@ public:
     struct PlatformSettings
     {
         bool overridden = false;
-        Format format = Format::RGBA8;
+        // BC7 by default: the editor preview build target (Standalone) cooks to
+        // BC on desktop, so freshly imported textures are compressed+mipped out
+        // of the box (matches Unity's "Auto / Compressed" default). Data
+        // textures that must stay uncompressed override this per-asset to RGBA8.
+        Format format = Format::BC7;
         bool generate_mipmaps = true;
         bool sRGB = true;
         int max_size = 4096;

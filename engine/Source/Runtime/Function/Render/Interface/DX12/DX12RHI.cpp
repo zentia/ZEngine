@@ -242,6 +242,169 @@ namespace
         command_list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
     }
 
+    // Forward declarations -- definitions live further down next to
+    // GetFormatBytesPerPixel; the mip uploader below needs them earlier.
+    bool IsBlockCompressedRHIFormat(RHIFormat format);
+    uint32_t BcBlockBytesRHI(RHIFormat format);
+
+    // Build one upload-buffer staging for a single mip subresource, reading the
+    // mip's data from `mip_src` (tightly packed: `source_row_pitch` bytes per
+    // source row, `num_source_rows` rows). Works for both linear (rows = height,
+    // pitch = width*bpp) and block-compressed (rows = blocksY, pitch =
+    // blocksX*blockBytes) layouts because GetCopyableFootprints already reports
+    // the correct destination row count / size for the subresource's format.
+    bool CreateMipUploadStaging(ID3D12Device* device,
+                                ID3D12Resource* texture_resource,
+                                const uint8_t* mip_src,
+                                UINT subresource_index,
+                                size_t source_row_pitch,
+                                UINT num_source_rows,
+                                TextureUploadStaging& out_staging)
+    {
+        if (device == nullptr || texture_resource == nullptr || mip_src == nullptr)
+        {
+            return false;
+        }
+
+        out_staging.subresource_index = subresource_index;
+        out_staging.source_row_pitch = source_row_pitch;
+
+        D3D12_RESOURCE_DESC texture_desc = texture_resource->GetDesc();
+        UINT64 upload_buffer_size = 0;
+        device->GetCopyableFootprints(&texture_desc,
+                                      subresource_index,
+                                      1,
+                                      0,
+                                      &out_staging.footprint,
+                                      &out_staging.num_rows,
+                                      &out_staging.row_size_in_bytes,
+                                      &upload_buffer_size);
+
+        D3D12_HEAP_PROPERTIES heap_properties = {};
+        heap_properties.Type = D3D12_HEAP_TYPE_UPLOAD;
+        heap_properties.CreationNodeMask = 1;
+        heap_properties.VisibleNodeMask = 1;
+
+        D3D12_RESOURCE_DESC upload_desc = {};
+        upload_desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        upload_desc.Width = upload_buffer_size;
+        upload_desc.Height = 1;
+        upload_desc.DepthOrArraySize = 1;
+        upload_desc.MipLevels = 1;
+        upload_desc.Format = DXGI_FORMAT_UNKNOWN;
+        upload_desc.SampleDesc.Count = 1;
+        upload_desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+        if (!CheckDX12(device->CreateCommittedResource(&heap_properties,
+                                                       D3D12_HEAP_FLAG_NONE,
+                                                       &upload_desc,
+                                                       D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                       nullptr,
+                                                       IID_PPV_ARGS(&out_staging.buffer)),
+                       "DX12 create mip upload buffer failed"))
+        {
+            return false;
+        }
+
+        uint8_t* mapped_data = nullptr;
+        D3D12_RANGE read_range {0, 0};
+        if (!CheckDX12(out_staging.buffer->Map(0, &read_range, reinterpret_cast<void**>(&mapped_data)),
+                       "DX12 map mip upload buffer failed"))
+        {
+            return false;
+        }
+
+        const UINT rows = std::min<UINT>(num_source_rows, out_staging.num_rows);
+        for (UINT row = 0; row < rows; ++row)
+        {
+            std::memcpy(mapped_data + out_staging.footprint.Offset +
+                            static_cast<size_t>(row) * out_staging.footprint.Footprint.RowPitch,
+                        mip_src + static_cast<size_t>(row) * source_row_pitch,
+                        std::min<size_t>(source_row_pitch, static_cast<size_t>(out_staging.row_size_in_bytes)));
+        }
+        out_staging.buffer->Unmap(0, nullptr);
+        return true;
+    }
+
+    // Upload a tightly-packed mip chain (mip0 first, every successive mip
+    // concatenated -- the exact layout TextureCompressor / Texture2D::m_Pixels
+    // produce) into a freshly-created DX12 texture. Handles linear (RGBA8) and
+    // block-compressed (BC1/BC3/BC7) layouts. array_layer 0 only.
+    bool UploadPackedMipChain(ID3D12Device* device,
+                              DX12Image* dx12_image,
+                              const uint8_t* blob,
+                              uint32_t width,
+                              uint32_t height,
+                              uint32_t mip_levels,
+                              RHIFormat storage_format,
+                              uint32_t bytes_per_pixel,
+                              std::function<bool(std::function<void(ID3D12GraphicsCommandList*)>)> execute_upload)
+    {
+        const bool block = IsBlockCompressedRHIFormat(storage_format);
+        const uint32_t block_bytes = block ? BcBlockBytesRHI(storage_format) : 0;
+        const uint32_t total_mips = dx12_image->getMipLevels();
+
+        std::vector<TextureUploadStaging> stagings;
+        stagings.reserve(mip_levels);
+
+        size_t blob_offset = 0;
+        for (uint32_t mip = 0; mip < mip_levels; ++mip)
+        {
+            const uint32_t mw = std::max<uint32_t>(1u, width >> mip);
+            const uint32_t mh = std::max<uint32_t>(1u, height >> mip);
+
+            size_t source_row_pitch = 0;
+            UINT num_source_rows = 0;
+            size_t mip_size = 0;
+            if (block)
+            {
+                const uint32_t blocks_x = (mw + 3) / 4;
+                const uint32_t blocks_y = (mh + 3) / 4;
+                source_row_pitch = static_cast<size_t>(blocks_x) * block_bytes;
+                num_source_rows = blocks_y;
+                mip_size = source_row_pitch * blocks_y;
+            }
+            else
+            {
+                source_row_pitch = static_cast<size_t>(mw) * bytes_per_pixel;
+                num_source_rows = mh;
+                mip_size = source_row_pitch * mh;
+            }
+
+            // subresource = mip + array_layer * total_mips, array_layer = 0.
+            const UINT subresource_index = mip;
+            TextureUploadStaging staging {};
+            if (!CreateMipUploadStaging(device,
+                                        dx12_image->getResource(),
+                                        blob + blob_offset,
+                                        subresource_index,
+                                        source_row_pitch,
+                                        num_source_rows,
+                                        staging))
+            {
+                return false;
+            }
+            stagings.push_back(std::move(staging));
+            blob_offset += mip_size;
+        }
+        (void)total_mips;
+
+        return execute_upload([&](ID3D12GraphicsCommandList* command_list) {
+            for (const TextureUploadStaging& staging : stagings)
+            {
+                TransitionImageOnList(dx12_image,
+                                      staging.subresource_index,
+                                      D3D12_RESOURCE_STATE_COPY_DEST,
+                                      command_list);
+                RecordTextureCopy(command_list, dx12_image->getResource(), staging);
+                TransitionImageOnList(dx12_image,
+                                      staging.subresource_index,
+                                      D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                                      command_list);
+            }
+        });
+    }
+
     DXGI_FORMAT ToDX12Format(RHIFormat format)
     {
         switch (format)
@@ -260,6 +423,23 @@ namespace
                 return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
             case RHI_FORMAT_R16G16B16A16_SFLOAT:
                 return DXGI_FORMAT_R16G16B16A16_FLOAT;
+            // Block-compressed (texture cook). BC1 has no separate RGB/RGBA DXGI
+            // form -- the 1-bit-alpha variant is the same DXGI_FORMAT_BC1_*; the
+            // RGB-only encode simply leaves alpha at 1.
+            case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:
+            case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:
+                return DXGI_FORMAT_BC1_UNORM;
+            case RHI_FORMAT_BC1_RGB_SRGB_BLOCK:
+            case RHI_FORMAT_BC1_RGBA_SRGB_BLOCK:
+                return DXGI_FORMAT_BC1_UNORM_SRGB;
+            case RHI_FORMAT_BC3_UNORM_BLOCK:
+                return DXGI_FORMAT_BC3_UNORM;
+            case RHI_FORMAT_BC3_SRGB_BLOCK:
+                return DXGI_FORMAT_BC3_UNORM_SRGB;
+            case RHI_FORMAT_BC7_UNORM_BLOCK:
+                return DXGI_FORMAT_BC7_UNORM;
+            case RHI_FORMAT_BC7_SRGB_BLOCK:
+                return DXGI_FORMAT_BC7_UNORM_SRGB;
             case RHI_FORMAT_R32_SFLOAT:
                 return DXGI_FORMAT_R32_FLOAT;
             case RHI_FORMAT_R32G32_SFLOAT:
@@ -466,6 +646,43 @@ namespace
             case RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE:
             default:
                 return D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        }
+    }
+
+    // True for the block-compressed formats the texture cook produces on DX12
+    // (BC1/BC3/BC7). ASTC is intentionally NOT here -- it is a mobile-only
+    // format that DX12 cannot sample, so cooked ASTC variants are never fed to
+    // this backend (they are file-inspected, never rendered, per the plan).
+    bool IsBlockCompressedRHIFormat(RHIFormat format)
+    {
+        switch (format)
+        {
+            case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:
+            case RHI_FORMAT_BC1_RGB_SRGB_BLOCK:
+            case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:
+            case RHI_FORMAT_BC1_RGBA_SRGB_BLOCK:
+            case RHI_FORMAT_BC3_UNORM_BLOCK:
+            case RHI_FORMAT_BC3_SRGB_BLOCK:
+            case RHI_FORMAT_BC7_UNORM_BLOCK:
+            case RHI_FORMAT_BC7_SRGB_BLOCK:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    // Bytes per 4x4 block for a BC format. BC1 = 8, BC3/BC7 = 16.
+    uint32_t BcBlockBytesRHI(RHIFormat format)
+    {
+        switch (format)
+        {
+            case RHI_FORMAT_BC1_RGB_UNORM_BLOCK:
+            case RHI_FORMAT_BC1_RGB_SRGB_BLOCK:
+            case RHI_FORMAT_BC1_RGBA_UNORM_BLOCK:
+            case RHI_FORMAT_BC1_RGBA_SRGB_BLOCK:
+                return 8;
+            default:
+                return 16;
         }
     }
 
@@ -2845,36 +3062,68 @@ void DX12RHI::CreateGlobalImage(RHIImage*& image,
                 std::max<uint32_t>(miplevels, 1));
     if (texture_image_pixels != nullptr)
     {
-        TextureUploadStaging staging {};
-        if (!CreateTextureUploadStaging(m_Device.Get(),
-                                        static_cast<DX12Image*>(image)->getResource(),
-                                        texture_image_pixels,
-                                        texture_image_width,
-                                        texture_image_height,
-                                        0,
-                                        0,
-                                        static_cast<DX12Image*>(image)->getMipLevels(),
-                                        static_cast<DX12Image*>(image)->getArrayLayers(),
-                                        source_bpp,
-                                        upload_bpp,
-                                        staging))
+        DX12Image* dx12_image = static_cast<DX12Image*>(image);
+        const bool block_compressed = IsBlockCompressedRHIFormat(storage_format);
+        const bool needs_f32_to_f16 = (source_bpp == 16 && upload_bpp == 8);
+        const uint32_t effective_mips = std::max<uint32_t>(miplevels, 1);
+
+        // HDR float32->float16 conversion is handled only by the legacy single-
+        // subresource path (global IBL / LUT textures are always single-mip
+        // uncompressed). Everything else -- LDR uncompressed and block-
+        // compressed, single- OR multi-mip -- goes through the packed mip-chain
+        // uploader, which slices `texture_image_pixels` per mip from format+dims
+        // (matching TextureCompressor / Texture2D::m_Pixels layout exactly).
+        if (needs_f32_to_f16 || (effective_mips <= 1 && !block_compressed))
         {
-            LOG_ERROR(ZRender, "DX12 CreateGlobalImage: staging failed ({}x{})", texture_image_width, texture_image_height);
+            TextureUploadStaging staging {};
+            if (!CreateTextureUploadStaging(m_Device.Get(),
+                                            dx12_image->getResource(),
+                                            texture_image_pixels,
+                                            texture_image_width,
+                                            texture_image_height,
+                                            0,
+                                            0,
+                                            dx12_image->getMipLevels(),
+                                            dx12_image->getArrayLayers(),
+                                            source_bpp,
+                                            upload_bpp,
+                                            staging))
+            {
+                LOG_ERROR(ZRender, "DX12 CreateGlobalImage: staging failed ({}x{})", texture_image_width, texture_image_height);
+            }
+            else if (!ExecuteDedicatedUploadCommands([&](ID3D12GraphicsCommandList* command_list) {
+                         TransitionImageOnList(dx12_image,
+                                               staging.subresource_index,
+                                               D3D12_RESOURCE_STATE_COPY_DEST,
+                                               command_list);
+                         RecordTextureCopy(command_list, dx12_image->getResource(), staging);
+                         TransitionImageOnList(dx12_image,
+                                               staging.subresource_index,
+                                               D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                                               command_list);
+                     }))
+            {
+                LOG_ERROR(ZRender, "DX12 CreateGlobalImage: upload failed ({}x{})", texture_image_width, texture_image_height);
+            }
         }
-        else if (!ExecuteDedicatedUploadCommands([&](ID3D12GraphicsCommandList* command_list) {
-                     DX12Image* dx12_image = static_cast<DX12Image*>(image);
-                     TransitionImageOnList(dx12_image,
-                                           staging.subresource_index,
-                                           D3D12_RESOURCE_STATE_COPY_DEST,
-                                           command_list);
-                     RecordTextureCopy(command_list, dx12_image->getResource(), staging);
-                     TransitionImageOnList(dx12_image,
-                                           staging.subresource_index,
-                                           D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
-                                           command_list);
-                 }))
+        else if (!UploadPackedMipChain(m_Device.Get(),
+                                       dx12_image,
+                                       static_cast<const uint8_t*>(texture_image_pixels),
+                                       texture_image_width,
+                                       texture_image_height,
+                                       effective_mips,
+                                       storage_format,
+                                       upload_bpp,
+                                       [this](std::function<void(ID3D12GraphicsCommandList*)> rec) {
+                                           return ExecuteDedicatedUploadCommands(rec);
+                                       }))
         {
-            LOG_ERROR(ZRender, "DX12 CreateGlobalImage: upload failed ({}x{})", texture_image_width, texture_image_height);
+            LOG_ERROR(ZRender,
+                      "DX12 CreateGlobalImage: mip-chain upload failed ({}x{}, mips={}, fmt={})",
+                      texture_image_width,
+                      texture_image_height,
+                      effective_mips,
+                      static_cast<int>(storage_format));
         }
     }
 

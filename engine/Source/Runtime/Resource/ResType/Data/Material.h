@@ -6,6 +6,7 @@
 #include <vector>
 
 class ShaderRes;
+class Texture2D;
 
 struct MaterialFloatProperty
 {
@@ -118,6 +119,20 @@ public:
     eastl::string m_OcclusionTextureFile;
     eastl::string m_EmissiveTextureFile;
 
+    // Texture cook (Phase 5) shadow references. Each PPtr<Texture2D> points at
+    // the cooked Texture2D .zasset for the corresponding *_File above. Shadow
+    // phase (mirrors m_ShaderPptr / PR-SE3a-shadow): written + read for schema
+    // evolution; the path string stays the renderer boundary. When a PPtr is
+    // valid, Get*TextureFile() returns the resolved .zasset path so the cooked
+    // (compressed+mipped) variant is consumed; otherwise it returns the legacy
+    // source-path string. Old .zasset files lack these nodes -> SafeBinaryRead
+    // leaves them null and behaviour is byte-identical.
+    PPtr<Texture2D> m_BaseColourTexturePptr;
+    PPtr<Texture2D> m_MetallicRoughnessTexturePptr;
+    PPtr<Texture2D> m_NormalTexturePptr;
+    PPtr<Texture2D> m_OcclusionTexturePptr;
+    PPtr<Texture2D> m_EmissiveTexturePptr;
+
     /// Enabled `#pragma multi_compile` / `shader_feature` keywords for this
     /// material instance (Inspector toggles). Empty = default variant (no defines).
     std::vector<eastl::string> m_EnabledShaderKeywords;
@@ -125,6 +140,16 @@ public:
     // PR-SE3a-migrate accessors
     eastl::string GetShaderName() const;
     void SetShaderByName(const eastl::string& name);
+
+    // Texture cook accessors: return the cooked .zasset path when the matching
+    // PPtr is valid, else the legacy source-path string. The renderer feeds the
+    // result to RenderResourceBase::LoadTexture, which loads a cooked Texture2D
+    // directly when handed a ".zasset" path.
+    eastl::string GetBaseColourTextureFile() const;
+    eastl::string GetMetallicRoughnessTextureFile() const;
+    eastl::string GetNormalTextureFile() const;
+    eastl::string GetOcclusionTextureFile() const;
+    eastl::string GetEmissiveTextureFile() const;
 
     bool IsShaderKeywordEnabled(const eastl::string& keyword) const;
     void SetShaderKeywordEnabled(const eastl::string& keyword, bool enabled);

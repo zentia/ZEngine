@@ -210,6 +210,12 @@ bool EditorAssetManager::Initialize()
     Runtime::ShaderImporter::ImportProjectShaders();
     Runtime::ShaderImporter::PrecompileProjectShaderVariants();
 
+    // Texture cook (Phase 5): first-time seeding of compressed+mipped
+    // Texture2D .zasset siblings for any source image under Assets/. Idempotent
+    // (skips existing .zasset), so warm restarts only stat. Materials then
+    // resolve the cooked variant through RenderResourceBase::LoadTexture.
+    TextureImporter::ImportProjectTextures();
+
     if (auto shader_registry = GET_SYSTEM(ShaderRegistry))
     {
         shader_registry->rescan();

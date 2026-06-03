@@ -2,6 +2,7 @@
 
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Render/ShaderRegistry.h"
+#include "Runtime/Function/Render/Texture/Texture2D.h"
 #include "Runtime/Function/ShaderLab/ShaderLabVariant.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
@@ -83,6 +84,14 @@ void MaterialRes::Transfer(TransferFunction& transfer)
     transfer.Transfer(m_EmissiveTextureFile, "emissive_texture_file");
     transfer.Transfer(m_EnabledShaderKeywords, "enabled_shader_keywords");
 
+    // Texture cook (Phase 5) PPtr shadow references. Appended last so old
+    // .zasset files (no these nodes) read back null via SafeBinaryRead.
+    transfer.Transfer(m_BaseColourTexturePptr, "base_colour_texture_pptr");
+    transfer.Transfer(m_MetallicRoughnessTexturePptr, "metallic_roughness_texture_pptr");
+    transfer.Transfer(m_NormalTexturePptr, "normal_texture_pptr");
+    transfer.Transfer(m_OcclusionTexturePptr, "occlusion_texture_pptr");
+    transfer.Transfer(m_EmissiveTexturePptr, "emissive_texture_pptr");
+
     if (!transfer.IsReading())
     {
         return;
@@ -130,6 +139,58 @@ void MaterialRes::Transfer(TransferFunction& transfer)
             }
         }
     }
+}
+
+namespace
+{
+    // Resolve a texture PPtr to its on-disk .zasset path (project-relative when
+    // possible). Returns the fallback string when the PPtr is null or its
+    // identity can't be recovered. The renderer hands a ".zasset" path straight
+    // to LoadTexture, which loads the cooked Texture2D directly.
+    eastl::string ResolveTexturePptrPath(const PPtr<Texture2D>& pptr, const eastl::string& fallback)
+    {
+        if (pptr.IsNull())
+        {
+            return fallback;
+        }
+        const std::shared_ptr<AssetManager> asset_mgr = GET_SYSTEM(AssetManager);
+        if (asset_mgr == nullptr)
+        {
+            return fallback;
+        }
+        std::filesystem::path out_path;
+        int64_t out_lfid = 0;
+        if (!asset_mgr->TryGetIdentityForInstance(pptr.GetInstanceID(), out_path, out_lfid) || out_path.empty())
+        {
+            return fallback;
+        }
+        return eastl::string(out_path.generic_string().c_str());
+    }
+}  // namespace
+
+eastl::string MaterialRes::GetBaseColourTextureFile() const
+{
+    return ResolveTexturePptrPath(m_BaseColourTexturePptr, m_BaseColourTextureFile);
+}
+
+eastl::string MaterialRes::GetMetallicRoughnessTextureFile() const
+{
+    return ResolveTexturePptrPath(m_MetallicRoughnessTexturePptr, m_MetallicRoughnessTextureFile);
+}
+
+eastl::string MaterialRes::GetNormalTextureFile() const
+{
+    return ResolveTexturePptrPath(m_NormalTexturePptr, m_NormalTextureFile);
+}
+
+eastl::string MaterialRes::GetOcclusionTextureFile() const
+{
+    return ResolveTexturePptrPath(m_OcclusionTexturePptr, m_OcclusionTextureFile);
+}
+
+eastl::string MaterialRes::GetEmissiveTextureFile() const
+{
+    return ResolveTexturePptrPath(m_EmissiveTexturePptr, m_EmissiveTextureFile);
 }
 
 eastl::string MaterialRes::GetShaderName() const

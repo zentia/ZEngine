@@ -1431,6 +1431,54 @@ renderer yet. **Vulkan path** of either module currently hits a *pre-existing*
 crash in `MainCameraPass::SetupModelGlobalDescriptorSet` (proven via A/B revert,
 unrelated to the module refactor); DX12 is the verified backend.
 
+### 2.17 Per-platform texture cook pipeline
+
+Full design / phase landing notes / verification at
+**`doc/asset_management/TEXTURE_COOK_PIPELINE.md`**. Read it before touching any
+of: `Texture2D` mip/format schema, `TextureCompressor`, the DDC, `TextureImporter`
+cook paths, `MaterialRes` texture PPtrs, or `RenderResourceBase::LoadTexture`.
+
+Conventions (do not re-litigate):
+
+- **One source image -> per-platform cooked variants.** No `.meta`, no ETC2.
+  BC1/BC3/BC7 on desktop + WebGL, ASTC LDR on mobile (Android / iOS).
+- **`Texture2D`** stores a concatenated mip chain (`m_Pixels` + `m_MipOffsets`)
+  and a real `RHIFormat` ordinal in `m_Format` (incl. BC*/ASTC). New `Transfer`
+  nodes are append-only; old single-mip RGBA8 `.zasset` still load (SafeBinaryRead
+  `kNotFound` -> default). See `Texture2D.{h,cpp}` + T1/T2 in
+  `SchemaEvolutionSmokeTest.cpp`.
+- **Three output locations**:
+  1. `Assets/<stem>.zasset` -- editor-platform variant (Standalone/BC7 on the DX12
+     editor). Consumed by editor preview + scene materials. Path-derived GUID.
+  2. `Intermediate/DDC/` -- LMDB cache of raw cook artifacts, keyed
+     `(cache_type="Texture", asset_guid, hash(settings+platform+encoderVer))` via
+     `Runtime::MakeDDCCacheKey`. Opened by `Runtime::GetDerivedDataCache()`.
+  3. `Intermediate/Cooked/<Platform>/<rel>.zasset` -- per-platform cook output.
+     Reuses the **source** GUID (so player builds resolve references), written via
+     `AssetManager::WriteObjectToDiskWithGuid(path, obj, source_guid)` (the only
+     explicit-GUID write API; everything else uses `DeterministicGuidFromPath`).
+  Both `Intermediate/*` roots are gitignored; settings JSON
+  (`AssetRegistry/texture_import_settings.json`) is the only VCS-checked artifact
+  (the `.meta` replacement).
+- **`MaterialRes`** carries `PPtr<Texture2D>` shadow fields beside each
+  `m_*TextureFile` string (write both, read prefer PPtr via `Get*TextureFile()`,
+  fall back to the path string -- same staged pattern as `m_shader_pptr`). PPtr
+  nodes are appended last in `Transfer()` so old material `.zasset` read back null.
+- **Consumption**: `RenderResourceBase::LoadTexture` tries the cooked
+  `<source>.zasset` first (`TryLoadCookedTexture`), else falls back to the legacy
+  `stb_image` source decode. **Block-compressed cooked variants are gated to DX12**
+  -- the Vulkan `CreateGlobalImage` path here does not yet decode BC/ASTC, so on
+  Vulkan the fallback path runs (uncompressed, GPU mipgen via `miplevels=0`). ASTC
+  is never sampleable on the DX12 editor -> verify ASTC cooks by file inspection,
+  not rendering.
+- **Entry points**: `Build -> Cook Textures for <Platform>` (MenuController) and
+  console `asset.cook <standalone|android|ios|webgl>` (EditorConsoleCommands).
+  Startup `TextureImporter::ImportProjectTextures()` (in `EditorAssetManager::
+  Initialize`) seeds the editor-platform `Assets/<stem>.zasset` for any source
+  image lacking one (A2 first-time seeding, idempotent).
+- **Encoders** (`bc7enc_rdo`, ARM `astc-encoder`) link PRIVATE into ZEditor only
+  but compile on the host so the Windows editor can cross-encode mobile ASTC.
+
 ## 3. Build / test invocations
 
 - Configure: pre-existing `build/` is fine; CMake presets in `CMakePresets.json`.

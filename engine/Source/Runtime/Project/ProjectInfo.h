@@ -157,6 +157,18 @@ public:
     /// pointed here at boot.
     std::filesystem::path GetIntermediateShadersRoot() const;
 
+    /// Derived Data Cache root: <project>/<intermediate_dir>/DDC/.
+    /// LMDB-backed store of platform-specific cooked artifacts (compressed
+    /// texture mip blobs, ...) keyed by (asset GUID, platform, settings hash,
+    /// encoder version). Excluded from version control; safe to delete to
+    /// force a recook on next launch. See DerivedDataCacheAccessor.
+    std::filesystem::path GetIntermediateDDCRoot() const;
+
+    /// Per-platform cooked output root: <project>/<intermediate_dir>/Cooked/.
+    /// Cook writes <Cooked>/<Platform>/<rel>.zasset variants here, reusing the
+    /// SOURCE asset GUID so references resolve in a player build. Gitignored.
+    std::filesystem::path GetIntermediateCookedRoot() const;
+
     // -------------------------------------------------------------------------
     // Data paths. All return absolute paths.
     // Empty `project_path` -> empty result (caller must check).

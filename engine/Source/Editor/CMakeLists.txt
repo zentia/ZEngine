@@ -25,6 +25,10 @@ if(APPLE)
 endif()
 list(FILTER EDITOR_HEADERS EXCLUDE REGEX ".*/[Pp]latform/([Ww]indows|[Mm]ac[Oo][Ss]|[Ll]inux)/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/[Pp]latform/([Ww]indows|[Mm]ac[Oo][Ss]|[Ll]inux)/.*")
+# Standalone smoke-test executables (their own main()) live in .../Test/ dirs
+# and must NOT be glommed into the ZEditor binary. They build via their own
+# guarded targets (see add_subdirectory below).
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/AssetPipeline/.*/[Tt]est/.*")
 file(GLOB EDITOR_RESOURCE CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/resource/ZEditor.rc)
 
 # Collect platform-specific source files if platform directory exists
@@ -226,6 +230,16 @@ if(TARGET minizip-ng)
     target_link_libraries(${TARGET_NAME} PRIVATE minizip-ng)
 endif()
 
+# Texture-cook block encoders (editor-only): bc7enc (BC1/3/7) + astc-encoder
+# (ASTC LDR). Consumed by TextureCompressor.cpp. PRIVATE -- cooking is an
+# editor-side step; ZRuntime never links these.
+if(TARGET bc7enc)
+    target_link_libraries(${TARGET_NAME} PRIVATE bc7enc)
+endif()
+if(TARGET astcenc)
+    target_link_libraries(${TARGET_NAME} PRIVATE astcenc)
+endif()
+
 if(WIN32 AND ZENGINE_USE_VULKAN AND (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" AND CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")))
     # Windows editor uses DX12 by default. Keep Vulkan support available for optional
     # code paths, but do not require vulkan-1.dll to exist before the process starts.
@@ -234,6 +248,9 @@ if(WIN32 AND ZENGINE_USE_VULKAN AND (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR (C
 endif()
 
 message(STATUS "Z_ROOT_DIR:${Z_ROOT_DIR}")
+
+# Opt-in editor-side smoke tests (own main(); excluded from the ZEditor glob above).
+add_subdirectory(AssetPipeline/TextureImporter/Test)
 
 set(_EDITOR_CONFIG_BIN "${BINARY_ROOT_DIR}/$<CONFIG>")
 set(POST_BUILD_COMMANDS

@@ -1,5 +1,7 @@
 #include "MenuController.h"
 
+#include "Editor/AssetPipeline/TextureImporter/TextureImporter.h"
+#include "Editor/AssetPipeline/TextureImporter/TextureImporterSettings.h"
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/EditorUI/EditorUI.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
@@ -172,7 +174,24 @@ void MenuController::EnsureZSlateMenuEntries()
                        }});
     entries.push_back({"Edit", empty_menu});
     entries.push_back({"Tools", empty_menu});
-    entries.push_back({"Build", empty_menu});
+    entries.push_back({"Build", [](ZSlate::SMenu& menu, float scale) {
+                           // Texture cook (Phase 6): cook all project textures
+                           // for the chosen platform into
+                           // Intermediate/Cooked/<Platform>/ (BC on
+                           // desktop/WebGL, ASTC on mobile).
+                           menu.AddItem("Cook Textures for Standalone", []() {
+                               TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget::Standalone);
+                           }, scale);
+                           menu.AddItem("Cook Textures for Android", []() {
+                               TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget::Android);
+                           }, scale);
+                           menu.AddItem("Cook Textures for iOS", []() {
+                               TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget::iOS);
+                           }, scale);
+                           menu.AddItem("Cook Textures for WebGL", []() {
+                               TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget::WebGL);
+                           }, scale);
+                       }});
     entries.push_back({"Select", empty_menu});
     entries.push_back({"Actor", [](ZSlate::SMenu& menu, float scale) {
                            menu.AddItem("Place Actor", []() {}, scale);

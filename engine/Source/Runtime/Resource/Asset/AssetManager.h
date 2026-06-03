@@ -211,10 +211,23 @@ public:
     {
         return static_cast<T*>(ReadObject(path, TypeOf<T>()));
     }
-    int WriteFile(const std::filesystem::path& path, int serializedFileIndex, WriteData* writeData, int size);
+    // explicit_guid: when non-empty, the AssetFileHeader GUID is stamped with
+    // this value instead of the path-derived DeterministicGuidFromPath. Used by
+    // the texture cook (Phase 6) so a cooked .zasset written to
+    // Intermediate/Cooked/<Platform>/ keeps the SOURCE asset's GUID -- otherwise
+    // its path-derived GUID would differ and references would not resolve in a
+    // player build.
+    int WriteFile(const std::filesystem::path& path, int serializedFileIndex, WriteData* writeData, int size, const std::string& explicit_guid = std::string());
 
     int GetSerializedFileIndexFromPath(const std::filesystem::path& path);
     bool WriteObjectToDiskThreadSafe(const std::filesystem::path& path, Object& object);
+
+    // Texture cook (Phase 6) explicit-GUID write. Same as
+    // WriteObjectToDiskThreadSafe but stamps `guid` into the header so cooked
+    // outputs preserve the source GUID. `guid` must be a 32-char lowercase hex
+    // string (the format DeterministicGuidFromPath produces); empty falls back
+    // to the path-derived GUID.
+    bool WriteObjectToDiskWithGuid(const std::filesystem::path& path, Object& object, const std::string& guid);
     bool WriteObjectsToDiskThreadSafe(const std::filesystem::path& path, Object** objects, const int64_t* identifiers, size_t count, TransferInstructionFlags transferFlags = kNoTransferInstructionFlags);
 
     // Text (YAML) multi-object graph I/O for scenes / prefabs. Same object-graph

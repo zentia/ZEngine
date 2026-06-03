@@ -706,3 +706,59 @@ if(NOT TARGET libcurl AND NOT TARGET libcurl_static AND NOT EMSCRIPTEN)
         endif()
     endif()
 endif()
+
+# =============================================================================
+# Texture-cook block encoders (editor-only). Both are compiled on the HOST
+# regardless of the build target, because the Windows editor must be able to
+# cross-encode mobile (ASTC) variants. They are linked PRIVATE into ZEditor
+# (and the encode smoke test); ZRuntime never links them.
+#   - bc7enc_rdo : BC1/BC3/BC7 (richgel999, MIT / public-domain).
+#   - astc-encoder : ASTC LDR (ARM, Apache-2.0).
+# =============================================================================
+
+# bc7enc_rdo -- BC1/BC3/BC7 block encoders.
+if(NOT TARGET bc7enc AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/bc7enc_rdo/bc7enc.cpp")
+    add_library(bc7enc STATIC
+        bc7enc_rdo/bc7enc.cpp
+        bc7enc_rdo/rgbcx.cpp
+    )
+    target_include_directories(bc7enc PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/bc7enc_rdo>
+        $<INSTALL_INTERFACE:include/bc7enc_rdo>
+    )
+    set_target_properties(bc7enc PROPERTIES CXX_STANDARD 17 UNITY_BUILD OFF)
+    if(MSVC)
+        target_compile_definitions(bc7enc PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(bc7enc PRIVATE /W0)
+    else()
+        target_compile_options(bc7enc PRIVATE -w)
+    endif()
+    set_target_properties(bc7enc PROPERTIES FOLDER ${third_party_folder}/bc7enc)
+    z_set_config_archive_dirs(bc7enc "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
+
+# ARM astc-encoder -- ASTC LDR encoder. Compiled with the no-intrinsics
+# (scalar) ISA path forced ON so it builds identically on every host
+# regardless of the inherited /arch flag; cooking is an offline step where
+# the scalar speed penalty is irrelevant.
+if(NOT TARGET astcenc AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/astc-encoder/Source/astcenc_entry.cpp")
+    file(GLOB ASTCENC_SOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/astc-encoder/Source/astcenc_*.cpp")
+    add_library(astcenc STATIC ${ASTCENC_SOURCES})
+    target_include_directories(astcenc PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/astc-encoder/Source>
+        $<INSTALL_INTERFACE:include/astc-encoder>
+    )
+    target_compile_definitions(astcenc PRIVATE
+        ASTCENC_SSE=0 ASTCENC_AVX=0 ASTCENC_POPCNT=0
+        ASTCENC_F16C=0 ASTCENC_NEON=0 ASTCENC_SVE=0)
+    set_target_properties(astcenc PROPERTIES CXX_STANDARD 17 UNITY_BUILD OFF)
+    if(MSVC)
+        target_compile_definitions(astcenc PRIVATE _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(astcenc PRIVATE /W0)
+    else()
+        target_compile_options(astcenc PRIVATE -w)
+    endif()
+    set_target_properties(astcenc PROPERTIES FOLDER ${third_party_folder}/astc-encoder)
+    z_set_config_archive_dirs(astcenc "${CMAKE_CURRENT_BINARY_DIR}")
+endif()

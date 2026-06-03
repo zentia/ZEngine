@@ -380,6 +380,26 @@ std::filesystem::path ProjectInfo::GetIntermediateShadersRoot() const
     return project_path / interm / "Shaders";
 }
 
+std::filesystem::path ProjectInfo::GetIntermediateDDCRoot() const
+{
+    if (project_path.empty())
+    {
+        return {};
+    }
+    const char* interm = intermediate_dir.empty() ? "Intermediate" : intermediate_dir.c_str();
+    return project_path / interm / "DDC";
+}
+
+std::filesystem::path ProjectInfo::GetIntermediateCookedRoot() const
+{
+    if (project_path.empty())
+    {
+        return {};
+    }
+    const char* interm = intermediate_dir.empty() ? "Intermediate" : intermediate_dir.c_str();
+    return project_path / interm / "Cooked";
+}
+
 std::filesystem::path ProjectInfo::GetDataRoot() const
 {
     if (project_path.empty())
@@ -467,6 +487,24 @@ bool ProjectInfo::EnsureScriptsScaffold()
                         interm_root.generic_string(),
                         ec.message());
             all_ok = false;
+            ec.clear();
+        }
+    }
+
+    // Cooked/ holds per-platform cooked .zasset variants (texture cook Phase 6).
+    // Gitignored (it lives under Intermediate/). Created here so the cook step
+    // never has to special-case a missing root; the per-platform subdir is made
+    // on demand by the cook walk.
+    const std::filesystem::path cooked_root = GetIntermediateCookedRoot();
+    if (!cooked_root.empty())
+    {
+        std::filesystem::create_directories(cooked_root, ec);
+        if (ec)
+        {
+            LOG_WARNING(ZProjectInfo,
+                        "ensureScriptsScaffold: failed to create cooked dir {}: {}",
+                        cooked_root.generic_string(),
+                        ec.message());
             ec.clear();
         }
     }

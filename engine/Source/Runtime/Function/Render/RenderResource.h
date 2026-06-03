@@ -90,6 +90,14 @@ struct TextureDataToUpdate
     uint32_t emissive_image_width;
     uint32_t emissive_image_height;
     RHIFormat emissive_image_format;
+    // Mip level counts per slot (texture cook). 1 = single mip / GPU-mipgen via
+    // the RHI's miplevels=0 contract for legacy uncompressed uploads; >1 = a
+    // pre-supplied compressed+mipped chain (cooked Texture2D) packed in *pixels.
+    uint32_t base_color_image_miplevels {1};
+    uint32_t metallic_roughness_image_miplevels {1};
+    uint32_t normal_roughness_image_miplevels {1};
+    uint32_t occlusion_image_miplevels {1};
+    uint32_t emissive_image_miplevels {1};
     VulkanPBRMaterial* now_material;
 };
 

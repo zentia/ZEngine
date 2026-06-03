@@ -7,6 +7,7 @@
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "core/Log/LogSystem.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -305,7 +306,11 @@ void* UiGpuResources::EnsureTexture2D(Texture2D* texture)
     }
 
     const RHIFormat format = static_cast<RHIFormat>(texture->m_Format);
-    void* handle = CreateFromPixels(texture->m_Pixels.data(), texture->m_Width, texture->m_Height, format);
+    void* handle = CreateFromPixels(texture->m_Pixels.data(),
+                                    texture->m_Width,
+                                    texture->m_Height,
+                                    format,
+                                    texture->GetMipCount());
     if (handle == nullptr)
     {
         LOG_WARNING(ZRender, "UiGpuResources: failed to upload Texture2D");
@@ -468,6 +473,15 @@ void* UiGpuResources::CreateFromPixels(const uint8_t* pixels,
                                        uint32_t height,
                                        RHIFormat format)
 {
+    return CreateFromPixels(pixels, width, height, format, 1);
+}
+
+void* UiGpuResources::CreateFromPixels(const uint8_t* pixels,
+                                       uint32_t width,
+                                       uint32_t height,
+                                       RHIFormat format,
+                                       uint32_t miplevels)
+{
     if (m_Rhi == nullptr || pixels == nullptr || width == 0 || height == 0)
     {
         return nullptr;
@@ -482,7 +496,7 @@ void* UiGpuResources::CreateFromPixels(const uint8_t* pixels,
                              height,
                              const_cast<uint8_t*>(pixels),
                              format,
-                             1);
+                             std::max<uint32_t>(miplevels, 1u));
 
     if (entry->image == nullptr || entry->view == nullptr)
     {

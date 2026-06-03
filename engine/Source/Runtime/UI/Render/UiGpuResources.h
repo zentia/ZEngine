@@ -91,6 +91,10 @@ private:
     void ReuploadTextureInPlace(GpuTexture* target, const uint8_t* pixels, uint32_t width, uint32_t height);
     void CreateDefaultNativeFont();
     void* CreateFromPixels(const uint8_t* pixels, uint32_t width, uint32_t height, RHIFormat format);
+    // Mip-aware overload: `pixels` is a tightly-packed mip chain (mip0 first),
+    // `miplevels` its count. Used by EnsureTexture2D for cooked compressed+mipped
+    // Texture2D assets. The 4-arg overload above forwards here with miplevels=1.
+    void* CreateFromPixels(const uint8_t* pixels, uint32_t width, uint32_t height, RHIFormat format, uint32_t miplevels);
 
     static UiGpuResources* s_Instance;
 

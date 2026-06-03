@@ -438,7 +438,7 @@ int AssetManager::GetSerializedFileIndexFromPath(const std::filesystem::path& pa
     return InsertPathNameInternal(path, true);
 }
 
-int AssetManager::WriteFile(const std::filesystem::path& path, int serializedFileIndex, WriteData* writeData, int size)
+int AssetManager::WriteFile(const std::filesystem::path& path, int serializedFileIndex, WriteData* writeData, int size, const std::string& explicit_guid)
 {
     const std::filesystem::path parent_path = path.parent_path();
     if (!parent_path.empty())
@@ -473,7 +473,10 @@ int AssetManager::WriteFile(const std::filesystem::path& path, int serializedFil
     // current pipeline (typically one Texture/Mesh/Material per file)
     // and AssetRegistry only needs a coarse classifier here, not a
     // perfect one.
-    tempSerialize->SetAssetGuid(DeterministicGuidFromPath(path));
+    // Phase 6 texture cook: an explicit GUID (the source asset's GUID) keeps a
+    // cooked .zasset resolvable in a player build even though its on-disk path
+    // (Intermediate/Cooked/<Platform>/...) differs from the source path.
+    tempSerialize->SetAssetGuid(!explicit_guid.empty() ? explicit_guid : DeterministicGuidFromPath(path));
     if (size > 0 && writeData[0].objectPtr != nullptr)
     {
         const Type* t = writeData[0].objectPtr->GetType();
@@ -674,6 +677,18 @@ bool AssetManager::WriteObjectToDiskThreadSafe(const std::filesystem::path& path
 {
     Object* objects[] = {&object};
     return WriteObjectsToDiskThreadSafe(path, objects, nullptr, 1);
+}
+
+bool AssetManager::WriteObjectToDiskWithGuid(const std::filesystem::path& path, Object& object, const std::string& guid)
+{
+    int serializedFileIndex = GetSerializedFileIndexFromPath(path);
+    if (serializedFileIndex == -1)
+        return false;
+
+    WriteData writeData;
+    writeData.objectPtr = &object;
+    writeData.localIdentifierInFile = 1;
+    return WriteFile(path, serializedFileIndex, &writeData, 1, guid) == 0;
 }
 
 bool AssetManager::WriteObjectsToYaml(const std::filesystem::path& path, Object** objects, const int64_t* identifiers, size_t count)

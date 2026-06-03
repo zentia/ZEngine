@@ -82,11 +82,11 @@ namespace
         material_desc.m_EmissiveFactor = material_res->m_EmissiveFactor;
         material_desc.m_IsBlend = material_res->m_IsBlend;
         material_desc.m_IsDoubleSided = material_res->m_IsDoubleSided;
-        material_desc.m_BaseColorTextureFile = resolveAssetPath(material_res->m_BaseColourTextureFile);
-        material_desc.m_MetallicRoughnessTextureFile = resolveAssetPath(material_res->m_MetallicRoughnessTextureFile);
-        material_desc.m_NormalTextureFile = resolveAssetPath(material_res->m_NormalTextureFile);
-        material_desc.m_OcclusionTextureFile = resolveAssetPath(material_res->m_OcclusionTextureFile);
-        material_desc.m_EmissiveTextureFile = resolveAssetPath(material_res->m_EmissiveTextureFile);
+        material_desc.m_BaseColorTextureFile = resolveAssetPath(material_res->GetBaseColourTextureFile());
+        material_desc.m_MetallicRoughnessTextureFile = resolveAssetPath(material_res->GetMetallicRoughnessTextureFile());
+        material_desc.m_NormalTextureFile = resolveAssetPath(material_res->GetNormalTextureFile());
+        material_desc.m_OcclusionTextureFile = resolveAssetPath(material_res->GetOcclusionTextureFile());
+        material_desc.m_EmissiveTextureFile = resolveAssetPath(material_res->GetEmissiveTextureFile());
         material_desc.m_EnabledShaderKeywords.clear();
         material_desc.m_EnabledShaderKeywords.reserve(material_res->m_EnabledShaderKeywords.size());
         for (const eastl::string& keyword : material_res->m_EnabledShaderKeywords)

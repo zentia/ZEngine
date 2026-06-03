@@ -579,27 +579,39 @@ VulkanPBRMaterial& RenderResource::GetOrCreateVulkanMaterial(std::shared_ptr<RHI
             rhi->FreeMemory(inefficient_staging_buffer_memory);
         }
 
+        // Mip counts come from the cooked TextureData (cooked Texture2D carries a
+        // full compressed mip chain; uncompressed stb-decoded textures stay at 1
+        // and rely on the RHI's GPU-mipgen contract).
+        auto mip_count_of = [](const std::shared_ptr<TextureData>& tex) -> uint32_t {
+            return (tex && tex->m_MipLevels > 0) ? tex->m_MipLevels : 1u;
+        };
+
         TextureDataToUpdate update_texture_data;
         update_texture_data.base_color_image_pixels = base_color_image_pixels;
         update_texture_data.base_color_image_width = base_color_image_width;
         update_texture_data.base_color_image_height = base_color_image_height;
         update_texture_data.base_color_image_format = base_color_image_format;
+        update_texture_data.base_color_image_miplevels = mip_count_of(material_data.m_BaseColorTexture);
         update_texture_data.metallic_roughness_image_pixels = metallic_roughness_image_pixels;
         update_texture_data.metallic_roughness_image_width = metallic_roughness_width;
         update_texture_data.metallic_roughness_image_height = metallic_roughness_height;
         update_texture_data.metallic_roughness_image_format = metallic_roughness_format;
+        update_texture_data.metallic_roughness_image_miplevels = mip_count_of(material_data.m_MetallicRoughnessTexture);
         update_texture_data.normal_roughness_image_pixels = normal_roughness_image_pixels;
         update_texture_data.normal_roughness_image_width = normal_roughness_width;
         update_texture_data.normal_roughness_image_height = normal_roughness_height;
         update_texture_data.normal_roughness_image_format = normal_roughness_format;
+        update_texture_data.normal_roughness_image_miplevels = mip_count_of(material_data.m_NormalTexture);
         update_texture_data.occlusion_image_pixels = occlusion_image_pixels;
         update_texture_data.occlusion_image_width = occlusion_image_width;
         update_texture_data.occlusion_image_height = occlusion_image_height;
         update_texture_data.occlusion_image_format = occlusion_image_format;
+        update_texture_data.occlusion_image_miplevels = mip_count_of(material_data.m_OcclusionTexture);
         update_texture_data.emissive_image_pixels = emissive_image_pixels;
         update_texture_data.emissive_image_width = emissive_image_width;
         update_texture_data.emissive_image_height = emissive_image_height;
         update_texture_data.emissive_image_format = emissive_image_format;
+        update_texture_data.emissive_image_miplevels = mip_count_of(material_data.m_EmissiveTexture);
         update_texture_data.now_material = &now_material;
 
         UpdateTextureImageData(rhi, update_texture_data);
@@ -1138,13 +1150,20 @@ void RenderResource::UpdateIndexBuffer(std::shared_ptr<RHI> rhi,
 
 void RenderResource::UpdateTextureImageData(std::shared_ptr<RHI> rhi, const TextureDataToUpdate& texture_data)
 {
+    // miplevels passthrough: preserve the legacy sentinel 0 for single-mip
+    // (uncompressed) uploads -- DX12 treats 0 as 1, Vulkan treats 0 as
+    // "GPU-generate the full chain", exactly the pre-cook behaviour. Only a
+    // cooked chain (>1) passes an explicit pre-supplied mip count.
+    auto upload_mips = [](uint32_t n) -> uint32_t { return n > 1u ? n : 0u; };
+
     rhi->CreateGlobalImage(texture_data.now_material->base_color_texture_image,
                            texture_data.now_material->base_color_image_view,
                            texture_data.now_material->base_color_image_allocation,
                            texture_data.base_color_image_width,
                            texture_data.base_color_image_height,
                            texture_data.base_color_image_pixels,
-                           texture_data.base_color_image_format);
+                           texture_data.base_color_image_format,
+                           upload_mips(texture_data.base_color_image_miplevels));
 
     rhi->CreateGlobalImage(texture_data.now_material->metallic_roughness_texture_image,
                            texture_data.now_material->metallic_roughness_image_view,
@@ -1152,7 +1171,8 @@ void RenderResource::UpdateTextureImageData(std::shared_ptr<RHI> rhi, const Text
                            texture_data.metallic_roughness_image_width,
                            texture_data.metallic_roughness_image_height,
                            texture_data.metallic_roughness_image_pixels,
-                           texture_data.metallic_roughness_image_format);
+                           texture_data.metallic_roughness_image_format,
+                           upload_mips(texture_data.metallic_roughness_image_miplevels));
 
     rhi->CreateGlobalImage(texture_data.now_material->normal_texture_image,
                            texture_data.now_material->normal_image_view,
@@ -1160,7 +1180,8 @@ void RenderResource::UpdateTextureImageData(std::shared_ptr<RHI> rhi, const Text
                            texture_data.normal_roughness_image_width,
                            texture_data.normal_roughness_image_height,
                            texture_data.normal_roughness_image_pixels,
-                           texture_data.normal_roughness_image_format);
+                           texture_data.normal_roughness_image_format,
+                           upload_mips(texture_data.normal_roughness_image_miplevels));
 
     rhi->CreateGlobalImage(texture_data.now_material->occlusion_texture_image,
                            texture_data.now_material->occlusion_image_view,
@@ -1168,7 +1189,8 @@ void RenderResource::UpdateTextureImageData(std::shared_ptr<RHI> rhi, const Text
                            texture_data.occlusion_image_width,
                            texture_data.occlusion_image_height,
                            texture_data.occlusion_image_pixels,
-                           texture_data.occlusion_image_format);
+                           texture_data.occlusion_image_format,
+                           upload_mips(texture_data.occlusion_image_miplevels));
 
     rhi->CreateGlobalImage(texture_data.now_material->emissive_texture_image,
                            texture_data.now_material->emissive_image_view,
@@ -1176,7 +1198,8 @@ void RenderResource::UpdateTextureImageData(std::shared_ptr<RHI> rhi, const Text
                            texture_data.emissive_image_width,
                            texture_data.emissive_image_height,
                            texture_data.emissive_image_pixels,
-                           texture_data.emissive_image_format);
+                           texture_data.emissive_image_format,
+                           upload_mips(texture_data.emissive_image_miplevels));
 }
 
 RenderMeshGPUResource& RenderResource::GetEntityMesh(RenderEntity entity)

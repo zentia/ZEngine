@@ -323,6 +323,11 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/YamlRoundTripSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/YamlRoundTripSmokeTest.cpp")
+# Derived Data Cache smoke-test main carve-out (texture cook P3)
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Cache/Test/DerivedDataCacheSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Cache/Test/DerivedDataCacheSmokeTest.cpp")
 
 # UGUI control layer retired (P4). The shared GPU render layer + Font/UITypes/
 # WindowUI moved to Runtime/UI/ and are now picked up by the main GLOB_RECURSE
@@ -1011,5 +1016,9 @@ add_subdirectory(Function/Render/Interface/Vulkan/Test)
 # everywhere ZRuntime does, so the smoke-test can link on every supported host.
 # ---------------------------------------------------------------------------
 add_subdirectory(Core/Serialize/Test)
+
+# Derived Data Cache smoke test (texture cook P3). Own main(); carved out of
+# the ZRuntime glob above and built only when ZENGINE_BUILD_DDC_SMOKE_TEST=ON.
+add_subdirectory(Resource/Cache/Test)
 
 

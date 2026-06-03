@@ -1,6 +1,8 @@
 #include "Runtime/Function/Render/RenderResourceBase.h"
 
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Function/Render/RenderSystem.h"
+#include "Runtime/Function/Render/Texture/Texture2D.h"
 #include "Runtime/Profiler/Profiler.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
@@ -16,6 +18,8 @@
 #include "tiny_obj_loader.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <vector>
@@ -76,6 +80,108 @@ namespace
     bool ShouldLogMeshLoadDebug(const eastl::string& mesh_asset)
     {
         return mesh_asset.find("cube.mesh.json") != eastl::string::npos;
+    }
+
+    // True for the block-compressed RHIFormat ordinals the texture cook emits
+    // (BC* desktop, ASTC mobile). Mirrors the DX12 backend's predicate but kept
+    // local here so RenderResourceBase doesn't depend on the DX12 TU.
+    bool IsBlockCompressedFormatOrdinal(uint32_t ordinal)
+    {
+        const RHIFormat f = static_cast<RHIFormat>(ordinal);
+        if (f >= RHI_FORMAT_BC1_RGB_UNORM_BLOCK && f <= RHI_FORMAT_BC7_SRGB_BLOCK)
+        {
+            return true;
+        }
+        if (f >= RHI_FORMAT_ASTC_4x4_UNORM_BLOCK && f <= RHI_FORMAT_ASTC_12x12_SRGB_BLOCK)
+        {
+            return true;
+        }
+        return false;
+    }
+
+    bool ActiveBackendIsDirectX12()
+    {
+        if (auto render_system = GET_SYSTEM(RenderSystem))
+        {
+            if (std::shared_ptr<RHI> rhi = render_system->GetRHI())
+            {
+                return rhi->getGraphicsAPI() == GraphicsAPI::DirectX12;
+            }
+        }
+        return false;
+    }
+
+    // Resolve a cooked Texture2D .zasset for a texture reference and, if it is
+    // consumable by the active backend, copy its compressed+mipped payload into
+    // a TextureData. Returns nullptr to signal "no cooked variant -- fall back
+    // to the stb_image source decode". The cooked .zasset is looked up next to
+    // the resolved source path with the extension swapped to ".zasset" (the
+    // TextureImporter default output placement for in-Assets sources); if the
+    // reference already points at a ".zasset" it is used directly.
+    std::shared_ptr<TextureData> TryLoadCookedTexture(const eastl::string& file)
+    {
+        auto asset_mgr = GET_SYSTEM(AssetManager);
+        if (asset_mgr == nullptr || file.empty())
+        {
+            return nullptr;
+        }
+
+        std::filesystem::path source_full = asset_mgr->GetFullPath(file);
+        std::filesystem::path zasset_path = source_full;
+        std::string ext = source_full.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (ext != ".zasset")
+        {
+            zasset_path = source_full;
+            zasset_path.replace_extension(".zasset");
+        }
+
+        std::error_code ec;
+        if (!std::filesystem::exists(zasset_path, ec) || ec)
+        {
+            return nullptr;
+        }
+
+        std::filesystem::path read_path = zasset_path;
+        Texture2D* cooked = asset_mgr->ReadObject<Texture2D>(read_path);
+        if (cooked == nullptr || !cooked->IsValid())
+        {
+            return nullptr;
+        }
+
+        // DX12 can sample BC*; Vulkan's legacy CreateGlobalImage path here does
+        // not yet decode block-compressed uploads (see AGENTS texture-cook
+        // watch-item), so compressed cooked variants are gated to DX12. On any
+        // other backend, fall back to the stb source decode (uncompressed).
+        if (IsBlockCompressedFormatOrdinal(cooked->m_Format) && !ActiveBackendIsDirectX12())
+        {
+            return nullptr;
+        }
+
+        const Texture2D::MipSpan mip0 = cooked->GetMipSpan(0);
+        if (mip0.data == nullptr || cooked->m_Pixels.empty())
+        {
+            return nullptr;
+        }
+
+        auto texture = std::make_shared<TextureData>();
+        texture->m_Width = cooked->m_Width;
+        texture->m_Height = cooked->m_Height;
+        texture->m_Format = static_cast<RHIFormat>(cooked->m_Format);
+        texture->m_Depth = 1;
+        texture->m_ArrayLayers = 1;
+        texture->m_MipLevels = cooked->GetMipCount();
+        texture->m_Type = ZENGINE_IMAGE_TYPE::ZENGINE_IMAGE_TYPE_2D;
+        texture->m_PixelsLength = static_cast<uint32_t>(cooked->m_Pixels.size());
+        // TextureData frees m_Pixels with free(), so the payload must be a
+        // malloc'd copy (cooked->m_Pixels is a std::vector owned by the Object).
+        texture->m_Pixels = static_cast<uint8_t*>(malloc(cooked->m_Pixels.size()));
+        if (texture->m_Pixels == nullptr)
+        {
+            return nullptr;
+        }
+        std::memcpy(texture->m_Pixels, cooked->m_Pixels.data(), cooked->m_Pixels.size());
+        return texture;
     }
 
     std::string ToUpperCopy(std::string value)
@@ -252,6 +358,15 @@ std::shared_ptr<TextureData> RenderResourceBase::LoadTextureHDR(eastl::string fi
 
 std::shared_ptr<TextureData> RenderResourceBase::LoadTexture(eastl::string file, bool is_srgb)
 {
+    // Texture cook (Phase 5): prefer the cooked Texture2D .zasset (compressed +
+    // full mip chain) when one exists and the active backend can sample it.
+    // Falls through to the legacy stb_image source decode otherwise, so demo
+    // projects without cooked variants keep rendering unchanged.
+    if (std::shared_ptr<TextureData> cooked = TryLoadCookedTexture(file))
+    {
+        return cooked;
+    }
+
     std::shared_ptr<TextureData> texture = std::make_shared<TextureData>();
 
     int iw, ih, n;

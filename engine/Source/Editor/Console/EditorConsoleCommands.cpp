@@ -1,5 +1,7 @@
 #include "EditorConsoleCommands.h"
 
+#include "Editor/AssetPipeline/TextureImporter/TextureImporter.h"
+#include "Editor/AssetPipeline/TextureImporter/TextureImporterSettings.h"
 #include "Editor/AssetRegistry/AssetRegistry.h"
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
@@ -166,6 +168,49 @@ namespace
             LOG_ERROR(ZConsole, "asset.reimport failed for '{}'", zasset_path.generic_string());
         }
         return ok;
+    }
+
+    bool CmdAssetCook(const std::vector<std::string>& args)
+    {
+        // Texture cook (Phase 6): asset.cook <platform>. Walks all project
+        // textures, cooks the per-platform variant, and writes cooked .zasset
+        // (source GUID preserved) to Intermediate/Cooked/<Platform>/.
+        if (args.empty())
+        {
+            LOG_ERROR(ZConsole, "Usage: asset.cook <standalone|android|ios|webgl>");
+            return false;
+        }
+
+        std::string platform = args[0];
+        std::transform(platform.begin(), platform.end(), platform.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        TextureImporterSettings::BuildTarget target;
+        if (platform == "standalone" || platform == "windows" || platform == "pc" || platform == "desktop")
+        {
+            target = TextureImporterSettings::BuildTarget::Standalone;
+        }
+        else if (platform == "android")
+        {
+            target = TextureImporterSettings::BuildTarget::Android;
+        }
+        else if (platform == "ios")
+        {
+            target = TextureImporterSettings::BuildTarget::iOS;
+        }
+        else if (platform == "webgl" || platform == "web")
+        {
+            target = TextureImporterSettings::BuildTarget::WebGL;
+        }
+        else
+        {
+            LOG_ERROR(ZConsole, "asset.cook: unknown platform '{}' (standalone|android|ios|webgl)", args[0]);
+            return false;
+        }
+
+        const int cooked = TextureImporter::CookProjectTextures(target);
+        LOG_INFO(ZConsole, "asset.cook {}: {} texture(s) cooked", platform, cooked);
+        return true;
     }
 
     bool CmdAssetCount(const std::vector<std::string>&)
@@ -347,6 +392,9 @@ void RegisterEditorConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("asset.reimport", "Reimport a .zasset from its source. Usage: asset.reimport <path>",
                             CmdAssetReimport);
     console.RegisterCommand("asset.count", "Print AssetRegistry asset count", CmdAssetCount);
+    console.RegisterCommand("asset.cook",
+                            "Cook project textures for a platform. Usage: asset.cook <standalone|android|ios|webgl>",
+                            CmdAssetCook);
     console.RegisterCommand("play", "Enter play mode (editor)", CmdPlay);
     console.RegisterCommand("pause", "Pause play mode (editor)", CmdPause);
     console.RegisterCommand("r.renderpath",
