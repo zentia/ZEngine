@@ -59,6 +59,9 @@ public:
     bool m_IsShowAxis {false};
     size_t m_SelectedAxis {3};
 
+    // Composited on the swapchain overlay from EditorUIPass::Draw (after ZSlate UI).
+    void DrawAxis();
+
     // DX-B2: shadow maps for RP1 deferred (wired from shadow passes after init).
     RHIImageView* m_PointLightShadowColorImageView {nullptr};
     RHIImageView* m_DirectionalLightShadowColorImageView {nullptr};
@@ -86,7 +89,6 @@ private:
 
     // ---- Draw helpers ----------------------------------------------------
     void DrawSkybox(ViewportType viewport_type);
-    void DrawAxis();
     void DrawSkyboxPreview();
     void DrawSkyboxWithCamera(const std::shared_ptr<RenderCamera>& camera,
                               const RHIViewport& viewport,
@@ -125,6 +127,12 @@ private:
     RHIDeviceMemory* m_AxisPerFrameConstantBufferMemory = nullptr;
     RHIBuffer* m_AxisDrawConstantBuffer = nullptr;
     RHIDeviceMemory* m_AxisDrawConstantBufferMemory = nullptr;
+    RHIBuffer* m_AxisHostVisibleVertexBuffer = nullptr;
+    RHIDeviceMemory* m_AxisHostVisibleVertexBufferMemory = nullptr;
+    size_t m_AxisHostVisibleVertexCapacity = 0;
+    RHIBuffer* m_AxisHostVisibleIndexBuffer = nullptr;
+    RHIDeviceMemory* m_AxisHostVisibleIndexBufferMemory = nullptr;
+    size_t m_AxisHostVisibleIndexCapacity = 0;
     std::array<MainCameraPerFrame, 2> m_MainCameraPerFrameByViewport {};
     bool m_AxisReady = false;
 

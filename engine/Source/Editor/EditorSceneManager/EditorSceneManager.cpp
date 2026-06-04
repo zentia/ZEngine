@@ -16,6 +16,7 @@
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Input/InputSystem.h"
+#include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/WindowSystem.h"
@@ -29,8 +30,10 @@
 #include <cassert>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
+#include <string>
 
 namespace
 {
@@ -49,6 +52,45 @@ namespace
         const Vector3 eye = pivot + kDefaultSceneView3DOffset;
         camera->LookAt(eye, pivot, Vector3::UNIT_Z);
     }
+
+    // UE reference: FSimpleConstantViewScaleAdjuster::GetAdjustedComponentToWorld +
+    // CalculateLocalPixelToWorldScale (InteractiveToolsFramework/BaseGizmos).
+    float ComputeEditorGizmoUniformScale(const RenderCamera& camera,
+                                           const Vector3& pivot_world,
+                                           float viewport_width,
+                                           float viewport_height)
+    {
+        if (viewport_width < 1.0f || viewport_height < 1.0f)
+        {
+            return 1.0f;
+        }
+
+        const float distance = (camera.position() - pivot_world).length();
+        const float aspect = viewport_width / viewport_height;
+        const Matrix4x4 proj = camera.GetProjectionMatrixForAspect(aspect);
+        const float proj_scale_x = std::max(std::abs(proj[0][0]), 1e-4f);
+
+        constexpr float k_gizmo_mesh_extent = 2.0f;
+        const float uniform_scale = distance * 4.0f * EditorSceneManager::kEditorGizmoViewportFraction /
+                                    (viewport_width * proj_scale_x * k_gizmo_mesh_extent);
+        return std::max(uniform_scale, 0.05f);
+    }
+
+    Matrix4x4 ApplyEditorGizmoViewScale(const Matrix4x4& local_to_world,
+                                        const RenderCamera& camera,
+                                        float viewport_width,
+                                        float viewport_height)
+    {
+        Vector3 pivot;
+        Vector3 scale;
+        Quaternion rotation;
+        local_to_world.Decomposition(pivot, scale, rotation);
+        const float uniform_scale =
+            ComputeEditorGizmoUniformScale(camera, pivot, viewport_width, viewport_height);
+        return Matrix4x4::GetTrans(pivot) * Matrix4x4(rotation) *
+               Matrix4x4::BuildScaleMatrix(uniform_scale, uniform_scale, uniform_scale);
+    }
+
 
     bool ComputeMeshLocalBounds(const eastl::string& mesh_asset_path, AxisAlignedBox& out_bounds)
     {
@@ -239,11 +281,16 @@ size_t EditorSceneManager::UpdateCursorOnAxis(Vector2 cursor_uv, Vector2 game_en
         else
         {
             const float camera_fov = m_Camera->getFovYDeprecated();
-            const float window_forward =
-                game_engine_window_size.y / 2.0f / Math::tan(Math::DegreesToRadians(camera_fov) / 2.0f);
-            world_ray_dir = camera_forward * window_forward +
-                            camera_right * (float)game_engine_window_size.x * screen_center_uv.x +
-                            camera_up * (float)game_engine_window_size.y * screen_center_uv.y;
+            const float aspect =
+                game_engine_window_size.y > 0.0f ? game_engine_window_size.x / game_engine_window_size.y
+                                                 : m_Camera->getAspect();
+            const float tan_half_fov = Math::tan(Math::DegreesToRadians(camera_fov) * 0.5f);
+            world_ray_dir = camera_forward + camera_right * (screen_center_uv.x * 2.0f * tan_half_fov * aspect) +
+                            camera_up * (screen_center_uv.y * 2.0f * tan_half_fov);
+            if (world_ray_dir.length() > 1e-4f)
+            {
+                world_ray_dir.normalise();
+            }
         }
 
         Vector4 local_ray_origin = model_matrix.inverse() * Vector4(camera_position, 1.0f);
@@ -266,7 +313,7 @@ size_t EditorSceneManager::UpdateCursorOnAxis(Vector2 cursor_uv, Vector2 game_en
 
         if ((int)m_AxisMode == 0 || (int)m_AxisMode == 2)  // transition axis & scale axis
         {
-            const float DIST_THRESHOLD = 0.6f;
+            const float DIST_THRESHOLD = 1.0f;
             const float EDGE_OF_AXIS_MIN = 0.1f;
             const float EDGE_OF_AXIS_MAX = 2.0f;
             const float AXIS_LENGTH = 2.0f;
@@ -349,6 +396,95 @@ size_t EditorSceneManager::UpdateCursorOnAxis(Vector2 cursor_uv, Vector2 game_en
     return m_SelectedAxis;
 }
 
+size_t EditorSceneManager::PickAxisAtViewportPixels(Vector2 mouse_px,
+                                                  Vector2 viewport_pos,
+                                                  Vector2 viewport_size) const
+{
+    if (m_SelectedGobjectId == k_invalid_gobject_id || m_Camera == nullptr || m_AxisMode != EditorAxisMode::TranslateMode ||
+        viewport_size.x < 1.0f || viewport_size.y < 1.0f)
+    {
+        return 3;
+    }
+
+    const std::shared_ptr<GameObject> selected_object = GetSelectedGObject().lock();
+    if (!selected_object)
+    {
+        return 3;
+    }
+
+    const Transform* transform_component = selected_object->tryGetComponentConst(Transform);
+    if (transform_component == nullptr)
+    {
+        return 3;
+    }
+
+    Vector3 pivot;
+    Vector3 scale;
+    Quaternion rotation;
+    transform_component->GetLocalToWorldMatrix().Decomposition(pivot, scale, rotation);
+
+    const float uniform_scale =
+        ComputeEditorGizmoUniformScale(*m_Camera, pivot, viewport_size.x, viewport_size.y);
+    constexpr float k_gizmo_mesh_extent = 2.0f;
+    const float axis_len = k_gizmo_mesh_extent * uniform_scale;
+
+    const float aspect = viewport_size.x / viewport_size.y;
+    const Matrix4x4 view_proj =
+        m_Camera->GetProjectionMatrixForAspect(aspect) * m_Camera->getLookAtMatrix();
+    const Matrix4x4 rot_mat(rotation);
+    const Vector3 axis_dirs[3] = {Vector3(rot_mat[0][0], rot_mat[1][0], rot_mat[2][0]),
+                                  Vector3(rot_mat[0][1], rot_mat[1][1], rot_mat[2][1]),
+                                  Vector3(rot_mat[0][2], rot_mat[1][2], rot_mat[2][2])};
+
+    auto project_to_screen = [&](const Vector3& world, Vector2& out_screen) -> bool {
+        const Vector4 clip = view_proj * Vector4(world, 1.0f);
+        if (clip.w <= 1e-4f)
+        {
+            return false;
+        }
+        const float inv_w = 1.0f / clip.w;
+        out_screen.x = viewport_pos.x + (clip.x * inv_w + 1.0f) * 0.5f * viewport_size.x;
+        out_screen.y = viewport_pos.y + (clip.y * inv_w + 1.0f) * 0.5f * viewport_size.y;
+        return true;
+    };
+
+    auto dist_point_to_segment = [](const Vector2& point, const Vector2& seg_a, const Vector2& seg_b) -> float {
+        const Vector2 ab = seg_b - seg_a;
+        const float denom = std::max(ab.squaredLength(), 1e-6f);
+        const float t = std::clamp(ab.dotProduct(point - seg_a) / denom, 0.0f, 1.0f);
+        const Vector2 closest = seg_a + ab * t;
+        const Vector2 delta = point - closest;
+        return std::sqrt(delta.squaredLength());
+    };
+
+    Vector2 pivot_screen {};
+    if (!project_to_screen(pivot, pivot_screen))
+    {
+        return 3;
+    }
+
+    constexpr float k_pick_radius_px = 12.0f;
+    float best_dist = 1e10f;
+    size_t best_axis = 3;
+    for (int axis_index = 0; axis_index < 3; ++axis_index)
+    {
+        Vector2 axis_end_screen {};
+        if (!project_to_screen(pivot + axis_dirs[axis_index] * axis_len, axis_end_screen))
+        {
+            continue;
+        }
+
+        const float dist = dist_point_to_segment(mouse_px, pivot_screen, axis_end_screen);
+        if (dist < k_pick_radius_px && dist < best_dist)
+        {
+            best_dist = dist;
+            best_axis = static_cast<size_t>(axis_index);
+        }
+    }
+
+    return best_axis;
+}
+
 RenderEntity* EditorSceneManager::GetAxisMeshByType(EditorAxisMode axis_mode)
 {
     RenderEntity* axis_mesh = nullptr;
@@ -371,28 +507,48 @@ RenderEntity* EditorSceneManager::GetAxisMeshByType(EditorAxisMode axis_mode)
 
 void EditorSceneManager::DrawSelectedEntityAxis()
 {
+    // Unity-style transform gizmo: only requires a Transform on the selection, not MeshRenderer.
     std::shared_ptr<GameObject> selected_object = GetSelectedGObject().lock();
 
     if (!g_isPlaying && selected_object != nullptr)
     {
         const Transform* transform_component = selected_object->tryGetComponentConst(Transform);
-
-        Vector3 scale;
-        Quaternion rotation;
-        Vector3 translation;
-        transform_component->GetLocalToWorldMatrix().Decomposition(translation, scale, rotation);
-        Matrix4x4 translation_matrix = Matrix4x4::GetTrans(translation);
-        Matrix4x4 scale_matrix = Matrix4x4::BuildScaleMatrix(1.0f, 1.0f, 1.0f);
-        Matrix4x4 axis_model_matrix = translation_matrix * scale_matrix;
+        if (transform_component == nullptr)
+        {
+            GET_SYSTEM(RenderSystem)->SetVisibleAxis(std::nullopt);
+            return;
+        }
+        const Matrix4x4 local_to_world = transform_component->GetLocalToWorldMatrix();
         RenderEntity* selected_aixs = GetAxisMeshByType(m_AxisMode);
-        if (m_AxisMode == EditorAxisMode::TranslateMode || m_AxisMode == EditorAxisMode::RotateMode)
+        if (selected_aixs == nullptr || m_Camera == nullptr)
         {
-            selected_aixs->m_ModelMatrix = axis_model_matrix;
+            GET_SYSTEM(RenderSystem)->SetVisibleAxis(std::nullopt);
+            return;
         }
-        else if (m_AxisMode == EditorAxisMode::ScaleMode)
+
+        float scene_viewport_width = 16.0f;
+        float scene_viewport_height = 9.0f;
+        if (RHI* rhi = GET_SYSTEM(RHI))
         {
-            selected_aixs->m_ModelMatrix = axis_model_matrix * Matrix4x4(rotation);
+            if (const RHIViewport* scene_viewport = rhi->GetViewport(ViewportType::scene))
+            {
+                scene_viewport_width = scene_viewport->width;
+                scene_viewport_height = scene_viewport->height;
+            }
         }
+
+        Matrix4x4 gizmo_matrix = local_to_world;
+        if (m_AxisMode == EditorAxisMode::ScaleMode)
+        {
+            Vector3 scale;
+            Quaternion rotation;
+            Vector3 translation;
+            local_to_world.Decomposition(translation, scale, rotation);
+            gizmo_matrix = Matrix4x4::GetTrans(translation) * Matrix4x4(rotation);
+        }
+
+        selected_aixs->m_ModelMatrix =
+            ApplyEditorGizmoViewScale(gizmo_matrix, *m_Camera, scene_viewport_width, scene_viewport_height);
 
         GET_SYSTEM(RenderSystem)->SetVisibleAxis(*selected_aixs);
     }
@@ -667,11 +823,15 @@ void EditorSceneManager::FocusSelectedGObject()
         return;
     }
 
-    Vector3 target_position = transform_component->GetLocalPosition();
-    float focus_radius = 0.0f;
+    Vector3 target_position;
+    Vector3 scale;
+    Quaternion rotation;
+    transform_component->GetLocalToWorldMatrix().Decomposition(target_position, scale, rotation);
+
+    float focus_radius = 1.0f;
     if (TryGetSelectedMeshWorldBounds(*selected_object, target_position, focus_radius))
     {
-        // Mesh-centered framing (Unity Frame Selected style).
+        // Mesh-centered framing when a MeshRenderer is present (Unity Frame Selected).
     }
 
     Vector3 camera_forward = m_Camera->forward();
@@ -740,7 +900,9 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
     axis_model_matrix.setTrans(model_translation);
 
     Matrix4x4 view_matrix = m_Camera->getLookAtMatrix();
-    Matrix4x4 proj_matrix = m_Camera->GetProjectionMatrix();
+    const float scene_aspect =
+        engine_window_size.y > 0.0f ? engine_window_size.x / engine_window_size.y : m_Camera->getAspect();
+    Matrix4x4 proj_matrix = m_Camera->GetProjectionMatrixForAspect(scene_aspect);
 
     Vector4 model_world_position_4(model_translation, 1.f);
 
@@ -1110,6 +1272,8 @@ bool EditorSceneManager::OpenSceneInternal(const eastl::string& level_url, bool 
         return false;
     }
 
+    GET_SYSTEM(RenderSystem)->ClearForLevelReloading();
+
     if (!world->OpenScene(level_url))
     {
         return false;
@@ -1206,7 +1370,7 @@ namespace
 
     void AfterSceneOpened(EditorSceneManager& scene_manager)
     {
-        GET_SYSTEM(RenderSystem)->ClearForLevelReloading();
+        GET_SYSTEM(RenderSystem)->ResubmitActiveLevelRenderers();
         scene_manager.OnGObjectSelected(k_invalid_gobject_id);
     }
 }  // namespace

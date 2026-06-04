@@ -83,6 +83,7 @@ private:
 
     // --- Navigation / picking (EditorSlateHost when native-hosted) ----------
     void HandleSceneViewNavigation(bool chrome_capturing, const UIRect& work_rect);
+    void HandleSceneGizmoDrag(bool chrome_capturing, const UIRect& work_rect);
     void HandleContextMenu(bool chrome_capturing, const UIRect& work_rect, float scale);
     void PanSceneViewCamera(const std::shared_ptr<RenderCamera>& editor_camera,
                             const Vector2& mouse_delta,
@@ -113,6 +114,9 @@ private:
     bool m_IsRotatingSceneView {false};
     bool m_IsPanningSceneView {false};
     bool m_IsAltLeftPanningSceneView {false};
+    bool m_IsDraggingGizmo {false};
+    size_t m_GizmoDragAxis {3};
+    Vector2 m_GizmoDragLastMouse {0.0f, 0.0f};
     bool m_SceneCameraDynamicClipping {true};
     bool m_SceneCameraOcclusionCulling {false};
     std::shared_ptr<RenderCamera> m_SelectedCameraPreviewCamera {nullptr};

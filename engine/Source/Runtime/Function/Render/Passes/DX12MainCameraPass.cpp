@@ -8,7 +8,9 @@
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderMesh.h"
 #include "Runtime/Function/Render/RenderResource.h"
+#include "Runtime/Function/Render/RenderScene.h"
 #include "Runtime/Function/Render/RenderSystem.h"
+#include "Runtime/Function/Render/RenderType.h"
 
 #include <algorithm>
 #include <cmath>
@@ -143,8 +145,6 @@ cbuffer AxisDraw : register(b1)
 struct VsInput
 {
     float3 position : POSITION;
-    float3 normal : NORMAL;
-    float3 tangent : TANGENT;
     float2 texcoord : TEXCOORD0;
 };
 
@@ -158,6 +158,7 @@ VsOutput main(VsInput input)
 {
     float4 world = mul(model_matrix, float4(input.position, 1.0f));
     float4 clip_position = mul(proj_view_matrix, world);
+    // Match GLSL axis.vert: push overlay geometry to the near plane in clip space.
     clip_position.z = clip_position.z * 0.0001f;
 
     float3 color = float3(1.0f, 1.0f, 1.0f);
@@ -397,6 +398,110 @@ float4 main(PSInput input) : SV_TARGET
         out_scissor = rhi->GetSwapchainInfo().scissor[static_cast<uint32_t>(ViewportType::scene)];
         return true;
     }
+
+    void LogAxisDrawDiagnosticsOnce(size_t axis_key,
+                                    const RHIViewport& scene_viewport,
+                                    const RHIViewport& draw_viewport,
+                                    uint32_t swap_width,
+                                    uint32_t swap_height,
+                                    uint32_t index_count,
+                                    const Matrix4x4& proj_view_matrix,
+                                    const Matrix4x4& model_matrix)
+    {
+        static size_t s_last_logged_axis_key = static_cast<size_t>(-1);
+        if (axis_key == s_last_logged_axis_key)
+        {
+            return;
+        }
+        s_last_logged_axis_key = axis_key;
+
+        const Vector4 origin {0.0f, 0.0f, 0.0f, 1.0f};
+        // Match HLSL: mul(proj_view, mul(model, position)) and ZSlate grid (Matrix * Vector4).
+        const Vector4 clip = proj_view_matrix * (model_matrix * origin);
+        const float w = std::abs(clip.w) > 1e-6f ? clip.w : 1.0f;
+        const float ndc_x = clip.x / w;
+        const float ndc_y = clip.y / w;
+        const float pixel_x = (ndc_x + 1.0f) * 0.5f * draw_viewport.width + draw_viewport.x;
+        const float pixel_y = (1.0f - ndc_y) * 0.5f * draw_viewport.height + draw_viewport.y;
+
+        const float scene_left = scene_viewport.x;
+        const float scene_top = scene_viewport.y;
+        const float scene_right = scene_viewport.x + scene_viewport.width;
+        const float scene_bottom = scene_viewport.y + scene_viewport.height;
+        const bool inside_scene = pixel_x >= scene_left && pixel_x < scene_right && pixel_y >= scene_top &&
+                                  pixel_y < scene_bottom;
+
+        LOG_INFO(ZRender,
+                 "DrawAxis diag: indices={} swapchain={}x{} scene_vp=({:.0f},{:.0f}) {:.0f}x{:.0f} "
+                 "draw_vp=({:.0f},{:.0f}) {:.0f}x{:.0f} origin_ndc=({:.3f},{:.3f}) origin_px=({:.0f},{:.0f}) "
+                 "inside_scene={}",
+                 index_count,
+                 swap_width,
+                 swap_height,
+                 scene_viewport.x,
+                 scene_viewport.y,
+                 scene_viewport.width,
+                 scene_viewport.height,
+                 draw_viewport.x,
+                 draw_viewport.y,
+                 draw_viewport.width,
+                 draw_viewport.height,
+                 ndc_x,
+                 ndc_y,
+                 pixel_x,
+                 pixel_y,
+                 inside_scene ? 1 : 0);
+    }
+
+    bool EnsureAxisHostVisibleBuffer(RHI* rhi,
+                                     RHIBufferUsageFlags usage,
+                                     RHIBuffer*& buffer,
+                                     RHIDeviceMemory*& memory,
+                                     size_t& capacity_bytes,
+                                     const void* cpu_data,
+                                     size_t byte_size)
+    {
+        if (rhi == nullptr || cpu_data == nullptr || byte_size == 0)
+        {
+            return false;
+        }
+
+        if (capacity_bytes < byte_size)
+        {
+            if (buffer != nullptr)
+            {
+                rhi->DestroyBuffer(buffer);
+                buffer = nullptr;
+            }
+            if (memory != nullptr)
+            {
+                rhi->FreeMemory(memory);
+                memory = nullptr;
+            }
+
+            rhi->CreateBuffer(static_cast<RHIDeviceSize>(byte_size),
+                              usage,
+                              RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                              buffer,
+                              memory);
+            if (buffer == nullptr || memory == nullptr)
+            {
+                capacity_bytes = 0;
+                return false;
+            }
+            capacity_bytes = byte_size;
+        }
+
+        void* mapped_data = nullptr;
+        if (!rhi->MapMemory(memory, 0, static_cast<RHIDeviceSize>(byte_size), 0, &mapped_data) || mapped_data == nullptr)
+        {
+            return false;
+        }
+
+        std::memcpy(mapped_data, cpu_data, byte_size);
+        rhi->UnmapMemory(memory);
+        return true;
+    }
 }  // namespace
 
 void DX12MainCameraPass::Initialize(const RenderPassInitInfo* init_info)
@@ -504,10 +609,13 @@ void DX12MainCameraPass::Initialize(const RenderPassInitInfo* init_info)
         }
     }
 
-    m_AxisReady = SetupAxisResources();
-    if (m_AxisReady)
+    if (!m_AxisReady)
     {
-        LOG_INFO(ZRender, "DX12MainCameraPass: editor axis gizmo initialized");
+        m_AxisReady = SetupAxisResources();
+        if (m_AxisReady)
+        {
+            LOG_INFO(ZRender, "DX12MainCameraPass: editor axis gizmo initialized");
+        }
     }
 }
 
@@ -563,6 +671,13 @@ void DX12MainCameraPass::UpdateAfterFramebufferRecreate()
     if (m_Rp2Ready)
     {
         m_Rp2Pass.UpdateAfterFramebufferRecreate();
+    }
+
+    if (m_Rp1Ready)
+    {
+        // G-buffer views are recreated above; deferred lighting input attachments must be
+        // re-written or the lit pass binds stale/freed SRVs (RenderDoc AV on startup resize).
+        m_Rp1Pass.RefreshDeferredLightingInputAttachments();
     }
 }
 
@@ -942,7 +1057,7 @@ bool DX12MainCameraPass::SetupAxisResources()
 
     DX12ShaderCompiler axis_vs_compiler;
     DX12ShaderCompileResult axis_vs_result =
-        axis_vs_compiler.CompileFromSource(k_dx12_axis_vertex_shader, ShaderStage::Vertex, "dx12_axis_vs");
+        axis_vs_compiler.CompileFromSource(k_dx12_axis_vertex_shader, ShaderStage::Vertex, "dx12_axis_vs", {}, {}, "main", "", "", true);
     if (!axis_vs_result.success)
     {
         LOG_ERROR(ZRender, "DX12MainCameraPass: axis VS compile failed: {}", axis_vs_result.error_message);
@@ -951,25 +1066,33 @@ bool DX12MainCameraPass::SetupAxisResources()
 
     DX12ShaderCompiler axis_ps_compiler;
     DX12ShaderCompileResult axis_ps_result =
-        axis_ps_compiler.CompileFromSource(k_dx12_axis_fragment_shader, ShaderStage::Fragment, "dx12_axis_ps");
+        axis_ps_compiler.CompileFromSource(k_dx12_axis_fragment_shader, ShaderStage::Fragment, "dx12_axis_ps", {}, {}, "main", "", "", true);
     if (!axis_ps_result.success)
     {
         LOG_ERROR(ZRender, "DX12MainCameraPass: axis PS compile failed: {}", axis_ps_result.error_message);
         return false;
     }
 
+    static_assert(sizeof(MeshVertexDataDefinition) == 44, "Axis interleaved layout out of sync with Axis.cpp");
+    static constexpr uint32_t k_axis_interleaved_texcoord_offset =
+        static_cast<uint32_t>(offsetof(MeshVertexDataDefinition, u));
+
     D3D12_INPUT_ELEMENT_DESC input_elements[] = {
         {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"TANGENT", 0, DXGI_FORMAT_R32G32B32_FLOAT, 1, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-        {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 2, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+        {"TEXCOORD",
+         0,
+         DXGI_FORMAT_R32G32_FLOAT,
+         0,
+         k_axis_interleaved_texcoord_offset,
+         D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA,
+         0},
     };
 
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = {};
     pso_desc.pRootSignature = m_AxisRootSignature.Get();
     pso_desc.VS = {axis_vs_result.dxil_code.data(), axis_vs_result.dxil_code.size()};
     pso_desc.PS = {axis_ps_result.dxil_code.data(), axis_ps_result.dxil_code.size()};
-    pso_desc.InputLayout = {input_elements, 4u};
+    pso_desc.InputLayout = {input_elements, 2u};
     pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso_desc.NumRenderTargets = 1;
     pso_desc.RTVFormats[0] = dx12_rhi->GetSwapchainDXGIFormat();
@@ -1008,6 +1131,11 @@ bool DX12MainCameraPass::SetupAxisResources()
 
 void DX12MainCameraPass::DrawAxis()
 {
+    if (!m_IsShowAxis)
+    {
+        return;
+    }
+
     if (!m_AxisReady)
     {
         m_AxisReady = SetupAxisResources();
@@ -1024,18 +1152,14 @@ void DX12MainCameraPass::DrawAxis()
         return;
     }
 
-    // Authoritative on the render thread: UpdateVisibleObjectsAxis() fills ref_mesh when
-    // logic thread published m_RenderAxis this frame. Do not gate on m_IsShowAxis here;
-    // that flag is written on the main thread and can lag one frame behind.
-    if (m_VisiableNodes.p_axis_node == nullptr || m_VisiableNodes.p_axis_node->ref_mesh == nullptr)
+    const std::shared_ptr<RenderScene> render_scene = GET_SYSTEM(RenderSystem)->getRenderScene();
+    if (!render_scene || !render_scene->m_RenderAxis.has_value())
     {
-        static bool warned = false;
-        if (!warned)
-        {
-            LOG_WARNING(ZRender,
-                        "DrawAxis: skipped (axis node or ref_mesh is null; select an object in edit mode)");
-            warned = true;
-        }
+        return;
+    }
+
+    if (m_VisiableNodes.p_axis_node == nullptr)
+    {
         return;
     }
 
@@ -1052,8 +1176,8 @@ void DX12MainCameraPass::DrawAxis()
     }
 
     RHIViewport scene_viewport {};
-    RHIRect2D scene_scissor {};
-    if (!ResolveSceneOverlayViewport(m_Rhi, scene_viewport, scene_scissor))
+    RHIRect2D unused_scissor {};
+    if (!ResolveSceneOverlayViewport(m_Rhi, scene_viewport, unused_scissor))
     {
         static bool warned = false;
         if (!warned)
@@ -1067,21 +1191,80 @@ void DX12MainCameraPass::DrawAxis()
         return;
     }
 
-    const MeshDrawData axis_mesh = getMeshDrawData(m_VisiableNodes.p_axis_node->ref_mesh);
-    if (!axis_mesh)
+    size_t axis_mesh_asset_id = render_scene->m_RenderAxis->m_MeshAssetId;
+    if (m_VisiableNodes.p_axis_node->mesh_asset_id != 0)
+    {
+        axis_mesh_asset_id = m_VisiableNodes.p_axis_node->mesh_asset_id;
+    }
+
+    const RenderMeshData* axis_source = render_scene->FindAxisMeshSourceData(axis_mesh_asset_id);
+
+    if (axis_source == nullptr || axis_source->m_StaticMeshData.m_VertexBuffer == nullptr ||
+        !axis_source->m_StaticMeshData.m_VertexBuffer->IsValid() ||
+        axis_source->m_StaticMeshData.m_IndexBuffer == nullptr ||
+        !axis_source->m_StaticMeshData.m_IndexBuffer->IsValid())
     {
         static bool warned = false;
         if (!warned)
         {
-            LOG_WARNING(ZRender, "DrawAxis: skipped (axis mesh GPU buffers invalid)");
+            LOG_WARNING(ZRender,
+                        "DrawAxis: skipped (axis CPU mesh source missing for asset id {})",
+                        axis_mesh_asset_id);
             warned = true;
         }
         return;
     }
 
+    const size_t axis_vertex_byte_size = axis_source->m_StaticMeshData.m_VertexBuffer->m_Size;
+    const size_t axis_index_byte_size = axis_source->m_StaticMeshData.m_IndexBuffer->m_Size;
+    if (axis_vertex_byte_size == 0 || axis_index_byte_size == 0 ||
+        axis_index_byte_size % sizeof(uint16_t) != 0)
+    {
+        return;
+    }
+
+    if (!EnsureAxisHostVisibleBuffer(m_Rhi,
+                                     RHI_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                     m_AxisHostVisibleVertexBuffer,
+                                     m_AxisHostVisibleVertexBufferMemory,
+                                     m_AxisHostVisibleVertexCapacity,
+                                     axis_source->m_StaticMeshData.m_VertexBuffer->m_Data,
+                                     axis_vertex_byte_size))
+    {
+        static bool warned = false;
+        if (!warned)
+        {
+            LOG_WARNING(ZRender, "DrawAxis: skipped (failed to upload axis vertex buffer)");
+            warned = true;
+        }
+        return;
+    }
+
+    if (!EnsureAxisHostVisibleBuffer(m_Rhi,
+                                     RHI_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                                     m_AxisHostVisibleIndexBuffer,
+                                     m_AxisHostVisibleIndexBufferMemory,
+                                     m_AxisHostVisibleIndexCapacity,
+                                     axis_source->m_StaticMeshData.m_IndexBuffer->m_Data,
+                                     axis_index_byte_size))
+    {
+        static bool warned = false;
+        if (!warned)
+        {
+            LOG_WARNING(ZRender, "DrawAxis: skipped (failed to upload axis index buffer)");
+            warned = true;
+        }
+        return;
+    }
+
+    const uint32_t axis_index_count = static_cast<uint32_t>(axis_index_byte_size / sizeof(uint16_t));
+
     DX12AxisPerFrameConstants per_frame_constants {};
+    // Same contract as ZSlateSceneWindow grid overlay: proj(aspect) * view, column-vector path.
+    const float scene_aspect =
+        scene_viewport.height > 0.0f ? scene_viewport.width / scene_viewport.height : scene_camera->getAspect();
     per_frame_constants.proj_view_matrix =
-        m_MainCameraPerFrameByViewport[static_cast<size_t>(ViewportType::scene)].proj_view_matrix;
+        scene_camera->GetProjectionMatrixForAspect(scene_aspect) * scene_camera->GetViewMatrix();
 
     DX12AxisDrawConstants draw_constants {};
     draw_constants.model_matrix = m_VisiableNodes.p_axis_node->model_matrix;
@@ -1105,13 +1288,31 @@ void DX12MainCameraPass::DrawAxis()
     std::memcpy(mapped_data, &draw_constants, sizeof(DX12AxisDrawConstants));
     m_Rhi->UnmapMemory(m_AxisDrawConstantBufferMemory);
 
+    const auto swap_extent = dx12_rhi->GetSwapchainInfo().extent;
+
+    RHIViewport draw_viewport = scene_viewport;
+    RHIRect2D axis_scissor {};
+    axis_scissor.offset.x = static_cast<int32_t>(draw_viewport.x);
+    axis_scissor.offset.y = static_cast<int32_t>(draw_viewport.y);
+    axis_scissor.extent.width = static_cast<uint32_t>(draw_viewport.width);
+    axis_scissor.extent.height = static_cast<uint32_t>(draw_viewport.height);
+
+    LogAxisDrawDiagnosticsOnce(axis_mesh_asset_id,
+                               scene_viewport,
+                               draw_viewport,
+                               swap_extent.width,
+                               swap_extent.height,
+                               axis_index_count,
+                               per_frame_constants.proj_view_matrix,
+                               draw_constants.model_matrix);
+
     RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
     float event_color[4] = {1.0f, 0.85f, 0.2f, 1.0f};
     m_Rhi->PushEvent(command_buffer, "Axis", event_color);
     dx12_rhi->BeginSwapchainOverlayDraw();
 
-    m_Rhi->CmdSetViewportPFN(command_buffer, 0, 1, &scene_viewport);
-    m_Rhi->CmdSetScissorPFN(command_buffer, 0, 1, &scene_scissor);
+    m_Rhi->CmdSetViewportPFN(command_buffer, 0, 1, &draw_viewport);
+    m_Rhi->CmdSetScissorPFN(command_buffer, 0, 1, &axis_scissor);
 
     auto* dx12_cmd = dx12_rhi->getCurrentCommandList();
     dx12_cmd->SetPipelineState(m_AxisPso.Get());
@@ -1122,37 +1323,28 @@ void DX12MainCameraPass::DrawAxis()
     dx12_cmd->SetGraphicsRootConstantBufferView(0, per_frame_buffer->getResource()->GetGPUVirtualAddress());
     dx12_cmd->SetGraphicsRootConstantBufferView(1, draw_buffer->getResource()->GetGPUVirtualAddress());
 
-    auto* position_buffer = static_cast<DX12Buffer*>(axis_mesh.position_buffer);
-    auto* blending_buffer = static_cast<DX12Buffer*>(axis_mesh.varying_blending_buffer);
-    auto* varying_buffer = static_cast<DX12Buffer*>(axis_mesh.varying_buffer);
-    auto* index_buffer = static_cast<DX12Buffer*>(axis_mesh.index_buffer);
-    if (!position_buffer || !blending_buffer || !varying_buffer || !index_buffer)
+    auto* vertex_buffer = static_cast<DX12Buffer*>(m_AxisHostVisibleVertexBuffer);
+    auto* index_buffer = static_cast<DX12Buffer*>(m_AxisHostVisibleIndexBuffer);
+    if (!vertex_buffer || !index_buffer)
     {
+        m_Rhi->PopEvent(command_buffer);
         return;
     }
 
-    D3D12_VERTEX_BUFFER_VIEW vertex_buffer_views[3] = {};
-    vertex_buffer_views[0].BufferLocation = position_buffer->getResource()->GetGPUVirtualAddress();
-    vertex_buffer_views[0].SizeInBytes = static_cast<UINT>(position_buffer->getSize());
-    vertex_buffer_views[0].StrideInBytes = static_cast<UINT>(sizeof(MeshVertex::Position));
-
-    vertex_buffer_views[1].BufferLocation = blending_buffer->getResource()->GetGPUVirtualAddress();
-    vertex_buffer_views[1].SizeInBytes = static_cast<UINT>(blending_buffer->getSize());
-    vertex_buffer_views[1].StrideInBytes = static_cast<UINT>(sizeof(MeshVertex::VaryingBlending));
-
-    vertex_buffer_views[2].BufferLocation = varying_buffer->getResource()->GetGPUVirtualAddress();
-    vertex_buffer_views[2].SizeInBytes = static_cast<UINT>(varying_buffer->getSize());
-    vertex_buffer_views[2].StrideInBytes = static_cast<UINT>(sizeof(MeshVertex::Varying));
+    D3D12_VERTEX_BUFFER_VIEW vertex_buffer_view = {};
+    vertex_buffer_view.BufferLocation = vertex_buffer->getResource()->GetGPUVirtualAddress();
+    vertex_buffer_view.SizeInBytes = static_cast<UINT>(axis_vertex_byte_size);
+    vertex_buffer_view.StrideInBytes = static_cast<UINT>(sizeof(MeshVertexDataDefinition));
 
     D3D12_INDEX_BUFFER_VIEW index_buffer_view = {};
     index_buffer_view.BufferLocation = index_buffer->getResource()->GetGPUVirtualAddress();
-    index_buffer_view.SizeInBytes = static_cast<UINT>(index_buffer->getSize());
+    index_buffer_view.SizeInBytes = static_cast<UINT>(axis_index_byte_size);
     index_buffer_view.Format = DXGI_FORMAT_R16_UINT;
 
-    dx12_cmd->IASetVertexBuffers(0, 3, vertex_buffer_views);
+    dx12_cmd->IASetVertexBuffers(0, 1, &vertex_buffer_view);
     dx12_cmd->IASetIndexBuffer(&index_buffer_view);
     dx12_cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    dx12_cmd->DrawIndexedInstanced(axis_mesh.index_count, 1, 0, 0, 0);
+    dx12_cmd->DrawIndexedInstanced(axis_index_count, 1, 0, 0, 0);
     m_Rhi->PopEvent(command_buffer);
 }
 
@@ -1234,8 +1426,10 @@ void DX12MainCameraPass::DrawSkyboxWithCamera(const std::shared_ptr<RenderCamera
     }
 
     // Upload constants to the UBO.
-    const float aspect = std::max(camera->getAspect(), 0.01f);
-    const float fovy_radians = camera->getFOV().y * 3.14159265358979323846f / 180.0f;
+    const float aspect =
+        viewport.height > 0.0f ? std::max(viewport.width / viewport.height, 0.01f) : std::max(camera->getAspect(), 0.01f);
+    const float fovy_radians =
+        Radian(Math::atan(Math::tan(Radian(Degree(camera->getFOV().x) * 0.5f)) / aspect) * 2.0f).valueRadians();
     const float tan_half_fovy = std::tan(fovy_radians * 0.5f);
     const Vector3 camera_right = camera->right();
     const Vector3 camera_up = camera->up();
@@ -1380,7 +1574,7 @@ void DX12MainCameraPass::DrawSceneGrid()
 
 void DX12MainCameraPass::TryLateInitializeSkybox()
 {
-    if (m_SkyboxReady || m_SkyboxSetupAborted)
+    if (m_SkyboxReady)
     {
         return;
     }
@@ -1392,10 +1586,8 @@ void DX12MainCameraPass::TryLateInitializeSkybox()
     if (SetupSkyboxResources())
     {
         m_SkyboxReady = true;
-        return;
+        m_SkyboxSetupAborted = false;
     }
-
-    m_SkyboxSetupAborted = true;
 }
 
 void DX12MainCameraPass::OnGlobalRenderResourceUploaded()
@@ -1459,6 +1651,20 @@ void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbac
         }
         DrawSkyboxPreview();
     }
+    else
+    {
+        static bool warned = false;
+        if (!warned)
+        {
+            LOG_WARNING(ZRender,
+                        "DX12MainCameraPass: skybox draw skipped (ready={} ibl={} aborted={})",
+                        m_SkyboxReady,
+                        m_GlobalRenderResource != nullptr &&
+                            m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView != nullptr,
+                        m_SkyboxSetupAborted);
+            warned = true;
+        }
+    }
 
     for (const RenderCallback& callback : post_ui_callbacks)
     {
@@ -1468,11 +1674,6 @@ void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbac
         }
     }
 
-    // Axis must run AFTER editor UI (ZSlate scene backdrop/grid is an opaque full-panel
-    // quad in post_ui_callbacks). Drawing earlier leaves the gizmo under that overlay.
-    DrawAxis();
-
-    // Scene grid is drawn in SceneWindow via ImGui (world-space projection).
-    // The GPU fullscreen path is kept for a future switch but disabled here to
-    // avoid double-draw moire and because swapchain overlay timing is fragile.
+    // Axis gizmo is drawn from EditorUIPass::Draw() after the native ZSlate batch so
+    // it composites above panel chrome/grid overlays.
 }

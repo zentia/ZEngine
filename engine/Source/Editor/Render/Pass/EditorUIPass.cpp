@@ -5,6 +5,7 @@
 #include "Runtime/Resource/Config/ConfigManager.h"
 #if defined(_WIN32)
     #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
+    #include "Runtime/Function/Render/Passes/DX12MainCameraPass.h"
 #endif
 #include "Runtime/Function/Render/RenderPipelineBase.h"
 #include "Runtime/Function/Render/RenderSystem.h"
@@ -238,6 +239,18 @@ void EditorUIPass::Draw()
                 // Runs after the main DrawBatch (pipeline is ready) and is presented
                 // by DX12RHI::SubmitRendering after the main swapchain present.
                 FloatingPanelManager::Get().DrawSurfaces(m_Rhi);
+            }
+        }
+
+        // Editor axis gizmo: draw last on the swapchain overlay, above ZSlate UI.
+        if (auto render_system = GET_SYSTEM(RenderSystem))
+        {
+            if (auto render_pipeline = render_system->getRenderPipeline())
+            {
+                if (auto* dx12_pass = dynamic_cast<DX12MainCameraPass*>(render_pipeline->GetMainCameraPass()))
+                {
+                    dx12_pass->DrawAxis();
+                }
             }
         }
 

@@ -32,6 +32,9 @@ enum class GObjectSelectionOp
 class EditorSceneManager : public IEngineSystem
 {
 public:
+    // Target screen footprint for translate/scale gizmo axes (fraction of viewport width).
+    static constexpr float kEditorGizmoViewportFraction = 0.14f;
+
     std::string GetName() const override { return "EditorSceneManager"; }
     SystemInitPhase GetInitPhase() const override { return SystemInitPhase::PostInit; }
     std::vector<std::type_index> GetDependencies() const override;
@@ -41,6 +44,8 @@ public:
     void Tick(float delta_time);
 
     size_t UpdateCursorOnAxis(Vector2 cursor_uv, Vector2 game_engine_window_size);
+    // Screen-space hit test for translate gizmo (matches ZSlate overlay lines). Returns 0..2 or 3 (none).
+    size_t PickAxisAtViewportPixels(Vector2 mouse_px, Vector2 viewport_pos, Vector2 viewport_size) const;
     void DrawSelectedEntityAxis();
     std::weak_ptr<GameObject> GetSelectedGObject() const;
     const std::filesystem::path& getSelectedAssetPath() const { return m_SelectedAssetPath; }

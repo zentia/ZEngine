@@ -79,8 +79,10 @@ bool RenderSwapContext::IsReadyToSwap() const
              m_SwapData[m_RenderSwapDataIndex].m_ParticleSubmitRequest.has_value() ||
              m_SwapData[m_RenderSwapDataIndex].m_EmitterTickRequest.has_value() ||
              m_SwapData[m_RenderSwapDataIndex].m_EmitterTransformRequest.has_value() ||
-             m_SwapData[m_RenderSwapDataIndex].m_VisibleAxisUpdatePending ||
              m_SwapData[m_RenderSwapDataIndex].m_SceneViewportUpdatePending);
+    // VisibleAxis is applied from the logic buffer in ProcessSwapData even when a
+    // full swap is blocked by a large GameObject upload queue, so do not gate swap
+    // readiness on m_VisibleAxisUpdatePending.
 }
 
 void RenderSwapContext::ResetLevelRsourceSwapData()
@@ -138,7 +140,6 @@ void RenderSwapContext::swap()
     ResetEmitterTickSwapData();
     ResetEmitterTransformSwapData();
     ResetPartilceBatchSwapData();
-    ResetVisibleAxisSwapData();
     ResetSceneViewportSwapData();
     std::swap(m_LogicSwapDataIndex, m_RenderSwapDataIndex);
 }

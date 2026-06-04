@@ -9,9 +9,13 @@
     #include "Runtime/Function/Render/RenderCamera.h"
     #include "Runtime/Function/Render/RenderMesh.h"
     #include "Runtime/Function/Render/RenderScene.h"
+    #include "Runtime/Function/Render/RenderSystem.h"
+    #include "Runtime/Function/Render/Interface/RHI.h"
 
     #include <algorithm>
+    #include <array>
     #include <cassert>
+    #include <cmath>
     #include <cstring>
     #include <stdexcept>
 
@@ -170,7 +174,13 @@ namespace
         }
 
         assert(index_buffer_size % sizeof(uint16_t) == 0);
+        now_mesh.mesh_vertex_count = vertex_count;
         now_mesh.mesh_index_count = index_buffer_size / sizeof(uint16_t);
+        Dx12CreateGpuBufferFromStaging(rhi,
+                                       vertex_buffer_size,
+                                       RHI_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                                       vertex_buffer_data,
+                                       now_mesh.mesh_vertex_interleaved_buffer);
         Dx12CreateGpuBufferFromStaging(rhi,
                                        index_buffer_size,
                                        RHI_BUFFER_USAGE_INDEX_BUFFER_BIT,
@@ -334,14 +344,195 @@ void RenderResource::clear()
     }
 }
 
+void RenderResource::CreateIBLSamplers(RHI* rhi)
+{
+    if (rhi == nullptr)
+    {
+        throw std::runtime_error("RenderResource::CreateIBLSamplers requires a valid RHI");
+    }
+
+    RHIPhysicalDeviceProperties physical_device_properties {};
+    rhi->GetPhysicalDeviceProperties(&physical_device_properties);
+    if (physical_device_properties.limits.maxSamplerAnisotropy <= 0.0f)
+    {
+        physical_device_properties.limits.maxSamplerAnisotropy = 1.0f;
+    }
+
+    RHISamplerCreateInfo sampler_info {};
+    sampler_info.sType = RHI_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampler_info.magFilter = RHI_FILTER_LINEAR;
+    sampler_info.minFilter = RHI_FILTER_LINEAR;
+    sampler_info.addressModeU = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.anisotropyEnable = RHI_TRUE;
+    sampler_info.maxAnisotropy = physical_device_properties.limits.maxSamplerAnisotropy;
+    sampler_info.borderColor = RHI_BORDER_COLOR_INT_OPAQUE_BLACK;
+    sampler_info.unnormalizedCoordinates = RHI_FALSE;
+    sampler_info.compareEnable = RHI_FALSE;
+    sampler_info.compareOp = RHI_COMPARE_OP_ALWAYS;
+    sampler_info.mipmapMode = RHI_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampler_info.maxLod = 0.0f;
+
+    if (m_GlobalRenderResource.m_IblResource.m_BrdflutTextureSampler != RHI_NULL_HANDLE)
+    {
+        rhi->DestroySampler(m_GlobalRenderResource.m_IblResource.m_BrdflutTextureSampler);
+    }
+
+    if (rhi->CreateSampler(&sampler_info, m_GlobalRenderResource.m_IblResource.m_BrdflutTextureSampler) !=
+        RHI_SUCCESS)
+    {
+        throw std::runtime_error("RenderResource::CreateIBLSamplers: BRDF sampler create failed");
+    }
+
+    sampler_info.minLod = 0.0f;
+    sampler_info.maxLod = 8.0f;
+    sampler_info.mipLodBias = 0.0f;
+
+    if (m_GlobalRenderResource.m_IblResource.m_IrradianceTextureSampler != RHI_NULL_HANDLE)
+    {
+        rhi->DestroySampler(m_GlobalRenderResource.m_IblResource.m_IrradianceTextureSampler);
+    }
+
+    if (rhi->CreateSampler(&sampler_info, m_GlobalRenderResource.m_IblResource.m_IrradianceTextureSampler) !=
+        RHI_SUCCESS)
+    {
+        throw std::runtime_error("RenderResource::CreateIBLSamplers: irradiance sampler create failed");
+    }
+
+    if (m_GlobalRenderResource.m_IblResource.m_SpecularTextureSampler != RHI_NULL_HANDLE)
+    {
+        rhi->DestroySampler(m_GlobalRenderResource.m_IblResource.m_SpecularTextureSampler);
+    }
+
+    if (rhi->CreateSampler(&sampler_info, m_GlobalRenderResource.m_IblResource.m_SpecularTextureSampler) !=
+        RHI_SUCCESS)
+    {
+        throw std::runtime_error("RenderResource::CreateIBLSamplers: specular sampler create failed");
+    }
+}
+
+void RenderResource::CreateIBLTextures(RHI* rhi,
+                                       std::array<std::shared_ptr<TextureData>, 6> irradiance_maps,
+                                       std::array<std::shared_ptr<TextureData>, 6> specular_maps)
+{
+    uint32_t irradiance_cubemap_miplevels =
+        static_cast<uint32_t>(std::floor(log2(std::max(irradiance_maps[0]->m_Width, irradiance_maps[0]->m_Height)))) +
+        1;
+    uint32_t specular_cubemap_miplevels =
+        static_cast<uint32_t>(std::floor(log2(std::max(specular_maps[0]->m_Width, specular_maps[0]->m_Height)))) + 1;
+
+    // Mip0-only on DX12: full GPU mipgen during startup has removed the device in the past.
+    if (rhi != nullptr && rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+    {
+        irradiance_cubemap_miplevels = 1;
+        specular_cubemap_miplevels = 1;
+    }
+
+    rhi->CreateCubeMap(m_GlobalRenderResource.m_IblResource.m_IrradianceTextureImage,
+                       m_GlobalRenderResource.m_IblResource.m_IrradianceTextureImageView,
+                       m_GlobalRenderResource.m_IblResource.m_IrradianceTextureImageAllocation,
+                       irradiance_maps[0]->m_Width,
+                       irradiance_maps[0]->m_Height,
+                       {irradiance_maps[0]->m_Pixels,
+                        irradiance_maps[1]->m_Pixels,
+                        irradiance_maps[2]->m_Pixels,
+                        irradiance_maps[3]->m_Pixels,
+                        irradiance_maps[4]->m_Pixels,
+                        irradiance_maps[5]->m_Pixels},
+                       irradiance_maps[0]->m_Format,
+                       irradiance_cubemap_miplevels);
+
+    rhi->CreateCubeMap(m_GlobalRenderResource.m_IblResource.m_SpecularTextureImage,
+                       m_GlobalRenderResource.m_IblResource.m_SpecularTextureImageView,
+                       m_GlobalRenderResource.m_IblResource.m_SpecularTextureImageAllocation,
+                       specular_maps[0]->m_Width,
+                       specular_maps[0]->m_Height,
+                       {specular_maps[0]->m_Pixels,
+                        specular_maps[1]->m_Pixels,
+                        specular_maps[2]->m_Pixels,
+                        specular_maps[3]->m_Pixels,
+                        specular_maps[4]->m_Pixels,
+                        specular_maps[5]->m_Pixels},
+                       specular_maps[0]->m_Format,
+                       specular_cubemap_miplevels);
+}
+
+namespace
+{
+    bool AllCubemapFacesLoaded(const std::array<std::shared_ptr<TextureData>, 6>& maps)
+    {
+        for (const std::shared_ptr<TextureData>& map : maps)
+        {
+            if (map == nullptr || map->m_Pixels == nullptr || map->m_Width == 0 || map->m_Height == 0)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+}  // namespace
+
 void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc level_resource_desc)
 {
+    if (rhi == nullptr)
+    {
+        return;
+    }
+
     if (m_GlobalRenderResource.m_StorageBuffer.m_GlobalUploadRingbuffer == nullptr)
     {
         CreateAndMapStorageBuffer(rhi);
     }
 
     m_MegaLights.Initialize(rhi);
+
+    const SkyBoxIrradianceMap& skybox_irradiance_map = level_resource_desc.m_IblResourceDesc.m_SkyboxIrradianceMap;
+    const SkyBoxSpecularMap& skybox_specular_map = level_resource_desc.m_IblResourceDesc.m_SkyboxSpecularMap;
+
+    std::array<std::shared_ptr<TextureData>, 6> irradiance_maps = {
+        LoadTextureHDR(skybox_irradiance_map.m_PositiveXMap),
+        LoadTextureHDR(skybox_irradiance_map.m_NegativeXMap),
+        LoadTextureHDR(skybox_irradiance_map.m_PositiveZMap),
+        LoadTextureHDR(skybox_irradiance_map.m_NegativeZMap),
+        LoadTextureHDR(skybox_irradiance_map.m_PositiveYMap),
+        LoadTextureHDR(skybox_irradiance_map.m_NegativeYMap)};
+
+    std::array<std::shared_ptr<TextureData>, 6> specular_maps = {
+        LoadTextureHDR(skybox_specular_map.m_PositiveXMap),
+        LoadTextureHDR(skybox_specular_map.m_NegativeXMap),
+        LoadTextureHDR(skybox_specular_map.m_PositiveZMap),
+        LoadTextureHDR(skybox_specular_map.m_NegativeZMap),
+        LoadTextureHDR(skybox_specular_map.m_PositiveYMap),
+        LoadTextureHDR(skybox_specular_map.m_NegativeYMap)};
+
+    std::shared_ptr<TextureData> brdf_map = LoadTextureHDR(level_resource_desc.m_IblResourceDesc.m_BrdfMap);
+
+    if (AllCubemapFacesLoaded(irradiance_maps) && AllCubemapFacesLoaded(specular_maps) && brdf_map != nullptr &&
+        brdf_map->m_Pixels != nullptr)
+    {
+        try
+        {
+            CreateIBLSamplers(rhi);
+            CreateIBLTextures(rhi, irradiance_maps, specular_maps);
+            rhi->CreateGlobalImage(m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImage,
+                                   m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImageView,
+                                   m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImageAllocation,
+                                   brdf_map->m_Width,
+                                   brdf_map->m_Height,
+                                   brdf_map->m_Pixels,
+                                   brdf_map->m_Format);
+            LOG_INFO(ZRender, "RenderResource(DX12): IBL HDR upload complete (mip0 cubemaps + BRDF LUT)");
+        }
+        catch (const std::exception& ex)
+        {
+            LOG_ERROR(ZRender, "RenderResource(DX12): IBL HDR upload failed: {}", ex.what());
+        }
+    }
+    else
+    {
+        LOG_WARNING(ZRender, "RenderResource(DX12): skipping IBL upload (HDR face or BRDF load failed)");
+    }
 
     if (level_resource_desc.m_ColorGradingResourceDesc.m_ColorGradingMap.empty())
     {
@@ -399,12 +590,43 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
     }
 
     Matrix4x4 view_matrix = camera->GetViewMatrix();
-    Matrix4x4 proj_matrix = camera->GetPersProjMatrix();
+    ViewportType viewport_type =
+        (camera->m_CurrentCameraType == RenderCameraType::Game) ? ViewportType::game : ViewportType::scene;
+
+    float viewport_aspect = camera->getAspect();
+    if (viewport_type == ViewportType::scene)
+    {
+        if (auto* render_system = GET_SYSTEM(RenderSystem))
+        {
+            RHIViewport render_viewport {};
+            RHIRect2D render_scissor {};
+            if (render_system->TryGetRenderSceneViewport(render_viewport, render_scissor) &&
+                render_viewport.width > 0.0f && render_viewport.height > 0.0f)
+            {
+                viewport_aspect = render_viewport.width / render_viewport.height;
+            }
+        }
+    }
+
+    if (RHI* rhi = GET_SYSTEM(RHI))
+    {
+        if (RHIViewport* viewport = rhi->GetViewport(viewport_type))
+        {
+            if (viewport->width > 0.0f && viewport->height > 0.0f)
+            {
+                viewport_aspect = viewport->width / viewport->height;
+            }
+        }
+    }
+
+    Matrix4x4 proj_matrix = camera->GetProjectionMatrix();
+    if (viewport_aspect > 0.0f)
+    {
+        proj_matrix = camera->GetProjectionMatrixForAspect(viewport_aspect);
+    }
     Vector3 camera_position = camera->position();
     Matrix4x4 proj_view_matrix = proj_matrix * view_matrix;
 
-    ViewportType viewport_type =
-        (camera->m_CurrentCameraType == RenderCameraType::Game) ? ViewportType::game : ViewportType::scene;
     const size_t viewport_index = static_cast<size_t>(viewport_type);
 
     auto& mesh_perframe_storage_buffer_object = m_MainCameraPerFrameByViewport[viewport_index];
@@ -545,13 +767,16 @@ GpuMesh& RenderResource::GetOrCreateMesh(RHI* rhi,
 {
     const size_t assetid = entity.m_MeshAssetId;
     auto it = m_Meshes.find(assetid);
-    if (it != m_Meshes.end() && meshDrawDataIsValid(&it->second))
+    if (it != m_Meshes.end() && meshDrawDataIsValid(&it->second) &&
+        it->second.mesh_vertex_interleaved_buffer != nullptr)
     {
         return it->second;
     }
     if (it != m_Meshes.end())
     {
-        LOG_WARNING(ZRender, "RenderResource(DX12): re-uploading mesh asset id {} (GPU buffers were invalid)", assetid);
+        LOG_WARNING(ZRender,
+                    "RenderResource(DX12): re-uploading mesh asset id {} (GPU buffers were invalid or stale)",
+                    assetid);
         m_Meshes.erase(it);
     }
 

@@ -11,6 +11,10 @@
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 
+#if defined(_WIN32)
+    #include "Editor/RenderDoc/RenderDoc.h"
+#endif
+
 #include <algorithm>
 #include <cmath>
 
@@ -180,6 +184,13 @@ void EditorInputManager::ClearSceneViewInputCapture()
 
 void EditorInputManager::ProcessEditorCommand()
 {
+    if (ZSlate::EditorSlateHost::Get().IsNativeTextInputActive() ||
+        ZSlate::EditorSlateHost::Get().IsForegroundCapturing())
+    {
+        m_EditorCommand &= static_cast<unsigned int>(EditorCommand::exit);
+        return;
+    }
+
     float camera_speed = m_CameraSpeed;
     std::shared_ptr editor_camera = GET_SYSTEM(EditorSceneManager)->getEditorCamera();
     if (!editor_camera)
@@ -224,6 +235,12 @@ void EditorInputManager::ProcessEditorCommand()
 
 void EditorInputManager::OnKeyInEditorMode(int key, int scancode, int action, int mods)
 {
+    const ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
+    if (host.IsNativeTextInputActive() || host.IsForegroundCapturing())
+    {
+        return;
+    }
+
     if (action == GLFW_PRESS)
     {
         switch (key)
@@ -359,6 +376,15 @@ void EditorInputManager::OnKey(int key, int scancode, int action, int mods)
                     return;
                 }
                 break;
+#if defined(_WIN32)
+            case GLFW_KEY_F12:
+                if ((mods & GLFW_MOD_CONTROL) && (mods & GLFW_MOD_SHIFT))
+                {
+                    Runtime::RenderDoc::RequestCapture();
+                    return;
+                }
+                break;
+#endif
             default:
                 break;
         }
@@ -530,6 +556,12 @@ void EditorInputManager::OnMouseButtonClicked(int key, int action)
         }
         else if (key == GLFW_MOUSE_BUTTON_LEFT)
         {
+            if (m_EngineWindowSize.x > 0.0f && m_EngineWindowSize.y > 0.0f && m_MouseX >= 0.0f && m_MouseY >= 0.0f)
+            {
+                const Vector2 cursor_uv(((float)m_MouseX - m_EngineWindowPos.x) / m_EngineWindowSize.x,
+                                        ((float)m_MouseY - m_EngineWindowPos.y) / m_EngineWindowSize.y);
+                UpdateCursorOnAxis(cursor_uv);
+            }
             m_SceneViewInputMode = m_CursorOnAxis != 3 ? SceneViewInputMode::Gizmo : SceneViewInputMode::Selection;
         }
         return;

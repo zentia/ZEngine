@@ -8,6 +8,7 @@
 #include "Runtime/Function/Render/RenderResource.h"
 #include "Runtime/Function/Render/RenderResourceBase.h"
 #include "Runtime/Function/Render/RenderGPUResource.h"
+#include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Profiler/Profiler.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 
@@ -587,7 +588,17 @@ void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource>
     transparent_mesh_nodes.clear();
 
     Matrix4x4 view_matrix = camera->GetViewMatrix();
-    Matrix4x4 proj_matrix = camera->GetPersProjMatrix();
+    Matrix4x4 proj_matrix = camera->GetProjectionMatrix();
+    if (RHI* rhi = GET_SYSTEM(RHI))
+    {
+        if (RHIViewport* viewport = rhi->GetViewport(viewport_type))
+        {
+            if (viewport->width > 0.0f && viewport->height > 0.0f)
+            {
+                proj_matrix = camera->GetProjectionMatrixForAspect(viewport->width / viewport->height);
+            }
+        }
+    }
     Matrix4x4 proj_view_matrix = proj_matrix * view_matrix;
     Vector3 camera_position = camera->position();
 
@@ -651,20 +662,40 @@ void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource>
 
         visible_mesh_nodes.emplace_back(temp_node);
 
+        // DX12 RP1 always uses the built-in mesh_gbuffer pass; ShaderLab light-mode routing
+        // (Forward vs GBuffer) is Vulkan-only. Without this branch, StandardLit-style materials
+        // land in forward_mesh_nodes and are never drawn by MainCameraRp1Pass::DrawMeshGbuffer.
+        const bool dx12_builtin_gbuffer_routing =
+            GET_SYSTEM(RHI) != nullptr && GET_SYSTEM(RHI)->getGraphicsAPI() == GraphicsAPI::DirectX12;
+
 #if defined(Z_HAS_VULKAN)
-        GpuPBRMaterial* gpu_material = AsGpuMaterial(temp_node.ref_material);
-        if (gpu_material != nullptr && ShouldRenderTransparent(entity, *gpu_material))
+        if (dx12_builtin_gbuffer_routing)
         {
-            transparent_mesh_nodes.emplace_back(temp_node);
-        }
-        else if (gpu_material != nullptr && ShouldRenderForward(*gpu_material) &&
-                 FindShaderPassByLightMode(*gpu_material, "GBuffer") == nullptr)
-        {
-            forward_mesh_nodes.emplace_back(temp_node);
+            if (entity.m_Blend)
+            {
+                transparent_mesh_nodes.emplace_back(temp_node);
+            }
+            else
+            {
+                opaque_mesh_nodes.emplace_back(temp_node);
+            }
         }
         else
         {
-            opaque_mesh_nodes.emplace_back(temp_node);
+            GpuPBRMaterial* gpu_material = AsGpuMaterial(temp_node.ref_material);
+            if (gpu_material != nullptr && ShouldRenderTransparent(entity, *gpu_material))
+            {
+                transparent_mesh_nodes.emplace_back(temp_node);
+            }
+            else if (gpu_material != nullptr && ShouldRenderForward(*gpu_material) &&
+                     FindShaderPassByLightMode(*gpu_material, "GBuffer") == nullptr)
+            {
+                forward_mesh_nodes.emplace_back(temp_node);
+            }
+            else
+            {
+                opaque_mesh_nodes.emplace_back(temp_node);
+            }
         }
 #else
         if (entity.m_Blend)
@@ -697,6 +728,24 @@ void RenderScene::RegisterAxisMeshSources(const std::array<size_t, 3>& mesh_asse
     m_AxisMeshSourcesRegistered = true;
 }
 
+const RenderMeshData* RenderScene::FindAxisMeshSourceData(size_t mesh_asset_id) const
+{
+    if (!m_AxisMeshSourcesRegistered || mesh_asset_id == 0)
+    {
+        return nullptr;
+    }
+
+    for (size_t i = 0; i < m_AxisMeshAssetIds.size(); ++i)
+    {
+        if (m_AxisMeshAssetIds[i] == mesh_asset_id)
+        {
+            return &m_AxisMeshDatas[i];
+        }
+    }
+
+    return nullptr;
+}
+
 void RenderScene::UpdateVisibleObjectsAxis(std::shared_ptr<RenderResource> render_resource)
 {
     if (!m_RenderAxis.has_value())
@@ -709,6 +758,7 @@ void RenderScene::UpdateVisibleObjectsAxis(std::shared_ptr<RenderResource> rende
 
     m_AxisNode.model_matrix = axis.m_ModelMatrix;
     m_AxisNode.node_id = axis.m_InstanceId;
+    m_AxisNode.mesh_asset_id = axis.m_MeshAssetId;
     m_AxisNode.enable_vertex_blending = axis.m_EnableVertexBlending;
 
     if (render_resource == nullptr || axis.m_MeshAssetId == 0)
@@ -730,7 +780,15 @@ void RenderScene::UpdateVisibleObjectsAxis(std::shared_ptr<RenderResource> rende
         }
     }
 
-    if (!render_resource->HasValidMesh(axis.m_MeshAssetId) && m_UploadRhi != nullptr && axis_source_index >= 0)
+    bool needs_axis_mesh_upload = !render_resource->HasValidMesh(axis.m_MeshAssetId);
+    if (!needs_axis_mesh_upload && m_UploadRhi != nullptr && axis_source_index >= 0 &&
+        m_UploadRhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+    {
+        const RenderMeshGPUResource& mesh_asset = render_resource->GetEntityMesh(axis);
+        needs_axis_mesh_upload = mesh_asset.mesh_vertex_interleaved_buffer == nullptr;
+    }
+
+    if (needs_axis_mesh_upload && m_UploadRhi != nullptr && axis_source_index >= 0)
     {
         render_resource->UploadGameObjectRenderResource(m_UploadRhi, axis, m_AxisMeshDatas[axis_source_index]);
     }

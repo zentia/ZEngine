@@ -33,7 +33,9 @@
 #include "Runtime/Slate/Widgets/SSpacer.h"
 #include "Runtime/Slate/Widgets/STextBlock.h"
 
-#include <Application/Application.h>
+#include <Application/Application.h>  // g_isPlaying
+
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -76,8 +78,6 @@ namespace
         const float major_spacing = std::pow(10.0f, std::floor(std::log10(safe_height)));
         return std::max(1.0f, major_spacing / static_cast<float>(k_scene_grid_major_line_every));
     }
-
-    const UIColor kSceneBackdrop(74.0f / 255.0f, 88.0f / 255.0f, 111.0f / 255.0f, 1.0f);
 
     // Draw a straight line as a chain of short axis-aligned quads (UIRenderer has no
     // native line primitive; same approach as ZSlateAnimationWindow).
@@ -199,12 +199,11 @@ namespace
         const int min_y_index = static_cast<int>(std::floor((camera_position.y - half_extent) / minor_spacing));
         const int max_y_index = static_cast<int>(std::ceil((camera_position.y + half_extent) / minor_spacing));
 
-        const Matrix4x4 view_proj = camera->GetProjectionMatrix() * camera->getLookAtMatrix();
+        const float grid_aspect = rect.height > 0.0f ? rect.width / rect.height : camera->getAspect();
+        const Matrix4x4 view_proj =
+            camera->GetProjectionMatrixForAspect(grid_aspect) * camera->getLookAtMatrix();
 
-        // RP2 clears the swapchain to black; paint a scene-view backdrop behind the grid.
-        renderer.drawQuad(rect, kSceneBackdrop);
-
-        // Each grid line is drawn as ONE full-span segment (near-plane clipped in
+        // Grid lines only; 3D (RP2 combine + skybox) must show through without a dimming quad.
         // drawWorldLine), not one segment per cell. This turns the grid from
         // O((2*half_minor_count)^2) ~= 80k draw calls/frame into O(2*half_minor_count)
         // ~= 400 -- the dominant cause of the editor's ~10 FPS.
@@ -227,6 +226,96 @@ namespace
             drawWorldLine(renderer, Vector3(x_span_min, y, k_scene_grid_plane_height),
                           Vector3(x_span_max, y, k_scene_grid_plane_height), view_proj, rect, color);
         }
+    }
+
+    // Translate gizmo axes in the same projection path as the grid (visible even when the DX12
+    // swapchain overlay draw is misaligned). Requires only Transform on the selection.
+    void DrawTransformGizmoOverlay(UIRenderer& renderer,
+                                     const UIRect& rect,
+                                     const std::shared_ptr<RenderCamera>& camera,
+                                     EditorSceneManager& scene_manager)
+    {
+        if (g_isPlaying || rect.width <= 1.0f || rect.height <= 1.0f || !camera)
+        {
+            return;
+        }
+
+        const std::shared_ptr<GameObject> selected = scene_manager.GetSelectedGObject().lock();
+        if (!selected)
+        {
+            return;
+        }
+
+        const Transform* transform_component = selected->tryGetComponentConst(Transform);
+        if (transform_component == nullptr)
+        {
+            return;
+        }
+
+        Vector3 pivot;
+        Vector3 scale;
+        Quaternion rotation;
+        transform_component->GetLocalToWorldMatrix().Decomposition(pivot, scale, rotation);
+
+        const float aspect = rect.height > 0.0f ? rect.width / rect.height : camera->getAspect();
+        const Matrix4x4 view_proj =
+            camera->GetProjectionMatrixForAspect(aspect) * camera->getLookAtMatrix();
+
+        const float distance = (camera->position() - pivot).length();
+        const Matrix4x4 proj = camera->GetProjectionMatrixForAspect(aspect);
+        const float proj_scale_x = std::max(std::abs(proj[0][0]), 1e-4f);
+        constexpr float k_gizmo_mesh_extent = 2.0f;
+        const float uniform_scale = std::max(
+            distance * 4.0f * EditorSceneManager::kEditorGizmoViewportFraction /
+                (rect.width * proj_scale_x * k_gizmo_mesh_extent),
+            0.05f);
+        const float axis_len = k_gizmo_mesh_extent * uniform_scale;
+
+        const Matrix4x4 rot_mat(rotation);
+        const Vector3 axis_x(rot_mat[0][0], rot_mat[1][0], rot_mat[2][0]);
+        const Vector3 axis_y(rot_mat[0][1], rot_mat[1][1], rot_mat[2][1]);
+        const Vector3 axis_z(rot_mat[0][2], rot_mat[1][2], rot_mat[2][2]);
+
+        constexpr float k_axis_line_thickness = 2.5f;
+        const UIColor axis_red(1.0f, 0.25f, 0.25f, 1.0f);
+        const UIColor axis_green(0.25f, 1.0f, 0.35f, 1.0f);
+        const UIColor axis_blue(0.35f, 0.55f, 1.0f, 1.0f);
+
+        auto draw_axis = [&](const Vector3& dir, const UIColor& color) {
+            Vector4 ca = view_proj * Vector4(pivot, 1.0f);
+            Vector4 cb = view_proj * Vector4(pivot + dir * axis_len, 1.0f);
+            constexpr float w_min = 1e-4f;
+            const float da = ca.w - w_min;
+            const float db = cb.w - w_min;
+            if (da < 0.0f && db < 0.0f)
+            {
+                return;
+            }
+            if (da < 0.0f || db < 0.0f)
+            {
+                const float t = da / (da - db);
+                Vector4 mid;
+                mid.x = ca.x + (cb.x - ca.x) * t;
+                mid.y = ca.y + (cb.y - ca.y) * t;
+                mid.z = ca.z + (cb.z - ca.z) * t;
+                mid.w = ca.w + (cb.w - ca.w) * t;
+                if (da < 0.0f)
+                    ca = mid;
+                else
+                    cb = mid;
+            }
+            const float inv_wa = 1.0f / ca.w;
+            const float inv_wb = 1.0f / cb.w;
+            const Vector2 screen_a(rect.x + (ca.x * inv_wa + 1.0f) * 0.5f * rect.width,
+                                   rect.y + (ca.y * inv_wa + 1.0f) * 0.5f * rect.height);
+            const Vector2 screen_b(rect.x + (cb.x * inv_wb + 1.0f) * 0.5f * rect.width,
+                                   rect.y + (cb.y * inv_wb + 1.0f) * 0.5f * rect.height);
+            DrawLineQuads(renderer, screen_a, screen_b, color, k_axis_line_thickness);
+        };
+
+        draw_axis(axis_x, axis_red);
+        draw_axis(axis_y, axis_green);
+        draw_axis(axis_z, axis_blue);
     }
 }  // namespace
 
@@ -406,8 +495,9 @@ void ZSlateSceneWindow::OpenContextMenu(const Vector2& anchor, float scale)
         menu.AddItem("Save Scene    Ctrl+S", []() { GET_SYSTEM(WorldManager)->SaveCurrentLevel(); }, s);
         menu.AddItem("Save Scene As...", []() { GET_SYSTEM(EditorSceneManager)->SaveActiveSceneAsDialog(); }, s);
         menu.AddItem("Reload Current Level", []() {
-            GET_SYSTEM(WorldManager)->ReloadCurrentLevel();
             GET_SYSTEM(RenderSystem)->ClearForLevelReloading();
+            GET_SYSTEM(WorldManager)->ReloadCurrentLevel();
+            GET_SYSTEM(RenderSystem)->ResubmitActiveLevelRenderers();
             GET_SYSTEM(EditorSceneManager)->OnGObjectSelected(k_invalid_gobject_id);
         }, s);
     });
@@ -867,6 +957,72 @@ void ZSlateSceneWindow::HandleDragDropDrop(bool chrome_capturing, const UIRect& 
 // Navigation / picking (input polling, unchanged behaviour)
 // ----------------------------------------------------------------------------
 
+void ZSlateSceneWindow::HandleSceneGizmoDrag(bool chrome_capturing, const UIRect& work_rect)
+{
+    EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager);
+    if (scene_manager == nullptr || chrome_capturing || work_rect.width <= 0.0f || work_rect.height <= 0.0f)
+    {
+        return;
+    }
+
+    ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
+    const Vector2 mouse = host.GetPointerPos();
+    const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
+    const bool is_hovered =
+        work_rect.Contains(mouse) && host.IsSurfaceHovered(surface_id, mouse);
+
+    const Vector2 viewport_pos(work_rect.x, work_rect.y);
+    const Vector2 viewport_size(work_rect.width, work_rect.height);
+    const Vector2 cursor_uv((mouse.x - work_rect.x) / work_rect.width,
+                            (mouse.y - work_rect.y) / work_rect.height);
+
+    if (is_hovered || m_IsDraggingGizmo)
+    {
+        const size_t axis_under_cursor =
+            scene_manager->PickAxisAtViewportPixels(mouse, viewport_pos, viewport_size);
+        scene_manager->UpdateCursorOnAxis(cursor_uv, viewport_size);
+        if (axis_under_cursor != 3)
+        {
+            GET_SYSTEM(RenderSystem)->SetSelectedAxis(axis_under_cursor);
+        }
+    }
+
+    if (host.WasLeftPressedThisFrame() && is_hovered &&
+        scene_manager->getEditorAxisMode() == EditorAxisMode::TranslateMode)
+    {
+        m_GizmoDragAxis = scene_manager->PickAxisAtViewportPixels(mouse, viewport_pos, viewport_size);
+        if (m_GizmoDragAxis != 3)
+        {
+            m_IsDraggingGizmo = true;
+            m_GizmoDragLastMouse = mouse;
+        }
+    }
+
+    if (m_IsDraggingGizmo && host.IsLeftDown())
+    {
+        const Vector2 delta = mouse - m_GizmoDragLastMouse;
+        if (delta.squaredLength() > 0.0f)
+        {
+            scene_manager->MoveEntity(mouse.x,
+                                      mouse.y,
+                                      m_GizmoDragLastMouse.x,
+                                      m_GizmoDragLastMouse.y,
+                                      viewport_pos,
+                                      viewport_size,
+                                      m_GizmoDragAxis,
+                                      scene_manager->getSelectedObjectMatrix());
+            m_GizmoDragLastMouse = mouse;
+            scene_manager->DrawSelectedEntityAxis();
+        }
+    }
+
+    if (!host.IsLeftDown())
+    {
+        m_IsDraggingGizmo = false;
+        m_GizmoDragAxis = 3;
+    }
+}
+
 void ZSlateSceneWindow::HandleSceneViewNavigation(bool chrome_capturing, const UIRect& work_rect)
 {
     RHI* rhi = GET_SYSTEM(RHI);
@@ -994,6 +1150,10 @@ void ZSlateSceneWindow::ZoomSceneViewCamera(const std::shared_ptr<RenderCamera>&
 
 void ZSlateSceneWindow::MoveSceneViewCameraWithKeyboard(const std::shared_ptr<RenderCamera>& editor_camera) const
 {
+    const ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
+    if (host.IsNativeTextInputActive() || host.IsForegroundCapturing())
+        return;
+
     WindowSystem* window_system = GET_SYSTEM(WindowSystem);
     if (!editor_camera || window_system == nullptr || window_system->GetWindow() == nullptr)
         return;
@@ -1166,7 +1326,14 @@ void ZSlateSceneWindow::OnGUI()
         if (work_rect.width > 1.0f && work_rect.height > 1.0f)
         {
             renderer->pushClipRect(work_rect, true);
-            DrawEditorGridOverlay(*renderer, work_rect, GET_SYSTEM(EditorSceneManager)->getEditorCamera());
+            EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager);
+            const std::shared_ptr<RenderCamera> editor_camera =
+                scene_manager ? scene_manager->getEditorCamera() : nullptr;
+            DrawEditorGridOverlay(*renderer, work_rect, editor_camera);
+            if (scene_manager)
+            {
+                DrawTransformGizmoOverlay(*renderer, work_rect, editor_camera, *scene_manager);
+            }
             renderer->popClipRect();
         }
 
@@ -1252,6 +1419,7 @@ void ZSlateSceneWindow::OnGUI()
     const bool chrome_capturing = over_toolbar || popup_capturing || panel_capturing || m_CameraPanelOpen;
 
     HandleDragDropDrop(chrome_capturing, work_rect);
+    HandleSceneGizmoDrag(chrome_capturing, work_rect);
     HandleSceneViewNavigation(chrome_capturing, work_rect);
     HandleContextMenu(chrome_capturing, work_rect, ui_scale);
 

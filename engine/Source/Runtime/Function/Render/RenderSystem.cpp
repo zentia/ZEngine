@@ -199,11 +199,13 @@ GuidAllocator<MeshSourceDesc>& RenderSystem::GetMeshAssetIdAllocator()
     return allocator;
 }
 void RenderSystem::ClearForLevelReloading() {}
+void RenderSystem::ResubmitActiveLevelRenderers() {}
 void RenderSystem::SyncGameCameraFromMainCamera() {}
 void RenderSystem::ProcessSwapData() {}
 
 #else
     #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
+    #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
     #include "Runtime/Function/Framework/Level/Level.h"
     #include "Runtime/Function/Framework/World/WorldManager.h"
     #include "Runtime/Function/Particle/ParticleManager.h"
@@ -903,6 +905,39 @@ void RenderSystem::ClearForLevelReloading()
     m_RenderScene->ClearForLevelReloading();
 }
 
+void RenderSystem::ResubmitActiveLevelRenderers()
+{
+    WorldManager* world_manager = GET_SYSTEM(WorldManager);
+    if (world_manager == nullptr)
+    {
+        return;
+    }
+
+    Level* active_level = world_manager->getCurrentActiveLevel();
+    if (active_level == nullptr)
+    {
+        return;
+    }
+
+    uint32_t resubmit_count = 0;
+    for (const auto& id_object_pair : active_level->getAllGObjects())
+    {
+        const std::shared_ptr<GameObject>& object = id_object_pair.second;
+        if (object == nullptr)
+        {
+            continue;
+        }
+
+        if (BaseRenderer* renderer = object->tryGetComponent(BaseRenderer))
+        {
+            renderer->RefreshRenderStateFromTransformDispatch();
+            ++resubmit_count;
+        }
+    }
+
+    LOG_INFO(ZRender, "ResubmitActiveLevelRenderers: {} renderer(s)", resubmit_count);
+}
+
 void RenderSystem::InitializeUIRenderBackend(WindowUI* window_ui)
 {
     if (!m_RenderPipeline || window_ui == nullptr)
@@ -991,6 +1026,42 @@ void RenderSystem::ProcessSwapData()
     {
         m_RenderScene->m_RenderAxis = swap_data.m_VisibleAxis;
         m_SwapContext.ResetVisibleAxisSwapData();
+    }
+
+    // Game-thread dirty state can sit on the logic buffer while the render buffer is
+    // still draining a large upload queue (swap blocked). Mirror axis handling: apply
+    // mesh deletes/upserts from logic here so level reload + Resubmit are not stuck
+    // behind swap readiness.
+    RenderSwapData& logic_swap = m_SwapContext.GetLogicSwapData();
+    if (m_RenderScene)
+    {
+        if (logic_swap.m_GameObjectToDelete.has_value())
+        {
+            while (!logic_swap.m_GameObjectToDelete->IsEmpty())
+            {
+                GameObjectDesc gobject = logic_swap.m_GameObjectToDelete->GetNextProcessObject();
+                m_RenderScene->DeleteEntityByGObjectID(gobject.getId());
+                logic_swap.m_GameObjectToDelete->pop();
+            }
+            logic_swap.m_GameObjectToDelete.reset();
+        }
+
+        if (logic_swap.m_GameObjectResourceDesc.has_value())
+        {
+            while (!logic_swap.m_GameObjectResourceDesc->IsEmpty())
+            {
+                GameObjectDesc gobject = logic_swap.m_GameObjectResourceDesc->GetNextProcessObject();
+                m_RenderScene->UpsertGameObject(m_Rhi, *m_RenderResource, gobject);
+                logic_swap.m_GameObjectResourceDesc->pop();
+            }
+            logic_swap.m_GameObjectResourceDesc.reset();
+        }
+    }
+
+    if (logic_swap.m_VisibleAxisUpdatePending && m_RenderScene)
+    {
+        m_RenderScene->m_RenderAxis = logic_swap.m_VisibleAxis;
+        logic_swap.m_VisibleAxisUpdatePending = false;
     }
 
     if (swap_data.m_SceneViewportUpdatePending)
