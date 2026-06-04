@@ -47,9 +47,9 @@ namespace
         g_TransformSystemsRegistered = true;
     }
 
-    LocalTransform MakeLocalTransform(const Vector3d& position, const Quaternion& rotation, const Vector3& scale)
+    TransformTRS MakeTRS(const Vector3d& position, const Quaternion& rotation, const Vector3& scale)
     {
-        return LocalTransform(position, rotation, scale);
+        return TransformTRS(position, rotation, scale);
     }
 
     Level* GetActiveLevel()
@@ -96,14 +96,22 @@ void Transform::Transfer(TransferFunction& transfer)
 
     if constexpr (TransferFunction::IsWriting())
     {
-        m_LegacyTransformBlob = MakeLocalTransform(m_LocalPosition, m_LocalRotation, m_LocalScale);
-        transfer.Transfer(m_LegacyTransformBlob, "transform");
         transfer.Transfer(m_Father, "m_Father");
         transfer.Transfer(m_Children, "m_Children");
     }
     else
     {
-        transfer.Transfer(m_LegacyTransformBlob, "transform");
+        TransformTRS legacy_transform;
+        transfer.Transfer(legacy_transform, "transform");
+        if (m_LocalPosition == Vector3d::ZERO && m_LocalPositionLegacy == Vector3::ZERO &&
+            (legacy_transform.m_Position != Vector3d::ZERO || legacy_transform.m_Rotation != Quaternion::IDENTITY ||
+             legacy_transform.m_Scale != Vector3::UNIT_SCALE))
+        {
+            m_LocalPosition = legacy_transform.m_Position;
+            m_LocalPositionLegacy = m_LocalPosition.ToVector3();
+            m_LocalRotation = legacy_transform.m_Rotation;
+            m_LocalScale = legacy_transform.m_Scale;
+        }
 
         transfer.Transfer(m_Father, "m_Father");
         PPtr<Transform> legacy_parent;
@@ -131,25 +139,6 @@ void Transform::SetSceneRootLinks(Transform* prev, Transform* next)
 
 void Transform::ApplySerializedLocalToBuffers()
 {
-    const LocalTransform default_trs;
-    const LocalTransform serialized_local =
-        MakeLocalTransform(m_LocalPosition, m_LocalRotation, m_LocalScale);
-    if (serialized_local.m_Position == default_trs.m_Position &&
-        serialized_local.m_Rotation == default_trs.m_Rotation &&
-        serialized_local.m_Scale == default_trs.m_Scale &&
-        (m_LegacyTransformBlob.m_Position != default_trs.m_Position ||
-         m_LegacyTransformBlob.m_Rotation != default_trs.m_Rotation ||
-         m_LegacyTransformBlob.m_Scale != default_trs.m_Scale))
-    {
-        m_LocalPosition = m_LegacyTransformBlob.m_Position;
-        m_LocalPositionLegacy = m_LocalPosition.ToVector3();
-        m_LocalRotation = m_LegacyTransformBlob.m_Rotation;
-        m_LocalScale = m_LegacyTransformBlob.m_Scale;
-    }
-
-    const LocalTransform local_trs = MakeLocalTransform(m_LocalPosition, m_LocalRotation, m_LocalScale);
-    m_LocalTransformBuffer[0] = local_trs;
-    m_LocalTransformBuffer[1] = local_trs;
 }
 
 void Transform::SyncSerializedToHierarchy()
@@ -172,12 +161,11 @@ void Transform::SyncHierarchyToSerialized()
         return;
     }
 
-    const LocalTransform& trs = GetLocalTRS(GetTransformAccessReadOnly());
+    const TransformTRS& trs = GetLocalTRS(GetTransformAccessReadOnly());
     m_LocalPosition = trs.m_Position;
+    m_LocalPositionLegacy = m_LocalPosition.ToVector3();
     m_LocalRotation = trs.m_Rotation;
     m_LocalScale = trs.m_Scale;
-    m_LocalTransformBuffer[m_CurrentIndex] = trs;
-    m_LocalTransformBuffer[m_NextIndex] = trs;
 }
 
 void Transform::WriteLocalToSerializedFields()
@@ -188,9 +176,6 @@ void Transform::WriteLocalToSerializedFields()
         return;
     }
 
-    m_LocalPosition = m_LocalTransformBuffer[m_CurrentIndex].m_Position;
-    m_LocalRotation = m_LocalTransformBuffer[m_CurrentIndex].m_Rotation;
-    m_LocalScale = m_LocalTransformBuffer[m_CurrentIndex].m_Scale;
 }
 
 void Transform::MarkTransformDirty(bool scale_changed)
@@ -294,9 +279,6 @@ void Transform::SetLocalPosition(const Vector3d& local_position)
 {
     m_LocalPosition = local_position;
     m_LocalPositionLegacy = local_position.ToVector3();
-    m_LocalTransformBuffer[m_CurrentIndex].m_Position = local_position;
-    m_LocalTransformBuffer[m_NextIndex].m_Position = local_position;
-
     if (IsTransformHierarchyInitialized())
     {
         GetLocalTRSWritable(GetTransformAccess()).m_Position = local_position;
@@ -310,9 +292,6 @@ void Transform::SetLocalPosition(const Vector3d& local_position)
 void Transform::SetLocalRotation(const Quaternion& local_rotation)
 {
     m_LocalRotation = local_rotation;
-    m_LocalTransformBuffer[m_CurrentIndex].m_Rotation = local_rotation;
-    m_LocalTransformBuffer[m_NextIndex].m_Rotation = local_rotation;
-
     if (IsTransformHierarchyInitialized())
     {
         GetLocalTRSWritable(GetTransformAccess()).m_Rotation = local_rotation;
@@ -326,9 +305,6 @@ void Transform::SetLocalRotation(const Quaternion& local_rotation)
 void Transform::SetLocalScale(const Vector3& local_scale)
 {
     m_LocalScale = local_scale;
-    m_LocalTransformBuffer[m_CurrentIndex].m_Scale = local_scale;
-    m_LocalTransformBuffer[m_NextIndex].m_Scale = local_scale;
-
     if (IsTransformHierarchyInitialized())
     {
         GetLocalTRSWritable(GetTransformAccess()).m_Scale = local_scale;
@@ -351,7 +327,7 @@ Matrix4x4 Transform::GetLocalMatrix() const
     {
         return GetLocalTRS(GetTransformAccessReadOnly()).getMatrix();
     }
-    return m_LocalTransformBuffer[m_CurrentIndex].getMatrix();
+    return BuildLocalTRS().getMatrix();
 }
 
 Matrix4x4 Transform::GetLocalToWorldMatrix() const
@@ -787,7 +763,6 @@ void Transform::RebuildTransformHierarchy()
 void Transform::Tick(float delta_time)
 {
     (void)delta_time;
-    std::swap(m_CurrentIndex, m_NextIndex);
 
     if (m_IsDirty)
     {
@@ -796,7 +771,6 @@ void Transform::Tick(float delta_time)
 
     if (!g_isPlaying)
     {
-        m_LocalTransformBuffer[m_NextIndex] = m_LocalTransformBuffer[m_CurrentIndex];
         WriteLocalToSerializedFields();
     }
 }
@@ -811,14 +785,18 @@ void Transform::TryUpdateRigidBodyComponent()
     RigidBodyComponent* rigid_body_component = m_ParentObject->tryGetComponent(RigidBodyComponent);
     if (rigid_body_component)
     {
-        rigid_body_component->UpdateGlobalTransform(GetLocalTransformConst(), m_IsScaleDirty);
+        rigid_body_component->UpdateGlobalTransform(BuildLocalTRS(), m_IsScaleDirty);
         m_IsScaleDirty = false;
     }
 }
 
-LocalTransform Transform::GetLocalTransform() const
+TransformTRS Transform::BuildLocalTRS() const
 {
-    return m_LocalTransformBuffer[m_CurrentIndex];
+    if (IsTransformHierarchyInitialized())
+    {
+        return GetLocalTRS(GetTransformAccessReadOnly());
+    }
+    return TransformTRS(m_LocalPosition, m_LocalRotation, m_LocalScale);
 }
 
 void Transform::DetachFromParentList()

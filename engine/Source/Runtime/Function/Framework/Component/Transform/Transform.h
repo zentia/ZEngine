@@ -2,7 +2,7 @@
 
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/BaseClasses/PPtr.h"
-#include "Runtime/Core/Math/LocalTransform.h"
+#include "Runtime/Core/Math/TransformTRS.h"
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector3.h"
@@ -103,8 +103,7 @@ public:
 
     void TryUpdateRigidBodyComponent();
 
-    LocalTransform GetLocalTransform() const;
-    const LocalTransform& GetLocalTransformConst() const { return m_LocalTransformBuffer[m_CurrentIndex]; }
+    TransformTRS BuildLocalTRS() const;
 
     // ---- Unity internal: TransformAccess / hierarchy ----
     bool IsTransformHierarchyInitialized() const { return m_TransformData.hierarchy != nullptr; }
@@ -129,11 +128,6 @@ protected:
     Vector3d m_LocalPosition {Vector3d::ZERO};
     Quaternion m_LocalRotation {Quaternion::IDENTITY};
     Vector3 m_LocalScale {Vector3::UNIT_SCALE};
-
-    LocalTransform m_LegacyTransformBlob;
-    LocalTransform m_LocalTransformBuffer[2];
-    size_t m_CurrentIndex {0};
-    size_t m_NextIndex {1};
 
     PPtr<Transform> m_Father;
     std::vector<PPtr<Transform>> m_Children;

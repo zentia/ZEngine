@@ -1,6 +1,7 @@
 #include "Runtime/Function/Animation/Skeleton.h"
 
 #include "Runtime/Core/Math/Math.h"
+#include "Runtime/Core/Math/TransformTRS.h"
 #include "Runtime/Function/Animation/Utilities.h"
 
 Skeleton::~Skeleton()
@@ -138,7 +139,7 @@ AnimationResult Skeleton::OutputAnimationResult()
         //	scale,
         //	conjugate( bone->_getDerivedTOrientation())
         //);
-        auto objMat = LocalTransform(bone->_getDerivedPosition(), bone->_getDerivedOrientation(), bone->_getDerivedScale())
+        auto objMat = TransformTRS(bone->_getDerivedPosition(), bone->_getDerivedOrientation(), bone->_getDerivedScale())
                           .getMatrix();
 
         auto resMat = objMat * bone->_getInverseTpose();

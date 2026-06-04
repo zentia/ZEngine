@@ -46,6 +46,11 @@ struct MainCameraPerFrame
     ScenePointLight scene_point_lights[s_MaxPointLightCount];
     SceneDirectionalLight scene_directional_light;
     Matrix4x4 directional_light_proj_view;
+    /// LWC (UE PreViewTranslation + render tile); valid when r.LWC.Enable is on.
+    Vector3 pre_view_translation {0.0f, 0.0f, 0.0f};
+    float _padding_pre_view_translation {0.0f};
+    Vector3 render_tile {0.0f, 0.0f, 0.0f};
+    float _padding_render_tile {0.0f};
 };
 
 struct RenderMeshInstance

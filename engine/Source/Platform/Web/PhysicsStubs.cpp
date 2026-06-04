@@ -83,7 +83,7 @@ PhysicsScene::PhysicsScene(const Vector3& gravity)
 
 PhysicsScene::~PhysicsScene() = default;
 
-uint32_t PhysicsScene::CreateRigidBody(const LocalTransform& /*global_transform*/,
+uint32_t PhysicsScene::CreateRigidBody(const TransformTRS& /*global_transform*/,
                                        const RigidBodyComponentRes& /*rigidbody_actor_res*/)
 {
     return s_InvalidRigidbodyId;
@@ -91,7 +91,7 @@ uint32_t PhysicsScene::CreateRigidBody(const LocalTransform& /*global_transform*
 
 void PhysicsScene::RemoveRigidBody(uint32_t /*body_id*/) {}
 
-void PhysicsScene::UpdateRigidBodyGlobalTransform(uint32_t /*body_id*/, const LocalTransform& /*global_transform*/) {}
+void PhysicsScene::UpdateRigidBodyGlobalTransform(uint32_t /*body_id*/, const TransformTRS& /*global_transform*/) {}
 
 void PhysicsScene::Tick(float /*delta_time*/) {}
 

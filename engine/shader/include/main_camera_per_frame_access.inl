@@ -9,3 +9,5 @@
 #define scene_point_lights per_frame.scene_point_lights
 #define scene_directional_light per_frame.scene_directional_light
 #define directional_light_proj_view per_frame.directional_light_proj_view
+#define pre_view_translation per_frame.pre_view_translation
+#define render_tile per_frame.render_tile

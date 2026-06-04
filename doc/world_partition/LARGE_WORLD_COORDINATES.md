@@ -39,7 +39,7 @@ This fixes GPU jitter for distant cells **without** migrating every `Transform` 
 
 ### L2 (landed) -- authoritative double transforms
 
-- `LocalTransform::m_Position` and `Transform::m_LocalPosition` are `Vector3d`.
+- `TransformTRS::m_Position` and `Transform::m_LocalPosition` are `Vector3d` (`LocalTransform` removed).
 - `TransformHierarchy` composes world translation in double (`CalculateGlobalPositionD`).
 - Serialization: read legacy `m_LocalPosition` / `m_position` floats, write `m_LocalPositionD` / `m_positionD`.
 - `Transform::GetWorldPositionD()` / `SetPosition(Vector3d)` for absolute world edits.
@@ -47,10 +47,14 @@ This fixes GPU jitter for distant cells **without** migrating every `Transform` 
 
 Remaining L2 gaps: editor inspector fields as double, gizmo picking in absolute double (uses render-space today).
 
-### L3 (planned) -- shader LWC types
+### L3 (landed) -- shader LWC frame fields
 
-- HLSL/GLSL globals: `PreViewTranslation`, optional per-primitive tile.
-- Port UE `FLWCVector3` only where world-space shader math needs it (MegaLights, Lumen, VT).
+- `MainCameraPerFrame` tail: `pre_view_translation`, `render_tile` (CPU upload from `LargeWorldCoordinates` when `r.LWC.Enable` is on).
+- HLSL: `shader/hlsl/common/LargeWorldCoordinates.hlsl` + `ZLwcFromPerFrame()` in `scene_lighting_structs.hlsli`.
+- GLSL mirror: `shader/include/structures.h` (same tail layout).
+- Model matrices stay render-space on CPU (`BaseRenderer`); shaders can reconstruct absolute via `ZLwcRenderToAbsolute` when needed.
+
+Follow-up: port UE `FLWCVector3` only where world-space shader math needs split tile+offset (MegaLights, VT).
 
 ### L4 (planned) -- World Partition integration
 
@@ -99,6 +103,9 @@ Vector3 GetPreViewTranslation() const;  // -offset within tile, as float
 | `Runtime/Function/Framework/World/WorldManager.cpp` | Per-frame tile update |
 | `Runtime/Function/Render/RenderCamera.{h,cpp}` | Double world position |
 | `Runtime/Function/Framework/Component/Mesh/BaseRenderer.cpp` | Render-space draw matrices |
+| `Runtime/Core/Math/TransformTRS.h` | Serializable TRS (`LocalTransform` removed) |
+| `shader/hlsl/common/LargeWorldCoordinates.hlsl` | Shader LWC helpers |
+| `Runtime/Function/Render/RenderResource*.cpp` | Per-frame `pre_view_translation` / `render_tile` upload |
 
 ## Related
 

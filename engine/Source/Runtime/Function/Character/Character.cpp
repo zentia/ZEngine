@@ -28,9 +28,8 @@ void Character::SetObject(std::shared_ptr<GameObject> gobject)
         const Transform* transform_component = m_CharacterObject->tryGetComponentConst(Transform);
         if (transform_component)
         {
-            const LocalTransform& transform = transform_component->GetLocalTransformConst();
-            m_Position = transform.m_Position.ToVector3();
-            m_Rotation = transform.m_Rotation;
+            m_Position = transform_component->GetLocalPositionD().ToVector3();
+            m_Rotation = transform_component->GetLocalRotation();
         }
     }
     else

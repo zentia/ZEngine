@@ -7,7 +7,7 @@
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
-#include "Runtime/Core/Math/LocalTransform.h"
+#include "Runtime/Core/Math/TransformTRS.h"
 #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #include "Runtime/Function/Render/RenderDebugConfig.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
@@ -109,7 +109,7 @@ void LevelDebugger::DrawBones(std::shared_ptr<GameObject> object) const
         if (bones[bone_index].GetParent() == nullptr || bone_index == 1)
             continue;
 
-        Matrix4x4 bone_matrix = LocalTransform(bones[bone_index]._getDerivedPosition(),
+        Matrix4x4 bone_matrix = TransformTRS(bones[bone_index]._getDerivedPosition(),
                                           bones[bone_index]._getDerivedOrientation(),
                                           bones[bone_index]._getDerivedScale())
                                     .getMatrix();
@@ -118,7 +118,7 @@ void LevelDebugger::DrawBones(std::shared_ptr<GameObject> object) const
         bone_position /= bone_position[3];
 
         Node* parent_bone = bones[bone_index].GetParent();
-        Matrix4x4 parent_bone_matrix = LocalTransform(parent_bone->_getDerivedPosition(),
+        Matrix4x4 parent_bone_matrix = TransformTRS(parent_bone->_getDerivedPosition(),
                                                  parent_bone->_getDerivedOrientation(),
                                                  parent_bone->_getDerivedScale())
                                            .getMatrix();
@@ -162,7 +162,7 @@ void LevelDebugger::DrawBonesName(std::shared_ptr<GameObject> object) const
         if (bones[bone_index].GetParent() == nullptr || bone_index == 1)
             continue;
 
-        Matrix4x4 bone_matrix = LocalTransform(bones[bone_index]._getDerivedPosition(),
+        Matrix4x4 bone_matrix = TransformTRS(bones[bone_index]._getDerivedPosition(),
                                           bones[bone_index]._getDerivedOrientation(),
                                           bones[bone_index]._getDerivedScale())
                                     .getMatrix();

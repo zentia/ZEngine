@@ -43,4 +43,20 @@ struct MainCameraPerFrame
     PointLight scene_point_lights[16];
     DirectionalLight scene_directional_light;
     float4x4 directional_light_proj_view;
+    float3 pre_view_translation;
+    float _pad_pre_view;
+    float3 render_tile;
+    float _pad_render_tile;
 };
+
+#include "LargeWorldCoordinates.hlsl"
+
+ZLwcFrame ZLwcFromPerFrame(MainCameraPerFrame pf)
+{
+    ZLwcFrame lwc;
+    lwc.pre_view_translation = pf.pre_view_translation;
+    lwc._pad_pre_view = pf._pad_pre_view;
+    lwc.render_tile = pf.render_tile;
+    lwc._pad_render_tile = pf._pad_render_tile;
+    return lwc;
+}

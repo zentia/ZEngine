@@ -84,6 +84,10 @@ struct MainCameraPerFrame
     PointLight scene_point_lights[m_max_point_light_count];
     DirectionalLight scene_directional_light;
     highp mat4 directional_light_proj_view;
+    highp vec3 pre_view_translation;
+    highp float _padding_pre_view_translation;
+    highp vec3 render_tile;
+    highp float _padding_render_tile;
 };
 
 struct AxisDrawStorage

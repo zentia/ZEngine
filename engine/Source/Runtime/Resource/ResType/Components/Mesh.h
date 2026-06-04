@@ -1,5 +1,5 @@
 #pragma once
-#include "Runtime/Core/Math/LocalTransform.h"
+#include "Runtime/Core/Math/TransformTRS.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 
 #include <vector>
@@ -11,7 +11,7 @@ public:
 
     // 引用导入后的 Mesh 资产，而不是直接引用 .obj 源文件
     eastl::string m_MeshAsset;
-    LocalTransform m_Transform;
+    TransformTRS m_Transform;
 
     // Legacy assets stored material per sub mesh; keep this field only for migration compatibility.
     eastl::string m_LegacyMaterialAsset;

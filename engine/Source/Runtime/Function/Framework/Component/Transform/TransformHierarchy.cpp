@@ -93,7 +93,7 @@ TransformHierarchy* CreateTransformHierarchy(uint32_t transform_capacity)
 
     auto* hierarchy = new TransformHierarchy();
     hierarchy->transform_capacity = transform_capacity;
-    hierarchy->local_transforms = AllocateArray<LocalTransform>(transform_capacity);
+    hierarchy->local_transforms = AllocateArray<TransformTRS>(transform_capacity);
     hierarchy->parent_indices = AllocateArray<int32_t>(transform_capacity);
     hierarchy->deep_child_count = AllocateArray<uint32_t>(transform_capacity);
     hierarchy->transform_pointers = AllocateArray<Transform*>(transform_capacity);
@@ -272,7 +272,7 @@ bool GrowTransformHierarchyCapacity(TransformHierarchy* hierarchy, uint32_t min_
 
     const uint32_t new_capacity = std::max(min_capacity, hierarchy->transform_capacity * 2u);
 
-    LocalTransform* new_local = AllocateArray<LocalTransform>(new_capacity);
+    TransformTRS* new_local = AllocateArray<TransformTRS>(new_capacity);
     int32_t* new_parent = AllocateArray<int32_t>(new_capacity);
     uint32_t* new_deep = AllocateArray<uint32_t>(new_capacity);
     Transform** new_pointers = AllocateArray<Transform*>(new_capacity);
@@ -282,7 +282,7 @@ bool GrowTransformHierarchyCapacity(TransformHierarchy* hierarchy, uint32_t min_
     int32_t* new_prev = AllocateArray<int32_t>(new_capacity);
 
     const uint32_t old_capacity = hierarchy->transform_capacity;
-    std::memcpy(new_local, hierarchy->local_transforms, sizeof(LocalTransform) * old_capacity);
+    std::memcpy(new_local, hierarchy->local_transforms, sizeof(TransformTRS) * old_capacity);
     std::memcpy(new_parent, hierarchy->parent_indices, sizeof(int32_t) * old_capacity);
     std::memcpy(new_deep, hierarchy->deep_child_count, sizeof(uint32_t) * old_capacity);
     std::memcpy(new_pointers, hierarchy->transform_pointers, sizeof(Transform*) * old_capacity);
@@ -383,13 +383,13 @@ uint32_t GetDeepChildCount(TransformAccessReadOnly access)
     return GetDeepChildCount(*access.hierarchy, access.index);
 }
 
-const LocalTransform& GetLocalTRS(TransformAccessReadOnly access)
+const TransformTRS& GetLocalTRS(TransformAccessReadOnly access)
 {
     assert(access.IsValid());
     return access.hierarchy->local_transforms[access.index];
 }
 
-LocalTransform& GetLocalTRSWritable(TransformAccess access)
+TransformTRS& GetLocalTRSWritable(TransformAccess access)
 {
     assert(access.IsValid());
     return access.hierarchy->local_transforms[access.index];
@@ -439,7 +439,7 @@ namespace
 
         for (const int32_t index : chain)
         {
-            const LocalTransform& local = access.hierarchy->local_transforms[index];
+            const TransformTRS& local = access.hierarchy->local_transforms[index];
             const Vector3 scaled_local(
                 static_cast<float>(local.m_Position.x * scale.x),
                 static_cast<float>(local.m_Position.y * scale.y),
@@ -555,7 +555,7 @@ namespace TransformInternal
                       const Quaternion& rotation,
                       const Vector3& scale)
     {
-        LocalTransform& trs = GetLocalTRSWritable(access);
+        TransformTRS& trs = GetLocalTRSWritable(access);
         trs.m_Position = position;
         trs.m_Rotation = rotation;
         trs.m_Scale = scale;

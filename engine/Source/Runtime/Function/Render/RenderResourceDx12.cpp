@@ -5,6 +5,7 @@
 #if defined(_WIN32)
 
     #include "Runtime/Core/Base/Macro.h"
+    #include "Runtime/Core/Math/LargeWorldCoordinates.h"
     #include "Runtime/Function/Render/MegaLights/MegaLightsSettings.h"
     #include "Runtime/Function/Render/RenderCamera.h"
     #include "Runtime/Function/Render/RenderMesh.h"
@@ -636,6 +637,18 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
 
     mesh_perframe_storage_buffer_object.proj_view_matrix = proj_view_matrix;
     mesh_perframe_storage_buffer_object.camera_position = camera_position;
+    if (LargeWorldCoordinates::IsEnabled())
+    {
+        const Vector3d tile = LargeWorldCoordinates::GetRenderTile();
+        mesh_perframe_storage_buffer_object.render_tile = tile.ToVector3();
+        mesh_perframe_storage_buffer_object.pre_view_translation =
+            LargeWorldCoordinates::GetPreViewTranslation(camera->worldPosition());
+    }
+    else
+    {
+        mesh_perframe_storage_buffer_object.render_tile = Vector3::ZERO;
+        mesh_perframe_storage_buffer_object.pre_view_translation = Vector3::ZERO;
+    }
     mesh_perframe_storage_buffer_object.ambient_light = ambient_light;
     mesh_perframe_storage_buffer_object.point_light_num = point_light_num;
     mesh_perframe_storage_buffer_object.show_skybox = 1U;

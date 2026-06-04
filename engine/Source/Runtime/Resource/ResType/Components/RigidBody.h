@@ -2,7 +2,7 @@
 
 #include "Runtime/BaseClasses/PPtr.h"
 #include "Runtime/Core/Math/AxisAligned.h"
-#include "Runtime/Core/Math/LocalTransform.h"
+#include "Runtime/Core/Math/TransformTRS.h"
 #include "Runtime/Resource/ResType/Data/BasicShape.h"
 
 enum class RigidBodyShapeType : unsigned char
@@ -18,11 +18,11 @@ class RigidBodyShape : public Object
     REGISTER_CLASS(RigidBodyShape)
 
 public:
-    LocalTransform m_GlobalTransform;
+    TransformTRS m_GlobalTransform;
     AxisAlignedBox m_BoundingBox;
     RigidBodyShapeType m_Type {RigidBodyShapeType::invalid};
 
-    LocalTransform m_LocalTransform;
+    TransformTRS m_LocalTransform;
     PPtr<Geometry> m_Geometry;
 };
 

@@ -20,7 +20,7 @@ void RigidBodyComponent::PostLoadResource(GameObject* parent_object)
     std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
     ASSERT(physics_scene);
 
-    m_RigidbodyId = physics_scene->CreateRigidBody(parent_transform->GetLocalTransformConst(), m_RigidbodyRes);
+    m_RigidbodyId = physics_scene->CreateRigidBody(parent_transform->BuildLocalTRS(), m_RigidbodyRes);
 }
 
 RigidBodyComponent::~RigidBodyComponent()
@@ -31,7 +31,7 @@ RigidBodyComponent::~RigidBodyComponent()
     physics_scene->RemoveRigidBody(m_RigidbodyId);
 }
 
-void RigidBodyComponent::CreateRigidBody(const LocalTransform& global_transform)
+void RigidBodyComponent::CreateRigidBody(const TransformTRS& global_transform)
 {
     std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
     ASSERT(physics_scene);
@@ -47,7 +47,7 @@ void RigidBodyComponent::RemoveRigidBody()
     physics_scene->RemoveRigidBody(m_RigidbodyId);
 }
 
-void RigidBodyComponent::UpdateGlobalTransform(const LocalTransform& transform, bool is_scale_dirty)
+void RigidBodyComponent::UpdateGlobalTransform(const TransformTRS& transform, bool is_scale_dirty)
 {
     if (is_scale_dirty)
     {

@@ -1,30 +1,31 @@
 #pragma once
+
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Math/Vector3d.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 
-// Serializable local TRS (position / rotation / scale). Used by mesh sub-assets,
-// rigid-body shapes, skeleton binding poses, and the Transform component's
-// serialized "transform" field. Not the scene-graph Component (see Transform.h).
-class LocalTransform
+/// Serializable translation / rotation / scale (mesh sub-assets, physics shapes, transform hierarchy).
+class TransformTRS
 {
 public:
-    DECLARE_SERIALIZE(LocalTransform);
+    DECLARE_SERIALIZE(TransformTRS);
 
     Vector3d m_Position {Vector3d::ZERO};
     Vector3 m_Scale {Vector3::UNIT_SCALE};
     Quaternion m_Rotation {Quaternion::IDENTITY};
 
-    LocalTransform() = default;
-    LocalTransform(const Vector3d& position, const Quaternion& rotation, const Vector3& scale)
-        : m_Position {position}, m_Scale {scale}, m_Rotation {rotation}
+    TransformTRS() = default;
+    TransformTRS(const Vector3d& position, const Quaternion& rotation, const Vector3& scale)
+        : m_Position {position}
+        , m_Scale {scale}
+        , m_Rotation {rotation}
     {
     }
 
-    LocalTransform(const Vector3& position, const Quaternion& rotation, const Vector3& scale)
-        : LocalTransform(Vector3d(position), rotation, scale)
+    TransformTRS(const Vector3& position, const Quaternion& rotation, const Vector3& scale)
+        : TransformTRS(Vector3d(position), rotation, scale)
     {
     }
 
@@ -37,7 +38,7 @@ public:
 };
 
 template<typename TransferFunction>
-void LocalTransform::Transfer(TransferFunction& transfer)
+void TransformTRS::Transfer(TransferFunction& transfer)
 {
     if constexpr (TransferFunction::IsReading())
     {
@@ -55,4 +56,6 @@ void LocalTransform::Transfer(TransferFunction& transfer)
         Vector3 legacy_position = m_Position.ToVector3();
         transfer.Transfer(legacy_position, "m_position");
     }
+    transfer.Transfer(m_Scale, "m_scale");
+    transfer.Transfer(m_Rotation, "m_rotation");
 }

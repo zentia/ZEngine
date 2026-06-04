@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/Core/Math/LocalTransform.h"
+#include "Runtime/Core/Math/TransformTRS.h"
 #include "Runtime/Function/Framework/Component/Transform/TransformAccess.h"
 #include "Runtime/Function/Framework/Component/Transform/TransformChangeSystemMask.h"
 
@@ -11,7 +11,7 @@ struct TransformHierarchy
     uint32_t transform_capacity {0};
     int32_t first_free_index {0};
 
-    LocalTransform* local_transforms {nullptr};
+    TransformTRS* local_transforms {nullptr};
     int32_t* parent_indices {nullptr};
     uint32_t* deep_child_count {nullptr};
     Transform** transform_pointers {nullptr};

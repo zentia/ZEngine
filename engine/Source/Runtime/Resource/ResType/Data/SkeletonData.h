@@ -1,5 +1,5 @@
 #pragma once
-#include "Runtime/Core/Math/LocalTransform.h"
+#include "Runtime/Core/Math/TransformTRS.h"
 
 #include <string>
 class RawBone
@@ -7,7 +7,7 @@ class RawBone
 public:
     std::string name;
     int index;
-    LocalTransform binding_pose;
+    TransformTRS binding_pose;
     Matrix4x4_ tpose_matrix;
     int parent_index;
 

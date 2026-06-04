@@ -853,7 +853,7 @@ namespace
                     std::vector<SubMeshRes> subs = r->getSubMeshes();
                     if (s >= subs.size())
                         return;
-                    LocalTransform& t = subs[s].m_Transform;
+                    TransformTRS& t = subs[s].m_Transform;
                     Vector3 v;
                     v.x = ParseFloat(p0->Text);
                     v.y = ParseFloat(p1->Text);
@@ -923,7 +923,7 @@ namespace
 
                 if (s < subs.size())
                 {
-                    const LocalTransform& t = subs[s].m_Transform;
+                    const TransformTRS& t = subs[s].m_Transform;
                     const Vector3 p = t.m_Position.ToVector3();
                     const Vector3& sc = t.m_Scale;
                     const Vector3 euler = EditorEuler::GetEulerHint(euler_key, t.m_Rotation);

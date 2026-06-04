@@ -36,8 +36,8 @@ TransformAccessReadOnly GetParent(TransformAccessReadOnly access);
 uint32_t GetDeepChildCount(const TransformHierarchy& hierarchy, uint32_t index);
 uint32_t GetDeepChildCount(TransformAccessReadOnly access);
 
-const LocalTransform& GetLocalTRS(TransformAccessReadOnly access);
-LocalTransform& GetLocalTRSWritable(TransformAccess access);
+const TransformTRS& GetLocalTRS(TransformAccessReadOnly access);
+TransformTRS& GetLocalTRSWritable(TransformAccess access);
 
 Matrix4x4 CalculateGlobalMatrix(TransformAccessReadOnly access);
 Vector3d CalculateGlobalPositionD(TransformAccessReadOnly access);
