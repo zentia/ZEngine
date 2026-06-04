@@ -79,12 +79,13 @@ void EditorInputManager::RegisterInput()
                                       std::placeholders::_4));
 }
 
-void EditorInputManager::UpdateCursorOnAxis(Vector2 cursor_uv)
+void EditorInputManager::UpdateCursorOnAxis(Vector2 mouse_px)
 {
     if (GET_SYSTEM(EditorSceneManager)->getEditorCamera())
     {
-        Vector2 window_size(m_EngineWindowSize.x, m_EngineWindowSize.y);
-        m_CursorOnAxis = GET_SYSTEM(EditorSceneManager)->UpdateCursorOnAxis(cursor_uv, window_size);
+        m_CursorOnAxis = GET_SYSTEM(EditorSceneManager)->UpdateCursorOnAxis(mouse_px,
+                                                                           m_EngineWindowPos,
+                                                                           m_EngineWindowSize);
     }
 }
 
@@ -464,9 +465,7 @@ void EditorInputManager::OnCursorPos(double xpos, double ypos)
         glfwSetInputMode(GET_SYSTEM(WindowSystem)->GetWindow(), GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         if (m_EngineWindowSize.x > 0.0f && m_EngineWindowSize.y > 0.0f)
         {
-            Vector2 cursor_uv = Vector2(((float)xpos - m_EngineWindowPos.x) / m_EngineWindowSize.x,
-                                        ((float)ypos - m_EngineWindowPos.y) / m_EngineWindowSize.y);
-            UpdateCursorOnAxis(cursor_uv);
+            UpdateCursorOnAxis(Vector2((float)xpos, (float)ypos));
         }
     }
 
@@ -558,9 +557,7 @@ void EditorInputManager::OnMouseButtonClicked(int key, int action)
         {
             if (m_EngineWindowSize.x > 0.0f && m_EngineWindowSize.y > 0.0f && m_MouseX >= 0.0f && m_MouseY >= 0.0f)
             {
-                const Vector2 cursor_uv(((float)m_MouseX - m_EngineWindowPos.x) / m_EngineWindowSize.x,
-                                        ((float)m_MouseY - m_EngineWindowPos.y) / m_EngineWindowSize.y);
-                UpdateCursorOnAxis(cursor_uv);
+                UpdateCursorOnAxis(Vector2(m_MouseX, m_MouseY));
             }
             m_SceneViewInputMode = m_CursorOnAxis != 3 ? SceneViewInputMode::Gizmo : SceneViewInputMode::Selection;
         }

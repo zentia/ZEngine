@@ -142,7 +142,8 @@ namespace
                        const Vector3& world_b,
                        const Matrix4x4& view_proj,
                        const UIRect& rect,
-                       const UIColor& color)
+                       const UIColor& color,
+                       float thickness = 1.0f)
     {
         Vector4 ca = view_proj * Vector4(world_a, 1.0f);
         Vector4 cb = view_proj * Vector4(world_b, 1.0f);
@@ -179,7 +180,39 @@ namespace
         const Vector2 screen_b(rect.x + (cb.x * inv_wb + 1.0f) * 0.5f * rect.width,
                                rect.y + (cb.y * inv_wb + 1.0f) * 0.5f * rect.height);
 
-        DrawLineQuads(renderer, screen_a, screen_b, color, 1.0f);
+        DrawLineQuads(renderer, screen_a, screen_b, color, thickness);
+    }
+
+    void drawWorldRing(UIRenderer& renderer,
+                       const Vector3& pivot,
+                       const Vector3& tangent_u,
+                       const Vector3& tangent_v,
+                       float radius,
+                       const Matrix4x4& view_proj,
+                       const UIRect& rect,
+                       const UIColor& color,
+                       float thickness = 2.5f,
+                       int segments = 48)
+    {
+        if (radius <= 1e-4f || segments < 8)
+        {
+            return;
+        }
+
+        Vector3 prev_point {};
+        bool has_prev = false;
+        for (int segment_index = 0; segment_index <= segments; ++segment_index)
+        {
+            const float angle = static_cast<float>(segment_index) * (2.0f * Math_PI / static_cast<float>(segments));
+            const Vector3 point =
+                pivot + tangent_u * (std::cos(angle) * radius) + tangent_v * (std::sin(angle) * radius);
+            if (has_prev)
+            {
+                drawWorldLine(renderer, prev_point, point, view_proj, rect, color, thickness);
+            }
+            prev_point = point;
+            has_prev = true;
+        }
     }
 
     void DrawEditorGridOverlay(UIRenderer& renderer, const UIRect& rect, const std::shared_ptr<RenderCamera>& camera)
@@ -228,8 +261,7 @@ namespace
         }
     }
 
-    // Translate gizmo axes in the same projection path as the grid (visible even when the DX12
-    // swapchain overlay draw is misaligned). Requires only Transform on the selection.
+    // Mode-specific transform gizmo overlay (UE-style: arrows / rotation rings / scale boxes).
     void DrawTransformGizmoOverlay(UIRenderer& renderer,
                                      const UIRect& rect,
                                      const std::shared_ptr<RenderCamera>& camera,
@@ -253,62 +285,88 @@ namespace
         }
 
         Vector3 pivot;
-        Vector3 scale;
+        Vector3 decomposed_scale;
         Quaternion rotation;
-        transform_component->GetLocalToWorldMatrix().Decomposition(pivot, scale, rotation);
+        transform_component->GetLocalToWorldMatrix().Decomposition(pivot, decomposed_scale, rotation);
+        const Vector3 local_scale = transform_component->GetLocalScale();
 
         const float aspect = rect.height > 0.0f ? rect.width / rect.height : camera->getAspect();
         const Matrix4x4 view_proj =
             camera->GetProjectionMatrixForAspect(aspect) * camera->getLookAtMatrix();
 
-        const float axis_len =
+        const float translate_axis_len =
             EditorSceneManager::ComputeGizmoAxisLengthWorld(*camera, pivot, rect.width, rect.height);
+        // EditorRotationAxis mesh uses radius 1.0 in a 2-unit extent gizmo.
+        const float ring_radius = translate_axis_len * 0.5f;
 
         const Matrix4x4 rot_mat(rotation);
         const Vector3 axis_x(rot_mat[0][0], rot_mat[1][0], rot_mat[2][0]);
         const Vector3 axis_y(rot_mat[0][1], rot_mat[1][1], rot_mat[2][1]);
         const Vector3 axis_z(rot_mat[0][2], rot_mat[1][2], rot_mat[2][2]);
 
-        constexpr float k_axis_line_thickness = 3.5f;
+        constexpr float k_translate_thickness = 3.5f;
+        constexpr float k_rotate_thickness = 2.5f;
+        constexpr float k_scale_thickness = 3.0f;
+        constexpr float k_scale_handle_px = 7.0f;
         const UIColor axis_red(1.0f, 0.25f, 0.25f, 1.0f);
         const UIColor axis_green(0.25f, 1.0f, 0.35f, 1.0f);
         const UIColor axis_blue(0.35f, 0.55f, 1.0f, 1.0f);
 
-        auto draw_axis = [&](const Vector3& dir, const UIColor& color) {
-            Vector4 ca = view_proj * Vector4(pivot, 1.0f);
-            Vector4 cb = view_proj * Vector4(pivot + dir * axis_len, 1.0f);
+        auto projectWorldToScreen = [&](const Vector3& world, Vector2& out_screen) -> bool {
+            Vector4 clip = view_proj * Vector4(world, 1.0f);
             constexpr float w_min = 1e-4f;
-            const float da = ca.w - w_min;
-            const float db = cb.w - w_min;
-            if (da < 0.0f && db < 0.0f)
+            if (clip.w <= w_min)
             {
-                return;
+                return false;
             }
-            if (da < 0.0f || db < 0.0f)
-            {
-                const float t = da / (da - db);
-                Vector4 mid;
-                mid.x = ca.x + (cb.x - ca.x) * t;
-                mid.y = ca.y + (cb.y - ca.y) * t;
-                mid.z = ca.z + (cb.z - ca.z) * t;
-                mid.w = ca.w + (cb.w - ca.w) * t;
-                if (da < 0.0f)
-                    ca = mid;
-                else
-                    cb = mid;
-            }
-            const float inv_wa = 1.0f / ca.w;
-            const float inv_wb = 1.0f / cb.w;
-            const Vector2 screen_a(rect.x + (ca.x * inv_wa + 1.0f) * 0.5f * rect.width,
-                                   rect.y + (ca.y * inv_wa + 1.0f) * 0.5f * rect.height);
-            const Vector2 screen_b(rect.x + (cb.x * inv_wb + 1.0f) * 0.5f * rect.width,
-                                   rect.y + (cb.y * inv_wb + 1.0f) * 0.5f * rect.height);
-            DrawLineQuads(renderer, screen_a, screen_b, color, k_axis_line_thickness);
+            const float inv_w = 1.0f / clip.w;
+            out_screen.x = rect.x + (clip.x * inv_w + 1.0f) * 0.5f * rect.width;
+            out_screen.y = rect.y + (clip.y * inv_w + 1.0f) * 0.5f * rect.height;
+            return true;
         };
 
-        draw_axis(axis_x, axis_red);
-        draw_axis(axis_y, axis_green);
-        draw_axis(axis_z, axis_blue);
+        auto drawTranslateAxis = [&](const Vector3& dir, const UIColor& color) {
+            drawWorldLine(renderer, pivot, pivot + dir * translate_axis_len, view_proj, rect, color, k_translate_thickness);
+        };
+
+        auto drawScaleAxis = [&](const Vector3& dir, float local_scale_component, const UIColor& color) {
+            const float axis_len = EditorSceneManager::ComputeScaleModeAxisLength(
+                *camera, pivot, rect.width, rect.height, local_scale_component);
+            const Vector3 end = pivot + dir * axis_len;
+            drawWorldLine(renderer, pivot, end, view_proj, rect, color, k_scale_thickness);
+            Vector2 screen_end {};
+            if (projectWorldToScreen(end, screen_end))
+            {
+                const float half = k_scale_handle_px * 0.5f;
+                renderer.drawQuad(UIRect(screen_end.x - half, screen_end.y - half, k_scale_handle_px, k_scale_handle_px),
+                                  color);
+            }
+        };
+
+        switch (scene_manager.getEditorAxisMode())
+        {
+            case EditorAxisMode::TranslateMode:
+                drawTranslateAxis(axis_x, axis_red);
+                drawTranslateAxis(axis_y, axis_green);
+                drawTranslateAxis(axis_z, axis_blue);
+                break;
+
+            case EditorAxisMode::RotateMode:
+                // UE: X=YZ ring (red), Y=XZ ring (green), Z=XY ring (blue).
+                drawWorldRing(renderer, pivot, axis_y, axis_z, ring_radius, view_proj, rect, axis_red, k_rotate_thickness);
+                drawWorldRing(renderer, pivot, axis_x, axis_z, ring_radius, view_proj, rect, axis_green, k_rotate_thickness);
+                drawWorldRing(renderer, pivot, axis_x, axis_y, ring_radius, view_proj, rect, axis_blue, k_rotate_thickness);
+                break;
+
+            case EditorAxisMode::ScaleMode:
+                drawScaleAxis(axis_x, local_scale.x, axis_red);
+                drawScaleAxis(axis_y, local_scale.y, axis_green);
+                drawScaleAxis(axis_z, local_scale.z, axis_blue);
+                break;
+
+            default:
+                break;
+        }
     }
 }  // namespace
 
@@ -966,22 +1024,17 @@ void ZSlateSceneWindow::HandleSceneGizmoDrag(bool chrome_capturing, const UIRect
 
     const Vector2 viewport_pos(work_rect.x, work_rect.y);
     const Vector2 viewport_size(work_rect.width, work_rect.height);
-    const Vector2 cursor_uv((mouse.x - work_rect.x) / work_rect.width,
-                            (mouse.y - work_rect.y) / work_rect.height);
-
-    if (is_hovered || m_IsDraggingGizmo)
+    if (is_hovered && !m_IsDraggingGizmo)
     {
         const size_t axis_under_cursor =
-            scene_manager->PickAxisAtViewportPixels(mouse, viewport_pos, viewport_size);
-        scene_manager->UpdateCursorOnAxis(cursor_uv, viewport_size);
+            scene_manager->UpdateCursorOnAxis(mouse, viewport_pos, viewport_size);
         if (axis_under_cursor != 3)
         {
             GET_SYSTEM(RenderSystem)->SetSelectedAxis(axis_under_cursor);
         }
     }
 
-    if (host.WasLeftPressedThisFrame() && is_hovered &&
-        scene_manager->getEditorAxisMode() == EditorAxisMode::TranslateMode)
+    if (host.WasLeftPressedThisFrame() && is_hovered)
     {
         m_GizmoDragAxis = scene_manager->PickAxisAtViewportPixels(mouse, viewport_pos, viewport_size);
         if (m_GizmoDragAxis != 3)

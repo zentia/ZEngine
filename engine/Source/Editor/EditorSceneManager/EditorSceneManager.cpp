@@ -84,6 +84,24 @@ namespace
                Matrix4x4::BuildScaleMatrix(uniform_scale, uniform_scale, uniform_scale);
     }
 
+    Matrix4x4 ApplyScaleModeGizmoMatrix(const Matrix4x4& local_to_world,
+                                        const RenderCamera& camera,
+                                        float viewport_width,
+                                        float viewport_height)
+    {
+        Vector3 pivot;
+        Vector3 scale;
+        Quaternion rotation;
+        local_to_world.Decomposition(pivot, scale, rotation);
+        const float uniform_scale =
+            ComputeEditorGizmoUniformScale(camera, pivot, viewport_width, viewport_height);
+        // UE: CurrentComponentToWorld (includes object scale) then uniform view scaling on all axes.
+        return Matrix4x4::GetTrans(pivot) * Matrix4x4(rotation) *
+               Matrix4x4::BuildScaleMatrix(scale.x * uniform_scale,
+                                         scale.y * uniform_scale,
+                                         scale.z * uniform_scale);
+    }
+
 
     bool ComputeMeshLocalBounds(const eastl::string& mesh_asset_path, AxisAlignedBox& out_bounds)
     {
@@ -275,6 +293,17 @@ float EditorSceneManager::ComputeGizmoAxisLengthWorld(const RenderCamera& camera
            ComputePixelToWorldScale(camera, world_location, viewport_width, viewport_height);
 }
 
+float EditorSceneManager::ComputeScaleModeAxisLength(const RenderCamera& camera,
+                                                     const Vector3& pivot_world,
+                                                     float viewport_width,
+                                                     float viewport_height,
+                                                     float local_scale_component)
+{
+    const float uniform_scale = ComputeGizmoAxisLengthWorld(camera, pivot_world, viewport_width, viewport_height) /
+                                kEditorScaleGizmoMeshExtent;
+    return kEditorScaleGizmoMeshExtent * uniform_scale * std::max(std::abs(local_scale_component), 0.01f);
+}
+
 Vector2 EditorSceneManager::ComputeScreenAxisDirection(const RenderCamera& camera,
                                                        const Vector3& pivot_world,
                                                        const Vector3& world_axis_unit,
@@ -323,31 +352,42 @@ float intersectPlaneRay(Vector3 normal, float d, Vector3 origin, Vector3 dir)
     return -(normal.dotProduct(origin) + d) / deno;
 }
 
-size_t EditorSceneManager::UpdateCursorOnAxis(Vector2 cursor_uv, Vector2 game_engine_window_size)
+size_t EditorSceneManager::UpdateCursorOnAxis(Vector2 mouse_px, Vector2 viewport_pos, Vector2 viewport_size)
 {
+    if (m_SelectedGobjectId == k_invalid_gobject_id || m_Camera == nullptr)
+    {
+        return m_SelectedAxis;
+    }
+
+    m_SelectedAxis = 3;
+    if (!m_IsShowAxis)
+    {
+        GET_SYSTEM(RenderSystem)->SetSelectedAxis(m_SelectedAxis);
+        return m_SelectedAxis;
+    }
+
+    if (m_AxisMode == EditorAxisMode::TranslateMode || m_AxisMode == EditorAxisMode::ScaleMode)
+    {
+        m_SelectedAxis = PickAxisAtViewportPixels(mouse_px, viewport_pos, viewport_size);
+        GET_SYSTEM(RenderSystem)->SetSelectedAxis(m_SelectedAxis);
+        return m_SelectedAxis;
+    }
+
     Vector3 camera_forward = m_Camera->forward();
     Vector3 camera_up = m_Camera->up();
     Vector3 camera_right = m_Camera->right();
     Vector3 camera_position = m_Camera->position();
 
-    if (m_SelectedGobjectId == k_invalid_gobject_id)
-    {
-        return m_SelectedAxis;
-    }
     RenderEntity* selected_aixs = GetAxisMeshByType(m_AxisMode);
-    m_SelectedAxis = 3;
-    if (m_IsShowAxis == false)
     {
-        return m_SelectedAxis;
-    }
-    else
-    {
+        const Vector2 cursor_uv((mouse_px.x - viewport_pos.x) / std::max(viewport_size.x, 1.0f),
+                                (mouse_px.y - viewport_pos.y) / std::max(viewport_size.y, 1.0f));
         Matrix4x4 model_matrix = selected_aixs->m_ModelMatrix;
         Vector3 model_scale;
         Quaternion model_rotation;
         Vector3 model_translation;
         model_matrix.Decomposition(model_translation, model_scale, model_rotation);
-        Vector2 screen_center_uv = Vector2(cursor_uv.x, 1 - cursor_uv.y) - Vector2(0.5, 0.5);
+        Vector2 screen_center_uv = Vector2(cursor_uv.x, 1.0f - cursor_uv.y) - Vector2(0.5f, 0.5f);
         Vector3 world_ray_dir;
         if (m_Camera->IsOrthographic())
         {
@@ -364,8 +404,7 @@ size_t EditorSceneManager::UpdateCursorOnAxis(Vector2 cursor_uv, Vector2 game_en
         {
             const float camera_fov = m_Camera->getFovYDeprecated();
             const float aspect =
-                game_engine_window_size.y > 0.0f ? game_engine_window_size.x / game_engine_window_size.y
-                                                 : m_Camera->getAspect();
+                viewport_size.y > 0.0f ? viewport_size.x / viewport_size.y : m_Camera->getAspect();
             const float tan_half_fov = Math::tan(Math::DegreesToRadians(camera_fov) * 0.5f);
             world_ray_dir = camera_forward + camera_right * (screen_center_uv.x * 2.0f * tan_half_fov * aspect) +
                             camera_up * (screen_center_uv.y * 2.0f * tan_half_fov);
@@ -482,7 +521,8 @@ size_t EditorSceneManager::PickAxisAtViewportPixels(Vector2 mouse_px,
                                                   Vector2 viewport_pos,
                                                   Vector2 viewport_size) const
 {
-    if (m_SelectedGobjectId == k_invalid_gobject_id || m_Camera == nullptr || m_AxisMode != EditorAxisMode::TranslateMode ||
+    if (m_SelectedGobjectId == k_invalid_gobject_id || m_Camera == nullptr ||
+        (m_AxisMode != EditorAxisMode::TranslateMode && m_AxisMode != EditorAxisMode::ScaleMode) ||
         viewport_size.x < 1.0f || viewport_size.y < 1.0f)
     {
         return 3;
@@ -501,12 +541,10 @@ size_t EditorSceneManager::PickAxisAtViewportPixels(Vector2 mouse_px,
     }
 
     Vector3 pivot;
-    Vector3 scale;
+    Vector3 world_scale;
     Quaternion rotation;
-    transform_component->GetLocalToWorldMatrix().Decomposition(pivot, scale, rotation);
-
-    const float axis_len =
-        ComputeGizmoAxisLengthWorld(*m_Camera, pivot, viewport_size.x, viewport_size.y);
+    transform_component->GetLocalToWorldMatrix().Decomposition(pivot, world_scale, rotation);
+    const Vector3 local_scale = transform_component->GetLocalScale();
 
     const float aspect = viewport_size.x / viewport_size.y;
     const Matrix4x4 view_proj =
@@ -548,6 +586,15 @@ size_t EditorSceneManager::PickAxisAtViewportPixels(Vector2 mouse_px,
     size_t best_axis = 3;
     for (int axis_index = 0; axis_index < 3; ++axis_index)
     {
+        const float axis_len =
+            (m_AxisMode == EditorAxisMode::ScaleMode)
+                ? ComputeScaleModeAxisLength(*m_Camera,
+                                             pivot,
+                                             viewport_size.x,
+                                             viewport_size.y,
+                                             local_scale[axis_index])
+                : ComputeGizmoAxisLengthWorld(*m_Camera, pivot, viewport_size.x, viewport_size.y);
+
         Vector2 axis_end_screen {};
         if (!project_to_screen(pivot + axis_dirs[axis_index] * axis_len, axis_end_screen))
         {
@@ -585,6 +632,17 @@ RenderEntity* EditorSceneManager::GetAxisMeshByType(EditorAxisMode axis_mode)
     return axis_mesh;
 }
 
+void EditorSceneManager::setEditorAxisMode(EditorAxisMode new_axis_mode)
+{
+    if (m_AxisMode == new_axis_mode)
+    {
+        return;
+    }
+
+    m_AxisMode = new_axis_mode;
+    DrawSelectedEntityAxis();
+}
+
 void EditorSceneManager::DrawSelectedEntityAxis()
 {
     // Unity-style transform gizmo: only requires a Transform on the selection, not MeshRenderer.
@@ -617,18 +675,16 @@ void EditorSceneManager::DrawSelectedEntityAxis()
             }
         }
 
-        Matrix4x4 gizmo_matrix = local_to_world;
         if (m_AxisMode == EditorAxisMode::ScaleMode)
         {
-            Vector3 scale;
-            Quaternion rotation;
-            Vector3 translation;
-            local_to_world.Decomposition(translation, scale, rotation);
-            gizmo_matrix = Matrix4x4::GetTrans(translation) * Matrix4x4(rotation);
+            selected_aixs->m_ModelMatrix =
+                ApplyScaleModeGizmoMatrix(local_to_world, *m_Camera, scene_viewport_width, scene_viewport_height);
         }
-
-        selected_aixs->m_ModelMatrix =
-            ApplyEditorGizmoViewScale(gizmo_matrix, *m_Camera, scene_viewport_width, scene_viewport_height);
+        else
+        {
+            selected_aixs->m_ModelMatrix = ApplyEditorGizmoViewScale(
+                local_to_world, *m_Camera, scene_viewport_width, scene_viewport_height);
+        }
 
         GET_SYSTEM(RenderSystem)->SetVisibleAxis(*selected_aixs);
     }
@@ -1148,51 +1204,66 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
         transform_component->SetLocalScale(new_scale);
         m_ScaleAixs.m_ModelMatrix = new_model_matrix;
     }
-    else if (m_AxisMode == EditorAxisMode::ScaleMode)  // scale
+    else if (m_AxisMode == EditorAxisMode::ScaleMode)
     {
-        Vector3 delta_scale_vector = {0, 0, 0};
-        Vector3 new_model_scale = {0, 0, 0};
-        if (cursor_on_axis == 0)
+        Vector3 local_axis = Vector3::UNIT_X;
+        if (cursor_on_axis == 1)
         {
-            delta_scale_vector.x = 0.01f;
-            if (delta_mouse_move_uv.dotProduct(axis_x_direction_uv) < 0)
-            {
-                delta_scale_vector = -delta_scale_vector;
-            }
-        }
-        else if (cursor_on_axis == 1)
-        {
-            delta_scale_vector.y = 0.01f;
-            if (delta_mouse_move_uv.dotProduct(axis_y_direction_uv) < 0)
-            {
-                delta_scale_vector = -delta_scale_vector;
-            }
+            local_axis = Vector3::UNIT_Y;
         }
         else if (cursor_on_axis == 2)
         {
-            delta_scale_vector.z = 0.01f;
-            if (delta_mouse_move_uv.dotProduct(axis_z_direction_uv) < 0)
-            {
-                delta_scale_vector = -delta_scale_vector;
-            }
+            local_axis = Vector3::UNIT_Z;
         }
-        else
+        else if (cursor_on_axis != 0)
         {
             return;
         }
-        new_model_scale = model_scale + delta_scale_vector;
-        axis_model_matrix = axis_model_matrix * Matrix4x4(model_rotation);
-        Matrix4x4 scale_mat;
-        scale_mat.MakeTransform(Vector3::ZERO, new_model_scale, Quaternion::IDENTITY);
-        new_model_matrix = axis_model_matrix * scale_mat;
-        Vector3 new_scale;
-        Quaternion new_rotation;
-        Vector3 new_translation;
-        new_model_matrix.Decomposition(new_translation, new_scale, new_rotation);
 
-        transform_component->SetLocalPosition(new_translation);
-        transform_component->SetLocalRotation(new_rotation);
-        transform_component->SetLocalScale(new_scale);
+        Vector3 world_pivot {};
+        Quaternion world_rotation {};
+        transform_component->GetPositionAndRotation(world_pivot, world_rotation);
+
+        Vector3 world_axis = Matrix4x4(world_rotation) * local_axis;
+        if (world_axis.length() > 1e-4f)
+        {
+            world_axis.normalise();
+        }
+
+        const Vector2 screen_axis_dir = ComputeScreenAxisDirection(*m_Camera,
+                                                                   world_pivot,
+                                                                   world_axis,
+                                                                   engine_window_pos.x,
+                                                                   engine_window_pos.y,
+                                                                   engine_window_size.x,
+                                                                   engine_window_size.y);
+        if (screen_axis_dir.squaredLength() < 1e-8f)
+        {
+            return;
+        }
+
+        const float pixel_to_world = ComputePixelToWorldScale(*m_Camera,
+                                                              world_pivot,
+                                                              engine_window_size.x,
+                                                              engine_window_size.y);
+        const float drag_world = delta_mouse_move_uv.dotProduct(screen_axis_dir) * pixel_to_world;
+
+        const float uniform_scale =
+            ComputeGizmoAxisLengthWorld(*m_Camera, world_pivot, engine_window_size.x, engine_window_size.y) /
+            kEditorScaleGizmoMeshExtent;
+        const float scale_per_world =
+            1.0f / std::max(uniform_scale * kEditorScaleGizmoMeshExtent, 1e-6f);
+
+        Vector3 local_scale = transform_component->GetLocalScale();
+        const int axis_index = static_cast<int>(cursor_on_axis);
+        local_scale[axis_index] = std::max(0.001f, local_scale[axis_index] + drag_world * scale_per_world);
+
+        transform_component->SetLocalScale(local_scale);
+        m_SelectedObjectMatrix = transform_component->GetLocalToWorldMatrix();
+        DrawSelectedEntityAxis();
+        setSelectedObjectMatrix(m_SelectedObjectMatrix);
+        GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
+        return;
     }
     setSelectedObjectMatrix(new_model_matrix);
     GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();

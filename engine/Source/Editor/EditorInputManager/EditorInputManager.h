@@ -35,7 +35,7 @@ public:
     void Tick(float delta_time);
 
     void RegisterInput();
-    void UpdateCursorOnAxis(Vector2 cursor_uv);
+    void UpdateCursorOnAxis(Vector2 mouse_px);
     void ProcessEditorCommand();
     void OnKeyInEditorMode(int key, int scancode, int action, int mods);
 

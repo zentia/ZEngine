@@ -34,6 +34,15 @@ class EditorSceneManager : public IEngineSystem
 public:
     // UE-style constant screen axis length (GizmoRenderingUtil / TransformGizmo indirect drag).
     static constexpr float kEditorGizmoAxisPixelLength = 100.0f;
+    // EditorScaleAxis mesh extent along each local axis (see Axis.cpp, tip near 1.6).
+    static constexpr float kEditorScaleGizmoMeshExtent = 1.6f;
+
+    // Scale-mode handle length on one axis: follows object local scale * constant-view-size factor.
+    static float ComputeScaleModeAxisLength(const RenderCamera& camera,
+                                            const Vector3& pivot_world,
+                                            float viewport_width,
+                                            float viewport_height,
+                                            float local_scale_component);
 
     static float ComputePixelToWorldScale(const RenderCamera& camera,
                                           const Vector3& world_location,
@@ -59,8 +68,8 @@ public:
     void Shutdown() override {}
     void Tick(float delta_time);
 
-    size_t UpdateCursorOnAxis(Vector2 cursor_uv, Vector2 game_engine_window_size);
-    // Screen-space hit test for translate gizmo (matches ZSlate overlay lines). Returns 0..2 or 3 (none).
+    // Screen-space axis hit for translate/scale; ray cast for rotate. Returns 0..2 or 3 (none).
+    size_t UpdateCursorOnAxis(Vector2 mouse_px, Vector2 viewport_pos, Vector2 viewport_size);
     size_t PickAxisAtViewportPixels(Vector2 mouse_px, Vector2 viewport_pos, Vector2 viewport_size) const;
     void DrawSelectedEntityAxis();
     std::weak_ptr<GameObject> GetSelectedGObject() const;
@@ -110,7 +119,7 @@ public:
 
     void setSelectedObjectID(GObjectID selected_gobject_id) { m_SelectedGobjectId = selected_gobject_id; };
     void setSelectedObjectMatrix(Matrix4x4 new_object_matrix) { m_SelectedObjectMatrix = new_object_matrix; }
-    void setEditorAxisMode(EditorAxisMode new_axis_mode) { m_AxisMode = new_axis_mode; }
+    void setEditorAxisMode(EditorAxisMode new_axis_mode);
 
     bool IsSceneView2D() const { return m_SceneView2D; }
     void SetSceneView2D(bool enabled);
