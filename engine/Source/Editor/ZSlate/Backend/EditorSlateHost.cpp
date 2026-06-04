@@ -245,6 +245,7 @@ void EditorSlateHost::NewFrame()
     // panels register this frame) can hit-test a fully-populated set.
     m_SurfacesPrev = std::move(m_Surfaces);
     m_Surfaces.clear();
+    m_NativeTextInputActive = false;
 }
 
 int EditorSlateHost::HashId(const char* name)

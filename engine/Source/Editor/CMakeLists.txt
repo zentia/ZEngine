@@ -265,6 +265,18 @@ set(POST_BUILD_COMMANDS
   COMMAND ${CMAKE_COMMAND} -E copy "${ENGINE_ROOT_DIR}/${DEVELOP_CONFIG_DIR}/${TARGET_NAME}.ini" "$<TARGET_FILE_DIR:${TARGET_NAME}>/"
 )
 # Config/asset/jolt copy is done once by CopyEngineDataToOutput (engine/CMakeLists.txt).
+if(WIN32)
+    set(_RENDERDOC_MS_CFG "$<IF:$<STREQUAL:$<CONFIG>,Release>,Release,Development>")
+    list(APPEND POST_BUILD_COMMANDS
+        COMMAND ${CMAKE_COMMAND}
+            -DRENDERDOC_SRC_DIR=${Z_ROOT_DIR}/tools/renderdoc/x64/${_RENDERDOC_MS_CFG}
+            -DRENDERDOC_DST_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyRenderDocRuntime.cmake
+        COMMAND ${CMAKE_COMMAND}
+            -DDXC_RUNTIME_DST_DIR=$<TARGET_FILE_DIR:${TARGET_NAME}>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/CopyDxCompilerRuntime.cmake
+    )
+endif()
 add_custom_command(TARGET ${TARGET_NAME} POST_BUILD ${POST_BUILD_COMMANDS})
 
 # Conditionally copy resource directory if it exists

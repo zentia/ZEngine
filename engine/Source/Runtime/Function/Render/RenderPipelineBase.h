@@ -113,6 +113,8 @@ public:
     // 获取 render resource（供 Editor 创建 UI Pass 使用）
     virtual std::shared_ptr<RenderResourceBase> GetRenderResource() const { return m_RenderResource; }
 
+    RenderPassBase* GetMainCameraPass() const { return m_MainCameraPass.get(); }
+
 protected:
     RHI* m_Rhi;
 

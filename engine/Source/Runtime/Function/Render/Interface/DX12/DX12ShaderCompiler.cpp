@@ -414,7 +414,10 @@ DX12ShaderCompiler::DX12ShaderCompiler()
     hr = DxcCreateInstance(CLSID_DxcCompiler, IID_PPV_ARGS(&m_Compiler));
     if (FAILED(hr))
     {
-        LOG_ERROR(ZShader, "Failed to create DXC compiler");
+        LOG_ERROR(ZShader,
+                  "Failed to create DXC compiler (HRESULT=0x{:08X}). "
+                  "Copy dxcompiler.dll and dxil.dll next to the executable or add Vulkan SDK Bin to PATH.",
+                  static_cast<uint32_t>(hr));
         return;
     }
 
@@ -549,7 +552,8 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileFromSource(const std::string&
                                                               const std::map<std::string, std::string>& macros,
                                                               const std::string& entry_point,
                                                               const std::string& target_profile,
-                                                              const std::string& hlsl_version)
+                                                              const std::string& hlsl_version,
+                                                              bool embed_debug)
 {
     return CompileInternal(hlsl_source,
                            shader_stage,
@@ -558,7 +562,8 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileFromSource(const std::string&
                            macros,
                            entry_point,
                            target_profile,
-                           hlsl_version);
+                           hlsl_version,
+                           embed_debug);
 }
 
 void DX12ShaderCompiler::SetIncludeDirectory(const std::string& include_dir)
@@ -840,7 +845,8 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileInternal(const std::string& h
                                                             const std::map<std::string, std::string>& macros,
                                                             const std::string& entry_point,
                                                             const std::string& target_profile,
-                                                            const std::string& hlsl_version)
+                                                            const std::string& hlsl_version,
+                                                            bool embed_debug)
 {
     DX12ShaderCompileResult result;
 
@@ -992,8 +998,17 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileInternal(const std::string& h
 
     // Entry point and target profile are passed through IDxcCompiler::Compile parameters below.
 
-    // Optimization level (O3 = maximum optimization)
-    arguments.push_back(L"-O3");
+    // Optimization / debug info for RenderDoc source mapping.
+    if (embed_debug)
+    {
+        arguments.push_back(L"-Zi");
+        arguments.push_back(L"-Qembed_debug");
+        arguments.push_back(L"-Od");
+    }
+    else
+    {
+        arguments.push_back(L"-O3");
+    }
 
     // PR5b: HLSL language version override.
     //

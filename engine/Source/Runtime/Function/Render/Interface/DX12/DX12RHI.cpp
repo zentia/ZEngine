@@ -4584,7 +4584,7 @@ void DX12RHI::CmdBindDescriptorSetsPFN(RHICommandBuffer* commandBuffer,
             }
         }
 
-        if (!has_handle)
+        if (!has_handle || gpu_handle.ptr == 0)
         {
             continue;
         }
@@ -4665,7 +4665,58 @@ void DX12RHI::CmdClearAttachmentsPFN(RHICommandBuffer* commandBuffer,
                                      uint32_t rectCount,
                                      const RHIClearRect* pRects)
 {
-    // TODO: Implement DX12 cmdClearAttachmentsPFN
+    (void)commandBuffer;
+
+    ID3D12GraphicsCommandList* command_list = m_CommandLists[m_CurrentFrameIndex].Get();
+    if (command_list == nullptr || m_ActiveRenderPass == nullptr || m_ActiveFramebuffer == nullptr ||
+        pAttachments == nullptr || pRects == nullptr || attachmentCount == 0 || rectCount == 0)
+    {
+        return;
+    }
+
+    const RHISubpassDescription* subpass = m_ActiveRenderPass->getSubpass(m_ActiveSubpassIndex);
+    if (subpass == nullptr || subpass->pColorAttachments == nullptr || subpass->colorAttachmentCount == 0)
+    {
+        return;
+    }
+
+    for (uint32_t attachment_index = 0; attachment_index < attachmentCount; ++attachment_index)
+    {
+        const RHIClearAttachment& clear_attachment = pAttachments[attachment_index];
+        if ((clear_attachment.aspectMask & RHI_IMAGE_ASPECT_COLOR_BIT) == 0)
+        {
+            continue;
+        }
+        if (clear_attachment.colorAttachment >= subpass->colorAttachmentCount)
+        {
+            continue;
+        }
+
+        const uint32_t framebuffer_attachment_index =
+            subpass->pColorAttachments[clear_attachment.colorAttachment].attachment;
+        DX12ImageView* view = m_ActiveFramebuffer->getAttachmentView(framebuffer_attachment_index);
+        if (view == nullptr || !view->hasRenderTargetHandle())
+        {
+            continue;
+        }
+
+        const D3D12_CPU_DESCRIPTOR_HANDLE rtv = view->getRenderTargetHandle();
+        const float clear_color[4] = {clear_attachment.clearValue.color.float32[0],
+                                      clear_attachment.clearValue.color.float32[1],
+                                      clear_attachment.clearValue.color.float32[2],
+                                      clear_attachment.clearValue.color.float32[3]};
+
+        for (uint32_t rect_index = 0; rect_index < rectCount; ++rect_index)
+        {
+            const RHIRect2D& rect = pRects[rect_index].rect;
+            D3D12_RECT d3d_rect {};
+            d3d_rect.left = rect.offset.x;
+            d3d_rect.top = rect.offset.y;
+            d3d_rect.right = rect.offset.x + static_cast<LONG>(rect.extent.width);
+            d3d_rect.bottom = rect.offset.y + static_cast<LONG>(rect.extent.height);
+            command_list->ClearRenderTargetView(rtv, clear_color, 1, &d3d_rect);
+        }
+    }
 }
 
 bool DX12RHI::BeginCommandBuffer(RHICommandBuffer* commandBuffer, const RHICommandBufferBeginInfo* pBeginInfo)
@@ -4992,7 +5043,11 @@ void DX12RHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
                  write.descriptorType == RHI_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) &&
                 image_view != nullptr)
             {
-                descriptor_set->setCbvSrvUavHandle(write.dstBinding, image_view->getGpuHandle());
+                const D3D12_GPU_DESCRIPTOR_HANDLE view_gpu_handle = image_view->getGpuHandle();
+                if (view_gpu_handle.ptr != 0)
+                {
+                    descriptor_set->setCbvSrvUavHandle(write.dstBinding, view_gpu_handle);
+                }
             }
             else if (write.descriptorType == RHI_DESCRIPTOR_TYPE_STORAGE_IMAGE && image_view != nullptr &&
                      image_view->getImage() != nullptr)
@@ -5027,7 +5082,11 @@ void DX12RHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
                  write.descriptorType == RHI_DESCRIPTOR_TYPE_SAMPLER) &&
                 sampler != nullptr)
             {
-                descriptor_set->setSamplerHandle(write.dstBinding, sampler->getGpuHandle());
+                const D3D12_GPU_DESCRIPTOR_HANDLE sampler_gpu_handle = sampler->getGpuHandle();
+                if (sampler_gpu_handle.ptr != 0)
+                {
+                    descriptor_set->setSamplerHandle(write.dstBinding, sampler_gpu_handle);
+                }
             }
         }
 

@@ -80,6 +80,8 @@ public:
     Matrix4x4 GetPersProjMatrix() const;
     /// Perspective or orthographic projection (editor scene 2D mode uses ortho).
     Matrix4x4 GetProjectionMatrix() const;
+    /// Same as GetProjectionMatrix but with an explicit aspect override (scene sub-viewport).
+    Matrix4x4 GetProjectionMatrixForAspect(float aspect) const;
 
     bool IsOrthographic() const { return m_Orthographic; }
     void SetOrthographic(bool orthographic) { m_Orthographic = orthographic; }

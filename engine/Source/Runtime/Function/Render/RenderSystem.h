@@ -105,6 +105,9 @@ public:
 
     void ClearForLevelReloading();
 
+    // Re-queue every BaseRenderer in the active level (after scene open / reload).
+    void ResubmitActiveLevelRenderers();
+
     // 获取渲染管线（供 Editor 注册回调使用）
     std::shared_ptr<RenderPipelineBase> getRenderPipeline() const { return m_RenderPipeline; }
 

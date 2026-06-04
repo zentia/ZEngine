@@ -42,8 +42,8 @@ uint DecodeShadingModelId(float packed_channel) { return (uint)round(packed_chan
 float4 main(PsInput input) : SV_Target0
 {
     const int3 pix = int3(input.position.xy, 0);
-    ML_LoadHeader();
-    if (ml_spatial_enable == 0u)
+    MLHeader ml = ML_LoadHeader();
+    if (ml.spatial_enable == 0u)
     {
         discard;
     }
@@ -63,7 +63,7 @@ float4 main(PsInput input) : SV_Target0
         discard;
     }
 
-    float4x4 inv_proj_view = inverse(proj_view_matrix);
+    float4x4 inv_proj_view = ZInverseMatrix4x4(proj_view_matrix);
     float4 world_pos_h = mul(inv_proj_view, float4(UvToNdcxy(input.texcoord), scene_depth, 1.0f));
     float3 world_pos = world_pos_h.xyz / world_pos_h.w;
 
@@ -80,7 +80,8 @@ float4 main(PsInput input) : SV_Target0
                                                  input.texcoord,
                                                  pix,
                                                  scene_depth,
-                                                 N);
+                                                 N,
+                                                 ml);
     ml_history_out[pix.xy] = float4(lo_filtered, 1.0f);
 
     float3 stable = MegaLightsStableContrib(world_pos,

@@ -14,6 +14,9 @@
     #define GLFW_EXPOSE_NATIVE_WIN32
     #include <GLFW/glfw3.h>
     #include <GLFW/glfw3native.h>
+
+    #include <filesystem>
+    #include <string>
 #endif
 
 namespace Runtime
@@ -28,6 +31,74 @@ namespace Runtime
         };
 
         CaptureState g_capture_state = CaptureState::Idle;
+        bool g_capture_path_template_set = false;
+
+        std::filesystem::path ResolveRepoRootForCaptures()
+        {
+            if (const char* env_root = std::getenv("ZENGINE_ROOT"))
+            {
+                if (env_root[0] != '\0')
+                {
+                    return std::filesystem::path(env_root);
+                }
+            }
+
+            wchar_t exe_path[MAX_PATH] = {};
+            if (GetModuleFileNameW(nullptr, exe_path, MAX_PATH) != 0)
+            {
+                std::filesystem::path exe_dir = std::filesystem::path(exe_path).parent_path();
+                const std::filesystem::path bin_dir = exe_dir.parent_path();
+                if (bin_dir.filename() == "bin")
+                {
+                    return bin_dir.parent_path();
+                }
+            }
+
+            return std::filesystem::current_path();
+        }
+
+        void EnsureCapturePathTemplate(RENDERDOC_API_1_0_0* api)
+        {
+            if (g_capture_path_template_set || api == nullptr)
+            {
+                return;
+            }
+
+            std::error_code ec;
+            const std::filesystem::path captures_dir = ResolveRepoRootForCaptures() / "Captures";
+            std::filesystem::create_directories(captures_dir, ec);
+
+            // RenderDoc appends _frameNNN.rdc to this template path.
+            const std::string template_utf8 = (captures_dir / "zeditor").string();
+            api->SetCaptureFilePathTemplate(template_utf8.c_str());
+            g_capture_path_template_set = true;
+            LOG_INFO(ZEditor, "RenderDoc: capture template set to {}", template_utf8);
+        }
+
+        void LogLatestCapturePath(RENDERDOC_API_1_0_0* api)
+        {
+            if (api == nullptr)
+            {
+                return;
+            }
+
+            const uint32_t capture_count = api->GetNumCaptures();
+            if (capture_count == 0)
+            {
+                LOG_WARNING(ZEditor, "RenderDoc: capture finished but GetNumCaptures() returned 0");
+                return;
+            }
+
+            char path_buffer[1024] = {};
+            uint32_t path_length = static_cast<uint32_t>(sizeof(path_buffer));
+            if (api->GetCapture(capture_count - 1, path_buffer, &path_length, nullptr) == 0)
+            {
+                LOG_WARNING(ZEditor, "RenderDoc: failed to query latest capture path");
+                return;
+            }
+
+            LOG_INFO(ZEditor, "RenderDoc: capture saved to {}", path_buffer);
+        }
 
         void* ResolveNativeDevicePointer()
         {
@@ -77,20 +148,27 @@ namespace Runtime
     void RenderDoc::Init()
     {
     #if defined(_WIN32)
-        Z::RenderDocInitParams params;
-        if (auto* command_system = GET_SYSTEM(CommandSystem))
+        // RenderDocLoader (PreInit) loads renderdoc.dll before D3D12 device creation.
+        // Keep this hook for callers that expect Editor-time initialization side effects.
+        if (Z::RenderDocAPI::Get() == nullptr)
         {
-            params.load_module = command_system->GetFlag("load-renderdoc");
-            if (auto dll_path = command_system->GetOption("renderdoc-dll"))
+            Z::RenderDocInitParams params;
+            if (auto* command_system = GET_SYSTEM(CommandSystem))
             {
-                if (!dll_path->empty())
+                if (command_system->GetFlag("no-load-renderdoc"))
                 {
-                    params.dll_path_override = dll_path->c_str();
+                    params.load_module = false;
+                }
+                if (auto dll_path = command_system->GetOption("renderdoc-dll"))
+                {
+                    if (!dll_path->empty())
+                    {
+                        params.dll_path_override = dll_path->c_str();
+                    }
                 }
             }
+            Z::RenderDocAPI::Init(params);
         }
-
-        Z::RenderDocAPI::Init(params);
     #endif
     }
 
@@ -148,6 +226,10 @@ namespace Runtime
         }
 
         g_capture_state = CaptureState::BeginNextFrame;
+        if (auto* api = Z::RenderDocAPI::Get())
+        {
+            EnsureCapturePathTemplate(api);
+        }
         LOG_INFO(ZEditor, "RenderDoc: frame capture scheduled for next frame");
     #endif
     }
@@ -189,14 +271,21 @@ namespace Runtime
             return;
         }
 
-        api->EndFrameCapture(device, window);
+        const uint32_t captured = api->EndFrameCapture(device, window);
+        if (!captured)
+        {
+            LOG_WARNING(ZEditor,
+                        "RenderDoc: EndFrameCapture failed (ensure renderdoc.dll loaded before D3D12 init; "
+                        "see renderdoc.status)");
+            return;
+        }
+
+        LogLatestCapturePath(api);
 
         if (!api->IsRemoteAccessConnected())
         {
             api->LaunchReplayUI(true, "");
         }
-
-        LOG_INFO(ZEditor, "RenderDoc: frame capture saved");
     #endif
     }
 

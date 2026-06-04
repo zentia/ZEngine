@@ -20,15 +20,16 @@ float3 MegaLightsSpatialFilter(Texture2D direct_tex,
                                float2 texcoord,
                                int3 pix,
                                float center_depth,
-                               float3 center_normal)
+                               float3 center_normal,
+                               MLHeader h)
 {
-    if (ml_spatial_enable == 0u || ml_viewport_width == 0u || ml_viewport_height == 0u)
+    if (h.spatial_enable == 0u || h.viewport_width == 0u || h.viewport_height == 0u)
     {
         return direct_tex.SampleLevel(direct_sampler, texcoord, 0.0f).rgb;
     }
 
-    float2 texel_size = float2(1.0f / (float)ml_viewport_width, 1.0f / (float)ml_viewport_height);
-    int radius = (int)ml_spatial_radius;
+    float2 texel_size = float2(1.0f / (float)h.viewport_width, 1.0f / (float)h.viewport_height);
+    int radius = (int)h.spatial_radius;
     float3 center_direct = direct_tex.SampleLevel(direct_sampler, texcoord, 0.0f).rgb;
     float3 accum = center_direct;
     float weight_sum = 1.0f;
@@ -43,8 +44,8 @@ float3 MegaLightsSpatialFilter(Texture2D direct_tex,
             }
 
             int2 sample_px = pix.xy + int2(x, y);
-            if (sample_px.x < 0 || sample_px.y < 0 || sample_px.x >= (int)ml_viewport_width ||
-                sample_px.y >= (int)ml_viewport_height)
+            if (sample_px.x < 0 || sample_px.y < 0 || sample_px.x >= (int)h.viewport_width ||
+                sample_px.y >= (int)h.viewport_height)
             {
                 continue;
             }
@@ -54,8 +55,8 @@ float3 MegaLightsSpatialFilter(Texture2D direct_tex,
             float sample_depth = MegaLightsSpatialLoadDepth(sample_pix, depth_tex);
             float3 sample_normal = MegaLightsSpatialLoadNormal(sample_pix, normal_tex);
 
-            float depth_weight = exp(-abs(sample_depth - center_depth) / max(ml_spatial_depth_sigma, 1e-5f));
-            float normal_weight = pow(saturate(dot(center_normal, sample_normal)), ml_spatial_normal_power);
+            float depth_weight = exp(-abs(sample_depth - center_depth) / max(h.spatial_depth_sigma, 1e-5f));
+            float normal_weight = pow(saturate(dot(center_normal, sample_normal)), h.spatial_normal_power);
             float weight = depth_weight * normal_weight;
             accum += sample_direct * weight;
             weight_sum += weight;

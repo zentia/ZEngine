@@ -65,18 +65,21 @@ private:
     void BuildLayout(float scale);
     void RebuildLogRows();                 // full rebuild (filter changed)
     void AppendNewLogRows();               // incremental (only new entries)
-    std::shared_ptr<ZSlate::STextBlock> MakeLogRow(const LogEntry& entry) const;
+    std::shared_ptr<ZSlate::SButton> MakeLogRow(size_t entry_index, const LogEntry& entry, bool selected);
+    void UpdateLogRowSelectionHighlight();
     bool EntryMatchesFilter(const LogEntry& entry) const;
     int ActiveCategoryIndex() const;
     void RebuildCategoryOptions();
     void RebuildSearchMatcher();
     void OpenCategoryMenu();
+    void OpenLogContextMenu(size_t entry_index, const Vector2& screen_pos);
     void CloseMenu();
     void ExecuteCommand(const std::string& command);
     void DrainPending();
     void PollConsoleBuffer();
     void BootstrapBufferedLogs();
     void FreeEntries(std::vector<LogEntry>& entries);
+    void CopySelectedLogToClipboard() const;
 
     static ZSlateConsoleWindow* s_Instance;
 
@@ -107,6 +110,14 @@ private:
     size_t m_LastBuiltCount {0};
     float m_BuiltScale {-1.0f};
     bool m_AutoScroll {true};
+    int m_SelectedEntryIndex {-1};
+
+    struct LogRowWidget
+    {
+        size_t entry_index {0};
+        std::shared_ptr<ZSlate::SButton> button;
+    };
+    std::vector<LogRowWidget> m_LogRowWidgets;
 
     // ZSlate tree (persistent; only the log rows are rebuilt).
     std::shared_ptr<ZSlate::SWidget> m_Root;
@@ -123,7 +134,13 @@ private:
     Vector2 m_MenuPos {0.0f, 0.0f};
     bool m_MenuOpen {false};
 
+    int m_PendingContextEntryIndex {-1};
+    Vector2 m_PendingContextPos {0.0f, 0.0f};
+    bool m_HasPendingContext {false};
+
     ZSlate::SlateInputRouter m_Input;
 
     bool m_PrevLeftDown {false};
+    bool m_PrevRightDown {false};
+    bool m_PrevCopyShortcut {false};
 };

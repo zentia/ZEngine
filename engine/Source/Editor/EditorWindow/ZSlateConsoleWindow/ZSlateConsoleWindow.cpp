@@ -6,6 +6,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Log/LogSystem.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
+#include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Slate/Application/SlateApplication.h"
 #include "Runtime/Slate/Widgets/SBorder.h"
 #include "Runtime/Slate/Widgets/SBoxPanel.h"
@@ -24,6 +25,8 @@
 #include <mimalloc.h>
 #include <string_view>
 
+#include <GLFW/glfw3.h>
+
 using namespace ZSlate;
 
 namespace
@@ -33,6 +36,8 @@ const UIColor kBarColor(0.14f, 0.14f, 0.17f, 1.0f);
 const UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
 const UIColor kErrorColor(1.0f, 0.4f, 0.4f, 1.0f);
 const UIColor kLabelColor(0.82f, 0.84f, 0.88f, 1.0f);
+const UIColor kLogRowHoverColor(0.18f, 0.18f, 0.22f, 1.0f);
+const UIColor kLogRowSelectedColor(0.25f, 0.30f, 0.40f, 0.75f);
 
 UIColor LevelColor(uint32_t level)
 {
@@ -275,24 +280,62 @@ bool ZSlateConsoleWindow::EntryMatchesFilter(const LogEntry& entry) const
     return ContainsCaseInsensitive(content, m_Search);
 }
 
-std::shared_ptr<STextBlock> ZSlateConsoleWindow::MakeLogRow(const LogEntry& entry) const
+std::shared_ptr<SButton> ZSlateConsoleWindow::MakeLogRow(size_t entry_index, const LogEntry& entry, bool selected)
 {
     const float font_size = 13.0f * (m_BuiltScale > 0.0f ? m_BuiltScale : 1.0f);
     std::string text;
     if (entry.m_Content != nullptr && entry.m_Length > 0)
         text.assign(entry.m_Content, static_cast<size_t>(entry.m_Length));
-    return MakeText(text, font_size, LevelColor(entry.m_LogLevel));
+
+    auto row = std::make_shared<SButton>();
+    row->Padding = FMargin(2.0f, 1.0f);
+    row->NormalColor = selected ? kLogRowSelectedColor : UIColor(0.0f, 0.0f, 0.0f, 0.0f);
+    row->HoverColor = kLogRowHoverColor;
+    row->PressedColor = kLogRowSelectedColor;
+    row->HAlign = EHorizontalAlignment::Fill;
+    row->SetContent(MakeText(text, font_size, LevelColor(entry.m_LogLevel)));
+    row->OnClicked = [this, entry_index]() {
+        const int idx = static_cast<int>(entry_index);
+        if (m_SelectedEntryIndex != idx)
+        {
+            m_SelectedEntryIndex = idx;
+            UpdateLogRowSelectionHighlight();
+        }
+    };
+    row->OnRightClicked = [this, entry_index](const Vector2& screen_pos) {
+        m_PendingContextEntryIndex = static_cast<int>(entry_index);
+        m_PendingContextPos = screen_pos;
+        m_HasPendingContext = true;
+    };
+    m_LogRowWidgets.push_back({entry_index, row});
+    return row;
+}
+
+void ZSlateConsoleWindow::UpdateLogRowSelectionHighlight()
+{
+    for (const LogRowWidget& row_widget : m_LogRowWidgets)
+    {
+        if (!row_widget.button)
+            continue;
+        const bool selected = static_cast<int>(row_widget.entry_index) == m_SelectedEntryIndex;
+        row_widget.button->NormalColor =
+            selected ? kLogRowSelectedColor : UIColor(0.0f, 0.0f, 0.0f, 0.0f);
+    }
 }
 
 void ZSlateConsoleWindow::RebuildLogRows()
 {
     if (!m_LogList)
         return;
+    // Log rows are destroyed below; drop stale hover pointers but keep keyboard
+    // focus on the search/command box (Reset() was clearing focus every keystroke).
+    m_Input.ClearHoverPath();
     m_LogList->ClearChildren();
-    for (const auto& entry : m_LogEntries)
+    m_LogRowWidgets.clear();
+    for (size_t i = 0; i < m_LogEntries.size(); ++i)
     {
-        if (EntryMatchesFilter(entry))
-            m_LogList->AddChild(MakeLogRow(entry));
+        if (EntryMatchesFilter(m_LogEntries[i]))
+            m_LogList->AddChild(MakeLogRow(i, m_LogEntries[i], static_cast<int>(i) == m_SelectedEntryIndex));
     }
     m_LastBuiltCount = m_LogEntries.size();
 }
@@ -304,9 +347,27 @@ void ZSlateConsoleWindow::AppendNewLogRows()
     for (size_t i = m_LastBuiltCount; i < m_LogEntries.size(); ++i)
     {
         if (EntryMatchesFilter(m_LogEntries[i]))
-            m_LogList->AddChild(MakeLogRow(m_LogEntries[i]));
+            m_LogList->AddChild(MakeLogRow(i, m_LogEntries[i], static_cast<int>(i) == m_SelectedEntryIndex));
     }
     m_LastBuiltCount = m_LogEntries.size();
+}
+
+void ZSlateConsoleWindow::CopySelectedLogToClipboard() const
+{
+    if (m_SelectedEntryIndex < 0 || m_SelectedEntryIndex >= static_cast<int>(m_LogEntries.size()))
+        return;
+
+    const LogEntry& entry = m_LogEntries[static_cast<size_t>(m_SelectedEntryIndex)];
+    if (entry.m_Content == nullptr || entry.m_Length <= 0)
+        return;
+
+    if (auto* window_system = GET_SYSTEM(WindowSystem))
+    {
+        if (GLFWwindow* glfw_window = window_system->GetWindow())
+        {
+            glfwSetClipboardString(glfw_window, entry.m_Content);
+        }
+    }
 }
 
 void ZSlateConsoleWindow::BuildLayout(float scale)
@@ -372,6 +433,7 @@ void ZSlateConsoleWindow::BuildLayout(float scale)
         m_Search.clear();
         if (m_SearchBox)
             m_SearchBox->Text.clear();
+        m_SelectedEntryIndex = -1;
         m_FilterDirty = true;
     };
     bar->AddSlot(clear_btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
@@ -433,6 +495,26 @@ void ZSlateConsoleWindow::OpenCategoryMenu()
     // Anchor under the category button.
     const FGeometry& g = m_CategoryButton->GetCachedGeometry();
     m_MenuPos = Vector2(g.AbsolutePosition.x, g.AbsolutePosition.y + g.LocalSize.y);
+    m_MenuOpen = true;
+    m_MenuInput.Reset();
+}
+
+void ZSlateConsoleWindow::OpenLogContextMenu(size_t entry_index, const Vector2& screen_pos)
+{
+    m_SelectedEntryIndex = static_cast<int>(entry_index);
+    UpdateLogRowSelectionHighlight();
+
+    const float scale = m_BuiltScale > 0.0f ? m_BuiltScale : 1.0f;
+    if (m_Menu == nullptr)
+        m_Menu = std::make_shared<SMenu>();
+    m_Menu->Clear();
+    m_Menu->MinWidth = 120.0f * scale;
+
+    const bool can_copy = entry_index < m_LogEntries.size() && m_LogEntries[entry_index].m_Content != nullptr &&
+                          m_LogEntries[entry_index].m_Length > 0;
+    m_Menu->AddItem("Copy", [this]() { CopySelectedLogToClipboard(); }, scale, !can_copy);
+
+    m_MenuPos = screen_pos;
     m_MenuOpen = true;
     m_MenuInput.Reset();
 }
@@ -536,8 +618,10 @@ void ZSlateConsoleWindow::OnGUI()
     const Vector2 mouse = host.GetPointerPos();
     const bool over_canvas = host.IsSurfaceHovered(surface_id, mouse);
     const bool left_down = host.IsLeftDown();
+    const bool right_down = host.IsRightDown();
     const float wheel = over_canvas ? host.GetWheelDelta() : 0.0f;
     const bool left_edge = left_down && !m_PrevLeftDown;
+    const bool right_up_edge = !right_down && m_PrevRightDown;
 
     if (m_MenuOpen && m_Menu)
     {
@@ -580,10 +664,46 @@ void ZSlateConsoleWindow::OnGUI()
     }
     else
     {
-        m_Input.ProcessMouse(m_Root, mouse, over_canvas, left_down, wheel);
+        m_Input.ProcessMouse(m_Root, mouse, over_canvas, left_down, wheel, right_down);
 
-        if (m_Input.HasKeyboardFocus())
+        if (right_up_edge && over_canvas && m_HasPendingContext)
         {
+            if (m_PendingContextEntryIndex >= 0 &&
+                m_PendingContextEntryIndex < static_cast<int>(m_LogEntries.size()))
+            {
+                OpenLogContextMenu(static_cast<size_t>(m_PendingContextEntryIndex), m_PendingContextPos);
+            }
+            m_HasPendingContext = false;
+        }
+
+        if (over_canvas && !m_Input.HasKeyboardFocus() && m_SelectedEntryIndex >= 0)
+        {
+            bool copy_shortcut = false;
+            if (auto* window_system = GET_SYSTEM(WindowSystem))
+            {
+                if (GLFWwindow* glfw_window = window_system->GetWindow())
+                {
+                    const bool ctrl = host.IsCtrlDown();
+                    const bool c_down = glfwGetKey(glfw_window, GLFW_KEY_C) == GLFW_PRESS;
+                    const bool shortcut_down = ctrl && c_down;
+                    copy_shortcut = shortcut_down && !m_PrevCopyShortcut;
+                    m_PrevCopyShortcut = shortcut_down;
+                }
+            }
+            if (copy_shortcut)
+                CopySelectedLogToClipboard();
+        }
+        else
+        {
+            m_PrevCopyShortcut = false;
+        }
+
+        const bool text_input_active = m_Input.HasKeyboardFocus() ||
+                                       (m_CommandBox && m_CommandBox->IsFocused()) ||
+                                       (m_SearchBox && m_SearchBox->IsFocused());
+        if (text_input_active)
+        {
+            host.NotifyNativeTextInputActive();
             for (unsigned int cp : host.GetCharsThisFrame())
                 m_Input.ProcessChar(cp);
             for (EKey key : host.GetKeysThisFrame())
@@ -595,4 +715,5 @@ void ZSlateConsoleWindow::OnGUI()
     }
 
     m_PrevLeftDown = left_down;
+    m_PrevRightDown = right_down;
 }

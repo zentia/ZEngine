@@ -63,38 +63,50 @@ void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc leve
     // brdf
     std::shared_ptr<TextureData> brdf_map = LoadTextureHDR(level_resource_desc.m_IblResourceDesc.m_BrdfMap);
 
-    // HDR IBL cubemap + BRDF upload can remove the DX12 device during editor startup
-    // (even with mip0-only uploads). RP1/RP2 already have 1x1 fallback textures on DX12.
-    if (rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
+    const auto ibl_face_loaded = [](const std::shared_ptr<TextureData>& map) {
+        return map != nullptr && map->m_Pixels != nullptr && map->m_Width > 0 && map->m_Height > 0;
+    };
+
+    if (ibl_face_loaded(irradiace_pos_x_map) && ibl_face_loaded(specular_pos_x_map) && ibl_face_loaded(brdf_map))
     {
-        CreateIBLSamplers(rhi);
+        try
+        {
+            CreateIBLSamplers(rhi);
 
-        std::array<std::shared_ptr<TextureData>, 6> irradiance_maps = {irradiace_pos_x_map,
-                                                                       irradiace_neg_x_map,
-                                                                       irradiace_pos_z_map,
-                                                                       irradiace_neg_z_map,
-                                                                       irradiace_pos_y_map,
-                                                                       irradiace_neg_y_map};
-        std::array<std::shared_ptr<TextureData>, 6> specular_maps = {specular_pos_x_map,
-                                                                     specular_neg_x_map,
-                                                                     specular_pos_z_map,
-                                                                     specular_neg_z_map,
-                                                                     specular_pos_y_map,
-                                                                     specular_neg_y_map};
-        CreateIBLTextures(rhi, irradiance_maps, specular_maps);
+            std::array<std::shared_ptr<TextureData>, 6> irradiance_maps = {irradiace_pos_x_map,
+                                                                           irradiace_neg_x_map,
+                                                                           irradiace_pos_z_map,
+                                                                           irradiace_neg_z_map,
+                                                                           irradiace_pos_y_map,
+                                                                           irradiace_neg_y_map};
+            std::array<std::shared_ptr<TextureData>, 6> specular_maps = {specular_pos_x_map,
+                                                                         specular_neg_x_map,
+                                                                         specular_pos_z_map,
+                                                                         specular_neg_z_map,
+                                                                         specular_pos_y_map,
+                                                                         specular_neg_y_map};
+            CreateIBLTextures(rhi, irradiance_maps, specular_maps);
 
-        rhi->CreateGlobalImage(m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImage,
-                               m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImageView,
-                               m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImageAllocation,
-                               brdf_map->m_Width,
-                               brdf_map->m_Height,
-                               brdf_map->m_Pixels,
-                               brdf_map->m_Format);
+            rhi->CreateGlobalImage(m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImage,
+                                   m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImageView,
+                                   m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImageAllocation,
+                                   brdf_map->m_Width,
+                                   brdf_map->m_Height,
+                                   brdf_map->m_Pixels,
+                                   brdf_map->m_Format);
+            if (rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+            {
+                LOG_INFO(ZRender, "RenderResource(DX12): IBL HDR upload complete (mip0 cubemaps + BRDF LUT)");
+            }
+        }
+        catch (const std::exception& ex)
+        {
+            LOG_ERROR(ZRender, "RenderResource: IBL HDR upload failed: {}", ex.what());
+        }
     }
     else
     {
-        LOG_INFO(ZRender,
-                 "RenderResource(DX12): skipping startup IBL HDR GPU upload; MainCamera RP1 fallbacks are used");
+        LOG_WARNING(ZRender, "RenderResource: skipping IBL upload (HDR face or BRDF load failed)");
     }
 
     // color grading
@@ -336,9 +348,21 @@ RenderResource::GetOrCreateMesh(RHI* rhi, RenderEntity entity, RenderMeshData me
     auto it = m_Meshes.find(assetid);
     if (it != m_Meshes.end() && meshDrawDataIsValid(&it->second))
     {
-        return it->second;
+#if defined(_WIN32)
+        if (rhi->getGraphicsAPI() == GraphicsAPI::DirectX12 && it->second.mesh_vertex_interleaved_buffer == nullptr)
+        {
+            LOG_WARNING(ZRender,
+                        "RenderResource: re-uploading mesh asset id {} (DX12 interleaved vertex buffer missing)",
+                        assetid);
+            m_Meshes.erase(it);
+        }
+        else
+#endif
+        {
+            return it->second;
+        }
     }
-    if (it != m_Meshes.end())
+    else if (it != m_Meshes.end())
     {
         LOG_WARNING(ZRender, "RenderResource: re-uploading mesh asset id {} (GPU buffers were invalid)", assetid);
         m_Meshes.erase(it);

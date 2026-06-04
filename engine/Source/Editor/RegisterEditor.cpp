@@ -7,12 +7,16 @@
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
 #include "Editor/EditorUI/EditorUI.h"
 #include "Editor/PackageManager/PackageManager.h"
+#include "Editor/RenderDoc/RenderDocLoader.h"
 #include "Editor/Scripting/TypeScriptCompiler.h"
 
 namespace
 {
     void RegisterEditorSystem()
     {
+#if defined(_WIN32)
+        REGISTER_SYSTEM(RenderDocLoader);
+#endif
         REGISTER_SYSTEM(EditorInputManager);
         REGISTER_SYSTEM(EditorSceneManager);
         REGISTER_SYSTEM(Editor);

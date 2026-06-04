@@ -117,16 +117,33 @@ Matrix4x4 RenderCamera::GetPersProjMatrix() const
 
 Matrix4x4 RenderCamera::GetProjectionMatrix() const
 {
-    if (!m_Orthographic || m_Aspect <= 0.0f)
+    if (m_Aspect <= 0.0f)
+    {
+        return GetPersProjMatrix();
+    }
+    return GetProjectionMatrixForAspect(m_Aspect);
+}
+
+Matrix4x4 RenderCamera::GetProjectionMatrixForAspect(float aspect) const
+{
+    if (aspect <= 0.0f)
     {
         return GetPersProjMatrix();
     }
 
-    const float half_h = m_OrthoHalfHeight;
-    const float half_w = half_h * m_Aspect;
     Matrix4x4 fix_mat(1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-    Matrix4x4 ortho = Math::MakeOrthographicProjectionMatrix(
-        -half_w, half_w, -half_h, half_h, m_Zfar, m_Znear);
+
+    if (!m_Orthographic)
+    {
+        const float fovy_for_aspect =
+            Radian(Math::atan(Math::tan(Radian(Degree(m_Fovx) * 0.5f)) / aspect) * 2.0f).valueDegrees();
+        return fix_mat * Math::MakePerspectiveMatrix(Radian(Degree(fovy_for_aspect)), aspect, m_Znear, m_Zfar);
+    }
+
+    const float half_h = m_OrthoHalfHeight;
+    const float half_w = half_h * aspect;
+    Matrix4x4 ortho =
+        Math::MakeOrthographicProjectionMatrix(-half_w, half_w, -half_h, half_h, m_Zfar, m_Znear);
     return fix_mat * ortho;
 }
 

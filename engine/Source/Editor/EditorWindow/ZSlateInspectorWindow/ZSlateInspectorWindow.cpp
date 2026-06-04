@@ -2643,6 +2643,7 @@ void ZSlateInspectorWindow::OnGUI()
 
         if (m_Input.HasKeyboardFocus())
         {
+            host.NotifyNativeTextInputActive();
             for (unsigned int cp : host.GetCharsThisFrame())
                 m_Input.ProcessChar(cp);
             for (EKey key : host.GetKeysThisFrame())

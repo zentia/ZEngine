@@ -140,9 +140,9 @@ bool CommandSystem::Initialize()
     bool show_version = false;
     parser->AddFlag("--version", show_version, "Show version information");
 
-    bool load_renderdoc = false;
-    parser->AddFlag("-load-renderdoc,--load-renderdoc", load_renderdoc,
-                    "Load RenderDoc in-application API (optional --renderdoc-dll path)");
+    bool no_load_renderdoc = false;
+    parser->AddFlag("--no-load-renderdoc", no_load_renderdoc,
+                    "Skip loading RenderDoc in-application API (loaded by default on Windows editor)");
 
     std::string renderdoc_dll_path;
     parser->AddOption("--renderdoc-dll", renderdoc_dll_path, "Path to renderdoc.dll for in-app capture API")

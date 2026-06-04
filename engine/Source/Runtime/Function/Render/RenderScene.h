@@ -77,6 +77,7 @@ public:
     // Editor gizmo axis meshes (registered once from RenderSystem::CreateAxis).
     void RegisterAxisMeshSources(const std::array<size_t, 3>& mesh_asset_ids,
                                  const std::array<RenderMeshData, 3>& mesh_datas);
+    const RenderMeshData* FindAxisMeshSourceData(size_t mesh_asset_id) const;
 
 private:
     RenderEntity BuildRenderEntity(RHI* rhi,

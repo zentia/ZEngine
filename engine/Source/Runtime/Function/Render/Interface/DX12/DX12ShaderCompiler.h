@@ -78,7 +78,8 @@ public:
                                               const std::map<std::string, std::string>& macros = {},
                                               const std::string& entry_point = "main",
                                               const std::string& target_profile = "",
-                                              const std::string& hlsl_version = "");
+                                              const std::string& hlsl_version = "",
+                                              bool embed_debug = false);
 
     // Set shader include directory (for #include directives)
     void SetIncludeDirectory(const std::string& include_dir);
@@ -158,7 +159,8 @@ private:
                                             const std::map<std::string, std::string>& macros,
                                             const std::string& entry_point,
                                             const std::string& target_profile,
-                                            const std::string& hlsl_version);
+                                            const std::string& hlsl_version,
+                                            bool embed_debug);
 
     // Build an absolute on-disk cache filename for (source-file, stage,
     // entry, defines, target_profile, hlsl_version). Returns an empty

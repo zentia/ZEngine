@@ -1,6 +1,6 @@
 // DX-B3: rigid mesh vertex shader (matches MeshVertex 3-stream layout).
 
-#include "../common/scene_lighting_structs.hlsli"
+// render_storage_structs.hlsli already includes scene_lighting_structs.hlsli
 #include "../common/render_storage_structs.hlsli"
 #include "../common/main_camera_per_frame_access.hlsli"
 

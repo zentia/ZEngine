@@ -6,6 +6,10 @@
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Slate/Widgets/SMenu.h"
 
+#if defined(_WIN32)
+    #include "Editor/RenderDoc/RenderDoc.h"
+#endif
+
 #include <cstdlib>
 
 FileMenu::FileMenu(EditorUI* editor_ui)
@@ -14,8 +18,9 @@ FileMenu::FileMenu(EditorUI* editor_ui)
 void FileMenu::BuildZSlateMenu(ZSlate::SMenu& menu, float scale)
 {
     menu.AddItem("Reload Current Level", []() {
-        GET_SYSTEM(WorldManager)->ReloadCurrentLevel();
         GET_SYSTEM(RenderSystem)->ClearForLevelReloading();
+        GET_SYSTEM(WorldManager)->ReloadCurrentLevel();
+        GET_SYSTEM(RenderSystem)->ResubmitActiveLevelRenderers();
         GET_SYSTEM(EditorSceneManager)->OnGObjectSelected(k_invalid_gobject_id);
     }, scale);
     menu.AddItem("Save Scene    Ctrl+S", []() { GET_SYSTEM(WorldManager)->SaveCurrentLevel(); }, scale);
@@ -23,6 +28,13 @@ void FileMenu::BuildZSlateMenu(ZSlate::SMenu& menu, float scale)
 
     {
         std::shared_ptr<ZSlate::SMenu> debug = menu.AddSubMenu("Debug", scale);
+
+#if defined(_WIN32)
+        debug->AddItem("Capture Frame (RenderDoc)    Ctrl+Shift+F12", []() {
+            Runtime::RenderDoc::RequestCapture();
+        }, scale);
+        debug->AddSeparator(scale);
+#endif
 
         std::shared_ptr<ZSlate::SMenu> anim = debug->AddSubMenu("Animation", scale);
         auto cfg = GET_SYSTEM(RenderDebugConfig);

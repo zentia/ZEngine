@@ -27,6 +27,8 @@ struct RenderMeshGPUResource
     RHIBuffer* mesh_vertex_position_buffer {RHI_NULL_HANDLE};
     RHIBuffer* mesh_vertex_varying_enable_blending_buffer {RHI_NULL_HANDLE};
     RHIBuffer* mesh_vertex_varying_buffer {RHI_NULL_HANDLE};
+    // DX12 axis gizmo: raw MeshVertexDataDefinition stream (matches Axis.cpp authoring layout).
+    RHIBuffer* mesh_vertex_interleaved_buffer {RHI_NULL_HANDLE};
     RHIBuffer* mesh_index_buffer {RHI_NULL_HANDLE};
 };
 
@@ -36,6 +38,7 @@ struct MeshDrawData
     RHIBuffer* position_buffer {RHI_NULL_HANDLE};
     RHIBuffer* varying_blending_buffer {RHI_NULL_HANDLE};
     RHIBuffer* varying_buffer {RHI_NULL_HANDLE};
+    RHIBuffer* interleaved_buffer {RHI_NULL_HANDLE};
     RHIBuffer* index_buffer {RHI_NULL_HANDLE};
     uint32_t index_count {0};
 
@@ -43,6 +46,11 @@ struct MeshDrawData
     {
         return position_buffer != nullptr && varying_blending_buffer != nullptr && varying_buffer != nullptr &&
                index_buffer != nullptr && index_count > 0;
+    }
+
+    bool HasInterleavedStream() const
+    {
+        return interleaved_buffer != nullptr && index_buffer != nullptr && index_count > 0;
     }
 };
 
@@ -56,6 +64,7 @@ inline MeshDrawData getMeshDrawData(const RenderMeshGPUResource* mesh)
     return {mesh->mesh_vertex_position_buffer,
             mesh->mesh_vertex_varying_enable_blending_buffer,
             mesh->mesh_vertex_varying_buffer,
+            mesh->mesh_vertex_interleaved_buffer,
             mesh->mesh_index_buffer,
             mesh->mesh_index_count};
 }

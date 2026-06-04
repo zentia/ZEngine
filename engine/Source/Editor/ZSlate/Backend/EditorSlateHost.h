@@ -207,10 +207,17 @@ public:
     // lets any remaining ImGui-island consumer skip input while a menu is open.
     bool IsForegroundCapturing() const;
 
+    // True while any native SEditableTextBox (Console command bar, Inspector fields,
+    // etc.) owns keyboard focus this frame. Reset in NewFrame(); panels call
+    // NotifyNativeTextInputActive() from OnGUI when SlateInputRouter::HasKeyboardFocus().
+    void NotifyNativeTextInputActive() { m_NativeTextInputActive = true; }
+    bool IsNativeTextInputActive() const { return m_NativeTextInputActive; }
+
 private:
     EditorSlateHost() = default;
 
     bool m_Initialized {false};
+    bool m_NativeTextInputActive {false};
 
     // Live pointer / button / modifier state. Written in GLFW callbacks on the
     // main thread, read by panels (possibly on the render thread). Lock-free,

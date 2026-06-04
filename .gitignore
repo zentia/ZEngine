@@ -1,5 +1,6 @@
 build/
 build_v8/
+Captures/
 build_toolfix143_env/
 cpm_modules/
 CPM_modules/
@@ -385,6 +386,9 @@ __pycache__/
 # Cake - Uncomment if you are using it
 # tools/**
 # !tools/packages.config
+
+# ZEngine RenderDoc CMake wrapper output (tools/renderdoc_build/cmake)
+tools/renderdoc_build/build/
 
 # Tabs Studio
 *.tss

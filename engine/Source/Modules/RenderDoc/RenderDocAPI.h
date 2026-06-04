@@ -9,13 +9,13 @@ namespace Z
     struct RenderDocInitParams
     {
         const char* dll_path_override = nullptr;
-        bool load_module = false;
+        bool load_module = true;
     };
 
     class RenderDocAPI
     {
     public:
-        // Resolve install path. Optionally load the module when load_module is true.
+        // Resolve install path. Loads the module when load_module is true (default).
         static void Init(const RenderDocInitParams& params = {});
 
         static bool IsInstalled();

@@ -61,7 +61,7 @@ float4 main(PsInput input) : SV_Target0
         {
             discard;
         }
-        float4x4 inv_proj_view_unlit = inverse(proj_view_matrix);
+        float4x4 inv_proj_view_unlit = ZInverseMatrix4x4(proj_view_matrix);
         float4 world_pos_h_unlit =
             mul(inv_proj_view_unlit, float4(UvToNdcxy(input.texcoord), scene_depth, 1.0f));
         float3 world_pos_unlit = world_pos_h_unlit.xyz / world_pos_h_unlit.w;
@@ -72,7 +72,7 @@ float4 main(PsInput input) : SV_Target0
     }
     else if (shading_model_id == SHADINGMODELID_DEFAULT_LIT)
     {
-        float4x4 inv_proj_view = inverse(proj_view_matrix);
+        float4x4 inv_proj_view = ZInverseMatrix4x4(proj_view_matrix);
         float4 world_pos_h = mul(inv_proj_view, float4(UvToNdcxy(input.texcoord), scene_depth, 1.0f));
         float3 world_pos = world_pos_h.xyz / world_pos_h.w;
 
@@ -82,7 +82,7 @@ float4 main(PsInput input) : SV_Target0
         float3 origin_samplecube_N = float3(N.x, N.z, N.y);
         float3 origin_samplecube_R = float3(R.x, R.z, R.y);
 
-        ML_LoadHeader();
+        MLHeader ml = ML_LoadHeader();
 
         float3 lo_raw = MegaLightsStochasticDirect(world_pos,
                                                    scene_depth,
@@ -92,10 +92,11 @@ float4 main(PsInput input) : SV_Target0
                                                    f0,
                                                    basecolor,
                                                    metallic,
-                                                   roughness);
-        float3 Lo = MegaLightsTemporalDenoise(lo_raw, world_pos, scene_depth, input.texcoord, pix);
+                                                   roughness,
+                                                   ml);
+        float3 Lo = MegaLightsTemporalDenoise(lo_raw, world_pos, scene_depth, input.texcoord, pix, ml);
 
-        if (ml_spatial_enable != 0u)
+        if (ml.spatial_enable != 0u)
         {
             float3 stable = MegaLightsStableContrib(world_pos,
                                                    N,

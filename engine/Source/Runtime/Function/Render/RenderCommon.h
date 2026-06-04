@@ -156,6 +156,7 @@ struct RenderAxisNode
 {
     Matrix4x4 model_matrix {Matrix4x4::IDENTITY};
     RenderMeshGPUResource* ref_mesh {nullptr};
+    size_t mesh_asset_id {0};
 
     uint32_t node_id;
     bool enable_vertex_blending {false};

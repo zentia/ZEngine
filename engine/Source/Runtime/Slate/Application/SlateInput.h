@@ -26,6 +26,12 @@ public:
     // never dereference freed widgets.
     void Reset();
 
+    // Drop hover-path pointers without clearing keyboard focus or mouse capture.
+    // Use when only log-row widgets are destroyed (Console filter rebuild).
+    void ClearHoverPath() { m_HoverPath.clear(); }
+
+    SWidget* GetKeyboardFocusedWidget() const { return m_Focused; }
+
     // `right_down` lets widgets handle right-clicks (context menus). Optional so
     // existing call sites that only care about the left button compile unchanged.
     void ProcessMouse(const std::shared_ptr<SWidget>& root,

@@ -549,10 +549,18 @@ void MainCameraRp1Pass::SetupPipelines()
             throw std::runtime_error("MainCameraRp1Pass: create mesh pipeline layout");
         }
 
+        const std::string vert_shader_path = GetRp1ShaderRoot() + "/hlsl/rp1/mesh.vert.hlsl";
+        const std::string frag_shader_path = GetRp1ShaderRoot() + "/hlsl/rp1/" + frag_hlsl_path;
         RHIShader* vert_shader_module = CreateBuiltinVertShader(m_Rhi);
         RHIShader* frag_shader_module = CreateBuiltinFragShader(m_Rhi, frag_hlsl_path);
         if (vert_shader_module == nullptr || frag_shader_module == nullptr)
         {
+            LOG_ERROR(ZRender,
+                      "MainCameraRp1Pass: failed to load builtin mesh shaders (vert={} frag={}; paths: {} | {})",
+                      vert_shader_module != nullptr,
+                      frag_shader_module != nullptr,
+                      vert_shader_path,
+                      frag_shader_path);
             throw std::runtime_error("MainCameraRp1Pass: failed to load builtin mesh shaders");
         }
 
@@ -784,7 +792,9 @@ void MainCameraRp1Pass::SetupPipelines()
         m_Rhi->DestroyShaderModule(frag_shader_module);
     }
 
-    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+    // MegaLights shaders use HLSL 2018-incompatible patterns when disabled at runtime; only
+    // compile DX12 pipelines when the feature is on (default off). Core mesh/deferred still run.
+    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12 && MegaLights::IsEnabled())
     {
         RHIDescriptorSetLayout* descriptorset_layouts[2] = {m_DescriptorInfos[_mesh_global].layout,
                                                             m_DescriptorInfos[_deferred_lighting].layout};
@@ -890,108 +900,105 @@ void MainCameraRp1Pass::SetupPipelines()
 
         m_Rhi->DestroyShaderModule(vert_shader_module);
         m_Rhi->DestroyShaderModule(frag_shader_module);
-    }
 
-    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
-    {
-        RHIDescriptorSetLayout* descriptorset_layouts[2] = {m_DescriptorInfos[_mesh_global].layout,
-                                                            m_DescriptorInfos[_deferred_lighting].layout};
-        RHIPipelineLayoutCreateInfo pipeline_layout_create_info {};
-        pipeline_layout_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        pipeline_layout_create_info.setLayoutCount = 2;
-        pipeline_layout_create_info.pSetLayouts = descriptorset_layouts;
+        RHIDescriptorSetLayout* spatial_descriptorset_layouts[2] = {m_DescriptorInfos[_mesh_global].layout,
+                                                                  m_DescriptorInfos[_deferred_lighting].layout};
+        RHIPipelineLayoutCreateInfo spatial_pipeline_layout_create_info {};
+        spatial_pipeline_layout_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        spatial_pipeline_layout_create_info.setLayoutCount = 2;
+        spatial_pipeline_layout_create_info.pSetLayouts = spatial_descriptorset_layouts;
 
-        if (m_Rhi->CreatePipelineLayout(&pipeline_layout_create_info,
+        if (m_Rhi->CreatePipelineLayout(&spatial_pipeline_layout_create_info,
                                         m_RenderPipelines[_render_pipeline_type_megalights_spatial].layout) !=
             RHI_SUCCESS)
         {
             throw std::runtime_error("MainCameraRp1Pass: create megalights spatial pipeline layout");
         }
 
-        RHIShader* vert_shader_module = CreateBuiltinDeferredVertShader(m_Rhi);
-        RHIShader* frag_shader_module = LoadRp1ShaderFromFile(m_Rhi, "megalights_spatial.frag.hlsl", ShaderStage::Fragment);
+        vert_shader_module = CreateBuiltinDeferredVertShader(m_Rhi);
+        frag_shader_module = LoadRp1ShaderFromFile(m_Rhi, "megalights_spatial.frag.hlsl", ShaderStage::Fragment);
         if (vert_shader_module == nullptr || frag_shader_module == nullptr)
         {
             throw std::runtime_error("MainCameraRp1Pass: failed to load megalights spatial shaders");
         }
 
-        RHIPipelineShaderStageCreateInfo vert_stage {};
-        vert_stage.sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        vert_stage.stage = RHI_SHADER_STAGE_VERTEX_BIT;
-        vert_stage.module = vert_shader_module;
-        vert_stage.pName = "main";
+        RHIPipelineShaderStageCreateInfo spatial_vert_stage {};
+        spatial_vert_stage.sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        spatial_vert_stage.stage = RHI_SHADER_STAGE_VERTEX_BIT;
+        spatial_vert_stage.module = vert_shader_module;
+        spatial_vert_stage.pName = "main";
 
-        RHIPipelineShaderStageCreateInfo frag_stage {};
-        frag_stage.sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        frag_stage.stage = RHI_SHADER_STAGE_FRAGMENT_BIT;
-        frag_stage.module = frag_shader_module;
-        frag_stage.pName = "main";
+        RHIPipelineShaderStageCreateInfo spatial_frag_stage {};
+        spatial_frag_stage.sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        spatial_frag_stage.stage = RHI_SHADER_STAGE_FRAGMENT_BIT;
+        spatial_frag_stage.module = frag_shader_module;
+        spatial_frag_stage.pName = "main";
 
-        RHIPipelineShaderStageCreateInfo shader_stages[] = {vert_stage, frag_stage};
+        RHIPipelineShaderStageCreateInfo spatial_shader_stages[] = {spatial_vert_stage, spatial_frag_stage};
 
-        RHIPipelineVertexInputStateCreateInfo vertex_input_state_create_info {};
-        vertex_input_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        RHIPipelineVertexInputStateCreateInfo spatial_vertex_input_state_create_info {};
+        spatial_vertex_input_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
-        RHIPipelineInputAssemblyStateCreateInfo input_assembly_create_info {};
-        input_assembly_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-        input_assembly_create_info.topology = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        RHIPipelineInputAssemblyStateCreateInfo spatial_input_assembly_create_info {};
+        spatial_input_assembly_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        spatial_input_assembly_create_info.topology = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
-        RHIPipelineViewportStateCreateInfo viewport_state_create_info {};
-        viewport_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-        viewport_state_create_info.viewportCount = 1;
-        viewport_state_create_info.pViewports = m_Rhi->GetSwapchainInfo().viewport;
-        viewport_state_create_info.scissorCount = 1;
-        viewport_state_create_info.pScissors = m_Rhi->GetSwapchainInfo().scissor;
+        RHIPipelineViewportStateCreateInfo spatial_viewport_state_create_info {};
+        spatial_viewport_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        spatial_viewport_state_create_info.viewportCount = 1;
+        spatial_viewport_state_create_info.pViewports = m_Rhi->GetSwapchainInfo().viewport;
+        spatial_viewport_state_create_info.scissorCount = 1;
+        spatial_viewport_state_create_info.pScissors = m_Rhi->GetSwapchainInfo().scissor;
 
-        RHIPipelineRasterizationStateCreateInfo rasterization_state_create_info {};
-        rasterization_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-        rasterization_state_create_info.polygonMode = RHI_POLYGON_MODE_FILL;
-        rasterization_state_create_info.cullMode = RHI_CULL_MODE_BACK_BIT;
-        rasterization_state_create_info.frontFace = RHI_FRONT_FACE_CLOCKWISE;
+        RHIPipelineRasterizationStateCreateInfo spatial_rasterization_state_create_info {};
+        spatial_rasterization_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        spatial_rasterization_state_create_info.polygonMode = RHI_POLYGON_MODE_FILL;
+        spatial_rasterization_state_create_info.cullMode = RHI_CULL_MODE_BACK_BIT;
+        spatial_rasterization_state_create_info.frontFace = RHI_FRONT_FACE_CLOCKWISE;
 
-        RHIPipelineMultisampleStateCreateInfo multisample_state_create_info {};
-        multisample_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-        multisample_state_create_info.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
+        RHIPipelineMultisampleStateCreateInfo spatial_multisample_state_create_info {};
+        spatial_multisample_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        spatial_multisample_state_create_info.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
 
-        RHIPipelineColorBlendAttachmentState color_blend_attachment {};
-        color_blend_attachment.colorWriteMask = RHI_COLOR_COMPONENT_R_BIT | RHI_COLOR_COMPONENT_G_BIT |
-                                                RHI_COLOR_COMPONENT_B_BIT | RHI_COLOR_COMPONENT_A_BIT;
+        RHIPipelineColorBlendAttachmentState spatial_color_blend_attachment {};
+        spatial_color_blend_attachment.colorWriteMask = RHI_COLOR_COMPONENT_R_BIT | RHI_COLOR_COMPONENT_G_BIT |
+                                                        RHI_COLOR_COMPONENT_B_BIT | RHI_COLOR_COMPONENT_A_BIT;
 
-        RHIPipelineColorBlendStateCreateInfo color_blend_state_create_info {};
-        color_blend_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-        color_blend_state_create_info.attachmentCount = 1;
-        color_blend_state_create_info.pAttachments = &color_blend_attachment;
+        RHIPipelineColorBlendStateCreateInfo spatial_color_blend_state_create_info {};
+        spatial_color_blend_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        spatial_color_blend_state_create_info.attachmentCount = 1;
+        spatial_color_blend_state_create_info.pAttachments = &spatial_color_blend_attachment;
 
-        RHIPipelineDepthStencilStateCreateInfo depth_stencil_create_info {};
-        depth_stencil_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depth_stencil_create_info.depthTestEnable = RHI_FALSE;
-        depth_stencil_create_info.depthWriteEnable = RHI_FALSE;
+        RHIPipelineDepthStencilStateCreateInfo spatial_depth_stencil_create_info {};
+        spatial_depth_stencil_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        spatial_depth_stencil_create_info.depthTestEnable = RHI_FALSE;
+        spatial_depth_stencil_create_info.depthWriteEnable = RHI_FALSE;
 
-        RHIDynamicState dynamic_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
-        RHIPipelineDynamicStateCreateInfo dynamic_state_create_info {};
-        dynamic_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-        dynamic_state_create_info.dynamicStateCount = 2;
-        dynamic_state_create_info.pDynamicStates = dynamic_states;
+        RHIDynamicState spatial_dynamic_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
+        RHIPipelineDynamicStateCreateInfo spatial_dynamic_state_create_info {};
+        spatial_dynamic_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        spatial_dynamic_state_create_info.dynamicStateCount = 2;
+        spatial_dynamic_state_create_info.pDynamicStates = spatial_dynamic_states;
 
-        RHIGraphicsPipelineCreateInfo pipeline_info {};
-        pipeline_info.sType = RHI_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-        pipeline_info.stageCount = 2;
-        pipeline_info.pStages = shader_stages;
-        pipeline_info.pVertexInputState = &vertex_input_state_create_info;
-        pipeline_info.pInputAssemblyState = &input_assembly_create_info;
-        pipeline_info.pViewportState = &viewport_state_create_info;
-        pipeline_info.pRasterizationState = &rasterization_state_create_info;
-        pipeline_info.pMultisampleState = &multisample_state_create_info;
-        pipeline_info.pColorBlendState = &color_blend_state_create_info;
-        pipeline_info.pDepthStencilState = &depth_stencil_create_info;
-        pipeline_info.layout = m_RenderPipelines[_render_pipeline_type_megalights_spatial].layout;
-        pipeline_info.renderPass = rp1_render_pass;
-        pipeline_info.subpass = _main_camera_subpass_deferred_lighting;
-        pipeline_info.pDynamicState = &dynamic_state_create_info;
+        RHIGraphicsPipelineCreateInfo spatial_pipeline_info {};
+        spatial_pipeline_info.sType = RHI_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        spatial_pipeline_info.stageCount = 2;
+        spatial_pipeline_info.pStages = spatial_shader_stages;
+        spatial_pipeline_info.pVertexInputState = &spatial_vertex_input_state_create_info;
+        spatial_pipeline_info.pInputAssemblyState = &spatial_input_assembly_create_info;
+        spatial_pipeline_info.pViewportState = &spatial_viewport_state_create_info;
+        spatial_pipeline_info.pRasterizationState = &spatial_rasterization_state_create_info;
+        spatial_pipeline_info.pMultisampleState = &spatial_multisample_state_create_info;
+        spatial_pipeline_info.pColorBlendState = &spatial_color_blend_state_create_info;
+        spatial_pipeline_info.pDepthStencilState = &spatial_depth_stencil_create_info;
+        spatial_pipeline_info.layout = m_RenderPipelines[_render_pipeline_type_megalights_spatial].layout;
+        spatial_pipeline_info.renderPass = rp1_render_pass;
+        spatial_pipeline_info.subpass = _main_camera_subpass_deferred_lighting;
+        spatial_pipeline_info.pDynamicState = &spatial_dynamic_state_create_info;
 
         if (m_Rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE,
                                            1,
-                                           &pipeline_info,
+                                           &spatial_pipeline_info,
                                            m_RenderPipelines[_render_pipeline_type_megalights_spatial].pipeline) !=
             RHI_SUCCESS)
         {
@@ -1574,6 +1581,21 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
             temp.joint_count = node.joint_count;
         }
         mesh_nodes.push_back(temp);
+    }
+
+    if (visible_nodes.empty() && render_scene != nullptr && !render_scene->m_RenderEntities.empty())
+    {
+        static std::array<bool, 2> warned {};
+        const size_t viewport_index = static_cast<size_t>(viewport_type);
+        if (viewport_index < warned.size() && !warned[viewport_index])
+        {
+            LOG_WARNING(ZRender,
+                        "MainCameraRp1Pass: Mesh GBuffer has 0 visible opaque nodes but {} render entities exist "
+                        "(viewport={})",
+                        render_scene->m_RenderEntities.size(),
+                        static_cast<int>(viewport_type));
+            warned[viewport_index] = true;
+        }
     }
 
     float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
