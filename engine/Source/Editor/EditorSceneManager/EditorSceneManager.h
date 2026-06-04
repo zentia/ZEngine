@@ -32,8 +32,24 @@ enum class GObjectSelectionOp
 class EditorSceneManager : public IEngineSystem
 {
 public:
-    // Target screen footprint for translate/scale gizmo axes (fraction of viewport width).
-    static constexpr float kEditorGizmoViewportFraction = 0.14f;
+    // UE-style constant screen axis length (GizmoRenderingUtil / TransformGizmo indirect drag).
+    static constexpr float kEditorGizmoAxisPixelLength = 100.0f;
+
+    static float ComputePixelToWorldScale(const RenderCamera& camera,
+                                          const Vector3& world_location,
+                                          float viewport_width,
+                                          float viewport_height);
+    static float ComputeGizmoAxisLengthWorld(const RenderCamera& camera,
+                                             const Vector3& world_location,
+                                             float viewport_width,
+                                             float viewport_height);
+    static Vector2 ComputeScreenAxisDirection(const RenderCamera& camera,
+                                              const Vector3& pivot_world,
+                                              const Vector3& world_axis_unit,
+                                              float viewport_pos_x,
+                                              float viewport_pos_y,
+                                              float viewport_width,
+                                              float viewport_height);
 
     std::string GetName() const override { return "EditorSceneManager"; }
     SystemInitPhase GetInitPhase() const override { return SystemInitPhase::PostInit; }

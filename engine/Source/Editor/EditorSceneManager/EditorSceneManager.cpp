@@ -53,8 +53,6 @@ namespace
         camera->LookAt(eye, pivot, Vector3::UNIT_Z);
     }
 
-    // UE reference: FSimpleConstantViewScaleAdjuster::GetAdjustedComponentToWorld +
-    // CalculateLocalPixelToWorldScale (InteractiveToolsFramework/BaseGizmos).
     float ComputeEditorGizmoUniformScale(const RenderCamera& camera,
                                            const Vector3& pivot_world,
                                            float viewport_width,
@@ -65,15 +63,10 @@ namespace
             return 1.0f;
         }
 
-        const float distance = (camera.position() - pivot_world).length();
-        const float aspect = viewport_width / viewport_height;
-        const Matrix4x4 proj = camera.GetProjectionMatrixForAspect(aspect);
-        const float proj_scale_x = std::max(std::abs(proj[0][0]), 1e-4f);
-
         constexpr float k_gizmo_mesh_extent = 2.0f;
-        const float uniform_scale = distance * 4.0f * EditorSceneManager::kEditorGizmoViewportFraction /
-                                    (viewport_width * proj_scale_x * k_gizmo_mesh_extent);
-        return std::max(uniform_scale, 0.05f);
+        const float axis_len =
+            EditorSceneManager::ComputeGizmoAxisLengthWorld(camera, pivot_world, viewport_width, viewport_height);
+        return std::max(axis_len / k_gizmo_mesh_extent, 0.05f);
     }
 
     Matrix4x4 ApplyEditorGizmoViewScale(const Matrix4x4& local_to_world,
@@ -228,6 +221,95 @@ void EditorSceneManager::Tick(float delta_time)
     {
         DrawSelectedEntityAxis();
     }
+}
+
+float EditorSceneManager::ComputePixelToWorldScale(const RenderCamera& camera,
+                                                   const Vector3& world_location,
+                                                   float viewport_width,
+                                                   float viewport_height)
+{
+    if (viewport_width < 1.0f || viewport_height < 1.0f)
+    {
+        return 0.01f;
+    }
+
+    const float aspect = viewport_width / viewport_height;
+    const Matrix4x4 view_proj =
+        camera.GetProjectionMatrixForAspect(aspect) * camera.getLookAtMatrix();
+
+    auto world_to_screen = [&](const Vector3& world) -> Vector2 {
+        const Vector4 clip = view_proj * Vector4(world, 1.0f);
+        if (clip.w <= 1e-4f)
+        {
+            return Vector2(-1e9f, -1e9f);
+        }
+        const float inv_w = 1.0f / clip.w;
+        return Vector2((clip.x * inv_w + 1.0f) * 0.5f * viewport_width,
+                       (clip.y * inv_w + 1.0f) * 0.5f * viewport_height);
+    };
+
+    const Vector4 clip_pivot = view_proj * Vector4(world_location, 1.0f);
+    const float offset_delta = std::max(std::abs(clip_pivot.w) * 0.01f, 1e-3f);
+    const Vector3 offset_world =
+        world_location + camera.right() * offset_delta + camera.up() * offset_delta;
+
+    const Vector2 pixel_a = world_to_screen(world_location);
+    const Vector2 pixel_b = world_to_screen(offset_world);
+    const float pixel_delta_sqr = (pixel_b - pixel_a).squaredLength();
+    const Vector3 world_delta = offset_world - world_location;
+    const float world_delta_sqr = world_delta.squaredLength();
+    if (pixel_delta_sqr <= 1e-8f || world_delta_sqr <= 1e-8f)
+    {
+        return 0.01f;
+    }
+
+    return std::sqrt(world_delta_sqr / pixel_delta_sqr);
+}
+
+float EditorSceneManager::ComputeGizmoAxisLengthWorld(const RenderCamera& camera,
+                                                      const Vector3& world_location,
+                                                      float viewport_width,
+                                                      float viewport_height)
+{
+    return kEditorGizmoAxisPixelLength *
+           ComputePixelToWorldScale(camera, world_location, viewport_width, viewport_height);
+}
+
+Vector2 EditorSceneManager::ComputeScreenAxisDirection(const RenderCamera& camera,
+                                                       const Vector3& pivot_world,
+                                                       const Vector3& world_axis_unit,
+                                                       float viewport_pos_x,
+                                                       float viewport_pos_y,
+                                                       float viewport_width,
+                                                       float viewport_height)
+{
+    const float aspect = viewport_width / viewport_height;
+    const Matrix4x4 view_proj =
+        camera.GetProjectionMatrixForAspect(aspect) * camera.getLookAtMatrix();
+
+    auto world_to_screen = [&](const Vector3& world) -> Vector2 {
+        const Vector4 clip = view_proj * Vector4(world, 1.0f);
+        if (clip.w <= 1e-4f)
+        {
+            return Vector2(0.0f, 0.0f);
+        }
+        const float inv_w = 1.0f / clip.w;
+        return Vector2(viewport_pos_x + (clip.x * inv_w + 1.0f) * 0.5f * viewport_width,
+                       viewport_pos_y + (clip.y * inv_w + 1.0f) * 0.5f * viewport_height);
+    };
+
+    constexpr float k_reference_axis_world_len = 1.0f;
+    const Vector2 screen_pivot = world_to_screen(pivot_world);
+    const Vector2 screen_end =
+        world_to_screen(pivot_world + world_axis_unit * k_reference_axis_world_len);
+    Vector2 screen_dir = screen_end - screen_pivot;
+    const float len = screen_dir.length();
+    if (len < 1e-4f)
+    {
+        return Vector2(0.0f, 0.0f);
+    }
+    screen_dir /= len;
+    return screen_dir;
 }
 
 float intersectPlaneRay(Vector3 normal, float d, Vector3 origin, Vector3 dir)
@@ -423,10 +505,8 @@ size_t EditorSceneManager::PickAxisAtViewportPixels(Vector2 mouse_px,
     Quaternion rotation;
     transform_component->GetLocalToWorldMatrix().Decomposition(pivot, scale, rotation);
 
-    const float uniform_scale =
-        ComputeEditorGizmoUniformScale(*m_Camera, pivot, viewport_size.x, viewport_size.y);
-    constexpr float k_gizmo_mesh_extent = 2.0f;
-    const float axis_len = k_gizmo_mesh_extent * uniform_scale;
+    const float axis_len =
+        ComputeGizmoAxisLengthWorld(*m_Camera, pivot, viewport_size.x, viewport_size.y);
 
     const float aspect = viewport_size.x / viewport_size.y;
     const Matrix4x4 view_proj =
@@ -884,8 +964,10 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
                                     Matrix4x4 model_matrix)
 {
     std::shared_ptr<GameObject> selected_object = GetSelectedGObject().lock();
-    if (selected_object == nullptr)
+    if (selected_object == nullptr || m_Camera == nullptr)
+    {
         return;
+    }
 
     float angularVelocity =
         18.0f / Math::max(engine_window_size.x, engine_window_size.y);  // 18 degrees while moving full screen
@@ -953,51 +1035,54 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
     Transform* transform_component = selected_object->tryGetComponent(Transform);
 
     Matrix4x4 new_model_matrix(Matrix4x4::IDENTITY);
-    if (m_AxisMode == EditorAxisMode::TranslateMode)  // translate
+    if (m_AxisMode == EditorAxisMode::TranslateMode)
     {
-        Vector3 move_vector = {0, 0, 0};
-        if (cursor_on_axis == 0)
+        // UE TransformGizmo::OnClickDragTranslateAxis (indirect): screen axis * PixelToWorld * drag delta.
+        Vector3 world_pivot {};
+        Quaternion world_rotation {};
+        transform_component->GetPositionAndRotation(world_pivot, world_rotation);
+
+        Vector3 local_axis = Vector3::UNIT_X;
+        if (cursor_on_axis == 1)
         {
-            move_vector.x = delta_mouse_move_uv.dotProduct(axis_x_direction_uv) * angularVelocity;
-        }
-        else if (cursor_on_axis == 1)
-        {
-            move_vector.y = delta_mouse_move_uv.dotProduct(axis_y_direction_uv) * angularVelocity;
+            local_axis = Vector3::UNIT_Y;
         }
         else if (cursor_on_axis == 2)
         {
-            move_vector.z = delta_mouse_move_uv.dotProduct(axis_z_direction_uv) * angularVelocity;
+            local_axis = Vector3::UNIT_Z;
         }
-        else
+        else if (cursor_on_axis != 0)
         {
             return;
         }
 
-        Matrix4x4 translate_mat;
-        translate_mat.MakeTransform(move_vector, Vector3::UNIT_SCALE, Quaternion::IDENTITY);
-        new_model_matrix = axis_model_matrix * translate_mat;
+        Vector3 world_axis = Matrix4x4(world_rotation) * local_axis;
+        if (world_axis.length() > 1e-4f)
+        {
+            world_axis.normalise();
+        }
 
-        new_model_matrix = new_model_matrix * Matrix4x4(model_rotation);
-        new_model_matrix = new_model_matrix * Matrix4x4::BuildScaleMatrix(model_scale.x, model_scale.y, model_scale.z);
+        const Vector2 screen_axis_dir = ComputeScreenAxisDirection(*m_Camera,
+                                                                   world_pivot,
+                                                                   world_axis,
+                                                                   engine_window_pos.x,
+                                                                   engine_window_pos.y,
+                                                                   engine_window_size.x,
+                                                                   engine_window_size.y);
+        if (screen_axis_dir.squaredLength() < 1e-8f)
+        {
+            return;
+        }
 
-        Vector3 new_scale;
-        Quaternion new_rotation;
-        Vector3 new_translation;
-        new_model_matrix.Decomposition(new_translation, new_scale, new_rotation);
-
-        Matrix4x4 translation_matrix = Matrix4x4::GetTrans(new_translation);
-        Matrix4x4 scale_matrix = Matrix4x4::BuildScaleMatrix(1.f, 1.f, 1.f);
-        Matrix4x4 axis_model_matrix = translation_matrix * scale_matrix;
-
-        m_TranslationAxis.m_ModelMatrix = axis_model_matrix;
-        m_RotationAxis.m_ModelMatrix = axis_model_matrix;
-        m_ScaleAixs.m_ModelMatrix = axis_model_matrix;
-
-        GET_SYSTEM(RenderSystem)->SetVisibleAxis(m_TranslationAxis);
-
-        transform_component->SetLocalPosition(new_translation);
-        transform_component->SetLocalRotation(new_rotation);
-        transform_component->SetLocalScale(new_scale);
+        const float pixel_to_world = ComputePixelToWorldScale(*m_Camera,
+                                                              world_pivot,
+                                                              engine_window_size.x,
+                                                              engine_window_size.y);
+        const float world_along_axis = delta_mouse_move_uv.dotProduct(screen_axis_dir) * pixel_to_world;
+        transform_component->SetPosition(world_pivot + world_axis * world_along_axis);
+        m_SelectedObjectMatrix = transform_component->GetLocalToWorldMatrix();
+        DrawSelectedEntityAxis();
+        return;
     }
     else if (m_AxisMode == EditorAxisMode::RotateMode)  // rotate
     {

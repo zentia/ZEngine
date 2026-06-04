@@ -261,22 +261,15 @@ namespace
         const Matrix4x4 view_proj =
             camera->GetProjectionMatrixForAspect(aspect) * camera->getLookAtMatrix();
 
-        const float distance = (camera->position() - pivot).length();
-        const Matrix4x4 proj = camera->GetProjectionMatrixForAspect(aspect);
-        const float proj_scale_x = std::max(std::abs(proj[0][0]), 1e-4f);
-        constexpr float k_gizmo_mesh_extent = 2.0f;
-        const float uniform_scale = std::max(
-            distance * 4.0f * EditorSceneManager::kEditorGizmoViewportFraction /
-                (rect.width * proj_scale_x * k_gizmo_mesh_extent),
-            0.05f);
-        const float axis_len = k_gizmo_mesh_extent * uniform_scale;
+        const float axis_len =
+            EditorSceneManager::ComputeGizmoAxisLengthWorld(*camera, pivot, rect.width, rect.height);
 
         const Matrix4x4 rot_mat(rotation);
         const Vector3 axis_x(rot_mat[0][0], rot_mat[1][0], rot_mat[2][0]);
         const Vector3 axis_y(rot_mat[0][1], rot_mat[1][1], rot_mat[2][1]);
         const Vector3 axis_z(rot_mat[0][2], rot_mat[1][2], rot_mat[2][2]);
 
-        constexpr float k_axis_line_thickness = 2.5f;
+        constexpr float k_axis_line_thickness = 3.5f;
         const UIColor axis_red(1.0f, 0.25f, 0.25f, 1.0f);
         const UIColor axis_green(0.25f, 1.0f, 0.35f, 1.0f);
         const UIColor axis_blue(0.35f, 0.55f, 1.0f, 1.0f);
