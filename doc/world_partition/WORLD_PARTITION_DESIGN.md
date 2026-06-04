@@ -71,6 +71,11 @@ Example: `engine/asset/world/partition_demo.world.json`. Set `DefaultWorld=asset
 
 Console: `wp.status` reports pending cell count; `wp.cells` lists active level URLs.
 
+## Large World Coordinates
+
+See **`doc/world_partition/LARGE_WORLD_COORDINATES.md`** for UE-style LWC (double world + render tiles).
+Enable with `r.LWC.Enable 1` or env `ZENGINE_LWC_ENABLE=1`.
+
 ## Next steps (V3+)
 
 - Data layers / HLOD actor packing.

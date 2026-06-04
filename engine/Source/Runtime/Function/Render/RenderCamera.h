@@ -2,6 +2,7 @@
 
 #include "Runtime/BaseClasses/PPtr.h"
 #include "Runtime/Core/Math/MathHeaders.h"
+#include "Runtime/Core/Math/Vector3d.h"
 #include "Runtime/Core/Math/Rect.h"
 #include "Runtime/Function/Framework/Component/Behaviour.h"
 #include "Runtime/Function/Render/Texture/RenderTexture.h"
@@ -26,6 +27,7 @@ public:
     static const Vector3 X, Y, Z;
 
     Vector3 m_Position {0.0f, 0.0f, 0.0f};
+    Vector3d m_WorldPositionD {0.0, 0.0, 0.0};
     Quaternion m_Rotation {Quaternion::IDENTITY};
     Quaternion m_Invrotation {Quaternion::IDENTITY};
     float m_Znear {1000.0f};
@@ -68,7 +70,12 @@ public:
     const std::string& getTargetTexture() const { return m_TargetTextureId; }
     bool hasTargetTexture() const { return !m_TargetTextureId.empty(); }
 
-    Vector3 position() const { return m_Position; }
+    /// Render-space position (LWC: relative to current tile; otherwise absolute float).
+    Vector3 position() const;
+    Vector3d worldPosition() const { return m_WorldPositionD; }
+    void SetWorldPosition(Vector3d world_position);
+    Vector3 GetPreViewTranslation() const;
+
     Quaternion rotation() const { return m_Rotation; }
 
     Vector3 forward() const { return (m_Invrotation * Y); }

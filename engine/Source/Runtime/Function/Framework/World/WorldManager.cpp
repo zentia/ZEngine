@@ -1,6 +1,8 @@
 #include "WorldManager.h"
 
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Math/LargeWorldCoordinates.h"
+#include "Runtime/Core/Math/Vector3d.h"
 #include "Runtime/Function/Character/Character.h"
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -60,6 +62,11 @@ void WorldManager::Tick(float delta_time)
     {
         m_CurrentActiveLevel->Tick(delta_time);
         m_LevelDebugger->Tick(m_CurrentActiveLevel);
+    }
+
+    if (LargeWorldCoordinates::IsEnabled())
+    {
+        LargeWorldCoordinates::SetRenderTileFromWorldPosition(Vector3d(GetWorldPartitionStreamingSource()));
     }
 }
 

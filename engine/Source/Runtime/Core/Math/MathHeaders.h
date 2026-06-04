@@ -10,4 +10,6 @@
 #include "Runtime/Core/Math/LocalTransform.h"
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector3.h"
+#include "Runtime/Core/Math/Vector3d.h"
 #include "Runtime/Core/Math/Vector4.h"
+#include "Runtime/Core/Math/LargeWorldCoordinates.h"

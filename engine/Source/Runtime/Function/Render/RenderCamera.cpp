@@ -1,5 +1,6 @@
 #include "Runtime/Function/Render/RenderCamera.h"
 
+#include "Runtime/Core/Math/LargeWorldCoordinates.h"
 #include "Runtime/Core/Math/Rect.h"
 
 #include <algorithm>
@@ -30,11 +31,41 @@ void RenderCamera::SetMainViewMatrix(const Matrix4x4& view_matrix, RenderCameraT
     Vector3 u = Vector3(view_matrix[1][0], view_matrix[1][1], view_matrix[1][2]);
     Vector3 f = Vector3(-view_matrix[2][0], -view_matrix[2][1], -view_matrix[2][2]);
     m_Position = s * (-view_matrix[0][3]) + u * (-view_matrix[1][3]) + f * view_matrix[2][3];
+    m_WorldPositionD = Vector3d(m_Position);
+}
+
+Vector3 RenderCamera::position() const
+{
+    if (LargeWorldCoordinates::IsEnabled())
+    {
+        return LargeWorldCoordinates::WorldToRender(m_WorldPositionD);
+    }
+    return m_Position;
+}
+
+void RenderCamera::SetWorldPosition(Vector3d world_position)
+{
+    m_WorldPositionD = world_position;
+    m_Position = world_position.ToVector3();
+}
+
+Vector3 RenderCamera::GetPreViewTranslation() const
+{
+    return LargeWorldCoordinates::GetPreViewTranslation(m_WorldPositionD);
 }
 
 void RenderCamera::move(Vector3 delta)
 {
-    m_Position += delta;
+    if (LargeWorldCoordinates::IsEnabled())
+    {
+        m_WorldPositionD += Vector3d(delta);
+        m_Position = LargeWorldCoordinates::WorldToRender(m_WorldPositionD);
+    }
+    else
+    {
+        m_Position += delta;
+        m_WorldPositionD = Vector3d(m_Position);
+    }
 }
 
 void RenderCamera::Rotate(Vector2 delta)
@@ -68,7 +99,7 @@ void RenderCamera::Zoom(float offset)
 
 void RenderCamera::LookAt(const Vector3& position, const Vector3& target, const Vector3& up)
 {
-    m_Position = position;
+    SetWorldPosition(Vector3d(position));
 
     // model rotation
     // maps vectors to camera space (x, y, z)

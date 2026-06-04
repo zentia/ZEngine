@@ -1,5 +1,6 @@
 #include "BaseRenderer.h"
 
+#include "Runtime/Core/Math/LargeWorldCoordinates.h"
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Component/Transform/TransformChangeDispatch.h"
@@ -225,8 +226,9 @@ void BaseRenderer::OnSerializedFieldsUpdated()
 
 std::vector<GameObjectPartDesc> BaseRenderer::BuildRenderParts(const Transform* transform_component) const
 {
-    const Matrix4x4 object_transform =
+    Matrix4x4 object_transform =
         transform_component != nullptr ? transform_component->GetLocalToWorldMatrix() : Matrix4x4::IDENTITY;
+    object_transform = LargeWorldCoordinates::ApplyRenderOriginToModelMatrix(object_transform);
 
     std::vector<GameObjectPartDesc> render_parts;
     render_parts.reserve(m_SubMeshes.size());

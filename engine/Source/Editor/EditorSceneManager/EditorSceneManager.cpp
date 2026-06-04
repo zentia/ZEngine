@@ -1,5 +1,7 @@
 #include "EditorSceneManager.h"
 
+#include "Runtime/Core/Math/LargeWorldCoordinates.h"
+
 #include "Editor/EditorProjectPrefs/EditorProjectPrefs.h"
 #include "Editor/WorldPartition/WorldPartitionEditorDebug.h"
 #include "Editor/EditorUI/ContentBrowser/ContentBrowserHelpers.h"
@@ -215,6 +217,11 @@ void EditorSceneManager::Tick(float delta_time)
     }
 
     RefreshMainWindowTitle();
+
+    if (LargeWorldCoordinates::IsEnabled() && m_Camera != nullptr)
+    {
+        LargeWorldCoordinates::SetRenderTileFromWorldPosition(m_Camera->worldPosition());
+    }
 
     if (auto world = GET_SYSTEM(WorldManager))
     {

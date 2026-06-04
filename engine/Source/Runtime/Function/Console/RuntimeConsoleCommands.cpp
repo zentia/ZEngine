@@ -3,6 +3,7 @@
 #include "ConsoleManager.h"
 #include "Runtime/Application/Application.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
+#include "Runtime/Function/Render/LargeWorldCoordinatesSettings.h"
 #include "Runtime/Function/Render/Pipeline/RenderPipelineSettings.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UMG/Asset/UMGAssetIO.h"
@@ -147,4 +148,5 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
     // Cross-platform render path selection (Desktop deferred vs Mobile forward).
     // The RenderSystem applies a change at the next safe frame boundary.
     RenderPipelineSettings::RegisterConsoleVariables(console);
+    LargeWorldCoordinatesSettings::RegisterConsoleVariables(console);
 }
