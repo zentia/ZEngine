@@ -1,7 +1,10 @@
 #include "Runtime/Function/Framework/Component/Transform/TransformHierarchy.h"
 
+#include "Runtime/Core/Math/LargeWorldCoordinates.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Component/Transform/TransformChangeDispatch.h"
+
+#include <EASTL/vector.h>
 
 #include <algorithm>
 #include <cassert>
@@ -392,6 +395,64 @@ LocalTransform& GetLocalTRSWritable(TransformAccess access)
     return access.hierarchy->local_transforms[access.index];
 }
 
+namespace
+{
+    void CollectTransformChain(TransformAccessReadOnly access, eastl::vector<int32_t>& out_chain)
+    {
+        out_chain.clear();
+        if (!access.IsValid())
+        {
+            return;
+        }
+
+        for (int32_t index = access.index; index >= 0; index = access.hierarchy->parent_indices[index])
+        {
+            out_chain.push_back(index);
+        }
+
+        if (out_chain.size() > 1)
+        {
+            eastl::reverse(out_chain.begin(), out_chain.end());
+        }
+    }
+
+    Matrix4x4 CalculateGlobalMatrixLegacy(TransformAccessReadOnly access)
+    {
+        Matrix4x4 world = GetLocalTRS(access).getMatrix();
+        int32_t parent = access.hierarchy->parent_indices[access.index];
+        while (parent >= 0)
+        {
+            world = access.hierarchy->local_transforms[parent].getMatrix() * world;
+            parent = access.hierarchy->parent_indices[parent];
+        }
+        return world;
+    }
+
+    Vector3d ComposeGlobalPositionD(TransformAccessReadOnly access)
+    {
+        eastl::vector<int32_t> chain;
+        CollectTransformChain(access, chain);
+
+        Vector3d position {0.0, 0.0, 0.0};
+        Quaternion rotation {Quaternion::IDENTITY};
+        Vector3 scale {Vector3::UNIT_SCALE};
+
+        for (const int32_t index : chain)
+        {
+            const LocalTransform& local = access.hierarchy->local_transforms[index];
+            const Vector3 scaled_local(
+                static_cast<float>(local.m_Position.x * scale.x),
+                static_cast<float>(local.m_Position.y * scale.y),
+                static_cast<float>(local.m_Position.z * scale.z));
+            position = position + Vector3d(rotation * scaled_local);
+            rotation = rotation * local.m_Rotation;
+            scale = scale * local.m_Scale;
+        }
+
+        return position;
+    }
+}  // namespace
+
 Matrix4x4 CalculateGlobalMatrix(TransformAccessReadOnly access)
 {
     if (!access.IsValid())
@@ -399,19 +460,40 @@ Matrix4x4 CalculateGlobalMatrix(TransformAccessReadOnly access)
         return Matrix4x4::IDENTITY;
     }
 
-    Matrix4x4 world = GetLocalTRS(access).getMatrix();
-    int32_t parent = access.hierarchy->parent_indices[access.index];
-    while (parent >= 0)
+    if (LargeWorldCoordinates::IsEnabled())
     {
-        world = access.hierarchy->local_transforms[parent].getMatrix() * world;
-        parent = access.hierarchy->parent_indices[parent];
+        const Vector3d world_position = ComposeGlobalPositionD(access);
+        Vector3 legacy_position;
+        Vector3 scale;
+        Quaternion rotation;
+        CalculateGlobalMatrixLegacy(access).Decomposition(legacy_position, scale, rotation);
+        const Vector3 render_position = LargeWorldCoordinates::WorldToRender(world_position);
+        Matrix4x4 world;
+        world.MakeTransform(render_position, scale, rotation);
+        return world;
     }
-    return world;
+
+    return CalculateGlobalMatrixLegacy(access);
+}
+
+Vector3d CalculateGlobalPositionD(TransformAccessReadOnly access)
+{
+    if (!access.IsValid())
+    {
+        return Vector3d::ZERO;
+    }
+
+    return ComposeGlobalPositionD(access);
 }
 
 Vector3 CalculateGlobalPosition(TransformAccessReadOnly access)
 {
-    return CalculateGlobalMatrix(access).GetTrans();
+    const Vector3d world_position = CalculateGlobalPositionD(access);
+    if (LargeWorldCoordinates::IsEnabled())
+    {
+        return LargeWorldCoordinates::WorldToRender(world_position);
+    }
+    return world_position.ToVector3();
 }
 
 Quaternion CalculateGlobalRotation(TransformAccessReadOnly access)
@@ -469,7 +551,7 @@ Vector3 InverseTransformVector(TransformAccessReadOnly access, const Vector3& wo
 namespace TransformInternal
 {
     void InitLocalTRS(TransformAccess access,
-                      const Vector3& position,
+                      const Vector3d& position,
                       const Quaternion& rotation,
                       const Vector3& scale)
     {

@@ -70,6 +70,12 @@ inline void JSONWrite::TransferBasicData<float>(float& data)
 }
 
 template<>
+inline void JSONWrite::TransferBasicData<double>(double& data)
+{
+    m_CurrentNode->SetDouble(data);
+}
+
+template<>
 inline void JSONWrite::TransferBasicData<char>(char& data)
 {
     m_CurrentNode->SetUint(data);

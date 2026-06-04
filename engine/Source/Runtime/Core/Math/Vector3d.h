@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Core/Math/Vector3.h"
+#include "Runtime/Core/Serialize/SerializeUtility.h"
 
 #include <cmath>
 
@@ -8,6 +9,8 @@
 class Vector3d
 {
 public:
+    DECLARE_SERIALIZE(Vector3d)
+
     double x {0.0};
     double y {0.0};
     double z {0.0};
@@ -81,4 +84,16 @@ public:
     {
         return Vector3(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z));
     }
+
+    static const Vector3d ZERO;
 };
+
+template<typename TransferFunction>
+void Vector3d::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(x, "x");
+    transfer.Transfer(y, "y");
+    transfer.Transfer(z, "z");
+}
+
+inline const Vector3d Vector3d::ZERO {0.0, 0.0, 0.0};

@@ -1548,6 +1548,7 @@ as lost work.
 | Data Inspector | AGENTS.md 2.2 Data | Row add/remove, column reorder, `.xlsx` write-back out of V1 scope. |
 | RenderDoc | `doc/DX12_SUBPASS_RHI.md` | Manual checklist only. |
 | World Partition V3+ | `doc/world_partition/WORLD_PARTITION_DESIGN.md` | V1+V2 landed: grid streaming, async preload, level ref-count, render delete on unload, editor cell overlay. Data layers / HLOD / per-cell `.zasset` LevelRes still open. |
+| LWC (Large World Coordinates) | `doc/world_partition/LARGE_WORLD_COORDINATES.md` | L1+L2 landed: `r.LWC.Enable`, 2^21 render tiles, `Vector3d` transform/hierarchy, schema read float / write double. L3 shader types + L4 per-cell origins open. |
 
 
 

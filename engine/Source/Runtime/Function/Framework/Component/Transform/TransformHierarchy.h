@@ -3,6 +3,7 @@
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector3.h"
+#include "Runtime/Core/Math/Vector3d.h"
 #include "Runtime/Function/Framework/Component/Transform/TransformHierarchyTypes.h"
 
 class Transform;
@@ -39,6 +40,7 @@ const LocalTransform& GetLocalTRS(TransformAccessReadOnly access);
 LocalTransform& GetLocalTRSWritable(TransformAccess access);
 
 Matrix4x4 CalculateGlobalMatrix(TransformAccessReadOnly access);
+Vector3d CalculateGlobalPositionD(TransformAccessReadOnly access);
 Vector3 CalculateGlobalPosition(TransformAccessReadOnly access);
 Quaternion CalculateGlobalRotation(TransformAccessReadOnly access);
 Vector3 CalculateGlobalScaleLossy(TransformAccessReadOnly access);
@@ -53,7 +55,7 @@ Vector3 InverseTransformVector(TransformAccessReadOnly access, const Vector3& wo
 namespace TransformInternal
 {
     void InitLocalTRS(TransformAccess access,
-                      const Vector3& position,
+                      const Vector3d& position,
                       const Quaternion& rotation,
                       const Vector3& scale);
 

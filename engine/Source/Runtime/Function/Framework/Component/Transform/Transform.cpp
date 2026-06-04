@@ -4,6 +4,7 @@
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/TransformChangeDispatch.h"
+#include "Runtime/Core/Math/LargeWorldCoordinates.h"
 #include "Runtime/Function/Framework/Component/Transform/TransformHierarchy.h"
 #include "Runtime/Function/Framework/Component/Transform/TransformSceneRoots.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
@@ -46,7 +47,7 @@ namespace
         g_TransformSystemsRegistered = true;
     }
 
-    LocalTransform MakeLocalTransform(const Vector3& position, const Quaternion& rotation, const Vector3& scale)
+    LocalTransform MakeLocalTransform(const Vector3d& position, const Quaternion& rotation, const Vector3& scale)
     {
         return LocalTransform(position, rotation, scale);
     }
@@ -76,7 +77,21 @@ void Transform::Transfer(TransferFunction& transfer)
     Super::Transfer(transfer);
 
     transfer.Transfer(m_LocalRotation, "m_LocalRotation");
-    transfer.Transfer(m_LocalPosition, "m_LocalPosition");
+    if constexpr (TransferFunction::IsReading())
+    {
+        transfer.Transfer(m_LocalPositionLegacy, "m_LocalPosition");
+        transfer.Transfer(m_LocalPosition, "m_LocalPositionD");
+        if (m_LocalPosition == Vector3d::ZERO && m_LocalPositionLegacy != Vector3::ZERO)
+        {
+            m_LocalPosition = Vector3d(m_LocalPositionLegacy);
+        }
+    }
+    else
+    {
+        transfer.Transfer(m_LocalPosition, "m_LocalPositionD");
+        m_LocalPositionLegacy = m_LocalPosition.ToVector3();
+        transfer.Transfer(m_LocalPositionLegacy, "m_LocalPosition");
+    }
     transfer.Transfer(m_LocalScale, "m_LocalScale");
 
     if constexpr (TransferFunction::IsWriting())
@@ -127,6 +142,7 @@ void Transform::ApplySerializedLocalToBuffers()
          m_LegacyTransformBlob.m_Scale != default_trs.m_Scale))
     {
         m_LocalPosition = m_LegacyTransformBlob.m_Position;
+        m_LocalPositionLegacy = m_LocalPosition.ToVector3();
         m_LocalRotation = m_LegacyTransformBlob.m_Rotation;
         m_LocalScale = m_LegacyTransformBlob.m_Scale;
     }
@@ -242,13 +258,18 @@ void Transform::OnSerializedFieldsUpdated()
     MarkTransformDirty(true);
 }
 
-Vector3 Transform::GetLocalPosition() const
+Vector3d Transform::GetLocalPositionD() const
 {
     if (IsTransformHierarchyInitialized())
     {
         return GetLocalTRS(GetTransformAccessReadOnly()).m_Position;
     }
     return m_LocalPosition;
+}
+
+Vector3 Transform::GetLocalPosition() const
+{
+    return GetLocalPositionD().ToVector3();
 }
 
 Quaternion Transform::GetLocalRotation() const
@@ -269,9 +290,10 @@ Vector3 Transform::GetLocalScale() const
     return m_LocalScale;
 }
 
-void Transform::SetLocalPosition(const Vector3& local_position)
+void Transform::SetLocalPosition(const Vector3d& local_position)
 {
     m_LocalPosition = local_position;
+    m_LocalPositionLegacy = local_position.ToVector3();
     m_LocalTransformBuffer[m_CurrentIndex].m_Position = local_position;
     m_LocalTransformBuffer[m_NextIndex].m_Position = local_position;
 
@@ -354,13 +376,22 @@ Matrix4x4 Transform::GetWorldToLocalMatrix() const
     return GetLocalToWorldMatrix().InverseAffine();
 }
 
-Vector3 Transform::GetPosition() const
+Vector3d Transform::GetWorldPositionD() const
 {
     if (IsTransformHierarchyInitialized())
     {
-        return CalculateGlobalPosition(GetTransformAccessReadOnly());
+        return CalculateGlobalPositionD(GetTransformAccessReadOnly());
     }
-    return GetLocalToWorldMatrix().GetTrans();
+    return Vector3d(GetLocalToWorldMatrix().GetTrans());
+}
+
+Vector3 Transform::GetPosition() const
+{
+    if (LargeWorldCoordinates::IsEnabled())
+    {
+        return LargeWorldCoordinates::WorldToRender(GetWorldPositionD());
+    }
+    return GetWorldPositionD().ToVector3();
 }
 
 Quaternion Transform::GetRotation() const
@@ -403,14 +434,33 @@ void Transform::GetLocalPositionAndRotation(Vector3& local_position, Quaternion&
     local_rotation = GetLocalRotation();
 }
 
-void Transform::SetPosition(const Vector3& world_position)
+void Transform::SetPosition(const Vector3d& world_position)
 {
     if (m_Father == nullptr)
     {
         SetLocalPosition(world_position);
         return;
     }
-    SetLocalPosition(m_Father->InverseTransformPoint(world_position));
+
+    const Vector3d parent_world = m_Father->GetWorldPositionD();
+    const Quaternion parent_rotation = m_Father->GetRotation();
+    const Vector3 parent_scale = m_Father->GetLossyScale();
+    Vector3 delta_float = (world_position - parent_world).ToVector3();
+    delta_float = parent_rotation.inverse() * delta_float;
+    Vector3d delta(delta_float);
+    if (std::abs(parent_scale.x) > 1e-8)
+    {
+        delta.x /= parent_scale.x;
+    }
+    if (std::abs(parent_scale.y) > 1e-8)
+    {
+        delta.y /= parent_scale.y;
+    }
+    if (std::abs(parent_scale.z) > 1e-8)
+    {
+        delta.z /= parent_scale.z;
+    }
+    SetLocalPosition(delta);
 }
 
 void Transform::SetRotation(const Quaternion& world_rotation)
@@ -1049,7 +1099,7 @@ bool Transform::SetParent(Transform* new_parent, SetParentOptions options)
         Vector3 new_scale;
         Quaternion new_rotation;
         local_after.Decomposition(new_position, new_scale, new_rotation);
-        SetLocalPosition(new_position);
+        SetLocalPosition(Vector3d(new_position));
         SetLocalScale(new_scale);
         SetLocalRotation(new_rotation);
     }

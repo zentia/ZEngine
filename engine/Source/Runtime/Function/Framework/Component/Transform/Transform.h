@@ -6,6 +6,7 @@
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector3.h"
+#include "Runtime/Core/Math/Vector3d.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Transform/TransformAccess.h"
 #include "Runtime/Function/Framework/Component/Transform/TransformChangeSystemMask.h"
@@ -38,21 +39,25 @@ public:
     void OnSerializedFieldsUpdated() override;
 
     // ---- local space ----
+    Vector3d GetLocalPositionD() const;
     Vector3 GetLocalPosition() const;
     Quaternion GetLocalRotation() const;
     Vector3 GetLocalScale() const;
 
-    void SetLocalPosition(const Vector3& local_position);
+    void SetLocalPosition(const Vector3d& local_position);
+    void SetLocalPosition(const Vector3& local_position) { SetLocalPosition(Vector3d(local_position)); }
     void SetLocalRotation(const Quaternion& local_rotation);
     void SetLocalScale(const Vector3& local_scale);
     void SetLocalPositionAndRotation(const Vector3& local_position, const Quaternion& local_rotation);
 
     // ---- world space ----
+    Vector3d GetWorldPositionD() const;
     Vector3 GetPosition() const;
     Quaternion GetRotation() const;
     Vector3 GetLossyScale() const;
 
-    void SetPosition(const Vector3& world_position);
+    void SetPosition(const Vector3d& world_position);
+    void SetPosition(const Vector3& world_position) { SetPosition(Vector3d(world_position)); }
     void SetRotation(const Quaternion& world_rotation);
     void SetPositionAndRotation(const Vector3& world_position, const Quaternion& world_rotation);
 
@@ -120,7 +125,8 @@ public:
     Transform* GetPrevSceneRoot() const { return m_PrevSceneRoot; }
 
 protected:
-    Vector3 m_LocalPosition {Vector3::ZERO};
+    Vector3 m_LocalPositionLegacy {Vector3::ZERO};
+    Vector3d m_LocalPosition {Vector3d::ZERO};
     Quaternion m_LocalRotation {Quaternion::IDENTITY};
     Vector3 m_LocalScale {Vector3::UNIT_SCALE};
 

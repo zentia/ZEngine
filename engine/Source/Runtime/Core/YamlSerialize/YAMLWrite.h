@@ -84,6 +84,12 @@ inline void YAMLWrite::TransferBasicData<float>(float& data)
 }
 
 template<>
+inline void YAMLWrite::TransferBasicData<double>(double& data)
+{
+    m_CurrentNode->SetDouble(data);
+}
+
+template<>
 inline void YAMLWrite::TransferBasicData<char>(char& data)
 {
     m_CurrentNode->SetUint(data);

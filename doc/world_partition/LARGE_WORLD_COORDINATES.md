@@ -37,11 +37,15 @@ Shaders: `LargeWorldCoordinates.ush` splits values into **Tile** (large, shared 
 
 This fixes GPU jitter for distant cells **without** migrating every `Transform` field to `double` yet.
 
-### L2 (planned) -- authoritative double transforms
+### L2 (landed) -- authoritative double transforms
 
-- `Transform` / `TransformHierarchy` store `Vector3d` local position (and optionally scale).
-- Scene / prefab YAML: read old `float`, write `double`.
-- Editor gizmo + picking in absolute double, narrow to render space at the viewport boundary.
+- `LocalTransform::m_Position` and `Transform::m_LocalPosition` are `Vector3d`.
+- `TransformHierarchy` composes world translation in double (`CalculateGlobalPositionD`).
+- Serialization: read legacy `m_LocalPosition` / `m_position` floats, write `m_LocalPositionD` / `m_positionD`.
+- `Transform::GetWorldPositionD()` / `SetPosition(Vector3d)` for absolute world edits.
+- `GetPosition()` still returns render-space `Vector3` when `r.LWC.Enable` is on.
+
+Remaining L2 gaps: editor inspector fields as double, gizmo picking in absolute double (uses render-space today).
 
 ### L3 (planned) -- shader LWC types
 

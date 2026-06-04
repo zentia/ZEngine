@@ -269,7 +269,7 @@ void Bone::Initialize(RawBone* definition, Bone* parent_bone)
     {
         m_Name = definition->name;
         SetOrientation(definition->binding_pose.m_Rotation);
-        SetPosition(definition->binding_pose.m_Position);
+        SetPosition(definition->binding_pose.m_Position.ToVector3());
         SetScale(definition->binding_pose.m_Scale);
         m_InverseTpose = definition->tpose_matrix;
         SetAsInitialPose();

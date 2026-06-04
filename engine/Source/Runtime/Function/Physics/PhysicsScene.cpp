@@ -115,13 +115,17 @@ uint32_t PhysicsScene::CreateRigidBody(const LocalTransform& global_transform,
     JPH::Ref<JPH::StaticCompoundShapeSettings> compund_shape_setting = new JPH::StaticCompoundShapeSettings;
     for (const JPHShapeData& shape_data : jph_shapes)
     {
-        compund_shape_setting->AddShape(toVec3(shape_data.local_transform.m_Position * shape_data.global_scale),
+        const Vector3d scaled_shape_position(
+            shape_data.local_transform.m_Position.x * shape_data.global_scale.x,
+            shape_data.local_transform.m_Position.y * shape_data.global_scale.y,
+            shape_data.local_transform.m_Position.z * shape_data.global_scale.z);
+        compund_shape_setting->AddShape(toVec3(scaled_shape_position.ToVector3()),
                                         toQuat(shape_data.local_transform.m_Rotation),
                                         shape_data.shape);
     }
 
     JPH::Body* jph_body = body_interface.CreateBody(JPH::BodyCreationSettings(compund_shape_setting,
-                                                                              toVec3(global_transform.m_Position),
+                                                                              toVec3(global_transform.m_Position.ToVector3()),
                                                                               toQuat(global_transform.m_Rotation),
                                                                               motion_type,
                                                                               layer));
@@ -153,7 +157,7 @@ void PhysicsScene::UpdateRigidBodyGlobalTransform(uint32_t body_id, const LocalT
     JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
 
     body_interface.SetPositionAndRotation(JPH::BodyID(body_id),
-                                          toVec3(global_transform.m_Position),
+                                          toVec3(global_transform.m_Position.ToVector3()),
                                           toQuat(global_transform.m_Rotation),
                                           JPH::EActivation::Activate);
 }

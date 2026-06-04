@@ -860,7 +860,7 @@ namespace
                     v.z = ParseFloat(p2->Text);
                     if (which == 0)
                     {
-                        t.m_Position = v;
+                        t.m_Position = Vector3d(v);
                     }
                     else if (which == 2)
                     {
@@ -924,7 +924,7 @@ namespace
                 if (s < subs.size())
                 {
                     const LocalTransform& t = subs[s].m_Transform;
-                    const Vector3& p = t.m_Position;
+                    const Vector3 p = t.m_Position.ToVector3();
                     const Vector3& sc = t.m_Scale;
                     const Vector3 euler = EditorEuler::GetEulerHint(euler_key, t.m_Rotation);
                     for (int a = 0; a < 3; ++a)

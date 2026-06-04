@@ -66,7 +66,8 @@ void WorldManager::Tick(float delta_time)
 
     if (LargeWorldCoordinates::IsEnabled())
     {
-        LargeWorldCoordinates::SetRenderTileFromWorldPosition(Vector3d(GetWorldPartitionStreamingSource()));
+        const Vector3 streaming_source = GetWorldPartitionStreamingSource();
+        LargeWorldCoordinates::SetRenderTileFromWorldPosition(Vector3d(streaming_source));
     }
 }
 
@@ -134,7 +135,7 @@ Vector3 WorldManager::GetWorldPartitionStreamingSource() const
             {
                 if (Transform* transform = camera_object->tryGetComponent(Transform))
                 {
-                    return transform->GetPosition();
+                    return transform->GetWorldPositionD().ToVector3();
                 }
             }
         }
