@@ -420,6 +420,9 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
     EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager);
     const EditorAxisMode mode = scene_manager != nullptr ? scene_manager->getEditorAxisMode() : EditorAxisMode::TranslateMode;
     const bool scene_view_2d = scene_manager != nullptr && scene_manager->IsSceneView2D();
+    RenderSystem* render_system = GET_SYSTEM(RenderSystem);
+    const bool skybox_visible =
+        render_system != nullptr && render_system->IsSkyboxVisible(ViewportType::scene);
 
     auto bar = std::make_shared<SHorizontalBox>();
     const FMargin gap(3.0f * scale, 0.0f);
@@ -445,6 +448,23 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
             EditorSceneManager* sm = GET_SYSTEM(EditorSceneManager);
             if (sm != nullptr)
                 sm->SetSceneView2D(!scene_view_2d);
+        };
+        bar->AddSlot(btn).AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(gap);
+    }
+
+    // Skybox visibility (pressed = on, same affordance as the 2D toggle).
+    {
+        auto btn = std::make_shared<SButton>();
+        btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+        btn->VAlign = EVerticalAlignment::Center;
+        btn->NormalColor = skybox_visible ? kBtnSelected : kBtnNormal;
+        btn->HoverColor = skybox_visible ? kBtnSelectedHover : kBtnHover;
+        btn->PressedColor = skybox_visible ? kBtnSelected : kBtnNormal;
+        btn->SetContent(MakeText("Skybox", 13.0f * scale, kBtnText));
+        btn->OnClicked = [skybox_visible]() {
+            RenderSystem* rs = GET_SYSTEM(RenderSystem);
+            if (rs != nullptr)
+                rs->SetSkyboxVisible(ViewportType::scene, !skybox_visible);
         };
         bar->AddSlot(btn).AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(gap);
     }
@@ -478,22 +498,9 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
         bar->AddSlot(cam).AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(gap);
     }
 
-    {
-        auto disp = std::make_shared<SButton>();
-        disp->Padding = FMargin(8.0f * scale, 3.0f * scale);
-        disp->VAlign = EVerticalAlignment::Center;
-        disp->NormalColor = kBtnNormal;
-        disp->HoverColor = kBtnHover;
-        disp->PressedColor = kBtnNormal;
-        disp->SetContent(MakeText("Display", 13.0f * scale, kBtnText));
-        disp->OnClicked = [this, scale]() {
-            const FGeometry g = m_DisplayButton ? m_DisplayButton->GetCachedGeometry() : FGeometry();
-            const Vector2 anchor(g.AbsolutePosition.x, g.AbsolutePosition.y + g.LocalSize.y + 2.0f);
-            OpenDisplayMenu(anchor, scale);
-        };
-        m_DisplayButton = disp;
-        bar->AddSlot(disp).AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(FMargin(3.0f * scale, 0.0f, 8.0f * scale, 0.0f));
-    }
+    bar->AddSlot(std::make_shared<SSpacer>(Vector2(0.0f, 0.0f)))
+        .AutoSize()
+        .SetPadding(FMargin(0.0f, 0.0f, 5.0f * scale, 0.0f));
 
     auto bg = std::make_shared<SBorder>();
     bg->BackgroundColor = kToolbarBg;
@@ -506,19 +513,6 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
 // ----------------------------------------------------------------------------
 // Popups
 // ----------------------------------------------------------------------------
-
-void ZSlateSceneWindow::OpenDisplayMenu(const Vector2& anchor, float scale)
-{
-    m_CameraPanelOpen = false;
-    m_Popup.Open(anchor, scale, [](SMenu& menu, float s) {
-        menu.MinWidth = 160.0f * s;
-        const bool show = GET_SYSTEM(RenderSystem)->IsSkyboxVisible(ViewportType::scene);
-        menu.AddCheckItem("Skybox", show, []() {
-            const bool cur = GET_SYSTEM(RenderSystem)->IsSkyboxVisible(ViewportType::scene);
-            GET_SYSTEM(RenderSystem)->SetSkyboxVisible(ViewportType::scene, !cur);
-        }, s);
-    });
-}
 
 void ZSlateSceneWindow::OpenContextMenu(const Vector2& anchor, float scale)
 {
@@ -1295,13 +1289,17 @@ void ZSlateSceneWindow::OnGUI()
     EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager);
     const int axis_mode = scene_manager != nullptr ? static_cast<int>(scene_manager->getEditorAxisMode()) : 0;
     const bool scene_view_2d = scene_manager != nullptr && scene_manager->IsSceneView2D();
+    RenderSystem* render_system = GET_SYSTEM(RenderSystem);
+    const bool skybox_visible =
+        render_system != nullptr && render_system->IsSkyboxVisible(ViewportType::scene);
     if (m_Toolbar == nullptr || ui_scale != m_BuiltToolbarScale || axis_mode != m_BuiltAxisMode ||
-        scene_view_2d != m_BuiltSceneView2D)
+        scene_view_2d != m_BuiltSceneView2D || skybox_visible != m_BuiltSkyboxVisible)
     {
         BuildToolbar(ui_scale);
         m_BuiltToolbarScale = ui_scale;
         m_BuiltAxisMode = axis_mode;
         m_BuiltSceneView2D = scene_view_2d;
+        m_BuiltSkyboxVisible = skybox_visible;
         m_ToolbarInput.Reset();
     }
 
@@ -1421,7 +1419,7 @@ void ZSlateSceneWindow::OnGUI()
             m_CameraPanel->Paint(ctx, FGeometry(Vector2(px, py), size));
         }
 
-        // Popup (Display dropdown / context menu) on top of everything else.
+        // Popup (context menu) on top of everything else.
         if (m_Popup.IsOpen())
             m_Popup.Render(*renderer, mouse, left_down, over_toolbar ? 0.0f : wheel, viewport_rect, 2);
     }

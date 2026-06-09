@@ -59,6 +59,14 @@ struct FieldBinding
     // custom component sections (e.g. BaseRenderer) whose data is not a flat field.
     std::function<void()> custom_sync;
 };
+
+// Unity-style per-component enable checkbox on the section header row.
+struct ComponentEnableBinding
+{
+    size_t component_index {0};
+    std::shared_ptr<ZSlate::SCheckBox> check;
+    std::shared_ptr<ZSlate::STextBlock> title;
+};
 }  // namespace ZSlateInspectorDetail
 
 // P5 (extended): a ZSlate-rendered, dockable inspector that shows the selected
@@ -99,6 +107,10 @@ private:
     void BuildDataTableAsset(const std::filesystem::path& asset_path, const Type* asset_type, float scale);
     void BuildShaderAsset(const std::filesystem::path& asset_path, float scale);
 
+    // ASTC texture preview (Phase 6). Decompresses ASTC-compressed Texture2D
+    // and displays the RGBA8 result in the inspector.
+    void BuildASTCPreview(const std::filesystem::path& asset_path, float scale);
+
     // Popup-backed combo button (used by native asset inspectors). Returns an
     // SButton showing `current_label`; clicking raises m_Popup with `options`,
     // and choosing item i invokes on_select(i) + flags a rebuild.
@@ -110,6 +122,8 @@ private:
     void SyncBindings();
 
     std::shared_ptr<ZSlate::SWidget> m_Root;
+    std::shared_ptr<ZSlate::SCheckBox> m_GoActiveCheck;
+    std::vector<ZSlateInspectorDetail::ComponentEnableBinding> m_ComponentEnableBindings;
     std::shared_ptr<ZSlate::STextBlock> m_NameLabel;
     std::array<std::shared_ptr<ZSlate::SEditableTextBox>, 3> m_PositionFields {};
     std::array<std::shared_ptr<ZSlate::SEditableTextBox>, 3> m_RotationFields {};

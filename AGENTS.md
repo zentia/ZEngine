@@ -1233,6 +1233,9 @@ from importer code paths that may run on the same thread).
   Implementation: `Utility/DX12CubemapMipGen.{h,cpp}` on the dedicated
   upload command list.
 - Design / path-B landing notes: **`doc/DX12_SUBPASS_RHI.md`**.
+- **DX12 editor sky / IBL**: active path is RP1 deferred UNLIT -> specular
+  cubemap -> `backup_odd` HDR (not swapchain overlay). Full flow, UE
+  comparison, and RenderDoc checklist: **`doc/rendering/DX12_SKYBOX_RENDERING.md`**.
 
 ### 2.12 Local variable and assignment style
 

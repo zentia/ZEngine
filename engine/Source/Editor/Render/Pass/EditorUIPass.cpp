@@ -1,5 +1,7 @@
 ﻿#include "EditorUIPass.h"
 
+#include <array>
+
 #include "Editor/FloatingPanel/FloatingPanelManager.h"
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
@@ -9,6 +11,7 @@
 #endif
 #include "Runtime/Function/Render/RenderPipelineBase.h"
 #include "Runtime/Function/Render/RenderSystem.h"
+#include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UI/Core/WindowUI.h"
 
@@ -234,7 +237,12 @@ void EditorUIPass::Draw()
             if (zslate_overlay.IsNativeBackendEnabled())
             {
                 zslate_overlay.EnsurePipeline(m_Rhi, nullptr, 0);
+
                 zslate_overlay.DrawBatch(m_Rhi);
+
+                // Sky is composited in RP1 deferred (DX12MainCameraPass). A swapchain overlay
+                // pass would reinhard-sample HDR again on top of the tonemapped combine output.
+
                 // Editor tear-off: draw each floating panel onto its own swapchain.
                 // Runs after the main DrawBatch (pipeline is ready) and is presented
                 // by DX12RHI::SubmitRendering after the main swapchain present.

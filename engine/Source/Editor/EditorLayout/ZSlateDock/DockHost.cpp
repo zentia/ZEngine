@@ -1,5 +1,6 @@
 #include "Editor/EditorLayout/ZSlateDock/DockHost.h"
 
+#include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/EditorLayout/ZSlateDock/DockTree.h"
 #include "Runtime/UI/Render/BatchedUIRenderer.h"
 
@@ -97,6 +98,20 @@ namespace EditorDock
         tree.ForEachLeaf([&](DockNode& leaf) {
             if (leaf.NodeRect.width <= 1.0f || leaf.NodeRect.height <= 1.0f)
                 return;
+
+            // Scene / Game use EditorViewFlags_NoBackground: the swapchain already
+            // holds RP2+skybox in the panel work rect; an opaque fill would hide it.
+            if (!leaf.Tabs.empty())
+            {
+                const int active_tab =
+                    std::clamp(leaf.ActiveTab, 0, static_cast<int>(leaf.Tabs.size()) - 1);
+                const std::string& panel_id = leaf.Tabs[active_tab].PanelId;
+                if (panel_id == EditorLayoutWindowIds::kScene || panel_id == EditorLayoutWindowIds::kGame)
+                {
+                    return;
+                }
+            }
+
             // Opaque panel-area fill only. Recorded below the panel content (see
             // RenderBackgrounds doc in DockHost.h); the 1px frame + tab strip stay
             // in Render() at the foreground layer.

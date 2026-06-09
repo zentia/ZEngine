@@ -1,0 +1,48 @@
+{
+    "version": 6,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 24,
+        "patch": 0
+    },
+    "configurePresets": [
+        {
+            "name": "windows-dev",
+            "displayName": "RenderDoc Windows Development (x64)",
+            "description": "Debuggable Development build via CMake-selected VS 2022 MSBuild",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/../build/cmake-dev",
+            "cacheVariables": {
+                "RENDERDOC_CONFIG": "Development",
+                "RENDERDOC_PLATFORM_TOOLSET": "v143"
+            }
+        },
+        {
+            "name": "windows-release",
+            "displayName": "RenderDoc Windows Release (x64)",
+            "description": "Optimized Release build via CMake-selected VS 2022 MSBuild",
+            "generator": "Visual Studio 17 2022",
+            "architecture": "x64",
+            "binaryDir": "${sourceDir}/../build/cmake-release",
+            "cacheVariables": {
+                "RENDERDOC_CONFIG": "Release",
+                "RENDERDOC_PLATFORM_TOOLSET": "v143"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "windows-dev",
+            "displayName": "Build RenderDoc Development",
+            "configurePreset": "windows-dev",
+            "targets": ["renderdoc"]
+        },
+        {
+            "name": "windows-release",
+            "displayName": "Build RenderDoc Release",
+            "configurePreset": "windows-release",
+            "targets": ["renderdoc"]
+        }
+    ]
+}

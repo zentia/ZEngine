@@ -70,6 +70,7 @@
 #include <vector>
 
 using namespace ZSlate;
+using ZSlateInspectorDetail::ComponentEnableBinding;
 using ZSlateInspectorDetail::FieldBinding;
 using ZSlateInspectorDetail::FieldKind;
 
@@ -438,6 +439,28 @@ namespace
         return comps[index];
     }
 
+    bool IsGameObjectActive(const std::shared_ptr<GameObject>& go)
+    {
+        if (!go)
+            return false;
+        Transform* xf = go->tryGetComponent(Transform);
+        return xf == nullptr || xf->isEnabled();
+    }
+
+    void NotifyAllComponentsUpdated(GameObject* go)
+    {
+        if (go == nullptr)
+            return;
+        for (const auto& component_ptr : go->getComponents())
+        {
+            Component* component = static_cast<Component*>(component_ptr);
+            if (component != nullptr)
+                component->OnSerializedFieldsUpdated();
+        }
+        if (auto scene = GET_SYSTEM(EditorSceneManager))
+            scene->DrawSelectedEntityAxis();
+    }
+
     bool HasMetaFlag(TransferMetaFlags flags, TransferMetaFlags flag)
     {
         return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(flag)) != 0;
@@ -500,6 +523,10 @@ namespace
                         int depth)
     {
         if (HasMetaFlag(node.MetaFlags(), HideInEditorMask))
+            return;
+
+        // Component::m_Enabled is toggled from the section header checkbox (Unity style).
+        if (node.HasByteOffset() && node.Name() == "enabled")
             return;
 
         const bool read_only = HasMetaFlag(node.MetaFlags(), DisallowSerializedPropertyModification);
@@ -947,12 +974,38 @@ namespace
                                Component* component,
                                size_t comp_index,
                                std::vector<FieldBinding>& bindings,
+                               std::vector<ComponentEnableBinding>& enable_bindings,
                                float scale)
     {
         const std::string header = EditorPropertyDrawer::MakeTypeHeaderLabel(component->GetTypeName());
-        column->AddSlot(MakeText(header.c_str(), 16.0f * scale, kComponentHeaderColor))
+
+        auto header_row = std::make_shared<SHorizontalBox>();
+        auto enable_check = std::make_shared<SCheckBox>();
+        enable_check->BoxSize = 18.0f * scale;
+        enable_check->Checked = component->isEnabled();
+        enable_check->OnCheckStateChanged = [comp_index](bool enabled) {
+            Component* c = ResolveSelectedComponent(comp_index);
+            if (c == nullptr)
+                return;
+            c->SetEnabled(enabled);
+            c->OnSerializedFieldsUpdated();
+            if (auto scene = GET_SYSTEM(EditorSceneManager))
+                scene->DrawSelectedEntityAxis();
+        };
+        header_row->AddSlot(enable_check)
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 12.0f * scale, 0.0f, 6.0f * scale));
+            .SetVAlign(EVerticalAlignment::Center)
+            .SetPadding(FMargin(0.0f, 0.0f, 8.0f * scale, 0.0f));
+
+        auto title = MakeText(header.c_str(), 16.0f * scale, kComponentHeaderColor);
+        header_row->AddSlot(title).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
+        column->AddSlot(header_row).AutoSize().SetPadding(FMargin(0.0f, 12.0f * scale, 0.0f, 6.0f * scale));
+
+        ComponentEnableBinding enable_binding;
+        enable_binding.component_index = comp_index;
+        enable_binding.check = enable_check;
+        enable_binding.title = title;
+        enable_bindings.push_back(enable_binding);
 
         // BaseRenderer (incl. MeshRenderer) gets a dedicated layout: per-sub-mesh
         // mesh + material assets with read-only material introspection, mirroring
@@ -982,6 +1035,8 @@ ZSlateInspectorWindow::ZSlateInspectorWindow(EditorUI* editor_ui)
 
 void ZSlateInspectorWindow::BuildEmpty(float scale)
 {
+    m_GoActiveCheck = nullptr;
+    m_ComponentEnableBindings.clear();
     m_NameLabel = nullptr;
     m_PositionFields = {};
     m_RotationFields = {};
@@ -1436,6 +1491,35 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
         column->AddSlot(MakeText("Unsaved import setting changes.", 13.0f * scale, UIColor(1.0f, 0.85f, 0.2f, 1.0f)))
             .AutoSize()
             .SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
+
+    // ASTC Preview button (Phase 6)
+    {
+        // Check if texture is ASTC-compressed
+        bool is_astc = false;
+        
+        // Create a non-const copy for ReadObject (which takes std::filesystem::path&)
+        std::filesystem::path read_path = asset_path;
+        if (const auto tex = GET_SYSTEM(AssetManager)->ReadObject<Texture2D>(read_path))
+        {
+            // TODO: Check m_Format to confirm it's ASTC
+            // For now, assume all textures can be previewed
+            is_astc = true;  // TODO: Actually detect ASTC format
+        }
+
+        if (is_astc)
+        {
+            auto preview_btn = std::make_shared<SButton>();
+            preview_btn->Padding = FMargin(10.0f * scale, 4.0f * scale);
+            preview_btn->SetContent(MakeText("Preview ASTC", 14.0f * scale, kValueColor));
+            preview_btn->OnClicked = [this, asset_path]() {
+                // TODO: Open ASTCPreviewWindow
+                // Placeholder: log when ASTC preview is implemented
+            };
+
+            column->AddSlot(preview_btn);
+            // TODO: Apply AutoSize and SetPadding to the slot if needed
+        }
+    }
 
     wrap(column);
 }
@@ -2361,8 +2445,27 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
         return row;
     };
 
+    m_ComponentEnableBindings.clear();
+    m_GoActiveCheck = std::make_shared<SCheckBox>();
+    m_GoActiveCheck->BoxSize = 18.0f * scale;
+    m_GoActiveCheck->OnCheckStateChanged = [](bool active) {
+        auto go = EditorSelection::GetActiveGameObject().lock();
+        if (!go)
+            return;
+        Transform* xf = go->tryGetComponent(Transform);
+        if (xf == nullptr)
+            return;
+        xf->SetEnabled(active);
+        xf->OnSerializedFieldsUpdated();
+        NotifyAllComponentsUpdated(go.get());
+    };
+
     auto name_row = std::make_shared<SHorizontalBox>();
-    name_row->AddSlot(MakeLabelBox("Name", scale, 78.0f * scale)).AutoSize().SetVAlign(EVerticalAlignment::Center);
+    name_row->AddSlot(m_GoActiveCheck)
+        .AutoSize()
+        .SetVAlign(EVerticalAlignment::Center)
+        .SetPadding(FMargin(0.0f, 0.0f, 8.0f * scale, 0.0f));
+    name_row->AddSlot(MakeLabelBox("Name", scale, 70.0f * scale)).AutoSize().SetVAlign(EVerticalAlignment::Center);
     m_NameLabel = MakeText("", 15.0f * scale, kValueColor);
     name_row->AddSlot(m_NameLabel).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
 
@@ -2388,7 +2491,7 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
             Component* c = comps[i];
             if (c == nullptr || c == xf)
                 continue;
-            BuildComponentSection(column, c, i, m_Bindings, scale);
+            BuildComponentSection(column, c, i, m_Bindings, m_ComponentEnableBindings, scale);
         }
     }
 
@@ -2410,8 +2513,16 @@ void ZSlateInspectorWindow::SyncFromSelection()
     if (!go)
         return;
 
+    const bool object_active = IsGameObjectActive(go);
+
+    if (m_GoActiveCheck)
+        m_GoActiveCheck->Checked = object_active;
+
     if (m_NameLabel)
+    {
         m_NameLabel->Text = std::string(go->GetName().c_str());
+        m_NameLabel->Color = object_active ? kValueColor : kDimColor;
+    }
 
     Transform* xf = go->tryGetComponent(Transform);
     if (xf == nullptr)
@@ -2434,6 +2545,23 @@ void ZSlateInspectorWindow::SyncFromSelection()
 
 void ZSlateInspectorWindow::SyncBindings()
 {
+    auto go = EditorSelection::GetActiveGameObject().lock();
+    const bool object_active = IsGameObjectActive(go);
+
+    for (ComponentEnableBinding& enable_binding : m_ComponentEnableBindings)
+    {
+        Component* c = ResolveSelectedComponent(enable_binding.component_index);
+        if (c == nullptr)
+            continue;
+        if (enable_binding.check)
+            enable_binding.check->Checked = c->isEnabled();
+        if (enable_binding.title)
+        {
+            const bool show_enabled = object_active && c->isEnabled();
+            enable_binding.title->Color = show_enabled ? kComponentHeaderColor : kDimColor;
+        }
+    }
+
     for (FieldBinding& b : m_Bindings)
     {
         if (b.custom_sync)

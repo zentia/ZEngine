@@ -25,9 +25,9 @@ class SButton;
 // (NoBackground) panel; PlayModeView::UpdateViewport reports the panel work rect
 // to RenderSystem. What changed vs. the old SceneWindow is that the interactive
 // editor *chrome* now renders through ZSlate instead of ImGui:
-//   - Toolbar (axis-mode toggles, 2D toggle, Scene Camera / Display) -> ZSlate
+//   - Toolbar (axis-mode toggles, 2D toggle, Skybox toggle, Scene Camera) -> ZSlate
 //     SButtons painted into the reserved menu-bar strip, routed manually.
-//   - "Display" dropdown + right-click context menu -> ZSlatePopupMenu.
+//   - Right-click context menu -> ZSlatePopupMenu.
 //   - "Scene Camera" settings -> a ZSlate floating panel (sliders + checkboxes),
 //     hosted by a small inline controller (paint-on-top + route + outside-click
 //     dismiss).
@@ -62,8 +62,7 @@ private:
                                                     bool disabled,
                                                     float scale);
 
-    // --- Popups (Display dropdown + right-click context menu) ---------------
-    void OpenDisplayMenu(const Vector2& anchor, float scale);
+    // --- Popups (right-click context menu) ----------------------------------
     void OpenContextMenu(const Vector2& anchor, float scale);
 
     // --- Scene Camera settings panel ----------------------------------------
@@ -97,10 +96,10 @@ private:
     float m_BuiltToolbarScale {-1.0f};
     int m_BuiltAxisMode {-1};
     bool m_BuiltSceneView2D {false};
-    std::shared_ptr<ZSlate::SButton> m_DisplayButton;  // popup anchor (read cached geom)
+    bool m_BuiltSkyboxVisible {true};
     std::shared_ptr<ZSlate::SButton> m_CameraButton;
 
-    // Shared popup controller (only one of Display / context is open at a time).
+    // Shared popup controller (context menu).
     ZSlate::ZSlatePopupMenu m_Popup;
 
     // Scene Camera settings floating panel.

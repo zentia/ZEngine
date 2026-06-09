@@ -453,7 +453,12 @@ void DefaultLayout::RenderNativeMaximizedBackground(const UIRect& host_rect, flo
     m_MaximizedContentRect = content;
 
     // Opaque content-area fill only; recorded below the panel content.
-    renderer.drawQuad(content, style.PanelBg);
+    // Scene / Game: swapchain already holds the 3D view in this rect (same rule as DockHost).
+    if (m_MaximizedPanelId != EditorLayoutWindowIds::kScene &&
+        m_MaximizedPanelId != EditorLayoutWindowIds::kGame)
+    {
+        renderer.drawQuad(content, style.PanelBg);
+    }
 }
 
 void DefaultLayout::RenderNativeMaximized(const UIRect& host_rect, float scale)
