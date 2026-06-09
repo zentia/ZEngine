@@ -144,7 +144,7 @@ void RegisterRuntime(PreferredRHI preferred_rhi)
     RegisterSystem(preferred_rhi);
 }
 
-// ASTCPreview 等独立工具专用：只注册渲染/UI 必需系统，不包含
+// TexPreview 等独立工具专用：只注册渲染/UI 必需系统，不包含
 // ProjectInfo / ScriptingManager / ResourceManager 等编辑器系统。
 //
 // 注意：PlayerSettings 和 UserPreferences 依赖 ProjectInfo，因此这里不注册。
@@ -165,7 +165,6 @@ void RegisterRuntimeLight(PreferredRHI preferred_rhi)
     REGISTER_SYSTEM(PhysicsManager);
     REGISTER_SYSTEM(WorldManager);
     REGISTER_SYSTEM(InputSystem);
-    REGISTER_SYSTEM(ParticleManager);
 
     // 注册一个 RHI 实现（按平台选择）
 #if defined(Z_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(Z_PLATFORM_OHOS) || defined(__OHOS__)

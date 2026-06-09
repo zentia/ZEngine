@@ -1,18 +1,20 @@
 // =============================================================================
-// ASTCPreview - Standalone ASTC Texture Preview Tool
+// TexPreview - Standalone Block-Compressed Texture Preview Tool
 // -----------------------------------------------------------------------------
-// Bootstraps ZRuntime and hosts ASTCPreviewWindow inside SlateApplication.
+// Bootstraps ZRuntime and hosts TexPreviewWindow inside SlateApplication.
 //
 // Architecture:
 //   - RegisterRuntimeLight() registers core + WindowSystem + UISystem + RenderSystem
 //     (no ProjectInfo / ScriptingManager / ResourceManager).
 //   - START_SYSTEM() (true) lets WindowSystem create a GLFW window
 //     and UISystem install GLFW input callbacks + create UIRenderer.
-//   - We set ASTCPreviewWindow as the Slate root via SlateApplication.
+//   - We set TexPreviewWindow as the Slate root via SlateApplication.
 //   - UISystem::PreRender() paints the Slate root each frame.
-//   - ASTCPreviewWindow overrides OnMouseButtonDown/Move/Wheel for zoom/pan.
+//   - TexPreviewWindow overrides OnMouseButtonDown/Move/Wheel for zoom/pan.
 //
-// Usage:  ASTCPreview.exe [path\to\texture.astc]
+// Supported formats: ASTC (all block sizes), BC7
+//
+// Usage:  TexPreview.exe [path\to\texture.{astc,bc7}]
 // =============================================================================
 
 #include "Runtime/Core/Base/Macro.h"
@@ -23,7 +25,7 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Slate/Application/SlateApplication.h"
 
-#include "ASTCPreviewWindow.h"
+#include "TexPreviewWindow.h"
 
 #include <filesystem>
 #include <memory>
@@ -36,11 +38,11 @@
 namespace
 {
     std::filesystem::path g_TexturePath;
-    std::shared_ptr<ASTCPreviewWindow> g_PreviewWindow;
+    std::shared_ptr<TexPreviewWindow> g_PreviewWindow;
 
     void InitPreviewWindow()
     {
-        g_PreviewWindow = std::make_shared<ASTCPreviewWindow>();
+        g_PreviewWindow = std::make_shared<TexPreviewWindow>();
         if (!g_TexturePath.empty())
             g_PreviewWindow->SetTexture(g_TexturePath);
 
@@ -77,20 +79,10 @@ int main(int argc, char** argv)
 #endif
 
     // -------- Boot ZRuntime (light: core + rendering, no editor) -----
-    // RegisterRuntimeLight() registers:
-    //   Core:   CommonStringTable, TypeTreeCache, MemoryManager,
-    //           LLMTracker, FileSystem, AsyncReadManagerThreaded, ObjectManager
-    //   Render:  WindowSystem, PreloadManager, PhysicsManager,
-    //           WorldManager, InputSystem, ParticleManager,
-    //           (DX12|Vulkan)RHI, RenderSystem,
-    //           DebugDrawManager, RenderDebugConfig, ModuleManager, UISystem
-    //   NO:     ProjectInfo, ScriptingManager, ResourceManager, etc.
     RegisterRuntimeLight();
 
     // START_SYSTEM() = InitializeAll(true).
-    // The "true" lets WindowSystem create a GLFW window and UISystem
-    // install input callbacks.  This is required for Slate to render.
-    START_SYSTEM();
+    START_SYSTEM_WITHOUT_UI();
 
     // -------- Create & mount preview window ---------------------------------
     InitPreviewWindow();
@@ -99,7 +91,6 @@ int main(int argc, char** argv)
     GET_SYSTEM(WindowSystem)->ShowWindow();
 
     // Poll events once so GLFW updates the framebuffer size.
-    // Without this, getDisplaySize() may return (0,0) on the first frame.
     GET_SYSTEM(WindowSystem)->PollEvents();
 
     // -------- Main loop ----------------------------------------------------

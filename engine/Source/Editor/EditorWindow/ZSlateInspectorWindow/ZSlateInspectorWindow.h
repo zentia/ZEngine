@@ -107,9 +107,9 @@ private:
     void BuildDataTableAsset(const std::filesystem::path& asset_path, const Type* asset_type, float scale);
     void BuildShaderAsset(const std::filesystem::path& asset_path, float scale);
 
-    // ASTC texture preview (Phase 6). Decompresses ASTC-compressed Texture2D
-    // and displays the RGBA8 result in the inspector.
-    void BuildASTCPreview(const std::filesystem::path& asset_path, float scale);
+    // Block-compressed texture preview (Phase 6). Decompresses ASTC/BC7
+    // compressed Texture2D and displays the RGBA8 result in the inspector.
+    void BuildTexPreview(const std::filesystem::path& asset_path, float scale);
 
     // Popup-backed combo button (used by native asset inspectors). Returns an
     // SButton showing `current_label`; clicking raises m_Popup with `options`,

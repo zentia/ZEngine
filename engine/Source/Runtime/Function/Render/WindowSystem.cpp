@@ -60,15 +60,11 @@ void WindowSystem::Shutdown()
 
 bool WindowSystem::Initialize()
 {
-    WindowCreateInfo window_create_info;
-
     // 安全地获取可选系统（独立工具可能不注册这些）
     auto* user_prefs = SystemRegistry::GetInstance().GetSystem<UserPreferences>();
     auto* app = SystemRegistry::GetInstance().GetSystem<Application>();
     auto* player_settings = SystemRegistry::GetInstance().GetSystem<PlayerSettings>();
 
-    window_create_info.is_fullscreen = user_prefs ? user_prefs->GetBool("Window.IsFullscreen", true) : true;
-    window_create_info.title = app ? app->name.c_str() : "ZEngine";
     if (!glfwInit())
     {
         LOG_FATAL(ZWindow, "failed to initialize GLFW {}", __FUNCTION__);
@@ -94,7 +90,7 @@ bool WindowSystem::Initialize()
 #endif
 
     m_Window =
-        glfwCreateWindow(m_Width, m_Height, player_settings ? player_settings->m_ProjectName.c_str() : "ZEngine", nullptr, nullptr);
+        glfwCreateWindow(m_Width, m_Height, app->name.c_str(), nullptr, nullptr);
     if (!m_Window)
     {
         LOG_FATAL(ZWindow, "failed to create window {}", __FUNCTION__);

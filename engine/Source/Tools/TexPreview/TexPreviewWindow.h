@@ -1,11 +1,12 @@
 #pragma once
 
 // =============================================================================
-// ASTCPreviewWindow
+// TexPreviewWindow
 // -----------------------------------------------------------------------------
-// A standalone Slate widget for previewing ASTC-compressed textures.
-// Uses ASTCDecompressor to decompress ASTC data to RGBA8 for display.
-// Renders the preview via custom OnPaint() drawing.
+// A standalone Slate widget for previewing block-compressed textures.
+// Supports ASTC, BC7, and ETC2 formats.
+// Uses ASTCDecompressor / BC7Decompressor / ETC2Decompressor to decompress data to RGBA8 for
+// display. Renders the preview via custom OnPaint() drawing.
 //
 // This is a standalone tool that does not depend on ZEditor.
 // =============================================================================
@@ -20,11 +21,20 @@
 #include <string>
 #include <cstdint>
 
-class ASTCPreviewWindow : public ZSlate::SWidget
+// Detected texture format
+enum class TexPreviewFormat
+{
+    Unknown,
+    ASTC,
+    BC7,
+    ETC2,
+};
+
+class TexPreviewWindow : public ZSlate::SWidget
 {
 public:
-    ASTCPreviewWindow();
-    ~ASTCPreviewWindow() override = default;
+    TexPreviewWindow();
+    ~TexPreviewWindow() override = default;
 
     // SWidget interface
     Vector2 ComputeDesiredSize() const override;
@@ -48,17 +58,31 @@ public:
     // Get the current texture path
     const std::filesystem::path& GetTexturePath() const { return m_TexturePath; }
 
+    // Get detected format
+    TexPreviewFormat GetDetectedFormat() const { return m_DetectedFormat; }
+
 private:
-    // Decompress ASTC texture and cache the result
+    // Detect texture format from file content (magic / extension)
+    TexPreviewFormat DetectFormat(const std::filesystem::path& path) const;
+
+    // Decompress texture and cache the result (dispatches by format)
     bool DecompressTexture();
+
+    // Format-specific decompression
+    bool DecompressASTC(const std::vector<uint8_t>& file_data);
+    bool DecompressBC7(const std::vector<uint8_t>& file_data);
+    bool DecompressETC2(const std::vector<uint8_t>& file_data);
 
     // Create GPU texture from decompressed pixels
     bool CreateGPUTexture();
 
+    // Create the checkerboard pattern GPU texture (small tiled texture)
+    void EnsureCheckerboardTexture();
+
     // Draw checkerboard background for alpha visualization
     void DrawCheckerboard(UIRenderer* renderer, const UIRect& rect) const;
 
-    // Draw the preview image with zoom/pan
+    // Draw the preview image with zoom/pan (clipped to widget bounds)
     void DrawPreviewImage(UIRenderer* renderer, const UIRect& rect) const;
 
     // Draw info text overlay
@@ -73,6 +97,7 @@ private:
 
 private:
     std::filesystem::path m_TexturePath;
+    TexPreviewFormat m_DetectedFormat {TexPreviewFormat::Unknown};
 
     // Decompressed texture data (RGBA8)
     std::vector<uint8_t> m_PreviewPixels;
@@ -85,6 +110,9 @@ private:
     void* m_TextureId {nullptr};  // RHI texture handle for UIRenderer
     void* m_GpuTextureHandle {nullptr};  // GpuTexture handle for UiGpuResources
     bool m_NeedsTextureCreate {true};
+
+    // Checkerboard pattern texture (small 2x2-cell texture, tiled via UV)
+    void* m_CheckerTextureId {nullptr};
 
     // UI state
     float m_ZoomLevel {1.0f};

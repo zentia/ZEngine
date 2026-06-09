@@ -17,13 +17,6 @@
 
 class SplashScreen;
 
-class WindowCreateInfo
-{
-public:
-    const char* title {"Z"};
-    bool is_fullscreen {true};
-};
-
 class WindowSystem : public IEngineSystem
 {
 public:
@@ -184,9 +177,12 @@ protected:
         {
             app->m_Width = width;
             app->m_Height = height;
-            GET_SYSTEM(UserPreferences)->SetInt("Window.Width", width);
-            GET_SYSTEM(UserPreferences)->SetInt("Window.Height", height);
-            GET_SYSTEM(UserPreferences)->save();
+            if (auto* prefs = GET_SYSTEM(UserPreferences))
+            {
+                prefs->SetInt("Window.Width", width);
+                prefs->SetInt("Window.Height", height);
+                prefs->save();
+            }
             // Dispatch to registered listeners. Without this, every
             // registerOnWindowSizeFunc subscriber (currently EditorSlateHost, which
             // owns the editor UI's display size used as the overlay NDC divisor) is

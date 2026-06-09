@@ -1510,10 +1510,10 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
         {
             auto preview_btn = std::make_shared<SButton>();
             preview_btn->Padding = FMargin(10.0f * scale, 4.0f * scale);
-            preview_btn->SetContent(MakeText("Preview ASTC", 14.0f * scale, kValueColor));
+            preview_btn->SetContent(MakeText("Preview Texture", 14.0f * scale, kValueColor));
             preview_btn->OnClicked = [this, asset_path]() {
-                // TODO: Open ASTCPreviewWindow
-                // Placeholder: log when ASTC preview is implemented
+                // TODO: Open TexPreviewWindow
+                // Placeholder: log when texture preview is implemented
             };
 
             column->AddSlot(preview_btn);

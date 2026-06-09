@@ -15,7 +15,7 @@ enum class PreferredRHI
 void RegisterCore();
 void RegisterRuntime(PreferredRHI preferred_rhi = PreferredRHI::Default);
 // Light variant: registers core + rendering/UI, but NO editor/asset systems.
-// Used by standalone tools (ASTCPreview, etc.) that need a window + rendering
+// Used by standalone tools (TexPreview, etc.) that need a window + rendering
 // but don't have a project opened.
 void RegisterRuntimeLight(PreferredRHI preferred_rhi = PreferredRHI::Default);
 void RegisterPlatform();

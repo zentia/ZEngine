@@ -4,7 +4,7 @@
 // CrashHandler
 // -----------------------------------------------------------------------------
 // Windows SEH crash handler that writes a symbolized callstack to
-// `<exe-dir>/crash_stack.txt`.  Used by ZEditor and ASTCPreview.
+// `<exe-dir>/crash_stack.txt`.  Used by ZEditor and TexPreview.
 //
 // Design:
 //   * Process-wide: installed once via SetUnhandledExceptionFilter.

@@ -6,7 +6,7 @@
 
 #include <memory>
 
-// MinimalRenderSystem：独立工具（如 ASTCPreview）专用渲染系统。
+// MinimalRenderSystem：独立工具（如 TexPreview）专用渲染系统。
 //
 // 只配置 UIPass，不加载 3D 渲染通道（MainCameraPass、ShadowPass 等）。
 // 通过 OOP 重载 Initialize() 和 Tick()，实现最小 UI 渲染循环。

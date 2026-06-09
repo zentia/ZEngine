@@ -119,7 +119,7 @@ public:
     // previews) without racing the RHI worker. See doc/THREADING_GUIDE.md.
     void RunSynchronizedGpuReadback(std::function<void()> fn);
 
-    // 为独立工具（如 ASTCPreview）设置最小渲染管线
+    // 为独立工具（如 TexPreview）设置最小渲染管线
     // 只配置 UIPass，不加载 3D 渲染通道
     void SetupMinimalPipeline();
 

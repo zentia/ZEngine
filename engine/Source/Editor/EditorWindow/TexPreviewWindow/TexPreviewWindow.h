@@ -1,13 +1,13 @@
 #pragma once
 
 // =============================================================================
-// ASTCPreviewWindow
+// TexPreviewWindow (Editor)
 // -----------------------------------------------------------------------------
-// A standalone editor window for previewing ASTC-compressed textures.
-// Launched from the Inspector when an ASTC texture is selected.
+// A standalone editor window for previewing block-compressed textures.
+// Launched from the Inspector when an ASTC/BC7 texture is selected.
 //
 // Design notes:
-//   * Uses ASTCDecompressor to decompress ASTC data to RGBA8 for display.
+//   * Uses ASTCDecompressor / BC7Decompressor to decompress data to RGBA8.
 //   * Renders the preview via ZSlate widgets (mirrors Unity's TextureInspector).
 //   * Supports zoom/pan for detailed inspection.
 // =============================================================================
@@ -30,11 +30,11 @@ class SImage;  // TODO: Add SImage widget to ZSlate
 
 class Texture2D;
 
-class ASTCPreviewWindow : public EditorWindow
+class TexPreviewWindow : public EditorWindow
 {
 public:
-    explicit ASTCPreviewWindow(EditorUI* editor_ui);
-    ~ASTCPreviewWindow() override = default;
+    explicit TexPreviewWindow(EditorUI* editor_ui);
+    ~TexPreviewWindow() override = default;
 
     void OnGUI() override;
     bool SupportsNativeHosting() const override { return true; }
@@ -48,7 +48,7 @@ private:
     void BuildPreviewArea(float scale);
     void BuildInfoPanel(float scale);
 
-    // Decompress ASTC texture and cache the result
+    // Decompress texture and cache the result
     bool DecompressTexture();
 
     std::shared_ptr<ZSlate::SWidget> m_Root;

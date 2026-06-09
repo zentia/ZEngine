@@ -15,6 +15,15 @@
 #include "Runtime/Resource/Preload/PreloadManager.h"
 #include "Runtime/Resource/UserPreferences/UserPreferences.h"
 
+#if defined(_WIN32)
+    #define WIN32_LEAN_AND_MEAN
+    #include <windows.h>
+#elif defined(__linux__)
+    #include <unistd.h>
+#elif defined(__APPLE__)
+    #include <mach-o/dyld.h>
+#endif
+
 bool g_isPlaying {false};
 
 std::unordered_set<std::string> g_editorTickComponentTypes {};
@@ -36,9 +45,33 @@ bool Application::Initialize()
 {
     auto* player_settings = SystemRegistry::GetInstance().GetSystem<PlayerSettings>();
     if (player_settings)
+    {
         name = player_settings->m_ProjectName.c_str();
+    }
     else
-        name = "ZEngine";  // 默认名称（独立工具）
+    {
+        // 使用可执行文件名（不含扩展名）作为默认名称
+        std::string exe_name = "ZEngine";
+#if defined(_WIN32)
+        char exe_path[MAX_PATH];
+        if (GetModuleFileNameA(nullptr, exe_path, MAX_PATH) > 0)
+            exe_name = std::filesystem::path(exe_path).stem().string();
+#elif defined(__linux__)
+        char exe_path[4096];
+        ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (len > 0)
+        {
+            exe_path[len] = '\0';
+            exe_name = std::filesystem::path(exe_path).stem().string();
+        }
+#elif defined(__APPLE__)
+        char exe_path[4096];
+        uint32_t size = sizeof(exe_path);
+        if (_NSGetExecutablePath(exe_path, &size) == 0)
+            exe_name = std::filesystem::path(exe_path).stem().string();
+#endif
+        name = exe_name.c_str();
+    }
     return true;
 }
 
@@ -51,8 +84,6 @@ void Application::Run()
         {
             break;
         }
-
-        GET_SYSTEM(WindowSystem)->SetTitle(std::string("Z - " + std::to_string(GetFps()) + " FPS").c_str());
     }
 }
 
