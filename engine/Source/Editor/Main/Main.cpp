@@ -11,14 +11,13 @@
 #ifdef _WIN32
     #include <shellapi.h>
     #include <windows.h>
-    #include <dbghelp.h>
-    #pragma comment(lib, "dbghelp.lib")
 #endif
 
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/RegisterEditor.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/RegisterRuntime.h"
+#include "Runtime/Core/Base/CrashHandler.h"
 
 // https://gcc.gnu.org/onlinedocs/cpp/Stringizing.html
 #define ZENGINE_XSTR(s) ZENGINE_STR(s)
@@ -265,7 +264,7 @@ namespace
 #ifdef _WIN32
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
-    SetUnhandledExceptionFilter(ZEngineCrashHandler);
+    InstallCrashHandler();
 
     // Initialize UTF-8 locale to handle filesystem error messages properly
     Encoding::InitializeUtf8Locale();

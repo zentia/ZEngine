@@ -61,7 +61,7 @@ public:
 
     RenderSystem() = default;
     bool Initialize() override;
-    void Tick(float delta_time);
+    virtual void Tick(float delta_time);
 
     // Game-thread barrier: drain render/RHI workers and wait for pipelined frames.
     // Required before synchronous GPU readback (mesh picking, buffer Map, etc.).
@@ -118,6 +118,10 @@ public:
     // editor UI code to perform synchronous GPU work (readbacks, offscreen
     // previews) without racing the RHI worker. See doc/THREADING_GUIDE.md.
     void RunSynchronizedGpuReadback(std::function<void()> fn);
+
+    // 为独立工具（如 ASTCPreview）设置最小渲染管线
+    // 只配置 UIPass，不加载 3D 渲染通道
+    void SetupMinimalPipeline();
 
 private:
     RenderSwapContext m_SwapContext;

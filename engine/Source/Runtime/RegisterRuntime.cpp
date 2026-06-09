@@ -44,6 +44,7 @@
 #include "Runtime/Function/Render/ShaderRegistry.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UI/Core/WindowUI.h"
+#include "Runtime/Function/Render/MinimalRenderSystem.h"
 #include "Runtime/UI/UISystem.h"
 #include "Runtime/Resource/Asset/RuntimeAssetManager.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
@@ -141,6 +142,64 @@ void RegisterRuntime(PreferredRHI preferred_rhi)
 {
     RegisterCore();
     RegisterSystem(preferred_rhi);
+}
+
+// ASTCPreview 等独立工具专用：只注册渲染/UI 必需系统，不包含
+// ProjectInfo / ScriptingManager / ResourceManager 等编辑器系统。
+//
+// 注意：PlayerSettings 和 UserPreferences 依赖 ProjectInfo，因此这里不注册。
+// Application 已修改为支持无 PlayerSettings 的情况（使用默认名称）。
+void RegisterRuntimeLight(PreferredRHI preferred_rhi)
+{
+    RegisterCore();
+
+    // ---- 基础系统（WindowSystem 依赖）-----------------
+    REGISTER_SYSTEM(ThreadManager);
+    REGISTER_SYSTEM(CommandSystem);      // ConfigManager::GetDependencies()
+    REGISTER_SYSTEM(ConfigManager);       // WindowSystem::GetDependencies()
+    REGISTER_SYSTEM(Application);        // 主循环需要（已支持无 PlayerSettings）
+
+    // ---- 渲染 / UI 必需系统 -----------------
+    REGISTER_SYSTEM(WindowSystem);
+    REGISTER_SYSTEM(PreloadManager);
+    REGISTER_SYSTEM(PhysicsManager);
+    REGISTER_SYSTEM(WorldManager);
+    REGISTER_SYSTEM(InputSystem);
+    REGISTER_SYSTEM(ParticleManager);
+
+    // 注册一个 RHI 实现（按平台选择）
+#if defined(Z_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(Z_PLATFORM_OHOS) || defined(__OHOS__)
+    (void)preferred_rhi;
+    REGISTER_SYSTEM_AS(VulkanRHI, RHI);
+#elif defined(Z_PLATFORM_WINDOWS) || defined(_WIN32)
+    #if defined(Z_HAS_VULKAN)
+        if (preferred_rhi == PreferredRHI::Vulkan)
+        {
+            LOG_INFO(ZEngine, "RHI selection: Vulkan (requested via --rhi vulkan)");
+            REGISTER_SYSTEM_AS(VulkanRHI, RHI);
+        }
+        else
+        {
+            LOG_INFO(ZEngine, "RHI selection: DirectX 12 (default on Windows)");
+            REGISTER_SYSTEM_AS(DX12RHI, RHI);
+        }
+    #else
+        (void)preferred_rhi;
+        REGISTER_SYSTEM_AS(DX12RHI, RHI);
+    #endif
+#elif defined(Z_PLATFORM_MACOS) || defined(Z_PLATFORM_IOS) || defined(__APPLE__)
+    (void)preferred_rhi;
+    REGISTER_SYSTEM_AS(MetalRHI, RHI);
+#elif defined(__EMSCRIPTEN__)
+    (void)preferred_rhi;
+    REGISTER_SYSTEM_AS(ZEngine::WebGL2::WebGL2RHI, RHI);
+#endif
+
+    REGISTER_SYSTEM_AS(MinimalRenderSystem, RenderSystem);
+    REGISTER_SYSTEM(DebugDrawManager);
+    REGISTER_SYSTEM(RenderDebugConfig);
+    REGISTER_SYSTEM(ModuleManager);
+    REGISTER_SYSTEM(UISystem);
 }
 
 void RegisterPlatform()

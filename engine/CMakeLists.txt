@@ -289,6 +289,8 @@ else()
   add_subdirectory(Source/Profiler)
   # ZInsights: standalone .ztrace viewer (Win32 + Direct2D). Self-skips on non-Windows.
   add_subdirectory(Source/Insights)
+  # ASTCPreview: standalone ASTC texture preview tool
+  add_subdirectory(Source/Tools/ASTCPreview)
 endif()
 #add_subdirectory(Source/test)
 

@@ -73,7 +73,10 @@ void RenderSystem::Shutdown()
     m_Cameras.clear();
     m_Rhi = nullptr;
 }
-void RenderSystem::SwapLogicRenderData() {}
+void RenderSystem::SwapLogicRenderData()
+{
+    m_SwapContext.SwapLogicRenderData();
+}
 RenderSwapContext& RenderSystem::GetSwapContext()
 {
     return m_SwapContext;
@@ -96,7 +99,13 @@ RHI* RenderSystem::GetRHI() const
 {
     return m_Rhi;
 }
-void RenderSystem::InitializeUIRenderBackend(WindowUI*) {}
+void RenderSystem::InitializeUIRenderBackend(WindowUI* window_ui)
+{
+    if (m_RenderPipeline)
+    {
+        m_RenderPipeline->InitializeUIRenderBackend(window_ui);
+    }
+}
 void RenderSystem::UpdateViewport(ViewportType viewport_id, float offset_x, float offset_y, float width, float height)
 {
     RHIViewport viewport;
@@ -698,12 +707,14 @@ RenderSwapContext& RenderSystem::GetSwapContext()
 
 std::shared_ptr<RenderCamera> RenderSystem::GetRenderCamera(ViewportType viewportType) const
 {
-    return m_Cameras[static_cast<int>(viewportType)];
+    const size_t index = static_cast<size_t>(viewportType);
+    return index < m_Cameras.size() ? m_Cameras[index] : nullptr;
 }
 
 std::shared_ptr<RenderCamera> RenderSystem::GetCamera(ViewportType camera_id) const
 {
-    return m_Cameras[static_cast<int>(camera_id)];
+    const size_t index = static_cast<size_t>(camera_id);
+    return index < m_Cameras.size() ? m_Cameras[index] : nullptr;
 }
 
 std::vector<std::shared_ptr<RenderCamera>> RenderSystem::GetAllCameras()

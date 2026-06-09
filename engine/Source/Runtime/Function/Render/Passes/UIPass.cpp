@@ -95,7 +95,14 @@ void UIPass::InitializeUIRenderBackend(WindowUI* window_ui)
 
 void UIPass::SetupPipeline()
 {
-    if (m_Rhi == nullptr || m_Framebuffer.render_pass == nullptr)
+    if (m_Rhi == nullptr)
+    {
+        return;
+    }
+
+    // Vulkan 需要有效的 render_pass 来创建图形管线
+    // DX12 不使用 render_pass 对象，传 nullptr 即可
+    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::Vulkan && m_Framebuffer.render_pass == nullptr)
     {
         return;
     }

@@ -108,17 +108,22 @@ void UISystem::InitializeUIRenderer()
 void UISystem::RenderSlateRoot()
 {
     if (!m_UiRenderer)
+    {
+        LOG_ERROR(ZEditor, "RenderSlateRoot: m_UiRenderer is null");
         return;
+    }
 
     if (!m_UiRenderer->beginFrame())
     {
+        LOG_ERROR(ZEditor, "RenderSlateRoot: beginFrame() failed");
         return;
     }
 
     // Paint the retained-mode ZSlate root (installed via SetRootContent, i.e.
     // UMGViewport's overlay) through the same batched renderer, so ZSlate/UMG
     // share UIPass, the font atlas, the clip stack and the display size.
-    if (auto slate_root = ZSlate::SlateApplication::Get().GetRootContent())
+    auto slate_root = ZSlate::SlateApplication::Get().GetRootContent();
+    if (slate_root)
     {
         // Route input first -- hit-tests against the PREVIOUS frame's cached
         // widget geometry (standard retained-mode order), then paint to refresh

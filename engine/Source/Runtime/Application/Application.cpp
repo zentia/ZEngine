@@ -21,7 +21,10 @@ std::unordered_set<std::string> g_editorTickComponentTypes {};
 
 std::vector<std::type_index> Application::GetDependencies() const
 {
-    return {GET_SYSTEM_TYPE(PlayerSettings)};
+    // PlayerSettings 可选（独立工具可能不注册）
+    if (SystemRegistry::GetInstance().isSystemRegistered<PlayerSettings>())
+        return {GET_SYSTEM_TYPE(PlayerSettings)};
+    return {};  // 无依赖
 }
 
 void Application::Shutdown()
@@ -31,7 +34,11 @@ void Application::Shutdown()
 
 bool Application::Initialize()
 {
-    name = GET_SYSTEM(PlayerSettings)->m_ProjectName.c_str();
+    auto* player_settings = SystemRegistry::GetInstance().GetSystem<PlayerSettings>();
+    if (player_settings)
+        name = player_settings->m_ProjectName.c_str();
+    else
+        name = "ZEngine";  // 默认名称（独立工具）
     return true;
 }
 
@@ -85,6 +92,17 @@ bool Application::TickOneFrame(float simulation_delta_time, float frame_delta_ti
 #ifdef ENABLE_PHYSICS_DEBUG_RENDERER
     g_runtime_global_context.m_PhysicsManager->RenderPhysicsWorld(simulation_delta_time);
 #endif
+
+    // Drive Slate/UMG UI rendering (UISystem::PreRender() -> RenderSlateRoot).
+    // This must run before PollEvents so that input events generated this frame
+    // are consumed by the UI before the next frame's input poll.
+    {
+        auto* ui = GET_SYSTEM(UISystem);
+        if (ui)
+        {
+            ui->PreRender();
+        }
+    }
 
     GET_SYSTEM(WindowSystem)->PollEvents();
 

@@ -35,35 +35,48 @@ std::vector<std::type_index> WindowSystem::GetDependencies() const
 
 void WindowSystem::Shutdown()
 {
-    GET_SYSTEM(UserPreferences)->SetInt("Window.Width", m_Width);
-    GET_SYSTEM(UserPreferences)->SetInt("Window.Height", m_Height);
+    // 安全地获取 UserPreferences（独立工具可能不注册）
+    auto* user_prefs = SystemRegistry::GetInstance().GetSystem<UserPreferences>();
+    if (user_prefs)
+    {
+        user_prefs->SetInt("Window.Width", m_Width);
+        user_prefs->SetInt("Window.Height", m_Height);
+    }
 
 #if !defined(__EMSCRIPTEN__)
     GLFWmonitor* monitor = glfwGetWindowMonitor(m_Window);
     bool is_fullscreen = (monitor != nullptr);
-    GET_SYSTEM(UserPreferences)->SetBool("Window.IsFullscreen", is_fullscreen);
+    if (user_prefs)
+        user_prefs->SetBool("Window.IsFullscreen", is_fullscreen);
     glfwDestroyWindow(m_Window);
     glfwTerminate();
 #else
     // Browser: the canvas is owned by the page; do NOT destroy/terminate.
     // We just record the last known fullscreen state for parity with desktop.
-    GET_SYSTEM(UserPreferences)->SetBool("Window.IsFullscreen", false);
+    if (user_prefs)
+        user_prefs->SetBool("Window.IsFullscreen", false);
 #endif
 }
 
 bool WindowSystem::Initialize()
 {
     WindowCreateInfo window_create_info;
-    window_create_info.is_fullscreen = GET_SYSTEM(UserPreferences)->GetBool("Window.IsFullscreen", true);
-    window_create_info.title = GET_SYSTEM(Application)->name.c_str();
+
+    // 安全地获取可选系统（独立工具可能不注册这些）
+    auto* user_prefs = SystemRegistry::GetInstance().GetSystem<UserPreferences>();
+    auto* app = SystemRegistry::GetInstance().GetSystem<Application>();
+    auto* player_settings = SystemRegistry::GetInstance().GetSystem<PlayerSettings>();
+
+    window_create_info.is_fullscreen = user_prefs ? user_prefs->GetBool("Window.IsFullscreen", true) : true;
+    window_create_info.title = app ? app->name.c_str() : "ZEngine";
     if (!glfwInit())
     {
         LOG_FATAL(ZWindow, "failed to initialize GLFW {}", __FUNCTION__);
         return false;
     }
 
-    m_Width = Math::max(1280, GET_SYSTEM(UserPreferences)->GetInt("Window.Width", 1280));
-    m_Height = Math::max(720, GET_SYSTEM(UserPreferences)->GetInt("Window.Height", 720));
+    m_Width = Math::max(1280, user_prefs ? user_prefs->GetInt("Window.Width", 1280) : 1280);
+    m_Height = Math::max(720, user_prefs ? user_prefs->GetInt("Window.Height", 720) : 720);
 
 #if defined(__EMSCRIPTEN__)
     // Browser path: ask the GLFW shim to create a WebGL 2.0 context against
@@ -81,7 +94,7 @@ bool WindowSystem::Initialize()
 #endif
 
     m_Window =
-        glfwCreateWindow(m_Width, m_Height, GET_SYSTEM(PlayerSettings)->m_ProjectName.c_str(), nullptr, nullptr);
+        glfwCreateWindow(m_Width, m_Height, player_settings ? player_settings->m_ProjectName.c_str() : "ZEngine", nullptr, nullptr);
     if (!m_Window)
     {
         LOG_FATAL(ZWindow, "failed to create window {}", __FUNCTION__);
@@ -122,7 +135,7 @@ bool WindowSystem::Initialize()
     // movementX/Y deltas via the Pointer Lock API which the shim already
     // routes through cursorPosCallback when GLFW_CURSOR is DISABLED.
     glfwSetInputMode(m_Window, GLFW_RAW_MOUSE_MOTION, GLFW_FALSE);
-    if (GET_SYSTEM(UserPreferences)->GetBool("Window.IsFullscreen", false))
+    if (user_prefs && user_prefs->GetBool("Window.IsFullscreen", false))
         glfwMaximizeWindow(m_Window);
 
     // Hide main window before showing splash screen (no splash on Web).
