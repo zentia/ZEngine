@@ -62,6 +62,11 @@ public:
     // Composited on the swapchain overlay from EditorUIPass::Draw (after ZSlate UI).
     void DrawAxis();
 
+    // Legacy swapchain-overlay sky helpers (compiled; no live call sites on DX12 editor).
+    // Active sky path: RP1 mesh SkyPass (MainCameraRp1Pass::DrawSkyMeshPass) -> backup_odd HDR before deferred.
+    // See doc/rendering/DX12_SKYBOX_RENDERING.md.
+    void DrawEditorSkyboxOverlays(const std::array<bool, 2>& skybox_visible);
+
     // DX-B2: shadow maps for RP1 deferred (wired from shadow passes after init).
     RHIImageView* m_PointLightShadowColorImageView {nullptr};
     RHIImageView* m_DirectionalLightShadowColorImageView {nullptr};
@@ -82,6 +87,7 @@ private:
     //   Static samplers s0..s3 (LinearWrap/LinearClamp/PointWrap/PointClamp)
     //   Flag: CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED
     bool BuildBindlessProductionRootSignature();
+    bool BuildSkyboxOverlayRootSignature();
 
     bool SetupSkyboxResources();
     bool SetupSceneGridResources();
@@ -90,20 +96,24 @@ private:
     // ---- Draw helpers ----------------------------------------------------
     void DrawSkybox(ViewportType viewport_type);
     void DrawSkyboxPreview();
+    void DrawSkyboxInRp1Forward(ViewportType viewport_type);
     void DrawSkyboxWithCamera(const std::shared_ptr<RenderCamera>& camera,
                               const RHIViewport& viewport,
-                              size_t viewport_slot);
+                              size_t viewport_slot,
+                              bool swapchain_overlay);
     void DrawSceneGrid();
 
     void TryLateInitializeSkybox();
+    void RefreshSkyboxCubemapDescriptor();
 
     // ---- Bindless production pipeline state ------------------------------
     // Shared root signature for all production draws.
     ComPtr<ID3D12RootSignature> m_BindlessRootSignature;
 
-    // Skybox PSO + bindless slot
+    // Skybox PSOs (descriptor-table cubemap, not bindless heap).
+    ComPtr<ID3D12RootSignature> m_SkyboxOverlayRootSignature;
     ComPtr<ID3D12PipelineState> m_SkyboxPso;
-    uint32_t m_SkyboxBindlessIndex = RHIBindlessTextureManager::kInvalidBindlessIndex;
+    ComPtr<ID3D12PipelineState> m_SkyboxForwardPso;
 
     // Scene grid PSO (same root signature, no bindless texture used)
     ComPtr<ID3D12PipelineState> m_SceneGridPso;

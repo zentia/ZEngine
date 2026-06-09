@@ -2422,7 +2422,7 @@ void MainCameraPass::SetupPipelines()
         pipelineInfo.pDepthStencilState = &depth_stencil_create_info;
         pipelineInfo.layout = m_RenderPipelines[_render_pipeline_type_skybox].layout;
         pipelineInfo.renderPass = m_Framebuffer1.render_pass;  // RP1
-        pipelineInfo.subpass = _main_camera_subpass_forward_lighting;
+        pipelineInfo.subpass = _main_camera_subpass_deferred_lighting;
         pipelineInfo.basePipelineHandle = RHI_NULL_HANDLE;
         pipelineInfo.pDynamicState = &dynamic_state_create_info;
 
@@ -3245,6 +3245,18 @@ void MainCameraPass::Draw(ColorGradingPass& color_grading_pass,
 
     m_Rhi->CmdNextSubpassPFN(m_Rhi->GetCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
 
+    m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Sky Pass", color);
+    for (ViewportType viewport_type : k_viewports)
+    {
+        if (!IsViewportValid(viewport_type))
+        {
+            continue;
+        }
+        SetPerViewportData(viewport_type);
+        DrawSkybox(viewport_type);
+    }
+    m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
+
     m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Deferred Lighting", color);
     for (ViewportType viewport_type : k_viewports)
     {
@@ -3263,7 +3275,6 @@ void MainCameraPass::Draw(ColorGradingPass& color_grading_pass,
         if (!IsViewportValid(viewport_type))
             continue;
         SetPerViewportData(viewport_type);
-        DrawSkybox(viewport_type);
         DrawMeshTransparent(viewport_type);
     }
     particle_pass.Draw();

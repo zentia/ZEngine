@@ -64,12 +64,24 @@ public:
             ctx.Renderer->drawText(UIRect(rect.x + rect.width - gutter, rect.y, gutter, rect.height),
                                    ">", FontSize, mark, TextAnchor::MiddleCenter, TextWrapMode::NoWrap, nullptr);
         }
-        else if (ShowCheck && Checked)
+        else if (ShowCheck)
         {
             const float s = FontSize * 0.5f;
-            ctx.Renderer->drawQuad(UIRect(rect.x + rect.width - gutter + (gutter - s) * 0.5f,
-                                          rect.y + (rect.height - s) * 0.5f, s, s),
-                                   mark);
+            const float mx = rect.x + rect.width - gutter + (gutter - s) * 0.5f;
+            const float my = rect.y + (rect.height - s) * 0.5f;
+            if (Checked)
+            {
+                ctx.Renderer->drawQuad(UIRect(mx, my, s, s), mark);
+            }
+            else
+            {
+                // Hollow box so off-state is visible (font has no check glyph).
+                const float t = std::max(1.0f, s * 0.18f);
+                ctx.Renderer->drawQuad(UIRect(mx, my, s, t), mark);
+                ctx.Renderer->drawQuad(UIRect(mx, my + s - t, s, t), mark);
+                ctx.Renderer->drawQuad(UIRect(mx, my, t, s), mark);
+                ctx.Renderer->drawQuad(UIRect(mx + s - t, my, t, s), mark);
+            }
         }
     }
 

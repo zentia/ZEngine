@@ -10,3 +10,4 @@
 #define directional_light_proj_view per_frame.directional_light_proj_view
 #define pre_view_translation per_frame.pre_view_translation
 #define render_tile per_frame.render_tile
+#define viewport_rect per_frame.viewport_rect

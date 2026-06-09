@@ -271,6 +271,15 @@ void BaseRenderer::SubmitRenderState() const
     const Transform* transform_component = m_ParentObject->tryGetComponent(Transform);
 
     RenderSwapContext& render_swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
+    const bool object_active = transform_component == nullptr || transform_component->isEnabled();
+    if (!isEnabled() || !object_active)
+    {
+        // Empty parts remove stale render entities for this GameObject.
+        render_swap_context.GetLogicSwapData().AddDirtyGameObject(
+            GameObjectDesc {m_ParentObject->GetID(), {}});
+        return;
+    }
+
     render_swap_context.GetLogicSwapData().AddDirtyGameObject(BuildGameObjectDesc(transform_component));
 }
 

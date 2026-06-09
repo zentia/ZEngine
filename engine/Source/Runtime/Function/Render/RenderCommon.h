@@ -51,6 +51,9 @@ struct MainCameraPerFrame
     float _padding_pre_view_translation {0.0f};
     Vector3 render_tile {0.0f, 0.0f, 0.0f};
     float _padding_render_tile {0.0f};
+    /// Scene/game panel in framebuffer pixels (x, y, width, height). Used by deferred sky
+    /// to rebuild world rays from SV_Position (sub-viewport safe).
+    Vector4 viewport_rect {0.0f, 0.0f, 1.0f, 1.0f};
 };
 
 struct RenderMeshInstance

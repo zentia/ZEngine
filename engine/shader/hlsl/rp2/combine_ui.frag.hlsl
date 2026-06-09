@@ -17,10 +17,17 @@ float4 main(PSInput input) : SV_TARGET
     float4 scene_color = in_scene_color.Sample(in_scene_sampler, input.uv);
     float4 ui_color = in_ui_color.Sample(in_ui_sampler, input.uv);
 
+    // backup_even is the tonemap target before RP2; tonemap writes alpha=1. The editor
+    // composites ZSlate on the swapchain after RP2, so a cleared/empty UI layer must
+    // not replace the graded scene in backup_odd (t0).
+    if (ui_color.a < (1.0 / 255.0) || ui_color.a >= (254.0 / 255.0))
+    {
+        return float4(scene_color.rgb, 1.0);
+    }
+
     ui_color.rgb = pow(max(ui_color.rgb, 0.0), 1.0 / 2.2);
     ui_color.a = pow(max(ui_color.a, 0.0), 1.0 / 2.2);
 
-    // Standard over: transparent UI pixels show the graded scene underneath.
     float3 out_rgb = lerp(scene_color.rgb, ui_color.rgb, ui_color.a);
     return float4(out_rgb, 1.0);
 }

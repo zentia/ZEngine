@@ -10,6 +10,7 @@ struct PGBufferData
 
 #define SHADINGMODELID_UNLIT 0U
 #define SHADINGMODELID_DEFAULT_LIT 1U
+#define SHADINGMODELID_SKY 2U
 
 highp vec3 EncodeNormal(highp vec3 N) { return N * 0.5 + 0.5; }
 

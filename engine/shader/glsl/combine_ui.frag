@@ -16,17 +16,14 @@ void main()
     
     highp vec4 ui_color = subpassLoad(in_ui_color).rgba;
     
-    // Gamma correct
-    // TODO: select the VK_FORMAT_B8G8R8A8_SRGB surface format,
-    // there is no need to do gamma correction in the fragment shader
-    if(ui_color.r<1e-6&&ui_color.g<1e-6&&ui_color.a<1e-6)
+    // Tonemap leaves alpha=1 in backup_even; only blend real UI (0 < a < 254/255).
+    if (ui_color.a < (1.0 / 255.0) || ui_color.a >= (254.0 / 255.0))
     {
-        ui_color = vec4(pow(ui_color.r, 1.0 / 2.2), pow(ui_color.g, 1.0 / 2.2), pow(ui_color.b, 1.0 / 2.2), pow(ui_color.a, 1.0 / 2.2));
-        out_color = scene_color;
+        out_color = vec4(scene_color.rgb, 1.0);
     }
     else
     {
         ui_color = vec4(pow(ui_color.r, 1.0 / 2.2), pow(ui_color.g, 1.0 / 2.2), pow(ui_color.b, 1.0 / 2.2), pow(ui_color.a, 1.0 / 2.2));
-        out_color = ui_color;
+        out_color = vec4(mix(scene_color.rgb, ui_color.rgb, ui_color.a), 1.0);
     }
 }

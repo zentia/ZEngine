@@ -21,6 +21,7 @@ namespace MainCameraPassShaderCommon
 
     const GpuShaderPassData* FindShaderPassByLightMode(const GpuPBRMaterial& material, const char* desired_light_mode);
     const GpuShaderPassData* FindTransparentShaderPass(const GpuPBRMaterial& material);
+    bool IsSkyMaterial(const GpuPBRMaterial& material);
     bool CanUseRuntimePrimaryShaderPass(RHI* rhi, const GpuPBRMaterial& material);
     bool CanUseRuntimeShaderPass(RHI* rhi,
                                  const GpuPBRMaterial& material,

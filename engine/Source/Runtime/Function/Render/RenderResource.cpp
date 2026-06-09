@@ -11,6 +11,7 @@
     #include "Runtime/Function/Render/MegaLights/MegaLightsSettings.h"
     #include "Runtime/Function/Render/RenderHelper.h"
     #include "Runtime/Function/Render/RenderMesh.h"
+    #include "Runtime/Function/Render/RenderSystem.h"
     #include "Runtime/Profiler/Profiler.h"
 
     #include <stdexcept>
@@ -46,24 +47,36 @@ void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc leve
 
     // sky box irradiance
     SkyBoxIrradianceMap skybox_irradiance_map = level_resource_desc.m_IblResourceDesc.m_SkyboxIrradianceMap;
+    LOG_INFO(ZRender, "UploadGlobalRenderResource: loading irradiance maps from {}", skybox_irradiance_map.m_PositiveXMap);
     std::shared_ptr<TextureData> irradiace_pos_x_map = LoadTextureHDR(skybox_irradiance_map.m_PositiveXMap);
     std::shared_ptr<TextureData> irradiace_neg_x_map = LoadTextureHDR(skybox_irradiance_map.m_NegativeXMap);
     std::shared_ptr<TextureData> irradiace_pos_y_map = LoadTextureHDR(skybox_irradiance_map.m_PositiveYMap);
     std::shared_ptr<TextureData> irradiace_neg_y_map = LoadTextureHDR(skybox_irradiance_map.m_NegativeYMap);
     std::shared_ptr<TextureData> irradiace_pos_z_map = LoadTextureHDR(skybox_irradiance_map.m_PositiveZMap);
     std::shared_ptr<TextureData> irradiace_neg_z_map = LoadTextureHDR(skybox_irradiance_map.m_NegativeZMap);
+    LOG_INFO(ZRender, "UploadGlobalRenderResource: irradiance loaded: +X={}, -X={}, +Y={}, -Y={}, +Z={}, -Z={}",
+             irradiace_pos_x_map != nullptr, irradiace_neg_x_map != nullptr,
+             irradiace_pos_y_map != nullptr, irradiace_neg_y_map != nullptr,
+             irradiace_pos_z_map != nullptr, irradiace_neg_z_map != nullptr);
 
     // sky box specular
     SkyBoxSpecularMap skybox_specular_map = level_resource_desc.m_IblResourceDesc.m_SkyboxSpecularMap;
+    LOG_INFO(ZRender, "UploadGlobalRenderResource: loading specular maps from {}", skybox_specular_map.m_PositiveXMap);
     std::shared_ptr<TextureData> specular_pos_x_map = LoadTextureHDR(skybox_specular_map.m_PositiveXMap);
     std::shared_ptr<TextureData> specular_neg_x_map = LoadTextureHDR(skybox_specular_map.m_NegativeXMap);
     std::shared_ptr<TextureData> specular_pos_y_map = LoadTextureHDR(skybox_specular_map.m_PositiveYMap);
     std::shared_ptr<TextureData> specular_neg_y_map = LoadTextureHDR(skybox_specular_map.m_NegativeYMap);
     std::shared_ptr<TextureData> specular_pos_z_map = LoadTextureHDR(skybox_specular_map.m_PositiveZMap);
     std::shared_ptr<TextureData> specular_neg_z_map = LoadTextureHDR(skybox_specular_map.m_NegativeZMap);
+    LOG_INFO(ZRender, "UploadGlobalRenderResource: specular loaded: +X={}, -X={}, +Y={}, -Y={}, +Z={}, -Z={}",
+             specular_pos_x_map != nullptr, specular_neg_x_map != nullptr,
+             specular_pos_y_map != nullptr, specular_neg_y_map != nullptr,
+             specular_pos_z_map != nullptr, specular_neg_z_map != nullptr);
 
     // brdf
+    LOG_INFO(ZRender, "UploadGlobalRenderResource: loading BRDF LUT from {}", level_resource_desc.m_IblResourceDesc.m_BrdfMap);
     std::shared_ptr<TextureData> brdf_map = LoadTextureHDR(level_resource_desc.m_IblResourceDesc.m_BrdfMap);
+    LOG_INFO(ZRender, "UploadGlobalRenderResource: BRDF LUT loaded: {}", brdf_map != nullptr);
 
     const auto ibl_face_loaded = [](const std::shared_ptr<TextureData>& map) {
         return map != nullptr && map->m_Pixels != nullptr && map->m_Width > 0 && map->m_Height > 0;
@@ -178,6 +191,36 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
 
     mesh_perframe_storage_buffer_object.proj_view_matrix = proj_view_matrix;
     mesh_perframe_storage_buffer_object.camera_position = camera_position;
+    bool viewport_rect_set = false;
+    if (viewport_type == ViewportType::scene)
+    {
+        if (auto* render_system = GET_SYSTEM(RenderSystem))
+        {
+            RHIViewport render_viewport {};
+            RHIRect2D render_scissor {};
+            if (render_system->TryGetRenderSceneViewport(render_viewport, render_scissor) &&
+                render_viewport.width > 0.0f && render_viewport.height > 0.0f)
+            {
+                mesh_perframe_storage_buffer_object.viewport_rect =
+                    Vector4(render_viewport.x, render_viewport.y, render_viewport.width, render_viewport.height);
+                viewport_rect_set = true;
+            }
+        }
+    }
+    if (!viewport_rect_set)
+    {
+        if (RHI* viewport_rhi = GET_SYSTEM(RHI))
+        {
+            if (RHIViewport* viewport = viewport_rhi->GetViewport(viewport_type))
+            {
+                if (viewport->width > 0.0f && viewport->height > 0.0f)
+                {
+                    mesh_perframe_storage_buffer_object.viewport_rect =
+                        Vector4(viewport->x, viewport->y, viewport->width, viewport->height);
+                }
+            }
+        }
+    }
     if (LargeWorldCoordinates::IsEnabled())
     {
         const Vector3d tile = LargeWorldCoordinates::GetRenderTile();

@@ -88,6 +88,7 @@ struct MainCameraPerFrame
     highp float _padding_pre_view_translation;
     highp vec3 render_tile;
     highp float _padding_render_tile;
+    highp vec4 viewport_rect;
 };
 
 struct AxisDrawStorage

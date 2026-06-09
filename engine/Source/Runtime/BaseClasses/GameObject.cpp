@@ -34,6 +34,15 @@ GameObject::~GameObject()
 
 void GameObject::Tick(float delta_time)
 {
+    // Transform::m_Enabled is the GameObject active flag (Unity activeSelf analogue).
+    if (Transform* transform_component = tryGetComponent(Transform))
+    {
+        if (!transform_component->isEnabled())
+        {
+            return;
+        }
+    }
+
     for (auto& component : m_Components)
     {
         if (component == nullptr || !component->isEnabled())

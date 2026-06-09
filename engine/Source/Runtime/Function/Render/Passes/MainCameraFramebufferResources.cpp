@@ -155,12 +155,23 @@ void MainCameraFramebufferResources::SetupAttachments()
         }
         else
         {
+            // backup_odd / backup_even: written in RP1 deferred, sampled by bindless tonemap
+            // and RP2 color grading / combine. Must not use TRANSIENT (content must survive
+            // RP1 -> tonemap -> RP2) and must include SAMPLED (DX12 bindless + post passes).
+            RHIImageUsageFlags usage =
+                RHI_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | RHI_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
+                RHI_IMAGE_USAGE_SAMPLED_BIT | RHI_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            if (buffer_index != _main_camera_pass_backup_buffer_odd &&
+                buffer_index != _main_camera_pass_backup_buffer_even)
+            {
+                usage |= RHI_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
+            }
+
             m_Rhi->CreateImage(m_Rhi->GetSwapchainInfo().extent.width,
                                m_Rhi->GetSwapchainInfo().extent.height,
                                m_Framebuffer.attachments[buffer_index].format,
                                RHI_IMAGE_TILING_OPTIMAL,
-                               RHI_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | RHI_IMAGE_USAGE_INPUT_ATTACHMENT_BIT |
-                                   RHI_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+                               usage,
                                RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                                m_Framebuffer.attachments[buffer_index].image,
                                m_Framebuffer.attachments[buffer_index].mem,
@@ -256,7 +267,9 @@ void MainCameraFramebufferResources::SetupRenderPass1()
     backup_odd_attachment_description.format =
         m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].format;
     backup_odd_attachment_description.samples = RHI_SAMPLE_COUNT_1_BIT;
-    backup_odd_attachment_description.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    // Sky Pass (Subpass 1) writes all sky pixels, Deferred Lighting overwrites
+    // pixels covered by geometry. No need to clear - use DONT_CARE for optimal perf.
+    backup_odd_attachment_description.loadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
     backup_odd_attachment_description.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
     backup_odd_attachment_description.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
     backup_odd_attachment_description.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -314,6 +327,11 @@ void MainCameraFramebufferResources::SetupRenderPass1()
     deferred_lighting_pass.pInputAttachments = deferred_lighting_pass_input_attachments_reference;
     deferred_lighting_pass.colorAttachmentCount = 1;
     deferred_lighting_pass.pColorAttachments = deferred_lighting_pass_color_attachment_reference;
+    // Sky Pass (mesh + procedural) depth-tests against the BasePass depth buffer in this subpass.
+    RHIAttachmentReference deferred_lighting_pass_depth_attachment_reference {};
+    deferred_lighting_pass_depth_attachment_reference.attachment = kRP1_Depth;
+    deferred_lighting_pass_depth_attachment_reference.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    deferred_lighting_pass.pDepthStencilAttachment = &deferred_lighting_pass_depth_attachment_reference;
 
     RHIAttachmentReference forward_lighting_pass_color_attachments_reference[1] = {};
     forward_lighting_pass_color_attachments_reference[0].attachment = kRP1_BackupOdd;

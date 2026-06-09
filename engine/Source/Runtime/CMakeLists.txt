@@ -1026,4 +1026,14 @@ add_subdirectory(Core/Serialize/Test)
 # the ZRuntime glob above and built only when ZENGINE_BUILD_DDC_SMOKE_TEST=ON.
 add_subdirectory(Resource/Cache/Test)
 
+# =============================================================================
+# ASTC texture decompression support (Phase 6)
+# =============================================================================
+if(TARGET astcenc)
+    target_link_libraries(${TARGET_NAME} PUBLIC astcenc)
+    target_link_libraries(${SHARED_TARGET_NAME} PUBLIC astcenc)
+    message(STATUS "Runtime: Linked astcenc for ASTC texture decompression")
+endif()
+
+
 

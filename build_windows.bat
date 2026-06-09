@@ -1,12 +1,28 @@
 @echo off
 REM ZEngine Build Script for Windows
 REM This script uses the unified Python build tool (zbuild.py)
+REM Fixed: Set CMAKE_GIT_EXECUTABLE to avoid UGit version parsing issue
 
 echo.
 echo ========================================
 echo ZEngine Build System
 echo ========================================
 echo.
+
+REM Fix Git version detection issue
+REM Get short path (8.3 format) to avoid spaces in path
+set "GIT_EXE=C:\Program Files\Git\bin\git.exe"
+set "GIT_SHORT="
+for %%i in ("%GIT_EXE%") do set "GIT_SHORT=%%~si"
+if exist "%GIT_EXE%" (
+    echo [INFO] Using standard Git: %GIT_EXE%
+    echo [INFO] Short path: %GIT_SHORT%
+    set "GIT_EXTRA=--extra-args -DCMAKE_GIT_EXECUTABLE=%GIT_SHORT%"
+) else (
+    echo [WARNING] Standard Git not found at %GIT_EXE%
+    echo [INFO] Please install Git for Windows from https://git-scm.com/
+    set "GIT_EXTRA="
+)
 
 REM Check if Python is available
 python --version >nul 2>&1
@@ -54,7 +70,9 @@ echo [INFO] Configuring build...
 set CONFIGURE_EXTRA=
 if defined GITHUB_ACTIONS (
     REM CI: editor smoke build uses DX12 only; runners do not ship VULKAN_SDK.
-    set CONFIGURE_EXTRA=--extra-args -DZENGINE_USE_VULKAN=OFF
+    set "CONFIGURE_EXTRA=%GIT_EXTRA% --extra-args -DZENGINE_USE_VULKAN=OFF"
+) else (
+    set "CONFIGURE_EXTRA=%GIT_EXTRA%"
 )
 python zbuild.py configure --config %CONFIG% %CONFIGURE_EXTRA%
 if errorlevel 1 (

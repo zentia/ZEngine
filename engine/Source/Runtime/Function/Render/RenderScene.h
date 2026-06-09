@@ -41,6 +41,7 @@ public:
     std::array<std::vector<RenderMeshNode>, 2> m_MainCameraOpaqueMeshNodesPerViewport;
     std::array<std::vector<RenderMeshNode>, 2> m_MainCameraForwardMeshNodesPerViewport;
     std::array<std::vector<RenderMeshNode>, 2> m_MainCameraTransparentMeshNodesPerViewport;
+    std::array<std::vector<RenderMeshNode>, 2> m_MainCameraSkyMeshNodesPerViewport;
     std::vector<RenderMeshNode> m_MainCameraVisibleMeshNodes;
     RenderAxisNode m_AxisNode;
 
@@ -53,6 +54,7 @@ public:
     const std::vector<RenderMeshNode>& GetMainCameraOpaqueMeshNodes(ViewportType viewport) const;
     const std::vector<RenderMeshNode>& GetMainCameraForwardMeshNodes(ViewportType viewport) const;
     const std::vector<RenderMeshNode>& GetMainCameraTransparentMeshNodes(ViewportType viewport) const;
+    const std::vector<RenderMeshNode>& GetMainCameraSkyMeshNodes(ViewportType viewport) const;
 
     // set visible nodes ptr in render pass
 

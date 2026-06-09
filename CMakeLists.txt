@@ -45,7 +45,6 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUG "${ZENGINE_UNIFIED_OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${ZENGINE_UNIFIED_OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO "${ZENGINE_UNIFIED_OUTPUT_DIR}")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_MINSIZEREL "${ZENGINE_UNIFIED_OUTPUT_DIR}")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_DEBUGV8 "${ZENGINE_UNIFIED_OUTPUT_DIR}")
 
 # Set archive (static library) output directory
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${ZENGINE_UNIFIED_OUTPUT_DIR}")
@@ -53,14 +52,30 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUG "${ZENGINE_UNIFIED_OUTPUT_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELEASE "${ZENGINE_UNIFIED_OUTPUT_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO "${ZENGINE_UNIFIED_OUTPUT_DIR}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_MINSIZEREL "${ZENGINE_UNIFIED_OUTPUT_DIR}")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_DEBUGV8 "${ZENGINE_UNIFIED_OUTPUT_DIR}")
 
 message(STATUS "ZEngine unified output directory: ${ZENGINE_UNIFIED_OUTPUT_DIR}")
 
 # =============================================================================
 # Git Detection (required for FetchContent)
 # =============================================================================
-find_program(GIT_EXECUTABLE git)
+# Fix: Force standard Git to avoid UGit version parsing issue
+if(NOT CMAKE_GIT_EXECUTABLE)
+    # Try standard Git first (not UGit wrapper)
+    find_program(GIT_EXECUTABLE
+        NAMES git.exe git
+        PATHS "C:/Program Files/Git/bin"
+        NO_DEFAULT_PATH
+    )
+    if(GIT_EXECUTABLE)
+        set(CMAKE_GIT_EXECUTABLE "${GIT_EXECUTABLE}" CACHE FILEPATH "Path to git executable")
+    else()
+        # Fallback to default search
+        find_program(GIT_EXECUTABLE git)
+    endif()
+else()
+    set(GIT_EXECUTABLE "${CMAKE_GIT_EXECUTABLE}")
+endif()
+
 if(GIT_EXECUTABLE)
     set(CMAKE_GIT_EXECUTABLE "${GIT_EXECUTABLE}" CACHE FILEPATH "Path to git executable")
     execute_process(
@@ -355,9 +370,7 @@ if(WIN32 AND DEFINED PAPI_TYPE AND PAPI_TYPE STREQUAL "v8")
     # haven't customised. This is what makes IMPORTED libraries (which only
     # ship Release/Debug variants) resolve to their Release form under
     # DebugV8 -- exactly what we want, since wee8.lib IS a Release-built lib.
-    set(CMAKE_MAP_IMPORTED_CONFIG_DEBUGV8 "Release;RelWithDebInfo;"
-        CACHE STRING "DebugV8 maps to Release for imported targets" FORCE)
-
+    
     # ----- CRT selection -----
     # CMAKE_MSVC_RUNTIME_LIBRARY requires CMP0091=NEW (default since 3.15
     # when policy is set, and we declare cmake_minimum_required 3.19 above

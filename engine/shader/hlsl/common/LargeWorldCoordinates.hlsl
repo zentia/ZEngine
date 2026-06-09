@@ -1,5 +1,7 @@
 // UE-style LWC helpers (ZEngine render tile + pre-view translation).
 // CPU mirror: LargeWorldCoordinates.h, MainCameraPerFrame tail fields.
+#ifndef Z_LWC_HLSL
+#define Z_LWC_HLSL
 
 #ifndef Z_LWC_RENDER_TILE_SIZE
 #define Z_LWC_RENDER_TILE_SIZE 2097152.0
@@ -28,3 +30,5 @@ float3 ZLwcCameraAbsolute(float3 render_camera, ZLwcFrame lwc)
 {
     return ZLwcRenderToAbsolute(render_camera, lwc);
 }
+
+#endif  // Z_LWC_HLSL

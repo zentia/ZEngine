@@ -48,6 +48,66 @@ namespace
 #endif
     }
 
+    constexpr uint32_t kDx12CbvSlotAlignmentBytes = 256u;
+    // Must match DX12RHI::CreateDynamicBufferGpuHandle kRenderMeshInstanceStride.
+    constexpr uint32_t kDx12MeshInstanceStructBytes = 80u;
+    static_assert(sizeof(RenderMeshInstance) == kDx12MeshInstanceStructBytes,
+                  "RenderMeshInstance must stay 80 bytes for DX12 structured-buffer SRV stride");
+
+    uint32_t Dx12MeshSlotOffsetAfterPerFrame(uint32_t perframe_dynamic_offset)
+    {
+        const uint32_t after_cbv =
+            perframe_dynamic_offset +
+            RoundUp(static_cast<uint32_t>(sizeof(MainCameraPerFrame)), kDx12CbvSlotAlignmentBytes);
+        const uint32_t mesh_slot = RoundUp(after_cbv, kDx12MeshInstanceStructBytes);
+        assert((mesh_slot % kDx12MeshInstanceStructBytes) == 0);
+        return mesh_slot;
+    }
+
+    uint32_t AlignMeshDrawDynamicOffset(RHI* rhi, uint32_t perdrawcall_dynamic_offset)
+    {
+        if (rhi != nullptr && rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+        {
+            return RoundUp(perdrawcall_dynamic_offset, kDx12MeshInstanceStructBytes);
+        }
+        return perdrawcall_dynamic_offset;
+    }
+
+    uint32_t Dx12MainCameraPerFrameRingStrideBytes(uint32_t perframe_dynamic_offset)
+    {
+        const uint32_t mesh_slot_begin = Dx12MeshSlotOffsetAfterPerFrame(perframe_dynamic_offset);
+        const uint32_t slot_bytes = mesh_slot_begin - perframe_dynamic_offset;
+        // Keep the ring cursor 256-byte aligned so the next PerFrame CBV dynamic offset is valid.
+        return RoundUp(slot_bytes, kDx12CbvSlotAlignmentBytes);
+    }
+
+    uint32_t MeshPerDrawcallOffsetAfterPerFrame(RHI* rhi, uint32_t perframe_dynamic_offset)
+    {
+        if (rhi != nullptr && rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+        {
+            return AlignMeshDrawDynamicOffset(rhi, Dx12MeshSlotOffsetAfterPerFrame(perframe_dynamic_offset));
+        }
+        return perframe_dynamic_offset + static_cast<uint32_t>(sizeof(MainCameraPerFrame));
+    }
+
+    uint32_t AlignPerFrameRingOffset(RHI* rhi, uint32_t end_offset, uint32_t storage_buffer_alignment)
+    {
+        if (rhi != nullptr && rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+        {
+            return RoundUp(end_offset, kDx12CbvSlotAlignmentBytes);
+        }
+        return RoundUp(end_offset, storage_buffer_alignment);
+    }
+
+    uint32_t PerFrameUploadRingStrideBytes(RHI* rhi, uint32_t perframe_dynamic_offset)
+    {
+        if (rhi != nullptr && rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+        {
+            return Dx12MainCameraPerFrameRingStrideBytes(perframe_dynamic_offset);
+        }
+        return static_cast<uint32_t>(sizeof(MainCameraPerFrame));
+    }
+
     RHIPipeline* CreateRuntimeMeshPipeline(RHI* rhi,
                                            MainCameraRp1Pass& pass,
                                            RHIShader* vert_shader_module,
@@ -230,12 +290,14 @@ void MainCameraRp1Pass::Shutdown()
     m_FallbackSampler = nullptr;
     m_FallbackBrdfView = nullptr;
     m_FallbackCubeView = nullptr;
+    m_PerFrameSource = nullptr;
     m_Initialized = false;
 }
 
 void MainCameraRp1Pass::PreparePassData(std::shared_ptr<RenderResourceBase> render_resource)
 {
     RenderResource* resource = static_cast<RenderResource*>(render_resource.get());
+    m_PerFrameSource = resource;
     if (resource != nullptr)
     {
         m_MainCameraPerFrameByViewport = resource->m_MainCameraPerFrameByViewport;
@@ -274,24 +336,19 @@ void MainCameraRp1Pass::EnsureFallbackIblTextures()
                              static_cast<void*>(&neutral_pixel),
                              RHI_FORMAT_R8G8B8A8_UNORM);
 
-    m_Rhi->CreateImage(1,
-                       1,
-                       RHI_FORMAT_R8G8B8A8_UNORM,
-                       RHI_IMAGE_TILING_OPTIMAL,
-                       RHI_IMAGE_USAGE_SAMPLED_BIT | RHI_IMAGE_USAGE_TRANSFER_DST_BIT,
-                       RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                       owned.cube_image,
-                       owned.cube_mem,
-                       0,
-                       6,
-                       1);
-    m_Rhi->CreateImageView(owned.cube_image,
-                           RHI_FORMAT_R8G8B8A8_UNORM,
-                           RHI_IMAGE_ASPECT_COLOR_BIT,
-                           RHI_IMAGE_VIEW_TYPE_CUBE,
-                           6,
-                           1,
-                           m_FallbackCubeView);
+    std::array<void*, 6> neutral_faces = {
+        &neutral_pixel, &neutral_pixel, &neutral_pixel,
+        &neutral_pixel, &neutral_pixel, &neutral_pixel,
+    };
+    m_Rhi->CreateCubeMap(owned.cube_image,
+                         m_FallbackCubeView,
+                         nullptr,
+                         1,
+                         1,
+                         neutral_faces,
+                         RHI_FORMAT_R8G8B8A8_UNORM,
+                         1);
+    owned.cube_mem = nullptr;
 
     g_fallback_ibl_owned[this] = owned;
 }
@@ -471,7 +528,13 @@ namespace
         const std::vector<std::string> include_paths = {GetRp1ShaderRoot() + "/hlsl/rp1",
                                                         GetRp1ShaderRoot() + "/hlsl"};
         std::vector<uint8_t> binary;
-        return rhi->CreateShaderModuleFromFile(full_path, stage, include_paths, {}, binary);
+        LOG_INFO(ZRender, "LoadRp1ShaderFromFile: loading shader from {}", full_path);
+        RHIShader* shader = rhi->CreateShaderModuleFromFile(full_path, stage, include_paths, {}, binary);
+        if (shader == nullptr)
+        {
+            LOG_ERROR(ZRender, "LoadRp1ShaderFromFile: failed to load shader from {}", full_path);
+        }
+        return shader;
     }
 
     RHIShader* CreateBuiltinVertShader(RHI* rhi)
@@ -534,7 +597,9 @@ void MainCameraRp1Pass::SetupPipelines()
                                     uint32_t subpass,
                                     uint32_t color_attachment_count,
                                     bool transparent_pass,
-                                    RHICullModeFlags cull_mode) {
+                                    RHICullModeFlags cull_mode,
+                                    const char* forward_blend_mode = nullptr,
+                                    const char* vert_hlsl_path = "mesh.vert.hlsl") {
         RHIDescriptorSetLayout* descriptorset_layouts[3] = {m_DescriptorInfos[_mesh_global].layout,
                                                             m_DescriptorInfos[_per_mesh].layout,
                                                             m_DescriptorInfos[_mesh_per_material].layout};
@@ -549,9 +614,12 @@ void MainCameraRp1Pass::SetupPipelines()
             throw std::runtime_error("MainCameraRp1Pass: create mesh pipeline layout");
         }
 
-        const std::string vert_shader_path = GetRp1ShaderRoot() + "/hlsl/rp1/mesh.vert.hlsl";
+        const std::string vert_shader_path = GetRp1ShaderRoot() + "/hlsl/rp1/" + vert_hlsl_path;
         const std::string frag_shader_path = GetRp1ShaderRoot() + "/hlsl/rp1/" + frag_hlsl_path;
-        RHIShader* vert_shader_module = CreateBuiltinVertShader(m_Rhi);
+        RHIShader* vert_shader_module =
+            m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12
+                ? LoadRp1ShaderFromFile(m_Rhi, vert_hlsl_path, ShaderStage::Vertex)
+                : CreateBuiltinVertShader(m_Rhi);
         RHIShader* frag_shader_module = CreateBuiltinFragShader(m_Rhi, frag_hlsl_path);
         if (vert_shader_module == nullptr || frag_shader_module == nullptr)
         {
@@ -562,6 +630,11 @@ void MainCameraRp1Pass::SetupPipelines()
                       vert_shader_path,
                       frag_shader_path);
             throw std::runtime_error("MainCameraRp1Pass: failed to load builtin mesh shaders");
+        }
+        else
+        {
+            LOG_INFO(ZRender, "MainCameraRp1Pass: shader loaded successfully (vert={}, frag={})",
+                     vert_shader_path.c_str(), frag_shader_path);
         }
 
         RHIPipelineShaderStageCreateInfo vert_stage {};
@@ -612,10 +685,21 @@ void MainCameraRp1Pass::SetupPipelines()
 
         RHIPipelineDepthStencilStateCreateInfo depth_stencil_create_info {};
         depth_stencil_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depth_stencil_create_info.depthTestEnable = RHI_TRUE;
-        depth_stencil_create_info.depthWriteEnable = transparent_pass ? RHI_FALSE : RHI_TRUE;
-        depth_stencil_create_info.depthCompareOp =
-            transparent_pass ? RHI_COMPARE_OP_LESS_OR_EQUAL : RHI_COMPARE_OP_LESS;
+        // Sky mesh: enable depth test with LEQUAL so it only draws at far plane (depth == 1.0).
+        // Vertex shader pushes z = w (far plane). Sky pixels have depth 1.0, geometry pixels have depth < 1.0.
+        // LEQUAL ensures sky mesh only draws where no geometry exists.
+        bool is_sky_mesh = (pipeline_type == _render_pipeline_type_sky_mesh);
+        depth_stencil_create_info.depthTestEnable = RHI_TRUE;  // Always enable depth test
+        depth_stencil_create_info.depthWriteEnable = RHI_FALSE;  // Never write depth for sky
+        if (is_sky_mesh)
+        {
+            depth_stencil_create_info.depthCompareOp = RHI_COMPARE_OP_LESS_OR_EQUAL;  // LEQUAL for sky
+        }
+        else
+        {
+            depth_stencil_create_info.depthCompareOp =
+                (transparent_pass) ? RHI_COMPARE_OP_LESS_OR_EQUAL : RHI_COMPARE_OP_LESS;
+        }
 
         RHIPipelineColorBlendStateCreateInfo color_blend_state_create_info {};
         color_blend_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -629,7 +713,10 @@ void MainCameraRp1Pass::SetupPipelines()
         }
         else
         {
-            ApplyBlendMode("Transparent", forward_blend_attachments);
+            const char* blend_mode =
+                forward_blend_mode != nullptr ? forward_blend_mode
+                                              : (transparent_pass ? "Transparent" : "OFF");
+            ApplyBlendMode(blend_mode, forward_blend_attachments);
             color_blend_state_create_info.attachmentCount = 1;
             color_blend_state_create_info.pAttachments = forward_blend_attachments.data();
         }
@@ -659,7 +746,8 @@ void MainCameraRp1Pass::SetupPipelines()
         if (m_Rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &pipeline_info, m_RenderPipelines[pipeline_type].pipeline) !=
             RHI_SUCCESS)
         {
-            throw std::runtime_error("MainCameraRp1Pass: create mesh graphics pipeline");
+            throw std::runtime_error(std::string("MainCameraRp1Pass: create mesh graphics pipeline (frag=") +
+                                     frag_hlsl_path + ", subpass=" + std::to_string(subpass) + ")");
         }
 
         m_Rhi->DestroyShaderModule(vert_shader_module);
@@ -684,6 +772,18 @@ void MainCameraRp1Pass::SetupPipelines()
                          1,
                          true,
                          RHI_CULL_MODE_BACK_BIT);
+    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+    {
+        // Scene sky mesh: sky_mesh.vert pushes to far depth; LEQUAL depth test, no depth write.
+        create_mesh_pipeline(_render_pipeline_type_sky_mesh,
+                             "sky_mesh.frag.hlsl",
+                             _main_camera_subpass_deferred_lighting,
+                             1,
+                             true,
+                             RHI_CULL_MODE_NONE,
+                             "OFF",
+                             "sky_mesh.vert.hlsl");
+    }
 
     {
         RHIDescriptorSetLayout* descriptorset_layouts[2] = {m_DescriptorInfos[_mesh_global].layout,
@@ -1008,6 +1108,112 @@ void MainCameraRp1Pass::SetupPipelines()
         m_Rhi->DestroyShaderModule(vert_shader_module);
         m_Rhi->DestroyShaderModule(frag_shader_module);
     }
+
+    // Procedural sky cube (no vertex buffers). Scene sky mesh uses create_mesh_pipeline above.
+    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+    {
+        RenderPipelineType pipeline_type = _render_pipeline_type_sky_procedural;
+        RHIDescriptorSetLayout* descriptorset_layouts[1] = {m_DescriptorInfos[_mesh_global].layout};
+        RHIPipelineLayoutCreateInfo pipeline_layout_create_info {};
+        pipeline_layout_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_create_info.setLayoutCount = 1;
+        pipeline_layout_create_info.pSetLayouts = descriptorset_layouts;
+
+        if (m_Rhi->CreatePipelineLayout(&pipeline_layout_create_info, m_RenderPipelines[pipeline_type].layout) !=
+            RHI_SUCCESS)
+        {
+            throw std::runtime_error("MainCameraRp1Pass: create sky procedural pipeline layout");
+        }
+
+        RHIShader* vert_shader_module = LoadRp1ShaderFromFile(m_Rhi, "sky_procedural.vert.hlsl", ShaderStage::Vertex);
+        RHIShader* frag_shader_module = LoadRp1ShaderFromFile(m_Rhi, "sky_mesh.frag.hlsl", ShaderStage::Fragment);
+        if (vert_shader_module == nullptr || frag_shader_module == nullptr)
+        {
+            throw std::runtime_error("MainCameraRp1Pass: failed to load sky procedural shaders");
+        }
+
+        RHIPipelineShaderStageCreateInfo vert_stage {};
+        vert_stage.sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        vert_stage.stage = RHI_SHADER_STAGE_VERTEX_BIT;
+        vert_stage.module = vert_shader_module;
+        vert_stage.pName = "main";
+
+        RHIPipelineShaderStageCreateInfo frag_stage {};
+        frag_stage.sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        frag_stage.stage = RHI_SHADER_STAGE_FRAGMENT_BIT;
+        frag_stage.module = frag_shader_module;
+        frag_stage.pName = "main";
+
+        RHIPipelineShaderStageCreateInfo shader_stages[] = {vert_stage, frag_stage};
+
+        RHIPipelineVertexInputStateCreateInfo vertex_input_state_create_info {};
+        vertex_input_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        RHIPipelineInputAssemblyStateCreateInfo input_assembly_create_info {};
+        input_assembly_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        input_assembly_create_info.topology = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        RHIPipelineViewportStateCreateInfo viewport_state_create_info {};
+        viewport_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewport_state_create_info.viewportCount = 1;
+        viewport_state_create_info.pViewports = m_Rhi->GetSwapchainInfo().viewport;
+        viewport_state_create_info.scissorCount = 1;
+        viewport_state_create_info.pScissors = m_Rhi->GetSwapchainInfo().scissor;
+
+        RHIPipelineRasterizationStateCreateInfo rasterization_state_create_info {};
+        rasterization_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterization_state_create_info.polygonMode = RHI_POLYGON_MODE_FILL;
+        rasterization_state_create_info.cullMode = RHI_CULL_MODE_NONE;
+        rasterization_state_create_info.frontFace = RHI_FRONT_FACE_COUNTER_CLOCKWISE;
+
+        RHIPipelineMultisampleStateCreateInfo multisample_state_create_info {};
+        multisample_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisample_state_create_info.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
+
+        std::array<RHIPipelineColorBlendAttachmentState, 1> color_blend_attachments {};
+        ApplyBlendMode("Transparent", color_blend_attachments);
+        RHIPipelineColorBlendStateCreateInfo color_blend_state_create_info {};
+        color_blend_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        color_blend_state_create_info.attachmentCount = 1;
+        color_blend_state_create_info.pAttachments = color_blend_attachments.data();
+
+        RHIPipelineDepthStencilStateCreateInfo depth_stencil_create_info {};
+        depth_stencil_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        depth_stencil_create_info.depthTestEnable = RHI_TRUE;
+        depth_stencil_create_info.depthWriteEnable = RHI_FALSE;
+        depth_stencil_create_info.depthCompareOp = RHI_COMPARE_OP_LESS_OR_EQUAL;
+
+        RHIDynamicState dynamic_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
+        RHIPipelineDynamicStateCreateInfo dynamic_state_create_info {};
+        dynamic_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamic_state_create_info.dynamicStateCount = 2;
+        dynamic_state_create_info.pDynamicStates = dynamic_states;
+
+        RHIGraphicsPipelineCreateInfo pipeline_info {};
+        pipeline_info.sType = RHI_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipeline_info.stageCount = 2;
+        pipeline_info.pStages = shader_stages;
+        pipeline_info.pVertexInputState = &vertex_input_state_create_info;
+        pipeline_info.pInputAssemblyState = &input_assembly_create_info;
+        pipeline_info.pViewportState = &viewport_state_create_info;
+        pipeline_info.pRasterizationState = &rasterization_state_create_info;
+        pipeline_info.pMultisampleState = &multisample_state_create_info;
+        pipeline_info.pColorBlendState = &color_blend_state_create_info;
+        pipeline_info.pDepthStencilState = &depth_stencil_create_info;
+        pipeline_info.layout = m_RenderPipelines[pipeline_type].layout;
+        pipeline_info.renderPass = rp1_render_pass;
+        pipeline_info.subpass = _main_camera_subpass_deferred_lighting;
+        pipeline_info.pDynamicState = &dynamic_state_create_info;
+
+        if (m_Rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &pipeline_info, m_RenderPipelines[pipeline_type].pipeline) !=
+            RHI_SUCCESS)
+        {
+            throw std::runtime_error("MainCameraRp1Pass: create sky procedural graphics pipeline");
+        }
+
+        m_Rhi->DestroyShaderModule(vert_shader_module);
+        m_Rhi->DestroyShaderModule(frag_shader_module);
+    }
 }
 
 void MainCameraRp1Pass::SetupDescriptorSets()
@@ -1025,7 +1231,10 @@ void MainCameraRp1Pass::SetupDescriptorSets()
     }
     RHIDescriptorBufferInfo mesh_perframe_storage_buffer_info {};
     mesh_perframe_storage_buffer_info.offset = 0;
-    mesh_perframe_storage_buffer_info.range = sizeof(MainCameraPerFrame);
+    mesh_perframe_storage_buffer_info.range =
+        m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12
+            ? RoundUp(static_cast<uint32_t>(sizeof(MainCameraPerFrame)), kDx12CbvSlotAlignmentBytes)
+            : sizeof(MainCameraPerFrame);
     mesh_perframe_storage_buffer_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
 
     RHIDescriptorBufferInfo mesh_perdrawcall_storage_buffer_info {};
@@ -1243,8 +1452,21 @@ void MainCameraRp1Pass::RefreshMeshGlobalIblDescriptors()
 
     RHIDescriptorImageInfo specular_texture_image_info {};
     specular_texture_image_info.sampler = ibl.m_SpecularTextureSampler != nullptr ? ibl.m_SpecularTextureSampler : m_FallbackSampler;
-    specular_texture_image_info.imageView = ibl.m_SpecularTextureImageView != nullptr ? ibl.m_SpecularTextureImageView : m_FallbackCubeView;
+    const bool use_fallback_specular = ibl.m_SpecularTextureImageView == nullptr;
+    specular_texture_image_info.imageView =
+        use_fallback_specular ? m_FallbackCubeView : ibl.m_SpecularTextureImageView;
     specular_texture_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    if (use_fallback_specular)
+    {
+        static bool warned_fallback = false;
+        if (!warned_fallback)
+        {
+            LOG_WARNING(ZRender,
+                        "MainCameraRp1Pass: specular IBL cubemap not ready; deferred sky uses neutral fallback");
+            warned_fallback = true;
+        }
+    }
 
     RHIDescriptorImageInfo point_light_shadow_texture_image_info {};
     point_light_shadow_texture_image_info.sampler = m_Rhi->GetOrCreateDefaultSampler(Default_Sampler_Nearest);
@@ -1283,15 +1505,41 @@ bool MainCameraRp1Pass::IsViewportValid(ViewportType viewport_type) const
 void MainCameraRp1Pass::SetViewportScissor(ViewportType viewport_type)
 {
     RHICommandBuffer* current_command_buffer = m_Rhi->GetCurrentCommandBuffer();
+    RHIViewport stack_viewport {};
     RHIViewport* viewport = m_Rhi->GetViewport(viewport_type);
     RHIRect2D scissor = m_Rhi->GetSwapchainInfo().scissor[static_cast<uint32_t>(viewport_type)];
+
+    if (viewport_type == ViewportType::scene)
+    {
+        if (auto* render_system = GET_SYSTEM(RenderSystem))
+        {
+            RHIViewport scene_viewport {};
+            RHIRect2D scene_scissor {};
+            if (render_system->TryGetRenderSceneViewport(scene_viewport, scene_scissor) &&
+                scene_viewport.width > 0.0f && scene_viewport.height > 0.0f)
+            {
+                stack_viewport = scene_viewport;
+                viewport = &stack_viewport;
+                scissor = scene_scissor;
+            }
+        }
+    }
+
     m_Rhi->CmdSetViewportPFN(current_command_buffer, 0, 1, viewport);
     m_Rhi->CmdSetScissorPFN(current_command_buffer, 0, 1, &scissor);
 }
 
 void MainCameraRp1Pass::SetPerViewportData(ViewportType viewport_type)
 {
-    m_MainCameraPerFrame = m_MainCameraPerFrameByViewport[static_cast<size_t>(viewport_type)];
+    if (m_PerFrameSource != nullptr)
+    {
+        m_MainCameraPerFrame =
+            m_PerFrameSource->m_MainCameraPerFrameByViewport[static_cast<size_t>(viewport_type)];
+    }
+    else
+    {
+        m_MainCameraPerFrame = m_MainCameraPerFrameByViewport[static_cast<size_t>(viewport_type)];
+    }
 
     if (RenderScene* render_scene = GET_SYSTEM(RenderSystem)->getRenderScene().get())
     {
@@ -1478,6 +1726,14 @@ RHIPipeline* MainCameraRp1Pass::GetOrCreateMeshTransparentPipeline(const GpuPBRM
 
 void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
 {
+    LOG_INFO(ZRender, "DrawRP1: ENTRY (skybox_visible[0]={}, skybox_visible[1]={})",
+             skybox_visible[0], skybox_visible[1]);
+    
+    // G-buffer / IBL views can be recreated on resize; refresh every frame so deferred
+    // lighting and sky pixels never sample stale SRVs (white or blank scene).
+    RefreshDeferredLightingInputAttachments();
+    RefreshMeshGlobalIblDescriptors();
+
     constexpr float k_scene_clear_r = 0.29f;
     constexpr float k_scene_clear_g = 0.345f;
     constexpr float k_scene_clear_b = 0.435f;
@@ -1519,6 +1775,10 @@ void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
 
     m_Rhi->CmdNextSubpassPFN(m_Rhi->GetCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
 
+    // Deferred Lighting must run BEFORE Sky Pass:
+    // - Deferred Lighting writes lighting result to pixels covered by geometry (depth < 1.0)
+    // - Sky Pass writes sky color to pixels NOT covered by geometry (depth == 1.0)
+    // If Sky Pass runs first, Deferred Lighting may overwrite sky pixels.
     m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Deferred Lighting", color);
     for (ViewportType viewport_type : k_viewports)
     {
@@ -1530,6 +1790,20 @@ void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
         m_MainCameraPerFrame.show_skybox =
             skybox_visible[static_cast<size_t>(viewport_type)] ? 1U : 0U;
         DrawDeferredLighting(viewport_type);
+    }
+    m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
+
+    m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Sky Pass", color);
+    for (ViewportType viewport_type : k_viewports)
+    {
+        if (!IsViewportValid(viewport_type))
+        {
+            continue;
+        }
+        SetPerViewportData(viewport_type);
+        m_MainCameraPerFrame.show_skybox =
+            skybox_visible[static_cast<size_t>(viewport_type)] ? 1U : 0U;
+        DrawSkyMeshPass(viewport_type, skybox_visible[static_cast<size_t>(viewport_type)]);
     }
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
@@ -1545,15 +1819,259 @@ void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
         SetPerViewportData(viewport_type);
         m_MainCameraPerFrame.show_skybox =
             skybox_visible[static_cast<size_t>(viewport_type)] ? 1U : 0U;
-        if (skybox_visible[static_cast<size_t>(viewport_type)] && m_SkyboxDrawCallback)
-        {
-            m_SkyboxDrawCallback(viewport_type);
-        }
         DrawMeshTransparent(viewport_type);
     }
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
     m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
+}
+
+void MainCameraRp1Pass::DrawSkyMeshPass(ViewportType viewport_type, bool skybox_visible)
+{
+    LOG_INFO(ZRender, "DrawSkyMeshPass: ENTRY (viewport={}, skybox_visible={}, DX12={})",
+             static_cast<int>(viewport_type), skybox_visible, m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12);
+    
+    if (!skybox_visible || m_Rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
+    {
+        LOG_INFO(ZRender, "DrawSkyMeshPass: skipped (skybox_visible={}, DX12={})", skybox_visible, m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12);
+        return;
+    }
+
+    const RenderScene* render_scene = GET_SYSTEM(RenderSystem)->getRenderScene().get();
+    static const std::vector<RenderMeshNode> k_empty_sky_nodes;
+    const std::vector<RenderMeshNode>& sky_nodes =
+        render_scene ? render_scene->GetMainCameraSkyMeshNodes(viewport_type) : k_empty_sky_nodes;
+
+    LOG_INFO(ZRender, "DrawSkyMeshPass: viewport={}, sky_nodes.size()={}, will_use_procedural_sky={}",
+             static_cast<int>(viewport_type), sky_nodes.size(), sky_nodes.empty());
+
+    // Refresh from RenderResource immediately before ring-buffer upload (DrawRP1 also calls this).
+    SetPerViewportData(viewport_type);
+    m_MainCameraPerFrame.show_skybox = skybox_visible ? 1U : 0U;
+    SetViewportScissor(viewport_type);
+
+    if (viewport_type == ViewportType::scene)
+    {
+        if (auto* render_system = GET_SYSTEM(RenderSystem))
+        {
+            RHIViewport scene_viewport {};
+            RHIRect2D scene_scissor {};
+            if (render_system->TryGetRenderSceneViewport(scene_viewport, scene_scissor) &&
+                scene_viewport.width > 0.0f && scene_viewport.height > 0.0f)
+            {
+                m_MainCameraPerFrame.viewport_rect =
+                    Vector4(scene_viewport.x, scene_viewport.y, scene_viewport.width, scene_viewport.height);
+            }
+        }
+    }
+
+    const uint32_t perframe_dynamic_offset = AlignPerFrameRingOffset(
+        m_Rhi,
+        m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+        m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+    m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
+        perframe_dynamic_offset + PerFrameUploadRingStrideBytes(m_Rhi, perframe_dynamic_offset);
+
+    (*reinterpret_cast<MainCameraPerFrame*>(
+        reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
+        perframe_dynamic_offset)) = m_MainCameraPerFrame;
+
+    if (!sky_nodes.empty())
+    {
+        struct MeshNode
+        {
+            const Matrix4x4* model_matrix {nullptr};
+            const Matrix4x4* joint_matrices {nullptr};
+            uint32_t joint_count {0};
+        };
+
+        std::map<GpuMesh*, std::vector<MeshNode>> draw_batches;
+        for (const RenderMeshNode& node : sky_nodes)
+        {
+            auto& mesh_nodes = draw_batches[AsGpuMesh(node.ref_mesh)];
+            MeshNode temp;
+            temp.model_matrix = node.model_matrix;
+            if (node.enable_vertex_blending)
+            {
+                temp.joint_matrices = node.joint_matrices;
+                temp.joint_count = node.joint_count;
+            }
+            mesh_nodes.push_back(temp);
+        }
+
+        RHIPipeline* sky_mesh_pipeline = m_RenderPipelines[_render_pipeline_type_sky_mesh].pipeline;
+        RHIPipelineLayout* pipeline_layout = m_RenderPipelines[_render_pipeline_type_sky_mesh].layout;
+        
+        LOG_INFO(ZRender, "DrawSkyMeshPass: sky_mesh_pipeline={}, pipeline_layout={}", (void*)sky_mesh_pipeline, (void*)pipeline_layout);
+        
+        if (sky_mesh_pipeline == nullptr)
+        {
+            LOG_ERROR(ZRender, "DrawSkyMeshPass: sky_mesh_pipeline is null!");
+            return;
+        }
+        
+        m_Rhi->CmdBindPipelinePFN(m_Rhi->GetCurrentCommandBuffer(), RHI_PIPELINE_BIND_POINT_GRAPHICS, sky_mesh_pipeline);
+
+        for (auto& mesh_batch : draw_batches)
+        {
+            GpuMesh& mesh = *mesh_batch.first;
+            auto& mesh_nodes = mesh_batch.second;
+
+            const uint32_t total_instance_count = static_cast<uint32_t>(mesh_nodes.size());
+            if (total_instance_count == 0)
+            {
+                continue;
+            }
+
+            const MeshDrawData mesh_draw = getMeshDrawData(&mesh);
+            if (!mesh_draw)
+            {
+                LOG_ERROR(ZRender, "DrawSkyMeshPass: mesh_draw invalid for mesh=%p", (void*)&mesh);
+                continue;
+            }
+
+            LOG_INFO(ZRender, "DrawSkyMeshPass: valid mesh_draw, about to bind descriptors and draw");
+
+            m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                            RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                            pipeline_layout,
+                                            1,
+                                            1,
+                                            &mesh.mesh_vertex_blending_descriptor_set,
+                                            0,
+                                            nullptr);
+
+            RHIBuffer* vertex_buffers[] = {mesh_draw.position_buffer,
+                                           mesh_draw.varying_blending_buffer,
+                                           mesh_draw.varying_buffer};
+            RHIDeviceSize offsets[] = {0, 0, 0};
+            m_Rhi->CmdBindVertexBuffersPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                           0,
+                                           static_cast<uint32_t>(sizeof(vertex_buffers) / sizeof(vertex_buffers[0])),
+                                           vertex_buffers,
+                                           offsets);
+            m_Rhi->CmdBindIndexBufferPFN(
+                m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_buffer, 0, RHI_INDEX_TYPE_UINT16);
+
+            const uint32_t drawcall_max_instance_count =
+                static_cast<uint32_t>(sizeof(MeshDrawPerDrawcall::mesh_instances) /
+                                      sizeof(MeshDrawPerDrawcall::mesh_instances[0]));
+            const uint32_t drawcall_count =
+                RoundUp(total_instance_count, drawcall_max_instance_count) / drawcall_max_instance_count;
+
+            for (uint32_t drawcall_index = 0; drawcall_index < drawcall_count; ++drawcall_index)
+            {
+                const uint32_t current_instance_count =
+                    ((total_instance_count - drawcall_max_instance_count * drawcall_index) < drawcall_max_instance_count)
+                        ? (total_instance_count - drawcall_max_instance_count * drawcall_index)
+                        : drawcall_max_instance_count;
+
+                const uint32_t perdrawcall_dynamic_offset =
+                    drawcall_index == 0
+                        ? MeshPerDrawcallOffsetAfterPerFrame(m_Rhi, perframe_dynamic_offset)
+                        : RoundUp(m_GlobalRenderResource->m_StorageBuffer
+                                      .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+                                  m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+                if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+                {
+                    assert((perdrawcall_dynamic_offset % kDx12MeshInstanceStructBytes) == 0);
+                    assert(perdrawcall_dynamic_offset ==
+                           Dx12MeshSlotOffsetAfterPerFrame(perframe_dynamic_offset));
+                }
+                m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
+                    perdrawcall_dynamic_offset + sizeof(MeshDrawPerDrawcall);
+
+                RenderMeshInstance* const mesh_instances =
+                    reinterpret_cast<RenderMeshInstance*>(reinterpret_cast<uintptr_t>(
+                        m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
+                        perdrawcall_dynamic_offset);
+                for (uint32_t instance_index = 0; instance_index < current_instance_count; ++instance_index)
+                {
+                    const uint32_t node_index = drawcall_max_instance_count * drawcall_index + instance_index;
+                    RenderMeshInstance& instance = mesh_instances[instance_index];
+                    instance.enable_vertex_blending = mesh_nodes[node_index].joint_matrices ? 1.0f : -1.0f;
+                    instance.model_matrix = *mesh_nodes[node_index].model_matrix;
+                }
+
+                uint32_t per_drawcall_vertex_blending_dynamic_offset = 0;
+                bool any_vertex_blending = false;
+                for (uint32_t instance_index = 0; instance_index < current_instance_count; ++instance_index)
+                {
+                    if (mesh_nodes[drawcall_max_instance_count * drawcall_index + instance_index].joint_matrices)
+                    {
+                        any_vertex_blending = true;
+                        break;
+                    }
+                }
+                if (any_vertex_blending)
+                {
+                    per_drawcall_vertex_blending_dynamic_offset =
+                        RoundUp(m_GlobalRenderResource->m_StorageBuffer
+                                    .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+                                m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+                    m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
+                        per_drawcall_vertex_blending_dynamic_offset + sizeof(MeshDrawPerDrawcallVertexBlending);
+
+                    MeshDrawPerDrawcallVertexBlending& vertex_blending_object =
+                        *reinterpret_cast<MeshDrawPerDrawcallVertexBlending*>(reinterpret_cast<uintptr_t>(
+                            m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
+                            per_drawcall_vertex_blending_dynamic_offset);
+                    for (uint32_t instance_index = 0; instance_index < current_instance_count; ++instance_index)
+                    {
+                        const uint32_t node_index = drawcall_max_instance_count * drawcall_index + instance_index;
+                        if (mesh_nodes[node_index].joint_matrices)
+                        {
+                            for (uint32_t joint_index = 0; joint_index < mesh_nodes[node_index].joint_count; ++joint_index)
+                            {
+                                vertex_blending_object
+                                    .joint_matrices[s_MeshVertexBlendingMaxJointCount * instance_index + joint_index] =
+                                    mesh_nodes[node_index].joint_matrices[joint_index];
+                            }
+                        }
+                    }
+                }
+
+                const uint32_t dynamic_offsets[3] = {perframe_dynamic_offset,
+                                                     perdrawcall_dynamic_offset,
+                                                     per_drawcall_vertex_blending_dynamic_offset};
+                m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                                RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                                pipeline_layout,
+                                                0,
+                                                1,
+                                                &m_DescriptorInfos[_mesh_global].descriptor_set,
+                                                3,
+                                                dynamic_offsets);
+
+                LOG_INFO(ZRender, "DrawSkyMeshPass: calling CmdDrawIndexed (index_count={}, instance_count={}, position_buffer={})",
+                         mesh_draw.index_count, current_instance_count, (void*)mesh_draw.position_buffer);
+                if (mesh_draw.index_count == 0)
+                {
+                    LOG_ERROR(ZRender, "DrawSkyMeshPass: index_count is 0!");
+                }
+                m_Rhi->CmdDrawIndexedPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                         mesh_draw.index_count,
+                                         current_instance_count,
+                                         0,
+                                         0,
+                                         0);
+            }
+        }
+        return;
+    }
+
+    RHIPipeline* sky_procedural_pipeline = m_RenderPipelines[_render_pipeline_type_sky_procedural].pipeline;
+    RHIPipelineLayout* procedural_layout = m_RenderPipelines[_render_pipeline_type_sky_procedural].layout;
+    m_Rhi->CmdBindPipelinePFN(m_Rhi->GetCurrentCommandBuffer(), RHI_PIPELINE_BIND_POINT_GRAPHICS, sky_procedural_pipeline);
+    m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                    RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                    procedural_layout,
+                                    0,
+                                    1,
+                                    &m_DescriptorInfos[_mesh_global].descriptor_set,
+                                    1,
+                                    &perframe_dynamic_offset);
+    m_Rhi->CmdDraw(m_Rhi->GetCurrentCommandBuffer(), 36, 1, 0, 0);
 }
 
 void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
@@ -1585,31 +2103,58 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
 
     if (visible_nodes.empty() && render_scene != nullptr && !render_scene->m_RenderEntities.empty())
     {
-        static std::array<bool, 2> warned {};
-        const size_t viewport_index = static_cast<size_t>(viewport_type);
-        if (viewport_index < warned.size() && !warned[viewport_index])
+        const std::vector<RenderMeshNode>& sky_nodes = render_scene->GetMainCameraSkyMeshNodes(viewport_type);
+        const std::vector<RenderMeshNode>& transparent_nodes =
+            render_scene->GetMainCameraTransparentMeshNodes(viewport_type);
+        const std::vector<RenderMeshNode>& all_visible_nodes =
+            render_scene->GetMainCameraVisibleMeshNodes(viewport_type);
+
+        // Sky materials intentionally skip the GBuffer pass; only warn when entities exist but
+        // none survived visibility (frustum cull) or routing (opaque / transparent / sky).
+        if (all_visible_nodes.empty())
         {
-            LOG_WARNING(ZRender,
-                        "MainCameraRp1Pass: Mesh GBuffer has 0 visible opaque nodes but {} render entities exist "
-                        "(viewport={})",
-                        render_scene->m_RenderEntities.size(),
-                        static_cast<int>(viewport_type));
-            warned[viewport_index] = true;
+            static std::array<bool, 2> warned_culled {};
+            const size_t viewport_index = static_cast<size_t>(viewport_type);
+            if (viewport_index < warned_culled.size() && !warned_culled[viewport_index])
+            {
+                LOG_WARNING(ZRender,
+                            "MainCameraRp1Pass: {} render entities exist but none are visible for viewport={} "
+                            "(check frustum cull / enabled state)",
+                            render_scene->m_RenderEntities.size(),
+                            static_cast<int>(viewport_type));
+                warned_culled[viewport_index] = true;
+            }
+        }
+        else if (sky_nodes.empty() && transparent_nodes.empty())
+        {
+            static std::array<bool, 2> warned_routing {};
+            const size_t viewport_index = static_cast<size_t>(viewport_type);
+            if (viewport_index < warned_routing.size() && !warned_routing[viewport_index])
+            {
+                LOG_WARNING(ZRender,
+                            "MainCameraRp1Pass: {} visible mesh nodes but 0 opaque GBuffer nodes for viewport={} "
+                            "(forward-only materials?)",
+                            all_visible_nodes.size(),
+                            static_cast<int>(viewport_type));
+                warned_routing[viewport_index] = true;
+            }
         }
     }
 
     float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Mesh GBuffer", color);
+    SetPerViewportData(viewport_type);
     SetViewportScissor(viewport_type);
 
     RHIPipeline* bound_pipeline = nullptr;
     RHIPipelineLayout* pipeline_layout = m_RenderPipelines[_render_pipeline_type_mesh_gbuffer].layout;
 
-    const uint32_t perframe_dynamic_offset =
-        RoundUp(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
-                m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+    const uint32_t perframe_dynamic_offset = AlignPerFrameRingOffset(
+        m_Rhi,
+        m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+        m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-        perframe_dynamic_offset + sizeof(MainCameraPerFrame);
+        perframe_dynamic_offset + PerFrameUploadRingStrideBytes(m_Rhi, perframe_dynamic_offset);
 
     (*reinterpret_cast<MainCameraPerFrame*>(
         reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
@@ -1685,9 +2230,11 @@ void MainCameraRp1Pass::DrawMeshGbuffer(ViewportType viewport_type)
                     ((total_instance_count - drawcall_max_instance_count * drawcall_index) < drawcall_max_instance_count) ? (total_instance_count - drawcall_max_instance_count * drawcall_index) : drawcall_max_instance_count;
 
                 const uint32_t perdrawcall_dynamic_offset =
-                    RoundUp(m_GlobalRenderResource->m_StorageBuffer
-                                .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
-                            m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+                    drawcall_index == 0
+                        ? MeshPerDrawcallOffsetAfterPerFrame(m_Rhi, perframe_dynamic_offset)
+                        : RoundUp(m_GlobalRenderResource->m_StorageBuffer
+                                      .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+                                  m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
                 m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
                     perdrawcall_dynamic_offset + sizeof(MeshDrawPerDrawcall);
 
@@ -1798,11 +2345,12 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
     RHIPipeline* bound_pipeline = nullptr;
     RHIPipelineLayout* pipeline_layout = m_RenderPipelines[_render_pipeline_type_mesh_transparent].layout;
 
-    const uint32_t perframe_dynamic_offset =
-        RoundUp(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
-                m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+    const uint32_t perframe_dynamic_offset = AlignPerFrameRingOffset(
+        m_Rhi,
+        m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+        m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-        perframe_dynamic_offset + sizeof(MainCameraPerFrame);
+        perframe_dynamic_offset + PerFrameUploadRingStrideBytes(m_Rhi, perframe_dynamic_offset);
 
     (*reinterpret_cast<MainCameraPerFrame*>(
         reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
@@ -1878,9 +2426,11 @@ void MainCameraRp1Pass::DrawMeshTransparent(ViewportType viewport_type)
                     ((total_instance_count - drawcall_max_instance_count * drawcall_index) < drawcall_max_instance_count) ? (total_instance_count - drawcall_max_instance_count * drawcall_index) : drawcall_max_instance_count;
 
                 const uint32_t perdrawcall_dynamic_offset =
-                    RoundUp(m_GlobalRenderResource->m_StorageBuffer
-                                .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
-                            m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+                    drawcall_index == 0
+                        ? MeshPerDrawcallOffsetAfterPerFrame(m_Rhi, perframe_dynamic_offset)
+                        : RoundUp(m_GlobalRenderResource->m_StorageBuffer
+                                      .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+                                  m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
                 m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
                     perdrawcall_dynamic_offset + sizeof(MeshDrawPerDrawcall);
 
@@ -2046,6 +2596,21 @@ void MainCameraRp1Pass::UpdateMegaLightsSpatialDescriptorSets(ViewportType viewp
 
 void MainCameraRp1Pass::DrawDeferredLighting(ViewportType viewport_type)
 {
+    if (viewport_type == ViewportType::scene)
+    {
+        if (auto* render_system = GET_SYSTEM(RenderSystem))
+        {
+            RHIViewport scene_viewport {};
+            RHIRect2D scene_scissor {};
+            if (render_system->TryGetRenderSceneViewport(scene_viewport, scene_scissor) &&
+                scene_viewport.width > 0.0f && scene_viewport.height > 0.0f)
+            {
+                m_MainCameraPerFrame.viewport_rect =
+                    Vector4(scene_viewport.x, scene_viewport.y, scene_viewport.width, scene_viewport.height);
+            }
+        }
+    }
+
     const bool use_megalights = m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12 && MegaLights::IsEnabled() &&
                                 m_MegaLightsSystem != nullptr && m_MegaLightsSystem->HasGpuData();
     const uint8_t pipeline_index = use_megalights ? _render_pipeline_type_megalights_deferred
@@ -2063,11 +2628,12 @@ void MainCameraRp1Pass::DrawDeferredLighting(ViewportType viewport_type)
                               m_RenderPipelines[pipeline_index].pipeline);
     SetViewportScissor(viewport_type);
 
-    const uint32_t perframe_dynamic_offset =
-        RoundUp(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
-                m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+    const uint32_t perframe_dynamic_offset = AlignPerFrameRingOffset(
+        m_Rhi,
+        m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+        m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-        perframe_dynamic_offset + sizeof(MainCameraPerFrame);
+        perframe_dynamic_offset + PerFrameUploadRingStrideBytes(m_Rhi, perframe_dynamic_offset);
 
     (*reinterpret_cast<MainCameraPerFrame*>(
         reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
@@ -2108,11 +2674,12 @@ void MainCameraRp1Pass::DrawMegaLightsSpatialDenoise(ViewportType viewport_type)
                               m_RenderPipelines[_render_pipeline_type_megalights_spatial].pipeline);
     SetViewportScissor(viewport_type);
 
-    const uint32_t perframe_dynamic_offset =
-        RoundUp(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
-                m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+    const uint32_t perframe_dynamic_offset = AlignPerFrameRingOffset(
+        m_Rhi,
+        m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+        m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
     m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-        perframe_dynamic_offset + sizeof(MainCameraPerFrame);
+        perframe_dynamic_offset + PerFrameUploadRingStrideBytes(m_Rhi, perframe_dynamic_offset);
 
     (*reinterpret_cast<MainCameraPerFrame*>(
         reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +

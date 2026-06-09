@@ -1241,9 +1241,19 @@ bool DX12RHI::CreateDynamicBufferGpuHandle(const DX12DescriptorBufferBinding& bi
     if (binding.type == RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
         binding.type == RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
     {
+        constexpr RHIDeviceSize k_cbv_alignment = 256u;
+        const RHIDeviceSize aligned_offset = effective_offset - (effective_offset % k_cbv_alignment);
+        if (aligned_offset != effective_offset)
+        {
+            LOG_WARNING(ZRender,
+                        "DX12 CBV dynamic offset {} is not 256-byte aligned; binding aligned slot {}",
+                        static_cast<uint64_t>(effective_offset),
+                        static_cast<uint64_t>(aligned_offset));
+        }
+
         D3D12_CONSTANT_BUFFER_VIEW_DESC cbv_desc = {};
-        cbv_desc.BufferLocation = binding.buffer->getResource()->GetGPUVirtualAddress() + effective_offset;
-        cbv_desc.SizeInBytes = AlignTo(static_cast<uint32_t>(buffer_range), 256);
+        cbv_desc.BufferLocation = binding.buffer->getResource()->GetGPUVirtualAddress() + aligned_offset;
+        cbv_desc.SizeInBytes = AlignTo(static_cast<uint32_t>(buffer_range), static_cast<uint32_t>(k_cbv_alignment));
         m_Device->CreateConstantBufferView(&cbv_desc, cpu_handle);
         return true;
     }
@@ -1255,11 +1265,27 @@ bool DX12RHI::CreateDynamicBufferGpuHandle(const DX12DescriptorBufferBinding& bi
         const UINT stride =
             (buffer_range >= kRenderMeshInstanceStride && (buffer_range % kRenderMeshInstanceStride) == 0) ? kRenderMeshInstanceStride : 4u;
 
+        RHIDeviceSize aligned_offset = effective_offset;
+        if (stride == kRenderMeshInstanceStride)
+        {
+            const RHIDeviceSize remainder = effective_offset % stride;
+            if (remainder != 0)
+            {
+                aligned_offset = effective_offset + (stride - remainder);
+                LOG_ERROR(ZRender,
+                          "DX12 structured-buffer dynamic offset {} is not {}-byte aligned; GPU reads slot {} but "
+                          "CPU must write the same aligned slot",
+                          static_cast<uint64_t>(effective_offset),
+                          kRenderMeshInstanceStride,
+                          static_cast<uint64_t>(aligned_offset));
+            }
+        }
+
         D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
         srv_desc.Format = DXGI_FORMAT_UNKNOWN;
         srv_desc.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
         srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srv_desc.Buffer.FirstElement = static_cast<UINT>(effective_offset / stride);
+        srv_desc.Buffer.FirstElement = static_cast<UINT>(aligned_offset / stride);
         srv_desc.Buffer.NumElements = static_cast<UINT>(std::max<RHIDeviceSize>(buffer_range / stride, 1));
         srv_desc.Buffer.StructureByteStride = stride;
         srv_desc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
@@ -2652,24 +2678,61 @@ void DX12RHI::CreateFramebufferImageAndView()
 
 RHISampler* DX12RHI::GetOrCreateDefaultSampler(RHIDefaultSamplerType type)
 {
-    RHISamplerCreateInfo sampler_info {};
-    sampler_info.magFilter = RHI_FILTER_LINEAR;
-    sampler_info.minFilter = RHI_FILTER_LINEAR;
-    sampler_info.mipmapMode = RHI_SAMPLER_MIPMAP_MODE_LINEAR;
-    sampler_info.addressModeU = RHI_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler_info.addressModeV = RHI_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler_info.addressModeW = RHI_SAMPLER_ADDRESS_MODE_REPEAT;
-    sampler_info.maxAnisotropy = 1.0f;
-    sampler_info.minLod = 0.0f;
-    sampler_info.maxLod = D3D12_FLOAT32_MAX;
+    switch (type)
+    {
+        case Default_Sampler_Linear:
+            if (m_LinearSampler == nullptr)
+            {
+                RHISamplerCreateInfo sampler_info {};
+                sampler_info.magFilter = RHI_FILTER_LINEAR;
+                sampler_info.minFilter = RHI_FILTER_LINEAR;
+                sampler_info.mipmapMode = RHI_SAMPLER_MIPMAP_MODE_LINEAR;
+                sampler_info.addressModeU = RHI_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeV = RHI_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeW = RHI_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.maxAnisotropy = 1.0f;
+                sampler_info.minLod = 0.0f;
+                sampler_info.maxLod = D3D12_FLOAT32_MAX;
+                CreateSampler(&sampler_info, m_LinearSampler);
+            }
+            return m_LinearSampler;
 
-    RHISampler* sampler = nullptr;
-    CreateSampler(&sampler_info, sampler);
-    return sampler;
+        case Default_Sampler_Nearest:
+            if (m_NearestSampler == nullptr)
+            {
+                RHISamplerCreateInfo sampler_info {};
+                sampler_info.magFilter = RHI_FILTER_NEAREST;
+                sampler_info.minFilter = RHI_FILTER_NEAREST;
+                sampler_info.mipmapMode = RHI_SAMPLER_MIPMAP_MODE_NEAREST;
+                sampler_info.addressModeU = RHI_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeV = RHI_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.addressModeW = RHI_SAMPLER_ADDRESS_MODE_REPEAT;
+                sampler_info.maxAnisotropy = 1.0f;
+                sampler_info.minLod = 0.0f;
+                sampler_info.maxLod = D3D12_FLOAT32_MAX;
+                CreateSampler(&sampler_info, m_NearestSampler);
+            }
+            return m_NearestSampler;
+
+        default:
+            return nullptr;
+    }
 }
 
 RHISampler* DX12RHI::GetOrCreateMipmapSampler(uint32_t width, uint32_t height)
 {
+    if (width == 0 || height == 0)
+    {
+        return nullptr;
+    }
+
+    const uint32_t mip_levels =
+        static_cast<uint32_t>(std::floor(std::log2(static_cast<float>(std::max(1u, std::max(width, height)))))) + 1u;
+    if (const auto found = m_MipmapSamplerMap.find(mip_levels); found != m_MipmapSamplerMap.end())
+    {
+        return found->second;
+    }
+
     RHISamplerCreateInfo sampler_info {};
     sampler_info.magFilter = RHI_FILTER_LINEAR;
     sampler_info.minFilter = RHI_FILTER_LINEAR;
@@ -2679,10 +2742,13 @@ RHISampler* DX12RHI::GetOrCreateMipmapSampler(uint32_t width, uint32_t height)
     sampler_info.addressModeW = RHI_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_info.maxAnisotropy = 1.0f;
     sampler_info.minLod = 0.0f;
-    sampler_info.maxLod = static_cast<float>(std::floor(std::log2(std::max(1u, std::max(width, height))))) + 1.0f;
+    sampler_info.maxLod = static_cast<float>(mip_levels);
 
     RHISampler* sampler = nullptr;
-    CreateSampler(&sampler_info, sampler);
+    if (CreateSampler(&sampler_info, sampler))
+    {
+        m_MipmapSamplerMap.emplace(mip_levels, sampler);
+    }
     return sampler;
 }
 
@@ -3496,6 +3562,16 @@ bool DX12RHI::CreateGraphicsPipelines(RHIPipelineCache* pipelineCache,
         }
     }
 
+    if (pso_desc.VS.pShaderBytecode == nullptr || pso_desc.VS.BytecodeLength == 0 ||
+        pso_desc.PS.pShaderBytecode == nullptr || pso_desc.PS.BytecodeLength == 0)
+    {
+        LOG_ERROR(ZRender,
+                  "DX12 createGraphicsPipelines: missing VS or PS bytecode (VS={} PS={})",
+                  pso_desc.VS.BytecodeLength,
+                  pso_desc.PS.BytecodeLength);
+        return false;
+    }
+
     pso_desc.InputLayout = {input_elements.data(), static_cast<UINT>(input_elements.size())};
 
     RHIPrimitiveTopology rhi_topology = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -3565,6 +3641,15 @@ bool DX12RHI::CreateGraphicsPipelines(RHIPipelineCache* pipelineCache,
     if (!CheckDX12(m_Device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&pipeline_state)),
                    "CreateGraphicsPipelineState failed"))
     {
+        LOG_ERROR(ZRender,
+                  "DX12 PSO dump: NumRTV={} RTV0={} DSV={} DepthEnable={} inputElements={} VS={} PS={}",
+                  pso_desc.NumRenderTargets,
+                  static_cast<uint32_t>(pso_desc.RTVFormats[0]),
+                  static_cast<uint32_t>(pso_desc.DSVFormat),
+                  pso_desc.DepthStencilState.DepthEnable ? 1 : 0,
+                  static_cast<uint32_t>(input_elements.size()),
+                  pso_desc.VS.BytecodeLength,
+                  pso_desc.PS.BytecodeLength);
         return false;
     }
 
@@ -4232,6 +4317,17 @@ void DX12RHI::CmdBeginRenderPassPFN(RHICommandBuffer* commandBuffer,
     m_ActiveRenderPass = static_cast<DX12RenderPass*>(pRenderPassBegin->renderPass);
     m_ActiveSubpassIndex = 0;
 
+    m_ActiveRenderPassClearValueCount = 0;
+    if (pRenderPassBegin->pClearValues != nullptr && pRenderPassBegin->clearValueCount > 0)
+    {
+        m_ActiveRenderPassClearValueCount =
+            std::min(pRenderPassBegin->clearValueCount, k_max_stored_render_pass_clear_values);
+        for (uint32_t i = 0; i < m_ActiveRenderPassClearValueCount; ++i)
+        {
+            m_ActiveRenderPassClearValues[i] = pRenderPassBegin->pClearValues[i];
+        }
+    }
+
     const RHISubpassDescription* subpass = m_ActiveRenderPass->getSubpass(0);
     if (subpass == nullptr)
     {
@@ -4279,7 +4375,16 @@ void DX12RHI::CmdNextSubpassPFN(RHICommandBuffer* commandBuffer, RHISubpassConte
     ApplySubpassDependencies(m_ActiveSubpassIndex, next_subpass);
     TransitionSubpassAttachments(*subpass, false);
     TransitionSubpassAttachments(*subpass, true);
-    BindSubpassRenderTargets(*subpass, nullptr, false);
+
+    RHIRenderPassBeginInfo begin_for_clear {};
+    const RHIRenderPassBeginInfo* begin_ptr = nullptr;
+    if (m_ActiveRenderPassClearValueCount > 0)
+    {
+        begin_for_clear.clearValueCount = m_ActiveRenderPassClearValueCount;
+        begin_for_clear.pClearValues = m_ActiveRenderPassClearValues;
+        begin_ptr = &begin_for_clear;
+    }
+    BindSubpassRenderTargets(*subpass, begin_ptr, true);
     m_ActiveSubpassIndex = next_subpass;
 }
 
@@ -4321,6 +4426,7 @@ void DX12RHI::CmdEndRenderPassPFN(RHICommandBuffer* commandBuffer)
     m_ActiveFramebuffer = nullptr;
     m_ActiveRenderPass = nullptr;
     m_ActiveSubpassIndex = 0;
+    m_ActiveRenderPassClearValueCount = 0;
 }
 
 void DX12RHI::CmdBindPipelinePFN(RHICommandBuffer* commandBuffer,
@@ -5557,6 +5663,9 @@ void DX12RHI::clear()
         next_descriptor = 0;
     }
     m_NextSamplerDescriptor = 0;
+    m_LinearSampler = nullptr;
+    m_NearestSampler = nullptr;
+    m_MipmapSamplerMap.clear();
 
     for (uint8_t i = 0; i < k_max_frames_in_flight; ++i)
     {
@@ -5606,12 +5715,28 @@ void DX12RHI::ClearSwapchain()
 
 void DX12RHI::DestroyDefaultSampler(RHIDefaultSamplerType type)
 {
-    // TODO: Implement DX12 destroyDefaultSampler
+    switch (type)
+    {
+        case Default_Sampler_Linear:
+            DestroySampler(m_LinearSampler);
+            m_LinearSampler = nullptr;
+            break;
+        case Default_Sampler_Nearest:
+            DestroySampler(m_NearestSampler);
+            m_NearestSampler = nullptr;
+            break;
+        default:
+            break;
+    }
 }
 
 void DX12RHI::DestroyMipmappedSampler()
 {
-    // TODO: Implement DX12 destroyMipmappedSampler
+    for (auto& entry : m_MipmapSamplerMap)
+    {
+        DestroySampler(entry.second);
+    }
+    m_MipmapSamplerMap.clear();
 }
 
 void DX12RHI::DestroyShaderModule(RHIShader* shader)

@@ -52,4 +52,14 @@ float3 BRDF(float3 L, float3 V, float3 N, float3 f0, float3 basecolor, float met
 float2 NdcxyToUv(float2 ndcxy) { return ndcxy * float2(0.5f, 0.5f) + float2(0.5f, 0.5f); }
 float2 UvToNdcxy(float2 uv) { return uv * 2.0f - 1.0f; }
 
+// SV_Position pixel coords -> NDC for the active viewport_rect (D3D Y-down).
+float2 NdcFromViewportPixel(float2 pixel_xy)
+{
+    const float inv_w = 1.0f / max(viewport_rect.z, 1.0f);
+    const float inv_h = 1.0f / max(viewport_rect.w, 1.0f);
+    const float ndc_x = (pixel_xy.x - viewport_rect.x) * inv_w * 2.0f - 1.0f;
+    const float ndc_y = 1.0f - (pixel_xy.y - viewport_rect.y) * inv_h * 2.0f;
+    return float2(ndc_x, ndc_y);
+}
+
 #endif

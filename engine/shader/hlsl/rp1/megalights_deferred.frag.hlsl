@@ -57,23 +57,14 @@ float4 main(PsInput input) : SV_Target0
 
     if (shading_model_id == SHADINGMODELID_UNLIT)
     {
-        if (show_skybox == 0u)
-        {
-            discard;
-        }
-        float4x4 inv_proj_view_unlit = ZInverseMatrix4x4(proj_view_matrix);
-        float4 world_pos_h_unlit =
-            mul(inv_proj_view_unlit, float4(UvToNdcxy(input.texcoord), scene_depth, 1.0f));
-        float3 world_pos_unlit = world_pos_h_unlit.xyz / world_pos_h_unlit.w;
-        float3 in_uvw = normalize(world_pos_unlit - camera_position);
-        float3 origin_sample_uvw = float3(in_uvw.x, in_uvw.z, in_uvw.y);
-        // IBL specular cubemap faces match the sky environment (same as Vulkan skybox_sampler).
-        result_color = specular_map.SampleLevel(specular_sampler, origin_sample_uvw, 0.0f).rgb;
+        // DX12 Sky Pass already wrote HDR cubemap into backup_odd; keep those pixels.
+        discard;
     }
     else if (shading_model_id == SHADINGMODELID_DEFAULT_LIT)
     {
         float4x4 inv_proj_view = ZInverseMatrix4x4(proj_view_matrix);
-        float4 world_pos_h = mul(inv_proj_view, float4(UvToNdcxy(input.texcoord), scene_depth, 1.0f));
+        const float2 ndc_xy = NdcFromViewportPixel(input.position.xy);
+        float4 world_pos_h = mul(inv_proj_view, float4(ndc_xy, scene_depth, 1.0f));
         float3 world_pos = world_pos_h.xyz / world_pos_h.w;
 
         float3 V = normalize(camera_position - world_pos);

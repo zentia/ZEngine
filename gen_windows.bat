@@ -4,8 +4,9 @@ REM This script generates the project files using CMake presets
 
 REM Parse command line arguments
 REM PAPI_TYPE selects the JS scripting backend. ZEngine is JS-only;
-REM supported values: v8 (default on desktop/console), quickjs (mobile/web).
-set PAPI_TYPE=v8
+REM supported values: v8 (release/relwithdebinfo), quickjs (debug/mobile/web).
+REM Default is quickjs (debug builds use QuickJS for faster iteration).
+set PAPI_TYPE=quickjs
 set USE_UNITY_BUILD=OFF
 set PRESET_NAME=windows_visual_studio
 :parse_args

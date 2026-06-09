@@ -64,7 +64,8 @@ float4 main(PsInput input) : SV_Target0
     }
 
     float4x4 inv_proj_view = ZInverseMatrix4x4(proj_view_matrix);
-    float4 world_pos_h = mul(inv_proj_view, float4(UvToNdcxy(input.texcoord), scene_depth, 1.0f));
+    const float2 ndc_xy = NdcFromViewportPixel(input.position.xy);
+    float4 world_pos_h = mul(inv_proj_view, float4(ndc_xy, scene_depth, 1.0f));
     float3 world_pos = world_pos_h.xyz / world_pos_h.w;
 
     float3 V = normalize(camera_position - world_pos);

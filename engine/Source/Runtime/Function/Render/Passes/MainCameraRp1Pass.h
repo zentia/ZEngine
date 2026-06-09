@@ -5,10 +5,10 @@
 #include "Runtime/Function/Render/RenderPass.h"
 
 #include <array>
-#include <functional>
 #include <map>
 
 class RenderResourceBase;
+class RenderResource;
 
 namespace MegaLights
 {
@@ -36,6 +36,8 @@ public:
         _render_pipeline_type_deferred_lighting,
         _render_pipeline_type_megalights_deferred,
         _render_pipeline_type_megalights_spatial,
+        _render_pipeline_type_sky_procedural,
+        _render_pipeline_type_sky_mesh,
         _render_pipeline_type_count
     };
 
@@ -48,12 +50,6 @@ public:
     }
 
     void SetPerMeshLayout(RHIDescriptorSetLayout* layout) { m_ExternalPerMeshLayout = layout; }
-
-    // DX12 bindless skybox draw inside RP1 forward subpass (Vulkan parity).
-    void SetSkyboxDrawCallback(std::function<void(ViewportType)> callback)
-    {
-        m_SkyboxDrawCallback = std::move(callback);
-    }
 
     // Rebind mesh-global IBL + shadow textures after UploadGlobalRenderResource (level hot-reload).
     void RefreshMeshGlobalIblDescriptors();
@@ -92,13 +88,12 @@ private:
     void SetupDescriptorSets();
     void EnsureFallbackIblTextures();
 
-    std::function<void(ViewportType)> m_SkyboxDrawCallback;
-
     void SetPerViewportData(ViewportType viewport_type);
     bool IsViewportValid(ViewportType viewport_type) const;
     void SetViewportScissor(ViewportType viewport_type);
 
     void DrawMeshGbuffer(ViewportType viewport_type);
+    void DrawSkyMeshPass(ViewportType viewport_type, bool skybox_visible);
     void DrawDeferredLighting(ViewportType viewport_type);
     void UpdateMegaLightsDescriptorSets(ViewportType viewport_type);
     void UpdateMegaLightsSpatialDescriptorSets(ViewportType viewport_type);
@@ -111,6 +106,8 @@ private:
     RHIShader* LoadBuiltinShader(const char* hlsl_relative_path, ShaderStage stage);
 
     MainCameraFramebufferResources* m_FbResources {nullptr};
+    // Live per-viewport UBO source (PreparePassData); avoids stale copies at Sky Pass upload.
+    RenderResource* m_PerFrameSource {nullptr};
     RHIDescriptorSetLayout* m_ExternalPerMeshLayout {nullptr};
     RHIDescriptorSetLayout* m_MaterialDescriptorSetLayoutPtr {nullptr};
 

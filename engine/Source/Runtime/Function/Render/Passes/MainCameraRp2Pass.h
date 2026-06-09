@@ -48,6 +48,7 @@ private:
     void SetupDescriptorSets();
     void UpdateDescriptorBindings();
     void EnsureFallbackLutTexture();
+    void EnsureFallbackUiClearTexture();
 
     void DrawColorGrading();
     void DrawFxaa();
@@ -62,4 +63,6 @@ private:
 
     RHISampler* m_FallbackSampler {nullptr};
     RHIImageView* m_FallbackLutView {nullptr};
+    // 1x1 transparent; combine_ui t1 on DX12 when legacy UIPass is skipped.
+    RHIImageView* m_FallbackUiClearView {nullptr};
 };

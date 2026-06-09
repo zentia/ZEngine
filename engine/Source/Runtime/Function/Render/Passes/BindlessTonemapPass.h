@@ -52,13 +52,27 @@ private:
     bool InitBackendPipeline(RHIRenderPass* render_pass, const char* hlsl_search_root);
     void RecordBackendTonemap(RHICommandBuffer* cmd, uint32_t bindless_slot) const;
 
+#if defined(_WIN32)
+    bool InitDx12DescriptorTonemap(RHIRenderPass* render_pass);
+    void ShutdownDx12DescriptorTonemap();
+    void UpdateDx12DescriptorBinding();
+    void RecordDx12DescriptorTonemap(RHICommandBuffer* cmd) const;
+#endif
+
     uint32_t m_BindlessSlot {0xFFFFFFFFu};
+    RHIImageView* m_SourceHdrView {nullptr};
 
 #if defined(Z_HAS_VULKAN)
     VulkanBindlessTonemapPipeline m_VulkanPipeline;
 #endif
 #if defined(_WIN32)
     DX12BindlessTonemapPipeline m_Dx12Pipeline;
+    bool m_Dx12DescriptorTonemapReady {false};
+    RHIDescriptorSetLayout* m_Dx12TonemapSetLayout {nullptr};
+    RHIPipelineLayout* m_Dx12TonemapPipelineLayout {nullptr};
+    RHIPipeline* m_Dx12TonemapPipeline {nullptr};
+    RHIDescriptorSet* m_Dx12TonemapDescriptorSet {nullptr};
+    RHISampler* m_Dx12TonemapSampler {nullptr};
 #endif
 
     uint32_t m_Width {0};

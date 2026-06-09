@@ -4,7 +4,9 @@
 struct MeshInstance
 {
     float enable_vertex_blending;
-    float3 _pad0;
+    float _padding_enable_vertex_blending_1;
+    float _padding_enable_vertex_blending_2;
+    float _padding_enable_vertex_blending_3;
     float4x4 model_matrix;
 };
 

@@ -9,6 +9,100 @@
 #include <stdexcept>
 #include <string>
 
+namespace
+{
+    std::string GetRp2ShaderRoot()
+    {
+#ifdef ZENGINE_SHADER_ROOT
+        return ZENGINE_SHADER_ROOT;
+#else
+        return "e:/Engine/ZEngine/engine/shader";
+#endif
+    }
+
+    RHIPipeline* CreateFullscreenTonemapPipeline(RHI* rhi,
+                                                 RHIShader* vert,
+                                                 RHIShader* frag,
+                                                 RHIPipelineLayout* layout,
+                                                 RHIRenderPass* render_pass)
+    {
+        RHIPipelineShaderStageCreateInfo stages[2] {};
+        stages[0].sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = RHI_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vert;
+        stages[0].pName = "main";
+        stages[1].sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = RHI_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = frag;
+        stages[1].pName = "main";
+
+        RHIPipelineVertexInputStateCreateInfo vi {};
+        vi.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        RHIPipelineInputAssemblyStateCreateInfo ia {};
+        ia.sType = RHI_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        RHIPipelineViewportStateCreateInfo vp {};
+        vp.sType = RHI_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vp.viewportCount = 1;
+        vp.scissorCount = 1;
+
+        RHIPipelineRasterizationStateCreateInfo rs {};
+        rs.sType = RHI_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rs.cullMode = RHI_CULL_MODE_NONE;
+        rs.frontFace = RHI_FRONT_FACE_CLOCKWISE;
+        rs.polygonMode = RHI_POLYGON_MODE_FILL;
+
+        RHIPipelineMultisampleStateCreateInfo ms {};
+        ms.sType = RHI_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        ms.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
+
+        RHIPipelineColorBlendAttachmentState blend_att {};
+        blend_att.colorWriteMask = RHI_COLOR_COMPONENT_R_BIT | RHI_COLOR_COMPONENT_G_BIT | RHI_COLOR_COMPONENT_B_BIT |
+                                   RHI_COLOR_COMPONENT_A_BIT;
+
+        RHIPipelineColorBlendStateCreateInfo blend {};
+        blend.sType = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        blend.attachmentCount = 1;
+        blend.pAttachments = &blend_att;
+
+        RHIPipelineDepthStencilStateCreateInfo ds {};
+        ds.sType = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        ds.depthTestEnable = RHI_FALSE;
+        ds.depthWriteEnable = RHI_FALSE;
+
+        RHIDynamicState dyn_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
+        RHIPipelineDynamicStateCreateInfo dyn {};
+        dyn.sType = RHI_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dyn.dynamicStateCount = 2;
+        dyn.pDynamicStates = dyn_states;
+
+        RHIGraphicsPipelineCreateInfo info {};
+        info.sType = RHI_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        info.stageCount = 2;
+        info.pStages = stages;
+        info.pVertexInputState = &vi;
+        info.pInputAssemblyState = &ia;
+        info.pViewportState = &vp;
+        info.pRasterizationState = &rs;
+        info.pMultisampleState = &ms;
+        info.pColorBlendState = &blend;
+        info.pDepthStencilState = &ds;
+        info.pDynamicState = &dyn;
+        info.layout = layout;
+        info.renderPass = render_pass;
+        info.subpass = 0;
+
+        RHIPipeline* pipeline = nullptr;
+        if (rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &info, pipeline) != RHI_SUCCESS)
+        {
+            return nullptr;
+        }
+        return pipeline;
+    }
+}  // namespace
+
 bool BindlessTonemapPass::InitBackendPipeline(RHIRenderPass* render_pass, const char* hlsl_search_root)
 {
     if (m_Rhi == nullptr || render_pass == nullptr)
@@ -19,8 +113,8 @@ bool BindlessTonemapPass::InitBackendPipeline(RHIRenderPass* render_pass, const 
     if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
     {
 #if defined(_WIN32)
-        const std::string root = hlsl_search_root != nullptr ? hlsl_search_root : "";
-        return m_Dx12Pipeline.Initialize(m_Rhi, render_pass, root);
+        (void)hlsl_search_root;
+        return InitDx12DescriptorTonemap(render_pass);
 #else
         (void)hlsl_search_root;
         return false;
@@ -46,11 +140,8 @@ void BindlessTonemapPass::RecordBackendTonemap(RHICommandBuffer* cmd, uint32_t b
     if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
     {
 #if defined(_WIN32)
-        if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi))
-        {
-            dx12_rhi->SetBindlessDescriptorHeaps();
-        }
-        m_Dx12Pipeline.RecordTonemap(cmd, m_Width, m_Height, bindless_slot, BindlessBlitSampler::LinearClamp);
+        (void)bindless_slot;
+        RecordDx12DescriptorTonemap(cmd);
 #endif
         return;
     }
@@ -69,7 +160,7 @@ bool BindlessTonemapPass::isReady() const
     if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
     {
 #if defined(_WIN32)
-        return m_Dx12Pipeline.isReady();
+        return m_Dx12DescriptorTonemapReady;
 #else
         return false;
 #endif
@@ -80,6 +171,138 @@ bool BindlessTonemapPass::isReady() const
     return false;
 #endif
 }
+
+#if defined(_WIN32)
+bool BindlessTonemapPass::InitDx12DescriptorTonemap(RHIRenderPass* render_pass)
+{
+    RHIDescriptorSetLayoutBinding binding {};
+    binding.binding = 0;
+    binding.descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = RHI_SHADER_STAGE_FRAGMENT_BIT;
+
+    RHIDescriptorSetLayoutCreateInfo layout_ci {};
+    layout_ci.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layout_ci.bindingCount = 1;
+    layout_ci.pBindings = &binding;
+    if (m_Rhi->CreateDescriptorSetLayout(&layout_ci, m_Dx12TonemapSetLayout) != RHI_SUCCESS)
+    {
+        return false;
+    }
+
+    RHIPipelineLayoutCreateInfo pli {};
+    pli.sType = RHI_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pli.setLayoutCount = 1;
+    pli.pSetLayouts = &m_Dx12TonemapSetLayout;
+    if (m_Rhi->CreatePipelineLayout(&pli, m_Dx12TonemapPipelineLayout) != RHI_SUCCESS)
+    {
+        return false;
+    }
+
+    const std::string shader_root = GetRp2ShaderRoot() + "/hlsl/rp2/";
+    std::vector<uint8_t> binary;
+    RHIShader* vert = m_Rhi->CreateShaderModuleFromFile(shader_root + "post_process.vert.hlsl",
+                                                        ShaderStage::Vertex,
+                                                        {},
+                                                        {},
+                                                        binary);
+    RHIShader* frag = m_Rhi->CreateShaderModuleFromFile(shader_root + "color_grading_hdr_tonemap.frag.hlsl",
+                                                        ShaderStage::Fragment,
+                                                        {},
+                                                        {},
+                                                        binary);
+    if (vert == nullptr || frag == nullptr)
+    {
+        LOG_ERROR(ZRender, "BindlessTonemapPass: DX12 descriptor tonemap shader load failed");
+        return false;
+    }
+
+    m_Dx12TonemapPipeline =
+        CreateFullscreenTonemapPipeline(m_Rhi, vert, frag, m_Dx12TonemapPipelineLayout, render_pass);
+    m_Rhi->DestroyShaderModule(vert);
+    m_Rhi->DestroyShaderModule(frag);
+
+    if (m_Dx12TonemapPipeline == nullptr)
+    {
+        LOG_ERROR(ZRender, "BindlessTonemapPass: DX12 descriptor tonemap pipeline create failed");
+        return false;
+    }
+
+    RHIDescriptorSetAllocateInfo ai {};
+    ai.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool = m_Rhi->GetDescriptorPoor();
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &m_Dx12TonemapSetLayout;
+    RHIDescriptorSet* descriptor_set = nullptr;
+    if (m_Rhi->AllocateDescriptorSets(&ai, descriptor_set) != RHI_SUCCESS || descriptor_set == nullptr)
+    {
+        return false;
+    }
+    m_Dx12TonemapDescriptorSet = descriptor_set;
+
+    m_Dx12TonemapSampler = m_Rhi->GetOrCreateDefaultSampler(Default_Sampler_Linear);
+    m_Dx12DescriptorTonemapReady = true;
+    LOG_INFO(ZRender, "BindlessTonemapPass: DX12 descriptor tonemap ready (backup_odd -> backup_even)");
+    return true;
+}
+
+void BindlessTonemapPass::ShutdownDx12DescriptorTonemap()
+{
+    m_Dx12TonemapPipeline = nullptr;
+    m_Dx12TonemapPipelineLayout = nullptr;
+    m_Dx12TonemapSetLayout = nullptr;
+    m_Dx12TonemapDescriptorSet = nullptr;
+    m_Dx12TonemapSampler = nullptr;
+    m_Dx12DescriptorTonemapReady = false;
+}
+
+void BindlessTonemapPass::UpdateDx12DescriptorBinding()
+{
+    if (!m_Dx12DescriptorTonemapReady || m_SourceHdrView == nullptr || m_Dx12TonemapDescriptorSet == nullptr)
+    {
+        return;
+    }
+
+    RHIDescriptorImageInfo in_hdr {};
+    in_hdr.sampler = m_Dx12TonemapSampler;
+    in_hdr.imageView = m_SourceHdrView;
+    in_hdr.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    RHIWriteDescriptorSet write {};
+    write.sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = m_Dx12TonemapDescriptorSet;
+    write.dstBinding = 0;
+    write.descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.descriptorCount = 1;
+    write.pImageInfo = &in_hdr;
+    m_Rhi->UpdateDescriptorSets(1, &write, 0, nullptr);
+}
+
+void BindlessTonemapPass::RecordDx12DescriptorTonemap(RHICommandBuffer* cmd) const
+{
+    if (!m_Dx12DescriptorTonemapReady || cmd == nullptr || m_Dx12TonemapPipeline == nullptr)
+    {
+        return;
+    }
+
+    m_Rhi->CmdBindPipelinePFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, m_Dx12TonemapPipeline);
+
+    RHIViewport viewport {0.0f, 0.0f, static_cast<float>(m_Width), static_cast<float>(m_Height), 0.0f, 1.0f};
+    RHIRect2D scissor {0, 0, m_Width, m_Height};
+    m_Rhi->CmdSetViewportPFN(cmd, 0, 1, &viewport);
+    m_Rhi->CmdSetScissorPFN(cmd, 0, 1, &scissor);
+
+    m_Rhi->CmdBindDescriptorSetsPFN(cmd,
+                                      RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                      m_Dx12TonemapPipelineLayout,
+                                      0,
+                                      1,
+                                      &m_Dx12TonemapDescriptorSet,
+                                      0,
+                                      nullptr);
+    m_Rhi->CmdDraw(cmd, 3, 1, 0, 0);
+}
+#endif
 
 void BindlessTonemapPass::Initialize(const RenderPassInitInfo* init_info)
 {
@@ -209,6 +432,15 @@ void BindlessTonemapPass::UpdateAfterFramebufferRecreate(RHIImageView* source_hd
     SetupFramebuffer(target_ldr_view, width, height);
     m_Width = width;
     m_Height = height;
+    m_SourceHdrView = source_hdr_view;
+
+    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+    {
+#if defined(_WIN32)
+        UpdateDx12DescriptorBinding();
+#endif
+        return;
+    }
 
     if (!m_Rhi->supportsBindlessTextures() || source_hdr_view == nullptr)
     {
@@ -241,19 +473,37 @@ void BindlessTonemapPass::UpdateAfterFramebufferRecreate(RHIImageView* source_hd
 
 void BindlessTonemapPass::Draw()
 {
-    if (!isReady() || m_Framebuffer.framebuffer == nullptr)
+    if (!isReady() || m_Framebuffer.framebuffer == nullptr || m_SourceHdrView == nullptr)
     {
         return;
     }
-    if (m_BindlessSlot == RHIBindlessTextureManager::kInvalidBindlessIndex)
+
+    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+    {
+#if defined(_WIN32)
+        UpdateDx12DescriptorBinding();
+#endif
+    }
+    else if (m_BindlessSlot == RHIBindlessTextureManager::kInvalidBindlessIndex)
     {
         return;
+    }
+    else if (m_SourceHdrView != nullptr)
+    {
+        RHIBindlessTextureManager* mgr = m_Rhi->getBindlessTextureManager();
+        RHISampler* sampler = m_Rhi->GetOrCreateDefaultSampler(Default_Sampler_Linear);
+        if (mgr != nullptr)
+        {
+            mgr->Update(m_BindlessSlot, m_SourceHdrView, sampler);
+        }
     }
 
     RHICommandBuffer* cmd = m_Rhi->GetCurrentCommandBuffer();
 
     float color[4] = {0.6f, 0.8f, 1.0f, 1.0f};
-    m_Rhi->PushEvent(cmd, "Tone Map (bindless)", color);
+    const char* event_name =
+        m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12 ? "Tone Map (descriptor)" : "Tone Map (bindless)";
+    m_Rhi->PushEvent(cmd, event_name, color);
 
     RHIRenderPassBeginInfo bi {};
     bi.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;

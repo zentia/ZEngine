@@ -2,9 +2,15 @@
 
 #include <stdint.h>
 
-inline uint32_t RoundUp(uint32_t value, int32_t base)
+// Align value up to a positive base. Uses integer division so non-power-of-two
+// bases (e.g. 80 for D3D12 structured-buffer strides) work correctly.
+inline uint32_t RoundUp(uint32_t value, uint32_t base)
 {
-    return (value + base - 1) & (-base);
+    if (base == 0u)
+    {
+        return value;
+    }
+    return (value + base - 1u) / base * base;
 }
 
 struct StringWithHash

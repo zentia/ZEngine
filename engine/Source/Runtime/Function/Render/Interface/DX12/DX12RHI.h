@@ -637,6 +637,9 @@ private:
     DX12RenderPass* m_ActiveRenderPass {nullptr};
     DX12Framebuffer* m_ActiveFramebuffer {nullptr};
     uint32_t m_ActiveSubpassIndex {0};
+    static constexpr uint32_t k_max_stored_render_pass_clear_values = 16;
+    RHIClearValue m_ActiveRenderPassClearValues[k_max_stored_render_pass_clear_values] {};
+    uint32_t m_ActiveRenderPassClearValueCount {0};
     enum class SwapchainSurfaceState : uint8_t
     {
         Present,
@@ -677,4 +680,10 @@ private:
     // untouched. Built only when m_BindlessSupported is true.
     std::unique_ptr<DX12BindlessTextureManager> m_BindlessTextureManager;
     // ------------------------------------------------------------------
+
+    // Cached samplers (Vulkan parity). GetOrCreateDefaultSampler used to call
+    // CreateSampler every time and exhausted the 1024-slot shader-visible heap.
+    RHISampler* m_LinearSampler {nullptr};
+    RHISampler* m_NearestSampler {nullptr};
+    std::map<uint32_t, RHISampler*> m_MipmapSamplerMap;
 };

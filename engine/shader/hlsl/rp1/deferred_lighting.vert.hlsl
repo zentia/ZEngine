@@ -1,3 +1,6 @@
+// Fullscreen triangle VS for deferred / MegaLights (must match post_process.vert.hlsl and
+// shader/glsl/deferred_lighting.vert UV layout so sky world-direction reconstruction is correct).
+
 struct VsOutput
 {
     float4 position : SV_POSITION;
@@ -6,11 +9,9 @@ struct VsOutput
 
 VsOutput main(uint vertex_id : SV_VertexID)
 {
-    float2 positions[3] = { float2(-1.0f, -1.0f), float2(3.0f, -1.0f), float2(-1.0f, 3.0f) };
-    float2 uvs[3] = { float2(0.0f, 0.0f), float2(2.0f, 0.0f), float2(0.0f, 2.0f) };
-
     VsOutput output;
-    output.position = float4(positions[vertex_id], 0.0f, 1.0f);
-    output.texcoord = uvs[vertex_id];
+    output.texcoord = float2((vertex_id << 1) & 2, vertex_id & 2);
+    output.position =
+        float4(output.texcoord * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
     return output;
 }

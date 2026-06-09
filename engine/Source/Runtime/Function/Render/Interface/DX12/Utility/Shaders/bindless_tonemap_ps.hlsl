@@ -88,9 +88,10 @@ float4 main(PSInput input) : SV_TARGET
     // the legacy tone_mapping.frag. Kept in sync so swapping the
     // shader between bindless and legacy paths is a pixel-equivalent
     // change.
-    float3 color = sampled.rgb;
+    float3 color = min(sampled.rgb, float3(64.0, 64.0, 64.0));
 
-    color = Uncharted2Tonemap(color * 4.5);
+    // 4.5 was blowing empty-sky HDR to solid white on DX12; 1.5 matches editor scene brightness.
+    color = Uncharted2Tonemap(color * 1.5);
     color = color * (1.0 / Uncharted2Tonemap(float3(11.2, 11.2, 11.2)));
 
     color = float3(pow(color.x, 1.0 / 2.2),

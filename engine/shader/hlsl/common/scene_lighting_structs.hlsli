@@ -1,4 +1,6 @@
 // Per-frame lighting payload (C++ mirror: ScenePointLight / SceneDirectionalLight in RenderCommon.h).
+#ifndef Z_SCENE_LIGHTING_STRUCTS_HLSLI
+#define Z_SCENE_LIGHTING_STRUCTS_HLSLI
 
 struct PointLight
 {
@@ -47,6 +49,8 @@ struct MainCameraPerFrame
     float _pad_pre_view;
     float3 render_tile;
     float _pad_render_tile;
+    /// Scene/game panel in framebuffer pixels (x, y, width, height).
+    float4 viewport_rect;
 };
 
 #include "LargeWorldCoordinates.hlsl"
@@ -60,3 +64,5 @@ ZLwcFrame ZLwcFromPerFrame(MainCameraPerFrame pf)
     lwc._pad_render_tile = pf._pad_render_tile;
     return lwc;
 }
+
+#endif  // Z_SCENE_LIGHTING_STRUCTS_HLSLI

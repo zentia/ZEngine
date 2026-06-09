@@ -6,6 +6,8 @@
 #include "Runtime/Function/Render/RenderHelper.h"
 #include "Runtime/Function/Render/RenderPass.h"
 #include "Runtime/Function/Render/RenderResource.h"
+#include "Runtime/Function/Render/Passes/MainCameraPassShaderCommon.h"
+#include "Runtime/Function/Render/RenderGpuResources.h"
 #include "Runtime/Function/Render/RenderResourceBase.h"
 #include "Runtime/Function/Render/RenderGPUResource.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
@@ -178,6 +180,11 @@ const std::vector<RenderMeshNode>& RenderScene::GetMainCameraForwardMeshNodes(Vi
 const std::vector<RenderMeshNode>& RenderScene::GetMainCameraTransparentMeshNodes(ViewportType viewport) const
 {
     return m_MainCameraTransparentMeshNodesPerViewport[static_cast<size_t>(viewport)];
+}
+
+const std::vector<RenderMeshNode>& RenderScene::GetMainCameraSkyMeshNodes(ViewportType viewport) const
+{
+    return m_MainCameraSkyMeshNodesPerViewport[static_cast<size_t>(viewport)];
 }
 
 void RenderScene::SetVisibleNodesReference()
@@ -582,10 +589,12 @@ void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource>
     auto& opaque_mesh_nodes = m_MainCameraOpaqueMeshNodesPerViewport[viewport_index];
     auto& forward_mesh_nodes = m_MainCameraForwardMeshNodesPerViewport[viewport_index];
     auto& transparent_mesh_nodes = m_MainCameraTransparentMeshNodesPerViewport[viewport_index];
+    auto& sky_mesh_nodes = m_MainCameraSkyMeshNodesPerViewport[viewport_index];
     visible_mesh_nodes.clear();
     opaque_mesh_nodes.clear();
     forward_mesh_nodes.clear();
     transparent_mesh_nodes.clear();
+    sky_mesh_nodes.clear();
 
     Matrix4x4 view_matrix = camera->GetViewMatrix();
     Matrix4x4 proj_matrix = camera->GetProjectionMatrix();
@@ -609,7 +618,14 @@ void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource>
         BoundingBox mesh_asset_bounding_box {entity.m_BoundingBox.getMinCorner(),
                                              entity.m_BoundingBox.getMaxCorner()};
         const BoundingBox world_bounding_box = BoundingBoxTransform(mesh_asset_bounding_box, entity.m_ModelMatrix);
-        const bool is_visible = TiledFrustumIntersectBox(f, world_bounding_box);
+
+        RenderMaterialGPUResource& material_asset = render_resource->GetEntityMaterial(entity);
+        GpuPBRMaterial* gpu_material = AsGpuMaterial(&material_asset);
+        const bool is_sky_material =
+            gpu_material != nullptr && MainCameraPassShaderCommon::IsSkyMaterial(*gpu_material);
+
+        // Sky domes are often camera-interior or unbounded; never frustum-cull them.
+        const bool is_visible = is_sky_material || TiledFrustumIntersectBox(f, world_bounding_box);
 
         if (g_debug_tracked_instances.count(entity.m_InstanceId) > 0)
         {
@@ -656,8 +672,6 @@ void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource>
         RenderMeshGPUResource& mesh_asset = render_resource->GetEntityMesh(entity);
         temp_node.ref_mesh = &mesh_asset;
         temp_node.enable_vertex_blending = entity.m_EnableVertexBlending;
-
-        RenderMaterialGPUResource& material_asset = render_resource->GetEntityMaterial(entity);
         temp_node.ref_material = &material_asset;
 
         visible_mesh_nodes.emplace_back(temp_node);
@@ -669,7 +683,11 @@ void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource>
             GET_SYSTEM(RHI) != nullptr && GET_SYSTEM(RHI)->getGraphicsAPI() == GraphicsAPI::DirectX12;
 
 #if defined(Z_HAS_VULKAN)
-        if (dx12_builtin_gbuffer_routing)
+        if (is_sky_material)
+        {
+            sky_mesh_nodes.emplace_back(temp_node);
+        }
+        else if (dx12_builtin_gbuffer_routing)
         {
             if (entity.m_Blend)
             {
@@ -682,7 +700,6 @@ void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource>
         }
         else
         {
-            GpuPBRMaterial* gpu_material = AsGpuMaterial(temp_node.ref_material);
             if (gpu_material != nullptr && ShouldRenderTransparent(entity, *gpu_material))
             {
                 transparent_mesh_nodes.emplace_back(temp_node);
@@ -698,7 +715,11 @@ void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource>
             }
         }
 #else
-        if (entity.m_Blend)
+        if (is_sky_material)
+        {
+            sky_mesh_nodes.emplace_back(temp_node);
+        }
+        else if (entity.m_Blend)
         {
             transparent_mesh_nodes.emplace_back(temp_node);
         }

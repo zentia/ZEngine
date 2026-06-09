@@ -153,20 +153,6 @@
                 "-j",
                 "0"
             ]
-        },
-        {
-            "name": "windows_pc_v8_debug",
-            "displayName": "Windows PC (V8 DebugV8)",
-            "description": "PAPI_TYPE=v8 + custom DebugV8 config: /MT + /Od + /Zi, ABI-compatible with vendored wee8.lib (MT_StaticRelease). Stock --config Debug fails to link under V8; use this for full single-step debugging instead. Requires -DPAPI_TYPE=v8 at configure time.",
-            "configurePreset": "windows_visual_studio",
-            "configuration": "DebugV8",
-            "targets": [
-                "ZEditor"
-            ],
-            "nativeToolOptions": [
-                "-j",
-                "0"
-            ]
         }
     ]
 }

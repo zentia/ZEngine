@@ -138,6 +138,7 @@ bool MainCameraRp2Pass::Initialize(bool enable_fxaa)
         SetupPipelines();
         SetupDescriptorSets();
         EnsureFallbackLutTexture();
+        EnsureFallbackUiClearTexture();
         UpdateDescriptorBindings();
     }
     catch (const std::exception& ex)
@@ -179,6 +180,12 @@ void MainCameraRp2Pass::Shutdown()
         m_FallbackLutView = nullptr;
     }
 
+    if (m_FallbackUiClearView != nullptr && m_Rhi != nullptr)
+    {
+        m_Rhi->DestroyImageView(m_FallbackUiClearView);
+        m_FallbackUiClearView = nullptr;
+    }
+
     m_RenderPipelines.clear();
     m_DescriptorInfos.clear();
     m_Initialized = false;
@@ -208,6 +215,25 @@ void MainCameraRp2Pass::EnsureFallbackLutTexture()
                              RHI_FORMAT_R8G8B8A8_UNORM,
                              1);
     m_FallbackSampler = m_Rhi->GetOrCreateDefaultSampler(Default_Sampler_Linear);
+}
+
+void MainCameraRp2Pass::EnsureFallbackUiClearTexture()
+{
+    if (m_FallbackUiClearView != nullptr || m_Rhi == nullptr)
+    {
+        return;
+    }
+
+    RHIImage* image = nullptr;
+    const uint8_t clear_rgba[] = {0, 0, 0, 0};
+    m_Rhi->CreateGlobalImage(image,
+                             m_FallbackUiClearView,
+                             nullptr,
+                             1,
+                             1,
+                             const_cast<uint8_t*>(clear_rgba),
+                             RHI_FORMAT_R8G8B8A8_UNORM,
+                             1);
 }
 
 void MainCameraRp2Pass::SetupDescriptorSetLayouts()
@@ -442,6 +468,7 @@ void MainCameraRp2Pass::UpdateDescriptorBindings()
     }
 
     {
+        // Color grading (and FXAA when enabled) writes the final LDR frame into backup_odd.
         RHIDescriptorImageInfo scene {};
         scene.sampler = nearest;
         scene.imageView = backup_odd;
@@ -449,8 +476,16 @@ void MainCameraRp2Pass::UpdateDescriptorBindings()
 
         RHIDescriptorImageInfo ui {};
         ui.sampler = nearest;
-        ui.imageView = backup_even;
         ui.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12 && m_FallbackUiClearView != nullptr)
+        {
+            // Editor skips legacy UIPass on DX12; do not sample tonemap RT (alpha=1) as UI.
+            ui.imageView = m_FallbackUiClearView;
+        }
+        else
+        {
+            ui.imageView = backup_even;
+        }
 
         RHIWriteDescriptorSet writes[2] {};
         writes[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -606,22 +641,29 @@ void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
 
     m_Rhi->CmdNextSubpassPFN(cmd, RHI_SUBPASS_CONTENTS_INLINE);
 
-    RHIClearAttachment clear_attachments[1] {};
-    clear_attachments[0].aspectMask = RHI_IMAGE_ASPECT_COLOR_BIT;
-    clear_attachments[0].colorAttachment = 0;
-    clear_attachments[0].clearValue.color.float32[0] = 0.0f;
-    clear_attachments[0].clearValue.color.float32[1] = 0.0f;
-    clear_attachments[0].clearValue.color.float32[2] = 0.0f;
-    clear_attachments[0].clearValue.color.float32[3] = 0.0f;
+    // backup_even is the UI-layer RT. Clear it to transparent black so combine_ui keeps
+    // the graded scene in backup_odd. On DX12 the editor paints UI on the swapchain
+    // after RP2 (ZSlateEditorOverlay), so skip legacy UIPass but still clear even.
+    {
+        RHIClearAttachment clear_attachments[1] {};
+        clear_attachments[0].aspectMask = RHI_IMAGE_ASPECT_COLOR_BIT;
+        clear_attachments[0].colorAttachment = 0;
+        clear_attachments[0].clearValue.color.float32[0] = 0.0f;
+        clear_attachments[0].clearValue.color.float32[1] = 0.0f;
+        clear_attachments[0].clearValue.color.float32[2] = 0.0f;
+        clear_attachments[0].clearValue.color.float32[3] = 0.0f;
 
-    RHIClearRect clear_rects[1] {};
-    clear_rects[0].rect.offset.x = 0;
-    clear_rects[0].rect.offset.y = 0;
-    clear_rects[0].rect.extent.width = m_Rhi->GetSwapchainInfo().extent.width;
-    clear_rects[0].rect.extent.height = m_Rhi->GetSwapchainInfo().extent.height;
-    m_Rhi->CmdClearAttachmentsPFN(cmd, 1, clear_attachments, 1, clear_rects);
+        RHIClearRect clear_rects[1] {};
+        clear_rects[0].rect.offset.x = 0;
+        clear_rects[0].rect.offset.y = 0;
+        clear_rects[0].rect.extent.width = m_Rhi->GetSwapchainInfo().extent.width;
+        clear_rects[0].rect.extent.height = m_Rhi->GetSwapchainInfo().extent.height;
+        m_Rhi->CmdClearAttachmentsPFN(cmd, 1, clear_attachments, 1, clear_rects);
+    }
 
-    if (m_UiPass != nullptr)
+    const bool skip_legacy_ui_draw =
+        m_Rhi != nullptr && m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12;
+    if (!skip_legacy_ui_draw && m_UiPass != nullptr)
     {
         m_UiPass->Draw();
     }
@@ -635,6 +677,10 @@ void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
     }
 
     m_Rhi->CmdNextSubpassPFN(cmd, RHI_SUBPASS_CONTENTS_INLINE);
+
+    // Subpass writes may not be visible to descriptor sampling on all backends until
+    // descriptors are rebound for this frame's final odd/even contents.
+    UpdateDescriptorBindings();
 
     m_Rhi->PushEvent(cmd, "Combine UI", color);
     DrawCombineUi();

@@ -12,6 +12,7 @@
     #include "Runtime/Function/Render/RenderScene.h"
     #include "Runtime/Function/Render/RenderSystem.h"
     #include "Runtime/Function/Render/Interface/RHI.h"
+    #include "Runtime/Utility/Utility.h"
 
     #include <algorithm>
     #include <array>
@@ -637,6 +638,36 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
 
     mesh_perframe_storage_buffer_object.proj_view_matrix = proj_view_matrix;
     mesh_perframe_storage_buffer_object.camera_position = camera_position;
+    bool viewport_rect_set = false;
+    if (viewport_type == ViewportType::scene)
+    {
+        if (auto* render_system = GET_SYSTEM(RenderSystem))
+        {
+            RHIViewport render_viewport {};
+            RHIRect2D render_scissor {};
+            if (render_system->TryGetRenderSceneViewport(render_viewport, render_scissor) &&
+                render_viewport.width > 0.0f && render_viewport.height > 0.0f)
+            {
+                mesh_perframe_storage_buffer_object.viewport_rect =
+                    Vector4(render_viewport.x, render_viewport.y, render_viewport.width, render_viewport.height);
+                viewport_rect_set = true;
+            }
+        }
+    }
+    if (!viewport_rect_set)
+    {
+        if (RHI* viewport_rhi = GET_SYSTEM(RHI))
+        {
+            if (RHIViewport* viewport = viewport_rhi->GetViewport(viewport_type))
+            {
+                if (viewport->width > 0.0f && viewport->height > 0.0f)
+                {
+                    mesh_perframe_storage_buffer_object.viewport_rect =
+                        Vector4(viewport->x, viewport->y, viewport->width, viewport->height);
+                }
+            }
+        }
+    }
     if (LargeWorldCoordinates::IsEnabled())
     {
         const Vector3d tile = LargeWorldCoordinates::GetRenderTile();
@@ -651,7 +682,15 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
     }
     mesh_perframe_storage_buffer_object.ambient_light = ambient_light;
     mesh_perframe_storage_buffer_object.point_light_num = point_light_num;
-    mesh_perframe_storage_buffer_object.show_skybox = 1U;
+    if (auto* render_system = GET_SYSTEM(RenderSystem))
+    {
+        mesh_perframe_storage_buffer_object.show_skybox =
+            render_system->IsSkyboxVisible(viewport_type) ? 1U : 0U;
+    }
+    else
+    {
+        mesh_perframe_storage_buffer_object.show_skybox = 1U;
+    }
 
     m_PointLightShadowPerFrame.point_light_num = point_light_num;
     for (uint32_t i = 0; i < point_light_num; ++i)
@@ -743,9 +782,10 @@ void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
     storage_buffer.m_GlobalUploadRingbuffersSize.resize(frames_in_flight);
     for (uint32_t i = 0; i < frames_in_flight; ++i)
     {
-        storage_buffer.m_GlobalUploadRingbuffersBegin[i] = (global_storage_buffer_size * i) / frames_in_flight;
+        storage_buffer.m_GlobalUploadRingbuffersBegin[i] =
+            RoundUp((global_storage_buffer_size * i) / frames_in_flight, 256u);
         storage_buffer.m_GlobalUploadRingbuffersSize[i] = (global_storage_buffer_size * (i + 1)) / frames_in_flight -
-                                                          (global_storage_buffer_size * i) / frames_in_flight;
+                                                          storage_buffer.m_GlobalUploadRingbuffersBegin[i];
         storage_buffer.m_GlobalUploadRingbuffersEnd[i] = storage_buffer.m_GlobalUploadRingbuffersBegin[i];
     }
 

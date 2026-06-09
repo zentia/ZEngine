@@ -336,8 +336,8 @@ Examples:
     
     # Configure command
     configure_parser = subparsers.add_parser('configure', help='Configure the build system')
-    configure_parser.add_argument('--config', choices=['debug', 'release', 'relwithdebinfo', 'debugv8'],
-                                 default='debug', help='Build configuration (debugv8 = V8-compatible Debug, requires -DPAPI_TYPE=v8)')
+    configure_parser.add_argument('--config', choices=['debug', 'release', 'relwithdebinfo'],
+                                 default='debug', help='Build configuration (debug = QuickJS, release/relwithdebinfo = V8)')
     configure_parser.add_argument('--generator', choices=['ninja', 'make', 'xcode', 'vs'],
                                  help='CMake generator to use')
     configure_parser.add_argument('--preset', help='Use specific CMake preset')
@@ -345,8 +345,8 @@ Examples:
     
     # Build command
     build_parser = subparsers.add_parser('build', help='Build the project')
-    build_parser.add_argument('--config', choices=['debug', 'release', 'relwithdebinfo', 'debugv8'],
-                             default='debug', help='Build configuration (debugv8 = V8-compatible Debug, requires -DPAPI_TYPE=v8)')
+    build_parser.add_argument('--config', choices=['debug', 'release', 'relwithdebinfo'],
+                             default='debug', help='Build configuration (debug = QuickJS, release/relwithdebinfo = V8)')
     build_parser.add_argument('--target', help='Specific target to build')
     build_parser.add_argument('--jobs', type=int, help='Number of parallel jobs')
     build_parser.add_argument('--preset', help='Use specific build preset')

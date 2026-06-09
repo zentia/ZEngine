@@ -51,7 +51,7 @@ VSOutput main(uint vertex_id : SV_VertexID)
 
     float2 p = positions[vertex_id];
     VSOutput output;
-    output.position = float4(p, 0.0f, 1.0f);
+    output.position = float4(p, 1.0f, 1.0f);
     output.direction = float3(p.x, -p.y, 1.0f);
     return output;
 }
@@ -87,13 +87,12 @@ struct PSInput
 float4 main(PSInput input) : SV_TARGET
 {
     float3 camera_right = g_camera_right_tan_aspect.xyz;
-    float  tan_aspect = g_camera_right_tan_aspect.w;
+    float  right_w = g_camera_right_tan_aspect.w;
     float3 camera_up = g_camera_up_tan.xyz;
-    float  tan_half_fovy = g_camera_up_tan.w;
+    float  up_w = g_camera_up_tan.w;
     float3 camera_forward = g_camera_forward_padding.xyz;
-    float3 world_direction = normalize(camera_forward +
-                                       camera_right * input.direction.x * tan_aspect -
-                                       camera_up * input.direction.y * tan_half_fovy);
+    float3 world_direction = normalize(camera_forward + camera_right * input.direction.x * right_w -
+                                       camera_up * input.direction.y * up_w);
 
     float3 sample_direction = float3(world_direction.x, world_direction.z, world_direction.y);
 
@@ -540,15 +539,12 @@ void DX12MainCameraPass::Initialize(const RenderPassInitInfo* init_info)
         m_Rp1Pass.SetFramebufferResources(&m_FramebufferResources);
         m_Rp1Pass.SetShadowImageViews(m_DirectionalLightShadowColorImageView, m_PointLightShadowColorImageView);
         m_Rp1Pass.SetPerMeshLayout(ShadowPassShared::GetPerMeshLayoutPtr());
-        // Skybox uses swapchain overlay (BeginSwapchainOverlayDraw). Never call that
-        // inside RP1's active render pass -- it causes device-removed and a black screen.
-        m_Rp1Pass.SetSkyboxDrawCallback(nullptr);
         try
         {
             m_Rp1Ready = m_Rp1Pass.Initialize();
             if (m_Rp1Ready)
             {
-                LOG_INFO(ZRender, "DX12MainCameraPass: MainCameraRp1Pass initialized");
+                LOG_INFO(ZRender, "DX12MainCameraPass: MainCameraRp1Pass initialized (Plan C mesh SkyPass)");
             }
         }
         catch (const std::exception& ex)
@@ -792,18 +788,94 @@ bool DX12MainCameraPass::BuildBindlessProductionRootSignature()
     return true;
 }
 
-bool DX12MainCameraPass::SetupSkyboxResources()
+bool DX12MainCameraPass::BuildSkyboxOverlayRootSignature()
 {
     auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi);
-    if (!dx12_rhi || !m_BindlessRootSignature)
+    if (!dx12_rhi || !dx12_rhi->getDevice())
     {
         return false;
     }
 
-    // Require the bindless manager to allocate a slot for the cubemap.
-    if (!dx12_rhi->supportsBindlessTextures() || !dx12_rhi->getBindlessTextureManager())
+    ID3D12Device* device = dx12_rhi->getDevice();
+
+    D3D12_DESCRIPTOR_RANGE srv_range {};
+    srv_range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    srv_range.NumDescriptors = 1;
+    srv_range.BaseShaderRegister = 0;
+    srv_range.RegisterSpace = 0;
+    srv_range.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+
+    D3D12_ROOT_PARAMETER root_params[2] = {};
+    root_params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+    root_params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_params[0].Descriptor.ShaderRegister = 0;
+    root_params[0].Descriptor.RegisterSpace = 0;
+
+    root_params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    root_params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    root_params[1].DescriptorTable.NumDescriptorRanges = 1;
+    root_params[1].DescriptorTable.pDescriptorRanges = &srv_range;
+
+    D3D12_STATIC_SAMPLER_DESC static_samplers[DX12RHI::kBindlessStaticSamplerCount] = {};
+    auto fill_sampler = [](D3D12_STATIC_SAMPLER_DESC& s,
+                           D3D12_FILTER filter,
+                           D3D12_TEXTURE_ADDRESS_MODE addr,
+                           UINT slot) {
+        s.Filter = filter;
+        s.AddressU = addr;
+        s.AddressV = addr;
+        s.AddressW = addr;
+        s.MipLODBias = 0.0f;
+        s.MaxAnisotropy = 1;
+        s.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+        s.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
+        s.MinLOD = 0.0f;
+        s.MaxLOD = D3D12_FLOAT32_MAX;
+        s.ShaderRegister = slot;
+        s.RegisterSpace = 0;
+        s.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    };
+    fill_sampler(static_samplers[0], D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_WRAP, 0);
+    fill_sampler(static_samplers[1], D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, 1);
+    fill_sampler(static_samplers[2], D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_TEXTURE_ADDRESS_MODE_WRAP, 2);
+    fill_sampler(static_samplers[3], D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_TEXTURE_ADDRESS_MODE_CLAMP, 3);
+
+    D3D12_ROOT_SIGNATURE_DESC root_sig_desc = {};
+    root_sig_desc.NumParameters = 2;
+    root_sig_desc.pParameters = root_params;
+    root_sig_desc.NumStaticSamplers = DX12RHI::kBindlessStaticSamplerCount;
+    root_sig_desc.pStaticSamplers = static_samplers;
+    root_sig_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+    ComPtr<ID3DBlob> signature_blob;
+    ComPtr<ID3DBlob> error_blob;
+    HRESULT hr = D3D12SerializeRootSignature(&root_sig_desc,
+                                             D3D_ROOT_SIGNATURE_VERSION_1,
+                                             signature_blob.GetAddressOf(),
+                                             error_blob.GetAddressOf());
+    if (FAILED(hr))
     {
-        LOG_WARNING(ZRender, "DX12MainCameraPass: bindless not supported, skybox disabled");
+        if (error_blob)
+        {
+            LOG_ERROR(ZRender,
+                      "DX12MainCameraPass: skybox overlay root signature failed: {}",
+                      static_cast<const char*>(error_blob->GetBufferPointer()));
+        }
+        return false;
+    }
+
+    return PassCheckDX12(device->CreateRootSignature(0,
+                                                     signature_blob->GetBufferPointer(),
+                                                     signature_blob->GetBufferSize(),
+                                                     IID_PPV_ARGS(&m_SkyboxOverlayRootSignature)),
+                         "DX12MainCameraPass: skybox overlay CreateRootSignature failed");
+}
+
+bool DX12MainCameraPass::SetupSkyboxResources()
+{
+    auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi);
+    if (!dx12_rhi)
+    {
         return false;
     }
 
@@ -813,51 +885,47 @@ bool DX12MainCameraPass::SetupSkyboxResources()
         return false;
     }
 
-    ID3D12Device* device = dx12_rhi->getDevice();
-
-    // Allocate a bindless slot for the cubemap SRV.
-    auto* bindless_mgr = static_cast<DX12BindlessTextureManager*>(dx12_rhi->getBindlessTextureManager());
-    m_SkyboxBindlessIndex = bindless_mgr->allocate(
-        m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView,
-        nullptr);  // sampler ignored on DX12 bindless path
-    if (m_SkyboxBindlessIndex == RHIBindlessTextureManager::kInvalidBindlessIndex)
+    if (!BuildSkyboxOverlayRootSignature())
     {
-        LOG_ERROR(ZRender, "DX12MainCameraPass: failed to allocate bindless slot for skybox cubemap");
         return false;
     }
 
-    // Compile shaders. The skybox PS uses SM 6.6 + HLSL 2021 for
-    // ResourceDescriptorHeap[] + NonUniformResourceIndex.
+    ID3D12Device* device = dx12_rhi->getDevice();
+
     DX12ShaderCompiler vs_compiler;
     DX12ShaderCompileResult vs_result =
         vs_compiler.CompileFromSource(k_dx12_skybox_vertex_shader,
                                       ShaderStage::Vertex,
-                                      "dx12_skybox_bindless_vs");
+                                      "dx12_skybox_overlay_vs");
     if (!vs_result.success)
     {
         LOG_ERROR(ZRender, "DX12MainCameraPass: skybox VS compile failed: {}", vs_result.error_message);
         return false;
     }
 
+#ifdef ZENGINE_SHADER_ROOT
+    const std::string shader_root = std::string(ZENGINE_SHADER_ROOT) + "/hlsl/rp1/";
+#else
+    const std::string shader_root = "e:/Engine/ZEngine/engine/shader/hlsl/rp1/";
+#endif
+    const std::string ps_path = shader_root + "skybox_overlay.frag.hlsl";
+
     DX12ShaderCompiler ps_compiler;
-    DX12ShaderCompileResult ps_result =
-        ps_compiler.CompileFromSource(k_dx12_skybox_fragment_shader,
-                                      ShaderStage::Fragment,
-                                      "dx12_skybox_bindless_ps",
-                                      {},
-                                      {},
-                                      "main",
-                                      "ps_6_6",
-                                      "2021");  // SM 6.6 + HLSL 2021
+    DX12ShaderCompileResult ps_result = ps_compiler.CompileFromFile(ps_path,
+                                                                    ShaderStage::Fragment,
+                                                                    {},
+                                                                    {},
+                                                                    "main",
+                                                                    "ps_6_0",
+                                                                    "2021");
     if (!ps_result.success)
     {
-        LOG_ERROR(ZRender, "DX12MainCameraPass: skybox PS compile failed (ps_6_6 / HV 2021): {}", ps_result.error_message);
+        LOG_ERROR(ZRender, "DX12MainCameraPass: skybox PS compile failed: {}", ps_result.error_message);
         return false;
     }
 
-    // Build PSO.
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = {};
-    pso_desc.pRootSignature = m_BindlessRootSignature.Get();
+    pso_desc.pRootSignature = m_SkyboxOverlayRootSignature.Get();
 
     pso_desc.VS = {vs_result.dxil_code.data(), vs_result.dxil_code.size()};
     pso_desc.PS = {ps_result.dxil_code.data(), ps_result.dxil_code.size()};
@@ -883,9 +951,6 @@ bool DX12MainCameraPass::SetupSkyboxResources()
     pso_desc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
 
     HRESULT hr = device->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&m_SkyboxPso));
-    // No need to destroy shader modules — DXIL was compiled inline,
-    // not through the RHI's createShaderModuleFromSource path.
-
     if (FAILED(hr))
     {
         static bool s_logged_skybox_pso_failure = false;
@@ -893,7 +958,44 @@ bool DX12MainCameraPass::SetupSkyboxResources()
         {
             s_logged_skybox_pso_failure = true;
             LOG_ERROR(ZRender,
-                      "DX12MainCameraPass: skybox CreateGraphicsPipelineState failed HRESULT=0x{:08X}",
+                      "DX12MainCameraPass: skybox overlay CreateGraphicsPipelineState failed HRESULT=0x{:08X}",
+                      static_cast<unsigned int>(hr));
+        }
+        return false;
+    }
+
+    const std::string forward_ps_path = shader_root + "skybox_forward.frag.hlsl";
+    DX12ShaderCompileResult forward_ps_result = ps_compiler.CompileFromFile(forward_ps_path,
+                                                                            ShaderStage::Fragment,
+                                                                            {},
+                                                                            {},
+                                                                            "main",
+                                                                            "ps_6_0",
+                                                                            "2021");
+    if (!forward_ps_result.success)
+    {
+        LOG_ERROR(ZRender, "DX12MainCameraPass: skybox forward PS compile failed: {}", forward_ps_result.error_message);
+        return false;
+    }
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC forward_pso_desc = pso_desc;
+    forward_pso_desc.PS = {forward_ps_result.dxil_code.data(), forward_ps_result.dxil_code.size()};
+    forward_pso_desc.RTVFormats[0] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    forward_pso_desc.DepthStencilState.DepthEnable = TRUE;
+    forward_pso_desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    forward_pso_desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
+    forward_pso_desc.DepthStencilState.StencilEnable = FALSE;
+    forward_pso_desc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+    hr = device->CreateGraphicsPipelineState(&forward_pso_desc, IID_PPV_ARGS(&m_SkyboxForwardPso));
+    if (FAILED(hr))
+    {
+        static bool s_logged_forward_pso_failure = false;
+        if (!s_logged_forward_pso_failure)
+        {
+            s_logged_forward_pso_failure = true;
+            LOG_ERROR(ZRender,
+                      "DX12MainCameraPass: skybox forward CreateGraphicsPipelineState failed HRESULT=0x{:08X}",
                       static_cast<unsigned int>(hr));
         }
         return false;
@@ -910,9 +1012,13 @@ bool DX12MainCameraPass::SetupSkyboxResources()
     }
 
     LOG_INFO(ZRender,
-             "DX12MainCameraPass: bindless skybox initialized (bindless slot = {})",
-             m_SkyboxBindlessIndex);
+             "DX12MainCameraPass: skybox initialized (overlay + RP1 forward HDR, descriptor cubemap SRV)");
     return true;
+}
+
+void DX12MainCameraPass::RefreshSkyboxCubemapDescriptor()
+{
+    // Cubemap SRV is bound per-draw from the live ImageView GPU handle (no bindless heap copy).
 }
 
 bool DX12MainCameraPass::SetupSceneGridResources()
@@ -1363,16 +1469,29 @@ void DX12MainCameraPass::DrawSkybox(ViewportType viewport_type)
         RHIRect2D scissor {};
         if (!ResolveSceneOverlayViewport(m_Rhi, viewport_for_draw, scissor))
         {
+            static bool warned = false;
+            if (!warned)
+            {
+                LOG_WARNING(ZRender,
+                            "DrawSkybox(scene): skipped (scene viewport {:.0f}x{:.0f})",
+                            viewport_for_draw.width,
+                            viewport_for_draw.height);
+                warned = true;
+            }
             return;
         }
 
-        DrawSkyboxWithCamera(GET_SYSTEM(RenderSystem)->GetCamera(viewport_type), viewport_for_draw, viewport_index);
+        DrawSkyboxWithCamera(GET_SYSTEM(RenderSystem)->GetCamera(viewport_type),
+                             viewport_for_draw,
+                             viewport_index,
+                             true);
         return;
     }
 
     DrawSkyboxWithCamera(GET_SYSTEM(RenderSystem)->GetCamera(viewport_type),
                          viewport != nullptr ? *viewport : RHIViewport {},
-                         viewport_index);
+                         viewport_index,
+                         true);
 }
 
 void DX12MainCameraPass::DrawSkyboxPreview()
@@ -1390,14 +1509,55 @@ void DX12MainCameraPass::DrawSkyboxPreview()
     viewport.height = request.viewport.height;
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
-    DrawSkyboxWithCamera(request.camera, viewport, 2);  // slot 2 = preview
+    DrawSkyboxWithCamera(request.camera, viewport, 2, true);  // slot 2 = preview
+}
+
+void DX12MainCameraPass::DrawSkyboxInRp1Forward(ViewportType viewport_type)
+{
+    if (!m_SkyboxReady || !m_SkyboxForwardPso || !m_SkyboxOverlayRootSignature)
+    {
+        return;
+    }
+
+    const size_t viewport_index = static_cast<size_t>(viewport_type);
+    if (viewport_index >= kSkyboxViewportCount)
+    {
+        return;
+    }
+
+    RHIViewport viewport_for_draw {};
+    if (viewport_type == ViewportType::scene)
+    {
+        RHIRect2D scissor {};
+        if (!ResolveSceneOverlayViewport(m_Rhi, viewport_for_draw, scissor))
+        {
+            return;
+        }
+    }
+    else
+    {
+        RHIViewport* viewport = m_Rhi->GetViewport(viewport_type);
+        if (!viewport || viewport->width <= 0.0f || viewport->height <= 0.0f)
+        {
+            return;
+        }
+        viewport_for_draw = *viewport;
+    }
+
+    DrawSkyboxWithCamera(GET_SYSTEM(RenderSystem)->GetCamera(viewport_type),
+                         viewport_for_draw,
+                         viewport_index,
+                         false);
 }
 
 void DX12MainCameraPass::DrawSkyboxWithCamera(const std::shared_ptr<RenderCamera>& camera,
                                               const RHIViewport& viewport,
-                                              size_t viewport_slot)
+                                              size_t viewport_slot,
+                                              bool swapchain_overlay)
 {
-    if (!m_SkyboxReady || !m_SkyboxPso || !m_BindlessRootSignature)
+    ID3D12PipelineState* active_pso =
+        swapchain_overlay ? m_SkyboxPso.Get() : m_SkyboxForwardPso.Get();
+    if (!m_SkyboxReady || active_pso == nullptr || !m_SkyboxOverlayRootSignature)
     {
         return;
     }
@@ -1410,6 +1570,26 @@ void DX12MainCameraPass::DrawSkyboxWithCamera(const std::shared_ptr<RenderCamera
 
     if (dx12_rhi->IsDeviceRemoved(" before skybox draw"))
     {
+        return;
+    }
+
+    if (m_GlobalRenderResource == nullptr ||
+        m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView == nullptr)
+    {
+        return;
+    }
+
+    auto* cubemap_view =
+        static_cast<DX12ImageView*>(m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView);
+    const D3D12_GPU_DESCRIPTOR_HANDLE cubemap_srv = cubemap_view->getGpuHandle();
+    if (cubemap_srv.ptr == 0)
+    {
+        static bool warned = false;
+        if (!warned)
+        {
+            LOG_WARNING(ZRender, "DX12MainCameraPass: skybox cubemap has no GPU SRV handle");
+            warned = true;
+        }
         return;
     }
 
@@ -1428,17 +1608,29 @@ void DX12MainCameraPass::DrawSkyboxWithCamera(const std::shared_ptr<RenderCamera
     // Upload constants to the UBO.
     const float aspect =
         viewport.height > 0.0f ? std::max(viewport.width / viewport.height, 0.01f) : std::max(camera->getAspect(), 0.01f);
-    const float fovy_radians =
-        Radian(Math::atan(Math::tan(Radian(Degree(camera->getFOV().x) * 0.5f)) / aspect) * 2.0f).valueRadians();
-    const float tan_half_fovy = std::tan(fovy_radians * 0.5f);
     const Vector3 camera_right = camera->right();
     const Vector3 camera_up = camera->up();
     const Vector3 camera_forward = camera->forward();
 
     DX12SkyboxConstants constants {};
-    constants.camera_right_tan_aspect = Vector4(camera_right.x, camera_right.y, camera_right.z, tan_half_fovy * aspect);
-    constants.camera_up_tan = Vector4(camera_up.x, camera_up.y, camera_up.z, tan_half_fovy);
-    constants.camera_forward_padding = Vector4(camera_forward.x, camera_forward.y, camera_forward.z, 0.0f);
+    if (camera->IsOrthographic())
+    {
+        const float half_h = camera->GetOrthoHalfHeight();
+        const float half_w = half_h * aspect;
+        constants.camera_right_tan_aspect = Vector4(camera_right.x, camera_right.y, camera_right.z, half_w);
+        constants.camera_up_tan = Vector4(camera_up.x, camera_up.y, camera_up.z, half_h);
+        constants.camera_forward_padding = Vector4(camera_forward.x, camera_forward.y, camera_forward.z, 1.0f);
+    }
+    else
+    {
+        const float fovy_radians =
+            Radian(Math::atan(Math::tan(Radian(Degree(camera->getFOV().x) * 0.5f)) / aspect) * 2.0f).valueRadians();
+        const float tan_half_fovy = std::tan(fovy_radians * 0.5f);
+        constants.camera_right_tan_aspect =
+            Vector4(camera_right.x, camera_right.y, camera_right.z, tan_half_fovy * aspect);
+        constants.camera_up_tan = Vector4(camera_up.x, camera_up.y, camera_up.z, tan_half_fovy);
+        constants.camera_forward_padding = Vector4(camera_forward.x, camera_forward.y, camera_forward.z, 0.0f);
+    }
 
     void* mapped_data = nullptr;
     if (!m_Rhi->MapMemory(m_SkyboxConstantBufferMemories[viewport_slot], 0, sizeof(DX12SkyboxConstants), 0, &mapped_data) ||
@@ -1453,26 +1645,37 @@ void DX12MainCameraPass::DrawSkyboxWithCamera(const std::shared_ptr<RenderCamera
     RHIRect2D scissor {{static_cast<int32_t>(viewport.x), static_cast<int32_t>(viewport.y)},
                        {static_cast<uint32_t>(viewport.width), static_cast<uint32_t>(viewport.height)}};
 
-    dx12_rhi->BeginSwapchainOverlayDraw();
-    dx12_rhi->SetBindlessDescriptorHeaps();
+    if (swapchain_overlay)
+    {
+        dx12_rhi->BeginSwapchainOverlayDraw();
+
+        ID3D12DescriptorHeap* descriptor_heap = dx12_rhi->GetCbvSrvUavDescriptorHeap();
+        if (descriptor_heap != nullptr)
+        {
+            ID3D12GraphicsCommandList* command_list = dx12_rhi->getCurrentCommandList();
+            command_list->SetDescriptorHeaps(1, &descriptor_heap);
+        }
+    }
+    else
+    {
+        ID3D12DescriptorHeap* descriptor_heap = dx12_rhi->GetCbvSrvUavDescriptorHeap();
+        if (descriptor_heap != nullptr)
+        {
+            ID3D12GraphicsCommandList* command_list = dx12_rhi->getCurrentCommandList();
+            command_list->SetDescriptorHeaps(1, &descriptor_heap);
+        }
+    }
 
     m_Rhi->CmdSetViewportPFN(command_buffer, 0, 1, &viewport);
     m_Rhi->CmdSetScissorPFN(command_buffer, 0, 1, &scissor);
 
-    // Bind the skybox PSO and root signature.
     auto* dx12_cmd = dx12_rhi->getCurrentCommandList();
-    dx12_cmd->SetPipelineState(m_SkyboxPso.Get());
-    dx12_cmd->SetGraphicsRootSignature(m_BindlessRootSignature.Get());
+    dx12_cmd->SetGraphicsRootSignature(m_SkyboxOverlayRootSignature.Get());
+    dx12_cmd->SetPipelineState(active_pso);
 
-    // Root param 0: packed bindless index.
-    const uint32_t packed = BindlessIndex::Pack(
-        m_SkyboxBindlessIndex,
-        static_cast<uint32_t>(BindlessBlitSampler::LinearClamp));
-    dx12_cmd->SetGraphicsRoot32BitConstant(0, packed, 0);
-
-    // Root param 1: UBO via root CBV.
     auto* dx12_ubo = static_cast<DX12Buffer*>(m_SkyboxConstantBuffers[viewport_slot]);
-    dx12_cmd->SetGraphicsRootConstantBufferView(1, dx12_ubo->getResource()->GetGPUVirtualAddress());
+    dx12_cmd->SetGraphicsRootConstantBufferView(0, dx12_ubo->getResource()->GetGPUVirtualAddress());
+    dx12_cmd->SetGraphicsRootDescriptorTable(1, cubemap_srv);
 
     dx12_cmd->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     dx12_cmd->DrawInstanced(3, 1, 0, 0);
@@ -1593,6 +1796,17 @@ void DX12MainCameraPass::TryLateInitializeSkybox()
 void DX12MainCameraPass::OnGlobalRenderResourceUploaded()
 {
     TryLateInitializeSkybox();
+    RefreshSkyboxCubemapDescriptor();
+    if (m_GlobalRenderResource != nullptr &&
+        m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView != nullptr)
+    {
+        auto* cubemap_view =
+            static_cast<DX12ImageView*>(m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView);
+        if (cubemap_view->getGpuHandle().ptr == 0)
+        {
+            LOG_WARNING(ZRender, "DX12MainCameraPass: specular IBL cubemap SRV has no GPU handle after upload");
+        }
+    }
     if (m_Rp1Ready)
     {
         m_Rp1Pass.RefreshMeshGlobalIblDescriptors();
@@ -1603,9 +1817,40 @@ void DX12MainCameraPass::OnGlobalRenderResourceUploaded()
     }
 }
 
+void DX12MainCameraPass::DrawEditorSkyboxOverlays(const std::array<bool, 2>& skybox_visible)
+{
+    TryLateInitializeSkybox();
+    if (!m_SkyboxReady)
+    {
+        static bool warned = false;
+        if (!warned)
+        {
+            LOG_WARNING(ZRender,
+                        "DX12MainCameraPass: skybox draw skipped (ready={} ibl={} aborted={})",
+                        m_SkyboxReady,
+                        m_GlobalRenderResource != nullptr &&
+                            m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView != nullptr,
+                        m_SkyboxSetupAborted);
+            warned = true;
+        }
+        return;
+    }
+
+    if (skybox_visible[static_cast<size_t>(ViewportType::game)])
+    {
+        DrawSkybox(ViewportType::game);
+    }
+    if (skybox_visible[static_cast<size_t>(ViewportType::scene)])
+    {
+        DrawSkybox(ViewportType::scene);
+    }
+    DrawSkyboxPreview();
+}
+
 void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbacks,
                               const std::array<bool, 2>& skybox_visible)
 {
+    (void)skybox_visible;
     TryLateInitializeSkybox();
 
     if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi))
@@ -1639,32 +1884,7 @@ void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbac
         m_Rp2Pass.DrawRP2(swapchain_index, {});
     }
 
-    if (m_SkyboxReady)
-    {
-        if (skybox_visible[static_cast<size_t>(ViewportType::game)])
-        {
-            DrawSkybox(ViewportType::game);
-        }
-        if (skybox_visible[static_cast<size_t>(ViewportType::scene)])
-        {
-            DrawSkybox(ViewportType::scene);
-        }
-        DrawSkyboxPreview();
-    }
-    else
-    {
-        static bool warned = false;
-        if (!warned)
-        {
-            LOG_WARNING(ZRender,
-                        "DX12MainCameraPass: skybox draw skipped (ready={} ibl={} aborted={})",
-                        m_SkyboxReady,
-                        m_GlobalRenderResource != nullptr &&
-                            m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView != nullptr,
-                        m_SkyboxSetupAborted);
-            warned = true;
-        }
-    }
+    // Swapchain skybox overlay is drawn from EditorUIPass after the ZSlate batch.
 
     for (const RenderCallback& callback : post_ui_callbacks)
     {

@@ -95,14 +95,7 @@ void main()
 
     if (SHADINGMODELID_UNLIT == gbuffer.shadingModelID)
     {
-        if (show_skybox == 0U)
-        {
-            discard;
-        }
-
-        highp vec3 in_UVW            = normalize(in_world_position - camera_position);
-        highp vec3 origin_sample_UVW = vec3(in_UVW.x, in_UVW.z, in_UVW.y);
-        result_color                 = textureLod(skybox_sampler, origin_sample_UVW, 0.0).rgb;
+        discard;
     }
     else if (SHADINGMODELID_DEFAULT_LIT == gbuffer.shadingModelID)
     {
