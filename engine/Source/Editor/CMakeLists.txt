@@ -225,14 +225,25 @@ endif()
 # Link to minizip-ng (PR #8: XlsxImporter cracks open .xlsx ZIP archives).
 # Editor-only; ZRuntime does NOT link it so player builds stay free of the
 # ZIP / zlib payload. The 3rdparty CMake already strips minizip down to
-# zlib-only so we don't drag in BZIP2 / LZMA / OpenSSL transitively.
-# NOTE: with MZ_COMPAT=OFF the actual target name is `minizip-ng` (with
-# the -ng suffix injected via MZ_LIB_SUFFIX). The PUBLIC include dir
-# carrying mz.h / mz_strm.h / mz_zip.h / mz_zip_rw.h propagates through
-# this link, so xlsx_importer.cpp resolves them as plain "mz_*.h".
-if(TARGET minizip-ng)
-    target_link_libraries(${TARGET_NAME} PRIVATE minizip-ng)
-endif()
+# zlib-only so we don't drag in BZIP2 / LZMA / OpenSSL.
+# 
+# NOTE: We MUST link the library (not just add include dirs), otherwise
+# XlsxImporter.obj will have unresolved external symbols (LNK2019).
+# 
+# Force link minizip-ng (always, not conditional on TARGET existence).
+# If minizip-ng was not built, this will cause a CMake error at link time,
+# which is better than a silent LNK2019.
+target_link_libraries(${TARGET_NAME} PRIVATE minizip-ng)
+message(STATUS "Editor: FORCE-linked minizip-ng (ZIP archive support for XlsxImporter)")
+
+# Always add minizip-ng include directory so XlsxImporter.cpp can find mz.h.
+# The minizip-ng CMake installs headers to <build>/engine/3rdparty/minizip-ng/,
+# but the source tree also has mz.h in the root of the submodule.
+# We add BOTH the source directory and the build directory to be safe.
+target_include_directories(${TARGET_NAME} PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/3rdparty/minizip-ng
+    ${CMAKE_BINARY_DIR}/engine/3rdparty/minizip-ng
+)
 
 # Texture-cook block encoders (editor-only): bc7enc (BC1/3/7) + astc-encoder
 # (ASTC LDR). Consumed by TextureCompressor.cpp. PRIVATE -- cooking is an

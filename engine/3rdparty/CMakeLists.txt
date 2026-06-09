@@ -612,7 +612,7 @@ endif()
 # and pick up ZEditor's GLOB_RECURSE; only the link-against happens in
 # engine/Source/Editor/CMakeLists.txt.
 # =============================================================================
-if(NOT TARGET MINIZIP::minizip AND NOT EMSCRIPTEN)
+if(NOT EMSCRIPTEN)
     set(MZ_COMPAT OFF CACHE BOOL "" FORCE)
     set(MZ_ZLIB ON CACHE BOOL "" FORCE)
     set(MZ_BZIP2 OFF CACHE BOOL "" FORCE)
@@ -664,6 +664,44 @@ if(NOT TARGET MINIZIP::minizip AND NOT EMSCRIPTEN)
             set_target_properties(${_real_target} PROPERTIES UNITY_BUILD OFF)
         endif()
     endforeach()
+endif()
+
+# Fallback: if minizip-ng target still doesn't exist, create it manually
+if(NOT TARGET minizip-ng)
+    message(STATUS "minizip-ng target not found, creating manually")
+    set(MINIZIP_NG_SRC
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_crypt.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_os.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm_buf.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm_mem.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm_split.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_zip.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_zip_rw.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm_zlib.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_os_win32.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm_os_win32.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_crypt_winxp.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_crypt_winvista.c
+    )
+    set(MINIZIP_NG_HDR
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_os.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_crypt.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm_buf.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm_mem.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm_split.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_strm_os.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_zip.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_zip_rw.h
+    )
+    add_library(minizip-ng STATIC ${MINIZIP_NG_SRC} ${MINIZIP_NG_HDR})
+    target_include_directories(minizip-ng PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng)
+    target_link_libraries(minizip-ng PRIVATE zlib-ng)
+    set_target_properties(minizip-ng PROPERTIES FOLDER ${third_party_folder}/minizip-ng)
+    set_target_properties(minizip-ng PROPERTIES UNITY_BUILD OFF)
+    z_set_config_archive_dirs(minizip-ng "${CMAKE_CURRENT_BINARY_DIR}/minizip-ng")
 endif()
 
 if(NOT TARGET libcurl AND NOT TARGET libcurl_static AND NOT EMSCRIPTEN)
