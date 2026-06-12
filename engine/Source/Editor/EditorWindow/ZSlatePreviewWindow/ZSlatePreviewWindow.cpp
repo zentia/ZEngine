@@ -188,9 +188,9 @@ void ZSlatePreviewWindow::BuildTexture(const std::filesystem::path& asset_path, 
     const float draw_h = src_h * fit;
 
     auto image = std::make_shared<SImage>();
-    image->Texture = handle;
-    image->Tint = UIColor(1.0f, 1.0f, 1.0f, 1.0f);
-    image->DesiredSize = Vector2(draw_w, draw_h);
+    image->Brush.Texture = handle;
+    image->Brush.Tint = UIColor(1.0f, 1.0f, 1.0f, 1.0f);
+    image->Brush.ImageSize = Vector2(draw_w, draw_h);
     column->AddSlot(image)
         .AutoSize()
         .SetHAlign(EHorizontalAlignment::Center)
@@ -229,9 +229,9 @@ void ZSlatePreviewWindow::BuildMesh(const std::filesystem::path& asset_path, flo
     }
 
     auto image = std::make_shared<SImage>();
-    image->Texture = frame.texture_handle;
-    image->Tint = UIColor(1.0f, 1.0f, 1.0f, 1.0f);
-    image->DesiredSize = Vector2(static_cast<float>(frame.pixel_size), static_cast<float>(frame.pixel_size));
+    image->Brush.Texture = frame.texture_handle;
+    image->Brush.Tint = UIColor(1.0f, 1.0f, 1.0f, 1.0f);
+    image->Brush.ImageSize = Vector2(static_cast<float>(frame.pixel_size), static_cast<float>(frame.pixel_size));
     column->AddSlot(image)
         .AutoSize()
         .SetHAlign(EHorizontalAlignment::Center)
@@ -289,9 +289,9 @@ void ZSlatePreviewWindow::BuildMaterial(const std::filesystem::path& asset_path,
     }
 
     auto image = std::make_shared<SImage>();
-    image->Texture = frame.texture_handle;
-    image->Tint = UIColor(1.0f, 1.0f, 1.0f, 1.0f);
-    image->DesiredSize = Vector2(static_cast<float>(frame.pixel_size), static_cast<float>(frame.pixel_size));
+    image->Brush.Texture = frame.texture_handle;
+    image->Brush.Tint = UIColor(1.0f, 1.0f, 1.0f, 1.0f);
+    image->Brush.ImageSize = Vector2(static_cast<float>(frame.pixel_size), static_cast<float>(frame.pixel_size));
     column->AddSlot(image)
         .AutoSize()
         .SetHAlign(EHorizontalAlignment::Center)
@@ -339,9 +339,9 @@ void ZSlatePreviewWindow::BuildShader(const std::filesystem::path& asset_path,
     // RTT square; SImage scales it to the requested display edge.
     const float edge = std::clamp(256.0f * scale, 160.0f, 420.0f);
     auto image = std::make_shared<SImage>();
-    image->Texture = texture_handle;
-    image->Tint = UIColor(1.0f, 1.0f, 1.0f, 1.0f);
-    image->DesiredSize = Vector2(edge, edge);
+    image->Brush.Texture = texture_handle;
+    image->Brush.Tint = UIColor(1.0f, 1.0f, 1.0f, 1.0f);
+    image->Brush.ImageSize = Vector2(edge, edge);
     column->AddSlot(image)
         .AutoSize()
         .SetHAlign(EHorizontalAlignment::Center)

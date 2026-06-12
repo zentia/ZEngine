@@ -451,9 +451,8 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildThumbnailWidget(Editor
     if (void* texture = ContentBrowserThumbnailCache::ResolveForNode(node))
     {
         auto image = std::make_shared<SImage>();
-        image->Texture = texture;
-        image->DesiredSize = Vector2(thumb_size, thumb_size);
-        image->Tint = UIColor(1.0f, 1.0f, 1.0f, 1.0f);
+        image->Brush = FSlateBrush::Image(texture, UIColor(1.0f, 1.0f, 1.0f, 1.0f));
+        image->Brush.SetImageSize(Vector2(thumb_size, thumb_size));
 
         auto frame = std::make_shared<SBorder>();
         frame->BackgroundColor = UIColor(0.12f, 0.13f, 0.16f, 1.0f);
