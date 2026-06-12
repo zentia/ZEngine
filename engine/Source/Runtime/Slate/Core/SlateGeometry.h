@@ -30,6 +30,19 @@ struct FMargin
 
     float GetTotalHorizontal() const { return Left + Right; }
     float GetTotalVertical() const { return Top + Bottom; }
+
+    bool operator==(const FMargin& Other) const
+    {
+        return Left == Other.Left
+            && Top == Other.Top
+            && Right == Other.Right
+            && Bottom == Other.Bottom;
+    }
+
+    bool operator!=(const FMargin& Other) const
+    {
+        return !(*this == Other);
+    }
 };
 
 // Resolved absolute placement of a widget for one frame (Slate FGeometry).

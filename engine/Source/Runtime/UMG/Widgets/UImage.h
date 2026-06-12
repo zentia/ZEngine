@@ -20,13 +20,13 @@ public:
     {
         Texture = texture;
         if (auto* w = GetSlateAs<ZSlate::SImage>())
-            w->Texture = texture;
+            w->Brush.Texture = texture;
     }
     void SetTint(const UIColor& tint)
     {
         Tint = tint;
         if (auto* w = GetSlateAs<ZSlate::SImage>())
-            w->Tint = tint;
+            w->Brush.Tint = tint;
     }
 
     const char* GetWidgetClassName() const override { return "Image"; }
@@ -53,12 +53,12 @@ protected:
     std::shared_ptr<ZSlate::SWidget> RebuildWidget() override
     {
         auto img = std::make_shared<ZSlate::SImage>();
-        img->Texture = Texture;
-        img->Tint = Tint;
-        img->DesiredSize = DesiredSize;
-        img->Uv0 = Uv0;
-        img->Uv1 = Uv1;
-        img->Visibility = m_Visibility;
+        img->Brush.Texture = Texture;
+        img->Brush.Tint    = Tint;
+        img->Brush.ImageSize = DesiredSize;
+        img->Brush.Uv0     = Uv0;
+        img->Brush.Uv1     = Uv1;
+        img->Visibility    = m_Visibility;
         return img;
     }
 };
