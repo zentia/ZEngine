@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "renderdoc-mcp"
+version = "0.2.0"
+description = "MCP server for RenderDoc graphics debugger - enables AI-assisted frame capture analysis"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.0.0",
+]
+
+[project.scripts]
+renderdoc-mcp = "renderdoc_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/renderdoc_mcp"]

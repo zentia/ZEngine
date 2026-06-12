@@ -436,4 +436,18 @@ FodyWeavers.xsd
 engine/3rdparty/Puerts/unity/native/papi-v8/build_win_x64_papi-v8
 engine/3rdparty/.cipd
  clangLog.txt
- clangLog.txt
+clangLog.txt
+
+# IDE and tool config
+.cursor/
+
+# Crash logs
+crash_stack.txt
+
+# Temporary/cmake fix scripts
+fix_cmake.py
+fix_cmake2.py
+modify_cmake.py
+
+# CodeBuddy user-specific data
+.codebuddy/plans/
