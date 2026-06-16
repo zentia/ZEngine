@@ -70,6 +70,7 @@ public:
                                         RHIDescriptorSet*& pDescriptorSets) override;
     virtual void CreateSwapchain() override;
     virtual void RecreateSwapchain() override;
+    virtual void NotifyWindowFocusGained() override;
     virtual void CreateSwapchainImageViews() override;
     virtual void CreateFramebufferImageAndView() override;
     virtual RHISampler* GetOrCreateDefaultSampler(RHIDefaultSamplerType type) override;
@@ -670,6 +671,12 @@ private:
     // advancing otherwise, leaving PrepareBeforePass pointing at stale descriptors).
     std::array<D3D12_CPU_DESCRIPTOR_HANDLE, k_max_frames_in_flight> m_SwapchainRtvReuse {};
     bool m_HasSwapchainRtvReuse {false};
+
+    // Set by SubmitRendering when Present reports device loss / occlusion /
+    // any transient failure. Checked at the top of PrepareBeforePass to force
+    // an unconditional RecreateSwapchain so the editor recovers on the very
+    // next frame instead of staying gray forever.
+    bool m_SwapchainNeedsRecreate {false};
 
     void BindSubpassRenderTargets(const RHISubpassDescription& subpass,
                                   const RHIRenderPassBeginInfo* begin_info,

@@ -195,6 +195,13 @@ public:
                                         RHIDescriptorSet*& pDescriptorSets) = 0;
     virtual void CreateSwapchain() = 0;
     virtual void RecreateSwapchain() = 0;
+    // Called by the editor when the OS window regains input focus (Alt-Tab back,
+    // etc.). For DX12 this flags the swapchain as stale so PrepareBeforePass
+    // forces a full recreate — recovering from DXGI occlusion / TDR / driver
+    // internal reset that can leave a FLIP-model swapchain presenting blank.
+    // Vulkan already recovers reactively (VK_ERROR_OUT_OF_DATE_KHR), so its
+    // implementation is typically a no-op.
+    virtual void NotifyWindowFocusGained() = 0;
     virtual void CreateSwapchainImageViews() = 0;
     virtual void CreateFramebufferImageAndView() = 0;
     virtual RHISampler* GetOrCreateDefaultSampler(RHIDefaultSamplerType type) = 0;

@@ -43,6 +43,10 @@ public:
     void CreateSwapchain() override;
     void RecreateSwapchain() override;
     void CreateSwapchainImageViews() override;
+    // Vulkan recovers from Alt-Tab / occlusion reactively via
+    // VK_ERROR_OUT_OF_DATE_KHR returned by vkAcquireNextImageKHR or
+    // vkQueuePresentKHR, so this is a no-op.
+    void NotifyWindowFocusGained() override {}
     void CreateFramebufferImageAndView() override;
     RHISampler* GetOrCreateDefaultSampler(RHIDefaultSamplerType type) override;
     RHISampler* GetOrCreateMipmapSampler(uint32_t width, uint32_t height) override;

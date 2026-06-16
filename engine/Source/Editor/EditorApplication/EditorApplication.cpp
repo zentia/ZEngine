@@ -128,6 +128,21 @@ bool Editor::Initialize()
     // for the un-presented grown area until the drag is released.
     GET_SYSTEM(WindowSystem)->registerOnWindowRefreshFunc([this]() { RenderFrameDuringResize(); });
 
+    // DX12 swapchain recovery on Alt-Tab return: FLIP-model swapchains can enter an
+    // occluded / device-lost state when the window is in the background. Notify the
+    // RHI so PrepareBeforePass forces a full swapchain recreate on the next frame.
+    // Vulkan handles this reactively via VK_ERROR_OUT_OF_DATE_KHR, so its implementation
+    // is a no-op — but calling it unconditionally keeps the call site simple.
+    if (auto* rhi = GET_SYSTEM(RHI))
+    {
+        GET_SYSTEM(WindowSystem)->registerOnWindowFocusFunc([rhi](int focused) {
+            if (focused)
+            {
+                rhi->NotifyWindowFocusGained();
+            }
+        });
+    }
+
     // Show window immediately after initialization to avoid delay
     GET_SYSTEM(WindowSystem)->ShowWindow();
     SetPlaybackState(EditorPlaybackState::Editing);

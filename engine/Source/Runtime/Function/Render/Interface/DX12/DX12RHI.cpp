@@ -2359,6 +2359,15 @@ void DX12RHI::RecreateSwapchain()
     // backbuffer with a null DSV), so we deliberately do NOT tear it down here.
 }
 
+void DX12RHI::NotifyWindowFocusGained()
+{
+    // Force a full swapchain recreate on next PrepareBeforePass. This recovers
+    // from DXGI surface invalidation that occurs when Alt-Tabbing away with a
+    // FLIP-model swapchain: Windows may internally reset the backbuffer
+    // chain, causing subsequent Presents to show blank / stale content.
+    m_SwapchainNeedsRecreate = true;
+}
+
 // ---------------------------------------------------------------------------
 // Editor floating-panel surfaces (tear-off). See DX12RHI::CreateFloatingSurface
 // header comment + the DX12FloatingSurface struct in DX12RHI.h.
@@ -5589,6 +5598,25 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
     // re-queued by BeginFloatingSurfaceDraw if the editor records them again.
     m_PendingFloatingPresents.clear();
 
+    // If the previous frame's Present detected device loss / occlusion /
+    // any failure that left the swapchain in a bad state, force a full
+    // recreate NOW so this frame renders into a fresh backbuffer.
+    // This is the recovery path for Alt-Tab away + return, driver TDR,
+    // or any DXGI surface invalidation (mirrors Vulkan's VK_ERROR_OUT_OF_DATE
+    // handling which already calls RecreateSwapchain reactively).
+    if (m_SwapchainNeedsRecreate && m_Device && m_Swapchain)
+    {
+        m_SwapchainNeedsRecreate = false;
+        LOG_INFO(ZRender, "DX12: recovering swapchain after Present failure");
+        RecreateSwapchain();
+        if (passUpdateAfterRecreateSwapchain)
+        {
+            passUpdateAfterRecreateSwapchain();
+        }
+        // Do NOT early-return: render into the fresh backbuffer this same frame
+        // (same rationale as the resize path below).
+    }
+
     // Proactive swapchain resize. Unlike Vulkan (which reports a stale surface via
     // VK_ERROR_OUT_OF_DATE_KHR and recreates reactively), DXGI silently stretches a
     // mismatched backbuffer, so nothing would ever trigger RecreateSwapchain on a
@@ -5693,6 +5721,18 @@ void DX12RHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwapc
     m_CommandQueue->ExecuteCommandLists(1, command_lists);
 
     HRESULT present_result = m_Swapchain->Present(1, 0);
+
+    // DXGI_STATUS_OCCLUDED: FLIP-model swapchain when the window is minimized,
+    // occluded, or on a different desktop. This is a SUCCESS code (SUCCEEDED
+    // returns true) meaning "nothing was presented but the swapchain is still
+    // valid". Skip fence advance / frame index rotation this frame — the next
+    // present (when visible again) will pick up normally.
+    if (present_result == DXGI_STATUS_OCCLUDED)
+    {
+        m_PendingFloatingPresents.clear();
+        return;
+    }
+
     if (IsActualDx12DeviceRemoval(present_result))
     {
         static bool s_logged_present_device_loss = false;
@@ -5706,6 +5746,11 @@ void DX12RHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwapc
                       static_cast<unsigned int>(present_result),
                       static_cast<unsigned int>(device_reason));
         }
+        // Flag so PrepareBeforePass forces a full swapchain recreation on the
+        // next frame. This recovers from Alt-Tab TDR / driver reset without
+        // requiring a full device teardown (which UE's FD3D12Device does, but
+        // for an editor-only path a simple ResizeBuffers round-trip suffices).
+        m_SwapchainNeedsRecreate = true;
         return;
     }
     if (present_result == DXGI_ERROR_INVALID_CALL)
@@ -5716,6 +5761,7 @@ void DX12RHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwapc
             s_logged_present_invalid_call = true;
             LOG_ERROR(ZRender, "DX12 Present invalid call: HRESULT=0x887A0001");
         }
+        m_SwapchainNeedsRecreate = true;
         return;
     }
     if (FAILED(present_result))
@@ -5728,6 +5774,7 @@ void DX12RHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwapc
                       "DX12 Present failed: HRESULT=0x{:08X}",
                       static_cast<unsigned int>(present_result));
         }
+        m_SwapchainNeedsRecreate = true;
         return;
     }
 
