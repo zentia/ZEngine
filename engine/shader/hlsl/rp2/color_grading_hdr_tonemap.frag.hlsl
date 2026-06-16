@@ -1,5 +1,7 @@
 // DX12: tonemap deferred HDR (backup_odd) inside RP2 color grading.
-// Avoids bindless heap copy of transient framebuffer views between RP1 and tonemap.
+// NOTE: Currently disabled in DX12MainCameraPass (RP2 color_grading.frag handles
+// tonemapping).  Re-enable by changing `if (false && m_TonemapReady)` to
+// `if (m_TonemapReady)` in DX12MainCameraPass.cpp.
 
 Texture2D in_hdr : register(t0, space0);
 SamplerState in_hdr_sampler : register(s0, space0);
@@ -13,22 +15,26 @@ struct PSInput
     float2 uv       : TEXCOORD0;
 };
 
-float3 Uncharted2Tonemap(float3 x)
+// ACES tonemapping approximation (same as color_grading.frag.hlsl).
+static const float a = 0.0245786;
+static const float b = 0.000090537;
+static const float c = 0.3539984;
+static const float d = 0.2375826;
+static const float e = 0.0746349;
+static const float f = 0.971218;
+
+static const float kExposure = 1.0;
+
+float3 TonemapACES(float3 x)
 {
-    float A = 0.15;
-    float B = 0.50;
-    float C = 0.10;
-    float D = 0.20;
-    float E = 0.02;
-    float F = 0.30;
-    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+    return (x * (a * x + b) + c) / (x * (d * x + e) + f);
 }
 
 float4 main(PSInput input) : SV_TARGET
 {
-    float3 color = min(in_hdr.Sample(in_hdr_sampler, input.uv).rgb, float3(64.0, 64.0, 64.0));
-    color = Uncharted2Tonemap(color * 1.5);
-    color = color * (1.0 / Uncharted2Tonemap(float3(11.2, 11.2, 11.2)));
-    color = float3(pow(color.x, 1.0 / 2.2), pow(color.y, 1.0 / 2.2), pow(color.z, 1.0 / 2.2));
-    return float4(color, 1.0);
+    float4 hdr = in_hdr.Sample(in_hdr_sampler, input.uv);
+    float3 exposed = hdr.rgb * kExposure;
+    float3 ldr = TonemapACES(exposed);
+    ldr = pow(ldr, 1.0 / 2.2);   // fast sRGB gamma
+    return float4(ldr, hdr.a);
 }
