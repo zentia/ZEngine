@@ -44,6 +44,15 @@ public:
     // BEFORE the batch is drawn. handle_ids stay stable across the re-upload.
     void RefreshNativeFontAtlasesIfDirty();
 
+    // Force-invalidate ALL native font atlas GPU textures so they are re-created
+    // from CPU bitmap data on the next GetNativeFontTextureId() call.
+    // Must be called after a DX12 swapchain recreate / device-loss recovery:
+    // the old SRV descriptor handles may be stale after DXGI surface
+    // invalidation (Alt-Tab, minimize/maximize, driver TDR), and re-uploading
+    // from the still-valid CPU pixels is the only safe recovery path.
+    // Mirrors UE's FSlateRHIRenderer::Invalidated() behaviour for font resources.
+    void InvalidateAllNativeFontTextures();
+
     void* EnsureTexture2D(Texture2D* texture);
 
     // Dynamic CPU-bitmap texture for editor previews (software-rasterized mesh /

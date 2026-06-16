@@ -332,6 +332,29 @@ void UiGpuResources::RefreshNativeFontAtlasesIfDirty()
     }
 }
 
+void UiGpuResources::InvalidateAllNativeFontTextures()
+{
+    if (m_NativeFontTextures.empty())
+    {
+        return;
+    }
+
+    LOG_INFO(ZRender, "UiGpuResources: invalidating {} native font texture(s) for swapchain recovery",
+            m_NativeFontTextures.size());
+
+    // Drop all GPU texture entries. The old RHI resources (image/view/descriptor
+    // set/SRV) are intentionally leaked: they may still be referenced by in-flight
+    // GPU command buffers from the frame that detected the swapchain failure.
+    // DX12's reference-counted ComPtr keeps them alive until the GPU finishes;
+    // then they are reclaimed automatically.
+    //
+    // The next BatchedUIRenderer::drawText() call will hit GetNativeFontTextureId(),
+    // find no entry, and re-upload fresh GPU resources from the CPU atlas bitmap
+    // (m_Pixels in ZFontAtlas), which was never corrupted — only the GPU-side
+    // SRV descriptor / heap slot went stale during DXGI surface invalidation.
+    m_NativeFontTextures.clear();
+}
+
 void* UiGpuResources::GetWhiteTextureId() const
 {
     return m_WhiteTexture != nullptr ? m_WhiteTexture->handle_id : nullptr;

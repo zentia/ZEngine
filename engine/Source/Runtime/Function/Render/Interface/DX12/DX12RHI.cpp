@@ -7,6 +7,7 @@
 #include "Runtime/Function/Render/Interface/DX12/DX12RHIResource.h"
 #include "Runtime/Function/Render/Interface/DX12/DX12ShaderCompiler.h"
 #include "Runtime/Function/Render/WindowSystem.h"
+#include "Runtime/UI/Render/UiGpuResources.h"
 #include "Runtime/Project/ProjectInfo.h"
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3native.h>
@@ -5613,6 +5614,17 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
         {
             passUpdateAfterRecreateSwapchain();
         }
+
+        // UE parity (FSlateRHIRenderer::Invalidated): DXGI surface invalidation
+        // (Alt-Tab / minimize / driver TDR) can stale font-atlas SRV descriptors
+        // even though the bindless heap itself survives. Force-re-upload all
+        // native font textures from their CPU bitmaps so the next UI draw call
+        // gets fresh GPU resources with valid SRV handles.
+        if (auto* gpu_res = GET_SYSTEM(UiGpuResources))
+        {
+            gpu_res->InvalidateAllNativeFontTextures();
+        }
+
         // Do NOT early-return: render into the fresh backbuffer this same frame
         // (same rationale as the resize path below).
     }
