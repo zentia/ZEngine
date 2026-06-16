@@ -48,8 +48,16 @@ public:
     bool LoadFromFile(const std::string& ttf_path);
     bool IsLoaded() const { return m_Loaded; }
 
+    // Add a fallback font that will be tried when the primary font does not contain
+    // a requested glyph. Multiple fallbacks can be added; they are tried in order.
+    // Returns true if the fallback font was loaded successfully.
+    // On Windows the caller should add CJK-capable fonts (e.g. msyh.ttc) so that
+    // Chinese/Japanese/Korean text renders without missing glyphs.
+    bool AddFallbackFont(const std::string& ttf_path);
+
     // Bake-on-demand. pixel_size is rounded to an integer for cache keying, so a
     // handful of DPI-scaled sizes do not explode the glyph cache.
+    // If the primary font lacks the codepoint, fallback fonts are tried automatically.
     const Glyph& GetGlyph(unsigned int codepoint, float pixel_size);
 
     // Distance from one line's top to the next (ascent - descent + line gap).
@@ -88,6 +96,12 @@ private:
     uint32_t m_RowHeight {0};
 
     bool m_Dirty {false};
+
+    // Opaque pointer to fallback font data (std::vector<FallbackFont>*).
+    // All fallback management lives in ZFontAtlas.cpp; keeping it opaque here
+    // avoids pulling stb_truetype.h into every translation unit that includes
+    // this header (ZAEngine already does the same trick for m_FontInfo).
+    void* m_FallbackData {nullptr};
 
     std::unordered_map<uint64_t, Glyph> m_Glyphs;
     Glyph m_Invalid {};

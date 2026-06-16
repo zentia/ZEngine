@@ -36,6 +36,16 @@ namespace
         return (static_cast<uint64_t>(static_cast<uint32_t>(rounded_size)) << 32) |
                static_cast<uint64_t>(codepoint);
     }
+
+    // Per-font metrics needed to bake a glyph from that specific font face.
+    struct FallbackFont
+    {
+        std::vector<uint8_t> fontData;  // TTF bytes; must outlive fontInfo
+        stbtt_fontinfo* fontInfo {nullptr};
+        int ascentUnits {0};
+        int descentUnits {0};
+        int lineGapUnits {0};
+    };
 }  // namespace
 
 ZFontAtlas::~ZFontAtlas()
@@ -44,6 +54,18 @@ ZFontAtlas::~ZFontAtlas()
     {
         delete static_cast<stbtt_fontinfo*>(m_FontInfo);
         m_FontInfo = nullptr;
+    }
+
+    // Free fallback fonts (opaque vector<FallbackFont> allocated in AddFallbackFont).
+    if (m_FallbackData != nullptr)
+    {
+        auto* fallbacks = static_cast<std::vector<FallbackFont>*>(m_FallbackData);
+        for (FallbackFont& fb : *fallbacks)
+        {
+            delete fb.fontInfo;
+        }
+        delete fallbacks;
+        m_FallbackData = nullptr;
     }
 }
 
@@ -116,6 +138,78 @@ bool ZFontAtlas::LoadFromFile(const std::string& ttf_path)
     return true;
 }
 
+bool ZFontAtlas::AddFallbackFont(const std::string& ttf_path)
+{
+    if (!m_Loaded)
+    {
+        LOG_WARNING(ZRender, "ZFontAtlas: AddFallbackFont called before LoadFromFile");
+        return false;
+    }
+    if (ttf_path.empty())
+    {
+        return false;
+    }
+
+    std::FILE* fp = nullptr;
+#if defined(_WIN32)
+    fopen_s(&fp, ttf_path.c_str(), "rb");
+#else
+    fp = std::fopen(ttf_path.c_str(), "rb");
+#endif
+    if (fp == nullptr)
+    {
+        LOG_WARNING(ZRender, "ZFontAtlas: cannot open fallback font '{}'", ttf_path.c_str());
+        return false;
+    }
+
+    std::fseek(fp, 0, SEEK_END);
+    const long size = std::ftell(fp);
+    std::fseek(fp, 0, SEEK_SET);
+    if (size <= 0)
+    {
+        std::fclose(fp);
+        LOG_WARNING(ZRender, "ZFontAtlas: empty fallback font '{}'", ttf_path.c_str());
+        return false;
+    }
+
+    std::vector<uint8_t> fontData(static_cast<size_t>(size));
+    const size_t read = std::fread(fontData.data(), 1, static_cast<size_t>(size), fp);
+    std::fclose(fp);
+    if (read != static_cast<size_t>(size))
+    {
+        LOG_WARNING(ZRender, "ZFontAtlas: short read on fallback font '{}'", ttf_path.c_str());
+        return false;
+    }
+
+    auto* info = new stbtt_fontinfo();
+    const int offset = stbtt_GetFontOffsetForIndex(fontData.data(), 0);
+    if (offset < 0 || stbtt_InitFont(info, fontData.data(), offset) == 0)
+    {
+        delete info;
+        LOG_WARNING(ZRender, "ZFontAtlas: stbtt_InitFont failed for fallback '{}'", ttf_path.c_str());
+        return false;
+    }
+
+    int ascent = 0, descent = 0, lineGap = 0;
+    stbtt_GetFontVMetrics(info, &ascent, &descent, &lineGap);
+
+    if (m_FallbackData == nullptr)
+    {
+        m_FallbackData = new std::vector<FallbackFont>();
+    }
+    auto* fallbacks = static_cast<std::vector<FallbackFont>*>(m_FallbackData);
+    fallbacks->emplace_back();
+    FallbackFont& fb = fallbacks->back();
+    fb.fontData = std::move(fontData);
+    fb.fontInfo = info;
+    fb.ascentUnits = ascent;
+    fb.descentUnits = descent;
+    fb.lineGapUnits = lineGap;
+
+    LOG_INFO(ZRender, "ZFontAtlas: loaded fallback font '{}' ({} bytes)", ttf_path.c_str(), size);
+    return true;
+}
+
 float ZFontAtlas::ScaleForSize(float pixel_size) const
 {
     if (m_FontInfo == nullptr || pixel_size <= 0.0f)
@@ -176,22 +270,62 @@ const ZFontAtlas::Glyph& ZFontAtlas::GetGlyph(unsigned int codepoint, float pixe
         return found->second;
     }
 
-    auto* info = static_cast<stbtt_fontinfo*>(m_FontInfo);
-    const float scale = ScaleForSize(static_cast<float>(rounded));
-    const float ascent = static_cast<float>(m_AscentUnits) * scale;
+    // Find which font (primary or fallback) contains this codepoint.
+    // stbtt_FindGlyphIndex returns 0 when the glyph is not in the font's cmap
+    // (glyph index 0 is .notdef, which we treat as "not present" for fallback
+    // purposes -- codepoint 0 never appears in real text).
+    stbtt_fontinfo* bake_info = nullptr;
+    int bake_ascent = 0;
+    int bake_descent = 0;
+    int bake_line_gap = 0;
+
+    // Try primary font first.
+    auto* primary_info = static_cast<stbtt_fontinfo*>(m_FontInfo);
+    if (primary_info != nullptr && stbtt_FindGlyphIndex(primary_info, static_cast<int>(codepoint)) != 0)
+    {
+        bake_info = primary_info;
+        bake_ascent = m_AscentUnits;
+        bake_descent = m_DescentUnits;
+        bake_line_gap = m_LineGapUnits;
+    }
+
+    // Try fallback fonts (e.g. CJK font when primary is Latin-only).
+    if (bake_info == nullptr && m_FallbackData != nullptr)
+    {
+        auto* fallbacks = static_cast<std::vector<FallbackFont>*>(m_FallbackData);
+        for (FallbackFont& fb : *fallbacks)
+        {
+            if (stbtt_FindGlyphIndex(fb.fontInfo, static_cast<int>(codepoint)) != 0)
+            {
+                bake_info = fb.fontInfo;
+                bake_ascent = fb.ascentUnits;
+                bake_descent = fb.descentUnits;
+                bake_line_gap = fb.lineGapUnits;
+                break;
+            }
+        }
+    }
+
+    if (bake_info == nullptr)
+    {
+        // Codepoint not found in any font; return invalid (renders as blank).
+        const auto inserted = m_Glyphs.emplace(key, m_Invalid);
+        return inserted.first->second;
+    }
+
+    // Bake the glyph from the font that actually contains it.
+    const float scale = stbtt_ScaleForPixelHeight(bake_info, static_cast<float>(rounded));
+    const float ascent = static_cast<float>(bake_ascent) * scale;
 
     int advance_units = 0;
     int left_bearing = 0;
-    stbtt_GetCodepointHMetrics(info, static_cast<int>(codepoint), &advance_units, &left_bearing);
+    stbtt_GetCodepointHMetrics(bake_info, static_cast<int>(codepoint), &advance_units, &left_bearing);
 
     Glyph g {};
     g.advance = static_cast<float>(advance_units) * scale;
 
-    int ix0 = 0;
-    int iy0 = 0;
-    int ix1 = 0;
-    int iy1 = 0;
-    stbtt_GetCodepointBitmapBox(info, static_cast<int>(codepoint), scale, scale, &ix0, &iy0, &ix1, &iy1);
+    int ix0 = 0, iy0 = 0, ix1 = 0, iy1 = 0;
+    stbtt_GetCodepointBitmapBox(bake_info, static_cast<int>(codepoint), scale, scale, &ix0, &iy0, &ix1, &iy1);
 
     const int gw = ix1 - ix0;
     const int gh = iy1 - iy0;
@@ -221,7 +355,7 @@ const ZFontAtlas::Glyph& ZFontAtlas::GetGlyph(unsigned int codepoint, float pixe
     // Rasterize coverage into a scratch buffer, then expand into the RGBA atlas as
     // (255,255,255, coverage) so color modulation in the UI shader tints text.
     std::vector<uint8_t> coverage(static_cast<size_t>(gw) * gh, 0u);
-    stbtt_MakeCodepointBitmap(info, coverage.data(), gw, gh, gw, scale, scale, static_cast<int>(codepoint));
+    stbtt_MakeCodepointBitmap(bake_info, coverage.data(), gw, gh, gw, scale, scale, static_cast<int>(codepoint));
 
     for (int row = 0; row < gh; ++row)
     {

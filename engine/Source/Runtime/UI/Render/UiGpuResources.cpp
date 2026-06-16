@@ -19,6 +19,46 @@
 
 UiGpuResources* UiGpuResources::s_Instance = nullptr;
 
+namespace
+{
+    // Try to add common CJK fallback fonts to `atlas` so that Chinese, Japanese,
+    // and Korean codepoints render correctly when the primary font is Latin-only.
+    // Mirrors UE's FCompositeFont fallback behaviour for the CJK range.
+    void TryAddCjkFallbacks(ZFontAtlas* atlas)
+    {
+        if (atlas == nullptr)
+        {
+            return;
+        }
+
+#ifdef _WIN32
+        // Windows CJK font candidates, in preference order. Only fonts that actually
+        // exist on the current machine are added (avoid failing loads for every
+        // nonexistent path).
+        const char* cjk_candidates[] = {
+            "C:/Windows/Fonts/msyh.ttc",    // Microsoft YaHei (Simplified Chinese)
+            "C:/Windows/Fonts/simsun.ttc",   // SimSun (Simplified Chinese)
+            "C:/Windows/Fonts/simhei.ttf",  // SimHei (Simplified Chinese, bold)
+            "C:/Windows/Fonts/Deng.ttf",     // DengXian (Simplified Chinese)
+            "C:/Windows/Fonts/meiryo.ttc",  // Meiryo (Japanese)
+            "C:/Windows/Fonts/malgun.ttf",  // Malgun Gothic (Korean)
+        };
+        for (const char* path : cjk_candidates)
+        {
+            if (!std::filesystem::exists(path))
+            {
+                continue;
+            }
+            // Skip if already added (ResolveNativeFontPath caches failures too).
+            if (atlas->AddFallbackFont(path))
+            {
+                LOG_INFO(ZRender, "UiGpuResources: added CJK fallback font '{}'", path);
+            }
+        }
+#endif
+    }
+}  // namespace
+
 UiGpuResources::~UiGpuResources()
 {
     Shutdown();
@@ -194,6 +234,11 @@ void UiGpuResources::CreateDefaultNativeFont()
         return;
     }
     m_DefaultNativeFont = ResolveNativeFontPath(default_path);
+
+    // Attach CJK fallback fonts so Chinese/Japanese/Korean text renders even
+    // when the primary UI font is Latin-only (Segoe UI, Arial, etc.).
+    // Matches UE's FCompositeFont behaviour for the CJK Unicode range.
+    TryAddCjkFallbacks(m_DefaultNativeFont);
 }
 
 ZFontAtlas* UiGpuResources::ResolveNativeFontPath(const eastl::string& path)
