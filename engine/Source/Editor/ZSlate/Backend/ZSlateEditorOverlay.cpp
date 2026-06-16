@@ -178,6 +178,20 @@ void ZSlateEditorOverlay::BeginFrameIfEnabled()
     s_editor_measurer.SetRenderer(&m_Renderer);
     SlateApplication::Get().SetTextMeasurer(&s_editor_measurer);
 
+    // Install GLFW-backed clipboard callbacks so SEditableTextBox can copy/paste.
+    // Lambdas are non-capturing, so they implicitly convert to function pointers.
+    auto SlateGetClipboardGLFW = [](void* userdata) -> const char* {
+        return glfwGetClipboardString(static_cast<GLFWwindow*>(userdata));
+    };
+    auto SlateSetClipboardGLFW = [](const char* text, void* userdata) {
+        glfwSetClipboardString(static_cast<GLFWwindow*>(userdata), text);
+    };
+    GLFWwindow* clipboard_window = nullptr;
+    if (auto* ws = GET_SYSTEM(WindowSystem))
+        clipboard_window = ws->GetWindow();
+    SlateApplication::Get().SetClipboardCallbacks(
+        SlateGetClipboardGLFW, SlateSetClipboardGLFW, clipboard_window);
+
     // Capture the display size ZSlate windows are mapped to NDC against (see
     // m_EditorDisplay* in the header). The NDC divisor MUST equal the viewport
     // extent the overlay renders into (the live swapchain/framebuffer pixels in

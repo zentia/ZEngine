@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "Runtime/Slate/Core/SlatePaint.h"
+#include "Runtime/Slate/Core/SlateClipboard.h"
 #include "Runtime/Slate/Widgets/SWidget.h"
 #include "Runtime/UI/Core/UITypes.h"  // UIRect
 
@@ -26,6 +27,12 @@ public:
     // Install the text-measurement backend (forwards to UIRenderer::measureText
     // or the editor font atlas). Stored in the process-wide GSlateTextMeasurer.
     void SetTextMeasurer(ISlateTextMeasurer* measurer);
+
+    // Install clipboard callbacks (so SEditableTextBox can copy/paste without
+    // depending on WindowSystem/GLFW). userdata is typically GLFWwindow*.
+    void SetClipboardCallbacks(SlateGetClipboardFunc getFunc,
+                              SlateSetClipboardFunc setFunc,
+                              void* userdata);
 
     void SetRootContent(std::shared_ptr<SWidget> root) { m_Root = std::move(root); }
     std::shared_ptr<SWidget> GetRootContent() const { return m_Root; }

@@ -13,6 +13,13 @@ namespace
 {
 ZSlate::EKey MapGlfwKeyToSlate(int glfw_key)
 {
+    // Letter keys A-Z (GLFW_KEY_A=65 .. GLFW_KEY_Z=90, contiguous)
+    if (glfw_key >= GLFW_KEY_A && glfw_key <= GLFW_KEY_Z)
+    {
+        return static_cast<ZSlate::EKey>(
+            static_cast<int>(ZSlate::EKey::A) + (glfw_key - GLFW_KEY_A));
+    }
+
     switch (glfw_key)
     {
         case GLFW_KEY_BACKSPACE: return ZSlate::EKey::Backspace;
@@ -24,6 +31,7 @@ ZSlate::EKey MapGlfwKeyToSlate(int glfw_key)
         case GLFW_KEY_RIGHT:     return ZSlate::EKey::Right;
         case GLFW_KEY_HOME:      return ZSlate::EKey::Home;
         case GLFW_KEY_END:       return ZSlate::EKey::End;
+        case GLFW_KEY_SPACE:     return ZSlate::EKey::Space;
         default:                 return ZSlate::EKey::Unknown;
     }
 }
@@ -144,6 +152,19 @@ void UISystem::RenderSlateRoot()
         static ZSlate::SlateUIRendererTextMeasurer s_slate_measurer;
         s_slate_measurer.SetRenderer(m_UiRenderer);
         ZSlate::SlateApplication::Get().SetTextMeasurer(&s_slate_measurer);
+
+        // Install GLFW-backed clipboard callbacks for runtime Slate text boxes.
+        static auto SlateGetClipboardGLFW = [](void* userdata) -> const char* {
+            return glfwGetClipboardString(static_cast<GLFWwindow*>(userdata));
+        };
+        static auto SlateSetClipboardGLFW = [](const char* text, void* userdata) {
+            glfwSetClipboardString(static_cast<GLFWwindow*>(userdata), text);
+        };
+        GLFWwindow* clipboard_window = nullptr;
+        if (auto* ws = GET_SYSTEM(WindowSystem))
+            clipboard_window = ws->GetWindow();
+        ZSlate::SlateApplication::Get().SetClipboardCallbacks(
+            SlateGetClipboardGLFW, SlateSetClipboardGLFW, clipboard_window);
 
         const Vector2 display_size = m_UiRenderer->getDisplaySize();
         ZSlate::SlateApplication::Get().PaintInto(m_UiRenderer, UIRect(0.0f, 0.0f, display_size.x, display_size.y));

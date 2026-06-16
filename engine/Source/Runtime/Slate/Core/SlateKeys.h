@@ -16,5 +16,9 @@ enum class EKey
     Home,
     End,
     Space,
+
+    // Letter keys (for Ctrl+ shortcuts: A=SelectAll, C=Copy, V=Paste, X=Cut, Z=Undo, Y=Redo)
+    A, B, C, D, E, F, G, H, I, J, K, L, M,
+    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
 };
 }  // namespace ZSlate

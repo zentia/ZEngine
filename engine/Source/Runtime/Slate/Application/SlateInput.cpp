@@ -8,6 +8,11 @@
 
 namespace ZSlate
 {
+    // Static thread-local modifier state (accessed by widgets via IsCtrlDown() etc.)
+    thread_local bool SlateInputRouter::s_CtrlDown = false;
+    thread_local bool SlateInputRouter::s_ShiftDown = false;
+    thread_local bool SlateInputRouter::s_AltDown = false;
+
 namespace
 {
     // Movement (in screen px) a press must travel before it becomes a drag.

@@ -1140,16 +1140,10 @@ void ZSlateContentBrowserWindow::OnGUI()
         {
             for (unsigned int cp : host.GetCharsThisFrame())
                 m_Input.ProcessChar(cp);
+            // UE pattern: route ALL keys to the focused widget.
+            // Escape handling for rename-cancel is done via widget OnKeyDown.
             for (EKey key : host.GetKeysThisFrame())
-            {
-                if (key == EKey::Backspace || key == EKey::Enter)
-                    m_Input.ProcessKey(key);
-                else if (key == EKey::Escape && m_IsRenaming)
-                {
-                    ContentBrowserAssetActions::CancelRename(Ctx());
-                    m_ForceRebuild = true;
-                }
-            }
+                m_Input.ProcessKey(key);
         }
 
         if (right_up_edge && over_canvas)

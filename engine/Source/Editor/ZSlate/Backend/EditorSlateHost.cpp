@@ -19,6 +19,13 @@ namespace
     // switch is cheaper than exporting it.
     EKey MapGlfwKeyToSlate(int glfw_key)
     {
+        // Letter keys A-Z (GLFW_KEY_A=65 .. GLFW_KEY_Z=90, contiguous)
+        if (glfw_key >= GLFW_KEY_A && glfw_key <= GLFW_KEY_Z)
+        {
+            return static_cast<EKey>(
+                static_cast<int>(EKey::A) + (glfw_key - GLFW_KEY_A));
+        }
+
         switch (glfw_key)
         {
             case GLFW_KEY_BACKSPACE: return EKey::Backspace;

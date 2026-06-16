@@ -46,6 +46,20 @@ public:
 
     bool HasKeyboardFocus() const { return m_Focused != nullptr; }
 
+    // Modifier key state (static, set by host via SetModifierState, read by widgets)
+    static bool IsCtrlDown() { return s_CtrlDown; }
+    static bool IsShiftDown() { return s_ShiftDown; }
+    static bool IsAltDown() { return s_AltDown; }
+
+    // Call this from the host before ProcessKey/ProcessChar to update modifier state.
+    // This avoids changing the ProcessKey signature (which would break all callers).
+    static void SetModifierState(bool ctrl, bool shift, bool alt)
+    {
+        s_CtrlDown = ctrl;
+        s_ShiftDown = shift;
+        s_AltDown = alt;
+    }
+
     // Programmatically move keyboard focus (e.g. onto a freshly-shown rename box)
     // or clear it. Safe to pass a widget that is part of the routed tree.
     void SetKeyboardFocus(SWidget* widget);
@@ -77,5 +91,10 @@ private:
     bool m_LeftPressed {false};
     std::shared_ptr<FDragDropOperation> m_DragOp;  // non-null while dragging
     SWidget* m_DragOverTarget {nullptr};
+
+    // Static modifier key state (per-thread, set by ProcessKey)
+    static thread_local bool s_CtrlDown;
+    static thread_local bool s_ShiftDown;
+    static thread_local bool s_AltDown;
 };
 }  // namespace ZSlate

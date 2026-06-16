@@ -1443,13 +1443,9 @@ void ZSlateSceneWindow::OnGUI()
         {
             for (unsigned int ch : host.GetCharsThisFrame())
                 m_CameraPanelInput.ProcessChar(ch);
+            // UE pattern: route ALL keys to the focused widget
             for (EKey key : host.GetKeysThisFrame())
-            {
-                if (key == EKey::Backspace)
-                    m_CameraPanelInput.ProcessKey(EKey::Backspace);
-                else if (key == EKey::Enter)
-                    m_CameraPanelInput.ProcessKey(EKey::Enter);
-            }
+                m_CameraPanelInput.ProcessKey(key);
         }
 
         const bool left_edge = host.WasLeftPressedThisFrame();

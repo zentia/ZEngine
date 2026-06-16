@@ -7,6 +7,11 @@ namespace ZSlate
 // Definition of the process-wide text measurer declared in SlatePaint.h.
 ISlateTextMeasurer* GSlateTextMeasurer = nullptr;
 
+// Definition of clipboard callbacks declared in SlatePaint.h.
+SlateGetClipboardFunc GSlateGetClipboard = nullptr;
+SlateSetClipboardFunc GSlateSetClipboard = nullptr;
+void* GSlateClipboardUserData = nullptr;
+
 SlateApplication& SlateApplication::Get()
 {
     static SlateApplication instance;
@@ -16,6 +21,15 @@ SlateApplication& SlateApplication::Get()
 void SlateApplication::SetTextMeasurer(ISlateTextMeasurer* measurer)
 {
     GSlateTextMeasurer = measurer;
+}
+
+void SlateApplication::SetClipboardCallbacks(SlateGetClipboardFunc getFunc,
+                                             SlateSetClipboardFunc setFunc,
+                                             void* userdata)
+{
+    GSlateGetClipboard = getFunc;
+    GSlateSetClipboard = setFunc;
+    GSlateClipboardUserData = userdata;
 }
 
 void SlateApplication::Tick(float delta_seconds)

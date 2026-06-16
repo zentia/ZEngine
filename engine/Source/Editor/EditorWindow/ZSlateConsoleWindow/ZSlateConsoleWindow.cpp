@@ -704,13 +704,17 @@ void ZSlateConsoleWindow::OnGUI()
         if (text_input_active)
         {
             host.NotifyNativeTextInputActive();
+
+            // Update modifier state so widgets can query Shift/Ctrl/Alt
+            ZSlate::SlateInputRouter::SetModifierState(
+                host.IsCtrlDown(), host.IsShiftDown(), host.IsAltDown());
+
             for (unsigned int cp : host.GetCharsThisFrame())
                 m_Input.ProcessChar(cp);
+            // UE pattern: route ALL keys to the focused widget; the widget's
+            // OnKeyDown decides whether to handle or ignore each key.
             for (EKey key : host.GetKeysThisFrame())
-            {
-                if (key == EKey::Backspace || key == EKey::Delete || key == EKey::Enter)
-                    m_Input.ProcessKey(key);
-            }
+                m_Input.ProcessKey(key);
         }
     }
 
