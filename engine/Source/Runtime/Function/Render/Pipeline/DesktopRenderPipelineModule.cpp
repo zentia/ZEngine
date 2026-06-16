@@ -130,7 +130,7 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
             static_cast<RenderPass*>(m_Pipeline.m_DirectionalLightPass.get())->m_Framebuffer.attachments[0].view;
 
         MainCameraPassInitInfo camera_init_info {};
-        camera_init_info.enble_fxaa = init_info.enable_fxaa;
+        camera_init_info.enable_fxaa = init_info.enable_fxaa;
         m_Pipeline.m_MainCameraPass->Initialize(&camera_init_info);
 
         if (auto* render_resource = dynamic_cast<RenderResource*>(init_info.render_resource.get()))
@@ -142,7 +142,8 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
         m_Pipeline.m_UiPass = std::make_shared<UIPass>();
         m_Pipeline.m_UiPass->SetCommonInfo(pass_common_info);
         UIPassInitInfo ui_init_info {};
-        ui_init_info.render_pass = dx12_main_camera->getRp2RenderPass();
+        // UI pass writes to backup_even (HDR format), so use HDR render pass.
+        ui_init_info.render_pass = dx12_main_camera->getRp2HdrRenderPass();
         if (ui_init_info.render_pass != nullptr)
         {
             m_Pipeline.m_UiPass->Initialize(&ui_init_info);
@@ -203,7 +204,7 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
         static_cast<RenderPass*>(m_Pipeline.m_DirectionalLightPass.get())->m_Framebuffer.attachments[0].view;
 
     MainCameraPassInitInfo main_camera_init_info;
-    main_camera_init_info.enble_fxaa = init_info.enable_fxaa;
+    main_camera_init_info.enable_fxaa = init_info.enable_fxaa;
     main_camera_pass->SetParticlePass(particle_pass);
     m_Pipeline.m_MainCameraPass->Initialize(&main_camera_init_info);
 
@@ -566,7 +567,9 @@ RHIRenderPass* DesktopRenderPipelineModule::GetUIRenderPass() const
         {
             return nullptr;
         }
-        return static_cast<DX12MainCameraPass*>(m_Pipeline.m_MainCameraPass.get())->getRp2RenderPass();
+        // Return HDR render pass for backward compatibility.
+        // TODO: callers should explicitly request HDR or LDR.
+        return static_cast<DX12MainCameraPass*>(m_Pipeline.m_MainCameraPass.get())->getRp2HdrRenderPass();
     }
     #endif
     #if defined(Z_HAS_VULKAN)

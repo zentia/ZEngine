@@ -41,6 +41,8 @@ public:
                                         uint32_t height);
 
     RHIRenderPass* GetRenderPass() const { return m_Framebuffer.render_pass; }
+    RHIFramebuffer* GetFramebuffer() const { return m_Framebuffer.framebuffer; }
+    RHIImageView* GetSourceHdrView() const { return m_SourceHdrView; }
 
     bool isReady() const;
 

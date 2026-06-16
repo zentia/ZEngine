@@ -121,10 +121,11 @@ RHIShader* MetalRHI::CreateShaderModuleFromFile(const std::string&,
                                                 ShaderStage,
                                                 const std::vector<std::string>&,
                                                 const ShaderMacros&,
-                                                std::vector<uint8_t>&           output_spirv_code,
-                                                const std::string& /*entry_point*/)
+                                                std::vector<uint8_t>& output_binary,
+                                                const std::string& /*entry_point*/,
+                                                bool /*embed_debug*/)
 {
-    output_spirv_code.clear();
+    (void)output_binary;
     return nullptr;
 }
 

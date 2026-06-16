@@ -63,7 +63,10 @@ public:
 
     void PreparePassData(std::shared_ptr<RenderResourceBase> render_resource) override;
 
-    void DrawRP1(const std::array<bool, 2>& skybox_visible);
+    // Simplified: 3 independent render passes (no subpasses).
+    void DrawGBufferPass(const std::array<bool, 2>& skybox_visible);
+    void DrawDeferredLightingPass(const std::array<bool, 2>& skybox_visible);
+    void DrawForwardLightingPass(const std::array<bool, 2>& skybox_visible);
 
     RHIDescriptorSetLayout* GetPerMeshDescriptorSetLayout() const
     {

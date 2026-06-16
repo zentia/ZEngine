@@ -58,16 +58,20 @@ public:
     // string omits the flag (DXC default = HV 2018). Pass `"2021"`
     // alongside SM 6.6 for HLSL 2021 features.
     //
-    // Both new parameters default to "" so every existing call site
-    // (preview, inspector, RHI shader-module loader, ...) continues
-    // to compile against SM 6.0 / HV 2018 unchanged.
+    // `embed_debug`: if true, pass `-Zi -Qembed_debug -Od` to DXC so
+    // tools like PIX / RenderDoc can show HLSL source when debugging
+    // shaders.  Adds compile time and blob size; default false.
+    //
+    // `target_profile`, `hlsl_version`, and `embed_debug` default so
+    // every existing call site continues to compile unchanged.
     DX12ShaderCompileResult CompileFromFile(const std::string& file_path,
                                             ShaderStage shader_stage,
                                             const std::vector<std::string>& include_paths = {},
                                             const std::map<std::string, std::string>& macros = {},
                                             const std::string& entry_point = "main",
                                             const std::string& target_profile = "",
-                                            const std::string& hlsl_version = "");
+                                            const std::string& hlsl_version = "",
+                                            bool embed_debug = false);
 
     // Compile HLSL shader from source code string. See compileFromFile
     // for the `target_profile` / `hlsl_version` semantics.

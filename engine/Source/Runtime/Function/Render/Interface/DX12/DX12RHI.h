@@ -81,8 +81,9 @@ public:
                                                   ShaderStage shader_stage,
                                                   const std::vector<std::string>& include_paths,
                                                   const ShaderMacros& macros,
-                                                  std::vector<uint8_t>& output_spirv_code,
-                                                  const std::string& entry_point = "main") override;
+                                                  std::vector<uint8_t>& output_binary,
+                                                  const std::string& entry_point = "main",
+                                                  bool embed_debug = false) override;
     virtual RHIShader* CreateShaderModuleFromSource(const std::string& source_code,
                                                     ShaderStage shader_stage,
                                                     const std::string& shader_name = "",
@@ -107,6 +108,11 @@ public:
                             RHIDeviceSize srcOffset,
                             RHIDeviceSize dstOffset,
                             RHIDeviceSize size) override;
+    virtual void CopyBufferImmediate(RHIBuffer* srcBuffer,
+                                    RHIBuffer* dstBuffer,
+                                    RHIDeviceSize srcOffset,
+                                    RHIDeviceSize dstOffset,
+                                    RHIDeviceSize size) override;
 
     // Image operations
     virtual void CreateImage(uint32_t image_width,
@@ -167,6 +173,7 @@ public:
     virtual bool CreatePipelineLayout(const RHIPipelineLayoutCreateInfo* pCreateInfo,
                                       RHIPipelineLayout*& pPipelineLayout) override;
     virtual bool CreateRenderPass(const RHIRenderPassCreateInfo* pCreateInfo, RHIRenderPass*& pRenderPass) override;
+    virtual void DestroyRenderPass(RHIRenderPass* renderPass) override;
     virtual bool CreateSampler(const RHISamplerCreateInfo* pCreateInfo, RHISampler*& pSampler) override;
     virtual bool CreateSemaphore(const RHISemaphoreCreateInfo* pCreateInfo, RHISemaphore*& pSemaphore) override;
 
@@ -381,6 +388,8 @@ public:
     // After RP2 ends the swapchain image may be in PRESENT; rebind swapchain RTV for
     // fullscreen overlay draws (scene grid / skybox) that run outside the RP2 pass.
     void BeginSwapchainOverlayDraw();
+    // DEBUG: Clear swapchain to a solid color to verify present pipeline works.
+    void ClearSwapchainToColor(const float color[4]);
     // Bind backup_even (or any color RTV) for ImGui during RP2 UI subpass. No-op if view is null
     // or lacks an RTV handle.
     void BindUiLayerRenderTarget(RHIImageView* color_view);
@@ -498,6 +507,12 @@ public:
     bool ExecuteDedicatedUploadCommands(
         const std::function<void(ID3D12GraphicsCommandList*)>& record_commands);
 
+    // Per-frame CBV/SRV/UAV heap allocation — public so that render passes
+    // (e.g. DX12MainCameraPass::DrawSkyboxWithCamera) can allocate fresh
+    // per-frame SRV slots to avoid stale GPU handles after WaitForFences
+    // resets the per-frame partition counter.
+    bool AllocateCbvSrvUavDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE& cpu_handle,
+                                     D3D12_GPU_DESCRIPTOR_HANDLE& gpu_handle);
 private:
     // Block the CPU until the GPU has finished ALL in-flight frame slots (not just
     // the current one). This is the equivalent of UE's FD3D12Adapter::BlockUntilIdle
@@ -517,8 +532,6 @@ private:
     bool AllocateRtvDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE& cpu_handle);
     bool TryGetSwapchainBackBufferRtv(uint8_t back_buffer_index, D3D12_CPU_DESCRIPTOR_HANDLE& out_rtv) const;
     bool AllocateDsvDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE& cpu_handle);
-    bool AllocateCbvSrvUavDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE& cpu_handle,
-                                     D3D12_GPU_DESCRIPTOR_HANDLE& gpu_handle);
     bool AllocateSamplerDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE& cpu_handle,
                                    D3D12_GPU_DESCRIPTOR_HANDLE& gpu_handle);
     bool CreateDynamicBufferGpuHandle(const DX12DescriptorBufferBinding& binding,
@@ -637,6 +650,11 @@ private:
     DX12RenderPass* m_ActiveRenderPass {nullptr};
     DX12Framebuffer* m_ActiveFramebuffer {nullptr};
     uint32_t m_ActiveSubpassIndex {0};
+    // Per-Vulkan spec: loadOp only applies on the FIRST use of an attachment.
+    // This mask tracks which attachments have already been "first-used" (and cleared)
+    // within the current render pass, so that CmdNextSubpassPFN does not
+    // clear them again for subsequent subpasses.
+    uint64_t m_ActiveSubpassAttachmentsUsed {0};
     static constexpr uint32_t k_max_stored_render_pass_clear_values = 16;
     RHIClearValue m_ActiveRenderPassClearValues[k_max_stored_render_pass_clear_values] {};
     uint32_t m_ActiveRenderPassClearValueCount {0};

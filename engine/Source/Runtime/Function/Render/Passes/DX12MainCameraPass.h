@@ -36,7 +36,11 @@ public:
     bool hasFramebufferResources() const { return m_FramebufferResourcesReady; }
 
     // DX-B8: parity with Vulkan MainCameraPass for Editor / pipeline queries.
-    RHIRenderPass* getRp2RenderPass() const;
+    // UE-style: RP2 now uses separate HDR/LDR render passes.
+    // - getRp2HdrRenderPass(): for color_grading and fxaa (HDR format).
+    // - getRp2LdrRenderPass(): for combine_ui (LDR/swapchain format).
+    RHIRenderPass* getRp2HdrRenderPass() const;
+    RHIRenderPass* getRp2LdrRenderPass() const;
     RHIImageView* getUiLayerColorView() const;
     std::vector<RHIImageView*> getFramebufferImageViews() const;
 

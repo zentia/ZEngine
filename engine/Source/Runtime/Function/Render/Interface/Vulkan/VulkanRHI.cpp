@@ -2401,6 +2401,21 @@ bool VulkanRHI::CreateRenderPass(const RHIRenderPassCreateInfo* pCreateInfo, RHI
     }
 }
 
+void VulkanRHI::DestroyRenderPass(RHIRenderPass* renderPass)
+{
+    if (renderPass == nullptr)
+    {
+        return;
+    }
+    VulkanRenderPass* vk_render_pass = static_cast<VulkanRenderPass*>(renderPass);
+    VkRenderPass vk_handle = vk_render_pass->getResource();
+    if (vk_handle != VK_NULL_HANDLE)
+    {
+        vkDestroyRenderPass(m_Device, vk_handle, nullptr);
+    }
+    delete vk_render_pass;
+}
+
 bool VulkanRHI::CreateSampler(const RHISamplerCreateInfo* pCreateInfo, RHISampler*& pSampler)
 {
     VkSamplerCreateInfo create_info {};
@@ -3737,8 +3752,9 @@ RHIShader* VulkanRHI::CreateShaderModuleFromFile(const std::string& file_path,
                                                  ShaderStage shader_stage,
                                                  const std::vector<std::string>& include_paths,
                                                  const ShaderMacros& macros,
-                                                 std::vector<uint8_t>& output_spirv_code,
-                                                 const std::string& entry_point)
+                                                 std::vector<uint8_t>& output_binary,
+                                                 const std::string& entry_point,
+                                                 bool /*embed_debug*/)
 {
     // Initialize shader compiler if not already initialized
     if (!m_ShaderCompiler)
@@ -3752,6 +3768,8 @@ RHIShader* VulkanRHI::CreateShaderModuleFromFile(const std::string& file_path,
     ShaderMacros compiler_macros(macros.begin(), macros.end());
 
     (void)entry_point;
+    // TODO: pass embed_debug to ShaderCompiler::CompileFromFile to enable
+    //       -g flag (SPIR-V debug info) when embed_debug == true.
     ShaderCompileResult result =
         m_ShaderCompiler->CompileFromFile(file_path, shader_stage, include_paths, compiler_macros);
 
@@ -3760,6 +3778,12 @@ RHIShader* VulkanRHI::CreateShaderModuleFromFile(const std::string& file_path,
         LOG_ERROR(ZShader, "Failed to compile shader from file: {}", file_path);
         LOG_ERROR(ZShader, "Error: {}", result.error_message);
         return nullptr;
+    }
+
+    // Optionally copy SPIR-V bytecode to caller.
+    if (!result.spirv_code.empty())
+    {
+        output_binary = result.spirv_code;
     }
 
     // Create shader module from compiled SPIR-V

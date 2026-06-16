@@ -205,13 +205,16 @@ public:
     // Shader macros for variants (e.g., {"ENABLE_SHADOWS", "1"}, {"MAX_LIGHTS", "4"})
     using ShaderMacros = std::map<std::string, std::string>;
 
-    // Compile GLSL shader from file path and create shader module
+    // Compile shader from file path and create shader module.
+    // `embed_debug`: if true, emit debug info (-Zi -Qembed_debug for DX12,
+    // -g for Vulkan) for tools like PIX / RenderDoc shader debugging.
     virtual RHIShader* CreateShaderModuleFromFile(const std::string& file_path,
                                                   ShaderStage shader_stage,
                                                   const std::vector<std::string>& include_paths,
                                                   const ShaderMacros& macros,
-                                                  std::vector<uint8_t>& output_spirv_code,
-                                                  const std::string& entry_point = "main") = 0;
+                                                  std::vector<uint8_t>& output_binary,
+                                                  const std::string& entry_point = "main",
+                                                  bool embed_debug = false) = 0;
 
     // Compile GLSL shader from source code string and create shader module
     virtual RHIShader* CreateShaderModuleFromSource(const std::string& source_code,
@@ -259,6 +262,19 @@ public:
                             RHIDeviceSize srcOffset,
                             RHIDeviceSize dstOffset,
                             RHIDeviceSize size) = 0;
+
+    // Force immediate upload via a dedicated command list (synchronous).
+    // Default implementation just calls CopyBuffer(); backends that batch
+    // CopyBuffer into the frame command list must override this to guarantee
+    // the copy is visible to the GPU before the call returns.
+    virtual void CopyBufferImmediate(RHIBuffer* srcBuffer,
+                                    RHIBuffer* dstBuffer,
+                                    RHIDeviceSize srcOffset,
+                                    RHIDeviceSize dstOffset,
+                                    RHIDeviceSize size)
+    {
+        CopyBuffer(srcBuffer, dstBuffer, srcOffset, dstOffset, size);
+    }
     virtual void CreateImage(uint32_t image_width,
                              uint32_t image_height,
                              RHIFormat format,
@@ -317,6 +333,7 @@ public:
     virtual bool CreatePipelineLayout(const RHIPipelineLayoutCreateInfo* pCreateInfo,
                                       RHIPipelineLayout*& pPipelineLayout) = 0;
     virtual bool CreateRenderPass(const RHIRenderPassCreateInfo* pCreateInfo, RHIRenderPass*& pRenderPass) = 0;
+    virtual void DestroyRenderPass(RHIRenderPass* renderPass) = 0;
     virtual bool CreateSampler(const RHISamplerCreateInfo* pCreateInfo, RHISampler*& pSampler) = 0;
     virtual bool CreateSemaphore(const RHISemaphoreCreateInfo* pCreateInfo, RHISemaphore*& pSemaphore) = 0;
 

@@ -51,8 +51,9 @@ public:
                                           ShaderStage shader_stage,
                                           const std::vector<std::string>& include_paths,
                                           const ShaderMacros& macros,
-                                          std::vector<uint8_t>& output_spirv_code,
-                                          const std::string& entry_point = "main") override;
+                                          std::vector<uint8_t>& output_binary,
+                                          const std::string& entry_point = "main",
+                                          bool embed_debug = false) override;
     RHIShader* CreateShaderModuleFromSource(const std::string& source_code,
                                             ShaderStage shader_stage,
                                             const std::string& shader_name = "",
@@ -140,6 +141,7 @@ public:
     bool CreatePipelineLayout(const RHIPipelineLayoutCreateInfo* pCreateInfo,
                               RHIPipelineLayout*& pPipelineLayout) override;
     bool CreateRenderPass(const RHIRenderPassCreateInfo* pCreateInfo, RHIRenderPass*& pRenderPass) override;
+    void DestroyRenderPass(RHIRenderPass* renderPass) override;
     bool CreateSampler(const RHISamplerCreateInfo* pCreateInfo, RHISampler*& pSampler) override;
     bool CreateSemaphore(const RHISemaphoreCreateInfo* pCreateInfo, RHISemaphore*& pSemaphore) override;
 

@@ -365,7 +365,7 @@ void MainCameraPass::Initialize(const RenderPassInitInfo* init_info)
     RenderPass::Initialize(nullptr);
 
     const MainCameraPassInitInfo* _init_info = static_cast<const MainCameraPassInitInfo*>(init_info);
-    m_EnableFxaa = _init_info->enble_fxaa;
+    m_EnableFxaa = _init_info->enable_fxaa;
 
     SetupAttachments();
     SetupRenderPass();
@@ -3245,6 +3245,22 @@ void MainCameraPass::Draw(ColorGradingPass& color_grading_pass,
 
     m_Rhi->CmdNextSubpassPFN(m_Rhi->GetCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
 
+    // Deferred Lighting runs FIRST so it can read GBuffer input attachments.
+    // Sky Pass runs AFTER so it overwrites UNLIT (sky) pixels with the skybox.
+    // NOTE: In this subpass there is no depth attachment, so skybox cannot
+    // depth-test against geometry. For scenes WITH geometry, the skybox will
+    // overwrite lit pixels too — a future fix should move sky to forward_lighting
+    // subpass (which has depth) or use stencil masking.
+    m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Deferred Lighting", color);
+    for (ViewportType viewport_type : k_viewports)
+    {
+        if (!IsViewportValid(viewport_type))
+            continue;
+        SetPerViewportData(viewport_type);
+        DrawDeferredLighting(viewport_type);
+    }
+    m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
+
     m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Sky Pass", color);
     for (ViewportType viewport_type : k_viewports)
     {
@@ -3254,16 +3270,6 @@ void MainCameraPass::Draw(ColorGradingPass& color_grading_pass,
         }
         SetPerViewportData(viewport_type);
         DrawSkybox(viewport_type);
-    }
-    m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
-
-    m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Deferred Lighting", color);
-    for (ViewportType viewport_type : k_viewports)
-    {
-        if (!IsViewportValid(viewport_type))
-            continue;
-        SetPerViewportData(viewport_type);
-        DrawDeferredLighting(viewport_type);
     }
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 

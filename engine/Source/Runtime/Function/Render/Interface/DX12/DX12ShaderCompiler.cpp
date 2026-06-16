@@ -2,6 +2,7 @@
 
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Log/LogSystem.h"
+#include "Runtime/Function/Console/ConsoleManager.h"
 #include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/ShaderLab/ShaderLabHlslExtract.h"
 
@@ -20,6 +21,10 @@
 
 namespace
 {
+    // Global embed-debug flag for PIX / RenderDoc shader debugging.
+    // Controlled by console variable `r.Shaders.EmbedDebugInfo`.
+    static bool g_embed_debug_info = false;
+
     // FNV-1a 64. Same hash style as ShaderLab::ShaderLabCompiler so the two
     // caches can coexist on disk without semantic confusion. Cache-key
     // collisions are not a security issue here -- a collided slot fails the
@@ -427,6 +432,28 @@ DX12ShaderCompiler::DX12ShaderCompiler()
         // Utils is optional, just log a warning
         LOG_WARNING(ZShader, "Failed to create DXC utils (optional)");
     }
+
+    // Register console variable for PIX / RenderDoc shader debugging.
+    // g_embed_debug_info is a static bool in this translation unit's
+    // anonymous namespace (line ~24).  When the user sets
+    //   r.Shaders.EmbedDebugInfo 1
+    // in the console, DXC will receive -Zi -Qembed_debug -Od
+    // on the NEXT recompile of any shader compiled through this
+    // DX12ShaderCompiler instance (or any instance that shares
+    // the same static flag -- they don't, each TU has its own;
+    // but the console variable writes to g_embed_debug_info
+    // which CompileInternal reads).
+    if (auto* console = GET_SYSTEM(ConsoleManager))
+    {
+        console->RegisterBoolVariable(
+            "r.Shaders.EmbedDebugInfo",
+            "Embed PIX/RenderDoc debug info in DX12 shaders.\n"
+            "When true, -Zi -Qembed_debug -Od are passed to DXC.\n"
+            "Affected shaders must be recompiled to pick up the change\n"
+            "(delete Intermediate/Shaders/ cache or touch the .hlsl file).",
+            false,
+            &g_embed_debug_info);
+    }
 }
 
 DX12ShaderCompiler::~DX12ShaderCompiler() {}
@@ -478,7 +505,8 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileFromFile(const std::string& f
                                                             const std::map<std::string, std::string>& macros,
                                                             const std::string& entry_point,
                                                             const std::string& target_profile,
-                                                            const std::string& hlsl_version)
+                                                            const std::string& hlsl_version,
+                                                            bool embed_debug)
 
 {
     DX12ShaderCompileResult result;
@@ -519,7 +547,8 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileFromFile(const std::string& f
                                  macros,
                                  resolved_entry,
                                  target_profile,
-                                 hlsl_version);
+                                 hlsl_version,
+                                 embed_debug);
     }
 
     // Read plain HLSL file
@@ -542,7 +571,8 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileFromFile(const std::string& f
                              macros,
                              entry_point,
                              target_profile,
-                             hlsl_version);
+                             hlsl_version,
+                             embed_debug);
 }
 
 DX12ShaderCompileResult DX12ShaderCompiler::CompileFromSource(const std::string& hlsl_source,
@@ -998,8 +1028,9 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileInternal(const std::string& h
 
     // Entry point and target profile are passed through IDxcCompiler::Compile parameters below.
 
-    // Optimization / debug info for RenderDoc source mapping.
-    if (embed_debug)
+    // Optimization / debug info for PIX / RenderDoc source mapping.
+    // Check both the per-call parameter and the global console variable.
+    if (embed_debug || g_embed_debug_info)
     {
         arguments.push_back(L"-Zi");
         arguments.push_back(L"-Qembed_debug");

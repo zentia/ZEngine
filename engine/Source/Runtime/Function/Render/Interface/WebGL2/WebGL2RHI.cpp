@@ -147,14 +147,19 @@ namespace ZEngine
                                                          ShaderStage shader_stage,
                                                          const std::vector<std::string>& include_paths,
                                                          const ShaderMacros& /*macros*/,
-                                                         std::vector<uint8_t>& output_spirv_code,
-                                                         const std::string& /*entry_point*/)
+                                                         std::vector<uint8_t>& output_binary,
+                                                         const std::string& /*entry_point*/,
+                                                         bool /*embed_debug*/)
         {
+            (void)output_binary;  // WebGL2 does not produce binary blobs
             if (!m_ShaderCompiler)
             {
                 return nullptr;
             }
             std::map<std::string, std::string> macro_map;
+            // TODO: pass embed_debug to WebGL2ShaderCompiler if host-side
+            //       debug info becomes useful (currently emcc compiles GLSL
+            //       to GL at runtime, debug info is browser-side).
             auto r = m_ShaderCompiler->CompileFromFile(file_path, shader_stage, include_paths, macro_map);
             if (!r.success)
             {
@@ -162,7 +167,6 @@ namespace ZEngine
             }
             auto* s = new WebGL2Shader();
             s->setStage(GL_VERTEX_SHADER, r.glsl_source);
-            output_spirv_code.clear();
             return s;
         }
 

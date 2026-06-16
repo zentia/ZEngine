@@ -4,6 +4,7 @@
 #include "Runtime/Function/Render/Interface/RHI.h"
 #if defined(_WIN32)
     #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
+    #include "Runtime/Function/Render/Interface/DX12/DX12RHIResource.h"
 #endif
 
 #include <stdexcept>
@@ -258,8 +259,13 @@ void BindlessTonemapPass::ShutdownDx12DescriptorTonemap()
 
 void BindlessTonemapPass::UpdateDx12DescriptorBinding()
 {
+    LOG_INFO(ZRender, "UpdateDx12DescriptorBinding: ENTRY (m_Dx12DescriptorTonemapReady={}, m_SourceHdrView={}, m_Dx12TonemapDescriptorSet={})",
+             m_Dx12DescriptorTonemapReady, (void*)m_SourceHdrView, (void*)m_Dx12TonemapDescriptorSet);
+    
     if (!m_Dx12DescriptorTonemapReady || m_SourceHdrView == nullptr || m_Dx12TonemapDescriptorSet == nullptr)
     {
+        LOG_ERROR(ZRender, "UpdateDx12DescriptorBinding: EARLY RETURN (m_Dx12DescriptorTonemapReady={}, m_SourceHdrView={}, m_Dx12TonemapDescriptorSet={})",
+                  m_Dx12DescriptorTonemapReady, (void*)m_SourceHdrView, (void*)m_Dx12TonemapDescriptorSet);
         return;
     }
 
@@ -282,9 +288,14 @@ void BindlessTonemapPass::RecordDx12DescriptorTonemap(RHICommandBuffer* cmd) con
 {
     if (!m_Dx12DescriptorTonemapReady || cmd == nullptr || m_Dx12TonemapPipeline == nullptr)
     {
+        LOG_ERROR(ZRender, "RecordDx12DescriptorTonemap: early return (m_Dx12DescriptorTonemapReady={}, cmd={}, pipeline={})",
+                  m_Dx12DescriptorTonemapReady, (void*)cmd, (void*)m_Dx12TonemapPipeline);
         return;
     }
 
+    LOG_INFO(ZRender, "RecordDx12DescriptorTonemap: drawing fullscreen triangle (pipeline={}, descriptor_set={})",
+             (void*)m_Dx12TonemapPipeline, (void*)m_Dx12TonemapDescriptorSet);
+    
     m_Rhi->CmdBindPipelinePFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, m_Dx12TonemapPipeline);
 
     RHIViewport viewport {0.0f, 0.0f, static_cast<float>(m_Width), static_cast<float>(m_Height), 0.0f, 1.0f};
@@ -300,7 +311,11 @@ void BindlessTonemapPass::RecordDx12DescriptorTonemap(RHICommandBuffer* cmd) con
                                       &m_Dx12TonemapDescriptorSet,
                                       0,
                                       nullptr);
+    LOG_INFO(ZRender, "RecordDx12DescriptorTonemap: about to CmdDraw (cmd={}, pipeline={})", (void*)cmd, (void*)m_Dx12TonemapPipeline);
+    LOG_INFO(ZRender, "RecordDx12DescriptorTonemap: viewport=({},{}), scissor=({},{},{},{})", 
+             viewport.x, viewport.y, scissor.offset.x, scissor.offset.y, scissor.extent.width, scissor.extent.height);
     m_Rhi->CmdDraw(cmd, 3, 1, 0, 0);
+    LOG_INFO(ZRender, "RecordDx12DescriptorTonemap: CmdDraw returned (pipeline should have written RED to RTV)");
 }
 #endif
 
@@ -387,8 +402,28 @@ void BindlessTonemapPass::SetupRenderPass(RHIFormat target_format)
 
 void BindlessTonemapPass::SetupFramebuffer(RHIImageView* target_ldr_view, uint32_t width, uint32_t height)
 {
+    LOG_INFO(ZRender, "SetupFramebuffer: target_ldr_view={}, width={}, height={}", 
+             (void*)target_ldr_view, width, height);
+    
+    // DEBUG: Log RTV handle of target_ldr_view
+    if (target_ldr_view)
+    {
+        DX12ImageView* dx12_view = static_cast<DX12ImageView*>(target_ldr_view);
+        if (dx12_view->hasRenderTargetHandle())
+        {
+            D3D12_CPU_DESCRIPTOR_HANDLE rtv = dx12_view->getRenderTargetHandle();
+            LOG_INFO(ZRender, "SetupFramebuffer: target_ldr_view RTV={:016X}", rtv.ptr);
+        }
+        else
+        {
+            LOG_WARNING(ZRender, "SetupFramebuffer: target_ldr_view has NO RTV handle!");
+        }
+    }
+    
     if (target_ldr_view == nullptr || width == 0 || height == 0)
     {
+        LOG_ERROR(ZRender, "SetupFramebuffer: invalid parameters (target_ldr_view={}, width={}, height={})",
+                  (void*)target_ldr_view, width, height);
         return;
     }
 
@@ -475,8 +510,11 @@ void BindlessTonemapPass::Draw()
 {
     if (!isReady() || m_Framebuffer.framebuffer == nullptr || m_SourceHdrView == nullptr)
     {
+        LOG_INFO(ZRender, "BindlessTonemapPass::Draw: EARLY RETURN (ready={}, framebuffer={}, source_hdr_view={})",
+                 isReady(), (void*)m_Framebuffer.framebuffer, (void*)m_SourceHdrView);
         return;
     }
+    LOG_INFO(ZRender, "BindlessTonemapPass::Draw: ENTRY");
 
     if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
     {
@@ -500,6 +538,21 @@ void BindlessTonemapPass::Draw()
 
     RHICommandBuffer* cmd = m_Rhi->GetCurrentCommandBuffer();
 
+    LOG_INFO(ZRender, "BindlessTonemapPass::Draw: about to begin render pass (framebuffer={}, width={}, height={})",
+             (void*)m_Framebuffer.framebuffer, m_Width, m_Height);
+    
+    // DEBUG: Log the image pointer of backup_even.
+    if (m_Framebuffer.framebuffer)
+    {
+        // We can't easily get the image from framebuffer, but we can log the RTV.
+        LOG_INFO(ZRender, "BindlessTonemapPass::Draw: Tonemap will write to backup_even (RTV should be same as RP2's backup_even)");
+    }
+
+    // DEBUG: Log RTV of backup_even in Tonemap's framebuffer.
+    // We need to access the framebuffer's RTV array. Since we don't have a public API,
+    // let's just log that we're about to draw.
+    LOG_INFO(ZRender, "BindlessTonemapPass::Draw: Tonemap should write RED to backup_even, but combine_ui shows BLACK -> Tonemap output is lost!");
+    
     float color[4] = {0.6f, 0.8f, 1.0f, 1.0f};
     const char* event_name =
         m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12 ? "Tone Map (descriptor)" : "Tone Map (bindless)";
@@ -520,9 +573,16 @@ void BindlessTonemapPass::Draw()
 
     m_Rhi->CmdBeginRenderPassPFN(cmd, &bi, RHI_SUBPASS_CONTENTS_INLINE);
 
+    LOG_INFO(ZRender, "BindlessTonemapPass::Draw: calling RecordBackendTonemap (bindless_slot={})", m_BindlessSlot);
     RecordBackendTonemap(cmd, m_BindlessSlot);
+    LOG_INFO(ZRender, "BindlessTonemapPass::Draw: RecordBackendTonemap returned");
 
     m_Rhi->CmdEndRenderPassPFN(cmd);
 
+    // DEBUG: Log that Tonemap render pass ended. Next step: verify backup_even has red.
+    // If combine_ui shows black, the problem is that Tonemap's output didn't reach backup_even.
+    LOG_INFO(ZRender, "BindlessTonemapPass::Draw: Tonemap render pass ended (should have written RED to backup_even)");
+
     m_Rhi->PopEvent(cmd);
+    LOG_INFO(ZRender, "BindlessTonemapPass::Draw: render pass ended");
 }

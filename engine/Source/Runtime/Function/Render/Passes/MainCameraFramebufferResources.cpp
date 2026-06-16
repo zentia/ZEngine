@@ -20,17 +20,18 @@ bool MainCameraFramebufferResources::Initialize(RHI* rhi, bool enable_fxaa)
     }
 
     SetupAttachments();
-    SetupRenderPass1();
+    SetupGBufferPass();
+    SetupDeferredLightingPass();
+    SetupForwardLightingPass();
     SetupRenderPass2();
     SetupFramebuffers();
 
     m_Initialized = true;
     LOG_INFO(ZRender,
-             "MainCameraFramebufferResources: RP1+RP2 ready ({}x{}, fxaa={}, swapchain_images={})",
+             "MainCameraFramebufferResources: simplified RP1 (3 independent passes) + RP2 ready ({}x{}, fxaa={})",
              m_Rhi->GetSwapchainInfo().extent.width,
              m_Rhi->GetSwapchainInfo().extent.height,
-             m_EnableFxaa ? "on" : "off",
-             m_SwapchainFramebuffers.size());
+             m_EnableFxaa ? "on" : "off");
     return true;
 }
 
@@ -39,8 +40,35 @@ void MainCameraFramebufferResources::Shutdown()
     DestroyFramebuffers();
     DestroyAttachments();
 
-    m_Rp1RenderPass = nullptr;
-    m_Framebuffer.render_pass = nullptr;
+    // Destroy RP1 render passes (simplified: 3 independent passes).
+    if (m_GBufferRenderPass != nullptr && m_Rhi != nullptr)
+    {
+        m_Rhi->DestroyRenderPass(m_GBufferRenderPass);
+        m_GBufferRenderPass = nullptr;
+    }
+    if (m_DeferredLightingRenderPass != nullptr && m_Rhi != nullptr)
+    {
+        m_Rhi->DestroyRenderPass(m_DeferredLightingRenderPass);
+        m_DeferredLightingRenderPass = nullptr;
+    }
+    if (m_ForwardLightingRenderPass != nullptr && m_Rhi != nullptr)
+    {
+        m_Rhi->DestroyRenderPass(m_ForwardLightingRenderPass);
+        m_ForwardLightingRenderPass = nullptr;
+    }
+
+    // Destroy RP2 render passes.
+    if (m_Rp2HdrRenderPass != nullptr && m_Rhi != nullptr)
+    {
+        m_Rhi->DestroyRenderPass(m_Rp2HdrRenderPass);
+        m_Rp2HdrRenderPass = nullptr;
+    }
+    if (m_Rp2LdrRenderPass != nullptr && m_Rhi != nullptr)
+    {
+        m_Rhi->DestroyRenderPass(m_Rp2LdrRenderPass);
+        m_Rp2LdrRenderPass = nullptr;
+    }
+
     m_Rhi = nullptr;
     m_Initialized = false;
 }
@@ -70,6 +98,15 @@ RHIImageView* MainCameraFramebufferResources::getAttachmentView(uint32_t attachm
         return nullptr;
     }
     return m_Framebuffer.attachments[attachment_index].view;
+}
+
+RHIImage* MainCameraFramebufferResources::getAttachmentImage(uint32_t attachment_index) const
+{
+    if (attachment_index >= m_Framebuffer.attachments.size())
+    {
+        return nullptr;
+    }
+    return m_Framebuffer.attachments[attachment_index].image;
 }
 
 void MainCameraFramebufferResources::DestroyAttachments()
@@ -104,15 +141,45 @@ void MainCameraFramebufferResources::DestroyFramebuffers()
 {
     if (m_Rhi == nullptr)
     {
-        m_Rp1Framebuffer = nullptr;
+        m_GBufferFramebuffer = nullptr;
+        m_DeferredLightingFramebuffer = nullptr;
+        m_ForwardLightingFramebuffer = nullptr;
+        m_Rp2ColorGradingFramebuffer = nullptr;
+        m_Rp2FxaaFramebuffer = nullptr;
         m_SwapchainFramebuffers.clear();
         return;
     }
 
-    if (m_Rp1Framebuffer != nullptr)
+    // Destroy RP1 framebuffers (simplified: 3 independent framebuffers).
+    if (m_GBufferFramebuffer != nullptr)
     {
-        m_Rhi->DestroyFramebuffer(m_Rp1Framebuffer);
-        m_Rp1Framebuffer = nullptr;
+        m_Rhi->DestroyFramebuffer(m_GBufferFramebuffer);
+        m_GBufferFramebuffer = nullptr;
+    }
+
+    if (m_DeferredLightingFramebuffer != nullptr)
+    {
+        m_Rhi->DestroyFramebuffer(m_DeferredLightingFramebuffer);
+        m_DeferredLightingFramebuffer = nullptr;
+    }
+
+    if (m_ForwardLightingFramebuffer != nullptr)
+    {
+        m_Rhi->DestroyFramebuffer(m_ForwardLightingFramebuffer);
+        m_ForwardLightingFramebuffer = nullptr;
+    }
+
+    // Destroy RP2 framebuffers.
+    if (m_Rp2ColorGradingFramebuffer != nullptr)
+    {
+        m_Rhi->DestroyFramebuffer(m_Rp2ColorGradingFramebuffer);
+        m_Rp2ColorGradingFramebuffer = nullptr;
+    }
+
+    if (m_Rp2FxaaFramebuffer != nullptr)
+    {
+        m_Rhi->DestroyFramebuffer(m_Rp2FxaaFramebuffer);
+        m_Rp2FxaaFramebuffer = nullptr;
     }
 
     for (RHIFramebuffer* framebuffer : m_SwapchainFramebuffers)
@@ -218,402 +285,535 @@ void MainCameraFramebufferResources::SetupAttachments()
     }
 }
 
-void MainCameraFramebufferResources::SetupRenderPass1()
+void MainCameraFramebufferResources::SetupGBufferPass()
 {
+    // Simplified: single-pass G-Buffer render pass (no subpasses).
+    // Writes GBufferA, GBufferB, GBufferC, Depth.
+    // Final layouts: G-Buffer → SHADER_READ_ONLY_OPTIMAL, Depth → DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+
     enum
     {
-        kRP1_GBufferA = 0,
-        kRP1_GBufferB = 1,
-        kRP1_GBufferC = 2,
-        kRP1_BackupOdd = 3,
-        kRP1_Depth = 4,
-        kRP1_AttachmentCount = 5,
+        kAttachment_GBufferA = 0,
+        kAttachment_GBufferB = 1,
+        kAttachment_GBufferC = 2,
+        kAttachment_Depth = 3,
+        kAttachmentCount = 4,
     };
 
-    RHIAttachmentDescription attachments[kRP1_AttachmentCount] = {};
+    RHIAttachmentDescription attachments[kAttachmentCount] = {};
 
-    RHIAttachmentDescription& gbuffer_normal_attachment_description = attachments[kRP1_GBufferA];
-    gbuffer_normal_attachment_description.format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_a].format;
-    gbuffer_normal_attachment_description.samples = RHI_SAMPLE_COUNT_1_BIT;
-    gbuffer_normal_attachment_description.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-    gbuffer_normal_attachment_description.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
-    gbuffer_normal_attachment_description.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    gbuffer_normal_attachment_description.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    gbuffer_normal_attachment_description.initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-    gbuffer_normal_attachment_description.finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // GBufferA
+    attachments[kAttachment_GBufferA].format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_a].format;
+    attachments[kAttachment_GBufferA].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_GBufferA].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[kAttachment_GBufferA].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+    attachments[kAttachment_GBufferA].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_GBufferA].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferA].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+    attachments[kAttachment_GBufferA].finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    RHIAttachmentDescription& gbuffer_metallic_attachment_description = attachments[kRP1_GBufferB];
-    gbuffer_metallic_attachment_description.format =
-        m_Framebuffer.attachments[_main_camera_pass_gbuffer_b].format;
-    gbuffer_metallic_attachment_description.samples = RHI_SAMPLE_COUNT_1_BIT;
-    gbuffer_metallic_attachment_description.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-    gbuffer_metallic_attachment_description.storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    gbuffer_metallic_attachment_description.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    gbuffer_metallic_attachment_description.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    gbuffer_metallic_attachment_description.initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-    gbuffer_metallic_attachment_description.finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // GBufferB
+    attachments[kAttachment_GBufferB].format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_b].format;
+    attachments[kAttachment_GBufferB].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_GBufferB].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[kAttachment_GBufferB].storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferB].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_GBufferB].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferB].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+    attachments[kAttachment_GBufferB].finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    RHIAttachmentDescription& gbuffer_albedo_attachment_description = attachments[kRP1_GBufferC];
-    gbuffer_albedo_attachment_description.format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_c].format;
-    gbuffer_albedo_attachment_description.samples = RHI_SAMPLE_COUNT_1_BIT;
-    gbuffer_albedo_attachment_description.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-    gbuffer_albedo_attachment_description.storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    gbuffer_albedo_attachment_description.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    gbuffer_albedo_attachment_description.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    gbuffer_albedo_attachment_description.initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-    gbuffer_albedo_attachment_description.finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // GBufferC
+    attachments[kAttachment_GBufferC].format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_c].format;
+    attachments[kAttachment_GBufferC].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_GBufferC].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[kAttachment_GBufferC].storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferC].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_GBufferC].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferC].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+    attachments[kAttachment_GBufferC].finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    RHIAttachmentDescription& backup_odd_attachment_description = attachments[kRP1_BackupOdd];
-    backup_odd_attachment_description.format =
-        m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].format;
-    backup_odd_attachment_description.samples = RHI_SAMPLE_COUNT_1_BIT;
-    // Sky Pass (Subpass 1) writes all sky pixels, Deferred Lighting overwrites
-    // pixels covered by geometry. No need to clear - use DONT_CARE for optimal perf.
-    backup_odd_attachment_description.loadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    backup_odd_attachment_description.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
-    backup_odd_attachment_description.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    backup_odd_attachment_description.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    backup_odd_attachment_description.initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-    backup_odd_attachment_description.finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    // Depth
+    attachments[kAttachment_Depth].format = m_Rhi->GetDepthImageInfo().depth_image_format;
+    attachments[kAttachment_Depth].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_Depth].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[kAttachment_Depth].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+    attachments[kAttachment_Depth].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_Depth].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_Depth].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+    attachments[kAttachment_Depth].finalLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
-    RHIAttachmentDescription& depth_attachment_description = attachments[kRP1_Depth];
-    depth_attachment_description.format = m_Rhi->GetDepthImageInfo().depth_image_format;
-    depth_attachment_description.samples = RHI_SAMPLE_COUNT_1_BIT;
-    depth_attachment_description.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-    depth_attachment_description.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
-    depth_attachment_description.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    depth_attachment_description.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    depth_attachment_description.initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-    depth_attachment_description.finalLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    // Single subpass: writes to GBufferA, GBufferB, GBufferC, Depth.
+    RHIAttachmentReference color_refs[3] = {};
+    color_refs[0].attachment = kAttachment_GBufferA;
+    color_refs[0].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_refs[1].attachment = kAttachment_GBufferB;
+    color_refs[1].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    color_refs[2].attachment = kAttachment_GBufferC;
+    color_refs[2].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-    RHISubpassDescription subpasses[_main_camera_rp1_subpass_count] = {};
+    RHIAttachmentReference depth_ref {};
+    depth_ref.attachment = kAttachment_Depth;
+    depth_ref.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-    RHIAttachmentReference base_pass_color_attachments_reference[3] = {};
-    base_pass_color_attachments_reference[0].attachment = kRP1_GBufferA;
-    base_pass_color_attachments_reference[0].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    base_pass_color_attachments_reference[1].attachment = kRP1_GBufferB;
-    base_pass_color_attachments_reference[1].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    base_pass_color_attachments_reference[2].attachment = kRP1_GBufferC;
-    base_pass_color_attachments_reference[2].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    RHISubpassDescription subpass {};
+    subpass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 3;
+    subpass.pColorAttachments = color_refs;
+    subpass.pDepthStencilAttachment = &depth_ref;
 
-    RHIAttachmentReference base_pass_depth_attachment_reference {};
-    base_pass_depth_attachment_reference.attachment = kRP1_Depth;
-    base_pass_depth_attachment_reference.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    RHISubpassDescription subpasses[1] = {subpass};
 
-    RHISubpassDescription& base_pass = subpasses[_main_camera_subpass_basepass];
-    base_pass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
-    base_pass.colorAttachmentCount =
-        sizeof(base_pass_color_attachments_reference) / sizeof(base_pass_color_attachments_reference[0]);
-    base_pass.pColorAttachments = base_pass_color_attachments_reference;
-    base_pass.pDepthStencilAttachment = &base_pass_depth_attachment_reference;
+    RHIRenderPassCreateInfo ci {};
+    ci.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    ci.attachmentCount = kAttachmentCount;
+    ci.pAttachments = attachments;
+    ci.subpassCount = 1;
+    ci.pSubpasses = subpasses;
+    ci.dependencyCount = 0;
+    ci.pDependencies = nullptr;
 
-    RHIAttachmentReference deferred_lighting_pass_input_attachments_reference[4] = {};
-    deferred_lighting_pass_input_attachments_reference[0].attachment = kRP1_GBufferA;
-    deferred_lighting_pass_input_attachments_reference[0].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    deferred_lighting_pass_input_attachments_reference[1].attachment = kRP1_GBufferB;
-    deferred_lighting_pass_input_attachments_reference[1].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    deferred_lighting_pass_input_attachments_reference[2].attachment = kRP1_GBufferC;
-    deferred_lighting_pass_input_attachments_reference[2].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    deferred_lighting_pass_input_attachments_reference[3].attachment = kRP1_Depth;
-    deferred_lighting_pass_input_attachments_reference[3].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    RHIAttachmentReference deferred_lighting_pass_color_attachment_reference[1] = {};
-    deferred_lighting_pass_color_attachment_reference[0].attachment = kRP1_BackupOdd;
-    deferred_lighting_pass_color_attachment_reference[0].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    RHISubpassDescription& deferred_lighting_pass = subpasses[_main_camera_subpass_deferred_lighting];
-    deferred_lighting_pass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
-    deferred_lighting_pass.inputAttachmentCount = 4;
-    deferred_lighting_pass.pInputAttachments = deferred_lighting_pass_input_attachments_reference;
-    deferred_lighting_pass.colorAttachmentCount = 1;
-    deferred_lighting_pass.pColorAttachments = deferred_lighting_pass_color_attachment_reference;
-    // Sky Pass (mesh + procedural) depth-tests against the BasePass depth buffer in this subpass.
-    RHIAttachmentReference deferred_lighting_pass_depth_attachment_reference {};
-    deferred_lighting_pass_depth_attachment_reference.attachment = kRP1_Depth;
-    deferred_lighting_pass_depth_attachment_reference.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    deferred_lighting_pass.pDepthStencilAttachment = &deferred_lighting_pass_depth_attachment_reference;
-
-    RHIAttachmentReference forward_lighting_pass_color_attachments_reference[1] = {};
-    forward_lighting_pass_color_attachments_reference[0].attachment = kRP1_BackupOdd;
-    forward_lighting_pass_color_attachments_reference[0].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    RHIAttachmentReference forward_lighting_pass_depth_attachment_reference {};
-    forward_lighting_pass_depth_attachment_reference.attachment = kRP1_Depth;
-    forward_lighting_pass_depth_attachment_reference.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-    RHISubpassDescription& forward_lighting_pass = subpasses[_main_camera_subpass_forward_lighting];
-    forward_lighting_pass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
-    forward_lighting_pass.colorAttachmentCount = 1;
-    forward_lighting_pass.pColorAttachments = forward_lighting_pass_color_attachments_reference;
-    forward_lighting_pass.pDepthStencilAttachment = &forward_lighting_pass_depth_attachment_reference;
-
-    RHISubpassDependency dependencies[3] = {};
-
-    RHISubpassDependency& deferred_lighting_pass_depend_on_shadow_map_pass = dependencies[0];
-    deferred_lighting_pass_depend_on_shadow_map_pass.srcSubpass = RHI_SUBPASS_EXTERNAL;
-    deferred_lighting_pass_depend_on_shadow_map_pass.dstSubpass = _main_camera_subpass_deferred_lighting;
-    deferred_lighting_pass_depend_on_shadow_map_pass.srcStageMask = RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deferred_lighting_pass_depend_on_shadow_map_pass.dstStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    deferred_lighting_pass_depend_on_shadow_map_pass.srcAccessMask = RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deferred_lighting_pass_depend_on_shadow_map_pass.dstAccessMask = RHI_ACCESS_SHADER_READ_BIT;
-
-    RHISubpassDependency& deferred_lighting_pass_depend_on_base_pass = dependencies[1];
-    deferred_lighting_pass_depend_on_base_pass.srcSubpass = _main_camera_subpass_basepass;
-    deferred_lighting_pass_depend_on_base_pass.dstSubpass = _main_camera_subpass_deferred_lighting;
-    deferred_lighting_pass_depend_on_base_pass.srcStageMask =
-        RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deferred_lighting_pass_depend_on_base_pass.dstStageMask =
-        RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    deferred_lighting_pass_depend_on_base_pass.srcAccessMask =
-        RHI_ACCESS_SHADER_WRITE_BIT | RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    deferred_lighting_pass_depend_on_base_pass.dstAccessMask =
-        RHI_ACCESS_SHADER_READ_BIT | RHI_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-    deferred_lighting_pass_depend_on_base_pass.dependencyFlags = RHI_DEPENDENCY_BY_REGION_BIT;
-
-    RHISubpassDependency& forward_lighting_pass_depend_on_deferred_lighting_pass = dependencies[2];
-    forward_lighting_pass_depend_on_deferred_lighting_pass.srcSubpass = _main_camera_subpass_deferred_lighting;
-    forward_lighting_pass_depend_on_deferred_lighting_pass.dstSubpass = _main_camera_subpass_forward_lighting;
-    forward_lighting_pass_depend_on_deferred_lighting_pass.srcStageMask =
-        RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    forward_lighting_pass_depend_on_deferred_lighting_pass.dstStageMask =
-        RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    forward_lighting_pass_depend_on_deferred_lighting_pass.srcAccessMask =
-        RHI_ACCESS_SHADER_WRITE_BIT | RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    forward_lighting_pass_depend_on_deferred_lighting_pass.dstAccessMask =
-        RHI_ACCESS_SHADER_READ_BIT | RHI_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-    forward_lighting_pass_depend_on_deferred_lighting_pass.dependencyFlags = RHI_DEPENDENCY_BY_REGION_BIT;
-
-    RHIRenderPassCreateInfo renderpass_create_info {};
-    renderpass_create_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderpass_create_info.attachmentCount = kRP1_AttachmentCount;
-    renderpass_create_info.pAttachments = attachments;
-    renderpass_create_info.subpassCount = _main_camera_rp1_subpass_count;
-    renderpass_create_info.pSubpasses = subpasses;
-    renderpass_create_info.dependencyCount = sizeof(dependencies) / sizeof(dependencies[0]);
-    renderpass_create_info.pDependencies = dependencies;
-
-    if (m_Rhi->CreateRenderPass(&renderpass_create_info, m_Rp1RenderPass) != RHI_SUCCESS)
+    if (m_Rhi->CreateRenderPass(&ci, m_GBufferRenderPass) != RHI_SUCCESS)
     {
-        throw std::runtime_error("MainCameraFramebufferResources: create RP1 render pass failed");
+        throw std::runtime_error("MainCameraFramebufferResources: create GBuffer render pass failed");
+    }
+}
+
+void MainCameraFramebufferResources::SetupDeferredLightingPass()
+{
+    // Simplified: single-pass Deferred Lighting + Sky render pass (no subpasses).
+    // Reads GBufferA, GBufferB, GBufferC, Depth (as input attachments).
+    // Writes BackupOdd (HDR output).
+
+    enum
+    {
+        kAttachment_GBufferA = 0,
+        kAttachment_GBufferB = 1,
+        kAttachment_GBufferC = 2,
+        kAttachment_Depth = 3,
+        kAttachment_BackupOdd = 4,
+        kAttachmentCount = 5,
+    };
+
+    RHIAttachmentDescription attachments[kAttachmentCount] = {};
+
+    // GBufferA (input only, LOAD)
+    attachments[kAttachment_GBufferA].format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_a].format;
+    attachments[kAttachment_GBufferA].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_GBufferA].loadOp = RHI_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[kAttachment_GBufferA].storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferA].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_GBufferA].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferA].initialLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    attachments[kAttachment_GBufferA].finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // GBufferB (input only, LOAD)
+    attachments[kAttachment_GBufferB].format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_b].format;
+    attachments[kAttachment_GBufferB].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_GBufferB].loadOp = RHI_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[kAttachment_GBufferB].storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferB].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_GBufferB].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferB].initialLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    attachments[kAttachment_GBufferB].finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // GBufferC (input only, LOAD)
+    attachments[kAttachment_GBufferC].format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_c].format;
+    attachments[kAttachment_GBufferC].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_GBufferC].loadOp = RHI_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[kAttachment_GBufferC].storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferC].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_GBufferC].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferC].initialLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    attachments[kAttachment_GBufferC].finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Depth (input only, LOAD)
+    attachments[kAttachment_Depth].format = m_Rhi->GetDepthImageInfo().depth_image_format;
+    attachments[kAttachment_Depth].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_Depth].loadOp = RHI_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[kAttachment_Depth].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+    attachments[kAttachment_Depth].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_Depth].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_Depth].initialLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    attachments[kAttachment_Depth].finalLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+    // BackupOdd (output, CLEAR)
+    attachments[kAttachment_BackupOdd].format =
+        m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].format;
+    attachments[kAttachment_BackupOdd].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_BackupOdd].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[kAttachment_BackupOdd].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+    attachments[kAttachment_BackupOdd].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_BackupOdd].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_BackupOdd].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+    attachments[kAttachment_BackupOdd].finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Single subpass: reads GBufferA/B/C + Depth as input, writes BackupOdd as color.
+    // DX12 note: do NOT include Depth in input_refs. In DX12, a resource cannot
+    // be both an SRV (for input attachment reads) and a DSV (for depth testing)
+    // at the same time. The deferred lighting shader reads depth via SRV bound by
+    // RefreshDeferredLightingInputAttachments (separate descriptor), not via
+    // input attachments. Depth is only the depth stencil attachment here.
+    const bool is_dx12 = (m_Rhi != nullptr && m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12);
+
+    RHIAttachmentReference input_refs[4] = {};
+    input_refs[0].attachment = kAttachment_GBufferA;
+    input_refs[0].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    input_refs[1].attachment = kAttachment_GBufferB;
+    input_refs[1].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    input_refs[2].attachment = kAttachment_GBufferC;
+    input_refs[2].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    uint32_t input_attachment_count = 3;
+    if (!is_dx12)
+    {
+        // Vulkan: depth as input attachment is allowed and required by the render pass.
+        input_refs[3].attachment = kAttachment_Depth;
+        input_refs[3].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        input_attachment_count = 4;
+    }
+
+    RHIAttachmentReference color_refs[1] = {};
+    color_refs[0].attachment = kAttachment_BackupOdd;
+    color_refs[0].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    RHIAttachmentReference depth_ref {};
+    depth_ref.attachment = kAttachment_Depth;
+    depth_ref.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    RHISubpassDescription subpass {};
+    subpass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.inputAttachmentCount = input_attachment_count;
+    subpass.pInputAttachments = input_refs;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = color_refs;
+    subpass.pDepthStencilAttachment = &depth_ref;
+
+    RHISubpassDescription subpasses[1] = {subpass};
+
+    // Dependency: GBufferPass → DeferredLightingPass
+    RHISubpassDependency dependency {};
+    dependency.srcSubpass = RHI_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency.dstAccessMask = RHI_ACCESS_SHADER_READ_BIT | RHI_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+
+    RHIRenderPassCreateInfo ci {};
+    ci.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    ci.attachmentCount = kAttachmentCount;
+    ci.pAttachments = attachments;
+    ci.subpassCount = 1;
+    ci.pSubpasses = subpasses;
+    ci.dependencyCount = 1;
+    ci.pDependencies = &dependency;
+
+    if (m_Rhi->CreateRenderPass(&ci, m_DeferredLightingRenderPass) != RHI_SUCCESS)
+    {
+        throw std::runtime_error("MainCameraFramebufferResources: create DeferredLighting render pass failed");
+    }
+}
+
+void MainCameraFramebufferResources::SetupForwardLightingPass()
+{
+    // Simplified: single-pass Forward Lighting render pass (no subpasses).
+    // Reads/writes BackupOdd (HDR, transparent objects).
+    // Reads Depth (for depth testing).
+
+    enum
+    {
+        kAttachment_BackupOdd = 0,
+        kAttachment_Depth = 1,
+        kAttachmentCount = 2,
+    };
+
+    RHIAttachmentDescription attachments[kAttachmentCount] = {};
+
+    // BackupOdd (read/write, LOAD)
+    attachments[kAttachment_BackupOdd].format =
+        m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].format;
+    attachments[kAttachment_BackupOdd].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_BackupOdd].loadOp = RHI_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[kAttachment_BackupOdd].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+    attachments[kAttachment_BackupOdd].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_BackupOdd].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_BackupOdd].initialLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    attachments[kAttachment_BackupOdd].finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Depth (read, LOAD)
+    attachments[kAttachment_Depth].format = m_Rhi->GetDepthImageInfo().depth_image_format;
+    attachments[kAttachment_Depth].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kAttachment_Depth].loadOp = RHI_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[kAttachment_Depth].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+    attachments[kAttachment_Depth].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kAttachment_Depth].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_Depth].initialLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    attachments[kAttachment_Depth].finalLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    // Single subpass: reads/writes BackupOdd, reads Depth.
+    RHIAttachmentReference color_refs[1] = {};
+    color_refs[0].attachment = kAttachment_BackupOdd;
+    color_refs[0].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    RHIAttachmentReference depth_ref {};
+    depth_ref.attachment = kAttachment_Depth;
+    depth_ref.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    RHISubpassDescription subpass {};
+    subpass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = color_refs;
+    subpass.pDepthStencilAttachment = &depth_ref;
+
+    RHISubpassDescription subpasses[1] = {subpass};
+
+    // Dependency: DeferredLightingPass → ForwardLightingPass
+    RHISubpassDependency dependency {};
+    dependency.srcSubpass = RHI_SUBPASS_EXTERNAL;
+    dependency.dstSubpass = 0;
+    dependency.srcStageMask = RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.dstStageMask = RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    dependency.srcAccessMask = RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    dependency.dstAccessMask = RHI_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+
+    RHIRenderPassCreateInfo ci {};
+    ci.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    ci.attachmentCount = kAttachmentCount;
+    ci.pAttachments = attachments;
+    ci.subpassCount = 1;
+    ci.pSubpasses = subpasses;
+    ci.dependencyCount = 1;
+    ci.pDependencies = &dependency;
+
+    if (m_Rhi->CreateRenderPass(&ci, m_ForwardLightingRenderPass) != RHI_SUCCESS)
+    {
+        throw std::runtime_error("MainCameraFramebufferResources: create ForwardLighting render pass failed");
     }
 }
 
 void MainCameraFramebufferResources::SetupRenderPass2()
 {
-    enum
+    // UE-style: create TWO simple render passes (no subpasses).
+    //
+    // HDR render pass:  for color_grading and fxaa.
+    //   Attachment format = R16G16B16A16_SFLOAT (matches backup_odd/backup_even).
+    // LDR render pass:  for combine_ui (writes to swapchain).
+    //   Attachment format = swapchain image format (LDR).
+
+    // ---- HDR render pass (color_grading / fxaa) ----
+    // finalLayout = SHADER_READ_ONLY_OPTIMAL so that after the render pass ends,
+    // the attachment is already in a shader-readable layout (no extra barrier needed).
     {
-        kRP2_BackupOdd = 0,
-        kRP2_BackupEven = 1,
-        kRP2_PostOdd = 2,
-        kRP2_Swapchain = 3,
-        kRP2_AttachmentCount = 4,
-    };
+        RHIAttachmentDescription att {};
+        att.format = RHI_FORMAT_R16G16B16A16_SFLOAT;  // matches backup_odd / backup_even
+        att.samples = RHI_SAMPLE_COUNT_1_BIT;
+        att.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+        att.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+        att.finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    RHIAttachmentDescription attachments[kRP2_AttachmentCount] = {};
+        // Simple subpass: one color attachment (attachment index 0).
+        RHIAttachmentReference color_ref {};
+        color_ref.attachment = 0;
+        color_ref.layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
-    RHIAttachmentDescription& backup_odd_attachment = attachments[kRP2_BackupOdd];
-    backup_odd_attachment.format =
-        m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].format;
-    backup_odd_attachment.samples = RHI_SAMPLE_COUNT_1_BIT;
-    backup_odd_attachment.loadOp = RHI_ATTACHMENT_LOAD_OP_LOAD;
-    backup_odd_attachment.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
-    backup_odd_attachment.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    backup_odd_attachment.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    backup_odd_attachment.initialLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    backup_odd_attachment.finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        RHISubpassDescription subpass {};
+        subpass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &color_ref;
 
-    RHIAttachmentDescription& backup_even_attachment = attachments[kRP2_BackupEven];
-    backup_even_attachment.format =
-        m_Framebuffer.attachments[_main_camera_pass_backup_buffer_even].format;
-    backup_even_attachment.samples = RHI_SAMPLE_COUNT_1_BIT;
-    backup_even_attachment.loadOp = RHI_ATTACHMENT_LOAD_OP_LOAD;
-    backup_even_attachment.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
-    backup_even_attachment.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    backup_even_attachment.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    backup_even_attachment.initialLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    backup_even_attachment.finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        RHISubpassDescription subpasses[1] = {subpass};
 
-    RHIAttachmentDescription& post_odd_attachment = attachments[kRP2_PostOdd];
-    post_odd_attachment.format =
-        m_Framebuffer.attachments[_main_camera_pass_post_process_buffer_odd].format;
-    post_odd_attachment.samples = RHI_SAMPLE_COUNT_1_BIT;
-    post_odd_attachment.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-    post_odd_attachment.storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    post_odd_attachment.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    post_odd_attachment.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    post_odd_attachment.initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-    post_odd_attachment.finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        RHIRenderPassCreateInfo ci {};
+        ci.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        ci.attachmentCount = 1;
+        ci.pAttachments = &att;
+        ci.subpassCount = 1;
+        ci.pSubpasses = subpasses;
+        ci.dependencyCount = 0;
+        ci.pDependencies = nullptr;
 
-    RHIAttachmentDescription& swapchain_attachment = attachments[kRP2_Swapchain];
-    swapchain_attachment.format = m_Rhi->GetSwapchainInfo().image_format;
-    swapchain_attachment.samples = RHI_SAMPLE_COUNT_1_BIT;
-    swapchain_attachment.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-    swapchain_attachment.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
-    swapchain_attachment.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    swapchain_attachment.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    swapchain_attachment.initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-    swapchain_attachment.finalLayout = RHI_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        if (m_Rhi->CreateRenderPass(&ci, m_Rp2HdrRenderPass) != RHI_SUCCESS)
+        {
+            throw std::runtime_error("MainCameraFramebufferResources: create RP2 HDR render pass failed");
+        }
+    }
 
-    RHISubpassDescription subpasses[_main_camera_rp2_subpass_count] = {};
-
-    RHIAttachmentReference color_grading_input {};
-    color_grading_input.attachment = kRP2_BackupEven;
-    color_grading_input.layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    RHIAttachmentReference color_grading_output {};
-    color_grading_output.attachment = m_EnableFxaa ? kRP2_PostOdd : kRP2_BackupOdd;
-    color_grading_output.layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    RHISubpassDescription& color_grading_pass = subpasses[_main_camera_subpass_color_grading];
-    color_grading_pass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
-    color_grading_pass.inputAttachmentCount = 1;
-    color_grading_pass.pInputAttachments = &color_grading_input;
-    color_grading_pass.colorAttachmentCount = 1;
-    color_grading_pass.pColorAttachments = &color_grading_output;
-
-    RHIAttachmentReference fxaa_input {};
-    fxaa_input.attachment = m_EnableFxaa ? kRP2_PostOdd : kRP2_BackupEven;
-    fxaa_input.layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    RHIAttachmentReference fxaa_output {};
-    fxaa_output.attachment = kRP2_BackupOdd;
-    fxaa_output.layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    RHISubpassDescription& fxaa_pass = subpasses[_main_camera_subpass_fxaa];
-    fxaa_pass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
-    fxaa_pass.inputAttachmentCount = 1;
-    fxaa_pass.pInputAttachments = &fxaa_input;
-    fxaa_pass.colorAttachmentCount = 1;
-    fxaa_pass.pColorAttachments = &fxaa_output;
-
-    RHIAttachmentReference ui_output {};
-    ui_output.attachment = kRP2_BackupEven;
-    ui_output.layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    uint32_t ui_preserve_attachment = kRP2_BackupOdd;
-
-    RHISubpassDescription& ui_pass = subpasses[_main_camera_subpass_ui];
-    ui_pass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
-    ui_pass.colorAttachmentCount = 1;
-    ui_pass.pColorAttachments = &ui_output;
-    ui_pass.preserveAttachmentCount = 1;
-    ui_pass.pPreserveAttachments = &ui_preserve_attachment;
-
-    RHIAttachmentReference combine_ui_inputs[2] = {};
-    combine_ui_inputs[0].attachment = kRP2_BackupOdd;
-    combine_ui_inputs[0].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    combine_ui_inputs[1].attachment = kRP2_BackupEven;
-    combine_ui_inputs[1].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-    RHIAttachmentReference combine_ui_output {};
-    combine_ui_output.attachment = kRP2_Swapchain;
-    combine_ui_output.layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
-    RHISubpassDescription& combine_ui_pass = subpasses[_main_camera_subpass_combine_ui];
-    combine_ui_pass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
-    combine_ui_pass.inputAttachmentCount = 2;
-    combine_ui_pass.pInputAttachments = combine_ui_inputs;
-    combine_ui_pass.colorAttachmentCount = 1;
-    combine_ui_pass.pColorAttachments = &combine_ui_output;
-
-    RHISubpassDependency dependencies[5] = {};
-
-    dependencies[0].srcSubpass = RHI_SUBPASS_EXTERNAL;
-    dependencies[0].dstSubpass = _main_camera_subpass_color_grading;
-    dependencies[0].srcStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[0].dstStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[0].srcAccessMask = RHI_ACCESS_SHADER_WRITE_BIT | RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependencies[0].dstAccessMask = RHI_ACCESS_SHADER_READ_BIT | RHI_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-    dependencies[0].dependencyFlags = RHI_DEPENDENCY_BY_REGION_BIT;
-
-    dependencies[1].srcSubpass = _main_camera_subpass_color_grading;
-    dependencies[1].dstSubpass = _main_camera_subpass_fxaa;
-    dependencies[1].srcStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[1].dstStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[1].srcAccessMask = RHI_ACCESS_SHADER_WRITE_BIT | RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependencies[1].dstAccessMask = RHI_ACCESS_SHADER_READ_BIT | RHI_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-    dependencies[1].dependencyFlags = RHI_DEPENDENCY_BY_REGION_BIT;
-
-    dependencies[2].srcSubpass = _main_camera_subpass_fxaa;
-    dependencies[2].dstSubpass = _main_camera_subpass_ui;
-    dependencies[2].srcStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[2].dstStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[2].srcAccessMask = RHI_ACCESS_SHADER_WRITE_BIT | RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependencies[2].dstAccessMask = RHI_ACCESS_SHADER_READ_BIT | RHI_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-    dependencies[2].dependencyFlags = RHI_DEPENDENCY_BY_REGION_BIT;
-
-    dependencies[3].srcSubpass = _main_camera_subpass_ui;
-    dependencies[3].dstSubpass = _main_camera_subpass_combine_ui;
-    dependencies[3].srcStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[3].dstStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[3].srcAccessMask = RHI_ACCESS_SHADER_WRITE_BIT | RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependencies[3].dstAccessMask = RHI_ACCESS_SHADER_READ_BIT | RHI_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-    dependencies[3].dependencyFlags = RHI_DEPENDENCY_BY_REGION_BIT;
-
-    dependencies[4].srcSubpass = RHI_SUBPASS_EXTERNAL;
-    dependencies[4].dstSubpass = _main_camera_subpass_combine_ui;
-    dependencies[4].srcStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dependencies[4].dstStageMask = RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dependencies[4].srcAccessMask = RHI_ACCESS_SHADER_WRITE_BIT | RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    dependencies[4].dstAccessMask = RHI_ACCESS_SHADER_READ_BIT;
-    dependencies[4].dependencyFlags = RHI_DEPENDENCY_BY_REGION_BIT;
-
-    RHIRenderPassCreateInfo renderpass_create_info {};
-    renderpass_create_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    renderpass_create_info.attachmentCount = kRP2_AttachmentCount;
-    renderpass_create_info.pAttachments = attachments;
-    renderpass_create_info.subpassCount = _main_camera_rp2_subpass_count;
-    renderpass_create_info.pSubpasses = subpasses;
-    renderpass_create_info.dependencyCount = sizeof(dependencies) / sizeof(dependencies[0]);
-    renderpass_create_info.pDependencies = dependencies;
-
-    if (m_Rhi->CreateRenderPass(&renderpass_create_info, m_Framebuffer.render_pass) != RHI_SUCCESS)
+    // ---- LDR render pass (combine_ui) ----
     {
-        throw std::runtime_error("MainCameraFramebufferResources: create RP2 render pass failed");
+        RHIAttachmentDescription att {};
+        att.format = m_Rhi->GetSwapchainInfo().image_format;  // LDR swapchain format
+        att.samples = RHI_SAMPLE_COUNT_1_BIT;
+        att.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+        att.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+        att.finalLayout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        // Simple subpass: one color attachment (attachment index 0).
+        RHIAttachmentReference color_ref {};
+        color_ref.attachment = 0;
+        color_ref.layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+        RHISubpassDescription subpass {};
+        subpass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &color_ref;
+
+        RHISubpassDescription subpasses[1] = {subpass};
+
+        RHIRenderPassCreateInfo ci {};
+        ci.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        ci.attachmentCount = 1;
+        ci.pAttachments = &att;
+        ci.subpassCount = 1;
+        ci.pSubpasses = subpasses;
+        ci.dependencyCount = 0;
+        ci.pDependencies = nullptr;
+
+        if (m_Rhi->CreateRenderPass(&ci, m_Rp2LdrRenderPass) != RHI_SUCCESS)
+        {
+            throw std::runtime_error("MainCameraFramebufferResources: create RP2 LDR render pass failed");
+        }
     }
 }
 
 void MainCameraFramebufferResources::SetupFramebuffers()
 {
+    // RP1 – Simplified: 3 independent framebuffers (no subpasses).
+
+    // GBufferPass framebuffer (writes GBufferA, GBufferB, GBufferC, Depth)
     {
-        RHIImageView* rp1_attachments[5] = {
+        RHIImageView* attachments[4] = {
             m_Framebuffer.attachments[_main_camera_pass_gbuffer_a].view,
             m_Framebuffer.attachments[_main_camera_pass_gbuffer_b].view,
             m_Framebuffer.attachments[_main_camera_pass_gbuffer_c].view,
-            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view,
             m_Rhi->GetDepthImageInfo().depth_image_view,
         };
 
+        RHIFramebufferCreateInfo ci {};
+        ci.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        ci.renderPass = m_GBufferRenderPass;
+        ci.attachmentCount = 4;
+        ci.pAttachments = attachments;
+        ci.width = m_Rhi->GetSwapchainInfo().extent.width;
+        ci.height = m_Rhi->GetSwapchainInfo().extent.height;
+        ci.layers = 1;
+
+        if (m_Rhi->CreateFramebuffer(&ci, m_GBufferFramebuffer) != RHI_SUCCESS)
+        {
+            throw std::runtime_error("MainCameraFramebufferResources: create GBuffer framebuffer failed");
+        }
+    }
+
+    // DeferredLightingPass framebuffer (reads GBufferA/B/C + Depth, writes BackupOdd)
+    {
+        RHIImageView* attachments[5] = {
+            m_Framebuffer.attachments[_main_camera_pass_gbuffer_a].view,   // input
+            m_Framebuffer.attachments[_main_camera_pass_gbuffer_b].view,   // input
+            m_Framebuffer.attachments[_main_camera_pass_gbuffer_c].view,   // input
+            m_Rhi->GetDepthImageInfo().depth_image_view,                   // input
+            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view,  // output
+        };
+
+        RHIFramebufferCreateInfo ci {};
+        ci.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        ci.renderPass = m_DeferredLightingRenderPass;
+        ci.attachmentCount = 5;
+        ci.pAttachments = attachments;
+        ci.width = m_Rhi->GetSwapchainInfo().extent.width;
+        ci.height = m_Rhi->GetSwapchainInfo().extent.height;
+        ci.layers = 1;
+
+        if (m_Rhi->CreateFramebuffer(&ci, m_DeferredLightingFramebuffer) != RHI_SUCCESS)
+        {
+            throw std::runtime_error("MainCameraFramebufferResources: create DeferredLighting framebuffer failed");
+        }
+    }
+
+    // ForwardLightingPass framebuffer (reads/writes BackupOdd, reads Depth)
+    {
+        RHIImageView* attachments[2] = {
+            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view,  // read/write
+            m_Rhi->GetDepthImageInfo().depth_image_view,                          // input
+        };
+
+        RHIFramebufferCreateInfo ci {};
+        ci.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        ci.renderPass = m_ForwardLightingRenderPass;
+        ci.attachmentCount = 2;
+        ci.pAttachments = attachments;
+        ci.width = m_Rhi->GetSwapchainInfo().extent.width;
+        ci.height = m_Rhi->GetSwapchainInfo().extent.height;
+        ci.layers = 1;
+
+        if (m_Rhi->CreateFramebuffer(&ci, m_ForwardLightingFramebuffer) != RHI_SUCCESS)
+        {
+            throw std::runtime_error("MainCameraFramebufferResources: create ForwardLighting framebuffer failed");
+        }
+    }
+
+    // RP2 step 0: color_grading framebuffer
+    // CRITICAL: SRV reads backup_odd (RP1 output: deferred + sky),
+    //           RTV must write to a DIFFERENT texture to avoid read-write hazard
+    //           with loadOp=CLEAR (which would zero backup_odd before shader samples it).
+    // Output = backup_even (no FXAA) or post_odd (FXAA enabled).
+    {
+        uint32_t output_attachment =
+            m_EnableFxaa ? _main_camera_pass_post_process_buffer_odd : _main_camera_pass_backup_buffer_even;
+        RHIImageView* att[1] = { m_Framebuffer.attachments[output_attachment].view };
+
         RHIFramebufferCreateInfo fb_ci {};
         fb_ci.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fb_ci.renderPass = m_Rp1RenderPass;
-        fb_ci.attachmentCount = 5;
-        fb_ci.pAttachments = rp1_attachments;
+        fb_ci.renderPass = m_Rp2HdrRenderPass;  // HDR format render pass
+        fb_ci.attachmentCount = 1;
+        fb_ci.pAttachments = att;
         fb_ci.width = m_Rhi->GetSwapchainInfo().extent.width;
         fb_ci.height = m_Rhi->GetSwapchainInfo().extent.height;
         fb_ci.layers = 1;
 
-        if (m_Rhi->CreateFramebuffer(&fb_ci, m_Rp1Framebuffer) != RHI_SUCCESS)
+        if (m_Rhi->CreateFramebuffer(&fb_ci, m_Rp2ColorGradingFramebuffer) != RHI_SUCCESS)
         {
-            throw std::runtime_error("MainCameraFramebufferResources: create RP1 framebuffer failed");
+            throw std::runtime_error("MainCameraFramebufferResources: create RP2 color_grading framebuffer failed");
         }
     }
 
-    m_SwapchainFramebuffers.resize(m_Rhi->GetSwapchainInfo().imageViews.size());
-    for (size_t i = 0; i < m_SwapchainFramebuffers.size(); ++i)
+    // RP2 step 1: fxaa framebuffer (output = backup_even, only if FXAA enabled)
+    // FXAA also uses HDR render pass (reads post_odd, writes backup_even, both HDR format).
+    if (m_EnableFxaa)
     {
-        RHIImageView* rp2_attachments[4] = {
-            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view,
-            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_even].view,
-            m_Framebuffer.attachments[_main_camera_pass_post_process_buffer_odd].view,
-            m_Rhi->GetSwapchainInfo().imageViews[i],
-        };
+        RHIImageView* att[1] = { m_Framebuffer.attachments[_main_camera_pass_backup_buffer_even].view };
 
         RHIFramebufferCreateInfo fb_ci {};
         fb_ci.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        fb_ci.renderPass = m_Framebuffer.render_pass;
-        fb_ci.attachmentCount = 4;
-        fb_ci.pAttachments = rp2_attachments;
+        fb_ci.renderPass = m_Rp2HdrRenderPass;  // HDR format render pass
+        fb_ci.attachmentCount = 1;
+        fb_ci.pAttachments = att;
+        fb_ci.width = m_Rhi->GetSwapchainInfo().extent.width;
+        fb_ci.height = m_Rhi->GetSwapchainInfo().extent.height;
+        fb_ci.layers = 1;
+
+        if (m_Rhi->CreateFramebuffer(&fb_ci, m_Rp2FxaaFramebuffer) != RHI_SUCCESS)
+        {
+            throw std::runtime_error("MainCameraFramebufferResources: create RP2 fxaa framebuffer failed");
+        }
+    }
+
+    // RP2 step 2: combine_ui framebuffers (one per swapchain image, output = swapchain)
+    // Combine UI uses LDR render pass (swapchain format R8G8B8A8_UNORM).
+    m_SwapchainFramebuffers.resize(m_Rhi->GetSwapchainInfo().imageViews.size());
+    for (size_t i = 0; i < m_SwapchainFramebuffers.size(); ++i)
+    {
+        RHIImageView* att[1] = { m_Rhi->GetSwapchainInfo().imageViews[i] };
+
+        RHIFramebufferCreateInfo fb_ci {};
+        fb_ci.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fb_ci.renderPass = m_Rp2LdrRenderPass;  // LDR format render pass
+        fb_ci.attachmentCount = 1;
+        fb_ci.pAttachments = att;
         fb_ci.width = m_Rhi->GetSwapchainInfo().extent.width;
         fb_ci.height = m_Rhi->GetSwapchainInfo().extent.height;
         fb_ci.layers = 1;
@@ -621,7 +821,7 @@ void MainCameraFramebufferResources::SetupFramebuffers()
         RHIFramebuffer* framebuffer = nullptr;
         if (m_Rhi->CreateFramebuffer(&fb_ci, framebuffer) != RHI_SUCCESS)
         {
-            throw std::runtime_error("MainCameraFramebufferResources: create RP2 framebuffer failed");
+            throw std::runtime_error("MainCameraFramebufferResources: create RP2 combine_ui framebuffer failed");
         }
         m_SwapchainFramebuffers[i] = framebuffer;
     }

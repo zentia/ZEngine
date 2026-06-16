@@ -104,8 +104,9 @@ namespace ZEngine
                                                           ShaderStage shader_stage,
                                                           const std::vector<std::string>& include_paths,
                                                           const ShaderMacros& macros,
-                                                          std::vector<uint8_t>& output_spirv_code,
-                                                          const std::string& entry_point = "main") override;
+                                                          std::vector<uint8_t>& output_binary,
+                                                          const std::string& entry_point = "main",
+                                                          bool embed_debug = false) override;
             virtual RHIShader* CreateShaderModuleFromSource(const std::string& source_code,
                                                             ShaderStage shader_stage,
                                                             const std::string& shader_name = "",

@@ -1128,6 +1128,10 @@ enum RHIAttachmentLoadOp : int
     RHI_ATTACHMENT_LOAD_OP_MAX_ENUM = 0x7FFFFFFF
 };
 
+// Special value indicating that an attachment reference does not reference any attachment.
+// Similar to VK_ATTACHMENT_UNUSED in Vulkan.
+static constexpr uint32_t RHI_ATTACHMENT_UNUSED = 0xFFFFFFFFu;
+
 enum RHIAttachmentStoreOp : int
 {
     RHI_ATTACHMENT_STORE_OP_STORE = 0,

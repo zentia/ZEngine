@@ -517,7 +517,7 @@ void DX12MainCameraPass::Initialize(const RenderPassInitInfo* init_info)
     if (init_info != nullptr)
     {
         const MainCameraPassInitInfo* camera_init = static_cast<const MainCameraPassInitInfo*>(init_info);
-        m_EnableFxaa = camera_init->enble_fxaa;
+        m_EnableFxaa = camera_init->enable_fxaa;
     }
 
     m_FramebufferResourcesReady = m_FramebufferResources.Initialize(m_Rhi, m_EnableFxaa);
@@ -542,14 +542,19 @@ void DX12MainCameraPass::Initialize(const RenderPassInitInfo* init_info)
         try
         {
             m_Rp1Ready = m_Rp1Pass.Initialize();
+            LOG_INFO(ZRender, "DX12MainCameraPass: MainCameraRp1Pass.Initialize() returned {}", m_Rp1Ready);
             if (m_Rp1Ready)
             {
                 LOG_INFO(ZRender, "DX12MainCameraPass: MainCameraRp1Pass initialized (Plan C mesh SkyPass)");
             }
+            else
+            {
+                LOG_WARNING(ZRender, "DX12MainCameraPass: MainCameraRp1Pass FAILED to initialize (check MainCameraRp1Pass::Initialize logs)");
+            }
         }
         catch (const std::exception& ex)
         {
-            LOG_ERROR(ZRender, "DX12MainCameraPass: MainCameraRp1Pass init failed: {}", ex.what());
+            LOG_ERROR(ZRender, "DX12MainCameraPass: MainCameraRp1Pass init EXCEPTION: {}", ex.what());
             m_Rp1Ready = false;
         }
 
@@ -615,9 +620,14 @@ void DX12MainCameraPass::Initialize(const RenderPassInitInfo* init_info)
     }
 }
 
-RHIRenderPass* DX12MainCameraPass::getRp2RenderPass() const
+RHIRenderPass* DX12MainCameraPass::getRp2HdrRenderPass() const
 {
-    return m_FramebufferResourcesReady ? m_FramebufferResources.getRP2RenderPass() : nullptr;
+    return m_FramebufferResourcesReady ? m_FramebufferResources.getRp2HdrRenderPass() : nullptr;
+}
+
+RHIRenderPass* DX12MainCameraPass::getRp2LdrRenderPass() const
+{
+    return m_FramebufferResourcesReady ? m_FramebufferResources.getRp2LdrRenderPass() : nullptr;
 }
 
 RHIImageView* DX12MainCameraPass::getUiLayerColorView() const
@@ -1581,16 +1591,33 @@ void DX12MainCameraPass::DrawSkyboxWithCamera(const std::shared_ptr<RenderCamera
 
     auto* cubemap_view =
         static_cast<DX12ImageView*>(m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView);
-    const D3D12_GPU_DESCRIPTOR_HANDLE cubemap_srv = cubemap_view->getGpuHandle();
-    if (cubemap_srv.ptr == 0)
+
+    // Allocate a fresh per-frame SRV slot for the cubemap. The image view's
+    // stored GPU handle may point to a per-frame CBV/SRV/UAV heap slot that
+    // was valid at CreateImageView time but has since been reused after the
+    // frame's WaitForFences counter reset. Creating a new SRV in the current
+    // frame's partition ensures the GPU reads valid descriptor data.
+    D3D12_CPU_DESCRIPTOR_HANDLE cubemap_cpu {};
+    D3D12_GPU_DESCRIPTOR_HANDLE cubemap_srv {};
+    if (cubemap_view == nullptr || cubemap_view->getImage() == nullptr)
     {
-        static bool warned = false;
-        if (!warned)
-        {
-            LOG_WARNING(ZRender, "DX12MainCameraPass: skybox cubemap has no GPU SRV handle");
-            warned = true;
-        }
         return;
+    }
+    if (!dx12_rhi->AllocateCbvSrvUavDescriptor(cubemap_cpu, cubemap_srv))
+    {
+        LOG_WARNING(ZRender, "DrawSkyboxWithCamera: failed to allocate per-frame cubemap SRV");
+        return;
+    }
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+        srv_desc.Format = cubemap_view->getFormat();
+        srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+        srv_desc.TextureCube.MostDetailedMip = 0;
+        srv_desc.TextureCube.MipLevels = cubemap_view->getMipLevels();
+        srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
+        dx12_rhi->getDevice()->CreateShaderResourceView(
+            cubemap_view->getImage()->getResource(), &srv_desc, cubemap_cpu);
     }
 
     if (!camera || viewport.width <= 0.0f || viewport.height <= 0.0f)
@@ -1784,12 +1811,22 @@ void DX12MainCameraPass::TryLateInitializeSkybox()
     if (m_GlobalRenderResource == nullptr ||
         m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView == nullptr)
     {
+        LOG_INFO(ZRender, "TryLateInitializeSkybox: deferred (GlobalRenderResource={:016X}, SpecularView={:016X})",
+                 (uint64_t)(uintptr_t)m_GlobalRenderResource,
+                 m_GlobalRenderResource ? (uint64_t)(uintptr_t)m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView : 0);
         return;
     }
+    LOG_INFO(ZRender, "TryLateInitializeSkybox: attempting SetupSkyboxResources (SpecularView={:016X})",
+             (uint64_t)(uintptr_t)m_GlobalRenderResource->m_IblResource.m_SpecularTextureImageView);
     if (SetupSkyboxResources())
     {
         m_SkyboxReady = true;
         m_SkyboxSetupAborted = false;
+        LOG_INFO(ZRender, "TryLateInitializeSkybox: SUCCESS - skybox is now ready");
+    }
+    else
+    {
+        LOG_WARNING(ZRender, "TryLateInitializeSkybox: SetupSkyboxResources FAILED");
     }
 }
 
@@ -1863,10 +1900,117 @@ void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbac
 
     if (m_Rp1Ready)
     {
-        m_Rp1Pass.DrawRP1(skybox_visible);
+        // Simplified: 3 independent render passes (no subpasses).
+        // GBufferPass → DeferredLightingPass → ForwardLightingPass.
+
+        // Pass 1: G-Buffer (writes GBufferA/B/C + Depth).
+        m_Rp1Pass.DrawGBufferPass(skybox_visible);
+
+        // Image layout transition: G-Buffer → SHADER_READ_ONLY_OPTIMAL, Depth → DEPTH_STENCIL_READ_ONLY_OPTIMAL.
+        // This ensures DeferredLightingPass can read G-Buffer as input attachments.
+        if (m_Rhi != nullptr && m_FramebufferResourcesReady)
+        {
+            RHIImageMemoryBarrier barriers[4] = {};
+
+            // GBufferA
+            barriers[0].sType = RHI_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barriers[0].srcAccessMask = RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barriers[0].dstAccessMask = RHI_ACCESS_SHADER_READ_BIT;
+            barriers[0].oldLayout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            barriers[0].newLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barriers[0].srcQueueFamilyIndex = RHI_QUEUE_FAMILY_IGNORED;
+            barriers[0].dstQueueFamilyIndex = RHI_QUEUE_FAMILY_IGNORED;
+            barriers[0].image = m_FramebufferResources.getAttachmentImage(_main_camera_pass_gbuffer_a);
+            barriers[0].subresourceRange.aspectMask = RHI_IMAGE_ASPECT_COLOR_BIT;
+            barriers[0].subresourceRange.baseMipLevel = 0;
+            barriers[0].subresourceRange.levelCount = 1;
+            barriers[0].subresourceRange.baseArrayLayer = 0;
+            barriers[0].subresourceRange.layerCount = 1;
+
+            // GBufferB
+            barriers[1] = barriers[0];
+            barriers[1].image = m_FramebufferResources.getAttachmentImage(_main_camera_pass_gbuffer_b);
+
+            // GBufferC
+            barriers[2] = barriers[0];
+            barriers[2].image = m_FramebufferResources.getAttachmentImage(_main_camera_pass_gbuffer_c);
+
+            // Depth
+            barriers[3].sType = RHI_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barriers[3].srcAccessMask = RHI_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            barriers[3].dstAccessMask = RHI_ACCESS_SHADER_READ_BIT | RHI_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            barriers[3].oldLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            barriers[3].newLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            barriers[3].srcQueueFamilyIndex = RHI_QUEUE_FAMILY_IGNORED;
+            barriers[3].dstQueueFamilyIndex = RHI_QUEUE_FAMILY_IGNORED;
+            barriers[3].image = m_Rhi->GetDepthImageInfo().depth_image;
+            barriers[3].subresourceRange.aspectMask = RHI_IMAGE_ASPECT_DEPTH_BIT;
+            barriers[3].subresourceRange.baseMipLevel = 0;
+            barriers[3].subresourceRange.levelCount = 1;
+            barriers[3].subresourceRange.baseArrayLayer = 0;
+            barriers[3].subresourceRange.layerCount = 1;
+
+            m_Rhi->CmdPipelineBarrier(m_Rhi->GetCurrentCommandBuffer(),
+                                       RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | RHI_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                                       RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | RHI_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                                       0, 0, nullptr, 0, nullptr, 4, barriers);
+        }
+
+        // Pass 2: Deferred Lighting + Sky (reads G-Buffer, writes BackupOdd).
+        m_Rp1Pass.DrawDeferredLightingPass(skybox_visible);
+
+        // Note: no manual barrier needed here. CmdEndRenderPassPFN already
+        // transitions BackupOdd to SHADER_READ_ONLY_OPTIMAL (the render pass
+        // finalLayout), and ForwardLightingPass::BeginRenderPass will transition
+        // it back to RENDER_TARGET via initialLayout handling.
+
+        // Pass 3: Forward Lighting (reads/writes BackupOdd, transparent objects).
+        m_Rp1Pass.DrawForwardLightingPass(skybox_visible);
     }
 
-    if (m_TonemapReady)
+    // =========================================================================
+    // RP1→RP2 barrier: backup_odd is already in SHADER_READ_ONLY state after
+    // ForwardLightingPass::EndRenderPass (finalLayout=SHADER_READ_ONLY_OPTIMAL).
+    // No additional transition is needed on DX12 — the ResourceBarrier issued by
+    // CmdEndRenderPassPFN already ensures visibility of RP1 color writes to
+    // subsequent shader reads. The explicit CmdPipelineBarrier below is kept as
+    // a no-op safety net (oldLayout matches the tracked state, so it will be
+    // skipped by TransitionImage).
+    // =========================================================================
+    if (m_FramebufferResourcesReady)
+    {
+        RHIImage* backup_odd_img = m_FramebufferResources.getAttachmentImage(_main_camera_pass_backup_buffer_odd);
+        if (backup_odd_img != nullptr)
+        {
+            RHIImageMemoryBarrier barrier {};
+            barrier.sType = RHI_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.pNext = nullptr;
+            barrier.srcAccessMask = RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = RHI_ACCESS_SHADER_READ_BIT;
+            barrier.oldLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;  // matches tracked state
+            barrier.newLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;  // no layout change
+            barrier.srcQueueFamilyIndex = RHI_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = RHI_QUEUE_FAMILY_IGNORED;
+            barrier.image = backup_odd_img;
+            RHIImageSubresourceRange range {};
+            range.aspectMask = RHI_IMAGE_ASPECT_COLOR_BIT;
+            range.baseMipLevel = 0;
+            range.levelCount = 1;
+            range.baseArrayLayer = 0;
+            range.layerCount = 1;
+            barrier.subresourceRange = range;
+
+            m_Rhi->CmdPipelineBarrier(m_Rhi->GetCurrentCommandBuffer(),
+                                       RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                       RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                       0, 0, nullptr, 0, nullptr, 1, &barrier);
+        }
+    }
+
+    // UE-style refactor: disable legacy BindlessTonemapPass.
+    // MainCameraRp2Pass::DrawRP2() now handles color_grading/fxaa/combine_ui.
+    // Keep this block commented for now; remove after confirming RP2 works.
+    if (false && m_TonemapReady)
     {
         m_TonemapPass.Draw();
     }

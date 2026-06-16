@@ -1,4 +1,4 @@
-#include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
+﻿#include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
 
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Log/LogSystem.h"
@@ -1999,6 +1999,23 @@ bool DX12RHI::Initialize()
     m_SwapchainImageFormat = RHI_FORMAT_R8G8B8A8_UNORM;
     m_DepthImageFormat = RHI_FORMAT_D32_SFLOAT;
 
+    // Enable DX12 debug layer BEFORE creating any DX12 objects.
+    {
+        ID3D12Debug* debug = nullptr;
+        if (SUCCEEDED(D3D12GetDebugInterface(__uuidof(ID3D12Debug), reinterpret_cast<void**>(&debug))))
+        {
+            debug->EnableDebugLayer();
+            debug->Release();
+            LOG_INFO(ZRender, "DX12RHI: DX12 debug layer enabled");
+        }
+        else
+        {
+            LOG_WARNING(ZRender, "DX12RHI: failed to enable DX12 debug layer");
+        }
+    }
+    {
+    }
+
     if (!CheckDX12(CreateDXGIFactory2(0, IID_PPV_ARGS(&m_DxgiFactory)), "CreateDXGIFactory2 failed"))
     {
         return false;
@@ -2786,8 +2803,9 @@ RHIShader* DX12RHI::CreateShaderModuleFromFile(const std::string& file_path,
                                                ShaderStage shader_stage,
                                                const std::vector<std::string>& include_paths,
                                                const ShaderMacros& macros,
-                                               std::vector<uint8_t>& output_spirv_code,
-                                               const std::string& entry_point)
+                                               std::vector<uint8_t>& output_binary,
+                                               const std::string& entry_point,
+                                               bool embed_debug)
 {
     // Initialize shader compiler if not already initialized
     if (!m_ShaderCompiler)
@@ -2798,15 +2816,24 @@ RHIShader* DX12RHI::CreateShaderModuleFromFile(const std::string& file_path,
     // Convert RHI::ShaderMacros to compiler's ShaderMacros
     std::map<std::string, std::string> compiler_macros(macros.begin(), macros.end());
 
-    // Compile shader from file
+    // Compile shader from file (pass embed_debug through).
+    // Also infer target_profile / hlsl_version from shader_stage if needed
+    // (CompileFromFile defaults to SM 6.0 / HV 2018 when those are empty).
     DX12ShaderCompileResult result = m_ShaderCompiler->CompileFromFile(
-        file_path, shader_stage, include_paths, compiler_macros, entry_point);
+        file_path, shader_stage, include_paths, compiler_macros,
+        entry_point, "", "", embed_debug);
 
     if (!result.success)
     {
         LOG_ERROR(ZShader, "Failed to compile shader from file: {}", file_path);
         LOG_ERROR(ZShader, "Error: {}", result.error_message);
         return nullptr;
+    }
+
+    // Optionally copy DXIL bytecode to caller (used by LoadRp1ShaderFromFile).
+    if (!result.dxil_code.empty())
+    {
+        output_binary = result.dxil_code;
     }
 
     // Create shader module from compiled DXIL
@@ -2972,6 +2999,36 @@ void DX12RHI::CopyBuffer(RHIBuffer* srcBuffer,
     if (!ExecuteDedicatedUploadCommands(record_copy))
     {
         LOG_ERROR(ZRender, "DX12 CopyBuffer: dedicated upload failed (size={})", static_cast<uint64_t>(size));
+    }
+}
+
+void DX12RHI::CopyBufferImmediate(RHIBuffer* srcBuffer,
+                                   RHIBuffer* dstBuffer,
+                                   RHIDeviceSize srcOffset,
+                                   RHIDeviceSize dstOffset,
+                                   RHIDeviceSize size)
+{
+    DX12Buffer* src = static_cast<DX12Buffer*>(srcBuffer);
+    DX12Buffer* dst = static_cast<DX12Buffer*>(dstBuffer);
+    if (src == nullptr || dst == nullptr || src->getResource() == nullptr || dst->getResource() == nullptr ||
+        size == 0)
+    {
+        return;
+    }
+
+    const auto record_copy = [&](ID3D12GraphicsCommandList* command_list) {
+        RecordDefaultHeapBufferCopy(command_list,
+                                    src->getResource(),
+                                    dst->getResource(),
+                                    srcOffset,
+                                    dstOffset,
+                                    size,
+                                    D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+    };
+
+    if (!ExecuteDedicatedUploadCommands(record_copy))
+    {
+        LOG_ERROR(ZRender, "DX12 CopyBufferImmediate: dedicated upload failed (size={})", static_cast<uint64_t>(size));
     }
 }
 
@@ -4043,6 +4100,16 @@ bool DX12RHI::CreateRenderPass(const RHIRenderPassCreateInfo* pCreateInfo, RHIRe
     return true;
 }
 
+void DX12RHI::DestroyRenderPass(RHIRenderPass* renderPass)
+{
+    if (renderPass == nullptr)
+    {
+        return;
+    }
+    DX12RenderPass* dx12_render_pass = static_cast<DX12RenderPass*>(renderPass);
+    delete dx12_render_pass;
+}
+
 void DX12RHI::TransitionSubpassAttachments(const RHISubpassDescription& subpass, bool for_color_output)
 {
     if (m_ActiveFramebuffer == nullptr || m_ActiveRenderPass == nullptr)
@@ -4163,8 +4230,13 @@ void DX12RHI::BindSubpassRenderTargets(const RHISubpassDescription& subpass,
             const D3D12_CPU_DESCRIPTOR_HANDLE rtv = view->getRenderTargetHandle();
             rtvs.push_back(rtv);
 
+            // Per-Vulkan spec: only clear on FIRST use of the attachment.
+            const bool already_used =
+                (attachment_index < 64) &&
+                (m_ActiveSubpassAttachmentsUsed & (1ULL << attachment_index));
             if (clear_on_load && attachment_index < attachment_descs.size() &&
-                attachment_descs[attachment_index].loadOp == RHI_ATTACHMENT_LOAD_OP_CLEAR)
+                attachment_descs[attachment_index].loadOp == RHI_ATTACHMENT_LOAD_OP_CLEAR &&
+                !already_used)
             {
                 float clear_color[4] = {0.0f, 0.0f, 0.0f, 1.0f};
                 if (begin_info != nullptr && begin_info->pClearValues != nullptr &&
@@ -4192,8 +4264,14 @@ void DX12RHI::BindSubpassRenderTargets(const RHISubpassDescription& subpass,
             dsv_ptr = &dsv;
 
             const uint32_t depth_attachment_index = subpass.pDepthStencilAttachment->attachment;
-            if (clear_on_load && depth_attachment_index < attachment_descs.size() &&
-                attachment_descs[depth_attachment_index].loadOp == RHI_ATTACHMENT_LOAD_OP_CLEAR)
+            // Per-Vulkan spec: only clear on FIRST use of the attachment.
+            const bool already_used =
+                (depth_attachment_index < 64) &&
+                (m_ActiveSubpassAttachmentsUsed & (1ULL << depth_attachment_index));
+            if (clear_on_load &&
+                depth_attachment_index < attachment_descs.size() &&
+                attachment_descs[depth_attachment_index].loadOp == RHI_ATTACHMENT_LOAD_OP_CLEAR &&
+                !already_used)
             {
                 float depth = 1.0f;
                 UINT8 stencil = 0;
@@ -4220,6 +4298,33 @@ void DX12RHI::BindSubpassRenderTargets(const RHISubpassDescription& subpass,
     else if (dsv_ptr != nullptr)
     {
         m_CommandLists[m_CurrentFrameIndex]->OMSetRenderTargets(0, nullptr, FALSE, dsv_ptr);
+    }
+
+    // Mark all attachments referenced by this subpass as "used" so that
+    // subsequent subpasses will NOT clear them again.
+    auto mark_used = [&](uint32_t idx) {
+        if (idx != RHI_ATTACHMENT_UNUSED && idx < 64)
+        {
+            m_ActiveSubpassAttachmentsUsed |= (1ULL << idx);
+        }
+    };
+    if (subpass.pColorAttachments != nullptr)
+    {
+        for (uint32_t i = 0; i < subpass.colorAttachmentCount; ++i)
+        {
+            mark_used(subpass.pColorAttachments[i].attachment);
+        }
+    }
+    if (subpass.pDepthStencilAttachment != nullptr)
+    {
+        mark_used(subpass.pDepthStencilAttachment->attachment);
+    }
+    if (subpass.pInputAttachments != nullptr)
+    {
+        for (uint32_t i = 0; i < subpass.inputAttachmentCount; ++i)
+        {
+            mark_used(subpass.pInputAttachments[i].attachment);
+        }
     }
 }
 
@@ -4316,6 +4421,7 @@ void DX12RHI::CmdBeginRenderPassPFN(RHICommandBuffer* commandBuffer,
     m_ActiveFramebuffer = static_cast<DX12Framebuffer*>(pRenderPassBegin->framebuffer);
     m_ActiveRenderPass = static_cast<DX12RenderPass*>(pRenderPassBegin->renderPass);
     m_ActiveSubpassIndex = 0;
+    m_ActiveSubpassAttachmentsUsed = 0;
 
     m_ActiveRenderPassClearValueCount = 0;
     if (pRenderPassBegin->pClearValues != nullptr && pRenderPassBegin->clearValueCount > 0)
@@ -4444,6 +4550,11 @@ void DX12RHI::CmdBindPipelinePFN(RHICommandBuffer* commandBuffer,
         if (m_CurrentGraphicsPipeline->getPipelineState())
         {
             m_CommandLists[m_CurrentFrameIndex]->SetPipelineState(m_CurrentGraphicsPipeline->getPipelineState());
+        }
+        else
+        {
+            LOG_ERROR(ZRender, "CmdBindPipelinePFN: GRAPHICS pipeline has NULL PSO! pipeline=0x{:016X} — SetPipelineState SKIPPED",
+                      (uint64_t)(uintptr_t)pipeline);
         }
         if (m_CurrentGraphicsPipeline->getPipelineLayout() && m_CurrentGraphicsPipeline->getPipelineLayout()->getRootSignature())
         {
@@ -5147,12 +5258,51 @@ void DX12RHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
             if ((write.descriptorType == RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
                  write.descriptorType == RHI_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
                  write.descriptorType == RHI_DESCRIPTOR_TYPE_INPUT_ATTACHMENT) &&
-                image_view != nullptr)
+                image_view != nullptr && image_view->getImage() != nullptr)
             {
-                const D3D12_GPU_DESCRIPTOR_HANDLE view_gpu_handle = image_view->getGpuHandle();
-                if (view_gpu_handle.ptr != 0)
+                // Allocate a fresh per-frame SRV slot and create the SRV there.
+                // CreateImageView allocates SRVs from the per-frame CBV/SRV/UAV
+                // heap partition. After WaitForFences resets the per-frame counter,
+                // subsequent allocations in the same partition overwrite those SRVs.
+                // Storing the image view's stale GPU handle would cause the GPU to
+                // read wrong descriptor data (black textures). Instead, create a
+                // fresh SRV in the current frame's partition — the same pattern
+                // already used for buffer CBVs and storage image UAVs above.
+                D3D12_CPU_DESCRIPTOR_HANDLE srv_cpu {};
+                D3D12_GPU_DESCRIPTOR_HANDLE srv_gpu {};
+                if (AllocateCbvSrvUavDescriptor(srv_cpu, srv_gpu))
                 {
-                    descriptor_set->setCbvSrvUavHandle(write.dstBinding, view_gpu_handle);
+                    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+                    srv_desc.Format = image_view->getFormat();
+                    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+
+                    switch (image_view->getViewType())
+                    {
+                        case RHI_IMAGE_VIEW_TYPE_CUBE:
+                            srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+                            srv_desc.TextureCube.MostDetailedMip = 0;
+                            srv_desc.TextureCube.MipLevels = image_view->getMipLevels();
+                            srv_desc.TextureCube.ResourceMinLODClamp = 0.0f;
+                            break;
+                        case RHI_IMAGE_VIEW_TYPE_2D_ARRAY:
+                            srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+                            srv_desc.Texture2DArray.MostDetailedMip = 0;
+                            srv_desc.Texture2DArray.MipLevels = image_view->getMipLevels();
+                            srv_desc.Texture2DArray.FirstArraySlice = 0;
+                            srv_desc.Texture2DArray.ArraySize = image_view->getArrayCount();
+                            break;
+                        case RHI_IMAGE_VIEW_TYPE_2D:
+                        default:
+                            srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+                            srv_desc.Texture2D.MostDetailedMip = 0;
+                            srv_desc.Texture2D.MipLevels = image_view->getMipLevels();
+                            srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
+                            break;
+                    }
+
+                    m_Device->CreateShaderResourceView(
+                        image_view->getImage()->getResource(), &srv_desc, srv_cpu);
+                    descriptor_set->setCbvSrvUavHandle(write.dstBinding, srv_gpu);
                 }
             }
             else if (write.descriptorType == RHI_DESCRIPTOR_TYPE_STORAGE_IMAGE && image_view != nullptr &&

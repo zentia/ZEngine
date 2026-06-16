@@ -58,7 +58,7 @@ namespace
                           out_buffer,
                           gpu_memory);
 
-        rhi->CopyBuffer(staging_buffer, out_buffer, 0, 0, size);
+        rhi->CopyBufferImmediate(staging_buffer, out_buffer, 0, 0, size);
         rhi->DestroyBuffer(staging_buffer);
         rhi->FreeMemory(staging_memory);
         if (gpu_memory != nullptr)
@@ -137,7 +137,7 @@ namespace
                           RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                           now_mesh.mesh_vertex_position_buffer,
                           position_memory);
-        rhi->CopyBuffer(staging_buffer, now_mesh.mesh_vertex_position_buffer, 0, 0, position_buffer_size);
+        rhi->CopyBufferImmediate(staging_buffer, now_mesh.mesh_vertex_position_buffer, 0, 0, position_buffer_size);
 
         RHIDeviceMemory* blending_memory = nullptr;
         rhi->CreateBuffer(varying_blending_size,
@@ -145,7 +145,7 @@ namespace
                           RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                           now_mesh.mesh_vertex_varying_enable_blending_buffer,
                           blending_memory);
-        rhi->CopyBuffer(
+        rhi->CopyBufferImmediate(
             staging_buffer, now_mesh.mesh_vertex_varying_enable_blending_buffer, position_buffer_size, 0, varying_blending_size);
 
         RHIDeviceMemory* varying_memory = nullptr;
@@ -154,11 +154,11 @@ namespace
                           RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
                           now_mesh.mesh_vertex_varying_buffer,
                           varying_memory);
-        rhi->CopyBuffer(staging_buffer,
-                        now_mesh.mesh_vertex_varying_buffer,
-                        position_buffer_size + varying_blending_size,
-                        0,
-                        varying_size);
+        rhi->CopyBufferImmediate(staging_buffer,
+                                 now_mesh.mesh_vertex_varying_buffer,
+                                 position_buffer_size + varying_blending_size,
+                                 0,
+                                 varying_size);
 
         rhi->DestroyBuffer(staging_buffer);
         rhi->FreeMemory(staging_memory);

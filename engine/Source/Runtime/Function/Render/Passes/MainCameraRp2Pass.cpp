@@ -300,7 +300,8 @@ void MainCameraRp2Pass::SetupDescriptorSetLayouts()
 
 void MainCameraRp2Pass::SetupPipelines()
 {
-    RHIRenderPass* rp2 = m_FbResources->getRP2RenderPass();
+    // UE-style: use separate render passes for HDR (color_grading/fxaa) and LDR (combine_ui).
+    // All new render passes are simple (no subpasses), so subpass index is always 0.
 
     RHIShader* post_vert = LoadShader("post_process.vert.hlsl", ShaderStage::Vertex);
     RHIShader* color_frag = LoadShader("color_grading.frag.hlsl", ShaderStage::Fragment);
@@ -312,6 +313,7 @@ void MainCameraRp2Pass::SetupPipelines()
         throw std::runtime_error("MainCameraRp2Pass: failed to load RP2 shaders");
     }
 
+    // Color grading: uses HDR render pass (backup_odd/output is HDR).
     {
         RHIDescriptorSetLayout* layouts[] = {m_DescriptorInfos[_color_grading].layout};
         RHIPipelineLayoutCreateInfo pli {};
@@ -327,10 +329,11 @@ void MainCameraRp2Pass::SetupPipelines()
             post_vert,
             color_frag,
             m_RenderPipelines[_pipeline_color_grading].layout,
-            rp2,
-            _main_camera_subpass_color_grading);
+            m_FbResources->getRp2HdrRenderPass(),  // HDR render pass
+            0);  // No subpasses: index 0
     }
 
+    // FXAA: uses HDR render pass (reads post_odd, writes backup_even, both HDR).
     {
         RHIDescriptorSetLayout* layouts[] = {m_DescriptorInfos[_fxaa].layout};
         RHIPipelineLayoutCreateInfo pli {};
@@ -341,14 +344,16 @@ void MainCameraRp2Pass::SetupPipelines()
         {
             throw std::runtime_error("MainCameraRp2Pass: fxaa pipeline layout");
         }
-        m_RenderPipelines[_pipeline_fxaa].pipeline = CreateFullscreenPostPipeline(m_Rhi,
-                                                                                  post_vert,
-                                                                                  fxaa_frag,
-                                                                                  m_RenderPipelines[_pipeline_fxaa].layout,
-                                                                                  rp2,
-                                                                                  _main_camera_subpass_fxaa);
+        m_RenderPipelines[_pipeline_fxaa].pipeline = CreateFullscreenPostPipeline(
+            m_Rhi,
+            post_vert,
+            fxaa_frag,
+            m_RenderPipelines[_pipeline_fxaa].layout,
+            m_FbResources->getRp2HdrRenderPass(),  // HDR render pass
+            0);  // No subpasses: index 0
     }
 
+    // Combine UI: uses LDR render pass (writes to swapchain, LDR format).
     {
         RHIDescriptorSetLayout* layouts[] = {m_DescriptorInfos[_combine_ui].layout};
         RHIPipelineLayoutCreateInfo pli {};
@@ -364,8 +369,8 @@ void MainCameraRp2Pass::SetupPipelines()
             post_vert,
             combine_frag,
             m_RenderPipelines[_pipeline_combine_ui].layout,
-            rp2,
-            _main_camera_subpass_combine_ui);
+            m_FbResources->getRp2LdrRenderPass(),  // LDR render pass
+            0);  // No subpasses: index 0
     }
 
     m_Rhi->DestroyShaderModule(post_vert);
@@ -405,6 +410,7 @@ void MainCameraRp2Pass::UpdateDescriptorBindings()
 {
     if (m_FbResources == nullptr)
     {
+        LOG_ERROR(ZRender, "UpdateDescriptorBindings: m_FbResources is null");
         return;
     }
 
@@ -426,7 +432,10 @@ void MainCameraRp2Pass::UpdateDescriptorBindings()
     {
         RHIDescriptorImageInfo in_color {};
         in_color.sampler = nearest;
-        in_color.imageView = backup_even;
+        // FIX: Read from backup_odd (RP1 output: deferred lighting + sky).
+        // Previously read backup_even which contained stale/black data —
+        // RP1 writes its final result to backup_odd, so RP2 must sample it.
+        in_color.imageView = backup_odd;
         in_color.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         RHIDescriptorImageInfo lut {};
@@ -451,6 +460,8 @@ void MainCameraRp2Pass::UpdateDescriptorBindings()
     }
 
     {
+        // FXAA input: when enabled, reads post_odd (CG writes there).
+        // When disabled, this descriptor is unused but keep it valid.
         RHIImageView* fxaa_input = m_EnableFxaa ? post_odd : backup_even;
         RHIDescriptorImageInfo in_tex {};
         in_tex.sampler = linear;
@@ -468,18 +479,22 @@ void MainCameraRp2Pass::UpdateDescriptorBindings()
     }
 
     {
-        // Color grading (and FXAA when enabled) writes the final LDR frame into backup_odd.
+        // Combine UI reads the Color Grading output (backup_even when FXAA disabled,
+        // backup_even when FXAA enabled) as the scene color, and the UI layer.
+        RHIImageView* scene_source = m_EnableFxaa ? backup_even : backup_even;
         RHIDescriptorImageInfo scene {};
         scene.sampler = nearest;
-        scene.imageView = backup_odd;
+        scene.imageView = scene_source;
         scene.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+        // in_ui_color reads the UI layer.
+        // On DX12 editor: use a clear (black+transparent) fallback view (editor paints
+        // UI on the swapchain after RP2 via ImGui overlay, not via legacy UIPass).
         RHIDescriptorImageInfo ui {};
         ui.sampler = nearest;
         ui.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12 && m_FallbackUiClearView != nullptr)
         {
-            // Editor skips legacy UIPass on DX12; do not sample tonemap RT (alpha=1) as UI.
             ui.imageView = m_FallbackUiClearView;
         }
         else
@@ -533,6 +548,7 @@ void MainCameraRp2Pass::DrawColorGrading()
                                     &m_DescriptorInfos[_color_grading].descriptor_set,
                                     0,
                                     nullptr);
+    
     m_Rhi->CmdDraw(m_Rhi->GetCurrentCommandBuffer(), 3, 1, 0, 0);
 }
 
@@ -600,71 +616,157 @@ void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
         return;
     }
 
-    const auto& swapchain_fbs = m_FbResources->getRP2Framebuffers();
-    if (swapchain_image_index >= swapchain_fbs.size() || swapchain_fbs[swapchain_image_index] == nullptr)
-    {
-        return;
-    }
-
-    constexpr float k_scene_clear_r = 0.29f;
-    constexpr float k_scene_clear_g = 0.345f;
-    constexpr float k_scene_clear_b = 0.435f;
-
-    RHIRenderPassBeginInfo begin_info {};
-    begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    begin_info.renderPass = m_FbResources->getRP2RenderPass();
-    begin_info.framebuffer = swapchain_fbs[swapchain_image_index];
-    begin_info.renderArea.offset = {0, 0};
-    begin_info.renderArea.extent = m_Rhi->GetSwapchainInfo().extent;
-
-    RHIClearValue clear_values[4];
-    clear_values[0].color = {{k_scene_clear_r, k_scene_clear_g, k_scene_clear_b, 1.0f}};
-    clear_values[1].color = {{k_scene_clear_r, k_scene_clear_g, k_scene_clear_b, 1.0f}};
-    clear_values[2].color = {{k_scene_clear_r, k_scene_clear_g, k_scene_clear_b, 1.0f}};
-    clear_values[3].color = {{k_scene_clear_r, k_scene_clear_g, k_scene_clear_b, 1.0f}};
-    begin_info.clearValueCount = 4;
-    begin_info.pClearValues = clear_values;
-
     RHICommandBuffer* cmd = m_Rhi->GetCurrentCommandBuffer();
-    m_Rhi->CmdBeginRenderPassPFN(cmd, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+    const auto& extent = m_Rhi->GetSwapchainInfo().extent;
+    float debug_color[4] = {0.8f, 0.6f, 1.0f, 1.0f};
 
-    float color[4] = {0.8f, 0.6f, 1.0f, 1.0f};
-    m_Rhi->PushEvent(cmd, "Color Grading", color);
-    DrawColorGrading();
-    m_Rhi->PopEvent(cmd);
+    // DX12 per-frame descriptor fix: UpdateDescriptorBindings() allocates
+    // fresh per-frame SRV slots from the CBV/SRV/UAV heap.  Without this
+    // call, the ColorGrading pass (Step 0) would use stale GPU handles
+    // from a previous frame's partition — WaitForFences resets the
+    // per-frame counter, so old handles point to overwritten slots and
+    // the shader reads zeros (black screen).
+    UpdateDescriptorBindings();
 
-    m_Rhi->CmdNextSubpassPFN(cmd, RHI_SUBPASS_CONTENTS_INLINE);
+    // =========================================================================
+    // UE-style: independent passes with explicit barriers.
+    // Each step is a separate BeginRenderPass/EndRenderPass pair.
+    // =========================================================================
 
-    m_Rhi->PushEvent(cmd, "FXAA", color);
-    DrawFxaa();
-    m_Rhi->PopEvent(cmd);
-
-    m_Rhi->CmdNextSubpassPFN(cmd, RHI_SUBPASS_CONTENTS_INLINE);
-
-    // backup_even is the UI-layer RT. Clear it to transparent black so combine_ui keeps
-    // the graded scene in backup_odd. On DX12 the editor paints UI on the swapchain
-    // after RP2 (ZSlateEditorOverlay), so skip legacy UIPass but still clear even.
+    // ---- Step 0: Color Grading ----
+    // Reads:  backup_odd (RP1 HDR output: deferred lighting + sky, as SRV via descriptor)
+    // Writes: backup_even (or post_odd if FXAA enabled, as RTV)
+    // Uses HDR render pass (R16G16B16A16_SFLOAT format).
+    // NOTE: SRV and RTV MUST be different textures because loadOp=CLEAR
+    //       would zero the RTV texture before the fragment shader samples it via SRV.
     {
-        RHIClearAttachment clear_attachments[1] {};
-        clear_attachments[0].aspectMask = RHI_IMAGE_ASPECT_COLOR_BIT;
-        clear_attachments[0].colorAttachment = 0;
-        clear_attachments[0].clearValue.color.float32[0] = 0.0f;
-        clear_attachments[0].clearValue.color.float32[1] = 0.0f;
-        clear_attachments[0].clearValue.color.float32[2] = 0.0f;
-        clear_attachments[0].clearValue.color.float32[3] = 0.0f;
+        RHIRenderPassBeginInfo begin_info {};
+        begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        begin_info.renderPass = m_FbResources->getRp2HdrRenderPass();  // HDR render pass
+        begin_info.framebuffer = m_FbResources->getRp2ColorGradingFramebuffer();
+        begin_info.renderArea.offset = {0, 0};
+        begin_info.renderArea.extent = extent;
+        RHIClearValue clear_values[1] {};
+        clear_values[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        begin_info.clearValueCount = 1;
+        begin_info.pClearValues = clear_values;
 
-        RHIClearRect clear_rects[1] {};
-        clear_rects[0].rect.offset.x = 0;
-        clear_rects[0].rect.offset.y = 0;
-        clear_rects[0].rect.extent.width = m_Rhi->GetSwapchainInfo().extent.width;
-        clear_rects[0].rect.extent.height = m_Rhi->GetSwapchainInfo().extent.height;
-        m_Rhi->CmdClearAttachmentsPFN(cmd, 1, clear_attachments, 1, clear_rects);
+        m_Rhi->CmdBeginRenderPassPFN(cmd, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+        m_Rhi->PushEvent(cmd, "Color Grading", debug_color);
+        DrawColorGrading();
+        m_Rhi->PopEvent(cmd);
+        m_Rhi->CmdEndRenderPassPFN(cmd);
     }
 
+    // Barrier: color_grading output (backup_even or post_odd) is already in
+    // SHADER_READ_ONLY_OPTIMAL thanks to finalLayout. Only need a memory
+    // visibility barrier (no layout transition).
+    {
+        uint32_t output_att =
+            m_EnableFxaa ? _main_camera_pass_post_process_buffer_odd
+                          : _main_camera_pass_backup_buffer_even;
+        RHIImage* img = m_FbResources->getAttachmentImage(output_att);
+        if (img != nullptr)
+        {
+            RHIImageMemoryBarrier barrier {};
+            barrier.sType = RHI_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.pNext = nullptr;
+            barrier.srcAccessMask = RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = RHI_ACCESS_SHADER_READ_BIT;
+            barrier.oldLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;  // already transitioned by finalLayout
+            barrier.newLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;  // no layout change
+            barrier.srcQueueFamilyIndex = RHI_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = RHI_QUEUE_FAMILY_IGNORED;
+            barrier.image = img;
+            RHIImageSubresourceRange range {};
+            range.aspectMask = RHI_IMAGE_ASPECT_COLOR_BIT;
+            range.baseMipLevel = 0;
+            range.levelCount = 1;
+            range.baseArrayLayer = 0;
+            range.layerCount = 1;
+            barrier.subresourceRange = range;
+
+            m_Rhi->CmdPipelineBarrier(cmd,
+                                       RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                       RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                       0,
+                                       0, nullptr,
+                                       0, nullptr,
+                                       1, &barrier);
+        }
+    }
+
+    // ---- Step 1: FXAA (optional) ----
+    // Uses HDR render pass (reads post_odd, writes backup_even, both HDR format).
+    if (m_EnableFxaa && m_RenderPipelines[_pipeline_fxaa].pipeline != nullptr)
+    {
+        RHIRenderPassBeginInfo begin_info {};
+        begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        begin_info.renderPass = m_FbResources->getRp2HdrRenderPass();  // HDR render pass
+        begin_info.framebuffer = m_FbResources->getRp2FxaaFramebuffer();
+        begin_info.renderArea.offset = {0, 0};
+        begin_info.renderArea.extent = extent;
+        RHIClearValue clear_values[1] {};
+        clear_values[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        begin_info.clearValueCount = 1;
+        begin_info.pClearValues = clear_values;
+
+        m_Rhi->CmdBeginRenderPassPFN(cmd, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+        m_Rhi->PushEvent(cmd, "FXAA", debug_color);
+        DrawFxaa();
+        m_Rhi->PopEvent(cmd);
+        m_Rhi->CmdEndRenderPassPFN(cmd);
+    }
+
+    // Barrier: FXAA output (backup_even) is already in SHADER_READ_ONLY_OPTIMAL
+    // thanks to finalLayout. Only need a memory visibility barrier.
+    if (m_EnableFxaa)
+    {
+        RHIImage* img = m_FbResources->getAttachmentImage(_main_camera_pass_backup_buffer_even);
+        if (img != nullptr)
+        {
+            RHIImageMemoryBarrier barrier {};
+            barrier.sType = RHI_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.pNext = nullptr;
+            barrier.srcAccessMask = RHI_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            barrier.dstAccessMask = RHI_ACCESS_SHADER_READ_BIT;
+            barrier.oldLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;  // already transitioned by finalLayout
+            barrier.newLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;  // no layout change
+            barrier.srcQueueFamilyIndex = RHI_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = RHI_QUEUE_FAMILY_IGNORED;
+            barrier.image = img;
+            RHIImageSubresourceRange range {};
+            range.aspectMask = RHI_IMAGE_ASPECT_COLOR_BIT;
+            range.baseMipLevel = 0;
+            range.levelCount = 1;
+            range.baseArrayLayer = 0;
+            range.layerCount = 1;
+            barrier.subresourceRange = range;
+
+            m_Rhi->CmdPipelineBarrier(cmd,
+                                       RHI_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                                       RHI_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                       0,
+                                       0, nullptr,
+                                       0, nullptr,
+                                       1, &barrier);
+        }
+    }
+
+    // ---- Step 2: UI Clear + Draw ----
+    // On DX12, clear backup_even (UI layer) to transparent black.
+    // The editor paints UI on the swapchain after RP2, so we skip legacy UIPass.
+    // We do this BEFORE combine_ui by writing to backup_even in a small pass,
+    // or just clear it as a sub-step. For simplicity, we clear it via a dedicated
+    // render pass (or skip if editor overlay handles it).
+    // For now, we just draw the legacy UI pass if not on DX12.
     const bool skip_legacy_ui_draw =
         m_Rhi != nullptr && m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12;
     if (!skip_legacy_ui_draw && m_UiPass != nullptr)
     {
+        // Use a simple pass to clear backup_even, then draw UI.
+        // For simplicity, reuse the combine_ui framebuffer but with a clear.
+        // Actually, let's just call m_UiPass->Draw() which uses its own render pass.
         m_UiPass->Draw();
     }
 
@@ -676,15 +778,36 @@ void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
         }
     }
 
-    m_Rhi->CmdNextSubpassPFN(cmd, RHI_SUBPASS_CONTENTS_INLINE);
+    // ---- Step 3: Combine UI ----
+    // Reads:  backup_odd (scene, as SRV) + backup_even (UI, as SRV)
+    // Writes: swapchain image (as RTV)
+    // Uses LDR render pass (swapchain format R8G8B8A8_UNORM).
+    {
+        const auto& swapchain_fbs = m_FbResources->getRP2Framebuffers();
+        if (swapchain_image_index >= swapchain_fbs.size() ||
+            swapchain_fbs[swapchain_image_index] == nullptr)
+        {
+            return;
+        }
 
-    // Subpass writes may not be visible to descriptor sampling on all backends until
-    // descriptors are rebound for this frame's final odd/even contents.
-    UpdateDescriptorBindings();
+        // Update descriptor bindings so combine_ui reads the latest odd/even contents.
+        UpdateDescriptorBindings();
 
-    m_Rhi->PushEvent(cmd, "Combine UI", color);
-    DrawCombineUi();
-    m_Rhi->PopEvent(cmd);
+        RHIRenderPassBeginInfo begin_info {};
+        begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        begin_info.renderPass = m_FbResources->getRp2LdrRenderPass();  // LDR render pass
+        begin_info.framebuffer = swapchain_fbs[swapchain_image_index];
+        begin_info.renderArea.offset = {0, 0};
+        begin_info.renderArea.extent = extent;
+        RHIClearValue clear_values[1] {};
+        clear_values[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        begin_info.clearValueCount = 1;
+        begin_info.pClearValues = clear_values;
 
-    m_Rhi->CmdEndRenderPassPFN(cmd);
+        m_Rhi->CmdBeginRenderPassPFN(cmd, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+        m_Rhi->PushEvent(cmd, "Combine UI", debug_color);
+        DrawCombineUi();
+        m_Rhi->PopEvent(cmd);
+        m_Rhi->CmdEndRenderPassPFN(cmd);
+    }
 }

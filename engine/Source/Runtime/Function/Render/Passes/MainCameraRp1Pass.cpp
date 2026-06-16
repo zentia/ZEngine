@@ -114,8 +114,8 @@ namespace
                                            RHIShader* frag_shader_module,
                                            const MeshPipelineKey& pipeline_key,
                                            MainCameraRp1Pass::RenderPipelineType pipeline_type,
-                                           RHIRenderPass* rp1_render_pass,
-                                           uint32_t subpass,
+                                           RHIRenderPass* render_pass,  // Changed: pass render_pass instead of rp1_render_pass
+                                           uint32_t subpass_index,         // Changed: subpass index (now always 0)
                                            uint32_t color_attachment_count,
                                            bool transparent_pass)
     {
@@ -210,8 +210,8 @@ namespace
         pipeline_info.pColorBlendState = &color_blend_state_create_info;
         pipeline_info.pDepthStencilState = &depth_stencil_create_info;
         pipeline_info.layout = pass.m_RenderPipelines[static_cast<size_t>(pipeline_type)].layout;
-        pipeline_info.renderPass = rp1_render_pass;
-        pipeline_info.subpass = subpass;
+        pipeline_info.renderPass = render_pass;  // Use parameter instead of rp1_render_pass
+        pipeline_info.subpass = subpass_index;          // Use parameter instead of subpass
         pipeline_info.pDynamicState = &dynamic_state_create_info;
 
         RHIPipeline* material_pipeline = RHI_NULL_HANDLE;
@@ -336,6 +336,17 @@ void MainCameraRp1Pass::EnsureFallbackIblTextures()
                              static_cast<void*>(&neutral_pixel),
                              RHI_FORMAT_R8G8B8A8_UNORM);
 
+    // Guard: CreateGlobalImage / CreateCubeMap may fail if the D3D12 device
+    // has been removed (e.g. TDR under RenderDoc).  Without these checks
+    // subsequent rendering code would dereference null image/view pointers.
+    if (owned.brdf_image == nullptr)
+    {
+        LOG_ERROR(ZRender,
+                  "EnsureFallbackIblTextures: CreateGlobalImage (BRDF LUT) "
+                  "failed — D3D12 device may have been removed");
+        return;
+    }
+
     std::array<void*, 6> neutral_faces = {
         &neutral_pixel, &neutral_pixel, &neutral_pixel,
         &neutral_pixel, &neutral_pixel, &neutral_pixel,
@@ -349,6 +360,18 @@ void MainCameraRp1Pass::EnsureFallbackIblTextures()
                          RHI_FORMAT_R8G8B8A8_UNORM,
                          1);
     owned.cube_mem = nullptr;
+
+    if (owned.cube_image == nullptr)
+    {
+        LOG_ERROR(ZRender,
+                  "EnsureFallbackIblTextures: CreateCubeMap (fallback cubemap) "
+                  "failed — cleaning up BRDF LUT and returning");
+        m_Rhi->DestroyImageView(m_FallbackBrdfView);
+        m_Rhi->DestroyImage(owned.brdf_image);
+        m_Rhi->FreeMemory(owned.brdf_mem);
+        m_FallbackBrdfView = nullptr;
+        return;
+    }
 
     g_fallback_ibl_owned[this] = owned;
 }
@@ -590,11 +613,15 @@ namespace
 
 void MainCameraRp1Pass::SetupPipelines()
 {
-    RHIRenderPass* rp1_render_pass = m_FbResources->getRP1RenderPass();
+    // Simplified: 3 independent render passes (no subpasses).
+    // Each pipeline type uses the correct render pass.
+    RHIRenderPass* gbuffer_render_pass = m_FbResources->getGBufferRenderPass();           // GBufferPass
+    RHIRenderPass* deferred_lighting_render_pass = m_FbResources->getDeferredLightingRenderPass(); // DeferredLightingPass
+    RHIRenderPass* forward_lighting_render_pass = m_FbResources->getForwardLightingRenderPass(); // ForwardLightingPass
 
     auto create_mesh_pipeline = [&](RenderPipelineType pipeline_type,
                                     const char* frag_hlsl_path,
-                                    uint32_t subpass,
+                                    RHIRenderPass* render_pass,  // Changed: pass render_pass instead of subpass
                                     uint32_t color_attachment_count,
                                     bool transparent_pass,
                                     RHICullModeFlags cull_mode,
@@ -685,15 +712,14 @@ void MainCameraRp1Pass::SetupPipelines()
 
         RHIPipelineDepthStencilStateCreateInfo depth_stencil_create_info {};
         depth_stencil_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        // Sky mesh: enable depth test with LEQUAL so it only draws at far plane (depth == 1.0).
-        // Vertex shader pushes z = w (far plane). Sky pixels have depth 1.0, geometry pixels have depth < 1.0.
-        // LEQUAL ensures sky mesh only draws where no geometry exists.
+        // Sky: disable depth test (ALWAYS) so sky renders after all opaque objects.
+        // UE-style: sky is drawn at far plane, no need to test against depth buffer.
         bool is_sky_mesh = (pipeline_type == _render_pipeline_type_sky_mesh);
-        depth_stencil_create_info.depthTestEnable = RHI_TRUE;  // Always enable depth test
+        depth_stencil_create_info.depthTestEnable = RHI_TRUE;  // Enable depth test
         depth_stencil_create_info.depthWriteEnable = RHI_FALSE;  // Never write depth for sky
         if (is_sky_mesh)
         {
-            depth_stencil_create_info.depthCompareOp = RHI_COMPARE_OP_LESS_OR_EQUAL;  // LEQUAL for sky
+            depth_stencil_create_info.depthCompareOp = RHI_COMPARE_OP_ALWAYS;  // ALWAYS for sky (UE-style)
         }
         else
         {
@@ -739,45 +765,50 @@ void MainCameraRp1Pass::SetupPipelines()
         pipeline_info.pColorBlendState = &color_blend_state_create_info;
         pipeline_info.pDepthStencilState = &depth_stencil_create_info;
         pipeline_info.layout = m_RenderPipelines[pipeline_type].layout;
-        pipeline_info.renderPass = rp1_render_pass;
-        pipeline_info.subpass = subpass;
+        pipeline_info.renderPass = render_pass;  // Use parameter instead of rp1_render_pass
+        pipeline_info.subpass = 0;               // Simplified: each render pass has only 1 subpass
         pipeline_info.pDynamicState = &dynamic_state_create_info;
 
         if (m_Rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &pipeline_info, m_RenderPipelines[pipeline_type].pipeline) !=
             RHI_SUCCESS)
         {
             throw std::runtime_error(std::string("MainCameraRp1Pass: create mesh graphics pipeline (frag=") +
-                                     frag_hlsl_path + ", subpass=" + std::to_string(subpass) + ")");
+                                     frag_hlsl_path + ", subpass=0)");
         }
 
         m_Rhi->DestroyShaderModule(vert_shader_module);
         m_Rhi->DestroyShaderModule(frag_shader_module);
     };
 
+    // GBufferPass: writes GBufferA, GBufferB, GBufferC.
     create_mesh_pipeline(_render_pipeline_type_mesh_gbuffer,
                          "mesh_gbuffer.frag.hlsl",
-                         _main_camera_subpass_basepass,
+                         gbuffer_render_pass,  // Pass GBuffer render pass
                          3,
                          false,
                          RHI_CULL_MODE_BACK_BIT);
     create_mesh_pipeline(_render_pipeline_type_mesh_gbuffer_nocull,
                          "mesh_gbuffer.frag.hlsl",
-                         _main_camera_subpass_basepass,
+                         gbuffer_render_pass,  // Pass GBuffer render pass
                          3,
                          false,
                          RHI_CULL_MODE_NONE);
+
+    // ForwardLightingPass: reads/writes BackupOdd.
     create_mesh_pipeline(_render_pipeline_type_mesh_transparent,
                          "mesh_forward.frag.hlsl",
-                         _main_camera_subpass_forward_lighting,
+                         forward_lighting_render_pass,  // Pass ForwardLighting render pass
                          1,
                          true,
                          RHI_CULL_MODE_BACK_BIT);
+
     if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
     {
+        // DeferredLightingPass: reads G-Buffer, writes BackupOdd (includes sky).
         // Scene sky mesh: sky_mesh.vert pushes to far depth; LEQUAL depth test, no depth write.
         create_mesh_pipeline(_render_pipeline_type_sky_mesh,
                              "sky_mesh.frag.hlsl",
-                             _main_camera_subpass_deferred_lighting,
+                             deferred_lighting_render_pass,  // Pass DeferredLighting render pass
                              1,
                              true,
                              RHI_CULL_MODE_NONE,
@@ -875,8 +906,8 @@ void MainCameraRp1Pass::SetupPipelines()
         pipeline_info.pColorBlendState = &color_blend_state_create_info;
         pipeline_info.pDepthStencilState = &depth_stencil_create_info;
         pipeline_info.layout = m_RenderPipelines[_render_pipeline_type_deferred_lighting].layout;
-        pipeline_info.renderPass = rp1_render_pass;
-        pipeline_info.subpass = _main_camera_subpass_deferred_lighting;
+        pipeline_info.renderPass = deferred_lighting_render_pass;  // Use DeferredLightingPass
+        pipeline_info.subpass = 0;                                          // Simplified: only 1 subpass
         pipeline_info.pDynamicState = &dynamic_state_create_info;
 
         if (m_Rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE,
@@ -985,8 +1016,8 @@ void MainCameraRp1Pass::SetupPipelines()
         pipeline_info.pColorBlendState = &color_blend_state_create_info;
         pipeline_info.pDepthStencilState = &depth_stencil_create_info;
         pipeline_info.layout = m_RenderPipelines[_render_pipeline_type_megalights_deferred].layout;
-        pipeline_info.renderPass = rp1_render_pass;
-        pipeline_info.subpass = _main_camera_subpass_deferred_lighting;
+        pipeline_info.renderPass = deferred_lighting_render_pass;  // Use DeferredLightingPass
+        pipeline_info.subpass = 0;                                           // Simplified: only 1 subpass
         pipeline_info.pDynamicState = &dynamic_state_create_info;
 
         if (m_Rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE,
@@ -1092,8 +1123,8 @@ void MainCameraRp1Pass::SetupPipelines()
         spatial_pipeline_info.pColorBlendState = &spatial_color_blend_state_create_info;
         spatial_pipeline_info.pDepthStencilState = &spatial_depth_stencil_create_info;
         spatial_pipeline_info.layout = m_RenderPipelines[_render_pipeline_type_megalights_spatial].layout;
-        spatial_pipeline_info.renderPass = rp1_render_pass;
-        spatial_pipeline_info.subpass = _main_camera_subpass_deferred_lighting;
+        spatial_pipeline_info.renderPass = deferred_lighting_render_pass;  // Use DeferredLightingPass
+        spatial_pipeline_info.subpass = 0;                                           // Simplified: only 1 subpass
         spatial_pipeline_info.pDynamicState = &spatial_dynamic_state_create_info;
 
         if (m_Rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE,
@@ -1179,9 +1210,11 @@ void MainCameraRp1Pass::SetupPipelines()
 
         RHIPipelineDepthStencilStateCreateInfo depth_stencil_create_info {};
         depth_stencil_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-        depth_stencil_create_info.depthTestEnable = RHI_TRUE;
-        depth_stencil_create_info.depthWriteEnable = RHI_FALSE;
-        depth_stencil_create_info.depthCompareOp = RHI_COMPARE_OP_LESS_OR_EQUAL;
+        // Sky: disable depth test (ALWAYS) so sky renders after all opaque objects.
+        // UE-style: sky is drawn at far plane, no need to test against depth buffer.
+        depth_stencil_create_info.depthTestEnable = RHI_TRUE;  // Enable depth test
+        depth_stencil_create_info.depthWriteEnable = RHI_FALSE;  // Never write depth for sky
+        depth_stencil_create_info.depthCompareOp = RHI_COMPARE_OP_ALWAYS;  // ALWAYS for sky (UE-style)
 
         RHIDynamicState dynamic_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
         RHIPipelineDynamicStateCreateInfo dynamic_state_create_info {};
@@ -1201,8 +1234,8 @@ void MainCameraRp1Pass::SetupPipelines()
         pipeline_info.pColorBlendState = &color_blend_state_create_info;
         pipeline_info.pDepthStencilState = &depth_stencil_create_info;
         pipeline_info.layout = m_RenderPipelines[pipeline_type].layout;
-        pipeline_info.renderPass = rp1_render_pass;
-        pipeline_info.subpass = _main_camera_subpass_deferred_lighting;
+        pipeline_info.renderPass = deferred_lighting_render_pass;  // Use DeferredLightingPass
+        pipeline_info.subpass = 0;                                           // Simplified: only 1 subpass
         pipeline_info.pDynamicState = &dynamic_state_create_info;
 
         if (m_Rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &pipeline_info, m_RenderPipelines[pipeline_type].pipeline) !=
@@ -1251,19 +1284,36 @@ void MainCameraRp1Pass::SetupDescriptorSets()
 
     const IBLResource& ibl = m_GlobalRenderResource->m_IblResource;
 
+    // Guard: if neither real IBL textures nor fallback textures are available
+    // (e.g. D3D12 device removed / TDR under RenderDoc), skip descriptor setup.
+    RHIImageView* setup_brdf = ibl.m_BrdflutTextureImageView != nullptr
+        ? ibl.m_BrdflutTextureImageView : m_FallbackBrdfView;
+    RHIImageView* setup_irradiance = ibl.m_IrradianceTextureImageView != nullptr
+        ? ibl.m_IrradianceTextureImageView : m_FallbackCubeView;
+    RHIImageView* setup_specular = ibl.m_SpecularTextureImageView != nullptr
+        ? ibl.m_SpecularTextureImageView : m_FallbackCubeView;
+    if (setup_brdf == nullptr || setup_irradiance == nullptr ||
+        setup_specular == nullptr)
+    {
+        LOG_ERROR(ZRender,
+                  "MainCameraRp1Pass::SetupDescriptorSets: IBL textures unavailable "
+                  "(device removed?) — skipping mesh global descriptor set");
+        return;
+    }
+
     RHIDescriptorImageInfo brdf_texture_image_info {};
     brdf_texture_image_info.sampler = ibl.m_BrdflutTextureSampler != nullptr ? ibl.m_BrdflutTextureSampler : m_FallbackSampler;
-    brdf_texture_image_info.imageView = ibl.m_BrdflutTextureImageView != nullptr ? ibl.m_BrdflutTextureImageView : m_FallbackBrdfView;
+    brdf_texture_image_info.imageView = setup_brdf;
     brdf_texture_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     RHIDescriptorImageInfo irradiance_texture_image_info {};
     irradiance_texture_image_info.sampler = ibl.m_IrradianceTextureSampler != nullptr ? ibl.m_IrradianceTextureSampler : m_FallbackSampler;
-    irradiance_texture_image_info.imageView = ibl.m_IrradianceTextureImageView != nullptr ? ibl.m_IrradianceTextureImageView : m_FallbackCubeView;
+    irradiance_texture_image_info.imageView = setup_irradiance;
     irradiance_texture_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     RHIDescriptorImageInfo specular_texture_image_info {};
     specular_texture_image_info.sampler = ibl.m_SpecularTextureSampler != nullptr ? ibl.m_SpecularTextureSampler : m_FallbackSampler;
-    specular_texture_image_info.imageView = ibl.m_SpecularTextureImageView != nullptr ? ibl.m_SpecularTextureImageView : m_FallbackCubeView;
+    specular_texture_image_info.imageView = setup_specular;
     specular_texture_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     RHIDescriptorImageInfo point_light_shadow_texture_image_info {};
@@ -1365,6 +1415,35 @@ void MainCameraRp1Pass::SetupDescriptorSets()
     }
 
     RefreshDeferredLightingInputAttachments();
+
+    // Allocate a default _mesh_per_material descriptor set.
+    // DX12 requires ALL descriptor sets in the root signature to be bound;
+    // a null set causes the GPU to return 0 (black) for any access.
+    // Sky mesh doesn't use per-material params, but the set must be valid.
+    if (m_DescriptorInfos[_mesh_per_material].layout != nullptr)
+    {
+        RHIDescriptorSetAllocateInfo mesh_per_material_alloc_info {};
+        mesh_per_material_alloc_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        mesh_per_material_alloc_info.descriptorPool = m_Rhi->GetDescriptorPoor();
+        mesh_per_material_alloc_info.descriptorSetCount = 1;
+        mesh_per_material_alloc_info.pSetLayouts = &m_DescriptorInfos[_mesh_per_material].layout;
+
+        if (m_Rhi->AllocateDescriptorSets(&mesh_per_material_alloc_info,
+                                          m_DescriptorInfos[_mesh_per_material].descriptor_set) != RHI_SUCCESS)
+        {
+            LOG_WARNING(ZRender, "MainCameraRp1Pass: failed to allocate default mesh_per_material descriptor set");
+        }
+        else
+        {
+            LOG_INFO(ZRender, "MainCameraRp1Pass: allocated default mesh_per_material descriptor set (handle={:016X})",
+                     (uint64_t)(uintptr_t)m_DescriptorInfos[_mesh_per_material].descriptor_set);
+            // NOTE: We do NOT write descriptors here. The sky mesh shader does not
+            // access set 2 (_mesh_per_material). The only requirement is that the
+            // descriptor set handle is non-null so DX12 doesn't bind garbage.
+            // When real mesh nodes are drawn later, RefreshMeshPerMaterialDescriptor()
+            // will overwrite this set with real descriptors.
+        }
+    }
 }
 
 void MainCameraRp1Pass::RefreshDeferredLightingInputAttachments()
@@ -1440,21 +1519,35 @@ void MainCameraRp1Pass::RefreshMeshGlobalIblDescriptors()
 
     const IBLResource& ibl = m_GlobalRenderResource->m_IblResource;
 
+    // Guard: if neither real IBL textures nor fallback textures are available
+    // (e.g. D3D12 device removed / TDR under RenderDoc), skip descriptor updates
+    // to avoid passing null imageViews into UpdateDescriptorSets.
+    RHIImageView* effective_brdf = ibl.m_BrdflutTextureImageView != nullptr
+        ? ibl.m_BrdflutTextureImageView : m_FallbackBrdfView;
+    RHIImageView* effective_irradiance = ibl.m_IrradianceTextureImageView != nullptr
+        ? ibl.m_IrradianceTextureImageView : m_FallbackCubeView;
+    RHIImageView* effective_specular = ibl.m_SpecularTextureImageView != nullptr
+        ? ibl.m_SpecularTextureImageView : m_FallbackCubeView;
+    if (effective_brdf == nullptr || effective_irradiance == nullptr ||
+        effective_specular == nullptr)
+    {
+        return;
+    }
+
     RHIDescriptorImageInfo brdf_texture_image_info {};
     brdf_texture_image_info.sampler = ibl.m_BrdflutTextureSampler != nullptr ? ibl.m_BrdflutTextureSampler : m_FallbackSampler;
-    brdf_texture_image_info.imageView = ibl.m_BrdflutTextureImageView != nullptr ? ibl.m_BrdflutTextureImageView : m_FallbackBrdfView;
+    brdf_texture_image_info.imageView = effective_brdf;
     brdf_texture_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     RHIDescriptorImageInfo irradiance_texture_image_info {};
     irradiance_texture_image_info.sampler = ibl.m_IrradianceTextureSampler != nullptr ? ibl.m_IrradianceTextureSampler : m_FallbackSampler;
-    irradiance_texture_image_info.imageView = ibl.m_IrradianceTextureImageView != nullptr ? ibl.m_IrradianceTextureImageView : m_FallbackCubeView;
+    irradiance_texture_image_info.imageView = effective_irradiance;
     irradiance_texture_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     RHIDescriptorImageInfo specular_texture_image_info {};
     specular_texture_image_info.sampler = ibl.m_SpecularTextureSampler != nullptr ? ibl.m_SpecularTextureSampler : m_FallbackSampler;
     const bool use_fallback_specular = ibl.m_SpecularTextureImageView == nullptr;
-    specular_texture_image_info.imageView =
-        use_fallback_specular ? m_FallbackCubeView : ibl.m_SpecularTextureImageView;
+    specular_texture_image_info.imageView = effective_specular;
     specular_texture_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     if (use_fallback_specular)
@@ -1629,8 +1722,8 @@ RHIPipeline* MainCameraRp1Pass::GetOrCreateMeshGBufferPipeline(const GpuPBRMater
                                                                frag_shader_module,
                                                                pipeline_key,
                                                                _render_pipeline_type_mesh_gbuffer,
-                                                               m_FbResources->getRP1RenderPass(),
-                                                               _main_camera_subpass_basepass,
+                                                               m_FbResources->getGBufferRenderPass(),  // Pass GBufferPass render pass
+                                                               0,                                            // Simplified: only 1 subpass
                                                                3,
                                                                false);
     m_Rhi->DestroyShaderModule(vert_shader_module);
@@ -1713,8 +1806,8 @@ RHIPipeline* MainCameraRp1Pass::GetOrCreateMeshTransparentPipeline(const GpuPBRM
                                                                frag_shader_module,
                                                                pipeline_key,
                                                                _render_pipeline_type_mesh_transparent,
-                                                               m_FbResources->getRP1RenderPass(),
-                                                               _main_camera_subpass_forward_lighting,
+                                                               m_FbResources->getForwardLightingRenderPass(),  // Pass ForwardLightingPass render pass
+                                                               0,                                            // Simplified: only 1 subpass
                                                                1,
                                                                true);
     m_Rhi->DestroyShaderModule(vert_shader_module);
@@ -1724,34 +1817,22 @@ RHIPipeline* MainCameraRp1Pass::GetOrCreateMeshTransparentPipeline(const GpuPBRM
     return material_pipeline != nullptr ? material_pipeline : default_pipeline;
 }
 
-void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
+void MainCameraRp1Pass::DrawGBufferPass(const std::array<bool, 2>& skybox_visible)
 {
-    LOG_INFO(ZRender, "DrawRP1: ENTRY (skybox_visible[0]={}, skybox_visible[1]={})",
-             skybox_visible[0], skybox_visible[1]);
-    
-    // G-buffer / IBL views can be recreated on resize; refresh every frame so deferred
-    // lighting and sky pixels never sample stale SRVs (white or blank scene).
-    RefreshDeferredLightingInputAttachments();
-    RefreshMeshGlobalIblDescriptors();
-
-    constexpr float k_scene_clear_r = 0.29f;
-    constexpr float k_scene_clear_g = 0.345f;
-    constexpr float k_scene_clear_b = 0.435f;
-
+    // G-buffer pass: writes GBufferA, GBufferB, GBufferC, Depth.
     RHIRenderPassBeginInfo renderpass_begin_info {};
     renderpass_begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    renderpass_begin_info.renderPass = m_FbResources->getRP1RenderPass();
-    renderpass_begin_info.framebuffer = m_FbResources->getRP1Framebuffer();
+    renderpass_begin_info.renderPass = m_FbResources->getGBufferRenderPass();
+    renderpass_begin_info.framebuffer = m_FbResources->getGBufferFramebuffer();
     renderpass_begin_info.renderArea.offset = {0, 0};
     renderpass_begin_info.renderArea.extent = m_Rhi->GetSwapchainInfo().extent;
 
-    RHIClearValue clear_values[5];
-    clear_values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    clear_values[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    clear_values[2].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    clear_values[3].color = {{k_scene_clear_r, k_scene_clear_g, k_scene_clear_b, 1.0f}};
-    clear_values[4].depthStencil = {1.0f, 0};
-    renderpass_begin_info.clearValueCount = 5;
+    RHIClearValue clear_values[4];
+    clear_values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferA
+    clear_values[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferB
+    clear_values[2].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferC
+    clear_values[3].depthStencil = {1.0f, 0};                 // Depth
+    renderpass_begin_info.clearValueCount = 4;
     renderpass_begin_info.pClearValues = clear_values;
 
     m_Rhi->CmdBeginRenderPassPFN(m_Rhi->GetCurrentCommandBuffer(), &renderpass_begin_info, RHI_SUBPASS_CONTENTS_INLINE);
@@ -1773,12 +1854,44 @@ void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
     }
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
-    m_Rhi->CmdNextSubpassPFN(m_Rhi->GetCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
+    m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
+}
 
-    // Deferred Lighting must run BEFORE Sky Pass:
-    // - Deferred Lighting writes lighting result to pixels covered by geometry (depth < 1.0)
-    // - Sky Pass writes sky color to pixels NOT covered by geometry (depth == 1.0)
-    // If Sky Pass runs first, Deferred Lighting may overwrite sky pixels.
+void MainCameraRp1Pass::DrawDeferredLightingPass(const std::array<bool, 2>& skybox_visible)
+{
+    // Deferred Lighting pass: reads G-Buffer + Depth (as input attachments), writes BackupOdd.
+    // Includes Sky Pass (draws sky mesh).
+
+    // Refresh G-Buffer input attachments (they were written by GBufferPass).
+    RefreshDeferredLightingInputAttachments();
+    RefreshMeshGlobalIblDescriptors();
+
+    RHIRenderPassBeginInfo renderpass_begin_info {};
+    renderpass_begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderpass_begin_info.renderPass = m_FbResources->getDeferredLightingRenderPass();
+    renderpass_begin_info.framebuffer = m_FbResources->getDeferredLightingFramebuffer();
+    renderpass_begin_info.renderArea.offset = {0, 0};
+    renderpass_begin_info.renderArea.extent = m_Rhi->GetSwapchainInfo().extent;
+
+    constexpr float k_scene_clear_r = 0.29f;
+    constexpr float k_scene_clear_g = 0.345f;
+    constexpr float k_scene_clear_b = 0.435f;
+
+    RHIClearValue clear_values[5];
+    clear_values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferA (load)
+    clear_values[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferB (load)
+    clear_values[2].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferC (load)
+    clear_values[3].depthStencil = {1.0f, 0};                 // Depth (load)
+    clear_values[4].color = {{k_scene_clear_r, k_scene_clear_g, k_scene_clear_b, 1.0f}};  // BackupOdd (clear)
+    renderpass_begin_info.clearValueCount = 5;
+    renderpass_begin_info.pClearValues = clear_values;
+
+    m_Rhi->CmdBeginRenderPassPFN(m_Rhi->GetCurrentCommandBuffer(), &renderpass_begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+
+    constexpr ViewportType k_viewports[] = {ViewportType::game, ViewportType::scene};
+    float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+
+    // Deferred Lighting (must run before Sky Pass).
     m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Deferred Lighting", color);
     for (ViewportType viewport_type : k_viewports)
     {
@@ -1793,6 +1906,7 @@ void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
     }
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
+    // Sky Pass (draws sky mesh).
     m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Sky Pass", color);
     for (ViewportType viewport_type : k_viewports)
     {
@@ -1807,7 +1921,29 @@ void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
     }
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
-    m_Rhi->CmdNextSubpassPFN(m_Rhi->GetCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
+    m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
+}
+
+void MainCameraRp1Pass::DrawForwardLightingPass(const std::array<bool, 2>& skybox_visible)
+{
+    // Forward Lighting pass: reads/writes BackupOdd (transparent objects), reads Depth.
+    RHIRenderPassBeginInfo renderpass_begin_info {};
+    renderpass_begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderpass_begin_info.renderPass = m_FbResources->getForwardLightingRenderPass();
+    renderpass_begin_info.framebuffer = m_FbResources->getForwardLightingFramebuffer();
+    renderpass_begin_info.renderArea.offset = {0, 0};
+    renderpass_begin_info.renderArea.extent = m_Rhi->GetSwapchainInfo().extent;
+
+    RHIClearValue clear_values[2];
+    clear_values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // BackupOdd (load)
+    clear_values[1].depthStencil = {1.0f, 0};                 // Depth (load)
+    renderpass_begin_info.clearValueCount = 2;
+    renderpass_begin_info.pClearValues = clear_values;
+
+    m_Rhi->CmdBeginRenderPassPFN(m_Rhi->GetCurrentCommandBuffer(), &renderpass_begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+
+    constexpr ViewportType k_viewports[] = {ViewportType::game, ViewportType::scene};
+    float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 
     m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Forward Lighting", color);
     for (ViewportType viewport_type : k_viewports)
@@ -1828,12 +1964,9 @@ void MainCameraRp1Pass::DrawRP1(const std::array<bool, 2>& skybox_visible)
 
 void MainCameraRp1Pass::DrawSkyMeshPass(ViewportType viewport_type, bool skybox_visible)
 {
-    LOG_INFO(ZRender, "DrawSkyMeshPass: ENTRY (viewport={}, skybox_visible={}, DX12={})",
-             static_cast<int>(viewport_type), skybox_visible, m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12);
     
     if (!skybox_visible || m_Rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
     {
-        LOG_INFO(ZRender, "DrawSkyMeshPass: skipped (skybox_visible={}, DX12={})", skybox_visible, m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12);
         return;
     }
 
@@ -1841,9 +1974,6 @@ void MainCameraRp1Pass::DrawSkyMeshPass(ViewportType viewport_type, bool skybox_
     static const std::vector<RenderMeshNode> k_empty_sky_nodes;
     const std::vector<RenderMeshNode>& sky_nodes =
         render_scene ? render_scene->GetMainCameraSkyMeshNodes(viewport_type) : k_empty_sky_nodes;
-
-    LOG_INFO(ZRender, "DrawSkyMeshPass: viewport={}, sky_nodes.size()={}, will_use_procedural_sky={}",
-             static_cast<int>(viewport_type), sky_nodes.size(), sky_nodes.empty());
 
     // Refresh from RenderResource immediately before ring-buffer upload (DrawRP1 also calls this).
     SetPerViewportData(viewport_type);
@@ -1902,8 +2032,6 @@ void MainCameraRp1Pass::DrawSkyMeshPass(ViewportType viewport_type, bool skybox_
         RHIPipeline* sky_mesh_pipeline = m_RenderPipelines[_render_pipeline_type_sky_mesh].pipeline;
         RHIPipelineLayout* pipeline_layout = m_RenderPipelines[_render_pipeline_type_sky_mesh].layout;
         
-        LOG_INFO(ZRender, "DrawSkyMeshPass: sky_mesh_pipeline={}, pipeline_layout={}", (void*)sky_mesh_pipeline, (void*)pipeline_layout);
-        
         if (sky_mesh_pipeline == nullptr)
         {
             LOG_ERROR(ZRender, "DrawSkyMeshPass: sky_mesh_pipeline is null!");
@@ -1926,11 +2054,26 @@ void MainCameraRp1Pass::DrawSkyMeshPass(ViewportType viewport_type, bool skybox_
             const MeshDrawData mesh_draw = getMeshDrawData(&mesh);
             if (!mesh_draw)
             {
-                LOG_ERROR(ZRender, "DrawSkyMeshPass: mesh_draw invalid for mesh=%p", (void*)&mesh);
+                LOG_ERROR(ZRender, "DrawSkyMeshPass: mesh_draw invalid for mesh={:016X}", (uint64_t)(uintptr_t)&mesh);
                 continue;
             }
 
-            LOG_INFO(ZRender, "DrawSkyMeshPass: valid mesh_draw, about to bind descriptors and draw");
+            // Must bind binding 0 (_mesh_global) BEFORE binding binding 1.
+            // In DX12, all descriptor tables referenced by the root signature must be bound,
+            // otherwise GPU resource access faults cause the draw call to be skipped.
+            // Binding 0 provides access to: per-frame UBO (b0), IBL cubemaps (t3-t7), etc.
+            uint32_t perframe_dynamic_offset = AlignPerFrameRingOffset(
+                m_Rhi,
+                m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+                m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+            m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                            RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                            pipeline_layout,
+                                            0,
+                                            1,
+                                            &m_DescriptorInfos[_mesh_global].descriptor_set,
+                                            1,
+                                            &perframe_dynamic_offset);
 
             m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
                                             RHI_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1938,6 +2081,20 @@ void MainCameraRp1Pass::DrawSkyMeshPass(ViewportType viewport_type, bool skybox_
                                             1,
                                             1,
                                             &mesh.mesh_vertex_blending_descriptor_set,
+                                            0,
+                                            nullptr);
+
+            // DX12: must bind ALL descriptor sets in the root signature.
+            // The pipeline layout has 3 sets (0/1/2). Set 2 (_mesh_per_material)
+            // must be bound even if the sky shader doesn't use per-material data,
+            // otherwise the DX12 root signature is incomplete and the draw call
+            // is silently skipped.
+            m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                            RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                            pipeline_layout,
+                                            2,
+                                            1,
+                                            &m_DescriptorInfos[_mesh_per_material].descriptor_set,
                                             0,
                                             nullptr);
 
@@ -2043,8 +2200,6 @@ void MainCameraRp1Pass::DrawSkyMeshPass(ViewportType viewport_type, bool skybox_
                                                 3,
                                                 dynamic_offsets);
 
-                LOG_INFO(ZRender, "DrawSkyMeshPass: calling CmdDrawIndexed (index_count={}, instance_count={}, position_buffer={})",
-                         mesh_draw.index_count, current_instance_count, (void*)mesh_draw.position_buffer);
                 if (mesh_draw.index_count == 0)
                 {
                     LOG_ERROR(ZRender, "DrawSkyMeshPass: index_count is 0!");
@@ -2062,7 +2217,15 @@ void MainCameraRp1Pass::DrawSkyMeshPass(ViewportType viewport_type, bool skybox_
 
     RHIPipeline* sky_procedural_pipeline = m_RenderPipelines[_render_pipeline_type_sky_procedural].pipeline;
     RHIPipelineLayout* procedural_layout = m_RenderPipelines[_render_pipeline_type_sky_procedural].layout;
+    
+    if (sky_procedural_pipeline == nullptr)
+    {
+        LOG_ERROR(ZRender, "DrawSkyMeshPass: sky_procedural_pipeline is null!");
+        return;
+    }
+    
     m_Rhi->CmdBindPipelinePFN(m_Rhi->GetCurrentCommandBuffer(), RHI_PIPELINE_BIND_POINT_GRAPHICS, sky_procedural_pipeline);
+    
     m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
                                     RHI_PIPELINE_BIND_POINT_GRAPHICS,
                                     procedural_layout,
@@ -2071,6 +2234,25 @@ void MainCameraRp1Pass::DrawSkyMeshPass(ViewportType viewport_type, bool skybox_
                                     &m_DescriptorInfos[_mesh_global].descriptor_set,
                                     1,
                                     &perframe_dynamic_offset);
+
+    // DX12: bind ALL descriptor sets in the root signature.
+    m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                    RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                    procedural_layout,
+                                    1,
+                                    1,
+                                    &m_DescriptorInfos[_per_mesh].descriptor_set,
+                                    0,
+                                    nullptr);
+    m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                    RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                    procedural_layout,
+                                    2,
+                                    1,
+                                    &m_DescriptorInfos[_mesh_per_material].descriptor_set,
+                                    0,
+                                    nullptr);
+
     m_Rhi->CmdDraw(m_Rhi->GetCurrentCommandBuffer(), 36, 1, 0, 0);
 }
 

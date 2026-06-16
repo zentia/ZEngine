@@ -58,6 +58,11 @@ float4 main(PsInput input) : SV_Target0
 
     const uint shading_model_id = DecodeShadingModelId(gbuffer_b.a);
 
+    // UNLIT pixels (sky area): discard so deferred lighting does not overwrite
+    // the sky color that was written by the earlier Sky Pass draw call
+    // (or the render pass clear color if no sky mesh is present).
+    // In UE, the sky is drawn last in the deferred pass; discarding here
+    // preserves whatever was written before this pixel.
     if (shading_model_id == SHADINGMODELID_UNLIT)
     {
         discard;
@@ -67,7 +72,7 @@ float4 main(PsInput input) : SV_Target0
     float3 albedo = gbuffer_c.rgb;
     float metallic = gbuffer_b.r;
     float roughness = saturate(gbuffer_b.b);
-
+    
     float3 L = normalize(-scene_directional_light.direction);
     float NdotL = saturate(dot(N, L));
     float3 diffuse = albedo * scene_directional_light.color * NdotL;
