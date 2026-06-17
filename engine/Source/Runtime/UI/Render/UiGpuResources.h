@@ -53,6 +53,21 @@ public:
     // Mirrors UE's FSlateRHIRenderer::Invalidated() behaviour for font resources.
     void InvalidateAllNativeFontTextures();
 
+    // UE-parity: release ALL UI GPU resources (font atlases, white texture,
+    // Texture2D cache, dynamic textures, external image views) so they are
+    // re-created on the next draw call.  This is the ZEngine equivalent of
+    // UE's FSlateRHIResourceManager::ReleaseResources().
+    //
+    // Implementation note: we intentionally do NOT free the RHI objects
+    // (RHIImage / RHIImageView / RHIDescriptorSet) immediately — they may
+    // still be referenced by in-flight GPU command buffers.  DX12's COM
+    // reference counting keeps them alive until the GPU finishes; thereafter
+    // they are reclaimed automatically.  The CPU-side ZFontAtlas pixel
+    // buffers are never freed (they live in m_NativeFontsByPath), so the
+    // next GetNativeFontTextureId() / EnsureTexture2D() call will upload
+    // fresh GPU resources from the still-valid bitmap data.
+    void InvalidateAllGpuResources();
+
     void* EnsureTexture2D(Texture2D* texture);
 
     // Dynamic CPU-bitmap texture for editor previews (software-rasterized mesh /

@@ -342,17 +342,70 @@ void UiGpuResources::InvalidateAllNativeFontTextures()
     LOG_INFO(ZRender, "UiGpuResources: invalidating {} native font texture(s) for swapchain recovery",
             m_NativeFontTextures.size());
 
-    // Drop all GPU texture entries. The old RHI resources (image/view/descriptor
-    // set/SRV) are intentionally leaked: they may still be referenced by in-flight
-    // GPU command buffers from the frame that detected the swapchain failure.
-    // DX12's reference-counted ComPtr keeps them alive until the GPU finishes;
-    // then they are reclaimed automatically.
-    //
-    // The next BatchedUIRenderer::drawText() call will hit GetNativeFontTextureId(),
-    // find no entry, and re-upload fresh GPU resources from the CPU atlas bitmap
-    // (m_Pixels in ZFontAtlas), which was never corrupted — only the GPU-side
-    // SRV descriptor / heap slot went stale during DXGI surface invalidation.
     m_NativeFontTextures.clear();
+}
+
+void UiGpuResources::InvalidateAllGpuResources()
+{
+    if (!m_Ready)
+    {
+        return;
+    }
+
+    size_t total = m_NativeFontTextures.size()
+                  + m_Texture2DCache.size()
+                  + m_DynamicTextures.size()
+                  + m_ExternalTextures.size()
+                  + (m_WhiteTexture ? 1 : 0);
+
+    LOG_INFO(ZRender,
+            "UiGpuResources: InvalidateAllGpuResources — releasing {} GPU texture "
+            "cache entrie(s) (fonts={}, texture2d={}, dynamic={}, external={}, white={})",
+            total,
+            m_NativeFontTextures.size(),
+            m_Texture2DCache.size(),
+            m_DynamicTextures.size(),
+            m_ExternalTextures.size(),
+            (m_WhiteTexture ? 1 : 0));
+
+    // UE parity: FSlateRHIResourceManager::ReleaseResources() releases ALL
+    // UI GPU resources (font atlases, brush textures, dynamic textures, etc.)
+    // and lets them be lazily re-created on the next draw call.
+    //
+    // We clear every cache map / unique_ptr.  RHI objects (RHIImage,
+    // RHIImageView, RHIDescriptorSet) are intentionally NOT freed here:
+    //   - they may still be referenced by in-flight GPU command buffers
+    //   - DX12 ComPtr / Vulkan vkDestroy* defers the actual free until
+    //     all queue submissions that reference the handle have completed
+    //   - the CPU-side pixel data (ZFontAtlas::m_Pixels, Texture2D::m_Pixels)
+    //     is never touched, so the next EnsureXXX() call uploads fresh GPU
+    //     resources from pristine source data.
+    //
+    // This is the ZEngine equivalent of UE's pattern:
+    //   ReleaseResources()  →  clears RHI handles
+    //   UpdateTextureAtlases()  →  called next frame, re-uploads from CPU data
+
+    m_NativeFontTextures.clear();
+    m_Texture2DCache.clear();
+    m_DynamicTextures.clear();
+    m_ExternalTextures.clear();
+    m_WhiteTexture.reset();
+
+    // Re-create the white texture immediately (it is needed as a fallback
+    // for every UiDrawCommand whose texture_id is null or stale).
+    // Use the same CreateFromPixels path so the SRV lands in the
+    // (now-recovered) bindless heap correctly.
+    const uint8_t white_rgba[4] = {255, 255, 255, 255};
+    void* white_handle = CreateFromPixels(white_rgba, 1, 1, RHI_FORMAT_R8G8B8A8_UNORM);
+    if (white_handle == nullptr)
+    {
+        LOG_ERROR(ZRender, "UiGpuResources: failed to re-create white texture after invalidate");
+    }
+    else
+    {
+        m_WhiteTexture.reset(static_cast<GpuTexture*>(white_handle));
+        LOG_INFO(ZRender, "UiGpuResources: white texture re-created successfully");
+    }
 }
 
 void* UiGpuResources::GetWhiteTextureId() const

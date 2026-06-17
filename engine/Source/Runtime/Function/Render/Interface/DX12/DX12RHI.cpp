@@ -5615,14 +5615,16 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
             passUpdateAfterRecreateSwapchain();
         }
 
-        // UE parity (FSlateRHIRenderer::Invalidated): DXGI surface invalidation
-        // (Alt-Tab / minimize / driver TDR) can stale font-atlas SRV descriptors
-        // even though the bindless heap itself survives. Force-re-upload all
-        // native font textures from their CPU bitmaps so the next UI draw call
-        // gets fresh GPU resources with valid SRV handles.
+        // UE parity: FSlateRHIRenderer::Invalidated() +
+        // FSlateRHIResourceManager::ReleaseResources().
+        // DXGI surface invalidation (Alt-Tab / minimize / driver TDR)
+        // can stale ANY UI GPU resource (font atlases, white texture,
+        // Texture2D cache entries, dynamic textures, external image views).
+        // Invalidate ALL of them so they are lazily re-created from
+        // still-valid CPU pixel data on the next UI draw call.
         if (auto* gpu_res = GET_SYSTEM(UiGpuResources))
         {
-            gpu_res->InvalidateAllNativeFontTextures();
+            gpu_res->InvalidateAllGpuResources();
         }
 
         // Do NOT early-return: render into the fresh backbuffer this same frame
@@ -5648,6 +5650,15 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
             {
                 passUpdateAfterRecreateSwapchain();
             }
+
+            // UE parity: any swapchain recreate (including resize) can stale
+            // UI GPU resources. Invalidate all of them so they are lazily
+            // re-created from CPU pixel data on the next UI draw call.
+            if (auto* gpu_res = GET_SYSTEM(UiGpuResources))
+            {
+                gpu_res->InvalidateAllGpuResources();
+            }
+
             // NOTE: do NOT early-return / skip the frame here. Unlike Vulkan, the DX12 editor
             // path does not have the ImGui game/render handshake wired through
             // notifySkippedFrameRender(), so skipping leaves the swapchain un-presented every
