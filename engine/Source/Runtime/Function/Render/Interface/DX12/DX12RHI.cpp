@@ -5599,6 +5599,32 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
     // re-queued by BeginFloatingSurfaceDraw if the editor records them again.
     m_PendingFloatingPresents.clear();
 
+    // UE parity: when the window is minimized (or on a virtual desktop that is not
+    // visible), GetFramebufferSize() returns (0, 0). DXGI's ResizeBuffers(0, 0, ...)
+    // would fail, and even clamped-to-(1,1) creates a broken 1×1 swapchain whose
+    // RTV/viewport/scissor state leaks into the next real-sized recreation.
+    //
+    // The correct behaviour (matching UE's FD3D12Viewport::PresentChecked which
+    // returns false without presenting when !bIsValid) is to skip the ENTIRE frame:
+    //   - no RecreateSwapchain with dummy dimensions
+    //   - no command buffer recording / submission / Present
+    //   - no fence or frame-index advancement
+    //   - just return "skip" so the editor's main loop calls notifySkippedFrameRender()
+    //     and avoids leaving the swapchain un-Presented (which produces gray).
+    //
+    // Recovery path: NotifyWindowFocusGained() sets m_SwapchainNeedsRecreate=true.
+    // On the first visible frame, GetFramebufferSize() returns real dimensions,
+    // this zero-size guard passes, and the normal recreate+render path runs.
+    if (m_Device && m_Swapchain)
+    {
+        const std::array<int, 2> fb = GET_SYSTEM(WindowSystem)->GetFramebufferSize();
+        if (fb[0] <= 0 || fb[1] <= 0)
+        {
+            // Window is minimized or otherwise zero-area. Skip rendering entirely.
+            return true;
+        }
+    }
+
     // If the previous frame's Present detected device loss / occlusion /
     // any failure that left the swapchain in a bad state, force a full
     // recreate NOW so this frame renders into a fresh backbuffer.
@@ -5745,15 +5771,28 @@ void DX12RHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwapc
 
     HRESULT present_result = m_Swapchain->Present(1, 0);
 
-    // DXGI_STATUS_OCCLUDED: FLIP-model swapchain when the window is minimized,
-    // occluded, or on a different desktop. This is a SUCCESS code (SUCCEEDED
-    // returns true) meaning "nothing was presented but the swapchain is still
-    // valid". Skip fence advance / frame index rotation this frame — the next
-    // present (when visible again) will pick up normally.
+    // UE parity (FD3D12Viewport::PresentChecked):
+    // DXGI_STATUS_OCCLUDED is a SUCCESS code (SUCCEEDED returns true).
+    // Unlike our old early-return path (which left fences / frame indices stale
+    // and caused gray-screen recovery after Alt-Tab or minimize/maximize),
+    // we now treat it like UE does: advance ALL frame state normally so the
+    // next PrepareBeforePass has a consistent starting point. The only thing we
+    // skip is floating-surface Presents (they would also be occluded).
+    //
+    // Historical note: the old early-return was the root cause of the gray-
+    // screen bug. After OCCLUDED, m_FenceValues[m_CurrentFrameIndex] was never
+    // advanced, so WaitForFences() on a future frame could block forever;
+    // m_CurrentBackBufferIndex / m_CurrentFrameIndex were stale, causing
+    // ResetCommandPool() to reset an allocator still in-use by the GPU; and
+    // m_SwapchainSurfaceState drifted out of sync with the actual resource
+    // state, causing missed or redundant barriers.
     if (present_result == DXGI_STATUS_OCCLUDED)
     {
         m_PendingFloatingPresents.clear();
-        return;
+        // Fall through to normal fence advance + frame index rotation below,
+        // exactly as if Present had succeeded. This matches UE's behaviour in
+        // FD3D12Viewport::PresentChecked which checks SUCCEEDED(Result) and
+        // continues unconditionally for OCCLUDED.
     }
 
     if (IsActualDx12DeviceRemoval(present_result))
