@@ -5622,7 +5622,7 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
         // Texture2D cache entries, dynamic textures, external image views).
         // Invalidate ALL of them so they are lazily re-created from
         // still-valid CPU pixel data on the next UI draw call.
-        if (auto* gpu_res = GET_SYSTEM(UiGpuResources))
+        if (auto* gpu_res = UiGpuResources::Get())
         {
             gpu_res->InvalidateAllGpuResources();
         }
@@ -5654,7 +5654,7 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
             // UE parity: any swapchain recreate (including resize) can stale
             // UI GPU resources. Invalidate all of them so they are lazily
             // re-created from CPU pixel data on the next UI draw call.
-            if (auto* gpu_res = GET_SYSTEM(UiGpuResources))
+            if (auto* gpu_res = UiGpuResources::Get())
             {
                 gpu_res->InvalidateAllGpuResources();
             }
