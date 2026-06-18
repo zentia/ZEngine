@@ -31,8 +31,6 @@
 #include <vector>
 
 #ifdef _WIN32
-    #define GLFW_EXPOSE_NATIVE_WIN32
-    #include <GLFW/glfw3native.h>
     #include <commdlg.h>
     #include <objbase.h>
     #include <shlobj.h>
@@ -559,8 +557,8 @@ namespace ContentBrowserAssetActions
         }
 
 #ifdef _WIN32
-        GLFWwindow* glfw_window = GET_SYSTEM(WindowSystem)->GetWindow();
-        if (glfw_window == nullptr)
+        void* native_window = GET_SYSTEM(WindowSystem)->GetNativeWindowHandle();
+        if (native_window == nullptr)
         {
             return;
         }
@@ -620,7 +618,12 @@ namespace ContentBrowserAssetActions
                 }
             }
 
-            HWND hwnd = glfwGetWin32Window(glfw_window);
+            HWND hwnd = nullptr;
+            auto* window_system = GET_SYSTEM(WindowSystem);
+            if (window_system != nullptr && window_system->GetMainWindow() != nullptr)
+            {
+                hwnd = static_cast<HWND>(window_system->GetMainWindow()->GetNativeHandle());
+            }
             hr = pFileOpen->Show(hwnd);
 
             if (SUCCEEDED(hr))
@@ -1021,13 +1024,12 @@ namespace ContentBrowserAssetActions
 
     void OnMenuItemCopyPath(EditorFileNode* node)
     {
-        GLFWwindow* glfw_window = GET_SYSTEM(WindowSystem)->GetWindow();
-        if (glfw_window == nullptr)
-        {
-            return;
-        }
+        auto* ws = GET_SYSTEM(WindowSystem);
+        if (ws == nullptr) return;
+        auto* app = ws->GetApplication();
+        if (app == nullptr) return;
         const char* text = node->m_FilePath.empty() ? node->m_FileName.c_str() : node->m_FilePath.c_str();
-        glfwSetClipboardString(glfw_window, text);
+        app->SetClipboardText(text);
     }
 
     void OnMenuItemReimport(ContentBrowserContext& ctx, EditorFileNode* node)

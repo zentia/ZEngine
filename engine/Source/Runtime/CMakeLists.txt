@@ -446,12 +446,6 @@ function(configure_runtime_library target)
     # Link dependencies
     target_link_libraries(${target} PUBLIC BqLog)
     target_link_libraries(${target} PRIVATE tinyobjloader stb tweeny)
-    if(ANDROID OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
-        target_compile_definitions(${target} PUBLIC GLFW_INCLUDE_NONE GLFW_INCLUDE_VULKAN)
-    elseif(APPLE)
-        target_compile_definitions(${target} PUBLIC GLFW_INCLUDE_NONE)
-    endif()
-    target_link_libraries(${target} PUBLIC glfw)
     # ZRuntime is ImGui-free: the 2D UI renders through native ZSlate (BatchedUIRenderer +
     # ZFontAtlas, which vendors its own stb_truetype). ImGui now links only into the
     # standalone dev tools (ZLauncher, ZProfiler) via their own target_link_libraries.
@@ -900,7 +894,7 @@ set(_${TARGET_NAME}_INSTALL_TARGETS)
 list(APPEND _${TARGET_NAME}_INSTALL_TARGETS ${SHARED_TARGET_NAME} ${TARGET_NAME})
 
 # Conditionally include auxiliary/runtime dependency targets only if they exist
-foreach(_t IN ITEMS BqLog tinyobjloader stb tweeny glfw render_doc Jolt mimalloc-static EASTL lmdb)
+foreach(_t IN ITEMS BqLog tinyobjloader stb tweeny render_doc Jolt mimalloc-static EASTL lmdb)
     if(TARGET ${_t})
         list(APPEND _${TARGET_NAME}_INSTALL_TARGETS ${_t})
     endif()

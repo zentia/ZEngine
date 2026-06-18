@@ -26,10 +26,9 @@
 #include "Runtime/Slate/Core/SlateKeys.h"
 #include "Runtime/UI/Core/UITypes.h"  // UIRect
 
-#include <vector>
+#include "Runtime/Function/Render/Platform/Generic/GenericWindow.h"
 
-struct GLFWcursor;
-struct GLFWwindow;
+#include <vector>
 
 namespace ZSlate
 {
@@ -62,7 +61,7 @@ enum class ESurfaceLayer
 // is owned by the manager and lives for the duration of the panel's paint.
 struct FloatingInputState
 {
-    ::GLFWwindow* window {nullptr};  // for SetMouseCursor routing
+    GenericWindow* window {nullptr};  // for SetMouseCursor routing
     Vector2 pointer {0.0f, 0.0f};
     Vector2 pointer_delta {0.0f, 0.0f};
     bool left_down {false};
@@ -281,9 +280,9 @@ private:
 
     int HoveredIn(const std::vector<Surface>& surfaces, const Vector2& point) const;
 
-    GLFWcursor* m_CursorHand {nullptr};
-    GLFWcursor* m_CursorResizeEw {nullptr};
-    GLFWcursor* m_CursorResizeNs {nullptr};
-    GLFWcursor* m_CursorResizeNwse {nullptr};
+    void* m_CursorHand {nullptr};
+    void* m_CursorResizeEw {nullptr};
+    void* m_CursorResizeNs {nullptr};
+    void* m_CursorResizeNwse {nullptr};
 };
 }  // namespace ZSlate

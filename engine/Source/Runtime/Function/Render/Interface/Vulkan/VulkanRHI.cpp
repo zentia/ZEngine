@@ -75,6 +75,10 @@
 
 #include "Runtime/Core/Thread/ThreadManager.h"
 
+#if defined(Z_PLATFORM_WINDOWS)
+#include <vulkan/vulkan_win32.h>
+#endif
+
 #include <cstring>
 #include <iostream>
 #include <set>
@@ -85,6 +89,56 @@ REGISTER_FACTORY(RHI, VulkanRHI, "VulkanRHI");
 std::vector<std::type_index> VulkanRHI::GetDependencies() const
 {
     return {GET_SYSTEM_TYPE(WindowSystem), GET_SYSTEM_TYPE(ThreadManager)};
+}
+
+// ---- 平台抽象的 Vulkan Surface 创建辅助 ----
+
+static VkResult CreateVulkanSurface(VkInstance instance, GenericWindow* window, VkSurfaceKHR* outSurface)
+{
+#if defined(Z_PLATFORM_WINDOWS)
+    HWND hwnd = static_cast<HWND>(window->GetNativeHandle());
+    HINSTANCE hinstance = GetModuleHandle(nullptr);
+    VkWin32SurfaceCreateInfoKHR createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+    createInfo.hwnd = hwnd;
+    createInfo.hinstance = hinstance;
+    return vkCreateWin32SurfaceKHR(instance, &createInfo, nullptr, outSurface);
+#elif defined(Z_PLATFORM_LINUX)
+    // Linux: 需要 X11 或 Wayland 支持
+    (void)instance; (void)window; (void)outSurface;
+    LOG_ERROR(ZVulkan, "Linux Vulkan surface creation not yet implemented (need X11/Wayland)");
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+#elif defined(Z_PLATFORM_ANDROID) || defined(Z_PLATFORM_OHOS)
+    (void)instance; (void)window; (void)outSurface;
+    LOG_ERROR(ZVulkan, "Android/OHOS Vulkan surface creation not yet implemented");
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+#elif defined(Z_PLATFORM_MACOS)
+    (void)instance; (void)window; (void)outSurface;
+    LOG_ERROR(ZVulkan, "macOS Vulkan surface creation not yet implemented (MoltenVK)");
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+#else
+    (void)instance; (void)window; (void)outSurface;
+    return VK_ERROR_FEATURE_NOT_PRESENT;
+#endif
+}
+
+static std::vector<const char*> GetPlatformRequiredExtensions()
+{
+    std::vector<const char*> extensions;
+    // 所有平台都需要 VK_KHR_surface
+    extensions.push_back(VK_KHR_SURFACE_EXTENSION_NAME);
+#if defined(Z_PLATFORM_WINDOWS)
+    extensions.push_back("VK_KHR_win32_surface");
+#elif defined(Z_PLATFORM_LINUX)
+    // X11 或 Wayland
+    extensions.push_back("VK_KHR_xlib_surface");
+#elif defined(Z_PLATFORM_ANDROID) || defined(Z_PLATFORM_OHOS)
+    extensions.push_back("VK_KHR_android_surface");
+#elif defined(Z_PLATFORM_MACOS)
+    extensions.push_back("VK_MVK_macos_surface");
+    extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#endif
+    return extensions;
 }
 VulkanRHI::~VulkanRHI()
 {
@@ -743,11 +797,8 @@ bool VulkanRHI::CheckValidationLayerSupport()
 
 std::vector<const char*> VulkanRHI::GetRequiredExtensions()
 {
-    uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions;
-    glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-
-    std::vector<const char*> extensions(glfwExtensions, glfwExtensions + glfwExtensionCount);
+    // 使用平台抽象的扩展列表（不再依赖 GLFW）
+    std::vector<const char*> extensions = GetPlatformRequiredExtensions();
 
     if (m_EnableValidationLayers || m_EnableDebugUtilsLabel)
     {
@@ -960,28 +1011,13 @@ void VulkanRHI::CreateInstance()
         LOG_INFO(ZVulkan, "    - {} (version: {})", ext.extensionName, ext.specVersion);
     }
 
-    // Get required extensions
-    uint32_t glfwExtensionCount = 0;
-    const char** glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
-
-    LOG_INFO(ZVulkan, "  GLFW required extensions ({}):", glfwExtensionCount);
-    if (glfwExtensions == nullptr || glfwExtensionCount == 0)
-    {
-        LOG_ERROR(ZVulkan, "    glfwGetRequiredInstanceExtensions returned NULL or 0!");
-        LOG_ERROR(ZVulkan, "    Possible causes:");
-        LOG_ERROR(ZVulkan, "      - GLFW not initialized (glfwInit not called)");
-        LOG_ERROR(ZVulkan, "      - GLFW compiled without Vulkan support");
-        LOG_ERROR(ZVulkan, "      - Vulkan loader not found on system");
-    }
-    else
-    {
-        for (uint32_t i = 0; i < glfwExtensionCount; i++)
-        {
-            LOG_INFO(ZVulkan, "    - {}", glfwExtensions[i]);
-        }
-    }
-
+    // Get required extensions (平台抽象)
     auto extensions = GetRequiredExtensions();
+    LOG_INFO(ZVulkan, "  Platform required extensions ({}):", extensions.size());
+    for (size_t i = 0; i < extensions.size(); i++)
+    {
+        LOG_INFO(ZVulkan, "    - {}", extensions[i]);
+    }
     LOG_INFO(ZVulkan, "  Total requested extensions ({}):", extensions.size());
 
     bool allExtensionsAvailable = true;
@@ -1125,9 +1161,16 @@ void VulkanRHI::InitializeDebugMessenger()
 
 void VulkanRHI::CreateWindowSurface()
 {
-    if (glfwCreateWindowSurface(m_Instance, GET_SYSTEM(WindowSystem)->GetWindow(), nullptr, &m_Surface) != VK_SUCCESS)
+    GenericWindow* window = GET_SYSTEM(WindowSystem)->GetMainWindow();
+    if (!window)
     {
-        LOG_ERROR(ZVulkan, "glfwCreateWindowSurface failed!");
+        LOG_ERROR(ZVulkan, "WindowSystem has no main window!");
+        return;
+    }
+    VkResult result = CreateVulkanSurface(m_Instance, window, &m_Surface);
+    if (result != VK_SUCCESS)
+    {
+        LOG_ERROR(ZVulkan, "CreateVulkanSurface failed! VkResult=%d", static_cast<int>(result));
     }
 }
 
@@ -4561,11 +4604,16 @@ void VulkanRHI::RecreateSwapchain()
 {
     int width = 0;
     int height = 0;
-    glfwGetFramebufferSize(GET_SYSTEM(WindowSystem)->GetWindow(), &width, &height);
+    auto fb_size = GET_SYSTEM(WindowSystem)->GetFramebufferSize();
+    width = fb_size[0];
+    height = fb_size[1];
     while (width == 0 || height == 0)  // minimized 0,0, pause for now
     {
-        glfwGetFramebufferSize(GET_SYSTEM(WindowSystem)->GetWindow(), &width, &height);
-        glfwWaitEvents();
+        // 泵消息，等待窗口恢复
+        GET_SYSTEM(WindowSystem)->PollEvents();
+        fb_size = GET_SYSTEM(WindowSystem)->GetFramebufferSize();
+        width = fb_size[0];
+        height = fb_size[1];
     }
 
     VkResult res_wait_for_fences =
@@ -4795,8 +4843,9 @@ VkExtent2D VulkanRHI::ChooseSwapchainExtentFromDetails(const VkSurfaceCapabiliti
     }
     else
     {
-        int width, height;
-        glfwGetFramebufferSize(GET_SYSTEM(WindowSystem)->GetWindow(), &width, &height);
+        auto fb_size = GET_SYSTEM(WindowSystem)->GetFramebufferSize();
+        int width = fb_size[0];
+        int height = fb_size[1];
 
         VkExtent2D actualExtent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
 

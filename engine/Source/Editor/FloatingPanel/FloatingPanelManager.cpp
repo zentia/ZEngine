@@ -7,6 +7,7 @@
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Function/Input/KeyCodes.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Project/ProjectInfo.h"
@@ -14,7 +15,6 @@
 #include "Runtime/Slate/Widgets/SWindowTitleBar.h"
 #include "Runtime/UI/Render/BatchedUIRenderer.h"
 
-#include <GLFW/glfw3.h>
 #include <rapidjson/document.h>
 #include <rapidjson/istreamwrapper.h>
 #include <rapidjson/prettywriter.h>
@@ -27,17 +27,13 @@
 
 #if defined(_WIN32)
     #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
-
-    #define GLFW_EXPOSE_NATIVE_WIN32
-    #include <GLFW/glfw3native.h>
+    #include "Runtime/Function/Render/Platform/Generic/GenericApplication.h"
+    #include "Runtime/Function/Render/Platform/Generic/GenericWindow.h"
 #endif
 
 namespace
 {
-    // Per-floating-window input accumulators. Stored as the GLFW window user pointer
-    // so the C callbacks (which can only see a void*) can write into them. Kept at
-    // file scope (not nested in the private FloatingPanel) precisely so the free
-    // callbacks below can name the type. Drained + reset each BuildBatches.
+    // Per-floating-window input accumulators. Drained + reset each BuildBatches.
     struct FloatingInputAccum
     {
         bool left_down {false};
@@ -59,101 +55,30 @@ namespace
         Vector2 prev_pointer {0.0f, 0.0f};
     };
 
-    // Minimal GLFW->Slate key map (same subset EditorSlateHost uses; duplicated
-    // because its copy lives in an unexported anonymous namespace).
-    ZSlate::EKey MapGlfwKeyToSlateFloating(int glfw_key)
+    // Minimal key map (same subset EditorSlateHost uses).
+    ZSlate::EKey MapKeyToSlateFloating(int key_code)
     {
-        switch (glfw_key)
+        // Letter keys A-Z (KEY_A=65 .. KEY_Z=90, contiguous)
+        if (key_code >= KeyCodes::KEY_A && key_code <= KeyCodes::KEY_Z)
         {
-            case GLFW_KEY_BACKSPACE: return ZSlate::EKey::Backspace;
-            case GLFW_KEY_DELETE:    return ZSlate::EKey::Delete;
-            case GLFW_KEY_ENTER:
-            case GLFW_KEY_KP_ENTER:  return ZSlate::EKey::Enter;
-            case GLFW_KEY_ESCAPE:    return ZSlate::EKey::Escape;
-            case GLFW_KEY_LEFT:      return ZSlate::EKey::Left;
-            case GLFW_KEY_RIGHT:     return ZSlate::EKey::Right;
-            case GLFW_KEY_HOME:      return ZSlate::EKey::Home;
-            case GLFW_KEY_END:       return ZSlate::EKey::End;
-            case GLFW_KEY_SPACE:     return ZSlate::EKey::Space;
-            default:                 return ZSlate::EKey::Unknown;
+            return static_cast<ZSlate::EKey>(
+                static_cast<int>(ZSlate::EKey::A) + (key_code - KeyCodes::KEY_A));
         }
-    }
 
-    void FloatingMouseButtonCb(GLFWwindow* window, int button, int action, int mods)
-    {
-        auto* in = static_cast<FloatingInputAccum*>(glfwGetWindowUserPointer(window));
-        if (in == nullptr)
-            return;
-        const bool down = (action != GLFW_RELEASE);
-        if (button == GLFW_MOUSE_BUTTON_LEFT)
+        switch (key_code)
         {
-            in->left_down = down;
-            if (action == GLFW_PRESS)
-            {
-                ++in->pending_presses;
-                constexpr double kDoubleClickTime = 0.30;
-                constexpr float kDoubleClickMaxDist = 6.0f;
-                double cx = 0.0, cy = 0.0;
-                glfwGetCursorPos(window, &cx, &cy);
-                const double now = glfwGetTime();
-                const float ddx = static_cast<float>(cx) - in->last_press_pos.x;
-                const float ddy = static_cast<float>(cy) - in->last_press_pos.y;
-                if (in->last_press_time >= 0.0 && (now - in->last_press_time) <= kDoubleClickTime &&
-                    (ddx * ddx + ddy * ddy) <= (kDoubleClickMaxDist * kDoubleClickMaxDist))
-                {
-                    ++in->pending_double_clicks;
-                    in->last_press_time = -1.0;
-                }
-                else
-                {
-                    in->last_press_time = now;
-                }
-                in->last_press_pos = Vector2(static_cast<float>(cx), static_cast<float>(cy));
-            }
-            else if (action == GLFW_RELEASE)
-            {
-                ++in->pending_releases;
-            }
+            case KeyCodes::KEY_Backspace: return ZSlate::EKey::Backspace;
+            case KeyCodes::KEY_Delete:    return ZSlate::EKey::Delete;
+            case KeyCodes::KEY_Enter:
+            case KeyCodes::KEY_KPEnter:   return ZSlate::EKey::Enter;
+            case KeyCodes::KEY_Escape:    return ZSlate::EKey::Escape;
+            case KeyCodes::KEY_Left:      return ZSlate::EKey::Left;
+            case KeyCodes::KEY_Right:     return ZSlate::EKey::Right;
+            case KeyCodes::KEY_Home:      return ZSlate::EKey::Home;
+            case KeyCodes::KEY_End:       return ZSlate::EKey::End;
+            case KeyCodes::KEY_Space:     return ZSlate::EKey::Space;
+            default:                      return ZSlate::EKey::Unknown;
         }
-        else if (button == GLFW_MOUSE_BUTTON_RIGHT)
-        {
-            in->right_down = down;
-        }
-        else if (button == GLFW_MOUSE_BUTTON_MIDDLE)
-        {
-            in->middle_down = down;
-        }
-        in->ctrl = (mods & GLFW_MOD_CONTROL) != 0;
-        in->shift = (mods & GLFW_MOD_SHIFT) != 0;
-        in->alt = (mods & GLFW_MOD_ALT) != 0;
-    }
-
-    void FloatingScrollCb(GLFWwindow* window, double /*xoff*/, double yoff)
-    {
-        if (auto* in = static_cast<FloatingInputAccum*>(glfwGetWindowUserPointer(window)))
-            in->pending_wheel += static_cast<float>(yoff);
-    }
-
-    void FloatingKeyCb(GLFWwindow* window, int key, int /*scan*/, int action, int mods)
-    {
-        auto* in = static_cast<FloatingInputAccum*>(glfwGetWindowUserPointer(window));
-        if (in == nullptr)
-            return;
-        in->ctrl = (mods & GLFW_MOD_CONTROL) != 0;
-        in->shift = (mods & GLFW_MOD_SHIFT) != 0;
-        in->alt = (mods & GLFW_MOD_ALT) != 0;
-        if (action == GLFW_PRESS || action == GLFW_REPEAT)
-        {
-            const ZSlate::EKey k = MapGlfwKeyToSlateFloating(key);
-            if (k != ZSlate::EKey::Unknown)
-                in->pending_keys.push_back(k);
-        }
-    }
-
-    void FloatingCharCb(GLFWwindow* window, unsigned int codepoint)
-    {
-        if (auto* in = static_cast<FloatingInputAccum*>(glfwGetWindowUserPointer(window)))
-            in->pending_chars.push_back(codepoint);
     }
 }  // namespace
 
@@ -162,7 +87,7 @@ namespace
 struct FloatingPanelManager::FloatingPanel
 {
     std::string title;
-    GLFWwindow* window {nullptr};
+    GenericWindow* window {nullptr};
     BatchedUIRenderer renderer;
     int width {0};
     int height {0};
@@ -217,70 +142,6 @@ namespace
             case ZSlate::ECursorType::ResizeNS:   return ZSlate::EMouseCursor::ResizeNS;
             case ZSlate::ECursorType::ResizeNWSE: return ZSlate::EMouseCursor::ResizeNWSE;
             default:                              return ZSlate::EMouseCursor::Default;
-        }
-    }
-
-    // Framebuffer-pixel / window-coord ratio. On Windows window coords ARE pixels
-    // (ratio 1, even at 150% DPI); on macOS window coords are points (ratio 2).
-    // GLFW window position / size ops are in WINDOW coords, while our chrome widgets
-    // live in PIXEL space, so this is the one conversion at the OS boundary.
-    void FramebufferRatio(GLFWwindow* window, float& fbx, float& fby)
-    {
-        fbx = 1.0f;
-        fby = 1.0f;
-        if (window == nullptr)
-            return;
-        int fbw = 0;
-        int fbh = 0;
-        glfwGetFramebufferSize(window, &fbw, &fbh);
-        int win_w = 0;
-        int win_h = 0;
-        glfwGetWindowSize(window, &win_w, &win_h);
-        if (win_w > 0)
-            fbx = static_cast<float>(fbw) / static_cast<float>(win_w);
-        if (win_h > 0)
-            fby = static_cast<float>(fbh) / static_cast<float>(win_h);
-    }
-
-    // Work area (excludes the taskbar) of the monitor that contains the window centre;
-    // falls back to the primary monitor. Used for borderless maximize.
-    void ComputeWorkAreaForWindow(GLFWwindow* window, int& out_x, int& out_y, int& out_w, int& out_h)
-    {
-        int wx = 0;
-        int wy = 0;
-        int ww = 0;
-        int wh = 0;
-        glfwGetWindowPos(window, &wx, &wy);
-        glfwGetWindowSize(window, &ww, &wh);
-        const int cx = wx + ww / 2;
-        const int cy = wy + wh / 2;
-
-        int count = 0;
-        GLFWmonitor** monitors = glfwGetMonitors(&count);
-        GLFWmonitor* best = glfwGetPrimaryMonitor();
-        for (int i = 0; i < count; ++i)
-        {
-            int mx = 0;
-            int my = 0;
-            int mw = 0;
-            int mh = 0;
-            glfwGetMonitorWorkarea(monitors[i], &mx, &my, &mw, &mh);
-            if (cx >= mx && cx < mx + mw && cy >= my && cy < my + mh)
-            {
-                best = monitors[i];
-                break;
-            }
-        }
-        if (best != nullptr)
-        {
-            glfwGetMonitorWorkarea(best, &out_x, &out_y, &out_w, &out_h);
-        }
-        else
-        {
-            out_x = wx;
-            out_y = wy;
-            out_w = ww;
-            out_h = wh;
         }
     }
 }  // namespace
@@ -449,20 +310,18 @@ void FloatingPanelManager::ProcessPendingFloat()
 
         // Borderless: we draw our own title bar so the tab drag is handled in-app
         // (window follows the cursor live, re-docks on drop -- UE custom-chrome model).
-        GLFWwindow* child = window_system->CreateChildWindow(title.c_str(), win_w, win_h, pos_x, pos_y, /*decorated=*/false);
+        auto* child = window_system->CreateChildWindow(title.c_str(), win_w, win_h, pos_x, pos_y, /*decorated=*/false);
         if (child == nullptr)
         {
             LOG_WARNING(ZEditor, "FloatingPanelManager: CreateChildWindow failed for '%s'", title.c_str());
             continue;
         }
 
-        int fb_w = win_w;
-        int fb_h = win_h;
-        glfwGetFramebufferSize(child, &fb_w, &fb_h);
-        fb_w = std::max(fb_w, 1);
-        fb_h = std::max(fb_h, 1);
+        auto fb = child->GetFramebufferSize();
+        int fb_w = std::max(fb[0], 1);
+        int fb_h = std::max(fb[1], 1);
 
-        HWND hwnd = glfwGetWin32Window(child);
+        HWND hwnd = static_cast<HWND>(child->GetNativeHandle());
         DX12FloatingSurface* surface =
             dx12->CreateFloatingSurface(reinterpret_cast<void*>(hwnd),
                                         static_cast<uint32_t>(fb_w),
@@ -488,15 +347,76 @@ void FloatingPanelManager::ProcessPendingFloat()
         FloatingPanel* panel_raw = panel.get();
         m_Panels.push_back(std::move(panel));
 
-        // P5 input: route this window's GLFW events into the panel's accumulators.
-        // The user pointer is the accumulator address (stable inside the unique_ptr).
-        glfwSetWindowUserPointer(child, &panel_raw->input);
-        glfwSetMouseButtonCallback(child, FloatingMouseButtonCb);
-        glfwSetScrollCallback(child, FloatingScrollCb);
-        glfwSetKeyCallback(child, FloatingKeyCb);
-        glfwSetCharCallback(child, FloatingCharCb);
+        // P5 input: register callbacks on the GenericWindow to write into panel->input.
+        // The callbacks capture &panel_raw->input (stable once panel is in m_Panels).
+        child->OnMouseButton.push_back([panel_raw](int button, int action, int mods) {
+            FloatingInputAccum& in = panel_raw->input;
+            const bool down = (action != KeyCodes::RELEASE);
+            if (button == 0)  // left button
+            {
+                in.left_down = down;
+                if (action == KeyCodes::PRESS)
+                {
+                    ++in.pending_presses;
+                    constexpr double kDoubleClickTime = 0.30;
+                    constexpr float kDoubleClickMaxDist = 6.0f;
+                    double cx = 0.0, cy = 0.0;
+                    panel_raw->window->GetCursorPos(cx, cy);
+                    const double now = GET_SYSTEM(WindowSystem)->GetApplication()->GetTime();
+                    const float ddx = static_cast<float>(cx) - in.last_press_pos.x;
+                    const float ddy = static_cast<float>(cy) - in.last_press_pos.y;
+                    if (in.last_press_time >= 0.0 && (now - in.last_press_time) <= kDoubleClickTime &&
+                        (ddx * ddx + ddy * ddy) <= (kDoubleClickMaxDist * kDoubleClickMaxDist))
+                    {
+                        ++in.pending_double_clicks;
+                        in.last_press_time = -1.0;
+                    }
+                    else
+                    {
+                        in.last_press_time = now;
+                    }
+                    in.last_press_pos = Vector2(static_cast<float>(cx), static_cast<float>(cy));
+                }
+                else if (action == KeyCodes::RELEASE)
+                {
+                    ++in.pending_releases;
+                }
+            }
+            else if (button == 1)  // right button
+            {
+                in.right_down = down;
+            }
+            else if (button == 2)  // middle button
+            {
+                in.middle_down = down;
+            }
+            in.ctrl = (mods & 1) != 0;    // MOD_CONTROL = bit 0
+            in.shift = (mods & 2) != 0;   // MOD_SHIFT = bit 1
+            in.alt = (mods & 4) != 0;     // MOD_ALT = bit 2
+        });
 
-        glfwShowWindow(child);
+        child->OnScroll.push_back([panel_raw](double, double yoff) {
+            panel_raw->input.pending_wheel += static_cast<float>(yoff);
+        });
+
+        child->OnKey.push_back([panel_raw](int key, int, int action, int mods) {
+            FloatingInputAccum& in = panel_raw->input;
+            in.ctrl = (mods & 1) != 0;
+            in.shift = (mods & 2) != 0;
+            in.alt = (mods & 4) != 0;
+            if (action == KeyCodes::PRESS || action == KeyCodes::REPEAT)
+            {
+                const ZSlate::EKey k = MapKeyToSlateFloating(key);
+                if (k != ZSlate::EKey::Unknown)
+                    in.pending_keys.push_back(k);
+            }
+        });
+
+        child->OnChar.push_back([panel_raw](unsigned int codepoint) {
+            panel_raw->input.pending_chars.push_back(codepoint);
+        });
+
+        child->Show();
         LOG_INFO(ZEditor, "FloatingPanelManager: floated panel '%s' (%dx%d)", title.c_str(), fb_w, fb_h);
     }
     if (!pending.empty())
@@ -574,7 +494,7 @@ void FloatingPanelManager::ProcessClosedWindows()
     for (auto it = m_Panels.begin(); it != m_Panels.end();)
     {
         FloatingPanel& panel = **it;
-        if (panel.window != nullptr && glfwWindowShouldClose(panel.window))
+        if (panel.window != nullptr && panel.window->ShouldClose())
         {
             LOG_INFO(ZEditor, "FloatingPanelManager: re-docking '%s' (window closed)", panel.title.c_str());
             DestroyPanel(panel, /*redock=*/true);
@@ -625,15 +545,12 @@ void FloatingPanelManager::BeginCaptionDrag(FloatingPanel& panel, const Vector2&
     if (panel.maximized)
     {
         // UE: dragging a maximized window restores it, then it follows the cursor.
-        // Re-anchor the grab so the cursor stays over the (now smaller) title bar.
         RestoreFromMaximize(panel);
-        float fbx = 1.0f;
-        float fby = 1.0f;
-        FramebufferRatio(panel.window, fbx, fby);
-        int lw = 0;
-        int lh = 0;
-        glfwGetWindowSize(panel.window, &lw, &lh);
-        const float restored_w_px = static_cast<float>(lw) * fbx;
+        auto fb = panel.window->GetFramebufferSize();
+        auto sz = panel.window->GetSize();
+        const float fbx = (sz[0] > 0) ? static_cast<float>(fb[0]) / static_cast<float>(sz[0]) : 1.0f;
+        const float fby = (sz[1] > 0) ? static_cast<float>(fb[1]) / static_cast<float>(sz[1]) : 1.0f;
+        const float restored_w_px = static_cast<float>(sz[0]) * fbx;
         const float bar_px = kTitleBarLogicalH * std::max(1.0f, fby);
         panel.caption_grab = Vector2(std::min(pos_px.x, std::max(0.0f, restored_w_px * 0.5f)),
                                      std::min(pos_px.y, bar_px * 0.5f));
@@ -655,23 +572,17 @@ void FloatingPanelManager::UpdateCaptionDrag(FloatingPanel& panel, const Vector2
     if (!panel.caption_dragging || panel.window == nullptr)
         return;
 
-    // Move the window so the grabbed point stays under the cursor. The grab is
-    // fixed at press; once the window catches up, the cursor's client-local pos
-    // returns to the grab, so the delta self-cancels -- the window tracks the hand.
-    // Windows auto-captures the mouse while the button is held, so the cursor keeps
-    // reporting even past the window bounds (lets us drag over the main window).
-    float fbx = 1.0f;
-    float fby = 1.0f;
-    FramebufferRatio(panel.window, fbx, fby);
-    int wx = 0;
-    int wy = 0;
-    glfwGetWindowPos(panel.window, &wx, &wy);
+    auto fb = panel.window->GetFramebufferSize();
+    auto sz = panel.window->GetSize();
+    const float fbx = (sz[0] > 0) ? static_cast<float>(fb[0]) / static_cast<float>(sz[0]) : 1.0f;
+    const float fby = (sz[1] > 0) ? static_cast<float>(fb[1]) / static_cast<float>(sz[1]) : 1.0f;
+    auto pos = panel.window->GetPosition();
     const int dx = static_cast<int>((pos_px.x - panel.caption_grab.x) / std::max(0.01f, fbx));
     const int dy = static_cast<int>((pos_px.y - panel.caption_grab.y) / std::max(0.01f, fby));
     if (dx != 0 || dy != 0)
-        glfwSetWindowPos(panel.window, wx + dx, wy + dy);
-    panel.win_x = wx + dx;
-    panel.win_y = wy + dy;
+        panel.window->SetPosition(pos[0] + dx, pos[1] + dy);
+    panel.win_x = pos[0] + dx;
+    panel.win_y = pos[1] + dy;
 
     // Re-dock hint: highlight the host while the cursor is over the main window.
     const Vector2 global(static_cast<float>(panel.win_x) + pos_px.x / std::max(0.01f, fbx),
@@ -695,9 +606,10 @@ void FloatingPanelManager::EndCaptionDrag(FloatingPanel& panel, const Vector2& p
     if (panel.window == nullptr)
         return;
 
-    float fbx = 1.0f;
-    float fby = 1.0f;
-    FramebufferRatio(panel.window, fbx, fby);
+    auto fb = panel.window->GetFramebufferSize();
+    auto sz = panel.window->GetSize();
+    const float fbx = (sz[0] > 0) ? static_cast<float>(fb[0]) / static_cast<float>(sz[0]) : 1.0f;
+    const float fby = (sz[1] > 0) ? static_cast<float>(fb[1]) / static_cast<float>(sz[1]) : 1.0f;
     const Vector2 global(static_cast<float>(panel.win_x) + pos_px.x / std::max(0.01f, fbx),
                          static_cast<float>(panel.win_y) + pos_px.y / std::max(0.01f, fby));
     const bool over_main = global.x >= m_MainRect[0] && global.x <= m_MainRect[0] + m_MainRect[2] &&
@@ -719,14 +631,13 @@ void FloatingPanelManager::UpdateResize(FloatingPanel& panel, const Vector2& pos
     if (panel.window == nullptr || panel.maximized)
         return;
     // pos_px is the cursor in client-local PIXELS = the desired bottom-right corner.
-    // Convert to window coords for glfwSetWindowSize. The DXGI swapchain follows on
-    // the next TickMainThread (which flushes the pipeline before ResizeBuffers).
-    float fbx = 1.0f;
-    float fby = 1.0f;
-    FramebufferRatio(panel.window, fbx, fby);
+    auto fb = panel.window->GetFramebufferSize();
+    auto sz = panel.window->GetSize();
+    const float fbx = (sz[0] > 0) ? static_cast<float>(fb[0]) / static_cast<float>(sz[0]) : 1.0f;
+    const float fby = (sz[1] > 0) ? static_cast<float>(fb[1]) / static_cast<float>(sz[1]) : 1.0f;
     const int new_w = std::max(kMinFloatW, static_cast<int>(pos_px.x / std::max(0.01f, fbx)));
     const int new_h = std::max(kMinFloatH, static_cast<int>(pos_px.y / std::max(0.01f, fby)));
-    glfwSetWindowSize(panel.window, new_w, new_h);
+    panel.window->SetSize(new_w, new_h);
 #else
     (void)panel;
     (void)pos_px;
@@ -744,15 +655,18 @@ void FloatingPanelManager::ToggleMaximize(FloatingPanel& panel)
         return;
     }
     // Save the current rect, then cover the monitor work area.
-    glfwGetWindowPos(panel.window, &panel.restore_x, &panel.restore_y);
-    glfwGetWindowSize(panel.window, &panel.restore_w, &panel.restore_h);
-    int ax = 0;
-    int ay = 0;
-    int aw = 0;
-    int ah = 0;
-    ComputeWorkAreaForWindow(panel.window, ax, ay, aw, ah);
-    glfwSetWindowPos(panel.window, ax, ay);
-    glfwSetWindowSize(panel.window, std::max(aw, kMinFloatW), std::max(ah, kMinFloatH));
+    auto pos = panel.window->GetPosition();
+    auto sz = panel.window->GetSize();
+    panel.restore_x = pos[0];
+    panel.restore_y = pos[1];
+    panel.restore_w = sz[0];
+    panel.restore_h = sz[1];
+    if (auto* app = GET_SYSTEM(WindowSystem) ? GET_SYSTEM(WindowSystem)->GetApplication() : nullptr)
+    {
+        auto workArea = app->GetMonitorWorkAreaForWindow(panel.window);
+        panel.window->SetPosition(workArea.x, workArea.y);
+        panel.window->SetSize(std::max(workArea.width, kMinFloatW), std::max(workArea.height, kMinFloatH));
+    }
     panel.maximized = true;
     LOG_INFO(ZEditor, "FloatingPanelManager: maximized '%s'", panel.title.c_str());
 #else
@@ -767,8 +681,8 @@ void FloatingPanelManager::RestoreFromMaximize(FloatingPanel& panel)
         return;
     const int w = std::max(panel.restore_w, kMinFloatW);
     const int h = std::max(panel.restore_h, kMinFloatH);
-    glfwSetWindowPos(panel.window, panel.restore_x, panel.restore_y);
-    glfwSetWindowSize(panel.window, w, h);
+    panel.window->SetPosition(panel.restore_x, panel.restore_y);
+    panel.window->SetSize(w, h);
     panel.maximized = false;
     LOG_INFO(ZEditor, "FloatingPanelManager: restored '%s'", panel.title.c_str());
 #else
@@ -805,10 +719,10 @@ void FloatingPanelManager::TickMainThread()
             FloatingPanel& panel = *panel_ptr;
             if (panel.window == nullptr || panel.surface == nullptr)
                 continue;
-            int fb_w = panel.width;
-            int fb_h = panel.height;
-            glfwGetFramebufferSize(panel.window, &fb_w, &fb_h);
-            if (std::max(fb_w, 1) != panel.width || std::max(fb_h, 1) != panel.height)
+            auto fb = panel.window->GetFramebufferSize();
+            int fb_w = std::max(fb[0], 1);
+            int fb_h = std::max(fb[1], 1);
+            if (fb_w != panel.width || fb_h != panel.height)
             {
                 needs_resize = true;
                 break;
@@ -830,11 +744,9 @@ void FloatingPanelManager::TickMainThread()
                 FloatingPanel& panel = *panel_ptr;
                 if (panel.window == nullptr || panel.surface == nullptr)
                     continue;
-                int fb_w = panel.width;
-                int fb_h = panel.height;
-                glfwGetFramebufferSize(panel.window, &fb_w, &fb_h);
-                fb_w = std::max(fb_w, 1);
-                fb_h = std::max(fb_h, 1);
+                auto fb = panel.window->GetFramebufferSize();
+                int fb_w = std::max(fb[0], 1);
+                int fb_h = std::max(fb[1], 1);
                 if (fb_w != panel.width || fb_h != panel.height)
                 {
                     dx12->ResizeFloatingSurface(panel.surface, static_cast<uint32_t>(fb_w),
@@ -887,27 +799,16 @@ void FloatingPanelManager::BuildBatches()
         float scale = 1.0f;
         if (panel.window != nullptr)
         {
-            float xs = 1.0f, ys = 1.0f;
-            glfwGetWindowContentScale(panel.window, &xs, &ys);
-            scale = std::max(1.0f, std::max(xs, ys));
+            scale = std::max(1.0f, panel.window->GetDpiScale());
 
-            // Cursor -> surface (pixel) space. This panel is laid out in FRAMEBUFFER PIXEL
-            // space (display_w/h = panel.width/height from glfwGetFramebufferSize), so the
-            // pointer must be converted by the REAL framebuffer/window ratio -- NOT the DPI
-            // content scale. On Windows GLFW window coords already ARE pixels (ratio 1)
-            // while content scale is e.g. 1.5; multiplying by content scale would push the
-            // pointer 1.5x too far. On macOS the ratio is 2 (window coords are points), so
-            // the ratio correctly doubles the pointer. ui_scale stays the content scale --
-            // it sizes fonts/widgets, which is a separate concern from pointer position.
-            int fbw = 0, fbh = 0;
-            glfwGetFramebufferSize(panel.window, &fbw, &fbh);
-            int win_w = 0, win_h = 0;
-            glfwGetWindowSize(panel.window, &win_w, &win_h);
-            const float fbx = win_w > 0 ? static_cast<float>(fbw) / static_cast<float>(win_w) : 1.0f;
-            const float fby = win_h > 0 ? static_cast<float>(fbh) / static_cast<float>(win_h) : 1.0f;
+            // Cursor -> surface (pixel) space. Compute ratio from GetFramebufferSize() / GetSize().
+            auto fb = panel.window->GetFramebufferSize();
+            auto sz = panel.window->GetSize();
+            const float fbx = (sz[0] > 0) ? static_cast<float>(fb[0]) / static_cast<float>(sz[0]) : 1.0f;
+            const float fby = (sz[1] > 0) ? static_cast<float>(fb[1]) / static_cast<float>(sz[1]) : 1.0f;
 
             double cx = 0.0, cy = 0.0;
-            glfwGetCursorPos(panel.window, &cx, &cy);
+            panel.window->GetCursorPos(cx, cy);
             state_in.pointer = Vector2(static_cast<float>(cx) * fbx, static_cast<float>(cy) * fby);
         }
         state_in.ui_scale = scale;
@@ -1122,9 +1023,12 @@ void FloatingPanelManager::SaveState() const
 #if defined(_WIN32)
         if (panel.window != nullptr)
         {
-            glfwGetWindowPos(panel.window, &wx, &wy);
-            // Logical (screen-coord) size -- that is what CreateChildWindow expects.
-            glfwGetWindowSize(panel.window, &ww, &wh);
+            auto pos = panel.window->GetPosition();
+            wx = pos[0];
+            wy = pos[1];
+            auto sz = panel.window->GetSize();
+            ww = sz[0];
+            wh = sz[1];
         }
 #endif
         rapidjson::Value entry(rapidjson::kObjectType);

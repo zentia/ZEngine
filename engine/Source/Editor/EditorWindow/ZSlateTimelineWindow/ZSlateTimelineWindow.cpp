@@ -16,8 +16,8 @@
 #include "Runtime/Slate/Widgets/SSpacer.h"
 #include "Runtime/Slate/Widgets/STextBlock.h"
 #include "Runtime/UI/Render/UIRenderer.h"
+#include "Runtime/Function/Render/WindowSystem.h"
 
-#include <GLFW/glfw3.h>
 #include <algorithm>
 #include <cstdio>
 #include <functional>
@@ -548,7 +548,7 @@ void ZSlateTimelineWindow::AdvancePlayback()
     if (m_PlayState != TimelinePlayState::Playing || m_CurrentAsset == nullptr)
         return;
 
-    const double now = glfwGetTime();
+    const double now = GET_SYSTEM(WindowSystem)->GetApplication()->GetTime();
     float dt = (m_LastFrameTime > 0.0) ? static_cast<float>(now - m_LastFrameTime) : 0.0f;
     m_LastFrameTime = now;
     if (dt <= 0.0f || dt > 0.25f)
@@ -577,7 +577,7 @@ void ZSlateTimelineWindow::SetTimelineAsset(TimelineAsset* asset)
 void ZSlateTimelineWindow::Play()
 {
     m_PlayState = TimelinePlayState::Playing;
-    m_LastFrameTime = glfwGetTime();
+    m_LastFrameTime = GET_SYSTEM(WindowSystem)->GetApplication()->GetTime();
 }
 
 void ZSlateTimelineWindow::Pause()

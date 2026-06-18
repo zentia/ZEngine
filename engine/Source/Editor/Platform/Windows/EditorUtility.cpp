@@ -1,10 +1,8 @@
 #include "Editor/Platform/Interface/EditorUtility.h"
 
-#define GLFW_EXPOSE_NATIVE_WIN32
+#include "Runtime/Function/Render/Platform/Generic/GenericWindow.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 
-#include <GLFW/glfw3.h>
-#include <GLFW/glfw3native.h>
 #include <Windows.h>
 #include <cstring>
 #include <filesystem>
@@ -118,13 +116,13 @@ namespace
 
     HWND getEditorWindowHandle()
     {
-        GLFWwindow* glfw_window = GET_SYSTEM(WindowSystem)->GetWindow();
-        if (glfw_window == nullptr)
-        {
+        auto* window_system = GET_SYSTEM(WindowSystem);
+        if (window_system == nullptr)
             return nullptr;
-        }
-
-        return glfwGetWin32Window(glfw_window);
+        GenericWindow* main_window = window_system->GetMainWindow();
+        if (main_window == nullptr)
+            return nullptr;
+        return static_cast<HWND>(main_window->GetNativeHandle());
     }
 
     void setCommonDialogOptions(IFileDialog* dialog,

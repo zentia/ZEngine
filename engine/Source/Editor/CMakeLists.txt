@@ -203,9 +203,6 @@ if(TARGET render_doc)
     target_link_libraries(${TARGET_NAME} PRIVATE render_doc)
 endif()
 
-# Link to GLFW (from 3rdparty)
-target_link_libraries(${TARGET_NAME} PUBLIC glfw)
-
 # Link to OpenGL
 if(WIN32)
     # Windows: Need to link opengl32.lib for OpenGL functions

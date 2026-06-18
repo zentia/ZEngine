@@ -6,7 +6,7 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "core/base/Macro.h"
 
-#include <GLFW/glfw3.h>
+#include "Runtime/Function/Input/KeyCodes.h"
 
 unsigned int k_complement_control_command = 0xFFFFFFFF;
 
@@ -162,7 +162,7 @@ void InputSystem::Tick()
     SyncGameCommands();
 
     // Focus mode -> invalid flag
-    if (GET_SYSTEM(WindowSystem)->getFocusMode())
+    if (GET_SYSTEM(WindowSystem)->GetFocusMode())
     {
         m_GameCommand &= (k_complement_control_command ^ (unsigned int)GameCommand::invalid);
     }

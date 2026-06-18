@@ -11,12 +11,11 @@
 #include <cstdint>
 
 #if defined(_WIN32)
-    #define GLFW_EXPOSE_NATIVE_WIN32
-    #include <GLFW/glfw3.h>
-    #include <GLFW/glfw3native.h>
+    #include "Runtime/Function/Render/Platform/Generic/GenericWindow.h"
 
     #include <filesystem>
     #include <string>
+    #include <windows.h>
 #endif
 
 namespace Runtime
@@ -131,14 +130,14 @@ namespace Runtime
                 return nullptr;
             }
 
-            GLFWwindow* window = window_system->GetWindow();
+            GenericWindow* window = window_system->GetMainWindow();
             if (window == nullptr)
             {
                 return nullptr;
             }
 
     #if defined(_WIN32)
-            return glfwGetWin32Window(window);
+            return window->GetNativeHandle();
     #else
             return nullptr;
     #endif

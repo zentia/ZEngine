@@ -10,6 +10,7 @@
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/WindowSystem.h"
+#include "Runtime/Function/Input/KeyCodes.h"
 
 #if defined(_WIN32)
     #include "Editor/RenderDoc/RenderDoc.h"
@@ -20,27 +21,38 @@
 
 namespace
 {
+    GenericApplication* GetApp()
+    {
+        auto* ws = GET_SYSTEM(WindowSystem);
+        return ws ? ws->GetApplication() : nullptr;
+    }
+
     bool isKeyDown(int key)
     {
-        WindowSystem* window_system = GET_SYSTEM(WindowSystem);
-        return window_system != nullptr && window_system->GetWindow() != nullptr &&
-               glfwGetKey(window_system->GetWindow(), key) == GLFW_PRESS;
+        auto* app = GetApp();
+        return app && app->IsKeyDown(key);
     }
 
     bool isAltDown()
     {
-        return isKeyDown(GLFW_KEY_LEFT_ALT) || isKeyDown(GLFW_KEY_RIGHT_ALT);
+        return isKeyDown(KeyCodes::LeftAlt) || isKeyDown(KeyCodes::RightAlt);
     }
 
     bool isActionDown()
     {
-        return isKeyDown(GLFW_KEY_LEFT_CONTROL) || isKeyDown(GLFW_KEY_RIGHT_CONTROL) || isKeyDown(GLFW_KEY_LEFT_SUPER) ||
-               isKeyDown(GLFW_KEY_RIGHT_SUPER);
+        return isKeyDown(KeyCodes::LeftControl) || isKeyDown(KeyCodes::RightControl) ||
+               isKeyDown(KeyCodes::LeftSuper) || isKeyDown(KeyCodes::RightSuper);
     }
 
     bool isShiftDown()
     {
-        return isKeyDown(GLFW_KEY_LEFT_SHIFT) || isKeyDown(GLFW_KEY_RIGHT_SHIFT);
+        return isKeyDown(KeyCodes::LeftShift) || isKeyDown(KeyCodes::RightShift);
+    }
+
+    void SetCursorMode(bool capture)
+    {
+        auto* app = GetApp();
+        if (app) app->SetCursorMode(capture);
     }
 }  // namespace
 
@@ -57,21 +69,21 @@ void EditorInputManager::Tick(float delta_time)
 
 void EditorInputManager::RegisterInput()
 {
-    GET_SYSTEM(WindowSystem)->registerOnResetFunc(std::bind(&EditorInputManager::OnReset, this));
+    GET_SYSTEM(WindowSystem)->RegisterOnResetFunc(std::bind(&EditorInputManager::OnReset, this));
     GET_SYSTEM(WindowSystem)
-        ->registerOnCursorPosFunc(
+        ->RegisterOnCursorPosFunc(
             std::bind(&EditorInputManager::OnCursorPos, this, std::placeholders::_1, std::placeholders::_2));
     GET_SYSTEM(WindowSystem)
-        ->registerOnCursorEnterFunc(std::bind(&EditorInputManager::OnCursorEnter, this, std::placeholders::_1));
+        ->RegisterOnCursorEnterFunc(std::bind(&EditorInputManager::OnCursorEnter, this, std::placeholders::_1));
     GET_SYSTEM(WindowSystem)
-        ->registerOnScrollFunc(
+        ->RegisterOnScrollFunc(
             std::bind(&EditorInputManager::OnScroll, this, std::placeholders::_1, std::placeholders::_2));
     GET_SYSTEM(WindowSystem)
-        ->registerOnMouseButtonFunc(
+        ->RegisterOnMouseButtonFunc(
             std::bind(&EditorInputManager::OnMouseButtonClicked, this, std::placeholders::_1, std::placeholders::_2));
-    GET_SYSTEM(WindowSystem)->registerOnWindowCloseFunc(std::bind(&EditorInputManager::OnWindowClosed, this));
+    GET_SYSTEM(WindowSystem)->RegisterOnWindowCloseFunc(std::bind(&EditorInputManager::OnWindowClosed, this));
     GET_SYSTEM(WindowSystem)
-        ->registerOnKeyFunc(std::bind(&EditorInputManager::OnKey,
+        ->RegisterOnKeyFunc(std::bind(&EditorInputManager::OnKey,
                                       this,
                                       std::placeholders::_1,
                                       std::placeholders::_2,
@@ -180,7 +192,7 @@ void EditorInputManager::ClearSceneViewInputCapture()
 {
     m_SceneViewInputMode = SceneViewInputMode::None;
     m_SceneViewDragged = false;
-    glfwSetInputMode(GET_SYSTEM(WindowSystem)->GetWindow(), GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    SetCursorMode(false);
 }
 
 void EditorInputManager::ProcessEditorCommand()
@@ -242,28 +254,28 @@ void EditorInputManager::OnKeyInEditorMode(int key, int scancode, int action, in
         return;
     }
 
-    if (action == GLFW_PRESS)
+    if (action == KeyCodes::PRESS)
     {
         switch (key)
         {
-            case GLFW_KEY_A:
+            case KeyCodes::KEY_A:
                 m_EditorCommand |= (unsigned int)EditorCommand::camera_left;
                 break;
-            case GLFW_KEY_S:
-                if ((mods & GLFW_MOD_CONTROL) || (mods & GLFW_MOD_SUPER))
+            case KeyCodes::KEY_S:
+                if ((mods & KeyCodes::MOD_CONTROL_VAL) || (mods & KeyCodes::MOD_SUPER_VAL))
                 {
                     break;
                 }
                 m_EditorCommand |= (unsigned int)EditorCommand::camera_back;
                 break;
-            case GLFW_KEY_D:
+            case KeyCodes::KEY_D:
                 m_EditorCommand |= (unsigned int)EditorCommand::camera_right;
                 break;
-            case GLFW_KEY_Q:
+            case KeyCodes::KEY_Q:
                 m_EditorCommand |= (unsigned int)EditorCommand::camera_up;
                 break;
-            case GLFW_KEY_E:
-                if (GET_SYSTEM(WindowSystem)->isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT))
+            case KeyCodes::KEY_E:
+                if (GET_SYSTEM(WindowSystem)->IsMouseButtonDown(static_cast<int>(KeyCodes::MouseButtonRight)))
                 {
                     m_EditorCommand |= (unsigned int)EditorCommand::camera_down;
                 }
@@ -274,11 +286,11 @@ void EditorInputManager::OnKeyInEditorMode(int key, int scancode, int action, in
                     GET_SYSTEM(EditorSceneManager)->DrawSelectedEntityAxis();
                 }
                 break;
-            case GLFW_KEY_T:
-            case GLFW_KEY_W:
-                if (key == GLFW_KEY_W &&
-                    (GET_SYSTEM(WindowSystem)->isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT) ||
-                     GET_SYSTEM(WindowSystem)->isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT)))
+            case KeyCodes::KEY_T:
+            case KeyCodes::KEY_W:
+                if (key == KeyCodes::KEY_W &&
+                    (GET_SYSTEM(WindowSystem)->IsMouseButtonDown(static_cast<int>(KeyCodes::MouseButtonRight)) ||
+                     GET_SYSTEM(WindowSystem)->IsMouseButtonDown(static_cast<int>(KeyCodes::MouseButtonLeft))))
                 {
                     m_EditorCommand |= (unsigned int)EditorCommand::camera_foward;
                 }
@@ -290,60 +302,60 @@ void EditorInputManager::OnKeyInEditorMode(int key, int scancode, int action, in
                     GET_SYSTEM(EditorSceneManager)->DrawSelectedEntityAxis();
                 }
                 break;
-            case GLFW_KEY_R:
+            case KeyCodes::KEY_R:
                 m_EditorCommand |= (unsigned int)EditorCommand::scale_mode;
                 GET_SYSTEM(EditorSceneManager)->setEditorAxisMode(EditorAxisMode::ScaleMode);
                 GET_SYSTEM(EditorSceneManager)->DrawSelectedEntityAxis();
                 break;
-            case GLFW_KEY_C:
+            case KeyCodes::KEY_C:
                 m_EditorCommand |= (unsigned int)EditorCommand::scale_mode;
                 GET_SYSTEM(EditorSceneManager)->setEditorAxisMode(EditorAxisMode::ScaleMode);
                 GET_SYSTEM(EditorSceneManager)->DrawSelectedEntityAxis();
                 break;
-            case GLFW_KEY_DELETE:
+            case KeyCodes::KEY_Delete:
                 m_EditorCommand |= (unsigned int)EditorCommand::delete_object;
                 break;
             default:
                 break;
         }
     }
-    else if (action == GLFW_RELEASE)
+    else if (action == KeyCodes::RELEASE)
     {
         switch (key)
         {
-            case GLFW_KEY_ESCAPE:
+            case KeyCodes::KEY_Escape:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::exit);
                 break;
-            case GLFW_KEY_A:
+            case KeyCodes::KEY_A:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::camera_left);
                 break;
-            case GLFW_KEY_S:
+            case KeyCodes::KEY_S:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::camera_back);
                 break;
-            case GLFW_KEY_W:
+            case KeyCodes::KEY_W:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::camera_foward);
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::translation_mode);
                 break;
-            case GLFW_KEY_D:
+            case KeyCodes::KEY_D:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::camera_right);
                 break;
-            case GLFW_KEY_Q:
+            case KeyCodes::KEY_Q:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::camera_up);
                 break;
-            case GLFW_KEY_E:
+            case KeyCodes::KEY_E:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::camera_down);
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::rotation_mode);
                 break;
-            case GLFW_KEY_T:
+            case KeyCodes::KEY_T:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::translation_mode);
                 break;
-            case GLFW_KEY_R:
+            case KeyCodes::KEY_R:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::scale_mode);
                 break;
-            case GLFW_KEY_C:
+            case KeyCodes::KEY_C:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::scale_mode);
                 break;
-            case GLFW_KEY_DELETE:
+            case KeyCodes::KEY_Delete:
                 m_EditorCommand &= (k_complement_control_command ^ (unsigned int)EditorCommand::delete_object);
                 break;
             default:
@@ -354,21 +366,21 @@ void EditorInputManager::OnKeyInEditorMode(int key, int scancode, int action, in
 
 void EditorInputManager::OnKey(int key, int scancode, int action, int mods)
 {
-    if (action == GLFW_PRESS)
+    if (action == KeyCodes::PRESS)
     {
         switch (key)
         {
-            case GLFW_KEY_F5:
+            case KeyCodes::KEY_F5:
                 GET_SYSTEM(Editor)->TogglePlayMode();
                 return;
-            case GLFW_KEY_F6:
+            case KeyCodes::KEY_F6:
                 GET_SYSTEM(Editor)->TogglePauseMode();
                 return;
-            case GLFW_KEY_F10:
+            case KeyCodes::KEY_F10:
                 GET_SYSTEM(Editor)->RequestStepFrame();
                 return;
-            case GLFW_KEY_S:
-                if (!g_isPlaying && ((mods & GLFW_MOD_CONTROL) || (mods & GLFW_MOD_SUPER)))
+            case KeyCodes::KEY_S:
+                if (!g_isPlaying && ((mods & KeyCodes::MOD_CONTROL_VAL) || (mods & KeyCodes::MOD_SUPER_VAL)))
                 {
                     if (auto world = GET_SYSTEM(WorldManager))
                     {
@@ -378,8 +390,8 @@ void EditorInputManager::OnKey(int key, int scancode, int action, int mods)
                 }
                 break;
 #if defined(_WIN32)
-            case GLFW_KEY_F12:
-                if ((mods & GLFW_MOD_CONTROL) && (mods & GLFW_MOD_SHIFT))
+            case KeyCodes::KEY_F12:
+                if ((mods & KeyCodes::MOD_CONTROL_VAL) && (mods & KeyCodes::MOD_SHIFT_VAL))
                 {
                     Runtime::RenderDoc::RequestCapture();
                     return;
@@ -411,29 +423,27 @@ void EditorInputManager::OnCursorPos(double xpos, double ypos)
     const bool has_last_mouse = m_MouseX >= 0.0f && m_MouseY >= 0.0f;
     const Vector2 mouse_delta(has_last_mouse ? static_cast<float>(xpos) - m_MouseX : 0.0f,
                               has_last_mouse ? static_cast<float>(ypos) - m_MouseY : 0.0f);
-    const bool cursor_in_scene = IsCursorInRect(m_EngineWindowPos, m_EngineWindowSize, (float)xpos, (float)ypos);
+        const bool cursor_in_scene = IsCursorInRect(m_EngineWindowPos, m_EngineWindowSize, (float)xpos, (float)ypos);
 
-    if (editor_camera && has_last_mouse && m_SceneViewInputMode != SceneViewInputMode::None)
-    {
-        const Vector2 drag_delta(static_cast<float>(xpos) - m_SceneViewMouseDownPos.x,
-                                 static_cast<float>(ypos) - m_SceneViewMouseDownPos.y);
-        if (drag_delta.x * drag_delta.x + drag_delta.y * drag_delta.y > 16.0f)
+        if (editor_camera && has_last_mouse && m_SceneViewInputMode != SceneViewInputMode::None)
         {
-            m_SceneViewDragged = true;
-        }
+            const Vector2 drag_delta(static_cast<float>(xpos) - m_SceneViewMouseDownPos.x,
+                                     static_cast<float>(ypos) - m_SceneViewMouseDownPos.y);
+            if (drag_delta.x * drag_delta.x + drag_delta.y * drag_delta.y > 16.0f)
+            {
+                m_SceneViewDragged = true;
+            }
 
-        const float angular_velocity = 180.0f / Math::max(m_EngineWindowSize.x, m_EngineWindowSize.y);
-        switch (m_SceneViewInputMode)
-        {
-            case SceneViewInputMode::Orbit:
-                if (!GET_SYSTEM(EditorSceneManager)->IsSceneView2D())
-                {
-                    glfwSetInputMode(GET_SYSTEM(WindowSystem)->GetWindow(),
-                                     GLFW_CURSOR,
-                                     isAltDown() ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
-                    editor_camera->Rotate(Vector2(mouse_delta.y, mouse_delta.x) * angular_velocity);
-                }
-                break;
+            const float angular_velocity = 180.0f / Math::max(m_EngineWindowSize.x, m_EngineWindowSize.y);
+            switch (m_SceneViewInputMode)
+            {
+                case SceneViewInputMode::Orbit:
+                    if (!GET_SYSTEM(EditorSceneManager)->IsSceneView2D())
+                    {
+                        SetCursorMode(isAltDown() ? false : true);
+                        editor_camera->Rotate(Vector2(mouse_delta.y, mouse_delta.x) * angular_velocity);
+                    }
+                    break;
 
             case SceneViewInputMode::Pan:
                 PanSceneCamera(editor_camera, mouse_delta);
@@ -462,7 +472,7 @@ void EditorInputManager::OnCursorPos(double xpos, double ypos)
     }
     else if (cursor_in_scene && editor_camera)
     {
-        glfwSetInputMode(GET_SYSTEM(WindowSystem)->GetWindow(), GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        SetCursorMode(false);
         if (m_EngineWindowSize.x > 0.0f && m_EngineWindowSize.y > 0.0f)
         {
             UpdateCursorOnAxis(Vector2((float)xpos, (float)ypos));
@@ -497,7 +507,7 @@ void EditorInputManager::OnScroll(double xoffset, double yoffset)
 
     if (IsCursorInRect(m_EngineWindowPos, m_EngineWindowSize))
     {
-        if (GET_SYSTEM(WindowSystem)->isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT))
+        if (GET_SYSTEM(WindowSystem)->IsMouseButtonDown(static_cast<int>(KeyCodes::MouseButtonRight)))
         {
             if (yoffset > 0)
             {
@@ -523,7 +533,7 @@ void EditorInputManager::OnMouseButtonClicked(int key, int action)
     std::shared_ptr editor_camera = GET_SYSTEM(EditorSceneManager)->getEditorCamera();
     const bool cursor_in_scene = IsCursorInRect(m_EngineWindowPos, m_EngineWindowSize);
 
-    if (action == GLFW_PRESS)
+    if (action == KeyCodes::PRESS)
     {
         if (!cursor_in_scene || !editor_camera)
         {
@@ -535,25 +545,28 @@ void EditorInputManager::OnMouseButtonClicked(int key, int action)
 
         const bool alt_down = isAltDown();
         const bool action_down = isActionDown();
-        if (key == GLFW_MOUSE_BUTTON_MIDDLE || (alt_down && key == GLFW_MOUSE_BUTTON_LEFT) ||
-            (action_down && alt_down && key == GLFW_MOUSE_BUTTON_LEFT))
+        const int btnLeft   = static_cast<int>(KeyCodes::MouseButtonLeft);
+        const int btnRight  = static_cast<int>(KeyCodes::MouseButtonRight);
+        const int btnMiddle = static_cast<int>(KeyCodes::MouseButtonMiddle);
+        if (key == btnMiddle || (alt_down && key == btnLeft) ||
+            (action_down && alt_down && key == btnLeft))
         {
             m_SceneViewInputMode = SceneViewInputMode::Pan;
         }
-        else if ((alt_down && key == GLFW_MOUSE_BUTTON_RIGHT) ||
-                 (action_down && alt_down && key == GLFW_MOUSE_BUTTON_RIGHT))
+        else if ((alt_down && key == btnRight) ||
+                 (action_down && alt_down && key == btnRight))
         {
             m_SceneViewInputMode = SceneViewInputMode::DragZoom;
         }
-        else if (key == GLFW_MOUSE_BUTTON_RIGHT && !GET_SYSTEM(EditorSceneManager)->IsSceneView2D())
+        else if (key == btnRight && !GET_SYSTEM(EditorSceneManager)->IsSceneView2D())
         {
             m_SceneViewInputMode = SceneViewInputMode::Orbit;
         }
-        else if (key == GLFW_MOUSE_BUTTON_RIGHT && GET_SYSTEM(EditorSceneManager)->IsSceneView2D())
+        else if (key == btnRight && GET_SYSTEM(EditorSceneManager)->IsSceneView2D())
         {
             m_SceneViewInputMode = SceneViewInputMode::Pan;
         }
-        else if (key == GLFW_MOUSE_BUTTON_LEFT)
+        else if (key == btnLeft)
         {
             if (m_EngineWindowSize.x > 0.0f && m_EngineWindowSize.y > 0.0f && m_MouseX >= 0.0f && m_MouseY >= 0.0f)
             {
@@ -564,10 +577,13 @@ void EditorInputManager::OnMouseButtonClicked(int key, int action)
         return;
     }
 
-    if (action == GLFW_RELEASE)
+    if (action == KeyCodes::RELEASE)
     {
         const SceneViewInputMode input_mode = m_SceneViewInputMode;
-        if (key == GLFW_MOUSE_BUTTON_LEFT && input_mode == SceneViewInputMode::Selection && !m_SceneViewDragged)
+        const int btnLeft   = static_cast<int>(KeyCodes::MouseButtonLeft);
+        const int btnRight  = static_cast<int>(KeyCodes::MouseButtonRight);
+        const int btnMiddle = static_cast<int>(KeyCodes::MouseButtonMiddle);
+        if (key == btnLeft && input_mode == SceneViewInputMode::Selection && !m_SceneViewDragged)
         {
             Level* current_active_level = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
             if (current_active_level != nullptr)
@@ -576,12 +592,12 @@ void EditorInputManager::OnMouseButtonClicked(int key, int action)
             }
         }
 
-        if ((key == GLFW_MOUSE_BUTTON_LEFT &&
+        if ((key == btnLeft &&
              (input_mode == SceneViewInputMode::Selection || input_mode == SceneViewInputMode::Gizmo ||
               input_mode == SceneViewInputMode::Pan)) ||
-            (key == GLFW_MOUSE_BUTTON_RIGHT &&
+            (key == btnRight &&
              (input_mode == SceneViewInputMode::Orbit || input_mode == SceneViewInputMode::DragZoom)) ||
-            (key == GLFW_MOUSE_BUTTON_MIDDLE && input_mode == SceneViewInputMode::Pan))
+            (key == btnMiddle && input_mode == SceneViewInputMode::Pan))
         {
             ClearSceneViewInputCapture();
         }

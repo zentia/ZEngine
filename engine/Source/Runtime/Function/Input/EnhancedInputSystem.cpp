@@ -4,24 +4,20 @@
 #include "core/base/Macro.h"
 
 #include <algorithm>
-#include <GLFW/glfw3.h>
+#include "Runtime/Function/Input/KeyCodes.h"
 
 namespace
 {
-    // Map GLFW key codes to our platform-agnostic KeyCodes.
-    // GLFW key codes for printable keys (A-Z, 0-9) and special keys
-    // already match our KeyCodes constants (GLFW uses the same values
-    // as the standard USB HID usage table). So most keys need no
-    // translation — we just pass them through.
-    // Mouse buttons need offsetting to our MouseButton range.
-    int GlfwToKeyCode(int glfw_key)
+    // Identity mapping — our internal key codes are already
+    // GLFW-compatible, so no translation is needed.
+    int ToKeyCode(int key)
     {
-        return glfw_key; // GLFW key codes already match KeyCodes
+        return key;
     }
 
-    int GlfwMouseButtonToKeyCode(int glfw_button)
+    int MouseButtonToKeyCode(int button)
     {
-        return KeyCodes::MouseButton1 + glfw_button;
+        return static_cast<int>(KeyCodes::MouseButton1) + button;
     }
 } // namespace
 
@@ -34,19 +30,19 @@ bool EnhancedInputSystem::Initialize()
 {
     // Register raw input callbacks with WindowSystem
     GET_SYSTEM(WindowSystem)
-        ->registerOnKeyFunc([this](int key, int scancode, int action, int mods) {
+        ->RegisterOnKeyFunc([this](int key, int scancode, int action, int mods) {
             OnKey(key, scancode, action, mods);
         });
     GET_SYSTEM(WindowSystem)
-        ->registerOnCursorPosFunc([this](double x, double y) {
+        ->RegisterOnCursorPosFunc([this](double x, double y) {
             OnCursorPos(x, y);
         });
     GET_SYSTEM(WindowSystem)
-        ->registerOnMouseButtonFunc([this](int button, int action, int mods) {
+        ->RegisterOnMouseButtonFunc([this](int button, int action, int mods) {
             OnMouseButton(button, action, mods);
         });
     GET_SYSTEM(WindowSystem)
-        ->registerOnScrollFunc([this](double xoff, double yoff) {
+        ->RegisterOnScrollFunc([this](double xoff, double yoff) {
             OnScroll(xoff, yoff);
         });
 
@@ -71,12 +67,12 @@ void EnhancedInputSystem::Shutdown()
 
 void EnhancedInputSystem::OnKey(int key, int scancode, int action, int mods)
 {
-    int key_code = GlfwToKeyCode(key);
-    if (action == GLFW_PRESS || action == GLFW_REPEAT)
+    int key_code = ToKeyCode(key);
+    if (action == KeyCodes::PRESS || action == KeyCodes::REPEAT)
     {
         m_PressedKeys.insert(key_code);
     }
-    else if (action == GLFW_RELEASE)
+    else if (action == KeyCodes::RELEASE)
     {
         m_PressedKeys.erase(key_code);
     }
@@ -98,12 +94,12 @@ void EnhancedInputSystem::OnCursorPos(double current_cursor_x, double current_cu
 
 void EnhancedInputSystem::OnMouseButton(int button, int action, int mods)
 {
-    int key_code = GlfwMouseButtonToKeyCode(button);
-    if (action == GLFW_PRESS)
+    int key_code = MouseButtonToKeyCode(button);
+    if (action == KeyCodes::PRESS)
     {
         m_PressedKeys.insert(key_code);
     }
-    else if (action == GLFW_RELEASE)
+    else if (action == KeyCodes::RELEASE)
     {
         m_PressedKeys.erase(key_code);
     }

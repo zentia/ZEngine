@@ -43,34 +43,36 @@ namespace
         return static_cast<EditorUIPass*>(pass);
     }
 
-    void LoadGlfwWindowIcons(GLFWwindow* window, const std::string& big_icon_path, const std::string& small_icon_path)
+    void LoadWindowIcons(void* nativeWindowHandle, const std::string& big_icon_path, const std::string& small_icon_path)
     {
-        GLFWimage window_icon[2] = {};
-        window_icon[0].pixels =
-            stbi_load(big_icon_path.c_str(), &window_icon[0].width, &window_icon[0].height, nullptr, 4);
-        window_icon[1].pixels =
-            stbi_load(small_icon_path.c_str(), &window_icon[1].width, &window_icon[1].height, nullptr, 4);
+#ifdef _WIN32
+        HWND hwnd = static_cast<HWND>(nativeWindowHandle);
+        if (hwnd == nullptr) return;
 
-        if (window_icon[0].pixels != nullptr && window_icon[1].pixels != nullptr)
+        // Load icons directly from .ico files using Win32 API (replaces glfwSetWindowIcon)
+        HICON bigIcon = (HICON)LoadImageA(NULL, big_icon_path.c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+        HICON smallIcon = (HICON)LoadImageA(NULL, small_icon_path.c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+
+        if (bigIcon)
         {
-            glfwSetWindowIcon(window, 2, window_icon);
+            SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)bigIcon);
         }
-        else
+        if (smallIcon)
+        {
+            SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)smallIcon);
+        }
+
+        if (!bigIcon && !smallIcon)
         {
             LOG_WARNING(ZEditor,
                         "EditorUI: failed to load window icons (big='{}' small='{}'); continuing without custom icon",
                         big_icon_path,
                         small_icon_path);
         }
-
-        if (window_icon[0].pixels != nullptr)
-        {
-            stbi_image_free(window_icon[0].pixels);
-        }
-        if (window_icon[1].pixels != nullptr)
-        {
-            stbi_image_free(window_icon[1].pixels);
-        }
+#else
+        (void)nativeWindowHandle; (void)big_icon_path; (void)small_icon_path;
+        LOG_INFO(ZEditor, "EditorUI: window icon loading not implemented on this platform");
+#endif
     }
 }  // namespace
 
@@ -195,10 +197,10 @@ bool EditorUI::Initialize()
     // (including CJK) is rasterized by the native ZFontAtlas. The Profiler tool
     // still uses ImGui, but owns its own context independently.
 
-    // setup window icon (stbi_* symbols are linked from ZRuntime's STB_IMAGE_IMPLEMENTATION TU)
-    LoadGlfwWindowIcons(GET_SYSTEM(WindowSystem)->GetWindow(),
-                        GET_SYSTEM(ConfigManager)->GetEditorBigIconPath().generic_string(),
-                        GET_SYSTEM(ConfigManager)->GetEditorSmallIconPath().generic_string());
+    // setup window icon
+    LoadWindowIcons(GET_SYSTEM(WindowSystem)->GetNativeWindowHandle(),
+                    GET_SYSTEM(ConfigManager)->GetEditorBigIconPath().generic_string(),
+                    GET_SYSTEM(ConfigManager)->GetEditorSmallIconPath().generic_string());
     RegisterAllEditorWindow();
 
     // Editor tear-off (true OS multi-window): the manager detaches panels into

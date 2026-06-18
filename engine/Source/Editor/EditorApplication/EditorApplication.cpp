@@ -126,7 +126,7 @@ bool Editor::Initialize()
     // UE-style live resize: keep presenting during the Win32 modal resize/move loop (border drag),
     // when glfwPollEvents blocks and Run() is frozen. Without this the FLIP swapchain shows white
     // for the un-presented grown area until the drag is released.
-    GET_SYSTEM(WindowSystem)->registerOnWindowRefreshFunc([this]() { RenderFrameDuringResize(); });
+    GET_SYSTEM(WindowSystem)->RegisterOnWindowRefreshFunc([this]() { RenderFrameDuringResize(); });
 
     // DX12 swapchain recovery on Alt-Tab return: FLIP-model swapchains can enter an
     // occluded / device-lost state when the window is in the background. Notify the
@@ -135,7 +135,7 @@ bool Editor::Initialize()
     // is a no-op — but calling it unconditionally keeps the call site simple.
     if (auto* rhi = GET_SYSTEM(RHI))
     {
-        GET_SYSTEM(WindowSystem)->registerOnWindowFocusFunc([rhi](int focused) {
+        GET_SYSTEM(WindowSystem)->RegisterOnWindowFocusFunc([rhi](int focused) {
             if (focused)
             {
                 rhi->NotifyWindowFocusGained();

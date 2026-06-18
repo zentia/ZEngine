@@ -13,8 +13,6 @@
 // Forward declarations for platform-specific types
 // These will be conditionally included in implementation files
 #if defined(Z_HAS_VULKAN)
-    #define GLFW_INCLUDE_VULKAN
-    #include <GLFW/glfw3.h>
     #include <vma/vk_mem_alloc.h>
 #endif
 

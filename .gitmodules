@@ -10,9 +10,6 @@
 [submodule "engine/3rdparty/bqlog"]
 	path = engine/3rdparty/bqlog
 	url = https://github.com/tencent/bqlog
-[submodule "engine/3rdparty/glfw"]
-	path = engine/3rdparty/glfw
-	url = https://github.com/glfw/glfw.git
 [submodule "engine/3rdparty/JoltPhysics"]
 	path = engine/3rdparty/JoltPhysics
 	url = https://github.com/zentia/JoltPhysics.git

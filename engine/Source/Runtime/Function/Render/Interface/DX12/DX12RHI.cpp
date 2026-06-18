@@ -9,8 +9,6 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UI/Render/UiGpuResources.h"
 #include "Runtime/Project/ProjectInfo.h"
-#define GLFW_EXPOSE_NATIVE_WIN32
-#include <GLFW/glfw3native.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -2235,11 +2233,10 @@ void DX12RHI::CreateSwapchain()
         return;
     }
 
-    GLFWwindow* glfw_window = GET_SYSTEM(WindowSystem)->GetWindow();
-    HWND hwnd = glfwGetWin32Window(glfw_window);
+    HWND hwnd = static_cast<HWND>(GET_SYSTEM(WindowSystem)->GetNativeWindowHandle());
     if (hwnd == nullptr)
     {
-        LOG_ERROR(ZRender, "glfwGetWin32Window failed for DX12 swapchain");
+        LOG_ERROR(ZRender, "GetNativeWindowHandle failed for DX12 swapchain");
         return;
     }
 
@@ -5789,6 +5786,18 @@ void DX12RHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwapc
     if (present_result == DXGI_STATUS_OCCLUDED)
     {
         m_PendingFloatingPresents.clear();
+        // Flag for full swapchain recreation on the next non-zero-sized frame.
+        // This is the primary recovery path for minimize/restore because the
+        // GLFW window-focus callback (which also sets this flag via
+        // NotifyWindowFocusGained) may not fire reliably for taskbar-based
+        // minimize/restore on Windows, and even when it does fire,
+        // PrepareBeforePass runs BEFORE glfwPollEvents in TickOneFrame so
+        // the flag would take one extra frame to take effect.
+        //
+        // For the common minimize case the overhead is zero: all subsequent
+        // frames are skipped (0x0 framebuffer) until the window is restored,
+        // so RecreateSwapchain fires exactly once on the first visible frame.
+        m_SwapchainNeedsRecreate = true;
         // Fall through to normal fence advance + frame index rotation below,
         // exactly as if Present had succeeded. This matches UE's behaviour in
         // FD3D12Viewport::PresentChecked which checks SUCCEEDED(Result) and

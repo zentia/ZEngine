@@ -385,7 +385,7 @@ bool EditorAssetManager::Initialize()
 
     if (auto window_system = GET_SYSTEM(WindowSystem))
     {
-        window_system->registerOnWindowFocusFunc([this](int focused) {
+        window_system->RegisterOnWindowFocusFunc([this](int focused) {
             if (focused != 0)
             {
                 OnEditorFocusGained();

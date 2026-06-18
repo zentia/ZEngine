@@ -6,35 +6,34 @@
 #include "Runtime/Slate/Application/SlateApplication.h"
 #include "Runtime/Slate/Backend/SlateUIRendererBackend.h"
 #include "Runtime/UI/Render/UIRenderer.h"
-
-#include <GLFW/glfw3.h>
+#include "Runtime/Function/Input/KeyCodes.h"
 
 namespace
 {
-ZSlate::EKey MapGlfwKeyToSlate(int glfw_key)
-{
-    // Letter keys A-Z (GLFW_KEY_A=65 .. GLFW_KEY_Z=90, contiguous)
-    if (glfw_key >= GLFW_KEY_A && glfw_key <= GLFW_KEY_Z)
+    ZSlate::EKey MapKeyToSlate(int key)
     {
-        return static_cast<ZSlate::EKey>(
-            static_cast<int>(ZSlate::EKey::A) + (glfw_key - GLFW_KEY_A));
-    }
+        // Letter keys A-Z (KEY_A=65 .. KEY_Z=90, contiguous)
+        if (key >= KeyCodes::KEY_A && key <= KeyCodes::KEY_Z)
+        {
+            return static_cast<ZSlate::EKey>(
+                static_cast<int>(ZSlate::EKey::A) + (key - KeyCodes::KEY_A));
+        }
 
-    switch (glfw_key)
-    {
-        case GLFW_KEY_BACKSPACE: return ZSlate::EKey::Backspace;
-        case GLFW_KEY_DELETE:    return ZSlate::EKey::Delete;
-        case GLFW_KEY_ENTER:
-        case GLFW_KEY_KP_ENTER:  return ZSlate::EKey::Enter;
-        case GLFW_KEY_ESCAPE:    return ZSlate::EKey::Escape;
-        case GLFW_KEY_LEFT:      return ZSlate::EKey::Left;
-        case GLFW_KEY_RIGHT:     return ZSlate::EKey::Right;
-        case GLFW_KEY_HOME:      return ZSlate::EKey::Home;
-        case GLFW_KEY_END:       return ZSlate::EKey::End;
-        case GLFW_KEY_SPACE:     return ZSlate::EKey::Space;
-        default:                 return ZSlate::EKey::Unknown;
+        switch (key)
+        {
+            case KeyCodes::KEY_Backspace: return ZSlate::EKey::Backspace;
+            case KeyCodes::KEY_Delete:    return ZSlate::EKey::Delete;
+            case KeyCodes::KEY_Enter:
+            case KeyCodes::KEY_KPEnter:  return ZSlate::EKey::Enter;
+            case KeyCodes::KEY_Escape:    return ZSlate::EKey::Escape;
+            case KeyCodes::KEY_Left:      return ZSlate::EKey::Left;
+            case KeyCodes::KEY_Right:     return ZSlate::EKey::Right;
+            case KeyCodes::KEY_Home:      return ZSlate::EKey::Home;
+            case KeyCodes::KEY_End:       return ZSlate::EKey::End;
+            case KeyCodes::KEY_Space:     return ZSlate::EKey::Space;
+            default:                       return ZSlate::EKey::Unknown;
+        }
     }
-}
 }  // namespace
 
 std::vector<std::type_index> UISystem::GetDependencies() const
@@ -52,25 +51,25 @@ bool UISystem::Initialize()
 
     if (auto window = GET_SYSTEM(WindowSystem))
     {
-        window->registerOnCursorPosFunc([this](double x, double y) {
+        window->RegisterOnCursorPosFunc([this](double x, double y) {
             m_PointerPos = Vector2(static_cast<float>(x), static_cast<float>(y));
         });
 
-        window->registerOnMouseButtonFunc([this](int button, int action, int /*mods*/) {
-            if (button == GLFW_MOUSE_BUTTON_LEFT)
+        window->RegisterOnMouseButtonFunc([this](int button, int action, int /*mods*/) {
+            if (button == static_cast<int>(KeyCodes::MouseButtonLeft))
             {
-                m_SlateLeftDown = (action != GLFW_RELEASE);
+                m_SlateLeftDown = (action != KeyCodes::RELEASE);
             }
         });
 
-        window->registerOnScrollFunc([this](double /*xoff*/, double yoff) {
+        window->RegisterOnScrollFunc([this](double /*xoff*/, double yoff) {
             m_SlateWheelAccum += static_cast<float>(yoff);
         });
 
-        window->registerOnKeyFunc([this](int key, int /*scan*/, int action, int /*mods*/) {
-            if (action == GLFW_PRESS || action == GLFW_REPEAT)
+        window->RegisterOnKeyFunc([this](int key, int /*scan*/, int action, int /*mods*/) {
+            if (action == KeyCodes::PRESS || action == KeyCodes::REPEAT)
             {
-                const ZSlate::EKey slate_key = MapGlfwKeyToSlate(key);
+                const ZSlate::EKey slate_key = MapKeyToSlate(key);
                 if (slate_key != ZSlate::EKey::Unknown)
                 {
                     m_SlateKeys.push_back(slate_key);
@@ -78,7 +77,7 @@ bool UISystem::Initialize()
             }
         });
 
-        window->registerOnCharFunc([this](unsigned int codepoint) {
+        window->RegisterOnCharFunc([this](unsigned int codepoint) {
             m_SlateChars.push_back(codepoint);
         });
     }
@@ -149,22 +148,25 @@ void UISystem::RenderSlateRoot()
         m_SlateChars.clear();
         m_SlateKeys.clear();
 
-        static ZSlate::SlateUIRendererTextMeasurer s_slate_measurer;
-        s_slate_measurer.SetRenderer(m_UiRenderer);
-        ZSlate::SlateApplication::Get().SetTextMeasurer(&s_slate_measurer);
+        static ZSlate::SlateUIRendererTextMeasurer s_Slate_measurer;
+        s_Slate_measurer.SetRenderer(m_UiRenderer);
+        ZSlate::SlateApplication::Get().SetTextMeasurer(&s_Slate_measurer);
 
-        // Install GLFW-backed clipboard callbacks for runtime Slate text boxes.
-        static auto SlateGetClipboardGLFW = [](void* userdata) -> const char* {
-            return glfwGetClipboardString(static_cast<GLFWwindow*>(userdata));
+        // Install native clipboard callbacks for runtime ZSlate text boxes.
+        static auto SlateGetClipboard = [](void* userdata) -> const char* {
+            static std::string s_Text;
+            if (auto* ws = GET_SYSTEM(WindowSystem))
+                if (auto* app = ws->GetApplication())
+                    s_Text = app->GetClipboardText();
+            return s_Text.c_str();
         };
-        static auto SlateSetClipboardGLFW = [](const char* text, void* userdata) {
-            glfwSetClipboardString(static_cast<GLFWwindow*>(userdata), text);
+        static auto SlateSetClipboard = [](const char* text, void* userdata) {
+            if (auto* ws = GET_SYSTEM(WindowSystem))
+                if (auto* app = ws->GetApplication())
+                    app->SetClipboardText(text);
         };
-        GLFWwindow* clipboard_window = nullptr;
-        if (auto* ws = GET_SYSTEM(WindowSystem))
-            clipboard_window = ws->GetWindow();
         ZSlate::SlateApplication::Get().SetClipboardCallbacks(
-            SlateGetClipboardGLFW, SlateSetClipboardGLFW, clipboard_window);
+            SlateGetClipboard, SlateSetClipboard, nullptr);
 
         const Vector2 display_size = m_UiRenderer->getDisplaySize();
         ZSlate::SlateApplication::Get().PaintInto(m_UiRenderer, UIRect(0.0f, 0.0f, display_size.x, display_size.y));

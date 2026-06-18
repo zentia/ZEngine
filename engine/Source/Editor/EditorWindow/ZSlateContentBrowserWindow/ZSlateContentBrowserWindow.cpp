@@ -129,7 +129,7 @@ ZSlateContentBrowserWindow::ZSlateContentBrowserWindow(EditorUI* editor_ui)
 
     if (auto window_system = GET_SYSTEM(WindowSystem))
     {
-        window_system->registerOnDropFunc([this](int count, const char** paths) {
+        window_system->RegisterOnDropFunc([this](int count, const char** paths) {
             if (count <= 0 || paths == nullptr)
                 return;
             std::vector<std::string> copies;

@@ -178,19 +178,26 @@ void ZSlateEditorOverlay::BeginFrameIfEnabled()
     s_editor_measurer.SetRenderer(&m_Renderer);
     SlateApplication::Get().SetTextMeasurer(&s_editor_measurer);
 
-    // Install GLFW-backed clipboard callbacks so SEditableTextBox can copy/paste.
+    // Install native clipboard callbacks so SEditableTextBox can copy/paste.
+    // Uses GenericApplication::GetClipboardText/SetClipboardText (platform-agnostic).
     // Lambdas are non-capturing, so they implicitly convert to function pointers.
-    auto SlateGetClipboardGLFW = [](void* userdata) -> const char* {
-        return glfwGetClipboardString(static_cast<GLFWwindow*>(userdata));
+    auto SlateGetClipboardNative = [](void* userdata) -> const char* {
+        auto* app = static_cast<GenericApplication*>(userdata);
+        if (!app) return nullptr;
+        // Cache the result so it stays valid for the caller (SEditableTextBox uses it immediately).
+        static std::string s_cached;
+        s_cached = app->GetClipboardText();
+        return s_cached.c_str();
     };
-    auto SlateSetClipboardGLFW = [](const char* text, void* userdata) {
-        glfwSetClipboardString(static_cast<GLFWwindow*>(userdata), text);
+    auto SlateSetClipboardNative = [](const char* text, void* userdata) {
+        auto* app = static_cast<GenericApplication*>(userdata);
+        if (app) app->SetClipboardText(text);
     };
-    GLFWwindow* clipboard_window = nullptr;
+    GenericApplication* clipboard_app = nullptr;
     if (auto* ws = GET_SYSTEM(WindowSystem))
-        clipboard_window = ws->GetWindow();
+        clipboard_app = ws->GetApplication();
     SlateApplication::Get().SetClipboardCallbacks(
-        SlateGetClipboardGLFW, SlateSetClipboardGLFW, clipboard_window);
+        SlateGetClipboardNative, SlateSetClipboardNative, clipboard_app);
 
     // Capture the display size ZSlate windows are mapped to NDC against (see
     // m_EditorDisplay* in the header). The NDC divisor MUST equal the viewport

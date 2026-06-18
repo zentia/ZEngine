@@ -9,6 +9,7 @@
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Runtime/UI/Render/UIRenderer.h"
+#include "Runtime/Function/Input/KeyCodes.h"
 
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/Macro.h"
@@ -1079,7 +1080,10 @@ void ZSlateSceneWindow::HandleSceneViewNavigation(bool chrome_capturing, const U
     const bool is_hovered = !chrome_capturing && work_rect.Contains(mouse) && host.IsSurfaceHovered(surface_id, mouse);
 
     if (host.IsAltDown())
-        glfwSetInputMode(GET_SYSTEM(WindowSystem)->GetWindow(), GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    {
+        if (auto* app = GET_SYSTEM(WindowSystem)->GetApplication())
+            app->SetCursorMode(false);
+    }
 
     const bool scene_view_2d =
         GET_SYSTEM(EditorSceneManager) != nullptr && GET_SYSTEM(EditorSceneManager)->IsSceneView2D();
@@ -1195,29 +1199,31 @@ void ZSlateSceneWindow::MoveSceneViewCameraWithKeyboard(const std::shared_ptr<Re
         return;
 
     WindowSystem* window_system = GET_SYSTEM(WindowSystem);
-    if (!editor_camera || window_system == nullptr || window_system->GetWindow() == nullptr)
+    if (!editor_camera || window_system == nullptr || window_system->GetNativeWindowHandle() == nullptr)
         return;
 
     Vector3 camera_delta(0.0f, 0.0f, 0.0f);
+    auto* app = window_system->GetApplication();
+    if (!app) return;
     const bool scene_view_2d =
         GET_SYSTEM(EditorSceneManager) != nullptr && GET_SYSTEM(EditorSceneManager)->IsSceneView2D();
     if (scene_view_2d)
     {
-        if (glfwGetKey(window_system->GetWindow(), GLFW_KEY_W) == GLFW_PRESS)
+        if (app->IsKeyDown(KeyCodes::KEY_W))
             camera_delta += editor_camera->up();
-        if (glfwGetKey(window_system->GetWindow(), GLFW_KEY_S) == GLFW_PRESS)
+        if (app->IsKeyDown(KeyCodes::KEY_S))
             camera_delta -= editor_camera->up();
     }
     else
     {
-        if (glfwGetKey(window_system->GetWindow(), GLFW_KEY_W) == GLFW_PRESS)
+        if (app->IsKeyDown(KeyCodes::KEY_W))
             camera_delta += editor_camera->forward();
-        if (glfwGetKey(window_system->GetWindow(), GLFW_KEY_S) == GLFW_PRESS)
+        if (app->IsKeyDown(KeyCodes::KEY_S))
             camera_delta -= editor_camera->forward();
     }
-    if (glfwGetKey(window_system->GetWindow(), GLFW_KEY_A) == GLFW_PRESS)
+    if (app->IsKeyDown(KeyCodes::KEY_A))
         camera_delta -= editor_camera->right();
-    if (glfwGetKey(window_system->GetWindow(), GLFW_KEY_D) == GLFW_PRESS)
+    if (app->IsKeyDown(KeyCodes::KEY_D))
         camera_delta += editor_camera->right();
 
     if (camera_delta.squaredLength() <= 0.0f)

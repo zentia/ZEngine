@@ -25,7 +25,8 @@
 #include <mimalloc.h>
 #include <string_view>
 
-#include <GLFW/glfw3.h>
+#include "Runtime/Function/Input/KeyCodes.h"
+
 
 using namespace ZSlate;
 
@@ -363,9 +364,9 @@ void ZSlateConsoleWindow::CopySelectedLogToClipboard() const
 
     if (auto* window_system = GET_SYSTEM(WindowSystem))
     {
-        if (GLFWwindow* glfw_window = window_system->GetWindow())
+        if (auto* app = window_system->GetApplication())
         {
-            glfwSetClipboardString(glfw_window, entry.m_Content);
+            app->SetClipboardText(entry.m_Content);
         }
     }
 }
@@ -681,10 +682,10 @@ void ZSlateConsoleWindow::OnGUI()
             bool copy_shortcut = false;
             if (auto* window_system = GET_SYSTEM(WindowSystem))
             {
-                if (GLFWwindow* glfw_window = window_system->GetWindow())
+                if (auto* app = window_system->GetApplication())
                 {
                     const bool ctrl = host.IsCtrlDown();
-                    const bool c_down = glfwGetKey(glfw_window, GLFW_KEY_C) == GLFW_PRESS;
+                    const bool c_down = app->IsKeyDown(KeyCodes::KEY_C);
                     const bool shortcut_down = ctrl && c_down;
                     copy_shortcut = shortcut_down && !m_PrevCopyShortcut;
                     m_PrevCopyShortcut = shortcut_down;
