@@ -222,11 +222,7 @@ std::array<int, 2> WindowsWindow::GetFramebufferSize() const
     if (!m_Hwnd) return {m_Width, m_Height};
     RECT clientRect;
     GetClientRect(m_Hwnd, &clientRect);
-    // DPI 缩放：GetClientRect 返回逻辑像素，需乘 DPI scale
-    float scale = GetDpiScale();
-    return {
-        static_cast<int>(clientRect.right  * scale),
-        static_cast<int>(clientRect.bottom * scale)};
+    return {clientRect.right, clientRect.bottom};
 }
 
 float WindowsWindow::GetDpiScale() const
@@ -328,9 +324,9 @@ bool WindowsWindow::ProcessMessage(UINT   msg,
     {
         int x = GET_X_LPARAM(lParam);
         int y = GET_Y_LPARAM(lParam);
-        // DPI 缩放
-        float scale = GetDpiScale();
-        for (auto& cb : OnCursorPos) cb(x / scale, y / scale);
+        // Per-Monitor DPI V2 下 WM_MOUSEMOVE 已经返回物理像素坐标，
+        // 不再需要除以 DPI scale（否则会导致物理 + 逻辑混合坐标，光标与按钮位置对不齐）
+        for (auto& cb : OnCursorPos) cb(static_cast<double>(x), static_cast<double>(y));
         break;
     }
     case WM_MOUSEWHEEL:
@@ -363,6 +359,23 @@ bool WindowsWindow::ProcessMessage(UINT   msg,
         for (auto& cb : OnWindowRefresh) cb();
         ValidateRect(m_Hwnd, nullptr);
         break;
+    case WM_SETCURSOR:
+        // 参考 UE：光标被捕获时阻止系统设置光标，其余交给 DefWindowProc
+        if (m_Application && m_Application->IsCursorCaptured())
+            return true;
+        return false;
+    case WM_DPICHANGED:
+    {
+        // 响应 DPI 变化，更新窗口位置/大小，并触发 swapchain 重建
+        const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+        SetWindowPos(m_Hwnd, nullptr,
+                     suggested->left, suggested->top,
+                     suggested->right - suggested->left,
+                     suggested->bottom - suggested->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        // WM_SIZE 会自然触发 OnWindowSize -> swapchain 重建
+        break;
+    }
     case WM_DROPFILES:
     {
         HDROP hDrop = reinterpret_cast<HDROP>(wParam);

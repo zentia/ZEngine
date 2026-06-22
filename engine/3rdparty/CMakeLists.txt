@@ -197,59 +197,6 @@ elseif(PAPI_TYPE STREQUAL "v8")
     endif()
 endif()
 
-if(NOT TARGET glfw)
-    if(EMSCRIPTEN)
-        # On Web (Emscripten), do NOT compile GLFW from source. It calls native
-        # window-system / POSIX APIs (Win32, Cocoa, X11, Wayland, clock_gettime,
-        # etc.) which are unavailable in the browser. Emscripten ships its own
-        # GLFW3-compatible implementation that maps glfw* APIs onto the HTML5
-        # <canvas> + requestAnimationFrame.
-        #
-        # We expose a header-only INTERFACE target named `glfw` so that the rest
-        # of the build can keep doing `target_link_libraries(... glfw)`. The
-        # `-sUSE_GLFW=3` flag is added on both the compile and link sides so
-        # that include paths and link-time symbols are resolved by Emscripten.
-        add_library(glfw INTERFACE)
-        # NOTE: -sUSE_GLFW=3 is a *link-time* Emscripten setting. Putting it on
-        # the compile line triggers `linker setting ignored during compilation`
-        # warnings on every TU that links to glfw. Emscripten's GLFW3 headers
-        # are available via the system include path regardless, so we only
-        # need this on the link side.
-        target_link_options(glfw INTERFACE "-sUSE_GLFW=3")
-        # Provide the upstream public headers so callers can still
-        # `#include <GLFW/glfw3.h>` exactly like on native platforms.
-        target_include_directories(glfw INTERFACE
-            "${CMAKE_CURRENT_SOURCE_DIR}/glfw/include"
-        )
-    else()
-        option(GLFW_BUILD_EXAMPLES "" OFF)
-        option(GLFW_BUILD_TESTS "" OFF)
-        option(GLFW_BUILD_DOCS "" OFF)
-        option(GLFW_INSTALL "" OFF)
-        if(ANDROID OR IOS OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
-            set(GLFW_BUILD_WIN32 OFF CACHE BOOL "" FORCE)
-            set(GLFW_BUILD_COCOA OFF CACHE BOOL "" FORCE)
-            set(GLFW_BUILD_X11 OFF CACHE BOOL "" FORCE)
-            set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
-        endif()
-        add_subdirectory(glfw)
-        if(TARGET glfw)
-            set_target_properties(glfw PROPERTIES FOLDER ${third_party_folder}/glfw)
-            # Disable Unity Builds for GLFW (causes redefinition errors for static functions)
-            set_target_properties(glfw PROPERTIES UNITY_BUILD OFF)
-            if(Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
-                target_compile_definitions(glfw PRIVATE _POSIX_C_SOURCE=199309L)
-                target_compile_options(glfw PRIVATE -Wno-unused-command-line-argument)
-            endif()
-            z_set_config_archive_dirs(glfw "${CMAKE_CURRENT_BINARY_DIR}/glfw/src")
-        endif()
-
-        if(TARGET update_mappings)
-            set_target_properties(update_mappings PROPERTIES FOLDER ${third_party_folder}/glfw)
-        endif()
-    endif()
-endif()
-
 if(NOT TARGET BqLog)
     if(EMSCRIPTEN)
         # BqLog uses POSIX backtrace (<execinfo.h>) and platform-specific inline

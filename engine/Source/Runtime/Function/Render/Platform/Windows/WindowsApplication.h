@@ -22,6 +22,7 @@ public:
     void SetTitle(const char* title) override;
     void ShowMainWindow() override;
     void SetCursorMode(bool capture) override;
+    bool IsCursorCaptured() const { return m_CursorCaptured; }
 
     // 剪贴板
     void           SetClipboardText(const char* text) override;

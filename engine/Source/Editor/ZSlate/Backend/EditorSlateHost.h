@@ -280,6 +280,7 @@ private:
 
     int HoveredIn(const std::vector<Surface>& surfaces, const Vector2& point) const;
 
+    void* m_CursorArrow  {nullptr};
     void* m_CursorHand {nullptr};
     void* m_CursorResizeEw {nullptr};
     void* m_CursorResizeNs {nullptr};

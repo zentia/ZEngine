@@ -5643,8 +5643,10 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
         // DXGI surface invalidation (Alt-Tab / minimize / driver TDR)
         // can stale ANY UI GPU resource (font atlases, white texture,
         // Texture2D cache entries, dynamic textures, external image views).
-        // Invalidate ALL of them so they are lazily re-created from
-        // still-valid CPU pixel data on the next UI draw call.
+        // InvalidateAllGpuResources now re-uploads font atlases and the
+        // white texture IN PLACE (keeping GpuTexture* handle_ids stable)
+        // so batch commands recorded on the game thread still resolve
+        // to valid descriptor sets this same frame.
         if (auto* gpu_res = UiGpuResources::Get())
         {
             gpu_res->InvalidateAllGpuResources();
@@ -5675,8 +5677,10 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
             }
 
             // UE parity: any swapchain recreate (including resize) can stale
-            // UI GPU resources. Invalidate all of them so they are lazily
-            // re-created from CPU pixel data on the next UI draw call.
+            // UI GPU resources. InvalidateAllGpuResources re-uploads font
+            // atlases and the white texture IN PLACE (handle_ids stable) so
+            // batch commands recorded on the game thread still resolve to
+            // valid descriptor sets this same frame.
             if (auto* gpu_res = UiGpuResources::Get())
             {
                 gpu_res->InvalidateAllGpuResources();

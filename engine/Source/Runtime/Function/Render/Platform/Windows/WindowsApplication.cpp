@@ -11,6 +11,10 @@ WindowsApplication::~WindowsApplication()
 
 bool WindowsApplication::Initialize(const char* title, int width, int height)
 {
+    // 声明 Per-Monitor DPI 感知，防止 Windows 自动缩放导致窗口放大
+    // 参考 UE 和 JoltPhysics
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     m_MainWindow = std::make_unique<WindowsWindow>();
     if (!m_MainWindow->Initialize(title, width, height,
                                    true,   // decorated
@@ -20,6 +24,7 @@ bool WindowsApplication::Initialize(const char* title, int width, int height)
     {
         return false;
     }
+    m_MainWindow->SetParentApplication(this);
     m_AllWindows.push_back(m_MainWindow.get());
     return true;
 }
@@ -58,7 +63,12 @@ void WindowsApplication::ShowMainWindow()
 
 void WindowsApplication::SetCursorMode(bool capture)
 {
+    // 幂等：状态未变则不重复操作（防止每帧调用导致 ShowCursor 计数器漂移）
+    if (m_CursorCaptured == capture)
+        return;
+
     m_CursorCaptured = capture;
+
     if (capture)
     {
         // 捕获鼠标（等价 glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED)）
@@ -67,12 +77,18 @@ void WindowsApplication::SetCursorMode(bool capture)
         ClientToScreen(m_MainWindow->GetHwnd(), (POINT*)&clipRect.left);
         ClientToScreen(m_MainWindow->GetHwnd(), (POINT*)&clipRect.right);
         ClipCursor(&clipRect);
-        ShowCursor(FALSE);
+
+        // 参考 UE FWindowsCursor::Show(false):
+        // Win32 ShowCursor 是引用计数的，循环直到计数 < 0（光标真正隐藏）
+        while (ShowCursor(FALSE) >= 0) { }
     }
     else
     {
         ClipCursor(nullptr);
-        ShowCursor(TRUE);
+
+        // 参考 UE FWindowsCursor::Show(true):
+        // 循环调用 ShowCursor(TRUE) 直到计数 >= 0（光标真正显示）
+        while (ShowCursor(TRUE) < 0) { }
     }
 }
 
@@ -93,6 +109,7 @@ GenericWindow* WindowsApplication::CreateChildWindow(const char* title,
         return nullptr;
     }
     child->SetPosition(pos_x, pos_y);
+    child->SetParentApplication(this);
 
     GenericWindow* result = child.get();
     m_OwnedChildren.push_back(std::move(child));

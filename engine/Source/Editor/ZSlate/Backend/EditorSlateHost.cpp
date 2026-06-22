@@ -167,6 +167,7 @@ void EditorSlateHost::Initialize()
 
     if (auto* app = GET_SYSTEM(WindowSystem) ? GET_SYSTEM(WindowSystem)->GetApplication() : nullptr)
     {
+        m_CursorArrow   = app->CreateStandardCursor(0);  // arrow
         m_CursorHand     = app->CreateStandardCursor(1);  // hand
         m_CursorResizeEw = app->CreateStandardCursor(2);  // hresize
         m_CursorResizeNs = app->CreateStandardCursor(3);  // vresize
@@ -317,7 +318,7 @@ void EditorSlateHost::SetMouseCursor(EMouseCursor cursor)
         case EMouseCursor::ResizeNS:   native_cursor = m_CursorResizeNs;   break;
         case EMouseCursor::ResizeNWSE: native_cursor = m_CursorResizeNwse; break;
         case EMouseCursor::Default:
-        default:                       break;
+        default:                       native_cursor = m_CursorArrow;      break;
     }
     auto* app = GET_SYSTEM(WindowSystem) ? GET_SYSTEM(WindowSystem)->GetApplication() : nullptr;
     if (app != nullptr)
