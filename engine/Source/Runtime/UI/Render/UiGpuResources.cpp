@@ -19,6 +19,28 @@
 
 UiGpuResources* UiGpuResources::s_Instance = nullptr;
 
+std::vector<std::pair<uint32_t, std::function<void()>>> UiGpuResources::s_InvalidationCallbacks;
+uint32_t UiGpuResources::s_NextCallbackId = 1;
+
+uint32_t UiGpuResources::RegisterInvalidationCallback(std::function<void()> callback)
+{
+    if (!callback)
+        return 0;
+    const uint32_t id = s_NextCallbackId++;
+    s_InvalidationCallbacks.emplace_back(id, std::move(callback));
+    return id;
+}
+
+void UiGpuResources::UnregisterInvalidationCallback(uint32_t id)
+{
+    if (id == 0)
+        return;
+    auto it = std::find_if(s_InvalidationCallbacks.begin(), s_InvalidationCallbacks.end(),
+                           [id](const auto& pair) { return pair.first == id; });
+    if (it != s_InvalidationCallbacks.end())
+        s_InvalidationCallbacks.erase(it);
+}
+
 namespace
 {
     // Try to add common CJK fallback fonts to `atlas` so that Chinese, Japanese,
@@ -111,12 +133,22 @@ void UiGpuResources::ReuploadTextureInPlace(GpuTexture* target,
                                             uint32_t width,
                                             uint32_t height)
 {
+    ReuploadTextureInPlace(target, pixels, width, height, RHI_FORMAT_R8G8B8A8_UNORM, 1);
+}
+
+void UiGpuResources::ReuploadTextureInPlace(GpuTexture* target,
+                                            const uint8_t* pixels,
+                                            uint32_t width,
+                                            uint32_t height,
+                                            RHIFormat format,
+                                            uint32_t miplevels)
+{
     if (target == nullptr || pixels == nullptr || width == 0 || height == 0)
     {
         return;
     }
 
-    void* fresh = CreateFromPixels(pixels, width, height, RHI_FORMAT_R8G8B8A8_UNORM);
+    void* fresh = CreateFromPixels(pixels, width, height, format, std::max<uint32_t>(miplevels, 1u));
     if (fresh == nullptr)
     {
         LOG_WARNING(ZRender, "UiGpuResources: texture re-upload failed ({}x{})", width, height);
@@ -372,39 +404,77 @@ void UiGpuResources::InvalidateAllGpuResources()
     // UI GPU resources (font atlases, brush textures, dynamic textures, etc.)
     // and lets them be lazily re-created on the next draw call.
     //
-    // We clear every cache map / unique_ptr.  RHI objects (RHIImage,
-    // RHIImageView, RHIDescriptorSet) are intentionally NOT freed here:
-    //   - they may still be referenced by in-flight GPU command buffers
-    //   - DX12 ComPtr / Vulkan vkDestroy* defers the actual free until
-    //     all queue submissions that reference the handle have completed
-    //   - the CPU-side pixel data (ZFontAtlas::m_Pixels, Texture2D::m_Pixels)
-    //     is never touched, so the next EnsureXXX() call uploads fresh GPU
-    //     resources from pristine source data.
+    // CRITICAL: unlike UE where ReleaseResources is followed by a full
+    // UpdateTextureAtlases before the next draw, ZEngine's editor parallel
+    // path records the batch on the game thread BEFORE the render thread
+    // detects a swapchain resize and calls InvalidateAllGpuResources().
+    // If we clear the cache maps, the GpuTexture objects are destroyed and
+    // the batch commands' texture_id (GpuTexture* handles) become dangling
+    // pointers — fonts disappear for the entire resize frame.
     //
-    // This is the ZEngine equivalent of UE's pattern:
-    //   ReleaseResources()  →  clears RHI handles
-    //   UpdateTextureAtlases()  →  called next frame, re-uploads from CPU data
+    // Therefore we re-upload every cache entry IN PLACE via
+    // ReuploadTextureInPlace: fresh RHI images/views/descriptors are
+    // transplanted into the EXISTING GpuTexture wrappers, keeping their
+    // handle_id (void* address) stable.  Batch commands recorded before
+    // this invalidation continue to resolve to valid descriptor sets.
+    //
+    // Old RHI objects are intentionally leaked: they may still be
+    // referenced by in-flight GPU command buffers; DX12 COM / Vulkan
+    // deferred destroy keeps them alive until the GPU finishes.
 
-    m_NativeFontTextures.clear();
-    m_Texture2DCache.clear();
+    // Bump the invalidation version so Editor-side caches (ContentBrowserThumbnailCache,
+    // MeshDataPreview, InspectorMaterialPreview) can detect stale handles.
+    ++m_InvalidateCount;
+
+    // 1. Native font atlases: re-upload in place from still-valid CPU bitmaps.
+    for (auto& entry : m_NativeFontTextures)
+    {
+        ZFontAtlas* atlas = entry.first;
+        if (atlas != nullptr && atlas->IsLoaded())
+        {
+            ReuploadTextureInPlace(entry.second.get(),
+                                   atlas->GetPixels(),
+                                   atlas->GetWidth(),
+                                   atlas->GetHeight());
+        }
+    }
+
+    // 2. White texture: re-upload in place.
+    if (m_WhiteTexture)
+    {
+        const uint8_t white_rgba[4] = {255, 255, 255, 255};
+        ReuploadTextureInPlace(m_WhiteTexture.get(), white_rgba, 1, 1);
+    }
+
+    // 3. Texture2D cache: re-upload in place from the source Texture2D::m_Pixels.
+    //    ContentBrowserThumbnailCache and other Editor-side consumers hold void*
+    //    handles to these entries; clearing the cache would leave them with
+    //    dangling pointers. Re-uploading keeps handle_ids stable.
+    for (auto& entry : m_Texture2DCache)
+    {
+        Texture2D* tex = entry.first;
+        GpuTexture* gpu = entry.second.get();
+        if (tex != nullptr && tex->IsValid() && gpu != nullptr && !tex->m_Pixels.empty())
+        {
+            const RHIFormat format = static_cast<RHIFormat>(tex->m_Format);
+            ReuploadTextureInPlace(gpu, tex->m_Pixels.data(), tex->m_Width, tex->m_Height,
+                                   format, tex->GetMipCount());
+        }
+    }
+
+    // 4. Dynamic / external textures: clear (no CPU-pixel backup stored, so
+    //    in-place re-upload is not possible). Editor-side caches that hold
+    //    these handles must re-create via the invalidation callback below.
     m_DynamicTextures.clear();
     m_ExternalTextures.clear();
-    m_WhiteTexture.reset();
 
-    // Re-create the white texture immediately (it is needed as a fallback
-    // for every UiDrawCommand whose texture_id is null or stale).
-    // Use the same CreateFromPixels path so the SRV lands in the
-    // (now-recovered) bindless heap correctly.
-    const uint8_t white_rgba[4] = {255, 255, 255, 255};
-    void* white_handle = CreateFromPixels(white_rgba, 1, 1, RHI_FORMAT_R8G8B8A8_UNORM);
-    if (white_handle == nullptr)
+    // 5. Fire registered invalidation callbacks so Editor-side thumbnail/preview
+    //    caches (ContentBrowserThumbnailCache, MeshDataPreview, InspectorMaterialPreview)
+    //    can discard their now-stale void* handles.
+    for (const auto& cb : s_InvalidationCallbacks)
     {
-        LOG_ERROR(ZRender, "UiGpuResources: failed to re-create white texture after invalidate");
-    }
-    else
-    {
-        m_WhiteTexture.reset(static_cast<GpuTexture*>(white_handle));
-        LOG_INFO(ZRender, "UiGpuResources: white texture re-created successfully");
+        if (cb.second)
+            cb.second();
     }
 }
 

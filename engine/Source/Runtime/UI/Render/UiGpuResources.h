@@ -6,9 +6,12 @@
 #include <EASTL/string.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 class Font;
 class Texture2D;
@@ -68,6 +71,19 @@ public:
     // fresh GPU resources from the still-valid bitmap data.
     void InvalidateAllGpuResources();
 
+    // Register a callback that fires AFTER all GPU resource caches are invalidated.
+    // Use this to clear Editor-side thumbnail/preview caches that hold void*
+    // handle references to now-destroyed GpuTexture wrappers. Thread-safe for
+    // registration but NOT for concurrent firing (call on the main thread only).
+    // Returns a registration id for UnregisterInvalidationCallback.
+    static uint32_t RegisterInvalidationCallback(std::function<void()> callback);
+    static void UnregisterInvalidationCallback(uint32_t id);
+
+    // Opaque version that bumps every time m_Texture2DCache / m_DynamicTextures /
+    // m_ExternalTextures are invalidated. Editor caches can store this alongside
+    // their cached handles and discard on mismatch.
+    uint64_t GetInvalidateCount() const { return m_InvalidateCount; }
+
     void* EnsureTexture2D(Texture2D* texture);
 
     // Dynamic CPU-bitmap texture for editor previews (software-rasterized mesh /
@@ -113,6 +129,11 @@ private:
     // buffers, so freeing them here would be a use-after-free without a frame-
     // fence wait). Used by the native atlas refresh path.
     void ReuploadTextureInPlace(GpuTexture* target, const uint8_t* pixels, uint32_t width, uint32_t height);
+    // Overload supporting arbitrary RHI formats and mip chains (for Texture2D assets
+    // with compressed / mipped data). Used by InvalidateAllGpuResources to re-upload
+    // Texture2D cache entries in place.
+    void ReuploadTextureInPlace(GpuTexture* target, const uint8_t* pixels, uint32_t width, uint32_t height,
+                                RHIFormat format, uint32_t miplevels);
     void CreateDefaultNativeFont();
     void* CreateFromPixels(const uint8_t* pixels, uint32_t width, uint32_t height, RHIFormat format);
     // Mip-aware overload: `pixels` is a tightly-packed mip chain (mip0 first),
@@ -121,6 +142,10 @@ private:
     void* CreateFromPixels(const uint8_t* pixels, uint32_t width, uint32_t height, RHIFormat format, uint32_t miplevels);
 
     static UiGpuResources* s_Instance;
+
+    // Invalidation callback registry (see RegisterInvalidationCallback).
+    static std::vector<std::pair<uint32_t, std::function<void()>>> s_InvalidationCallbacks;
+    static uint32_t s_NextCallbackId;
 
     RHI* m_Rhi;
     RHIDescriptorSetLayout* m_TextureLayout {nullptr};
@@ -141,5 +166,6 @@ private:
     std::unordered_map<ZFontAtlas*, std::unique_ptr<GpuTexture>> m_NativeFontTextures;
     ZFontAtlas* m_DefaultNativeFont {nullptr};
 
+    uint64_t m_InvalidateCount {0};
     bool m_Ready {false};
 };

@@ -18,6 +18,7 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Slate/Application/SlateApplication.h"
+#include "Runtime/UI/Render/UiGpuResources.h"  // GPU cache invalidation callback
 #include "Runtime/Slate/Widgets/SBorder.h"
 #include "Runtime/Slate/Widgets/SBoxPanel.h"
 #include "Runtime/Slate/Widgets/SButton.h"
@@ -127,6 +128,19 @@ ZSlateContentBrowserWindow::ZSlateContentBrowserWindow(EditorUI* editor_ui)
             });
     }
 
+    // Register with UiGpuResources so that when GPU resources are invalidated
+    // (swapchain recreate / DXGI surface invalidation), the Content Browser
+    // thumbnail cache and its dependent Mesh/Material preview caches discard
+    // their stale void* handles.  Without this, InvalidateAllGpuResources()
+    // clears m_Texture2DCache / m_DynamicTextures / m_ExternalTextures but
+    // ContentBrowserThumbnailCache still returns the freed handles, causing
+    // tiles to display white fallback textures.
+    m_GpuInvalidationCallbackId = UiGpuResources::RegisterInvalidationCallback([]() {
+        ContentBrowserThumbnailCache::InvalidateAll();
+    });
+
+    if (auto window_system = GET_SYSTEM(WindowSystem))
+
     if (auto window_system = GET_SYSTEM(WindowSystem))
     {
         window_system->RegisterOnDropFunc([this](int count, const char** paths) {
@@ -151,6 +165,10 @@ ZSlateContentBrowserWindow::~ZSlateContentBrowserWindow()
     {
         if (auto asset_manager = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
             asset_manager->UnregisterOnAssetUpdated(m_AssetRegistryListenerHandle);
+    }
+    if (m_GpuInvalidationCallbackId != 0)
+    {
+        UiGpuResources::UnregisterInvalidationCallback(m_GpuInvalidationCallbackId);
     }
     s_Instance = nullptr;
 }

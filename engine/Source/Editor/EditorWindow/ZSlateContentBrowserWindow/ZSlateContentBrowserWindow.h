@@ -109,6 +109,7 @@ private:
     bool m_PendingImportDialog {false};
     bool m_AssetTreeDirty {false};
     uint32_t m_AssetRegistryListenerHandle {0};
+    uint32_t m_GpuInvalidationCallbackId {0};
     ContentBrowserContext m_Context;
 
     // ---- ZSlate view state -------------------------------------------------
