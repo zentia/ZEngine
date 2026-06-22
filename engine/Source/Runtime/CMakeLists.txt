@@ -5,12 +5,25 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(RUNTIME_COMPILE_DEFINITIONS)
+
+# ---- Add ZSlate library (standalone UI framework) ----
+set(ZSLATE_PATH "${ENGINE_ROOT_DIR}/Libraries/ZSlate")
+if(EXISTS "${ZSLATE_PATH}/CMakeLists.txt")
+    add_subdirectory("${ZSLATE_PATH}" "${CMAKE_CURRENT_BINARY_DIR}/ZSlate")
+    message(STATUS "Runtime: ZSlate library enabled from ${ZSLATE_PATH}")
+else()
+    message(WARNING "Runtime: ZSlate library not found at ${ZSLATE_PATH}")
+endif()
+
 # ---- Add source files ----
 
 # Note: globbing sources is considered bad practice as CMake's generators may not detect new files
 # automatically. Keep that in mind when changing files, or explicitly mention them here.
 file(GLOB_RECURSE HEADER_FILES CONFIGURE_DEPENDS "*.h" "*.inl")
 file(GLOB_RECURSE SOURCE_FILES CONFIGURE_DEPENDS "*.cpp")
+
+# Slate files have been fully migrated to the standalone ZSlate library
+# (Runtime/Slate/ directory removed in P3)
 
 # Determine platform-specific Platform directory and collect platform source files
 set(PLATFORM_DIR "${ENGINE_ROOT_DIR}/Source/Platform")
@@ -445,6 +458,21 @@ function(configure_runtime_library target)
     
     # Link dependencies
     target_link_libraries(${target} PUBLIC BqLog)
+    # ZSlate: standalone UI framework (when available)
+    if(TARGET ZSlate)
+        target_link_libraries(${target} PRIVATE ZSlate)
+        message(STATUS "Runtime: Linking with ZSlate library")
+        
+        # ZSlate ZEngine platform implementation (bridges ZSlate <-> UiGpuResources)
+        set(ZSLATE_PLATFORM_DIR "${ENGINE_ROOT_DIR}/Libraries/ZSlate/platform/ZEngine")
+        if(EXISTS "${ZSLATE_PLATFORM_DIR}/ZEngineSlateRenderer.cpp")
+            target_include_directories(${target} PRIVATE "${ZSLATE_PLATFORM_DIR}")
+            target_sources(${target} PRIVATE
+                "${ZSLATE_PLATFORM_DIR}/ZEngineSlateRenderer.cpp"
+            )
+            message(STATUS "Runtime: ZSlate ZEngine platform implementation enabled")
+        endif()
+    endif()
     target_link_libraries(${target} PRIVATE tinyobjloader stb tweeny)
     # ZRuntime is ImGui-free: the 2D UI renders through native ZSlate (BatchedUIRenderer +
     # ZFontAtlas, which vendors its own stb_truetype). ImGui now links only into the
