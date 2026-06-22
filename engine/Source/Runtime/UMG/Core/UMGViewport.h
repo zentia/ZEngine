@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "ZSlate/Widgets/SOverlay.h"
+#include "ZSlate/Widgets/Panels/SOverlay.h"
 
 #include <memory>
 #include <vector>
