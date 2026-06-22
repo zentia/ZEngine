@@ -4,6 +4,8 @@
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector4.h"
 
+#include <cstdint>
+
 // UI颜色类型（RGBA）
 using UIColor = Vector4;
 
@@ -41,6 +43,26 @@ struct UIRect
 
         return UIRect(minX, minY, maxX - minX, maxY - minY);
     }
+};
+
+// UI边距（用于padding、margin等）
+struct FMargin
+{
+    float Left {0.0f};
+    float Top {0.0f};
+    float Right {0.0f};
+    float Bottom {0.0f};
+
+    FMargin() = default;
+    explicit FMargin(float uniform)
+        : Left(uniform), Top(uniform), Right(uniform), Bottom(uniform) {}
+    FMargin(float horizontal, float vertical)
+        : Left(horizontal), Top(vertical), Right(horizontal), Bottom(vertical) {}
+    FMargin(float l, float t, float r, float b)
+        : Left(l), Top(t), Right(r), Bottom(b) {}
+
+    float GetTotalHorizontal() const { return Left + Right; }
+    float GetTotalVertical() const { return Top + Bottom; }
 };
 
 // 矩形偏移（用于padding等）

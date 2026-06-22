@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "ZSlate/Widgets/SImage.h"
+#include "ZSlate/Widgets/Panels/SImage.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 namespace ZUMG
@@ -26,7 +26,7 @@ public:
     {
         Tint = tint;
         if (auto* w = GetSlateAs<ZSlate::SImage>())
-            w->Brush.Tint = tint;
+            w->Brush.Tint = ZSlate::UIColor(tint.x, tint.y, tint.z, tint.w);
     }
 
     const char* GetWidgetClassName() const override { return "Image"; }
@@ -54,11 +54,13 @@ protected:
     {
         auto img = std::make_shared<ZSlate::SImage>();
         img->Brush.Texture = Texture;
-        img->Brush.Tint    = Tint;
-        img->Brush.ImageSize = DesiredSize;
-        img->Brush.Uv0     = Uv0;
-        img->Brush.Uv1     = Uv1;
-        img->Visibility    = m_Visibility;
+        // Convert ::UIColor to ZSlate::UIColor (::Vector4 uses x,y,z,w)
+        img->Brush.Tint = ZSlate::UIColor(Tint.x, Tint.y, Tint.z, Tint.w);
+        // Convert ::Vector2 to ZSlate::Vector2
+        img->Brush.ImageSize = ZSlate::Vector2(DesiredSize.x, DesiredSize.y);
+        img->Brush.Uv0 = ZSlate::Vector2(Uv0.x, Uv0.y);
+        img->Brush.Uv1 = ZSlate::Vector2(Uv1.x, Uv1.y);
+        img->Visibility = m_Visibility;
         return img;
     }
 };

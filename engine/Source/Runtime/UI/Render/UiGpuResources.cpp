@@ -452,7 +452,7 @@ void UiGpuResources::InvalidateAllGpuResources()
     //    dangling pointers. Re-uploading keeps handle_ids stable.
     for (auto& entry : m_Texture2DCache)
     {
-        Texture2D* tex = entry.first;
+        const Texture2D* tex = entry.first;
         GpuTexture* gpu = entry.second.get();
         if (tex != nullptr && tex->IsValid() && gpu != nullptr && !tex->m_Pixels.empty())
         {

@@ -1,6 +1,7 @@
 ﻿#pragma once
 
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
+#include "Runtime/UI/Core/UITypes.h"
 #include "Runtime/UMG/Core/UPanelWidget.h"
 
 namespace ZUMG
@@ -10,7 +11,7 @@ namespace ZUMG
 class UBorder : public UPanelWidget
 {
 public:
-    UIColor BackgroundColor {0.12f, 0.12f, 0.12f, 1.0f};
+    ::UIColor BackgroundColor {0.12f, 0.12f, 0.12f, 1.0f};
     bool DrawBackground {true};
     ZSlate::FMargin Padding;
     ZSlate::EHorizontalAlignment HAlign {ZSlate::EHorizontalAlignment::Fill};
@@ -26,7 +27,7 @@ public:
     {
         BackgroundColor = color;
         if (auto* w = GetSlateAs<ZSlate::SBorder>())
-            w->BackgroundColor = color;
+            w->BackgroundColor = ZSlate::UIColor(color.x, color.y, color.z, color.w);
     }
 
     const char* GetWidgetClassName() const override { return "Border"; }
@@ -57,7 +58,7 @@ protected:
     std::shared_ptr<ZSlate::SWidget> RebuildWidget() override
     {
         auto b = std::make_shared<ZSlate::SBorder>();
-        b->BackgroundColor = BackgroundColor;
+        b->BackgroundColor = ZSlate::UIColor(BackgroundColor.x, BackgroundColor.y, BackgroundColor.z, BackgroundColor.w);
         b->DrawBackground = DrawBackground;
         b->Padding = Padding;
         b->HAlign = HAlign;

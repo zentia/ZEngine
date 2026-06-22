@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "ZSlate/Widgets/SSpacer.h"
+#include "ZSlate/Widgets/Layout/SSpacer.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 namespace ZUMG
@@ -26,7 +26,7 @@ public:
 protected:
     std::shared_ptr<ZSlate::SWidget> RebuildWidget() override
     {
-        auto s = std::make_shared<ZSlate::SSpacer>(Size);
+        auto s = std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(Size.x, Size.y));
         s->Visibility = m_Visibility;
         return s;
     }

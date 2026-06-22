@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "ZSlate/Widgets/SCheckBox.h"
+#include "ZSlate/Widgets/Input/SCheckBox.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 #include <functional>

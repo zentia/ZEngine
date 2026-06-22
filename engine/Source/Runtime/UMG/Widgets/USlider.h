@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "ZSlate/Widgets/SSlider.h"
+#include "ZSlate/Widgets/Input/SSlider.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 #include <functional>
@@ -47,7 +47,6 @@ protected:
     {
         auto s = std::make_shared<ZSlate::SSlider>();
         s->Value = Value;
-        s->MinDesiredWidth = MinDesiredWidth;
         s->OnValueChanged = OnValueChanged;
         s->Visibility = m_Visibility;
         return s;

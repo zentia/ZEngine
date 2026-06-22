@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "ZSlate/Widgets/SEditableTextBox.h"
+#include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 #include <functional>

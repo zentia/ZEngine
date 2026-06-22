@@ -12,6 +12,11 @@ class UIRenderer;
 class WindowSystem;
 class RenderSystem;
 
+namespace ZSlate
+{
+class ZEngineSlateRenderer;
+}
+
 // UISystem - runtime UI driver (replaces the retired UGUI CanvasManager).
 //
 // Owns the shared GPU-backed UIRenderer and acts as the WindowUI PreRender
@@ -41,6 +46,7 @@ private:
     void RenderSlateRoot();
 
     UIRenderer* m_UiRenderer {nullptr};
+    ZSlate::ZEngineSlateRenderer* m_SlateRenderer {nullptr};
     Vector2 m_PointerPos {0.0f, 0.0f};
     bool m_Initialized {false};
 

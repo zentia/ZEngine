@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "ZSlate/Widgets/STextBlock.h"
+#include "ZSlate/Widgets/Text/STextBlock.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 #include <string>
@@ -26,7 +26,7 @@ public:
     {
         Color = color;
         if (auto* w = GetSlateAs<ZSlate::STextBlock>())
-            w->Color = color;
+            w->SetColor(ZSlate::UIColor(color.x, color.y, color.z, color.w));
     }
 
     const char* GetWidgetClassName() const override { return "TextBlock"; }
@@ -53,8 +53,8 @@ protected:
         auto t = std::make_shared<ZSlate::STextBlock>();
         t->Text = Text;
         t->FontSize = FontSize;
-        t->Color = Color;
-        t->Alignment = Alignment;
+        t->Color = ZSlate::UIColor(Color.x, Color.y, Color.z, Color.w);
+        t->Alignment = static_cast<ZSlate::TextAnchor>(Alignment);
         t->Visibility = m_Visibility;
         return t;
     }

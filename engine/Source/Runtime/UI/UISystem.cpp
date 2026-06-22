@@ -5,6 +5,7 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Backend/SlateUIRendererBackend.h"
+#include "ZSlate/Backend/ZEngineSlateRenderer.h"
 #include "Runtime/UI/Render/UIRenderer.h"
 #include "Runtime/Function/Input/KeyCodes.h"
 
@@ -96,6 +97,11 @@ void UISystem::PreRender()
 
 void UISystem::Shutdown()
 {
+    if (m_SlateRenderer)
+    {
+        delete m_SlateRenderer;
+        m_SlateRenderer = nullptr;
+    }
     if (m_UiRenderer)
     {
         DestroyUIRenderer(m_UiRenderer);
@@ -109,6 +115,7 @@ void UISystem::InitializeUIRenderer()
     if (!m_UiRenderer)
     {
         m_UiRenderer = CreateDefaultUIRenderer();
+        m_SlateRenderer = new ZSlate::ZEngineSlateRenderer(nullptr, m_UiRenderer);
     }
 }
 
@@ -136,7 +143,9 @@ void UISystem::RenderSlateRoot()
         // widget geometry (standard retained-mode order), then paint to refresh
         // geometry for next frame. is_over_host is always true here because the
         // ZSlate surface owns the whole display in the runtime path.
-        m_SlateInput.ProcessMouse(slate_root, m_PointerPos, /*is_over_host=*/true, m_SlateLeftDown, m_SlateWheelAccum);
+        // Convert Vector2 to ZSlate::Vector2
+        ZSlate::Vector2 slate_pos(m_PointerPos.x, m_PointerPos.y);
+        m_SlateInput.ProcessMouse(slate_root, slate_pos, /*is_over_host=*/true, m_SlateLeftDown, m_SlateWheelAccum);
         m_SlateWheelAccum = 0.0f;
         if (m_SlateInput.HasKeyboardFocus())
         {
@@ -148,8 +157,7 @@ void UISystem::RenderSlateRoot()
         m_SlateChars.clear();
         m_SlateKeys.clear();
 
-        static ZSlate::SlateUIRendererTextMeasurer s_Slate_measurer;
-        s_Slate_measurer.SetRenderer(m_UiRenderer);
+        static ZSlate::SlateUIRendererTextMeasurer s_Slate_measurer(m_SlateRenderer);
         ZSlate::SlateApplication::Get().SetTextMeasurer(&s_Slate_measurer);
 
         // Install native clipboard callbacks for runtime ZSlate text boxes.
@@ -169,7 +177,7 @@ void UISystem::RenderSlateRoot()
             SlateGetClipboard, SlateSetClipboard, nullptr);
 
         const Vector2 display_size = m_UiRenderer->getDisplaySize();
-        ZSlate::SlateApplication::Get().PaintInto(m_UiRenderer, UIRect(0.0f, 0.0f, display_size.x, display_size.y));
+        ZSlate::SlateApplication::Get().PaintInto(m_SlateRenderer, ZSlate::UIRect(0.0f, 0.0f, display_size.x, display_size.y));
     }
     else
     {

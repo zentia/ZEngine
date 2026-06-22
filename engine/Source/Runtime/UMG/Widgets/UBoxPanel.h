@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "Runtime/UMG/Core/UPanelWidget.h"
 
 #include <memory>
