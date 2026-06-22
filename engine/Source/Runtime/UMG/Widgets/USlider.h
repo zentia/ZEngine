@@ -1,6 +1,6 @@
-#pragma once
+﻿#pragma once
 
-#include "Runtime/Slate/Widgets/SSlider.h"
+#include "ZSlate/Widgets/SSlider.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 #include <functional>

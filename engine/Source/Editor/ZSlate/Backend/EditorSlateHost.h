@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // ----------------------------------------------------------------------------
 // EditorSlateHost -- native editor windowing + input layer (P10).
@@ -23,7 +23,7 @@
 // ----------------------------------------------------------------------------
 
 #include "Runtime/Core/Math/Vector2.h"
-#include "Runtime/Slate/Core/SlateKeys.h"
+#include "ZSlate/Core/SlateKeys.h"
 #include "Runtime/UI/Core/UITypes.h"  // UIRect
 
 #include "Runtime/Function/Render/Platform/Generic/GenericWindow.h"

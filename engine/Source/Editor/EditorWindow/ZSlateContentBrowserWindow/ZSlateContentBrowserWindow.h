@@ -1,13 +1,13 @@
-#pragma once
+﻿#pragma once
 
 #include "Editor/EditorFileService/EditorFileService.h"
 #include "Editor/EditorUI/ContentBrowser/ContentBrowserContext.h"
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Editor/Menu/ZSlatePopupMenu.h"  // reusable context-menu overlay
-#include "Runtime/Slate/Core/SlatePaint.h"
+#include "ZSlate/Core/SlatePaint.h"
 #include "Runtime/UI/Render/UIRenderer.h"
-#include "Runtime/Slate/Application/SlateInput.h"
-#include "Runtime/Slate/Core/SlateGeometry.h"  // Vector2
+#include "ZSlate/Application/SlateInput.h"
+#include "ZSlate/Core/SlateGeometry.h"  // Vector2
 #include "function/framework/Object/ObjectIdAllocator.h"
 
 #include <EASTL/string.h>

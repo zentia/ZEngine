@@ -1,15 +1,15 @@
-#include "ZSlateAnimationWindow.h"
+﻿#include "ZSlateAnimationWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"  // native RHI backend
-#include "Runtime/Slate/Application/SlateApplication.h"
-#include "Runtime/Slate/Widgets/SBorder.h"
-#include "Runtime/Slate/Widgets/SBoxPanel.h"
-#include "Runtime/Slate/Widgets/SButton.h"
-#include "Runtime/Slate/Widgets/SCheckBox.h"
-#include "Runtime/Slate/Widgets/SSpacer.h"
-#include "Runtime/Slate/Widgets/STextBlock.h"
+#include "ZSlate/Application/SlateApplication.h"
+#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/SButton.h"
+#include "ZSlate/Widgets/SCheckBox.h"
+#include "ZSlate/Widgets/SSpacer.h"
+#include "ZSlate/Widgets/STextBlock.h"
 #include "Runtime/UI/Render/UIRenderer.h"
 
 #include <algorithm>

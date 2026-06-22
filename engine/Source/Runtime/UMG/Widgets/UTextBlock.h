@@ -1,6 +1,6 @@
-#pragma once
+﻿#pragma once
 
-#include "Runtime/Slate/Widgets/STextBlock.h"
+#include "ZSlate/Widgets/STextBlock.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 #include <string>

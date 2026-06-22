@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // ----------------------------------------------------------------------------
 // ZSlateEditorMenuBar -- native ZSlate replacement for the editor's ImGui main
@@ -19,7 +19,7 @@
 // ----------------------------------------------------------------------------
 
 #include "Editor/Menu/ZSlatePopupMenu.h"  // shared dropdown-chain implementation
-#include "Runtime/Slate/Core/SlateGeometry.h"
+#include "ZSlate/Core/SlateGeometry.h"
 #include "Runtime/UI/Core/UITypes.h"  // UIRect
 
 #include <functional>

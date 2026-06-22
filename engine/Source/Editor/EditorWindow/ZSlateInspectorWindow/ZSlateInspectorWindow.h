@@ -1,10 +1,10 @@
-#pragma once
+﻿#pragma once
 
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"  // GObjectID, k_invalid_gobject_id
 #include "Editor/Menu/ZSlatePopupMenu.h"                   // combo dropdowns for native asset inspectors
-#include "Runtime/Slate/Application/SlateInput.h"
-#include "Runtime/Slate/Core/SlatePaint.h"
+#include "ZSlate/Application/SlateInput.h"
+#include "ZSlate/Core/SlatePaint.h"
 #include "Runtime/UI/Render/UIRenderer.h"
 
 #include <array>

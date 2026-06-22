@@ -1,4 +1,4 @@
-#include "ZSlateConsoleWindow.h"
+﻿#include "ZSlateConsoleWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"       // native input bus (P10)
@@ -7,16 +7,16 @@
 #include "Runtime/Core/Log/LogSystem.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
 #include "Runtime/Function/Render/WindowSystem.h"
-#include "Runtime/Slate/Application/SlateApplication.h"
-#include "Runtime/Slate/Widgets/SBorder.h"
-#include "Runtime/Slate/Widgets/SBoxPanel.h"
-#include "Runtime/Slate/Widgets/SButton.h"
-#include "Runtime/Slate/Widgets/SCheckBox.h"
-#include "Runtime/Slate/Widgets/SEditableTextBox.h"
-#include "Runtime/Slate/Widgets/SMenu.h"
-#include "Runtime/Slate/Widgets/SScrollBox.h"
-#include "Runtime/Slate/Widgets/SSpacer.h"
-#include "Runtime/Slate/Widgets/STextBlock.h"
+#include "ZSlate/Application/SlateApplication.h"
+#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/SButton.h"
+#include "ZSlate/Widgets/SCheckBox.h"
+#include "ZSlate/Widgets/SEditableTextBox.h"
+#include "ZSlate/Widgets/SMenu.h"
+#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/SSpacer.h"
+#include "ZSlate/Widgets/STextBlock.h"
 
 #include <algorithm>
 #include <bq_log/bq_log.h>

@@ -1,6 +1,6 @@
-#pragma once
+﻿#pragma once
 
-#include "Runtime/Slate/Widgets/SBox.h"
+#include "ZSlate/Widgets/SBox.h"
 #include "Runtime/UMG/Core/UPanelWidget.h"
 
 namespace ZUMG

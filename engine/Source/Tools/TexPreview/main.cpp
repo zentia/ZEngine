@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 // TexPreview - Standalone Block-Compressed Texture Preview Tool
 // -----------------------------------------------------------------------------
 // Bootstraps ZRuntime and hosts TexPreviewWindow inside SlateApplication.
@@ -23,7 +23,7 @@
 #include "Runtime/RegisterRuntime.h"
 #include "Runtime/Application/Application.h"
 #include "Runtime/Function/Render/WindowSystem.h"
-#include "Runtime/Slate/Application/SlateApplication.h"
+#include "ZSlate/Application/SlateApplication.h"
 
 #include "TexPreviewWindow.h"
 

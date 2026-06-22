@@ -1,4 +1,4 @@
-#include "ZSlateContentBrowserWindow.h"
+﻿#include "ZSlateContentBrowserWindow.h"
 
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Editor/EditorDragDrop/EditorDragDrop.h"
@@ -17,19 +17,19 @@
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
-#include "Runtime/Slate/Application/SlateApplication.h"
+#include "ZSlate/Application/SlateApplication.h"
 #include "Runtime/UI/Render/UiGpuResources.h"  // GPU cache invalidation callback
-#include "Runtime/Slate/Widgets/SBorder.h"
-#include "Runtime/Slate/Widgets/SBoxPanel.h"
-#include "Runtime/Slate/Widgets/SButton.h"
-#include "Runtime/Slate/Widgets/SEditableTextBox.h"
-#include "Runtime/Slate/Widgets/SImage.h"
-#include "Runtime/Slate/Widgets/SMenu.h"
-#include "Runtime/Slate/Widgets/SDropTarget.h"
-#include "Runtime/Slate/Widgets/SScrollBox.h"
-#include "Runtime/Slate/Widgets/SSplitter.h"
-#include "Runtime/Slate/Widgets/SSpacer.h"
-#include "Runtime/Slate/Widgets/STextBlock.h"
+#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/SButton.h"
+#include "ZSlate/Widgets/SEditableTextBox.h"
+#include "ZSlate/Widgets/SImage.h"
+#include "ZSlate/Widgets/SMenu.h"
+#include "ZSlate/Widgets/SDropTarget.h"
+#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/SSplitter.h"
+#include "ZSlate/Widgets/SSpacer.h"
+#include "ZSlate/Widgets/STextBlock.h"
 
 #include <algorithm>
 #include <cstdlib>

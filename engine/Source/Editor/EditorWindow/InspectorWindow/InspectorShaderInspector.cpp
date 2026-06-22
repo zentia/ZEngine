@@ -1,4 +1,4 @@
-#include "InspectorAssetCommon.h"
+﻿#include "InspectorAssetCommon.h"
 #include "MaterialInspectorRow.h"  // MaterialInspectorRow type (no fn decls -> safe inside detail ns)
 
 #include "Editor/AssetPipeline/ShaderImporter/ShaderImporter.h"
@@ -19,14 +19,14 @@
 #include "Runtime/Platform/Path/Path.h"
 
 // Native ZSlate Shader inspector widgets (BuildShaderInspectorWidget).
-#include "Runtime/Slate/Widgets/SBorder.h"
-#include "Runtime/Slate/Widgets/SBoxPanel.h"
-#include "Runtime/Slate/Widgets/SButton.h"
-#include "Runtime/Slate/Widgets/SCheckBox.h"
-#include "Runtime/Slate/Widgets/SEditableTextBox.h"
-#include "Runtime/Slate/Widgets/SExpandableArea.h"
-#include "Runtime/Slate/Widgets/SScrollBox.h"
-#include "Runtime/Slate/Widgets/STextBlock.h"
+#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/SButton.h"
+#include "ZSlate/Widgets/SCheckBox.h"
+#include "ZSlate/Widgets/SEditableTextBox.h"
+#include "ZSlate/Widgets/SExpandableArea.h"
+#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/STextBlock.h"
 
 #ifdef _WIN32
 #include "Runtime/Function/Render/Interface/DX12/DX12ShaderCompiler.h"

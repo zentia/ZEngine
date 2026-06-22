@@ -1,10 +1,10 @@
-#pragma once
+﻿#pragma once
 
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Runtime/Resource/ResType/Data/AnimationClip.h"
-#include "Runtime/Slate/Core/SlatePaint.h"
+#include "ZSlate/Core/SlatePaint.h"
 #include "Runtime/UI/Render/UIRenderer.h"
-#include "Runtime/Slate/Application/SlateInput.h"
+#include "ZSlate/Application/SlateInput.h"
 #include "Runtime/UI/Core/UITypes.h"
 
 #include <memory>

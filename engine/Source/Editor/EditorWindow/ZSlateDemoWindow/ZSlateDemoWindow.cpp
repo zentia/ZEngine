@@ -1,17 +1,17 @@
-#include "ZSlateDemoWindow.h"
+﻿#include "ZSlateDemoWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"       // native input bus (P10)
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"  // native RHI backend (M5)
-#include "Runtime/Slate/Application/SlateApplication.h"
-#include "Runtime/Slate/Widgets/SBorder.h"
-#include "Runtime/Slate/Widgets/SBoxPanel.h"
-#include "Runtime/Slate/Widgets/SButton.h"
-#include "Runtime/Slate/Widgets/SCheckBox.h"
-#include "Runtime/Slate/Widgets/SEditableTextBox.h"
-#include "Runtime/Slate/Widgets/SScrollBox.h"
-#include "Runtime/Slate/Widgets/SSlider.h"
-#include "Runtime/Slate/Widgets/STextBlock.h"
+#include "ZSlate/Application/SlateApplication.h"
+#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/SButton.h"
+#include "ZSlate/Widgets/SCheckBox.h"
+#include "ZSlate/Widgets/SEditableTextBox.h"
+#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/SSlider.h"
+#include "ZSlate/Widgets/STextBlock.h"
 
 #include <cmath>
 using namespace ZSlate;

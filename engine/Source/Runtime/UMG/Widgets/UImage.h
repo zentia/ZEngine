@@ -1,6 +1,6 @@
-#pragma once
+﻿#pragma once
 
-#include "Runtime/Slate/Widgets/SImage.h"
+#include "ZSlate/Widgets/SImage.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 namespace ZUMG

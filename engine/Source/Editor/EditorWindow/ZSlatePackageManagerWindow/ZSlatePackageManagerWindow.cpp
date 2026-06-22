@@ -1,4 +1,4 @@
-#include "ZSlatePackageManagerWindow.h"
+﻿#include "ZSlatePackageManagerWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/PackageManager/PackageManager.h"
@@ -8,16 +8,16 @@
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"  // native RHI backend
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Project/ProjectInfo.h"
-#include "Runtime/Slate/Application/SlateApplication.h"
-#include "Runtime/Slate/Widgets/SBorder.h"
-#include "Runtime/Slate/Widgets/SBox.h"
-#include "Runtime/Slate/Widgets/SBoxPanel.h"
-#include "Runtime/Slate/Widgets/SButton.h"
-#include "Runtime/Slate/Widgets/SCheckBox.h"
-#include "Runtime/Slate/Widgets/SEditableTextBox.h"
-#include "Runtime/Slate/Widgets/SScrollBox.h"
-#include "Runtime/Slate/Widgets/SSpacer.h"
-#include "Runtime/Slate/Widgets/STextBlock.h"
+#include "ZSlate/Application/SlateApplication.h"
+#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/SBox.h"
+#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/SButton.h"
+#include "ZSlate/Widgets/SCheckBox.h"
+#include "ZSlate/Widgets/SEditableTextBox.h"
+#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/SSpacer.h"
+#include "ZSlate/Widgets/STextBlock.h"
 
 #include <algorithm>
 #include <functional>

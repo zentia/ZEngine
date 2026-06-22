@@ -1,10 +1,10 @@
-#pragma once
+﻿#pragma once
 
 #include "Editor/EditorLayout/EditorLayoutConstants.h"
 #include "Editor/Menu/ZSlateMenuBar.h"
 #include "Editor/Platform/Interface/EditorView.h"
 #include "Menu.h"
-#include "Runtime/Slate/Application/SlateInput.h"
+#include "ZSlate/Application/SlateInput.h"
 
 #include <memory>
 #include <typeindex>

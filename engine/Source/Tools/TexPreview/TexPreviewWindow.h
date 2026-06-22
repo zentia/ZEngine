@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // =============================================================================
 // TexPreviewWindow
@@ -11,7 +11,7 @@
 // This is a standalone tool that does not depend on ZEditor.
 // =============================================================================
 
-#include "Runtime/Slate/Widgets/SWidget.h"
+#include "ZSlate/Widgets/SWidget.h"
 #include "Runtime/UI/Render/UIRenderer.h"
 #include "Runtime/UI/Render/UiGpuResources.h"
 

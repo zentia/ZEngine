@@ -1,12 +1,12 @@
-#pragma once
+﻿#pragma once
 
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"  // GObjectID, k_invalid_gobject_id
 #include "Editor/Menu/ZSlatePopupMenu.h"                   // reusable context-menu overlay
-#include "Runtime/Slate/Core/SlatePaint.h"
+#include "ZSlate/Core/SlatePaint.h"
 #include "Runtime/UI/Render/UIRenderer.h"
-#include "Runtime/Slate/Application/SlateInput.h"
-#include "Runtime/Slate/Core/SlateGeometry.h"  // Vector2
+#include "ZSlate/Application/SlateInput.h"
+#include "ZSlate/Core/SlateGeometry.h"  // Vector2
 
 #include <cstdint>
 #include <memory>

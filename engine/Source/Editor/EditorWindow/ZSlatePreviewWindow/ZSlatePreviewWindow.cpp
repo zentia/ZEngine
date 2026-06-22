@@ -1,4 +1,4 @@
-#include "ZSlatePreviewWindow.h"
+﻿#include "ZSlatePreviewWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
@@ -14,13 +14,13 @@
 #include "Runtime/Function/Render/Texture/Texture2D.h"
 #include "Runtime/Platform/Path/Path.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
-#include "Runtime/Slate/Application/SlateApplication.h"
-#include "Runtime/Slate/Widgets/SBorder.h"
-#include "Runtime/Slate/Widgets/SBox.h"
-#include "Runtime/Slate/Widgets/SBoxPanel.h"
-#include "Runtime/Slate/Widgets/SImage.h"
-#include "Runtime/Slate/Widgets/SScrollBox.h"
-#include "Runtime/Slate/Widgets/STextBlock.h"
+#include "ZSlate/Application/SlateApplication.h"
+#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/SBox.h"
+#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/SImage.h"
+#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/STextBlock.h"
 #include "Runtime/UI/Render/UiGpuResources.h"  // EnsureTexture2D (native texture preview)
 
 #include <algorithm>

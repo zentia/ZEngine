@@ -1,9 +1,9 @@
-#pragma once
+﻿#pragma once
 
 #include "Editor/EditorLayout/EditorLayout.h"
 #include "Editor/EditorLayout/ZSlateDock/DockHost.h"
 #include "Editor/EditorLayout/ZSlateDock/DockTree.h"
-#include "Runtime/Slate/Application/SlateInput.h"  // P11f: native Save Layout dialog input routing
+#include "ZSlate/Application/SlateInput.h"  // P11f: native Save Layout dialog input routing
 
 #include <array>
 #include <filesystem>

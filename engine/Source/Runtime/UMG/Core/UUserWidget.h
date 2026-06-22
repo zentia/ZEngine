@@ -1,6 +1,6 @@
-#pragma once
+﻿#pragma once
 
-#include "Runtime/Slate/Widgets/SWidget.h"
+#include "ZSlate/Widgets/SWidget.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 #include <memory>

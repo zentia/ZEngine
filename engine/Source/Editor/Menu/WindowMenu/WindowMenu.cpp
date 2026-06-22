@@ -1,4 +1,4 @@
-#include "WindowMenu.h"
+﻿#include "WindowMenu.h"
 
 #include "Editor/EditorLayout/DefaultLayout/DefaultLayout.h"
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
@@ -6,7 +6,7 @@
 #include "Editor/EditorWindow/ZSlatePackageManagerWindow/ZSlatePackageManagerWindow.h"
 #include "Editor/FloatingPanel/FloatingPanelManager.h"
 #include "Runtime/Function/Render/Pipeline/RenderPipelineSettings.h"
-#include "Runtime/Slate/Widgets/SMenu.h"
+#include "ZSlate/Widgets/SMenu.h"
 
 WindowMenu::WindowMenu(EditorUI* editor_ui)
     : Menu("Window", editor_ui) {}

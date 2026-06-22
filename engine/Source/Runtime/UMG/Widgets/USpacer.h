@@ -1,6 +1,6 @@
-#pragma once
+﻿#pragma once
 
-#include "Runtime/Slate/Widgets/SSpacer.h"
+#include "ZSlate/Widgets/SSpacer.h"
 #include "Runtime/UMG/Core/UWidget.h"
 
 namespace ZUMG

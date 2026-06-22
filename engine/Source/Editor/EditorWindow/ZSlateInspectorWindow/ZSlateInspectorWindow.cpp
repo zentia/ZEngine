@@ -1,4 +1,4 @@
-#include "ZSlateInspectorWindow.h"
+﻿#include "ZSlateInspectorWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/EditorUI/EditorEulerHint.h"
@@ -22,20 +22,20 @@
 #include "Editor/AssetPipeline/TextureImporter/TextureImportSettingsRegistry.h"
 #include "Runtime/Function/Render/Texture/Texture2D.h"  // native Texture2D inspector (imported dims)
 #include "Runtime/Project/ProjectInfo.h"                // resolve content-relative asset paths
-#include "Runtime/Slate/Application/SlateApplication.h"
-#include "Runtime/Slate/Widgets/SBorder.h"
-#include "Runtime/Slate/Widgets/SBox.h"
-#include "Runtime/Slate/Widgets/SBoxPanel.h"
-#include "Runtime/Slate/Widgets/SButton.h"
-#include "Runtime/Slate/Widgets/SCheckBox.h"
-#include "Runtime/Slate/Widgets/SColorPicker.h"   // native Material color editing
-#include "Runtime/Slate/Widgets/SDragFloat.h"     // native Material scalar editing
-#include "Runtime/Slate/Widgets/SEditableTextBox.h"
-#include "Runtime/Slate/Widgets/SExpandableArea.h"  // collapsible inspector sections
-#include "Runtime/Slate/Widgets/SMenu.h"     // combo dropdown rows
-#include "Runtime/Slate/Widgets/SScrollBox.h"
-#include "Runtime/Slate/Widgets/SSlider.h"   // compression-quality slider
-#include "Runtime/Slate/Widgets/STextBlock.h"
+#include "ZSlate/Application/SlateApplication.h"
+#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/SBox.h"
+#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/SButton.h"
+#include "ZSlate/Widgets/SCheckBox.h"
+#include "ZSlate/Widgets/SColorPicker.h"   // native Material color editing
+#include "ZSlate/Widgets/SDragFloat.h"     // native Material scalar editing
+#include "ZSlate/Widgets/SEditableTextBox.h"
+#include "ZSlate/Widgets/SExpandableArea.h"  // collapsible inspector sections
+#include "ZSlate/Widgets/SMenu.h"     // combo dropdown rows
+#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/SSlider.h"   // compression-quality slider
+#include "ZSlate/Widgets/STextBlock.h"
 #include "Runtime/UI/Core/Font.h"  // native Font asset inspector
 
 #include "Runtime/BaseClasses/GameObject.h"

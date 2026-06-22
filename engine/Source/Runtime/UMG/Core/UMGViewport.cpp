@@ -1,6 +1,6 @@
-#include "Runtime/UMG/Core/UMGViewport.h"
+﻿#include "Runtime/UMG/Core/UMGViewport.h"
 
-#include "Runtime/Slate/Application/SlateApplication.h"
+#include "ZSlate/Application/SlateApplication.h"
 #include "Runtime/UMG/Core/UUserWidget.h"
 
 #include <algorithm>

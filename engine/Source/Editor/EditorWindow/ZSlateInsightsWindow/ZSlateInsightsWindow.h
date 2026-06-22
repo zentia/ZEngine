@@ -1,10 +1,10 @@
-#pragma once
+﻿#pragma once
 
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Runtime/Profiler/InsightsTrace.h"
 #include "Runtime/Profiler/SInsightsTimeline.h"
-#include "Runtime/Slate/Application/SlateInput.h"
-#include "Runtime/Slate/Core/SlateGeometry.h"
+#include "ZSlate/Application/SlateInput.h"
+#include "ZSlate/Core/SlateGeometry.h"
 
 #include <memory>
 

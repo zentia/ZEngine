@@ -1,12 +1,12 @@
-#pragma once
+﻿#pragma once
 
 #include "Editor/EditorSceneManager/EditorSceneManager.h"  // EditorAxisMode
 #include "Editor/EditorWindow/PlayModeView/PlayModeView.h"
 #include "Editor/Menu/ZSlatePopupMenu.h"
-#include "Runtime/Slate/Application/SlateDragDrop.h"
-#include "Runtime/Slate/Core/SlatePaint.h"
+#include "ZSlate/Application/SlateDragDrop.h"
+#include "ZSlate/Core/SlatePaint.h"
 #include "Runtime/UI/Render/UIRenderer.h"
-#include "Runtime/Slate/Application/SlateInput.h"
+#include "ZSlate/Application/SlateInput.h"
 #include "Runtime/UI/Core/UITypes.h"
 
 #include <memory>

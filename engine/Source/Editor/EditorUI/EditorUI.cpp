@@ -1,4 +1,4 @@
-#include "EditorUI.h"
+﻿#include "EditorUI.h"
 
 #include "Editor/EditorInputManager/EditorInputManager.h"
 #include "Editor/EditorLayout/DefaultLayout/DefaultLayout.h"
@@ -28,7 +28,7 @@
 #include "Runtime/Platform/Path/Path.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
-#include "Runtime/Slate/Widgets/SMenu.h"
+#include "ZSlate/Widgets/SMenu.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
 
 #include <stb_image.h>

@@ -1,4 +1,4 @@
-// =============================================================================
+﻿// =============================================================================
 // TexPreviewWindow.cpp - Block-Compressed Texture Preview Widget
 // -----------------------------------------------------------------------------
 // A standalone Slate widget that previews ASTC and BC7 compressed textures.
@@ -8,7 +8,7 @@
 #include "TexPreviewWindow.h"
 
 #include "Runtime/Core/Base/Macro.h"
-#include "Runtime/Slate/Core/SlateReply.h"
+#include "ZSlate/Core/SlateReply.h"
 #include "Runtime/Function/Render/Texture/ASTCDecompressor.h"
 #include "Runtime/Function/Render/Texture/BC7Decompressor.h"
 #include "Runtime/Function/Render/Texture/ETC2Decompressor.h"

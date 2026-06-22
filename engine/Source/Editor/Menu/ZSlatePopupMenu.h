@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 // ----------------------------------------------------------------------------
 // ZSlatePopupMenu -- reusable anchored popup menu (right-click context menu)
@@ -21,8 +21,8 @@
 // draw list).
 // ----------------------------------------------------------------------------
 
-#include "Runtime/Slate/Application/SlateInput.h"
-#include "Runtime/Slate/Core/SlateGeometry.h"
+#include "ZSlate/Application/SlateInput.h"
+#include "ZSlate/Core/SlateGeometry.h"
 #include "Runtime/UI/Core/UITypes.h"  // UIRect
 
 #include <functional>

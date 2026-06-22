@@ -1,4 +1,4 @@
-#include "Editor/FloatingPanel/FloatingPanelManager.h"
+﻿#include "Editor/FloatingPanel/FloatingPanelManager.h"
 
 #include "Editor/EditorLayout/DefaultLayout/DefaultLayout.h"
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
@@ -11,8 +11,8 @@
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Project/ProjectInfo.h"
-#include "Runtime/Slate/Application/SlateInput.h"
-#include "Runtime/Slate/Widgets/SWindowTitleBar.h"
+#include "ZSlate/Application/SlateInput.h"
+#include "ZSlate/Widgets/SWindowTitleBar.h"
 #include "Runtime/UI/Render/BatchedUIRenderer.h"
 
 #include <rapidjson/document.h>
