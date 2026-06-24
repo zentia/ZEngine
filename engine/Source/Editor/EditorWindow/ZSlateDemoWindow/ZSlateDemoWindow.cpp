@@ -9,7 +9,7 @@
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/Input/SCheckBox.h"
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"
-#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/SSlider.h"
 #include "ZSlate/Widgets/STextBlock.h"
 

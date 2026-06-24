@@ -33,7 +33,7 @@
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/SExpandableArea.h"  // collapsible inspector sections
 #include "ZSlate/Widgets/SMenu.h"     // combo dropdown rows
-#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/SSlider.h"   // compression-quality slider
 #include "ZSlate/Widgets/STextBlock.h"
 #include "Runtime/UI/Core/Font.h"  // native Font asset inspector

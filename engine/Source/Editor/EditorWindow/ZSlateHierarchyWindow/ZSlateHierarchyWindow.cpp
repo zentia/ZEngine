@@ -20,7 +20,7 @@
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/SDropTarget.h"
 #include "ZSlate/Widgets/SMenu.h"
-#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/SSpacer.h"
 #include "ZSlate/Widgets/STextBlock.h"
 

@@ -19,7 +19,7 @@
 #include "ZSlate/Widgets/Layout/SBox.h"
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/SImage.h"
-#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/STextBlock.h"
 #include "Runtime/UI/Render/UiGpuResources.h"  // EnsureTexture2D (native texture preview)
 

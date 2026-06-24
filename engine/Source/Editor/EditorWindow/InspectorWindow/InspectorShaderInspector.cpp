@@ -25,7 +25,7 @@
 #include "ZSlate/Widgets/Input/SCheckBox.h"
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/SExpandableArea.h"
-#include "ZSlate/Widgets/SScrollBox.h"
+#include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/STextBlock.h"
 
 #ifdef _WIN32
