@@ -27,7 +27,7 @@
 #include "ZSlate/Widgets/Layout/SBox.h"
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Input/SButton.h"
-#include "ZSlate/Widgets/SCheckBox.h"
+#include "ZSlate/Widgets/Input/SCheckBox.h"
 #include "ZSlate/Widgets/SColorPicker.h"   // native Material color editing
 #include "ZSlate/Widgets/SDragFloat.h"     // native Material scalar editing
 #include "ZSlate/Widgets/SEditableTextBox.h"
