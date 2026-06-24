@@ -6,7 +6,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
-#include "ZSlate/Widgets/SButton.h"
+#include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/SSpacer.h"
 #include "ZSlate/Widgets/STextBlock.h"
 

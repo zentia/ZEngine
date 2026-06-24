@@ -21,7 +21,7 @@
 #include "Runtime/UI/Render/UiGpuResources.h"  // GPU cache invalidation callback
 #include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
-#include "ZSlate/Widgets/SButton.h"
+#include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/SEditableTextBox.h"
 #include "ZSlate/Widgets/SImage.h"
 #include "ZSlate/Widgets/SMenu.h"

@@ -1,4 +1,4 @@
-﻿#include "MenuController.h"
+#include "MenuController.h"
 
 #include "Editor/AssetPipeline/TextureImporter/TextureImporter.h"
 #include "Editor/AssetPipeline/TextureImporter/TextureImporterSettings.h"
@@ -13,7 +13,7 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "ZSlate/Core/SlatePaint.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
-#include "ZSlate/Widgets/SButton.h"
+#include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/SLeafWidget.h"
 #include "ZSlate/Widgets/SMenu.h"
 #include "ZSlate/Widgets/SSpacer.h"
