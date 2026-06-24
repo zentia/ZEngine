@@ -28,7 +28,7 @@ bool BatchedUIRenderer::BeginFrame()
     return m_Active;
 }
 
-void BatchedUIRenderer::PushClipRect(const UIRect& clip_rect, bool intersect_with_current)
+void BatchedUIRenderer::PushClipRect(const ZSlate::UIRect& clip_rect, bool intersect_with_current)
 {
     if (!m_Active)
     {
@@ -64,7 +64,7 @@ void BatchedUIRenderer::PopTransform()
     m_Batch.PopTransform();
 }
 
-void BatchedUIRenderer::DrawQuad(const UIRect& rect, const ZSlate::UIColor& color)
+void BatchedUIRenderer::DrawQuad(const ZSlate::UIRect& rect, const ZSlate::UIColor& color)
 {
     if (!m_Active)
     {
@@ -73,7 +73,7 @@ void BatchedUIRenderer::DrawQuad(const UIRect& rect, const ZSlate::UIColor& colo
     m_Batch.DrawQuad(rect, color, GetWhiteTextureId());
 }
 
-void BatchedUIRenderer::DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness)
+void BatchedUIRenderer::DrawRect(const ZSlate::UIRect& rect, const ZSlate::UIColor& color, float thickness)
 {
     if (!m_Active)
     {
@@ -91,7 +91,7 @@ void BatchedUIRenderer::DrawConvexPoly(const Vector2* points, int count, const Z
     m_Batch.DrawConvexPoly(points, count, color, GetWhiteTextureId());
 }
 
-void BatchedUIRenderer::DrawTexturedQuad(const UIRect& rect,
+void BatchedUIRenderer::DrawTexturedQuad(const ZSlate::UIRect& rect,
                                          void* texture_id,
                                          const ZSlate::UIColor& color,
                                          const Vector2& uv0,
@@ -104,7 +104,7 @@ void BatchedUIRenderer::DrawTexturedQuad(const UIRect& rect,
     m_Batch.DrawTexturedQuad(rect, texture_id, color, uv0, uv1, GetWhiteTextureId());
 }
 
-void BatchedUIRenderer::DrawText(const UIRect& rect,
+void BatchedUIRenderer::DrawText(const ZSlate::UIRect& rect,
                                  const std::string& text,
                                  float font_size,
                                  const ZSlate::UIColor& color,
@@ -131,7 +131,7 @@ void BatchedUIRenderer::DrawText(const UIRect& rect,
             if (native_tex != nullptr)
             {
                 TextGenerator::Settings settings;
-                settings.rect = rect;
+                settings.rect = UIRect(rect.x, rect.y, rect.w, rect.h);
                 settings.font_size = font_size;
                 settings.alignment = alignment;
                 settings.wrap = wrap;
@@ -151,10 +151,10 @@ void BatchedUIRenderer::DrawText(const UIRect& rect,
 
     // Native font atlas not ready yet -- draw a solid placeholder block sized to
     // the measured text extent so layout still reserves the right space.
-    const Vector2 measured = MeasureText(text, font_size, wrap, rect.width, font_asset);
-    UIRect text_rect = rect;
-    text_rect.width = std::min(text_rect.width, measured.x);
-    text_rect.height = std::min(text_rect.height, measured.y);
+    const Vector2 measured = MeasureText(text, font_size, wrap, rect.w, font_asset);
+    ZSlate::UIRect text_rect = rect;
+    text_rect.w = std::min(text_rect.w, measured.x);
+    text_rect.h = std::min(text_rect.h, measured.y);
     DrawQuad(text_rect, color);
 }
 

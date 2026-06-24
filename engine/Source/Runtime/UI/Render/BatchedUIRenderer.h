@@ -10,23 +10,23 @@ public:
     bool BeginFrame() override;
     void EndFrame() override {}
 
-    void PushClipRect(const UIRect& clip_rect, bool intersect_with_current = true) override;
+    void PushClipRect(const ZSlate::UIRect& clip_rect, bool intersect_with_current = true) override;
     void PopClipRect() override;
 
     void PushTransform(const UIAffine2D& transform) override;
     void PopTransform() override;
 
-    void DrawQuad(const UIRect& rect, const ZSlate::UIColor& color) override;
-    void DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness = 1.0f) override;
+    void DrawQuad(const ZSlate::UIRect& rect, const ZSlate::UIColor& color) override;
+    void DrawRect(const ZSlate::UIRect& rect, const ZSlate::UIColor& color, float thickness = 1.0f) override;
     void DrawConvexPoly(const Vector2* points, int count, const ZSlate::UIColor& color) override;
 
-    void DrawTexturedQuad(const UIRect& rect,
+    void DrawTexturedQuad(const ZSlate::UIRect& rect,
                           void* texture_id,
                           const ZSlate::UIColor& color = ZSlate::UIColor(1, 1, 1, 1),
                           const Vector2& uv0 = Vector2(0.0f, 0.0f),
                           const Vector2& uv1 = Vector2(1.0f, 1.0f)) override;
 
-    void DrawText(const UIRect& rect,
+    void DrawText(const ZSlate::UIRect& rect,
                   const std::string& text,
                   float font_size,
                   const ZSlate::UIColor& color,

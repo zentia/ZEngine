@@ -40,7 +40,7 @@ public:
 
     // Push a clip rect. `clip_rect` is in screen-space pixels (origin top-left).
     // Calls nest: `PushClipRect` must be paired with `PopClipRect`.
-    virtual void PushClipRect(const UIRect& clip_rect, bool intersect_with_current = true) = 0;
+    virtual void PushClipRect(const ZSlate::UIRect& clip_rect, bool intersect_with_current = true) = 0;
     virtual void PopClipRect() = 0;
 
     // Cumulative 2D transform applied to subsequent draw calls (widget-local space).
@@ -48,10 +48,10 @@ public:
     virtual void PopTransform() {}
 
     // Solid axis-aligned filled rectangle.
-    virtual void DrawQuad(const UIRect& rect, const ZSlate::UIColor& color) = 0;
+    virtual void DrawQuad(const ZSlate::UIRect& rect, const ZSlate::UIColor& color) = 0;
 
     // Outline (1-pixel default) rectangle.
-    virtual void DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness = 1.0f) = 0;
+    virtual void DrawRect(const ZSlate::UIRect& rect, const ZSlate::UIColor& color, float thickness = 1.0f) = 0;
 
     // Solid convex polygon (>= 3 points, in order), fan-triangulated. Used for
     // vector icons (play triangle, etc.) that a quad/outline can't express.
@@ -69,14 +69,14 @@ public:
     //               ImGui-backed implementation; nullptr-equivalent => fall
     //               through to a solid-colour quad).
     //   uv0/uv1   : top-left / bottom-right uv (default = full texture).
-    virtual void DrawTexturedQuad(const UIRect& rect,
+    virtual void DrawTexturedQuad(const ZSlate::UIRect& rect,
                                   void* texture_id,
                                   const ZSlate::UIColor& color = ZSlate::UIColor(1, 1, 1, 1),
                                   const Vector2& uv0 = Vector2(0.0f, 0.0f),
                                   const Vector2& uv1 = Vector2(1.0f, 1.0f)) = 0;
 
     // Text run; optional `font` resolves through UIGpuResources (TTF atlas).
-    virtual void DrawText(const UIRect& rect,
+    virtual void DrawText(const ZSlate::UIRect& rect,
                           const std::string& text,
                           float font_size,
                           const ZSlate::UIColor& color,

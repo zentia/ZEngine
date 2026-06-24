@@ -22,7 +22,7 @@ struct UiDrawCommand
     // that support GPU scissor (e.g. the editor native overlay) use it for per-
     // command clipping; the runtime UIPass currently ignores it (its quads are
     // already CPU-clamped in appendTexturedQuad). has_clip=false => unclipped.
-    UIRect clip_rect {0.0f, 0.0f, 0.0f, 0.0f};
+    ZSlate::UIRect clip_rect {0.0f, 0.0f, 0.0f, 0.0f};
     bool has_clip {false};
 };
 
@@ -33,7 +33,7 @@ public:
     void clear();
     bool empty() const { return m_Indices.empty(); }
 
-    void PushClipRect(const UIRect& clip_rect, bool intersect_with_current);
+    void PushClipRect(const ZSlate::UIRect& clip_rect, bool intersect_with_current);
     void PopClipRect();
 
     // Forces the next draw to open a fresh UiDrawCommand instead of merging into
@@ -44,14 +44,14 @@ public:
     void PushTransform(const UIAffine2D& transform);
     void PopTransform();
 
-    void DrawQuad(const UIRect& rect, const ZSlate::UIColor& color, void* white_texture_id);
-    void DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness, void* white_texture_id);
+    void DrawQuad(const ZSlate::UIRect& rect, const ZSlate::UIColor& color, void* white_texture_id);
+    void DrawRect(const ZSlate::UIRect& rect, const ZSlate::UIColor& color, float thickness, void* white_texture_id);
     // Solid convex polygon (>= 3 ordered points), fan-triangulated. Samples the
     // white texel (uv 0,0). Per-vertex clipping is NOT done here -- the recorded
     // command carries the active clip rect, so the editor overlay's GPU scissor
     // clips it (the runtime UIPass ignores clip, but never calls this).
     void DrawConvexPoly(const Vector2* points, int count, const ZSlate::UIColor& color, void* white_texture_id);
-    void DrawTexturedQuad(const UIRect& rect,
+    void DrawTexturedQuad(const ZSlate::UIRect& rect,
                           void* texture_id,
                           const ZSlate::UIColor& color,
                           const Vector2& uv0,
@@ -61,7 +61,7 @@ public:
     const std::vector<UIVertex>& getVertices() const { return m_Vertices; }
     const std::vector<uint16_t>& getIndices() const { return m_Indices; }
     const std::vector<UiDrawCommand>& getCommands() const { return m_Commands; }
-    const UIRect& getActiveClipRect() const { return m_ActiveClip; }
+    const ZSlate::UIRect& getActiveClipRect() const { return m_ActiveClip; }
 
 private:
     void beginCommand(void* texture_id, void* white_texture_id);
@@ -88,10 +88,10 @@ private:
     std::vector<UIVertex> m_Vertices;
     std::vector<uint16_t> m_Indices;
     std::vector<UiDrawCommand> m_Commands;
-    std::vector<UIRect> m_ClipStack;
+    std::vector<ZSlate::UIRect> m_ClipStack;
     std::vector<UIAffine2D> m_TransformStack;
     UIAffine2D m_ActiveTransform = UIAffine2D::Identity();
-    UIRect m_ActiveClip {0.0f, 0.0f, 0.0f, 0.0f};
+    ZSlate::UIRect m_ActiveClip {0.0f, 0.0f, 0.0f, 0.0f};
     bool m_HasClip {false};
     void* m_CurrentTexture {nullptr};
 };

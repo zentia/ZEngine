@@ -670,8 +670,8 @@ void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
             // transform as the vertex NDC mapping in UploadBatch).
             float x0 = (command.clip_rect.x - display_pos_x) * scissor_scale_x;
             float y0 = (command.clip_rect.y - display_pos_y) * scissor_scale_y;
-            float x1 = (command.clip_rect.x + command.clip_rect.width - display_pos_x) * scissor_scale_x;
-            float y1 = (command.clip_rect.y + command.clip_rect.height - display_pos_y) * scissor_scale_y;
+            float x1 = (command.clip_rect.x + command.clip_rect.w - display_pos_x) * scissor_scale_x;
+            float y1 = (command.clip_rect.y + command.clip_rect.h - display_pos_y) * scissor_scale_y;
             x0 = std::clamp(x0, 0.0f, static_cast<float>(fb_width));
             y0 = std::clamp(y0, 0.0f, static_cast<float>(fb_height));
             x1 = std::clamp(x1, 0.0f, static_cast<float>(fb_width));
@@ -867,8 +867,8 @@ void ZSlateEditorOverlay::DrawExternalBatchToFloatingSurface(RHI* rhi,
         {
             float x0 = std::clamp(command.clip_rect.x, 0.0f, display_width);
             float y0 = std::clamp(command.clip_rect.y, 0.0f, display_height);
-            float x1 = std::clamp(command.clip_rect.x + command.clip_rect.width, 0.0f, display_width);
-            float y1 = std::clamp(command.clip_rect.y + command.clip_rect.height, 0.0f, display_height);
+            float x1 = std::clamp(command.clip_rect.x + command.clip_rect.w, 0.0f, display_width);
+            float y1 = std::clamp(command.clip_rect.y + command.clip_rect.h, 0.0f, display_height);
             scissor.offset.x = static_cast<int32_t>(x0);
             scissor.offset.y = static_cast<int32_t>(y0);
             scissor.extent.width = static_cast<uint32_t>(x1 > x0 ? x1 - x0 : 0.0f);

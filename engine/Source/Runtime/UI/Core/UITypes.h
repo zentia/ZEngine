@@ -41,11 +41,8 @@ struct UIRect
     UIRect(float x_, float y_, float w_, float h_)
         : x(x_), y(y_), width(w_), height(h_) {}
 
-    // Convert to ZSlate::UIRect
-    ZSlate::UIRect ToZSlate() const { return ZSlate::UIRect(x, y, width, height); }
-
-    // Construct from ZSlate::UIRect
-    static UIRect FromZSlate(const ZSlate::UIRect& z) { return UIRect(z.x, z.y, z.w, z.h); }
+    // Implicit conversion to ZSlate::UIRect
+    operator ZSlate::UIRect() const { return ZSlate::UIRect(x, y, width, height); }
 
     Vector2 getMin() const { return Vector2(x, y); }
     Vector2 getMax() const { return Vector2(x + width, y + height); }

@@ -5,17 +5,17 @@
 
 namespace
 {
-    UIRect IntersectRects(const UIRect& a, const UIRect& b)
+    ZSlate::UIRect IntersectRects(const ZSlate::UIRect& a, const ZSlate::UIRect& b)
     {
         const float x0 = std::max(a.x, b.x);
         const float y0 = std::max(a.y, b.y);
-        const float x1 = std::min(a.x + a.width, b.x + b.width);
-        const float y1 = std::min(a.y + a.height, b.y + b.height);
+        const float x1 = std::min(a.x + a.w, b.x + b.w);
+        const float y1 = std::min(a.y + a.h, b.y + b.h);
         if (x1 <= x0 || y1 <= y0)
         {
-            return UIRect {0.0f, 0.0f, 0.0f, 0.0f};
+            return ZSlate::UIRect{0.0f, 0.0f, 0.0f, 0.0f};
         }
-        return UIRect {x0, y0, x1 - x0, y1 - y0};
+        return ZSlate::UIRect{x0, y0, x1 - x0, y1 - y0};
     }
 
     void ToVertexColor(const ZSlate::UIColor& color, float out_rgba[4])
@@ -31,9 +31,9 @@ namespace
         return texture_id != nullptr ? texture_id : white_texture_id;
     }
 
-    bool RectsEqual(const UIRect& a, const UIRect& b)
+    bool RectsEqual(const ZSlate::UIRect& a, const ZSlate::UIRect& b)
     {
-        return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
+        return a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h;
     }
 }  // namespace
 
@@ -46,7 +46,7 @@ void UIRenderBatch::clear()
     m_TransformStack.clear();
     m_ActiveTransform = UIAffine2D::Identity();
     m_HasClip = false;
-    m_ActiveClip = UIRect {0.0f, 0.0f, 0.0f, 0.0f};
+    m_ActiveClip = ZSlate::UIRect{0.0f, 0.0f, 0.0f, 0.0f};
     m_CurrentTexture = nullptr;
 }
 
@@ -73,9 +73,9 @@ void UIRenderBatch::transformPoint(float x, float y, float& out_x, float& out_y)
     m_ActiveTransform.TransformPoint(x, y, out_x, out_y);
 }
 
-void UIRenderBatch::PushClipRect(const UIRect& clip_rect, bool intersect_with_current)
+void UIRenderBatch::PushClipRect(const ZSlate::UIRect& clip_rect, bool intersect_with_current)
 {
-    UIRect next = clip_rect;
+    ZSlate::UIRect next = clip_rect;
     if (m_HasClip && intersect_with_current)
     {
         next = IntersectRects(m_ActiveClip, clip_rect);
@@ -90,13 +90,13 @@ void UIRenderBatch::PopClipRect()
     if (m_ClipStack.empty())
     {
         m_HasClip = false;
-        m_ActiveClip = UIRect {0.0f, 0.0f, 0.0f, 0.0f};
+        m_ActiveClip = ZSlate::UIRect{0.0f, 0.0f, 0.0f, 0.0f};
         return;
     }
 
     m_ActiveClip = m_ClipStack.back();
     m_ClipStack.pop_back();
-    m_HasClip = !m_ClipStack.empty() || (m_ActiveClip.width > 0.0f && m_ActiveClip.height > 0.0f);
+    m_HasClip = !m_ClipStack.empty() || (m_ActiveClip.w > 0.0f && m_ActiveClip.h > 0.0f);
 }
 
 void UIRenderBatch::forceNewCommand()
@@ -130,7 +130,7 @@ void UIRenderBatch::beginCommand(void* texture_id, void* white_texture_id)
     m_CurrentTexture = resolved;
 }
 
-void UIRenderBatch::DrawQuad(const UIRect& rect, const ZSlate::UIColor& color, void* white_texture_id)
+void UIRenderBatch::DrawQuad(const ZSlate::UIRect& rect, const ZSlate::UIColor& color, void* white_texture_id)
 {
     DrawTexturedQuad(rect,
                      white_texture_id,
@@ -140,9 +140,9 @@ void UIRenderBatch::DrawQuad(const UIRect& rect, const ZSlate::UIColor& color, v
                      white_texture_id);
 }
 
-void UIRenderBatch::DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness, void* white_texture_id)
+void UIRenderBatch::DrawRect(const ZSlate::UIRect& rect, const ZSlate::UIColor& color, float thickness, void* white_texture_id)
 {
-    appendOutline(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, color, thickness, white_texture_id);
+    appendOutline(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h, color, thickness, white_texture_id);
 }
 
 void UIRenderBatch::DrawConvexPoly(const Vector2* points, int count, const ZSlate::UIColor& color, void* white_texture_id)
@@ -185,7 +185,7 @@ void UIRenderBatch::DrawConvexPoly(const Vector2* points, int count, const ZSlat
     }
 }
 
-void UIRenderBatch::DrawTexturedQuad(const UIRect& rect,
+void UIRenderBatch::DrawTexturedQuad(const ZSlate::UIRect& rect,
                                      void* texture_id,
                                      const ZSlate::UIColor& color,
                                      const Vector2& uv0,
@@ -194,8 +194,8 @@ void UIRenderBatch::DrawTexturedQuad(const UIRect& rect,
 {
     appendTexturedQuad(rect.x,
                        rect.y,
-                       rect.x + rect.width,
-                       rect.y + rect.height,
+                       rect.x + rect.w,
+                       rect.y + rect.h,
                        color,
                        uv0.x,
                        uv0.y,
@@ -221,8 +221,8 @@ void UIRenderBatch::appendTexturedQuad(float x0,
     {
         x0 = std::max(x0, m_ActiveClip.x);
         y0 = std::max(y0, m_ActiveClip.y);
-        x1 = std::min(x1, m_ActiveClip.x + m_ActiveClip.width);
-        y1 = std::min(y1, m_ActiveClip.y + m_ActiveClip.height);
+        x1 = std::min(x1, m_ActiveClip.x + m_ActiveClip.w);
+        y1 = std::min(y1, m_ActiveClip.y + m_ActiveClip.h);
         if (x1 <= x0 || y1 <= y0)
         {
             return;
