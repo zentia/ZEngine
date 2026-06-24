@@ -21,7 +21,7 @@ struct UiDrawCommand
     // Clip rect active when this command was recorded (UI-space pixels). Consumers
     // that support GPU scissor (e.g. the editor native overlay) use it for per-
     // command clipping; the runtime UIPass currently ignores it (its quads are
-    // already CPU-clamped in appendTexturedQuad). has_clip=false => unclipped.
+    // already CPU-clamped in AppendTexturedQuad). has_clip=false => unclipped.
     ZSlate::UIRect clip_rect {0.0f, 0.0f, 0.0f, 0.0f};
     bool has_clip {false};
 };
@@ -30,8 +30,8 @@ struct UiDrawCommand
 class UIRenderBatch
 {
 public:
-    void clear();
-    bool empty() const { return m_Indices.empty(); }
+    void Clear();
+    bool Empty() const { return m_Indices.empty(); }
 
     void PushClipRect(const ZSlate::UIRect& clip_rect, bool intersect_with_current);
     void PopClipRect();
@@ -39,7 +39,7 @@ public:
     // Forces the next draw to open a fresh UiDrawCommand instead of merging into
     // the current one. Used to keep per-window command ranges disjoint so the
     // editor overlay can submit windows in z-order.
-    void forceNewCommand();
+    void ForceNewCommand();
 
     void PushTransform(const UIAffine2D& transform);
     void PopTransform();
@@ -58,15 +58,15 @@ public:
                           const Vector2& uv1,
                           void* white_texture_id);
 
-    const std::vector<UIVertex>& getVertices() const { return m_Vertices; }
-    const std::vector<uint16_t>& getIndices() const { return m_Indices; }
-    const std::vector<UiDrawCommand>& getCommands() const { return m_Commands; }
-    const ZSlate::UIRect& getActiveClipRect() const { return m_ActiveClip; }
+    const std::vector<UIVertex>& GetVertices() const { return m_Vertices; }
+    const std::vector<uint16_t>& GetIndices() const { return m_Indices; }
+    const std::vector<UiDrawCommand>& GetCommands() const { return m_Commands; }
+    const ZSlate::UIRect& GetActiveClipRect() const { return m_ActiveClip; }
 
 private:
-    void beginCommand(void* texture_id, void* white_texture_id);
-    void transformPoint(float x, float y, float& out_x, float& out_y) const;
-    void appendTexturedQuad(float x0,
+    void BeginCommand(void* texture_id, void* white_texture_id);
+    void TransformPoint(float x, float y, float& out_x, float& out_y) const;
+    void AppendTexturedQuad(float x0,
                             float y0,
                             float x1,
                             float y1,
@@ -77,7 +77,7 @@ private:
                             float uv1y,
                             void* texture_id,
                             void* white_texture_id);
-    void appendOutline(float x0,
+    void AppendOutline(float x0,
                        float y0,
                        float x1,
                        float y1,

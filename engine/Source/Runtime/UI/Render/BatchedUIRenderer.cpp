@@ -22,7 +22,7 @@ namespace
 
 bool BatchedUIRenderer::BeginFrame()
 {
-    m_Batch.clear();
+    m_Batch.Clear();
     m_DisplaySize = getDisplaySize();
     m_Active = m_DisplaySize.x > 0.0f && m_DisplaySize.y > 0.0f;
     return m_Active;

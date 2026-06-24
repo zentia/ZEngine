@@ -37,7 +37,7 @@ namespace
     }
 }  // namespace
 
-void UIRenderBatch::clear()
+void UIRenderBatch::Clear()
 {
     m_Vertices.clear();
     m_Indices.clear();
@@ -68,7 +68,7 @@ void UIRenderBatch::PopTransform()
     m_TransformStack.pop_back();
 }
 
-void UIRenderBatch::transformPoint(float x, float y, float& out_x, float& out_y) const
+void UIRenderBatch::TransformPoint(float x, float y, float& out_x, float& out_y) const
 {
     m_ActiveTransform.TransformPoint(x, y, out_x, out_y);
 }
@@ -99,14 +99,14 @@ void UIRenderBatch::PopClipRect()
     m_HasClip = !m_ClipStack.empty() || (m_ActiveClip.w > 0.0f && m_ActiveClip.h > 0.0f);
 }
 
-void UIRenderBatch::forceNewCommand()
+void UIRenderBatch::ForceNewCommand()
 {
     // Sentinel that cannot match any real (or null/white) texture id, so the next
-    // beginCommand always opens a new command.
+    // BeginCommand always opens a new command.
     m_CurrentTexture = reinterpret_cast<void*>(~static_cast<uintptr_t>(0));
 }
 
-void UIRenderBatch::beginCommand(void* texture_id, void* white_texture_id)
+void UIRenderBatch::BeginCommand(void* texture_id, void* white_texture_id)
 {
     void* resolved = ResolveTextureId(texture_id, white_texture_id);
     // Reuse the open command only when the texture AND the active clip both match;
@@ -142,7 +142,7 @@ void UIRenderBatch::DrawQuad(const ZSlate::UIRect& rect, const ZSlate::UIColor& 
 
 void UIRenderBatch::DrawRect(const ZSlate::UIRect& rect, const ZSlate::UIColor& color, float thickness, void* white_texture_id)
 {
-    appendOutline(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h, color, thickness, white_texture_id);
+    AppendOutline(rect.x, rect.y, rect.x + rect.w, rect.y + rect.h, color, thickness, white_texture_id);
 }
 
 void UIRenderBatch::DrawConvexPoly(const Vector2* points, int count, const ZSlate::UIColor& color, void* white_texture_id)
@@ -152,7 +152,7 @@ void UIRenderBatch::DrawConvexPoly(const Vector2* points, int count, const ZSlat
         return;
     }
 
-    beginCommand(white_texture_id, white_texture_id);
+    BeginCommand(white_texture_id, white_texture_id);
 
     float rgba[4];
     ToVertexColor(color, rgba);
@@ -161,7 +161,7 @@ void UIRenderBatch::DrawConvexPoly(const Vector2* points, int count, const ZSlat
     for (int i = 0; i < count; ++i)
     {
         UIVertex v {};
-        transformPoint(points[i].x, points[i].y, v.pos[0], v.pos[1]);
+        TransformPoint(points[i].x, points[i].y, v.pos[0], v.pos[1]);
         v.uv[0] = 0.0f;  // sample the white texel
         v.uv[1] = 0.0f;
         v.color[0] = rgba[0];
@@ -192,7 +192,7 @@ void UIRenderBatch::DrawTexturedQuad(const ZSlate::UIRect& rect,
                                      const Vector2& uv1,
                                      void* white_texture_id)
 {
-    appendTexturedQuad(rect.x,
+    AppendTexturedQuad(rect.x,
                        rect.y,
                        rect.x + rect.w,
                        rect.y + rect.h,
@@ -205,7 +205,7 @@ void UIRenderBatch::DrawTexturedQuad(const ZSlate::UIRect& rect,
                        white_texture_id);
 }
 
-void UIRenderBatch::appendTexturedQuad(float x0,
+void UIRenderBatch::AppendTexturedQuad(float x0,
                                        float y0,
                                        float x1,
                                        float y1,
@@ -229,7 +229,7 @@ void UIRenderBatch::appendTexturedQuad(float x0,
         }
     }
 
-    beginCommand(texture_id, white_texture_id);
+    BeginCommand(texture_id, white_texture_id);
 
     float corners_x[4] = {x0, x1, x1, x0};
     float corners_y[4] = {y0, y0, y1, y1};
@@ -241,7 +241,7 @@ void UIRenderBatch::appendTexturedQuad(float x0,
     ToVertexColor(color, vertices[0].color);
     for (int i = 0; i < 4; ++i)
     {
-        transformPoint(corners_x[i], corners_y[i], vertices[i].pos[0], vertices[i].pos[1]);
+        TransformPoint(corners_x[i], corners_y[i], vertices[i].pos[0], vertices[i].pos[1]);
         vertices[i].uv[0] = uv_x[i];
         vertices[i].uv[1] = uv_y[i];
     }
@@ -268,7 +268,7 @@ void UIRenderBatch::appendTexturedQuad(float x0,
     }
 }
 
-void UIRenderBatch::appendOutline(float x0,
+void UIRenderBatch::AppendOutline(float x0,
                                   float y0,
                                   float x1,
                                   float y1,
@@ -277,8 +277,8 @@ void UIRenderBatch::appendOutline(float x0,
                                   void* white_texture_id)
 {
     const float t = std::max(thickness, 1.0f);
-    appendTexturedQuad(x0, y0, x1, y0 + t, color, 0.0f, 0.0f, 1.0f, 1.0f, white_texture_id, white_texture_id);
-    appendTexturedQuad(x0, y1 - t, x1, y1, color, 0.0f, 0.0f, 1.0f, 1.0f, white_texture_id, white_texture_id);
-    appendTexturedQuad(x0, y0, x0 + t, y1, color, 0.0f, 0.0f, 1.0f, 1.0f, white_texture_id, white_texture_id);
-    appendTexturedQuad(x1 - t, y0, x1, y1, color, 0.0f, 0.0f, 1.0f, 1.0f, white_texture_id, white_texture_id);
+    AppendTexturedQuad(x0, y0, x1, y0 + t, color, 0.0f, 0.0f, 1.0f, 1.0f, white_texture_id, white_texture_id);
+    AppendTexturedQuad(x0, y1 - t, x1, y1, color, 0.0f, 0.0f, 1.0f, 1.0f, white_texture_id, white_texture_id);
+    AppendTexturedQuad(x0, y0, x0 + t, y1, color, 0.0f, 0.0f, 1.0f, 1.0f, white_texture_id, white_texture_id);
+    AppendTexturedQuad(x1 - t, y0, x1, y1, color, 0.0f, 0.0f, 1.0f, 1.0f, white_texture_id, white_texture_id);
 }

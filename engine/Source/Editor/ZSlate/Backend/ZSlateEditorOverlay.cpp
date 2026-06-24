@@ -211,7 +211,7 @@ void ZSlateEditorOverlay::BeginFrameIfEnabled()
     // size event (defence in depth on top of the windowSizeCallback dispatch
     // fix). Falls back to the host's logical size if the framebuffer query is
     // unavailable. (The macOS Retina logical-vs-physical split is deferred until
-    // the native Metal UI lands; that overlay is currently a clear/present stub.)
+    // the native Metal UI lands; that overlay is currently a Clear/present stub.)
     Vector2 display = EditorSlateHost::Get().GetDisplaySize();
     if (auto window = GET_SYSTEM(WindowSystem))
     {
@@ -236,7 +236,7 @@ void ZSlateEditorOverlay::BeginWindowGroup(int z_order)
     // Break the current command so this window's first draw can't merge into the
     // previous window's last command (keeps group ranges disjoint).
     BatchedUIRenderer& renderer = GetRenderer();
-    renderer.getBatch().forceNewCommand();
+    renderer.getBatch().ForceNewCommand();
     // Window groups structure ONLY the main overlay batch (z-order sorting in
     // DrawBatch). A floating panel paints into its own batch drawn in natural
     // order, so skip group bookkeeping when a floating renderer is active --
@@ -245,7 +245,7 @@ void ZSlateEditorOverlay::BeginWindowGroup(int z_order)
         return;
     WindowGroup group {};
     group.z_order = z_order;
-    group.first_command = static_cast<uint32_t>(renderer.getBatch().getCommands().size());
+    group.first_command = static_cast<uint32_t>(renderer.getBatch().GetCommands().size());
     m_Groups.push_back(group);
 }
 
@@ -526,8 +526,8 @@ void ZSlateEditorOverlay::UploadBatch(RHI* rhi, float display_width, float displ
                                       float display_pos_x, float display_pos_y)
 {
     const UIRenderBatch& batch = m_Renderer.getBatch();
-    const std::vector<UIVertex>& src_vertices = batch.getVertices();
-    const std::vector<uint16_t>& src_indices = batch.getIndices();
+    const std::vector<UIVertex>& src_vertices = batch.GetVertices();
+    const std::vector<uint16_t>& src_indices = batch.GetIndices();
     if (src_vertices.empty() || src_indices.empty() || display_width <= 0.0f || display_height <= 0.0f)
     {
         return;
@@ -580,7 +580,7 @@ void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
     }
 
     const UIRenderBatch& batch = m_Renderer.getBatch();
-    if (batch.empty())
+    if (batch.Empty())
     {
         return;
     }
@@ -649,7 +649,7 @@ void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
     const float scissor_scale_y =
         display_height > 0.0f ? static_cast<float>(fb_height) / display_height : 1.0f;
 
-    const std::vector<UiDrawCommand>& commands = batch.getCommands();
+    const std::vector<UiDrawCommand>& commands = batch.GetCommands();
     const uint32_t command_total = static_cast<uint32_t>(commands.size());
 
     auto draw_command = [&](const UiDrawCommand& command) {
@@ -743,8 +743,8 @@ void ZSlateEditorOverlay::DrawExternalBatchToFloatingSurface(RHI* rhi,
     {
         return;
     }
-    const std::vector<UIVertex>& src_vertices = batch.getVertices();
-    const std::vector<uint16_t>& src_indices = batch.getIndices();
+    const std::vector<UIVertex>& src_vertices = batch.GetVertices();
+    const std::vector<uint16_t>& src_indices = batch.GetIndices();
     if (src_vertices.empty() || src_indices.empty() || width == 0 || height == 0)
     {
         return;
@@ -851,7 +851,7 @@ void ZSlateEditorOverlay::DrawExternalBatchToFloatingSurface(RHI* rhi,
     rhi->CmdBindVertexBuffersPFN(command_buffer, 0, 1, vertex_buffers, offsets);
     rhi->CmdBindIndexBufferPFN(command_buffer, ring.index_buffer[slot], 0, RHI_INDEX_TYPE_UINT16);
 
-    const std::vector<UiDrawCommand>& commands = batch.getCommands();
+    const std::vector<UiDrawCommand>& commands = batch.GetCommands();
     for (const UiDrawCommand& command : commands)
     {
         if (command.index_count == 0)

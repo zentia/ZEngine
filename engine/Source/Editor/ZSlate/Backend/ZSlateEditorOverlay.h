@@ -102,7 +102,7 @@ public:
     // ImGui's DisplaySize for the NDC mapping, and records the self-test if enabled.
     void BeginFrameIfEnabled();
 
-    bool HasContent() const { return !m_Renderer.getBatch().empty(); }
+    bool HasContent() const { return !m_Renderer.getBatch().Empty(); }
 
     // Build the UI pipeline once. render_pass == nullptr => DX12 swapchain
     // overlay format; a real pass + subpass => Vulkan editor UI subpass.

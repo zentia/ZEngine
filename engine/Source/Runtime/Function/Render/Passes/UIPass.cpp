@@ -328,8 +328,8 @@ void UIPass::EnsureGpuBuffers(size_t vertex_count, size_t index_count)
 
 void UIPass::UploadBatch(const UIRenderBatch& batch, float display_width, float display_height)
 {
-    const std::vector<UIVertex>& src_vertices = batch.getVertices();
-    const std::vector<uint16_t>& src_indices = batch.getIndices();
+    const std::vector<UIVertex>& src_vertices = batch.GetVertices();
+    const std::vector<uint16_t>& src_indices = batch.GetIndices();
     if (src_vertices.empty() || src_indices.empty() || display_width <= 0.0f || display_height <= 0.0f)
     {
         return;
@@ -391,7 +391,7 @@ void UIPass::Draw()
     }
 
     const UIRenderBatch& batch = renderer->getBatch();
-    if (batch.empty())
+    if (batch.Empty())
     {
         return;
     }
@@ -435,7 +435,7 @@ void UIPass::Draw()
     m_Rhi->CmdBindVertexBuffersPFN(command_buffer, 0, 1, vertex_buffers, offsets);
     m_Rhi->CmdBindIndexBufferPFN(command_buffer, m_IndexBuffer, 0, RHI_INDEX_TYPE_UINT16);
 
-    const std::vector<UiDrawCommand>& commands = batch.getCommands();
+    const std::vector<UiDrawCommand>& commands = batch.GetCommands();
     if (commands.empty())
     {
         RHIDescriptorSet* descriptor_set = m_GpuResources.GetDescriptorSet(m_GpuResources.GetWhiteTextureId());
@@ -451,7 +451,7 @@ void UIPass::Draw()
                                             nullptr);
         }
         m_Rhi->CmdDrawIndexedPFN(command_buffer,
-                                 static_cast<uint32_t>(batch.getIndices().size()),
+                                 static_cast<uint32_t>(batch.GetIndices().size()),
                                  1,
                                  0,
                                  0,
