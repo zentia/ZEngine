@@ -54,8 +54,8 @@ namespace
                 return;
 
             const UIRect r = geom.ToRect();
-            const float w = r.width;
-            const float h = r.height;
+            const float w = r.w;  // ZSlate::UIRect uses .w/.h (not .width/.height)
+            const float h = r.h;
             const float cx = r.x + w * 0.5f;
             const float cy = r.y + h * 0.5f;
 
@@ -229,8 +229,9 @@ void MenuController::RenderNativeMenuBar()
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const Vector2 win_pos = host.GetDisplayPos();
     const Vector2 win_size = host.GetDisplaySize();
-    const UIRect bar_rect(win_pos.x, win_pos.y, win_size.x, MenuController::kMainMenuBarHeight);
-    const UIRect viewport_rect(win_pos.x, win_pos.y, win_size.x, win_size.y);
+    // Use ZSlate::UIRect (x,y,w,h) to match ZSlateEditorMenuBar::Render signature.
+    const ZSlate::UIRect bar_rect(win_pos.x, win_pos.y, win_size.x, MenuController::kMainMenuBarHeight);
+    const ZSlate::UIRect viewport_rect(win_pos.x, win_pos.y, win_size.x, win_size.y);
     const Vector2 mouse = host.GetPointerPos();
     const bool left_down = host.IsLeftDown();
 
@@ -276,15 +277,16 @@ void MenuController::BuildPlaybackToolbar(bool playing, bool paused, float scale
     const float btn_w = 30.0f * scale;
     const float btn_h = 22.0f * scale;
 
-    const UIColor c_normal(54.0f / 255.0f, 56.0f / 255.0f, 60.0f / 255.0f, 1.0f);
-    const UIColor c_hover(68.0f / 255.0f, 70.0f / 255.0f, 75.0f / 255.0f, 1.0f);
-    const UIColor c_press(45.0f / 255.0f, 47.0f / 255.0f, 51.0f / 255.0f, 1.0f);
-    const UIColor c_tog(40.0f / 255.0f, 84.0f / 255.0f, 124.0f / 255.0f, 1.0f);
-    const UIColor c_tog_hover(48.0f / 255.0f, 92.0f / 255.0f, 134.0f / 255.0f, 1.0f);
-    const UIColor c_tog_press(54.0f / 255.0f, 98.0f / 255.0f, 140.0f / 255.0f, 1.0f);
-    const UIColor c_disabled(48.0f / 255.0f, 50.0f / 255.0f, 54.0f / 255.0f, 1.0f);
-    const UIColor icon_on(0.94f, 0.96f, 0.99f, 1.0f);
-    const UIColor icon_off(0.70f, 0.74f, 0.80f, 1.0f);
+    // Use ZSlate::UIColor (not ::UIColor) to avoid ambiguity.
+    const ZSlate::UIColor c_normal(54.0f / 255.0f, 56.0f / 255.0f, 60.0f / 255.0f, 1.0f);
+    const ZSlate::UIColor c_hover(68.0f / 255.0f, 70.0f / 255.0f, 75.0f / 255.0f, 1.0f);
+    const ZSlate::UIColor c_press(45.0f / 255.0f, 47.0f / 255.0f, 51.0f / 255.0f, 1.0f);
+    const ZSlate::UIColor c_tog(40.0f / 255.0f, 84.0f / 255.0f, 124.0f / 255.0f, 1.0f);
+    const ZSlate::UIColor c_tog_hover(48.0f / 255.0f, 92.0f / 255.0f, 134.0f / 255.0f, 1.0f);
+    const ZSlate::UIColor c_tog_press(54.0f / 255.0f, 98.0f / 255.0f, 140.0f / 255.0f, 1.0f);
+    const ZSlate::UIColor c_disabled(48.0f / 255.0f, 50.0f / 255.0f, 54.0f / 255.0f, 1.0f);
+    const ZSlate::UIColor icon_on(0.94f, 0.96f, 0.99f, 1.0f);
+    const ZSlate::UIColor icon_off(0.70f, 0.74f, 0.80f, 1.0f);
 
     auto make_btn = [&](PlaybackToolbarIcon icon, bool enabled, bool toggled,
                         std::function<void()> on_click) -> std::shared_ptr<SWidget> {
@@ -316,7 +318,7 @@ void MenuController::BuildPlaybackToolbar(bool playing, bool paused, float scale
         auto glyph = std::make_shared<SPlaybackIcon>();
         glyph->Icon = icon;
         glyph->Color = enabled ? icon_on : icon_off;
-        glyph->IconSize = Vector2(btn_w, btn_h);
+        glyph->IconSize = ZSlate::Vector2(btn_w, btn_h);  // ZSlate::Vector2 to avoid ambiguity
         b->SetContent(glyph);
         return b;
     };
@@ -325,11 +327,11 @@ void MenuController::BuildPlaybackToolbar(bool playing, bool paused, float scale
     row->AddSlot(make_btn(playing ? PlaybackToolbarIcon::Stop : PlaybackToolbarIcon::Play, true, playing,
                           []() { GET_SYSTEM(Editor)->TogglePlayMode(); }))
         .AutoSize();
-    row->AddSlot(std::make_shared<SSpacer>(Vector2(1.0f * scale, 0.0f))).AutoSize();
+    row->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(1.0f * scale, 0.0f))).AutoSize();
     row->AddSlot(make_btn(PlaybackToolbarIcon::Pause, playing, paused,
                           []() { GET_SYSTEM(Editor)->TogglePauseMode(); }))
         .AutoSize();
-    row->AddSlot(std::make_shared<SSpacer>(Vector2(1.0f * scale, 0.0f))).AutoSize();
+    row->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(1.0f * scale, 0.0f))).AutoSize();
     row->AddSlot(make_btn(PlaybackToolbarIcon::Step, playing, false,
                           []() { GET_SYSTEM(Editor)->RequestStepFrame(); }))
         .AutoSize();
@@ -401,8 +403,8 @@ void MenuController::DrawPlaybackToolbarNative()
     // GLFW-backed EditorSlateHost (the r.ZSlate.NativeInput fallback was retired).
     const Vector2 mouse = host.GetPointerPos();
     const bool menu_open = m_ZSlateMenuBar.IsOpen();
-    const bool over_strip = !menu_open && mouse.x >= strip_rect.x && mouse.x <= strip_rect.x + strip_rect.width &&
-                            mouse.y >= strip_rect.y && mouse.y <= strip_rect.y + strip_rect.height;
+    const bool over_strip = !menu_open && mouse.x >= strip_rect.x && mouse.x <= strip_rect.x + strip_rect.w &&
+                            mouse.y >= strip_rect.y && mouse.y <= strip_rect.y + strip_rect.h;
     const bool left_down = !menu_open && host.IsLeftDown();
     m_PlaybackInput.ProcessMouse(m_PlaybackToolbar, mouse, over_strip, left_down, 0.0f);
 }

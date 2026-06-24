@@ -38,7 +38,7 @@ bool ZSlatePopupMenu::Contains(const FGeometry& geom, const Vector2& p)
     return geom.IsUnderLocation(p);
 }
 
-bool ZSlatePopupMenu::Render(UIRenderer& renderer,
+bool ZSlatePopupMenu::Render(ISlateRenderer& renderer,
                              const Vector2& mouse,
                              bool left_down,
                              float wheel,
@@ -76,8 +76,9 @@ bool ZSlatePopupMenu::Render(UIRenderer& renderer,
         }
 
         // Clamp on-screen so the popup never gets clipped off the viewport.
-        mx = std::min(mx, viewport_rect.x + viewport_rect.width - size.x);
-        my = std::min(my, viewport_rect.y + viewport_rect.height - size.y);
+        // ZSlate::UIRect uses .w/.h (not .width/.height).
+        mx = std::min(mx, viewport_rect.x + viewport_rect.w - size.x);
+        my = std::min(my, viewport_rect.y + viewport_rect.h - size.y);
         mx = std::max(mx, viewport_rect.x);
         my = std::max(my, viewport_rect.y);
 

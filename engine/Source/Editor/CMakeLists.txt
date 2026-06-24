@@ -129,6 +129,12 @@ target_include_directories(
   PUBLIC $<BUILD_INTERFACE:${THIRD_PARTY_DIR}/bqlog/include>
 )
 
+# ZSlate: editor UI framework (header-only, include path points at .../include)
+target_include_directories(
+  ${TARGET_NAME}
+  PRIVATE $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/engine/Libraries/ZSlate/include>
+)
+
 # Add platform-specific include directory (if needed for Editor-specific platform files)
 # Note: Runtime already adds the platform include directory, so this is only needed
 # if Editor has its own platform-specific files separate from Runtime

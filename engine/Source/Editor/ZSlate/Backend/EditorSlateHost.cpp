@@ -246,7 +246,8 @@ int EditorSlateHost::HoveredIn(const std::vector<Surface>& surfaces, const Vecto
     int best_layer = -1;
     for (const Surface& s : surfaces)
     {
-        if (!s.rect.Contains(point))
+        // ZSlate::UIRect::Contains takes (Px, Py), not Vector2
+        if (!s.rect.Contains(point.x, point.y))
             continue;
         const int layer = static_cast<int>(s.layer);
         if (layer >= best_layer)

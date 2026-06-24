@@ -19,14 +19,13 @@
 // ----------------------------------------------------------------------------
 
 #include "Editor/Menu/ZSlatePopupMenu.h"  // shared dropdown-chain implementation
+#include "ZSlate/Backend/SlateUIRendererBackend.h"  // ISlateRenderer
 #include "ZSlate/Core/SlateGeometry.h"
 #include "Runtime/UI/Core/UITypes.h"  // UIRect
 
 #include <functional>
 #include <string>
 #include <vector>
-
-class BatchedUIRenderer;
 
 namespace ZSlate
 {
@@ -52,7 +51,7 @@ public:
     void CloseAll();
 
     // Paint the bar + active dropdown chain and route input for this frame.
-    //   renderer      : shared editor overlay renderer (already inside a frame).
+    //   renderer      : ZSlate renderer interface (ISlateRenderer).
     //   bar_rect      : screen-space strip the titles live in (top of viewport).
     //   scale         : editor DPI scale (font + padding multiplier).
     //   mouse         : absolute cursor position (screen px).
@@ -60,7 +59,7 @@ public:
     //   viewport_rect : clamp region for dropdowns (usually the main viewport).
     // Returns true if the cursor is over the bar or an open dropdown (the host
     // should then suppress click-through to whatever is underneath).
-    bool Render(BatchedUIRenderer& renderer,
+    bool Render(ISlateRenderer& renderer,
                 const UIRect& bar_rect,
                 float scale,
                 const Vector2& mouse,

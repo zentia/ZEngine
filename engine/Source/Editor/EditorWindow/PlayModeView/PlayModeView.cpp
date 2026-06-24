@@ -48,7 +48,7 @@ void PlayModeView::UpdateViewport()
         width = rect[2];
         height = rect[3];
         const ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-        const Vector2 fb_scale = host.GetFramebufferScale();
+        const auto fb_scale = host.GetFramebufferScale();  // returns ZSlate::Vector2
         scale_x = fb_scale.x;
         scale_y = fb_scale.y;
         main_x = host.GetDisplayPos().x;

@@ -13,8 +13,8 @@
 // m_MenuOpen + m_MenuInput + Open/Close), and lifts them to full submenu
 // support for free.
 //
-// Renderer-agnostic: Render() takes a base UIRenderer&, so the same call works
-// for the native BatchedUIRenderer (editor overlay) and the legacy
+// Renderer-agnostic: Render() takes a base ISlateRenderer&, so the same call
+// works for the native BatchedUIRenderer (editor overlay) and the legacy
 // SlateImGuiRenderer fallback. The caller is responsible for ensuring the
 // renderer is inside a paintable frame (native: the overlay frame is already
 // active; legacy: wrap the call in beginFrame()/endFrame() on the foreground
@@ -22,14 +22,13 @@
 // ----------------------------------------------------------------------------
 
 #include "ZSlate/Application/SlateInput.h"
+#include "ZSlate/Backend/SlateUIRendererBackend.h"  // ISlateRenderer
 #include "ZSlate/Core/SlateGeometry.h"
 #include "Runtime/UI/Core/UITypes.h"  // UIRect
 
 #include <functional>
 #include <memory>
 #include <vector>
-
-class UIRenderer;
 
 namespace ZSlate
 {
@@ -62,7 +61,7 @@ public:
     //                   self-close). Item-fire always closes regardless.
     // Returns true if the cursor is over the popup chain (host should swallow
     // click-through). Closes the popup on an outside press or item firing.
-    bool Render(UIRenderer& renderer,
+    bool Render(ISlateRenderer& renderer,
                 const Vector2& mouse,
                 bool left_down,
                 float wheel,

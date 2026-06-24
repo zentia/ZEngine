@@ -13,10 +13,18 @@ namespace
     constexpr float kTitleFontSize = 14.0f;
     constexpr float kTitlePadX = 10.0f;  // per side, * scale
 
-    const UIColor kBarBg {0.12f, 0.12f, 0.14f, 1.0f};
-    const UIColor kTitleText {0.88f, 0.89f, 0.92f, 1.0f};
+    // ZSlate::UIColor == Vector4 (same underlying type as ::UIColor).
+    // No :: prefix — we want ZSlate::UIColor so ISlateRenderer methods accept them.
+    const UIColor kBarBg         {0.12f, 0.12f, 0.14f, 1.0f};
+    const UIColor kTitleText     {0.88f, 0.89f, 0.92f, 1.0f};
     const UIColor kTitleHighlight {0.26f, 0.40f, 0.62f, 1.0f};
-    const UIColor kTitleHover {0.24f, 0.25f, 0.29f, 1.0f};
+    const UIColor kTitleHover    {0.24f, 0.25f, 0.29f, 1.0f};
+
+    // Convert ZSlate::UIRect -> ::UIRect (global, used by BatchedUIRenderer).
+    // ZSlate::UIRect has fields {x, y, w, h}; ::UIRect has {x, y, width, height}.
+    static ::UIRect ToEngineRect(const UIRect& r) {
+        return ::UIRect(r.x, r.y, r.w, r.h);
+    }
 }  // namespace
 
 void ZSlateEditorMenuBar::SetMenus(std::vector<TopMenu> menus)
@@ -44,7 +52,8 @@ void ZSlateEditorMenuBar::OpenMenu(int index, float scale)
     if (index >= 0 && index < static_cast<int>(m_TitleRects.size()))
     {
         const UIRect& tr = m_TitleRects[index];
-        anchor = Vector2(tr.x, tr.y + tr.height);
+        // ZSlate::UIRect uses .w/.h (not .width/.height)
+        anchor = Vector2(tr.x, tr.y + tr.h);
     }
 
     DropdownBuilder build = (index >= 0 && index < static_cast<int>(m_Menus.size())) ? m_Menus[index].build
@@ -55,7 +64,7 @@ void ZSlateEditorMenuBar::OpenMenu(int index, float scale)
     });
 }
 
-bool ZSlateEditorMenuBar::Render(BatchedUIRenderer& renderer,
+bool ZSlateEditorMenuBar::Render(ISlateRenderer& renderer,
                                  const UIRect& bar_rect,
                                  float scale,
                                  const Vector2& mouse,
@@ -67,6 +76,9 @@ bool ZSlateEditorMenuBar::Render(BatchedUIRenderer& renderer,
     const float pad = kTitlePadX * scale;
 
     // ---- Lay out + paint the title strip -----------------------------------
+    // bar_rect is ZSlate::UIRect; ISlateRenderer expects ZSlate::UIRect.
+    // kBarBg is ::UIColor (from anonymous namespace); ISlateRenderer::drawQuad
+    // expects ZSlate::UIColor. They're both Vector4 -- pass directly.
     renderer.drawQuad(bar_rect, kBarBg);
 
     m_TitleRects.clear();
@@ -74,9 +86,11 @@ bool ZSlateEditorMenuBar::Render(BatchedUIRenderer& renderer,
     float x = bar_rect.x + pad;
     for (int i = 0; i < static_cast<int>(m_Menus.size()); ++i)
     {
-        const Vector2 sz = renderer.measureText(m_Menus[i].title, font, TextWrapMode::NoWrap, 0.0f, nullptr);
+        // ISlateRenderer::measureText has 2 params (text, font_size).
+        const Vector2 sz = renderer.measureText(m_Menus[i].title, font);
         const float w = sz.x + pad * 2.0f;
-        const UIRect rect(x, bar_rect.y, w, bar_rect.height);
+        // ZSlate::UIRect uses .h (not .height)
+        const UIRect rect(x, bar_rect.y, w, bar_rect.h);
         m_TitleRects.push_back(rect);
         x += w;
     }
@@ -85,8 +99,9 @@ bool ZSlateEditorMenuBar::Render(BatchedUIRenderer& renderer,
     for (int i = 0; i < static_cast<int>(m_TitleRects.size()); ++i)
     {
         const UIRect& rect = m_TitleRects[i];
-        const bool hover = mouse.x >= rect.x && mouse.x < rect.x + rect.width && mouse.y >= rect.y &&
-                           mouse.y < rect.y + rect.height;
+        // ZSlate::UIRect uses .w/.h (not .width/.height)
+        const bool hover = mouse.x >= rect.x && mouse.x < rect.x + rect.w && mouse.y >= rect.y &&
+                           mouse.y < rect.y + rect.h;
         if (hover)
             hovered_title = i;
 
@@ -95,8 +110,9 @@ bool ZSlateEditorMenuBar::Render(BatchedUIRenderer& renderer,
         else if (hover)
             renderer.drawQuad(rect, kTitleHover);
 
-        renderer.drawText(rect, m_Menus[i].title, font, kTitleText, TextAnchor::MiddleCenter,
-                          TextWrapMode::NoWrap, nullptr);
+        // ISlateRenderer::drawText: pass ZSlate::UIRect + ZSlate::UIColor.
+        renderer.drawText(rect, m_Menus[i].title, font, kTitleText,
+                         TextAnchor::MiddleCenter, TextWrapMode::NoWrap, nullptr);
     }
 
     // ---- Title interaction --------------------------------------------------
@@ -114,9 +130,6 @@ bool ZSlateEditorMenuBar::Render(BatchedUIRenderer& renderer,
     }
 
     // ---- Paint + route the active dropdown chain ---------------------------
-    // Delegated to the shared popup. auto_close is OFF: the bar owns dismissal
-    // (clicking a title opens a new dropdown on the same left-edge that would
-    // otherwise self-close the popup; outside clicks are handled below).
     bool over_menu = false;
     if (m_ActiveIndex >= 0 && m_Popup.IsOpen())
     {
@@ -128,8 +141,9 @@ bool ZSlateEditorMenuBar::Render(BatchedUIRenderer& renderer,
     }
 
     // ---- Outside click closes everything -----------------------------------
-    const bool over_bar = mouse.x >= bar_rect.x && mouse.x < bar_rect.x + bar_rect.width &&
-                          mouse.y >= bar_rect.y && mouse.y < bar_rect.y + bar_rect.height;
+    // ZSlate::UIRect uses .w/.h (not .width/.height)
+    const bool over_bar = mouse.x >= bar_rect.x && mouse.x < bar_rect.x + bar_rect.w &&
+                          mouse.y >= bar_rect.y && mouse.y < bar_rect.y + bar_rect.h;
     if (left_edge && hovered_title < 0 && !over_bar && !over_menu)
         CloseAll();
 

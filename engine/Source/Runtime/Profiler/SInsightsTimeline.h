@@ -57,7 +57,7 @@ public:
         if (ctx.Renderer == nullptr)
             return;
         const UIRect rect = geom.ToRect();
-        UIRenderer* r = ctx.Renderer;
+        ISlateRenderer* r = ctx.Renderer;
 
         r->drawQuad(rect, UIColor(0.09f, 0.09f, 0.11f, 1.0f));
 
@@ -65,15 +65,15 @@ public:
             return;
 
         // --- Frame ruler ----------------------------------------------------
-        const UIRect ruler(rect.x, rect.y, rect.width, kRulerHeight);
+        const UIRect ruler(rect.x, rect.y, rect.w, kRulerHeight);
         r->drawQuad(ruler, UIColor(0.13f, 0.13f, 0.16f, 1.0f));
         const auto& frames = m_Snapshot->frame_starts;
         for (size_t i = 0; i < frames.size(); ++i)
         {
             const float fx = XOf(static_cast<double>(frames[i]), rect);
-            if (fx < rect.x - 1.0f || fx > rect.x + rect.width + 1.0f)
+            if (fx < rect.x - 1.0f || fx > rect.x + rect.w + 1.0f)
                 continue;
-            r->drawQuad(UIRect(fx, rect.y, 1.0f, rect.height), UIColor(0.30f, 0.32f, 0.40f, 0.55f));
+            r->drawQuad(UIRect(fx, rect.y, 1.0f, rect.h), UIColor(0.30f, 0.32f, 0.40f, 0.55f));
             if (i + 1 < frames.size())
             {
                 const float nx = XOf(static_cast<double>(frames[i + 1]), rect);
@@ -95,8 +95,8 @@ public:
         {
             const float rows_h = static_cast<float>(track.max_depth + 1) * kRowHeight;
             // Track header band.
-            r->drawQuad(UIRect(rect.x, y, rect.width, kHeaderHeight), UIColor(0.16f, 0.17f, 0.21f, 1.0f));
-            r->drawText(UIRect(rect.x + 6.0f, y, rect.width - 8.0f, kHeaderHeight), track.thread_name, 12.0f,
+            r->drawQuad(UIRect(rect.x, y, rect.w, kHeaderHeight), UIColor(0.16f, 0.17f, 0.21f, 1.0f));
+            r->drawText(UIRect(rect.x + 6.0f, y, rect.w - 8.0f, kHeaderHeight), track.thread_name, 12.0f,
                         UIColor(0.85f, 0.88f, 0.94f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
             const float rows_top = y + kHeaderHeight;
 
@@ -105,10 +105,10 @@ public:
                 const uint64_t end = (ev.end_ns != 0) ? ev.end_ns : m_Snapshot->max_ns;
                 const float x0 = XOf(static_cast<double>(ev.start_ns), rect);
                 const float x1 = XOf(static_cast<double>(end), rect);
-                if (x1 < rect.x || x0 > rect.x + rect.width)
+                if (x1 < rect.x || x0 > rect.x + rect.w)
                     continue;
                 float bx = std::max(x0, rect.x);
-                float bw = std::min(x1, rect.x + rect.width) - bx;
+                float bw = std::min(x1, rect.x + rect.w) - bx;
                 if (bw < 1.0f)
                     bw = 1.0f;
                 const float by = rows_top + static_cast<float>(ev.depth) * kRowHeight;
@@ -122,7 +122,7 @@ public:
                 }
             }
             y = rows_top + rows_h + kTrackGap;
-            if (y > rect.y + rect.height)
+            if (y > rect.y + rect.h)
                 break;
         }
     }
