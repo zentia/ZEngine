@@ -37,14 +37,14 @@ public:
     ~TexPreviewWindow() override = default;
 
     // SWidget interface
-    Vector2 ComputeDesiredSize() const override;
+    ZSlate::Vector2 ComputeDesiredSize() const override;
     void OnPaint(const ZSlate::FPaintContext& ctx, const ZSlate::FGeometry& geom) const override;
 
     // Input handling - CORRECT signatures matching SWidget
-    void OnMouseMove(const Vector2& screen_pos) override;
-    ZSlate::FReply OnMouseButtonDown(const Vector2& screen_pos, int button) override;
-    ZSlate::FReply OnMouseButtonUp(const Vector2& screen_pos, int button) override;
-    ZSlate::FReply OnMouseWheel(const Vector2& screen_pos, float delta) override;
+    void OnMouseMove(const ZSlate::Vector2& screen_pos) override;
+    ZSlate::FReply OnMouseButtonDown(const ZSlate::Vector2& screen_pos, int button) override;
+    ZSlate::FReply OnMouseButtonUp(const ZSlate::Vector2& screen_pos, int button) override;
+    ZSlate::FReply OnMouseWheel(const ZSlate::Vector2& screen_pos, float delta) override;
 
     // Keyboard focus: must return true for OnKeyChar/OnKeyDown to be delivered
     bool SupportsKeyboardFocus() const override { return true; }

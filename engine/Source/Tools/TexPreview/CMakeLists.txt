@@ -41,6 +41,7 @@ z_set_config_output_dirs(${TEX_PREVIEW_TARGET} "${BINARY_ROOT_DIR}" RUNTIME)
 target_include_directories(${TEX_PREVIEW_TARGET} PRIVATE
     ${ENGINE_ROOT_DIR}/Source
     ${ENGINE_ROOT_DIR}/Source/CommonPCH
+    ${ENGINE_ROOT_DIR}/Libraries/ZSlate/include
 )
 
 # Link against ZRuntime

@@ -111,9 +111,9 @@ void TexPreviewWindow::SetTexture(const std::filesystem::path& texture_path)
     }
 }
 
-Vector2 TexPreviewWindow::ComputeDesiredSize() const
+ZSlate::Vector2 TexPreviewWindow::ComputeDesiredSize() const
 {
-    return Vector2(1024.0f, 768.0f);
+    return ZSlate::Vector2(1024.0f, 768.0f);
 }
 
 void TexPreviewWindow::OnPaint(const ZSlate::FPaintContext& ctx, const ZSlate::FGeometry& geom) const
@@ -136,7 +136,7 @@ void TexPreviewWindow::OnPaint(const ZSlate::FPaintContext& ctx, const ZSlate::F
     DrawInfoOverlay(ctx.Renderer, rect);
 }
 
-void TexPreviewWindow::OnMouseMove(const Vector2& screen_pos)
+void TexPreviewWindow::OnMouseMove(const ZSlate::Vector2& screen_pos)
 {
     if (m_IsPanning)
     {
@@ -147,7 +147,7 @@ void TexPreviewWindow::OnMouseMove(const Vector2& screen_pos)
     }
 }
 
-ZSlate::FReply TexPreviewWindow::OnMouseButtonDown(const Vector2& screen_pos, int button)
+ZSlate::FReply TexPreviewWindow::OnMouseButtonDown(const ZSlate::Vector2& screen_pos, int button)
 {
     if (button == 2)  // Middle button = pan
     {
@@ -159,7 +159,7 @@ ZSlate::FReply TexPreviewWindow::OnMouseButtonDown(const Vector2& screen_pos, in
     return ZSlate::FReply::Unhandled();
 }
 
-ZSlate::FReply TexPreviewWindow::OnMouseButtonUp(const Vector2& screen_pos, int button)
+ZSlate::FReply TexPreviewWindow::OnMouseButtonUp(const ZSlate::Vector2& screen_pos, int button)
 {
     if (button == 2 && m_IsPanning)
     {
@@ -169,7 +169,7 @@ ZSlate::FReply TexPreviewWindow::OnMouseButtonUp(const Vector2& screen_pos, int 
     return ZSlate::FReply::Unhandled();
 }
 
-ZSlate::FReply TexPreviewWindow::OnMouseWheel(const Vector2& screen_pos, float delta)
+ZSlate::FReply TexPreviewWindow::OnMouseWheel(const ZSlate::Vector2& screen_pos, float delta)
 {
     const float old_zoom = m_ZoomLevel;
     const float zoom_delta = delta > 0.0f ? 1.1f : 0.9f;
