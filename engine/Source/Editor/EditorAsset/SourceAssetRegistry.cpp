@@ -80,7 +80,7 @@ void SourceAssetRegistry::Record(const std::filesystem::path& zasset_abs_path,
         std::lock_guard<std::mutex> lk(m_Mutex);
         // Skip persistence work entirely if we have no project file to
         // write into. The in-memory map still gets the entry so that a
-        // late-binding project open can flush it later, but for now we
+        // late-binding project open can Flush it later, but for now we
         // just refuse to silently lose it.
         m_Entries[NormaliseKey(zasset_abs_path)] = entry;
     }

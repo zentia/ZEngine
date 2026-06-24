@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Runtime/UI/Render/UiAffine2D.h"
 #include "Runtime/UI/Core/UITypes.h"
@@ -33,25 +33,25 @@ public:
     void clear();
     bool empty() const { return m_Indices.empty(); }
 
-    void pushClipRect(const UIRect& clip_rect, bool intersect_with_current);
-    void popClipRect();
+    void PushClipRect(const UIRect& clip_rect, bool intersect_with_current);
+    void PopClipRect();
 
     // Forces the next draw to open a fresh UiDrawCommand instead of merging into
     // the current one. Used to keep per-window command ranges disjoint so the
     // editor overlay can submit windows in z-order.
     void forceNewCommand();
 
-    void pushTransform(const UiAffine2D& transform);
-    void popTransform();
+    void PushTransform(const UiAffine2D& transform);
+    void PopTransform();
 
-    void drawQuad(const UIRect& rect, const UIColor& color, void* white_texture_id);
-    void drawRect(const UIRect& rect, const UIColor& color, float thickness, void* white_texture_id);
+    void DrawQuad(const UIRect& rect, const UIColor& color, void* white_texture_id);
+    void DrawRect(const UIRect& rect, const UIColor& color, float thickness, void* white_texture_id);
     // Solid convex polygon (>= 3 ordered points), fan-triangulated. Samples the
     // white texel (uv 0,0). Per-vertex clipping is NOT done here -- the recorded
     // command carries the active clip rect, so the editor overlay's GPU scissor
     // clips it (the runtime UIPass ignores clip, but never calls this).
-    void drawConvexPoly(const Vector2* points, int count, const UIColor& color, void* white_texture_id);
-    void drawTexturedQuad(const UIRect& rect,
+    void DrawConvexPoly(const Vector2* points, int count, const UIColor& color, void* white_texture_id);
+    void DrawTexturedQuad(const UIRect& rect,
                           void* texture_id,
                           const UIColor& color,
                           const Vector2& uv0,

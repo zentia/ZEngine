@@ -37,7 +37,7 @@ namespace
     // Native ZSlate leaf widget that paints a single playback glyph (play
     // triangle / stop square / pause bars / step bar+triangle) centered in its
     // geometry. Mirrors the vector geometry of drawPlaybackToolbarIcon below,
-    // but through the backend-agnostic UIRenderer (drawConvexPoly / drawQuad)
+    // but through the backend-agnostic UIRenderer (DrawConvexPoly / DrawQuad)
     // so it composites in the ZSlate batch instead of an ImGui draw list.
     class SPlaybackIcon : public ZSlate::SLeafWidget
     {
@@ -68,13 +68,13 @@ namespace
                     const ZSlate::Vector2 pts[3] = {ZSlate::Vector2(cx - tw * 0.40f, cy - th * 0.60f),
                                             ZSlate::Vector2(cx - tw * 0.40f, cy + th * 0.60f),
                                             ZSlate::Vector2(cx + tw * 0.72f, cy)};
-                    ctx.Renderer->drawConvexPoly(pts, 3, Color);
+                    ctx.Renderer->DrawConvexPoly(pts, 3, Color);
                     break;
                 }
                 case PlaybackToolbarIcon::Stop:
                 {
                     const float he = std::min(w, h) * 0.23f;
-                    ctx.Renderer->drawQuad(ZSlate::UIRect(cx - he, cy - he, he * 2.0f, he * 2.0f), Color);
+                    ctx.Renderer->DrawQuad(ZSlate::UIRect(cx - he, cy - he, he * 2.0f, he * 2.0f), Color);
                     break;
                 }
                 case PlaybackToolbarIcon::Pause:
@@ -82,8 +82,8 @@ namespace
                     const float bhw = w * 0.055f;
                     const float bhh = h * 0.28f;
                     const float bo = w * 0.12f;
-                    ctx.Renderer->drawQuad(ZSlate::UIRect(cx - bo - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
-                    ctx.Renderer->drawQuad(ZSlate::UIRect(cx + bo - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
+                    ctx.Renderer->DrawQuad(ZSlate::UIRect(cx - bo - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
+                    ctx.Renderer->DrawQuad(ZSlate::UIRect(cx + bo - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
                     break;
                 }
                 case PlaybackToolbarIcon::Step:
@@ -91,14 +91,14 @@ namespace
                     const float bhw = w * 0.032f;
                     const float bhh = h * 0.28f;
                     const float bx = cx - w * 0.17f;
-                    ctx.Renderer->drawQuad(ZSlate::UIRect(bx - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
+                    ctx.Renderer->DrawQuad(ZSlate::UIRect(bx - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
 
                     const float tw = w * 0.28f;
                     const float th = h * 0.50f;
                     const ZSlate::Vector2 pts[3] = {ZSlate::Vector2(cx - tw * 0.10f, cy - th * 0.60f),
                                             ZSlate::Vector2(cx - tw * 0.10f, cy + th * 0.60f),
                                             ZSlate::Vector2(cx + tw * 0.80f, cy)};
-                    ctx.Renderer->drawConvexPoly(pts, 3, Color);
+                    ctx.Renderer->DrawConvexPoly(pts, 3, Color);
                     break;
                 }
                 default:
@@ -375,11 +375,11 @@ void MenuController::DrawPlaybackToolbarNative()
 
     // BatchedUIRenderer expects ::UIRect (x,y,width,height)
     const ::UIRect strip_rect(win_pos.x, strip_min_y, win_size.x, strip_h);
-    renderer.pushClipRect(strip_rect, true);
+    renderer.PushClipRect(strip_rect, true);
 
     // Strip background + 1px bottom separator (mirrors the ImGui fallback).
-    renderer.drawQuad(strip_rect, ::UIColor(26.0f / 255.0f, 27.0f / 255.0f, 31.0f / 255.0f, 1.0f));
-    renderer.drawQuad(::UIRect(win_pos.x, strip_min_y + strip_h - 1.0f, win_size.x, 1.0f),
+    renderer.DrawQuad(strip_rect, ::UIColor(26.0f / 255.0f, 27.0f / 255.0f, 31.0f / 255.0f, 1.0f));
+    renderer.DrawQuad(::UIRect(win_pos.x, strip_min_y + strip_h - 1.0f, win_size.x, 1.0f),
                       ::UIColor(52.0f / 255.0f, 56.0f / 255.0f, 62.0f / 255.0f, 1.0f));
 
     m_PlaybackToolbar->CacheDesiredSize();
@@ -389,7 +389,7 @@ void MenuController::DrawPlaybackToolbarNative()
 
     // Panel plate behind the buttons.
     const float pad = 5.0f * ui_scale;
-    renderer.drawQuad(::UIRect(tx - pad, ty - pad, size.x + pad * 2.0f, size.y + pad * 2.0f),
+    renderer.DrawQuad(::UIRect(tx - pad, ty - pad, size.x + pad * 2.0f, size.y + pad * 2.0f),
                       ::UIColor(46.0f / 255.0f, 48.0f / 255.0f, 52.0f / 255.0f, 0.96f));
 
     ZSlate::FPaintContext ctx;
@@ -397,7 +397,7 @@ void MenuController::DrawPlaybackToolbarNative()
     ctx.LayerId = 0;
     m_PlaybackToolbar->Paint(ctx, ZSlate::FGeometry(ZSlate::Vector2(tx, ty), size));
 
-    renderer.popClipRect();
+    renderer.PopClipRect();
 
     // Route input. A dropdown being open swallows toolbar input (a Foreground
     // surface owns the mouse while open). P11a: native mouse source from the

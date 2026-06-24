@@ -219,7 +219,7 @@ void DrawBezier(UIRenderer& r, const ZSlate::Vector2& a, const ZSlate::Vector2& 
             const float st = static_cast<float>(s) / static_cast<float>(sub);
             const float x = prev.x + (pt.x - prev.x) * st;
             const float y = prev.y + (pt.y - prev.y) * st;
-            r.drawQuad(ZSlate::UIRect(x - half, y - half, thickness, thickness), color);
+            r.DrawQuad(ZSlate::UIRect(x - half, y - half, thickness, thickness), color);
         }
         prev = pt;
     }
@@ -228,17 +228,17 @@ void DrawBezier(UIRenderer& r, const ZSlate::Vector2& a, const ZSlate::Vector2& 
 
 void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& region, float scale)
 {
-    r.drawQuad(region, kCanvasBg);
-    r.pushClipRect(region, true);
+    r.DrawQuad(region, kCanvasBg);
+    r.PushClipRect(region, true);
 
     // Grid.
     const float grid = kGridSize * scale;
     const float ox = std::fmod(m_Scroll.x, grid);
     const float oy = std::fmod(m_Scroll.y, grid);
     for (float x = ox; x < region.width; x += grid)
-        r.drawQuad(ZSlate::UIRect(region.x + x, region.y, 1.0f, region.height), kGridColor);
+        r.DrawQuad(ZSlate::UIRect(region.x + x, region.y, 1.0f, region.height), kGridColor);
     for (float y = oy; y < region.height; y += grid)
-        r.drawQuad(ZSlate::UIRect(region.x, region.y + y, region.width, 1.0f), kGridColor);
+        r.DrawQuad(ZSlate::UIRect(region.x, region.y + y, region.width, 1.0f), kGridColor);
 
     // Links.
     for (size_t i = 0; i < m_Links.size(); ++i)
@@ -301,18 +301,18 @@ void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& reg
         const ZSlate::Vector2 size = NodeSize(node);
         const ZSlate::UIRect body(sp.x, sp.y, size.x, size.y);
 
-        r.drawQuad(body, node.selected ? kNodeBgSelected : kNodeBg);
-        r.drawRect(body, kNodeBorder, 1.0f);
+        r.DrawQuad(body, node.selected ? kNodeBgSelected : kNodeBg);
+        r.DrawRect(body, kNodeBorder, 1.0f);
 
         // Title.
-        r.drawText(ZSlate::UIRect(sp.x + 6.0f * scale, sp.y, size.x - 12.0f * scale, kTitleH * scale),
+        r.DrawText(ZSlate::UIRect(sp.x + 6.0f * scale, sp.y, size.x - 12.0f * scale, kTitleH * scale),
                    node.title,
                    13.0f * scale,
                    kTitleColor,
                    ZSlate::TextAnchor::MiddleLeft,
                    ZSlate::TextWrapMode::NoWrap);
         // Title separator.
-        r.drawQuad(ZSlate::UIRect(sp.x, sp.y + kTitleH * scale, size.x, 1.0f), kNodeBorder);
+        r.DrawQuad(ZSlate::UIRect(sp.x, sp.y + kTitleH * scale, size.x, 1.0f), kNodeBorder);
 
         // Input pins + labels.
         for (size_t i = 0; i < node.inputs.size(); ++i)
@@ -321,9 +321,9 @@ void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& reg
             const ZSlate::Vector2 pp = PinScreen(node, static_cast<int>(i), true);
             const bool hov = (m_HoveredPinNodeId == node.id && m_HoveredPinId == pin.id);
             const float pr = (hov ? kPinRadius + 1.0f : kPinRadius) * scale;
-            r.drawQuad(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), PinColor(pin.type));
-            r.drawRect(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), kWhite, 1.0f);
-            r.drawText(ZSlate::UIRect(pp.x + pr + 3.0f * scale, pp.y - kPinRow * 0.5f * scale, size.x * 0.5f, kPinRow * scale),
+            r.DrawQuad(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), PinColor(pin.type));
+            r.DrawRect(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), kWhite, 1.0f);
+            r.DrawText(ZSlate::UIRect(pp.x + pr + 3.0f * scale, pp.y - kPinRow * 0.5f * scale, size.x * 0.5f, kPinRow * scale),
                        pin.name,
                        11.0f * scale,
                        kLabelColor,
@@ -338,9 +338,9 @@ void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& reg
             const ZSlate::Vector2 pp = PinScreen(node, static_cast<int>(i), false);
             const bool hov = (m_HoveredPinNodeId == node.id && m_HoveredPinId == pin.id);
             const float pr = (hov ? kPinRadius + 1.0f : kPinRadius) * scale;
-            r.drawQuad(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), PinColor(pin.type));
-            r.drawRect(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), kWhite, 1.0f);
-            r.drawText(ZSlate::UIRect(pp.x - pr - 3.0f * scale - size.x * 0.5f,
+            r.DrawQuad(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), PinColor(pin.type));
+            r.DrawRect(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), kWhite, 1.0f);
+            r.DrawText(ZSlate::UIRect(pp.x - pr - 3.0f * scale - size.x * 0.5f,
                               pp.y - kPinRow * 0.5f * scale,
                               size.x * 0.5f,
                               kPinRow * scale),
@@ -352,7 +352,7 @@ void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& reg
         }
     }
 
-    r.popClipRect();
+    r.PopClipRect();
 }
 
 // ---------------------------------------------------------------------------
@@ -561,9 +561,9 @@ void ZSlateBlueprintWindow::OnGUI()
 
         PaintCanvas(renderer, canvas_region, ui_scale);
 
-        renderer.pushClipRect(toolbar_region, true);
+        renderer.PushClipRect(toolbar_region, true);
         m_Toolbar->Paint(ctx, toolbar_geom);
-        renderer.popClipRect();
+        renderer.PopClipRect();
     }
 
     // ---- Input --------------------------------------------------------------

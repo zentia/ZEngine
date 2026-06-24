@@ -1,4 +1,4 @@
-﻿#include "Runtime/UI/Render/BatchedUIRenderer.h"
+#include "Runtime/UI/Render/BatchedUIRenderer.h"
 
 #include "Runtime/UI/Core/Font.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
@@ -20,7 +20,7 @@ namespace
     }
 }  // namespace
 
-bool BatchedUIRenderer::beginFrame()
+bool BatchedUIRenderer::BeginFrame()
 {
     m_Batch.clear();
     m_DisplaySize = getDisplaySize();
@@ -28,70 +28,70 @@ bool BatchedUIRenderer::beginFrame()
     return m_Active;
 }
 
-void BatchedUIRenderer::pushClipRect(const UIRect& clip_rect, bool intersect_with_current)
+void BatchedUIRenderer::PushClipRect(const UIRect& clip_rect, bool intersect_with_current)
 {
     if (!m_Active)
     {
         return;
     }
-    m_Batch.pushClipRect(clip_rect, intersect_with_current);
+    m_Batch.PushClipRect(clip_rect, intersect_with_current);
 }
 
-void BatchedUIRenderer::popClipRect()
+void BatchedUIRenderer::PopClipRect()
 {
     if (!m_Active)
     {
         return;
     }
-    m_Batch.popClipRect();
+    m_Batch.PopClipRect();
 }
 
-void BatchedUIRenderer::pushTransform(const UiAffine2D& transform)
+void BatchedUIRenderer::PushTransform(const UiAffine2D& transform)
 {
     if (!m_Active)
     {
         return;
     }
-    m_Batch.pushTransform(transform);
+    m_Batch.PushTransform(transform);
 }
 
-void BatchedUIRenderer::popTransform()
+void BatchedUIRenderer::PopTransform()
 {
     if (!m_Active)
     {
         return;
     }
-    m_Batch.popTransform();
+    m_Batch.PopTransform();
 }
 
-void BatchedUIRenderer::drawQuad(const UIRect& rect, const UIColor& color)
+void BatchedUIRenderer::DrawQuad(const UIRect& rect, const UIColor& color)
 {
     if (!m_Active)
     {
         return;
     }
-    m_Batch.drawQuad(rect, color, GetWhiteTextureId());
+    m_Batch.DrawQuad(rect, color, GetWhiteTextureId());
 }
 
-void BatchedUIRenderer::drawRect(const UIRect& rect, const UIColor& color, float thickness)
+void BatchedUIRenderer::DrawRect(const UIRect& rect, const UIColor& color, float thickness)
 {
     if (!m_Active)
     {
         return;
     }
-    m_Batch.drawRect(rect, color, thickness, GetWhiteTextureId());
+    m_Batch.DrawRect(rect, color, thickness, GetWhiteTextureId());
 }
 
-void BatchedUIRenderer::drawConvexPoly(const Vector2* points, int count, const UIColor& color)
+void BatchedUIRenderer::DrawConvexPoly(const Vector2* points, int count, const UIColor& color)
 {
     if (!m_Active)
     {
         return;
     }
-    m_Batch.drawConvexPoly(points, count, color, GetWhiteTextureId());
+    m_Batch.DrawConvexPoly(points, count, color, GetWhiteTextureId());
 }
 
-void BatchedUIRenderer::drawTexturedQuad(const UIRect& rect,
+void BatchedUIRenderer::DrawTexturedQuad(const UIRect& rect,
                                          void* texture_id,
                                          const UIColor& color,
                                          const Vector2& uv0,
@@ -101,10 +101,10 @@ void BatchedUIRenderer::drawTexturedQuad(const UIRect& rect,
     {
         return;
     }
-    m_Batch.drawTexturedQuad(rect, texture_id, color, uv0, uv1, GetWhiteTextureId());
+    m_Batch.DrawTexturedQuad(rect, texture_id, color, uv0, uv1, GetWhiteTextureId());
 }
 
-void BatchedUIRenderer::drawText(const UIRect& rect,
+void BatchedUIRenderer::DrawText(const UIRect& rect,
                                  const std::string& text,
                                  float font_size,
                                  const UIColor& color,
@@ -142,7 +142,7 @@ void BatchedUIRenderer::drawText(const UIRect& rect,
                 void* white = GetWhiteTextureId();
                 for (const TextGenerator::Glyph& g : generator.GetGlyphs())
                 {
-                    m_Batch.drawTexturedQuad(g.dest, native_tex, color, g.uv0, g.uv1, white);
+                    m_Batch.DrawTexturedQuad(g.dest, native_tex, color, g.uv0, g.uv1, white);
                 }
                 return;
             }
@@ -151,14 +151,14 @@ void BatchedUIRenderer::drawText(const UIRect& rect,
 
     // Native font atlas not ready yet -- draw a solid placeholder block sized to
     // the measured text extent so layout still reserves the right space.
-    const Vector2 measured = measureText(text, font_size, wrap, rect.width, font_asset);
+    const Vector2 measured = MeasureText(text, font_size, wrap, rect.width, font_asset);
     UIRect text_rect = rect;
     text_rect.width = std::min(text_rect.width, measured.x);
     text_rect.height = std::min(text_rect.height, measured.y);
-    drawQuad(text_rect, color);
+    DrawQuad(text_rect, color);
 }
 
-Vector2 BatchedUIRenderer::measureText(const std::string& text,
+Vector2 BatchedUIRenderer::MeasureText(const std::string& text,
                                        float font_size,
                                        TextWrapMode wrap,
                                        float wrap_width,
@@ -181,7 +181,7 @@ Vector2 BatchedUIRenderer::measureText(const std::string& text,
     }
 
     // Native atlas not loaded yet: rough monospace estimate (matches the
-    // placeholder block drawText paints in the same situation).
+    // placeholder block DrawText paints in the same situation).
     return Vector2(static_cast<float>(text.size()) * font_size * 0.5f, font_size * 1.2f);
 }
 

@@ -666,18 +666,18 @@ void ZSlateUMGDesignerWindow::OnGUI()
         if (m_Chrome)
         {
             m_Chrome->CacheDesiredSize();
-            renderer.pushClipRect(chrome_region, true);
+            renderer.PushClipRect(chrome_region, true);
             m_Chrome->Paint(ctx, chrome_geom);
-            renderer.popClipRect();
+            renderer.PopClipRect();
         }
 
-        renderer.drawQuad(preview_region, preview_bg);
+        renderer.DrawQuad(preview_region, preview_bg);
         if (m_PreviewSlate)
         {
             m_PreviewSlate->CacheDesiredSize();
-            renderer.pushClipRect(preview_region, true);
+            renderer.PushClipRect(preview_region, true);
             m_PreviewSlate->Paint(ctx, preview_geom);
-            renderer.popClipRect();
+            renderer.PopClipRect();
         }
     };
 

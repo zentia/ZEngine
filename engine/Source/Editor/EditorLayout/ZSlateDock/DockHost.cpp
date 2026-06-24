@@ -54,7 +54,7 @@ namespace EditorDock
             float total = 0.0f;
             for (size_t i = 0; i < leaf.Tabs.size(); ++i)
             {
-                const float text_w = renderer.measureText(leaf.Tabs[i].PanelId, font, TextWrapMode::NoWrap, 0.0f, nullptr).x;
+                const float text_w = renderer.MeasureText(leaf.Tabs[i].PanelId, font, TextWrapMode::NoWrap, 0.0f, nullptr).x;
                 tab_w[i] = text_w + pad * 2.0f + (static_cast<int>(i) == leaf.ActiveTab ? close_w : 0.0f);
                 total += tab_w[i] + (i > 0 ? gap : 0.0f);
             }
@@ -115,7 +115,7 @@ namespace EditorDock
             // Opaque panel-area fill only. Recorded below the panel content (see
             // RenderBackgrounds doc in DockHost.h); the 1px frame + tab strip stay
             // in Render() at the foreground layer.
-            renderer.drawQuad(leaf.ContentRect, m_Style.PanelBg);
+            renderer.DrawQuad(leaf.ContentRect, m_Style.PanelBg);
         });
     }
 
@@ -150,8 +150,8 @@ namespace EditorDock
             case EDockDir::Center:
             default:               region = target.ContentRect; break;
         }
-        renderer.drawQuad(region, m_Style.DropPreviewFill);
-        renderer.drawRect(region, m_Style.DropPreviewBorder, 2.0f);
+        renderer.DrawQuad(region, m_Style.DropPreviewFill);
+        renderer.DrawRect(region, m_Style.DropPreviewBorder, 2.0f);
     }
 
     void DockHost::RenderLeaf(DockNode& leaf, BatchedUIRenderer& renderer, float scale, const Vector2& mouse)
@@ -162,7 +162,7 @@ namespace EditorDock
 
         // 1px frame around the leaf. The opaque panel-area fill is drawn separately by
         // RenderBackgrounds() in a z-group below the panel content (see DockHost.h).
-        renderer.drawRect(node_rect, m_Style.BorderColor, 1.0f);
+        renderer.DrawRect(node_rect, m_Style.BorderColor, 1.0f);
 
         if (leaf.Tabs.empty() || leaf.TabStripRect.height <= 1.0f)
         {
@@ -172,7 +172,7 @@ namespace EditorDock
 
         // Tab strip band.
         const UIRect& strip = leaf.TabStripRect;
-        renderer.drawQuad(strip, m_Style.TabStripBg);
+        renderer.DrawQuad(strip, m_Style.TabStripBg);
 
         // Tab rects come from the shared layout helper (also used by the input layer so
         // hit-testing matches pixel-for-pixel).
@@ -186,7 +186,7 @@ namespace EditorDock
 
         // Clip tab content to the visible (non-arrow) region so scrolled labels never
         // bleed into siblings or paint over the scroll arrows.
-        renderer.pushClipRect(UIRect(strip.x, strip.y, usable, strip.height), true);
+        renderer.PushClipRect(UIRect(strip.x, strip.y, usable, strip.height), true);
 
         for (size_t i = 0; i < leaf.TabRects.size(); ++i)
         {
@@ -203,17 +203,17 @@ namespace EditorDock
                 bg = m_Style.TabActiveBg;
             else if (is_hover)
                 bg = m_Style.TabHoverBg;
-            renderer.drawQuad(tab_rect, bg);
+            renderer.DrawQuad(tab_rect, bg);
 
             if (is_active)
             {
                 // Accent bar along the top edge of the active tab (Unity/UE feel).
-                renderer.drawQuad(UIRect(tab_rect.x, tab_rect.y, tab_rect.width, accent_h), m_Style.ActiveTabAccent);
+                renderer.DrawQuad(UIRect(tab_rect.x, tab_rect.y, tab_rect.width, accent_h), m_Style.ActiveTabAccent);
             }
 
             // Label area excludes the close button on the active tab.
             const float label_w = is_active ? std::max(1.0f, tab_rect.width - close_w) : tab_rect.width;
-            renderer.drawText(UIRect(tab_rect.x, tab_rect.y, label_w, tab_rect.height),
+            renderer.DrawText(UIRect(tab_rect.x, tab_rect.y, label_w, tab_rect.height),
                               label,
                               font,
                               is_active ? m_Style.TabActiveText : m_Style.TabText,
@@ -225,8 +225,8 @@ namespace EditorDock
             {
                 const bool close_hover = RectContains(leaf.ActiveTabCloseRect, mouse);
                 if (close_hover)
-                    renderer.drawQuad(leaf.ActiveTabCloseRect, m_Style.TabHoverBg);
-                renderer.drawText(leaf.ActiveTabCloseRect,
+                    renderer.DrawQuad(leaf.ActiveTabCloseRect, m_Style.TabHoverBg);
+                renderer.DrawText(leaf.ActiveTabCloseRect,
                                   "x",
                                   font,
                                   close_hover ? m_Style.TabActiveText : m_Style.TabText,
@@ -236,7 +236,7 @@ namespace EditorDock
             }
         }
 
-        renderer.popClipRect();
+        renderer.PopClipRect();
 
         // Scroll arrows (drawn over their own background so any tab bleeding into the
         // arrow zone is masked).
@@ -244,8 +244,8 @@ namespace EditorDock
         {
             const auto draw_arrow = [&](const UIRect& r, const char* glyph) {
                 const bool hover = RectContains(r, mouse);
-                renderer.drawQuad(r, hover ? m_Style.TabHoverBg : m_Style.TabInactiveBg);
-                renderer.drawText(r, glyph, font, m_Style.TabActiveText, TextAnchor::MiddleCenter,
+                renderer.DrawQuad(r, hover ? m_Style.TabHoverBg : m_Style.TabInactiveBg);
+                renderer.DrawText(r, glyph, font, m_Style.TabActiveText, TextAnchor::MiddleCenter,
                                   TextWrapMode::NoWrap, nullptr);
             };
             draw_arrow(leaf.ScrollLeftRect, "<");
@@ -260,6 +260,6 @@ namespace EditorDock
             return;
 
         const bool hover = RectContains(r, mouse);
-        renderer.drawQuad(r, hover ? m_Style.SplitterHoverColor : m_Style.SplitterColor);
+        renderer.DrawQuad(r, hover ? m_Style.SplitterHoverColor : m_Style.SplitterColor);
     }
 }  // namespace EditorDock

@@ -14,7 +14,7 @@
 //     - Having previously called BindlessTextureManager::allocate()
 //       to register the source texture's view and obtain a slot.
 //     - Calling RecordBlit() inside an active frame (between
-//       RHI::beginFrame and RHI::endFrame), inside an active render
+//       RHI::BeginFrame and RHI::EndFrame), inside an active render
 //       pass, with the framebuffer's color RT bound.
 //
 // Why a dedicated class instead of a `RenderPass` subclass:
@@ -30,7 +30,7 @@
 //     call with isReady() == true is a no-op.
 //   - Shutdown() must be called before the owning RHI is destroyed.
 //   - RecordBlit() is called inside the per-frame editor tick, AFTER
-//     RHI::beginFrame and an outer cmdBeginRenderPass on the caller's
+//     RHI::BeginFrame and an outer cmdBeginRenderPass on the caller's
 //     framebuffer (the caller knows the RT's clear color / load-op
 //     semantics; this class doesn't).
 //
@@ -109,7 +109,7 @@ public:
 
     // Record one fullscreen-triangle drawcall into `command_buffer`.
     // PRECONDITIONS:
-    //   - RHI::beginFrame has been called this frame.
+    //   - RHI::BeginFrame has been called this frame.
     //   - cmdBeginRenderPass on the same render pass passed to
     //     Initialize() has been called on `command_buffer`.
     //   - `bindless_texture_index` was returned by

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Runtime/Core/Math/Vector2.h"
@@ -60,7 +60,7 @@ struct BpLink
 // "Blueprint"). The "add node" actions live in a persistent ZSlate toolbar
 // (replacing the legacy ImGui right-click popup); the node graph itself
 // (grid + nodes + pins + bezier links) is a custom canvas painted directly
-// through the active UIRenderer (drawQuad / drawRect / drawText -- bezier links
+// through the active UIRenderer (DrawQuad / DrawRect / DrawText -- bezier links
 // are sampled into short quads since the renderer has no native line/curve
 // primitive) and hit-tested manually. No ImGui widgets are used.
 class ZSlateBlueprintWindow : public EditorWindow

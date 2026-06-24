@@ -1,4 +1,4 @@
-﻿// =============================================================================
+// =============================================================================
 // TexPreviewWindow.cpp - Block-Compressed Texture Preview Widget
 // -----------------------------------------------------------------------------
 // A standalone Slate widget that previews ASTC and BC7 compressed textures.
@@ -124,7 +124,7 @@ void TexPreviewWindow::OnPaint(const ZSlate::FPaintContext& ctx, const ZSlate::F
     const UIRect rect = geom.ToRect();
 
     // 1. Background
-    ctx.Renderer->drawQuad(rect, UIColor(0.2f, 0.2f, 0.2f, 1.0f));
+    ctx.Renderer->DrawQuad(rect, UIColor(0.2f, 0.2f, 0.2f, 1.0f));
 
     // 2. Checkerboard (visible under transparent areas)
     DrawCheckerboard(ctx.Renderer, rect);
@@ -634,14 +634,14 @@ void TexPreviewWindow::DrawCheckerboard(UIRenderer* renderer, const UIRect& rect
     {
         const float tile_u = rect.width / CHECKER_TEX_SIZE;
         const float tile_v = rect.height / CHECKER_TEX_SIZE;
-        renderer->drawTexturedQuad(rect, m_CheckerTextureId,
+        renderer->DrawTexturedQuad(rect, m_CheckerTextureId,
                                    UIColor(1.0f, 1.0f, 1.0f, 1.0f),
                                    Vector2(0.0f, 0.0f),
                                    Vector2(tile_u, tile_v));
     }
     else
     {
-        renderer->drawQuad(rect, UIColor(0.2f, 0.2f, 0.2f, 1.0f));
+        renderer->DrawQuad(rect, UIColor(0.2f, 0.2f, 0.2f, 1.0f));
     }
 }
 
@@ -663,7 +663,7 @@ void TexPreviewWindow::DrawPreviewImage(UIRenderer* renderer, const UIRect& rect
     const float img_x = rect.x + (rect.width - img_w) / 2.0f + m_PanX;
     const float img_y = rect.y + (rect.height - img_h) / 2.0f + m_PanY;
 
-    renderer->pushClipRect(rect);
+    renderer->PushClipRect(rect);
 
     const float clip_l = rect.x;
     const float clip_t = rect.y;
@@ -691,13 +691,13 @@ void TexPreviewWindow::DrawPreviewImage(UIRenderer* renderer, const UIRect& rect
             uv1 = Vector2(1.0f, 1.0f);
         }
 
-        renderer->drawTexturedQuad(ToRect(draw_l, draw_t, draw_r - draw_l, draw_b - draw_t),
+        renderer->DrawTexturedQuad(ToRect(draw_l, draw_t, draw_r - draw_l, draw_b - draw_t),
                                    m_TextureId,
                                    UIColor(1.0f, 1.0f, 1.0f, 1.0f),
                                    uv0, uv1);
     }
 
-    renderer->popClipRect();
+    renderer->PopClipRect();
 }
 
 void TexPreviewWindow::DrawInfoOverlay(UIRenderer* renderer, const UIRect& rect) const
@@ -712,10 +712,10 @@ void TexPreviewWindow::DrawInfoOverlay(UIRenderer* renderer, const UIRect& rect)
                   m_ZoomLevel * 100.0f, m_PanX, m_PanY);
 
     // Info bar background
-    renderer->drawQuad(ToRect(rect.x, rect.y, rect.width, 28.0f),
+    renderer->DrawQuad(ToRect(rect.x, rect.y, rect.width, 28.0f),
                        UIColor(0.1f, 0.1f, 0.1f, 0.85f));
 
-    renderer->drawText(ToRect(rect.x + 8.0f, rect.y, rect.width - 16.0f, 28.0f),
+    renderer->DrawText(ToRect(rect.x + 8.0f, rect.y, rect.width - 16.0f, 28.0f),
                        buf, 13.0f,
                        UIColor(0.9f, 0.9f, 0.9f, 1.0f),
                        TextAnchor::MiddleLeft,

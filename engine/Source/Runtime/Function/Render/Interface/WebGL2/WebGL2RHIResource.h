@@ -151,7 +151,7 @@ namespace ZEngine
             WebGL2Buffer* getOwner() const { return m_Buffer; }
 
             // CPU-side staging. WebGL2 cannot persistently map; we allocate a host
-            // buffer on map and flush via glBufferSubData on unmap.
+            // buffer on map and Flush via glBufferSubData on unmap.
             std::vector<uint8_t>& staging() { return m_Staging; }
             bool& mapped() { return m_Mapped; }
             RHIDeviceSize& mappedOffset() { return m_MappedOffset; }
@@ -257,7 +257,7 @@ namespace ZEngine
         //
         // WebGL 2.0 has no monolithic PSO. We pre-link a GL program, then carry the
         // fixed-function state (rasterizer, blend, depth-stencil, vertex layout) on
-        // the pipeline object so the RHI can flush it lazily on each draw.
+        // the pipeline object so the RHI can Flush it lazily on each draw.
         // ---------------------------------------------------------------------------
 
         class WebGL2Shader final : public RHIShader

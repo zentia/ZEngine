@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Runtime/UI/Render/UIRenderer.h"
 #include "Runtime/UI/Render/UiRenderBatch.h"
@@ -7,26 +7,26 @@
 class BatchedUIRenderer final : public UIRenderer
 {
 public:
-    bool beginFrame() override;
-    void endFrame() override {}
+    bool BeginFrame() override;
+    void EndFrame() override {}
 
-    void pushClipRect(const UIRect& clip_rect, bool intersect_with_current = true) override;
-    void popClipRect() override;
+    void PushClipRect(const UIRect& clip_rect, bool intersect_with_current = true) override;
+    void PopClipRect() override;
 
-    void pushTransform(const UiAffine2D& transform) override;
-    void popTransform() override;
+    void PushTransform(const UiAffine2D& transform) override;
+    void PopTransform() override;
 
-    void drawQuad(const UIRect& rect, const UIColor& color) override;
-    void drawRect(const UIRect& rect, const UIColor& color, float thickness = 1.0f) override;
-    void drawConvexPoly(const Vector2* points, int count, const UIColor& color) override;
+    void DrawQuad(const UIRect& rect, const UIColor& color) override;
+    void DrawRect(const UIRect& rect, const UIColor& color, float thickness = 1.0f) override;
+    void DrawConvexPoly(const Vector2* points, int count, const UIColor& color) override;
 
-    void drawTexturedQuad(const UIRect& rect,
+    void DrawTexturedQuad(const UIRect& rect,
                           void* texture_id,
                           const UIColor& color = UIColor(1, 1, 1, 1),
                           const Vector2& uv0 = Vector2(0.0f, 0.0f),
                           const Vector2& uv1 = Vector2(1.0f, 1.0f)) override;
 
-    void drawText(const UIRect& rect,
+    void DrawText(const UIRect& rect,
                   const std::string& text,
                   float font_size,
                   const UIColor& color,
@@ -34,7 +34,7 @@ public:
                   TextWrapMode wrap = TextWrapMode::Wrap,
                   Font* font = nullptr) override;
 
-    Vector2 measureText(const std::string& text,
+    Vector2 MeasureText(const std::string& text,
                         float font_size,
                         TextWrapMode wrap = TextWrapMode::Wrap,
                         float wrap_width = 0.0f,

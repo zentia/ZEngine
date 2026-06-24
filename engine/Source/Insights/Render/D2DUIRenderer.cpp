@@ -96,7 +96,7 @@ IDWriteTextFormat* D2DUIRenderer::GetTextFormat(float font_size)
     return fmt;
 }
 
-void D2DUIRenderer::pushClipRect(const UIRect& clip_rect, bool /*intersect_with_current*/)
+void D2DUIRenderer::PushClipRect(const UIRect& clip_rect, bool /*intersect_with_current*/)
 {
     if (m_Target == nullptr)
         return;
@@ -106,7 +106,7 @@ void D2DUIRenderer::pushClipRect(const UIRect& clip_rect, bool /*intersect_with_
     ++m_ClipDepth;
 }
 
-void D2DUIRenderer::popClipRect()
+void D2DUIRenderer::PopClipRect()
 {
     if (m_Target == nullptr || m_ClipDepth <= 0)
         return;
@@ -114,7 +114,7 @@ void D2DUIRenderer::popClipRect()
     --m_ClipDepth;
 }
 
-void D2DUIRenderer::drawQuad(const UIRect& rect, const UIColor& color)
+void D2DUIRenderer::DrawQuad(const UIRect& rect, const UIColor& color)
 {
     if (m_Target == nullptr)
         return;
@@ -125,7 +125,7 @@ void D2DUIRenderer::drawQuad(const UIRect& rect, const UIColor& color)
     m_Target->FillRectangle(ToRect(rect), m_Brush);
 }
 
-void D2DUIRenderer::drawRect(const UIRect& rect, const UIColor& color, float thickness)
+void D2DUIRenderer::DrawRect(const UIRect& rect, const UIColor& color, float thickness)
 {
     if (m_Target == nullptr)
         return;
@@ -136,15 +136,15 @@ void D2DUIRenderer::drawRect(const UIRect& rect, const UIColor& color, float thi
     m_Target->DrawRectangle(ToRect(rect), m_Brush, thickness);
 }
 
-void D2DUIRenderer::drawTexturedQuad(const UIRect& rect, void* /*texture_id*/, const UIColor& color,
+void D2DUIRenderer::DrawTexturedQuad(const UIRect& rect, void* /*texture_id*/, const UIColor& color,
                                      const Vector2& /*uv0*/, const Vector2& /*uv1*/)
 {
     // The standalone viewer never draws textured quads; fall back to a solid
     // fill so any accidental call still produces something sensible.
-    drawQuad(rect, color);
+    DrawQuad(rect, color);
 }
 
-void D2DUIRenderer::drawText(const UIRect& rect, const std::string& text, float font_size, const UIColor& color,
+void D2DUIRenderer::DrawText(const UIRect& rect, const std::string& text, float font_size, const UIColor& color,
                              TextAnchor alignment, TextWrapMode wrap, Font* /*font*/)
 {
     if (m_Target == nullptr || text.empty())
@@ -201,7 +201,7 @@ void D2DUIRenderer::drawText(const UIRect& rect, const std::string& text, float 
                        D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
 }
 
-Vector2 D2DUIRenderer::measureText(const std::string& text, float font_size, TextWrapMode /*wrap*/,
+Vector2 D2DUIRenderer::MeasureText(const std::string& text, float font_size, TextWrapMode /*wrap*/,
                                    float wrap_width, Font* /*font*/) const
 {
     if (m_DWrite == nullptr || text.empty())

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Runtime/Profiler/InsightsTrace.h"
 #include "ZSlate/Widgets/SLeafWidget.h"
@@ -59,21 +59,21 @@ public:
         const UIRect rect = geom.ToRect();
         ISlateRenderer* r = ctx.Renderer;
 
-        r->drawQuad(rect, UIColor(0.09f, 0.09f, 0.11f, 1.0f));
+        r->DrawQuad(rect, UIColor(0.09f, 0.09f, 0.11f, 1.0f));
 
         if (m_Snapshot == nullptr)
             return;
 
         // --- Frame ruler ----------------------------------------------------
         const UIRect ruler(rect.x, rect.y, rect.w, kRulerHeight);
-        r->drawQuad(ruler, UIColor(0.13f, 0.13f, 0.16f, 1.0f));
+        r->DrawQuad(ruler, UIColor(0.13f, 0.13f, 0.16f, 1.0f));
         const auto& frames = m_Snapshot->frame_starts;
         for (size_t i = 0; i < frames.size(); ++i)
         {
             const float fx = XOf(static_cast<double>(frames[i]), rect);
             if (fx < rect.x - 1.0f || fx > rect.x + rect.w + 1.0f)
                 continue;
-            r->drawQuad(UIRect(fx, rect.y, 1.0f, rect.h), UIColor(0.30f, 0.32f, 0.40f, 0.55f));
+            r->DrawQuad(UIRect(fx, rect.y, 1.0f, rect.h), UIColor(0.30f, 0.32f, 0.40f, 0.55f));
             if (i + 1 < frames.size())
             {
                 const float nx = XOf(static_cast<double>(frames[i + 1]), rect);
@@ -83,7 +83,7 @@ public:
                     const double ms = static_cast<double>(frames[i + 1] - frames[i]) / 1.0e6;
                     char buf[32];
                     std::snprintf(buf, sizeof(buf), "%.2f ms", ms);
-                    r->drawText(UIRect(fx + 3.0f, rect.y, w - 4.0f, kRulerHeight), buf, 11.0f,
+                    r->DrawText(UIRect(fx + 3.0f, rect.y, w - 4.0f, kRulerHeight), buf, 11.0f,
                                 UIColor(0.70f, 0.74f, 0.82f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
                 }
             }
@@ -95,8 +95,8 @@ public:
         {
             const float rows_h = static_cast<float>(track.max_depth + 1) * kRowHeight;
             // Track header band.
-            r->drawQuad(UIRect(rect.x, y, rect.w, kHeaderHeight), UIColor(0.16f, 0.17f, 0.21f, 1.0f));
-            r->drawText(UIRect(rect.x + 6.0f, y, rect.w - 8.0f, kHeaderHeight), track.thread_name, 12.0f,
+            r->DrawQuad(UIRect(rect.x, y, rect.w, kHeaderHeight), UIColor(0.16f, 0.17f, 0.21f, 1.0f));
+            r->DrawText(UIRect(rect.x + 6.0f, y, rect.w - 8.0f, kHeaderHeight), track.thread_name, 12.0f,
                         UIColor(0.85f, 0.88f, 0.94f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
             const float rows_top = y + kHeaderHeight;
 
@@ -113,10 +113,10 @@ public:
                     bw = 1.0f;
                 const float by = rows_top + static_cast<float>(ev.depth) * kRowHeight;
                 const UIColor col = ColorForName(ev.name_id);
-                r->drawQuad(UIRect(bx, by, bw, kRowHeight - 1.0f), col);
+                r->DrawQuad(UIRect(bx, by, bw, kRowHeight - 1.0f), col);
                 if (bw > 28.0f)
                 {
-                    r->drawText(UIRect(bx + 3.0f, by, bw - 5.0f, kRowHeight - 1.0f), m_Snapshot->Name(ev.name_id),
+                    r->DrawText(UIRect(bx + 3.0f, by, bw - 5.0f, kRowHeight - 1.0f), m_Snapshot->Name(ev.name_id),
                                 10.0f, UIColor(0.04f, 0.04f, 0.06f, 1.0f), TextAnchor::MiddleLeft,
                                 TextWrapMode::NoWrap);
                 }

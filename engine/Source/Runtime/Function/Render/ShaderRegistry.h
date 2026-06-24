@@ -66,7 +66,7 @@ public:
 
     std::filesystem::path GetRegistryFilePath() const;
 
-    /// Editor tick: flush debounced JSON when the quiet window elapsed.
+    /// Editor tick: Flush debounced JSON when the quiet window elapsed.
     void TickDeferredSave();
 
     /// Deterministic GUID from normalised project-relative path (public for tests).

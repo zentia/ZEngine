@@ -1,4 +1,4 @@
-﻿#include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"
+#include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"
 
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
@@ -147,9 +147,9 @@ bool ZSlateEditorOverlay::IsNativeMenuBarEnabled()
     return true;  // P9: ImGui menu-bar fallback retired.
 }
 
-void ZSlateEditorOverlay::BeginFrame()
+void ZSlateEditorOverlay::ResetBatch()
 {
-    m_Renderer.beginFrame();
+    m_Renderer.BeginFrame();
 }
 
 void ZSlateEditorOverlay::BeginFrameIfEnabled()
@@ -159,7 +159,7 @@ void ZSlateEditorOverlay::BeginFrameIfEnabled()
         return;
     }
 
-    m_Renderer.beginFrame();
+    m_Renderer.BeginFrame();
     m_Groups.clear();
 
     // P10: snapshot the native input bus for this UI frame. Runs here because
@@ -254,12 +254,12 @@ void ZSlateEditorOverlay::RecordSelfTest()
     // Fixed quad + label so the GPU path is provable without any real window.
     // Use :: prefix to refer to the global UIRect/UIColor/TextAnchor/TextWrapMode
     // defined in Runtime/UI/Core/UITypes.h, NOT the ZSlate namespace equivalents.
-    m_Renderer.drawQuad(::UIRect(40.0f, 40.0f, 320.0f, 96.0f), ::UIColor(0.10f, 0.45f, 0.85f, 0.92f));
-    m_Renderer.drawRect(::UIRect(40.0f, 40.0f, 320.0f, 96.0f), ::UIColor(1.0f, 1.0f, 1.0f, 0.9f), 2.0f);
+    m_Renderer.DrawQuad(::UIRect(40.0f, 40.0f, 320.0f, 96.0f), ::UIColor(0.10f, 0.45f, 0.85f, 0.92f));
+    m_Renderer.DrawRect(::UIRect(40.0f, 40.0f, 320.0f, 96.0f), ::UIColor(1.0f, 1.0f, 1.0f, 0.9f), 2.0f);
     // font_size 0 => use the font's baked LegacySize (16). The one-shot atlas
     // upload only contains glyphs baked at that size; arbitrary sizes need the
     // atlas-refresh added in M2 (ImGui 1.92 dynamic fonts bake on demand).
-    m_Renderer.drawText(::UIRect(56.0f, 64.0f, 288.0f, 48.0f),
+    m_Renderer.DrawText(::UIRect(56.0f, 64.0f, 288.0f, 48.0f),
                         "ZSlate native backend OK",
                         0.0f,
                         ::UIColor(1.0f, 1.0f, 1.0f, 1.0f),
@@ -952,43 +952,43 @@ namespace
     }
 }  // anonymous namespace
 
-void ZSlateEditorOverlay::drawQuad(const UIRect& rect, const UIColor& color)
+void ZSlateEditorOverlay::DrawQuad(const UIRect& rect, const UIColor& color)
 {
-    m_Renderer.drawQuad(ToEngine(rect), ToEngine(color));
+    m_Renderer.DrawQuad(ToEngine(rect), ToEngine(color));
 }
 
-void ZSlateEditorOverlay::drawRect(const UIRect& rect, const UIColor& color, float thickness)
+void ZSlateEditorOverlay::DrawRect(const UIRect& rect, const UIColor& color, float thickness)
 {
-    m_Renderer.drawRect(ToEngine(rect), ToEngine(color), thickness);
+    m_Renderer.DrawRect(ToEngine(rect), ToEngine(color), thickness);
 }
 
-void ZSlateEditorOverlay::drawConvexPoly(const Vector2* points, int count, const UIColor& color)
+void ZSlateEditorOverlay::DrawConvexPoly(const Vector2* points, int count, const UIColor& color)
 {
-    // BatchedUIRenderer has no drawConvexPoly; approximate with drawQuad or skip.
+    // BatchedUIRenderer has no DrawConvexPoly; approximate with DrawQuad or skip.
     (void)points; (void)count; (void)color;
 }
 
-void ZSlateEditorOverlay::drawRoundedRect(const UIRect& rect, float radius, const UIColor& color)
+void ZSlateEditorOverlay::DrawRoundedRect(const UIRect& rect, float radius, const UIColor& color)
 {
     (void)rect; (void)radius; (void)color;
 }
 
-void ZSlateEditorOverlay::drawTexturedQuad(const UIRect& rect, void* texture_handle, const UIColor& tint)
+void ZSlateEditorOverlay::DrawTexturedQuad(const UIRect& rect, void* texture_handle, const UIColor& tint)
 {
     (void)rect; (void)texture_handle; (void)tint;
 }
 
-void ZSlateEditorOverlay::drawBox(const UIRect& rect, const FMargin& margin, void* texture_handle, const UIColor& tint)
+void ZSlateEditorOverlay::DrawBox(const UIRect& rect, const FMargin& margin, void* texture_handle, const UIColor& tint)
 {
     (void)rect; (void)margin; (void)texture_handle; (void)tint;
 }
 
-void ZSlateEditorOverlay::drawBorder(const UIRect& rect, const FMargin& margin, void* texture_handle, const UIColor& tint)
+void ZSlateEditorOverlay::DrawBorder(const UIRect& rect, const FMargin& margin, void* texture_handle, const UIColor& tint)
 {
     (void)rect; (void)margin; (void)texture_handle; (void)tint;
 }
 
-void ZSlateEditorOverlay::drawText(const UIRect& rect,
+void ZSlateEditorOverlay::DrawText(const UIRect& rect,
                                 const std::string& text,
                                 float font_size,
                                 const UIColor& color,
@@ -997,7 +997,7 @@ void ZSlateEditorOverlay::drawText(const UIRect& rect,
                                 void* font_handle)
 {
     // ZSlate::TextAnchor -> ::TextAnchor, ZSlate::TextWrapMode -> ::TextWrapMode
-    m_Renderer.drawText(ToEngine(rect),
+    m_Renderer.DrawText(ToEngine(rect),
                         text,
                         font_size,
                         ToEngine(color),
@@ -1006,43 +1006,43 @@ void ZSlateEditorOverlay::drawText(const UIRect& rect,
                         static_cast<Font*>(font_handle));
 }
 
-void ZSlateEditorOverlay::drawText(const std::string& text, const Vector2& pos, float font_size, const UIColor& color)
+void ZSlateEditorOverlay::DrawText(const std::string& text, const Vector2& pos, float font_size, const UIColor& color)
 {
     (void)text; (void)pos; (void)font_size; (void)color;
 }
 
-Vector2 ZSlateEditorOverlay::measureText(const std::string& text, float font_size) const
+Vector2 ZSlateEditorOverlay::MeasureText(const std::string& text, float font_size) const
 {
-    // m_Renderer.measureText returns ::Vector2 (global).
+    // m_Renderer.MeasureText returns ::Vector2 (global).
     // This function returns ZSlate::Vector2 (inside namespace).
     // Explicitly construct ZSlate::Vector2 from the result.
-    const ::Vector2 sz = m_Renderer.measureText(text, font_size, ::TextWrapMode::NoWrap, 0.0f, nullptr);
+    const ::Vector2 sz = m_Renderer.MeasureText(text, font_size, ::TextWrapMode::NoWrap, 0.0f, nullptr);
     return Vector2(sz.x, sz.y);
 }
 
-void ZSlateEditorOverlay::pushClipRect(const UIRect& rect)
+void ZSlateEditorOverlay::PushClipRect(const UIRect& rect)
 {
-    m_Renderer.pushClipRect(ToEngine(rect));
+    m_Renderer.PushClipRect(ToEngine(rect));
 }
 
-void ZSlateEditorOverlay::popClipRect()
+void ZSlateEditorOverlay::PopClipRect()
 {
-    m_Renderer.popClipRect();
+    m_Renderer.PopClipRect();
 }
 
-void ZSlateEditorOverlay::beginFrame()
+void ZSlateEditorOverlay::BeginFrame()
 {
     // ZSlateEditorOverlay manages its own frame via BeginFrameIfEnabled.
     // This is called by the Slate painting path; forward to m_Renderer.
-    m_Renderer.beginFrame();
+    m_Renderer.BeginFrame();
 }
 
-void ZSlateEditorOverlay::endFrame()
+void ZSlateEditorOverlay::EndFrame()
 {
-    m_Renderer.endFrame();
+    m_Renderer.EndFrame();
 }
 
-void ZSlateEditorOverlay::flush()
+void ZSlateEditorOverlay::Flush()
 {
     // No-op: the overlay flushes via DrawBatch, not here.
 }

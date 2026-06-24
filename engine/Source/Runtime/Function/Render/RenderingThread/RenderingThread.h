@@ -58,7 +58,7 @@ public:
     // 等待所有渲染相关线程完成
     static void WaitForAll();
 
-    // UE-style flush: drain worker queues, then wait for all pipelined frames to finish.
+    // UE-style Flush: drain worker queues, then wait for all pipelined frames to finish.
     static void FlushRenderingCommands();
 
     // 检查当前是否在游戏（主）线程

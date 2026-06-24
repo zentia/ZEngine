@@ -1,4 +1,4 @@
-﻿#include "ZSlateMenuBar.h"
+#include "ZSlateMenuBar.h"
 
 #include "Runtime/Core/Base/Macro.h"
 #include "ZSlate/Widgets/SMenu.h"
@@ -77,17 +77,17 @@ bool ZSlateEditorMenuBar::Render(ISlateRenderer& renderer,
 
     // ---- Lay out + paint the title strip -----------------------------------
     // bar_rect is ZSlate::UIRect; ISlateRenderer expects ZSlate::UIRect.
-    // kBarBg is ::UIColor (from anonymous namespace); ISlateRenderer::drawQuad
+    // kBarBg is ::UIColor (from anonymous namespace); ISlateRenderer::DrawQuad
     // expects ZSlate::UIColor. They're both Vector4 -- pass directly.
-    renderer.drawQuad(bar_rect, kBarBg);
+    renderer.DrawQuad(bar_rect, kBarBg);
 
     m_TitleRects.clear();
     m_TitleRects.reserve(m_Menus.size());
     float x = bar_rect.x + pad;
     for (int i = 0; i < static_cast<int>(m_Menus.size()); ++i)
     {
-        // ISlateRenderer::measureText has 2 params (text, font_size).
-        const Vector2 sz = renderer.measureText(m_Menus[i].title, font);
+        // ISlateRenderer::MeasureText has 2 params (text, font_size).
+        const Vector2 sz = renderer.MeasureText(m_Menus[i].title, font);
         const float w = sz.x + pad * 2.0f;
         // ZSlate::UIRect uses .h (not .height)
         const UIRect rect(x, bar_rect.y, w, bar_rect.h);
@@ -106,12 +106,12 @@ bool ZSlateEditorMenuBar::Render(ISlateRenderer& renderer,
             hovered_title = i;
 
         if (i == m_ActiveIndex)
-            renderer.drawQuad(rect, kTitleHighlight);
+            renderer.DrawQuad(rect, kTitleHighlight);
         else if (hover)
-            renderer.drawQuad(rect, kTitleHover);
+            renderer.DrawQuad(rect, kTitleHover);
 
-        // ISlateRenderer::drawText: pass ZSlate::UIRect + ZSlate::UIColor.
-        renderer.drawText(rect, m_Menus[i].title, font, kTitleText,
+        // ISlateRenderer::DrawText: pass ZSlate::UIRect + ZSlate::UIColor.
+        renderer.DrawText(rect, m_Menus[i].title, font, kTitleText,
                          TextAnchor::MiddleCenter, TextWrapMode::NoWrap, nullptr);
     }
 

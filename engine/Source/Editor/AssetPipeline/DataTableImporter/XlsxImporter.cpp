@@ -372,7 +372,7 @@ namespace
                 continue;
             }
 
-            // We hit '<' -- flush any preceding character data.
+            // We hit '<' -- Flush any preceding character data.
             flush_text();
 
             // ---- Comment / DOCTYPE / CDATA / PI dispatch ----

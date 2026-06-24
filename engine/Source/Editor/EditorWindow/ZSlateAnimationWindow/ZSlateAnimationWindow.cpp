@@ -60,7 +60,7 @@ void DrawLineQuads(UIRenderer& r, const ZSlate::Vector2& a, const ZSlate::Vector
         const float t = static_cast<float>(i) / static_cast<float>(steps);
         const float x = a.x + dx * t;
         const float y = a.y + dy * t;
-        r.drawQuad(ZSlate::UIRect(x - half, y - half, thickness, thickness), color);
+        r.DrawQuad(ZSlate::UIRect(x - half, y - half, thickness, thickness), color);
     }
 }
 }  // namespace
@@ -159,33 +159,33 @@ void ZSlateAnimationWindow::BuildToolbar(float scale)
 // ---------------------------------------------------------------------------
 void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ZSlate::UIRect& region, float scale)
 {
-    r.drawQuad(region, kListBg);
-    r.pushClipRect(region, true);
+    r.DrawQuad(region, kListBg);
+    r.PushClipRect(region, true);
     m_PropRows.clear();
 
     const float row_h = kRowH * scale;
     const float font = 12.0f * scale;
     float y = region.y + 4.0f * scale;
 
-    r.drawText(ZSlate::UIRect(region.x + 6.0f * scale, y, region.width - 8.0f * scale, row_h),
+    r.DrawText(ZSlate::UIRect(region.x + 6.0f * scale, y, region.width - 8.0f * scale, row_h),
                "Properties",
                13.0f * scale,
                kLabelColor,
                ZSlate::TextAnchor::MiddleLeft,
                ZSlate::TextWrapMode::NoWrap);
     y += row_h;
-    r.drawQuad(ZSlate::UIRect(region.x, y, region.width, 1.0f), kSeparator);
+    r.DrawQuad(ZSlate::UIRect(region.x, y, region.width, 1.0f), kSeparator);
     y += 3.0f * scale;
 
     if (m_CurrentAsset == nullptr)
     {
-        r.drawText(ZSlate::UIRect(region.x + 6.0f * scale, y, region.width - 8.0f * scale, row_h),
+        r.DrawText(ZSlate::UIRect(region.x + 6.0f * scale, y, region.width - 8.0f * scale, row_h),
                    "(no asset)",
                    font,
                    kDimColor,
                    ZSlate::TextAnchor::MiddleLeft,
                    ZSlate::TextWrapMode::NoWrap);
-        r.popClipRect();
+        r.PopClipRect();
         return;
     }
 
@@ -193,10 +193,10 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ZSlate::UIRec
         const bool selected = (m_Selected.channel_index == channel_index && m_Selected.property_type == type);
         const ZSlate::UIRect rect(region.x, y, region.width, row_h);
         if (selected)
-            r.drawQuad(rect, kSelRowBg);
+            r.DrawQuad(rect, kSelRowBg);
         // type colour swatch
-        r.drawQuad(ZSlate::UIRect(region.x + 22.0f * scale, y + row_h * 0.3f, 8.0f * scale, 8.0f * scale), PropertyColor(type));
-        r.drawText(ZSlate::UIRect(region.x + 36.0f * scale, y, region.width - 40.0f * scale, row_h),
+        r.DrawQuad(ZSlate::UIRect(region.x + 22.0f * scale, y + row_h * 0.3f, 8.0f * scale, 8.0f * scale), PropertyColor(type));
+        r.DrawText(ZSlate::UIRect(region.x + 36.0f * scale, y, region.width - 40.0f * scale, row_h),
                    prop_name,
                    font,
                    selected ? kWhite : kLabelColor,
@@ -213,7 +213,7 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ZSlate::UIRec
         const bool expanded = m_ExpandedChannels.count(key) ? m_ExpandedChannels[key] : true;
 
         const ZSlate::UIRect head_rect(region.x, y, region.width, row_h);
-        r.drawText(ZSlate::UIRect(region.x + 4.0f * scale, y, region.width - 8.0f * scale, row_h),
+        r.DrawText(ZSlate::UIRect(region.x + 4.0f * scale, y, region.width - 8.0f * scale, row_h),
                    std::string(expanded ? "v " : "> ") + channel.name,
                    font,
                    kLabelColor,
@@ -245,7 +245,7 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ZSlate::UIRec
         }
     }
 
-    r.popClipRect();
+    r.PopClipRect();
 }
 
 // ---------------------------------------------------------------------------
@@ -253,18 +253,18 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ZSlate::UIRec
 // ---------------------------------------------------------------------------
 void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const ZSlate::UIRect& region, float scale)
 {
-    r.drawQuad(region, kCanvasBg);
-    r.pushClipRect(region, true);
+    r.DrawQuad(region, kCanvasBg);
+    r.PushClipRect(region, true);
 
     if (m_CurrentAsset == nullptr || m_Selected.channel_index < 0)
     {
-        r.drawText(region,
+        r.DrawText(region,
                    m_CurrentAsset == nullptr ? "No Animation Asset selected" : "Select a property to edit",
                    14.0f * scale,
                    kDimColor,
                    ZSlate::TextAnchor::MiddleCenter,
                    ZSlate::TextWrapMode::NoWrap);
-        r.popClipRect();
+        r.PopClipRect();
         return;
     }
 
@@ -289,7 +289,7 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const ZSlate::UIRect
     for (int i = 0; i <= rows; ++i)
     {
         const float gy = region.y + (region.height / rows) * i;
-        r.drawQuad(ZSlate::UIRect(region.x, gy, region.width, 1.0f), kGrid);
+        r.DrawQuad(ZSlate::UIRect(region.x, gy, region.width, 1.0f), kGrid);
     }
     {
         const float visible_dur = region.width / pps;
@@ -300,7 +300,7 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const ZSlate::UIRect
             const float time = m_TimeRangeStart + (visible_dur / cols) * i;
             const float px = (time - m_TimeRangeStart) * pps;
             if (px >= 0 && px <= region.width)
-                r.drawQuad(ZSlate::UIRect(region.x + px, region.y, 1.0f, region.height), kGrid);
+                r.DrawQuad(ZSlate::UIRect(region.x + px, region.y, 1.0f, region.height), kGrid);
         }
     }
 
@@ -333,16 +333,16 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const ZSlate::UIRect
             continue;
         const bool sel = (m_DraggingKeyframe == static_cast<int>(i));
         const float hr = 5.0f * scale;
-        r.drawQuad(ZSlate::UIRect(x - hr, yv - hr, hr * 2.0f, hr * 2.0f), sel ? kKeyframeSel : kKeyframe);
-        r.drawRect(ZSlate::UIRect(x - hr, yv - hr, hr * 2.0f, hr * 2.0f), kWhite, 1.0f);
+        r.DrawQuad(ZSlate::UIRect(x - hr, yv - hr, hr * 2.0f, hr * 2.0f), sel ? kKeyframeSel : kKeyframe);
+        r.DrawRect(ZSlate::UIRect(x - hr, yv - hr, hr * 2.0f, hr * 2.0f), kWhite, 1.0f);
     }
 
     // Playhead.
     const float head_x = (m_CurrentTime - m_TimeRangeStart) * pps;
     if (head_x >= 0 && head_x <= region.width)
-        r.drawQuad(ZSlate::UIRect(region.x + head_x, region.y, 2.0f, region.height), kPlayhead);
+        r.DrawQuad(ZSlate::UIRect(region.x + head_x, region.y, 2.0f, region.height), kPlayhead);
 
-    r.popClipRect();
+    r.PopClipRect();
 }
 
 // ---------------------------------------------------------------------------
@@ -350,10 +350,10 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const ZSlate::UIRect
 // ---------------------------------------------------------------------------
 void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const ZSlate::UIRect& region, float scale)
 {
-    r.drawQuad(region, kRulerBg);
+    r.DrawQuad(region, kRulerBg);
     if (m_CurrentAsset == nullptr)
         return;
-    r.pushClipRect(region, true);
+    r.PushClipRect(region, true);
 
     const float pps = m_PixelsPerSecond * scale;
     const float visible_dur = region.width / pps;
@@ -368,10 +368,10 @@ void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const ZSlate::UIRect& r
         if (px < 0 || px > region.width)
             continue;
         const float x = region.x + px;
-        r.drawQuad(ZSlate::UIRect(x, region.y, 1.0f, region.height), kWhite);
+        r.DrawQuad(ZSlate::UIRect(x, region.y, 1.0f, region.height), kWhite);
         char label[32];
         std::snprintf(label, sizeof(label), "%.2f", time);
-        r.drawText(ZSlate::UIRect(x + 2.0f * scale, region.y + 1.0f * scale, 48.0f * scale, region.height * 0.5f),
+        r.DrawText(ZSlate::UIRect(x + 2.0f * scale, region.y + 1.0f * scale, 48.0f * scale, region.height * 0.5f),
                    label,
                    11.0f * scale,
                    kWhite,
@@ -385,7 +385,7 @@ void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const ZSlate::UIRect& r
             const float px = (FrameToTime(frame) - m_TimeRangeStart) * pps;
             if (px < 0 || px > region.width)
                 continue;
-            r.drawQuad(ZSlate::UIRect(region.x + px, region.y + region.height * 0.7f, 1.0f, region.height * 0.3f),
+            r.DrawQuad(ZSlate::UIRect(region.x + px, region.y + region.height * 0.7f, 1.0f, region.height * 0.3f),
                        ZSlate::UIColor(0.78f, 0.78f, 0.78f, 1.0f));
         }
     }
@@ -399,16 +399,16 @@ void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const ZSlate::UIRect& r
             if (px < 0 || px > region.width)
                 continue;
             const float mh = 4.0f * scale;
-            r.drawQuad(ZSlate::UIRect(region.x + px - mh, region.y + region.height * 0.5f - mh, mh * 2.0f, mh * 2.0f),
+            r.DrawQuad(ZSlate::UIRect(region.x + px - mh, region.y + region.height * 0.5f - mh, mh * 2.0f, mh * 2.0f),
                        kKeyframeSel);
         }
     }
 
     const float head_x = (m_CurrentTime - m_TimeRangeStart) * pps;
     if (head_x >= 0 && head_x <= region.width)
-        r.drawQuad(ZSlate::UIRect(region.x + head_x, region.y, 2.0f, region.height), kPlayhead);
+        r.DrawQuad(ZSlate::UIRect(region.x + head_x, region.y, 2.0f, region.height), kPlayhead);
 
-    r.popClipRect();
+    r.PopClipRect();
 }
 
 // ---------------------------------------------------------------------------
@@ -605,12 +605,12 @@ void ZSlateAnimationWindow::OnGUI()
         PaintCurveEditor(r, curve_region, ui_scale);
         PaintTimeline(r, timeline_region, ui_scale);
         // separators
-        r.drawQuad(ZSlate::UIRect(right_x, content_y, 1.0f, content_h), kSeparator);
-        r.drawQuad(ZSlate::UIRect(right_x, content_y + curve_h, right_w, 1.0f), kSeparator);
+        r.DrawQuad(ZSlate::UIRect(right_x, content_y, 1.0f, content_h), kSeparator);
+        r.DrawQuad(ZSlate::UIRect(right_x, content_y + curve_h, right_w, 1.0f), kSeparator);
 
-        r.pushClipRect(toolbar_region, true);
+        r.PushClipRect(toolbar_region, true);
         m_Toolbar->Paint(ctx, toolbar_geom);
-        r.popClipRect();
+        r.PopClipRect();
     };
 
     {

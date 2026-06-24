@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Runtime/Resource/ResType/Data/AnimationClip.h"
@@ -54,7 +54,7 @@ struct AnimSelectedProperty
 // read-out) is a persistent ZSlate widget tree. The three working areas --
 // property list (left), curve editor (top-right) and timeline (bottom-right) --
 // are custom canvases painted directly through the active UIRenderer
-// (drawQuad / drawRect / drawText; curves are drawn as short sampled quads since
+// (DrawQuad / DrawRect / DrawText; curves are drawn as short sampled quads since
 // the renderer has no native line primitive) and hit-tested manually. No ImGui
 // widgets are used.
 class ZSlateAnimationWindow : public EditorWindow

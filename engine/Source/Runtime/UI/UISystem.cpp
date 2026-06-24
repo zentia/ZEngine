@@ -1,4 +1,4 @@
-﻿#include "Runtime/UI/UISystem.h"
+#include "Runtime/UI/UISystem.h"
 
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Function/Render/RenderSystem.h"
@@ -127,9 +127,9 @@ void UISystem::RenderSlateRoot()
         return;
     }
 
-    if (!m_UiRenderer->beginFrame())
+    if (!m_UiRenderer->BeginFrame())
     {
-        LOG_ERROR(ZEditor, "RenderSlateRoot: beginFrame() failed");
+        LOG_ERROR(ZEditor, "RenderSlateRoot: BeginFrame() failed");
         return;
     }
 
@@ -188,5 +188,5 @@ void UISystem::RenderSlateRoot()
         m_SlateWheelAccum = 0.0f;
     }
 
-    m_UiRenderer->endFrame();
+    m_UiRenderer->EndFrame();
 }

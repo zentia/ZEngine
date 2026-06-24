@@ -178,9 +178,9 @@ void ZSlateDemoWindow::OnGUI()
         FPaintContext ctx;
         ctx.Renderer = &renderer;
         ctx.LayerId = 0;
-        renderer.pushClipRect(region, true);
+        renderer.PushClipRect(region, true);
         m_Root->Paint(ctx, geometry);
-        renderer.popClipRect();
+        renderer.PopClipRect();
     }
 
     // Route input AFTER paint so hit-testing uses this frame's cached geometry.

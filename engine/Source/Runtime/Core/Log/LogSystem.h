@@ -25,7 +25,7 @@ public:
     LogSystem();
     ~LogSystem();
 
-    // Force-flush BqLog's asynchronous buffer to disk. Safe to call from anywhere
+    // Force-Flush BqLog's asynchronous buffer to disk. Safe to call from anywhere
     // (idempotent, internally just signals the worker thread to drain). Call this
     // from any "the program is about to die" path -- crash handlers, graceful
     // shutdown, watchdog kills -- so the tail of the log isn't lost.

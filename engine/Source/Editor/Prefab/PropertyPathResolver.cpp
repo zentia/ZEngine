@@ -157,7 +157,7 @@ namespace prefab_editor
             }
         }
 
-        // Finalise: only the kField state may have a pending segment to flush.
+        // Finalise: only the kField state may have a pending segment to Flush.
         switch (state)
         {
             case State::kField:

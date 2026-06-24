@@ -677,7 +677,7 @@ void Editor::RenderFrameDuringResize()
     render_system->FlushRenderingCommands();
 
     // 2. Consume the in-flight frame's ImGui handshake (its Draw already signalled completion during
-    //    the flush), then build a fresh ImGui frame at the current (live) window size.
+    //    the Flush), then build a fresh ImGui frame at the current (live) window size.
     m_EditorUi->FinalizePendingImGuiPlatformFrame();
     m_EditorUi->PrepareGameThreadImGuiFrame();
 

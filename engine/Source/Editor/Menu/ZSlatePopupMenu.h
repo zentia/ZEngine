@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // ----------------------------------------------------------------------------
 // ZSlatePopupMenu -- reusable anchored popup menu (right-click context menu)
@@ -17,7 +17,7 @@
 // works for the native BatchedUIRenderer (editor overlay) and the legacy
 // SlateImGuiRenderer fallback. The caller is responsible for ensuring the
 // renderer is inside a paintable frame (native: the overlay frame is already
-// active; legacy: wrap the call in beginFrame()/endFrame() on the foreground
+// active; legacy: wrap the call in BeginFrame()/EndFrame() on the foreground
 // draw list).
 // ----------------------------------------------------------------------------
 

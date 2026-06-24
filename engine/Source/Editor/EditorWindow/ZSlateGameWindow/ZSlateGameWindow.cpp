@@ -109,9 +109,9 @@ void ZSlateGameWindow::OnGUI()
     ctx.Renderer = &renderer;
     ctx.LayerId = 0;
 
-    renderer.pushClipRect(region, true);
+    renderer.PushClipRect(region, true);
     m_Root->Paint(ctx, geometry);
-    renderer.popClipRect();
+    renderer.PopClipRect();
 
     UpdateViewport();
 }

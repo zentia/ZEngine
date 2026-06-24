@@ -97,7 +97,7 @@ DefaultLayout::DefaultLayout(EditorUI* editor_ui)
 
 DefaultLayout::~DefaultLayout()
 {
-    // Best-effort flush so a clean shutdown captures the last sub-second of edits the
+    // Best-effort Flush so a clean shutdown captures the last sub-second of edits the
     // debounced autosave may not have written yet. Guarded: only if the native tree was
     // actually used this session, and never throwing out of a destructor.
     try
@@ -365,16 +365,16 @@ void DefaultLayout::RenderNativeDockPreview(const ZSlate::Vector2& origin, const
     if (m_NativeDockTree.Root() == nullptr || m_NativeDockTree.Root()->IsEmptyLeaf())
     {
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZForeground);
-        renderer.pushClipRect(host_rect, true);
-        renderer.drawQuad(host_rect, m_NativeDockHost.GetStyle().PanelBg);
-        renderer.drawText(host_rect,
+        renderer.PushClipRect(host_rect, true);
+        renderer.DrawQuad(host_rect, m_NativeDockHost.GetStyle().PanelBg);
+        renderer.DrawText(host_rect,
                           "No panels open -- open one from the Window menu.",
                           14.0f * ui_scale,
                           ZSlate::UIColor(0.52f, 0.55f, 0.60f, 1.0f),
                           ZSlate::TextAnchor::MiddleCenter,
                           ZSlate::TextWrapMode::NoWrap,
                           nullptr);
-        renderer.popClipRect();
+        renderer.PopClipRect();
         return;
     }
 
@@ -384,14 +384,14 @@ void DefaultLayout::RenderNativeDockPreview(const ZSlate::Vector2& origin, const
         // Content-area fill below the maximized panel content (same layering rule as the
         // tiled path); the strip/border/tabs composite above it at the foreground layer.
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZDockBackground);
-        renderer.pushClipRect(host_rect, true);
+        renderer.PushClipRect(host_rect, true);
         RenderNativeMaximizedBackground(host_rect, ui_scale);
-        renderer.popClipRect();
+        renderer.PopClipRect();
 
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZForeground);
-        renderer.pushClipRect(host_rect, true);
+        renderer.PushClipRect(host_rect, true);
         RenderNativeMaximized(host_rect, ui_scale);
-        renderer.popClipRect();
+        renderer.PopClipRect();
         TickNativeSessionAutosave();
         return;
     }
@@ -411,14 +411,14 @@ void DefaultLayout::RenderNativeDockPreview(const ZSlate::Vector2& origin, const
     // opaque and the dock chrome is recorded after the panels each frame, so it must
     // sit on its own sub-panel layer or it would blank every body). Mirrors UE Slate.
     overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZDockBackground);
-    renderer.pushClipRect(host_rect, true);
+    renderer.PushClipRect(host_rect, true);
     m_NativeDockHost.RenderBackgrounds(m_NativeDockTree, renderer);
-    renderer.popClipRect();
+    renderer.PopClipRect();
 
     // Composite above the docked panels (same z-order layer as the native menu bar).
     overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZForeground);
 
-    renderer.pushClipRect(host_rect, true);
+    renderer.PushClipRect(host_rect, true);
     m_NativeDockHost.Render(m_NativeDockTree, renderer, ui_scale, ChromeMouse());
 
     // Drag-to-dock drop preview overlay (painted last so it sits above the chrome).
@@ -430,10 +430,10 @@ void DefaultLayout::RenderNativeDockPreview(const ZSlate::Vector2& origin, const
     // P6: a floating panel is being dragged over the host -> "dock here" highlight.
     if (m_ExternalDockHint)
     {
-        renderer.drawQuad(host_rect, ZSlate::UIColor(0.25f, 0.55f, 0.95f, 0.22f));
-        renderer.drawRect(host_rect, ZSlate::UIColor(0.35f, 0.65f, 1.0f, 0.9f), 2.0f);
+        renderer.DrawQuad(host_rect, ZSlate::UIColor(0.25f, 0.55f, 0.95f, 0.22f));
+        renderer.DrawRect(host_rect, ZSlate::UIColor(0.35f, 0.65f, 1.0f, 0.9f), 2.0f);
     }
-    renderer.popClipRect();
+    renderer.PopClipRect();
 
     // Persist the live arrangement (debounced) so it survives editor restarts.
     TickNativeSessionAutosave();
@@ -457,7 +457,7 @@ void DefaultLayout::RenderNativeMaximizedBackground(const ZSlate::UIRect& host_r
     if (m_MaximizedPanelId != EditorLayoutWindowIds::kScene &&
         m_MaximizedPanelId != EditorLayoutWindowIds::kGame)
     {
-        renderer.drawQuad(content, style.PanelBg);
+        renderer.DrawQuad(content, style.PanelBg);
     }
 }
 
@@ -472,27 +472,27 @@ void DefaultLayout::RenderNativeMaximized(const ZSlate::UIRect& host_rect, float
 
     // Frame + tab strip band (the content-area fill is RenderNativeMaximizedBackground's,
     // drawn in the kZDockBackground group so the panel content composites above it).
-    renderer.drawRect(host_rect, style.BorderColor, 1.0f);
-    renderer.drawQuad(strip, style.TabStripBg);
+    renderer.DrawRect(host_rect, style.BorderColor, 1.0f);
+    renderer.DrawQuad(strip, style.TabStripBg);
 
     const ZSlate::Vector2 mouse = ChromeMouse();
 
     // Single (active) tab for the maximized panel.
     const float pad = style.TabPaddingX * scale;
-    const float text_w = renderer.measureText(m_MaximizedPanelId, font, ZSlate::TextWrapMode::NoWrap, 0.0f, nullptr).x;
+    const float text_w = renderer.MeasureText(m_MaximizedPanelId, font, ZSlate::TextWrapMode::NoWrap, 0.0f, nullptr).x;
     const ZSlate::UIRect tab(strip.x, strip.y, text_w + pad * 2.0f, strip.height);
-    renderer.drawQuad(tab, style.TabActiveBg);
-    renderer.drawQuad(ZSlate::UIRect(tab.x, tab.y, tab.width, std::max(1.0f, 2.0f * scale)), style.ActiveTabAccent);
-    renderer.drawText(tab, m_MaximizedPanelId, font, style.TabActiveText, ZSlate::TextAnchor::MiddleCenter,
+    renderer.DrawQuad(tab, style.TabActiveBg);
+    renderer.DrawQuad(ZSlate::UIRect(tab.x, tab.y, tab.width, std::max(1.0f, 2.0f * scale)), style.ActiveTabAccent);
+    renderer.DrawText(tab, m_MaximizedPanelId, font, style.TabActiveText, ZSlate::TextAnchor::MiddleCenter,
                       ZSlate::TextWrapMode::NoWrap, nullptr);
 
     // Restore button at the far right of the strip (a small square = "restore down").
     const float btn_w = strip.height;
     m_RestoreButtonRect = ZSlate::UIRect(strip.x + strip.width - btn_w, strip.y, btn_w, strip.height);
     const bool rb_hover = m_RestoreButtonRect.Contains(mouse);
-    renderer.drawQuad(m_RestoreButtonRect, rb_hover ? style.TabHoverBg : style.TabInactiveBg);
+    renderer.DrawQuad(m_RestoreButtonRect, rb_hover ? style.TabHoverBg : style.TabInactiveBg);
     const float ic = btn_w * 0.34f;
-    renderer.drawRect(ZSlate::UIRect(m_RestoreButtonRect.x + (btn_w - ic) * 0.5f,
+    renderer.DrawRect(ZSlate::UIRect(m_RestoreButtonRect.x + (btn_w - ic) * 0.5f,
                              m_RestoreButtonRect.y + (btn_w - ic) * 0.5f, ic, ic),
                       rb_hover ? style.TabActiveText : style.TabText, std::max(1.0f, 1.5f * scale));
 
@@ -996,7 +996,7 @@ void DefaultLayout::DrawDialogs()
 
     // Full-screen modal scrim (dims everything below; also the Foreground hit-test
     // surface that suppresses the native dock chrome + native panels while open).
-    renderer.drawQuad(display_rect, ZSlate::UIColor(0.0f, 0.0f, 0.0f, 0.45f));
+    renderer.DrawQuad(display_rect, ZSlate::UIColor(0.0f, 0.0f, 0.0f, 0.45f));
     host.BeginSurface(ZSlate::EditorSlateHost::HashId("##SaveLayoutDialogScrim"), display_rect,
                       ZSlate::ESurfaceLayer::Foreground);
 
@@ -1010,8 +1010,8 @@ void DefaultLayout::DrawDialogs()
     const float panel_y = disp_pos.y + (disp_size.y - panel_h) * 0.5f;
     const ZSlate::UIRect panel_rect(panel_x, panel_y, panel_w, panel_h);
 
-    renderer.drawQuad(panel_rect, ZSlate::UIColor(0.13f, 0.14f, 0.16f, 1.0f));
-    renderer.drawRect(panel_rect, ZSlate::UIColor(0.32f, 0.34f, 0.40f, 1.0f), 1.0f);
+    renderer.DrawQuad(panel_rect, ZSlate::UIColor(0.13f, 0.14f, 0.16f, 1.0f));
+    renderer.DrawRect(panel_rect, ZSlate::UIColor(0.32f, 0.34f, 0.40f, 1.0f), 1.0f);
 
     // Paint BEFORE routing so each widget's cached geometry is fresh this frame (the
     // router hit-tests against CachedGeometry) -- matches MenuController's toolbar order.

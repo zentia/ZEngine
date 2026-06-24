@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Runtime/UI/Render/UiAffine2D.h"
 #include "Runtime/UI/Core/UITypes.h"
@@ -33,31 +33,31 @@ public:
 
     // Begin/End frame are called by `UISystem::PreRender()` once per frame,
     // around the retained-mode ZSlate/UMG paint. Some backends need them to
-    // flush. Returns false if no draw target is available this frame; in that
+    // Flush. Returns false if no draw target is available this frame; in that
     // case the caller MUST skip draw* calls.
-    virtual bool beginFrame() { return true; }
-    virtual void endFrame() {}
+    virtual bool BeginFrame() { return true; }
+    virtual void EndFrame() {}
 
     // Push a clip rect. `clip_rect` is in screen-space pixels (origin top-left).
-    // Calls nest: `pushClipRect` must be paired with `popClipRect`.
-    virtual void pushClipRect(const UIRect& clip_rect, bool intersect_with_current = true) = 0;
-    virtual void popClipRect() = 0;
+    // Calls nest: `PushClipRect` must be paired with `PopClipRect`.
+    virtual void PushClipRect(const UIRect& clip_rect, bool intersect_with_current = true) = 0;
+    virtual void PopClipRect() = 0;
 
     // Cumulative 2D transform applied to subsequent draw calls (widget-local space).
-    virtual void pushTransform(const UiAffine2D& transform) { (void)transform; }
-    virtual void popTransform() {}
+    virtual void PushTransform(const UiAffine2D& transform) { (void)transform; }
+    virtual void PopTransform() {}
 
     // Solid axis-aligned filled rectangle.
-    virtual void drawQuad(const UIRect& rect, const UIColor& color) = 0;
+    virtual void DrawQuad(const UIRect& rect, const UIColor& color) = 0;
 
     // Outline (1-pixel default) rectangle.
-    virtual void drawRect(const UIRect& rect, const UIColor& color, float thickness = 1.0f) = 0;
+    virtual void DrawRect(const UIRect& rect, const UIColor& color, float thickness = 1.0f) = 0;
 
     // Solid convex polygon (>= 3 points, in order), fan-triangulated. Used for
     // vector icons (play triangle, etc.) that a quad/outline can't express.
     // Default no-op: only BatchedUIRenderer (which paints editor chrome) needs
     // it; plain runtime UI never draws these icons.
-    virtual void drawConvexPoly(const Vector2* points, int count, const UIColor& color)
+    virtual void DrawConvexPoly(const Vector2* points, int count, const UIColor& color)
     {
         (void)points;
         (void)count;
@@ -69,14 +69,14 @@ public:
     //               ImGui-backed implementation; nullptr-equivalent => fall
     //               through to a solid-colour quad).
     //   uv0/uv1   : top-left / bottom-right uv (default = full texture).
-    virtual void drawTexturedQuad(const UIRect& rect,
+    virtual void DrawTexturedQuad(const UIRect& rect,
                                   void* texture_id,
                                   const UIColor& color = UIColor(1, 1, 1, 1),
                                   const Vector2& uv0 = Vector2(0.0f, 0.0f),
                                   const Vector2& uv1 = Vector2(1.0f, 1.0f)) = 0;
 
     // Text run; optional `font` resolves through UiGpuResources (TTF atlas).
-    virtual void drawText(const UIRect& rect,
+    virtual void DrawText(const UIRect& rect,
                           const std::string& text,
                           float font_size,
                           const UIColor& color,
@@ -84,7 +84,7 @@ public:
                           TextWrapMode wrap = TextWrapMode::Wrap,
                           Font* font = nullptr) = 0;
 
-    virtual Vector2 measureText(const std::string& text,
+    virtual Vector2 MeasureText(const std::string& text,
                                 float font_size,
                                 TextWrapMode wrap = TextWrapMode::Wrap,
                                 float wrap_width = 0.0f,

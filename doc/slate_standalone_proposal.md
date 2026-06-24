@@ -294,7 +294,7 @@ namespace ZSlate
 // main.cpp
 #include "ZSlate/Core/SlateApplication.h"
 #include "ZSlate/Widgets/SButton.h"
-#include "ZSlate/Widgets/STextBlock.h"
+#include "ZSlate/Widgets/Text/STextBlock.h"
 
 // 平台实现（用户需要提供）
 #include "MySlatePlatform.h"

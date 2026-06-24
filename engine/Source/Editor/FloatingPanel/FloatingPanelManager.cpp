@@ -1,4 +1,4 @@
-﻿#include "Editor/FloatingPanel/FloatingPanelManager.h"
+#include "Editor/FloatingPanel/FloatingPanelManager.h"
 
 #include "Editor/EditorLayout/DefaultLayout/DefaultLayout.h"
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
@@ -852,7 +852,7 @@ void FloatingPanelManager::BuildBatches()
         // below, then the chrome route, re-set the cursor over their own widgets.
         host.SetMouseCursor(ZSlate::EMouseCursor::Default);
 
-        panel.renderer.beginFrame();
+        panel.renderer.BeginFrame();
 
         // Panel content is inset below the title bar (title_h is in surface PIXELS,
         // matching the chrome widgets which are painted + hit-tested in pixel space).

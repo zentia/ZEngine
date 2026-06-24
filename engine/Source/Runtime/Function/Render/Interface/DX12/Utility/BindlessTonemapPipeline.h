@@ -98,7 +98,7 @@ public:
     // `command_buffer`.
     //
     // PRECONDITIONS:
-    //   - RHI::beginFrame has been called this frame.
+    //   - RHI::BeginFrame has been called this frame.
     //   - cmdBeginRenderPass on the same render pass passed to
     //     Initialize() has been called on `command_buffer`.
     //   - `bindless_texture_index` was returned by the bindless

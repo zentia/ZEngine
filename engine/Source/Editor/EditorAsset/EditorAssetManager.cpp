@@ -680,7 +680,7 @@ void EditorAssetManager::Shutdown()
     // recompile finishes against a still-valid ObjectManager / AssetManager.
     m_DataWatcher.StopWatching();
 
-    // PR-AI2: stop Shaders/ watcher. We do NOT force-flush pending
+    // PR-AI2: stop Shaders/ watcher. We do NOT force-Flush pending
     // invalidations here -- any entries still inside the 200 ms debounce
     // window will be picked up next launch by the cache's own mtime
     // freshness Check (last_write_time(cache) < last_write_time(src)
@@ -692,7 +692,7 @@ void EditorAssetManager::Shutdown()
 
     // PR-AI3: persist any in-flight registry edits and clear in-memory
     // state. Edits during the session already saved on every record /
-    // removeEntry call, so this is mostly a defensive flush. Drop the
+    // removeEntry call, so this is mostly a defensive Flush. Drop the
     // pending reimport queue too -- on next launch we'll re-stat
     // everything via the focus callback anyway.
     m_SourceRegistry.Shutdown();

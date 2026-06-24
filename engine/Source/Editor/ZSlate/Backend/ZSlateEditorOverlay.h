@@ -36,7 +36,6 @@ namespace ZSlate
 class ZSlateEditorOverlay : public ISlateRenderer
 {
 public:
-public:
     static ZSlateEditorOverlay& Get();
 
     // Reads the r.ZSlate.NativeBackend CVar (registers it lazily on first call).
@@ -96,7 +95,7 @@ public:
     void BeginWindowGroup(int z_order);
 
     // Clears the shared batch; call once before windows paint each frame.
-    void BeginFrame();
+    void ResetBatch();
 
     // Frame-start entry point used by EditorUIPass right before WindowUI::PreRender:
     // no-op unless the native backend is on, otherwise clears the batch, captures
@@ -134,26 +133,26 @@ public:
     void Destroy(RHI* rhi);
 
     // --- ISlateRenderer implementation (forward to m_Renderer with type conversion) ---
-    void drawQuad(const UIRect& rect, const UIColor& color) override;
-    void drawRect(const UIRect& rect, const UIColor& color, float thickness = 1.0f) override;
-    void drawConvexPoly(const Vector2* points, int count, const UIColor& color) override;
-    void drawRoundedRect(const UIRect& rect, float radius, const UIColor& color) override;
-    void drawTexturedQuad(const UIRect& rect, void* texture_handle, const UIColor& tint = Colors::White) override;
-    void drawBox(const UIRect& rect, const FMargin& margin, void* texture_handle, const UIColor& tint) override;
-    void drawBorder(const UIRect& rect, const FMargin& margin, void* texture_handle, const UIColor& tint) override;
+    void DrawQuad(const UIRect& rect, const UIColor& color) override;
+    void DrawRect(const UIRect& rect, const UIColor& color, float thickness = 1.0f) override;
+    void DrawConvexPoly(const Vector2* points, int count, const UIColor& color) override;
+    void DrawRoundedRect(const UIRect& rect, float radius, const UIColor& color) override;
+    void DrawTexturedQuad(const UIRect& rect, void* texture_handle, const UIColor& tint = Colors::White) override;
+    void DrawBox(const UIRect& rect, const FMargin& margin, void* texture_handle, const UIColor& tint) override;
+    void DrawBorder(const UIRect& rect, const FMargin& margin, void* texture_handle, const UIColor& tint) override;
 
-    void drawText(const UIRect& rect, const std::string& text, float font_size, const UIColor& color,
+    void DrawText(const UIRect& rect, const std::string& text, float font_size, const UIColor& color,
                  TextAnchor alignment = TextAnchor::MiddleLeft, TextWrapMode wrap = TextWrapMode::NoWrap,
                  void* font_handle = nullptr) override;
-    void drawText(const std::string& text, const Vector2& pos, float font_size, const UIColor& color) override;
-    Vector2 measureText(const std::string& text, float font_size) const override;
+    void DrawText(const std::string& text, const Vector2& pos, float font_size, const UIColor& color) override;
+    Vector2 MeasureText(const std::string& text, float font_size) const override;
 
-    void pushClipRect(const UIRect& rect) override;
-    void popClipRect() override;
+    void PushClipRect(const UIRect& rect) override;
+    void PopClipRect() override;
 
-    void beginFrame() override;
-    void endFrame() override;
-    void flush() override;
+    void BeginFrame() override;
+    void EndFrame() override;
+    void Flush() override;
 
 private:
     void EnsureGpuBuffers(RHI* rhi, size_t vertex_count, size_t index_count);

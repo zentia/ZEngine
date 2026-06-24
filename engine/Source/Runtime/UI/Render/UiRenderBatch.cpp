@@ -1,4 +1,4 @@
-﻿#include "Runtime/UI/Render/UiRenderBatch.h"
+#include "Runtime/UI/Render/UiRenderBatch.h"
 
 #include <algorithm>
 #include <cmath>
@@ -50,13 +50,13 @@ void UiRenderBatch::clear()
     m_CurrentTexture = nullptr;
 }
 
-void UiRenderBatch::pushTransform(const UiAffine2D& transform)
+void UiRenderBatch::PushTransform(const UiAffine2D& transform)
 {
     m_TransformStack.push_back(m_ActiveTransform);
     m_ActiveTransform = m_ActiveTransform * transform;
 }
 
-void UiRenderBatch::popTransform()
+void UiRenderBatch::PopTransform()
 {
     if (m_TransformStack.empty())
     {
@@ -73,7 +73,7 @@ void UiRenderBatch::transformPoint(float x, float y, float& out_x, float& out_y)
     m_ActiveTransform.TransformPoint(x, y, out_x, out_y);
 }
 
-void UiRenderBatch::pushClipRect(const UIRect& clip_rect, bool intersect_with_current)
+void UiRenderBatch::PushClipRect(const UIRect& clip_rect, bool intersect_with_current)
 {
     UIRect next = clip_rect;
     if (m_HasClip && intersect_with_current)
@@ -85,7 +85,7 @@ void UiRenderBatch::pushClipRect(const UIRect& clip_rect, bool intersect_with_cu
     m_HasClip = true;
 }
 
-void UiRenderBatch::popClipRect()
+void UiRenderBatch::PopClipRect()
 {
     if (m_ClipStack.empty())
     {
@@ -130,9 +130,9 @@ void UiRenderBatch::beginCommand(void* texture_id, void* white_texture_id)
     m_CurrentTexture = resolved;
 }
 
-void UiRenderBatch::drawQuad(const UIRect& rect, const UIColor& color, void* white_texture_id)
+void UiRenderBatch::DrawQuad(const UIRect& rect, const UIColor& color, void* white_texture_id)
 {
-    drawTexturedQuad(rect,
+    DrawTexturedQuad(rect,
                      white_texture_id,
                      color,
                      Vector2(0.0f, 0.0f),
@@ -140,12 +140,12 @@ void UiRenderBatch::drawQuad(const UIRect& rect, const UIColor& color, void* whi
                      white_texture_id);
 }
 
-void UiRenderBatch::drawRect(const UIRect& rect, const UIColor& color, float thickness, void* white_texture_id)
+void UiRenderBatch::DrawRect(const UIRect& rect, const UIColor& color, float thickness, void* white_texture_id)
 {
     appendOutline(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, color, thickness, white_texture_id);
 }
 
-void UiRenderBatch::drawConvexPoly(const Vector2* points, int count, const UIColor& color, void* white_texture_id)
+void UiRenderBatch::DrawConvexPoly(const Vector2* points, int count, const UIColor& color, void* white_texture_id)
 {
     if (points == nullptr || count < 3)
     {
@@ -185,7 +185,7 @@ void UiRenderBatch::drawConvexPoly(const Vector2* points, int count, const UICol
     }
 }
 
-void UiRenderBatch::drawTexturedQuad(const UIRect& rect,
+void UiRenderBatch::DrawTexturedQuad(const UIRect& rect,
                                      void* texture_id,
                                      const UIColor& color,
                                      const Vector2& uv0,

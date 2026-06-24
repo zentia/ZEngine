@@ -84,7 +84,7 @@ namespace
     // native line primitive; same approach as ZSlateAnimationWindow).
     void DrawLineQuads(UIRenderer& r, const ZSlate::Vector2& a, const ZSlate::Vector2& b, const ZSlate::UIColor& color, float thickness)
     {
-        // Draw the whole segment as ONE oriented quad (2 triangles) via drawConvexPoly,
+        // Draw the whole segment as ONE oriented quad (2 triangles) via DrawConvexPoly,
         // instead of a chain of 1x1 quads (which was O(length-in-pixels) per line and
         // made the editor grid cost ~100 ms/frame).
         const float dx = b.x - a.x;
@@ -93,7 +93,7 @@ namespace
         const float half = std::max(0.5f, thickness * 0.5f);
         if (dist < 1e-3f)
         {
-            r.drawQuad(ZSlate::UIRect(a.x - half, a.y - half, half * 2.0f, half * 2.0f), color);
+            r.DrawQuad(ZSlate::UIRect(a.x - half, a.y - half, half * 2.0f, half * 2.0f), color);
             return;
         }
         const float nx = -dy / dist * half;  // screen-space normal scaled to half thickness
@@ -104,7 +104,7 @@ namespace
             ZSlate::Vector2(b.x - nx, b.y - ny),
             ZSlate::Vector2(a.x - nx, a.y - ny),
         };
-        r.drawConvexPoly(pts, 4, color);
+        r.DrawConvexPoly(pts, 4, color);
     }
 
     ZSlate::UIColor getSceneGridLineColor(int line_index, bool is_vertical_line)
@@ -339,7 +339,7 @@ namespace
             if (projectWorldToScreen(end, screen_end))
             {
                 const float half = k_scale_handle_px * 0.5f;
-                renderer.drawQuad(ZSlate::UIRect(screen_end.x - half, screen_end.y - half, k_scale_handle_px, k_scale_handle_px),
+                renderer.DrawQuad(ZSlate::UIRect(screen_end.x - half, screen_end.y - half, k_scale_handle_px, k_scale_handle_px),
                                   color);
             }
         };
@@ -1375,7 +1375,7 @@ void ZSlateSceneWindow::OnGUI()
         // Editor grid + backdrop (composited under the toolbar; 3D scene renders beneath).
         if (work_rect.width > 1.0f && work_rect.height > 1.0f)
         {
-            renderer->pushClipRect(work_rect, true);
+            renderer->PushClipRect(work_rect, true);
             EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager);
             const std::shared_ptr<RenderCamera> editor_camera =
                 scene_manager ? scene_manager->getEditorCamera() : nullptr;
@@ -1384,16 +1384,16 @@ void ZSlateSceneWindow::OnGUI()
             {
                 DrawTransformGizmoOverlay(*renderer, work_rect, editor_camera, *scene_manager);
             }
-            renderer->popClipRect();
+            renderer->PopClipRect();
         }
 
         // Camera preview chrome (live texture is composited by RenderSystem).
         if (m_CameraPreviewVisible)
         {
             const ZSlate::UIRect& pr = m_CameraPreviewFrame;
-            renderer->drawRect(pr, ZSlate::UIColor(1.0f, 1.0f, 1.0f, 0.71f), 2.0f);
-            renderer->drawQuad(ZSlate::UIRect(pr.x, pr.y, pr.width, 22.0f), ZSlate::UIColor(0.0f, 0.0f, 0.0f, 0.67f));
-            renderer->drawText(ZSlate::UIRect(pr.x + 6.0f, pr.y + 4.0f, pr.width - 12.0f, 18.0f), m_CameraPreviewTitle,
+            renderer->DrawRect(pr, ZSlate::UIColor(1.0f, 1.0f, 1.0f, 0.71f), 2.0f);
+            renderer->DrawQuad(ZSlate::UIRect(pr.x, pr.y, pr.width, 22.0f), ZSlate::UIColor(0.0f, 0.0f, 0.0f, 0.67f));
+            renderer->DrawText(ZSlate::UIRect(pr.x + 6.0f, pr.y + 4.0f, pr.width - 12.0f, 18.0f), m_CameraPreviewTitle,
                                13.0f, ZSlate::UIColor(0.90f, 0.90f, 0.90f, 1.0f), ZSlate::TextAnchor::MiddleLeft);
         }
 
@@ -1404,9 +1404,9 @@ void ZSlateSceneWindow::OnGUI()
             FPaintContext ctx;
             ctx.Renderer = renderer;
             ctx.LayerId = 0;
-            renderer->pushClipRect(toolbar_region, true);
+            renderer->PushClipRect(toolbar_region, true);
             m_Toolbar->Paint(ctx, toolbar_geom);
-            renderer->popClipRect();
+            renderer->PopClipRect();
         }
 
         // Scene Camera settings panel (clamped on-screen).

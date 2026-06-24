@@ -168,11 +168,11 @@ void ZSlateTimelineWindow::BuildToolbar(float scale)
 // ---------------------------------------------------------------------------
 void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& region, float scale)
 {
-    r.drawQuad(region, kCanvasBg);
+    r.DrawQuad(region, kCanvasBg);
 
     if (m_CurrentAsset == nullptr)
     {
-        r.drawText(region,
+        r.DrawText(region,
                    "No Timeline Asset selected",
                    14.0f * scale,
                    kDimColor,
@@ -190,10 +190,10 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
     const float right_w = std::max(1.0f, region.width - track_list_w);
 
     // Track-list background + separator.
-    r.drawQuad(ZSlate::UIRect(region.x, region.y, track_list_w, region.height), kTrackListBg);
-    r.drawQuad(ZSlate::UIRect(right_x, region.y, 1.0f, region.height), kSeparator);
+    r.DrawQuad(ZSlate::UIRect(region.x, region.y, track_list_w, region.height), kTrackListBg);
+    r.DrawQuad(ZSlate::UIRect(right_x, region.y, 1.0f, region.height), kSeparator);
 
-    r.drawText(ZSlate::UIRect(region.x + 6.0f * scale, region.y + 2.0f * scale, track_list_w - 8.0f * scale, ruler_h),
+    r.DrawText(ZSlate::UIRect(region.x + 6.0f * scale, region.y + 2.0f * scale, track_list_w - 8.0f * scale, ruler_h),
                "Tracks",
                13.0f * scale,
                kLabelColor,
@@ -202,8 +202,8 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
 
     // ---- Ruler --------------------------------------------------------------
     const ZSlate::UIRect ruler(right_x, region.y, right_w, ruler_h);
-    r.drawQuad(ruler, kRulerBg);
-    r.pushClipRect(ruler, true);
+    r.DrawQuad(ruler, kRulerBg);
+    r.PushClipRect(ruler, true);
 
     const float visible_duration = right_w / pps;
     const int start_frame = TimeToFrame(m_TimeRangeStart);
@@ -217,11 +217,11 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
         if (px < 0.0f || px > right_w)
             continue;
         const float x = right_x + px;
-        r.drawQuad(ZSlate::UIRect(x, region.y, 1.0f, ruler_h), kWhite);
+        r.DrawQuad(ZSlate::UIRect(x, region.y, 1.0f, ruler_h), kWhite);
 
         char label[32];
         std::snprintf(label, sizeof(label), "%.2f", time);
-        r.drawText(ZSlate::UIRect(x + 2.0f * scale, region.y + 1.0f * scale, 48.0f * scale, ruler_h * 0.6f),
+        r.DrawText(ZSlate::UIRect(x + 2.0f * scale, region.y + 1.0f * scale, 48.0f * scale, ruler_h * 0.6f),
                    label,
                    11.0f * scale,
                    kWhite,
@@ -238,15 +238,15 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
             if (px < 0.0f || px > right_w)
                 continue;
             const float x = right_x + px;
-            r.drawQuad(ZSlate::UIRect(x, region.y + ruler_h * 0.7f, 1.0f, ruler_h * 0.3f), ZSlate::UIColor(0.78f, 0.78f, 0.78f, 1.0f));
+            r.DrawQuad(ZSlate::UIRect(x, region.y + ruler_h * 0.7f, 1.0f, ruler_h * 0.3f), ZSlate::UIColor(0.78f, 0.78f, 0.78f, 1.0f));
         }
     }
-    r.popClipRect();
+    r.PopClipRect();
 
     // ---- Track lanes + clips ------------------------------------------------
     const float lanes_top = region.y + ruler_h;
     const ZSlate::UIRect lanes_clip(right_x, lanes_top, right_w, region.height - ruler_h);
-    r.pushClipRect(lanes_clip, true);
+    r.PushClipRect(lanes_clip, true);
 
     float y = lanes_top;
     for (size_t i = 0; i < m_CurrentAsset->m_Tracks.size(); ++i)
@@ -257,10 +257,10 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
 
         // Lane background.
         const ZSlate::UIRect lane(right_x, y, right_w, track_h);
-        r.drawQuad(lane, TrackColor(track));
+        r.DrawQuad(lane, TrackColor(track));
 
         // Track header in left column.
-        r.drawText(ZSlate::UIRect(region.x + 8.0f * scale, y, track_list_w - 12.0f * scale, track_h),
+        r.DrawText(ZSlate::UIRect(region.x + 8.0f * scale, y, track_list_w - 12.0f * scale, track_h),
                    track->m_Name.empty() ? std::string(TrackTypeName(track)) : track->m_Name,
                    12.0f * scale,
                    kLabelColor,
@@ -281,12 +281,12 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
 
             const ZSlate::UIRect clip_rect(clip_x, y + 2.0f * scale, clip_w, track_h - 4.0f * scale);
             const bool selected = IsClipSelected(track, static_cast<int>(j));
-            r.drawQuad(clip_rect, selected ? kClipSelected : ClipColor(clip));
-            r.drawRect(clip_rect, kWhite, 1.0f);
+            r.DrawQuad(clip_rect, selected ? kClipSelected : ClipColor(clip));
+            r.DrawRect(clip_rect, kWhite, 1.0f);
 
             if (clip_w > 50.0f * scale)
             {
-                r.drawText(ZSlate::UIRect(clip_rect.x + 4.0f * scale, clip_rect.y, clip_rect.width - 6.0f * scale, clip_rect.height),
+                r.DrawText(ZSlate::UIRect(clip_rect.x + 4.0f * scale, clip_rect.y, clip_rect.width - 6.0f * scale, clip_rect.height),
                            ClipDisplayName(clip),
                            11.0f * scale,
                            kBlack,
@@ -300,7 +300,7 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
 
     if (m_CurrentAsset->m_Tracks.empty())
     {
-        r.drawText(ZSlate::UIRect(right_x + 8.0f * scale, lanes_top + 8.0f * scale, right_w - 16.0f * scale, track_h),
+        r.DrawText(ZSlate::UIRect(right_x + 8.0f * scale, lanes_top + 8.0f * scale, right_w - 16.0f * scale, track_h),
                    "No tracks. Use the toolbar to add a track.",
                    12.0f * scale,
                    kDimColor,
@@ -312,9 +312,9 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
     const float head_px = (m_CurrentTime - m_TimeRangeStart) * pps;
     if (head_px >= 0.0f && head_px <= right_w)
     {
-        r.drawQuad(ZSlate::UIRect(right_x + head_px, region.y, 2.0f, region.height), kPlayhead);
+        r.DrawQuad(ZSlate::UIRect(right_x + head_px, region.y, 2.0f, region.height), kPlayhead);
     }
-    r.popClipRect();
+    r.PopClipRect();
 }
 
 // ---------------------------------------------------------------------------
@@ -490,9 +490,9 @@ void ZSlateTimelineWindow::OnGUI()
         ctx.Renderer = &renderer;
         ctx.LayerId = 0;
 
-        renderer.pushClipRect(toolbar_region, true);
+        renderer.PushClipRect(toolbar_region, true);
         m_Toolbar->Paint(ctx, toolbar_geom);
-        renderer.popClipRect();
+        renderer.PopClipRect();
 
         PaintCanvas(renderer, canvas_region, ui_scale);
     }
