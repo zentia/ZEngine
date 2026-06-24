@@ -29,7 +29,7 @@
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/SSplitter.h"
 #include "ZSlate/Widgets/Layout/SSpacer.h"
-#include "ZSlate/Widgets/STextBlock.h"
+#include "ZSlate/Widgets/Text/STextBlock.h"
 
 #include <algorithm>
 #include <cstdlib>

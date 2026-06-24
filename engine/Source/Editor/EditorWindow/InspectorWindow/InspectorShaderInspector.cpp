@@ -26,7 +26,7 @@
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/SExpandableArea.h"
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
-#include "ZSlate/Widgets/STextBlock.h"
+#include "ZSlate/Widgets/Text/STextBlock.h"
 
 #ifdef _WIN32
 #include "Runtime/Function/Render/Interface/DX12/DX12ShaderCompiler.h"

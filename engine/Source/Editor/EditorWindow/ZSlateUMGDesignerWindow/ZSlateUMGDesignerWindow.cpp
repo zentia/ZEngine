@@ -15,7 +15,7 @@
 #include "ZSlate/Widgets/SDragFloat.h"
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
-#include "ZSlate/Widgets/STextBlock.h"
+#include "ZSlate/Widgets/Text/STextBlock.h"
 #include "Runtime/UI/Render/BatchedUIRenderer.h"
 #include "Runtime/UI/Render/UIRenderer.h"
 #include "Runtime/UMG/Asset/UMGAssetIO.h"

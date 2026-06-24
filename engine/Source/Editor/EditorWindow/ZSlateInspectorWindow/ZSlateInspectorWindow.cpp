@@ -35,7 +35,7 @@
 #include "ZSlate/Widgets/SMenu.h"     // combo dropdown rows
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/SSlider.h"   // compression-quality slider
-#include "ZSlate/Widgets/STextBlock.h"
+#include "ZSlate/Widgets/Text/STextBlock.h"
 #include "Runtime/UI/Core/Font.h"  // native Font asset inspector
 
 #include "Runtime/BaseClasses/GameObject.h"

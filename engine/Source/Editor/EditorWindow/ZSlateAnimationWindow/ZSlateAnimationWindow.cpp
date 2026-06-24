@@ -9,7 +9,7 @@
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/Input/SCheckBox.h"
 #include "ZSlate/Widgets/Layout/SSpacer.h"
-#include "ZSlate/Widgets/STextBlock.h"
+#include "ZSlate/Widgets/Text/STextBlock.h"
 #include "Runtime/UI/Render/UIRenderer.h"
 
 #include <algorithm>

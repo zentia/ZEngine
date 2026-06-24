@@ -17,7 +17,7 @@
 #include "ZSlate/Widgets/Input/SButton.h"          // P11f
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"  // P11f
 #include "ZSlate/Widgets/Layout/SSpacer.h"           // P11f
-#include "ZSlate/Widgets/STextBlock.h"        // P11f
+#include "ZSlate/Widgets/Text/STextBlock.h"        // P11f
 #include "Runtime/UI/Render/BatchedUIRenderer.h"  // P7 placeholder / maximized chrome painting
 
 #include <algorithm>
