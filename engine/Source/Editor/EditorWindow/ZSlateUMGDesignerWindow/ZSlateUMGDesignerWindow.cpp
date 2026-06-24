@@ -61,7 +61,7 @@ void InvalidateTree(UWidget* w)
     }
 }
 
-std::shared_ptr<STextBlock> MakeLabel(const std::string& text, float font, const UIColor& color)
+std::shared_ptr<STextBlock> MakeLabel(const std::string& text, float font, const ZSlate::UIColor& color)
 {
     auto t = std::make_shared<STextBlock>();
     t->Text = text;
@@ -73,8 +73,8 @@ std::shared_ptr<STextBlock> MakeLabel(const std::string& text, float font, const
 std::shared_ptr<SButton> MakeButton(const std::string& label, float font, std::function<void()> on_click)
 {
     auto btn = std::make_shared<SButton>();
-    btn->Padding = FMargin(8.0f, 4.0f);
-    btn->SetContent(MakeLabel(label, font, UIColor(0.90f, 0.91f, 0.94f, 1.0f)));
+    btn->Padding = ZSlate::FMargin(8.0f, 4.0f);
+    btn->SetContent(MakeLabel(label, font, ZSlate::UIColor(0.90f, 0.91f, 0.94f, 1.0f)));
     btn->OnClicked = std::move(on_click);
     return btn;
 }
@@ -182,7 +182,7 @@ void ZSlateUMGDesignerWindow::AddWidgetToSelection(const std::string& class_name
     child->Name = class_name;
 
     if (auto* box = dynamic_cast<UBoxPanel*>(panel))
-        box->AddSlot(child).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f));
+        box->AddSlot(child).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f));
     else if (auto* overlay = dynamic_cast<UOverlay*>(panel))
         overlay->AddSlot(child);
     else
@@ -238,7 +238,7 @@ void ZSlateUMGDesignerWindow::ApplyPendingReparent()
         }
     }
     if (auto* box = dynamic_cast<UBoxPanel*>(target.get()))
-        box->AddSlot(node).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f));
+        box->AddSlot(node).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f));
     else if (auto* overlay = dynamic_cast<UOverlay*>(target.get()))
         overlay->AddSlot(node);
     else
@@ -265,19 +265,19 @@ void ZSlateUMGDesignerWindow::BuildHierarchyRows(const std::shared_ptr<SScrollBo
     std::weak_ptr<UWidget> wnode = widget;
 
     auto row = std::make_shared<SButton>();
-    row->Padding = FMargin(6.0f + depth * 14.0f * scale, 3.0f, 6.0f, 3.0f);
+    row->Padding = ZSlate::FMargin(6.0f + depth * 14.0f * scale, 3.0f, 6.0f, 3.0f);
     row->HAlign = EHorizontalAlignment::Left;
     if (is_selected)
     {
-        row->NormalColor = UIColor(0.20f, 0.36f, 0.58f, 1.0f);
-        row->HoverColor = UIColor(0.24f, 0.42f, 0.66f, 1.0f);
+        row->NormalColor = ZSlate::UIColor(0.20f, 0.36f, 0.58f, 1.0f);
+        row->HoverColor = ZSlate::UIColor(0.24f, 0.42f, 0.66f, 1.0f);
     }
     else
     {
-        row->NormalColor = UIColor(0.15f, 0.15f, 0.17f, 1.0f);
-        row->HoverColor = UIColor(0.22f, 0.22f, 0.26f, 1.0f);
+        row->NormalColor = ZSlate::UIColor(0.15f, 0.15f, 0.17f, 1.0f);
+        row->HoverColor = ZSlate::UIColor(0.22f, 0.22f, 0.26f, 1.0f);
     }
-    row->SetContent(MakeLabel(label, font, UIColor(0.90f, 0.91f, 0.94f, 1.0f)));
+    row->SetContent(MakeLabel(label, font, ZSlate::UIColor(0.90f, 0.91f, 0.94f, 1.0f)));
     row->OnClicked = [this, wnode]() {
         m_Selected = wnode;
         MarkUiDirty();
@@ -286,7 +286,7 @@ void ZSlateUMGDesignerWindow::BuildHierarchyRows(const std::shared_ptr<SScrollBo
     // Drag SOURCE: non-root nodes can be dragged onto a panel to reparent.
     if (widget != m_Root)
     {
-        row->OnDragDetectedHandler = [wnode, label](const Vector2&) -> std::shared_ptr<FDragDropOperation> {
+        row->OnDragDetectedHandler = [wnode, label](const ZSlate::Vector2&) -> std::shared_ptr<FDragDropOperation> {
             auto op = std::make_shared<UMGDragOp>();
             op->PayloadType = "UMG_NODE";
             op->DecoratorText = label;
@@ -336,12 +336,12 @@ void ZSlateUMGDesignerWindow::BuildPropertyRows(const std::shared_ptr<SScrollBox
 {
     const float font = 14.0f * scale;
     const float label_w = 96.0f * scale;
-    const UIColor label_color(0.72f, 0.74f, 0.80f, 1.0f);
+    const ZSlate::UIColor label_color(0.72f, 0.74f, 0.80f, 1.0f);
 
     std::shared_ptr<UWidget> sel = SelectedShared();
     if (!sel)
     {
-        box->AddChild(MakeLabel("No widget selected", font, UIColor(0.55f, 0.56f, 0.62f, 1.0f)));
+        box->AddChild(MakeLabel("No widget selected", font, ZSlate::UIColor(0.55f, 0.56f, 0.62f, 1.0f)));
         return;
     }
 
@@ -355,7 +355,7 @@ void ZSlateUMGDesignerWindow::BuildPropertyRows(const std::shared_ptr<SScrollBox
         label_box->VAlign = EVerticalAlignment::Center;
         label_box->SetContent(MakeLabel(key, font, label_color));
         row->AddSlot(label_box).AutoSize().SetVAlign(EVerticalAlignment::Center);
-        row->AddSlot(editor).Fill(1.0f).SetVAlign(EVerticalAlignment::Center).SetPadding(FMargin(4.0f, 0.0f, 0.0f, 0.0f));
+        row->AddSlot(editor).Fill(1.0f).SetVAlign(EVerticalAlignment::Center).SetPadding(ZSlate::FMargin(4.0f, 0.0f, 0.0f, 0.0f));
         box->AddChild(row);
     };
 
@@ -447,7 +447,7 @@ void ZSlateUMGDesignerWindow::BuildPropertyRows(const std::shared_ptr<SScrollBox
             }
             case EPropType::Vec2:
             {
-                const Vector2 v = bag.GetVec2(key);
+                const ZSlate::Vector2 v = bag.GetVec2(key);
                 auto pair = std::make_shared<SHorizontalBox>();
                 auto dx = std::make_shared<SDragFloat>();
                 dx->Value = v.x;
@@ -456,7 +456,7 @@ void ZSlateUMGDesignerWindow::BuildPropertyRows(const std::shared_ptr<SScrollBox
                 dx->FontSize = font;
                 dx->OnValueChanged = [apply, key](float nv) {
                     apply([&](UMGPropertyBag& b) {
-                        Vector2 cur = b.GetVec2(key);
+                        ZSlate::Vector2 cur = b.GetVec2(key);
                         cur.x = nv;
                         b.SetVec2(key, cur);
                     });
@@ -468,24 +468,24 @@ void ZSlateUMGDesignerWindow::BuildPropertyRows(const std::shared_ptr<SScrollBox
                 dy->FontSize = font;
                 dy->OnValueChanged = [apply, key](float nv) {
                     apply([&](UMGPropertyBag& b) {
-                        Vector2 cur = b.GetVec2(key);
+                        ZSlate::Vector2 cur = b.GetVec2(key);
                         cur.y = nv;
                         b.SetVec2(key, cur);
                     });
                 };
                 pair->AddSlot(dx).Fill(1.0f);
-                pair->AddSlot(dy).Fill(1.0f).SetPadding(FMargin(4.0f, 0.0f, 0.0f, 0.0f));
+                pair->AddSlot(dy).Fill(1.0f).SetPadding(ZSlate::FMargin(4.0f, 0.0f, 0.0f, 0.0f));
                 make_row(key, pair);
                 break;
             }
             case EPropType::Color:
             {
-                const UIColor c = bag.GetColor(key);
+                const ZSlate::UIColor c = bag.GetColor(key);
                 auto picker = std::make_shared<SColorPicker>();
                 picker->SquareSize = 130.0f * scale;
                 picker->SetColorRGBA(c.x, c.y, c.z, c.w);
                 picker->OnColorChanged = [apply, key](float r, float g, float bl, float a) {
-                    apply([&](UMGPropertyBag& b) { b.SetColor(key, UIColor(r, g, bl, a)); });
+                    apply([&](UMGPropertyBag& b) { b.SetColor(key, ZSlate::UIColor(r, g, bl, a)); });
                 };
                 // The picker is tall; give it a full-width row with the key above it.
                 box->AddChild(MakeLabel(key, font, label_color));
@@ -501,15 +501,15 @@ void ZSlateUMGDesignerWindow::BuildChrome(float scale)
     EnsureRoot();
 
     const float font = 14.0f * scale;
-    const UIColor panel_bg(0.10f, 0.10f, 0.12f, 1.0f);
-    const UIColor header_color(0.78f, 0.80f, 0.86f, 1.0f);
+    const ZSlate::UIColor panel_bg(0.10f, 0.10f, 0.12f, 1.0f);
+    const ZSlate::UIColor header_color(0.78f, 0.80f, 0.86f, 1.0f);
 
     auto root = std::make_shared<SVerticalBox>();
 
     // ---- Toolbar -----------------------------------------------------------
     auto toolbar = std::make_shared<SHorizontalBox>();
     auto pad = [](SBoxPanel::FSlot& slot) -> SBoxPanel::FSlot& {
-        return slot.AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(FMargin(0.0f, 0.0f, 4.0f, 0.0f));
+        return slot.AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(ZSlate::FMargin(0.0f, 0.0f, 4.0f, 0.0f));
     };
 
     pad(toolbar->AddSlot(MakeButton("New", font, [this]() {
@@ -535,7 +535,7 @@ void ZSlateUMGDesignerWindow::BuildChrome(float scale)
     m_UrlBox->MinWidth = 200.0f * scale;
     m_UrlBox->OnTextChanged = [this](const std::string& t) { m_AssetUrl = t; };
     m_UrlBox->OnTextCommitted = [this](const std::string& t) { m_AssetUrl = t; };
-    pad(toolbar->AddSlot(m_UrlBox)).SetPadding(FMargin(12.0f, 0.0f, 4.0f, 0.0f));
+    pad(toolbar->AddSlot(m_UrlBox)).SetPadding(ZSlate::FMargin(12.0f, 0.0f, 4.0f, 0.0f));
 
     pad(toolbar->AddSlot(MakeButton("Save", font, [this]() {
         EnsureRoot();
@@ -562,7 +562,7 @@ void ZSlateUMGDesignerWindow::BuildChrome(float scale)
         }
     })));
 
-    root->AddSlot(toolbar).AutoSize().SetPadding(FMargin(4.0f, 4.0f, 4.0f, 6.0f));
+    root->AddSlot(toolbar).AutoSize().SetPadding(ZSlate::FMargin(4.0f, 4.0f, 4.0f, 6.0f));
 
     // ---- Body: hierarchy | properties --------------------------------------
     auto body = std::make_shared<SHorizontalBox>();
@@ -570,9 +570,9 @@ void ZSlateUMGDesignerWindow::BuildChrome(float scale)
     auto make_panel = [&](const std::string& title, const std::shared_ptr<SScrollBox>& scroll) {
         auto border = std::make_shared<SBorder>();
         border->BackgroundColor = panel_bg;
-        border->Padding = FMargin(6.0f, 6.0f, 6.0f, 6.0f);
+        border->Padding = ZSlate::FMargin(6.0f, 6.0f, 6.0f, 6.0f);
         auto col = std::make_shared<SVerticalBox>();
-        col->AddSlot(MakeLabel(title, font, header_color)).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 6.0f));
+        col->AddSlot(MakeLabel(title, font, header_color)).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 6.0f));
         col->AddSlot(scroll).Fill(1.0f);
         border->SetContent(col);
         return border;
@@ -584,8 +584,8 @@ void ZSlateUMGDesignerWindow::BuildChrome(float scale)
     auto properties = std::make_shared<SScrollBox>();
     BuildPropertyRows(properties, scale);
 
-    body->AddSlot(make_panel("Hierarchy", hierarchy)).Fill(1.0f).SetPadding(FMargin(2.0f, 0.0f, 3.0f, 0.0f));
-    body->AddSlot(make_panel("Properties", properties)).Fill(1.0f).SetPadding(FMargin(3.0f, 0.0f, 2.0f, 0.0f));
+    body->AddSlot(make_panel("Hierarchy", hierarchy)).Fill(1.0f).SetPadding(ZSlate::FMargin(2.0f, 0.0f, 3.0f, 0.0f));
+    body->AddSlot(make_panel("Properties", properties)).Fill(1.0f).SetPadding(ZSlate::FMargin(3.0f, 0.0f, 2.0f, 0.0f));
 
     root->AddSlot(body).Fill(1.0f);
 
@@ -649,12 +649,12 @@ void ZSlateUMGDesignerWindow::OnGUI()
     const float chrome_w = avail_w - preview_w;
     const float split_x = pos_x + chrome_w;
 
-    const UIRect chrome_region(pos_x, pos_y, chrome_w, avail_h);
-    const FGeometry chrome_geom(Vector2(pos_x, pos_y), Vector2(chrome_w, avail_h));
-    const UIRect preview_region(split_x, pos_y, preview_w, avail_h);
-    const FGeometry preview_geom(Vector2(split_x, pos_y), Vector2(preview_w, avail_h));
-    const UIRect panel_region(pos_x, pos_y, avail_w, avail_h);
-    const UIColor preview_bg(0.11f, 0.11f, 0.13f, 1.0f);
+    const ZSlate::UIRect chrome_region(pos_x, pos_y, chrome_w, avail_h);
+    const FGeometry chrome_geom(ZSlate::Vector2(pos_x, pos_y), ZSlate::Vector2(chrome_w, avail_h));
+    const ZSlate::UIRect preview_region(split_x, pos_y, preview_w, avail_h);
+    const FGeometry preview_geom(ZSlate::Vector2(split_x, pos_y), ZSlate::Vector2(preview_w, avail_h));
+    const ZSlate::UIRect panel_region(pos_x, pos_y, avail_w, avail_h);
+    const ZSlate::UIColor preview_bg(0.11f, 0.11f, 0.13f, 1.0f);
 
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
 
@@ -691,7 +691,7 @@ void ZSlateUMGDesignerWindow::OnGUI()
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
     host.BeginSurface(surface_id, panel_region, ZSlate::ESurfaceLayer::Panels);
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool over_canvas = host.IsSurfaceHovered(surface_id, mouse);
     const bool left_down = host.IsLeftDown();
     const float wheel = over_canvas ? host.GetWheelDelta() : 0.0f;

@@ -1,4 +1,4 @@
-﻿#include "ZSlateGameWindow.h"
+#include "ZSlateGameWindow.h"
 
 #include "Editor/EditorInputManager/EditorInputManager.h"
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
@@ -17,16 +17,16 @@ using namespace ZSlate;
 
 namespace
 {
-    const UIColor kEditColor(0.0f, 1.0f, 0.0f, 1.0f);
-    const UIColor kPlayColor(0.95f, 0.85f, 0.20f, 1.0f);
+    const ZSlate::UIColor kEditColor(0.0f, 1.0f, 0.0f, 1.0f);
+    const ZSlate::UIColor kPlayColor(0.95f, 0.85f, 0.20f, 1.0f);
 
-    std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const UIColor& color)
+    std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color)
     {
         auto t = std::make_shared<STextBlock>();
         t->Text = text;
         t->FontSize = font_size;
         t->Color = color;
-        t->Alignment = TextAnchor::MiddleLeft;
+        t->Alignment = ZSlate::TextAnchor::MiddleLeft;
         return t;
     }
 }  // namespace
@@ -96,8 +96,8 @@ void ZSlateGameWindow::OnGUI()
     if (avail_h < 1.0f)
         avail_h = 1.0f;
 
-    const UIRect region(pos_x, pos_y, avail_w, avail_h);
-    const FGeometry geometry(Vector2(pos_x, pos_y), Vector2(avail_w, avail_h));
+    const ZSlate::UIRect region(pos_x, pos_y, avail_w, avail_h);
+    const FGeometry geometry(ZSlate::Vector2(pos_x, pos_y), ZSlate::Vector2(avail_w, avail_h));
 
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
     BatchedUIRenderer& renderer = overlay.GetRenderer();

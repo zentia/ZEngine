@@ -1,4 +1,4 @@
-﻿#include "DefaultLayout.h"
+#include "DefaultLayout.h"
 
 #include "Editor/EditorLayout/EditorLayoutConstants.h"
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
@@ -47,7 +47,7 @@ namespace
     // P11a: dock chrome mouse source is the GLFW-backed EditorSlateHost (the
     // transitional r.ZSlate.NativeInput CVar was retired in P10c, so the old
     // ImGui::GetIO() fallbacks were dead and are gone).
-    Vector2 ChromeMouse()
+    ZSlate::Vector2 ChromeMouse()
     {
         return ZSlate::EditorSlateHost::Get().GetPointerPos();
     }
@@ -131,11 +131,11 @@ void DefaultLayout::OnGUI()
     // NOTE: the old ImGui path inset the right/bottom by the host window's WindowPadding
     // (space_m = 12px), leaving a small transparent gap; the native path fills to the edge.
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const Vector2 disp_pos = host.GetDisplayPos();
-    const Vector2 disp_size = host.GetDisplaySize();
+    const ZSlate::Vector2 disp_pos = host.GetDisplayPos();
+    const ZSlate::Vector2 disp_size = host.GetDisplaySize();
     const float reserved = EditorLayoutConstants::kReservedTopHeight;
-    const Vector2 native_origin(disp_pos.x, disp_pos.y + reserved);
-    const Vector2 dock_host_avail(disp_size.x, disp_size.y - reserved);
+    const ZSlate::Vector2 native_origin(disp_pos.x, disp_pos.y + reserved);
+    const ZSlate::Vector2 dock_host_avail(disp_size.x, disp_size.y - reserved);
     RenderNativeDockPreview(native_origin, dock_host_avail);
 }
 
@@ -298,7 +298,7 @@ bool DefaultLayout::IsPanelFloating(const char* title) const
 void DefaultLayout::BeginFloatingPanelRender(const char* title, float x, float y, float width, float height)
 {
     m_FloatingRenderTitle = (title != nullptr) ? title : "";
-    m_FloatingRenderRect = UIRect(x, y, width, height);
+    m_FloatingRenderRect = ZSlate::UIRect(x, y, width, height);
 }
 
 void DefaultLayout::EndFloatingPanelRender()
@@ -330,7 +330,7 @@ void DefaultLayout::EnsureNativeDockTree()
     ReconcileNativeTreeWithOpenWindows();
 }
 
-void DefaultLayout::RenderNativeDockPreview(const Vector2& origin, const Vector2& size)
+void DefaultLayout::RenderNativeDockPreview(const ZSlate::Vector2& origin, const ZSlate::Vector2& size)
 {
     if (size.x <= 1.0f || size.y <= 1.0f)
         return;
@@ -352,7 +352,7 @@ void DefaultLayout::RenderNativeDockPreview(const Vector2& origin, const Vector2
     metrics.MinNodeExtent = 48.0f * ui_scale;
     m_NativeDockTree.SetMetrics(metrics);
 
-    const UIRect host_rect(origin.x, origin.y, size.x, size.y);
+    const ZSlate::UIRect host_rect(origin.x, origin.y, size.x, size.y);
     ZSlate::ZSlateEditorOverlay& overlay = ZSlate::ZSlateEditorOverlay::Get();
     BatchedUIRenderer& renderer = overlay.GetRenderer();
 
@@ -370,9 +370,9 @@ void DefaultLayout::RenderNativeDockPreview(const Vector2& origin, const Vector2
         renderer.drawText(host_rect,
                           "No panels open -- open one from the Window menu.",
                           14.0f * ui_scale,
-                          UIColor(0.52f, 0.55f, 0.60f, 1.0f),
-                          TextAnchor::MiddleCenter,
-                          TextWrapMode::NoWrap,
+                          ZSlate::UIColor(0.52f, 0.55f, 0.60f, 1.0f),
+                          ZSlate::TextAnchor::MiddleCenter,
+                          ZSlate::TextWrapMode::NoWrap,
                           nullptr);
         renderer.popClipRect();
         return;
@@ -430,8 +430,8 @@ void DefaultLayout::RenderNativeDockPreview(const Vector2& origin, const Vector2
     // P6: a floating panel is being dragged over the host -> "dock here" highlight.
     if (m_ExternalDockHint)
     {
-        renderer.drawQuad(host_rect, UIColor(0.25f, 0.55f, 0.95f, 0.22f));
-        renderer.drawRect(host_rect, UIColor(0.35f, 0.65f, 1.0f, 0.9f), 2.0f);
+        renderer.drawQuad(host_rect, ZSlate::UIColor(0.25f, 0.55f, 0.95f, 0.22f));
+        renderer.drawRect(host_rect, ZSlate::UIColor(0.35f, 0.65f, 1.0f, 0.9f), 2.0f);
     }
     renderer.popClipRect();
 
@@ -439,14 +439,14 @@ void DefaultLayout::RenderNativeDockPreview(const Vector2& origin, const Vector2
     TickNativeSessionAutosave();
 }
 
-void DefaultLayout::RenderNativeMaximizedBackground(const UIRect& host_rect, float scale)
+void DefaultLayout::RenderNativeMaximizedBackground(const ZSlate::UIRect& host_rect, float scale)
 {
     (void)scale;
     BatchedUIRenderer& renderer = ZSlate::ZSlateEditorOverlay::Get().GetRenderer();
     const EditorDock::DockHost::Style& style = m_NativeDockHost.GetStyle();
     const float strip_h = m_NativeDockTree.GetMetrics().TabStripHeight;
 
-    const UIRect content(host_rect.x, host_rect.y + strip_h, host_rect.width,
+    const ZSlate::UIRect content(host_rect.x, host_rect.y + strip_h, host_rect.width,
                          std::max(1.0f, host_rect.height - strip_h));
     // Cache for QueryNativeDockPanel (the const query places the maximized panel here).
     // Runs before the panel paints this frame, so the rect is fresh on resize.
@@ -461,38 +461,38 @@ void DefaultLayout::RenderNativeMaximizedBackground(const UIRect& host_rect, flo
     }
 }
 
-void DefaultLayout::RenderNativeMaximized(const UIRect& host_rect, float scale)
+void DefaultLayout::RenderNativeMaximized(const ZSlate::UIRect& host_rect, float scale)
 {
     BatchedUIRenderer& renderer = ZSlate::ZSlateEditorOverlay::Get().GetRenderer();
     const EditorDock::DockHost::Style& style = m_NativeDockHost.GetStyle();
     const float font = style.FontSize * scale;
     const float strip_h = m_NativeDockTree.GetMetrics().TabStripHeight;
 
-    const UIRect strip(host_rect.x, host_rect.y, host_rect.width, strip_h);
+    const ZSlate::UIRect strip(host_rect.x, host_rect.y, host_rect.width, strip_h);
 
     // Frame + tab strip band (the content-area fill is RenderNativeMaximizedBackground's,
     // drawn in the kZDockBackground group so the panel content composites above it).
     renderer.drawRect(host_rect, style.BorderColor, 1.0f);
     renderer.drawQuad(strip, style.TabStripBg);
 
-    const Vector2 mouse = ChromeMouse();
+    const ZSlate::Vector2 mouse = ChromeMouse();
 
     // Single (active) tab for the maximized panel.
     const float pad = style.TabPaddingX * scale;
-    const float text_w = renderer.measureText(m_MaximizedPanelId, font, TextWrapMode::NoWrap, 0.0f, nullptr).x;
-    const UIRect tab(strip.x, strip.y, text_w + pad * 2.0f, strip.height);
+    const float text_w = renderer.measureText(m_MaximizedPanelId, font, ZSlate::TextWrapMode::NoWrap, 0.0f, nullptr).x;
+    const ZSlate::UIRect tab(strip.x, strip.y, text_w + pad * 2.0f, strip.height);
     renderer.drawQuad(tab, style.TabActiveBg);
-    renderer.drawQuad(UIRect(tab.x, tab.y, tab.width, std::max(1.0f, 2.0f * scale)), style.ActiveTabAccent);
-    renderer.drawText(tab, m_MaximizedPanelId, font, style.TabActiveText, TextAnchor::MiddleCenter,
-                      TextWrapMode::NoWrap, nullptr);
+    renderer.drawQuad(ZSlate::UIRect(tab.x, tab.y, tab.width, std::max(1.0f, 2.0f * scale)), style.ActiveTabAccent);
+    renderer.drawText(tab, m_MaximizedPanelId, font, style.TabActiveText, ZSlate::TextAnchor::MiddleCenter,
+                      ZSlate::TextWrapMode::NoWrap, nullptr);
 
     // Restore button at the far right of the strip (a small square = "restore down").
     const float btn_w = strip.height;
-    m_RestoreButtonRect = UIRect(strip.x + strip.width - btn_w, strip.y, btn_w, strip.height);
+    m_RestoreButtonRect = ZSlate::UIRect(strip.x + strip.width - btn_w, strip.y, btn_w, strip.height);
     const bool rb_hover = m_RestoreButtonRect.Contains(mouse);
     renderer.drawQuad(m_RestoreButtonRect, rb_hover ? style.TabHoverBg : style.TabInactiveBg);
     const float ic = btn_w * 0.34f;
-    renderer.drawRect(UIRect(m_RestoreButtonRect.x + (btn_w - ic) * 0.5f,
+    renderer.drawRect(ZSlate::UIRect(m_RestoreButtonRect.x + (btn_w - ic) * 0.5f,
                              m_RestoreButtonRect.y + (btn_w - ic) * 0.5f, ic, ic),
                       rb_hover ? style.TabActiveText : style.TabText, std::max(1.0f, 1.5f * scale));
 
@@ -535,7 +535,7 @@ namespace
 {
     // Quadrant test for drag-to-dock: returns the edge the cursor is nearest within an
     // outer zone, else Center. Edge zone is 30% of the smaller extent.
-    EditorDock::EDockDir ComputeDropDir(const UIRect& r, const Vector2& m)
+    EditorDock::EDockDir ComputeDropDir(const ZSlate::UIRect& r, const ZSlate::Vector2& m)
     {
         if (r.width <= 0.0f || r.height <= 0.0f)
             return EditorDock::EDockDir::Center;
@@ -558,14 +558,14 @@ namespace
     }
 }  // namespace
 
-bool DefaultLayout::HandleNativeDockInput(const UIRect& host_rect)
+bool DefaultLayout::HandleNativeDockInput(const ZSlate::UIRect& host_rect)
 {
     // P11a: pointer + button-hold + click/double-click edges + wheel all come from
     // the GLFW-backed EditorSlateHost. P11g: the chrome gate below is now fully native
     // (HoveredSurfacePrev over the registered panel / island / Foreground-popup surfaces)
     // -- no ImGui state is consulted here anymore.
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const Vector2 mouse = ChromeMouse();
+    const ZSlate::Vector2 mouse = ChromeMouse();
     const float thickness = m_NativeDockTree.GetMetrics().SplitterThickness;
 
     // Baseline the cursor to the arrow every frame; the splitter-drag / tab-drag /
@@ -770,7 +770,7 @@ bool DefaultLayout::HandleNativeDockInput(const UIRect& host_rect)
             // is placed correctly on the very next QueryNativeDockPanel, even before the
             // first RenderNativeMaximized refreshes it.
             const float strip_h = m_NativeDockTree.GetMetrics().TabStripHeight;
-            m_MaximizedContentRect = UIRect(host_rect.x, host_rect.y + strip_h, host_rect.width,
+            m_MaximizedContentRect = ZSlate::UIRect(host_rect.x, host_rect.y + strip_h, host_rect.width,
                                             std::max(1.0f, host_rect.height - strip_h));
             // Cancel any drag armed by the first click of the double so it does not linger.
             m_TabDragId.clear();
@@ -899,12 +899,12 @@ void DefaultLayout::BuildSaveLayoutDialog(float scale)
     auto title = std::make_shared<STextBlock>();
     title->Text = "Save Layout Preset";
     title->FontSize = 16.0f * scale;
-    title->Color = UIColor(0.93f, 0.95f, 0.98f, 1.0f);
+    title->Color = ZSlate::UIColor(0.93f, 0.95f, 0.98f, 1.0f);
 
     auto hint = std::make_shared<STextBlock>();
     hint->Text = "Save the current editor layout as a reusable preset.";
     hint->FontSize = 13.0f * scale;
-    hint->Color = UIColor(0.62f, 0.66f, 0.72f, 1.0f);
+    hint->Color = ZSlate::UIColor(0.62f, 0.66f, 0.72f, 1.0f);
 
     m_SaveDialogEdit = std::make_shared<SEditableTextBox>();
     m_SaveDialogEdit->Text = trim(m_LayoutNameBuffer.data());
@@ -914,38 +914,38 @@ void DefaultLayout::BuildSaveLayoutDialog(float scale)
     // Enter commits. Defer the actual save -- this fires from inside the router.
     m_SaveDialogEdit->OnTextCommitted = [this](const std::string&) { m_SaveDialogWantCommit = true; };
 
-    auto make_label = [&](const char* text, const UIColor& color) {
+    auto make_label = [&](const char* text, const ZSlate::UIColor& color) {
         auto label = std::make_shared<STextBlock>();
         label->Text = text;
         label->FontSize = 14.0f * scale;
         label->Color = color;
-        label->Alignment = TextAnchor::MiddleCenter;
+        label->Alignment = ZSlate::TextAnchor::MiddleCenter;
         return label;
     };
 
     auto save_btn = std::make_shared<SButton>();
-    save_btn->SetContent(make_label("Save", UIColor(0.95f, 0.97f, 1.0f, 1.0f)));
-    save_btn->Padding = FMargin(18.0f * scale, 6.0f * scale);
-    save_btn->NormalColor = UIColor(0.20f, 0.42f, 0.66f, 1.0f);
-    save_btn->HoverColor = UIColor(0.26f, 0.50f, 0.76f, 1.0f);
-    save_btn->PressedColor = UIColor(0.17f, 0.36f, 0.58f, 1.0f);
+    save_btn->SetContent(make_label("Save", ZSlate::UIColor(0.95f, 0.97f, 1.0f, 1.0f)));
+    save_btn->Padding = ZSlate::FMargin(18.0f * scale, 6.0f * scale);
+    save_btn->NormalColor = ZSlate::UIColor(0.20f, 0.42f, 0.66f, 1.0f);
+    save_btn->HoverColor = ZSlate::UIColor(0.26f, 0.50f, 0.76f, 1.0f);
+    save_btn->PressedColor = ZSlate::UIColor(0.17f, 0.36f, 0.58f, 1.0f);
     save_btn->OnClicked = [this]() { m_SaveDialogWantCommit = true; };
 
     auto cancel_btn = std::make_shared<SButton>();
-    cancel_btn->SetContent(make_label("Cancel", UIColor(0.90f, 0.92f, 0.95f, 1.0f)));
-    cancel_btn->Padding = FMargin(18.0f * scale, 6.0f * scale);
+    cancel_btn->SetContent(make_label("Cancel", ZSlate::UIColor(0.90f, 0.92f, 0.95f, 1.0f)));
+    cancel_btn->Padding = ZSlate::FMargin(18.0f * scale, 6.0f * scale);
     cancel_btn->OnClicked = [this]() { m_SaveDialogWantClose = true; };
 
     auto button_row = std::make_shared<SHorizontalBox>();
-    button_row->AddSlot(std::make_shared<SSpacer>(Vector2(0.0f, 0.0f))).Fill(1.0f);
+    button_row->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(0.0f, 0.0f))).Fill(1.0f);
     button_row->AddSlot(save_btn).AutoSize();
-    button_row->AddSlot(std::make_shared<SSpacer>(Vector2(8.0f * scale, 0.0f))).AutoSize();
+    button_row->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(8.0f * scale, 0.0f))).AutoSize();
     button_row->AddSlot(cancel_btn).AutoSize();
 
     auto col = std::make_shared<SVerticalBox>();
-    col->AddSlot(title).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 8.0f * scale));
-    col->AddSlot(hint).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 12.0f * scale));
-    col->AddSlot(m_SaveDialogEdit).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 16.0f * scale));
+    col->AddSlot(title).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 8.0f * scale));
+    col->AddSlot(hint).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 12.0f * scale));
+    col->AddSlot(m_SaveDialogEdit).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 16.0f * scale));
     col->AddSlot(button_row).AutoSize().SetHAlign(EHorizontalAlignment::Fill);
 
     m_SaveDialogRoot = col;
@@ -990,39 +990,39 @@ void DefaultLayout::DrawDialogs()
     BatchedUIRenderer& renderer = overlay.GetRenderer();
     overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZForeground);
 
-    const Vector2 disp_pos = host.GetDisplayPos();
-    const Vector2 disp_size = host.GetDisplaySize();
-    const UIRect display_rect(disp_pos.x, disp_pos.y, disp_size.x, disp_size.y);
+    const ZSlate::Vector2 disp_pos = host.GetDisplayPos();
+    const ZSlate::Vector2 disp_size = host.GetDisplaySize();
+    const ZSlate::UIRect display_rect(disp_pos.x, disp_pos.y, disp_size.x, disp_size.y);
 
     // Full-screen modal scrim (dims everything below; also the Foreground hit-test
     // surface that suppresses the native dock chrome + native panels while open).
-    renderer.drawQuad(display_rect, UIColor(0.0f, 0.0f, 0.0f, 0.45f));
+    renderer.drawQuad(display_rect, ZSlate::UIColor(0.0f, 0.0f, 0.0f, 0.45f));
     host.BeginSurface(ZSlate::EditorSlateHost::HashId("##SaveLayoutDialogScrim"), display_rect,
                       ZSlate::ESurfaceLayer::Foreground);
 
     // Center the dialog panel around the widget tree's desired size.
     m_SaveDialogRoot->CacheDesiredSize();
-    const Vector2 content = m_SaveDialogRoot->GetDesiredSize();
+    const ZSlate::Vector2 content = m_SaveDialogRoot->GetDesiredSize();
     const float pad = 18.0f * ui_scale;
     const float panel_w = content.x + pad * 2.0f;
     const float panel_h = content.y + pad * 2.0f;
     const float panel_x = disp_pos.x + (disp_size.x - panel_w) * 0.5f;
     const float panel_y = disp_pos.y + (disp_size.y - panel_h) * 0.5f;
-    const UIRect panel_rect(panel_x, panel_y, panel_w, panel_h);
+    const ZSlate::UIRect panel_rect(panel_x, panel_y, panel_w, panel_h);
 
-    renderer.drawQuad(panel_rect, UIColor(0.13f, 0.14f, 0.16f, 1.0f));
-    renderer.drawRect(panel_rect, UIColor(0.32f, 0.34f, 0.40f, 1.0f), 1.0f);
+    renderer.drawQuad(panel_rect, ZSlate::UIColor(0.13f, 0.14f, 0.16f, 1.0f));
+    renderer.drawRect(panel_rect, ZSlate::UIColor(0.32f, 0.34f, 0.40f, 1.0f), 1.0f);
 
     // Paint BEFORE routing so each widget's cached geometry is fresh this frame (the
     // router hit-tests against CachedGeometry) -- matches MenuController's toolbar order.
     ZSlate::FPaintContext ctx;
     ctx.Renderer = &renderer;
     ctx.LayerId = 0;
-    m_SaveDialogRoot->Paint(ctx, ZSlate::FGeometry(Vector2(panel_x + pad, panel_y + pad), content));
+    m_SaveDialogRoot->Paint(ctx, ZSlate::FGeometry(ZSlate::Vector2(panel_x + pad, panel_y + pad), content));
 
     // Route input. over_panel = cursor over the dialog body (buttons / edit box); clicks
     // on the scrim outside the panel are absorbed by the modal but do nothing.
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool over_panel = panel_rect.Contains(mouse);
     m_SaveDialogInput.ProcessMouse(m_SaveDialogRoot, mouse, over_panel, host.IsLeftDown(), 0.0f, host.IsRightDown());
 

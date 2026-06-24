@@ -43,18 +43,18 @@ namespace
     {
     public:
         PlaybackToolbarIcon Icon {PlaybackToolbarIcon::Play};
-        UIColor Color {0.94f, 0.96f, 0.99f, 1.0f};
-        Vector2 IconSize {30.0f, 22.0f};
+        ZSlate::UIColor Color {0.94f, 0.96f, 0.99f, 1.0f};
+        ZSlate::Vector2 IconSize {30.0f, 22.0f};
 
-        Vector2 ComputeDesiredSize() const override { return IconSize; }
+        ZSlate::Vector2 ComputeDesiredSize() const override { return IconSize; }
 
         void OnPaint(const ZSlate::FPaintContext& ctx, const ZSlate::FGeometry& geom) const override
         {
             if (ctx.Renderer == nullptr)
                 return;
 
-            const UIRect r = geom.ToRect();
-            const float w = r.w;  // ZSlate::UIRect uses .w/.h (not .width/.height)
+            const ZSlate::UIRect r = geom.ToRect();
+            const float w = r.w;
             const float h = r.h;
             const float cx = r.x + w * 0.5f;
             const float cy = r.y + h * 0.5f;
@@ -65,16 +65,16 @@ namespace
                 {
                     const float tw = w * 0.34f;
                     const float th = h * 0.52f;
-                    const Vector2 pts[3] = {Vector2(cx - tw * 0.40f, cy - th * 0.60f),
-                                            Vector2(cx - tw * 0.40f, cy + th * 0.60f),
-                                            Vector2(cx + tw * 0.72f, cy)};
+                    const ZSlate::Vector2 pts[3] = {ZSlate::Vector2(cx - tw * 0.40f, cy - th * 0.60f),
+                                            ZSlate::Vector2(cx - tw * 0.40f, cy + th * 0.60f),
+                                            ZSlate::Vector2(cx + tw * 0.72f, cy)};
                     ctx.Renderer->drawConvexPoly(pts, 3, Color);
                     break;
                 }
                 case PlaybackToolbarIcon::Stop:
                 {
                     const float he = std::min(w, h) * 0.23f;
-                    ctx.Renderer->drawQuad(UIRect(cx - he, cy - he, he * 2.0f, he * 2.0f), Color);
+                    ctx.Renderer->drawQuad(ZSlate::UIRect(cx - he, cy - he, he * 2.0f, he * 2.0f), Color);
                     break;
                 }
                 case PlaybackToolbarIcon::Pause:
@@ -82,8 +82,8 @@ namespace
                     const float bhw = w * 0.055f;
                     const float bhh = h * 0.28f;
                     const float bo = w * 0.12f;
-                    ctx.Renderer->drawQuad(UIRect(cx - bo - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
-                    ctx.Renderer->drawQuad(UIRect(cx + bo - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
+                    ctx.Renderer->drawQuad(ZSlate::UIRect(cx - bo - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
+                    ctx.Renderer->drawQuad(ZSlate::UIRect(cx + bo - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
                     break;
                 }
                 case PlaybackToolbarIcon::Step:
@@ -91,13 +91,13 @@ namespace
                     const float bhw = w * 0.032f;
                     const float bhh = h * 0.28f;
                     const float bx = cx - w * 0.17f;
-                    ctx.Renderer->drawQuad(UIRect(bx - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
+                    ctx.Renderer->drawQuad(ZSlate::UIRect(bx - bhw, cy - bhh, bhw * 2.0f, bhh * 2.0f), Color);
 
                     const float tw = w * 0.28f;
                     const float th = h * 0.50f;
-                    const Vector2 pts[3] = {Vector2(cx - tw * 0.10f, cy - th * 0.60f),
-                                            Vector2(cx - tw * 0.10f, cy + th * 0.60f),
-                                            Vector2(cx + tw * 0.80f, cy)};
+                    const ZSlate::Vector2 pts[3] = {ZSlate::Vector2(cx - tw * 0.10f, cy - th * 0.60f),
+                                            ZSlate::Vector2(cx - tw * 0.10f, cy + th * 0.60f),
+                                            ZSlate::Vector2(cx + tw * 0.80f, cy)};
                     ctx.Renderer->drawConvexPoly(pts, 3, Color);
                     break;
                 }
@@ -227,15 +227,15 @@ void MenuController::RenderNativeMenuBar()
     // transitional r.ZSlate.NativeInput CVar was retired in P10c, so the old
     // ImGui::GetIO() fallback was dead and is gone).
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const Vector2 win_pos = host.GetDisplayPos();
-    const Vector2 win_size = host.GetDisplaySize();
+    const auto win_pos = host.GetDisplayPos();
+    const auto win_size = host.GetDisplaySize();
     // Use ZSlate::UIRect (x,y,w,h) to match ZSlateEditorMenuBar::Render signature.
     const ZSlate::UIRect bar_rect(win_pos.x, win_pos.y, win_size.x, MenuController::kMainMenuBarHeight);
     const ZSlate::UIRect viewport_rect(win_pos.x, win_pos.y, win_size.x, win_size.y);
-    const Vector2 mouse = host.GetPointerPos();
+    const auto mouse = host.GetPointerPos();
     const bool left_down = host.IsLeftDown();
 
-    m_ZSlateMenuBar.Render(renderer, bar_rect, ui_scale, mouse, left_down, viewport_rect);
+    m_ZSlateMenuBar.Render(overlay, bar_rect, ui_scale, mouse, left_down, viewport_rect);
 
     // P10b: while a dropdown is open, register a full-viewport Foreground surface so
     // native panels under it report not-hovered (HoveredSurface occlusion). This is
@@ -291,7 +291,7 @@ void MenuController::BuildPlaybackToolbar(bool playing, bool paused, float scale
     auto make_btn = [&](PlaybackToolbarIcon icon, bool enabled, bool toggled,
                         std::function<void()> on_click) -> std::shared_ptr<SWidget> {
         auto b = std::make_shared<SButton>();
-        b->Padding = FMargin(0.0f);
+        b->Padding = ZSlate::FMargin(0.0f);
         b->HAlign = EHorizontalAlignment::Center;
         b->VAlign = EVerticalAlignment::Center;
         if (!enabled)
@@ -362,8 +362,8 @@ void MenuController::DrawPlaybackToolbarNative()
     // P11d: strip geometry from native display metrics (= main viewport pos/size),
     // not the ImGui "Editor menu" host window (GetWindowPos / GetWindowSize).
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const Vector2 win_pos = host.GetDisplayPos();
-    const Vector2 win_size = host.GetDisplaySize();
+    const auto win_pos = host.GetDisplayPos();
+    const auto win_size = host.GetDisplaySize();
     const float strip_min_y = win_pos.y + MenuController::kMainMenuBarHeight;
     const float strip_h = MenuController::kPlaybackToolbarHeight;
 
@@ -373,38 +373,39 @@ void MenuController::DrawPlaybackToolbarNative()
     // overlaps panels; it is inserted before them so it sorts behind harmlessly.
     overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
 
-    const UIRect strip_rect(win_pos.x, strip_min_y, win_size.x, strip_h);
+    // BatchedUIRenderer expects ::UIRect (x,y,width,height)
+    const ::UIRect strip_rect(win_pos.x, strip_min_y, win_size.x, strip_h);
     renderer.pushClipRect(strip_rect, true);
 
     // Strip background + 1px bottom separator (mirrors the ImGui fallback).
-    renderer.drawQuad(strip_rect, UIColor(26.0f / 255.0f, 27.0f / 255.0f, 31.0f / 255.0f, 1.0f));
-    renderer.drawQuad(UIRect(win_pos.x, strip_min_y + strip_h - 1.0f, win_size.x, 1.0f),
-                      UIColor(52.0f / 255.0f, 56.0f / 255.0f, 62.0f / 255.0f, 1.0f));
+    renderer.drawQuad(strip_rect, ::UIColor(26.0f / 255.0f, 27.0f / 255.0f, 31.0f / 255.0f, 1.0f));
+    renderer.drawQuad(::UIRect(win_pos.x, strip_min_y + strip_h - 1.0f, win_size.x, 1.0f),
+                      ::UIColor(52.0f / 255.0f, 56.0f / 255.0f, 62.0f / 255.0f, 1.0f));
 
     m_PlaybackToolbar->CacheDesiredSize();
-    const Vector2 size = m_PlaybackToolbar->GetDesiredSize();
+    const auto size = m_PlaybackToolbar->GetDesiredSize();
     const float tx = win_pos.x + std::max(0.0f, (win_size.x - size.x) * 0.5f);
     const float ty = strip_min_y + std::max(0.0f, (strip_h - size.y) * 0.5f);
 
     // Panel plate behind the buttons.
     const float pad = 5.0f * ui_scale;
-    renderer.drawQuad(UIRect(tx - pad, ty - pad, size.x + pad * 2.0f, size.y + pad * 2.0f),
-                      UIColor(46.0f / 255.0f, 48.0f / 255.0f, 52.0f / 255.0f, 0.96f));
+    renderer.drawQuad(::UIRect(tx - pad, ty - pad, size.x + pad * 2.0f, size.y + pad * 2.0f),
+                      ::UIColor(46.0f / 255.0f, 48.0f / 255.0f, 52.0f / 255.0f, 0.96f));
 
     ZSlate::FPaintContext ctx;
-    ctx.Renderer = &renderer;
+    ctx.Renderer = &overlay;  // ZSlateEditorOverlay IS an ISlateRenderer
     ctx.LayerId = 0;
-    m_PlaybackToolbar->Paint(ctx, ZSlate::FGeometry(Vector2(tx, ty), size));
+    m_PlaybackToolbar->Paint(ctx, ZSlate::FGeometry(ZSlate::Vector2(tx, ty), size));
 
     renderer.popClipRect();
 
     // Route input. A dropdown being open swallows toolbar input (a Foreground
     // surface owns the mouse while open). P11a: native mouse source from the
     // GLFW-backed EditorSlateHost (the r.ZSlate.NativeInput fallback was retired).
-    const Vector2 mouse = host.GetPointerPos();
+    const auto mouse = host.GetPointerPos();
     const bool menu_open = m_ZSlateMenuBar.IsOpen();
-    const bool over_strip = !menu_open && mouse.x >= strip_rect.x && mouse.x <= strip_rect.x + strip_rect.w &&
-                            mouse.y >= strip_rect.y && mouse.y <= strip_rect.y + strip_rect.h;
+    const bool over_strip = !menu_open && mouse.x >= strip_rect.x && mouse.x <= strip_rect.x + strip_rect.width &&
+                            mouse.y >= strip_rect.y && mouse.y <= strip_rect.y + strip_rect.height;
     const bool left_down = !menu_open && host.IsLeftDown();
     m_PlaybackInput.ProcessMouse(m_PlaybackToolbar, mouse, over_strip, left_down, 0.0f);
 }

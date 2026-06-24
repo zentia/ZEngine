@@ -29,6 +29,29 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/[Pp]latform/([Ww]indows|[Mm]ac[Oo][
 # and must NOT be glommed into the ZEditor binary. They build via their own
 # guarded targets (see add_subdirectory below).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/AssetPipeline/.*/[Tt]est/.*")
+
+# ---- ZSlate-heavy editor windows (P2) ----
+# Excluded until UIRenderer->ISlateRenderer migration and ZSlate::/::type bridging
+# is complete. MenuController.cpp and FloatingPanelManager.cpp are kept.
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateAnimationWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateBlueprintWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateConsoleWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateContentBrowserWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateDemoWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateGameWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateHierarchyWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateInsightsWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateInspectorWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateMaterialEditorWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlatePackageManagerWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlatePreviewWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateSceneWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateTimelineWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateUMGDesignerWindow/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/InspectorWindow/InspectorShaderInspector.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/DefaultLayout/.*")
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/FloatingPanelManager\\.cpp")
+
 file(GLOB EDITOR_RESOURCE CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/resource/ZEditor.rc)
 
 # Collect platform-specific source files if platform directory exists

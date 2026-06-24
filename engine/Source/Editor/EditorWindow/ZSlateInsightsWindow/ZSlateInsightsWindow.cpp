@@ -25,17 +25,17 @@ using namespace ZSlate;
 
 namespace
 {
-const UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
-const UIColor kLabelColor(0.82f, 0.84f, 0.88f, 1.0f);
-const UIColor kDimColor(0.58f, 0.60f, 0.66f, 1.0f);
+const ZSlate::UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
+const ZSlate::UIColor kLabelColor(0.82f, 0.84f, 0.88f, 1.0f);
+const ZSlate::UIColor kDimColor(0.58f, 0.60f, 0.66f, 1.0f);
 
-std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const UIColor& color)
+std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color)
 {
     auto t = std::make_shared<STextBlock>();
     t->Text = text;
     t->FontSize = font_size;
     t->Color = color;
-    t->Alignment = TextAnchor::MiddleLeft;
+    t->Alignment = ZSlate::TextAnchor::MiddleLeft;
     return t;
 }
 }  // namespace
@@ -53,7 +53,7 @@ void ZSlateInsightsWindow::BuildLayout(float scale)
 
     auto root = std::make_shared<SBorder>();
     root->BackgroundColor = kPanelColor;
-    root->Padding = FMargin(4.0f * scale, 4.0f * scale);
+    root->Padding = ZSlate::FMargin(4.0f * scale, 4.0f * scale);
     root->HAlign = EHorizontalAlignment::Fill;
     root->VAlign = EVerticalAlignment::Fill;
 
@@ -63,47 +63,47 @@ void ZSlateInsightsWindow::BuildLayout(float scale)
     auto bar = std::make_shared<SHorizontalBox>();
 
     auto pause_btn = std::make_shared<SButton>();
-    pause_btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+    pause_btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
     m_PauseLabel = MakeText("Pause", font, kLabelColor);
     pause_btn->SetContent(m_PauseLabel);
     pause_btn->OnClicked = [this]() { m_Paused = !m_Paused; };
     bar->AddSlot(pause_btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
 
     auto clear_btn = std::make_shared<SButton>();
-    clear_btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+    clear_btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
     clear_btn->SetContent(MakeText("Clear", font, kLabelColor));
     clear_btn->OnClicked = [this]() { ZEngine::Insights::InsightsTrace::Get().Clear(); };
     bar->AddSlot(clear_btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
 
     auto fit_btn = std::make_shared<SButton>();
-    fit_btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+    fit_btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
     fit_btn->SetContent(MakeText("Fit", font, kLabelColor));
     fit_btn->OnClicked = [this]() { m_PendingFit = true; };
     bar->AddSlot(fit_btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
 
     auto save_btn = std::make_shared<SButton>();
-    save_btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+    save_btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
     save_btn->SetContent(MakeText("Save & View", font, kLabelColor));
     save_btn->OnClicked = [this]() { SaveAndOpenTrace(); };
     bar->AddSlot(save_btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(10.0f * scale, 0.0f))).AutoSize();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(10.0f * scale, 0.0f))).AutoSize();
 
     m_StatusText = MakeText("", font, kDimColor);
     bar->AddSlot(m_StatusText).Fill().SetVAlign(EVerticalAlignment::Center);
 
-    column->AddSlot(bar).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+    column->AddSlot(bar).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
     // ---- Timeline ----------------------------------------------------------
     auto timeline_border = std::make_shared<SBorder>();
-    timeline_border->BackgroundColor = UIColor(0.07f, 0.07f, 0.09f, 1.0f);
-    timeline_border->Padding = FMargin(0.0f, 0.0f);
+    timeline_border->BackgroundColor = ZSlate::UIColor(0.07f, 0.07f, 0.09f, 1.0f);
+    timeline_border->Padding = ZSlate::FMargin(0.0f, 0.0f);
     timeline_border->HAlign = EHorizontalAlignment::Fill;
     timeline_border->VAlign = EVerticalAlignment::Fill;
     m_Timeline = std::make_shared<SInsightsTimeline>();
@@ -140,8 +140,8 @@ void ZSlateInsightsWindow::OnGUI()
 
     // ---- Geometry ----------------------------------------------------------
     const float* native_rect = NativeRect();
-    Vector2 pos(native_rect[0], native_rect[1]);
-    Vector2 avail(native_rect[2], native_rect[3]);
+    ZSlate::Vector2 pos(native_rect[0], native_rect[1]);
+    ZSlate::Vector2 avail(native_rect[2], native_rect[3]);
     if (avail.x < 1.0f)
         avail.x = 1.0f;
     if (avail.y < 1.0f)
@@ -173,8 +173,8 @@ void ZSlateInsightsWindow::OnGUI()
     }
 
     // ---- Paint -------------------------------------------------------------
-    const UIRect region(pos.x, pos.y, avail.x, avail.y);
-    const FGeometry geometry(Vector2(pos.x, pos.y), Vector2(avail.x, avail.y));
+    const ZSlate::UIRect region(pos.x, pos.y, avail.x, avail.y);
+    const FGeometry geometry(ZSlate::Vector2(pos.x, pos.y), ZSlate::Vector2(avail.x, avail.y));
 
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
     {
@@ -193,7 +193,7 @@ void ZSlateInsightsWindow::OnGUI()
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
     host.BeginSurface(surface_id, region, ZSlate::ESurfaceLayer::Panels);
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool over_canvas = host.IsSurfaceHovered(surface_id, mouse);
     const bool left_down = host.IsLeftDown();
     const float wheel = over_canvas ? host.GetWheelDelta() : 0.0f;

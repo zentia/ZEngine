@@ -28,12 +28,12 @@ using namespace ZSlate;
 
 namespace
 {
-const UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
-const UIColor kRowHeaderColor(0.78f, 0.80f, 0.85f, 1.0f);
-const UIColor kValueColor(0.86f, 0.88f, 0.92f, 1.0f);
-const UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
-const UIColor kErrorColor(1.0f, 0.40f, 0.40f, 1.0f);
-const UIColor kLabelColor(0.82f, 0.84f, 0.88f, 1.0f);
+const ZSlate::UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
+const ZSlate::UIColor kRowHeaderColor(0.78f, 0.80f, 0.85f, 1.0f);
+const ZSlate::UIColor kValueColor(0.86f, 0.88f, 0.92f, 1.0f);
+const ZSlate::UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
+const ZSlate::UIColor kErrorColor(1.0f, 0.40f, 0.40f, 1.0f);
+const ZSlate::UIColor kLabelColor(0.82f, 0.84f, 0.88f, 1.0f);
 
 // Column widths (unscaled px) shared between the header row and data rows so the
 // columns line up; the Path column fills the remaining width.
@@ -42,18 +42,18 @@ constexpr float kColVersion = 80.0f;
 constexpr float kColSource = 90.0f;
 constexpr float kColDepth = 50.0f;
 
-std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const UIColor& color)
+std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color)
 {
     auto t = std::make_shared<STextBlock>();
     t->Text = text;
     t->FontSize = font_size;
     t->Color = color;
-    t->Alignment = TextAnchor::MiddleLeft;
+    t->Alignment = ZSlate::TextAnchor::MiddleLeft;
     return t;
 }
 
 // A fixed-width column cell wrapping a text block.
-std::shared_ptr<SBox> MakeCell(const std::string& text, float width, float font, const UIColor& color)
+std::shared_ptr<SBox> MakeCell(const std::string& text, float width, float font, const ZSlate::UIColor& color)
 {
     auto box = std::make_shared<SBox>();
     box->WidthOverride = width;
@@ -69,7 +69,7 @@ std::shared_ptr<SHorizontalBox> MakeRow(const std::string& name,
                                         const std::string& depth,
                                         const std::string& path,
                                         float scale,
-                                        const UIColor& color)
+                                        const ZSlate::UIColor& color)
 {
     const float font = 13.0f * scale;
     auto row = std::make_shared<SHorizontalBox>();
@@ -160,7 +160,7 @@ void ZSlatePackageManagerWindow::BuildLayout(float scale)
 
     auto root = std::make_shared<SBorder>();
     root->BackgroundColor = kPanelColor;
-    root->Padding = FMargin(6.0f * scale, 6.0f * scale);
+    root->Padding = ZSlate::FMargin(6.0f * scale, 6.0f * scale);
     root->HAlign = EHorizontalAlignment::Fill;
     root->VAlign = EVerticalAlignment::Fill;
 
@@ -171,11 +171,11 @@ void ZSlatePackageManagerWindow::BuildLayout(float scale)
 
     auto make_button = [&](const char* label, std::function<void()> on_click) {
         auto btn = std::make_shared<SButton>();
-        btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+        btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
         btn->SetContent(MakeText(label, font, kLabelColor));
         btn->OnClicked = std::move(on_click);
         toolbar->AddSlot(btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
-        toolbar->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+        toolbar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
     };
 
     make_button("Re-resolve", [this]() {
@@ -205,24 +205,24 @@ void ZSlatePackageManagerWindow::BuildLayout(float scale)
     m_ErrorText = MakeText("", font, kErrorColor);
     toolbar->AddSlot(m_ErrorText).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
 
-    column->AddSlot(toolbar).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+    column->AddSlot(toolbar).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
     // ---- Manifest / lock paths ----------------------------------------------
     auto manifest_row = std::make_shared<SHorizontalBox>();
     manifest_row->AddSlot(MakeText("Project manifest:", font, kDimColor))
         .AutoSize()
         .SetVAlign(EVerticalAlignment::Center);
-    manifest_row->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+    manifest_row->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
     m_ManifestText = MakeText("(none)", font, kValueColor);
     manifest_row->AddSlot(m_ManifestText).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
-    column->AddSlot(manifest_row).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
+    column->AddSlot(manifest_row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
 
     auto lock_row = std::make_shared<SHorizontalBox>();
     lock_row->AddSlot(MakeText("Lock file:", font, kDimColor)).AutoSize().SetVAlign(EVerticalAlignment::Center);
-    lock_row->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+    lock_row->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
     m_LockText = MakeText("(not generated yet)", font, kValueColor);
     lock_row->AddSlot(m_LockText).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
-    column->AddSlot(lock_row).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+    column->AddSlot(lock_row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
     // ---- Filter + sort ------------------------------------------------------
     auto filter_row = std::make_shared<SHorizontalBox>();
@@ -236,7 +236,7 @@ void ZSlatePackageManagerWindow::BuildLayout(float scale)
     };
     filter_row->AddSlot(m_FilterBox).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
 
-    filter_row->AddSlot(std::make_shared<SSpacer>(Vector2(8.0f * scale, 0.0f))).AutoSize();
+    filter_row->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(8.0f * scale, 0.0f))).AutoSize();
     auto sort_cb = std::make_shared<SCheckBox>();
     sort_cb->Checked = m_SortByName;
     sort_cb->BoxSize = 16.0f * scale;
@@ -245,20 +245,20 @@ void ZSlatePackageManagerWindow::BuildLayout(float scale)
         m_TableDirty = true;
     };
     filter_row->AddSlot(sort_cb).AutoSize().SetVAlign(EVerticalAlignment::Center);
-    filter_row->AddSlot(std::make_shared<SSpacer>(Vector2(3.0f * scale, 0.0f))).AutoSize();
+    filter_row->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(3.0f * scale, 0.0f))).AutoSize();
     filter_row->AddSlot(MakeText("Sort by name", font, kLabelColor)).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
-    column->AddSlot(filter_row).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+    column->AddSlot(filter_row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
     // ---- Column header (fixed above the scrolling rows) ---------------------
     column->AddSlot(MakeRow("Name", "Version", "Source", "Depth", "Path", scale, kRowHeaderColor))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
 
     // ---- Package rows -------------------------------------------------------
     auto list_border = std::make_shared<SBorder>();
-    list_border->BackgroundColor = UIColor(0.07f, 0.07f, 0.09f, 1.0f);
-    list_border->Padding = FMargin(4.0f * scale, 4.0f * scale);
+    list_border->BackgroundColor = ZSlate::UIColor(0.07f, 0.07f, 0.09f, 1.0f);
+    list_border->Padding = ZSlate::FMargin(4.0f * scale, 4.0f * scale);
     list_border->HAlign = EHorizontalAlignment::Fill;
     list_border->VAlign = EVerticalAlignment::Fill;
 
@@ -328,15 +328,15 @@ void ZSlatePackageManagerWindow::OnGUI()
     // P10c: native-host panels source their leaf rect from EditorView::NativeRect()
     // (no ImGui::Begin / item to probe); otherwise use the ImGui content region.
     const float* native_rect = NativeRect();
-    Vector2 pos(native_rect[0], native_rect[1]);
-    Vector2 avail(native_rect[2], native_rect[3]);
+    ZSlate::Vector2 pos(native_rect[0], native_rect[1]);
+    ZSlate::Vector2 avail(native_rect[2], native_rect[3]);
     if (avail.x < 1.0f)
         avail.x = 1.0f;
     if (avail.y < 1.0f)
         avail.y = 1.0f;
 
-    const UIRect region(pos.x, pos.y, avail.x, avail.y);
-    const FGeometry geometry(Vector2(pos.x, pos.y), Vector2(avail.x, avail.y));
+    const ZSlate::UIRect region(pos.x, pos.y, avail.x, avail.y);
+    const FGeometry geometry(ZSlate::Vector2(pos.x, pos.y), ZSlate::Vector2(avail.x, avail.y));
 
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
     {
@@ -356,7 +356,7 @@ void ZSlatePackageManagerWindow::OnGUI()
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
     host.BeginSurface(surface_id, region, ZSlate::ESurfaceLayer::Panels);
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool over_canvas = host.IsSurfaceHovered(surface_id, mouse);
     const bool left_down = host.IsLeftDown();
     const float wheel = over_canvas ? host.GetWheelDelta() : 0.0f;

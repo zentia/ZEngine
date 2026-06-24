@@ -76,19 +76,19 @@ using ZSlateInspectorDetail::FieldKind;
 
 namespace
 {
-    const UIColor kLabelColor(0.74f, 0.78f, 0.84f, 1.0f);
-    const UIColor kHeaderColor(0.92f, 0.93f, 0.97f, 1.0f);
-    const UIColor kComponentHeaderColor(0.62f, 0.78f, 0.96f, 1.0f);
-    const UIColor kValueColor(0.85f, 0.87f, 0.92f, 1.0f);
-    const UIColor kDimColor(0.50f, 0.52f, 0.58f, 1.0f);
+    const ZSlate::UIColor kLabelColor(0.74f, 0.78f, 0.84f, 1.0f);
+    const ZSlate::UIColor kHeaderColor(0.92f, 0.93f, 0.97f, 1.0f);
+    const ZSlate::UIColor kComponentHeaderColor(0.62f, 0.78f, 0.96f, 1.0f);
+    const ZSlate::UIColor kValueColor(0.85f, 0.87f, 0.92f, 1.0f);
+    const ZSlate::UIColor kDimColor(0.50f, 0.52f, 0.58f, 1.0f);
 
-    std::shared_ptr<STextBlock> MakeText(const char* text, float font_size, const UIColor& color)
+    std::shared_ptr<STextBlock> MakeText(const char* text, float font_size, const ZSlate::UIColor& color)
     {
         auto t = std::make_shared<STextBlock>();
         t->Text = text;
         t->FontSize = font_size;
         t->Color = color;
-        t->Alignment = TextAnchor::MiddleLeft;
+        t->Alignment = ZSlate::TextAnchor::MiddleLeft;
         return t;
     }
 
@@ -488,7 +488,7 @@ namespace
             .AutoSize()
             .SetVAlign(EVerticalAlignment::Center);
         row->AddSlot(content).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
-        column->AddSlot(row).AutoSize().SetPadding(FMargin(depth * 12.0f * scale, 0.0f, 0.0f, 4.0f * scale));
+        column->AddSlot(row).AutoSize().SetPadding(ZSlate::FMargin(depth * 12.0f * scale, 0.0f, 0.0f, 4.0f * scale));
     }
 
     std::shared_ptr<SEditableTextBox> MakeScalarBox(FieldKind kind, size_t comp_index, uint32_t offset, float scale)
@@ -496,7 +496,7 @@ namespace
         auto f = std::make_shared<SEditableTextBox>();
         f->FontSize = 14.0f * scale;
         f->MinWidth = 60.0f * scale;
-        f->Padding = FMargin(6.0f * scale, 3.0f * scale);
+        f->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
         f->OnTextCommitted = [kind, comp_index, offset](const std::string& s) {
             Component* c = ResolveSelectedComponent(comp_index);
             if (c == nullptr)
@@ -563,13 +563,13 @@ namespace
                         auto box = std::make_shared<SEditableTextBox>();
                         box->FontSize = 14.0f * scale;
                         box->MinWidth = 44.0f * scale;
-                        box->Padding = FMargin(6.0f * scale, 3.0f * scale);
+                        box->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
                         boxes[static_cast<size_t>(a)] = box;
 
                         axis_row->AddSlot(MakeText(axis_names[a], 13.0f * scale, kDimColor))
                             .AutoSize()
                             .SetVAlign(EVerticalAlignment::Center)
-                            .SetPadding(FMargin(a == 0 ? 0.0f : 6.0f * scale, 0.0f, 2.0f * scale, 0.0f));
+                            .SetPadding(ZSlate::FMargin(a == 0 ? 0.0f : 6.0f * scale, 0.0f, 2.0f * scale, 0.0f));
                         axis_row->AddSlot(box).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
                     }
                     // Raw pointers avoid a shared_ptr cycle (box -> lambda -> box).
@@ -677,7 +677,7 @@ namespace
         {
             column->AddSlot(MakeText(label.c_str(), 14.0f * scale, kLabelColor))
                 .AutoSize()
-                .SetPadding(FMargin(depth * 12.0f * scale, 4.0f * scale, 0.0f, 2.0f * scale));
+                .SetPadding(ZSlate::FMargin(depth * 12.0f * scale, 4.0f * scale, 0.0f, 2.0f * scale));
             if (depth < 8)
                 BuildFieldChildren(column, node, bindings, comp_index, scale, depth + 1);
             return;
@@ -749,7 +749,7 @@ namespace
         auto box = std::make_shared<SEditableTextBox>();
         box->FontSize = 14.0f * scale;
         box->MinWidth = 60.0f * scale;
-        box->Padding = FMargin(6.0f * scale, 3.0f * scale);
+        box->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
         return box;
     }
 
@@ -772,7 +772,7 @@ namespace
         {
             column->AddSlot(MakeText("No sub meshes assigned.", 13.0f * scale, kDimColor))
                 .AutoSize()
-                .SetPadding(FMargin(0.0f, 2.0f * scale, 0.0f, 0.0f));
+                .SetPadding(ZSlate::FMargin(0.0f, 2.0f * scale, 0.0f, 0.0f));
             return;
         }
 
@@ -781,7 +781,7 @@ namespace
             const std::string element_label = "Element " + std::to_string(s);
             column->AddSlot(MakeText(element_label.c_str(), 14.0f * scale, kLabelColor))
                 .AutoSize()
-                .SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 2.0f * scale));
+                .SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 2.0f * scale));
 
             // Mesh asset (editable string -> SetSubMeshes).
             auto mesh_box = MakeAssetBox(scale);
@@ -860,14 +860,14 @@ namespace
                     auto box = std::make_shared<SEditableTextBox>();
                     box->FontSize = 14.0f * scale;
                     box->MinWidth = 44.0f * scale;
-                    box->Padding = FMargin(6.0f * scale, 3.0f * scale);
+                    box->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
                     boxes[static_cast<size_t>(a)] = box;
                     out_raw[static_cast<size_t>(a)] = box.get();
 
                     axis_row->AddSlot(MakeText(axis_names[a], 13.0f * scale, kDimColor))
                         .AutoSize()
                         .SetVAlign(EVerticalAlignment::Center)
-                        .SetPadding(FMargin(a == 0 ? 0.0f : 6.0f * scale, 0.0f, 2.0f * scale, 0.0f));
+                        .SetPadding(ZSlate::FMargin(a == 0 ? 0.0f : 6.0f * scale, 0.0f, 2.0f * scale, 0.0f));
                     axis_row->AddSlot(box).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
                 }
                 SEditableTextBox* p0 = boxes[0].get();
@@ -995,11 +995,11 @@ namespace
         header_row->AddSlot(enable_check)
             .AutoSize()
             .SetVAlign(EVerticalAlignment::Center)
-            .SetPadding(FMargin(0.0f, 0.0f, 8.0f * scale, 0.0f));
+            .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 8.0f * scale, 0.0f));
 
         auto title = MakeText(header.c_str(), 16.0f * scale, kComponentHeaderColor);
         header_row->AddSlot(title).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
-        column->AddSlot(header_row).AutoSize().SetPadding(FMargin(0.0f, 12.0f * scale, 0.0f, 6.0f * scale));
+        column->AddSlot(header_row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 12.0f * scale, 0.0f, 6.0f * scale));
 
         ComponentEnableBinding enable_binding;
         enable_binding.component_index = comp_index;
@@ -1044,11 +1044,11 @@ void ZSlateInspectorWindow::BuildEmpty(float scale)
     m_Bindings.clear();
 
     auto msg = MakeText("Nothing selected", 16.0f * scale, kDimColor);
-    msg->Alignment = TextAnchor::MiddleCenter;
+    msg->Alignment = ZSlate::TextAnchor::MiddleCenter;
 
     auto border = std::make_shared<SBorder>();
-    border->BackgroundColor = UIColor(0.10f, 0.10f, 0.13f, 1.0f);
-    border->Padding = FMargin(16.0f * scale);
+    border->BackgroundColor = ZSlate::UIColor(0.10f, 0.10f, 0.13f, 1.0f);
+    border->Padding = ZSlate::FMargin(16.0f * scale);
     border->HAlign = EHorizontalAlignment::Fill;
     border->VAlign = EVerticalAlignment::Fill;
     border->SetContent(msg);
@@ -1066,7 +1066,7 @@ void ZSlateInspectorWindow::BuildFontAsset(const std::filesystem::path& asset_pa
     auto column = std::make_shared<SVerticalBox>();
     column->AddSlot(MakeText("Font", 20.0f * scale, kHeaderColor))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
 
     auto asset_manager = GET_SYSTEM(AssetManager);
     std::filesystem::path read_path = asset_path;
@@ -1089,7 +1089,7 @@ void ZSlateInspectorWindow::BuildFontAsset(const std::filesystem::path& asset_pa
         auto size_box = std::make_shared<SEditableTextBox>();
         size_box->FontSize = 14.0f * scale;
         size_box->MinWidth = 60.0f * scale;
-        size_box->Padding = FMargin(6.0f * scale, 3.0f * scale);
+        size_box->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
         size_box->Text = std::to_string(font->GetDefaultSize());
         size_box->OnTextCommitted = [path_str](const std::string& s) {
             const int v = static_cast<int>(std::strtol(s.c_str(), nullptr, 10));
@@ -1105,7 +1105,7 @@ void ZSlateInspectorWindow::BuildFontAsset(const std::filesystem::path& asset_pa
         AddFieldRow(column, "Default Size", size_box, 0, scale);
 
         auto reimport = std::make_shared<SButton>();
-        reimport->Padding = FMargin(10.0f * scale, 4.0f * scale);
+        reimport->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
         reimport->SetContent(MakeText("Reimport", 14.0f * scale, kValueColor));
         reimport->OnClicked = [path_str]() {
             if (auto editor_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
@@ -1113,15 +1113,15 @@ void ZSlateInspectorWindow::BuildFontAsset(const std::filesystem::path& asset_pa
         };
         auto reimport_row = std::make_shared<SHorizontalBox>();
         reimport_row->AddSlot(reimport).AutoSize();
-        column->AddSlot(reimport_row).AutoSize().SetPadding(FMargin(0.0f, 12.0f * scale, 0.0f, 0.0f));
+        column->AddSlot(reimport_row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 12.0f * scale, 0.0f, 0.0f));
     }
 
     auto scroll = std::make_shared<SScrollBox>();
     scroll->AddChild(column);
 
     auto border = std::make_shared<SBorder>();
-    border->BackgroundColor = UIColor(0.10f, 0.10f, 0.13f, 1.0f);
-    border->Padding = FMargin(16.0f * scale);
+    border->BackgroundColor = ZSlate::UIColor(0.10f, 0.10f, 0.13f, 1.0f);
+    border->Padding = ZSlate::FMargin(16.0f * scale);
     border->HAlign = EHorizontalAlignment::Fill;
     border->VAlign = EVerticalAlignment::Fill;
     border->SetContent(scroll);
@@ -1139,7 +1139,7 @@ void ZSlateInspectorWindow::BuildGenericAsset(const std::filesystem::path& asset
     auto column = std::make_shared<SVerticalBox>();
     column->AddSlot(MakeText("Asset", 20.0f * scale, kHeaderColor))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
 
     AddFieldRow(column, "Name",
                 MakeText(asset_path.stem().generic_string().c_str(), 14.0f * scale, kValueColor), 0, scale);
@@ -1150,14 +1150,14 @@ void ZSlateInspectorWindow::BuildGenericAsset(const std::filesystem::path& asset
         ->AddSlot(MakeText("This .zasset file could not be resolved to a supported runtime asset type.",
                            13.0f * scale, kDimColor))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 8.0f * scale, 0.0f, 0.0f));
+        .SetPadding(ZSlate::FMargin(0.0f, 8.0f * scale, 0.0f, 0.0f));
 
     auto scroll = std::make_shared<SScrollBox>();
     scroll->AddChild(column);
 
     auto border = std::make_shared<SBorder>();
-    border->BackgroundColor = UIColor(0.10f, 0.10f, 0.13f, 1.0f);
-    border->Padding = FMargin(16.0f * scale);
+    border->BackgroundColor = ZSlate::UIColor(0.10f, 0.10f, 0.13f, 1.0f);
+    border->Padding = ZSlate::FMargin(16.0f * scale);
     border->HAlign = EHorizontalAlignment::Fill;
     border->VAlign = EVerticalAlignment::Fill;
     border->SetContent(scroll);
@@ -1170,11 +1170,11 @@ std::shared_ptr<SWidget> ZSlateInspectorWindow::MakeComboButton(const std::strin
                                                                 float scale)
 {
     auto btn = std::make_shared<SButton>();
-    btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+    btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
     btn->HAlign = EHorizontalAlignment::Left;
     btn->SetContent(MakeText((current_label + "   v").c_str(), 14.0f * scale, kValueColor));
     btn->OnClicked = [this, scale, options = std::move(options), on_select = std::move(on_select)]() {
-        const Vector2 anchor = ZSlate::EditorSlateHost::Get().GetPointerPos();
+        const ZSlate::Vector2 anchor = ZSlate::EditorSlateHost::Get().GetPointerPos();
         m_Popup.Open(anchor, scale, [this, options, on_select](SMenu& menu, float s) {
             menu.MinWidth = 150.0f * s;
             for (size_t i = 0; i < options.size(); ++i)
@@ -1205,8 +1205,8 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
         auto scroll = std::make_shared<SScrollBox>();
         scroll->AddChild(col);
         auto border = std::make_shared<SBorder>();
-        border->BackgroundColor = UIColor(0.10f, 0.10f, 0.13f, 1.0f);
-        border->Padding = FMargin(16.0f * scale);
+        border->BackgroundColor = ZSlate::UIColor(0.10f, 0.10f, 0.13f, 1.0f);
+        border->Padding = ZSlate::FMargin(16.0f * scale);
         border->HAlign = EHorizontalAlignment::Fill;
         border->VAlign = EVerticalAlignment::Fill;
         border->SetContent(scroll);
@@ -1216,7 +1216,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
     auto column = std::make_shared<SVerticalBox>();
     column->AddSlot(MakeText("Texture Import Settings", 20.0f * scale, kHeaderColor))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
 
     auto editor_asset_mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
     if (editor_asset_mgr == nullptr)
@@ -1226,7 +1226,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
             .AutoSize();
         column->AddSlot(MakeText("Use the Preview window to view this texture.", 13.0f * scale, kDimColor))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
+            .SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
         wrap(column);
         return;
     }
@@ -1306,7 +1306,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
     {
         column->AddSlot(MakeText("Default settings apply when a platform has no override.", 12.0f * scale, kDimColor))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 2.0f * scale, 0.0f, 6.0f * scale));
+            .SetPadding(ZSlate::FMargin(0.0f, 2.0f * scale, 0.0f, 6.0f * scale));
     }
 
     const bool fields_read_only = !editing_default && !override_enabled;
@@ -1321,7 +1321,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
         const TextureImporterSettings::PlatformSettings eff = s_tex_settings.GetEffective(s_tex_target);
         column->AddSlot(MakeText("Using Default settings:", 12.0f * scale, kDimColor))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 2.0f * scale, 0.0f, 4.0f * scale));
+            .SetPadding(ZSlate::FMargin(0.0f, 2.0f * scale, 0.0f, 4.0f * scale));
         AddFieldRow(column, "Max Size", MakeText(std::to_string(eff.max_size).c_str(), 14.0f * scale, kDimColor), 0,
                     scale);
         AddFieldRow(column, "Format",
@@ -1411,7 +1411,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
             quality_row->AddSlot(value_text)
                 .AutoSize()
                 .SetVAlign(EVerticalAlignment::Center)
-                .SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+                .SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
             AddFieldRow(column, "Compression Quality", quality_row, 0, scale);
         }
 
@@ -1432,14 +1432,14 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
             column
                 ->AddSlot(MakeText(hint, 12.0f * scale, kDimColor))
                 .AutoSize()
-                .SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
+                .SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
         }
         if (editable->generate_mipmaps)
         {
             column
                 ->AddSlot(MakeText("Mip generation is saved but not applied on import yet.", 12.0f * scale, kDimColor))
                 .AutoSize()
-                .SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
+                .SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
         }
     }
 
@@ -1447,7 +1447,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
     {
         const std::string zasset_str = zasset_abs.generic_string();
         auto apply = std::make_shared<SButton>();
-        apply->Padding = FMargin(10.0f * scale, 4.0f * scale);
+        apply->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
         apply->SetContent(MakeText("Apply", 14.0f * scale, kValueColor));
         apply->OnClicked = [this, zasset_abs]() {
             if (auto mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager)))
@@ -1458,7 +1458,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
         };
 
         auto reimport = std::make_shared<SButton>();
-        reimport->Padding = FMargin(10.0f * scale, 4.0f * scale);
+        reimport->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
         reimport->SetContent(MakeText("Reimport", 14.0f * scale, kValueColor));
         reimport->OnClicked = [this, zasset_abs, zasset_str]() {
             auto mgr = dynamic_cast<EditorAssetManager*>(GET_SYSTEM(AssetManager));
@@ -1479,18 +1479,18 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
 
         auto button_row = std::make_shared<SHorizontalBox>();
         button_row->AddSlot(apply).AutoSize();
-        button_row->AddSlot(reimport).AutoSize().SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
-        column->AddSlot(button_row).AutoSize().SetPadding(FMargin(0.0f, 12.0f * scale, 0.0f, 0.0f));
+        button_row->AddSlot(reimport).AutoSize().SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+        column->AddSlot(button_row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 12.0f * scale, 0.0f, 0.0f));
     }
 
     if (!s_tex_status.empty())
         column->AddSlot(MakeText(s_tex_status.c_str(), 13.0f * scale, kValueColor))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 0.0f));
+            .SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 0.0f));
     if (s_tex_dirty)
-        column->AddSlot(MakeText("Unsaved import setting changes.", 13.0f * scale, UIColor(1.0f, 0.85f, 0.2f, 1.0f)))
+        column->AddSlot(MakeText("Unsaved import setting changes.", 13.0f * scale, ZSlate::UIColor(1.0f, 0.85f, 0.2f, 1.0f)))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
+            .SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
 
     // ASTC Preview button (Phase 6)
     {
@@ -1509,7 +1509,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
         if (is_astc)
         {
             auto preview_btn = std::make_shared<SButton>();
-            preview_btn->Padding = FMargin(10.0f * scale, 4.0f * scale);
+            preview_btn->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
             preview_btn->SetContent(MakeText("Preview Texture", 14.0f * scale, kValueColor));
             preview_btn->OnClicked = [this, asset_path]() {
                 // TODO: Open TexPreviewWindow
@@ -1535,8 +1535,8 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
         auto scroll = std::make_shared<SScrollBox>();
         scroll->AddChild(col);
         auto border = std::make_shared<SBorder>();
-        border->BackgroundColor = UIColor(0.10f, 0.10f, 0.13f, 1.0f);
-        border->Padding = FMargin(16.0f * scale);
+        border->BackgroundColor = ZSlate::UIColor(0.10f, 0.10f, 0.13f, 1.0f);
+        border->Padding = ZSlate::FMargin(16.0f * scale);
         border->HAlign = EHorizontalAlignment::Fill;
         border->VAlign = EVerticalAlignment::Fill;
         border->SetContent(scroll);
@@ -1546,7 +1546,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
     auto column = std::make_shared<SVerticalBox>();
     column->AddSlot(MakeText("Material", 20.0f * scale, kHeaderColor))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
 
     // Reload material when the selected asset changes. Editing mutates s_mat in
     // place; the user commits with Apply (see button row below).
@@ -1589,7 +1589,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
     {
         column->AddSlot(MakeText("Unable to load material asset.", 14.0f * scale, kDimColor))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 8.0f * scale, 0.0f, 0.0f));
+            .SetPadding(ZSlate::FMargin(0.0f, 8.0f * scale, 0.0f, 0.0f));
         wrap(column);
         return;
     }
@@ -1617,9 +1617,9 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
             ->AddSlot(MakeText((std::string("Shader '") + authoring_shader_name.c_str() +
                                 "' source not found. Select a valid shader below.")
                                    .c_str(),
-                               13.0f * scale, UIColor(1.0f, 0.45f, 0.35f, 1.0f)))
+                               13.0f * scale, ZSlate::UIColor(1.0f, 0.45f, 0.35f, 1.0f)))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 6.0f * scale));
+            .SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 6.0f * scale));
     }
 
     // Shader selector (combo over StandardLit + all project shaders).
@@ -1670,8 +1670,8 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                 row->AddSlot(MakeText(kw.c_str(), 13.0f * scale, kValueColor))
                     .AutoSize()
                     .SetVAlign(EVerticalAlignment::Center)
-                    .SetPadding(FMargin(6.0f * scale, 0.0f, 0.0f, 0.0f));
-                variant_box->AddSlot(row).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 3.0f * scale));
+                    .SetPadding(ZSlate::FMargin(6.0f * scale, 0.0f, 0.0f, 0.0f));
+                variant_box->AddSlot(row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 3.0f * scale));
             }
             if (!s_mat.m_EnabledShaderKeywords.empty())
             {
@@ -1680,10 +1680,10 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                                            .c_str(),
                                        12.0f * scale, kDimColor))
                     .AutoSize()
-                    .SetPadding(FMargin(0.0f, 2.0f * scale, 0.0f, 4.0f * scale));
+                    .SetPadding(ZSlate::FMargin(0.0f, 2.0f * scale, 0.0f, 4.0f * scale));
 
                 auto clear_btn = std::make_shared<SButton>();
-                clear_btn->Padding = FMargin(10.0f * scale, 3.0f * scale);
+                clear_btn->Padding = ZSlate::FMargin(10.0f * scale, 3.0f * scale);
                 clear_btn->SetContent(MakeText("Clear All Keywords", 13.0f * scale, kValueColor));
                 clear_btn->OnClicked = [this]() {
                     MatRef().ClearShaderKeywords();
@@ -1699,7 +1699,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
             area->FontSize = 15.0f * scale;
             area->HeaderHeight = 26.0f * scale;
             area->SetContent(variant_box);
-            column->AddSlot(area).AutoSize().SetPadding(FMargin(0.0f, 8.0f * scale, 0.0f, 4.0f * scale));
+            column->AddSlot(area).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 8.0f * scale, 0.0f, 4.0f * scale));
         }
     }
 
@@ -1720,7 +1720,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
 
     column->AddSlot(MakeText("Properties", 16.0f * scale, kLabelColor))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 10.0f * scale, 0.0f, 6.0f * scale));
+        .SetPadding(ZSlate::FMargin(0.0f, 10.0f * scale, 0.0f, 6.0f * scale));
 
     for (const MaterialInspectorRow& row : rows)
     {
@@ -1752,11 +1752,11 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                 area->Title = row.label;
                 area->Expanded = false;
                 area->ShowHeaderSwatch = true;
-                area->HeaderSwatchColor = UIColor(color_ptr->x, color_ptr->y, color_ptr->z, 1.0f);
+                area->HeaderSwatchColor = ZSlate::UIColor(color_ptr->x, color_ptr->y, color_ptr->z, 1.0f);
                 area->FontSize = 14.0f * scale;
                 area->HeaderHeight = 24.0f * scale;
                 area->SetContent(picker);
-                column->AddSlot(area).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+                column->AddSlot(area).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
                 break;
             }
             case MaterialInspectorRowKind::Float:
@@ -1802,7 +1802,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                 auto box = std::make_shared<SEditableTextBox>();
                 box->FontSize = 14.0f * scale;
                 box->MinWidth = 120.0f * scale;
-                box->Padding = FMargin(6.0f * scale, 3.0f * scale);
+                box->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
                 box->Text = Material::ResolveTextureAssetPath(*tex_ptr).c_str();
                 box->OnTextCommitted = [tex_ptr](const std::string& s) {
                     Material::AssignTextureFromAssetPath(*tex_ptr, s.c_str());
@@ -1819,7 +1819,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                 auto box = std::make_shared<SEditableTextBox>();
                 box->FontSize = 14.0f * scale;
                 box->MinWidth = 120.0f * scale;
-                box->Padding = FMargin(6.0f * scale, 3.0f * scale);
+                box->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
                 box->Text = str_ptr->c_str();
                 box->OnTextCommitted = [str_ptr](const std::string& s) {
                     str_ptr->assign(s.c_str());
@@ -1833,7 +1833,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
 
     {
         auto apply = std::make_shared<SButton>();
-        apply->Padding = FMargin(10.0f * scale, 4.0f * scale);
+        apply->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
         apply->SetContent(MakeText("Apply", 14.0f * scale, kValueColor));
         apply->OnClicked = [this]() {
             if (!s_mat_dirty)
@@ -1854,7 +1854,7 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
         };
 
         auto revert = std::make_shared<SButton>();
-        revert->Padding = FMargin(10.0f * scale, 4.0f * scale);
+        revert->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
         revert->SetContent(MakeText("Revert", 14.0f * scale, kValueColor));
         revert->OnClicked = [this]() {
             ReloadCachedMaterialFromDisk();
@@ -1864,21 +1864,21 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
 
         auto button_row = std::make_shared<SHorizontalBox>();
         button_row->AddSlot(apply).AutoSize();
-        button_row->AddSlot(revert).AutoSize().SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
-        column->AddSlot(button_row).AutoSize().SetPadding(FMargin(0.0f, 12.0f * scale, 0.0f, 0.0f));
+        button_row->AddSlot(revert).AutoSize().SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+        column->AddSlot(button_row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 12.0f * scale, 0.0f, 0.0f));
     }
 
     if (!s_mat_status.empty())
     {
         column->AddSlot(MakeText(s_mat_status.c_str(), 13.0f * scale, kValueColor))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 0.0f));
+            .SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 0.0f));
     }
     if (s_mat_dirty)
     {
-        column->AddSlot(MakeText("Unsaved material changes.", 13.0f * scale, UIColor(1.0f, 0.85f, 0.2f, 1.0f)))
+        column->AddSlot(MakeText("Unsaved material changes.", 13.0f * scale, ZSlate::UIColor(1.0f, 0.85f, 0.2f, 1.0f)))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
+            .SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
     }
 
     wrap(column);
@@ -1893,8 +1893,8 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
         auto scroll = std::make_shared<SScrollBox>();
         scroll->AddChild(col);
         auto border = std::make_shared<SBorder>();
-        border->BackgroundColor = UIColor(0.10f, 0.10f, 0.13f, 1.0f);
-        border->Padding = FMargin(16.0f * scale);
+        border->BackgroundColor = ZSlate::UIColor(0.10f, 0.10f, 0.13f, 1.0f);
+        border->Padding = ZSlate::FMargin(16.0f * scale);
         border->HAlign = EHorizontalAlignment::Fill;
         border->VAlign = EVerticalAlignment::Fill;
         border->SetContent(scroll);
@@ -1904,7 +1904,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
     auto column = std::make_shared<SVerticalBox>();
     column->AddSlot(MakeText("Data Table", 20.0f * scale, kHeaderColor))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
 
     auto asset_manager = GET_SYSTEM(AssetManager);
     auto object_manager = GET_SYSTEM(ObjectManager);
@@ -1922,13 +1922,13 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
     {
         AddFieldRow(column, "Path", MakeText(asset_path.generic_string().c_str(), 13.0f * scale, kDimColor), 0, scale);
         column->AddSlot(MakeText("Failed to load DataTable (the .zasset may be corrupt or stale).", 14.0f * scale,
-                                 UIColor(1.0f, 0.45f, 0.35f, 1.0f)))
+                                 ZSlate::UIColor(1.0f, 0.45f, 0.35f, 1.0f)))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 8.0f * scale, 0.0f, 0.0f));
+            .SetPadding(ZSlate::FMargin(0.0f, 8.0f * scale, 0.0f, 0.0f));
         column->AddSlot(MakeText("Edit the source CSV; the importer overwrites this file on save.", 13.0f * scale,
                                  kDimColor))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
+            .SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
         wrap(column);
         return;
     }
@@ -1975,7 +1975,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
     // Reimport / Open Source toolbar.
     {
         auto reimport = std::make_shared<SButton>();
-        reimport->Padding = FMargin(10.0f * scale, 4.0f * scale);
+        reimport->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
         reimport->SetContent(MakeText("Reimport", 14.0f * scale, kValueColor));
         reimport->OnClicked = [this, absolute_csv, csv_exists, is_xlsx_source]() {
             if (!csv_exists)
@@ -1997,7 +1997,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
 
 #ifdef _WIN32
         auto open_src = std::make_shared<SButton>();
-        open_src->Padding = FMargin(10.0f * scale, 4.0f * scale);
+        open_src->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
         open_src->SetContent(
             MakeText(is_xlsx_source ? "Open Source XLSX" : "Open Source CSV", 14.0f * scale, kValueColor));
         open_src->OnClicked = [absolute_csv, csv_exists]() {
@@ -2006,9 +2006,9 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
             const std::wstring wide = absolute_csv.wstring();
             ::ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         };
-        button_row->AddSlot(open_src).AutoSize().SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+        button_row->AddSlot(open_src).AutoSize().SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
 #endif
-        column->AddSlot(button_row).AutoSize().SetPadding(FMargin(0.0f, 10.0f * scale, 0.0f, 8.0f * scale));
+        column->AddSlot(button_row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 10.0f * scale, 0.0f, 8.0f * scale));
     }
 
     // (Re)load the CSV edit-session when the selected asset changes. XLSX
@@ -2041,7 +2041,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
         auto filter_box = std::make_shared<SEditableTextBox>();
         filter_box->FontSize = 14.0f * scale;
         filter_box->MinWidth = 200.0f * scale;
-        filter_box->Padding = FMargin(6.0f * scale, 3.0f * scale);
+        filter_box->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
         filter_box->Text = s_dt.filter;
         filter_box->OnTextCommitted = [this](const std::string& s) {
             s_dt.filter = s;
@@ -2099,7 +2099,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
             auto toolbar = std::make_shared<SHorizontalBox>();
 
             auto save = std::make_shared<SButton>();
-            save->Padding = FMargin(10.0f * scale, 4.0f * scale);
+            save->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
             save->SetContent(MakeText("Save to CSV", 14.0f * scale, can_save ? kValueColor : kDimColor));
             const std::filesystem::path csv_path = absolute_csv;
             save->OnClicked = [this, csv_path, can_save]() {
@@ -2123,7 +2123,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
             toolbar->AddSlot(save).AutoSize();
 
             auto discard = std::make_shared<SButton>();
-            discard->Padding = FMargin(10.0f * scale, 4.0f * scale);
+            discard->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
             discard->SetContent(MakeText("Discard", 14.0f * scale, s_dt.dirty ? kValueColor : kDimColor));
             const std::filesystem::path csv_path2 = absolute_csv;
             discard->OnClicked = [this, csv_path2]() {
@@ -2145,10 +2145,10 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
                 }
                 m_ForceRebuild = true;
             };
-            toolbar->AddSlot(discard).AutoSize().SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+            toolbar->AddSlot(discard).AutoSize().SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
 
             auto add_row = std::make_shared<SButton>();
-            add_row->Padding = FMargin(10.0f * scale, 4.0f * scale);
+            add_row->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
             add_row->SetContent(MakeText("Add Row", 14.0f * scale, s_dt.headers.empty() ? kDimColor : kValueColor));
             add_row->OnClicked = [this]() {
                 if (s_dt.headers.empty())
@@ -2168,26 +2168,26 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
                 s_dt.dirty = true;
                 m_ForceRebuild = true;
             };
-            toolbar->AddSlot(add_row).AutoSize().SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+            toolbar->AddSlot(add_row).AutoSize().SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
 
-            column->AddSlot(toolbar).AutoSize().SetPadding(FMargin(0.0f, 8.0f * scale, 0.0f, 4.0f * scale));
+            column->AddSlot(toolbar).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 8.0f * scale, 0.0f, 4.0f * scale));
         }
 
         if (s_dt.dirty)
-            column->AddSlot(MakeText("(unsaved edits)", 13.0f * scale, UIColor(1.0f, 0.85f, 0.2f, 1.0f)))
+            column->AddSlot(MakeText("(unsaved edits)", 13.0f * scale, ZSlate::UIColor(1.0f, 0.85f, 0.2f, 1.0f)))
                 .AutoSize()
-                .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
+                .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
         if (has_conflict)
             column
                 ->AddSlot(MakeText("ID conflicts (duplicate or blank). Save is blocked until resolved.", 13.0f * scale,
-                                   UIColor(1.0f, 0.35f, 0.35f, 1.0f)))
+                                   ZSlate::UIColor(1.0f, 0.35f, 0.35f, 1.0f)))
                 .AutoSize()
-                .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
+                .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
         if (!s_dt.last_error.empty())
             column->AddSlot(MakeText((std::string("Error: ") + s_dt.last_error.c_str()).c_str(), 13.0f * scale,
-                                     UIColor(1.0f, 0.4f, 0.4f, 1.0f)))
+                                     ZSlate::UIColor(1.0f, 0.4f, 0.4f, 1.0f)))
                 .AutoSize()
-                .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
+                .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 2.0f * scale));
 
         auto grid = std::make_shared<SVerticalBox>();
 
@@ -2199,7 +2199,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
         else
         {
             auto header = std::make_shared<SHorizontalBox>();
-            header->AddSlot(MakeText("#", 13.0f * scale, kLabelColor)).AutoSize().SetPadding(FMargin(0, 0, 6.0f * scale, 0));
+            header->AddSlot(MakeText("#", 13.0f * scale, kLabelColor)).AutoSize().SetPadding(ZSlate::FMargin(0, 0, 6.0f * scale, 0));
             // reserve a small fixed gutter the width of the per-row delete button + index
             for (size_t hc = 0; hc < s_dt.headers.size(); ++hc)
             {
@@ -2208,9 +2208,9 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
                 if (rc != nullptr)
                     label += rc->is_supported ? ("  (" + rc->type_string + ")") : ("  <" + rc->type_string + ">");
                 auto hb = MakeText(label.c_str(), 13.0f * scale, kLabelColor);
-                header->AddSlot(hb).AutoSize().SetPadding(FMargin(0, 0, 8.0f * scale, 0));
+                header->AddSlot(hb).AutoSize().SetPadding(ZSlate::FMargin(0, 0, 8.0f * scale, 0));
             }
-            grid->AddSlot(header).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+            grid->AddSlot(header).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
             for (size_t i = 0; i < s_dt.rows.size(); ++i)
             {
@@ -2230,8 +2230,8 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
 
                 // Per-row delete button (replaces the legacy multi-select model).
                 auto del = std::make_shared<SButton>();
-                del->Padding = FMargin(5.0f * scale, 1.0f * scale);
-                del->SetContent(MakeText("x", 13.0f * scale, UIColor(1.0f, 0.5f, 0.5f, 1.0f)));
+                del->Padding = ZSlate::FMargin(5.0f * scale, 1.0f * scale);
+                del->SetContent(MakeText("x", 13.0f * scale, ZSlate::UIColor(1.0f, 0.5f, 0.5f, 1.0f)));
                 const size_t row_index = i;
                 del->OnClicked = [this, row_index]() {
                     if (row_index < s_dt.rows.size())
@@ -2239,7 +2239,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
                     s_dt.dirty = true;
                     m_ForceRebuild = true;
                 };
-                row_box->AddSlot(del).AutoSize().SetPadding(FMargin(0, 0, 6.0f * scale, 0)).SetVAlign(EVerticalAlignment::Center);
+                row_box->AddSlot(del).AutoSize().SetPadding(ZSlate::FMargin(0, 0, 6.0f * scale, 0)).SetVAlign(EVerticalAlignment::Center);
 
                 for (size_t c = 0; c < row.size() && c < s_dt.headers.size(); ++c)
                 {
@@ -2273,7 +2273,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
                         auto tb = std::make_shared<SEditableTextBox>();
                         tb->FontSize = 13.0f * scale;
                         tb->MinWidth = cell_w;
-                        tb->Padding = FMargin(5.0f * scale, 2.0f * scale);
+                        tb->Padding = ZSlate::FMargin(5.0f * scale, 2.0f * scale);
                         tb->Text = cell->c_str();
                         tb->OnTextCommitted = [this, cell](const std::string& s) {
                             cell->assign(s.c_str());
@@ -2281,15 +2281,15 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
                         };
                         widget = tb;
                     }
-                    row_box->AddSlot(widget).AutoSize().SetPadding(FMargin(0, 0, 8.0f * scale, 0)).SetVAlign(EVerticalAlignment::Center);
+                    row_box->AddSlot(widget).AutoSize().SetPadding(ZSlate::FMargin(0, 0, 8.0f * scale, 0)).SetVAlign(EVerticalAlignment::Center);
                 }
-                grid->AddSlot(row_box).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 3.0f * scale));
+                grid->AddSlot(row_box).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 3.0f * scale));
             }
             if (s_dt.rows.empty())
                 grid->AddSlot(MakeText("(table is empty)", 13.0f * scale, kDimColor)).AutoSize();
         }
 
-        column->AddSlot(grid).AutoSize().SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 0.0f));
+        column->AddSlot(grid).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 0.0f));
     }
     else
     {
@@ -2297,18 +2297,18 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
         if (is_xlsx_source)
             column
                 ->AddSlot(MakeText("XLSX source: read-only in inspector. Edit in Excel and save -- the watcher reimports.",
-                                   13.0f * scale, UIColor(0.6f, 0.85f, 1.0f, 1.0f)))
+                                   13.0f * scale, ZSlate::UIColor(0.6f, 0.85f, 1.0f, 1.0f)))
                 .AutoSize()
-                .SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
+                .SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
         else if (!s_dt.last_error.empty())
             column->AddSlot(MakeText((std::string("Source CSV unavailable for editing: ") + s_dt.last_error.c_str()).c_str(),
-                                     13.0f * scale, UIColor(1.0f, 0.4f, 0.4f, 1.0f)))
+                                     13.0f * scale, ZSlate::UIColor(1.0f, 0.4f, 0.4f, 1.0f)))
                 .AutoSize()
-                .SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
+                .SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
         else if (!csv_exists)
             column->AddSlot(MakeText("Source CSV not found; rendering read-only memory view.", 13.0f * scale, kDimColor))
                 .AutoSize()
-                .SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
+                .SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
 
         const int row_size_bytes = static_cast<int>(table->rowSize());
         auto grid = std::make_shared<SVerticalBox>();
@@ -2319,16 +2319,16 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
         else
         {
             auto header = std::make_shared<SHorizontalBox>();
-            header->AddSlot(MakeText("#", 13.0f * scale, kLabelColor)).AutoSize().SetPadding(FMargin(0, 0, 8.0f * scale, 0));
+            header->AddSlot(MakeText("#", 13.0f * scale, kLabelColor)).AutoSize().SetPadding(ZSlate::FMargin(0, 0, 8.0f * scale, 0));
             for (const auto& col : columns)
             {
                 std::string label = col.name;
                 label += col.is_supported ? ("  (" + col.type_string + ")") : ("  <" + col.type_string + ">");
                 header->AddSlot(MakeText(label.c_str(), 13.0f * scale, kLabelColor))
                     .AutoSize()
-                    .SetPadding(FMargin(0, 0, 8.0f * scale, 0));
+                    .SetPadding(ZSlate::FMargin(0, 0, 8.0f * scale, 0));
             }
-            grid->AddSlot(header).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+            grid->AddSlot(header).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
             for (size_t i = 0; i < row_count; ++i)
             {
@@ -2348,7 +2348,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
                 auto row_box = std::make_shared<SHorizontalBox>();
                 row_box->AddSlot(MakeText(std::to_string(i).c_str(), 13.0f * scale, kDimColor))
                     .AutoSize()
-                    .SetPadding(FMargin(0, 0, 8.0f * scale, 0));
+                    .SetPadding(ZSlate::FMargin(0, 0, 8.0f * scale, 0));
                 for (const auto& col : columns)
                 {
                     std::string cell_text;
@@ -2360,14 +2360,14 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
                         cell_text = DTFormatCell(col, row_base + col.byte_offset);
                     row_box->AddSlot(MakeText(cell_text.c_str(), 13.0f * scale, kValueColor))
                         .AutoSize()
-                        .SetPadding(FMargin(0, 0, 8.0f * scale, 0));
+                        .SetPadding(ZSlate::FMargin(0, 0, 8.0f * scale, 0));
                 }
-                grid->AddSlot(row_box).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 3.0f * scale));
+                grid->AddSlot(row_box).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 3.0f * scale));
             }
             if (row_count == 0)
                 grid->AddSlot(MakeText("(table is empty)", 13.0f * scale, kDimColor)).AutoSize();
         }
-        column->AddSlot(grid).AutoSize().SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 0.0f));
+        column->AddSlot(grid).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 0.0f));
     }
 
     MemoryManager::DestroyObject(produced);
@@ -2392,7 +2392,7 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
         auto f = std::make_shared<SEditableTextBox>();
         f->FontSize = 14.0f * scale;
         f->MinWidth = 44.0f * scale;
-        f->Padding = FMargin(6.0f * scale, 3.0f * scale);
+        f->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
         f->OnTextCommitted = [this, which, axis](const std::string& s) {
             const float value = ParseFloat(s);
             auto go = EditorSelection::GetActiveGameObject().lock();
@@ -2438,7 +2438,7 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
             row->AddSlot(MakeText(axis_names[a], 13.0f * scale, kDimColor))
                 .AutoSize()
                 .SetVAlign(EVerticalAlignment::Center)
-                .SetPadding(FMargin(6.0f * scale, 0.0f, 2.0f * scale, 0.0f));
+                .SetPadding(ZSlate::FMargin(6.0f * scale, 0.0f, 2.0f * scale, 0.0f));
             fields[static_cast<size_t>(a)] = make_field(which, a);
             row->AddSlot(fields[static_cast<size_t>(a)]).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
         }
@@ -2464,7 +2464,7 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
     name_row->AddSlot(m_GoActiveCheck)
         .AutoSize()
         .SetVAlign(EVerticalAlignment::Center)
-        .SetPadding(FMargin(0.0f, 0.0f, 8.0f * scale, 0.0f));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 8.0f * scale, 0.0f));
     name_row->AddSlot(MakeLabelBox("Name", scale, 70.0f * scale)).AutoSize().SetVAlign(EVerticalAlignment::Center);
     m_NameLabel = MakeText("", 15.0f * scale, kValueColor);
     name_row->AddSlot(m_NameLabel).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
@@ -2472,14 +2472,14 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
     auto column = std::make_shared<SVerticalBox>();
     column->AddSlot(MakeText("Inspector (ZSlate)", 20.0f * scale, kHeaderColor))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
-    column->AddSlot(name_row).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 12.0f * scale));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 10.0f * scale));
+    column->AddSlot(name_row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 12.0f * scale));
     column->AddSlot(MakeText("Transform", 16.0f * scale, kComponentHeaderColor))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 6.0f * scale));
-    column->AddSlot(vec_row("Position", m_PositionFields, 0)).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 5.0f * scale));
-    column->AddSlot(vec_row("Rotation", m_RotationFields, 2)).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 5.0f * scale));
-    column->AddSlot(vec_row("Scale", m_ScaleFields, 1)).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 5.0f * scale));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 6.0f * scale));
+    column->AddSlot(vec_row("Position", m_PositionFields, 0)).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 5.0f * scale));
+    column->AddSlot(vec_row("Rotation", m_RotationFields, 2)).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 5.0f * scale));
+    column->AddSlot(vec_row("Scale", m_ScaleFields, 1)).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 5.0f * scale));
 
     // Generic sections for every other component.
     if (auto go = EditorSelection::GetActiveGameObject().lock())
@@ -2499,8 +2499,8 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
     scroll->AddChild(column);
 
     auto border = std::make_shared<SBorder>();
-    border->BackgroundColor = UIColor(0.10f, 0.10f, 0.13f, 1.0f);
-    border->Padding = FMargin(16.0f * scale);
+    border->BackgroundColor = ZSlate::UIColor(0.10f, 0.10f, 0.13f, 1.0f);
+    border->Padding = ZSlate::FMargin(16.0f * scale);
     border->HAlign = EHorizontalAlignment::Fill;
     border->VAlign = EVerticalAlignment::Fill;
     border->SetContent(scroll);
@@ -2712,15 +2712,15 @@ void ZSlateInspectorWindow::OnGUI()
     // before any panel OnGUI) guarantees an open window is in the dock tree, so the
     // leaf rect always comes from NativeRect().
     const float* native_rect = NativeRect();
-    Vector2 pos(native_rect[0], native_rect[1]);
-    Vector2 avail(native_rect[2], native_rect[3]);
+    ZSlate::Vector2 pos(native_rect[0], native_rect[1]);
+    ZSlate::Vector2 avail(native_rect[2], native_rect[3]);
     if (avail.x < 1.0f)
         avail.x = 1.0f;
     if (avail.y < 1.0f)
         avail.y = 1.0f;
 
-    const UIRect region(pos.x, pos.y, avail.x, avail.y);
-    const FGeometry geometry(Vector2(pos.x, pos.y), Vector2(avail.x, avail.y));
+    const ZSlate::UIRect region(pos.x, pos.y, avail.x, avail.y);
+    const FGeometry geometry(ZSlate::Vector2(pos.x, pos.y), ZSlate::Vector2(avail.x, avail.y));
 
     // P9: paint the widget tree into the shared BatchedUIRenderer (frame begun/ended by
     // ZSlateEditorOverlay around WindowUI::PreRender) with this panel's rect as a clip.
@@ -2747,7 +2747,7 @@ void ZSlateInspectorWindow::OnGUI()
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
     host.BeginSurface(surface_id, region, ZSlate::ESurfaceLayer::Panels);
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool over_canvas = host.IsSurfaceHovered(surface_id, mouse);
     const bool left_down = host.IsLeftDown();
     const float wheel = over_canvas ? host.GetWheelDelta() : 0.0f;
@@ -2758,7 +2758,7 @@ void ZSlateInspectorWindow::OnGUI()
         // foreground overlay so it can overflow the panel, and swallow tree input
         // this frame to avoid click-through. Mirrors ZSlateHierarchyWindow.
         // Clamp to the native display rect (== the editor's full-window viewport).
-        const UIRect viewport_rect(host.GetDisplayPos().x, host.GetDisplayPos().y,
+        const ZSlate::UIRect viewport_rect(host.GetDisplayPos().x, host.GetDisplayPos().y,
                                    host.GetDisplaySize().x, host.GetDisplaySize().y);
 
         {

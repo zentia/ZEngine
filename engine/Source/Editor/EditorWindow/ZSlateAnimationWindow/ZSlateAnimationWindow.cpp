@@ -20,35 +20,35 @@ using namespace ZSlate;
 
 namespace
 {
-const UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
-const UIColor kListBg(0.09f, 0.09f, 0.11f, 1.0f);
-const UIColor kCanvasBg(0.118f, 0.118f, 0.118f, 1.0f);
-const UIColor kRulerBg(0.157f, 0.157f, 0.157f, 1.0f);
-const UIColor kGrid(0.235f, 0.235f, 0.235f, 1.0f);
-const UIColor kSeparator(0.30f, 0.30f, 0.34f, 1.0f);
-const UIColor kLabelColor(0.85f, 0.86f, 0.90f, 1.0f);
-const UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
-const UIColor kWhite(1.0f, 1.0f, 1.0f, 1.0f);
-const UIColor kSelRowBg(0.20f, 0.30f, 0.45f, 1.0f);
-const UIColor kPlayhead(1.0f, 0.10f, 0.10f, 1.0f);
-const UIColor kKeyframe(1.0f, 0.78f, 0.0f, 1.0f);
-const UIColor kKeyframeSel(1.0f, 1.0f, 0.0f, 1.0f);
+const ZSlate::UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
+const ZSlate::UIColor kListBg(0.09f, 0.09f, 0.11f, 1.0f);
+const ZSlate::UIColor kCanvasBg(0.118f, 0.118f, 0.118f, 1.0f);
+const ZSlate::UIColor kRulerBg(0.157f, 0.157f, 0.157f, 1.0f);
+const ZSlate::UIColor kGrid(0.235f, 0.235f, 0.235f, 1.0f);
+const ZSlate::UIColor kSeparator(0.30f, 0.30f, 0.34f, 1.0f);
+const ZSlate::UIColor kLabelColor(0.85f, 0.86f, 0.90f, 1.0f);
+const ZSlate::UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
+const ZSlate::UIColor kWhite(1.0f, 1.0f, 1.0f, 1.0f);
+const ZSlate::UIColor kSelRowBg(0.20f, 0.30f, 0.45f, 1.0f);
+const ZSlate::UIColor kPlayhead(1.0f, 0.10f, 0.10f, 1.0f);
+const ZSlate::UIColor kKeyframe(1.0f, 0.78f, 0.0f, 1.0f);
+const ZSlate::UIColor kKeyframeSel(1.0f, 1.0f, 0.0f, 1.0f);
 
 constexpr float kRowH = 20.0f;  // unscaled property-list row height
 
-std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const UIColor& color)
+std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color)
 {
     auto t = std::make_shared<STextBlock>();
     t->Text = text;
     t->FontSize = font_size;
     t->Color = color;
-    t->Alignment = TextAnchor::MiddleLeft;
+    t->Alignment = ZSlate::TextAnchor::MiddleLeft;
     return t;
 }
 
 // Draw a straight line as a chain of short axis-aligned quads (the UIRenderer
 // has no native line primitive; works identically on both backends).
-void DrawLineQuads(UIRenderer& r, const Vector2& a, const Vector2& b, const UIColor& color, float thickness)
+void DrawLineQuads(UIRenderer& r, const ZSlate::Vector2& a, const ZSlate::Vector2& b, const ZSlate::UIColor& color, float thickness)
 {
     const float dx = b.x - a.x;
     const float dy = b.y - a.y;
@@ -60,7 +60,7 @@ void DrawLineQuads(UIRenderer& r, const Vector2& a, const Vector2& b, const UICo
         const float t = static_cast<float>(i) / static_cast<float>(steps);
         const float x = a.x + dx * t;
         const float y = a.y + dy * t;
-        r.drawQuad(UIRect(x - half, y - half, thickness, thickness), color);
+        r.drawQuad(ZSlate::UIRect(x - half, y - half, thickness, thickness), color);
     }
 }
 }  // namespace
@@ -80,16 +80,16 @@ void ZSlateAnimationWindow::BuildToolbar(float scale)
 
     auto root = std::make_shared<SBorder>();
     root->BackgroundColor = kPanelColor;
-    root->Padding = FMargin(6.0f * scale, 4.0f * scale);
+    root->Padding = ZSlate::FMargin(6.0f * scale, 4.0f * scale);
     root->HAlign = EHorizontalAlignment::Fill;
     root->VAlign = EVerticalAlignment::Top;
 
     auto bar = std::make_shared<SHorizontalBox>();
-    auto spacer = [&](float w) { bar->AddSlot(std::make_shared<SSpacer>(Vector2(w * scale, 0.0f))).AutoSize(); };
+    auto spacer = [&](float w) { bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(w * scale, 0.0f))).AutoSize(); };
 
     auto add_button = [&](std::shared_ptr<STextBlock> label, std::function<void()> on_click) {
         auto btn = std::make_shared<SButton>();
-        btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+        btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
         btn->SetContent(std::move(label));
         btn->OnClicked = std::move(on_click);
         bar->AddSlot(btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
@@ -107,7 +107,7 @@ void ZSlateAnimationWindow::BuildToolbar(float scale)
     };
 
     m_PlayLabel = MakeText(">", font, kLabelColor);
-    m_PlayLabel->Alignment = TextAnchor::MiddleCenter;
+    m_PlayLabel->Alignment = ZSlate::TextAnchor::MiddleCenter;
     add_button(m_PlayLabel, [this]() {
         if (m_IsPlaying && !m_IsPaused)
             Pause();
@@ -116,7 +116,7 @@ void ZSlateAnimationWindow::BuildToolbar(float scale)
     });
     {
         auto stop = MakeText("[]", font, kLabelColor);
-        stop->Alignment = TextAnchor::MiddleCenter;
+        stop->Alignment = ZSlate::TextAnchor::MiddleCenter;
         add_button(stop, [this]() { Stop(); });
     }
 
@@ -157,7 +157,7 @@ void ZSlateAnimationWindow::BuildToolbar(float scale)
 // ---------------------------------------------------------------------------
 // Property list (custom canvas)
 // ---------------------------------------------------------------------------
-void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const UIRect& region, float scale)
+void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ZSlate::UIRect& region, float scale)
 {
     r.drawQuad(region, kListBg);
     r.pushClipRect(region, true);
@@ -167,41 +167,41 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const UIRect& regio
     const float font = 12.0f * scale;
     float y = region.y + 4.0f * scale;
 
-    r.drawText(UIRect(region.x + 6.0f * scale, y, region.width - 8.0f * scale, row_h),
+    r.drawText(ZSlate::UIRect(region.x + 6.0f * scale, y, region.width - 8.0f * scale, row_h),
                "Properties",
                13.0f * scale,
                kLabelColor,
-               TextAnchor::MiddleLeft,
-               TextWrapMode::NoWrap);
+               ZSlate::TextAnchor::MiddleLeft,
+               ZSlate::TextWrapMode::NoWrap);
     y += row_h;
-    r.drawQuad(UIRect(region.x, y, region.width, 1.0f), kSeparator);
+    r.drawQuad(ZSlate::UIRect(region.x, y, region.width, 1.0f), kSeparator);
     y += 3.0f * scale;
 
     if (m_CurrentAsset == nullptr)
     {
-        r.drawText(UIRect(region.x + 6.0f * scale, y, region.width - 8.0f * scale, row_h),
+        r.drawText(ZSlate::UIRect(region.x + 6.0f * scale, y, region.width - 8.0f * scale, row_h),
                    "(no asset)",
                    font,
                    kDimColor,
-                   TextAnchor::MiddleLeft,
-                   TextWrapMode::NoWrap);
+                   ZSlate::TextAnchor::MiddleLeft,
+                   ZSlate::TextWrapMode::NoWrap);
         r.popClipRect();
         return;
     }
 
     auto add_prop_row = [&](int channel_index, AnimPropType type, const char* prop_name) {
         const bool selected = (m_Selected.channel_index == channel_index && m_Selected.property_type == type);
-        const UIRect rect(region.x, y, region.width, row_h);
+        const ZSlate::UIRect rect(region.x, y, region.width, row_h);
         if (selected)
             r.drawQuad(rect, kSelRowBg);
         // type colour swatch
-        r.drawQuad(UIRect(region.x + 22.0f * scale, y + row_h * 0.3f, 8.0f * scale, 8.0f * scale), PropertyColor(type));
-        r.drawText(UIRect(region.x + 36.0f * scale, y, region.width - 40.0f * scale, row_h),
+        r.drawQuad(ZSlate::UIRect(region.x + 22.0f * scale, y + row_h * 0.3f, 8.0f * scale, 8.0f * scale), PropertyColor(type));
+        r.drawText(ZSlate::UIRect(region.x + 36.0f * scale, y, region.width - 40.0f * scale, row_h),
                    prop_name,
                    font,
                    selected ? kWhite : kLabelColor,
-                   TextAnchor::MiddleLeft,
-                   TextWrapMode::NoWrap);
+                   ZSlate::TextAnchor::MiddleLeft,
+                   ZSlate::TextWrapMode::NoWrap);
         m_PropRows.push_back(PropRow {rect, false, channel_index, std::string(), type});
         y += row_h;
     };
@@ -212,13 +212,13 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const UIRect& regio
         const std::string key = channel.name + "_" + std::to_string(i);
         const bool expanded = m_ExpandedChannels.count(key) ? m_ExpandedChannels[key] : true;
 
-        const UIRect head_rect(region.x, y, region.width, row_h);
-        r.drawText(UIRect(region.x + 4.0f * scale, y, region.width - 8.0f * scale, row_h),
+        const ZSlate::UIRect head_rect(region.x, y, region.width, row_h);
+        r.drawText(ZSlate::UIRect(region.x + 4.0f * scale, y, region.width - 8.0f * scale, row_h),
                    std::string(expanded ? "v " : "> ") + channel.name,
                    font,
                    kLabelColor,
-                   TextAnchor::MiddleLeft,
-                   TextWrapMode::NoWrap);
+                   ZSlate::TextAnchor::MiddleLeft,
+                   ZSlate::TextWrapMode::NoWrap);
         m_PropRows.push_back(PropRow {head_rect, true, static_cast<int>(i), key, AnimPropType::PositionX});
         y += row_h;
 
@@ -251,7 +251,7 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const UIRect& regio
 // ---------------------------------------------------------------------------
 // Curve editor (custom canvas)
 // ---------------------------------------------------------------------------
-void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const UIRect& region, float scale)
+void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const ZSlate::UIRect& region, float scale)
 {
     r.drawQuad(region, kCanvasBg);
     r.pushClipRect(region, true);
@@ -262,8 +262,8 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const UIRect& region
                    m_CurrentAsset == nullptr ? "No Animation Asset selected" : "Select a property to edit",
                    14.0f * scale,
                    kDimColor,
-                   TextAnchor::MiddleCenter,
-                   TextWrapMode::NoWrap);
+                   ZSlate::TextAnchor::MiddleCenter,
+                   ZSlate::TextWrapMode::NoWrap);
         r.popClipRect();
         return;
     }
@@ -289,7 +289,7 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const UIRect& region
     for (int i = 0; i <= rows; ++i)
     {
         const float gy = region.y + (region.height / rows) * i;
-        r.drawQuad(UIRect(region.x, gy, region.width, 1.0f), kGrid);
+        r.drawQuad(ZSlate::UIRect(region.x, gy, region.width, 1.0f), kGrid);
     }
     {
         const float visible_dur = region.width / pps;
@@ -300,7 +300,7 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const UIRect& region
             const float time = m_TimeRangeStart + (visible_dur / cols) * i;
             const float px = (time - m_TimeRangeStart) * pps;
             if (px >= 0 && px <= region.width)
-                r.drawQuad(UIRect(region.x + px, region.y, 1.0f, region.height), kGrid);
+                r.drawQuad(ZSlate::UIRect(region.x + px, region.y, 1.0f, region.height), kGrid);
         }
     }
 
@@ -314,11 +314,11 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const UIRect& region
         std::sort(sorted.begin(), sorted.end(), [](const AnimKeyframe& a, const AnimKeyframe& b) {
             return a.time < b.time;
         });
-        const UIColor color = PropertyColor(m_Selected.property_type);
+        const ZSlate::UIColor color = PropertyColor(m_Selected.property_type);
         for (size_t i = 0; i + 1 < sorted.size(); ++i)
         {
-            const Vector2 p1(time_to_x(sorted[i].time), value_to_y(sorted[i].value));
-            const Vector2 p2(time_to_x(sorted[i + 1].time), value_to_y(sorted[i + 1].value));
+            const ZSlate::Vector2 p1(time_to_x(sorted[i].time), value_to_y(sorted[i].value));
+            const ZSlate::Vector2 p2(time_to_x(sorted[i + 1].time), value_to_y(sorted[i + 1].value));
             DrawLineQuads(r, p1, p2, color, 2.0f * scale);
         }
     }
@@ -333,14 +333,14 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const UIRect& region
             continue;
         const bool sel = (m_DraggingKeyframe == static_cast<int>(i));
         const float hr = 5.0f * scale;
-        r.drawQuad(UIRect(x - hr, yv - hr, hr * 2.0f, hr * 2.0f), sel ? kKeyframeSel : kKeyframe);
-        r.drawRect(UIRect(x - hr, yv - hr, hr * 2.0f, hr * 2.0f), kWhite, 1.0f);
+        r.drawQuad(ZSlate::UIRect(x - hr, yv - hr, hr * 2.0f, hr * 2.0f), sel ? kKeyframeSel : kKeyframe);
+        r.drawRect(ZSlate::UIRect(x - hr, yv - hr, hr * 2.0f, hr * 2.0f), kWhite, 1.0f);
     }
 
     // Playhead.
     const float head_x = (m_CurrentTime - m_TimeRangeStart) * pps;
     if (head_x >= 0 && head_x <= region.width)
-        r.drawQuad(UIRect(region.x + head_x, region.y, 2.0f, region.height), kPlayhead);
+        r.drawQuad(ZSlate::UIRect(region.x + head_x, region.y, 2.0f, region.height), kPlayhead);
 
     r.popClipRect();
 }
@@ -348,7 +348,7 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const UIRect& region
 // ---------------------------------------------------------------------------
 // Timeline (custom canvas)
 // ---------------------------------------------------------------------------
-void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const UIRect& region, float scale)
+void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const ZSlate::UIRect& region, float scale)
 {
     r.drawQuad(region, kRulerBg);
     if (m_CurrentAsset == nullptr)
@@ -368,15 +368,15 @@ void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const UIRect& region, f
         if (px < 0 || px > region.width)
             continue;
         const float x = region.x + px;
-        r.drawQuad(UIRect(x, region.y, 1.0f, region.height), kWhite);
+        r.drawQuad(ZSlate::UIRect(x, region.y, 1.0f, region.height), kWhite);
         char label[32];
         std::snprintf(label, sizeof(label), "%.2f", time);
-        r.drawText(UIRect(x + 2.0f * scale, region.y + 1.0f * scale, 48.0f * scale, region.height * 0.5f),
+        r.drawText(ZSlate::UIRect(x + 2.0f * scale, region.y + 1.0f * scale, 48.0f * scale, region.height * 0.5f),
                    label,
                    11.0f * scale,
                    kWhite,
-                   TextAnchor::UpperLeft,
-                   TextWrapMode::NoWrap);
+                   ZSlate::TextAnchor::UpperLeft,
+                   ZSlate::TextWrapMode::NoWrap);
     }
     if (pps > 50.0f)
     {
@@ -385,8 +385,8 @@ void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const UIRect& region, f
             const float px = (FrameToTime(frame) - m_TimeRangeStart) * pps;
             if (px < 0 || px > region.width)
                 continue;
-            r.drawQuad(UIRect(region.x + px, region.y + region.height * 0.7f, 1.0f, region.height * 0.3f),
-                       UIColor(0.78f, 0.78f, 0.78f, 1.0f));
+            r.drawQuad(ZSlate::UIRect(region.x + px, region.y + region.height * 0.7f, 1.0f, region.height * 0.3f),
+                       ZSlate::UIColor(0.78f, 0.78f, 0.78f, 1.0f));
         }
     }
 
@@ -399,14 +399,14 @@ void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const UIRect& region, f
             if (px < 0 || px > region.width)
                 continue;
             const float mh = 4.0f * scale;
-            r.drawQuad(UIRect(region.x + px - mh, region.y + region.height * 0.5f - mh, mh * 2.0f, mh * 2.0f),
+            r.drawQuad(ZSlate::UIRect(region.x + px - mh, region.y + region.height * 0.5f - mh, mh * 2.0f, mh * 2.0f),
                        kKeyframeSel);
         }
     }
 
     const float head_x = (m_CurrentTime - m_TimeRangeStart) * pps;
     if (head_x >= 0 && head_x <= region.width)
-        r.drawQuad(UIRect(region.x + head_x, region.y, 2.0f, region.height), kPlayhead);
+        r.drawQuad(ZSlate::UIRect(region.x + head_x, region.y, 2.0f, region.height), kPlayhead);
 
     r.popClipRect();
 }
@@ -414,7 +414,7 @@ void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const UIRect& region, f
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
-void ZSlateAnimationWindow::HandlePropertyListClick(const Vector2& mouse)
+void ZSlateAnimationWindow::HandlePropertyListClick(const ZSlate::Vector2& mouse)
 {
     for (const PropRow& row : m_PropRows)
     {
@@ -438,9 +438,9 @@ void ZSlateAnimationWindow::HandlePropertyListClick(const Vector2& mouse)
     }
 }
 
-void ZSlateAnimationWindow::HandleCurveInput(const UIRect& region,
+void ZSlateAnimationWindow::HandleCurveInput(const ZSlate::UIRect& region,
                                              float scale,
-                                             const Vector2& mouse,
+                                             const ZSlate::Vector2& mouse,
                                              bool over,
                                              bool clicked,
                                              bool double_clicked,
@@ -503,7 +503,7 @@ void ZSlateAnimationWindow::HandleCurveInput(const UIRect& region,
     }
 }
 
-void ZSlateAnimationWindow::HandleTimelineClick(const UIRect& region, float scale, const Vector2& mouse)
+void ZSlateAnimationWindow::HandleTimelineClick(const ZSlate::UIRect& region, float scale, const ZSlate::Vector2& mouse)
 {
     if (m_CurrentAsset == nullptr)
         return;
@@ -581,8 +581,8 @@ void ZSlateAnimationWindow::OnGUI()
     const float toolbar_h = std::min(avail_h, std::max(m_Toolbar->GetDesiredSize().y, 26.0f * ui_scale));
     m_ToolbarHeight = toolbar_h;
 
-    const UIRect toolbar_region(pos_x, pos_y, avail_w, toolbar_h);
-    const FGeometry toolbar_geom(Vector2(pos_x, pos_y), Vector2(avail_w, toolbar_h));
+    const ZSlate::UIRect toolbar_region(pos_x, pos_y, avail_w, toolbar_h);
+    const FGeometry toolbar_geom(ZSlate::Vector2(pos_x, pos_y), ZSlate::Vector2(avail_w, toolbar_h));
 
     const float content_y = pos_y + toolbar_h;
     const float content_h = avail_h - toolbar_h;
@@ -592,10 +592,10 @@ void ZSlateAnimationWindow::OnGUI()
     const float timeline_h = std::min(content_h * 0.5f, m_TimelineHeight * ui_scale);
     const float curve_h = std::max(1.0f, content_h - timeline_h);
 
-    const UIRect list_region(pos_x, content_y, list_w, content_h);
-    const UIRect curve_region(right_x, content_y, right_w, curve_h);
-    const UIRect timeline_region(right_x, content_y + curve_h, right_w, timeline_h);
-    const UIRect panel_region(pos_x, pos_y, avail_w, avail_h);
+    const ZSlate::UIRect list_region(pos_x, content_y, list_w, content_h);
+    const ZSlate::UIRect curve_region(right_x, content_y, right_w, curve_h);
+    const ZSlate::UIRect timeline_region(right_x, content_y + curve_h, right_w, timeline_h);
+    const ZSlate::UIRect panel_region(pos_x, pos_y, avail_w, avail_h);
 
     // ---- Paint --------------------------------------------------------------
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
@@ -605,8 +605,8 @@ void ZSlateAnimationWindow::OnGUI()
         PaintCurveEditor(r, curve_region, ui_scale);
         PaintTimeline(r, timeline_region, ui_scale);
         // separators
-        r.drawQuad(UIRect(right_x, content_y, 1.0f, content_h), kSeparator);
-        r.drawQuad(UIRect(right_x, content_y + curve_h, right_w, 1.0f), kSeparator);
+        r.drawQuad(ZSlate::UIRect(right_x, content_y, 1.0f, content_h), kSeparator);
+        r.drawQuad(ZSlate::UIRect(right_x, content_y + curve_h, right_w, 1.0f), kSeparator);
 
         r.pushClipRect(toolbar_region, true);
         m_Toolbar->Paint(ctx, toolbar_geom);
@@ -626,7 +626,7 @@ void ZSlateAnimationWindow::OnGUI()
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
     host.BeginSurface(surface_id, panel_region, ZSlate::ESurfaceLayer::Panels);
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool over_item = host.IsSurfaceHovered(surface_id, mouse);
 
     m_Input.ProcessMouse(m_Toolbar, mouse, over_item, host.IsLeftDown(), over_item ? host.GetWheelDelta() : 0.0f);
@@ -820,30 +820,30 @@ float ZSlateAnimationWindow::FrameToTime(int frame) const
     return m_FrameRate > 0.0f ? static_cast<float>(frame) / m_FrameRate : 0.0f;
 }
 
-UIColor ZSlateAnimationWindow::PropertyColor(AnimPropType type) const
+ZSlate::UIColor ZSlateAnimationWindow::PropertyColor(AnimPropType type) const
 {
     switch (type)
     {
         case AnimPropType::PositionX:
-            return UIColor(1.0f, 0.39f, 0.39f, 1.0f);
+            return ZSlate::UIColor(1.0f, 0.39f, 0.39f, 1.0f);
         case AnimPropType::PositionY:
-            return UIColor(0.39f, 1.0f, 0.39f, 1.0f);
+            return ZSlate::UIColor(0.39f, 1.0f, 0.39f, 1.0f);
         case AnimPropType::PositionZ:
-            return UIColor(0.39f, 0.39f, 1.0f, 1.0f);
+            return ZSlate::UIColor(0.39f, 0.39f, 1.0f, 1.0f);
         case AnimPropType::RotationX:
-            return UIColor(1.0f, 0.78f, 0.39f, 1.0f);
+            return ZSlate::UIColor(1.0f, 0.78f, 0.39f, 1.0f);
         case AnimPropType::RotationY:
-            return UIColor(0.78f, 1.0f, 0.39f, 1.0f);
+            return ZSlate::UIColor(0.78f, 1.0f, 0.39f, 1.0f);
         case AnimPropType::RotationZ:
-            return UIColor(0.39f, 0.78f, 1.0f, 1.0f);
+            return ZSlate::UIColor(0.39f, 0.78f, 1.0f, 1.0f);
         case AnimPropType::ScaleX:
-            return UIColor(1.0f, 0.39f, 0.78f, 1.0f);
+            return ZSlate::UIColor(1.0f, 0.39f, 0.78f, 1.0f);
         case AnimPropType::ScaleY:
-            return UIColor(0.78f, 0.39f, 1.0f, 1.0f);
+            return ZSlate::UIColor(0.78f, 0.39f, 1.0f, 1.0f);
         case AnimPropType::ScaleZ:
-            return UIColor(0.39f, 1.0f, 0.78f, 1.0f);
+            return ZSlate::UIColor(0.39f, 1.0f, 0.78f, 1.0f);
         default:
-            return UIColor(1.0f, 1.0f, 1.0f, 1.0f);
+            return ZSlate::UIColor(1.0f, 1.0f, 1.0f, 1.0f);
     }
 }
 

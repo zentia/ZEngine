@@ -32,25 +32,25 @@ using namespace ZSlate;
 
 namespace
 {
-const UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
-const UIColor kBarColor(0.14f, 0.14f, 0.17f, 1.0f);
-const UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
-const UIColor kErrorColor(1.0f, 0.4f, 0.4f, 1.0f);
-const UIColor kLabelColor(0.82f, 0.84f, 0.88f, 1.0f);
-const UIColor kLogRowHoverColor(0.18f, 0.18f, 0.22f, 1.0f);
-const UIColor kLogRowSelectedColor(0.25f, 0.30f, 0.40f, 0.75f);
+const ZSlate::UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
+const ZSlate::UIColor kBarColor(0.14f, 0.14f, 0.17f, 1.0f);
+const ZSlate::UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
+const ZSlate::UIColor kErrorColor(1.0f, 0.4f, 0.4f, 1.0f);
+const ZSlate::UIColor kLabelColor(0.82f, 0.84f, 0.88f, 1.0f);
+const ZSlate::UIColor kLogRowHoverColor(0.18f, 0.18f, 0.22f, 1.0f);
+const ZSlate::UIColor kLogRowSelectedColor(0.25f, 0.30f, 0.40f, 0.75f);
 
-UIColor LevelColor(uint32_t level)
+ZSlate::UIColor LevelColor(uint32_t level)
 {
     switch (level)
     {
-        case 0: return UIColor(0.50f, 0.50f, 0.50f, 1.0f);  // verbose
-        case 1: return UIColor(0.70f, 0.70f, 0.70f, 1.0f);  // debug
-        case 2: return UIColor(0.92f, 0.93f, 0.96f, 1.0f);  // info
-        case 3: return UIColor(1.00f, 0.85f, 0.20f, 1.0f);  // warning
-        case 4: return UIColor(1.00f, 0.35f, 0.35f, 1.0f);  // error
-        case 5: return UIColor(1.00f, 0.10f, 0.10f, 1.0f);  // fatal
-        default: return UIColor(0.92f, 0.93f, 0.96f, 1.0f);
+        case 0: return ZSlate::UIColor(0.50f, 0.50f, 0.50f, 1.0f);  // verbose
+        case 1: return ZSlate::UIColor(0.70f, 0.70f, 0.70f, 1.0f);  // debug
+        case 2: return ZSlate::UIColor(0.92f, 0.93f, 0.96f, 1.0f);  // info
+        case 3: return ZSlate::UIColor(1.00f, 0.85f, 0.20f, 1.0f);  // warning
+        case 4: return ZSlate::UIColor(1.00f, 0.35f, 0.35f, 1.0f);  // error
+        case 5: return ZSlate::UIColor(1.00f, 0.10f, 0.10f, 1.0f);  // fatal
+        default: return ZSlate::UIColor(0.92f, 0.93f, 0.96f, 1.0f);
     }
 }
 
@@ -78,13 +78,13 @@ bool ContainsCaseInsensitive(std::string_view haystack, std::string_view needle)
     return false;
 }
 
-std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const UIColor& color)
+std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color)
 {
     auto t = std::make_shared<STextBlock>();
     t->Text = text;
     t->FontSize = font_size;
     t->Color = color;
-    t->Alignment = TextAnchor::MiddleLeft;
+    t->Alignment = ZSlate::TextAnchor::MiddleLeft;
     return t;
 }
 }  // namespace
@@ -289,8 +289,8 @@ std::shared_ptr<SButton> ZSlateConsoleWindow::MakeLogRow(size_t entry_index, con
         text.assign(entry.m_Content, static_cast<size_t>(entry.m_Length));
 
     auto row = std::make_shared<SButton>();
-    row->Padding = FMargin(2.0f, 1.0f);
-    row->NormalColor = selected ? kLogRowSelectedColor : UIColor(0.0f, 0.0f, 0.0f, 0.0f);
+    row->Padding = ZSlate::FMargin(2.0f, 1.0f);
+    row->NormalColor = selected ? kLogRowSelectedColor : ZSlate::UIColor(0.0f, 0.0f, 0.0f, 0.0f);
     row->HoverColor = kLogRowHoverColor;
     row->PressedColor = kLogRowSelectedColor;
     row->HAlign = EHorizontalAlignment::Fill;
@@ -303,7 +303,7 @@ std::shared_ptr<SButton> ZSlateConsoleWindow::MakeLogRow(size_t entry_index, con
             UpdateLogRowSelectionHighlight();
         }
     };
-    row->OnRightClicked = [this, entry_index](const Vector2& screen_pos) {
+    row->OnRightClicked = [this, entry_index](const ZSlate::Vector2& screen_pos) {
         m_PendingContextEntryIndex = static_cast<int>(entry_index);
         m_PendingContextPos = screen_pos;
         m_HasPendingContext = true;
@@ -320,7 +320,7 @@ void ZSlateConsoleWindow::UpdateLogRowSelectionHighlight()
             continue;
         const bool selected = static_cast<int>(row_widget.entry_index) == m_SelectedEntryIndex;
         row_widget.button->NormalColor =
-            selected ? kLogRowSelectedColor : UIColor(0.0f, 0.0f, 0.0f, 0.0f);
+            selected ? kLogRowSelectedColor : ZSlate::UIColor(0.0f, 0.0f, 0.0f, 0.0f);
     }
 }
 
@@ -377,7 +377,7 @@ void ZSlateConsoleWindow::BuildLayout(float scale)
 
     auto root = std::make_shared<SBorder>();
     root->BackgroundColor = kPanelColor;
-    root->Padding = FMargin(4.0f * scale, 4.0f * scale);
+    root->Padding = ZSlate::FMargin(4.0f * scale, 4.0f * scale);
     root->HAlign = EHorizontalAlignment::Fill;
     root->VAlign = EVerticalAlignment::Fill;
 
@@ -388,12 +388,12 @@ void ZSlateConsoleWindow::BuildLayout(float scale)
 
     m_CategoryLabel = MakeText("All", font, kLabelColor);
     m_CategoryButton = std::make_shared<SButton>();
-    m_CategoryButton->Padding = FMargin(8.0f * scale, 3.0f * scale);
+    m_CategoryButton->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
     m_CategoryButton->SetContent(m_CategoryLabel);
     m_CategoryButton->OnClicked = [this]() { OpenCategoryMenu(); };
     bar->AddSlot(m_CategoryButton).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
 
     m_SearchBox = std::make_shared<SEditableTextBox>();
     m_SearchBox->FontSize = font;
@@ -406,13 +406,13 @@ void ZSlateConsoleWindow::BuildLayout(float scale)
     bar->AddSlot(m_SearchBox).Fill().SetVAlign(EVerticalAlignment::Center);
 
     auto add_check = [&](const char* label, bool initial, std::function<void(bool)> on_change) {
-        bar->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+        bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
         auto cb = std::make_shared<SCheckBox>();
         cb->Checked = initial;
         cb->BoxSize = 16.0f * scale;
         cb->OnCheckStateChanged = std::move(on_change);
         bar->AddSlot(cb).AutoSize().SetVAlign(EVerticalAlignment::Center);
-        bar->AddSlot(std::make_shared<SSpacer>(Vector2(3.0f * scale, 0.0f))).AutoSize();
+        bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(3.0f * scale, 0.0f))).AutoSize();
         bar->AddSlot(MakeText(label, font, kLabelColor)).AutoSize().SetVAlign(EVerticalAlignment::Center);
     };
     add_check("Regex", m_UseRegex, [this](bool b) {
@@ -426,9 +426,9 @@ void ZSlateConsoleWindow::BuildLayout(float scale)
         m_FilterDirty = true;
     });
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
     auto clear_btn = std::make_shared<SButton>();
-    clear_btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+    clear_btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
     clear_btn->SetContent(MakeText("Clear", font, kLabelColor));
     clear_btn->OnClicked = [this]() {
         m_Search.clear();
@@ -439,16 +439,16 @@ void ZSlateConsoleWindow::BuildLayout(float scale)
     };
     bar->AddSlot(clear_btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
     m_CountText = MakeText("", font, kDimColor);
     bar->AddSlot(m_CountText).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
-    column->AddSlot(bar).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+    column->AddSlot(bar).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
     // ---- Log list ----------------------------------------------------------
     auto log_border = std::make_shared<SBorder>();
-    log_border->BackgroundColor = UIColor(0.07f, 0.07f, 0.09f, 1.0f);
-    log_border->Padding = FMargin(4.0f * scale, 4.0f * scale);
+    log_border->BackgroundColor = ZSlate::UIColor(0.07f, 0.07f, 0.09f, 1.0f);
+    log_border->Padding = ZSlate::FMargin(4.0f * scale, 4.0f * scale);
     log_border->HAlign = EHorizontalAlignment::Fill;
     log_border->VAlign = EVerticalAlignment::Fill;
 
@@ -468,7 +468,7 @@ void ZSlateConsoleWindow::BuildLayout(float scale)
         m_Command.clear();
     };
     m_CommandBox->OnTextChanged = [this](const std::string& t) { m_Command = t; };
-    column->AddSlot(m_CommandBox).AutoSize().SetPadding(FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
+    column->AddSlot(m_CommandBox).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
 
     root->SetContent(column);
     m_Root = root;
@@ -495,12 +495,12 @@ void ZSlateConsoleWindow::OpenCategoryMenu()
 
     // Anchor under the category button.
     const FGeometry& g = m_CategoryButton->GetCachedGeometry();
-    m_MenuPos = Vector2(g.AbsolutePosition.x, g.AbsolutePosition.y + g.LocalSize.y);
+    m_MenuPos = ZSlate::Vector2(g.AbsolutePosition.x, g.AbsolutePosition.y + g.LocalSize.y);
     m_MenuOpen = true;
     m_MenuInput.Reset();
 }
 
-void ZSlateConsoleWindow::OpenLogContextMenu(size_t entry_index, const Vector2& screen_pos)
+void ZSlateConsoleWindow::OpenLogContextMenu(size_t entry_index, const ZSlate::Vector2& screen_pos)
 {
     m_SelectedEntryIndex = static_cast<int>(entry_index);
     UpdateLogRowSelectionHighlight();
@@ -583,15 +583,15 @@ void ZSlateConsoleWindow::OnGUI()
     // P10c: native-host panels source their leaf rect from EditorView::NativeRect()
     // (no ImGui::Begin / item to probe); otherwise use the ImGui content region.
     const float* native_rect = NativeRect();
-    Vector2 pos(native_rect[0], native_rect[1]);
-    Vector2 avail(native_rect[2], native_rect[3]);
+    ZSlate::Vector2 pos(native_rect[0], native_rect[1]);
+    ZSlate::Vector2 avail(native_rect[2], native_rect[3]);
     if (avail.x < 1.0f)
         avail.x = 1.0f;
     if (avail.y < 1.0f)
         avail.y = 1.0f;
 
-    const UIRect region(pos.x, pos.y, avail.x, avail.y);
-    const FGeometry geometry(Vector2(pos.x, pos.y), Vector2(avail.x, avail.y));
+    const ZSlate::UIRect region(pos.x, pos.y, avail.x, avail.y);
+    const FGeometry geometry(ZSlate::Vector2(pos.x, pos.y), ZSlate::Vector2(avail.x, avail.y));
 
     // P9: the native RHI backend paints into the shared BatchedUIRenderer (frame managed by
     // ZSlateEditorOverlay around WindowUI::PreRender), clipped to this panel. The legacy
@@ -616,7 +616,7 @@ void ZSlateConsoleWindow::OnGUI()
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
     host.BeginSurface(surface_id, region, ZSlate::ESurfaceLayer::Panels);
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool over_canvas = host.IsSurfaceHovered(surface_id, mouse);
     const bool left_down = host.IsLeftDown();
     const bool right_down = host.IsRightDown();
@@ -627,11 +627,11 @@ void ZSlateConsoleWindow::OnGUI()
     if (m_MenuOpen && m_Menu)
     {
         m_Menu->CacheDesiredSize();
-        const Vector2 menu_size = m_Menu->GetDesiredSize();
+        const ZSlate::Vector2 menu_size = m_Menu->GetDesiredSize();
         // Clamp the menu to the native display rect (== the editor's full-window
         // viewport work area).
-        const Vector2 disp_pos = host.GetDisplayPos();
-        const Vector2 disp_size = host.GetDisplaySize();
+        const ZSlate::Vector2 disp_pos = host.GetDisplayPos();
+        const ZSlate::Vector2 disp_size = host.GetDisplaySize();
         const float vx = disp_pos.x;
         const float vy = disp_pos.y;
         const float vw = disp_size.x;
@@ -640,7 +640,7 @@ void ZSlateConsoleWindow::OnGUI()
         float my = std::min(m_MenuPos.y, vy + vh - menu_size.y);
         mx = std::max(mx, vx);
         my = std::max(my, vy);
-        const FGeometry menu_geom(Vector2(mx, my), menu_size);
+        const FGeometry menu_geom(ZSlate::Vector2(mx, my), menu_size);
 
         {
             // Append the popup into the shared batch after the panel content so it

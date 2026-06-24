@@ -29,14 +29,14 @@ using namespace ZSlate;
 
 namespace
 {
-const UIColor kSelectedColor(0.18f, 0.35f, 0.58f, 1.0f);
-const UIColor kTransparent(0.0f, 0.0f, 0.0f, 0.0f);
-const UIColor kHoverColor(0.25f, 0.27f, 0.32f, 0.65f);
-const UIColor kNameColor(0.86f, 0.88f, 0.92f, 1.0f);
-const UIColor kSelectedTextColor(0.97f, 0.98f, 1.0f, 1.0f);
-const UIColor kToggleColor(0.62f, 0.65f, 0.72f, 1.0f);
-const UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
-const UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
+const ZSlate::UIColor kSelectedColor(0.18f, 0.35f, 0.58f, 1.0f);
+const ZSlate::UIColor kTransparent(0.0f, 0.0f, 0.0f, 0.0f);
+const ZSlate::UIColor kHoverColor(0.25f, 0.27f, 0.32f, 0.65f);
+const ZSlate::UIColor kNameColor(0.86f, 0.88f, 0.92f, 1.0f);
+const ZSlate::UIColor kSelectedTextColor(0.97f, 0.98f, 1.0f, 1.0f);
+const ZSlate::UIColor kToggleColor(0.62f, 0.65f, 0.72f, 1.0f);
+const ZSlate::UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
+const ZSlate::UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
 
 constexpr uint64_t kFnvOffset = 1469598103934665603ull;
 constexpr uint64_t kFnvPrime = 1099511628211ull;
@@ -62,13 +62,13 @@ uint64_t HashBytes(const char* s, uint64_t seed)
     return seed;
 }
 
-std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const UIColor& color)
+std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color)
 {
     auto t = std::make_shared<STextBlock>();
     t->Text = text;
     t->FontSize = font_size;
     t->Color = color;
-    t->Alignment = TextAnchor::MiddleLeft;
+    t->Alignment = ZSlate::TextAnchor::MiddleLeft;
     return t;
 }
 }  // namespace
@@ -163,7 +163,7 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
     const float toggle_w = 14.0f * scale;
 
     auto row = std::make_shared<SButton>();
-    row->Padding = FMargin(2.0f * scale, 2.0f * scale);
+    row->Padding = ZSlate::FMargin(2.0f * scale, 2.0f * scale);
     row->HAlign = EHorizontalAlignment::Fill;
     row->VAlign = EVerticalAlignment::Center;
     row->NormalColor = is_selected ? kSelectedColor : kTransparent;
@@ -172,7 +172,7 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
     row->OnClicked = [object_id]() { EditorSelection::SelectGameObject(object_id); };
 
     // Right-click: record the target; OnGUI opens the menu on the button-up edge.
-    row->OnRightClicked = [this, object_id](const Vector2& screen_pos) {
+    row->OnRightClicked = [this, object_id](const ZSlate::Vector2& screen_pos) {
         m_PendingContextObject = object_id;
         m_PendingContextPos = screen_pos;
         m_HasPendingContext = true;
@@ -180,7 +180,7 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
 
     // Drag source: carry this object's id so a drop target can reparent it.
     const std::string row_name(object->GetName().c_str());
-    row->OnDragDetectedHandler = [object_id, row_name](const Vector2&) -> std::shared_ptr<FDragDropOperation> {
+    row->OnDragDetectedHandler = [object_id, row_name](const ZSlate::Vector2&) -> std::shared_ptr<FDragDropOperation> {
         auto op = std::make_shared<FDragDropOperation>();
         op->PayloadType = EditorDragDrop::kZSlateAssetPayloadGObjectId;
         op->Id = static_cast<uint64_t>(object_id);
@@ -211,16 +211,16 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
 
     auto hb = std::make_shared<SHorizontalBox>();
     if (depth > 0)
-        hb->AddSlot(std::make_shared<SSpacer>(Vector2(depth * indent_unit, 0.0f))).AutoSize();
+        hb->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(depth * indent_unit, 0.0f))).AutoSize();
 
     if (has_children)
     {
         auto toggle = std::make_shared<SButton>();
-        toggle->Padding = FMargin(1.0f * scale, 0.0f);
+        toggle->Padding = ZSlate::FMargin(1.0f * scale, 0.0f);
         toggle->HAlign = EHorizontalAlignment::Center;
         toggle->VAlign = EVerticalAlignment::Center;
         toggle->NormalColor = kTransparent;
-        toggle->HoverColor = UIColor(0.32f, 0.34f, 0.40f, 0.85f);
+        toggle->HoverColor = ZSlate::UIColor(0.32f, 0.34f, 0.40f, 0.85f);
         toggle->PressedColor = kTransparent;
         toggle->SetContent(MakeText(collapsed ? ">" : "v", font_size, kToggleColor));
         toggle->OnClicked = [this, object_id]() {
@@ -233,10 +233,10 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
     }
     else
     {
-        hb->AddSlot(std::make_shared<SSpacer>(Vector2(toggle_w, 0.0f))).AutoSize();
+        hb->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(toggle_w, 0.0f))).AutoSize();
     }
 
-    hb->AddSlot(std::make_shared<SSpacer>(Vector2(4.0f * scale, 0.0f))).AutoSize();
+    hb->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(4.0f * scale, 0.0f))).AutoSize();
     hb->AddSlot(MakeText(std::string(object->GetName().c_str()),
                          font_size,
                          is_selected ? kSelectedTextColor : kNameColor))
@@ -257,7 +257,7 @@ void ZSlateHierarchyWindow::BuildMessage(const char* text, float scale)
 {
     auto border = std::make_shared<SBorder>();
     border->BackgroundColor = kPanelColor;
-    border->Padding = FMargin(10.0f * scale, 10.0f * scale);
+    border->Padding = ZSlate::FMargin(10.0f * scale, 10.0f * scale);
     border->HAlign = EHorizontalAlignment::Fill;
     border->VAlign = EVerticalAlignment::Top;
     border->SetContent(MakeText(text, 13.0f * scale, kDimColor));
@@ -279,7 +279,7 @@ void ZSlateHierarchyWindow::Rebuild(Level* level, const TreeData& tree, GObjectI
 
     auto border = std::make_shared<SBorder>();
     border->BackgroundColor = kPanelColor;
-    border->Padding = FMargin(2.0f * scale, 2.0f * scale);
+    border->Padding = ZSlate::FMargin(2.0f * scale, 2.0f * scale);
     border->HAlign = EHorizontalAlignment::Fill;
     border->VAlign = EVerticalAlignment::Fill;
 
@@ -359,7 +359,7 @@ void ZSlateHierarchyWindow::DeleteObject(GObjectID object_id)
     NotifyHierarchyStructureChanged(k_invalid_gobject_id);
 }
 
-void ZSlateHierarchyWindow::OpenContextMenu(GObjectID context_object, const Vector2& screen_pos, float scale)
+void ZSlateHierarchyWindow::OpenContextMenu(GObjectID context_object, const ZSlate::Vector2& screen_pos, float scale)
 {
     if (context_object != k_invalid_gobject_id)
     {
@@ -412,15 +412,15 @@ void ZSlateHierarchyWindow::OnGUI()
     }
 
     const float* native_rect = NativeRect();
-    Vector2 pos(native_rect[0], native_rect[1]);
-    Vector2 avail(native_rect[2], native_rect[3]);
+    ZSlate::Vector2 pos(native_rect[0], native_rect[1]);
+    ZSlate::Vector2 avail(native_rect[2], native_rect[3]);
     if (avail.x < 1.0f)
         avail.x = 1.0f;
     if (avail.y < 1.0f)
         avail.y = 1.0f;
 
-    const UIRect region(pos.x, pos.y, avail.x, avail.y);
-    const FGeometry geometry(Vector2(pos.x, pos.y), Vector2(avail.x, avail.y));
+    const ZSlate::UIRect region(pos.x, pos.y, avail.x, avail.y);
+    const FGeometry geometry(ZSlate::Vector2(pos.x, pos.y), ZSlate::Vector2(avail.x, avail.y));
 
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
     if (m_Root != nullptr)
@@ -439,7 +439,7 @@ void ZSlateHierarchyWindow::OnGUI()
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
     host.BeginSurface(surface_id, region, ZSlate::ESurfaceLayer::Panels);
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool over_canvas = host.IsSurfaceHovered(surface_id, mouse);
     const bool left_down = host.IsLeftDown();
     const bool right_down = host.IsRightDown();
@@ -448,7 +448,7 @@ void ZSlateHierarchyWindow::OnGUI()
 
     if (m_Popup.IsOpen())
     {
-        const UIRect viewport_rect(host.GetDisplayPos().x, host.GetDisplayPos().y,
+        const ZSlate::UIRect viewport_rect(host.GetDisplayPos().x, host.GetDisplayPos().y,
                                    host.GetDisplaySize().x, host.GetDisplaySize().y);
         m_Popup.Render(overlay.GetRenderer(), mouse, left_down, wheel, viewport_rect, 1);
     }

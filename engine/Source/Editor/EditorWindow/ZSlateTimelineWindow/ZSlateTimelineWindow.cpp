@@ -25,27 +25,27 @@ using namespace ZSlate;
 
 namespace
 {
-const UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
-const UIColor kCanvasBg(0.13f, 0.13f, 0.15f, 1.0f);
-const UIColor kRulerBg(0.157f, 0.157f, 0.157f, 1.0f);
-const UIColor kTrackListBg(0.09f, 0.09f, 0.11f, 1.0f);
-const UIColor kSeparator(0.30f, 0.30f, 0.34f, 1.0f);
-const UIColor kLabelColor(0.82f, 0.84f, 0.88f, 1.0f);
-const UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
-const UIColor kWhite(1.0f, 1.0f, 1.0f, 1.0f);
-const UIColor kBlack(0.0f, 0.0f, 0.0f, 1.0f);
-const UIColor kPlayhead(1.0f, 0.10f, 0.10f, 1.0f);
-const UIColor kClipSelected(1.0f, 1.0f, 0.0f, 1.0f);
+const ZSlate::UIColor kPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
+const ZSlate::UIColor kCanvasBg(0.13f, 0.13f, 0.15f, 1.0f);
+const ZSlate::UIColor kRulerBg(0.157f, 0.157f, 0.157f, 1.0f);
+const ZSlate::UIColor kTrackListBg(0.09f, 0.09f, 0.11f, 1.0f);
+const ZSlate::UIColor kSeparator(0.30f, 0.30f, 0.34f, 1.0f);
+const ZSlate::UIColor kLabelColor(0.82f, 0.84f, 0.88f, 1.0f);
+const ZSlate::UIColor kDimColor(0.55f, 0.57f, 0.62f, 1.0f);
+const ZSlate::UIColor kWhite(1.0f, 1.0f, 1.0f, 1.0f);
+const ZSlate::UIColor kBlack(0.0f, 0.0f, 0.0f, 1.0f);
+const ZSlate::UIColor kPlayhead(1.0f, 0.10f, 0.10f, 1.0f);
+const ZSlate::UIColor kClipSelected(1.0f, 1.0f, 0.0f, 1.0f);
 
 const char* kModeNames[] = {"Select", "Move", "Trim", "Split"};
 
-std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const UIColor& color)
+std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color)
 {
     auto t = std::make_shared<STextBlock>();
     t->Text = text;
     t->FontSize = font_size;
     t->Color = color;
-    t->Alignment = TextAnchor::MiddleLeft;
+    t->Alignment = ZSlate::TextAnchor::MiddleLeft;
     return t;
 }
 }  // namespace
@@ -65,19 +65,19 @@ void ZSlateTimelineWindow::BuildToolbar(float scale)
 
     auto root = std::make_shared<SBorder>();
     root->BackgroundColor = kPanelColor;
-    root->Padding = FMargin(6.0f * scale, 4.0f * scale);
+    root->Padding = ZSlate::FMargin(6.0f * scale, 4.0f * scale);
     root->HAlign = EHorizontalAlignment::Fill;
     root->VAlign = EVerticalAlignment::Top;
 
     auto bar = std::make_shared<SHorizontalBox>();
 
     auto add_spacer = [&](float w) {
-        bar->AddSlot(std::make_shared<SSpacer>(Vector2(w * scale, 0.0f))).AutoSize();
+        bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(w * scale, 0.0f))).AutoSize();
     };
 
     auto add_button = [&](std::shared_ptr<STextBlock> label, std::function<void()> on_click) {
         auto btn = std::make_shared<SButton>();
-        btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+        btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
         btn->SetContent(std::move(label));
         btn->OnClicked = std::move(on_click);
         bar->AddSlot(btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
@@ -97,7 +97,7 @@ void ZSlateTimelineWindow::BuildToolbar(float scale)
 
     // Play / Pause (label toggles in OnGUI).
     m_PlayLabel = MakeText(">", font, kLabelColor);
-    m_PlayLabel->Alignment = TextAnchor::MiddleCenter;
+    m_PlayLabel->Alignment = ZSlate::TextAnchor::MiddleCenter;
     add_button(m_PlayLabel, [this]() {
         if (m_PlayState == TimelinePlayState::Playing)
             Pause();
@@ -108,7 +108,7 @@ void ZSlateTimelineWindow::BuildToolbar(float scale)
     // Stop.
     {
         auto stop_label = MakeText("[]", font, kLabelColor);
-        stop_label->Alignment = TextAnchor::MiddleCenter;
+        stop_label->Alignment = ZSlate::TextAnchor::MiddleCenter;
         add_button(stop_label, [this]() { Stop(); });
     }
 
@@ -166,7 +166,7 @@ void ZSlateTimelineWindow::BuildToolbar(float scale)
 // ---------------------------------------------------------------------------
 // Canvas paint (ruler + track lanes + clips + playhead)
 // ---------------------------------------------------------------------------
-void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const UIRect& region, float scale)
+void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& region, float scale)
 {
     r.drawQuad(region, kCanvasBg);
 
@@ -176,8 +176,8 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const UIRect& region, floa
                    "No Timeline Asset selected",
                    14.0f * scale,
                    kDimColor,
-                   TextAnchor::MiddleCenter,
-                   TextWrapMode::NoWrap);
+                   ZSlate::TextAnchor::MiddleCenter,
+                   ZSlate::TextWrapMode::NoWrap);
         return;
     }
 
@@ -190,18 +190,18 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const UIRect& region, floa
     const float right_w = std::max(1.0f, region.width - track_list_w);
 
     // Track-list background + separator.
-    r.drawQuad(UIRect(region.x, region.y, track_list_w, region.height), kTrackListBg);
-    r.drawQuad(UIRect(right_x, region.y, 1.0f, region.height), kSeparator);
+    r.drawQuad(ZSlate::UIRect(region.x, region.y, track_list_w, region.height), kTrackListBg);
+    r.drawQuad(ZSlate::UIRect(right_x, region.y, 1.0f, region.height), kSeparator);
 
-    r.drawText(UIRect(region.x + 6.0f * scale, region.y + 2.0f * scale, track_list_w - 8.0f * scale, ruler_h),
+    r.drawText(ZSlate::UIRect(region.x + 6.0f * scale, region.y + 2.0f * scale, track_list_w - 8.0f * scale, ruler_h),
                "Tracks",
                13.0f * scale,
                kLabelColor,
-               TextAnchor::MiddleLeft,
-               TextWrapMode::NoWrap);
+               ZSlate::TextAnchor::MiddleLeft,
+               ZSlate::TextWrapMode::NoWrap);
 
     // ---- Ruler --------------------------------------------------------------
-    const UIRect ruler(right_x, region.y, right_w, ruler_h);
+    const ZSlate::UIRect ruler(right_x, region.y, right_w, ruler_h);
     r.drawQuad(ruler, kRulerBg);
     r.pushClipRect(ruler, true);
 
@@ -217,16 +217,16 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const UIRect& region, floa
         if (px < 0.0f || px > right_w)
             continue;
         const float x = right_x + px;
-        r.drawQuad(UIRect(x, region.y, 1.0f, ruler_h), kWhite);
+        r.drawQuad(ZSlate::UIRect(x, region.y, 1.0f, ruler_h), kWhite);
 
         char label[32];
         std::snprintf(label, sizeof(label), "%.2f", time);
-        r.drawText(UIRect(x + 2.0f * scale, region.y + 1.0f * scale, 48.0f * scale, ruler_h * 0.6f),
+        r.drawText(ZSlate::UIRect(x + 2.0f * scale, region.y + 1.0f * scale, 48.0f * scale, ruler_h * 0.6f),
                    label,
                    11.0f * scale,
                    kWhite,
-                   TextAnchor::UpperLeft,
-                   TextWrapMode::NoWrap);
+                   ZSlate::TextAnchor::UpperLeft,
+                   ZSlate::TextWrapMode::NoWrap);
     }
 
     // Sub-ticks per frame when zoomed in.
@@ -238,14 +238,14 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const UIRect& region, floa
             if (px < 0.0f || px > right_w)
                 continue;
             const float x = right_x + px;
-            r.drawQuad(UIRect(x, region.y + ruler_h * 0.7f, 1.0f, ruler_h * 0.3f), UIColor(0.78f, 0.78f, 0.78f, 1.0f));
+            r.drawQuad(ZSlate::UIRect(x, region.y + ruler_h * 0.7f, 1.0f, ruler_h * 0.3f), ZSlate::UIColor(0.78f, 0.78f, 0.78f, 1.0f));
         }
     }
     r.popClipRect();
 
     // ---- Track lanes + clips ------------------------------------------------
     const float lanes_top = region.y + ruler_h;
-    const UIRect lanes_clip(right_x, lanes_top, right_w, region.height - ruler_h);
+    const ZSlate::UIRect lanes_clip(right_x, lanes_top, right_w, region.height - ruler_h);
     r.pushClipRect(lanes_clip, true);
 
     float y = lanes_top;
@@ -256,16 +256,16 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const UIRect& region, floa
             continue;
 
         // Lane background.
-        const UIRect lane(right_x, y, right_w, track_h);
+        const ZSlate::UIRect lane(right_x, y, right_w, track_h);
         r.drawQuad(lane, TrackColor(track));
 
         // Track header in left column.
-        r.drawText(UIRect(region.x + 8.0f * scale, y, track_list_w - 12.0f * scale, track_h),
+        r.drawText(ZSlate::UIRect(region.x + 8.0f * scale, y, track_list_w - 12.0f * scale, track_h),
                    track->m_Name.empty() ? std::string(TrackTypeName(track)) : track->m_Name,
                    12.0f * scale,
                    kLabelColor,
-                   TextAnchor::MiddleLeft,
-                   TextWrapMode::NoWrap);
+                   ZSlate::TextAnchor::MiddleLeft,
+                   ZSlate::TextWrapMode::NoWrap);
 
         // Clips.
         for (size_t j = 0; j < track->m_Clips.size(); ++j)
@@ -279,19 +279,19 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const UIRect& region, floa
             if (clip_x + clip_w < right_x || clip_x > right_x + right_w)
                 continue;
 
-            const UIRect clip_rect(clip_x, y + 2.0f * scale, clip_w, track_h - 4.0f * scale);
+            const ZSlate::UIRect clip_rect(clip_x, y + 2.0f * scale, clip_w, track_h - 4.0f * scale);
             const bool selected = IsClipSelected(track, static_cast<int>(j));
             r.drawQuad(clip_rect, selected ? kClipSelected : ClipColor(clip));
             r.drawRect(clip_rect, kWhite, 1.0f);
 
             if (clip_w > 50.0f * scale)
             {
-                r.drawText(UIRect(clip_rect.x + 4.0f * scale, clip_rect.y, clip_rect.width - 6.0f * scale, clip_rect.height),
+                r.drawText(ZSlate::UIRect(clip_rect.x + 4.0f * scale, clip_rect.y, clip_rect.width - 6.0f * scale, clip_rect.height),
                            ClipDisplayName(clip),
                            11.0f * scale,
                            kBlack,
-                           TextAnchor::MiddleLeft,
-                           TextWrapMode::NoWrap);
+                           ZSlate::TextAnchor::MiddleLeft,
+                           ZSlate::TextWrapMode::NoWrap);
             }
         }
 
@@ -300,19 +300,19 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const UIRect& region, floa
 
     if (m_CurrentAsset->m_Tracks.empty())
     {
-        r.drawText(UIRect(right_x + 8.0f * scale, lanes_top + 8.0f * scale, right_w - 16.0f * scale, track_h),
+        r.drawText(ZSlate::UIRect(right_x + 8.0f * scale, lanes_top + 8.0f * scale, right_w - 16.0f * scale, track_h),
                    "No tracks. Use the toolbar to add a track.",
                    12.0f * scale,
                    kDimColor,
-                   TextAnchor::MiddleLeft,
-                   TextWrapMode::NoWrap);
+                   ZSlate::TextAnchor::MiddleLeft,
+                   ZSlate::TextWrapMode::NoWrap);
     }
 
     // Playhead across the lanes.
     const float head_px = (m_CurrentTime - m_TimeRangeStart) * pps;
     if (head_px >= 0.0f && head_px <= right_w)
     {
-        r.drawQuad(UIRect(right_x + head_px, region.y, 2.0f, region.height), kPlayhead);
+        r.drawQuad(ZSlate::UIRect(right_x + head_px, region.y, 2.0f, region.height), kPlayhead);
     }
     r.popClipRect();
 }
@@ -320,9 +320,9 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const UIRect& region, floa
 // ---------------------------------------------------------------------------
 // Manual canvas mouse interaction
 // ---------------------------------------------------------------------------
-void ZSlateTimelineWindow::HandleCanvasMouse(const UIRect& region,
+void ZSlateTimelineWindow::HandleCanvasMouse(const ZSlate::UIRect& region,
                                              float scale,
-                                             const Vector2& mouse,
+                                             const ZSlate::Vector2& mouse,
                                              bool over_canvas,
                                              bool clicked,
                                              bool down,
@@ -465,8 +465,8 @@ void ZSlateTimelineWindow::OnGUI()
     // P10c: native-host panels source their leaf rect from EditorView::NativeRect()
     // (no ImGui::Begin / item to probe); otherwise use the ImGui content region.
     const float* native_rect = NativeRect();
-    Vector2 pos(native_rect[0], native_rect[1]);
-    Vector2 avail(native_rect[2], native_rect[3]);
+    ZSlate::Vector2 pos(native_rect[0], native_rect[1]);
+    ZSlate::Vector2 avail(native_rect[2], native_rect[3]);
     if (avail.x < 1.0f)
         avail.x = 1.0f;
     if (avail.y < 1.0f)
@@ -476,9 +476,9 @@ void ZSlateTimelineWindow::OnGUI()
     const float toolbar_h = std::min(avail.y, std::max(m_Toolbar->GetDesiredSize().y, 26.0f * ui_scale));
     m_ToolbarHeight = toolbar_h;
 
-    const UIRect toolbar_region(pos.x, pos.y, avail.x, toolbar_h);
-    const FGeometry toolbar_geom(Vector2(pos.x, pos.y), Vector2(avail.x, toolbar_h));
-    const UIRect canvas_region(pos.x, pos.y + toolbar_h, avail.x, avail.y - toolbar_h);
+    const ZSlate::UIRect toolbar_region(pos.x, pos.y, avail.x, toolbar_h);
+    const FGeometry toolbar_geom(ZSlate::Vector2(pos.x, pos.y), ZSlate::Vector2(avail.x, toolbar_h));
+    const ZSlate::UIRect canvas_region(pos.x, pos.y + toolbar_h, avail.x, avail.y - toolbar_h);
 
     // ---- Paint --------------------------------------------------------------
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
@@ -501,8 +501,8 @@ void ZSlateTimelineWindow::OnGUI()
     // P11a: input / hover / wheel / keyboard all come from the GLFW-backed EditorSlateHost.
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
-    host.BeginSurface(surface_id, UIRect(pos.x, pos.y, avail.x, avail.y), ZSlate::ESurfaceLayer::Panels);
-    const Vector2 mouse = host.GetPointerPos();
+    host.BeginSurface(surface_id, ZSlate::UIRect(pos.x, pos.y, avail.x, avail.y), ZSlate::ESurfaceLayer::Panels);
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool over_canvas = host.IsSurfaceHovered(surface_id, mouse);
     const bool left_down = host.IsLeftDown();
     const float wheel = over_canvas ? host.GetWheelDelta() : 0.0f;
@@ -720,30 +720,30 @@ const char* ZSlateTimelineWindow::TrackTypeName(TimelineTrack* track) const
     return "Unknown";
 }
 
-UIColor ZSlateTimelineWindow::TrackColor(TimelineTrack* track) const
+ZSlate::UIColor ZSlateTimelineWindow::TrackColor(TimelineTrack* track) const
 {
     if (dynamic_cast<AnimationTimelineTrack*>(track))
-        return UIColor(0.39f, 0.59f, 1.0f, 0.39f);
+        return ZSlate::UIColor(0.39f, 0.59f, 1.0f, 0.39f);
     if (dynamic_cast<ActivationTimelineTrack*>(track))
-        return UIColor(0.59f, 0.39f, 1.0f, 0.39f);
+        return ZSlate::UIColor(0.59f, 0.39f, 1.0f, 0.39f);
     if (dynamic_cast<AudioTimelineTrack*>(track))
-        return UIColor(1.0f, 0.59f, 0.39f, 0.39f);
+        return ZSlate::UIColor(1.0f, 0.59f, 0.39f, 0.39f);
     if (dynamic_cast<EventTimelineTrack*>(track))
-        return UIColor(0.39f, 1.0f, 0.59f, 0.39f);
-    return UIColor(0.50f, 0.50f, 0.50f, 0.39f);
+        return ZSlate::UIColor(0.39f, 1.0f, 0.59f, 0.39f);
+    return ZSlate::UIColor(0.50f, 0.50f, 0.50f, 0.39f);
 }
 
-UIColor ZSlateTimelineWindow::ClipColor(TimelineClip* clip) const
+ZSlate::UIColor ZSlateTimelineWindow::ClipColor(TimelineClip* clip) const
 {
     if (dynamic_cast<AnimationTimelineClip*>(clip))
-        return UIColor(0.39f, 0.59f, 1.0f, 1.0f);
+        return ZSlate::UIColor(0.39f, 0.59f, 1.0f, 1.0f);
     if (dynamic_cast<ActivationTimelineClip*>(clip))
-        return UIColor(0.59f, 0.39f, 1.0f, 1.0f);
+        return ZSlate::UIColor(0.59f, 0.39f, 1.0f, 1.0f);
     if (dynamic_cast<AudioTimelineClip*>(clip))
-        return UIColor(1.0f, 0.59f, 0.39f, 1.0f);
+        return ZSlate::UIColor(1.0f, 0.59f, 0.39f, 1.0f);
     if (dynamic_cast<EventTimelineClip*>(clip))
-        return UIColor(0.39f, 1.0f, 0.59f, 1.0f);
-    return UIColor(0.50f, 0.50f, 0.50f, 1.0f);
+        return ZSlate::UIColor(0.39f, 1.0f, 0.59f, 1.0f);
+    return ZSlate::UIColor(0.50f, 0.50f, 0.50f, 1.0f);
 }
 
 std::string ZSlateTimelineWindow::ClipDisplayName(TimelineClip* clip) const

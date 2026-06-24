@@ -51,23 +51,23 @@ namespace
     constexpr int k_scene_grid_half_major_count = 10;
     constexpr int k_scene_grid_half_minor_count = k_scene_grid_half_major_count * k_scene_grid_major_line_every;
 
-    const UIColor kToolbarBg(0.13f, 0.13f, 0.15f, 1.0f);
-    const UIColor kBtnNormal(0.20f, 0.20f, 0.23f, 1.0f);
-    const UIColor kBtnHover(0.28f, 0.28f, 0.33f, 1.0f);
-    const UIColor kBtnSelected(0.20f, 0.42f, 0.68f, 1.0f);
-    const UIColor kBtnSelectedHover(0.26f, 0.50f, 0.78f, 1.0f);
-    const UIColor kBtnText(0.90f, 0.91f, 0.94f, 1.0f);
-    const UIColor kBtnTextDim(0.55f, 0.56f, 0.60f, 1.0f);
-    const UIColor kLabelColor(0.78f, 0.80f, 0.85f, 1.0f);
-    const UIColor kValueColor(0.88f, 0.90f, 0.94f, 1.0f);
+    const ZSlate::UIColor kToolbarBg(0.13f, 0.13f, 0.15f, 1.0f);
+    const ZSlate::UIColor kBtnNormal(0.20f, 0.20f, 0.23f, 1.0f);
+    const ZSlate::UIColor kBtnHover(0.28f, 0.28f, 0.33f, 1.0f);
+    const ZSlate::UIColor kBtnSelected(0.20f, 0.42f, 0.68f, 1.0f);
+    const ZSlate::UIColor kBtnSelectedHover(0.26f, 0.50f, 0.78f, 1.0f);
+    const ZSlate::UIColor kBtnText(0.90f, 0.91f, 0.94f, 1.0f);
+    const ZSlate::UIColor kBtnTextDim(0.55f, 0.56f, 0.60f, 1.0f);
+    const ZSlate::UIColor kLabelColor(0.78f, 0.80f, 0.85f, 1.0f);
+    const ZSlate::UIColor kValueColor(0.88f, 0.90f, 0.94f, 1.0f);
 
-    std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const UIColor& color)
+    std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color)
     {
         auto t = std::make_shared<STextBlock>();
         t->Text = text;
         t->FontSize = font_size;
         t->Color = color;
-        t->Alignment = TextAnchor::MiddleLeft;
+        t->Alignment = ZSlate::TextAnchor::MiddleLeft;
         return t;
     }
 
@@ -82,7 +82,7 @@ namespace
 
     // Draw a straight line as a chain of short axis-aligned quads (UIRenderer has no
     // native line primitive; same approach as ZSlateAnimationWindow).
-    void DrawLineQuads(UIRenderer& r, const Vector2& a, const Vector2& b, const UIColor& color, float thickness)
+    void DrawLineQuads(UIRenderer& r, const ZSlate::Vector2& a, const ZSlate::Vector2& b, const ZSlate::UIColor& color, float thickness)
     {
         // Draw the whole segment as ONE oriented quad (2 triangles) via drawConvexPoly,
         // instead of a chain of 1x1 quads (which was O(length-in-pixels) per line and
@@ -93,35 +93,35 @@ namespace
         const float half = std::max(0.5f, thickness * 0.5f);
         if (dist < 1e-3f)
         {
-            r.drawQuad(UIRect(a.x - half, a.y - half, half * 2.0f, half * 2.0f), color);
+            r.drawQuad(ZSlate::UIRect(a.x - half, a.y - half, half * 2.0f, half * 2.0f), color);
             return;
         }
         const float nx = -dy / dist * half;  // screen-space normal scaled to half thickness
         const float ny = dx / dist * half;
-        const Vector2 pts[4] = {
-            Vector2(a.x + nx, a.y + ny),
-            Vector2(b.x + nx, b.y + ny),
-            Vector2(b.x - nx, b.y - ny),
-            Vector2(a.x - nx, a.y - ny),
+        const ZSlate::Vector2 pts[4] = {
+            ZSlate::Vector2(a.x + nx, a.y + ny),
+            ZSlate::Vector2(b.x + nx, b.y + ny),
+            ZSlate::Vector2(b.x - nx, b.y - ny),
+            ZSlate::Vector2(a.x - nx, a.y - ny),
         };
         r.drawConvexPoly(pts, 4, color);
     }
 
-    UIColor getSceneGridLineColor(int line_index, bool is_vertical_line)
+    ZSlate::UIColor getSceneGridLineColor(int line_index, bool is_vertical_line)
     {
         if (is_vertical_line && line_index == 0)
-            return UIColor(89.0f / 255.0f, 204.0f / 255.0f, 115.0f / 255.0f, 217.0f / 255.0f);
+            return ZSlate::UIColor(89.0f / 255.0f, 204.0f / 255.0f, 115.0f / 255.0f, 217.0f / 255.0f);
         if (!is_vertical_line && line_index == 0)
-            return UIColor(217.0f / 255.0f, 89.0f / 255.0f, 89.0f / 255.0f, 217.0f / 255.0f);
+            return ZSlate::UIColor(217.0f / 255.0f, 89.0f / 255.0f, 89.0f / 255.0f, 217.0f / 255.0f);
         if (line_index % k_scene_grid_major_line_every == 0)
-            return UIColor(148.0f / 255.0f, 161.0f / 255.0f, 184.0f / 255.0f, 140.0f / 255.0f);
-        return UIColor(120.0f / 255.0f, 133.0f / 255.0f, 153.0f / 255.0f, 90.0f / 255.0f);
+            return ZSlate::UIColor(148.0f / 255.0f, 161.0f / 255.0f, 184.0f / 255.0f, 140.0f / 255.0f);
+        return ZSlate::UIColor(120.0f / 255.0f, 133.0f / 255.0f, 153.0f / 255.0f, 90.0f / 255.0f);
     }
 
     [[maybe_unused]] bool projectWorldToSceneRect(const Vector3& world,
                                  const Matrix4x4& view_proj,
-                                 const UIRect& rect,
-                                 Vector2& out_screen,
+                                 const ZSlate::UIRect& rect,
+                                 ZSlate::Vector2& out_screen,
                                  float& out_ndc_z)
     {
         Vector4 clip = view_proj * Vector4(world, 1.0f);
@@ -142,8 +142,8 @@ namespace
                        const Vector3& world_a,
                        const Vector3& world_b,
                        const Matrix4x4& view_proj,
-                       const UIRect& rect,
-                       const UIColor& color,
+                       const ZSlate::UIRect& rect,
+                       const ZSlate::UIColor& color,
                        float thickness = 1.0f)
     {
         Vector4 ca = view_proj * Vector4(world_a, 1.0f);
@@ -176,9 +176,9 @@ namespace
 
         const float inv_wa = 1.0f / ca.w;
         const float inv_wb = 1.0f / cb.w;
-        const Vector2 screen_a(rect.x + (ca.x * inv_wa + 1.0f) * 0.5f * rect.width,
+        const ZSlate::Vector2 screen_a(rect.x + (ca.x * inv_wa + 1.0f) * 0.5f * rect.width,
                                rect.y + (ca.y * inv_wa + 1.0f) * 0.5f * rect.height);
-        const Vector2 screen_b(rect.x + (cb.x * inv_wb + 1.0f) * 0.5f * rect.width,
+        const ZSlate::Vector2 screen_b(rect.x + (cb.x * inv_wb + 1.0f) * 0.5f * rect.width,
                                rect.y + (cb.y * inv_wb + 1.0f) * 0.5f * rect.height);
 
         DrawLineQuads(renderer, screen_a, screen_b, color, thickness);
@@ -190,8 +190,8 @@ namespace
                        const Vector3& tangent_v,
                        float radius,
                        const Matrix4x4& view_proj,
-                       const UIRect& rect,
-                       const UIColor& color,
+                       const ZSlate::UIRect& rect,
+                       const ZSlate::UIColor& color,
                        float thickness = 2.5f,
                        int segments = 48)
     {
@@ -216,7 +216,7 @@ namespace
         }
     }
 
-    void DrawEditorGridOverlay(UIRenderer& renderer, const UIRect& rect, const std::shared_ptr<RenderCamera>& camera)
+    void DrawEditorGridOverlay(UIRenderer& renderer, const ZSlate::UIRect& rect, const std::shared_ptr<RenderCamera>& camera)
     {
         if (rect.width <= 1.0f || rect.height <= 1.0f || !camera)
             return;
@@ -246,7 +246,7 @@ namespace
         for (int x_index = min_x_index; x_index <= max_x_index; ++x_index)
         {
             const float x = static_cast<float>(x_index) * minor_spacing;
-            const UIColor color = getSceneGridLineColor(x_index, true);
+            const ZSlate::UIColor color = getSceneGridLineColor(x_index, true);
             drawWorldLine(renderer, Vector3(x, y_span_min, k_scene_grid_plane_height),
                           Vector3(x, y_span_max, k_scene_grid_plane_height), view_proj, rect, color);
         }
@@ -256,7 +256,7 @@ namespace
         for (int y_index = min_y_index; y_index <= max_y_index; ++y_index)
         {
             const float y = static_cast<float>(y_index) * minor_spacing;
-            const UIColor color = getSceneGridLineColor(y_index, false);
+            const ZSlate::UIColor color = getSceneGridLineColor(y_index, false);
             drawWorldLine(renderer, Vector3(x_span_min, y, k_scene_grid_plane_height),
                           Vector3(x_span_max, y, k_scene_grid_plane_height), view_proj, rect, color);
         }
@@ -264,7 +264,7 @@ namespace
 
     // Mode-specific transform gizmo overlay (UE-style: arrows / rotation rings / scale boxes).
     void DrawTransformGizmoOverlay(UIRenderer& renderer,
-                                     const UIRect& rect,
+                                     const ZSlate::UIRect& rect,
                                      const std::shared_ptr<RenderCamera>& camera,
                                      EditorSceneManager& scene_manager)
     {
@@ -309,11 +309,11 @@ namespace
         constexpr float k_rotate_thickness = 2.5f;
         constexpr float k_scale_thickness = 3.0f;
         constexpr float k_scale_handle_px = 7.0f;
-        const UIColor axis_red(1.0f, 0.25f, 0.25f, 1.0f);
-        const UIColor axis_green(0.25f, 1.0f, 0.35f, 1.0f);
-        const UIColor axis_blue(0.35f, 0.55f, 1.0f, 1.0f);
+        const ZSlate::UIColor axis_red(1.0f, 0.25f, 0.25f, 1.0f);
+        const ZSlate::UIColor axis_green(0.25f, 1.0f, 0.35f, 1.0f);
+        const ZSlate::UIColor axis_blue(0.35f, 0.55f, 1.0f, 1.0f);
 
-        auto projectWorldToScreen = [&](const Vector3& world, Vector2& out_screen) -> bool {
+        auto projectWorldToScreen = [&](const Vector3& world, ZSlate::Vector2& out_screen) -> bool {
             Vector4 clip = view_proj * Vector4(world, 1.0f);
             constexpr float w_min = 1e-4f;
             if (clip.w <= w_min)
@@ -326,20 +326,20 @@ namespace
             return true;
         };
 
-        auto drawTranslateAxis = [&](const Vector3& dir, const UIColor& color) {
+        auto drawTranslateAxis = [&](const Vector3& dir, const ZSlate::UIColor& color) {
             drawWorldLine(renderer, pivot, pivot + dir * translate_axis_len, view_proj, rect, color, k_translate_thickness);
         };
 
-        auto drawScaleAxis = [&](const Vector3& dir, float local_scale_component, const UIColor& color) {
+        auto drawScaleAxis = [&](const Vector3& dir, float local_scale_component, const ZSlate::UIColor& color) {
             const float axis_len = EditorSceneManager::ComputeScaleModeAxisLength(
                 *camera, pivot, rect.width, rect.height, local_scale_component);
             const Vector3 end = pivot + dir * axis_len;
             drawWorldLine(renderer, pivot, end, view_proj, rect, color, k_scale_thickness);
-            Vector2 screen_end {};
+            ZSlate::Vector2 screen_end {};
             if (projectWorldToScreen(end, screen_end))
             {
                 const float half = k_scale_handle_px * 0.5f;
-                renderer.drawQuad(UIRect(screen_end.x - half, screen_end.y - half, k_scale_handle_px, k_scale_handle_px),
+                renderer.drawQuad(ZSlate::UIRect(screen_end.x - half, screen_end.y - half, k_scale_handle_px, k_scale_handle_px),
                                   color);
             }
         };
@@ -381,8 +381,8 @@ ZSlateSceneWindow::ZSlateSceneWindow(EditorUI* editor_ui)
 
 void ZSlateSceneWindow::OnViewportHidden()
 {
-    GET_SYSTEM(EditorInputManager)->setEngineWindowPos(Vector2(0.0f, 0.0f));
-    GET_SYSTEM(EditorInputManager)->setEngineWindowSize(Vector2(0.0f, 0.0f));
+    GET_SYSTEM(EditorInputManager)->setEngineWindowPos(ZSlate::Vector2(0.0f, 0.0f));
+    GET_SYSTEM(EditorInputManager)->setEngineWindowSize(ZSlate::Vector2(0.0f, 0.0f));
     m_TrackContextClick = false;
     m_IsRotatingSceneView = false;
     m_IsPanningSceneView = false;
@@ -402,7 +402,7 @@ std::shared_ptr<SWidget> ZSlateSceneWindow::MakeAxisButton(const char* label,
                                                            float scale)
 {
     auto btn = std::make_shared<SButton>();
-    btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+    btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
     btn->VAlign = EVerticalAlignment::Center;
     btn->NormalColor = selected ? kBtnSelected : kBtnNormal;
     btn->HoverColor = disabled ? (selected ? kBtnSelected : kBtnNormal)
@@ -426,9 +426,9 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
         render_system != nullptr && render_system->IsSkyboxVisible(ViewportType::scene);
 
     auto bar = std::make_shared<SHorizontalBox>();
-    const FMargin gap(3.0f * scale, 0.0f);
+    const ZSlate::FMargin gap(3.0f * scale, 0.0f);
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(8.0f * scale, 0.0f))).AutoSize();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(8.0f * scale, 0.0f))).AutoSize();
     bar->AddSlot(MakeAxisButton("Trans", EditorAxisMode::TranslateMode, mode == EditorAxisMode::TranslateMode, false, scale))
         .AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(gap);
     bar->AddSlot(MakeAxisButton("Rotate", EditorAxisMode::RotateMode, mode == EditorAxisMode::RotateMode, scene_view_2d, scale))
@@ -439,7 +439,7 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
     // 2D toggle.
     {
         auto btn = std::make_shared<SButton>();
-        btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+        btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
         btn->VAlign = EVerticalAlignment::Center;
         btn->NormalColor = scene_view_2d ? kBtnSelected : kBtnNormal;
         btn->HoverColor = scene_view_2d ? kBtnSelectedHover : kBtnHover;
@@ -456,7 +456,7 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
     // Skybox visibility (pressed = on, same affordance as the 2D toggle).
     {
         auto btn = std::make_shared<SButton>();
-        btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+        btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
         btn->VAlign = EVerticalAlignment::Center;
         btn->NormalColor = skybox_visible ? kBtnSelected : kBtnNormal;
         btn->HoverColor = skybox_visible ? kBtnSelectedHover : kBtnHover;
@@ -471,11 +471,11 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
     }
 
     // Stretch spacer pushes the right-hand tools to the far edge.
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(0.0f, 0.0f))).Fill(1.0f);
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(0.0f, 0.0f))).Fill(1.0f);
 
     {
         auto cam = std::make_shared<SButton>();
-        cam->Padding = FMargin(8.0f * scale, 3.0f * scale);
+        cam->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
         cam->VAlign = EVerticalAlignment::Center;
         cam->NormalColor = kBtnNormal;
         cam->HoverColor = kBtnHover;
@@ -490,7 +490,7 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
             }
             m_Popup.Close();
             const FGeometry g = m_CameraButton ? m_CameraButton->GetCachedGeometry() : FGeometry();
-            m_CameraPanelAnchor = Vector2(g.AbsolutePosition.x, g.AbsolutePosition.y + g.LocalSize.y + 2.0f);
+            m_CameraPanelAnchor = ZSlate::Vector2(g.AbsolutePosition.x, g.AbsolutePosition.y + g.LocalSize.y + 2.0f);
             BuildCameraPanel(scale);
             m_CameraPanelInput.Reset();
             m_CameraPanelOpen = true;
@@ -499,9 +499,9 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
         bar->AddSlot(cam).AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(gap);
     }
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(0.0f, 0.0f)))
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(0.0f, 0.0f)))
         .AutoSize()
-        .SetPadding(FMargin(0.0f, 0.0f, 5.0f * scale, 0.0f));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 5.0f * scale, 0.0f));
 
     auto bg = std::make_shared<SBorder>();
     bg->BackgroundColor = kToolbarBg;
@@ -515,7 +515,7 @@ void ZSlateSceneWindow::BuildToolbar(float scale)
 // Popups
 // ----------------------------------------------------------------------------
 
-void ZSlateSceneWindow::OpenContextMenu(const Vector2& anchor, float scale)
+void ZSlateSceneWindow::OpenContextMenu(const ZSlate::Vector2& anchor, float scale)
 {
     m_CameraPanelOpen = false;
     m_Popup.Open(anchor, scale, [](SMenu& menu, float s) {
@@ -567,7 +567,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
     auto add_header = [&](const char* text) {
         column->AddSlot(MakeText(text, 14.0f * scale, kValueColor))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, row_pad, 0.0f, row_pad));
+            .SetPadding(ZSlate::FMargin(0.0f, row_pad, 0.0f, row_pad));
     };
 
     // A label + control row; `control` fills the remaining width.
@@ -579,7 +579,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
         label_box->SetContent(MakeText(label, font, kLabelColor));
         row->AddSlot(label_box).AutoSize().SetVAlign(EVerticalAlignment::Center);
         row->AddSlot(control).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
-        column->AddSlot(row).AutoSize().SetPadding(FMargin(0.0f, row_pad * 0.5f, 0.0f, row_pad * 0.5f));
+        column->AddSlot(row).AutoSize().SetPadding(ZSlate::FMargin(0.0f, row_pad * 0.5f, 0.0f, row_pad * 0.5f));
     };
 
     add_header("Scene Camera");
@@ -594,7 +594,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
         char buf[32];
         std::snprintf(buf, sizeof(buf), "%.0f", fov);
         auto value_text = MakeText(buf, font, kValueColor);
-        value_text->Alignment = TextAnchor::MiddleRight;
+        value_text->Alignment = ZSlate::TextAnchor::MiddleRight;
 
         auto slider = std::make_shared<SSlider>();
         slider->Height = 16.0f * scale;
@@ -618,7 +618,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
         vbox->WidthOverride = 36.0f * scale;
         vbox->VAlign = EVerticalAlignment::Center;
         vbox->SetContent(value_text);
-        hb->AddSlot(vbox).AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(FMargin(6.0f * scale, 0.0f, 0.0f, 0.0f));
+        hb->AddSlot(vbox).AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(ZSlate::FMargin(6.0f * scale, 0.0f, 0.0f, 0.0f));
         add_row("Field of View", hb);
     }
 
@@ -637,7 +637,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
     if (cam)
     {
         const bool dim = m_SceneCameraDynamicClipping;
-        const UIColor entry_text = dim ? UIColor(0.55f, 0.56f, 0.60f, 1.0f) : UIColor(0.92f, 0.93f, 0.96f, 1.0f);
+        const ZSlate::UIColor entry_text = dim ? ZSlate::UIColor(0.55f, 0.56f, 0.60f, 1.0f) : ZSlate::UIColor(0.92f, 0.93f, 0.96f, 1.0f);
 
         auto near_box = std::make_shared<SEditableTextBox>();
         auto far_box = std::make_shared<SEditableTextBox>();
@@ -758,7 +758,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%.3g", speed);
             auto value_text = MakeText(buf, font, kValueColor);
-            value_text->Alignment = TextAnchor::MiddleRight;
+            value_text->Alignment = ZSlate::TextAnchor::MiddleRight;
 
             auto slider = std::make_shared<SSlider>();
             slider->Height = 16.0f * scale;
@@ -781,7 +781,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
             vbox->WidthOverride = 40.0f * scale;
             vbox->VAlign = EVerticalAlignment::Center;
             vbox->SetContent(value_text);
-            hb->AddSlot(vbox).AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(FMargin(6.0f * scale, 0.0f, 0.0f, 0.0f));
+            hb->AddSlot(vbox).AutoSize().SetVAlign(EVerticalAlignment::Center).SetPadding(ZSlate::FMargin(6.0f * scale, 0.0f, 0.0f, 0.0f));
             add_row("Camera Speed", hb);
         }
 
@@ -851,8 +851,8 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
     auto panel = std::make_shared<SBox>();
     panel->WidthOverride = 320.0f * scale;
     auto border = std::make_shared<SBorder>();
-    border->BackgroundColor = UIColor(0.16f, 0.16f, 0.18f, 0.98f);
-    border->Padding = FMargin(10.0f * scale);
+    border->BackgroundColor = ZSlate::UIColor(0.16f, 0.16f, 0.18f, 0.98f);
+    border->Padding = ZSlate::FMargin(10.0f * scale);
     border->HAlign = EHorizontalAlignment::Fill;
     border->VAlign = EVerticalAlignment::Top;
     border->SetContent(column);
@@ -864,7 +864,7 @@ void ZSlateSceneWindow::BuildCameraPanel(float scale)
 // Camera preview overlay (native chrome + RenderSystem composite)
 // ----------------------------------------------------------------------------
 
-void ZSlateSceneWindow::UpdateCameraPreviewOverlay(const UIRect& work_rect,
+void ZSlateSceneWindow::UpdateCameraPreviewOverlay(const ZSlate::UIRect& work_rect,
                                                    float viewport_origin_x,
                                                    float viewport_origin_y)
 {
@@ -923,12 +923,12 @@ void ZSlateSceneWindow::UpdateCameraPreviewOverlay(const UIRect& work_rect,
     GET_SYSTEM(RenderSystem)->SetCameraPreview(m_SelectedCameraPreviewCamera, preview_viewport,
                                                std::string(selected_object->name.c_str()));
 
-    m_CameraPreviewFrame = UIRect(px, py, preview_width, preview_height);
+    m_CameraPreviewFrame = ZSlate::UIRect(px, py, preview_width, preview_height);
     m_CameraPreviewVisible = true;
     m_CameraPreviewTitle = selected_object->name.empty() ? "Camera Preview" : selected_object->name.c_str();
 }
 
-void ZSlateSceneWindow::UpdateViewportForWorkRect(const UIRect& work_rect)
+void ZSlateSceneWindow::UpdateViewportForWorkRect(const ZSlate::UIRect& work_rect)
 {
     if (work_rect.width <= 0.0f || work_rect.height <= 0.0f)
     {
@@ -937,10 +937,10 @@ void ZSlateSceneWindow::UpdateViewportForWorkRect(const UIRect& work_rect)
     }
 
     const ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const Vector2 fb_scale = host.GetFramebufferScale();
-    const Vector2 display_pos = host.GetDisplayPos();
+    const ZSlate::Vector2 fb_scale = host.GetFramebufferScale();
+    const ZSlate::Vector2 display_pos = host.GetDisplayPos();
 
-    Vector2 render_target_window_pos;
+    ZSlate::Vector2 render_target_window_pos;
     render_target_window_pos.x = (work_rect.x - display_pos.x) * fb_scale.x;
     render_target_window_pos.y = (work_rect.y - display_pos.y) * fb_scale.y;
 
@@ -955,7 +955,7 @@ void ZSlateSceneWindow::UpdateViewportForWorkRect(const UIRect& work_rect)
 // Cross-window drag-drop consumption (asset placement / object reparent)
 // ----------------------------------------------------------------------------
 
-void ZSlateSceneWindow::HandleDragDropDrop(bool chrome_capturing, const UIRect& work_rect)
+void ZSlateSceneWindow::HandleDragDropDrop(bool chrome_capturing, const ZSlate::UIRect& work_rect)
 {
     // Cache the in-flight op while a drag is published. On the release frame the
     // source router may have already cleared the channel (draw-order dependent),
@@ -964,7 +964,7 @@ void ZSlateSceneWindow::HandleDragDropDrop(bool chrome_capturing, const UIRect& 
         m_PendingDragOp = active;
 
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool left_down = host.IsLeftDown();
     const bool release = host.WasLeftReleasedThisFrame();
 
@@ -972,7 +972,7 @@ void ZSlateSceneWindow::HandleDragDropDrop(bool chrome_capturing, const UIRect& 
         work_rect.Contains(mouse))
     {
         // The object under the cursor becomes the drop parent (invalid = root).
-        const Vector2 picked_uv((mouse.x - work_rect.x) / work_rect.width, (mouse.y - work_rect.y) / work_rect.height);
+        const ZSlate::Vector2 picked_uv((mouse.x - work_rect.x) / work_rect.width, (mouse.y - work_rect.y) / work_rect.height);
         const GObjectID parent_id = GET_SYSTEM(EditorSceneManager)->PickGObjectAtViewportUv(picked_uv);
 
         const std::string& type = m_PendingDragOp->PayloadType;
@@ -1003,7 +1003,7 @@ void ZSlateSceneWindow::HandleDragDropDrop(bool chrome_capturing, const UIRect& 
 // Navigation / picking (input polling, unchanged behaviour)
 // ----------------------------------------------------------------------------
 
-void ZSlateSceneWindow::HandleSceneGizmoDrag(bool chrome_capturing, const UIRect& work_rect)
+void ZSlateSceneWindow::HandleSceneGizmoDrag(bool chrome_capturing, const ZSlate::UIRect& work_rect)
 {
     EditorSceneManager* scene_manager = GET_SYSTEM(EditorSceneManager);
     if (scene_manager == nullptr || chrome_capturing || work_rect.width <= 0.0f || work_rect.height <= 0.0f)
@@ -1012,13 +1012,13 @@ void ZSlateSceneWindow::HandleSceneGizmoDrag(bool chrome_capturing, const UIRect
     }
 
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
     const bool is_hovered =
         work_rect.Contains(mouse) && host.IsSurfaceHovered(surface_id, mouse);
 
-    const Vector2 viewport_pos(work_rect.x, work_rect.y);
-    const Vector2 viewport_size(work_rect.width, work_rect.height);
+    const ZSlate::Vector2 viewport_pos(work_rect.x, work_rect.y);
+    const ZSlate::Vector2 viewport_size(work_rect.width, work_rect.height);
     if (is_hovered && !m_IsDraggingGizmo)
     {
         const size_t axis_under_cursor =
@@ -1041,7 +1041,7 @@ void ZSlateSceneWindow::HandleSceneGizmoDrag(bool chrome_capturing, const UIRect
 
     if (m_IsDraggingGizmo && host.IsLeftDown())
     {
-        const Vector2 delta = mouse - m_GizmoDragLastMouse;
+        const ZSlate::Vector2 delta = mouse - m_GizmoDragLastMouse;
         if (delta.squaredLength() > 0.0f)
         {
             scene_manager->MoveEntity(mouse.x,
@@ -1064,7 +1064,7 @@ void ZSlateSceneWindow::HandleSceneGizmoDrag(bool chrome_capturing, const UIRect
     }
 }
 
-void ZSlateSceneWindow::HandleSceneViewNavigation(bool chrome_capturing, const UIRect& work_rect)
+void ZSlateSceneWindow::HandleSceneViewNavigation(bool chrome_capturing, const ZSlate::UIRect& work_rect)
 {
     RHI* rhi = GET_SYSTEM(RHI);
     if (rhi == nullptr || rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
@@ -1074,7 +1074,7 @@ void ZSlateSceneWindow::HandleSceneViewNavigation(bool chrome_capturing, const U
         return;
 
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
 
     const bool is_hovered = !chrome_capturing && work_rect.Contains(mouse) && host.IsSurfaceHovered(surface_id, mouse);
@@ -1113,7 +1113,7 @@ void ZSlateSceneWindow::HandleSceneViewNavigation(bool chrome_capturing, const U
     if (is_hovered && mouse_wheel != 0.0f)
         ZoomSceneViewCamera(GET_SYSTEM(EditorSceneManager)->getEditorCamera(), mouse_wheel);
 
-    const Vector2 mouse_delta = host.GetPointerDelta();
+    const ZSlate::Vector2 mouse_delta = host.GetPointerDelta();
     const bool is_alt_left_pan_down = m_IsAltLeftPanningSceneView && host.IsLeftDown();
     const bool is_middle_pan_down = !m_IsAltLeftPanningSceneView && host.IsMiddleDown();
 
@@ -1125,7 +1125,7 @@ void ZSlateSceneWindow::HandleSceneViewNavigation(bool chrome_capturing, const U
             if (m_IsRotatingSceneView && host.IsRightDown())
             {
                 const float angular_velocity = 180.0f / std::max(work_rect.width, work_rect.height);
-                editor_camera->Rotate(Vector2(mouse_delta.y, mouse_delta.x) * angular_velocity);
+                editor_camera->Rotate(ZSlate::Vector2(mouse_delta.y, mouse_delta.x) * angular_velocity);
                 m_TrackContextClick = false;
             }
             else if (m_IsPanningSceneView && (is_middle_pan_down || is_alt_left_pan_down))
@@ -1151,7 +1151,7 @@ void ZSlateSceneWindow::HandleSceneViewNavigation(bool chrome_capturing, const U
 }
 
 void ZSlateSceneWindow::PanSceneViewCamera(const std::shared_ptr<RenderCamera>& editor_camera,
-                                           const Vector2& mouse_delta,
+                                           const ZSlate::Vector2& mouse_delta,
                                            float viewport_height) const
 {
     if (!editor_camera || viewport_height <= 1.0f)
@@ -1234,13 +1234,13 @@ void ZSlateSceneWindow::MoveSceneViewCameraWithKeyboard(const std::shared_ptr<Re
                         GET_SYSTEM(EditorInputManager)->getCameraSpeed() * speed_multiplier);
 }
 
-void ZSlateSceneWindow::HandleContextMenu(bool chrome_capturing, const UIRect& work_rect, float scale)
+void ZSlateSceneWindow::HandleContextMenu(bool chrome_capturing, const ZSlate::UIRect& work_rect, float scale)
 {
     if (work_rect.width <= 0.0f || work_rect.height <= 0.0f)
         return;
 
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
 
     const bool is_hovered = !chrome_capturing && work_rect.Contains(mouse) && host.IsSurfaceHovered(surface_id, mouse);
@@ -1256,13 +1256,13 @@ void ZSlateSceneWindow::HandleContextMenu(bool chrome_capturing, const UIRect& w
 
     if (m_TrackContextClick && right_released)
     {
-        const Vector2 delta(mouse.x - m_ContextClickPos.x, mouse.y - m_ContextClickPos.y);
+        const ZSlate::Vector2 delta(mouse.x - m_ContextClickPos.x, mouse.y - m_ContextClickPos.y);
         const bool is_click = (delta.x * delta.x + delta.y * delta.y) <= 16.0f;
         m_TrackContextClick = false;
 
         if (!m_IsRotatingSceneView && is_click && work_rect.Contains(m_ContextClickPos))
         {
-            Vector2 picked_uv((m_ContextClickPos.x - work_rect.x) / work_rect.width,
+            ZSlate::Vector2 picked_uv((m_ContextClickPos.x - work_rect.x) / work_rect.width,
                               (m_ContextClickPos.y - work_rect.y) / work_rect.height);
             const GObjectID picked_gobject_id = GET_SYSTEM(EditorSceneManager)->PickGObjectAtViewportUv(picked_uv);
             if (picked_gobject_id != k_invalid_gobject_id)
@@ -1332,19 +1332,19 @@ void ZSlateSceneWindow::OnGUI()
     m_Toolbar->CacheDesiredSize();
     const float toolbar_h = std::min(avail_h, std::max(m_Toolbar->GetDesiredSize().y, 26.0f * ui_scale));
 
-    UIRect toolbar_region {};
-    UIRect work_rect {};
-    UIRect panel_region(pos_x, pos_y, avail_w, avail_h);
+    ZSlate::UIRect toolbar_region {};
+    ZSlate::UIRect work_rect {};
+    ZSlate::UIRect panel_region(pos_x, pos_y, avail_w, avail_h);
     float viewport_origin_x = 0.0f;
     float viewport_origin_y = 0.0f;
-    UIRect viewport_rect {};
+    ZSlate::UIRect viewport_rect {};
 
     {
-        toolbar_region = UIRect(pos_x, pos_y, avail_w, toolbar_h);
-        work_rect = UIRect(pos_x, pos_y + toolbar_h, avail_w, std::max(1.0f, avail_h - toolbar_h));
+        toolbar_region = ZSlate::UIRect(pos_x, pos_y, avail_w, toolbar_h);
+        work_rect = ZSlate::UIRect(pos_x, pos_y + toolbar_h, avail_w, std::max(1.0f, avail_h - toolbar_h));
         viewport_origin_x = host.GetDisplayPos().x;
         viewport_origin_y = host.GetDisplayPos().y;
-        viewport_rect = UIRect(viewport_origin_x, viewport_origin_y, host.GetDisplaySize().x, host.GetDisplaySize().y);
+        viewport_rect = ZSlate::UIRect(viewport_origin_x, viewport_origin_y, host.GetDisplaySize().x, host.GetDisplaySize().y);
     }
 
     // Report the scene viewport rect (composited under this panel, below toolbar).
@@ -1353,17 +1353,17 @@ void ZSlateSceneWindow::OnGUI()
     UpdateCameraPreviewOverlay(work_rect, viewport_origin_x, viewport_origin_y);
 
     auto* viewport = GET_SYSTEM(RHI)->GetViewport(m_ViewportId);
-    GET_SYSTEM(EditorInputManager)->setEngineWindowPos(Vector2(viewport->x, viewport->y));
-    GET_SYSTEM(EditorInputManager)->setEngineWindowSize(Vector2(viewport->width, viewport->height));
+    GET_SYSTEM(EditorInputManager)->setEngineWindowPos(ZSlate::Vector2(viewport->x, viewport->y));
+    GET_SYSTEM(EditorInputManager)->setEngineWindowSize(ZSlate::Vector2(viewport->width, viewport->height));
 
     // ---- Input snapshot -----------------------------------------------------
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool left_down = host.IsLeftDown();
     const float wheel = host.GetWheelDelta();
     const bool over_toolbar = toolbar_region.width > 0.0f && toolbar_region.height > 0.0f && toolbar_region.Contains(mouse);
 
-    const FGeometry toolbar_geom(Vector2(toolbar_region.x, toolbar_region.y),
-                                 Vector2(toolbar_region.width, toolbar_region.height));
+    const FGeometry toolbar_geom(ZSlate::Vector2(toolbar_region.x, toolbar_region.y),
+                                 ZSlate::Vector2(toolbar_region.width, toolbar_region.height));
 
     // ---- Paint chrome through the native overlay (P9: the only renderer) ----
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
@@ -1390,11 +1390,11 @@ void ZSlateSceneWindow::OnGUI()
         // Camera preview chrome (live texture is composited by RenderSystem).
         if (m_CameraPreviewVisible)
         {
-            const UIRect& pr = m_CameraPreviewFrame;
-            renderer->drawRect(pr, UIColor(1.0f, 1.0f, 1.0f, 0.71f), 2.0f);
-            renderer->drawQuad(UIRect(pr.x, pr.y, pr.width, 22.0f), UIColor(0.0f, 0.0f, 0.0f, 0.67f));
-            renderer->drawText(UIRect(pr.x + 6.0f, pr.y + 4.0f, pr.width - 12.0f, 18.0f), m_CameraPreviewTitle,
-                               13.0f, UIColor(0.90f, 0.90f, 0.90f, 1.0f), TextAnchor::MiddleLeft);
+            const ZSlate::UIRect& pr = m_CameraPreviewFrame;
+            renderer->drawRect(pr, ZSlate::UIColor(1.0f, 1.0f, 1.0f, 0.71f), 2.0f);
+            renderer->drawQuad(ZSlate::UIRect(pr.x, pr.y, pr.width, 22.0f), ZSlate::UIColor(0.0f, 0.0f, 0.0f, 0.67f));
+            renderer->drawText(ZSlate::UIRect(pr.x + 6.0f, pr.y + 4.0f, pr.width - 12.0f, 18.0f), m_CameraPreviewTitle,
+                               13.0f, ZSlate::UIColor(0.90f, 0.90f, 0.90f, 1.0f), ZSlate::TextAnchor::MiddleLeft);
         }
 
         // Toolbar.
@@ -1413,7 +1413,7 @@ void ZSlateSceneWindow::OnGUI()
         if (m_CameraPanelOpen && m_CameraPanel)
         {
             m_CameraPanel->CacheDesiredSize();
-            const Vector2 size = m_CameraPanel->GetDesiredSize();
+            const ZSlate::Vector2 size = m_CameraPanel->GetDesiredSize();
             float px = std::min(m_CameraPanelAnchor.x, viewport_rect.x + viewport_rect.width - size.x);
             float py = std::min(m_CameraPanelAnchor.y, viewport_rect.y + viewport_rect.height - size.y);
             px = std::max(px, viewport_rect.x);
@@ -1422,7 +1422,7 @@ void ZSlateSceneWindow::OnGUI()
             FPaintContext ctx;
             ctx.Renderer = renderer;
             ctx.LayerId = 1;
-            m_CameraPanel->Paint(ctx, FGeometry(Vector2(px, py), size));
+            m_CameraPanel->Paint(ctx, FGeometry(ZSlate::Vector2(px, py), size));
         }
 
         // Popup (context menu) on top of everything else.

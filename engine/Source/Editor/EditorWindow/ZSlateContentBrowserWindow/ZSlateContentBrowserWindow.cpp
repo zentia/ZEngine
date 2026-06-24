@@ -38,21 +38,21 @@ using namespace ZSlate;
 
 namespace
 {
-const UIColor kTreePanelColor(0.08f, 0.08f, 0.10f, 1.0f);
-const UIColor kListPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
-const UIColor kTransparent(0.0f, 0.0f, 0.0f, 0.0f);
-const UIColor kHoverColor(0.25f, 0.27f, 0.32f, 0.65f);
-const UIColor kSelectedColor(0.18f, 0.35f, 0.58f, 1.0f);
-const UIColor kNameColor(0.86f, 0.88f, 0.92f, 1.0f);
-const UIColor kFolderColor(0.95f, 0.86f, 0.55f, 1.0f);
-const UIColor kSelectedTextColor(0.97f, 0.98f, 1.0f, 1.0f);
-const UIColor kTypeColor(0.50f, 0.52f, 0.58f, 1.0f);
-const UIColor kToggleColor(0.62f, 0.65f, 0.72f, 1.0f);
-const UIColor kToolbarActiveColor(0.22f, 0.38f, 0.62f, 1.0f);
-const UIColor kThumbFolderColor(0.72f, 0.62f, 0.28f, 1.0f);
-const UIColor kThumbAssetColor(0.32f, 0.38f, 0.48f, 1.0f);
-const UIColor kThumbSceneColor(0.28f, 0.52f, 0.38f, 1.0f);
-const UIColor kThumbDefaultColor(0.28f, 0.30f, 0.34f, 1.0f);
+const ZSlate::UIColor kTreePanelColor(0.08f, 0.08f, 0.10f, 1.0f);
+const ZSlate::UIColor kListPanelColor(0.10f, 0.10f, 0.12f, 1.0f);
+const ZSlate::UIColor kTransparent(0.0f, 0.0f, 0.0f, 0.0f);
+const ZSlate::UIColor kHoverColor(0.25f, 0.27f, 0.32f, 0.65f);
+const ZSlate::UIColor kSelectedColor(0.18f, 0.35f, 0.58f, 1.0f);
+const ZSlate::UIColor kNameColor(0.86f, 0.88f, 0.92f, 1.0f);
+const ZSlate::UIColor kFolderColor(0.95f, 0.86f, 0.55f, 1.0f);
+const ZSlate::UIColor kSelectedTextColor(0.97f, 0.98f, 1.0f, 1.0f);
+const ZSlate::UIColor kTypeColor(0.50f, 0.52f, 0.58f, 1.0f);
+const ZSlate::UIColor kToggleColor(0.62f, 0.65f, 0.72f, 1.0f);
+const ZSlate::UIColor kToolbarActiveColor(0.22f, 0.38f, 0.62f, 1.0f);
+const ZSlate::UIColor kThumbFolderColor(0.72f, 0.62f, 0.28f, 1.0f);
+const ZSlate::UIColor kThumbAssetColor(0.32f, 0.38f, 0.48f, 1.0f);
+const ZSlate::UIColor kThumbSceneColor(0.28f, 0.52f, 0.38f, 1.0f);
+const ZSlate::UIColor kThumbDefaultColor(0.28f, 0.30f, 0.34f, 1.0f);
 
 float ParsePrefFloat(const std::string& text, float default_value)
 {
@@ -65,7 +65,7 @@ float ParsePrefFloat(const std::string& text, float default_value)
     return value;
 }
 
-UIColor ThumbColorForNode(const EditorFileNode* node)
+ZSlate::UIColor ThumbColorForNode(const EditorFileNode* node)
 {
     if (node == nullptr)
         return kThumbDefaultColor;
@@ -78,8 +78,8 @@ UIColor ThumbColorForNode(const EditorFileNode* node)
     return kThumbDefaultColor;
 }
 
-std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const UIColor& color,
-                                     TextAnchor anchor = TextAnchor::MiddleLeft)
+std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, const ZSlate::UIColor& color,
+                                     ZSlate::TextAnchor anchor = ZSlate::TextAnchor::MiddleLeft)
 {
     auto t = std::make_shared<STextBlock>();
     t->Text = text;
@@ -361,33 +361,33 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildToolbar(float scale)
     auto bar = std::make_shared<SHorizontalBox>();
 
     auto import_btn = std::make_shared<SButton>();
-    import_btn->Padding = FMargin(10.0f * scale, 3.0f * scale);
+    import_btn->Padding = ZSlate::FMargin(10.0f * scale, 3.0f * scale);
     import_btn->SetContent(MakeText("Import", font, kNameColor));
     import_btn->OnClicked = [this]() { ContentBrowserAssetActions::RequestImportDialog(Ctx()); };
     bar->AddSlot(import_btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
 
     auto add_btn = std::make_shared<SButton>();
-    add_btn->Padding = FMargin(10.0f * scale, 3.0f * scale);
+    add_btn->Padding = ZSlate::FMargin(10.0f * scale, 3.0f * scale);
     add_btn->SetContent(MakeText("Add", font, kNameColor));
     std::weak_ptr<SButton> add_weak = add_btn;
     add_btn->OnClicked = [this, scale, add_weak]() {
         if (auto b = add_weak.lock())
         {
             const FGeometry& g = b->GetCachedGeometry();
-            OpenCreateMenu(Vector2(g.AbsolutePosition.x, g.AbsolutePosition.y + g.LocalSize.y), scale);
+            OpenCreateMenu(ZSlate::Vector2(g.AbsolutePosition.x, g.AbsolutePosition.y + g.LocalSize.y), scale);
         }
     };
     bar->AddSlot(add_btn).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(0.0f, 0.0f))).Fill();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(0.0f, 0.0f))).Fill();
 
     auto make_view_btn = [this, font, scale](const char* label, EContentBrowserViewMode mode) {
         auto btn = std::make_shared<SButton>();
-        btn->Padding = FMargin(8.0f * scale, 3.0f * scale);
+        btn->Padding = ZSlate::FMargin(8.0f * scale, 3.0f * scale);
         const bool active = (m_ViewMode == mode);
-        btn->NormalColor = active ? kToolbarActiveColor : UIColor(0.20f, 0.20f, 0.22f, 1.0f);
+        btn->NormalColor = active ? kToolbarActiveColor : ZSlate::UIColor(0.20f, 0.20f, 0.22f, 1.0f);
         btn->HoverColor = active ? kToolbarActiveColor : kHoverColor;
         btn->PressedColor = kSelectedColor;
         btn->SetContent(MakeText(label, font, active ? kSelectedTextColor : kNameColor));
@@ -397,7 +397,7 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildToolbar(float scale)
     bar->AddSlot(make_view_btn("List", EContentBrowserViewMode::List))
         .AutoSize()
         .SetVAlign(EVerticalAlignment::Center);
-    bar->AddSlot(std::make_shared<SSpacer>(Vector2(4.0f * scale, 0.0f))).AutoSize();
+    bar->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(4.0f * scale, 0.0f))).AutoSize();
     bar->AddSlot(make_view_btn("Grid", EContentBrowserViewMode::Tile))
         .AutoSize()
         .SetVAlign(EVerticalAlignment::Center);
@@ -423,9 +423,9 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildNavigationBar(float sc
 
         if (i > 0)
         {
-            bar->AddSlot(MakeText(">", font, kToggleColor, TextAnchor::MiddleCenter))
+            bar->AddSlot(MakeText(">", font, kToggleColor, ZSlate::TextAnchor::MiddleCenter))
                 .AutoSize()
-                .SetPadding(FMargin(4.0f * scale, 0.0f))
+                .SetPadding(ZSlate::FMargin(4.0f * scale, 0.0f))
                 .SetVAlign(EVerticalAlignment::Center);
         }
 
@@ -440,7 +440,7 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildNavigationBar(float sc
         }
 
         auto crumb = std::make_shared<SButton>();
-        crumb->Padding = FMargin(2.0f * scale, 1.0f * scale);
+        crumb->Padding = ZSlate::FMargin(2.0f * scale, 1.0f * scale);
         crumb->NormalColor = kTransparent;
         crumb->HoverColor = kHoverColor;
         crumb->PressedColor = kSelectedColor;
@@ -454,8 +454,8 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildNavigationBar(float sc
     }
 
     auto border = std::make_shared<SBorder>();
-    border->BackgroundColor = UIColor(0.11f, 0.11f, 0.13f, 1.0f);
-    border->Padding = FMargin(4.0f * scale, 3.0f * scale);
+    border->BackgroundColor = ZSlate::UIColor(0.11f, 0.11f, 0.13f, 1.0f);
+    border->Padding = ZSlate::FMargin(4.0f * scale, 3.0f * scale);
     border->HAlign = EHorizontalAlignment::Fill;
     border->VAlign = EVerticalAlignment::Center;
     border->SetContent(bar);
@@ -469,12 +469,12 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildThumbnailWidget(Editor
     if (void* texture = ContentBrowserThumbnailCache::ResolveForNode(node))
     {
         auto image = std::make_shared<SImage>();
-        image->Brush = FSlateBrush::Image(texture, UIColor(1.0f, 1.0f, 1.0f, 1.0f));
-        image->Brush.SetImageSize(Vector2(thumb_size, thumb_size));
+        image->Brush = FSlateBrush::Image(texture, ZSlate::UIColor(1.0f, 1.0f, 1.0f, 1.0f));
+        image->Brush.SetImageSize(ZSlate::Vector2(thumb_size, thumb_size));
 
         auto frame = std::make_shared<SBorder>();
-        frame->BackgroundColor = UIColor(0.12f, 0.13f, 0.16f, 1.0f);
-        frame->Padding = FMargin(2.0f * scale, 2.0f * scale);
+        frame->BackgroundColor = ZSlate::UIColor(0.12f, 0.13f, 0.16f, 1.0f);
+        frame->Padding = ZSlate::FMargin(2.0f * scale, 2.0f * scale);
         frame->HAlign = EHorizontalAlignment::Center;
         frame->VAlign = EVerticalAlignment::Center;
         frame->SetContent(image);
@@ -483,13 +483,13 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildThumbnailWidget(Editor
 
     auto placeholder = std::make_shared<SBorder>();
     placeholder->BackgroundColor = ThumbColorForNode(node);
-    placeholder->Padding = FMargin(2.0f * scale, 2.0f * scale);
+    placeholder->Padding = ZSlate::FMargin(2.0f * scale, 2.0f * scale);
     placeholder->HAlign = EHorizontalAlignment::Center;
     placeholder->VAlign = EVerticalAlignment::Center;
 
     auto inner = std::make_shared<SBorder>();
-    inner->BackgroundColor = UIColor(0.12f, 0.13f, 0.16f, 1.0f);
-    inner->SetContent(std::make_shared<SSpacer>(Vector2(thumb_size, thumb_size)));
+    inner->BackgroundColor = ZSlate::UIColor(0.12f, 0.13f, 0.16f, 1.0f);
+    inner->SetContent(std::make_shared<SSpacer>(ZSlate::Vector2(thumb_size, thumb_size)));
     placeholder->SetContent(inner);
     return placeholder;
 }
@@ -517,7 +517,7 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
     const float indent_unit = panel == EContentBrowserRowPanel::FolderTree ? 14.0f * scale : 0.0f;
     const float toggle_w = 14.0f * scale;
 
-    UIColor row_color = kTransparent;
+    ZSlate::UIColor row_color = kTransparent;
     bool row_highlighted = false;
     if (panel == EContentBrowserRowPanel::FolderTree && is_browsed)
     {
@@ -531,7 +531,7 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
     }
 
     auto row = std::make_shared<SButton>();
-    row->Padding = FMargin(2.0f * scale, 2.0f * scale);
+    row->Padding = ZSlate::FMargin(2.0f * scale, 2.0f * scale);
     row->HAlign = EHorizontalAlignment::Fill;
     row->VAlign = EVerticalAlignment::Center;
     row->NormalColor = row_color;
@@ -560,7 +560,7 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
                 m_ForceRebuild = true;
             }
         };
-        row->OnRightClicked = [this, node_ptr](const Vector2& screen_pos) {
+        row->OnRightClicked = [this, node_ptr](const ZSlate::Vector2& screen_pos) {
             m_PendingContextNode = node_ptr;
             m_PendingContextPos = screen_pos;
             m_HasPendingContext = true;
@@ -582,7 +582,7 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
         {
             const std::string asset_path = std::string(node->m_FilePath.c_str());
             const std::string label = std::string(ContentBrowserHelpers::GetContentBrowserDisplayName(node).c_str());
-            row->OnDragDetectedHandler = [asset_path, label](const Vector2&) -> std::shared_ptr<FDragDropOperation> {
+            row->OnDragDetectedHandler = [asset_path, label](const ZSlate::Vector2&) -> std::shared_ptr<FDragDropOperation> {
                 auto op = std::make_shared<FAssetDragDropOp>();
                 op->PayloadType = EditorDragDrop::kZSlateAssetPayloadAssetPath;
                 op->DecoratorText = label;
@@ -594,16 +594,16 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
 
     auto hb = std::make_shared<SHorizontalBox>();
     if (depth > 0)
-        hb->AddSlot(std::make_shared<SSpacer>(Vector2(depth * indent_unit, 0.0f))).AutoSize();
+        hb->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(depth * indent_unit, 0.0f))).AutoSize();
 
     if (panel == EContentBrowserRowPanel::FolderTree && has_children)
     {
         auto toggle = std::make_shared<SButton>();
-        toggle->Padding = FMargin(1.0f * scale, 0.0f);
+        toggle->Padding = ZSlate::FMargin(1.0f * scale, 0.0f);
         toggle->HAlign = EHorizontalAlignment::Center;
         toggle->VAlign = EVerticalAlignment::Center;
         toggle->NormalColor = kTransparent;
-        toggle->HoverColor = UIColor(0.32f, 0.34f, 0.40f, 0.85f);
+        toggle->HoverColor = ZSlate::UIColor(0.32f, 0.34f, 0.40f, 0.85f);
         toggle->PressedColor = kTransparent;
         toggle->SetContent(MakeText(collapsed ? ">" : "v", font_size, kToggleColor));
         eastl::string toggle_path = node->m_FilePath;
@@ -612,17 +612,17 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
     }
     else if (panel == EContentBrowserRowPanel::FolderTree)
     {
-        hb->AddSlot(std::make_shared<SSpacer>(Vector2(toggle_w, 0.0f))).AutoSize();
+        hb->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(toggle_w, 0.0f))).AutoSize();
     }
 
-    hb->AddSlot(std::make_shared<SSpacer>(Vector2(4.0f * scale, 0.0f))).AutoSize();
+    hb->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(4.0f * scale, 0.0f))).AutoSize();
 
     if (panel == EContentBrowserRowPanel::AssetList && !is_folder)
     {
         hb->AddSlot(BuildThumbnailWidget(node, scale, 20.0f * scale))
             .AutoSize()
             .SetVAlign(EVerticalAlignment::Center);
-        hb->AddSlot(std::make_shared<SSpacer>(Vector2(6.0f * scale, 0.0f))).AutoSize();
+        hb->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(6.0f * scale, 0.0f))).AutoSize();
     }
 
     if (renaming)
@@ -652,10 +652,10 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
 
         if (panel == EContentBrowserRowPanel::AssetList)
         {
-            hb->AddSlot(std::make_shared<SSpacer>(Vector2(8.0f * scale, 0.0f))).Fill();
+            hb->AddSlot(std::make_shared<SSpacer>(ZSlate::Vector2(8.0f * scale, 0.0f))).Fill();
             if (!is_folder)
             {
-                hb->AddSlot(MakeText(node->displayTypeLabel(), font_size, kTypeColor, TextAnchor::MiddleRight))
+                hb->AddSlot(MakeText(node->displayTypeLabel(), font_size, kTypeColor, ZSlate::TextAnchor::MiddleRight))
                     .AutoSize()
                     .SetVAlign(EVerticalAlignment::Center);
             }
@@ -715,7 +715,7 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildAssetTile(EditorFileNo
     EditorFileNode* node_ptr = node;
 
     auto tile = std::make_shared<SButton>();
-    tile->Padding = FMargin(4.0f * scale, 4.0f * scale);
+    tile->Padding = ZSlate::FMargin(4.0f * scale, 4.0f * scale);
     tile->HAlign = EHorizontalAlignment::Fill;
     tile->VAlign = EVerticalAlignment::Fill;
     tile->NormalColor = is_selected ? kSelectedColor : kTransparent;
@@ -740,7 +740,7 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildAssetTile(EditorFileNo
             if (is_double || is_folder)
                 m_ForceRebuild = true;
         };
-        tile->OnRightClicked = [this, node_ptr](const Vector2& screen_pos) {
+        tile->OnRightClicked = [this, node_ptr](const ZSlate::Vector2& screen_pos) {
             m_PendingContextNode = node_ptr;
             m_PendingContextPos = screen_pos;
             m_HasPendingContext = true;
@@ -762,7 +762,7 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildAssetTile(EditorFileNo
         {
             const std::string asset_path = std::string(node->m_FilePath.c_str());
             const std::string label = std::string(ContentBrowserHelpers::GetContentBrowserDisplayName(node).c_str());
-            tile->OnDragDetectedHandler = [asset_path, label](const Vector2&) -> std::shared_ptr<FDragDropOperation> {
+            tile->OnDragDetectedHandler = [asset_path, label](const ZSlate::Vector2&) -> std::shared_ptr<FDragDropOperation> {
                 auto op = std::make_shared<FAssetDragDropOp>();
                 op->PayloadType = EditorDragDrop::kZSlateAssetPayloadAssetPath;
                 op->DecoratorText = label;
@@ -777,7 +777,7 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildAssetTile(EditorFileNo
     column->AddSlot(BuildThumbnailWidget(node, scale, thumb_size))
         .AutoSize()
         .SetHAlign(EHorizontalAlignment::Center)
-        .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+        .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
     if (renaming)
     {
@@ -800,7 +800,7 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildAssetTile(EditorFileNo
         const eastl::string display = ContentBrowserHelpers::GetContentBrowserDisplayName(node);
         auto label = MakeText(std::string(display.c_str()), font_size,
                               is_folder ? kFolderColor : (is_selected ? kSelectedTextColor : kNameColor),
-                              TextAnchor::MiddleCenter);
+                              ZSlate::TextAnchor::MiddleCenter);
         column->AddSlot(label).AutoSize().SetHAlign(EHorizontalAlignment::Center);
     }
 
@@ -854,12 +854,12 @@ void ZSlateContentBrowserWindow::Rebuild(float scale, float content_width)
 
     auto root = std::make_shared<SBorder>();
     root->BackgroundColor = kListPanelColor;
-    root->Padding = FMargin(4.0f * scale, 4.0f * scale);
+    root->Padding = ZSlate::FMargin(4.0f * scale, 4.0f * scale);
     root->HAlign = EHorizontalAlignment::Fill;
     root->VAlign = EVerticalAlignment::Fill;
 
     auto column = std::make_shared<SVerticalBox>();
-    column->AddSlot(BuildToolbar(scale)).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+    column->AddSlot(BuildToolbar(scale)).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
     // Left path view | drag handle | right asset view (UE SSplitter).
     auto splitter = std::make_shared<SSplitter>();
@@ -874,7 +874,7 @@ void ZSlateContentBrowserWindow::Rebuild(float scale, float content_width)
 
     auto tree_border = std::make_shared<SBorder>();
     tree_border->BackgroundColor = kTreePanelColor;
-    tree_border->Padding = FMargin(2.0f * scale, 2.0f * scale);
+    tree_border->Padding = ZSlate::FMargin(2.0f * scale, 2.0f * scale);
     tree_border->HAlign = EHorizontalAlignment::Fill;
     tree_border->VAlign = EVerticalAlignment::Fill;
     auto tree_list = std::make_shared<SScrollBox>();
@@ -885,7 +885,7 @@ void ZSlateContentBrowserWindow::Rebuild(float scale, float content_width)
 
     auto list_border = std::make_shared<SBorder>();
     list_border->BackgroundColor = kListPanelColor;
-    list_border->Padding = FMargin(2.0f * scale, 2.0f * scale);
+    list_border->Padding = ZSlate::FMargin(2.0f * scale, 2.0f * scale);
     list_border->HAlign = EHorizontalAlignment::Fill;
     list_border->VAlign = EVerticalAlignment::Fill;
 
@@ -894,7 +894,7 @@ void ZSlateContentBrowserWindow::Rebuild(float scale, float content_width)
     {
         list_column->AddSlot(BuildNavigationBar(scale))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+            .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
     }
 
     auto asset_list = std::make_shared<SScrollBox>();
@@ -928,7 +928,7 @@ void ZSlateContentBrowserWindow::Rebuild(float scale, float content_width)
     m_PathViewWidth = splitter->LeftPanelWidth;
 }
 
-void ZSlateContentBrowserWindow::OpenCreateMenu(const Vector2& screen_pos, float scale)
+void ZSlateContentBrowserWindow::OpenCreateMenu(const ZSlate::Vector2& screen_pos, float scale)
 {
     m_Popup.Open(screen_pos, scale, [this](SMenu& menu, float s) {
         menu.MinWidth = 180.0f * s;
@@ -950,7 +950,7 @@ void ZSlateContentBrowserWindow::OpenCreateMenu(const Vector2& screen_pos, float
     });
 }
 
-void ZSlateContentBrowserWindow::OpenContextMenuFor(EditorFileNode* node, const Vector2& screen_pos, float scale)
+void ZSlateContentBrowserWindow::OpenContextMenuFor(EditorFileNode* node, const ZSlate::Vector2& screen_pos, float scale)
 {
     if (node == nullptr)
         return;
@@ -1063,7 +1063,7 @@ void ZSlateContentBrowserWindow::OnGUI()
         m_ForceRebuild = true;
 
     const float* native_rect = NativeRect();
-    Vector2 avail(native_rect[2], native_rect[3]);
+    ZSlate::Vector2 avail(native_rect[2], native_rect[3]);
     if (avail.x < 1.0f)
         avail.x = 1.0f;
     if (avail.y < 1.0f)
@@ -1102,10 +1102,10 @@ void ZSlateContentBrowserWindow::OnGUI()
     // ---- Paint --------------------------------------------------------------
     // P10c: native-host panels source their leaf rect from EditorView::NativeRect()
     // (no ImGui::Begin / item to probe); otherwise use the ImGui content region.
-    Vector2 pos(native_rect[0], native_rect[1]);
+    ZSlate::Vector2 pos(native_rect[0], native_rect[1]);
 
-    const UIRect region(pos.x, pos.y, avail.x, avail.y);
-    const FGeometry geometry(Vector2(pos.x, pos.y), Vector2(avail.x, avail.y));
+    const ZSlate::UIRect region(pos.x, pos.y, avail.x, avail.y);
+    const FGeometry geometry(ZSlate::Vector2(pos.x, pos.y), ZSlate::Vector2(avail.x, avail.y));
 
     // P9: the native RHI backend paints into the shared BatchedUIRenderer (frame managed by
     // ZSlateEditorOverlay around WindowUI::PreRender), clipped to this panel. The legacy
@@ -1130,7 +1130,7 @@ void ZSlateContentBrowserWindow::OnGUI()
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
     const int surface_id = ZSlate::EditorSlateHost::HashId(m_Title);
     host.BeginSurface(surface_id, region, ZSlate::ESurfaceLayer::Panels);
-    const Vector2 mouse = host.GetPointerPos();
+    const ZSlate::Vector2 mouse = host.GetPointerPos();
     const bool over_canvas = host.IsSurfaceHovered(surface_id, mouse);
     const bool left_down = host.IsLeftDown();
     const bool right_down = host.IsRightDown();
@@ -1141,7 +1141,7 @@ void ZSlateContentBrowserWindow::OnGUI()
     {
         // Clamp the popup to the native display rect (== the editor's full-window
         // viewport work area).
-        const UIRect viewport_rect(host.GetDisplayPos().x, host.GetDisplayPos().y,
+        const ZSlate::UIRect viewport_rect(host.GetDisplayPos().x, host.GetDisplayPos().y,
                                    host.GetDisplaySize().x, host.GetDisplaySize().y);
 
         {

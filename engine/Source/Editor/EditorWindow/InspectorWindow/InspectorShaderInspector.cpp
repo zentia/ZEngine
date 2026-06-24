@@ -1566,41 +1566,41 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
 {
     using namespace ZSlate;
 
-    const UIColor kHeader(0.92f, 0.93f, 0.97f, 1.0f);
-    const UIColor kLabel(0.74f, 0.78f, 0.84f, 1.0f);
-    const UIColor kValue(0.85f, 0.87f, 0.92f, 1.0f);
-    const UIColor kDim(0.50f, 0.52f, 0.58f, 1.0f);
-    const UIColor kErr(1.0f, 0.45f, 0.35f, 1.0f);
-    const UIColor kOk(0.40f, 0.85f, 0.50f, 1.0f);
+    const ZSlate::UIColor kHeader(0.92f, 0.93f, 0.97f, 1.0f);
+    const ZSlate::UIColor kLabel(0.74f, 0.78f, 0.84f, 1.0f);
+    const ZSlate::UIColor kValue(0.85f, 0.87f, 0.92f, 1.0f);
+    const ZSlate::UIColor kDim(0.50f, 0.52f, 0.58f, 1.0f);
+    const ZSlate::UIColor kErr(1.0f, 0.45f, 0.35f, 1.0f);
+    const ZSlate::UIColor kOk(0.40f, 0.85f, 0.50f, 1.0f);
 
-    auto text = [&](const std::string& s, float fs, const UIColor& c) {
+    auto text = [&](const std::string& s, float fs, const ZSlate::UIColor& c) {
         auto t = std::make_shared<STextBlock>();
         t->Text = s;
         t->FontSize = fs * scale;
         t->Color = c;
-        t->Alignment = TextAnchor::MiddleLeft;
+        t->Alignment = ZSlate::TextAnchor::MiddleLeft;
         return t;
     };
 
     auto column = std::make_shared<SVerticalBox>();
     auto add_widget = [&](const std::shared_ptr<SWidget>& w, float top = 0.0f) {
-        column->AddSlot(w).AutoSize().SetPadding(FMargin(0.0f, top * scale, 0.0f, 4.0f * scale));
+        column->AddSlot(w).AutoSize().SetPadding(ZSlate::FMargin(0.0f, top * scale, 0.0f, 4.0f * scale));
     };
     auto add_row = [&](const std::string& label, const std::shared_ptr<SWidget>& content) {
         auto r = std::make_shared<SHorizontalBox>();
         r->AddSlot(text(label, 13.0f, kLabel))
             .AutoSize()
-            .SetPadding(FMargin(0.0f, 0.0f, 10.0f * scale, 0.0f))
+            .SetPadding(ZSlate::FMargin(0.0f, 0.0f, 10.0f * scale, 0.0f))
             .SetVAlign(EVerticalAlignment::Center);
         r->AddSlot(content).AutoSize().SetVAlign(EVerticalAlignment::Center);
-        column->AddSlot(r).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+        column->AddSlot(r).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
     };
     auto add_text_row = [&](const std::string& label, const std::string& value) {
         add_row(label, text(value.empty() ? "(none)" : value, 13.0f, kValue));
     };
     auto make_button = [&](const std::string& label, std::function<void()> on_click) {
         auto b = std::make_shared<SButton>();
-        b->Padding = FMargin(10.0f * scale, 4.0f * scale);
+        b->Padding = ZSlate::FMargin(10.0f * scale, 4.0f * scale);
         b->SetContent(text(label, 13.0f, kValue));
         b->OnClicked = std::move(on_click);
         return b;
@@ -1645,15 +1645,15 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
         area->FontSize = 14.0f * scale;
         area->HeaderHeight = 24.0f * scale;
         area->SetContent(body);
-        column->AddSlot(area).AutoSize().SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
+        column->AddSlot(area).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
     };
 
     auto wrap = [&](const std::shared_ptr<SVerticalBox>& col) -> std::shared_ptr<SWidget> {
         auto scroll = std::make_shared<SScrollBox>();
         scroll->AddChild(col);
         auto border = std::make_shared<SBorder>();
-        border->BackgroundColor = UIColor(0.10f, 0.10f, 0.13f, 1.0f);
-        border->Padding = FMargin(16.0f * scale);
+        border->BackgroundColor = ZSlate::UIColor(0.10f, 0.10f, 0.13f, 1.0f);
+        border->Padding = ZSlate::FMargin(16.0f * scale);
         border->HAlign = EHorizontalAlignment::Fill;
         border->VAlign = EVerticalAlignment::Fill;
         border->SetContent(scroll);
@@ -1731,14 +1731,14 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
                    EditorUtility::RevealInFinder(path_copy.generic_string().c_str());
                }))
                 .AutoSize()
-                .SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+                .SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
             bar->AddSlot(make_button("Refresh", [request_rebuild]() {
                    s_sl_path.clear();  // force the top-of-build reload (asset_path valid there)
                    if (request_rebuild)
                        request_rebuild();
                }))
                 .AutoSize()
-                .SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+                .SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
             bar->AddSlot(make_button("Reimport", [path_copy, request_rebuild]() {
                    if (ReimportShaderLabAfterSourceSave(path_copy))
                        s_sl_status = "Shader reimported.";
@@ -1748,8 +1748,8 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
                        request_rebuild();
                }))
                 .AutoSize()
-                .SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
-            column->AddSlot(bar).AutoSize().SetPadding(FMargin(0.0f, 8.0f * scale, 0.0f, 6.0f * scale));
+                .SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+            column->AddSlot(bar).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 8.0f * scale, 0.0f, 6.0f * scale));
         }
 
         if (!s_sl_status.empty())
@@ -1798,14 +1798,14 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
         {
             auto warn_box = std::make_shared<SVerticalBox>();
             for (const std::string& w : s_sl_warnings)
-                warn_box->AddSlot(text("- " + w, 12.0f, UIColor(1.0f, 0.8f, 0.3f, 1.0f))).AutoSize();
+                warn_box->AddSlot(text("- " + w, 12.0f, ZSlate::UIColor(1.0f, 0.8f, 0.3f, 1.0f))).AutoSize();
             auto area = std::make_shared<SExpandableArea>();
             area->Title = "Warnings";
             area->Expanded = true;
             area->FontSize = 14.0f * scale;
             area->HeaderHeight = 24.0f * scale;
             area->SetContent(warn_box);
-            column->AddSlot(area).AutoSize().SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
+            column->AddSlot(area).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
         }
 
         std::vector<std::string> keywords;
@@ -1821,7 +1821,7 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
             area->FontSize = 14.0f * scale;
             area->HeaderHeight = 24.0f * scale;
             area->SetContent(kw_box);
-            column->AddSlot(area).AutoSize().SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
+            column->AddSlot(area).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
         }
 
         // Properties (read-only).
@@ -1843,7 +1843,7 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
             area->FontSize = 14.0f * scale;
             area->HeaderHeight = 24.0f * scale;
             area->SetContent(prop_box);
-            column->AddSlot(area).AutoSize().SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
+            column->AddSlot(area).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
         }
 
         add_source_view("Source (read-only -- edit via Open)", s_sl_source);
@@ -1895,7 +1895,7 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
         auto tb = std::make_shared<SEditableTextBox>();
         tb->FontSize = 13.0f * scale;
         tb->MinWidth = 200.0f * scale;
-        tb->Padding = FMargin(6.0f * scale, 3.0f * scale);
+        tb->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
         tb->Text = field->c_str();
         tb->OnTextCommitted = [field](const std::string& s) { field->assign(s.c_str()); };
         add_row(label, tb);
@@ -1935,7 +1935,7 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
         area->FontSize = 14.0f * scale;
         area->HeaderHeight = 24.0f * scale;
         area->SetContent(box);
-        column->AddSlot(area).AutoSize().SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
+        column->AddSlot(area).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
     }
     // Passes (read-only summary).
     if (!s_shader.m_Passes.empty())
@@ -1952,7 +1952,7 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
         area->FontSize = 14.0f * scale;
         area->HeaderHeight = 24.0f * scale;
         area->SetContent(box);
-        column->AddSlot(area).AutoSize().SetPadding(FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
+        column->AddSlot(area).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 4.0f * scale));
     }
 
     // Action buttons.
@@ -1980,8 +1980,8 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
                    EditorUtility::RevealInFinder(p.generic_string().c_str());
            }))
             .AutoSize()
-            .SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
-        column->AddSlot(bar1).AutoSize().SetPadding(FMargin(0.0f, 10.0f * scale, 0.0f, 4.0f * scale));
+            .SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+        column->AddSlot(bar1).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 10.0f * scale, 0.0f, 4.0f * scale));
 
         auto bar2 = std::make_shared<SHorizontalBox>();
         bar2->AddSlot(make_button("Create/Open Fragment", [request_rebuild]() {
@@ -2006,8 +2006,8 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
                    EditorUtility::RevealInFinder(p.generic_string().c_str());
            }))
             .AutoSize()
-            .SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
-        column->AddSlot(bar2).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+            .SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+        column->AddSlot(bar2).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
 
         auto bar3 = std::make_shared<SHorizontalBox>();
         bar3->AddSlot(make_button("Compile DX12", [request_rebuild]() {
@@ -2027,8 +2027,8 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
                    request_rebuild();
            }))
             .AutoSize()
-            .SetPadding(FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
-        column->AddSlot(bar3).AutoSize().SetPadding(FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
+            .SetPadding(ZSlate::FMargin(8.0f * scale, 0.0f, 0.0f, 0.0f));
+        column->AddSlot(bar3).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 4.0f * scale));
     }
 
     if (!s_status.empty())
