@@ -1,15 +1,35 @@
 #pragma once
 
+// =============================================================================
+// UITypes.h — ZEngine UI type definitions (transitional)
+// -----------------------------------------------------------------------------
+// Phase 1: now includes ZSlateTypes.h as the canonical type source.
+// Global aliases (::UIRect, ::UIColor, etc.) remain for backward compatibility
+// but should be migrated to ZSlate:: types.
+// =============================================================================
+
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector4.h"
+#include "ZSlate/Core/SlateGeometry.h"   // FMargin
+#include "ZSlate/Core/ZSlateTypes.h"
 
 #include <cstdint>
 
-// UI颜色类型（RGBA）
+// ---- Legacy type aliases (migrate to ZSlate:: equivalents) ----
+
+// UIColor: both :: and ZSlate:: are Vector4 aliases
 using UIColor = Vector4;
 
-// UI矩形
+// TextAnchor: same enum values as ZSlate::TextAnchor
+using TextAnchor = ZSlate::TextAnchor;
+
+// TextWrapMode: same values, ZSlate adds WrapAtWordBoundaryOrOverflow
+using TextWrapMode = ZSlate::TextWrapMode;
+
+// ---- Conversion helpers between ::UIRect (width/height) and ZSlate::UIRect (w/h) ----
+
+// UI矩形 (legacy, migrate to ZSlate::UIRect)
 struct UIRect
 {
     float x {0.0f};
@@ -20,6 +40,12 @@ struct UIRect
     UIRect() = default;
     UIRect(float x_, float y_, float w_, float h_)
         : x(x_), y(y_), width(w_), height(h_) {}
+
+    // Convert to ZSlate::UIRect
+    ZSlate::UIRect ToZSlate() const { return ZSlate::UIRect(x, y, width, height); }
+
+    // Construct from ZSlate::UIRect
+    static UIRect FromZSlate(const ZSlate::UIRect& z) { return UIRect(z.x, z.y, z.w, z.h); }
 
     Vector2 getMin() const { return Vector2(x, y); }
     Vector2 getMax() const { return Vector2(x + width, y + height); }
@@ -61,6 +87,9 @@ struct FMargin
     FMargin(float l, float t, float r, float b)
         : Left(l), Top(t), Right(r), Bottom(b) {}
 
+    ZSlate::FMargin ToZSlate() const { return ZSlate::FMargin(Left, Top, Right, Bottom); }
+    static FMargin FromZSlate(const ZSlate::FMargin& z) { return FMargin(z.Left, z.Top, z.Right, z.Bottom); }
+
     float GetTotalHorizontal() const { return Left + Right; }
     float GetTotalVertical() const { return Top + Bottom; }
 };
@@ -80,27 +109,6 @@ struct RectOffset
         : left(all), right(all), top(all), bottom(all) {}
 
     Vector2 getTotalSize() const { return Vector2(left + right, top + bottom); }
-};
-
-// 文本对齐方式
-enum class TextAnchor
-{
-    UpperLeft,
-    UpperCenter,
-    UpperRight,
-    MiddleLeft,
-    MiddleCenter,
-    MiddleRight,
-    LowerLeft,
-    LowerCenter,
-    LowerRight
-};
-
-// 文本换行模式
-enum class TextWrapMode
-{
-    NoWrap,
-    Wrap
 };
 
 // Anchor预设
