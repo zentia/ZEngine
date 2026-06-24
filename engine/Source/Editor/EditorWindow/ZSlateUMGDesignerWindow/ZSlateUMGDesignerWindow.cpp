@@ -7,7 +7,7 @@
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateDragDrop.h"
 #include "ZSlate/Widgets/Panels/SBorder.h"
-#include "ZSlate/Widgets/SBox.h"
+#include "ZSlate/Widgets/Layout/SBox.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SButton.h"
 #include "ZSlate/Widgets/SCheckBox.h"
