@@ -20,7 +20,7 @@
 
 // Native ZSlate Shader inspector widgets (BuildShaderInspectorWidget).
 #include "ZSlate/Widgets/Panels/SBorder.h"
-#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/SCheckBox.h"
 #include "ZSlate/Widgets/SEditableTextBox.h"

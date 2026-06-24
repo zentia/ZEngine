@@ -12,7 +12,7 @@
 #include "Runtime/Function/Render/RenderDebugConfig.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "ZSlate/Core/SlatePaint.h"
-#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/SLeafWidget.h"
 #include "ZSlate/Widgets/SMenu.h"

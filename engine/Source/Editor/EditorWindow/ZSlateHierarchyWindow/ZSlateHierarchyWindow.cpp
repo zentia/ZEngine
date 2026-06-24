@@ -16,7 +16,7 @@
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateDragDrop.h"
 #include "ZSlate/Widgets/Panels/SBorder.h"
-#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/SDropTarget.h"
 #include "ZSlate/Widgets/SMenu.h"

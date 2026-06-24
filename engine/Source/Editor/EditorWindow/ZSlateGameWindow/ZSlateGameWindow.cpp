@@ -9,7 +9,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "ZSlate/Application/SlateApplication.h"
-#include "ZSlate/Widgets/SBoxPanel.h"
+#include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/STextBlock.h"
 
 #include <cstdio>
