@@ -20,7 +20,7 @@
 
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/UI/Render/BatchedUIRenderer.h"
-#include "Runtime/UI/Render/UiRenderBatch.h"
+#include "Runtime/UI/Render/UIRenderBatch.h"
 
 #include "ZSlate/Backend/SlateUIRendererBackend.h"  // ISlateRenderer
 
@@ -121,7 +121,7 @@ public:
     // ReleaseFloatingRing frees that ring when the window closes.
     void DrawExternalBatchToFloatingSurface(RHI* rhi,
                                             const void* key,
-                                            const UiRenderBatch& batch,
+                                            const UIRenderBatch& batch,
                                             uint32_t width,
                                             uint32_t height);
     void ReleaseFloatingRing(RHI* rhi, const void* key);
@@ -204,7 +204,7 @@ private:
     size_t m_IndexCapacity[kOverlayFrameRing] {};
     int m_FrameSlot {0};
 
-    std::vector<UiVertex> m_CpuVertices;
+    std::vector<UIVertex> m_CpuVertices;
 
     // Per-floating-window GPU buffer rings (editor tear-off). Keyed by the
     // floating window identity; each entry is a 3-deep ring just like the main

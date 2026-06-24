@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 // =============================================================================
 // TexPreviewWindow
@@ -13,7 +13,7 @@
 
 #include "ZSlate/Widgets/SWidget.h"
 #include "Runtime/UI/Render/UIRenderer.h"
-#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 
 #include <filesystem>
 #include <memory>
@@ -108,7 +108,7 @@ private:
 
     // Rendering
     void* m_TextureId {nullptr};  // RHI texture handle for UIRenderer
-    void* m_GpuTextureHandle {nullptr};  // GpuTexture handle for UiGpuResources
+    void* m_GpuTextureHandle {nullptr};  // GpuTexture handle for UIGpuResources
     bool m_NeedsTextureCreate {true};
 
     // Checkerboard pattern texture (small 2x2-cell texture, tiled via UV)

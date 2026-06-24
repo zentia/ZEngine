@@ -1,4 +1,4 @@
-﻿#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 
 #include "Runtime/UI/Core/Font.h"
 #include "Runtime/UI/Render/ZFontAtlas.h"
@@ -17,12 +17,12 @@
     #include <stdlib.h>
 #endif
 
-UiGpuResources* UiGpuResources::s_Instance = nullptr;
+UIGpuResources* UIGpuResources::s_Instance = nullptr;
 
-std::vector<std::pair<uint32_t, std::function<void()>>> UiGpuResources::s_InvalidationCallbacks;
-uint32_t UiGpuResources::s_NextCallbackId = 1;
+std::vector<std::pair<uint32_t, std::function<void()>>> UIGpuResources::s_InvalidationCallbacks;
+uint32_t UIGpuResources::s_NextCallbackId = 1;
 
-uint32_t UiGpuResources::RegisterInvalidationCallback(std::function<void()> callback)
+uint32_t UIGpuResources::RegisterInvalidationCallback(std::function<void()> callback)
 {
     if (!callback)
         return 0;
@@ -31,7 +31,7 @@ uint32_t UiGpuResources::RegisterInvalidationCallback(std::function<void()> call
     return id;
 }
 
-void UiGpuResources::UnregisterInvalidationCallback(uint32_t id)
+void UIGpuResources::UnregisterInvalidationCallback(uint32_t id)
 {
     if (id == 0)
         return;
@@ -74,24 +74,24 @@ namespace
             // Skip if already added (ResolveNativeFontPath caches failures too).
             if (atlas->AddFallbackFont(path))
             {
-                LOG_INFO(ZRender, "UiGpuResources: added CJK fallback font '{}'", path);
+                LOG_INFO(ZRender, "UIGpuResources: added CJK fallback font '{}'", path);
             }
         }
 #endif
     }
 }  // namespace
 
-UiGpuResources::~UiGpuResources()
+UIGpuResources::~UIGpuResources()
 {
     Shutdown();
 }
 
-UiGpuResources* UiGpuResources::Get()
+UIGpuResources* UIGpuResources::Get()
 {
     return s_Instance;
 }
 
-eastl::string UiGpuResources::ResolveDefaultFontPath() const
+eastl::string UIGpuResources::ResolveDefaultFontPath() const
 {
     if (const char* env_path = std::getenv("ZENGINE_UI_FONT"))
     {
@@ -128,7 +128,7 @@ eastl::string UiGpuResources::ResolveDefaultFontPath() const
     return eastl::string();
 }
 
-void UiGpuResources::ReuploadTextureInPlace(GpuTexture* target,
+void UIGpuResources::ReuploadTextureInPlace(GpuTexture* target,
                                             const uint8_t* pixels,
                                             uint32_t width,
                                             uint32_t height)
@@ -136,7 +136,7 @@ void UiGpuResources::ReuploadTextureInPlace(GpuTexture* target,
     ReuploadTextureInPlace(target, pixels, width, height, RHI_FORMAT_R8G8B8A8_UNORM, 1);
 }
 
-void UiGpuResources::ReuploadTextureInPlace(GpuTexture* target,
+void UIGpuResources::ReuploadTextureInPlace(GpuTexture* target,
                                             const uint8_t* pixels,
                                             uint32_t width,
                                             uint32_t height,
@@ -151,7 +151,7 @@ void UiGpuResources::ReuploadTextureInPlace(GpuTexture* target,
     void* fresh = CreateFromPixels(pixels, width, height, format, std::max<uint32_t>(miplevels, 1u));
     if (fresh == nullptr)
     {
-        LOG_WARNING(ZRender, "UiGpuResources: texture re-upload failed ({}x{})", width, height);
+        LOG_WARNING(ZRender, "UIGpuResources: texture re-upload failed ({}x{})", width, height);
         return;
     }
 
@@ -188,7 +188,7 @@ void UiGpuResources::ReuploadTextureInPlace(GpuTexture* target,
     delete fresh_tex;
 }
 
-void UiGpuResources::Initialize(RHI* rhi)
+void UIGpuResources::Initialize(RHI* rhi)
 {
     if (m_Ready || rhi == nullptr)
     {
@@ -211,14 +211,14 @@ void UiGpuResources::Initialize(RHI* rhi)
 
     if (RHI_SUCCESS != m_Rhi->CreateDescriptorSetLayout(&layout_info, m_TextureLayout))
     {
-        throw std::runtime_error("UiGpuResources: create descriptor set layout failed");
+        throw std::runtime_error("UIGpuResources: create descriptor set layout failed");
     }
 
     const uint8_t white_rgba[4] = {255, 255, 255, 255};
     void* white_handle = CreateFromPixels(white_rgba, 1, 1, RHI_FORMAT_R8G8B8A8_UNORM);
     if (white_handle == nullptr)
     {
-        throw std::runtime_error("UiGpuResources: create white texture failed");
+        throw std::runtime_error("UIGpuResources: create white texture failed");
     }
 
     m_WhiteTexture.reset(static_cast<GpuTexture*>(white_handle));
@@ -229,10 +229,10 @@ void UiGpuResources::Initialize(RHI* rhi)
     // ResolveNativeFontPath proceeds past its readiness guard.
     CreateDefaultNativeFont();
 
-    LOG_INFO(ZRender, "UiGpuResources initialized (native font atlas + white texture ready)");
+    LOG_INFO(ZRender, "UIGpuResources initialized (native font atlas + white texture ready)");
 }
 
-void UiGpuResources::Shutdown()
+void UIGpuResources::Shutdown()
 {
     if (!m_Ready)
     {
@@ -257,12 +257,12 @@ void UiGpuResources::Shutdown()
     }
 }
 
-void UiGpuResources::CreateDefaultNativeFont()
+void UIGpuResources::CreateDefaultNativeFont()
 {
     const eastl::string default_path = ResolveDefaultFontPath();
     if (default_path.empty())
     {
-        LOG_WARNING(ZRender, "UiGpuResources: no UI font found; text will not render");
+        LOG_WARNING(ZRender, "UIGpuResources: no UI font found; text will not render");
         return;
     }
     m_DefaultNativeFont = ResolveNativeFontPath(default_path);
@@ -273,7 +273,7 @@ void UiGpuResources::CreateDefaultNativeFont()
     TryAddCjkFallbacks(m_DefaultNativeFont);
 }
 
-ZFontAtlas* UiGpuResources::ResolveNativeFontPath(const eastl::string& path)
+ZFontAtlas* UIGpuResources::ResolveNativeFontPath(const eastl::string& path)
 {
     if (!m_Ready || path.empty())
     {
@@ -300,7 +300,7 @@ ZFontAtlas* UiGpuResources::ResolveNativeFontPath(const eastl::string& path)
     return raw;
 }
 
-ZFontAtlas* UiGpuResources::ResolveNativeFont(Font* font)
+ZFontAtlas* UIGpuResources::ResolveNativeFont(Font* font)
 {
     if (!m_Ready)
     {
@@ -313,7 +313,7 @@ ZFontAtlas* UiGpuResources::ResolveNativeFont(Font* font)
     return ResolveNativeFontPath(font->GetSourcePath());
 }
 
-void* UiGpuResources::GetNativeFontTextureId(ZFontAtlas* atlas)
+void* UIGpuResources::GetNativeFontTextureId(ZFontAtlas* atlas)
 {
     if (!m_Ready || atlas == nullptr || !atlas->IsLoaded())
     {
@@ -332,7 +332,7 @@ void* UiGpuResources::GetNativeFontTextureId(ZFontAtlas* atlas)
                                     RHI_FORMAT_R8G8B8A8_UNORM);
     if (handle == nullptr)
     {
-        LOG_WARNING(ZRender, "UiGpuResources: native font atlas upload failed");
+        LOG_WARNING(ZRender, "UIGpuResources: native font atlas upload failed");
         return nullptr;
     }
 
@@ -346,7 +346,7 @@ void* UiGpuResources::GetNativeFontTextureId(ZFontAtlas* atlas)
     return id;
 }
 
-void UiGpuResources::RefreshNativeFontAtlasesIfDirty()
+void UIGpuResources::RefreshNativeFontAtlasesIfDirty()
 {
     if (!m_Ready)
     {
@@ -364,20 +364,20 @@ void UiGpuResources::RefreshNativeFontAtlasesIfDirty()
     }
 }
 
-void UiGpuResources::InvalidateAllNativeFontTextures()
+void UIGpuResources::InvalidateAllNativeFontTextures()
 {
     if (m_NativeFontTextures.empty())
     {
         return;
     }
 
-    LOG_INFO(ZRender, "UiGpuResources: invalidating {} native font texture(s) for swapchain recovery",
+    LOG_INFO(ZRender, "UIGpuResources: invalidating {} native font texture(s) for swapchain recovery",
             m_NativeFontTextures.size());
 
     m_NativeFontTextures.clear();
 }
 
-void UiGpuResources::InvalidateAllGpuResources()
+void UIGpuResources::InvalidateAllGpuResources()
 {
     if (!m_Ready)
     {
@@ -391,7 +391,7 @@ void UiGpuResources::InvalidateAllGpuResources()
                   + (m_WhiteTexture ? 1 : 0);
 
     LOG_INFO(ZRender,
-            "UiGpuResources: InvalidateAllGpuResources — releasing {} GPU texture "
+            "UIGpuResources: InvalidateAllGpuResources — releasing {} GPU texture "
             "cache entrie(s) (fonts={}, texture2d={}, dynamic={}, external={}, white={})",
             total,
             m_NativeFontTextures.size(),
@@ -478,12 +478,12 @@ void UiGpuResources::InvalidateAllGpuResources()
     }
 }
 
-void* UiGpuResources::GetWhiteTextureId() const
+void* UIGpuResources::GetWhiteTextureId() const
 {
     return m_WhiteTexture != nullptr ? m_WhiteTexture->handle_id : nullptr;
 }
 
-void* UiGpuResources::EnsureTexture2D(Texture2D* texture)
+void* UIGpuResources::EnsureTexture2D(Texture2D* texture)
 {
     if (texture == nullptr || !texture->IsValid() || !m_Ready)
     {
@@ -504,7 +504,7 @@ void* UiGpuResources::EnsureTexture2D(Texture2D* texture)
                                     texture->GetMipCount());
     if (handle == nullptr)
     {
-        LOG_WARNING(ZRender, "UiGpuResources: failed to upload Texture2D");
+        LOG_WARNING(ZRender, "UIGpuResources: failed to upload Texture2D");
         return GetWhiteTextureId();
     }
 
@@ -514,7 +514,7 @@ void* UiGpuResources::EnsureTexture2D(Texture2D* texture)
     return id;
 }
 
-void* UiGpuResources::UpdateDynamicTexture(void* handle, const uint8_t* rgba, uint32_t width, uint32_t height)
+void* UIGpuResources::UpdateDynamicTexture(void* handle, const uint8_t* rgba, uint32_t width, uint32_t height)
 {
     if (!m_Ready || rgba == nullptr || width == 0 || height == 0)
     {
@@ -537,7 +537,7 @@ void* UiGpuResources::UpdateDynamicTexture(void* handle, const uint8_t* rgba, ui
     void* fresh = CreateFromPixels(rgba, width, height, RHI_FORMAT_R8G8B8A8_UNORM);
     if (fresh == nullptr)
     {
-        LOG_WARNING(ZRender, "UiGpuResources: dynamic texture create failed ({}x{})", width, height);
+        LOG_WARNING(ZRender, "UIGpuResources: dynamic texture create failed ({}x{})", width, height);
         return nullptr;
     }
 
@@ -547,7 +547,7 @@ void* UiGpuResources::UpdateDynamicTexture(void* handle, const uint8_t* rgba, ui
     return id;
 }
 
-void* UiGpuResources::AdoptExternalImageView(void* handle, RHIImageView* view, RHISampler* sampler)
+void* UIGpuResources::AdoptExternalImageView(void* handle, RHIImageView* view, RHISampler* sampler)
 {
     if (!m_Ready || m_Rhi == nullptr || view == nullptr)
     {
@@ -616,7 +616,7 @@ void* UiGpuResources::AdoptExternalImageView(void* handle, RHIImageView* view, R
     return id;
 }
 
-RHIDescriptorSet* UiGpuResources::GetDescriptorSet(void* texture_id) const
+RHIDescriptorSet* UIGpuResources::GetDescriptorSet(void* texture_id) const
 {
     if (texture_id == nullptr)
     {
@@ -659,7 +659,7 @@ RHIDescriptorSet* UiGpuResources::GetDescriptorSet(void* texture_id) const
     return m_WhiteTexture != nullptr ? m_WhiteTexture->descriptor_set : nullptr;
 }
 
-void* UiGpuResources::CreateFromPixels(const uint8_t* pixels,
+void* UIGpuResources::CreateFromPixels(const uint8_t* pixels,
                                        uint32_t width,
                                        uint32_t height,
                                        RHIFormat format)
@@ -667,7 +667,7 @@ void* UiGpuResources::CreateFromPixels(const uint8_t* pixels,
     return CreateFromPixels(pixels, width, height, format, 1);
 }
 
-void* UiGpuResources::CreateFromPixels(const uint8_t* pixels,
+void* UIGpuResources::CreateFromPixels(const uint8_t* pixels,
                                        uint32_t width,
                                        uint32_t height,
                                        RHIFormat format,

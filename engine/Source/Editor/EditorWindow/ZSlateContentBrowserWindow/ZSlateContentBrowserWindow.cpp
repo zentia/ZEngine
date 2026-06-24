@@ -18,7 +18,7 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "ZSlate/Application/SlateApplication.h"
-#include "Runtime/UI/Render/UiGpuResources.h"  // GPU cache invalidation callback
+#include "Runtime/UI/Render/UIGpuResources.h"  // GPU cache invalidation callback
 #include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Input/SButton.h"
@@ -128,14 +128,14 @@ ZSlateContentBrowserWindow::ZSlateContentBrowserWindow(EditorUI* editor_ui)
             });
     }
 
-    // Register with UiGpuResources so that when GPU resources are invalidated
+    // Register with UIGpuResources so that when GPU resources are invalidated
     // (swapchain recreate / DXGI surface invalidation), the Content Browser
     // thumbnail cache and its dependent Mesh/Material preview caches discard
     // their stale void* handles.  Without this, InvalidateAllGpuResources()
     // clears m_Texture2DCache / m_DynamicTextures / m_ExternalTextures but
     // ContentBrowserThumbnailCache still returns the freed handles, causing
     // tiles to display white fallback textures.
-    m_GpuInvalidationCallbackId = UiGpuResources::RegisterInvalidationCallback([]() {
+    m_GpuInvalidationCallbackId = UIGpuResources::RegisterInvalidationCallback([]() {
         ContentBrowserThumbnailCache::InvalidateAll();
     });
 
@@ -168,7 +168,7 @@ ZSlateContentBrowserWindow::~ZSlateContentBrowserWindow()
     }
     if (m_GpuInvalidationCallbackId != 0)
     {
-        UiGpuResources::UnregisterInvalidationCallback(m_GpuInvalidationCallbackId);
+        UIGpuResources::UnregisterInvalidationCallback(m_GpuInvalidationCallbackId);
     }
     s_Instance = nullptr;
 }

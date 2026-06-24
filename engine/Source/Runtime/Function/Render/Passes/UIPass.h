@@ -1,8 +1,8 @@
-﻿#pragma once
+#pragma once
 
 #include "Runtime/Function/Render/RenderPass.h"
-#include "Runtime/UI/Render/UiGpuResources.h"
-#include "Runtime/UI/Render/UiRenderBatch.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
+#include "Runtime/UI/Render/UIRenderBatch.h"
 
 #include <cstdint>
 #include <vector>
@@ -28,10 +28,10 @@ private:
     void SetupPipeline();
     void DestroyGpuBuffers();
     void EnsureGpuBuffers(size_t vertex_count, size_t index_count);
-    void UploadBatch(const UiRenderBatch& batch, float display_width, float display_height);
+    void UploadBatch(const UIRenderBatch& batch, float display_width, float display_height);
 
     WindowUI* m_WindowUi {nullptr};
-    UiGpuResources m_GpuResources;
+    UIGpuResources m_GpuResources;
     bool m_PipelineReady {false};
 
     RHIBuffer* m_VertexBuffer {nullptr};
@@ -41,5 +41,5 @@ private:
     size_t m_VertexCapacity {0};
     size_t m_IndexCapacity {0};
 
-    std::vector<UiVertex> m_CpuVertices;
+    std::vector<UIVertex> m_CpuVertices;
 };

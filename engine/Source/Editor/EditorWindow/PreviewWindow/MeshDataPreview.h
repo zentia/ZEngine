@@ -6,7 +6,7 @@
 // Software-lit orbit view; runs in the native ZSlate Preview window.
 //
 // The preview is software-rasterized into an off-screen RGBA8 bitmap which is
-// uploaded to a ZSlate dynamic texture (UiGpuResources::UpdateDynamicTexture).
+// uploaded to a ZSlate dynamic texture (UIGpuResources::UpdateDynamicTexture).
 // The Preview window displays the returned handle through an SImage. This
 // replaces the old ImGui draw-list path now that the Preview window paints
 // through the retained ZSlate widget tree.
@@ -45,7 +45,7 @@ namespace MeshDataPreview
     // `pixel_size` x `pixel_size` and returns its handle. Cheap when nothing
     // changed (no re-raster / no GPU re-upload); re-rasterizes only when the
     // camera, asset, or size changes. Requires the native ZSlate backend (the
-    // handle is a UiGpuResources handle, not an ImGui texture id).
+    // handle is a UIGpuResources handle, not an ImGui texture id).
     PreviewFrame RenderToTexture(const std::filesystem::path& asset_path, uint32_t pixel_size, const PreviewInput& input);
 
     // Fixed-camera thumbnail for Content Browser tiles. Each asset keeps its own

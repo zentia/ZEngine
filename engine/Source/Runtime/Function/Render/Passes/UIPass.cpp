@@ -1,11 +1,11 @@
-﻿#include "Runtime/Function/Render/Passes/UIPass.h"
+#include "Runtime/Function/Render/Passes/UIPass.h"
 
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/UI/Render/BatchedUIRenderer.h"
 #include "Runtime/UI/UISystem.h"
-#include "Runtime/UI/Render/UiRenderBatch.h"
-#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UIRenderBatch.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 #include "Runtime/UI/Core/WindowUI.h"
 #include "core/Log/LogSystem.h"
 
@@ -29,7 +29,7 @@ namespace
     constexpr uint32_t kUiAttrColor = 4;
     constexpr uint32_t kUiAttrTexCoord = 3;
 
-    void FillUiVertexAttributes(RHIVertexInputAttributeDescription out[3], GraphicsAPI api)
+    void FillUIVertexAttributes(RHIVertexInputAttributeDescription out[3], GraphicsAPI api)
     {
         const uint32_t color_loc = (api == GraphicsAPI::DirectX12) ? kUiAttrColor : 1u;
         const uint32_t uv_loc = (api == GraphicsAPI::DirectX12) ? kUiAttrTexCoord : 2u;
@@ -37,17 +37,17 @@ namespace
         out[0].location = kUiAttrPosition;
         out[0].binding = 0;
         out[0].format = RHI_FORMAT_R32G32_SFLOAT;
-        out[0].offset = offsetof(UiVertex, pos);
+        out[0].offset = offsetof(UIVertex, pos);
 
         out[1].location = color_loc;
         out[1].binding = 0;
         out[1].format = RHI_FORMAT_R32G32B32A32_SFLOAT;
-        out[1].offset = offsetof(UiVertex, color);
+        out[1].offset = offsetof(UIVertex, color);
 
         out[2].location = uv_loc;
         out[2].binding = 0;
         out[2].format = RHI_FORMAT_R32G32_SFLOAT;
-        out[2].offset = offsetof(UiVertex, uv);
+        out[2].offset = offsetof(UIVertex, uv);
     }
 
     BatchedUIRenderer* ResolveBatchedRenderer(WindowUI* window_ui)
@@ -161,11 +161,11 @@ void UIPass::SetupPipeline()
 
     RHIVertexInputBindingDescription binding_description {};
     binding_description.binding = 0;
-    binding_description.stride = sizeof(UiVertex);
+    binding_description.stride = sizeof(UIVertex);
     binding_description.inputRate = RHI_VERTEX_INPUT_RATE_VERTEX;
 
     RHIVertexInputAttributeDescription attribute_descriptions[3] {};
-    FillUiVertexAttributes(attribute_descriptions, m_Rhi->getGraphicsAPI());
+    FillUIVertexAttributes(attribute_descriptions, m_Rhi->getGraphicsAPI());
 
     RHIPipelineVertexInputStateCreateInfo vertex_input {};
     vertex_input.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -307,7 +307,7 @@ void UIPass::EnsureGpuBuffers(size_t vertex_count, size_t index_count)
 
     DestroyGpuBuffers();
 
-    const RHIDeviceSize vertex_bytes = static_cast<RHIDeviceSize>(vertex_count * sizeof(UiVertex));
+    const RHIDeviceSize vertex_bytes = static_cast<RHIDeviceSize>(vertex_count * sizeof(UIVertex));
     const RHIDeviceSize index_bytes = static_cast<RHIDeviceSize>(index_count * sizeof(uint16_t));
 
     m_Rhi->CreateBuffer(vertex_bytes,
@@ -326,9 +326,9 @@ void UIPass::EnsureGpuBuffers(size_t vertex_count, size_t index_count)
     m_IndexCapacity = index_count;
 }
 
-void UIPass::UploadBatch(const UiRenderBatch& batch, float display_width, float display_height)
+void UIPass::UploadBatch(const UIRenderBatch& batch, float display_width, float display_height)
 {
-    const std::vector<UiVertex>& src_vertices = batch.getVertices();
+    const std::vector<UIVertex>& src_vertices = batch.getVertices();
     const std::vector<uint16_t>& src_indices = batch.getIndices();
     if (src_vertices.empty() || src_indices.empty() || display_width <= 0.0f || display_height <= 0.0f)
     {
@@ -355,10 +355,10 @@ void UIPass::UploadBatch(const UiRenderBatch& batch, float display_width, float 
     void* vertex_data = nullptr;
     m_Rhi->MapMemory(m_VertexMemory,
                      0,
-                     static_cast<RHIDeviceSize>(m_CpuVertices.size() * sizeof(UiVertex)),
+                     static_cast<RHIDeviceSize>(m_CpuVertices.size() * sizeof(UIVertex)),
                      0,
                      &vertex_data);
-    memcpy(vertex_data, m_CpuVertices.data(), m_CpuVertices.size() * sizeof(UiVertex));
+    memcpy(vertex_data, m_CpuVertices.data(), m_CpuVertices.size() * sizeof(UIVertex));
     m_Rhi->UnmapMemory(m_VertexMemory);
 
     void* index_data = nullptr;
@@ -390,7 +390,7 @@ void UIPass::Draw()
         return;
     }
 
-    const UiRenderBatch& batch = renderer->getBatch();
+    const UIRenderBatch& batch = renderer->getBatch();
     if (batch.empty())
     {
         return;
@@ -398,7 +398,7 @@ void UIPass::Draw()
 
     // All UI has recorded by now, so every requested glyph size is baked. Re-upload
     // any native font atlas that grew this frame before we draw from it.
-    if (UiGpuResources* gpu = UiGpuResources::Get())
+    if (UIGpuResources* gpu = UIGpuResources::Get())
     {
         gpu->RefreshNativeFontAtlasesIfDirty();
     }

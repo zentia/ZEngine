@@ -414,7 +414,7 @@ public:
     bool AllocateImGuiSrvDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE& cpu_handle,
                                     D3D12_GPU_DESCRIPTOR_HANDLE& gpu_handle);
 
-    // Editor ZSlate native overlay: UiGpuResources textures must live in the
+    // Editor ZSlate native overlay: UIGpuResources textures must live in the
     // bindless heap when SetBindlessDescriptorHeaps is active.
     void EnsureShaderVisibleImageView(RHIImageView* image_view) override;
 

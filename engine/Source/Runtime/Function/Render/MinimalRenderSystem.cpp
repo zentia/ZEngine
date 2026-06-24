@@ -165,7 +165,7 @@ void MinimalRenderSystem::RenderUI()
     // 对于 Vulkan：需要确保 render pass 已经 begun
     //
     // 关键：Draw() 内部会调用 m_WindowUi->PreRender()
-    // （记录 UI 命令到 UiRenderBatch），然后上传并绘制。
+    // （记录 UI 命令到 UIRenderBatch），然后上传并绘制。
 
     // 调用 UIPass::Draw() 渲染 UI
     m_UiPass->Draw();

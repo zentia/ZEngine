@@ -1,4 +1,4 @@
-﻿#include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
+#include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
 
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Log/LogSystem.h"
@@ -7,7 +7,7 @@
 #include "Runtime/Function/Render/Interface/DX12/DX12RHIResource.h"
 #include "Runtime/Function/Render/Interface/DX12/DX12ShaderCompiler.h"
 #include "Runtime/Function/Render/WindowSystem.h"
-#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include <algorithm>
 #include <array>
@@ -5647,7 +5647,7 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
         // white texture IN PLACE (keeping GpuTexture* handle_ids stable)
         // so batch commands recorded on the game thread still resolve
         // to valid descriptor sets this same frame.
-        if (auto* gpu_res = UiGpuResources::Get())
+        if (auto* gpu_res = UIGpuResources::Get())
         {
             gpu_res->InvalidateAllGpuResources();
         }
@@ -5681,7 +5681,7 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
             // atlases and the white texture IN PLACE (handle_ids stable) so
             // batch commands recorded on the game thread still resolve to
             // valid descriptor sets this same frame.
-            if (auto* gpu_res = UiGpuResources::Get())
+            if (auto* gpu_res = UIGpuResources::Get())
             {
                 gpu_res->InvalidateAllGpuResources();
             }

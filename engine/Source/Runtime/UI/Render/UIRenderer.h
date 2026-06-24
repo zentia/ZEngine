@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Runtime/UI/Render/UiAffine2D.h"
+#include "Runtime/UI/Render/UIAffine2D.h"
 #include "Runtime/UI/Core/UITypes.h"
 
 #include <cstdint>
@@ -20,7 +20,7 @@ class Font;
 // has wired up.
 //
 // The live backend is `BatchedUIRenderer` (BatchedUIRenderer.cpp): it records
-// primitives into a `UiRenderBatch` and submits them through the engine's own
+// primitives into a `UIRenderBatch` and submits them through the engine's own
 // RHI pipeline, with text rasterised by the native `ZFontAtlas` (stb_truetype).
 // Callers (`Image::onRender`, `Text::onRender`, ...) stay backend-agnostic.
 // ============================================================================
@@ -44,7 +44,7 @@ public:
     virtual void PopClipRect() = 0;
 
     // Cumulative 2D transform applied to subsequent draw calls (widget-local space).
-    virtual void PushTransform(const UiAffine2D& transform) { (void)transform; }
+    virtual void PushTransform(const UIAffine2D& transform) { (void)transform; }
     virtual void PopTransform() {}
 
     // Solid axis-aligned filled rectangle.
@@ -75,7 +75,7 @@ public:
                                   const Vector2& uv0 = Vector2(0.0f, 0.0f),
                                   const Vector2& uv1 = Vector2(1.0f, 1.0f)) = 0;
 
-    // Text run; optional `font` resolves through UiGpuResources (TTF atlas).
+    // Text run; optional `font` resolves through UIGpuResources (TTF atlas).
     virtual void DrawText(const UIRect& rect,
                           const std::string& text,
                           float font_size,

@@ -21,7 +21,7 @@
 #include "ZSlate/Widgets/SImage.h"
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/Text/STextBlock.h"
-#include "Runtime/UI/Render/UiGpuResources.h"  // EnsureTexture2D (native texture preview)
+#include "Runtime/UI/Render/UIGpuResources.h"  // EnsureTexture2D (native texture preview)
 
 #include <algorithm>
 #include <cstdio>
@@ -157,7 +157,7 @@ void ZSlatePreviewWindow::BuildTexture(const std::filesystem::path& asset_path, 
                   texture->m_Format);
     AddInfoRow(column, "Imported", dims, scale);
 
-    // Native path only: SImage.Texture is a UiGpuResources handle under the
+    // Native path only: SImage.Texture is a UIGpuResources handle under the
     // native backend. Under the ImGui-bridge fallback it would be (mis)read as an
     // ImTextureID, so we show a message instead. Bridge parity is a follow-up.
     if (!ZSlate::ZSlateEditorOverlay::Get().IsNativeBackendEnabled())
@@ -170,7 +170,7 @@ void ZSlatePreviewWindow::BuildTexture(const std::filesystem::path& asset_path, 
         return;
     }
 
-    UiGpuResources* gpu = UiGpuResources::Get();
+    UIGpuResources* gpu = UIGpuResources::Get();
     void* handle = gpu != nullptr ? gpu->EnsureTexture2D(texture) : nullptr;
     if (handle == nullptr)
     {
@@ -203,7 +203,7 @@ void ZSlatePreviewWindow::BuildMesh(const std::filesystem::path& asset_path, flo
 {
     auto column = MakeHeaderColumn(asset_path, scale);
 
-    // Native path only: SImage.Texture is a UiGpuResources handle under the
+    // Native path only: SImage.Texture is a UIGpuResources handle under the
     // native backend (same constraint as the texture preview).
     if (!ZSlate::ZSlateEditorOverlay::Get().IsNativeBackendEnabled())
     {

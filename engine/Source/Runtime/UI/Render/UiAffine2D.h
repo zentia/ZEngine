@@ -6,7 +6,7 @@
 
 // 2D affine transform for screen-space UI (top-left origin, +Y down).
 // Maps (x, y) as: x' = m00*x + m01*y + tx; y' = m10*x + m11*y + ty.
-struct UiAffine2D
+struct UIAffine2D
 {
     float m00 {1.0f};
     float m01 {0.0f};
@@ -15,18 +15,18 @@ struct UiAffine2D
     float tx {0.0f};
     float ty {0.0f};
 
-    static UiAffine2D Identity();
-    static UiAffine2D Translation(float x, float y);
-    static UiAffine2D Scale(float sx, float sy);
-    static UiAffine2D Rotation(float radians);
-    static UiAffine2D FromMatrix4x4(const Matrix4x4& matrix);
+    static UIAffine2D Identity();
+    static UIAffine2D Translation(float x, float y);
+    static UIAffine2D Scale(float sx, float sy);
+    static UIAffine2D Rotation(float radians);
+    static UIAffine2D FromMatrix4x4(const Matrix4x4& matrix);
 
-    UiAffine2D operator*(const UiAffine2D& rhs) const;
+    UIAffine2D operator*(const UIAffine2D& rhs) const;
 
     void TransformPoint(float x, float y, float& out_x, float& out_y) const;
 };
 
-UiAffine2D BuildWidgetSpaceToScreenAffine(const struct UIRect& rect,
+UIAffine2D BuildWidgetSpaceToScreenAffine(const struct UIRect& rect,
                                           const Vector2& pivot,
                                           const Vector3& scale,
                                           const Quaternion& rotation);

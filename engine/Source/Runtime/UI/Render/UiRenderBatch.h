@@ -1,12 +1,12 @@
 #pragma once
 
-#include "Runtime/UI/Render/UiAffine2D.h"
+#include "Runtime/UI/Render/UIAffine2D.h"
 #include "Runtime/UI/Core/UITypes.h"
 
 #include <cstdint>
 #include <vector>
 
-struct UiVertex
+struct UIVertex
 {
     float pos[2] {};
     float uv[2] {0.0f, 0.0f};
@@ -27,7 +27,7 @@ struct UiDrawCommand
 };
 
 // CPU-side geometry collected by BatchedUIRenderer during UISystem::PreRender().
-class UiRenderBatch
+class UIRenderBatch
 {
 public:
     void clear();
@@ -41,7 +41,7 @@ public:
     // editor overlay can submit windows in z-order.
     void forceNewCommand();
 
-    void PushTransform(const UiAffine2D& transform);
+    void PushTransform(const UIAffine2D& transform);
     void PopTransform();
 
     void DrawQuad(const UIRect& rect, const UIColor& color, void* white_texture_id);
@@ -58,7 +58,7 @@ public:
                           const Vector2& uv1,
                           void* white_texture_id);
 
-    const std::vector<UiVertex>& getVertices() const { return m_Vertices; }
+    const std::vector<UIVertex>& getVertices() const { return m_Vertices; }
     const std::vector<uint16_t>& getIndices() const { return m_Indices; }
     const std::vector<UiDrawCommand>& getCommands() const { return m_Commands; }
     const UIRect& getActiveClipRect() const { return m_ActiveClip; }
@@ -85,12 +85,12 @@ private:
                        float thickness,
                        void* white_texture_id);
 
-    std::vector<UiVertex> m_Vertices;
+    std::vector<UIVertex> m_Vertices;
     std::vector<uint16_t> m_Indices;
     std::vector<UiDrawCommand> m_Commands;
     std::vector<UIRect> m_ClipStack;
-    std::vector<UiAffine2D> m_TransformStack;
-    UiAffine2D m_ActiveTransform = UiAffine2D::Identity();
+    std::vector<UIAffine2D> m_TransformStack;
+    UIAffine2D m_ActiveTransform = UIAffine2D::Identity();
     UIRect m_ActiveClip {0.0f, 0.0f, 0.0f, 0.0f};
     bool m_HasClip {false};
     void* m_CurrentTexture {nullptr};

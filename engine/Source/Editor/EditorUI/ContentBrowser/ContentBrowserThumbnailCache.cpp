@@ -8,7 +8,7 @@
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Render/Texture/Texture2D.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
-#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 
 #include <filesystem>
 #include <string>
@@ -69,7 +69,7 @@ namespace ContentBrowserThumbnailCache
         if (!ZSlate::ZSlateEditorOverlay::Get().IsNativeBackendEnabled())
             return nullptr;
 
-        UiGpuResources* gpu = UiGpuResources::Get();
+        UIGpuResources* gpu = UIGpuResources::Get();
         if (gpu == nullptr || !gpu->IsReady())
             return nullptr;
 

@@ -5,7 +5,7 @@
 #include <EASTL/string.h>
 
 // Runtime font asset (.zasset via FontImporter). Source TTF/OTF path is stored
-// project-relative; GPU glyphs bake through UiGpuResources (ImFontAtlas).
+// project-relative; GPU glyphs bake through UIGpuResources (ImFontAtlas).
 class Font : public Object
 {
     REGISTER_CLASS(Font);

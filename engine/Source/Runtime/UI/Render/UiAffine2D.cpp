@@ -1,33 +1,33 @@
-﻿#include "Runtime/UI/Render/UiAffine2D.h"
+#include "Runtime/UI/Render/UIAffine2D.h"
 
 #include "Runtime/UI/Core/UITypes.h"
 
 #include <cmath>
 
-UiAffine2D UiAffine2D::Identity()
+UIAffine2D UIAffine2D::Identity()
 {
-    return UiAffine2D {};
+    return UIAffine2D {};
 }
 
-UiAffine2D UiAffine2D::Translation(float x, float y)
+UIAffine2D UIAffine2D::Translation(float x, float y)
 {
-    UiAffine2D result = Identity();
+    UIAffine2D result = Identity();
     result.tx = x;
     result.ty = y;
     return result;
 }
 
-UiAffine2D UiAffine2D::Scale(float sx, float sy)
+UIAffine2D UIAffine2D::Scale(float sx, float sy)
 {
-    UiAffine2D result = Identity();
+    UIAffine2D result = Identity();
     result.m00 = sx;
     result.m11 = sy;
     return result;
 }
 
-UiAffine2D UiAffine2D::Rotation(float radians)
+UIAffine2D UIAffine2D::Rotation(float radians)
 {
-    UiAffine2D result = Identity();
+    UIAffine2D result = Identity();
     const float c = std::cos(radians);
     const float s = std::sin(radians);
     result.m00 = c;
@@ -37,9 +37,9 @@ UiAffine2D UiAffine2D::Rotation(float radians)
     return result;
 }
 
-UiAffine2D UiAffine2D::FromMatrix4x4(const Matrix4x4& matrix)
+UIAffine2D UIAffine2D::FromMatrix4x4(const Matrix4x4& matrix)
 {
-    UiAffine2D result {};
+    UIAffine2D result {};
     result.m00 = matrix.m_Mat[0][0];
     result.m01 = matrix.m_Mat[1][0];
     result.m10 = matrix.m_Mat[0][1];
@@ -49,9 +49,9 @@ UiAffine2D UiAffine2D::FromMatrix4x4(const Matrix4x4& matrix)
     return result;
 }
 
-UiAffine2D UiAffine2D::operator*(const UiAffine2D& rhs) const
+UIAffine2D UIAffine2D::operator*(const UIAffine2D& rhs) const
 {
-    UiAffine2D result {};
+    UIAffine2D result {};
     result.m00 = m00 * rhs.m00 + m01 * rhs.m10;
     result.m01 = m00 * rhs.m01 + m01 * rhs.m11;
     result.m10 = m10 * rhs.m00 + m11 * rhs.m10;
@@ -61,7 +61,7 @@ UiAffine2D UiAffine2D::operator*(const UiAffine2D& rhs) const
     return result;
 }
 
-void UiAffine2D::TransformPoint(float x, float y, float& out_x, float& out_y) const
+void UIAffine2D::TransformPoint(float x, float y, float& out_x, float& out_y) const
 {
     out_x = m00 * x + m01 * y + tx;
     out_y = m10 * x + m11 * y + ty;
@@ -82,7 +82,7 @@ namespace
     }
 }  // namespace
 
-UiAffine2D BuildWidgetSpaceToScreenAffine(const UIRect& rect,
+UIAffine2D BuildWidgetSpaceToScreenAffine(const UIRect& rect,
                                           const Vector2& pivot,
                                           const Vector3& scale,
                                           const Quaternion& rotation)
@@ -91,10 +91,10 @@ UiAffine2D BuildWidgetSpaceToScreenAffine(const UIRect& rect,
     const float pivot_y = rect.height * pivot.y;
     const float angle = QuaternionToZRotationRadians(rotation);
 
-    const UiAffine2D to_pivot = UiAffine2D::Translation(-pivot_x, -pivot_y);
-    const UiAffine2D rot = UiAffine2D::Rotation(angle);
-    const UiAffine2D scl = UiAffine2D::Scale(scale.x, scale.y);
-    const UiAffine2D from_pivot = UiAffine2D::Translation(rect.x + pivot_x, rect.y + pivot_y);
+    const UIAffine2D to_pivot = UIAffine2D::Translation(-pivot_x, -pivot_y);
+    const UIAffine2D rot = UIAffine2D::Rotation(angle);
+    const UIAffine2D scl = UIAffine2D::Scale(scale.x, scale.y);
+    const UIAffine2D from_pivot = UIAffine2D::Translation(rect.x + pivot_x, rect.y + pivot_y);
 
     return from_pivot * rot * scl * to_pivot;
 }

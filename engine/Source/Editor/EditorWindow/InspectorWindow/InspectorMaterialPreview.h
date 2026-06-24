@@ -55,7 +55,7 @@ struct MaterialPreviewResult
 // an internal dynamic ZSlate texture sized pixel_size x pixel_size and returns its
 // handle for display through an SImage. Replaces the old ImGui DrawMaterialPreviewWidget
 // now that the Preview window paints through the retained ZSlate widget tree.
-// Requires the native ZSlate backend (the handle is a UiGpuResources handle).
+// Requires the native ZSlate backend (the handle is a UIGpuResources handle).
 MaterialPreviewResult RenderMaterialPreviewToTexture(const Material& material, uint32_t pixel_size);
 
 // Fixed-camera material thumbnail for Content Browser tiles. Each asset path keeps

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Runtime/UI/Render/UIRenderer.h"
-#include "Runtime/UI/Render/UiRenderBatch.h"
+#include "Runtime/UI/Render/UIRenderBatch.h"
 
 // Records Canvas draw commands into a CPU batch consumed by UIPass on the render thread.
 class BatchedUIRenderer final : public UIRenderer
@@ -13,7 +13,7 @@ public:
     void PushClipRect(const UIRect& clip_rect, bool intersect_with_current = true) override;
     void PopClipRect() override;
 
-    void PushTransform(const UiAffine2D& transform) override;
+    void PushTransform(const UIAffine2D& transform) override;
     void PopTransform() override;
 
     void DrawQuad(const UIRect& rect, const UIColor& color) override;
@@ -42,11 +42,11 @@ public:
 
     Vector2 getDisplaySize() const override;
 
-    UiRenderBatch& getBatch() { return m_Batch; }
-    const UiRenderBatch& getBatch() const { return m_Batch; }
+    UIRenderBatch& getBatch() { return m_Batch; }
+    const UIRenderBatch& getBatch() const { return m_Batch; }
 
 private:
-    UiRenderBatch m_Batch;
+    UIRenderBatch m_Batch;
     Vector2 m_DisplaySize {0.0f, 0.0f};
     bool m_Active {false};
 };

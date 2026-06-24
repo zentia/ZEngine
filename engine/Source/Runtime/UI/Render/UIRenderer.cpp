@@ -1,6 +1,6 @@
-﻿#include "Runtime/UI/Render/UIRenderer.h"
+#include "Runtime/UI/Render/UIRenderer.h"
 
-// The only live UIRenderer backend is BatchedUIRenderer (native UiRenderBatch -> RHI).
+// The only live UIRenderer backend is BatchedUIRenderer (native UIRenderBatch -> RHI).
 // The former ImGui-draw-list backend (ImGuiUIRenderer) was removed: it was never
 // instantiated (CreateImGuiUIRenderer had no callers) and only existed as the original
 // bootstrap path before the native batcher landed.

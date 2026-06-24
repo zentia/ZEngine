@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "ZSlate/Application/SlateInput.h"
@@ -17,11 +17,11 @@ class SWidget;
 // Native ZSlate replacement for the legacy ImGui PreviewWindow. Shows the
 // selected asset's name/path header plus a type-specific preview, all displayed
 // through SImage under the native backend:
-//   - Texture2D  -> UiGpuResources::EnsureTexture2D
-//   - Mesh       -> software rasterizer -> UiGpuResources::UpdateDynamicTexture
-//   - Material   -> software rasterizer -> UiGpuResources::UpdateDynamicTexture
+//   - Texture2D  -> UIGpuResources::EnsureTexture2D
+//   - Mesh       -> software rasterizer -> UIGpuResources::UpdateDynamicTexture
+//   - Material   -> software rasterizer -> UIGpuResources::UpdateDynamicTexture
 //   - Shader     -> DX12 render-to-texture adopted via
-//                   UiGpuResources::AdoptExternalImageView (real offscreen shader
+//                   UIGpuResources::AdoptExternalImageView (real offscreen shader
 //                   execution). The RTT GPU pass is driven per-frame from OnGUI;
 //                   the tree is rebuilt once the handle first becomes valid.
 class ZSlatePreviewWindow : public EditorWindow

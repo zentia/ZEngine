@@ -18,10 +18,10 @@ class Texture2D;
 
 // GPU-side texture cache for the runtime UI (font atlas + Texture2D uploads).
 // Initialized by UIPass once RHI is available; read during UISystem::PreRender().
-class UiGpuResources
+class UIGpuResources
 {
 public:
-    static UiGpuResources* Get();
+    static UIGpuResources* Get();
 
     void Initialize(RHI* rhi);
     void Shutdown();
@@ -110,7 +110,7 @@ public:
     RHIDescriptorSet* GetDescriptorSet(void* texture_id) const;
     RHIDescriptorSetLayout* GetTextureLayout() const { return m_TextureLayout; }
 
-    ~UiGpuResources();
+    ~UIGpuResources();
 
 private:
     struct GpuTexture
@@ -141,7 +141,7 @@ private:
     // Texture2D assets. The 4-arg overload above forwards here with miplevels=1.
     void* CreateFromPixels(const uint8_t* pixels, uint32_t width, uint32_t height, RHIFormat format, uint32_t miplevels);
 
-    static UiGpuResources* s_Instance;
+    static UIGpuResources* s_Instance;
 
     // Invalidation callback registry (see RegisterInvalidationCallback).
     static std::vector<std::pair<uint32_t, std::function<void()>>> s_InvalidationCallbacks;

@@ -7,7 +7,7 @@ class Material;
 
 // Native ZSlate variant: renders the same DX12 render-to-texture preview but,
 // instead of issuing an ImGui::Image, adopts the RTT color target into
-// UiGpuResources and returns its stable handle so an SImage can sample it under
+// UIGpuResources and returns its stable handle so an SImage can sample it under
 // the native backend. Call this every frame while the shader/material is shown:
 // the GPU pass defers when an editor render pass is already open, so the handle
 // only becomes valid on a frame where the draw lands. The returned handle stays
@@ -17,7 +17,7 @@ struct ShaderPreviewTextureResult
 {
     bool handled {false};         // false => not a DX12 / not previewable asset
     bool rendered {false};        // a fresh GPU draw landed this call
-    void* texture_handle {nullptr};  // UiGpuResources handle (nullptr until first draw)
+    void* texture_handle {nullptr};  // UIGpuResources handle (nullptr until first draw)
     std::string message;
 };
 

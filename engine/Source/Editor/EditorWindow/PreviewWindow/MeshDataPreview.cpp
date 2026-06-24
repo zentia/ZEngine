@@ -6,7 +6,7 @@
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Data/MeshData.h"
-#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 
 #include <algorithm>
 #include <atomic>
@@ -698,7 +698,7 @@ namespace
             return false;
         }
 
-        UiGpuResources* gpu = UiGpuResources::Get();
+        UIGpuResources* gpu = UIGpuResources::Get();
         if (gpu == nullptr || !gpu->IsReady())
         {
             return false;
@@ -896,7 +896,7 @@ namespace MeshDataPreview
             return frame;
         }
 
-        UiGpuResources* gpu = UiGpuResources::Get();
+        UIGpuResources* gpu = UIGpuResources::Get();
         if (gpu == nullptr || !gpu->IsReady())
         {
             frame.error = "GPU resources unavailable";
@@ -972,7 +972,7 @@ namespace MeshDataPreview
             return frame;
         }
 
-        UiGpuResources* gpu = UiGpuResources::Get();
+        UIGpuResources* gpu = UIGpuResources::Get();
         if (gpu == nullptr || !gpu->IsReady())
         {
             frame.error = "GPU resources unavailable";

@@ -5,7 +5,7 @@
 #include "Runtime/Function/Render/Texture/Texture2D.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UI/Render/TextGenerator.h"
-#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 #include "Runtime/UI/Render/ZFontAtlas.h"
 
 #include <algorithm>
@@ -15,7 +15,7 @@ namespace
 {
     void* GetWhiteTextureId()
     {
-        UiGpuResources* gpu = UiGpuResources::Get();
+        UIGpuResources* gpu = UIGpuResources::Get();
         return gpu != nullptr ? gpu->GetWhiteTextureId() : nullptr;
     }
 }  // namespace
@@ -46,7 +46,7 @@ void BatchedUIRenderer::PopClipRect()
     m_Batch.PopClipRect();
 }
 
-void BatchedUIRenderer::PushTransform(const UiAffine2D& transform)
+void BatchedUIRenderer::PushTransform(const UIAffine2D& transform)
 {
     if (!m_Active)
     {
@@ -117,7 +117,7 @@ void BatchedUIRenderer::DrawText(const UIRect& rect,
         return;
     }
 
-    UiGpuResources* gpu = UiGpuResources::Get();
+    UIGpuResources* gpu = UIGpuResources::Get();
 
     // Native glyph atlas path (stb_truetype via ZFontAtlas). The renderer only
     // resolves the atlas' GPU texture and submits geometry -- TextGenerator owns
@@ -169,7 +169,7 @@ Vector2 BatchedUIRenderer::MeasureText(const std::string& text,
         return Vector2(0.0f, 0.0f);
     }
 
-    UiGpuResources* gpu = UiGpuResources::Get();
+    UIGpuResources* gpu = UIGpuResources::Get();
 
     if (gpu != nullptr)
     {

@@ -4,7 +4,7 @@
 
 #include "Editor/EditorWindow/PreviewWindow/PreviewRaster.h"
 #include "Runtime/Core/Math/MathHeaders.h"
-#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 
 #include <algorithm>
 #include <array>
@@ -845,7 +845,7 @@ MaterialPreviewResult RenderMaterialThumbnailFromPath(const std::filesystem::pat
         return result;
     }
 
-    UiGpuResources* gpu = UiGpuResources::Get();
+    UIGpuResources* gpu = UIGpuResources::Get();
     if (gpu == nullptr || !gpu->IsReady())
     {
         result.error = "GPU resources unavailable";
@@ -916,7 +916,7 @@ MaterialPreviewResult RenderMaterialPreviewToTexture(const Material& material, u
         return result;
     }
 
-    UiGpuResources* gpu = UiGpuResources::Get();
+    UIGpuResources* gpu = UIGpuResources::Get();
     if (gpu == nullptr || !gpu->IsReady())
     {
         result.error = "GPU resources unavailable";

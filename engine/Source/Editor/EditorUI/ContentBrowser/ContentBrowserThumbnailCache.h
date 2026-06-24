@@ -5,7 +5,7 @@ struct EditorFileNode;
 #include <filesystem>
 
 // Lazy GPU thumbnail cache for Content Browser tiles (Texture2D / MeshData / Material).
-// Returns a UiGpuResources handle suitable for SImage::Texture, or nullptr to fall
+// Returns a UIGpuResources handle suitable for SImage::Texture, or nullptr to fall
 // back to the type-colored placeholder quad.
 namespace ContentBrowserThumbnailCache
 {

@@ -11,7 +11,7 @@
 // On-demand baking: glyphs are rendered into a CPU RGBA bitmap the first time a
 // (codepoint, pixel-size) pair is requested, not pre-ranged. This is CJK-capable
 // without paying for the full CJK range up front -- only glyphs that are actually
-// drawn ever get baked. The owner (UiGpuResources) uploads the bitmap to a GPU
+// drawn ever get baked. The owner (UIGpuResources) uploads the bitmap to a GPU
 // texture and re-uploads it whenever IsDirty() reports new glyphs since the last
 // ClearDirty().
 //

@@ -9,7 +9,7 @@
 #include "Runtime/Function/ShaderLab/ShaderLabParser.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/ResType/Data/Material.h"
-#include "Runtime/UI/Render/UiGpuResources.h"  // AdoptExternalImageView (native ZSlate preview handle)
+#include "Runtime/UI/Render/UIGpuResources.h"  // AdoptExternalImageView (native ZSlate preview handle)
 #include "core/Log/LogSystem.h"
 
 #include <algorithm>
@@ -918,7 +918,7 @@ namespace
     {
     public:
         // Native ZSlate path: render the RTT (default view, no ImGui interaction
-        // widgets) and return a UiGpuResources handle pointing at the color target.
+        // widgets) and return a UIGpuResources handle pointing at the color target.
         // No ImGui drawing. Re-renders only when the selected asset or the shader
         // source mtime changes; the handle is stable across frames once it appears.
         //
@@ -926,7 +926,7 @@ namespace
         // lost to an accidental `git checkout`; this is a best-effort rebuild from the
         // surviving header + free function + the documented design (sync GPU via
         // RunSynchronizedGpuReadback + ExecuteDedicatedUploadCommands, then adopt via
-        // UiGpuResources::AdoptExternalImageView). Verify against intent if behaviour
+        // UIGpuResources::AdoptExternalImageView). Verify against intent if behaviour
         // differs from the pre-loss version.
         ShaderPreviewTextureResult DrawNative(const std::filesystem::path& selected_asset_path,
                                               const std::string& resolved_asset_type,
@@ -1003,12 +1003,12 @@ namespace
                 m_NativeNeedsRender = false;
                 m_NativeRenderedWriteTime = shader_write_time;
 
-                // Adopt the RTT color target into UiGpuResources. EnsureShaderVisibleImageView
+                // Adopt the RTT color target into UIGpuResources. EnsureShaderVisibleImageView
                 // (invoked inside AdoptExternalImageView) creates the bindless SRV from the
                 // wrapped DX12 resource, so we only need to point the view at m_RenderTarget.
                 m_NativeImage.setResource(m_RenderTarget, k_preview_format, m_TextureSize, m_TextureSize, 1, 1, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                 m_NativeView.setResource(&m_NativeImage, k_preview_format, {}, {}, RHI_IMAGE_VIEW_TYPE_2D, 1, 1);
-                if (UiGpuResources* gpu = UiGpuResources::Get())
+                if (UIGpuResources* gpu = UIGpuResources::Get())
                 {
                     m_NativeHandle = gpu->AdoptExternalImageView(m_NativeHandle, &m_NativeView, nullptr);
                 }
@@ -1192,7 +1192,7 @@ namespace
             m_RtvHandle = m_RtvHeap->GetCPUDescriptorHandleForHeapStart();
             m_Device->CreateRenderTargetView(m_RenderTarget.Get(), nullptr, m_RtvHandle);
 
-            // The sampleable SRV is created by UiGpuResources::AdoptExternalImageView
+            // The sampleable SRV is created by UIGpuResources::AdoptExternalImageView
             // (-> EnsureShaderVisibleImageView) in the bindless heap; no SRV is built here.
             (void)dx12_rhi;
 
@@ -1415,7 +1415,7 @@ namespace
             m_PipelineWriteTime = std::filesystem::file_time_type::min();
             m_RenderTargetState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             // Native path: m_RenderTarget was just released, so force a fresh draw +
-            // re-adopt on the next DrawNative (handle reset -> new UiGpuResources entry).
+            // re-adopt on the next DrawNative (handle reset -> new UIGpuResources entry).
             m_NativeNeedsRender = true;
             m_NativeRenderedWriteTime = std::filesystem::file_time_type::min();
             m_NativeHandle = nullptr;
@@ -1442,7 +1442,7 @@ namespace
 
         // P11g reconstruction: native ZSlate preview path. The RTT color target
         // (m_RenderTarget) is wrapped into these RHI shims and adopted into
-        // UiGpuResources so an SImage can sample it; the handle is stable across
+        // UIGpuResources so an SImage can sample it; the handle is stable across
         // frames. Re-render is gated on selection / shader-source-mtime change.
         std::filesystem::path m_NativeLastAssetPath;
         bool m_NativeNeedsRender {true};

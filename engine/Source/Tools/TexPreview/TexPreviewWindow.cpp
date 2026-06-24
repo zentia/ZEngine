@@ -12,7 +12,7 @@
 #include "Runtime/Function/Render/Texture/ASTCDecompressor.h"
 #include "Runtime/Function/Render/Texture/BC7Decompressor.h"
 #include "Runtime/Function/Render/Texture/ETC2Decompressor.h"
-#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 #include "Runtime/Function/Render/RenderType.h"
 
 #include <cmath>
@@ -581,10 +581,10 @@ bool TexPreviewWindow::CreateGPUTexture()
     if (!m_TextureLoaded || m_PreviewPixels.empty())
         return false;
 
-    auto* gpu_res = UiGpuResources::Get();
+    auto* gpu_res = UIGpuResources::Get();
     if (gpu_res == nullptr)
     {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: UiGpuResources not available");
+        LOG_ERROR(ZEditor, "TexPreviewWindow: UIGpuResources not available");
         return false;
     }
 
@@ -614,7 +614,7 @@ void TexPreviewWindow::EnsureCheckerboardTexture()
     if (m_CheckerTextureId != nullptr)
         return;
 
-    auto* gpu_res = UiGpuResources::Get();
+    auto* gpu_res = UIGpuResources::Get();
     if (gpu_res == nullptr)
         return;
 

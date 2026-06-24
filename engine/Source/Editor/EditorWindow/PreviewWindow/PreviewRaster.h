@@ -6,7 +6,7 @@
 // Tiny ImGui-independent software rasterizer used by the native ZSlate preview
 // window. Renders into a tightly-packed RGBA8 CPU buffer (byte order R,G,B,A --
 // matching RHI_FORMAT_R8G8B8A8_UNORM) that callers upload to a ZSlate dynamic
-// texture via UiGpuResources::UpdateDynamicTexture. Replaces the old ImGui
+// texture via UIGpuResources::UpdateDynamicTexture. Replaces the old ImGui
 // draw-list path (AddTriangleFilled / AddRectFilled) used by the mesh and
 // material previews, which is unavailable now that those panels paint through
 // the retained ZSlate widget tree.

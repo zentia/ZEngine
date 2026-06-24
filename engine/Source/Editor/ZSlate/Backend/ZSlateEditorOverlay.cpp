@@ -8,7 +8,7 @@
 #include "ZSlate/Backend/SlateUIRendererBackend.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UI/Core/UITypes.h"
-#include "Runtime/UI/Render/UiGpuResources.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 #include "core/Log/LogSystem.h"
 
 #if defined(_WIN32)
@@ -71,7 +71,7 @@ namespace
     constexpr uint32_t kUiAttrColor = 4;
     constexpr uint32_t kUiAttrTexCoord = 3;
 
-    void FillUiVertexAttributes(RHIVertexInputAttributeDescription out[3], GraphicsAPI api)
+    void FillUIVertexAttributes(RHIVertexInputAttributeDescription out[3], GraphicsAPI api)
     {
         const uint32_t color_loc = (api == GraphicsAPI::DirectX12) ? kUiAttrColor : 1u;
         const uint32_t uv_loc = (api == GraphicsAPI::DirectX12) ? kUiAttrTexCoord : 2u;
@@ -79,17 +79,17 @@ namespace
         out[0].location = kUiAttrPosition;
         out[0].binding = 0;
         out[0].format = RHI_FORMAT_R32G32_SFLOAT;
-        out[0].offset = offsetof(UiVertex, pos);
+        out[0].offset = offsetof(UIVertex, pos);
 
         out[1].location = color_loc;
         out[1].binding = 0;
         out[1].format = RHI_FORMAT_R32G32B32A32_SFLOAT;
-        out[1].offset = offsetof(UiVertex, color);
+        out[1].offset = offsetof(UIVertex, color);
 
         out[2].location = uv_loc;
         out[2].binding = 0;
         out[2].format = RHI_FORMAT_R32G32_SFLOAT;
-        out[2].offset = offsetof(UiVertex, uv);
+        out[2].offset = offsetof(UIVertex, uv);
     }
 
     std::string GetShaderRoot()
@@ -277,7 +277,7 @@ void ZSlateEditorOverlay::EnsurePipeline(RHI* rhi, RHIRenderPass* render_pass, u
 
     // In pure edit mode no runtime UIPass runs, so the shared GPU resources may
     // not be initialized yet.
-    UiGpuResources* gpu = UiGpuResources::Get();
+    UIGpuResources* gpu = UIGpuResources::Get();
     if (gpu != nullptr && !gpu->IsReady())
     {
         gpu->Initialize(rhi);
@@ -337,11 +337,11 @@ void ZSlateEditorOverlay::EnsurePipeline(RHI* rhi, RHIRenderPass* render_pass, u
 
     RHIVertexInputBindingDescription binding_description {};
     binding_description.binding = 0;
-    binding_description.stride = sizeof(UiVertex);
+    binding_description.stride = sizeof(UIVertex);
     binding_description.inputRate = RHI_VERTEX_INPUT_RATE_VERTEX;
 
     RHIVertexInputAttributeDescription attribute_descriptions[3] {};
-    FillUiVertexAttributes(attribute_descriptions, rhi->getGraphicsAPI());
+    FillUIVertexAttributes(attribute_descriptions, rhi->getGraphicsAPI());
 
     RHIPipelineVertexInputStateCreateInfo vertex_input {};
     vertex_input.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -504,7 +504,7 @@ void ZSlateEditorOverlay::EnsureGpuBuffers(RHI* rhi, size_t vertex_count, size_t
         m_IndexMemory[slot] = nullptr;
     }
 
-    const RHIDeviceSize vertex_bytes = static_cast<RHIDeviceSize>(vertex_count * sizeof(UiVertex));
+    const RHIDeviceSize vertex_bytes = static_cast<RHIDeviceSize>(vertex_count * sizeof(UIVertex));
     const RHIDeviceSize index_bytes = static_cast<RHIDeviceSize>(index_count * sizeof(uint16_t));
 
     rhi->CreateBuffer(vertex_bytes,
@@ -525,8 +525,8 @@ void ZSlateEditorOverlay::EnsureGpuBuffers(RHI* rhi, size_t vertex_count, size_t
 void ZSlateEditorOverlay::UploadBatch(RHI* rhi, float display_width, float display_height,
                                       float display_pos_x, float display_pos_y)
 {
-    const UiRenderBatch& batch = m_Renderer.getBatch();
-    const std::vector<UiVertex>& src_vertices = batch.getVertices();
+    const UIRenderBatch& batch = m_Renderer.getBatch();
+    const std::vector<UIVertex>& src_vertices = batch.getVertices();
     const std::vector<uint16_t>& src_indices = batch.getIndices();
     if (src_vertices.empty() || src_indices.empty() || display_width <= 0.0f || display_height <= 0.0f)
     {
@@ -562,8 +562,8 @@ void ZSlateEditorOverlay::UploadBatch(RHI* rhi, float display_width, float displ
 
     const int slot = m_FrameSlot;
     void* vertex_data = nullptr;
-    rhi->MapMemory(m_VertexMemory[slot], 0, static_cast<RHIDeviceSize>(m_CpuVertices.size() * sizeof(UiVertex)), 0, &vertex_data);
-    memcpy(vertex_data, m_CpuVertices.data(), m_CpuVertices.size() * sizeof(UiVertex));
+    rhi->MapMemory(m_VertexMemory[slot], 0, static_cast<RHIDeviceSize>(m_CpuVertices.size() * sizeof(UIVertex)), 0, &vertex_data);
+    memcpy(vertex_data, m_CpuVertices.data(), m_CpuVertices.size() * sizeof(UIVertex));
     rhi->UnmapMemory(m_VertexMemory[slot]);
 
     void* index_data = nullptr;
@@ -579,7 +579,7 @@ void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
         return;
     }
 
-    const UiRenderBatch& batch = m_Renderer.getBatch();
+    const UIRenderBatch& batch = m_Renderer.getBatch();
     if (batch.empty())
     {
         return;
@@ -592,7 +592,7 @@ void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
     // All windows have recorded by now, so every requested glyph size is baked.
     // Re-upload any native glyph atlas that grew this frame (keeps each atlas'
     // handle_id stable so the commands above still resolve).
-    if (UiGpuResources* gpu = UiGpuResources::Get())
+    if (UIGpuResources* gpu = UIGpuResources::Get())
     {
         gpu->RefreshNativeFontAtlasesIfDirty();
     }
@@ -620,7 +620,7 @@ void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
         return;
     }
 
-    UiGpuResources* gpu = UiGpuResources::Get();
+    UIGpuResources* gpu = UIGpuResources::Get();
     if (gpu == nullptr)
     {
         return;
@@ -735,7 +735,7 @@ void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
 
 void ZSlateEditorOverlay::DrawExternalBatchToFloatingSurface(RHI* rhi,
                                                              const void* key,
-                                                             const UiRenderBatch& batch,
+                                                             const UIRenderBatch& batch,
                                                              uint32_t width,
                                                              uint32_t height)
 {
@@ -743,14 +743,14 @@ void ZSlateEditorOverlay::DrawExternalBatchToFloatingSurface(RHI* rhi,
     {
         return;
     }
-    const std::vector<UiVertex>& src_vertices = batch.getVertices();
+    const std::vector<UIVertex>& src_vertices = batch.getVertices();
     const std::vector<uint16_t>& src_indices = batch.getIndices();
     if (src_vertices.empty() || src_indices.empty() || width == 0 || height == 0)
     {
         return;
     }
 
-    UiGpuResources* gpu = UiGpuResources::Get();
+    UIGpuResources* gpu = UIGpuResources::Get();
     if (gpu == nullptr)
     {
         return;
@@ -784,7 +784,7 @@ void ZSlateEditorOverlay::DrawExternalBatchToFloatingSurface(RHI* rhi,
             rhi->FreeMemory(ring.index_memory[slot]);
             ring.index_memory[slot] = nullptr;
         }
-        rhi->CreateBuffer(static_cast<RHIDeviceSize>(src_vertices.size() * sizeof(UiVertex)),
+        rhi->CreateBuffer(static_cast<RHIDeviceSize>(src_vertices.size() * sizeof(UIVertex)),
                           RHI_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                           RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                           ring.vertex_buffer[slot],
@@ -824,8 +824,8 @@ void ZSlateEditorOverlay::DrawExternalBatchToFloatingSurface(RHI* rhi,
 
     void* vertex_data = nullptr;
     rhi->MapMemory(ring.vertex_memory[slot], 0,
-                   static_cast<RHIDeviceSize>(m_CpuVertices.size() * sizeof(UiVertex)), 0, &vertex_data);
-    memcpy(vertex_data, m_CpuVertices.data(), m_CpuVertices.size() * sizeof(UiVertex));
+                   static_cast<RHIDeviceSize>(m_CpuVertices.size() * sizeof(UIVertex)), 0, &vertex_data);
+    memcpy(vertex_data, m_CpuVertices.data(), m_CpuVertices.size() * sizeof(UIVertex));
     rhi->UnmapMemory(ring.vertex_memory[slot]);
 
     void* index_data = nullptr;
