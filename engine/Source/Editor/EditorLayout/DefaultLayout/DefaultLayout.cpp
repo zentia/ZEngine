@@ -15,7 +15,7 @@
 #include "Runtime/Project/ProjectInfo.h"
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"        // P11f: native Save Layout dialog
 #include "ZSlate/Widgets/Input/SButton.h"          // P11f
-#include "ZSlate/Widgets/SEditableTextBox.h"  // P11f
+#include "ZSlate/Widgets/Input/SEditableTextBox.h"  // P11f
 #include "ZSlate/Widgets/SSpacer.h"           // P11f
 #include "ZSlate/Widgets/STextBlock.h"        // P11f
 #include "Runtime/UI/Render/BatchedUIRenderer.h"  // P7 placeholder / maximized chrome painting

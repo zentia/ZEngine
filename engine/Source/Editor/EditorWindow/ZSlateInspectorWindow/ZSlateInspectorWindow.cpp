@@ -30,7 +30,7 @@
 #include "ZSlate/Widgets/Input/SCheckBox.h"
 #include "ZSlate/Widgets/SColorPicker.h"   // native Material color editing
 #include "ZSlate/Widgets/SDragFloat.h"     // native Material scalar editing
-#include "ZSlate/Widgets/SEditableTextBox.h"
+#include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/SExpandableArea.h"  // collapsible inspector sections
 #include "ZSlate/Widgets/SMenu.h"     // combo dropdown rows
 #include "ZSlate/Widgets/SScrollBox.h"

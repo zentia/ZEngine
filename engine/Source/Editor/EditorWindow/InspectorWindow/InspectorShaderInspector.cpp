@@ -23,7 +23,7 @@
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/Input/SCheckBox.h"
-#include "ZSlate/Widgets/SEditableTextBox.h"
+#include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/SExpandableArea.h"
 #include "ZSlate/Widgets/SScrollBox.h"
 #include "ZSlate/Widgets/STextBlock.h"

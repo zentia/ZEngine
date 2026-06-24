@@ -22,7 +22,7 @@
 #include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Input/SButton.h"
-#include "ZSlate/Widgets/SEditableTextBox.h"
+#include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/SImage.h"
 #include "ZSlate/Widgets/SMenu.h"
 #include "ZSlate/Widgets/SDropTarget.h"
