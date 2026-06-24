@@ -1,10 +1,10 @@
-﻿#include "ZSlateDemoWindow.h"
+#include "ZSlateDemoWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"       // native input bus (P10)
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"  // native RHI backend (M5)
 #include "ZSlate/Application/SlateApplication.h"
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SButton.h"
 #include "ZSlate/Widgets/SCheckBox.h"

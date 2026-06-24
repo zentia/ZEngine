@@ -1,4 +1,4 @@
-﻿#include "ZSlateUMGDesignerWindow.h"
+#include "ZSlateUMGDesignerWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
@@ -6,7 +6,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateDragDrop.h"
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBox.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SButton.h"

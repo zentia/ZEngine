@@ -1,4 +1,4 @@
-﻿#include "ZSlateConsoleWindow.h"
+#include "ZSlateConsoleWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"       // native input bus (P10)
@@ -8,7 +8,7 @@
 #include "Runtime/Function/Console/ConsoleManager.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "ZSlate/Application/SlateApplication.h"
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SButton.h"
 #include "ZSlate/Widgets/SCheckBox.h"

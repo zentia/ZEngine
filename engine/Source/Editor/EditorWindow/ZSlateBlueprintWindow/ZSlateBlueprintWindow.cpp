@@ -1,10 +1,10 @@
-﻿#include "ZSlateBlueprintWindow.h"
+#include "ZSlateBlueprintWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"  // native RHI backend
 #include "ZSlate/Application/SlateApplication.h"
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SButton.h"
 #include "ZSlate/Widgets/SSpacer.h"

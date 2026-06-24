@@ -1,4 +1,4 @@
-﻿#include "ZSlateContentBrowserWindow.h"
+#include "ZSlateContentBrowserWindow.h"
 
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Editor/EditorDragDrop/EditorDragDrop.h"
@@ -19,7 +19,7 @@
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "ZSlate/Application/SlateApplication.h"
 #include "Runtime/UI/Render/UiGpuResources.h"  // GPU cache invalidation callback
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SButton.h"
 #include "ZSlate/Widgets/SEditableTextBox.h"

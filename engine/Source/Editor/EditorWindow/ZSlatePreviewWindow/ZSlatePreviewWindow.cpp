@@ -1,4 +1,4 @@
-﻿#include "ZSlatePreviewWindow.h"
+#include "ZSlatePreviewWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
@@ -15,7 +15,7 @@
 #include "Runtime/Platform/Path/Path.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "ZSlate/Application/SlateApplication.h"
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBox.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SImage.h"

@@ -1,4 +1,4 @@
-﻿#include "ZSlateInspectorWindow.h"
+#include "ZSlateInspectorWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/EditorUI/EditorEulerHint.h"
@@ -23,7 +23,7 @@
 #include "Runtime/Function/Render/Texture/Texture2D.h"  // native Texture2D inspector (imported dims)
 #include "Runtime/Project/ProjectInfo.h"                // resolve content-relative asset paths
 #include "ZSlate/Application/SlateApplication.h"
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBox.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SButton.h"

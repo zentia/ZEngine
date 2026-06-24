@@ -1,4 +1,4 @@
-﻿#include "ZSlateHierarchyWindow.h"
+#include "ZSlateHierarchyWindow.h"
 
 #include "Editor/EditorDragDrop/EditorDragDrop.h"
 #include "Editor/EditorHierarchy/EditorHierarchyReparent.h"
@@ -15,7 +15,7 @@
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateDragDrop.h"
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SButton.h"
 #include "ZSlate/Widgets/SDropTarget.h"

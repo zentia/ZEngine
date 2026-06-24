@@ -1,4 +1,4 @@
-﻿#include "ZSlateTimelineWindow.h"
+#include "ZSlateTimelineWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"      // native input / metrics
@@ -8,7 +8,7 @@
 #include "Runtime/Resource/ResType/Data/TimelineClip.h"
 #include "Runtime/Resource/ResType/Data/TimelineTrack.h"
 #include "ZSlate/Application/SlateApplication.h"
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBox.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SButton.h"

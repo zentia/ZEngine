@@ -1,4 +1,4 @@
-﻿#include "ZSlateSceneWindow.h"
+#include "ZSlateSceneWindow.h"
 
 #include "Editor/EditorDragDrop/EditorDragDrop.h"
 #include "Editor/EditorHierarchy/EditorHierarchyReparent.h"
@@ -23,7 +23,7 @@
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "ZSlate/Application/SlateApplication.h"
-#include "ZSlate/Widgets/SBorder.h"
+#include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/SBox.h"
 #include "ZSlate/Widgets/SBoxPanel.h"
 #include "ZSlate/Widgets/SButton.h"
