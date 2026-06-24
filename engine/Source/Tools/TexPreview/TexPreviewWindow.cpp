@@ -121,10 +121,10 @@ void TexPreviewWindow::OnPaint(const ZSlate::FPaintContext& ctx, const ZSlate::F
     if (!ctx.Renderer)
         return;
 
-    const UIRect rect = geom.ToRect();
+    const ZSlate::UIRect rect = geom.ToRect();
 
     // 1. Background
-    ctx.Renderer->DrawQuad(rect, UIColor(0.2f, 0.2f, 0.2f, 1.0f));
+    ctx.Renderer->DrawQuad(rect, ZSlate::UIColor(0.2f, 0.2f, 0.2f, 1.0f));
 
     // 2. Checkerboard (visible under transparent areas)
     DrawCheckerboard(ctx.Renderer, rect);
@@ -623,29 +623,14 @@ void TexPreviewWindow::EnsureCheckerboardTexture()
         nullptr, pixels.data(), CHECKER_TEX_SIZE, CHECKER_TEX_SIZE);
 }
 
-void TexPreviewWindow::DrawCheckerboard(UIRenderer* renderer, const UIRect& rect) const
+void TexPreviewWindow::DrawCheckerboard(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const
 {
-    if (m_CheckerTextureId == nullptr)
-    {
-        const_cast<TexPreviewWindow*>(this)->EnsureCheckerboardTexture();
-    }
-
-    if (m_CheckerTextureId != nullptr)
-    {
-        const float tile_u = rect.width / CHECKER_TEX_SIZE;
-        const float tile_v = rect.height / CHECKER_TEX_SIZE;
-        renderer->DrawTexturedQuad(rect, m_CheckerTextureId,
-                                   UIColor(1.0f, 1.0f, 1.0f, 1.0f),
-                                   Vector2(0.0f, 0.0f),
-                                   Vector2(tile_u, tile_v));
-    }
-    else
-    {
-        renderer->DrawQuad(rect, UIColor(0.2f, 0.2f, 0.2f, 1.0f));
-    }
+    // ISlateRenderer::DrawTexturedQuad only takes 3 args (no UV tiling).
+    // Draw a solid dark background instead of tiled checkerboard for now.
+    renderer->DrawQuad(rect, ZSlate::UIColor(0.18f, 0.18f, 0.18f, 1.0f));
 }
 
-void TexPreviewWindow::DrawPreviewImage(UIRenderer* renderer, const UIRect& rect) const
+void TexPreviewWindow::DrawPreviewImage(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const
 {
     if (!m_TextureLoaded)
         return;
@@ -660,47 +645,21 @@ void TexPreviewWindow::DrawPreviewImage(UIRenderer* renderer, const UIRect& rect
 
     const float img_w = static_cast<float>(m_PreviewWidth) * m_ZoomLevel;
     const float img_h = static_cast<float>(m_PreviewHeight) * m_ZoomLevel;
-    const float img_x = rect.x + (rect.width - img_w) / 2.0f + m_PanX;
-    const float img_y = rect.y + (rect.height - img_h) / 2.0f + m_PanY;
+    const float img_x = rect.x + (rect.w - img_w) / 2.0f + m_PanX;
+    const float img_y = rect.y + (rect.h - img_h) / 2.0f + m_PanY;
 
     renderer->PushClipRect(rect);
 
-    const float clip_l = rect.x;
-    const float clip_t = rect.y;
-    const float clip_r = rect.x + rect.width;
-    const float clip_b = rect.y + rect.height;
-
-    const float draw_l = std::max(img_x, clip_l);
-    const float draw_t = std::max(img_y, clip_t);
-    const float draw_r = std::min(img_x + img_w, clip_r);
-    const float draw_b = std::min(img_y + img_h, clip_b);
-
-    if (draw_r > draw_l && draw_b > draw_t)
+    if (img_w > 0.0f && img_h > 0.0f)
     {
-        Vector2 uv0, uv1;
-        if (img_w > 0.0f && img_h > 0.0f)
-        {
-            uv0.x = (draw_l - img_x) / img_w;
-            uv0.y = (draw_t - img_y) / img_h;
-            uv1.x = (draw_r - img_x) / img_w;
-            uv1.y = (draw_b - img_y) / img_h;
-        }
-        else
-        {
-            uv0 = Vector2(0.0f, 0.0f);
-            uv1 = Vector2(1.0f, 1.0f);
-        }
-
-        renderer->DrawTexturedQuad(ToRect(draw_l, draw_t, draw_r - draw_l, draw_b - draw_t),
-                                   m_TextureId,
-                                   UIColor(1.0f, 1.0f, 1.0f, 1.0f),
-                                   uv0, uv1);
+        const ZSlate::UIRect img_rect(img_x, img_y, img_w, img_h);
+        renderer->DrawTexturedQuad(img_rect, m_TextureId, ZSlate::Colors::White);
     }
 
     renderer->PopClipRect();
 }
 
-void TexPreviewWindow::DrawInfoOverlay(UIRenderer* renderer, const UIRect& rect) const
+void TexPreviewWindow::DrawInfoOverlay(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const
 {
     if (!m_TextureLoaded)
         return;
@@ -711,15 +670,13 @@ void TexPreviewWindow::DrawInfoOverlay(UIRenderer* renderer, const UIRect& rect)
                   m_PreviewWidth, m_PreviewHeight,
                   m_ZoomLevel * 100.0f, m_PanX, m_PanY);
 
-    // Info bar background
-    renderer->DrawQuad(ToRect(rect.x, rect.y, rect.width, 28.0f),
-                       UIColor(0.1f, 0.1f, 0.1f, 0.85f));
-
-    renderer->DrawText(ToRect(rect.x + 8.0f, rect.y, rect.width - 16.0f, 28.0f),
+    renderer->DrawQuad(ZSlate::UIRect(rect.x, rect.y, rect.w, 28.0f),
+                       ZSlate::UIColor(0.1f, 0.1f, 0.1f, 0.85f));
+    renderer->DrawText(ZSlate::UIRect(rect.x + 8.0f, rect.y, rect.w - 16.0f, 28.0f),
                        buf, 13.0f,
-                       UIColor(0.9f, 0.9f, 0.9f, 1.0f),
-                       TextAnchor::MiddleLeft,
-                       TextWrapMode::NoWrap);
+                       ZSlate::UIColor(0.9f, 0.9f, 0.9f, 1.0f),
+                       ZSlate::TextAnchor::MiddleLeft,
+                       ZSlate::TextWrapMode::NoWrap);
 }
 
 void TexPreviewWindow::OnZoomIn()     { m_ZoomLevel = std::min(m_ZoomLevel * 1.2f, m_MaxZoom); }

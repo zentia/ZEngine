@@ -80,13 +80,13 @@ private:
     void EnsureCheckerboardTexture();
 
     // Draw checkerboard background for alpha visualization
-    void DrawCheckerboard(UIRenderer* renderer, const UIRect& rect) const;
+    void DrawCheckerboard(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const;
 
     // Draw the preview image with zoom/pan (clipped to widget bounds)
-    void DrawPreviewImage(UIRenderer* renderer, const UIRect& rect) const;
+    void DrawPreviewImage(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const;
 
     // Draw info text overlay
-    void DrawInfoOverlay(UIRenderer* renderer, const UIRect& rect) const;
+    void DrawInfoOverlay(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const;
 
     // Event handlers
     void OnZoomIn();
