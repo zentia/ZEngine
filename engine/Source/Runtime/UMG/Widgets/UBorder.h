@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "ZSlate/Widgets/Panels/SBorder.h"
 #include "Runtime/UI/Core/UITypes.h"
@@ -11,7 +11,7 @@ namespace ZUMG
 class UBorder : public UPanelWidget
 {
 public:
-    ::UIColor BackgroundColor {0.12f, 0.12f, 0.12f, 1.0f};
+    ::ZSlate::UIColor BackgroundColor {0.12f, 0.12f, 0.12f, 1.0f};
     bool DrawBackground {true};
     ZSlate::FMargin Padding;
     ZSlate::EHorizontalAlignment HAlign {ZSlate::EHorizontalAlignment::Fill};
@@ -23,7 +23,7 @@ public:
         if (content)
             AddChildWidget(std::move(content));
     }
-    void SetBackgroundColor(const UIColor& color)
+    void SetBackgroundColor(const ZSlate::UIColor& color)
     {
         BackgroundColor = color;
         if (auto* w = GetSlateAs<ZSlate::SBorder>())

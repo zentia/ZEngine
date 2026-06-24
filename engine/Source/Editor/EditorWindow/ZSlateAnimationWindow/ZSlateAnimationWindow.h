@@ -104,7 +104,7 @@ private:
     int TimeToFrame(float time) const;
     float FrameToTime(int frame) const;
 
-    UIColor PropertyColor(AnimPropType type) const;
+    ZSlate::UIColor PropertyColor(AnimPropType type) const;
     void ValueRange(const std::vector<AnimKeyframe>& kfs, float& min_val, float& max_val) const;
 
     // ---- Model -------------------------------------------------------------

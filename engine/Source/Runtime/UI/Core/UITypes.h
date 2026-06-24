@@ -4,7 +4,7 @@
 // UITypes.h — ZEngine UI type definitions (transitional)
 // -----------------------------------------------------------------------------
 // Phase 1: now includes ZSlateTypes.h as the canonical type source.
-// Global aliases (::UIRect, ::UIColor, etc.) remain for backward compatibility
+// Global aliases (::UIRect, ::ZSlate::UIColor, etc.) remain for backward compatibility
 // but should be migrated to ZSlate:: types.
 // =============================================================================
 
@@ -18,8 +18,8 @@
 
 // ---- Legacy type aliases (migrate to ZSlate:: equivalents) ----
 
-// UIColor: both :: and ZSlate:: are Vector4 aliases
-using UIColor = Vector4;
+// ZSlate::UIColor: migrated to ZSlate::UIColor. Include ZSlate/Core/ZSlateTypes.h for access.
+// (was: using ZSlate::UIColor = Vector4)
 
 // TextAnchor: same enum values as ZSlate::TextAnchor
 using TextAnchor = ZSlate::TextAnchor;

@@ -17,7 +17,7 @@ namespace ZInsights
 {
 namespace
 {
-D2D1_COLOR_F ToColor(const UIColor& c)
+D2D1_COLOR_F ToColor(const ZSlate::UIColor& c)
 {
     return D2D1::ColorF(c.x, c.y, c.z, c.w);
 }
@@ -114,7 +114,7 @@ void D2DUIRenderer::PopClipRect()
     --m_ClipDepth;
 }
 
-void D2DUIRenderer::DrawQuad(const UIRect& rect, const UIColor& color)
+void D2DUIRenderer::DrawQuad(const UIRect& rect, const ZSlate::UIColor& color)
 {
     if (m_Target == nullptr)
         return;
@@ -125,7 +125,7 @@ void D2DUIRenderer::DrawQuad(const UIRect& rect, const UIColor& color)
     m_Target->FillRectangle(ToRect(rect), m_Brush);
 }
 
-void D2DUIRenderer::DrawRect(const UIRect& rect, const UIColor& color, float thickness)
+void D2DUIRenderer::DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness)
 {
     if (m_Target == nullptr)
         return;
@@ -136,7 +136,7 @@ void D2DUIRenderer::DrawRect(const UIRect& rect, const UIColor& color, float thi
     m_Target->DrawRectangle(ToRect(rect), m_Brush, thickness);
 }
 
-void D2DUIRenderer::DrawTexturedQuad(const UIRect& rect, void* /*texture_id*/, const UIColor& color,
+void D2DUIRenderer::DrawTexturedQuad(const UIRect& rect, void* /*texture_id*/, const ZSlate::UIColor& color,
                                      const Vector2& /*uv0*/, const Vector2& /*uv1*/)
 {
     // The standalone viewer never draws textured quads; fall back to a solid
@@ -144,7 +144,7 @@ void D2DUIRenderer::DrawTexturedQuad(const UIRect& rect, void* /*texture_id*/, c
     DrawQuad(rect, color);
 }
 
-void D2DUIRenderer::DrawText(const UIRect& rect, const std::string& text, float font_size, const UIColor& color,
+void D2DUIRenderer::DrawText(const UIRect& rect, const std::string& text, float font_size, const ZSlate::UIColor& color,
                              TextAnchor alignment, TextWrapMode wrap, Font* /*font*/)
 {
     if (m_Target == nullptr || text.empty())

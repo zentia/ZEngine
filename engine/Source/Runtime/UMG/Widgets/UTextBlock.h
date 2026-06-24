@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "ZSlate/Widgets/Text/STextBlock.h"
 #include "Runtime/UMG/Core/UWidget.h"
@@ -13,7 +13,7 @@ class UTextBlock : public UWidget
 public:
     std::string Text;
     float FontSize {14.0f};
-    UIColor Color {1.0f, 1.0f, 1.0f, 1.0f};
+    ZSlate::UIColor Color {1.0f, 1.0f, 1.0f, 1.0f};
     TextAnchor Alignment {TextAnchor::MiddleLeft};
 
     void SetText(const std::string& text)
@@ -22,7 +22,7 @@ public:
         if (auto* w = GetSlateAs<ZSlate::STextBlock>())
             w->Text = text;
     }
-    void SetColor(const UIColor& color)
+    void SetColor(const ZSlate::UIColor& color)
     {
         Color = color;
         if (auto* w = GetSlateAs<ZSlate::STextBlock>())

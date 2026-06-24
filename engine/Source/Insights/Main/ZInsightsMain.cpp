@@ -163,9 +163,9 @@ void Render()
     g_RenderTarget->Clear(D2D1::ColorF(0.07f, 0.07f, 0.09f, 1.0f));
 
     // Status bar.
-    g_Renderer->DrawQuad(UIRect(0.0f, 0.0f, size.width, kStatusBarHeight), UIColor(0.14f, 0.14f, 0.17f, 1.0f));
+    g_Renderer->DrawQuad(UIRect(0.0f, 0.0f, size.width, kStatusBarHeight), ZSlate::UIColor(0.14f, 0.14f, 0.17f, 1.0f));
     g_Renderer->DrawText(UIRect(8.0f, 0.0f, size.width - 12.0f, kStatusBarHeight), BuildStatusText(), 13.0f,
-                         UIColor(0.78f, 0.80f, 0.85f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
+                         ZSlate::UIColor(0.78f, 0.80f, 0.85f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
 
     // Timeline fills the rest.
     const float timeline_w = size.width;

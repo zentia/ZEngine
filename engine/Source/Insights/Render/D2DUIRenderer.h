@@ -39,12 +39,12 @@ public:
     void PushClipRect(const UIRect& clip_rect, bool intersect_with_current = true) override;
     void PopClipRect() override;
 
-    void DrawQuad(const UIRect& rect, const UIColor& color) override;
-    void DrawRect(const UIRect& rect, const UIColor& color, float thickness = 1.0f) override;
-    void DrawTexturedQuad(const UIRect& rect, void* texture_id, const UIColor& color = UIColor(1, 1, 1, 1),
+    void DrawQuad(const UIRect& rect, const ZSlate::UIColor& color) override;
+    void DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness = 1.0f) override;
+    void DrawTexturedQuad(const UIRect& rect, void* texture_id, const ZSlate::UIColor& color = ZSlate::UIColor(1, 1, 1, 1),
                           const Vector2& uv0 = Vector2(0.0f, 0.0f),
                           const Vector2& uv1 = Vector2(1.0f, 1.0f)) override;
-    void DrawText(const UIRect& rect, const std::string& text, float font_size, const UIColor& color,
+    void DrawText(const UIRect& rect, const std::string& text, float font_size, const ZSlate::UIColor& color,
                   TextAnchor alignment = TextAnchor::MiddleCenter, TextWrapMode wrap = TextWrapMode::Wrap,
                   Font* font = nullptr) override;
     Vector2 MeasureText(const std::string& text, float font_size, TextWrapMode wrap = TextWrapMode::Wrap,

@@ -101,7 +101,7 @@ private:
     BpNode* FindNode(int node_id);
     std::pair<BpNode*, BpPin*> FindPinAt(const Vector2& screen_pos);
 
-    UIColor PinColor(BpPinType type) const;
+    ZSlate::UIColor PinColor(BpPinType type) const;
 
     // ---- Graph state -------------------------------------------------------
     std::vector<BpNode> m_Nodes;

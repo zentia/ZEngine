@@ -18,7 +18,7 @@ namespace
         return UIRect {x0, y0, x1 - x0, y1 - y0};
     }
 
-    void ToVertexColor(const UIColor& color, float out_rgba[4])
+    void ToVertexColor(const ZSlate::UIColor& color, float out_rgba[4])
     {
         out_rgba[0] = std::clamp(color.x, 0.0f, 1.0f);
         out_rgba[1] = std::clamp(color.y, 0.0f, 1.0f);
@@ -130,7 +130,7 @@ void UIRenderBatch::beginCommand(void* texture_id, void* white_texture_id)
     m_CurrentTexture = resolved;
 }
 
-void UIRenderBatch::DrawQuad(const UIRect& rect, const UIColor& color, void* white_texture_id)
+void UIRenderBatch::DrawQuad(const UIRect& rect, const ZSlate::UIColor& color, void* white_texture_id)
 {
     DrawTexturedQuad(rect,
                      white_texture_id,
@@ -140,12 +140,12 @@ void UIRenderBatch::DrawQuad(const UIRect& rect, const UIColor& color, void* whi
                      white_texture_id);
 }
 
-void UIRenderBatch::DrawRect(const UIRect& rect, const UIColor& color, float thickness, void* white_texture_id)
+void UIRenderBatch::DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness, void* white_texture_id)
 {
     appendOutline(rect.x, rect.y, rect.x + rect.width, rect.y + rect.height, color, thickness, white_texture_id);
 }
 
-void UIRenderBatch::DrawConvexPoly(const Vector2* points, int count, const UIColor& color, void* white_texture_id)
+void UIRenderBatch::DrawConvexPoly(const Vector2* points, int count, const ZSlate::UIColor& color, void* white_texture_id)
 {
     if (points == nullptr || count < 3)
     {
@@ -187,7 +187,7 @@ void UIRenderBatch::DrawConvexPoly(const Vector2* points, int count, const UICol
 
 void UIRenderBatch::DrawTexturedQuad(const UIRect& rect,
                                      void* texture_id,
-                                     const UIColor& color,
+                                     const ZSlate::UIColor& color,
                                      const Vector2& uv0,
                                      const Vector2& uv1,
                                      void* white_texture_id)
@@ -209,7 +209,7 @@ void UIRenderBatch::appendTexturedQuad(float x0,
                                        float y0,
                                        float x1,
                                        float y1,
-                                       const UIColor& color,
+                                       const ZSlate::UIColor& color,
                                        float uv0x,
                                        float uv0y,
                                        float uv1x,
@@ -272,7 +272,7 @@ void UIRenderBatch::appendOutline(float x0,
                                   float y0,
                                   float x1,
                                   float y1,
-                                  const UIColor& color,
+                                  const ZSlate::UIColor& color,
                                   float thickness,
                                   void* white_texture_id)
 {

@@ -38,7 +38,7 @@ void UMGDemoWidget::Build()
     auto title = std::make_shared<UTextBlock>();
     title->Text = "ZUMG Demo (UMG over ZSlate)";
     title->FontSize = 20.0f;
-    title->Color = UIColor(0.85f, 0.90f, 1.0f, 1.0f);
+    title->Color = ZSlate::UIColor(0.85f, 0.90f, 1.0f, 1.0f);
     column->AddSlot(title).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 0.0f, 0.0f, 10.0f));
 
     // Counter label + button.
@@ -104,7 +104,7 @@ void UMGDemoWidget::Build()
 
     // Wrap the column in a padded background border.
     auto border = std::make_shared<UBorder>();
-    border->BackgroundColor = UIColor(0.10f, 0.11f, 0.13f, 0.96f);
+    border->BackgroundColor = ZSlate::UIColor(0.10f, 0.11f, 0.13f, 0.96f);
     border->Padding = ZSlate::FMargin(16.0f);
     border->HAlign = ZSlate::EHorizontalAlignment::Left;
     border->VAlign = ZSlate::EVerticalAlignment::Top;

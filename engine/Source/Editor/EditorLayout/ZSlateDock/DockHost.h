@@ -2,7 +2,7 @@
 
 #include "Editor/EditorLayout/ZSlateDock/DockNode.h"
 #include "Runtime/Core/Math/Vector2.h"
-#include "Runtime/UI/Core/UITypes.h"  // UIRect, UIColor
+#include "Runtime/UI/Core/UITypes.h"  // UIRect, ZSlate::UIColor
 
 #include <string>
 
@@ -32,19 +32,19 @@ namespace EditorDock
     public:
         struct Style
         {
-            UIColor PanelBg {0.12f, 0.13f, 0.15f, 1.0f};
-            UIColor BorderColor {0.07f, 0.07f, 0.09f, 1.0f};
-            UIColor TabStripBg {0.16f, 0.17f, 0.19f, 1.0f};
-            UIColor TabActiveBg {0.26f, 0.28f, 0.32f, 1.0f};
-            UIColor TabInactiveBg {0.20f, 0.21f, 0.24f, 1.0f};
-            UIColor TabHoverBg {0.30f, 0.32f, 0.36f, 1.0f};
-            UIColor TabText {0.70f, 0.73f, 0.78f, 1.0f};
-            UIColor TabActiveText {0.96f, 0.97f, 0.99f, 1.0f};
-            UIColor SplitterColor {0.10f, 0.10f, 0.12f, 1.0f};
-            UIColor SplitterHoverColor {0.26f, 0.52f, 0.84f, 1.0f};
-            UIColor ActiveTabAccent {0.26f, 0.52f, 0.84f, 1.0f};  // top accent bar on the active tab
-            UIColor DropPreviewFill {0.26f, 0.52f, 0.84f, 0.35f};   // drag-to-dock target highlight
-            UIColor DropPreviewBorder {0.36f, 0.62f, 0.94f, 0.95f};
+            ZSlate::UIColor PanelBg {0.12f, 0.13f, 0.15f, 1.0f};
+            ZSlate::UIColor BorderColor {0.07f, 0.07f, 0.09f, 1.0f};
+            ZSlate::UIColor TabStripBg {0.16f, 0.17f, 0.19f, 1.0f};
+            ZSlate::UIColor TabActiveBg {0.26f, 0.28f, 0.32f, 1.0f};
+            ZSlate::UIColor TabInactiveBg {0.20f, 0.21f, 0.24f, 1.0f};
+            ZSlate::UIColor TabHoverBg {0.30f, 0.32f, 0.36f, 1.0f};
+            ZSlate::UIColor TabText {0.70f, 0.73f, 0.78f, 1.0f};
+            ZSlate::UIColor TabActiveText {0.96f, 0.97f, 0.99f, 1.0f};
+            ZSlate::UIColor SplitterColor {0.10f, 0.10f, 0.12f, 1.0f};
+            ZSlate::UIColor SplitterHoverColor {0.26f, 0.52f, 0.84f, 1.0f};
+            ZSlate::UIColor ActiveTabAccent {0.26f, 0.52f, 0.84f, 1.0f};  // top accent bar on the active tab
+            ZSlate::UIColor DropPreviewFill {0.26f, 0.52f, 0.84f, 0.35f};   // drag-to-dock target highlight
+            ZSlate::UIColor DropPreviewBorder {0.36f, 0.62f, 0.94f, 0.95f};
 
             float TabPaddingX {12.0f};
             float TabGap {2.0f};

@@ -13,12 +13,12 @@ namespace
     constexpr float kTitleFontSize = 14.0f;
     constexpr float kTitlePadX = 10.0f;  // per side, * scale
 
-    // ZSlate::UIColor == Vector4 (same underlying type as ::UIColor).
+    // ZSlate::UIColor == Vector4 (same underlying type as ::ZSlate::UIColor).
     // No :: prefix — we want ZSlate::UIColor so ISlateRenderer methods accept them.
-    const UIColor kBarBg         {0.12f, 0.12f, 0.14f, 1.0f};
-    const UIColor kTitleText     {0.88f, 0.89f, 0.92f, 1.0f};
-    const UIColor kTitleHighlight {0.26f, 0.40f, 0.62f, 1.0f};
-    const UIColor kTitleHover    {0.24f, 0.25f, 0.29f, 1.0f};
+    const ZSlate::UIColor kBarBg         {0.12f, 0.12f, 0.14f, 1.0f};
+    const ZSlate::UIColor kTitleText     {0.88f, 0.89f, 0.92f, 1.0f};
+    const ZSlate::UIColor kTitleHighlight {0.26f, 0.40f, 0.62f, 1.0f};
+    const ZSlate::UIColor kTitleHover    {0.24f, 0.25f, 0.29f, 1.0f};
 
     // Convert ZSlate::UIRect -> ::UIRect (global, used by BatchedUIRenderer).
     // ZSlate::UIRect has fields {x, y, w, h}; ::UIRect has {x, y, width, height}.
@@ -77,7 +77,7 @@ bool ZSlateEditorMenuBar::Render(ISlateRenderer& renderer,
 
     // ---- Lay out + paint the title strip -----------------------------------
     // bar_rect is ZSlate::UIRect; ISlateRenderer expects ZSlate::UIRect.
-    // kBarBg is ::UIColor (from anonymous namespace); ISlateRenderer::DrawQuad
+    // kBarBg is ::ZSlate::UIColor (from anonymous namespace); ISlateRenderer::DrawQuad
     // expects ZSlate::UIColor. They're both Vector4 -- pass directly.
     renderer.DrawQuad(bar_rect, kBarBg);
 

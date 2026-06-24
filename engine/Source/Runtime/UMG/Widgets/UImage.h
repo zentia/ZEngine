@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "ZSlate/Widgets/Panels/SImage.h"
 #include "Runtime/UMG/Core/UWidget.h"
@@ -11,7 +11,7 @@ class UImage : public UWidget
 {
 public:
     void* Texture {nullptr};
-    UIColor Tint {1.0f, 1.0f, 1.0f, 1.0f};
+    ZSlate::UIColor Tint {1.0f, 1.0f, 1.0f, 1.0f};
     Vector2 DesiredSize {16.0f, 16.0f};
     Vector2 Uv0 {0.0f, 0.0f};
     Vector2 Uv1 {1.0f, 1.0f};
@@ -22,7 +22,7 @@ public:
         if (auto* w = GetSlateAs<ZSlate::SImage>())
             w->Brush.Texture = texture;
     }
-    void SetTint(const UIColor& tint)
+    void SetTint(const ZSlate::UIColor& tint)
     {
         Tint = tint;
         if (auto* w = GetSlateAs<ZSlate::SImage>())
@@ -54,7 +54,7 @@ protected:
     {
         auto img = std::make_shared<ZSlate::SImage>();
         img->Brush.Texture = Texture;
-        // Convert ::UIColor to ZSlate::UIColor (::Vector4 uses x,y,z,w)
+        // Convert ::ZSlate::UIColor to ZSlate::UIColor (::Vector4 uses x,y,z,w)
         img->Brush.Tint = ZSlate::UIColor(Tint.x, Tint.y, Tint.z, Tint.w);
         // Convert ::Vector2 to ZSlate::Vector2
         img->Brush.ImageSize = ZSlate::Vector2(DesiredSize.x, DesiredSize.y);

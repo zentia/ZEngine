@@ -277,7 +277,7 @@ void MenuController::BuildPlaybackToolbar(bool playing, bool paused, float scale
     const float btn_w = 30.0f * scale;
     const float btn_h = 22.0f * scale;
 
-    // Use ZSlate::UIColor (not ::UIColor) to avoid ambiguity.
+    // Use ZSlate::UIColor (not ::ZSlate::UIColor) to avoid ambiguity.
     const ZSlate::UIColor c_normal(54.0f / 255.0f, 56.0f / 255.0f, 60.0f / 255.0f, 1.0f);
     const ZSlate::UIColor c_hover(68.0f / 255.0f, 70.0f / 255.0f, 75.0f / 255.0f, 1.0f);
     const ZSlate::UIColor c_press(45.0f / 255.0f, 47.0f / 255.0f, 51.0f / 255.0f, 1.0f);
@@ -378,9 +378,9 @@ void MenuController::DrawPlaybackToolbarNative()
     renderer.PushClipRect(strip_rect, true);
 
     // Strip background + 1px bottom separator (mirrors the ImGui fallback).
-    renderer.DrawQuad(strip_rect, ::UIColor(26.0f / 255.0f, 27.0f / 255.0f, 31.0f / 255.0f, 1.0f));
+    renderer.DrawQuad(strip_rect, ::ZSlate::UIColor(26.0f / 255.0f, 27.0f / 255.0f, 31.0f / 255.0f, 1.0f));
     renderer.DrawQuad(::UIRect(win_pos.x, strip_min_y + strip_h - 1.0f, win_size.x, 1.0f),
-                      ::UIColor(52.0f / 255.0f, 56.0f / 255.0f, 62.0f / 255.0f, 1.0f));
+                      ::ZSlate::UIColor(52.0f / 255.0f, 56.0f / 255.0f, 62.0f / 255.0f, 1.0f));
 
     m_PlaybackToolbar->CacheDesiredSize();
     const auto size = m_PlaybackToolbar->GetDesiredSize();
@@ -390,7 +390,7 @@ void MenuController::DrawPlaybackToolbarNative()
     // Panel plate behind the buttons.
     const float pad = 5.0f * ui_scale;
     renderer.DrawQuad(::UIRect(tx - pad, ty - pad, size.x + pad * 2.0f, size.y + pad * 2.0f),
-                      ::UIColor(46.0f / 255.0f, 48.0f / 255.0f, 52.0f / 255.0f, 0.96f));
+                      ::ZSlate::UIColor(46.0f / 255.0f, 48.0f / 255.0f, 52.0f / 255.0f, 0.96f));
 
     ZSlate::FPaintContext ctx;
     ctx.Renderer = &overlay;  // ZSlateEditorOverlay IS an ISlateRenderer

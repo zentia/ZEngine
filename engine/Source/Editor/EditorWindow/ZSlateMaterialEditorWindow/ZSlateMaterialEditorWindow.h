@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "Runtime/Core/Math/Vector2.h"
@@ -142,7 +142,7 @@ private:
     std::pair<MatNode*, MatPin*> FindPinAt(const Vector2& screen_pos);
 
     std::string NodeTitle(MatNodeType type) const;
-    UIColor PinColor(MatPinType type) const;
+    ZSlate::UIColor PinColor(MatPinType type) const;
 
     // ---- Graph state -------------------------------------------------------
     std::vector<MatNode> m_Nodes;

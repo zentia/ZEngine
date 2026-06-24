@@ -1,7 +1,7 @@
-﻿#pragma once
+#pragma once
 
 #include "Runtime/Core/Math/Vector2.h"
-#include "Runtime/UI/Core/UITypes.h"  // UIColor (= Vector4)
+#include "Runtime/UI/Core/UITypes.h"  // ZSlate::UIColor (= Vector4)
 
 #include <cstdio>
 #include <cstdlib>
@@ -41,7 +41,7 @@ public:
     void SetInt(const std::string& key, int v) { Put(key, EPropType::Int, std::to_string(v)); }
     void SetBool(const std::string& key, bool v) { Put(key, EPropType::Bool, v ? "1" : "0"); }
     void SetString(const std::string& key, const std::string& v) { Put(key, EPropType::String, v); }
-    void SetColor(const std::string& key, const UIColor& c) { Put(key, EPropType::Color, ColorToStr(c)); }
+    void SetColor(const std::string& key, const ZSlate::UIColor& c) { Put(key, EPropType::Color, ColorToStr(c)); }
     void SetVec2(const std::string& key, const Vector2& v) { Put(key, EPropType::Vec2, Vec2ToStr(v)); }
 
     float GetFloat(const std::string& key, float def = 0.0f) const
@@ -64,12 +64,12 @@ public:
         const FUMGProperty* p = Find(key);
         return p ? p->Value : def;
     }
-    UIColor GetColor(const std::string& key, const UIColor& def = UIColor(1, 1, 1, 1)) const
+    ZSlate::UIColor GetColor(const std::string& key, const ZSlate::UIColor& def = ZSlate::UIColor(1, 1, 1, 1)) const
     {
         const FUMGProperty* p = Find(key);
         if (!p)
             return def;
-        UIColor c = def;
+        ZSlate::UIColor c = def;
         ParseFloats(p->Value, &c.x, 4);
         return c;
     }
@@ -125,7 +125,7 @@ private:
         std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(v));
         return buf;
     }
-    static std::string ColorToStr(const UIColor& c)
+    static std::string ColorToStr(const ZSlate::UIColor& c)
     {
         char buf[64];
         std::snprintf(buf, sizeof(buf), "%g,%g,%g,%g", static_cast<double>(c.x), static_cast<double>(c.y),

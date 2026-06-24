@@ -133,18 +133,18 @@ public:
     void Destroy(RHI* rhi);
 
     // --- ISlateRenderer implementation (forward to m_Renderer with type conversion) ---
-    void DrawQuad(const UIRect& rect, const UIColor& color) override;
-    void DrawRect(const UIRect& rect, const UIColor& color, float thickness = 1.0f) override;
-    void DrawConvexPoly(const Vector2* points, int count, const UIColor& color) override;
-    void DrawRoundedRect(const UIRect& rect, float radius, const UIColor& color) override;
-    void DrawTexturedQuad(const UIRect& rect, void* texture_handle, const UIColor& tint = Colors::White) override;
-    void DrawBox(const UIRect& rect, const FMargin& margin, void* texture_handle, const UIColor& tint) override;
-    void DrawBorder(const UIRect& rect, const FMargin& margin, void* texture_handle, const UIColor& tint) override;
+    void DrawQuad(const UIRect& rect, const ZSlate::UIColor& color) override;
+    void DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness = 1.0f) override;
+    void DrawConvexPoly(const Vector2* points, int count, const ZSlate::UIColor& color) override;
+    void DrawRoundedRect(const UIRect& rect, float radius, const ZSlate::UIColor& color) override;
+    void DrawTexturedQuad(const UIRect& rect, void* texture_handle, const ZSlate::UIColor& tint = Colors::White) override;
+    void DrawBox(const UIRect& rect, const FMargin& margin, void* texture_handle, const ZSlate::UIColor& tint) override;
+    void DrawBorder(const UIRect& rect, const FMargin& margin, void* texture_handle, const ZSlate::UIColor& tint) override;
 
-    void DrawText(const UIRect& rect, const std::string& text, float font_size, const UIColor& color,
+    void DrawText(const UIRect& rect, const std::string& text, float font_size, const ZSlate::UIColor& color,
                  TextAnchor alignment = TextAnchor::MiddleLeft, TextWrapMode wrap = TextWrapMode::NoWrap,
                  void* font_handle = nullptr) override;
-    void DrawText(const std::string& text, const Vector2& pos, float font_size, const UIColor& color) override;
+    void DrawText(const std::string& text, const Vector2& pos, float font_size, const ZSlate::UIColor& color) override;
     Vector2 MeasureText(const std::string& text, float font_size) const override;
 
     void PushClipRect(const UIRect& rect) override;

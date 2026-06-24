@@ -198,7 +198,7 @@ namespace EditorDock
             const bool is_active = (static_cast<int>(i) == leaf.ActiveTab);
             const bool is_hover = RectContains(tab_rect, mouse);
 
-            UIColor bg = m_Style.TabInactiveBg;
+            ZSlate::UIColor bg = m_Style.TabInactiveBg;
             if (is_active)
                 bg = m_Style.TabActiveBg;
             else if (is_hover)

@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "Editor/EditorWindow/EditorWindow.h"
 #include "ZSlate/Core/SlatePaint.h"
@@ -65,8 +65,8 @@ private:
     float FrameToTime(int frame) const;
 
     // Visuals.
-    UIColor TrackColor(TimelineTrack* track) const;
-    UIColor ClipColor(TimelineClip* clip) const;
+    ZSlate::UIColor TrackColor(TimelineTrack* track) const;
+    ZSlate::UIColor ClipColor(TimelineClip* clip) const;
     const char* TrackTypeName(TimelineTrack* track) const;
     std::string ClipDisplayName(TimelineClip* clip) const;
 

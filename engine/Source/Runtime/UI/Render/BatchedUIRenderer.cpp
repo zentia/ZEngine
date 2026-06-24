@@ -64,7 +64,7 @@ void BatchedUIRenderer::PopTransform()
     m_Batch.PopTransform();
 }
 
-void BatchedUIRenderer::DrawQuad(const UIRect& rect, const UIColor& color)
+void BatchedUIRenderer::DrawQuad(const UIRect& rect, const ZSlate::UIColor& color)
 {
     if (!m_Active)
     {
@@ -73,7 +73,7 @@ void BatchedUIRenderer::DrawQuad(const UIRect& rect, const UIColor& color)
     m_Batch.DrawQuad(rect, color, GetWhiteTextureId());
 }
 
-void BatchedUIRenderer::DrawRect(const UIRect& rect, const UIColor& color, float thickness)
+void BatchedUIRenderer::DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness)
 {
     if (!m_Active)
     {
@@ -82,7 +82,7 @@ void BatchedUIRenderer::DrawRect(const UIRect& rect, const UIColor& color, float
     m_Batch.DrawRect(rect, color, thickness, GetWhiteTextureId());
 }
 
-void BatchedUIRenderer::DrawConvexPoly(const Vector2* points, int count, const UIColor& color)
+void BatchedUIRenderer::DrawConvexPoly(const Vector2* points, int count, const ZSlate::UIColor& color)
 {
     if (!m_Active)
     {
@@ -93,7 +93,7 @@ void BatchedUIRenderer::DrawConvexPoly(const Vector2* points, int count, const U
 
 void BatchedUIRenderer::DrawTexturedQuad(const UIRect& rect,
                                          void* texture_id,
-                                         const UIColor& color,
+                                         const ZSlate::UIColor& color,
                                          const Vector2& uv0,
                                          const Vector2& uv1)
 {
@@ -107,7 +107,7 @@ void BatchedUIRenderer::DrawTexturedQuad(const UIRect& rect,
 void BatchedUIRenderer::DrawText(const UIRect& rect,
                                  const std::string& text,
                                  float font_size,
-                                 const UIColor& color,
+                                 const ZSlate::UIColor& color,
                                  TextAnchor alignment,
                                  TextWrapMode wrap,
                                  Font* font_asset)

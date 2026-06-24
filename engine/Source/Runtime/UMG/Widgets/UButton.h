@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "Runtime/UI/Core/UITypes.h"
@@ -13,9 +13,9 @@ namespace ZUMG
 class UButton : public UPanelWidget
 {
 public:
-    ::UIColor NormalColor {0.20f, 0.20f, 0.22f, 1.0f};
-    ::UIColor HoverColor {0.28f, 0.28f, 0.32f, 1.0f};
-    ::UIColor PressedColor {0.15f, 0.15f, 0.17f, 1.0f};
+    ::ZSlate::UIColor NormalColor {0.20f, 0.20f, 0.22f, 1.0f};
+    ::ZSlate::UIColor HoverColor {0.28f, 0.28f, 0.32f, 1.0f};
+    ::ZSlate::UIColor PressedColor {0.15f, 0.15f, 0.17f, 1.0f};
     ZSlate::FMargin Padding {8.0f, 4.0f};
     ZSlate::EHorizontalAlignment HAlign {ZSlate::EHorizontalAlignment::Center};
     ZSlate::EVerticalAlignment VAlign {ZSlate::EVerticalAlignment::Center};
@@ -61,7 +61,7 @@ protected:
     std::shared_ptr<ZSlate::SWidget> RebuildWidget() override
     {
         auto btn = std::make_shared<ZSlate::SButton>();
-        // Convert ::UIColor to ZSlate::UIColor
+        // Convert ::ZSlate::UIColor to ZSlate::UIColor
         btn->NormalColor = ZSlate::UIColor(NormalColor.x, NormalColor.y, NormalColor.z, NormalColor.w);
         btn->HoverColor = ZSlate::UIColor(HoverColor.x, HoverColor.y, HoverColor.z, HoverColor.w);
         btn->PressedColor = ZSlate::UIColor(PressedColor.x, PressedColor.y, PressedColor.z, PressedColor.w);

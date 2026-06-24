@@ -59,21 +59,21 @@ public:
         const UIRect rect = geom.ToRect();
         ISlateRenderer* r = ctx.Renderer;
 
-        r->DrawQuad(rect, UIColor(0.09f, 0.09f, 0.11f, 1.0f));
+        r->DrawQuad(rect, ZSlate::UIColor(0.09f, 0.09f, 0.11f, 1.0f));
 
         if (m_Snapshot == nullptr)
             return;
 
         // --- Frame ruler ----------------------------------------------------
         const UIRect ruler(rect.x, rect.y, rect.w, kRulerHeight);
-        r->DrawQuad(ruler, UIColor(0.13f, 0.13f, 0.16f, 1.0f));
+        r->DrawQuad(ruler, ZSlate::UIColor(0.13f, 0.13f, 0.16f, 1.0f));
         const auto& frames = m_Snapshot->frame_starts;
         for (size_t i = 0; i < frames.size(); ++i)
         {
             const float fx = XOf(static_cast<double>(frames[i]), rect);
             if (fx < rect.x - 1.0f || fx > rect.x + rect.w + 1.0f)
                 continue;
-            r->DrawQuad(UIRect(fx, rect.y, 1.0f, rect.h), UIColor(0.30f, 0.32f, 0.40f, 0.55f));
+            r->DrawQuad(UIRect(fx, rect.y, 1.0f, rect.h), ZSlate::UIColor(0.30f, 0.32f, 0.40f, 0.55f));
             if (i + 1 < frames.size())
             {
                 const float nx = XOf(static_cast<double>(frames[i + 1]), rect);
@@ -84,7 +84,7 @@ public:
                     char buf[32];
                     std::snprintf(buf, sizeof(buf), "%.2f ms", ms);
                     r->DrawText(UIRect(fx + 3.0f, rect.y, w - 4.0f, kRulerHeight), buf, 11.0f,
-                                UIColor(0.70f, 0.74f, 0.82f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
+                                ZSlate::UIColor(0.70f, 0.74f, 0.82f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
                 }
             }
         }
@@ -95,9 +95,9 @@ public:
         {
             const float rows_h = static_cast<float>(track.max_depth + 1) * kRowHeight;
             // Track header band.
-            r->DrawQuad(UIRect(rect.x, y, rect.w, kHeaderHeight), UIColor(0.16f, 0.17f, 0.21f, 1.0f));
+            r->DrawQuad(UIRect(rect.x, y, rect.w, kHeaderHeight), ZSlate::UIColor(0.16f, 0.17f, 0.21f, 1.0f));
             r->DrawText(UIRect(rect.x + 6.0f, y, rect.w - 8.0f, kHeaderHeight), track.thread_name, 12.0f,
-                        UIColor(0.85f, 0.88f, 0.94f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
+                        ZSlate::UIColor(0.85f, 0.88f, 0.94f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
             const float rows_top = y + kHeaderHeight;
 
             for (const ZEngine::Insights::ScopeEvent& ev : track.events)
@@ -112,12 +112,12 @@ public:
                 if (bw < 1.0f)
                     bw = 1.0f;
                 const float by = rows_top + static_cast<float>(ev.depth) * kRowHeight;
-                const UIColor col = ColorForName(ev.name_id);
+                const ZSlate::UIColor col = ColorForName(ev.name_id);
                 r->DrawQuad(UIRect(bx, by, bw, kRowHeight - 1.0f), col);
                 if (bw > 28.0f)
                 {
                     r->DrawText(UIRect(bx + 3.0f, by, bw - 5.0f, kRowHeight - 1.0f), m_Snapshot->Name(ev.name_id),
-                                10.0f, UIColor(0.04f, 0.04f, 0.06f, 1.0f), TextAnchor::MiddleLeft,
+                                10.0f, ZSlate::UIColor(0.04f, 0.04f, 0.06f, 1.0f), TextAnchor::MiddleLeft,
                                 TextWrapMode::NoWrap);
                 }
             }
@@ -220,13 +220,13 @@ private:
         }
     }
 
-    static UIColor ColorForName(uint32_t id)
+    static ZSlate::UIColor ColorForName(uint32_t id)
     {
         // Stable pseudo-random hue from the name id; fixed saturation/value.
         const float hue = static_cast<float>((id * 2654435761u) % 1000u) / 1000.0f;
         float rr, gg, bb;
         HSVtoRGB(hue, 0.55f, 0.85f, rr, gg, bb);
-        return UIColor(rr, gg, bb, 1.0f);
+        return ZSlate::UIColor(rr, gg, bb, 1.0f);
     }
 
     static void HSVtoRGB(float h, float s, float v, float& r, float& g, float& b)

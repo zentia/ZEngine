@@ -44,16 +44,16 @@ public:
     void PushTransform(const UIAffine2D& transform);
     void PopTransform();
 
-    void DrawQuad(const UIRect& rect, const UIColor& color, void* white_texture_id);
-    void DrawRect(const UIRect& rect, const UIColor& color, float thickness, void* white_texture_id);
+    void DrawQuad(const UIRect& rect, const ZSlate::UIColor& color, void* white_texture_id);
+    void DrawRect(const UIRect& rect, const ZSlate::UIColor& color, float thickness, void* white_texture_id);
     // Solid convex polygon (>= 3 ordered points), fan-triangulated. Samples the
     // white texel (uv 0,0). Per-vertex clipping is NOT done here -- the recorded
     // command carries the active clip rect, so the editor overlay's GPU scissor
     // clips it (the runtime UIPass ignores clip, but never calls this).
-    void DrawConvexPoly(const Vector2* points, int count, const UIColor& color, void* white_texture_id);
+    void DrawConvexPoly(const Vector2* points, int count, const ZSlate::UIColor& color, void* white_texture_id);
     void DrawTexturedQuad(const UIRect& rect,
                           void* texture_id,
-                          const UIColor& color,
+                          const ZSlate::UIColor& color,
                           const Vector2& uv0,
                           const Vector2& uv1,
                           void* white_texture_id);
@@ -70,7 +70,7 @@ private:
                             float y0,
                             float x1,
                             float y1,
-                            const UIColor& color,
+                            const ZSlate::UIColor& color,
                             float uv0x,
                             float uv0y,
                             float uv1x,
@@ -81,7 +81,7 @@ private:
                        float y0,
                        float x1,
                        float y1,
-                       const UIColor& color,
+                       const ZSlate::UIColor& color,
                        float thickness,
                        void* white_texture_id);
 
