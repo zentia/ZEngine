@@ -31,7 +31,7 @@
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/SMenu.h"
 #include "ZSlate/Widgets/SSlider.h"
-#include "ZSlate/Widgets/SSpacer.h"
+#include "ZSlate/Widgets/Layout/SSpacer.h"
 #include "ZSlate/Widgets/STextBlock.h"
 
 #include <Application/Application.h>  // g_isPlaying

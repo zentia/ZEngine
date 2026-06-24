@@ -28,7 +28,7 @@
 #include "ZSlate/Widgets/SDropTarget.h"
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/SSplitter.h"
-#include "ZSlate/Widgets/SSpacer.h"
+#include "ZSlate/Widgets/Layout/SSpacer.h"
 #include "ZSlate/Widgets/STextBlock.h"
 
 #include <algorithm>

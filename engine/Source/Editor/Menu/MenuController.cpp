@@ -16,7 +16,7 @@
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/SLeafWidget.h"
 #include "ZSlate/Widgets/SMenu.h"
-#include "ZSlate/Widgets/SSpacer.h"
+#include "ZSlate/Widgets/Layout/SSpacer.h"
 #include "ZSlate/Widgets/SWidget.h"
 #include "WindowMenu/WindowMenu.h"
 
