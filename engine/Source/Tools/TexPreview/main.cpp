@@ -127,8 +127,20 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     }
 
     printf("=== TexPreview (ZSlate + D3D11) ===\n");
+
+    // Load font atlas for info overlay text
+    ZSlate::ZSlateFontAtlas fontAtlas;
+    if (fontAtlas.LoadFromFile("C:\\Windows\\Fonts\\segoeui.ttf"))
+    {
+        fontAtlas.AddFallbackFont("C:\\Windows\\Fonts\\msyh.ttc");  // CJK
+        std::printf("[TexPreview] Font atlas loaded (Segoe UI + CJK fallback)\n");
+    }
+    else
+        std::fprintf(stderr, "[TexPreview] WARNING: font atlas load failed, text will be blocky\n");
+
     TexApp app;
     ZSlate::SetPlatform(&app.m_Platform);
+    app.m_Platform.Renderer.SetFontAtlas(&fontAtlas);
     app.BuildUI(path);
 
     WNDCLASSA wc {}; wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandle(nullptr);
@@ -156,7 +168,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
             TranslateMessage(&msg); DispatchMessage(&msg);
         }
         app.RunFrame();
-        backend->Render(app.m_Platform.Renderer, nullptr);
+        backend->Render(app.m_Platform.Renderer, &fontAtlas);
         Sleep(1);
     }
 out:

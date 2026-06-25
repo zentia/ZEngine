@@ -326,7 +326,27 @@ bool TexPreviewWindow::CreateGPUTexture()
 void TexPreviewWindow::DrawCheckerboard(ZSlate::ISlateRenderer* r,
                                          const ZSlate::UIRect& rect) const
 {
-    r->DrawQuad(rect, ZSlate::UIColor(0.18f, 0.18f, 0.18f, 1.0f));
+    // Draw a checkerboard pattern for transparency visualization
+    const float cellSize = 16.0f;
+    const float mid = (rect.x + rect.w * 0.5f);
+    const float top = rect.y;
+    const float bot = rect.y + rect.h;
+
+    // Clip drawing to the rect to avoid overdrawing the entire window
+    for (float cy = rect.y; cy < bot; cy += cellSize)
+    {
+        float ch = std::min(cellSize, bot - cy);
+        int rowIdx = int((cy - rect.y) / cellSize);
+        for (float cx = rect.x; cx < rect.Right(); cx += cellSize)
+        {
+            float cw = std::min(cellSize, rect.Right() - cx);
+            int colIdx = int((cx - rect.x) / cellSize);
+            bool even = (rowIdx + colIdx) % 2 == 0;
+            r->DrawQuad(ZSlate::UIRect(cx, cy, cw, ch),
+                       even ? ZSlate::UIColor(0.22f, 0.22f, 0.22f, 1.0f)
+                            : ZSlate::UIColor(0.17f, 0.17f, 0.17f, 1.0f));
+        }
+    }
 }
 
 void TexPreviewWindow::DrawPreviewImage(ZSlate::ISlateRenderer* renderer,
