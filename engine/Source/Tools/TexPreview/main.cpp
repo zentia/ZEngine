@@ -72,6 +72,9 @@ struct TexApp
             bool over = m_Platform.m_MousePos.x >= 0;
             m_Input.ProcessMouse(root, m_Platform.m_MousePos, over,
                 m_Platform.m_MouseDown[0], 0.0f, m_Platform.m_MouseDown[1]);
+            // Set keyboard focus on left-click so ProcessChar can deliver to OnKeyChar
+            if (m_Platform.m_MouseDown[0] && m_Window)
+                m_Input.SetKeyboardFocusWidget(m_Window.get());
         }
         m_Platform.Renderer.BeginFrame();
         ZSlate::UIRect r(0, 0, m_Platform.GetWindowSize().x, m_Platform.GetWindowSize().y);
@@ -105,6 +108,7 @@ LRESULT CALLBACK WndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
     case WM_RBUTTONUP:   if (app) app->m_Platform.m_MouseDown[1]=false; return 0;
     case WM_MBUTTONDOWN: if (app) app->m_Platform.m_MouseDown[2]=true;  return 0;
     case WM_MBUTTONUP:   if (app) app->m_Platform.m_MouseDown[2]=false; return 0;
+    case WM_CHAR:        if (app) app->m_Input.ProcessChar((unsigned int)wp); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
     return DefWindowProc(hw, msg, wp, lp);
