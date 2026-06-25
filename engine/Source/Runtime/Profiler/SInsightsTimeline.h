@@ -83,7 +83,7 @@ public:
                     const double ms = static_cast<double>(frames[i + 1] - frames[i]) / 1.0e6;
                     char buf[32];
                     std::snprintf(buf, sizeof(buf), "%.2f ms", ms);
-                    r->DrawText(UIRect(fx + 3.0f, rect.y, w - 4.0f, kRulerHeight), buf, 11.0f,
+                    r->DrawTextLabel(UIRect(fx + 3.0f, rect.y, w - 4.0f, kRulerHeight), buf, 11.0f,
                                 ZSlate::UIColor(0.70f, 0.74f, 0.82f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
                 }
             }
@@ -96,7 +96,7 @@ public:
             const float rows_h = static_cast<float>(track.max_depth + 1) * kRowHeight;
             // Track header band.
             r->DrawQuad(UIRect(rect.x, y, rect.w, kHeaderHeight), ZSlate::UIColor(0.16f, 0.17f, 0.21f, 1.0f));
-            r->DrawText(UIRect(rect.x + 6.0f, y, rect.w - 8.0f, kHeaderHeight), track.thread_name, 12.0f,
+            r->DrawTextLabel(UIRect(rect.x + 6.0f, y, rect.w - 8.0f, kHeaderHeight), track.thread_name, 12.0f,
                         ZSlate::UIColor(0.85f, 0.88f, 0.94f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
             const float rows_top = y + kHeaderHeight;
 
@@ -116,7 +116,7 @@ public:
                 r->DrawQuad(UIRect(bx, by, bw, kRowHeight - 1.0f), col);
                 if (bw > 28.0f)
                 {
-                    r->DrawText(UIRect(bx + 3.0f, by, bw - 5.0f, kRowHeight - 1.0f), m_Snapshot->Name(ev.name_id),
+                    r->DrawTextLabel(UIRect(bx + 3.0f, by, bw - 5.0f, kRowHeight - 1.0f), m_Snapshot->Name(ev.name_id),
                                 10.0f, ZSlate::UIColor(0.04f, 0.04f, 0.06f, 1.0f), TextAnchor::MiddleLeft,
                                 TextWrapMode::NoWrap);
                 }

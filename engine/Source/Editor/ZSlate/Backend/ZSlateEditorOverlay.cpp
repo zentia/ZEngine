@@ -988,13 +988,13 @@ void ZSlateEditorOverlay::DrawBorder(const UIRect& rect, const FMargin& margin, 
     (void)rect; (void)margin; (void)texture_handle; (void)tint;
 }
 
-void ZSlateEditorOverlay::DrawText(const UIRect& rect,
-                                const std::string& text,
-                                float font_size,
-                                const ZSlate::UIColor& color,
-                                TextAnchor alignment,
-                                TextWrapMode wrap,
-                                void* font_handle)
+void ZSlateEditorOverlay::DrawTextLabel(const UIRect& rect,
+                                     const std::string& text,
+                                     float font_size,
+                                     const ZSlate::UIColor& color,
+                                     TextAnchor alignment,
+                                     TextWrapMode wrap,
+                                     void* font_handle)
 {
     // ZSlate::TextAnchor -> ::TextAnchor, ZSlate::TextWrapMode -> ::TextWrapMode
     m_Renderer.DrawText(ToEngine(rect),
@@ -1006,7 +1006,7 @@ void ZSlateEditorOverlay::DrawText(const UIRect& rect,
                         static_cast<Font*>(font_handle));
 }
 
-void ZSlateEditorOverlay::DrawText(const std::string& text, const Vector2& pos, float font_size, const ZSlate::UIColor& color)
+void ZSlateEditorOverlay::DrawTextLabel(const std::string& text, const Vector2& pos, float font_size, const ZSlate::UIColor& color)
 {
     (void)text; (void)pos; (void)font_size; (void)color;
 }

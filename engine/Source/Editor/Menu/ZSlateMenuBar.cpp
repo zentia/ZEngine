@@ -111,7 +111,7 @@ bool ZSlateEditorMenuBar::Render(ISlateRenderer& renderer,
             renderer.DrawQuad(rect, kTitleHover);
 
         // ISlateRenderer::DrawText: pass ZSlate::UIRect + ZSlate::UIColor.
-        renderer.DrawText(rect, m_Menus[i].title, font, kTitleText,
+        renderer.DrawTextLabel(rect, m_Menus[i].title, font, kTitleText,
                          TextAnchor::MiddleCenter, TextWrapMode::NoWrap, nullptr);
     }
 

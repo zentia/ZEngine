@@ -382,9 +382,9 @@ void TexPreviewWindow::DrawInfoOverlay(ZSlate::ISlateRenderer* renderer,
 
     renderer->DrawQuad(ZSlate::UIRect(rect.x, rect.y, rect.w, 28.0f),
                        ZSlate::UIColor(0.1f, 0.1f, 0.1f, 0.85f));
-    renderer->DrawText(ZSlate::UIRect(rect.x + 8.0f, rect.y, rect.w - 16.0f, 28.0f),
-                       buf, 13.0f, ZSlate::UIColor(0.9f, 0.9f, 0.9f, 1.0f),
-                       ZSlate::TextAnchor::MiddleLeft, ZSlate::TextWrapMode::NoWrap);
+    renderer->DrawTextLabel(ZSlate::UIRect(rect.x + 8.0f, rect.y, rect.w - 16.0f, 28.0f),
+                            buf, 13.0f, ZSlate::UIColor(0.9f, 0.9f, 0.9f, 1.0f),
+                            ZSlate::TextAnchor::MiddleLeft, ZSlate::TextWrapMode::NoWrap);
 }
 
 // ---- Zoom / Action stubs ----------------------------------------------------
