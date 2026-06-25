@@ -1,94 +1,73 @@
 // =============================================================================
-// TexPreviewWindow.cpp - Block-Compressed Texture Preview Widget
-// -----------------------------------------------------------------------------
-// A standalone Slate widget that previews ASTC and BC7 compressed textures.
-// Uses custom painting in OnPaint() with UIRenderer.
+// TexPreviewWindow.cpp — ZSlate + D3D11 texture preview (no ZRuntime)
 // =============================================================================
 
 #include "TexPreviewWindow.h"
+#undef DrawText  // restored by TexPreviewWindow.h, but .cpp needs its own guard
 
-#include "Runtime/Core/Base/Macro.h"
 #include "ZSlate/Core/SlateReply.h"
 #include "Runtime/Function/Render/Texture/ASTCDecompressor.h"
 #include "Runtime/Function/Render/Texture/BC7Decompressor.h"
 #include "Runtime/Function/Render/Texture/ETC2Decompressor.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
-#include "Runtime/Function/Render/RenderType.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 
 #ifdef _WIN32
     #include <windows.h>
     #include <commdlg.h>
 #endif
 
+// ---- Logging (no Runtime/Macro.h) -------------------------------------------
+#define TEX_LOG_ERR(fmt, ...) std::fprintf(stderr, "[TexPreview] " fmt "\n", ##__VA_ARGS__)
+#define TEX_LOG_INF(fmt, ...) std::fprintf(stdout, "[TexPreview] " fmt "\n", ##__VA_ARGS__)
+
 namespace
 {
-    inline UIRect ToRect(float x, float y, float w, float h)
-    {
-        return UIRect(x, y, w, h);
-    }
-
-    // Checkerboard cell size in pixels (used for both the pattern texture and UV tiling)
-    constexpr float CHECKER_CELL = 16.0f;
-    // The checkerboard texture is 2 cells wide and 2 cells tall
-    constexpr uint32_t CHECKER_TEX_CELLS = 2;
-    constexpr uint32_t CHECKER_TEX_SIZE = static_cast<uint32_t>(CHECKER_CELL) * CHECKER_TEX_CELLS; // 32x32
-
-    // Build a 32x32 RGBA8 checkerboard bitmap (2x2 cells, each 16x16 pixels)
-    std::vector<uint8_t> BuildCheckerboardBitmap()
-    {
-        std::vector<uint8_t> pixels(CHECKER_TEX_SIZE * CHECKER_TEX_SIZE * 4);
-        for (uint32_t y = 0; y < CHECKER_TEX_SIZE; ++y)
-        {
-            for (uint32_t x = 0; x < CHECKER_TEX_SIZE; ++x)
-            {
-                const bool light = ((x / static_cast<uint32_t>(CHECKER_CELL)) +
-                                    (y / static_cast<uint32_t>(CHECKER_CELL))) % 2 == 0;
-                const uint8_t v = light ? 64 : 38;  // 0.25 or ~0.15 in 0-255
-                uint8_t* p = &pixels[(y * CHECKER_TEX_SIZE + x) * 4];
-                p[0] = v;
-                p[1] = v;
-                p[2] = v;
-                p[3] = 255;
-            }
-        }
-        return pixels;
-    }
-
-    // Convert TexPreviewFormat to display string
     const char* FormatToString(TexPreviewFormat fmt)
     {
-        switch (fmt)
-        {
+        switch (fmt) {
         case TexPreviewFormat::ASTC: return "ASTC";
         case TexPreviewFormat::BC7:  return "BC7";
         case TexPreviewFormat::ETC2: return "ETC2";
         default:                     return "Unknown";
         }
     }
-}  // namespace
+}
+
+// ---- Constructor / Destructor -----------------------------------------------
 
 TexPreviewWindow::TexPreviewWindow()
-    : m_ZoomLevel(1.0f)
-    , m_MinZoom(0.1f)
-    , m_MaxZoom(10.0f)
-    , m_IsPanning(false)
-    , m_PanX(0.0f)
-    , m_PanY(0.0f)
-    , m_LastMouseX(0.0f)
-    , m_LastMouseY(0.0f)
-    , m_NeedsDecompress(true)
-    , m_TextureLoaded(false)
-    , m_NeedsTextureCreate(true)
-    , m_TextureId(nullptr)
-    , m_CheckerTextureId(nullptr)
+    : m_ZoomLevel(1.0f), m_MinZoom(0.1f), m_MaxZoom(10.0f)
+    , m_IsPanning(false), m_PanX(0.0f), m_PanY(0.0f)
+    , m_LastMouseX(0.0f), m_LastMouseY(0.0f)
+    , m_NeedsDecompress(true), m_TextureLoaded(false)
+    , m_NeedsTextureCreate(true), m_TextureId(nullptr)
 {
     Visibility = ZSlate::EVisibility::Visible;
 }
+
+TexPreviewWindow::~TexPreviewWindow()
+{
+#ifdef _WIN32
+    ReleaseGPUTexture();
+#endif
+}
+
+void TexPreviewWindow::ReleaseGPUTexture()
+{
+#ifdef _WIN32
+    if (m_TextureSRV) { m_TextureSRV->Release(); m_TextureSRV = nullptr; }
+    if (m_TextureTex) { m_TextureTex->Release(); m_TextureTex = nullptr; }
+#endif
+    m_TextureId = nullptr;
+    m_NeedsTextureCreate = true;
+}
+
+// ---- SetTexture --------------------------------------------------------------
 
 void TexPreviewWindow::SetTexture(const std::filesystem::path& texture_path)
 {
@@ -100,6 +79,8 @@ void TexPreviewWindow::SetTexture(const std::filesystem::path& texture_path)
     m_PanX = m_PanY = 0.0f;
     m_ZoomLevel = 1.0f;
 
+    ReleaseGPUTexture();
+
     if (DecompressTexture())
     {
         m_TextureLoaded = true;
@@ -107,39 +88,32 @@ void TexPreviewWindow::SetTexture(const std::filesystem::path& texture_path)
     }
     else
     {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: failed to decompress texture");
+        TEX_LOG_ERR("failed to decompress texture");
     }
 }
+
+// ---- SWidget overrides ------------------------------------------------------
 
 ZSlate::Vector2 TexPreviewWindow::ComputeDesiredSize() const
 {
     return ZSlate::Vector2(1024.0f, 768.0f);
 }
 
-void TexPreviewWindow::OnPaint(const ZSlate::FPaintContext& ctx, const ZSlate::FGeometry& geom) const
+void TexPreviewWindow::OnPaint(const ZSlate::FPaintContext& ctx,
+                                const ZSlate::FGeometry& geom) const
 {
-    if (!ctx.Renderer)
-        return;
-
+    if (!ctx.Renderer) return;
     const ZSlate::UIRect rect = geom.ToRect();
 
-    // 1. Background
     ctx.Renderer->DrawQuad(rect, ZSlate::UIColor(0.2f, 0.2f, 0.2f, 1.0f));
-
-    // 2. Checkerboard (visible under transparent areas)
     DrawCheckerboard(ctx.Renderer, rect);
-
-    // 3. Preview image
     DrawPreviewImage(ctx.Renderer, rect);
-
-    // 4. Info overlay
     DrawInfoOverlay(ctx.Renderer, rect);
 }
 
 void TexPreviewWindow::OnMouseMove(const ZSlate::Vector2& screen_pos)
 {
-    if (m_IsPanning)
-    {
+    if (m_IsPanning) {
         m_PanX += (screen_pos.x - m_LastMouseX);
         m_PanY += (screen_pos.y - m_LastMouseY);
         m_LastMouseX = screen_pos.x;
@@ -147,607 +121,280 @@ void TexPreviewWindow::OnMouseMove(const ZSlate::Vector2& screen_pos)
     }
 }
 
-ZSlate::FReply TexPreviewWindow::OnMouseButtonDown(const ZSlate::Vector2& screen_pos, int button)
+ZSlate::FReply TexPreviewWindow::OnMouseButtonDown(const ZSlate::Vector2& pos, int btn)
 {
-    if (button == 2)  // Middle button = pan
-    {
-        m_IsPanning = true;
-        m_LastMouseX = screen_pos.x;
-        m_LastMouseY = screen_pos.y;
-        return ZSlate::FReply::Handled();
-    }
+    if (btn == 2) { m_IsPanning = true; m_LastMouseX = pos.x; m_LastMouseY = pos.y; return ZSlate::FReply::Handled(); }
     return ZSlate::FReply::Unhandled();
 }
 
-ZSlate::FReply TexPreviewWindow::OnMouseButtonUp(const ZSlate::Vector2& screen_pos, int button)
+ZSlate::FReply TexPreviewWindow::OnMouseButtonUp(const ZSlate::Vector2&, int btn)
 {
-    if (button == 2 && m_IsPanning)
-    {
-        m_IsPanning = false;
-        return ZSlate::FReply::Handled();
-    }
+    if (btn == 2 && m_IsPanning) { m_IsPanning = false; return ZSlate::FReply::Handled(); }
     return ZSlate::FReply::Unhandled();
 }
 
-ZSlate::FReply TexPreviewWindow::OnMouseWheel(const ZSlate::Vector2& screen_pos, float delta)
+ZSlate::FReply TexPreviewWindow::OnMouseWheel(const ZSlate::Vector2&, float delta)
 {
-    const float old_zoom = m_ZoomLevel;
-    const float zoom_delta = delta > 0.0f ? 1.1f : 0.9f;
-    m_ZoomLevel = std::clamp(m_ZoomLevel * zoom_delta, m_MinZoom, m_MaxZoom);
-
-    if (m_ZoomLevel != old_zoom)
-    {
-        const float scale = m_ZoomLevel / old_zoom;
-        m_PanX *= scale;
-        m_PanY *= scale;
-    }
-
+    const float old = m_ZoomLevel;
+    m_ZoomLevel = std::clamp(m_ZoomLevel * (delta > 0 ? 1.1f : 0.9f), m_MinZoom, m_MaxZoom);
+    if (m_ZoomLevel != old) { const float s = m_ZoomLevel / old; m_PanX *= s; m_PanY *= s; }
     return ZSlate::FReply::Handled();
 }
 
-// ---- Format detection ----
+// ---- Format detection -------------------------------------------------------
 
 TexPreviewFormat TexPreviewWindow::DetectFormat(const std::filesystem::path& path) const
 {
-    if (!std::filesystem::exists(path))
-        return TexPreviewFormat::Unknown;
+    if (!std::filesystem::exists(path)) return TexPreviewFormat::Unknown;
 
-    // Read first 4 bytes to check magic numbers
     std::ifstream file(path, std::ios::binary);
-    if (!file.is_open())
-        return TexPreviewFormat::Unknown;
+    if (!file.is_open()) return TexPreviewFormat::Unknown;
 
     uint8_t magic[4] = {};
     file.read(reinterpret_cast<char*>(magic), 4);
 
-    // Standard ASTC magic: 0x5CA1AB13 (LE: 0x13, 0xAB, 0xA1, 0x5C)
-    const uint32_t magic32 = magic[0] | (magic[1] << 8) | (magic[2] << 16) | (magic[3] << 24);
-    if (magic32 == 0x5CA1AB13)
-        return TexPreviewFormat::ASTC;
+    const uint32_t m32 = magic[0] | (magic[1] << 8) | (magic[2] << 16) | (magic[3] << 24);
+    if (m32 == 0x5CA1AB13 || m32 == 0x00000004) return TexPreviewFormat::ASTC;
 
-    // Unity exported ASTC magic: 0x00000004
-    if (magic32 == 0x00000004)
-        return TexPreviewFormat::ASTC;
-
-    // Check for DDS container with BC7 payload (Unity convention):
-    //   magic "DDS " (0x20534444), fourCC "DX10", dxgiFormat 98/99
-    if (magic32 == 0x20534444)
-    {
-        // Read enough for DDS header + DX10 extension (132 bytes from start)
-        uint8_t dds_buf[132] = {};
-        file.seekg(0);
-        file.read(reinterpret_cast<char*>(dds_buf), 132);
-        if (file.gcount() >= 132)
-        {
-            const uint32_t pf = dds_buf[80] | (dds_buf[81] << 8) | (dds_buf[82] << 16) | (dds_buf[83] << 24);
-            if (pf & 0x4) // DDPF_FOURCC
-            {
-                const uint32_t fcc = dds_buf[84] | (dds_buf[85] << 8) | (dds_buf[86] << 16) | (dds_buf[87] << 24);
-                if (fcc == 0x30315844) // "DX10"
-                {
-                    const uint32_t fmt = dds_buf[128] | (dds_buf[129] << 8) | (dds_buf[130] << 16) | (dds_buf[131] << 24);
-                    if (fmt == 98 || fmt == 99) // BC7_UNORM / BC7_SRGB
-                        return TexPreviewFormat::BC7;
+    if (m32 == 0x20534444) {
+        uint8_t buf[132] = {}; file.seekg(0); file.read(reinterpret_cast<char*>(buf), 132);
+        if (file.gcount() >= 132) {
+            uint32_t pf = buf[80]|(buf[81]<<8)|(buf[82]<<16)|(buf[83]<<24);
+            if (pf & 0x4) {
+                uint32_t fc = buf[84]|(buf[85]<<8)|(buf[86]<<16)|(buf[87]<<24);
+                if (fc == 0x30315844) {
+                    uint32_t fmt = buf[128]|(buf[129]<<8)|(buf[130]<<16)|(buf[131]<<24);
+                    if (fmt == 98 || fmt == 99) return TexPreviewFormat::BC7;
                 }
             }
         }
     }
 
-    // Check extension for BC7 files
-    auto ext = path.extension();
-    if (ext == ".bc7" || ext == ".BC7")
-        return TexPreviewFormat::BC7;
-
-    // Check for ETC2 (PKM file format)
-    // PKM magic: "PKM " (0x50, 0x4B, 0x4D, 0x20)
-    // PKM version field (bytes 4-5): "10" = ETC2, "01" = ETC1
-    if (magic[0] == 0x50 && magic[1] == 0x4B && magic[2] == 0x4D && magic[3] == 0x20)
-    {
-        // Read full 16-byte PKM header
-        uint8_t pkm_buf[16] = {};
-        file.seekg(0);
-        file.read(reinterpret_cast<char*>(pkm_buf), 16);
-        if (file.gcount() >= 16)
-        {
-            // Version "10" = ETC2
-            if (pkm_buf[4] == 0x31 && pkm_buf[5] == 0x30)
-                return TexPreviewFormat::ETC2;
-        }
+    if (magic[0]==0x50 && magic[1]==0x4B && magic[2]==0x4D && magic[3]==0x20) {
+        uint8_t buf[16]={}; file.seekg(0); file.read(reinterpret_cast<char*>(buf),16);
+        if (file.gcount()>=16 && buf[4]==0x31 && buf[5]==0x30) return TexPreviewFormat::ETC2;
     }
 
-    // .astc extension fallback
-    if (ext == ".astc" || ext == ".ASTC")
-        return TexPreviewFormat::ASTC;
-
-    // .pkm extension fallback (ETC2)
-    if (ext == ".pkm" || ext == ".PKM")
-        return TexPreviewFormat::ETC2;
-
+    auto ext = path.extension();
+    if (ext == ".astc" || ext == ".ASTC") return TexPreviewFormat::ASTC;
+    if (ext == ".bc7"  || ext == ".BC7")  return TexPreviewFormat::BC7;
+    if (ext == ".pkm"  || ext == ".PKM")  return TexPreviewFormat::ETC2;
     return TexPreviewFormat::Unknown;
 }
 
-// ---- Decompression ----
+// ---- Decompression (ASTC/BC7/ETC2 — same logic, just LOG→TEX_LOG) -----------
 
 bool TexPreviewWindow::DecompressTexture()
 {
     if (m_TexturePath.empty() || !std::filesystem::exists(m_TexturePath))
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: texture path empty or file missing");
-        return false;
-    }
+    { TEX_LOG_ERR("texture path empty or file missing"); return false; }
 
-    // Read entire file
     std::ifstream file(m_TexturePath, std::ios::binary | std::ios::ate);
-    if (!file.is_open())
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: failed to open file: {}", m_TexturePath.generic_string());
-        return false;
-    }
+    if (!file.is_open()) { TEX_LOG_ERR("failed to open: %s", m_TexturePath.generic_string().c_str()); return false; }
+    const size_t sz = (size_t)file.tellg(); file.seekg(0);
+    if (sz < 16) { TEX_LOG_ERR("file too small"); return false; }
 
-    const size_t file_size = static_cast<size_t>(file.tellg());
-    file.seekg(0);
+    std::vector<uint8_t> data(sz);
+    file.read(reinterpret_cast<char*>(data.data()), sz); file.close();
 
-    if (file_size < 16)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: file too small ({} bytes)", file_size);
-        return false;
-    }
-
-    std::vector<uint8_t> file_data(file_size);
-    file.read(reinterpret_cast<char*>(file_data.data()), file_size);
-    file.close();
-
-    // Dispatch based on detected format
-    switch (m_DetectedFormat)
-    {
-    case TexPreviewFormat::ASTC:
-        return DecompressASTC(file_data);
-    case TexPreviewFormat::BC7:
-        return DecompressBC7(file_data);
-    case TexPreviewFormat::ETC2:
-        return DecompressETC2(file_data);
-    default:
-        LOG_ERROR(ZEditor, "TexPreviewWindow: unrecognized texture format");
-        return false;
+    switch (m_DetectedFormat) {
+    case TexPreviewFormat::ASTC: return DecompressASTC(data);
+    case TexPreviewFormat::BC7:  return DecompressBC7(data);
+    case TexPreviewFormat::ETC2: return DecompressETC2(data);
+    default: TEX_LOG_ERR("unrecognized format"); return false;
     }
 }
 
-bool TexPreviewWindow::DecompressASTC(const std::vector<uint8_t>& file_data)
+bool TexPreviewWindow::DecompressASTC(const std::vector<uint8_t>& data)
 {
-    // Read header (first 16 bytes)
-    const uint8_t* header = file_data.data();
+    const uint32_t magic = data[0]|(data[1]<<8)|(data[2]<<16)|(data[3]<<24);
+    uint8_t bx, by; uint32_t w, h;
+    if (magic == 0x5CA1AB13) { bx=data[4]; by=data[5]; w=data[7]|(data[8]<<8)|(data[9]<<16); h=data[10]|(data[11]<<8)|(data[12]<<16); }
+    else if (magic == 0x00000004) { bx=data[4]; by=data[5]; w=data[6]|(data[7]<<8); h=data[8]|(data[9]<<8); }
+    else { TEX_LOG_ERR("bad ASTC magic 0x%08X", magic); return false; }
 
-    const uint32_t magic = header[0] | (header[1] << 8) | (header[2] << 16) | (header[3] << 24);
+    ZEngine::Render::ASTCBlockSize bs;
+    if (bx==4&&by==4) bs=ZEngine::Render::ASTCBlockSize::ASTC_4x4;
+    else if (bx==5&&by==5) bs=ZEngine::Render::ASTCBlockSize::ASTC_5x5;
+    else if (bx==6&&by==6) bs=ZEngine::Render::ASTCBlockSize::ASTC_6x6;
+    else if (bx==8&&by==8) bs=ZEngine::Render::ASTCBlockSize::ASTC_8x8;
+    else if (bx==10&&by==10) bs=ZEngine::Render::ASTCBlockSize::ASTC_10x10;
+    else if (bx==12&&by==12) bs=ZEngine::Render::ASTCBlockSize::ASTC_12x12;
+    else { TEX_LOG_ERR("unsupported ASTC block %dx%d", bx, by); return false; }
 
-    uint8_t block_x, block_y;
-    uint32_t width, height;
+    if (!ZEngine::Render::ASTCDecompressor::Initialize()) { TEX_LOG_ERR("ASTC init failed"); return false; }
+    auto r = ZEngine::Render::ASTCDecompressor::Decompress(data.data()+16, data.size()-16, w, h, bs);
+    if (!r.success) { TEX_LOG_ERR("ASTC decompress: %s", r.error_message.c_str()); return false; }
 
-    if (magic == 0x5CA1AB13)
-    {
-        // Standard ASTC header
-        block_x = header[4];
-        block_y = header[5];
-        width  = header[7] | (header[8] << 8) | (header[9] << 16);
-        height = header[10] | (header[11] << 8) | (header[12] << 16);
-    }
-    else if (magic == 0x00000004)
-    {
-        // Unity exported ASTC header
-        block_x = header[4];
-        block_y = header[5];
-        width  = header[6] | (header[7] << 8);
-        height = header[8] | (header[9] << 8);
-    }
-    else
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: unrecognized ASTC header magic 0x{:08X}", magic);
-        return false;
-    }
-
-    // Map block size to enum
-    ZEngine::Render::ASTCBlockSize block_size;
-    if (block_x == 4 && block_y == 4)       block_size = ZEngine::Render::ASTCBlockSize::ASTC_4x4;
-    else if (block_x == 5 && block_y == 5)  block_size = ZEngine::Render::ASTCBlockSize::ASTC_5x5;
-    else if (block_x == 6 && block_y == 6)  block_size = ZEngine::Render::ASTCBlockSize::ASTC_6x6;
-    else if (block_x == 8 && block_y == 8)  block_size = ZEngine::Render::ASTCBlockSize::ASTC_8x8;
-    else if (block_x == 10 && block_y == 10) block_size = ZEngine::Render::ASTCBlockSize::ASTC_10x10;
-    else if (block_x == 12 && block_y == 12) block_size = ZEngine::Render::ASTCBlockSize::ASTC_12x12;
-    else
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: unsupported ASTC block size {}x{}", block_x, block_y);
-        return false;
-    }
-
-    // Compressed data starts after 16-byte header
-    const size_t compressed_size = file_data.size() - 16;
-    const uint8_t* compressed_data = file_data.data() + 16;
-
-    // Initialize decompressor
-    if (!ZEngine::Render::ASTCDecompressor::Initialize())
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: failed to initialize ASTCDecompressor");
-        return false;
-    }
-
-    // Decompress
-    ZEngine::Render::ASTCDecompressResult result =
-        ZEngine::Render::ASTCDecompressor::Decompress(
-            compressed_data,
-            compressed_size,
-            width,
-            height,
-            block_size);
-
-    if (!result.success)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: ASTC decompression failed: {}", result.error_message);
-        return false;
-    }
-
-    m_PreviewWidth = result.width;
-    m_PreviewHeight = result.height;
-    m_PreviewPixels = std::move(result.pixels);
-
-    m_NeedsDecompress = false;
-    m_TextureLoaded = true;
-
-    return true;
+    m_PreviewWidth=r.width; m_PreviewHeight=r.height; m_PreviewPixels=std::move(r.pixels);
+    m_NeedsDecompress=false; m_TextureLoaded=true; return true;
 }
 
-bool TexPreviewWindow::DecompressBC7(const std::vector<uint8_t>& file_data)
+bool TexPreviewWindow::DecompressBC7(const std::vector<uint8_t>& data)
 {
-    // DDS container with BC7 payload (Unity convention, same as
-    // ImageConversion.cpp:516-546):
-    //   Bytes 0-3:     magic   "DDS " (0x20534444 LE)
-    //   Bytes 4-127:   DDS_HEADER (124 bytes)
-    //     +12:          height  (uint32 LE)
-    //     +16:          width   (uint32 LE)
-    //     +80:          pf_flags — DDPF_FOURCC = 0x4
-    //     +84:          fourCC
-    //   Bytes 128-147: DDS_HEADER_DX10 (when fourCC == "DX10")
-    //     +128:         dxgiFormat (98 = BC7_UNORM, 99 = BC7_SRGB)
-    //   Bytes 148+:    raw BC7 block data (16 bytes per 4x4 block)
+    if (data.size() < 148) { TEX_LOG_ERR("BC7 header too small"); return false; }
+    const uint32_t m = data[0]|(data[1]<<8)|(data[2]<<16)|(data[3]<<24);
+    if (m != 0x20534444) { TEX_LOG_ERR("bad DDS magic"); return false; }
+    const uint32_t pf = data[80]|(data[81]<<8)|(data[82]<<16)|(data[83]<<24);
+    if (!(pf & 0x4)) { TEX_LOG_ERR("not FOURCC"); return false; }
+    const uint32_t fc = data[84]|(data[85]<<8)|(data[86]<<16)|(data[87]<<24);
+    if (fc != 0x30315844) { TEX_LOG_ERR("not DX10"); return false; }
+    const uint32_t fmt = data[128]|(data[129]<<8)|(data[130]<<16)|(data[131]<<24);
+    if (fmt != 98 && fmt != 99) { TEX_LOG_ERR("not BC7"); return false; }
 
-    if (file_data.size() < 148)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: DDS/BC7 file too small for header");
-        return false;
-    }
+    const uint32_t w = data[16]|(data[17]<<8)|(data[18]<<16)|(data[19]<<24);
+    const uint32_t h = data[12]|(data[13]<<8)|(data[14]<<16)|(data[15]<<24);
+    const size_t cs = data.size()-148;
+    if (!ZEngine::Render::BC7Decompressor::ValidateSize(w,h,cs)) { TEX_LOG_ERR("BC7 size mismatch"); return false; }
 
-    // Validate DDS magic: "DDS " (0x20534444)
-    const uint32_t magic = file_data[0] | (file_data[1] << 8) | (file_data[2] << 16) | (file_data[3] << 24);
-    if (magic != 0x20534444)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: unrecognized DDS header magic 0x{:08X}", magic);
-        return false;
-    }
+    auto r = ZEngine::Render::BC7Decompressor::Decompress(data.data()+148, cs, w, h);
+    if (!r.success) { TEX_LOG_ERR("BC7 decompress: %s", r.error_message.c_str()); return false; }
 
-    // Validate DDPF_FOURCC flag
-    const uint32_t pf_flags = file_data[80] | (file_data[81] << 8) | (file_data[82] << 16) | (file_data[83] << 24);
-    if (!(pf_flags & 0x4))
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: DDS pixel format is not FOURCC (flags 0x{:08X})", pf_flags);
-        return false;
-    }
-
-    // Check fourCC == "DX10" (0x30315844) — required for BC7
-    const uint32_t fourCC = file_data[84] | (file_data[85] << 8) | (file_data[86] << 16) | (file_data[87] << 24);
-    if (fourCC != 0x30315844) // "DX10"
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: DDS fourCC is not DX10 (got 0x{:08X}), BC7 requires DX10 extension", fourCC);
-        return false;
-    }
-
-    // Validate DXGI format is BC7
-    const uint32_t dxgiFormat = file_data[128] | (file_data[129] << 8) | (file_data[130] << 16) | (file_data[131] << 24);
-    if (dxgiFormat != 98 && dxgiFormat != 99) // BC7_UNORM / BC7_SRGB
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: DXGI format {} is not BC7 (expected 98=BC7_UNORM or 99=BC7_SRGB)", dxgiFormat);
-        return false;
-    }
-
-    // Read dimensions from DDS header
-    const uint32_t height = file_data[12] | (file_data[13] << 8) | (file_data[14] << 16) | (file_data[15] << 24);
-    const uint32_t width  = file_data[16] | (file_data[17] << 8) | (file_data[18] << 16) | (file_data[19] << 24);
-
-    if (width == 0 || height == 0 || width > 16384 || height > 16384)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: invalid BC7 dimensions {}x{}", width, height);
-        return false;
-    }
-
-    const size_t compressed_size = file_data.size() - 148;
-    const uint8_t* compressed_data = file_data.data() + 148;
-
-    if (!ZEngine::Render::BC7Decompressor::ValidateSize(width, height, compressed_size))
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: BC7 data size mismatch (got {}, expected at least {})",
-                  compressed_size, (static_cast<uint32_t>((width + 3) / 4) *
-                                    static_cast<uint32_t>((height + 3) / 4) * 16));
-        return false;
-    }
-
-    ZEngine::Render::BC7DecompressResult result =
-        ZEngine::Render::BC7Decompressor::Decompress(
-            compressed_data,
-            compressed_size,
-            width,
-            height);
-
-    if (!result.success)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: BC7 decompression failed: {}", result.error_message);
-        return false;
-    }
-
-    m_PreviewWidth = result.width;
-    m_PreviewHeight = result.height;
-    m_PreviewPixels = std::move(result.pixels);
-
-    m_NeedsDecompress = false;
-    m_TextureLoaded = true;
-
-    return true;
+    m_PreviewWidth=r.width; m_PreviewHeight=r.height; m_PreviewPixels=std::move(r.pixels);
+    m_NeedsDecompress=false; m_TextureLoaded=true; return true;
 }
 
-bool TexPreviewWindow::DecompressETC2(const std::vector<uint8_t>& file_data)
+bool TexPreviewWindow::DecompressETC2(const std::vector<uint8_t>& data)
 {
-    // PKM container with ETC2 payload (Unity convention, same as
-    // ImageConversion.cpp:570-598 and Texture2D_EncodeTo.h:151-173):
-    //   Bytes 0-3:     magic   "PKM " (0x50, 0x4B, 0x4D, 0x20)
-    //   Bytes 4-5:     version ("10" = ETC2, "01" = ETC1)
-    //   Bytes 6-7:     data type ("rR" = ETC2 RGB, "rG" = ETC2 RGBA1, "rA" = ETC2 RGBA8)
-    //   Bytes 8-9:     extended width  (big-endian, padded to multiple of 4)
-    //   Bytes 10-11:   extended height (big-endian, padded to multiple of 4)
-    //   Bytes 12-13:   original width  (big-endian)
-    //   Bytes 14-15:   original height (big-endian)
-    //   Bytes 16+:     ETC2 compressed block data
+    if (data.size()<16){TEX_LOG_ERR("ETC2 header too small");return false;}
+    if (data[0]!=0x50||data[1]!=0x4B||data[2]!=0x4D||data[3]!=0x20){TEX_LOG_ERR("bad PKM magic");return false;}
+    if (!(data[4]==0x31&&data[5]==0x30)){TEX_LOG_ERR("not ETC2");return false;}
 
-    if (file_data.size() < 16)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: PKM/ETC2 file too small for header");
-        return false;
-    }
+    const uint32_t w=(data[12]<<8)|data[13], h=(data[14]<<8)|data[15];
+    ZEngine::Render::ETC2Variant v;
+    if (data[6]=='r'&&data[7]=='A') v=ZEngine::Render::ETC2Variant::RGBA8;
+    else if (data[6]=='r'&&data[7]=='G') v=ZEngine::Render::ETC2Variant::RGBA1;
+    else v=ZEngine::Render::ETC2Variant::RGB;
+    const size_t cs=data.size()-16;
+    if (!ZEngine::Render::ETC2Decompressor::ValidateSize(w,h,cs,v)){TEX_LOG_ERR("ETC2 size mismatch");return false;}
 
-    // Validate PKM magic: "PKM " (0x50, 0x4B, 0x4D, 0x20)
-    if (file_data[0] != 0x50 || file_data[1] != 0x4B || file_data[2] != 0x4D || file_data[3] != 0x20)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: unrecognized PKM header magic");
-        return false;
-    }
+    auto r=ZEngine::Render::ETC2Decompressor::Decompress(data.data()+16, cs, w, h, v);
+    if (!r.success){TEX_LOG_ERR("ETC2 decompress: %s",r.error_message.c_str());return false;}
 
-    // Check version: "10" = ETC2
-    bool isETC2 = (file_data[4] == 0x31 && file_data[5] == 0x30);
-    if (!isETC2)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: PKM version is not ETC2 (got {:02x}{:02x})", file_data[4], file_data[5]);
-        return false;
-    }
-
-    // Read dimensions from PKM header (original width/height at bytes 12-15, big-endian)
-    const uint32_t width  = (static_cast<uint32_t>(file_data[12]) << 8) | file_data[13];
-    const uint32_t height = (static_cast<uint32_t>(file_data[14]) << 8) | file_data[15];
-
-    if (width == 0 || height == 0 || width > 16384 || height > 16384)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: invalid ETC2 dimensions {}x{}", width, height);
-        return false;
-    }
-
-    // Determine ETC2 variant from data type field (bytes 6-7)
-    ZEngine::Render::ETC2Variant variant;
-    if (file_data[6] == 'r' && file_data[7] == 'A')
-        variant = ZEngine::Render::ETC2Variant::RGBA8;
-    else if (file_data[6] == 'r' && file_data[7] == 'G')
-        variant = ZEngine::Render::ETC2Variant::RGBA1;
-    else
-        variant = ZEngine::Render::ETC2Variant::RGB;
-
-    const size_t compressed_size = file_data.size() - 16;
-    const uint8_t* compressed_data = file_data.data() + 16;
-
-    if (!ZEngine::Render::ETC2Decompressor::ValidateSize(width, height, compressed_size, variant))
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: ETC2 data size mismatch (got {} bytes)", compressed_size);
-        return false;
-    }
-
-    ZEngine::Render::ETC2DecompressResult result =
-        ZEngine::Render::ETC2Decompressor::Decompress(
-            compressed_data,
-            compressed_size,
-            width,
-            height,
-            variant);
-
-    if (!result.success)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: ETC2 decompression failed: {}", result.error_message);
-        return false;
-    }
-
-    m_PreviewWidth = result.width;
-    m_PreviewHeight = result.height;
-    m_PreviewPixels = std::move(result.pixels);
-
-    m_NeedsDecompress = false;
-    m_TextureLoaded = true;
-
-    return true;
+    m_PreviewWidth=r.width; m_PreviewHeight=r.height; m_PreviewPixels=std::move(r.pixels);
+    m_NeedsDecompress=false; m_TextureLoaded=true; return true;
 }
+
+// ---- GPU Texture (D3D11 directly, no UIGpuResources) ------------------------
 
 bool TexPreviewWindow::CreateGPUTexture()
 {
-    if (!m_TextureLoaded || m_PreviewPixels.empty())
-        return false;
+#ifdef _WIN32
+    if (!m_TextureLoaded || m_PreviewPixels.empty()) return false;
+    if (!m_D3DDevice) { TEX_LOG_ERR("no D3D11 device set"); return false; }
 
-    auto* gpu_res = UIGpuResources::Get();
-    if (gpu_res == nullptr)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: UIGpuResources not available");
-        return false;
-    }
+    // Release old texture
+    if (m_TextureSRV) { m_TextureSRV->Release(); m_TextureSRV = nullptr; }
+    if (m_TextureTex) { m_TextureTex->Release(); m_TextureTex = nullptr; }
 
-    void* handle = gpu_res->UpdateDynamicTexture(
-        nullptr,  // Create new
-        m_PreviewPixels.data(),
-        m_PreviewWidth,
-        m_PreviewHeight);
+    D3D11_TEXTURE2D_DESC td {};
+    td.Width  = m_PreviewWidth;
+    td.Height = m_PreviewHeight;
+    td.MipLevels = 1;
+    td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
 
-    if (handle == nullptr)
-    {
-        LOG_ERROR(ZEditor, "TexPreviewWindow: failed to create GPU texture");
-        return false;
-    }
+    D3D11_SUBRESOURCE_DATA sd {};
+    sd.pSysMem = m_PreviewPixels.data();
+    sd.SysMemPitch = m_PreviewWidth * 4;
 
-    m_TextureId = handle;
-    m_GpuTextureHandle = handle;
+    ID3D11Texture2D* tex = nullptr;
+    if (FAILED(m_D3DDevice->CreateTexture2D(&td, &sd, &tex)) || !tex)
+    { TEX_LOG_ERR("CreateTexture2D failed"); return false; }
 
+    ID3D11ShaderResourceView* srv = nullptr;
+    HRESULT hr = m_D3DDevice->CreateShaderResourceView(tex, nullptr, &srv);
+    tex->Release();
+    if (FAILED(hr) || !srv) { srv->Release(); TEX_LOG_ERR("CreateSRV failed"); return false; }
+
+    m_TextureSRV = srv;
+    m_TextureId  = srv;  // ISlateRenderer::DrawTexturedQuad takes void* = SRV*
     m_NeedsTextureCreate = false;
-    LOG_INFO(ZEditor, "TexPreviewWindow: GPU texture created ({}x{}, {})",
-             m_PreviewWidth, m_PreviewHeight, FormatToString(m_DetectedFormat));
+
+    TEX_LOG_INF("GPU texture created (%ux%u, %s)", m_PreviewWidth, m_PreviewHeight, FormatToString(m_DetectedFormat));
     return true;
+#else
+    return false;
+#endif
 }
 
-void TexPreviewWindow::EnsureCheckerboardTexture()
+// ---- Drawing helpers --------------------------------------------------------
+
+void TexPreviewWindow::DrawCheckerboard(ZSlate::ISlateRenderer* r,
+                                         const ZSlate::UIRect& rect) const
 {
-    if (m_CheckerTextureId != nullptr)
-        return;
-
-    auto* gpu_res = UIGpuResources::Get();
-    if (gpu_res == nullptr)
-        return;
-
-    auto pixels = BuildCheckerboardBitmap();
-    m_CheckerTextureId = gpu_res->UpdateDynamicTexture(
-        nullptr, pixels.data(), CHECKER_TEX_SIZE, CHECKER_TEX_SIZE);
+    r->DrawQuad(rect, ZSlate::UIColor(0.18f, 0.18f, 0.18f, 1.0f));
 }
 
-void TexPreviewWindow::DrawCheckerboard(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const
+void TexPreviewWindow::DrawPreviewImage(ZSlate::ISlateRenderer* renderer,
+                                         const ZSlate::UIRect& rect) const
 {
-    // ISlateRenderer::DrawTexturedQuad only takes 3 args (no UV tiling).
-    // Draw a solid dark background instead of tiled checkerboard for now.
-    renderer->DrawQuad(rect, ZSlate::UIColor(0.18f, 0.18f, 0.18f, 1.0f));
-}
-
-void TexPreviewWindow::DrawPreviewImage(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const
-{
-    if (!m_TextureLoaded)
-        return;
+    if (!m_TextureLoaded) return;
 
     if (m_NeedsTextureCreate)
-    {
         const_cast<TexPreviewWindow*>(this)->CreateGPUTexture();
-    }
 
-    if (m_TextureId == nullptr)
-        return;
+    if (!m_TextureId) return;
 
-    const float img_w = static_cast<float>(m_PreviewWidth) * m_ZoomLevel;
-    const float img_h = static_cast<float>(m_PreviewHeight) * m_ZoomLevel;
-    const float img_x = rect.x + (rect.w - img_w) / 2.0f + m_PanX;
-    const float img_y = rect.y + (rect.h - img_h) / 2.0f + m_PanY;
+    const float iw = (float)m_PreviewWidth  * m_ZoomLevel;
+    const float ih = (float)m_PreviewHeight * m_ZoomLevel;
+    const float ix = rect.x + (rect.w - iw) / 2.0f + m_PanX;
+    const float iy = rect.y + (rect.h - ih) / 2.0f + m_PanY;
 
     renderer->PushClipRect(rect);
-
-    if (img_w > 0.0f && img_h > 0.0f)
-    {
-        const ZSlate::UIRect img_rect(img_x, img_y, img_w, img_h);
-        renderer->DrawTexturedQuad(img_rect, m_TextureId, ZSlate::Colors::White);
-    }
-
+    if (iw > 0.0f && ih > 0.0f)
+        renderer->DrawTexturedQuad(ZSlate::UIRect(ix, iy, iw, ih), m_TextureId, ZSlate::Colors::White);
     renderer->PopClipRect();
 }
 
-void TexPreviewWindow::DrawInfoOverlay(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const
+void TexPreviewWindow::DrawInfoOverlay(ZSlate::ISlateRenderer* renderer,
+                                        const ZSlate::UIRect& rect) const
 {
-    if (!m_TextureLoaded)
-        return;
+    if (!m_TextureLoaded) return;
 
     char buf[192];
     std::snprintf(buf, sizeof(buf), "Format: %s  |  Size: %ux%u  |  Zoom: %.0f%%  |  Pan: %.0f, %.0f",
-                  FormatToString(m_DetectedFormat),
-                  m_PreviewWidth, m_PreviewHeight,
+                  FormatToString(m_DetectedFormat), m_PreviewWidth, m_PreviewHeight,
                   m_ZoomLevel * 100.0f, m_PanX, m_PanY);
 
     renderer->DrawQuad(ZSlate::UIRect(rect.x, rect.y, rect.w, 28.0f),
                        ZSlate::UIColor(0.1f, 0.1f, 0.1f, 0.85f));
     renderer->DrawText(ZSlate::UIRect(rect.x + 8.0f, rect.y, rect.w - 16.0f, 28.0f),
-                       buf, 13.0f,
-                       ZSlate::UIColor(0.9f, 0.9f, 0.9f, 1.0f),
-                       ZSlate::TextAnchor::MiddleLeft,
-                       ZSlate::TextWrapMode::NoWrap);
+                       buf, 13.0f, ZSlate::UIColor(0.9f, 0.9f, 0.9f, 1.0f),
+                       ZSlate::TextAnchor::MiddleLeft, ZSlate::TextWrapMode::NoWrap);
 }
 
-void TexPreviewWindow::OnZoomIn()     { m_ZoomLevel = std::min(m_ZoomLevel * 1.2f, m_MaxZoom); }
-void TexPreviewWindow::OnZoomOut()    { m_ZoomLevel = std::max(m_ZoomLevel / 1.2f, m_MinZoom); }
+// ---- Zoom / Action stubs ----------------------------------------------------
+
+void TexPreviewWindow::OnZoomIn()  { m_ZoomLevel = std::min(m_ZoomLevel * 1.2f, m_MaxZoom); }
+void TexPreviewWindow::OnZoomOut() { m_ZoomLevel = std::max(m_ZoomLevel / 1.2f, m_MinZoom); }
 void TexPreviewWindow::OnFitToWindow() { m_ZoomLevel = 1.0f; m_PanX = m_PanY = 0.0f; }
-void TexPreviewWindow::OnSaveAsPNG()   { /* TODO */ }
+void TexPreviewWindow::OnSaveAsPNG() {}
 void TexPreviewWindow::OnReloadTexture()
 {
     m_NeedsDecompress = true;
-    if (DecompressTexture())
-    {
-        m_TextureLoaded = true;
-        m_NeedsTextureCreate = true;
-    }
+    if (DecompressTexture()) { m_TextureLoaded = true; m_NeedsTextureCreate = true; ReleaseGPUTexture(); }
 }
 
-void TexPreviewWindow::OnKeyChar(unsigned int codepoint)
+void TexPreviewWindow::OnKeyChar(unsigned int c)
 {
-    // O/o = open file dialog
-    if (codepoint == 'O' || codepoint == 'o')
-    {
 #ifdef _WIN32
-        OPENFILENAMEA ofn {};
-        char file_path[MAX_PATH] {};
-        ofn.lStructSize = sizeof(OPENFILENAMEA);
-        ofn.hwndOwner = nullptr;
-        ofn.lpstrFilter = "Texture Files (*.astc;*.bc7;*.pkm)\0*.astc;*.bc7;*.pkm\0ASTC Files (*.astc)\0*.astc\0BC7 Files (*.bc7)\0*.bc7\0ETC2/PKM Files (*.pkm)\0*.pkm\0All Files (*.*)\0*.*\0";
-        ofn.lpstrFile = file_path;
-        ofn.nMaxFile = MAX_PATH;
+    if (c == 'O' || c == 'o') {
+        OPENFILENAMEA ofn {}; char path[MAX_PATH] {};
+        ofn.lStructSize = sizeof(ofn); ofn.hwndOwner = nullptr;
+        ofn.lpstrFilter = "Texture Files (*.astc;*.bc7;*.pkm)\0*.astc;*.bc7;*.pkm\0All (*.*)\0*.*\0";
+        ofn.lpstrFile = path; ofn.nMaxFile = MAX_PATH;
         ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-
-        if (GetOpenFileNameA(&ofn))
-        {
-            SetTexture(std::filesystem::path(file_path));
-        }
+        if (GetOpenFileNameA(&ofn)) SetTexture(std::filesystem::path(path));
+        return;
+    }
 #endif
-        return;
-    }
-
-    // R/r = reload texture
-    if (codepoint == 'R' || codepoint == 'r')
-    {
-        OnReloadTexture();
-        return;
-    }
-
-    // F/f = fit to window
-    if (codepoint == 'F' || codepoint == 'f')
-    {
-        OnFitToWindow();
-        return;
-    }
-
-    // + = zoom in
-    if (codepoint == '+')
-    {
-        OnZoomIn();
-        return;
-    }
-
-    // - = zoom out
-    if (codepoint == '-')
-    {
-        OnZoomOut();
-        return;
-    }
-
-    // S/s = save as PNG (stub)
-    if (codepoint == 'S' || codepoint == 's')
-    {
-        OnSaveAsPNG();
-        return;
-    }
+    if (c == 'R' || c == 'r') { OnReloadTexture(); return; }
+    if (c == 'F' || c == 'f') { OnFitToWindow(); return; }
+    if (c == '+') { OnZoomIn(); return; }
+    if (c == '-') { OnZoomOut(); return; }
+    if (c == 'S' || c == 's') { OnSaveAsPNG(); return; }
 }

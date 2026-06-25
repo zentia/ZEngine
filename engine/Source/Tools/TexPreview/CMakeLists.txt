@@ -1,14 +1,8 @@
 # =============================================================================
-# TexPreview - Standalone Block-Compressed Texture Preview Tool
-# -----------------------------------------------------------------------------
-# A standalone executable that previews ASTC and BC7 compressed textures.
-# Uses ZRuntime's rendering and Slate for UI.
-# Launched from the Inspector or as a standalone tool.
+# TexPreview — ZSlate UI + D3D11 rendering, ZRuntime for decompressors only
 # =============================================================================
-
 set(TEX_PREVIEW_TARGET TexPreview)
 
-# Source files
 set(TEX_PREVIEW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/TexPreviewWindow.cpp
@@ -20,7 +14,6 @@ set(TEX_PREVIEW_HEADERS
 
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${TEX_PREVIEW_SOURCES} ${TEX_PREVIEW_HEADERS})
 
-# Create executable
 if(WIN32)
     add_executable(${TEX_PREVIEW_TARGET} WIN32 ${TEX_PREVIEW_SOURCES} ${TEX_PREVIEW_HEADERS})
 else()
@@ -34,30 +27,23 @@ set_target_properties(${TEX_PREVIEW_TARGET} PROPERTIES
     FOLDER "Engine/Tools"
 )
 
-# Set output directories
 z_set_config_output_dirs(${TEX_PREVIEW_TARGET} "${BINARY_ROOT_DIR}" RUNTIME)
 
-# Include directories
 target_include_directories(${TEX_PREVIEW_TARGET} PRIVATE
     ${ENGINE_ROOT_DIR}/Source
     ${ENGINE_ROOT_DIR}/Source/CommonPCH
     ${ENGINE_ROOT_DIR}/Libraries/ZSlate/include
 )
 
-# Link against ZRuntime
-target_link_libraries(${TEX_PREVIEW_TARGET} PRIVATE ZRuntime)
+# ZSlate: UI framework + D3D11 render backend
+# ZRuntime: decompressor symbols only (ASTC/BC7/ETC2), no engine boot
+target_link_libraries(${TEX_PREVIEW_TARGET} PRIVATE ZSlate ZRuntime)
 
-# Use precompiled headers
-if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.16" AND TARGET ZEnginePCH)
-    target_link_libraries(${TEX_PREVIEW_TARGET} PRIVATE ZEnginePCH)
-    add_dependencies(${TEX_PREVIEW_TARGET} ZEnginePCH)
-    target_precompile_headers(${TEX_PREVIEW_TARGET} REUSE_FROM ZEnginePCH)
-    message(STATUS "TexPreview: precompiled headers reused from ZEnginePCH")
-endif()
+# No ZEnginePCH — PCH may include windows.h which pollutes DrawText before
+# ZSlate headers can #undef it.
 
-# Platform-specific libraries
 if(WIN32)
-    target_link_libraries(${TEX_PREVIEW_TARGET} PRIVATE comdlg32 shell32)
+    target_link_libraries(${TEX_PREVIEW_TARGET} PRIVATE comdlg32 shell32 d3d11)
 endif()
 
-message(STATUS "TexPreview: target configured (standalone block-compressed texture preview tool)")
+message(STATUS "TexPreview: ZSlate (UI+D3D11) + ZRuntime (decompressors only, no engine boot)")

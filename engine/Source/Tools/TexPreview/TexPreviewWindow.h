@@ -1,19 +1,21 @@
 #pragma once
 
 // =============================================================================
-// TexPreviewWindow
+// TexPreviewWindow — standalone block-compressed texture preview widget
 // -----------------------------------------------------------------------------
-// A standalone Slate widget for previewing block-compressed textures.
-// Supports ASTC, BC7, and ETC2 formats.
-// Uses ASTCDecompressor / BC7Decompressor / ETC2Decompressor to decompress data to RGBA8 for
-// display. Renders the preview via custom OnPaint() drawing.
-//
-// This is a standalone tool that does not depend on ZEditor.
+// Dependencies: ZSlate (SWidget), D3D11 (GPU textures, Windows-only).
+// No ZRuntime.  Decompressors (ASTC/BC7/ETC2) are compiled inline.
 // =============================================================================
 
 #include "ZSlate/Widgets/SWidget.h"
-#include "Runtime/UI/Render/UIRenderer.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <d3d11.h>
+#undef DrawText  // windows.h redefines DrawText → DrawTextA/W
+#endif
 
 #include <filesystem>
 #include <memory>
@@ -21,108 +23,72 @@
 #include <string>
 #include <cstdint>
 
-// Detected texture format
-enum class TexPreviewFormat
-{
-    Unknown,
-    ASTC,
-    BC7,
-    ETC2,
-};
+enum class TexPreviewFormat { Unknown, ASTC, BC7, ETC2 };
 
 class TexPreviewWindow : public ZSlate::SWidget
 {
 public:
     TexPreviewWindow();
-    ~TexPreviewWindow() override = default;
+    ~TexPreviewWindow() override;
 
     // SWidget interface
     ZSlate::Vector2 ComputeDesiredSize() const override;
     void OnPaint(const ZSlate::FPaintContext& ctx, const ZSlate::FGeometry& geom) const override;
 
-    // Input handling - CORRECT signatures matching SWidget
     void OnMouseMove(const ZSlate::Vector2& screen_pos) override;
     ZSlate::FReply OnMouseButtonDown(const ZSlate::Vector2& screen_pos, int button) override;
     ZSlate::FReply OnMouseButtonUp(const ZSlate::Vector2& screen_pos, int button) override;
     ZSlate::FReply OnMouseWheel(const ZSlate::Vector2& screen_pos, float delta) override;
-
-    // Keyboard focus: must return true for OnKeyChar/OnKeyDown to be delivered
     bool SupportsKeyboardFocus() const override { return true; }
-
-    // Keyboard shortcuts (letter keys come via OnKeyChar)
     void OnKeyChar(unsigned int codepoint) override;
 
-    // Set the texture to preview
     void SetTexture(const std::filesystem::path& texture_path);
 
-    // Get the current texture path
-    const std::filesystem::path& GetTexturePath() const { return m_TexturePath; }
-
-    // Get detected format
-    TexPreviewFormat GetDetectedFormat() const { return m_DetectedFormat; }
+#ifdef _WIN32
+    // Must be called before first paint to set the D3D11 device for GPU textures.
+    void SetD3D11Device(ID3D11Device* device, ID3D11DeviceContext* ctx)
+    { m_D3DDevice = device; m_D3DContext = ctx; }
+#endif
 
 private:
-    // Detect texture format from file content (magic / extension)
     TexPreviewFormat DetectFormat(const std::filesystem::path& path) const;
-
-    // Decompress texture and cache the result (dispatches by format)
     bool DecompressTexture();
-
-    // Format-specific decompression
     bool DecompressASTC(const std::vector<uint8_t>& file_data);
     bool DecompressBC7(const std::vector<uint8_t>& file_data);
     bool DecompressETC2(const std::vector<uint8_t>& file_data);
-
-    // Create GPU texture from decompressed pixels
     bool CreateGPUTexture();
+    void ReleaseGPUTexture();
 
-    // Create the checkerboard pattern GPU texture (small tiled texture)
-    void EnsureCheckerboardTexture();
-
-    // Draw checkerboard background for alpha visualization
     void DrawCheckerboard(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const;
-
-    // Draw the preview image with zoom/pan (clipped to widget bounds)
     void DrawPreviewImage(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const;
-
-    // Draw info text overlay
     void DrawInfoOverlay(ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& rect) const;
 
-    // Event handlers
-    void OnZoomIn();
-    void OnZoomOut();
-    void OnFitToWindow();
-    void OnSaveAsPNG();
-    void OnReloadTexture();
+    void OnZoomIn(); void OnZoomOut(); void OnFitToWindow();
+    void OnSaveAsPNG(); void OnReloadTexture();
 
-private:
     std::filesystem::path m_TexturePath;
     TexPreviewFormat m_DetectedFormat {TexPreviewFormat::Unknown};
 
-    // Decompressed texture data (RGBA8)
     std::vector<uint8_t> m_PreviewPixels;
-    uint32_t m_PreviewWidth {0};
+    uint32_t m_PreviewWidth  {0};
     uint32_t m_PreviewHeight {0};
     bool m_NeedsDecompress {true};
     bool m_TextureLoaded {false};
 
-    // Rendering
-    void* m_TextureId {nullptr};  // RHI texture handle for UIRenderer
-    void* m_GpuTextureHandle {nullptr};  // GpuTexture handle for UIGpuResources
+#ifdef _WIN32
+    ID3D11Device*        m_D3DDevice  {nullptr};
+    ID3D11DeviceContext* m_D3DContext {nullptr};
+    ID3D11ShaderResourceView* m_TextureSRV {nullptr};
+    ID3D11Texture2D*           m_TextureTex {nullptr};
+#endif
+    void* m_TextureId {nullptr};  // opaque handle for ISlateRenderer::DrawTexturedQuad
     bool m_NeedsTextureCreate {true};
 
-    // Checkerboard pattern texture (small 2x2-cell texture, tiled via UV)
-    void* m_CheckerTextureId {nullptr};
-
-    // UI state
     float m_ZoomLevel {1.0f};
     float m_MinZoom {0.1f};
     float m_MaxZoom {10.0f};
 
-    // Pan state
-    bool m_IsPanning {false};
-    float m_PanX {0.0f};
-    float m_PanY {0.0f};
-    float m_LastMouseX {0.0f};
-    float m_LastMouseY {0.0f};
+    bool  m_IsPanning {false};
+    float m_PanX {0.0f}, m_PanY {0.0f};
+    float m_LastMouseX {0.0f}, m_LastMouseY {0.0f};
 };
