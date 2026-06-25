@@ -35,7 +35,6 @@ struct TexPlatform : public ZSlate::ISlatePlatform
     float m_MouseWheel {0.0f};  // consumed each frame
 
     ZSlate::ISlateRenderer*    GetRenderer()    override { return &Renderer; }
-    ZSlate::ISlateFontService* GetFontService() override { return nullptr; }
     ZSlate::Vector2 GetMousePosition()   const override { return m_MousePos; }
     bool IsMouseButtonDown(int b) const override { return b<3?m_MouseDown[b]:false; }
     bool IsKeyDown(int)           const override { return false; }
