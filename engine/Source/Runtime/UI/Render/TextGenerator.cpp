@@ -157,24 +157,15 @@ namespace
     {
         switch (anchor)
         {
-            case TextAnchor::UpperLeft:
-                return Vector2(0.0f, 0.0f);
-            case TextAnchor::UpperCenter:
-                return Vector2(0.5f, 0.0f);
-            case TextAnchor::UpperRight:
-                return Vector2(1.0f, 0.0f);
-            case TextAnchor::MiddleLeft:
-                return Vector2(0.0f, 0.5f);
-            case TextAnchor::MiddleCenter:
-                return Vector2(0.5f, 0.5f);
-            case TextAnchor::MiddleRight:
-                return Vector2(1.0f, 0.5f);
-            case TextAnchor::LowerLeft:
-                return Vector2(0.0f, 1.0f);
-            case TextAnchor::LowerCenter:
-                return Vector2(0.5f, 1.0f);
-            case TextAnchor::LowerRight:
-                return Vector2(1.0f, 1.0f);
+            case TextAnchor::TopLeft:      return Vector2(0.0f, 0.0f);
+            case TextAnchor::TopCenter:    return Vector2(0.5f, 0.0f);
+            case TextAnchor::TopRight:     return Vector2(1.0f, 0.0f);
+            case TextAnchor::MiddleLeft:   return Vector2(0.0f, 0.5f);
+            case TextAnchor::MiddleCenter: return Vector2(0.5f, 0.5f);
+            case TextAnchor::MiddleRight:  return Vector2(1.0f, 0.5f);
+            case TextAnchor::BottomLeft:   return Vector2(0.0f, 1.0f);
+            case TextAnchor::BottomCenter: return Vector2(0.5f, 1.0f);
+            case TextAnchor::BottomRight:  return Vector2(1.0f, 1.0f);
         }
         return Vector2(0.5f, 0.5f);
     }

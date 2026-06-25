@@ -32,6 +32,7 @@ struct TexPlatform : public ZSlate::ISlatePlatform
     ZSlate::ZSlateBatchedRenderer Renderer;
     ZSlate::Vector2 m_MousePos {}, m_WinSize {1024, 768};
     bool m_MouseDown[3] {};
+    float m_MouseWheel {0.0f};  // consumed each frame
 
     ZSlate::ISlateRenderer*    GetRenderer()    override { return &Renderer; }
     ZSlate::ISlateFontService* GetFontService() override { return nullptr; }
@@ -71,7 +72,8 @@ struct TexApp
         if (root) {
             bool over = m_Platform.m_MousePos.x >= 0;
             m_Input.ProcessMouse(root, m_Platform.m_MousePos, over,
-                m_Platform.m_MouseDown[0], 0.0f, m_Platform.m_MouseDown[1]);
+                m_Platform.m_MouseDown[0], m_Platform.m_MouseWheel, m_Platform.m_MouseDown[1]);
+            m_Platform.m_MouseWheel = 0.0f;  // consumed each frame
             // Set keyboard focus on left-click so ProcessChar can deliver to OnKeyChar
             if (m_Platform.m_MouseDown[0] && m_Window)
                 m_Input.SetKeyboardFocusWidget(m_Window.get());
@@ -108,6 +110,7 @@ LRESULT CALLBACK WndProc(HWND hw, UINT msg, WPARAM wp, LPARAM lp)
     case WM_RBUTTONUP:   if (app) app->m_Platform.m_MouseDown[1]=false; return 0;
     case WM_MBUTTONDOWN: if (app) app->m_Platform.m_MouseDown[2]=true;  return 0;
     case WM_MBUTTONUP:   if (app) app->m_Platform.m_MouseDown[2]=false; return 0;
+    case WM_MOUSEWHEEL:  if (app) app->m_Platform.m_MouseWheel += GET_WHEEL_DELTA_WPARAM(wp) / (float)WHEEL_DELTA; return 0;
     case WM_CHAR:        if (app) app->m_Input.ProcessChar((unsigned int)wp); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     }
