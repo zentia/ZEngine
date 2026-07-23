@@ -15,6 +15,12 @@ static std::unique_ptr<GenericApplication> CreatePlatformApplication()
 {
 #if Z_PLATFORM_WINDOWS
     return std::make_unique<WindowsApplication>();
+#elif Z_PLATFORM_MACOS || Z_PLATFORM_IOS
+    // macOS / iOS: window / view is owned by the host (Cocoa NSWindow / UIKit UIView).
+    // MetalRHI attaches to an externally-provided CAMetalLayer at runtime.
+    // TODO: Implement MacApplication / IOSApplication for standalone window management
+    //       (UE-style FCocoaApplication / FIOSApplication).
+    return nullptr;
 #else
     #error "CreatePlatformApplication: unsupported platform"
 #endif
@@ -52,6 +58,17 @@ bool WindowSystem::Initialize()
     const int height = std::max(720,  user_prefs ? user_prefs->GetInt("Window.Height", 720) : 720);
 
     m_Application = CreatePlatformApplication();
+
+#if Z_PLATFORM_MACOS || Z_PLATFORM_IOS
+    // Apple platforms: window is managed externally (Cocoa/UIKit host).
+    // MetalRHI attaches to the host's CAMetalLayer; WindowSystem provides
+    // only the input/event shell — window creation is deferred to the host.
+    if (!m_Application)
+    {
+        return true;
+    }
+#endif
+
     if (!m_Application->Initialize(app->name.c_str(), width, height))
     {
         LOG_FATAL(ZWindow, "failed to create platform window {}", __FUNCTION__);

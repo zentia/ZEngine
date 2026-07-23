@@ -5,6 +5,8 @@
 #if defined(Z_HAS_VULKAN)
     #include <vma/vk_mem_alloc.h>
     #include <vulkan/vulkan.h>
+#elif defined(__APPLE__) || defined(__EMSCRIPTEN__)
+using VmaAllocation = void*;
 #else
 struct VmaAllocation_T;
 typedef struct VmaAllocation_T* VmaAllocation;

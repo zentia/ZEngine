@@ -102,50 +102,62 @@ if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     # Mirrors the policy used by the Apple and "WIN32 AND NOT ZENGINE_USE_VULKAN"
     # branches below.
     # ----------------------------------------------------------------
-    list(FILTER SOURCE_FILES         EXCLUDE REGEX ".*/Function/Render/Interface/DX12/.*\\.cpp$")
-    list(FILTER SOURCE_FILES         EXCLUDE REGEX ".*/Function/Render/Interface/Vulkan/.*\\.cpp$")
-    list(FILTER SOURCE_FILES         EXCLUDE REGEX ".*/Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
-    list(FILTER SOURCE_FILES         EXCLUDE REGEX ".*/Function/Render/Passes/.*\\.cpp$")
-    list(FILTER SOURCE_FILES         EXCLUDE REGEX ".*/Function/Render/Texture/VirtualTexture.*\\.cpp$")
-    list(FILTER SOURCE_FILES         EXCLUDE REGEX ".*/Function/Render/DebugDraw/DebugDrawBuffer\\.cpp$")
-    list(FILTER SOURCE_FILES         EXCLUDE REGEX ".*/Function/Render/Lumen/.*\\.cpp$")
-    list(FILTER SOURCE_FILES         EXCLUDE REGEX ".*/Function/ShaderLab/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/DX12/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/Vulkan/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Passes/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Texture/VirtualTexture.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/DebugDraw/DebugDrawBuffer\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Lumen/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/ShaderLab/.*\\.cpp$")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Interface/DX12/.*\\.cpp$")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Vulkan/.*\\.cpp$")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Passes/.*\\.cpp$")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/DebugDraw/DebugDrawBuffer\\.cpp$")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Lumen/.*\\.cpp$")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/ShaderLab/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/DX12/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Vulkan/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/DebugDraw/DebugDrawBuffer\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Lumen/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/.*\\.cpp$")
     # Jolt is stubbed on Web (engine/3rdparty/CMakeLists.txt); strip the
     # native physics translation units. Public APIs are kept linkable by
     # the PhysicsStubs.cpp shim under engine/Source/Platform/Web/.
-    list(FILTER SOURCE_FILES         EXCLUDE REGEX ".*/[Ff]unction/[Pp]hysics/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/[Ff]unction/[Pp]hysics/.*\\.cpp$")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)[Ff]unction/[Pp]hysics/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)[Ff]unction/[Pp]hysics/.*\\.cpp$")
+    # Strip Platform/Windows/ files (not applicable to Web/Emscripten)
+    list(FILTER HEADER_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
+    list(FILTER REGULAR_HEADER_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
     message(STATUS "Runtime(Web): Vulkan/DX12/Metal disabled; using WebGL2 RHI; excluded Passes/VirtualTexture/DebugDrawBuffer/Lumen/ShaderLab/physics sources")
 else()
     set(ZENGINE_RHI_WEBGL2 OFF CACHE INTERNAL "WebGL2 RHI backend disabled (non-Emscripten build)")
-    list(FILTER SOURCE_FILES         EXCLUDE REGEX ".*/Function/Render/Interface/WebGL2/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/WebGL2/.*\\.cpp$")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Interface/WebGL2/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/WebGL2/.*\\.cpp$")
 endif()
 
 if(ANDROID OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/DX12/.*\\.cpp$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/DX12/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/DX12/.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/DX12/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
+    # Strip Platform/Windows/ files (not applicable to Android/OHOS)
+    list(FILTER HEADER_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
+    list(FILTER REGULAR_HEADER_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
 elseif(APPLE)
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/DX12/.*\\.cpp$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/Vulkan/.*\\.cpp$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Passes/.*\\.cpp$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Texture/VirtualTexture.*\\.cpp$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/DebugDraw/DebugDrawBuffer\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/DX12/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/Vulkan/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Passes/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Texture/VirtualTexture.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/DebugDraw/DebugDrawBuffer\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Dd][Xx]12/.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Vv]ulkan/.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Pp]asses/.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Dd]ebug[Dd]raw/DebugDrawBuffer\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Dd][Xx]12/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Vv]ulkan/.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabDx12.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabDx12.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Dd]ebug[Dd]raw/DebugDrawBuffer\\.cpp$")
     list(REMOVE_ITEM SOURCE_FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/DX12RHI.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/DX12ShaderCompiler.cpp"
@@ -160,66 +172,71 @@ elseif(APPLE)
         "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Vulkan/VulkanRHI.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Vulkan/VulkanUtil.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Vulkan/VulkanVma.cpp")
+    # Strip Platform/Windows/ files (not applicable to Apple)
+    list(FILTER HEADER_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
+    list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
+    list(FILTER REGULAR_HEADER_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
     list(APPEND SOURCE_FILES "${PLATFORM_DIR}/Android/LocalFileSystemAndroid.cpp")
     list(APPEND HEADER_FILES "${PLATFORM_DIR}/Android/LocalFileSystemAndroid.h")
 elseif(WIN32 AND NOT ZENGINE_USE_VULKAN)
     # Windows default: build DX12 only, strip every Vulkan translation unit. Passes and a
     # handful of render resources currently depend on VulkanRHI headers, so we exclude
     # them entirely and rely on the DX12 render pipeline path at runtime.
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/Vulkan/.*\\.cpp$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Texture/VirtualTexture.*\\.cpp$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/DebugDraw/DebugDrawBuffer\\.cpp$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Lumen/.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Vulkan/.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/DebugDraw/DebugDrawBuffer\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Lumen/.*\\.cpp$")
     # ShaderLab parser + HLSL extract stay in ZRuntime (Vulkan-free); only the
     # SPIR-V compiler TU is excluded so DX12ShaderCompiler can extract .shader.
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/ShaderLab/ShaderLabCompiler\\.cpp$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/ShaderLab/ShaderLabTest\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Interface/Vulkan/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Texture/VirtualTexture.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/DebugDraw/DebugDrawBuffer\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Lumen/.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/ShaderLab/ShaderLabCompiler\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/ShaderLab/ShaderLabTest\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabCompiler\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabTest\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Vulkan/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/DebugDraw/DebugDrawBuffer\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Lumen/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabCompiler\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabTest\\.cpp$")
 
     # Exclude all pass source files first, then restore the DX12-only passes.
     # CMake's regex engine does not support look-ahead, so we do this in two steps.
     set(_WIN_DX12_PASS_FILES)
     foreach(_src IN LISTS SOURCE_FILES)
-        if(_src MATCHES ".*/Function/Render/Passes/DX12.*\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/MainCameraFramebufferResources\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/MainCameraRp1Pass\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/MainCameraPassShaderCommon\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/BindlessTonemapPass\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/MainCameraRp2Pass\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/DirectionalLightPass\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/PointLightPass\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/ShadowPassShared\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/UIPass\\.cpp$")
+        if(_src MATCHES "(^|.*/)Function/Render/Passes/DX12.*\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/MainCameraFramebufferResources\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/MainCameraRp1Pass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/MainCameraPassShaderCommon\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/BindlessTonemapPass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/MainCameraRp2Pass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/DirectionalLightPass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/PointLightPass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/ShadowPassShared\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/UIPass\\.cpp$")
             list(APPEND _WIN_DX12_PASS_FILES "${_src}")
         endif()
     endforeach()
-    list(FILTER SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Passes/.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/.*\\.cpp$")
     list(APPEND SOURCE_FILES ${_WIN_DX12_PASS_FILES})
     list(APPEND SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/RenderResourceDx12.cpp")
 
     set(_WIN_DX12_PASS_FILES_REG)
     foreach(_src IN LISTS REGULAR_SOURCE_FILES)
-        if(_src MATCHES ".*/Function/Render/Passes/DX12.*\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/MainCameraFramebufferResources\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/MainCameraRp1Pass\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/MainCameraPassShaderCommon\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/BindlessTonemapPass\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/MainCameraRp2Pass\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/DirectionalLightPass\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/PointLightPass\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/ShadowPassShared\\.cpp$" OR
-           _src MATCHES ".*/Function/Render/Passes/UIPass\\.cpp$")
+        if(_src MATCHES "(^|.*/)Function/Render/Passes/DX12.*\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/MainCameraFramebufferResources\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/MainCameraRp1Pass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/MainCameraPassShaderCommon\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/BindlessTonemapPass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/MainCameraRp2Pass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/DirectionalLightPass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/PointLightPass\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/ShadowPassShared\\.cpp$" OR
+           _src MATCHES "(^|.*/)Function/Render/Passes/UIPass\\.cpp$")
             list(APPEND _WIN_DX12_PASS_FILES_REG "${_src}")
         endif()
     endforeach()
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX ".*/Function/Render/Passes/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/.*\\.cpp$")
     list(APPEND REGULAR_SOURCE_FILES ${_WIN_DX12_PASS_FILES_REG})
     list(APPEND REGULAR_SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/RenderResourceDx12.cpp")
 
@@ -235,7 +252,6 @@ endif()
 
 if(APPLE)
     set_source_files_properties(
-        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/RHIFactory.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/RegisterRuntime.cpp"
         PROPERTIES LANGUAGE OBJCXX SKIP_PRECOMPILE_HEADERS ON)
     set_source_files_properties(${OBJC_SOURCE_FILES} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)

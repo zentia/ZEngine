@@ -43,12 +43,13 @@ bool MetalRHI::Initialize()
         m_MaxBindlessStorageBuffers = 1024;
 #endif
 
-        m_BindlessTextureManager = std::make_unique<MetalBindlessTextureManager>();
+        m_BindlessTextureManager = new MetalBindlessTextureManager();
         if (!m_BindlessTextureManager->Initialize(m_Device, m_MaxBindlessSampledImages))
         {
             LOG_WARNING(ZRender,
                         "MetalBindlessTextureManager init failed -- demoting bindless support to OFF");
-            m_BindlessTextureManager.reset();
+            delete m_BindlessTextureManager;
+        m_BindlessTextureManager = nullptr;
             m_MaxBindlessSampledImages  = 0;
             m_MaxBindlessStorageBuffers = 0;
         }
@@ -79,7 +80,8 @@ void MetalRHI::Shutdown()
     if (m_BindlessTextureManager)
     {
         m_BindlessTextureManager->Shutdown();
-        m_BindlessTextureManager.reset();
+        delete m_BindlessTextureManager;
+        m_BindlessTextureManager = nullptr;
     }
     m_BindlessSupported           = false;
     m_MaxBindlessSampledImages  = 0;
@@ -94,8 +96,12 @@ void MetalRHI::Shutdown()
 #endif
 }
 
+MetalRHI::~MetalRHI() = default;
+
 void MetalRHI::PrepareContext() {}
 bool MetalRHI::IsPointLightShadowEnabled() { return false; }
+void MetalRHI::NotifyWindowFocusGained() {}
+void MetalRHI::DestroyRenderPass(RHIRenderPass* /*renderPass*/) {}
 
 bool MetalRHI::AllocateCommandBuffers(const RHICommandBufferAllocateInfo*, RHICommandBuffer*& pCommandBuffers)
 {
@@ -330,7 +336,8 @@ void MetalRHI::clear()
     if (m_BindlessTextureManager)
     {
         m_BindlessTextureManager->Shutdown();
-        m_BindlessTextureManager.reset();
+        delete m_BindlessTextureManager;
+        m_BindlessTextureManager = nullptr;
     }
     m_BindlessSupported           = false;
     m_MaxBindlessSampledImages  = 0;
@@ -412,7 +419,22 @@ RHI::ViewportRenderTexture* MetalRHI::GetViewportRenderTexture(const std::string
 
 RHIBindlessTextureManager* MetalRHI::getBindlessTextureManager()
 {
-    return m_BindlessTextureManager.get();
+    return m_BindlessTextureManager;
+}
+
+bool MetalRHI::supportsBindlessTextures() const
+{
+    return m_BindlessSupported;
+}
+
+uint32_t MetalRHI::maxBindlessSampledImages() const
+{
+    return m_MaxBindlessSampledImages;
+}
+
+uint32_t MetalRHI::maxBindlessStorageBuffers() const
+{
+    return m_MaxBindlessStorageBuffers;
 }
 
 void MetalRHI::CmdSetBindlessIndexPFN(RHICommandBuffer*    /*commandBuffer*/,

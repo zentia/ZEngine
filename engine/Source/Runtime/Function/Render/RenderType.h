@@ -3,6 +3,7 @@
 #include "Runtime/Core/Base/Hash.h"
 
 #include <EASTL/string.h>
+#include <EASTL/vector.h>
 #include <cstdint>
 #include <memory>
 #include <string>

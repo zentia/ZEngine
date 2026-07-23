@@ -307,6 +307,16 @@ cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -G Xcode \
   "${CMAKE_EXPORT_ARGS[@]}" \
   -DZENGINE_OUTPUT_SUBDIR="$OUTPUT_SUBDIR"
 
+# Fix: CMake 4.x Xcode generator injects the MSVC-only /Y- flag (ignore PCH)
+# into OTHER_CPLUSPLUSFLAGS for every target. AppleClang interprets /Y- as
+# a source file path and errors with "no such file or directory: '/Y-'".
+# Strip it from the generated pbxproj post-configure.
+_pbxproj="${BUILD_DIR}/ZEngine.xcodeproj/project.pbxproj"
+if [[ -f "$_pbxproj" ]]; then
+  sed -i '' 's| /Y- ||g' "$_pbxproj"
+  echo "[PATCH] Stripped /Y- from ${_pbxproj}"
+fi
+
 for build_config in "${CONFIGS[@]}"; do
   cmake --build "$BUILD_DIR" --config "$build_config" --target ZRuntimeShared --parallel "$PARALLEL_JOBS"
 
@@ -323,7 +333,7 @@ for build_config in "${CONFIGS[@]}"; do
   fi
 
   if [[ "$do_strip" == "1" ]]; then
-    xcrun strip -S -x "$out_dylib"
+    xcrun strip -S "$out_dylib"
   fi
 
   if [[ "$BUILD_FRAMEWORK" == "1" ]]; then

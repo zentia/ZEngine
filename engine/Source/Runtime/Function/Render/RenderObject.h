@@ -3,6 +3,7 @@
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Function/Framework/Object/ObjectIdAllocator.h"
 
+#include <EASTL/vector.h>
 #include <vector>
 
 class GameObjectMeshDesc

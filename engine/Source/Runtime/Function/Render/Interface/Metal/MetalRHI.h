@@ -7,6 +7,11 @@
 #include <EASTL/functional.h>
 #include <EASTL/string.h>
 
+#include <memory>
+
+// Forward declare — full definition is in MetalBindlessTextureManager.h
+class MetalBindlessTextureManager;
+
 #ifdef __APPLE__
     #define Component AppleComponent
     #include <Metal/Metal.h>
@@ -27,6 +32,7 @@ public:
     std::vector<std::type_index> GetDependencies() const override;
     bool Initialize() override;
     void Shutdown() override;
+    ~MetalRHI();
 
     // Get the graphics API
     GraphicsAPI getGraphicsAPI() const override { return GraphicsAPI::Metal; }
@@ -36,6 +42,7 @@ public:
 
     // RHI interface implementation
     virtual bool IsPointLightShadowEnabled() override;
+    virtual void NotifyWindowFocusGained() override;
 
     // Allocate and create
     virtual bool AllocateCommandBuffers(const RHICommandBufferAllocateInfo* pAllocateInfo,
@@ -274,6 +281,16 @@ public:
     virtual uint8_t GetCurrentFrameIndex() const override;
     virtual void SetCurrentFrameIndex(uint8_t index) override;
 
+    // Bindless resource texture support (Metal Tier-2 Argument Buffer)
+    virtual bool supportsBindlessTextures() const override;
+    virtual uint32_t maxBindlessSampledImages() const override;
+    virtual uint32_t maxBindlessStorageBuffers() const override;
+    virtual RHIBindlessTextureManager* getBindlessTextureManager() override;
+    virtual void CmdSetBindlessIndexPFN(RHICommandBuffer* commandBuffer,
+                                        RHIPipelineBindPoint pipelineBindPoint,
+                                        RHIPipelineLayout* layout,
+                                        uint32_t packed_index) override;
+
     // Command write
     virtual RHICommandBuffer* BeginSingleTimeCommands() override;
     virtual void EndSingleTimeCommands(RHICommandBuffer* command_buffer) override;
@@ -294,6 +311,7 @@ public:
     virtual void DestroyImageView(RHIImageView* imageView) override;
     virtual void DestroyImage(RHIImage* image) override;
     virtual void DestroyFramebuffer(RHIFramebuffer* framebuffer) override;
+    virtual void DestroyRenderPass(RHIRenderPass* renderPass) override;
     virtual void DestroyFence(RHIFence* fence) override;
     virtual void DestroyDevice() override;
     virtual void DestroyCommandPool(RHICommandPool* commandPool) override;
@@ -363,4 +381,10 @@ private:
     RHICommandBuffer* m_CommandBuffers[k_max_frames_in_flight];
     RHICommandBuffer* m_CurrentCommandBuffer {nullptr};
     QueueFamilyIndices m_QueueIndices;
+
+    // Bindless texture support (Metal Tier-2 Argument Buffer)
+    bool m_BindlessSupported = false;
+    uint32_t m_MaxBindlessSampledImages = 0;
+    uint32_t m_MaxBindlessStorageBuffers = 0;
+    MetalBindlessTextureManager* m_BindlessTextureManager = nullptr;
 };

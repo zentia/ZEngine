@@ -423,8 +423,8 @@ void UIPass::Draw()
                           1.0f};
     RHIRect2D scissor {0,
                        0,
-                       static_cast<int32_t>(m_Rhi->GetSwapchainInfo().extent.width),
-                       static_cast<int32_t>(m_Rhi->GetSwapchainInfo().extent.height)};
+                       m_Rhi->GetSwapchainInfo().extent.width,
+                       m_Rhi->GetSwapchainInfo().extent.height};
 
     m_Rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_GRAPHICS, m_RenderPipelines[0].pipeline);
     m_Rhi->CmdSetViewportPFN(command_buffer, 0, 1, &viewport);
