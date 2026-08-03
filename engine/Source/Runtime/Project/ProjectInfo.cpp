@@ -6,8 +6,8 @@
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "core/Log/LogSystem.h"
 
+#include <cstdio>
 #include <ctime>
-#include <fstream>
 #include <iomanip>
 #include <memory>
 #include <sstream>
@@ -160,14 +160,16 @@ namespace
         {
             return true;
         }
-        std::ofstream ofs(path, std::ios::binary);
-        if (!ofs.is_open())
+        FILE* f = fopen(path.string().c_str(), "wb");
+        if (!f)
         {
             LOG_WARNING(ZProjectInfo, "ensureScriptsScaffold: cannot create {}", path.generic_string());
             return false;
         }
-        ofs << content;
-        return ofs.good();
+        size_t len = strlen(content);
+        bool ok = (fwrite(content, 1, len, f) == len);
+        fclose(f);
+        return ok;
     }
 
     /// Append the scripting ignore-section to .gitignore if our marker isn't there
@@ -179,12 +181,18 @@ namespace
         std::string existing;
         if (std::filesystem::exists(gitignore_path, ec))
         {
-            std::ifstream ifs(gitignore_path, std::ios::binary);
-            if (ifs.is_open())
+            FILE* f = fopen(gitignore_path.string().c_str(), "rb");
+            if (f)
             {
-                std::ostringstream ss;
-                ss << ifs.rdbuf();
-                existing = ss.str();
+                fseek(f, 0, SEEK_END);
+                long fsz = ftell(f);
+                if (fsz > 0)
+                {
+                    existing.resize(static_cast<size_t>(fsz));
+                    fseek(f, 0, SEEK_SET);
+                    fread(existing.data(), 1, static_cast<size_t>(fsz), f);
+                }
+                fclose(f);
             }
             if (existing.find(kGitignoreMarker) != std::string::npos)
             {
@@ -192,14 +200,16 @@ namespace
             }
         }
 
-        std::ofstream ofs(gitignore_path, std::ios::binary | std::ios::app);
-        if (!ofs.is_open())
+        FILE* f = fopen(gitignore_path.string().c_str(), "ab");
+        if (!f)
         {
             LOG_WARNING(ZProjectInfo, "ensureScriptsScaffold: cannot append to {}", gitignore_path.generic_string());
             return false;
         }
-        ofs << kGitignoreSection;
-        return ofs.good();
+        size_t len = strlen(kGitignoreSection);
+        bool ok = (fwrite(kGitignoreSection, 1, len, f) == len);
+        fclose(f);
+        return ok;
     }
 }  // namespace
 
@@ -231,11 +241,6 @@ bool ProjectInfo::LoadFromFile(const std::filesystem::path& project_file_path)
     project_file = project_file_path;
     project_path = project_file_path.parent_path();
 
-    std::ifstream file(project_file_path);
-    if (!file.is_open())
-    {
-        return false;
-    }
     return GET_SYSTEM(FileSystem)->LoadAssetByJson(this, project_file_path);
 }
 
@@ -593,13 +598,25 @@ bool ProjectInfo::EnsureScriptsScaffold()
         else
         {
             const auto dts_path = typings_dir / "zengine.d.ts";
-            std::ofstream ofs(dts_path, std::ios::binary | std::ios::trunc);
-            if (!ofs.is_open() || !(ofs << kZEngineDtsTemplate).good())
+            FILE* f = fopen(dts_path.string().c_str(), "wb");
+            if (!f)
             {
                 LOG_WARNING(ZProjectInfo,
                             "ensureScriptsScaffold: failed to write {}",
                             dts_path.generic_string());
                 all_ok = false;
+            }
+            else
+            {
+                size_t len = strlen(kZEngineDtsTemplate);
+                if (fwrite(kZEngineDtsTemplate, 1, len, f) != len)
+                {
+                    LOG_WARNING(ZProjectInfo,
+                                "ensureScriptsScaffold: failed to write {}",
+                                dts_path.generic_string());
+                    all_ok = false;
+                }
+                fclose(f);
             }
         }
     }

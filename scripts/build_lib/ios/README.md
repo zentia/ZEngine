@@ -98,9 +98,15 @@ bin/ios/OS64/Release/libZRuntimeShared.dylib.dSYM
 1. 链接阶段启用 `-dead_strip` / `-dead_strip_dylibs`。
 2. 自动生成 `exported_symbols_list`，仅导出 `EXPORT_RUNTIME` 和 `ZENGINE_API_EXPORT` 声明的 C API；如需完整符号导出，可使用 `--no-export-list`。
 3. 对 `ZRuntimeShared` 目标启用导出列表链接选项，减少 `__LINKEDIT` 并让 dead strip 更有效。
-4. 使用 `auto` strip 策略：
-   - `Release` / `MinSizeRel`：自动执行 `xcrun strip -S -x`
-   - `Debug` / `RelWithDebInfo`：默认不 strip，方便调试
+4. 禁用 chained fixups（`-no_fixup_chains`）：
+   - iOS 16+ 的 ld64 链接器默认使用 chained fixups 格式（`LC_DYLD_CHAINED_FIXUPS`
+     + `LC_DYLD_EXPORTS_TRIE`）替代旧式 `LC_DYLD_INFO_ONLY`
+   - 但 UnityFramework 内嵌的 dyld 不认识 chained fixups，加载时直接拒绝：
+     `missing LC_DYLD_INFO load command`
+   - 修复：`target_link_options` 添加 `LINKER:-no_fixup_chains`（CMakeLists.txt），
+     同时在构建脚本 `cmake` 命令行追加 `-DCMAKE_XCODE_ATTRIBUTE_LD_NO_FIXUP_CHAINS=YES`
+   - 验证：`xcrun otool -l ZRuntimeShared.framework/ZRuntimeShared | grep LC_DYLD_INFO`
+     应输出 `LC_DYLD_INFO_ONLY`
 
 在当前本机测试中，`Release` 产物约为：
 

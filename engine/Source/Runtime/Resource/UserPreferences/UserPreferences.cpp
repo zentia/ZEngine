@@ -3,11 +3,11 @@
 #include "Runtime/Function/PlayerSettings/PlayerSettings.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "core/Log/LogSystem.h"
-#include "rapidjson/istreamwrapper.h"
+#include "rapidjson/filereadstream.h"
 #include "rapidjson/prettywriter.h"
 
+#include <cstdio>
 #include <cstdlib>
-#include <fstream>
 
 namespace
 {
@@ -91,8 +91,8 @@ void UserPreferences::save()
         std::filesystem::path temp_path = m_PreferencesFilePath;
         temp_path += ".tmp";
 
-        std::ofstream file(temp_path, std::ios::binary);
-        if (!file.is_open())
+        FILE* file = fopen(temp_path.string().c_str(), "wb");
+        if (!file)
         {
             LOG_ERROR(ZUserPreferences, "Failed to open preferences file for writing: {}", temp_path.generic_string());
             return;
@@ -100,8 +100,8 @@ void UserPreferences::save()
         rapidjson::StringBuffer sb;
         rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(sb);
         m_Preferences.Accept(writer);
-        file << sb.GetString();  // Pretty print with 4 spaces
-        file.close();
+        fwrite(sb.GetString(), 1, sb.GetSize(), file);
+        fclose(file);
 
         // Replace original file with temporary file
         std::filesystem::rename(temp_path, m_PreferencesFilePath);
@@ -126,8 +126,8 @@ void UserPreferences::load()
 
     try
     {
-        std::ifstream file(m_PreferencesFilePath);
-        if (!file.is_open())
+        FILE* file = fopen(m_PreferencesFilePath.string().c_str(), "rb");
+        if (!file)
         {
             LOG_WARNING(
                 ZUserPreferences, "Failed to open preferences file: {}", m_PreferencesFilePath.generic_string());
@@ -135,8 +135,10 @@ void UserPreferences::load()
             return;
         }
 
-        rapidjson::IStreamWrapper isw(file);
-        m_Preferences.ParseStream(isw);
+        char readBuffer[65536];
+        rapidjson::FileReadStream is(file, readBuffer, sizeof(readBuffer));
+        m_Preferences.ParseStream(is);
+        fclose(file);
         if (m_Preferences.HasParseError() || !m_Preferences.IsObject())
         {
             LOG_WARNING(

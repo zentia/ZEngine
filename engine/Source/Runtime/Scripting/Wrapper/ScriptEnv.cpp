@@ -7,8 +7,6 @@
 
 #include <cstdio>
 #include <cstring>
-#include <fstream>
-#include <sstream>
 #include <string>
 
 std::vector<ScriptEnv*> ScriptEnv::scriptEnvs;
@@ -428,15 +426,22 @@ bool ScriptEnv::LoadModuleInternal(const std::string& module_id)
 
     // 2. Read source. Use binary mode so we don't translate CRLF and
     //    introduce off-by-one offsets in error messages.
-    std::ifstream ifs(js_path, std::ios::binary);
-    if (!ifs)
+    FILE* file = fopen(js_path.c_str(), "rb");
+    if (!file)
     {
         LOG_ERROR(ZScripting, "LoadModule('{}'): cannot open '{}'", module_id, js_path);
         return false;
     }
-    std::ostringstream oss;
-    oss << ifs.rdbuf();
-    std::string raw = oss.str();
+    fseek(file, 0, SEEK_END);
+    long fsz = ftell(file);
+    std::string raw;
+    if (fsz > 0)
+    {
+        raw.resize(static_cast<size_t>(fsz));
+        fseek(file, 0, SEEK_SET);
+        fread(raw.data(), 1, static_cast<size_t>(fsz), file);
+    }
+    fclose(file);
 
     // 3. Wrap in IIFE-factory so we get a function value back. The QuickJS
     //    in puerts doesn't expose CommonJS `require`, so we synthesize one

@@ -304,6 +304,7 @@ cmake -S "$ROOT_DIR" -B "$BUILD_DIR" -G Xcode \
   -DJPH_USE_VK=OFF \
   -DZENGINE_LINK_VULKAN_SDK_GLSLANG_LIBS=OFF \
   -DCMAKE_XCODE_ATTRIBUTE_DEAD_CODE_STRIPPING=YES \
+  -DCMAKE_XCODE_ATTRIBUTE_LD_NO_FIXUP_CHAINS=YES \
   "${CMAKE_EXPORT_ARGS[@]}" \
   -DZENGINE_OUTPUT_SUBDIR="$OUTPUT_SUBDIR"
 
@@ -332,8 +333,15 @@ for build_config in "${CONFIGS[@]}"; do
     do_strip=1
   fi
 
+  # NOTE: Do NOT run `strip -S` post-build on iOS dylibs.
+  # On modern iOS (16+), dyld requires LC_DYLD_INFO_ONLY in the Mach-O header,
+  # and `strip -S` can corrupt or remove this load command, causing dyld to
+  # reject the binary with "missing LC_DYLD_INFO load command".
+  # Dead code stripping is already handled at link time via
+  # CMAKE_XCODE_ATTRIBUTE_DEAD_CODE_STRIPPING=YES and linker -dead_strip,
+  # so the post-build strip is both redundant and harmful.
   if [[ "$do_strip" == "1" ]]; then
-    xcrun strip -S "$out_dylib"
+    echo "[STRIP] Skipping post-build strip (not safe for iOS 16+ dyld; dead-code stripping is handled by the linker)"
   fi
 
   if [[ "$BUILD_FRAMEWORK" == "1" ]]; then

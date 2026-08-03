@@ -1,8 +1,8 @@
 #include "Runtime/Profiler/InsightsTrace.h"
 
 #include <chrono>
+#include <cstdio>
 #include <cstring>
-#include <fstream>
 #include <thread>
 
 namespace ZEngine
@@ -331,74 +331,77 @@ constexpr uint32_t kZtrcMagic = ('Z') | ('T' << 8) | ('R' << 16) | (static_cast<
 constexpr uint32_t kZtrcVersion = 1u;
 
 template<typename T>
-void WritePod(std::ostream& os, const T& value)
+void WritePod(FILE* f, const T& value)
 {
-    os.write(reinterpret_cast<const char*>(&value), sizeof(T));
+    fwrite(&value, sizeof(T), 1, f);
 }
 
-void WriteString(std::ostream& os, const std::string& s)
+void WriteString(FILE* f, const std::string& s)
 {
     const uint32_t len = static_cast<uint32_t>(s.size());
-    WritePod(os, len);
+    WritePod(f, len);
     if (len > 0)
-        os.write(s.data(), static_cast<std::streamsize>(len));
+        fwrite(s.data(), len, 1, f);
 }
 
 template<typename T>
-bool ReadPod(std::istream& is, T& value)
+bool ReadPod(FILE* f, T& value)
 {
-    is.read(reinterpret_cast<char*>(&value), sizeof(T));
-    return static_cast<bool>(is);
+    return fread(&value, sizeof(T), 1, f) == 1;
 }
 
-bool ReadString(std::istream& is, std::string& out, uint32_t max_len)
+bool ReadString(FILE* f, std::string& out, uint32_t max_len)
 {
     uint32_t len = 0;
-    if (!ReadPod(is, len) || len > max_len)
+    if (!ReadPod(f, len) || len > max_len)
         return false;
     out.resize(len);
     if (len > 0)
-        is.read(out.data(), static_cast<std::streamsize>(len));
-    return static_cast<bool>(is);
+    {
+        if (fread(out.data(), len, 1, f) != 1)
+            return false;
+    }
+    return true;
 }
 }  // namespace
 
 bool SaveTrace(const std::string& path, const InsightsSnapshot& snapshot)
 {
-    std::ofstream os(path, std::ios::binary | std::ios::trunc);
-    if (!os.is_open())
+    FILE* f = fopen(path.c_str(), "wb");
+    if (!f)
         return false;
 
-    WritePod(os, kZtrcMagic);
-    WritePod(os, kZtrcVersion);
-    WritePod(os, snapshot.min_ns);
-    WritePod(os, snapshot.max_ns);
+    WritePod(f, kZtrcMagic);
+    WritePod(f, kZtrcVersion);
+    WritePod(f, snapshot.min_ns);
+    WritePod(f, snapshot.max_ns);
 
-    WritePod(os, static_cast<uint32_t>(snapshot.names.size()));
+    WritePod(f, static_cast<uint32_t>(snapshot.names.size()));
     for (const std::string& name : snapshot.names)
-        WriteString(os, name);
+        WriteString(f, name);
 
-    WritePod(os, static_cast<uint32_t>(snapshot.frame_starts.size()));
-    for (uint64_t f : snapshot.frame_starts)
-        WritePod(os, f);
+    WritePod(f, static_cast<uint32_t>(snapshot.frame_starts.size()));
+    for (uint64_t fr : snapshot.frame_starts)
+        WritePod(f, fr);
 
-    WritePod(os, static_cast<uint32_t>(snapshot.tracks.size()));
+    WritePod(f, static_cast<uint32_t>(snapshot.tracks.size()));
     for (const TrackSnapshot& track : snapshot.tracks)
     {
-        WriteString(os, track.thread_name);
-        WritePod(os, track.thread_id);
-        WritePod(os, track.max_depth);
-        WritePod(os, static_cast<uint32_t>(track.events.size()));
+        WriteString(f, track.thread_name);
+        WritePod(f, track.thread_id);
+        WritePod(f, track.max_depth);
+        WritePod(f, static_cast<uint32_t>(track.events.size()));
         for (const ScopeEvent& ev : track.events)
         {
-            WritePod(os, ev.name_id);
-            WritePod(os, ev.depth);
-            WritePod(os, ev.start_ns);
-            WritePod(os, ev.end_ns);
+            WritePod(f, ev.name_id);
+            WritePod(f, ev.depth);
+            WritePod(f, ev.start_ns);
+            WritePod(f, ev.end_ns);
         }
     }
 
-    return static_cast<bool>(os);
+    fclose(f);
+    return true;
 }
 
 bool LoadTrace(const std::string& path, InsightsSnapshot& out)
@@ -409,73 +412,74 @@ bool LoadTrace(const std::string& path, InsightsSnapshot& out)
     out.min_ns = 0;
     out.max_ns = 0;
 
-    std::ifstream is(path, std::ios::binary);
-    if (!is.is_open())
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f)
         return false;
 
     uint32_t magic = 0;
     uint32_t version = 0;
-    if (!ReadPod(is, magic) || magic != kZtrcMagic)
-        return false;
-    if (!ReadPod(is, version) || version != kZtrcVersion)
-        return false;
-    if (!ReadPod(is, out.min_ns) || !ReadPod(is, out.max_ns))
-        return false;
+    if (!ReadPod(f, magic) || magic != kZtrcMagic)
+        { fclose(f); return false; }
+    if (!ReadPod(f, version) || version != kZtrcVersion)
+        { fclose(f); return false; }
+    if (!ReadPod(f, out.min_ns) || !ReadPod(f, out.max_ns))
+        { fclose(f); return false; }
 
     // Sanity caps to avoid pathological allocations on a corrupt file.
     constexpr uint32_t kMaxCount = 50u * 1000u * 1000u;
     constexpr uint32_t kMaxStrLen = 1u << 20;
 
     uint32_t name_count = 0;
-    if (!ReadPod(is, name_count) || name_count > kMaxCount)
-        return false;
+    if (!ReadPod(f, name_count) || name_count > kMaxCount)
+        { fclose(f); return false; }
     out.names.reserve(name_count);
     for (uint32_t i = 0; i < name_count; ++i)
     {
         std::string name;
-        if (!ReadString(is, name, kMaxStrLen))
-            return false;
+        if (!ReadString(f, name, kMaxStrLen))
+            { fclose(f); return false; }
         out.names.push_back(std::move(name));
     }
 
     uint32_t frame_count = 0;
-    if (!ReadPod(is, frame_count) || frame_count > kMaxCount)
-        return false;
+    if (!ReadPod(f, frame_count) || frame_count > kMaxCount)
+        { fclose(f); return false; }
     out.frame_starts.reserve(frame_count);
     for (uint32_t i = 0; i < frame_count; ++i)
     {
-        uint64_t f = 0;
-        if (!ReadPod(is, f))
-            return false;
-        out.frame_starts.push_back(f);
+        uint64_t fr = 0;
+        if (!ReadPod(f, fr))
+            { fclose(f); return false; }
+        out.frame_starts.push_back(fr);
     }
 
     uint32_t track_count = 0;
-    if (!ReadPod(is, track_count) || track_count > kMaxCount)
-        return false;
+    if (!ReadPod(f, track_count) || track_count > kMaxCount)
+        { fclose(f); return false; }
     out.tracks.reserve(track_count);
     for (uint32_t t = 0; t < track_count; ++t)
     {
         TrackSnapshot track;
-        if (!ReadString(is, track.thread_name, kMaxStrLen))
-            return false;
-        if (!ReadPod(is, track.thread_id) || !ReadPod(is, track.max_depth))
-            return false;
+        if (!ReadString(f, track.thread_name, kMaxStrLen))
+            { fclose(f); return false; }
+        if (!ReadPod(f, track.thread_id) || !ReadPod(f, track.max_depth))
+            { fclose(f); return false; }
         uint32_t event_count = 0;
-        if (!ReadPod(is, event_count) || event_count > kMaxCount)
-            return false;
+        if (!ReadPod(f, event_count) || event_count > kMaxCount)
+            { fclose(f); return false; }
         track.events.reserve(event_count);
         for (uint32_t e = 0; e < event_count; ++e)
         {
             ScopeEvent ev;
-            if (!ReadPod(is, ev.name_id) || !ReadPod(is, ev.depth) || !ReadPod(is, ev.start_ns) ||
-                !ReadPod(is, ev.end_ns))
-                return false;
+            if (!ReadPod(f, ev.name_id) || !ReadPod(f, ev.depth) || !ReadPod(f, ev.start_ns) ||
+                !ReadPod(f, ev.end_ns))
+                { fclose(f); return false; }
             track.events.push_back(ev);
         }
         out.tracks.push_back(std::move(track));
     }
 
+    fclose(f);
     return true;
 }
 

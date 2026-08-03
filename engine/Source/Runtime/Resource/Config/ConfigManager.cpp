@@ -1,10 +1,10 @@
 #include "Runtime/Resource/Config/ConfigManager.h"
 
 #include "Runtime/Application/Application.h"
+#include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 
 #include <filesystem>
-#include <fstream>
 #include <string>
 
 std::vector<std::type_index> ConfigManager::GetDependencies() const
@@ -16,10 +16,16 @@ bool ConfigManager::Initialize()
 {
     auto&& config_file_path = GET_SYSTEM(CommandSystem)->getConfigFilePath();
     // read configs
-    std::ifstream config_file(config_file_path);
-    std::string config_line;
-    while (std::getline(config_file, config_line))
+    zcore::ZFileReader config_file(config_file_path.string());
+    if (!config_file.isOpen())
+        return false;
+    char line_buf[4096];
+    while (config_file.getline(line_buf, sizeof(line_buf)))
     {
+        std::string config_line(line_buf);
+        // Remove trailing newline/carriage return
+        while (!config_line.empty() && (config_line.back() == '\n' || config_line.back() == '\r'))
+            config_line.pop_back();
         size_t seperate_pos = config_line.find_first_of('=');
         if (seperate_pos > 0 && seperate_pos < (config_line.length() - 1))
         {

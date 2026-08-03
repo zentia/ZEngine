@@ -12,6 +12,8 @@
 #include "Runtime/Function/Render/RenderDebugConfig.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Components/Animation.h"
+
+#include <cstdio>
 void LevelDebugger::Tick(Level* level) const
 {
     if (!g_isPlaying)
@@ -207,30 +209,26 @@ void LevelDebugger::DrawCameraInfo(std::shared_ptr<GameObject> object) const
 
     DebugDrawGroup* debug_draw_group = GET_SYSTEM(DebugDrawManager)->TryGetOrCreateDebugDrawGroup("show camera info");
 
-    std::ostringstream buffer;
-    buffer << "camera mode: ";
+    const char* mode_str = "invalid";
     switch (camera_component->getCameraMode())
     {
-        case CameraMode::first_person:
-            buffer << "first person";
-            break;
-        case CameraMode::third_person:
-            buffer << "third person";
-            break;
-        case CameraMode::free:
-            buffer << "free";
-            break;
-        case CameraMode::invalid:
-            buffer << "invalid";
-            break;
+        case CameraMode::first_person: mode_str = "first person"; break;
+        case CameraMode::third_person: mode_str = "third person"; break;
+        case CameraMode::free:         mode_str = "free"; break;
+        case CameraMode::invalid:       break;
     }
-    buffer << std::endl;
 
     Vector3 position = camera_component->GetPosition();
     Vector3 forward = camera_component->getForward();
     Vector3 direction = forward - position;
-    buffer << "camera position: (" << position.x << "," << position.y << "," << position.z << ")" << std::endl;
-    buffer << "camera direction : (" << direction.x << "," << direction.y << "," << direction.z << ")";
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+             "camera mode: %s\n"
+             "camera position: (%.2f,%.2f,%.2f)\n"
+             "camera direction : (%.2f,%.2f,%.2f)",
+             mode_str,
+             (float)position.x, (float)position.y, (float)position.z,
+             (float)direction.x, (float)direction.y, (float)direction.z);
     debug_draw_group->AddText(
-        buffer.str().c_str(), Vector4(1.0f, 0.0f, 0.0f, 1.0f), Vector3(-1.0f, -0.2f, 0.0f), 10, true);
+        buf, Vector4(1.0f, 0.0f, 0.0f, 1.0f), Vector3(-1.0f, -0.2f, 0.0f), 10, true);
 }

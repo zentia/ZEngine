@@ -7,6 +7,7 @@
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
 
+#include <cstdio>
 #include <filesystem>
 
 struct WriteData;
@@ -32,21 +33,28 @@ public:
     AssetType* loadAssetJson(const std::filesystem::path& asset_path) const
     {
         // read json file to string
-        std::ifstream asset_json_file(asset_path);
-        if (!asset_json_file)
+        FILE* f = fopen(asset_path.string().c_str(), "rb");
+        if (!f)
         {
             LOG_ERROR(ZFileSystem, "open file: {} failed!", asset_path.string());
-            return false;
+            return nullptr;
         }
-
-        std::stringstream buffer;
-        buffer << asset_json_file.rdbuf();
+        fseek(f, 0, SEEK_END);
+        long fsz = ftell(f);
+        std::string json_str;
+        if (fsz > 0)
+        {
+            json_str.resize(static_cast<size_t>(fsz));
+            fseek(f, 0, SEEK_SET);
+            fread(json_str.data(), 1, static_cast<size_t>(fsz), f);
+        }
+        fclose(f);
 
         // parse to json object and read to runtime res object
         try
         {
             AssetType* obj = MemoryManager::CreateObject<AssetType>();
-            JSONRead reader(buffer.str().c_str(), TransferInstructionFlags::kNoTransferInstructionFlags);
+            JSONRead reader(json_str.c_str(), TransferInstructionFlags::kNoTransferInstructionFlags);
 
             JSONUtility::DeserializedFromJSONRead(reader, *obj);
             reader.ResetCurrentNodeToOriginalState();
@@ -65,20 +73,27 @@ public:
     template<typename T, typename... Args>
     T* loadAssetJson(const std::filesystem::path& asset_path, Args&&... args)
     {
-        std::ifstream asset_json_file(asset_path);
-        if (!asset_json_file)
+        FILE* f = fopen(asset_path.string().c_str(), "rb");
+        if (!f)
         {
             LOG_ERROR(ZFileSystem, "open file: {} failed!", asset_path.string());
             return nullptr;
         }
-
-        std::stringstream buffer;
-        buffer << asset_json_file.rdbuf();
+        fseek(f, 0, SEEK_END);
+        long fsz = ftell(f);
+        std::string json_str;
+        if (fsz > 0)
+        {
+            json_str.resize(static_cast<size_t>(fsz));
+            fseek(f, 0, SEEK_SET);
+            fread(json_str.data(), 1, static_cast<size_t>(fsz), f);
+        }
+        fclose(f);
 
         try
         {
             T* obj = MemoryManager::CreateObject<T>();
-            JSONRead reader(buffer.str().c_str(), TransferInstructionFlags::kNoTransferInstructionFlags);
+            JSONRead reader(json_str.c_str(), TransferInstructionFlags::kNoTransferInstructionFlags);
 
             JSONUtility::DeserializedFromJSONRead(reader, *obj);
             reader.ResetCurrentNodeToOriginalState();
@@ -96,16 +111,24 @@ public:
     template<typename T, typename... Args>
     bool LoadAssetByJson(T* obj, const std::filesystem::path& assetPath, Args&&... args)
     {
-        std::ifstream asset_json_file(assetPath);
-        if (!asset_json_file)
+        FILE* f = fopen(assetPath.string().c_str(), "rb");
+        if (!f)
         {
             LOG_ERROR(ZFileSystem, "open file: {} failed!", assetPath.string());
             return false;
         }
+        fseek(f, 0, SEEK_END);
+        long fsz = ftell(f);
+        std::string buffer;
+        if (fsz > 0)
+        {
+            buffer.resize(static_cast<size_t>(fsz));
+            fseek(f, 0, SEEK_SET);
+            fread(buffer.data(), 1, static_cast<size_t>(fsz), f);
+        }
+        fclose(f);
 
-        std::stringstream buffer;
-        buffer << asset_json_file.rdbuf();
-        JSONRead reader(buffer.str().c_str(), TransferInstructionFlags::kNoTransferInstructionFlags);
+        JSONRead reader(buffer.c_str(), TransferInstructionFlags::kNoTransferInstructionFlags);
         JSONUtility::DeserializedFromJSONRead(reader, *obj);
         reader.ResetCurrentNodeToOriginalState();
         return true;
@@ -117,8 +140,8 @@ public:
     template<typename AssetType>
     bool saveAssetJson(const AssetType& in_asset, const std::filesystem::path& asset_path) const
     {
-        std::ofstream asset_json_file(asset_path);
-        if (!asset_json_file)
+        FILE* f = fopen(asset_path.string().c_str(), "wb");
+        if (!f)
         {
             LOG_ERROR(ZFileSystem, "open file {} failed!", asset_path.string());
             return false;
@@ -129,8 +152,8 @@ public:
         JSONUtility::SerializeToJSON(in_asset, output);
 
         // write to file
-        asset_json_file << output.c_str();
-        asset_json_file.flush();
+        fwrite(output.c_str(), 1, output.length(), f);
+        fclose(f);
 
         return true;
     }

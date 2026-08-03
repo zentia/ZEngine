@@ -5,16 +5,15 @@
 #include "Runtime/Project/ProjectInfo.h"
 #include "core/Log/LogSystem.h"
 #include "rapidjson/document.h"
-#include "rapidjson/istreamwrapper.h"
+#include "rapidjson/filereadstream.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
-#include <fstream>
+#include <cstdio>
 #include <regex>
-#include <sstream>
 
 namespace
 {
@@ -46,28 +45,38 @@ namespace
 
     std::string readSmallTextFile(const std::filesystem::path& abs_path, size_t max_bytes = 16 * 1024)
     {
-        std::ifstream ifs(abs_path, std::ios::binary);
-        if (!ifs.is_open())
+        FILE* f = fopen(abs_path.string().c_str(), "rb");
+        if (!f)
         {
             return {};
         }
         std::string buf;
         buf.resize(max_bytes);
-        ifs.read(buf.data(), static_cast<std::streamsize>(max_bytes));
-        buf.resize(static_cast<size_t>(ifs.gcount()));
+        size_t n = fread(buf.data(), 1, max_bytes, f);
+        buf.resize(n);
+        fclose(f);
         return buf;
     }
 
     std::string readWholeFile(const std::filesystem::path& abs_path)
     {
-        std::ifstream ifs(abs_path, std::ios::binary);
-        if (!ifs.is_open())
+        FILE* f = fopen(abs_path.string().c_str(), "rb");
+        if (!f)
         {
             return {};
         }
-        std::ostringstream ss;
-        ss << ifs.rdbuf();
-        return ss.str();
+        fseek(f, 0, SEEK_END);
+        long fsz = ftell(f);
+        if (fsz <= 0)
+        {
+            fclose(f);
+            return {};
+        }
+        std::string buf(static_cast<size_t>(fsz), '\0');
+        fseek(f, 0, SEEK_SET);
+        fread(buf.data(), 1, static_cast<size_t>(fsz), f);
+        fclose(f);
+        return buf;
     }
 
     eastl::string contentHashHex(const std::string& bytes)
@@ -495,16 +504,18 @@ bool ShaderRegistry::LoadFromDisk()
         return false;
     }
 
-    std::ifstream ifs(m_RegistryFile, std::ios::binary);
-    if (!ifs.is_open())
+    FILE* f = fopen(m_RegistryFile.string().c_str(), "rb");
+    if (!f)
     {
         LOG_WARNING(ZShaderRegistry, "Cannot open registry: {}", m_RegistryFile.generic_string());
         return false;
     }
 
-    rapidjson::IStreamWrapper isw(ifs);
+    char readBuffer[65536];
+    rapidjson::FileReadStream is(f, readBuffer, sizeof(readBuffer));
     rapidjson::Document doc;
-    doc.ParseStream(isw);
+    doc.ParseStream(is);
+    fclose(f);
     if (doc.HasParseError() || !doc.IsObject())
     {
         LOG_WARNING(ZShaderRegistry,
@@ -650,8 +661,8 @@ bool ShaderRegistry::SaveToDisk() const
         temp += ".tmp";
 
         {
-            std::ofstream ofs(temp, std::ios::binary);
-            if (!ofs.is_open())
+            FILE* f = fopen(temp.string().c_str(), "wb");
+            if (!f)
             {
                 LOG_ERROR(ZShaderRegistry, "Cannot write registry tmp: {}", temp.generic_string());
                 return false;
@@ -659,7 +670,8 @@ bool ShaderRegistry::SaveToDisk() const
             rapidjson::StringBuffer sb;
             rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(sb);
             doc.Accept(writer);
-            ofs << sb.GetString();
+            fwrite(sb.GetString(), 1, sb.GetSize(), f);
+            fclose(f);
         }
 
         std::error_code rename_ec;

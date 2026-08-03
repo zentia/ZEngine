@@ -5,7 +5,7 @@
 #include "Runtime/Project/ProjectInfo.h"
 #include "core/Log/LogSystem.h"
 #include "rapidjson/document.h"
-#include "rapidjson/istreamwrapper.h"
+#include "rapidjson/filereadstream.h"
 #include "rapidjson/prettywriter.h"
 #include "rapidjson/stringbuffer.h"
 
@@ -13,9 +13,8 @@
 #include <cctype>
 #include <chrono>
 #include <cstdint>
-#include <fstream>
+#include <cstdio>
 #include <regex>
-#include <sstream>
 
 namespace
 {
@@ -51,15 +50,16 @@ namespace
     // Read up to N bytes of a text file. Returns empty string on failure.
     std::string readSmallTextFile(const std::filesystem::path& abs_path, size_t max_bytes = 8 * 1024)
     {
-        std::ifstream ifs(abs_path, std::ios::binary);
-        if (!ifs.is_open())
+        FILE* f = fopen(abs_path.string().c_str(), "rb");
+        if (!f)
         {
             return {};
         }
         std::string buf;
         buf.resize(max_bytes);
-        ifs.read(buf.data(), static_cast<std::streamsize>(max_bytes));
-        buf.resize(static_cast<size_t>(ifs.gcount()));
+        size_t n = fread(buf.data(), 1, max_bytes, f);
+        buf.resize(n);
+        fclose(f);
         return buf;
     }
 
@@ -69,14 +69,23 @@ namespace
     // real codebases exhibit through copy-paste / template imports).
     std::string readWholeFile(const std::filesystem::path& abs_path)
     {
-        std::ifstream ifs(abs_path, std::ios::binary);
-        if (!ifs.is_open())
+        FILE* f = fopen(abs_path.string().c_str(), "rb");
+        if (!f)
         {
             return {};
         }
-        std::ostringstream ss;
-        ss << ifs.rdbuf();
-        return ss.str();
+        fseek(f, 0, SEEK_END);
+        long fsz = ftell(f);
+        if (fsz <= 0)
+        {
+            fclose(f);
+            return {};
+        }
+        std::string buf(static_cast<size_t>(fsz), '\0');
+        fseek(f, 0, SEEK_SET);
+        fread(buf.data(), 1, static_cast<size_t>(fsz), f);
+        fclose(f);
+        return buf;
     }
 
     // 64-bit FNV-1a -> 16-char lowercase hex. Used as a content fingerprint.
@@ -670,16 +679,18 @@ bool ScriptRegistry::LoadFromDisk()
         return false;
     }
 
-    std::ifstream ifs(m_RegistryFile, std::ios::binary);
-    if (!ifs.is_open())
+    FILE* f = fopen(m_RegistryFile.string().c_str(), "rb");
+    if (!f)
     {
         LOG_WARNING(ZScriptRegistry, "Cannot open registry file: {}", m_RegistryFile.generic_string());
         return false;
     }
 
-    rapidjson::IStreamWrapper isw(ifs);
+    char readBuffer[65536];
+    rapidjson::FileReadStream is(f, readBuffer, sizeof(readBuffer));
     rapidjson::Document doc;
-    doc.ParseStream(isw);
+    doc.ParseStream(is);
+    fclose(f);
     if (doc.HasParseError() || !doc.IsObject())
     {
         LOG_WARNING(ZScriptRegistry,
@@ -821,8 +832,8 @@ bool ScriptRegistry::SaveToDisk() const
         temp += ".tmp";
 
         {
-            std::ofstream ofs(temp, std::ios::binary);
-            if (!ofs.is_open())
+            FILE* f = fopen(temp.string().c_str(), "wb");
+            if (!f)
             {
                 LOG_ERROR(ZScriptRegistry,
                           "Cannot open registry tmp file for writing: {}",
@@ -832,7 +843,8 @@ bool ScriptRegistry::SaveToDisk() const
             rapidjson::StringBuffer sb;
             rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(sb);
             doc.Accept(writer);
-            ofs << sb.GetString();
+            fwrite(sb.GetString(), 1, sb.GetSize(), f);
+            fclose(f);
         }
         std::error_code ec;
         std::filesystem::rename(temp, m_RegistryFile, ec);

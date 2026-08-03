@@ -60,7 +60,6 @@ if(PLATFORM_SUBDIR AND EXISTS "${PLATFORM_SUBDIR}")
         file(GLOB_RECURSE PLATFORM_OBJC_SOURCES CONFIGURE_DEPENDS "${PLATFORM_SUBDIR}/*.m" "${PLATFORM_SUBDIR}/*.mm")
         list(APPEND PLATFORM_SOURCES ${PLATFORM_OBJC_SOURCES})
     endif()
-    
     list(APPEND HEADER_FILES ${PLATFORM_HEADERS})
     list(APPEND SOURCE_FILES ${PLATFORM_SOURCES})
     
@@ -438,7 +437,40 @@ endif()
 
 
 if(IOS)
-    target_link_options(${SHARED_TARGET_NAME} PRIVATE "LINKER:-dead_strip" "LINKER:-dead_strip_dylibs")
+    # --- Compile options ---
+    # Disable stack probing: on arm64 iOS, Clang inserts ___chkstk_darwin calls
+    # for functions with >4KB stack frames. This symbol lives in macOS libSystem
+    # but is NOT exported by the iOS SDK stubs, so dyld rejects the dylib:
+    #   Symbol not found: ___chkstk_darwin
+    #   Expected in: /usr/lib/libSystem.B.dylib
+    # We provide our own no-op implementation in Platform/IOS/ZChkstkDarwin.c
+    # (iOS uses kernel guard pages for stack overflow detection, so explicit
+    # probing is unnecessary).
+    target_compile_options(${SHARED_TARGET_NAME} PRIVATE -fno-stack-check)
+    target_compile_options(${TARGET_NAME} PRIVATE -fno-stack-check)
+
+    # --- Link options ---
+    target_link_options(${SHARED_TARGET_NAME} PRIVATE
+        "LINKER:-dead_strip"
+        "LINKER:-dead_strip_dylibs"
+        # Force old-style LC_DYLD_INFO load command instead of chained fixups.
+        # On iOS 16+, ld64 defaults to chained fixups (LC_DYLD_CHAINED_FIXUPS +
+        # LC_DYLD_EXPORTS_TRIE), but UnityFramework's dyld does NOT understand
+        # the chained fixups format and will reject the dylib with:
+        #   "missing LC_DYLD_INFO load command"
+        # -no_fixup_chains tells ld64 to emit the legacy LC_DYLD_INFO instead.
+        "LINKER:-no_fixup_chains"
+        # Use flat namespace: break dyld's two-level namespace binding so that
+        # undefined symbols are searched across ALL loaded dylibs, not just the
+        # specific install_name recorded at build time.
+        # Combined with -undefined dynamic_lookup, this lets dyld resolve
+        # libc++ VTT/vtable symbols from UnityFramework's embedded libc++ at
+        # runtime, even though the linker originally expected them from
+        # /usr/lib/libc++.1.dylib.
+        "LINKER:-flat_namespace"
+        "LINKER:-undefined"
+        "LINKER:dynamic_lookup"
+    )
     if(ZENGINE_IOS_EXPORT_SYMBOLS_FILE)
         target_link_options(${SHARED_TARGET_NAME} PRIVATE "LINKER:-exported_symbols_list,${ZENGINE_IOS_EXPORT_SYMBOLS_FILE}")
     endif()

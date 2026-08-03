@@ -18,9 +18,9 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <filesystem>
-#include <fstream>
 #include <iterator>
 #include <string>
 #if defined(_MSC_VER)
@@ -107,12 +107,23 @@ namespace
 
     std::string ReadTextFile(const std::filesystem::path& path)
     {
-        std::ifstream input(path, std::ios::binary);
-        if (!input)
+        FILE* f = fopen(path.string().c_str(), "rb");
+        if (!f)
         {
             return {};
         }
-        return std::string((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+        fseek(f, 0, SEEK_END);
+        long fsz = ftell(f);
+        if (fsz <= 0)
+        {
+            fclose(f);
+            return {};
+        }
+        std::string result(static_cast<size_t>(fsz), '\0');
+        fseek(f, 0, SEEK_SET);
+        fread(result.data(), 1, static_cast<size_t>(fsz), f);
+        fclose(f);
+        return result;
     }
 
     std::filesystem::path NormalizeAuthoringWritePath(const std::filesystem::path& path, const Object& object)
@@ -971,27 +982,37 @@ bool AssetManager::WriteObjectsToYaml(const std::filesystem::path& path, Object*
     if (!ZYaml::WriteObjectGraph(entries, yaml, std::move(writerHook)))
         return false;
 
-    std::ofstream output(path, std::ios::binary);
+    FILE* output = fopen(path.string().c_str(), "wb");
     if (!output)
     {
         LOG_ERROR(ZAsset, "failed to open yaml asset for writing {}", path.generic_string());
         return false;
     }
-    output.write(yaml.c_str(), static_cast<std::streamsize>(yaml.size()));
-    return output.good();
+    size_t written = fwrite(yaml.c_str(), 1, yaml.size(), output);
+    fclose(output);
+    return written == yaml.size();
 }
 
 bool AssetManager::ReadObjectsFromYaml(const std::filesystem::path& path, std::vector<std::pair<int64_t, Object*>>& out)
 {
     out.clear();
 
-    std::ifstream input(path, std::ios::binary);
-    if (!input)
+    FILE* f = fopen(path.string().c_str(), "rb");
+    if (!f)
     {
         LOG_ERROR(ZAsset, "failed to open yaml asset for reading {}", path.generic_string());
         return false;
     }
-    std::string text((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    fseek(f, 0, SEEK_END);
+    long fsz = ftell(f);
+    std::string text;
+    if (fsz > 0)
+    {
+        text.resize(static_cast<size_t>(fsz));
+        fseek(f, 0, SEEK_SET);
+        fread(text.data(), 1, static_cast<size_t>(fsz), f);
+    }
+    fclose(f);
 
     // Same reader hook as the binary ReadObject path: map an external
     // (guid/path, pathID) reference back to a runtime InstanceID (lazily).

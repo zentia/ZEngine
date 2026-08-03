@@ -1,7 +1,5 @@
 #include "DerivedDataCache.h"
 
-#include <sstream>
-
 namespace Runtime
 {
     bool DDCKey::operator==(const DDCKey& other) const
@@ -13,8 +11,6 @@ namespace Runtime
 
     std::string DDCKey::ToString() const
     {
-        std::stringstream ss;
-        ss << cache_type << ":" << asset_guid << ":" << cache_key;
-        return ss.str();
+        return cache_type + ":" + asset_guid + ":" + cache_key;
     }
 }  // namespace Runtime
