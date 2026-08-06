@@ -243,7 +243,7 @@ create_framework() {
 PLIST
 
   for header in \
-    "$ROOT_DIR/engine/Source/Runtime/export_runtime.h" \
+    "$ROOT_DIR/engine/Source/Runtime/ExportRuntime.h" \
     "$ROOT_DIR/engine/Source/Runtime/Scripting/Native/PuertsNative.h" \
     "$ROOT_DIR/engine/Source/Runtime/ZEngineApi/ZEngineApi.h" \
     "$ROOT_DIR/engine/Source/Runtime/ZEngineApi/ZEngineApi.export.h"; do
@@ -255,8 +255,8 @@ PLIST
   cat > "$framework_dir/Headers/$FRAMEWORK_NAME.h" <<HEADER
 #pragma once
 
-#if __has_include(<$FRAMEWORK_NAME/export_runtime.h>)
-#include <$FRAMEWORK_NAME/export_runtime.h>
+#if __has_include(<$FRAMEWORK_NAME/ExportRuntime.h>)
+#include <$FRAMEWORK_NAME/ExportRuntime.h>
 #endif
 #if __has_include(<$FRAMEWORK_NAME/PuertsNative.h>)
 #include <$FRAMEWORK_NAME/PuertsNative.h>

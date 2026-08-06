@@ -1,12 +1,88 @@
-#pragma once
-#include "Log.h"
-#include "Runtime/ExportRuntime.h"
-#include "pesapi.h"
+// PuertsNative.h -- C entrypoint surface for ZRuntimeShared.framework.
+//
+// This header is part of the *public* framework API: external code (Unity
+// plugin code, sample apps, etc.) does
+//
+//     #include <ZRuntimeShared/PuertsNative.h>
+//
+// and must compile without any of the engine's internal include paths
+// (Runtime/, 3rdparty/puerts/unity/...) being visible. Therefore this header
+// MUST NOT include `Log.h`, `pesapi.h`, or anything else from inside the
+// engine source tree -- all transitive includes the previous revision pulled
+// in (which forced external code to ship matching copies of those headers,
+// and produced thousands of "file not found" errors when those copies were
+// absent) have been replaced with self-contained forward declarations.
+//
+// Only the opaque pointer typedefs and function-pointer typedefs that the
+// exported function signatures actually mention are needed here. All pesapi_*
+// types are forward-declared as `struct foo__*` -- identical to how pesapi.h
+// itself defines them -- so callers only need the pointer identity to make
+// calls, not the full struct layouts.
 
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+#if __has_include("Runtime/ExportRuntime.h")
+#include "Runtime/ExportRuntime.h"
+#elif __has_include("ExportRuntime.h")
+#include "ExportRuntime.h"
+#else
+// Keep this public header usable in isolation. Normal engine and framework
+// builds include ExportRuntime.h through one of the branches above.
+#define ZRUNTIME_PUERTS_LOCAL_EXPORT_RUNTIME
+#if defined(_WIN32) && defined(ZRUNTIME_SHARED_IMPORTS)
+#define EXPORT_RUNTIME extern "C" __declspec(dllimport)
+#elif defined(_WIN32) && defined(ZRUNTIME_SHARED_EXPORTS)
+#define EXPORT_RUNTIME extern "C" __declspec(dllexport)
+#elif defined(ZRUNTIME_SHARED_EXPORTS)
+#define EXPORT_RUNTIME extern "C" __attribute__((visibility("default")))
+#else
+#define EXPORT_RUNTIME extern "C"
+#endif
+#endif
+
+// Public pesapi types used by the exported signatures. These declarations
+// intentionally match pesapi.h. Repeating an identical typedef is legal, so
+// this remains valid regardless of whether pesapi.h is included before or
+// after this header. Only pesapi_scope_memory is forward-declared because the
+// API below receives it by pointer; defining it here would conflict with the
+// complete definition in pesapi.h.
+typedef void (*LogCallback)(const char* value);
+typedef struct pesapi_env__* pesapi_env;
+typedef struct pesapi_env_ref__* pesapi_env_ref;
+typedef struct pesapi_value__* pesapi_value;
+typedef struct pesapi_value_ref__* pesapi_value_ref;
+typedef struct pesapi_callback_info__* pesapi_callback_info;
+typedef struct pesapi_scope__* pesapi_scope;
+typedef struct pesapi_registry__* pesapi_registry;
+
+struct pesapi_ffi;
+struct pesapi_scope_memory;
+
+typedef void (*pesapi_callback)(struct pesapi_ffi* apis, pesapi_callback_info info);
+typedef void (*pesapi_function_finalize)(struct pesapi_ffi* apis, void* data, void* env_private);
+
+// ---------------------------------------------------------------------------
+// Backend activation / version query.
+// ---------------------------------------------------------------------------
 EXPORT_RUNTIME int GetPapiVersion();
 EXPORT_RUNTIME void* GetRegisterApi();
+
+// Routes the scripting backend's internal log stream to caller-supplied
+// sinks. LogCallback is declared above.
 EXPORT_RUNTIME void SetLogCallback(LogCallback Log, LogCallback LogWarning, LogCallback LogError);
 
+// ---------------------------------------------------------------------------
+// Per-backend FFI / env-ref entry points.
+//
+// Only the entries for the active PAPI backend are implemented at link time
+// (the iOS build script filters the exported-symbols list accordingly via
+// `PAPI_KEEP_BACKEND`). The other declarations remain so that the header is
+// usable from external code that wants to be backend-agnostic at compile
+// time and only resolves the symbols it needs at runtime.
+// ---------------------------------------------------------------------------
 EXPORT_RUNTIME int GetLuaPapiVersion();
 EXPORT_RUNTIME pesapi_ffi* GetLuaFFIApi();
 EXPORT_RUNTIME pesapi_env_ref CreateLuaPapiEnvRef();
@@ -28,6 +104,15 @@ EXPORT_RUNTIME pesapi_ffi* GetV8FFIApi();
 EXPORT_RUNTIME pesapi_env_ref CreateV8PapiEnvRef();
 EXPORT_RUNTIME void DestroyV8PapiEnvRef(pesapi_env_ref env_ref);
 
+// ---------------------------------------------------------------------------
+// Re-exported pesapi C entry points (vtable-style flat C API).
+//
+// These mirror the function-pointer fields of `struct pesapi_ffi` so that
+// callers that link against ZRuntimeShared directly -- without first
+// calling GetRegisterApi() to obtain an FFI table -- can still reach the
+// full pesapi surface. Each one takes a `pesapi_ffi*` that the caller has
+// obtained from one of the Get*FFIApi() entry points above.
+// ---------------------------------------------------------------------------
 EXPORT_RUNTIME pesapi_value pesapi_create_null(struct pesapi_ffi* apis, pesapi_env env);
 EXPORT_RUNTIME pesapi_value pesapi_create_undefined(struct pesapi_ffi* apis, pesapi_env env);
 EXPORT_RUNTIME pesapi_value pesapi_create_boolean(struct pesapi_ffi* apis, pesapi_env env, int value);
@@ -114,3 +199,8 @@ EXPORT_RUNTIME pesapi_value pesapi_global(struct pesapi_ffi* apis, pesapi_env en
 EXPORT_RUNTIME const void* pesapi_get_env_private(struct pesapi_ffi* apis, pesapi_env env);
 EXPORT_RUNTIME void pesapi_set_env_private(struct pesapi_ffi* apis, pesapi_env env, const void* ptr);
 EXPORT_RUNTIME void pesapi_set_registry(struct pesapi_ffi* apis, pesapi_env env, pesapi_registry registry);
+
+#ifdef ZRUNTIME_PUERTS_LOCAL_EXPORT_RUNTIME
+#undef EXPORT_RUNTIME
+#undef ZRUNTIME_PUERTS_LOCAL_EXPORT_RUNTIME
+#endif
