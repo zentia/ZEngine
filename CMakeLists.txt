@@ -446,6 +446,15 @@ elseif(WIN32)
 endif()
 
 # =============================================================================
+# Standalone Tools
+# =============================================================================
+
+option(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK "Build the standalone Windows environment checker" ON)
+if(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK AND WIN32)
+    add_subdirectory(tools/WindowsEnvironmentCheck)
+endif()
+
+# =============================================================================
 # Tests
 # =============================================================================
 
