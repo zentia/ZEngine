@@ -173,11 +173,38 @@ std::string BuildTextReport(
                << " GiB\n";
     }
 
+    stream << "\nInspected DLLs (" << snapshot.inspectedImages.size() << ")\n";
+    for (std::size_t index = 0; index < snapshot.inspectedImages.size(); ++index)
+    {
+        const auto& image = snapshot.inspectedImages[index];
+        stream << "  [" << index << "] " << image.path << '\n'
+               << "      Exists: " << BoolText(image.fileExists)
+               << ", valid PE: " << BoolText(image.validPeImage)
+               << ", x64: " << BoolText(image.is64Bit) << '\n'
+               << "      Debug directory: " << BoolText(image.hasDebugDirectory)
+               << ", Debug CRT: " << BoolText(image.usesDebugRuntime)
+               << ", timestamp: " << HexId(image.timeDateStamp, 8) << '\n';
+        if (!image.debugRuntimeLibraries.empty())
+        {
+            stream << "      Debug runtimes:";
+            for (const auto& library : image.debugRuntimeLibraries)
+            {
+                stream << ' ' << library;
+            }
+            stream << '\n';
+        }
+        if (!image.error.empty())
+        {
+            stream << "      Error: " << image.error << '\n';
+        }
+    }
+
     stream << "\nConfigured minimum\n"
            << "  AVX: " << BoolText(requirements.avx) << '\n'
            << "  AVX2: " << BoolText(requirements.avx2) << '\n'
            << "  FMA: " << BoolText(requirements.fma) << '\n'
            << "  F16C: " << BoolText(requirements.f16c) << '\n'
+           << "  Reject Debug CRT: " << BoolText(requirements.rejectDebugRuntime) << '\n'
            << "  Physical memory: "
            << static_cast<double>(requirements.minimumMemoryBytes) / BytesPerGiB << " GiB\n";
 
@@ -207,8 +234,8 @@ std::string BuildJsonReport(
 {
     std::ostringstream stream;
     stream << "{\n"
-           << "  \"schemaVersion\": 2,\n"
-           << "  \"toolVersion\": \"1.1.0\",\n"
+           << "  \"schemaVersion\": 3,\n"
+           << "  \"toolVersion\": \"1.2.0\",\n"
            << "  \"result\": \"" << ToString(evaluation.status) << "\",\n"
            << "  \"issueCode\": \"" << EscapeJson(evaluation.issueCode) << "\",\n"
            << "  \"exitCode\": " << evaluation.exitCode << ",\n"
@@ -309,11 +336,48 @@ std::string BuildJsonReport(
     }
     stream << "  ],\n";
 
+    stream << "  \"inspectedImages\": [\n";
+    for (std::size_t index = 0; index < snapshot.inspectedImages.size(); ++index)
+    {
+        const auto& image = snapshot.inspectedImages[index];
+        stream << "    {\n"
+               << "      \"path\": \"" << EscapeJson(image.path) << "\",\n"
+               << "      \"fileExists\": " << BoolText(image.fileExists) << ",\n"
+               << "      \"validPeImage\": " << BoolText(image.validPeImage) << ",\n"
+               << "      \"is64Bit\": " << BoolText(image.is64Bit) << ",\n"
+               << "      \"hasDebugDirectory\": " << BoolText(image.hasDebugDirectory) << ",\n"
+               << "      \"usesDebugRuntime\": " << BoolText(image.usesDebugRuntime) << ",\n"
+               << "      \"timeDateStamp\": " << image.timeDateStamp << ",\n"
+               << "      \"timeDateStampHex\": \"" << HexId(image.timeDateStamp, 8) << "\",\n"
+               << "      \"importedLibraries\": [";
+        for (std::size_t libraryIndex = 0; libraryIndex < image.importedLibraries.size(); ++libraryIndex)
+        {
+            if (libraryIndex != 0)
+            {
+                stream << ", ";
+            }
+            stream << '"' << EscapeJson(image.importedLibraries[libraryIndex]) << '"';
+        }
+        stream << "],\n      \"debugRuntimeLibraries\": [";
+        for (std::size_t libraryIndex = 0; libraryIndex < image.debugRuntimeLibraries.size(); ++libraryIndex)
+        {
+            if (libraryIndex != 0)
+            {
+                stream << ", ";
+            }
+            stream << '"' << EscapeJson(image.debugRuntimeLibraries[libraryIndex]) << '"';
+        }
+        stream << "],\n      \"error\": \"" << EscapeJson(image.error) << "\"\n"
+               << "    }" << (index + 1 == snapshot.inspectedImages.size() ? "" : ",") << '\n';
+    }
+    stream << "  ],\n";
+
     stream << "  \"requirements\": {\n"
            << "    \"avx\": " << BoolText(requirements.avx) << ",\n"
            << "    \"avx2\": " << BoolText(requirements.avx2) << ",\n"
            << "    \"fma\": " << BoolText(requirements.fma) << ",\n"
            << "    \"f16c\": " << BoolText(requirements.f16c) << ",\n"
+           << "    \"rejectDebugRuntime\": " << BoolText(requirements.rejectDebugRuntime) << ",\n"
            << "    \"minimumMemoryBytes\": " << requirements.minimumMemoryBytes << "\n"
            << "  },\n";
     WriteJsonStringArray(stream, "failures", evaluation.failures, true);

@@ -16,6 +16,8 @@ add_executable(${ENVIRONMENT_CHECK_TARGET}
     EnvironmentProbe.h
     HardwareProbe.cpp
     HardwareProbe.h
+    PeInspector.cpp
+    PeInspector.h
     ReportWriter.cpp
     ReportWriter.h
     main.cpp
@@ -35,6 +37,8 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES
     EnvironmentProbe.h
     HardwareProbe.cpp
     HardwareProbe.h
+    PeInspector.cpp
+    PeInspector.h
     ReportWriter.cpp
     ReportWriter.h
     main.cpp

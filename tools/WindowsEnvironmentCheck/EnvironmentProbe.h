@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PeInspector.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -95,6 +97,7 @@ struct EnvironmentSnapshot
     std::vector<DisplayInfo> displays;
     std::vector<PhysicalDiskInfo> physicalDisks;
     std::vector<VolumeInfo> volumes;
+    std::vector<PeImageInfo> inspectedImages;
 };
 
 struct Requirements
@@ -103,6 +106,7 @@ struct Requirements
     bool avx2 = false;
     bool fma = false;
     bool f16c = false;
+    bool rejectDebugRuntime = true;
     std::uint64_t minimumMemoryBytes = 4ull * 1024ull * 1024ull * 1024ull;
 };
 

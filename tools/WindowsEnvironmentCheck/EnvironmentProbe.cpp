@@ -221,6 +221,46 @@ Evaluation EvaluateEnvironment(const EnvironmentSnapshot& snapshot, const Requir
         }
     }
 
+    for (const auto& image : snapshot.inspectedImages)
+    {
+        if (!image.validPeImage)
+        {
+            evaluation.failures.emplace_back(
+                "DLL inspection failed for " + image.path + ": " + image.error);
+            if (evaluation.exitCode == 0)
+            {
+                evaluation.exitCode = 21;
+                evaluation.issueCode = "DLL_INSPECTION_FAILED";
+            }
+            continue;
+        }
+        if (!image.is64Bit)
+        {
+            evaluation.failures.emplace_back("DLL is not a 64-bit image: " + image.path);
+            if (evaluation.exitCode == 0)
+            {
+                evaluation.exitCode = 21;
+                evaluation.issueCode = "DLL_ARCHITECTURE_UNSUPPORTED";
+            }
+        }
+        if (requirements.rejectDebugRuntime && image.usesDebugRuntime)
+        {
+            std::string runtimes;
+            for (const auto& library : image.debugRuntimeLibraries)
+            {
+                if (!runtimes.empty())
+                {
+                    runtimes += ", ";
+                }
+                runtimes += library;
+            }
+            evaluation.failures.emplace_back(
+                "DLL depends on non-redistributable Debug CRT libraries: " + image.path + " [" + runtimes + "]");
+            evaluation.exitCode = 20;
+            evaluation.issueCode = "DLL_DEBUG_RUNTIME_UNSUPPORTED";
+        }
+    }
+
     if (!snapshot.cpu.avx2)
     {
         evaluation.warnings.emplace_back("AVX2 is unavailable; optimized local prediction paths may be disabled or incompatible.");
