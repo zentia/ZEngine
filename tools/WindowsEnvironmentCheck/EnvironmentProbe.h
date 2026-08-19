@@ -1,5 +1,6 @@
 #pragma once
 
+#include "DllProbe.h"
 #include "PeInspector.h"
 
 #include <cstdint>
@@ -25,6 +26,9 @@ struct CpuFeatures
     bool avx2 = false;
     bool fma = false;
     bool f16c = false;
+    bool avx512Hardware = false;
+    bool avx512OsEnabled = false;
+    bool avx512 = false;
 };
 
 struct SystemInfo
@@ -98,11 +102,12 @@ struct EnvironmentSnapshot
     std::vector<PhysicalDiskInfo> physicalDisks;
     std::vector<VolumeInfo> volumes;
     std::vector<PeImageInfo> inspectedImages;
+    std::vector<DllProbeResult> dllProbeResults;
 };
 
 struct Requirements
 {
-    bool avx = true;
+    bool avx = false;
     bool avx2 = false;
     bool fma = false;
     bool f16c = false;

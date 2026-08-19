@@ -46,7 +46,7 @@ std::string EscapeJson(const std::string& value)
     return stream.str();
 }
 
-std::string HexId(std::uint32_t value, int width)
+std::string HexId(std::uint64_t value, int width)
 {
     std::ostringstream stream;
     stream << "0x" << std::uppercase << std::hex << std::setw(width)
@@ -117,7 +117,10 @@ std::string BuildTextReport(
            << "  AVX usable: " << BoolText(snapshot.cpu.avx) << '\n'
            << "  AVX2 usable: " << BoolText(snapshot.cpu.avx2) << '\n'
            << "  FMA usable: " << BoolText(snapshot.cpu.fma) << '\n'
-           << "  F16C usable: " << BoolText(snapshot.cpu.f16c) << "\n";
+           << "  F16C usable: " << BoolText(snapshot.cpu.f16c) << '\n'
+           << "  AVX-512 hardware: " << BoolText(snapshot.cpu.avx512Hardware) << '\n'
+           << "  AVX-512 OS state: " << BoolText(snapshot.cpu.avx512OsEnabled) << '\n'
+           << "  AVX-512 usable: " << BoolText(snapshot.cpu.avx512) << "\n";
 
     stream << "\nGPU adapters (" << snapshot.gpuAdapters.size() << ")\n";
     for (std::size_t index = 0; index < snapshot.gpuAdapters.size(); ++index)
@@ -193,9 +196,81 @@ std::string BuildTextReport(
             }
             stream << '\n';
         }
+
+        const auto& instructionSets = image.instructionSets;
+        stream << "      Instruction scan: attempted=" << BoolText(instructionSets.scanAttempted)
+               << ", completed=" << BoolText(instructionSets.scanCompleted)
+               << ", strategy=" << instructionSets.scanStrategy << '\n'
+               << "      Executable sections=" << instructionSets.executableSectionCount
+               << ", executable bytes=" << instructionSets.executableBytes
+               << ", runtime functions=" << instructionSets.runtimeFunctionCount
+               << ", scanned code bytes=" << instructionSets.scannedCodeBytes << '\n'
+               << "      Decoded instructions=" << instructionSets.decodedInstructionCount
+               << ", undecodable bytes=" << instructionSets.undecodableByteCount << '\n'
+               << "      AVX=" << instructionSets.avxInstructionCount
+               << ", AVX2=" << instructionSets.avx2InstructionCount
+               << ", FMA=" << instructionSets.fmaInstructionCount
+               << ", F16C=" << instructionSets.f16cInstructionCount
+               << ", AVX-512=" << instructionSets.avx512InstructionCount << '\n'
+               << "      Contains: AVX=" << BoolText(instructionSets.containsAvx)
+               << ", AVX2=" << BoolText(instructionSets.containsAvx2)
+               << ", FMA=" << BoolText(instructionSets.containsFma)
+               << ", F16C=" << BoolText(instructionSets.containsF16c)
+               << ", AVX-512=" << BoolText(instructionSets.containsAvx512) << '\n';
+        for (const auto& sample : instructionSets.samples)
+        {
+            stream << "      [" << sample.category << '/' << sample.isaSet << "] RVA="
+                   << HexId(sample.rva, 8) << ", file=" << HexId(sample.fileOffset, 8)
+                   << ", bytes=" << sample.bytes << ", " << sample.text << '\n';
+        }
+        if (!instructionSets.error.empty())
+        {
+            stream << "      Instruction scan error: " << instructionSets.error << '\n';
+        }
+        stream << "      Note: static presence does not prove the instruction executes without runtime dispatch.\n";
+
         if (!image.error.empty())
         {
             stream << "      Error: " << image.error << '\n';
+        }
+    }
+
+    stream << "\nDLL dynamic probes (" << snapshot.dllProbeResults.size() << ")\n";
+    for (std::size_t index = 0; index < snapshot.dllProbeResults.size(); ++index)
+    {
+        const auto& probe = snapshot.dllProbeResults[index];
+        stream << "  [" << index << "] " << probe.dllPath << '\n'
+               << "      Process started: " << BoolText(probe.processStarted)
+               << ", result available: " << BoolText(probe.resultAvailable)
+               << ", timed out: " << BoolText(probe.timedOut)
+               << ", duration: " << probe.durationMilliseconds << " ms\n"
+               << "      Runner: " << (probe.runnerExecutable.empty() ? "native" : probe.runnerExecutable)
+               << ", process exit: " << HexId(probe.processExitCode, 8) << '\n'
+               << "      Runner ISA violation: " << BoolText(probe.runnerReportedIsaViolation)
+               << ", runner internal error: " << BoolText(probe.runnerReportedInternalError) << '\n'
+               << "      Load succeeded: " << BoolText(probe.loadSucceeded)
+               << ", Win32 error: " << probe.win32Error
+               << ", exception: " << HexId(probe.exceptionCode, 8) << '\n'
+               << "      Export: " << probe.exportName
+               << ", found: " << BoolText(probe.exportFound)
+               << ", called: " << BoolText(probe.exportCalled)
+               << ", result: " << probe.exportResult << '\n';
+        if (!probe.runnerArguments.empty())
+        {
+            stream << "      Runner arguments:";
+            for (const auto& argument : probe.runnerArguments)
+            {
+                stream << ' ' << argument;
+            }
+            stream << '\n';
+        }
+        if (!probe.error.empty())
+        {
+            stream << "      Error: " << probe.error << '\n';
+        }
+        if (!probe.runnerOutput.empty())
+        {
+            stream << "      Runner output:\n" << probe.runnerOutput << '\n';
         }
     }
 
@@ -234,8 +309,8 @@ std::string BuildJsonReport(
 {
     std::ostringstream stream;
     stream << "{\n"
-           << "  \"schemaVersion\": 3,\n"
-           << "  \"toolVersion\": \"1.2.0\",\n"
+           << "  \"schemaVersion\": 5,\n"
+           << "  \"toolVersion\": \"1.4.0\",\n"
            << "  \"result\": \"" << ToString(evaluation.status) << "\",\n"
            << "  \"issueCode\": \"" << EscapeJson(evaluation.issueCode) << "\",\n"
            << "  \"exitCode\": " << evaluation.exitCode << ",\n"
@@ -264,7 +339,10 @@ std::string BuildJsonReport(
            << "    \"avx\": " << BoolText(snapshot.cpu.avx) << ",\n"
            << "    \"avx2\": " << BoolText(snapshot.cpu.avx2) << ",\n"
            << "    \"fma\": " << BoolText(snapshot.cpu.fma) << ",\n"
-           << "    \"f16c\": " << BoolText(snapshot.cpu.f16c) << "\n"
+           << "    \"f16c\": " << BoolText(snapshot.cpu.f16c) << ",\n"
+           << "    \"avx512Hardware\": " << BoolText(snapshot.cpu.avx512Hardware) << ",\n"
+           << "    \"avx512OsEnabled\": " << BoolText(snapshot.cpu.avx512OsEnabled) << ",\n"
+           << "    \"avx512\": " << BoolText(snapshot.cpu.avx512) << "\n"
            << "  },\n";
 
     stream << "  \"gpuAdapters\": [\n";
@@ -367,8 +445,92 @@ std::string BuildJsonReport(
             }
             stream << '"' << EscapeJson(image.debugRuntimeLibraries[libraryIndex]) << '"';
         }
-        stream << "],\n      \"error\": \"" << EscapeJson(image.error) << "\"\n"
+        const auto& instructionSets = image.instructionSets;
+        stream << "],\n"
+               << "      \"instructionSets\": {\n"
+               << "        \"scanAttempted\": " << BoolText(instructionSets.scanAttempted) << ",\n"
+               << "        \"scanCompleted\": " << BoolText(instructionSets.scanCompleted) << ",\n"
+               << "        \"scanStrategy\": \"" << EscapeJson(instructionSets.scanStrategy) << "\",\n"
+               << "        \"executableSectionCount\": " << instructionSets.executableSectionCount << ",\n"
+               << "        \"executableBytes\": " << instructionSets.executableBytes << ",\n"
+               << "        \"runtimeFunctionCount\": " << instructionSets.runtimeFunctionCount << ",\n"
+               << "        \"scannedCodeBytes\": " << instructionSets.scannedCodeBytes << ",\n"
+               << "        \"decodedInstructionCount\": " << instructionSets.decodedInstructionCount << ",\n"
+               << "        \"undecodableByteCount\": " << instructionSets.undecodableByteCount << ",\n"
+               << "        \"avxInstructionCount\": " << instructionSets.avxInstructionCount << ",\n"
+               << "        \"avx2InstructionCount\": " << instructionSets.avx2InstructionCount << ",\n"
+               << "        \"fmaInstructionCount\": " << instructionSets.fmaInstructionCount << ",\n"
+               << "        \"f16cInstructionCount\": " << instructionSets.f16cInstructionCount << ",\n"
+               << "        \"avx512InstructionCount\": " << instructionSets.avx512InstructionCount << ",\n"
+               << "        \"containsAvx\": " << BoolText(instructionSets.containsAvx) << ",\n"
+               << "        \"containsAvx2\": " << BoolText(instructionSets.containsAvx2) << ",\n"
+               << "        \"containsFma\": " << BoolText(instructionSets.containsFma) << ",\n"
+               << "        \"containsF16c\": " << BoolText(instructionSets.containsF16c) << ",\n"
+               << "        \"containsAvx512\": " << BoolText(instructionSets.containsAvx512) << ",\n"
+               << "        \"staticPresenceDoesNotProveExecution\": true,\n"
+               << "        \"runtimeDispatchSafety\": \"UNKNOWN\",\n"
+               << "        \"unsupportedOnCurrentCpuIsFailure\": false,\n"
+               << "        \"samples\": [\n";
+        for (std::size_t sampleIndex = 0; sampleIndex < instructionSets.samples.size(); ++sampleIndex)
+        {
+            const auto& sample = instructionSets.samples[sampleIndex];
+            stream << "          {\"category\": \"" << EscapeJson(sample.category)
+                   << "\", \"isaSet\": \"" << EscapeJson(sample.isaSet)
+                   << "\", \"rva\": " << sample.rva
+                   << ", \"rvaHex\": \"" << HexId(sample.rva, 8)
+                   << "\", \"fileOffset\": " << sample.fileOffset
+                   << ", \"fileOffsetHex\": \"" << HexId(sample.fileOffset, 8)
+                   << "\", \"bytes\": \"" << EscapeJson(sample.bytes)
+                   << "\", \"text\": \"" << EscapeJson(sample.text) << "\"}"
+                   << (sampleIndex + 1 == instructionSets.samples.size() ? "" : ",") << '\n';
+        }
+        stream << "        ],\n"
+               << "        \"error\": \"" << EscapeJson(instructionSets.error) << "\"\n"
+               << "      },\n"
+               << "      \"error\": \"" << EscapeJson(image.error) << "\"\n"
                << "    }" << (index + 1 == snapshot.inspectedImages.size() ? "" : ",") << '\n';
+    }
+    stream << "  ],\n";
+
+    stream << "  \"dllProbeResults\": [\n";
+    for (std::size_t index = 0; index < snapshot.dllProbeResults.size(); ++index)
+    {
+        const auto& probe = snapshot.dllProbeResults[index];
+        stream << "    {\n"
+               << "      \"dllPath\": \"" << EscapeJson(probe.dllPath) << "\",\n"
+               << "      \"probeExecutable\": \"" << EscapeJson(probe.probeExecutable) << "\",\n"
+               << "      \"runnerExecutable\": \"" << EscapeJson(probe.runnerExecutable) << "\",\n"
+               << "      \"runnerArguments\": [";
+        for (std::size_t argumentIndex = 0; argumentIndex < probe.runnerArguments.size(); ++argumentIndex)
+        {
+            if (argumentIndex != 0)
+            {
+                stream << ", ";
+            }
+            stream << '"' << EscapeJson(probe.runnerArguments[argumentIndex]) << '"';
+        }
+        stream << "],\n"
+               << "      \"exportName\": \"" << EscapeJson(probe.exportName) << "\",\n"
+               << "      \"attempted\": " << BoolText(probe.attempted) << ",\n"
+               << "      \"processStarted\": " << BoolText(probe.processStarted) << ",\n"
+               << "      \"timedOut\": " << BoolText(probe.timedOut) << ",\n"
+               << "      \"resultAvailable\": " << BoolText(probe.resultAvailable) << ",\n"
+               << "      \"loadSucceeded\": " << BoolText(probe.loadSucceeded) << ",\n"
+               << "      \"exportRequested\": " << BoolText(probe.exportRequested) << ",\n"
+               << "      \"exportFound\": " << BoolText(probe.exportFound) << ",\n"
+               << "      \"exportCalled\": " << BoolText(probe.exportCalled) << ",\n"
+               << "      \"exportResult\": " << probe.exportResult << ",\n"
+               << "      \"processExitCode\": " << probe.processExitCode << ",\n"
+               << "      \"processExitCodeHex\": \"" << HexId(probe.processExitCode, 8) << "\",\n"
+               << "      \"win32Error\": " << probe.win32Error << ",\n"
+               << "      \"exceptionCode\": " << probe.exceptionCode << ",\n"
+               << "      \"exceptionCodeHex\": \"" << HexId(probe.exceptionCode, 8) << "\",\n"
+               << "      \"durationMilliseconds\": " << probe.durationMilliseconds << ",\n"
+               << "      \"runnerReportedIsaViolation\": " << BoolText(probe.runnerReportedIsaViolation) << ",\n"
+               << "      \"runnerReportedInternalError\": " << BoolText(probe.runnerReportedInternalError) << ",\n"
+               << "      \"runnerOutput\": \"" << EscapeJson(probe.runnerOutput) << "\",\n"
+               << "      \"error\": \"" << EscapeJson(probe.error) << "\"\n"
+               << "    }" << (index + 1 == snapshot.dllProbeResults.size() ? "" : ",") << '\n';
     }
     stream << "  ],\n";
 

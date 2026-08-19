@@ -1,13 +1,18 @@
 #include "PeInspector.h"
 
 #include <Windows.h>
+#include <Zydis/Zydis.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <limits>
+#include <sstream>
+#include <string_view>
 
 namespace zengine::envcheck
 {
@@ -98,6 +103,328 @@ std::string ReadNullTerminatedAscii(const std::vector<unsigned char>& bytes, std
     const auto begin = bytes.begin() + static_cast<std::ptrdiff_t>(offset);
     const auto end = std::find(begin, bytes.end(), static_cast<unsigned char>(0));
     return std::string(begin, end);
+}
+
+std::string InstructionBytes(const unsigned char* bytes, std::size_t length)
+{
+    std::ostringstream stream;
+    stream << std::hex << std::uppercase << std::setfill('0');
+    for (std::size_t index = 0; index < length; ++index)
+    {
+        if (index != 0)
+        {
+            stream << ' ';
+        }
+        stream << std::setw(2) << static_cast<unsigned int>(bytes[index]);
+    }
+    return stream.str();
+}
+
+enum class InstructionCategory
+{
+    None,
+    Avx,
+    Avx2,
+    Fma,
+    F16c,
+    Avx512
+};
+
+InstructionCategory ClassifyInstructionSet(const char* isaSetName)
+{
+    if (isaSetName == nullptr)
+    {
+        return InstructionCategory::None;
+    }
+
+    const std::string_view name(isaSetName);
+    if (name.starts_with("AVX512"))
+    {
+        return InstructionCategory::Avx512;
+    }
+    if (name == "AVX2" || name == "AVX2GATHER")
+    {
+        return InstructionCategory::Avx2;
+    }
+    if (name == "FMA" || name == "FMA4")
+    {
+        return InstructionCategory::Fma;
+    }
+    if (name == "F16C")
+    {
+        return InstructionCategory::F16c;
+    }
+    if (name == "AVX" || name.starts_with("AVX_") || name == "AVXAES")
+    {
+        return InstructionCategory::Avx;
+    }
+    return InstructionCategory::None;
+}
+
+const char* CategoryName(InstructionCategory category)
+{
+    switch (category)
+    {
+    case InstructionCategory::Avx: return "AVX";
+    case InstructionCategory::Avx2: return "AVX2";
+    case InstructionCategory::Fma: return "FMA";
+    case InstructionCategory::F16c: return "F16C";
+    case InstructionCategory::Avx512: return "AVX-512";
+    case InstructionCategory::None: break;
+    }
+    return "NONE";
+}
+
+void RecordInstruction(
+    InstructionSetSummary& summary,
+    InstructionCategory category,
+    const char* isaSetName,
+    const ZydisFormatter& formatter,
+    const ZydisDecodedInstruction& instruction,
+    const ZydisDecodedOperand* operands,
+    const unsigned char* bytes,
+    std::uint32_t rva,
+    std::uint64_t fileOffset)
+{
+    std::uint64_t* count = nullptr;
+    switch (category)
+    {
+    case InstructionCategory::Avx:
+        count = &summary.avxInstructionCount;
+        summary.containsAvx = true;
+        break;
+    case InstructionCategory::Avx2:
+        count = &summary.avx2InstructionCount;
+        summary.containsAvx = true;
+        summary.containsAvx2 = true;
+        break;
+    case InstructionCategory::Fma:
+        count = &summary.fmaInstructionCount;
+        summary.containsAvx = true;
+        summary.containsFma = true;
+        break;
+    case InstructionCategory::F16c:
+        count = &summary.f16cInstructionCount;
+        summary.containsAvx = true;
+        summary.containsF16c = true;
+        break;
+    case InstructionCategory::Avx512:
+        count = &summary.avx512InstructionCount;
+        summary.containsAvx = true;
+        summary.containsAvx512 = true;
+        break;
+    case InstructionCategory::None:
+        return;
+    }
+    ++*count;
+
+    constexpr std::size_t maximumSamplesPerCategory = 8;
+    const char* categoryName = CategoryName(category);
+    const auto existingSamples = std::count_if(
+        summary.samples.begin(), summary.samples.end(), [categoryName](const InstructionSample& sample)
+        {
+            return sample.category == categoryName;
+        });
+    if (existingSamples >= maximumSamplesPerCategory)
+    {
+        return;
+    }
+
+    std::array<char, 256> text{};
+    if (ZYAN_FAILED(ZydisFormatterFormatInstruction(
+            &formatter,
+            &instruction,
+            operands,
+            instruction.operand_count_visible,
+            text.data(),
+            text.size(),
+            rva,
+            ZYAN_NULL)))
+    {
+        const char* mnemonic = ZydisMnemonicGetString(instruction.mnemonic);
+        if (mnemonic != nullptr)
+        {
+            strcpy_s(text.data(), text.size(), mnemonic);
+        }
+    }
+
+    InstructionSample sample;
+    sample.category = categoryName;
+    sample.isaSet = isaSetName == nullptr ? "UNKNOWN" : isaSetName;
+    sample.text = text.data();
+    sample.bytes = InstructionBytes(bytes, instruction.length);
+    sample.rva = rva;
+    sample.fileOffset = fileOffset;
+    summary.samples.push_back(std::move(sample));
+}
+
+struct CodeRange
+{
+    std::uint32_t rva = 0;
+    std::size_t fileOffset = 0;
+    std::size_t size = 0;
+};
+
+std::vector<CodeRange> CollectRuntimeFunctionRanges(
+    const std::vector<unsigned char>& bytes,
+    const IMAGE_OPTIONAL_HEADER64& optionalHeader,
+    const std::vector<IMAGE_SECTION_HEADER>& sections,
+    InstructionSetSummary& summary)
+{
+    std::vector<CodeRange> ranges;
+    if (optionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXCEPTION)
+    {
+        summary.error = "PE image has no exception directory; instruction scan was skipped.";
+        return ranges;
+    }
+
+    const auto& directory = optionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    if (directory.VirtualAddress == 0 || directory.Size < sizeof(RUNTIME_FUNCTION))
+    {
+        summary.error = "PE image has no x64 runtime function ranges; instruction scan was skipped.";
+        return ranges;
+    }
+
+    const std::size_t directoryOffset =
+        RvaToFileOffset(directory.VirtualAddress, sections.data(),
+            static_cast<WORD>(sections.size()), bytes.size());
+    if (directoryOffset == std::numeric_limits<std::size_t>::max() ||
+        !IsRangeValid(directoryOffset, directory.Size, bytes.size()))
+    {
+        summary.error = "PE exception directory is outside the file; instruction scan was skipped.";
+        return ranges;
+    }
+
+    const std::size_t entryCount = directory.Size / sizeof(RUNTIME_FUNCTION);
+    ranges.reserve(entryCount);
+    for (std::size_t index = 0; index < entryCount; ++index)
+    {
+        RUNTIME_FUNCTION function{};
+        std::memcpy(
+            &function,
+            bytes.data() + directoryOffset + index * sizeof(RUNTIME_FUNCTION),
+            sizeof(function));
+        if (function.BeginAddress >= function.EndAddress)
+        {
+            continue;
+        }
+
+        const std::size_t fileOffset = RvaToFileOffset(
+            function.BeginAddress, sections.data(), static_cast<WORD>(sections.size()), bytes.size());
+        if (fileOffset == std::numeric_limits<std::size_t>::max())
+        {
+            continue;
+        }
+
+        const std::uint64_t length =
+            static_cast<std::uint64_t>(function.EndAddress) - function.BeginAddress;
+        if (length == 0 || length > bytes.size() - fileOffset)
+        {
+            continue;
+        }
+        ranges.push_back({function.BeginAddress, fileOffset, static_cast<std::size_t>(length)});
+    }
+
+    std::sort(ranges.begin(), ranges.end(), [](const CodeRange& left, const CodeRange& right)
+    {
+        if (left.rva != right.rva)
+        {
+            return left.rva < right.rva;
+        }
+        return left.size < right.size;
+    });
+    ranges.erase(std::unique(ranges.begin(), ranges.end(), [](const CodeRange& left, const CodeRange& right)
+    {
+        return left.rva == right.rva && left.size == right.size;
+    }), ranges.end());
+    return ranges;
+}
+
+void ScanRuntimeFunctions(
+    const std::vector<unsigned char>& bytes,
+    const std::vector<IMAGE_SECTION_HEADER>& sections,
+    const std::vector<CodeRange>& ranges,
+    PeImageInfo& result)
+{
+    auto& summary = result.instructionSets;
+    summary.scanAttempted = true;
+    summary.scanStrategy = "PE_EXCEPTION_DIRECTORY_RUNTIME_FUNCTIONS";
+
+    for (const auto& section : sections)
+    {
+        if ((section.Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0 || section.SizeOfRawData == 0)
+        {
+            continue;
+        }
+        ++summary.executableSectionCount;
+        const std::size_t fileOffset = section.PointerToRawData;
+        if (fileOffset < bytes.size())
+        {
+            summary.executableBytes += std::min<std::size_t>(
+                section.SizeOfRawData, bytes.size() - fileOffset);
+        }
+    }
+
+    summary.runtimeFunctionCount = ranges.size();
+    if (ranges.empty())
+    {
+        summary.scanCompleted = true;
+        return;
+    }
+
+    ZydisDecoder decoder{};
+    ZydisFormatter formatter{};
+    if (ZYAN_FAILED(ZydisDecoderInit(
+            &decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_STACK_WIDTH_64)) ||
+        ZYAN_FAILED(ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL)))
+    {
+        summary.error = "Failed to initialize the Zydis decoder or formatter.";
+        return;
+    }
+
+    for (const auto& range : ranges)
+    {
+        summary.scannedCodeBytes += range.size;
+        std::size_t offset = 0;
+        while (offset < range.size)
+        {
+            ZydisDecodedInstruction instruction{};
+            ZydisDecodedOperand operands[ZYDIS_MAX_OPERAND_COUNT]{};
+            const ZyanStatus status = ZydisDecoderDecodeFull(
+                &decoder,
+                bytes.data() + range.fileOffset + offset,
+                range.size - offset,
+                &instruction,
+                operands);
+            if (ZYAN_FAILED(status) || instruction.length == 0)
+            {
+                ++summary.undecodableByteCount;
+                ++offset;
+                continue;
+            }
+
+            ++summary.decodedInstructionCount;
+            const char* isaSetName = ZydisISASetGetString(instruction.meta.isa_set);
+            const InstructionCategory category = ClassifyInstructionSet(isaSetName);
+            const std::uint64_t instructionRva = static_cast<std::uint64_t>(range.rva) + offset;
+            if (instructionRva <= std::numeric_limits<std::uint32_t>::max())
+            {
+                RecordInstruction(
+                    summary,
+                    category,
+                    isaSetName,
+                    formatter,
+                    instruction,
+                    operands,
+                    bytes.data() + range.fileOffset + offset,
+                    static_cast<std::uint32_t>(instructionRva),
+                    range.fileOffset + offset);
+            }
+            offset += instruction.length;
+        }
+    }
+
+    summary.scanCompleted = true;
 }
 
 template <typename OptionalHeader>
@@ -256,6 +583,12 @@ PeImageInfo InspectPeImage(const std::filesystem::path& path)
         IMAGE_OPTIONAL_HEADER64 optionalHeader{};
         std::memcpy(&optionalHeader, bytes.data() + optionalOffset, sizeof(optionalHeader));
         parsed = ParseOptionalHeader(bytes, optionalHeader, sections.data(), fileHeader.NumberOfSections, result);
+        if (parsed && fileHeader.Machine == IMAGE_FILE_MACHINE_AMD64)
+        {
+            const auto ranges = CollectRuntimeFunctionRanges(
+                bytes, optionalHeader, sections, result.instructionSets);
+            ScanRuntimeFunctions(bytes, sections, ranges, result);
+        }
     }
     else if (magic == IMAGE_NT_OPTIONAL_HDR32_MAGIC &&
         fileHeader.SizeOfOptionalHeader >= sizeof(IMAGE_OPTIONAL_HEADER32))
@@ -271,6 +604,10 @@ PeImageInfo InspectPeImage(const std::filesystem::path& path)
     }
 
     result.validPeImage = parsed;
+    if (parsed && fileHeader.Machine != IMAGE_FILE_MACHINE_AMD64)
+    {
+        result.instructionSets.error = "Instruction scanning currently supports x64 PE images only.";
+    }
     return result;
 }
 } // namespace zengine::envcheck

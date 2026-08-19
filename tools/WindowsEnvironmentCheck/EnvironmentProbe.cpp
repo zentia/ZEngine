@@ -133,6 +133,13 @@ CpuFeatures CollectCpuFeatures()
         const auto leaf7 = Cpuid(7, 0);
         const unsigned int ebx = static_cast<unsigned int>(leaf7[1]);
         result.avx2 = result.avx && (ebx & (1u << 5)) != 0;
+        result.avx512Hardware = (ebx & (1u << 16)) != 0;
+        if (result.osxsave)
+        {
+            const unsigned __int64 xcr0 = _xgetbv(0);
+            result.avx512OsEnabled = (xcr0 & 0xE6u) == 0xE6u;
+        }
+        result.avx512 = result.avx512Hardware && result.avx512OsEnabled;
     }
 
     const auto extended = Cpuid(static_cast<int>(0x80000000u));
@@ -258,6 +265,143 @@ Evaluation EvaluateEnvironment(const EnvironmentSnapshot& snapshot, const Requir
                 "DLL depends on non-redistributable Debug CRT libraries: " + image.path + " [" + runtimes + "]");
             evaluation.exitCode = 20;
             evaluation.issueCode = "DLL_DEBUG_RUNTIME_UNSUPPORTED";
+        }
+
+        const auto& instructionSets = image.instructionSets;
+        if (instructionSets.scanAttempted && !instructionSets.scanCompleted)
+        {
+            evaluation.failures.emplace_back(
+                "DLL instruction scan failed for " + image.path + ": " + instructionSets.error);
+            if (evaluation.exitCode == 0)
+            {
+                evaluation.exitCode = 21;
+                evaluation.issueCode = "DLL_INSTRUCTION_SCAN_FAILED";
+            }
+            continue;
+        }
+
+        std::string unavailableFeatures;
+        const auto addUnavailableFeature = [&unavailableFeatures](bool present, bool available, const char* name)
+        {
+            if (!present || available)
+            {
+                return;
+            }
+            if (!unavailableFeatures.empty())
+            {
+                unavailableFeatures += ", ";
+            }
+            unavailableFeatures += name;
+        };
+        addUnavailableFeature(instructionSets.containsAvx, snapshot.cpu.avx, "AVX");
+        addUnavailableFeature(instructionSets.containsAvx2, snapshot.cpu.avx2, "AVX2");
+        addUnavailableFeature(instructionSets.containsFma, snapshot.cpu.fma, "FMA");
+        addUnavailableFeature(instructionSets.containsF16c, snapshot.cpu.f16c, "F16C");
+        addUnavailableFeature(instructionSets.containsAvx512, snapshot.cpu.avx512, "AVX-512");
+        if (!unavailableFeatures.empty())
+        {
+            evaluation.warnings.emplace_back(
+                "DLL contains instructions unavailable on this CPU/OS: " + image.path + " [" +
+                unavailableFeatures + "]. Static presence is informational because runtime CPU dispatch may protect these paths.");
+        }
+    }
+
+    for (const auto& probe : snapshot.dllProbeResults)
+    {
+        if (!probe.processStarted)
+        {
+            evaluation.failures.emplace_back(
+                "DLL probe infrastructure failed for " + probe.dllPath + ": " + probe.error);
+            if (evaluation.exitCode == 0)
+            {
+                evaluation.exitCode = 24;
+                evaluation.issueCode = "DLL_PROBE_INFRASTRUCTURE_FAILED";
+            }
+            continue;
+        }
+        if (probe.timedOut)
+        {
+            evaluation.failures.emplace_back("DLL probe timed out: " + probe.dllPath);
+            if (evaluation.exitCode == 0)
+            {
+                evaluation.exitCode = 23;
+                evaluation.issueCode = "DLL_PROBE_TIMEOUT";
+            }
+            continue;
+        }
+        if (probe.runnerReportedIsaViolation)
+        {
+            evaluation.failures.emplace_back(
+                "CPU emulator reported an executed instruction unsupported by the selected target CPU while probing " +
+                probe.dllPath + '.');
+            if (evaluation.exitCode == 0)
+            {
+                evaluation.exitCode = 23;
+                evaluation.issueCode = "DLL_PROBE_ILLEGAL_INSTRUCTION";
+            }
+            continue;
+        }
+        if (!probe.resultAvailable)
+        {
+            evaluation.failures.emplace_back(
+                "DLL probe crashed or produced no result for " + probe.dllPath + ": " + probe.error);
+            if (evaluation.exitCode == 0)
+            {
+                evaluation.exitCode = 23;
+                evaluation.issueCode = "DLL_PROBE_CRASHED";
+            }
+            continue;
+        }
+        if (probe.exceptionCode != 0)
+        {
+            std::ostringstream message;
+            message << "DLL probe raised exception 0x" << std::hex << std::uppercase
+                    << probe.exceptionCode << " while loading or invoking " << probe.dllPath << '.';
+            evaluation.failures.push_back(message.str());
+            if (evaluation.exitCode == 0)
+            {
+                evaluation.exitCode = 23;
+                evaluation.issueCode = probe.exceptionCode == 0xC000001Du
+                    ? "DLL_PROBE_ILLEGAL_INSTRUCTION"
+                    : "DLL_PROBE_EXCEPTION";
+            }
+            continue;
+        }
+        if (!probe.loadSucceeded)
+        {
+            evaluation.failures.emplace_back(
+                "LoadLibrary failed for " + probe.dllPath + " with Win32 error " +
+                std::to_string(probe.win32Error) + '.');
+            if (evaluation.exitCode == 0)
+            {
+                evaluation.exitCode = 23;
+                evaluation.issueCode = "DLL_LOAD_FAILED";
+            }
+            continue;
+        }
+        if (probe.exportRequested && !probe.exportFound)
+        {
+            evaluation.failures.emplace_back(
+                "Requested compatibility export was not found in " + probe.dllPath + ": " +
+                probe.exportName + '.');
+            if (evaluation.exitCode == 0)
+            {
+                evaluation.exitCode = 23;
+                evaluation.issueCode = "DLL_PROBE_EXPORT_NOT_FOUND";
+            }
+            continue;
+        }
+        if (probe.exportCalled && probe.exportResult == 0)
+        {
+            evaluation.warnings.emplace_back(
+                "Compatibility export returned 0 for " + probe.dllPath +
+                "; the DLL loaded successfully but this optional capability is unavailable.");
+        }
+        if (probe.runnerReportedInternalError)
+        {
+            evaluation.warnings.emplace_back(
+                "The CPU emulator reported an internal assertion after producing a valid DLL probe result for " +
+                probe.dllPath + "; target DLL load results were retained, but emulator stability should be reviewed.");
         }
     }
 

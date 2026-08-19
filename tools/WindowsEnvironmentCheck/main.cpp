@@ -21,6 +21,11 @@ struct CommandLineOptions
 {
     std::filesystem::path outputDirectory = std::filesystem::current_path();
     std::vector<std::filesystem::path> dllPaths;
+    std::vector<std::filesystem::path> probeDllPaths;
+    std::filesystem::path probeRunner;
+    std::vector<std::wstring> probeRunnerArguments;
+    std::string probeExport;
+    std::uint32_t probeTimeoutMilliseconds = 60000;
     Requirements requirements;
     bool quiet = false;
     bool showHelp = false;
@@ -128,6 +133,52 @@ CommandLineOptions ParseCommandLine(int argumentCount, wchar_t** arguments)
                 throw std::invalid_argument("--check-dll requires a DLL path.");
             }
             options.dllPaths.emplace_back(arguments[index]);
+        }
+        else if (argument == L"--probe-dll")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--probe-dll requires a DLL path.");
+            }
+            options.probeDllPaths.emplace_back(arguments[index]);
+            options.dllPaths.emplace_back(arguments[index]);
+        }
+        else if (argument == L"--probe-runner")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--probe-runner requires an executable path.");
+            }
+            options.probeRunner = arguments[index];
+        }
+        else if (argument == L"--probe-runner-arg")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--probe-runner-arg requires a value.");
+            }
+            options.probeRunnerArguments.emplace_back(arguments[index]);
+        }
+        else if (argument == L"--probe-export")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--probe-export requires an exported function name.");
+            }
+            options.probeExport = NarrowAscii(arguments[index]);
+        }
+        else if (argument == L"--probe-timeout-seconds")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--probe-timeout-seconds requires a positive integer.");
+            }
+            const unsigned long timeoutSeconds = std::stoul(arguments[index]);
+            if (timeoutSeconds == 0 || timeoutSeconds > 3600)
+            {
+                throw std::invalid_argument("--probe-timeout-seconds must be between 1 and 3600.");
+            }
+            options.probeTimeoutMilliseconds = timeoutSeconds * 1000u;
         }
         else if (argument == L"--quiet")
         {
@@ -242,22 +293,57 @@ std::vector<std::filesystem::path> ResolveDllPaths(const CommandLineOptions& opt
     return paths;
 }
 
+bool IsGameCoreDll(const std::filesystem::path& path)
+{
+    std::wstring fileName = path.filename().wstring();
+    std::transform(fileName.begin(), fileName.end(), fileName.begin(), [](wchar_t character)
+    {
+        return static_cast<wchar_t>(towlower(character));
+    });
+    return fileName == L"gamecore.dll" || fileName == L"gamecore_standalone.dll";
+}
+
+std::vector<std::filesystem::path> ResolveProbePaths(
+    const CommandLineOptions& options,
+    const std::vector<std::filesystem::path>& inspectedPaths)
+{
+    std::vector<std::filesystem::path> paths;
+    for (const auto& path : options.probeDllPaths)
+    {
+        AddUniquePath(paths, path);
+    }
+    for (const auto& path : inspectedPaths)
+    {
+        if (IsGameCoreDll(path))
+        {
+            AddUniquePath(paths, path);
+        }
+    }
+    return paths;
+}
+
 void PrintUsage()
 {
     std::cout
         << "ZWindowsEnvironmentCheck [options]\n\n"
         << "Options:\n"
         << "  --output-dir <path>        Report directory. Default: current directory.\n"
-        << "  --require <features>       Required features: avx,avx2,fma,f16c or none.\n"
-        << "                             Default: avx.\n"
+        << "  --require <features>       Product minimum: avx,avx2,fma,f16c or none.\n"
+        << "                             Default: none.\n"
         << "  --min-memory-gb <number>   Required physical memory. Default: 4.\n"
-        << "  --check-dll <path>         Inspect a DLL; may be repeated.\n"
-        << "                             All DLLs in the tool/current directory and\n"
-        << "                             subdirectories are auto-detected.\n"
+        << "  --check-dll <path>         Inspect PE imports and executable instructions.\n"
+        << "  --probe-dll <path>         Isolated LoadLibrary probe; may be repeated.\n"
+        << "  --probe-export <name>      Optional no-argument int export to invoke.\n"
+        << "  --probe-runner <path>      Optional runner, such as Intel SDE.\n"
+        << "  --probe-runner-arg <arg>   Runner argument; may be repeated.\n"
+        << "  --probe-timeout-seconds N  Probe timeout. Default: 60.\n"
+        << "                             All DLLs are inspected recursively; GameCore\n"
+        << "                             DLLs are probed automatically.\n"
         << "  --quiet                    Do not print the full text report.\n"
         << "  --help                     Show this help.\n\n"
         << "Exit codes: 0=compatible, 10=CPU ISA, 11=Windows x64, 12=memory,\n"
-        << "            20=Debug CRT DLL, 21=invalid/unsupported DLL, 30=tool error.\n";
+        << "            20=Debug CRT DLL, 21=invalid/unsupported DLL,\n"
+        << "            23=DLL load/probe failure, 24=probe infrastructure, 30=tool error.\n";
 }
 } // namespace
 
@@ -277,10 +363,28 @@ int wmain(int argumentCount, wchar_t** arguments)
         std::filesystem::create_directories(options.outputDirectory);
 
         auto snapshot = zengine::envcheck::CollectEnvironment();
-        for (const auto& dllPath : ResolveDllPaths(options))
+        const auto dllPaths = ResolveDllPaths(options);
+        for (const auto& dllPath : dllPaths)
         {
             snapshot.inspectedImages.push_back(zengine::envcheck::InspectPeImage(dllPath));
         }
+
+        zengine::envcheck::DllProbeOptions probeOptions;
+        probeOptions.probeExecutable = ExecutableDirectory() / L"ZDllLoadProbe.exe";
+        probeOptions.runnerExecutable = options.probeRunner;
+        probeOptions.runnerArguments = options.probeRunnerArguments;
+        probeOptions.timeoutMilliseconds = options.probeTimeoutMilliseconds;
+        for (const auto& dllPath : ResolveProbePaths(options, dllPaths))
+        {
+            probeOptions.exportName = options.probeExport;
+            if (probeOptions.exportName.empty() && IsGameCoreDll(dllPath))
+            {
+                probeOptions.exportName = "OSG_LocalPredictHardwareCapable";
+            }
+            snapshot.dllProbeResults.push_back(
+                zengine::envcheck::RunDllProbe(dllPath, probeOptions));
+        }
+
         const auto evaluation = zengine::envcheck::EvaluateEnvironment(snapshot, options.requirements);
         const std::string textReport =
             zengine::envcheck::BuildTextReport(snapshot, options.requirements, evaluation);
