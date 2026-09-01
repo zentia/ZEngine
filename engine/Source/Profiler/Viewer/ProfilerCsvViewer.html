@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ZEngine Profiler CSV Viewer</title>
+<style>
+  :root {
+    --bg: #1a1a1c;
+    --bg-panel: #212124;
+    --bg-hover: #2a2a2e;
+    --bg-selected: #33415c;
+    --border: #3a3a3f;
+    --text: #d6d6da;
+    --text-dim: #8a8a92;
+    --accent: #4ea1ff;
+    --accent-dim: #2f6bb0;
+    --row-h: 24px;
+    --header-h: 34px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font: 13px/1.4 ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas,
+          "Liberation Mono", Menlo, monospace;
+    overflow: hidden;
+  }
+  a { color: var(--accent); }
+
+  /* ---------- Drop zone / initial state ---------- */
+  #dropzone {
+    position: fixed; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    background: var(--bg); z-index: 20; transition: opacity .15s;
+  }
+  #dropzone.hidden { opacity: 0; pointer-events: none; }
+  #dropzone.drag { background: #17202b; }
+  #dropzone .box {
+    border: 2px dashed var(--border); border-radius: 12px;
+    padding: 56px 72px; text-align: center; pointer-events: none;
+  }
+  #dropzone.drag .box { border-color: var(--accent); }
+  #dropzone h1 { font-size: 18px; margin: 0 0 10px; font-weight: 600; }
+  #dropzone p { color: var(--text-dim); margin: 4px 0; font-size: 12px; }
+  #dropzone .open-btn { pointer-events: auto; }
+
+  button, select, input[type="text"], input[type="search"] {
+    background: #2a2a2e; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 9px; font: inherit; outline: none;
+  }
+  button:hover, select:hover { border-color: var(--accent-dim); }
+  button:active { background: #333; }
+  button.primary { background: var(--accent-dim); border-color: var(--accent); }
+  input[type="search"] { width: 260px; }
+  input[type="search"]:focus { border-color: var(--accent); }
+
+  /* ---------- App layout ---------- */
+  #app { display: none; flex-direction: column; height: 100vh; }
+  #app.ready { display: flex; }
+
+  #toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--bg-panel); border-bottom: 1px solid var(--border);
+  }
+  #tabs { display: flex; gap: 4px; }
+  .tab {
+    padding: 5px 12px; border-radius: 6px; cursor: pointer; border: 1px solid transparent;
+    color: var(--text-dim); white-space: nowrap;
+  }
+  .tab.active { background: var(--bg-selected); color: var(--text); border-color: var(--border); }
+  .tab .badge { opacity: .6; font-size: 11px; margin-left: 4px; }
+
+  #summary {
+    padding: 6px 14px; color: var(--text-dim); font-size: 12px;
+    border-bottom: 1px solid var(--border); background: var(--bg-panel);
+    display: flex; gap: 20px; flex-wrap: wrap;
+  }
+  #summary b { color: var(--text); font-weight: 600; }
+
+  #spacer-left { display: flex; align-items: center; gap: 8px; }
+
+  /* ---------- Virtualized table ---------- */
+  #table-wrap { flex: 1 1 auto; position: relative; overflow: auto; outline: none; }
+  #spacer { width: 1px; }
+
+  .grid {
+    position: sticky; top: 0; z-index: 3; display: grid;
+    height: var(--header-h); background: #26262a; border-bottom: 1px solid var(--border);
+    align-items: center; min-width: 100%;
+  }
+  .hcell {
+    padding: 0 10px; color: var(--text-dim); font-weight: 600; font-size: 11px;
+    text-transform: uppercase; letter-spacing: .03em; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: none;
+    display: flex; align-items: center; gap: 4px;
+  }
+  .hcell:hover { color: var(--text); }
+  .hcell .arrow { opacity: .8; }
+
+  .row {
+    position: absolute; left: 0; right: 0; height: var(--row-h);
+    display: grid; align-items: center; border-bottom: 1px solid #232326;
+    cursor: pointer; min-width: 100%;
+  }
+  .row:hover { background: var(--bg-hover); }
+  .row.selected { background: var(--bg-selected); }
+  .cell {
+    padding: 0 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .cell.num { text-align: right; color: #9fd0a8; }
+  .cell.dim { color: var(--text-dim); }
+
+  /* ---------- Detail panel ---------- */
+  #detail {
+    display: none; flex: 0 0 200px; flex-direction: column;
+    border-top: 1px solid var(--border); background: var(--bg-panel);
+  }
+  #detail.open { display: flex; }
+  #detail-head {
+    display: flex; align-items: center; gap: 10px; padding: 6px 12px;
+    border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  #detail-head .meta { color: var(--text-dim); }
+  #detail-head .spacer { flex: 1; }
+  #detail-stack {
+    flex: 1; overflow: auto; padding: 10px 14px; white-space: pre;
+    color: #cfe3d0; font-size: 12px; line-height: 1.5;
+  }
+  .close-btn { cursor: pointer; color: var(--text-dim); border: 1px solid var(--border);
+               border-radius: 6px; padding: 2px 8px; }
+  .close-btn:hover { color: var(--text); }
+
+  #status { color: var(--text-dim); font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div id="dropzone">
+  <div class="box">
+    <h1>ZEngine Profiler CSV Viewer</h1>
+    <p>Drop one or more exported CSV files here</p>
+    <p style="opacity:.7">(<code>*.csv</code> produced by <code>ZProfilerCsvExporter</code>)</p>
+  </div>
+  <button class="open-btn primary" id="btn-open">Choose CSV files…</button>
+  <p style="font-size:11px;color:var(--text-dim)">
+    Not a CSV? <code>.zasset</code> captures must be exported first via
+    <code>ZProfilerCsvExporter &lt;capture.zasset&gt;</code>.
+  </p>
+</div>
+
+<div id="app">
+  <div id="toolbar">
+    <div id="tabs"></div>
+    <div id="spacer-left" style="flex:1"></div>
+    <select id="type-filter" title="Filter by allocation type (Lua only)"></select>
+    <input type="search" id="search" placeholder="Search name / type / stack…" />
+    <button id="btn-more" title="Load more CSV files">+ Open</button>
+    <span id="status"></span>
+  </div>
+  <div id="summary"></div>
+  <div id="table-wrap" tabindex="0">
+    <div id="header" class="grid"></div>
+    <div id="spacer"></div>
+    <div id="rows"></div>
+  </div>
+  <div id="detail">
+    <div id="detail-head">
+      <span id="detail-title"></span>
+      <span id="detail-meta" class="meta"></span>
+      <span class="spacer"></span>
+      <span class="close-btn" id="btn-close">Esc close</span>
+    </div>
+    <div id="detail-stack"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ===========================================================================
+ * Schema detection from the CSV header line written by ProfilerCsvExport.cpp
+ * ========================================================================= */
+const SCHEMAS = {
+  "Count,Name,Stack": {
+    kind: "csharp", label: "C#",
+    columns: [
+      { key: "count", label: "Count", numeric: true,  width: "84px"  },
+      { key: "name",  label: "Name",  numeric: false, width: "minmax(180px,1fr)" },
+      { key: "stack", label: "Stack", numeric: false, width: "minmax(360px,2fr)" },
+    ],
+    defaultSort: { key: "count", dir: -1 },
+  },
+  "Count,Stack": {
+    kind: "userdata", label: "Userdata",
+    columns: [
+      { key: "count", label: "Count", numeric: true,  width: "84px" },
+      { key: "stack", label: "Stack", numeric: false, width: "minmax(360px,2fr)" },
+    ],
+    defaultSort: { key: "count", dir: -1 },
+  },
+  "Count,Size,Type,Stack": {
+    kind: "lua", label: "Lua",
+    columns: [
+      { key: "count", label: "Count", numeric: true,  width: "84px"  },
+      { key: "size",  label: "Size",  numeric: true,  width: "110px" },
+      { key: "type",  label: "Type",  numeric: false, width: "120px" },
+      { key: "stack", label: "Stack", numeric: false, width: "minmax(360px,2fr)" },
+    ],
+    defaultSort: { key: "size", dir: -1 },
+  },
+};
+
+const ROW_H = 24;
+const HEADER_H = 34;
+
+const state = {
+  files: [],      // [{ name, schema, rows, totalCount, totalSize, types:Set }]
+  active: 0,
+  sort: null,     // { key, dir }
+  search: "",
+  typeFilter: "all",
+  filtered: [],   // indices into active file rows (sorted order == rows order)
+  selected: -1,   // index into filtered (display row) or raw row index
+};
+
+const $ = (id) => document.getElementById(id);
+const dz = $("dropzone"), app = $("app");
+const tabsEl = $("tabs"), headerEl = $("header"), rowsEl = $("rows");
+const spacerEl = $("spacer"), tableWrap = $("table-wrap");
+const summaryEl = $("summary"), statusEl = $("status");
+const detailEl = $("detail"), detailTitle = $("detail-title");
+const detailMeta = $("detail-meta"), detailStack = $("detail-stack");
+const searchEl = $("search"), typeFilterEl = $("type-filter");
+
+/* ===========================================================================
+ * Small utilities
+ * ========================================================================= */
+function fmtCount(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  return String(n);
+}
+function fmtBytes(n) {
+  if (n >= 1024 * 1024 * 1024) return (n / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+  if (n >= 1024 * 1024) return (n / (1024 * 1024)).toFixed(2) + " MB";
+  if (n >= 1024) return (n / 1024).toFixed(1) + " KB";
+  return n + " B";
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+// Case-insensitive substring search that avoids allocating a lowercased copy
+// of a potentially huge stack string.
+function ciIncludes(hay, needleLower) {
+  const hl = hay.length, nl = needleLower.length;
+  if (nl === 0) return true;
+  if (nl > hl) return false;
+  outer:
+  for (let i = 0; i <= hl - nl; i++) {
+    for (let j = 0; j < nl; j++) {
+      let c = hay.charCodeAt(i + j);
+      if (c >= 65 && c <= 90) c += 32;
+      const nc = needleLower.charCodeAt(j);
+      if (c !== nc) continue outer;
+    }
+    return true;
+  }
+  return false;
+}
+
+/* ===========================================================================
+ * CSV parsing (RFC4180: quoted fields, embedded commas/newlines, "" escape)
+ * Runs chunked + yields to the event loop so huge files don't freeze the UI.
+ * ========================================================================= */
+async function parseCsvBody(text, bodyStart, schema, onProgress) {
+  const rows = [];
+  const n = text.length;
+  let field = "";
+  let inQuotes = false;
+  let row = [];
+  let i = bodyStart;
+  let lastYield = performance.now();
+  let totalCount = 0, totalSize = 0;
+  const kind = schema.kind;
+
+  function endField() { row.push(field); field = ""; }
+  function endRow() {
+    if (row.length === 0 && field === "") { return; }
+    endField();
+    // Skip a trailing empty line produced by a final newline.
+    if (row.length <= 1 && row[0] === "") { row = []; return; }
+
+    const obj = { count: 0, size: 0, name: "", type: "", stack: "", nameLower: "" };
+    switch (kind) {
+      case "csharp":
+        obj.count = parseInt(row[0], 10) || 0;
+        obj.name = row[1] || "";
+        obj.stack = row[2] || "";
+        obj.nameLower = obj.name.toLowerCase();
+        totalCount += obj.count;
+        break;
+      case "userdata":
+        obj.count = parseInt(row[0], 10) || 0;
+        obj.stack = row[1] || "";
+        obj.nameLower = "";
+        totalCount += obj.count;
+        break;
+      case "lua":
+        obj.count = parseInt(row[0], 10) || 0;
+        obj.size = parseInt(row[1], 10) || 0;
+        obj.type = row[2] || "unknown";
+        obj.stack = row[3] || "";
+        obj.nameLower = obj.type.toLowerCase();
+        totalCount += obj.count;
+        totalSize += obj.size;
+        break;
+    }
+    rows.push(obj);
+    row = [];
+  }
+
+  while (i < n) {
+    if ((i & 0xffff) === 0) {
+      const now = performance.now();
+      if (now - lastYield > 40) {
+        if (onProgress) onProgress(i - bodyStart, n - bodyStart, rows.length);
+        await new Promise((r) => setTimeout(r, 0));
+        lastYield = performance.now();
+      }
+    }
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 2; continue; }
+        inQuotes = false; i++; continue;
+      }
+      field += c; i++; continue;
+    }
+    if (c === '"') { inQuotes = true; i++; continue; }
+    if (c === ',') { endField(); i++; continue; }
+    if (c === '\n') { endRow(); i++; continue; }
+    if (c === '\r') {
+      endRow();
+      i++;
+      if (text[i] === '\n') i++;
+      continue;
+    }
+    field += c; i++; continue;
+  }
+  if (field !== "" || row.length > 0) endRow();
+  return { rows, totalCount, totalSize };
+}
+
+/* ===========================================================================
+ * File loading
+ * ========================================================================= */
+async function loadFile(file) {
+  statusEl.textContent = "Reading " + file.name + "…";
+  const text = await file.text();
+  const nl = text.indexOf("\n");
+  let headerLine = (nl < 0 ? text : text.slice(0, nl)).replace(/\r$/, "");
+  headerLine = headerLine.replace(/^\uFEFF/, ""); // strip BOM
+  const schema = SCHEMAS[headerLine];
+  if (!schema) {
+    statusEl.textContent = "Unrecognized header: " + headerLine;
+    return;
+  }
+  const bodyStart = nl < 0 ? text.length : nl + 1;
+
+  statusEl.textContent = "Parsing " + file.name + "…";
+  const { rows, totalCount, totalSize } = await parseCsvBody(
+    text, bodyStart, schema,
+    (done, total, parsed) => {
+      statusEl.textContent =
+        "Parsing " + file.name + "… " + fmtCount(parsed) + " rows (" +
+        (total > 0 ? Math.round((done / total) * 100) : 100) + "%)";
+    }
+  );
+
+  const types = new Set();
+  for (const r of rows) if (r.type) types.add(r.type);
+
+  state.files.push({
+    name: file.name,
+    schema,
+    rows,
+    totalCount,
+    totalSize,
+    types,
+    sort: { key: schema.defaultSort.key, dir: schema.defaultSort.dir },
+  });
+
+  // Apply default sort on the freshly loaded file.
+  const f = state.files[state.files.length - 1];
+  sortFile(f, f.sort.key, f.sort.dir);
+
+  if (state.files.length === 1) state.active = 0;
+  rebuildTabs();
+  setActive(state.files.length - 1);
+  statusEl.textContent = "";
+}
+
+function sortFile(file, key, dir) {
+  const col = file.schema.columns.find((c) => c.key === key);
+  if (!col) return;
+  file.rows.sort((a, b) => {
+    let cmp;
+    if (col.numeric) cmp = (a[key] || 0) - (b[key] || 0);
+    else cmp = String(a[key] || "").localeCompare(String(b[key] || ""));
+    return dir * cmp;
+  });
+  file.sort = { key, dir };
+}
+
+/* ===========================================================================
+ * Filtering
+ * ========================================================================= */
+function activeFile() { return state.files[state.active]; }
+
+function rowMatches(row) {
+  if (state.typeFilter !== "all" && row.type !== state.typeFilter) return false;
+  const q = state.search;
+  if (!q) return true;
+  if (row.nameLower && row.nameLower.indexOf(q) !== -1) return true;
+  return ciIncludes(row.stack, q);
+}
+
+function rebuildFiltered() {
+  const file = activeFile();
+  if (!file) { state.filtered = []; return; }
+  const out = [];
+  const rows = file.rows;
+  for (let i = 0; i < rows.length; i++) if (rowMatches(rows[i])) out.push(i);
+  state.filtered = out;
+  if (state.selected >= out.length) state.selected = out.length ? 0 : -1;
+}
+
+/* ===========================================================================
+ * Rendering (virtualized — only visible rows hit the DOM)
+ * ========================================================================= */
+function gridTemplate(file) {
+  return file.schema.columns.map((c) => c.width).join(" ");
+}
+
+function buildHeader(file) {
+  headerEl.style.gridTemplateColumns = gridTemplate(file);
+  headerEl.innerHTML = file.schema.columns.map((c) => {
+    const arrow = (file.sort.key === c.key) ? (file.sort.dir > 0 ? "▲" : "▼") : "";
+    return `<div class="hcell" data-key="${c.key}">${escapeHtml(c.label)}<span class="arrow">${arrow}</span></div>`;
+  }).join("");
+}
+
+function cellText(row, col, file) {
+  const v = row[col.key];
+  if (col.key === "stack") {
+    const first = v ? v.split("\n")[0] : "";
+    return { text: first, isNum: false };
+  }
+  if (col.key === "size") return { text: fmtBytes(v), isNum: true };
+  if (col.numeric) return { text: fmtCount(v), isNum: true };
+  return { text: v || "", isNum: false };
+}
+
+function render() {
+  const file = activeFile();
+  if (!file) return;
+
+  const indices = state.filtered;
+  const count = indices.length;
+  spacerEl.style.height = (count * ROW_H) + "px";
+
+  const viewH = tableWrap.clientHeight;
+  const scrollTop = tableWrap.scrollTop;
+  const first = Math.max(0, Math.floor(scrollTop / ROW_H) - 8);
+  const last = Math.min(count, Math.ceil((scrollTop + viewH) / ROW_H) + 8);
+
+  const frag = document.createDocumentFragment();
+  for (let vi = first; vi < last; vi++) {
+    const ri = indices[vi];
+    const row = file.rows[ri];
+    const el = document.createElement("div");
+    el.className = "row" + (vi === state.selected ? " selected" : "");
+    el.style.gridTemplateColumns = gridTemplate(file);
+    el.style.top = (HEADER_H + vi * ROW_H) + "px";
+    el.dataset.vi = vi;
+
+    for (const col of file.schema.columns) {
+      const c = cellText(row, col, file);
+      const cls = col.key === "stack" ? "cell dim" : (c.isNum ? "cell num" : "cell");
+      const d = document.createElement("div");
+      d.className = cls;
+      d.textContent = c.text;
+      el.appendChild(d);
+    }
+    frag.appendChild(el);
+  }
+  rowsEl.innerHTML = "";
+  rowsEl.appendChild(frag);
+
+  // Summary bar.
+  const totalAlloc = fmtCount(file.totalCount);
+  summaryEl.innerHTML =
+    `<span><b>${escapeHtml(file.name)}</b> (${file.schema.label})</span>` +
+    `<span>unique entries: <b>${fmtCount(count)}</b> / ${fmtCount(file.rows.length)}</span>` +
+    `<span>total ${file.schema.kind === "lua" ? "size" : "allocations"}: <b>${file.schema.kind === "lua" ? fmtBytes(file.totalSize) : totalAlloc}</b>${file.schema.kind === "lua" ? " · " + totalAlloc + " allocations" : ""}</span>` +
+    (state.search || state.typeFilter !== "all"
+      ? `<span>filter: “${escapeHtml(state.search)}”${state.typeFilter !== "all" ? " · " + escapeHtml(state.typeFilter) : ""}</span>`
+      : "");
+}
+
+function renderLoop() {
+  render();
+}
+
+/* ===========================================================================
+ * Tabs / active file
+ * ========================================================================= */
+function rebuildTabs() {
+  tabsEl.innerHTML = "";
+  state.files.forEach((f, i) => {
+    const t = document.createElement("div");
+    t.className = "tab" + (i === state.active ? " active" : "");
+    t.innerHTML = `${escapeHtml(f.name)}<span class="badge">${fmtCount(f.rows.length)}</span>`;
+    t.onclick = () => setActive(i);
+    tabsEl.appendChild(t);
+  });
+}
+
+function setActive(i) {
+  state.active = i;
+  state.selected = -1;
+  state.search = "";
+  state.typeFilter = "all";
+  searchEl.value = "";
+  buildHeader(activeFile());
+  populateTypeFilter(activeFile());
+  rebuildTabs();
+  rebuildFiltered();
+  tableWrap.scrollTop = 0;
+  render();
+}
+
+function populateTypeFilter(file) {
+  const isLua = file && file.schema.kind === "lua";
+  typeFilterEl.style.display = isLua ? "" : "none";
+  typeFilterEl.innerHTML = "";
+  if (!isLua) return;
+  const all = document.createElement("option");
+  all.value = "all"; all.textContent = "All types"; typeFilterEl.appendChild(all);
+  for (const t of [...file.types].sort()) {
+    const o = document.createElement("option");
+    o.value = t; o.textContent = t; typeFilterEl.appendChild(o);
+  }
+  typeFilterEl.value = "all";
+}
+
+/* ===========================================================================
+ * Detail panel
+ * ========================================================================= */
+function showDetail(vi) {
+  const file = activeFile();
+  if (!file) return;
+  const ri = state.filtered[vi];
+  const row = file.rows[ri];
+  state.selected = vi;
+  detailEl.classList.add("open");
+
+  const title =
+    file.schema.kind === "csharp" ? (row.name || "(unnamed)")
+    : file.schema.kind === "lua" ? (row.type || "unknown")
+    : "userdata";
+  detailTitle.textContent = title;
+  const parts = ["count " + fmtCount(row.count)];
+  if (file.schema.kind === "lua") parts.push("size " + fmtBytes(row.size));
+  detailMeta.textContent = parts.join("  ·  ");
+  detailStack.textContent = row.stack || "(no stack captured)";
+
+  // Re-render selected highlight.
+  render();
+}
+
+/* ===========================================================================
+ * Event wiring
+ * ========================================================================= */
+function onSearchChange() {
+  state.search = searchEl.value.trim().toLowerCase();
+  debouncedFilter();
+}
+function onTypeFilterChange() {
+  state.typeFilter = typeFilterEl.value;
+  rebuildFiltered();
+  render();
+}
+
+let filterTimer = null;
+function debouncedFilter() {
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { rebuildFiltered(); render(); }, 150);
+}
+
+headerEl.addEventListener("click", (e) => {
+  const cell = e.target.closest(".hcell");
+  if (!cell) return;
+  const file = activeFile();
+  const key = cell.dataset.key;
+  let dir = -1;
+  if (file.sort.key === key) dir = -file.sort.dir;
+  sortFile(file, key, dir);
+  buildHeader(file);
+  rebuildFiltered();
+  render();
+});
+
+rowsEl.addEventListener("click", (e) => {
+  const rowEl = e.target.closest(".row");
+  if (!rowEl) return;
+  showDetail(parseInt(rowEl.dataset.vi, 10));
+});
+
+$("btn-close").addEventListener("click", () => {
+  detailEl.classList.remove("open");
+  state.selected = -1;
+  render();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    detailEl.classList.remove("open");
+    state.selected = -1;
+    render();
+  }
+});
+
+let scrollRaf = 0;
+tableWrap.addEventListener("scroll", () => {
+  if (scrollRaf) return;
+  scrollRaf = requestAnimationFrame(() => { scrollRaf = 0; renderLoop(); });
+});
+
+// Drag & drop (global so it works over the whole window).
+window.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("drag"); });
+window.addEventListener("dragleave", (e) => {
+  if (e.relatedTarget === null) dz.classList.remove("drag");
+});
+window.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dz.classList.remove("drag");
+  const files = [...(e.dataTransfer?.files || [])].filter((f) =>
+    f.name.toLowerCase().endsWith(".csv"));
+  if (files.length) loadFiles(files);
+});
+
+function loadFiles(files) {
+  dz.classList.add("hidden");
+  app.classList.add("ready");
+  (async () => { for (const f of files) await loadFile(f); })();
+}
+
+$("btn-open").addEventListener("click", () => pickFiles());
+$("btn-more").addEventListener("click", () => pickFiles());
+
+function pickFiles() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".csv,text/csv";
+  input.multiple = true;
+  input.onchange = () => {
+    const files = [...input.files].filter((f) => f.name.toLowerCase().endsWith(".csv"));
+    if (files.length) loadFiles(files);
+  };
+  input.click();
+}
+
+searchEl.addEventListener("input", onSearchChange);
+typeFilterEl.addEventListener("change", onTypeFilterChange);
+
+// Handle window resize.
+window.addEventListener("resize", renderLoop);
+</script>
+</body>
+</html>

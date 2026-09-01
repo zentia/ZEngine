@@ -73,11 +73,11 @@ ZENGINE_API_EXPORT void RemoveUserData(void* t)
         profilerRuntime->RemoveUserData(t);
 }
 
-ZENGINE_API_EXPORT void AddLuaData(void* t, const char* stack, uint32_t size)
+ZENGINE_API_EXPORT void AddLuaData(void* t, const char* stack, uint32_t size, uint32_t type)
 {
     auto&& profilerRuntime = GET_SYSTEM(ProfilerRuntime);
     if (profilerRuntime != nullptr)
-        profilerRuntime->AddLuaData(t, stack, size);
+        profilerRuntime->AddLuaData(t, stack, size, type);
 }
 
 ZENGINE_API_EXPORT void ResizeLuaData(void* t, uint32_t size)

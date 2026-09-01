@@ -5,6 +5,13 @@
 
 set(PROFILER_CSV_EXPORT_TARGET ZProfilerCsvExporter)
 
+# The standalone CSV viewer (a single self-contained HTML file) is copied next
+# to the exporter binary at build time. Open it in any browser and drop the
+# exported *.csv files onto it: it uses virtualized rendering (only visible
+# rows hit the DOM), so multi-hundred-MB CSVs open and scroll instantly, unlike
+# Excel / text editors which load and lay out every row + multiline stack cell.
+set(PROFILER_CSV_VIEWER "${CMAKE_CURRENT_SOURCE_DIR}/Viewer/ProfilerCsvViewer.html")
+
 file(GLOB_RECURSE PROFILER_COMMANDLINE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/CommandLine/*.cpp")
 file(GLOB_RECURSE PROFILER_EXPORT_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Export/*.h")
 file(GLOB_RECURSE PROFILER_EXPORT_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/Export/*.cpp")
@@ -32,3 +39,12 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR (CMAKE_CXX_COMPILER_ID STREQUAL "Cla
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(${PROFILER_CSV_EXPORT_TARGET} PRIVATE -Wreturn-type -Werror=return-type)
 endif()
+
+# Copy the viewer next to ZProfilerCsvExporter(.exe) so it's discoverable
+# wherever the exporter binary lands.
+add_custom_command(TARGET ${PROFILER_CSV_EXPORT_TARGET} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${PROFILER_CSV_VIEWER}"
+            "$<TARGET_FILE_DIR:${PROFILER_CSV_EXPORT_TARGET}>/ProfilerCsvViewer.html"
+    VERBATIM
+)

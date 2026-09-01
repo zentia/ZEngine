@@ -9,7 +9,7 @@
 class ProfilerRuntime : public IEngineSystem
 {
 public:
-    void AddLuaData(void* ptr, const char* stack, uint32_t size);
+    void AddLuaData(void* ptr, const char* stack, uint32_t size, uint32_t type);
     void ResizeLuaData(void* ptr, uint32_t size);
     void AddCSharpData(const int key, const char* name, const char* stack);
     void RemoveCSharpData(const int key);

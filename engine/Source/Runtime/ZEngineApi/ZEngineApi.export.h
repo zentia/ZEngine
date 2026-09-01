@@ -14,7 +14,7 @@ namespace ZEngine
 
     using RemoveUserDataFunction = void (*)(void* ptr);
 
-    using AddLuaDataFunction = void (*)(void* ptr, const char* stack, uint32_t size);
+    using AddLuaDataFunction = void (*)(void* ptr, const char* stack, uint32_t size, uint32_t type);
 
     using ResizeLuaDataFunction = void (*)(void* ptr, uint32_t size);
 

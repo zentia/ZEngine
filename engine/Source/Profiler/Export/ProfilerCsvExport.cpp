@@ -198,10 +198,10 @@ namespace ProfilerCsvExport
                 SetError(errorMessage, "Failed to open CSV for writing: " + luaPath.string());
                 return false;
             }
-            luaFile << "Count,Size,Stack\n";
+            luaFile << "Count,Size,Type,Stack\n";
             for (const auto& info : luaInfos)
             {
-                luaFile << info.count << ',' << info.size << ',' << EscapeCSVField(info.stack) << '\n';
+                luaFile << info.count << ',' << info.size << ',' << LuaMemoryTypeName(info.type) << ',' << EscapeCSVField(info.stack) << '\n';
             }
         }
 

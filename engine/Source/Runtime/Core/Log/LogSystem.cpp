@@ -119,16 +119,39 @@ namespace
         return dir.generic_string();
     }
 
+    // Distinct engine executables (ZEditor, ZProfilerCsvExporter, ZInsights,
+    // etc.) must not share a log file: BqLog's text_file appender opens the log
+    // with exclusive share semantics (FILE_SHARE_READ only on Windows), so a
+    // second process trying to write the same engine_*.log gets
+    // ERROR_SHARING_VIOLATION and the headless tool silently falls back to a
+    // _2.log. Derive the prefix from the executable name so each process owns
+    // its own log (mirrors Application::Initialize's default app-name logic).
+    std::string GetEngineLogFilePrefix()
+    {
+#if defined(_WIN32)
+        char exe_path[MAX_PATH] = {};
+        if (GetModuleFileNameA(nullptr, exe_path, MAX_PATH) > 0)
+        {
+            const std::string stem = std::filesystem::path(exe_path).stem().string();
+            if (!stem.empty())
+            {
+                return stem;
+            }
+        }
+#endif
+        return "engine";
+    }
+
     std::string BuildEngineLogConfig(const std::string& log_file_prefix)
     {
         return std::string(R"(
 				appenders_config.appender_0.type=console
-				appenders_config.appender_0.time_zone=default local time
+				appenders_config.appender_0.time_zone=localtime
 				appenders_config.appender_0.levels=[verbose,debug,info,warning,error,fatal]
 				appenders_config.appender_0.enable=true
 
 				appenders_config.appender_1.type=text_file
-				appenders_config.appender_1.time_zone=default local time
+				appenders_config.appender_1.time_zone=localtime
 				appenders_config.appender_1.levels=[verbose,debug,info,warning,error,fatal]
 				appenders_config.appender_1.file_name=)") +
                log_file_prefix +
@@ -148,7 +171,7 @@ namespace
 LogSystem::LogSystem()
 {
     const std::string log_dir = GetEngineLogDirectory();
-    const std::string log_file_prefix = log_dir + "/engine";
+    const std::string log_file_prefix = log_dir + "/" + GetEngineLogFilePrefix();
     const std::string engine_log_config = BuildEngineLogConfig(log_file_prefix);
 
     m_Logger = std::make_unique<bq::engine_log>(bq::engine_log::create_log("engine", engine_log_config.c_str()));

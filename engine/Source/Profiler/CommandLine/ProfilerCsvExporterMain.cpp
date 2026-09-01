@@ -24,7 +24,12 @@ namespace
                   << "Output files:\n"
                   << "  <base>_csharp.csv\n"
                   << "  <base>_userdata.csv\n"
-                  << "  <base>_lua.csv\n";
+                  << "  <base>_lua.csv\n"
+                  << "\n"
+                  << "Viewing: these CSVs can be very large (multi-line stack cells), so\n"
+                  << "opening them in Excel / a text editor is slow. Instead open the\n"
+                  << "bundled ProfilerCsvViewer.html (sits next to this binary) in a\n"
+                  << "browser and drop the CSV files onto it.\n";
     }
 
     std::filesystem::path MakeDefaultOutputBase(const std::filesystem::path& inputPath)

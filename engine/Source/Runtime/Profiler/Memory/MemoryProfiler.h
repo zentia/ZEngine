@@ -12,7 +12,7 @@ class MemoryProfiler : public Object
 public:
     virtual ~MemoryProfiler() = default;
     void Clear();
-    void AddLuaData(uint64_t ptr, const char* stack, uint32_t size);
+    void AddLuaData(uint64_t ptr, const char* stack, uint32_t size, uint32_t type);
     void RemoveLuaData(uint64_t key);
     void ResizeLuaData(uint64_t ptr, uint32_t size);
 

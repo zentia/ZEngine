@@ -57,10 +57,10 @@ void ProfilerRuntime::RemoveUserData(void* ptr)
         m_MemoryProfiler->RemoveUserData((uint64_t)ptr);
 }
 
-void ProfilerRuntime::AddLuaData(void* ptr, const char* stack, uint32_t size)
+void ProfilerRuntime::AddLuaData(void* ptr, const char* stack, uint32_t size, uint32_t type)
 {
     if (m_MemoryProfiler != nullptr)
-        m_MemoryProfiler->AddLuaData((uint64_t)ptr, stack, size);
+        m_MemoryProfiler->AddLuaData((uint64_t)ptr, stack, size, type);
 }
 
 void ProfilerRuntime::ResizeLuaData(void* ptr, uint32_t size)

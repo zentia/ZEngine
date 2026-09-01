@@ -39,7 +39,7 @@ void MemoryProfiler::RemoveCSharpData(const int key)
     m_CSharpMemoryProfiler.data.erase(key);
 }
 
-void MemoryProfiler::AddLuaData(uint64_t ptr, const char* stack, uint32_t size)
+void MemoryProfiler::AddLuaData(uint64_t ptr, const char* stack, uint32_t size, uint32_t type)
 {
     auto&& element = m_LuaMemoryProfiler.data[ptr];
     if (stack != nullptr)
@@ -47,6 +47,7 @@ void MemoryProfiler::AddLuaData(uint64_t ptr, const char* stack, uint32_t size)
         element.stack = stack;
     }
     element.size = size;
+    element.type = type;
 }
 
 void MemoryProfiler::ResizeLuaData(uint64_t ptr, uint32_t size)

@@ -2,6 +2,7 @@
 #include "CacheWriterBase.h"
 #include "Runtime/File/File.h"
 
+#include <filesystem>
 #include <vector>
 
 class CachedWriter;
@@ -41,5 +42,6 @@ protected:
     size_t m_BlockOnDisk;
     size_t m_Size;
     File m_File;
+    std::filesystem::path m_TempPath;
     size_t m_CacheLimit;
 };

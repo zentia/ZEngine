@@ -19,6 +19,28 @@
     #define Z_LOG_HAS_STD_FORMAT 0
 #endif
 
+#if Z_LOG_HAS_STD_FORMAT && __has_include(<EASTL/string.h>)
+    #include <EASTL/string.h>
+
+    // eastl::string is the engine's primary string type and is frequently passed to
+    // LOG_* macros. LogSystem::log instantiates its fatal branch (fatalCallback ->
+    // std::vformat) for every log level, so eastl::string must be std::formattable
+    // regardless of the actual level. BqLog already serializes eastl::string on its
+    // own; this closes the equivalent std::format gap. The __has_include guard keeps
+    // this header usable by targets (e.g. render_doc) that do not have EASTL on their
+    // include path and never log eastl::string.
+    template <>
+    struct std::formatter<eastl::string> : std::formatter<std::string_view>
+    {
+        template <class FormatContext>
+        auto format(const eastl::string& s, FormatContext& ctx) const
+        {
+            return std::formatter<std::string_view>::format(
+                std::string_view(s.c_str(), s.size()), ctx);
+        }
+    };
+#endif
+
 class LogSystem final : public Singleton<LogSystem>
 {
 public:
