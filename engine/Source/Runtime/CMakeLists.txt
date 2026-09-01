@@ -139,6 +139,15 @@ if(ANDROID OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/DX12/.*\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Interface/Metal/.*\\.(cpp|mm|m)$")
+    # DX12-only passes (DX12MainCameraPass / MainCameraRp2Pass) include <d3d12.h>;
+    # strip them on Vulkan mobile.
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/DX12.*\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/MainCameraRp2Pass\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/DX12.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/MainCameraRp2Pass\\.cpp$")
+    # DX12-only ShaderLab compiler includes <d3d12.h>; the Vulkan compiler (ShaderLabCompiler.cpp) is kept.
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabDx12.*\\.(cpp|h)$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabDx12.*\\.(cpp|h)$")
     # Strip Platform/Windows/ files (not applicable to Android/OHOS)
     list(FILTER HEADER_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
     list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")

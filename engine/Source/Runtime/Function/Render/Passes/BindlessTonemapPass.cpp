@@ -405,7 +405,8 @@ void BindlessTonemapPass::SetupFramebuffer(RHIImageView* target_ldr_view, uint32
     LOG_INFO(ZRender, "SetupFramebuffer: target_ldr_view={}, width={}, height={}", 
              (void*)target_ldr_view, width, height);
     
-    // DEBUG: Log RTV handle of target_ldr_view
+#if defined(_WIN32)
+    // DEBUG: Log RTV handle of target_ldr_view (DX12-only types)
     if (target_ldr_view)
     {
         DX12ImageView* dx12_view = static_cast<DX12ImageView*>(target_ldr_view);
@@ -419,6 +420,7 @@ void BindlessTonemapPass::SetupFramebuffer(RHIImageView* target_ldr_view, uint32
             LOG_WARNING(ZRender, "SetupFramebuffer: target_ldr_view has NO RTV handle!");
         }
     }
+#endif
     
     if (target_ldr_view == nullptr || width == 0 || height == 0)
     {

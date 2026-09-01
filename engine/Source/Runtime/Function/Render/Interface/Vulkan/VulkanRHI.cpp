@@ -828,7 +828,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityF
     static FILE* s_ValidationLog = nullptr;
     if (s_ValidationLog == nullptr)
     {
-        fopen_s(&s_ValidationLog, "e:/Engine/ZEngine/vk_validation.log", "w");
+        s_ValidationLog = fopen("e:/Engine/ZEngine/vk_validation.log", "w");
     }
     const char* sev = "INFO";
     if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)

@@ -132,7 +132,15 @@ bool LocalFileSystemWindowsShared::Write(FileEntryData& data, FileSize at, uint6
 
     LARGE_INTEGER distanceToMove;
     distanceToMove.QuadPart = at.Cast<uint64_t>();
+    if (SetFilePointerEx(hFile, distanceToMove, nullptr, FILE_BEGIN) == FALSE)
+    {
+        data.lastError = GetLastFileSystemError(false);
+        return false;
+    }
+
     BOOL success = TRUE;
+    *actual = 0;
+    const uint64_t totalExpected = size;
     while (size > 0 && success)
     {
         DWORD actualWrite = 0;
@@ -141,10 +149,13 @@ bool LocalFileSystemWindowsShared::Write(FileEntryData& data, FileSize at, uint6
 
         data.lastError = GetLastFileSystemError(success != FALSE);
         buffer = static_cast<const char*>(buffer) + actualWrite;
-        size -= toWriteSize;
+        size -= actualWrite;
         *actual += actualWrite;
+
+        if (actualWrite == 0)
+            break;
     }
-    return true;
+    return success == TRUE && (*actual == totalExpected);
 }
 
 bool LocalFileSystemWindowsShared::Write(FileEntryData& data, uint64_t size, const void* buffer, uint64_t* actual)
@@ -162,14 +173,17 @@ bool LocalFileSystemWindowsShared::Write(FileEntryData& data, uint64_t size, con
     {
         DWORD actualWrite = 0;
         DWORD toWriteSize = std::min<uint64_t>(size, std::numeric_limits<DWORD>::max());
-        BOOL success = ::WriteFile(hFile, buffer, static_cast<DWORD>(toWriteSize), &actualWrite, nullptr);
+        success = ::WriteFile(hFile, buffer, static_cast<DWORD>(toWriteSize), &actualWrite, nullptr);
 
         data.lastError = GetLastFileSystemError(success != FALSE);
         buffer = static_cast<const char*>(buffer) + actualWrite;
-        size -= toWriteSize;
+        size -= actualWrite;
         *actual += actualWrite;
+
+        if (actualWrite == 0)
+            break;
     }
-    return success && (*actual == totalExpected);
+    return success == TRUE && (*actual == totalExpected);
 }
 
 FileSystemError LocalFileSystemWindowsShared::GetLastFileSystemError(bool operationSuccessful) const

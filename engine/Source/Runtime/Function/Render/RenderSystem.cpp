@@ -323,11 +323,13 @@ bool RenderSystem::Initialize()
         {
             pipeline->FinishDx12ShadowPassDescriptorSetup();
         }
+#if defined(_WIN32)
         if (auto* dx12_main_camera =
                 dynamic_cast<DX12MainCameraPass*>(m_RenderPipeline->m_MainCameraPass.get()))
         {
             dx12_main_camera->OnGlobalRenderResourceUploaded();
         }
+#endif
 
         MemoryManager::DestroyObject(global_rendering_res);
         LOG_INFO(ZRender, "DX12 minimal main camera + UI RenderSystem path enabled");

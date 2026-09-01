@@ -15,11 +15,11 @@ static std::unique_ptr<GenericApplication> CreatePlatformApplication()
 {
 #if Z_PLATFORM_WINDOWS
     return std::make_unique<WindowsApplication>();
-#elif Z_PLATFORM_MACOS || Z_PLATFORM_IOS
-    // macOS / iOS: window / view is owned by the host (Cocoa NSWindow / UIKit UIView).
-    // MetalRHI attaches to an externally-provided CAMetalLayer at runtime.
-    // TODO: Implement MacApplication / IOSApplication for standalone window management
-    //       (UE-style FCocoaApplication / FIOSApplication).
+#elif Z_PLATFORM_MACOS || Z_PLATFORM_IOS || Z_PLATFORM_ANDROID || Z_PLATFORM_OHOS
+    // macOS / iOS / Android / OHOS: window / view is owned by the host
+    // (Cocoa NSWindow / UIKit UIView / Android Surface / OHOS XComponent).
+    // The platform RHI attaches to an externally-provided layer/surface at runtime.
+    // TODO: Implement per-platform standalone window management.
     return nullptr;
 #else
     #error "CreatePlatformApplication: unsupported platform"
@@ -59,9 +59,9 @@ bool WindowSystem::Initialize()
 
     m_Application = CreatePlatformApplication();
 
-#if Z_PLATFORM_MACOS || Z_PLATFORM_IOS
-    // Apple platforms: window is managed externally (Cocoa/UIKit host).
-    // MetalRHI attaches to the host's CAMetalLayer; WindowSystem provides
+#if Z_PLATFORM_MACOS || Z_PLATFORM_IOS || Z_PLATFORM_ANDROID || Z_PLATFORM_OHOS
+    // Apple / Android / OHOS platforms: window is managed externally by the host.
+    // The platform RHI attaches to the host's layer/surface; WindowSystem provides
     // only the input/event shell — window creation is deferred to the host.
     if (!m_Application)
     {

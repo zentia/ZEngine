@@ -10,8 +10,11 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(BUILD_SHARED_LIBS OFF)
 
-# Disable PCH to force fresh header parsing (avoids PCH cache mismatch with KeyCodes.h edits)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Y-")
+# Disable PCH to force fresh header parsing (avoids PCH cache mismatch with KeyCodes.h edits).
+# /Y- is MSVC-only; clang/gcc (Android/iOS) treat it as an input filename, so guard it.
+if(MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Y-")
+endif()
 
 include(CMakeDependentOption)
 

@@ -83,6 +83,7 @@ if not exist "%ANDROID_NDK_ROOT%\build\cmake\android.toolchain.cmake" (
 )
 
 set "MAKE_EXE=C:\Strawberry\c\bin\mingw32-make.exe"
+if not exist "%MAKE_EXE%" set "MAKE_EXE=%ANDROID_NDK_ROOT%\prebuilt\windows-x86_64\bin\make.exe"
 if not exist "%MAKE_EXE%" set "MAKE_EXE=mingw32-make"
 set "NDK_HOST_TAG=windows-x86_64"
 if exist "%ANDROID_NDK_ROOT%\toolchains\llvm\prebuilt\windows-arm64\bin\llvm-strip.exe" set "NDK_HOST_TAG=windows-arm64"
