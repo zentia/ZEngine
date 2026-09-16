@@ -470,3 +470,15 @@ add_subdirectory(tests)
 
 # Include the main engine
 add_subdirectory(engine)
+
+# =============================================================================
+# GPU Selection Inspector GUI (optional)
+# =============================================================================
+# Must come AFTER add_subdirectory(engine) above: the ZSlate target it links
+# against is defined deep inside engine/Source/Runtime/CMakeLists.txt, and is
+# not yet available when tools/WindowsEnvironmentCheck is processed earlier in
+# this file. The subdirectory itself is guarded with if(TARGET ZSlate), so it
+# is a no-op when ZSlate was not built (e.g. Runtime target excluded).
+if(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK AND WIN32)
+    add_subdirectory(tools/WindowsEnvironmentCheck/GpuSelectionInspectorGui)
+endif()

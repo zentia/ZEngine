@@ -1,4 +1,5 @@
 #include "EnvironmentProbe.h"
+#include "GpuSelectionProbe.h"
 #include "ReportWriter.h"
 
 #include <Windows.h>
@@ -363,6 +364,8 @@ int wmain(int argumentCount, wchar_t** arguments)
         std::filesystem::create_directories(options.outputDirectory);
 
         auto snapshot = zengine::envcheck::CollectEnvironment();
+        snapshot.gpuSelectionMockResults = zengine::envcheck::RunAllGpuSelectionMockCases();
+        snapshot.gpuSelectionRealProbe = zengine::envcheck::ProbeRealGpuSelection();
         const auto dllPaths = ResolveDllPaths(options);
         for (const auto& dllPath : dllPaths)
         {

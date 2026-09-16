@@ -50,6 +50,8 @@ add_executable(${ENVIRONMENT_CHECK_TARGET}
     DllProbeProtocol.h
     EnvironmentProbe.cpp
     EnvironmentProbe.h
+    GpuSelectionProbe.cpp
+    GpuSelectionProbe.h
     HardwareProbe.cpp
     HardwareProbe.h
     PeInspector.cpp
@@ -104,6 +106,8 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES
     DllProbeProtocol.h
     EnvironmentProbe.cpp
     EnvironmentProbe.h
+    GpuSelectionProbe.cpp
+    GpuSelectionProbe.h
     HardwareProbe.cpp
     HardwareProbe.h
     PeInspector.cpp

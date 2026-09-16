@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DllProbe.h"
+#include "GpuSelectionProbe.h"
 #include "PeInspector.h"
 
 #include <cstdint>
@@ -103,6 +104,8 @@ struct EnvironmentSnapshot
     std::vector<VolumeInfo> volumes;
     std::vector<PeImageInfo> inspectedImages;
     std::vector<DllProbeResult> dllProbeResults;
+    std::vector<GpuSelectionMockCaseResult> gpuSelectionMockResults;
+    GpuSelectionRealProbeResult gpuSelectionRealProbe;
 };
 
 struct Requirements

@@ -142,6 +142,48 @@ std::string BuildTextReport(
                << ", software adapter: " << BoolText(gpu.softwareAdapter) << '\n';
     }
 
+    stream << "\nGPU auto-selection\n"
+           << "  Mock regression cases: " << snapshot.gpuSelectionMockResults.size() << '\n';
+    for (std::size_t index = 0; index < snapshot.gpuSelectionMockResults.size(); ++index)
+    {
+        const auto& mockResult = snapshot.gpuSelectionMockResults[index];
+        stream << "  [" << index << "] " << (mockResult.passed ? "PASS" : "FAIL")
+               << ": " << mockResult.caseName << '\n';
+        for (std::size_t adapterIndex = 0; adapterIndex < mockResult.adapters.size(); ++adapterIndex)
+        {
+            const auto& adapter = mockResult.adapters[adapterIndex];
+            stream << "      [" << adapterIndex << "] " << adapter.name
+                   << " (PCI " << HexId(adapter.vendorId, 4) << ':' << HexId(adapter.deviceId, 4)
+                   << ", dedicated "
+                   << static_cast<double>(adapter.dedicatedVideoMemoryBytes) / BytesPerGiB
+                   << " GiB, shared "
+                   << static_cast<double>(adapter.sharedSystemMemoryBytes) / BytesPerGiB
+                   << " GiB"
+                   << (adapter.looksIntegrated ? ", looks integrated" : "")
+                   << ")\n";
+        }
+        stream << "      chosen=" << mockResult.chosenAdapterIndex
+               << ", expected=" << mockResult.expectedAdapterIndex
+               << ", excludedIntegrated=" << BoolText(mockResult.excludedIntegrated) << '\n';
+    }
+    const auto& gpuSelection = snapshot.gpuSelectionRealProbe;
+    stream << "  Real probe: factory created=" << BoolText(gpuSelection.dxgiFactoryCreated)
+           << ", IDXGIFactory6=" << BoolText(gpuSelection.factory6Available)
+           << ", GpuPreference pick=" << BoolText(gpuSelection.gpuPreferencePicked) << '\n';
+    if (gpuSelection.gpuPreferencePicked)
+    {
+        const auto& preferred = gpuSelection.preferredAdapter;
+        stream << "      Preferred: " << preferred.name
+               << " (PCI " << HexId(preferred.vendorId, 4) << ':' << HexId(preferred.deviceId, 4)
+               << ", dedicated "
+               << static_cast<double>(preferred.dedicatedVideoMemoryBytes) / BytesPerGiB
+               << " GiB)\n";
+    }
+    else if (!gpuSelection.errorMessage.empty())
+    {
+        stream << "      " << gpuSelection.errorMessage << '\n';
+    }
+
     stream << "\nDisplays (" << snapshot.displays.size() << ")\n";
     for (std::size_t index = 0; index < snapshot.displays.size(); ++index)
     {
@@ -368,6 +410,56 @@ std::string BuildJsonReport(
                << "    }" << (index + 1 == snapshot.gpuAdapters.size() ? "" : ",") << '\n';
     }
     stream << "  ],\n";
+
+    stream << "  \"gpuAutoSelection\": {\n"
+           << "    \"mockCases\": [\n";
+    for (std::size_t index = 0; index < snapshot.gpuSelectionMockResults.size(); ++index)
+    {
+        const auto& mockResult = snapshot.gpuSelectionMockResults[index];
+        stream << "      {\n"
+               << "        \"caseName\": \"" << EscapeJson(mockResult.caseName) << "\",\n"
+               << "        \"passed\": " << BoolText(mockResult.passed) << ",\n"
+               << "        \"chosenAdapterIndex\": " << mockResult.chosenAdapterIndex << ",\n"
+               << "        \"expectedAdapterIndex\": " << mockResult.expectedAdapterIndex << ",\n"
+               << "        \"excludedIntegrated\": " << BoolText(mockResult.excludedIntegrated) << ",\n"
+               << "        \"adapters\": [";
+        for (std::size_t adapterIndex = 0; adapterIndex < mockResult.adapters.size(); ++adapterIndex)
+        {
+            if (adapterIndex != 0)
+            {
+                stream << ", ";
+            }
+            const auto& adapter = mockResult.adapters[adapterIndex];
+            stream << "{\"name\": \"" << EscapeJson(adapter.name)
+                   << "\", \"vendorId\": " << adapter.vendorId
+                   << ", \"deviceId\": " << adapter.deviceId
+                   << ", \"dedicatedVideoMemoryBytes\": " << adapter.dedicatedVideoMemoryBytes
+                   << ", \"sharedSystemMemoryBytes\": " << adapter.sharedSystemMemoryBytes
+                   << ", \"looksIntegrated\": " << BoolText(adapter.looksIntegrated)
+                   << "}";
+        }
+        stream << "]\n"
+               << "      }" << (index + 1 == snapshot.gpuSelectionMockResults.size() ? "" : ",") << '\n';
+    }
+    stream << "    ],\n";
+    const auto& gpuSelection = snapshot.gpuSelectionRealProbe;
+    stream << "    \"realProbe\": {\n"
+           << "      \"dxgiFactoryCreated\": " << BoolText(gpuSelection.dxgiFactoryCreated) << ",\n"
+           << "      \"factory6Available\": " << BoolText(gpuSelection.factory6Available) << ",\n"
+           << "      \"gpuPreferencePicked\": " << BoolText(gpuSelection.gpuPreferencePicked) << ",\n"
+           << "      \"preferredAdapter\": {";
+    if (gpuSelection.gpuPreferencePicked)
+    {
+        const auto& preferred = gpuSelection.preferredAdapter;
+        stream << "\"name\": \"" << EscapeJson(preferred.name)
+               << "\", \"vendorId\": " << preferred.vendorId
+               << ", \"deviceId\": " << preferred.deviceId
+               << ", \"dedicatedVideoMemoryBytes\": " << preferred.dedicatedVideoMemoryBytes;
+    }
+    stream << "},\n"
+           << "      \"errorMessage\": \"" << EscapeJson(gpuSelection.errorMessage) << "\"\n"
+           << "    }\n"
+           << "  },\n";
 
     stream << "  \"displays\": [\n";
     for (std::size_t index = 0; index < snapshot.displays.size(); ++index)
