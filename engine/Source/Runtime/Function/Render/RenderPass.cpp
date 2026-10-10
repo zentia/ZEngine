@@ -1,7 +1,7 @@
 #include "Runtime/Function/Render/RenderPass.h"
 
 #include "Runtime/Core/Base/Macro.h"
-#if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+#if defined(Z_HAS_VULKAN)
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
 #endif
 #include "Runtime/Function/Render/RenderResource.h"

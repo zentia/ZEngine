@@ -29,9 +29,17 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${INSIGHTS_SOURCES} ${INSI
 target_include_directories(${INSIGHTS_TARGET} PRIVATE
     ${ENGINE_ROOT_DIR}/Source
     ${ENGINE_ROOT_DIR}/Source/CommonPCH
+    ${ENGINE_ROOT_DIR}/Libraries/ZSlate/include
 )
 
+# SInsightsTimeline derives from ZSlate::SLeafWidget and paints through
+# ZSlate::ISlateRenderer (implemented here by D2DUIRenderer). ZRuntime links
+# ZSlate PRIVATE, so neither its include dir nor its symbols propagate -- link
+# it explicitly.
 target_link_libraries(${INSIGHTS_TARGET} PUBLIC ZRuntime)
+if(TARGET ZSlate)
+    target_link_libraries(${INSIGHTS_TARGET} PRIVATE ZSlate)
+endif()
 target_link_libraries(${INSIGHTS_TARGET} PRIVATE ZEnginePCH)
 add_dependencies(${INSIGHTS_TARGET} ZEnginePCH)
 

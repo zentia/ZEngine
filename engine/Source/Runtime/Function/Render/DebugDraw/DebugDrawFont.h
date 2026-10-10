@@ -6,14 +6,20 @@
 
 #include <stdexcept>
 #include <vector>
-#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
+#if defined(Z_HAS_VULKAN)
+    #include <vma/vk_mem_alloc.h>
+#elif defined(__APPLE__) || defined(__EMSCRIPTEN__)
 // macOS uses Metal (no VMA); Emscripten/WebGL2 has no Vulkan at all and we
 // strip vk_mem_alloc.h on Web. Provide a minimal placeholder so the rest of
 // the header still compiles. The font path that *uses* this allocation lives
 // in debug_draw_buffer.cpp which is excluded from the Web build.
 using VmaAllocation = void*;
 #else
-    #include <vma/vk_mem_alloc.h>
+// Windows DX12-only build (ZENGINE_USE_VULKAN=OFF): the Vulkan SDK include
+// dir (which provides vma/vk_mem_alloc.h) is not on the path. Forward-declare
+// the opaque handle exactly as VMA does so the type matches RenderGpuResources.h.
+struct VmaAllocation_T;
+typedef struct VmaAllocation_T* VmaAllocation;
 #endif
 
 class DebugDrawFont

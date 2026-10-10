@@ -10,10 +10,13 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
-#if defined(__APPLE__) || defined(__EMSCRIPTEN__)
+#if defined(Z_HAS_VULKAN)
+    #include <vma/vk_mem_alloc.h>
+#elif defined(__APPLE__) || defined(__EMSCRIPTEN__)
 using VmaAllocation = void*;
 #else
-    #include <vma/vk_mem_alloc.h>
+struct VmaAllocation_T;
+typedef struct VmaAllocation_T* VmaAllocation;
 #endif
 
 // Forward declarations

@@ -135,6 +135,11 @@ void CreateRenderTarget()
     }
 }
 
+ZSlate::Vector2 MousePos(LPARAM lParam)
+{
+    return ZSlate::Vector2(static_cast<float>(GET_X_LPARAM(lParam)), static_cast<float>(GET_Y_LPARAM(lParam)));
+}
+
 std::string BuildStatusText()
 {
     char buf[256];
@@ -163,9 +168,11 @@ void Render()
     g_RenderTarget->Clear(D2D1::ColorF(0.07f, 0.07f, 0.09f, 1.0f));
 
     // Status bar.
-    g_Renderer->DrawQuad(UIRect(0.0f, 0.0f, size.width, kStatusBarHeight), ZSlate::UIColor(0.14f, 0.14f, 0.17f, 1.0f));
-    g_Renderer->DrawText(UIRect(8.0f, 0.0f, size.width - 12.0f, kStatusBarHeight), BuildStatusText(), 13.0f,
-                         ZSlate::UIColor(0.78f, 0.80f, 0.85f, 1.0f), TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
+    g_Renderer->DrawQuad(ZSlate::UIRect(0.0f, 0.0f, size.width, kStatusBarHeight),
+                         ZSlate::UIColor(0.14f, 0.14f, 0.17f, 1.0f));
+    g_Renderer->DrawTextLabel(ZSlate::UIRect(8.0f, 0.0f, size.width - 12.0f, kStatusBarHeight), BuildStatusText(),
+                              13.0f, ZSlate::UIColor(0.78f, 0.80f, 0.85f, 1.0f), ZSlate::TextAnchor::MiddleLeft,
+                              ZSlate::TextWrapMode::NoWrap);
 
     // Timeline fills the rest.
     const float timeline_w = size.width;
@@ -183,7 +190,7 @@ void Render()
     ZSlate::FPaintContext ctx;
     ctx.Renderer = g_Renderer;
     ctx.LayerId = 0;
-    const ZSlate::FGeometry geom(Vector2(0.0f, kStatusBarHeight), Vector2(timeline_w, timeline_h));
+    const ZSlate::FGeometry geom(ZSlate::Vector2(0.0f, kStatusBarHeight), ZSlate::Vector2(timeline_w, timeline_h));
     g_Timeline.Paint(ctx, geom);
 
     const HRESULT hr = g_RenderTarget->EndDraw();
@@ -216,7 +223,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         case WM_MBUTTONDOWN:
         {
             SetCapture(hwnd);
-            const Vector2 pos(static_cast<float>(GET_X_LPARAM(lParam)), static_cast<float>(GET_Y_LPARAM(lParam)));
+            const ZSlate::Vector2 pos(MousePos(lParam));
             g_Timeline.OnMouseButtonDown(pos, msg == WM_LBUTTONDOWN ? 0 : 2);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -224,7 +231,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
         case WM_MOUSEMOVE:
         {
-            const Vector2 pos(static_cast<float>(GET_X_LPARAM(lParam)), static_cast<float>(GET_Y_LPARAM(lParam)));
+            const ZSlate::Vector2 pos(MousePos(lParam));
             g_Timeline.OnMouseMove(pos);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
@@ -233,7 +240,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         case WM_LBUTTONUP:
         case WM_MBUTTONUP:
         {
-            const Vector2 pos(static_cast<float>(GET_X_LPARAM(lParam)), static_cast<float>(GET_Y_LPARAM(lParam)));
+            const ZSlate::Vector2 pos(MousePos(lParam));
             g_Timeline.OnMouseButtonUp(pos, msg == WM_LBUTTONUP ? 0 : 2);
             if (GetCapture() == hwnd)
                 ReleaseCapture();
@@ -245,7 +252,7 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             POINT pt {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             ScreenToClient(hwnd, &pt);
-            const Vector2 pos(static_cast<float>(pt.x), static_cast<float>(pt.y));
+            const ZSlate::Vector2 pos(static_cast<float>(pt.x), static_cast<float>(pt.y));
             const float delta = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? 1.0f : -1.0f;
             g_Timeline.OnMouseWheel(pos, delta);
             InvalidateRect(hwnd, nullptr, FALSE);
