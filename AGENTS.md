@@ -630,6 +630,15 @@ Or via the gen scripts (both already accept `--papi`):
 - `gen_macos.sh --papi v8`
 - `setup_ninja.bat --papi v8`
 
+`gen_windows.bat` additionally accepts `--no-vulkan`, which forwards
+`-DZENGINE_USE_VULKAN=OFF`. That produces a **DX12-only Windows build**: no
+`VULKAN_SDK` env var / Vulkan SDK install is required (otherwise
+`engine/CMakeLists.txt` FATAL_ERRORs), `Z_HAS_VULKAN` is not defined, and
+`Runtime/CMakeLists.txt` strips the Vulkan / Metal / non-DX12-pass TUs while
+`ShaderLab` drops `ShaderLabCompiler.cpp`. Use it for slim CI or on machines
+without a Vulkan SDK. `--vulkan` is the (default) inverse. Run
+`gen_windows.bat --help` for the full flag list.
+
 The default stays at `quickjs` so a fresh clone without the V8 backend
 binaries still configures cleanly. To switch the project-wide default to
 v8 once the V8 binaries are vendored / auto-downloaded, change the four

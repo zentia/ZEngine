@@ -6,8 +6,12 @@ REM Parse command line arguments
 REM PAPI_TYPE selects the JS scripting backend. ZEngine is JS-only;
 REM supported values: v8 (release/relwithdebinfo), quickjs (debug/mobile/web).
 REM Default is quickjs (debug builds use QuickJS for faster iteration).
+REM USE_VULKAN controls -DZENGINE_USE_VULKAN. Default ON (Windows builds both
+REM the DX12 and Vulkan backends); pass --no-vulkan for a DX12-only build that
+REM needs no Vulkan SDK at all.
 set PAPI_TYPE=quickjs
 set USE_UNITY_BUILD=OFF
+set USE_VULKAN=ON
 set PRESET_NAME=windows_visual_studio
 :parse_args
 if "%~1"=="" goto end_parse
@@ -32,9 +36,36 @@ if /i "%~1"=="--ninja" (
     shift
     goto parse_args
 )
+REM --no-vulkan: DX12-only build. Skips the Vulkan SDK requirement entirely
+REM (no VULKAN_SDK env var needed) and excludes every Vulkan translation unit
+REM from ZRuntime / ShaderLab. See engine/CMakeLists.txt (ZENGINE_USE_VULKAN).
+if /i "%~1"=="--no-vulkan" (
+    set USE_VULKAN=OFF
+    shift
+    goto parse_args
+)
+REM --vulkan: explicit inverse of --no-vulkan (this is already the default).
+if /i "%~1"=="--vulkan" (
+    set USE_VULKAN=ON
+    shift
+    goto parse_args
+)
+if /i "%~1"=="--help" (
+    goto usage
+)
+if /i "%~1"=="/?" (
+    goto usage
+)
 shift
 goto parse_args
 :end_parse
+
+REM Assemble the CMake -D list. Kept as a flat variable so it can be passed
+REM through unquoted -- zbuild.py's --extra-args uses argparse REMAINDER, and a
+REM single quoted "a b" string would arrive as ONE CMake argument.
+set CMAKE_EXTRA_ARGS=-DPAPI_TYPE=%PAPI_TYPE%
+if "%USE_UNITY_BUILD%"=="ON" set CMAKE_EXTRA_ARGS=%CMAKE_EXTRA_ARGS% -DUSE_UNITY_BUILD=ON
+if "%USE_VULKAN%"=="OFF" set CMAKE_EXTRA_ARGS=%CMAKE_EXTRA_ARGS% -DZENGINE_USE_VULKAN=OFF
 
 REM Validate PAPI_TYPE -- JS-only (quickjs / v8). Lua / Python / Node.js
 REM backends were removed; ZEngine commits to TypeScript-first scripting
@@ -59,6 +90,12 @@ if "%USE_UNITY_BUILD%"=="ON" (
 ) else (
     echo [INFO] Unity Build: Disabled
 )
+if "%USE_VULKAN%"=="OFF" (
+    echo [INFO] Vulkan: Disabled (DX12 only, no Vulkan SDK required)
+) else (
+    echo [INFO] Vulkan: Enabled (DX12 default runtime + Vulkan switchable backend)
+)
+echo [INFO] CMake args: %CMAKE_EXTRA_ARGS%
 echo.
 REM Get CPU count for display
 for /f %%I in ('powershell -Command "[System.Environment]::ProcessorCount"') do set CPU_COUNT=%%I
@@ -83,7 +120,9 @@ echo      Ninja is typically 2-3x faster than Visual Studio generator!
 echo.
 echo   === Other Options ===
 echo   4. Use --fast flag to enable Unity Builds (faster full builds, slower incremental)
-echo   5. Example: gen_windows.bat --ninja --papi lua
+echo   5. Use --no-vulkan flag for a DX12-only build (no Vulkan SDK needed):
+echo      gen_windows.bat --no-vulkan
+echo   6. Example: gen_windows.bat --ninja --papi v8 --no-vulkan
 echo.
 
 REM Check if running in VSCode/Cursor environment
@@ -98,18 +137,10 @@ REM Check if Python is available (for unified tool)
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [WARNING] Python not found, using CMake directly
-    if "%USE_UNITY_BUILD%"=="ON" (
-        cmake --preset "%PRESET_NAME%" -DPAPI_TYPE=%PAPI_TYPE% -DUSE_UNITY_BUILD=ON
-    ) else (
-        cmake --preset "%PRESET_NAME%" -DPAPI_TYPE=%PAPI_TYPE%
-    )
+    cmake --preset "%PRESET_NAME%" %CMAKE_EXTRA_ARGS%
 ) else (
     echo [INFO] Using unified build tool...
-    if "%USE_UNITY_BUILD%"=="ON" (
-        python zbuild.py configure --preset %PRESET_NAME% --extra-args "-DPAPI_TYPE=%PAPI_TYPE% -DUSE_UNITY_BUILD=ON"
-    ) else (
-        python zbuild.py configure --preset %PRESET_NAME% --extra-args "-DPAPI_TYPE=%PAPI_TYPE%"
-    )
+    python zbuild.py configure --preset %PRESET_NAME% --extra-args %CMAKE_EXTRA_ARGS%
 )
 
 REM Restore VSCODE_NLS_CONFIG
@@ -127,3 +158,31 @@ echo.
 echo [SUCCESS] Project files generated successfully!
 echo.
 pause
+exit /b 0
+
+:usage
+echo.
+echo ========================================
+echo ZEngine Project Generation - Usage
+echo ========================================
+echo.
+echo   gen_windows.bat [options]
+echo.
+echo Options:
+echo   --papi ^<quickjs^|v8^>   JS scripting backend (default: quickjs)
+echo   --unity              Enable Unity Build (faster full builds)
+echo   --fast               Use the windows_visual_studio_fast preset (Unity Build on)
+echo   --ninja              Use the windows_ninja preset (Ninja Multi-Config)
+echo   --no-vulkan          DX12-only build: sets -DZENGINE_USE_VULKAN=OFF, so no
+echo                        Vulkan SDK / VULKAN_SDK env var is required
+echo   --vulkan             Keep Vulkan enabled (default)
+echo   --help               Show this help
+echo.
+echo Examples:
+echo   gen_windows.bat
+echo   gen_windows.bat --ninja --papi v8
+echo   gen_windows.bat --no-vulkan
+echo   gen_windows.bat --ninja --fast --no-vulkan
+echo.
+pause
+exit /b 0
