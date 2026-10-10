@@ -44,6 +44,12 @@ if /I "%~1"=="--ndk" (
     shift
     goto :parse_args
 )
+if /I "%~1"=="--vulkan-sdk" (
+    set "VULKAN_SDK=%~2"
+    shift
+    shift
+    goto :parse_args
+)
 if /I "%~1"=="--clean" (
     set "CLEAN=1"
     shift
@@ -59,13 +65,14 @@ echo Unknown option: %~1
 goto :usage
 
 :help
-echo Usage: %~nx0 [--abi arm64-v8a] [--config Release] [--platform android-24] [--jobs N] [--ndk PATH] [--clean] [--no-strip]
+echo Usage: %~nx0 [--abi arm64-v8a] [--config Release] [--platform android-24] [--jobs N] [--ndk PATH] [--vulkan-sdk PATH] [--clean] [--no-strip]
 echo Output:  bin\android\ABI\CONFIG\libZRuntimeShared.so
 echo Symbols: bin\android\symbols\CONFIG\ABI\libZRuntimeShared.so
+echo Vulkan SDK lookup order: --vulkan-sdk, VULKAN_SDK env, registry (User/Machine), latest C:\VulkanSDK\*
 exit /b 0
 
 :usage
-echo Usage: %~nx0 [--abi arm64-v8a] [--config Release] [--platform android-24] [--jobs N] [--ndk PATH] [--clean] [--no-strip]
+echo Usage: %~nx0 [--abi arm64-v8a] [--config Release] [--platform android-24] [--jobs N] [--ndk PATH] [--vulkan-sdk PATH] [--clean] [--no-strip]
 echo Output:  bin\android\ABI\CONFIG\libZRuntimeShared.so
 echo Symbols: bin\android\symbols\CONFIG\ABI\libZRuntimeShared.so
 exit /b 1
@@ -79,6 +86,47 @@ if not defined ANDROID_NDK_ROOT (
 )
 if not exist "%ANDROID_NDK_ROOT%\build\cmake\android.toolchain.cmake" (
     echo [ERROR] Android toolchain not found: %ANDROID_NDK_ROOT%\build\cmake\android.toolchain.cmake
+    exit /b 1
+)
+
+REM ---- Vulkan SDK ----------------------------------------------------------
+REM Android forces ZENGINE_USE_VULKAN=ON, and engine/CMakeLists.txt reads the
+REM SDK root ONLY from the VULKAN_SDK env var (Include/ for vulkan + vma headers,
+REM Bin/glslangValidator.exe for offline SPIR-V). Resolve it here so a shell
+REM started before the SDK installer set the variable still works.
+REM Order: --vulkan-sdk > current env > registry (User, Machine) > newest C:\VulkanSDK\*.
+if not defined VULKAN_SDK (
+    for /f "tokens=2,*" %%A in ('reg query "HKCU\Environment" /v VULKAN_SDK 2^>nul ^| findstr /i "VULKAN_SDK"') do set "VULKAN_SDK=%%B"
+)
+if not defined VULKAN_SDK (
+    for /f "tokens=2,*" %%A in ('reg query "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment" /v VULKAN_SDK 2^>nul ^| findstr /i "VULKAN_SDK"') do set "VULKAN_SDK=%%B"
+)
+if not defined VULKAN_SDK if exist "C:\VulkanSDK\" (
+    for /f "delims=" %%D in ('dir /b /ad /o:n "C:\VulkanSDK" 2^>nul') do (
+        if exist "C:\VulkanSDK\%%D\Include\vulkan\vulkan.h" set "VULKAN_SDK=C:\VulkanSDK\%%D"
+    )
+)
+if not defined VULKAN_SDK (
+    echo [ERROR] Vulkan SDK not found. Install it from https://vulkan.lunarg.com/ or pass --vulkan-sdk PATH.
+    exit /b 1
+)
+if "%VULKAN_SDK:~-1%"=="\" set "VULKAN_SDK=%VULKAN_SDK:~0,-1%"
+if not exist "%VULKAN_SDK%\Include\vulkan\vulkan.h" (
+    echo [ERROR] Invalid Vulkan SDK ^(missing Include\vulkan\vulkan.h^): %VULKAN_SDK%
+    exit /b 1
+)
+if not exist "%VULKAN_SDK%\Bin\glslangValidator.exe" (
+    echo [ERROR] Invalid Vulkan SDK ^(missing Bin\glslangValidator.exe^): %VULKAN_SDK%
+    exit /b 1
+)
+REM VMA is an OPTIONAL component of the LunarG installer (com.lunarg.vulkan.vma)
+REM and is not installed by default, but VulkanRHI.h includes <vma/vk_mem_alloc.h>.
+if not exist "%VULKAN_SDK%\Include\vma\vk_mem_alloc.h" (
+    echo [ERROR] Vulkan SDK is missing the Vulkan Memory Allocator header:
+    echo         %VULKAN_SDK%\Include\vma\vk_mem_alloc.h
+    echo [FIX]   Add the VMA component with the SDK maintenance tool ^(run as Administrator^):
+    echo         "%VULKAN_SDK%\maintenancetool.exe" install com.lunarg.vulkan.vma --accept-licenses --confirm-command
+    echo         or open maintenancetool.exe, choose "Add or remove components", tick "Vulkan Memory Allocator header".
     exit /b 1
 )
 
@@ -98,6 +146,7 @@ echo ZRuntimeShared Android Build
 echo ========================================
 echo Root:   %ROOT_DIR%
 echo NDK:    %ANDROID_NDK_ROOT%
+echo Vulkan: %VULKAN_SDK%
 echo ABI:    %ABI%
 echo Config: %CONFIG%
 echo Output: %OUT_SO%
