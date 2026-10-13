@@ -10,8 +10,7 @@
 #include "Editor/EditorWindow/ZSlateInspectorWindow/ZSlateInspectorWindow.h"
 #include "Editor/EditorWindow/ZSlatePackageManagerWindow/ZSlatePackageManagerWindow.h"
 #include "Editor/EditorWindow/ZSlatePreviewWindow/ZSlatePreviewWindow.h"
-// ZSlateContentBrowserWindow: excluded (ContentBrowserContext reference members
-// prevent trivial stubbing while UIRenderer->ISlateRenderer migration is in progress)
+#include "Editor/EditorWindow/ZSlateContentBrowserWindow/ZSlateContentBrowserWindow.h"
 #include "Editor/EditorWindow/ZSlateAnimationWindow/ZSlateAnimationWindow.h"
 #include "Editor/EditorWindow/ZSlateBlueprintWindow/ZSlateBlueprintWindow.h"
 #include "Editor/EditorWindow/ZSlateMaterialEditorWindow/ZSlateMaterialEditorWindow.h"
@@ -33,8 +32,8 @@ namespace
          NewEditorPanel<ZSlateGameWindow>},
         {EditorLayoutWindowIds::kConsole, EditorWindowCategory::General, true, typeid(ZSlateConsoleWindow),
          NewEditorPanel<ZSlateConsoleWindow>},
-        // ContentBrowser: excluded (ContentBrowserContext references prevent trivial stubbing)
-        // {EditorLayoutWindowIds::kContentBrowser, EditorWindowCategory::General, true, ...},
+        {EditorLayoutWindowIds::kContentBrowser, EditorWindowCategory::General, true,
+         typeid(ZSlateContentBrowserWindow), NewEditorPanel<ZSlateContentBrowserWindow>},
         {EditorLayoutWindowIds::kInspector, EditorWindowCategory::General, true,
          typeid(ZSlateInspectorWindow), NewEditorPanel<ZSlateInspectorWindow>},
         {EditorLayoutWindowIds::kPreview, EditorWindowCategory::General, true, typeid(ZSlatePreviewWindow),

@@ -291,6 +291,8 @@ else()
   add_subdirectory(Source/Insights)
   # TexPreview: standalone block-compressed texture preview tool (ASTC, BC7)
   add_subdirectory(Source/Tools/TexPreview)
+  # LuaMemPreview: standalone viewer for the Lua section of a MemoryProfiler CSV dump
+  add_subdirectory(Source/Tools/LuaMemPreview)
 endif()
 #add_subdirectory(Source/test)
 

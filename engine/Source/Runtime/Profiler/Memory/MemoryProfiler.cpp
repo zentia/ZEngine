@@ -52,8 +52,13 @@ void MemoryProfiler::AddLuaData(uint64_t ptr, const char* stack, uint32_t size, 
 
 void MemoryProfiler::ResizeLuaData(uint64_t ptr, uint32_t size)
 {
-    auto&& element = m_LuaMemoryProfiler.data[ptr];
-    element.size = size;
+    // Only update known objects: using operator[] here would materialise an
+    // entry with type 0 ("table") and an empty stack for any object whose
+    // creation happened before the profiler was registered, inflating the
+    // table bucket with phantom records.
+    auto it = m_LuaMemoryProfiler.data.find(ptr);
+    if (it != m_LuaMemoryProfiler.data.end())
+        it->second.size = size;
 }
 
 void MemoryProfiler::RemoveLuaData(uint64_t ptr)

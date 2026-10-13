@@ -198,6 +198,11 @@ namespace ProfilerCsvExport
                 SetError(errorMessage, "Failed to open CSV for writing: " + luaPath.string());
                 return false;
             }
+            // Data rows only - no summary row. After a GameCore sync pass the
+            // sum of every row already equals Lua's own accounting
+            // (collectgarbage("count") * 1024), so any consumer can derive the
+            // total itself. Emitting a TOTAL row here would make every such
+            // consumer double count it.
             luaFile << "Count,Size,Type,Stack\n";
             for (const auto& info : luaInfos)
             {

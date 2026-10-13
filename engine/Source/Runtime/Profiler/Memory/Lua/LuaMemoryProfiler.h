@@ -30,7 +30,12 @@ struct LuaDisplayData
     eastl::string stack;
 };
 
-/* Type tag mirror of ltracker.h's lua_track_type_t (GameCore). Keep in sync. */
+/* Type tag mirror of ltracker.h's lua_track_type_t (GameCore). Keep in sync.
+** 0-7 are GC objects and now carry their FULL footprint (a table includes its
+** array/hash part, a proto its bytecode + constants + debug info, a thread its
+** value stack + CallInfo list and - for the main thread - the global_State).
+** 8-9 are VM memory that belongs to no GC object. Summing all of them yields
+** the value reported by GameCore_LuaMemProfiler_TotalBytes(). */
 inline const char* LuaMemoryTypeName(uint32_t type)
 {
     switch (type)
@@ -43,6 +48,8 @@ inline const char* LuaMemoryTypeName(uint32_t type)
     case 5: return "proto";
     case 6: return "upval";
     case 7: return "thread";
+    case 8: return "string_table";
+    case 9: return "vm_other";
     default: return "unknown";
     }
 }
@@ -58,8 +65,10 @@ struct LuaMemoryProfiler
 
     eastl::vector<LuaDisplayData>& GetLuaInfos()
     {
-        if (size > 0)
-            return luaInfos;
+        /* Always re-aggregate: 'data' is refreshed by a sync pass on the
+           GameCore side right before every snapshot, so caching on
+           'size > 0' would make the second and later snapshots stale. */
+        size = 0;
         eastl::unordered_map<StringWithHash, LuaDisplayData> sizeData;
         for (auto&& info : data)
         {

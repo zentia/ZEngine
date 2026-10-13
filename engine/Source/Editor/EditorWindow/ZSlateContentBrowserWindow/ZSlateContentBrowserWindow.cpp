@@ -27,7 +27,7 @@
 #include "ZSlate/Widgets/SMenu.h"
 #include "ZSlate/Widgets/SDropTarget.h"
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
-#include "ZSlate/Widgets/SSplitter.h"
+#include "ZSlate/Widgets/Layout/SSplitter.h"
 #include "ZSlate/Widgets/Layout/SSpacer.h"
 #include "ZSlate/Widgets/Text/STextBlock.h"
 
@@ -1112,15 +1112,18 @@ void ZSlateContentBrowserWindow::OnGUI()
     // per-window SlateImGuiRenderer fallback was retired.
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
     {
-        BatchedUIRenderer& renderer = overlay.GetRenderer();
+        // ZSlateEditorOverlay IS an ISlateRenderer (same pattern as MenuController).
+        // Paint AND clip through the overlay so both land on the same target --
+        // mixing overlay draws with BatchedUIRenderer clips would split them,
+        // because the overlay's ISlateRenderer methods bypass GetRenderer().
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
         m_Root->CacheDesiredSize();
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;
         ctx.LayerId = 0;
-        renderer.PushClipRect(region, true);
+        overlay.PushClipRect(region);
         m_Root->Paint(ctx, geometry);
-        renderer.PopClipRect();
+        overlay.PopClipRect();
     }
 
     // ---- Input --------------------------------------------------------------
@@ -1147,7 +1150,7 @@ void ZSlateContentBrowserWindow::OnGUI()
         {
             // Append the popup into the shared batch after the panel content so it
             // draws on top (the native overlay is composited after all ImGui).
-            m_Popup.Render(overlay.GetRenderer(), mouse, left_down, wheel, viewport_rect, 1);
+            m_Popup.Render(overlay, mouse, left_down, wheel, viewport_rect, 1);
         }
     }
     else

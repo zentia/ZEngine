@@ -9,7 +9,7 @@
 void ZSlateConsoleWindow::PumpBufferedLogsIfOpen() {}
 
 // ---- ZSlateContentBrowserWindow ----
-void ZSlateContentBrowserWindow::ExecutePendingImportDialog() {}
+// Real implementation is built; no stub needed.
 
 // ---- ZSlateGameWindow ----
 ZSlateGameWindow::ZSlateGameWindow(EditorUI* editor_ui)

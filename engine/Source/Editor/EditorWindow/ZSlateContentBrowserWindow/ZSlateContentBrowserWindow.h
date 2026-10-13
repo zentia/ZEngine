@@ -81,8 +81,8 @@ private:
     void SelectNode(EditorFileNode* node);
     void NavigateToFolder(EditorFileNode* folder);
     void EnsureBrowsedFolder();
-    void OpenContextMenuFor(EditorFileNode* node, const Vector2& screen_pos, float scale);
-    void OpenCreateMenu(const Vector2& screen_pos, float scale);
+    void OpenContextMenuFor(EditorFileNode* node, const ZSlate::Vector2& screen_pos, float scale);
+    void OpenCreateMenu(const ZSlate::Vector2& screen_pos, float scale);
     void RebindSelectionAfterTreeRebuild(const std::string& selected_path, const std::string& browsed_path);
     void HandleNodeActivated(EditorFileNode* node, EContentBrowserRowPanel panel);
 
@@ -129,7 +129,7 @@ private:
 
     // Right-click target captured during routing, opened on the up edge.
     EditorFileNode* m_PendingContextNode {nullptr};
-    Vector2 m_PendingContextPos {0.0f, 0.0f};
+    ZSlate::Vector2 m_PendingContextPos {0.0f, 0.0f};
     bool m_HasPendingContext {false};
 
     ZSlate::SlateInputRouter m_Input;

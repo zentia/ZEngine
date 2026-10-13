@@ -451,3 +451,6 @@ modify_cmake.py
 
 # CodeBuddy user-specific data
 .codebuddy/plans/
+
+# Local verification build trees
+build_gpu_inspector_verify/

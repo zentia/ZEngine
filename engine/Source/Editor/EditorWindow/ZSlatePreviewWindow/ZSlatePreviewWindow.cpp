@@ -466,18 +466,21 @@ void ZSlatePreviewWindow::OnGUI()
     const FGeometry geometry(ZSlate::Vector2(pos_x, pos_y), ZSlate::Vector2(avail_w, avail_h));
 
     {
-        BatchedUIRenderer& renderer = overlay.GetRenderer();
+        // ZSlateEditorOverlay IS an ISlateRenderer (same pattern as MenuController).
+        // Paint AND clip through the overlay so both land on the same target --
+        // mixing overlay draws with BatchedUIRenderer clips would split them,
+        // because the overlay's ISlateRenderer methods bypass GetRenderer().
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
 
         m_Root->CacheDesiredSize();
 
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;
         ctx.LayerId = 0;
 
-        renderer.PushClipRect(region, true);
+        overlay.PushClipRect(region);
         m_Root->Paint(ctx, geometry);
-        renderer.PopClipRect();
+        overlay.PopClipRect();
     }
 
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();

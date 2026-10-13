@@ -33,7 +33,7 @@ STUB_WIN(ZSlateBlueprintWindow, "Blueprint")
 STUB_WIN(ZSlateTimelineWindow, "Timeline")
 STUB_WIN(ZSlateHierarchyWindow, "Hierarchy")
 STUB_WIN(ZSlateMaterialEditorWindow, "MaterialEditor")
-STUB_WIN(ZSlatePreviewWindow, "Preview")
+// ZSlatePreviewWindow: real implementation is built (native zasset preview).
 STUB_WIN(ZSlateInsightsWindow, "Insights")
 
 // ZSlateConsoleWindow declares virtual ~ZSlateConsoleWindow() explicitly

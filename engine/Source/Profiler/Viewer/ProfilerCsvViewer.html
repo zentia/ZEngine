@@ -78,6 +78,30 @@
   }
   #summary b { color: var(--text); font-weight: 600; }
 
+  /* ---------- Per-type breakdown (Lua) ----------
+     The long tail makes scrolling useless for "which category owns the
+     memory", so the split is surfaced up front and doubles as a filter. */
+  #breakdown {
+    display: none; padding: 7px 14px 8px; gap: 6px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--border); flex-wrap: wrap; align-items: center;
+  }
+  #breakdown.on { display: flex; }
+  .bd-bar {
+    display: flex; width: 100%; height: 8px; border-radius: 4px;
+    overflow: hidden; margin-bottom: 3px; background: #2a2a2e;
+  }
+  .bd-seg { height: 100%; }
+  .chip {
+    display: flex; align-items: center; gap: 5px; padding: 2px 8px;
+    border-radius: 10px; border: 1px solid var(--border); cursor: pointer;
+    font-size: 11px; color: var(--text-dim); white-space: nowrap; user-select: none;
+  }
+  .chip:hover { color: var(--text); border-color: var(--accent-dim); }
+  .chip.active { background: var(--bg-selected); color: var(--text); }
+  .chip b { color: var(--text); font-weight: 600; }
+  .chip .dot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+  .chip .pct { opacity: .65; }
+
   #spacer-left { display: flex; align-items: center; gap: 8px; }
 
   /* ---------- Virtualized table ---------- */
@@ -159,6 +183,7 @@
     <span id="status"></span>
   </div>
   <div id="summary"></div>
+  <div id="breakdown"></div>
   <div id="table-wrap" tabindex="0">
     <div id="header" class="grid"></div>
     <div id="spacer"></div>
@@ -210,6 +235,27 @@ const SCHEMAS = {
     defaultSort: { key: "size", dir: -1 },
   },
 };
+
+/* Stable colours for the Lua type tags mirrored from ltracker.h. Unknown tags
+ * fall back to a hash-derived hue so a future tag still renders sensibly. */
+const TYPE_COLORS = {
+  table:        "#4ea1ff",
+  string:       "#9fd0a8",
+  userdata:     "#e0a458",
+  lua_closure:  "#c792ea",
+  c_closure:    "#a07ad6",
+  proto:        "#ff8f70",
+  upval:        "#5fb3b3",
+  thread:       "#f07178",
+  string_table: "#8a8a92",
+  vm_other:     "#5a5a62",
+};
+function typeColor(t) {
+  if (TYPE_COLORS[t]) return TYPE_COLORS[t];
+  let h = 0;
+  for (let i = 0; i < t.length; i++) h = (h * 31 + t.charCodeAt(i)) >>> 0;
+  return "hsl(" + (h % 360) + " 55% 60%)";
+}
 
 const ROW_H = 24;
 const HEADER_H = 34;
@@ -383,6 +429,20 @@ async function loadFile(file) {
   const types = new Set();
   for (const r of rows) if (r.type) types.add(r.type);
 
+  // Per-type aggregation. Single extra pass; cheap next to parsing.
+  let byType = null;
+  if (schema.kind === "lua") {
+    const m = new Map();
+    for (const r of rows) {
+      let e = m.get(r.type);
+      if (!e) { e = { type: r.type, size: 0, count: 0, entries: 0 }; m.set(r.type, e); }
+      e.size += r.size;
+      e.count += r.count;
+      e.entries++;
+    }
+    byType = [...m.values()].sort((a, b) => b.size - a.size);
+  }
+
   state.files.push({
     name: file.name,
     schema,
@@ -390,6 +450,7 @@ async function loadFile(file) {
     totalCount,
     totalSize,
     types,
+    byType,
     sort: { key: schema.defaultSort.key, dir: schema.defaultSort.dir },
   });
 
@@ -511,6 +572,40 @@ function render() {
       : "");
 }
 
+function renderBreakdown(file) {
+  const bd = $("breakdown");
+  if (!file || file.schema.kind !== "lua" || !file.byType || !file.byType.length) {
+    bd.className = "";
+    bd.innerHTML = "";
+    return;
+  }
+  bd.className = "on";
+  const total = file.totalSize || 1;
+
+  const bar = file.byType.map((e) =>
+    `<div class="bd-seg" style="width:${(e.size / total * 100).toFixed(3)}%;` +
+    `background:${typeColor(e.type)}" title="${escapeHtml(e.type)} — ` +
+    `${fmtBytes(e.size)}"></div>`).join("");
+
+  const chips = file.byType.map((e) => {
+    const pct = (e.size / total * 100).toFixed(1);
+    const on = state.typeFilter === e.type ? " active" : "";
+    return `<div class="chip${on}" data-type="${escapeHtml(e.type)}" ` +
+           `title="${fmtCount(e.entries)} rows · ${fmtCount(e.count)} objects">` +
+           `<span class="dot" style="background:${typeColor(e.type)}"></span>` +
+           `${escapeHtml(e.type)} <b>${fmtBytes(e.size)}</b>` +
+           `<span class="pct">${pct}%</span></div>`;
+  }).join("");
+
+  const allOn = state.typeFilter === "all" ? " active" : "";
+  bd.innerHTML =
+    `<div class="bd-bar">${bar}</div>` +
+    `<div class="chip${allOn}" data-type="all" ` +
+    `title="Sum of every row. After a profiler sync this equals Lua's own ` +
+    `accounting, i.e. collectgarbage(&quot;count&quot;) * 1024.">` +
+    `<b>Σ ${fmtBytes(file.totalSize)}</b></div>` + chips;
+}
+
 function renderLoop() {
   render();
 }
@@ -537,6 +632,7 @@ function setActive(i) {
   searchEl.value = "";
   buildHeader(activeFile());
   populateTypeFilter(activeFile());
+  renderBreakdown(activeFile());
   rebuildTabs();
   rebuildFiltered();
   tableWrap.scrollTop = 0;
@@ -592,8 +688,23 @@ function onSearchChange() {
 function onTypeFilterChange() {
   state.typeFilter = typeFilterEl.value;
   rebuildFiltered();
+  renderBreakdown(activeFile());
   render();
 }
+
+// Chips double as the type filter: clicking one is the fastest way to go from
+// "proto owns 40 MB" to the rows that make it up.
+$("breakdown").addEventListener("click", (e) => {
+  const chip = e.target.closest(".chip");
+  if (!chip) return;
+  const t = chip.dataset.type;
+  state.typeFilter = (state.typeFilter === t && t !== "all") ? "all" : t;
+  typeFilterEl.value = state.typeFilter;
+  rebuildFiltered();
+  renderBreakdown(activeFile());
+  tableWrap.scrollTop = 0;
+  render();
+});
 
 let filterTimer = null;
 function debouncedFilter() {
