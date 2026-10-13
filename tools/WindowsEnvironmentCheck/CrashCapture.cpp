@@ -12,6 +12,7 @@
 #include <chrono>
 #include <memory>
 #include <sstream>
+#include <iomanip>
 #include <stdexcept>
 #include <thread>
 
@@ -70,28 +71,63 @@ std::wstring OriginalName(const std::filesystem::path& file)
     }
     return {};
 }
-void VerifyMicrosoft(const std::filesystem::path& file, HANDLE handle)
+std::string HexStatus(LONG status)
+{
+    std::ostringstream text;
+    text << "0x" << std::uppercase << std::hex << std::setfill('0') << std::setw(8) << static_cast<std::uint32_t>(status);
+    return text.str();
+}
+struct TrustFailureInfo { const char* code; const char* description; };
+TrustFailureInfo TrustFailure(const ProcDumpVerification& verification)
+{
+    if (!verification.trustAttempted) return {"NOT_CHECKED", "尚未完成签名检查"};
+    switch (verification.trustStatus)
+    {
+    case ERROR_SUCCESS:
+        if (verification.signer.empty()) return {"SIGNER_UNAVAILABLE", "信任检查通过但无法取得签名者"};
+        if (!verification.microsoftSigner) return {"SIGNER_NOT_MICROSOFT", "签名者不是Microsoft Corporation"};
+        return {"TRUSTED_MICROSOFT", "微软签名信任检查通过"};
+    case CRYPT_E_REVOCATION_OFFLINE: return {"CRYPT_E_REVOCATION_OFFLINE", "证书吊销查询离线或不可达"};
+    case CERT_E_REVOCATION_FAILURE: return {"CERT_E_REVOCATION_FAILURE", "证书吊销状态无法验证"};
+    case CRYPT_E_NO_REVOCATION_CHECK: return {"CRYPT_E_NO_REVOCATION_CHECK", "证书缺少可用吊销检查信息"};
+    case CERT_E_UNTRUSTEDROOT: return {"CERT_E_UNTRUSTEDROOT", "证书根不受系统信任"};
+    case CERT_E_CHAINING: return {"CERT_E_CHAINING", "无法建立完整证书链"};
+    case CERT_E_EXPIRED: return {"CERT_E_EXPIRED", "证书有效期检查失败，请核对系统时间"};
+    case CERT_E_REVOKED: return {"CERT_E_REVOKED", "证书已吊销"};
+    case TRUST_E_BAD_DIGEST: return {"TRUST_E_BAD_DIGEST", "文件摘要与签名不符，请从微软重新下载"};
+    case TRUST_E_NOSIGNATURE: return {"TRUST_E_NOSIGNATURE", "没有可验证的数字签名"};
+    case TRUST_E_SUBJECT_FORM_UNKNOWN: return {"TRUST_E_SUBJECT_FORM_UNKNOWN", "所选文件不是支持的签名格式"};
+    case TRUST_E_PROVIDER_UNKNOWN: return {"TRUST_E_PROVIDER_UNKNOWN", "系统信任提供程序不可用"};
+    case TRUST_E_SUBJECT_NOT_TRUSTED: return {"TRUST_E_SUBJECT_NOT_TRUSTED", "文件未通过系统信任策略"};
+    default: return {"UNKNOWN_TRUST_ERROR", "签名信任检查失败，需查看原始错误码"};
+    }
+}
+void VerifyMicrosoft(const std::filesystem::path& file, HANDLE handle, ProcDumpVerification& verification)
 {
     WINTRUST_FILE_INFO info{}; info.cbStruct = sizeof(info); info.pcwszFilePath = file.c_str(); info.hFile = handle;
     WINTRUST_DATA trust{}; trust.cbStruct = sizeof(trust); trust.dwUIChoice = WTD_UI_NONE;
     trust.fdwRevocationChecks = WTD_REVOKE_WHOLECHAIN; trust.dwUnionChoice = WTD_CHOICE_FILE; trust.pFile = &info;
     trust.dwStateAction = WTD_STATEACTION_VERIFY; trust.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT;
     GUID policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
-    LONG status = WinVerifyTrust(nullptr, &policy, &trust);
-    bool microsoft = false;
-    if (status == ERROR_SUCCESS)
+    verification.trustAttempted = true;
+    verification.trustStatus = WinVerifyTrust(nullptr, &policy, &trust);
+    wchar_t name[512]{}, issuer[512]{};
+    auto* provider = WTHelperProvDataFromStateData(trust.hWVTStateData);
+    auto* signer = provider ? WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0) : nullptr;
+    if (signer && signer->csCertChain && signer->pasCertChain[0].pCert)
     {
-        auto* provider = WTHelperProvDataFromStateData(trust.hWVTStateData);
-        auto* signer = provider ? WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0) : nullptr;
-        if (signer && signer->csCertChain)
-        {
-            wchar_t name[256]{};
-            CertGetNameStringW(signer->pasCertChain[0].pCert, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, name, 256);
-            microsoft = _wcsicmp(name, L"Microsoft Corporation") == 0;
-        }
+        const auto certificate = signer->pasCertChain[0].pCert;
+        SetLastError(ERROR_SUCCESS);
+        if (CertGetNameStringW(certificate, CERT_NAME_SIMPLE_DISPLAY_TYPE, 0, nullptr, name, 512) <= 1)
+            verification.signerNameError = GetLastError();
+        CertGetNameStringW(certificate, CERT_NAME_SIMPLE_DISPLAY_TYPE, CERT_NAME_ISSUER_FLAG, nullptr, issuer, 512);
     }
     trust.dwStateAction = WTD_STATEACTION_CLOSE; WinVerifyTrust(nullptr, &policy, &trust);
-    if (status != ERROR_SUCCESS || !microsoft) throw std::runtime_error("ProcDump微软签名验证失败（也可能证书联网校验不可用），已拒绝运行");
+    verification.signer = WideToUtf8(name);
+    verification.issuer = WideToUtf8(issuer);
+    verification.microsoftSigner = _wcsicmp(name, L"Microsoft Corporation") == 0;
+    if (verification.trustStatus != ERROR_SUCCESS || !verification.microsoftSigner)
+        throw std::runtime_error(DescribeProcDumpTrustFailure(verification));
 }
 std::uint64_t FreeBytes(const std::filesystem::path& path)
 {
@@ -99,10 +135,22 @@ std::uint64_t FreeBytes(const std::filesystem::path& path)
     if (!GetDiskFreeSpaceExW(path.c_str(), &available, nullptr, nullptr)) throw std::runtime_error("无法查询剩余磁盘空间");
     return available.QuadPart;
 }
-std::filesystem::path ProcessPath(HANDLE process)
+class ProcessAccessError : public std::runtime_error
+{
+public:
+    std::string operation;
+    DWORD code, pid, access;
+    ProcessAccessError(const char* api, DWORD error, DWORD processId, DWORD requestedAccess = 0)
+        : std::runtime_error(std::string("目标进程访问失败：") + api + "，PID=" + std::to_string(processId) +
+            "，Win32=" + std::to_string(error) + (error == ERROR_ACCESS_DENIED ? "（访问被拒绝）" :
+                error == ERROR_INVALID_PARAMETER ? "（参数无效或进程已退出）" : "") + "；未绕过系统限制"),
+          operation(api), code(error), pid(processId), access(requestedAccess) {}
+};
+std::filesystem::path ProcessPath(HANDLE process, DWORD pid)
 {
     std::vector<wchar_t> buffer(32768); DWORD length = static_cast<DWORD>(buffer.size());
-    if (!QueryFullProcessImageNameW(process, 0, buffer.data(), &length)) throw std::runtime_error("无法核验目标程序路径，拒绝附加");
+    if (!QueryFullProcessImageNameW(process, 0, buffer.data(), &length))
+        throw ProcessAccessError("QueryFullProcessImageNameW", GetLastError(), pid);
     return std::filesystem::path(std::wstring(buffer.data(), length));
 }
 DWORD FindTarget(const std::filesystem::path& expected)
@@ -119,9 +167,9 @@ DWORD FindTarget(const std::filesystem::path& expected)
         DWORD session = 0;
         if (!ProcessIdToSessionId(entry.th32ProcessID, &session) || session != currentSession) continue;
         Handle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, entry.th32ProcessID));
-        if (!process.value) throw std::runtime_error("目标程序访问被拒绝，请检查权限或反作弊兼容性；不会绕过");
+        if (!process.value) throw ProcessAccessError("OpenProcess(discovery)", GetLastError(), entry.th32ProcessID, PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE);
         if (WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0) continue;
-        auto path = ProcessPath(process.value);
+        auto path = ProcessPath(process.value, entry.th32ProcessID);
         if (_wcsicmp(path.c_str(), expected.c_str()) != 0) continue;
         if (found) throw std::runtime_error("存在多个相同游戏进程，请仅保留需要采集的实例");
         found = entry.th32ProcessID;
@@ -197,17 +245,28 @@ std::filesystem::path CreateSession(const std::filesystem::path& root)
     throw std::runtime_error("无法创建新的取证目录");
 }
 }
-std::string ValidateProcDump(const std::filesystem::path& file)
+std::string DescribeProcDumpTrustFailure(const ProcDumpVerification& verification)
 {
+    const auto failure = TrustFailure(verification);
+    return std::string("ProcDump：") + failure.description + " [" + HexStatus(verification.trustStatus) + "]，已拒绝运行";
+}
+std::string ValidateProcDump(const std::filesystem::path& file, ProcDumpVerification* verification)
+{
+    ProcDumpVerification local;
+    auto& details = verification ? *verification : local;
+    details = {};
     EvidenceFile locked(file);
-    VerifyMicrosoft(file, locked.Get());
+    details.fileVersion = Version(file);
     const auto original = OriginalName(file);
+    details.originalName = WideToUtf8(original);
+    VerifyMicrosoft(file, locked.Get(), details);
     if (_wcsicmp(original.c_str(), L"procdump") != 0 && _wcsicmp(original.c_str(), L"procdump.exe") != 0 && _wcsicmp(original.c_str(), L"procdump64.exe") != 0)
         throw std::runtime_error("所选文件不是微软ProcDump");
     DWORD binary = 0;
     if (!GetBinaryTypeW(file.c_str(), &binary) || binary != SCS_64BIT_BINARY)
         throw std::runtime_error("请选择64位ProcDump程序");
-    return Version(file);
+    details.verified = true;
+    return details.fileVersion;
 }
 std::filesystem::path LoadProcDumpPreference()
 {
@@ -233,33 +292,57 @@ CaptureResult CaptureCrash(const CaptureOptions& options, const std::atomic_bool
     const auto game = std::filesystem::absolute(options.gameExecutable).lexically_normal();
     if (!std::filesystem::is_regular_file(game) || !EqualsIgnoreCaseAscii(WideToUtf8(game.filename().wstring()), options.environment.profile.gameExecutable))
         throw std::runtime_error("目标程序必须与当前项目profile指定的exe一致");
-    EvidenceFile procDumpLock(options.procDump);
-    progress("校验微软ProcDump签名", true);
-    const auto procVersion = ValidateProcDump(options.procDump);
-    if (stop.load()) return {{}, false, "捕获已取消"};
     const auto root = std::filesystem::absolute(options.environment.outputDirectory.empty() ? DefaultOutputDirectory() : options.environment.outputDirectory);
     CaptureResult result; result.report.directory = CreateSession(root);
-    std::string outcome = "WAITING", log;
-    DWORD pid = 0, exitCode = STILL_ACTIVE;
+    std::string outcome = "VERIFYING_PROCDUMP", log, failedStage, failedOperation;
+    DWORD pid = 0, exitCode = STILL_ACTIVE, processError = ERROR_SUCCESS, requestedAccess = 0;
+    bool procDumpStarted = false;
+    ProcDumpVerification verification;
     std::string exeVersion, exeHash, procHash;
     DumpMetadata metadata{};
     const auto consentTime = CurrentUtcTime();
-    auto manifest = [&] {
+    auto manifest = [&](bool includeLog = true) {
         std::ostringstream json;
         json << "{\"schemaVersion\":1,\"toolVersion\":" << JsonString(ToolVersion) << ",\"status\":" << JsonString(outcome)
             << ",\"consentUtc\":" << JsonString(FormatUtcIso8601(consentTime)) << ",\"fullMemoryConsent\":true,\"sysinternalsLicenseAccepted\":true"
             << ",\"targetName\":" << JsonString(WideToUtf8(game.filename().wstring())) << ",\"pid\":" << pid
             << ",\"exeFileVersion\":" << JsonString(exeVersion) << ",\"exeSha256\":" << JsonString(exeHash)
-            << ",\"procDumpVersion\":" << JsonString(procVersion) << ",\"procDumpSha256\":" << JsonString(procHash)
-            << ",\"procDumpExitCode\":" << exitCode << ",\"exceptionCode\":" << metadata.exceptionCode
+            << ",\"procDumpVersion\":" << JsonString(verification.fileVersion) << ",\"procDumpSha256\":" << JsonString(procHash)
+            << ",\"procDumpStarted\":" << (procDumpStarted ? "true" : "false")
+            << ",\"failedStage\":" << JsonString(failedStage) << ",\"failedOperation\":" << JsonString(failedOperation)
+            << ",\"win32Error\":" << (failedOperation.empty() ? "null" : std::to_string(processError))
+            << ",\"requestedProcessAccess\":" << requestedAccess
+            << ",\"verification\":{\"trustAttempted\":" << (verification.trustAttempted ? "true" : "false")
+            << ",\"trustStatus\":" << (verification.trustAttempted ? std::to_string(verification.trustStatus) : "null")
+            << ",\"trustStatusHex\":" << (verification.trustAttempted ? JsonString(HexStatus(verification.trustStatus)) : "null")
+            << ",\"trustStatusName\":" << JsonString(TrustFailure(verification).code)
+            << ",\"signer\":" << JsonString(verification.signer) << ",\"issuer\":" << JsonString(verification.issuer)
+            << ",\"signerNameError\":" << verification.signerNameError << ",\"originalName\":" << JsonString(verification.originalName)
+            << ",\"microsoftSigner\":" << (verification.microsoftSigner ? "true" : "false")
+            << ",\"verified\":" << (verification.verified ? "true" : "false")
+            << ",\"policy\":\"WINTRUST_ACTION_GENERIC_VERIFY_V2\",\"revocationChecks\":\"WHOLECHAIN\",\"providerFlags\":\"REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT\"}"
+            << ",\"procDumpExitCode\":" << (procDumpStarted ? std::to_string(exitCode) : "null") << ",\"exceptionCode\":" << metadata.exceptionCode
             << ",\"dumpTimestampUnix\":" << metadata.timestamp << ",\"memoryBytes\":" << metadata.memoryBytes
             << ",\"dumpBytes\":" << metadata.fileBytes << ",\"dumpValidation\":" << JsonString(result.dumpCaptured ? "FULL_MEMORY_EXCEPTION_PID_AND_FILE_RANGES" : "NO_VALID_DUMP")
             << ",\"automaticUpload\":false,\"memoryRedacted\":false,\"message\":" << JsonString(result.message) << '}';
         WriteReportFile(result.report.directory / "capture.json", json.str());
-        WriteReportFile(result.report.directory / "procdump.log", DecodeLog(log));
+        if (includeLog && procDumpStarted) WriteReportFile(result.report.directory / "procdump.log", DecodeLog(log));
     };
     try
     {
+        manifest();
+        EvidenceFile procDumpLock(options.procDump);
+        if (procDumpLock.Size() > (64ull << 20)) throw std::runtime_error("所选ProcDump文件异常大，已拒绝运行");
+        progress("校验微软ProcDump签名", true);
+        procHash = Sha256File(options.procDump, &stop);
+        ValidateProcDump(options.procDump, &verification);
+        result.procDumpVerified = verification.verified;
+        if (stop.load())
+        {
+            outcome = "CANCELLED"; result.report.cancelled = true;
+            result.message = "验证后已取消，ProcDump未启动"; manifest(); return result;
+        }
+        outcome = "WAITING";
         manifest();
         const auto deadline = GetTickCount64() + options.waitSeconds * 1000ull;
         progress("等待所选游戏启动（最多1小时）", true);
@@ -274,12 +357,20 @@ CaptureResult CaptureCrash(const CaptureOptions& options, const std::atomic_bool
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
         }
-        Handle process(OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, pid));
-        if (!process.value || _wcsicmp(ProcessPath(process.value).c_str(), game.c_str()) != 0)
-            throw std::runtime_error("目标进程已变化或访问被拒绝，不会附加");
+        outcome = "OPENING_TARGET";
+        constexpr DWORD targetAccess = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE;
+        Handle process(OpenProcess(targetAccess, FALSE, pid));
+        if (!process.value) throw ProcessAccessError("OpenProcess(capture)", GetLastError(), pid, targetAccess);
+        outcome = "CHECKING_TARGET_IDENTITY";
+        if (WaitForSingleObject(process.value, 0) == WAIT_OBJECT_0)
+            throw std::runtime_error("目标进程已退出，请保持游戏运行后重试；未附加");
+        if (_wcsicmp(ProcessPath(process.value, pid).c_str(), game.c_str()) != 0)
+            throw std::runtime_error("目标进程路径已变化，与所选exe不符；未附加");
         BOOL debugged = FALSE, wow64 = FALSE;
-        if (!CheckRemoteDebuggerPresent(process.value, &debugged) || debugged) throw std::runtime_error("目标已有调试器或无法确认调试状态，不会重复附加");
-        if (!IsWow64Process(process.value, &wow64) || wow64) throw std::runtime_error("此模式仅支持64位游戏进程");
+        if (!CheckRemoteDebuggerPresent(process.value, &debugged)) throw ProcessAccessError("CheckRemoteDebuggerPresent", GetLastError(), pid);
+        if (debugged) throw std::runtime_error("目标已有调试器，不会重复附加");
+        if (!IsWow64Process(process.value, &wow64)) throw ProcessAccessError("IsWow64Process", GetLastError(), pid);
+        if (wow64) throw std::runtime_error("此模式仅支持64位游戏进程");
         const auto eventName = L"ProcDump-" + std::to_wstring(pid);
         Handle existing(OpenEventW(SYNCHRONIZE, FALSE, eventName.c_str()));
         if (existing.value || GetLastError() != ERROR_FILE_NOT_FOUND) throw std::runtime_error("目标已有ProcDump监控或无法确认其独占状态");
@@ -289,7 +380,7 @@ CaptureResult CaptureCrash(const CaptureOptions& options, const std::atomic_bool
         const auto estimated = CommittedBytes(process.value);
         if (FreeBytes(root) < std::max<std::uint64_t>(4 * GiB, estimated * 2 + 2 * GiB))
             throw std::runtime_error("磁盘空间不足：需同时保留完整dump与压缩包，至少预计内存的两倍加2GiB");
-        exeVersion = Version(game); exeHash = Sha256File(game, &stop); procHash = Sha256File(options.procDump, &stop);
+        exeVersion = Version(game); exeHash = Sha256File(game, &stop);
         if (stop.load()) { outcome = "CANCELLED"; result.report.cancelled = true; result.message = "附加前已取消"; manifest(); return result; }
         SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
         HANDLE readPipe = nullptr, writePipe = nullptr;
@@ -315,6 +406,7 @@ CaptureResult CaptureCrash(const CaptureOptions& options, const std::atomic_bool
             CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, result.report.directory.c_str(), &startup.StartupInfo, &child);
         DeleteProcThreadAttributeList(attributes);
         if (!started) throw std::runtime_error("ProcDump启动失败，请检查权限或安全软件");
+        procDumpStarted = true;
         Handle monitor(child.hProcess), thread(child.hThread);
         MonitorLifetime monitorLifetime{monitor.value, reader.value, eventName.c_str()};
         CloseHandle(writer.value); writer.value = nullptr;
@@ -399,10 +491,29 @@ CaptureResult CaptureCrash(const CaptureOptions& options, const std::atomic_bool
     }
     catch (const std::exception& exception)
     {
-        outcome = result.dumpCaptured ? "POSTPROCESS_FAILED" : "CAPTURE_FAILED";
+        failedStage = outcome;
+        const bool preflightFailed = outcome == "VERIFYING_PROCDUMP" && !procDumpStarted;
+        if (const auto* accessError = dynamic_cast<const ProcessAccessError*>(&exception))
+        {
+            failedOperation = accessError->operation; processError = accessError->code;
+            requestedAccess = accessError->access; pid = accessError->pid;
+        }
+        outcome = preflightFailed ? "PROCDUMP_PREFLIGHT_FAILED" : result.dumpCaptured ? "POSTPROCESS_FAILED" : "CAPTURE_FAILED";
         result.report.partial = true; result.report.cancelled = stop.load(); result.message = exception.what();
-        try { WriteReportFile(result.report.directory / "procdump.log", DecodeLog(log)); } catch (...) {}
-        try { manifest(); } catch (...) { result.message += "；报告写入失败，原始证据目录已保留"; }
+        bool reportWritten = false;
+        try { if (procDumpStarted) WriteReportFile(result.report.directory / "procdump.log", DecodeLog(log)); } catch (...) {}
+        try { manifest(false); reportWritten = true; } catch (...) { result.message += "；报告写入失败，原始证据目录已保留"; }
+        if (reportWritten && !stop.load())
+        {
+            try
+            {
+                const auto archive = result.report.directory / (preflightFailed ? "verification.zip" : "capture-failure.zip");
+                WriteZip(result.report.directory, archive, {"capture.json"});
+                result.report.archive = archive;
+                result.message += "；失败诊断ZIP已保存（包内无dump）";
+            }
+            catch (...) { result.message += "；失败诊断打包失败，请发送capture.json"; }
+        }
         return result;
     }
 }

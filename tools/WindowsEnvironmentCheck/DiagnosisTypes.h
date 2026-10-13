@@ -55,6 +55,12 @@ struct Observability
     bool budgetExceeded = false;
     bool eventCapReached = false;
     bool queryErrorOccurred = false;
+    // The incident window is scanned before the rest of the range, so the three
+    // flags above cannot tell whether a truncated scan actually lost evidence.
+    // These two can: when the window was requested and completed, truncation
+    // only cost context and the verdict still rests on a fully scanned window.
+    bool priorityWindowRequested = false;
+    bool priorityWindowComplete = false;
 };
 
 // Raw material for the rules. Produced by EventLogReader (live) or by the

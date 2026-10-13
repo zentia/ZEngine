@@ -1,6 +1,9 @@
 #include "Collection.h"
+#include "CollectorScrollPanel.h"
 #include "CrashCapture.h"
+#include "ToolVersion.h"
 #include <commdlg.h>
+#include <shlobj.h>
 #include "DiagnosisUtil.h"
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateInput.h"
@@ -71,6 +74,7 @@ public:
     std::mutex mutex;
     std::string progress, error;
     Result result;
+    Result captureReport;
     bool busy = false, closing = false, minimized = false;
     bool suppressPointerUntilRelease = false;
     float scale = 1;
@@ -159,6 +163,7 @@ public:
         timeLabel = Button("填写当前时间", [this] { if (!busy) timeInput->SetText(FormatUtcIso8601(CurrentUtcTime())); });
         details = std::make_shared<SCheckBox>();
         details->SetLabel("同意附带事件明细");
+        details->SetChecked(true);
         dpiUpdates.push_back([this](float s) {
             details->FontSize = std::round(16 * s); details->BoxSize = std::round(18 * s);
             details->Size = Vector2(std::round(260 * s), std::round(28 * s));
@@ -179,7 +184,7 @@ public:
         });
         Text("完成后确认报告内容，将 ZIP 手动发给研发。", 16);
         Text("未发现异常不代表硬件健康；部分采集失败会记入报告。", 16);
-        Text("高级诊断：捕获一次游戏崩溃", 24);
+        Text(std::string("高级诊断：捕获一次游戏崩溃 · ") + zengine::envcheck::ToolVersion, 24);
         Text("完整内存可能包含账号和聊天信息；仅本地保存，请勿公开分享。", 16);
         Text("微软ProcDump需自行下载；监控可能被反作弊阻止，不会绕过。", 16);
         Button("打开微软ProcDump下载及许可页面", [this] {
@@ -199,11 +204,32 @@ public:
         Button("开始捕获崩溃（需隐私和许可确认）", [this] { StartCapture(); });
         Button("安全停止捕获 / 取消后处理", [this] { if (busy && capturing && cancellable.load()) cancel = true; });
         captureStatus = Text("未开启；仅匹配所选程序路径，默认等待/监控最多1小时。", 16);
-        Button("打开dump取证目录", [this] {
-            if (!busy && !result.directory.empty()) ShellExecuteW(window, L"open", result.directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        Button("打开捕获结果（定位ZIP或capture.json）", [this] {
+            if (busy) return;
+            if (captureReport.directory.empty())
+            { captureStatus->SetText("本窗口还没有捕获报告；历史结果请到EnvironmentReports内的crash-capture-*目录查找。"); return; }
+            const auto file = captureReport.archive.empty() ? captureReport.directory / "capture.json" : captureReport.archive;
+            const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            PIDLIST_ABSOLUTE item = ILCreateFromPathW(file.c_str());
+            HRESULT opened = E_FAIL;
+            if (item) { opened = SHOpenFolderAndSelectItems(item, 0, nullptr, 0); ILFree(item); }
+            if (SUCCEEDED(com)) CoUninitialize();
+            if (FAILED(opened))
+            {
+                const auto handle = ShellExecuteW(window, L"open", captureReport.directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                if (reinterpret_cast<INT_PTR>(handle) <= 32) captureStatus->SetText("无法打开捕获目录，请到EnvironmentReports/crash-capture-*查找capture.json。");
+            }
         });
         auto scroll = std::make_shared<SScrollBox>(); scroll->AddChild(column);
-        SlateApplication::Get().SetRootContent(scroll);
+        auto scrollBar = std::make_shared<SScrollBar>();
+        scroll->SetScrollBar(scrollBar);
+        dpiUpdates.push_back([scroll, scrollBar](float s) {
+            scrollBar->Thickness = std::round(16 * s);
+            scrollBar->MinThumbLength = std::round(32 * s);
+            scroll->ScrollSpeed = std::round(40 * s);
+        });
+        auto root = std::make_shared<CollectorScrollPanel>(scroll, scrollBar);
+        SlateApplication::Get().SetRootContent(root);
     }
     std::filesystem::path ChooseExecutable(const wchar_t* title)
     {
@@ -238,15 +264,15 @@ public:
         capturing = true; busy = true; cancel = false; finished = false; cancellable = true;
         kindBox->ClosePopup(); kindBox->Visibility = EVisibility::HitTestInvisible;
         timeInput->Visibility = EVisibility::HitTestInvisible; details->Visibility = EVisibility::HitTestInvisible;
-        { std::lock_guard lock(mutex); error.clear(); captureMessage.clear(); result = {}; progress = "准备捕获"; }
+        { std::lock_guard lock(mutex); error.clear(); captureMessage.clear(); captureReport = {}; progress = "准备捕获"; }
         worker = std::thread([this, input] {
             try
             {
                 auto captured = CaptureCrash(input, cancel, [this](const std::string& message, bool canCancel) {
                     cancellable = canCancel; std::lock_guard lock(mutex); progress = message;
                 });
-                const bool remember = !captured.report.directory.empty();
-                { std::lock_guard lock(mutex); result = std::move(captured.report); captureMessage = captured.message; }
+                const bool remember = captured.procDumpVerified;
+                { std::lock_guard lock(mutex); captureReport = std::move(captured.report); captureMessage = captured.message; }
                 if (remember)
                 {
                     try { SaveProcDumpPreference(input.procDump); }

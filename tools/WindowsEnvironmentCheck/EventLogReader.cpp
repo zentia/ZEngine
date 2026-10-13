@@ -6,6 +6,7 @@
 #include <Windows.h>
 #include <winevt.h>
 
+#include <algorithm>
 #include <array>
 #include <cwctype>
 #include <cwchar>
@@ -477,7 +478,7 @@ void ProcessEvent(
     collection.events.push_back(std::move(normalized));
 }
 
-void ReadOldestSystemEvent(EVT_HANDLE context, RenderBuffers& buffers, Observability& observability)
+void ReadOldestSystemEventTime(EVT_HANDLE context, RenderBuffers& buffers, Observability& observability)
 {
     EventHandle query(EvtQuery(nullptr, L"System", L"*", EvtQueryChannelPath | EvtQueryForwardDirection));
     if (!query)
@@ -499,17 +500,24 @@ void ReadOldestSystemEvent(EVT_HANDLE context, RenderBuffers& buffers, Observabi
     }
 }
 
-bool ReadChannel(
+bool ReadChannelRange(
     const wchar_t* channelPath,
     EventChannel channel,
     EVT_HANDLE context,
+    const EventScanRange& range,
     const EventLogReadOptions& options,
     RenderBuffers& buffers,
     EventCollection& collection)
 {
-    const std::wstring queryText = BuildTimeRangeQuery(options.rangeStart, options.rangeEnd);
+    if (IsEmptyEventScanRange(range))
+    {
+        return true;
+    }
+    const std::wstring queryText = BuildTimeRangeQuery(range.start, range.end);
+    // Reverse direction: when MaxRelevantEvents is reached the events that are
+    // dropped are the oldest ones, not the ones closest to the incident.
     EventHandle query(EvtQuery(
-        nullptr, channelPath, queryText.c_str(), EvtQueryChannelPath | EvtQueryForwardDirection));
+        nullptr, channelPath, queryText.c_str(), EvtQueryChannelPath | EvtQueryReverseDirection));
     if (!query)
     {
         return false;
@@ -548,6 +556,43 @@ bool ReadChannel(
 }
 } // namespace
 
+bool IsEmptyEventScanRange(const EventScanRange& range)
+{
+    return range.end == 0 || (range.start != 0 && range.start > range.end);
+}
+
+std::vector<EventScanRange> BuildEventScanOrder(const EventLogReadOptions& options)
+{
+    std::vector<EventScanRange> ranges;
+    const EventScanRange whole{options.rangeStart, options.rangeEnd};
+    if (!options.hasPriorityWindow)
+    {
+        ranges.push_back(whole);
+        return ranges;
+    }
+
+    const UtcTicks priorityStart = std::max(options.priorityStart, options.rangeStart);
+    const UtcTicks priorityEnd = std::min(options.priorityEnd, options.rangeEnd);
+    if (priorityEnd == 0 || priorityStart > priorityEnd)
+    {
+        // The requested window falls outside the collected range; nothing to prioritize.
+        ranges.push_back(whole);
+        return ranges;
+    }
+
+    ranges.push_back({priorityStart, priorityEnd, true});
+    if (priorityEnd < options.rangeEnd)
+    {
+        // After the incident: records Windows writes late (bugcheck, WER reports).
+        ranges.push_back({priorityEnd + 1, options.rangeEnd, false});
+    }
+    if (priorityStart > options.rangeStart)
+    {
+        ranges.push_back({options.rangeStart, priorityStart - 1, false});
+    }
+    return ranges;
+}
+
 EventCollection ReadEventLogs(const EventLogReadOptions& options)
 {
     EventCollection collection;
@@ -563,11 +608,46 @@ EventCollection ReadEventLogs(const EventLogReadOptions& options)
     }
 
     RenderBuffers buffers;
-    ReadOldestSystemEvent(context.Get(), buffers, collection.observability);
-    collection.observability.systemLogReadable =
-        ReadChannel(L"System", EventChannel::System, context.Get(), options, buffers, collection);
-    collection.observability.applicationLogReadable =
-        ReadChannel(L"Application", EventChannel::Application, context.Get(), options, buffers, collection);
+    // Only fills systemOldest*; an empty or unprobeable log must not be reported
+    // as unreadable here, that is decided by the range queries below.
+    ReadOldestSystemEventTime(context.Get(), buffers, collection.observability);
+
+    bool systemReadable = true;
+    bool applicationReadable = true;
+    collection.observability.priorityWindowRequested = options.hasPriorityWindow;
+    // Both channels are read for the priority window before either is read for
+    // context, because the same rule can be evidenced from either channel.
+    for (const EventScanRange& range : BuildEventScanOrder(options))
+    {
+        const bool systemRangeRead =
+            ReadChannelRange(L"System", EventChannel::System, context.Get(), range, options, buffers, collection);
+        const bool applicationRangeRead =
+            ReadChannelRange(L"Application", EventChannel::Application, context.Get(), range, options, buffers, collection);
+        systemReadable = systemRangeRead && systemReadable;
+        applicationReadable = applicationRangeRead && applicationReadable;
+        if (range.priority)
+        {
+            // The priority range is scanned first, so any truncation flag set by
+            // now came from this range and really did cost incident evidence.
+            collection.observability.priorityWindowComplete =
+                systemRangeRead && applicationRangeRead &&
+                !collection.observability.budgetExceeded &&
+                !collection.observability.eventCapReached &&
+                !collection.observability.queryErrorOccurred;
+        }
+    }
+    collection.observability.systemLogReadable = systemReadable;
+    collection.observability.applicationLogReadable = applicationReadable;
+
+    // Reverse scanning and the multi-pass order leave the records unsorted.
+    // Rules do not depend on order, but the events file is read by humans and
+    // replayed in regression tests, so restore chronological order here.
+    std::sort(collection.systemEventTimes.begin(), collection.systemEventTimes.end());
+    std::stable_sort(collection.events.begin(), collection.events.end(),
+        [](const NormalizedEvent& left, const NormalizedEvent& right)
+        {
+            return left.time < right.time;
+        });
     return collection;
 }
 } // namespace zengine::envcheck::diagnosis

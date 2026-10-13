@@ -1,6 +1,9 @@
 #include "CrashCapture.h"
 #include "DiagnosisUtil.h"
 #include <Windows.h>
+#include <sddl.h>
+#include <fstream>
+#include <iterator>
 #include <future>
 #include <iostream>
 #include <stdexcept>
@@ -9,7 +12,7 @@ int wmain(int argc, wchar_t** argv)
 {
     if (argc != 5 || std::wstring(argv[4]) != L"--consent-test-memory-and-sysinternals-license") return 2;
     const std::wstring mode = argv[2];
-    if (mode != L"crash" && mode != L"normal" && mode != L"cancel" && mode != L"wait-cancel" && mode != L"callback-error") return 2;
+    if (mode != L"crash" && mode != L"normal" && mode != L"cancel" && mode != L"wait-cancel" && mode != L"callback-error" && mode != L"access-denied") return 2;
     HANDLE trigger = nullptr;
     PROCESS_INFORMATION child{};
     try
@@ -23,6 +26,43 @@ int wmain(int argc, wchar_t** argv)
         options.memoryConsent = true; options.licenseAccepted = true; options.waitSeconds = 40;
         options.environment.profile.id = "capture-test"; options.environment.profile.gameExecutable = "EnvironmentCaptureTestTarget.exe";
         options.environment.outputDirectory = argv[3]; options.environment.profile.lookbackHours = 1;
+        if (mode == L"access-denied")
+        {
+            HANDLE token = nullptr;
+            if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+                throw std::runtime_error("cannot restrict fixture runner token");
+            TOKEN_PRIVILEGES privileges{}; privileges.PrivilegeCount = 1;
+            const BOOL foundPrivilege = LookupPrivilegeValueW(nullptr, SE_DEBUG_NAME, &privileges.Privileges[0].Luid);
+            const BOOL restricted = foundPrivilege && AdjustTokenPrivileges(token, FALSE, &privileges, 0, nullptr, nullptr);
+            CloseHandle(token);
+            if (!restricted) throw std::runtime_error("cannot disable inherited debug privilege in fixture runner");
+            PSECURITY_DESCRIPTOR descriptor = nullptr;
+            if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(L"D:(D;;0x0010;;;WD)(A;;0x101000;;;WD)", SDDL_REVISION_1, &descriptor, nullptr))
+                throw std::runtime_error("fixture security descriptor failed");
+            SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
+            std::wstring command = L"\"" + executable.wstring() + L"\" " + eventName + L" normal";
+            STARTUPINFOW startup{}; startup.cb = sizeof(startup);
+            const BOOL launched = CreateProcessW(executable.c_str(), command.data(), &attributes, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child);
+            LocalFree(descriptor);
+            if (!launched) throw std::runtime_error("restricted fixture launch failed");
+            HANDLE accessProbe = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ | SYNCHRONIZE, FALSE, child.dwProcessId);
+            const DWORD probeError = GetLastError();
+            if (accessProbe) CloseHandle(accessProbe);
+            if (accessProbe || probeError != ERROR_ACCESS_DENIED) throw std::runtime_error("fixture did not establish real access denial; refusing to start capture");
+            auto result = CaptureCrash(options, stop, [](const std::string& text, bool) { std::cout << text << std::endl; });
+            if (result.dumpCaptured || !result.procDumpVerified || !result.report.partial || result.report.archive.filename() != L"capture-failure.zip")
+                throw std::runtime_error("process access failure did not produce a diagnostic-only package");
+            std::ifstream input(result.report.directory / "capture.json", std::ios::binary);
+            const std::string json((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+            if (json.find("\"failedOperation\":\"OpenProcess(capture)\"") == std::string::npos || json.find("\"win32Error\":5") == std::string::npos ||
+                json.find("\"failedStage\":\"OPENING_TARGET\"") == std::string::npos || json.find("\"procDumpStarted\":false") == std::string::npos)
+                throw std::runtime_error("Windows access-denied API/phase/code evidence missing");
+            if (WaitForSingleObject(child.hProcess, 0) != WAIT_TIMEOUT) throw std::runtime_error("restricted fixture unexpectedly exited");
+            SetEvent(trigger); WaitForSingleObject(child.hProcess, 5000);
+            CloseHandle(child.hProcess); CloseHandle(child.hThread); CloseHandle(trigger);
+            std::cout << "PASS real Windows access denial: signature passed, ProcDump not started, diagnostic ZIP saved\n";
+            return 0;
+        }
         auto task = std::async(std::launch::async, [&] { return CaptureCrash(options, stop, [&](const std::string& text, bool) {
             std::cout << text << std::endl;
             if (mode == L"callback-error" && text.find("正在监控游戏") != std::string::npos) throw std::runtime_error("injected callback failure");

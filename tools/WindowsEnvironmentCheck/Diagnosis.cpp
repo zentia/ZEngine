@@ -218,11 +218,18 @@ int RunDiagnosis(const DiagnosisOptions& options)
             throw std::invalid_argument("--incident-time is in the future.");
         }
         UtcTicks rangeStart = SubtractClamped(generatedAt, lookbackSpan);
+        EventLogReadOptions readOptions;
         if (options.hasIncidentTime)
         {
-            rangeStart = std::min(rangeStart, SubtractClamped(options.incidentTime, IncidentWindowMargin));
+            // Widen the range so the whole incident window is covered even when
+            // it predates the lookback, and read that window first: on a noisy
+            // machine the event cap would otherwise be spent on older records
+            // and the incident would never be reached.
+            readOptions.hasPriorityWindow = true;
+            readOptions.priorityStart = SubtractClamped(options.incidentTime, IncidentWindowMargin);
+            readOptions.priorityEnd = std::min(options.incidentTime + IncidentWindowMargin, generatedAt);
+            rangeStart = std::min(rangeStart, readOptions.priorityStart);
         }
-        EventLogReadOptions readOptions;
         readOptions.rangeStart = rangeStart;
         readOptions.rangeEnd = generatedAt;
         readOptions.deadlineTickCount =

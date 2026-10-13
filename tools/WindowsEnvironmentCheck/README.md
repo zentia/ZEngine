@@ -149,7 +149,7 @@ OSGameEnvironmentReport.json
 ```json
 {
   "schemaVersion": 5,
-  "toolVersion": "1.7.0"
+  "toolVersion": "1.7.3"
 }
 ```
 
@@ -177,13 +177,42 @@ OSGameEnvironmentReport.json
 - `DLL_PROBE_EXPORT_NOT_FOUND`
 - `DLL_PROBE_INFRASTRUCTURE_FAILED`
 
-## 事件诊断与玩家一键采集（1.7.0）
+## 事件诊断与玩家一键采集（1.7.2）
 
 GUI 使用 ZSlate，不依赖 ZRuntime、编辑器或游戏进程。公共源码只在本目录维护；OSGame 通过 profile 和发布适配接入，G侧已删除迁移完成的旧源码，仅保留分发适配和接口说明。
 
+### 1.7.3 事件扫描顺序修复
+
+1.7.2 及更早版本按时间正序扫描整个回溯区间，命中 `MaxRelevantEvents`（5000）上限后丢弃的是**最近的**事件，也就是最可能相关的那批；填了 `--incident-time` 也只是把区间向前**扩大**，没有锚定到事故时刻。现网实测：某台机器 14 天内有 4227 条 `Windows Error Reporting/1001 crashpad_log`，上限在事故前 6 天就被占满，`events-redacted.json` 只覆盖到事故前 6 天，事故当天一条都没扫到，却输出了 `NO_SYSTEM_EVIDENCE` 之外的误导结论——此时"没发现显卡/存储异常"是无效的否定证据。
+
+1.7.3 的改动：
+
+- 提供 `--incident-time` 时，`BuildEventScanOrder()` 把区间切成 3 段并按此顺序扫描：① `[事故-30min, 事故+30min]`（决定 verdict 的窗口）→ ② 事故之后（Windows 延迟写入的 bugcheck / WER）→ ③ 更早的上下文。上限或超时只会牺牲上下文，不再牺牲事故窗口。三段边界互不重叠（闭区间之间留 1 tick），不会重复计入同一条事件。
+- 每段改用 `EvtQueryReverseDirection` 倒序读取，即使单段内命中上限，丢弃的也是最旧的记录。
+- 两个通道（System / Application）都先扫优先窗口再扫上下文，因为同一条规则（如 `GPU_TDR`）的证据可能来自任一通道。
+- 读取结束后把 `events` 与 `systemEventTimes` 重新按时间升序排序：规则本身与顺序无关，但事件文件要给人看、也要能回放。
+- `SYSTEM_ISSUES_NEARBY` 的用户文案区分远近：证据不在事故时刻附近（无事故时间或 `proximity=lookback`）时不再说"可能与你遇到的问题有关"，改为明确"该记录不在问题发生的时间点附近，无法确定与本次问题有关"。此前一条 6 天前的 `Ntfs/98` 会让玩家以为硬盘坏了。
+- `systemLogReadable` 维持原语义，只由区间查询的结果决定；读取最旧事件的探针失败或日志为空只影响 `systemOldestKnown`，不会被误判成"日志不可读"而直接 fatal。
+
+- 区分“只截断了上下文”与“事故窗口被截断”。`budgetExceeded` / `eventCapReached` / `queryErrorOccurred` 是全局标志，无法说明截断是否真的损失了事故证据，因此 `Observability` 增加两个字段：
+
+  | 字段 | 含义 |
+  |---|---|
+  | `priorityWindowRequested` | 本次是否请求了优先窗口（等价于“是否提供了事故时间”） |
+  | `priorityWindowComplete` | 优先窗口是否被完整扫完。优先窗口排在最前，因此扫完它之后才出现的截断只影响上下文 |
+
+  两者都为真时，截断只记 `SCAN_CONTEXT_TRUNCATED`，不再置 `scanIncomplete`；无发现的结论保持 `NO_SYSTEM_EVIDENCE`（`confidence=medium`）而不是被压成 `INCONCLUSIVE`。若截断发生在优先窗口内，`priorityWindowComplete=false`，仍按原逻辑判 `INCONCLUSIVE`。优先窗口落在采集区间之外时按单段扫描，`EventScanRange::priority` 为 false、`priorityWindowComplete` 保持 false，结论保守。
+
+契约影响：
+
+- 事件明细文件版本 `1` → `2`（新增两个 `O` 键）。解析器接受 `1` 与 `2`，**旧样本仍可回放**，缺失的键取默认值 false；版本超出范围时报明确错误而不是笼统的 header 错误。
+- `OSGameDiagnosis.json` 的 `schemaVersion` **保持 1**：本次只在 `observability` 下新增上述两个布尔字段，既有字段语义未变。launcher 只读 `verdict` / `confidence` / `userMessage` / `actions`，不受影响；保持 1 可避免严格校验 `schemaVersion == 1` 的消费端被动失败。
+
+`BuildEventScanOrder()` / `IsEmptyEventScanRange()` 在 `EventLogReader.h` 导出，`EnvironmentCollectorTests` 覆盖：三段切分与顺序、边界不重叠、`priority` 标记唯一、无事故时间时退回单段、优先窗口落在区间外时退回单段且不冒充事故窗口、只截断上下文时维持 `NO_SYSTEM_EVIDENCE` 且记 `SCAN_CONTEXT_TRUNCATED`、事故窗口被截断时仍 `INCONCLUSIVE`、版本 1 事件文件回放后新字段取默认值。
+
 ### 玩家操作
 
-解压完整工具包，运行 `ZEnvironmentCollector.exe`，选择问题类型、可选填写带时区的发生时间，点击“开始采集并生成 ZIP”。默认输出到桌面 `EnvironmentReports`。可选择附带脱敏事件明细，默认不选。完成后点击打开目录，确认内容后手动发送 ZIP；不自动上传。
+解压完整工具包，运行 `ZEnvironmentCollector.exe`，选择问题类型、可选填写带时区的发生时间，点击“开始采集并生成 ZIP”。默认输出到桌面 `EnvironmentReports`。GUI默认勾选“同意附带事件明细”，可手动取消；CLI仍需显式传入 `--include-events` 才附带脱敏事件明细。窗口右侧提供可拖动滚动条，也可使用滚轮或点击轨道翻页；滑块与内容位置同步，尺寸随DPI缩放。完成后点击打开目录，确认内容后手动发送 ZIP；不自动上传。
 
 只读采集CPU、内存、BIOS/整机/主板型号、SMBIOS内存配置、原始微码注册表字节、显卡/驱动、磁盘容量、事件诊断、WHEA及已有内存诊断结果。不读取序列号、不运行内存测试、不重启、不改BIOS、不加载GameCore或扫描DLL。每个采集阶段在独立受Job管理的子进程执行，默认45秒超时，失败/取消保留已完成信息。系统权限不足、字段缺失、事件覆盖不完整会记录在报告中，不代表硬件健康。
 
@@ -204,7 +233,19 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 
 保留原 `--diagnose` 的JSON schema1、四类verdict、事件回放、退出0/30语义及原OSGame文件名；原普通CLI的GPU mock/实际GPU选择探针和DLL行为保留。普通CLI并不是安全采集入口：`--check-dll`会追加路径而不是关闭递归扫描。玩家用GUI或 `--collect`。
 
-### 高级诊断：一次完整崩溃dump（1.7.0）
+### 高级诊断：一次完整崩溃dump（1.7.2）
+
+1.7.2修复“签名通过但访问游戏失败，没有verification.zip且打开普通报告目录”：1.7.1只在签名前置失败生成verification.zip，并且GUI普通采集和捕获共用结果对象。捕获失败后执行普通采集，会覆盖取证目录入口。现在普通报告与捕获结果分别保存；新按钮“打开捕获结果（定位ZIP或capture.json）”只使用本窗口最近一次捕获结果，直接在资源管理器选中ZIP或capture.json，不受普通采集影响。高级区域显示版本号。若重开窗口无历史结果，提示到桌面EnvironmentReports/crash-capture-*查找，不跳转普通报告冒充。
+
+签名前置失败继续生成`verification.zip`；签名后的进程访问/监控/后处理异常生成`capture-failure.zip`，二者仅含capture.json，不混入dump或原始日志。收集根目录不可写、授权前参数失败、取消/正常退出等仍可能只有本地JSON或没有新目录，不能承诺任何失败都必有ZIP；磁盘打包失败明确提示发送JSON。报告补充failedStage、failedOperation、Win32错误码、目标PID和requestedProcessAccess；OpenProcess失败、进程已退出、路径变化、已有调试器分别提示。不自动提权、不调整真实目标DACL、不启用调试特权、不跳过签名或反作弊。旧截图的“目标进程已变化或访问被拒绝”只证明本次已通过签名且未附加；不能由截图确认错误码5或断言反作弊是原因。
+
+1.7.2验证：3项CTest通过；手动集成测试`access-denied`对仅含合成数据的专用进程限制访问，产生真实`OpenProcess(capture)`错误5、OPENING_TARGET阶段，签名已通过而ProcDump未启动，生成capture-failure.zip，Python独立回读仅capture.json。首次测试运行继承了调试特权，DACL拒绝未生效并导致测试失败；已仅在测试进程内禁用该特权，并新增实际拒绝访问前置断言后重跑通过，生产采集器权限未改。GUI真实文件选择/授权触发未签名拒绝，再点击普通采集，再点捕获结果入口，资源管理器回读仍选中原crash-capture-*下verification.zip。验证截图和产物位于独立build的validation-1.7.2；未访问真实游戏。下面保留1.7.1历史说明，按钮名及异常包扩展以本节为准。
+
+1.7.1补充签名前置失败诊断：旧1.7.0将吊销查询、证书链、摘要、缺失签名和发布者不符统一显示为一句错误，并且验证发生在取证目录建立前，失败没有capture.json。新版保留WinVerifyTrust直接返回的LONG及十六进制值、错误分类、签名者/颁发者、文件SHA256/版本、策略和`procDumpStarted`；前置失败自动保存仅含`capture.json`的`verification.zip`。点击“打开dump取证目录”发送此包，不要重复发送顶部普通`osgame-*.zip`。失败ZIP不是dump，也不表示捕获成功；未通过验证不会启动ProcDump，不会记住该文件。
+
+2026-10-13反馈截图与`osgame-2026-10-13T054234144Z-16144-0.zip`只能确认玩家在验证阶段被阻止。该ZIP为1.7.0普通环境报告、仅8文件，无ProcDump哈希、签名状态或dump；无法据此断言断网、文件篡改或反作弊阻止。此版是定位版，不声称已修复玩家的实际证书环境。严格吊销/微软身份校验保持不变，不加离线放行、不导入证书、不修改系统时间或关闭安全软件。
+
+验证：3项CTest通过；未签名测试文件被拒绝且返回失败诊断包；模拟错误分类覆盖0x80092013、0x80096010及非微软发布者；日志路径不可写不阻断JSON/ZIP；独立zipfile回读包内仅capture.json并确认started/verified=false。本机官方12.01签名只验证通过，未执行它；未在玩家机器复现真实错误。新版成功捕获链路本轮未重新附加测试进程，沿用1.7.0既有验证。
 
 用户打开GUI并滚动到“高级诊断”，选择微软官方 `procdump64.exe` 和当前profile对应的游戏exe（不是Launcher）。点击开始后需分别确认完整内存隐私和Sysinternals许可；选择否不会启动监控。ProcDump需从 https://learn.microsoft.com/en-us/sysinternals/downloads/procdump 自行下载，采集器只提供打开官网入口，不捆绑或镜像分发。通过签名/原始文件名/64位PE检查才运行，并保持只读文件句柄防止校验后修改。证书在线验证不可用时拒绝运行，不降级跳过。
 

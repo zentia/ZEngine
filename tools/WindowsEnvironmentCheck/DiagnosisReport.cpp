@@ -16,7 +16,10 @@ namespace
 {
 constexpr int DiagnosisSchemaVersion = 1;
 const std::string EventsFileHeader = "#OSGameDiagnosisEvents";
-constexpr int EventsFileVersion = 1;
+// Version 2 adds the priorityWindow* observability keys. Version 1 files stay
+// replayable: the missing keys simply keep their defaults.
+constexpr int EventsFileVersion = 2;
+constexpr int OldestSupportedEventsFileVersion = 1;
 constexpr std::size_t EventLineFieldCount = 14;
 constexpr std::size_t HexIdWidth = 4;
 
@@ -228,7 +231,12 @@ std::string BuildDiagnosisJson(const DiagnosisResult& result, const DiagnosisRep
            << "    \"systemEventsInWindow\": " << result.systemEventsInWindow << ",\n"
            << "    \"budgetExceeded\": " << BoolText(observability.budgetExceeded) << ",\n"
            << "    \"eventCapReached\": " << BoolText(observability.eventCapReached) << ",\n"
-           << "    \"queryErrorOccurred\": " << BoolText(observability.queryErrorOccurred) << "\n"
+           << "    \"queryErrorOccurred\": " << BoolText(observability.queryErrorOccurred) << ",\n"
+           // Added in 1.7.3: tells whether a truncated scan actually lost
+           // incident evidence or only context. Purely additive, so launchers
+           // that read verdict/confidence/userMessage/actions are unaffected.
+           << "    \"priorityWindowRequested\": " << BoolText(observability.priorityWindowRequested) << ",\n"
+           << "    \"priorityWindowComplete\": " << BoolText(observability.priorityWindowComplete) << "\n"
            << "  },\n";
 
     WriteFindings(stream, result.findings);
@@ -256,7 +264,9 @@ std::string BuildEventsFile(const EventCollection& collection)
            << "O\tsystemOldest\t" << observability.systemOldest << '\n'
            << "O\tbudgetExceeded\t" << (observability.budgetExceeded ? 1 : 0) << '\n'
            << "O\teventCapReached\t" << (observability.eventCapReached ? 1 : 0) << '\n'
-           << "O\tqueryErrorOccurred\t" << (observability.queryErrorOccurred ? 1 : 0) << '\n';
+           << "O\tqueryErrorOccurred\t" << (observability.queryErrorOccurred ? 1 : 0) << '\n'
+           << "O\tpriorityWindowRequested\t" << (observability.priorityWindowRequested ? 1 : 0) << '\n'
+           << "O\tpriorityWindowComplete\t" << (observability.priorityWindowComplete ? 1 : 0) << '\n';
     for (const UtcTicks time : collection.systemEventTimes)
     {
         stream << "T\t" << time << '\n';
@@ -303,10 +313,16 @@ EventCollection ParseEventsFile(const std::string& content)
         const auto fields = SplitTabs(line);
         if (!headerSeen)
         {
-            if (fields.size() < 2 || fields[0] != EventsFileHeader ||
-                ParseUnsigned(fields[1], lineNumber) != static_cast<std::uint64_t>(EventsFileVersion))
+            if (fields.size() < 2 || fields[0] != EventsFileHeader)
             {
                 throw std::runtime_error("Events file has an unsupported header.");
+            }
+            const std::uint64_t version = ParseUnsigned(fields[1], lineNumber);
+            // Older samples stay replayable so recorded regressions keep working.
+            if (version < static_cast<std::uint64_t>(OldestSupportedEventsFileVersion) ||
+                version > static_cast<std::uint64_t>(EventsFileVersion))
+            {
+                throw std::runtime_error("Events file version " + std::to_string(version) + " is not supported.");
             }
             headerSeen = true;
             continue;
@@ -327,6 +343,8 @@ EventCollection ParseEventsFile(const std::string& content)
             else if (key == "budgetExceeded") observability.budgetExceeded = ParseFlag(value, lineNumber);
             else if (key == "eventCapReached") observability.eventCapReached = ParseFlag(value, lineNumber);
             else if (key == "queryErrorOccurred") observability.queryErrorOccurred = ParseFlag(value, lineNumber);
+            else if (key == "priorityWindowRequested") observability.priorityWindowRequested = ParseFlag(value, lineNumber);
+            else if (key == "priorityWindowComplete") observability.priorityWindowComplete = ParseFlag(value, lineNumber);
             else throw std::runtime_error("Events file line " + std::to_string(lineNumber) + ": unknown key '" + key + "'.");
         }
         else if (kind == "T" && fields.size() == 2)

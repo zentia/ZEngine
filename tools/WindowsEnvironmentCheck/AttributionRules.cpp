@@ -574,17 +574,28 @@ ObservabilityAssessment AssessObservability(
     if (observability.budgetExceeded)
     {
         addIssue("SCAN_BUDGET_EXCEEDED");
-        assessment.scanIncomplete = true;
     }
     if (observability.eventCapReached)
     {
         addIssue("SCAN_EVENT_CAP_REACHED");
-        assessment.scanIncomplete = true;
     }
     if (observability.queryErrorOccurred)
     {
         addIssue("SCAN_QUERY_ERROR");
-        assessment.scanIncomplete = true;
+    }
+    if (observability.budgetExceeded || observability.eventCapReached || observability.queryErrorOccurred)
+    {
+        // The incident window is scanned first. If it completed, the truncation
+        // happened afterwards and only cost context, so the verdict still rests
+        // on a fully scanned window and must not be weakened to "inconclusive".
+        if (observability.priorityWindowRequested && observability.priorityWindowComplete)
+        {
+            addIssue("SCAN_CONTEXT_TRUNCATED");
+        }
+        else
+        {
+            assessment.scanIncomplete = true;
+        }
     }
     if ((collection.rangeStart != 0 && collection.rangeStart > incident.windowStart) ||
         collection.rangeEnd < incident.windowEnd)
@@ -854,8 +865,12 @@ void DecideVerdict(
             (primary->proximity == Proximity::Near || primary->strength == FindingStrength::Strong);
         result.confidence = closeEnough ? Confidence::Medium : Confidence::Low;
         result.userMessageCode = std::string("NEARBY_") + LayerMessageCode(primary->layer);
-        result.userMessageZh = TimeScopePrefix(anchored, request.lookbackHours) +
-            LayerPhrase(primary->layer) + "，可能与你遇到的问题有关。";
+        result.userMessageZh = TimeScopePrefix(anchored, request.lookbackHours) + LayerPhrase(primary->layer);
+        // Without an incident time the record may be days away from the problem.
+        // Saying it "may be related" then reads as a diagnosis the data does not support.
+        result.userMessageZh += closeEnough
+            ? "，可能与你遇到的问题有关。"
+            : "。该记录不在问题发生的时间点附近，无法确定与本次问题有关。" + FeedbackSuffix;
         SetActions(result, primary);
         return;
     }

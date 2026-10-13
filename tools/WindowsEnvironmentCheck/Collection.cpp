@@ -202,7 +202,15 @@ int RunStage(const std::string& stage, const Options& options)
         EventLogReadOptions read;
         read.rangeEnd = now;
         read.rangeStart = SubtractClamped(now, options.profile.lookbackHours * TicksPerHour);
-        if (options.incidentTime) read.rangeStart = std::min(read.rangeStart, SubtractClamped(options.incidentTime, IncidentWindowMargin));
+        if (options.incidentTime)
+        {
+            // Read the incident window before the rest of the lookback: a noisy
+            // machine fills the event cap long before the scan gets there.
+            read.hasPriorityWindow = true;
+            read.priorityStart = SubtractClamped(options.incidentTime, IncidentWindowMargin);
+            read.priorityEnd = std::min(options.incidentTime + IncidentWindowMargin, now);
+            read.rangeStart = std::min(read.rangeStart, read.priorityStart);
+        }
         read.deadlineTickCount = GetTickCount64() + 20000;
         auto events = ReadEventLogs(read);
         DiagnosisRequest request;
