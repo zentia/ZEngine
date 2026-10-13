@@ -160,7 +160,7 @@ CpuFeatures CollectCpuFeatures()
 }
 } // namespace
 
-EnvironmentSnapshot CollectEnvironment()
+EnvironmentSnapshot CollectEnvironment(bool includeDevices)
 {
     EnvironmentSnapshot snapshot;
     snapshot.cpu = CollectCpuFeatures();
@@ -183,8 +183,11 @@ EnvironmentSnapshot CollectEnvironment()
     }
     snapshot.system.uptimeMilliseconds = GetTickCount64();
 
-    CollectGraphicsInformation(snapshot);
-    CollectStorageInformation(snapshot);
+    if (includeDevices)
+    {
+        CollectGraphicsInformation(snapshot);
+        CollectStorageInformation(snapshot);
+    }
     return snapshot;
 }
 

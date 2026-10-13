@@ -44,7 +44,52 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(zydis)
 
-add_executable(${ENVIRONMENT_CHECK_TARGET}
+set(ENVIRONMENT_CHECK_MINIZ_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../renderdoc/renderdoc/3rdparty/miniz" CACHE PATH "Unmodified miniz sources from the pinned RenderDoc submodule")
+find_package(Git REQUIRED)
+set(_miniz_patched_dir "${CMAKE_CURRENT_BINARY_DIR}/miniz-patched")
+set(_miniz_patch "${CMAKE_CURRENT_SOURCE_DIR}/miniz-zip64.patch")
+file(MAKE_DIRECTORY "${_miniz_patched_dir}")
+configure_file("${ENVIRONMENT_CHECK_MINIZ_DIR}/miniz.c" "${_miniz_patched_dir}/miniz.c" COPYONLY)
+configure_file("${ENVIRONMENT_CHECK_MINIZ_DIR}/miniz.h" "${_miniz_patched_dir}/miniz.h" COPYONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_miniz_patch}")
+set(_miniz_git_command "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
+    "GIT_CEILING_DIRECTORIES=${CMAKE_CURRENT_BINARY_DIR}" "${GIT_EXECUTABLE}")
+execute_process(
+    COMMAND ${_miniz_git_command} apply --check -- "${_miniz_patch}"
+    WORKING_DIRECTORY "${_miniz_patched_dir}"
+    RESULT_VARIABLE _miniz_check_result ERROR_VARIABLE _miniz_check_error)
+if(NOT _miniz_check_result EQUAL 0)
+    message(FATAL_ERROR "miniz ZIP64 patch check failed; use unmodified sources from the pinned RenderDoc submodule: ${_miniz_check_error}")
+endif()
+execute_process(
+    COMMAND ${_miniz_git_command} apply -- "${_miniz_patch}"
+    WORKING_DIRECTORY "${_miniz_patched_dir}"
+    RESULT_VARIABLE _miniz_apply_result ERROR_VARIABLE _miniz_apply_error)
+if(NOT _miniz_apply_result EQUAL 0)
+    message(FATAL_ERROR "miniz ZIP64 patch application failed: ${_miniz_apply_error}")
+endif()
+execute_process(
+    COMMAND ${_miniz_git_command} apply --reverse --check -- "${_miniz_patch}"
+    WORKING_DIRECTORY "${_miniz_patched_dir}"
+    RESULT_VARIABLE _miniz_verify_result ERROR_VARIABLE _miniz_verify_error)
+if(NOT _miniz_verify_result EQUAL 0)
+    message(FATAL_ERROR "miniz ZIP64 patch verification failed: ${_miniz_verify_error}")
+endif()
+add_library(ZEnvironmentMiniz STATIC "${_miniz_patched_dir}/miniz.c")
+target_include_directories(ZEnvironmentMiniz PUBLIC "${_miniz_patched_dir}")
+target_compile_definitions(ZEnvironmentMiniz PRIVATE _CRT_SECURE_NO_WARNINGS)
+
+add_library(ZEnvironmentCheckCore STATIC
+    AttributionRules.cpp
+    Diagnosis.cpp
+    DiagnosisReport.cpp
+    DiagnosisUtil.cpp
+    EventLogReader.cpp
+    Collection.cpp
+    FirmwareProbe.cpp
+    ReportArchive.cpp
+    EvidenceFiles.cpp
+    CrashCapture.cpp
     DllProbe.cpp
     DllProbe.h
     DllProbeProtocol.h
@@ -58,8 +103,16 @@ add_executable(${ENVIRONMENT_CHECK_TARGET}
     PeInspector.h
     ReportWriter.cpp
     ReportWriter.h
-    main.cpp
 )
+target_include_directories(ZEnvironmentCheckCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(ZEnvironmentCheckCore PUBLIC cxx_std_20)
+target_compile_definitions(ZEnvironmentCheckCore PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+target_link_libraries(ZEnvironmentCheckCore PUBLIC Zydis ZEnvironmentMiniz dxgi setupapi wevtapi advapi32 shell32 ole32 bcrypt wintrust crypt32 version comdlg32)
+if(MSVC)
+    target_compile_options(ZEnvironmentCheckCore PRIVATE /W4 /permissive- /EHsc /utf-8)
+endif()
+add_executable(${ENVIRONMENT_CHECK_TARGET} main.cpp)
+target_link_libraries(${ENVIRONMENT_CHECK_TARGET} PRIVATE ZEnvironmentCheckCore)
 
 set(DLL_PROBE_TARGET ZDllLoadProbe)
 add_executable(${DLL_PROBE_TARGET}
@@ -170,4 +223,78 @@ else()
     )
 endif()
 
+set(_collector_default OFF)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(_collector_default ON)
+endif()
+option(ENVIRONMENT_CHECK_BUILD_GUI "Build standalone ZSlate collector" ${_collector_default})
+if(ENVIRONMENT_CHECK_BUILD_GUI)
+    if(NOT TARGET ZSlate)
+        set(ZSLATE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../engine/Libraries/ZSlate" CACHE PATH "ZSlate source directory")
+        add_subdirectory("${ZSLATE_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/zslate")
+    endif()
+    add_executable(ZEnvironmentCollector WIN32 CollectorGui.cpp CollectorGui.manifest)
+    target_link_libraries(ZEnvironmentCollector PRIVATE ZEnvironmentCheckCore ZSlate d3d11 dxgi d3dcompiler)
+    target_compile_definitions(ZEnvironmentCollector PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    target_compile_features(ZEnvironmentCollector PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(ZEnvironmentCollector PRIVATE /W4 /permissive- /EHsc /utf-8)
+    endif()
+    add_dependencies(ZEnvironmentCollector ${ENVIRONMENT_CHECK_TARGET})
+    if(DEFINED BINARY_ROOT_DIR)
+        foreach(configuration Debug Release RelWithDebInfo MinSizeRel)
+            string(TOUPPER "${configuration}" configuration_upper)
+            set_target_properties(ZEnvironmentCollector PROPERTIES
+                "RUNTIME_OUTPUT_DIRECTORY_${configuration_upper}" "${BINARY_ROOT_DIR}/${configuration}")
+        endforeach()
+    else()
+        set_target_properties(ZEnvironmentCollector PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    endif()
+    add_custom_command(TARGET ZEnvironmentCollector POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:ZEnvironmentCollector>/profiles"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/profiles/generic.ini" "$<TARGET_FILE_DIR:ZEnvironmentCollector>/profiles/default.ini"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/profiles/osgame.ini" "$<TARGET_FILE_DIR:ZEnvironmentCollector>/profiles/osgame.ini")
+    install(TARGETS ZEnvironmentCollector RUNTIME DESTINATION . COMPONENT EnvironmentCollector)
+endif()
+install(TARGETS ${ENVIRONMENT_CHECK_TARGET} ${DLL_PROBE_TARGET} RUNTIME DESTINATION . COMPONENT EnvironmentCollector)
+install(FILES "${zydis_SOURCE_DIR}/LICENSE" DESTINATION . RENAME LICENSE-Zydis.txt COMPONENT EnvironmentCollector)
+install(FILES "${zycore_SOURCE_DIR}/LICENSE" DESTINATION . RENAME LICENSE-Zycore.txt COMPONENT EnvironmentCollector)
+install(FILES profiles/generic.ini DESTINATION profiles RENAME default.ini COMPONENT EnvironmentCollector)
+install(FILES profiles/osgame.ini DESTINATION profiles COMPONENT EnvironmentCollector)
+install(FILES LICENSE-stb.txt LICENSE-miniz.txt DESTINATION . COMPONENT EnvironmentCollector)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(EnvironmentCollectorTests CollectionTests.cpp)
+    target_link_libraries(EnvironmentCollectorTests PRIVATE ZEnvironmentCheckCore)
+    if(MSVC)
+        target_compile_options(EnvironmentCollectorTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME environment_collector_core COMMAND EnvironmentCollectorTests)
+    add_executable(EnvironmentCaptureTests CaptureTests.cpp)
+    target_link_libraries(EnvironmentCaptureTests PRIVATE ZEnvironmentCheckCore)
+    add_test(NAME environment_capture_safety COMMAND EnvironmentCaptureTests)
+    add_executable(EnvironmentCaptureTestTarget CaptureTestTarget.cpp)
+    add_executable(EnvironmentCaptureIntegrationTests CaptureIntegrationTests.cpp)
+    target_link_libraries(EnvironmentCaptureIntegrationTests PRIVATE ZEnvironmentCheckCore)
+    add_dependencies(EnvironmentCaptureIntegrationTests EnvironmentCaptureTestTarget ${ENVIRONMENT_CHECK_TARGET})
+    foreach(testTarget EnvironmentCaptureTests EnvironmentCaptureTestTarget EnvironmentCaptureIntegrationTests)
+        target_compile_features(${testTarget} PRIVATE cxx_std_20)
+        target_compile_definitions(${testTarget} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+        if(MSVC)
+            target_compile_options(${testTarget} PRIVATE /utf-8)
+        endif()
+        set_target_properties(${testTarget} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    endforeach()
+    if(ENVIRONMENT_CHECK_BUILD_GUI)
+        add_executable(EnvironmentCollectorUiTests CollectorUiTests.cpp)
+        target_link_libraries(EnvironmentCollectorUiTests PRIVATE ZSlate)
+        target_compile_features(EnvironmentCollectorUiTests PRIVATE cxx_std_20)
+        target_compile_definitions(EnvironmentCollectorUiTests PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+        if(MSVC)
+            target_compile_options(EnvironmentCollectorUiTests PRIVATE /utf-8)
+        endif()
+        add_test(NAME environment_collector_ui COMMAND EnvironmentCollectorUiTests)
+    endif()
+endif()
 message(STATUS "ZWindowsEnvironmentCheck configured without ZRuntime, GameCore, or AVX compile flags")

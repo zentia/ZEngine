@@ -1,3 +1,5 @@
+#include "Diagnosis.h"
+#include "Collection.h"
 #include "EnvironmentProbe.h"
 #include "GpuSelectionProbe.h"
 #include "ReportWriter.h"
@@ -341,7 +343,9 @@ void PrintUsage()
         << "                             All DLLs are inspected recursively; GameCore\n"
         << "                             DLLs are probed automatically.\n"
         << "  --quiet                    Do not print the full text report.\n"
-        << "  --help                     Show this help.\n\n"
+        << "  --help                     Show this help.\n"
+        << "  --diagnose                 Event diagnosis; see --diagnose --help.\n"
+        << "  --collect                  Safe collection and ZIP; see --collect --help.\n\n"
         << "Exit codes: 0=compatible, 10=CPU ISA, 11=Windows x64, 12=memory,\n"
         << "            20=Debug CRT DLL, 21=invalid/unsupported DLL,\n"
         << "            23=DLL load/probe failure, 24=probe infrastructure, 30=tool error.\n";
@@ -354,6 +358,11 @@ int wmain(int argumentCount, wchar_t** arguments)
 
     try
     {
+        if (zengine::envcheck::collector::IsCollectionCommand(argumentCount, arguments))
+            return zengine::envcheck::collector::RunCollectionCommand(argumentCount, arguments);
+        if (zengine::envcheck::diagnosis::IsDiagnosisCommandLine(argumentCount, arguments))
+            return zengine::envcheck::diagnosis::RunDiagnosis(
+                zengine::envcheck::diagnosis::ParseDiagnosisCommandLine(argumentCount, arguments));
         const CommandLineOptions options = ParseCommandLine(argumentCount, arguments);
         if (options.showHelp)
         {

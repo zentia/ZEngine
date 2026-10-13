@@ -1,5 +1,7 @@
 #include "ReportWriter.h"
 
+#include "ToolVersion.h"
+
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -352,7 +354,7 @@ std::string BuildJsonReport(
     std::ostringstream stream;
     stream << "{\n"
            << "  \"schemaVersion\": 5,\n"
-           << "  \"toolVersion\": \"1.4.0\",\n"
+           << "  \"toolVersion\": \"" << ToolVersion << "\",\n"
            << "  \"result\": \"" << ToString(evaluation.status) << "\",\n"
            << "  \"issueCode\": \"" << EscapeJson(evaluation.issueCode) << "\",\n"
            << "  \"exitCode\": " << evaluation.exitCode << ",\n"

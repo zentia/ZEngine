@@ -134,7 +134,7 @@ struct Evaluation
     std::vector<std::string> warnings;
 };
 
-EnvironmentSnapshot CollectEnvironment();
+EnvironmentSnapshot CollectEnvironment(bool includeDevices = true);
 Evaluation EvaluateEnvironment(const EnvironmentSnapshot& snapshot, const Requirements& requirements);
 const char* ToString(CompatibilityStatus status);
 } // namespace zengine::envcheck
