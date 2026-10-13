@@ -8,6 +8,7 @@
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateInput.h"
 #include "ZSlate/Core/SlatePaint.h"
+#include "ZSlate/Renderer/SlateDpiScaleRenderer.h"
 #include "ZSlate/Renderer/ZSlateBatchedRenderer.h"
 #include "ZSlate/Renderer/ZSlateFontAtlas.h"
 #include "ZSlate/Platform/D3D11/ZSlateD3D11Renderer.h"
@@ -37,18 +38,26 @@ namespace
 using namespace ZSlate;
 using namespace zengine::envcheck::collector;
 using namespace zengine::envcheck::diagnosis;
+// The widget tree works in DPI-independent logical units (96 DPI = 1.0), so every
+// size below is written once at its 100% value. `scaled` converts to physical
+// pixels on the way to `renderer` and snaps edges to whole pixels, so neighbouring
+// boxes stay seamless at 125%/150%. Win32 coordinates are physical; they are
+// divided by `dpiScale` at the WindowProc boundary (see CollectorApp::Logical).
 class Platform final : public ISlatePlatform
 {
 public:
     ZSlateBatchedRenderer renderer;
-    Vector2 mouse{0,0}, size{920,680};
+    FSlateDpiScaleRenderer scaled{&renderer, 1.0f, true};
+    Vector2 mouse{0,0}, size{920,680};  // logical
+    float dpiScale = 1;
     bool down = false;
-    ISlateRenderer* GetRenderer() override { return &renderer; }
+    ISlateRenderer* GetRenderer() override { return &scaled; }
     Vector2 GetMousePosition() const override { return mouse; }
     bool IsMouseButtonDown(int button) const override { return button == 0 && down; }
     bool IsKeyDown(int key) const override { return (GetKeyState(key) & 0x8000) != 0; }
     float GetTimeSeconds() const override { return static_cast<float>(GetTickCount64() % 10000000) / 1000; }
     Vector2 GetWindowSize() const override { return size; }
+    float GetDpiScale() const override { return dpiScale; }
 };
 class CollectorApp
 {
@@ -62,7 +71,6 @@ public:
     std::shared_ptr<SVerticalBox> column;
     std::shared_ptr<STextBlock> status, timeLabel;
     std::shared_ptr<SComboBox<IncidentKind>> kindBox;
-    std::vector<std::function<void(float)>> dpiUpdates;
     std::shared_ptr<SEditableTextBox> timeInput;
     std::shared_ptr<SCheckBox> details;
     std::filesystem::path procDumpPath, targetPath;
@@ -77,7 +85,6 @@ public:
     Result captureReport;
     bool busy = false, closing = false, minimized = false;
     bool suppressPointerUntilRelease = false;
-    float scale = 1;
     ~CollectorApp()
     {
         cancel = true;
@@ -87,16 +94,27 @@ public:
     }
     void AddWidget(const std::shared_ptr<SWidget>& widget, float padding)
     {
-        auto* slot = &column->AddSlot(widget).AutoSize();
-        dpiUpdates.push_back([slot, padding](float s) { slot->SetPadding(FMargin(std::round(22 * s), std::round(padding * s))); });
+        column->AddSlot(widget).AutoSize().SetPadding(FMargin(22, padding));
     }
+    // Only the scale and the logical client size change; widget metrics stay in
+    // logical units and FSlateDpiScaleRenderer applies the new factor on paint.
     void ApplyDpi(UINT dpi)
     {
-        if (!column) return;
-        scale = static_cast<float>(dpi ? dpi : 96) / 96;
-        for (const auto& update : dpiUpdates) update(scale);
-        kindBox->ClosePopup();
+        platform.dpiScale = static_cast<float>(dpi ? dpi : 96) / 96;
+        platform.scaled.SetScale(platform.dpiScale);
+        RECT client{};
+        if (window && GetClientRect(window, &client) && client.right > 0 && client.bottom > 0)
+            SetPhysicalSize(client.right, client.bottom);
+        if (kindBox) kindBox->ClosePopup();
         ResetPointerGesture();
+    }
+    void SetPhysicalSize(int width, int height)
+    {
+        platform.size = Vector2(static_cast<float>(width) / platform.dpiScale, static_cast<float>(height) / platform.dpiScale);
+    }
+    Vector2 Logical(int x, int y) const
+    {
+        return Vector2(static_cast<float>(x) / platform.dpiScale, static_cast<float>(y) / platform.dpiScale);
     }
     void ResetPointerGesture()
     {
@@ -105,16 +123,14 @@ public:
     }
     std::shared_ptr<STextBlock> Text(const std::string& text, float size = 17)
     {
-        auto w = std::make_shared<STextBlock>(); w->SetText(text);
-        dpiUpdates.push_back([w, size](float s) { w->SetFontSize(std::round(size * s)); });
+        auto w = std::make_shared<STextBlock>(); w->SetText(text); w->SetFontSize(size);
         AddWidget(w, 7);
         return w;
     }
     std::shared_ptr<STextBlock> Button(const std::string& text, const std::function<void()>& callback)
     {
         auto button = std::make_shared<SButton>();
-        auto label = std::make_shared<STextBlock>(); label->SetText(text);
-        dpiUpdates.push_back([label](float s) { label->SetFontSize(std::round(21 * s)); });
+        auto label = std::make_shared<STextBlock>(); label->SetText(text); label->SetFontSize(21);
         button->SetContent(label); button->OnClicked = callback;
         AddWidget(button, 9);
         return label;
@@ -147,16 +163,14 @@ public:
             return kind == IncidentKind::Crash ? "闪退" : kind == IncidentKind::Hang ? "卡住" : "不确定";
         };
         kindBox->OnSelectionChanged = [this](IncidentKind kind, int32_t) { if (!busy) options.incidentKind = kind; };
-        dpiUpdates.push_back([this](float s) {
-            kindBox->Size = Vector2(std::round(260 * s), std::round(32 * s));
-            kindBox->ItemHeight = std::round(32 * s);
-            kindBox->FontSize = std::round(18 * s);
-            kindBox->MaxDropdownHeight = kindBox->ItemHeight * 3;
-        });
+        kindBox->Size = Vector2(260, 32);
+        kindBox->ItemHeight = 32;
+        kindBox->FontSize = 18;
+        kindBox->MaxDropdownHeight = kindBox->ItemHeight * 3;
         AddWidget(kindBox, 6);
         Text("发生时间（可留空自动找记录；输入需带时区）", 16);
         timeInput = std::make_shared<SEditableTextBox>();
-        dpiUpdates.push_back([this](float s) { timeInput->FontSize = std::round(18 * s); timeInput->MinWidth = std::round(560 * s); });
+        timeInput->FontSize = 18; timeInput->MinWidth = 560;
         timeInput->SetHintText("2026-10-12T18:30:00+08:00");
         timeInput->SetText(FormatUtcIso8601(options.incidentTime));
         AddWidget(timeInput, 6);
@@ -164,10 +178,8 @@ public:
         details = std::make_shared<SCheckBox>();
         details->SetLabel("同意附带事件明细");
         details->SetChecked(true);
-        dpiUpdates.push_back([this](float s) {
-            details->FontSize = std::round(16 * s); details->BoxSize = std::round(18 * s);
-            details->Size = Vector2(std::round(260 * s), std::round(28 * s));
-        });
+        details->FontSize = 16; details->BoxSize = 18;
+        details->Size = Vector2(260, 28);
         AddWidget(details, 9);
         Button("开始采集并生成 ZIP", [this] { Start(); });
         Button("取消采集（打包阶段不可取消）", [this] { if (busy && cancellable.load()) cancel = true; });
@@ -223,11 +235,9 @@ public:
         auto scroll = std::make_shared<SScrollBox>(); scroll->AddChild(column);
         auto scrollBar = std::make_shared<SScrollBar>();
         scroll->SetScrollBar(scrollBar);
-        dpiUpdates.push_back([scroll, scrollBar](float s) {
-            scrollBar->Thickness = std::round(16 * s);
-            scrollBar->MinThumbLength = std::round(32 * s);
-            scroll->ScrollSpeed = std::round(40 * s);
-        });
+        scrollBar->Thickness = 16;
+        scrollBar->MinThumbLength = 32;
+        scroll->ScrollSpeed = 40;
         auto root = std::make_shared<CollectorScrollPanel>(scroll, scrollBar);
         SlateApplication::Get().SetRootContent(root);
     }
@@ -367,7 +377,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
         app->minimized = w == SIZE_MINIMIZED;
         if (!app->minimized && LOWORD(l) && HIWORD(l))
         {
-            app->platform.size = Vector2(static_cast<float>(LOWORD(l)), static_cast<float>(HIWORD(l)));
+            // Swapchain stays physical; the widget tree gets the logical size.
+            app->SetPhysicalSize(LOWORD(l), HIWORD(l));
             if (app->backend) app->backend->Resize(LOWORD(l), HIWORD(l));
         }
         return 0;
@@ -379,10 +390,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
         return 0;
     }
     case WM_MOUSEMOVE:
-        app->platform.mouse = Vector2(static_cast<float>(GET_X_LPARAM(l)), static_cast<float>(GET_Y_LPARAM(l)));
+        app->platform.mouse = app->Logical(GET_X_LPARAM(l), GET_Y_LPARAM(l));
         app->Mouse(); return 0;
     case WM_LBUTTONDOWN: case WM_LBUTTONUP:
-        app->platform.mouse = Vector2(static_cast<float>(GET_X_LPARAM(l)), static_cast<float>(GET_Y_LPARAM(l)));
+        app->platform.mouse = app->Logical(GET_X_LPARAM(l), GET_Y_LPARAM(l));
         app->platform.down = message == WM_LBUTTONDOWN;
         if (app->platform.down) SetCapture(window);
         app->Mouse();
@@ -399,7 +410,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
     {
         POINT pos{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
         ScreenToClient(window, &pos);
-        app->platform.mouse = Vector2(static_cast<float>(pos.x), static_cast<float>(pos.y));
+        app->platform.mouse = app->Logical(pos.x, pos.y);
         app->Mouse(static_cast<float>(GET_WHEEL_DELTA_WPARAM(w)) / WHEEL_DELTA); return 0;
     }
     case WM_KEYDOWN:
@@ -479,11 +490,14 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
             app.Update();
             if (!app.minimized && IsWindow(window))
             {
-                app.platform.renderer.BeginFrame();
+                // Paint in logical units through the DPI decorator; the batched
+                // renderer underneath accumulates physical-pixel geometry.
+                auto& scaled = app.platform.scaled;
+                scaled.BeginFrame();
                 const UIRect viewport(0, 0, app.platform.size.x, app.platform.size.y);
-                SlateApplication::Get().PaintInto(&app.platform.renderer, viewport);
-                app.kindBox->PaintPopup(&app.platform.renderer, viewport);
-                app.platform.renderer.EndFrame();
+                SlateApplication::Get().PaintInto(&scaled, viewport);
+                app.kindBox->PaintPopup(&scaled, viewport);
+                scaled.EndFrame();
                 app.backend->Render(app.platform.renderer, &app.fonts);
             }
             Sleep(app.minimized ? 50 : 10);

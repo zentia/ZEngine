@@ -3,13 +3,17 @@
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "CollectorScrollPanel.h"
+#include "ZSlate/Renderer/SlateDpiScaleRenderer.h"
 #include "ZSlate/Renderer/ZSlateBatchedRenderer.h"
 #include "ZSlate/Renderer/ZSlateFontAtlas.h"
+#include "ZSlate/Testing/SlateRecordingRenderer.h"
 #include <Windows.h>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
+#include <vector>
 
 using namespace ZSlate;
 namespace
@@ -193,6 +197,93 @@ void TestGlyphMapping()
     auto fractional = renderer.MeasureText("文本 Measure", 22.5f);
     auto quantized = renderer.MeasureText("文本 Measure", 23.0f);
     Check(fractional.x == quantized.x && fractional.y == quantized.y, "measure and raster size quantization agrees");
+
+    // The GUI paints text through FSlateDpiScaleRenderer (logical 18pt -> physical
+    // 18*s), so the 1:1 texel mapping must survive the decorator too.
+    for (float dpiScale : {1.25f, 1.5f, 1.75f, 2.0f})
+    for (float offset : {0.0f, 0.3f, 0.5f, 0.7f})
+    {
+        FSlateDpiScaleRenderer dpi(&renderer, dpiScale, true);
+        dpi.BeginFrame();
+        dpi.DrawTextLabel(UIRect(10 + offset, 10 + offset, 640, 60), "环境信息 闪退 卡住 AVmw 0123456789", 18, Colors::White);
+        dpi.EndFrame();
+        const auto& vertices = renderer.GetVertices();
+        Check(!vertices.empty(), "decorated glyph quads generated");
+        for (size_t i = 0; i < vertices.size(); i += 4)
+        {
+            const auto& a = vertices[i]; const auto& b = vertices[i + 2];
+            Check(std::abs((b.Pos[0] - a.Pos[0]) - (b.UV[0] - a.UV[0]) * atlas.GetWidth()) < 0.002f, "decorated glyph width stays 1:1");
+            Check(std::abs((b.Pos[1] - a.Pos[1]) - (b.UV[1] - a.UV[1]) * atlas.GetHeight()) < 0.002f, "decorated glyph height stays 1:1");
+            Check(a.Pos[0] == std::floor(a.Pos[0]) && a.Pos[1] == std::floor(a.Pos[1]), "decorated glyph origin on pixel grid");
+        }
+    }
+}
+// Records DrawRect thickness as well, which FSlateRecordingRenderer only counts.
+struct RectRecorder : FSlateRecordingRenderer
+{
+    std::vector<UIRect> rects;
+    std::vector<float> thickness;
+    void DrawRect(const UIRect& rect, const UIColor& color, float t) override
+    {
+        FSlateRecordingRenderer::DrawRect(rect, color, t);
+        rects.push_back(rect); thickness.push_back(t);
+    }
+};
+bool IsWhole(float v) { return v == std::floor(v); }
+void TestDpiPixelSnap()
+{
+    // Logical row of boxes that tile the line with no gaps -- the layout the GUI
+    // produces (22px side padding, integer widths). Fractional scales put most
+    // of these edges between physical pixels.
+    const float widths[] = {22, 7, 13, 260, 1, 3, 560, 22};
+    for (float s : {1.0f, 1.25f, 1.5f, 1.75f, 2.0f, 2.25f})
+    {
+        RectRecorder rec;
+        FSlateDpiScaleRenderer dpi(&rec, s, true);
+        float x = 0;
+        for (float w : widths) { dpi.DrawQuad(UIRect(x, 5, w, 32), Colors::White); x += w; }
+        Check(rec.Quads.size() == std::size(widths), "every quad forwarded");
+        for (size_t i = 0; i < rec.Quads.size(); ++i)
+        {
+            const UIRect& q = rec.Quads[i];
+            Check(IsWhole(q.x) && IsWhole(q.y) && IsWhole(q.w) && IsWhole(q.h), "snapped quad on pixel grid");
+            Check(q.w >= 1 && q.h >= 1, "snapped quad never collapses");
+            if (i + 1 < rec.Quads.size())
+                Check(q.x + q.w == rec.Quads[i + 1].x, "adjacent quads share an edge (no seam/overlap)");
+        }
+        // Edge snapping keeps total extent faithful: at most half a pixel of drift.
+        const UIRect& last = rec.Quads.back();
+        Check(std::abs((last.x + last.w) - x * s) <= 0.5f, "row extent within half a pixel");
+
+        // Hairlines: a sub-pixel quad still shows, a border is whole pixels >= 1.
+        dpi.DrawQuad(UIRect(10.3f, 10, 0.2f, 0.2f), Colors::White);
+        Check(rec.Quads.back().w == 1 && rec.Quads.back().h == 1, "sub-pixel quad rounds up to 1px");
+        dpi.DrawQuad(UIRect(10, 10, 0, 4), Colors::White);
+        Check(rec.Quads.back().w == 0, "empty quad stays empty");
+        dpi.DrawRect(UIRect(0, 0, 100, 20), Colors::White, 1.0f);
+        Check(IsWhole(rec.thickness.back()) && rec.thickness.back() >= 1, "border thickness whole pixels");
+        Check(std::abs(rec.thickness.back() - s) <= 0.5f, "border thickness tracks scale");
+
+        // Clip rects snap with the same rule, so content and its clip agree.
+        dpi.PushClipRect(UIRect(22, 0, 260, 400));
+        dpi.DrawQuad(UIRect(22, 0, 260, 400), Colors::White);
+        dpi.PopClipRect();
+        Check(rec.IsClipBalanced(), "clip stack balanced through decorator");
+
+        // Text keeps the exact scaled size (atlas does its own rounding).
+        dpi.DrawTextLabel(UIRect(22, 5, 100, 20), "x", 17, Colors::White);
+        Check(rec.Texts.back().FontSize == 17 * s, "font size scaled, not snapped");
+        // MeasureText round-trips to logical units.
+        const Vector2 m = dpi.MeasureText("MMMM", 14);
+        Check(std::abs(m.x - rec.MeasureText("MMMM", 14).x) < 0.01f, "measure returns logical units");
+    }
+
+    // Snap off: an exact similarity transform (what LuaMemPreview asserts).
+    RectRecorder rec;
+    FSlateDpiScaleRenderer exact(&rec, 1.25f);
+    exact.DrawQuad(UIRect(22, 7, 13, 5), Colors::White);
+    const UIRect& q = rec.Quads.back();
+    Check(q.x == 27.5f && q.y == 8.75f && q.w == 16.25f && q.h == 6.25f, "unsnapped decorator is exact");
 }
 }
 int main()
@@ -202,7 +293,8 @@ int main()
         TestPointerReset();
         for (float scale : {1.0f, 1.25f, 1.5f, 2.0f}) { TestDropdown(scale); TestScrollBar(scale); }
         TestGlyphMapping();
-        std::cout << "PASS dropdown, scrollbar drag/wheel/page/capture/clipping and 1:1 glyph mapping at 100/125/150/200 percent\n";
+        TestDpiPixelSnap();
+        std::cout << "PASS dropdown, scrollbar drag/wheel/page/capture/clipping, 1:1 glyph mapping and DPI pixel snapping at 100/125/150/200 percent\n";
         return 0;
     }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

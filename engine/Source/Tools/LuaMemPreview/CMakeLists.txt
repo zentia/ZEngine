@@ -18,12 +18,12 @@ set(LUA_MEM_PREVIEW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemWidgets.cpp
 )
 
+# FSlateDpiScaleRenderer / FSlateRecordingRenderer used to live here; they are
+# now ZSlate library headers (ZSlate/Renderer, ZSlate/Testing).
 set(LUA_MEM_PREVIEW_HEADERS
-    ${CMAKE_CURRENT_SOURCE_DIR}/DpiScaleRenderer.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsv.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemWidgets.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/UiRecorder.h
 )
 
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${LUA_MEM_PREVIEW_SOURCES} ${LUA_MEM_PREVIEW_HEADERS})

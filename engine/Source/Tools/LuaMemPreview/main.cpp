@@ -30,18 +30,18 @@
 //   LuaMemPreview.exe --dump-ui <file>   headless: assert on the painted tree
 //   Ctrl+O to open, or drag a file onto the window.
 
-#include "DpiScaleRenderer.h"
 #include "LuaMemCsv.h"
 #include "LuaMemWidgets.h"
-#include "UiRecorder.h"
 
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateInput.h"
 #include "ZSlate/Core/SlateGeometry.h"
 #include "ZSlate/Core/SlatePaint.h"
 #include "ZSlate/Platform/D3D11/ZSlateD3D11Renderer.h"
+#include "ZSlate/Renderer/SlateDpiScaleRenderer.h"
 #include "ZSlate/Renderer/ZSlateBatchedRenderer.h"
 #include "ZSlate/Renderer/ZSlateFontAtlas.h"
+#include "ZSlate/Testing/SlateRecordingRenderer.h"
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Text/STextBlock.h"
@@ -61,6 +61,9 @@
 #include <shellapi.h>
 
 using namespace LuaMemPreview;
+using ZSlate::FSlateDpiScaleRenderer;
+using ZSlate::FSlateRecordedText;
+using ZSlate::FSlateRecordingRenderer;
 
 // ============================================================================
 // Platform bridge
@@ -73,9 +76,9 @@ public:
     // the checks run against the real widget tree rather than a stand-in.
     ZSlate::ISlateRenderer* RendererOverride {nullptr};
     bool MouseDown[3] {};
-    // Logical (DPI-independent) units -- see DpiScaleRenderer.h. The swapchain
-    // and all Win32 message coordinates stay physical; conversion happens at
-    // the boundary (WndProc divides, FDpiScaleRenderer multiplies).
+    // Logical (DPI-independent) units -- see ZSlate/Renderer/SlateDpiScaleRenderer.h.
+    // The swapchain and all Win32 message coordinates stay physical; conversion
+    // happens at the boundary (WndProc divides, FSlateDpiScaleRenderer multiplies).
     ZSlate::Vector2 MousePos {-1.0f, -1.0f};
     ZSlate::Vector2 WinSize {1440.0f, 900.0f};
     float WheelDelta {0.0f};
@@ -111,7 +114,7 @@ public:
     // lays out in logical units, this converts to physical pixels and -- the
     // reason text was blurry -- scales font_size *before* the atlas rasterises,
     // so glyphs are baked at the physical size instead of stretched.
-    FDpiScaleRenderer ScaledRenderer {&Platform.Renderer, 1.0f};
+    FSlateDpiScaleRenderer ScaledRenderer {&Platform.Renderer, 1.0f};
 
     FSnapshot Snapshot;
     FRowView RowView;
@@ -373,7 +376,7 @@ ZSlate::EKey MapVirtualKey(WPARAM vk)
 // awareness gets DPI *virtualisation*: it renders at 96 DPI and the compositor
 // bitmap-stretches the whole window to the monitor scale (1.5x here), which is
 // a bilinear resample and exactly why the text looked soft. Declaring awareness
-// turns that off; FDpiScaleRenderer then does the scaling properly.
+// turns that off; FSlateDpiScaleRenderer then does the scaling properly.
 //
 // Both entry points are resolved dynamically: SetProcessDpiAwarenessContext is
 // Win10 1703+ and GetDpiForWindow is 1607+, so a static import would stop the
@@ -579,7 +582,7 @@ int main(int argc, char** argv)
             return 1;
         }
 
-        FUiRecorder rec;
+        FSlateRecordingRenderer rec;
         app.Platform.RendererOverride = &rec;
         app.Platform.WinSize = ZSlate::Vector2(1440.0f, 900.0f);
         const ZSlate::UIRect full(0.0f, 0.0f, 1440.0f, 900.0f);
@@ -604,7 +607,7 @@ int main(int argc, char** argv)
         float widest_text_right = 0.0f;
         float lowest_row_bottom = 0.0f;
         int row_like = 0;  // texts drawn at the table's row height
-        for (const FRecordedText& t : rec.Texts)
+        for (const FSlateRecordedText& t : rec.Texts)
         {
             widest_text_right = (t.Rect.x + t.Rect.w > widest_text_right) ? t.Rect.x + t.Rect.w : widest_text_right;
             if (t.Rect.y > lowest_row_bottom)
@@ -637,14 +640,14 @@ int main(int argc, char** argv)
         };
 
         // ---- DPI scaling ---------------------------------------------------
-        // Repaint the identical UI through FDpiScaleRenderer at 150% and compare
+        // Repaint the identical UI through FSlateDpiScaleRenderer at 150% and compare
         // against the 100% pass above. A correct decorator is a pure similarity
         // transform: same draw calls in the same order, every rect and every
         // font size exactly 1.5x. Font size matters most -- it is what makes the
         // atlas rasterize bigger glyphs instead of stretching a 14px bitmap.
         constexpr float kTestScale = 1.5f;
-        FUiRecorder scaled_rec;
-        FDpiScaleRenderer dpi(&scaled_rec, kTestScale);
+        FSlateRecordingRenderer scaled_rec;
+        FSlateDpiScaleRenderer dpi(&scaled_rec, kTestScale);
         // Logical window stays 1440x900 so layout must come out identical; the
         // physical surface would be 2160x1350.
         app.Platform.RendererOverride = &dpi;
@@ -661,8 +664,8 @@ int main(int argc, char** argv)
         {
             for (size_t i = 0; i < rec.Texts.size(); ++i)
             {
-                const FRecordedText& a = rec.Texts[i];
-                const FRecordedText& b = scaled_rec.Texts[i];
+                const FSlateRecordedText& a = rec.Texts[i];
+                const FSlateRecordedText& b = scaled_rec.Texts[i];
                 if (a.Text != b.Text)
                 {
                     dpi_same_count = false;  // order/content drift
@@ -717,7 +720,7 @@ int main(int argc, char** argv)
         std::printf("\nfirst recorded texts (layout order):\n");
         for (size_t i = 0; i < rec.Texts.size() && i < 22; ++i)
         {
-            const FRecordedText& t = rec.Texts[i];
+            const FSlateRecordedText& t = rec.Texts[i];
             std::string s = t.Text;
             if (s.size() > 60)
                 s = s.substr(0, 57) + "...";
