@@ -1496,7 +1496,7 @@ Conventions (do not re-litigate):
 
 - The only ZSlate source tree is the submodule `engine/Libraries/ZSlate`
   (`github.com/zentia/ZSlate`). Standalone tools (e.g.
-  `tools/ClientProjBranches.Cpp`) consume it with
+  `tools/ClientProjBranches`) consume it with
   `add_subdirectory(<repo>/engine/Libraries/ZSlate ...)` + link `ZSlate`;
   never fork a private copy under `tools/`. Missing widgets go into the
   submodule (commit there, then bump the pointer).
@@ -1600,7 +1600,7 @@ the environment report:
 ## 7. Standalone ZSlate tools: use FSlateStandaloneApp, do not hand-roll a host
 
 Every standalone ZSlate GUI tool (LuaMemPreview, TexPreview,
-ClientProjBranches.Cpp, ZGpuSelectionInspector, ZEnvironmentCollector) used to
+ClientProjBranches, ZGpuSelectionInspector, ZEnvironmentCollector) used to
 carry its own copy of: an `ISlatePlatform` subclass, WNDCLASS + CreateWindow +
 PeekMessage host, DPI declaration / `WM_DPICHANGED` handling, and a hardcoded
 `C:\Windows\Fonts\...` atlas load. The copies drifted — two had **no DPI
@@ -1660,7 +1660,7 @@ by taste. When adding a tool, put it on the correct side:
 | Home | For | Added by | Examples |
 |---|---|---|---|
 | `engine/Source/Tools/` | tools that need **engine internals** — ZRuntime decompressors, `SerializedFile`, asset registry | `engine/CMakeLists.txt` (desktop branch only) | `TexPreview`, `LuaMemPreview` |
-| `tools/` | tools with **no engine dependency** — ZSlate + platform APIs only | `tools/CMakeLists.txt`, from the root **after** `add_subdirectory(engine)` | `WindowsEnvironmentCheck`, `ClientProjBranches.Cpp` |
+| `tools/` | tools with **no engine dependency** — ZSlate + platform APIs only | `tools/CMakeLists.txt`, from the root **after** `add_subdirectory(engine)` | `WindowsEnvironmentCheck`, `ClientProjBranches` |
 
 **The ordering constraint is load-bearing.** `tools/` must be added after
 `add_subdirectory(engine)`: every tool there links `ZSlate`, and `ZSlate` is
@@ -1686,7 +1686,7 @@ reintroduce the ordering problem from the other side.
   configure: `cmake -S tools/WindowsEnvironmentCheck -B <dir>`.
 - `ZENGINE_BUILD_CLIENT_PROJ_BRANCHES`: a self-contained CMake project with its
   own C++ standard and output layout; normally configured standalone
-  (`cmake -S tools/ClientProjBranches.Cpp -B build`). Available in-tree, but
+  (`cmake -S tools/ClientProjBranches -B build`). Available in-tree, but
   OFF so a full configure does not pick up unrelated work.
 
 

@@ -30,12 +30,12 @@ if(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK AND WIN32)
     add_subdirectory(WindowsEnvironmentCheck)
 endif()
 
-# ClientProjBranches.Cpp is a self-contained CMake project: it configures and
+# ClientProjBranches is a self-contained CMake project: it configures and
 # builds fine on its own (cmake -S . -B build), which is how it is normally
 # used. It is OFF here by default so a full engine configure does not pick up a
 # second, unrelated tool with its own C++ standard and output layout.
 option(ZENGINE_BUILD_CLIENT_PROJ_BRANCHES "Build the ClientProjBranches branch/stack-trace viewer" OFF)
 
 if(ZENGINE_BUILD_CLIENT_PROJ_BRANCHES AND WIN32)
-    add_subdirectory(ClientProjBranches.Cpp)
+    add_subdirectory(ClientProjBranches)
 endif()

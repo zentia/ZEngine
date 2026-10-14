@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ClientProjBranches.Cpp LANGUAGES CXX)
+project(ClientProjBranches LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,14 +27,14 @@ set(SOURCES
 )
 
 # Create main executable (Win32 GUI, not console)
-add_executable(ClientProjBranches.Cpp WIN32 ${SOURCES})
+add_executable(ClientProjBranches WIN32 ${SOURCES})
 
 if(MSVC)
-    target_compile_options(ClientProjBranches.Cpp PRIVATE /utf-8)
+    target_compile_options(ClientProjBranches PRIVATE /utf-8)
 endif()
 
 # Link libraries
-target_link_libraries(ClientProjBranches.Cpp PRIVATE
+target_link_libraries(ClientProjBranches PRIVATE
     ZSlate
     d3d11
     dxgi
@@ -47,7 +47,7 @@ target_link_libraries(ClientProjBranches.Cpp PRIVATE
 )
 
 # Copy settings directory on build
-add_custom_command(TARGET ClientProjBranches.Cpp POST_BUILD
+add_custom_command(TARGET ClientProjBranches POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
         "$ENV{LOCALAPPDATA}/ClientProjBranches"
 )

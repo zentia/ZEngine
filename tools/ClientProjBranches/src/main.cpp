@@ -36,7 +36,7 @@
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int nCmdShow)
 {
-    printf("=== ClientProjBranches.Cpp (D3D11) ===\n\n");
+    printf("=== ClientProjBranches (D3D11) ===\n\n");
     fflush(stdout);
 
     // COM init (required for IFileDialog)
