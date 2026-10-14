@@ -4,8 +4,10 @@
 #include <filesystem>
 #include <Windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <cctype>
 #include <string>
+#include <vector>
 #include "IdeSettings.h"
 namespace fs = std::filesystem;
 
@@ -217,6 +219,195 @@ inline bool IsValidSvnRevision(const std::string& revision) {
 inline void KillProcess(const std::string& name) {
     std::string cmd = "taskkill /f /im " + name + " 2>nul";
     system(cmd.c_str());
+}
+
+// ============================================================================
+// Working-copy relative launchers (C# SvnActions)
+// ============================================================================
+
+// ShellExecute "open" with the working directory set to the file's folder —
+// what C# does for .sln files and standalone tools alike.
+inline bool LaunchFile(const std::string& file) {
+    if (file.empty() || !fs::exists(file)) return false;
+
+    const std::string directory = fs::path(file).parent_path().string();
+    const HINSTANCE result = ShellExecuteA(nullptr, "open", file.c_str(), nullptr,
+                                           directory.empty() ? nullptr : directory.c_str(), SW_SHOW);
+    return reinterpret_cast<intptr_t>(result) > 32;
+}
+
+// Resolves <workingCopy>/<relative> and launches it.
+inline bool LaunchInWorkingCopy(const std::string& workingCopy, const std::string& relative) {
+    if (!IsExistingDirectory(workingCopy)) return false;
+    return LaunchFile((fs::path(workingCopy) / relative).string());
+}
+
+// <wc>\GameCore\Build\build_win\GameCore.sln
+inline bool OpenGameCoreSolution(const std::string& workingCopy) {
+    return LaunchInWorkingCopy(workingCopy, "GameCore/Build/build_win/GameCore.sln");
+}
+
+// <wc>\Program\Project.sln
+inline bool OpenProgramSolution(const std::string& workingCopy) {
+    return LaunchInWorkingCopy(workingCopy, "Program/Project.sln");
+}
+
+// <wc>\Tools\ProtobufDatabin\Tools\DataTableConvGUI.exe
+inline bool OpenDataBin(const std::string& workingCopy) {
+    return LaunchInWorkingCopy(workingCopy, "Tools/ProtobufDatabin/Tools/DataTableConvGUI.exe");
+}
+
+// <wc>\Tools\PerfTools\PerfToolsPlus\perftools_gui.exe
+inline bool OpenPerfTools(const std::string& workingCopy) {
+    return LaunchInWorkingCopy(workingCopy, "Tools/PerfTools/PerfToolsPlus/perftools_gui.exe");
+}
+
+// <wc>\KillUnity.bat
+inline bool RunKillUnityScript(const std::string& workingCopy) {
+    return LaunchInWorkingCopy(workingCopy, "KillUnity.bat");
+}
+
+// The a_*Unity*Win*.bat launcher sitting in the working copy root.
+inline bool OpenUnityLauncher(const std::string& workingCopy) {
+    if (!IsExistingDirectory(workingCopy)) return false;
+
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(workingCopy, ec)) {
+        if (!entry.is_regular_file()) continue;
+
+        const std::string name = entry.path().filename().string();
+        if (name.size() < 4 || name.compare(name.size() - 4, 4, ".bat") != 0) continue;
+
+        std::string lower;
+        for (char c : name) lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+        // a_*unity*win*.bat
+        if (lower.compare(0, 2, "a_") != 0) continue;
+        if (lower.find("unity") == std::string::npos) continue;
+        if (lower.rfind("win") == std::string::npos || lower.rfind("win") < lower.find("unity")) continue;
+
+        return LaunchFile(entry.path().string());
+    }
+    return false;
+}
+
+// ============================================================================
+// Shell context-menu verbs (C# ShellMenuInvoker)
+// ============================================================================
+
+// Builds the shell context menu for `path` and invokes the first entry whose
+// display text matches one of `verbNames` (accelerator "&" and case ignored).
+// This is how "Create CodeReview" is reached — it is a TortoiseSVN-style shell
+// extension, not an executable.
+inline bool InvokeShellVerb(const std::string& path,
+                            const std::vector<std::string>& verbNames,
+                            std::string* outError = nullptr) {
+    if (path.empty() || verbNames.empty()) return false;
+
+    const HRESULT coInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool    coOwned = SUCCEEDED(coInit);
+
+    bool        invoked = false;
+    std::string error;
+
+    auto toLower = [](const std::string& value) {
+        std::string out;
+        out.reserve(value.size());
+        for (char c : value) out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return out;
+    };
+
+    std::vector<std::string> wanted;
+    for (const auto& name : verbNames) wanted.push_back(toLower(name));
+
+    if (PIDLIST_ABSOLUTE pidl = ILCreateFromPathA(path.c_str()))
+    {
+        IShellFolder*  parent = nullptr;
+        LPCITEMIDLIST  child  = nullptr;
+
+        HRESULT hr = SHBindToParent(pidl, IID_IShellFolder,
+                                    reinterpret_cast<void**>(&parent), &child);
+        if (FAILED(hr) || !parent) error = "SHBindToParent failed.";
+
+        IContextMenu* contextMenu = nullptr;
+        if (parent)
+        {
+            hr = parent->GetUIObjectOf(nullptr, 1, &child, IID_IContextMenu, nullptr,
+                                       reinterpret_cast<void**>(&contextMenu));
+            if (FAILED(hr) || !contextMenu) error = "No shell context menu for this path.";
+        }
+
+        if (contextMenu)
+        {
+            if (HMENU menu = CreatePopupMenu())
+            {
+                constexpr UINT idFirst = 1;
+                hr = contextMenu->QueryContextMenu(menu, 0, idFirst, 0x7FFF, CMF_NORMAL);
+
+                if (SUCCEEDED(hr))
+                {
+                    const int count = GetMenuItemCount(menu);
+                    for (int i = 0; i < count && !invoked; ++i)
+                    {
+                        wchar_t label[256] = {};
+                        if (!GetMenuStringW(menu, i, label, 256, MF_BYPOSITION)) continue;
+                        if (label[0] == L'\0') continue;
+
+                        const int narrow = WideCharToMultiByte(CP_UTF8, 0, label, -1,
+                                                               nullptr, 0, nullptr, nullptr);
+                        if (narrow <= 1) continue;
+
+                        std::string display(static_cast<size_t>(narrow) - 1, '\0');
+                        WideCharToMultiByte(CP_UTF8, 0, label, -1,
+                                            display.data(), narrow, nullptr, nullptr);
+
+                        // Drop the "&" accelerator markers.
+                        std::string plain;
+                        for (char c : display) if (c != '&') plain += c;
+                        const std::string plainLower = toLower(plain);
+
+                        bool matched = false;
+                        for (const auto& name : wanted)
+                            if (plainLower == name) { matched = true; break; }
+                        if (!matched) continue;
+
+                        const UINT id = GetMenuItemID(menu, i);
+                        if (id == static_cast<UINT>(-1)) continue;
+
+                        CMINVOKECOMMANDINFO info = { sizeof(info) };
+                        info.lpVerb = reinterpret_cast<LPCSTR>(MAKEINTRESOURCEA(id - idFirst));
+                        info.nShow  = SW_SHOWNORMAL;
+
+                        invoked = SUCCEEDED(contextMenu->InvokeCommand(&info));
+                        if (!invoked) error = "The shell command refused to run.";
+                    }
+                }
+                DestroyMenu(menu);
+            }
+            contextMenu->Release();
+        }
+
+        if (parent) parent->Release();
+        CoTaskMemFree(pidl);
+    }
+    else
+    {
+        error = "Not a valid shell path: " + path;
+    }
+
+    if (coOwned) CoUninitialize();
+    if (!invoked && outError) *outError = error;
+    return invoked;
+}
+
+// C# SvnActions.CreateCodeReview.
+inline bool CreateCodeReview(const std::string& workingCopy, std::string* outError = nullptr) {
+    if (!IsExistingDirectory(workingCopy)) {
+        if (outError) *outError = "Not an existing working copy: " + workingCopy;
+        return false;
+    }
+    return InvokeShellVerb(workingCopy,
+        { "Create CodeReview...", "Create CodeReview", "CreateCodeReview" }, outError);
 }
 
 } }

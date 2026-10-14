@@ -33,6 +33,7 @@
 #include <memory>
 #include <string>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -164,9 +165,8 @@ public:
         context.Renderer->DrawRect(r, Options.BorderColor, 1.0f);
 
         if (!m_DataSource) return;
-        RebuildRows();
 
-        const int32_t count = static_cast<int32_t>(m_RowWidgets.size());
+        const int32_t count = GetItemCount();
         if (count == 0) return;
 
         const float itemH   = Options.ItemHeight;
@@ -180,6 +180,11 @@ public:
         const int32_t last  = std::min(count,
             first + static_cast<int32_t>(std::ceil(viewH / itemH)) + 2);
 
+        // Virtualisation: only the rows inside the window exist. Rows are built
+        // on demand and dropped once they scroll out, so cost is bounded by the
+        // number of visible rows instead of by Items.size().
+        SyncRowCache(first, last);
+
         for (int32_t i = first; i < last; ++i)
         {
             const float y = viewTop + static_cast<float>(i) * itemH - m_ScrollOffset;
@@ -190,9 +195,9 @@ public:
             else if (i == m_HoverIndex)
                 context.Renderer->DrawQuad(rowRect, Options.HoverBackgroundColor);
 
-            if (m_RowWidgets[i])
+            if (auto row = GetRowWidget(i))
             {
-                PaintWidget(m_RowWidgets[i], context,
+                PaintWidget(row, context,
                             FGeometry(Vector2(rowRect.x, rowRect.y),
                                       Vector2(rowRect.w, rowRect.h)));
             }
@@ -281,40 +286,70 @@ private:
         if (m_ScrollOffset > maxScroll)  m_ScrollOffset = maxScroll;
     }
 
-    void RebuildRows() const
+    // Drop every cached row. Called when the data source (or the row factory)
+    // changes, so rows are rebuilt from the new data on the next paint.
+    void InvalidateRows() const
     {
-        if (!m_DataSource) return;
-        const uint64_t revision = m_DataSource->GetRevision();
-        if (revision == m_LastRevision && !m_RowWidgets.empty()) return;
-        if (revision == m_LastRevision && m_RowWidgets.empty()
-            && m_DataSource->GetItemsRef().empty()) return;
+        m_RowCache.clear();
+        m_LastRevision = 0;
+    }
 
-        m_LastRevision = revision;
+    std::shared_ptr<SWidget> GetRowWidget(int32_t index) const
+    {
+        const auto it = m_RowCache.find(index);
+        return (it == m_RowCache.end()) ? nullptr : it->second;
+    }
+
+    std::shared_ptr<SWidget> BuildRowWidget(int32_t index) const
+    {
+        if (!m_DataSource || index < 0 || index >= GetItemCount()) return nullptr;
 
         const std::vector<T>& items = m_DataSource->GetItemsRef();
-        m_RowWidgets.clear();
-        m_RowWidgets.reserve(items.size());
 
-        for (size_t i = 0; i < items.size(); ++i)
+        std::shared_ptr<SWidget> row;
+        if (m_OnGenerateItemWidget)
         {
-            std::shared_ptr<SWidget> row;
-            if (m_OnGenerateItemWidget)
-            {
-                auto self = std::static_pointer_cast<SListView<T>>(
-                    const_cast<SListView<T>*>(this)->shared_from_this());
-                row = m_OnGenerateItemWidget(items[i], static_cast<int32_t>(i), self);
-            }
-            if (!row)
-            {
-                // Fallback: plain label, so a list is never blank.
-                auto label = std::make_shared<STextBlock>();
-                label->Text = ToDisplayString(items[i]);
-                label->FontSize = 14.0f;
-                label->Color = Colors::White;
-                row = label;
-            }
-            row->SetParent(const_cast<SListView<T>*>(this));
-            m_RowWidgets.push_back(row);
+            auto self = std::static_pointer_cast<SListView<T>>(
+                const_cast<SListView<T>*>(this)->shared_from_this());
+            row = m_OnGenerateItemWidget(items[static_cast<size_t>(index)], index, self);
+        }
+        if (!row)
+        {
+            // Fallback: plain label, so a list is never blank.
+            auto label = std::make_shared<STextBlock>();
+            label->Text = ToDisplayString(items[static_cast<size_t>(index)]);
+            label->FontSize = 14.0f;
+            label->Color = Colors::White;
+            row = label;
+        }
+
+        row->SetParent(const_cast<SListView<T>*>(this));
+        m_RowCache[index] = row;
+        return row;
+    }
+
+    // Keep the cache limited to the visible window (plus the two rows of slack
+    // the paint pass asks for), dropping anything that scrolled away.
+    void SyncRowCache(int32_t first, int32_t last) const
+    {
+        if (!m_DataSource) return;
+
+        // A bumped revision means the backing data changed: start over.
+        const uint64_t revision = m_DataSource->GetRevision();
+        if (revision != m_LastRevision)
+        {
+            m_RowCache.clear();
+            m_LastRevision = revision;
+        }
+
+        for (auto it = m_RowCache.begin(); it != m_RowCache.end();)
+        {
+            it = (it->first < first || it->first >= last) ? m_RowCache.erase(it) : std::next(it);
+        }
+
+        for (int32_t i = first; i < last; ++i)
+        {
+            if (m_RowCache.find(i) == m_RowCache.end()) BuildRowWidget(i);
         }
     }
 
@@ -332,7 +367,8 @@ private:
     std::function<void(int32_t, const Vector2&)>     m_OnItemRightClicked;
     std::function<void(int32_t)>                     m_OnItemDoubleClicked;
 
-    mutable std::vector<std::shared_ptr<SWidget>> m_RowWidgets;
+    // Only the rows inside the visible window are materialised.
+    mutable std::unordered_map<int32_t, std::shared_ptr<SWidget>> m_RowCache;
     mutable uint64_t m_LastRevision = 0;
     mutable float    m_ScrollOffset = 0.0f;
     int32_t          m_HoverIndex   = -1;

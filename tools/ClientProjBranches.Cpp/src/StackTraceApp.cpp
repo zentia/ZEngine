@@ -103,9 +103,20 @@ namespace StackTraceApp
         // Build all panels
         BuildTopPanel();
         BuildSymbolPanel();
-        BuildInputPanel();
         BuildButtonPanel();
+
+        // C# mainSplit: Orientation.Horizontal (stacked), SplitterDistance 260,
+        // Panel1MinSize / Panel2MinSize 100. Panel1 = input, Panel2 = output.
+        m_Split = std::make_shared<ZSlate::SSplitContainer>();
+        m_Split->Orientation       = ZSlate::EOrientation::Vertical;
+        m_Split->SplitFraction     = 0.45f;
+        m_Split->MinPaneSize       = 100.0f;
+        m_Split->SplitterThickness = 6.0f;
+
+        BuildInputPanel();
         BuildOutputPanel();
+        m_Root->AddSlot(m_Split);
+
         BuildStatusPanel();
 
         // Set root content
@@ -180,41 +191,34 @@ namespace StackTraceApp
                 knownPaths.push_back(p);
         }
 
-        // Create a row of quick-select buttons (wrap)
-        auto presetRow = std::make_shared<ZSlate::SHorizontalBox>();
-        int count = 0;
-        for (auto& p : knownPaths) {
+        // The C# version spreads these over rows of quick-select buttons; the
+        // list can be long, so it lives in a drop-down here.
+        std::vector<std::string> comboOptions;
+        for (const auto& p : knownPaths) {
             if (p.empty() || p == "llvm-addr2line.exe") continue;
-            auto fileName = std::filesystem::path(p).filename().string();
-            auto btn = std::make_shared<ZSlate::SButton>();
-            auto lbl = std::make_shared<ZSlate::STextBlock>();
-            lbl->Text = fileName;
-            lbl->FontSize = 12.0f;
-            lbl->Color = ZSlate::UIColor(0.7f, 0.8f, 1.0f, 1.0f);
-            btn->SetContent(lbl);
-            std::string pathCopy = p;
-            btn->OnClicked = [this, pathCopy]() {
-                m_Addr2linePathBox->Text = pathCopy;
-                m_StatusLabel->Text = "Selected: " + pathCopy;
-            };
-            presetRow->AddSlot(btn);
-            presetRow->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(4, 1)));
-            count++;
-            if (count % 5 == 0) {
-                vbox2->AddSlot(presetRow);
-                vbox2->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 2)));
-                presetRow = std::make_shared<ZSlate::SHorizontalBox>();
-            }
+            comboOptions.push_back(p);
         }
-        if (count % 5 != 0 || count == 0) {
-            if (count == 0) {
-                auto noFound = std::make_shared<ZSlate::STextBlock>();
-                noFound->Text = "  (no other addr2line found — use Browse... or type path manually)";
-                noFound->FontSize = 12.0f;
-                noFound->Color = ZSlate::UIColor(0.4f, 0.45f, 0.5f, 1.0f);
-                presetRow->AddSlot(noFound);
-            }
-            vbox2->AddSlot(presetRow);
+
+        if (comboOptions.empty()) {
+            auto noFound = std::make_shared<ZSlate::STextBlock>();
+            noFound->Text = "  (no other addr2line found — use Browse... or type path manually)";
+            noFound->FontSize = 12.0f;
+            noFound->Color = ZSlate::UIColor(0.4f, 0.45f, 0.5f, 1.0f);
+            vbox2->AddSlot(noFound);
+        }
+        else {
+            m_PresetCombo = std::make_shared<ZSlate::SComboBox>();
+            m_PresetCombo->SetOptions(comboOptions);
+            m_PresetCombo->FontSize = 13.0f;
+            m_PresetCombo->Height   = 26.0f;
+            m_PresetCombo->Placeholder = "Select a known addr2line...";
+            m_PresetCombo->OnSelectionChanged = [this](int32_t, const std::string& value) {
+                m_Addr2linePathBox->Text = value;
+                m_Settings.Addr2linePath = value;
+                SaveSettings();
+                m_StatusLabel->Text = "Selected: " + value;
+            };
+            vbox2->AddSlot(m_PresetCombo);
         }
 
         vbox->AddSlot(vbox2);
@@ -286,7 +290,7 @@ namespace StackTraceApp
         m_InputTextArea->Options.FontSize = 16.0f;
         vbox->AddSlot(m_InputTextArea);
 
-        m_Root->AddSlot(vbox);
+        m_Split->SetSlot(0, vbox);
     }
 
     void StackTraceApp::BuildButtonPanel()
@@ -331,7 +335,7 @@ namespace StackTraceApp
         hint->Color    = ZSlate::UIColor(0.55f, 0.58f, 0.66f, 1.0f);
         vbox->AddSlot(hint);
 
-        m_Root->AddSlot(vbox);
+        m_Split->SetSlot(1, vbox);
     }
 
     void StackTraceApp::BuildStatusPanel()
@@ -499,6 +503,76 @@ namespace StackTraceApp
         }
     }
 
+    // Runs `commandLine` hidden and captures stdout + stderr. Returns false when
+    // the process cannot be started or does not exit within `timeoutMs`.
+    static bool RunAndCapture(const std::string& commandLine, std::string& outOutput,
+                              DWORD timeoutMs = 5000)
+    {
+        SECURITY_ATTRIBUTES security = { sizeof(security), nullptr, TRUE };
+
+        HANDLE readPipe  = nullptr;
+        HANDLE writePipe = nullptr;
+        if (!CreatePipe(&readPipe, &writePipe, &security, 0)) return false;
+
+        STARTUPINFOA startup = { sizeof(startup) };
+        startup.dwFlags     = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        startup.hStdOutput  = writePipe;
+        startup.hStdError   = writePipe;
+        startup.hStdInput   = GetStdHandle(STD_INPUT_HANDLE);
+        startup.wShowWindow = SW_HIDE;
+
+        PROCESS_INFORMATION process {};
+        std::vector<char> command(commandLine.begin(), commandLine.end());
+        command.push_back('\0');
+
+        const BOOL started = CreateProcessA(nullptr, command.data(), nullptr, nullptr, TRUE,
+                                            CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+        if (!started)
+        {
+            CloseHandle(readPipe);
+            CloseHandle(writePipe);
+            return false;
+        }
+
+        // Close our copy so the read side sees EOF once the child exits.
+        CloseHandle(writePipe);
+
+        const DWORD waitResult = WaitForSingleObject(process.hProcess, timeoutMs);
+
+        char buffer[4096];
+        DWORD bytesRead = 0;
+        while (ReadFile(readPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0)
+            outOutput.append(buffer, static_cast<size_t>(bytesRead));
+
+        CloseHandle(readPipe);
+        CloseHandle(process.hProcess);
+        CloseHandle(process.hThread);
+
+        return waitResult == WAIT_OBJECT_0;
+    }
+
+    // First non-blank line of a tool banner, e.g. "GNU addr2line ... 2.39".
+    static std::string FirstNonBlankLine(const std::string& text)
+    {
+        size_t pos = 0;
+        while (pos < text.size())
+        {
+            const size_t newline = text.find('\n', pos);
+            std::string line = text.substr(pos, (newline == std::string::npos)
+                ? std::string::npos : newline - pos);
+
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t'))
+                line.pop_back();
+            while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
+                line.erase(line.begin());
+
+            if (!line.empty()) return line;
+            if (newline == std::string::npos) break;
+            pos = newline + 1;
+        }
+        return "";
+    }
+
     void StackTraceApp::OnTestAddr2line()
     {
         std::string addr2linePath = m_Addr2linePathBox->Text;
@@ -518,34 +592,21 @@ namespace StackTraceApp
             return;
         }
 
-        // Test version
-        std::string version;
-        try
-        {
-            STARTUPINFOA si = { sizeof(si) };
-            PROCESS_INFORMATION pi;
-            std::string args = actualPath + " --version";
-            
-            if (CreateProcessA(nullptr, const_cast<char*>(args.data()), nullptr, nullptr, FALSE,
-                CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi))
-            {
-                // Wait for process to complete
-                WaitForSingleObject(pi.hProcess, INFINITE);
-                
-                CloseHandle(pi.hProcess);
-                CloseHandle(pi.hThread);
-                
-                version = "addr2line found";
-            }
-        }
-        catch (...)
-        {
-            version = "Unable to get version";
-        }
+        // Real --version check: run the tool and read its own banner.
+        std::string banner;
+        const bool  ran = RunAndCapture("\"" + actualPath + "\" --version", banner);
+
+        std::string version = FirstNonBlankLine(banner);
+        if (version.empty())
+            version = ran ? "(no version output)" : "(timed out or failed to run)";
 
         std::string testResult = "=== addr2line Test ===\n";
         testResult += "Path: " + actualPath + "\n";
         testResult += "Version: " + version + "\n";
+        if (!ran)
+            testResult += "WARNING: '--version' did not complete within 5s.\n";
+        else if (version.find("llvm") == std::string::npos && version.find("addr2line") == std::string::npos)
+            testResult += "NOTE: output does not look like an addr2line banner.\n";
 
         if (actualPath.find("strawberry") != std::string::npos)
         {
@@ -658,6 +719,8 @@ namespace StackTraceApp
     void StackTraceApp::OnShowDiagChanged(bool checked)
     {
         m_Settings.ShowDiagnostics = checked;
+        // C# persists this toggle immediately; so should we.
+        SaveSettings();
     }
 
     // ============================================================================

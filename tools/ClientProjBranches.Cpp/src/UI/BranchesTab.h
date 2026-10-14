@@ -21,8 +21,11 @@
 #include <shlobj_core.h>
 #include <filesystem>
 #include <fstream>
+#include <chrono>
+#include <future>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <functional>
 #include <algorithm>
@@ -64,6 +67,15 @@ private:
     void DoRebuild();
     void RenderGrid();
 
+    // Background working-copy scan. The worker only reads the filesystem; the
+    // result is applied on the UI thread from OnFrame().
+    struct FScanResult
+    {
+        std::vector<std::string> Paths;
+        std::vector<Svn::SvnItem> Items;
+    };
+    void RefreshAsync();
+
     std::shared_ptr<ZSlate::SBoxPanel> m_Root;
     std::shared_ptr<ZSlate::SBoxPanel> m_PathManagerPanel;
     std::shared_ptr<SBranchTable> m_BranchTable;
@@ -79,6 +91,9 @@ private:
     std::string m_FilterText;
     bool m_PathManagerVisible = false;
     bool m_NeedsRebuild = false;
+
+    std::future<FScanResult> m_ScanFuture;
+    bool m_Scanning = false;
     int m_PathSelectedIndex = -1;
     int m_BranchSelectedIndex = -1;
 
@@ -157,7 +172,7 @@ inline BranchesTab::BranchesTab()
     });
 
     BuildUI();
-    Refresh();
+    RefreshAsync();
 }
 
 inline void BranchesTab::BuildUI() {
@@ -360,8 +375,30 @@ inline void BranchesTab::DoRebuild() {
 }
 
 inline bool BranchesTab::OnFrame() {
+    bool didWork = false;
+
+    // Collect a finished background scan (main thread only — RenderGrid touches
+    // widgets, so it must not run on the worker).
+    if (m_Scanning && m_ScanFuture.valid() &&
+        m_ScanFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+    {
+        FScanResult result = m_ScanFuture.get();
+        m_Scanning = false;
+
+        m_Paths = std::move(result.Paths);
+        m_Items = std::move(result.Items);
+
+        if (m_Items.empty())
+            m_StatusLabel->Text = "No working copies found. Use 'Manage Paths' to add scan directories.";
+        else
+            m_StatusLabel->Text = "Found " + std::to_string(m_Items.size()) + " working copies";
+
+        RenderGrid();
+        didWork = true;
+    }
+
     if (m_NeedsRebuild) { DoRebuild(); return true; }
-    return false;
+    return didWork;
 }
 
 inline void BranchesTab::OnFilterChanged(const std::string& text) {
@@ -401,7 +438,7 @@ inline void BranchesTab::TogglePathManager() {
 inline void BranchesTab::ClosePathManager(bool refreshBranches) {
     SavePaths();
     TogglePathManager();
-    if (refreshBranches) Refresh();
+    if (refreshBranches) RefreshAsync();
 }
 
 inline void BranchesTab::OnManagePaths() {
@@ -427,7 +464,29 @@ inline void BranchesTab::Refresh() {
     RenderGrid();
 }
 
-inline void BranchesTab::OnRefresh() { Refresh(); }
+// The scan walks every configured directory and shells out to svn.exe, which
+// can take seconds. Run it off the UI thread; OnFrame() collects the result.
+inline void BranchesTab::RefreshAsync() {
+    if (m_Scanning) return;   // a scan is already in flight
+
+    m_Scanning = true;
+    m_StatusLabel->Text = "Scanning working copies...";
+
+    m_ScanFuture = std::async(std::launch::async, []() -> FScanResult {
+        std::vector<std::string> paths = BranchPathsStore::Load();
+        if (paths.empty()) paths = BranchPathsStore::AutoScan();
+
+        std::vector<Svn::SvnItem> items;
+        for (const auto& dir : paths) {
+            for (auto& root : Svn::FindSvnRoots(dir)) {
+                items.push_back(Svn::GetSvnInfo(root.Path));
+            }
+        }
+        return { std::move(paths), std::move(items) };
+    });
+}
+
+inline void BranchesTab::OnRefresh() { RefreshAsync(); }
 
 inline void BranchesTab::OnOpenExplorer() {
     if (m_BranchSelectedIndex >= 0 && m_BranchSelectedIndex < (int32_t)m_FilteredItems.size()) {
@@ -453,7 +512,7 @@ inline void BranchesTab::OnSvnUpdate() {
     const std::string path = m_FilteredItems[m_BranchSelectedIndex].Path;
     if (Tools::RunTortoiseVerb(path, "update")) {
         m_StatusLabel->Text = "SVN Update: " + path;
-        Refresh();
+        RefreshAsync();
     } else {
         m_StatusLabel->Text = "SVN Update failed — working copy or svn.exe / TortoiseSVN missing: " + path;
     }
@@ -542,10 +601,12 @@ inline void BranchesTab::OnBranchRightClick(int32_t index, const ZSlate::Vector2
     // Rich context menu matching C# version
     std::vector<std::pair<std::string, int>> items = {
         {"Open Folder",       1},
-        {"Open in Terminal",  2},
-        {"Open in IDE",       3},
-        {"-",                 0},
+        {"Open GameCore",     12},
+        {"Open Project",      3},
+        {"Open DataBin",      13},
+        {"Open Program",      14},
         {"Open Unity",        10},
+        {"Open PerfTools",    15},
         {"Kill Unity",        11},
         {"-",                 0},
         {"SVN Update",        4},
@@ -556,8 +617,10 @@ inline void BranchesTab::OnBranchRightClick(int32_t index, const ZSlate::Vector2
         {"SVN Show Log",      5},
         {"SVN Revert",        24},
         {"SVN Cleanup",       25},
+        {"Create CodeReview", 16},
         {"-",                 0},
         {"Copy Path",         6},
+        {"Manage Paths...",   7},
     };
 
     int cmd = ShowContextMenu(hWnd, (int)screenPos.x, (int)screenPos.y, items);
@@ -575,23 +638,61 @@ inline void BranchesTab::OnBranchRightClick(int32_t index, const ZSlate::Vector2
         Tools::OpenInIde(item.Path);
         m_StatusLabel->Text = "Opening in IDE: " + item.Path;
         break;
-    case 10: // Open Unity
-        {
-            std::string unityPath = item.Path + "\\UnityProject";
-            if (std::filesystem::exists(unityPath))
-                Tools::OpenExplorer(unityPath);
-            else
-                m_StatusLabel->Text = "UnityProject folder not found";
+    case 12: // Open GameCore
+        if (Tools::OpenGameCoreSolution(item.Path))
+            m_StatusLabel->Text = "Opening GameCore.sln: " + item.Path;
+        else
+            m_StatusLabel->Text = "GameCore.sln not found under: " + item.Path;
+        break;
+    case 13: // Open DataBin
+        if (Tools::OpenDataBin(item.Path))
+            m_StatusLabel->Text = "Opening DataBin tool: " + item.Path;
+        else
+            m_StatusLabel->Text = "DataTableConvGUI.exe not found under: " + item.Path;
+        break;
+    case 14: // Open Program
+        if (Tools::OpenProgramSolution(item.Path))
+            m_StatusLabel->Text = "Opening Project.sln: " + item.Path;
+        else
+            m_StatusLabel->Text = "Project.sln not found under: " + item.Path;
+        break;
+    case 10: // Open Unity — runs the a_*Unity*Win*.bat launcher, like C#
+        if (Tools::OpenUnityLauncher(item.Path))
+            m_StatusLabel->Text = "Launching Unity: " + item.Path;
+        else
+            m_StatusLabel->Text = "Unity launcher (a_*Unity*Win*.bat) not found in: " + item.Path;
+        break;
+    case 15: // Open PerfTools
+        if (Tools::OpenPerfTools(item.Path))
+            m_StatusLabel->Text = "Opening PerfTools: " + item.Path;
+        else
+            m_StatusLabel->Text = "perftools_gui.exe not found under: " + item.Path;
+        break;
+    case 11: // Kill Unity — C# runs KillUnity.bat; fall back to taskkill
+        if (Tools::RunKillUnityScript(item.Path))
+            m_StatusLabel->Text = "Running KillUnity.bat";
+        else {
+            Tools::KillProcess("Unity.exe");
+            m_StatusLabel->Text = "KillUnity.bat not found — killed Unity.exe";
         }
         break;
-    case 11: // Kill Unity
-        Tools::KillProcess("Unity.exe");
-        m_StatusLabel->Text = "Unity killed";
+    case 16: // Create CodeReview (shell extension verb)
+        {
+            std::string error;
+            if (Tools::CreateCodeReview(item.Path, &error))
+                m_StatusLabel->Text = "Create CodeReview invoked: " + item.Path;
+            else
+                m_StatusLabel->Text = error.empty() ? ("Create CodeReview not available: " + item.Path)
+                                                    : ("Create CodeReview failed: " + error);
+        }
+        break;
+    case 7: // Manage Paths
+        OnManagePaths();
         break;
     case 4: // SVN Update
         if (Tools::RunTortoiseVerb(item.Path, "update")) {
             m_StatusLabel->Text = "SVN Update: " + item.Path;
-            Refresh();
+            RefreshAsync();
         } else {
             m_StatusLabel->Text = "SVN Update failed — working copy or svn.exe / TortoiseSVN missing: " + item.Path;
         }
@@ -610,7 +711,7 @@ inline void BranchesTab::OnBranchRightClick(int32_t index, const ZSlate::Vector2
                 }
                 if (Tools::RunTortoiseVerb(path, "update", "/rev:" + revision, "update -r " + revision)) {
                     m_StatusLabel->Text = "SVN Update to " + revision + ": " + path;
-                    Refresh();
+                    RefreshAsync();
                 } else {
                     m_StatusLabel->Text = "SVN Update to " + revision + " failed: " + path;
                 }
@@ -640,7 +741,7 @@ inline void BranchesTab::OnBranchRightClick(int32_t index, const ZSlate::Vector2
     case 25: // SVN Cleanup
         if (Tools::RunTortoiseVerb(item.Path, "cleanup")) {
             m_StatusLabel->Text = "SVN Cleanup: " + item.Path;
-            Refresh();
+            RefreshAsync();
         } else {
             m_StatusLabel->Text = "SVN Cleanup failed — working copy or svn.exe / TortoiseSVN missing: " + item.Path;
         }
