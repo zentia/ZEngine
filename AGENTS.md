@@ -1364,7 +1364,8 @@ Cooperating layers:
   implements the abstract `UIRenderer` over a `ID2D1HwndRenderTarget` (96-DPI
   forced so mouse pixels == widget DIPs), `ZInsightsMain.cpp` drives the shared
   `SInsightsTimeline` (open via argv / drag-drop / `O` key, `F` to fit). It
-  links the **static `ZRuntime`** (same pattern as `ZProfilerCsvExporter`) but
+  links the **static `ZRuntime`** (same pattern as `LuaMemPreview`, which also absorbed the former
+  `ZProfilerCsvExporter` as `LuaMemPreview -batchmode <in.zasset> [out_base]`) but
   references only the timing-trace + Slate-base objects, so the linker pulls no
   RHI/GLFW/scripting code. No live socket transport yet (the data path is
   offline file by design choice).

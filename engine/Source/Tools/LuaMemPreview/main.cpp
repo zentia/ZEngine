@@ -2,7 +2,7 @@
 // LuaMemPreview - standalone ZSlate viewer for Lua memory snapshot CSVs
 // ============================================================================
 //
-// Consumes the "Count,Size,Type,Stack" CSV written by ProfilerCsvExport (the
+// Consumes the "Count,Size,Type,Stack" CSV written by LuaMemCsvExport (the
 // Lua section of a MemoryProfiler dump) and shows:
 //   * a per-type proportion bar with clickable chips (the only practical way to
 //     see where ~100 MB across ~180K rows actually went),
@@ -19,13 +19,16 @@
 // and analysed on a desktop that need not run the editor at all.
 //
 // Input: either the MemoryProfiler `.zasset` snapshot itself or the `_lua.csv`
-// exported from it. The asset is the original - ProfilerCsvExport derives the
+// exported from it. The asset is the original - -batchmode derives the
 // CSV from it - so opening it directly drops the export step. Both paths go
 // through FSnapshot and produce an identical model; on the reference snapshot
 // they agree to the byte.
 //
 // Usage:
 //   LuaMemPreview.exe [path\to\LuaProfile_xxx.zasset | ..._lua.csv]
+//   LuaMemPreview.exe -batchmode <in.zasset> [out_base_or_csv]
+//                                        headless: export _csharp/_userdata/_lua.csv
+//                                        (replaces the old ZProfilerCsvExporter)
 //   LuaMemPreview.exe --stats <file>     headless: per-type breakdown
 //   LuaMemPreview.exe --dump-ui <file>   headless: assert on the painted tree
 //   Ctrl+O to open, or drag a file onto the window.
@@ -33,6 +36,7 @@
 #include "LuaMemCsv.h"
 #include "LuaMemTypeDoc.h"
 #include "LuaMemWidgets.h"
+#include "LuaMemZasset.h"
 
 // Icon resource id; must stay in sync with resource/LuaMemPreview.rc.
 #ifndef IDI_ICON1
@@ -56,6 +60,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <vector>
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -573,6 +578,44 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 int main(int argc, char** argv)
 {
     const std::string mode = (argc >= 2) ? argv[1] : "";
+
+    // ---- Batch mode: .zasset -> CSV ---------------------------------------
+    // Unity-style -batchmode: no window, no D3D11, just the engine Core
+    // systems needed to deserialize the MemoryProfiler asset. Output is the
+    // same three CSVs the former ZProfilerCsvExporter wrote; `_lua.csv` can be
+    // opened back in this viewer.
+    if (mode == "-batchmode" || mode == "--batchmode" || mode == "--batch")
+    {
+        if (argc < 3 || argc > 4)
+        {
+            std::printf("Usage: %s -batchmode <input_profiler.zasset> [output_base_or_csv]\n"
+                        "\n"
+                        "Output files:\n"
+                        "  <base>_csharp.csv\n"
+                        "  <base>_userdata.csv\n"
+                        "  <base>_lua.csv\n"
+                        "\n"
+                        "<base> defaults to the input path without its extension.\n",
+                        argv[0]);
+            return 1;
+        }
+
+        std::vector<std::string> written;
+        std::string err;
+        const auto t0 = std::chrono::steady_clock::now();
+        if (!ExportZassetToCsv(argv[2], (argc >= 4) ? argv[3] : "", written, err))
+        {
+            std::fprintf(stderr, "ERROR: %s\n", err.c_str());
+            return 1;
+        }
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0).count();
+
+        std::printf("Exported CSV files (%.0f ms):\n", ms);
+        for (const std::string& p : written)
+            std::printf("  %s\n", p.c_str());
+        return 0;
+    }
 
     // ---- Headless UI verification -----------------------------------------
     // Paints one real frame into a recording renderer and asserts on what the

@@ -1,6 +1,7 @@
 #include "LuaMemZasset.h"
 
 #include "LuaMemCsv.h"
+#include "LuaMemCsvExport.h"
 
 // Standard headers FIRST: the engine headers below are written against
 // CommonPCH/pch.h, which we deliberately do not use here (it drags in
@@ -12,6 +13,7 @@
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <vector>
 
 // Engine side. Confined to this TU on purpose - see LuaMemZasset.h.
 #include "RegisterRuntime.h"
@@ -54,21 +56,20 @@ bool EnsureCoreSystems(std::string& out_error)
     s_state = 1;
     return true;
 }
-}  // namespace
 
-bool LoadSnapshotFromZasset(const std::string& path, FSnapshot& out, std::string& out_error)
+// Reads `path` into a heap MemoryProfiler. Caller owns the result and must
+// release it with MemoryManager::DestroyObject. Returns nullptr on failure.
+MemoryProfiler* ReadMemoryProfiler(const std::string& path, std::string& out_error)
 {
-    out.BeginBuild();
-
     std::error_code ec;
     if (!std::filesystem::exists(path, ec) || ec)
     {
         out_error = "cannot open file: " + path;
-        return false;
+        return nullptr;
     }
 
     if (!EnsureCoreSystems(out_error))
-        return false;
+        return nullptr;
 
     // MUST be heap-allocated through MemoryManager: that is the only path that
     // runs Object::InitializeRuntimeTypeInfo() and seeds m_CachedTypeIndex. A
@@ -77,7 +78,7 @@ bool LoadSnapshotFromZasset(const std::string& path, FSnapshot& out, std::string
     if (profiler == nullptr)
     {
         out_error = "MemoryProfiler type is not registered (linker dropped its auto-registrar?)";
-        return false;
+        return nullptr;
     }
 
     SerializedFile* file = MemoryManager::CreateObject<SerializedFile>();
@@ -85,7 +86,7 @@ bool LoadSnapshotFromZasset(const std::string& path, FSnapshot& out, std::string
     {
         MemoryManager::DestroyObject(profiler);
         out_error = "failed to allocate SerializedFile";
-        return false;
+        return nullptr;
     }
 
     if (file->InitializeRead(std::filesystem::path(path), kCacheSize) != kSerializedFileLoadError_None)
@@ -93,18 +94,55 @@ bool LoadSnapshotFromZasset(const std::string& path, FSnapshot& out, std::string
         MemoryManager::DestroyObject(file);
         MemoryManager::DestroyObject(profiler);
         out_error = "not a readable .zasset (SerializedFile::InitializeRead failed): " + path;
-        return false;
+        return nullptr;
     }
 
     // fileID 1 is the single top-level Object written by
     // AssetManager::WriteObjectToDiskThreadSafe.
     file->ReadObject(/*fileID=*/1, *profiler);
     MemoryManager::DestroyObject(file);
+    return profiler;
+}
+}  // namespace
+
+bool ExportZassetToCsv(const std::string& path,
+                       const std::string& output_base,
+                       std::vector<std::string>& out_written,
+                       std::string& out_error)
+{
+    out_written.clear();
+
+    MemoryProfiler* profiler = ReadMemoryProfiler(path, out_error);
+    if (profiler == nullptr)
+        return false;
+
+    std::filesystem::path base = output_base.empty() ? std::filesystem::path(path) : std::filesystem::path(output_base);
+    if (output_base.empty())
+        base.replace_extension();
+
+    std::vector<std::filesystem::path> written;
+    const bool ok = ExportMemoryProfilerToCSV(*profiler, base, &written, &out_error);
+    MemoryManager::DestroyObject(profiler);
+    if (!ok)
+        return false;
+
+    for (const auto& p : written)
+        out_written.push_back(p.string());
+    return true;
+}
+
+bool LoadSnapshotFromZasset(const std::string& path, FSnapshot& out, std::string& out_error)
+{
+    out.BeginBuild();
+
+    MemoryProfiler* profiler = ReadMemoryProfiler(path, out_error);
+    if (profiler == nullptr)
+        return false;
 
     // GetLuaInfos() folds the raw per-allocation map (ptr -> {size,type,stack})
     // into one row per (type, stack) and sorts by descending size. This is the
-    // exact call ProfilerCsvExport uses to produce `_lua.csv`, so the asset and
-    // the CSV must agree row for row.
+    // exact call ExportMemoryProfilerToCSV (batch mode) uses to produce
+    // `_lua.csv`, so the asset and the CSV must agree row for row.
     const auto& lua_infos = profiler->GetLuaMemoryProfiler().GetLuaInfos();
 
     // A valid asset with an empty Lua section is a normal outcome, not a parse

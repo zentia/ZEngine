@@ -4,7 +4,7 @@
 // LuaMemCsv - data layer for the Lua memory snapshot previewer
 // ============================================================================
 //
-// Parses the CSV produced by ProfilerCsvExport (the "Count,Size,Type,Stack"
+// Parses the CSV produced by LuaMemCsvExport / `-batchmode` (the "Count,Size,Type,Stack"
 // schema written by MemoryProfiler's Lua section) and aggregates it per type.
 //
 // Memory layout matters here: a real snapshot has ~180K rows whose stacks are

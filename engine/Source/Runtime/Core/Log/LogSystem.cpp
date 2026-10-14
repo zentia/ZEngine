@@ -119,7 +119,7 @@ namespace
         return dir.generic_string();
     }
 
-    // Distinct engine executables (ZEditor, ZProfilerCsvExporter, ZInsights,
+    // Distinct engine executables (ZEditor, LuaMemPreview, ZInsights,
     // etc.) must not share a log file: BqLog's text_file appender opens the log
     // with exclusive share semantics (FILE_SHARE_READ only on Windows), so a
     // second process trying to write the same engine_*.log gets

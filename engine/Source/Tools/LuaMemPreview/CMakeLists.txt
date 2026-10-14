@@ -1,6 +1,10 @@
 # =============================================================================
 # LuaMemPreview — standalone viewer for Lua memory snapshot CSVs
 #
+# Also the MemoryProfiler .zasset -> CSV exporter: `LuaMemPreview -batchmode
+# <in.zasset> [out_base]` writes _csharp/_userdata/_lua.csv headlessly. This
+# replaces the former Source/Profiler (ZProfilerCsvExporter) target.
+#
 # ZSlate (UI + D3D11 backend) only; no engine boot, no ZRuntime, and crucially
 # no dependency on Source/Editor — every ZSlate *window* there is currently
 # excluded from the build pending the UIRenderer->ISlateRenderer migration.
@@ -15,6 +19,7 @@ set(LUA_MEM_PREVIEW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsv.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsvExport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemTypeDoc.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemWidgets.cpp
 )
@@ -24,6 +29,7 @@ set(LUA_MEM_PREVIEW_SOURCES
 set(LUA_MEM_PREVIEW_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsv.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsvExport.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemTypeDoc.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemWidgets.h
 )
@@ -67,18 +73,22 @@ target_link_libraries(${LUA_MEM_PREVIEW_TARGET} PRIVATE ZSlate ZRuntime ZEngineP
 # would clash with ISlateRenderer::DrawTextLabel's neighbours before ZSlate can
 # #undef it.
 #
-# LuaMemZasset.cpp is the one exception: it includes no ZSlate header at all,
-# and the engine headers it does pull (MemoryProfiler -> EASTL containers,
-# VirtualFileSystemTypes -> std::filesystem) are written assuming pch.h is in
-# effect, which is how every ZRuntime TU compiles. Force-including pch.h for
-# that single file reproduces exactly that environment instead of guessing by
-# hand which headers to pre-include.
+# LuaMemZasset.cpp / LuaMemCsvExport.cpp are the exceptions: they include no
+# ZSlate header at all, and the engine headers they do pull (MemoryProfiler ->
+# EASTL containers, VirtualFileSystemTypes -> std::filesystem) are written
+# assuming pch.h is in effect, which is how every ZRuntime TU compiles.
+# Force-including pch.h for those files reproduces exactly that environment
+# instead of guessing by hand which headers to pre-include.
 set(LUA_MEM_PREVIEW_PCH "${ENGINE_ROOT_DIR}/Source/CommonPCH/pch.h")
+set(LUA_MEM_PREVIEW_ENGINE_TUS
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsvExport.cpp
+)
 if(MSVC)
-    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.cpp
+    set_source_files_properties(${LUA_MEM_PREVIEW_ENGINE_TUS}
         PROPERTIES COMPILE_OPTIONS "/FI${LUA_MEM_PREVIEW_PCH}")
 else()
-    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.cpp
+    set_source_files_properties(${LUA_MEM_PREVIEW_ENGINE_TUS}
         PROPERTIES COMPILE_OPTIONS "-include;${LUA_MEM_PREVIEW_PCH}")
 endif()
 

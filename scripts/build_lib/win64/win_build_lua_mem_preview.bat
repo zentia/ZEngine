@@ -1,6 +1,10 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
+rem LuaMemPreview: Lua memory snapshot viewer + MemoryProfiler .zasset -> CSV
+rem exporter (`LuaMemPreview.exe -batchmode <in.zasset> [out_base]`).
+rem Replaces the former win_build_zprofiler_csv_exporter.bat / ZProfilerCsvExporter.
+
 set "SCRIPT_DIR=%~dp0"
 for %%I in ("%SCRIPT_DIR%..\..\..") do set "ROOT_DIR=%%~fI"
 
@@ -54,27 +58,27 @@ goto :usage
 
 :help
 echo Usage: %~nx0 [--arch x64] [--config Release] [--jobs N] [--generator "Visual Studio 17 2022"] [--clean] [--no-symbols]
-echo Output:  bin\win64\ARCH\CONFIG\ZProfilerCsvExporter.exe
-echo Symbols: bin\win64\symbols\CONFIG\ARCH\ZProfilerCsvExporter.*
+echo Output:  bin\win64\ARCH\CONFIG\LuaMemPreview.exe
+echo Symbols: bin\win64\symbols\CONFIG\ARCH\LuaMemPreview.*
 exit /b 0
 
 :usage
 echo Usage: %~nx0 [--arch x64] [--config Release] [--jobs N] [--generator "Visual Studio 17 2022"] [--clean] [--no-symbols]
-echo Output:  bin\win64\ARCH\CONFIG\ZProfilerCsvExporter.exe
-echo Symbols: bin\win64\symbols\CONFIG\ARCH\ZProfilerCsvExporter.*
+echo Output:  bin\win64\ARCH\CONFIG\LuaMemPreview.exe
+echo Symbols: bin\win64\symbols\CONFIG\ARCH\LuaMemPreview.*
 exit /b 1
 
 :main
 set "BUILD_DIR=%ROOT_DIR%\build\lib\win64\%ARCH%"
 set "OUTPUT_SUBDIR=win64/%ARCH%"
 set "OUT_DIR=%ROOT_DIR%\bin\win64\%ARCH%\%CONFIG%"
-set "OUT_EXE=%OUT_DIR%\ZProfilerCsvExporter.exe"
-set "OUT_PDB=%OUT_DIR%\ZProfilerCsvExporter.pdb"
-set "OUT_ILK=%OUT_DIR%\ZProfilerCsvExporter.ilk"
+set "OUT_EXE=%OUT_DIR%\LuaMemPreview.exe"
+set "OUT_PDB=%OUT_DIR%\LuaMemPreview.pdb"
+set "OUT_ILK=%OUT_DIR%\LuaMemPreview.ilk"
 set "SYMBOL_DIR=%ROOT_DIR%\bin\win64\symbols\%CONFIG%\%ARCH%"
 
 echo ========================================
-echo ZProfilerCsvExporter Win64 Build
+echo LuaMemPreview Win64 Build
 echo ========================================
 echo Root:      %ROOT_DIR%
 echo Generator: %GENERATOR%
@@ -95,7 +99,7 @@ cmake -S "%ROOT_DIR%" -B "%BUILD_DIR%" -G "%GENERATOR%" -A "%ARCH%" ^
   -DZENGINE_LINK_VULKAN_SDK_GLSLANG_LIBS=OFF
 if errorlevel 1 exit /b 1
 
-cmake --build "%BUILD_DIR%" --config "%CONFIG%" --target ZProfilerCsvExporter --parallel %PARALLEL_JOBS%
+cmake --build "%BUILD_DIR%" --config "%CONFIG%" --target LuaMemPreview --parallel %PARALLEL_JOBS%
 if errorlevel 1 exit /b 1
 
 if not exist "%OUT_EXE%" (
@@ -105,8 +109,8 @@ if not exist "%OUT_EXE%" (
 
 if "%COLLECT_SYMBOLS%"=="1" (
     if not exist "%SYMBOL_DIR%" mkdir "%SYMBOL_DIR%"
-    if exist "%OUT_PDB%" move /Y "%OUT_PDB%" "%SYMBOL_DIR%\ZProfilerCsvExporter.pdb" >nul
-    if exist "%OUT_ILK%" move /Y "%OUT_ILK%" "%SYMBOL_DIR%\ZProfilerCsvExporter.ilk" >nul
+    if exist "%OUT_PDB%" move /Y "%OUT_PDB%" "%SYMBOL_DIR%\LuaMemPreview.pdb" >nul
+    if exist "%OUT_ILK%" move /Y "%OUT_ILK%" "%SYMBOL_DIR%\LuaMemPreview.ilk" >nul
 )
 
 echo.

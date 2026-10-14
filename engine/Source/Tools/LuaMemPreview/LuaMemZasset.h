@@ -6,7 +6,7 @@
 //
 // The `.zasset` is the ORIGINAL snapshot; the three sibling CSVs
 // (`_lua.csv` / `_csharp.csv` / `_userdata.csv`) are exports derived from it by
-// ProfilerCsvExport::ExportMemoryProfilerToCSV. Reading the asset directly
+// LuaMemPreview::ExportMemoryProfilerToCSV (LuaMemCsvExport, `-batchmode`). Reading the asset directly
 // therefore removes the export step instead of re-deriving it.
 //
 // This header is deliberately engine-free: only the implementation pulls in
@@ -19,6 +19,7 @@
 // Runtime/Core/Serialize/Test/SchemaEvolutionSmokeTest.cpp.
 
 #include <string>
+#include <vector>
 
 namespace LuaMemPreview
 {
@@ -27,5 +28,14 @@ class FSnapshot;
 // Reads `path` as a MemoryProfiler asset and fills `out` with its Lua section.
 // Returns false and sets out_error on failure.
 bool LoadSnapshotFromZasset(const std::string& path, FSnapshot& out, std::string& out_error);
+
+// Batch mode: reads `path` as a MemoryProfiler asset and writes
+// <base>_csharp.csv / <base>_userdata.csv / <base>_lua.csv. `output_base`
+// empty -> `path` without its extension. Unlike LoadSnapshotFromZasset, a
+// snapshot with no Lua data is NOT an error here (C# / userdata still export).
+bool ExportZassetToCsv(const std::string& path,
+                       const std::string& output_base,
+                       std::vector<std::string>& out_written,
+                       std::string& out_error);
 
 }  // namespace LuaMemPreview

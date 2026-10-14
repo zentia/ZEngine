@@ -285,13 +285,12 @@ elseif(APPLE)
   add_subdirectory(Source/Editor)
 else()
   add_subdirectory(Source/Editor)
-  # Profiler now builds only the headless ZProfilerCsvExporter (the ImGui GUI was removed).
-  add_subdirectory(Source/Profiler)
   # ZInsights: standalone .ztrace viewer (Win32 + Direct2D). Self-skips on non-Windows.
   add_subdirectory(Source/Insights)
   # TexPreview: standalone block-compressed texture preview tool (ASTC, BC7)
   add_subdirectory(Source/Tools/TexPreview)
-  # LuaMemPreview: standalone viewer for the Lua section of a MemoryProfiler CSV dump
+  # LuaMemPreview: standalone viewer for the Lua section of a MemoryProfiler dump;
+  # `-batchmode` exports the .zasset to CSV (replaces the old ZProfilerCsvExporter)
   add_subdirectory(Source/Tools/LuaMemPreview)
 endif()
 #add_subdirectory(Source/test)

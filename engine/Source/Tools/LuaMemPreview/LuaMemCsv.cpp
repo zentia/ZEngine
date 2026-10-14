@@ -19,7 +19,7 @@ namespace
 // `out_quoted` tells the caller whether the field was quoted, which is the only
 // way to know that an embedded '\n' was data rather than a row terminator.
 //
-// ProfilerCsvExport::EscapeCSVField quotes a field whenever it contains a
+// LuaMemCsvExport's EscapeCSVField quotes a field whenever it contains a
 // comma, a quote or a newline, and doubles inner quotes - so a Lua stack like
 //   "[a.lua:1] f()\n[b.lua:2] g()"
 // arrives as a single quoted field spanning multiple physical lines.
