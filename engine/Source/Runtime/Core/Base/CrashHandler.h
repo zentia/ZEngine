@@ -1,21 +1,24 @@
 #pragma once
 
-// =============================================================================
+// ============================================================================
 // CrashHandler
-// -----------------------------------------------------------------------------
-// Windows SEH crash handler that writes a symbolized callstack to
-// `<exe-dir>/crash_stack.txt`.  Used by ZEditor and TexPreview.
+// ----------------------------------------------------------------------------
+// Windows SEH crash handler that writes a structured crash snapshot.
+//
+// Two artifacts are produced next to the exe:
+//   * crash_stack.txt  - human-readable symbolized callstack
+//   * crash_snap.json  - machine-readable snapshot (consumed by agentkit)
 //
 // Design:
 //   * Process-wide: installed once via SetUnhandledExceptionFilter.
 //   * Runs on the faulting thread (the filter callback is SEH, not Vectored).
-//   * Looks for PDBs next to the exe (RelWithDebInfo build).
-//   * Removes itself after the first dump so a nested crash won't re-enter.
+//   * Looks for PDBs next to the exe (RelWithDebInfo / Debug build).
+//   * Address formatting is locale-immune (see FormatHex).
 //
 // Usage:
 //   #include "Runtime/Core/Base/CrashHandler.h"
 //   InstallCrashHandler();
-// =============================================================================
+// ============================================================================
 
 #ifdef _WIN32
 
@@ -23,58 +26,372 @@
 #include <dbghelp.h>
 #pragma comment(lib, "dbghelp.lib")
 
+#include <cstdint>
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <fstream>
-#include <iomanip>
 #include <string>
+#include <vector>
 
-inline LONG WINAPI ZEngineCrashHandler(EXCEPTION_POINTERS* ep);
-
-// Installed once; the actual handler is ZEngineCrashHandler (a plain function).
-inline void InstallCrashHandler()
+// ---------------------------------------------------------------------------
+// Locale-immune hex formatting.
+//
+// The engine installs a global std::locale (".UTF-8" / "en_US.UTF-8").
+// Any `out << std::hex << addr` then inherits that locale's numpunct and emits
+// thousands separators: 0x7ff,9bb,33c,52f. That string is unparseable and
+// silently broke every downstream consumer. We therefore never stream an
+// integer in hex; we format it by hand.
+// ---------------------------------------------------------------------------
+namespace zcrash
 {
-    static bool installed = false;
-    if (installed) return;
-    installed = true;
-    SetUnhandledExceptionFilter(ZEngineCrashHandler);
+
+inline std::string FormatHex(std::uint64_t v)
+{
+    static const char* kDigits = "0123456789abcdef";
+    char buf[32];
+    int pos = 31;
+    buf[pos--] = '\0';
+    if (v == 0)
+    {
+        buf[pos--] = '0';
+    }
+    while (v != 0 && pos >= 0)
+    {
+        buf[pos--] = kDigits[v & 0xF];
+        v >>= 4;
+    }
+    return std::string(buf + pos + 1);
 }
 
-// ---- The actual SEH filter (plain function, NOT a lambda) -----------
-
-inline LONG WINAPI ZEngineCrashHandler(EXCEPTION_POINTERS* ep)
+// 十进制的 locale 免疫格式化。
+//
+// FormatHex 只解决了十六进制，但十进制一样会被 numpunct 插逗号：
+// 真实工程里 thread_id 被打成 `4,321`、行号被打成 `2,393`。
+// 凡是流式输出的整数都得走这里 —— 只修 hex 是不够的。
+inline std::string FormatDec(std::uint64_t v)
 {
-    // ---- Resolve output path: <exe-dir>/crash_stack.txt ----
-    char exe_path[MAX_PATH] {};
-    GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
-    std::string out_path = exe_path;
-    // Strip filename -> directory
-    size_t last_slash = out_path.find_last_of("\\/");
-    if (last_slash != std::string::npos)
-        out_path = out_path.substr(0, last_slash + 1);
-    out_path += "crash_stack.txt";
-
-    // ---- Write -------------------------------------------------------
-    std::ofstream out(out_path, std::ios::trunc);
-    if (!out.is_open() || ep == nullptr || ep->ExceptionRecord == nullptr)
+    char buf[32];
+    int pos = 30;
+    buf[31] = '\0';
+    if (v == 0)
     {
-        return EXCEPTION_EXECUTE_HANDLER;
+        buf[pos--] = '0';
+    }
+    while (v != 0 && pos >= 0)
+    {
+        buf[pos--] = static_cast<char>('0' + (v % 10));
+        v /= 10;
+    }
+    return std::string(buf + pos + 1);
+}
+
+// JSON string escaping. Paths contain backslashes, and C++ symbols routinely
+// contain <, >, " and &. A naive dump would produce invalid JSON.
+inline std::string JsonEscape(const std::string& s)
+{
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (unsigned char c : s)
+    {
+        switch (c)
+        {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b";  break;
+            case '\f': out += "\\f";  break;
+            case '\n': out += "\\n";  break;
+            case '\r': out += "\\r";  break;
+            case '\t': out += "\\t";  break;
+            default:
+                if (c < 0x20)
+                {
+                    char buf[8];
+                    std::snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                }
+                else
+                {
+                    out += static_cast<char>(c);
+                }
+                break;
+        }
+    }
+    return out;
+}
+
+struct Frame
+{
+    std::uint64_t pc = 0;
+    std::uint64_t module_base = 0;
+    std::uint64_t offset = 0;
+    std::string module;
+    std::string function;
+    std::string file;
+    int line = 0;
+    bool has_symbol = false;
+    bool has_line = false;
+};
+struct Snapshot
+{
+    std::uint32_t exception_code = 0;
+    std::uint64_t exception_address = 0;
+    std::uint32_t thread_id = 0;
+    std::vector<Frame> frames;
+
+    // ---- 构建身份 ---------------------------------------------------
+    // 版本对齐门禁的输入。三个字段各有分工，缺一不可：
+    //
+    //   product_version  人读版本号（如 0.1.0）。可能为空，且人会写错。
+    //   build_id         PDB GUID + Age，形如 "a1b2c3d4...1"。
+    //                    这是最可靠的锚点：编译器为每次链接生成 GUID，
+    //                    Age 是 PDB 被增量更新的次数。两者组合在同一份
+    //                    源码 + 同一份编译配置下才唯一。Release 没有行号
+    //                    时，它是把崩溃帧对回源码的唯一硬证据。
+    //   build_timestamp  PE 头里的链接时间戳（UTC 秒）。
+    //
+    // 为什么不能只靠 product_version：版本字符串是人维护的，改代码忘记
+    // bump 是常态；而 build_id 是链接器生成的，想撒谎都撒不了。
+    std::string build_id;
+    std::string product_version;
+    std::uint32_t build_timestamp = 0;
+    // build_id 为空时说明为什么；空串表示拿到了
+    std::string build_id_reason;
+};
+
+// Module base for an address. Release builds ship without PDBs: an absolute
+// address is dead there, but (base, rva) still lets an offline symbolizer
+// resolve the frame later.
+// ---------------------------------------------------------------------------
+// 构建身份提取：从主模块的 PE 头里读 Debug Directory，取出 PDB GUID + Age。
+//
+// 为什么不用 GetFileVersionInfo 读版本资源：那玩意儿要写 .rc 文件，
+// 而且改代码忘了 bump 是常态。CodeView 记录是链接器自己写的，
+// 拿的是事实而不是人声明的东西。
+// ---------------------------------------------------------------------------
+struct BuildIdentity
+{
+    std::string build_id;          // "<GUID><Age>"，空串表示拿不到
+    std::uint32_t timestamp = 0;   // PE 链接时间戳（UTC 秒）
+    bool ok = false;
+
+    // 拿不到 build_id 时的原因。不能只留空串：
+    // 「这个构建没生成 PDB」和「我解析失败了」是完全不同的两回事，
+    // 前者是构建配置问题，后者是代码 bug。留空串会被当成前者掩盖掉后者。
+    std::string reason;
+};
+
+inline std::string GuidToString(const GUID& g)
+{
+    char buf[64];
+    std::snprintf(
+        buf, sizeof(buf),
+        "%08x%04x%04x%02x%02x%02x%02x%02x%02x%02x%02x",
+        g.Data1,
+        static_cast<unsigned>(g.Data2),
+        static_cast<unsigned>(g.Data3),
+        static_cast<unsigned>(g.Data4[0]), static_cast<unsigned>(g.Data4[1]),
+        static_cast<unsigned>(g.Data4[2]), static_cast<unsigned>(g.Data4[3]),
+        static_cast<unsigned>(g.Data4[4]), static_cast<unsigned>(g.Data4[5]),
+        static_cast<unsigned>(g.Data4[6]), static_cast<unsigned>(g.Data4[7]));
+    return std::string(buf);
+}
+
+inline BuildIdentity ReadBuildIdentity()
+{
+    BuildIdentity id;
+
+    const HMODULE main_module = GetModuleHandleA(nullptr);
+    if (main_module == nullptr)
+    {
+        id.reason = "no_main_module";
+        return id;
     }
 
-    HANDLE process = GetCurrentProcess();
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(main_module);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        id.reason = "not_mz";
+        return id;
+    }
+
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+        reinterpret_cast<const std::uint8_t*>(main_module) + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+    {
+        id.reason = "not_pe";
+        return id;
+    }
+
+    // PE 时间戳：链接时刻，UTC 秒。人能看懂，便于和 CI 记录对账。
+    id.timestamp = static_cast<std::uint32_t>(nt->FileHeader.TimeDateStamp);
+
+    // Debug Directory 可能在任一 section 里，得走 RVA->文件偏移转换。
+    const DWORD debug_rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].VirtualAddress;
+    const DWORD debug_size = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG].Size;
+    if (debug_rva == 0 || debug_size < sizeof(IMAGE_DEBUG_DIRECTORY))
+    {
+        // 连 Debug Directory 都没有 —— 常见于 /DEBUG 关掉的 Release 构建。
+        id.reason = "no_debug_directory";
+        return id;
+    }
+
+    const WORD section_count = nt->FileHeader.NumberOfSections;
+    const auto* sections = reinterpret_cast<const IMAGE_SECTION_HEADER*>(
+        reinterpret_cast<const std::uint8_t*>(&nt->OptionalHeader) + nt->FileHeader.SizeOfOptionalHeader);
+
+    // 找 Debug Directory 落在哪个 section。
+    // 注意用 max(VirtualSize, SizeOfRawData) 做上界：有些链接器写的
+    // VirtualSize 比实际原始数据小，只按 VirtualSize 判会整个漏掉。
+    DWORD debug_file_offset = 0;
+    bool found_section = false;
+    for (WORD i = 0; i < section_count; ++i)
+    {
+        const IMAGE_SECTION_HEADER& s = sections[i];
+        const DWORD span = max(s.Misc.VirtualSize, s.SizeOfRawData);
+        if (debug_rva >= s.VirtualAddress && debug_rva < s.VirtualAddress + span)
+        {
+            debug_file_offset = s.PointerToRawData + (debug_rva - s.VirtualAddress);
+            found_section = true;
+            break;
+        }
+    }
+
+    if (!found_section)
+    {
+        id.reason = "debug_rva_outside_sections";
+        return id;
+    }
+
+    // 遍历所有 IMAGE_DEBUG_DIRECTORY 条目，而不是只看第一个。
+    // Debug Directory 里通常还塞着 POGO / VC_FEATURE / GCTL 等条目，
+    // CodeView 不一定排在第一个 —— 只看第一个会静默漏掉。
+    const DWORD entry_count = debug_size / sizeof(IMAGE_DEBUG_DIRECTORY);
+    bool saw_any_entry = false;
+
+    for (DWORD i = 0; i < entry_count; ++i)
+    {
+        const auto* dir = reinterpret_cast<const IMAGE_DEBUG_DIRECTORY*>(
+            reinterpret_cast<const std::uint8_t*>(main_module) + debug_file_offset
+            + i * sizeof(IMAGE_DEBUG_DIRECTORY));
+
+        if (dir->Type == 0 && dir->SizeOfData == 0)
+        {
+            continue;  // 空条目
+        }
+        saw_any_entry = true;
+
+        // 只认 CodeView（RSDS）——那是 PDB 的 GUID/Age。
+        // NB10 是老格式，没有 GUID，直接跳过不猜。
+        if (dir->Type != IMAGE_DEBUG_TYPE_CODEVIEW)
+        {
+            continue;
+        }
+
+        if (dir->PointerToRawData == 0)
+        {
+            continue;
+        }
+
+        const auto* cv = reinterpret_cast<const std::uint8_t*>(main_module) + dir->PointerToRawData;
+        if (std::memcmp(cv, "RSDS", 4) != 0)
+        {
+            continue;
+        }
+
+        // RSDS: char[4] sig, GUID guid, DWORD age, char[] pdb_path
+        GUID guid{};
+        std::memcpy(&guid, cv + 4, sizeof(GUID));
+        DWORD age = 0;
+        std::memcpy(&age, cv + 4 + sizeof(GUID), sizeof(DWORD));
+
+        id.build_id = GuidToString(guid);
+        // Age 拼进去：同一个 PDB 被增量更新后 GUID 不变、Age 递增，
+        // 只留 GUID 会把两次不同的构建认成同一次。
+        char age_buf[16];
+        std::snprintf(age_buf, sizeof(age_buf), "%x", age);
+        id.build_id += age_buf;
+        id.ok = true;
+        return id;
+    }
+
+    // 走到这里说明：有 Debug Directory、也扫了所有条目，但没有 CodeView/PDB。
+    // 这就是 Release 无 PDB 的真实处境 —— 必须说出来，不能留空串让人
+    // 以为「崩溃没抓到」。
+    id.reason = saw_any_entry ? "debug_directory_without_codeview" : "empty_debug_directory";
+    return id;
+}
+
+inline std::uint64_t ModuleBaseOf(HANDLE process, std::uint64_t addr)
+{
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQueryEx(process, reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) != sizeof(mbi))
+    {
+        return 0;
+    }
+    return reinterpret_cast<std::uint64_t>(mbi.AllocationBase);
+}
+
+inline std::string ModuleNameOf(HANDLE process, std::uint64_t addr)
+{
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQueryEx(process, reinterpret_cast<LPCVOID>(addr), &mbi, sizeof(mbi)) != sizeof(mbi))
+    {
+        return {};
+    }
+    const HMODULE mod = reinterpret_cast<HMODULE>(mbi.AllocationBase);
+    if (mod == nullptr)
+    {
+        return {};
+    }
+    char path[MAX_PATH]{};
+    if (GetModuleFileNameA(mod, path, MAX_PATH) == 0)
+    {
+        return {};
+    }
+    const std::string full(path);
+    const std::size_t slash = full.find_last_of("\\/");
+    return slash == std::string::npos ? full : full.substr(slash + 1);
+}
+
+inline Snapshot Capture(EXCEPTION_POINTERS* ep,
+                        const std::string& product_version = std::string())
+{
+    Snapshot snap;
+    if (ep == nullptr || ep->ExceptionRecord == nullptr)
+    {
+        return snap;
+    }
+
+    snap.exception_code = static_cast<std::uint32_t>(ep->ExceptionRecord->ExceptionCode);
+    snap.exception_address = reinterpret_cast<std::uint64_t>(ep->ExceptionRecord->ExceptionAddress);
+    snap.thread_id = GetCurrentThreadId();
+
+    // 构建身份：优先用链接器写的事实（build_id），版本串只是人读标签。
+    const BuildIdentity bid = ReadBuildIdentity();
+    snap.build_id = bid.build_id;
+    snap.build_timestamp = bid.timestamp;
+    snap.build_id_reason = bid.reason;
+    snap.product_version = product_version;
+
+    const HANDLE process = GetCurrentProcess();
     SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
     SymInitialize(process, nullptr, TRUE);
 
-    out << "ZEngine crash. ExceptionCode=0x" << std::hex << ep->ExceptionRecord->ExceptionCode
-        << " at " << ep->ExceptionRecord->ExceptionAddress << std::dec
-        << " tid=" << GetCurrentThreadId() << "\n\n";
-
     CONTEXT* ctx = ep->ContextRecord;
-    STACKFRAME64 frame = {};
+    if (ctx == nullptr)
+    {
+        SymCleanup(process);
+        return snap;
+    }
+
+    STACKFRAME64 frame{};
     frame.AddrPC.Offset    = ctx->Rip;
     frame.AddrPC.Mode      = AddrModeFlat;
     frame.AddrFrame.Offset = ctx->Rbp;
-    frame.AddrFrame.Mode  = AddrModeFlat;
+    frame.AddrFrame.Mode   = AddrModeFlat;
     frame.AddrStack.Offset = ctx->Rsp;
-    frame.AddrStack.Mode  = AddrModeFlat;
+    frame.AddrStack.Mode   = AddrModeFlat;
 
     for (int i = 0; i < 64; ++i)
     {
@@ -90,40 +407,183 @@ inline LONG WINAPI ZEngineCrashHandler(EXCEPTION_POINTERS* ep)
         }
 
         const DWORD64 addr = frame.AddrPC.Offset;
+        Frame f;
+        f.pc = addr;
+        f.module_base = ModuleBaseOf(process, addr);
+        f.module = ModuleNameOf(process, addr);
+
         char symbol_buffer[sizeof(SYMBOL_INFO) + 512] = {};
         SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(symbol_buffer);
         symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
         symbol->MaxNameLen   = 511;
         DWORD64 displacement = 0;
 
-        out << "[" << i << "] 0x" << std::hex << addr << std::dec << "  ";
         if (SymFromAddr(process, addr, &displacement, symbol))
         {
-            out << symbol->Name << " +0x" << std::hex << displacement << std::dec;
+            f.has_symbol = true;
+            f.function = symbol->Name;
+            f.offset = displacement;
+        }
+
+        IMAGEHLP_LINE64 line{};
+        line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+        DWORD line_displacement = 0;
+        if (SymGetLineFromAddr64(process, addr, &line_displacement, &line) && line.FileName != nullptr)
+        {
+            f.has_line = true;
+            f.file = line.FileName;
+            f.line = static_cast<int>(line.LineNumber);
+        }
+
+        snap.frames.push_back(f);
+    }
+
+    SymCleanup(process);
+    return snap;
+}
+inline void WriteText(const Snapshot& snap, const std::string& path)
+{
+    std::ofstream out(path, std::ios::trunc);
+    if (!out.is_open())
+    {
+        return;
+    }
+
+    out << "ZEngine crash. ExceptionCode=0x" << FormatHex(snap.exception_code)
+        << " at 0x" << FormatHex(snap.exception_address)
+        << " tid=" << FormatDec(snap.thread_id) << "\n";
+
+    // 构建身份。build_id 是硬证据（链接器写死的 GUID+Age），
+    // product_version 只是人读标签——可能为空，也可能没 bump。
+    out << "build_id=" << (snap.build_id.empty() ? std::string("<unknown>") : snap.build_id)
+        << " timestamp=" << FormatDec(snap.build_timestamp);
+    if (!snap.build_id_reason.empty())
+    {
+        out << " (" << snap.build_id_reason << ")";
+    }
+    if (!snap.product_version.empty())
+    {
+        out << " version=" << snap.product_version;
+    }
+    out << "\n\n";
+
+    for (std::size_t i = 0; i < snap.frames.size(); ++i)
+    {
+        const Frame& f = snap.frames[i];
+        out << "[" << i << "] 0x" << FormatHex(f.pc) << "  ";
+        if (f.has_symbol)
+        {
+            out << f.function << " +0x" << FormatHex(f.offset);
         }
         else
         {
             out << "<no symbol>";
         }
-
-        IMAGEHLP_LINE64 line = {};
-        line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
-        DWORD line_displacement = 0;
-        if (SymGetLineFromAddr64(process, addr, &line_displacement, &line) &&
-            line.FileName != nullptr)
+        if (!f.module.empty())
         {
-            out << "  (" << line.FileName << ":" << line.LineNumber << ")";
+            out << "  [" << f.module << " base=0x" << FormatHex(f.module_base) << "]";
+        }
+        if (f.has_line)
+        {
+            out << "  (" << f.file << ":" << FormatDec(static_cast<std::uint64_t>(f.line)) << ")";
         }
         out << "\n";
     }
     out.flush();
-    SymCleanup(process);
+}
+
+inline void WriteJson(const Snapshot& snap, const std::string& path)
+{
+    std::ofstream out(path, std::ios::trunc);
+    if (!out.is_open())
+    {
+        return;
+    }
+
+    out << "{\n";
+    out << "  \"schema\": \"zengine-crash/1\",\n";
+    out << "  \"platform\": \"windows\",\n";
+    out << "  \"exception_type\": \"" << FormatHex(snap.exception_code) << "\",\n";
+    out << "  \"exception_address\": \"" << FormatHex(snap.exception_address) << "\",\n";
+    out << "  \"thread_id\": " << FormatDec(snap.thread_id) << ",\n";
+    out << "  \"product_version\": \"" << JsonEscape(snap.product_version) << "\",\n";
+    out << "  \"build_id\": \"" << JsonEscape(snap.build_id) << "\",\n";
+    out << "  \"build_timestamp\": " << FormatDec(snap.build_timestamp) << ",\n";
+    out << "  \"build_id_reason\": \"" << JsonEscape(snap.build_id_reason) << "\",\n";
+    out << "  \"frames\": [\n";
+
+    for (std::size_t i = 0; i < snap.frames.size(); ++i)
+    {
+        const Frame& f = snap.frames[i];
+        out << "    {\"index\": " << i
+            << ", \"module\": \"" << JsonEscape(f.module) << "\""
+            << ", \"address\": \"" << FormatHex(f.pc) << "\""
+            << ", \"module_base\": \"" << FormatHex(f.module_base) << "\""
+            << ", \"function\": \"" << JsonEscape(f.function) << "\""
+            << ", \"offset\": \"" << FormatHex(f.offset) << "\""
+            << ", \"file\": \"" << JsonEscape(f.file) << "\""
+            << ", \"line\": " << FormatDec(static_cast<std::uint64_t>(f.line))
+            << "}";
+        if (i + 1 < snap.frames.size())
+        {
+            out << ",";
+        }
+        out << "\n";
+    }
+
+    out << "  ]\n}\n";
+    out.flush();
+}
+
+}  // namespace zcrash
+
+inline LONG WINAPI ZEngineCrashHandler(EXCEPTION_POINTERS* ep);
+
+
+// 进程级产品版本。由 InstallCrashHandler(version) 写入，崩溃时取用。
+//
+// 为什么是个函数内的 static 而不是全局变量：这是个 header-only 的 inline
+// 头文件，放全局会撞 ODR。static 局部在 C++11 起是线程安全初始化的，
+// 崩溃路径上只读不写，没有竞争。
+inline std::string& MutableProductVersion()
+{
+    static std::string s_version;
+    return s_version;
+}
+
+inline const std::string& ProductVersion()
+{
+    return MutableProductVersion();
+}
+
+inline void InstallCrashHandler(const std::string& product_version = std::string())
+{
+    MutableProductVersion() = product_version;
+    static bool installed = false;
+    if (installed) return;
+    installed = true;
+    SetUnhandledExceptionFilter(ZEngineCrashHandler);
+}
+
+// ---- The actual SEH filter (plain function, NOT a lambda) -----------
+
+inline LONG WINAPI ZEngineCrashHandler(EXCEPTION_POINTERS* ep)
+{
+    char exe_path[MAX_PATH]{};
+    GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
+    std::string dir(exe_path);
+    const std::size_t last_slash = dir.find_last_of("\\/");
+    dir = last_slash == std::string::npos ? std::string() : dir.substr(0, last_slash + 1);
+
+    const zcrash::Snapshot snap = zcrash::Capture(ep, ProductVersion());
+    zcrash::WriteText(snap, dir + "crash_stack.txt");
+    zcrash::WriteJson(snap, dir + "crash_snap.json");
 
     return EXCEPTION_EXECUTE_HANDLER;
 }
 
 #else  // !_WIN32
 
-inline void InstallCrashHandler() {}  // no-op on non-Windows
+inline void InstallCrashHandler(const std::string& = std::string()) {}  // no-op on non-Windows
 
 #endif

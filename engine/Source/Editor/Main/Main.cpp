@@ -25,76 +25,6 @@
 
 namespace
 {
-#ifdef _WIN32
-    // TEMPORARY crash diagnostic: write a symbolized callstack to crash_stack.txt on any
-    // unhandled SEH exception (covers render-thread access violations -- the filter is
-    // process-wide and runs on the faulting thread). RelWithDebInfo PDBs sit next to the exe
-    // so SymFromAddr resolves names. Remove once the resize crash is fixed.
-    LONG WINAPI ZEngineCrashHandler(EXCEPTION_POINTERS* ep)
-    {
-        HANDLE process = GetCurrentProcess();
-        SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_DEFERRED_LOADS | SYMOPT_UNDNAME);
-        SymInitialize(process, nullptr, TRUE);
-
-        std::ofstream out("E:/Engine/ZEngine/crash_stack.txt", std::ios::trunc);
-        if (out.is_open() && ep != nullptr && ep->ExceptionRecord != nullptr)
-        {
-            out << "ZEditor crash. ExceptionCode=0x" << std::hex << ep->ExceptionRecord->ExceptionCode
-                << " at " << ep->ExceptionRecord->ExceptionAddress << std::dec
-                << " tid=" << GetCurrentThreadId() << "\n\n";
-
-            CONTEXT* ctx = ep->ContextRecord;
-            STACKFRAME64 frame = {};
-            frame.AddrPC.Offset = ctx->Rip;
-            frame.AddrPC.Mode = AddrModeFlat;
-            frame.AddrFrame.Offset = ctx->Rbp;
-            frame.AddrFrame.Mode = AddrModeFlat;
-            frame.AddrStack.Offset = ctx->Rsp;
-            frame.AddrStack.Mode = AddrModeFlat;
-
-            for (int i = 0; i < 64; ++i)
-            {
-                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, process, GetCurrentThread(), &frame, ctx, nullptr,
-                                 SymFunctionTableAccess64, SymGetModuleBase64, nullptr))
-                {
-                    break;
-                }
-                if (frame.AddrPC.Offset == 0)
-                {
-                    break;
-                }
-
-                const DWORD64 addr = frame.AddrPC.Offset;
-                char symbol_buffer[sizeof(SYMBOL_INFO) + 512] = {};
-                SYMBOL_INFO* symbol = reinterpret_cast<SYMBOL_INFO*>(symbol_buffer);
-                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
-                symbol->MaxNameLen = 511;
-                DWORD64 displacement = 0;
-
-                out << "[" << i << "] 0x" << std::hex << addr << std::dec << "  ";
-                if (SymFromAddr(process, addr, &displacement, symbol))
-                {
-                    out << symbol->Name << " +0x" << std::hex << displacement << std::dec;
-                }
-                else
-                {
-                    out << "<no symbol>";
-                }
-
-                IMAGEHLP_LINE64 line = {};
-                line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
-                DWORD line_displacement = 0;
-                if (SymGetLineFromAddr64(process, addr, &line_displacement, &line) && line.FileName != nullptr)
-                {
-                    out << "  (" << line.FileName << ":" << line.LineNumber << ")";
-                }
-                out << "\n";
-            }
-            out.flush();
-        }
-        return EXCEPTION_EXECUTE_HANDLER;
-    }
-#endif
 
     enum class StartupMode
     {
@@ -264,7 +194,13 @@ namespace
 #ifdef _WIN32
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
-    InstallCrashHandler();
+    // 产品版本：优先用构建系统注入的宏，其次退回 CMake 的 project 版本。
+    // 版本串只是人读标签 —— 真正的硬证据是快照里的 build_id（PDB GUID+Age）。
+#ifdef ZENGINE_PRODUCT_VERSION
+    InstallCrashHandler(ZENGINE_PRODUCT_VERSION);
+#else
+    InstallCrashHandler("0.1.0");
+#endif
 
     // Initialize UTF-8 locale to handle filesystem error messages properly
     Encoding::InitializeUtf8Locale();
