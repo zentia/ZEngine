@@ -1,5 +1,6 @@
 // =============================================================================
-// TexPreviewWindow.cpp — ZSlate + D3D11 texture preview (no ZRuntime)
+// TexPreviewWindow.cpp — ZSlate + D3D11 texture preview,
+// ZRuntime for the ASTC/BC7/ETC2 decompressors (no engine boot)
 // =============================================================================
 
 #include "TexPreviewWindow.h"
@@ -10,9 +11,11 @@
 #include "Runtime/Function/Render/Texture/BC7Decompressor.h"
 #include "Runtime/Function/Render/Texture/ETC2Decompressor.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <filesystem>
 #include <fstream>
 
@@ -35,6 +38,137 @@ namespace
         case TexPreviewFormat::ETC2: return "ETC2";
         default:                     return "Unknown";
         }
+    }
+
+    // ---- Minimal PNG writer ------------------------------------------------
+    //
+    // Why this exists instead of stb_image_write: the engine vendored no image
+    // writer (DebugDrawFont.cpp includes <stb_image_write.h> but the header is
+    // not in the tree, and there is no zlib target to link). Pulling one in
+    // from tools/renderdoc/3rdparty would give an engine tool a dependency on
+    // a different tool's third-party tree.
+    //
+    // Trade-off: the zlib stream is emitted as *stored* (uncompressed) deflate
+    // blocks. That is valid for every decoder, but the file is roughly raw RGBA
+    // size -- a 2048^2 texture is ~16 MB. If a real compressor ever becomes
+    // available, only ZlibStream() below needs to change.
+
+    uint32_t Crc32Update(uint32_t crc, const uint8_t* data, size_t len)
+    {
+        static uint32_t table[256] {};
+        static bool built = false;
+        if (!built)
+        {
+            for (uint32_t n = 0; n < 256; ++n)
+            {
+                uint32_t c = n;
+                for (int k = 0; k < 8; ++k)
+                    c = (c & 1u) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+                table[n] = c;
+            }
+            built = true;
+        }
+        for (size_t i = 0; i < len; ++i)
+            crc = table[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8);
+        return crc;
+    }
+
+    void PutBe32(std::vector<uint8_t>& out, uint32_t v)
+    {
+        out.push_back(static_cast<uint8_t>(v >> 24));
+        out.push_back(static_cast<uint8_t>(v >> 16));
+        out.push_back(static_cast<uint8_t>(v >> 8));
+        out.push_back(static_cast<uint8_t>(v));
+    }
+
+    void WriteChunk(std::vector<uint8_t>& out, const char type[4],
+                    const uint8_t* data, size_t len)
+    {
+        PutBe32(out, static_cast<uint32_t>(len));
+        const auto type_bytes = reinterpret_cast<const uint8_t*>(type);
+        out.insert(out.end(), type_bytes, type_bytes + 4);
+        if (len != 0)
+            out.insert(out.end(), data, data + len);
+        uint32_t crc = Crc32Update(0xFFFFFFFFu, type_bytes, 4);
+        if (len != 0)
+            crc = Crc32Update(crc, data, len);
+        PutBe32(out, crc ^ 0xFFFFFFFFu);
+    }
+
+    uint32_t Adler32(const uint8_t* data, size_t len)
+    {
+        uint32_t a = 1, b = 0;
+        for (size_t i = 0; i < len; ++i)
+        {
+            a = (a + data[i]) % 65521u;
+            b = (b + a) % 65521u;
+        }
+        return (b << 16) | a;
+    }
+
+    // zlib wrapper around `raw`: 2-byte header, deflate data, big-endian adler32.
+    std::vector<uint8_t> ZlibStream(const std::vector<uint8_t>& raw)
+    {
+        std::vector<uint8_t> z;
+        z.reserve(raw.size() + 16);
+        z.push_back(0x78);  // CMF: CM=8 (deflate), CINFO=7
+        z.push_back(0x01);  // FLG: FLEVEL=0; (0x78 << 8 | 0x01) % 31 == 0
+
+        for (size_t pos = 0; pos < raw.size();)
+        {
+            const size_t n = std::min<size_t>(65535, raw.size() - pos);
+            const bool last = (pos + n >= raw.size());
+            z.push_back(static_cast<uint8_t>(last ? 0x01 : 0x00));  // BFINAL, BTYPE=00 (stored)
+            z.push_back(static_cast<uint8_t>(n & 0xFF));
+            z.push_back(static_cast<uint8_t>((n >> 8) & 0xFF));
+            z.push_back(static_cast<uint8_t>((~n) & 0xFF));
+            z.push_back(static_cast<uint8_t>(((~n) >> 8) & 0xFF));
+            z.insert(z.end(), raw.begin() + static_cast<ptrdiff_t>(pos),
+                     raw.begin() + static_cast<ptrdiff_t>(pos + n));
+            pos += n;
+        }
+        PutBe32(z, Adler32(raw.data(), raw.size()));
+        return z;
+    }
+
+    // Writes RGBA8 as an 8-bit colour-type-6 PNG. Returns false (with a logged
+    // reason) rather than throwing.
+    bool WriteRgbaPng(const std::filesystem::path& path, const uint8_t* rgba,
+                      uint32_t w, uint32_t h)
+    {
+        std::vector<uint8_t> raw;
+        raw.reserve(static_cast<size_t>(h) * (1 + static_cast<size_t>(w) * 4));
+        for (uint32_t y = 0; y < h; ++y)
+        {
+            raw.push_back(0);  // filter type 0 (None) per scanline
+            raw.insert(raw.end(), rgba + static_cast<size_t>(y) * w * 4,
+                       rgba + (static_cast<size_t>(y) + 1) * w * 4);
+        }
+
+        std::vector<uint8_t> png;
+        const uint8_t signature[] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+        png.insert(png.end(), signature, signature + sizeof(signature));
+
+        std::vector<uint8_t> ihdr;
+        PutBe32(ihdr, w);
+        PutBe32(ihdr, h);
+        ihdr.push_back(8);  // bit depth
+        ihdr.push_back(6);  // colour type 6 = truecolour + alpha
+        ihdr.push_back(0);  // deflate
+        ihdr.push_back(0);  // adaptive filtering
+        ihdr.push_back(0);  // no interlace
+        WriteChunk(png, "IHDR", ihdr.data(), ihdr.size());
+
+        const std::vector<uint8_t> idat = ZlibStream(raw);
+        WriteChunk(png, "IDAT", idat.data(), idat.size());
+        WriteChunk(png, "IEND", nullptr, 0);
+
+        std::ofstream file(path, std::ios::binary);
+        if (!file.is_open()) { TEX_LOG_ERR("save: cannot open %s", path.u8string().c_str()); return false; }
+        file.write(reinterpret_cast<const char*>(png.data()), static_cast<std::streamsize>(png.size()));
+        file.close();
+        if (!file) { TEX_LOG_ERR("save: write failed for %s", path.u8string().c_str()); return false; }
+        return true;
     }
 }
 
@@ -182,7 +316,10 @@ TexPreviewFormat TexPreviewWindow::DetectFormat(const std::filesystem::path& pat
     return TexPreviewFormat::Unknown;
 }
 
-// ---- Decompression (ASTC/BC7/ETC2 — same logic, just LOG→TEX_LOG) -----------
+// ---- Decompression ---------------------------------------------------------
+// Container parsing (ASTC magic, DDS/DX10 header, PKM header) is local; the
+// block decoding is ZEngine::Render::{ASTC,BC7,ETC2}Decompressor from ZRuntime.
+// Do not fork that logic here -- this file only converts LOG_* to TEX_LOG_*.
 
 bool TexPreviewWindow::DecompressTexture()
 {
@@ -392,7 +529,47 @@ void TexPreviewWindow::DrawInfoOverlay(ZSlate::ISlateRenderer* renderer,
 void TexPreviewWindow::OnZoomIn()  { m_ZoomLevel = std::min(m_ZoomLevel * 1.2f, m_MaxZoom); }
 void TexPreviewWindow::OnZoomOut() { m_ZoomLevel = std::max(m_ZoomLevel / 1.2f, m_MinZoom); }
 void TexPreviewWindow::OnFitToWindow() { m_ZoomLevel = 1.0f; m_PanX = m_PanY = 0.0f; }
-void TexPreviewWindow::OnSaveAsPNG() {}
+void TexPreviewWindow::OnSaveAsPNG()
+{
+    if (!m_TextureLoaded || m_PreviewWidth == 0 || m_PreviewHeight == 0 || m_PreviewPixels.empty())
+    { TEX_LOG_ERR("save: nothing decoded yet"); return; }
+
+    const size_t expected = static_cast<size_t>(m_PreviewWidth) * static_cast<size_t>(m_PreviewHeight) * 4;
+    if (m_PreviewPixels.size() < expected)
+    {
+        TEX_LOG_ERR("save: pixel buffer is %zu bytes, expected %zu", m_PreviewPixels.size(), expected);
+        return;
+    }
+
+#ifdef _WIN32
+    // Wide dialog: a narrow OPENFILENAMEA would mangle non-ASCII paths before
+    // we ever get here.
+    wchar_t path[MAX_PATH] {};
+    std::wstring seed = m_TexturePath.stem().wstring() + L".png";
+    if (seed.size() >= MAX_PATH) seed.resize(MAX_PATH - 1);
+    std::memset(path, 0, sizeof(path));
+    std::wcsncpy(path, seed.c_str(), MAX_PATH - 1);
+
+    OPENFILENAMEW ofn {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = nullptr;
+    ofn.lpstrFilter = L"PNG (*.png)\0*.png\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"png";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetSaveFileNameW(&ofn))
+        return;  // cancelled
+
+    const std::filesystem::path out(path);
+    if (!WriteRgbaPng(out, m_PreviewPixels.data(), m_PreviewWidth, m_PreviewHeight))
+        return;
+    TEX_LOG_INF("saved %ux%u PNG (%zu bytes) -> %s", m_PreviewWidth, m_PreviewHeight,
+                std::filesystem::file_size(out), out.u8string().c_str());
+#else
+    TEX_LOG_ERR("save: PNG export needs a save-file dialog; Windows only for now");
+#endif
+}
 void TexPreviewWindow::OnReloadTexture()
 {
     m_NeedsDecompress = true;

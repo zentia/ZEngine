@@ -3,8 +3,15 @@
 // =============================================================================
 // TexPreviewWindow — standalone block-compressed texture preview widget
 // -----------------------------------------------------------------------------
-// Dependencies: ZSlate (SWidget), D3D11 (GPU textures, Windows-only).
-// No ZRuntime.  Decompressors (ASTC/BC7/ETC2) are compiled inline.
+// Dependencies: ZSlate (SWidget), D3D11 (GPU textures, Windows-only),
+// ZRuntime for the ASTC/BC7/ETC2 decompressors
+// (Runtime/Function/Render/Texture/*Decompressor.h).
+//
+// ZRuntime is linked for those decompressors only -- there is no engine boot,
+// no renderer, no asset registry. That is the whole reason this tool lives in
+// engine/Source/Tools/ rather than tools/ (see AGENTS.md section 8).
+// Only the container parsing (ASTC magic, DDS/DX10 header, PKM header) is
+// local; the block decoding itself is ZRuntime's, do not fork it.
 // =============================================================================
 
 #include "ZSlate/Widgets/SWidget.h"
