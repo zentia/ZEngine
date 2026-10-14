@@ -30,6 +30,14 @@
 #include <memory>
 #include <string>
 
+// Icon resource id; must stay in sync with resource/ClientProjBranches.rc.
+// Without it the window class registers with no hIcon, so the title bar and
+// Alt-Tab fall back to the system default icon even though Explorer and the
+// taskbar would still show the one embedded in the exe.
+#ifndef IDI_ICON1
+#define IDI_ICON1 101
+#endif
+
 // ============================================================================
 // Main Entry Point
 // ============================================================================
@@ -48,6 +56,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int nCmdShow)
     desc.Height      = 768.0f;
     desc.Font        = ZSlate::Win32::ESystemFont::Sans;
     desc.ShowCommand = nCmdShow;
+    desc.LargeIconResId = IDI_ICON1;
+    desc.SmallIconResId = IDI_ICON1;
     // InstallTextMeasurer and InstallClipboard default on: the Stack Trace tab
     // copies its output, and layout has to measure text at the size the atlas
     // will actually rasterize it at.

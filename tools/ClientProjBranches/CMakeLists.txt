@@ -26,6 +26,13 @@ set(SOURCES
     src/Svn/SvnProbe.cpp
 )
 
+# App icon. rc.exe resolves the .ico next to the .rc, so both live in
+# resource/. MSVC-only because .rc is a Windows resource script; the tool is
+# Win32-only anyway (d3d11, shell32, comdlg32).
+if(MSVC)
+    list(APPEND SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/resource/ClientProjBranches.rc)
+endif()
+
 # Create main executable (Win32 GUI, not console)
 add_executable(ClientProjBranches WIN32 ${SOURCES})
 

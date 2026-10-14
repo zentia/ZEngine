@@ -1,0 +1,9 @@
+// App icon for ClientProjBranches -- shown by Explorer, the taskbar (small
+// icon) and the window's title bar / Alt-Tab (large icon).
+//
+// The id must stay in sync with IDI_ICON1 in src/main.cpp.
+// Regenerate the .ico with: powershell -NoProfile -ExecutionPolicy Bypass
+// -File gen_icon.ps1   (run from this directory)
+#define IDI_ICON1 101
+
+IDI_ICON1               ICON                    "ClientProjBranches.ico"
