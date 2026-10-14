@@ -26,8 +26,9 @@
 //
 // Usage:
 //   LuaMemPreview.exe [path\to\LuaProfile_xxx.zasset | ..._lua.csv]
-//   LuaMemPreview.exe -batchmode <in.zasset> [out_base_or_csv]
-//                                        headless: export _csharp/_userdata/_lua.csv
+//   LuaMemPreview.exe -batchmode <in.zasset|folder> [out]
+//                                        headless: export _csharp/_userdata/_lua.csv,
+//                                        for one snapshot or a whole folder
 //                                        (replaces the old ZProfilerCsvExporter)
 //   LuaMemPreview.exe --stats <file>     headless: per-type breakdown
 //   LuaMemPreview.exe --dump-ui <file>   headless: assert on the painted tree
@@ -54,14 +55,12 @@
 #ifndef IDI_ICON1
 #define IDI_ICON1 101
 #endif
+#include "ZSlate/App/SlateStandaloneApp.h"
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateInput.h"
 #include "ZSlate/Core/SlateGeometry.h"
 #include "ZSlate/Core/SlatePaint.h"
-#include "ZSlate/Platform/D3D11/ZSlateD3D11Renderer.h"
 #include "ZSlate/Renderer/SlateDpiScaleRenderer.h"
-#include "ZSlate/Renderer/ZSlateBatchedRenderer.h"
-#include "ZSlate/Renderer/ZSlateFontAtlas.h"
 #include "ZSlate/Testing/SlateRecordingRenderer.h"
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
@@ -107,34 +106,7 @@ using ZSlate::FSlateRecordingRenderer;
 // caller owns the output, and AttachConsole would silently redirect it away.
 namespace
 {
-bool StdOutIsRedirected()
-{
-    const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (out == nullptr || out == INVALID_HANDLE_VALUE)
-        return false;
-    const DWORD type = GetFileType(out);
-    return type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE;
-}
-
-void EnsureConsole()
-{
-    if (StdOutIsRedirected())
-        return;
-
-    // ATTACH_PARENT_PROCESS == (DWORD)-1.
-    if (!AttachConsole(static_cast<DWORD>(-1)) && !AllocConsole())
-        return;
-
-    // The C runtime captured the (invalid) handles before we had a console, so
-    // stdout/stderr still point nowhere until they are reopened on CONOUT$.
-    FILE* f = nullptr;
-    freopen_s(&f, "CONOUT$", "w", stdout);
-    freopen_s(&f, "CONOUT$", "w", stderr);
-    // No buffering: without a console-attached CRT flush, a crash or an early
-    // return can lose the last lines.
-    setvbuf(stdout, nullptr, _IONBF, 0);
-    setvbuf(stderr, nullptr, _IONBF, 0);
-}
+// Attaching a console for the headless modes is ZSlate::Win32::EnsureConsole().
 
 // Optional, explicitly requested: without a console of our own the process
 // exits as soon as it is done, taking its output with it.
@@ -159,55 +131,15 @@ int ExitCode(int code, bool pause)
 }  // namespace
 
 // ============================================================================
-// Platform bridge
-// ============================================================================
-class FPreviewPlatform : public ZSlate::ISlatePlatform
-{
-public:
-    ZSlate::ZSlateBatchedRenderer Renderer;
-    // When set, paint goes here instead (headless --dump-ui verification), so
-    // the checks run against the real widget tree rather than a stand-in.
-    ZSlate::ISlateRenderer* RendererOverride {nullptr};
-    bool MouseDown[3] {};
-    // Logical (DPI-independent) units -- see ZSlate/Renderer/SlateDpiScaleRenderer.h.
-    // The swapchain and all Win32 message coordinates stay physical; conversion
-    // happens at the boundary (WndProc divides, FSlateDpiScaleRenderer multiplies).
-    ZSlate::Vector2 MousePos {-1.0f, -1.0f};
-    ZSlate::Vector2 WinSize {1440.0f, 900.0f};
-    float WheelDelta {0.0f};
-    float DpiScale {1.0f};
-
-    ZSlate::ISlateRenderer* GetRenderer() override
-    {
-        return (RendererOverride != nullptr) ? RendererOverride
-                                             : static_cast<ZSlate::ISlateRenderer*>(&Renderer);
-    }
-    ZSlate::Vector2 GetMousePosition() const override { return MousePos; }
-    bool IsMouseButtonDown(int b) const override { return (b >= 0 && b < 3) ? MouseDown[b] : false; }
-    bool IsKeyDown(int) const override { return false; }
-    ZSlate::Vector2 GetWindowSize() const override { return WinSize; }
-    float GetDpiScale() const override { return DpiScale; }
-    float GetTimeSeconds() const override
-    {
-        static const auto t0 = std::chrono::steady_clock::now();
-        return std::chrono::duration<float>(std::chrono::steady_clock::now() - t0).count();
-    }
-};
-
-// ============================================================================
 // Application
 // ============================================================================
+// The Win32 host, message pump, DPI handling and font loading are
+// ZSlate::FSlateStandaloneApp (see ZSlate/App/SlateStandaloneApp.h); this class
+// is only what is specific to viewing a Lua memory snapshot.
 class FPreviewApp
 {
 public:
-    FPreviewPlatform Platform;
-    ZSlate::ZSlateFontAtlas FontAtlas;
-    ZSlate::SlateInputRouter Input;
-    // Sits between SlateApplication and the batched renderer: the widget tree
-    // lays out in logical units, this converts to physical pixels and -- the
-    // reason text was blurry -- scales font_size *before* the atlas rasterises,
-    // so glyphs are baked at the physical size instead of stretched.
-    FSlateDpiScaleRenderer ScaledRenderer {&Platform.Renderer, 1.0f};
+    ZSlate::FSlateStandaloneApp Host;
 
     FSnapshot Snapshot;
     FRowView RowView;
@@ -217,34 +149,6 @@ public:
     std::shared_ptr<SLuaTypeBar> TypeBar;
     std::shared_ptr<SLuaMemTable> Table;
     std::shared_ptr<SLuaStackDetail> Detail;
-
-    HWND Hwnd {nullptr};
-
-    void InitFonts()
-    {
-        // Monospace first: allocation stacks are file:line lists and align far
-        // better in a fixed-pitch face.
-        const char* primary[] = {
-            "C:\\Windows\\Fonts\\consola.ttf",
-            "C:\\Windows\\Fonts\\segoeui.ttf",
-        };
-        for (const char* f : primary)
-        {
-            if (FontAtlas.LoadFromFile(f))
-                break;
-        }
-        if (FontAtlas.IsLoaded())
-        {
-            // Lua source paths can contain CJK characters.
-            const char* cjk[] = {"C:\\Windows\\Fonts\\msyh.ttc", "C:\\Windows\\Fonts\\simsun.ttc"};
-            for (const char* f : cjk)
-            {
-                if (FontAtlas.AddFallbackFont(f))
-                    break;
-            }
-        }
-        Platform.Renderer.SetFontAtlas(FontAtlas.IsLoaded() ? &FontAtlas : nullptr);
-    }
 
     void BuildUI()
     {
@@ -307,8 +211,8 @@ public:
         Detail->SetRow(-1);
         root->AddSlot(Detail).AutoSize();
 
-        ZSlate::SlateApplication::Get().SetRootContent(root);
-        Input.SetKeyboardFocusWidget(Table.get());
+        Host.SetRootContent(root);
+        Host.GetInputRouter().SetKeyboardFocusWidget(Table.get());
     }
 
     void RefreshStatus()
@@ -375,11 +279,7 @@ public:
                 FormatBytes(Snapshot.GetTotalSize()) + ", parsed in " +
                 std::to_string(static_cast<int>(ms)) + " ms");
 
-        if (Hwnd != nullptr)
-        {
-            const std::string title = "Lua Memory Preview - " + Snapshot.GetFileName();
-            SetWindowTextA(Hwnd, title.c_str());
-        }
+        Host.SetWindowTitle("Lua Memory Preview - " + Snapshot.GetFileName());
     }
 
     void OpenFileDialog()
@@ -387,7 +287,7 @@ public:
         char file[MAX_PATH] = {};
         OPENFILENAMEA ofn = {};
         ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = Hwnd;
+        ofn.hwndOwner = Host.GetHwnd();
         ofn.lpstrFilter = "Lua memory snapshot\0*.zasset;*_lua.csv\0"
                           "MemoryProfiler asset\0*.zasset\0"
                           "Lua profile CSV\0*_lua.csv\0"
@@ -401,263 +301,7 @@ public:
             LoadFile(file);
     }
 
-    // Physical client size -> logical layout size. Called on creation, on
-    // WM_SIZE and on WM_DPICHANGED (moving the window between monitors of
-    // different scale factors re-bakes the glyphs at the new size).
-    void ApplyDpi(float scale, int physical_w, int physical_h)
-    {
-        const float s = (scale > 0.0f) ? scale : 1.0f;
-        Platform.DpiScale = s;
-        ScaledRenderer.SetScale(s);
-        Platform.WinSize = ZSlate::Vector2(static_cast<float>(physical_w) / s,
-                                           static_cast<float>(physical_h) / s);
-    }
-
-
-    void RunFrame()    {
-        auto root = ZSlate::SlateApplication::Get().GetRootContent();
-        if (root)
-        {
-            const bool over = Platform.MousePos.x >= 0.0f && Platform.MousePos.y >= 0.0f;
-            Input.ProcessMouse(root, Platform.MousePos, over, Platform.MouseDown[0],
-                               Platform.WheelDelta, Platform.MouseDown[1]);
-            Platform.WheelDelta = 0.0f;  // consumed
-        }
-
-        // BeginFrame/EndFrame are forwarded by the decorator; going through it
-        // for everything keeps one coordinate space in this function.
-        ScaledRenderer.BeginFrame();
-        const ZSlate::UIRect full(0.0f, 0.0f, Platform.WinSize.x, Platform.WinSize.y);
-        // Base fill: the toolbar row has no background widget of its own.
-        ScaledRenderer.DrawQuad(full, ZSlate::UIColor(0.086f, 0.086f, 0.098f, 1.0f));
-        ZSlate::SlateApplication::Get().PaintInto(&ScaledRenderer, full);
-        // Painted after the tree, not from a widget: the card has to escape the
-        // type bar's AutoSize slot to overlap the table below it. It must go in
-        // before EndFrame, which clears m_Active and drops every later call.
-        PaintTypeDocCard(&ScaledRenderer, full, *TypeBar, Snapshot);
-        ScaledRenderer.EndFrame();
-    }
 };
-
-// ============================================================================
-// Win32 host
-// ============================================================================
-namespace
-{
-ZSlate::EKey MapVirtualKey(WPARAM vk)
-{
-    switch (vk)
-    {
-    case VK_UP:     return ZSlate::EKey::Up;
-    case VK_DOWN:   return ZSlate::EKey::Down;
-    case VK_LEFT:   return ZSlate::EKey::Left;
-    case VK_RIGHT:  return ZSlate::EKey::Right;
-    case VK_HOME:   return ZSlate::EKey::Home;
-    case VK_END:    return ZSlate::EKey::End;
-    case VK_RETURN: return ZSlate::EKey::Enter;
-    case VK_ESCAPE: return ZSlate::EKey::Escape;
-    case VK_TAB:    return ZSlate::EKey::Tab;
-    case VK_BACK:   return ZSlate::EKey::Backspace;
-    case VK_DELETE: return ZSlate::EKey::Delete;
-    case VK_SPACE:  return ZSlate::EKey::Space;
-    default: break;
-    }
-    if (vk >= 'A' && vk <= 'Z')
-        return static_cast<ZSlate::EKey>(static_cast<int>(ZSlate::EKey::A) + static_cast<int>(vk - 'A'));
-    return ZSlate::EKey::Unknown;
-}
-
-// ----------------------------------------------------------------------------
-// DPI awareness
-// ----------------------------------------------------------------------------
-// Must run before the first window exists -- a process that has not declared
-// awareness gets DPI *virtualisation*: it renders at 96 DPI and the compositor
-// bitmap-stretches the whole window to the monitor scale (1.5x here), which is
-// a bilinear resample and exactly why the text looked soft. Declaring awareness
-// turns that off; FSlateDpiScaleRenderer then does the scaling properly.
-//
-// Both entry points are resolved dynamically: SetProcessDpiAwarenessContext is
-// Win10 1703+ and GetDpiForWindow is 1607+, so a static import would stop the
-// exe from loading on anything older.
-void DeclareDpiAwareness()
-{
-    HMODULE user32 = GetModuleHandleA("user32.dll");
-    if (user32 != nullptr)
-    {
-        using SetCtxFn = BOOL(WINAPI*)(HANDLE);
-        auto set_ctx = reinterpret_cast<SetCtxFn>(
-            reinterpret_cast<void*>(GetProcAddress(user32, "SetProcessDpiAwarenessContext")));
-        // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 == (HANDLE)-4
-        if (set_ctx != nullptr && set_ctx(reinterpret_cast<HANDLE>(static_cast<intptr_t>(-4))))
-            return;
-    }
-    // Pre-1703 fallback: system-wide awareness. No per-monitor updates, but it
-    // still stops the stretch on the primary monitor.
-    SetProcessDPIAware();
-}
-
-float QueryDpiScaleForWindow(HWND hwnd)
-{
-    HMODULE user32 = GetModuleHandleA("user32.dll");
-    if (user32 != nullptr)
-    {
-        using GetDpiFn = UINT(WINAPI*)(HWND);
-        auto get_dpi = reinterpret_cast<GetDpiFn>(
-            reinterpret_cast<void*>(GetProcAddress(user32, "GetDpiForWindow")));
-        if (get_dpi != nullptr)
-        {
-            const UINT dpi = get_dpi(hwnd);
-            if (dpi != 0)
-                return static_cast<float>(dpi) / 96.0f;
-        }
-    }
-    // Fallback: device caps on the window DC.
-    HDC dc = GetDC(hwnd);
-    float scale = 1.0f;
-    if (dc != nullptr)
-    {
-        const int dpi = GetDeviceCaps(dc, LOGPIXELSX);
-        if (dpi > 0)
-            scale = static_cast<float>(dpi) / 96.0f;
-        ReleaseDC(hwnd, dc);
-    }
-    return scale;
-}
-
-struct FWinCtx
-{
-    FPreviewApp* App {nullptr};
-    ZSlate::ZSlateD3D11Renderer* Backend {nullptr};
-};
-
-LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
-{
-    FWinCtx* ctx = nullptr;
-    if (msg == WM_CREATE)
-    {
-        ctx = reinterpret_cast<FWinCtx*>(reinterpret_cast<CREATESTRUCT*>(lp)->lpCreateParams);
-        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(ctx));
-    }
-    else
-    {
-        ctx = reinterpret_cast<FWinCtx*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
-    }
-    FPreviewApp* app = (ctx != nullptr) ? ctx->App : nullptr;
-
-    switch (msg)
-    {
-    case WM_SIZE:
-        if (app != nullptr)
-        {
-            // lp is physical pixels; the swapchain wants those, the widget tree
-            // wants logical.
-            app->ApplyDpi(app->Platform.DpiScale, LOWORD(lp), HIWORD(lp));
-            if (ctx->Backend != nullptr)
-                ctx->Backend->Resize(LOWORD(lp), HIWORD(lp));
-        }
-        return 0;
-
-    case WM_DPICHANGED:
-        if (app != nullptr)
-        {
-            // Dragged to a monitor with a different scale factor. Take the
-            // rect Windows suggests, then re-derive the logical size from it.
-            const RECT* suggested = reinterpret_cast<const RECT*>(lp);
-            const float scale = static_cast<float>(LOWORD(wp)) / 96.0f;
-            if (suggested != nullptr)
-            {
-                SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
-                             suggested->right - suggested->left,
-                             suggested->bottom - suggested->top,
-                             SWP_NOZORDER | SWP_NOACTIVATE);
-            }
-            RECT client {};
-            GetClientRect(hwnd, &client);
-            app->ApplyDpi(scale, client.right - client.left, client.bottom - client.top);
-            if (ctx->Backend != nullptr)
-                ctx->Backend->Resize(client.right - client.left, client.bottom - client.top);
-        }
-        return 0;
-
-    case WM_MOUSEMOVE:
-        if (app != nullptr)
-        {
-            // Physical -> logical, to match the space the widget tree hit-tests in.
-            const float inv = 1.0f / app->Platform.DpiScale;
-            app->Platform.MousePos = ZSlate::Vector2(
-                static_cast<float>(static_cast<short>(LOWORD(lp))) * inv,
-                static_cast<float>(static_cast<short>(HIWORD(lp))) * inv);
-        }
-        return 0;
-
-    case WM_MOUSELEAVE:
-        if (app != nullptr)
-            app->Platform.MousePos = ZSlate::Vector2(-1.0f, -1.0f);
-        return 0;
-
-    case WM_LBUTTONDOWN: if (app) { app->Platform.MouseDown[0] = true;  SetCapture(hwnd); } return 0;
-    case WM_LBUTTONUP:   if (app) { app->Platform.MouseDown[0] = false; ReleaseCapture(); } return 0;
-    case WM_RBUTTONDOWN: if (app) app->Platform.MouseDown[1] = true;  return 0;
-    case WM_RBUTTONUP:   if (app) app->Platform.MouseDown[1] = false; return 0;
-
-    case WM_MOUSEWHEEL:
-        if (app != nullptr)
-        {
-            // Accumulate: several wheel messages can arrive between frames.
-            app->Platform.WheelDelta += static_cast<float>(GET_WHEEL_DELTA_WPARAM(wp)) / WHEEL_DELTA;
-        }
-        return 0;
-
-    case WM_KEYDOWN:
-        if (app != nullptr)
-        {
-            const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-            const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
-            const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-            ZSlate::SlateInputRouter::SetModifierState(ctrl, shift, alt);
-
-            if (ctrl && wp == 'O')
-            {
-                app->OpenFileDialog();
-                return 0;
-            }
-            // ZSlate's EKey has no page keys, so drive the table directly.
-            if (wp == VK_PRIOR) { app->Table->ScrollByPage(-1); return 0; }
-            if (wp == VK_NEXT)  { app->Table->ScrollByPage(+1); return 0; }
-
-            const ZSlate::EKey key = MapVirtualKey(wp);
-            if (key != ZSlate::EKey::Unknown)
-                app->Input.ProcessKey(key);
-        }
-        return 0;
-
-    case WM_CHAR:
-        if (app != nullptr && wp >= 32)
-            app->Input.ProcessChar(static_cast<unsigned int>(wp));
-        return 0;
-
-    case WM_DROPFILES:
-        if (app != nullptr)
-        {
-            HDROP drop = reinterpret_cast<HDROP>(wp);
-            char path[MAX_PATH] = {};
-            if (DragQueryFileA(drop, 0, path, MAX_PATH) > 0)
-                app->LoadFile(path);
-            DragFinish(drop);
-            SetForegroundWindow(hwnd);
-        }
-        return 0;
-
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
-
-    default:
-        break;
-    }
-    return DefWindowProc(hwnd, msg, wp, lp);
-}
-}  // namespace
 
 namespace
 {
@@ -667,11 +311,14 @@ void PrintUsage(const char* exeName)
                 "\n"
                 "Usage:\n"
                 "  %s [file]                            open <file> (.zasset or _lua.csv) in the GUI\n"
-                "  %s -batchmode <in.zasset> [out]      export _csharp/_userdata/_lua.csv\n"
+                "  %s -batchmode <in> [out]             export _csharp/_userdata/_lua.csv;\n"
+                "                                       <in> is one .zasset or a folder of them\n"
+                "                                       (--recursive to walk subdirectories)\n"
                 "  %s --stats <file>                    headless per-type breakdown\n"
                 "  %s --dump-ui <file>                  headless assertions on the painted UI\n"
                 "\n"
                 "Options:\n"
+                "  --recursive  -batchmode folder: also walk subdirectories\n"
                 "  --pause      wait for Enter before exiting (headless modes only)\n"
                 "\n"
                 "In the GUI: Ctrl+O to open, or drag a file onto the window.\n"
@@ -698,12 +345,20 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // --pause is a modifier, so it can sit anywhere; pull it out before the
     // positional arguments are interpreted.
     bool pause_at_exit = false;
+    bool recursive = false;
     int arg_count = argc;
     for (int i = 1; i < argc; ++i)
     {
+        // Modifiers: they can sit anywhere, so they are pulled out before the
+        // positional arguments are interpreted.
         if (std::strcmp(argv[i], "--pause") == 0)
         {
             pause_at_exit = true;
+            --arg_count;
+        }
+        else if (std::strcmp(argv[i], "--recursive") == 0)
+        {
+            recursive = true;
             --arg_count;
         }
     }
@@ -712,52 +367,109 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 
     if (mode == "--help" || mode == "-h" || mode == "-?")
     {
-        EnsureConsole();
+        ZSlate::Win32::EnsureConsole();
         PrintUsage(argv[0]);
         return ExitCode(0, pause_at_exit);
     }
 
-    // ---- Batch mode: .zasset -> CSV ---------------------------------------
+    // ---- Batch mode: .zasset(s) -> CSV ------------------------------------
     // Unity-style -batchmode: no window, no D3D11, just the engine Core
-    // systems needed to deserialize the MemoryProfiler asset. Output is the
+    // systems needed to deserialize the MemoryProfiler asset(s). Output is the
     // same three CSVs the former ZProfilerCsvExporter wrote; `_lua.csv` can be
     // opened back in this viewer.
+    //
+    // The input may be a single snapshot or a folder of them. The folder case
+    // is the one worth having: a capture session drops a whole directory of
+    // snapshots, and converting them one by one by hand is the whole reason
+    // this tool needed a batch mode at all.
     if (mode == "-batchmode" || mode == "--batchmode" || mode == "--batch")
     {
-        EnsureConsole();
+        ZSlate::Win32::EnsureConsole();
         if (arg_count < 3 || arg_count > 4)
         {
-            std::printf("Usage: %s -batchmode <input_profiler.zasset> [output_base_or_csv]\n"
+            std::printf("Usage: %s -batchmode <snapshot.zasset | folder> [output]\n"
                         "\n"
-                        "Output files:\n"
+                        "Output per snapshot:\n"
                         "  <base>_csharp.csv\n"
                         "  <base>_userdata.csv\n"
                         "  <base>_lua.csv\n"
                         "\n"
-                        "<base> defaults to the input path without its extension.\n",
+                        "A snapshot:  [output] is <base>, defaulting to the input path without\n"
+                        "             its extension.\n"
+                        "A folder:    [output] is a directory, defaulting to the folder itself.\n"
+                        "             Every *.zasset in it becomes <dir>/<stem>_lua.csv; add\n"
+                        "             --recursive to walk subdirectories.\n",
                         argv[0]);
-            LogError("batchmode: expected <input_profiler.zasset> [output_base_or_csv]");
+            LogError("batchmode: expected <snapshot.zasset | folder> [output]");
+            return ExitCode(1, pause_at_exit);
+        }
+
+        const std::string input = argv[2];
+        const std::string output = (arg_count >= 4) ? argv[3] : "";
+        const bool folder_mode = IsDirectory(input);
+        const bool snapshot_mode = IsSnapshotPath(input);
+
+        // Decide what the argument was *meant* to be before touching the disk:
+        // a missing "C:\...\XYZ" is not a snapshot that failed to open, and
+        // "cannot open file" sends you looking for a permissions problem that
+        // isn't there.
+        if (!folder_mode && !snapshot_mode)
+        {
+            const std::string message = "not a snapshot (.zasset) and not a folder: " + input;
+            std::fprintf(stderr, "ERROR: %s\n", message.c_str());
+            LogError("batchmode: " + message);
             return ExitCode(1, pause_at_exit);
         }
 
         std::vector<std::string> written;
-        std::string err;
+        std::vector<std::string> errors;
         const auto t0 = std::chrono::steady_clock::now();
-        if (!ExportZassetToCsv(argv[2], (arg_count >= 4) ? argv[3] : "", written, err))
+
+        bool ok = false;
+        if (folder_mode)
         {
-            std::fprintf(stderr, "ERROR: %s\n", err.c_str());
-            LogError("batchmode: " + err);
-            return ExitCode(1, pause_at_exit);
+            ok = ExportFolderToCsv(input, output, recursive, written, errors);
         }
+        else
+        {
+            std::string err;
+            ok = ExportZassetToCsv(input, output, written, err);
+            if (!ok)
+                errors.push_back(err);
+        }
+
         const double ms = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - t0).count();
+
+        for (const std::string& e : errors)
+            std::fprintf(stderr, "ERROR: %s\n", e.c_str());
+        if (!errors.empty())
+            std::printf("\n");
 
         std::printf("Exported CSV files (%.0f ms):\n", ms);
         for (const std::string& p : written)
             std::printf("  %s\n", p.c_str());
-        LogInfo("Exported " + std::to_string(written.size()) + " CSV files in " +
-                std::to_string(static_cast<int>(ms)) + " ms");
-        return ExitCode(0, pause_at_exit);
+
+        // How many *snapshots* succeeded, not how many files: three CSVs per
+        // snapshot is an implementation detail.
+        const size_t snapshots = written.size() / 3;
+        const std::string summary = folder_mode
+            ? ("batch: " + std::to_string(snapshots) + " snapshot(s) from " + input +
+               " -> " + (output.empty() ? input : output) +
+               (recursive ? " (recursive)" : "") +
+               ", " + std::to_string(errors.size()) + " error(s)")
+            : ("Exported " + std::to_string(written.size()) + " CSV files from " + input);
+
+        if (ok && errors.empty())
+        {
+            LogInfo(summary + " in " + std::to_string(static_cast<int>(ms)) + " ms");
+            return ExitCode(0, pause_at_exit);
+        }
+
+        LogError(summary);
+        for (const std::string& e : errors)
+            LogError("batchmode: " + e);
+        return ExitCode(1, pause_at_exit);
     }
 
     // ---- Headless UI verification -----------------------------------------
@@ -767,9 +479,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // a blank surface to PrintWindow, so a screenshot proves nothing.
     if (mode == "--dump-ui" && arg_count >= 3)
     {
-        EnsureConsole();
+        ZSlate::Win32::EnsureConsole();
         FPreviewApp app;
-        ZSlate::SetPlatform(&app.Platform);
+        ZSlate::SetPlatform(&app.Host);
         app.BuildUI();
         app.LoadFile(argv[2]);
         if (!app.Snapshot.IsLoaded())
@@ -780,8 +492,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         }
 
         FSlateRecordingRenderer rec;
-        app.Platform.RendererOverride = &rec;
-        app.Platform.WinSize = ZSlate::Vector2(1440.0f, 900.0f);
+        app.Host.SetRendererOverride(&rec);
+        // Headless: no window, so declare the logical viewport directly. The
+        // physical size is the same at scale 1.0.
+        app.Host.ApplyDpi(1.0f, 1440, 900);
         const ZSlate::UIRect full(0.0f, 0.0f, 1440.0f, 900.0f);
         rec.Reset();
         ZSlate::SlateApplication::Get().PaintInto(&rec, full);
@@ -871,12 +585,12 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
             // Calling TypeBar->OnMouseMove directly would bypass the router and
             // hide a regression in move delivery -- which is precisely the bug
             // this check exists for.
-            app.Platform.MousePos = ZSlate::Vector2(chip->Rect.x + 2.0f,
-                                                    chip->Rect.y + chip->Rect.h * 0.5f);
-            app.Input.ProcessMouse(ZSlate::SlateApplication::Get().GetRootContent(),
-                                   app.Platform.MousePos, true, false, 0.0f, false);
+            app.Host.MousePosition() = ZSlate::Vector2(chip->Rect.x + 2.0f,
+                                                       chip->Rect.y + chip->Rect.h * 0.5f);
+            app.Host.GetInputRouter().ProcessMouse(ZSlate::SlateApplication::Get().GetRootContent(),
+                                                   app.Host.MousePosition(), true, false, 0.0f, false);
             out.Reset();
-            app.Platform.RendererOverride = &out;
+            app.Host.SetRendererOverride(&out);
             ZSlate::SlateApplication::Get().PaintInto(&out, full);
             card_start = out.Texts.size();
             PaintTypeDocCard(&out, full, *app.TypeBar, app.Snapshot);
@@ -951,11 +665,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         // Done last so the hover state is clean for the DPI pass below.
         // WM_MOUSELEAVE: cursor outside the window, so the hover path is empty
         // and the router sends OnMouseLeave to the bar.
-        app.Platform.MousePos = ZSlate::Vector2(-1.0f, -1.0f);
-        app.Input.ProcessMouse(ZSlate::SlateApplication::Get().GetRootContent(),
-                               app.Platform.MousePos, false, false, 0.0f, false);
+        app.Host.MousePosition() = ZSlate::Vector2(-1.0f, -1.0f);
+        app.Host.GetInputRouter().ProcessMouse(ZSlate::SlateApplication::Get().GetRootContent(),
+                                               app.Host.MousePosition(), false, false, 0.0f, false);
         ZSlate::FSlateRecordingRenderer bare_rec;
-        app.Platform.RendererOverride = &bare_rec;
+        app.Host.SetRendererOverride(&bare_rec);
         bare_rec.Reset();
         ZSlate::SlateApplication::Get().PaintInto(&bare_rec, full);
         const size_t bare_count = bare_rec.Texts.size();
@@ -984,8 +698,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         FSlateDpiScaleRenderer dpi(&scaled_rec, kTestScale);
         // Logical window stays 1440x900 so layout must come out identical; the
         // physical surface would be 2160x1350.
-        app.Platform.RendererOverride = &dpi;
-        app.Platform.DpiScale = kTestScale;
+        // Same logical 1440x900 viewport as the 100% pass; the decorator turns
+        // it into a 2160x1350 physical surface.
+        app.Host.ApplyDpi(kTestScale, static_cast<int>(1440.0f * kTestScale),
+                          static_cast<int>(900.0f * kTestScale));
+        app.Host.SetRendererOverride(&dpi);
         scaled_rec.Reset();
         ZSlate::SlateApplication::Get().PaintInto(&dpi, full);
 
@@ -1076,7 +793,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // script or CI job wants when it just needs the per-type split.
     if (mode == "--stats" && arg_count >= 3)
     {
-        EnsureConsole();
+        ZSlate::Win32::EnsureConsole();
         FSnapshot snap;
         std::string err;
         const auto t0 = std::chrono::steady_clock::now();
@@ -1138,106 +855,61 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         return ExitCode(snap.IsSelfConsistent() ? 0 : 3, pause_at_exit);
     }
 
-    // Before any window exists, and only on the interactive path -- the
-    // headless modes above neither create a window nor care about DPI.
-    DeclareDpiAwareness();
-
+    // ---- GUI ---------------------------------------------------------------
+    // Window, message pump, DPI awareness / WM_DPICHANGED and the font atlas
+    // are all FSlateStandaloneApp now; awareness is declared inside
+    // Initialize(), i.e. before the first window exists.
     FPreviewApp app;
-    ZSlate::SetPlatform(&app.Platform);
-    app.InitFonts();
+
+    ZSlate::FStandaloneAppDesc desc;
+    desc.Title  = "Lua Memory Preview";
+    desc.Width  = 1440.0f;
+    desc.Height = 900.0f;
+    // Monospace: allocation stacks are file:line lists and align far better in
+    // a fixed-pitch face.
+    desc.Font   = ZSlate::Win32::ESystemFont::Mono;
+    desc.LargeIconResId   = IDI_ICON1;
+    desc.SmallIconResId   = IDI_ICON1;
+    desc.AcceptFileDrops  = true;
+    // ClearBeforePaint stays on: the toolbar row has no background widget of
+    // its own, so the whole viewport is filled before the tree paints.
+
+    if (!app.Host.Initialize(desc))
+        return 1;
+
     app.BuildUI();
 
-    // WNDCLASSEX, not WNDCLASS: only the EX variant carries hIconSm, which is
-    // what the taskbar shows.
-    WNDCLASSEXA wc = {};
-    wc.cbSize = sizeof(wc);
-    wc.lpfnWndProc = WndProc;
-    wc.hInstance = GetModuleHandle(nullptr);
-    wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    // hIcon is what the title bar and Alt-Tab show, hIconSm what the taskbar
-    // shows. Asking LoadImage for an explicit size picks the closest of the
-    // .ico's embedded sizes (16/32/48/256) instead of stretching one of them.
-    wc.hIcon = static_cast<HICON>(LoadImageA(wc.hInstance, MAKEINTRESOURCEA(IDI_ICON1),
-                                             IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR));
-    wc.hIconSm = static_cast<HICON>(LoadImageA(wc.hInstance, MAKEINTRESOURCEA(IDI_ICON1),
-                                               IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
-    wc.lpszClassName = "LuaMemPreviewWnd";
-    RegisterClassExA(&wc);
-
-    // Scale the default window size by the primary monitor's factor, so the
-    // 1440x900 logical default still occupies the intended physical area
-    // instead of shrinking to 2/3 once virtualisation is off.
-    float initial_scale = 1.0f;
+    // Drag a snapshot onto the window, or Ctrl+O for the file dialog.
+    app.Host.OnDropFile = [&app](const std::string& path)
     {
-        HDC screen = GetDC(nullptr);
-        if (screen != nullptr)
+        app.LoadFile(path);
+        return true;
+    };
+    app.Host.OnKey = [&app](unsigned vk, bool down) -> bool
+    {
+        if (!down)
+            return false;
+        if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 && vk == 'O')
         {
-            const int dpi = GetDeviceCaps(screen, LOGPIXELSX);
-            if (dpi > 0)
-                initial_scale = static_cast<float>(dpi) / 96.0f;
-            ReleaseDC(nullptr, screen);
+            app.OpenFileDialog();
+            return true;
         }
-    }
-
-    FWinCtx ctx {&app, nullptr};
-    HWND hwnd = CreateWindowA("LuaMemPreviewWnd", "Lua Memory Preview",
-                              WS_OVERLAPPEDWINDOW,
-                              CW_USEDEFAULT, CW_USEDEFAULT,
-                              static_cast<int>(app.Platform.WinSize.x * initial_scale),
-                              static_cast<int>(app.Platform.WinSize.y * initial_scale),
-                              nullptr, nullptr, GetModuleHandle(nullptr), &ctx);
-    if (hwnd == nullptr)
+        // ZSlate's EKey has no page keys, so drive the table directly.
+        if (vk == VK_PRIOR) { app.Table->ScrollByPage(-1); return true; }
+        if (vk == VK_NEXT)  { app.Table->ScrollByPage(+1); return true; }
+        return false;
+    };
+    // The category card has to escape the type bar's AutoSize slot to overlap
+    // the table below it, so it is painted after the tree instead of from a
+    // widget. The host still sends it before EndFrame, which is what makes the
+    // draw calls land.
+    app.Host.OnPostPaint = [&app](ZSlate::ISlateRenderer* renderer, const ZSlate::UIRect& viewport)
     {
-        std::printf("[LuaMemPreview] CreateWindow failed\n");
-        return 1;
-    }
-    app.Hwnd = hwnd;
-
-    // Per-window DPI is authoritative (multi-monitor); re-derive the logical
-    // size from the real client rect now that the window exists.
-    {
-        RECT client {};
-        GetClientRect(hwnd, &client);
-        app.ApplyDpi(QueryDpiScaleForWindow(hwnd),
-                     client.right - client.left, client.bottom - client.top);
-    }
-    DragAcceptFiles(hwnd, TRUE);
-
-    auto* backend = new ZSlate::ZSlateD3D11Renderer(hwnd);
-    ctx.Backend = backend;
-    if (!backend->Init())
-    {
-        std::printf("[LuaMemPreview] D3D11 init failed\n");
-        delete backend;
-        return 1;
-    }
-    ShowWindow(hwnd, SW_SHOW);
+        PaintTypeDocCard(renderer, viewport, *app.TypeBar, app.Snapshot);
+    };
 
     if (argc > 1)
         app.LoadFile(argv[1]);
 
-    MSG msg = {};
-    bool running = true;
-    while (running)
-    {
-        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE))
-        {
-            if (msg.message == WM_QUIT)
-            {
-                running = false;
-                break;
-            }
-            TranslateMessage(&msg);
-            DispatchMessage(&msg);
-        }
-        if (!running)
-            break;
-
-        app.RunFrame();
-        backend->Render(app.Platform.Renderer, &app.FontAtlas);
-        Sleep(1);
-    }
-
-    delete backend;  // destructor calls Shutdown(); do not call it twice
-    return 0;
+    return app.Host.Run();
 }

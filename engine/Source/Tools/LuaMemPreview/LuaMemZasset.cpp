@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <algorithm>
 #include <system_error>
 #include <vector>
 
@@ -103,6 +104,50 @@ MemoryProfiler* ReadMemoryProfiler(const std::string& path, std::string& out_err
     MemoryManager::DestroyObject(file);
     return profiler;
 }
+
+std::string ToLowerAscii(std::string s)
+{
+    for (char& c : s)
+    {
+        if (c >= 'A' && c <= 'Z')
+            c += 'a' - 'A';
+    }
+    return s;
+}
+
+bool HasZassetExtension(const std::filesystem::path& path)
+{
+    return ToLowerAscii(path.extension().string()) == ".zasset";
+}
+
+// One entry per snapshot file to export; sorted so the run is reproducible.
+std::vector<std::filesystem::path> CollectSnapshots(const std::filesystem::path& folder, bool recursive)
+{
+    std::vector<std::filesystem::path> out;
+    std::error_code ec;
+    if (recursive)
+    {
+        for (std::filesystem::recursive_directory_iterator it(folder, ec), end; it != end; it.increment(ec))
+        {
+            if (ec)
+                break;
+            if (it->is_regular_file(ec) && !ec && HasZassetExtension(it->path()))
+                out.push_back(it->path());
+        }
+    }
+    else
+    {
+        for (std::filesystem::directory_iterator it(folder, ec), end; it != end; it.increment(ec))
+        {
+            if (ec)
+                break;
+            if (it->is_regular_file(ec) && !ec && HasZassetExtension(it->path()))
+                out.push_back(it->path());
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
 }  // namespace
 
 bool ExportZassetToCsv(const std::string& path,
@@ -128,6 +173,63 @@ bool ExportZassetToCsv(const std::string& path,
 
     for (const auto& p : written)
         out_written.push_back(p.string());
+    return true;
+}
+
+bool IsDirectory(const std::string& path)
+{
+    std::error_code ec;
+    return std::filesystem::is_directory(path, ec) && !ec;
+}
+
+bool IsSnapshotPath(const std::string& path)
+{
+    if (path.size() < 7)
+        return false;
+    return ToLowerAscii(path.substr(path.size() - 7)) == ".zasset";
+}
+
+bool ExportFolderToCsv(const std::string& folder,
+                       const std::string& output_dir,
+                       bool recursive,
+                       std::vector<std::string>& out_written,
+                       std::vector<std::string>& out_errors)
+{
+    out_written.clear();
+    out_errors.clear();
+
+    std::error_code ec;
+    if (!std::filesystem::is_directory(folder, ec) || ec)
+    {
+        out_errors.push_back("not a readable directory: " + folder);
+        return false;
+    }
+
+    const std::filesystem::path out_dir = output_dir.empty() ? std::filesystem::path(folder)
+                                                             : std::filesystem::path(output_dir);
+    const std::vector<std::filesystem::path> snapshots = CollectSnapshots(folder, recursive);
+    if (snapshots.empty())
+    {
+        out_errors.push_back("no *.zasset found in " + folder + (recursive ? " (recursive)" : ""));
+        return true;
+    }
+
+    for (const std::filesystem::path& snapshot : snapshots)
+    {
+        std::string err;
+        std::vector<std::string> written;
+        // Base is <out_dir>/<stem>: the input's own path is irrelevant here,
+        // since everything lands side by side in one directory.
+        if (ExportZassetToCsv(snapshot.string(), (out_dir / snapshot.stem()).string(), written, err))
+        {
+            out_written.insert(out_written.end(), written.begin(), written.end());
+        }
+        else
+        {
+            out_errors.push_back(snapshot.filename().string() + ": " + err);
+        }
+    }
+
     return true;
 }
 

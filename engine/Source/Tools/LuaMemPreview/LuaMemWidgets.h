@@ -6,17 +6,27 @@
 //
 // Why these are hand-painted leaf widgets rather than SListView rows:
 //
-// A snapshot holds ~180K rows. SListView<T> builds one child SWidget per
-// visible row through OnGenerateRow, but its recycling path is broken in two
-// ways that make it unusable at this scale:
-//   * GetOrCreateWidget() only calls OnGenerateRow when the pool is empty, so a
-//     widget pulled from the pool keeps the previous row's data - scrolling
-//     would show wrong values.
-//   * ReleaseInvisibleWidgets() is never called from OnPaint, so the
-//     item->widget map grows monotonically; scrolling the whole list would
-//     retain 180K widgets.
-// Painting the rows directly also means zero per-row allocations and a cost
-// that depends only on how many rows actually fit on screen.
+// SListView<T> IS virtualised and its recycling IS correct -- both claims that
+// used to be made here were stale, and are now pinned down by
+// engine/Libraries/ZSlate/tests/slate_list_view_tests.cpp, which scrolls 180K
+// rows and asserts that (a) the painted text count stays proportional to the
+// visible rows, (b) a recycled row shows the new item's data, and (c) the live
+// widget count stays bounded across a 200-step sweep. Do not re-claim that
+// SListView "leaks a widget per row" without running that test first.
+//
+// What remains true, and is why this table is still hand-painted:
+//   * Rows here are 4 fixed columns (COUNT / SIZE / TYPE / STACK) with an
+//     independent sort, a filter and a type-colour chip. Through SListView
+//     each visible row would be an SHorizontalBox of 4 STextBlocks rebuilt
+//     on every scroll step -- ~135 live widgets instead of 0, allocated and
+//     destroyed continuously while the user scrolls.
+//   * Painting rows directly makes the cost depend only on how many rows fit
+//     on screen, with zero per-row allocation, which is what keeps a 180K-row
+//     snapshot responsive.
+//
+// So this is a deliberate specialisation, not a workaround for a Slate bug.
+// If SListView ever grows fixed-column support with stable row identity,
+// reconsider.
 
 #include "LuaMemCsv.h"
 

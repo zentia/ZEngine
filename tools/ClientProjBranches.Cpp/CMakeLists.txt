@@ -9,7 +9,13 @@ set(ZSLATE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../../engine/Libraries/ZSlate")
 if(NOT EXISTS "${ZSLATE_PATH}/CMakeLists.txt")
     message(FATAL_ERROR "ZSlate not found at ${ZSLATE_PATH} - run 'git submodule update --init engine/Libraries/ZSlate'")
 endif()
-add_subdirectory("${ZSLATE_PATH}" "${CMAKE_CURRENT_BINARY_DIR}/ZSlate")
+# Guarded so this project can also be added to a full-tree configure, where
+# add_subdirectory(engine) has already created the ZSlate target. Adding it a
+# second time is a hard CMake error ("another target with the same name
+# already exists"), not a silent no-op.
+if(NOT TARGET ZSlate)
+    add_subdirectory("${ZSLATE_PATH}" "${CMAKE_CURRENT_BINARY_DIR}/ZSlate")
+endif()
 
 # Our source files
 set(SOURCES
