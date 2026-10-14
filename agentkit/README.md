@@ -156,19 +156,47 @@ top1 100%   top3 100%   honesty 100%   evidence 100%
 不是缺陷本质；且全部样本都在同一台机器上产生。
 
 ---
-## 七、路线图
+## 七、CI 的平台分工
+
+两个工作流，职责分开：
+
+`agentkit.yml` 跑三平台（ubuntu / macos / windows）× Python 3.11/3.12 的
+平台无关测试，外加一个 windows-only 的 `lab` job 跑真实实验台（真编译、
+真崩溃、真符号化）。`agentkit-eval.yml` 跑大规模 eval，只在 push main 与
+每晚定时触发 —— 它要跑上百次编译+崩溃，本机实测 5 分钟以上，放进 PR
+门禁会把每次改动都拖到十分钟。
+
+**关键在于「能编译」和「能跑实验台」不是一回事。**
+
+`Toolchain.supported` 只表示找到一个能编 C++17 的编译器，Linux 与 macOS
+的 clang++/g++ 都满足。但 zlab 需要的是 MSVC + PDB：探针注入的是
+`#include <windows.h>`，崩溃捕获依赖 SEH 与 RtlVirtualUnwind，符号化走
+`MsSymbolResolver` 读 PDB。
+
+于是 `supported=True` 时实验台照样跑不了。这个区分由
+`Toolchain.can_run_lab` 显式表达，测试据此 skip。此前判据写的是
+`skipif(not supported)`，在 Linux CI 上会**不 skip 而硬跑** Windows 专用
+代码然后失败 —— 看起来像「测试坏了」，实际是平台不支持，很难归因。
+
+两个工作流都带了守卫，防止「全绿但全是 skip」：用 `--junit-xml` 拿结构化
+计数，实际执行数低于阈值就报错。这里刻意不解析 pytest 的文本输出 —— 在
+`-rA` 模式下输出很长，容易截丢汇总行，而 grep 失败回退成 0 又会造成误报。
+一个自己会失效的守卫比没有守卫更糟，因为它给的是假的安全感。
+
+---
+## 八、路线图
 
 - [x] L4 骨架：流水线 + tracing + 证据等级 + 简化 Verifier
 - [x] L3 扩展：已注册 8 条规则 —— callchain / nullcheck / unsigned_underflow / double_free / leak / recursion / overflow / race
 - [x] L1 引擎侧：结构化崩溃快照导出 —— crash_snap.json (schema zengine-crash/1) + PDB GUID/Age 构建身份 + 模块基址 + 线程 ID；修掉十六进制与十进制的千分位污染。已用 MSVC 真实编译+运行验证。
 - [ ] L2 engine-mcp：控制引擎、抓帧、读运行时状态
 - [x] **故障注入器**：9 个模板 × depth(0-3) × decoy 难度变体，正负样本同源；真实编译+崩溃+符号化
-- [ ] CI 批量产样本（当前仅本机 Windows/MSVC，CI 未接入）← 差异化核心
+- [x] CI 批量产样本：.github/workflows/agentkit.yml（三平台测试 + Windows 真实实验台）与 gentkit-eval.yml（大规模 eval，push main / 每晚定时）← 差异化核心
 - [ ] eval 报告站：命中率 / 诚实度 / 失败案例库公开
 
 ---
 
-## 八、快速开始
+## 九、快速开始
 
 ```bash
 cd agentkit
@@ -179,7 +207,7 @@ python -m examples.minimal_run
 
 ---
 
-## 九、与内部项目的关系
+## 十、与内部项目的关系
 
 `agentkit/` 里的框架代码与任何闭源工程无耦合。闭源工程提供的是**领域规则**（Verifier 里的判断逻辑），那些不进这个仓库。
 

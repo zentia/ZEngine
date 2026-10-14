@@ -1,0 +1,152 @@
+name: AgentKit
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agentkit/**'
+      - '.github/workflows/agentkit.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'agentkit/**'
+      - '.github/workflows/agentkit.yml'
+
+jobs:
+  # ------------------------------------------------------------------
+  # 平台无关测试：三平台 × 多 Python 版本
+  #
+  # test_lab.py 被排除在这里，由下面的 lab job 单独跑 —— 它在 Windows 上
+  # 要真实编译+崩溃+符号化，一个文件就要 4 分钟。放在矩阵里等于每个
+  # Windows 组合都付一遍这个代价。
+  # ------------------------------------------------------------------
+  test:
+    name: pytest (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+
+      - name: Platform-independent tests
+        working-directory: agentkit
+        run: |
+          python -m pytest tests -q --ignore=tests/test_lab.py --junit-xml=_ci_core.xml
+        env:
+          PYTHONIOENCODING: utf-8
+
+      # ------------------------------------------------------------
+      # 关键守卫：区分「skip」与「静默漏掉」
+      #
+      # 只跑 pytest 看不出这个区别 —— 全 skip 也是绿的。
+      # 用 --junit-xml 拿结构化计数，而不是 grep 文本：
+      # pytest 在 -rA 模式下输出很长，文本解析容易截丢汇总行，
+      # 而 grep 失败回退成 0 又会造成误报。这个守卫自己失效比没有更糟，
+      # 因为它提供的是假的安全感。
+      # ------------------------------------------------------------
+      - name: Verify tests actually ran
+        shell: bash
+        working-directory: agentkit
+        run: |
+          python - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse('_ci_core.xml').getroot()
+          ts = root.find('testsuite') if root.tag == 'testsuites' else root
+          a = ts.attrib
+          tests = int(a.get('tests', 0))
+          fails = int(a.get('failures', 0)) + int(a.get('errors', 0))
+          skip  = int(a.get('skipped', 0))
+          ran   = tests - skip
+          print(f"tests={tests} ran={ran} skipped={skip} failures={fails}")
+          if fails:
+              print("::error::存在失败用例")
+              sys.exit(1)
+          if ran < 20:
+              print(f"::error::实际执行数过低（{ran}）——很可能是全 skip，等于没测")
+              sys.exit(1)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agentkit-core-${{ matrix.os }}-${{ matrix.python }}
+          path: agentkit/_ci_core.xml
+          if-no-files-found: ignore
+
+  # ------------------------------------------------------------------
+  # 真实实验台：只在 Windows 跑
+  #
+  # zlab 需要 MSVC + PDB 符号化 + SEH 崩溃捕获，Linux/macOS 上
+  # clang++/g++ 虽然能编译（supported=True）但跑不了这条链路。
+  # 这个约束由 Toolchain.can_run_lab 显式表达，测试据此 skip。
+  # ------------------------------------------------------------------
+  lab:
+    name: zlab real crash lab (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+
+      # 先自报家门：CI 日志里要能一眼看出工具链是什么。
+      # 若 windows-latest 哪天不带 MSVC，这里会显示 can_run_lab=False，
+      # 下面的守卫随即报警，而不是留一个"全绿但什么都没测"的 job。
+      - name: Report toolchain
+        working-directory: agentkit
+        run: |
+          python -c "import sys; sys.path.insert(0, '.'); from zfault.toolchain import detect; tc = detect(); print(tc); print('can_run_lab:', tc.can_run_lab)"
+
+      - name: Real crash lab tests
+        working-directory: agentkit
+        run: |
+          python -m pytest tests/test_lab.py tests/test_patterns.py -q --junit-xml=_ci_lab.xml
+        env:
+          PYTHONIOENCODING: utf-8
+
+      - name: Guard against all-skipped
+        shell: bash
+        working-directory: agentkit
+        run: |
+          python - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse('_ci_lab.xml').getroot()
+          ts = root.find('testsuite') if root.tag == 'testsuites' else root
+          a = ts.attrib
+          tests = int(a.get('tests', 0))
+          fails = int(a.get('failures', 0)) + int(a.get('errors', 0))
+          skip  = int(a.get('skipped', 0))
+          ran   = tests - skip
+          print(f"tests={tests} ran={ran} skipped={skip} failures={fails}")
+          if fails:
+              print("::error::实验台测试失败")
+              sys.exit(1)
+          # zlab 是真编译真崩溃，本机实测 51 项全跑。低于 40 说明
+          # 工具链没被识别到、大部分被 skip —— 那这个 job 就是空的。
+          if ran < 40:
+              print(f"::error::实验台实际执行数过低（{ran}）——很可能全部 skip，等于没测")
+              sys.exit(1)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agentkit-lab
+          path: agentkit/_ci_lab.xml
+          if-no-files-found: ignore

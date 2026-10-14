@@ -14,7 +14,10 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
+from zfault import toolchain as T
+from zfault.toolchain import Toolchain
 from zfault.patterns import all_patterns, get
 from zagent.eval import EvalReport, Sample, score
 from zagent.types import Evidence, Hypothesis, Report, Verdict
@@ -259,3 +262,44 @@ class TestStabilityNotMeasured:
         line = [ln for ln in rep.render().splitlines()
                 if "stability" in ln][0]
         assert "100.00%" in line
+
+
+
+# ============================================================ can_run_lab
+#
+# 这一组锁的是「能不能跑实验台」与「能不能编译」的区分。
+# CI 的三平台差异全挂在这个判据上：Linux 上 g++ 可用（supported=True）
+# 但 zlab 跑不了（PDB/SEH），若判据退化回 supported，test_lab.py 会
+# 在 Linux 上硬跑 Windows 专用代码然后失败 —— 看上去像"测试坏了"，
+# 实际是平台不支持，而且很难归因。
+
+class TestCanRunLab:
+
+    def test_msvc_on_windows_can_run(self):
+        tc = Toolchain(name="msvc", cxx="cl.exe", supported=True)
+        with mock.patch.object(T, "_is_windows", return_value=True):
+            assert tc.can_run_lab is True
+
+    def test_gcc_on_linux_cannot_run(self):
+        """反向对照：g++ 能编（supported=True）但跑不了实验台。"""
+        tc = Toolchain(name="gcc", cxx="g++", supported=True)
+        with mock.patch.object(T, "_is_windows", return_value=False):
+            assert tc.can_run_lab is False
+
+    def test_msvc_off_windows_cannot_run(self):
+        """MSVC 但非 Windows（例如探测逻辑被误用）——仍不能跑。"""
+        tc = Toolchain(name="msvc", cxx="cl.exe", supported=True)
+        with mock.patch.object(T, "_is_windows", return_value=False):
+            assert tc.can_run_lab is False
+
+    def test_unsupported_never_runs(self):
+        tc = Toolchain(name="none", supported=False)
+        with mock.patch.object(T, "_is_windows", return_value=True):
+            assert tc.can_run_lab is False
+
+    def test_differs_from_supported(self):
+        """两者不能是同一个东西 —— 这是本组存在的理由。"""
+        tc = Toolchain(name="gcc", cxx="g++", supported=True)
+        with mock.patch.object(T, "_is_windows", return_value=False):
+            assert tc.supported is True
+            assert tc.can_run_lab is False

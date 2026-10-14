@@ -1,4 +1,4 @@
-﻿"""
+"""
 实验台的验收测试。
 
 这些测试跑真实的编译、崩溃、栈展开与符号化，不 mock。
@@ -24,8 +24,22 @@ from zlab.probe import inject_probe, parse_probe_output
 from zlab.symbols import MsSymbolResolver
 
 _TC = detect()
+
+# **这里用 can_run_lab，不能用 supported。**
+#
+# supported 只表示"有能编 C++17 的编译器"，Linux/macOS 的 clang++/g++
+# 都满足。但本文件跑的是 Windows 专用链路：探针注入 `#include <windows.h>`，
+# 崩溃捕获依赖 SEH 与 RtlVirtualUnwind，符号化走 PDB。
+# 若按 supported 判断，在 Linux CI 上不会 skip 而是硬跑，然后失败 ——
+# 看起来像"测试坏了"，实际是平台不支持。
+#
+# 平台限制必须显式说出来，不能让调用方自己猜，否则每个调用点都会
+# 各猜各的，而且猜错的表现是"偶发失败"，很难归因。
 _NEEDS_CXX = pytest.mark.skipif(
-    not _TC.supported, reason=f"无可用 C++ 编译器: {'; '.join(_TC.notes)}")
+    not _TC.can_run_lab,
+    reason=("zlab 实验台需要 MSVC + Windows（PDB 符号化 / SEH 捕获）"
+            + (f"；本机: {_TC}" if _TC.supported else
+               f"；无可用编译器: {'; '.join(_TC.notes)}")))
 
 
 def _make_lab():

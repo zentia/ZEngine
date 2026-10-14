@@ -24,9 +24,13 @@ from zfault.patterns import PATTERNS, all_patterns
 from zfault.toolchain import detect
 
 _TOOLCHAIN = detect()
+# 同 test_lab.py：这里跑的是 Windows 崩溃捕获（f.exe / WER 抑制 / 退出码
+# 0xFFFFFFFF），不是"能编就行"。用 supported 会在 Linux 上硬跑然后失败。
 _NEEDS_CXX = pytest.mark.skipif(
-    not _TOOLCHAIN.supported,
-    reason=f"无可用 C++ 编译器: {'; '.join(_TOOLCHAIN.notes)}",
+    not _TOOLCHAIN.can_run_lab,
+    reason=(f"需要 MSVC + Windows（崩溃捕获依赖 SEH）: {_TOOLCHAIN}"
+            if _TOOLCHAIN.supported else
+            f"无可用 C++ 编译器: {'; '.join(_TOOLCHAIN.notes)}"),
 )
 
 

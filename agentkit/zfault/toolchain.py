@@ -50,6 +50,25 @@ class Toolchain:
     def build_env(self) -> dict[str, str] | None:
         return self.env or None
 
+    @property
+    def can_run_lab(self) -> bool:
+        """
+        能否跑 zlab 实验台（编译 -> 崩溃 -> 符号化 -> 诊断）。
+
+        **它和 supported 不是一回事，混用会让 CI 静默跑错东西。**
+
+        supported 只表示「找到一个能编译 C++17 的编译器」，Linux 与 macOS
+        上 clang++/g++ 都能满足。但 zlab 要的是 MSVC + PDB：探针注入的是
+        `#include <windows.h>`，崩溃捕获依赖 Windows 结构化异常与
+        RtlVirtualUnwind 手写栈展开，符号化走 MsSymbolResolver 读 PDB。
+
+        于是 g++ 可用时 supported=True，而 test_lab.py 里
+        `skipif(not _TC.supported)` 判据不会跳过 —— 测试会在 Linux CI 上
+        硬跑 Windows 专用代码并失败。这三个平台的故事必须分开讲：
+        supported 管「能不能编」，can_run_lab 管「能不能跑实验台」。
+        """
+        return bool(self.supported and self.name == "msvc" and _is_windows())
+
     def __str__(self) -> str:
         if not self.supported:
             return f"[不可用] {self.name or 'none'}"

@@ -1,0 +1,108 @@
+name: AgentKit Eval
+
+# 大规模 eval 单独跑：它要真实编译+崩溃+符号化上百次，本机实测
+# --per 12（56 样本）约 5 分钟，--per 6 约 5.5 分钟（含 repeat=2）。
+# 放进 PR 门禁会把每次改动都拖到十分钟以上，所以它只在 main 上跑，
+# 外加每晚定时 —— 目的是看趋势，不是卡门禁。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agentkit/zagent/**'
+      - 'agentkit/zfault/**'
+      - 'agentkit/zlab/**'
+      - 'agentkit/examples/run_eval_lab_scale.py'
+      - '.github/workflows/agentkit-eval.yml'
+  schedule:
+    - cron: '0 20 * * *'
+  workflow_dispatch:
+    inputs:
+      per:
+        description: '每个模板的变体数（8 起才覆盖 depth=3）'
+        required: false
+        default: '8'
+      repeat:
+        description: '稳定性重跑次数（1 = 不测稳定性）'
+        required: false
+        default: '2'
+
+jobs:
+  eval:
+    name: large-scale eval (windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pytest
+        run: python -m pip install --upgrade pip pytest
+
+      - name: Report toolchain
+        working-directory: agentkit
+        run: |
+          python -c "import sys; sys.path.insert(0, '.'); from zfault.toolchain import detect; tc = detect(); print(tc); print('can_run_lab:', tc.can_run_lab)"
+
+      - name: Run large-scale eval
+        working-directory: agentkit
+        shell: bash
+        run: |
+          set -o pipefail
+          python -m examples.run_eval_lab_scale \
+            --per "${{ github.event.inputs.per || '8' }}" \
+            --repeat "${{ github.event.inputs.repeat || '2' }}" 2>&1 | tee _ci_eval.log
+        env:
+          PYTHONIOENCODING: utf-8
+
+      # ------------------------------------------------------------
+      # 把指标抽出来写进 $GITHUB_STEP_SUMMARY
+      #
+      # 不能只靠退出码：脚本返回非 0 只说明"有失败样本"，
+      # 看不出 honesty 这种关键指标是多少。指标必须是可见的数字，
+      # 否则"跑过了"和"跑出什么"是两回事，趋势也无从跟踪。
+      # ------------------------------------------------------------
+      - name: Extract metrics
+        shell: bash
+        working-directory: agentkit
+        run: |
+          python - <<'PY'
+          import re, os, sys
+          txt = open('_ci_eval.log', encoding='utf-8', errors='replace').read()
+          keys = ['top1', 'top3', 'honesty', 'evidence', 'blocked', 'stability']
+          found = {}
+          for k in keys:
+              # 必须按 2+ 空格切分取第一段：honesty 那行后面跟着中文注释
+              # （`<- 负样本上的克制率，最关键`），要求行尾紧接值的正则
+              # 会恰好漏掉这个最关键的指标 —— 5 个里独缺它。
+              # stability 的值本身又含括号（n/a (repeat<=1, 未测量)），
+              # 所以也不能用简单的 \S+。
+              m = re.search(r'^\s*' + k + r'\s{2,}(.+?)\s*$', txt, re.M)
+              if not m:
+                  continue
+              val = m.group(1).strip()
+              val = re.split(r'\s{2,}<-|\s{2,}#', val)[0].strip()
+              found[k] = val
+          missing = [k for k in keys if k not in found]
+          if not found:
+              print("::error::未从日志中解析出任何指标，eval 可能根本没跑")
+              sys.exit(1)
+          if missing:
+              print(f"::warning::以下指标未解析到: {missing}")
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as f:
+              f.write('## AgentKit Eval\n\n')
+              f.write('| metric | value |\n|---|---|\n')
+              for k in keys:
+                  if k in found:
+                      f.write(f'| {k} | `{found[k]}` |\n')
+          print('指标:', found)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agentkit-eval-log
+          path: agentkit/_ci_eval.log
+          if-no-files-found: ignore
