@@ -62,11 +62,26 @@ agentkit/
     tracing.py    结构化轨迹，JSONL 落盘
     protocols.py  可替换适配器接口
     adapters.py   参考实现：git 代码索引、本地 dump、addr2line 符号化
-    verify.py     Verifier 与验证规则（调用链 / 空指针）
+    verify.py     Verifier 与 8 条验证规则
     pipeline.py   diagnose() 主流水线
-    eval.py       样本集 / 指标 / runner
+    eval.py       样本集 / 指标 / runner（EvalReport）
+  zfault/
+    patterns.py   故障模式库（9 个模板）
+    variants.py   难度变体生成器：depth / decoy，正负样本同源
+    process.py    崩溃进程捕获
+  zlab/
+    lab.py        实验台：编译 -> 崩溃 -> 符号化 -> 诊断
+    probe.py      运行时探针注入（堆证据 / 崩溃点 / 分配点）
+    symbols.py    PDB 符号化
+  tools/
+    check_variants.py   变体自检：注入 -> 编译 -> 实际运行
+    crash_verify.cpp    崩溃真实性校验
+    verify_build_id.py  构建身份校验
   examples/
-    minimal_run.py   最小可跑闭环（不需要真实 dump）
+    minimal_run.py         最小可跑闭环（不需要真实 dump）
+    run_eval.py            合成样本 eval
+    run_eval_lab.py        真实样本 eval（8 个手写模板）
+    run_eval_lab_scale.py  大规模 eval（变体，接 EvalReport 全指标）
   tests/
 ```
 
@@ -110,18 +125,50 @@ UNPROVEN    兼容但无法锁定 —— 允许存在，但必须标注，且拉
 
 ---
 
-## 六、路线图
+## 六、大规模 eval 的口径
+
+`examples/run_eval_lab_scale.py` 把模板扩成难度变体后跑全指标。有三个
+口径问题容易被忽略，它们都直接决定数字能不能信：
+
+**正负样本按「是否拿到运行时证据」划分，不按「是否崩溃」。**
+泄漏与竞争本来就**不该崩溃**：它们的证据是堆分配点 / 冲突现场，不是异常。
+实测 `leak_01` / `race_01` 都不崩但定位正确（453/453）。若用"没崩"当
+负样本判据，会把两个真命中记成"克制正确"——既虚增 honesty 分子，又把它
+们从 top1 分子里扣掉。
+
+**负样本同样带难度维度。** 只拿一个 clean_01 测 honesty，测的是「最干净
+的干净」；系统在这种样本上克制，说明不了它在「干净但调用链很深、隔壁就是
+一段高度相似但有正确检查的死代码」时是否还克制。所以负样本也按 depth /
+decoy 展开，honesty 同样能按难度分组。
+
+**stability 未测量时显示 n/a，不是 0.00%。** `repeat<=1` 时稳定性分支根本
+没跑，此时渲染成 0.00% 是把「未测量」伪装成「0 分」。
+
+当前实测（`--per 12`，56 个样本，Windows/MSVC）：
+
+```
+top1 100%   top3 100%   honesty 100%   evidence 100%
+按 depth: 0/1/2/3 各档均 100%
+按 decoy: 有/无 各 100%
+```
+
+读这个 100% 时要记住两件事：故障语义只有 9 个模板，变体改的是定位难度
+不是缺陷本质；且全部样本都在同一台机器上产生。
+
+---
+## 七、路线图
 
 - [x] L4 骨架：流水线 + tracing + 证据等级 + 简化 Verifier
-- [ ] L3 扩展：生命周期 / 内存归属 / 线程模型 验证规则
+- [x] L3 扩展：已注册 8 条规则 —— callchain / nullcheck / unsigned_underflow / double_free / leak / recursion / overflow / race
 - [x] L1 引擎侧：结构化崩溃快照导出 —— crash_snap.json (schema zengine-crash/1) + PDB GUID/Age 构建身份 + 模块基址 + 线程 ID；修掉十六进制与十进制的千分位污染。已用 MSVC 真实编译+运行验证。
 - [ ] L2 engine-mcp：控制引擎、抓帧、读运行时状态
-- [ ] **故障注入器**：内置 bug 模式库 + CI 批量产样本 ← 差异化核心
+- [x] **故障注入器**：9 个模板 × depth(0-3) × decoy 难度变体，正负样本同源；真实编译+崩溃+符号化
+- [ ] CI 批量产样本（当前仅本机 Windows/MSVC，CI 未接入）← 差异化核心
 - [ ] eval 报告站：命中率 / 诚实度 / 失败案例库公开
 
 ---
 
-## 七、快速开始
+## 八、快速开始
 
 ```bash
 cd agentkit
@@ -132,7 +179,7 @@ python -m examples.minimal_run
 
 ---
 
-## 八、与内部项目的关系
+## 九、与内部项目的关系
 
 `agentkit/` 里的框架代码与任何闭源工程无耦合。闭源工程提供的是**领域规则**（Verifier 里的判断逻辑），那些不进这个仓库。
 

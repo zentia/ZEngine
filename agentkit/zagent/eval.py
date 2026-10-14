@@ -169,6 +169,7 @@ class EvalReport:
     evidence_completeness: float = 0.0
     blocked: int = 0
     stability: float = 0.0
+    stability_n: int = 0            # 参与稳定性统计的样本数；0 = 未测量
     failures: list[CaseResult] = field(default_factory=list)
 
     def render(self) -> str:
@@ -180,7 +181,9 @@ class EvalReport:
             f"  honesty         {self.honesty:.2%}   <- 负样本上的克制率，最关键",
             f"  evidence        {self.evidence_completeness:.2%}",
             f"  blocked         {self.blocked}",
-            f"  stability       {self.stability:.2%}",
+            f"  stability       "
+            + (f"{self.stability:.2%}" if self.stability_n
+               else "n/a (repeat<=1, 未测量)"),
         ]
         if self.failures:
             lines += ["", "失败明细:"]
@@ -247,6 +250,7 @@ def evaluate(samples: SampleSet, run_fn, repeat: int = 1) -> EvalReport:
         evidence_completeness=ev_sum / ev_n if ev_n else 0.0,
         blocked=blocked,
         stability=stability_hits / stability_n if stability_n else 0.0,
+        stability_n=stability_n,
         failures=failures,
     )
     return out

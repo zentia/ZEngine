@@ -251,3 +251,56 @@ def corpus(base: Iterable[FaultPattern] | None = None) -> list[FaultPattern]:
     variants = generate_variants(base=base_list)
     originals = [p for p in base_list if p.id in _VARIANT_EXCLUDE]
     return variants + originals
+
+
+def generate_clean_variants(
+    *,
+    seed: int = 20261014,
+    base: Iterable[FaultPattern] | None = None,
+) -> list[FaultPattern]:
+    """
+    干净代码的难度变体 —— **负样本也要有难度维度**。
+
+    只拿一个 clean_01 测 honesty，测的是「最干净的那种干净」：main 直接
+    返回、旁边没有长得像缺陷的代码。系统在它上面克制，说明不了它在
+    「干净但调用链很深、隔壁就是一段高度相似但有正确检查的死代码」时
+    是否还克制。
+
+    honesty 和 top1 一样有边界，边界也得能量出来。所以负样本同样按
+    depth / decoy 展开，命名与正样本变体一致，好让分组统计两边通用。
+
+    **这些变体不走 make_variant**：那个函数要求源码里有根因标记，干净
+    代码没有（也不该有），调用它一律返回 None。这里直接用同一套
+    _wrap_depth / _add_decoy 变换，保证难度维度与正样本同源 —— 两处若
+    各写一套，正负样本的难度就不可比，分组数字也就失去意义。
+    """
+    base_list = list(base) if base is not None else all_patterns()
+    clean = [p for p in base_list if p.id == "clean_01"]
+    if not clean:
+        return []
+
+    p = clean[0]
+    combos = [(d, dec) for d in (0, 1, 2, 3) for dec in (False, True)]
+
+    out: list[FaultPattern] = []
+    for k, (depth, decoy) in enumerate(combos):
+        src = p.source
+        if depth:
+            src = _wrap_depth(src, depth, seed + k)
+        if decoy:
+            src = _add_decoy(src, seed + k)
+        # depth=0 且 decoy=False 时源码不变是预期的：它是难度基准样本，
+        # 与「变换没生效」不是一回事，仍然保留（独立目录重编一次）。
+        vid = "clean_01.d{}{}.s{}".format(depth, "y" if decoy else "n",
+                                          seed + k)
+        out.append(replace(
+            p,
+            id=vid,
+            source=src,
+            title="{} [depth={} decoy={}]".format(p.title, depth, decoy),
+            notes=(p.notes + " " if p.notes else "")
+                  + "负样本变体: depth={} decoy={} seed={}".format(
+                      depth, decoy, seed + k),
+        ))
+    return out
+

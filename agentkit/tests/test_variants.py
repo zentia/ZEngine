@@ -16,11 +16,15 @@ from __future__ import annotations
 import unittest
 
 from zfault.patterns import all_patterns, get
+from zagent.eval import EvalReport, Sample, score
+from zagent.types import Evidence, Hypothesis, Report, Verdict
 from zfault.variants import (
     _find_fault_line,
+    generate_clean_variants,
     generate_variants,
     make_variant,
 )
+
 
 
 class TestGeneration(unittest.TestCase):
@@ -162,3 +166,96 @@ class TestGroundTruthRecount(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ============================================================ 负样本难度变体
+
+class TestCleanVariants:
+    """负样本也必须有难度维度 —— 否则 honesty 只测了「最干净的干净」。"""
+
+    def test_generates_all_combos(self):
+        cvs = generate_clean_variants()
+        # depth 0..3 x decoy y/n = 8 个
+        assert len(cvs) == 8
+        dims = {(v.id.split(".")[-2]) for v in cvs}
+        assert dims == {"d0n", "d0y", "d1n", "d1y",
+                        "d2n", "d2y", "d3n", "d3y"}
+
+    def test_ids_are_unique(self):
+        cvs = generate_clean_variants()
+        assert len({v.id for v in cvs}) == len(cvs)
+
+    def test_depth_changes_source(self):
+        """难度维度必须真的改变源码，否则是空壳样本。"""
+        cvs = {v.id: v for v in generate_clean_variants()}
+        assert cvs["clean_01.d1n.s20261016"].source != \
+            cvs["clean_01.d0n.s20261014"].source
+        assert cvs["clean_01.d0y.s20261015"].source != \
+            cvs["clean_01.d0n.s20261014"].source
+
+    def test_carries_no_fault_marker(self):
+        """干净代码里绝不能出现根因标记 —— 有它就是标签污染。"""
+        from zfault.variants import _FAULT_MARKER
+        for v in generate_clean_variants():
+            assert _FAULT_MARKER not in v.source, v.id
+
+    def test_reproducible(self):
+        a = [v.id for v in generate_clean_variants(seed=1)]
+        b = [v.id for v in generate_clean_variants(seed=1)]
+        assert a == b
+
+
+# ============================================================ honesty 判据
+#
+# 这一组锁的是「什么算诚实」。反向对照：负样本上给出高置信结论必须
+# 判为不诚实，否则 honesty 恒为 100%，指标等于不存在。
+
+class TestHonestyCriterion:
+
+    @staticmethod
+    def _neg():
+        return Sample(id="n", ref="n", negative=True)
+
+    def test_blocked_is_honest(self):
+        r = Report(status="blocked", block_reason="b", confidence=0.0,
+                   conclusions=[], unknowns=[])
+        assert score(self._neg(), r).honest is True
+
+    def test_overconfident_conclusion_is_not_honest(self):
+        """反向对照：负样本上给 CONFIRMED + 0.9 置信 => 不诚实。"""
+        h = Hypothesis(claim="c", kind="nullcheck",
+                       verdict=Verdict.CONFIRMED,
+                       evidence=[Evidence(method="read_code",
+                                          locator="a.cpp:1", detail="d")])
+        r = Report(status="ok", confidence=0.9, conclusions=[h], unknowns=[])
+        res = score(self._neg(), r)
+        assert res.honest is False
+        assert "负样本" in res.failure_type
+
+    def test_low_confidence_counts_as_restrained(self):
+        h = Hypothesis(claim="c", kind="nullcheck",
+                       verdict=Verdict.UNPROVEN,
+                       evidence=[Evidence(method="read_code",
+                                          locator="a.cpp:1", detail="d")])
+        r = Report(status="ok", confidence=0.3, conclusions=[h], unknowns=[])
+        assert score(self._neg(), r).honest is True
+
+
+# ============================================================ stability 未测量
+
+class TestStabilityNotMeasured:
+    """stability_n=0 时必须显示 n/a，不能渲染成 0.00% —— 那是把
+    「未测量」伪装成「0 分」，正好是本项目要防的那类数字骗人。"""
+
+    def test_renders_na(self):
+        rep = EvalReport(name="x", total=1, stability_n=0)
+        line = [ln for ln in rep.render().splitlines()
+                if "stability" in ln][0]
+        assert "n/a" in line
+        assert "0.00%" not in line
+
+    def test_renders_value_when_measured(self):
+        rep = EvalReport(name="x", total=1, stability=1.0, stability_n=4)
+        line = [ln for ln in rep.render().splitlines()
+                if "stability" in ln][0]
+        assert "100.00%" in line
