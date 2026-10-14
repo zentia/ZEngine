@@ -288,7 +288,13 @@ class Lab:
                 written.read_text(encoding="utf-8", errors="replace"))
         except OSError:
             found = -1
-        return found if found > 0 else pattern.root_cause_line()
+        # 算不出就返回 -1，**不回退到 pattern.root_cause_line()。**
+        #
+        # 回退值来自未注入的模板，而行号在注入后必然漂移 —— 于是 ground
+        # truth 指向一个错行，agent 定位正确也被判 MISS。这类标签失真比
+        # 算法缺陷隐蔽得多：它让好算法看起来不行，而且从指标上完全看不出
+        # 是标签错了。变体生成器大量改源码后，这个回退几乎必触发。
+        return found
 
     def crash(self, pattern_id: str, exe: Path, retries: int = 1,
               argv: tuple[str, ...] = ()) -> CrashCapture:
