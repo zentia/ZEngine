@@ -248,7 +248,10 @@ inline BuildIdentity ReadBuildIdentity()
     for (WORD i = 0; i < section_count; ++i)
     {
         const IMAGE_SECTION_HEADER& s = sections[i];
-        const DWORD span = max(s.Misc.VirtualSize, s.SizeOfRawData);
+        // std::max, not max(): windows.h defines max as a macro unless the
+        // translation unit sets NOMINMAX, and several do (the Editor does),
+        // which leaves the bare name undefined -> C3861.
+        const DWORD span = std::max(s.Misc.VirtualSize, s.SizeOfRawData);
         if (debug_rva >= s.VirtualAddress && debug_rva < s.VirtualAddress + span)
         {
             debug_file_offset = s.PointerToRawData + (debug_rva - s.VirtualAddress);
