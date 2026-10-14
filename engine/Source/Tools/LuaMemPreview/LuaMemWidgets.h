@@ -31,6 +31,15 @@ namespace LuaMemPreview
 // Shared palette so the bar, the chips and the table's type column agree.
 ZSlate::UIColor ColorForType(const std::string& type_name);
 
+class SLuaTypeBar;
+
+// Paints the "what does this bucket count" card for the currently hovered
+// chip, clamped inside 'screen'. Call this AFTER the widget hierarchy has been
+// painted - see SLuaTypeBar::GetHoveredChip for why it cannot live in the bar.
+// No-op when nothing is hovered.
+void PaintTypeDocCard(ZSlate::ISlateRenderer* r, const ZSlate::UIRect& screen,
+                      const SLuaTypeBar& bar, const FSnapshot& snapshot);
+
 // ----------------------------------------------------------------------------
 // SLuaTypeBar - stacked proportion bar + clickable type chips
 //
@@ -53,6 +62,18 @@ public:
     void OnMouseMove(const ZSlate::Vector2& pos) override;
     void OnMouseLeave() override;
     ZSlate::ECursorType GetCursor() const override;
+
+    // Hovered chip, for the explanation card. The card cannot be painted by
+    // this widget: the bar is an auto-sized slot in a vertical box and the
+    // table is painted after it, so anything overflowing the bar's own
+    // geometry gets covered. The host paints it after the whole hierarchy.
+    struct FHoverInfo
+    {
+        bool Valid {false};
+        uint16_t TypeId {0};
+        ZSlate::UIRect ChipRect;  // absolute, for anchoring the card
+    };
+    FHoverInfo GetHoveredChip() const;
 
 private:
     struct FChipHit

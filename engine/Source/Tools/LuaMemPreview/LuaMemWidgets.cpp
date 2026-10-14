@@ -1,5 +1,7 @@
 #include "LuaMemWidgets.h"
 
+#include "LuaMemTypeDoc.h"
+
 #include "ZSlate/Core/SlatePaint.h"
 
 #include <algorithm>
@@ -33,6 +35,9 @@ constexpr UIColor kTextDim {0.569f, 0.569f, 0.608f, 1.0f};
 constexpr UIColor kBorder {0.216f, 0.216f, 0.235f, 1.0f};
 constexpr UIColor kAccent {0.306f, 0.631f, 1.0f, 1.0f};
 constexpr UIColor kScrollThumb {0.333f, 0.333f, 0.365f, 1.0f};
+// Used for the vm_other chip when the residual is non-zero, i.e. the buckets
+// do not add up to Lua's own total and the split cannot be fully trusted.
+constexpr UIColor kWarn {0.925f, 0.682f, 0.306f, 1.0f};
 
 // Lowercase ASCII hash for the unknown-type fallback hue.
 uint32_t HashString(const std::string& s)
@@ -146,6 +151,7 @@ void SLuaTypeBar::OnPaint(const FPaintContext& ctx, const FGeometry& geom) const
         UIColor Dot;
         uint16_t TypeId;
         bool ShowDot;
+        uint64_t Size {0};
     };
     std::vector<FChipDef> defs;
     defs.reserve(buckets.size() + 1);
@@ -167,6 +173,7 @@ void SLuaTypeBar::OnPaint(const FPaintContext& ctx, const FGeometry& geom) const
         d.Dot = ColorForType(name);
         d.TypeId = b.TypeId;
         d.ShowDot = true;
+        d.Size = b.Size;
         defs.push_back(std::move(d));
     }
 
@@ -189,11 +196,20 @@ void SLuaTypeBar::OnPaint(const FPaintContext& ctx, const FGeometry& geom) const
         const bool is_active = (d.TypeId == active);
         const bool is_hover = (static_cast<int>(m_ChipHits.size()) == m_HoverChip);
 
+        // vm_other is the residual bucket: a non-zero value means some
+        // allocation path is not covered, so every other percentage here is
+        // suspect. That is a statement about the whole snapshot's
+        // trustworthiness, so it is flagged on the bar instead of being left
+        // for whoever happens to hover the chip. Zero is the healthy case and
+        // must stay unmarked.
+        const bool is_unaccounted =
+            d.ShowDot && d.Size > 0 && Snapshot->GetTypeName(d.TypeId) == "vm_other";
+
         if (is_active)
             r->DrawQuad(chip, kBgSelected);
         else if (is_hover)
             r->DrawQuad(chip, kBgRowHover);
-        r->DrawRect(chip, is_active ? kAccent : kBorder, 1.0f);
+        r->DrawRect(chip, is_active ? kAccent : (is_unaccounted ? kWarn : kBorder), 1.0f);
 
         float tx = cx + 8.0f;
         if (d.ShowDot)
@@ -210,6 +226,110 @@ void SLuaTypeBar::OnPaint(const FPaintContext& ctx, const FGeometry& geom) const
     }
 
     r->DrawQuad(UIRect(view.x, view.y + view.h - 1.0f, view.w, 1.0f), kBorder);
+}
+
+void PaintTypeDocCard(ISlateRenderer* r, const UIRect& screen, const SLuaTypeBar& bar,
+                      const FSnapshot& snapshot)
+{
+    if (r == nullptr)
+        return;
+    const SLuaTypeBar::FHoverInfo hover = bar.GetHoveredChip();
+    if (!hover.Valid)
+        return;
+
+    const std::string& name = snapshot.GetTypeName(hover.TypeId);
+    const char* detail = TypeDetail(name);
+    const std::string body = (detail != nullptr && detail[0] != '\0') ? detail : TypeSummary(name);
+
+    // Wrapping is done here rather than by passing TextWrapMode::Wrap, because
+    // the card has to be sized to the text before it is placed, and the text
+    // already carries deliberate line breaks that a re-wrap would lose.
+    std::vector<std::string> lines;
+    {
+        std::string cur;
+        for (char c : body)
+        {
+            if (c == '\n')
+            {
+                lines.push_back(cur);
+                cur.clear();
+            }
+            else
+            {
+                cur.push_back(c);
+            }
+        }
+        lines.push_back(cur);
+    }
+
+    constexpr float kFont = 11.0f;
+    constexpr float kTitleFont = 12.0f;
+    constexpr float kPad = 10.0f;
+    constexpr float kLineH = 15.0f;
+
+    const std::string title = name + (IsNonGcBucket(name) ? "   (非 GC 对象)" : "");
+
+    float text_w = r->MeasureText(title, kTitleFont).x;
+    for (const std::string& ln : lines)
+    {
+        const float w = r->MeasureText(ln, kFont).x;
+        if (w > text_w)
+            text_w = w;
+    }
+
+    // Cap the width so a long line pushes the card narrower rather than off
+    // the edge of the screen. Clamping the placement alone is not enough: the
+    // card is anchored left, so an over-wide card would still overhang right.
+    const float max_card_w = screen.w - 2.0f * kPad;
+    float card_w = text_w + 2.0f * kPad;
+    if (card_w > max_card_w)
+    {
+        card_w = max_card_w;
+        text_w = card_w - 2.0f * kPad;
+    }
+    const float card_h = kPad + kLineH + 6.0f + static_cast<float>(lines.size()) * kLineH + kPad;
+
+    // Prefer below the chip; flip above when it would run off the bottom.
+    float cx = hover.ChipRect.x;
+    float cy = hover.ChipRect.y + hover.ChipRect.h + 6.0f;
+    if (cy + card_h > screen.y + screen.h)
+        cy = hover.ChipRect.y - card_h - 6.0f;
+    if (cy < screen.y)
+        cy = screen.y;
+    if (cx + card_w > screen.x + screen.w)
+        cx = screen.x + screen.w - card_w;
+    if (cx < screen.x)
+        cx = screen.x;
+
+    const UIRect card(cx, cy, card_w, card_h);
+    r->DrawQuad(card, UIColor(0.055f, 0.055f, 0.067f, 0.98f));
+    r->DrawRect(card, ColorForType(name), 1.0f);
+
+    float y = cy + kPad;
+    r->DrawTextLabel(UIRect(cx + kPad, y, text_w, kLineH), title, kTitleFont, ColorForType(name),
+                     TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
+    y += kLineH + 6.0f;
+    for (const std::string& ln : lines)
+    {
+        r->DrawTextLabel(UIRect(cx + kPad, y, text_w, kLineH), ln, kFont, kTextMain,
+                         TextAnchor::MiddleLeft, TextWrapMode::NoWrap);
+        y += kLineH;
+    }
+}
+
+SLuaTypeBar::FHoverInfo SLuaTypeBar::GetHoveredChip() const
+{
+    FHoverInfo info;
+    if (m_HoverChip < 0 || m_HoverChip >= static_cast<int>(m_ChipHits.size()))
+        return info;
+    const FChipHit& hit = m_ChipHits[static_cast<size_t>(m_HoverChip)];
+    // The ALL chip is the reconciliation total, not a type; it has no doc entry.
+    if (hit.TypeId == FRowView::kAllTypes)
+        return info;
+    info.Valid = true;
+    info.TypeId = hit.TypeId;
+    info.ChipRect = hit.Rect;
+    return info;
 }
 
 FReply SLuaTypeBar::OnMouseButtonDown(const Vector2& pos, int button)

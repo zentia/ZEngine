@@ -15,6 +15,7 @@ set(LUA_MEM_PREVIEW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsv.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemTypeDoc.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemWidgets.cpp
 )
 
@@ -23,8 +24,16 @@ set(LUA_MEM_PREVIEW_SOURCES
 set(LUA_MEM_PREVIEW_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsv.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemTypeDoc.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemWidgets.h
 )
+
+# App icon. rc.exe resolves the .ico next to the .rc, so both live in
+# resource/. MSVC-only because .rc is a Windows resource script; the tool is
+# Win32-only anyway (comdlg32, shell32, d3d11).
+if(MSVC)
+    list(APPEND LUA_MEM_PREVIEW_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/resource/LuaMemPreview.rc)
+endif()
 
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${LUA_MEM_PREVIEW_SOURCES} ${LUA_MEM_PREVIEW_HEADERS})
 

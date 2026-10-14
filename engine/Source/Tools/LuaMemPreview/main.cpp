@@ -31,8 +31,13 @@
 //   Ctrl+O to open, or drag a file onto the window.
 
 #include "LuaMemCsv.h"
+#include "LuaMemTypeDoc.h"
 #include "LuaMemWidgets.h"
 
+// Icon resource id; must stay in sync with resource/LuaMemPreview.rc.
+#ifndef IDI_ICON1
+#define IDI_ICON1 101
+#endif
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateInput.h"
 #include "ZSlate/Core/SlateGeometry.h"
@@ -319,8 +324,8 @@ public:
                                            static_cast<float>(physical_h) / s);
     }
 
-    void RunFrame()
-    {
+
+    void RunFrame()    {
         auto root = ZSlate::SlateApplication::Get().GetRootContent();
         if (root)
         {
@@ -337,6 +342,10 @@ public:
         // Base fill: the toolbar row has no background widget of its own.
         ScaledRenderer.DrawQuad(full, ZSlate::UIColor(0.086f, 0.086f, 0.098f, 1.0f));
         ZSlate::SlateApplication::Get().PaintInto(&ScaledRenderer, full);
+        // Painted after the tree, not from a widget: the card has to escape the
+        // type bar's AutoSize slot to overlap the table below it. It must go in
+        // before EndFrame, which clears m_Active and drops every later call.
+        PaintTypeDocCard(&ScaledRenderer, full, *TypeBar, Snapshot);
         ScaledRenderer.EndFrame();
     }
 };
@@ -639,6 +648,143 @@ int main(int argc, char** argv)
             {"detail pane placeholder",      rec.HasText("Select a row")},
         };
 
+        // ---- Category documentation ----------------------------------------
+        // Hovering a chip must explain what that bucket counts. Checked
+        // headlessly because the card is painted *after* the widget tree (it
+        // has to escape the type bar's AutoSize slot), so it sits outside
+        // PaintInto and a regression there would fail nothing else.
+        //
+        // Chip hit rects are produced by OnPaint, so the paint above is what
+        // makes hover reachable at all.
+        const auto find_chip_text = [&rec](const std::string& type_name) -> const ZSlate::FSlateRecordedText*
+        {
+            // The chip label is "<type>  <size>  <pct>"; the table's TYPE cell
+            // is the bare name. Matching the two-space suffix picks the chip.
+            const std::string prefix = type_name + "  ";
+            for (const ZSlate::FSlateRecordedText& t : rec.Texts)
+            {
+                if (t.Text.compare(0, prefix.size(), prefix) == 0)
+                    return &t;
+            }
+            return nullptr;
+        };
+
+        // Repaints with `type_name`'s chip hovered. card_start is the index of
+        // the first text belonging to the card, so the card can be inspected
+        // without confusing it with the rest of the UI.
+        const auto paint_hovered = [&](const std::string& type_name,
+                                       ZSlate::FSlateRecordingRenderer& out,
+                                       size_t& card_start) -> bool
+        {
+            const ZSlate::FSlateRecordedText* chip = find_chip_text(type_name);
+            if (chip == nullptr)
+                return false;
+            // Route through SlateInputRouter, exactly as the frame loop does.
+            // Calling TypeBar->OnMouseMove directly would bypass the router and
+            // hide a regression in move delivery -- which is precisely the bug
+            // this check exists for.
+            app.Platform.MousePos = ZSlate::Vector2(chip->Rect.x + 2.0f,
+                                                    chip->Rect.y + chip->Rect.h * 0.5f);
+            app.Input.ProcessMouse(ZSlate::SlateApplication::Get().GetRootContent(),
+                                   app.Platform.MousePos, true, false, 0.0f, false);
+            out.Reset();
+            app.Platform.RendererOverride = &out;
+            ZSlate::SlateApplication::Get().PaintInto(&out, full);
+            card_start = out.Texts.size();
+            PaintTypeDocCard(&out, full, *app.TypeBar, app.Snapshot);
+            return true;
+        };
+
+        ZSlate::FSlateRecordingRenderer doc_rec;
+        size_t doc_start = 0;
+        const bool doc_hovered = paint_hovered(top_type, doc_rec, doc_start);
+        const bool doc_shown = doc_hovered && doc_rec.Texts.size() > doc_start;
+        const bool doc_titled = doc_shown &&
+                                doc_rec.Texts[doc_start].Text.compare(0, top_type.size(), top_type) == 0;
+
+        // The body must be the real doc text, not a placeholder: compare
+        // against the first line of what LuaMemTypeDoc actually returns.
+        std::string first_line = LuaMemPreview::TypeDetail(top_type);
+        const size_t nl = first_line.find('\n');
+        if (nl != std::string::npos)
+            first_line.resize(nl);
+        bool doc_body_ok = doc_shown && !first_line.empty();
+        if (doc_body_ok)
+        {
+            doc_body_ok = false;
+            for (size_t i = doc_start; i < doc_rec.Texts.size(); ++i)
+            {
+                if (doc_rec.Texts[i].Text == first_line)
+                {
+                    doc_body_ok = true;
+                    break;
+                }
+            }
+        }
+
+        // A card that runs off the edge is useless; placement must clamp.
+        bool doc_on_screen = doc_shown;
+        for (size_t i = doc_start; i < doc_rec.Texts.size(); ++i)
+        {
+            const ZSlate::UIRect& rc = doc_rec.Texts[i].Rect;
+            if (rc.x < full.x - 0.5f || rc.y < full.y - 0.5f ||
+                rc.x + rc.w > full.x + full.w + 0.5f || rc.y + rc.h > full.y + full.h + 0.5f)
+            {
+                doc_on_screen = false;
+                break;
+            }
+        }
+
+        // Every bucket ltracker.h can emit needs an entry, otherwise a newly
+        // added bucket would silently show the "unknown" fallback.
+        const std::string unknown_summary = LuaMemPreview::TypeSummary("\x01 no such bucket");
+        bool all_documented = true;
+        for (const FTypeBucket& b : app.Snapshot.GetTypeBuckets())
+        {
+            const std::string& n = app.Snapshot.GetTypeName(b.TypeId);
+            if (LuaMemPreview::TypeSummary(n) == unknown_summary ||
+                std::string(LuaMemPreview::TypeDetail(n)).empty())
+            {
+                all_documented = false;
+                break;
+            }
+        }
+
+        // The two non-GC buckets are the most misread of the set, so the card
+        // has to say so rather than leaving them looking like object counts.
+        ZSlate::FSlateRecordingRenderer nongc_rec;
+        size_t nongc_start = 0;
+        const bool nongc_hovered = paint_hovered("string_table", nongc_rec, nongc_start);
+        bool nongc_marked = false;
+        if (nongc_hovered && nongc_rec.Texts.size() > nongc_start)
+            nongc_marked = nongc_rec.Texts[nongc_start].Text.find("GC") != std::string::npos;
+
+        // Hover off must take the card away; a stuck card hides the table.
+        // Done last so the hover state is clean for the DPI pass below.
+        // WM_MOUSELEAVE: cursor outside the window, so the hover path is empty
+        // and the router sends OnMouseLeave to the bar.
+        app.Platform.MousePos = ZSlate::Vector2(-1.0f, -1.0f);
+        app.Input.ProcessMouse(ZSlate::SlateApplication::Get().GetRootContent(),
+                               app.Platform.MousePos, false, false, 0.0f, false);
+        ZSlate::FSlateRecordingRenderer bare_rec;
+        app.Platform.RendererOverride = &bare_rec;
+        bare_rec.Reset();
+        ZSlate::SlateApplication::Get().PaintInto(&bare_rec, full);
+        const size_t bare_count = bare_rec.Texts.size();
+        PaintTypeDocCard(&bare_rec, full, *app.TypeBar, app.Snapshot);
+        const bool doc_hidden = bare_rec.Texts.size() == bare_count;
+
+        const FCheck doc_checks[] = {
+            {"doc: chip hover found",        doc_hovered},
+            {"doc: card shown on hover",     doc_shown},
+            {"doc: card titled by type",     doc_titled},
+            {"doc: card body is real text",  doc_body_ok},
+            {"doc: card clamped on screen",  doc_on_screen},
+            {"doc: every bucket documented", all_documented},
+            {"doc: non-GC bucket flagged",   nongc_marked},
+            {"doc: no card without hover",   doc_hidden},
+        };
+
         // ---- DPI scaling ---------------------------------------------------
         // Repaint the identical UI through FSlateDpiScaleRenderer at 150% and compare
         // against the 100% pass above. A correct decorator is a pure similarity
@@ -699,6 +845,12 @@ int main(int argc, char** argv)
         int failed = 0;
         std::printf("\n");
         for (const FCheck& c : checks)
+        {
+            if (!c.Ok)
+                ++failed;
+            std::printf("  %s  %s\n", c.Ok ? "PASS" : "FAIL", c.Name);
+        }
+        for (const FCheck& c : doc_checks)
         {
             if (!c.Ok)
                 ++failed;
@@ -802,12 +954,22 @@ int main(int argc, char** argv)
     app.InitFonts();
     app.BuildUI();
 
-    WNDCLASSA wc = {};
+    // WNDCLASSEX, not WNDCLASS: only the EX variant carries hIconSm, which is
+    // what the taskbar shows.
+    WNDCLASSEXA wc = {};
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = GetModuleHandle(nullptr);
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    // hIcon is what the title bar and Alt-Tab show, hIconSm what the taskbar
+    // shows. Asking LoadImage for an explicit size picks the closest of the
+    // .ico's embedded sizes (16/32/48/256) instead of stretching one of them.
+    wc.hIcon = static_cast<HICON>(LoadImageA(wc.hInstance, MAKEINTRESOURCEA(IDI_ICON1),
+                                             IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR));
+    wc.hIconSm = static_cast<HICON>(LoadImageA(wc.hInstance, MAKEINTRESOURCEA(IDI_ICON1),
+                                               IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
     wc.lpszClassName = "LuaMemPreviewWnd";
-    RegisterClassA(&wc);
+    RegisterClassExA(&wc);
 
     // Scale the default window size by the primary monitor's factor, so the
     // 1440x900 logical default still occupies the intended physical area

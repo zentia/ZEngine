@@ -1,0 +1,7 @@
+// App icon for LuaMemPreview -- shown by Explorer, the taskbar (small icon)
+// and the window's title bar / Alt-Tab (large icon).
+//
+// The id must stay in sync with IDI_ICON1 in main.cpp.
+#define IDI_ICON1 101
+
+IDI_ICON1               ICON                    "LuaMemPreview.ico"
