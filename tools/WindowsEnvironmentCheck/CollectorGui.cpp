@@ -1,5 +1,4 @@
 #include "Collection.h"
-#include "CollectorScrollPanel.h"
 #include "CrashCapture.h"
 #include "WerCapture.h"
 #include "ToolVersion.h"
@@ -13,8 +12,11 @@
 #include "ZSlate/Renderer/ZSlateBatchedRenderer.h"
 #include "ZSlate/Renderer/ZSlateFontAtlas.h"
 #include "ZSlate/Platform/D3D11/ZSlateD3D11Renderer.h"
+#include "ZSlate/Platform/Win32/SlateWin32Dpi.h"
+#include "ZSlate/Platform/Win32/SlateWin32Host.h"
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
+#include "ZSlate/Widgets/Layout/SScrollPanel.h"
 #include "ZSlate/Widgets/Layout/SSpacer.h"
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/Input/SCheckBox.h"
@@ -39,6 +41,17 @@ namespace
 using namespace ZSlate;
 using namespace zengine::envcheck::collector;
 using namespace zengine::envcheck::diagnosis;
+// NOTE: this tool deliberately keeps its own window class, WindowProc and DPI
+// plumbing instead of using ZSlate::FSlateStandaloneApp like the other four
+// tools now do. Its message handling is not the generic one: a Unicode window,
+// capture acknowledged through WM_CLOSE while a background collection is still
+// running, popups that take mouse and key events before the widget tree, and a
+// `busy` gate that drops all input. Forcing that through the shared shell's
+// hooks would mean adding hooks only this caller uses.
+// The parts that *were* duplicated knowledge have still moved out: font
+// discovery is ZSlate::Win32::LoadSystemFonts() and DPI-sized window framing is
+// ZSlate::Win32::ResizeWindowForDpi().
+//
 // The widget tree works in DPI-independent logical units (96 DPI = 1.0), so every
 // size below is written once at its 100% value. `scaled` converts to physical
 // pixels on the way to `renderer` and snaps edges to whole pixels, so neighbouring
@@ -138,14 +151,13 @@ public:
         AddWidget(button, 9);
         return label;
     }
+    // The candidate list, the Fonts directory lookup and the CJK fallback chain
+    // are ZSlate::Win32::LoadSystemFonts() now -- this tool used to be the only
+    // one of the five that derived the directory instead of hardcoding
+    // "C:\Windows\Fonts", and that version is the one that got promoted.
     bool InitFonts()
     {
-        wchar_t windows[MAX_PATH]{};
-        if (!GetWindowsDirectoryW(windows, MAX_PATH)) return false;
-        auto dir = std::filesystem::path(windows) / L"Fonts";
-        if (!fonts.LoadFromFile(WideToUtf8((dir / L"segoeui.ttf").wstring()))) return false;
-        if (!fonts.AddFallbackFont(WideToUtf8((dir / L"msyh.ttc").wstring()))
-            && !fonts.AddFallbackFont(WideToUtf8((dir / L"simsun.ttc").wstring()))) return false;
+        if (!Win32::LoadSystemFonts(fonts, Win32::ESystemFont::Sans)) return false;
         platform.renderer.SetFontAtlas(&fonts);
         return true;
     }
@@ -207,7 +219,7 @@ public:
         captureMode->ItemHeight = 32; captureMode->MaxDropdownHeight = 64; captureMode->ExternalPopup = true;
         captureMode->OnGetLabel = [](int mode) { return mode == 0 ? "Windows系统崩溃转储（推荐）" : "ProcDump附加（需允许调试）"; };
         AddWidget(captureMode, 6);
-        Text("WER仅配置当前exe名称；需要UAC，结束时恢复，不附加游戏。", 16);
+        Text("WER仅配置当前exe名称；需要UAC，一次启用可连续收集多次崩溃，点“安全停止捕获”后才恢复，不附加游戏。", 16);
         Text("下方ProcDump下载与选择只用于ProcDump模式。", 16);
         Button("打开微软ProcDump下载及许可页面", [this] {
             if (!busy) ShellExecuteW(window, L"open", L"https://learn.microsoft.com/en-us/sysinternals/downloads/procdump", nullptr, nullptr, SW_SHOWNORMAL);
@@ -255,7 +267,7 @@ public:
         scrollBar->Thickness = 16;
         scrollBar->MinThumbLength = 32;
         scroll->ScrollSpeed = 40;
-        auto root = std::make_shared<CollectorScrollPanel>(scroll, scrollBar);
+        auto root = std::make_shared<SScrollPanel>(scroll, scrollBar);
         SlateApplication::Get().SetRootContent(root);
     }
     std::filesystem::path ChooseExecutable(const wchar_t* title, const wchar_t* filter = L"Windows program (*.exe)\0*.exe\0\0")
@@ -278,7 +290,7 @@ public:
         const std::wstring notice = !import.empty()
             ? L"确认这个完整dump来自所选游戏。导入只验证结构及模块路径，不能证明它属于本次运行。\n可能包含账号、聊天和令牌，占用数GB空间，不自动上传，不删除原文件。\n\n是否确认来源并同意打包？"
             : wer ? L"将仅配置HKLM LocalDumps下的 " + Utf8ToWide(options.profile.gameExecutable) +
-                L"，DumpType=2，保留2份，输出到本次报告的system-dumps私有目录。\n配置按exe名称生效，可能影响其它同名程序；需要UAC授权，结束时再次请求UAC恢复原设置。\n完整内存含敏感数据，占用数GB，不自动上传。配置成功不保证产生dump。\n不附加游戏，不终止WER；异常退出可用恢复按钮处理。\n\n是否同意？"
+                L"，DumpType=2，输出到本次报告的system-dumps私有目录。\n配置按exe名称生效，可能影响其它同名程序；需要UAC授权，结束收集时再次请求UAC恢复原设置。\n一次启用可连续收集本次会话内的多次崩溃（每份数GB，最多8份）；点击“安全停止捕获”后才结束并统一恢复配置，未点击前配置一直生效。\n完整内存含敏感数据，占用数GB，不自动上传。配置成功不保证产生dump。\n不附加游戏，不终止WER；异常退出可用恢复按钮处理。\n\n是否同意？"
             : L"仅监控所选游戏。完整内存含账号、聊天等敏感数据，占用数GB，不自动上传。\n停止时等待ProcDump安全退出，不强杀游戏或调试器。\n\n是否同意？";
         if (MessageBoxW(window, notice.c_str(), L"完整内存采集授权", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
         if (!wer && MessageBoxW(window,
@@ -521,11 +533,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
         HWND window = CreateWindowExW(0, klass.lpszClassName, L"环境信息采集 - ZSlate", WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT, CW_USEDEFAULT, 1000, 790, nullptr, nullptr, instance, &app);
         if (!window) throw std::runtime_error("Window creation failed");
-        const UINT dpi = GetDpiForWindow(window);
+        // Window sizing at the monitor's scale (960x740 logical) is
+        // Win32::ResizeWindowForDpi, shared with the other ZSlate tools.
+        const UINT dpi = static_cast<UINT>(Win32::QueryDpiScaleForWindow(window) * 96.0f);
         app.ApplyDpi(dpi);
-        RECT initial{0, 0, MulDiv(960, dpi, 96), MulDiv(740, dpi, 96)};
-        AdjustWindowRectExForDpi(&initial, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
-        SetWindowPos(window, nullptr, 0, 0, initial.right - initial.left, initial.bottom - initial.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        Win32::ResizeWindowForDpi(window, 960, 740, dpi);
         auto backend = std::make_unique<ZSlateD3D11Renderer>(window);
         if (!backend->Init())
         {

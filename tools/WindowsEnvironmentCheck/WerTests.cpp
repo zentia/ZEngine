@@ -90,24 +90,52 @@ int Integration(const std::filesystem::path& root, bool cancel)
     options.environment.profile.gameExecutable = "EnvironmentCaptureTestTarget.exe"; options.environment.profile.lookbackHours = 1;
     options.environment.outputDirectory = root; options.gameExecutable = game; options.memoryConsent = true; options.waitSeconds = 90;
     const auto eventName = L"Local\\WerFixture-" + NewWerToken();
+    const auto eventName2 = L"Local\\WerFixture-" + NewWerToken();
     HANDLE trigger = CreateEventW(nullptr, TRUE, FALSE, eventName.c_str()); Check(trigger != nullptr, "fixture event");
-    PROCESS_INFORMATION child{}; std::future<void> signal;
+    HANDLE trigger2 = CreateEventW(nullptr, TRUE, FALSE, eventName2.c_str()); Check(trigger2 != nullptr, "second fixture event");
+    PROCESS_INFORMATION child{}, child2{}; std::future<void> signal, signal2; bool launched2 = false;
+    auto launch = [&](const std::wstring& event, HANDLE handle, PROCESS_INFORMATION& process) {
+        std::wstring cmd = L"\"" + game.wstring() + L"\" " + event + L" wer-crash";
+        STARTUPINFOW startup{sizeof(startup)};
+        Check(CreateProcessW(game.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) != FALSE, "launch synthetic WER target");
+        return std::async(std::launch::async, [handle] { Sleep(2500); SetEvent(handle); });
+    };
     auto result = CaptureWer(options, stop, [&](const std::string& text, bool) {
         std::cout << text << std::endl;
-        if (text.find("系统捕获已启用") == std::string::npos) return;
-        if (cancel) { stop = true; return; }
-        std::wstring cmd = L"\"" + game.wstring() + L"\" " + eventName + L" wer-crash";
-        STARTUPINFOW startup{sizeof(startup)};
-        Check(CreateProcessW(game.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &child) != FALSE, "launch synthetic WER target");
-        signal = std::async(std::launch::async, [trigger] { Sleep(2500); SetEvent(trigger); });
+        // Only the "enabled" message should trigger the first launch. An early
+        // return on every other message would also swallow the "collected #1"
+        // progress, and the second crash would never be started.
+        if (text.find("系统捕获已启用") != std::string::npos)
+        {
+            if (cancel) { stop = true; return; }
+            if (!signal.valid()) signal = launch(eventName, trigger, child);
+            return;
+        }
+        if (cancel) return;
+        // The whole point of continuous collection: a second crash, after the
+        // first dump was already copied, must still be captured -- with no
+        // re-enabling and no second UAC prompt.
+        if (text.find("已收集第1份") != std::string::npos && !launched2)
+        { launched2 = true; signal2 = launch(eventName2, trigger2, child2); }
+        if (text.find("已收集第2份") != std::string::npos) stop = true;
     });
     if (signal.valid()) signal.get();
+    if (signal2.valid()) signal2.get();
     if (child.hProcess) { WaitForSingleObject(child.hProcess, 45000); CloseHandle(child.hProcess); CloseHandle(child.hThread); }
-    CloseHandle(trigger);
+    if (child2.hProcess) { WaitForSingleObject(child2.hProcess, 45000); CloseHandle(child2.hProcess); CloseHandle(child2.hThread); }
+    CloseHandle(trigger); CloseHandle(trigger2);
     std::cout << result.message << '\n' << result.report.directory << '\n';
     Check(!HasWerBackup(options.environment.profile.gameExecutable), "real fixture config restored");
     if (cancel) Check(result.report.cancelled && !result.dumpCaptured, "cancel does not capture or kill processes");
-    else Check(result.dumpCaptured && result.report.archive.filename() == L"capture.zip", "actual Windows WER capture and package");
+    else
+    {
+        Check(result.dumpCaptured && result.report.archive.filename() == L"capture.zip", "actual Windows WER capture and package");
+        Check(std::filesystem::exists(result.report.directory / "crash.dmp") && std::filesystem::exists(result.report.directory / "crash-2.dmp"),
+            "second crash collected as its own dump");
+        std::ifstream report(result.report.directory / "capture.json");
+        const std::string json((std::istreambuf_iterator<char>(report)), std::istreambuf_iterator<char>()); report.close();
+        Check(json.find("\"capturedDumpCount\":2") != std::string::npos, "manifest records both dumps");
+    }
     return 0;
 }
 }

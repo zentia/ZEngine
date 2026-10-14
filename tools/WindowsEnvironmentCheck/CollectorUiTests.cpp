@@ -2,7 +2,7 @@
 #include "ZSlate/Widgets/Input/SComboBox.h"
 #include "ZSlate/Widgets/Input/SEditableTextBox.h"
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
-#include "CollectorScrollPanel.h"
+#include "ZSlate/Widgets/Layout/SScrollPanel.h"
 #include "ZSlate/Renderer/SlateDpiScaleRenderer.h"
 #include "ZSlate/Renderer/ZSlateBatchedRenderer.h"
 #include "ZSlate/Renderer/ZSlateFontAtlas.h"
@@ -39,7 +39,7 @@ void TestScrollBar(float scale)
     auto box = std::make_shared<SScrollBox>(); box->AddChild(content); box->ScrollSpeed = 40 * scale;
     auto bar = std::make_shared<SScrollBar>(); bar->Thickness = 16 * scale; bar->MinThumbLength = 32 * scale;
     box->SetScrollBar(bar);
-    auto root = std::make_shared<zengine::envcheck::collector::CollectorScrollPanel>(box, bar);
+    auto root = std::make_shared<ZSlate::SScrollPanel>(box, bar);
     ZSlateBatchedRenderer renderer;
     auto paint = [&] {
         renderer.BeginFrame(); FPaintContext ctx; ctx.Renderer = &renderer;

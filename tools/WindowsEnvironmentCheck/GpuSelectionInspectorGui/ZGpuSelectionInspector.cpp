@@ -21,13 +21,11 @@
 
 #include "GpuSelectionProbe.h"
 
+#include "ZSlate/App/SlateStandaloneApp.h"
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateInput.h"
 #include "ZSlate/Core/SlatePaint.h"
 #include "ZSlate/Core/SlateGeometry.h"
-#include "ZSlate/Renderer/ZSlateBatchedRenderer.h"
-#include "ZSlate/Renderer/ZSlateFontAtlas.h"
-#include "ZSlate/Platform/D3D11/ZSlateD3D11Renderer.h"
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Input/SButton.h"
 #include "ZSlate/Widgets/Layout/SSpacer.h"
@@ -80,67 +78,18 @@ std::string FormatAdapterLine(std::size_t index, const GpuSelectionAdapter& adap
 }
 
 // ---------------------------------------------------------------------------
-// Minimal Win32 + D3D11 host, following ZSlate::ISlatePlatform exactly like
-// examples/standalone_app_example.cpp does.
-// ---------------------------------------------------------------------------
-class InspectorPlatform : public ZSlate::ISlatePlatform
-{
-public:
-    ZSlate::ZSlateBatchedRenderer Renderer;
-    bool MouseDown[3]{};
-    ZSlate::Vector2 MousePos{0, 0};
-    ZSlate::Vector2 WindowSizeValue{980, 720};
-
-    ZSlate::ISlateRenderer* GetRenderer() override { return &Renderer; }
-    ZSlate::Vector2 GetMousePosition() const override { return MousePos; }
-    bool IsMouseButtonDown(int button) const override { return button < 3 ? MouseDown[button] : false; }
-    bool IsKeyDown(int) const override { return false; }
-    float GetTimeSeconds() const override
-    {
-        static auto start = std::chrono::steady_clock::now();
-        return std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
-    }
-    ZSlate::Vector2 GetWindowSize() const override { return WindowSizeValue; }
-};
-
-// ---------------------------------------------------------------------------
 // The inspector application: owns the probe results and rebuilds the widget
 // tree whenever the user asks for a re-run.
+//
+// The Win32 host (window, message pump, DPI awareness, font atlas) is
+// ZSlate::FSlateStandaloneApp. This tool previously had no DPI support at all,
+// so it was DPI-virtualised: rendered at 96 DPI and bitmap-stretched to the
+// monitor scale.
 // ---------------------------------------------------------------------------
 class InspectorApp
 {
 public:
-    InspectorPlatform Platform;
-    ZSlate::ZSlateFontAtlas FontAtlas;
-    ZSlate::SlateInputRouter InputRouter;
-
-    bool InitFonts()
-    {
-        const char* candidates[] = {
-            "C:\\Windows\\Fonts\\consola.ttf",
-            "C:\\Windows\\Fonts\\segoeui.ttf",
-        };
-        for (const char* path : candidates)
-        {
-            if (FontAtlas.LoadFromFile(path))
-            {
-                break;
-            }
-        }
-        if (FontAtlas.IsLoaded())
-        {
-            const char* cjkCandidates[] = {"C:\\Windows\\Fonts\\msyh.ttc", "C:\\Windows\\Fonts\\simsun.ttc"};
-            for (const char* path : cjkCandidates)
-            {
-                if (FontAtlas.AddFallbackFont(path))
-                {
-                    break;
-                }
-            }
-        }
-        Platform.Renderer.SetFontAtlas(FontAtlas.IsLoaded() ? &FontAtlas : nullptr);
-        return FontAtlas.IsLoaded();
-    }
+    ZSlate::FSlateStandaloneApp Host;
 
     void RunProbesAndBuildUi()
     {
@@ -280,83 +229,9 @@ public:
         // because its root IS the SVerticalBox with leaf-widget slots (no
         // extra container layer to recurse through). Setting root directly as
         // SetRootContent mirrors that known-good structure.
-        ZSlate::SlateApplication::Get().SetRootContent(root);
-    }
-
-    void RunFrame()
-    {
-        auto root = ZSlate::SlateApplication::Get().GetRootContent();
-        if (root)
-        {
-            const bool mouseOverWindow = Platform.MousePos.x >= 0 && Platform.MousePos.y >= 0;
-            InputRouter.ProcessMouse(root, Platform.MousePos, mouseOverWindow, Platform.MouseDown[0], 0.0f, Platform.MouseDown[1]);
-        }
-
-        Platform.Renderer.BeginFrame();
-        const ZSlate::UIRect frameRect(0, 0, Platform.GetWindowSize().x, Platform.GetWindowSize().y);
-        ZSlate::SlateApplication::Get().PaintInto(&Platform.Renderer, frameRect);
-        Platform.Renderer.EndFrame();
+        Host.SetRootContent(root);
     }
 };
-
-struct WindowContext
-{
-    InspectorApp* app = nullptr;
-    ZSlate::ZSlateD3D11Renderer* backend = nullptr;
-};
-
-LRESULT CALLBACK WindowProcedure(HWND windowHandle, UINT message, WPARAM wParam, LPARAM lParam)
-{
-    WindowContext* context = nullptr;
-    if (message == WM_CREATE)
-    {
-        context = reinterpret_cast<WindowContext*>(reinterpret_cast<CREATESTRUCT*>(lParam)->lpCreateParams);
-        SetWindowLongPtr(windowHandle, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(context));
-    }
-    else
-    {
-        context = reinterpret_cast<WindowContext*>(GetWindowLongPtr(windowHandle, GWLP_USERDATA));
-    }
-
-    InspectorApp* app = context ? context->app : nullptr;
-    switch (message)
-    {
-    case WM_SIZE:
-        if (app)
-        {
-            app->Platform.WindowSizeValue = ZSlate::Vector2(static_cast<float>(LOWORD(lParam)), static_cast<float>(HIWORD(lParam)));
-            if (context->backend)
-            {
-                context->backend->Resize(LOWORD(lParam), HIWORD(lParam));
-            }
-        }
-        return 0;
-    case WM_MOUSEMOVE:
-        if (app)
-        {
-            app->Platform.MousePos = ZSlate::Vector2(static_cast<float>(LOWORD(lParam)), static_cast<float>(HIWORD(lParam)));
-        }
-        return 0;
-    case WM_LBUTTONDOWN:
-        if (app) app->Platform.MouseDown[0] = true;
-        return 0;
-    case WM_LBUTTONUP:
-        if (app) app->Platform.MouseDown[0] = false;
-        return 0;
-    case WM_MOUSEWHEEL:
-        return 0;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
-    default:
-        break;
-    }
-    // Explicitly call the ANSI variant: this window was registered and created
-    // via the ANSI Win32 API (WNDCLASSA/RegisterClassA/CreateWindowA above), so
-    // its default message handling must stay ANSI too, regardless of whether
-    // UNICODE happens to be defined for this translation unit.
-    return DefWindowProcA(windowHandle, message, wParam, lParam);
-}
 } // namespace
 
 int main()
@@ -364,56 +239,19 @@ int main()
     printf("=== ZGpuSelectionInspector (ZSlate GUI) ===\n");
 
     InspectorApp app;
-    ZSlate::SetPlatform(&app.Platform);
-    app.InitFonts();
-    app.RunProbesAndBuildUi();
 
-    WNDCLASSA windowClass{};
-    windowClass.lpfnWndProc = WindowProcedure;
-    windowClass.hInstance = GetModuleHandle(nullptr);
-    windowClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
-    windowClass.lpszClassName = "ZGpuSelectionInspector";
-    RegisterClassA(&windowClass);
+    ZSlate::FStandaloneAppDesc desc;
+    desc.Title  = "GPU Auto-Select Verification Tool";
+    desc.Width  = 980.0f;
+    desc.Height = 720.0f;
+    desc.Font   = ZSlate::Win32::ESystemFont::Mono;
 
-    WindowContext context{&app, nullptr};
-    HWND windowHandle = CreateWindowA(
-        "ZGpuSelectionInspector",
-        "GPU Auto-Select Verification Tool",
-        WS_OVERLAPPEDWINDOW,
-        CW_USEDEFAULT, CW_USEDEFAULT,
-        static_cast<int>(app.Platform.WindowSizeValue.x), static_cast<int>(app.Platform.WindowSizeValue.y),
-        nullptr, nullptr, GetModuleHandle(nullptr), &context);
-
-    auto* backend = new ZSlate::ZSlateD3D11Renderer(windowHandle);
-    context.backend = backend;
-
-    if (!backend->Init())
+    if (!app.Host.Initialize(desc))
     {
-        printf("D3D11 init failed\n");
-        delete backend;
+        printf("ZSlate host init failed\n");
         return 1;
     }
-    ShowWindow(windowHandle, SW_SHOW);
 
-    MSG message{};
-    while (true)
-    {
-        while (PeekMessageA(&message, nullptr, 0, 0, PM_REMOVE))
-        {
-            if (message.message == WM_QUIT)
-            {
-                goto exitLoop;
-            }
-            TranslateMessage(&message);
-            DispatchMessage(&message);
-        }
-
-        app.RunFrame();
-        backend->Render(app.Platform.Renderer, &app.FontAtlas);
-        Sleep(1);
-    }
-
-exitLoop:
-    delete backend; // destructor calls Shutdown(); do not call Shutdown() twice.
-    return 0;
+    app.RunProbesAndBuildUi();
+    return app.Host.Run();
 }

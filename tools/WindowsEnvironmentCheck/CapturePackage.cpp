@@ -30,7 +30,14 @@ void PackageDumpEvidence(Result& result, std::vector<std::string> files, const s
     }
     hashes << "]}"; WriteReportFile(result.directory / "checksums.json", hashes.str()); files.push_back("checksums.json");
     ULARGE_INTEGER available{};
-    const auto bytes = std::filesystem::file_size(result.directory / "crash.dmp");
+    // Sum every dump, not just "crash.dmp": a session can now hold several, and
+    // checking only the first one would start a compression that cannot finish.
+    std::uint64_t bytes = 0;
+    for (const auto& name : files)
+    {
+        if (name.size() < 4 || name.compare(name.size() - 4, 4, ".dmp")) continue;
+        bytes += std::filesystem::file_size(result.directory / name);
+    }
     if (!GetDiskFreeSpaceExW(result.directory.c_str(), &available, nullptr, nullptr) || available.QuadPart < bytes + (1ull << 30))
         throw std::runtime_error("压缩空间不足，原始dump及环境报告已保留");
     progress("流式压缩并回读校验ZIP64，不自动上传", true);

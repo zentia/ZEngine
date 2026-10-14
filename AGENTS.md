@@ -1597,5 +1597,97 @@ the environment report:
   Index in `game-logs.json`; missing or empty log dir is status `NO_LOGS`
   and does **not** mark the report partial.
 
+## 7. Standalone ZSlate tools: use FSlateStandaloneApp, do not hand-roll a host
+
+Every standalone ZSlate GUI tool (LuaMemPreview, TexPreview,
+ClientProjBranches.Cpp, ZGpuSelectionInspector, ZEnvironmentCollector) used to
+carry its own copy of: an `ISlatePlatform` subclass, WNDCLASS + CreateWindow +
+PeekMessage host, DPI declaration / `WM_DPICHANGED` handling, and a hardcoded
+`C:\Windows\Fonts\...` atlas load. The copies drifted — two had **no DPI
+support at all**, four of five hardcoded the Fonts drive letter, and the DPI
+decorator was built with different pixel-snapping flags.
+
+That is now one implementation, in ZSlate:
+
+| Concern | Where it lives |
+|---|---|
+| Window + message pump + `ISlatePlatform` + D3D11 backend lifetime | `ZSlate/App/SlateStandaloneApp.h` (`FSlateStandaloneApp`) |
+| DPI awareness, per-window scale, DPI-sized window framing | `ZSlate/Platform/Win32/SlateWin32Dpi.h` (`Win32::DeclareDpiAwareness`, `QueryDpiScaleForWindow`, `QuerySystemDpiScale`, `ResizeWindowForDpi`) |
+| System font discovery + CJK fallback, key mapping, clipboard, UTF-8 argv | `ZSlate/Platform/Win32/SlateWin32Host.h` (`Win32::LoadSystemFonts`, `KeyFromVirtualKey`, `InstallClipboardBridge`, `CommandLineArgsUtf8`) |
+
+**A new standalone ZSlate tool must start from `FSlateStandaloneApp`.** Doing
+anything else re-introduces per-tool DPI/font bugs.
+
+Coordinate contract (stated once, in `SlateStandaloneApp.h`): Win32 messages and
+the swapchain are **physical**; the widget tree is **logical** (96-DPI units).
+The shell is the only place the two meet — its WndProc divides on the way in,
+`FSlateDpiScaleRenderer` multiplies on the way out.
+
+Known exception: `CollectorGui.cpp` keeps its own window/WndProc because it
+needs a Unicode window, a WM_CLOSE veto while a background collection runs,
+popups that pre-empt widget input, and a `busy` input gate. It still uses
+`Win32::LoadSystemFonts` / `Win32::ResizeWindowForDpi`, so no DPI/font
+knowledge is duplicated. Do not "unify" it by adding shell hooks only it uses.
+
+### 7.1 SListView is NOT broken — do not repeat the old claim
+
+`LuaMemPreview/LuaMemWidgets.h` used to justify its hand-painted 180K-row table
+with "SListView's recycling is broken in two ways" (stale data in recycled rows,
+and `ReleaseInvisibleWidgets()` never called → a widget retained per row).
+**Both were already fixed**: the index→widget map is keyed by index, released
+when rows scroll off screen, and cleared whenever the data source revision
+changes. The comment was stale and kept being cited as the reason to duplicate
+list widgets — it has been rewritten, and the behaviour is now pinned by
+`engine/Libraries/ZSlate/tests/slate_list_view_tests.cpp`
+(`-DZSLATE_BUILD_TESTS=ON`), which scrolls 180K rows and asserts bounded text
+draws / bounded live widgets / fresh data after recycling / balanced clip stack.
+Measured: 27 live widgets at 180K rows.
+
+`SLuaMemTable` is still hand-painted, but now for a real reason, not a
+workaround: 4 fixed columns with independent sort, a filter and type-colour
+chips would cost ~135 live widgets rebuilt every scroll step if routed through
+`SListView`. Do not "unify" the two tables without measuring.
+
+Other pieces sunk into ZSlate in the same pass: `SScrollPanel`
+(`ZSlate/Widgets/Layout/`, was `CollectorScrollPanel.h`) and
+`Win32::EnsureConsole` / `Win32::StdOutIsRedirected`.
+
+## 8. Where a tool lives: two homes, one rule
+
+Standalone tools have **two** directories and the split is by dependency, not
+by taste. When adding a tool, put it on the correct side:
+
+| Home | For | Added by | Examples |
+|---|---|---|---|
+| `engine/Source/Tools/` | tools that need **engine internals** — ZRuntime decompressors, `SerializedFile`, asset registry | `engine/CMakeLists.txt` (desktop branch only) | `TexPreview`, `LuaMemPreview` |
+| `tools/` | tools with **no engine dependency** — ZSlate + platform APIs only | `tools/CMakeLists.txt`, from the root **after** `add_subdirectory(engine)` | `WindowsEnvironmentCheck`, `ClientProjBranches.Cpp` |
+
+**The ordering constraint is load-bearing.** `tools/` must be added after
+`add_subdirectory(engine)`: every tool there links `ZSlate`, and `ZSlate` is
+defined deep inside `engine/Source/Runtime/CMakeLists.txt`. If `tools/` is
+processed first, a tool creates its own `ZSlate` via
+`add_subdirectory(engine/Libraries/ZSlate)` and the engine's later add dies with
+`add_library cannot create target "ZSlate" because another target with the same
+name already exists`. Every `add_subdirectory(ZSlate)` in `tools/` is therefore
+guarded with `if(NOT TARGET ZSlate)`.
+
+**Do not move TexPreview / LuaMemPreview into `tools/`.** They pull ZRuntime;
+moving them out would put engine-internal consumers outside the engine tree and
+reintroduce the ordering problem from the other side.
+
+### Two options that must stay OFF in a full-tree configure
+
+- `ENVIRONMENT_CHECK_BUILD_GUI` (WindowsEnvironmentCheck's two ZSlate GUIs):
+  the tool sets `CMAKE_MSVC_RUNTIME_LIBRARY` to `/MT` because it ships to
+  machines with no VC redist. Standalone, ZSlate is added inside that scope and
+  inherits `/MT`. In a full tree ZSlate already exists as `/MD`, so linking it
+  into a `/MT` collector fails with `LNK2038 (RuntimeLibrary mismatch)`. One
+  ZSlate instance cannot be both. Build the collector GUI from its own
+  configure: `cmake -S tools/WindowsEnvironmentCheck -B <dir>`.
+- `ZENGINE_BUILD_CLIENT_PROJ_BRANCHES`: a self-contained CMake project with its
+  own C++ standard and output layout; normally configured standalone
+  (`cmake -S tools/ClientProjBranches.Cpp -B build`). Available in-tree, but
+  OFF so a full configure does not pick up unrelated work.
+
 
 

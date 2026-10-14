@@ -123,6 +123,15 @@ CaptureResult CaptureWer(const WerOptions& options, const std::atomic_bool& stop
     DWORD enableCode = ERROR_SUCCESS, restoreCode = ERROR_SUCCESS;
     DumpMetadata metadata; std::string state = "PREPARING", identity = "NOT_VERIFIED", fileIssue;
     std::string sourceName;
+    // Continuous collection. The registry stays configured for the whole
+    // session, so a second crash is not silently lost the way it used to be:
+    // the old code restored the settings as soon as the first dump was copied,
+    // which made every later crash invisible. Each verified dump gets its own
+    // copy; the first keeps the historical name "crash.dmp" so existing readers
+    // and tests are unaffected.
+    struct CapturedDump { std::wstring name; DumpMetadata metadata; std::string sourceName; };
+    std::vector<CapturedDump> dumps;
+    constexpr size_t MaxDumps = 8;
     auto manifest = [&] {
         std::ostringstream json;
         json << "{\"schemaVersion\":2,\"toolVersion\":" << JsonString(ToolVersion) << ",\"captureBackend\":" << JsonString(imported ? "dump_import" : "wer")
@@ -134,6 +143,19 @@ CaptureResult CaptureWer(const WerOptions& options, const std::atomic_bool& stop
             << ",\"dumpType\":" << (imported ? "null" : "2") << ",\"dumpCount\":" << (imported ? "null" : "2")
             << ",\"restoreAttempted\":" << (restoreAttempted ? "true" : "false") << ",\"restoreWin32\":" << restoreCode
             << ",\"restorePending\":" << (restoreNeeded ? "true" : "false") << ",\"identity\":" << JsonString(identity)
+            // The single-dump fields below keep reporting the first dump so
+            // existing consumers do not break; `dumps` lists every one.
+            << ",\"capturedDumpCount\":" << dumps.size() << ",\"dumps\":[";
+        for (size_t i = 0; i < dumps.size(); ++i)
+        {
+            if (i) json << ',';
+            json << "{\"index\":" << (i + 1) << ",\"fileName\":" << JsonString(WideToUtf8(dumps[i].name))
+                 << ",\"sourceFileName\":" << JsonString(dumps[i].sourceName)
+                 << ",\"pid\":" << dumps[i].metadata.processId << ",\"processCreatedUnix\":" << dumps[i].metadata.processCreatedUnix
+                 << ",\"dumpTimestampUnix\":" << dumps[i].metadata.timestamp << ",\"exceptionCode\":" << dumps[i].metadata.exceptionCode
+                 << ",\"dumpBytes\":" << dumps[i].metadata.fileBytes << '}';
+        }
+        json << ']'
             << ",\"sourceFileName\":" << JsonString(sourceName) << ",\"pid\":" << metadata.processId << ",\"processCreatedUnix\":" << metadata.processCreatedUnix
             << ",\"dumpTimestampUnix\":" << metadata.timestamp << ",\"exceptionCode\":" << metadata.exceptionCode << ",\"dumpBytes\":" << metadata.fileBytes
             << ",\"dumpValidated\":" << (result.dumpCaptured ? "true" : "false") << ",\"lastFileIssue\":" << JsonString(fileIssue)
@@ -167,8 +189,10 @@ CaptureResult CaptureWer(const WerOptions& options, const std::atomic_bool& stop
             progress("系统捕获已启用，请正常启动游戏并复现崩溃；最多等待1小时", true);
         }
         const auto deadline = GetTickCount64() + options.waitSeconds * 1000ull;
-        bool copied = false;
-        while (!stop.load() && GetTickCount64() < deadline)
+        std::vector<std::wstring> handled;
+        std::uint64_t committed = 0;   // bytes this session already copied in
+        bool spaceOut = false;
+        while (!stop.load() && GetTickCount64() < deadline && dumps.size() < MaxDumps)
         {
             if (!imported) Observe(game, observed);
             std::vector<std::filesystem::path> files;
@@ -180,6 +204,12 @@ CaptureResult CaptureWer(const WerOptions& options, const std::atomic_bool& stop
             }
             for (const auto& file : files)
             {
+                // Reject sources already copied *before* opening them. The wait
+                // can last an hour at 300 ms per pass, and re-parsing a multi-GiB
+                // dump each time just to skip it would burn a core the whole
+                // time. WER names files "<exe>.<pid>.dmp", so the name is unique
+                // per crash; a file still being written is not in this list yet.
+                if (std::find(handled.begin(), handled.end(), file.filename().wstring()) != handled.end()) continue;
                 std::unique_ptr<EvidenceFile> locked;
                 std::unique_ptr<DirectoryGuard> parents;
                 try
@@ -206,26 +236,60 @@ CaptureResult CaptureWer(const WerOptions& options, const std::atomic_bool& stop
                     identity = "OBSERVED_PID_CREATION_TIME_AND_MODULE_PATH";
                 }
                 else identity = "USER_CONFIRMED_IMPORT_AND_MODULE_PATH";
-                if (FreeSpace(root) < metadata.fileBytes * 2 + GiB) throw std::runtime_error("需保留原dump、复制件与ZIP，空间不足，原文件未修改");
+                // First dump keeps "crash.dmp"; later ones are numbered. Space is
+                // budgeted against what this session has already committed, not
+                // just the current dump, or a second crash would be copied onto
+                // a disk that is already full.
+                const std::wstring copyName = dumps.empty() ? L"crash.dmp"
+                    : L"crash-" + std::to_wstring(dumps.size() + 1) + L".dmp";
+                if (FreeSpace(root) < metadata.fileBytes * 2 + GiB + committed) { spaceOut = true; break; }
                 progress("已确认完整dump，复制到本次报告目录；不删除原文件", true);
-                CopyLocked(*locked, result.report.directory / "crash.dmp", stop);
-                metadata = ValidateFullDump(result.report.directory / "crash.dmp", metadata.processId);
-                result.dumpCaptured = true; copied = true; break;
+                CopyLocked(*locked, result.report.directory / copyName, stop);
+                metadata = ValidateFullDump(result.report.directory / copyName, metadata.processId);
+                handled.push_back(file.filename().wstring());
+                dumps.push_back({copyName, metadata, sourceName});
+                committed += metadata.fileBytes;
+                result.dumpCaptured = true;
+                progress(dumps.size() == 1
+                    ? "已收集第1份完整dump；配置仍生效，可继续复现下一次崩溃，点击“安全停止捕获”结束并打包"
+                    : "已收集第" + std::to_string(dumps.size()) + "份完整dump；点击“安全停止捕获”结束并打包", true);
             }
-            if (copied || imported) break;
-            if (FreeSpace(root) < GiB) throw std::runtime_error("剩余空间低于1GiB，停止等待并恢复设置；不终止系统写入");
+            if (imported || spaceOut) break;
+            if (FreeSpace(root) < GiB + committed) { spaceOut = true; break; }
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
         }
-        if (stop.load()) { result.report.cancelled = true; throw std::runtime_error("已停止等待/后处理；不会终止WER或游戏，晚到dump仍保留本地"); }
-        if (!copied) throw std::runtime_error("等待超时，未获得可验证dump；自定义崩溃处理或策略可能影响系统转储");
-        state = "DUMP_VALIDATED"; result.message = "完整dump已验证";
+        if (dumps.empty())
+        {
+            if (stop.load()) { result.report.cancelled = true; throw std::runtime_error("已停止等待/后处理；不会终止WER或游戏，晚到dump仍保留本地"); }
+            if (spaceOut) throw std::runtime_error("剩余空间不足，未获得可验证dump；不终止系统写入");
+            throw std::runtime_error("等待超时，未获得可验证dump；自定义崩溃处理或策略可能影响系统转储");
+        }
+        // Stopping or timing out with dumps in hand is a normal finish, not a
+        // cancellation: package what was collected. Only an empty session fails.
+        // The registry is restored here, once, after the last dump -- which is
+        // exactly what made later crashes collectable.
+        metadata = dumps.front().metadata; sourceName = dumps.front().sourceName;
+        state = "DUMP_VALIDATED";
+        result.message = dumps.size() > 1 ? "已收集 " + std::to_string(dumps.size()) + " 份完整dump" : "完整dump已验证";
+        if (dumps.size() >= MaxDumps) result.message += "（已达单次会话收集上限，结束等待）";
+        else if (stop.load()) result.message += "（已结束等待）";
+        else if (spaceOut) result.message += "（剩余空间不足，提前结束等待）";
         if (restoreNeeded) progress("准备恢复WER原配置，请确认UAC；不会中断系统写入", false);
         restore(); manifest();
-        EvidenceFile stable(result.report.directory / "crash.dmp");
-        CollectDumpEnvironment(options.environment, metadata, result.report, stop, progress);
+        // The caller's stop flag has done its job -- it ended the wait. Passing
+        // it on would make post-processing cancel itself instantly and package
+        // none of the dumps: whoever clicked "stop" still wants the evidence.
+        static std::atomic_bool noStop{false};
+        EvidenceFile stable(result.report.directory / dumps.front().name);
+        CollectDumpEnvironment(options.environment, metadata, result.report, noStop, progress);
         state = "CAPTURED"; manifest();
-        PackageDumpEvidence(result.report, {"crash.dmp", "environment.zip", "capture.json"}, stop, progress);
-        result.message = restoreNeeded ? "ZIP已生成，但WER配置待恢复，请点击恢复按钮" : "完整dump与环境ZIP已生成，请确认隐私后手动发送";
+        std::vector<std::string> packaged;
+        for (const auto& dump : dumps) packaged.push_back(WideToUtf8(dump.name));
+        packaged.push_back("environment.zip"); packaged.push_back("capture.json");
+        PackageDumpEvidence(result.report, packaged, noStop, progress);
+        result.message = restoreNeeded ? "ZIP已生成，但WER配置待恢复，请点击恢复按钮"
+            : dumps.size() > 1 ? "多份完整dump与环境ZIP已生成，请确认隐私后手动发送"
+            : "完整dump与环境ZIP已生成，请确认隐私后手动发送";
         return result;
     }
     catch (const std::exception& error)

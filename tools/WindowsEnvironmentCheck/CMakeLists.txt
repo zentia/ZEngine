@@ -259,6 +259,16 @@ if(ENVIRONMENT_CHECK_BUILD_GUI)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/profiles/osgame.ini" "$<TARGET_FILE_DIR:ZEnvironmentCollector>/profiles/osgame.ini")
     install(TARGETS ZEnvironmentCollector RUNTIME DESTINATION . COMPONENT EnvironmentCollector)
 endif()
+
+# The GPU auto-select inspector is a second, much smaller ZSlate GUI over the
+# same probe module. It used to be added separately from the root CMakeLists
+# (which had to explain why it belonged after add_subdirectory(engine)); being
+# here next to the collector keeps that ordering constraint in one place.
+# Self-skips when ZSlate is not available.
+if(TARGET ZSlate)
+    add_subdirectory(GpuSelectionInspectorGui)
+endif()
+
 install(TARGETS ${ENVIRONMENT_CHECK_TARGET} ${DLL_PROBE_TARGET} RUNTIME DESTINATION . COMPONENT EnvironmentCollector)
 install(FILES "${zydis_SOURCE_DIR}/LICENSE" DESTINATION . RENAME LICENSE-Zydis.txt COMPONENT EnvironmentCollector)
 install(FILES "${zycore_SOURCE_DIR}/LICENSE" DESTINATION . RENAME LICENSE-Zycore.txt COMPONENT EnvironmentCollector)

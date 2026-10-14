@@ -449,15 +449,6 @@ elseif(WIN32)
 endif()
 
 # =============================================================================
-# Standalone Tools
-# =============================================================================
-
-option(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK "Build the standalone Windows environment checker" ON)
-if(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK AND WIN32)
-    add_subdirectory(tools/WindowsEnvironmentCheck)
-endif()
-
-# =============================================================================
 # Tests
 # =============================================================================
 
@@ -472,13 +463,17 @@ add_subdirectory(tests)
 add_subdirectory(engine)
 
 # =============================================================================
-# GPU Selection Inspector GUI (optional)
+# Standalone tools that do not depend on the engine
 # =============================================================================
-# Must come AFTER add_subdirectory(engine) above: the ZSlate target it links
-# against is defined deep inside engine/Source/Runtime/CMakeLists.txt, and is
-# not yet available when tools/WindowsEnvironmentCheck is processed earlier in
-# this file. The subdirectory itself is guarded with if(TARGET ZSlate), so it
-# is a no-op when ZSlate was not built (e.g. Runtime target excluded).
-if(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK AND WIN32)
-    add_subdirectory(tools/WindowsEnvironmentCheck/GpuSelectionInspectorGui)
-endif()
+# MUST come after add_subdirectory(engine) above. Every tool in tools/ links
+# ZSlate, which is defined deep inside engine/Source/Runtime/CMakeLists.txt.
+# Adding this directory earlier makes the tools create their own ZSlate target
+# via add_subdirectory(engine/Libraries/ZSlate) and then collide with the
+# engine's -- "add_library cannot create target ZSlate because another target
+# with the same name already exists". It also silently disabled
+# -DENVIRONMENT_CHECK_BUILD_GUI=ON in a full-tree configure.
+#
+# Tools that DO need engine internals (ZRuntime decompressors, SerializedFile)
+# do not live here: they stay in engine/Source/Tools/ and are added by
+# engine/CMakeLists.txt. See AGENTS.md section 8.
+add_subdirectory(tools)
