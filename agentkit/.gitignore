@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+traces/
+*.jsonl
+.eval_runs/
+.pytest_cache/
+
+# 编译验证的临时产物（用 cl.exe 手工编译 CrashHandler 时落在这里）
+vc140.pdb
+crash_verify.obj
+crash_verify.ilk
+crash_verify.exe
+crashverify_*.json
+crashverify_*.txt
+
+# 实验工作目录：zlab 跑缺陷样本时生成的临时源码与产物
+_lab_work/
