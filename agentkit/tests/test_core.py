@@ -16,11 +16,13 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from zagent.adapters import GitCodeIndex, LocalDumpSource, SimpleVersionResolver
+from zagent.adapters import (GitCodeIndex, LocalDumpSource,  # noqa: E401
+                            SimpleVersionResolver, find_git)
 from zagent.eval import Sample, SampleSet, _normalize, evaluate, score
 from zagent.pipeline import diagnose
 from zagent.protocols import Context
@@ -275,3 +277,58 @@ class TestTracing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+from unittest import mock
+
+
+class TestRevisionNeverFakedFromErrorText(unittest.TestCase):
+    """拿不到 revision 必须返回空，不能把错误文本当版本号。
+
+    这里锁住一个真实的坑：current_revision() 曾写成
+    `Revision(id=out or "unknown")` 并忽略返回码，于是 git 不可用时
+    "git not found" 这个字符串被当成了一个 revision。版本对齐门禁拿它
+    和崩溃端的 "nogit" 比对，两边都是垃圾值、恰好不等，4 个合成样本
+    全部被 block，top1 掉到 0%。
+
+    教训：**错误信息不是数据**。拿不到就说拿不到（空 id），让门禁走
+    "版本无法确定" 分支；把错误文本塞进数据字段，只会让它看起来像是有
+    值，从而绕过所有缺失检查。
+    """
+
+    def test_git_missing_yields_empty_not_error_text(self):
+        idx = GitCodeIndex(Path(r"E:\Engine\ZEngine"))
+        with mock.patch.object(GitCodeIndex, "_git", return_value=(1, "git not found")):
+            rev = idx.current_revision()
+        self.assertEqual(rev.id, "")
+        self.assertNotIn("git not found", rev.id)
+
+    def test_git_empty_output_yields_empty(self):
+        idx = GitCodeIndex(Path(r"E:\Engine\ZEngine"))
+        with mock.patch.object(GitCodeIndex, "_git", return_value=(0, "")):
+            self.assertEqual(idx.current_revision().id, "")
+
+    def test_successful_revision_preserved(self):
+        idx = GitCodeIndex(Path(r"E:\Engine\ZEngine"))
+        with mock.patch.object(GitCodeIndex, "_git", return_value=(0, "abc123")):
+            rev = idx.current_revision()
+        self.assertEqual(rev.id, "abc123")
+
+
+class TestFindGit(unittest.TestCase):
+    """git 探测只该有一份实现。
+
+    之前 adapters.py 和 examples/run_eval.py 各写一份降级
+    （"git not found" / "nogit"），互不知情，门禁靠两边垃圾值恰好相等
+    才放行 —— 等于没生效。
+    """
+
+    def test_returns_executable_or_none(self):
+        r = find_git()
+        self.assertTrue(r is None or isinstance(r, str))
+
+    def test_no_error_text_leaks(self):
+        """返回值要么是真路径，要么是 None，绝不可能是错误描述。"""
+        r = find_git()
+        if r is not None:
+            self.assertNotIn("not found", r)
+            self.assertNotIn("nogit", r)
+

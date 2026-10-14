@@ -45,6 +45,30 @@ class SimpleVersionResolver:
         return Revision(id=product_version, note="raw")
 
 
+def find_git() -> str | None:
+    """找到可用的 git 可执行文件，找不到返回 None。
+
+    **为什么需要这个函数**
+
+    git 装在 C:\\Program Files\\Git\\cmd 却没加进 PATH 是很常见的情形。
+    直接 `shutil.which("git")` 会返回 None，于是各处各写各的降级：
+    adapters.py 回退成字符串 "git not found"，examples/run_eval.py
+    回退成 "nogit"。两份降级互不知情，版本对齐门禁拿两个垃圾值去比对，
+    结果取决于它们恰好是否相等 —— 门禁等于没生效。
+
+    git 探测只该有一份实现，且失败必须表现为"没有"而不是"某个字符串"。
+    """
+    found = shutil.which("git")
+    if found:
+        return found
+    for c in (r"C:\Program Files\Git\cmd\git.exe",
+              r"C:\Program Files\Git\bin\git.exe",
+              r"C:\Program Files (x86)\Git\cmd\git.exe"):
+        if Path(c).exists():
+            return c
+    return None
+
+
 # ============================================================ 代码索引
 
 class GitCodeIndex:
@@ -61,19 +85,38 @@ class GitCodeIndex:
         self.root = Path(root)
         self.project_globs = project_globs
 
+    # git 不在 PATH 时的常见位置。git 装在 C:\Program Files\Git\cmd 却没
+    # 加进 PATH 是很常见的情形，直接判"没有 git"会让版本对齐门禁失去依据。
     def _git(self, *args: str) -> tuple[int, str]:
-        if not shutil.which("git"):
-            return 1, "git not found"
+        exe = find_git()
+        if exe is None:
+            return 1, ""
         try:
-            p = subprocess.run(["git", *args], cwd=self.root, capture_output=True,
-                               text=True, timeout=60)
+            p = subprocess.run([exe, *args], cwd=self.root,
+                               capture_output=True, text=True, timeout=60)
             return p.returncode, (p.stdout or "").strip()
         except subprocess.TimeoutExpired:
-            return 1, "timeout"
+            return 1, ""
+        except (OSError, subprocess.SubprocessError):
+            return 1, ""
 
     def current_revision(self) -> Revision:
+        """
+        当前 revision。**失败时必须返回空 id，绝不能把错误文本当版本号。**
+
+        这里曾经写 `Revision(id=out or "unknown")`，忽略了返回码。
+        于是 git 不可用时，"git not found" 这个字符串被当成了一个 revision，
+        版本对齐门禁拿它去和崩溃端的 "nogit" 比对 —— 结果当然是"不一致"，
+        4 个合成样本全部被 block，top1 掉到 0%。
+
+        教训：**错误信息不是数据**。拿不到就说拿不到（空 id + note 说明），
+        让门禁走"版本无法确定"的分支；把错误文本塞进数据字段，
+        只会让它看起来像是有值，从而绕过所有缺失检查。
+        """
         rc, out = self._git("rev-parse", "HEAD")
-        return Revision(id=out or "unknown", note="HEAD")
+        if rc != 0 or not out:
+            return Revision(id="", note="revision unavailable (git failed)")
+        return Revision(id=out, note="HEAD")
 
     def is_dirty(self) -> bool:
         _, out = self._git("status", "--porcelain")

@@ -28,17 +28,22 @@ from zagent.tracing import Tracer
 from zagent.verify import HeuristicReasoner, RuleVerifier
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from zagent.adapters import find_git            # noqa: E402
 from minimal_run import SAMPLE_CPP, build_crash_sample, build_fake_repo  # noqa: E402
 
 
 def build_repo(root: Path) -> str:
     """复用 minimal_run 的合成工程；返回 HEAD sha。"""
     build_fake_repo(root)
-    if not shutil.which("git"):
-        return "nogit"
-    p = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
+    # 走共用的 find_git()，不要自己判 which —— 否则本机 git 不在 PATH 时
+    # 这里返回 "nogit" 而 adapters 那边返回真实 sha，两边对不上，
+    # 版本门禁会把所有正样本都 block 掉。
+    exe = find_git()
+    if exe is None:
+        return ""
+    p = subprocess.run([exe, "rev-parse", "HEAD"], cwd=root,
                        capture_output=True, text=True, timeout=30)
-    return (p.stdout or "").strip() or "nogit"
+    return (p.stdout or "").strip()
 
 
 def main() -> int:
