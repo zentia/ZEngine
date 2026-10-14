@@ -1578,5 +1578,24 @@ as lost work.
 | World Partition V3+ | `doc/world_partition/WORLD_PARTITION_DESIGN.md` | V1+V2 landed: grid streaming, async preload, level ref-count, render delete on unload, editor cell overlay. Data layers / HLOD / per-cell `.zasset` LevelRes still open. |
 | LWC (Large World Coordinates) | `doc/world_partition/LARGE_WORLD_COORDINATES.md` | L1+L2 landed: `r.LWC.Enable`, 2^21 render tiles, `Vector3d` transform/hierarchy, schema read float / write double. L3 shader types + L4 per-cell origins open. |
 
+## 6. Tools: WindowsEnvironmentCheck (env collector)
+
+`tools/WindowsEnvironmentCheck/` (GUI `ZEnvironmentCollector.exe`, CLI
+`ZWindowsEnvironmentCheck.exe --collect`) packages **game logs** together with
+the environment report:
+
+- The log directory is declared per project profile, never guessed: `logRoot`
+  (`localLow` default, else `localAppData` / `roaming` / `programData`) +
+  `logSubPath`. OSGame = `LocalLow\Tencent\osgameCNOfficial\Cache\Logs`.
+  CLI override: `--log-dir`. Empty `logSubPath` disables the stage.
+- **Real OSGame logs are `.logcompr`** (compressed per-session 扁鹊 log), not
+  `.log`; plain `.log` only shows up under `bqLog\ccs_log\`. A filter that
+  accepts only `.log`/`.txt` silently collects nothing on a real machine.
+- Caps: 8 files, 16 MiB each, 48 MiB total; incident-window files first, then
+  newest; oversized files are skipped, never truncated. Logs are copied into
+  the report dir (`gamelog-NN-<name>`), never moved / modified / renamed.
+  Index in `game-logs.json`; missing or empty log dir is status `NO_LOGS`
+  and does **not** mark the report partial.
+
 
 

@@ -1,6 +1,7 @@
 #include "Collection.h"
 #include "CollectorScrollPanel.h"
 #include "CrashCapture.h"
+#include "WerCapture.h"
 #include "ToolVersion.h"
 #include <commdlg.h>
 #include <shlobj.h>
@@ -71,6 +72,7 @@ public:
     std::shared_ptr<SVerticalBox> column;
     std::shared_ptr<STextBlock> status, timeLabel;
     std::shared_ptr<SComboBox<IncidentKind>> kindBox;
+    std::shared_ptr<SComboBox<int>> captureMode;
     std::shared_ptr<SEditableTextBox> timeInput;
     std::shared_ptr<SCheckBox> details;
     std::filesystem::path procDumpPath, targetPath;
@@ -106,6 +108,7 @@ public:
         if (window && GetClientRect(window, &client) && client.right > 0 && client.bottom > 0)
             SetPhysicalSize(client.right, client.bottom);
         if (kindBox) kindBox->ClosePopup();
+        if (captureMode) captureMode->ClosePopup();
         ResetPointerGesture();
     }
     void SetPhysicalSize(int width, int height)
@@ -151,7 +154,7 @@ public:
         column = std::make_shared<SVerticalBox>();
         Text("Windows 环境信息采集", 29);
         Text("项目：" + options.profile.displayName, 18);
-        Text("采集硬件、BIOS、驱动、系统事件和已有内存检测结果。", 16);
+        Text("采集硬件、BIOS、驱动、系统事件、已有内存检测结果，并按项目配置附带最新游戏日志。", 16);
         Text("不上传、不启动游戏、不压测、不重启、不修改BIOS。", 16);
         Text("问题类型", 16);
         kindBox = std::make_shared<SComboBox<IncidentKind>>();
@@ -198,7 +201,14 @@ public:
         Text("未发现异常不代表硬件健康；部分采集失败会记入报告。", 16);
         Text(std::string("高级诊断：捕获一次游戏崩溃 · ") + zengine::envcheck::ToolVersion, 24);
         Text("完整内存可能包含账号和聊天信息；仅本地保存，请勿公开分享。", 16);
-        Text("微软ProcDump需自行下载；监控可能被反作弊阻止，不会绕过。", 16);
+        captureMode = std::make_shared<SComboBox<int>>();
+        captureMode->Options = {0, 1}; captureMode->SelectedIndex = 0; captureMode->SelectedItem = 0;
+        captureMode->Size = Vector2(460, 32); captureMode->FontSize = 18;
+        captureMode->ItemHeight = 32; captureMode->MaxDropdownHeight = 64; captureMode->ExternalPopup = true;
+        captureMode->OnGetLabel = [](int mode) { return mode == 0 ? "Windows系统崩溃转储（推荐）" : "ProcDump附加（需允许调试）"; };
+        AddWidget(captureMode, 6);
+        Text("WER仅配置当前exe名称；需要UAC，结束时恢复，不附加游戏。", 16);
+        Text("下方ProcDump下载与选择只用于ProcDump模式。", 16);
         Button("打开微软ProcDump下载及许可页面", [this] {
             if (!busy) ShellExecuteW(window, L"open", L"https://learn.microsoft.com/en-us/sysinternals/downloads/procdump", nullptr, nullptr, SW_SHOWNORMAL);
         });
@@ -213,9 +223,16 @@ public:
             auto path = ChooseExecutable(L"选择当前项目的游戏exe，不是启动器");
             if (!path.empty()) { targetPath = path; targetLabel->SetText("目标：" + WideToUtf8(path.filename().wstring())); }
         });
-        Button("开始捕获崩溃（需隐私和许可确认）", [this] { StartCapture(); });
+        Button("开始捕获崩溃（按所选方式）", [this] { StartCapture(); });
+        Button("选择已有dump并打包（不改系统配置）", [this] {
+            if (busy) return;
+            auto file = ChooseExecutable(L"选择已生成的完整dump", L"Memory dump (*.dmp)\0*.dmp\0\0");
+            if (!file.empty()) StartCapture(file);
+        });
         Button("安全停止捕获 / 取消后处理", [this] { if (busy && capturing && cancellable.load()) cancel = true; });
-        captureStatus = Text("未开启；仅匹配所选程序路径，默认等待/监控最多1小时。", 16);
+        Button("恢复当前项目WER原配置（含上次未完成会话）", [this] { RestoreWer(); });
+        captureStatus = Text(!options.profile.gameExecutable.empty() && HasWerBackup(options.profile.gameExecutable)
+            ? "发现未恢复的WER会话，请先点击恢复原配置。" : "未开启；默认等待最多1小时，启用成功不保证系统一定产生dump。", 16);
         Button("打开捕获结果（定位ZIP或capture.json）", [this] {
             if (busy) return;
             if (captureReport.directory.empty())
@@ -241,28 +258,30 @@ public:
         auto root = std::make_shared<CollectorScrollPanel>(scroll, scrollBar);
         SlateApplication::Get().SetRootContent(root);
     }
-    std::filesystem::path ChooseExecutable(const wchar_t* title)
+    std::filesystem::path ChooseExecutable(const wchar_t* title, const wchar_t* filter = L"Windows program (*.exe)\0*.exe\0\0")
     {
         std::array<wchar_t, 32768> path{};
         OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof(dialog); dialog.hwndOwner = window;
-        dialog.lpstrFilter = L"Windows program (*.exe)\0*.exe\0\0";
+        dialog.lpstrFilter = filter;
         dialog.lpstrFile = path.data(); dialog.nMaxFile = static_cast<DWORD>(path.size()); dialog.lpstrTitle = title;
         dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
         return GetOpenFileNameW(&dialog) ? std::filesystem::path(path.data()) : std::filesystem::path{};
     }
-    void StartCapture()
+    void StartCapture(const std::filesystem::path& import = {})
     {
         if (busy) return;
-        if (procDumpPath.empty() || targetPath.empty())
-        { captureStatus->SetText("请先选择ProcDump和游戏程序。"); return; }
+        const bool wer = captureMode->SelectedItem == 0 || !import.empty();
+        if (targetPath.empty() || (!wer && procDumpPath.empty()))
+        { captureStatus->SetText(wer ? "请先选择游戏程序。" : "请先选择ProcDump和游戏程序。"); return; }
         if (options.profile.gameExecutable.empty())
         { captureStatus->SetText("当前profile没有目标exe，请使用具体项目配置。"); return; }
-        if (MessageBoxW(window,
-            L"仅监控所选游戏，默认一次完整dump。文件可能包含账号、聊天等内存数据，无法自动脱敏。\n"
-            L"可能暂停游戏并占用数GB磁盘，不自动上传。反作弊或崩溃处理器可能阻止捕获。\n"
-            L"停止时需等待ProcDump安全退出；不会强杀游戏或调试器。\n\n是否同意采集？",
-            L"完整内存采集授权", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
-        if (MessageBoxW(window,
+        const std::wstring notice = !import.empty()
+            ? L"确认这个完整dump来自所选游戏。导入只验证结构及模块路径，不能证明它属于本次运行。\n可能包含账号、聊天和令牌，占用数GB空间，不自动上传，不删除原文件。\n\n是否确认来源并同意打包？"
+            : wer ? L"将仅配置HKLM LocalDumps下的 " + Utf8ToWide(options.profile.gameExecutable) +
+                L"，DumpType=2，保留2份，输出到本次报告的system-dumps私有目录。\n配置按exe名称生效，可能影响其它同名程序；需要UAC授权，结束时再次请求UAC恢复原设置。\n完整内存含敏感数据，占用数GB，不自动上传。配置成功不保证产生dump。\n不附加游戏，不终止WER；异常退出可用恢复按钮处理。\n\n是否同意？"
+            : L"仅监控所选游戏。完整内存含账号、聊天等敏感数据，占用数GB，不自动上传。\n停止时等待ProcDump安全退出，不强杀游戏或调试器。\n\n是否同意？";
+        if (MessageBoxW(window, notice.c_str(), L"完整内存采集授权", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+        if (!wer && MessageBoxW(window,
             L"请先阅读微软Sysinternals许可（下载页及ProcDump自带Eula.txt）。\n"
             L"选择“是”表示你已阅读并接受，采集器将以 -accepteula 参数调用你选择的ProcDump。\n"
             L"工具不包含ProcDump，也不代替你取得第三方使用许可。\n\n是否接受该许可？",
@@ -270,17 +289,21 @@ public:
         CaptureOptions input;
         input.environment = options; input.environment.includeEvents = details->IsChecked();
         input.procDump = procDumpPath; input.gameExecutable = targetPath;
-        input.memoryConsent = true; input.licenseAccepted = true;
+        input.memoryConsent = true; input.licenseAccepted = !wer;
+        WerOptions system; system.environment = input.environment; system.gameExecutable = targetPath;
+        system.memoryConsent = true; system.importDump = import; system.importConfirmed = !import.empty(); system.owner = window;
         capturing = true; busy = true; cancel = false; finished = false; cancellable = true;
+        captureMode->ClosePopup(); captureMode->Visibility = EVisibility::HitTestInvisible;
         kindBox->ClosePopup(); kindBox->Visibility = EVisibility::HitTestInvisible;
         timeInput->Visibility = EVisibility::HitTestInvisible; details->Visibility = EVisibility::HitTestInvisible;
         { std::lock_guard lock(mutex); error.clear(); captureMessage.clear(); captureReport = {}; progress = "准备捕获"; }
-        worker = std::thread([this, input] {
+        worker = std::thread([this, input, system, wer] {
             try
             {
-                auto captured = CaptureCrash(input, cancel, [this](const std::string& message, bool canCancel) {
+                auto update = [this](const std::string& message, bool canCancel) {
                     cancellable = canCancel; std::lock_guard lock(mutex); progress = message;
-                });
+                };
+                auto captured = wer ? CaptureWer(system, cancel, update) : CaptureCrash(input, cancel, update);
                 const bool remember = captured.procDumpVerified;
                 { std::lock_guard lock(mutex); captureReport = std::move(captured.report); captureMessage = captured.message; }
                 if (remember)
@@ -292,6 +315,26 @@ public:
             catch (const std::exception& exception) { std::lock_guard lock(mutex); error = exception.what(); }
             finished = true;
         });
+    }
+    void RestoreWer()
+    {
+        if (busy || options.profile.gameExecutable.empty()) return;
+        if (MessageBoxW(window, L"恢复当前项目exe的WER备份，可能需要UAC授权。\n只恢复采集器保存的原值，不删除dump；检测到其他工具修改时拒绝覆盖。\n\n继续？", L"恢复系统捕获配置", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+        capturing = true; busy = true; finished = false; cancellable = false;
+        captureMode->ClosePopup(); captureMode->Visibility = EVisibility::HitTestInvisible;
+        { std::lock_guard lock(mutex); error.clear(); captureMessage.clear(); progress = "等待恢复配置授权"; }
+        worker = std::thread([this] {
+            DWORD code = RequestWerRestore(options.profile.gameExecutable, window);
+            { std::lock_guard lock(mutex); captureMessage = code == ERROR_SUCCESS ? "WER配置已恢复（或没有待恢复备份），原dump保留。"
+                : "恢复未完成：Win32=" + std::to_string(code) + "。可能UAC被取消或配置存在冲突，备份保留。"; }
+            finished = true;
+        });
+    }
+    bool ConfirmClose()
+    {
+        if (!options.profile.gameExecutable.empty() && HasWerBackup(options.profile.gameExecutable))
+            return MessageBoxW(window, L"WER配置仍有未恢复备份，后续同名程序崩溃可能继续生成dump。\n建议返回并点击恢复原配置。仍要退出？", L"系统捕获配置尚未恢复", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+        return true;
     }
     void Start()
     {
@@ -306,6 +349,7 @@ public:
         { status->SetText("发生时间不能在未来。"); return; }
         input.includeEvents = details->IsChecked();
         cancel = false; finished = false; cancellable = true; busy = true;
+        captureMode->ClosePopup(); captureMode->Visibility = EVisibility::HitTestInvisible;
         { std::lock_guard lock(mutex); progress = "准备采集"; error.clear(); }
         timeInput->Visibility = EVisibility::HitTestInvisible;
         details->Visibility = EVisibility::HitTestInvisible;
@@ -327,12 +371,14 @@ public:
     void Update()
     {
         if (!busy) return;
+        if (closing && cancellable.load()) cancel = true;
         { std::lock_guard lock(mutex); status->SetText(progress + " …"); if (capturing) captureStatus->SetText(progress + " …"); }
         if (finished.load())
         {
             worker.join(); busy = false;
             timeInput->Visibility = EVisibility::Visible; details->Visibility = EVisibility::Visible;
             kindBox->Visibility = EVisibility::Visible;
+            captureMode->Visibility = EVisibility::Visible;
             std::lock_guard lock(mutex);
             if (capturing)
             {
@@ -341,7 +387,7 @@ public:
             }
             else status->SetText(!error.empty() ? error : result.cancelled ? "已取消，已生成包含部分信息的ZIP。"
                 : result.partial ? "ZIP已生成；部分步骤失败，请查看manifest。" : "ZIP已生成。请检查报告后手动发送。");
-            if (closing) DestroyWindow(window);
+            if (closing) { closing = false; if (ConfirmClose()) DestroyWindow(window); }
         }
     }
     void Mouse(float wheel = 0)
@@ -354,6 +400,11 @@ public:
         if (kindBox && kindBox->ProcessPopupMouse(platform.mouse, platform.down, wheel))
         {
             if (!kindBox->IsOpen()) ResetPointerGesture();
+            return;
+        }
+        if (captureMode && captureMode->ProcessPopupMouse(platform.mouse, platform.down, wheel))
+        {
+            if (!captureMode->IsOpen()) ResetPointerGesture();
             return;
         }
         router.ProcessMouse(SlateApplication::Get().GetRootContent(), platform.mouse,
@@ -405,6 +456,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
     case WM_KILLFOCUS:
         app->platform.down = false;
         if (app->kindBox) app->kindBox->ClosePopup();
+        if (app->captureMode) app->captureMode->ClosePopup();
         app->router.Reset(); return 0;
     case WM_MOUSEWHEEL:
     {
@@ -422,15 +474,20 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
             app->kindBox->OnKeyDown(key);
             if (!app->kindBox->IsOpen()) app->ResetPointerGesture();
         }
+        else if (app->captureMode && app->captureMode->IsOpen())
+        {
+            app->captureMode->OnKeyDown(key);
+            if (!app->captureMode->IsOpen()) app->ResetPointerGesture();
+        }
         else if (!app->busy) app->router.ProcessKey(key);
         return 0;
     }
     case WM_CHAR:
-        if (!app->busy && w < 128 && (!app->kindBox || !app->kindBox->IsOpen())) app->router.ProcessChar(static_cast<unsigned>(w));
+        if (!app->busy && w < 128 && (!app->kindBox || !app->kindBox->IsOpen()) && (!app->captureMode || !app->captureMode->IsOpen())) app->router.ProcessChar(static_cast<unsigned>(w));
         return 0;
     case WM_CLOSE:
         if (app->busy) { app->closing = true; if (app->cancellable.load()) app->cancel = true; return 0; }
-        DestroyWindow(window); return 0;
+        if (app->ConfirmClose()) DestroyWindow(window); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     default: return DefWindowProcW(window, message, w, l);
     }
@@ -497,6 +554,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show)
                 const UIRect viewport(0, 0, app.platform.size.x, app.platform.size.y);
                 SlateApplication::Get().PaintInto(&scaled, viewport);
                 app.kindBox->PaintPopup(&scaled, viewport);
+                app.captureMode->PaintPopup(&scaled, viewport);
                 scaled.EndFrame();
                 app.backend->Render(app.platform.renderer, &app.fonts);
             }

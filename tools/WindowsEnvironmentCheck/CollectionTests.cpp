@@ -151,6 +151,43 @@ int main()
         std::atomic_bool cancelled{true};
         auto partial = Collect(cancelledOptions, cancelled, [](const std::string&, bool) {});
         Check(partial.cancelled && partial.partial && std::filesystem::is_regular_file(partial.archive), "cancel retains partial ZIP");
+
+        // Game logs travel with the report: they are the only record of what the
+        // game itself printed before the incident.
+        {
+            auto logs = directory / "GameLogs";
+            std::filesystem::create_directories(logs / "nested");
+            std::ofstream(logs / "2026-01-01_000000_d1_g1_r1.logcompr", std::ios::binary) << "session\n";
+            std::ofstream(logs / "nested" / "weird name@.log", std::ios::binary) << "nested\n";
+            std::ofstream(logs / "ignored.bin", std::ios::binary) << "binary";
+            const auto collected = CollectGameLogs(logs, directory / "log-out", 336, 0);
+            Check(collected.status == GameLogStatus::Ok, "game logs collected");
+            // Compressed per-session logs (.logcompr) are the game's own record; they must not be filtered out.
+            Check(collected.archiveNames.size() == 2, "only .log/.logcompr/.txt files are packaged");
+            for (const auto& name : collected.archiveNames)
+            {
+                Check(IsArchivedGameLogName(name), "archive name stays whitelisted");
+                Check(std::filesystem::is_regular_file(directory / "log-out" / name), "log copy written next to the reports");
+            }
+            Check(collected.json.find("weird") != std::string::npos, "index keeps the relative path");
+            Check(collected.json.find("ignored.bin") == std::string::npos, "other extensions skipped");
+            Check(collected.json.find("\"sha256\"") != std::string::npos, "index hashes each copy");
+
+            const auto missing = CollectGameLogs(directory / "NoSuchLogs", directory / "log-out2", 336, 0);
+            Check(missing.status == GameLogStatus::NoLogs && missing.archiveNames.empty()
+                && missing.json.find("LOG_DIRECTORY_MISSING") != std::string::npos, "missing log folder is reported, not blamed");
+            std::filesystem::create_directories(directory / "EmptyLogs");
+            const auto empty = CollectGameLogs(directory / "EmptyLogs", directory / "log-out3", 336, 0);
+            Check(empty.status == GameLogStatus::NoLogs && empty.json.find("NO_LOG_FILES_IN_WINDOW") != std::string::npos,
+                "empty log folder is reported");
+
+            Profile configured;
+            configured.logSubPath = "Tencent\\osgameCNOfficial\\Cache\\Logs";
+            Check(diagnosis::WideToUtf8(ResolveGameLogDirectory(configured).wstring()).find("osgameCNOfficial") != std::string::npos,
+                "profile log sub path resolves under LocalLow");
+            Check(ResolveGameLogDirectory(Profile{}).empty(), "no log stage without a configured path");
+            Check(!IsArchivedGameLogName("../gamelog-00-x.log") && IsArchivedGameLogName("gamelog-00-x.log"), "archive name guard");
+        }
         std::filesystem::remove_all(directory);
         const auto mocks = RunAllGpuSelectionMockCases();
         Check(!mocks.empty(), "GPU mock cases preserved");

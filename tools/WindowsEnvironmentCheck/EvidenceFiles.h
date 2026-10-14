@@ -32,6 +32,9 @@ struct DumpMetadata
     std::uint32_t timestamp = 0;
     std::uint64_t memoryBytes = 0;
     std::uint64_t fileBytes = 0;
+    std::uint32_t processCreatedUnix = 0;
+    std::vector<std::wstring> modulePaths;
 };
+// expectedPid=0 validates the file only; callers must separately establish identity.
 DumpMetadata ValidateFullDump(const std::filesystem::path& file, std::uint32_t expectedPid);
 }

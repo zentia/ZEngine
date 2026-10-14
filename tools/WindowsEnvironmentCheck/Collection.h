@@ -1,9 +1,11 @@
 #pragma once
 #include "DiagnosisTypes.h"
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace zengine::envcheck::collector
 {
@@ -13,11 +15,16 @@ struct Profile
     std::string displayName = "Windows 环境采集";
     std::string gameExecutable;
     unsigned lookbackHours = 336;
+    // Game logs are optional: an empty logSubPath disables the gamelogs stage.
+    std::string logRoot = "localLow"; // localLow | localAppData | roaming | programData
+    std::string logSubPath; // e.g. "Tencent\osgameCNOfficial\Cache\Logs", relative to logRoot
 };
 struct Options
 {
     Profile profile;
     std::filesystem::path outputDirectory;
+    // Resolved game log directory; overrides Profile when set from the command line.
+    std::filesystem::path logDirectory;
     diagnosis::UtcTicks incidentTime = 0;
     diagnosis::IncidentKind incidentKind = diagnosis::IncidentKind::Unknown;
     bool includeEvents = false;
@@ -30,6 +37,28 @@ struct Result
     bool partial = false;
     bool cancelled = false;
 };
+// Game log packaging (stage "gamelogs").
+constexpr std::uint32_t MaxGameLogFiles = 8;
+constexpr std::uint64_t MaxGameLogFileBytes = 16ull << 20; // matches the report archive per-file cap
+constexpr std::uint64_t MaxGameLogTotalBytes = 48ull << 20;
+constexpr int MaxGameLogScanDepth = 3; // 1 = the log directory itself, no subdirectories
+constexpr const char* GameLogNamePrefix = "gamelog-";
+
+enum class GameLogStatus { Ok, NoLogs };
+struct GameLogCollection
+{
+    GameLogStatus status = GameLogStatus::NoLogs;
+    std::string json;
+    std::vector<std::string> archiveNames;
+};
+// Copies the newest .log/.logcompr/.txt files of logDirectory into outputDirectory and returns the index JSON.
+// Files are never modified or deleted; oversized ones are skipped and recorded in the index.
+GameLogCollection CollectGameLogs(const std::filesystem::path& logDirectory, const std::filesystem::path& outputDirectory,
+                                  unsigned lookbackHours, diagnosis::UtcTicks incidentTime);
+std::filesystem::path ResolveGameLogDirectory(const Profile& profile);
+// True for names this tool can have written into the report directory (archive whitelist).
+bool IsArchivedGameLogName(const std::string& name);
+
 std::filesystem::path ExecutableDirectory();
 std::filesystem::path DefaultOutputDirectory();
 Profile LoadProfile(const std::filesystem::path& file);

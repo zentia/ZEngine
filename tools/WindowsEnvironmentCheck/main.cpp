@@ -1,5 +1,6 @@
 #include "Diagnosis.h"
 #include "Collection.h"
+#include "WerCapture.h"
 #include "EnvironmentProbe.h"
 #include "GpuSelectionProbe.h"
 #include "ReportWriter.h"
@@ -358,6 +359,8 @@ int wmain(int argumentCount, wchar_t** arguments)
 
     try
     {
+        if (zengine::envcheck::collector::IsWerCommand(argumentCount, arguments))
+            return zengine::envcheck::collector::RunWerCommand(argumentCount, arguments);
         if (zengine::envcheck::collector::IsCollectionCommand(argumentCount, arguments))
             return zengine::envcheck::collector::RunCollectionCommand(argumentCount, arguments);
         if (zengine::envcheck::diagnosis::IsDiagnosisCommandLine(argumentCount, arguments))

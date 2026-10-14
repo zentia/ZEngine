@@ -2,5 +2,5 @@
 
 namespace zengine::envcheck
 {
-constexpr const char* ToolVersion = "1.7.3";
+constexpr const char* ToolVersion = "1.8.0";
 } // namespace zengine::envcheck

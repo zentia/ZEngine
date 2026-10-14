@@ -149,7 +149,7 @@ OSGameEnvironmentReport.json
 ```json
 {
   "schemaVersion": 5,
-  "toolVersion": "1.7.3"
+  "toolVersion": "1.8.0"
 }
 ```
 
@@ -214,7 +214,19 @@ GUI 使用 ZSlate，不依赖 ZRuntime、编辑器或游戏进程。公共源码
 
 解压完整工具包，运行 `ZEnvironmentCollector.exe`，选择问题类型、可选填写带时区的发生时间，点击“开始采集并生成 ZIP”。默认输出到桌面 `EnvironmentReports`。GUI默认勾选“同意附带事件明细”，可手动取消；CLI仍需显式传入 `--include-events` 才附带脱敏事件明细。窗口右侧提供可拖动滚动条，也可使用滚轮或点击轨道翻页；滑块与内容位置同步，尺寸随DPI缩放。完成后点击打开目录，确认内容后手动发送 ZIP；不自动上传。
 
-只读采集CPU、内存、BIOS/整机/主板型号、SMBIOS内存配置、原始微码注册表字节、显卡/驱动、磁盘容量、事件诊断、WHEA及已有内存诊断结果。不读取序列号、不运行内存测试、不重启、不改BIOS、不加载GameCore或扫描DLL。每个采集阶段在独立受Job管理的子进程执行，默认45秒超时，失败/取消保留已完成信息。系统权限不足、字段缺失、事件覆盖不完整会记录在报告中，不代表硬件健康。
+只读采集CPU、内存、BIOS/整机/主板型号、SMBIOS内存配置、原始微码注册表字节、显卡/驱动、磁盘容量、事件诊断、WHEA及已有内存诊断结果，并在项目配置了日志目录时附带最新的游戏日志副本。不读取序列号、不运行内存测试、不重启、不改BIOS、不加载GameCore或扫描DLL。每个采集阶段在独立受Job管理的子进程执行，默认45秒超时，失败/取消保留已完成信息。系统权限不足、字段缺失、事件覆盖不完整会记录在报告中，不代表硬件健康。
+
+### 游戏日志打包（gamelogs 阶段）
+
+环境报告只有系统侧证据时，往往看不出游戏自己打印了什么，因此新增 `gamelogs` 阶段：把游戏日志目录里**窗口内最新的** `.log` / `.logcompr` / `.txt` 复制进报告目录并打进ZIP，索引写入 `game-logs.json`。`.logcompr` 是游戏在 `Cache\Logs` 下写的压缩会话日志，漏掉它就等于没有游戏自己的记录。
+
+- 目录由 profile 声明，不猜测：`logRoot`（`localLow` 默认，另支持 `localAppData` / `roaming` / `programData`，必须是这几个已知目录之一）+ `logSubPath`（相对路径，禁止绝对路径、`..`、驱动器号）。两者都不会拼出日志目录之外的路径。OSGame 配置为 `logRoot=localLow` + `logSubPath=Tencent\osgameCNOfficial\Cache\Logs`（即 `%USERPROFILE%\AppData\LocalLow\Tencent\osgameCNOfficial\Cache\Logs`）。未配置 `logSubPath` 的 profile 不运行该阶段，manifest 也不会出现它。CLI 可用 `--log-dir <绝对路径>` 覆盖。
+- 挑选顺序：先取事故时间 ±窗口内写过的日志，其余按最后写入时间倒序；上限 8 个文件、单文件 16MiB、合计 48MiB，超限文件不截断、只记 `skipped`（`TOO_LARGE` / `TOTAL_LIMIT` / `UNREADABLE`），避免把半个日志伪装成完整日志。
+- 只复制不修改：以 `FILE_SHARE_READ|WRITE|DELETE` 打开，游戏仍在写也能读；不跟随目录/文件链接（拒绝重解析点）；副本落到本次报告目录，命名 `gamelog-NN-<原名>.log`（非白名单字符替换为 `_`），原文件不改名、不删除、不截断。
+- 不递归到底：只扫描日志目录及其下一层子目录（深度上限3层由 `MaxGameLogScanDepth` 控制，当前只走一层）。
+- 索引记录每个副本的原始相对路径、字节数、修改时间、SHA256 与 `complete`（复制期间被追加导致短读时为 false）；日志目录路径用 `SanitizePath` 去掉用户名。
+- 状态语义：目录不存在或窗口内没有日志时返回 `NO_LOGS`（manifest 中体现），**不计入 `partial`**——这不是采集失败，也不代表机器有问题；`game-logs.json` 仍然写入并给出 `reason`（`NOT_CONFIGURED` / `LOG_DIRECTORY_MISSING` / `NO_LOG_FILES_IN_WINDOW` / `NO_LOG_FILES_COLLECTED`）。
+- 隐私：日志可能含账号、聊天等信息。副本只留在本地报告目录，不自动上传；`summary.txt` 在包含日志副本时追加提示，发送前需人工确认。`EnvironmentCollectorTests` 覆盖：只收 `.log`/`.txt`、名字白名单化、副本真实落盘、缺目录与空目录返回 `NO_LOGS`、profile 路径解析。
 
 微码仅保存 `Update Revision` 原始字节，不声称跨CPU统一解码或应用桌面Intel门槛。内存标称/配置速率不等于XMP判定。BIOS日期不是安装日期。没有WHEA或内存检测结果不等于通过检测。
 
@@ -227,13 +239,29 @@ GUI 使用 ZSlate，不依赖 ZRuntime、编辑器或游戏进程。公共源码
 .\ZWindowsEnvironmentCheck.exe --diagnose --diagnose-from-events .\Diagnosis\OSGameDiagnosisEvents.tsv --output-dir .\Replay
 ```
 
-`--collect` 还支持 `--incident-time`、`--incident-kind crash|hang|unknown`、`--lookback-hours 1..720`、`--stage-timeout-seconds 1..300`；未填事故时间按已有事件查找，不伪装成当前时间。退出0表示ZIP生成，完整性见manifest；30为错误。`--collect-stage` 为隔离worker内部入口，不用于玩家直接调用。
+`--collect` 还支持 `--incident-time`、`--incident-kind crash|hang|unknown`、`--lookback-hours 1..720`、`--stage-timeout-seconds 1..300`、`--log-dir <游戏日志目录>`（覆盖profile配置，用于临时指向其它日志目录）；未填事故时间按已有事件查找，不伪装成当前时间。退出0表示ZIP生成，完整性见manifest；30为错误。`--collect-stage` 为隔离worker内部入口，不用于玩家直接调用。
 
-GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[project]` 下的 `id`、`displayName`、`gameExecutable`、`lookbackHours`。配置支持ASCII或UTF-16LE BOM编码，项目ID与进程名仅允许安全文件名字符。无目标游戏时使用generic，不能把其它进程推断成目标游戏。
+GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[project]` 下的 `id`、`displayName`、`gameExecutable`、`lookbackHours`，需要附带游戏日志时再加 `logRoot`（默认 `localLow`）与 `logSubPath`。配置支持ASCII或UTF-16LE BOM编码，项目ID与进程名仅允许安全文件名字符。无目标游戏时使用generic，不能把其它进程推断成目标游戏。
 
 保留原 `--diagnose` 的JSON schema1、四类verdict、事件回放、退出0/30语义及原OSGame文件名；原普通CLI的GPU mock/实际GPU选择探针和DLL行为保留。普通CLI并不是安全采集入口：`--check-dll`会追加路径而不是关闭递归扫描。玩家用GUI或 `--collect`。
 
-### 高级诊断：一次完整崩溃dump（1.7.2）
+### 1.8.0：推荐Windows系统转储（WER）与已有dump导入
+
+高级区域默认选择“Windows系统崩溃转储（推荐）”，另保留“ProcDump附加（需允许调试）”。WER不用选择或运行ProcDump：选择当前项目游戏exe → 点击开始 → 确认完整内存隐私及注册表修改 → 批准UAC → 界面提示系统捕获已启用后，正常启动游戏并复现崩溃。默认等1小时。目标需在当前用户会话运行；不同用户的游戏不会自动放宽输出目录权限。
+
+只写64位注册表视图的 `HKLM/SOFTWARE/Microsoft/Windows/Windows Error Reporting/LocalDumps/<exe文件名>` 三值：DumpType DWORD=2、DumpCount DWORD=2、DumpFolder REG_EXPAND_SZ=本次私有目录。WER按文件名匹配而非完整路径，因此其他同名程序也可能生成文件；采集器必须结合观测到的PID、创建时间、dump异常时间和完整模块路径才能自动接收。仅做可选的有限查询，不申请VM_READ、不调试附加、不修改反作弊。进程保护导致身份证据不足时保留原文件，提示手工确认导入，不把任意新文件当目标崩溃。
+
+普通环境采集仍只读。提权动作仅在用户启用/恢复WER时发生，调用随包CLI的严格 `--wer-config` 内部入口；参数不进入shell执行。备份写入 `HKLM/SOFTWARE/ZEngine/EnvironmentCollector/WerBackupsV1/<exe>`，ACL只允许管理员/SYSTEM修改，普通用户只读。先持久化原值的存在性、类型、原始字节与预期新值，再写目标值；异常退出后可用“恢复当前项目WER原配置”重试。恢复逐值比较，若其他工具已改动，返回冲突并保留备份，不覆盖它们。空备份/部分应用均有恢复路径；不直接删整个LocalDumps键。**恢复是恢复先前配置，不是关闭已有全局WER；以前FullDump.bat建立的全局设置不会被本工具删除。** UAC拒绝/恢复冲突时明确提示，窗口退出前对未恢复配置再次告警。
+
+成功后按原配置恢复（可能再次弹UAC），再补采环境、计算SHA256和ZIP64压缩。会话目录为 `EnvironmentReports/crash-capture-wer-<GUID>`，其 `system-dumps` 保留Windows原文件，验证后的副本为 `crash.dmp`，最终分享包为该私有目录内的 `capture.zip`，不把完整内存包放到可能共享的父目录。目录权限限当前用户、管理员和SYSTEM；不跟随目录链接，不覆盖已有文件。打开捕获结果按钮直接选中ZIP。空间不足/超时/后处理失败生成仅含capture.json的capture-failure.zip，不冒称含dump。停止不会终止游戏、WER或删除仍在写入的文件；晚到文件仍可手工导入。完整dump仍可能数GB，至少4GiB起步，复制前要求额外约2倍dump大小+1GiB；单dump上限64GiB。
+
+“选择已有dump并打包”不改注册表、不运行ProcDump，不删除或移动原文件；需先选择对应游戏exe并确认来源和完整内存隐私。验证完整内存/异常线程/PID/模块路径后复制、补采与打包。报告记录 `captureBackend=dump_import` 和 `identity=USER_CONFIRMED_IMPORT_AND_MODULE_PATH`，不伪称属于本次运行。1.8.0共用打包流程也将ProcDump最终包放到本次目录内的 `capture.zip`。WER/import报告schemaVersion=2，记录配置/恢复状态、身份依据、dump时间与异常码；ProcDump原schema不变。保留1.7.3事件优先窗口、逻辑像素DPI和滚动条修复，GUI事件明细仍默认勾选。
+
+验证（2026-10-14）：Release独立构建和4项CTest通过；HKCU唯一测试键覆盖原值不存在、原始类型/字节还原、已有备份拒绝覆盖、Token错配、外部修改冲突、Token写入前中断清理；合成dump的模块与进程创建时间校验通过。只对 `EnvironmentCaptureTestTarget.exe` 做真实HKLM启用后取消/恢复、系统异常落dump/身份匹配/恢复/打包，后者生成82,451,550字节完整dump；Python独立回读ZIP CRC、白名单和SHA256通过，最终ZIP ACL仍私有，目标配置与备份均确认移除。首次系统测试错误复用了含SEM_NOGPFAULTERRORBOX的ProcDump测试模式，导致无WER文件；仅为测试程序新增允许WER的wer-crash模式后重跑通过，没有修改系统策略。已有dump导入端到端通过。GUI 150%实际截图与鼠标选择验证两个后端，截图在独立build的wer-validation内。
+
+限制：真实WXQ.exe及玩家反作弊环境尚未验证；自定义崩溃处理、自动调试设置或系统策略可能阻止WER，配置成功不保证生成dump，不用于卡死/普通退出。未完成跨用户目标、标准用户UAC拒绝、异机ACL/受控文件夹环境验收；当前只支持安全exe文件名、本地普通目录，文件路径映射不同的历史dump需匹配原游戏路径。工具未数字签名、不自动上传。说明来源：https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps 。
+
+### 高级诊断：一次完整崩溃dump（1.7.2历史行为，1.8.0变更以上节为准）
 
 1.7.2修复“签名通过但访问游戏失败，没有verification.zip且打开普通报告目录”：1.7.1只在签名前置失败生成verification.zip，并且GUI普通采集和捕获共用结果对象。捕获失败后执行普通采集，会覆盖取证目录入口。现在普通报告与捕获结果分别保存；新按钮“打开捕获结果（定位ZIP或capture.json）”只使用本窗口最近一次捕获结果，直接在资源管理器选中ZIP或capture.json，不受普通采集影响。高级区域显示版本号。若重开窗口无历史结果，提示到桌面EnvironmentReports/crash-capture-*查找，不跳转普通报告冒充。
 

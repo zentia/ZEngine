@@ -142,8 +142,28 @@ DumpMetadata ValidateFullDump(const std::filesystem::path& path, std::uint32_t e
             if (entry.Location.DataSize >= sizeof(info))
             {
                 read(entry.Location.Rva, &info, sizeof(info));
+                if (hasPid || info.SizeOfInfo < sizeof(info)) throw std::runtime_error("dump进程标识流无效");
                 hasPid = (info.Flags1 & MINIDUMP_MISC1_PROCESS_ID) != 0;
                 result.processId = info.ProcessId;
+                if (info.Flags1 & MINIDUMP_MISC1_PROCESS_TIMES) result.processCreatedUnix = info.ProcessCreateTime;
+            }
+        }
+        else if (entry.StreamType == ModuleListStream)
+        {
+            DWORD count = 0;
+            if (!result.modulePaths.empty() || entry.Location.DataSize < sizeof(count)) throw std::runtime_error("dump模块列表无效");
+            read(entry.Location.Rva, &count, sizeof(count));
+            if (count > 4096 || count > (entry.Location.DataSize - sizeof(count)) / sizeof(MINIDUMP_MODULE)) throw std::runtime_error("dump模块数无效");
+            for (DWORD j = 0; j < count; ++j)
+            {
+                MINIDUMP_MODULE module{};
+                read(entry.Location.Rva + sizeof(count) + static_cast<std::uint64_t>(j) * sizeof(module), &module, sizeof(module));
+                DWORD bytes = 0; read(module.ModuleNameRva, &bytes, sizeof(bytes));
+                if (bytes == 0 || bytes > 32768 || bytes % sizeof(wchar_t)) throw std::runtime_error("dump模块名称无效");
+                std::wstring name(bytes / sizeof(wchar_t), L'\0');
+                read(static_cast<std::uint64_t>(module.ModuleNameRva) + sizeof(bytes), name.data(), bytes);
+                if (name.find(L'\0') != std::wstring::npos) throw std::runtime_error("dump模块名称含空字符");
+                result.modulePaths.push_back(std::move(name));
             }
         }
         else if (entry.StreamType == ThreadListStream)
@@ -166,7 +186,7 @@ DumpMetadata ValidateFullDump(const std::filesystem::path& path, std::uint32_t e
             }
         }
     }
-    if (!hasMemory || memoryBase < metadataEnd || !hasException || !hasPid || !hasThreads || result.processId != expectedPid ||
+    if (!hasMemory || memoryBase < metadataEnd || !hasException || !hasPid || !hasThreads || !result.processId || (expectedPid && result.processId != expectedPid) ||
         std::find(threadIds.begin(), threadIds.end(), exceptionThread) == threadIds.end())
         throw std::runtime_error("dump缺少完整内存/异常/线程信息或PID不符");
     return result;

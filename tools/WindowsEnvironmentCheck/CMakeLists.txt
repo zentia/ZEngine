@@ -90,6 +90,9 @@ add_library(ZEnvironmentCheckCore STATIC
     ReportArchive.cpp
     EvidenceFiles.cpp
     CrashCapture.cpp
+    CapturePackage.cpp
+    WerRegistry.cpp
+    WerCapture.cpp
     DllProbe.cpp
     DllProbe.h
     DllProbeProtocol.h
@@ -278,7 +281,11 @@ if(BUILD_TESTING)
     add_executable(EnvironmentCaptureIntegrationTests CaptureIntegrationTests.cpp)
     target_link_libraries(EnvironmentCaptureIntegrationTests PRIVATE ZEnvironmentCheckCore)
     add_dependencies(EnvironmentCaptureIntegrationTests EnvironmentCaptureTestTarget ${ENVIRONMENT_CHECK_TARGET})
-    foreach(testTarget EnvironmentCaptureTests EnvironmentCaptureTestTarget EnvironmentCaptureIntegrationTests)
+    add_executable(EnvironmentWerTests WerTests.cpp)
+    target_link_libraries(EnvironmentWerTests PRIVATE ZEnvironmentCheckCore dbghelp)
+    add_dependencies(EnvironmentWerTests EnvironmentCaptureTestTarget ${ENVIRONMENT_CHECK_TARGET})
+    add_test(NAME environment_wer_safety COMMAND EnvironmentWerTests)
+    foreach(testTarget EnvironmentCaptureTests EnvironmentCaptureTestTarget EnvironmentCaptureIntegrationTests EnvironmentWerTests)
         target_compile_features(${testTarget} PRIVATE cxx_std_20)
         target_compile_definitions(${testTarget} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
         if(MSVC)

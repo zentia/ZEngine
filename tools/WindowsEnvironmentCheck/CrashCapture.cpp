@@ -1,4 +1,5 @@
 #include "CrashCapture.h"
+#include "CapturePackage.h"
 #include "DiagnosisUtil.h"
 #include "ReportWriter.h"
 #include "ToolVersion.h"
@@ -462,30 +463,10 @@ CaptureResult CaptureCrash(const CaptureOptions& options, const std::atomic_bool
         if (metadata.fileBytes > 64 * GiB) throw std::runtime_error("dump超过64GiB上限，保留原文件不打包");
         result.dumpCaptured = true; outcome = "DUMP_VALIDATED";
         result.message = "已获取完整异常dump，正在收集环境信息"; manifest();
-        Options environment = options.environment; environment.outputDirectory = result.report.directory;
-        environment.incidentKind = IncidentKind::Crash;
-        environment.incidentTime = (static_cast<UtcTicks>(metadata.timestamp) + 11644473600ull) * 10000000ull;
-        auto collected = Collect(environment, stop, progress);
-        if (stop.load()) throw std::runtime_error("后处理已取消，完整dump保留本地");
-        std::filesystem::rename(collected.archive, result.report.directory / "environment.zip");
-        result.report.partial = collected.partial;
-        outcome = "CAPTURED"; result.message = collected.partial ? "dump已捕获；部分环境信息不可用" : "完整dump与环境信息已捕获";
+        CollectDumpEnvironment(options.environment, metadata, result.report, stop, progress);
+        outcome = "CAPTURED"; result.message = result.report.partial ? "dump已捕获；部分环境信息不可用" : "完整dump与环境信息已捕获";
         manifest();
-        std::vector<std::string> files{"crash.dmp", "environment.zip", "capture.json", "procdump.log"};
-        progress("计算证据SHA256（大dump可能耗时）", true);
-        std::ostringstream hashes; hashes << "{\"schemaVersion\":1,\"files\":[";
-        for (size_t i = 0; i < files.size(); ++i)
-        {
-            if (i) hashes << ',';
-            hashes << "{\"name\":" << JsonString(files[i]) << ",\"bytes\":" << std::filesystem::file_size(result.report.directory / files[i])
-                << ",\"sha256\":" << JsonString(Sha256File(result.report.directory / files[i], &stop)) << '}';
-        }
-        hashes << "]}"; WriteReportFile(result.report.directory / "checksums.json", hashes.str()); files.push_back("checksums.json");
-        if (FreeBytes(root) < metadata.fileBytes + GiB) throw std::runtime_error("压缩空间不足，原始dump及环境报告已保留");
-        progress("流式压缩并回读校验ZIP64，不自动上传", true);
-        const auto archive = std::filesystem::path(result.report.directory.wstring() + L".zip");
-        WriteZip64(result.report.directory, archive, files, stop);
-        result.report.archive = archive;
+        PackageDumpEvidence(result.report, {"crash.dmp", "environment.zip", "capture.json", "procdump.log"}, stop, progress);
         result.message = result.report.partial ? "完整dump报告包已生成（部分环境数据缺失）" : "完整dump报告包已生成，请确认隐私后手动发送";
         return result;
     }
