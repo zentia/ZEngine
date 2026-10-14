@@ -71,7 +71,7 @@ inline void SettingsTab::BuildUI() {
     m_PathEditor->Options.FontSize = 14.0f;
     m_PathEditor->Options.MinHeight = 120.0f;
     m_PathEditor->Options.ReadOnly = false;
-    m_Root->AddSlot(m_PathEditor);
+    m_Root->AddSlot(m_PathEditor).Fill();
     m_Root->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
 
     auto pathBtns = std::make_shared<ZSlate::SHorizontalBox>();

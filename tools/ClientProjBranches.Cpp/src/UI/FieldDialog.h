@@ -38,7 +38,7 @@ inline std::shared_ptr<ZSlate::SButton> DlgButton(const std::string& text,
     label->Text     = text;
     label->FontSize = 13.0f;
     label->Color    = ZSlate::Colors::White;
-    button->Padding = ZSlate::Vector2(14.0f, 5.0f);
+    button->Padding = ZSlate::FMargin(14.0f, 5.0f);
     button->SetContent(label);
     button->OnClicked = std::move(onClicked);
     return button;
@@ -73,7 +73,7 @@ inline void ShowFieldsDialog(const std::string& title,
             area->Options.MinHeight = field.Height > 0.0f ? field.Height : 120.0f;
             area->Options.AutoWrap  = true;
             area->SetText(field.Value);
-            body->AddSlot(area);
+            body->AddSlot(area).Fill();
             multiBoxes->push_back(area);
         }
         else

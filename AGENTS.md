@@ -1492,6 +1492,21 @@ Conventions (do not re-litigate):
 - **Encoders** (`bc7enc_rdo`, ARM `astc-encoder`) link PRIVATE into ZEditor only
   but compile on the host so the Windows editor can cross-encode mobile ASTC.
 
+### 2.18 ZSlate has exactly one copy
+
+- The only ZSlate source tree is the submodule `engine/Libraries/ZSlate`
+  (`github.com/zentia/ZSlate`). Standalone tools (e.g.
+  `tools/ClientProjBranches.Cpp`) consume it with
+  `add_subdirectory(<repo>/engine/Libraries/ZSlate ...)` + link `ZSlate`;
+  never fork a private copy under `tools/`. Missing widgets go into the
+  submodule (commit there, then bump the pointer).
+- Layout contract: a widget never asks to fill; the parent slot decides
+  (`SBoxPanel::AddSlot(w).Fill()`, UE `SBoxPanel` semantics).
+- Modal / popup layers: `SlateApplication::ShowModal` (used by `SDialog`)
+  and `SlateInputRouter::OpenPopup` (used by `SComboBox` dropdowns). Hosts
+  must route mouse to `SlateApplication::GetInputRoot()` and paint through
+  `SlateApplication::PaintInto`, which draws modal + popup on top.
+
 ## 3. Build / test invocations
 
 - Configure: pre-existing `build/` is fine; CMake presets in `CMakePresets.json`.

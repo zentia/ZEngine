@@ -61,7 +61,7 @@ inline NotesTab::NotesTab() : m_Root(std::make_shared<ZSlate::SVerticalBox>()) {
     m_DataSource = std::make_shared<ZSlate::TSimpleListViewDataSource<std::string>>(std::vector<std::string>{});
     m_ListView = std::make_shared<ZSlate::SListView<std::string>>();
     m_ListView->SetDataSource(m_DataSource);
-    m_ListView->Options.ItemHeight = 28.0f;
+    m_ListView->ItemHeight = 28.0f;
     m_ListView->SetOnGenerateItemWidget([this](const std::string& item, int32_t, const auto&) {
         auto w = std::make_shared<ZSlate::STextBlock>();
         w->Text = item; w->FontSize = 13.0f;
@@ -104,7 +104,7 @@ inline void NotesTab::BuildUI() {
     tb->AddSlot(NMkBtn("Archive...",   [this]() { OnOpenArchive(); }));
     m_Root->AddSlot(tb);
     m_Root->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
-    m_Root->AddSlot(m_ListView);
+    m_Root->AddSlot(m_ListView).Fill();
     m_StatusLabel = std::make_shared<ZSlate::STextBlock>();
     m_StatusLabel->Text = "Ready"; m_StatusLabel->FontSize = 13.0f;
     m_StatusLabel->Color = ZSlate::UIColor(0.5f, 0.55f, 0.65f, 1.0f);
@@ -361,7 +361,7 @@ inline void NotesTab::OnOpenArchive() {
     auto dataSource = std::make_shared<ZSlate::TSimpleListViewDataSource<std::string>>(*rows);
     auto listView   = std::make_shared<ZSlate::SListView<std::string>>();
     listView->SetDataSource(dataSource);
-    listView->Options.ItemHeight = 22.0f;
+    listView->ItemHeight = 22.0f;
     listView->SetOnGenerateItemWidget([](const std::string& item, int32_t, const auto&) {
         auto w = std::make_shared<ZSlate::STextBlock>();
         w->Text = item; w->FontSize = 12.0f;
@@ -375,7 +375,7 @@ inline void NotesTab::OnOpenArchive() {
     });
 
     auto body = std::make_shared<ZSlate::SVerticalBox>();
-    body->AddSlot(listView);
+    body->AddSlot(listView).Fill();
     dialog->SetBody(body);
 
     auto buttons = std::make_shared<ZSlate::SHorizontalBox>();

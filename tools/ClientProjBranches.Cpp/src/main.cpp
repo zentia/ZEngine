@@ -47,6 +47,8 @@ public:
     ZSlate::Vector2 m_WinSize  {1024, 768};
     // Wheel deltas arrive in WM_MOUSEWHEEL and are consumed once per frame.
     float         m_PendingWheel = 0.0f;
+    // First half of a UTF-16 surrogate pair delivered through WM_CHAR.
+    uint32_t      m_PendingHighSurrogate = 0;
 
     ZSlate::ISlateRenderer*    GetRenderer()    override { return &Renderer; }
     ZSlate::Vector2 GetMousePosition()   const override { return m_MousePos; }
@@ -62,6 +64,31 @@ public:
 // ============================================================================
 // Win32 Window
 // ============================================================================
+
+// Win32 virtual-key -> ZSlate key identity (letters only matter for Ctrl+ shortcuts).
+static ZSlate::EKey MapVirtualKeyToSlate(WPARAM vk)
+{
+    using ZSlate::EKey;
+    switch (vk)
+    {
+    case VK_BACK:   return EKey::Backspace;
+    case VK_DELETE: return EKey::Delete;
+    case VK_RETURN: return EKey::Enter;
+    case VK_ESCAPE: return EKey::Escape;
+    case VK_TAB:    return EKey::Tab;
+    case VK_LEFT:   return EKey::Left;
+    case VK_RIGHT:  return EKey::Right;
+    case VK_UP:     return EKey::Up;
+    case VK_DOWN:   return EKey::Down;
+    case VK_HOME:   return EKey::Home;
+    case VK_END:    return EKey::End;
+    case VK_SPACE:  return EKey::Space;
+    default: break;
+    }
+    if (vk >= 'A' && vk <= 'Z')
+        return static_cast<EKey>(static_cast<int>(EKey::A) + static_cast<int>(vk - 'A'));
+    return EKey::Unknown;
+}
 
 struct WinCtx
 {
@@ -106,15 +133,33 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_KEYDOWN:
     case WM_KEYUP:
-        if (platform) platform->Input.ProcessKey((int)wp, msg == WM_KEYDOWN);
+        if (platform && msg == WM_KEYDOWN) {
+            ZSlate::SlateInputRouter::SetModifierState(GetKeyState(VK_CONTROL) < 0,
+                                                       GetKeyState(VK_SHIFT) < 0,
+                                                       GetKeyState(VK_MENU) < 0);
+            const ZSlate::EKey key = MapVirtualKeyToSlate(wp);
+            if (key != ZSlate::EKey::Unknown) platform->Input.ProcessKey(key);
+        }
         if (stackTrace) stackTrace->OnKeyboardEvent((int)wp, 0, (msg == WM_KEYDOWN) ? 1 : 0, 0);
         return 0;
 
     // WM_CHAR carries the composed character (including CJK input) and is the
-    // only way text ever reaches the editable widgets.
+    // only way text ever reaches the editable widgets. Control characters
+    // (Enter, Backspace, Ctrl+letter) are delivered as keys instead.
     case WM_CHAR:
-        if (platform && wp >= 32 && wp != 127)
-            platform->Input.ProcessCharacter((uint32_t)wp);
+        if (platform && wp >= 32 && wp != 127) {
+            const uint32_t unit = static_cast<uint32_t>(wp);
+            if (unit >= 0xD800 && unit <= 0xDBFF) {
+                platform->m_PendingHighSurrogate = unit;
+            } else if (unit >= 0xDC00 && unit <= 0xDFFF) {
+                if (platform->m_PendingHighSurrogate)
+                    platform->Input.ProcessChar(0x10000u + ((platform->m_PendingHighSurrogate - 0xD800u) << 10)
+                                                + (unit - 0xDC00u));
+                platform->m_PendingHighSurrogate = 0;
+            } else {
+                platform->Input.ProcessChar(unit);
+            }
+        }
         return 0;
 
     case WM_MOUSEWHEEL:
@@ -154,7 +199,8 @@ static bool InitFonts(ZSlate::ZSlateFontAtlas& atlas, ZSlate::ZSlateBatchedRende
 
 static void RunFrame(AppPlatform& platform)
 {
-    auto root = ZSlate::SlateApplication::Get().GetRootContent();
+    // While a dialog is open only the modal receives input.
+    auto root = ZSlate::SlateApplication::Get().GetInputRoot();
     if (root) {
         bool over = platform.m_MousePos.x >= 0 && platform.m_MousePos.y >= 0;
         platform.Input.ProcessMouse(root, platform.m_MousePos, over,

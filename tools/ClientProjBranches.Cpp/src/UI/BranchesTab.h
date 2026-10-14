@@ -157,7 +157,7 @@ inline BranchesTab::BranchesTab()
     m_PathDataSource = std::make_shared<ZSlate::TSimpleListViewDataSource<std::string>>(std::vector<std::string>{});
     m_PathListView = std::make_shared<ZSlate::SListView<std::string>>();
     m_PathListView->SetDataSource(m_PathDataSource);
-    m_PathListView->Options.ItemHeight = 26.0f;
+    m_PathListView->ItemHeight = 26.0f;
     m_PathListView->SetOnGenerateItemWidget([](const std::string& item, int32_t, const auto&) {
         auto w = std::make_shared<ZSlate::STextBlock>();
         w->Text = item; w->FontSize = 14.0f;
@@ -231,7 +231,7 @@ inline void BranchesTab::BuildUI() {
     }
 
     // Branch table
-    m_Root->AddSlot(m_BranchTable);
+    m_Root->AddSlot(m_BranchTable).Fill();
 
     // Status bar
     m_Root->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
@@ -271,7 +271,7 @@ inline void BranchesTab::BuildPathManager() {
     m_PathManagerPanel->AddSlot(hint);
     m_PathManagerPanel->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
 
-    m_PathManagerPanel->AddSlot(m_PathListView);
+    m_PathManagerPanel->AddSlot(m_PathListView).Fill();
     m_PathManagerPanel->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
 
     m_PathStatus = std::make_shared<ZSlate::STextBlock>();
@@ -355,7 +355,7 @@ inline void BranchesTab::DoRebuild() {
         hint->FontSize = 13.0f; hint->Color = ZSlate::UIColor(0.5f, 0.55f, 0.65f, 1.0f);
         m_PathManagerPanel->AddSlot(hint);
         m_PathManagerPanel->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
-        m_PathManagerPanel->AddSlot(m_PathListView);
+        m_PathManagerPanel->AddSlot(m_PathListView).Fill();
         m_PathManagerPanel->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
         m_PathStatus = std::make_shared<ZSlate::STextBlock>();
         m_PathStatus->Text = std::to_string(m_Paths.size()) + " path(s)";
@@ -365,7 +365,7 @@ inline void BranchesTab::DoRebuild() {
         newRoot->AddSlot(m_PathManagerPanel);
     }
 
-    newRoot->AddSlot(m_BranchTable);
+    newRoot->AddSlot(m_BranchTable).Fill();
     newRoot->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
     newRoot->AddSlot(m_StatusLabel);
 
@@ -768,7 +768,7 @@ inline void BranchesTab::SaveGridLayout() {
     std::vector<std::pair<std::string, float>> columns;
     columns.reserve(header->Columns.size());
     for (const auto& column : header->Columns)
-        columns.emplace_back(column.Name, column.Width);
+        columns.emplace_back(column.Label, column.Width);
 
     GridLayout::Save("BranchesTab", columns);
     m_StatusLabel->Text = "Column layout saved";

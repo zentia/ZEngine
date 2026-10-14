@@ -140,7 +140,7 @@ inline GitTab::GitTab() : m_Root(std::make_shared<ZSlate::SVerticalBox>()) {
     m_DataSource = std::make_shared<ZSlate::TSimpleListViewDataSource<std::string>>(std::vector<std::string>{});
     m_ListView = std::make_shared<ZSlate::SListView<std::string>>();
     m_ListView->SetDataSource(m_DataSource);
-    m_ListView->Options.ItemHeight = 26.0f;
+    m_ListView->ItemHeight = 26.0f;
     m_ListView->SetOnGenerateItemWidget([this](const std::string& item, int32_t index, const auto&) {
         auto w = std::make_shared<ZSlate::STextBlock>();
         w->Text = item; w->FontSize = 13.0f;
@@ -179,7 +179,7 @@ inline void GitTab::BuildUI() {
     tb->AddSlot(GMakeBtn("Set Tag...",   [this]() { OnSetTag(); }));
     m_Root->AddSlot(tb);
     m_Root->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
-    m_Root->AddSlot(m_ListView);
+    m_Root->AddSlot(m_ListView).Fill();
     m_StatusLabel = std::make_shared<ZSlate::STextBlock>();
     m_StatusLabel->Text = "Ready"; m_StatusLabel->FontSize = 13.0f;
     m_StatusLabel->Color = ZSlate::UIColor(0.5f, 0.55f, 0.65f, 1.0f);
@@ -541,7 +541,7 @@ inline void GitTab::ShowSetTagDialog(int index) {
 
     auto MakeSwatch = []() {
         auto swatch = std::make_shared<ZSlate::SBorder>();
-        swatch->Padding = ZSlate::Vector2(0.0f, 0.0f);
+        swatch->Padding = ZSlate::FMargin(0.0f);
         swatch->BorderColor = ZSlate::UIColor(0.45f, 0.48f, 0.55f, 1.0f);
         swatch->SetContent(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(52.0f, 16.0f)));
         return swatch;
@@ -561,7 +561,7 @@ inline void GitTab::ShowSetTagDialog(int index) {
     preview->FontSize = 14.0f;
     preview->Text     = "  Preview: " + repoName + "  ";
     auto previewBox   = std::make_shared<ZSlate::SBorder>();
-    previewBox->Padding = ZSlate::Vector2(6.0f, 6.0f);
+    previewBox->Padding = ZSlate::FMargin(6.0f);
     previewBox->SetContent(preview);
 
     auto Refresh = [=]() {

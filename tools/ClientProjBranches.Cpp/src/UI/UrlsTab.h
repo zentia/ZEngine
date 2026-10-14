@@ -48,7 +48,7 @@ inline UrlsTab::UrlsTab() : m_Root(std::make_shared<ZSlate::SVerticalBox>()) {
     m_DataSource = std::make_shared<ZSlate::TSimpleListViewDataSource<std::string>>(std::vector<std::string>{});
     m_ListView = std::make_shared<ZSlate::SListView<std::string>>();
     m_ListView->SetDataSource(m_DataSource);
-    m_ListView->Options.ItemHeight = 26.0f;
+    m_ListView->ItemHeight = 26.0f;
     m_ListView->SetOnGenerateItemWidget([this](const std::string& item, int32_t, const auto&) {
         auto w = std::make_shared<ZSlate::STextBlock>();
         w->Text = item; w->FontSize = 13.0f;
@@ -76,7 +76,7 @@ inline void UrlsTab::BuildUI() {
     tb->AddSlot(UMkBtn("Copy URL",   [this]() { OnCopy(); }));
     m_Root->AddSlot(tb);
     m_Root->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
-    m_Root->AddSlot(m_ListView);
+    m_Root->AddSlot(m_ListView).Fill();
     m_StatusLabel = std::make_shared<ZSlate::STextBlock>();
     m_StatusLabel->Text = "Ready"; m_StatusLabel->FontSize = 13.0f;
     m_StatusLabel->Color = ZSlate::UIColor(0.5f, 0.55f, 0.65f, 1.0f);

@@ -51,7 +51,7 @@ namespace StackTraceApp
         m_SymbolFilesDataSource = std::make_shared<ZSlate::TSimpleListViewDataSource<std::string>>(std::vector<std::string>{});
         m_SymbolFilesList = std::make_shared<ZSlate::SListView<std::string>>();
         m_SymbolFilesList->SetDataSource(m_SymbolFilesDataSource);
-        m_SymbolFilesList->Options.ItemHeight = 20.0f;
+        m_SymbolFilesList->ItemHeight = 20.0f;
     }
 
     StackTraceApp::~StackTraceApp()
@@ -115,7 +115,7 @@ namespace StackTraceApp
 
         BuildInputPanel();
         BuildOutputPanel();
-        m_Root->AddSlot(m_Split);
+        m_Root->AddSlot(m_Split).Fill();
 
         BuildStatusPanel();
 
@@ -158,6 +158,7 @@ namespace StackTraceApp
 
         // Show Diagnostics checkbox
         m_ShowDiagCheckBox->Checked = true;
+        m_ShowDiagCheckBox->Size = ZSlate::Vector2(28.0f, 24.0f);  // box only; the label is a separate STextBlock
         m_ShowDiagCheckBox->OnCheckStateChanged = [this](bool checked) {
             OnShowDiagChanged(checked);
         };
@@ -207,12 +208,12 @@ namespace StackTraceApp
             vbox2->AddSlot(noFound);
         }
         else {
-            m_PresetCombo = std::make_shared<ZSlate::SComboBox>();
+            m_PresetCombo = std::make_shared<ZSlate::SComboBox<>>();
             m_PresetCombo->SetOptions(comboOptions);
             m_PresetCombo->FontSize = 13.0f;
             m_PresetCombo->Height   = 26.0f;
             m_PresetCombo->Placeholder = "Select a known addr2line...";
-            m_PresetCombo->OnSelectionChanged = [this](int32_t, const std::string& value) {
+            m_PresetCombo->OnSelectionChanged = [this](const std::string& value, int32_t) {
                 m_Addr2linePathBox->Text = value;
                 m_Settings.Addr2linePath = value;
                 SaveSettings();
@@ -230,9 +231,9 @@ namespace StackTraceApp
         auto hbox = std::make_shared<ZSlate::SBoxPanel>(ZSlate::EOrientation::Horizontal);
 
         // Left side: List view
-        m_SymbolFilesList->Options.ItemHeight = 20.0f;
-        m_SymbolFilesList->Options.SelectedBackgroundColor = ZSlate::UIColor(0.25f, 0.50f, 0.90f, 0.30f);
-        m_SymbolFilesList->Options.BackgroundColor = ZSlate::UIColor(0.08f, 0.08f, 0.10f, 1.0f);
+        m_SymbolFilesList->ItemHeight = 20.0f;
+        m_SymbolFilesList->SelectedBackgroundColor = ZSlate::UIColor(0.25f, 0.50f, 0.90f, 0.30f);
+        m_SymbolFilesList->BackgroundColor = ZSlate::UIColor(0.08f, 0.08f, 0.10f, 1.0f);
         
         // Set item generator
         m_SymbolFilesList->SetOnGenerateItemWidget([this](const std::string& item, int32_t index, const std::shared_ptr<ZSlate::SListView<std::string>>& listview) {
@@ -288,7 +289,7 @@ namespace StackTraceApp
         m_InputTextArea->Options.AutoWrap = false;
         m_InputTextArea->Options.ReadOnly = false;
         m_InputTextArea->Options.FontSize = 16.0f;
-        vbox->AddSlot(m_InputTextArea);
+        vbox->AddSlot(m_InputTextArea).Fill();
 
         m_Split->SetSlot(0, vbox);
     }
@@ -325,9 +326,9 @@ namespace StackTraceApp
         m_OutputTextArea->Options.ReadOnly = true;
         m_OutputTextArea->Options.FontSize = 16.0f;
         // Dark editor colours, like the C# output box (30,30,30 / 212,212,212).
-        m_OutputTextArea->BackgroundColor = ZSlate::UIColor(0.118f, 0.118f, 0.118f, 1.0f);
-        m_OutputTextArea->TextColor       = ZSlate::UIColor(0.831f, 0.831f, 0.831f, 1.0f);
-        vbox->AddSlot(m_OutputTextArea);
+        m_OutputTextArea->Options.BackgroundColor = ZSlate::UIColor(0.118f, 0.118f, 0.118f, 1.0f);
+        m_OutputTextArea->Options.TextColor       = ZSlate::UIColor(0.831f, 0.831f, 0.831f, 1.0f);
+        vbox->AddSlot(m_OutputTextArea).Fill();
 
         auto hint = std::make_shared<ZSlate::STextBlock>();
         hint->Text     = "Format: #01 pc 0000abcd  libexample.so";

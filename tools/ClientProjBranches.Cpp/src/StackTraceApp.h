@@ -14,6 +14,7 @@
 #include "ZSlate/Widgets/Layout/SBoxPanel.h"
 #include "ZSlate/Widgets/Layout/SSpacer.h"
 #include "ZSlate/Widgets/Layout/SSplitter.h"
+#include "ZSlate/Widgets/Layout/SSplitContainer.h"
 #include "ZSlate/Widgets/Input/SComboBox.h"
 #include "ZSlate/Widgets/Panels/SBorder.h"
 #include "ZSlate/Widgets/Views/SListView.h"
@@ -117,7 +118,7 @@ namespace StackTraceApp
         // C# mainSplit: Panel1 = input, Panel2 = output.
         std::shared_ptr<ZSlate::SSplitContainer> m_Split;
         // Known addr2line paths (C# quick-select buttons, as a drop-down).
-        std::shared_ptr<ZSlate::SComboBox> m_PresetCombo;
+        std::shared_ptr<ZSlate::SComboBox<>> m_PresetCombo;
 
         // Input Controls
         std::shared_ptr<ZSlate::SEditableTextBox> m_Addr2linePathBox;

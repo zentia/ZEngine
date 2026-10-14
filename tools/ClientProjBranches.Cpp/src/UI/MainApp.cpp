@@ -29,7 +29,7 @@ void MainApp::SelectTab(int index)
     // Replace content: remove all slots after tab bar, then add the active content
     auto newRoot = std::make_shared<ZSlate::SVerticalBox>();
     newRoot->AddSlot(m_TabBar);
-    newRoot->AddSlot(m_Tabs[index].Content);
+    newRoot->AddSlot(m_Tabs[index].Content).Fill();
     m_Root = newRoot;
 
     ZSlate::SlateApplication::Get().SetRootContent(m_Root);

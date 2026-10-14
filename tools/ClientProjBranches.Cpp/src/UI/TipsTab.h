@@ -56,7 +56,7 @@ inline TipsTab::TipsTab() : m_Root(std::make_shared<ZSlate::SVerticalBox>()) {
     m_DataSource = std::make_shared<ZSlate::TSimpleListViewDataSource<std::string>>(std::vector<std::string>{});
     m_ListView = std::make_shared<ZSlate::SListView<std::string>>();
     m_ListView->SetDataSource(m_DataSource);
-    m_ListView->Options.ItemHeight = 26.0f;
+    m_ListView->ItemHeight = 26.0f;
     m_ListView->SetOnGenerateItemWidget([this](const std::string& item, int32_t, const auto&) {
         auto w = std::make_shared<ZSlate::STextBlock>();
         w->Text = item; w->FontSize = 13.0f;
@@ -107,7 +107,7 @@ inline void TipsTab::BuildUI() {
     m_Root->AddSlot(std::make_shared<ZSlate::SSpacer>(ZSlate::Vector2(0, 4)));
 
     // ---- List ----
-    m_Root->AddSlot(m_ListView);
+    m_Root->AddSlot(m_ListView).Fill();
 
     // ---- Preview ----
     m_PreviewLabel = std::make_shared<ZSlate::STextBlock>();
