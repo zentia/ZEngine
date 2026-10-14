@@ -116,4 +116,9 @@ if "%COLLECT_SYMBOLS%"=="1" (
 echo.
 echo [SUCCESS] %OUT_EXE%
 if "%COLLECT_SYMBOLS%"=="1" echo [SYMBOLS] %SYMBOL_DIR%
+echo.
+echo Note: LuaMemPreview is a /SUBSYSTEM:WINDOWS executable (no console behind the
+echo GUI). cmd.exe therefore does not wait for it; to run the headless modes and
+echo keep their output, use `start /wait LuaMemPreview.exe -batchmode ...` or pass
+echo --pause.
 exit /b 0

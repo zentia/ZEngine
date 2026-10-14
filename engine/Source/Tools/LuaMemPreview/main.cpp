@@ -31,9 +31,21 @@
 //                                        (replaces the old ZProfilerCsvExporter)
 //   LuaMemPreview.exe --stats <file>     headless: per-type breakdown
 //   LuaMemPreview.exe --dump-ui <file>   headless: assert on the painted tree
+//   LuaMemPreview.exe --help             usage
+//
+// Entry point is WinMain (/SUBSYSTEM:WINDOWS), like ZEditor / ZInsights /
+// TexPreview, so the GUI opens with no console behind it. Arguments come from
+// the CRT globals; the headless modes additionally attach to the console they
+// were launched from (EnsureConsole). Their diagnostics go through bqlog
+// (LuaMemLog) - which writes the usual LuaMemPreview_*.log AND the console -
+// while the data itself (--stats table, file list, --help) stays on stdout.
+// Add --pause to keep console output on screen, or `start /wait` from a batch
+// file to make one wait for the process.
+//
 //   Ctrl+O to open, or drag a file onto the window.
 
 #include "LuaMemCsv.h"
+#include "LuaMemLog.h"
 #include "LuaMemTypeDoc.h"
 #include "LuaMemWidgets.h"
 #include "LuaMemZasset.h"
@@ -58,6 +70,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -69,11 +82,81 @@
 #undef DrawText  // windows.h #defines DrawText -> DrawTextA/W, clashing with ISlateRenderer
 #include <commdlg.h>
 #include <shellapi.h>
+#include <fcntl.h>
+#include <io.h>
 
 using namespace LuaMemPreview;
 using ZSlate::FSlateDpiScaleRenderer;
 using ZSlate::FSlateRecordedText;
 using ZSlate::FSlateRecordingRenderer;
+
+// ============================================================================
+// Console
+// ============================================================================
+// The exe is linked /SUBSYSTEM:WINDOWS so double-clicking it in Explorer shows
+// only the Slate window, with no console flashing behind it. The trade-off is
+// that the headless modes (-batchmode / --stats / --dump-ui) then start with a
+// dead stdout, since only the GUI path ever needs a window.
+//
+// Attaching (not allocating) is what makes them usable from a terminal: the
+// output lands in the shell you launched from, instead of a second window that
+// appears and vanishes. AllocConsole is the fallback for "launched with no
+// console at all" (Explorer, a shortcut) so the output is not simply lost.
+//
+// Skipped when stdout is already redirected: `> out.txt` / `| more` means the
+// caller owns the output, and AttachConsole would silently redirect it away.
+namespace
+{
+bool StdOutIsRedirected()
+{
+    const HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (out == nullptr || out == INVALID_HANDLE_VALUE)
+        return false;
+    const DWORD type = GetFileType(out);
+    return type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE;
+}
+
+void EnsureConsole()
+{
+    if (StdOutIsRedirected())
+        return;
+
+    // ATTACH_PARENT_PROCESS == (DWORD)-1.
+    if (!AttachConsole(static_cast<DWORD>(-1)) && !AllocConsole())
+        return;
+
+    // The C runtime captured the (invalid) handles before we had a console, so
+    // stdout/stderr still point nowhere until they are reopened on CONOUT$.
+    FILE* f = nullptr;
+    freopen_s(&f, "CONOUT$", "w", stdout);
+    freopen_s(&f, "CONOUT$", "w", stderr);
+    // No buffering: without a console-attached CRT flush, a crash or an early
+    // return can lose the last lines.
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    setvbuf(stderr, nullptr, _IONBF, 0);
+}
+
+// Optional, explicitly requested: without a console of our own the process
+// exits as soon as it is done, taking its output with it.
+void MaybePause()
+{
+    std::printf("\nPress Enter to close...");
+    std::fflush(stdout);
+    std::getchar();
+}
+
+// Every headless mode has several exit points, and each one has to offer the
+// pause and drain bqlog before it returns - otherwise the output scrolls away
+// on the most interesting paths (the failures) and the async log worker loses
+// its tail.
+int ExitCode(int code, bool pause)
+{
+    LogFlush();
+    if (pause)
+        MaybePause();
+    return code;
+}
+}  // namespace
 
 // ============================================================================
 // Platform bridge
@@ -268,6 +351,7 @@ public:
         const auto t0 = std::chrono::steady_clock::now();
         if (!Snapshot.LoadFromFile(path, err))
         {
+            LogError("load failed: " + err);
             StatusText->Text = "Load failed: " + err;
             StatusText->Color = ZSlate::UIColor(1.0f, 0.45f, 0.45f, 1.0f);
             RowView.Rebuild(Snapshot);
@@ -287,9 +371,9 @@ public:
         Detail->SetRow(-1);
         RefreshStatus();
 
-        std::printf("[LuaMemPreview] %s: %zu rows, %s, parsed in %.0f ms\n",
-                    Snapshot.GetFileName().c_str(), Snapshot.GetRowCount(),
-                    FormatBytes(Snapshot.GetTotalSize()).c_str(), ms);
+        LogInfo("loaded " + path + ": " + std::to_string(Snapshot.GetRowCount()) + " rows, " +
+                FormatBytes(Snapshot.GetTotalSize()) + ", parsed in " +
+                std::to_string(static_cast<int>(ms)) + " ms");
 
         if (Hwnd != nullptr)
         {
@@ -575,9 +659,63 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 }
 }  // namespace
 
-int main(int argc, char** argv)
+namespace
 {
-    const std::string mode = (argc >= 2) ? argv[1] : "";
+void PrintUsage(const char* exeName)
+{
+    std::printf("LuaMemPreview - viewer and CSV exporter for Lua memory snapshots\n"
+                "\n"
+                "Usage:\n"
+                "  %s [file]                            open <file> (.zasset or _lua.csv) in the GUI\n"
+                "  %s -batchmode <in.zasset> [out]      export _csharp/_userdata/_lua.csv\n"
+                "  %s --stats <file>                    headless per-type breakdown\n"
+                "  %s --dump-ui <file>                  headless assertions on the painted UI\n"
+                "\n"
+                "Options:\n"
+                "  --pause      wait for Enter before exiting (headless modes only)\n"
+                "\n"
+                "In the GUI: Ctrl+O to open, or drag a file onto the window.\n"
+                "\n"
+                "-batchmode / --stats / --dump-ui print to the console they were started\n"
+                "from. This is a /SUBSYSTEM:WINDOWS executable, so a caller that needs to\n"
+                "wait for them has to ask explicitly (e.g. `start /wait` from a batch file);\n"
+                "--pause is the other way to keep the output on screen.\n",
+                exeName, exeName, exeName, exeName);
+}
+}  // namespace
+
+// WinMain, matching the other ZEngine GUI executables (ZEditor, ZInsights,
+// TexPreview): the target is linked /SUBSYSTEM:WINDOWS, so this is the entry
+// point the CRT expects and no explicit /ENTRY override is needed. __argv /
+// __argc are the CRT globals it fills from GetCommandLine, so the headless
+// modes keep working exactly as they did under main().
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
+{
+    constexpr int kMaxArgs = 32;
+    const int argc = (__argc < kMaxArgs) ? __argc : kMaxArgs;
+    char** argv = __argv;
+
+    // --pause is a modifier, so it can sit anywhere; pull it out before the
+    // positional arguments are interpreted.
+    bool pause_at_exit = false;
+    int arg_count = argc;
+    for (int i = 1; i < argc; ++i)
+    {
+        if (std::strcmp(argv[i], "--pause") == 0)
+        {
+            pause_at_exit = true;
+            --arg_count;
+        }
+    }
+
+    const std::string mode = (arg_count >= 2) ? argv[1] : "";
+
+    if (mode == "--help" || mode == "-h" || mode == "-?")
+    {
+        EnsureConsole();
+        PrintUsage(argv[0]);
+        return ExitCode(0, pause_at_exit);
+    }
 
     // ---- Batch mode: .zasset -> CSV ---------------------------------------
     // Unity-style -batchmode: no window, no D3D11, just the engine Core
@@ -586,7 +724,8 @@ int main(int argc, char** argv)
     // opened back in this viewer.
     if (mode == "-batchmode" || mode == "--batchmode" || mode == "--batch")
     {
-        if (argc < 3 || argc > 4)
+        EnsureConsole();
+        if (arg_count < 3 || arg_count > 4)
         {
             std::printf("Usage: %s -batchmode <input_profiler.zasset> [output_base_or_csv]\n"
                         "\n"
@@ -597,16 +736,18 @@ int main(int argc, char** argv)
                         "\n"
                         "<base> defaults to the input path without its extension.\n",
                         argv[0]);
-            return 1;
+            LogError("batchmode: expected <input_profiler.zasset> [output_base_or_csv]");
+            return ExitCode(1, pause_at_exit);
         }
 
         std::vector<std::string> written;
         std::string err;
         const auto t0 = std::chrono::steady_clock::now();
-        if (!ExportZassetToCsv(argv[2], (argc >= 4) ? argv[3] : "", written, err))
+        if (!ExportZassetToCsv(argv[2], (arg_count >= 4) ? argv[3] : "", written, err))
         {
             std::fprintf(stderr, "ERROR: %s\n", err.c_str());
-            return 1;
+            LogError("batchmode: " + err);
+            return ExitCode(1, pause_at_exit);
         }
         const double ms = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - t0).count();
@@ -614,7 +755,9 @@ int main(int argc, char** argv)
         std::printf("Exported CSV files (%.0f ms):\n", ms);
         for (const std::string& p : written)
             std::printf("  %s\n", p.c_str());
-        return 0;
+        LogInfo("Exported " + std::to_string(written.size()) + " CSV files in " +
+                std::to_string(static_cast<int>(ms)) + " ms");
+        return ExitCode(0, pause_at_exit);
     }
 
     // ---- Headless UI verification -----------------------------------------
@@ -622,8 +765,9 @@ int main(int argc, char** argv)
     // widgets emitted. Needs no GPU, no window and no font file, which is also
     // the only way to check virtualisation: a DXGI flip-model swapchain returns
     // a blank surface to PrintWindow, so a screenshot proves nothing.
-    if (mode == "--dump-ui" && argc >= 3)
+    if (mode == "--dump-ui" && arg_count >= 3)
     {
+        EnsureConsole();
         FPreviewApp app;
         ZSlate::SetPlatform(&app.Platform);
         app.BuildUI();
@@ -631,7 +775,8 @@ int main(int argc, char** argv)
         if (!app.Snapshot.IsLoaded())
         {
             std::printf("ERROR: snapshot failed to load\n");
-            return 1;
+            LogError("dump-ui: snapshot failed to load: " + std::string(argv[2]));
+            return ExitCode(1, pause_at_exit);
         }
 
         FSlateRecordingRenderer rec;
@@ -921,21 +1066,25 @@ int main(int argc, char** argv)
                 s = s.substr(0, 57) + "...";
             std::printf("  [%6.0f,%6.0f] %s\n", t.Rect.x, t.Rect.y, s.c_str());
         }
-        return (failed == 0) ? 0 : 4;
+        if (pause_at_exit)
+            MaybePause();
+        return ExitCode((failed == 0) ? 0 : 4, pause_at_exit);
     }
 
     // ---- Headless stats ---------------------------------------------------
     // Keeps the data layer verifiable without a window, which is also what a
     // script or CI job wants when it just needs the per-type split.
-    if (mode == "--stats" && argc >= 3)
+    if (mode == "--stats" && arg_count >= 3)
     {
+        EnsureConsole();
         FSnapshot snap;
         std::string err;
         const auto t0 = std::chrono::steady_clock::now();
         if (!snap.LoadFromFile(argv[2], err))
         {
             std::printf("ERROR: %s\n", err.c_str());
-            return 1;
+            LogError("stats: " + err);
+            return ExitCode(1, pause_at_exit);
         }
         const double ms = std::chrono::duration<double, std::milli>(
                               std::chrono::steady_clock::now() - t0).count();
@@ -983,9 +1132,10 @@ int main(int argc, char** argv)
         if (bucket_sum != snap.GetTotalSize())
         {
             std::printf("ERROR: bucket sum != total\n");
-            return 2;
+            LogError("stats: bucket sum != total for " + std::string(argv[2]));
+            return ExitCode(2, pause_at_exit);
         }
-        return snap.IsSelfConsistent() ? 0 : 3;
+        return ExitCode(snap.IsSelfConsistent() ? 0 : 3, pause_at_exit);
     }
 
     // Before any window exists, and only on the interactive path -- the

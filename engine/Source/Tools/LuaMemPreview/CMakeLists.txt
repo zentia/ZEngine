@@ -9,9 +9,9 @@
 # no dependency on Source/Editor — every ZSlate *window* there is currently
 # excluded from the build pending the UIRenderer->ISlateRenderer migration.
 #
-# Console subsystem on purpose (no WIN32 flag): the tool prints parse timings,
-# row counts and load errors, which is exactly what you want when a snapshot
-# fails to open.
+# GUI subsystem (WIN32_EXECUTABLE + /ENTRY:mainCRTStartup): the headless modes
+# attach to the console they were started from, so their parse timings, row
+# counts and load errors still show up without a window of their own.
 # =============================================================================
 set(LUA_MEM_PREVIEW_TARGET LuaMemPreview)
 
@@ -20,6 +20,7 @@ set(LUA_MEM_PREVIEW_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsv.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsvExport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemLog.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemTypeDoc.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemWidgets.cpp
 )
@@ -30,6 +31,7 @@ set(LUA_MEM_PREVIEW_HEADERS
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsv.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsvExport.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemLog.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemTypeDoc.h
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemWidgets.h
 )
@@ -50,6 +52,12 @@ set_target_properties(${LUA_MEM_PREVIEW_TARGET} PROPERTIES
     CXX_STANDARD_REQUIRED ON
     OUTPUT_NAME "LuaMemPreview"
     FOLDER "Engine/Tools"
+    # No console window behind the Slate window. WIN32_EXECUTABLE implies
+    # /SUBSYSTEM:WINDOWS, so the entry point is WinMain - same as ZEditor /
+    # ZInsights / TexPreview. The headless modes read their arguments from the
+    # CRT globals (__argv / __argc) and attach to the caller's console at
+    # startup (main.cpp: EnsureConsole) so their output is still visible.
+    WIN32_EXECUTABLE TRUE
 )
 
 z_set_config_output_dirs(${LUA_MEM_PREVIEW_TARGET} "${BINARY_ROOT_DIR}" RUNTIME)
@@ -73,16 +81,18 @@ target_link_libraries(${LUA_MEM_PREVIEW_TARGET} PRIVATE ZSlate ZRuntime ZEngineP
 # would clash with ISlateRenderer::DrawTextLabel's neighbours before ZSlate can
 # #undef it.
 #
-# LuaMemZasset.cpp / LuaMemCsvExport.cpp are the exceptions: they include no
-# ZSlate header at all, and the engine headers they do pull (MemoryProfiler ->
-# EASTL containers, VirtualFileSystemTypes -> std::filesystem) are written
-# assuming pch.h is in effect, which is how every ZRuntime TU compiles.
-# Force-including pch.h for those files reproduces exactly that environment
-# instead of guessing by hand which headers to pre-include.
+# LuaMemZasset.cpp / LuaMemCsvExport.cpp / LuaMemLog.cpp are the exceptions:
+# they include no ZSlate header at all, and the engine headers they do pull
+# (MemoryProfiler -> EASTL containers, VirtualFileSystemTypes ->
+# std::filesystem, LogSystem -> Macro.h's LOG_* ) are written assuming pch.h is
+# in effect, which is how every ZRuntime TU compiles. Force-including pch.h for
+# those files reproduces exactly that environment instead of guessing by hand
+# which headers to pre-include.
 set(LUA_MEM_PREVIEW_PCH "${ENGINE_ROOT_DIR}/Source/CommonPCH/pch.h")
 set(LUA_MEM_PREVIEW_ENGINE_TUS
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemZasset.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemCsvExport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/LuaMemLog.cpp
 )
 if(MSVC)
     set_source_files_properties(${LUA_MEM_PREVIEW_ENGINE_TUS}
