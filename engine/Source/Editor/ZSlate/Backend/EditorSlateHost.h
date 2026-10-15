@@ -110,7 +110,12 @@ public:
     // --- Input accessors (stable for the duration of the frame) ---
     // Each transparently returns the active floating window's input when an override
     // is pushed (editor tear-off, P5), otherwise the main window's.
-    const Vector2& GetPointerPos() const { return m_Override != nullptr ? m_Override->pointer : m_PointerScreen; }
+    Vector2 GetPointerPos() const
+    {
+        if (m_Override != nullptr) return m_Override->pointer;
+        const float s = m_UiScale > 0.0f ? m_UiScale : 1.0f;
+        return Vector2(m_PointerScreen.x / s, m_PointerScreen.y / s);
+    }
     bool IsLeftDown() const { return m_Override != nullptr ? m_Override->left_down : m_LeftDown; }
     bool IsRightDown() const { return m_Override != nullptr ? m_Override->right_down : m_RightDown; }
     bool IsMiddleDown() const { return m_Override != nullptr ? m_Override->middle_down : m_MiddleDown; }
@@ -142,11 +147,18 @@ public:
     // EditorUI's content_scale.
     Vector2 GetDisplaySize() const
     {
-        return m_Override != nullptr ? Vector2(m_Override->display_w, m_Override->display_h) : Vector2(m_WindowW, m_WindowH);
+        // WindowsWindow::GetSize() is the OS-reported PHYSICAL size (this process
+        // is DPI-aware), while the UI coordinate system is logical: every draw
+        // call is scaled up by GetUiScale() on the way out. Divide here so the
+        // two agree. At 100% DPI this is the identity, which is why dock layouts
+        // only overflowed the window on scaled displays.
+        const float s = m_UiScale > 0.0f ? m_UiScale : 1.0f;
+        return m_Override != nullptr ? Vector2(m_Override->display_w, m_Override->display_h) : Vector2(m_WindowW / s, m_WindowH / s);
     }
     Vector2 GetDisplayPos() const
     {
-        return m_Override != nullptr ? Vector2(m_Override->display_x, m_Override->display_y) : Vector2(m_WindowX, m_WindowY);
+        const float s = m_UiScale > 0.0f ? m_UiScale : 1.0f;
+        return m_Override != nullptr ? Vector2(m_Override->display_x, m_Override->display_y) : Vector2(m_WindowX / s, m_WindowY / s);
     }
     float GetUiScale() const { return m_Override != nullptr ? m_Override->ui_scale : m_UiScale; }
 

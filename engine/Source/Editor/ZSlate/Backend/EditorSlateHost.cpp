@@ -281,18 +281,13 @@ bool EditorSlateHost::IsForegroundCapturing() const
 
 Vector2 EditorSlateHost::GetFramebufferScale() const
 {
-    auto window = GET_SYSTEM(WindowSystem);
-    if (!window)
-        return Vector2(1.0f, 1.0f);
-    const std::array<int, 2> logical     = window->GetWindowSize();
-    const std::array<int, 2> framebuffer = window->GetFramebufferSize();
-    const float scale_x = logical[0] > 0
-                              ? static_cast<float>(framebuffer[0]) / static_cast<float>(logical[0])
-                              : 1.0f;
-    const float scale_y = logical[1] > 0
-                              ? static_cast<float>(framebuffer[1]) / static_cast<float>(logical[1])
-                              : 1.0f;
-    return Vector2(scale_x, scale_y);
+    // m_WindowW/H are physical pixels (see GetDisplaySize), and the UI works in
+    // logical units -- a composited viewport's pixel size is its logical size
+    // times ui_scale. (The old framebuffer/logical ratio computed ~1.0 here
+    // because BOTH queries were physical, so viewports never scaled up and the
+    // swapchain was sized in a mismatched unit.)
+    const float s = m_UiScale > 0.0f ? m_UiScale : 1.0f;
+    return Vector2(s, s);
 }
 
 double EditorSlateHost::GetTime()
