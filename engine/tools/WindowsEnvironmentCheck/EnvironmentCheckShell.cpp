@@ -24,9 +24,11 @@
 // our code ran, so FreeConsole() could only close it *after* it had flashed.)
 //
 // The CLI is not lost: `-batchmode`, `--help` and the two internal worker verbs
-// call AttachConsole(ATTACH_PARENT_PROCESS) and re-point the CRT streams at the
-// caller's console before anything is printed, so under cmd.exe and PowerShell
-// stdout/stderr still work and %ERRORLEVEL% / $LASTEXITCODE is still set.
+// call zengine::appshell::EnsureConsole(), which attaches the caller's console
+// and re-points the CRT streams at it before anything is printed, so under
+// cmd.exe and PowerShell stdout/stderr still work and %ERRORLEVEL% /
+// $LASTEXITCODE is still set. A caller that already redirected stdout to a pipe
+// or a file is left alone, so CI captures keep working.
 //
 // cmd.exe still waits for it, so `exe && next` in a .bat is still correct. That
 // is easy to get wrong by reasoning alone -- cmd is documented not to wait for
@@ -50,8 +52,9 @@
 #include "EnvironmentCheckCommand.h"
 #include "WerCapture.h"
 
+#include <ZAppShell/AppMain.h>
+
 #include <shellapi.h>
-#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -59,31 +62,6 @@
 
 namespace
 {
-// Give a WINDOWS-subsystem process the console of whoever launched it.
-//
-// Only when the caller did not already arrange our output: a pipe or a
-// redirected file means something (CI, a script, a capture) is reading stdout,
-// and re-opening CONOUT$ would silently move that output to the console instead.
-// A pipe/file handle is inherited and works as-is, so leave the CRT alone there.
-// Everything else -- no handle at all, or an inherited console handle -- attaches
-// and re-points the streams, which is what makes `exe -batchmode --help` print
-// where you asked it to.
-//
-// Fails harmlessly when there is no parent console (Explorer, a service, the
-// Job-managed stage child), which is fine: that path is GUI mode, and it never
-// calls this.
-void AttachToParentConsole()
-{
-    const DWORD kind = GetFileType(GetStdHandle(STD_OUTPUT_HANDLE));
-    if (kind == FILE_TYPE_PIPE || kind == FILE_TYPE_DISK) return;
-    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
-    // The CRT set up stdin/stdout/stderr long before we had a console, so they
-    // point at nothing. CONIN$/CONOUT$ always name this process's console.
-    FILE* stream = nullptr;
-    freopen_s(&stream, "CONIN$", "r", stdin);
-    freopen_s(&stream, "CONOUT$", "w", stdout);
-    freopen_s(&stream, "CONOUT$", "w", stderr);
-}
 bool IsBatchModeToken(const std::wstring& argument)
 {
     return argument == L"-batchmode" || argument == L"--batchmode" || argument == L"/batchmode";
@@ -171,7 +149,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     }
     if (batchMode || helpRequested || IsInternalWorkerVerb(argumentCount, arguments))
     {
-        AttachToParentConsole();
+        // A WINDOWS-subsystem process has no console of its own; this gives the
+        // CLI somewhere to print. A no-op when the caller already redirected our
+        // output, so a pipe or a CI capture is left alone.
+        zengine::appshell::EnsureConsole();
         return RunBatchMode(argumentCount, arguments);
     }
     // Deliberately SW_SHOW and not the show command wWinMain was handed: a

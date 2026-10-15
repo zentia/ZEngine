@@ -254,6 +254,12 @@ z_embed_app_icon(${ENVIRONMENT_CHECK_TARGET})
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/AppManifest.cmake")
 z_embed_app_manifest(${ENVIRONMENT_CHECK_TARGET})
 
+# ZAppShell: header-only, so the /MT collector can use it even though it cannot
+# link the /MD ZSlate. Provides the command-line split and the console attach
+# that the CLI path needs.
+target_include_directories(${ENVIRONMENT_CHECK_TARGET} PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../Libraries/ZAppShell/include")
+
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES
     DllProbe.cpp
     DllProbe.h

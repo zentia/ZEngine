@@ -41,6 +41,7 @@ z_embed_app_manifest(${TEX_PREVIEW_TARGET})
 target_include_directories(${TEX_PREVIEW_TARGET} PRIVATE
     ${ENGINE_ROOT_DIR}/Source
     ${ENGINE_ROOT_DIR}/Source/CommonPCH
+    ${ENGINE_ROOT_DIR}/Libraries/ZAppShell/include
     ${ENGINE_ROOT_DIR}/Libraries/ZSlate/include
 )
 

@@ -29,6 +29,7 @@ source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${INSIGHTS_SOURCES} ${INSI
 target_include_directories(${INSIGHTS_TARGET} PRIVATE
     ${ENGINE_ROOT_DIR}/Source
     ${ENGINE_ROOT_DIR}/Source/CommonPCH
+    ${ENGINE_ROOT_DIR}/Libraries/ZAppShell/include
     ${ENGINE_ROOT_DIR}/Libraries/ZSlate/include
 )
 

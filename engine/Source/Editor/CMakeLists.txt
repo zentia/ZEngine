@@ -158,6 +158,13 @@ target_include_directories(
   PRIVATE $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/engine/Libraries/ZSlate/include>
 )
 
+# ZAppShell: header-only startup helpers (wide command line, console attach).
+# Header-only so the /MT tools can use it too; nothing to link.
+target_include_directories(
+  ${TARGET_NAME}
+  PRIVATE $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/engine/Libraries/ZAppShell/include>
+)
+
 # Add platform-specific include directory (if needed for Editor-specific platform files)
 # Note: Runtime already adds the platform include directory, so this is only needed
 # if Editor has its own platform-specific files separate from Runtime

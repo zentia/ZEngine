@@ -48,8 +48,11 @@ set_target_properties(${LUA_MEM_PREVIEW_TARGET} PROPERTIES
     # No console window behind the Slate window. WIN32_EXECUTABLE implies
     # /SUBSYSTEM:WINDOWS, so the entry point is WinMain - same as ZEditor /
     # ZInsights / TexPreview. The headless modes read their arguments from the
-    # CRT globals (__argv / __argc) and attach to the caller's console at
-    # startup (main.cpp: EnsureConsole) so their output is still visible.
+    # wide command line, not the CRT's ANSI __argv (a non-ASCII path would
+    # arrive mangled, and a path is what -batchmode takes), and attach to the
+    # caller's console at startup so their output is still visible. Both come
+    # from ZAppShell, which is header-only: this tool is /MD like the tree, but
+    # ZEnvironmentCollector is /MT and could not link a library version.
     WIN32_EXECUTABLE TRUE
 )
 
@@ -67,6 +70,7 @@ z_embed_app_manifest(${LUA_MEM_PREVIEW_TARGET})
 
 target_include_directories(${LUA_MEM_PREVIEW_TARGET} PRIVATE
     ${ENGINE_ROOT_DIR}/Source
+    ${ENGINE_ROOT_DIR}/Libraries/ZAppShell/include
     ${ENGINE_ROOT_DIR}/Libraries/ZSlate/include
 )
 

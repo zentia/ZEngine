@@ -18,6 +18,8 @@
 
 #include "CommonPCH/pch.h"  // windows.h, std, engine include dirs
 
+#include <ZAppShell/AppMain.h>  // CommandLine (wide argv, owns its memory)
+
 #include <commdlg.h>
 #include <d2d1.h>
 #include <shellapi.h>
@@ -327,13 +329,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
 
     // Open the file passed on the command line (drag-onto-exe or editor launch).
     {
-        int argc = 0;
-        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-        if (argv)
+        const auto commandLine = zengine::appshell::CommandLine::Acquire();
+        if (commandLine.valid() && commandLine.count() >= 2 && commandLine[1][0] != L'\0')
         {
-            if (argc >= 2 && argv[1][0] != L'\0')
-                LoadTraceFile(argv[1]);
-            LocalFree(argv);
+            LoadTraceFile(commandLine[1]);
         }
     }
 

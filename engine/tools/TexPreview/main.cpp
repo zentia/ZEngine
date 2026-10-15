@@ -11,6 +11,8 @@
 // about what is actually TexPreview-specific: the texture widget and the
 // command-line path.
 
+#include <ZAppShell/AppMain.h>
+
 #include "ZSlate/App/SlateStandaloneApp.h"
 #include "TexPreviewWindow.h"
 
@@ -24,9 +26,10 @@
 
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 {
-    // UTF-8 argv: the CRT's __argv is in the ANSI codepage, which mangles
-    // non-ASCII texture paths.
-    const std::vector<std::string> args = ZSlate::Win32::CommandLineArgsUtf8();
+    // UTF-8 argv from the wide command line: the CRT's __argv is in the ANSI
+    // codepage, which mangles non-ASCII texture paths. Same source the other
+    // ZEngine executables use.
+    const std::vector<std::string> args = zengine::appshell::CommandLine::Acquire().Utf8();
 
     std::printf("=== TexPreview (ZSlate + D3D11) ===\n");
 

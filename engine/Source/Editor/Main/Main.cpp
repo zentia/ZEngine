@@ -9,6 +9,7 @@
 #include <vector>
 
 #ifdef _WIN32
+    #include <ZAppShell/AppMain.h>  // CommandLine (wide argv, owns its memory)
     #include <shellapi.h>
     #include <windows.h>
 #endif
@@ -90,12 +91,13 @@ namespace
 #ifdef _WIN32
     StartupMode resolveStartupModeFromCommandLine(PreferredRHI& preferred_rhi)
     {
-        int argc = 0;
-        LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-        if (!argv)
+        const auto commandLine = zengine::appshell::CommandLine::Acquire();
+        if (!commandLine.valid())
         {
             return StartupMode::Abort;
         }
+        const int argc = commandLine.count();
+        const wchar_t* const* argv = commandLine.values();
 
         std::filesystem::path project_path;
         bool has_project_argument = false;
@@ -127,7 +129,7 @@ namespace
             }
         }
 
-        LocalFree(argv);
+        // No LocalFree: commandLine owns the array and frees it on scope exit.
         return resolveStartupModeFromProjectPath(project_path, has_project_argument);
     }
 

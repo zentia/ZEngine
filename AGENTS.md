@@ -1706,7 +1706,38 @@ Note `engine/resource/ZEngineEditor.rc` is unrelated and currently orphaned
 (no CMakeLists references it); the editor loads its icons at runtime from file
 (`EditorUI.cpp: LoadWindowIcons`).
 
-### 7.3 Output & build directories for standalone GUI tools
+### 7.3 ZAppShell — the startup bits every executable repeats
+
+`engine/Libraries/ZAppShell/include/ZAppShell/AppMain.h`. **Header-only, and it
+must stay that way**: `ZEnvironmentCollector` ships `/MT` while the tree is
+`/MD`, so anything compiled into a library serves only one of them (`LNK2038`)
+— which is exactly why the collector had its own copy of the console-attach
+logic instead of calling the `ZSlate` one. Inline code is compiled by whoever
+includes it, with that target's own runtime library. It therefore calls nothing
+but Win32 and the CRT: no ZSlate, no ZRuntime.
+
+| What | Why it is shared |
+|---|---|
+| `CommandLine::Acquire()` | `CommandLineToArgvW(GetCommandLineW())` was open-coded in five places (ZEditor, ZInsights, CommandSystem, LogSystem, WEC). Owns the array and `LocalFree`s it, so call sites stop leaking it. `.Utf8()` for `std::filesystem`/printing. |
+| `EnsureConsole()` | A `/SUBSYSTEM:WINDOWS` exe has no console, so printf goes nowhere and a headless mode looks like it hung. Two implementations existed (ZSlate's and WEC's) and had drifted; the ZSlate one is now gone. No-op when the caller already redirected stdout to a pipe or file, so CI captures keep working. |
+
+**Never `LocalFree` the array yourself** — `CommandLine` owns it. ZEditor's
+`resolveStartupModeFromCommandLine` had a manual `LocalFree` that became a
+compile error the moment `CommandLine` took ownership.
+
+`EnsureConsole()` must be called **only on the path that prints**. A GUI run
+that called it would flash a console window on double-click — the whole reason
+these executables are `/SUBSYSTEM:WINDOWS`.
+
+**Do not read `__argv`.** It is in the ANSI codepage, so a non-ASCII path
+arrives already mangled — and `LuaMemPreview -batchmode` takes a path.
+
+**Not shared on purpose:** deciding whether a run is GUI or batch. The three
+executables with a batch mode disagree — WEC takes `-batchmode` as a switch
+anywhere on the line, `LuaMemPreview` takes it as a positional subcommand next
+to `--stats`/`--dump-ui`, and ZEditor reads `-p`/`--rhi` to pick a startup mode.
+
+### 7.4 Output & build directories for standalone GUI tools
 
 Two directories per tool, both fixed by convention so an exe never has to be
 hunted for:

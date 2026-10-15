@@ -36,12 +36,15 @@
 //
 // Entry point is WinMain (/SUBSYSTEM:WINDOWS), like ZEditor / ZInsights /
 // TexPreview, so the GUI opens with no console behind it. Arguments come from
-// the CRT globals; the headless modes additionally attach to the console they
-// were launched from (EnsureConsole). Their diagnostics go through bqlog
-// (LuaMemLog) - which writes the usual LuaMemPreview_*.log AND the console -
-// while the data itself (--stats table, file list, --help) stays on stdout.
-// Add --pause to keep console output on screen, or `start /wait` from a batch
-// file to make one wait for the process.
+// the wide command line (ZAppShell) -- not the CRT's __argv, which is in the
+// ANSI codepage and mangles a non-ASCII path, and a path is what -batchmode
+// takes. The headless modes attach to the console they were launched from
+// (EnsureConsole). Their diagnostics go through bqlog (LuaMemLog) - which
+// writes the usual LuaMemPreview_*.log AND the console - while the data itself
+// (--stats table, file list, --help) stays on stdout.
+// Add --pause to keep console output on screen. A batch file does NOT need
+// `start /wait`: cmd.exe waits for this executable even though it is a
+// WINDOWS-subsystem binary.
 //
 //   Ctrl+O to open, or drag a file onto the window.
 
@@ -50,6 +53,8 @@
 #include "LuaMemTypeDoc.h"
 #include "LuaMemWidgets.h"
 #include "LuaMemZasset.h"
+
+#include <ZAppShell/AppMain.h>
 
 #include "ZSlate/App/SlateStandaloneApp.h"
 #include "ZSlate/Application/SlateApplication.h"
@@ -320,23 +325,28 @@ void PrintUsage(const char* exeName)
                 "In the GUI: Ctrl+O to open, or drag a file onto the window.\n"
                 "\n"
                 "-batchmode / --stats / --dump-ui print to the console they were started\n"
-                "from. This is a /SUBSYSTEM:WINDOWS executable, so a caller that needs to\n"
-                "wait for them has to ask explicitly (e.g. `start /wait` from a batch file);\n"
+                "from. This is a /SUBSYSTEM:WINDOWS executable, but cmd.exe still waits for\n"
+                "it, so `%s -batchmode ... && next` in a batch file does what you expect.\n"
                 "--pause is the other way to keep the output on screen.\n",
-                exeName, exeName, exeName, exeName);
+                exeName, exeName, exeName, exeName, exeName);
 }
 }  // namespace
 
 // WinMain, matching the other ZEngine GUI executables (ZEditor, ZInsights,
 // TexPreview): the target is linked /SUBSYSTEM:WINDOWS, so this is the entry
-// point the CRT expects and no explicit /ENTRY override is needed. __argv /
-// __argc are the CRT globals it fills from GetCommandLine, so the headless
-// modes keep working exactly as they did under main().
+// point the CRT expects and no explicit /ENTRY override is needed.
+//
+// Arguments come from the wide command line rather than the CRT globals:
+// __argv is in the ANSI codepage, so a non-ASCII path arrives already mangled,
+// and a path is exactly what -batchmode takes. Same source every other ZEngine
+// executable uses (ZAppShell).
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
 {
+    const std::vector<std::string> args = zengine::appshell::CommandLine::Acquire().Utf8();
     constexpr int kMaxArgs = 32;
-    const int argc = (__argc < kMaxArgs) ? __argc : kMaxArgs;
-    char** argv = __argv;
+    const int argc = (static_cast<int>(args.size()) < kMaxArgs)
+                         ? static_cast<int>(args.size())
+                         : kMaxArgs;
 
     // --pause is a modifier, so it can sit anywhere; pull it out before the
     // positional arguments are interpreted.
@@ -347,24 +357,24 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     {
         // Modifiers: they can sit anywhere, so they are pulled out before the
         // positional arguments are interpreted.
-        if (std::strcmp(argv[i], "--pause") == 0)
+        if (args[i] == "--pause")
         {
             pause_at_exit = true;
             --arg_count;
         }
-        else if (std::strcmp(argv[i], "--recursive") == 0)
+        else if (args[i] == "--recursive")
         {
             recursive = true;
             --arg_count;
         }
     }
 
-    const std::string mode = (arg_count >= 2) ? argv[1] : "";
+    const std::string mode = (arg_count >= 2) ? args[1] : "";
 
     if (mode == "--help" || mode == "-h" || mode == "-?")
     {
-        ZSlate::Win32::EnsureConsole();
-        PrintUsage(argv[0]);
+        zengine::appshell::EnsureConsole();
+        PrintUsage(args[0].c_str());
         return ExitCode(0, pause_at_exit);
     }
 
@@ -380,7 +390,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // this tool needed a batch mode at all.
     if (mode == "-batchmode" || mode == "--batchmode" || mode == "--batch")
     {
-        ZSlate::Win32::EnsureConsole();
+        zengine::appshell::EnsureConsole();
         if (arg_count < 3 || arg_count > 4)
         {
             std::printf("Usage: %s -batchmode <snapshot.zasset | folder> [output]\n"
@@ -395,13 +405,13 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
                         "A folder:    [output] is a directory, defaulting to the folder itself.\n"
                         "             Every *.zasset in it becomes <dir>/<stem>_lua.csv; add\n"
                         "             --recursive to walk subdirectories.\n",
-                        argv[0]);
+                        args[0].c_str());
             LogError("batchmode: expected <snapshot.zasset | folder> [output]");
             return ExitCode(1, pause_at_exit);
         }
 
-        const std::string input = argv[2];
-        const std::string output = (arg_count >= 4) ? argv[3] : "";
+        const std::string input = args[2];
+        const std::string output = (arg_count >= 4) ? args[3] : "";
         const bool folder_mode = IsDirectory(input);
         const bool snapshot_mode = IsSnapshotPath(input);
 
@@ -475,15 +485,15 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // a blank surface to PrintWindow, so a screenshot proves nothing.
     if (mode == "--dump-ui" && arg_count >= 3)
     {
-        ZSlate::Win32::EnsureConsole();
+        zengine::appshell::EnsureConsole();
         FPreviewApp app;
         ZSlate::SetPlatform(&app.Host);
         app.BuildUI();
-        app.LoadFile(argv[2]);
+        app.LoadFile(args[2]);
         if (!app.Snapshot.IsLoaded())
         {
             std::printf("ERROR: snapshot failed to load\n");
-            LogError("dump-ui: snapshot failed to load: " + std::string(argv[2]));
+            LogError("dump-ui: snapshot failed to load: " + args[2]);
             return ExitCode(1, pause_at_exit);
         }
 
@@ -789,11 +799,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // script or CI job wants when it just needs the per-type split.
     if (mode == "--stats" && arg_count >= 3)
     {
-        ZSlate::Win32::EnsureConsole();
+        zengine::appshell::EnsureConsole();
         FSnapshot snap;
         std::string err;
         const auto t0 = std::chrono::steady_clock::now();
-        if (!snap.LoadFromFile(argv[2], err))
+        if (!snap.LoadFromFile(args[2], err))
         {
             std::printf("ERROR: %s\n", err.c_str());
             LogError("stats: " + err);
@@ -845,7 +855,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         if (bucket_sum != snap.GetTotalSize())
         {
             std::printf("ERROR: bucket sum != total\n");
-            LogError("stats: bucket sum != total for " + std::string(argv[2]));
+            LogError("stats: bucket sum != total for " + args[2]);
             return ExitCode(2, pause_at_exit);
         }
         return ExitCode(snap.IsSelfConsistent() ? 0 : 3, pause_at_exit);
@@ -910,7 +920,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     };
 
     if (argc > 1)
-        app.LoadFile(argv[1]);
+        app.LoadFile(args[1]);
 
     return app.Host.Run();
 }
