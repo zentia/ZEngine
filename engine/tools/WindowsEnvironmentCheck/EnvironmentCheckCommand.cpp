@@ -352,12 +352,11 @@ EnvironmentCheckOutcome RunEnvironmentCheck(
     };
 
     EnvironmentCheckOutcome outcome;
+    // CollectEnvironment() now includes the GPU auto-selection verification
+    // (offline mock regression cases + the real DXGI probe), so there is no
+    // separate step here -- see GpuSelectionProbe.h.
     report("采集环境信息");
     auto snapshot = CollectEnvironment();
-
-    report("验证双显卡自动选卡规则");
-    snapshot.gpuSelectionMockResults = RunAllGpuSelectionMockCases();
-    snapshot.gpuSelectionRealProbe = ProbeRealGpuSelection();
 
     std::vector<std::filesystem::path> dllPaths;
     if (options.includeDllChecks)

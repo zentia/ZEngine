@@ -96,6 +96,16 @@ std::string FormatGpuSelectionReport(
     const std::vector<GpuSelectionMockCaseResult>& mockResults,
     const GpuSelectionRealProbeResult& realResult);
 
+// The same two sections as JSON object *body* (no wrapping braces, indented by
+// four spaces, no trailing newline). One serializer for all three consumers:
+// the compatibility report's "gpuAutoSelection" block (ReportWriter.cpp), the
+// collector's standalone gpu-selection stage (Collection.cpp) and anything that
+// embeds the result later. Keeping it here -- next to the structs it serializes
+// -- is what stops the report and the collected ZIP from drifting apart.
+std::string BuildGpuSelectionJson(
+    const std::vector<GpuSelectionMockCaseResult>& mockResults,
+    const GpuSelectionRealProbeResult& realResult);
+
 // True when every mock regression case picked the expected adapter. A false
 // result means the selection heuristic in GfxDeviceSetup.cpp regressed, which is
 // a tool-verifiable failure (exit code 1) independent of the host machine.

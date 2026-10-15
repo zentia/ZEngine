@@ -128,6 +128,7 @@ add_library(ZEnvironmentCheckCore STATIC
     PeInspector.h
     ReportWriter.cpp
     ReportWriter.h
+    JsonEscape.h
 )
 target_include_directories(ZEnvironmentCheckCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_features(ZEnvironmentCheckCore PUBLIC cxx_std_20)

@@ -183,10 +183,20 @@ EnvironmentSnapshot CollectEnvironment(bool includeDevices)
     }
     snapshot.system.uptimeMilliseconds = GetTickCount64();
 
+    // GPU auto-selection verification lives here rather than in the caller so
+    // every consumer of a snapshot gets it -- the compatibility check, the GUI
+    // tab and the collector's gpu-selection stage all call this one function.
+    //
+    // The mock regression cases are pure in-memory arithmetic with no device
+    // access, so they run unconditionally; only the real DXGI probe needs an
+    // adapter and therefore follows includeDevices.
+    snapshot.gpuSelectionMockResults = RunAllGpuSelectionMockCases();
+
     if (includeDevices)
     {
         CollectGraphicsInformation(snapshot);
         CollectStorageInformation(snapshot);
+        snapshot.gpuSelectionRealProbe = ProbeRealGpuSelection();
     }
     return snapshot;
 }

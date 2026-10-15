@@ -237,6 +237,26 @@ int RunStage(const std::string& stage, const Options& options)
         }
         WriteReportFile(options.outputDirectory / (stage + ".json"), EnvironmentJson(snapshot));
     }
+    else if (stage == "gpu-selection")
+    {
+        // Dual-GPU auto-select verification: the offline mock regression cases
+        // (pure arithmetic, always available) plus the real DXGI probe on this
+        // machine. Deliberately its own stage instead of a field on
+        // "graphics": the mocks say whether the shipped heuristic in
+        // GfxDeviceSetup.cpp still behaves, which is a different question from
+        // "what hardware is installed", and a graphics-stage failure must not
+        // silently drop it from the package.
+        //
+        // The JSON comes from the same serializer the compatibility report
+        // uses, so a collected ZIP and a -batchmode report always agree.
+        const auto mockResults = RunAllGpuSelectionMockCases();
+        const auto realResult = ProbeRealGpuSelection();
+        complete = !mockResults.empty() && !realResult.allAdapters.empty();
+        std::ostringstream out;
+        out << "{\"schemaVersion\":1,\"toolVersion\":" << JsonString(ToolVersion)
+            << ",\"gpuAutoSelection\":{\n" << BuildGpuSelectionJson(mockResults, realResult) << "\n}}\n";
+        WriteReportFile(options.outputDirectory / "gpu-selection.json", out.str());
+    }
     else if (stage == "firmware") WriteReportFile(options.outputDirectory / "firmware.json", CollectFirmwareJson(complete));
     else if (stage == "health") WriteReportFile(options.outputDirectory / "health-events.json", CollectHealthEventsJson(options.profile.lookbackHours, complete));
     else if (stage == "events")
@@ -518,7 +538,8 @@ Result Collect(const Options& options, const std::atomic_bool& cancel, const std
     struct Stage { const char* id; const char* label; const char* file; };
     std::vector<Stage> stages = {{"basic", "采集CPU与内存", "basic.json"}, {"firmware", "采集BIOS与内存配置", "firmware.json"},
         {"events", "分析系统事件", "diagnosis.json"}, {"health", "采集WHEA与内存诊断历史", "health-events.json"},
-        {"graphics", "采集显卡与驱动", "graphics.json"}, {"storage", "采集存储信息", "storage.json"}};
+        {"graphics", "采集显卡与驱动", "graphics.json"}, {"storage", "采集存储信息", "storage.json"},
+        {"gpu-selection", "验证双显卡自动选卡规则", "gpu-selection.json"}};
     // Game logs only exist for profiles that declare where the game writes them.
     const auto logDirectory = options.logDirectory.empty() ? ResolveGameLogDirectory(options.profile) : options.logDirectory;
     if (!logDirectory.empty()) stages.push_back({"gamelogs", "复制游戏日志", "game-logs.json"});

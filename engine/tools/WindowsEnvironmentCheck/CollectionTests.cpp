@@ -189,9 +189,35 @@ int main()
             Check(!IsArchivedGameLogName("../gamelog-00-x.log") && IsArchivedGameLogName("gamelog-00-x.log"), "archive name guard");
         }
         std::filesystem::remove_all(directory);
-        const auto mocks = RunAllGpuSelectionMockCases();
-        Check(!mocks.empty(), "GPU mock cases preserved");
-        for (const auto& mock : mocks) Check(mock.passed, "GPU mock regression");
+        // GPU auto-selection is part of the environment snapshot now, not a
+        // separate step the compatibility check bolts on, so a plain
+        // CollectEnvironment() has to carry it.
+        const auto envSnapshot = CollectEnvironment();
+        Check(!envSnapshot.gpuSelectionMockResults.empty(), "GPU mock cases inside CollectEnvironment");
+        Check(AllGpuSelectionMockCasesPassed(envSnapshot.gpuSelectionMockResults), "GPU mock regression via CollectEnvironment");
+        // The real probe is machine-dependent (headless CI has no adapters), so
+        // assert it *ran*, not that it found hardware.
+        Check(envSnapshot.gpuSelectionRealProbe.dxgiFactoryCreated || !envSnapshot.gpuSelectionRealProbe.errorMessage.empty(),
+            "real GPU probe ran inside CollectEnvironment");
+        // includeDevices=false is the "basic" stage: no DXGI at all, mocks still run.
+        const auto basicSnapshot = CollectEnvironment(false);
+        Check(!basicSnapshot.gpuSelectionMockResults.empty(), "GPU mock cases survive includeDevices=false");
+        Check(basicSnapshot.gpuSelectionRealProbe.allAdapters.empty()
+            && !basicSnapshot.gpuSelectionRealProbe.dxgiFactoryCreated
+            && basicSnapshot.gpuSelectionRealProbe.errorMessage.empty(), "no DXGI probe under includeDevices=false");
+        // One serializer for the report and for the collected stage file.
+        const std::string gpuJson = BuildGpuSelectionJson(envSnapshot.gpuSelectionMockResults, envSnapshot.gpuSelectionRealProbe);
+        Check(gpuJson.find("\"allMockCasesPassed\": true") != std::string::npos, "GPU JSON reports mock verdict");
+        Check(gpuJson.find("\"mockCases\": [") != std::string::npos && gpuJson.find("\"realProbe\": {") != std::string::npos,
+            "GPU JSON has both sections");
+        GpuSelectionMockCaseResult escaping;
+        escaping.caseName = "quote\" back\\slash";
+        GpuSelectionAdapter escapingAdapter;
+        escapingAdapter.name = "a\"b\\c";
+        escaping.adapters.push_back(escapingAdapter);
+        const std::string escapedJson = BuildGpuSelectionJson({escaping}, GpuSelectionRealProbeResult{});
+        Check(escapedJson.find("quote\\\" back\\\\slash") != std::string::npos, "GPU JSON escapes case name");
+        Check(escapedJson.find("a\\\"b\\\\c") != std::string::npos, "GPU JSON escapes adapter name");
         std::cout << "PASS JSON, timestamps, diagnosis replay, event scan order, ZIP whitelist, GPU mock invocation\n";
         return 0;
     }

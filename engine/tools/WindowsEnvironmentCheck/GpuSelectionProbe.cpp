@@ -1,10 +1,13 @@
 #include "GpuSelectionProbe.h"
 
+#include "JsonEscape.h"
+
 #include <Windows.h>
 #include <dxgi.h>
 #include <dxgi1_6.h>
 
 #include <cstdio>
+#include <sstream>
 
 namespace zengine::envcheck
 {
@@ -341,6 +344,60 @@ std::string FormatGpuSelectionReport(
             + (realResult.errorMessage.empty() ? std::string("unknown reason") : realResult.errorMessage) + "\n";
     }
     return report;
+}
+std::string BuildGpuSelectionJson(
+    const std::vector<GpuSelectionMockCaseResult>& mockResults,
+    const GpuSelectionRealProbeResult& realResult)
+{
+    std::ostringstream stream;
+    stream << "    \"allMockCasesPassed\": " << (AllGpuSelectionMockCasesPassed(mockResults) ? "true" : "false") << ",\n";
+    stream << "    \"mockCases\": [\n";
+    for (std::size_t index = 0; index < mockResults.size(); ++index)
+    {
+        const GpuSelectionMockCaseResult& mockResult = mockResults[index];
+        stream << "      {\n"
+               << "        \"caseName\": \"" << EscapeJson(mockResult.caseName) << "\",\n"
+               << "        \"passed\": " << (mockResult.passed ? "true" : "false") << ",\n"
+               << "        \"chosenAdapterIndex\": " << mockResult.chosenAdapterIndex << ",\n"
+               << "        \"expectedAdapterIndex\": " << mockResult.expectedAdapterIndex << ",\n"
+               << "        \"excludedIntegrated\": " << (mockResult.excludedIntegrated ? "true" : "false") << ",\n"
+               << "        \"adapters\": [";
+        for (std::size_t adapterIndex = 0; adapterIndex < mockResult.adapters.size(); ++adapterIndex)
+        {
+            if (adapterIndex != 0)
+            {
+                stream << ", ";
+            }
+            const GpuSelectionAdapter& adapter = mockResult.adapters[adapterIndex];
+            stream << "{\"name\": \"" << EscapeJson(adapter.name)
+                   << "\", \"vendorId\": " << adapter.vendorId
+                   << ", \"deviceId\": " << adapter.deviceId
+                   << ", \"dedicatedVideoMemoryBytes\": " << adapter.dedicatedVideoMemoryBytes
+                   << ", \"sharedSystemMemoryBytes\": " << adapter.sharedSystemMemoryBytes
+                   << ", \"looksIntegrated\": " << (adapter.looksIntegrated ? "true" : "false")
+                   << "}";
+        }
+        stream << "]\n"
+               << "      }" << (index + 1 == mockResults.size() ? "" : ",") << '\n';
+    }
+    stream << "    ],\n";
+    stream << "    \"realProbe\": {\n"
+           << "      \"dxgiFactoryCreated\": " << (realResult.dxgiFactoryCreated ? "true" : "false") << ",\n"
+           << "      \"factory6Available\": " << (realResult.factory6Available ? "true" : "false") << ",\n"
+           << "      \"gpuPreferencePicked\": " << (realResult.gpuPreferencePicked ? "true" : "false") << ",\n"
+           << "      \"preferredAdapter\": {";
+    if (realResult.gpuPreferencePicked)
+    {
+        const GpuSelectionAdapter& preferred = realResult.preferredAdapter;
+        stream << "\"name\": \"" << EscapeJson(preferred.name)
+               << "\", \"vendorId\": " << preferred.vendorId
+               << ", \"deviceId\": " << preferred.deviceId
+               << ", \"dedicatedVideoMemoryBytes\": " << preferred.dedicatedVideoMemoryBytes;
+    }
+    stream << "},\n"
+           << "      \"errorMessage\": \"" << EscapeJson(realResult.errorMessage) << "\"\n"
+           << "    }";
+    return stream.str();
 }
 bool AllGpuSelectionMockCasesPassed(const std::vector<GpuSelectionMockCaseResult>& mockResults)
 {

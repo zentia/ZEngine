@@ -1,5 +1,6 @@
 #include "ReportWriter.h"
 
+#include "JsonEscape.h"
 #include "ToolVersion.h"
 
 #include <fstream>
@@ -16,36 +17,6 @@ constexpr double BytesPerGiB = 1024.0 * 1024.0 * 1024.0;
 const char* BoolText(bool value)
 {
     return value ? "true" : "false";
-}
-
-std::string EscapeJson(const std::string& value)
-{
-    std::ostringstream stream;
-    for (const unsigned char character : value)
-    {
-        switch (character)
-        {
-        case '\\': stream << "\\\\"; break;
-        case '"': stream << "\\\""; break;
-        case '\b': stream << "\\b"; break;
-        case '\f': stream << "\\f"; break;
-        case '\n': stream << "\\n"; break;
-        case '\r': stream << "\\r"; break;
-        case '\t': stream << "\\t"; break;
-        default:
-            if (character < 0x20)
-            {
-                stream << "\\u" << std::hex << std::setw(4) << std::setfill('0')
-                       << static_cast<int>(character) << std::dec;
-            }
-            else
-            {
-                stream << static_cast<char>(character);
-            }
-            break;
-        }
-    }
-    return stream.str();
 }
 
 std::string HexId(std::uint64_t value, int width)
@@ -413,55 +384,11 @@ std::string BuildJsonReport(
     }
     stream << "  ],\n";
 
+    // Same serializer the collector's gpu-selection stage uses, so a collected
+    // ZIP and this report can never disagree about what the probe found.
     stream << "  \"gpuAutoSelection\": {\n"
-           << "    \"mockCases\": [\n";
-    for (std::size_t index = 0; index < snapshot.gpuSelectionMockResults.size(); ++index)
-    {
-        const auto& mockResult = snapshot.gpuSelectionMockResults[index];
-        stream << "      {\n"
-               << "        \"caseName\": \"" << EscapeJson(mockResult.caseName) << "\",\n"
-               << "        \"passed\": " << BoolText(mockResult.passed) << ",\n"
-               << "        \"chosenAdapterIndex\": " << mockResult.chosenAdapterIndex << ",\n"
-               << "        \"expectedAdapterIndex\": " << mockResult.expectedAdapterIndex << ",\n"
-               << "        \"excludedIntegrated\": " << BoolText(mockResult.excludedIntegrated) << ",\n"
-               << "        \"adapters\": [";
-        for (std::size_t adapterIndex = 0; adapterIndex < mockResult.adapters.size(); ++adapterIndex)
-        {
-            if (adapterIndex != 0)
-            {
-                stream << ", ";
-            }
-            const auto& adapter = mockResult.adapters[adapterIndex];
-            stream << "{\"name\": \"" << EscapeJson(adapter.name)
-                   << "\", \"vendorId\": " << adapter.vendorId
-                   << ", \"deviceId\": " << adapter.deviceId
-                   << ", \"dedicatedVideoMemoryBytes\": " << adapter.dedicatedVideoMemoryBytes
-                   << ", \"sharedSystemMemoryBytes\": " << adapter.sharedSystemMemoryBytes
-                   << ", \"looksIntegrated\": " << BoolText(adapter.looksIntegrated)
-                   << "}";
-        }
-        stream << "]\n"
-               << "      }" << (index + 1 == snapshot.gpuSelectionMockResults.size() ? "" : ",") << '\n';
-    }
-    stream << "    ],\n";
-    const auto& gpuSelection = snapshot.gpuSelectionRealProbe;
-    stream << "    \"realProbe\": {\n"
-           << "      \"dxgiFactoryCreated\": " << BoolText(gpuSelection.dxgiFactoryCreated) << ",\n"
-           << "      \"factory6Available\": " << BoolText(gpuSelection.factory6Available) << ",\n"
-           << "      \"gpuPreferencePicked\": " << BoolText(gpuSelection.gpuPreferencePicked) << ",\n"
-           << "      \"preferredAdapter\": {";
-    if (gpuSelection.gpuPreferencePicked)
-    {
-        const auto& preferred = gpuSelection.preferredAdapter;
-        stream << "\"name\": \"" << EscapeJson(preferred.name)
-               << "\", \"vendorId\": " << preferred.vendorId
-               << ", \"deviceId\": " << preferred.deviceId
-               << ", \"dedicatedVideoMemoryBytes\": " << preferred.dedicatedVideoMemoryBytes;
-    }
-    stream << "},\n"
-           << "      \"errorMessage\": \"" << EscapeJson(gpuSelection.errorMessage) << "\"\n"
-           << "    }\n"
-           << "  },\n";
+           << BuildGpuSelectionJson(snapshot.gpuSelectionMockResults, snapshot.gpuSelectionRealProbe)
+           << "\n  },\n";
 
     stream << "  \"displays\": [\n";
     for (std::size_t index = 0; index < snapshot.displays.size(); ++index)
