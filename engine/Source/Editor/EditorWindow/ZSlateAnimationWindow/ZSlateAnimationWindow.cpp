@@ -16,6 +16,14 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+
+// --- ZSlate <-> runtime UI type bridges (same pattern as ZSlateSceneWindow) ---
+// ZSlate::UIRect uses w/h, the runtime UIRect uses width/height, and only the
+// runtime one converts implicitly to ZSlate -- so going back needs a cast.
+inline ::Vector2       ToRuntime(const ZSlate::Vector2& v) { return ::Vector2(v.x, v.y); }
+inline ZSlate::Vector2 ToSlate(const ::Vector2& v)          { return ZSlate::Vector2(v.x, v.y); }
+inline ::UIRect        ToRuntimeRect(const ZSlate::UIRect& r) { return ::UIRect(r.x, r.y, r.w, r.h); }
+inline ZSlate::UIRect  ToSlateRect(const ::UIRect& r)         { return ZSlate::UIRect(r.x, r.y, r.width, r.height); }
 using namespace ZSlate;
 
 namespace
@@ -48,7 +56,7 @@ std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, c
 
 // Draw a straight line as a chain of short axis-aligned quads (the UIRenderer
 // has no native line primitive; works identically on both backends).
-void DrawLineQuads(UIRenderer& r, const ZSlate::Vector2& a, const ZSlate::Vector2& b, const ZSlate::UIColor& color, float thickness)
+void DrawLineQuads(UIRenderer& r, const ::Vector2& a, const ::Vector2& b, const ZSlate::UIColor& color, float thickness)
 {
     const float dx = b.x - a.x;
     const float dy = b.y - a.y;
@@ -157,7 +165,7 @@ void ZSlateAnimationWindow::BuildToolbar(float scale)
 // ---------------------------------------------------------------------------
 // Property list (custom canvas)
 // ---------------------------------------------------------------------------
-void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ZSlate::UIRect& region, float scale)
+void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ::UIRect& region, float scale)
 {
     r.DrawQuad(region, kListBg);
     r.PushClipRect(region, true);
@@ -202,7 +210,7 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ZSlate::UIRec
                    selected ? kWhite : kLabelColor,
                    ZSlate::TextAnchor::MiddleLeft,
                    ZSlate::TextWrapMode::NoWrap);
-        m_PropRows.push_back(PropRow {rect, false, channel_index, std::string(), type});
+        m_PropRows.push_back(PropRow {ToRuntimeRect(rect), false, channel_index, std::string(), type});
         y += row_h;
     };
 
@@ -219,7 +227,7 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ZSlate::UIRec
                    kLabelColor,
                    ZSlate::TextAnchor::MiddleLeft,
                    ZSlate::TextWrapMode::NoWrap);
-        m_PropRows.push_back(PropRow {head_rect, true, static_cast<int>(i), key, AnimPropType::PositionX});
+        m_PropRows.push_back(PropRow {ToRuntimeRect(head_rect), true, static_cast<int>(i), key, AnimPropType::PositionX});
         y += row_h;
 
         if (!expanded)
@@ -251,7 +259,7 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ZSlate::UIRec
 // ---------------------------------------------------------------------------
 // Curve editor (custom canvas)
 // ---------------------------------------------------------------------------
-void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const ZSlate::UIRect& region, float scale)
+void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const ::UIRect& region, float scale)
 {
     r.DrawQuad(region, kCanvasBg);
     r.PushClipRect(region, true);
@@ -319,7 +327,7 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const ZSlate::UIRect
         {
             const ZSlate::Vector2 p1(time_to_x(sorted[i].time), value_to_y(sorted[i].value));
             const ZSlate::Vector2 p2(time_to_x(sorted[i + 1].time), value_to_y(sorted[i + 1].value));
-            DrawLineQuads(r, p1, p2, color, 2.0f * scale);
+            DrawLineQuads(r, ToRuntime(p1), ToRuntime(p2), color, 2.0f * scale);
         }
     }
 
@@ -348,7 +356,7 @@ void ZSlateAnimationWindow::PaintCurveEditor(UIRenderer& r, const ZSlate::UIRect
 // ---------------------------------------------------------------------------
 // Timeline (custom canvas)
 // ---------------------------------------------------------------------------
-void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const ZSlate::UIRect& region, float scale)
+void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const ::UIRect& region, float scale)
 {
     r.DrawQuad(region, kRulerBg);
     if (m_CurrentAsset == nullptr)
@@ -375,7 +383,7 @@ void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const ZSlate::UIRect& r
                    label,
                    11.0f * scale,
                    kWhite,
-                   ZSlate::TextAnchor::UpperLeft,
+                   ZSlate::TextAnchor::TopLeft,  // renamed from UpperLeft
                    ZSlate::TextWrapMode::NoWrap);
     }
     if (pps > 50.0f)
@@ -414,7 +422,7 @@ void ZSlateAnimationWindow::PaintTimeline(UIRenderer& r, const ZSlate::UIRect& r
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
-void ZSlateAnimationWindow::HandlePropertyListClick(const ZSlate::Vector2& mouse)
+void ZSlateAnimationWindow::HandlePropertyListClick(const ::Vector2& mouse)
 {
     for (const PropRow& row : m_PropRows)
     {
@@ -438,9 +446,9 @@ void ZSlateAnimationWindow::HandlePropertyListClick(const ZSlate::Vector2& mouse
     }
 }
 
-void ZSlateAnimationWindow::HandleCurveInput(const ZSlate::UIRect& region,
+void ZSlateAnimationWindow::HandleCurveInput(const ::UIRect& region,
                                              float scale,
-                                             const ZSlate::Vector2& mouse,
+                                             const ::Vector2& mouse,
                                              bool over,
                                              bool clicked,
                                              bool double_clicked,
@@ -503,7 +511,7 @@ void ZSlateAnimationWindow::HandleCurveInput(const ZSlate::UIRect& region,
     }
 }
 
-void ZSlateAnimationWindow::HandleTimelineClick(const ZSlate::UIRect& region, float scale, const ZSlate::Vector2& mouse)
+void ZSlateAnimationWindow::HandleTimelineClick(const ::UIRect& region, float scale, const ::Vector2& mouse)
 {
     if (m_CurrentAsset == nullptr)
         return;
@@ -601,9 +609,9 @@ void ZSlateAnimationWindow::OnGUI()
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
 
     auto paint_all = [&](UIRenderer& r, FPaintContext& ctx) {
-        PaintPropertyList(r, list_region, ui_scale);
-        PaintCurveEditor(r, curve_region, ui_scale);
-        PaintTimeline(r, timeline_region, ui_scale);
+        PaintPropertyList(r, ToRuntimeRect(list_region), ui_scale);
+        PaintCurveEditor(r, ToRuntimeRect(curve_region), ui_scale);
+        PaintTimeline(r, ToRuntimeRect(timeline_region), ui_scale);
         // separators
         r.DrawQuad(ZSlate::UIRect(right_x, content_y, 1.0f, content_h), kSeparator);
         r.DrawQuad(ZSlate::UIRect(right_x, content_y + curve_h, right_w, 1.0f), kSeparator);
@@ -617,7 +625,7 @@ void ZSlateAnimationWindow::OnGUI()
         BatchedUIRenderer& renderer = overlay.GetRenderer();
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
         ctx.LayerId = 0;
         paint_all(renderer, ctx);
     }
@@ -638,12 +646,12 @@ void ZSlateAnimationWindow::OnGUI()
     const bool double_clicked = below_toolbar && host.WasLeftDoubleClickedThisFrame();
 
     if (left_clicked && list_region.Contains(mouse))
-        HandlePropertyListClick(mouse);
+        HandlePropertyListClick(ToRuntime(mouse));
 
     const bool over_curve = below_toolbar && curve_region.Contains(mouse);
-    HandleCurveInput(curve_region,
+    HandleCurveInput(ToRuntimeRect(curve_region),
                      ui_scale,
-                     mouse,
+                     ToRuntime(mouse),
                      over_curve,
                      left_clicked && curve_region.Contains(mouse),
                      double_clicked && curve_region.Contains(mouse),
@@ -651,7 +659,7 @@ void ZSlateAnimationWindow::OnGUI()
                      left_released);
 
     if (left_clicked && timeline_region.Contains(mouse))
-        HandleTimelineClick(timeline_region, ui_scale, mouse);
+        HandleTimelineClick(ToRuntimeRect(timeline_region), ui_scale, ToRuntime(mouse));
 
     if (below_toolbar && mouse.x >= right_x && host.GetWheelDelta() != 0.0f)
     {

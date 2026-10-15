@@ -29,7 +29,7 @@
 // ZSlateInspectorWindow: real implementation is built (its CMake exclude is
 // gone; see ZSlate-heavy editor windows above).
 // ZSlatePackageManagerWindow: real implementation is built (its CMake exclude is gone).
-STUB_WIN(ZSlateAnimationWindow, "Animation")
+// ZSlateAnimationWindow: real implementation is built (its CMake exclude is gone).
 STUB_WIN(ZSlateBlueprintWindow, "Blueprint")
 // ZSlateTimelineWindow: real implementation is built (its CMake exclude is gone).
 STUB_WIN(ZSlateMaterialEditorWindow, "MaterialEditor")

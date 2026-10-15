@@ -33,7 +33,7 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/AssetPipeline/.*/[Tt]est/.*")
 # ---- ZSlate-heavy editor windows (P2) ----
 # Excluded until UIRenderer->ISlateRenderer migration and ZSlate::/::type bridging
 # is complete. MenuController.cpp is kept -- it is what still draws the menu bar.
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateAnimationWindow/.*")
+# ZSlateAnimationWindow: re-enabled (animation clip editor).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateBlueprintWindow/.*")
 # ZSlateConsoleWindow: re-enabled (the log console; dock layout restored).
 # ZSlateContentBrowserWindow: re-enabled (asset selection entry for zasset preview).
