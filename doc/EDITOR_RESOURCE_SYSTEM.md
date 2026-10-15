@@ -4,6 +4,14 @@
 
 本文档描述 ZEngine 编辑器资源加载系统的设计，参考 Unreal Engine 的编辑器资源管理机制。
 
+> **状态：设计稿，尚未实现。**
+> 文中的 `editor_resource_manager.h` / `EditorResourceManager` 在
+> `engine/Source/Editor/` 下并不存在，本文件描述的是方案而非现状。
+> 编辑器资源目前的真实走法是：`configs/{development,deployment}/ZEditor.ini`
+> 里的 `BigIconFile` / `SmallIconFile` / `FontFile` 由 `ConfigManager` 读成路径，
+> `EditorUI.cpp` 再按路径加载（PNG 用 stb_image 解码）。
+> 下文按原样保留设计内容，仅在路径与现状冲突处做了更正。
+
 ---
 
 ## Unreal Engine 编辑器资源加载机制
@@ -78,17 +86,20 @@
 
 **资源目录结构**：
 ```
-engine/source/editor/resource/
-├── icons/
-│   ├── play.png
-│   ├── pause.png
-│   ├── stop.png
-│   └── ...
-├── fonts/
-│   └── ZEngineEditorFont.TTF
-└── styles/
-    └── default_style.json
+engine/resource/                     # 编辑器运行时资源（部署到 bin/<Config>/resource/）
+├── icons/                           # 229 个 UI 图标 PNG
+├── ZEngineEditorFont.TTF            # FontFile
+├── ZEngineEditorBigIcon.png         # BigIconFile（同时是粒子系统的 logo 纹理）
+├── ZEngineEditorSmallIcon.png       # SmallIconFile
+├── ZEngine.png                      # 仓库 README 用的 logo
+└── gen_icon.ps1                     # 四个独立工具的 .ico 生成器
+
+engine/Source/Editor/app_icon/       # ZEditor.exe 内嵌图标（不进运行时目录）
+└── ZEditor.ico
 ```
+
+> 早期该目录位于 `engine/source/editor/resource/`，后随资源重组迁到
+> `engine/resource/`；`fonts/`、`styles/` 两层当时并未落地，字体直接放在根下。
 
 #### 2. 核心类设计
 

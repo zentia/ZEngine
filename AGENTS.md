@@ -1702,9 +1702,26 @@ Both are guarded by `#ifdef IDI_ICON1`, so a config where the .rc was not
 embedded still compiles. Do not re-add per-tool `#define IDI_ICON1 101` — the
 CMake function is the only source of that id.
 
-Note `engine/resource/ZEngineEditor.rc` is unrelated and currently orphaned
-(no CMakeLists references it); the editor loads its icons at runtime from file
-(`EditorUI.cpp: LoadWindowIcons`).
+**The editor has two icon mechanisms, and they are easy to confuse.** They
+cover different surfaces and neither alone is enough:
+
+- **Embedded in the executable** (Explorer, Properties, taskbar):
+  `engine/Source/Editor/resource/ZEditor.ico`, attached by `z_embed_app_icon()`
+  in `engine/Source/Editor/CMakeLists.txt`. `AppIcon.cmake` generates the .rc
+  into the *binary* dir, so the `file(GLOB ... resource/ZEditor.rc)` in that
+  CMakeLists still matches nothing -- harmless, but it means dropping a
+  hand-written `resource/ZEditor.rc` in there would silently take over.
+- **Loaded at runtime** (window title bar, Alt-Tab): `ZEngineEditorBigIcon.png`
+  and `ZEngineEditorSmallIcon.png` under `engine/resource/`, named by
+  `BigIconFile` / `SmallIconFile` in `configs/{development,deployment}/ZEditor.ini`
+  and read by `EditorUI.cpp: LoadWindowIcons`.
+
+The runtime pair is PNG, so it is decoded with stb_image. Do not go back to
+`LoadImage(..., IMAGE_ICON, ...)` for them: that reads .ico/.cur only and
+returns NULL, which is how this path went unnoticed for so long.
+
+`ZEngineEditorBigIcon.png` is also the particle system's logo texture
+(`engine/asset/global/particle.global.json`), so it is not dead weight.
 
 ### 7.3 ZAppShell — the startup bits every executable repeats
 

@@ -180,11 +180,16 @@ set_target_properties(${TARGET_NAME} PROPERTIES CXX_STANDARD 23 OUTPUT_NAME "ZEd
 set_target_properties(${TARGET_NAME} PROPERTIES FOLDER "Engine")
 z_set_config_output_dirs(ZEditor "${BINARY_ROOT_DIR}" RUNTIME)
 
-# App icon: embeds resource/ZEditor.ico as IDI_ICON1=101. After the OUTPUT_NAME
+# App icon: embeds app_icon/ZEditor.ico as IDI_ICON1=101. After the OUTPUT_NAME
 # line, since the icon base name defaults to it. This covers Explorer and the
 # file's Properties page; the title bar / Alt-Tab / taskbar come from the window
 # class, which WindowsWindow.cpp fills in.
-z_embed_app_icon(${TARGET_NAME})
+#
+# Deliberately NOT in resource/: a POST_BUILD step at the bottom of this file
+# copies that whole directory into the runtime tree, and the .ico is baked into
+# the executable already -- nothing reads it from disk. Keeping it out also
+# leaves resource/ non-existent, which is what that copy step tests for.
+z_embed_app_icon(${TARGET_NAME} ICON_DIR "${CMAKE_CURRENT_SOURCE_DIR}/app_icon")
 
 target_compile_options(${TARGET_NAME} PUBLIC "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:$<IF:$<BOOL:${ZENGINE_ENABLE_WERROR}>,/WX,/WX->>")
 
