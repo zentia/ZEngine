@@ -180,6 +180,12 @@ set_target_properties(${TARGET_NAME} PROPERTIES CXX_STANDARD 23 OUTPUT_NAME "ZEd
 set_target_properties(${TARGET_NAME} PROPERTIES FOLDER "Engine")
 z_set_config_output_dirs(ZEditor "${BINARY_ROOT_DIR}" RUNTIME)
 
+# App icon: embeds resource/ZEditor.ico as IDI_ICON1=101. After the OUTPUT_NAME
+# line, since the icon base name defaults to it. This covers Explorer and the
+# file's Properties page; the title bar / Alt-Tab / taskbar come from the window
+# class, which WindowsWindow.cpp fills in.
+z_embed_app_icon(${TARGET_NAME})
+
 target_compile_options(${TARGET_NAME} PUBLIC "$<$<COMPILE_LANG_AND_ID:CXX,MSVC>:$<IF:$<BOOL:${ZENGINE_ENABLE_WERROR}>,/WX,/WX->>")
 
 # Configure precompiled headers (reuse shared ZEnginePCH)

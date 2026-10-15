@@ -35,6 +35,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <vector>
 
 namespace
 {
@@ -43,15 +44,118 @@ namespace
         return static_cast<EditorUIPass*>(pass);
     }
 
+#ifdef _WIN32
+    // Box filter down to an icon-sized square. stb_image only decodes; the sizes
+    // Windows wants for a window icon (SM_CXICON / SM_CXSMICON) are far smaller
+    // than the source PNG, and handing CreateIconIndirect a 512x512 bitmap would
+    // build a 1 MB icon that the shell then has to scale itself.
+    std::vector<unsigned char> ResizeRgba(const unsigned char* source,
+                                          int source_width,
+                                          int source_height,
+                                          int size)
+    {
+        std::vector<unsigned char> out(static_cast<size_t>(size) * size * 4);
+        for (int y = 0; y < size; ++y)
+        {
+            const int top = y * source_height / size;
+            const int bottom = std::max(top + 1, (y + 1) * source_height / size);
+            for (int x = 0; x < size; ++x)
+            {
+                const int left = x * source_width / size;
+                const int right = std::max(left + 1, (x + 1) * source_width / size);
+                unsigned int sum[4] = {0, 0, 0, 0};
+                unsigned int count = 0;
+                for (int sy = top; sy < bottom; ++sy)
+                {
+                    for (int sx = left; sx < right; ++sx)
+                    {
+                        const unsigned char* pixel = source + (static_cast<size_t>(sy) * source_width + sx) * 4;
+                        sum[0] += pixel[0];
+                        sum[1] += pixel[1];
+                        sum[2] += pixel[2];
+                        sum[3] += pixel[3];
+                        ++count;
+                    }
+                }
+                unsigned char* target = &out[(static_cast<size_t>(y) * size + x) * 4];
+                for (int channel = 0; channel < 4; ++channel)
+                {
+                    target[channel] = static_cast<unsigned char>(sum[channel] / count);
+                }
+            }
+        }
+        return out;
+    }
+
+    // Wrap RGBA pixels in an HICON. Windows icons are 32bpp BGRA, hence the swap.
+    HICON MakeIcon(const unsigned char* rgba, int size)
+    {
+        // Negative height = top-down rows, so stb_image's order needs no flip.
+        BITMAPV5HEADER header = {};
+        header.bV5Size = sizeof(header);
+        header.bV5Width = size;
+        header.bV5Height = -size;
+        header.bV5Planes = 1;
+        header.bV5BitCount = 32;
+        header.bV5Compression = BI_RGB;
+
+        void* bits = nullptr;
+        HBITMAP colour = CreateDIBSection(nullptr, reinterpret_cast<BITMAPINFO*>(&header), DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (colour == nullptr || bits == nullptr)
+        {
+            if (colour != nullptr) DeleteObject(colour);
+            return nullptr;
+        }
+
+        const size_t pixels = static_cast<size_t>(size) * size;
+        auto* target = static_cast<unsigned char*>(bits);
+        for (size_t i = 0; i < pixels; ++i)
+        {
+            target[i * 4 + 0] = rgba[i * 4 + 2];  // B
+            target[i * 4 + 1] = rgba[i * 4 + 1];  // G
+            target[i * 4 + 2] = rgba[i * 4 + 0];  // R
+            target[i * 4 + 3] = rgba[i * 4 + 3];  // A
+        }
+
+        // A 1bpp mask of zeroes: every pixel opaque, alpha from the colour bitmap.
+        HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
+        ICONINFO info = {};
+        info.fIcon = TRUE;
+        info.hbmMask = mask;
+        info.hbmColor = colour;
+        HICON icon = CreateIconIndirect(&info);
+        DeleteObject(mask);
+        DeleteObject(colour);
+        return icon;
+    }
+
+    // LoadImage() cannot decode a PNG -- IMAGE_ICON reads .ico/.cur only -- so the
+    // two PNGs named by BigIconFile/SmallIconFile in ZEditor.ini never loaded and
+    // this path always fell through to the warning below. Decode with stb_image,
+    // which the editor already links for its texture previews.
+    HICON LoadIconFromPngFile(const std::string& path, int size)
+    {
+        int width = 0;
+        int height = 0;
+        unsigned char* pixels = stbi_load(path.c_str(), &width, &height, nullptr, 4);
+        if (pixels == nullptr) return nullptr;
+        const std::vector<unsigned char> scaled = ResizeRgba(pixels, width, height, size);
+        stbi_image_free(pixels);
+        return MakeIcon(scaled.data(), size);
+    }
+#endif
+
     void LoadWindowIcons(void* nativeWindowHandle, const std::string& big_icon_path, const std::string& small_icon_path)
     {
 #ifdef _WIN32
         HWND hwnd = static_cast<HWND>(nativeWindowHandle);
         if (hwnd == nullptr) return;
 
-        // Load icons directly from .ico files using Win32 API (replaces glfwSetWindowIcon)
-        HICON bigIcon = (HICON)LoadImageA(NULL, big_icon_path.c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
-        HICON smallIcon = (HICON)LoadImageA(NULL, small_icon_path.c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+        // ICON_BIG wants SM_CXICON (32 by default) and ICON_SMALL wants SM_CXSMICON
+        // (16). Asking for 0 -- which LoadImage took as "system default" -- handed
+        // the same size to both, so the two files were never actually distinct.
+        HICON bigIcon = LoadIconFromPngFile(big_icon_path, GetSystemMetrics(SM_CXICON));
+        HICON smallIcon = LoadIconFromPngFile(small_icon_path, GetSystemMetrics(SM_CXSMICON));
 
         if (bigIcon)
         {
