@@ -24,6 +24,14 @@
 #include <string>
 #include <vector>
 
+// --- ZSlate <-> runtime UI type bridges (same pattern as ZSlateSceneWindow) ---
+// ZSlate::UIRect uses w/h, the runtime UIRect uses width/height, and only the
+// runtime one converts implicitly to ZSlate -- so going back needs a cast.
+inline ::Vector2       ToRuntime(const ZSlate::Vector2& v) { return ::Vector2(v.x, v.y); }
+inline ZSlate::Vector2 ToSlate(const ::Vector2& v)          { return ZSlate::Vector2(v.x, v.y); }
+inline ::UIRect        ToRuntimeRect(const ZSlate::UIRect& r) { return ::UIRect(r.x, r.y, r.w, r.h); }
+inline ZSlate::UIRect  ToSlateRect(const ::UIRect& r)         { return ZSlate::UIRect(r.x, r.y, r.width, r.height); }
+
 using namespace ZSlate;
 
 namespace
@@ -117,7 +125,7 @@ void ZSlatePackageManagerWindow::RebuildTable(PackageManager& pm)
 {
     if (!m_PackageList)
         return;
-    m_PackageList->ClearChildren();
+    m_PackageList->ClearSlots();
 
     const float scale = m_BuiltScale > 0.0f ? m_BuiltScale : 1.0f;
 
@@ -318,7 +326,7 @@ void ZSlatePackageManagerWindow::OnGUI()
     {
         if (m_PackageList)
         {
-            m_PackageList->ClearChildren();
+            m_PackageList->ClearSlots();
             m_PackageList->AddChild(MakeText("Open a project to manage packages.", 13.0f * ui_scale, kDimColor));
         }
         m_TableDirty = false;
@@ -344,7 +352,7 @@ void ZSlatePackageManagerWindow::OnGUI()
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
         m_Root->CacheDesiredSize();
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
         ctx.LayerId = 0;
         renderer.PushClipRect(region, true);
         m_Root->Paint(ctx, geometry);

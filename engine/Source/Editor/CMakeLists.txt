@@ -43,7 +43,7 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateBlueprintWindow/.*")
 # ZSlateInsightsWindow: deleted -- Insights is served by the standalone ZInsights app.
 # ZSlateInspectorWindow: re-enabled (the property panel; dock layout restored).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateMaterialEditorWindow/.*")
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlatePackageManagerWindow/.*")
+# ZSlatePackageManagerWindow: re-enabled (package list / import panel).
 # ZSlatePreviewWindow: re-enabled (native zasset preview: Texture2D / MeshData / Material / Shader).
 # ZSlateSceneWindow: re-enabled (the 3D viewport; dock layout restored).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateTimelineWindow/.*")
