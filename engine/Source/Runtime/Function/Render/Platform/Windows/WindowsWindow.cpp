@@ -194,10 +194,14 @@ bool WindowsWindow::IsVisible() const
 
 std::array<int, 2> WindowsWindow::GetSize() const
 {
+    // Client-area size in physical pixels (this process is Per-Monitor DPI aware,
+    // so GetClientRect is exact). GetWindowRect here used to report the OUTER
+    // window rect (title bar + borders), which made layout metrics disagree with
+    // both WM_SIZE and GetFramebufferSize().
     if (!m_Hwnd) return {m_Width, m_Height};
     RECT rect;
-    GetWindowRect(m_Hwnd, &rect);
-    return {rect.right - rect.left, rect.bottom - rect.top};
+    GetClientRect(m_Hwnd, &rect);
+    return {rect.right, rect.bottom};
 }
 
 std::array<int, 2> WindowsWindow::GetPosition() const

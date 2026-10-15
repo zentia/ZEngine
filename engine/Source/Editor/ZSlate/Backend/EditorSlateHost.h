@@ -113,8 +113,8 @@ public:
     Vector2 GetPointerPos() const
     {
         if (m_Override != nullptr) return m_Override->pointer;
-        const float s = m_UiScale > 0.0f ? m_UiScale : 1.0f;
-        return Vector2(m_PointerScreen.x / s, m_PointerScreen.y / s);
+        // Physical pixels, matching the layout space (see GetDisplaySize).
+        return m_PointerScreen;
     }
     bool IsLeftDown() const { return m_Override != nullptr ? m_Override->left_down : m_LeftDown; }
     bool IsRightDown() const { return m_Override != nullptr ? m_Override->right_down : m_RightDown; }
@@ -140,29 +140,24 @@ public:
     const std::vector<EKey>& GetKeysThisFrame() const { return m_Override != nullptr ? m_Override->keys : m_FrameKeys; }
 
     // Native display metrics (replaces ImGui io.DisplaySize / GetFontSize()/16 and
-    // GetMainViewport()->WorkPos/WorkSize). Display size is the logical window size
-    // (screen coords), matching ImGui's DisplaySize under GLFW. Display pos is the
-    // window client origin in desktop coords, matching the main viewport Pos under
-    // ViewportsEnable -- popup rects clamp against (pos, size). UI scale matches
-    // EditorUI's content_scale.
+    // GetMainViewport()->WorkPos/WorkSize). Display size is the window CLIENT size
+    // in physical pixels -- the same space the dock layout, the panels and the
+    // renderer's NDC mapping (ZSlateEditorOverlay) all work in; WindowsWindow
+    // reports it via GetClientRect for both GetSize() and GetFramebufferSize().
+    // Widget metrics (font sizes, toolbars, splitters) are the ones that scale
+    // with DPI, via GetUiScale(); at 100% DPI the two conventions coincide.
     Vector2 GetDisplaySize() const
     {
-        // WindowsWindow::GetSize() is the OS-reported PHYSICAL size (this process
-        // is DPI-aware), while the UI coordinate system is logical: every draw
-        // call is scaled up by GetUiScale() on the way out. Divide here so the
-        // two agree. At 100% DPI this is the identity, which is why dock layouts
-        // only overflowed the window on scaled displays.
-        const float s = m_UiScale > 0.0f ? m_UiScale : 1.0f;
-        return m_Override != nullptr ? Vector2(m_Override->display_w, m_Override->display_h) : Vector2(m_WindowW / s, m_WindowH / s);
+        return m_Override != nullptr ? Vector2(m_Override->display_w, m_Override->display_h) : Vector2(m_WindowW, m_WindowH);
     }
     Vector2 GetDisplayPos() const
     {
-        const float s = m_UiScale > 0.0f ? m_UiScale : 1.0f;
-        return m_Override != nullptr ? Vector2(m_Override->display_x, m_Override->display_y) : Vector2(m_WindowX / s, m_WindowY / s);
+        return m_Override != nullptr ? Vector2(m_Override->display_x, m_Override->display_y) : Vector2(m_WindowX, m_WindowY);
     }
     float GetUiScale() const { return m_Override != nullptr ? m_Override->ui_scale : m_UiScale; }
 
-    // Logical window size -> framebuffer pixel scale (for composited viewports).
+    // Kept for the composited-viewport call sites (Scene / Game / Preview): the
+    // layout space IS the framebuffer space now, so the mapping is the identity.
     Vector2 GetFramebufferScale() const;
 
     // Monotonic seconds (glfwGetTime). Replaces ImGui::GetTime for native UI.

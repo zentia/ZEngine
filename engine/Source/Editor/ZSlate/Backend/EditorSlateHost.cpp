@@ -281,13 +281,11 @@ bool EditorSlateHost::IsForegroundCapturing() const
 
 Vector2 EditorSlateHost::GetFramebufferScale() const
 {
-    // m_WindowW/H are physical pixels (see GetDisplaySize), and the UI works in
-    // logical units -- a composited viewport's pixel size is its logical size
-    // times ui_scale. (The old framebuffer/logical ratio computed ~1.0 here
-    // because BOTH queries were physical, so viewports never scaled up and the
-    // swapchain was sized in a mismatched unit.)
-    const float s = m_UiScale > 0.0f ? m_UiScale : 1.0f;
-    return Vector2(s, s);
+    // The layout space is physical framebuffer pixels (see GetDisplaySize), so a
+    // composited viewport's pixel rect equals its layout rect -- the mapping is
+    // the identity. (When the host still divided by ui_scale this had to return
+    // (s, s) to compensate; that convention is gone.)
+    return Vector2(1.0f, 1.0f);
 }
 
 double EditorSlateHost::GetTime()
