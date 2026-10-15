@@ -1698,8 +1698,8 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
             }
 
             auto area = std::make_shared<SExpandableArea>();
-            area->Title = "Shader Variants";
-            area->Expanded = true;
+            area->HeaderLabel = "Shader Variants";
+            area->SetExpanded(true);
             area->FontSize = 15.0f * scale;
             area->HeaderHeight = 26.0f * scale;
             area->SetContent(variant_box);
@@ -1738,11 +1738,13 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                     break;
 
                 auto picker = std::make_shared<SColorPicker>();
-                picker->ShowAlpha = (alpha_ptr != nullptr);
-                picker->SquareSize = 150.0f * scale;
-                picker->BarWidth = 16.0f * scale;
-                const float seed_a = alpha_ptr ? *alpha_ptr : 1.0f;
-                picker->SetColorRGBA(color_ptr->x, color_ptr->y, color_ptr->z, seed_a);
+                // SColorPicker sizes itself from ComputeDesiredSize() and its
+                // R/G/B/A are the public color state -- the old ShowAlpha /
+                // SquareSize / BarWidth / SetColorRGBA knobs are gone from ZSlate.
+                picker->R = color_ptr->x;
+                picker->G = color_ptr->y;
+                picker->B = color_ptr->z;
+                picker->A = alpha_ptr ? *alpha_ptr : 1.0f;
                 picker->OnColorChanged = [color_ptr, alpha_ptr](float r, float g, float b, float a) {
                     color_ptr->x = r;
                     color_ptr->y = g;
@@ -1753,10 +1755,10 @@ void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asse
                 };
 
                 auto area = std::make_shared<SExpandableArea>();
-                area->Title = row.label;
-                area->Expanded = false;
-                area->ShowHeaderSwatch = true;
-                area->HeaderSwatchColor = ZSlate::UIColor(color_ptr->x, color_ptr->y, color_ptr->z, 1.0f);
+                area->HeaderLabel = row.label;  // was Title
+                area->SetExpanded(false);       // was `Expanded = bool`
+                // ShowHeaderSwatch / HeaderSwatchColor no longer exist on
+                // ZSlate's SExpandableArea; the header swatch is simply not drawn.
                 area->FontSize = 14.0f * scale;
                 area->HeaderHeight = 24.0f * scale;
                 area->SetContent(picker);
@@ -2737,7 +2739,7 @@ void ZSlateInspectorWindow::OnGUI()
         m_Root->CacheDesiredSize();
 
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
         ctx.LayerId = 0;
 
         renderer.PushClipRect(region, true);
@@ -2766,7 +2768,7 @@ void ZSlateInspectorWindow::OnGUI()
                                    host.GetDisplaySize().x, host.GetDisplaySize().y);
 
         {
-            m_Popup.Render(overlay.GetRenderer(), mouse, left_down, wheel, viewport_rect, 1);
+            m_Popup.Render(overlay, mouse, left_down, wheel, viewport_rect, 1);
         }
     }
     else

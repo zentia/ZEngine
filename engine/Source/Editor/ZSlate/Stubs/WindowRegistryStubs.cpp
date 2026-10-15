@@ -26,7 +26,8 @@
 STUB_WIN(ZSlateUMGDesignerWindow, "UMGDesigner")
 STUB_WIN(ZSlateConsoleWindow, "Console")
 STUB_WIN(ZSlateDemoWindow, "Demo")
-STUB_WIN(ZSlateInspectorWindow, "Inspector")
+// ZSlateInspectorWindow: real implementation is built (its CMake exclude is
+// gone; see ZSlate-heavy editor windows above).
 STUB_WIN(ZSlatePackageManagerWindow, "PackageManager")
 STUB_WIN(ZSlateAnimationWindow, "Animation")
 STUB_WIN(ZSlateBlueprintWindow, "Blueprint")

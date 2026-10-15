@@ -41,14 +41,15 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateDemoWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateGameWindow/.*")
 # ZSlateHierarchyWindow: re-enabled (small, off its stub; dock layout restored).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateInsightsWindow/.*")
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateInspectorWindow/.*")
+# ZSlateInspectorWindow: re-enabled (the property panel; dock layout restored).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateMaterialEditorWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlatePackageManagerWindow/.*")
 # ZSlatePreviewWindow: re-enabled (native zasset preview: Texture2D / MeshData / Material / Shader).
 # ZSlateSceneWindow: re-enabled (the 3D viewport; dock layout restored).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateTimelineWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateUMGDesignerWindow/.*")
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/InspectorWindow/InspectorShaderInspector.*")
+# InspectorShaderInspector: re-enabled. It is not a window of its own -- it backs
+# the ZSlate Inspector's material/shader section, which links against it.
 # DefaultLayout/ is back: its native dock tree is what places every editor window
 # on screen, and with it stubbed out the editor shows only the menu bar.
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/FloatingPanelManager\\.cpp")

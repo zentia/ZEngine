@@ -1640,8 +1640,8 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
                     .AutoSize();
         }
         auto area = std::make_shared<SExpandableArea>();
-        area->Title = title;
-        area->Expanded = false;
+        area->HeaderLabel = title;
+        area->SetExpanded(false);
         area->FontSize = 14.0f * scale;
         area->HeaderHeight = 24.0f * scale;
         area->SetContent(body);
@@ -1800,8 +1800,8 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
             for (const std::string& w : s_sl_warnings)
                 warn_box->AddSlot(text("- " + w, 12.0f, ZSlate::UIColor(1.0f, 0.8f, 0.3f, 1.0f))).AutoSize();
             auto area = std::make_shared<SExpandableArea>();
-            area->Title = "Warnings";
-            area->Expanded = true;
+            area->HeaderLabel = "Warnings";
+            area->SetExpanded(true);
             area->FontSize = 14.0f * scale;
             area->HeaderHeight = 24.0f * scale;
             area->SetContent(warn_box);
@@ -1816,8 +1816,8 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
             for (const std::string& k : keywords)
                 kw_box->AddSlot(text("- " + k, 12.0f, kValue)).AutoSize();
             auto area = std::make_shared<SExpandableArea>();
-            area->Title = "Keywords";
-            area->Expanded = false;
+            area->HeaderLabel = "Keywords";
+            area->SetExpanded(false);
             area->FontSize = 14.0f * scale;
             area->HeaderHeight = 24.0f * scale;
             area->SetContent(kw_box);
@@ -1838,8 +1838,8 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
                 prop_box->AddSlot(text(line, 12.0f, kValue)).AutoSize();
             }
             auto area = std::make_shared<SExpandableArea>();
-            area->Title = "Properties";
-            area->Expanded = false;
+            area->HeaderLabel = "Properties";
+            area->SetExpanded(false);
             area->FontSize = 14.0f * scale;
             area->HeaderHeight = 24.0f * scale;
             area->SetContent(prop_box);
@@ -1930,8 +1930,8 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
             box->AddSlot(text(line, 12.0f, kValue)).AutoSize();
         }
         auto area = std::make_shared<SExpandableArea>();
-        area->Title = "Properties";
-        area->Expanded = false;
+        area->HeaderLabel = "Properties";
+        area->SetExpanded(false);
         area->FontSize = 14.0f * scale;
         area->HeaderHeight = 24.0f * scale;
         area->SetContent(box);
@@ -1947,8 +1947,8 @@ std::shared_ptr<ZSlate::SWidget> BuildShaderInspectorWidgetImpl(const std::files
             box->AddSlot(text(line, 12.0f, kValue)).AutoSize();
         }
         auto area = std::make_shared<SExpandableArea>();
-        area->Title = "Passes";
-        area->Expanded = false;
+        area->HeaderLabel = "Passes";
+        area->SetExpanded(false);
         area->FontSize = 14.0f * scale;
         area->HeaderHeight = 24.0f * scale;
         area->SetContent(box);
