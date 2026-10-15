@@ -4,6 +4,7 @@
 
 #ifdef _WIN32
     #include <dwmapi.h>
+    #include "Runtime/Platform/Windows/WindowsAppIcon.h"
     #pragma comment(lib, "dwmapi.lib")
 #endif
 
@@ -79,12 +80,13 @@ bool SplashScreen::RegisterWindowClass()
     wc.cbClsExtra = 0;
     wc.cbWndExtra = 0;
     wc.hInstance = m_Hinstance;
-    wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
+    // 可执行文件内嵌的图标，取不到就退回 IDI_APPLICATION（见 WindowsAppIcon.h）
+    wc.hIcon = LoadEmbeddedAppIcon(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = CreateSolidBrush(COLOR_BACKGROUND);
     wc.lpszMenuName = nullptr;
     wc.lpszClassName = SPLASH_CLASS_NAME;
-    wc.hIconSm = LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIconSm = LoadEmbeddedAppIcon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
 
     return RegisterClassExW(&wc) != 0;
 }

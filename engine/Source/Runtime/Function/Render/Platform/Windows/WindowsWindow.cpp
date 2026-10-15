@@ -1,5 +1,6 @@
 #include "WindowsWindow.h"
 #include "WindowsApplication.h"
+#include "Runtime/Platform/Windows/WindowsAppIcon.h"
 #include <shellapi.h>  // DragAcceptFiles, DragQueryFile
 #include <windowsx.h>   // GET_X_LPARAM, GET_Y_LPARAM, GET_WHEEL_DELTA_WPARAM
 
@@ -94,24 +95,10 @@ bool WindowsWindow::Initialize(const char* title,
     wc.hbrBackground = nullptr;  // 由 DXGI swapchain 呈现，不需背景刷
     wc.lpszClassName = className;
 
-    // 101 = IDI_ICON1（见 engine/cmake/AppIcon.rc.in）。这里从可执行文件模块读资源，
-    // 而不是用 IDI_ICON1 宏：本文件编译进 ZRuntime，而 ZRuntime 同时被“嵌了图标”和
-    // “没嵌图标”的可执行文件链接，用 #ifdef 判断不到。取不到就退回原来的
-    // IDI_APPLICATION，行为与之前一致。
-    wc.hIcon   = static_cast<HICON>(LoadImageW(hInstance,
-                                               MAKEINTRESOURCEW(101),
-                                               IMAGE_ICON,
-                                               GetSystemMetrics(SM_CXICON),
-                                               GetSystemMetrics(SM_CYICON),
-                                               0));
-    wc.hIconSm = static_cast<HICON>(LoadImageW(hInstance,
-                                               MAKEINTRESOURCEW(101),
-                                               IMAGE_ICON,
-                                               GetSystemMetrics(SM_CXSMICON),
-                                               GetSystemMetrics(SM_CYSMICON),
-                                               0));
-    if (wc.hIcon == nullptr)
-        wc.hIcon = LoadIconW(nullptr, (LPCWSTR)32512);  // IDI_APPLICATION
+    // 可执行文件内嵌的图标（101 = IDI_ICON1），取不到就退回 IDI_APPLICATION。
+    // 为什么不能直接用 IDI_ICON1 宏，见 WindowsAppIcon.h。
+    wc.hIcon   = LoadEmbeddedAppIcon(GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON));
+    wc.hIconSm = LoadEmbeddedAppIcon(GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON));
 
     if (!RegisterClassExW(&wc))
     {
