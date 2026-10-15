@@ -5,7 +5,7 @@
 #include "Editor/AssetRegistry/AssetRegistry.h"
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
-#include "Editor/EditorWindow/ZSlateInsightsWindow/ZSlateInsightsWindow.h"
+// ZSlateInsightsWindow: deleted (Insights -> standalone ZInsights app).
 #if defined(_WIN32)
     #include "Editor/RenderDoc/RenderDoc.h"
     #include "RenderDocAPI.h"
@@ -302,6 +302,74 @@ namespace
         return true;
     }
 
+    // Writes `Insights/trace_<timestamp>.ztrace` under the working directory.
+    // These two used to be members of ZSlateInsightsWindow, which was deleted --
+    // Insights is served by the standalone ZInsights app now, so `insights.dump`
+    // owns the save + launch pair directly.
+    std::string SaveInsightsTraceToDisk(const ZEngine::Insights::InsightsSnapshot& snapshot)
+    {
+        namespace fs = std::filesystem;
+
+        std::error_code ec;
+        const fs::path dir = fs::current_path(ec) / "Insights";
+        fs::create_directories(dir, ec);
+
+        const std::time_t now = std::time(nullptr);
+        std::tm tm_buf {};
+#ifdef _WIN32
+        localtime_s(&tm_buf, &now);
+#else
+        localtime_r(&now, &tm_buf);
+#endif
+        char stamp[32];
+        std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tm_buf);
+
+        const fs::path out_path = dir / (std::string("trace_") + stamp + ".ztrace");
+        const std::string out_str = out_path.generic_string();
+
+        if (!ZEngine::Insights::SaveTrace(out_str, snapshot))
+        {
+            LOG_ERROR(ZConsole, "Insights: failed to write trace to {}", out_str);
+            return std::string();
+        }
+        LOG_INFO(ZConsole, "Insights: saved trace ({} tracks, {} frames) to {}", snapshot.tracks.size(),
+                 snapshot.frame_starts.size(), out_str);
+        return out_str;
+    }
+
+    void LaunchInsightsViewer(const std::string& trace_path)
+    {
+        if (trace_path.empty())
+            return;
+#ifdef _WIN32
+        // ZInsights.exe sits next to ZEditor.exe in the same bin/ directory.
+        wchar_t module_path[MAX_PATH] = {};
+        if (GetModuleFileNameW(nullptr, module_path, MAX_PATH) == 0)
+        {
+            LOG_WARNING(ZConsole, "Insights: could not resolve module path to launch ZInsights");
+            return;
+        }
+        std::filesystem::path viewer = std::filesystem::path(module_path).parent_path() / "ZInsights.exe";
+        if (!std::filesystem::exists(viewer))
+        {
+            LOG_WARNING(ZConsole, "Insights: ZInsights.exe not found next to the editor ({}); trace saved only",
+                        viewer.generic_string());
+            return;
+        }
+        const std::wstring viewer_w = viewer.wstring();
+        const std::wstring arg_w = L"\"" + std::filesystem::path(trace_path).wstring() + L"\"";
+        const HINSTANCE rc =
+            ShellExecuteW(nullptr, L"open", viewer_w.c_str(), arg_w.c_str(), nullptr, SW_SHOWNORMAL);
+        if (reinterpret_cast<INT_PTR>(rc) <= 32)
+        {
+            LOG_WARNING(ZConsole, "Insights: ShellExecute failed to launch ZInsights.exe (code {})",
+                        reinterpret_cast<INT_PTR>(rc));
+        }
+#else
+        LOG_INFO(ZConsole, "Insights: trace saved to {} (standalone viewer is Windows-only)", trace_path);
+#endif
+    }
+
     bool CmdInsightsDump(const std::vector<std::string>& args)
     {
         ZEngine::Insights::InsightsSnapshot snapshot;
@@ -312,7 +380,7 @@ namespace
                         "insights.dump: no captured data. Open the Insights panel first so capture turns on.");
         }
 
-        const std::string path = ZSlateInsightsWindow::SaveTraceToDisk(snapshot);
+        const std::string path = SaveInsightsTraceToDisk(snapshot);
         if (path.empty())
         {
             return false;
@@ -320,7 +388,7 @@ namespace
         // `insights.dump view` (or `open`) also launches the standalone viewer.
         if (!args.empty() && (args[0] == "view" || args[0] == "open"))
         {
-            ZSlateInsightsWindow::LaunchStandaloneViewer(path);
+            LaunchInsightsViewer(path);
         }
         return true;
     }

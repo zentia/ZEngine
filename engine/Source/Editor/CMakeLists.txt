@@ -37,10 +37,10 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateAnimationWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateBlueprintWindow/.*")
 # ZSlateConsoleWindow: re-enabled (the log console; dock layout restored).
 # ZSlateContentBrowserWindow: re-enabled (asset selection entry for zasset preview).
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateDemoWindow/.*")
+# ZSlateDemoWindow: deleted (ZSlate widget showcase; not part of the editor).
 # ZSlateGameWindow: re-enabled (the Game viewport; it is the Default layout's active tab).
 # ZSlateHierarchyWindow: re-enabled (small, off its stub; dock layout restored).
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateInsightsWindow/.*")
+# ZSlateInsightsWindow: deleted -- Insights is served by the standalone ZInsights app.
 # ZSlateInspectorWindow: re-enabled (the property panel; dock layout restored).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateMaterialEditorWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlatePackageManagerWindow/.*")

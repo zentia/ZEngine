@@ -6,7 +6,7 @@
 #include "Editor/EditorWindow/ZSlateSceneWindow/ZSlateSceneWindow.h"
 #include "Editor/EditorWindow/ZSlateUMGDesignerWindow/ZSlateUMGDesignerWindow.h"
 #include "Editor/EditorWindow/ZSlateConsoleWindow/ZSlateConsoleWindow.h"
-#include "Editor/EditorWindow/ZSlateDemoWindow/ZSlateDemoWindow.h"
+// ZSlateDemoWindow: deleted.
 #include "Editor/EditorWindow/ZSlateInspectorWindow/ZSlateInspectorWindow.h"
 #include "Editor/EditorWindow/ZSlatePackageManagerWindow/ZSlatePackageManagerWindow.h"
 #include "Editor/EditorWindow/ZSlatePreviewWindow/ZSlatePreviewWindow.h"
@@ -16,7 +16,7 @@
 #include "Editor/EditorWindow/ZSlateMaterialEditorWindow/ZSlateMaterialEditorWindow.h"
 #include "Editor/EditorWindow/ZSlateHierarchyWindow/ZSlateHierarchyWindow.h"
 #include "Editor/EditorWindow/ZSlateTimelineWindow/ZSlateTimelineWindow.h"
-#include "Editor/EditorWindow/ZSlateInsightsWindow/ZSlateInsightsWindow.h"
+// ZSlateInsightsWindow: deleted (Insights -> standalone ZInsights app).
 #include "Runtime/Core/Memory/MemoryManager.h"
 
 namespace
@@ -52,10 +52,7 @@ namespace
          NewEditorPanel<ZSlateTimelineWindow>},
         {EditorLayoutWindowIds::kPackageManager, EditorWindowCategory::Package, false,
          typeid(ZSlatePackageManagerWindow), NewEditorPanel<ZSlatePackageManagerWindow>},
-        {EditorLayoutWindowIds::kInsights, EditorWindowCategory::General, false, typeid(ZSlateInsightsWindow),
-         NewEditorPanel<ZSlateInsightsWindow>},
-        {EditorLayoutWindowIds::kZSlate, EditorWindowCategory::General, true, typeid(ZSlateDemoWindow),
-         NewEditorPanel<ZSlateDemoWindow>},
+        // ZSlateInsightsWindow / ZSlateDemoWindow: removed (Insights -> standalone ZInsights).
         {EditorLayoutWindowIds::kUMGDesigner, EditorWindowCategory::General, true,
          typeid(ZSlateUMGDesignerWindow), NewEditorPanel<ZSlateUMGDesignerWindow>},
     };
