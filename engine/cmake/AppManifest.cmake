@@ -24,9 +24,10 @@
 #
 # Who needs it:
 #   * A GUI that does NOT go through ZSlate::FSlateStandaloneApp. Today that is
-#     WindowsEnvironmentCheck, which registers its own WNDCLASSEX: no
+#     only WindowsEnvironmentCheck, which registers its own WNDCLASSEX: no
 #     DeclareDpiAwareness() runs on its path, so the manifest is its only
-#     declaration and without it its window is DPI-virtualised.
+#     declaration and without it the window is DPI-virtualised (rendered at
+#     96 dpi, bitmap-stretched by DWM, ClearType off -> soft text).
 #   * Everything else declares the same mode in code before its first window --
 #     DeclareDpiAwareness() in ZSlate, SetProcessDpiAwarenessContext() in
 #     ZRuntime's WindowsApplication. Those do not need this, but calling it

@@ -1360,11 +1360,17 @@ Cooperating layers:
   a timestamped `<cwd>/Insights/trace_*.ztrace` and launches `ZInsights.exe` on
   it (`ShellExecute`, resolved next to `ZEditor.exe`).
   **`ZInsights.exe`** (`engine/Source/Insights/`, Win32-only target gated on
-  `WIN32`) is a tiny Win32 + Direct2D/DirectWrite host: `D2DUIRenderer`
-  implements the abstract `UIRenderer` over a `ID2D1HwndRenderTarget` (96-DPI
-  forced so mouse pixels == widget DIPs), `ZInsightsMain.cpp` drives the shared
-  `SInsightsTimeline` (open via argv / drag-drop / `O` key, `F` to fit). It
-  links the **static `ZRuntime`** (same pattern as `LuaMemPreview`, which also absorbed the former
+  `WIN32`) is a plain `ZSlate::FSlateStandaloneApp` tool: shell owns window,
+  DPI, pump, input router **and** the D3D11 render backend, so the exe is only
+  the widget tree — a vertical box with an auto-height status bar over the
+  shared `SInsightsTimeline` filling the rest (open via argv / drag-drop / `O`
+  key, `F` to fit) — plus trace loading. It used to carry a bespoke Direct2D
+  host (`D2DUIRenderer`); that bought DirectWrite subpixel text and per-label
+  clipping, but the shell's glyph atlas already bakes at the *scaled* integer
+  pixel size (`FSlateDpiScaleRenderer` scales `font_size` before the atlas), so
+  the sharpness argument did not survive — and the in-editor panel paints the
+  same widget through the engine's ZSlate renderer anyway. It links the
+  **static `ZRuntime`** (same pattern as `LuaMemPreview`, which also absorbed the former
   `ZProfilerCsvExporter` as `LuaMemPreview -batchmode <in.zasset> [out_base]`) but
   references only the timing-trace + Slate-base objects, so the linker pulls no
   RHI/GLFW/scripting code. No live socket transport yet (the data path is
@@ -1392,7 +1398,7 @@ Cooperating layers:
   closed Insights window adds nothing to the command list.
 
 - **V1 scope** (deliberately): CPU timing + frames + per-thread tracks + DX12 GPU
-  track + hover + `.ztrace` save/load + standalone Win32/Direct2D viewer. No
+  track + hover + `.ztrace` save/load + standalone ZSlate/D3D11 viewer. No
   Vulkan/Metal GPU track, no counters/memory, no vertical scroll on tracks, no
   aggregated stats table, and no LIVE (socket) connection to a running editor --
   the standalone viewer is offline/file-based. All are natural follow-ups on the
@@ -1681,14 +1687,29 @@ shared pieces:
 | `z_embed_app_manifest(<target> [MANIFEST <file>])` | `engine/cmake/AppManifest.cmake` (+ `AppManifest.manifest`) | one call, same place. Declares per-monitor DPI v2 by embedding the shared manifest; `MANIFEST <file>` replaces it wholesale for a tool needing something else (execution level, comctl32 v6). MSVC-only — CMake has no mt.exe rule for MinGW — and a no-op elsewhere, so the call can be committed anywhere. Same include arrangement as `AppIcon`. |
 
 `z_embed_app_manifest()` is **required** for a GUI that does not go through
-`ZSlate::FSlateStandaloneApp` — today that is only `WindowsEnvironmentCheck`,
-which registers its own `WNDCLASSEX`, so `DeclareDpiAwareness()` never runs on
-its path and the manifest is its only DPI declaration. The other three declare
-the same mode in code (`DeclareDpiAwareness()` inside
-`FSlateStandaloneApp::Initialize`), so for them it is redundancy that costs
-nothing and is slightly safer: the manifest is in force before `main()` runs,
-so it cannot be beaten by a window created too early. ZEditor/ZInsights are the
-same via `ZRuntime`'s `SetProcessDpiAwarenessContext()` and are left alone.
+`ZSlate::FSlateStandaloneApp` — today only `WindowsEnvironmentCheck`, which
+registers its own `WNDCLASSEX` so `DeclareDpiAwareness()` never runs on its
+path. (ZInsights used to be in that bucket, and a prior note claimed it was
+covered "via `ZRuntime`'s `SetProcessDpiAwarenessContext()`" — it was not:
+that call lives in `WindowsApplication::Initialize` and ZInsights never
+constructs a `WindowsApplication`. **Linking ZRuntime declares nothing; only
+running that code does.** Use this test, not the link line, when deciding
+whether a target needs the manifest.) Tools on the shell declare the same mode
+in code (`DeclareDpiAwareness()` inside `FSlateStandaloneApp::Initialize`), so
+for them the manifest is redundancy that costs nothing and is slightly safer:
+it is in force before `main()` runs, so it cannot be beaten by a window created
+too early.
+
+Declaring awareness is only half of a crisp GUI; the other half is **letting
+the scale reach the glyph rasteriser**. `FSlateDpiScaleRenderer` multiplies
+`font_size` *before* it hits the font atlas, and the atlas bakes per integer
+pixel size — so at 150% a 14px label is genuinely rasterised at 21px instead of
+a 14px bitmap stretched 1.5x. That is why no ZSlate tool needs a Direct2D
+backend for crisp text, and why pinning a raw D2D target to 96 DPI with a
+"1 DIP == 1 pixel so mouse coords line up" comment is the bug: it renders 1:1
+and lets DWM do the scaling instead. If you ever do add a non-ZSlate surface,
+create it in physical pixels at `GetDpiScale() * 96` and recreate it from
+`OnDpiChanged`.
 
 **The .rc alone is not enough.** It only puts the icon in the *executable*
 (Explorer, Properties). The title bar, Alt-Tab entry and taskbar button come
