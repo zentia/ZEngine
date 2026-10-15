@@ -38,6 +38,7 @@
 #include "ZSlate/Renderer/SlateDpiScaleRenderer.h"
 #include "ZSlate/Renderer/ZSlateBatchedRenderer.h"
 #include "ZSlate/Renderer/ZSlateFontAtlas.h"
+#include "ZSlate/Backend/SlateUIRendererBackend.h"
 #include "ZSlate/Platform/D3D11/ZSlateD3D11Renderer.h"
 #include "ZSlate/Platform/Win32/SlateWin32Dpi.h"
 #include "ZSlate/Platform/Win32/SlateWin32Host.h"
@@ -122,6 +123,12 @@ class ShellApp
 public:
     Platform platform;
     ZSlateFontAtlas fonts;
+    // Layout measurer: without it STextBlock falls back to a per-BYTE estimate
+    // (UTF-8 CJK chars count as three), which inflates the column's desired
+    // width ~2.5x and stretches every Fill-width button past the window edge.
+    // Measuring through the scaled renderer keeps the numbers in logical units
+    // and identical to what DrawTextLabel will actually paint.
+    ZSlate::SlateUIRendererTextMeasurer measurer;
     SlateInputRouter router;
     Options options;
     HWND window = nullptr;
@@ -168,6 +175,7 @@ public:
     {
         cancel = true;
         if (worker.joinable()) worker.join();
+        SlateApplication::Get().SetTextMeasurer(nullptr);
         SlateApplication::Get().SetRootContent(nullptr);
         SetPlatform(nullptr);
     }
@@ -227,6 +235,8 @@ public:
     {
         if (!Win32::LoadSystemFonts(fonts, Win32::ESystemFont::Sans)) return false;
         platform.renderer.SetFontAtlas(&fonts);
+        measurer.SetRenderer(&platform.scaled);
+        SlateApplication::Get().SetTextMeasurer(&measurer);
         return true;
     }
     void Build()
