@@ -1586,8 +1586,13 @@ compatibility check / GPU select verification), CLI under `-batchmode`
 (`--collect`, `--diagnose`, `--gpu-selection`, and the plain check). The former
 separate `ZWindowsEnvironmentCheck.exe` CLI and `ZGpuSelectionInspector.exe` GUI
 are gone; `-batchmode` is the Unity/UE spelling on purpose. The exe is
-CONSOLE-subsystem so `-batchmode` is a real CLI under cmd.exe (exit code, `&&`
-waits); GUI mode calls `FreeConsole()`. The collector re-launches *itself* as a
+**WINDOWS-subsystem** (`wWinMain`), so a double-click never flashes a console —
+as a CONSOLE binary the loader's console existed before any of our code ran, so
+`FreeConsole()` could only close it after it had already flashed. `-batchmode`
+attaches to the caller's console (`AttachConsole(ATTACH_PARENT_PROCESS)`) unless
+the caller already redirected stdout to a pipe or a file, so cmd.exe/PowerShell
+still get stdout and the exit code, and cmd still waits in a `.bat` (measured,
+not assumed). The collector re-launches *itself* as a
 Job-managed stage worker and as an elevated WER helper, so both call sites read
 `collector::ToolExecutablePath()` — renaming the output must go through that
 constant. It packages **game logs** together with the environment report:

@@ -18,12 +18,22 @@
 // anywhere on the line; the dispatcher below strips it before the per-command
 // parsers run, because those are strict about unknown tokens.
 //
-// The executable is a CONSOLE-subsystem binary so `-batchmode` behaves like a
-// real CLI under cmd.exe and PowerShell: stdout/stderr work, $LASTEXITCODE is
-// set, and `exe && next` inside a .bat actually waits for it. The alternative
-// (WINDOWS subsystem + AttachConsole) silently breaks `&&`, which is exactly how
-// CI drives this tool. GUI mode therefore calls FreeConsole() first thing, which
-// drops the console the loader created without leaving a window behind.
+// The executable is a WINDOWS-subsystem binary, so the loader never creates a
+// console and a double-clicked GUI shows no black window -- not even for a
+// frame. (As a CONSOLE binary the loader's console always existed before any of
+// our code ran, so FreeConsole() could only close it *after* it had flashed.)
+//
+// The CLI is not lost: `-batchmode`, `--help` and the two internal worker verbs
+// call AttachConsole(ATTACH_PARENT_PROCESS) and re-point the CRT streams at the
+// caller's console before anything is printed, so under cmd.exe and PowerShell
+// stdout/stderr still work and %ERRORLEVEL% / $LASTEXITCODE is still set.
+//
+// cmd.exe still waits for it, so `exe && next` in a .bat is still correct. That
+// is easy to get wrong by reasoning alone -- cmd is documented not to wait for
+// GUI-subsystem processes in batch scripts -- so it was checked instead: a .bat
+// runs a slow `-batchmode` command and looks for the file it produces on the
+// very next line. It waits, both with and without the tool's output redirected.
+// Re-check if this ever has to run on an old cmd.exe.
 //
 // Command dispatch (first match wins, same order the old CLI used):
 //   --wer-config        internal elevated registry helper (never opens a window)
@@ -41,6 +51,7 @@
 #include "WerCapture.h"
 
 #include <shellapi.h>
+#include <cstdio>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -48,6 +59,31 @@
 
 namespace
 {
+// Give a WINDOWS-subsystem process the console of whoever launched it.
+//
+// Only when the caller did not already arrange our output: a pipe or a
+// redirected file means something (CI, a script, a capture) is reading stdout,
+// and re-opening CONOUT$ would silently move that output to the console instead.
+// A pipe/file handle is inherited and works as-is, so leave the CRT alone there.
+// Everything else -- no handle at all, or an inherited console handle -- attaches
+// and re-points the streams, which is what makes `exe -batchmode --help` print
+// where you asked it to.
+//
+// Fails harmlessly when there is no parent console (Explorer, a service, the
+// Job-managed stage child), which is fine: that path is GUI mode, and it never
+// calls this.
+void AttachToParentConsole()
+{
+    const DWORD kind = GetFileType(GetStdHandle(STD_OUTPUT_HANDLE));
+    if (kind == FILE_TYPE_PIPE || kind == FILE_TYPE_DISK) return;
+    if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+    // The CRT set up stdin/stdout/stderr long before we had a console, so they
+    // point at nothing. CONIN$/CONOUT$ always name this process's console.
+    FILE* stream = nullptr;
+    freopen_s(&stream, "CONIN$", "r", stdin);
+    freopen_s(&stream, "CONOUT$", "w", stdout);
+    freopen_s(&stream, "CONOUT$", "w", stderr);
+}
 bool IsBatchModeToken(const std::wstring& argument)
 {
     return argument == L"-batchmode" || argument == L"--batchmode" || argument == L"/batchmode";
@@ -112,21 +148,34 @@ int RunBatchMode(int argumentCount, wchar_t** arguments)
 }
 } // namespace
 
-// wmain (not wWinMain): the executable is a CONSOLE-subsystem binary so that
-// -batchmode behaves like a real CLI, and the CRT entry point for that is wmain.
-int wmain(int argc, wchar_t** argv)
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
+    // No argc/argv parameters with this entry point; the command line is the
+    // source of truth and is already wide.
+    int argumentCount = 0;
+    wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (!arguments || argumentCount < 1) return 30;
+    struct CommandLine
+    {
+        wchar_t** values;
+        ~CommandLine() { LocalFree(values); }
+    } commandLine{arguments};
+
     bool batchMode = false;
     bool helpRequested = false;
-    for (int index = 1; index < argc; ++index)
+    for (int index = 1; index < argumentCount; ++index)
     {
-        const std::wstring argument = argv[index];
+        const std::wstring argument = arguments[index];
         if (IsBatchModeToken(argument)) batchMode = true;
         if (IsHelpToken(argument)) helpRequested = true;
     }
-    if (batchMode || helpRequested || IsInternalWorkerVerb(argc, argv))
+    if (batchMode || helpRequested || IsInternalWorkerVerb(argumentCount, arguments))
     {
-        return RunBatchMode(argc, argv);
+        AttachToParentConsole();
+        return RunBatchMode(argumentCount, arguments);
     }
-    return RunEnvironmentCheckGui(SW_SHOW, argc, argv);
+    // Deliberately SW_SHOW and not the show command wWinMain was handed: a
+    // launcher passing something odd (SW_SHOWMINIMIZED, SW_HIDE) must not be
+    // able to start the collection window invisible.
+    return RunEnvironmentCheckGui(SW_SHOW, argumentCount, arguments);
 }

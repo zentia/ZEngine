@@ -214,10 +214,14 @@ else()
         EnvironmentCheckGuiFallback.cpp
     )
 endif()
-# CONSOLE subsystem on purpose: -batchmode has to behave like a real CLI under
-# cmd.exe (stdout, exit code, and `exe && next` waiting for it). GUI mode calls
-# FreeConsole() so a double-click still shows no console.
-add_executable(${ENVIRONMENT_CHECK_TARGET} ${_shell_sources})
+# WINDOWS subsystem: the loader creates no console, so a double-clicked GUI never
+# flashes a black window. It used to be CONSOLE + FreeConsole(), but that console
+# always existed before any of our code ran, so it could only be closed *after*
+# it had already flashed. -batchmode is unaffected: it attaches to the caller's
+# console (see EnvironmentCheckShell.cpp), so stdout and the exit code survive.
+# cmd.exe still waits for it in a .bat (checked, see the shell's header comment),
+# so `exe && next` keeps working.
+add_executable(${ENVIRONMENT_CHECK_TARGET} WIN32 ${_shell_sources})
 target_link_libraries(${ENVIRONMENT_CHECK_TARGET} PRIVATE ZEnvironmentCheckCore)
 if(ENVIRONMENT_CHECK_WITH_ZSLATE)
     target_link_libraries(${ENVIRONMENT_CHECK_TARGET} PRIVATE ZSlate d3d11 dxgi d3dcompiler)

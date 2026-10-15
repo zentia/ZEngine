@@ -833,9 +833,8 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
 
 int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
 {
-    // Drop the console the loader created for us: GUI mode is not a CLI run and
-    // must not leave a black window behind the ZSlate window.
-    FreeConsole();
+    // No FreeConsole() here any more: as a WINDOWS-subsystem binary there is no
+    // console to drop, which is what stops the double-click flash.
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     try
     {
