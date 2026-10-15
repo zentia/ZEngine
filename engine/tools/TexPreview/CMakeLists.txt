@@ -33,6 +33,11 @@ z_set_tool_output_dir(${TEX_PREVIEW_TARGET})
 # every TU. No-op off Windows / when RC is unavailable / before the .ico exists.
 z_embed_app_icon(${TEX_PREVIEW_TARGET})
 
+# Per-monitor DPI v2. FSlateStandaloneApp already declares it in code; the
+# manifest makes it true before main() runs, so it cannot lose to a window
+# created too early.
+z_embed_app_manifest(${TEX_PREVIEW_TARGET})
+
 target_include_directories(${TEX_PREVIEW_TARGET} PRIVATE
     ${ENGINE_ROOT_DIR}/Source
     ${ENGINE_ROOT_DIR}/Source/CommonPCH

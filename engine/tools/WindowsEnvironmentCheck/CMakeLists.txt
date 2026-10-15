@@ -202,11 +202,13 @@ endif()
 # The one executable
 # ------------------------------------------------------------------------------
 if(ENVIRONMENT_CHECK_WITH_ZSLATE)
+    # No .manifest beside the sources: DPI awareness now comes from
+    # z_embed_app_manifest() below, which shares one manifest across every
+    # ZEngine GUI instead of each tool carrying a copy.
     set(_shell_sources
         EnvironmentCheckShell.cpp
         EnvironmentCheckGui.cpp
         EnvironmentCheckGui.h
-        EnvironmentCheckGui.manifest
     )
 else()
     set(_shell_sources
@@ -243,6 +245,14 @@ set_target_properties(${ENVIRONMENT_CHECK_TARGET} PROPERTIES
 # OUTPUT_NAME is what the .ico is named after.
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/AppIcon.cmake")
 z_embed_app_icon(${ENVIRONMENT_CHECK_TARGET})
+
+# Per-monitor DPI v2. This one is not optional: the GUI registers its own
+# WNDCLASSEX (EnvironmentCheckGui.cpp) instead of using
+# ZSlate::FSlateStandaloneApp, so DeclareDpiAwareness() never runs on its path
+# and the manifest is its only declaration -- without it the whole window is
+# bitmap-stretched on a scaled display.
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/AppManifest.cmake")
+z_embed_app_manifest(${ENVIRONMENT_CHECK_TARGET})
 
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES
     DllProbe.cpp

@@ -1678,6 +1678,17 @@ shared pieces:
 |---|---|---|
 | `z_embed_app_icon(<target>)` | `engine/cmake/AppIcon.cmake` (+ `AppIcon.rc.in`) | one call in the tool's CMakeLists, after `set_target_properties(... OUTPUT_NAME ...)`. Embeds `resource/<OUTPUT_NAME>.ico`, defines `IDI_ICON1=101`, no-op off Windows / when RC is unavailable / before the .ico exists. `engine/CMakeLists.txt` includes it; tools that configure standalone `include()` it by path. |
 | `gen_icon.ps1 -Name <Tool> -Motif <...> -OutDir <tool>/resource` | `engine/resource/gen_icon.ps1` | draws the `.ico` (16/32/48/256, PNG-compressed entries) on the shared dark rounded tile. Motifs: `bars` (LuaMemPreview), `branch` (ClientProjBranches), `checker` (TexPreview), `check` (ZEnvironmentCollector). |
+| `z_embed_app_manifest(<target> [MANIFEST <file>])` | `engine/cmake/AppManifest.cmake` (+ `AppManifest.manifest`) | one call, same place. Declares per-monitor DPI v2 by embedding the shared manifest; `MANIFEST <file>` replaces it wholesale for a tool needing something else (execution level, comctl32 v6). MSVC-only — CMake has no mt.exe rule for MinGW — and a no-op elsewhere, so the call can be committed anywhere. Same include arrangement as `AppIcon`. |
+
+`z_embed_app_manifest()` is **required** for a GUI that does not go through
+`ZSlate::FSlateStandaloneApp` — today that is only `WindowsEnvironmentCheck`,
+which registers its own `WNDCLASSEX`, so `DeclareDpiAwareness()` never runs on
+its path and the manifest is its only DPI declaration. The other three declare
+the same mode in code (`DeclareDpiAwareness()` inside
+`FSlateStandaloneApp::Initialize`), so for them it is redundancy that costs
+nothing and is slightly safer: the manifest is in force before `main()` runs,
+so it cannot be beaten by a window created too early. ZEditor/ZInsights are the
+same via `ZRuntime`'s `SetProcessDpiAwarenessContext()` and are left alone.
 
 **The .rc alone is not enough.** It only puts the icon in the *executable*
 (Explorer, Properties). The title bar, Alt-Tab entry and taskbar button come

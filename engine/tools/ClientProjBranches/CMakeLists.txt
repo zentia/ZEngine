@@ -34,6 +34,12 @@ add_executable(ClientProjBranches WIN32 ${SOURCES})
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/AppIcon.cmake")
 z_embed_app_icon(ClientProjBranches)
 
+# Per-monitor DPI v2. FSlateStandaloneApp already declares it in code; the
+# manifest makes it true before main() runs, so it cannot lose to a window
+# created too early.
+include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/AppManifest.cmake")
+z_embed_app_manifest(ClientProjBranches)
+
 # Output: <repo>/bin/Tools/<Config>/, same as the other standalone GUI tools.
 # Without it the exe lands in <build>/<Config>/, i.e. wherever -B happened to
 # point.

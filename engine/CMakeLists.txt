@@ -266,6 +266,11 @@ include(cmake/ConfigOutputDirs.cmake)
 # include this file directly.
 include(cmake/AppIcon.cmake)
 
+# z_embed_app_manifest(<target>): declares per-monitor DPI v2 by embedding the
+# shared manifest. Same include rule as AppIcon above -- a tool that configures
+# on its own pulls the file in itself. MSVC-only; a no-op elsewhere.
+include(cmake/AppManifest.cmake)
+
 # z_set_tool_output_dir(<target> [SUBDIR <subdir>]): sends a standalone GUI tool
 # to <repo>/bin/Tools/<Config>[/<subdir>]/ so no tool's exe lands in the build
 # tree. Pass SUBDIR when the tool ships more than its .exe.
