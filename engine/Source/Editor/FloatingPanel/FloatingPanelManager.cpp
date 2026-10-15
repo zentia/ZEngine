@@ -12,6 +12,7 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "ZSlate/Application/SlateInput.h"
+#include "ZSlate/Backend/ZEngineSlateRenderer.h"
 #include "ZSlate/Widgets/SWindowTitleBar.h"
 #include "Runtime/UI/Render/BatchedUIRenderer.h"
 
@@ -30,6 +31,10 @@
     #include "Runtime/Function/Render/Platform/Generic/GenericApplication.h"
     #include "Runtime/Function/Render/Platform/Generic/GenericWindow.h"
 #endif
+
+// --- ZSlate <-> runtime UI type bridges (same pattern as ZSlateSceneWindow) ---
+inline ::Vector2       ToRuntime(const ZSlate::Vector2& v) { return ::Vector2(v.x, v.y); }
+inline ZSlate::Vector2 ToSlate(const ::Vector2& v)          { return ZSlate::Vector2(v.x, v.y); }
 
 namespace
 {
@@ -527,13 +532,15 @@ void FloatingPanelManager::EnsureChrome(FloatingPanel& panel)
         LOG_INFO(ZEditor, "FloatingPanelManager: re-docking '%s' (close button)", p->title.c_str());
         RequestDock(p->title);
     };
-    tb.OnCaptionDragBegin = [this, p](const Vector2& pos) { BeginCaptionDrag(*p, pos); };
-    tb.OnCaptionDrag = [this, p](const Vector2& pos) { UpdateCaptionDrag(*p, pos); };
-    tb.OnCaptionDragEnd = [this, p](const Vector2& pos) { EndCaptionDrag(*p, pos); };
+    // The chrome delegates (SWindowTitleBar / SResizeGrip) speak ZSlate::Vector2,
+    // while the drag helpers below take the runtime one.
+    tb.OnCaptionDragBegin = [this, p](const ZSlate::Vector2& pos) { BeginCaptionDrag(*p, ToRuntime(pos)); };
+    tb.OnCaptionDrag = [this, p](const ZSlate::Vector2& pos) { UpdateCaptionDrag(*p, ToRuntime(pos)); };
+    tb.OnCaptionDragEnd = [this, p](const ZSlate::Vector2& pos) { EndCaptionDrag(*p, ToRuntime(pos)); };
 
     ZSlate::SResizeGrip& grip = *panel.chrome->Grip;
-    grip.OnResizeBegin = [p](const Vector2&) { p->grip_resizing = true; };
-    grip.OnResize = [this, p](const Vector2& pos) { UpdateResize(*p, pos); };
+    grip.OnResizeBegin = [p](const ZSlate::Vector2&) { p->grip_resizing = true; };
+    grip.OnResize = [this, p](const ZSlate::Vector2& pos) { UpdateResize(*p, ToRuntime(pos)); };
     grip.OnResizeEnd = [p] { p->grip_resizing = false; };
 }
 
@@ -774,8 +781,8 @@ void FloatingPanelManager::BuildBatches()
     // Capture the MAIN window rect now, BEFORE any per-panel input override is
     // pushed below -- the override makes GetDisplayPos/Size report the floating
     // window instead of the main one. The caption-drag re-dock test reads m_MainRect.
-    const Vector2 main_pos = host.GetDisplayPos();
-    const Vector2 main_size = host.GetDisplaySize();
+    const Vector2 main_pos = ToRuntime(host.GetDisplayPos());
+    const Vector2 main_size = ToRuntime(host.GetDisplaySize());
     m_MainRect[0] = main_pos.x;
     m_MainRect[1] = main_pos.y;
     m_MainRect[2] = main_size.x;
@@ -809,11 +816,11 @@ void FloatingPanelManager::BuildBatches()
 
             double cx = 0.0, cy = 0.0;
             panel.window->GetCursorPos(cx, cy);
-            state_in.pointer = Vector2(static_cast<float>(cx) * fbx, static_cast<float>(cy) * fby);
+            state_in.pointer = ZSlate::Vector2(static_cast<float>(cx) * fbx, static_cast<float>(cy) * fby);
         }
         state_in.ui_scale = scale;
-        state_in.pointer_delta = Vector2(state_in.pointer.x - in.prev_pointer.x, state_in.pointer.y - in.prev_pointer.y);
-        in.prev_pointer = state_in.pointer;
+        state_in.pointer_delta = ZSlate::Vector2(state_in.pointer.x - in.prev_pointer.x, state_in.pointer.y - in.prev_pointer.y);
+        in.prev_pointer = ToRuntime(state_in.pointer);
         state_in.left_down = in.left_down;
         state_in.right_down = in.right_down;
         state_in.middle_down = in.middle_down;
@@ -888,12 +895,16 @@ void FloatingPanelManager::BuildBatches()
         frame.TitleBar->Now = ZSlate::EditorSlateHost::GetTime();
 
         std::shared_ptr<ZSlate::SWidget> chrome_root = panel.chrome;
-        const ZSlate::FGeometry frame_geom(Vector2(0.0f, 0.0f),
-                                           Vector2(static_cast<float>(panel.width),
-                                                   static_cast<float>(panel.height)));
+        const ZSlate::FGeometry frame_geom(ZSlate::Vector2(0.0f, 0.0f),
+                                           ZSlate::Vector2(static_cast<float>(panel.width),
+                                                           static_cast<float>(panel.height)));
         chrome_root->CacheDesiredSize();
         ZSlate::FPaintContext paint_ctx;
-        paint_ctx.Renderer = &panel.renderer;
+        // Each floating window owns its own BatchedUIRenderer (per-window swapchain),
+        // so adapt it to the ISlateRenderer interface the ZSlate chrome paints through
+        // rather than borrowing the main window's overlay.
+        ZSlate::ZEngineSlateRenderer per_window_renderer(nullptr, &panel.renderer);
+        paint_ctx.Renderer = &per_window_renderer;
         chrome_root->Paint(paint_ctx, frame_geom);
 
         // Feed the router a synthetic level so a press+release within one frame

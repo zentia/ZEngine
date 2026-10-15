@@ -52,7 +52,7 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/AssetPipeline/.*/[Tt]est/.*")
 # the ZSlate Inspector's material/shader section, which links against it.
 # DefaultLayout/ is back: its native dock tree is what places every editor window
 # on screen, and with it stubbed out the editor shows only the menu bar.
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/FloatingPanelManager\\.cpp")
+# FloatingPanelManager: re-enabled (tear-off / undock support).
 
 file(GLOB EDITOR_RESOURCE CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/resource/ZEditor.rc)
 
