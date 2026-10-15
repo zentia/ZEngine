@@ -42,7 +42,7 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/AssetPipeline/.*/[Tt]est/.*")
 # ZSlateHierarchyWindow: re-enabled (small, off its stub; dock layout restored).
 # ZSlateInsightsWindow: deleted -- Insights is served by the standalone ZInsights app.
 # ZSlateInspectorWindow: re-enabled (the property panel; dock layout restored).
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateMaterialEditorWindow/.*")
+# ZSlateMaterialEditorWindow: re-enabled (material graph editor).
 # ZSlatePackageManagerWindow: re-enabled (package list / import panel).
 # ZSlatePreviewWindow: re-enabled (native zasset preview: Texture2D / MeshData / Material / Shader).
 # ZSlateSceneWindow: re-enabled (the 3D viewport; dock layout restored).

@@ -32,7 +32,7 @@
 // ZSlateAnimationWindow: real implementation is built (its CMake exclude is gone).
 // ZSlateBlueprintWindow: real implementation is built (its CMake exclude is gone).
 // ZSlateTimelineWindow: real implementation is built (its CMake exclude is gone).
-STUB_WIN(ZSlateMaterialEditorWindow, "MaterialEditor")
+// ZSlateMaterialEditorWindow: real implementation is built (its CMake exclude is gone).
 // ZSlatePreviewWindow: real implementation is built (native zasset preview).
 // ZSlateInsightsWindow: deleted (Insights -> standalone ZInsights app).
 // ZSlateHierarchyWindow + ZSlateSceneWindow: real implementations are built

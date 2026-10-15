@@ -15,6 +15,14 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+
+// --- ZSlate <-> runtime UI type bridges (same pattern as ZSlateSceneWindow) ---
+// ZSlate::UIRect uses w/h, the runtime UIRect uses width/height, and only the
+// runtime one converts implicitly to ZSlate -- so going back needs a cast.
+inline ::Vector2       ToRuntime(const ZSlate::Vector2& v) { return ::Vector2(v.x, v.y); }
+inline ZSlate::Vector2 ToSlate(const ::Vector2& v)          { return ZSlate::Vector2(v.x, v.y); }
+inline ::UIRect        ToRuntimeRect(const ZSlate::UIRect& r) { return ::UIRect(r.x, r.y, r.w, r.h); }
+inline ZSlate::UIRect  ToSlateRect(const ::UIRect& r)         { return ZSlate::UIRect(r.x, r.y, r.width, r.height); }
 using namespace ZSlate;
 
 namespace
@@ -55,10 +63,10 @@ std::shared_ptr<STextBlock> MakeText(const std::string& text, float font_size, c
 // Cubic bezier sampled into short filled quads (UIRenderer has no line/curve
 // primitive). Identical approach to ZSlateBlueprintWindow.
 void DrawBezier(UIRenderer& r,
-                const ZSlate::Vector2& a,
-                const ZSlate::Vector2& b,
-                const ZSlate::Vector2& c,
-                const ZSlate::Vector2& d,
+                const ::Vector2& a,
+                const ::Vector2& b,
+                const ::Vector2& c,
+                const ::Vector2& d,
                 const ZSlate::UIColor& color,
                 float thickness)
 {
@@ -67,7 +75,7 @@ void DrawBezier(UIRenderer& r,
     steps = std::max(16, std::min(96, steps));
     const float half = thickness * 0.5f;
 
-    ZSlate::Vector2 prev = a;
+    ::Vector2 prev = a;
     for (int i = 1; i <= steps; ++i)
     {
         const float t = static_cast<float>(i) / static_cast<float>(steps);
@@ -86,7 +94,7 @@ void DrawBezier(UIRenderer& r,
             const float y = prev.y + (pt.y - prev.y) * st;
             r.DrawQuad(ZSlate::UIRect(x - half, y - half, thickness, thickness), color);
         }
-        prev = pt;
+        prev = ToRuntime(pt);
     }
 }
 }  // namespace
@@ -96,10 +104,10 @@ ZSlateMaterialEditorWindow::ZSlateMaterialEditorWindow(EditorUI* editor_ui)
 {
     m_Open = false;
     // Default PBR output nodes, mirroring the legacy window's seed.
-    AddNode(MatNodeType::Output_BaseColor, ZSlate::Vector2(600.0f, 120.0f));
-    AddNode(MatNodeType::Output_Metallic, ZSlate::Vector2(600.0f, 230.0f));
-    AddNode(MatNodeType::Output_Roughness, ZSlate::Vector2(600.0f, 320.0f));
-    AddNode(MatNodeType::Output_Normal, ZSlate::Vector2(600.0f, 410.0f));
+    AddNode(MatNodeType::Output_BaseColor, ::Vector2(600.0f, 120.0f));
+    AddNode(MatNodeType::Output_Metallic, ::Vector2(600.0f, 230.0f));
+    AddNode(MatNodeType::Output_Roughness, ::Vector2(600.0f, 320.0f));
+    AddNode(MatNodeType::Output_Normal, ::Vector2(600.0f, 410.0f));
 }
 
 // ---------------------------------------------------------------------------
@@ -162,26 +170,29 @@ float ZSlateMaterialEditorWindow::NodeContentExtra(MatNodeType type) const
     }
 }
 
-ZSlate::Vector2 ZSlateMaterialEditorWindow::NodeScreen(const MatNode& node) const
+// Same split as the Blueprint window: the graph is laid out in runtime UI space
+// (MatNode::position, m_CanvasOrigin, m_Scroll), so these helpers stay on
+// ::Vector2 and ZSlate types only appear at the widget/canvas boundary.
+::Vector2 ZSlateMaterialEditorWindow::NodeScreen(const MatNode& node) const
 {
-    return ZSlate::Vector2(m_CanvasOrigin.x + m_Scroll.x + node.position.x * m_Scale,
-                   m_CanvasOrigin.y + m_Scroll.y + node.position.y * m_Scale);
+    return ::Vector2(m_CanvasOrigin.x + m_Scroll.x + node.position.x * m_Scale,
+                     m_CanvasOrigin.y + m_Scroll.y + node.position.y * m_Scale);
 }
 
-ZSlate::Vector2 ZSlateMaterialEditorWindow::NodeSize(const MatNode& node) const
+::Vector2 ZSlateMaterialEditorWindow::NodeSize(const MatNode& node) const
 {
     const float rows = static_cast<float>(std::max(node.inputs.size(), node.outputs.size()));
     const float content = rows * kPinRow;
     const float h = (kTitleH + content + NodeContentExtra(node.node_type) + kPinTopPad) * m_Scale;
-    return ZSlate::Vector2(kNodeWidth * m_Scale, h);
+    return ::Vector2(kNodeWidth * m_Scale, h);
 }
 
-ZSlate::Vector2 ZSlateMaterialEditorWindow::PinScreen(const MatNode& node, int pin_index, bool is_input) const
+::Vector2 ZSlateMaterialEditorWindow::PinScreen(const MatNode& node, int pin_index, bool is_input) const
 {
-    const ZSlate::Vector2 sp = NodeScreen(node);
+    const ::Vector2 sp = NodeScreen(node);
     const float y = sp.y + (kTitleH + kPinTopPad) * m_Scale + static_cast<float>(pin_index) * kPinRow * m_Scale;
     const float x = is_input ? sp.x : sp.x + NodeSize(node).x;
-    return ZSlate::Vector2(x, y);
+    return ::Vector2(x, y);
 }
 
 MatNode* ZSlateMaterialEditorWindow::FindNode(int node_id)
@@ -192,20 +203,20 @@ MatNode* ZSlateMaterialEditorWindow::FindNode(int node_id)
     return nullptr;
 }
 
-std::pair<MatNode*, MatPin*> ZSlateMaterialEditorWindow::FindPinAt(const ZSlate::Vector2& p)
+std::pair<MatNode*, MatPin*> ZSlateMaterialEditorWindow::FindPinAt(const ::Vector2& p)
 {
     const float r = kPinRadius * m_Scale + 3.0f;
     for (auto& node : m_Nodes)
     {
         for (size_t i = 0; i < node.inputs.size(); ++i)
         {
-            const ZSlate::Vector2 pp = PinScreen(node, static_cast<int>(i), true);
+            const ::Vector2 pp = PinScreen(node, static_cast<int>(i), true);
             if ((p.x - pp.x) * (p.x - pp.x) + (p.y - pp.y) * (p.y - pp.y) <= r * r)
                 return {&node, &node.inputs[i]};
         }
         for (size_t i = 0; i < node.outputs.size(); ++i)
         {
-            const ZSlate::Vector2 pp = PinScreen(node, static_cast<int>(i), false);
+            const ::Vector2 pp = PinScreen(node, static_cast<int>(i), false);
             if ((p.x - pp.x) * (p.x - pp.x) + (p.y - pp.y) * (p.y - pp.y) <= r * r)
                 return {&node, &node.outputs[i]};
         }
@@ -241,7 +252,7 @@ ZSlate::UIColor ZSlateMaterialEditorWindow::PinColor(MatPinType type) const
 // ---------------------------------------------------------------------------
 // Graph paint
 // ---------------------------------------------------------------------------
-void ZSlateMaterialEditorWindow::PaintGraph(UIRenderer& r, const ZSlate::UIRect& region, float scale)
+void ZSlateMaterialEditorWindow::PaintGraph(UIRenderer& r, const ::UIRect& region, float scale)
 {
     r.DrawQuad(region, kCanvasBg);
     r.PushClipRect(region, true);
@@ -272,10 +283,10 @@ void ZSlateMaterialEditorWindow::PaintGraph(UIRenderer& r, const ZSlate::UIRect&
         if (fi < 0 || ti < 0)
             continue;
 
-        const ZSlate::Vector2 a = PinScreen(*from, fi, false);
-        const ZSlate::Vector2 d = PinScreen(*to, ti, true);
-        const ZSlate::Vector2 b(a.x + 50.0f * scale, a.y);
-        const ZSlate::Vector2 c(d.x - 50.0f * scale, d.y);
+        const ::Vector2 a = PinScreen(*from, fi, false);
+        const ::Vector2 d = PinScreen(*to, ti, true);
+        const ::Vector2 b(a.x + 50.0f * scale, a.y);
+        const ::Vector2 c(d.x - 50.0f * scale, d.y);
         ZSlate::UIColor color = PinColor(from->outputs[fi].type);
         color.w = 0.85f;
         const bool hot = (m_HoveredLinkIndex == static_cast<int>(i) || m_SelectedLinkIndex == static_cast<int>(i));
@@ -297,12 +308,12 @@ void ZSlateMaterialEditorWindow::PaintGraph(UIRenderer& r, const ZSlate::UIRect&
             if (fi >= 0)
             {
                 const ZSlate::Vector2 m = ZSlate::EditorSlateHost::Get().GetPointerPos();
-                const ZSlate::Vector2 a = PinScreen(*from, fi, false);
-                const ZSlate::Vector2 d(m.x, m.y);
+                const ::Vector2 a = PinScreen(*from, fi, false);
+                const ::Vector2 d = ToRuntime(m);
                 DrawBezier(r,
                            a,
-                           ZSlate::Vector2(a.x + 50.0f * scale, a.y),
-                           ZSlate::Vector2(d.x - 50.0f * scale, d.y),
+                           ::Vector2(a.x + 50.0f * scale, a.y),
+                           ::Vector2(d.x - 50.0f * scale, d.y),
                            d,
                            ZSlate::UIColor(1.0f, 1.0f, 1.0f, 0.6f),
                            2.0f * scale);
@@ -313,8 +324,8 @@ void ZSlateMaterialEditorWindow::PaintGraph(UIRenderer& r, const ZSlate::UIRect&
     // Nodes.
     for (const MatNode& node : m_Nodes)
     {
-        const ZSlate::Vector2 sp = NodeScreen(node);
-        const ZSlate::Vector2 size = NodeSize(node);
+        const ::Vector2 sp = NodeScreen(node);
+        const ::Vector2 size = NodeSize(node);
         const ZSlate::UIRect body(sp.x, sp.y, size.x, size.y);
 
         r.DrawQuad(body, node.selected ? kNodeBgSelected : kNodeBg);
@@ -331,7 +342,7 @@ void ZSlateMaterialEditorWindow::PaintGraph(UIRenderer& r, const ZSlate::UIRect&
         for (size_t i = 0; i < node.inputs.size(); ++i)
         {
             const MatPin& pin = node.inputs[i];
-            const ZSlate::Vector2 pp = PinScreen(node, static_cast<int>(i), true);
+            const ::Vector2 pp = PinScreen(node, static_cast<int>(i), true);
             const bool hov = (m_HoveredPinNodeId == node.id && m_HoveredPinId == pin.id);
             const float pr = (hov ? kPinRadius + 1.0f : kPinRadius) * scale;
             r.DrawQuad(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), PinColor(pin.type));
@@ -347,7 +358,7 @@ void ZSlateMaterialEditorWindow::PaintGraph(UIRenderer& r, const ZSlate::UIRect&
         for (size_t i = 0; i < node.outputs.size(); ++i)
         {
             const MatPin& pin = node.outputs[i];
-            const ZSlate::Vector2 pp = PinScreen(node, static_cast<int>(i), false);
+            const ::Vector2 pp = PinScreen(node, static_cast<int>(i), false);
             const bool hov = (m_HoveredPinNodeId == node.id && m_HoveredPinId == pin.id);
             const float pr = (hov ? kPinRadius + 1.0f : kPinRadius) * scale;
             r.DrawQuad(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), PinColor(pin.type));
@@ -420,7 +431,7 @@ void ZSlateMaterialEditorWindow::PaintGraph(UIRenderer& r, const ZSlate::UIRect&
 // ---------------------------------------------------------------------------
 // Side panel (preview placeholder + read-only properties)
 // ---------------------------------------------------------------------------
-void ZSlateMaterialEditorWindow::PaintSidePanel(UIRenderer& r, const ZSlate::UIRect& region, float scale)
+void ZSlateMaterialEditorWindow::PaintSidePanel(UIRenderer& r, const ::UIRect& region, float scale)
 {
     r.DrawQuad(region, kSideBg);
     r.PushClipRect(region, true);
@@ -526,8 +537,8 @@ void ZSlateMaterialEditorWindow::PaintSidePanel(UIRenderer& r, const ZSlate::UIR
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
-void ZSlateMaterialEditorWindow::HandleGraphInput(const ZSlate::Vector2& mouse,
-                                                  const ZSlate::Vector2& mouse_delta,
+void ZSlateMaterialEditorWindow::HandleGraphInput(const ::Vector2& mouse,
+                                                  const ::Vector2& mouse_delta,
                                                   bool over_canvas,
                                                   bool left_clicked,
                                                   bool left_down,
@@ -568,8 +579,8 @@ void ZSlateMaterialEditorWindow::HandleGraphInput(const ZSlate::Vector2& mouse,
                         ti = static_cast<int>(k);
                 if (fi < 0 || ti < 0)
                     continue;
-                const ZSlate::Vector2 a = PinScreen(*from, fi, false);
-                const ZSlate::Vector2 d = PinScreen(*to, ti, true);
+                const ::Vector2 a = PinScreen(*from, fi, false);
+                const ::Vector2 d = PinScreen(*to, ti, true);
                 const ZSlate::Vector2 mid((a.x + d.x) * 0.5f, (a.y + d.y) * 0.5f);
                 const float rr = 12.0f * m_Scale;
                 if ((mouse.x - mid.x) * (mouse.x - mid.x) + (mouse.y - mid.y) * (mouse.y - mid.y) <= rr * rr)
@@ -638,8 +649,8 @@ void ZSlateMaterialEditorWindow::HandleGraphInput(const ZSlate::Vector2& mouse,
 
     for (auto& node : m_Nodes)
     {
-        const ZSlate::Vector2 sp = NodeScreen(node);
-        const ZSlate::Vector2 size = NodeSize(node);
+        const ::Vector2 sp = NodeScreen(node);
+        const ::Vector2 size = NodeSize(node);
         if (mouse.x >= sp.x && mouse.x <= sp.x + size.x && mouse.y >= sp.y && mouse.y <= sp.y + size.y)
         {
             for (auto& n : m_Nodes)
@@ -717,13 +728,13 @@ void ZSlateMaterialEditorWindow::OnGUI()
     const ZSlate::UIRect side_region(pos_x + graph_w, content_y, side_w, content_h);
     const ZSlate::UIRect panel_region(pos_x, pos_y, avail_w, avail_h);
 
-    m_CanvasOrigin = ZSlate::Vector2(graph_region.x, graph_region.y);
+    m_CanvasOrigin = ::Vector2(graph_region.x, graph_region.y);
 
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
 
     auto paint_all = [&](UIRenderer& r, FPaintContext& ctx) {
-        PaintGraph(r, graph_region, ui_scale);
-        PaintSidePanel(r, side_region, ui_scale);
+        PaintGraph(r, ToRuntimeRect(graph_region), ui_scale);
+        PaintSidePanel(r, ToRuntimeRect(side_region), ui_scale);
         r.DrawQuad(ZSlate::UIRect(pos_x + graph_w, content_y, 1.0f, content_h), kSeparator);
         r.PushClipRect(toolbar_region, true);
         m_Toolbar->Paint(ctx, toolbar_geom);
@@ -734,7 +745,7 @@ void ZSlateMaterialEditorWindow::OnGUI()
         BatchedUIRenderer& renderer = overlay.GetRenderer();
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
         ctx.LayerId = 0;
         paint_all(renderer, ctx);
     }
@@ -754,7 +765,7 @@ void ZSlateMaterialEditorWindow::OnGUI()
     const bool left_released = host.WasLeftReleasedThisFrame();
     const bool middle_down = host.IsMiddleDown();
 
-    HandleGraphInput(mouse, mouse_delta, in_graph, left_clicked, left_down, left_released, middle_down);
+    HandleGraphInput(ToRuntime(mouse), ToRuntime(mouse_delta), in_graph, left_clicked, left_down, left_released, middle_down);
 
     if (over_item)
     {
@@ -769,7 +780,7 @@ void ZSlateMaterialEditorWindow::OnGUI()
 // ---------------------------------------------------------------------------
 // Graph ops
 // ---------------------------------------------------------------------------
-void ZSlateMaterialEditorWindow::AddNode(MatNodeType type, const ZSlate::Vector2& position)
+void ZSlateMaterialEditorWindow::AddNode(MatNodeType type, const ::Vector2& position)
 {
     MatNode node;
     node.id = m_NextNodeId++;
@@ -785,7 +796,7 @@ void ZSlateMaterialEditorWindow::AddNodeInView(MatNodeType type)
     const float step = 28.0f;
     const float base_x = (-m_Scroll.x) / m_Scale + 40.0f;
     const float base_y = (-m_Scroll.y) / m_Scale + 40.0f;
-    const ZSlate::Vector2 p(base_x + static_cast<float>(m_AddCascade % 6) * step,
+    const ::Vector2 p(base_x + static_cast<float>(m_AddCascade % 6) * step,
                     base_y + static_cast<float>(m_AddCascade % 6) * step);
     m_AddCascade++;
     AddNode(type, p);
