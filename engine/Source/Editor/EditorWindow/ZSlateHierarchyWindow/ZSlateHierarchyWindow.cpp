@@ -27,6 +27,11 @@
 #include <algorithm>
 using namespace ZSlate;
 
+// Runtime UI types (Runtime/Core/Math/Vector2.h) vs ZSlate's own Vector2: same
+// shape, distinct types. Convert at the boundary. See ZSlateSceneWindow.cpp.
+inline ::Vector2       ToRuntime(const ZSlate::Vector2& v) { return ::Vector2(v.x, v.y); }
+inline ZSlate::Vector2 ToSlate(const ::Vector2& v)         { return ZSlate::Vector2(v.x, v.y); }
+
 namespace
 {
 const ZSlate::UIColor kSelectedColor(0.18f, 0.35f, 0.58f, 1.0f);
@@ -174,7 +179,7 @@ void ZSlateHierarchyWindow::AddNodeRows(Level* level,
     // Right-click: record the target; OnGUI opens the menu on the button-up edge.
     row->OnRightClicked = [this, object_id](const ZSlate::Vector2& screen_pos) {
         m_PendingContextObject = object_id;
-        m_PendingContextPos = screen_pos;
+        m_PendingContextPos = ::Vector2(screen_pos.x, screen_pos.y);  // ZSlate -> runtime UI type
         m_HasPendingContext = true;
     };
 
@@ -359,7 +364,7 @@ void ZSlateHierarchyWindow::DeleteObject(GObjectID object_id)
     NotifyHierarchyStructureChanged(k_invalid_gobject_id);
 }
 
-void ZSlateHierarchyWindow::OpenContextMenu(GObjectID context_object, const ZSlate::Vector2& screen_pos, float scale)
+void ZSlateHierarchyWindow::OpenContextMenu(GObjectID context_object, const ::Vector2& screen_pos, float scale)
 {
     if (context_object != k_invalid_gobject_id)
     {
@@ -368,7 +373,7 @@ void ZSlateHierarchyWindow::OpenContextMenu(GObjectID context_object, const ZSla
     }
 
     const GObjectID target = context_object;
-    m_Popup.Open(screen_pos, scale, [this, target](SMenu& menu, float s) {
+    m_Popup.Open(ToSlate(screen_pos), scale, [this, target](SMenu& menu, float s) {
         menu.MinWidth = 170.0f * s;
         if (target != k_invalid_gobject_id)
         {
@@ -429,7 +434,7 @@ void ZSlateHierarchyWindow::OnGUI()
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
         m_Root->CacheDesiredSize();
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
         ctx.LayerId = 0;
         renderer.PushClipRect(region, true);
         m_Root->Paint(ctx, geometry);
@@ -450,7 +455,7 @@ void ZSlateHierarchyWindow::OnGUI()
     {
         const ZSlate::UIRect viewport_rect(host.GetDisplayPos().x, host.GetDisplayPos().y,
                                    host.GetDisplaySize().x, host.GetDisplaySize().y);
-        m_Popup.Render(overlay.GetRenderer(), mouse, left_down, wheel, viewport_rect, 1);
+        m_Popup.Render(overlay, mouse, left_down, wheel, viewport_rect, 1);
     }
     else if (m_Root != nullptr)
     {
@@ -461,7 +466,7 @@ void ZSlateHierarchyWindow::OnGUI()
             if (m_HasPendingContext)
                 OpenContextMenu(m_PendingContextObject, m_PendingContextPos, ui_scale);
             else
-                OpenContextMenu(k_invalid_gobject_id, mouse, ui_scale);
+                OpenContextMenu(k_invalid_gobject_id, ::Vector2(mouse.x, mouse.y), ui_scale);
             m_HasPendingContext = false;
         }
     }

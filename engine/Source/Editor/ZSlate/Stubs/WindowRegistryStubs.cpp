@@ -31,13 +31,11 @@ STUB_WIN(ZSlatePackageManagerWindow, "PackageManager")
 STUB_WIN(ZSlateAnimationWindow, "Animation")
 STUB_WIN(ZSlateBlueprintWindow, "Blueprint")
 STUB_WIN(ZSlateTimelineWindow, "Timeline")
-STUB_WIN(ZSlateHierarchyWindow, "Hierarchy")
 STUB_WIN(ZSlateMaterialEditorWindow, "MaterialEditor")
 // ZSlatePreviewWindow: real implementation is built (native zasset preview).
 STUB_WIN(ZSlateInsightsWindow, "Insights")
+// ZSlateHierarchyWindow + ZSlateSceneWindow: real implementations are built
+// (their CMake excludes are gone; see ZSlate-heavy editor windows above).
 
 // ZSlateConsoleWindow declares virtual ~ZSlateConsoleWindow() explicitly
 ZSlateConsoleWindow::~ZSlateConsoleWindow() = default;
-
-STUB_PLAY(ZSlateSceneWindow, "Scene", 1)
-void ZSlateSceneWindow::OnViewportHidden() {}

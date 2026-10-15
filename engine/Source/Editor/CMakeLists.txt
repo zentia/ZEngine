@@ -32,24 +32,25 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/AssetPipeline/.*/[Tt]est/.*")
 
 # ---- ZSlate-heavy editor windows (P2) ----
 # Excluded until UIRenderer->ISlateRenderer migration and ZSlate::/::type bridging
-# is complete. MenuController.cpp and FloatingPanelManager.cpp are kept.
+# is complete. MenuController.cpp is kept -- it is what still draws the menu bar.
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateAnimationWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateBlueprintWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateConsoleWindow/.*")
 # ZSlateContentBrowserWindow: re-enabled (asset selection entry for zasset preview).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateDemoWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateGameWindow/.*")
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateHierarchyWindow/.*")
+# ZSlateHierarchyWindow: re-enabled (small, off its stub; dock layout restored).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateInsightsWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateInspectorWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateMaterialEditorWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlatePackageManagerWindow/.*")
 # ZSlatePreviewWindow: re-enabled (native zasset preview: Texture2D / MeshData / Material / Shader).
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateSceneWindow/.*")
+# ZSlateSceneWindow: re-enabled (the 3D viewport; dock layout restored).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateTimelineWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateUMGDesignerWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/InspectorWindow/InspectorShaderInspector.*")
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/DefaultLayout/.*")
+# DefaultLayout/ is back: its native dock tree is what places every editor window
+# on screen, and with it stubbed out the editor shows only the menu bar.
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/FloatingPanelManager\\.cpp")
 
 file(GLOB EDITOR_RESOURCE CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/resource/ZEditor.rc)

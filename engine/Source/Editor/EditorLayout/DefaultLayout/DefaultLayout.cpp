@@ -47,9 +47,15 @@ namespace
     // P11a: dock chrome mouse source is the GLFW-backed EditorSlateHost (the
     // transitional r.ZSlate.NativeInput CVar was retired in P10c, so the old
     // ImGui::GetIO() fallbacks were dead and are gone).
-    ZSlate::Vector2 ChromeMouse()
+    // DockTree / DockHost geometry is expressed in the runtime UI types
+    // (Vector2 from Runtime/Core/Math/Vector2.h, UIRect from
+    // Runtime/UI/Core/UITypes.h), while EditorSlateHost reports pointer
+    // positions in ZSlate's own Vector2. The two are distinct types, so the
+    // chrome mouse is converted once here at the boundary.
+    Vector2 ChromeMouse()
     {
-        return ZSlate::EditorSlateHost::Get().GetPointerPos();
+        const ZSlate::Vector2 pointer = ZSlate::EditorSlateHost::Get().GetPointerPos();
+        return Vector2(pointer.x, pointer.y);
     }
 
     bool ChromeLeftDown()
@@ -134,8 +140,8 @@ void DefaultLayout::OnGUI()
     const ZSlate::Vector2 disp_pos = host.GetDisplayPos();
     const ZSlate::Vector2 disp_size = host.GetDisplaySize();
     const float reserved = EditorLayoutConstants::kReservedTopHeight;
-    const ZSlate::Vector2 native_origin(disp_pos.x, disp_pos.y + reserved);
-    const ZSlate::Vector2 dock_host_avail(disp_size.x, disp_size.y - reserved);
+    const Vector2 native_origin(disp_pos.x, disp_pos.y + reserved);
+    const Vector2 dock_host_avail(disp_size.x, disp_size.y - reserved);
     RenderNativeDockPreview(native_origin, dock_host_avail);
 }
 
@@ -298,7 +304,7 @@ bool DefaultLayout::IsPanelFloating(const char* title) const
 void DefaultLayout::BeginFloatingPanelRender(const char* title, float x, float y, float width, float height)
 {
     m_FloatingRenderTitle = (title != nullptr) ? title : "";
-    m_FloatingRenderRect = ZSlate::UIRect(x, y, width, height);
+    m_FloatingRenderRect = UIRect(x, y, width, height);
 }
 
 void DefaultLayout::EndFloatingPanelRender()
@@ -330,7 +336,7 @@ void DefaultLayout::EnsureNativeDockTree()
     ReconcileNativeTreeWithOpenWindows();
 }
 
-void DefaultLayout::RenderNativeDockPreview(const ZSlate::Vector2& origin, const ZSlate::Vector2& size)
+void DefaultLayout::RenderNativeDockPreview(const Vector2& origin, const Vector2& size)
 {
     if (size.x <= 1.0f || size.y <= 1.0f)
         return;
@@ -352,7 +358,7 @@ void DefaultLayout::RenderNativeDockPreview(const ZSlate::Vector2& origin, const
     metrics.MinNodeExtent = 48.0f * ui_scale;
     m_NativeDockTree.SetMetrics(metrics);
 
-    const ZSlate::UIRect host_rect(origin.x, origin.y, size.x, size.y);
+    const UIRect host_rect(origin.x, origin.y, size.x, size.y);
     ZSlate::ZSlateEditorOverlay& overlay = ZSlate::ZSlateEditorOverlay::Get();
     BatchedUIRenderer& renderer = overlay.GetRenderer();
 
@@ -439,14 +445,14 @@ void DefaultLayout::RenderNativeDockPreview(const ZSlate::Vector2& origin, const
     TickNativeSessionAutosave();
 }
 
-void DefaultLayout::RenderNativeMaximizedBackground(const ZSlate::UIRect& host_rect, float scale)
+void DefaultLayout::RenderNativeMaximizedBackground(const UIRect& host_rect, float scale)
 {
     (void)scale;
     BatchedUIRenderer& renderer = ZSlate::ZSlateEditorOverlay::Get().GetRenderer();
     const EditorDock::DockHost::Style& style = m_NativeDockHost.GetStyle();
     const float strip_h = m_NativeDockTree.GetMetrics().TabStripHeight;
 
-    const ZSlate::UIRect content(host_rect.x, host_rect.y + strip_h, host_rect.width,
+    const UIRect content(host_rect.x, host_rect.y + strip_h, host_rect.width,
                          std::max(1.0f, host_rect.height - strip_h));
     // Cache for QueryNativeDockPanel (the const query places the maximized panel here).
     // Runs before the panel paints this frame, so the rect is fresh on resize.
@@ -461,38 +467,38 @@ void DefaultLayout::RenderNativeMaximizedBackground(const ZSlate::UIRect& host_r
     }
 }
 
-void DefaultLayout::RenderNativeMaximized(const ZSlate::UIRect& host_rect, float scale)
+void DefaultLayout::RenderNativeMaximized(const UIRect& host_rect, float scale)
 {
     BatchedUIRenderer& renderer = ZSlate::ZSlateEditorOverlay::Get().GetRenderer();
     const EditorDock::DockHost::Style& style = m_NativeDockHost.GetStyle();
     const float font = style.FontSize * scale;
     const float strip_h = m_NativeDockTree.GetMetrics().TabStripHeight;
 
-    const ZSlate::UIRect strip(host_rect.x, host_rect.y, host_rect.width, strip_h);
+    const UIRect strip(host_rect.x, host_rect.y, host_rect.width, strip_h);
 
     // Frame + tab strip band (the content-area fill is RenderNativeMaximizedBackground's,
     // drawn in the kZDockBackground group so the panel content composites above it).
     renderer.DrawRect(host_rect, style.BorderColor, 1.0f);
     renderer.DrawQuad(strip, style.TabStripBg);
 
-    const ZSlate::Vector2 mouse = ChromeMouse();
+    const Vector2 mouse = ChromeMouse();
 
     // Single (active) tab for the maximized panel.
     const float pad = style.TabPaddingX * scale;
     const float text_w = renderer.MeasureText(m_MaximizedPanelId, font, ZSlate::TextWrapMode::NoWrap, 0.0f, nullptr).x;
-    const ZSlate::UIRect tab(strip.x, strip.y, text_w + pad * 2.0f, strip.height);
+    const UIRect tab(strip.x, strip.y, text_w + pad * 2.0f, strip.height);
     renderer.DrawQuad(tab, style.TabActiveBg);
-    renderer.DrawQuad(ZSlate::UIRect(tab.x, tab.y, tab.width, std::max(1.0f, 2.0f * scale)), style.ActiveTabAccent);
+    renderer.DrawQuad(UIRect(tab.x, tab.y, tab.width, std::max(1.0f, 2.0f * scale)), style.ActiveTabAccent);
     renderer.DrawText(tab, m_MaximizedPanelId, font, style.TabActiveText, ZSlate::TextAnchor::MiddleCenter,
                       ZSlate::TextWrapMode::NoWrap, nullptr);
 
     // Restore button at the far right of the strip (a small square = "restore down").
     const float btn_w = strip.height;
-    m_RestoreButtonRect = ZSlate::UIRect(strip.x + strip.width - btn_w, strip.y, btn_w, strip.height);
+    m_RestoreButtonRect = UIRect(strip.x + strip.width - btn_w, strip.y, btn_w, strip.height);
     const bool rb_hover = m_RestoreButtonRect.Contains(mouse);
     renderer.DrawQuad(m_RestoreButtonRect, rb_hover ? style.TabHoverBg : style.TabInactiveBg);
     const float ic = btn_w * 0.34f;
-    renderer.DrawRect(ZSlate::UIRect(m_RestoreButtonRect.x + (btn_w - ic) * 0.5f,
+    renderer.DrawRect(UIRect(m_RestoreButtonRect.x + (btn_w - ic) * 0.5f,
                              m_RestoreButtonRect.y + (btn_w - ic) * 0.5f, ic, ic),
                       rb_hover ? style.TabActiveText : style.TabText, std::max(1.0f, 1.5f * scale));
 
@@ -505,7 +511,7 @@ void DefaultLayout::RenderNativeMaximized(const ZSlate::UIRect& host_rect, float
     // old ImGui::IsPopupOpen term is gone (the last ImGui::BeginCombo, in the legacy
     // ShaderPreviewRenderer ImGui draw path, was removed in P11g), so no ImGui popup exists here.
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const bool over_chrome = host.HoveredSurfacePrev(mouse) == -1;
+    const bool over_chrome = host.HoveredSurfacePrev(ZSlate::Vector2(mouse.x, mouse.y)) == -1;
     if (over_chrome)
     {
         if (host.WasLeftPressedThisFrame() && m_RestoreButtonRect.Contains(mouse))
@@ -535,7 +541,7 @@ namespace
 {
     // Quadrant test for drag-to-dock: returns the edge the cursor is nearest within an
     // outer zone, else Center. Edge zone is 30% of the smaller extent.
-    EditorDock::EDockDir ComputeDropDir(const ZSlate::UIRect& r, const ZSlate::Vector2& m)
+    EditorDock::EDockDir ComputeDropDir(const UIRect& r, const Vector2& m)
     {
         if (r.width <= 0.0f || r.height <= 0.0f)
             return EditorDock::EDockDir::Center;
@@ -558,14 +564,14 @@ namespace
     }
 }  // namespace
 
-bool DefaultLayout::HandleNativeDockInput(const ZSlate::UIRect& host_rect)
+bool DefaultLayout::HandleNativeDockInput(const UIRect& host_rect)
 {
     // P11a: pointer + button-hold + click/double-click edges + wheel all come from
     // the GLFW-backed EditorSlateHost. P11g: the chrome gate below is now fully native
     // (HoveredSurfacePrev over the registered panel / island / Foreground-popup surfaces)
     // -- no ImGui state is consulted here anymore.
     ZSlate::EditorSlateHost& host = ZSlate::EditorSlateHost::Get();
-    const ZSlate::Vector2 mouse = ChromeMouse();
+    const Vector2 mouse = ChromeMouse();
     const float thickness = m_NativeDockTree.GetMetrics().SplitterThickness;
 
     // Baseline the cursor to the arrow every frame; the splitter-drag / tab-drag /
@@ -677,7 +683,7 @@ bool DefaultLayout::HandleNativeDockInput(const ZSlate::UIRect& host_rect)
     // HoveredSurfacePrev (over_panel) like every other native popup (menu dropdowns,
     // panel context menus). The old ImGui::IsPopupOpen term is removed (the last
     // ImGui::BeginCombo, in the legacy ShaderPreviewRenderer ImGui draw path, was removed in P11g).
-    const bool over_panel = host.HoveredSurfacePrev(mouse) != -1;
+    const bool over_panel = host.HoveredSurfacePrev(ZSlate::Vector2(mouse.x, mouse.y)) != -1;
     if (over_panel || !host_rect.Contains(mouse))
         return false;
 
@@ -770,7 +776,7 @@ bool DefaultLayout::HandleNativeDockInput(const ZSlate::UIRect& host_rect)
             // is placed correctly on the very next QueryNativeDockPanel, even before the
             // first RenderNativeMaximized refreshes it.
             const float strip_h = m_NativeDockTree.GetMetrics().TabStripHeight;
-            m_MaximizedContentRect = ZSlate::UIRect(host_rect.x, host_rect.y + strip_h, host_rect.width,
+            m_MaximizedContentRect = UIRect(host_rect.x, host_rect.y + strip_h, host_rect.width,
                                             std::max(1.0f, host_rect.height - strip_h));
             // Cancel any drag armed by the first click of the double so it does not linger.
             m_TabDragId.clear();
@@ -1016,7 +1022,7 @@ void DefaultLayout::DrawDialogs()
     // Paint BEFORE routing so each widget's cached geometry is fresh this frame (the
     // router hit-tests against CachedGeometry) -- matches MenuController's toolbar order.
     ZSlate::FPaintContext ctx;
-    ctx.Renderer = &renderer;
+    ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
     ctx.LayerId = 0;
     m_SaveDialogRoot->Paint(ctx, ZSlate::FGeometry(ZSlate::Vector2(panel_x + pad, panel_y + pad), content));
 

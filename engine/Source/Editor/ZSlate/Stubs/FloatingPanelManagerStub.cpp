@@ -24,5 +24,9 @@ void FloatingPanelManager::BuildBatches() {}
 void FloatingPanelManager::DrawSurfaces(RHI*) {}
 bool FloatingPanelManager::HasFloatingPanels() const { return false; }
 void FloatingPanelManager::RequestFloat(const std::string&) {}
+// Needed by DefaultLayout's tab-drag tear-off (it calls this with a spawn rect
+// under the cursor). Tear-off stays inert until FloatingPanelManager.cpp itself
+// is migrated off the old UI types and this stub is dropped.
+void FloatingPanelManager::RequestFloatAt(const std::string&, int, int, int, int) {}
 void FloatingPanelManager::RequestDock(const std::string&) {}
 bool FloatingPanelManager::IsFloating(const std::string&) const { return false; }
