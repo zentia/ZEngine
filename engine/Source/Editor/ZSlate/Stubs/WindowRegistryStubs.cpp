@@ -23,7 +23,7 @@
     cls::cls(EditorUI* ui) : PlayModeView(ui, name, static_cast<ViewportType>(vp)) {} \
     void cls::OnGUI() {}
 
-STUB_WIN(ZSlateUMGDesignerWindow, "UMGDesigner")
+// ZSlateUMGDesignerWindow: real implementation is built (its CMake exclude is gone).
 // ZSlateConsoleWindow: real implementation is built (its CMake exclude is gone).
 // ZSlateDemoWindow: deleted.
 // ZSlateInspectorWindow: real implementation is built (its CMake exclude is
@@ -31,7 +31,7 @@ STUB_WIN(ZSlateUMGDesignerWindow, "UMGDesigner")
 // ZSlatePackageManagerWindow: real implementation is built (its CMake exclude is gone).
 STUB_WIN(ZSlateAnimationWindow, "Animation")
 STUB_WIN(ZSlateBlueprintWindow, "Blueprint")
-STUB_WIN(ZSlateTimelineWindow, "Timeline")
+// ZSlateTimelineWindow: real implementation is built (its CMake exclude is gone).
 STUB_WIN(ZSlateMaterialEditorWindow, "MaterialEditor")
 // ZSlatePreviewWindow: real implementation is built (native zasset preview).
 // ZSlateInsightsWindow: deleted (Insights -> standalone ZInsights app).

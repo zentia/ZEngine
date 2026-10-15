@@ -46,8 +46,8 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateMaterialEditorWindow/.*")
 # ZSlatePackageManagerWindow: re-enabled (package list / import panel).
 # ZSlatePreviewWindow: re-enabled (native zasset preview: Texture2D / MeshData / Material / Shader).
 # ZSlateSceneWindow: re-enabled (the 3D viewport; dock layout restored).
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateTimelineWindow/.*")
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateUMGDesignerWindow/.*")
+# ZSlateTimelineWindow: re-enabled (timeline / dope sheet).
+# ZSlateUMGDesignerWindow: re-enabled (UMG widget designer canvas).
 # InspectorShaderInspector: re-enabled. It is not a window of its own -- it backs
 # the ZSlate Inspector's material/shader section, which links against it.
 # DefaultLayout/ is back: its native dock tree is what places every editor window

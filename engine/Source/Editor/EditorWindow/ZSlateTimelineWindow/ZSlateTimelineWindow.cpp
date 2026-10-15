@@ -21,6 +21,14 @@
 #include <algorithm>
 #include <cstdio>
 #include <functional>
+
+// --- ZSlate <-> runtime UI type bridges (same pattern as ZSlateSceneWindow) ---
+// ZSlate::UIRect uses w/h, the runtime UIRect uses width/height, and only the
+// runtime one converts implicitly to ZSlate -- so going back needs a cast.
+inline ::Vector2       ToRuntime(const ZSlate::Vector2& v) { return ::Vector2(v.x, v.y); }
+inline ZSlate::Vector2 ToSlate(const ::Vector2& v)          { return ZSlate::Vector2(v.x, v.y); }
+inline ::UIRect        ToRuntimeRect(const ZSlate::UIRect& r) { return ::UIRect(r.x, r.y, r.w, r.h); }
+inline ZSlate::UIRect  ToSlateRect(const ::UIRect& r)         { return ZSlate::UIRect(r.x, r.y, r.width, r.height); }
 using namespace ZSlate;
 
 namespace
@@ -166,7 +174,7 @@ void ZSlateTimelineWindow::BuildToolbar(float scale)
 // ---------------------------------------------------------------------------
 // Canvas paint (ruler + track lanes + clips + playhead)
 // ---------------------------------------------------------------------------
-void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& region, float scale)
+void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ::UIRect& region, float scale)
 {
     r.DrawQuad(region, kCanvasBg);
 
@@ -225,7 +233,7 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
                    label,
                    11.0f * scale,
                    kWhite,
-                   ZSlate::TextAnchor::UpperLeft,
+                   ZSlate::TextAnchor::TopLeft,  // renamed from UpperLeft
                    ZSlate::TextWrapMode::NoWrap);
     }
 
@@ -286,7 +294,9 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
 
             if (clip_w > 50.0f * scale)
             {
-                r.DrawText(ZSlate::UIRect(clip_rect.x + 4.0f * scale, clip_rect.y, clip_rect.width - 6.0f * scale, clip_rect.height),
+                // ZSlate::UIRect spells its extents w/h (the runtime UIRect uses
+                // width/height), and DrawText takes the ZSlate one.
+                r.DrawText(ZSlate::UIRect(clip_rect.x + 4.0f * scale, clip_rect.y, clip_rect.w - 6.0f * scale, clip_rect.h),
                            ClipDisplayName(clip),
                            11.0f * scale,
                            kBlack,
@@ -320,9 +330,9 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& regi
 // ---------------------------------------------------------------------------
 // Manual canvas mouse interaction
 // ---------------------------------------------------------------------------
-void ZSlateTimelineWindow::HandleCanvasMouse(const ZSlate::UIRect& region,
+void ZSlateTimelineWindow::HandleCanvasMouse(const ::UIRect& region,
                                              float scale,
-                                             const ZSlate::Vector2& mouse,
+                                             const ::Vector2& mouse,
                                              bool over_canvas,
                                              bool clicked,
                                              bool down,
@@ -487,14 +497,14 @@ void ZSlateTimelineWindow::OnGUI()
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
 
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
         ctx.LayerId = 0;
 
         renderer.PushClipRect(toolbar_region, true);
         m_Toolbar->Paint(ctx, toolbar_geom);
         renderer.PopClipRect();
 
-        PaintCanvas(renderer, canvas_region, ui_scale);
+        PaintCanvas(renderer, ToRuntimeRect(canvas_region), ui_scale);
     }
 
     // ---- Input --------------------------------------------------------------
@@ -516,7 +526,7 @@ void ZSlateTimelineWindow::OnGUI()
     const bool in_canvas = over_canvas && mouse.y >= canvas_region.y;
     const bool clicked = in_canvas && host.WasLeftPressedThisFrame();
     const bool released = !left_down && m_PrevLeftDown;
-    HandleCanvasMouse(canvas_region, ui_scale, mouse, in_canvas, clicked, left_down, released);
+    HandleCanvasMouse(ToRuntimeRect(canvas_region), ui_scale, ToRuntime(mouse), in_canvas, clicked, left_down, released);
 
     // Horizontal scroll via mouse wheel over the canvas.
     if (in_canvas && wheel != 0.0f)

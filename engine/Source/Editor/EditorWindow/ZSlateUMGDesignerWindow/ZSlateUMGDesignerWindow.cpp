@@ -29,6 +29,14 @@
 #include <cmath>
 #include <vector>
 
+// --- ZSlate <-> runtime UI type bridges (same pattern as ZSlateSceneWindow) ---
+// ZSlate::UIRect uses w/h, the runtime UIRect uses width/height, and only the
+// runtime one converts implicitly to ZSlate -- so going back needs a cast.
+inline ::Vector2       ToRuntime(const ZSlate::Vector2& v) { return ::Vector2(v.x, v.y); }
+inline ZSlate::Vector2 ToSlate(const ::Vector2& v)          { return ZSlate::Vector2(v.x, v.y); }
+inline ::UIRect        ToRuntimeRect(const ZSlate::UIRect& r) { return ::UIRect(r.x, r.y, r.w, r.h); }
+inline ZSlate::UIRect  ToSlateRect(const ::UIRect& r)         { return ZSlate::UIRect(r.x, r.y, r.width, r.height); }
+
 using namespace ZSlate;
 using namespace ZUMG;
 
@@ -447,7 +455,7 @@ void ZSlateUMGDesignerWindow::BuildPropertyRows(const std::shared_ptr<SScrollBox
             }
             case EPropType::Vec2:
             {
-                const ZSlate::Vector2 v = bag.GetVec2(key);
+                const ZSlate::Vector2 v = ToSlate(bag.GetVec2(key));  // UMGPropertyBag speaks runtime Vector2
                 auto pair = std::make_shared<SHorizontalBox>();
                 auto dx = std::make_shared<SDragFloat>();
                 dx->Value = v.x;
@@ -456,9 +464,9 @@ void ZSlateUMGDesignerWindow::BuildPropertyRows(const std::shared_ptr<SScrollBox
                 dx->FontSize = font;
                 dx->OnValueChanged = [apply, key](float nv) {
                     apply([&](UMGPropertyBag& b) {
-                        ZSlate::Vector2 cur = b.GetVec2(key);
+                        ZSlate::Vector2 cur = ToSlate(b.GetVec2(key));
                         cur.x = nv;
-                        b.SetVec2(key, cur);
+                        b.SetVec2(key, ToRuntime(cur));
                     });
                 };
                 auto dy = std::make_shared<SDragFloat>();
@@ -468,9 +476,9 @@ void ZSlateUMGDesignerWindow::BuildPropertyRows(const std::shared_ptr<SScrollBox
                 dy->FontSize = font;
                 dy->OnValueChanged = [apply, key](float nv) {
                     apply([&](UMGPropertyBag& b) {
-                        ZSlate::Vector2 cur = b.GetVec2(key);
+                        ZSlate::Vector2 cur = ToSlate(b.GetVec2(key));
                         cur.y = nv;
-                        b.SetVec2(key, cur);
+                        b.SetVec2(key, ToRuntime(cur));
                     });
                 };
                 pair->AddSlot(dx).Fill(1.0f);
@@ -482,8 +490,12 @@ void ZSlateUMGDesignerWindow::BuildPropertyRows(const std::shared_ptr<SScrollBox
             {
                 const ZSlate::UIColor c = bag.GetColor(key);
                 auto picker = std::make_shared<SColorPicker>();
-                picker->SquareSize = 130.0f * scale;
-                picker->SetColorRGBA(c.x, c.y, c.z, c.w);
+                // ZSlate's SColorPicker sizes itself from ComputeDesiredSize() and
+                // exposes R/G/B/A as its color state (SquareSize/SetColorRGBA are gone).
+                picker->R = c.x;
+                picker->G = c.y;
+                picker->B = c.z;
+                picker->A = c.w;
                 picker->OnColorChanged = [apply, key](float r, float g, float bl, float a) {
                     apply([&](UMGPropertyBag& b) { b.SetColor(key, ZSlate::UIColor(r, g, bl, a)); });
                 };
@@ -660,7 +672,7 @@ void ZSlateUMGDesignerWindow::OnGUI()
 
     auto paint_all = [&](UIRenderer& renderer) {
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
         ctx.LayerId = 0;
 
         if (m_Chrome)
