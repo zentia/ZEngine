@@ -2,27 +2,43 @@
 
 <p align="center">
   <a href="https://zentia.github.io">
-    <img src="engine/source/editor/resource/ZEngine.png" width="400" alt="Z Engine logo">
+    <img src="engine/resource/ZEngine.png" width="400" alt="Z Engine logo">
   </a>
 </p>
 
 **Z Engine** is a tiny game engine.
 
-## Recent Updates (February 2026)
+## Recent Updates (October 2026)
 
-- **Enhanced Profiling**: Memory profiling for C#, Lua, and native code with detailed UI
-- **Scripting Support**: Improved Lua and JavaScript/TypeScript integration via Puerts
-- **Editor Tools**: New console window and better resource management
-- **Serialization**: Complete binary serialization system with TypeTree reflection
-- **Build Improvements**: Precompiled headers for faster compilation
+- **ZSlate**: the engine's UI framework now lives in its own submodule
+  (`engine/Libraries/ZSlate`), and the editor has been migrated onto it — the
+  ImGui backend is retired, with a few ImGui widget islands (scene grid, shader
+  editor, preview controls, modals) still being converted.
+- **Standalone GUI tools** under `engine/tools/`: `ZEnvironmentCollector`
+  (Windows compatibility report + crash/log collection), `LuaMemPreview` (Lua
+  memory snapshots, `-batchmode` CSV export), `TexPreview` (texture viewer),
+  `ClientProjBranches` (branch / SVN / git manager). All four build to
+  `bin/Tools/<Config>/`.
+- **ZInsights**: a standalone `.ztrace` profiler viewer (Win32 + Direct2D),
+  rendering the same timeline widget the in-editor panel paints.
+- **ZAppShell**: header-only startup helpers — one command-line reader and one
+  console attach, shared by every ZEngine executable regardless of its runtime
+  library (`/MT` or `/MD`).
+- **D3D12 backend** alongside Vulkan behind the multi-RHI abstraction; Metal on
+  macOS.
+- **agentkit**: Python kits for crash attribution (`zagent` / `zfault` / `zlab`),
+  wired into CI behind an explicit platform gate.
+- **RenderDoc integration**: in-engine capture module plus an MCP server and
+  analysis scripts under `tools/`.
 
 See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 
 ## Key Features
 
 ### Core Engine
-- **Multi-platform Support**: Windows, Linux, and macOS
-- **Vulkan Renderer**: Modern graphics API with validation layers
+- **Multi-platform Support**: Windows, Linux, and macOS (web via Emscripten)
+- **Multi-RHI Renderer**: Vulkan and D3D12 backends behind one abstraction,
+  Metal on macOS, with validation layers
 - **Physics**: Integrated Jolt Physics engine
 - **Asset Pipeline**: Complete asset management and bundle system
 
@@ -32,7 +48,8 @@ See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 - **C# Scripting**: Managed scripting with memory profiling
 
 ### Editor
-- **Visual Editor**: ImGui-based editor interface
+- **Visual Editor**: ZSlate-based editor interface (see above — the ImGui
+  backend has been retired, a few widget islands remain mid-conversion)
 - **Console Window**: Built-in console for debugging
 - **Project Management**: Asset browser and hierarchy viewer
 - **Timeline Editor**: Animation and sequencing tools
@@ -40,17 +57,50 @@ See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 
 ### Developer Tools
 - **Profiling**: Memory and performance profilers for all scripting languages
+- **ZInsights**: Standalone flame-chart viewer for `.ztrace` captures
 - **Serialization**: Binary and JSON serialization with reflection
 - **Virtual File System**: Flexible file system abstraction
 - **Hot Reload**: Asset and script hot reloading support
+
+## Repository Layout
+
+| Path | What |
+|---|---|
+| `engine/Source/Runtime/` | The runtime: `Core`, `Function` (Render, Physics, Animation, GAS, Input, ShaderLab…), `Resource`, `Scripting`, `Profiler`, `VirtualFileSystem`, `ZEngineApi` |
+| `engine/Source/Editor/` | ZEditor — ZSlate windows, editor UI, property drawers, docking layout |
+| `engine/Source/Insights/` | ZInsights — standalone `.ztrace` viewer (Windows + Direct2D) |
+| `engine/Source/Modules/` | Optional engine modules (currently RenderDoc) |
+| `engine/Source/WebLauncher/` | Emscripten entry point + `shell.html` |
+| `engine/Libraries/ZSlate/` | ZSlate UI framework — **git submodule** |
+| `engine/Libraries/ZAppShell/` | Header-only startup helpers (wide command line, console attach) |
+| `engine/tools/` | The four standalone GUI tools (see below) |
+| `engine/3rdparty/` | Third-party sources |
+| `tools/` | RenderDoc integration, its MCP server, and capture analysis scripts |
+| `agentkit/` | Python kits for crash attribution: `zagent`, `zfault`, `zlab` |
+| `doc/` | Design documents and guides |
+| `zbuild.py` | Unified build driver (configure / build / tool / test / install) |
+
+## Standalone Tools
+
+Built by `zbuild.py tool <name>` (or `--all`), output to `bin/Tools/<Config>/`.
+
+| Tool | Executable | What |
+|---|---|---|
+| WindowsEnvironmentCheck | `ZEnvironmentCollector.exe` | Windows compatibility report: hardware/firmware/driver probe, consented crash capture, game-log collection, ZIP64 report. GUI, or `-batchmode` for CI |
+| LuaMemPreview | `LuaMemPreview.exe` | Viewer for Lua memory snapshots (`.zasset` or CSV); `-batchmode` exports CSV for one snapshot or a whole folder |
+| TexPreview | `TexPreview.exe` | Texture viewer |
+| ClientProjBranches | `ClientProjBranches.exe` | Branch / SVN / git manager |
+
+`ZEditor.exe` and `ZInsights.exe` are built with the main tree, not by
+`zbuild.py tool`.
 
 ## Continuous build status
 
 |    Build Type     |                                                                                      Status                                                                                      |
 | :---------------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: |
 | **Build Windows** | [![Build Windows](https://github.com/zentia/ZEngine/actions/workflows/build_windows.yml/badge.svg)](https://github.com/zentia/ZEngine/workflows/build_windows.yml) |
-|  **Build Linux**  |    [![Build Linux](https://github.com/zentia/ZEngine/actions/workflows/build_linux.yml/badge.svg)](https://github.com/zentia/ZEngine/actions/workflows/build_linux.yml)    |
-|  **Build macOS**  |    [![Build macOS](https://github.com/zentia/ZEngine/actions/workflows/build_macos.yml/badge.svg)](https://github.com/zentia/ZEngine/actions/workflows/build_macos.yml)    |
+|  **Build Linux**  |    [![Build Linux](https://github.com/zentia/ZEngine/actions/workflows/build_linux.yml/badge.svg)](https://github.com/zentia/ZEngine/workflows/build_linux.yml)    |
+|  **Build macOS**  |    [![Build macOS](https://github.com/zentia/ZEngine/actions/workflows/build_macos.yml/badge.svg)](https://github.com/zentia/ZEngine/workflows/build_macos.yml)    |
 
 ## Prerequisites
 
@@ -116,8 +166,28 @@ Or you can execute the **build_macos.sh** to build the binaries.
 ### Build on Ubuntu 20.04
 You can execute the **build_linux.sh** to build the binaries.
 
+### zbuild.py
+
+`zbuild.py` is a unified driver wrapping the steps above, and the only way to
+build the standalone tools:
+
+```
+python zbuild.py configure --config release   # debug | release | relwithdebinfo
+python zbuild.py build --target ZEditor
+python zbuild.py tools                        # list the standalone GUI tools
+python zbuild.py tool TexPreview              # one -> bin/Tools/Release/
+python zbuild.py tool --all                   # all four
+python zbuild.py test
+python zbuild.py clean
+```
+
+Note that `--config` also selects the scripting backend: debug builds QuickJS,
+release and relwithdebinfo build V8.
+
 ## Documentation
-For documentation, please refer to the Wiki section.
+For documentation, please refer to the Wiki section. Design documents also live
+under [`doc/`](doc/) — notably `doc/BUILD_SYSTEM.md`, `doc/CODING_STYLE.md`, and
+`doc/MULTI_API_RHI_GUIDE.md`.
 
 ## Extra
 
@@ -150,76 +220,76 @@ Note:
 
 ## Coding Style Guide
 
-> 📖 **详细文档**: 完整的命名规范请参考 [CODING_STYLE.md](CODING_STYLE.md)
+> 📖 **详细文档**: 完整的命名规范请参考 [doc/CODING_STYLE.md](doc/CODING_STYLE.md)
 
-### C++ Naming Conventions
+The summary below must match that document — it is the authority. Note that the
+engine uses **CamelCase for functions**, not camelCase; several older summaries
+in this repository got that backwards.
 
 #### Namespaces
-- Use uppercase initials, keep names short
-- Example: `namespace Z`
+- PascalCase, keep names short
+- Example: `namespace Engine`, `namespace Engine::Render`
 
-#### Classes
-- Use PascalCase (capitalize first letter of each word)
-- Use nouns or noun phrases
-- Example: `class MemoryManager`, `class RuntimeGlobalContext`
+#### Classes and Structs
+- CamelCase, nouns or noun phrases
+- Example: `class WindowSystem`, `class RenderConfig`
 
-#### Functions
-- Use camelCase (first word lowercase, capitalize first letter of subsequent words)
-- Begin with verbs or verb phrases
-- Example: `initialize()`, `createObject()`, `destroyObject()`
+#### Functions and Methods
+- **CamelCase**, begin with verbs or verb phrases
+- Example: `Initialize()`, `IsQuit()`, `CreateObject()`
 
 #### Member Variables
-- Prefix with `m_` followed by snake_case
-- Example: `m_window`, `m_is_quit`, `m_average_duration`
+- `m_` prefix followed by **camelCase**
+- Example: `m_window`, `m_isQuit`
 
 #### Static Members
-- Prefix with `s_` followed by snake_case
-- Example: `s_fps_alpha`
+- `s_` prefix followed by camelCase
+- Example: `s_instance`, `s_count`
 
 #### Global Variables
-- Prefix with `g_` followed by snake_case
-- Example: `g_runtime_global_context`, `g_is_editor_mode`
+- `g_` prefix followed by camelCase
+- Example: `g_runtimeContext`
+
+#### Parameters
+- snake_case; use an `in_` prefix to avoid shadowing
+- Example: `float in_delta_time`, `WindowCreateInfo in_create_info`
+
+#### Local Variables
+- snake_case
+- Example: `float delta_time`, `int frame_count`
 
 #### Constants
-- Use all uppercase with underscores
-- Example: `MAX_BUFFER_SIZE`, `DEFAULT_WINDOW_WIDTH`
+- All uppercase with underscores
+- Example: `MAX_BUFFER_SIZE`, `DEFAULT_FPS`
 
 #### Enums
-- Enum type names use PascalCase
-- Enum values use lowercase (preferred) or UPPER_CASE
+- Type names CamelCase, **values CamelCase**
 - Example:
 ```cpp
 enum class LogLevel {
-    debug,
-    info,
-    warn,
-    error,
-    fatal
+    Debug,
+    Info,
+    Warn,
+    Error,
+    Fatal
 };
 ```
 
-#### Parameters and Local Variables
-- Use snake_case
-- Be descriptive but concise
-- Example: `float delta_time`, `int frame_count`, `WindowCreateInfo create_info`
-
 #### Interface Classes
-- Prefix with 'I' followed by PascalCase
+- `I` prefix followed by CamelCase
 - Example: `class IRenderer`, `class ISystem`
 
 #### File Names
-- Use lowercase with underscores
-- Headers use .h extension
-- Source files use .cpp extension
-- Example: `memory_manager.h`, `render_system.cpp`
+- **PascalCase**, matching the type they declare
+- Headers use .h extension, source files use .cpp
+- Example: `WindowSystem.h`, `RenderSystem.cpp`
 
 #### Macros
-- Use all uppercase with underscores
-- Add project prefix for project-specific macros
-- Example: `Z_ASSERT`, `Z_ENABLE_LOGGING`
+- All uppercase with underscores, `Z_` prefix for project-specific ones
+- Example: `Z_ASSERT`, `Z_PLATFORM_WINDOWS`
 
 #### Template Parameters
-- Use simple capital letters or meaningful PascalCase names
+- Simple capital letters, or meaningful CamelCase names
 - Example:
 ```cpp
 template<typename T>
@@ -229,11 +299,6 @@ template<typename KeyType, typename ValueType>
 #### Boolean Variables
 - Prefix with is, has, can, should, etc.
 - Example: `isVisible`, `hasChildren`, `canUpdate`
-
-#### Private Methods
-- Follow normal function naming rules
-- Optionally use underscore suffix for private
-- Example: `calculateBounds_`, `updateInternal_`
 
 ### General Principles
 1. Maintain consistency throughout the project
