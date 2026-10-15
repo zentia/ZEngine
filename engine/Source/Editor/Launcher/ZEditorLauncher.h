@@ -26,4 +26,11 @@ namespace ZEditorLauncher
     /// choosing (or when the window could not be created at all, in which case
     /// the reason is reported on screen -- stderr is invisible to this process).
     bool Run(std::filesystem::path& out_project_file);
+
+    /// Records a project as most-recently-used.
+    ///
+    /// Called by the editor once a project has actually loaded, so that projects
+    /// opened without going through the picker -- double clicking a .zproject,
+    /// or -p on the command line -- still show up in the list next time.
+    void RememberProject(const std::filesystem::path& project_file);
 }

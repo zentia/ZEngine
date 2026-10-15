@@ -17,6 +17,7 @@
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/Launcher/ZEditorLauncher.h"
 #include "Editor/RegisterEditor.h"
+#include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/RegisterRuntime.h"
 #include "Runtime/Core/Base/CrashHandler.h"
@@ -139,6 +140,16 @@ namespace
         RegisterRuntime(preferred_rhi);
         RegisterEditor();
         START_SYSTEM();
+
+        // Remember the project so it shows up in the launcher next time. Needed
+        // because a project can be opened without ever going through the picker:
+        // double clicking a .zproject (once associated) or -p on the command
+        // line. Only recorded when it actually loaded.
+        if (ProjectInfo* project = GET_SYSTEM(ProjectInfo); project != nullptr && project->IsValid())
+        {
+            ZEditorLauncher::RememberProject(project->project_file);
+        }
+
         GET_SYSTEM(Editor)->Run();
         SHUTDOWN_SYSTEM();
         return 0;

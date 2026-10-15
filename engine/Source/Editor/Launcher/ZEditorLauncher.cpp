@@ -217,6 +217,77 @@ namespace
     }
 
     // -------------------------------------------------------------------------
+    // File association
+    //
+    // Lets a double clicked .zproject open the editor directly, which is the
+    // whole point for someone who does not know about -p.
+    //
+    // Written under HKCU\Software\Classes, not HKCR: HKCU needs no elevation and
+    // Windows merges it into the effective HKCR view anyway.
+    // -------------------------------------------------------------------------
+    constexpr const wchar_t* kProgId = L"ZEngine.Project";
+
+    std::wstring ExePath()
+    {
+        wchar_t buffer[4096] = {};
+        const DWORD length = GetModuleFileNameW(nullptr, buffer, ARRAYSIZE(buffer));
+        return length != 0 ? std::wstring(buffer) : std::wstring{};
+    }
+
+    bool SetKeyString(HKEY root, const std::wstring& sub_key, const std::wstring& data)
+    {
+        HKEY key = nullptr;
+        if (RegCreateKeyExW(root, sub_key.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &key, nullptr) !=
+            ERROR_SUCCESS)
+        {
+            return false;
+        }
+        const bool ok =
+            RegSetValueExW(key,
+                           nullptr,
+                           0,
+                           REG_SZ,
+                           reinterpret_cast<const BYTE*>(data.c_str()),
+                           static_cast<DWORD>((data.size() + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
+        RegCloseKey(key);
+        return ok;
+    }
+
+    bool RegisterFileAssociation()
+    {
+        const std::wstring exe = ExePath();
+        if (exe.empty()) return false;
+
+        const std::wstring prog_key = std::wstring(L"Software\\Classes\\") + kProgId;
+        bool ok = true;
+        ok &= SetKeyString(HKEY_CURRENT_USER, L"Software\\Classes\\.zproject", kProgId);
+        ok &= SetKeyString(HKEY_CURRENT_USER, prog_key, L"ZEngine 项目");
+        // DefaultIcon: ",0" picks the first (largest) icon baked into the exe.
+        ok &= SetKeyString(HKEY_CURRENT_USER, prog_key + L"\\DefaultIcon", L"\"" + exe + L"\",0");
+        ok &= SetKeyString(HKEY_CURRENT_USER, prog_key + L"\\shell\\open\\command", L"\"" + exe + L"\" -p \"%1\"");
+
+        // Explorer caches associations; without this the new icon and open verb
+        // do not appear until it happens to re-read the registry.
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+        return ok;
+    }
+
+    bool IsFileAssociationRegistered()
+    {
+        HKEY key = nullptr;
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\.zproject", 0, KEY_READ, &key) != ERROR_SUCCESS)
+        {
+            return false;
+        }
+        wchar_t value[256] = {};
+        DWORD   size       = sizeof(value);
+        const LSTATUS status =
+            RegQueryValueExW(key, nullptr, nullptr, nullptr, reinterpret_cast<LPBYTE>(value), &size);
+        RegCloseKey(key);
+        return status == ERROR_SUCCESS && std::wstring(value) == kProgId;
+    }
+
+    // -------------------------------------------------------------------------
     // UI
     // -------------------------------------------------------------------------
     std::shared_ptr<ZSlate::STextBlock> MakeLabel(const std::string& text,
@@ -342,6 +413,26 @@ namespace
                                  }));
         root->AddSlot(status);
 
+        root->AddSlot(std::make_shared<SSpacer>(Vector2(0, 20)));
+        root->AddSlot(MakeLabel("文件关联", 15.0f, UIColor(0.78f, 0.80f, 0.86f, 1.0f)));
+        root->AddSlot(std::make_shared<SSpacer>(Vector2(0, 6)));
+
+        auto assoc_label = MakeLabel(IsFileAssociationRegistered()
+                                         ? "已关联 .zproject 文件，双击项目文件即可打开"
+                                         : "关联 .zproject 文件（之后双击项目文件即可打开）",
+                                     13.0f,
+                                     kMuted);
+
+        auto assoc_button = std::make_shared<SButton>();
+        assoc_button->SetContent(assoc_label);
+        assoc_button->OnClicked = [assoc_label]()
+        {
+            assoc_label->Text = RegisterFileAssociation()
+                                    ? "已关联 .zproject 文件，双击项目文件即可打开"
+                                    : "关联失败：无法写入注册表";
+        };
+        root->AddSlot(assoc_button);
+
         return root;
     }
 }  // namespace
@@ -388,6 +479,18 @@ bool Run(std::filesystem::path& out_project_file)
 
     out_project_file = picked;
     return true;
+}
+
+void RememberProject(const std::filesystem::path& project_file)
+{
+    if (project_file.empty()) return;
+
+    const std::filesystem::path list_path = RecentListPath();
+    if (list_path.empty()) return;
+
+    std::vector<std::filesystem::path> recent = LoadRecent(list_path);
+    PushRecent(recent, project_file);
+    SaveRecent(list_path, recent);
 }
 
 }  // namespace ZEditorLauncher
