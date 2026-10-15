@@ -261,6 +261,15 @@ add_subdirectory(shader)
 # Per-config output dirs (bin/Debug, bin/Release) and z_set_config_archive_dirs for 3rdparty
 include(cmake/ConfigOutputDirs.cmake)
 
+# z_embed_app_icon(<target>): embeds a tool's resource/<Name>.ico as IDI_ICON1.
+# Standalone tools that configure on their own (engine/tools/WindowsEnvironmentCheck)
+# include this file directly.
+include(cmake/AppIcon.cmake)
+
+# z_set_tool_output_dir(<target>): sends a standalone GUI tool to
+# <repo>/bin/Tools/<Config>/ so no tool's exe lands in the build tree.
+include(cmake/ToolOutputDir.cmake)
+
 add_subdirectory(3rdparty)
 
 # Ensure modules (e.g. render_doc) are configured before the Runtime so their
@@ -288,10 +297,52 @@ else()
   # ZInsights: standalone .ztrace viewer (Win32 + Direct2D). Self-skips on non-Windows.
   add_subdirectory(Source/Insights)
   # TexPreview: standalone block-compressed texture preview tool (ASTC, BC7)
-  add_subdirectory(Source/Tools/TexPreview)
+  add_subdirectory(tools/TexPreview)
   # LuaMemPreview: standalone viewer for the Lua section of a MemoryProfiler dump;
   # `-batchmode` exports the .zasset to CSV (replaces the old ZProfilerCsvExporter)
-  add_subdirectory(Source/Tools/LuaMemPreview)
+  add_subdirectory(tools/LuaMemPreview)
+endif()
+
+# =============================================================================
+# Standalone GUI tools that are normally configured on their own
+# =============================================================================
+# All four GUI tools live in engine/tools/ (AGENTS.md section 8): TexPreview and
+# LuaMemPreview above (desktop branch), these two here. Both are self-contained
+# CMake projects -- `cmake -S engine/tools/<Tool> -B build/tools/<Tool>` -- and
+# both are Windows-only.
+#
+# Ordering is load-bearing: this block sits after add_subdirectory(Source/Runtime),
+# which is where ZSlate is defined. Both tools link ZSlate, and each guards its
+# own `add_subdirectory(.../ZSlate)` with `if(NOT TARGET ZSlate)` for the
+# standalone case -- pull this block above Source/Runtime and they would create a
+# second ZSlate, colliding with the engine's.
+
+option(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK "Build the standalone Windows environment checker" ON)
+
+if(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK AND WIN32)
+    # ZEnvironmentCollector (GUI + -batchmode CLI) and ZDllLoadProbe need no
+    # ZSlate and build fine here. The ZSlate front-end defaults to OFF in a
+    # full-tree configure (ENVIRONMENT_CHECK_BUILD_GUI) and that default is
+    # deliberate -- do not "fix" it:
+    #
+    # WindowsEnvironmentCheck sets CMAKE_MSVC_RUNTIME_LIBRARY to /MT because it
+    # ships to machines with no VC redist. Standalone, ZSlate is added inside
+    # that scope and inherits /MT. In a full-tree configure ZSlate already
+    # exists as /MD (engine default), so linking it into a /MT collector fails
+    # with LNK2038 (RuntimeLibrary mismatch). One ZSlate instance cannot be
+    # both. Build the collector GUI from its own configure:
+    #     cmake -S engine/tools/WindowsEnvironmentCheck -B <dir>
+    add_subdirectory(tools/WindowsEnvironmentCheck)
+endif()
+
+# ClientProjBranches is a self-contained CMake project: it configures and
+# builds fine on its own (cmake -S . -B build), which is how it is normally
+# used. It is OFF here by default so a full engine configure does not pick up a
+# second, unrelated tool with its own C++ standard and output layout.
+option(ZENGINE_BUILD_CLIENT_PROJ_BRANCHES "Build the ClientProjBranches branch/stack-trace viewer" OFF)
+
+if(ZENGINE_BUILD_CLIENT_PROJ_BRANCHES AND WIN32)
+    add_subdirectory(tools/ClientProjBranches)
 endif()
 #add_subdirectory(Source/test)
 

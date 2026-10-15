@@ -1513,7 +1513,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
             preview_btn->SetContent(MakeText("Preview Texture", 14.0f * scale, kValueColor));
             preview_btn->OnClicked = [this, asset_path]() {
                 // TODO: launch the standalone TexPreview tool
-                // (engine/Source/Tools/TexPreview) on this asset path.
+                // (engine/tools/TexPreview) on this asset path.
                 // A TexPreviewWindow editor panel used to be stubbed out here;
                 // it was never implemented (every method only logged) and has
                 // been deleted -- do not re-add a second previewer, call the

@@ -463,17 +463,10 @@ add_subdirectory(tests)
 add_subdirectory(engine)
 
 # =============================================================================
-# Standalone tools that do not depend on the engine
+# tools/ is NOT a CMake directory any more
 # =============================================================================
-# MUST come after add_subdirectory(engine) above. Every tool in tools/ links
-# ZSlate, which is defined deep inside engine/Source/Runtime/CMakeLists.txt.
-# Adding this directory earlier makes the tools create their own ZSlate target
-# via add_subdirectory(engine/Libraries/ZSlate) and then collide with the
-# engine's -- "add_library cannot create target ZSlate because another target
-# with the same name already exists". It also silently disabled
-# -DENVIRONMENT_CHECK_BUILD_GUI=ON in a full-tree configure.
-#
-# Tools that DO need engine internals (ZRuntime decompressors, SerializedFile)
-# do not live here: they stay in engine/Source/Tools/ and are added by
-# engine/CMakeLists.txt. See AGENTS.md section 8.
-add_subdirectory(tools)
+# Every buildable GUI tool moved to engine/tools/ (AGENTS.md section 8) so all
+# four sit in one place. What is left in tools/ is not CMake-driven: the
+# renderdoc submodule, tools/renderdoc_build, tools/renderdoc-mcp and the
+# analyze_*.py capture-analysis scripts. Nothing here is added by CMake, so
+# there is deliberately no add_subdirectory(tools).

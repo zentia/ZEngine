@@ -1,0 +1,453 @@
+#include "EnvironmentCheckCommand.h"
+
+#include "Collection.h"
+#include "DiagnosisUtil.h"
+#include "DllProbe.h"
+#include "EnvironmentProbe.h"
+#include "GpuSelectionProbe.h"
+#include "ReportWriter.h"
+
+#include <Windows.h>
+
+#include <algorithm>
+#include <cctype>
+#include <cwctype>
+#include <exception>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+
+namespace zengine::envcheck
+{
+namespace
+{
+std::string ToLower(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character)
+    {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+std::string NarrowAscii(const std::wstring& value)
+{
+    std::string result;
+    result.reserve(value.size());
+    for (const wchar_t character : value)
+    {
+        if (character < 0 || character > 0x7f)
+        {
+            throw std::invalid_argument("CPU feature names must use ASCII characters.");
+        }
+        result.push_back(static_cast<char>(character));
+    }
+    return result;
+}
+std::filesystem::path ProbeHelperDirectory()
+{
+    try
+    {
+        return collector::ExecutableDirectory();
+    }
+    catch (const std::exception&)
+    {
+        return {};
+    }
+}
+void AddUniquePath(
+    std::vector<std::filesystem::path>& paths,
+    const std::filesystem::path& candidate)
+{
+    std::error_code error;
+    const auto absolutePath = std::filesystem::absolute(candidate, error).lexically_normal();
+    const auto normalized = error ? candidate.lexically_normal() : absolutePath;
+    std::wstring comparison = normalized.wstring();
+    std::transform(comparison.begin(), comparison.end(), comparison.begin(), [](wchar_t character)
+    {
+        return static_cast<wchar_t>(towlower(character));
+    });
+
+    const bool exists = std::any_of(paths.begin(), paths.end(), [&comparison](const auto& path)
+    {
+        std::wstring existing = path.wstring();
+        std::transform(existing.begin(), existing.end(), existing.begin(), [](wchar_t character)
+        {
+            return static_cast<wchar_t>(towlower(character));
+        });
+        return existing == comparison;
+    });
+    if (!exists)
+    {
+        paths.push_back(normalized);
+    }
+}
+void AddDllsRecursively(
+    std::vector<std::filesystem::path>& paths,
+    const std::filesystem::path& rootDirectory)
+{
+    std::error_code error;
+    if (rootDirectory.empty() || !std::filesystem::is_directory(rootDirectory, error))
+    {
+        return;
+    }
+
+    const auto options = std::filesystem::directory_options::skip_permission_denied;
+    std::filesystem::recursive_directory_iterator iterator(rootDirectory, options, error);
+    const std::filesystem::recursive_directory_iterator end;
+    while (iterator != end)
+    {
+        if (error)
+        {
+            error.clear();
+            iterator.increment(error);
+            continue;
+        }
+
+        const auto& entry = *iterator;
+        if (entry.is_regular_file(error))
+        {
+            std::wstring extension = entry.path().extension().wstring();
+            std::transform(extension.begin(), extension.end(), extension.begin(), [](wchar_t character)
+            {
+                return static_cast<wchar_t>(towlower(character));
+            });
+            if (extension == L".dll")
+            {
+                AddUniquePath(paths, entry.path());
+            }
+        }
+        error.clear();
+        iterator.increment(error);
+    }
+}
+std::vector<std::filesystem::path> ResolveDllPaths(const EnvironmentCheckOptions& options)
+{
+    std::vector<std::filesystem::path> paths;
+    for (const auto& path : options.dllPaths)
+    {
+        AddUniquePath(paths, path);
+    }
+
+    std::vector<std::filesystem::path> scanRoots;
+    AddUniquePath(scanRoots, std::filesystem::current_path());
+    AddUniquePath(scanRoots, ProbeHelperDirectory());
+    for (const auto& root : scanRoots)
+    {
+        AddDllsRecursively(paths, root);
+    }
+    return paths;
+}
+bool IsGameCoreDll(const std::filesystem::path& path)
+{
+    std::wstring fileName = path.filename().wstring();
+    std::transform(fileName.begin(), fileName.end(), fileName.begin(), [](wchar_t character)
+    {
+        return static_cast<wchar_t>(towlower(character));
+    });
+    return fileName == L"gamecore.dll" || fileName == L"gamecore_standalone.dll";
+}
+std::vector<std::filesystem::path> ResolveProbePaths(
+    const EnvironmentCheckOptions& options,
+    const std::vector<std::filesystem::path>& inspectedPaths)
+{
+    std::vector<std::filesystem::path> paths;
+    for (const auto& path : options.probeDllPaths)
+    {
+        AddUniquePath(paths, path);
+    }
+    for (const auto& path : inspectedPaths)
+    {
+        if (IsGameCoreDll(path))
+        {
+            AddUniquePath(paths, path);
+        }
+    }
+    return paths;
+}
+const std::atomic_bool kNeverCancel{false};
+} // namespace
+
+void ApplyRequiredFeatures(Requirements& requirements, const std::string& commaSeparatedFeatures)
+{
+    requirements.avx = false;
+    requirements.avx2 = false;
+    requirements.fma = false;
+    requirements.f16c = false;
+
+    std::stringstream stream(commaSeparatedFeatures);
+    std::string feature;
+    while (std::getline(stream, feature, ','))
+    {
+        feature = ToLower(feature);
+        if (feature.empty() || feature == "none")
+        {
+            continue;
+        }
+        if (feature == "avx")
+        {
+            requirements.avx = true;
+        }
+        else if (feature == "avx2")
+        {
+            requirements.avx2 = true;
+        }
+        else if (feature == "fma")
+        {
+            requirements.fma = true;
+        }
+        else if (feature == "f16c")
+        {
+            requirements.f16c = true;
+        }
+        else
+        {
+            throw std::invalid_argument("Unknown CPU feature in --require: " + feature);
+        }
+    }
+}
+
+EnvironmentCheckOptions ParseEnvironmentCheckCommandLine(int argumentCount, wchar_t** arguments)
+{
+    EnvironmentCheckOptions options;
+    for (int index = 1; index < argumentCount; ++index)
+    {
+        const std::wstring argument = arguments[index];
+        if (argument == L"--output-dir")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--output-dir requires a path.");
+            }
+            options.outputDirectory = arguments[index];
+        }
+        else if (argument == L"--require")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--require requires a comma-separated feature list.");
+            }
+            const std::wstring wideValue = arguments[index];
+            ApplyRequiredFeatures(options.requirements, NarrowAscii(wideValue));
+        }
+        else if (argument == L"--min-memory-gb")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--min-memory-gb requires a positive integer.");
+            }
+            const unsigned long long gibibytes = std::stoull(arguments[index]);
+            options.requirements.minimumMemoryBytes = gibibytes * 1024ull * 1024ull * 1024ull;
+        }
+        else if (argument == L"--check-dll")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--check-dll requires a DLL path.");
+            }
+            options.dllPaths.emplace_back(arguments[index]);
+        }
+        else if (argument == L"--probe-dll")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--probe-dll requires a DLL path.");
+            }
+            options.probeDllPaths.emplace_back(arguments[index]);
+            options.dllPaths.emplace_back(arguments[index]);
+        }
+        else if (argument == L"--probe-runner")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--probe-runner requires an executable path.");
+            }
+            options.probeRunner = arguments[index];
+        }
+        else if (argument == L"--probe-runner-arg")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--probe-runner-arg requires a value.");
+            }
+            options.probeRunnerArguments.emplace_back(arguments[index]);
+        }
+        else if (argument == L"--probe-export")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--probe-export requires an exported function name.");
+            }
+            options.probeExport = NarrowAscii(arguments[index]);
+        }
+        else if (argument == L"--probe-timeout-seconds")
+        {
+            if (++index >= argumentCount)
+            {
+                throw std::invalid_argument("--probe-timeout-seconds requires a positive integer.");
+            }
+            const unsigned long timeoutSeconds = std::stoul(arguments[index]);
+            if (timeoutSeconds == 0 || timeoutSeconds > 3600)
+            {
+                throw std::invalid_argument("--probe-timeout-seconds must be between 1 and 3600.");
+            }
+            options.probeTimeoutMilliseconds = timeoutSeconds * 1000u;
+        }
+        else if (argument == L"--no-dll-checks")
+        {
+            options.includeDllChecks = false;
+        }
+        else if (argument == L"--quiet")
+        {
+            options.quiet = true;
+        }
+        else if (argument == L"--help" || argument == L"-h" || argument == L"/?")
+        {
+            options.showHelp = true;
+        }
+        else
+        {
+            throw std::invalid_argument("Unknown command-line option: " + diagnosis::WideToUtf8(argument));
+        }
+    }
+    return options;
+}
+void PrintEnvironmentCheckUsage()
+{
+    std::cout
+        << "ZEnvironmentCollector -batchmode [options]\n\n"
+        << "Options:\n"
+        << "  --output-dir <path>        Report directory. Default: current directory.\n"
+        << "  --require <features>       Product minimum: avx,avx2,fma,f16c or none.\n"
+        << "                             Default: none.\n"
+        << "  --min-memory-gb <number>   Required physical memory. Default: 4.\n"
+        << "  --check-dll <path>         Inspect PE imports and executable instructions.\n"
+        << "  --probe-dll <path>         Isolated LoadLibrary probe; may be repeated.\n"
+        << "  --probe-export <name>      Optional no-argument int export to invoke.\n"
+        << "  --probe-runner <path>      Optional runner, such as Intel SDE.\n"
+        << "  --probe-runner-arg <arg>   Runner argument; may be repeated.\n"
+        << "  --probe-timeout-seconds N  Probe timeout. Default: 60.\n"
+        << "                             All DLLs are inspected recursively; GameCore\n"
+        << "                             DLLs are probed automatically.\n"
+        << "  --no-dll-checks            Skip the recursive DLL scan and load probe.\n"
+        << "  --quiet                    Do not print the full text report.\n"
+        << "  --help                     Show this help.\n"
+        << "  --diagnose                 Event diagnosis; see --diagnose --help.\n"
+        << "  --collect                  Safe collection and ZIP; see --collect --help.\n"
+        << "  --gpu-selection            Dual-GPU auto-select verification (mock + real).\n\n"
+        << "Exit codes: 0=compatible, 10=CPU ISA, 11=Windows x64, 12=memory,\n"
+        << "            20=Debug CRT DLL, 21=invalid/unsupported DLL,\n"
+        << "            23=DLL load/probe failure, 24=probe infrastructure, 30=tool error.\n";
+}
+EnvironmentCheckOutcome RunEnvironmentCheck(
+    const EnvironmentCheckOptions& options,
+    const std::atomic_bool& cancel,
+    const EnvironmentCheckProgress& progress)
+{
+    const auto report = [&progress](const std::string& message)
+    {
+        if (progress)
+        {
+            progress(message);
+        }
+    };
+
+    EnvironmentCheckOutcome outcome;
+    report("采集环境信息");
+    auto snapshot = CollectEnvironment();
+
+    report("验证双显卡自动选卡规则");
+    snapshot.gpuSelectionMockResults = RunAllGpuSelectionMockCases();
+    snapshot.gpuSelectionRealProbe = ProbeRealGpuSelection();
+
+    std::vector<std::filesystem::path> dllPaths;
+    if (options.includeDllChecks)
+    {
+        report("扫描 DLL");
+        dllPaths = ResolveDllPaths(options);
+        for (const auto& dllPath : dllPaths)
+        {
+            if (cancel.load())
+            {
+                break;
+            }
+            snapshot.inspectedImages.push_back(InspectPeImage(dllPath));
+        }
+    }
+
+    if (options.includeDllChecks)
+    {
+        DllProbeOptions probeOptions;
+        probeOptions.probeExecutable = ProbeHelperDirectory() / ProbeExecutableName;
+        probeOptions.runnerExecutable = options.probeRunner;
+        probeOptions.runnerArguments = options.probeRunnerArguments;
+        probeOptions.timeoutMilliseconds = options.probeTimeoutMilliseconds;
+        for (const auto& dllPath : ResolveProbePaths(options, dllPaths))
+        {
+            if (cancel.load())
+            {
+                break;
+            }
+            report("隔离加载探测：" + diagnosis::WideToUtf8(dllPath.filename().wstring()));
+            probeOptions.exportName = options.probeExport;
+            if (probeOptions.exportName.empty() && IsGameCoreDll(dllPath))
+            {
+                probeOptions.exportName = "OSG_LocalPredictHardwareCapable";
+            }
+            snapshot.dllProbeResults.push_back(RunDllProbe(dllPath, probeOptions));
+        }
+    }
+
+    report("生成报告");
+    const auto evaluation = EvaluateEnvironment(snapshot, options.requirements);
+    outcome.textReport = BuildTextReport(snapshot, options.requirements, evaluation);
+    outcome.jsonReport = BuildJsonReport(snapshot, options.requirements, evaluation);
+
+    std::filesystem::create_directories(options.outputDirectory);
+    outcome.textPath = options.outputDirectory / "OSGameEnvironmentReport.txt";
+    outcome.jsonPath = options.outputDirectory / "OSGameEnvironmentReport.json";
+    WriteReportFile(outcome.textPath, outcome.textReport);
+    WriteReportFile(outcome.jsonPath, outcome.jsonReport);
+
+    outcome.evaluation = evaluation;
+    outcome.exitCode = evaluation.exitCode;
+    return outcome;
+}
+EnvironmentCheckOutcome RunEnvironmentCheck(const EnvironmentCheckOptions& options)
+{
+    return RunEnvironmentCheck(options, kNeverCancel, {});
+}
+int RunEnvironmentCheckCommand(int argumentCount, wchar_t** arguments)
+{
+    const EnvironmentCheckOptions options = ParseEnvironmentCheckCommandLine(argumentCount, arguments);
+    if (options.showHelp)
+    {
+        PrintEnvironmentCheckUsage();
+        return 0;
+    }
+    const auto outcome = RunEnvironmentCheck(options);
+    if (!options.quiet)
+    {
+        std::cout << outcome.textReport << '\n';
+    }
+    std::cout << "Reports written to:\n  " << outcome.textPath.string()
+              << "\n  " << outcome.jsonPath.string() << '\n';
+    return outcome.exitCode;
+}
+int RunGpuSelectionCommand(int argumentCount, wchar_t** arguments)
+{
+    for (int index = 1; index < argumentCount; ++index)
+    {
+        const std::wstring argument = arguments[index];
+        if (argument == L"--gpu-selection")
+        {
+            continue;
+        }
+        std::cerr << "Unknown --gpu-selection option: " << diagnosis::WideToUtf8(argument) << '\n';
+        return 30;
+    }
+    const auto mockResults = RunAllGpuSelectionMockCases();
+    const auto realResult = ProbeRealGpuSelection();
+    std::cout << FormatGpuSelectionReport(mockResults, realResult);
+    return AllGpuSelectionMockCasesPassed(mockResults) ? 0 : 1;
+}
+} // namespace zengine::envcheck

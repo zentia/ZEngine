@@ -1496,9 +1496,9 @@ Conventions (do not re-litigate):
 
 - The only ZSlate source tree is the submodule `engine/Libraries/ZSlate`
   (`github.com/zentia/ZSlate`). Standalone tools (e.g.
-  `tools/ClientProjBranches`) consume it with
+  `engine/tools/ClientProjBranches`) consume it with
   `add_subdirectory(<repo>/engine/Libraries/ZSlate ...)` + link `ZSlate`;
-  never fork a private copy under `tools/`. Missing widgets go into the
+  never fork a private copy under `engine/tools/`. Missing widgets go into the
   submodule (commit there, then bump the pointer).
 - Layout contract: a widget never asks to fill; the parent slot decides
   (`SBoxPanel::AddSlot(w).Fill()`, UE `SBoxPanel` semantics).
@@ -1580,9 +1580,17 @@ as lost work.
 
 ## 6. Tools: WindowsEnvironmentCheck (env collector)
 
-`tools/WindowsEnvironmentCheck/` (GUI `ZEnvironmentCollector.exe`, CLI
-`ZWindowsEnvironmentCheck.exe --collect`) packages **game logs** together with
-the environment report:
+`engine/tools/WindowsEnvironmentCheck/` ships **one** executable,
+`ZEnvironmentCollector.exe`: GUI by default (three tabs — collection /
+compatibility check / GPU select verification), CLI under `-batchmode`
+(`--collect`, `--diagnose`, `--gpu-selection`, and the plain check). The former
+separate `ZWindowsEnvironmentCheck.exe` CLI and `ZGpuSelectionInspector.exe` GUI
+are gone; `-batchmode` is the Unity/UE spelling on purpose. The exe is
+CONSOLE-subsystem so `-batchmode` is a real CLI under cmd.exe (exit code, `&&`
+waits); GUI mode calls `FreeConsole()`. The collector re-launches *itself* as a
+Job-managed stage worker and as an elevated WER helper, so both call sites read
+`collector::ToolExecutablePath()` — renaming the output must go through that
+constant. It packages **game logs** together with the environment report:
 
 - The log directory is declared per project profile, never guessed: `logRoot`
   (`localLow` default, else `localAppData` / `roaming` / `programData`) +
@@ -1600,7 +1608,8 @@ the environment report:
 ## 7. Standalone ZSlate tools: use FSlateStandaloneApp, do not hand-roll a host
 
 Every standalone ZSlate GUI tool (LuaMemPreview, TexPreview,
-ClientProjBranches, ZGpuSelectionInspector, ZEnvironmentCollector) used to
+ClientProjBranches, ZEnvironmentCollector — the former ZGpuSelectionInspector is
+now a tab inside the collector) used to
 carry its own copy of: an `ISlatePlatform` subclass, WNDCLASS + CreateWindow +
 PeekMessage host, DPI declaration / `WM_DPICHANGED` handling, and a hardcoded
 `C:\Windows\Fonts\...` atlas load. The copies drifted — two had **no DPI
@@ -1652,41 +1661,124 @@ Other pieces sunk into ZSlate in the same pass: `SScrollPanel`
 (`ZSlate/Widgets/Layout/`, was `CollectorScrollPanel.h`) and
 `Win32::EnsureConsole` / `Win32::StdOutIsRedirected`.
 
-## 8. Where a tool lives: two homes, one rule
+### 7.2 App icons for GUI tools: one generator, one CMake function
 
-Standalone tools have **two** directories and the split is by dependency, not
-by taste. When adding a tool, put it on the correct side:
+Four tools (LuaMemPreview, TexPreview, ClientProjBranches,
+ZEnvironmentCollector) each need an application icon, and each used to
+hand-roll all four pieces of it: a `.ico`, a `.rc`, an `if(MSVC)` block in its
+CMakeLists, and an `#ifndef IDI_ICON1` in its `main.cpp`. That is now two
+shared pieces:
 
-| Home | For | Added by | Examples |
+| Piece | Where | What a tool does |
+|---|---|---|
+| `z_embed_app_icon(<target>)` | `engine/cmake/AppIcon.cmake` (+ `AppIcon.rc.in`) | one call in the tool's CMakeLists, after `set_target_properties(... OUTPUT_NAME ...)`. Embeds `resource/<OUTPUT_NAME>.ico`, defines `IDI_ICON1=101`, no-op off Windows / when RC is unavailable / before the .ico exists. `engine/CMakeLists.txt` includes it; tools that configure standalone `include()` it by path. |
+| `gen_icon.ps1 -Name <Tool> -Motif <...> -OutDir <tool>/resource` | `engine/resource/gen_icon.ps1` | draws the `.ico` (16/32/48/256, PNG-compressed entries) on the shared dark rounded tile. Motifs: `bars` (LuaMemPreview), `branch` (ClientProjBranches), `checker` (TexPreview), `check` (ZEnvironmentCollector). |
+
+**The .rc alone is not enough.** It only puts the icon in the *executable*
+(Explorer, Properties). The title bar, Alt-Tab entry and taskbar button come
+from the **window class**, which is a separate step:
+
+- ZSlate tools: `desc.LargeIconResId = desc.SmallIconResId = IDI_ICON1;`
+- raw Win32: `WNDCLASSEXW::hIcon` / `hIconSm` — **WNDCLASSEX, not WNDCLASS**;
+  the plain class has no `hIconSm`, so the taskbar keeps the default icon.
+
+Both are guarded by `#ifdef IDI_ICON1`, so a config where the .rc was not
+embedded still compiles. Do not re-add per-tool `#define IDI_ICON1 101` — the
+CMake function is the only source of that id.
+
+Note `engine/resource/ZEngineEditor.rc` is unrelated and currently orphaned
+(no CMakeLists references it); the editor loads its icons at runtime from file
+(`EditorUI.cpp: LoadWindowIcons`).
+
+### 7.3 Output & build directories for standalone GUI tools
+
+Two directories per tool, both fixed by convention so an exe never has to be
+hunted for:
+
+| Kind | Path | Set by |
+|---|---|---|
+| **Output** (the `.exe`) | `<repo>/bin/Tools/<Config>/` | `z_set_tool_output_dir(<target>)` — `engine/cmake/ToolOutputDir.cmake` |
+| **Build tree** (`-B`) | `<repo>/build/tools/<ToolName>/` | convention only, documented here and in each tool's README |
+
+`z_set_tool_output_dir()` resolves the root as: `Z_ROOT_DIR` if set (full-tree
+configure) → else walk up from `CMAKE_CURRENT_SOURCE_DIR` to the directory
+containing `engine/CMakeLists.txt` (standalone configure, no hardcoded path) →
+else `CMAKE_BINARY_DIR/bin/Tools`. If `BINARY_ROOT_DIR` is already defined it
+wins, so the tools follow `ZENGINE_OUTPUT_SUBDIR` too: a cross-compile layout
+`bin/win64/x64/` becomes `bin/win64/x64/Tools/<Config>/`.
+
+Standalone configure commands (all four land in the same `bin/Tools/<Config>/`):
+
+```powershell
+cmake -S engine\tools\WindowsEnvironmentCheck -B build\tools\ZEnvironmentCollector -G "Visual Studio 17 2022" -A x64 -DENVIRONMENT_CHECK_BUILD_GUI=ON
+cmake -S engine\tools\ClientProjBranches      -B build\tools\ClientProjBranches   -G "Visual Studio 17 2022" -A x64
+# TexPreview / LuaMemPreview cannot configure standalone; build them from the
+# full tree, or via scripts\build_lib\win64\win_build_lua_mem_preview.bat
+```
+
+Why a `Tools/` level instead of `bin/<Config>/` next to ZEditor: the tools share
+nothing with the engine's runtime layout (no configs, no assets, no ZRuntime
+DLL), and `ZEnvironmentCollector` is built `/MT` to ship to machines with no VC
+redist — its output directory *is* its distribution unit, because `profiles/`
+and the LICENSE files are copied next to the exe. "Zip `bin/Tools/<Config>`" is
+therefore a correct packaging step.
+
+`scripts\build_lib\win64\win_build_lua_mem_preview.bat` builds through the full
+tree with `-DZENGINE_OUTPUT_SUBDIR=win64/<arch>`, so its output is
+`bin\win64\<arch>\Tools\<Config>\LuaMemPreview.exe`; its echoed `Output:` lines
+and `OUT_DIR` must stay in sync with this rule.
+
+## 8. Where a tool lives: one home
+
+All four standalone GUI tools live in **one** directory, `engine/tools/`:
+
+| Tool | Needs | Added by | In a full tree |
 |---|---|---|---|
-| `engine/Source/Tools/` | tools that need **engine internals** — ZRuntime decompressors, `SerializedFile`, asset registry | `engine/CMakeLists.txt` (desktop branch only) | `TexPreview`, `LuaMemPreview` |
-| `tools/` | tools with **no engine dependency** — ZSlate + platform APIs only | `tools/CMakeLists.txt`, from the root **after** `add_subdirectory(engine)` | `WindowsEnvironmentCheck`, `ClientProjBranches` |
+| `engine/tools/TexPreview` | ZRuntime (ASTC/BC7/ETC2 decompressors) | `engine/CMakeLists.txt`, desktop branch | always |
+| `engine/tools/LuaMemPreview` | ZRuntime (`SerializedFile`, asset registry) | `engine/CMakeLists.txt`, desktop branch | always |
+| `engine/tools/WindowsEnvironmentCheck` | ZSlate only, `/MT`, shipped to players | `engine/CMakeLists.txt` | ON, but GUI OFF (below) |
+| `engine/tools/ClientProjBranches` | ZSlate only | `engine/CMakeLists.txt` | OFF by default |
 
-**The ordering constraint is load-bearing.** `tools/` must be added after
-`add_subdirectory(engine)`: every tool there links `ZSlate`, and `ZSlate` is
-defined deep inside `engine/Source/Runtime/CMakeLists.txt`. If `tools/` is
-processed first, a tool creates its own `ZSlate` via
-`add_subdirectory(engine/Libraries/ZSlate)` and the engine's later add dies with
-`add_library cannot create target "ZSlate" because another target with the same
-name already exists`. Every `add_subdirectory(ZSlate)` in `tools/` is therefore
-guarded with `if(NOT TARGET ZSlate)`.
+They used to be split across `engine/Source/Tools/` and root `tools/`, and the
+old rule ("two homes, split by dependency") is **gone** — one directory is
+easier to manage than two, which is what the split was costing.
 
-**Do not move TexPreview / LuaMemPreview into `tools/`.** They pull ZRuntime;
-moving them out would put engine-internal consumers outside the engine tree and
-reintroduce the ordering problem from the other side.
+**Why `engine/tools/`, not root `tools/`:** `ENGINE_ROOT_DIR` is set at
+`engine/CMakeLists.txt:1`, i.e. in the engine's own directory scope. A sibling
+directory added from the root does **not** inherit it, so TexPreview /
+LuaMemPreview would have had to redefine it — exactly the kind of duplicated
+path this repo keeps removing. Inside `engine/` every tool inherits
+`ENGINE_ROOT_DIR`, `Z_ROOT_DIR`, `BINARY_ROOT_DIR` and the `cmake/*.cmake`
+helpers for free.
+
+**The ordering constraint is still load-bearing.** The block that adds
+`engine/tools/WindowsEnvironmentCheck` and `engine/tools/ClientProjBranches`
+sits *after* `add_subdirectory(Source/Runtime)`, where `ZSlate` is defined. Both
+link ZSlate, and each guards its own `add_subdirectory(.../Libraries/ZSlate)`
+with `if(NOT TARGET ZSlate)` for the standalone case — move that block above
+`Source/Runtime` and they would create a second `ZSlate`, colliding with the
+engine's (`add_library cannot create target "ZSlate" because another target with
+the same name already exists`).
+
+`tools/` at the root is **not** a CMake directory any more and has no
+`CMakeLists.txt`: it holds the renderdoc submodule, `tools/renderdoc_build`,
+`tools/renderdoc-mcp` and the `analyze_*.py` capture-analysis scripts.
 
 ### Two options that must stay OFF in a full-tree configure
 
-- `ENVIRONMENT_CHECK_BUILD_GUI` (WindowsEnvironmentCheck's two ZSlate GUIs):
-  the tool sets `CMAKE_MSVC_RUNTIME_LIBRARY` to `/MT` because it ships to
-  machines with no VC redist. Standalone, ZSlate is added inside that scope and
-  inherits `/MT`. In a full tree ZSlate already exists as `/MD`, so linking it
-  into a `/MT` collector fails with `LNK2038 (RuntimeLibrary mismatch)`. One
-  ZSlate instance cannot be both. Build the collector GUI from its own
-  configure: `cmake -S tools/WindowsEnvironmentCheck -B <dir>`.
+- `ENVIRONMENT_CHECK_BUILD_GUI` (the ZSlate front-end of
+  `ZEnvironmentCollector.exe`): the tool sets `CMAKE_MSVC_RUNTIME_LIBRARY` to
+  `/MT` because it ships to machines with no VC redist. Standalone, ZSlate is
+  added inside that scope and inherits `/MT`. In a full tree ZSlate already
+  exists as `/MD`, so linking it into a `/MT` collector fails with
+  `LNK2038 (RuntimeLibrary mismatch)`. One ZSlate instance cannot be both. The
+  executable is still built when this is OFF — it just swaps in
+  `EnvironmentCheckGuiFallback.cpp` and serves `-batchmode` only. Build the GUI
+  from its own configure:
+  `cmake -S engine/tools/WindowsEnvironmentCheck -B <dir>`.
 - `ZENGINE_BUILD_CLIENT_PROJ_BRANCHES`: a self-contained CMake project with its
   own C++ standard and output layout; normally configured standalone
-  (`cmake -S tools/ClientProjBranches -B build`). Available in-tree, but
+  (`cmake -S engine/tools/ClientProjBranches -B build`). Available in-tree, but
   OFF so a full configure does not pick up unrelated work.
 
 

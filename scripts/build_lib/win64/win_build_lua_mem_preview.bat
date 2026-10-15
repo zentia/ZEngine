@@ -58,20 +58,20 @@ goto :usage
 
 :help
 echo Usage: %~nx0 [--arch x64] [--config Release] [--jobs N] [--generator "Visual Studio 17 2022"] [--clean] [--no-symbols]
-echo Output:  bin\win64\ARCH\CONFIG\LuaMemPreview.exe
+echo Output:  bin\win64\ARCH\Tools\CONFIG\LuaMemPreview.exe
 echo Symbols: bin\win64\symbols\CONFIG\ARCH\LuaMemPreview.*
 exit /b 0
 
 :usage
 echo Usage: %~nx0 [--arch x64] [--config Release] [--jobs N] [--generator "Visual Studio 17 2022"] [--clean] [--no-symbols]
-echo Output:  bin\win64\ARCH\CONFIG\LuaMemPreview.exe
+echo Output:  bin\win64\ARCH\Tools\CONFIG\LuaMemPreview.exe
 echo Symbols: bin\win64\symbols\CONFIG\ARCH\LuaMemPreview.*
 exit /b 1
 
 :main
 set "BUILD_DIR=%ROOT_DIR%\build\lib\win64\%ARCH%"
 set "OUTPUT_SUBDIR=win64/%ARCH%"
-set "OUT_DIR=%ROOT_DIR%\bin\win64\%ARCH%\%CONFIG%"
+set "OUT_DIR=%ROOT_DIR%\bin\win64\%ARCH%\Tools\%CONFIG%"
 set "OUT_EXE=%OUT_DIR%\LuaMemPreview.exe"
 set "OUT_PDB=%OUT_DIR%\LuaMemPreview.pdb"
 set "OUT_ILK=%OUT_DIR%\LuaMemPreview.ilk"
