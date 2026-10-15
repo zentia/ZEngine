@@ -15,6 +15,14 @@
 #include <cmath>
 #include <functional>
 
+// --- ZSlate <-> runtime UI type bridges (same pattern as ZSlateSceneWindow) ---
+// ZSlate::UIRect uses w/h, the runtime UIRect uses width/height, and only the
+// runtime one converts implicitly to ZSlate -- so going back needs a cast.
+inline ::Vector2       ToRuntime(const ZSlate::Vector2& v) { return ::Vector2(v.x, v.y); }
+inline ZSlate::Vector2 ToSlate(const ::Vector2& v)          { return ZSlate::Vector2(v.x, v.y); }
+inline ::UIRect        ToRuntimeRect(const ZSlate::UIRect& r) { return ::UIRect(r.x, r.y, r.w, r.h); }
+inline ZSlate::UIRect  ToSlateRect(const ::UIRect& r)         { return ZSlate::UIRect(r.x, r.y, r.width, r.height); }
+
 using namespace ZSlate;
 
 namespace
@@ -55,13 +63,13 @@ ZSlateBlueprintWindow::ZSlateBlueprintWindow(EditorUI* editor_ui)
     m_Open = false;
 
     // Seed a few example nodes so the graph isn't empty on first open.
-    AddNode("Start", ZSlate::Vector2(80.0f, 80.0f), {}, {{"Out", BpPinType::Flow}});
+    AddNode("Start", ::Vector2(80.0f, 80.0f), {}, {{"Out", BpPinType::Flow}});
     AddNode("Print",
-            ZSlate::Vector2(360.0f, 80.0f),
+            ::Vector2(360.0f, 80.0f),
             {{"In", BpPinType::Flow}, {"Message", BpPinType::String}},
             {{"Out", BpPinType::Flow}});
     AddNode("Add",
-            ZSlate::Vector2(360.0f, 280.0f),
+            ::Vector2(360.0f, 280.0f),
             {{"A", BpPinType::Float}, {"B", BpPinType::Float}},
             {{"Result", BpPinType::Float}});
 }
@@ -113,25 +121,28 @@ void ZSlateBlueprintWindow::BuildToolbar(float scale)
 // ---------------------------------------------------------------------------
 // Geometry helpers (depend on per-frame m_CanvasOrigin / m_Scale / m_Scroll)
 // ---------------------------------------------------------------------------
-ZSlate::Vector2 ZSlateBlueprintWindow::NodeScreen(const BpNode& node) const
+// The graph itself lives in runtime UI space (BpNode::position, m_CanvasOrigin,
+// m_Scroll), so these helpers stay on ::Vector2 -- ZSlate types only appear where
+// the canvas meets the widget tree / the host input.
+::Vector2 ZSlateBlueprintWindow::NodeScreen(const BpNode& node) const
 {
-    return ZSlate::Vector2(m_CanvasOrigin.x + m_Scroll.x + node.position.x * m_Scale,
-                   m_CanvasOrigin.y + m_Scroll.y + node.position.y * m_Scale);
+    return ::Vector2(m_CanvasOrigin.x + m_Scroll.x + node.position.x * m_Scale,
+                     m_CanvasOrigin.y + m_Scroll.y + node.position.y * m_Scale);
 }
 
-ZSlate::Vector2 ZSlateBlueprintWindow::NodeSize(const BpNode& node) const
+::Vector2 ZSlateBlueprintWindow::NodeSize(const BpNode& node) const
 {
     const float rows = static_cast<float>(std::max(node.inputs.size(), node.outputs.size()));
     const float content = rows * kPinRow * m_Scale;
-    return ZSlate::Vector2(kNodeWidth * m_Scale, (kTitleH + kPinTopPad) * m_Scale + content + kPinTopPad * m_Scale);
+    return ::Vector2(kNodeWidth * m_Scale, (kTitleH + kPinTopPad) * m_Scale + content + kPinTopPad * m_Scale);
 }
 
-ZSlate::Vector2 ZSlateBlueprintWindow::PinScreen(const BpNode& node, int pin_index, bool is_input) const
+::Vector2 ZSlateBlueprintWindow::PinScreen(const BpNode& node, int pin_index, bool is_input) const
 {
-    const ZSlate::Vector2 sp = NodeScreen(node);
+    const ::Vector2 sp = NodeScreen(node);
     const float y = sp.y + (kTitleH + kPinTopPad) * m_Scale + static_cast<float>(pin_index) * kPinRow * m_Scale;
     const float x = is_input ? sp.x : sp.x + NodeSize(node).x;
-    return ZSlate::Vector2(x, y);
+    return ::Vector2(x, y);
 }
 
 BpNode* ZSlateBlueprintWindow::FindNode(int node_id)
@@ -142,20 +153,20 @@ BpNode* ZSlateBlueprintWindow::FindNode(int node_id)
     return nullptr;
 }
 
-std::pair<BpNode*, BpPin*> ZSlateBlueprintWindow::FindPinAt(const ZSlate::Vector2& p)
+std::pair<BpNode*, BpPin*> ZSlateBlueprintWindow::FindPinAt(const ::Vector2& p)
 {
     const float r = kPinRadius * m_Scale + 2.0f;
     for (auto& node : m_Nodes)
     {
         for (size_t i = 0; i < node.inputs.size(); ++i)
         {
-            const ZSlate::Vector2 pp = PinScreen(node, static_cast<int>(i), true);
+            const ::Vector2 pp = PinScreen(node, static_cast<int>(i), true);
             if ((p.x - pp.x) * (p.x - pp.x) + (p.y - pp.y) * (p.y - pp.y) <= r * r)
                 return {&node, &node.inputs[i]};
         }
         for (size_t i = 0; i < node.outputs.size(); ++i)
         {
-            const ZSlate::Vector2 pp = PinScreen(node, static_cast<int>(i), false);
+            const ::Vector2 pp = PinScreen(node, static_cast<int>(i), false);
             if ((p.x - pp.x) * (p.x - pp.x) + (p.y - pp.y) * (p.y - pp.y) <= r * r)
                 return {&node, &node.outputs[i]};
         }
@@ -192,7 +203,7 @@ namespace
 // Draw a cubic bezier as a chain of short filled quads (the UIRenderer has no
 // native line/curve primitive; dense sampling reads as a continuous curve and
 // works identically on both the native and ImGui-fallback backends).
-void DrawBezier(UIRenderer& r, const ZSlate::Vector2& a, const ZSlate::Vector2& b, const ZSlate::Vector2& c, const ZSlate::Vector2& d,
+void DrawBezier(UIRenderer& r, const ::Vector2& a, const ::Vector2& b, const ::Vector2& c, const ::Vector2& d,
                 const ZSlate::UIColor& color, float thickness)
 {
     const float chord = std::abs(d.x - a.x) + std::abs(d.y - a.y);
@@ -200,7 +211,7 @@ void DrawBezier(UIRenderer& r, const ZSlate::Vector2& a, const ZSlate::Vector2& 
     steps = std::max(16, std::min(96, steps));
     const float half = thickness * 0.5f;
 
-    ZSlate::Vector2 prev = a;
+    ::Vector2 prev = a;
     for (int i = 1; i <= steps; ++i)
     {
         const float t = static_cast<float>(i) / static_cast<float>(steps);
@@ -221,12 +232,12 @@ void DrawBezier(UIRenderer& r, const ZSlate::Vector2& a, const ZSlate::Vector2& 
             const float y = prev.y + (pt.y - prev.y) * st;
             r.DrawQuad(ZSlate::UIRect(x - half, y - half, thickness, thickness), color);
         }
-        prev = pt;
+        prev = ToRuntime(pt);
     }
 }
 }  // namespace
 
-void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& region, float scale)
+void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ::UIRect& region, float scale)
 {
     r.DrawQuad(region, kCanvasBg);
     r.PushClipRect(region, true);
@@ -260,10 +271,10 @@ void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& reg
         if (from_idx < 0 || to_idx < 0)
             continue;
 
-        const ZSlate::Vector2 a = PinScreen(*from, from_idx, false);
-        const ZSlate::Vector2 d = PinScreen(*to, to_idx, true);
-        const ZSlate::Vector2 b(a.x + 50.0f * scale, a.y);
-        const ZSlate::Vector2 c(d.x - 50.0f * scale, d.y);
+        const ::Vector2 a = PinScreen(*from, from_idx, false);
+        const ::Vector2 d = PinScreen(*to, to_idx, true);
+        const ::Vector2 b(a.x + 50.0f * scale, a.y);
+        const ::Vector2 c(d.x - 50.0f * scale, d.y);
 
         ZSlate::UIColor color = PinColor(from->outputs[from_idx].type);
         color.w = 0.85f;
@@ -286,9 +297,9 @@ void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& reg
             if (from_idx >= 0)
             {
                 const ZSlate::Vector2 m = ZSlate::EditorSlateHost::Get().GetPointerPos();
-                const ZSlate::Vector2 a = PinScreen(*from, from_idx, false);
-                const ZSlate::Vector2 d = m;
-                DrawBezier(r, a, ZSlate::Vector2(a.x + 50.0f * scale, a.y), ZSlate::Vector2(d.x - 50.0f * scale, d.y), d,
+                const ::Vector2 a = PinScreen(*from, from_idx, false);
+                const ::Vector2 d = ToRuntime(m);
+                DrawBezier(r, a, ::Vector2(a.x + 50.0f * scale, a.y), ::Vector2(d.x - 50.0f * scale, d.y), d,
                            ZSlate::UIColor(1.0f, 1.0f, 1.0f, 0.6f), 2.0f * scale);
             }
         }
@@ -297,8 +308,8 @@ void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& reg
     // Nodes.
     for (const BpNode& node : m_Nodes)
     {
-        const ZSlate::Vector2 sp = NodeScreen(node);
-        const ZSlate::Vector2 size = NodeSize(node);
+        const ::Vector2 sp = NodeScreen(node);
+        const ::Vector2 size = NodeSize(node);
         const ZSlate::UIRect body(sp.x, sp.y, size.x, size.y);
 
         r.DrawQuad(body, node.selected ? kNodeBgSelected : kNodeBg);
@@ -318,7 +329,7 @@ void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& reg
         for (size_t i = 0; i < node.inputs.size(); ++i)
         {
             const BpPin& pin = node.inputs[i];
-            const ZSlate::Vector2 pp = PinScreen(node, static_cast<int>(i), true);
+            const ::Vector2 pp = PinScreen(node, static_cast<int>(i), true);
             const bool hov = (m_HoveredPinNodeId == node.id && m_HoveredPinId == pin.id);
             const float pr = (hov ? kPinRadius + 1.0f : kPinRadius) * scale;
             r.DrawQuad(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), PinColor(pin.type));
@@ -335,7 +346,7 @@ void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& reg
         for (size_t i = 0; i < node.outputs.size(); ++i)
         {
             const BpPin& pin = node.outputs[i];
-            const ZSlate::Vector2 pp = PinScreen(node, static_cast<int>(i), false);
+            const ::Vector2 pp = PinScreen(node, static_cast<int>(i), false);
             const bool hov = (m_HoveredPinNodeId == node.id && m_HoveredPinId == pin.id);
             const float pr = (hov ? kPinRadius + 1.0f : kPinRadius) * scale;
             r.DrawQuad(ZSlate::UIRect(pp.x - pr, pp.y - pr, pr * 2.0f, pr * 2.0f), PinColor(pin.type));
@@ -358,8 +369,8 @@ void ZSlateBlueprintWindow::PaintCanvas(UIRenderer& r, const ZSlate::UIRect& reg
 // ---------------------------------------------------------------------------
 // Canvas interaction (manual hit-testing against io.MousePos)
 // ---------------------------------------------------------------------------
-void ZSlateBlueprintWindow::HandleCanvasInput(const ZSlate::Vector2& mouse,
-                                              const ZSlate::Vector2& mouse_delta,
+void ZSlateBlueprintWindow::HandleCanvasInput(const ::Vector2& mouse,
+                                              const ::Vector2& mouse_delta,
                                               bool over_canvas,
                                               bool left_clicked,
                                               bool left_down,
@@ -403,8 +414,8 @@ void ZSlateBlueprintWindow::HandleCanvasInput(const ZSlate::Vector2& mouse,
                         ti = static_cast<int>(k);
                 if (fi < 0 || ti < 0)
                     continue;
-                const ZSlate::Vector2 a = PinScreen(*from, fi, false);
-                const ZSlate::Vector2 d = PinScreen(*to, ti, true);
+                const ::Vector2 a = PinScreen(*from, fi, false);
+                const ::Vector2 d = PinScreen(*to, ti, true);
                 const ZSlate::Vector2 mid((a.x + d.x) * 0.5f, (a.y + d.y) * 0.5f);
                 if ((mouse.x - mid.x) * (mouse.x - mid.x) + (mouse.y - mid.y) * (mouse.y - mid.y) <= (12.0f * m_Scale) * (12.0f * m_Scale))
                     m_HoveredLinkIndex = static_cast<int>(i);
@@ -478,8 +489,8 @@ void ZSlateBlueprintWindow::HandleCanvasInput(const ZSlate::Vector2& mouse,
     // 2. Node body -> select + begin node drag.
     for (auto& node : m_Nodes)
     {
-        const ZSlate::Vector2 sp = NodeScreen(node);
-        const ZSlate::Vector2 size = NodeSize(node);
+        const ::Vector2 sp = NodeScreen(node);
+        const ::Vector2 size = NodeSize(node);
         if (mouse.x >= sp.x && mouse.x <= sp.x + size.x && mouse.y >= sp.y && mouse.y <= sp.y + size.y)
         {
             for (auto& n : m_Nodes)
@@ -547,7 +558,7 @@ void ZSlateBlueprintWindow::OnGUI()
     const ZSlate::UIRect canvas_region(pos_x, pos_y + toolbar_h, avail_w, avail_h - toolbar_h);
     const ZSlate::UIRect panel_region(pos_x, pos_y, avail_w, avail_h);
 
-    m_CanvasOrigin = ZSlate::Vector2(canvas_region.x, canvas_region.y);
+    m_CanvasOrigin = ::Vector2(canvas_region.x, canvas_region.y);
 
     // ---- Paint --------------------------------------------------------------
     auto& overlay = ZSlate::ZSlateEditorOverlay::Get();
@@ -556,10 +567,10 @@ void ZSlateBlueprintWindow::OnGUI()
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
 
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
         ctx.LayerId = 0;
 
-        PaintCanvas(renderer, canvas_region, ui_scale);
+        PaintCanvas(renderer, ToRuntimeRect(canvas_region), ui_scale);
 
         renderer.PushClipRect(toolbar_region, true);
         m_Toolbar->Paint(ctx, toolbar_geom);
@@ -582,7 +593,7 @@ void ZSlateBlueprintWindow::OnGUI()
     const bool left_released = host.WasLeftReleasedThisFrame();
     const bool middle_down = host.IsMiddleDown();
 
-    HandleCanvasInput(mouse, mouse_delta, in_canvas, left_clicked, left_down, left_released, middle_down);
+    HandleCanvasInput(ToRuntime(mouse), ToRuntime(mouse_delta), in_canvas, left_clicked, left_down, left_released, middle_down);
 
     if (over_item)
     {
@@ -598,7 +609,7 @@ void ZSlateBlueprintWindow::OnGUI()
 // Graph ops
 // ---------------------------------------------------------------------------
 void ZSlateBlueprintWindow::AddNode(const std::string& title,
-                                    const ZSlate::Vector2& position,
+                                    const ::Vector2& position,
                                     const std::vector<std::pair<std::string, BpPinType>>& inputs,
                                     const std::vector<std::pair<std::string, BpPinType>>& outputs)
 {
@@ -621,7 +632,7 @@ void ZSlateBlueprintWindow::AddNodeInView(const std::string& title,
     const float cx = (-m_Scroll.x + 60.0f + static_cast<float>(m_AddCascade % 6) * 28.0f) / m_Scale;
     const float cy = (-m_Scroll.y + 60.0f + static_cast<float>(m_AddCascade % 6) * 28.0f) / m_Scale;
     ++m_AddCascade;
-    AddNode(title, ZSlate::Vector2(cx, cy), inputs, outputs);
+    AddNode(title, ::Vector2(cx, cy), inputs, outputs);
 }
 
 void ZSlateBlueprintWindow::CreateLink(int from_node_id, int from_pin_id, int to_node_id, int to_pin_id)
