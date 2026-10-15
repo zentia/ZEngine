@@ -12,7 +12,7 @@ import os
 import platform
 import shutil
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Any, Optional, List, Dict
 import json
 
 
@@ -51,11 +51,67 @@ def print_header(message: str):
     print(f"{Colors.BOLD}{Colors.HEADER}{'='*60}{Colors.ENDC}\n")
 
 
+# CMake configuration name for each zbuild.py --config value. The engine adds
+# DebugV8 on top of the four stock ones (install already accepted it).
+CONFIG_MAP = {
+    "debug": "Debug",
+    "release": "Release",
+    "relwithdebinfo": "RelWithDebInfo",
+    "debugv8": "DebugV8",
+}
+
+# The four standalone GUI tools and *how* each one has to be built. They share a
+# source directory (engine/tools/) and an output root (bin/Tools/<Config>/, set
+# by z_set_tool_output_dir in engine/cmake/ToolOutputDir.cmake), but not a build
+# tree, because they do not share dependencies:
+#
+#   intree     -- links ZRuntime, so it can only come out of a full-tree
+#                 configure. Slower the first time, incremental afterwards.
+#   standalone -- self-contained project with its own configure. Kept out of the
+#                 full tree on purpose: ClientProjBranches is OFF there, and the
+#                 ZEnvironmentCollector GUI is /MT while the tree's ZSlate is
+#                 /MD (LNK2038), so it MUST configure on its own.
+#
+# "subdir" is the optional extra level a tool asks for via
+# z_set_tool_output_dir(... SUBDIR <name>). WindowsEnvironmentCheck uses it
+# because it ships an .exe plus a helper exe, profiles/ and LICENSE files --
+# dropped straight into bin/Tools/<Config>/ those cannot be told apart from
+# another tool's. Must match the CMake side, hence the comment there too.
+TOOLS: Dict[str, Dict[str, Any]] = {
+    "TexPreview": {
+        "mode": "intree",
+        "source": "engine/tools/TexPreview",
+        "exe": "TexPreview.exe",
+    },
+    "LuaMemPreview": {
+        "mode": "intree",
+        "source": "engine/tools/LuaMemPreview",
+        "exe": "LuaMemPreview.exe",
+    },
+    "ClientProjBranches": {
+        "mode": "standalone",
+        "source": "engine/tools/ClientProjBranches",
+        "build_dir": "build/tools/ClientProjBranches",
+        "targets": ["ClientProjBranches"],
+        "exe": "ClientProjBranches.exe",
+    },
+    "ZEnvironmentCollector": {
+        "mode": "standalone",
+        "source": "engine/tools/WindowsEnvironmentCheck",
+        "build_dir": "build/tools/ZEnvironmentCollector",
+        "options": ["-DENVIRONMENT_CHECK_BUILD_GUI=ON"],
+        "targets": ["ZEnvironmentCollector", "ZDllLoadProbe"],
+        "subdir": "WindowsEnvironmentCheck",
+        "exe": "ZEnvironmentCollector.exe",
+    },
+}
+
+
 class BuildSystem:
     """Main build system class"""
 
     @staticmethod
-    def _cmake_subprocess_env() -> dict:
+    def _cmake_subprocess_env() -> Dict[str, str]:
         """CMake preset windows_visual_studio requires VSCODE_NLS_CONFIG empty."""
         env = os.environ.copy()
         if env.get("VSCODE_NLS_CONFIG"):
@@ -192,13 +248,7 @@ class BuildSystem:
             
             # Configuration
             if self.is_windows:
-                config_map = {
-                    "debug": "Debug",
-                    "release": "Release",
-                    "relwithdebinfo": "RelWithDebInfo",
-                    "debugv8": "DebugV8"
-                }
-                cmd.extend(["--config", config_map.get(config.lower(), "Debug")])
+                cmd.extend(["--config", self._cmake_config_name(config)])
             else:
                 # For Unix-like systems, use CMAKE_BUILD_TYPE
                 pass
@@ -231,6 +281,115 @@ class BuildSystem:
         print_success("Build completed successfully")
         return True
     
+    @staticmethod
+    def _cmake_config_name(config: str) -> str:
+        """zbuild.py --config value -> CMake configuration name."""
+        return CONFIG_MAP.get(config.lower(), config)
+
+    def list_tools(self):
+        """List the standalone GUI tools zbuild.py knows how to build."""
+        print_header("Standalone GUI tools")
+        for name, spec in TOOLS.items():
+            if spec["mode"] == "intree":
+                how = "full tree  (links ZRuntime, needs zbuild.py configure once)"
+            else:
+                how = "own configure  (build/tools/" + name + ")"
+            print(f"  {name:<22} {how}")
+        print("\n  Build one:  zbuild.py tool <Name> --config release")
+        print("  Build all:  zbuild.py tool --all")
+        print("  Output:     bin/Tools/<Config>/, or")
+        print("              bin/Tools/<Config>/<subdir>/ for a tool that ships")
+        print("              more than its .exe.")
+
+    def build_all_tools(self, config: str = "release", jobs: Optional[int] = None,
+                        generator: Optional[str] = None,
+                        reconfigure: bool = False) -> bool:
+        """Build every tool in TOOLS. Stops at the first failure."""
+        print_header(f"Building all {len(TOOLS)} GUI tools "
+                     f"({self._cmake_config_name(config)})")
+        print_info("TexPreview / LuaMemPreview come from the full tree -- the "
+                   "first run also configures it, which is the slow part")
+        built = []
+        for name in TOOLS:
+            if not self.build_tool(name, config=config, jobs=jobs,
+                                   generator=generator, reconfigure=reconfigure):
+                print_error(f"Stopped after {len(built)}/{len(TOOLS)} tools "
+                            f"(built: {', '.join(built) or 'none'})")
+                return False
+            built.append(name)
+        print_success(f"Built {len(built)}/{len(TOOLS)} tools: {', '.join(built)}")
+        return True
+
+    def build_tool(self, name: str, config: str = "release",
+                   jobs: Optional[int] = None, generator: Optional[str] = None,
+                   reconfigure: bool = False) -> bool:
+        """Build one of the standalone GUI tools registered in TOOLS."""
+        spec = TOOLS.get(name)
+        if spec is None:
+            print_error(f"Unknown tool '{name}'. Known tools: {', '.join(TOOLS)}")
+            return False
+
+        cmake_config = self._cmake_config_name(config)
+        print_header(f"Building tool {name} ({cmake_config})")
+
+        if spec["mode"] == "intree":
+            if reconfigure or not (self.build_dir / "CMakeCache.txt").exists():
+                print_info("Full tree is not configured yet -- configuring it first")
+                if not self.configure(config=config, generator=generator):
+                    return False
+            cmd = ["cmake", "--build", str(self.build_dir),
+                   "--config", cmake_config, "--target", name]
+        else:
+            build_dir = self.root_dir / spec["build_dir"]
+            if reconfigure or not (build_dir / "CMakeCache.txt").exists():
+                cfg_cmd = ["cmake", "-S", str(self.root_dir / spec["source"]),
+                           "-B", str(build_dir)]
+                if self.is_windows:
+                    cfg_cmd.extend(["-G", "Visual Studio 17 2022", "-A", "x64"])
+                cfg_cmd.extend(spec.get("options", []))
+                print_info(f"Running: {' '.join(cfg_cmd)}")
+                configured = subprocess.run(
+                    cfg_cmd, cwd=self.root_dir, env=self._cmake_subprocess_env())
+                if configured.returncode != 0:
+                    print_error(f"Configuration of {name} failed")
+                    return False
+            cmd = ["cmake", "--build", str(build_dir), "--config", cmake_config]
+            for target in spec.get("targets", []):
+                cmd.extend(["--target", target])
+
+        if jobs:
+            cmd.extend(["-j", str(jobs)])
+        else:
+            try:
+                import multiprocessing
+                cmd.extend(["-j", str(multiprocessing.cpu_count())])
+            except Exception:
+                pass
+
+        print_info(f"Running: {' '.join(cmd)}")
+        result = subprocess.run(cmd, cwd=self.root_dir, env=self._cmake_subprocess_env())
+        if result.returncode != 0:
+            print_error(f"Build of {name} failed")
+            return False
+
+        # z_set_tool_output_dir sends every tool to
+        # bin/Tools/<Config>/[<subdir>/], but -DZENGINE_OUTPUT_SUBDIR moves the
+        # whole bin/ layout, so look it up instead of asserting one path.
+        subdir = spec.get("subdir")
+        leaf = f"{subdir}/{spec['exe']}" if subdir else spec["exe"]
+        exe = self.root_dir / "bin" / "Tools" / cmake_config / leaf
+        if not exe.exists():
+            found = sorted(
+                self.root_dir.glob(f"bin/**/Tools/{cmake_config}/{leaf}"))
+            if found:
+                exe = found[0]
+        if exe.exists():
+            print_success(f"{name} -> {exe}")
+        else:
+            print_warning(f"{name} built, but {exe} was not found -- "
+                          "check ZENGINE_OUTPUT_SUBDIR and the build log")
+        return True
+
     def clean(self) -> bool:
         """Clean build artifacts"""
         print_header("Cleaning build directory")
@@ -255,13 +414,7 @@ class BuildSystem:
         cmd = ["cmake", "--install", str(self.build_dir)]
         
         if self.is_windows:
-            config_map = {
-                "debug": "Debug",
-                "release": "Release",
-                "relwithdebinfo": "RelWithDebInfo",
-                "debugv8": "DebugV8"
-            }
-            cmd.extend(["--config", config_map.get(config.lower(), "Release")])
+            cmd.extend(["--config", self._cmake_config_name(config)])
         
         print_info(f"Running: {' '.join(cmd)}")
         result = subprocess.run(cmd, cwd=self.root_dir)
@@ -326,6 +479,9 @@ Examples:
   zbuild.py build                      # Build the project
   zbuild.py build --target ZEditor     # Build specific target
   zbuild.py build --jobs 8             # Build with 8 parallel jobs
+  zbuild.py tools                      # List the standalone GUI tools
+  zbuild.py tool TexPreview            # Build one -> bin/Tools/Release/
+  zbuild.py tool --all                 # Build all four
   zbuild.py clean                      # Clean build directory
   zbuild.py test                       # Run tests
   zbuild.py install                    # Install built artifacts
@@ -351,6 +507,23 @@ Examples:
     build_parser.add_argument('--jobs', type=int, help='Number of parallel jobs')
     build_parser.add_argument('--preset', help='Use specific build preset')
     
+    # Tool command: build one of the standalone GUI tools
+    tool_parser = subparsers.add_parser('tool', help='Build one of the standalone GUI tools')
+    tool_parser.add_argument('name', nargs='?',
+                             help='Tool name (see "zbuild.py tools"); omit or pass '
+                                  '--all to build every tool')
+    tool_parser.add_argument('--config', choices=['debug', 'release', 'relwithdebinfo'],
+                             default='release', help='Build configuration (default: release)')
+    tool_parser.add_argument('--jobs', type=int, help='Number of parallel jobs')
+    tool_parser.add_argument('--generator', choices=['ninja', 'make', 'xcode', 'vs'],
+                             help='CMake generator (full-tree tools only)')
+    tool_parser.add_argument('--reconfigure', action='store_true',
+                             help='Force a (re)configure even if a build tree already exists')
+    tool_parser.add_argument('--all', action='store_true',
+                             help='Build every registered tool (same as omitting the name)')
+
+    subparsers.add_parser('tools', help='List the standalone GUI tools')
+
     # Clean command
     subparsers.add_parser('clean', help='Clean build artifacts')
     
@@ -415,6 +588,31 @@ Examples:
             )
             return 0 if success else 1
         
+        elif args.command == 'tool':
+            if args.all and args.name:
+                print_error("Pass either a tool name or --all, not both")
+                return 1
+            if args.all or not args.name:
+                success = build_system.build_all_tools(
+                    config=args.config,
+                    jobs=args.jobs,
+                    generator=args.generator,
+                    reconfigure=args.reconfigure
+                )
+            else:
+                success = build_system.build_tool(
+                    name=args.name,
+                    config=args.config,
+                    jobs=args.jobs,
+                    generator=args.generator,
+                    reconfigure=args.reconfigure
+                )
+            return 0 if success else 1
+
+        elif args.command == 'tools':
+            build_system.list_tools()
+            return 0
+
         elif args.command == 'clean':
             success = build_system.clean()
             return 0 if success else 1

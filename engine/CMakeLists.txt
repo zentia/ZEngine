@@ -266,8 +266,9 @@ include(cmake/ConfigOutputDirs.cmake)
 # include this file directly.
 include(cmake/AppIcon.cmake)
 
-# z_set_tool_output_dir(<target>): sends a standalone GUI tool to
-# <repo>/bin/Tools/<Config>/ so no tool's exe lands in the build tree.
+# z_set_tool_output_dir(<target> [SUBDIR <subdir>]): sends a standalone GUI tool
+# to <repo>/bin/Tools/<Config>[/<subdir>]/ so no tool's exe lands in the build
+# tree. Pass SUBDIR when the tool ships more than its .exe.
 include(cmake/ToolOutputDir.cmake)
 
 add_subdirectory(3rdparty)

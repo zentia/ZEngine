@@ -1697,8 +1697,24 @@ hunted for:
 
 | Kind | Path | Set by |
 |---|---|---|
-| **Output** (the `.exe`) | `<repo>/bin/Tools/<Config>/` | `z_set_tool_output_dir(<target>)` — `engine/cmake/ToolOutputDir.cmake` |
+| **Output** (the `.exe`) | `<repo>/bin/Tools/<Config>[/<subdir>]/` | `z_set_tool_output_dir(<target> [SUBDIR <subdir>])` — `engine/cmake/ToolOutputDir.cmake` |
 | **Build tree** (`-B`) | `<repo>/build/tools/<ToolName>/` | convention only, documented here and in each tool's README |
+
+A tool that ships more than its `.exe` passes `SUBDIR` and gets its own level,
+so its extra files cannot be mistaken for another tool's.
+`WindowsEnvironmentCheck` is the only one today:
+
+```
+bin/Tools/Release/
+├── TexPreview.exe
+├── LuaMemPreview.exe
+├── ClientProjBranches.exe
+└── WindowsEnvironmentCheck/
+    ├── ZEnvironmentCollector.exe
+    ├── ZDllLoadProbe.exe          # re-launched from the exe's own directory
+    ├── profiles/default.ini       # read from the exe's own directory
+    └── LICENSE-*.txt
+```
 
 `z_set_tool_output_dir()` resolves the root as: `Z_ROOT_DIR` if set (full-tree
 configure) → else walk up from `CMAKE_CURRENT_SOURCE_DIR` to the directory
@@ -1707,21 +1723,46 @@ else `CMAKE_BINARY_DIR/bin/Tools`. If `BINARY_ROOT_DIR` is already defined it
 wins, so the tools follow `ZENGINE_OUTPUT_SUBDIR` too: a cross-compile layout
 `bin/win64/x64/` becomes `bin/win64/x64/Tools/<Config>/`.
 
-Standalone configure commands (all four land in the same `bin/Tools/<Config>/`):
+**Build any of them with one command** (all four land under
+`bin/Tools/<Config>/`, and the command prints the exe path when it is done):
+
+```powershell
+python zbuild.py tools                          # list them
+python zbuild.py tool TexPreview --config release
+python zbuild.py tool ZEnvironmentCollector     # --config defaults to release
+python zbuild.py tool --all                     # all four, stops at the first failure
+```
+
+`--all` includes the two full-tree tools, so the first run also configures the
+whole engine — that configure, not the tools, is the slow part. `--reconfigure`
+forces a fresh configure of either kind.
+
+`zbuild.py` knows that the four do *not* share a build tree, only a source
+directory and an output directory:
+
+- `TexPreview`, `LuaMemPreview` — **full tree**. They link ZRuntime, so they
+  cannot configure standalone; `zbuild.py` configures the tree if it has not
+  been configured yet, then builds `--target <Name>` in `build/`.
+- `ClientProjBranches`, `ZEnvironmentCollector` — **own configure** into
+  `build/tools/<Name>/`, which is what the earlier standalone commands did:
 
 ```powershell
 cmake -S engine\tools\WindowsEnvironmentCheck -B build\tools\ZEnvironmentCollector -G "Visual Studio 17 2022" -A x64 -DENVIRONMENT_CHECK_BUILD_GUI=ON
 cmake -S engine\tools\ClientProjBranches      -B build\tools\ClientProjBranches   -G "Visual Studio 17 2022" -A x64
-# TexPreview / LuaMemPreview cannot configure standalone; build them from the
-# full tree, or via scripts\build_lib\win64\win_build_lua_mem_preview.bat
 ```
+
+They stay out of the full tree on purpose: `ClientProjBranches` is OFF there,
+and the `ZEnvironmentCollector` GUI is `/MT` while the tree's ZSlate is `/MD`
+(`LNK2038`), so it must configure on its own. `--reconfigure` forces a fresh
+configure of either kind.
 
 Why a `Tools/` level instead of `bin/<Config>/` next to ZEditor: the tools share
 nothing with the engine's runtime layout (no configs, no assets, no ZRuntime
 DLL), and `ZEnvironmentCollector` is built `/MT` to ship to machines with no VC
 redist — its output directory *is* its distribution unit, because `profiles/`
-and the LICENSE files are copied next to the exe. "Zip `bin/Tools/<Config>`" is
-therefore a correct packaging step.
+and the LICENSE files are copied next to the exe. "Zip
+`bin/Tools/<Config>/WindowsEnvironmentCheck`" is therefore a correct packaging
+step, and `install(COMPONENT EnvironmentCollector)` produces the same folder.
 
 `scripts\build_lib\win64\win_build_lua_mem_preview.bat` builds through the full
 tree with `-DZENGINE_OUTPUT_SUBDIR=win64/<arch>`, so its output is

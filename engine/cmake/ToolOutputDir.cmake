@@ -7,6 +7,17 @@
 #
 #     <repo>/bin/Tools/<Config>/<name>.exe
 #
+# A tool that ships more than its .exe passes SUBDIR and gets its own level, so
+# its extra files cannot be mistaken for another tool's:
+#
+#     <repo>/bin/Tools/<Config>/<subdir>/<name>.exe
+#     <repo>/bin/Tools/<Config>/<subdir>/profiles/...
+#
+# WindowsEnvironmentCheck is the one that needs it: ZEnvironmentCollector.exe
+# plus ZDllLoadProbe.exe, profiles/ and two LICENSE files, all in
+# bin/Tools/<Config>/WindowsEnvironmentCheck/ -- which is also its
+# distribution unit (zip the folder).
+#
 # Before this, the four tools landed in three different shapes, which is why
 # "where did my exe go" had to be answered per project:
 #
@@ -45,7 +56,13 @@
 include("${CMAKE_CURRENT_LIST_DIR}/ConfigOutputDirs.cmake")
 
 function(z_set_tool_output_dir)
-    if(ARGC LESS 1)
+    # Targets are positional; SUBDIR is an optional keyword that puts them one
+    # level deeper, at <tools root>/<Config>/<subdir>. A tool that ships more
+    # than its .exe -- a helper executable, a profiles/ directory, LICENSE
+    # files -- should pass it, so those files cannot be mistaken for another
+    # tool's in the shared bin/Tools/<Config>/.
+    cmake_parse_arguments(_tool "" "SUBDIR" "" ${ARGN})
+    if(NOT _tool_UNPARSED_ARGUMENTS)
         message(FATAL_ERROR "z_set_tool_output_dir requires at least one target")
     endif()
 
@@ -79,11 +96,16 @@ function(z_set_tool_output_dir)
         set(_tool_out "${_tool_root}/bin/Tools")
     endif()
 
-    foreach(_tool_target IN LISTS ARGV)
+    set(_tool_suffix "")
+    if(_tool_SUBDIR)
+        set(_tool_suffix "/${_tool_SUBDIR}")
+    endif()
+
+    foreach(_tool_target IN LISTS _tool_UNPARSED_ARGUMENTS)
         if(NOT TARGET ${_tool_target})
             message(FATAL_ERROR "z_set_tool_output_dir: '${_tool_target}' is not a target")
         endif()
-        z_set_config_output_dirs(${_tool_target} "${_tool_out}" RUNTIME)
-        message(STATUS "[ToolOutputDir] ${_tool_target} -> ${_tool_out}/<Config>")
+        z_set_config_output_dirs(${_tool_target} "${_tool_out}" RUNTIME "${_tool_SUBDIR}")
+        message(STATUS "[ToolOutputDir] ${_tool_target} -> ${_tool_out}/<Config>${_tool_suffix}")
     endforeach()
 endfunction()

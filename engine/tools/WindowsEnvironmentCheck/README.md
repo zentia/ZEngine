@@ -324,7 +324,7 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 - 结果包：`crash.dmp`、`environment.zip`、`capture.json`、`procdump.log`、`checksums.json`。环境子包沿用原白名单；清单保存同意时刻、目标名/PID、EXE文件版本和SHA256、ProcDump版本及SHA256、异常码、dump时间/大小、验证结果。EXE文件版本不保证等同游戏资源版本，定位仍需结合dump模块及发布记录获取匹配PDB。原始dump始终保留；后处理取消/失败不删除它。
 - 日志/哈希：ProcDump日志保存最多1MiB输出并转UTF-8。成功后所有证据文件计算SHA256，按白名单流式Deflate压缩成ZIP64并实际解压回读CRC。64KiB文件读缓冲，不把数GB文件装入内存。大dump打包可取消；环境子包的短暂最终阶段维持原不可取消行为。
 - 设置：采集器将成功完成签名检查后的ProcDump路径记在 `HKCU/Software/ZEngine/EnvironmentCollector/ProcDumpPath`；每次GUI仍需重新确认许可与内存采集，偏好写失败不丢取证结果。ProcDump可能自行保存其EULA接受状态。没有修改全局调试器注册和反作弊设置。
-- 压缩依赖：读取主仓固定的 `tools/renderdoc/renderdoc/3rdparty/miniz` 原始源码，不构建RenderDoc、不修改子模块。两处ZIP64版本字段修复由Git差异生成并保存在本目录 `miniz-zip64.patch`；CMake复制原始文件到构建目录 `miniz-patched`，通过Git检查、应用及反向检查后仅编译该生成副本。构建需要Git；`ENVIRONMENT_CHECK_MINIZ_DIR` 必须指向未修改的固定版本源码，补丁不兼容会立即终止配置。Git仓库发现范围限制在构建目录，避免嵌套仓库静默跳过补丁。已验证生成副本逐字节等于此前修复源，RenderDoc工作区恢复干净。同时使用回写本地头API，完整CRC校验不跳过。交付源码须包含补丁与 `LICENSE-miniz.txt`，无需向RenderDoc上游推送。
+- 压缩依赖：`engine/3rdparty/minizip-ng`（主仓子模块，编辑器 XlsxImporter 用的同一份），以 deflate 单方法构建，ZIP64 由库原生支持，无补丁、无本地修改。整树构建时复用 `engine/3rdparty/CMakeLists.txt` 已建好的 `minizip-ng` 目标；独立构建时由本工程 `add_subdirectory` 并按需 FetchContent 拉取 zlib（本工程本来就 FetchContent zydis，联网配置是既有前提）。旧的 `tools/renderdoc/3rdparty/miniz` + `miniz-zip64.patch` 方案已移除：不再依赖 RenderDoc 子模块、不再在配置期跑 `git apply`、不再需要 Git。交付源码须包含 `LICENSE-minizip-ng.txt`（安装时从子模块 LICENSE 改名复制）。归档仍为流式：64KiB 读缓冲，不把数GB文件装入内存；写完回读每个条目完整内容并由库比对 CRC32。
 
 验证在独立build的 `capture-validation`：3项CTest通过；官方ProcDump12.01配合仅含合成数据的 `EnvironmentCaptureTestTarget.exe` 验证完整异常dump自动打包、正常退出不误报、等待取消、已附加后取消（目标仍活着且无调试器）、进度回调抛异常后安全脱离；完整dump错误PID/截断尾部拒绝。4GiB+1KiB合成文件通过独立Python解压、大小、ZIP64版本45和CRC验证。GUI文件选择及拒绝隐私授权路径已用真实窗口消息验证并截图。未附加真实游戏，反作弊/CrashSight共存、权限提升、低磁盘实际故障仍需内部实机验证。当前微软页面列ProcDump支持Windows11及以上，此模式不承诺Windows10兼容。
 
@@ -344,11 +344,13 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 cmake -S engine\tools\WindowsEnvironmentCheck -B build\tools\ZEnvironmentCollector -G "Visual Studio 17 2022" -A x64 -DENVIRONMENT_CHECK_BUILD_GUI=ON -DBUILD_TESTING=ON
 cmake --build build\tools\ZEnvironmentCollector --config Release --target ZEnvironmentCollector EnvironmentCollectorTests EnvironmentCollectorUiTests EnvironmentCaptureTests
 ctest --test-dir build\tools\ZEnvironmentCollector -C Release --output-on-failure
-cmake --install build\tools\ZEnvironmentCollector --config Release --component EnvironmentCollector --prefix dist\WindowsEnvironmentCollector
+cmake --install build\tools\ZEnvironmentCollector --config Release --component EnvironmentCollector --prefix dist
 
 产物不落在 build 目录里：`ZEnvironmentCollector.exe` 与 `ZDllLoadProbe.exe` 输出到
-`bin\Tools\<Config>\`（与其他独立 GUI 工具同一处），profiles 与 LICENSE 也复制过去，
-所以该目录就是可直接打包的分发单元。
+`bin\Tools\<Config>\WindowsEnvironmentCheck\`（子目录名与源码目录同名），profiles 与
+LICENSE 也复制过去，所以该目录就是可直接打包的分发单元——而不会在共享的
+`bin\Tools\<Config>\` 里和另外三个工具的 exe 混在一起。`--prefix dist` 装出的是
+同一份目录：`dist\WindowsEnvironmentCheck\`。
 ```
 
 分发 `ZEnvironmentCollector.exe`、`ZDllLoadProbe.exe`、profiles及LICENSE文件，不只发主 exe。无需ZRuntime或引擎资源；Release采用静态CRT。GUI和ZIP模式未改变旧环境报告schema5。GUI动态依赖Windows的 `d3d11.dll`、`D3DCOMPILER_47.dll` 及基础系统DLL。

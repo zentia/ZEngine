@@ -47,40 +47,57 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(zydis)
 
-set(ENVIRONMENT_CHECK_MINIZ_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../renderdoc/renderdoc/3rdparty/miniz" CACHE PATH "Unmodified miniz sources from the pinned RenderDoc submodule")
-find_package(Git REQUIRED)
-set(_miniz_patched_dir "${CMAKE_CURRENT_BINARY_DIR}/miniz-patched")
-set(_miniz_patch "${CMAKE_CURRENT_SOURCE_DIR}/miniz-zip64.patch")
-file(MAKE_DIRECTORY "${_miniz_patched_dir}")
-configure_file("${ENVIRONMENT_CHECK_MINIZ_DIR}/miniz.c" "${_miniz_patched_dir}/miniz.c" COPYONLY)
-configure_file("${ENVIRONMENT_CHECK_MINIZ_DIR}/miniz.h" "${_miniz_patched_dir}/miniz.h" COPYONLY)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_miniz_patch}")
-set(_miniz_git_command "${CMAKE_COMMAND}" -E env --unset=GIT_DIR --unset=GIT_WORK_TREE
-    "GIT_CEILING_DIRECTORIES=${CMAKE_CURRENT_BINARY_DIR}" "${GIT_EXECUTABLE}")
-execute_process(
-    COMMAND ${_miniz_git_command} apply --check -- "${_miniz_patch}"
-    WORKING_DIRECTORY "${_miniz_patched_dir}"
-    RESULT_VARIABLE _miniz_check_result ERROR_VARIABLE _miniz_check_error)
-if(NOT _miniz_check_result EQUAL 0)
-    message(FATAL_ERROR "miniz ZIP64 patch check failed; use unmodified sources from the pinned RenderDoc submodule: ${_miniz_check_error}")
+# ZIP container: minizip-ng from the engine's own 3rdparty tree -- the same
+# submodule the editor's XlsxImporter links. `../..` is engine/, so (unlike the
+# old arrangement, which read miniz out of the root tools/renderdoc submodule
+# and patched it with miniz-zip64.patch at configure time) this stays inside
+# the engine tree and needs no patching: minizip-ng speaks ZIP64 natively.
+#
+# In a full-tree configure engine/3rdparty/CMakeLists.txt has already added it
+# (it is not Emscripten-gated), hence the target guard -- same pattern as the
+# ZSlate guard below. Standalone, the options below strip it to deflate-only
+# and let it FetchContent zlib (WEC already fetches zydis, so a network
+# configure was already required).
+# minizip-ng force-sets BUILD_TESTING OFF in the cache (that is how it silences
+# zlib-ng's own tests). It is added before `include(CTest)` below, so without
+# saving and restoring the option this project's tests would silently vanish
+# from a standalone configure.
+if(DEFINED BUILD_TESTING)
+    set(_environment_check_build_testing "${BUILD_TESTING}")
+else()
+    set(_environment_check_build_testing ON)
 endif()
-execute_process(
-    COMMAND ${_miniz_git_command} apply -- "${_miniz_patch}"
-    WORKING_DIRECTORY "${_miniz_patched_dir}"
-    RESULT_VARIABLE _miniz_apply_result ERROR_VARIABLE _miniz_apply_error)
-if(NOT _miniz_apply_result EQUAL 0)
-    message(FATAL_ERROR "miniz ZIP64 patch application failed: ${_miniz_apply_error}")
+
+if(NOT TARGET minizip-ng)
+    set(MZ_COMPAT OFF CACHE BOOL "" FORCE)
+    set(MZ_ZLIB ON CACHE BOOL "" FORCE)
+    set(MZ_BZIP2 OFF CACHE BOOL "" FORCE)
+    set(MZ_LZMA OFF CACHE BOOL "" FORCE)
+    set(MZ_PPMD OFF CACHE BOOL "" FORCE)
+    set(MZ_ZSTD OFF CACHE BOOL "" FORCE)
+    set(MZ_LIBCOMP OFF CACHE BOOL "" FORCE)
+    set(MZ_PKCRYPT OFF CACHE BOOL "" FORCE)
+    set(MZ_WZAES OFF CACHE BOOL "" FORCE)
+    set(MZ_OPENSSL OFF CACHE BOOL "" FORCE)
+    set(MZ_LIBBSD OFF CACHE BOOL "" FORCE)
+    set(MZ_ICONV OFF CACHE BOOL "" FORCE)
+    set(MZ_FETCH_LIBS ON CACHE BOOL "" FORCE)
+    # When minizip-ng fetches zlib itself it links the *shared* zlib-ng target
+    # (its CMake appends plain `zlib` whenever the fetched tree is zlib-ng),
+    # which leaves ZEnvironmentCollector.exe importing zlib-ng2.dll. This tool
+    # ships /MT to machines with no VC redist and must be a self-contained
+    # directory, so the deflate backend has to be static. zlib-ng honours
+    # BUILD_SHARED_LIBS, so turning it off before the fetch is what makes
+    # minizip-ng pick up the static archive.
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(MZ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(MZ_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
+    set(MZ_BUILD_FUZZ_TESTS OFF CACHE BOOL "" FORCE)
+    set(SKIP_INSTALL_ALL ON CACHE BOOL "" FORCE)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/minizip-ng"
+                     "${CMAKE_CURRENT_BINARY_DIR}/minizip-ng")
+    set(BUILD_TESTING "${_environment_check_build_testing}" CACHE BOOL "" FORCE)
 endif()
-execute_process(
-    COMMAND ${_miniz_git_command} apply --reverse --check -- "${_miniz_patch}"
-    WORKING_DIRECTORY "${_miniz_patched_dir}"
-    RESULT_VARIABLE _miniz_verify_result ERROR_VARIABLE _miniz_verify_error)
-if(NOT _miniz_verify_result EQUAL 0)
-    message(FATAL_ERROR "miniz ZIP64 patch verification failed: ${_miniz_verify_error}")
-endif()
-add_library(ZEnvironmentMiniz STATIC "${_miniz_patched_dir}/miniz.c")
-target_include_directories(ZEnvironmentMiniz PUBLIC "${_miniz_patched_dir}")
-target_compile_definitions(ZEnvironmentMiniz PRIVATE _CRT_SECURE_NO_WARNINGS)
 
 add_library(ZEnvironmentCheckCore STATIC
     AttributionRules.cpp
@@ -115,7 +132,12 @@ add_library(ZEnvironmentCheckCore STATIC
 target_include_directories(ZEnvironmentCheckCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_features(ZEnvironmentCheckCore PUBLIC cxx_std_20)
 target_compile_definitions(ZEnvironmentCheckCore PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
-target_link_libraries(ZEnvironmentCheckCore PUBLIC Zydis ZEnvironmentMiniz dxgi setupapi wevtapi advapi32 shell32 ole32 bcrypt wintrust crypt32 version comdlg32)
+# minizip-ng exports both include dirs it needs as PUBLIC BUILD_INTERFACE
+# entries (submodule root for mz_zip.h / mz_zip_rw.h, its own binary dir for
+# the generated mz_config.h mz.h includes), so linking it is enough -- do not
+# hand-roll the paths here, they differ between a full-tree and a standalone
+# configure.
+target_link_libraries(ZEnvironmentCheckCore PUBLIC Zydis minizip-ng dxgi setupapi wevtapi advapi32 shell32 ole32 bcrypt wintrust crypt32 version comdlg32)
 if(MSVC)
     target_compile_options(ZEnvironmentCheckCore PRIVATE /W4 /permissive- /EHsc /utf-8)
 endif()
@@ -282,20 +304,42 @@ else()
     target_compile_options(${DLL_PROBE_TARGET} PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-# Output: <repo>/bin/Tools/<Config>/, the same directory every other standalone
-# GUI tool uses. Standalone, BINARY_ROOT_DIR is undefined, so the helper derives
-# the repo root by walking up to engine/CMakeLists.txt. ZDllLoadProbe goes to the
-# same directory on purpose -- the collector re-launches it as a child process
-# from its own executable directory (ToolExecutablePath()).
+# Output: <repo>/bin/Tools/<Config>/WindowsEnvironmentCheck/ -- its own level
+# under the shared tools directory, because this tool is not one .exe: it is
+# ZEnvironmentCollector.exe + ZDllLoadProbe.exe + profiles/ + LICENSE files, and
+# dropping those straight into bin/Tools/<Config>/ leaves you unable to tell
+# which of the four tools a stray .exe, .ini or LICENSE belongs to. The
+# subdirectory is also the distribution unit: zip it and it runs.
+#
+# Standalone, BINARY_ROOT_DIR is undefined, so the helper derives the repo root
+# by walking up to engine/CMakeLists.txt. ZDllLoadProbe goes to the SAME
+# directory on purpose -- the collector re-launches it as a child process from
+# its own executable directory (ToolExecutablePath()), and reads
+# profiles/default.ini from there too.
+#
+# The name matches the source directory (engine/tools/WindowsEnvironmentCheck),
+# not the executable, so bin/ and engine/tools/ line up one-to-one.
+set(ENVIRONMENT_CHECK_OUTPUT_SUBDIR WindowsEnvironmentCheck)
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/ToolOutputDir.cmake")
-z_set_tool_output_dir(${ENVIRONMENT_CHECK_TARGET} ${DLL_PROBE_TARGET})
+z_set_tool_output_dir(${ENVIRONMENT_CHECK_TARGET} ${DLL_PROBE_TARGET}
+    SUBDIR "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}")
 
-install(TARGETS ${ENVIRONMENT_CHECK_TARGET} ${DLL_PROBE_TARGET} RUNTIME DESTINATION . COMPONENT EnvironmentCollector)
-install(FILES "${zydis_SOURCE_DIR}/LICENSE" DESTINATION . RENAME LICENSE-Zydis.txt COMPONENT EnvironmentCollector)
-install(FILES "${zycore_SOURCE_DIR}/LICENSE" DESTINATION . RENAME LICENSE-Zycore.txt COMPONENT EnvironmentCollector)
-install(FILES profiles/generic.ini DESTINATION profiles RENAME default.ini COMPONENT EnvironmentCollector)
-install(FILES profiles/osgame.ini DESTINATION profiles COMPONENT EnvironmentCollector)
-install(FILES LICENSE-stb.txt LICENSE-miniz.txt DESTINATION . COMPONENT EnvironmentCollector)
+# install() mirrors the build layout: --prefix <dir> gives you the same folder
+# you would have zipped out of bin/Tools/<Config>/.
+install(TARGETS ${ENVIRONMENT_CHECK_TARGET} ${DLL_PROBE_TARGET} RUNTIME
+        DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}" COMPONENT EnvironmentCollector)
+install(FILES "${zydis_SOURCE_DIR}/LICENSE" DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}"
+        RENAME LICENSE-Zydis.txt COMPONENT EnvironmentCollector)
+install(FILES "${zycore_SOURCE_DIR}/LICENSE" DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}"
+        RENAME LICENSE-Zycore.txt COMPONENT EnvironmentCollector)
+install(FILES profiles/generic.ini DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}/profiles"
+        RENAME default.ini COMPONENT EnvironmentCollector)
+install(FILES profiles/osgame.ini DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}/profiles"
+        COMPONENT EnvironmentCollector)
+install(FILES LICENSE-stb.txt DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}" COMPONENT EnvironmentCollector)
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/minizip-ng/LICENSE"
+        DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}" RENAME LICENSE-minizip-ng.txt
+        COMPONENT EnvironmentCollector)
 
 include(CTest)
 if(BUILD_TESTING)
