@@ -106,7 +106,7 @@ void ZSlateGameWindow::OnGUI()
     m_Root->CacheDesiredSize();
 
     FPaintContext ctx;
-    ctx.Renderer = &renderer;
+    ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
     ctx.LayerId = 0;
 
     renderer.PushClipRect(region, true);

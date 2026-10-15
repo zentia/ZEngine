@@ -305,7 +305,7 @@ std::shared_ptr<SButton> ZSlateConsoleWindow::MakeLogRow(size_t entry_index, con
     };
     row->OnRightClicked = [this, entry_index](const ZSlate::Vector2& screen_pos) {
         m_PendingContextEntryIndex = static_cast<int>(entry_index);
-        m_PendingContextPos = screen_pos;
+        m_PendingContextPos = ::Vector2(screen_pos.x, screen_pos.y);  // ZSlate -> runtime UI type
         m_HasPendingContext = true;
     };
     m_LogRowWidgets.push_back({entry_index, row});
@@ -331,7 +331,7 @@ void ZSlateConsoleWindow::RebuildLogRows()
     // Log rows are destroyed below; drop stale hover pointers but keep keyboard
     // focus on the search/command box (Reset() was clearing focus every keystroke).
     m_Input.ClearHoverPath();
-    m_LogList->ClearChildren();
+    m_LogList->ClearSlots();  // SPanel::ClearSlots() (ZSlate renamed it from ClearChildren)
     m_LogRowWidgets.clear();
     for (size_t i = 0; i < m_LogEntries.size(); ++i)
     {
@@ -460,7 +460,8 @@ void ZSlateConsoleWindow::BuildLayout(float scale)
     m_CommandBox = std::make_shared<SEditableTextBox>();
     m_CommandBox->FontSize = font;
     m_CommandBox->HintText = "Enter console command...";
-    m_CommandBox->BackgroundColor = kBarColor;
+    // BackgroundColor is gone from ZSlate's SEditableTextBox (it paints its own
+    // themed background), so the command box keeps the default appearance.
     m_CommandBox->OnTextCommitted = [this](const std::string& t) {
         ExecuteCommand(t);
         if (m_CommandBox)
@@ -495,12 +496,12 @@ void ZSlateConsoleWindow::OpenCategoryMenu()
 
     // Anchor under the category button.
     const FGeometry& g = m_CategoryButton->GetCachedGeometry();
-    m_MenuPos = ZSlate::Vector2(g.AbsolutePosition.x, g.AbsolutePosition.y + g.LocalSize.y);
+    m_MenuPos = ::Vector2(g.AbsolutePosition.x, g.AbsolutePosition.y + g.LocalSize.y);  // ZSlate -> runtime
     m_MenuOpen = true;
     m_MenuInput.Reset();
 }
 
-void ZSlateConsoleWindow::OpenLogContextMenu(size_t entry_index, const ZSlate::Vector2& screen_pos)
+void ZSlateConsoleWindow::OpenLogContextMenu(size_t entry_index, const ::Vector2& screen_pos)
 {
     m_SelectedEntryIndex = static_cast<int>(entry_index);
     UpdateLogRowSelectionHighlight();
@@ -602,7 +603,7 @@ void ZSlateConsoleWindow::OnGUI()
         overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZPanel);
         m_Root->CacheDesiredSize();
         FPaintContext ctx;
-        ctx.Renderer = &renderer;
+        ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
         ctx.LayerId = 0;
         renderer.PushClipRect(region, true);
         m_Root->Paint(ctx, geometry);
@@ -647,7 +648,7 @@ void ZSlateConsoleWindow::OnGUI()
             // draws on top (the native overlay is composited after all ImGui).
             BatchedUIRenderer& renderer = overlay.GetRenderer();
             FPaintContext menu_ctx;
-            menu_ctx.Renderer = &renderer;
+            menu_ctx.Renderer = &overlay;  // ZSlateEditorOverlay implements ISlateRenderer
             menu_ctx.LayerId = 1;
             m_Menu->Paint(menu_ctx, menu_geom);
         }

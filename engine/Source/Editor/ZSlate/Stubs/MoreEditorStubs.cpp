@@ -6,12 +6,10 @@
 #include "Editor/EditorWindow/ZSlateGameWindow/ZSlateGameWindow.h"
 
 // ---- ZSlateConsoleWindow ----
-void ZSlateConsoleWindow::PumpBufferedLogsIfOpen() {}
+// Real implementation is built (its CMake exclude is gone).
 
 // ---- ZSlateContentBrowserWindow ----
 // Real implementation is built; no stub needed.
 
 // ---- ZSlateGameWindow ----
-ZSlateGameWindow::ZSlateGameWindow(EditorUI* editor_ui)
-    : PlayModeView(editor_ui, "Game", static_cast<ViewportType>(0)) {}
-void ZSlateGameWindow::OnGUI() {}
+// Real implementation is built (its CMake exclude is gone).

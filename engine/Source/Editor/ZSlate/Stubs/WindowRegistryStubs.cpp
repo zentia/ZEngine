@@ -24,7 +24,7 @@
     void cls::OnGUI() {}
 
 STUB_WIN(ZSlateUMGDesignerWindow, "UMGDesigner")
-STUB_WIN(ZSlateConsoleWindow, "Console")
+// ZSlateConsoleWindow: real implementation is built (its CMake exclude is gone).
 STUB_WIN(ZSlateDemoWindow, "Demo")
 // ZSlateInspectorWindow: real implementation is built (its CMake exclude is
 // gone; see ZSlate-heavy editor windows above).
@@ -38,5 +38,5 @@ STUB_WIN(ZSlateInsightsWindow, "Insights")
 // ZSlateHierarchyWindow + ZSlateSceneWindow: real implementations are built
 // (their CMake excludes are gone; see ZSlate-heavy editor windows above).
 
-// ZSlateConsoleWindow declares virtual ~ZSlateConsoleWindow() explicitly
-ZSlateConsoleWindow::~ZSlateConsoleWindow() = default;
+// ZSlateConsoleWindow's virtual dtor is defined by the real implementation
+// (ZSlateConsoleWindow.cpp), which is built again.

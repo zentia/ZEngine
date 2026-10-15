@@ -35,10 +35,10 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/AssetPipeline/.*/[Tt]est/.*")
 # is complete. MenuController.cpp is kept -- it is what still draws the menu bar.
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateAnimationWindow/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateBlueprintWindow/.*")
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateConsoleWindow/.*")
+# ZSlateConsoleWindow: re-enabled (the log console; dock layout restored).
 # ZSlateContentBrowserWindow: re-enabled (asset selection entry for zasset preview).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateDemoWindow/.*")
-list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateGameWindow/.*")
+# ZSlateGameWindow: re-enabled (the Game viewport; it is the Default layout's active tab).
 # ZSlateHierarchyWindow: re-enabled (small, off its stub; dock layout restored).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ZSlateInsightsWindow/.*")
 # ZSlateInspectorWindow: re-enabled (the property panel; dock layout restored).
