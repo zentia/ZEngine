@@ -24,6 +24,13 @@ set_target_properties(${INSIGHTS_TARGET} PROPERTIES CXX_STANDARD 23 OUTPUT_NAME 
 set_target_properties(${INSIGHTS_TARGET} PROPERTIES FOLDER "Engine")
 z_set_config_output_dirs(${INSIGHTS_TARGET} "${BINARY_ROOT_DIR}" RUNTIME)
 
+# App icon: embeds resource/ZInsights.ico as IDI_ICON1 (drawn by
+# engine/resource/gen_icon.ps1 -Motif flame). After the OUTPUT_NAME line, since
+# the icon base name defaults to it. This alone only puts the icon in the
+# executable -- ZInsights registers its own window class, so that class has to
+# carry it too; see ZInsightsMain.cpp.
+z_embed_app_icon(${INSIGHTS_TARGET})
+
 source_group(TREE "${CMAKE_CURRENT_SOURCE_DIR}" FILES ${INSIGHTS_SOURCES} ${INSIGHTS_HEADERS})
 
 target_include_directories(${INSIGHTS_TARGET} PRIVATE

@@ -16,9 +16,10 @@
 #   .\gen_icon.ps1 -Name LuaMemPreview         -Motif bars    -OutDir ..\tools\LuaMemPreview\resource
 #   .\gen_icon.ps1 -Name TexPreview            -Motif checker -OutDir ..\tools\TexPreview\resource
 #   .\gen_icon.ps1 -Name ZEnvironmentCollector -Motif check   -OutDir ..\tools\WindowsEnvironmentCheck\resource
+#   .\gen_icon.ps1 -Name ZInsights             -Motif flame   -OutDir ..\Source\Insights\resource
 #
 # -OutDir is where the tool's .ico is committed; it must be the same directory
-# z_embed_app_icon() reads (resources/ next to the tool's CMakeLists by default).
+# z_embed_app_icon() reads (resource/ next to the target's CMakeLists by default).
 # No path in this script is absolute, so it survives the repo moving.
 #
 # Motifs:
@@ -26,6 +27,7 @@
 #   branch  -- a trunk forking in two with a commit dot at each end (ClientProjBranches)
 #   checker -- a 4x4 checkerboard; a block-compressed texture (TexPreview)
 #   check   -- a tick; a passing environment diagnosis (ZEnvironmentCollector)
+#   flame   -- four stacked rows narrowing downwards; the flame chart (ZInsights)
 #
 # Output: <OutDir>/<Name>.ico, multi-size (16/32/48/256) with PNG-compressed
 # entries, so it stays legible from the taskbar to Explorer's largest view.
@@ -38,7 +40,7 @@ param(
     [string]$Name,
 
     [Parameter(Mandatory = $true)]
-    [ValidateSet('bars', 'branch', 'check', 'checker')]
+    [ValidateSet('bars', 'branch', 'check', 'checker', 'flame')]
     [string]$Motif,
 
     [string]$OutDir = (Get-Location).Path
@@ -211,6 +213,36 @@ function Draw-Checker([System.Drawing.Graphics]$g, [int]$size) {
     }
 }
 
+# Four stacked rows, each narrower than the one above: the call-stack flame
+# chart a .ztrace capture is drawn as.
+function Draw-Flame([System.Drawing.Graphics]$g, [int]$size) {
+    $margin = [float][Math]::Floor($size * 0.18)
+    $rowH   = [float][Math]::Max(1.0, [Math]::Floor($size * 0.13))
+    $gap    = [float][Math]::Max(1.0, [Math]::Floor($size * 0.035))
+
+    # Element by element for the same PS 5.1 array-literal reason as above.
+    $widths = New-Object 'double[]' 4
+    $widths[0] = $size * 0.58
+    $widths[1] = $size * 0.46
+    $widths[2] = $size * 0.34
+    $widths[3] = $size * 0.22
+    # The top row is the widest, so it carries the blue the other motifs lead
+    # with; the two middle rows step through the shared accents.
+    $rows = New-Object 'System.Drawing.Color[]' 4
+    $rows[0] = $Accent[0]
+    $rows[1] = $Accent[1]
+    $rows[2] = $Accent[2]
+    $rows[3] = $Accent[0]
+
+    for ($i = 0; $i -lt 4; $i++) {
+        $y = [float][Math]::Floor($margin + $i * ($rowH + $gap))
+        $w = [float][Math]::Max(1.0, [Math]::Floor($widths[$i]))
+        $b = New-Object System.Drawing.SolidBrush($rows[$i])
+        $g.FillRectangle($b, [float][Math]::Floor($margin), $y, $w, $rowH)
+        $b.Dispose()
+    }
+}
+
 # --- ICO writer -------------------------------------------------------------
 function Get-PngBytes([System.Drawing.Bitmap]$bmp) {
     $ms = New-Object System.IO.MemoryStream
@@ -234,6 +266,7 @@ foreach ($s in $sizes) {
         'branch'  { Draw-Branch  $g $s }
         'check'   { Draw-Check   $g $s }
         'checker' { Draw-Checker $g $s }
+        'flame'   { Draw-Flame   $g $s }
     }
     $g.Dispose()
     $pngs.Add((Get-PngBytes $bmp))

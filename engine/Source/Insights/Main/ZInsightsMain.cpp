@@ -313,6 +313,27 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = nullptr;
     wc.lpszClassName = kWindowClass;
+
+    // IDI_ICON1 comes from z_embed_app_icon() in CMakeLists.txt. The .rc it
+    // generates puts the icon in the *executable* (Explorer, Properties); the
+    // title bar, the Alt-Tab entry and the taskbar button come from the window
+    // class, which is why these two are a separate step. WNDCLASSEX, not
+    // WNDCLASS -- the plain class has no hIconSm, so the taskbar would keep the
+    // system default icon.
+#ifdef IDI_ICON1
+    wc.hIcon = static_cast<HICON>(LoadImageW(wc.hInstance,
+                                             MAKEINTRESOURCEW(IDI_ICON1),
+                                             IMAGE_ICON,
+                                             GetSystemMetrics(SM_CXICON),
+                                             GetSystemMetrics(SM_CYICON),
+                                             0));
+    wc.hIconSm = static_cast<HICON>(LoadImageW(wc.hInstance,
+                                               MAKEINTRESOURCEW(IDI_ICON1),
+                                               IMAGE_ICON,
+                                               GetSystemMetrics(SM_CXSMICON),
+                                               GetSystemMetrics(SM_CYSMICON),
+                                               0));
+#endif
     RegisterClassExW(&wc);
 
     g_Hwnd = CreateWindowExW(0, kWindowClass, L"ZEngine Insights", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
