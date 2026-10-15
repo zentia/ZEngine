@@ -15,6 +15,7 @@
 #endif
 
 #include "Editor/EditorApplication/EditorApplication.h"
+#include "Editor/Launcher/ZEditorLauncher.h"
 #include "Editor/RegisterEditor.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/RegisterRuntime.h"
@@ -142,6 +143,40 @@ namespace
         SHUTDOWN_SYSTEM();
         return 0;
     }
+
+    // Show the project picker, then relaunch ourselves with -p <project>.
+    //
+    // Relaunching rather than carrying on in-process: CommandSystem reads the
+    // project out of argv during START_SYSTEM(), so handing it one here would
+    // mean a second, parallel way to set it. ShellExecute restarts the same exe
+    // (GetModuleFileName, not a hardcoded path) with a quoted argument -- project
+    // paths contain spaces often enough that this matters.
+    int runLauncherAndRelaunch()
+    {
+        std::filesystem::path project_file;
+        if (!ZEditorLauncher::Run(project_file))
+        {
+            return reportMissingProject();
+        }
+
+        wchar_t exe_path[4096] = {};
+        GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));
+
+        const std::wstring arguments = L"-p \"" + project_file.wstring() + L"\"";
+        const HINSTANCE    launched =
+            ShellExecuteW(nullptr, L"open", exe_path, arguments.c_str(), nullptr, SW_SHOW);
+
+        // ShellExecute reports failure through any value <= 32, not NULL.
+        if (reinterpret_cast<INT_PTR>(launched) <= 32)
+        {
+            LOG_ERROR(ZEditor, "Failed to relaunch ZEditor with project: {}", project_file.string());
+            LogSystem::ForceFlush();
+            MessageBoxW(nullptr, L"无法启动 ZEditor。", L"ZEditor", MB_OK | MB_ICONERROR);
+            return 1;
+        }
+
+        return 0;
+    }
 #else
     StartupMode resolveStartupModeFromCommandLine(int argc, char** argv, std::filesystem::path& project_path, PreferredRHI& preferred_rhi)
     {
@@ -212,7 +247,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     switch (resolveStartupModeFromCommandLine(preferred_rhi))
     {
         case StartupMode::OpenLauncher:
-            return reportMissingProject();
+            return runLauncherAndRelaunch();
         case StartupMode::Abort:
             return 1;
         case StartupMode::OpenProject:

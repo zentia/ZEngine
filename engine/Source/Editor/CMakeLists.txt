@@ -158,6 +158,19 @@ target_include_directories(
   PRIVATE $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/engine/Libraries/ZSlate/include>
 )
 
+# ZSlate is header-mostly, but the launcher needs FSlateStandaloneApp, whose
+# Win32 host and D3D11 backend are compiled into the ZSlate target. Every other
+# ZSlate-heavy editor window is still filtered out above, so this is the only
+# thing pulling the library in today.
+target_link_libraries(${TARGET_NAME} PRIVATE ZSlate)
+
+if(WIN32)
+    # comdlg32: GetOpenFileNameW (launcher's "open project" dialog)
+    # shell32:  ShellExecuteW, SHGetKnownFolderPath
+    # d3d11:    ZSlate's standalone render backend
+    target_link_libraries(${TARGET_NAME} PRIVATE comdlg32 shell32 d3d11)
+endif()
+
 # ZAppShell: header-only startup helpers (wide command line, console attach).
 # Header-only so the /MT tools can use it too; nothing to link.
 target_include_directories(
