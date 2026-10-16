@@ -66,7 +66,12 @@ RISK_ORDER: dict[Risk, int] = {
 # 状态取值。刻意不用 bool：
 # 模型看到 `timeout` 会去改超时或换实现，看到 `awaiting_input` 会去换
 # 非交互写法 —— 两者都是"没拿到结果"，但纠偏方向相反。
+#
+# `nonzero_exit` 必须单独一档，不能并入 `ok`：命令跑完了但没成功，
+# 和命令成功是两件事。若都标成 ok，模型会读到「[ok] 退出码 1」这种
+# 自相矛盾的话，从而把失败当成成功往下推。
 STATUS_OK = "ok"
+STATUS_NONZERO = "nonzero_exit"
 STATUS_ERROR = "error"
 STATUS_TIMEOUT = "timeout"
 STATUS_AWAITING_INPUT = "awaiting_input"

@@ -46,8 +46,8 @@ from pathlib import Path
 from typing import Any
 
 from .base import (STATUS_AWAITING_INPUT, STATUS_BAD_ARGS, STATUS_ERROR,
-                   STATUS_KILLED, STATUS_OK, STATUS_TIMEOUT, Risk, Tool,
-                   ToolResult)
+                   STATUS_KILLED, STATUS_NONZERO, STATUS_OK, STATUS_TIMEOUT,
+                   Risk, Tool, ToolResult)
 
 # 让常见工具不要进入交互/分页模式。
 # 这几项不是"优化"，是**能否返回**的前提：git 拉不到凭据时会挂在那里等
@@ -259,16 +259,23 @@ def execute(command: str,
     t_err.start()
 
     status = STATUS_OK
+    # 只有真正需要中断才杀进程树。判据必须显式：
+    # 早先写成 `if status != OK` 就杀，于是"跑完了但退出码非 0"也会被
+    # 当成需要终止 —— 不但白杀一次，还可能连带杀掉命令正常拉起的后台
+    # 子进程。跑完但失败，和跑不完，是两回事。
+    need_kill = False
     try:
         while p.poll() is None:
             now = time.monotonic()
             if timeout and now - start > timeout:
                 status = STATUS_TIMEOUT
+                need_kill = True
                 res.notes.append(f"超过 {timeout}s 未退出，已终止进程树")
                 break
             if (stall_timeout and not res.produced_output
                     and now - start > stall_timeout):
                 status = STATUS_AWAITING_INPUT
+                need_kill = True
                 res.notes.append(
                     f"启动后 {stall_timeout}s 未产出任何输出，"
                     f"疑似在等待输入或分页器")
@@ -277,11 +284,14 @@ def execute(command: str,
 
         if status == STATUS_OK:
             res.returncode = p.returncode
+            # 跑完了但没成功 —— 与"成功"分开标注。
+            # 混为一谈会让模型读到「[ok] 退出码 1」这种自相矛盾的观测。
+            if res.returncode != 0:
+                status = STATUS_NONZERO
     finally:
-        if status != STATUS_OK:
-            res.status = status
-            res.killed = True if status in (STATUS_TIMEOUT,
-                                            STATUS_AWAITING_INPUT) else False
+        res.status = status
+        if need_kill:
+            res.killed = True
             _kill_tree(p)
             try:
                 p.wait(timeout=5)
@@ -301,15 +311,39 @@ def _split_command(command: str) -> list[str]:
     """
     非 shell 模式下把命令串切成 argv。
 
-    用 `shlex` 且 `posix=False`：Windows 路径里的反斜杠会被 posix 模式
-    当成转义吃掉（`C:\\temp` -> `C:temp`），而这套工具主要在 Windows 上
-    跑在引擎工程里。切不开就整串交给 Popen，由它报错。
+    **为什么不用 shlex**：两条路都走不通。
+    - `posix=True`：反斜杠被当转义符吃掉，`C:\\temp\\x.cpp` -> `C:tempx.cpp`。
+      这套工具跑在 Windows 引擎工程里，路径里全是反斜杠，这会直接让
+      "读这个文件"变成"读一个不存在的文件"，而且错得很隐蔽。
+    - `posix=False`：不剥引号，`-c "print(1)"` 会把引号一起交给解释器，
+      变成 `-c '"print(1)"'`，执行的是一个字符串字面量而不是那条语句。
+
+    这里只需要"正确分词"，不需要完整 shell 语法：不处理管道、重定向、
+    变量展开。需要那些能力时调用方应显式开 `shell=True`，而不是指望
+    一个分词器假装自己是 shell。
     """
-    import shlex
-    try:
-        return shlex.split(command, posix=(os.name != "nt"))
-    except ValueError:
-        return [command]
+    out: list[str] = []
+    cur: list[str] = []
+    quote: str | None = None
+
+    for ch in command:
+        if quote:
+            if ch == quote:
+                quote = None
+            else:
+                cur.append(ch)
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch.isspace():
+            if cur:
+                out.append("".join(cur))
+                cur = []
+        else:
+            cur.append(ch)
+
+    if cur:
+        out.append("".join(cur))
+    return out or [command]
 
 
 # ---------------------------------------------------------------- 工具封装
@@ -410,6 +444,8 @@ def _error_text(r: ExecResult) -> str:
         return "命令疑似在等待输入或分页器，已终止"
     if r.status == STATUS_KILLED:
         return "进程被终止"
+    if r.status == STATUS_NONZERO:
+        return f"命令已执行完毕，但退出码为 {r.returncode}"
     if r.returncode is None:
         return "; ".join(r.notes) or "未能启动"
     return f"退出码 {r.returncode}"

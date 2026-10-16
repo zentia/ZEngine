@@ -207,6 +207,9 @@ class AgentLoop:
             step = self.planner.plan(task, history, pending)
 
             if isinstance(step, Finish):
+                # 结束本身也进轨迹。不记这一条，复现时就看不到"决策者是在
+                # 什么观测之后决定收尾的"，也就无从判断它是不是收早了。
+                history.append(Turn(index=i, step=step))
                 return RunOutcome(status=STATUS_DONE, answer=step.answer,
                                   unknowns=list(step.unknowns),
                                   turns=list(history))
