@@ -125,6 +125,20 @@ public:
     bool ExtractObjectData(int64_t fileID, SerializedFile::ObjectData& data);
 
     // -------------------------------------------------------------------------
+    // Unity-1:1 object-table enumeration (PR-SE3c).
+    //
+    // A scene / prefab `.zasset` is a FLAT table of objects -- there is no
+    // nested "objects array" owned by the header (see LevelRes). Callers that
+    // need to hydrate the whole file (Level::load, PrefabUtility) must be able
+    // to walk that table without knowing the local identifiers up front, which
+    // is exactly what SerializedFile::ReadObject's counterpart does in Unity.
+    //
+    // Returns the local identifiers in ascending order so the caller can
+    // Produce() in document order (LevelRes at fileID 1 first, matching the
+    // YAML graph layout and giving deterministic InstanceID assignment).
+    std::vector<int64_t> GetAllObjectFileIDs() const;
+
+    // -------------------------------------------------------------------------
     // P2 #6 -- GUID persistence in `.zasset` header.
     //
     // Every `.zasset` produced by `WriteHeaderAndMetadata` is now prefixed

@@ -14,7 +14,7 @@ objects:
     data:
       GameObject:
         m_Name: Emitter
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/particle/particle.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -25,10 +25,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.46944212913513184
           x: 0
           y: 0
-          z: 0
+          z: 0.88296324014663696
         m_LocalPositionD:
           x: 32
           y: 11
@@ -50,7 +50,7 @@ objects:
     data:
       GameObject:
         m_Name: Player
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/character/player/player.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -61,10 +61,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70710676908493042
           x: 0
           y: 0
-          z: 0
+          z: 0.70710676908493042
         m_LocalPositionD:
           x: 3
           y: 3
@@ -86,7 +86,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_1
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -97,10 +97,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: 1.9459700584411621
           y: -0.38554000854492188
@@ -110,8 +110,8 @@ objects:
           y: -0.38554000854492188
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.99999302625656128
+          y: 0.99999302625656128
           z: 1
         m_Father:
           m_FileID: 0
@@ -122,7 +122,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_2
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -133,10 +133,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: -7.9951000213623047
           y: -0.38554000854492188
@@ -146,8 +146,8 @@ objects:
           y: -0.38554000854492188
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.99991798400878906
+          y: 0.99991798400878906
           z: 1
         m_Father:
           m_FileID: 0
@@ -158,7 +158,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_3
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -169,10 +169,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: -14.20419979095459
           y: -0.38554000854492188
@@ -182,8 +182,8 @@ objects:
           y: -0.38554000854492188
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.99990200996398926
+          y: 0.99990200996398926
           z: 1
         m_Father:
           m_FileID: 0
@@ -194,7 +194,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_4
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -205,10 +205,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: -23.952800750732422
           y: 8.1511001586914062
@@ -218,8 +218,8 @@ objects:
           y: 8.1511001586914062
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.99985599517822266
+          y: 0.99985599517822266
           z: 1
         m_Father:
           m_FileID: 0
@@ -230,7 +230,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_5
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -241,10 +241,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: -31.196300506591797
           y: 8.1511001586914062
@@ -254,8 +254,8 @@ objects:
           y: 8.1511001586914062
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.9998289942741394
+          y: 0.9998289942741394
           z: 1
         m_Father:
           m_FileID: 0
@@ -266,7 +266,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_6
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -277,10 +277,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: -31.1343994140625
           y: -6.5378899574279785
@@ -290,8 +290,8 @@ objects:
           y: -6.5378899574279785
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.9998289942741394
+          y: 0.8398280143737793
           z: 1
         m_Father:
           m_FileID: 0
@@ -302,7 +302,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_7
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -313,10 +313,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: -0.29427200555801392
           y: -16.353099822998047
@@ -326,8 +326,8 @@ objects:
           y: -16.353099822998047
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.9998289942741394
+          y: 0.9998289942741394
           z: 1
         m_Father:
           m_FileID: 0
@@ -338,7 +338,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_8
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -349,10 +349,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: 6.3296298980712891
           y: -16.353099822998047
@@ -362,8 +362,8 @@ objects:
           y: -16.353099822998047
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.9998289942741394
+          y: 0.9998289942741394
           z: 1
         m_Father:
           m_FileID: 0
@@ -374,7 +374,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_9
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -385,10 +385,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: 28.109199523925781
           y: -9.2786998748779297
@@ -398,8 +398,8 @@ objects:
           y: -9.2786998748779297
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.9998289942741394
+          y: 0.9998289942741394
           z: 1
         m_Father:
           m_FileID: 0
@@ -410,7 +410,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_10
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -421,10 +421,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: 27.54170036315918
           y: -1.2243499755859375
@@ -434,8 +434,8 @@ objects:
           y: -1.2243499755859375
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.9998289942741394
+          y: 0.9998289942741394
           z: 1
         m_Father:
           m_FileID: 0
@@ -446,7 +446,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_11
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -457,10 +457,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: 24.114500045776367
           y: 11.760199546813965
@@ -470,8 +470,8 @@ objects:
           y: 11.760199546813965
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.9998289942741394
+          y: 0.9998289942741394
           z: 1
         m_Father:
           m_FileID: 0
@@ -482,7 +482,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_12
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -493,10 +493,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: 16.929300308227539
           y: 11.760199546813965
@@ -506,8 +506,8 @@ objects:
           y: 11.760199546813965
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.9998289942741394
+          y: 0.9998289942741394
           z: 1
         m_Father:
           m_FileID: 0
@@ -518,7 +518,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_13
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -529,10 +529,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: -4.5550098419189453
           y: 15.539400100708008
@@ -542,8 +542,8 @@ objects:
           y: 15.539400100708008
           z: 0
         m_LocalScale:
-          x: 1
-          y: 1
+          x: 0.9998289942741394
+          y: 0.87982797622680664
           z: 1
         m_Father:
           m_FileID: 0
@@ -554,7 +554,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_14
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -579,7 +579,7 @@ objects:
           z: 0
         m_LocalScale:
           x: 1
-          y: 1
+          y: 0.89999997615814209
           z: 1
         m_Father:
           m_FileID: 0
@@ -590,7 +590,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_15
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -626,7 +626,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_16
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -662,7 +662,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_17
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -687,7 +687,7 @@ objects:
           z: 0
         m_LocalScale:
           x: 1
-          y: 1
+          y: 0.86000001430511475
           z: 1
         m_Father:
           m_FileID: 0
@@ -698,7 +698,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithDoor_1
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -723,7 +723,7 @@ objects:
           z: 0
         m_LocalScale:
           x: 1
-          y: 1
+          y: 0.87999975681304932
           z: 1
         m_Father:
           m_FileID: 0
@@ -734,7 +734,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithDoor_2
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -759,7 +759,7 @@ objects:
           z: 0
         m_LocalScale:
           x: 1
-          y: 1
+          y: 0.86000001430511475
           z: 1
         m_Father:
           m_FileID: 0
@@ -770,7 +770,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithDoor_3
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -795,7 +795,7 @@ objects:
           z: 0
         m_LocalScale:
           x: 1
-          y: 1
+          y: 0.86000001430511475
           z: 1
         m_Father:
           m_FileID: 0
@@ -806,7 +806,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithDoor_4
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -831,7 +831,7 @@ objects:
           z: 0
         m_LocalScale:
           x: 1
-          y: 1
+          y: 0.86000001430511475
           z: 1
         m_Father:
           m_FileID: 0
@@ -842,7 +842,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithDoor_5
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -853,10 +853,10 @@ objects:
       Transform:
         enabled: true
         m_LocalRotation:
-          w: 1
+          w: 0.70652997493743896
           x: 0
           y: 0
-          z: 0
+          z: -0.7076830267906189
         m_LocalPositionD:
           x: 36.248100280761719
           y: 7.6569600105285645
@@ -867,7 +867,7 @@ objects:
           z: 0
         m_LocalScale:
           x: 1
-          y: 1
+          y: 0.86000001430511475
           z: 1
         m_Father:
           m_FileID: 0
@@ -878,7 +878,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithWindow_1
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_window.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -914,7 +914,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithWindow_2
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_window.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -939,7 +939,7 @@ objects:
           z: 0
         m_LocalScale:
           x: 1
-          y: 1
+          y: 0.90999966859817505
           z: 1
         m_Father:
           m_FileID: 0
@@ -950,7 +950,7 @@ objects:
     data:
       GameObject:
         m_Name: WallBlock_1
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall_block.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -986,7 +986,7 @@ objects:
     data:
       GameObject:
         m_Name: WallBlock_2
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/wall/wall_block.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -1022,7 +1022,7 @@ objects:
     data:
       GameObject:
         m_Name: Stairs
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/stairs/stairs.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -1058,7 +1058,7 @@ objects:
     data:
       GameObject:
         m_Name: Ground
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/floor/floor.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -1094,7 +1094,7 @@ objects:
     data:
       GameObject:
         m_Name: Fence
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/fence/fence.object.json
         m_Component:
           - component:
               m_FileID: 0
@@ -1130,7 +1130,7 @@ objects:
     data:
       GameObject:
         m_Name: NavVolume
-        m_DefinitionUrl: ""
+        m_DefinitionUrl: asset/objects/environment/navvolume/nav_volume.object.json
         m_Component:
           - component:
               m_FileID: 0

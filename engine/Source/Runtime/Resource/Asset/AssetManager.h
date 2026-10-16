@@ -250,6 +250,14 @@ public:
     bool WriteObjectsToYaml(const std::filesystem::path& path, Object** objects, const int64_t* identifiers, size_t count);
     bool ReadObjectsFromYaml(const std::filesystem::path& path, std::vector<std::pair<int64_t, Object*>>& out);
 
+    // Binary (.zasset) counterpart of ReadObjectsFromYaml -- PR-SE3c.
+    // Hydrates EVERY object in the file's flat object table, registering each
+    // in the read-session resolver before any transfer runs so PPtr /
+    // ImmediatePtr siblings resolve to the right instance. Same
+    // (fileID, Object*) output contract as the YAML reader, so Level::load
+    // and PrefabUtility are backend-agnostic.
+    bool ReadObjectsFromBinary(const std::filesystem::path& path, std::vector<std::pair<int64_t, Object*>>& out);
+
 protected:
     virtual int InsertPathNameInternal(const std::filesystem::path& path, bool create) = 0;
     virtual const std::string& PathIDToPathNameInternal(int pathID) const = 0;

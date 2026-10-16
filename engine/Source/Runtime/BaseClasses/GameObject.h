@@ -71,6 +71,12 @@ public:
     const eastl::string& GetName() const { return name; }
     const eastl::string& getDefinitionUrl() const { return m_DefinitionUrl; }
 
+    // Setter for the prefab/object-definition url. Authoring tools (importers,
+    // the .level.json -> .scene migrator) need to stamp the definition when
+    // they synthesise a GameObject, since m_DefinitionUrl is otherwise only
+    // reachable through deserialization.
+    void setDefinitionUrl(eastl::string definition_url) { m_DefinitionUrl = std::move(definition_url); }
+
     bool HasComponent(const std::string& compenent_type_name) const;
 
     void addComponent(Component* component)

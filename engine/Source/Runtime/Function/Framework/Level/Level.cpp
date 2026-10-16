@@ -83,7 +83,9 @@ namespace
         const std::string extension = LowerExtension(level_path);
         if (extension == ".json")
         {
-            // Legacy engine paths like asset/level/1-1.level.json -> Assets/.../1-1.scene
+            // Legacy .json level urls are not a supported level format; levels
+            // are .scene (YAML) or .zasset (binary). Remap to .scene so an old
+            // reference still resolves instead of failing.
             const std::filesystem::path stem_path = level_path.stem();
             if (LowerExtension(stem_path) == ".level")
             {
@@ -170,96 +172,77 @@ bool Level::load(const eastl::string& levelPath)
     m_LevelResUrl = levelPath;
 
     const std::filesystem::path level_full_path = ResolveLevelLoadPath(levelPath);
-    if (LowerExtension(level_full_path) == ".scene")
+    // Unity-1:1 -- a level is an object graph, never a nested object array.
+    // Both supported backends (YAML .scene for authoring, binary .zasset for
+    // cooked builds) hydrate the file's flat object table; LevelRes is the
+    // header object at fileID 1 and every GameObject / Component is a sibling.
+    // JSON is deliberately NOT supported (see PPTR_DESIGN.md): it cannot carry
+    // the (m_FileID, m_PathID) reference pairs that PPtr / ImmediatePtr need.
+    const bool is_binary = LowerExtension(level_full_path) == ".zasset";
+    const bool is_yaml = LowerExtension(level_full_path) == ".scene";
+    if (!is_binary && !is_yaml)
     {
-        std::vector<std::pair<int64_t, Object*>> entries;
-        if (!GET_SYSTEM(AssetManager)->ReadObjectsFromYaml(level_full_path, entries))
-        {
-            return false;
-        }
-
-        LevelRes* header = nullptr;
-        std::vector<GameObject*> loaded_objects;
-        loaded_objects.reserve(entries.size());
-        for (const auto& entry : entries)
-        {
-            Object* object = entry.second;
-            if (object == nullptr)
-            {
-                continue;
-            }
-            if (object->GetType() == TypeOf<LevelRes>())
-            {
-                header = static_cast<LevelRes*>(object);
-            }
-            else if (object->GetType() == TypeOf<GameObject>())
-            {
-                loaded_objects.push_back(static_cast<GameObject*>(object));
-            }
-        }
-
-        const Vector3 gravity = (header != nullptr) ? header->m_Gravity : Vector3 {0.f, 0.f, -9.8f};
-        m_PhysicsScene = GET_SYSTEM(PhysicsManager)->CreatePhysicsScene(gravity);
-        ParticleEmitterIDAllocator::reset();
-
-        for (GameObject* loaded_object : loaded_objects)
-        {
-            loaded_object->RebuildRuntimeComponents();
-            CreateObject(*loaded_object);
-        }
-
-        if (header != nullptr && !header->m_CharacterName.empty())
-        {
-            for (const auto& object_pair : m_Gobjects)
-            {
-                if (object_pair.second != nullptr && header->m_CharacterName == object_pair.second->GetName())
-                {
-                    m_CurrentActiveCharacter = std::make_shared<Character>(object_pair.second);
-                    break;
-                }
-            }
-        }
-
-        m_IsLoaded = true;
-        RebuildAllTransformHierarchies();
-        LOG_INFO(ZLevel, "level load succeed (yaml)");
-        return true;
-    }
-
-    LevelRes* level_res = GET_SYSTEM(AssetManager)->loadAsset<LevelRes>(levelPath);
-    if (!level_res)
-    {
+        LOG_ERROR(ZLevel,
+                  "unsupported level format '{}': only .scene (YAML) and .zasset (binary) are supported",
+                  level_full_path.generic_string());
         return false;
     }
 
-    m_PhysicsScene = GET_SYSTEM(PhysicsManager)->CreatePhysicsScene(level_res->m_Gravity);
-    ParticleEmitterIDAllocator::reset();
-
-    for (const GameObject* gameObject : level_res->m_Objects)
+    std::vector<std::pair<int64_t, Object*>> entries;
+    const bool read_ok = is_binary ? GET_SYSTEM(AssetManager)->ReadObjectsFromBinary(level_full_path, entries)
+                                   : GET_SYSTEM(AssetManager)->ReadObjectsFromYaml(level_full_path, entries);
+    if (!read_ok)
     {
-        CreateObject(*gameObject);
+        LOG_ERROR(ZLevel, "failed to read level object graph: {}", level_full_path.generic_string());
+        return false;
     }
 
-    // create active character
-    for (const auto& object_pair : m_Gobjects)
+    LevelRes* header = nullptr;
+    std::vector<GameObject*> loaded_objects;
+    loaded_objects.reserve(entries.size());
+    for (const auto& entry : entries)
     {
-        std::shared_ptr<GameObject> object = object_pair.second;
+        Object* object = entry.second;
         if (object == nullptr)
-            continue;
-
-        if (level_res->m_CharacterName == object->GetName())
         {
-            m_CurrentActiveCharacter = std::make_shared<Character>(object);
-            break;
+            continue;
+        }
+        if (object->GetType() == TypeOf<LevelRes>())
+        {
+            header = static_cast<LevelRes*>(object);
+        }
+        else if (object->GetType() == TypeOf<GameObject>())
+        {
+            loaded_objects.push_back(static_cast<GameObject*>(object));
+        }
+    }
+
+    const Vector3 gravity = (header != nullptr) ? header->m_Gravity : Vector3 {0.f, 0.f, -9.8f};
+    m_PhysicsScene = GET_SYSTEM(PhysicsManager)->CreatePhysicsScene(gravity);
+    ParticleEmitterIDAllocator::reset();
+
+    for (GameObject* loaded_object : loaded_objects)
+    {
+        loaded_object->RebuildRuntimeComponents();
+        CreateObject(*loaded_object);
+    }
+
+    if (header != nullptr && !header->m_CharacterName.empty())
+    {
+        for (const auto& object_pair : m_Gobjects)
+        {
+            if (object_pair.second != nullptr && header->m_CharacterName == object_pair.second->GetName())
+            {
+                m_CurrentActiveCharacter = std::make_shared<Character>(object_pair.second);
+                break;
+            }
         }
     }
 
     m_IsLoaded = true;
     m_IsDirty = false;
     RebuildAllTransformHierarchies();
-
-    LOG_INFO(ZLevel, "level load succeed");
-
+    LOG_INFO(ZLevel, "level load succeed ({} objects, {})", loaded_objects.size(), is_binary ? "binary" : "yaml");
     return true;
 }
 
@@ -273,27 +256,6 @@ void Level::Unload()
 bool Level::save()
 {
     LOG_INFO(ZLevel, "saving level: {}", m_LevelResUrl.c_str());
-    LevelRes output_level_res;
-
-    const size_t object_count = m_Gobjects.size();
-    std::vector<std::unique_ptr<GameObject>> saved_objects;
-    saved_objects.reserve(object_count);
-
-    std::vector<GameObject*>& output_objects = output_level_res.m_Objects;
-    output_objects.reserve(object_count);
-
-    for (const auto& id_object_pair : m_Gobjects)
-    {
-        if (id_object_pair.second == nullptr)
-        {
-            continue;
-        }
-
-        std::unique_ptr<GameObject> saved_object = std::make_unique<GameObject>(id_object_pair.first);
-        id_object_pair.second->save(*saved_object);
-        output_objects.push_back(saved_object.get());
-        saved_objects.emplace_back(std::move(saved_object));
-    }
 
     AssetManager* asset_manager = GET_SYSTEM(AssetManager);
     if (asset_manager == nullptr)
@@ -309,61 +271,79 @@ bool Level::save()
         return false;
     }
 
-    bool is_save_success = false;
-    if (LowerExtension(level_path) == ".scene")
+    // Unity-1:1 -- write the whole level as one flat object graph. LevelRes is
+    // the header at fileID 1; every GameObject and Component is a sibling in
+    // the same table, cross-referenced by (m_FileID, m_PathID). The backend is
+    // chosen purely by extension: .scene -> YAML (authoring), .zasset ->
+    // binary (cooked). JSON is not a supported level format.
+    const bool is_binary = LowerExtension(level_path) == ".zasset";
+    if (!is_binary && LowerExtension(level_path) != ".scene")
     {
-        // YAML multi-object graph: a LevelRes header (fileID 1) carrying scene
-        // settings, then every live GameObject and its Components as their own
-        // objects. The GameObject->Component links serialize as local fileID
-        // references (see YamlObjectGraph). Imported assets referenced by
-        // components stay binary and are linked by GUID through the externals
-        // table.
-        std::vector<Object*> graph_objects;
-        std::vector<int64_t> graph_ids;
-
-        LevelRes* header = static_cast<LevelRes*>(GET_SYSTEM(ObjectManager)->Produce(TypeOf<LevelRes>(), 0));
-        if (header == nullptr)
-        {
-            LOG_ERROR(ZLevel, "failed to allocate LevelRes header for {}", m_LevelResUrl.c_str());
-            return false;
-        }
-        header->m_Gravity = output_level_res.m_Gravity;
-        header->m_CharacterName = output_level_res.m_CharacterName;
-        graph_objects.push_back(header);
-        graph_ids.push_back(1);
-
-        int64_t next_file_id = 2;
-        for (const auto& id_object_pair : m_Gobjects)
-        {
-            std::shared_ptr<GameObject> live_object = id_object_pair.second;
-            if (live_object == nullptr)
-            {
-                continue;
-            }
-            live_object->SyncSerializedComponents();
-            graph_objects.push_back(live_object.get());
-            graph_ids.push_back(next_file_id++);
-
-            for (ImmediatePtr<Component>& component_ptr : live_object->getComponents())
-            {
-                Component* component = component_ptr;
-                if (component != nullptr)
-                {
-                    graph_objects.push_back(component);
-                    graph_ids.push_back(next_file_id++);
-                }
-            }
-        }
-
-        is_save_success =
-            asset_manager->WriteObjectsToYaml(level_path, graph_objects.data(), graph_ids.data(), graph_objects.size());
-
-        MemoryManager::DestroyObject(header);
+        LOG_ERROR(ZLevel,
+                  "unsupported level format '{}': only .scene (YAML) and .zasset (binary) are supported",
+                  level_path.generic_string());
+        return false;
     }
-    else
+
+    std::vector<Object*> graph_objects;
+    std::vector<int64_t> graph_ids;
+
+    LevelRes* header = static_cast<LevelRes*>(GET_SYSTEM(ObjectManager)->Produce(TypeOf<LevelRes>(), 0));
+    if (header == nullptr)
     {
-        is_save_success = asset_manager->WriteObjectToDiskThreadSafe(level_path, output_level_res);
+        LOG_ERROR(ZLevel, "failed to allocate LevelRes header for {}", m_LevelResUrl.c_str());
+        return false;
     }
+
+    // Round-trip the scene settings that actually exist on the live level.
+    // (The previous implementation wrote a freshly default-constructed
+    // LevelRes, silently dropping gravity and the active character on save.)
+    if (auto physics_scene = m_PhysicsScene.lock())
+    {
+        header->m_Gravity = physics_scene->getGravity();
+    }
+    if (m_CurrentActiveCharacter != nullptr)
+    {
+        const std::shared_ptr<GameObject> character_object = m_CurrentActiveCharacter->getObject().lock();
+        if (character_object != nullptr)
+        {
+            header->m_CharacterName = character_object->GetName();
+        }
+    }
+
+    graph_objects.push_back(header);
+    graph_ids.push_back(1);
+
+    int64_t next_file_id = 2;
+    for (const auto& id_object_pair : m_Gobjects)
+    {
+        std::shared_ptr<GameObject> live_object = id_object_pair.second;
+        if (live_object == nullptr)
+        {
+            continue;
+        }
+        live_object->SyncSerializedComponents();
+        graph_objects.push_back(live_object.get());
+        graph_ids.push_back(next_file_id++);
+
+        for (ImmediatePtr<Component>& component_ptr : live_object->getComponents())
+        {
+            Component* component = component_ptr;
+            if (component != nullptr)
+            {
+                graph_objects.push_back(component);
+                graph_ids.push_back(next_file_id++);
+            }
+        }
+    }
+
+    const bool is_save_success =
+        is_binary ? asset_manager->WriteObjectsToDiskThreadSafe(level_path, graph_objects.data(), graph_ids.data(),
+                                                                graph_objects.size())
+                  : asset_manager->WriteObjectsToYaml(level_path, graph_objects.data(), graph_ids.data(),
+                                                      graph_objects.size());
+
+    MemoryManager::DestroyObject(header);
 
     if (!is_save_success)
     {

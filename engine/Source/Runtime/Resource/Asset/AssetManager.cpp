@@ -1029,6 +1029,93 @@ bool AssetManager::ReadObjectsFromYaml(const std::filesystem::path& path, std::v
     return true;
 }
 
+bool AssetManager::ReadObjectsFromBinary(const std::filesystem::path& path, std::vector<std::pair<int64_t, Object*>>& out)
+{
+    out.clear();
+
+    SerializedFile* tempSerialize = MemoryManager::CreateObject<SerializedFile>();
+    if (tempSerialize->InitializeRead(path, kCacheSize) != kSerializedFileLoadError_None)
+    {
+        MemoryManager::DestroyObject(tempSerialize);
+        return false;
+    }
+
+    const std::vector<int64_t> file_ids = tempSerialize->GetAllObjectFileIDs();
+    if (file_ids.empty())
+    {
+        MemoryManager::DestroyObject(tempSerialize);
+        return false;
+    }
+
+    // Two passes, mirroring YamlObjectGraph::ReadObjectGraph:
+    //
+    //   1. Produce every object (ascending fileID, so LevelRes at 1 comes
+    //      first) and register it in the read-session resolver.
+    //   2. Transfer each object's fields with the resolver in scope.
+    //
+    // Without pass 1 completing first, a PPtr in an early object that points
+    // at a later sibling (e.g. GameObject -> Transform) would resolve to null
+    // because the target hasn't been produced yet.
+    std::vector<std::pair<int64_t, Object*>> produced;
+    produced.reserve(file_ids.size());
+
+    for (const int64_t file_id : file_ids)
+    {
+        const uint64_t persistent_type_id = tempSerialize->GetObjectPersistentTypeID(file_id);
+        if (persistent_type_id == Type::UndefinedPersistentTypeID)
+        {
+            continue;
+        }
+
+        const Type* resolved_type = nullptr;
+        RuntimeTypeArray& runtime_types = TypeManager::GetInstance().GetRuntimeTypes();
+        for (uint32_t type_index = 0; type_index < runtime_types.count; ++type_index)
+        {
+            const Type* candidate = runtime_types.types[type_index];
+            if (candidate != nullptr && candidate->assetTypeID == persistent_type_id)
+            {
+                resolved_type = candidate;
+                break;
+            }
+        }
+        if (resolved_type == nullptr)
+        {
+            continue;
+        }
+
+        // Stable, path-derived instance ID -- identical to what a future PPtr
+        // targeting this object will mint via GetInstanceIDFromPathAndFileID.
+        const int32_t instance_id = GetInstanceIDFromPathAndFileID(path, file_id);
+        Object* obj = GET_SYSTEM(ObjectManager)->Produce(resolved_type, instance_id);
+        if (obj == nullptr)
+        {
+            continue;
+        }
+
+        produced.emplace_back(file_id, obj);
+    }
+
+    auto readerHook = MakeYamlReaderHook(this);
+    SerializedFilePPtrResolver resolver(tempSerialize, {}, std::move(readerHook));
+    for (const auto& id_object_pair : produced)
+    {
+        resolver.RegisterLocalObject(id_object_pair.second->GetInstanceID(), id_object_pair.first);
+    }
+
+    {
+        ScopedPPtrResolver resolverScope(&resolver);
+        for (const auto& id_object_pair : produced)
+        {
+            tempSerialize->ReadObject(id_object_pair.first, *id_object_pair.second);
+        }
+    }
+
+    MemoryManager::DestroyObject(tempSerialize);
+
+    out = std::move(produced);
+    return true;
+}
+
 bool AssetManager::WriteObjectsToDiskThreadSafe(const std::filesystem::path& path, Object** objects, const int64_t* identifiers, size_t count, TransferInstructionFlags transferFlags)
 {
     if (IsYamlAuthoringAssetPath(path))

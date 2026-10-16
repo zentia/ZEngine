@@ -43,7 +43,10 @@ namespace
     struct PlacedObject
     {
         std::string name;
+        std::string definition;
         Vector3 position;
+        Quaternion rotation;
+        Vector3 scale {1.f, 1.f, 1.f};
     };
 
     // ---- authored level parsing -------------------------------------------
@@ -86,6 +89,16 @@ namespace
                 placed.name = name_it->value.GetString();
             }
 
+            // The definition url is what binds an authored object to its
+            // prefab (wall / floor / player / ...). Dropping it would emit a
+            // scene full of unnamed, definition-less shells, so it must
+            // round-trip even though the legacy JSON branch never read it.
+            const auto definition_it = object_value.FindMember("definition");
+            if (definition_it != object_value.MemberEnd() && definition_it->value.IsString())
+            {
+                placed.definition = definition_it->value.GetString();
+            }
+
             const auto components_it = object_value.FindMember("instanced_components");
             if (components_it != object_value.MemberEnd() && components_it->value.IsArray())
             {
@@ -105,17 +118,44 @@ namespace
                     {
                         continue;
                     }
-                    const auto position_it = transform_it->value.FindMember("position");
-                    if (position_it == transform_it->value.MemberEnd() || !position_it->value.IsObject())
+                    const auto& transform = transform_it->value;
+
+                    const auto position_it = transform.FindMember("position");
+                    if (position_it != transform.MemberEnd() && position_it->value.IsObject())
                     {
-                        continue;
+                        placed.position.x = position_it->value.HasMember("x") && position_it->value["x"].IsNumber()
+                                                 ? position_it->value["x"].GetFloat() : 0.f;
+                        placed.position.y = position_it->value.HasMember("y") && position_it->value["y"].IsNumber()
+                                                 ? position_it->value["y"].GetFloat() : 0.f;
+                        placed.position.z = position_it->value.HasMember("z") && position_it->value["z"].IsNumber()
+                                                 ? position_it->value["z"].GetFloat() : 0.f;
                     }
-                    placed.position.x = position_it->value.HasMember("x") && position_it->value["x"].IsNumber()
-                                             ? position_it->value["x"].GetFloat() : 0.f;
-                    placed.position.y = position_it->value.HasMember("y") && position_it->value["y"].IsNumber()
-                                             ? position_it->value["y"].GetFloat() : 0.f;
-                    placed.position.z = position_it->value.HasMember("z") && position_it->value["z"].IsNumber()
-                                             ? position_it->value["z"].GetFloat() : 0.f;
+
+                    // Rotation and scale round-trip too: the shipped level
+                    // orients walls by yaw, and losing it would collapse the
+                    // whole level onto the axis-aligned default.
+                    const auto rotation_it = transform.FindMember("rotation");
+                    if (rotation_it != transform.MemberEnd() && rotation_it->value.IsObject())
+                    {
+                        const auto& rotation = rotation_it->value;
+                        placed.rotation.x = rotation.HasMember("x") && rotation["x"].IsNumber()
+                                                ? rotation["x"].GetFloat() : 0.f;
+                        placed.rotation.y = rotation.HasMember("y") && rotation["y"].IsNumber()
+                                                ? rotation["y"].GetFloat() : 0.f;
+                        placed.rotation.z = rotation.HasMember("z") && rotation["z"].IsNumber()
+                                                ? rotation["z"].GetFloat() : 0.f;
+                        placed.rotation.w = rotation.HasMember("w") && rotation["w"].IsNumber()
+                                                ? rotation["w"].GetFloat() : 1.f;
+                    }
+
+                    const auto scale_it = transform.FindMember("scale");
+                    if (scale_it != transform.MemberEnd() && scale_it->value.IsObject())
+                    {
+                        const auto& scale = scale_it->value;
+                        placed.scale.x = scale.HasMember("x") && scale["x"].IsNumber() ? scale["x"].GetFloat() : 1.f;
+                        placed.scale.y = scale.HasMember("y") && scale["y"].IsNumber() ? scale["y"].GetFloat() : 1.f;
+                        placed.scale.z = scale.HasMember("z") && scale["z"].IsNumber() ? scale["z"].GetFloat() : 1.f;
+                    }
                     break;
                 }
             }
@@ -189,7 +229,10 @@ int main(int argc, char** argv)
         object_manager->AllocateAndAssignInstanceID(game_object);
         object_manager->AllocateAndAssignInstanceID(transform);
         game_object->SetName(item.name.c_str());
+        game_object->setDefinitionUrl(item.definition.c_str());
         transform->SetLocalPosition(Vector3d(item.position));
+        transform->SetLocalRotation(item.rotation);
+        transform->SetLocalScale(item.scale);
         game_object->addComponent(transform);
 
         // The authored level carries a bare "NavVolume" object whose

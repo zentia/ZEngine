@@ -15,6 +15,7 @@
 #include "SwapEndianBytes.h"
 #include "TypeTreeQueries.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -780,4 +781,19 @@ bool SerializedFile::ExtractObjectData(int64_t fileID, SerializedFile::ObjectDat
     }
 
     return true;
+}
+
+std::vector<int64_t> SerializedFile::GetAllObjectFileIDs() const
+{
+    std::vector<int64_t> file_ids;
+    file_ids.reserve(m_Object.size());
+    for (const auto& id_info_pair : m_Object)
+    {
+        file_ids.push_back(id_info_pair.first);
+    }
+
+    // Ascending order: LevelRes is written at fileID 1, so it is hydrated
+    // first and every sibling PPtr target exists by the time it is read.
+    std::sort(file_ids.begin(), file_ids.end());
+    return file_ids;
 }

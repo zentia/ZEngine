@@ -9,5 +9,4 @@ void LevelRes::Transfer(TransferFunction& transfer)
 {
     transfer.Transfer(m_Gravity, "gravity");
     transfer.Transfer(m_CharacterName, "character_name");
-    // transfer.Transfer(m_Objects, "objects");
 }
