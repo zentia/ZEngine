@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .policy import Policy
 from .tools.base import STATUS_DENIED, RISK_ORDER, Risk, ToolRegistry, ToolResult
@@ -74,7 +74,24 @@ class AskUser:
     context: str = ""
 
 
-Step = Action | Finish | AskUser
+@dataclass
+class BadStep:
+    """
+    决策者产出了无法执行的步骤：JSON 解析失败、调用了不存在的工具、
+    LLM 请求本身失败等。
+
+    **为什么它需要是一个独立的 step 类型，而不是让 Planner 抛异常**：
+    畸形输出是 LLM 最高频的故障，而且绝大多数是可恢复的 —— 模型只要
+    看到"你上一步的 JSON 括号没闭合"就能自己改对。把它变成异常，等于
+    把最常见的可恢复错误升级成致命错误；把它变成观测，它就成了模型可以
+    自我纠正的一条反馈。
+    """
+
+    reason: str
+    raw: str = ""
+
+
+Step = Action | Finish | AskUser | BadStep
 
 
 @dataclass
@@ -171,15 +188,28 @@ class AgentLoop:
                  policy: Policy | None = None,
                  interactor: Interactor | None = None,
                  max_steps: int = 20,
-                 max_consecutive_failures: int = 3) -> None:
+                 max_consecutive_failures: int = 3,
+                 on_turn: Callable[[Turn], None] | None = None) -> None:
         self.registry = registry
         self.planner = planner
         self.policy = policy or Policy()
         self.interactor = interactor or AutoInteractor()
         self.max_steps = max_steps
         self.max_consecutive_failures = max_consecutive_failures
+        # 每轮完成即回调。CLI 靠它实时打印（否则用户盯着黑屏等几十秒），
+        # eval 靠它逐步记账。抽成回调而不是在 loop 里直接 print，是因为
+        # loop 不该知道自己在被谁驱动。
+        self.on_turn = on_turn
         self._inbox: list[str] = []
         self._lock = threading.Lock()
+
+    def _record(self, history: list[Turn], turn: Turn) -> None:
+        history.append(turn)
+        if self.on_turn is not None:
+            try:
+                self.on_turn(turn)
+            except Exception:  # noqa: BLE001 —— 回调出错不许掀翻 loop
+                pass
 
     def push(self, message: str) -> None:
         """
@@ -209,14 +239,29 @@ class AgentLoop:
             if isinstance(step, Finish):
                 # 结束本身也进轨迹。不记这一条，复现时就看不到"决策者是在
                 # 什么观测之后决定收尾的"，也就无从判断它是不是收早了。
-                history.append(Turn(index=i, step=step))
+                self._record(history, Turn(index=i, step=step))
                 return RunOutcome(status=STATUS_DONE, answer=step.answer,
                                   unknowns=list(step.unknowns),
                                   turns=list(history))
 
             if isinstance(step, AskUser):
                 answer = self.interactor.ask(step)
-                history.append(Turn(index=i, step=step, answer=answer))
+                self._record(history, Turn(index=i, step=step, answer=answer))
+                continue
+
+            if isinstance(step, BadStep):
+                # 不终结运行：把它变成一条模型能读懂的失败观测，
+                # 让它有机会在下一步自己纠正。
+                self._record(history, Turn(
+                    index=i, step=step,
+                    observation=ToolResult(ok=False, status=STATUS_ERROR,
+                                           error=step.reason)))
+                consecutive_failures += 1
+                if consecutive_failures >= self.max_consecutive_failures:
+                    return RunOutcome(
+                        status=STATUS_STALLED, turns=list(history),
+                        answer=f"连续 {consecutive_failures} 步无法执行，"
+                               f"最后原因：{step.reason}")
                 continue
 
             # ---- 权限裁决 ----
@@ -227,7 +272,7 @@ class AgentLoop:
                 ok = self.interactor.approve(
                     f"即将执行 {step.tool}({_brief(step.args)}) —— {decision.reason}")
                 if not ok:
-                    history.append(Turn(
+                    self._record(history, Turn(
                         index=i, step=step, approved=False,
                         observation=ToolResult(ok=False, status=STATUS_DENIED,
                                                error=f"未获批准：{decision.reason}")))
@@ -240,7 +285,7 @@ class AgentLoop:
 
             # ---- 执行 ----
             obs = self.registry.call(step.tool, step.args)
-            history.append(Turn(index=i, step=step, observation=obs))
+            self._record(history, Turn(index=i, step=step, observation=obs))
 
             # ---- 停滞检测 ----
             if obs.ok:

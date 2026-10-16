@@ -67,10 +67,15 @@ agentkit/
     eval.py       样本集 / 指标 / runner（EvalReport）
     loop.py       Agent loop：思考 -> 行动 -> 观测（含防呆与可中断）
     policy.py     风险分级与自治档位（plan / normal / autopilot）
+    llm.py        LLM 决策者（零依赖 OpenAI 兼容客户端 + 可注入 transport）
+    cli.py        **入口**：交互式命令行 agent
+    eval_agent.py agent 级 eval（与流水线共用一把尺子）
     tools/
       base.py     Risk / ToolResult / Tool / ToolRegistry
       shell.py    通用命令执行（永不挂住，说清为什么返回）
       code.py     CodeIndex -> 工具（纯转发，行为与规则层一致）
+      crash.py    diagnose() 降级为工具 —— 崩溃诊断只是其中一个能力
+      verify_tool.py  Verifier 暴露为工具 —— 裁定权归规则，调用时机归模型
   zfault/
     patterns.py   故障模式库（9 个模板）
     variants.py   难度变体生成器：depth / decoy，正负样本同源
@@ -218,11 +223,133 @@ destructive / network / irreversible），再叠会话档位：
 区别在于：阻塞是系统替模型决定"到此为止"，这里是模型自己判断"我需要人"。
 前者做不出 agent。`AgentLoop.push()` 另提供中途插话（steering）通道。
 
-### 7.4 三道防呆
+### 7.4 LLM 决策者（`zagent/llm.py`）
+
+零第三方依赖：标准库 `urllib` 直连 OpenAI 兼容的 `/v1/chat/completions`，
+覆盖 OpenAI / DeepSeek / Qwen / Moonshot / vLLM / Ollama 等一整套部署。
+换供应商只改环境变量，不换代码。
+
+**必须可注入 transport。** `FakeTransport` 与 `ScriptedPlanner` 是同一个
+道理，但在这里还多一层意义：**eval 必须可复现**。真模型有随机性，用它跑
+出来的数字无法重放，也就无法回答"改了一版是不是变好了"。默认
+`temperature=0`，并允许整批响应稳定重放。
+
+**失败一律降级为观测。** 网络错、超时、畸形 JSON、调了不存在的工具 ——
+都变成 `BadStep` 而不是异常。畸形输出是 LLM 最高频的故障，而它几乎总是
+可恢复的：模型看到"你上一步的 JSON 没闭合"就能自己改对。把它当异常，
+等于把最常见的可恢复错误升级成致命错误。测试里失败路径的用例比开心路径
+多，这是有意的。
+
+工具调用走两条路径：原生 `function calling` 优先，解析不出时回退到从文本
+里抠 JSON 块（兼容不开 function calling 的本地推理服务）。
+
+**预期要接受的一件事**：接上 LLM 之后，eval 的 `top1` 大概率会从当前的
+100% **掉下来**。现在这个 100% 是 8 条规则在 9 个故障模板上手调出来的，
+不是泛化能力。这个"掉了 → 归因 → 修 → 指标变化"的过程，才是这套东西
+真正值钱的部分；为了保住 100% 而不接 LLM 是本末倒置。
+
+### 7.5 三道防呆
 
 1. `max_steps` —— 拿不到结果的决策者会无限循环烧 token，这是 ReAct 第一号故障模式
 2. 停滞检测 —— 连续失败或原样重复上一步即停，"一直在动但无进展"比卡住更贵
 3. 工具调用永不抛异常 —— 错误降级为观测，模型才有机会自我纠正
+
+### 7.6 CLI：入口是它，不是崩溃诊断
+
+```bash
+python -m zagent.cli                        # 交互
+python -m zagent.cli --task "..."           # 单次执行后退出（CI）
+python -m zagent.cli --root <repo> --dump <x.json> --task "定位这次崩溃"
+```
+
+斜杠命令：`/help` `/tools` `/mode plan|normal|autopilot` `/trace` `/exit`。
+
+**没有模型也要能用。** 未配 API key 时退到 `RulePlanner`：能派发诊断、
+能提问，但**如实声明自己是规则路由**、"只走了一步"。为什么不做成没 key
+就退出：那会让 CLI 在离线分析机和 CI 上变成死文件。降级后仍可用、且说清
+自己在降级，比"要么全有要么全无"有用得多。
+
+**执行中可以插话。** 任务跑在后台线程，主线程同时读键盘：说话即注入
+（steering），agent 提问则由主线程接过来问人。两个线程不能同时读 stdin
+（会互相吃输入），所以提问走队列 + 事件：agent 阻塞等，主线程统一读。
+
+### 7.7 崩溃诊断降级为工具（关键的一步）
+
+`tools/crash.py` 把 `diagnose()` 包装成 `diagnose_crash`。方向很重要：
+**不是把流水线改写成 agent，而是让 agent 去调用它**。流水线因此保住确定性
+（可回归、可 eval），agent 因此拿到自主性。
+
+分水岭在**版本不一致**这个场景上：
+
+- 旧行为：`auto_checkout=False` → 硬 `return report`，到此为止。没有任何
+  通道能继续 —— 这正是"自动化工具"和"agent"的分界。
+- 新行为：工具返回 `blocked` 并说明原因，**agent 读到这条观测后自己决定
+  下一步**：调 shell 切分支、切完再调一次。
+
+护栏一个字没改，从"死路"变成了"可绕过的路障"。
+
+工具**强制 `auto_checkout=False`**：自动切分支会改动开发者的 working tree，
+那是破坏性操作，该由 agent 显式调 shell 去做并走审批，不能藏在"只读诊断"
+里偷偷做掉。这条有测试守着（`test_never_auto_checkout`）。
+
+### 7.8 接 eval：同一份样本、两条路径、同一把尺子
+
+```bash
+python -m examples.run_eval_agent
+```
+
+一次跑出两组数字：流水线基线 vs agent。两组用**完全相同**的 `score()`
+评分，所以差异只可能来自路径本身：
+
+```
+[对照]
+  top1         100.00% -> 100.00%   +0.00%
+  top3         100.00% -> 100.00%   +0.00%
+  honesty      100.00% -> 100.00%   +0.00%
+  evidence     100.00% -> 100.00%   +0.00%
+```
+
+**这个"一致"本身就是结论**：它证明 agent 层没有引入损耗。之后接上真 LLM
+时掉下来的每一个点，就都可以归因到模型，而不是管道。
+
+没有这个对照实验会怎样？假设接 LLM 后 top1 掉到 87%，你看到"掉了 13 个
+点"，**但无法归因** —— 它可能是模型不行，也可能是你的工具层有 bug。
+对照实验的作用就是把这两种可能分开。
+
+新增的只有 agent 特有的过程指标：平均步数、工具错误率、**停滞率**、
+未产出报告率。它们衡量的是过程，结论质量仍由原指标负责。
+
+### 7.9 Verifier 工具化：既自主又不幻觉
+
+`tools/verify_tool.py` 把 8 条验证规则暴露成工具。分工是这套东西的核心：
+
+- **模型决定何时验证**：看到可疑的地方就去调，调几次、验证什么，由它定；
+- **规则决定怎样算验证过**：裁定发生在模型之外，它无法自己给自己发
+  CONFIRMED。
+
+这就是和一万个玩具 ReAct demo 的分界线 —— 玩具 agent 的"验证"是模型
+自己再说一遍"我确认了"，那等于没验证。
+
+三个必须做对的语义：
+
+| 裁定 | `ok` | 能否进结论 | 为什么 |
+|---|---|---|---|
+| `CONFIRMED` | True | 是（且需可回溯证据） | 成立 |
+| `REFUTED` | **True** | 否 | 验证成功了，答案是"不成立" |
+| `UNPROVEN` | **True** | 否 | 无法判定是合法结论，猜一个不是 |
+
+**REFUTED 绝不能回成 `ok=False`。** 否则模型会把"这条假设不成立"当成
+工具故障去重试同一条 —— 恰恰是把正确结论当成了故障，而且会死循环。
+
+结论门槛是 `CONFIRMED` **且** 带可回溯证据。少了后一半，一条"我说它对"
+也能混进结论 —— CONFIRMED 是必要不充分条件。
+
+台账（`conclusion_ledger`）保留全部，包括被推翻的。只留成功的台账会让
+复盘变成自证；能回答"试过什么、为什么否掉"才可归因。
+
+**当前约束到哪一步**：system prompt 约束 + `conclusion_ledger` 提供自检
+手段，**尚未在 `finish` 处硬拦**（那需要 loop 层持有台账，已在路线图）。
+这里不做"假装已经拦住了"的事 —— 约束到哪一步，就说到哪一步。
 
 ---
 ## 八、CI 的平台分工
@@ -271,11 +398,17 @@ destructive / network / irreversible），再叠会话档位：
 - [x] `Policy`：三档自治（plan / normal / autopilot）+ 低置信度触发询问
 - [x] HITL：`AskUser` 作为一等 step + 中途插话（steering）
 - [x] `CodeIndex` 映射为工具（纯转发，不改动验证层行为）
-- [ ] `Planner` 的 LLM 实现（当前只有 `ScriptedPlanner` 确定性基线）
-- [ ] 把 `diagnose()` 整体降级为 loop 可调的一个工具
-- [ ] `Verifier` 暴露为工具：模型决定何时验证，规则决定怎样算验证过
+- [x] `Planner` 的 LLM 实现：零第三方依赖（标准库 urllib）+ 可注入 transport
+- [x] 把 `diagnose()` 整体降级为 loop 可调的一个工具
+- [x] 交互式 CLI（斜杠命令、审批、中途插话、逐轮打印）
+- [x] agent 级 eval：与流水线共用 `score()`，已跑对照实验（见 7.8）
+- [x] `Verifier` 暴露为工具：模型决定何时验证，规则决定怎样算验证过
+- [ ] 结论硬门禁：在 `finish` 处拦截没有 CONFIRMED 支撑的结论（需 loop 持台账）
 - [ ] 上下文压缩（轨迹变长后的摘要/裁剪）
 - [ ] 把工具层接到 MCP，让外部 agent 也能用这套能力
+- [ ] 接入更多能力工具（编译日志、实验台跑批），验证"加能力不用改结构"
+- [ ] 用真 LLM 跑对照实验，记录 top1 掉了多少并做归因 ← 见 7.8
+- [ ] 用 `zlab` 批量注入故障，把对照实验的样本量堆到数百个
 
 ---
 
@@ -287,6 +420,28 @@ python -m examples.minimal_run
 ```
 
 不需要真实 dump、不需要引擎编译，跑的是一个合成的崩溃样本，完整走完门禁 → 取事实 → 版本对齐 → 符号映射 → 假设验证 → 报告。
+
+### 交互 agent（新入口）
+
+```bash
+python -m zagent.cli                     # 进入交互，/help 看命令
+python -m zagent.cli --task "..."        # 单次执行后退出，CI 用
+python -m examples.agent_demo            # 不需要 LLM 的机制演示
+python -m examples.agent_llm_demo        # 有 key 时真跑，无 key 时演示
+```
+
+崩溃诊断在这个 CLI 里是一个**注册进来的能力**，不是全部：
+
+```bash
+python -m zagent.cli --root <repo> --dump <crash.json> --task "定位这次崩溃"
+```
+
+### eval 对照
+
+```bash
+python -m examples.run_eval       # 流水线基线
+python -m examples.run_eval_agent # 流水线 vs agent，同一把尺子
+```
 
 ---
 

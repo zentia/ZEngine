@@ -15,13 +15,24 @@
   工具壳（`tools/code.py`），不改动验证规则的任何行为；
 - `Verifier` 后续会作为一个**工具**暴露，而不是流水线的一个阶段 ——
   那时"何时该验证"由模型决定，"怎样算验证过"仍由规则把持。
+
+崩溃诊断在这个体系里的位置
+--------------------------
+`tools/crash.py` 把 `diagnose()` **降级成一个工具**。方向很重要：不是把
+流水线改写成 agent，而是让 agent 去调用它 —— 流水线因此保住确定性
+（可回归、可 eval），agent 因此拿到自主性（决定何时调用、调用后干什么）。
+崩溃诊断是这套 agent 的一个能力，不是它的全部。
 """
 
 from .base import Risk, Tool, ToolRegistry, ToolResult
 from .code import make_code_tools
+from .crash import make_crash_tools
 from .shell import classify_command_risk, make_shell_tool
+from .verify_tool import RULE_PARAMS, make_verify_tools
 
 __all__ = [
     "Risk", "Tool", "ToolRegistry", "ToolResult",
-    "make_shell_tool", "make_code_tools", "classify_command_risk",
+    "make_shell_tool", "make_code_tools", "make_crash_tools",
+    "make_verify_tools", "RULE_PARAMS",
+    "classify_command_risk",
 ]
