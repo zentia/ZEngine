@@ -219,5 +219,15 @@ void RegisterGameRuntime(PreferredRHI preferred_rhi)
     // GameEngine is registered last: its Initialize() reads the active level and
     // possesses the character, so WorldManager must already be up.
     RegisterRuntime(preferred_rhi);
+
+    // AssetManager lives in RegisterPlatform() rather than in RegisterSystem()
+    // so that the editor keeps its own EditorAssetManager: RegisterRuntime() is
+    // shared with the editor, and SystemRegistry::RegisterSystemAlias() skips an
+    // alias whose base type is already present, so registering RuntimeAssetManager
+    // inside RegisterSystem() would silently displace EditorAssetManager.
+    // RegisterPlatform() is therefore game-only, and must run before GameEngine
+    // because Level::load / WorldManager resolve assets through GET_SYSTEM(AssetManager).
+    RegisterPlatform();
+
     REGISTER_SYSTEM(GameEngine);
 }

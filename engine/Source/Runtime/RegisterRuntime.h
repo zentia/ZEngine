@@ -18,6 +18,11 @@ void RegisterRuntime(PreferredRHI preferred_rhi = PreferredRHI::Default);
 // Used by standalone tools (TexPreview, etc.) that need a window + rendering
 // but don't have a project opened.
 void RegisterRuntimeLight(PreferredRHI preferred_rhi = PreferredRHI::Default);
+// Registers the AssetManager implementation used outside the editor
+// (RuntimeAssetManager). Called by RegisterGameRuntime() for the standalone
+// game, and by ZEngineApi / standalone tools. Deliberately NOT called by
+// RegisterRuntime(): the editor registers its own EditorAssetManager via
+// RegisterEditor(), and RegisterSystemAlias() would skip it if this ran first.
 void RegisterPlatform();
 
 // Standalone game process (ZGame): Runtime systems + the game framework layer
