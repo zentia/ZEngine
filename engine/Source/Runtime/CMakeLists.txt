@@ -397,6 +397,10 @@ list(REMOVE_ITEM SOURCE_FILES
        "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AssetMigrator.cpp")
   list(REMOVE_ITEM SOURCE_FILES
        "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/ComponentRegistryCheck.cpp")
+  list(REMOVE_ITEM SOURCE_FILES
+       "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/ObjectDefinitionMigrator.cpp")
+  list(REMOVE_ITEM REGULAR_SOURCE_FILES
+       "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/ObjectDefinitionMigrator.cpp")
   list(REMOVE_ITEM REGULAR_SOURCE_FILES
        "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/ComponentRegistryCheck.cpp")
 

@@ -45,9 +45,31 @@ void TransformTRS::Transfer(TransferFunction& transfer)
         Vector3 legacy_position {Vector3::ZERO};
         transfer.Transfer(legacy_position, "m_position");
         transfer.Transfer(m_Position, "m_positionD");
-        if (m_Position == Vector3d::ZERO && legacy_position != Vector3::ZERO)
+
+        // Legacy .object.json / authored JSON spell these without the "m_"
+        // prefix and keep position single-precision. Reading is additive so a
+        // file written by either convention loads; writing still emits the
+        // canonical names.
+        Vector3 authored_position {Vector3::ZERO};
+        transfer.Transfer(authored_position, "position");
+
+        if (m_Position == Vector3d::ZERO)
         {
-            m_Position = Vector3d(legacy_position);
+            if (legacy_position != Vector3::ZERO)
+            {
+                m_Position = Vector3d(legacy_position);
+            }
+            else if (authored_position != Vector3::ZERO)
+            {
+                m_Position = Vector3d(authored_position);
+            }
+        }
+
+        Quaternion authored_rotation {Quaternion::IDENTITY};
+        transfer.Transfer(authored_rotation, "rotation");
+        if (m_Rotation == Quaternion::IDENTITY && authored_rotation != Quaternion::IDENTITY)
+        {
+            m_Rotation = authored_rotation;
         }
     }
     else
@@ -57,5 +79,14 @@ void TransformTRS::Transfer(TransferFunction& transfer)
         transfer.Transfer(legacy_position, "m_position");
     }
     transfer.Transfer(m_Scale, "m_scale");
+    if constexpr (TransferFunction::IsReading())
+    {
+        Vector3 authored_scale {Vector3::UNIT_SCALE};
+        transfer.Transfer(authored_scale, "scale");
+        if (m_Scale == Vector3::UNIT_SCALE && authored_scale != Vector3::UNIT_SCALE)
+        {
+            m_Scale = authored_scale;
+        }
+    }
     transfer.Transfer(m_Rotation, "m_rotation");
 }

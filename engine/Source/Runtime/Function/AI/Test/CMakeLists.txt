@@ -164,4 +164,19 @@ if(MSVC)
     target_compile_options(ComponentRegistryCheck PRIVATE /W4)
 endif()
 
+add_executable(ObjectDefinitionMigrator ObjectDefinitionMigrator.cpp)
+target_link_libraries(ObjectDefinitionMigrator PRIVATE ZRuntime)
+if(TARGET ZEnginePCH)
+    target_link_libraries(ObjectDefinitionMigrator PRIVATE ZEnginePCH)
+    target_include_directories(ObjectDefinitionMigrator PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+    add_dependencies(ObjectDefinitionMigrator ZEnginePCH)
+    target_precompile_headers(ObjectDefinitionMigrator REUSE_FROM ZEnginePCH)
+endif()
+
+if(MSVC)
+    target_compile_options(ObjectDefinitionMigrator PRIVATE /W4)
+endif()
+
+message(STATUS "Configured object definition migrator target: ObjectDefinitionMigrator")
+
 message(STATUS "Configured component registry check target: ComponentRegistryCheck")

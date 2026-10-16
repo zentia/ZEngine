@@ -6,6 +6,7 @@
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/PrefabRefComponent.h"
+#include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
@@ -401,6 +402,26 @@ namespace
         }
 
     private:
+        /// Append Objects owned by a Component (rather than by the GameObject)
+        /// to the writer's object list, so their fileID references resolve.
+        static void CollectEmbeddedObjects(const Component* comp, std::vector<Object*>& out)
+        {
+            const RigidBodyComponent* rigidbody = dynamic_cast<const RigidBodyComponent*>(comp);
+            if (rigidbody == nullptr)
+            {
+                return;
+            }
+
+            for (const ImmediatePtr<RigidBodyShape>& shape : rigidbody->GetRigidbodyRes().m_Shapes)
+            {
+                RigidBodyShape* shape_object = shape;
+                if (shape_object != nullptr)
+                {
+                    out.push_back(shape_object);
+                }
+            }
+        }
+
         bool Visit(GameObject* go, std::vector<Object*>& out)
         {
             if (go == nullptr || !m_Visited.insert(go).second)
@@ -419,10 +440,18 @@ namespace
             for (ImmediatePtr<Component>& comp_ptr : go->getComponents())
             {
                 Component* comp = comp_ptr;
-                if (comp != nullptr)
+                if (comp == nullptr)
                 {
-                    out.push_back(comp);
+                    continue;
                 }
+
+                out.push_back(comp);
+
+                // Some Components embed Objects of their own. Those are
+                // serialized as fileID references too, so they need slots in
+                // this file -- without them the reference resolves to null on
+                // read (a wall would load with a rigid body but no shape).
+                CollectEmbeddedObjects(comp, out);
             }
 
             // 2) Recurse into Transform children.
