@@ -568,6 +568,15 @@ bool WorldManager::OpenScene(const eastl::string& level_url)
     }
 
     m_CurrentActiveLevel = iter->second;
+
+    // 单场景直开也是一个"世界已就绪"的终态：不置位的话 Tick() 里的
+    // `if (!m_IsWorldLoaded) LoadWorld(m_CurrentWorldUrl)` 会在下一帧把配置里的
+    // 默认 world 再拉起来，把它自己默认关卡设为活动关卡 —— 调用方刚打开的
+    // 场景（独立进程 --level / startup_level）活不过一帧就被顶掉，角色接管
+    // 于是永远拿到一个没有角色的关卡。置位后 Tick 不再补加载，活动关卡保持
+    // 本次 OpenScene 的结果，直到下一次显式切换。
+    m_IsWorldLoaded = true;
+
     LOG_INFO(ZWorld, "OpenScene: loaded {}", level_url.c_str());
     return true;
 }
