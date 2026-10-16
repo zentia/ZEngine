@@ -65,6 +65,12 @@ agentkit/
     verify.py     Verifier 与 8 条验证规则
     pipeline.py   diagnose() 主流水线
     eval.py       样本集 / 指标 / runner（EvalReport）
+    loop.py       Agent loop：思考 -> 行动 -> 观测（含防呆与可中断）
+    policy.py     风险分级与自治档位（plan / normal / autopilot）
+    tools/
+      base.py     Risk / ToolResult / Tool / ToolRegistry
+      shell.py    通用命令执行（永不挂住，说清为什么返回）
+      code.py     CodeIndex -> 工具（纯转发，行为与规则层一致）
   zfault/
     patterns.py   故障模式库（9 个模板）
     variants.py   难度变体生成器：depth / decoy，正负样本同源
@@ -82,6 +88,7 @@ agentkit/
     run_eval.py            合成样本 eval
     run_eval_lab.py        真实样本 eval（8 个手写模板）
     run_eval_lab_scale.py  大规模 eval（变体，接 EvalReport 全指标）
+    agent_demo.py          agent loop 演示（不需要 LLM）
   tests/
 ```
 
@@ -156,7 +163,69 @@ top1 100%   top3 100%   honesty 100%   evidence 100%
 不是缺陷本质；且全部样本都在同一台机器上产生。
 
 ---
-## 七、CI 的平台分工
+## 七、从流水线到 Agent loop
+
+`diagnose()` 是一条**写死的五阶段流水线**：步骤确定、可回归、可 eval。
+它的代价是自主性为零 —— 决策者只能接受流水线喂给它的东西，没有"选一个
+工具去查"的能力，于是也没有等待管理、自主决策、与人交互的必要。
+
+新增的 `zagent/loop.py` + `zagent/tools/` 补齐了另一半。分工是刻意的：
+
+| | 流水线 `diagnose()` | loop `AgentLoop` |
+|---|---|---|
+| 适用 | 步骤确定、要可回归 | 步骤不确定 |
+| 谁决定下一步 | 代码写死 | 决策者（`Planner`） |
+| 领域知识在哪 | 阶段内部 | **仍在工具里**（Verifier） |
+
+**关键：Verifier 不进 loop。** "什么时候该验证"交给模型决定，"怎样算验证
+过"仍由那 8 条规则把持 —— 这就是既自主又不幻觉的结构。下一步应把
+`diagnose()` 整体降级成 loop 可以调用的一个工具，而不是改写它。
+
+### 7.1 命令不再"一直等待"
+
+`tools/shell.py` 针对五类成因分别处理，并**把原因结构化返回**：
+
+| 成因 | 对策 | 返回状态 |
+|---|---|---|
+| 没设超时 | wall-clock timeout | `timeout` |
+| 在等 stdin | `stdin=DEVNULL`，立刻 EOF | `nonzero_exit` |
+| 分页器 | `PAGER=cat` / `TERM=dumb` / `GIT_TERMINAL_PROMPT=0` | — |
+| 只杀父进程 | 杀进程树 | — |
+| 输出一次性收回 | 线程边跑边收 | **超时也保留部分输出** |
+
+最后一条最致命也最易漏：编译失败时前 200 行就是错误信息。丢掉它，模型
+只能原样重试 —— 而原样重试正是"一直等待"的观感来源。
+
+`awaiting_input` 必须单独成档：模型看到它会去换非交互写法，看到
+`timeout` 会去加长时限。笼统回 `failed`，两者都只能重试。
+
+### 7.2 风险分级取代全局开关
+
+`auto_checkout=False` 那种布尔开关，是用一个值同时回答了三个不同风险
+等级的问题。改为按**可挽回性**分级（read / search / write / exec /
+destructive / network / irreversible），再叠会话档位：
+
+- `plan` 只读与检索，其余先问
+- `normal` 本地可撤销动作自动，破坏/出网/不可逆先问
+- `autopilot` 除不可逆外全部自动
+
+另有一条：**低置信度本身也触发询问**。这把「不确定性」从报告里的一个
+标注，变成了控制流的一部分 —— 模型说没把握，系统就真的去问人。
+
+### 7.3 交互是决策者的一种输出
+
+`AskUser` 与 `Action`、`Finish` 并列，是决策者**主动选择**的 step。
+区别在于：阻塞是系统替模型决定"到此为止"，这里是模型自己判断"我需要人"。
+前者做不出 agent。`AgentLoop.push()` 另提供中途插话（steering）通道。
+
+### 7.4 三道防呆
+
+1. `max_steps` —— 拿不到结果的决策者会无限循环烧 token，这是 ReAct 第一号故障模式
+2. 停滞检测 —— 连续失败或原样重复上一步即停，"一直在动但无进展"比卡住更贵
+3. 工具调用永不抛异常 —— 错误降级为观测，模型才有机会自我纠正
+
+---
+## 八、CI 的平台分工
 
 两个工作流，职责分开：
 
@@ -184,7 +253,7 @@ top1 100%   top3 100%   honesty 100%   evidence 100%
 一个自己会失效的守卫比没有守卫更糟，因为它给的是假的安全感。
 
 ---
-## 八、路线图
+## 九、路线图
 
 - [x] L4 骨架：流水线 + tracing + 证据等级 + 简化 Verifier
 - [x] L3 扩展：已注册 8 条规则 —— callchain / nullcheck / unsigned_underflow / double_free / leak / recursion / overflow / race
@@ -194,9 +263,23 @@ top1 100%   top3 100%   honesty 100%   evidence 100%
 - [x] CI 批量产样本：.github/workflows/agentkit.yml（三平台测试 + Windows 真实实验台）与 gentkit-eval.yml（大规模 eval，push main / 每晚定时）← 差异化核心
 - [ ] eval 报告站：命中率 / 诚实度 / 失败案例库公开
 
+**Agent 运行时**（第七节）：
+
+- [x] 工具层：`ToolRegistry` + `Risk` 分级；工具调用永不抛异常，错误降级为观测
+- [x] 通用命令执行：五类挂死成因分别处理；超时保留部分输出；`awaiting_input` 单独成档
+- [x] `AgentLoop`：思考->行动->观测，含 max_steps / 停滞 / 重复三道防呆
+- [x] `Policy`：三档自治（plan / normal / autopilot）+ 低置信度触发询问
+- [x] HITL：`AskUser` 作为一等 step + 中途插话（steering）
+- [x] `CodeIndex` 映射为工具（纯转发，不改动验证层行为）
+- [ ] `Planner` 的 LLM 实现（当前只有 `ScriptedPlanner` 确定性基线）
+- [ ] 把 `diagnose()` 整体降级为 loop 可调的一个工具
+- [ ] `Verifier` 暴露为工具：模型决定何时验证，规则决定怎样算验证过
+- [ ] 上下文压缩（轨迹变长后的摘要/裁剪）
+- [ ] 把工具层接到 MCP，让外部 agent 也能用这套能力
+
 ---
 
-## 九、快速开始
+## 十、快速开始
 
 ```bash
 cd agentkit
@@ -207,7 +290,7 @@ python -m examples.minimal_run
 
 ---
 
-## 十、与内部项目的关系
+## 十一、与内部项目的关系
 
 `agentkit/` 里的框架代码与任何闭源工程无耦合。闭源工程提供的是**领域规则**（Verifier 里的判断逻辑），那些不进这个仓库。
 

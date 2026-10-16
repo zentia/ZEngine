@@ -20,8 +20,10 @@ read_lines 为什么默认限制行数
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
+from ..types import SourceLocation
 from .base import STATUS_BAD_ARGS, STATUS_ERROR, Risk, Tool, ToolResult
 
 
@@ -31,9 +33,13 @@ def make_code_tools(code: Any, default_radius: int = 40,
 
     def _read_context(path: str, line: int,
                       radius: int | None = None) -> ToolResult:
-        from ..types import SourceLocation
+        # **必须转成 Path**：`SourceLocation.path` 与 `CodeIndex` 各方法
+        # 的签名都是 Path，而工具入参是 JSON 里的字符串。直接传 str，
+        # 在桩实现上能跑通（桩不碰 path），在真实 GitCodeIndex 上会在
+        # 第一次 `path.read_text()` 处炸 —— 这类"只在真实实现上暴露"的
+        # 类型错误，正是工具层最容易漏掉的一类。
         try:
-            loc = SourceLocation(path=path, line=int(line))
+            loc = SourceLocation(path=Path(path), line=int(line))
         except (TypeError, ValueError, OSError) as e:
             return ToolResult(ok=False, status=STATUS_BAD_ARGS,
                               error=f"无法解析位置 {path}:{line} ({e})")
@@ -53,9 +59,9 @@ def make_code_tools(code: Any, default_radius: int = 40,
 
     def _read_lines(path: str, start: int = 1,
                     count: int = max_lines) -> ToolResult:
-        from ..types import SourceLocation
+        p = Path(path)
         try:
-            lines = code.read_lines(path)
+            lines = code.read_lines(p)
         except Exception as e:  # noqa: BLE001
             return ToolResult(ok=False, status=STATUS_ERROR,
                               error=f"读取失败: {type(e).__name__}: {e}")
@@ -73,7 +79,7 @@ def make_code_tools(code: Any, default_radius: int = 40,
         note = f"\n[共 {total} 行，本次显示 {s}~{s + len(chunk) - 1}" \
                + (f"，还有 {hidden} 行未显示]" if hidden > 0 else "]")
         return ToolResult(ok=True, output=body + note,
-                          data={"path": str(path), "total": total,
+                          data={"path": str(p), "total": total,
                                 "shown": len(chunk), "hidden": max(0, hidden)})
 
     def _grep(pattern: str, limit: int = 50) -> ToolResult:

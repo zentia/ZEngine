@@ -43,7 +43,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import IO, Callable
 
 from .base import (STATUS_AWAITING_INPUT, STATUS_BAD_ARGS, STATUS_ERROR,
                    STATUS_KILLED, STATUS_NONZERO, STATUS_OK, STATUS_TIMEOUT,
@@ -121,7 +121,7 @@ class ExecResult:
 
 # ---------------------------------------------------------------- 执行核心
 
-def _pump(stream, sink: list[str], on_line) -> None:
+def _pump(stream: IO[str], sink: list[str], on_line: Callable[[], None]) -> None:
     """把子进程输出逐行搬到列表里。线程中运行。"""
     try:
         for line in iter(stream.readline, ""):
@@ -136,7 +136,7 @@ def _pump(stream, sink: list[str], on_line) -> None:
             pass
 
 
-def _kill_tree(p: subprocess.Popen) -> None:
+def _kill_tree(p: "subprocess.Popen[str]") -> None:
     """
     杀掉进程及其子孙。
 
@@ -166,7 +166,7 @@ def _kill_tree(p: subprocess.Popen) -> None:
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)],
-                           capture_output=True, timeout=10)
+                           capture_output=True, timeout=10, check=False)
         except Exception:  # noqa: BLE001
             pass
 
