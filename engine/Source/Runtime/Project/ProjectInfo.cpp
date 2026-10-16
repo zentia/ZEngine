@@ -241,6 +241,16 @@ bool ProjectInfo::LoadFromFile(const std::filesystem::path& project_file_path)
     project_file = project_file_path;
     project_path = project_file_path.parent_path();
 
+    // .zproject is authored as block YAML. Legacy JSON projects are still read:
+    // a JSON document parses as YAML (JSON is a YAML subset), so the YAML path
+    // alone would already cover them -- but our constrained parser is stricter
+    // than the spec on a few constructs, so we fall back to the JSON reader on
+    // failure rather than failing the whole project open.
+    if (GET_SYSTEM(FileSystem)->LoadAssetByYaml(this, project_file_path))
+    {
+        return true;
+    }
+
     return GET_SYSTEM(FileSystem)->LoadAssetByJson(this, project_file_path);
 }
 
@@ -251,7 +261,7 @@ bool ProjectInfo::SaveToFile() const
         return false;
     }
 
-    return GET_SYSTEM(FileSystem)->saveAssetJson(*this, project_file);
+    return GET_SYSTEM(FileSystem)->saveAssetYaml(*this, project_file);
 }
 
 bool ProjectInfo::IsValid() const
@@ -781,4 +791,5 @@ void ProjectInfo::Transfer(TransferFunction& transfer)
     transfer.Transfer(data_dir, "data_dir");
     transfer.Transfer(textures_dir, "textures_dir");
     transfer.Transfer(models_dir, "models_dir");
+    transfer.Transfer(startup_level, "startup_level");
 }

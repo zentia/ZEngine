@@ -18,6 +18,7 @@
 #include "Runtime/Core/Base/CrashHandler.h"
 #include "Runtime/Function/Framework/GameFramework/GameEngine.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
+#include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/RegisterRuntime.h"
 
 namespace
@@ -26,8 +27,33 @@ namespace
     {
         std::filesystem::path project_path;
         bool has_project_argument {false};
+        std::string level_override;
         PreferredRHI preferred_rhi {PreferredRHI::Default};
     };
+
+#ifdef _WIN32
+    // EncodingUtils exposes GBK->UTF-8 but nothing for wide argv. CommandSystem
+    // does the same conversion inline; we keep a local copy so ZGame doesn't
+    // depend on that system being up yet (this runs before START_SYSTEM).
+    std::string WideToUtf8(const wchar_t* wide)
+    {
+        if (wide == nullptr)
+        {
+            return {};
+        }
+
+        const int needed = WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
+        if (needed <= 1)
+        {
+            return {};
+        }
+
+        std::string utf8;
+        utf8.resize(static_cast<size_t>(needed) - 1);
+        WideCharToMultiByte(CP_UTF8, 0, wide, -1, utf8.data(), needed, nullptr, nullptr);
+        return utf8;
+    }
+#endif
 
 #ifdef _WIN32
     LaunchOptions ParseCommandLine()
@@ -48,6 +74,12 @@ namespace
             {
                 options.project_path = std::filesystem::path(argv[i + 1]);
                 options.has_project_argument = true;
+                ++i;
+                continue;
+            }
+            if ((arg == L"--level" || arg == L"-l") && i + 1 < argc)
+            {
+                options.level_override = WideToUtf8(argv[i + 1]);
                 ++i;
                 continue;
             }
@@ -84,6 +116,12 @@ namespace
                 ++i;
                 continue;
             }
+            if ((arg == "--level" || arg == "-l") && i + 1 < argc)
+            {
+                options.level_override = argv[i + 1];
+                ++i;
+                continue;
+            }
             if (arg == "--rhi" && i + 1 < argc)
             {
                 const std::string_view value(argv[i + 1]);
@@ -108,6 +146,47 @@ namespace
         LOG_ERROR(ZEngine, "ZGame: no project specified. Launch with -p <path-to-.zproject>.");
         LogSystem::ForceFlush();
         return 1;
+    }
+
+    // UE's GameDefaultMap: the level the packaged game opens on launch.
+    //
+    // Resolution order:
+    //   1. --level <url>   explicit override (handy for QA / scripted runs)
+    //   2. .zproject "startup_level"
+    //   3. nothing -> no level is opened; GameEngine still starts, it just has
+    //      no character to possess.
+    //
+    // Failing to open a *configured* level is fatal (typo / missing asset would
+    // otherwise launch an empty game and look like a silent data bug). Having
+    // no level configured at all is not.
+    bool OpenStartupLevel(const std::string& override_level)
+    {
+        auto* game_engine = GET_SYSTEM(GameEngine);
+        if (game_engine == nullptr)
+        {
+            LOG_ERROR(ZEngine, "ZGame: GameEngine is not registered");
+            return false;
+        }
+
+        eastl::string level_url;
+        if (!override_level.empty())
+        {
+            level_url = override_level.c_str();
+        }
+        else if (auto* project_info = GET_SYSTEM(ProjectInfo); project_info != nullptr)
+        {
+            level_url = project_info->startup_level;
+        }
+
+        if (level_url.empty())
+        {
+            LOG_WARNING(ZEngine,
+                        "ZGame: no startup_level configured in .zproject; launching with an empty world");
+            return true;
+        }
+
+        LOG_INFO(ZEngine, "ZGame: opening startup level {}", level_url.c_str());
+        return game_engine->LoadLevel(std::string(level_url.c_str()));
     }
 }  // namespace
 
@@ -160,6 +239,14 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         return 1;
     }
 
+    if (!OpenStartupLevel(options.level_override))
+    {
+        LOG_ERROR(ZEngine, "ZGame: startup level could not be opened");
+        LogSystem::ForceFlush();
+        SHUTDOWN_SYSTEM();
+        return 1;
+    }
+
     const int exit_code = game_engine->Run();
 
     SHUTDOWN_SYSTEM();
@@ -203,6 +290,14 @@ int main(int argc, char** argv)
     if (game_engine == nullptr)
     {
         LOG_ERROR(ZEngine, "ZGame: GameEngine failed to initialize");
+        LogSystem::ForceFlush();
+        SHUTDOWN_SYSTEM();
+        return 1;
+    }
+
+    if (!OpenStartupLevel(options.level_override))
+    {
+        LOG_ERROR(ZEngine, "ZGame: startup level could not be opened");
         LogSystem::ForceFlush();
         SHUTDOWN_SYSTEM();
         return 1;

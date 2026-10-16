@@ -35,7 +35,12 @@ public:
     std::string engine_version;  // Engine version used by this project
 
     // Project settings
-    std::string default_level;      // Default level to load
+    // Startup level (UE's GameDefaultMap). Relative to the content dir, e.g.
+    // "asset/level/1-1.scene". Empty means "no level is loaded on launch".
+    // Typed eastl::string because Transfer()-based serialisation is only
+    // specialised for eastl::string (see SerializeTraits.h); std::string would
+    // silently fail to compile into the generated Transfer.
+    eastl::string startup_level;  // Default level loaded by ZGame on launch
     std::vector<std::string> tags;  // Project tags
 
     // Timestamps

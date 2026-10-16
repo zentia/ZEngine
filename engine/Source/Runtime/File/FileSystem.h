@@ -4,6 +4,7 @@
 #include "Runtime/BaseClasses/Type.h"
 #include "Runtime/Core/Base/EngineSystem.h"
 #include "Runtime/Core/JsonSerialize/JSONUtility.h"
+#include "Runtime/Core/YamlSerialize/YAMLUtility.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
 
@@ -152,6 +153,75 @@ public:
         JSONUtility::SerializeToJSON(in_asset, output);
 
         // write to file
+        fwrite(output.c_str(), 1, output.length(), f);
+        fclose(f);
+
+        return true;
+    }
+
+    /**
+     * @brief Load asset from a block-YAML file
+     *
+     * Peer of LoadAssetByJson for the text authoring format. Anything that
+     * round-trips through Transfer() reads back identically; only the on-disk
+     * encoding differs.
+     */
+    template<typename T, typename... Args>
+    bool LoadAssetByYaml(T* obj, const std::filesystem::path& asset_path, Args&&... args)
+    {
+        FILE* f = fopen(asset_path.string().c_str(), "rb");
+        if (!f)
+        {
+            LOG_ERROR(ZFileSystem, "open file {} failed!", asset_path.string());
+            return false;
+        }
+
+        fseek(f, 0, SEEK_END);
+        const long file_size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        std::string buffer;
+        if (file_size > 0)
+        {
+            buffer.resize(static_cast<size_t>(file_size));
+            const size_t read_bytes = fread(buffer.data(), 1, static_cast<size_t>(file_size), f);
+            buffer.resize(read_bytes);
+        }
+        fclose(f);
+
+        try
+        {
+            YAMLRead reader(buffer.c_str(), TransferInstructionFlags::kNoTransferInstructionFlags);
+            YAMLUtility::DeserializeFromYAMLRead(reader, *obj);
+            reader.ResetCurrentNodeToOriginalState();
+        }
+        catch (const std::exception& e)
+        {
+            LOG_ERROR(ZFileSystem,
+                      "parse yaml file {} failed: {}!",
+                      asset_path.string(),
+                      Encoding::GetExceptionMessage(e));
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * @brief Save asset to a block-YAML file
+     */
+    template<typename AssetType>
+    bool saveAssetYaml(const AssetType& in_asset, const std::filesystem::path& asset_path) const
+    {
+        FILE* f = fopen(asset_path.string().c_str(), "wb");
+        if (!f)
+        {
+            LOG_ERROR(ZFileSystem, "open file {} failed!", asset_path.string());
+            return false;
+        }
+
+        eastl::string output;
+        YAMLUtility::SerializeToYAML(in_asset, output);
+
         fwrite(output.c_str(), 1, output.length(), f);
         fclose(f);
 
