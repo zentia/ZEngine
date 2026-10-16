@@ -370,6 +370,25 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Cache/Test/DerivedDataCacheSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Cache/Test/DerivedDataCacheSmokeTest.cpp")
+# AI layer smoke-test main carve-out (blackboard + behaviour tree, no engine
+# systems). Same rationale: it owns main() and must not be whole-archived into
+# ZRuntime, or every downstream consumer would hit LNK2005.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AISmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AISmokeTest.cpp")
+# NavMeshTest: same rationale -- it owns its own main() and must not be
+# wholearchive'd into ZRuntime or every consumer exe gets LNK2005.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/NavMeshTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/NavMeshTest.cpp")
+# SceneGenTool: same rationale -- it owns main() and must not be
+# wholearchive'd into ZRuntime or every consumer exe gets LNK2005.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/SceneGenTool.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/SceneGenTool.cpp")
 
 # UGUI control layer retired (P4). The shared GPU render layer + Font/UITypes/
 # WindowUI moved to Runtime/UI/ and are now picked up by the main GLOB_RECURSE
@@ -1105,6 +1124,11 @@ add_subdirectory(Core/Serialize/Test)
 # the ZRuntime glob above and built only when ZENGINE_BUILD_DDC_SMOKE_TEST=ON.
 add_subdirectory(Resource/Cache/Test)
 
+# AI layer smoke test. Own main(); carved out of the ZRuntime glob above and
+# built only when ZENGINE_BUILD_AI_SMOKE_TEST=ON. Runs headless -- no world,
+# no physics, no RHI -- so it links on every host.
+add_subdirectory(Function/AI/Test)
+
 # =============================================================================
 # ASTC texture decompression support (Phase 6)
 # =============================================================================
@@ -1113,6 +1137,3 @@ if(TARGET astcenc)
     target_link_libraries(${SHARED_TARGET_NAME} PUBLIC astcenc)
     message(STATUS "Runtime: Linked astcenc for ASTC texture decompression")
 endif()
-
-
-

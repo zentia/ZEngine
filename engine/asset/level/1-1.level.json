@@ -907,6 +907,30 @@
           "$typeName": "TransformComponent"
         }
       ]
+    },
+    {
+      "name": "NavVolume",
+      "definition": "asset/objects/environment/navvolume/nav_volume.object.json",
+      "instanced_components": [
+        {
+          "$context": {
+            "transform": {
+              "rotation": {},
+              "scale": {
+                "x": 1,
+                "y": 1,
+                "z": 1
+              },
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              }
+            }
+          },
+          "$typeName": "TransformComponent"
+        }
+      ]
     }
   ]
 }

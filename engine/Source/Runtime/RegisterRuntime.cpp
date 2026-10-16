@@ -5,7 +5,10 @@
 #include "Runtime/Core/Thread/TaskGraph.h"
 #include "Runtime/Core/Thread/ThreadManager.h"
 #include "Runtime/Function/Command/CommandSystem.h"
+#include "Runtime/Function/AI/AISystem.h"
+#include "Runtime/Function/AI/Navigation/NavigationSystem.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
+#include "Runtime/Function/Framework/GameFramework/GameEngine.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Input/InputSystem.h"
 #include "Runtime/Function/Module/ModuleManager.h"
@@ -74,6 +77,8 @@ namespace
         REGISTER_SYSTEM(PreloadManager);
         REGISTER_SYSTEM(PhysicsManager);
         REGISTER_SYSTEM(WorldManager);
+        REGISTER_SYSTEM(AISystem);
+        REGISTER_SYSTEM(NavigationSystem);
         REGISTER_SYSTEM(InputSystem);
         REGISTER_SYSTEM(ParticleManager);
         // Register exactly one RHI implementation based on platform.
@@ -162,9 +167,11 @@ void RegisterRuntimeLight(PreferredRHI preferred_rhi)
     // ---- 渲染 / UI 必需系统 -----------------
     REGISTER_SYSTEM(WindowSystem);
     REGISTER_SYSTEM(PreloadManager);
-    REGISTER_SYSTEM(PhysicsManager);
-    REGISTER_SYSTEM(WorldManager);
-    REGISTER_SYSTEM(InputSystem);
+        REGISTER_SYSTEM(PhysicsManager);
+        REGISTER_SYSTEM(WorldManager);
+        REGISTER_SYSTEM(AISystem);
+        REGISTER_SYSTEM(NavigationSystem);
+        REGISTER_SYSTEM(InputSystem);
 
     // 注册一个 RHI 实现（按平台选择）
 #if defined(Z_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(Z_PLATFORM_OHOS) || defined(__OHOS__)
@@ -204,4 +211,13 @@ void RegisterRuntimeLight(PreferredRHI preferred_rhi)
 void RegisterPlatform()
 {
     REGISTER_SYSTEM_AS(RuntimeAssetManager, AssetManager);
+}
+
+void RegisterGameRuntime(PreferredRHI preferred_rhi)
+{
+    // Everything the editor-free game needs, plus the game framework layer.
+    // GameEngine is registered last: its Initialize() reads the active level and
+    // possesses the character, so WorldManager must already be up.
+    RegisterRuntime(preferred_rhi);
+    REGISTER_SYSTEM(GameEngine);
 }

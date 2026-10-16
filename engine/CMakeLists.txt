@@ -300,6 +300,9 @@ elseif(APPLE)
   add_subdirectory(Source/Editor)
 else()
   add_subdirectory(Source/Editor)
+  # ZGame: standalone game runtime (UE "packaged game" equivalent). No editor
+  # UI -- just RegisterGameRuntime() + GameEngine::Run().
+  add_subdirectory(Source/Game)
   # ZInsights: standalone .ztrace viewer (Win32 + Direct2D). Self-skips on non-Windows.
   add_subdirectory(Source/Insights)
   # TexPreview: standalone block-compressed texture preview tool (ASTC, BC7)

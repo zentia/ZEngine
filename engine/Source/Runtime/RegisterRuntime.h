@@ -19,3 +19,13 @@ void RegisterRuntime(PreferredRHI preferred_rhi = PreferredRHI::Default);
 // but don't have a project opened.
 void RegisterRuntimeLight(PreferredRHI preferred_rhi = PreferredRHI::Default);
 void RegisterPlatform();
+
+// Standalone game process (ZGame): Runtime systems + the game framework layer
+// (GameEngine -> GameInstance / LocalPlayer / PlayerController).
+//
+// Why this is a separate entry point rather than being folded into
+// RegisterRuntime(): the editor also calls RegisterRuntime(), and GameEngine
+// auto-possesses the active character on startup. Running that inside the
+// editor would steal the character the editor is driving. Only the standalone
+// game asks for the game layer.
+void RegisterGameRuntime(PreferredRHI preferred_rhi = PreferredRHI::Default);

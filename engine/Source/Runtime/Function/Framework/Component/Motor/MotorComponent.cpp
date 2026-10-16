@@ -2,6 +2,7 @@
 
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Math/Math.h"
 #include "Runtime/Function/Character/Character.h"
 #include "Runtime/Function/Controller/CharacterController.h"
 #include "Runtime/Function/Framework/Component/Animation/AnimationComponent.h"
@@ -49,7 +50,163 @@ MotorComponent::~MotorComponent()
 
 void MotorComponent::Tick(float delta_time)
 {
+    if (m_IsAIDriven)
+    {
+        TickAIMotor(delta_time);
+        return;
+    }
+
     TickPlayerMotor(delta_time);
+}
+
+void MotorComponent::TickAIMotor(float delta_time)
+{
+    if (!m_ParentObject)
+        return;
+
+    Transform* transform_component = m_ParentObject->tryGetComponent<Transform>("Transform");
+    if (transform_component == nullptr)
+        return;
+
+    // The intent is world-space while the displacement pipeline below works in
+    // local space. For root-level agents (the normal case) the two coincide,
+    // and for parented agents this keeps the pawn moving under its parent
+    // exactly as the player path does.
+    const Vector3 current_position = transform_component->GetLocalPosition();
+
+    if (m_AIIntent.has_face_target)
+    {
+        TurnToward(m_AIIntent.face_target, delta_time);
+    }
+
+    if (m_AIIntent.has_move_target)
+    {
+        const Vector3 to_target = m_AIIntent.move_target - current_position;
+        const float distance_to_target = to_target.length();
+
+        if (distance_to_target <= m_AIArriveRadius)
+        {
+            // Arrived: decelerate instead of snapping, so momentum reads right.
+            CalculatedDesiredHorizontalMoveSpeed(0, delta_time);
+            m_DesiredHorizontalMoveDirection = Vector3::ZERO;
+        }
+        else
+        {
+            Vector3 direction = to_target;
+            direction.normalise();
+
+            // Drive the speed ratio straight to the requested fraction of the
+            // authored max. AI has no "hold W to accelerate" ramp, and going
+            // through the player acceleration curve made agents feel sluggish.
+            const float target_ratio = Math::Clamp(m_AIIntent.speed_ratio, 0.f, 1.f) *
+                                       m_MotorRes.m_MaxMoveSpeedRatio;
+            m_MoveSpeedRatio = target_ratio;
+            m_DesiredHorizontalMoveDirection = direction;
+        }
+    }
+    else
+    {
+        CalculatedDesiredHorizontalMoveSpeed(0, delta_time);
+        m_DesiredHorizontalMoveDirection = Vector3::ZERO;
+    }
+
+    // AI never jumps: m_JumpHeight-driven vertical motion stays a player input
+    // concern until the AI layer grows a jump action.
+    m_VerticalMoveSpeed = 0.f;
+    m_JumpState = JumpState::idle;
+
+    CalculateDesiredDisplacement(delta_time);
+    CalculateTargetPosition(std::move(current_position));
+
+    transform_component->SetLocalPosition(m_TargetPosition);
+}
+
+bool MotorComponent::TurnToward(const Vector3& world_position, float delta_time)
+{
+    if (!m_ParentObject)
+        return false;
+
+    Transform* transform_component = m_ParentObject->tryGetComponent<Transform>("Transform");
+    if (transform_component == nullptr)
+        return false;
+
+    const Vector3 current_position = transform_component->GetLocalPosition();
+    Vector3 to_target = world_position - current_position;
+    to_target.z = 0.f;  // yaw only: agents should not pitch toward a target
+
+    if (to_target.squaredLength() <= 0.0001f)
+        return true;
+
+    // Build the turn from the engine's own forward convention (-Y, see
+    // CalculatedDesiredMoveDirection) rather than extracting a yaw angle.
+    // Going through cross/axis-angle keeps this correct regardless of which
+    // axis "yaw" happens to be, and is what stops agents spinning the long way
+    // round when a project flips its up axis.
+    const Quaternion current_rotation = transform_component->GetLocalRotation();
+
+    Vector3 current_forward = current_rotation * Vector3::NEGATIVE_UNIT_Y;
+    current_forward.z = 0.f;
+    if (current_forward.squaredLength() <= 0.000001f)
+    {
+        current_forward = Vector3::NEGATIVE_UNIT_Y;
+    }
+    current_forward.normalise();
+    to_target.normalise();
+
+    const float alignment = Math::Clamp(current_forward.dotProduct(to_target), -1.f, 1.f);
+    Vector3 turn_axis = current_forward.crossProduct(to_target);
+
+    // A near-zero cross product means the agent is either already facing the
+    // target or facing exactly away -- and cross magnitude cannot tell those
+    // two apart, so a plain atan2(len, dot) would read the 180-degree case as
+    // "already aligned" and leave the agent staring backwards. Disambiguate on
+    // the sign of the dot product instead.
+    float angle = 0.f;
+    if (turn_axis.squaredLength() > 0.000001f)
+    {
+        turn_axis.normalise();
+        angle = Math::atan2(turn_axis.length(), alignment).valueRadians();
+    }
+    else if (alignment < 0.f)
+    {
+        // Facing exactly away: pick a deterministic perpendicular (Z is up here)
+        // so the agent always turns the same way instead of stalling.
+        turn_axis = Vector3::UNIT_Z;
+        angle = Math_PI;
+    }
+    else
+    {
+        return true;
+    }
+
+    const float max_step = Math::DegreesToRadians(m_AITurnSpeedDegrees) * delta_time;
+    if (Math::abs(angle) <= max_step)
+    {
+        Quaternion final_rotation = Quaternion(Radian(angle), turn_axis) * current_rotation;
+        final_rotation.normalise();
+        transform_component->SetLocalRotation(final_rotation);
+        return true;
+    }
+
+    const float step = (angle > 0.f ? 1.f : -1.f) * max_step;
+    Quaternion new_rotation = Quaternion(Radian(step), turn_axis) * current_rotation;
+    new_rotation.normalise();
+    transform_component->SetLocalRotation(new_rotation);
+
+    return false;
+}
+
+void MotorComponent::ApplyAIMoveIntent(const AIMoveIntent& intent, float delta_time)
+{
+    m_IsAIDriven = true;
+    m_AIIntent = intent;
+}
+
+void MotorComponent::ClearAIControl()
+{
+    m_IsAIDriven = false;
+    m_AIIntent = AIMoveIntent {};
+    m_DesiredHorizontalMoveDirection = Vector3::ZERO;
 }
 
 void MotorComponent::TickPlayerMotor(float delta_time)

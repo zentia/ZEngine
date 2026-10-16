@@ -7,6 +7,8 @@
 #include "Singleton.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdint>
 #include <functional>
 #include <typeindex>
 #include <unordered_map>
@@ -166,6 +168,9 @@ public:
         }
 
         m_Initialized = false;
+        // Systems are deleted below: invalidate every thread's cached system pointer
+        // BEFORE any of them can delete the object or observe freed memory.
+        m_Generation.fetch_add(1, std::memory_order_acq_rel);
         for (IEngineSystem* system : m_Systems)
         {
             delete system;
@@ -181,15 +186,44 @@ public:
     {
         static_assert(std::is_base_of_v<IEngineSystem, T>, "T must inherit from IEngineSystem");
 
+        // Fast path: a per-thread, write-free cache.
+        //
+        // Why this exists: GetSystem<T>() used to populate the shared m_TypeCache on
+        // every cache miss. m_TypeCache is an unsynchronised std::unordered_map, so a
+        // background thread (e.g. AssetRegistry::ScanAssetsAsync freeing a rapidjson
+        // document through MemoryManager::Free -> GET_SYSTEM(LLMTracker)) could write
+        // to it while the main thread was registering systems / rehashing it. The
+        // in-flight lookup then ran type_info::operator== against a type_index whose
+        // storage had been released, and strcmp dereferenced a dangling pointer
+        // (0xC0000005). See crash_stack.txt: strcmp <- _Hash::_Find_last <- GetSystem.
+        //
+        // The per-thread slot below keeps hot callers (allocators) off the shared map
+        // entirely. It is tagged with the registry generation so that a thread which
+        // cached a system before ShutdownAll() / re-registration does not hand back a
+        // dangling pointer afterwards.
+        static thread_local IEngineSystem* t_cached = nullptr;
+        static thread_local uint32_t t_cached_generation = 0;
+        if (t_cached != nullptr && t_cached_generation == m_Generation)
+        {
+            return static_cast<T*>(t_cached);
+        }
+        t_cached = nullptr;
+
         std::type_index type_id(typeid(T));
         auto cache_it = m_TypeCache.find(type_id);
         if (cache_it != m_TypeCache.end())
+        {
+            t_cached = cache_it->second;
+            t_cached_generation = m_Generation;
             return static_cast<T*>(cache_it->second);
+        }
 
         auto alias_it = m_TypeMap.find(type_id);
         if (alias_it != m_TypeMap.end())
         {
             m_TypeCache[type_id] = alias_it->second;
+            t_cached = alias_it->second;
+            t_cached_generation = m_Generation;
             return static_cast<T*>(alias_it->second);
         }
 
@@ -198,6 +232,8 @@ public:
             if (T* typed_system = dynamic_cast<T*>(system))
             {
                 m_TypeCache[type_id] = system;
+                t_cached = system;
+                t_cached_generation = m_Generation;
                 return typed_system;
             }
         }
@@ -322,5 +358,8 @@ private:
     std::vector<IEngineSystem*> m_Systems;
     std::unordered_map<std::type_index, IEngineSystem*> m_TypeMap;
     mutable std::unordered_map<std::type_index, IEngineSystem*> m_TypeCache;
+    // Bumped whenever the set of live systems changes (ShutdownAll). Threads compare
+    // their cached system against this to avoid using a destroyed instance.
+    mutable std::atomic<uint32_t> m_Generation {0};
     bool m_Initialized = false;
 };

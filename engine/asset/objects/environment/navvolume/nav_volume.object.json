@@ -1,0 +1,39 @@
+{
+  "components": [
+    {
+      "$context": {
+        "transform": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 0
+          },
+          "rotation": {
+            "x": 0,
+            "y": 0,
+            "z": 0,
+            "w": 1
+          },
+          "scale": {
+            "x": 1,
+            "y": 1,
+            "z": 1
+          }
+        }
+      },
+      "$typeName": "TransformComponent"
+    },
+    {
+      "$typeName": "NavMeshVolumeComponent",
+      "$context": {
+        "cell_size": 1,
+        "cells_x": 80,
+        "cells_y": 44,
+        "max_slope": 0.7,
+        "agent_radius": 0.4,
+        "max_step_height": 0.6,
+        "build_on_load": true
+      }
+    }
+  ]
+}

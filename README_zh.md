@@ -28,7 +28,14 @@
 - **物理引擎**：集成 Jolt Physics 物理引擎
 - **资源管线**：完整的资源管理和打包系统
 
-### 脚本系统
+### AI（第一阶段）
+- **行为树**：Selector / Sequence / Parallel 组合节点，Inverter / Repeater / Cooldown 装饰节点，Condition / Action 叶子节点
+- **黑板**：按代理（per-agent）的键值槽位与感知快照，不参与序列化
+- **感知组件**：视锥 + 射线视线检测 + 听觉半径，基于 `PhysicsScene::Raycast`，可按间隔扫描
+- **控制器组件**：`chase` / `chase_and_retreat` / `guard` 三种内置模板，输出为 `AIMoveIntent` 与 `AIActionRequest`
+- **执行层接线（框架层）**：`AIControllerComponent` 每帧把 `AIMoveIntent` 直接推给同对象的 `MotorComponent`，Motor 加了一条与玩家输入并行的 `TickAIMotor` 路径；脚本只负责配置（profile、范围、行为树），不参与驱动移动
+- **Navigation（二期）**：`NavMesh` 用网格采样可行走表面，A* 寻路 + string pulling 平滑；`NavigationSystem` 持有网格并桥接 `PhysicsScene`，`NavMeshVolumeComponent` 在编辑器里配置体积。追击/撤退/回岗三个动作优先走寻路，无网格时回退直线
+- **AISystem**：全局开关、每帧预算与统计；AI 层从不直接移动刚体，执行层负责消费意图
 - **Lua 集成**：完整 Lua 脚本支持，带性能分析
 - **Puerts 支持**：通过 Puerts 支持 JavaScript/TypeScript
 - **C# 脚本**：托管脚本，支持内存分析
@@ -51,7 +58,7 @@
 
 | 路径 | 说明 |
 |---|---|
-| `engine/Source/Runtime/` | 运行时：`Core`、`Function`（Render、Physics、Animation、GAS、Input、ShaderLab 等）、`Resource`、`Scripting`、`Profiler`、`VirtualFileSystem`、`ZEngineApi` |
+| `engine/Source/Runtime/` | 运行时：`Core`、`Function`（Render、Physics、Animation、GAS、AI、Input、ShaderLab 等）、`Resource`、`Scripting`、`Profiler`、`VirtualFileSystem`、`ZEngineApi` |
 | `engine/Source/Editor/` | ZEditor——ZSlate 窗口、编辑器 UI、属性绘制器、停靠布局 |
 | `engine/Source/Insights/` | ZInsights——独立的 `.ztrace` 查看器（Windows + Direct2D） |
 | `engine/Source/Modules/` | 可选引擎模块（当前为 RenderDoc） |
@@ -145,6 +152,14 @@ python zbuild.py tool TexPreview              # 构建单个 -> bin/Tools/Releas
 python zbuild.py tool --all                   # 构建全部四个
 python zbuild.py test
 python zbuild.py clean
+```
+
+### AI 冒烟测试
+默认关闭。它不启动世界、物理与 RHI，只验证黑板与行为树语义：
+
+```bash
+cmake -B build -DZENGINE_BUILD_AI_SMOKE_TEST=ON
+cmake --build build --target AISmokeTest
 ```
 
 注意 `--config` 同时决定脚本后端：debug 用 QuickJS，release 和 relwithdebinfo 用 V8。

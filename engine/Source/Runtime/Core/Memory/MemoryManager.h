@@ -44,13 +44,32 @@ public:
         }
     }
 
+    // NOTE: this runs on every deallocation, including frees issued by background
+    // threads (asset scanning, streaming). Resolving LLMTracker through GET_SYSTEM on
+    // that path used to touch the shared SystemRegistry type cache concurrently with
+    // main-thread registration and fault inside strcmp (see crash_stack.txt). The
+    // tracker pointer is therefore resolved once and cached; it stays valid for the
+    // lifetime of the registry-owned system.
+    static LLMTracker* CachedTracker()
+    {
+        // Deliberately does NOT cache a nullptr result: MemoryManager may be used
+        // before LLMTracker is registered, and caching null then would disable LLM
+        // tracking for the whole process.
+        static LLMTracker* tracker = nullptr;
+        if (tracker == nullptr)
+        {
+            tracker = GET_SYSTEM(LLMTracker);
+        }
+        return tracker;
+    }
+
     static void* Malloc(size_t size)
     {
         void* ptr = mi_malloc(size);
         if (ptr != nullptr)
         {
-            if (GET_SYSTEM(LLMTracker) != nullptr)
-                GET_SYSTEM(LLMTracker)->TrackAllocation(ptr, size);
+            if (CachedTracker() != nullptr)
+                CachedTracker()->TrackAllocation(ptr, size);
         }
         return ptr;
     }
@@ -65,8 +84,8 @@ public:
         {
             // Get the size before freeing (mimalloc provides this)
             size_t size = mi_usable_size(ptr);
-            if (GET_SYSTEM(LLMTracker) != nullptr)
-                GET_SYSTEM(LLMTracker)->TrackDeallocation(ptr, size);
+            if (CachedTracker() != nullptr)
+                CachedTracker()->TrackDeallocation(ptr, size);
             mi_free(ptr);
         }
     }
