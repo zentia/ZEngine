@@ -1520,7 +1520,26 @@ Conventions (do not re-litigate):
   ZSlate line into 扁鹊, because a WINDOWS-subsystem process has no stderr
   anyone can read. Do not add direct `fprintf`/`printf` to ZSlate sources.
 
-### 2.9 CRT mode: /MT tools inside a /MD tree
+### 2.19 Localization: mechanism in ZSlate, strings in the tool
+
+New UI text goes into the source **in English**, tagged with an id:
+`ZSlate::Loc("collection.start", "Start collection and build ZIP")` (the GUI
+wraps it in a short `S(id, english)` helper). Translations are tables the host
+registers at start-up -- ZSlate ships none of its own. Adding a language is a
+new `ELanguage` value plus a table; adding a string is one `Loc()` call plus one
+row in the table.
+
+- A missing entry falls back to the English literal and logs the id once through
+  ZSlate's sink, so a typo shows up in the log instead of as a blank label.
+- Strings resolve when a widget is **built**, so switching language rebuilds the
+  tree (`ShellApp::RebuildUi`, which carries the form's contents across).
+- The collector's table and the remembered choice live in `UiLocalization.cpp`
+  (registry `HKCU\Software\ZEngine\EnvironmentCollector\Language`); that file is
+  deliberately ZSlate-free because the CLI-only build links it too.
+- **Report file content (TXT/JSON) stays Chinese regardless of the UI language.**
+  Those files go to support, not to the player.
+
+### 2.20 CRT mode: /MT tools inside a /MD tree
 
 `MSVC_RUNTIME_LIBRARY` is baked into each object file, so a /MT executable
 linking a /MD static library fails with LNK2038 ("RuntimeLibrary" mismatch)

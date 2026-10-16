@@ -1,10 +1,16 @@
 // ============================================================================
 // ZSlate front-end of ZEnvironmentCollector -- three tabs over the one core.
 // ============================================================================
-//   tab 0  环境采集      -- safe collection + crash capture (was the collector GUI)
-//   tab 1  兼容性检查    -- the old CLI's plain check, run through the same
-//                          EnvironmentCheckCommand pipeline that -batchmode uses
-//   tab 2  GPU 选卡验证  -- the old ZGpuSelectionInspector
+//   tab 0  Collection          -- safe collection + crash capture
+//   tab 1  Compatibility       -- the old CLI's plain check, run through the same
+//                                 EnvironmentCheckCommand pipeline that -batchmode
+//                                 uses
+//   tab 2  GPU Selection       -- the old ZGpuSelectionInspector
+//
+// User-visible text is English in the source and looked up through ZSlate's
+// localization (ZSlate/Core/SlateLocalization.h); the Chinese table lives in
+// UiLocalization.cpp. Default is English, the choice is remembered per user, and
+// --lang en|zh-CN overrides it for one run.
 //
 // This file keeps its own window class, WindowProc and DPI plumbing instead of
 // ZSlate::FSlateStandaloneApp, for the same reason the collector always did: a
@@ -33,8 +39,10 @@
 #include "GpuSelectionProbe.h"
 #include <commdlg.h>
 #include <shlobj.h>
+#include "UiLocalization.h"
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateInput.h"
+#include "ZSlate/Core/SlateLocalization.h"
 #include "ZSlate/Core/SlateLog.h"
 #include "ZSlate/Core/SlatePaint.h"
 #include "ZSlate/Renderer/SlateDpiScaleRenderer.h"
@@ -91,6 +99,12 @@ enum class ShellTab
     Compatibility = 1,
     GpuSelection = 2,
 };
+
+// Every user-visible string goes through ZSlate's localization. The English
+// text is the one written here; Chinese comes from the table in
+// UiLocalization.cpp, and a missing entry falls back to what is written here.
+const char* S(const char* id, const char* english) { return ZSlate::Loc(id, english); }
+std::wstring W(const char* id, const char* english) { return Utf8ToWide(S(id, english)); }
 
 // Which background job is running. Replaces the old `capturing` bool: the shell
 // runs three different jobs and Update() has to know which one just ended.
@@ -161,6 +175,7 @@ public:
     std::vector<std::shared_ptr<SWidget>> interactive;
 
     std::shared_ptr<STextBlock> status, timeLabel;
+    std::shared_ptr<SComboBox<int>> langBox;
     std::shared_ptr<SComboBox<IncidentKind>> kindBox;
     std::shared_ptr<SComboBox<int>> captureMode;
     std::shared_ptr<SEditableTextBox> timeInput;
@@ -210,6 +225,7 @@ public:
             SetPhysicalSize(client.right, client.bottom);
         if (kindBox) kindBox->ClosePopup();
         if (captureMode) captureMode->ClosePopup();
+        if (langBox) langBox->ClosePopup();
         ResetPointerGesture();
     }
     void SetPhysicalSize(int width, int height)
@@ -255,10 +271,62 @@ public:
         SlateApplication::Get().SetTextMeasurer(&measurer);
         return true;
     }
+    void UpdateWindowTitle()
+    {
+        if (window) SetWindowTextW(window, W("window.title", "Environment Collector - ZSlate").c_str());
+    }
+    void ApplyLanguage(ELanguage language)
+    {
+        if (language == GetLanguage()) return;
+        SetLanguage(language);
+        zengine::envcheck::LogInfo(std::string("UI language -> ") + LanguageId(language));
+        // Remembered per user, next to the ProcDump path: an operator who picked
+        // Chinese once should not have to pick it again on every launch.
+        zengine::envcheck::ui::SaveLanguagePreference(LanguageId(language));
+        UpdateWindowTitle();
+        RebuildUi();
+    }
+    // Strings are resolved when a widget is built, not when it is painted, so a
+    // language switch means rebuilding the tree. Everything the user typed or
+    // picked is carried across -- switching language must not quietly reset the
+    // form they were filling in.
+    void RebuildUi()
+    {
+        const ShellTab current = tab;
+        const IncidentKind kind = kindBox ? kindBox->SelectedItem : options.incidentKind;
+        const int mode = captureMode ? captureMode->SelectedIndex : 0;
+        const std::string time = timeInput ? timeInput->GetText() : std::string();
+        const std::string output = checkOutputInput ? checkOutputInput->GetText() : std::string();
+        const std::string isa = checkRequireInput ? checkRequireInput->GetText() : std::string();
+        const std::string memory = checkMemoryInput ? checkMemoryInput->GetText() : std::string();
+        const bool events = details && details->IsChecked();
+        const bool dll = checkDllBox && checkDllBox->IsChecked();
+
+        interactive.clear();
+        tabButtons.clear();
+        tabLabels.clear();
+        Build();
+
+        options.incidentKind = kind;
+        if (kindBox) { kindBox->SelectedItem = kind; kindBox->SelectedIndex = static_cast<int32_t>(kind); }
+        if (captureMode && mode >= 0 && mode < static_cast<int>(captureMode->Options.size()))
+        { captureMode->SelectedIndex = mode; captureMode->SelectedItem = captureMode->Options[static_cast<std::size_t>(mode)]; }
+        if (timeInput) timeInput->SetText(time);
+        if (checkOutputInput) checkOutputInput->SetText(output);
+        if (checkRequireInput) checkRequireInput->SetText(isa);
+        if (checkMemoryInput) checkMemoryInput->SetText(memory);
+        if (details) details->SetChecked(events);
+        if (checkDllBox) checkDllBox->SetChecked(dll);
+        SelectTab(current);
+    }
     void Build()
     {
         auto strip = std::make_shared<SHorizontalBox>();
-        const std::array<const char*, TabCount> names{"环境采集", "兼容性检查", "GPU 选卡验证"};
+        const std::array<const char*, TabCount> names{
+            S("tab.collection", "Collection"),
+            S("tab.compatibility", "Compatibility"),
+            S("tab.gpu", "GPU Selection"),
+        };
         for (int index = 0; index < TabCount; ++index)
         {
             auto button = std::make_shared<SButton>();
@@ -272,6 +340,23 @@ public:
             tabButtons.push_back(button);
             tabLabels.push_back(label);
         }
+        strip->AddSlot(std::make_shared<SSpacer>()).Fill(1);
+        // Language, kept on the right edge of the tab strip. The combo's popup is
+        // driven from Mouse()/WM_KEYDOWN like the other two combos -- a popup is
+        // not part of the widget tree it floats over.
+        langBox = std::make_shared<SComboBox<int>>();
+        langBox->Options = {static_cast<int>(ELanguage::English), static_cast<int>(ELanguage::ChineseSimplified)};
+        langBox->SelectedIndex = static_cast<int32_t>(GetLanguage()) == 1 ? 1 : 0;
+        langBox->SelectedItem = langBox->Options[static_cast<std::size_t>(langBox->SelectedIndex)];
+        langBox->OnGetLabel = [](int language) { return LanguageName(static_cast<ELanguage>(language)); };
+        langBox->OnSelectionChanged = [this](int language, int32_t) { if (!busy) ApplyLanguage(static_cast<ELanguage>(language)); };
+        langBox->Size = Vector2(150, 32);
+        langBox->ItemHeight = 32;
+        langBox->FontSize = 17;
+        langBox->MaxDropdownHeight = langBox->ItemHeight * 2;
+        langBox->ExternalPopup = true;
+        strip->AddSlot(langBox).AutoSize().SetPadding(FMargin(16, 0, 0, 0));
+        Interactive(langBox);
 
         scroll = std::make_shared<SScrollBox>();
         auto scrollBar = std::make_shared<SScrollBar>();
@@ -311,24 +396,29 @@ public:
         }
         if (kindBox) kindBox->ClosePopup();
         if (captureMode) captureMode->ClosePopup();
+        if (langBox) langBox->ClosePopup();
         if (scroll) scroll->ScrollOffset = 0;
         ResetPointerGesture();
     }
     void BuildCollection()
     {
         column = tabs[static_cast<std::size_t>(ShellTab::Collection)] = std::make_shared<SVerticalBox>();
-        Text("Windows 环境信息采集", 29);
-        Text("项目：" + options.profile.displayName, 18);
-        Text("采集硬件、BIOS、驱动、系统事件、已有内存检测结果，并按项目配置附带最新游戏日志。", 16);
-        Text("不上传、不启动游戏、不压测、不重启、不修改BIOS。", 16);
-        Text("问题类型", 16);
+        Text(S("collection.title", "Windows Environment Collection"), 29);
+        Text(S("collection.project", "Project: ") + options.profile.displayName, 18);
+        Text(S("collection.intro",
+               "Collects hardware, BIOS, drivers, system events and existing memory test results, "
+               "and attaches the newest game logs the project profile asks for."), 16);
+        Text(S("collection.safety", "No uploading, no launching the game, no stress test, no reboot, no BIOS change."), 16);
+        Text(S("collection.kind", "Incident type"), 16);
         kindBox = std::make_shared<SComboBox<IncidentKind>>();
         kindBox->Options = {IncidentKind::Unknown, IncidentKind::Crash, IncidentKind::Hang};
         kindBox->SelectedItem = options.incidentKind;
         kindBox->SelectedIndex = static_cast<int32_t>(options.incidentKind);
         kindBox->ExternalPopup = true;
         kindBox->OnGetLabel = [](IncidentKind kind) {
-            return kind == IncidentKind::Crash ? "闪退" : kind == IncidentKind::Hang ? "卡住" : "不确定";
+            return kind == IncidentKind::Crash ? S("collection.kind.crash", "Crash")
+                 : kind == IncidentKind::Hang  ? S("collection.kind.hang", "Hang")
+                                               : S("collection.kind.unknown", "Unsure");
         };
         kindBox->OnSelectionChanged = [this](IncidentKind kind, int32_t) { if (!busy) options.incidentKind = kind; };
         kindBox->Size = Vector2(260, 32);
@@ -337,25 +427,27 @@ public:
         kindBox->MaxDropdownHeight = kindBox->ItemHeight * 3;
         AddWidget(kindBox, 6);
         Interactive(kindBox);
-        Text("发生时间（可留空自动找记录；输入需带时区）", 16);
+        Text(S("collection.time", "When it happened (leave empty to find one automatically; include the time zone)"), 16);
         timeInput = std::make_shared<SEditableTextBox>();
         timeInput->FontSize = 18; timeInput->MinWidth = 560;
         timeInput->SetHintText("2026-10-12T18:30:00+08:00");
         timeInput->SetText(FormatUtcIso8601(options.incidentTime));
         AddWidget(timeInput, 6);
         Interactive(timeInput);
-        timeLabel = Button("填写当前时间", [this] { if (!busy) timeInput->SetText(FormatUtcIso8601(CurrentUtcTime())); });
+        timeLabel = Button(S("collection.time.fill", "Use current time"),
+                           [this] { if (!busy) timeInput->SetText(FormatUtcIso8601(CurrentUtcTime())); });
         details = std::make_shared<SCheckBox>();
-        details->SetLabel("同意附带事件明细");
+        details->SetLabel(S("collection.events", "Include event details"));
         details->SetChecked(true);
         details->FontSize = 16; details->BoxSize = 18;
         details->Size = Vector2(260, 28);
         AddWidget(details, 9);
         Interactive(details);
-        Button("开始采集并生成 ZIP", [this] { Start(); });
-        Button("取消采集（打包阶段不可取消）", [this] { if (busy && job == Job::Collection && cancellable.load()) cancel = true; });
-        status = Text("就绪。报告保存在桌面的 EnvironmentReports 文件夹。", 16);
-        Button("打开报告所在文件夹", [this] {
+        Button(S("collection.start", "Start collection and build ZIP"), [this] { Start(); });
+        Button(S("collection.cancel", "Cancel collection (not cancellable while packing)"),
+               [this] { if (busy && job == Job::Collection && cancellable.load()) cancel = true; });
+        status = Text(S("collection.ready", "Ready. Reports are saved in the EnvironmentReports folder on the desktop."), 16);
+        Button(S("collection.open", "Open report folder"), [this] {
             if (busy) return;
             try
             {
@@ -363,49 +455,59 @@ public:
                 std::filesystem::create_directories(path);
                 ShellExecuteW(window, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
             }
-            catch (...) { status->SetText("无法打开目录，请检查访问权限。"); }
+            catch (...) { status->SetText(S("collection.open.failed", "Cannot open the folder; check access permissions.")); }
         });
-        Text("完成后确认报告内容，将 ZIP 手动发给研发。", 16);
-        Text("未发现异常不代表硬件健康；部分采集失败会记入报告。", 16);
-        Text(std::string("高级诊断：捕获一次游戏崩溃 · ") + zengine::envcheck::ToolVersion, 24);
-        Text("完整内存可能包含账号和聊天信息；仅本地保存，请勿公开分享。", 16);
+        Text(S("collection.after", "Review the report when it is done, then send the ZIP manually."), 16);
+        Text(S("collection.disclaimer",
+               "No anomaly found does not mean the hardware is healthy; failed steps are recorded in the report."), 16);
+        Text(std::string(S("capture.section", "Advanced diagnostics: capture one crash · ")) + zengine::envcheck::ToolVersion, 24);
+        Text(S("capture.privacy",
+               "A full memory dump may contain account and chat data. It stays on this machine; do not share it publicly."), 16);
         captureMode = std::make_shared<SComboBox<int>>();
         captureMode->Options = {0, 1}; captureMode->SelectedIndex = 0; captureMode->SelectedItem = 0;
         captureMode->Size = Vector2(460, 32); captureMode->FontSize = 18;
         captureMode->ItemHeight = 32; captureMode->MaxDropdownHeight = 64; captureMode->ExternalPopup = true;
-        captureMode->OnGetLabel = [](int mode) { return mode == 0 ? "Windows系统崩溃转储（推荐）" : "ProcDump附加（需允许调试）"; };
+        captureMode->OnGetLabel = [](int mode) {
+            return mode == 0 ? S("capture.mode.wer", "Windows system crash dump (recommended)")
+                             : S("capture.mode.procdump", "Attach ProcDump (needs debug permission)");
+        };
         AddWidget(captureMode, 6);
         Interactive(captureMode);
-        Text("WER仅配置当前exe名称；需要UAC，一次启用可连续收集多次崩溃，点“安全停止捕获”后才恢复，不附加游戏。", 16);
-        Text("下方ProcDump下载与选择只用于ProcDump模式。", 16);
-        Button("打开微软ProcDump下载及许可页面", [this] {
+        Text(S("capture.wer.note",
+               "WER is configured for the current exe name only. It needs UAC, stays enabled for repeated crashes "
+               "in this session, is restored only after you click 'Stop capture safely', and never attaches to the game."), 16);
+        Text(S("capture.procdump.note", "The ProcDump download and selection below are for ProcDump mode only."), 16);
+        Button(S("capture.procdump.download", "Open the Microsoft ProcDump download and license page"), [this] {
             if (!busy) ShellExecuteW(window, L"open", L"https://learn.microsoft.com/en-us/sysinternals/downloads/procdump", nullptr, nullptr, SW_SHOWNORMAL);
         });
         procDumpPath = LoadProcDumpPreference();
-        procDumpLabel = Button(procDumpPath.empty() ? "选择 procdump64.exe" : "重新选择 ProcDump（已记住位置）", [this] {
+        procDumpLabel = Button(procDumpPath.empty() ? S("capture.procdump.pick", "Select procdump64.exe")
+                                                    : S("capture.procdump.reselect", "Reselect ProcDump (location remembered)"), [this] {
             if (busy) return;
-            auto path = ChooseExecutable(L"选择微软官方 procdump64.exe");
-            if (!path.empty()) { procDumpPath = path; procDumpLabel->SetText("ProcDump已选择（启动前验证签名）"); }
+            auto path = ChooseExecutable(W("capture.procdump.dialog", "Select the official Microsoft procdump64.exe").c_str());
+            if (!path.empty()) { procDumpPath = path; procDumpLabel->SetText(S("capture.procdump.selected", "ProcDump selected (signature verified before start)")); }
         });
-        targetLabel = Button("选择游戏程序（当前项目目标）", [this] {
+        targetLabel = Button(S("capture.target.pick", "Select the game program (the current project target)"), [this] {
             if (busy) return;
-            auto path = ChooseExecutable(L"选择当前项目的游戏exe，不是启动器");
-            if (!path.empty()) { targetPath = path; targetLabel->SetText("目标：" + WideToUtf8(path.filename().wstring())); }
+            auto path = ChooseExecutable(W("capture.target.dialog", "Select the project's game exe, not the launcher").c_str());
+            if (!path.empty()) { targetPath = path; targetLabel->SetText(S("capture.target.prefix", "Target: ") + WideToUtf8(path.filename().wstring())); }
         });
-        Button("开始捕获崩溃（按所选方式）", [this] { StartCapture(); });
-        Button("选择已有dump并打包（不改系统配置）", [this] {
+        Button(S("capture.start", "Start crash capture (as selected)"), [this] { StartCapture(); });
+        Button(S("capture.import", "Pick an existing dump and pack it (no system change)"), [this] {
             if (busy) return;
-            auto file = ChooseExecutable(L"选择已生成的完整dump", L"Memory dump (*.dmp)\0*.dmp\0\0");
+            auto file = ChooseExecutable(W("capture.import.dialog", "Select an existing full dump").c_str(), L"Memory dump (*.dmp)\0*.dmp\0\0");
             if (!file.empty()) StartCapture(file);
         });
-        Button("安全停止捕获 / 取消后处理", [this] { if (busy && (job == Job::Capture || job == Job::WerRestore) && cancellable.load()) cancel = true; });
-        Button("恢复当前项目WER原配置（含上次未完成会话）", [this] { RestoreWer(); });
+        Button(S("capture.stop", "Stop capture safely / cancel post-processing"),
+               [this] { if (busy && (job == Job::Capture || job == Job::WerRestore) && cancellable.load()) cancel = true; });
+        Button(S("capture.restore", "Restore the project's original WER settings (including an unfinished session)"), [this] { RestoreWer(); });
         captureStatus = Text(!options.profile.gameExecutable.empty() && HasWerBackup(options.profile.gameExecutable)
-            ? "发现未恢复的WER会话，请先点击恢复原配置。" : "未开启；默认等待最多1小时，启用成功不保证系统一定产生dump。", 16);
-        Button("打开捕获结果（定位ZIP或capture.json）", [this] {
+            ? S("capture.status.pending", "An unrestored WER session was found; restore the original settings first.")
+            : S("capture.status.idle", "Not enabled. Waits up to 1 hour by default, and enabling it does not guarantee Windows will write a dump."), 16);
+        Button(S("capture.open", "Open capture result (locate the ZIP or capture.json)"), [this] {
             if (busy) return;
             if (captureReport.directory.empty())
-            { captureStatus->SetText("本窗口还没有捕获报告；历史结果请到EnvironmentReports内的crash-capture-*目录查找。"); return; }
+            { captureStatus->SetText(S("capture.open.empty", "This window has no capture report yet; earlier results are in crash-capture-* under EnvironmentReports.")); return; }
             const auto file = captureReport.archive.empty() ? captureReport.directory / "capture.json" : captureReport.archive;
             const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
             PIDLIST_ABSOLUTE item = ILCreateFromPathW(file.c_str());
@@ -415,30 +517,32 @@ public:
             if (FAILED(opened))
             {
                 const auto handle = ShellExecuteW(window, L"open", captureReport.directory.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                if (reinterpret_cast<INT_PTR>(handle) <= 32) captureStatus->SetText("无法打开捕获目录，请到EnvironmentReports/crash-capture-*查找capture.json。");
+                if (reinterpret_cast<INT_PTR>(handle) <= 32) captureStatus->SetText(S("capture.open.failed", "Cannot open the capture folder; look for capture.json under EnvironmentReports/crash-capture-*."));
             }
         });
     }
     void BuildCompatibility()
     {
         column = tabs[static_cast<std::size_t>(ShellTab::Compatibility)] = std::make_shared<SVerticalBox>();
-        Text("Windows 环境兼容性检查", 29);
-        Text("与 -batchmode 默认命令同一条流水线：硬件快照、双显卡选卡验证、DLL静态检查与隔离加载探针。", 16);
-        Text("报告目录", 16);
+        Text(S("check.title", "Windows Environment Compatibility Check"), 29);
+        Text(S("check.intro",
+               "The same pipeline as the default -batchmode command: hardware snapshot, dual-GPU selection check, "
+               "static DLL checks and the isolated load probe."), 16);
+        Text(S("check.output", "Report directory"), 16);
         checkOutputInput = std::make_shared<SEditableTextBox>();
         checkOutputInput->FontSize = 18; checkOutputInput->MinWidth = 560;
-        checkOutputInput->SetHintText("留空则使用桌面的 EnvironmentReports");
+        checkOutputInput->SetHintText(S("check.output.hint", "Leave empty to use EnvironmentReports on the desktop"));
         checkOutputInput->SetText(WideToUtf8(DefaultOutputDirectory().wstring()));
         AddWidget(checkOutputInput, 6);
         Interactive(checkOutputInput);
-        Text("产品最低指令集（none 或 avx,avx2,fma,f16c）", 16);
+        Text(S("check.isa", "Required instruction sets (none, or avx,avx2,fma,f16c)"), 16);
         checkRequireInput = std::make_shared<SEditableTextBox>();
         checkRequireInput->FontSize = 18; checkRequireInput->MinWidth = 560;
         checkRequireInput->SetHintText("none");
         checkRequireInput->SetText("none");
         AddWidget(checkRequireInput, 6);
         Interactive(checkRequireInput);
-        Text("最低物理内存（GB）", 16);
+        Text(S("check.memory", "Minimum physical memory (GB)"), 16);
         checkMemoryInput = std::make_shared<SEditableTextBox>();
         checkMemoryInput->FontSize = 18; checkMemoryInput->MinWidth = 560;
         checkMemoryInput->SetHintText("4");
@@ -446,26 +550,26 @@ public:
         AddWidget(checkMemoryInput, 6);
         Interactive(checkMemoryInput);
         checkDllBox = std::make_shared<SCheckBox>();
-        checkDllBox->SetLabel("包含递归DLL静态检查与隔离加载探针（可能较慢）");
+        checkDllBox->SetLabel(S("check.dll", "Include recursive static DLL checks and the isolated load probe (can be slow)"));
         checkDllBox->SetChecked(true);
         checkDllBox->FontSize = 16; checkDllBox->BoxSize = 18;
         checkDllBox->Size = Vector2(560, 28);
         AddWidget(checkDllBox, 9);
         Interactive(checkDllBox);
-        Button("开始检查并生成报告", [this] { StartCompatibility(); });
-        Button("取消检查", [this] { if (busy && job == Job::Compatibility && cancellable.load()) cancel = true; });
-        checkStatus = Text("就绪。", 16);
+        Button(S("check.start", "Start check and build report"), [this] { StartCompatibility(); });
+        Button(S("check.cancel", "Cancel check"), [this] { if (busy && job == Job::Compatibility && cancellable.load()) cancel = true; });
+        checkStatus = Text(S("check.ready", "Ready."), 16);
         checkReportBox = std::make_shared<SVerticalBox>();
         AddWidget(checkReportBox, 6);
     }
     void BuildGpu()
     {
         column = tabs[static_cast<std::size_t>(ShellTab::GpuSelection)] = std::make_shared<SVerticalBox>();
-        Text("GPU 自动选卡验证", 29);
-        Text("与 GfxDeviceSetup.cpp 的选卡逻辑逐字节一致；不链接引擎或游戏，不启动游戏。", 16);
-        Text("上半部分是离线回归用例，下半部分是本机真实探测（改BIOS开关独显后点重新探测可复查）。", 16);
-        Button("重新探测", [this] { if (!busy) RefreshGpu(); });
-        gpuStatus = Text("就绪。", 16);
+        Text(S("gpu.title", "GPU Automatic Selection Check"), 29);
+        Text(S("gpu.intro", "Byte-identical to the selection logic in GfxDeviceSetup.cpp. Links neither the engine nor the game, and never launches the game."), 16);
+        Text(S("gpu.intro2", "The top half is offline regression cases; the bottom half probes this machine (switch the discrete GPU in the BIOS and click Re-probe to check again)."), 16);
+        Button(S("gpu.reprobe", "Re-probe"), [this] { if (!busy) RefreshGpu(); });
+        gpuStatus = Text(S("gpu.ready", "Ready."), 16);
         gpuReportBox = std::make_shared<SVerticalBox>();
         AddWidget(gpuReportBox, 6);
     }
@@ -482,7 +586,7 @@ public:
             if (++count > MaxReportLines)
             {
                 auto truncated = std::make_shared<STextBlock>();
-                truncated->SetText("… 报告过长，已截断显示；完整内容见同目录 OSGameEnvironmentReport.txt。");
+                truncated->SetText(S("report.truncated", "... report too long, display truncated; the full text is in OSGameEnvironmentReport.txt next to it."));
                 truncated->SetFontSize(13); truncated->SetColor(DimColor);
                 box->AddSlot(truncated).AutoSize().SetPadding(FMargin(22, 1));
                 break;
@@ -509,7 +613,7 @@ public:
             widget->SetText(text); widget->SetFontSize(size); widget->SetColor(color);
             gpuReportBox->AddSlot(widget).AutoSize().SetPadding(FMargin(22, 1));
         };
-        add("== 离线回归用例 ==", 17, Colors::White);
+        add(S("gpu.section.mock", "== Offline regression cases =="), 17, Colors::White);
         for (const auto& mockResult : mockResults)
         {
             add((mockResult.passed ? "[PASS] " : "[FAIL] ") + mockResult.caseName,
@@ -523,28 +627,30 @@ public:
                 + "  excludedIntegrated=" + (mockResult.excludedIntegrated ? "true" : "false"), 13, DimColor);
         }
         const bool allPassed = zengine::envcheck::AllGpuSelectionMockCasesPassed(mockResults);
-        add(allPassed ? "回归：全部通过" : "回归：存在失败（选卡逻辑可能与 GfxDeviceSetup.cpp 不一致）",
+        add(allPassed ? S("gpu.regression.pass", "Regression: all passed")
+                      : S("gpu.regression.fail", "Regression: there are failures (the selection logic may differ from GfxDeviceSetup.cpp)"),
             16, allPassed ? PassColor : FailColor);
-        add("== 本机真实探测 ==", 17, Colors::White);
-        add("所有适配器（EnumAdapters1）：", 14, AccentColor);
+        add(S("gpu.section.real", "== Real probe on this machine =="), 17, Colors::White);
+        add(S("gpu.all.adapters", "All adapters (EnumAdapters1):"), 14, AccentColor);
         for (std::size_t index = 0; index < realResult.allAdapters.size(); ++index)
         {
             add(zengine::envcheck::FormatGpuAdapterLine(index, realResult.allAdapters[index], false), 13, DimColor);
         }
         if (realResult.gpuPreferencePicked)
         {
-            add("EnumAdapterByGpuPreference(HIGH_PERFORMANCE) 选中："
+            add(S("gpu.preference.picked", "EnumAdapterByGpuPreference(HIGH_PERFORMANCE) selected: ")
                 + realResult.preferredAdapter.name
                 + "  dedicated=" + zengine::envcheck::FormatGpuMegabytes(realResult.preferredAdapter.dedicatedVideoMemoryBytes),
                 14, PassColor);
         }
         else
         {
-            add("EnumAdapterByGpuPreference 不可用或失败："
-                + (realResult.errorMessage.empty() ? std::string("未知原因") : realResult.errorMessage),
+            add(S("gpu.preference.failed", "EnumAdapterByGpuPreference unavailable or failed: ")
+                + (realResult.errorMessage.empty() ? std::string(S("gpu.reason.unknown", "unknown reason")) : realResult.errorMessage),
                 14, FailColor);
         }
-        gpuStatus->SetText(allPassed ? "探测完成，回归全部通过。" : "探测完成，回归存在失败，请把本页截图发给研发。");
+        gpuStatus->SetText(allPassed ? S("gpu.status.pass", "Probe finished, regression all passed.")
+                                     : S("gpu.status.fail", "Probe finished, regression has failures; please screenshot this page and send it to the developers."));
     }
     std::filesystem::path ChooseExecutable(const wchar_t* title, const wchar_t* filter = L"Windows program (*.exe)\0*.exe\0\0")
     {
@@ -564,8 +670,9 @@ public:
         cancellable = true;
         if (kindBox) kindBox->ClosePopup();
         if (captureMode) captureMode->ClosePopup();
+        if (langBox) langBox->ClosePopup();
         for (const auto& widget : interactive) widget->Visibility = EVisibility::HitTestInvisible;
-        { std::lock_guard lock(mutex); progress = "准备中"; error.clear(); }
+        { std::lock_guard lock(mutex); progress = S("status.preparing", "Preparing"); error.clear(); }
     }
     void ClearBusy()
     {
@@ -585,7 +692,7 @@ public:
         }
         catch (const std::exception&)
         {
-            checkStatus->SetText("指令集填写不正确，只能填 none 或 avx,avx2,fma,f16c 的组合。");
+            checkStatus->SetText(S("check.isa.invalid", "Invalid instruction set; use none or a combination of avx,avx2,fma,f16c."));
             return;
         }
         try
@@ -599,7 +706,7 @@ public:
         }
         catch (const std::exception&)
         {
-            checkStatus->SetText("最低内存必须是整数GB。");
+            checkStatus->SetText(S("check.memory.invalid", "Minimum memory must be a whole number of GB."));
             return;
         }
         input.includeDllChecks = checkDllBox->IsChecked();
@@ -624,20 +731,40 @@ public:
         if (busy) return;
         const bool wer = captureMode->SelectedItem == 0 || !import.empty();
         if (targetPath.empty() || (!wer && procDumpPath.empty()))
-        { captureStatus->SetText(wer ? "请先选择游戏程序。" : "请先选择ProcDump和游戏程序。"); return; }
+        { captureStatus->SetText(wer ? S("capture.need.target", "Select the game program first.")
+                                     : S("capture.need.both", "Select ProcDump and the game program first.")); return; }
         if (options.profile.gameExecutable.empty())
-        { captureStatus->SetText("当前profile没有目标exe，请使用具体项目配置。"); return; }
+        { captureStatus->SetText(S("capture.need.profile", "The current profile has no target exe; use a project profile.")); return; }
+        // Consent dialogs are the one place the wording is contractual, so they
+        // are whole strings per language rather than assembled fragments.
         const std::wstring notice = !import.empty()
-            ? L"确认这个完整dump来自所选游戏。导入只验证结构及模块路径，不能证明它属于本次运行。\n可能包含账号、聊天和令牌，占用数GB空间，不自动上传，不删除原文件。\n\n是否确认来源并同意打包？"
-            : wer ? L"将仅配置HKLM LocalDumps下的 " + Utf8ToWide(options.profile.gameExecutable) +
-                L"，DumpType=2，输出到本次报告的system-dumps私有目录。\n配置按exe名称生效，可能影响其它同名程序；需要UAC授权，结束收集时再次请求UAC恢复原设置。\n一次启用可连续收集本次会话内的多次崩溃（每份数GB，最多8份）；点击“安全停止捕获”后才结束并统一恢复配置，未点击前配置一直生效。\n完整内存含敏感数据，占用数GB，不自动上传。配置成功不保证产生dump。\n不附加游戏，不终止WER；异常退出可用恢复按钮处理。\n\n是否同意？"
-            : L"仅监控所选游戏。完整内存含账号、聊天等敏感数据，占用数GB，不自动上传。\n停止时等待ProcDump安全退出，不强杀游戏或调试器。\n\n是否同意？";
-        if (MessageBoxW(window, notice.c_str(), L"完整内存采集授权", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
+            ? W("capture.consent.import",
+                "Confirm this full dump came from the selected game. Import only checks the structure and module "
+                "paths; it cannot prove the dump belongs to this run.\nIt may contain accounts, chats and tokens, "
+                "uses several GB, is never uploaded, and the original file is not deleted.\n\nConfirm the source and pack it?")
+            : wer ? W("capture.consent.wer.prefix", "Only the ") + Utf8ToWide(options.profile.gameExecutable)
+                    + W("capture.consent.wer.suffix",
+                        " key under HKLM LocalDumps is configured, DumpType=2, writing to this report's private "
+                        "system-dumps folder.\nThe setting applies to every program with that exe name; it needs UAC, "
+                        "and UAC is asked again to restore it when collection ends.\nOne activation covers repeated "
+                        "crashes in this session (several GB each, 8 at most); it stays in force until you click "
+                        "'Stop capture safely'.\nA full dump contains sensitive data, uses several GB and is never "
+                        "uploaded. Configuring it does not guarantee a dump.\nIt does not attach to the game and does "
+                        "not stop WER; use the restore button after an abnormal exit.\n\nDo you agree?")
+            : W("capture.consent.procdump",
+                "Only the selected game is monitored. A full dump contains accounts, chats and other sensitive data, "
+                "uses several GB and is never uploaded.\nOn stop, ProcDump is waited for and neither the game nor the "
+                "debugger is killed.\n\nDo you agree?");
+        if (MessageBoxW(window, notice.c_str(),
+            W("capture.consent.title", "Full memory capture authorisation").c_str(),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
         if (!wer && MessageBoxW(window,
-            L"请先阅读微软Sysinternals许可（下载页及ProcDump自带Eula.txt）。\n"
-            L"选择“是”表示你已阅读并接受，采集器将以 -accepteula 参数调用你选择的ProcDump。\n"
-            L"工具不包含ProcDump，也不代替你取得第三方使用许可。\n\n是否接受该许可？",
-            L"Sysinternals许可确认", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+            W("capture.license.body",
+              "Please read the Microsoft Sysinternals license first (the download page and the Eula.txt shipped with ProcDump).\n"
+              "Choosing Yes means you have read and accepted it; the collector will call the ProcDump you selected with -accepteula.\n"
+              "This tool does not contain ProcDump and does not obtain that third-party license for you.\n\nAccept the license?").c_str(),
+            W("capture.license.title", "Sysinternals license").c_str(),
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
         CaptureOptions input;
         input.environment = options; input.environment.includeEvents = details->IsChecked();
         input.procDump = procDumpPath; input.gameExecutable = targetPath;
@@ -645,7 +772,7 @@ public:
         WerOptions system; system.environment = input.environment; system.gameExecutable = targetPath;
         system.memoryConsent = true; system.importDump = import; system.importConfirmed = !import.empty(); system.owner = window;
         SetBusy(Job::Capture);
-        { std::lock_guard lock(mutex); error.clear(); captureMessage.clear(); captureReport = {}; progress = "准备捕获"; }
+        { std::lock_guard lock(mutex); error.clear(); captureMessage.clear(); captureReport = {}; progress = S("capture.preparing", "Preparing capture"); }
         worker = std::thread([this, input, system, wer] {
             try
             {
@@ -658,7 +785,7 @@ public:
                 if (remember)
                 {
                     try { SaveProcDumpPreference(input.procDump); }
-                    catch (...) { std::lock_guard lock(mutex); captureMessage += "（未能记住ProcDump位置，不影响取证结果）"; }
+                    catch (...) { std::lock_guard lock(mutex); captureMessage += S("capture.forget.failed", " (could not remember the ProcDump location; the evidence is unaffected)"); }
                 }
             }
             catch (const std::exception& exception) { std::lock_guard lock(mutex); error = exception.what(); }
@@ -668,21 +795,31 @@ public:
     void RestoreWer()
     {
         if (busy || options.profile.gameExecutable.empty()) return;
-        if (MessageBoxW(window, L"恢复当前项目exe的WER备份，可能需要UAC授权。\n只恢复采集器保存的原值，不删除dump；检测到其他工具修改时拒绝覆盖。\n\n继续？", L"恢复系统捕获配置", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+        if (MessageBoxW(window,
+            W("capture.restore.dialog.body",
+              "Restore the WER backup of the project's exe; UAC may be required.\nOnly the values this collector saved "
+              "are restored, no dump is deleted, and it refuses to overwrite if another tool changed them.\n\nContinue?").c_str(),
+            W("capture.restore.dialog.title", "Restore system capture settings").c_str(),
+            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
         SetBusy(Job::WerRestore);
         cancellable = false;
-        { std::lock_guard lock(mutex); error.clear(); captureMessage.clear(); progress = "等待恢复配置授权"; }
+        { std::lock_guard lock(mutex); error.clear(); captureMessage.clear(); progress = S("capture.restore.progress", "Waiting for restore authorisation"); }
         worker = std::thread([this] {
             DWORD code = RequestWerRestore(options.profile.gameExecutable, window);
-            { std::lock_guard lock(mutex); captureMessage = code == ERROR_SUCCESS ? "WER配置已恢复（或没有待恢复备份），原dump保留。"
-                : "恢复未完成：Win32=" + std::to_string(code) + "。可能UAC被取消或配置存在冲突，备份保留。"; }
+            { std::lock_guard lock(mutex); captureMessage = code == ERROR_SUCCESS ? S("capture.restore.ok", "WER settings restored (or there was nothing to restore); existing dumps are kept.")
+                : S("capture.restore.failed.prefix", "Restore did not finish: Win32=") + std::to_string(code) + S("capture.restore.failed.suffix", ". UAC may have been cancelled or the settings conflict; the backup is kept."); }
             finished = true;
         });
     }
     bool ConfirmClose()
     {
         if (!options.profile.gameExecutable.empty() && HasWerBackup(options.profile.gameExecutable))
-            return MessageBoxW(window, L"WER配置仍有未恢复备份，后续同名程序崩溃可能继续生成dump。\n建议返回并点击恢复原配置。仍要退出？", L"系统捕获配置尚未恢复", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
+            return MessageBoxW(window,
+                W("capture.close.body",
+                  "A WER backup is still unrestored, so later crashes of a program with the same name may keep "
+                  "producing dumps.\nBetter go back and click restore. Exit anyway?").c_str(),
+                W("capture.close.title", "System capture settings not restored").c_str(),
+                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
         return true;
     }
     void Start()
@@ -692,9 +829,9 @@ public:
         const auto time = timeInput->GetText();
         input.incidentTime = 0;
         if (!time.empty() && !TryParseUtcIso8601(time, input.incidentTime))
-        { status->SetText("时间格式不正确，请输入带Z或+08:00的ISO时间。"); return; }
+        { status->SetText(S("status.time.invalid", "Invalid time format; use an ISO time with Z or +08:00.")); return; }
         if (input.incidentTime > CurrentUtcTime() + 5 * TicksPerMinute)
-        { status->SetText("发生时间不能在未来。"); return; }
+        { status->SetText(S("status.time.future", "The incident time cannot be in the future.")); return; }
         input.includeEvents = details->IsChecked();
         SetBusy(Job::Collection);
         worker = std::thread([this, input] {
@@ -706,7 +843,7 @@ public:
                 });
                 std::lock_guard lock(mutex); result = std::move(collected);
             }
-            catch (const std::exception&) { std::lock_guard lock(mutex); error = "采集或打包失败，已写出的本地文件会保留。请检查输出目录。"; }
+            catch (const std::exception&) { std::lock_guard lock(mutex); error = S("status.collect.failed", "Collection or packing failed; files already written are kept. Check the output directory."); }
             finished = true;
         });
     }
@@ -733,7 +870,8 @@ public:
             {
                 FillReportLines(checkReportBox, checkOutcome.textReport);
                 checkStatus->SetText(error.empty()
-                    ? "检查完成，退出码 " + std::to_string(checkOutcome.exitCode) + "。报告：" + checkOutcome.textPath.string()
+                    ? S("check.done.prefix", "Check finished, exit code ") + std::to_string(checkOutcome.exitCode)
+                        + S("check.done.suffix", ". Report: ") + checkOutcome.textPath.string()
                     : error);
             }
             else if (completed == Job::Capture || completed == Job::WerRestore)
@@ -741,8 +879,9 @@ public:
                 captureStatus->SetText(error.empty() ? captureMessage : error);
                 status->SetText(error.empty() ? captureMessage : error);
             }
-            else status->SetText(!error.empty() ? error : result.cancelled ? "已取消，已生成包含部分信息的ZIP。"
-                : result.partial ? "ZIP已生成；部分步骤失败，请查看manifest。" : "ZIP已生成。请检查报告后手动发送。");
+            else status->SetText(!error.empty() ? error : result.cancelled ? S("status.cancelled", "Cancelled; a ZIP with partial information was produced.")
+                : result.partial ? S("status.partial", "ZIP built; some steps failed, see the manifest.")
+                                 : S("status.done", "ZIP built. Review the report, then send it manually."));
             if (closing) { closing = false; if (ConfirmClose()) DestroyWindow(window); }
         }
     }
@@ -751,6 +890,14 @@ public:
         if (suppressPointerUntilRelease)
         {
             if (!platform.down) suppressPointerUntilRelease = false;
+            return;
+        }
+        // The language combo sits on the tab strip, so it is live on every tab --
+        // it is handled before the per-tab combos, which are inside the scroll
+        // area and only exist on the collection tab.
+        if (langBox && langBox->ProcessPopupMouse(platform.mouse, platform.down, wheel))
+        {
+            if (!langBox->IsOpen()) ResetPointerGesture();
             return;
         }
         if (tab == ShellTab::Collection)
@@ -816,6 +963,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
         app->platform.down = false;
         if (app->kindBox) app->kindBox->ClosePopup();
         if (app->captureMode) app->captureMode->ClosePopup();
+        if (app->langBox) app->langBox->ClosePopup();
         app->router.Reset(); return 0;
     case WM_MOUSEWHEEL:
     {
@@ -828,7 +976,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
     {
         const EKey key = w == VK_UP ? EKey::Up : w == VK_DOWN ? EKey::Down : w == VK_RETURN ? EKey::Enter
             : w == VK_ESCAPE ? EKey::Escape : w == VK_SPACE ? EKey::Space : w == VK_TAB ? EKey::Tab : EKey::Unknown;
-        if (app->tab == ShellTab::Collection)
+        if (app->langBox && app->langBox->IsOpen())
+        {
+            app->langBox->OnKeyDown(key);
+            if (!app->langBox->IsOpen()) app->ResetPointerGesture();
+        }
+        else if (app->tab == ShellTab::Collection)
         {
             if (app->kindBox && app->kindBox->IsOpen())
             {
@@ -849,7 +1002,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
         return 0;
     }
     case WM_CHAR:
-        if (!app->busy && w < 128 && (!app->kindBox || !app->kindBox->IsOpen()) && (!app->captureMode || !app->captureMode->IsOpen())) app->router.ProcessChar(static_cast<unsigned>(w));
+        if (!app->busy && w < 128 && (!app->kindBox || !app->kindBox->IsOpen())
+            && (!app->captureMode || !app->captureMode->IsOpen()) && (!app->langBox || !app->langBox->IsOpen()))
+            app->router.ProcessChar(static_cast<unsigned>(w));
         return 0;
     case WM_CLOSE:
         if (app->busy) { app->closing = true; if (app->cancellable.load()) app->cancel = true; return 0; }
@@ -868,6 +1023,7 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
     try
     {
         ShellApp app;
+        bool languageFromCommandLine = false;
         auto defaultProfile = ExecutableDirectory() / L"profiles" / L"default.ini";
         if (std::filesystem::is_regular_file(defaultProfile)) app.options.profile = LoadProfile(defaultProfile);
         for (int i = 1; i < argumentCount; ++i)
@@ -885,8 +1041,36 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
                 else if (name == L"gpu") app.tab = ShellTab::GpuSelection;
                 else throw std::invalid_argument("Unknown tab; use collection|compatibility|gpu");
             }
+            else if (key == L"--lang")
+            {
+                // Wins over the remembered choice, so a screenshot session or a
+                // support walkthrough can force a language without touching the
+                // registry.
+                ZSlate::ELanguage language{};
+                if (!ZSlate::LanguageFromId(WideToUtf8(value()).c_str(), language))
+                    throw std::invalid_argument("Unknown language; use en|zh-CN");
+                ZSlate::SetLanguage(language);
+                languageFromCommandLine = true;
+            }
             else throw std::invalid_argument("Unsupported GUI option. CLI commands need -batchmode; "
                                              "see ZEnvironmentCollector.exe -batchmode --help");
+        }
+        // UI language: default English, remembered per user from the last visit.
+        // Registration happens before Build() so every string the tree asks for
+        // is already there. The table is copied across because UiLocalization.cpp
+        // is deliberately ZSlate-free (the CLI-only build links it too), so it
+        // cannot hand out ZSlate's own entry type.
+        {
+            std::size_t count = 0;
+            const zengine::envcheck::ui::UiStringEntry* table = zengine::envcheck::ui::ChineseSimplifiedStrings(count);
+            std::vector<ZSlate::FLocalizationEntry> entries;
+            entries.reserve(count);
+            for (std::size_t index = 0; index < count; ++index) entries.push_back({table[index].id, table[index].text});
+            ZSlate::RegisterStrings(ZSlate::ELanguage::ChineseSimplified, entries.data(), entries.size());
+            ZSlate::ELanguage remembered{};
+            if (!languageFromCommandLine
+                && ZSlate::LanguageFromId(zengine::envcheck::ui::LoadLanguagePreference().c_str(), remembered))
+                ZSlate::SetLanguage(remembered);
         }
         // ZSlate's own diagnostics (font atlas misses, the "no CJK face" warning)
         // go through 扁鹊 from here on: as a WINDOWS-subsystem binary this process
@@ -922,9 +1106,11 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
                                                       IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
 #endif
         if (!RegisterClassExW(&klass)) throw std::runtime_error("Window registration failed");
-        HWND window = CreateWindowExW(0, klass.lpszClassName, L"环境信息采集 - ZSlate", WS_OVERLAPPEDWINDOW,
+        HWND window = CreateWindowExW(0, klass.lpszClassName, L"ZEnvironmentCollector", WS_OVERLAPPEDWINDOW,
             CW_USEDEFAULT, CW_USEDEFAULT, 1000, 790, nullptr, nullptr, instance, &app);
         if (!window) throw std::runtime_error("Window creation failed");
+        // Title in the active language (English until the user picks otherwise).
+        app.UpdateWindowTitle();
         // Window sizing at the monitor's scale (960x740 logical) is
         // Win32::ResizeWindowForDpi, shared with the other ZSlate tools.
         const UINT dpi = static_cast<UINT>(Win32::QueryDpiScaleForWindow(window) * 96.0f);
@@ -934,7 +1120,9 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
         if (!backend->Init())
         {
             zengine::envcheck::LogError("D3D11 renderer init failed; falling back to -batchmode");
-            MessageBoxW(window, L"图形界面启动失败。可运行同目录 ZEnvironmentCollector.exe -batchmode --collect 生成报告。", L"图形初始化失败", MB_OK | MB_ICONWARNING);
+            MessageBoxW(window,
+                Utf8ToWide(ZSlate::Loc("dialog.gpuinit.body", "The GUI could not start. Run ZEnvironmentCollector.exe -batchmode --collect in the same folder to produce a report.")).c_str(),
+                Utf8ToWide(ZSlate::Loc("dialog.gpuinit.title", "Graphics initialisation failed")).c_str(), MB_OK | MB_ICONWARNING);
             DestroyWindow(window); return 30;
         }
         app.backend = std::move(backend);
@@ -958,6 +1146,7 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
                 scaled.BeginFrame();
                 const UIRect viewport(0, 0, app.platform.size.x, app.platform.size.y);
                 SlateApplication::Get().PaintInto(&scaled, viewport);
+                if (app.langBox) app.langBox->PaintPopup(&scaled, viewport);
                 if (app.tab == ShellTab::Collection)
                 {
                     app.kindBox->PaintPopup(&scaled, viewport);
@@ -973,7 +1162,9 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
     catch (const std::exception& exception)
     {
         zengine::envcheck::LogError(std::string("GUI startup failed: ") + exception.what());
-        MessageBoxW(nullptr, L"无法启动采集界面。请检查项目配置、系统字体及工具分发是否完整。可使用 -batchmode --collect 模式。", L"环境采集", MB_OK | MB_ICONERROR);
+        MessageBoxW(nullptr,
+            Utf8ToWide(ZSlate::Loc("dialog.startup.body", "Cannot start the collection window. Check the project profile, the system fonts and that the tool package is complete. -batchmode --collect is also available.")).c_str(),
+            Utf8ToWide(ZSlate::Loc("dialog.startup.title", "Environment Collection")).c_str(), MB_OK | MB_ICONERROR);
         return 30;
     }
 }

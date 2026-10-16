@@ -27,6 +27,22 @@ GUI 三个页签与 `-batchmode` 子命令一一对应：
 
 GUI 的“兼容性检查”和“GPU 选卡验证”与命令行走的是同一份代码（`EnvironmentCheckCommand` / `GpuSelectionProbe`），不会出现两套结果。
 
+## 界面语言
+
+**默认是英文**，界面右上角的语言下拉框可切到简体中文，选择按用户记在注册表
+`HKCU\Software\ZEngine\EnvironmentCollector\Language`（和 ProcDump 路径同一个键），
+下次启动自动沿用。临时覆盖：`ZEnvironmentCollector.exe --lang zh-CN`（`en` | `zh-CN`）。
+
+实现约定（多语言机制在 ZSlate，不在本工具）：
+
+- 机制在 `ZSlate/Core/SlateLocalization.h`：英文写在源码里（"id" + 英文原文），
+  其它语言是注册表式词条表；缺词条自动回退英文，并在日志里报一次缺失的 id。
+- 本工具只持有自己的词条：`UiLocalization.cpp`（简体中文表 + 语言偏好读写），
+  它不依赖 ZSlate，CLI-only 构建也会链接它。
+- 切换语言会重建控件树（字符串是在建控件时解析的，不是绘制时），表单里已填的内容会被带过去。
+- **报告文件内容（TXT/JSON）不受语言开关影响，始终中文**：那是给研发和支持的交付物，
+  不是给玩家看的界面。
+
 ## 产物
 
 Release 构建后需要一起分发：

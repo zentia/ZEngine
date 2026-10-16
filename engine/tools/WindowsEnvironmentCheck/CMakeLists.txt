@@ -262,6 +262,8 @@ if(ENVIRONMENT_CHECK_WITH_ZSLATE)
         EnvironmentCheckShell.cpp
         EnvironmentCheckGui.cpp
         EnvironmentCheckGui.h
+        UiLocalization.cpp
+        UiLocalization.h
     )
 else()
     set(_shell_sources
