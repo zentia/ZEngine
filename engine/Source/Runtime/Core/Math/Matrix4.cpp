@@ -1,4 +1,3 @@
-
 #include "Runtime/Core/Math/Matrix4.h"
 
 const Matrix4x4 Matrix4x4::ZERO(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
@@ -184,3 +183,26 @@ Vector4 operator*(const Vector4& v, const Matrix4x4& mat)
                    v.x * mat[0][2] + v.y * mat[1][2] + v.z * mat[2][2] + v.w * mat[3][2],
                    v.x * mat[0][3] + v.y * mat[1][3] + v.z * mat[2][3] + v.w * mat[3][3]);
 }
+
+template<typename TransferFunction>
+void Matrix4x4_::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(v0, "v0");
+    transfer.Transfer(v1, "v1");
+    transfer.Transfer(v2, "v2");
+    transfer.Transfer(v3, "v3");
+    transfer.Transfer(v4, "v4");
+    transfer.Transfer(v5, "v5");
+    transfer.Transfer(v6, "v6");
+    transfer.Transfer(v7, "v7");
+    transfer.Transfer(v8, "v8");
+    transfer.Transfer(v9, "v9");
+    transfer.Transfer(v10, "v10");
+    transfer.Transfer(v11, "v11");
+    transfer.Transfer(v12, "v12");
+    transfer.Transfer(v13, "v13");
+    transfer.Transfer(v14, "v14");
+    transfer.Transfer(v15, "v15");
+}
+
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(Matrix4x4_, , Transfer, void)

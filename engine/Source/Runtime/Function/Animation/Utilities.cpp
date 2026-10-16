@@ -44,7 +44,7 @@ std::shared_ptr<RawBone> find_by_index(std::vector<std::shared_ptr<RawBone>>& bo
 int find_index_by_name(const SkeletonData& skeleton, const std::string& name)
 {
     const auto it = std::find_if(
-        skeleton.bones_map.begin(), skeleton.bones_map.end(), [&](const auto& i) { return i.name == name; });
+        skeleton.bones_map.begin(), skeleton.bones_map.end(), [&](const auto& i) { return i.name == name.c_str(); });
     if (it != skeleton.bones_map.end())
         return it->index;
     return std::numeric_limits<int>::max();

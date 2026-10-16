@@ -267,7 +267,7 @@ void Bone::Initialize(RawBone* definition, Bone* parent_bone)
 
     if (definition)
     {
-        m_Name = definition->name;
+        m_Name = definition->name.c_str();
         SetOrientation(definition->binding_pose.m_Rotation);
         SetPosition(definition->binding_pose.m_Position.ToVector3());
         SetScale(definition->binding_pose.m_Scale);

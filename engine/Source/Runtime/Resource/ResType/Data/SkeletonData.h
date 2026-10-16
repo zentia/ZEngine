@@ -5,7 +5,9 @@
 class RawBone
 {
 public:
-    std::string name;
+    DECLARE_SERIALIZE(RawBone)
+
+    eastl::string name;
     int index;
     TransformTRS binding_pose;
     Matrix4x4_ tpose_matrix;

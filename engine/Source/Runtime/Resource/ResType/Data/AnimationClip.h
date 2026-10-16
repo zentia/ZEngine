@@ -10,7 +10,7 @@ class AnimNodeMap
 public:
     DECLARE_SERIALIZE(AnimNodeMap)
 
-    std::vector<std::string> convert;
+    std::vector<eastl::string> convert;
 };
 
 class AnimationChannel
@@ -18,7 +18,7 @@ class AnimationChannel
 public:
     DECLARE_SERIALIZE(AnimationChannel)
 
-    std::string name;
+    eastl::string name;
     std::vector<Vector3> position_keys;
     std::vector<Quaternion> rotation_keys;
     std::vector<Vector3> scaling_keys;
@@ -26,9 +26,9 @@ public:
 
 class AnimationClip
 {
+public:
     DECLARE_SERIALIZE(AnimationClip)
 
-public:
     int total_frame {0};
     int node_count {0};
     std::vector<AnimationChannel> node_channels;

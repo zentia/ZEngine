@@ -7,4 +7,6 @@ INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(BoneBlendMask)
 template<typename TransferFunction>
 void BoneBlendMask::Transfer(TransferFunction& transfer)
 {
+    transfer.Transfer(skeleton_file_path, "skeleton_file_path");
+    transfer.Transfer(enabled, "enabled");
 }

@@ -5,6 +5,7 @@
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Math/Vector4.h"
+#include "Runtime/Core/Serialize/SerializeUtility.h"
 
 /** Class encapsulating a standard 4x4 homogeneous matrix.
     @remarks
@@ -41,6 +42,8 @@
 class Matrix4x4_
 {
 public:
+    DECLARE_SERIALIZE(Matrix4x4_)
+
     Matrix4x4_() {}
     float v0 {1.f};
     float v1 {0};
