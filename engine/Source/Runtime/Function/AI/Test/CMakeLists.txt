@@ -91,12 +91,12 @@ message(STATUS "Configured navigation test target: NavMeshTest")
 
 # ---------------------------------------------------------------------
 # SceneGenTool: emits a .scene (YAML) level from the authored legacy
-# .level.json, using the engine's own WriteObjectsToYaml.
+# .level.json.
 #
-# Needed because Level::load()'s JSON branch currently deserializes zero
-# objects (LevelRes::Transfer has m_Objects commented out), while the
-# .scene branch works. This tool produces a level the editor will really
-# instantiate, so the navmesh can be validated end-to-end.
+# Levels are object graphs now (see LevelRes); the legacy .level.json is
+# read only by this tool so its placements can be re-emitted as a .scene
+# using the engine's own WriteObjectsToYaml, keeping the on-disk format
+# from drifting from what Level::load() expects.
 # ---------------------------------------------------------------------
 add_executable(SceneGenTool SceneGenTool.cpp)
 
@@ -119,3 +119,34 @@ if(MSVC)
 endif()
 
 message(STATUS "Configured scene generator target: SceneGenTool")
+
+# ---------------------------------------------------------------------
+# AssetMigrator: retires the legacy JSON asset format by re-serializing
+# every convertible .json asset as a binary .zasset, using the engine's
+# own reader + writer so the encoding cannot drift.
+#
+# JSON cannot represent PPtr's (m_FileID, m_PathID) pairs, so it is being
+# dropped in favour of binary (.zasset) and YAML authoring assets -- the
+# same two representations Unity ships.
+# ---------------------------------------------------------------------
+add_executable(AssetMigrator AssetMigrator.cpp)
+
+set_target_properties(AssetMigrator PROPERTIES
+    CXX_STANDARD 23
+    FOLDER "Engine/Tests"
+)
+
+target_link_libraries(AssetMigrator PRIVATE ZRuntime)
+
+if(TARGET ZEnginePCH)
+    target_link_libraries(AssetMigrator PRIVATE ZEnginePCH)
+    target_include_directories(AssetMigrator PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+    add_dependencies(AssetMigrator ZEnginePCH)
+    target_precompile_headers(AssetMigrator REUSE_FROM ZEnginePCH)
+endif()
+
+if(MSVC)
+    target_compile_options(AssetMigrator PRIVATE /W4)
+endif()
+
+message(STATUS "Configured asset migration target: AssetMigrator")

@@ -389,6 +389,12 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/SceneGenTool.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/SceneGenTool.cpp")
+# AssetMigrator: same rationale -- it owns main() and must not be
+# wholearchive'd into ZRuntime or every consumer exe gets LNK2005.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AssetMigrator.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AssetMigrator.cpp")
 
 # UGUI control layer retired (P4). The shared GPU render layer + Font/UITypes/
 # WindowUI moved to Runtime/UI/ and are now picked up by the main GLOB_RECURSE
