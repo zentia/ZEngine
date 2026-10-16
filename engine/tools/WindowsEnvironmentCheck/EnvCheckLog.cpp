@@ -16,6 +16,8 @@
 #include <bq_log/bq_log.h>
 #include "Runtime/Core/Log/generated/engine_log.h"
 
+#include "ToolVersion.h"
+
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -93,7 +95,11 @@ void LogInitialize()
     // Keep early console output readable in -batchmode, before anything else
     // can consume it.
     bq::log::set_console_buffer_enable(true);
-    logger->info(logger->cat.ZEnvironmentCheck, "ZEnvironmentCollector log files: {}", prefix);
+    // ToolVersion on the first line: support must be able to tell which build a
+    // user's log came from -- "the log looks fine but the UI is broken" is only
+    // debuggable if we know the exe matches the source we are reading.
+    logger->info(logger->cat.ZEnvironmentCheck, "ZEnvironmentCollector {} log files: {}",
+                 ToolVersion, prefix);
 }
 
 void LogShutdown()
