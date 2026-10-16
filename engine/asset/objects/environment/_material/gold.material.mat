@@ -1,0 +1,46 @@
+externals: []
+objects:
+  - fileID: 1
+    type: Material
+    data:
+      Material:
+        shader: StandardLit
+        shader_guid: ""
+        m_shader_pptr:
+          m_FileID: 0
+          m_PathID: 0
+        float_properties: []
+        color_properties: []
+        texture_properties: []
+        toggle_properties: []
+        base_color_factor:
+          x: 1
+          y: 1
+          z: 1
+        alpha_factor: 1
+        metallic_factor: 1
+        roughness_factor: 1
+        normal_scale: 1
+        occlusion_strength: 1
+        emissive_factor:
+          x: 0
+          y: 0
+          z: 0
+        is_blend: false
+        is_double_sided: false
+        enabled_shader_keywords: []
+        base_colour_texture_pptr:
+          m_FileID: 0
+          m_PathID: 0
+        metallic_roughness_texture_pptr:
+          m_FileID: 0
+          m_PathID: 0
+        normal_texture_pptr:
+          m_FileID: 0
+          m_PathID: 0
+        occlusion_texture_pptr:
+          m_FileID: 0
+          m_PathID: 0
+        emissive_texture_pptr:
+          m_FileID: 0
+          m_PathID: 0

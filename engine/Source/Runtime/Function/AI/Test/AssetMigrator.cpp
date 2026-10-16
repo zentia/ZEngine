@@ -1,4 +1,4 @@
-// AssetMigrator -- one-shot converter that retires the legacy JSON asset
+﻿// AssetMigrator -- one-shot converter that retires the legacy JSON asset
 // format in favour of the two supported backends: binary .zasset and YAML
 // authoring assets (.mat / .prefab / .scene).
 //
@@ -137,23 +137,23 @@ namespace
         AssetType* asset = MemoryManager::CreateObject<AssetType>();
         if (asset == nullptr)
         {
-            std::printf("  FAIL  %s (cannot allocate %s)\n", source.filename().string().c_str(), class_name);
+            std::fprintf(stderr, "  FAIL  %s (cannot allocate %s)\n", source.filename().string().c_str(), class_name);
             return false;
         }
 
         if (!GET_SYSTEM(FileSystem)->LoadAssetByJson(asset, source))
         {
-            std::printf("  FAIL  %s (json deserialize failed)\n", source.filename().string().c_str());
+            std::fprintf(stderr, "  FAIL  %s (json deserialize failed)\n", source.filename().string().c_str());
             return false;
         }
 
         if (!GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(target, *asset))
         {
-            std::printf("  FAIL  %s (binary write failed)\n", source.filename().string().c_str());
+            std::fprintf(stderr, "  FAIL  %s (binary write failed)\n", source.filename().string().c_str());
             return false;
         }
 
-        std::printf("  ok    %s -> %s\n", source.filename().string().c_str(), target.filename().string().c_str());
+        std::fprintf(stderr, "  ok    %s -> %s\n", source.filename().string().c_str(), target.filename().string().c_str());
         return true;
     }
 
@@ -210,10 +210,10 @@ int main(int argc, char** argv)
         }
     }
 
-    std::printf("found %zu json assets under %s\n", json_assets.size(), asset_root.string().c_str());
+    std::fprintf(stderr, "found %zu json assets under %s\n", json_assets.size(), asset_root.string().c_str());
     if (dry_run)
     {
-        std::printf("--dry-run: no files will be written\n");
+        std::fprintf(stderr, "--dry-run: no files will be written\n");
     }
 
     RegisterRuntime();
@@ -236,14 +236,14 @@ int main(int argc, char** argv)
         const char* class_name = ClassNameForPath(source);
         if (class_name == nullptr)
         {
-            std::printf("  skip  %s (no type mapping)\n", source.filename().string().c_str());
+            std::fprintf(stderr, "  skip  %s (no type mapping)\n", source.filename().string().c_str());
             ++skipped;
             continue;
         }
 
         if (dry_run)
         {
-            std::printf("  would convert %s -> %s.zasset\n", source.filename().string().c_str(), class_name);
+            std::fprintf(stderr, "  would convert %s -> %s.zasset\n", source.filename().string().c_str(), class_name);
             ++converted;
             continue;
         }
@@ -261,6 +261,6 @@ int main(int argc, char** argv)
         }
     }
 
-    std::printf("\nconverted=%d skipped=%d failed=%d\n", converted, skipped, failed);
+    std::fprintf(stderr, "\nconverted=%d skipped=%d failed=%d\n", converted, skipped, failed);
     return (failed == 0) ? 0 : 1;
 }
