@@ -5,6 +5,9 @@
 
 class RigidBodyComponent : public Component
 {
+    REGISTER_CLASS(RigidBodyComponent);
+    DECLARE_OBJECT_SERIALIZE();
+
 public:
     RigidBodyComponent() = default;
     ~RigidBodyComponent() override;

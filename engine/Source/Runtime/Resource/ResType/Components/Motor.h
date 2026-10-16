@@ -30,9 +30,17 @@ public:
     Capsule m_CapsuleShape;
 };
 
+template<typename TransferFunction>
+void PhysicsControllerConfig::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(m_CapsuleShape, "capsule_shape");
+}
+
 class MotorComponentRes
 {
 public:
+    DECLARE_SERIALIZE(MotorComponentRes)
+
     MotorComponentRes() = default;
     ~MotorComponentRes();
 
@@ -45,3 +53,18 @@ public:
 
     PPtr<ControllerConfig> m_ControllerConfig;
 };
+
+template<typename TransferFunction>
+void MotorComponentRes::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(m_MoveSpeed, "move_speed");
+    transfer.Transfer(m_JumpHeight, "jump_height");
+    transfer.Transfer(m_MaxMoveSpeedRatio, "max_move_speed_ratio");
+    transfer.Transfer(m_MaxSprintSpeedRatio, "max_sprint_speed_ratio");
+    transfer.Transfer(m_MoveAcceleration, "move_acceleration");
+    transfer.Transfer(m_SprintAcceleration, "sprint_acceleration");
+    transfer.Transfer(m_ControllerConfig, "controller_config");
+}
+
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(PhysicsControllerConfig, , Transfer, void)
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(MotorComponentRes, , Transfer, void)

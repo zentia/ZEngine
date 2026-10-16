@@ -85,20 +85,24 @@ uint32_t PhysicsScene::CreateRigidBody(const TransformTRS& global_transform,
 
     for (size_t shape_index = 0; shape_index < rigidbody_actor_res.m_Shapes.size(); shape_index++)
     {
-        const RigidBodyShape& shape = rigidbody_actor_res.m_Shapes[shape_index];
+        const RigidBodyShape* shape = rigidbody_actor_res.m_Shapes[shape_index];
+        if (shape == nullptr)
+        {
+            continue;
+        }
 
-        const Matrix4x4 shape_global_transform = global_transform.getMatrix() * shape.m_LocalTransform.getMatrix();
+        const Matrix4x4 shape_global_transform = global_transform.getMatrix() * shape->m_LocalTransform.getMatrix();
 
         Vector3 global_position, global_scale;
         Quaternion global_rotation;
 
         shape_global_transform.Decomposition(global_position, global_scale, global_rotation);
 
-        JPH::Shape* jph_shape = toShape(shape, global_scale);
+        JPH::Shape* jph_shape = toShape(*shape, global_scale);
 
         if (jph_shape)
         {
-            jph_shapes.push_back({jph_shape, shape.m_LocalTransform, global_position, global_scale, global_rotation});
+            jph_shapes.push_back({jph_shape, shape->m_LocalTransform, global_position, global_scale, global_rotation});
         }
     }
 

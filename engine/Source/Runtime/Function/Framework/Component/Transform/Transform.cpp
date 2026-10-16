@@ -19,14 +19,10 @@ INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(Transform)
 
 namespace
 {
-    struct TransformLegacyAliasRegistrar
-    {
-        TransformLegacyAliasRegistrar()
-        {
-            TypeManager::GetInstance().RegisterClassNameAlias("TransformComponent", TypeOf<Transform>());
-        }
-    };
-    static TransformLegacyAliasRegistrar s_TransformLegacyAliasRegistrar;
+    // "TransformComponent" (the legacy authoring name) is mapped centrally in
+    // RegisterRuntime.cpp's RegisterLegacyTypeAliases(), which runs after
+    // TypeManager::InitializeAllTypes(). It cannot live here: Initialize()
+    // calls Reset(), which wipes the name->type map and would drop it.
 
     TransformChangeSystemHandle g_RendererChangeSystem;
     TransformChangeSystemHandle g_PhysicsChangeSystem;

@@ -3,6 +3,18 @@
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Function/Animation/AnimationSystem.h"
 
+IMPLEMENT_REGISTER_CLASS(AnimationComponent)
+IMPLEMENT_OBJECT_SERIALIZE(AnimationComponent)
+
+template<typename TransferFunction>
+void AnimationComponent::Transfer(TransferFunction& transfer)
+{
+    Super::Transfer(transfer);
+    transfer.Transfer(m_AnimationRes, "animation_res");
+}
+
+INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(AnimationComponent)
+
 void AnimationComponent::PostLoadResource(GameObject* parent_object)
 {
     m_ParentObject = parent_object;

@@ -9,6 +9,9 @@ namespace Runtime
 {
     class ParticleComponent : public Component
     {
+        REGISTER_CLASS(ParticleComponent);
+        DECLARE_OBJECT_SERIALIZE();
+
     public:
         ParticleComponent() {}
 

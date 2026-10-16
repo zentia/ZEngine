@@ -20,6 +20,9 @@ enum class JumpState : unsigned char
 
 class MotorComponent : public Component
 {
+    REGISTER_CLASS(MotorComponent);
+    DECLARE_OBJECT_SERIALIZE();
+
 public:
     MotorComponent() = default;
 

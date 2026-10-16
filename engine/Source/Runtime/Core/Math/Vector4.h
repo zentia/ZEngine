@@ -2,10 +2,13 @@
 
 #include "Runtime/Core/Math/Math.h"
 #include "Runtime/Core/Math/Vector3.h"
+#include "Runtime/Core/Serialize/SerializeUtility.h"
 
 class Vector4
 {
 public:
+    DECLARE_SERIALIZE(Vector4)
+
     float x {0.f}, y {0.f}, z {0.f}, w {0.f};
 
     Vector4() = default;
@@ -212,3 +215,14 @@ public:
     static const Vector4 ZERO;
     static const Vector4 UNIT_SCALE;
 };
+
+template<typename TransferFunction>
+void Vector4::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(x, "x");
+    transfer.Transfer(y, "y");
+    transfer.Transfer(z, "z");
+    transfer.Transfer(w, "w");
+}
+
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(Vector4, , Transfer, void)

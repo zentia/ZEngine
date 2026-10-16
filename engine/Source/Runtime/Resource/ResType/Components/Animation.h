@@ -30,3 +30,13 @@ public:
 
     AnimationResult animation_result;
 };
+
+template<typename TransferFunction>
+void AnimationComponentRes::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(skeleton_file_path, "skeleton_file_path");
+    transfer.Transfer(blend_state, "blend_state");
+    transfer.Transfer(frame_position, "frame_position");
+}
+
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(AnimationComponentRes, , Transfer, void)

@@ -6,6 +6,18 @@
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
+IMPLEMENT_REGISTER_CLASS(RigidBodyComponent)
+IMPLEMENT_OBJECT_SERIALIZE(RigidBodyComponent)
+
+template<typename TransferFunction>
+void RigidBodyComponent::Transfer(TransferFunction& transfer)
+{
+    Super::Transfer(transfer);
+    transfer.Transfer(m_RigidbodyRes, "rigidbody_res");
+}
+
+INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(RigidBodyComponent)
+
 void RigidBodyComponent::PostLoadResource(GameObject* parent_object)
 {
     m_ParentObject = parent_object;

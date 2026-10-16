@@ -150,3 +150,18 @@ if(MSVC)
 endif()
 
 message(STATUS "Configured asset migration target: AssetMigrator")
+
+add_executable(ComponentRegistryCheck ComponentRegistryCheck.cpp)
+target_link_libraries(ComponentRegistryCheck PRIVATE ZRuntime)
+if(TARGET ZEnginePCH)
+    target_link_libraries(ComponentRegistryCheck PRIVATE ZEnginePCH)
+    target_include_directories(ComponentRegistryCheck PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+    add_dependencies(ComponentRegistryCheck ZEnginePCH)
+    target_precompile_headers(ComponentRegistryCheck REUSE_FROM ZEnginePCH)
+endif()
+
+if(MSVC)
+    target_compile_options(ComponentRegistryCheck PRIVATE /W4)
+endif()
+
+message(STATUS "Configured component registry check target: ComponentRegistryCheck")

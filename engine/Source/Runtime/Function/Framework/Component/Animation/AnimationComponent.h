@@ -6,6 +6,9 @@
 
 class AnimationComponent : public Component
 {
+    REGISTER_CLASS(AnimationComponent);
+    DECLARE_OBJECT_SERIALIZE();
+
 public:
     AnimationComponent() = default;
 

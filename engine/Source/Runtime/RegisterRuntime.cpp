@@ -37,6 +37,8 @@
 #include "Runtime/BaseClasses/ObjectDefines.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/BaseClasses/TypeManager.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
+#include "Runtime/Resource/ResType/Data/Material.h"
 #include "Runtime/Core/Serialize/TypeTreeCache.h"
 #include "Runtime/File/AsyncReadManagerThreaded.h"
 #include "Runtime/File/FileSystem.h"
@@ -61,12 +63,32 @@
 
 namespace
 {
+    /// Old authoring name -> current runtime class.
+    ///
+    /// The legacy .object.json definitions name components with the authoring
+    /// names rather than the runtime class names, so deserialization-by-name
+    /// needs these to resolve. Kept as one table so the whole set is visible
+    /// and can be checked against the serializer's expectations.
+    void RegisterLegacyTypeAliases()
+    {
+        TypeManager& type_manager = TypeManager::GetInstance();
+        type_manager.RegisterClassNameAlias("TransformComponent", TypeOf<Transform>());
+        type_manager.RegisterClassNameAlias("MaterialRes", TypeOf<Material>());
+    }
+
     void RegisterRuntimeType()
     {
         TypeManager::GetInstance().Initialize();
         // 鑷姩娉ㄥ唽鎵€鏈変娇鐢?IMPLEMENT_REGISTER_CLASS 鐨勭被
         AutoTypeRegistration::ExecuteAllRegistrations();
         TypeManager::GetInstance().InitializeAllTypes();
+
+        // Legacy .object.json / .level.json refer to components by their old
+        // authoring names ("TransformComponent" for Transform, ...). Those
+        // aliases must be registered AFTER InitializeAllTypes(): Initialize()
+        // calls Reset(), which clears the name->type map, so an alias
+        // registered by a file-scope static at load time is silently dropped.
+        RegisterLegacyTypeAliases();
     }
 
     void RegisterSystem(PreferredRHI preferred_rhi)

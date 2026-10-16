@@ -37,3 +37,26 @@ public:
     float m_Radius {0.3f};
     float m_HalfHeight {0.7f};
 };
+
+template<typename TransferFunction>
+void Box::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(m_HalfExtents, "half_extents");
+}
+
+template<typename TransferFunction>
+void Sphere::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(m_Radius, "radius");
+}
+
+template<typename TransferFunction>
+void Capsule::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(m_Radius, "radius");
+    transfer.Transfer(m_HalfHeight, "half_height");
+}
+
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(Box, , Transfer, void)
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(Sphere, , Transfer, void)
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(Capsule, , Transfer, void)

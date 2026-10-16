@@ -18,3 +18,18 @@ public:
     Vector2 m_Life;   // life base & variance
     Vector4 m_Color;  // color rgba
 };
+
+template<typename TransferFunction>
+void ParticleComponentRes::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(m_LocalTranslation, "local_translation");
+    transfer.Transfer(m_LocalRotation, "local_rotation");
+    transfer.Transfer(m_Velocity, "velocity");
+    transfer.Transfer(m_Acceleration, "acceleration");
+    transfer.Transfer(m_Size, "size");
+    transfer.Transfer(m_EmitterType, "emitter_type");
+    transfer.Transfer(m_Life, "life");
+    transfer.Transfer(m_Color, "color");
+}
+
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(ParticleComponentRes, , Transfer, void)
