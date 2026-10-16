@@ -13,7 +13,26 @@ endif()
 # merged into a single shell (EnvironmentCheckShell.cpp + EnvironmentCheckGui.cpp)
 # that runs the GUI by default and the CLI under -batchmode. See README.md.
 set(ENVIRONMENT_CHECK_TARGET ZEnvironmentCollector)
-set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# CRT mode -- /MT (no VC redist needed on the machine it ships to) is only
+# coherent when *every* static library this exe links is built inside this
+# directory scope, because MSVC_RUNTIME_LIBRARY is baked into each object at
+# compile time and a mix is LNK2038 ("RuntimeLibrary" mismatch) plus LNK2019 on
+# the other side's `__imp_*` symbols.
+#
+# Standalone (`cmake -S engine/tools/WindowsEnvironmentCheck -B <dir>`) that is
+# true: minizip-ng / zlib-ng / Zydis / BqLog are all added below and inherit /MT.
+# In a full-tree configure they already exist with the *tree's* CRT (/MD by
+# default) -- see the `if(NOT TARGET minizip-ng)` guard -- so forcing /MT here
+# only buys the mismatch. Inherit the tree's choice instead; the full-tree build
+# is CLI-only anyway (the GUI is deliberately built from its own configure, see
+# ENVIRONMENT_CHECK_BUILD_GUI below).
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(ENVIRONMENT_CHECK_STANDALONE TRUE)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+else()
+    set(ENVIRONMENT_CHECK_STANDALONE FALSE)
+endif()
 
 include(FetchContent)
 
@@ -99,9 +118,29 @@ if(NOT TARGET minizip-ng)
     set(BUILD_TESTING "${_environment_check_build_testing}" CACHE BOOL "" FORCE)
 endif()
 
+# ------------------------------------------------------------------------------
+# 扁鹊 (BqLog) -- the tool's diagnostics go through it, see EnvCheckLog.h
+# ------------------------------------------------------------------------------
+# Same guard as minizip-ng: in a full-tree configure BqLog already exists from
+# engine/3rdparty; standalone we add it here so it picks up this directory's /MT.
+# The cache variables mirror engine/3rdparty/CMakeLists.txt exactly -- without
+# TARGET_PLATFORM=win64 bqlog configures for the wrong host, and without
+# BUILD_TYPE=static_lib it produces a DLL that a /MT tool cannot import.
+if(NOT TARGET BqLog)
+    option(BQLOG_BUILD_EXAMPLE "" OFF)
+    option(BQLOG_INSTALL "" OFF)
+    set(TARGET_PLATFORM "win64" CACHE STRING "" FORCE)
+    set(BUILD_TYPE "static_lib" CACHE STRING "" FORCE)
+    add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/bqlog/src"
+                     "${CMAKE_CURRENT_BINARY_DIR}/bqlog")
+endif()
+
 add_library(ZEnvironmentCheckCore STATIC
     AttributionRules.cpp
     Diagnosis.cpp
+    DiagnosisUtil.cpp
+    EnvCheckLog.cpp
+    EnvCheckLog.h
     DiagnosisReport.cpp
     DiagnosisUtil.cpp
     EventLogReader.cpp
@@ -131,6 +170,13 @@ add_library(ZEnvironmentCheckCore STATIC
     JsonEscape.h
 )
 target_include_directories(ZEnvironmentCheckCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+# bqlog headers (<bq_log/bq_log.h>) and the generated category wrapper
+# (Runtime/Core/Log/generated/engine_log.h). Both live in the engine tree;
+# engine/Source is added narrowly - only EnvCheckLog.cpp includes from it.
+target_include_directories(ZEnvironmentCheckCore PUBLIC
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/bqlog/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../Source"
+)
 target_compile_features(ZEnvironmentCheckCore PUBLIC cxx_std_20)
 target_compile_definitions(ZEnvironmentCheckCore PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
 # minizip-ng exports both include dirs it needs as PUBLIC BUILD_INTERFACE
@@ -138,7 +184,7 @@ target_compile_definitions(ZEnvironmentCheckCore PUBLIC WIN32_LEAN_AND_MEAN NOMI
 # the generated mz_config.h mz.h includes), so linking it is enough -- do not
 # hand-roll the paths here, they differ between a full-tree and a standalone
 # configure.
-target_link_libraries(ZEnvironmentCheckCore PUBLIC Zydis minizip-ng dxgi setupapi wevtapi advapi32 shell32 ole32 bcrypt wintrust crypt32 version comdlg32)
+target_link_libraries(ZEnvironmentCheckCore PUBLIC Zydis minizip-ng BqLog dxgi setupapi wevtapi advapi32 shell32 ole32 bcrypt wintrust crypt32 version comdlg32)
 if(MSVC)
     target_compile_options(ZEnvironmentCheckCore PRIVATE /W4 /permissive- /EHsc /utf-8)
 endif()
@@ -153,6 +199,12 @@ set_target_properties(${DLL_PROBE_TARGET} PROPERTIES
     CXX_EXTENSIONS OFF
     OUTPUT_NAME "ZDllLoadProbe"
     FOLDER "Tools"
+)
+# /NODEFAULTLIB + a raw entry point: the probe links no CRT at all, so its CRT
+# choice is irrelevant -- and pinning it keeps the probe identical between a
+# standalone and a full-tree configure (it is re-launched as a child process by
+# whichever exe the tree happens to be building).
+set_target_properties(${DLL_PROBE_TARGET} PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
 target_compile_definitions(${DLL_PROBE_TARGET} PRIVATE
@@ -237,8 +289,13 @@ set_target_properties(${ENVIRONMENT_CHECK_TARGET} PROPERTIES
     CXX_EXTENSIONS OFF
     OUTPUT_NAME "ZEnvironmentCollector"
     FOLDER "Tools"
-    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
+if(ENVIRONMENT_CHECK_STANDALONE)
+    # Only the shipped, self-contained build is /MT -- see the CRT block above.
+    set_target_properties(${ENVIRONMENT_CHECK_TARGET} PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    )
+endif()
 
 # App icon. The GUI path registers its own WNDCLASSEX (EnvironmentCheckGui.cpp)
 # instead of ZSlate::FSlateStandaloneApp, so it loads IDI_ICON1 itself; the .rc

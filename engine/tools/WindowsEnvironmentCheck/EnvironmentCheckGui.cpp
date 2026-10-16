@@ -25,6 +25,7 @@
 
 #include "Collection.h"
 #include "CrashCapture.h"
+#include "EnvCheckLog.h"
 #include "WerCapture.h"
 #include "ToolVersion.h"
 #include "DiagnosisUtil.h"
@@ -34,6 +35,7 @@
 #include <shlobj.h>
 #include "ZSlate/Application/SlateApplication.h"
 #include "ZSlate/Application/SlateInput.h"
+#include "ZSlate/Core/SlateLog.h"
 #include "ZSlate/Core/SlatePaint.h"
 #include "ZSlate/Renderer/SlateDpiScaleRenderer.h"
 #include "ZSlate/Renderer/ZSlateBatchedRenderer.h"
@@ -100,6 +102,20 @@ enum class Job
     WerRestore,
     Compatibility,
 };
+
+// Only used to label log lines -- the UI never shows it.
+const char* JobName(Job job)
+{
+    switch (job)
+    {
+    case Job::Collection:    return "collection";
+    case Job::Capture:       return "capture";
+    case Job::WerRestore:    return "wer-restore";
+    case Job::Compatibility: return "compatibility";
+    case Job::None:          break;
+    }
+    return "idle";
+}
 
 class Platform final : public ISlatePlatform
 {
@@ -710,6 +726,9 @@ public:
             const Job completed = job;
             ClearBusy();
             std::lock_guard lock(mutex);
+            // A failed job is the reason someone sends us the log, so it goes in
+            // there as well as on the status line.
+            if (!error.empty()) zengine::envcheck::LogError(std::string(JobName(completed)) + " failed: " + error);
             if (completed == Job::Compatibility)
             {
                 FillReportLines(checkReportBox, checkOutcome.textReport);
@@ -869,8 +888,20 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
             else throw std::invalid_argument("Unsupported GUI option. CLI commands need -batchmode; "
                                              "see ZEnvironmentCollector.exe -batchmode --help");
         }
+        // ZSlate's own diagnostics (font atlas misses, the "no CJK face" warning)
+        // go through 扁鹊 from here on: as a WINDOWS-subsystem binary this process
+        // has no stderr anyone can read.
+        ZSlate::SetLogSink([](ZSlate::ELogLevel level, const char* message) {
+            if (level == ZSlate::ELogLevel::Error) zengine::envcheck::LogError(message);
+            else if (level == ZSlate::ELogLevel::Warning) zengine::envcheck::LogWarning(message);
+            else zengine::envcheck::LogInfo(message);
+        });
         SetPlatform(&app.platform);
-        if (!app.InitFonts()) throw std::runtime_error("Required system fonts unavailable");
+        if (!app.InitFonts())
+        {
+            zengine::envcheck::LogError("Required system fonts unavailable");
+            throw std::runtime_error("Required system fonts unavailable");
+        }
         app.Build();
         // WNDCLASSEX, not WNDCLASS: only the EX class carries hIconSm, and
         // hIconSm is what the taskbar shows. With the plain class the .rc that
@@ -902,6 +933,7 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
         auto backend = std::make_unique<ZSlateD3D11Renderer>(window);
         if (!backend->Init())
         {
+            zengine::envcheck::LogError("D3D11 renderer init failed; falling back to -batchmode");
             MessageBoxW(window, L"图形界面启动失败。可运行同目录 ZEnvironmentCollector.exe -batchmode --collect 生成报告。", L"图形初始化失败", MB_OK | MB_ICONWARNING);
             DestroyWindow(window); return 30;
         }
@@ -938,8 +970,9 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
         }
         return 0;
     }
-    catch (const std::exception&)
+    catch (const std::exception& exception)
     {
+        zengine::envcheck::LogError(std::string("GUI startup failed: ") + exception.what());
         MessageBoxW(nullptr, L"无法启动采集界面。请检查项目配置、系统字体及工具分发是否完整。可使用 -batchmode --collect 模式。", L"环境采集", MB_OK | MB_ICONERROR);
         return 30;
     }

@@ -47,6 +47,16 @@ LICENSE-Zycore.txt
 
 不要单独分发主程序，否则动态探针会报告 `DLL_PROBE_INFRASTRUCTURE_FAILED`，`--collect` 的分阶段子进程也会报 `HELPER_MISSING`。
 
+## 日志
+
+工具自身的诊断走扁鹊（bqlog，分类 `ZEnvironmentCheck`），落盘到
+
+```text
+%USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_YYYYMMDD_N.log
+```
+
+与引擎日志同目录。GUI 是 WINDOWS 子系统进程、没有 stderr，字体缺失、D3D 初始化失败、后台任务报错等只能在那里看到（ZSlate 的字体/图集告警也一并转发进来）。`manifest.json` 里的 `toolLog` 字段记录该路径，日志本身不进 ZIP。
+
 ## 检查内容
 
 ### 系统与硬件

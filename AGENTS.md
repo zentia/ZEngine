@@ -1512,6 +1512,27 @@ Conventions (do not re-litigate):
   and `SlateInputRouter::OpenPopup` (used by `SComboBox` dropdowns). Hosts
   must route mouse to `SlateApplication::GetInputRoot()` and paint through
   `SlateApplication::PaintInto`, which draws modal + popup on top.
+- **Diagnostics go out through a sink, not through `fprintf`**: `ZSlate::Log()`
+  (`ZSlate/Core/SlateLog.h`) formats and dispatches to a process-wide
+  `FSlateLogSink`; the default sink is the old stderr/stdout pair, so a host
+  that installs nothing is unaffected. Hosts that own a real logging stack
+  install one (`ZSlate::SetLogSink`) -- ZEnvironmentCollector's GUI routes every
+  ZSlate line into 扁鹊, because a WINDOWS-subsystem process has no stderr
+  anyone can read. Do not add direct `fprintf`/`printf` to ZSlate sources.
+
+### 2.9 CRT mode: /MT tools inside a /MD tree
+
+`MSVC_RUNTIME_LIBRARY` is baked into each object file, so a /MT executable
+linking a /MD static library fails with LNK2038 ("RuntimeLibrary" mismatch)
+**and** LNK2019 on the library's `__imp_*` symbols (`__imp_strncat`,
+`__imp__wstat64`, ...). A tool directory that forces
+`CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` must therefore either build every
+library it links itself, or inherit the tree's CRT when it is configured as part
+of the tree (where `minizip-ng` / `BqLog` / `zlib-ng` already exist as /MD).
+`engine/tools/WindowsEnvironmentCheck/CMakeLists.txt` does exactly that via
+`ENVIRONMENT_CHECK_STANDALONE`: standalone (its own `cmake -S`, everything
+local) -> /MT, which is what ships; inside the tree -> inherit. Do not "fix" a
+link error here by forcing /MT unconditionally.
 
 ## 3. Build / test invocations
 
@@ -1615,6 +1636,12 @@ constant. It packages **game logs** together with the environment report:
   the report dir (`gamelog-NN-<name>`), never moved / modified / renamed.
   Index in `game-logs.json`; missing or empty log dir is status `NO_LOGS`
   and does **not** mark the report partial.
+- **Its own diagnostics go through 扁鹊** (`EnvCheckLog.h/.cpp`, category
+  `ZEnvironmentCheck`, own `bq::engine_log` instance since the tool links no
+  ZRuntime): `%USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_*.log`,
+  same directory the engine uses. `ZSlate::SetLogSink` forwards ZSlate's own
+  lines (font atlas misses, "no CJK face") there too. The manifest carries the
+  path as `toolLog`; the log itself is **not** copied into the ZIP.
 
 ## 7. Standalone ZSlate tools: use FSlateStandaloneApp, do not hand-roll a host
 

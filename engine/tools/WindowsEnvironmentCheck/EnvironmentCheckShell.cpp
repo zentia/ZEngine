@@ -49,6 +49,7 @@
 
 #include "Collection.h"
 #include "Diagnosis.h"
+#include "EnvCheckLog.h"
 #include "EnvironmentCheckCommand.h"
 #include "WerCapture.h"
 
@@ -120,7 +121,9 @@ int RunBatchMode(int argumentCount, wchar_t** arguments)
     }
     catch (const std::exception& exception)
     {
+        // stderr is what the operator sees; the log file is what they send us.
         std::cerr << "Environment check failed: " << exception.what() << '\n';
+        zengine::envcheck::LogError(std::string("Environment check failed: ") + exception.what());
         return 30;
     }
 }
@@ -128,6 +131,10 @@ int RunBatchMode(int argumentCount, wchar_t** arguments)
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
+    // 扁鹊 (bqlog) up before anything can fail, and drained on every exit path
+    // below -- including the throwing ones, which is what the scope guard is for.
+    const zengine::envcheck::ScopedLog logScope;
+
     // No argc/argv parameters with this entry point; the command line is the
     // source of truth and is already wide.
     int argumentCount = 0;

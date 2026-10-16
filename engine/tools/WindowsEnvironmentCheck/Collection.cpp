@@ -2,6 +2,7 @@
 #include "AttributionRules.h"
 #include "DiagnosisReport.h"
 #include "DiagnosisUtil.h"
+#include "EnvCheckLog.h"
 #include "EnvironmentProbe.h"
 #include "EvidenceFiles.h"
 #include "HardwareProbe.h"
@@ -588,7 +589,11 @@ Result Collect(const Options& options, const std::atomic_bool& cancel, const std
     progress("正在完成ZIP（此阶段不可取消）", false);
     result.cancelled = cancel.load();
     manifest << "],\"partial\":" << (result.partial ? "true" : "false") << ",\"cancelled\":" << (result.cancelled ? "true" : "false")
-        << ",\"healthInterpretation\":\"See each report's observability and status; successful collection is not a health verdict\",\"files\":[";
+        << ",\"healthInterpretation\":\"See each report's observability and status; successful collection is not a health verdict\""
+        // Where the collector's own 扁鹊 log lives -- a stage that reported a
+        // failure usually has the reason there, and it is not part of the ZIP.
+        << ",\"toolLog\":" << JsonString(LogFilePath())
+        << ",\"files\":[";
     files.push_back("summary.txt"); files.push_back("manifest.json");
     for (size_t i = 0; i < files.size(); ++i) { if (i) manifest << ','; manifest << JsonString(files[i]); }
     manifest << "]}";
