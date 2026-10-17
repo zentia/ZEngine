@@ -23,10 +23,9 @@ public:
 class PhysicsControllerConfig : public ControllerConfig
 {
     REGISTER_CLASS(PhysicsControllerConfig)
+    DECLARE_OBJECT_SERIALIZE(PhysicsControllerConfig)
 
 public:
-    DECLARE_SERIALIZE(PhysicsControllerConfig)
-
     PhysicsControllerConfig() {}
     ~PhysicsControllerConfig() {}
     Capsule m_CapsuleShape;

@@ -628,6 +628,79 @@ namespace
         ++g_converted;
         return true;
     }
+    // Walk the same steps AssetManager::ReadObject(int32_t) walks and report
+    // which one fails. ReadObject returns nullptr at six different points and
+    // they all look identical from outside, so without this there is no way to
+    // tell "remapper lost the id" from "the type is unregistered".
+    void DiagnoseInstanceID(int32_t instance_id, const std::string& where)
+    {
+        std::fprintf(stderr, "         id=%d\n", instance_id);
+        if (instance_id == 0)
+        {
+            std::fprintf(stderr, "         -> id is zero: nothing was ever assigned\n");
+            return;
+        }
+
+        std::filesystem::path asset_path;
+        int64_t local_id = 0;
+        if (!GET_SYSTEM(AssetManager)->TryGetIdentityForInstance(instance_id, asset_path, local_id))
+        {
+            std::fprintf(stderr, "         -> FAIL: remapper has no (file, lfid) for this id\n");
+            return;
+        }
+        std::fprintf(stderr, "         -> path=%s lfid=%lld\n",
+                     asset_path.generic_string().c_str(), static_cast<long long>(local_id));
+
+        std::error_code ec;
+        if (!std::filesystem::exists(asset_path, ec))
+        {
+            std::fprintf(stderr, "         -> FAIL: file does not exist on disk\n");
+            return;
+        }
+        std::fprintf(stderr, "         -> file exists (%lld bytes)\n",
+                     static_cast<long long>(std::filesystem::file_size(asset_path, ec)));
+
+        const std::string type_name = GET_SYSTEM(AssetManager)->GetAssetTypeName(asset_path);
+        std::fprintf(stderr, "         -> asset type name='%s'\n", type_name.c_str());
+        if (type_name.empty())
+        {
+            std::fprintf(stderr, "         -> FAIL: no type name stamped in the file\n");
+            return;
+        }
+
+        const Type* resolved_type = TypeManager::GetInstance().ClassNameToType(type_name.c_str());
+        if (resolved_type == nullptr)
+        {
+            std::fprintf(stderr, "         -> FAIL: ClassNameToType('%s') returned null\n", type_name.c_str());
+            return;
+        }
+        std::fprintf(stderr, "         -> type resolved: %s (factory=%s)\n",
+                     resolved_type->GetName(),
+                     resolved_type->GetFactory() != nullptr ? "yes" : "NO");
+        if (resolved_type->GetFactory() == nullptr)
+        {
+            std::fprintf(stderr, "         -> FAIL: type has no factory, Produce will return null\n");
+            return;
+        }
+
+        // Everything upstream resolved, so try the load that ReadObject
+        // itself would do. If this succeeds but PPtr still reads null, the
+        // break is in the ID->object lookup, not in the file.
+        std::filesystem::path load_path(asset_path);
+        Object* loaded = GET_SYSTEM(AssetManager)->ReadObject(load_path, resolved_type);
+        std::fprintf(stderr, "         -> ReadObject(path, type) = %s\n", loaded != nullptr ? "ok" : "NULL");
+
+        // The two ways PPtr resolves: the in-memory table first, then the
+        // on-demand load. Comparing them says whether the id is registered
+        // at all or just not loadable.
+        std::fprintf(stderr, "         -> IDToPointer(%d) = %s\n", instance_id,
+                     GET_SYSTEM(ObjectManager)->IDToPointer(instance_id) != nullptr ? "hit" : "miss");
+        Object* by_id = GET_SYSTEM(AssetManager)->ReadObject(instance_id);
+        std::fprintf(stderr, "         -> ReadObject(instanceID) = %s\n", by_id != nullptr ? "ok" : "NULL");
+        std::fprintf(stderr, "         -> GetSerializedFile(path) = %s\n",
+                     GET_SYSTEM(AssetManager)->GetSerializedFile(load_path) != nullptr ? "ok" : "NULL");
+    }
+
     // Load a written prefab back and report whether the references the
     // migrator emitted actually resolve. This is the only check that proves
     // the conversion is usable: a file that writes clean but reads back with
@@ -682,6 +755,7 @@ namespace
                     {
                         ++dangling;
                         std::fprintf(stderr, "    NULL %s: shape geometry did not resolve\n", where.c_str());
+                        DiagnoseInstanceID(shape->m_Geometry.GetInstanceID(), where);
                         continue;
                     }
                     ++resolved;
@@ -695,6 +769,7 @@ namespace
                 {
                     ++dangling;
                     std::fprintf(stderr, "    NULL %s: controller config did not resolve\n", where.c_str());
+                    DiagnoseInstanceID(motor->GetMotorResMutable().m_ControllerConfig.GetInstanceID(), where);
                 }
                 else
                 {
@@ -709,6 +784,7 @@ namespace
                 {
                     ++dangling;
                     std::fprintf(stderr, "    NULL %s: camera parameter did not resolve\n", where.c_str());
+                    DiagnoseInstanceID(camera->GetCameraResMutable().m_Parameter.GetInstanceID(), where);
                 }
                 else
                 {
@@ -728,6 +804,50 @@ namespace
         std::fprintf(stderr, "  ok    %s (%d reference(s) resolved)\n", where.c_str(), resolved);
         return true;
     }
+    // Print what the asset system thinks a single file is.
+    // sniffed from the file. This separates two failure modes that look
+    // identical from the outside: "the file is corrupt / wrong" versus "the
+    // file is fine but the type cannot be recovered from it".
+    bool LoadBoxExplicit(const std::filesystem::path& asset_path)
+    {
+        std::filesystem::path path(asset_path);
+        Box* box = GET_SYSTEM(AssetManager)->ReadObject<Box>(path);
+        if (box == nullptr)
+        {
+            std::fprintf(stderr, "  -> ReadObject<Box> returned null\n");
+            return false;
+        }
+        std::fprintf(stderr, "  -> loaded Box: half_extents=(%.4f, %.4f, %.4f)\n",
+                     box->m_HalfExtents.x, box->m_HalfExtents.y, box->m_HalfExtents.z);
+        return true;
+    }
+
+    // Print what the asset system thinks a single file is. Used to compare a
+    // migrator-emitted .zasset against a known-good one: if the good one also
+    // reports empty, the problem is in the reader, not in what we wrote.
+    bool ProbeAsset(const std::filesystem::path& asset_path)
+    {
+        std::error_code ec;
+        std::fprintf(stderr, "probe %s\n", asset_path.generic_string().c_str());
+        if (!std::filesystem::exists(asset_path, ec))
+        {
+            std::fprintf(stderr, "  -> does not exist\n");
+            return false;
+        }
+        std::fprintf(stderr, "  -> %lld bytes\n", static_cast<long long>(std::filesystem::file_size(asset_path, ec)));
+
+        const std::string type_name = GET_SYSTEM(AssetManager)->GetAssetTypeName(asset_path);
+        std::fprintf(stderr, "  -> GetAssetTypeName='%s'\n", type_name.c_str());
+        if (type_name.empty())
+        {
+            std::fprintf(stderr, "  -> FAIL: empty (same symptom as the migrator output)\n");
+            return false;
+        }
+
+        const Type* resolved_type = TypeManager::GetInstance().ClassNameToType(type_name.c_str());
+        std::fprintf(stderr, "  -> ClassNameToType=%s\n", resolved_type != nullptr ? resolved_type->GetName() : "null");
+        return resolved_type != nullptr;
+    }
 }  // namespace
 
 int main(int argc, char** argv)
@@ -736,6 +856,38 @@ int main(int argc, char** argv)
     {
         std::fprintf(stderr, "usage: ObjectDefinitionMigrator <asset-root> [--dry-run]\n");
         return 2;
+    }
+
+    // Probe has to short-circuit before the asset-root directory check: it
+    // takes a single file, not a root. It registers the runtime itself because
+    // it needs AssetManager and the runtime type table to resolve anything.
+    if (argc >= 3)
+    {
+        const std::string mode(argv[2]);
+
+        if (mode == "--loadbox")
+        {
+            if (argc < 4)
+            {
+                std::fprintf(stderr, "usage: ObjectDefinitionMigrator x --loadbox <asset path>\n");
+                return 2;
+            }
+            RegisterRuntime();
+            REGISTER_SYSTEM_AS(RuntimeAssetManager, AssetManager);
+            return LoadBoxExplicit(argv[3]) ? 0 : 1;
+        }
+
+        if (mode == "--probe")
+        {
+            if (argc < 4)
+            {
+                std::fprintf(stderr, "usage: ObjectDefinitionMigrator x --probe <asset path>\n");
+                return 2;
+            }
+            RegisterRuntime();
+            REGISTER_SYSTEM_AS(RuntimeAssetManager, AssetManager);
+            return ProbeAsset(argv[3]) ? 0 : 1;
+        }
     }
 
     const std::filesystem::path asset_root(argv[1]);

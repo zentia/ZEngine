@@ -381,8 +381,19 @@ std::string AssetManager::GetAssetTypeName(const std::filesystem::path& asset_pa
         return {};
     }
 
+    const std::string stamped_type_name = serialized_file->GetAssetTypeName();
+
     const uint64_t persistent_type_id = serialized_file->GetObjectPersistentTypeID(1);
     MemoryManager::DestroyObject(serialized_file);
+
+    // The ZASS prefix carries the type name written by WriteFile. Trust it
+    // first: it is explicit, it does not depend on type registration being
+    // complete, and it is what AssetRegistry already reports for this file.
+    if (!stamped_type_name.empty())
+    {
+        return stamped_type_name;
+    }
+
     if (persistent_type_id == Type::UndefinedPersistentTypeID)
     {
         return {};
@@ -479,10 +490,25 @@ Object* AssetManager::ReadObject(int32_t instanceID)
         return ReadObject(asset_path, resolved_type);
     }
 
-    // Discover the persistent type stamped inside the .zasset so we
-    // can ask TypeManager for the right Type* without needing the
-    // caller to know the static T. Cheap: the SerializedFile open
-    // path is already cached internally per stream.
+    // Resolve by the type name stamped in the file rather than by the
+    // per-object persistent type id.
+    //
+    // The persistent-type-id path below cannot work for .zasset: it walks
+    // m_Types[i], and ReadMetadata rebuilds that table from TypeTree blobs
+    // (there is no Type* on disk to recover), so GetObjectPersistentTypeID
+    // reports Undefined and every object silently fails to resolve. The
+    // ZASS prefix does carry the type name, and ReadObject(path, type) is
+    // proven to load these files, so resolve the Type by name and delegate.
+    const std::string type_name = GetAssetTypeName(asset_path);
+    if (!type_name.empty())
+    {
+        const Type* named_type = TypeManager::GetInstance().ClassNameToType(type_name.c_str());
+        if (named_type != nullptr)
+        {
+            return ReadObject(asset_path, named_type);
+        }
+    }
+
     SerializedFile* sf = GetSerializedFile(static_cast<int>(ident.serializedFileIndex));
     if (sf == nullptr)
         return nullptr;

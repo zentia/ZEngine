@@ -75,7 +75,23 @@ public:
     void WriteType(std::vector<uint8_t>& cache);
 
     bool ReadType(const uint8_t*& iterator, const uint8_t* end);
+
     uint64_t GetPersistentTypeID() const { return m_Type == nullptr ? Type::UndefinedPersistentTypeID : m_Type->assetTypeID; }
+
+    // Recover the runtime Type* from the TypeTree that was just read back
+    // from disk. ReadMetadata builds entries with a null Type (the type
+    // table on disk stores a TypeTree blob, not a pointer), which leaves
+    // GetPersistentTypeID() returning Undefined for every object in the
+    // file -- that silently voids ReadObject(int32_t) and
+    // ReadObjectsFromBinary, which both resolve a Type by that id.
+    // The TypeTree root's type-string IS the class name (see
+    // DECLARE_OBJECT_SERIALIZE's GetTypeString), so it round-trips through
+    // TypeManager::ClassNameToType. Returns false only when the tree is
+    // missing or names an unregistered class; m_Type stays null then and
+    // callers keep their existing "cannot resolve" behaviour.
+    bool ResolveRuntimeType();
+
+    const Type* GetRuntimeType() const { return m_Type; }
 
 private:
     const Type* m_Type;

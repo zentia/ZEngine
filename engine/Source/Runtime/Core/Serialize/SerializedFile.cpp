@@ -2,6 +2,7 @@
 
 #include "Runtime/Asset/AssetFile.h"  // P2 #6 -- AssetFileHeader / k_zasset_magic
 #include "Runtime/BaseClasses/Object.h"
+#include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Serialize/SerializationCaching/CachedReader.h"
 #include "Runtime/Core/Serialize/SerializationCaching/FileCacherRead.h"
@@ -127,6 +128,37 @@ bool SerializedType::ReadType(const uint8_t*& iterator, const uint8_t* end)
         return false;
     }
     m_OldType = typeTree;
+    return true;
+}
+
+bool SerializedType::ResolveRuntimeType()
+{
+    if (m_Type != nullptr)
+    {
+        return true;
+    }
+    if (m_OldType == nullptr)
+    {
+        return false;
+    }
+
+    // The tree root's type-string is the class name: GenerateTypeTreeTransfer
+    // assigns SerializeTraits<T>::GetTypeString() at the root, and
+    // DECLARE_OBJECT_SERIALIZE defines that as TypeOf<ThisType>()->GetName().
+    // So the name on disk is exactly what ClassNameToType expects.
+    const char* class_name = m_OldType->Root().Type().c_str();
+    if (class_name == nullptr || class_name[0] == '\0')
+    {
+        return false;
+    }
+
+    const Type* resolved = TypeManager::GetInstance().ClassNameToType(class_name);
+    if (resolved == nullptr)
+    {
+        return false;
+    }
+
+    m_Type = resolved;
     return true;
 }
 
@@ -684,6 +716,10 @@ bool SerializedFile::ReadMetadata(int64_t version, FileSize dataOffset, uint8_t*
         m_Types.emplace_back(nullptr);
         if (!m_Types[i].ReadType(iterator, end))
             return false;
+        // Recover the runtime Type* now that the tree is in memory. Without
+        // this m_Type stays null, GetPersistentTypeID() reports Undefined
+        // for every object, and nothing in the file can be produced.
+        m_Types[i].ResolveRuntimeType();
     }
 
     int32_t objectCount = 0;

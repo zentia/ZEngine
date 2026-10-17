@@ -6,5 +6,6 @@
 // PhysicsControllerConfig is referenced through PPtr<ControllerConfig>, so it
 // needs a runtime factory to be producible by name.
 IMPLEMENT_REGISTER_CLASS(PhysicsControllerConfig)
+IMPLEMENT_OBJECT_SERAILIZE(PhysicsControllerConfig)
 
 MotorComponentRes::~MotorComponentRes() {}

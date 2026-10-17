@@ -14,20 +14,18 @@ public:
 class Box : public Geometry
 {
     REGISTER_CLASS(Box)
+    DECLARE_OBJECT_SERIALIZE(Box)
 
 public:
-    DECLARE_SERIALIZE(Box)
-
     Vector3 m_HalfExtents {0.5f, 0.5f, 0.5f};
 };
 
 class Sphere : public Geometry
 {
     REGISTER_CLASS(Sphere)
+    DECLARE_OBJECT_SERIALIZE(Sphere)
 
 public:
-    DECLARE_SERIALIZE(Sphere)
-
     ~Sphere() override {}
     float m_Radius {0.5f};
 };
@@ -35,10 +33,9 @@ public:
 class Capsule : public Geometry
 {
     REGISTER_CLASS(Capsule)
+    DECLARE_OBJECT_SERIALIZE(Capsule)
 
 public:
-    DECLARE_SERIALIZE(Capsule)
-
     ~Capsule() override {}
     float m_Radius {0.3f};
     float m_HalfHeight {0.7f};
