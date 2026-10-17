@@ -26,7 +26,9 @@
 // -----------------------------------------------------------------------------
 
 #include "Runtime/Core/Base/EngineSystem.h"
+#include "Runtime/Function/Framework/GameFramework/GameMode.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -59,11 +61,19 @@ public:
 
     bool IsInitialized() const { return m_IsInitialized; }
 
+    /// 本关的 GameMode。关卡加载时创建、卸载时销毁，因此切换间隙可能为 nullptr。
+    /// 骨架阶段默认类型就是 GameMode；后续按关卡配置挑选子类时在此扩展。
+    GameMode* GetGameMode() const { return m_GameMode.get(); }
+
     /// 已加载的关卡 URL（WorldManager 的当前活动关卡）。
     const std::string& GetCurrentLevelUrl() const { return m_CurrentLevelUrl; }
     void SetCurrentLevelUrl(const std::string& level_url) { m_CurrentLevelUrl = level_url; }
 
 protected:
+    /// 创建本关的 GameMode。派生类可 override 返回自定义 GameMode 子类。
+    virtual std::unique_ptr<GameMode> CreateGameMode(const std::string& level_url);
+
     bool m_IsInitialized {false};
     std::string m_CurrentLevelUrl;
+    std::unique_ptr<GameMode> m_GameMode;
 };

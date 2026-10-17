@@ -3,6 +3,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Character/Character.h"
+#include "Runtime/Function/Framework/GameFramework/GameMode.h"
 #include "Runtime/Function/Framework/GameFramework/PlayerController.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
@@ -100,6 +101,12 @@ void GameEngine::Tick(float delta_time)
     if (m_GameInstance != nullptr)
     {
         m_GameInstance->Tick(delta_time);
+
+        // GameMode 只在本关存活，随 GameInstance 的关卡生命周期创建/销毁。
+        if (GameMode* game_mode = m_GameInstance->GetGameMode(); game_mode != nullptr)
+        {
+            game_mode->Tick(delta_time);
+        }
     }
 
     for (auto& player : m_LocalPlayers)
@@ -210,6 +217,26 @@ bool GameEngine::AutoPossessActiveCharacter()
     {
         LOG_WARNING(ZEngine, "GameEngine::AutoPossessActiveCharacter: no active level");
         return false;
+    }
+
+    // GameMode 可以指定本关的默认角色；没指定时沿用关卡自己的 active character。
+    if (m_GameInstance != nullptr)
+    {
+        if (const GameMode* game_mode = m_GameInstance->GetGameMode(); game_mode != nullptr)
+        {
+            const GObjectID target = game_mode->GetPendingPossessTarget();
+            if (target != k_invalid_gobject_id)
+            {
+                LocalPlayer* first_player = m_LocalPlayers.empty() ? nullptr : m_LocalPlayers.front().get();
+                PlayerController* controller =
+                    first_player != nullptr ? first_player->GetPlayerController() : nullptr;
+                if (controller != nullptr)
+                {
+                    return controller->Possess(target);
+                }
+                return false;
+            }
+        }
     }
 
     std::shared_ptr<Character> character = level->getCurrentActiveCharacter().lock();
