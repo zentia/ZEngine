@@ -1,0 +1,17 @@
+name: ZGameSmoke
+description: Minimal project used to verify the standalone ZGame runtime boots and opens a level.
+version: 1.0.0
+engine_version: 0.1.0
+startup_level: asset/level/1-1.scene
+content_dir: asset
+config_dir: config
+saved_dir: saved
+source_dir: source
+scripts_dir: Scripts
+intermediate_dir: Intermediate
+shaders_dir: Shaders
+data_dir: Data
+textures_dir: Textures
+models_dir: Models
+tags:
+  - smoke

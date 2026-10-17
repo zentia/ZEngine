@@ -5628,11 +5628,39 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
     // This is the recovery path for Alt-Tab away + return, driver TDR,
     // or any DXGI surface invalidation (mirrors Vulkan's VK_ERROR_OUT_OF_DATE
     // handling which already calls RecreateSwapchain reactively).
+    //
+    // Occlusion-only case: DXGI_STATUS_OCCLUDED is reported whenever the
+    // window is *fully covered by another window* -- the size is still the
+    // real size, so the zero-size guard above never trips and this path
+    // used to fire on EVERY frame. Each pass recreated the main-camera
+    // framebuffers (3840x2054 G-buffer + depth) and re-allocated their
+    // CBV/SRV/UAV descriptors, while the per-frame descriptor cursor is
+    // only rewound by WaitForFences() on a completed frame -- so the
+    // heap saturated (1365/1365 per frame slot), every subsequent
+    // allocation failed, and the framebuffers leaked until the process
+    // reached OOM (observed: 51 GB resident, 260 recreates / 6.7k
+    // exhaustion logs in 20 s of running covered).
+    //
+    // Occlusion does not invalidate DXGI backbuffers the way a resize or
+    // device removal does -- the surfaces stay valid, DXGI just declines to
+    // present. So we only act when the extent actually changed, which folds
+    // this into the proactive-resize check below (that one already compares
+    // against m_SwapchainExtent). RecreateSwapchain() stays reserved for the
+    // cases that genuinely invalidate the surface.
     if (m_SwapchainNeedsRecreate && m_Device && m_Swapchain)
     {
         m_SwapchainNeedsRecreate = false;
-        LOG_INFO(ZRender, "DX12: recovering swapchain after Present failure");
-        RecreateSwapchain();
+
+        const std::array<int, 2> recovery_size = GET_SYSTEM(WindowSystem)->GetFramebufferSize();
+        const bool extent_changed =
+            recovery_size[0] > 0 && recovery_size[1] > 0 &&
+            (static_cast<uint32_t>(recovery_size[0]) != m_SwapchainExtent.width ||
+             static_cast<uint32_t>(recovery_size[1]) != m_SwapchainExtent.height);
+
+        if (extent_changed)
+        {
+            LOG_INFO(ZRender, "DX12: recovering swapchain after Present failure");
+            RecreateSwapchain();
         if (passUpdateAfterRecreateSwapchain)
         {
             passUpdateAfterRecreateSwapchain();
@@ -5647,9 +5675,10 @@ bool DX12RHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwa
         // white texture IN PLACE (keeping GpuTexture* handle_ids stable)
         // so batch commands recorded on the game thread still resolve
         // to valid descriptor sets this same frame.
-        if (auto* gpu_res = UIGpuResources::Get())
-        {
-            gpu_res->InvalidateAllGpuResources();
+            if (auto* gpu_res = UIGpuResources::Get())
+            {
+                gpu_res->InvalidateAllGpuResources();
+            }
         }
 
         // Do NOT early-return: render into the fresh backbuffer this same frame
