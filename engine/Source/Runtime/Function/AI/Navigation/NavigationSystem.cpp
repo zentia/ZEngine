@@ -84,9 +84,9 @@ int NavigationSystem::BuildFromActiveLevel(const NavMeshBuildSettings& settings)
 
   if (physics_scene == nullptr)
   {
-    LOG_ERROR(ZGame,
-              "NavigationSystem: cannot build navmesh, no active physics scene. "
-              "Load a level before requesting a navmesh build.");
+    // Not a build failure -- the level simply is not published as active yet
+    // (see RequestDeferredBuild's comment). Remember and retry later.
+    RequestDeferredBuild(settings);
     return 0;
   }
 
@@ -99,6 +99,58 @@ int NavigationSystem::BuildFromActiveLevel(const NavMeshBuildSettings& settings)
     LOG_WARNING(ZGame,
                 "NavigationSystem: navmesh build found no walkable cells. "
                 "Check the volume covers the floor and that geometry is static.");
+  }
+
+  return walkable;
+}
+
+void NavigationSystem::RequestDeferredBuild(const NavMeshBuildSettings& settings)
+{
+  m_DeferredSettings = settings;
+  m_HasDeferredBuild = true;
+  LOG_INFO(ZGame,
+           "NavigationSystem: navmesh build deferred until the level finishes loading");
+}
+
+int NavigationSystem::FlushDeferredBuild()
+{
+  if (!m_HasDeferredBuild)
+  {
+    return -1;
+  }
+
+  const NavMeshBuildSettings settings = m_DeferredSettings;
+  m_HasDeferredBuild = false;
+
+  std::shared_ptr<PhysicsScene> physics_scene;
+  if (WorldManager* world_manager = GET_SYSTEM(WorldManager))
+  {
+    physics_scene = world_manager->GetCurrentActivePhysicsScene().lock();
+  }
+
+  if (physics_scene == nullptr)
+  {
+    // Still not published: give up on this request rather than looping.
+    // The next level load issues a fresh one from PostLoadResource.
+    LOG_WARNING(ZGame,
+                "NavigationSystem: deferred navmesh build still has no active "
+                "physics scene; the level will have no navmesh");
+    return 0;
+  }
+
+  g_build_physics_scene = physics_scene.get();
+  const int walkable = m_NavMesh.Build(settings, &NavRaycastBridge);
+  g_build_physics_scene = nullptr;
+
+  if (walkable == 0)
+  {
+    LOG_WARNING(ZGame,
+                "NavigationSystem: deferred navmesh build found no walkable cells. "
+                "Check the volume covers the floor and that geometry is static.");
+  }
+  else
+  {
+    LOG_INFO(ZGame, "NavigationSystem: navmesh built ({} walkable cells)", walkable);
   }
 
   return walkable;

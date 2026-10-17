@@ -31,6 +31,23 @@ public:
   /// Convenience path for levels without an explicit volume.
   int BuildFromActiveLevel(const NavMeshBuildSettings& settings);
 
+  // ---- deferred build -----------------------------------------------------
+  //
+  // A volume with build_on_load fires from PostLoadResource(), which runs
+  // inside Level::load() -- before WorldManager has published the level as
+  // the active one. GetCurrentActivePhysicsScene() therefore returns null
+  // and the build is dropped, leaving the level with no navmesh at all
+  // (AI silently cannot path). We remember the request instead of failing
+  // and run it from Level::load()'s tail, where the physics scene and every
+  // component are known-good.
+  void RequestDeferredBuild(const NavMeshBuildSettings& settings);
+
+  /// Runs a pending deferred build if the physics scene is now available.
+  /// @return walkable cell count, or -1 when nothing was pending.
+  int FlushDeferredBuild();
+
+  bool HasDeferredBuild() const { return m_HasDeferredBuild; }
+
   void ClearNavMesh();
 
   bool IsReady() const { return m_NavMesh.IsBuilt(); }
@@ -68,4 +85,7 @@ private:
   mutable uint32_t m_FailedQueryCount {0};
 
   bool m_DebugDrawEnabled {false};
+
+  NavMeshBuildSettings m_DeferredSettings;
+  bool m_HasDeferredBuild {false};
 };

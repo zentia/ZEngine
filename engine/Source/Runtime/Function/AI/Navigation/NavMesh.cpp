@@ -209,7 +209,7 @@ int NavMesh::Build(const NavMeshBuildSettings& settings, NavRaycastFunc raycast)
   m_WalkableCount = walkable_count;
   m_IsBuilt = true;
 
-  LOG_INFO(ZGame, "NavMesh::Build: %d/%d walkable cells", walkable_count,
+  LOG_INFO(ZGame, "NavMesh::Build: {}/{} walkable cells", walkable_count,
            settings.cells_x * settings.cells_y);
 
   return walkable_count;

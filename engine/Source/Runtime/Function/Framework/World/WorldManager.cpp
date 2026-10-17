@@ -3,6 +3,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Math/LargeWorldCoordinates.h"
 #include "Runtime/Core/Math/Vector3d.h"
+#include "Runtime/Function/AI/Navigation/NavigationSystem.h"
 #include "Runtime/Function/Character/Character.h"
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -232,6 +233,16 @@ bool WorldManager::LoadLevelAdditive(const eastl::string& level_url)
     {
         m_CurrentActiveLevel = new_level;
     }
+
+    // Volumes with build_on_load request their mesh from PostLoadResource(),
+    // which runs inside Level::load() -- before this level is published as
+    // active, so GetCurrentActivePhysicsScene() was null and the build had to
+    // be deferred. The level is active now, so run it.
+    if (auto* navigation_system = GET_SYSTEM(NavigationSystem); navigation_system != nullptr)
+    {
+        navigation_system->FlushDeferredBuild();
+    }
+
     return true;
 }
 
