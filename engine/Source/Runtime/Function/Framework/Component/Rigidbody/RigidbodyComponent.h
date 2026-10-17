@@ -24,6 +24,11 @@ public:
     /// collect them. Without that the shapes serialize as null references.
     const RigidBodyComponentRes& GetRigidbodyRes() const { return m_RigidbodyRes; }
 
+    /// Mutable access for importers/migrators that must patch the shape list
+    /// after construction (legacy JSON stores shapes inline, while the runtime
+    /// holds them by reference).
+    RigidBodyComponentRes& GetRigidbodyResMutable() { return m_RigidbodyRes; }
+
 protected:
     void CreateRigidBody(const TransformTRS& global_transform);
     void RemoveRigidBody();

@@ -62,6 +62,11 @@ public:
     void SetAIArriveRadius(float radius) { m_AIArriveRadius = radius; }
     float GetAIArriveRadius() const { return m_AIArriveRadius; }
 
+    /// Mutable access for importers/migrators. The controller config is stored
+    /// inline in legacy JSON but held by PPtr at runtime, so it has to be
+    /// patched in after the component's own Transfer has run.
+    MotorComponentRes& GetMotorResMutable() { return m_MotorRes; }
+
     void GetOffStuckDead();
 
 private:

@@ -22,6 +22,8 @@ public:
 
 class PhysicsControllerConfig : public ControllerConfig
 {
+    REGISTER_CLASS(PhysicsControllerConfig)
+
 public:
     DECLARE_SERIALIZE(PhysicsControllerConfig)
 

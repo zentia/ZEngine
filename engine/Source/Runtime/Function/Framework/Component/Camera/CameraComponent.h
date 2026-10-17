@@ -51,6 +51,12 @@ public:
 
     CameraMode getCameraMode() const { return m_CameraMode; }
     void setCameraMode(CameraMode mode) { m_CameraMode = mode; }
+
+    /// Mutable access for importers/migrators. The camera parameter is stored
+    /// inline in legacy JSON but held by PPtr at runtime, so it has to be
+    /// patched in after the component's own Transfer has run.
+    CameraComponentRes& GetCameraResMutable() { return m_CameraRes; }
+
     bool isMainCamera() const { return m_IsMainCamera; }
     void SetMainCamera(bool is_main_camera) { m_IsMainCamera = is_main_camera; }
     CameraParameter* GetCameraParameter() const;
