@@ -1,0 +1,49 @@
+externals: []
+objects:
+  - fileID: 1
+    type: PrefabAsset
+    data:
+      PrefabAsset:
+        m_schema_version: 1
+        m_root_game_object:
+          m_FileID: 0
+          m_PathID: 2
+        m_variant_base:
+          m_FileID: 0
+          m_PathID: 0
+  - fileID: 2
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: nav_volume.object
+        m_DefinitionUrl: ""
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 3
+  - fileID: 3
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPosition:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []

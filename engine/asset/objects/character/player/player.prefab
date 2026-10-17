@@ -1,0 +1,144 @@
+externals:
+  - guid: a283d24874d103064f717688a5031804
+    type: PhysicsControllerConfig
+    path: "E:/Engine/ZEngine/engine/asset/objects/character/player/player.object_controller_config.zasset"
+  - guid: 7b4a7c7476faa410c99497533791fc70
+    type: ThirdPersonCameraParameter
+    path: "E:/Engine/ZEngine/engine/asset/objects/character/player/player.object_camera_parameter.zasset"
+objects:
+  - fileID: 1
+    type: PrefabAsset
+    data:
+      PrefabAsset:
+        m_schema_version: 1
+        m_root_game_object:
+          m_FileID: 0
+          m_PathID: 2
+        m_variant_base:
+          m_FileID: 0
+          m_PathID: 0
+  - fileID: 2
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: player.object
+        m_DefinitionUrl: ""
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 3
+          - component:
+              m_FileID: 0
+              m_PathID: 4
+          - component:
+              m_FileID: 0
+              m_PathID: 5
+          - component:
+              m_FileID: 0
+              m_PathID: 6
+          - component:
+              m_FileID: 0
+              m_PathID: 7
+  - fileID: 3
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 3
+          y: 3
+          z: 0
+        m_LocalPosition:
+          x: 3
+          y: 3
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 4
+    type: AnimationComponent
+    data:
+      AnimationComponent:
+        enabled: true
+        animation_res:
+          skeleton_file_path: asset/objects/character/player/components/animation/data/skeleton_data_root.skeleton.json
+          blend_state:
+            clip_count: 1
+            blend_clip_file_path:
+              - asset/objects/character/player/components/animation/data/W2_CrouchWalk_Aim_F_Loop_IP.animation_clip.json
+            blend_clip_file_length:
+              - 0.76666998863220215
+            blend_anim_skel_map_path:
+              - asset/objects/character/player/components/animation/data/anim.skeleton_map.json
+            blend_weight:
+              - 1
+            blend_mask_file_path:
+              - asset/objects/character/player/components/animation/data/anim.skeleton_mask.json
+              - asset/objects/character/player/components/animation/data/anim.skeleton_mask.json
+            blend_ratio:
+              - 0
+          frame_position: 0
+  - fileID: 5
+    type: SkinMeshRenderer
+    data:
+      SkinMeshRenderer:
+        enabled: true
+        sub_meshes:
+          - mesh: asset/objects/character/player/components/animation/data/robot.mesh_bind.json
+            transform:
+              m_positionD:
+                x: 0
+                y: 0
+                z: 0
+              m_position:
+                x: 0
+                y: 0
+                z: 0
+              m_scale:
+                x: 1
+                y: 1
+                z: 1
+              m_rotation:
+                w: 1
+                x: 0
+                y: 0
+                z: 0
+            material: ""
+        shared_materials:
+          - asset/objects/character/player/components/mesh/robot.material.json
+  - fileID: 6
+    type: MotorComponent
+    data:
+      MotorComponent:
+        enabled: true
+        motor_res:
+          move_speed: 2
+          jump_height: 1
+          max_move_speed_ratio: 1
+          max_sprint_speed_ratio: 2
+          move_acceleration: 2
+          sprint_acceleration: 2
+          controller_config:
+            m_FileID: 1
+            m_PathID: 1
+  - fileID: 7
+    type: CameraComponent
+    data:
+      CameraComponent:
+        enabled: true
+        mode: 3
+        main: false
+        settings:
+          parameter:
+            m_FileID: 2
+            m_PathID: 1

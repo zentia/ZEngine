@@ -1,0 +1,90 @@
+externals: []
+objects:
+  - fileID: 1
+    type: PrefabAsset
+    data:
+      PrefabAsset:
+        m_schema_version: 1
+        m_root_game_object:
+          m_FileID: 0
+          m_PathID: 2
+        m_variant_base:
+          m_FileID: 0
+          m_PathID: 0
+  - fileID: 2
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: particle.object
+        m_DefinitionUrl: ""
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 3
+          - component:
+              m_FileID: 0
+              m_PathID: 4
+  - fileID: 3
+    type: ParticleComponent
+    data:
+      ParticleComponent:
+        enabled: true
+        particle_res:
+          local_translation:
+            x: 0
+            y: 0
+            z: 0
+          local_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+          velocity:
+            x: 0.019999999552965164
+            y: 0.019999999552965164
+            z: 2.5
+            w: 4
+          acceleration:
+            x: 0
+            y: 0
+            z: -2.5
+            w: 0
+          size:
+            x: 0.019999999552965164
+            y: 0.019999999552965164
+            z: 0
+          emitter_type: 1
+          life:
+            x: 1.5
+            y: 0
+          color:
+            x: 9.0477180480957031
+            y: 0.6018109917640686
+            z: 0
+            w: 1
+  - fileID: 4
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPosition:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []

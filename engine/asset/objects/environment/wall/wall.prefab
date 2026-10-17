@@ -1,0 +1,141 @@
+externals:
+  - guid: 1beab8297845721993fd3db14fa9fbec
+    type: Box
+    path: "E:/Engine/ZEngine/engine/asset/objects/environment/wall/geometry/wall.object_shape0.zasset"
+objects:
+  - fileID: 1
+    type: PrefabAsset
+    data:
+      PrefabAsset:
+        m_schema_version: 1
+        m_root_game_object:
+          m_FileID: 0
+          m_PathID: 2
+        m_variant_base:
+          m_FileID: 0
+          m_PathID: 0
+  - fileID: 2
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: wall.object
+        m_DefinitionUrl: ""
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 3
+          - component:
+              m_FileID: 0
+              m_PathID: 4
+          - component:
+              m_FileID: 0
+              m_PathID: 5
+  - fileID: 3
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPosition:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 4
+    type: MeshRenderer
+    data:
+      MeshRenderer:
+        enabled: true
+        sub_meshes:
+          - mesh: asset/objects/environment/wall/components/mesh/wall.mesh.json
+            transform:
+              m_positionD:
+                x: 0
+                y: 0
+                z: 0
+              m_position:
+                x: 0
+                y: 0
+                z: 0
+              m_scale:
+                x: 1
+                y: 1
+                z: 1
+              m_rotation:
+                w: 1
+                x: 0
+                y: 0
+                z: 0
+            material: ""
+        shared_materials:
+          - asset/objects/environment/_material/gold.material.json
+  - fileID: 5
+    type: RigidBodyComponent
+    data:
+      RigidBodyComponent:
+        enabled: true
+        rigidbody_res:
+          shapes:
+            - m_FileID: 0
+              m_PathID: 6
+          inverse_mass: 0
+          actor_type: 1
+  - fileID: 6
+    type: RigidBodyShape
+    data:
+      RigidBodyShape:
+        global_transform:
+          m_positionD:
+            x: 0
+            y: 0
+            z: 0
+          m_position:
+            x: 0
+            y: 0
+            z: 0
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        type: 0
+        local_transform:
+          m_positionD:
+            x: 0
+            y: 0
+            z: 3.5
+          m_position:
+            x: 0
+            y: 0
+            z: 3.5
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        geometry:
+          m_FileID: 1
+          m_PathID: 1

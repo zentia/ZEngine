@@ -1,0 +1,484 @@
+externals:
+  - guid: 6c3b700e1d9e08756384c970cbf9039c
+    type: Box
+    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape0.zasset"
+  - guid: f914418024c816f4199c7c028acef320
+    type: Box
+    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape1.zasset"
+  - guid: 874879524eafd9e73c917a08c27d8800
+    type: Box
+    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape2.zasset"
+  - guid: c991de918ef582965e455382a9be7cac
+    type: Box
+    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape3.zasset"
+  - guid: dab4b882dc20b5691adf41897ad275e4
+    type: Box
+    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape4.zasset"
+  - guid: 3b8dd37e7ef41af829900fb3053e2680
+    type: Box
+    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape5.zasset"
+  - guid: 10040d67ddbbd39b959a220012575600
+    type: Box
+    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape6.zasset"
+  - guid: a8b1ddf6430d368a430c0705d984acd4
+    type: Box
+    path: "E:/Engine/ZEngine/engine/asset/objects/environment/stairs/geometry/stairs.object_shape7.zasset"
+objects:
+  - fileID: 1
+    type: PrefabAsset
+    data:
+      PrefabAsset:
+        m_schema_version: 1
+        m_root_game_object:
+          m_FileID: 0
+          m_PathID: 2
+        m_variant_base:
+          m_FileID: 0
+          m_PathID: 0
+  - fileID: 2
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: stairs.object
+        m_DefinitionUrl: ""
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 3
+          - component:
+              m_FileID: 0
+              m_PathID: 4
+          - component:
+              m_FileID: 0
+              m_PathID: 5
+  - fileID: 3
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 5.8713598251342773
+          y: -1.5180200338363647
+          z: 0
+        m_LocalPosition:
+          x: 5.8713598251342773
+          y: -1.5180200338363647
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 4
+    type: MeshRenderer
+    data:
+      MeshRenderer:
+        enabled: true
+        sub_meshes:
+          - mesh: asset/objects/environment/stairs/components/mesh/stairs.mesh.json
+            transform:
+              m_positionD:
+                x: 0
+                y: 0
+                z: 0
+              m_position:
+                x: 0
+                y: 0
+                z: 0
+              m_scale:
+                x: 1
+                y: 1
+                z: 1
+              m_rotation:
+                w: 1
+                x: 0
+                y: 0
+                z: 0
+            material: ""
+        shared_materials:
+          - asset/objects/environment/_material/gold.material.json
+  - fileID: 5
+    type: RigidBodyComponent
+    data:
+      RigidBodyComponent:
+        enabled: true
+        rigidbody_res:
+          shapes:
+            - m_FileID: 0
+              m_PathID: 6
+            - m_FileID: 0
+              m_PathID: 7
+            - m_FileID: 0
+              m_PathID: 8
+            - m_FileID: 0
+              m_PathID: 9
+            - m_FileID: 0
+              m_PathID: 10
+            - m_FileID: 0
+              m_PathID: 11
+            - m_FileID: 0
+              m_PathID: 12
+            - m_FileID: 0
+              m_PathID: 13
+          inverse_mass: 0
+          actor_type: 1
+  - fileID: 6
+    type: RigidBodyShape
+    data:
+      RigidBodyShape:
+        global_transform:
+          m_positionD:
+            x: 0
+            y: 0
+            z: 0
+          m_position:
+            x: 0
+            y: 0
+            z: 0
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        type: 0
+        local_transform:
+          m_positionD:
+            x: 0.875
+            y: 0
+            z: 0.125
+          m_position:
+            x: 0.875
+            y: 0
+            z: 0.125
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        geometry:
+          m_FileID: 1
+          m_PathID: 1
+  - fileID: 7
+    type: RigidBodyShape
+    data:
+      RigidBodyShape:
+        global_transform:
+          m_positionD:
+            x: 0
+            y: 0
+            z: 0
+          m_position:
+            x: 0
+            y: 0
+            z: 0
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        type: 0
+        local_transform:
+          m_positionD:
+            x: 0.625
+            y: 0
+            z: 0.25
+          m_position:
+            x: 0.625
+            y: 0
+            z: 0.25
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        geometry:
+          m_FileID: 2
+          m_PathID: 1
+  - fileID: 8
+    type: RigidBodyShape
+    data:
+      RigidBodyShape:
+        global_transform:
+          m_positionD:
+            x: 0
+            y: 0
+            z: 0
+          m_position:
+            x: 0
+            y: 0
+            z: 0
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        type: 0
+        local_transform:
+          m_positionD:
+            x: 0.375
+            y: 0
+            z: 0.375
+          m_position:
+            x: 0.375
+            y: 0
+            z: 0.375
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        geometry:
+          m_FileID: 3
+          m_PathID: 1
+  - fileID: 9
+    type: RigidBodyShape
+    data:
+      RigidBodyShape:
+        global_transform:
+          m_positionD:
+            x: 0
+            y: 0
+            z: 0
+          m_position:
+            x: 0
+            y: 0
+            z: 0
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        type: 0
+        local_transform:
+          m_positionD:
+            x: 0.125
+            y: 0
+            z: 0.5
+          m_position:
+            x: 0.125
+            y: 0
+            z: 0.5
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        geometry:
+          m_FileID: 4
+          m_PathID: 1
+  - fileID: 10
+    type: RigidBodyShape
+    data:
+      RigidBodyShape:
+        global_transform:
+          m_positionD:
+            x: 0
+            y: 0
+            z: 0
+          m_position:
+            x: 0
+            y: 0
+            z: 0
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        type: 0
+        local_transform:
+          m_positionD:
+            x: -0.125
+            y: 0
+            z: 0.625
+          m_position:
+            x: -0.125
+            y: 0
+            z: 0.625
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        geometry:
+          m_FileID: 5
+          m_PathID: 1
+  - fileID: 11
+    type: RigidBodyShape
+    data:
+      RigidBodyShape:
+        global_transform:
+          m_positionD:
+            x: 0
+            y: 0
+            z: 0
+          m_position:
+            x: 0
+            y: 0
+            z: 0
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        type: 0
+        local_transform:
+          m_positionD:
+            x: -0.375
+            y: 0
+            z: 0.75
+          m_position:
+            x: -0.375
+            y: 0
+            z: 0.75
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        geometry:
+          m_FileID: 6
+          m_PathID: 1
+  - fileID: 12
+    type: RigidBodyShape
+    data:
+      RigidBodyShape:
+        global_transform:
+          m_positionD:
+            x: 0
+            y: 0
+            z: 0
+          m_position:
+            x: 0
+            y: 0
+            z: 0
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        type: 0
+        local_transform:
+          m_positionD:
+            x: -0.625
+            y: 0
+            z: 0.875
+          m_position:
+            x: -0.625
+            y: 0
+            z: 0.875
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        geometry:
+          m_FileID: 7
+          m_PathID: 1
+  - fileID: 13
+    type: RigidBodyShape
+    data:
+      RigidBodyShape:
+        global_transform:
+          m_positionD:
+            x: 0
+            y: 0
+            z: 0
+          m_position:
+            x: 0
+            y: 0
+            z: 0
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        type: 0
+        local_transform:
+          m_positionD:
+            x: -0.875
+            y: 0
+            z: 1
+          m_position:
+            x: -0.875
+            y: 0
+            z: 1
+          m_scale:
+            x: 1
+            y: 1
+            z: 1
+          m_rotation:
+            w: 1
+            x: 0
+            y: 0
+            z: 0
+        geometry:
+          m_FileID: 8
+          m_PathID: 1
