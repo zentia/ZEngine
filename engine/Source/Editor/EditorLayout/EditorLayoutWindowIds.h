@@ -16,6 +16,9 @@ namespace EditorLayoutWindowIds
     inline constexpr const char* kTimeline = "Timeline";
     inline constexpr const char* kBlueprint = "Blueprint";
     inline constexpr const char* kAnimation = "Animation";
+    // PR-SK3: state-machine authoring panel (Unity's "Animator" window). Shares
+    // the Animation category with the clip curve editor above.
+    inline constexpr const char* kAnimator = "Animator";
     inline constexpr const char* kMaterial = "Material";
     inline constexpr const char* kPackageManager = "Package Manager";
     // kInsights / kZSlate: removed with the Insights and Demo windows.

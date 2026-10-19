@@ -41,6 +41,12 @@ public:
     bool SupportsNativeHosting() const override { return true; }
     void ExecutePendingImportDialog();
 
+    /// The shared asset tree. Other panels browse this instead of re-scanning
+    /// the project themselves, so every picker sees exactly what the Content
+    /// Browser sees (PR-SK3: the Animator's clip / anim-skel-map picker).
+    static ZSlateContentBrowserWindow* GetInstance() { return s_Instance; }
+    EditorFileService& GetFileService() { return m_EditorFileService; }
+
 private:
     enum class EContentBrowserRowPanel
     {

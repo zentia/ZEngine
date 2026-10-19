@@ -93,6 +93,22 @@ namespace ContentBrowserHelpers
         return extension == ".shader";
     }
 
+    // PR-SK3: an AnimatorController ships as "<name>.controller.zasset", so the
+    // browser can offer "Open in Animator" on it. Mirrors IsShaderAssetNode.
+    bool IsAnimatorControllerNode(const EditorFileNode* node)
+    {
+        if (node == nullptr || IsFolderNode(node) || node->m_FilePath.empty())
+        {
+            return false;
+        }
+        const std::string path = node->m_FilePath.c_str();
+        std::string lowered = path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return lowered.size() > 20 && lowered.compare(lowered.size() - 20, 20, ".controller.zasset") == 0;
+    }
+
     bool IsZassetProductNode(const EditorFileNode* node)
     {
         if (node == nullptr || IsFolderNode(node) || node->m_FilePath.empty())

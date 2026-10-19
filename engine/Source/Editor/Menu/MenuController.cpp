@@ -2,6 +2,7 @@
 
 #include "Editor/AssetPipeline/TextureImporter/TextureImporter.h"
 #include "Editor/AssetPipeline/TextureImporter/TextureImporterSettings.h"
+#include "Editor/Build/AssetBundleBuilder.h"
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/EditorUI/EditorUI.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
@@ -193,6 +194,37 @@ void MenuController::EnsureZSlateMenuEntries()
                            }, scale);
                            menu.AddItem("Cook Textures for WebGL", []() {
                                TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget::WebGL);
+                           }, scale);
+                           menu.AddSeparator(scale);
+                           // PR-PAK1: the actual packaging pass -- dependency
+                           // walk + cook + .zbundle + manifest under
+                           // <project>/Build/<Platform>/.
+                           menu.AddItem("Build Asset Bundles (Standalone)", []() {
+                               AssetBundleBuildOptions options;
+                               options.target = TextureImporterSettings::BuildTarget::Standalone;
+                               const AssetBundleBuildResult result = AssetBundleBuilder::Build(options);
+                               if (!result.succeeded)
+                               {
+                                   LOG_ERROR(ZPak, "Build failed: {}", result.error);
+                               }
+                           }, scale);
+                           menu.AddItem("Build Asset Bundles (Android)", []() {
+                               AssetBundleBuildOptions options;
+                               options.target = TextureImporterSettings::BuildTarget::Android;
+                               const AssetBundleBuildResult result = AssetBundleBuilder::Build(options);
+                               if (!result.succeeded)
+                               {
+                                   LOG_ERROR(ZPak, "Build failed: {}", result.error);
+                               }
+                           }, scale);
+                           menu.AddItem("Build Asset Bundles (WebGL)", []() {
+                               AssetBundleBuildOptions options;
+                               options.target = TextureImporterSettings::BuildTarget::WebGL;
+                               const AssetBundleBuildResult result = AssetBundleBuilder::Build(options);
+                               if (!result.succeeded)
+                               {
+                                   LOG_ERROR(ZPak, "Build failed: {}", result.error);
+                               }
                            }, scale);
                        }});
     entries.push_back({"Select", empty_menu});

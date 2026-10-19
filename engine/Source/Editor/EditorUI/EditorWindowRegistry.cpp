@@ -12,6 +12,7 @@
 #include "Editor/EditorWindow/ZSlatePreviewWindow/ZSlatePreviewWindow.h"
 #include "Editor/EditorWindow/ZSlateContentBrowserWindow/ZSlateContentBrowserWindow.h"
 #include "Editor/EditorWindow/ZSlateAnimationWindow/ZSlateAnimationWindow.h"
+#include "Editor/EditorWindow/ZSlateAnimatorWindow/ZSlateAnimatorWindow.h"
 #include "Editor/EditorWindow/ZSlateBlueprintWindow/ZSlateBlueprintWindow.h"
 #include "Editor/EditorWindow/ZSlateMaterialEditorWindow/ZSlateMaterialEditorWindow.h"
 #include "Editor/EditorWindow/ZSlateHierarchyWindow/ZSlateHierarchyWindow.h"
@@ -48,6 +49,10 @@ namespace
          NewEditorPanel<ZSlateMaterialEditorWindow>},
         {EditorLayoutWindowIds::kAnimation, EditorWindowCategory::Animation, false, typeid(ZSlateAnimationWindow),
          NewEditorPanel<ZSlateAnimationWindow>},
+        // PR-SK3: authoring surface for AnimatorController. Without it a
+        // controller could only be built in code.
+        {EditorLayoutWindowIds::kAnimator, EditorWindowCategory::Animation, false, typeid(ZSlateAnimatorWindow),
+         NewEditorPanel<ZSlateAnimatorWindow>},
         {EditorLayoutWindowIds::kTimeline, EditorWindowCategory::Animation, false, typeid(ZSlateTimelineWindow),
          NewEditorPanel<ZSlateTimelineWindow>},
         {EditorLayoutWindowIds::kPackageManager, EditorWindowCategory::Package, false,

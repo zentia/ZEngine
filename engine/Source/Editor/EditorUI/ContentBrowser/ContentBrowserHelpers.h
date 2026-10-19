@@ -29,6 +29,8 @@ namespace ContentBrowserHelpers
 
     bool IsShaderAssetNode(const EditorFileNode* node);
     bool IsZassetProductNode(const EditorFileNode* node);
+    /// PR-SK3: true for "<name>.controller.zasset".
+    bool IsAnimatorControllerNode(const EditorFileNode* node);
 
     void TrimRenameBufferInPlace(char* buffer, size_t capacity);
     bool IsValidRenameName(const std::string& name);

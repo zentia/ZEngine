@@ -5,6 +5,7 @@
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/EditorProjectPrefs/EditorProjectPrefs.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
+#include "Editor/EditorWindow/ZSlateAnimatorWindow/ZSlateAnimatorWindow.h"
 #include "Editor/EditorUI/ContentBrowser/ContentBrowserAssetActions.h"
 #include "Editor/EditorUI/ContentBrowser/ContentBrowserDragDrop.h"
 #include "Editor/EditorUI/ContentBrowser/ContentBrowserHelpers.h"
@@ -962,9 +963,13 @@ void ZSlateContentBrowserWindow::OpenContextMenuFor(EditorFileNode* node, const 
     const bool is_shader = ContentBrowserHelpers::IsShaderAssetNode(node);
     const bool can_rename = ContentBrowserAssetActions::CanRenameNode(Ctx(), node);
     const bool is_zasset_product = ContentBrowserHelpers::IsZassetProductNode(node);
+    // PR-SK3: an AnimatorController is a .zasset whose name ends in
+    // ".controller.zasset" (whatever the Animator window's Save wrote).
+    const bool is_controller = ContentBrowserHelpers::IsAnimatorControllerNode(node);
     EditorFileNode* n = node;
 
-    m_Popup.Open(screen_pos, scale, [this, n, is_folder, is_shader, can_rename, is_zasset_product](SMenu& menu, float s) {
+    m_Popup.Open(screen_pos, scale, [this, n, is_folder, is_shader, can_rename, is_zasset_product,
+                                     is_controller](SMenu& menu, float s) {
         menu.MinWidth = 190.0f * s;
 
         if (is_folder)
@@ -993,6 +998,26 @@ void ZSlateContentBrowserWindow::OpenContextMenuFor(EditorFileNode* node, const 
         else if (is_shader)
         {
             menu.AddItem("Create Material", [this, n]() { ContentBrowserAssetActions::RequestMaterialFromShader(Ctx(), n); }, s);
+            menu.AddSeparator(s);
+        }
+        else if (is_controller)
+        {
+            // PR-SK3: a controller is only editable in the Animator panel, so
+            // give it a direct entry point from the browser.
+            menu.AddItem("Open in Animator", [this, n]() {
+                ZSlateAnimatorWindow* animator =
+                    m_EditorUi != nullptr ? m_EditorUi->GetWindow<ZSlateAnimatorWindow>() : nullptr;
+                if (animator == nullptr)
+                {
+                    LOG_ERROR(ZEditor, "ContentBrowser: the Animator window is not registered");
+                    return;
+                }
+                std::string error;
+                if (!animator->ShowAndOpen(n->m_FilePath.c_str(), error))
+                {
+                    LOG_ERROR(ZEditor, "ContentBrowser: cannot open '{}': {}", n->m_FilePath.c_str(), error);
+                }
+            }, s);
             menu.AddSeparator(s);
         }
 

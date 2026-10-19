@@ -2,6 +2,7 @@
 
 #include "Editor/AssetPipeline/TextureImporter/TextureImporter.h"
 #include "Editor/AssetPipeline/TextureImporter/TextureImporterSettings.h"
+#include "Editor/Build/AssetBundleBuilder.h"
 #include "Editor/AssetRegistry/AssetRegistry.h"
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
@@ -506,6 +507,55 @@ namespace
         return true;
 #endif
     }
+
+    bool CmdBundleBuild(const std::vector<std::string>& args)
+    {
+        // PR-PAK1: bundle.build [platform] -- dependency walk + cook + .zbundle
+        // + manifest under <project>/Build/<Platform>/.
+        std::string platform = args.empty() ? std::string("standalone") : args[0];
+        std::transform(platform.begin(), platform.end(), platform.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
+        TextureImporterSettings::BuildTarget target = TextureImporterSettings::BuildTarget::Standalone;
+        if (platform == "android")
+        {
+            target = TextureImporterSettings::BuildTarget::Android;
+        }
+        else if (platform == "ios")
+        {
+            target = TextureImporterSettings::BuildTarget::iOS;
+        }
+        else if (platform == "webgl" || platform == "web")
+        {
+            target = TextureImporterSettings::BuildTarget::WebGL;
+        }
+        else if (platform == "ohos" || platform == "harmonyos")
+        {
+            target = TextureImporterSettings::BuildTarget::OHOS;
+        }
+        else if (platform != "standalone" && platform != "windows" && platform != "pc" && platform != "desktop")
+        {
+            LOG_ERROR(ZConsole, "Usage: bundle.build <standalone|android|ios|ohos|webgl>");
+            return false;
+        }
+
+        AssetBundleBuildOptions options;
+        options.target = target;
+        const AssetBundleBuildResult result = AssetBundleBuilder::Build(options);
+        if (!result.succeeded)
+        {
+            LOG_ERROR(ZPak, "bundle.build failed: {}", result.error);
+            return false;
+        }
+
+        LOG_INFO(ZPak,
+                 "bundle.build: {} bundle(s), {} asset(s), {} bytes -> {}",
+                 result.bundle_count,
+                 result.asset_count,
+                 result.total_bytes,
+                 result.output_dir.generic_string());
+        return true;
+    }
 }  // namespace
 
 void RegisterEditorConsoleCommands(ConsoleManager& console)
@@ -532,4 +582,7 @@ void RegisterEditorConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("renderdoc.load", "Load RenderDoc in-app API", CmdRenderDocLoad);
     console.RegisterCommand("renderdoc.capture", "Capture the next rendered frame with RenderDoc", CmdRenderDocCapture);
     console.RegisterCommand("renderdoc.status", "Print RenderDoc integration status", CmdRenderDocStatus);
+    console.RegisterCommand("bundle.build",
+                            "Package the project into .zbundle files. Usage: bundle.build <standalone|android|ios|ohos|webgl>",
+                            CmdBundleBuild);
 }
