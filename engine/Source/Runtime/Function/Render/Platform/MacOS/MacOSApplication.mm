@@ -8,15 +8,48 @@
     #import <CoreGraphics/CoreGraphics.h>
     #undef Component
 
+    #include "Runtime/Core/Base/SystemRegistry.h"
+    #include "Runtime/Resource/Config/ConfigManager.h"
+
     #include <chrono>
+    #include <string>
 
 namespace
 {
+    // Dock / Cmd-Tab 图标。我们发布的是裸 Mach-O 而不是 .app bundle（z_embed_app_icon()
+    // 只做 Windows 的 .rc），没有 .icns 会被系统自动拾取，Dock 里就会显示通用图标，
+    // 所以必须显式把图标交给 NSApp。图标文件来自配置的 BigIconFile（ZEditor.ini），
+    // ConfigManager 在 WindowSystem 之前初始化，这里一定拿得到。
+    void InstallApplicationIcon()
+    {
+        std::string icon_path;
+        if (auto* config = GET_SYSTEM(ConfigManager))
+        {
+            icon_path = config->GetEditorBigIconPath().string();
+        }
+        if (icon_path.empty())
+        {
+            return;
+        }
+
+        NSImage* image =
+            [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:icon_path.c_str()]];
+        if (image == nil)
+        {
+            LOG_WARNING(ZWindow, "App icon: cannot load '{}'", icon_path);
+            return;
+        }
+        [NSApp setApplicationIconImage:image];
+        [image release];
+        LOG_INFO(ZWindow, "App icon: installed from '{}'", icon_path);
+    }
+
     // NSApplication 只需初始化一次（sharedApplication 是进程级单例）。
     void SetupCocoaOnce()
     {
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
+        InstallApplicationIcon();
 
         // 最小主菜单：没有它 Cmd+Q / Cmd+C / Cmd+V / Cmd+A 全是死键。
         NSMenu*      menubar     = [[NSMenu alloc] init];
