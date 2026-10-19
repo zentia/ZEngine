@@ -18,7 +18,12 @@ bool ConfigManager::Initialize()
     // read configs
     zcore::ZFileReader config_file(config_file_path.string());
     if (!config_file.isOpen())
+    {
+        // Without this the failure surfaces as a generic "failed to initialize
+        // system 'ConfigManager'" with no hint about which path was tried.
+        LOG_ERROR(ZEditor, "ConfigManager: cannot open config file '{}'", config_file_path.string());
         return false;
+    }
     char line_buf[4096];
     while (config_file.getline(line_buf, sizeof(line_buf)))
     {

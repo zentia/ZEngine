@@ -92,10 +92,14 @@ class MetalDeviceMemory : public RHIDeviceMemory
 public:
     ~MetalDeviceMemory()
     {
+        // Releases our own reference to the MTLBuffer. m_HostPtr is NOT freed
+        // here: for a host-visible allocation it is the buffer's `contents`
+        // pointer, i.e. memory owned by the MTLBuffer, not by malloc.
         [m_Buffer release];
-        free(m_HostPtr);
     }
 
+    // Borrowed pointer: either nullptr or the MTLBuffer's `contents` (valid for
+    // as long as this object keeps its reference to the buffer).
     void* getHostPtr() const { return m_HostPtr; }
     void  setHostPtr(void* p) { m_HostPtr = p; }
 
