@@ -13,6 +13,12 @@
 #include "Runtime/Core/Thread/ThreadManager.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
+#include "Runtime/Function/Framework/GameFramework/GameEngine.h"
+#include "Runtime/BaseClasses/GameObject.h"
+#include "Runtime/Function/Character/Character.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
+#include "Runtime/Function/Framework/Level/Level.h"
+#include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Input/InputSystem.h"
 #include "Runtime/Function/Module/ModuleManager.h"
 #include "Runtime/Function/Render/RenderCamera.h"
@@ -537,9 +543,23 @@ void Editor::SetPlaybackState(EditorPlaybackState new_state)
         return;
     }
 
+    const EditorPlaybackState old_state = m_PlaybackState;
     m_PlaybackState = new_state;
     m_StepFrameRequested = false;
     g_isPlaying = (new_state != EditorPlaybackState::Editing);
+
+    // 游戏层随"是否正在播放"建立与拆除 —— 之前这里只改了一个枚举和
+    // g_isPlaying，GameInstance / LocalPlayer / PlayerController 从未在编辑器里
+    // 存在过，所以 F5 之后除了输入被屏蔽，什么也没发生。
+    const bool was_playing = (old_state != EditorPlaybackState::Editing);
+    if (!was_playing && g_isPlaying)
+    {
+        EnterPIE();
+    }
+    else if (was_playing && !g_isPlaying)
+    {
+        ExitPIE();
+    }
 
     GET_SYSTEM(EditorInputManager)->resetEditorCommand();
     GET_SYSTEM(InputSystem)->resetGameCommand();
@@ -547,6 +567,62 @@ void Editor::SetPlaybackState(EditorPlaybackState new_state)
     GET_SYSTEM(EditorSceneManager)->DrawSelectedEntityAxis();
 
     LOG_INFO(ZEditor, "Editor playback state switched to {}", GetPlaybackStateLabel());
+}
+
+void Editor::EnterPIE()
+{
+    auto* game_engine = GET_SYSTEM(GameEngine);
+    if (game_engine == nullptr)
+    {
+        LOG_ERROR(ZEditor, "EnterPIE: GameEngine is not registered; PIE will run without the game layer");
+        return;
+    }
+
+    if (!game_engine->BeginPIE())
+    {
+        LOG_ERROR(ZEditor, "EnterPIE: BeginPIE failed; falling back to edit mode");
+        // Roll the state back so the UI does not claim to be playing while the
+        // game layer is absent. Recursive state change is safe: the transition
+        // is now Playing -> Editing, so EnterPIE is not re-entered.
+        SetPlaybackState(EditorPlaybackState::Editing);
+    }
+}
+
+void Editor::ExitPIE()
+{
+    // 必须在 EndPIE() 之前取：EndPIE 会在丢弃 Play World 后把这个标志清掉，
+    // 而它正是"要不要重载编辑器关卡"的唯一判据。
+    bool used_play_world = false;
+    auto* game_engine = GET_SYSTEM(GameEngine);
+    if (game_engine != nullptr)
+    {
+        used_play_world = game_engine->IsPlayWorldPIE();
+        game_engine->EndPIE();
+    }
+
+    // 走 WorldManager 而不是 EditorSceneManager::OpenSceneInternal：后者会弹
+    // "未保存的改动"提示，而 PIE 的改动永远是要丢弃的，不是要保存的。
+    auto* world_manager = GET_SYSTEM(WorldManager);
+    if (world_manager == nullptr)
+    {
+        return;
+    }
+
+    // 只有退化成同世界播放时才需要重载：那种情况下游戏逻辑直接改过编辑器
+    // 打开的那份关卡（角色被移动、组件状态被改），重载是丢弃改动的唯一廉价
+    // 办法。独立 Play World 下编辑器世界从未被碰过，重载反而会白白丢掉用户
+    // 在 PIE 之前做的未保存改动。
+    if (!used_play_world)
+    {
+        GET_SYSTEM(RenderSystem)->ClearForLevelReloading();
+        if (!world_manager->ReloadActiveLevelInPlace())
+        {
+            LOG_WARNING(ZEditor, "ExitPIE: could not reload the level; runtime changes may persist");
+        }
+    }
+
+    GET_SYSTEM(EditorSceneManager)->DrawSelectedEntityAxis();
+    GET_SYSTEM(EditorSceneManager)->RefreshMainWindowTitle();
 }
 
 bool Editor::ResolveSimulationTick(float frame_delta_time, float& simulation_delta_time)
@@ -571,13 +647,41 @@ bool Editor::ResolveSimulationTick(float frame_delta_time, float& simulation_del
     }
 }
 
-void Editor::Run()
+void Editor::Run(float max_seconds)
 {
     float delta_time;
     auto& profiler = Profiler::GetInstance();
 
+    // Unattended smoke runs (`--pie <seconds>`) need a wall-clock deadline:
+    // there is no window message to close on, and the only way out of the loop
+    // otherwise would be killing the process, which skips shutdown/ordering.
+    const bool has_deadline = max_seconds > 0.0f;
+    const std::chrono::steady_clock::time_point start_time = std::chrono::steady_clock::now();
+
     while (true)
     {
+        if (has_deadline)
+        {
+            const float elapsed =
+                std::chrono::duration<float>(std::chrono::steady_clock::now() - start_time).count();
+            // 两个计时起算点不同：deadline 从进程起算，而 --pie-stop 从"进入
+            // 播放态"起算（关卡加载本身要花掉一段时间），所以同为一个 N 秒时，
+            // stop 一定晚于 deadline —— 直接比会让停止路径永远跑不到。
+            // 停止还挂着就先别退出，给它一段宽限；宽限用满仍没停就直接退出，
+            // 避免卡死。
+            const bool awaiting_pie_stop = m_PieStarted && m_PieStopRequested;
+            const float grace = awaiting_pie_stop ? max_seconds : 0.0f;
+            if (elapsed >= max_seconds + grace)
+            {
+                if (awaiting_pie_stop)
+                {
+                    LOG_WARNING(ZEditor, "--pie-stop: grace expired without leaving play mode; exiting anyway");
+                }
+                LOG_INFO(ZEditor, "Editor run deadline reached ({:.1f}s); exiting", max_seconds);
+                break;
+            }
+        }
+
         profiler.NextFrame();
 
         {
@@ -591,6 +695,84 @@ void Editor::Run()
                 Z_PROFILE_SCOPE("SceneManager::tick");
                 GET_SYSTEM(EditorSceneManager)->Tick(delta_time);
             }
+
+            // `--pie <seconds>`: the request was made before the startup level
+            // existed, so enter play mode here -- after SceneManager::Tick has
+            // opened the level and after the world is confirmed loaded. Doing it
+            // in START_SYSTEM() made BeginPIE fail with "no active level".
+            if (m_PieSeconds > 0.0f && !m_PieStarted)
+            {
+                if (auto* world_manager = GET_SYSTEM(WorldManager);
+                    world_manager != nullptr && world_manager->IsWorldLoaded() &&
+                    world_manager->getCurrentActiveLevel() != nullptr)
+                {
+                    m_PieStarted = true;
+                    m_PieStartClock = std::chrono::steady_clock::now();
+                    LOG_INFO(ZEditor, "--pie: level ready, entering play mode for {:.1f}s", m_PieSeconds);
+                    TogglePlayMode();
+                }
+            }
+
+            // `--pie-move-test`: drive the character for real. An unattended PIE
+            // run has no keyboard, so InputSystem reports command 0 every frame,
+            // the character never moves, and the run "passes" without ever
+            // executing CharacterController::move(). Forcing the command makes
+            // the whole pipeline run: MotorComponent -> Controller::move ->
+            // PhysicsScene::IsOverlap. The displacement is asserted at the end,
+            // so a controller that is misconfigured (ControllerType::invalid, or
+            // a null capsule) fails loudly instead of looking green.
+            if (m_PieMoveTest && m_PieStarted && isPlaying())
+            {
+                if (InputSystem* input_system = GET_SYSTEM(InputSystem))
+                {
+                    input_system->SetForcedTestCommand(static_cast<unsigned int>(GameCommand::forward));
+                }
+
+                if (!m_PieMoveTestPositionCaptured)
+                {
+                    if (Vector3 start_position; TryGetActiveCharacterPosition(start_position))
+                    {
+                        m_PieMoveTestStartPosition = start_position;
+                        m_PieMoveTestPositionCaptured = true;
+                        LOG_INFO(ZEditor,
+                                 "--pie-move-test: start position ({:.3f}, {:.3f}, {:.3f})",
+                                 start_position.x,
+                                 start_position.y,
+                                 start_position.z);
+                    }
+                }
+            }
+
+    // `--pie-stop`: leave play mode after the play phase has run, so the
+    // smoke test exercises EndPIE (Play World teardown / level restore)
+    // instead of just killing the process at the deadline. The stop runs
+    // before the deadline check so the remaining time still lets the
+    // stop-path frames tick.
+    if (m_PieStarted && m_PieStopRequested && isPlaying())
+    {
+        const float played =
+            std::chrono::duration<float>(std::chrono::steady_clock::now() - m_PieStartClock).count();
+        if (played >= m_PieSeconds)
+        {
+            // 断言必须在这里取样，不能等到 ReportPieMoveTestResult()：
+            // TogglePlayMode 一执行，EndPIE 就把 Play World 整个丢掉，
+            // getCurrentActiveLevel() 随即变回编辑器世界 —— 那时读到的角色
+            // 是编辑器里那份（从未移动过），位移恒为 0，测试报的是假失败。
+            if (m_PieMoveTest && m_PieMoveTestPositionCaptured)
+            {
+                if (Vector3 end_position; TryGetActiveCharacterPosition(end_position))
+                {
+                    m_PieMoveTestEndPosition = end_position;
+                    m_PieMoveTestEndCaptured = true;
+                }
+            }
+
+            LOG_INFO(ZEditor, "--pie-stop: played {:.1f}s, leaving play mode", played);
+            m_PieStopRequested = false;
+            TogglePlayMode();
+        }
+    }
+
 
             {
                 Z_PROFILE_SCOPE("InputManager::tick");
@@ -643,8 +825,126 @@ void Editor::Run()
                     return;
             }
             Runtime::RenderDoc::OnPostFrame();
+
+            {
+                // 游戏层（GameInstance → LocalPlayer → PlayerController）。
+                // 放在 TickOneFrame 之后，与独立进程 GameEngine::Run() 的顺序
+                // 一致：本帧的输入与物理已经推进过，游戏层读到的是本帧数据。
+                // Paused 时 should_update_logic 为 false（单帧步进除外），
+                // 因此这里也要跟着跳过，否则暂停了角色还在动。
+                Z_PROFILE_SCOPE("GameEngine::tick");
+                if (should_update_logic)
+                {
+                    if (auto* game_engine = GET_SYSTEM(GameEngine); game_engine != nullptr)
+                    {
+                        game_engine->Tick(simulation_delta_time);
+                    }
+                }
+            }
         }
     }
+
+    // Unattended movement validation (`--pie-move-test`) reports here, after
+    // the loop has wound down but before the process exits, so a controller that
+    // never moved is visible in the log instead of being silently green.
+    ReportPieMoveTestResult();
+    // The log ring buffer is only drained by the debug-layer pump on the next
+    // frame; with the run loop already exited that never happens, so the verdict
+    // would stay in memory and the unattended run would end with no verdict at
+    // all (seen as "PIE stopped" but no PASSED/FAILED line). Flush explicitly.
+    ZEngineForceFlushLogs();
+}
+
+bool Editor::TryGetActiveCharacterPosition(Vector3& out_position) const
+{
+    const WorldManager* world_manager = GET_SYSTEM(WorldManager);
+    if (world_manager == nullptr)
+    {
+        return false;
+    }
+
+    Level* level = world_manager->getCurrentActiveLevel();
+    if (level == nullptr)
+    {
+        return false;
+    }
+
+    std::shared_ptr<Character> character = level->getCurrentActiveCharacter().lock();
+    if (character == nullptr)
+    {
+        return false;
+    }
+
+    std::shared_ptr<GameObject> character_object = character->getObject().lock();
+    if (character_object == nullptr)
+    {
+        return false;
+    }
+
+    const Transform* transform_component = character_object->tryGetComponentConst(Transform);
+    if (transform_component == nullptr)
+    {
+        return false;
+    }
+
+    out_position = transform_component->GetLocalPosition();
+    return true;
+}
+
+void Editor::ReportPieMoveTestResult()
+{
+    if (!m_PieMoveTest)
+    {
+        return;
+    }
+
+    if (InputSystem* input_system = GET_SYSTEM(InputSystem))
+    {
+        input_system->SetForcedTestCommand(0u);
+    }
+
+    if (!m_PieMoveTestPositionCaptured)
+    {
+        LOG_ERROR(ZEditor, "--pie-move-test: FAILED -- no active character, pipeline never ran");
+        m_PieMoveTestFailed = true;
+        return;
+    }
+
+    // 终点已在退出播放态之前取样（见 --pie-stop 分支）：EndPIE 之后 Play World
+    // 就没了，那时再读只会拿到编辑器世界那份从未移动过的角色。
+    if (!m_PieMoveTestEndCaptured)
+    {
+        LOG_ERROR(ZEditor, "--pie-move-test: FAILED -- end position never captured; PIE ended too early");
+        m_PieMoveTestFailed = true;
+        return;
+    }
+
+    const Vector3 delta = m_PieMoveTestEndPosition - m_PieMoveTestStartPosition;
+    const float travelled = std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+
+    if (travelled > kPieMoveTestMinDistance)
+    {
+        LOG_INFO(ZEditor,
+                 "--pie-move-test: PASSED -- character moved {:.3f} to ({:.3f}, {:.3f}, {:.3f})",
+                 travelled,
+                 m_PieMoveTestEndPosition.x,
+                 m_PieMoveTestEndPosition.y,
+                 m_PieMoveTestEndPosition.z);
+        return;
+    }
+
+    LOG_ERROR(ZEditor,
+              "--pie-move-test: FAILED -- character moved only {:.6f} (needs > {:.3f}). "
+              "Start ({:.3f}, {:.3f}, {:.3f}) end ({:.3f}, {:.3f}, {:.3f})",
+              travelled,
+              kPieMoveTestMinDistance,
+              m_PieMoveTestStartPosition.x,
+              m_PieMoveTestStartPosition.y,
+              m_PieMoveTestStartPosition.z,
+              m_PieMoveTestEndPosition.x,
+              m_PieMoveTestEndPosition.y,
+              m_PieMoveTestEndPosition.z);
+    m_PieMoveTestFailed = true;
 }
 
 void Editor::RenderFrameDuringResize()

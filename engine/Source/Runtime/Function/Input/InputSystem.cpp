@@ -68,6 +68,16 @@ void InputSystem::CalculateCursorDeltaAngles()
 
 void InputSystem::SyncGameCommands()
 {
+    // 无人值守测试命令必须最先生效，不能放在 EnhancedInput 早退之后：
+    // ZGameSmoke 这类工程没有 EnhancedInput，`if (!m_EnhancedInput) return;`
+    // 会直接把整个函数短路掉，注入的 forward 永远到不了 MotorComponent，
+    // 于是 --pie-move-test 里 cmd 恒为 0，角色一动不动。
+    if (m_ForcedTestCommand != 0u)
+    {
+        m_GameCommand = m_ForcedTestCommand;
+        return;
+    }
+
     if (!m_EnhancedInput)
         return;
 
@@ -94,6 +104,13 @@ void InputSystem::SyncGameCommands()
         m_GameCommand |= (unsigned int)GameCommand::fire;
     if (m_EnhancedInput->IsActionActive("ToggleFreeCamera"))
         m_GameCommand |= (unsigned int)GameCommand::free_carema;
+
+    // Applied last so it wins over both the real-input sync above and the
+    // early-return path (when there is no EnhancedInput at all).
+    if (m_ForcedTestCommand != 0u)
+    {
+        m_GameCommand = m_ForcedTestCommand;
+    }
 }
 
 bool InputSystem::Initialize()
@@ -162,6 +179,16 @@ void InputSystem::Tick()
     SyncGameCommands();
 
     // Focus mode -> invalid flag
+    // 注入的测试命令必须跳过这段：非焦点模式会把 invalid 位（1<<31）或进
+    // m_GameCommand，而 MotorComponent::TickPlayerMotor 用
+    // `command >= GameCommand::invalid` 做守卫，一旦带上这一位就整体 return。
+    // 于是 --pie-move-test 注入的 forward 到达了 Motor 却仍被判为无效输入，
+    // 角色零位移。无人值守运行没有真实窗口焦点，天然走 else 分支，必踩这个坑。
+    if (m_ForcedTestCommand != 0u)
+    {
+        return;
+    }
+
     if (GET_SYSTEM(WindowSystem)->GetFocusMode())
     {
         m_GameCommand &= (k_complement_control_command ^ (unsigned int)GameCommand::invalid);

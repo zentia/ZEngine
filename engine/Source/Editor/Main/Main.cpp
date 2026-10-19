@@ -91,7 +91,13 @@ namespace
     }
 
 #ifdef _WIN32
-    StartupMode resolveStartupModeFromCommandLine(PreferredRHI& preferred_rhi)
+    // `--pie-move-test`: set during command line parsing, consumed by
+    // runEditorWin32(). Kept file-static so the several
+    // resolveStartupModeFromCommandLine/runEditor* overloads (Win32, Unix, argv
+    // based) do not all need a new parameter threaded through them.
+    bool g_pie_move_test = false;
+
+    StartupMode resolveStartupModeFromCommandLine(PreferredRHI& preferred_rhi, float& pie_seconds, bool& pie_stop)
     {
         const auto commandLine = zengine::appshell::CommandLine::Acquire();
         if (!commandLine.valid())
@@ -114,6 +120,22 @@ namespace
                 ++i;
                 continue;
             }
+        if (arg == L"--pie" && i + 1 < argc)
+        {
+            pie_seconds = std::wcstof(argv[i + 1], nullptr);
+            ++i;
+            continue;
+        }
+        if (arg == L"--pie-stop")
+        {
+            pie_stop = true;
+            continue;
+        }
+        if (arg == L"--pie-move-test")
+        {
+            g_pie_move_test = true;
+            continue;
+        }
             if (arg == L"--rhi" && i + 1 < argc)
             {
                 const std::wstring_view value(argv[i + 1]);
@@ -135,11 +157,39 @@ namespace
         return resolveStartupModeFromProjectPath(project_path, has_project_argument);
     }
 
-    int runEditorWin32(PreferredRHI preferred_rhi)
+    int runEditorWin32(PreferredRHI preferred_rhi, float pie_seconds, bool pie_stop)
     {
         RegisterRuntime(preferred_rhi);
         RegisterEditor();
         START_SYSTEM();
+
+        // `--pie <seconds>`: unattended PIE smoke run. The editor has no stdin
+        // console and F5 needs a focused, interactive window, so headless
+        // validation has no other way in. Enters play mode, runs for the given
+        // wall-clock duration, then shuts down normally (which also exercises
+        // ExitPIE's level reload).
+        if (pie_seconds > 0.0f)
+        {
+            if (Editor* editor = GET_SYSTEM(Editor))
+            {
+                // Only register the request: the startup level is opened later
+                // (EditorSceneManager::Initialize), so TogglePlayMode() here
+                // would hit BeginPIE with no active level. Editor::Run() enters
+                // play mode on the first frame where the level is loaded.
+                LOG_INFO(ZEditor, "--pie: queued play mode for {:.1f}s once the level is ready", pie_seconds);
+                editor->RequestPieOnLevelReady(pie_seconds);
+                if (pie_stop)
+                {
+                    LOG_INFO(ZEditor, "--pie-stop: will leave play mode normally after {:.1f}s", pie_seconds);
+                    editor->RequestPieStopAtEnd();
+                }
+                if (g_pie_move_test)
+                {
+                    LOG_INFO(ZEditor, "--pie-move-test: will inject a forward command and assert movement");
+                    editor->RequestPieMoveTest();
+                }
+            }
+        }
 
         // Remember the project so it shows up in the launcher next time. Needed
         // because a project can be opened without ever going through the picker:
@@ -150,7 +200,7 @@ namespace
             ZEditorLauncher::RememberProject(project->project_file);
         }
 
-        GET_SYSTEM(Editor)->Run();
+        GET_SYSTEM(Editor)->Run(pie_seconds);
         SHUTDOWN_SYSTEM();
         return 0;
     }
@@ -189,7 +239,8 @@ namespace
         return 0;
     }
 #else
-    StartupMode resolveStartupModeFromCommandLine(int argc, char** argv, std::filesystem::path& project_path, PreferredRHI& preferred_rhi)
+    StartupMode resolveStartupModeFromCommandLine(int argc, char** argv, std::filesystem::path& project_path,
+                                                  PreferredRHI& preferred_rhi, float& pie_seconds, bool& pie_stop)
     {
         bool has_project_argument = false;
         preferred_rhi = PreferredRHI::Default;
@@ -217,12 +268,24 @@ namespace
                 ++i;
                 continue;
             }
+            if (arg == "--pie" && i + 1 < argc)
+            {
+                pie_seconds = std::strtof(argv[i + 1], nullptr);
+                ++i;
+                continue;
+            }
+            if (arg == "--pie-stop")
+            {
+                pie_stop = true;
+                continue;
+            }
         }
 
         return resolveStartupModeFromProjectPath(project_path, has_project_argument);
     }
 
-    int runEditorUnix(const std::filesystem::path& project_path, PreferredRHI preferred_rhi)
+    int runEditorUnix(const std::filesystem::path& project_path, PreferredRHI preferred_rhi, float pie_seconds,
+                      bool pie_stop)
     {
         const std::filesystem::path working_dir = resolveWorkingDirectory(project_path);
         trySetWorkingDirectory(working_dir);
@@ -230,7 +293,20 @@ namespace
         RegisterRuntime(preferred_rhi);
         RegisterEditor();
         START_SYSTEM();
-        GET_SYSTEM(Editor)->Run();
+
+        if (pie_seconds > 0.0f)
+        {
+            if (Editor* editor = GET_SYSTEM(Editor))
+            {
+                editor->RequestPieOnLevelReady(pie_seconds);
+                if (pie_stop)
+                {
+                    editor->RequestPieStopAtEnd();
+                }
+            }
+        }
+
+        GET_SYSTEM(Editor)->Run(pie_seconds);
         SHUTDOWN_SYSTEM();
         // Final safety: BqLog is asynchronous, drain any remaining records.
         LogSystem::ForceFlush();
@@ -255,14 +331,16 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Unity/Hub 风格：先决定本次启动是打开项目还是转到 Launcher，再进入编辑器初始化。
     PreferredRHI preferred_rhi = PreferredRHI::Default;
-    switch (resolveStartupModeFromCommandLine(preferred_rhi))
+    float pie_seconds = 0.0f;
+    bool pie_stop = false;
+    switch (resolveStartupModeFromCommandLine(preferred_rhi, pie_seconds, pie_stop))
     {
         case StartupMode::OpenLauncher:
             return runLauncherAndRelaunch();
         case StartupMode::Abort:
             return 1;
         case StartupMode::OpenProject:
-            return runEditorWin32(preferred_rhi);
+            return runEditorWin32(preferred_rhi, pie_seconds, pie_stop);
     }
 
     return 1;
@@ -275,14 +353,16 @@ int main(int argc, char** argv)
 
     std::filesystem::path project_path;
     PreferredRHI preferred_rhi = PreferredRHI::Default;
-    switch (resolveStartupModeFromCommandLine(argc, argv, project_path, preferred_rhi))
+    float pie_seconds = 0.0f;
+    bool pie_stop = false;
+    switch (resolveStartupModeFromCommandLine(argc, argv, project_path, preferred_rhi, pie_seconds, pie_stop))
     {
         case StartupMode::OpenLauncher:
             return reportMissingProject();
         case StartupMode::Abort:
             return 1;
         case StartupMode::OpenProject:
-            return runEditorUnix(project_path, preferred_rhi);
+            return runEditorUnix(project_path, preferred_rhi, pie_seconds, pie_stop);
     }
 
     return 1;

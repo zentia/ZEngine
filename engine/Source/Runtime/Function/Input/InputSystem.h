@@ -52,6 +52,17 @@ public:
     void resetGameCommand() { m_GameCommand = 0; }
     unsigned int getGameCommand() const { return m_GameCommand; }
 
+    // ---- Unattended test hook ----------------------------------------------
+    // MotorComponent drives movement purely from getGameCommand(), and in a
+    // headless PIE run there is no real keyboard, so the command is always 0 and
+    // the character never moves -- a run like that "passes" without ever
+    // exercising CharacterController::move(). Setting this forces a command to
+    // be reported to every consumer, which makes the movement pipeline
+    // (MotorComponent -> Controller::move -> PhysicsScene::IsOverlap) genuinely
+    // run. Zero means "no override, use real input".
+    void SetForcedTestCommand(unsigned int command) { m_ForcedTestCommand = command; }
+    unsigned int GetForcedTestCommand() const { return m_ForcedTestCommand; }
+
     // Access the underlying EnhancedInputSystem
     EnhancedInputSystem* GetEnhancedInput() const { return m_EnhancedInput; }
 
@@ -59,6 +70,10 @@ private:
     void CalculateCursorDeltaAngles();
 
     unsigned int m_GameCommand {0};
+
+    // See SetForcedTestCommand(): non-zero overrides the command reported by
+    // getGameCommand() so unattended PIE runs can drive movement for real.
+    unsigned int m_ForcedTestCommand {0};
 
     int m_LastCursorX {0};
     int m_LastCursorY {0};

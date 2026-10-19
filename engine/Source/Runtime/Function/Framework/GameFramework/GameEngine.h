@@ -72,12 +72,49 @@ public:
     /// 骨架阶段的策略：取 Level::getCurrentActiveCharacter() 指向的 GameObject。
     bool AutoPossessActiveCharacter();
 
+    // -------------------------------------------------------------------------
+    // PIE（编辑器内播放）
+    //
+    // 独立进程走 Run()，主循环在 GameEngine 手里；PIE 反过来 —— 主循环仍在
+    // Editor::Run()，游戏层只是每帧被 Tick 一次。编辑器只调下面两个方法，
+    // 不碰 GameInstance / LocalPlayer 的内部。
+    //
+    // 当前实现是 UE 正统的"独立 Play World"：进入时由 WorldManager 把编辑器
+    // 关卡复制出第二份（<project>/<saved>/PIE/ 下的临时 .scene）并切成活动
+    // 关卡，游戏逻辑只改那一份，编辑器世界分毫未动，因此停止时直接丢弃、
+    // 无需重载，也不会产生"未保存改动"。
+    // 复制失败时才退化为同世界播放，那种情况下必须由调用方重载恢复。
+    // -------------------------------------------------------------------------
+
+    /// 进入 PIE：建 GameInstance / LocalPlayer，并把 PlayerController 接到
+    /// 当前活动关卡的角色上。已有活动关卡是前提。
+    bool BeginPIE();
+
+    /// 退出 PIE：解绑实体引用、拆掉游戏层，并丢弃 Play World（若用过）。
+    /// 退化路径下本方法不动世界 —— 由调用方（Editor）负责重载。
+    void EndPIE();
+
+    bool IsInPIE() const { return m_IsInPIE; }
+
+    /// 本次 PIE 是否成功建立了独立 Play World。
+    /// false 表示退化成了同世界播放，调用方必须在停止后重载关卡；
+    /// true 表示编辑器世界从未被改过，重载反而会丢掉用户的未保存改动。
+    bool IsPlayWorldPIE() const { return m_PieUsedPlayWorld; }
+
 protected:
     /// 卸载关卡前释放所有 PlayerController 持有的实体引用。
     void ReleaseAllPossessions();
 
+    /// 把 GameInstance 绑到当前活动关卡（记录 URL、建 GameMode、接管角色）。
+    /// Initialize() 与 BeginPIE() 共用：前者处理"启动关卡已在系统就绪前加载"，
+    /// 后者处理"PIE 开始时关卡才刚被编辑器打开"。关卡不存在时什么也不做。
+    void BindToActiveLevel();
+
     bool m_IsInitialized {false};
     bool m_RequestQuit {false};
+    bool m_IsInPIE {false};
+    /// 本次 PIE 是否真的用了独立 Play World（false = 退化成同世界播放）。
+    bool m_PieUsedPlayWorld {false};
 
     std::unique_ptr<GameInstance> m_GameInstance;
     std::vector<std::unique_ptr<LocalPlayer>> m_LocalPlayers;

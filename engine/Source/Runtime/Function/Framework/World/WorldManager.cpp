@@ -1,17 +1,21 @@
 #include "WorldManager.h"
 
+#include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Math/LargeWorldCoordinates.h"
 #include "Runtime/Core/Math/Vector3d.h"
 #include "Runtime/Function/AI/Navigation/NavigationSystem.h"
 #include "Runtime/Function/Character/Character.h"
+#include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
+#include "Runtime/Function/Framework/Component/Rigidbody/RigidbodyComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/Level/LevelDebugger.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
 #include "Runtime/Resource/Preload/PreloadManager.h"
+#include "Runtime/Project/ProjectInfo.h"
 
 bool WorldManager::Initialize()
 {
@@ -238,12 +242,57 @@ bool WorldManager::LoadLevelAdditive(const eastl::string& level_url)
     // which runs inside Level::load() -- before this level is published as
     // active, so GetCurrentActivePhysicsScene() was null and the build had to
     // be deferred. The level is active now, so run it.
+    //
+    // Same timing applies to rigid bodies: a prefab-expanded RigidBodyComponent
+    // is created inside Level::load() and cannot build its body there. Create
+    // those first -- the navmesh raycasts against them, so running the nav
+    // build before this would see an empty physics scene.
+    FlushPendingRigidBodies(new_level);
+
     if (auto* navigation_system = GET_SYSTEM(NavigationSystem); navigation_system != nullptr)
     {
         navigation_system->FlushDeferredBuild();
     }
 
     return true;
+}
+
+void WorldManager::FlushPendingRigidBodies(Level* level)
+{
+    if (level == nullptr)
+    {
+        return;
+    }
+
+    int created = 0;
+    int still_pending = 0;
+    for (const auto& id_object_pair : level->getAllGObjects())
+    {
+        const std::shared_ptr<GameObject>& game_object = id_object_pair.second;
+        if (game_object == nullptr)
+        {
+            continue;
+        }
+
+        for (ImmediatePtr<Component>& component_ptr : game_object->getComponents())
+        {
+            RigidBodyComponent* rigidbody = dynamic_cast<RigidBodyComponent*>(static_cast<Component*>(component_ptr));
+            if (rigidbody == nullptr)
+            {
+                continue;
+            }
+
+            if (rigidbody->HasPendingBody())
+            {
+                rigidbody->FlushPendingBody() ? ++created : ++still_pending;
+            }
+        }
+    }
+
+    if (created > 0 || still_pending > 0)
+    {
+        LOG_INFO(ZWorld, "created {} deferred rigid body(ies), {} still pending", created, still_pending);
+    }
 }
 
 void WorldManager::UnloadLevelByUrl(const eastl::string& level_url)
@@ -441,6 +490,221 @@ void WorldManager::ReloadCurrentLevel()
     m_CurrentActiveLevel = iter->second;
 
     LOG_INFO(ZWorld, "reload current level succeed");
+}
+
+eastl::string WorldManager::MakePlayWorldUrl(const eastl::string& editor_level_url) const
+{
+    const ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
+    if (project_info == nullptr || !project_info->IsValid())
+    {
+        LOG_ERROR(ZWorld, "MakePlayWorldUrl: no valid project; cannot place the PIE copy");
+        return {};
+    }
+
+    // <project>/<saved_dir>/PIE/. saved_dir 默认 "saved"，与日志目录同级。
+    // 放在项目内而不是临时目录，是为了让相对路径的资产引用（关卡里大量
+    // PPtr 指向 asset/...）在加载时仍能按项目根解析；放到系统临时目录会
+    // 让这些引用全部落空。
+    const std::filesystem::path pie_dir =
+        std::filesystem::absolute(project_info->GetProjectRoot() / project_info->saved_dir / "PIE");
+
+    std::error_code ec;
+    std::filesystem::create_directories(pie_dir, ec);
+    if (ec)
+    {
+        LOG_ERROR(ZWorld, "MakePlayWorldUrl: cannot create {}: {}", pie_dir.generic_string(), ec.message());
+        return {};
+    }
+
+    const std::filesystem::path stem = std::filesystem::path(editor_level_url.c_str()).stem();
+    const std::filesystem::path pie_path = (pie_dir / (stem.string() + "_pie.scene")).lexically_normal();
+    return eastl::string(pie_path.generic_string().c_str());
+}
+
+bool WorldManager::BeginPlayWorld(eastl::string& out_play_world_url)
+{
+    out_play_world_url.clear();
+
+    if (m_IsInPlayWorld)
+    {
+        LOG_WARNING(ZWorld, "BeginPlayWorld: already in a play world");
+        return false;
+    }
+
+    if (m_WorldPartition.IsEnabled())
+    {
+        LOG_ERROR(ZWorld, "BeginPlayWorld: world partition is enabled; not supported");
+        return false;
+    }
+
+    Level* editor_level = m_CurrentActiveLevel;
+    if (editor_level == nullptr)
+    {
+        LOG_ERROR(ZWorld, "BeginPlayWorld: no active level to duplicate");
+        return false;
+    }
+
+    const eastl::string editor_url = editor_level->getLevelResUrl();
+    const eastl::string pie_url = MakePlayWorldUrl(editor_url);
+    if (pie_url.empty())
+    {
+        return false;
+    }
+
+    // 先把编辑器这份"当前状态"（含未保存改动）另存成临时副本。用 setLevelResUrl
+    // 临时改指向再存，存完立刻改回 —— 否则会把用户的场景文件覆盖掉。
+    // 这里刻意不走 SaveCurrentLevelAs()：那个是给"另存为"用的，会改动
+    // m_LoadedLevels 的键，PIE 不需要也不应该动编辑器的场景表。
+    editor_level->setLevelResUrl(pie_url);
+    const bool is_saved = editor_level->save();
+    editor_level->setLevelResUrl(editor_url);
+    if (!is_saved)
+    {
+        LOG_ERROR(ZWorld, "BeginPlayWorld: failed to write the PIE copy {}", pie_url.c_str());
+        return false;
+    }
+
+    // 关键：先把活动关卡清空再加载。LoadLevelAdditive() 只在
+    // m_CurrentActiveLevel 为空时才把新关卡设为活动，而此时它还指向编辑器
+    // 那份；不清空的话 Play World 会加载成功但活动关卡仍是编辑器的，
+    // 游戏逻辑就会直接改到编辑器世界上——正是要避免的事。
+    m_EditorLevel = editor_level;
+    m_EditorLevelUrl = editor_url;
+    m_CurrentActiveLevel = nullptr;
+
+    if (!LoadLevelAdditive(pie_url))
+    {
+        LOG_ERROR(ZWorld, "BeginPlayWorld: failed to load the PIE world {}", pie_url.c_str());
+        m_CurrentActiveLevel = m_EditorLevel;
+        m_EditorLevel = nullptr;
+        m_EditorLevelUrl.clear();
+        return false;
+    }
+
+    auto iter = m_LoadedLevels.find(pie_url);
+    if (iter == m_LoadedLevels.end() || iter->second == nullptr)
+    {
+        LOG_ERROR(ZWorld, "BeginPlayWorld: PIE world missing after load {}", pie_url.c_str());
+        m_CurrentActiveLevel = m_EditorLevel;
+        m_EditorLevel = nullptr;
+        m_EditorLevelUrl.clear();
+        return false;
+    }
+
+    m_CurrentActiveLevel = iter->second;
+    m_IsInPlayWorld = true;
+    out_play_world_url = pie_url;
+
+    LOG_INFO(ZWorld, "BeginPlayWorld: play world ready {} (editor world {} kept untouched)",
+             pie_url.c_str(), editor_url.c_str());
+    return true;
+}
+
+void WorldManager::EndPlayWorld()
+{
+    if (!m_IsInPlayWorld)
+    {
+        return;
+    }
+
+    const eastl::string pie_url = (m_CurrentActiveLevel != nullptr) ? m_CurrentActiveLevel->getLevelResUrl() : eastl::string();
+
+    // 必须先排空渲染线程，再动场景。渲染线程每帧都会通过
+    // getCurrentActiveLevel() 拿当前关卡并直接解引用里面的 GameObject
+    // （RenderUpdateSceneCmd::Execute -> SyncPointLightsFromLevel），而下面
+    // 的 UnloadLevelByUrl() 会把 Play World 连同它的 GameObject 一起销毁。
+    // 两步之间没有同步的话，渲染线程读到的就是正在被删的对象 —— PIE 停止
+    // 时的访问违规（SyncPointLightsFromLevel / GuidAllocator::getAllocatedGuids
+    // 里的 0xc0000005）就是这个竞态。这里在游戏线程上等待渲染 + RHI 队列
+    // 排空，并丢掉尚未执行的命令，保证卸载时没有人在读这份关卡。
+    if (auto* render_system = GET_SYSTEM(RenderSystem); render_system != nullptr)
+    {
+        render_system->FlushRenderingCommands();
+    }
+
+    // 渲染层持有的是按对象 ID 索引的渲染对象；Play World 与编辑器世界的
+    // GObjectID 是两套独立分配（ObjectIDAllocator 单调递增），直接卸载会
+    // 在交换数据里留下对已销毁对象的删除项，所以先让渲染层整体清空。
+    if (auto* render_system = GET_SYSTEM(RenderSystem); render_system != nullptr)
+    {
+        render_system->ClearForLevelReloading();
+    }
+
+    if (!pie_url.empty())
+    {
+        UnloadLevelByUrl(pie_url);
+    }
+
+    // 编辑器那份一直没有动过，直接把指针复位回去即可 —— 不需要重载，
+    // 也不会产生"未保存改动"（这正是独立 Play World 相对同世界方案
+    // 的价值所在）。保险起见按 URL 再确认一次，防止编辑器在此期间换过场景。
+    auto editor_iter = m_LoadedLevels.find(m_EditorLevelUrl);
+    if (editor_iter != m_LoadedLevels.end() && editor_iter->second != nullptr)
+    {
+        m_CurrentActiveLevel = editor_iter->second;
+    }
+    else if (m_EditorLevel != nullptr)
+    {
+        m_CurrentActiveLevel = m_EditorLevel;
+    }
+
+    m_IsInPlayWorld = false;
+    m_EditorLevel = nullptr;
+    m_EditorLevelUrl.clear();
+
+    LOG_INFO(ZWorld, "EndPlayWorld: discarded {}, editor world {} restored",
+             pie_url.c_str(), m_CurrentActiveLevel != nullptr ? m_CurrentActiveLevel->getLevelResUrl().c_str() : "(none)");
+}
+
+bool WorldManager::ReloadActiveLevelInPlace()
+{
+    if (m_WorldPartition.IsEnabled())
+    {
+        // Streaming worlds have no single "the scene" to reload; PIE on top of a
+        // partitioned world is not supported yet.
+        LOG_ERROR(ZWorld, "ReloadActiveLevelInPlace: world partition is enabled; not supported");
+        return false;
+    }
+
+    Level* active_level = m_CurrentActiveLevel;
+    if (active_level == nullptr)
+    {
+        LOG_WARNING(ZWorld, "ReloadActiveLevelInPlace: no active level");
+        return false;
+    }
+
+    const eastl::string level_url = active_level->getLevelResUrl();
+    if (level_url.empty())
+    {
+        LOG_ERROR(ZWorld, "ReloadActiveLevelInPlace: active level has no url");
+        return false;
+    }
+
+    // ReloadCurrentLevel() is the editor-facing variant and is fine here: it
+    // unloads by url then re-loads, which is exactly the discard-and-restore
+    // PIE needs. It is not called through EditorSceneManager because PIE does
+    // not want the unsaved-changes prompt -- gameplay mutations are always
+    // meant to be thrown away, never saved.
+    const bool was_dirty = active_level->IsDirty();
+    ReloadCurrentLevel();
+
+    Level* reloaded = m_CurrentActiveLevel;
+    if (reloaded == nullptr)
+    {
+        LOG_ERROR(ZWorld, "ReloadActiveLevelInPlace: reload failed for {}", level_url.c_str());
+        return false;
+    }
+
+    // A fresh load must come back clean. A level can legitimately be dirty right
+    // after load (e.g. a migration normalised something), so only clear the flag
+    // that gameplay itself raised.
+    if (was_dirty && reloaded->IsDirty())
+    {
+        reloaded->ClearDirty();
+    }
+
+    LOG_INFO(ZWorld, "ReloadActiveLevelInPlace: restored {}", level_url.c_str());
+    return true;
 }
 
 void WorldManager::SaveCurrentLevel()

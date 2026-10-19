@@ -152,8 +152,13 @@ void Application::LogicalTick(float delta_time)
 {
     Z_PROFILE_SCOPE("Engine::logicalTick");
     GET_SYSTEM(PreloadManager)->Tick(delta_time);
-    GET_SYSTEM(WorldManager)->Tick(delta_time);
+    // 输入必须早于世界 tick。WorldManager::Tick 会驱动 Level::Tick ->
+    // 组件 tick，MotorComponent 就是在那里读 InputSystem 的命令位算位移的。
+    // 如果把 InputSystem::Tick() 留在后面，Motor 每帧读到的都是上一帧的
+    // 命令（首帧更是恒为 0），表现就是注入了输入、配置也正确，角色却不动。
+    // InputSystem::Tick() 不依赖世界状态，提前没有副作用。
     GET_SYSTEM(InputSystem)->Tick();
+    GET_SYSTEM(WorldManager)->Tick(delta_time);
     // The runtime UI (UMG on ZSlate) is event-driven (input via GLFW callbacks)
     // and painted inside the UI render pass via UISystem::PreRender(); no
     // per-frame logic tick is required here.
