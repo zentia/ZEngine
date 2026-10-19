@@ -521,6 +521,10 @@ cmake --build build\tools\ZEnvironmentCollector\pack --target package
 - 包内是一个以包名命名的顶层目录，展开后 `README.md` + `WindowsEnvironmentCheck\`
   （exe、`ZDllLoadProbe.exe`、`profiles\`、LICENSE）——就是能直接跑的那个目录，没有多余的层。
 - ZIP 用 CMake 自带的归档能力生成，不需要装 7-Zip。
+- **两种构建打出的包同名但内容不同**：独立构建自包含（无 DLL）；引擎后端（全树构建）多出
+  `ZRuntimeShared.dll` 与 `resource\ui_strings_zh-CN.zasset`。pack 会读 exe 的导入表判断是哪一种：
+  引擎后端但 staging 里没有 DLL 时**直接配置失败**（缺 DLL 是 `0xc0000135`、进程根本起不到
+  `main()`，而包看起来完全正常）；缺 zasset 只告警，因为 UI 会退回英文而不是死。
 - staging 目录里没有 `ZEnvironmentCollector.exe` 时**直接配置失败**并打印该跑的那条命令：
   把一个空的/过期的 staging 目录打成一个看起来很像样的包，是这里唯一一种"看起来成功了"的失败。
 

@@ -93,6 +93,37 @@ if(NOT DEFINED PACK_OUTPUT_DIR OR PACK_OUTPUT_DIR STREQUAL "")
     set(PACK_OUTPUT_DIR "${PACK_REPO_ROOT}/dist")
 endif()
 
+# ---------------------------------------------------------------------------
+# Which backend is this build?
+#
+# The collector has two configurations that produce different directories:
+# standalone (self-contained) and engine-backed, which links ZRuntimeShared.dll
+# and needs it beside the exe -- without it the process dies at startup with
+# 0xc0000135 before main() runs, and the archive still looks perfectly fine.
+# Both configurations would otherwise produce identically named archives, so
+# "does this exe import a DLL" has to be settled here rather than left to the
+# person who downloads it.
+#
+# The authoritative answer is the exe's own import table: it is what actually
+# decides whether the process starts. Reading it means reading the file as hex
+# and looking for the ASCII import name; there is no PE parser in CMake.
+#
+# The name is matched as an ASCIIZ string -- NUL on both sides -- because a bare
+# substring match does hit other bytes: scanning this very exe for
+# "ucrtbased.dll" matches, yet dumpbin /dependents shows only release runtimes.
+# A false positive here is not harmless either: it would accuse a correct
+# self-contained package of missing a DLL and block the pack.
+# ---------------------------------------------------------------------------
+function(pack_exe_imports_dll EXE_PATH DLL_NAME OUT_VAR)
+    file(READ "${EXE_PATH}" _exe_hex HEX)
+    string(REGEX MATCH "${DLL_NAME}" _found "${_exe_hex}")
+    if(_found STREQUAL "")
+        set(${OUT_VAR} FALSE PARENT_SCOPE)
+    else()
+        set(${OUT_VAR} TRUE PARENT_SCOPE)
+    endif()
+endfunction()
+
 if(NOT EXISTS "${PACK_STAGING_DIR}/WindowsEnvironmentCheck/ZEnvironmentCollector.exe")
     message(FATAL_ERROR
         "No staged build found at ${PACK_STAGING_DIR}. Run this first (from the "
@@ -101,6 +132,45 @@ if(NOT EXISTS "${PACK_STAGING_DIR}/WindowsEnvironmentCheck/ZEnvironmentCollector
         "--component EnvironmentCollector --prefix dist\\staging\n"
         "Packing a stale or empty staging directory is the one failure here that "
         "looks like success -- it produces a plausible archive that runs nothing.")
+endif()
+
+set(PACK_RUNTIME_DIR "${PACK_STAGING_DIR}/WindowsEnvironmentCheck")
+# "ZRuntimeShared.dll" in hex, wrapped in the NULs that make it an import name.
+pack_exe_imports_dll("${PACK_RUNTIME_DIR}/ZEnvironmentCollector.exe"
+    "005a52756e74696d655368617265642e646c6c00" PACK_ENGINE_BACKED)
+
+if(PACK_ENGINE_BACKED)
+    # Engine-backed: the exe links the DLL's import library, so a missing DLL is
+    # a process that never starts, not a degraded feature.
+    if(NOT EXISTS "${PACK_RUNTIME_DIR}/ZRuntimeShared.dll")
+        message(FATAL_ERROR
+            "This is an engine-backed build (ZEnvironmentCollector.exe imports "
+            "ZRuntimeShared.dll) but the DLL is not in ${PACK_RUNTIME_DIR}.\n"
+            "The install rule that ships it is guarded on the ZRuntimeShared target "
+            "existing, so this means the staging directory was populated by a "
+            "different build than the one that produced this exe -- most often an "
+            "install left over from a standalone configure. Re-run the install of "
+            "the engine-backed build, then reconfigure and pack again.")
+    endif()
+    # Degraded rather than dead: with no table the UI falls back to the English
+    # literals at the call sites. Worth saying out loud because the install rule
+    # for the .zasset is OPTIONAL, so its absence is otherwise silent.
+    if(NOT EXISTS "${PACK_RUNTIME_DIR}/resource/ui_strings_zh-CN.zasset")
+        message(WARNING
+            "Engine-backed build without resource/ui_strings_zh-CN.zasset: the "
+            "packaged UI will fall back to English. DataTableCook did not produce "
+            "the table for this build.")
+    endif()
+    message(STATUS "Build backend: engine-backed (needs ZRuntimeShared.dll)")
+else()
+    if(EXISTS "${PACK_RUNTIME_DIR}/ZRuntimeShared.dll")
+        message(WARNING
+            "A ZRuntimeShared.dll sits in the staging directory but "
+            "ZEnvironmentCollector.exe does not import it -- usually a stale file "
+            "from an earlier engine-backed install. It will be shipped anyway; "
+            "delete ${PACK_STAGING_DIR} and re-install to be sure of the contents.")
+    endif()
+    message(STATUS "Build backend: standalone (self-contained, no runtime DLL)")
 endif()
 
 set(PACK_FILE_NAME "${PACKAGE_NAME}-windows-${DETECTED_ARCH}-${PACK_VERSION}")
