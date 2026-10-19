@@ -20,6 +20,19 @@ struct MeshDrawPerDrawcallVertexBlending
     float4x4 joint_matrices[1024 * 64];
 };
 
+// Per-vertex joint binding (C++ mirror: MeshVertex::JointBinding, 32 bytes).
+// Uploaded into the per-mesh descriptor set (space1, binding 0) only for
+// skinned meshes; rigid meshes get the 1-byte null buffer there.
+struct MeshVertexJointBinding
+{
+    int4 indices;
+    float4 weights;
+};
+
+// Must match s_MeshVertexBlendingMaxJointCount in RenderScene.cpp: the joint
+// palette is a flat [max_joint_count * instance_id + joint_index] array.
+static const uint kMeshVertexBlendingMaxJointCount = 1024;
+
 struct AxisDrawStorage
 {
     float4x4 model_matrix;

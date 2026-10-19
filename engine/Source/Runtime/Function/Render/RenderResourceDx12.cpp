@@ -67,7 +67,9 @@ namespace
         }
     }
 
-    void Dx12UploadMeshNonSkinned(RHI* rhi, RenderResource* resource, GpuMesh& now_mesh, RenderMeshData& mesh_data)
+    /// Uploads the three vertex streams (position / normal+tangent / texcoord)
+    /// plus the index buffer. Shared by the rigid and the skinned path.
+    bool Dx12UploadMeshVertexStreams(RHI* rhi, GpuMesh& now_mesh, RenderMeshData& mesh_data)
     {
         const uint32_t index_buffer_size = static_cast<uint32_t>(mesh_data.m_StaticMeshData.m_IndexBuffer->m_Size);
         void* index_buffer_data = mesh_data.m_StaticMeshData.m_IndexBuffer->m_Data;
@@ -96,7 +98,7 @@ namespace
         {
             LOG_ERROR(ZRender, "RenderResource(DX12): failed to create mesh staging buffer (size={})",
                       static_cast<uint64_t>(staging_size));
-            return;
+            return false;
         }
 
         void* staging_ptr = nullptr;
@@ -189,6 +191,18 @@ namespace
                                        index_buffer_data,
                                        now_mesh.mesh_index_buffer);
 
+        return true;
+    }
+
+    void Dx12UploadMeshNonSkinned(RHI* rhi, RenderResource* resource, GpuMesh& now_mesh, RenderMeshData& mesh_data)
+    {
+        if (!Dx12UploadMeshVertexStreams(rhi, now_mesh, mesh_data))
+        {
+            return;
+        }
+
+        now_mesh.enable_vertex_blending = false;
+
         if (resource->m_MeshDescriptorSetLayout != nullptr)
         {
             RHIDescriptorSetAllocateInfo alloc_info {};
@@ -214,6 +228,89 @@ namespace
                 rhi->UpdateDescriptorSets(1, &write, 0, nullptr);
             }
         }
+    }
+
+    void Dx12UploadMeshSkinned(RHI* rhi, RenderResource* resource, GpuMesh& now_mesh, RenderMeshData& mesh_data)
+    {
+        if (!Dx12UploadMeshVertexStreams(rhi, now_mesh, mesh_data))
+        {
+            return;
+        }
+
+        now_mesh.enable_vertex_blending = true;
+
+        const BufferData* binding_data = mesh_data.m_SkeletonBindingBuffer.get();
+        if (binding_data == nullptr || binding_data->m_Data == nullptr || binding_data->m_Size == 0)
+        {
+            // A skinned mesh with no skin weights would collapse every vertex
+            // into the origin, so flag it loudly and fall back to the rigid
+            // descriptor (which the shader treats as "no influences").
+            LOG_WARNING(ZRender, "RenderResource(DX12): skinned mesh has an empty joint-binding buffer");
+            now_mesh.enable_vertex_blending = false;
+            return;
+        }
+
+        if (binding_data->m_Size % sizeof(MeshVertex::JointBinding) != 0)
+        {
+            LOG_ERROR(ZRender,
+                      "RenderResource(DX12): joint-binding buffer size {} is not a multiple of {}",
+                      static_cast<uint64_t>(binding_data->m_Size),
+                      static_cast<uint32_t>(sizeof(MeshVertex::JointBinding)));
+            now_mesh.enable_vertex_blending = false;
+            return;
+        }
+
+        Dx12CreateGpuBufferFromStaging(rhi,
+                                       binding_data->m_Size,
+                                       RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                       binding_data->m_Data,
+                                       now_mesh.mesh_vertex_joint_binding_buffer);
+
+        if (now_mesh.mesh_vertex_joint_binding_buffer == nullptr)
+        {
+            LOG_ERROR(ZRender, "RenderResource(DX12): failed to create the joint-binding buffer");
+            now_mesh.enable_vertex_blending = false;
+            return;
+        }
+        if (resource->m_MeshDescriptorSetLayout != nullptr)
+        {
+            RHIDescriptorSetAllocateInfo alloc_info {};
+            alloc_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            alloc_info.descriptorPool = rhi->GetDescriptorPoor();
+            alloc_info.descriptorSetCount = 1;
+            alloc_info.pSetLayouts = resource->m_MeshDescriptorSetLayout;
+
+            if (rhi->AllocateDescriptorSets(&alloc_info, now_mesh.mesh_vertex_blending_descriptor_set) == RHI_SUCCESS)
+            {
+                RHIDescriptorBufferInfo buffer_info {};
+                buffer_info.offset = 0;
+                buffer_info.range = binding_data->m_Size;
+                buffer_info.buffer = now_mesh.mesh_vertex_joint_binding_buffer;
+                // Explicit stride: MeshVertex::JointBinding is 32 bytes, so the
+                // backend's 80-byte heuristic would build a mis-sized SRV for any
+                // vertex count that is a multiple of 5.
+                buffer_info.stride = static_cast<uint32_t>(sizeof(MeshVertex::JointBinding));
+
+                RHIWriteDescriptorSet write {};
+                write.sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                write.dstSet = now_mesh.mesh_vertex_blending_descriptor_set;
+                write.dstBinding = 0;
+                write.descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                write.descriptorCount = 1;
+                write.pBufferInfo = &buffer_info;
+                rhi->UpdateDescriptorSets(1, &write, 0, nullptr);
+            }
+            else
+            {
+                LOG_ERROR(ZRender, "RenderResource(DX12): failed to allocate the joint-binding descriptor set");
+                now_mesh.enable_vertex_blending = false;
+            }
+        }
+
+        LOG_INFO(ZRender,
+                 "RenderResource(DX12): skinned mesh uploaded ({} vertices, {} bytes of joint bindings)",
+                 now_mesh.mesh_vertex_count,
+                 static_cast<uint64_t>(binding_data->m_Size));
     }
 
     void Dx12CreateWhiteTexture(RHI* rhi, RHIImage*& image, RHIImageView*& view)
@@ -327,12 +424,18 @@ namespace
 void RenderResource::UploadGpuMeshDx12(RHI* rhi, GpuMesh& now_mesh, RenderMeshData& mesh_data)
 {
     now_mesh.backend = RenderResourceBackend::DirectX12;
+
+    // PR-SK1: DX12 finally has a real skinned path (three vertex streams +
+    // a per-vertex joint-binding SRV + the per-drawcall joint palette). The
+    // shader skins in mesh.vert.hlsl; rigid meshes keep the old single path.
     if (mesh_data.m_SkeletonBindingBuffer != nullptr)
     {
-        LOG_WARNING(ZRender, "RenderResource(DX12): skinned mesh uses rigid upload path for now");
+        Dx12UploadMeshSkinned(rhi, this, now_mesh, mesh_data);
     }
-
-    Dx12UploadMeshNonSkinned(rhi, this, now_mesh, mesh_data);
+    else
+    {
+        Dx12UploadMeshNonSkinned(rhi, this, now_mesh, mesh_data);
+    }
 }
 
 #if !defined(Z_HAS_VULKAN)

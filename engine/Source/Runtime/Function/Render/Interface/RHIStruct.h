@@ -208,6 +208,12 @@ struct RHIDescriptorBufferInfo
     RHIBuffer* buffer;
     RHIDeviceSize offset;
     RHIDeviceSize range;
+    /// Optional structured-buffer element size in bytes. 0 = let the backend
+    /// guess. DX12 needs an explicit stride for anything that is not a
+    /// RenderMeshInstance (80 bytes): its SRV needs a StructureByteStride, and
+    /// guessing from `range` mis-sizes the joint-binding buffer (32 bytes per
+    /// vertex) whenever the vertex count happens to be a multiple of 5.
+    uint32_t stride {0};
 };
 
 struct RHIOffset2D

@@ -1291,6 +1291,10 @@ void MainCameraRp1Pass::SetupDescriptorSets()
     mesh_perdrawcall_storage_buffer_info.offset = 0;
     mesh_perdrawcall_storage_buffer_info.range = sizeof(MeshDrawPerDrawcall);
     mesh_perdrawcall_storage_buffer_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
+    // Explicit stride: DX12 builds a structured SRV from this, and its fallback
+    // heuristic (80 bytes when the range divides by 80) would be wrong for any
+    // per-instance struct that is not exactly 80 bytes.
+    mesh_perdrawcall_storage_buffer_info.stride = sizeof(RenderMeshInstance);
 
     RHIDescriptorBufferInfo mesh_per_drawcall_vertex_blending_storage_buffer_info {};
     mesh_per_drawcall_vertex_blending_storage_buffer_info.offset = 0;
@@ -1298,6 +1302,10 @@ void MainCameraRp1Pass::SetupDescriptorSets()
         sizeof(MeshDrawPerDrawcallVertexBlending);
     mesh_per_drawcall_vertex_blending_storage_buffer_info.buffer =
         m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
+    // The joint palette is a flat array of float4x4, not a struct, so the
+    // stride must be spelled out for DX12 (see the HLSL declaration in
+    // mesh.vert.hlsl: `StructuredBuffer<float4x4> joint_matrices`).
+    mesh_per_drawcall_vertex_blending_storage_buffer_info.stride = sizeof(Matrix4x4);
 
     const IBLResource& ibl = m_GlobalRenderResource->m_IblResource;
 

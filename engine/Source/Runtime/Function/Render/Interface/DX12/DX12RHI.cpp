@@ -1260,12 +1260,20 @@ bool DX12RHI::CreateDynamicBufferGpuHandle(const DX12DescriptorBufferBinding& bi
     if (binding.type == RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
         binding.type == RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
     {
+        // An explicit stride from the descriptor wins. The 80-byte heuristic is
+        // only the fallback for descriptors that predate explicit strides
+        // (RenderMeshInstance); guessing it for the 32-byte joint-binding
+        // buffer mis-sizes the SRV whenever the vertex count is a multiple of 5.
         constexpr UINT kRenderMeshInstanceStride = 80u;
         const UINT stride =
-            (buffer_range >= kRenderMeshInstanceStride && (buffer_range % kRenderMeshInstanceStride) == 0) ? kRenderMeshInstanceStride : 4u;
+            (binding.stride > 0)
+                ? static_cast<UINT>(binding.stride)
+                : ((buffer_range >= kRenderMeshInstanceStride && (buffer_range % kRenderMeshInstanceStride) == 0)
+                       ? kRenderMeshInstanceStride
+                       : 4u);
 
         RHIDeviceSize aligned_offset = effective_offset;
-        if (stride == kRenderMeshInstanceStride)
+        if (stride > 4u)
         {
             const RHIDeviceSize remainder = effective_offset % stride;
             if (remainder != 0)
@@ -1275,7 +1283,7 @@ bool DX12RHI::CreateDynamicBufferGpuHandle(const DX12DescriptorBufferBinding& bi
                           "DX12 structured-buffer dynamic offset {} is not {}-byte aligned; GPU reads slot {} but "
                           "CPU must write the same aligned slot",
                           static_cast<uint64_t>(effective_offset),
-                          kRenderMeshInstanceStride,
+                          static_cast<uint32_t>(stride),
                           static_cast<uint64_t>(aligned_offset));
             }
         }
@@ -5536,11 +5544,15 @@ void DX12RHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
             else if (write.descriptorType == RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER ||
                      write.descriptorType == RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
             {
+                // Same rule as the dynamic path: an explicit stride wins, the
+                // 80-byte guess is only for descriptors that predate it.
                 constexpr UINT kRenderMeshInstanceStride = 80u;
                 const UINT stride =
-                    (buffer_range >= kRenderMeshInstanceStride && (buffer_range % kRenderMeshInstanceStride) == 0)
-                        ? kRenderMeshInstanceStride
-                        : 4u;
+                    (buffer_info.stride > 0)
+                        ? static_cast<UINT>(buffer_info.stride)
+                        : ((buffer_range >= kRenderMeshInstanceStride && (buffer_range % kRenderMeshInstanceStride) == 0)
+                               ? kRenderMeshInstanceStride
+                               : 4u);
 
                 D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
                 srv_desc.Format = DXGI_FORMAT_UNKNOWN;
@@ -5553,7 +5565,7 @@ void DX12RHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
                 m_Device->CreateShaderResourceView(buffer->getResource(), &srv_desc, cpu_handle);
                 descriptor_set->setCbvSrvUavHandle(write.dstBinding, gpu_handle);
                 descriptor_set->setBufferBinding(
-                    write.dstBinding, buffer, buffer_info.offset, buffer_info.range, write.descriptorType);
+                    write.dstBinding, buffer, buffer_info.offset, buffer_info.range, write.descriptorType, stride);
             }
         }
     }

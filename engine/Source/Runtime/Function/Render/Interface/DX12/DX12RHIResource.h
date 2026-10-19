@@ -55,6 +55,8 @@ struct DX12DescriptorBufferBinding
     RHIDeviceSize offset {0};
     RHIDeviceSize range {0};
     RHIDescriptorType type {static_cast<RHIDescriptorType>(0)};
+    /// Structured SRV element size actually used when the view was created.
+    uint32_t stride {0};
 };
 
 class DX12DescriptorSet : public RHIDescriptorSet
@@ -73,9 +75,14 @@ public:
         m_SamplerHandles[binding] = handle;
     }
 
-    void setBufferBinding(uint32_t binding, DX12Buffer* buffer, RHIDeviceSize offset, RHIDeviceSize range, RHIDescriptorType type)
+    void setBufferBinding(uint32_t binding,
+                          DX12Buffer* buffer,
+                          RHIDeviceSize offset,
+                          RHIDeviceSize range,
+                          RHIDescriptorType type,
+                          uint32_t stride = 0)
     {
-        m_BufferBindings[binding] = {buffer, offset, range, type};
+        m_BufferBindings[binding] = {buffer, offset, range, type, stride};
     }
 
     const DX12DescriptorBufferBinding* getBufferBinding(uint32_t binding) const
