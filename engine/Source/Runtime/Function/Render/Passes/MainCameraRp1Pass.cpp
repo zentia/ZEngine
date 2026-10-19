@@ -249,6 +249,7 @@ bool MainCameraRp1Pass::Initialize()
     SetupDescriptorSetLayouts();
     m_MaterialDescriptorSetLayoutPtr = m_DescriptorInfos[_mesh_per_material].layout;
     SetupPipelines();
+
     SetupDescriptorSets();
     EnsureFallbackIblTextures();
 
@@ -347,15 +348,31 @@ void MainCameraRp1Pass::EnsureFallbackIblTextures()
         return;
     }
 
+    // NOTE: a 1x1 fallback cubemap was tried first and reproducibly removed the
+    // D3D12 device on this machine (the fault surfaced later as a failed 1x1 UI
+    // white-texture creation in UIGpuResources::Initialize).  Use a 4x4 face
+    // instead: large enough to avoid the 1x1 degenerate path, still negligible.
+    constexpr uint32_t kFallbackCubeSize = 4u;
+    constexpr uint32_t kFaceBytes = kFallbackCubeSize * kFallbackCubeSize * 4u;
+    static std::array<uint8_t, kFaceBytes> s_neutral_face {};
+    if (s_neutral_face[0] == 0u)
+    {
+        const uint32_t neutral_pixel_value = 0xFF404040u;
+        for (uint32_t i = 0; i < kFallbackCubeSize * kFallbackCubeSize; ++i)
+        {
+            std::memcpy(&s_neutral_face[i * 4u], &neutral_pixel_value, sizeof(neutral_pixel_value));
+        }
+    }
+
     std::array<void*, 6> neutral_faces = {
-        &neutral_pixel, &neutral_pixel, &neutral_pixel,
-        &neutral_pixel, &neutral_pixel, &neutral_pixel,
+        s_neutral_face.data(), s_neutral_face.data(), s_neutral_face.data(),
+        s_neutral_face.data(), s_neutral_face.data(), s_neutral_face.data(),
     };
     m_Rhi->CreateCubeMap(owned.cube_image,
                          m_FallbackCubeView,
                          nullptr,
-                         1,
-                         1,
+                         kFallbackCubeSize,
+                         kFallbackCubeSize,
                          neutral_faces,
                          RHI_FORMAT_R8G8B8A8_UNORM,
                          1);

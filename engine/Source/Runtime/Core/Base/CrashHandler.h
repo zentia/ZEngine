@@ -578,6 +578,15 @@ inline LONG WINAPI ZEngineCrashHandler(EXCEPTION_POINTERS* ep)
     const std::size_t last_slash = dir.find_last_of("\\/");
     dir = last_slash == std::string::npos ? std::string() : dir.substr(0, last_slash + 1);
 
+    // Declared in LogSystem.h / defined in LogSystem.cpp; routed through a free
+    // function so this header stays dependency-light (no EASTL / <format>).
+    void ZEngineForceFlushLogs();
+
+    // Flush the log before writing the crash dump: the logger buffers, so without
+    // this every diagnostic line (including DRED breadcrumbs and debug-layer
+    // errors) is lost exactly when it matters most -- on a crash.
+    ZEngineForceFlushLogs();
+
     const zcrash::Snapshot snap = zcrash::Capture(ep, ProductVersion());
     zcrash::WriteText(snap, dir + "crash_stack.txt");
     zcrash::WriteJson(snap, dir + "crash_snap.json");

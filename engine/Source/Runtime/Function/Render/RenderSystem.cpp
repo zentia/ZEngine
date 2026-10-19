@@ -359,6 +359,11 @@ bool RenderSystem::Initialize()
         // inside RenderPipeline::Initialize (otherwise descriptors point at null buffers).
         render_resource->CreateAndMapStorageBuffer(m_Rhi);
 
+        // NOTE: hoisting UploadGlobalRenderResource above RenderPipeline::Initialize
+        // was tried and proven ineffective -- the upload still landed after the
+        // pipeline ran. IBL binding is instead solved UE-style: fallback textures
+        // are created before SetupDescriptorSets() so the descriptor set is always
+        // valid, and the real cubemaps patch it in place once uploaded.
         RenderPipelineInitInfo pipeline_init_info;
         pipeline_init_info.enable_fxaa = global_rendering_res->m_EnableFxaa;
         pipeline_init_info.render_resource = m_RenderResource;
@@ -965,6 +970,26 @@ GuidAllocator<MeshSourceDesc>& RenderSystem::GetMeshAssetIdAllocator()
 void RenderSystem::ClearForLevelReloading()
 {
     m_RenderScene->ClearForLevelReloading();
+
+    // 交换数据里还压着的 GameObjectDesc 必须一起丢弃。ProcessSwapData 除了
+    // 消费 render buffer，还会直接读游戏线程的 logic buffer（见其中
+    // "apply mesh deletes/upserts from logic here" 那段），把那里的 desc 直接
+    // 拷出来做 UpsertGameObject / DeleteEntityByGObjectID。这些 desc 持有的是
+    // Play World 对象的引用，而调用方在清完之后马上就会卸载关卡 —— 于是
+    // 渲染线程拿到的就是已销毁对象（ProcessSwapData 里的 0xc0000005）。
+    // ClearForLevelReloading 只在即将丢弃关卡数据时调用（PIE 停止、编辑器
+    // 重载场景），此时两个 buffer 里的待处理项都已无意义，直接清掉。
+    // 交换数据里还压着的 GameObjectDesc 必须一起丢弃。ProcessSwapData 除了
+    // 消费 render buffer，还会直接读游戏线程的 logic buffer（见其中
+    // "apply mesh deletes/upserts from logic here" 那段），把那里的 desc 直接
+    // 拷出来做 UpsertGameObject / DeleteEntityByGObjectID。这些 desc 持有的是
+    // Play World 对象的引用，而调用方清完之后马上就会卸载关卡 —— 于是渲染
+    // 线程拿到的就是已销毁对象（ProcessSwapData 里的 0xc0000005）。
+    // ClearForLevelReloading 只在即将丢弃关卡数据时调用（PIE 停止、编辑器
+    // 重载场景），此时两个 buffer 里的待处理项都已无意义，直接清掉。
+    m_SwapContext.ResetGameObjectResourceSwapData();
+    m_SwapContext.ResetGameObjectToDelete();
+    m_SwapContext.ResetLogicGameObjectSwapData();
 }
 
 void RenderSystem::ResubmitActiveLevelRenderers()

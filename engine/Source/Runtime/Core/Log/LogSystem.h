@@ -53,6 +53,17 @@ public:
     // shutdown, watchdog kills -- so the tail of the log isn't lost.
     static void ForceFlush();
 
+    // Directory + file-name prefix the text-file appender writes to, i.e. the
+    // argument the tool-facing C API hands back from ZRuntime_LogFilePath() so a
+    // tool can print "logs are here" into its own report. Empty until the
+    // singleton is constructed (which happens on the first log call).
+    //
+    // It is a member rather than a free function because the value is computed
+    // once, in the constructor, from the command line / USERPROFILE -- asking
+    // for it must not re-run that resolution.
+    std::string m_LogFilePrefix;
+    static const std::string& LogFilePath() { return GetInstance().m_LogFilePrefix; }
+
     enum class LogLevel : uint8_t
     {
         verbose,
@@ -131,3 +142,9 @@ public:
 
     std::unique_ptr<bq::engine_log> m_Logger;
 };
+
+// Free-function bridge to LogSystem::ForceFlush(), so low-level headers (notably
+// CrashHandler.h) can flush the log on a fatal path without pulling in this
+// header's EASTL / <format> dependencies. Safe to call before the LogSystem
+// singleton exists; no-op in that case.
+void ZEngineForceFlushLogs();

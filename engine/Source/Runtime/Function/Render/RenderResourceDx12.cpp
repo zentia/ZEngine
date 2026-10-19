@@ -516,7 +516,23 @@ void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc leve
         try
         {
             CreateIBLSamplers(rhi);
-            CreateIBLTextures(rhi, irradiance_maps, specular_maps);
+
+            // Diagnostic escape hatch: set ZENGINE_DISABLE_IBL_CUBEMAP=1 to skip the
+            // cubemap upload (BRDF LUT still uploads).  Used to A/B whether the IBL
+            // cubemap upload is what removes the D3D12 device during bring-up.
+            const char* disable_cubemap_env = std::getenv("ZENGINE_DISABLE_IBL_CUBEMAP");
+            const bool disable_cubemap =
+                disable_cubemap_env != nullptr && std::string(disable_cubemap_env) != "0";
+            if (disable_cubemap)
+            {
+                LOG_WARNING(ZRender,
+                            "RenderResource(DX12): ZENGINE_DISABLE_IBL_CUBEMAP set — skipping IBL cubemap upload");
+            }
+            else
+            {
+                CreateIBLTextures(rhi, irradiance_maps, specular_maps);
+            }
+
             rhi->CreateGlobalImage(m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImage,
                                    m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImageView,
                                    m_GlobalRenderResource.m_IblResource.m_BrdflutTextureImageAllocation,

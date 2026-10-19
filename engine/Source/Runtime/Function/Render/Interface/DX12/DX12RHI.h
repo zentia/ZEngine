@@ -494,6 +494,14 @@ public:
 
     bool IsDeviceRemoved(const char* context) const;
 
+    // Dumps DRED auto-breadcrumbs / page-fault data after a device removal so a
+    // GPU fault can be attributed to the exact command without a frame capture.
+    void DumpDeviceRemovedExtendedData() const;
+
+    // Drains the debug layer's message queue into the log (it otherwise only goes
+    // to OutputDebugString and is lost).
+    void DrainDebugLayerMessages() const;
+
     /// True while CmdBeginRenderPassPFN has not been paired with CmdEndRenderPassPFN.
     bool IsInsideActiveRenderPass() const { return m_ActiveRenderPass != nullptr; }
 
@@ -587,6 +595,8 @@ private:
     ComPtr<IDXGIFactory7> m_DxgiFactory;
     ComPtr<IDXGIAdapter4> m_Adapter;
     ComPtr<ID3D12Device> m_Device;
+    // mutable: drained from const contexts such as IsDeviceRemoved().
+    mutable ComPtr<ID3D12InfoQueue> m_DebugInfoQueue;
     ComPtr<IDXGISwapChain3> m_Swapchain;
     // Floating surfaces that recorded a draw this frame; presented (once each)
     // by SubmitRendering right after the main swapchain present, then cleared.

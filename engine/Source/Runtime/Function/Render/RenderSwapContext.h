@@ -123,6 +123,10 @@ public:
     void ResetLevelRsourceSwapData();
     void ResetGameObjectResourceSwapData();
     void ResetGameObjectToDelete();
+    // 清空 logic buffer 里待处理的 GameObjectDesc。Render 侧的 Reset* 只作用于
+    // render buffer，但 ProcessSwapData 会直接读 logic buffer，所以丢弃关卡时
+    // 必须单独清这一侧。只应由游戏线程调用。
+    void ResetLogicGameObjectSwapData();
     void ResetCameraSwapData();
     void ResetPartilceBatchSwapData();
     void ResetEmitterTickSwapData();

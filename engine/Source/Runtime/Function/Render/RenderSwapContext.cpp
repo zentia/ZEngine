@@ -100,6 +100,12 @@ void RenderSwapContext::ResetGameObjectToDelete()
     m_SwapData[m_RenderSwapDataIndex].m_GameObjectToDelete.reset();
 }
 
+void RenderSwapContext::ResetLogicGameObjectSwapData()
+{
+    m_SwapData[m_LogicSwapDataIndex].m_GameObjectResourceDesc.reset();
+    m_SwapData[m_LogicSwapDataIndex].m_GameObjectToDelete.reset();
+}
+
 void RenderSwapContext::ResetPartilceBatchSwapData()
 {
     m_SwapData[m_RenderSwapDataIndex].m_ParticleSubmitRequest.reset();

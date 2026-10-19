@@ -1686,6 +1686,109 @@ bool DX12RHI::EnsureDispatchIndirectSignature()
                      "Create dispatch indirect command signature failed");
 }
 
+void DX12RHI::DrainDebugLayerMessages() const
+{
+    if (!m_DebugInfoQueue)
+    {
+        return;
+    }
+
+    const UINT64 message_count = m_DebugInfoQueue->GetNumStoredMessages();
+    for (UINT64 i = 0; i < message_count; ++i)
+    {
+        SIZE_T message_size = 0;
+        if (FAILED(m_DebugInfoQueue->GetMessage(i, nullptr, &message_size)) || message_size == 0)
+        {
+            continue;
+        }
+
+        std::vector<uint8_t> buffer(message_size);
+        auto* message = reinterpret_cast<D3D12_MESSAGE*>(buffer.data());
+        if (FAILED(m_DebugInfoQueue->GetMessage(i, message, &message_size)))
+        {
+            continue;
+        }
+
+        if (message->Severity == D3D12_MESSAGE_SEVERITY_MESSAGE)
+        {
+            continue;
+        }
+
+        const char* description = message->pDescription != nullptr ? message->pDescription : "<no description>";
+        if (message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
+            message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION)
+        {
+            LOG_ERROR(ZRender, "DX12 debug layer: {}", description);
+        }
+        else
+        {
+            LOG_WARNING(ZRender, "DX12 debug layer: {}", description);
+        }
+    }
+
+    m_DebugInfoQueue->ClearStoredMessages();
+}
+
+void DX12RHI::DumpDeviceRemovedExtendedData() const
+{
+    // DRED (Device Removed Extended Data): on a GPU fault the runtime records the
+    // last completed command ("breadcrumb") per command list.  Reading it back is
+    // the authoritative answer for "which command faulted", and unlike a frame
+    // capture it needs no external tooling and no interactive session.
+    if (!m_Device)
+    {
+        return;
+    }
+
+    ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
+    if (FAILED(m_Device->QueryInterface(IID_PPV_ARGS(&dred))) || !dred)
+    {
+        LOG_ERROR(ZRender, "DRED: ID3D12DeviceRemovedExtendedData1 unavailable");
+        return;
+    }
+
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 dred_output = {};
+    if (FAILED(dred->GetAutoBreadcrumbsOutput1(&dred_output)))
+    {
+        LOG_ERROR(ZRender, "DRED: GetAutoBreadcrumbsOutput1 failed");
+        return;
+    }
+
+    if (dred_output.pHeadAutoBreadcrumbNode == nullptr)
+    {
+        LOG_ERROR(ZRender, "DRED: no auto-breadcrumb nodes recorded");
+        return;
+    }
+
+    for (const D3D12_AUTO_BREADCRUMB_NODE1* node = dred_output.pHeadAutoBreadcrumbNode; node != nullptr;
+         node = node->pNext)
+    {
+        const char* queue_name = node->pCommandQueueDebugNameA != nullptr ? node->pCommandQueueDebugNameA
+                                                                         : "<unnamed>";
+        const char* list_name = node->pCommandListDebugNameA != nullptr ? node->pCommandListDebugNameA
+                                                                        : "<unnamed>";
+        LOG_ERROR(ZRender,
+                  "DRED breadcrumb: queue='{}' list='{}' completed={}/{}",
+                  queue_name,
+                  list_name,
+                  node->pLastBreadcrumbValue != nullptr ? *node->pLastBreadcrumbValue : 0u,
+                  node->BreadcrumbCount);
+    }
+
+    D3D12_DRED_PAGE_FAULT_OUTPUT1 page_fault = {};
+    if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&page_fault)))
+    {
+        const char* existing = page_fault.pHeadExistingAllocationNode != nullptr &&
+                                       page_fault.pHeadExistingAllocationNode->ObjectNameA != nullptr
+                                   ? page_fault.pHeadExistingAllocationNode->ObjectNameA
+                                   : "<unnamed>";
+        LOG_ERROR(ZRender,
+                  "DRED page fault: VA=0x{:016X} existing-allocation='{}'",
+                  static_cast<uint64_t>(page_fault.PageFaultVA),
+                  existing);
+    }
+}
+
 bool DX12RHI::IsDeviceRemoved(const char* context) const
 {
     if (!m_Device)
@@ -1705,6 +1808,8 @@ bool DX12RHI::IsDeviceRemoved(const char* context) const
                   "DX12 device removed{}: HRESULT=0x{:08X}",
                   context != nullptr ? context : "",
                   static_cast<unsigned int>(device_reason));
+        DrainDebugLayerMessages();
+        DumpDeviceRemovedExtendedData();
         return true;
     }
 
@@ -2027,10 +2132,44 @@ bool DX12RHI::Initialize()
         return false;
     }
 
+    // Enable DRED (Device Removed Extended Data) BEFORE creating the device so the
+    // runtime records breadcrumbs.  On a GPU fault this lets us dump the exact
+    // command that faulted instead of guessing from a delayed GetDeviceRemovedReason.
+    {
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred_settings;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred_settings))))
+        {
+            dred_settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dred_settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            LOG_INFO(ZRender, "DX12RHI: DRED auto-breadcrumbs + page-fault reporting enabled");
+        }
+        else
+        {
+            LOG_WARNING(ZRender, "DX12RHI: DRED unavailable (needs Windows 10 1809+ / Graphics Tools)");
+        }
+    }
+
     if (!CheckDX12(D3D12CreateDevice(m_Adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&m_Device)),
                    "D3D12CreateDevice failed"))
     {
         return false;
+    }
+
+    // The debug layer reports validation errors through OutputDebugString, which
+    // never reaches the log file.  Drain its message queue into the log so GPU /
+    // API errors are actually visible after the fact (this was the reason earlier
+    // device-removal diagnoses had to rely on guesswork).
+    {
+        ComPtr<ID3D12InfoQueue> info_queue;
+        if (SUCCEEDED(m_Device->QueryInterface(IID_PPV_ARGS(&info_queue))) && info_queue)
+        {
+            m_DebugInfoQueue = info_queue;
+            DrainDebugLayerMessages();
+        }
+        else
+        {
+            LOG_WARNING(ZRender, "DX12RHI: ID3D12InfoQueue unavailable (debug layer messages won't be logged)");
+        }
     }
     LOG_INFO(ZRender, "DX12RHI: D3D12 device created");
 
@@ -3111,6 +3250,9 @@ void DX12RHI::CreateImage(uint32_t image_width,
                                                      IID_PPV_ARGS(&resource)),
                    "DX12 create image failed"))
     {
+        LOG_ERROR(ZRender,
+                  "DX12 CreateImage: CreateCommittedResource failed ({}x{}, fmt={}, layers={}, mips={})",
+                  image_width, image_height, static_cast<int>(format), array_layers, miplevels);
         return;
     }
 
@@ -3243,7 +3385,16 @@ void DX12RHI::CreateGlobalImage(RHIImage*& image,
                 std::max<uint32_t>(miplevels, 1));
     if (texture_image_pixels != nullptr)
     {
+        // CreateImage 在设备被移除（TDR / GPU fault）时会失败并把 image 留成
+        // null。以前这里直接 static_cast 后解引用，于是崩溃点落在
+        // getArrayLayers() 而不是真正的故障处，误导排查方向。
         DX12Image* dx12_image = static_cast<DX12Image*>(image);
+        if (dx12_image == nullptr)
+        {
+            LOG_ERROR(ZRender, "DX12 CreateGlobalImage: image creation failed ({}x{})", texture_image_width,
+                      texture_image_height);
+            return;
+        }
         const bool block_compressed = IsBlockCompressedRHIFormat(storage_format);
         const bool needs_f32_to_f16 = (source_bpp == 16 && upload_bpp == 8);
         const uint32_t effective_mips = std::max<uint32_t>(miplevels, 1);

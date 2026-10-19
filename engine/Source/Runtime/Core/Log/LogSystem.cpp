@@ -174,6 +174,10 @@ LogSystem::LogSystem()
     const std::string log_file_prefix = log_dir + "/" + GetEngineLogFilePrefix();
     const std::string engine_log_config = BuildEngineLogConfig(log_file_prefix);
 
+    // Published before the first record: ZRuntime_LogFilePath() is documented to
+    // be answerable as soon as anything has been logged, and a tool's report
+    // prints it on the very first line it writes.
+    m_LogFilePrefix = log_file_prefix;
     m_Logger = std::make_unique<bq::engine_log>(bq::engine_log::create_log("engine", engine_log_config.c_str()));
     // Keep early console output until the editor Console panel registers its callback.
     bq::log::set_console_buffer_enable(true);
@@ -190,5 +194,14 @@ LogSystem::~LogSystem()
 
 void LogSystem::ForceFlush()
 {
+    bq::log::force_flush_all_logs();
+}
+
+void ZEngineForceFlushLogs()
+{
+    // Called from the crash handler: the log singleton may not exist yet (a fault
+    // during early startup) and the process state is already compromised, so this
+    // must not touch the singleton at all. Flushing is a global BqLog operation
+    // and is safe either way.
     bq::log::force_flush_all_logs();
 }

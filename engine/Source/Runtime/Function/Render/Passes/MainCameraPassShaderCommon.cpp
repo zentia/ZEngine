@@ -38,30 +38,28 @@ namespace MainCameraPassShaderCommon
 
     bool IsSkyMaterial(const GpuPBRMaterial& material)
     {
+        // Per-material, per-frame predicate: logged at DEBUG because it runs for
+        // every rendered material every frame. At INFO it flooded the log with
+        // megabytes of "no match" lines and buried every level-load message.
         if (EqualsIgnoreCase(material.shader_name, "Sky"))
         {
             return true;
         }
         if (EqualsIgnoreCase(material.light_mode, "Sky"))
         {
-            LOG_INFO(ZRender, "IsSkyMaterial: matched by light_mode");
             return true;
         }
         if (EqualsIgnoreCase(material.render_pipeline, "Sky"))
         {
-            LOG_INFO(ZRender, "IsSkyMaterial: matched by render_pipeline");
             return true;
         }
         for (const GpuShaderPassData& shader_pass : material.shader_passes)
         {
-            LOG_INFO(ZRender, "IsSkyMaterial: checking shader_pass light_mode='{}'", shader_pass.light_mode);
             if (EqualsIgnoreCase(shader_pass.light_mode, "Sky"))
             {
-                LOG_INFO(ZRender, "IsSkyMaterial: matched by shader_pass.light_mode");
                 return true;
             }
         }
-        LOG_INFO(ZRender, "IsSkyMaterial: no match, not a sky material");
         return false;
     }
 
