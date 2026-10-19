@@ -457,3 +457,6 @@ build_gpu_inspector_verify/
 
 # Packaging output (see engine/tools/WindowsEnvironmentCheck/pack)
 dist/
+
+# Scratch build trees (a second configure of the engine, e.g. for -DZENGINE_STATIC_CRT=ON)
+build-ship/
