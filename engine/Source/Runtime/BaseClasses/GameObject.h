@@ -65,6 +65,12 @@ public:
     void SyncSerializedComponents();
     void RebuildRuntimeComponents();
 
+    /// Merge the components authored in m_DefinitionUrl (a .prefab) into this
+    /// object. A component type already present inline is treated as an
+    /// override and is kept, so the scene's own Transform / volume settings win.
+    /// Safe to call when the url is empty (no definition) -- a no-op.
+    void ExpandDefinition();
+
     GObjectID GetID() const { return m_Id; }
 
     void SetName(eastl::string name) { this->name = name; }

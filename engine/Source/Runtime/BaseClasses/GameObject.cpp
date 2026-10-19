@@ -5,8 +5,11 @@
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
+#include "Runtime/Resource/Prefab/PrefabUtility.h"
 
 #include <cassert>
+#include <filesystem>
+#include <typeinfo>
 #include <unordered_set>
 
 IMPLEMENT_OBJECT_SERIALIZE(GameObject);
@@ -78,6 +81,13 @@ bool GameObject::load(const GameObject& object_instance_res)
 
     // load object instanced components
     m_Components = object_instance_res.m_Components;
+
+    // Expand the authored definition (a .prefab) before running PostLoadResource,
+    // so components that come from the prefab are already attached and see the
+    // full component set. See ExpandDefinition for the merge rules.
+    m_DefinitionUrl = object_instance_res.m_DefinitionUrl;
+    ExpandDefinition();
+
     for (auto component : m_Components)
     {
         if (component)
@@ -87,10 +97,73 @@ bool GameObject::load(const GameObject& object_instance_res)
         }
     }
 
-    // load object definition components
-    m_DefinitionUrl = object_instance_res.m_DefinitionUrl;
-
     return true;
+}
+
+void GameObject::ExpandDefinition()
+{
+    // A scene GameObject is authored as "inline overrides + a prefab definition".
+    // The scene inlines only what it overrides (typically the Transform); the
+    // prefab carries everything else -- mesh renderer, rigid body, ... Until now
+    // nothing expanded this url, so a level loaded as a set of bare transforms
+    // with zero colliders.
+    if (m_DefinitionUrl.empty())
+    {
+        return;
+    }
+
+    AssetManager* asset_manager = GET_SYSTEM(AssetManager);
+    if (asset_manager == nullptr)
+    {
+        LOG_ERROR(ZObject, "GameObject '{}': cannot expand definition '{}', AssetManager unavailable",
+                  name.c_str(), m_DefinitionUrl.c_str());
+        return;
+    }
+
+    const std::filesystem::path prefab_path = asset_manager->GetFullPath(m_DefinitionUrl);
+    GameObject* definition_root = PrefabUtility::InstantiateFromPath(prefab_path);
+    if (definition_root == nullptr)
+    {
+        LOG_ERROR(ZObject, "GameObject '{}': failed to instantiate definition '{}'",
+                  name.c_str(), m_DefinitionUrl.c_str());
+        return;
+    }
+
+    // Merge by type, inline-wins: a component already present on this object is
+    // an override and is never replaced. This keeps the scene's authored
+    // NavMeshVolumeComponent and its placement Transform, while adding everything
+    // the prefab contributes.
+    //
+    // The check runs against m_Components (the live list), not m_Component (the
+    // deserialized container): at this point in load() the latter is still empty.
+    // dynamic_cast also catches subclass overrides, which a name compare misses.
+    for (ImmediatePtr<Component>& definition_component : definition_root->getComponents())
+    {
+        Component* candidate = definition_component;
+        if (candidate == nullptr)
+        {
+            continue;
+        }
+
+        bool is_already_present = false;
+        for (const ImmediatePtr<Component>& existing : m_Components)
+        {
+            Component* existing_component = existing;
+            if (existing_component != nullptr && typeid(*existing_component) == typeid(*candidate))
+            {
+                is_already_present = true;
+                break;
+            }
+        }
+        if (is_already_present)
+        {
+            continue;
+        }
+        m_Components.emplace_back(candidate);
+    }
+
+    LOG_INFO(ZObject, "GameObject '{}': expanded definition '{}' to {} component(s)",
+             name.c_str(), m_DefinitionUrl.c_str(), m_Components.size());
 }
 
 void GameObject::save(GameObject& out_object_instance_res)

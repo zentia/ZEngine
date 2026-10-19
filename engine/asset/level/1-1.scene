@@ -1,4 +1,4 @@
-externals: []
+﻿externals: []
 objects:
   - fileID: 1
     type: LevelRes
@@ -14,7 +14,7 @@ objects:
     data:
       GameObject:
         m_Name: Emitter
-        m_DefinitionUrl: asset/objects/environment/particle/particle.object.json
+        m_DefinitionUrl: asset/objects/environment/particle/particle.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -50,7 +50,7 @@ objects:
     data:
       GameObject:
         m_Name: Player
-        m_DefinitionUrl: asset/objects/character/player/player.object.json
+        m_DefinitionUrl: asset/objects/character/player/player.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -86,7 +86,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_1
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -122,7 +122,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_2
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -158,7 +158,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_3
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -194,7 +194,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_4
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -230,7 +230,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_5
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -266,7 +266,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_6
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -302,7 +302,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_7
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -338,7 +338,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_8
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -374,7 +374,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_9
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -410,7 +410,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_10
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -446,7 +446,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_11
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -482,7 +482,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_12
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -518,7 +518,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_13
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -554,7 +554,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_14
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -590,7 +590,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_15
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -626,7 +626,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_16
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -662,7 +662,7 @@ objects:
     data:
       GameObject:
         m_Name: Wall_17
-        m_DefinitionUrl: asset/objects/environment/wall/wall.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -698,7 +698,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithDoor_1
-        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -734,7 +734,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithDoor_2
-        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -770,7 +770,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithDoor_3
-        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -806,7 +806,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithDoor_4
-        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -842,7 +842,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithDoor_5
-        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -878,7 +878,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithWindow_1
-        m_DefinitionUrl: asset/objects/environment/wall/wall_with_window.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_window.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -914,7 +914,7 @@ objects:
     data:
       GameObject:
         m_Name: WallWithWindow_2
-        m_DefinitionUrl: asset/objects/environment/wall/wall_with_window.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_window.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -950,7 +950,7 @@ objects:
     data:
       GameObject:
         m_Name: WallBlock_1
-        m_DefinitionUrl: asset/objects/environment/wall/wall_block.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall_block.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -986,7 +986,7 @@ objects:
     data:
       GameObject:
         m_Name: WallBlock_2
-        m_DefinitionUrl: asset/objects/environment/wall/wall_block.object.json
+        m_DefinitionUrl: asset/objects/environment/wall/wall_block.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -1022,7 +1022,7 @@ objects:
     data:
       GameObject:
         m_Name: Stairs
-        m_DefinitionUrl: asset/objects/environment/stairs/stairs.object.json
+        m_DefinitionUrl: asset/objects/environment/stairs/stairs.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -1058,7 +1058,7 @@ objects:
     data:
       GameObject:
         m_Name: Ground
-        m_DefinitionUrl: asset/objects/environment/floor/floor.object.json
+        m_DefinitionUrl: asset/objects/environment/floor/floor.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -1094,7 +1094,7 @@ objects:
     data:
       GameObject:
         m_Name: Fence
-        m_DefinitionUrl: asset/objects/environment/fence/fence.object.json
+        m_DefinitionUrl: asset/objects/environment/fence/fence.prefab
         m_Component:
           - component:
               m_FileID: 0
@@ -1130,7 +1130,7 @@ objects:
     data:
       GameObject:
         m_Name: NavVolume
-        m_DefinitionUrl: asset/objects/environment/navvolume/nav_volume.object.json
+        m_DefinitionUrl: asset/objects/environment/navvolume/nav_volume.prefab
         m_Component:
           - component:
               m_FileID: 0

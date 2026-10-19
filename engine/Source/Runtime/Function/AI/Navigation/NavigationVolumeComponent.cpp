@@ -78,7 +78,12 @@ int NavMeshVolumeComponent::RebuildNavMesh()
     }
 
     const int walkable = navigation_system->BuildFromVolume(BuildSettings());
-    if (walkable == 0)
+    // BuildFromVolume returns 0 both when the build ran and found nothing and
+    // when it had to defer because the level is not active yet. Only the first
+    // case is a real problem; the deferred build reports its own result from
+    // FlushDeferredBuild, and warning here produced a scary "no walkable
+    // cells" line on every level load right before the successful build.
+    if (walkable == 0 && !navigation_system->HasDeferredBuild())
     {
         LOG_WARNING(ZGame, "NavMeshVolumeComponent: rebuild produced no walkable cells");
     }

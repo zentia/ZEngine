@@ -759,7 +759,13 @@ namespace
                         continue;
                     }
                     ++resolved;
-                    std::fprintf(stderr, "    ok   %s: shape %s\n", where.c_str(), geometry->GetTypeName());
+                    std::fprintf(stderr, "    ok   %s: shape %s", where.c_str(), geometry->GetTypeName());
+                    if (Box* box = dynamic_cast<Box*>(geometry))
+                    {
+                        std::fprintf(stderr, " half_extents=(%.4f, %.4f, %.4f)",
+                                     box->m_HalfExtents.x, box->m_HalfExtents.y, box->m_HalfExtents.z);
+                    }
+                    std::fprintf(stderr, "\n");
                 }
             }
             else if (MotorComponent* motor = dynamic_cast<MotorComponent*>(component))
