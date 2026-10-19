@@ -40,12 +40,16 @@ See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 - **Multi-RHI Renderer**: Vulkan and D3D12 backends behind one abstraction,
   Metal on macOS, with validation layers
 - **Physics**: Integrated Jolt Physics engine
+- **Audio**: Software mixer (voices, buses, master), WAV decode, 3D attenuation
+  and panning, WASAPI output on Windows
 - **Asset Pipeline**: Complete asset management and bundle system
 
 ### Scripting
-- **Lua Integration**: Full Lua scripting support with profiling
-- **Puerts Support**: JavaScript/TypeScript scripting via Puerts
-- **C# Scripting**: Managed scripting with memory profiling
+- **TypeScript / JavaScript**: the supported scripting path, via Puerts
+  (V8 on desktop, QuickJS on web/mobile) with `tsc --watch`, hot reload and
+  Inspector-editable per-instance fields
+- **Lua / C#**: not scripting backends. Lua survives as a loader stub and C#
+  as memory-profiler hooks only; see `doc/TYPESCRIPT_SCRIPTING_DESIGN.md`
 
 ### Editor
 - **Visual Editor**: ZSlate-based editor interface (see above — the ImGui
@@ -66,7 +70,7 @@ See [CHANGELOG.md](CHANGELOG.md) for detailed version history.
 
 | Path | What |
 |---|---|
-| `engine/Source/Runtime/` | The runtime: `Core`, `Function` (Render, Physics, Animation, GAS, Input, ShaderLab…), `Resource`, `Scripting`, `Profiler`, `VirtualFileSystem`, `ZEngineApi` |
+| `engine/Source/Runtime/` | The runtime: `Core`, `Function` (Render, Physics, Audio, Animation, GAS, Input, ShaderLab…), `Resource`, `Scripting`, `Profiler`, `VirtualFileSystem`, `ZEngineApi` |
 | `engine/Source/Editor/` | ZEditor — ZSlate windows, editor UI, property drawers, docking layout |
 | `engine/Source/Insights/` | ZInsights — standalone `.ztrace` viewer (Windows + Direct2D) |
 | `engine/Source/Modules/` | Optional engine modules (currently RenderDoc) |

@@ -1560,6 +1560,409 @@ whole-tree: one DLL cannot mix CRTs against the static libraries it links.
 Crossing into the DLL is safe regardless, because the tool-facing API is
 `extern "C"` only and never moves an allocator-owned object across the boundary.
 
+### 2.21 Audio: three layers, one owner, headless by default
+
+Audio landed as a vertical slice (`Runtime/Function/Audio/`, PR-A1). Keep to
+this layering when extending it:
+
+| Layer | Type | Rule |
+|---|---|---|
+| DSP | `AudioCommon.h`, `AudioDecoder`, `AudioMixer` | **No engine headers**: no LogSystem, no eastl, no engine math (`AudioVec3` exists for this reason). This is what lets `AudioMixerSmokeTest` compile and run standalone in CI. |
+| Device | `IAudioDevice` + `AudioDeviceWasapi` / `AudioDeviceNull` | Platform-only. Owns its render thread and pulls frames through a callback; never touches clips or voices. |
+| Engine | `AudioSystem` (an `IEngineSystem`, Gameplay phase) | Owns the clip cache, the mixer and the device. Components talk to it, never to the mixer directly. |
+
+Invariants that are easy to break:
+
+1. **Clips are cached for the process lifetime.** A voice stores a raw
+   `const AudioClipData*`; evicting a clip while a voice plays is a
+   use-after-free. `UnloadAllClips()` must only run after `StopAll()`.
+2. **`ZENGINE_AUDIO_DISABLE=1` must keep every API working** with a null
+   device, and `AudioSystem::Initialize()` must never return false because of a
+   device failure. Headless CI, `-batchmode` and the standalone tools all
+   depend on this; a failed `Initialize()` aborts the whole startup sequence.
+3. **Mixer API is thread-safe; `Render()` runs on the device thread.** Every
+   public mixer entry point takes `m_Mutex`. Keep the critical section free of
+   allocation / I/O / logging -- that assumption is why a plain mutex is safe
+   instead of a lock-free command queue.
+4. **V1 is WAV only.** `DecodeAudioBuffer` reports `.ogg` / `.mp3` as
+   unsupported instead of silently playing nothing. Compressed formats need a
+   vendored decoder (stb_vorbis / dr_mp3) added to `engine/3rdparty/` first.
+5. **Log category is `ZAudio`** (already added to
+   `bq_log_category_config.ini` + regenerated `engine_log.h`).
+6. Windows links `Mmdevapi` for WASAPI (see the `WIN32` block in
+   `Runtime/CMakeLists.txt`). Other platforms get the null device; adding
+   CoreAudio / AAudio means a new `AudioDevice*.cpp` plus a factory branch.
+
+Known gaps (intentionally out of the first slice): streaming (clips are fully
+decoded in memory), compressed formats, DSP effects / reverb sends, doppler,
+OGG/MP3 import, an audio mixer editor window, and an audio importer in
+`Editor/AssetPipeline/`.
+
+### 2.22 Animation & skinning: conventions and current state
+
+PR-SK1 landed the skeletal-skinning foundation
+(`engine/Source/Runtime/Function/Animation/Skinning.{h,cpp}` + the DX12 GPU
+path). Conventions that are easy to get wrong, in the order they bite:
+
+1. **The GPU joint palette has an extra identity slot in front.** Slot 0 is the
+   root; bone `i` lives at slot `i+1`; the shaders test `index > 0` and skip a
+   zero index. `Skeleton::OutputAnimationResult()` writes `GetID() + 1`, and
+   `AnimationSkinning::BuildGpuPaletteWithRootSlot()` is the CPU-side helper.
+   Both `mesh.vert` (Vulkan) and `mesh.vert.hlsl` (DX12) rely on this.
+2. **Clip channels are DELTAS on the bind pose, not absolute local transforms.**
+   `Skeleton::ApplyAnimation()` resets to the bind pose every frame, then
+   composes each sampled pose with `AnimationSkinning::ComposeDelta()`
+   (position adds, rotation pre-multiplies, scale multiplies). Sampling returns
+   absolute poses; never skip the compose step.
+3. **Never trust `RawBone::tpose_matrix`.** Nothing in the codebase writes it
+   (grep it), so the inverse bind matrices are always derived from
+   `binding_pose` through the hierarchy
+   (`AnimationSkinning::ComputeInverseBindMatrices()`). Trusting
+   `tpose_matrix` silently renders the mesh unskinned.
+4. **Skeletons are topologically sorted at build time.**
+   `Skeleton::BuildSkeleton()` copies the asset's `bones_map` and runs
+   `EnsureTopologicalOrder()`; it never mutates the shared cached `SkeletonData`
+   and no longer bails out silently on unordered input (that failure mode used
+   to show up as "the character does not animate at all" with no log line).
+5. **DX12 storage-buffer SRVs need an explicit stride.**
+   `RHIDescriptorBufferInfo::stride` was added for this: DX12 used to guess
+   "80 bytes when the range divides by 80", which mis-sizes the 32-byte
+   joint-binding buffer whenever the vertex count is a multiple of 5. Set it
+   for every new structured buffer (joint palette = 64, RenderMeshInstance =
+   80, joint binding = 32).
+6. **Log category is `ZAnimation`.**
+
+### 2.23 FBX import: what dropping a file produces (PR-SK2)
+
+`AssetImportManager::FindImporter()` dispatches on **extension only**, so
+`.fbx` is handled by `MeshImporter` alone -- a separate animation importer can
+never be reached. One dropped `.fbx` therefore produces everything, Unity's
+ModelImporter style:
+
+```
+Assets/Models/hero.fbx
+  -> Assets/Models/hero.zasset                    MeshData (geometry + bind[])
+  -> Assets/Models/hero.skeleton.zasset           SkeletonData   (bones, if any)
+  -> Assets/Models/hero.anim.zasset               AnimationAsset (one per stack)
+  -> Assets/Models/hero.animskelmap.zasset        AnimSkelMap    (channel -> bone)
+```
+
+Rules that keep the two importers from drifting apart:
+
+1. **Bone numbering lives in `Editor/AssetPipeline/FbxSkeleton.h` and
+   `FbxAnimation.h`** (header-only, guarded by `ZENGINE_HAS_UFBX`). The mesh
+   importer uses it for `MeshData::bind`; the animation importer uses it for
+   `AnimSkelMap::convert`. Never rebuild the bone list locally -- if the two
+   disagree the character animates the wrong bones and nothing warns you.
+2. **`MeshData::bind` stores GPU palette slots (bone + 1)**, matching
+   `AnimationLoader::addBoneBind()` and the `index > 0` test in both mesh
+   shaders. Build them with
+   `AnimationSkinning::PackVertexInfluence()` (top-4 + renormalise).
+3. **Skinned meshes keep their authored coordinates.** `RecenterMeshAtOrigin()`
+   and `ApplyAxisFlip()` are skipped when the file has bones -- moving vertices
+   without moving the skeleton slides the mesh out of its own bind pose.
+4. **Clip channels are baked DELTAS** (`FbxAnimation::BakeStack()`), sampled at
+   the file's own FPS unless `AnimationImporterSettings::sample_rate` overrides
+   it; `max_frames` + a 10k hard cap bound asset size.
+5. `AnimationAsset::skeleton_file_path` is intentionally left empty at import
+   time; it is filled when a clip is wired to a mesh's skeleton in the editor.
+
+### 2.25 Animator: state machine (PR-SK3)
+
+`AnimationComponent` used to mix a fixed clip list at a static weight, always
+looping, with no speed and no events -- a character could not react to gameplay.
+The state machine adds that, Unity's AnimatorController shape adapted to what
+the engine already has:
+
+```
+AnimatorController  (asset: states + parameters + transitions + events)
+        |
+AnimatorInstance    (runtime: parameter values, per-state playhead, active fade)
+        |  GetBlendState()  ->  at most 2 clips with weights (1-w, w)
+        v
+AnimationSystem::GetBlendStateWithClipData()  ->  Skeleton::ApplyAnimation()
+```
+
+Rules that are easy to break:
+
+1. **The evaluator does not sample poses.** `AnimatorInstance` emits a
+   `BlendState` and hands it to the existing mixer, so there is exactly one
+   sampler in the engine. Never add a second sampling path.
+2. **A state owns ONE clip, addressed by PATH** (`.zasset`), same as the
+   existing `BlendState`. Not a `PPtr` -- PPtr round-tripping is still being
+   rolled out (PR-SE3a).
+3. **`AnimatorState::clip_length` is in SECONDS and is required.**
+   `AnimationClip` only stores `total_frame` and the bake FPS is not persisted,
+   so seconds cannot be derived. `<= 0` means "hold at frame 0".
+4. **Conditions are evaluated AFTER candidates are collected and sorted by
+   priority**, because a satisfied Trigger condition CONSUMES the trigger.
+   Evaluating every transition first would let a losing one eat it.
+5. **Transitions are not re-evaluated during a fade** (no interruption source,
+   matching Unity's default). `Play()` / `CrossFade()` are the escape hatch.
+6. **Enums are persisted as `int`** -- the serializer has no enum trait. Cast at
+   the boundary; do not "fix" this by adding enum support to the serializer.
+7. **Events fire once per pass**; the per-state fired flags reset when the
+   playhead wraps or is seeked backwards.
+8. `AnimationComponentRes::controller_file_path` is OPTIONAL and empty in every
+   pre-existing asset: empty == legacy blend-state playback. This is a
+   SafeBinaryRead schema evolution (PR-SE3a pattern) -- do not make it
+   mandatory.
+
+**Authoring loop**: `ZSlateAnimatorWindow` (dock title "Animator", Window menu,
+category Animation) is the authoring surface -- parameters / states /
+transitions as three editable tables, plus New / Open / Save against a
+`<Project>/Assets/<name>.controller.zasset` path. A controller asset in the
+Content Browser also offers "Open in Animator" on right-click
+(`ContentBrowserHelpers::IsAnimatorControllerNode` matches the
+`*.controller.zasset` suffix). Attaching it to a character is a plain string
+field: `AnimationComponentRes::controller_file_path` shows up in the Inspector
+through the generic TypeTree drawer (it is an `eastl::string`, which maps to
+`FieldKind::Str`) -- type the path there.
+
+Editing rules for the panel (easy to break):
+
+1. **Transitions address states BY INDEX**; conditions address parameters BY
+   NAME. Hence `RemoveState` must drop every transition touching the removed
+   state AND renumber the rest, and `RemoveParameter` must drop conditions that
+   named it (they would otherwise never fire).
+2. **Text commits must not rebuild the chrome tree** -- a rebuild replaces the
+   `SEditableTextBox` and drops keyboard focus. Only structural edits / enum
+   cycles set `m_UiDirty`.
+3. Numeric fields are `SEditableTextBox` + tolerant parse: a malformed value
+   keeps the previous one instead of writing NaN into the asset.
+
+**Graph view** (the default tab): one hand-painted node per state, arrows for
+transitions.
+- Node positions live on the asset (`AnimatorState::pos_x` / `pos_y`) in
+  LOGICAL units, multiplied by the UI scale at paint time, so a layout survives
+  a DPI change. They were added after the fact, so a controller written before
+  the graph existed has every state at (0,0) -- the window treats "all zero" as
+  "not laid out yet" and auto-arranges on load.
+- Gestures: drag a node body to move it, drag its **bottom port** onto another
+  node to create a transition (duplicates are rejected; the new arrow is
+  selected immediately). Click a node or an arrow to select it (mutually
+  exclusive -- picking one clears the other); clicking empty canvas clears both.
+  **Right-click an arrow deletes it** (the host has no `WasRightPressedThisFrame`,
+  so the edge is latched from `IsRightDown()` into `m_RightWasDown`).
+- The selected arrow opens an editing **strip under the canvas** with that
+  transition's own rows: from/to, fade, exit time, priority, conditions. It
+  reuses `BuildTransitionBody`, the same function the Transitions tab calls per
+  row, so the two editors cannot drift apart.
+- The selected **node** opens the same kind of strip (name, clip path, anim skel
+  map, wrap cycler, speed, length, events, plus `Set Default` / `Delete` /
+  `Deselect`), reusing `BuildStateBody` for the same reason. `AddState` selects
+  the new node immediately -- an unselected node has nowhere to type its clip.
+- `Delete` in the state strip is a button, NOT a right-click gesture: removing a
+  state renumbers every transition that referenced it.
+- **`Browse`** next to the clip and anim-skel-map fields opens a picker over the
+  right pane. It browses the **Content Browser's own `EditorFileService` tree**
+  (via `ZSlateContentBrowserWindow::GetInstance()->GetFileService()`), filtered
+  to `m_AssetType == "animationasset"` (clip) / `"animskelmap"` (map). Two rules
+  matter:
+  1. It must **never call `BuildEngineFileTree()` itself** -- that clears the
+     node array the browser holds raw pointers into (`m_SelectedNode`,
+     `m_BrowsedFolderNode`) and leaves them dangling. Rebuilding is the
+     browser's job (it rebinds its selection afterwards). While the tree is
+     empty we scan the content root with `std::filesystem` instead.
+  2. Picked paths are stored **content-root-relative** (`ToContentRelative`),
+     the form `AssetManager::loadAsset` resolves, so a controller survives the
+     project moving.
+- The picker's filter box does not rebuild the tree on commit (that would drop
+  keyboard focus); rows are filtered every frame by toggling
+  `SWidget::Visibility` between `Visible` and `Collapsed`, which `SBoxPanel` and
+  `SScrollBox` both honour in layout.
+- **Canvas is also a drop target**: drag a `.zasset` out of the Content Browser
+  onto a node -> `animationasset` becomes its clip, `animskelmap` its map; onto
+  blank canvas an `animatorcontroller` opens. The hovered node is outlined cyan
+  and a cursor-following label says what will land where (`-> clip` /
+  `(unsupported here)`). While a drag is in flight the canvas' own gestures are
+  off, so a drop can never also move the node.
+- The type is read with `AssetManager::GetAssetTypeName` and normalized by
+  `NormalizeAssetType` (lowercase, trailing "Res" stripped), because the ZAsset
+  header sometimes names the Resource wrapper class.
+
+### 2.26 Cross-window drag-drop (Content Browser -> canvas / Inspector)
+
+- The **source side already existed**: Content Browser asset rows/tiles emit
+  `FAssetDragDropOp` (`PayloadType = "AssetPath"`, `AssetPath` = ABSOLUTE path)
+  through `ZSlate::SetActiveDragOperation`. Do not write a second payload type.
+- `SlateInputRouter::ProcessMouse` already dispatches cross-window: it uses
+  `m_DragOp ? m_DragOp : GetActiveDragOperation()`, so a window that did not
+  start the gesture still delivers `OnDragOver` / `OnDrop` to **its own** widget
+  tree. Widget drop targets use `SDropTarget` (`CanAcceptDrop` / `OnDropHandler`).
+- **Two consumers exist for a reason — a hand-painted region cannot use
+  `SDropTarget`.** The Animator canvas is painted with `ISlateRenderer`, so it
+  has no widget to receive `OnDrop`; it caches the op and acts on its own
+  release edge (the `ZSlateSceneWindow` pattern). The Inspector's Mesh /
+  Material rows are widgets, so they use `SDropTarget`.
+- **Race (this is why the router was patched)**: the publishing router clears
+  the process-wide channel on its release frame, and window draw order decides
+  whether the target ticks before or after that. `SlateInputRouter` therefore
+  keeps `m_LastObservedDragOp` and delivers the drop from it; consumers of the
+  global channel cache their own copy for the same reason. Detection must key on
+  `IsLeftDown() || WasLeftReleasedThisFrame()` -- on the release frame
+  `IsLeftDown()` is already false.
+- **Path form**: a drag carries an ABSOLUTE path, but serialized fields store
+  content-root-relative (what `InspectorAssetCommon::ResolveProjectAssetPath`
+  resolves). All drop targets convert through
+  `EditorDragDrop::MakeDroppedAssetStoredPath` so they cannot disagree.
+- Inspector drops write the path into the text box and then call that box's own
+  `OnTextCommitted`: dropping goes through exactly the same code path as typing,
+  so validation and the read-only info labels cannot drift.
+
+### 2.27 Animator as a drag SOURCE (clip -> Inspector component field)
+
+- The **clip line inside a node** is the drag-out handle (`ClipChipRect`, shared
+  by painting and hit-testing). Press there and move >5px -> the canvas publishes
+  an `FAssetDragDropOp`. A press without travel still just selects the node.
+- **The source must unpublish the op itself.** Normally the `SlateInputRouter`
+  that started the gesture clears the channel; the canvas is hand-painted and has
+  no widget (no `OnDragDetected`, no router), so `EndAssetDragOut()` owns it.
+  Forget this and the channel stays hot -- every window then thinks a drag is in
+  flight forever.
+- Payloads carry ABSOLUTE paths; the controller stores content-root-relative, so
+  the path is resolved on publish (same root as
+  `MakeDroppedAssetStoredPath` uses in reverse).
+- States with an empty `clip_file_path` have no handle: there is nothing to drag.
+- **AnimationComponent now has a dedicated Inspector section** (Controller /
+  Skeleton / Clip / Anim Skel Map / Clip Length). Without it the generic TypeTree
+  walk renders `blend_state.blend_clip_file_path` as `<array> (not editable)` --
+  exactly the slot a dragged clip has to land in.
+- The slot accessors live on `AnimationComponent`, not in the Inspector: a
+  `BlendState` is a set of PARALLEL vectors, a clip only counts as usable when
+  its bone map is present, and `Tick()` bails out when length / ratio are missing
+  (a "clip assigned" character would stand perfectly still). The component owns
+  that invariant; callers must not hand-roll the vectors.
+- Clip length is authored, not derived: a clip stores frames and the bake FPS is
+  not persisted (see 2.25).
+
+### 2.28 Any asset path row is a two-way slot (generalized drag-out)
+
+- **Two kinds of drag SOURCE, and they are not interchangeable:**
+  - *Widget rows* answer `SWidget::OnDragDetected`; the router that saw the press
+    publishes the op AND clears it on release. Use `SDragSource` (the mirror of
+    `SDropTarget`) via `EditorDragDrop::MakeAssetPathDragSource`.
+  - *Hand-painted regions* (the Animator canvas) have no widget, so they publish
+    with `SetActiveDragOperation` and **must unpublish themselves** -- see 2.27.
+- `EditorDragDrop::MakeAssetDragOperation` is the only way to build the op:
+  stored (content-root-relative) path -> ABSOLUTE payload path, and an empty path
+  returns null so no gesture starts (otherwise the user drags "nothing" and every
+  target lights up for a payload it cannot use). Its inverse is
+  `MakeDroppedAssetStoredPath`; `MakeDroppedAssetAbsolutePath` is the other half.
+- `MakeAssetPathDragSource` polls the value at drag start, so a path typed a
+  second ago is the one that travels.
+- Animator nodes now show **two** asset lines (clip, anim->skeleton map) and both
+  are handles; `kNodeH` grew 56 -> 74 to fit them. `AssetSlotPath` /
+  `AssetChipRect` are shared by painting, hit-testing and drag-out, so a handle
+  can never carry something other than what it shows.
+- The States tab and the in-canvas strip share `BuildStateBody`, so both got
+  drag-out for free. Prefer that: one row builder, two call sites, no drift.
+- Inspector path rows (`MakeAssetSlot`) are now **two-way**: drop target in, drag
+  source out, on the same row.
+- Caveat: `OnDragDetected` is polled over the whole press path, so a drag inside a
+  focused text box beats selecting its text. Fine for path rows, wrong for prose.
+- Arrows are hit-tested as **fat segments** (point-to-segment distance), not
+  rects, since they run at any angle; nodes are tested before arrows so an arrow
+  passing under a node cannot steal its clicks. Painting and hit-testing both go
+  through `GetTransitionEndpoints`, so they cannot disagree.
+- A self-transition (A -> A) has no room for a real arrow: it is drawn as a short
+  stub just under the node so it stays visible and clickable.
+- Selecting anything rebuilds the chrome (the strip appears/disappears), so only
+  a *changed* selection may set `m_UiDirty` -- see rule 2 below.
+- The canvas is hand-painted into the rect a **placeholder `SBox`** was
+  arranged into (`m_GraphSlot->GetCachedGeometry()`), so the painted region can
+  never drift from the widget layout. Do not replace it with analytic maths.
+- There is no `DrawLine`: an arrow is a 4-point `DrawConvexPoly` shaft plus a
+  3-point head. Note `UIRenderer::DrawConvexPoly` takes the ENGINE `Vector2`,
+  which is a different type from `ZSlate::Vector2` -- the graph paints through
+  `ZSlate::ISlateRenderer` (which also has `DrawTextLabel`, `UIRenderer` does
+  not).
+- Node drags deliberately do NOT set `m_UiDirty`: repainting happens every
+  frame, and a rebuild would drop a text box's keyboard focus.
+- No pan / zoom yet; positions are clamped to the visible canvas.
+
+Known gaps: no layers / blend trees / sub-state machines, no graph pan/zoom, the
+Content Browser does not accept drops yet (a path cannot be dragged *into* it),
+and no live preview of the driven character's parameters while editing.
+
+### 2.24 Packaging: `.zbundle` + manifest (PR-PAK1)
+
+There was no pak, no manifest and no dependency pruning, so "shipping" meant
+copying `Assets/` whole. `AssetBundle.h` was a 16-line stub whose `GetImpl()`
+body was `return nullptr`. Now:
+
+```
+<project>/Build/<Platform>/
+├── <project>.manifest.zasset   AssetBundleManifest (bundles + deps)
+└── Bundles/<name>.zbundle      archive of cooked .zasset blobs
+```
+
+Rules that are easy to break:
+
+1. **A bundle stores cooked `.zasset` FILE BYTES, not re-serialised objects.**
+   There is exactly one binary writer/reader in the engine (`SerializedFile`);
+   inventing a second one for bundles would guarantee drift. Assets are
+   addressed by REGISTRY-RELATIVE path with forward slashes
+   (`"Models/hero.zasset"`) -- the same key `AssetRegistry` uses.
+2. **Bundle serving hangs off ONE hook: `SerializedFile::InitializeRead()`.**
+   It asks `AssetBundleManager` first and, on a hit, reads the blob into
+   `SerializedFile::m_OwnedMemory` and builds a `MemoryCacheReader` over it.
+   That is what makes `loadAsset<T>()`, PPtr resolution and `Level::load` work
+   unchanged in a player build with no `Assets/` tree. Do not add a second
+   lookup path.
+3. **Bundle wins over disk.** A mounted bundle shadows an on-disk file of the
+   same path. That is deliberate (mounting is an explicit act) but it means
+   never mount bundles in a normal editing session.
+4. **Cached blobs must outlive readers.** `MemoryCacheReader` holds its buffer
+   BY REFERENCE. `AssetBundle::GetAssetBytes()` caches per asset and never
+   moves or frees it until `Unload()`, so unmount only after dropping the
+   assets (`AssetManager::UnloadStream` per asset).
+5. **The manifest is a plain `.zasset`** (`AssetBundleManifest`), not JSON:
+   ZRuntime has no general-purpose JSON writer. It carries `platform`,
+   `content_root`, and per bundle: `asset_paths` + `dependencies`.
+6. **Bundle assignment**: one bundle per root (auto-detected `LevelRes` /
+   `WorldRes` / `PrefabAsset` / `SceneRes`, or an explicit list); anything
+   reachable from >=2 roots goes to a single `shared` bundle, so loading one
+   root needs at most one extra bundle. Bundle dependencies are derived from
+   the asset graph, not guessed.
+7. **Log category is `ZPak`.**
+
+Entry points: Build menu (`Build Asset Bundles (...)`) and the console
+command `bundle.build <standalone|android|ios|ohos|webgl>`.
+
+Known gaps, in the order they should be closed (PR-PAK2+):
+- **No player bootstrap mounts the bundles yet.** `AssetBundleManager` is
+  registered and `MountDirectory()` works, but nothing calls it in a standalone
+  player -- a shipped build still has to be handed `Assets/` or call it
+  itself. Auto-mounting is deliberately NOT implicit (rule 3: it would shadow
+  real files in the editor). Wire it behind an explicit player flag.
+- **No compression**: v1 writes STORED blobs (the `compression` field and
+  `uncompressed_size` are already in the format). ZRuntime links no compressor.
+- No incremental build, no content-hash change detection, no per-asset
+  reference counting (unloading a bundle drops everything it cached).
+- Only textures have a real cook today; every other asset type is packed as-is.
+
+Known gaps, in the order they should be closed (PR-SK3+):
+- **No importer test coverage**: the baking path is compile-verified only.
+  There is no FBX fixture in the repo, so exercise it manually once with a real
+  character asset before trusting it.
+- glTF/GLB produce no skinning data at all (`.gltf` is not even parsed -- the
+  mesh importer returns "not implemented yet").
+- No IK, no root motion, no retargeting, no animation compression.
+- The state machine has **no layers** (no upper-body / additive overrides), no
+  blend trees inside a state (a state owns exactly one clip), and no sub-state
+  machines.
+- No layers / blend trees / sub-state machines in the state machine (see 2.25).
+- `AnimationImporter` exists but is **not registered**: registration would
+  shadow `MeshImporter` on `.fbx` and break mesh import. It runs the same
+  `FbxAnimation::BakeAllStacks()` and is there for explicit / future use.
+- DX12 **shadow** pass does not skin: skinned meshes cast their bind-pose
+  shadow (the shadow VS has no joint palette bound yet). Vulkan's
+  `mesh_directional_light_shadow.vert` does.
+- Bone-count / instance limits are engine constants: 1024 joints per instance
+  and 64 instances per drawcall (`s_MeshVertexBlendingMaxJointCount`,
+  `s_MeshPerDrawcallMaxInstanceCount`).
+
 ## 3. Build / test invocations
 
 - Configure: pre-existing `build/` is fine; CMake presets in `CMakePresets.json`.
