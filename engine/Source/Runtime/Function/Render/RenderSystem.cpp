@@ -57,9 +57,10 @@ void RenderSystem::Tick(float)
     {
         m_Rhi->PrepareContext();
         // Metal: acquire this frame's drawable, draw the UI straight into it, then
-        // present. The render pipeline has no Metal modules yet (BuildDrawLists is
-        // empty), so the ZSlate editor overlay is driven here through the
-        // pipeline's post-UI callbacks (EditorUIPass::Draw).
+        // present. The render pipeline has no Metal scene modules yet, so the ZSlate
+        // editor overlay is driven here, inside the swapchain pass, through the
+        // pipeline's post-UI callbacks (EditorUIPass::Draw) -- the only place a
+        // Metal command buffer is open.
         if (!m_Rhi->PrepareBeforePass([]() {}))
         {
             RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
@@ -101,10 +102,17 @@ void RenderSystem::Tick(float)
             m_Rhi->SubmitRendering([]() {});
         }
     }
+    // On Metal this is skipped: DesktopRenderPipelineModule::BuildDrawLists
+    // registers a single entry, "PostUI", holding the very same callbacks the
+    // swapchain pass above just ran. Executing it here would re-record
+    // EditorUIPass::Draw after SubmitRendering() committed the command buffer,
+    // i.e. against a null command buffer where every draw is silently dropped.
+#if !defined(__APPLE__)
     if (m_RenderPipeline)
     {
         m_RenderPipeline->DeferredRender(m_Rhi, nullptr);
     }
+#endif
 }
 
 void RenderSystem::Shutdown()
