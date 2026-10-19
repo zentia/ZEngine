@@ -377,6 +377,10 @@ private:
     RHIViewport m_Viewports[2];
     uint32_t m_ViewportCount {2};
     RHIRect2D m_Scissors[2];
+    // Cached samplers (GetOrCreateDefaultSampler / GetOrCreateMipmapSampler).
+    std::map<int, RHISampler*> m_DefaultSamplers;
+    RHISampler*                m_MipmapSampler {nullptr};
+
     std::string m_ActiveViewportId {"default"};
     std::map<std::string, ViewportRenderTexture> m_ViewportRenderTextures;
     RHIFormat m_DepthImageFormat {RHI_FORMAT_UNDEFINED};

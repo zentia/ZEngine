@@ -37,3 +37,6 @@
 [submodule "engine/Libraries/ZSlate"]
 	path = engine/Libraries/ZSlate
 	url = https://github.com/zentia/ZSlate.git
+[submodule "engine/3rdparty/spirv-cross"]
+	path = engine/3rdparty/spirv-cross
+	url = https://github.com/KhronosGroup/SPIRV-Cross.git

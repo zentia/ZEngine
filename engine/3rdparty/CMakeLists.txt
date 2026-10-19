@@ -244,6 +244,35 @@ if(NOT TARGET tweeny)
     set_target_properties(tweeny PROPERTIES FOLDER ${third_party_folder}/tweeny)
 endif()
 
+# ---- SPIRV-Cross ----
+# The engine's shaders are GLSL compiled to SPIR-V; Metal only accepts MSL, so
+# the Metal backend runs SPIR-V through SPIRV-Cross' MSL backend at shader
+# module creation time (see MetalRHI::CreateShaderModule). Only needed where the
+# Metal backend is built (Apple).
+if(APPLE AND NOT TARGET spirv-cross-msl)
+    set(SPIRV_CROSS_CLI           OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_TESTS  OFF CACHE BOOL "" FORCE)
+    # NOTE: SPIRV-Cross' MSL backend is implemented on top of its GLSL backend
+    # (CompilerMSL derives from CompilerGLSL), so GLSL support must stay ON.
+    set(SPIRV_CROSS_ENABLE_GLSL   ON  CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_HLSL   OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_CPP    OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_REFLECT OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_C_API  OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_ENABLE_UTIL   OFF CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_SKIP_INSTALL  ON  CACHE BOOL "" FORCE)
+    set(SPIRV_CROSS_WERROR        OFF CACHE BOOL "" FORCE)
+    add_subdirectory(spirv-cross)
+    if(TARGET spirv-cross-msl)
+        set_target_properties(spirv-cross-core spirv-cross-glsl spirv-cross-msl
+            PROPERTIES FOLDER ${third_party_folder}/spirv-cross)
+        z_set_config_archive_dirs(spirv-cross-core "${CMAKE_CURRENT_BINARY_DIR}/spirv-cross")
+        z_set_config_archive_dirs(spirv-cross-glsl "${CMAKE_CURRENT_BINARY_DIR}/spirv-cross")
+        z_set_config_archive_dirs(spirv-cross-msl  "${CMAKE_CURRENT_BINARY_DIR}/spirv-cross")
+        message(STATUS "3rdparty: SPIRV-Cross enabled (SPIR-V -> MSL for the Metal backend)")
+    endif()
+endif()
+
 if(NOT TARGET tinyobjloader)
     add_subdirectory(tinyobjloader)
     set_target_properties(tinyobjloader PROPERTIES FOLDER ${third_party_folder}/tinyobjloader)
