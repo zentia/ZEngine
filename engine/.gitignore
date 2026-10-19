@@ -14,5 +14,5 @@ generated/
 # Scaffold generated at project open (ProjectInfo::EnsureScriptsScaffold)
 /package.json
 /tsconfig.json
-/1-1.scene.bak
+asset/level/1-1.scene.bak
 
