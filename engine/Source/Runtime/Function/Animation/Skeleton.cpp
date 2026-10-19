@@ -1,8 +1,11 @@
 #include "Runtime/Function/Animation/Skeleton.h"
 
+#include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Math/Math.h"
 #include "Runtime/Core/Math/TransformTRS.h"
-#include "Runtime/Function/Animation/Utilities.h"
+#include "Runtime/Function/Animation/Skinning.h"
+
+#include <algorithm>
 
 Skeleton::~Skeleton()
 {
@@ -15,24 +18,53 @@ void Skeleton::ResetSkeleton()
         m_Bones[i].ResetToInitialPose();
 }
 
+void Skeleton::MakeBindPose(const RawBone& in_bone, Vector3& out_position, Quaternion& out_rotation, Vector3& out_scale)
+{
+    out_position = in_bone.binding_pose.m_Position.ToVector3();
+    out_rotation = in_bone.binding_pose.m_Rotation;
+    out_scale = in_bone.binding_pose.m_Scale;
+}
+
 void Skeleton::BuildSkeleton(SkeletonData& skeleton_definition)
 {
-    m_IsFlat = skeleton_definition.is_flat;
     if (m_Bones != nullptr)
     {
         delete[] m_Bones;
+        m_Bones = nullptr;
     }
-    if (!m_IsFlat || !skeleton_definition.in_topological_order)
+    m_BoneCount = 0;
+    m_InverseBindMatrices.clear();
+
+    // Copy before sorting: the definition is shared cached data.
+    m_BoneDefinitions = skeleton_definition.bones_map;
+
+    // The old code bailed out silently here unless the asset was already flat
+    // AND topologically ordered, which is how "the character never animates"
+    // went undiagnosed for months. Sorting is cheap and always safe.
+    if (!AnimationSkinning::EnsureTopologicalOrder(m_BoneDefinitions))
     {
-        // LOG_ERROR
+        LOG_ERROR(ZAnimation,
+                  "Skeleton '{}' has a cyclic bone hierarchy ({} bones); animation disabled for this skeleton",
+                  skeleton_definition.bones_map.size() > 0 ? std::string(skeleton_definition.bones_map[0].name.c_str())
+                                                           : std::string("<empty>"),
+                  skeleton_definition.bones_map.size());
+        m_BoneDefinitions.clear();
         return;
     }
-    m_BoneCount = skeleton_definition.bones_map.size();
+
+    m_IsFlat = true;  // EnsureTopologicalOrder renumbers flat: slot == index.
+    m_BoneCount = static_cast<int>(m_BoneDefinitions.size());
+
+    AnimationSkinning::ComputeInverseBindMatrices(m_BoneDefinitions, m_InverseBindMatrices);
+
     m_Bones = new Bone[m_BoneCount];
-    for (size_t i = 0; i < m_BoneCount; i++)
+    for (int i = 0; i < m_BoneCount; i++)
     {
-        RawBone& bone_definition = skeleton_definition.bones_map[i];
-        Bone* parent_bone = find_by_index(m_Bones, bone_definition.parent_index, i, m_IsFlat);
+        RawBone& bone_definition = m_BoneDefinitions[static_cast<size_t>(i)];
+        // Topological order guarantees the parent is already initialised.
+        Bone* parent_bone =
+            (bone_definition.parent_index >= 0 && bone_definition.parent_index < i) ? &m_Bones[bone_definition.parent_index]
+                                                                                   : nullptr;
         m_Bones[i].Initialize(&bone_definition, parent_bone);
     }
 }
@@ -43,122 +75,118 @@ void Skeleton::ApplyAnimation(const BlendStateWithClipData& blend_state)
     {
         return;
     }
+
+    // Reset first: every channel in this engine is a DELTA on the bind pose, so
+    // accumulating onto a pose left over from the previous frame compounds it.
     ResetSkeleton();
-    for (size_t clip_index = 0; clip_index < 1; clip_index++)
+
+    const size_t bone_count = static_cast<size_t>(m_BoneCount);
+    std::vector<AnimationSkinning::BonePose> accumulator(bone_count, AnimationSkinning::BonePose::Identity());
+    std::vector<float> total_weight(bone_count, 0.0f);
+
+    const size_t clip_count = std::min({static_cast<size_t>(std::max(blend_state.clip_count, 0)),
+                                        blend_state.blend_clip.size(),
+                                        blend_state.blend_anim_skel_map.size()});
+
+    for (size_t clip_index = 0; clip_index < clip_count; clip_index++)
     {
         // The skeleton map is a PPtr and can legitimately resolve to null
         // (asset still loading, or missing on disk). Dereferencing it here
         // crashes the whole frame, so skip this clip instead.
-        if (clip_index >= blend_state.blend_anim_skel_map.size() ||
-            clip_index >= blend_state.blend_clip.size() || clip_index >= blend_state.blend_ratio.size())
-        {
-            break;
-        }
         const AnimSkelMap* anim_skel_map = blend_state.blend_anim_skel_map[clip_index];
         if (anim_skel_map == nullptr)
         {
             continue;
         }
+
         const AnimationClip& animation_clip = blend_state.blend_clip[clip_index];
-        const float phase = blend_state.blend_ratio[clip_index];
+        const float phase = (clip_index < blend_state.blend_ratio.size()) ? blend_state.blend_ratio[clip_index] : 0.0f;
 
-        float exact_frame = phase * (animation_clip.total_frame - 1);
-        int current_frame_low = floor(exact_frame);
-        int current_frame_high = ceil(exact_frame);
-        float lerp_ratio = exact_frame - current_frame_low;
-        // for (size_t node_index = 0; node_index < 0; node_index++)
-        for (size_t node_index = 0; node_index < animation_clip.node_count && node_index < anim_skel_map->convert.size();
-             node_index++)
+        std::vector<AnimationSkinning::BonePose> poses;
+        AnimationSkinning::SampleClip(animation_clip, phase, AnimationSkinning::WrapMode::Loop, poses);
+
+        const size_t node_count = std::min(poses.size(), anim_skel_map->convert.size());
+        for (size_t node_index = 0; node_index < node_count; node_index++)
         {
-            AnimationChannel channel = animation_clip.node_channels[node_index];
-            size_t bone_index = anim_skel_map->convert[node_index];
-            float weight = 1;  // blend_state.blend_weight[clip_index]->blend_weight[bone_index];
-            weight = 1;
-            if (fabs(weight) < 0.0001f)
+            const int bone_index = anim_skel_map->convert[node_index];
+            if (bone_index < 0 || static_cast<size_t>(bone_index) >= bone_count)
             {
                 continue;
             }
-            if (bone_index == std::numeric_limits<size_t>().max())
-            {
-                // LOG_WARNING
-                continue;
-            }
-            Bone* bone = &m_Bones[bone_index];
-            if (channel.position_keys.size() <= current_frame_high)
-            {
-                current_frame_high = channel.position_keys.size() - 1;
-            }
-            if (channel.scaling_keys.size() <= current_frame_high)
-            {
-                current_frame_high = channel.scaling_keys.size() - 1;
-            }
-            if (channel.rotation_keys.size() <= current_frame_high)
-            {
-                current_frame_high = channel.rotation_keys.size() - 1;
-            }
-            current_frame_low = (current_frame_low < current_frame_high) ? current_frame_low : current_frame_high;
-            Vector3 position = Vector3::Lerp(
-                channel.position_keys[current_frame_low], channel.position_keys[current_frame_high], lerp_ratio);
-            Vector3 scaling = Vector3::Lerp(
-                channel.scaling_keys[current_frame_low], channel.scaling_keys[current_frame_high], lerp_ratio);
-            Quaternion rotation = Quaternion::NLerp(
-                lerp_ratio, channel.rotation_keys[current_frame_low], channel.rotation_keys[current_frame_high], true);
 
+            float weight = 1.0f;
+            if (clip_index < blend_state.blend_weight.size())
             {
-                bone->Rotate(rotation);
-                bone->Scale(scaling);
-                bone->Translate(position);
-
-                // bone->Rotate({ {},0.01,0,0,1 });
-                // bone->Scale({ {},0.9,0.9,0.9 });
+                const std::vector<float>& bone_weights = blend_state.blend_weight[clip_index].blend_weight;
+                if (static_cast<size_t>(bone_index) < bone_weights.size())
+                {
+                    weight = bone_weights[static_cast<size_t>(bone_index)];
+                }
             }
+
+            AnimationSkinning::AccumulateBlend(
+                poses[node_index], weight, accumulator[static_cast<size_t>(bone_index)],
+                total_weight[static_cast<size_t>(bone_index)]);
         }
     }
-    // bones[77].Rotate(Quaternion{ {},1,0,0,1 });
-    // bones[18].Translate(Vector3{ {},0,1,0 });
-    // bones[0].SetScale(Vector3{ {},0,1,0.01 });
-    for (size_t i = 0; i < m_BoneCount; i++)
+
+    for (size_t bone_index = 0; bone_index < bone_count; bone_index++)
+    {
+        AnimationSkinning::BonePose delta = accumulator[bone_index];
+        AnimationSkinning::NormalizeBlendAccumulator(delta, total_weight[bone_index]);
+
+        Vector3 bind_position;
+        Quaternion bind_rotation;
+        Vector3 bind_scale;
+        MakeBindPose(m_BoneDefinitions[bone_index], bind_position, bind_rotation, bind_scale);
+
+        AnimationSkinning::BonePose bind_pose;
+        bind_pose.m_Position = bind_position;
+        bind_pose.m_Rotation = bind_rotation;
+        bind_pose.m_Scale = bind_scale;
+
+        const AnimationSkinning::BonePose local = AnimationSkinning::ComposeDelta(bind_pose, delta);
+
+        Bone& bone = m_Bones[bone_index];
+        bone.SetPosition(local.m_Position);
+        bone.SetOrientation(local.m_Rotation);
+        bone.SetScale(local.m_Scale);
+    }
+
+    for (size_t i = 0; i < bone_count; i++)
     {
         m_Bones[i].Update();
     }
-#ifdef _DEBUG
-    // bones[107].m_DerivedPosition += Vector3{ {},10, 0, 0 };
-#endif
 }
 
 AnimationResult Skeleton::OutputAnimationResult()
 {
     AnimationResult animation_result;
-    for (size_t i = 0; i < m_BoneCount; i++)
+    if (!m_Bones)
     {
-        std::shared_ptr<AnimationResultElement> animation_result_element = std::make_shared<AnimationResultElement>();
-        Bone* bone = &m_Bones[i];
-        animation_result_element->index = bone->GetID() + 1;
-        Vector3 temp_translation = bone->_getDerivedPosition();
+        return animation_result;
+    }
 
-        // TODO: the unit of the joint matrices is wrong
-        Vector3 temp_scale = bone->_getDerivedScale();
+    animation_result.node.reserve(static_cast<size_t>(m_BoneCount));
+    for (int i = 0; i < m_BoneCount; i++)
+    {
+        const Bone& bone = m_Bones[i];
 
-        Quaternion temp_rotation = bone->_getDerivedOrientation();
+        const Matrix4x4 object_matrix =
+            TransformTRS(bone._getDerivedPosition(), bone._getDerivedOrientation(), bone._getDerivedScale()).getMatrix();
+        const Matrix4x4& inverse_bind =
+            (static_cast<size_t>(i) < m_InverseBindMatrices.size()) ? m_InverseBindMatrices[static_cast<size_t>(i)]
+                                                                   : Matrix4x4::IDENTITY;
 
-        // auto scale = bone->_getDerivedTScale();
-        // scale.x = 1.f / scale.x;
-        // scale.y = 1.f / scale.y;
-        // scale.z = 1.f / scale.z;
+        // Skinning matrix: current global pose brought back through the bind pose.
+        Matrix4x4 skinning_matrix = object_matrix;
+        skinning_matrix = skinning_matrix * inverse_bind;
 
-        // auto revTmat = getMatrix(
-        //	-bone->_getDerivedTPosition(),
-        //	scale,
-        //	conjugate( bone->_getDerivedTOrientation())
-        //);
-        auto objMat = TransformTRS(bone->_getDerivedPosition(), bone->_getDerivedOrientation(), bone->_getDerivedScale())
-                          .getMatrix();
-
-        auto resMat = objMat * bone->_getInverseTpose();
-
-        animation_result_element->transform = resMat.toMatrix4x4_();
-
-        animation_result.node.push_back(*animation_result_element);
+        AnimationResultElement element;
+        // +1: slot 0 of the GPU palette is the identity root (see Skinning.h).
+        element.index = bone.GetID() + 1;
+        element.transform = skinning_matrix.toMatrix4x4_();
+        animation_result.node.push_back(element);
     }
     return animation_result;
 }

@@ -1,5 +1,7 @@
 #include "MeshImporter.h"
 
+#include "Editor/AssetPipeline/FbxAnimation.h"
+#include "Editor/AssetPipeline/FbxSkeleton.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Editor/EditorWindow/PreviewWindow/MeshDataPreview.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
@@ -8,8 +10,10 @@
 #include "Runtime/Core/Math/AxisAligned.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
+#include "Runtime/Function/Animation/Skinning.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Data/MeshData.h"
+#include "Runtime/Resource/ResType/Data/SkeletonData.h"
 
 #include <algorithm>
 #include <cctype>
@@ -321,11 +325,94 @@ namespace
         return vert;
     }
 
+    // --- PR-SK2: skeleton + skin weights (FBX only) --------------------------
+    //
+    // Produces the two halves of a skinned mesh:
+    //   * `RawBone` list -> written as a sibling SkeletonData asset
+    //   * one `SkeletonBinding` per vertex -> stored inside MeshData::bind
+    // Bone indices are 0-based here; `PackVertexInfluence` shifts them to GPU
+    // palette slots (bone + 1, slot 0 being the identity root).
+    //
+    // Bone extraction itself lives in Editor/AssetPipeline/FbxSkeleton.h so the
+    // animation importer numbers the bones identically.
+
+    /// Skin influences of one source vertex, packed into four slots.
+    SkeletonBinding MakeVertexBinding(const ufbx_mesh* mesh, size_t in_vertex_index, const FbxSkeleton::BoneTable& in_table)
+    {
+        SkeletonBinding binding {};
+        if (mesh == nullptr || mesh->skin_deformers.count == 0)
+        {
+            return binding;
+        }
+
+        const ufbx_skin_deformer* skin = mesh->skin_deformers.data[0];
+        if (skin == nullptr || in_vertex_index >= skin->vertices.count)
+        {
+            return binding;
+        }
+
+        constexpr size_t kMaxRaw = AnimationSkinning::kMaxInfluences + 4u;
+        AnimationSkinning::RawInfluence raw[kMaxRaw] = {};
+        size_t raw_count = 0;
+
+        const ufbx_skin_vertex skin_vertex = skin->vertices.data[in_vertex_index];
+        for (uint32_t weight_i = 0; weight_i < skin_vertex.num_weights && raw_count < kMaxRaw; ++weight_i)
+        {
+            const size_t weight_index = static_cast<size_t>(skin_vertex.weight_begin) + weight_i;
+            if (weight_index >= skin->weights.count)
+            {
+                break;
+            }
+            const ufbx_skin_weight skin_weight = skin->weights.data[weight_index];
+            if (skin_weight.cluster_index >= skin->clusters.count)
+            {
+                continue;
+            }
+            const ufbx_skin_cluster* cluster = skin->clusters.data[skin_weight.cluster_index];
+            if (cluster == nullptr || cluster->bone_node == nullptr)
+            {
+                continue;
+            }
+
+            const int32_t bone_index = in_table.FindBoneNode(cluster->bone_node);
+            if (bone_index < 0)
+            {
+                continue;
+            }
+
+            raw[raw_count].m_BoneIndex = bone_index;
+            raw[raw_count].m_Weight = static_cast<float>(skin_weight.weight);
+            ++raw_count;
+        }
+
+        AnimationSkinning::VertexInfluence influence;
+        if (!AnimationSkinning::PackVertexInfluence(raw, raw_count, influence))
+        {
+            // No usable influence: leave the binding zeroed, which the shaders
+            // read as "keep the bind pose" instead of collapsing to the origin.
+            return binding;
+        }
+
+        binding.index0 = influence.m_Indices[0];
+        binding.index1 = influence.m_Indices[1];
+        binding.index2 = influence.m_Indices[2];
+        binding.index3 = influence.m_Indices[3];
+        binding.weight0 = influence.m_Weights[0];
+        binding.weight1 = influence.m_Weights[1];
+        binding.weight2 = influence.m_Weights[2];
+        binding.weight3 = influence.m_Weights[3];
+        return binding;
+    }
+
     bool ImportFbxWithUfbx(const std::filesystem::path& source_path,
 
                            const MeshImporterSettings& settings,
 
                            MeshData& out_mesh,
+
+                           std::vector<RawBone>& out_bones,
+
+                           const std::filesystem::path& animation_output_base,
 
                            std::string& out_error)
 
@@ -357,6 +444,12 @@ namespace
         out_mesh.index_buffer.clear();
 
         out_mesh.bind.clear();
+
+        out_bones.clear();
+
+        // Built once for the whole scene so vertex influences can be resolved
+        // while vertices are emitted below.
+        const FbxSkeleton::BoneTable bone_table = FbxSkeleton::Build(scene);
 
         std::vector<uint32_t> tri_indices;
 
@@ -402,7 +495,27 @@ namespace
                     out_mesh.vertex_buffer.push_back(VertexFromUfbxIndex(mesh, ix, settings.scale));
 
                     out_mesh.index_buffer.push_back(static_cast<int>(out_mesh.vertex_buffer.size() - 1));
+
+                    if (bone_table.HasBones())
+                    {
+                        out_mesh.bind.push_back(MakeVertexBinding(mesh, ix, bone_table));
+                    }
                 }
+            }
+        }
+
+        // Bones plus curves are a character: bake the clips here, while the
+        // scene is still alive. (AssetImportManager dispatches on extension and
+        // .fbx is ours, so a standalone animation importer would never run.)
+        if (bone_table.HasBones())
+        {
+            const int baked_clips = FbxAnimation::BakeAllStacks(scene, animation_output_base, 0.0f, 0);
+            if (baked_clips > 0)
+            {
+                LOG_INFO(ZEditor,
+                         "MeshImporter: baked {} animation clip(s) from {}",
+                         baked_clips,
+                         source_path.generic_string());
             }
         }
 
@@ -416,8 +529,23 @@ namespace
             return false;
         }
 
-        RecenterMeshAtOrigin(out_mesh);
-        ApplyAxisFlip(out_mesh, settings.flip_y);
+        out_bones = bone_table.bones;
+
+        // A skinned mesh must keep its authored coordinates: recentring or
+        // flipping the vertices without moving the bones with them slides the
+        // mesh out of its own skeleton.
+        if (bone_table.HasBones())
+        {
+            LOG_INFO(ZEditor,
+                     "MeshImporter: {} carries {} bones; keeping authored coordinates",
+                     source_path.generic_string(),
+                     bone_table.bones.size());
+        }
+        else
+        {
+            RecenterMeshAtOrigin(out_mesh);
+            ApplyAxisFlip(out_mesh, settings.flip_y);
+        }
 
         return true;
     }
@@ -425,6 +553,43 @@ namespace
 #endif
 
 }  // namespace
+
+    /// PR-SK2: writes the extracted bones as a SkeletonData asset next to the
+    /// mesh. Returns the path actually written, empty on failure.
+    std::filesystem::path WriteSkeletonAsset(const std::filesystem::path& skeleton_path, const std::vector<RawBone>& bones)
+    {
+        auto* object_manager = GET_SYSTEM(ObjectManager);
+        auto* asset_manager = GET_SYSTEM(AssetManager);
+        if (object_manager == nullptr || asset_manager == nullptr)
+        {
+            return {};
+        }
+
+        Object* produced = object_manager->Produce(TypeOf<SkeletonData>(), 0);
+        if (produced == nullptr)
+        {
+            return {};
+        }
+
+        auto* skeleton = static_cast<SkeletonData*>(produced);
+        skeleton->bones_map = bones;
+        skeleton->is_flat = true;              // bone.index == slot in bones_map
+        skeleton->root_index = 0;
+        skeleton->in_topological_order = false;  // Skeleton sorts at build time.
+
+        {
+            std::error_code ec;
+            if (!skeleton_path.parent_path().empty())
+            {
+                std::filesystem::create_directories(skeleton_path.parent_path(), ec);
+            }
+        }
+
+        const bool write_ok = asset_manager->WriteObjectToDiskThreadSafe(skeleton_path, *skeleton);
+        MemoryManager::DestroyObject(produced);
+
+        return write_ok ? skeleton_path : std::filesystem::path {};
+    }
 
 bool MeshImporter::CanImport(const std::filesystem::path& file_path) const
 
@@ -477,6 +642,10 @@ bool MeshImporter::Import(const std::filesystem::path& source_path,
 
     MeshData mesh_geometry;
 
+    // PR-SK2: bones found in the source, if any. Skinned meshes produce a
+    // SkeletonData asset next to the mesh in addition to MeshData::bind.
+    std::vector<RawBone> imported_bones;
+
     std::string error;
 
     bool ok = false;
@@ -486,7 +655,11 @@ bool MeshImporter::Import(const std::filesystem::path& source_path,
     {
 #if defined(ZENGINE_HAS_UFBX)
 
-        ok = ImportFbxWithUfbx(source_path, *mesh_settings, mesh_geometry, error);
+        // Extension stripped: clips and the skeleton are named from this base.
+        std::filesystem::path import_base = output_path;
+        import_base.replace_extension();
+
+        ok = ImportFbxWithUfbx(source_path, *mesh_settings, mesh_geometry, imported_bones, import_base, error);
 
 #else
 
@@ -532,6 +705,26 @@ bool MeshImporter::Import(const std::filesystem::path& source_path,
                     source_path.string(),
 
                     mesh_geometry.vertex_buffer.size());
+    }
+
+    // A skinned mesh is useless without its skeleton: write it next to the mesh
+    // and remember it as a dependency so a reimport picks both up.
+    std::filesystem::path skeleton_path;
+    if (!imported_bones.empty())
+    {
+        skeleton_path = output_path;
+        skeleton_path.replace_extension();  // drop ".zasset"
+        skeleton_path += ".skeleton.zasset";
+
+        if (WriteSkeletonAsset(skeleton_path, imported_bones).empty())
+        {
+            LOG_ERROR(ZEditor, "MeshImporter: failed to write skeleton {}", skeleton_path.string());
+            skeleton_path.clear();
+        }
+        else
+        {
+            LOG_INFO(ZEditor, "MeshImporter: wrote skeleton {} ({} bones)", skeleton_path.string(), imported_bones.size());
+        }
     }
 
     auto* object_manager = GET_SYSTEM(ObjectManager);
@@ -611,6 +804,11 @@ bool MeshImporter::Import(const std::filesystem::path& source_path,
     }
 
     out_metadata.dependencies.clear();
+
+    if (!skeleton_path.empty())
+    {
+        out_metadata.dependencies.push_back(skeleton_path.generic_string());
+    }
 
     out_metadata.custom_metadata.clear();
 

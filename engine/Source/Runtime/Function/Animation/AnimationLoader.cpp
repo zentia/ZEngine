@@ -48,7 +48,19 @@ namespace
 
 std::shared_ptr<AnimationClip> AnimationLoader::LoadAnimationClipData(eastl::string animation_clip_url)
 {
-    AnimationAsset* animation_clip = GET_SYSTEM(AssetManager)->loadAsset<AnimationAsset>(animation_clip_url);
+    auto* asset_manager = GET_SYSTEM(AssetManager);
+    if (asset_manager == nullptr)
+    {
+        return nullptr;
+    }
+
+    AnimationAsset* animation_clip = asset_manager->loadAsset<AnimationAsset>(animation_clip_url);
+    if (animation_clip == nullptr)
+    {
+        // Used to dereference null here and take the process down when a clip
+        // was missing or had been renamed.
+        return nullptr;
+    }
     return std::make_shared<AnimationClip>(animation_clip->clip_data);
 }
 
