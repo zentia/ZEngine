@@ -460,3 +460,9 @@ dist/
 
 # Scratch build trees (a second configure of the engine, e.g. for -DZENGINE_STATIC_CRT=ON)
 build-ship/
+
+# Scratch build trees (local verification configures)
+build_check/
+build_check2/
+bc.err
+
