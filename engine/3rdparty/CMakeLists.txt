@@ -338,11 +338,23 @@ if(NOT TARGET Jolt)
         #   The generator expressions below are deliberately keyed on
         #   `$<CONFIG:Debug>` only; `DebugV8` falls through to the release
         #   branch, which is what we want.
+        # - ZENGINE_STATIC_CRT=ON: /MT[/MTd], so Jolt stops being the one
+        #   target in the tree that still asks for the DLL CRT -- linking
+        #   ZRuntimeShared with it produced 112x LNK2038 (MT_StaticRelease vs
+        #   MD_DynamicRelease) and failed the link.
+        #   Deliberately NOT the same as the v8 branch: that one pins to the
+        #   non-Debug "MultiThreaded" and forces _IDL=0 to match wee8.lib's
+        #   Release-only ABI, whereas here Debug really is Debug (/MTd + _IDL=2).
         if(WIN32 AND PAPI_TYPE STREQUAL "v8")
             set(_jolt_msvc_runtime "MultiThreaded")
             set(_jolt_compile_release_crt "/MT")
             set(_jolt_compile_debug_crt "/MTd")
             set(_jolt_idl_debug "/D_ITERATOR_DEBUG_LEVEL=0")
+        elseif(WIN32 AND ZENGINE_STATIC_CRT)
+            set(_jolt_msvc_runtime "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+            set(_jolt_compile_release_crt "/MT")
+            set(_jolt_compile_debug_crt "/MTd")
+            set(_jolt_idl_debug "/D_ITERATOR_DEBUG_LEVEL=2")
         else()
             set(_jolt_msvc_runtime "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
             set(_jolt_compile_release_crt "/MD")
@@ -359,8 +371,10 @@ if(NOT TARGET Jolt)
         else()
             # NOTE: when v8 path forces MT, the generator expression resolves
             # to "MultiThreaded" for Release/RelWithDebInfo configs, which
-            # is what wee8.lib needs.
-            if(WIN32 AND PAPI_TYPE STREQUAL "v8")
+            # is what wee8.lib needs. The ZENGINE_STATIC_CRT branch uses the
+            # Debug-aware expression instead, which is what the rest of the
+            # /MT tree uses.
+            if(WIN32 AND (PAPI_TYPE STREQUAL "v8" OR ZENGINE_STATIC_CRT))
                 set_target_properties(Jolt
                     PROPERTIES
                     FOLDER ${third_party_folder}/JoltPhysics
