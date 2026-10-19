@@ -217,6 +217,9 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ::UIRect& reg
     for (size_t i = 0; i < m_CurrentAsset->clip_data.node_channels.size(); ++i)
     {
         const AnimationChannel& channel = m_CurrentAsset->clip_data.node_channels[i];
+        // channel.name 已随 AnimationClip 迁移为 eastl::string，而本文件的
+        // 绘制路径走 UIRenderer::DrawText，后者仍要 std::string ——
+        // 这个边界必须显式转一次，不能靠隐式转换（两边没有互操作 operator+）。
         const std::string key = std::string(channel.name.c_str()) + "_" + std::to_string(i);
         const bool expanded = m_ExpandedChannels.count(key) ? m_ExpandedChannels[key] : true;
 

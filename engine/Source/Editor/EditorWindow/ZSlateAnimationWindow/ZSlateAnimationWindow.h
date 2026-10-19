@@ -12,6 +12,11 @@
 #include <unordered_map>
 #include <vector>
 
+// 显式引入，不靠传递包含：AnimationClip.h 里的字符串已经是 eastl::string，
+// 本文件的 channel_name 存的就是它的副本，类型必须与之对齐，
+// 否则每次赋值都是一次跨类型构造（拷贝 + 可能堆分配）。
+#include <EASTL/string.h>
+
 namespace ZSlate
 {
 class SWidget;
@@ -43,7 +48,7 @@ struct AnimKeyframe
 struct AnimSelectedProperty
 {
     int channel_index {-1};
-    std::string channel_name;
+    eastl::string channel_name;
     AnimPropType property_type {AnimPropType::PositionX};
     std::vector<AnimKeyframe> keyframes;
 };
