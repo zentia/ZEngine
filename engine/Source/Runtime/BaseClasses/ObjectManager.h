@@ -1,10 +1,12 @@
 #pragma once
 #include "Runtime/Core/Base/EngineSystem.h"
 
+#include "Runtime/BaseClasses/Object.h"
+#include "Runtime/Core/Memory/MemoryManager.h"
+
 #include <atomic>
 #include <mutex>
 #include <unordered_map>
-class Object;
 class Type;
 
 // =====================================================================================
@@ -59,10 +61,25 @@ public:
     /// Safe to call with id==0 (no-op).
     void UnregisterInstanceID(int32_t instanceID);
 
+    /// Heap-allocate a new Object of type `T` and give it a real InstanceID.
+    ///
+    /// IMPORTANT: MemoryManager::CreateObject<T>() only runs
+    /// InitializeRuntimeTypeInfo(), which deliberately leaves m_InstanceID at 0
+    /// (it is also used by Produce() for objects whose ID comes from the
+    /// serialized file). A raw CreateObject result is therefore INVISIBLE to
+    /// PPtr: PPtr<T>::operator T*() short-circuits on m_InstanceID == 0 and
+    /// returns nullptr, so `pptr == nullptr` is true even though the pointer is
+    /// perfectly valid. That is exactly what made
+    /// CharacterController::Initialize() log "null capsule" for a capsule that
+    /// had just been created here. NewObject() must close the gap by assigning
+    /// and registering a heap (negative) ID afterwards -- see the identity
+    /// allocation policy at the top of this file.
     template<typename T>
     T* NewObject()
     {
-        return MemoryManager::CreateObject<T>();
+        T* obj = MemoryManager::CreateObject<T>();
+        AllocateAndAssignInstanceID(obj);
+        return obj;
     }
 
 private:
