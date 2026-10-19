@@ -46,9 +46,21 @@ void Skeleton::ApplyAnimation(const BlendStateWithClipData& blend_state)
     ResetSkeleton();
     for (size_t clip_index = 0; clip_index < 1; clip_index++)
     {
+        // The skeleton map is a PPtr and can legitimately resolve to null
+        // (asset still loading, or missing on disk). Dereferencing it here
+        // crashes the whole frame, so skip this clip instead.
+        if (clip_index >= blend_state.blend_anim_skel_map.size() ||
+            clip_index >= blend_state.blend_clip.size() || clip_index >= blend_state.blend_ratio.size())
+        {
+            break;
+        }
+        const AnimSkelMap* anim_skel_map = blend_state.blend_anim_skel_map[clip_index];
+        if (anim_skel_map == nullptr)
+        {
+            continue;
+        }
         const AnimationClip& animation_clip = blend_state.blend_clip[clip_index];
         const float phase = blend_state.blend_ratio[clip_index];
-        const AnimSkelMap* anim_skel_map = blend_state.blend_anim_skel_map[clip_index];
 
         float exact_frame = phase * (animation_clip.total_frame - 1);
         int current_frame_low = floor(exact_frame);

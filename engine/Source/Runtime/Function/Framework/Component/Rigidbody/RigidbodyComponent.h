@@ -14,6 +14,16 @@ public:
 
     void PostLoadResource(GameObject* parent_object) override;
 
+    /// True when PostLoadResource could not create the body because no physics
+    /// scene was active yet. The body stays uncreated until FlushPendingBody
+    /// succeeds, so a level whose bodies are all pending has no colliders.
+    bool HasPendingBody() const;
+
+    /// Create the body deferred by PostLoadResource. Returns true if it was
+    /// created; false if nothing was pending or the scene is still unavailable
+    /// (which leaves it pending, safe to retry).
+    bool FlushPendingBody();
+
     void Tick(float delta_time) override {}
     void UpdateGlobalTransform(const TransformTRS& transform, bool is_scale_dirty);
     void GetShapeBoundingBoxes(std::vector<AxisAlignedBox>& out_boudning_boxes) const;
@@ -35,5 +45,13 @@ protected:
 
     RigidBodyComponentRes m_RigidbodyRes;
 
-    uint32_t m_RigidbodyId {0xffffffff};
+    /// Sentinel for "no body created yet". Matches the value the field was
+    /// already default-initialized to, so an unflushed body is detectable.
+    static constexpr uint32_t k_invalid_rigidbody_id = 0xffffffff;
+
+    uint32_t m_RigidbodyId {k_invalid_rigidbody_id};
+
+    /// Set by PostLoadResource when no physics scene was active yet; cleared
+    /// when the body is actually created.
+    bool m_HasPendingBody {false};
 };

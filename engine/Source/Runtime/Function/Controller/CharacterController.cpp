@@ -2,16 +2,30 @@
 
 #include "Runtime/Core/Math/TransformTRS.h"
 
+#include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
-void CharacterController::Initialize(const PPtr<Capsule> capsule)
+void CharacterController::Initialize(PPtr<Capsule> capsule)
 {
-    m_Capsule = (capsule);
-    // m_RigidbodyShape->m_Geometry = (Geometry*)m_Capsule;
+    m_Capsule = capsule;
 
+    if (capsule == nullptr)
+    {
+        LOG_ERROR(ZPhysics, "CharacterController::Initialize: null capsule");
+        return;
+    }
+
+    // m_RigidbodyShape is a PPtr, so it must point at a real Object registered
+    // with ObjectManager -- assigning it a bare `new RigidBodyShape` (or nothing
+    // at all, as this used to do) leaves the instance ID meaningless and the
+    // first dereference crashes. `move()` routes through IsOverlap -> toShape,
+    // which reads m_Type/m_Geometry/m_LocalTransform off this object.
+    m_RigidbodyShape = GET_SYSTEM(ObjectManager)->NewObject<RigidBodyShape>();
+
+    m_RigidbodyShape->m_Geometry = capsule;
     m_RigidbodyShape->m_Type = RigidBodyShapeType::capsule;
 
     Quaternion orientation;
@@ -23,6 +37,14 @@ void CharacterController::Initialize(const PPtr<Capsule> capsule)
 
 Vector3 CharacterController::move(const Vector3& current_position, const Vector3& displacement)
 {
+    // Initialize() bails out on a null capsule, and PostLoadResource only calls
+    // it for ControllerType::physics. Guard so a misconfigured controller
+    // degrades to unblocked movement instead of dereferencing a null shape.
+    if (m_RigidbodyShape == nullptr)
+    {
+        return current_position + displacement;
+    }
+
     std::shared_ptr<PhysicsScene> physics_scene = GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
     ASSERT(physics_scene);
 

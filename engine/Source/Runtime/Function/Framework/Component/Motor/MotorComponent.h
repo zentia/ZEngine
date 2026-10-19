@@ -90,8 +90,8 @@ private:
     MotorState m_MotorState {MotorState::moving};
     JumpState m_JumpState {JumpState::idle};
 
-    ControllerType m_ControllerType {ControllerType::none};
-    Controller* m_Controller {nullptr};
+    ControllerType m_ControllerType = ControllerType::invalid;
+    Controller* m_Controller = nullptr;
 
     bool m_IsMoving {false};
 

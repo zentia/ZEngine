@@ -83,8 +83,15 @@ PPtr<T>::operator T*() const
 template<typename T>
 inline T* PPtr<T>::operator->() const
 {
-    Object* temp = GET_SYSTEM(ObjectManager)->IDToPointer(m_InstanceID);
-    return static_cast<T*>(temp);
+    // Delegate to operator T*() so both go through the SAME resolution path.
+    // operator T*() handles two cases this used to miss: m_InstanceID == 0
+    // (returns null instead of asking ObjectManager for instance 0), and
+    // objects that are not in the live table yet but can still be pulled out
+    // of the persistent manager. Without this, `pptr->field` could return a
+    // dangling null while `static_cast<T*>(pptr)` on the very same PPtr
+    // resolved fine -- which is exactly how Skeleton::ApplyAnimation ended up
+    // calling std::vector::size() on a null AnimSkelMap.
+    return operator T*();
 }
 
 template<typename T>

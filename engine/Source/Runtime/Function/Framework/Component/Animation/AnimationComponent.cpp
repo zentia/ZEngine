@@ -29,7 +29,8 @@ void AnimationComponent::Tick(float delta_time)
     m_AnimationRes.blend_state.blend_ratio[0] += (delta_time / m_AnimationRes.blend_state.blend_clip_file_length[0]);
     m_AnimationRes.blend_state.blend_ratio[0] -= floor(m_AnimationRes.blend_state.blend_ratio[0]);
 
-    m_Skeleton.ApplyAnimation(AnimationSystem::GetBlendStateWithClipData(m_AnimationRes.blend_state));
+    const BlendStateWithClipData& clip_data = AnimationSystem::GetBlendStateWithClipData(m_AnimationRes.blend_state);
+    m_Skeleton.ApplyAnimation(clip_data);
     m_AnimationRes.animation_result = m_Skeleton.OutputAnimationResult();
 }
 

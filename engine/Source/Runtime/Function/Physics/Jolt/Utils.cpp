@@ -5,6 +5,7 @@
 #include "Jolt/Physics/Collision/Shape/SphereShape.h"
 #include "Jolt/Physics/Collision/Shape/StaticCompoundShape.h"
 #include "Runtime/Resource/ResType/Components/RigidBody.h"
+#include "Runtime/Resource/ResType/Data/BasicShape.h"
 
 BPLayerInterfaceImpl::BPLayerInterfaceImpl()
 {
@@ -115,38 +116,37 @@ JPH::Shape* toShape(const RigidBodyShape& shape, const Vector3& scale)
 {
     JPH::Shape* jph_shape = nullptr;
 
-    const std::string shape_type_str = shape.m_Geometry.GetTypeString();
-    if (shape_type_str == "Box")
+    // PPtr<T>::GetTypeString() is STATIC -- it expands to T::GetPPtrTypeString(),
+    // which returns "PPtr<Geometry>" for a PPtr<Geometry> no matter what the
+    // pointed-to object actually is. Comparing it against "Box"/"Sphere"/"Capsule"
+    // therefore never matched and this returned null for every shape, so no
+    // collider was ever created. Dispatch on the runtime type instead.
+    const Geometry* geometry = static_cast<const Geometry*>(shape.m_Geometry);
+    if (geometry == nullptr)
     {
-        const Box* box_geometry = static_cast<const Box*>((Geometry*)shape.m_Geometry);
-        if (box_geometry)
-        {
-            JPH::Vec3 jph_box(scale.x * box_geometry->m_HalfExtents.x,
-                              scale.y * box_geometry->m_HalfExtents.y,
-                              scale.z * box_geometry->m_HalfExtents.z);
-            jph_shape = new JPH::BoxShape(jph_box, 0.f);
-        }
+        LOG_ERROR(ZPhysics, "Unsupported Shape: geometry reference did not resolve");
+        return nullptr;
     }
-    else if (shape_type_str == "Sphere")
+
+    if (const Box* box_geometry = dynamic_cast<const Box*>(geometry))
     {
-        const Sphere* sphere_geometry = static_cast<const Sphere*>((Geometry*)shape.m_Geometry);
-        if (sphere_geometry)
-        {
-            jph_shape = new JPH::SphereShape((scale.x + scale.y + scale.z) / 3 * sphere_geometry->m_Radius);
-        }
+        JPH::Vec3 jph_box(scale.x * box_geometry->m_HalfExtents.x,
+                          scale.y * box_geometry->m_HalfExtents.y,
+                          scale.z * box_geometry->m_HalfExtents.z);
+        jph_shape = new JPH::BoxShape(jph_box, 0.f);
     }
-    else if (shape_type_str == "Capsule")
+    else if (const Sphere* sphere_geometry = dynamic_cast<const Sphere*>(geometry))
     {
-        const Capsule* capsule_geometry = static_cast<const Capsule*>((Geometry*)shape.m_Geometry);
-        if (capsule_geometry)
-        {
-            jph_shape = new JPH::CapsuleShape(scale.z * capsule_geometry->m_HalfHeight,
-                                              (scale.x + scale.y) / 2 * capsule_geometry->m_Radius);
-        }
+        jph_shape = new JPH::SphereShape((scale.x + scale.y + scale.z) / 3 * sphere_geometry->m_Radius);
+    }
+    else if (const Capsule* capsule_geometry = dynamic_cast<const Capsule*>(geometry))
+    {
+        jph_shape = new JPH::CapsuleShape(scale.z * capsule_geometry->m_HalfHeight,
+                                          (scale.x + scale.y) / 2 * capsule_geometry->m_Radius);
     }
     else
     {
-        LOG_ERROR(ZPhysics, "Unsupported Shape");
+        LOG_ERROR(ZPhysics, "Unsupported Shape: {}", geometry->GetTypeName());
     }
 
     return jph_shape;

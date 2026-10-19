@@ -1,6 +1,7 @@
 #include "MotorComponent.h"
 
 #include "Runtime/BaseClasses/GameObject.h"
+#include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Math/Math.h"
 #include "Runtime/Function/Character/Character.h"
@@ -29,14 +30,30 @@ void MotorComponent::PostLoadResource(GameObject* parent_object)
 {
     m_ParentObject = parent_object;
 
-    if (m_MotorRes.m_ControllerConfig.GetTypeString() == "PhysicsControllerConfig")
+    // 按运行时类型分发，不要用 GetTypeString()：它是 static 的，展开成
+    // PPtr<ControllerConfig>::GetTypeString() → "PPtr<ControllerConfig>"，
+    // 跟实际指向的对象无关，跟 "PhysicsControllerConfig" 永远不相等。
+    // 结果是每个 Motor 都掉进 invalid 分支，角色根本动不了。
+    // （与 Jolt/Utils.cpp toShape() 踩的是同一个坑。）
+    ControllerConfig* controller_config = m_MotorRes.m_ControllerConfig;
+    if (dynamic_cast<PhysicsControllerConfig*>(controller_config) != nullptr)
     {
         m_ControllerType = ControllerType::physics;
-        PhysicsControllerConfig* controller_config =
-            static_cast<PhysicsControllerConfig*>((ControllerConfig*)m_MotorRes.m_ControllerConfig);
-        // m_Controller = new CharacterController();
+        PhysicsControllerConfig* physics_config = static_cast<PhysicsControllerConfig*>(controller_config);
+
+        // The config keeps `Capsule m_CapsuleShape` as an INLINE value member, so
+        // it was never registered with ObjectManager and has no meaningful
+        // instance ID -- pointing a PPtr<Capsule> straight at it would resolve to
+        // garbage. Clone it into a properly registered object and hand that over.
+        Capsule* capsule = GET_SYSTEM(ObjectManager)->NewObject<Capsule>();
+        capsule->m_Radius = physics_config->m_CapsuleShape.m_Radius;
+        capsule->m_HalfHeight = physics_config->m_CapsuleShape.m_HalfHeight;
+
+        CharacterController* character_controller = new CharacterController();
+        character_controller->Initialize(capsule);
+        m_Controller = character_controller;
     }
-    else if (m_MotorRes.m_ControllerConfig != nullptr)
+    else if (controller_config != nullptr)
     {
         m_ControllerType = ControllerType::invalid;
         LOG_ERROR(ZMotor, "invalid controller type, not able to move");
@@ -232,7 +249,9 @@ void MotorComponent::TickPlayerMotor(float delta_time)
         return;
 
     if (current_character->GetObjectID() != m_ParentObject->GetID())
+    {
         return;
+    }
 
     Transform* transform_component =
         m_ParentObject->tryGetComponent<Transform>("Transform");
@@ -248,7 +267,15 @@ void MotorComponent::TickPlayerMotor(float delta_time)
     CalculatedDesiredVerticalMoveSpeed(command, delta_time);
     CalculatedDesiredMoveDirection(command, transform_component->GetLocalRotation());
     CalculateDesiredDisplacement(delta_time);
+
+    // 位移算完必须过 CalculateTargetPosition 才会写进 m_TargetPosition：
+    // 那里才按 ControllerType 分派（physics 走 CharacterController::move 做
+    // 碰撞检测）。玩家路径原来少了这一步，m_TargetPosition 一直停在构造时的
+    // 初始位置，于是 SetLocalPosition 每帧把角色写回原点 —— 位移算得再对
+    // 也不动。AI 路径（TickAIMotor）有这一步，所以只有玩家控制会零位移。
     CalculateTargetPosition(transform_component->GetLocalPosition());
+
+    CalculatedDesiredHorizontalMoveSpeed(command, delta_time);
 
     transform_component->SetLocalPosition(m_TargetPosition);
 }
