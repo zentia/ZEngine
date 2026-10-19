@@ -1404,11 +1404,15 @@ void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
 }
 #endif  // Z_HAS_VULKAN
 
-#if !defined(Z_HAS_VULKAN)
+#if !defined(Z_HAS_VULKAN) && !defined(_WIN32)
 // Metal / WebGL2 builds: every out-of-line virtual of RenderResource lives inside
 // the Z_HAS_VULKAN block above, so no translation unit emits its vtable/typeinfo.
 // RenderPass::Initialize() and friends still dynamic_cast to RenderResource, so
 // define the key function here to give the class a home TU.
+//
+// Not on Windows: RenderResourceDx12.cpp is compiled there and already defines
+// clear() in its own !Z_HAS_VULKAN block (next to CreateIBLSamplers and friends),
+// so defining it here too is a duplicate symbol at link time.
 void RenderResource::clear()
 {
     if (m_TextureStreamingManager)

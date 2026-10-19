@@ -28,6 +28,12 @@
 #endif
 
 #ifdef _WIN32
+    // DX12RHI.h / DX12ShaderCompiler.h used to be included unconditionally, which
+    // broke the macOS build (they pull in d3d12.h). They were then dropped outright,
+    // which broke Windows instead -- the DX12 paths in this file are real. They
+    // belong inside this guard: compiled on Windows, never seen on Apple.
+    #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
+    #include "Runtime/Function/Render/Interface/DX12/DX12ShaderCompiler.h"
     #include "Runtime/Function/Render/Interface/DX12/DX12RHIResource.h"  // DX12Image / DX12ImageView (RTT adopt)
     #include <d3d12.h>
     #include <d3dcompiler.h>
