@@ -1,6 +1,7 @@
 #include "SerializedFile.h"
 
 #include "Runtime/Asset/AssetFile.h"  // P2 #6 -- AssetFileHeader / k_zasset_magic
+#include "Runtime/AssetBundle/AssetBundleManager.h"  // PR-PAK1 -- bundle-resident reads
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/Macro.h"
@@ -171,6 +172,26 @@ SerializedFileLoadError SerializedFile::InitializeWrite(CachedWriter& cachedWrit
 
 SerializedFileLoadError SerializedFile::InitializeRead(const std::filesystem::path& path, size_t cacheSize)
 {
+    // PR-PAK1: a bundle-resident asset is served from memory instead of the
+    // filesystem. This is THE hook that lets a player build run without an
+    // `Assets/` tree: every reader (AssetManager::loadAsset, PPtr resolution,
+    // Level::load, AssetRegistry) funnels through here, so none of them needs
+    // to know bundles exist.
+    //
+    // Bundle wins over disk deliberately: a mounted bundle is an explicit
+    // request to test/ship that content, and in a player build there is no
+    // on-disk copy to shadow anyway.
+    if (auto* bundles = GET_SYSTEM(AssetBundleManager))
+    {
+        std::vector<uint8_t> bundle_bytes;
+        if (bundles->TryReadAssetBytes(path, bundle_bytes))
+        {
+            m_OwnedMemory = std::move(bundle_bytes);
+            m_ReadFile = MemoryManager::CreateObject<MemoryCacheReader>(m_OwnedMemory);
+            return FinalizeInitRead(kNoTransferInstructionFlags);
+        }
+    }
+
     m_ReadFile = MemoryManager::CreateObject<FileCacherRead>(path, cacheSize);
     return FinalizeInitRead(kNoTransferInstructionFlags);
 }

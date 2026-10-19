@@ -2,6 +2,7 @@
 
 #include "CommonPCH/pch.h"
 #include "Runtime/Application/Application.h"
+#include "Runtime/AssetBundle/AssetBundleManager.h"
 #include "Runtime/Core/Thread/TaskGraph.h"
 #include "Runtime/Core/Thread/ThreadManager.h"
 #include "Runtime/Function/Command/CommandSystem.h"
@@ -60,6 +61,7 @@
 #include "Runtime/Resource/UserPreferences/UserPreferences.h"
 #include "Runtime/Scripting/ScriptRegistry.h"
 #include "Runtime/Scripting/ScriptingManager.h"
+#include "Runtime/Function/Audio/AudioSystem.h"
 
 namespace
 {
@@ -144,12 +146,20 @@ namespace
         REGISTER_SYSTEM(CommandSystem);
         REGISTER_SYSTEM(ConsoleManager);
         REGISTER_SYSTEM(Application);
+        // PR-PAK1: mounted .zbundle registry. Registered here (not in the
+        // platform pass) so both the editor and standalone players have it --
+        // SerializedFile::InitializeRead asks it before touching the disk.
+        REGISTER_SYSTEM(AssetBundleManager);
         REGISTER_SYSTEM(UserPreferences);
         REGISTER_SYSTEM(ProjectInfo);
         REGISTER_SYSTEM(ScriptRegistry);
         REGISTER_SYSTEM(ShaderRegistry);
         REGISTER_SYSTEM(ResourceManager);
         REGISTER_SYSTEM(ScriptingManager);
+        // Audio is registered last so a device failure can never block the rest
+        // of the startup sequence: AudioSystem::Initialize() degrades to the
+        // null device rather than returning false.
+        REGISTER_SYSTEM(AudioSystem);
     }
 }  // namespace
 

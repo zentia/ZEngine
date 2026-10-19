@@ -34,11 +34,13 @@
 #include "ZSlate/Widgets/SExpandableArea.h"  // collapsible inspector sections
 #include "ZSlate/Widgets/SMenu.h"     // combo dropdown rows
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
+#include "ZSlate/Widgets/SDropTarget.h"  // Content Browser asset drop targets
 #include "ZSlate/Widgets/SSlider.h"   // compression-quality slider
 #include "ZSlate/Widgets/Text/STextBlock.h"
 #include "Runtime/UI/Core/Font.h"  // native Font asset inspector
 
 #include "Runtime/BaseClasses/GameObject.h"
+#include "Editor/EditorDragDrop/EditorDragDrop.h"
 #include "Runtime/Core/Base/Macro.h"  // LOG_INFO / LOG_WARNING (ZDataTable)
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Math/Quaternion.h"
@@ -46,6 +48,7 @@
 #include "Runtime/Core/Serialize/SerializationMetaFlags.h"
 #include "Runtime/Core/Serialize/TypeTree.h"
 #include "Runtime/Core/Serialize/TypeTreeCache.h"
+#include "Runtime/Function/Framework/Component/Animation/AnimationComponent.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -753,6 +756,58 @@ namespace
         return box;
     }
 
+    // Turns an asset path box into a two-way asset slot: a Content Browser drop
+    // TARGET (in) and a drag SOURCE (out).
+    //
+    // `wanted_type` is a resolved inspector asset type ("material", "meshdata");
+    // empty accepts any `.zasset`. The drop writes the STORED (project-relative)
+    // form and then runs the box's own commit handler, so dropping goes through
+    // exactly the same code path as typing the path -- validation and the
+    // read-only info labels cannot drift between the two.
+    //
+    // Drag-out reads the box's current text, so a path typed a second ago is the
+    // one that travels.
+    std::shared_ptr<SWidget> MakeAssetSlot(const std::shared_ptr<SEditableTextBox>& box, const std::string& wanted_type)
+    {
+        auto target = std::make_shared<SDropTarget>();
+        target->SetContent(box);
+        target->CanAcceptDrop = [wanted_type](const std::shared_ptr<FDragDropOperation>& op) -> bool {
+            const FAssetDragDropOp* asset_op = EditorDragDrop::AsAssetDrop(op);
+            if (asset_op == nullptr)
+            {
+                return false;
+            }
+            if (std::filesystem::path(asset_op->AssetPath).extension().generic_string() != ".zasset")
+            {
+                return false;
+            }
+            if (wanted_type.empty())
+            {
+                return true;
+            }
+            return ResolveInspectorAssetType(asset_op->AssetPath, std::string()) == wanted_type;
+        };
+        target->OnDropHandler = [box](const std::shared_ptr<FDragDropOperation>& op) {
+            const FAssetDragDropOp* asset_op = EditorDragDrop::AsAssetDrop(op);
+            if (asset_op == nullptr)
+            {
+                return;
+            }
+            const std::string stored_path = EditorDragDrop::MakeDroppedAssetStoredPath(asset_op->AssetPath);
+            box->Text = stored_path;
+            if (box->OnTextCommitted)
+            {
+                box->OnTextCommitted(stored_path);
+            }
+        };
+        // A path row is both directions: drop one in, drag this one out (onto
+        // another object's field, the Content Browser, ...). Drag-out wraps the
+        // drop target, so both live on the same row without either knowing about
+        // the other.
+        return EditorDragDrop::MakeAssetPathDragSource(std::static_pointer_cast<SWidget>(target),
+                                                       [box]() -> std::string { return box != nullptr ? box->Text : std::string(); });
+    }
+
     void BuildBaseRendererSection(const std::shared_ptr<SVerticalBox>& column,
                                   BaseRenderer* renderer,
                                   size_t comp_index,
@@ -797,7 +852,8 @@ namespace
                 r->SetSubMeshes(subs);
                 r->OnSerializedFieldsUpdated();
             };
-            AddFieldRow(column, "Mesh", mesh_box, 1, scale);
+            // Drop target: drag a MeshData .zasset from the Content Browser.
+            AddFieldRow(column, "Mesh", MakeAssetSlot(mesh_box, "meshdata"), 1, scale);
 
             // Material asset (editable string -> SetSharedMaterialAssets).
             auto material_box = MakeAssetBox(scale);
@@ -833,7 +889,8 @@ namespace
                     RefreshMaterialInfo(text.c_str(), status_raw, shader_raw, blend_raw, double_sided_raw);
                 };
 
-            AddFieldRow(column, "Material", material_box, 1, scale);
+            // Drop target: drag a Material .zasset from the Content Browser.
+            AddFieldRow(column, "Material", MakeAssetSlot(material_box, "material"), 1, scale);
             AddFieldRow(column, "Status", status_label, 1, scale);
             AddFieldRow(column, "Shader", shader_label, 1, scale);
             AddFieldRow(column, "Blend", blend_label, 1, scale);
@@ -970,6 +1027,77 @@ namespace
         }
     }
 
+    AnimationComponent* ResolveSelectedAnimationComponent(size_t index)
+    {
+        return dynamic_cast<AnimationComponent*>(ResolveSelectedComponent(index));
+    }
+
+    // AnimationComponent gets its own layout: the generic TypeTree walk shows
+    // `blend_clip_file_path` as "<array> (not editable)", which is exactly the
+    // slot a dragged clip needs to land in.
+    void BuildAnimationComponentSection(const std::shared_ptr<SVerticalBox>& column,
+                                        AnimationComponent* anim,
+                                        size_t comp_index,
+                                        std::vector<FieldBinding>& bindings,
+                                        float scale)
+    {
+        // Every row is an asset path box that also accepts a Content Browser /
+        // Animator drop of the matching type.
+        auto add_asset_row = [&](const char* label,
+                                 const std::string& value,
+                                 const std::string& wanted_type,
+                                 void (*apply)(AnimationComponent*, const std::string&)) {
+            auto box = MakeAssetBox(scale);
+            box->Text = value;
+            box->OnTextCommitted = [comp_index, apply](const std::string& text) {
+                AnimationComponent* a = ResolveSelectedAnimationComponent(comp_index);
+                if (a == nullptr)
+                {
+                    return;
+                }
+                apply(a, text);
+                a->OnSerializedFieldsUpdated();
+            };
+            AddFieldRow(column, label, MakeAssetSlot(box, wanted_type), 1, scale);
+        };
+
+        add_asset_row("Controller", std::string(anim->GetControllerPath().c_str()), "animatorcontroller",
+                      [](AnimationComponent* a, const std::string& text) {
+                          a->SetControllerPath(text.c_str());
+                          // The controller is resolved in PostLoadResource; without
+                          // re-running it the new path would only apply on reload.
+                          a->PostLoadResource(a->GetParentObject());
+                      });
+        add_asset_row("Skeleton", std::string(anim->GetSkeletonPath().c_str()), "skeletondata",
+                      [](AnimationComponent* a, const std::string& text) {
+                          a->SetSkeletonPath(text.c_str());
+                          a->PostLoadResource(a->GetParentObject());
+                      });
+        add_asset_row("Clip", std::string(anim->GetClipPath().c_str()), "animationasset",
+                      [](AnimationComponent* a, const std::string& text) { a->SetClipPath(text.c_str()); });
+        add_asset_row("Anim Skel Map", std::string(anim->GetAnimSkelMapPath().c_str()), "animskelmap",
+                      [](AnimationComponent* a, const std::string& text) { a->SetAnimSkelMapPath(text.c_str()); });
+
+        // Length is needed because a clip stores frames, not seconds: there is
+        // nothing to derive it from, so it has to be authored.
+        auto length_box = MakeScalarBox(FieldKind::Float, comp_index, 0, scale);
+        length_box->Text = FormatFloat(anim->GetClipLength());
+        length_box->OnTextCommitted = [comp_index](const std::string& text) {
+            AnimationComponent* a = ResolveSelectedAnimationComponent(comp_index);
+            if (a == nullptr)
+            {
+                return;
+            }
+            a->SetClipLength(ParseFloat(text));
+            a->OnSerializedFieldsUpdated();
+        };
+        AddFieldRow(column, "Clip Length (s)", length_box, 1, scale);
+
+        column->AddSlot(MakeText("A clip only plays together with its bone map.", 12.0f * scale, kDimColor))
+            .AutoSize()
+            .SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
+    }
+
     void BuildComponentSection(const std::shared_ptr<SVerticalBox>& column,
                                Component* component,
                                size_t comp_index,
@@ -1013,6 +1141,11 @@ namespace
         if (BaseRenderer* renderer = dynamic_cast<BaseRenderer*>(component))
         {
             BuildBaseRendererSection(column, renderer, comp_index, bindings, scale);
+            return;
+        }
+        if (AnimationComponent* anim = dynamic_cast<AnimationComponent*>(component))
+        {
+            BuildAnimationComponentSection(column, anim, comp_index, bindings, scale);
             return;
         }
 

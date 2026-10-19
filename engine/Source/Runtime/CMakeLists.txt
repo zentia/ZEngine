@@ -344,6 +344,37 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Vulkan/Test/VulkanBindlessSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Vulkan/Test/VulkanBindlessSmokeTest.cpp")
+# PR-A1: audio DSP smoke-test main. Same carve-out rationale as every entry
+# above: it owns main() and must not be whole-archived into ZRuntime. Built
+# only when ZENGINE_BUILD_AUDIO_SMOKE_TEST=ON (see Function/Audio/Test/
+# CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Audio/Test/AudioMixerSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Audio/Test/AudioMixerSmokeTest.cpp")
+# PR-PAK1: AssetBundle smoke-test main. Same carve-out rationale as every
+# entry above: it owns main() and must not be whole-archived into ZRuntime.
+# Built only when ZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON (see
+# AssetBundle/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/AssetBundle/Test/AssetBundleSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/AssetBundle/Test/AssetBundleSmokeTest.cpp")
+# PR-SK1: skeletal skinning smoke-test main. Same carve-out rationale as every
+# entry above: it owns main() and must not be whole-archived into ZRuntime.
+# Built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON (see
+# Function/Animation/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Animation/Test/AnimationSkinningSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Animation/Test/AnimationSkinningSmokeTest.cpp")
+# PR-SK3: animator state-machine smoke-test main. Same rationale; built only
+# when ZENGINE_BUILD_ANIMATOR_SMOKE_TEST=ON (see
+# Function/Animation/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Animation/Test/AnimatorSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Animation/Test/AnimatorSmokeTest.cpp")
 # PR-SE2: SerializedFile schema-evolution smoke-test main. Same
 # exclusion rationale as the bindless smoke-tests above -- the smoke
 # test owns its own main() and must NOT be wholearchive'd into
@@ -603,6 +634,10 @@ function(configure_runtime_library target)
     if(WIN32)
         # DirectX 12 runtime libraries (always needed on Windows, regardless of Vulkan toggle)
         target_link_libraries(${target} PUBLIC d3d12 dxgi d3dcompiler)
+        # WASAPI audio output (PR-A1). mmdevapi provides IMMDeviceEnumerator /
+        # IAudioClient; ole32 (CoCreateInstance) is already in CMake's default
+        # MSVC library set.
+        target_link_libraries(${target} PUBLIC Mmdevapi)
     endif()
     target_link_libraries(${target} PUBLIC mimalloc-static)
     target_link_libraries(${target} PUBLIC lmdb)
@@ -1156,6 +1191,22 @@ add_subdirectory(Resource/Cache/Test)
 # built only when ZENGINE_BUILD_AI_SMOKE_TEST=ON. Runs headless -- no world,
 # no physics, no RHI -- so it links on every host.
 add_subdirectory(Function/AI/Test)
+
+# Audio DSP smoke test (PR-A1). Own main(); carved out of the ZRuntime glob
+# above and built only when ZENGINE_BUILD_AUDIO_SMOKE_TEST=ON. Links ZRuntime
+# for the target helper but exercises only the dependency-free DSP layer, so it
+# runs headless on every host -- including CI machines with no audio device.
+add_subdirectory(Function/Audio/Test)
+
+# AssetBundle smoke test (PR-PAK1). Own main(); carved out of the ZRuntime glob
+# above and built only when ZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON. Pure file
+# + memory work, so it runs headless on every host.
+add_subdirectory(AssetBundle/Test)
+
+# Skeletal skinning smoke test (PR-SK1). Own main(); carved out of the ZRuntime
+# glob above and built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON. Pure
+# CPU math, so it runs headless on every host -- no GPU, no window.
+add_subdirectory(Function/Animation/Test)
 
 # =============================================================================
 # ASTC texture decompression support (Phase 6)

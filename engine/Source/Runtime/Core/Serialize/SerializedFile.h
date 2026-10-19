@@ -228,6 +228,10 @@ private:
     bool ReadMetadata(int64_t version, FileSize dataOffset, uint8_t* const data, size_t length, FileSize dataFileEnd);
 
     CacheReaderBase* m_ReadFile;
+    // PR-PAK1: when this file was opened out of an AssetBundle the blob is
+    // owned here, because MemoryCacheReader holds its buffer BY REFERENCE and
+    // must therefore outlive every read. Empty for the normal file-backed path.
+    std::vector<uint8_t> m_OwnedMemory;
     FileSize m_ReadOffset;
     ObjectMap m_Object;
 
