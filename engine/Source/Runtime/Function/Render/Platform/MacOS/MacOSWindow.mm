@@ -408,7 +408,13 @@ namespace
     }
     NSPoint point = [self convertPoint:event.locationInWindow fromView:nil];
     point.y = self.bounds.size.height - point.y;  // 左上原点（同 Win32 客户区 / GLFW）
-    for (auto& cb : owner->OnCursorPos) cb(static_cast<double>(point.x), static_cast<double>(point.y));
+    // Scale to physical pixels: the editor's ZSlate layout and input host work
+    // in device pixels (WindowsWindow contract), see MacOSWindow::GetSize().
+    const CGFloat scale = self.window != nil && self.window.backingScaleFactor > 0.0
+                              ? self.window.backingScaleFactor
+                              : 1.0;
+    for (auto& cb : owner->OnCursorPos)
+        cb(static_cast<double>(point.x * scale), static_cast<double>(point.y * scale));
 }
 
 - (void)mouseDown:(NSEvent*)event       { [self sendMouseButton:event button:0 pressed:YES]; }
@@ -449,7 +455,12 @@ namespace
 {
     [super setFrameSize:newSize];
     if (owner == nullptr) return;
-    for (auto& cb : owner->OnWindowSize) cb(static_cast<int>(newSize.width), static_cast<int>(newSize.height));
+    // Report physical pixels (see MacOSWindow::GetSize for the convention).
+    const CGFloat scale = self.window != nil && self.window.backingScaleFactor > 0.0
+                              ? self.window.backingScaleFactor
+                              : 1.0;
+    for (auto& cb : owner->OnWindowSize)
+        cb(static_cast<int>(newSize.width * scale), static_cast<int>(newSize.height * scale));
 }
 
 - (void)viewDidChangeBackingProperties
@@ -699,8 +710,14 @@ std::array<int, 2> MacOSWindow::GetSize() const
     {
         return {0, 0};
     }
-    NSSize size = window.contentView.frame.size;
-    return {static_cast<int>(size.width), static_cast<int>(size.height)};
+    // Physical pixels, matching the WindowsWindow contract the editor relies on
+    // (see EditorSlateHost: GetSize() and GetFramebufferSize() are both the
+    // client area in device pixels, and ZSlate's layout space + input hit-testing
+    // work in that space). Reporting logical points here made every UI element
+    // render 2x too large on Retina (1280x720 layout mapped against a
+    // 2560x1440 viewport).
+    NSRect backing = [window.contentView convertRectToBacking:window.contentView.bounds];
+    return {static_cast<int>(backing.size.width), static_cast<int>(backing.size.height)};
 }
 
 std::array<int, 2> MacOSWindow::GetPosition() const
@@ -710,10 +727,12 @@ std::array<int, 2> MacOSWindow::GetPosition() const
     {
         return {0, 0};
     }
-    NSPoint origin = window.frame.origin;
-    // Cocoa 原点在左下角，转成左上原点（同 Win32 / GLFW）。
-    CGFloat primary_height = NSScreen.screens.firstObject.frame.size.height;
-    return {static_cast<int>(origin.x), static_cast<int>(primary_height - origin.y - window.frame.size.height)};
+    // Top-left origin (Cocoa is bottom-left), in physical pixels like Win32.
+    NSPoint  origin = window.frame.origin;
+    CGFloat  scale  = window.screen != nil ? window.screen.backingScaleFactor : 1.0;
+    CGFloat  primary_height = NSScreen.screens.firstObject.frame.size.height;
+    CGFloat  top_left_y = primary_height - origin.y - window.frame.size.height;
+    return {static_cast<int>(origin.x * scale), static_cast<int>(top_left_y * scale)};
 }
 
 void MacOSWindow::SetSize(int width, int height)
@@ -721,7 +740,11 @@ void MacOSWindow::SetSize(int width, int height)
     NSWindow* window = (__bridge NSWindow*)m_NativeWindow;
     if (window != nil)
     {
-        [window setContentSize:NSMakeSize(static_cast<CGFloat>(width), static_cast<CGFloat>(height))];
+        // Input is physical pixels (see GetSize); CAMetalLayer's host view works
+        // in points, so divide the scale back out.
+        CGFloat scale = window.backingScaleFactor > 0.0 ? window.backingScaleFactor : 1.0;
+        [window setContentSize:NSMakeSize(static_cast<CGFloat>(width) / scale,
+                                          static_cast<CGFloat>(height) / scale)];
     }
 }
 
@@ -732,9 +755,11 @@ void MacOSWindow::SetPosition(int x, int y)
     {
         return;
     }
+    // Physical pixels in, points out (inverse of GetPosition).
+    CGFloat scale = window.screen != nil ? window.screen.backingScaleFactor : 1.0;
     CGFloat primary_height = NSScreen.screens.firstObject.frame.size.height;
-    NSPoint origin = NSMakePoint(static_cast<CGFloat>(x),
-                                 primary_height - static_cast<CGFloat>(y) - window.frame.size.height);
+    NSPoint origin = NSMakePoint(static_cast<CGFloat>(x) / scale,
+                                 primary_height - static_cast<CGFloat>(y) / scale - window.frame.size.height);
     [window setFrameOrigin:origin];
 }
 
@@ -766,8 +791,10 @@ void MacOSWindow::GetCursorPos(double& x, double& y) const
         return;
     }
     NSPoint point = window.mouseLocationOutsideOfEventStream;
-    x = static_cast<double>(point.x);
-    y = static_cast<double>(window.contentView.frame.size.height - point.y);
+    // Physical pixels, top-left origin -- same space as GetSize() / ZSlate layout.
+    const CGFloat scale = window.backingScaleFactor > 0.0 ? window.backingScaleFactor : 1.0;
+    x = static_cast<double>(point.x * scale);
+    y = static_cast<double>((window.contentView.frame.size.height - point.y) * scale);
 }
 
 bool MacOSWindow::ShouldClose() const

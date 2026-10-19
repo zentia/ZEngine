@@ -14,6 +14,7 @@
 #include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UI/Core/WindowUI.h"
+#include "Runtime/UI/Render/UIGpuResources.h"
 
 REGISTER_FACTORY(RenderPass, EditorUIPass, "EditorUIPass");
 void EditorUIPass::Initialize(const RenderPassInitInfo* init_info)
@@ -263,6 +264,11 @@ void EditorUIPass::Draw()
         SignalImGuiRenderComplete();
         return;
     }
+
+    // Metal builds no UIPass, and UIPass is what normally initializes the shared
+    // UI resources (descriptor layout, white texture, font atlas). Without them
+    // every ZSlate draw silently no-ops, so bootstrap them here.
+    UIGpuResources::EnsureInstance(m_Rhi);
 
     if (m_GameThreadFramePrepared)
     {

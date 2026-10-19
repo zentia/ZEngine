@@ -23,6 +23,13 @@ class UIGpuResources
 public:
     static UIGpuResources* Get();
 
+    // Returns the shared instance, creating it if no owner has yet (see
+    // Initialize). Backends that have no UIPass instance -- Metal today -- still
+    // need the shared UI resources (descriptor layout, white texture, font
+    // atlas), and without them every UI draw silently no-ops. Safe to call every
+    // frame: it is a no-op once an instance exists.
+    static UIGpuResources* EnsureInstance(RHI* rhi);
+
     void Initialize(RHI* rhi);
     void Shutdown();
     bool IsReady() const { return m_Ready; }

@@ -115,6 +115,29 @@ UIGpuResources* UIGpuResources::Get()
     return s_Instance;
 }
 
+UIGpuResources* UIGpuResources::EnsureInstance(RHI* rhi)
+{
+    if (s_Instance != nullptr)
+    {
+        return s_Instance;
+    }
+
+    // No owner has initialized the singleton yet. The backend has no UIPass
+    // instance (Metal), so own the shared resources here for the process
+    // lifetime instead; Initialize() publishes this object as the singleton.
+    static UIGpuResources fallback_instance;
+    try
+    {
+        fallback_instance.Initialize(rhi);
+    }
+    catch (const std::exception& e)
+    {
+        LOG_ERROR(ZRender, "UIGpuResources: initialization failed ({})", e.what());
+        return nullptr;
+    }
+    return s_Instance;
+}
+
 eastl::string UIGpuResources::ResolveDefaultFontPath() const
 {
     if (const char* env_path = std::getenv("ZENGINE_UI_FONT"))

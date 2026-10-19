@@ -629,7 +629,9 @@ void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
         return;
     }
 
-    UIGpuResources* gpu = UIGpuResources::Get();
+    // EnsureInstance is a no-op on backends where UIPass already initialized the
+    // singleton, and bootstraps it on Metal (which builds no UIPass).
+    UIGpuResources* gpu = UIGpuResources::EnsureInstance(rhi);
     if (gpu == nullptr)
     {
         return;
