@@ -25,6 +25,7 @@
 """
 
 from .base import Risk, Tool, ToolRegistry, ToolResult
+from .build import make_build_tools
 from .code import make_code_tools
 from .crash import make_crash_tools
 from .shell import classify_command_risk, make_shell_tool
@@ -33,6 +34,6 @@ from .verify_tool import RULE_PARAMS, make_verify_tools
 __all__ = [
     "Risk", "Tool", "ToolRegistry", "ToolResult",
     "make_shell_tool", "make_code_tools", "make_crash_tools",
-    "make_verify_tools", "RULE_PARAMS",
+    "make_verify_tools", "make_build_tools", "RULE_PARAMS",
     "classify_command_risk",
 ]

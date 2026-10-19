@@ -84,6 +84,21 @@ class CrashToolTest(unittest.TestCase):
         r = reg.call("diagnose_crash", {"ref": "abc"})
         self.assertIsInstance(r.data.get("report"), Report)
 
+    def test_conclusions_exposed_for_gate(self):
+        """
+        diagnose_crash 必须把假设台账交给结论门禁。
+
+        用 ledger 而不是 conclusions：ledger 含被推翻的假设，
+        门禁要能认出 REFUTED 并当场拦下"把已推翻的写进结论"。
+        只给确认过的那部分，门禁就少了一半能力。
+        """
+        reg = self._reg(_ctx())
+        r = reg.call("diagnose_crash", {"ref": "abc"})
+        self.assertIn("conclusions", r.data)
+        for c in r.data["conclusions"]:
+            self.assertIn("verdict", c)
+            self.assertIn("claim", c)
+
     def test_empty_ref_rejected(self):
         reg = self._reg(_ctx())
         self.assertEqual(reg.call("diagnose_crash", {"ref": ""}).status,

@@ -93,6 +93,17 @@ def make_crash_tools(
                 "location": str(report.location) if report.location else "",
                 "confidence": report.confidence,
                 "unknowns": list(report.unknowns),
+                # 把流水线的假设台账交给结论门禁。
+                #
+                # 用 ledger 而不是 conclusions：ledger 含被推翻的假设，
+                # 门禁需要知道哪些是 REFUTED（模型若把被推翻的写进结论，
+                # 要能当场拦下）。只给确认过的那部分，门禁就少了一半能力。
+                "conclusions": [
+                    {"claim": h.claim,
+                     "verdict": getattr(h.verdict, "value", str(h.verdict)),
+                     "locators": [e.locator for e in h.evidence]}
+                    for h in (report.ledger or report.conclusions)
+                ],
             },
         )
 

@@ -454,3 +454,6 @@ modify_cmake.py
 
 # Local verification build trees
 build_gpu_inspector_verify/
+
+# Packaging output (see engine/tools/WindowsEnvironmentCheck/pack)
+dist/

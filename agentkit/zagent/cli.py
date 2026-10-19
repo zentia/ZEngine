@@ -45,6 +45,7 @@ from typing import Any, Callable
 
 from .adapters import (GitCodeIndex, LocalDumpSource, SimpleVersionResolver,
                        find_git)
+from .gate import ConclusionGate
 from .llm import (FakeTransport, LLMConfig, LLMPlanner, OpenAICompatTransport)
 from .protocols import Context
 from .verify import HeuristicReasoner, RuleVerifier
@@ -52,7 +53,8 @@ from .loop import (Action, AgentLoop, AskUser, BadStep, Finish, Interactor,
                    Planner, RunOutcome, ScriptedPlanner, Turn,
                    STATUS_DONE, STATUS_MAX_STEPS, STATUS_STALLED)
 from .policy import Mode, Policy
-from .tools import Risk, ToolRegistry, make_code_tools, make_shell_tool
+from .tools import (Risk, ToolRegistry, make_build_tools, make_code_tools,
+                    make_shell_tool)
 from .tools.crash import make_crash_tools
 from .tools.verify_tool import make_verify_tools
 
@@ -88,6 +90,13 @@ def build_registry(root: Path,
         # 模型看到的代码就会不一致 —— 那种不一致极难发现，
         # 因为两边各自都是自洽的。
         for t in make_verify_tools(code, RuleVerifier()):
+            reg.register(t)
+
+    # 构建/测试工具：只在真的有 zbuild.py 时才有意义。
+    # 装了它，agent 才拿得到"构建通过"的裁定 —— 否则它只能通过 shell
+    # 读到退出码，而"退出码 0"这句话是它自己说的，门禁不认。
+    if (root / "zbuild.py").exists():
+        for t in make_build_tools(root=root):
             reg.register(t)
 
     if resolve_crash_ctx is not None:
@@ -238,7 +247,8 @@ class Session:
                  trace_dir: Path | None = None,
                  planner: Planner | None = None,
                  max_steps: int = 12,
-                 use_llm: bool = True) -> None:
+                 use_llm: bool = True,
+                 strict: bool = False) -> None:
         self.root = root
         self.mode = mode
         self.registry = build_registry(root, resolve_crash_ctx, trace_dir)
@@ -250,7 +260,7 @@ class Session:
         elif use_llm and _has_key():
             self._planner = LLMPlanner(self.registry,
                                        transport=OpenAICompatTransport(),
-                                       config=LLMConfig())
+                                       config=LLMConfig.from_env())
         else:
             self._planner = RulePlanner(self.registry)
 
@@ -260,6 +270,9 @@ class Session:
             interactor=QueueInteractor(),
             max_steps=max_steps,
             on_turn=self._print_turn,
+            # 结论硬门禁常开。require_confirmed=0 只拦"瞎编"，
+            # 不影响"列个文件"这类普通任务收尾；--strict 提到 1。
+            gate=ConclusionGate(require_confirmed=1 if strict else 0),
         )
 
     @property
@@ -454,6 +467,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-llm", action="store_true", help="强制使用规则路由")
     ap.add_argument("--max-steps", type=int, default=12)
     ap.add_argument("--dump", help="崩溃 dump 文件；给了才装配崩溃诊断能力")
+    ap.add_argument("--strict", action="store_true",
+                    help="严格结论门禁：不给已验证结论就必须说明没查清什么")
     args = ap.parse_args(argv)
 
     root = Path(args.root).resolve()
@@ -480,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
                            verifier=RuleVerifier())
 
     sess = Session(root, mode=Mode(args.mode), max_steps=args.max_steps,
-                   use_llm=not args.no_llm,
+                   use_llm=not args.no_llm, strict=args.strict,
                    resolve_crash_ctx=resolve_crash_ctx)
 
     if args.task:

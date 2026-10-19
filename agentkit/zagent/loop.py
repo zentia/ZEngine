@@ -31,8 +31,12 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
+if TYPE_CHECKING:  # 仅类型标注：运行时不能 import gate，否则与 gate 成环
+    from .gate import ConclusionGate
+
+from .gate import STATUS_GATE_REJECTED
 from .policy import Policy
 from .tools.base import STATUS_DENIED, RISK_ORDER, Risk, ToolRegistry, ToolResult
 from .tools.shell import classify_command_risk
@@ -58,10 +62,18 @@ class Action:
 
 @dataclass
 class Finish:
-    """结束。answer 给结论，unknowns 说明没查清的部分。"""
+    """
+    结束。answer 给结论，unknowns 说明没查清的部分。
+
+    conclusions 是**显式声明的结论**，与 answer 里的叙述分开填。
+    门禁只裁定这里列出的条目 —— 不从 answer 的自然语言里猜。
+    声明是模型自己给的，所以判定是确定的；从一段话里判断"它是不是在
+    断言"做不准，做不准的门禁会误杀正确的收尾。
+    """
 
     answer: str
     unknowns: list[str] = field(default_factory=list)
+    conclusions: list[str] = field(default_factory=list)
     confidence: float = 1.0
 
 
@@ -170,6 +182,7 @@ class RunOutcome:
     status: str = STATUS_ERROR
     answer: str = ""
     unknowns: list[str] = field(default_factory=list)
+    conclusions: list[str] = field(default_factory=list)
     turns: list[Turn] = field(default_factory=list)
 
     @property
@@ -189,13 +202,18 @@ class AgentLoop:
                  interactor: Interactor | None = None,
                  max_steps: int = 20,
                  max_consecutive_failures: int = 3,
-                 on_turn: Callable[[Turn], None] | None = None) -> None:
+                 on_turn: Callable[[Turn], None] | None = None,
+                 gate: "ConclusionGate | None" = None) -> None:
         self.registry = registry
         self.planner = planner
         self.policy = policy or Policy()
         self.interactor = interactor or AutoInteractor()
         self.max_steps = max_steps
         self.max_consecutive_failures = max_consecutive_failures
+        # 结论门禁。None 表示不启用 —— 默认关闭是为了让既有 eval
+        # 的对照实验保持干净（改一次数字就无法归因了），
+        # CLI 与诊断类任务显式装上。
+        self.gate = gate
         # 每轮完成即回调。CLI 靠它实时打印（否则用户盯着黑屏等几十秒），
         # eval 靠它逐步记账。抽成回调而不是在 loop 里直接 print，是因为
         # loop 不该知道自己在被谁驱动。
@@ -237,11 +255,38 @@ class AgentLoop:
             step = self.planner.plan(task, history, pending)
 
             if isinstance(step, Finish):
+                # ---- 结论硬门禁 ----
+                # 护栏放在 loop 而不是 planner：planner 可以被替换，
+                # 而这道约束必须对**所有**决策者都成立。放错地方的话，
+                # 换一个 planner 就等于把护栏拆了。
+                if self.gate is not None:
+                    verdict = self.gate.check(step, history)
+                    if not verdict.allowed:
+                        # 被拒的收尾**不终结运行**：变成一条观测塞回轨迹，
+                        # 模型下一步会读到"为什么被拒"，有机会自己改。
+                        # 直接抛异常或强行收尾都更糟 —— 前者丢失结论，
+                        # 后者等于门禁没生效。
+                        self._record(history, Turn(
+                            index=i, step=step,
+                            observation=ToolResult(
+                                ok=False, status=STATUS_GATE_REJECTED,
+                                error=verdict.reason)))
+                        consecutive_failures += 1
+                        if consecutive_failures >= self.max_consecutive_failures:
+                            return RunOutcome(
+                                status=STATUS_STALLED, turns=list(history),
+                                answer=f"结论未通过门禁，连续 "
+                                       f"{consecutive_failures} 次被拒："
+                                       f"{verdict.reason}",
+                                unknowns=list(step.unknowns))
+                        continue
+
                 # 结束本身也进轨迹。不记这一条，复现时就看不到"决策者是在
                 # 什么观测之后决定收尾的"，也就无从判断它是不是收早了。
                 self._record(history, Turn(index=i, step=step))
                 return RunOutcome(status=STATUS_DONE, answer=step.answer,
                                   unknowns=list(step.unknowns),
+                                  conclusions=list(step.conclusions),
                                   turns=list(history))
 
             if isinstance(step, AskUser):

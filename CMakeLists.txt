@@ -449,6 +449,30 @@ elseif(WIN32)
 endif()
 
 # =============================================================================
+# Optional whole-tree static CRT (/MT)
+# =============================================================================
+# Opt in with -DZENGINE_STATIC_CRT=ON.
+#
+# Why an option and not the default: /MD keeps the engine and every tool on the
+# system CRT, which is the right default for ZEditor and the Editor-adjacent
+# tools that only ever run on a developer machine. But a tool that is zipped to
+# a player (ZEnvironmentCollector) must not depend on a VC redist being
+# installed, and it cannot link a /MD library from an /MT executable without
+# LNK2038. CRT choice is baked into each object at compile time, so "just make
+# ZRuntimeShared /MT" is not a per-target option -- every static library it
+# links has to agree. Hence: all of the tree, or none of it.
+#
+# Must be applied before add_subdirectory(engine) so every target inherits the
+# policy (same ordering constraint the PAPI_TYPE=v8 "Plan C" block above has).
+option(ZENGINE_STATIC_CRT "Build the whole tree (incl. ZRuntimeShared) with the static MSVC runtime /MT" OFF)
+if(ZENGINE_STATIC_CRT AND WIN32)
+    cmake_policy(SET CMP0091 NEW)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+        CACHE STRING "MSVC runtime library (forced /MT by ZENGINE_STATIC_CRT)" FORCE)
+    message(STATUS "ZENGINE_STATIC_CRT=ON: forcing /MT across the whole tree (self-contained tool distribution)")
+endif()
+
+# =============================================================================
 # Tests
 # =============================================================================
 

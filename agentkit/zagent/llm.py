@@ -37,6 +37,7 @@ import json
 import os
 import re
 import time
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -68,11 +69,16 @@ _ASK_USER_SCHEMA = {
 
 _FINISH_SCHEMA = {
     "name": FINISH,
-    "description": "任务完成或无法继续时结束。unknowns 必须如实列出没查清的部分。",
+    "description": (
+        "任务完成或无法继续时结束。unknowns 必须如实列出没查清的部分。"
+        "conclusions 逐条列出**你明确断言的结论**；这些条目会被门禁逐条"
+        "核对证据，对不上会被打回，所以只填你真的验证过的。"
+    ),
     "parameters": {
         "type": "object",
         "properties": {
             "answer": {"type": "string"},
+            "conclusions": {"type": "array", "items": {"type": "string"}},
             "unknowns": {"type": "array", "items": {"type": "string"}},
             "confidence": {"type": "number"},
         },
@@ -98,6 +104,12 @@ SYSTEM_PROMPT = """你是一个严谨的排障 agent。每一步只能做一件�
 - 只有"CONFIRMED 且带可回溯证据"的才允许写进结论。
 - 收尾前调 conclusion_ledger 核一遍：结论里每条都要有 CONFIRMED 支撑。
 
+收尾（finish）：
+- **conclusions 字段逐条列出你明确断言的结论**，这些条目会被引擎逐条
+  核对证据。对不上的会被打回重来 —— 所以别把没验证过的东西填进去。
+- 做不到就别填 conclusions，把没查清的写进 unknowns。
+- 被 REFUTED 的假设**绝对不许**出现在 conclusions 里。
+
 诚实性要求（硬约束）：
 - 没有证据支撑的判断不许写成结论。
 - 被证据推翻的判断不许当成结论。
@@ -113,9 +125,47 @@ SYSTEM_PROMPT = """你是一个严谨的排障 agent。每一步只能做一件�
 
 # ---------------------------------------------------------------- 传输层
 
+def _json_env(name: str) -> dict:
+    """
+    读一个 JSON 格式的环境变量。没有或非法 -> 空 dict。
+
+    两种写法都收：
+      - JSON：  {"Wsid":"10103","X-Foo":"bar"}
+      - 简写：  Wsid=10103;X-Foo=bar
+
+    **为什么还要支持简写**：JSON 在 shell 里引号套引号极易写错（尤其
+    PowerShell），而写错后这里是静默返回空 dict —— 于是 header 没发出去，
+    服务端回一个 403/400，人只会以为是自己没权限。一个拼错的引号换来
+    半小时的排查方向错误，不值。
+
+    非法 JSON 同样静默返回空：这类变量是可选增强项，因为一个拼错的
+    JSON 就让整个 CLI 起不来，代价太大。代价是拼错时难发现，所以
+    `llm_check` 会把最终生效的配置打出来。
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return {}
+    if not raw.startswith("{"):
+        out: dict = {}
+        for part in re.split(r"[;,]", raw):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                if k.strip():
+                    out[k.strip()] = v.strip()
+        return out
+    try:
+        v = json.loads(raw)
+    except ValueError:
+        return {}
+    return v if isinstance(v, dict) else {}
+
+
 @dataclass
 class LLMConfig:
-    model: str = "deepseek-chat"
+    # deepseek-chat 已不在官方《模型 & 价格》页的推荐列表里，现在只有
+    # deepseek-flash（V4.1-Flash）和 deepseek-v4-pro。默认取便宜的那个：
+    # eval 要跑很多轮，价格差 3 倍，默认贵的没道理。
+    model: str = "deepseek-flash"
     base_url: str = "https://api.deepseek.com/v1"
     api_key_env: str = "DEEPSEEK_API_KEY"
     timeout: float = 60.0
@@ -123,6 +173,35 @@ class LLMConfig:
     max_tokens: int = 2048
     max_retries: int = 2
     retry_backoff: float = 1.0
+    # 各家网关的私货：额外的 header 与额外的 body 字段。
+    # 走这两个口子，接一个不标准的网关就不用改源码 —— 要改源码的话，
+    # 每个环境一份 patch，很快就分叉了。
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_env(cls) -> "LLMConfig":
+        """
+        从环境变量装配。
+
+        **为什么要这个类方法**：换供应商/换内网网关必须只改环境变量，
+        不能改代码。之前这些变量只在 demo 里读，核心里用的是硬编码默认值
+        —— 于是"接到公司内网的网关"要先去改源码，
+        而改了源码的那台机器就和其他机器不一致了。
+        """
+        t = os.environ.get("ZAGENT_TEMPERATURE", "").strip()
+        try:
+            temp = float(t) if t else cls.temperature
+        except ValueError:
+            temp = cls.temperature
+        return cls(
+            model=os.environ.get("ZAGENT_MODEL", cls.model),
+            base_url=os.environ.get("ZAGENT_BASE_URL", cls.base_url),
+            api_key_env=os.environ.get("ZAGENT_API_KEY_ENV", cls.api_key_env),
+            temperature=temp,
+            extra_headers=_json_env("ZAGENT_EXTRA_HEADERS"),
+            extra_body=_json_env("ZAGENT_EXTRA_BODY"),
+        )
 
 
 @dataclass
@@ -167,20 +246,30 @@ class OpenAICompatTransport:
             "messages": messages,
             "temperature": config.temperature,
             "max_tokens": config.max_tokens,
+            # **必须显式关掉流式。** OpenAI 的默认是 false，但内网的
+            # stream-server 默认是 **true** —— 不写这个字段，拿回来的是
+            # SSE 流（`data: {...}\ndata: {...}`），
+            # 而这里按非流式 JSON 解析，直接 JSONDecodeError。
+            # 显式写出来对两边都正确，所以无条件写。
+            "stream": False,
         }
         if tools:
             payload["tools"] = [
                 {"type": "function", "function": t} for t in tools
             ]
+        # 网关私货最后合并，允许覆盖上面的默认值。
+        payload.update(config.extra_body or {})
 
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
+        headers.update(config.extra_headers or {})
         req = urllib.request.Request(
             url=config.base_url.rstrip("/") + "/chat/completions",
             data=body,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
+            headers=headers,
             method="POST",
         )
 
@@ -195,7 +284,12 @@ class OpenAICompatTransport:
             except urllib.error.HTTPError as e:
                 detail = ""
                 try:
-                    detail = e.read().decode("utf-8", "replace")[:300]
+                    # **必须关掉**：HTTPError 是个类文件对象，只读不关会
+                    # 漏掉底层 socket。测试里表现为 ResourceWarning，
+                    # 线上表现为 agent 反复报错后句柄慢慢耗尽 ——
+                    # 这种泄漏平时看不出来，只在长任务上发作。
+                    with e:
+                        detail = e.read().decode("utf-8", "replace")[:300]
                 except Exception:  # noqa: BLE001
                     pass
                 last = LLMError(f"HTTP {e.code}: {detail}")
@@ -392,9 +486,12 @@ class LLMPlanner:
 
         if name == FINISH:
             unk = args.get("unknowns") or []
+            conc = args.get("conclusions") or []
             return Finish(
                 answer=str(args.get("answer", "")),
                 unknowns=[str(u) for u in unk] if isinstance(unk, list) else [],
+                conclusions=([str(c) for c in conc]
+                             if isinstance(conc, list) else []),
                 confidence=float(args.get("confidence", confidence) or confidence),
             )
 
@@ -483,11 +580,14 @@ def _finish_from_text(text: str) -> Finish:
     parsed = _extract_json(text)
     if isinstance(parsed, dict) and "answer" in parsed:
         unk = parsed.get("unknowns") or []
+        conc = parsed.get("conclusions") or []
         try:
             conf = float(parsed.get("confidence", 1.0))
         except (TypeError, ValueError):
             conf = 1.0
         return Finish(answer=str(parsed["answer"]),
                       unknowns=[str(u) for u in unk] if isinstance(unk, list) else [],
+                      conclusions=([str(c) for c in conc]
+                                   if isinstance(conc, list) else []),
                       confidence=conf)
     return Finish(answer=(text or "").strip())

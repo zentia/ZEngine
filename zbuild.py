@@ -67,10 +67,21 @@ CONFIG_MAP = {
 #
 #   intree     -- links ZRuntime, so it can only come out of a full-tree
 #                 configure. Slower the first time, incremental afterwards.
+#                 ZEnvironmentCollector is intree for the same reason as the
+#                 other two plus one more: it links ZRuntimeShared for its log
+#                 and its localization DataTable, and a standalone configure of
+#                 engine/tools/WindowsEnvironmentCheck has no ZRuntimeShared
+#                 target (producing one would mean pulling in all of
+#                 engine/Source/Runtime). "tree_options" is what turns the whole
+#                 tree /MT so the shipped directory still needs no VC redist;
+#                 it only takes effect on a FRESH configure (pass
+#                 --reconfigure otherwise).
 #   standalone -- self-contained project with its own configure. Kept out of the
-#                 full tree on purpose: ClientProjBranches is OFF there, and the
-#                 ZEnvironmentCollector GUI is /MT while the tree's ZSlate is
-#                 /MD (LNK2038), so it MUST configure on its own.
+#                 full tree on purpose: ClientProjBranches is OFF there. The
+#                 collector's own configure still works (it falls back to a
+#                 statically linked bqlog and a compiled-in string table), which
+#                 is why its CMake still carries the ENVIRONMENT_CHECK_STANDALONE
+#                 branch -- but that is no longer what ships.
 #
 # "subdir" is the optional extra level a tool asks for via
 # z_set_tool_output_dir(... SUBDIR <name>). WindowsEnvironmentCheck uses it
@@ -96,10 +107,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "exe": "ClientProjBranches.exe",
     },
     "ZEnvironmentCollector": {
-        "mode": "standalone",
+        "mode": "intree",
         "source": "engine/tools/WindowsEnvironmentCheck",
-        "build_dir": "build/tools/ZEnvironmentCollector",
-        "options": ["-DENVIRONMENT_CHECK_BUILD_GUI=ON"],
+        # What ships: engine-backed (LogSystem + DataTable localization) and
+        # whole-tree /MT so the output directory needs no VC redist.
+        "tree_options": ["-DZENGINE_STATIC_CRT=ON",
+                         "-DENVIRONMENT_CHECK_BUILD_GUI=ON"],
         "targets": ["ZEnvironmentCollector", "ZDllLoadProbe"],
         "subdir": "WindowsEnvironmentCheck",
         "exe": "ZEnvironmentCollector.exe",
@@ -333,12 +346,25 @@ class BuildSystem:
         print_header(f"Building tool {name} ({cmake_config})")
 
         if spec["mode"] == "intree":
+            tree_options = spec.get("tree_options", [])
             if reconfigure or not (self.build_dir / "CMakeCache.txt").exists():
                 print_info("Full tree is not configured yet -- configuring it first")
-                if not self.configure(config=config, generator=generator):
+                if not self.configure(config=config, generator=generator,
+                                      extra_args=tree_options):
                     return False
-            cmd = ["cmake", "--build", str(self.build_dir),
-                   "--config", cmake_config, "--target", name]
+            elif tree_options:
+                # Cached -D values win over command-line ones on a reconfigure,
+                # so a build tree that predates the option silently ignores it.
+                print_info(f"{name} wants {tree_options}, but the tree is already "
+                           "configured -- those only apply to a fresh one. Pass "
+                           "--reconfigure if the current tree was not configured "
+                           "with them.")
+            # Explicit target list so helper executables come along too (the
+            # collector needs ZDllLoadProbe beside it). Falls back to the tool
+            # name when a spec declares none.
+            cmd = ["cmake", "--build", str(self.build_dir), "--config", cmake_config]
+            for target in spec.get("targets", [name]):
+                cmd.extend(["--target", target])
         else:
             build_dir = self.root_dir / spec["build_dir"]
             if reconfigure or not (build_dir / "CMakeCache.txt").exists():

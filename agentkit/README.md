@@ -68,6 +68,7 @@ agentkit/
     loop.py       Agent loop：思考 -> 行动 -> 观测（含防呆与可中断）
     policy.py     风险分级与自治档位（plan / normal / autopilot）
     llm.py        LLM 决策者（零依赖 OpenAI 兼容客户端 + 可注入 transport）
+    gate.py       结论硬门禁：在 finish 处拦截没有证据支撑的结论
     cli.py        **入口**：交互式命令行 agent
     eval_agent.py agent 级 eval（与流水线共用一把尺子）
     tools/
@@ -76,6 +77,7 @@ agentkit/
       code.py     CodeIndex -> 工具（纯转发，行为与规则层一致）
       crash.py    diagnose() 降级为工具 —— 崩溃诊断只是其中一个能力
       verify_tool.py  Verifier 暴露为工具 —— 裁定权归规则，调用时机归模型
+      build.py    构建/测试暴露为会发裁定的工具 —— 编辑器 AI 的验证落点
   zfault/
     patterns.py   故障模式库（9 个模板）
     variants.py   难度变体生成器：depth / decoy，正负样本同源
@@ -347,9 +349,189 @@ python -m examples.run_eval_agent
 台账（`conclusion_ledger`）保留全部，包括被推翻的。只留成功的台账会让
 复盘变成自证；能回答"试过什么、为什么否掉"才可归因。
 
-**当前约束到哪一步**：system prompt 约束 + `conclusion_ledger` 提供自检
-手段，**尚未在 `finish` 处硬拦**（那需要 loop 层持有台账，已在路线图）。
-这里不做"假装已经拦住了"的事 —— 约束到哪一步，就说到哪一步。
+### 7.10 结论硬门禁（`zagent/gate.py`）
+
+上一版只有 prompt 约束 + `conclusion_ledger` 自检，两者都依赖模型自觉 ——
+**而模型不遵守 prompt 恰恰是我们要防的那种故障**。靠被防的对象自觉遵守
+规则，不算门禁。现在把它变成控制流：结论被拒，这一步就结束不了。
+
+**为什么它绕不过去**：允许收尾的结论集合 = 轨迹里被规则判为 CONFIRMED
+且带可回溯证据的 claim，而模型**无法自己往这个集合里加东西** —— 它只能
+调 `verify_hypothesis`，裁定权在规则手里。所以凭空写一条结论必然匹配
+不上、必然被拒。这不是"希望它别瞎编"，是"编了就会被拦"。
+
+二分规则，不给第三条路：
+
+| 情况 | 结果 |
+|---|---|
+| 下结论 | 每条都要匹配 CONFIRMED + 可回溯证据，否则打回 |
+| 把 REFUTED 的写进结论 | 打回（最严重，单独报） |
+| 不下结论 | 必须说明没查清什么（`--strict` 下强制） |
+
+**装在哪很关键**：门禁装在 `AgentLoop` 上，不在 planner 上。planner 可
+以被替换，而这道约束必须对所有决策者都成立 —— 装在 planner 里，换一个
+决策者就等于把护栏拆了。
+
+**被拒不终结运行**：变成一条观测塞回轨迹，模型读到"为什么被拒"后可以
+自己改；连续 3 次不改才判停滞。直接终结会让这一步的结论直接丢失。
+
+**门禁靠扫描观测工作，不认识具体工具**：任何工具只要在 `ToolResult.data`
+里给出 `verdict` 或 `conclusions`，就自动参与门禁。所以 `diagnose_crash`
+的假设台账也能直接喂给门禁 —— 将来加新能力不用改门禁。
+
+刻意没做的是**解析 answer 的自然语言**：从一段话里判断"它是不是在断言"
+做不准，做不准的门禁会误杀正确的收尾。门禁只裁定模型**显式声明**的
+`conclusions` —— 声明是它自己给的，所以判定是确定的。
+
+```bash
+python -m zagent.cli --strict ...   # 严格档位：不结论就必须说不知道
+```
+
+#### 门禁对照实验
+
+```bash
+python -m examples.run_eval_gate
+```
+
+模拟一个**幻觉率可控**的模型（默认 70%），三组对照：
+
+```
+A 门禁关                泄漏  2/2  ( 100%)   停滞  0   诚实收尾  0
+B 门禁开（会改正）           泄漏  0/2  (   0%)   停滞  0   诚实收尾  2
+C 门禁开（嘴硬）            泄漏  0/2  (   0%)   停滞  2   诚实收尾  0
+```
+
+**为什么用模拟模型而不是真模型**：要回答的是"门禁有没有压住幻觉"。
+用真模型跑一遍，你不知道它的**基线幻觉率** —— 看到只掉 2 个点，无法
+区分"门禁有效"和"这模型本来就不怎么瞎编"。幻觉率钉死之后，漏检率可以
+直接算而不是靠猜。
+
+C 组是关键：同为 0 泄漏，但代价是**停滞** —— 拦不住时退化成停滞，
+而不是静默放行。可见的故障比不可见的故障好处理得多。
+
+模拟模型证明的是**机制**有效，不证明真实模型的幻觉率是多少 —— 后者要
+接真模型量。真模型能补的是我没预料到的失败模式，两者都要做。
+
+> 注：分母是"实际发生幻觉的样本"。把无处可编的负样本算进分母会把泄漏率
+> 稀释成"看起来还行"的数字 —— 指标没坏，是尺子量错了东西。
+
+### 7.11 编辑器 AI：构建/测试即裁定（`tools/build.py`）
+
+"跟编辑器描述一个功能，它自动实现**并验证**" —— 这里解决后半句。
+
+一个能写代码的 agent 最常见的失败不是写不出来，是**它说"改好了"但根本
+没编译过**。让 agent 直接调 shell 跑 `zbuild.py` 解决不了：shell 的结果里
+**没有裁定**，"构建通过"这句话仍然是模型自己说的。
+
+`build_project` / `run_tests` 把裁定权收进工具，写进 `data.verdict`：
+
+| 情况 | 裁定 | 能进结论 |
+|---|---|---|
+| 退出码 0 **且**输出里有证据 | `confirmed` | ✓ |
+| 退出码非 0 | `refuted` | ✗ |
+| 退出码 0 但读不出证据 | `unproven` | ✗ |
+
+**第三行是本工具存在的全部理由。** 三种"看起来成功、其实没验证"：
+
+1. 构建无事可做（`up-to-date` / `Nothing to be done`）→ 退出 0
+2. 测试收集到 0 个用例 → 退出 0
+3. 目标拼错、没匹配到任何东西 → 有些构建系统仍退 0
+
+若图省事改成"退出码 0 就 confirmed"，门禁依然会照常放行 —— **但它已经
+什么都拦不住了，而且没有任何症状**。这种失效不会报错，只会让门禁变成装饰。
+
+因为 `collect_claims` 扫描任意工具 `data` 里的 `verdict`，**门禁一行都不用
+改**就对新领域生效。当初"不认识具体工具"这个抽象，就是为了这一天。
+
+```bash
+python -m examples.run_eval_build
+```
+
+```
+A 门禁关                泄漏 2/2    停滞 否   步数 1   收尾 DONE
+B 门禁开（会改正）           泄漏 0/2    停滞 否   步数 4   收尾 DONE
+C 门禁开（嘴硬）            泄漏 0/0    停滞 是   步数 3   收尾 stalled
+D 门禁开 + 空构建          泄漏 0/0    停滞 是   步数 6
+```
+
+D 组是关键：跑了构建，但输出是 `Nothing to be done` / `0 passed`，
+仍被拦住 —— 退出码 0 不等于验证过。
+
+执行器是注入的（`make_build_tools(runner=...)`），所以实验用假构建，
+秒级可复现，不碰真实工程（真构建一次可能几十分钟）。
+
+### 7.12 接真模型
+
+换供应商/内网网关只改环境变量，不改代码（走 OpenAI 兼容协议）：
+
+```bash
+set ZAGENT_BASE_URL=https://api.hunyuan.cloud.tencent.com/v1
+set ZAGENT_MODEL=<模型名>
+set ZAGENT_API_KEY=<混元控制台创建的 key>
+python -m examples.llm_check          # 先自检
+python -m examples.run_eval_gate --real
+```
+
+混元的 API Key 与 CAM 密钥**不是同一个东西**，要在混元控制台 / TokenHub
+单独创建。没配 key 时自动退到 `RulePlanner`，不报错退出 —— 离线分析机和
+CI 上仍可用。
+
+**先跑 `llm_check`。** 它探的不是连通性，是**端点支不支持 function
+calling** —— agent 能不能干活取决于这个，不取决于能不能聊天。不支持的话
+`LLMPlanner` 会回退到"从文本里抠 JSON"，那条路能用但明显更脆，而且症状
+是"agent 一直在原地打转"，根因极难发现。
+
+`--real` 会同时报**声明率**。没有它，"0% 泄漏"可能只是"模型压根没填过
+conclusions" —— 那是不可证伪的指标，看着漂亮，什么都没证明。
+
+### 7.13 接内部 stream-server（`/openapi` 那套）
+
+内部 stream-server 的 OpenAPI 与公网混元**不是一套东西**，差异足以让标准
+OpenAI 客户端直接失败：
+
+| 差异 | 公网 OpenAI/混元 | 内部 stream-server | 处理 |
+|---|---|---|---|
+| 路径 | `/v1/chat/completions` | `/openapi/chat/completions` | `ZAGENT_BASE_URL` 填到 `/openapi` |
+| 私有 header | 无 | **`Wsid` 必填** | `ZAGENT_EXTRA_HEADERS` |
+| `stream` 默认 | `false` | **`true`** | 客户端已无条件显式写 `stream: false` |
+| 长度字段 | `max_tokens` | `output_seq_len` | `ZAGENT_EXTRA_BODY` |
+| 端口 | 443 | idc 81 / devcloud 1081 / **办公网 8080** | 按网络环境选 |
+
+**`stream` 那条最阴**：OpenAI 默认 false，内网默认 true。不显式写这个字段，
+拿回来的是 SSE 流（`data: {...}` 一片），而客户端按非流式 JSON 解析，
+直接 `JSONDecodeError` —— 报错信息完全看不出是流式开关的锅。已无条件
+写死 `stream: false`（两边都正确），并有测试守着。
+
+**还有一条文档明说的坑**：这套实现里 `temperature=0` 会有问题（底层 C++
+除零有奇怪效果）。要 greedy search 得用 `top_k=1, top_p=0`。
+所以 `ZAGENT_TEMPERATURE` 可以覆盖默认值 0.0。
+
+```bash
+set ZAGENT_BASE_URL=http://<ip>:8080/openapi
+set ZAGENT_API_KEY=<你的 token>
+set ZAGENT_API_KEY_ENV=ZAGENT_API_KEY
+set ZAGENT_MODEL=<模型服务组名>
+set ZAGENT_EXTRA_HEADERS=Wsid=10103
+set ZAGENT_EXTRA_BODY=openai_infer=true;output_seq_len=2048
+python -m examples.llm_check
+```
+
+`ZAGENT_EXTRA_HEADERS` / `ZAGENT_EXTRA_BODY` 同时收 JSON 和 `k=v;k=v`
+简写。推荐简写：JSON 在 PowerShell 里引号套引号极易写错，而写错是
+**静默**的（拼错 -> 空 dict -> header 没发出去 -> 服务端 403 ->
+人以为自己没权限），会白查半小时。
+
+服务发现走北极星（`stream-server-online-sbs-{wsid}`），不要固定 IP ——
+文档明确说固定同一 IP 会导致单实例过载。
+
+**待确认**：这份文档的参数表里**没有 `tools` 字段**，也就是说 function
+calling 可能不支持。不支持的话 agent 会回退到"从文本里抠 JSON"，能用但
+更脆。`llm_check` 的第二步就是专门探这个的，跑一下就知道。
+
+真 transport 用**本地 mock HTTP 服务**做了回归（`tests/test_llm_real.py`）：
+鉴权头、payload 形状、4xx 不重试 / 5xx 重试、响应异常抛 `LLMError`。
+这段之前是零覆盖 —— 第一次执行它就是在有人指向真实端点的那一刻，
+那是发现 bug 的最糟时机。
 
 ---
 ## 八、CI 的平台分工
@@ -403,7 +585,8 @@ python -m examples.run_eval_agent
 - [x] 交互式 CLI（斜杠命令、审批、中途插话、逐轮打印）
 - [x] agent 级 eval：与流水线共用 `score()`，已跑对照实验（见 7.8）
 - [x] `Verifier` 暴露为工具：模型决定何时验证，规则决定怎样算验证过
-- [ ] 结论硬门禁：在 `finish` 处拦截没有 CONFIRMED 支撑的结论（需 loop 持台账）
+- [x] 结论硬门禁：装在 loop 上，`finish` 处拦截没有 CONFIRMED 支撑的结论
+- [ ] 用真 LLM 跑对照实验，验证门禁是否真的压住了幻觉（对比开关门禁的 honesty）
 - [ ] 上下文压缩（轨迹变长后的摘要/裁剪）
 - [ ] 把工具层接到 MCP，让外部 agent 也能用这套能力
 - [ ] 接入更多能力工具（编译日志、实验台跑批），验证"加能力不用改结构"
@@ -428,6 +611,7 @@ python -m zagent.cli                     # 进入交互，/help 看命令
 python -m zagent.cli --task "..."        # 单次执行后退出，CI 用
 python -m examples.agent_demo            # 不需要 LLM 的机制演示
 python -m examples.agent_llm_demo        # 有 key 时真跑，无 key 时演示
+python -m examples.llm_check             # 接入自检：探 function calling
 ```
 
 崩溃诊断在这个 CLI 里是一个**注册进来的能力**，不是全部：
@@ -441,6 +625,7 @@ python -m zagent.cli --root <repo> --dump <crash.json> --task "定位这次崩�
 ```bash
 python -m examples.run_eval       # 流水线基线
 python -m examples.run_eval_agent # 流水线 vs agent，同一把尺子
+python -m examples.run_eval_gate  # 结论门禁对照（模拟幻觉模型）
 ```
 
 ---

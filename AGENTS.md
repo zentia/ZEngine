@@ -1553,6 +1553,13 @@ of the tree (where `minizip-ng` / `BqLog` / `zlib-ng` already exist as /MD).
 local) -> /MT, which is what ships; inside the tree -> inherit. Do not "fix" a
 link error here by forcing /MT unconditionally.
 
+`-DZENGINE_STATIC_CRT=ON` (root `CMakeLists.txt`) flips the **whole tree** to
+/MT, `ZRuntimeShared.dll` included. That is the switch that lets a tool which
+links the engine DLL still ship to a machine with no VC redist. It has to be
+whole-tree: one DLL cannot mix CRTs against the static libraries it links.
+Crossing into the DLL is safe regardless, because the tool-facing API is
+`extern "C"` only and never moves an allocator-owned object across the boundary.
+
 ## 3. Build / test invocations
 
 - Configure: pre-existing `build/` is fine; CMake presets in `CMakePresets.json`.
@@ -1656,11 +1663,64 @@ constant. It packages **game logs** together with the environment report:
   Index in `game-logs.json`; missing or empty log dir is status `NO_LOGS`
   and does **not** mark the report partial.
 - **Its own diagnostics go through 扁鹊** (`EnvCheckLog.h/.cpp`, category
-  `ZEnvironmentCheck`, own `bq::engine_log` instance since the tool links no
-  ZRuntime): `%USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_*.log`,
+  `ZEnvironmentCheck`): `%USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_*.log`,
   same directory the engine uses. `ZSlate::SetLogSink` forwards ZSlate's own
   lines (font atlas misses, "no CJK face") there too. The manifest carries the
   path as `toolLog`; the log itself is **not** copied into the ZIP.
+- **It links `ZRuntimeShared`** — see §6.1. The log instance is then the engine's
+  `LogSystem` (reached over the C ABI), not a second bqlog linked into the tool.
+  A standalone configure has no `ZRuntimeShared` target and falls back to its own
+  `bq::engine_log`.
+- **A package without an incident anchor is not an error, but must say so.**
+  Missing `incidentTimeUtc` / `incidentKind` / `gameExecutable` means the package
+  can only describe the machine, never attribute anything — and three field
+  packages in October 2026 came back exactly like that, with the discovery left
+  to whoever opened the ZIP. `DescribeAttributionAnchor()` drives a summary.txt
+  header, manifest `attributionUsable` / `missingAttributionInputs`, a red line
+  on the GUI form plus a confirm dialog, and a CLI stdout warning. Details and
+  the `isTargetGame` field of `events-redacted.json` (schemaVersion 2) live in
+  `engine/tools/WindowsEnvironmentCheck/README.md` §1.8.1.
+
+### 6.1 Why the collector links ZRuntimeShared, and what it must not start
+
+The collector needs two things the engine already owns, and both are worse when
+duplicated inside a tool that ships to players:
+
+1. **Logging.** It is a WINDOWS-subsystem binary, so stderr goes nowhere when it
+   is double-clicked, and the failures it exists to report are exactly the ones a
+   player cannot describe.
+2. **Localised UI strings.** Hard-coding 100+ Simplified Chinese literals into
+   `UiLocalization.cpp` made translation a code change. They are now data: a real
+   engine `DataTable` (`Runtime/Resource/Asset/Data/LocalizationTable.h`) cooked
+   from `resource/ui_strings_zh-CN.csv`. A table is engine capability —
+   `AssetManager` + `SerializedFile` + reflection — so it comes from the same
+   place as the log.
+
+The seam is `Runtime/ZEngineApi/ZEngineToolApi.h` (`EXPORT_RUNTIME`, i.e.
+`extern "C"`). Nothing that needs an allocator crosses it: `const char*` in,
+`const char*` owned by the DLL out. That is what makes an /MT executable able to
+consume the DLL regardless of the DLL's own CRT choice.
+
+**`ZRuntime_ToolInit()` starts the minimum slice and no more**:
+`RegisterCore()` + `RegisterPlatform()` — reflection, memory, `FileSystem`,
+`ObjectManager`, `AssetManager`, plus `LogSystem`. It deliberately does **not**
+register `Application`, `WindowSystem`, any RHI, `ScriptingManager` or
+`ProjectInfo`. A tool sent to diagnose a machine must not open a window or create
+a GPU device on it. (Same shape as `ZEngineApi::InitMemoryProfilerData()`, minus
+`ProfilerRuntime`.)
+
+Loading takes absolute paths: `AssetManager::GetFullPath()` passes them straight
+through, so a tool with no project can still read the `.zasset` it ships beside
+its own exe.
+
+Cook step: `DataTableCook` (`engine/tools/DataTableCook`) bakes
+`resource/ui_strings_zh-CN.csv` -> `.zasset` at build time, driven from the
+collector's POST_BUILD. It lives in Runtime (not the Editor's
+`CsvSchemaRegistry`) because ZRuntime must not depend on ZEditor and the cook has
+to run with no project open. The shipped tool never parses CSV.
+
+Missing DLL = process does not start (import-lib link, by decision). Missing
+`.zasset` = UI degrades to English and the tool still works.
 
 ## 7. Standalone ZSlate tools: use FSlateStandaloneApp, do not hand-roll a host
 
@@ -1843,6 +1903,8 @@ bin/Tools/Release/
 └── WindowsEnvironmentCheck/
     ├── ZEnvironmentCollector.exe
     ├── ZDllLoadProbe.exe          # re-launched from the exe's own directory
+    ├── ZRuntimeShared.dll         # engine slice (log + localization table)
+    ├── resource/ui_strings_zh-CN.zasset   # cooked by DataTableCook at build time
     ├── profiles/default.ini       # read from the exe's own directory
     └── LICENSE-*.txt
 ```
@@ -1874,18 +1936,26 @@ directory and an output directory:
 - `TexPreview`, `LuaMemPreview` — **full tree**. They link ZRuntime, so they
   cannot configure standalone; `zbuild.py` configures the tree if it has not
   been configured yet, then builds `--target <Name>` in `build/`.
-- `ClientProjBranches`, `ZEnvironmentCollector` — **own configure** into
-  `build/tools/<Name>/`, which is what the earlier standalone commands did:
+- `ClientProjBranches` — **own configure** into `build/tools/<Name>/`.
+- `ZEnvironmentCollector` — **both**, and they are not equivalent:
 
 ```powershell
+# engine-backed: what ships. Links ZRuntimeShared (log + DataTable localization).
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DZENGINE_STATIC_CRT=ON
+cmake --build build --config Release --target ZEnvironmentCollector
+
+# standalone: self-contained, no engine DLL. Kept so the directory still
+# configures on its own; the localization table is compiled into the binary and
+# logging uses a statically linked bqlog.
 cmake -S engine\tools\WindowsEnvironmentCheck -B build\tools\ZEnvironmentCollector -G "Visual Studio 17 2022" -A x64 -DENVIRONMENT_CHECK_BUILD_GUI=ON
-cmake -S engine\tools\ClientProjBranches      -B build\tools\ClientProjBranches   -G "Visual Studio 17 2022" -A x64
 ```
 
-They stay out of the full tree on purpose: `ClientProjBranches` is OFF there,
-and the `ZEnvironmentCollector` GUI is `/MT` while the tree's ZSlate is `/MD`
-(`LNK2038`), so it must configure on its own. `--reconfigure` forces a fresh
-configure of either kind.
+  `ClientProjBranches` stays out of the full tree on purpose (OFF there).
+  `ZEnvironmentCollector` used to as well, because its GUI was `/MT` while the
+  tree's ZSlate is `/MD` (`LNK2038`); `-DZENGINE_STATIC_CRT=ON` removes that
+  reason — with it, tree and tool agree on /MT and the GUI can be built in the
+  tree (`-DENVIRONMENT_CHECK_BUILD_GUI=ON`) alongside the engine back-end.
+  `--reconfigure` forces a fresh configure of either kind.
 
 Why a `Tools/` level instead of `bin/<Config>/` next to ZEditor: the tools share
 nothing with the engine's runtime layout (no configs, no assets, no ZRuntime

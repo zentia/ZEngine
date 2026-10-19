@@ -6,6 +6,7 @@ from .llm import (FakeTransport, LLMConfig, LLMError, LLMPlanner, LLMResponse,
                   LLMTransport, OpenAICompatTransport, SYSTEM_PROMPT)
 from .eval_agent import (AgentEvalReport, AgentRunStats, evaluate_agent,
                          run_agent_on_sample)
+from .gate import Claim, ConclusionGate, GateDecision, collect_claims
 from .loop import (Action, AgentLoop, AskUser, AutoInteractor, BadStep,
                    ConsoleInteractor, Finish, Interactor, Planner, RunOutcome,
                    ScriptedPlanner, Turn)
@@ -56,6 +57,8 @@ __all__ = [
     "make_verify_tools", "RULE_PARAMS", "classify_command_risk",
     # 崩溃诊断降级为工具 + agent 级 eval
     "evaluate_agent", "run_agent_on_sample", "AgentEvalReport", "AgentRunStats",
+    # 结论硬门禁
+    "ConclusionGate", "GateDecision", "collect_claims", "Claim",
     # CLI（入口）
     "Session", "RulePlanner", "build_registry",
 ]
