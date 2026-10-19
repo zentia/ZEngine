@@ -56,6 +56,13 @@ void RenderSystem::Tick(float)
     if (m_Rhi)
     {
         m_Rhi->PrepareContext();
+        // Metal: acquire this frame's drawable and present it. The render pipeline
+        // has no Metal modules yet (BuildDrawLists is empty), so this is what makes
+        // the editor window show something (a cleared frame) today.
+        if (!m_Rhi->PrepareBeforePass([]() {}))
+        {
+            m_Rhi->SubmitRendering([]() {});
+        }
     }
     if (m_RenderPipeline)
     {

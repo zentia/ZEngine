@@ -6,6 +6,8 @@
 
 #if Z_PLATFORM_WINDOWS
     #include "Platform/Windows/WindowsApplication.h"
+#elif Z_PLATFORM_MACOS
+    #include "Platform/MacOS/MacOSApplication.h"
 #endif
 
 // ============================================================================
@@ -15,11 +17,15 @@ static std::unique_ptr<GenericApplication> CreatePlatformApplication()
 {
 #if Z_PLATFORM_WINDOWS
     return std::make_unique<WindowsApplication>();
-#elif Z_PLATFORM_MACOS || Z_PLATFORM_IOS || Z_PLATFORM_ANDROID || Z_PLATFORM_OHOS
-    // macOS / iOS / Android / OHOS: window / view is owned by the host
-    // (Cocoa NSWindow / UIKit UIView / Android Surface / OHOS XComponent).
+#elif Z_PLATFORM_MACOS
+    // macOS standalone (editor) build: native Cocoa window (NSWindow + NSView)
+    // owned by the engine, so MetalRHI can attach a CAMetalLayer to it
+    // (see MetalRHI::CreateSwapchain). Mirrors the Win32 implementation.
+    return std::make_unique<MacOSApplication>();
+#elif Z_PLATFORM_IOS || Z_PLATFORM_ANDROID || Z_PLATFORM_OHOS
+    // iOS / Android / OHOS: window / view is owned by the host
+    // (UIKit UIView / Android Surface / OHOS XComponent).
     // The platform RHI attaches to an externally-provided layer/surface at runtime.
-    // TODO: Implement per-platform standalone window management.
     return nullptr;
 #else
     #error "CreatePlatformApplication: unsupported platform"

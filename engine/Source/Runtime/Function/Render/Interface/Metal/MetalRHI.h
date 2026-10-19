@@ -354,6 +354,10 @@ private:
     id<MTLDevice> m_Device;
     id<MTLCommandQueue> m_CommandQueue;
     CAMetalLayer* m_MetalLayer;
+    // NSView* (unretained, owned by the NSWindow) hosting m_MetalLayer.
+    void* m_SwapchainView {nullptr};
+    // Drawable acquired for the frame in flight (nil between frames).
+    id<CAMetalDrawable> m_CurrentDrawable;
     id<MTLCommandBuffer> m_MetalCommandBuffers[3];  // k_max_frames_in_flight
     id<MTLRenderCommandEncoder> m_RenderEncoders[3];
     id<MTLTexture> m_RenderTargets[3];
@@ -370,6 +374,8 @@ private:
     RHIFormat m_SwapchainImageFormat {RHI_FORMAT_UNDEFINED};
     std::vector<RHIImageView*> m_SwapchainImageviews;
     RHIExtent2D m_SwapchainExtent;
+    RHIViewport m_Viewports[2];
+    uint32_t m_ViewportCount {2};
     RHIRect2D m_Scissors[2];
     std::string m_ActiveViewportId {"default"};
     std::map<std::string, ViewportRenderTexture> m_ViewportRenderTextures;

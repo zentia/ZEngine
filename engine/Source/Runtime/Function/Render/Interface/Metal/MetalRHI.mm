@@ -5,6 +5,14 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 
 #include <algorithm>
+#include <cmath>
+
+#ifdef __APPLE__
+    #define Component AppleComponent
+    #import <Cocoa/Cocoa.h>
+    #include <dispatch/dispatch.h>
+    #undef Component
+#endif
 
 std::vector<std::type_index> MetalRHI::GetDependencies() const
 {
@@ -23,6 +31,12 @@ bool MetalRHI::Initialize()
     if (m_CommandQueue == nil)
     {
         return false;
+    }
+
+    // Frame pacing: one binary semaphore per in-flight frame (k_max_frames_in_flight).
+    for (uint8_t i = 0; i < k_max_frames_in_flight; ++i)
+    {
+        m_Semaphores[i] = dispatch_semaphore_create(1);
     }
 
     // ---- Bindless capability probe ----
@@ -88,6 +102,14 @@ void MetalRHI::Shutdown()
     m_MaxBindlessStorageBuffers = 0;
 
 #if !__has_feature(objc_arc)
+    for (uint8_t i = 0; i < k_max_frames_in_flight; ++i)
+    {
+        if (m_Semaphores[i] != nullptr)
+        {
+            dispatch_release(m_Semaphores[i]);
+            m_Semaphores[i] = nullptr;
+        }
+    }
     [m_CommandQueue release];
     [m_Device release];
 #endif
@@ -98,7 +120,18 @@ void MetalRHI::Shutdown()
 
 MetalRHI::~MetalRHI() = default;
 
-void MetalRHI::PrepareContext() {}
+void MetalRHI::PrepareContext()
+{
+#ifdef __APPLE__
+    // Lazily attach the CAMetalLayer: WindowSystem may create the Cocoa window
+    // after the RHI (system init order is platform phase -> rendering phase, but
+    // the editor shows a splash and calls ShowWindow() later).
+    if (m_MetalLayer == nil)
+    {
+        CreateSwapchain();
+    }
+#endif
+}
 bool MetalRHI::IsPointLightShadowEnabled() { return false; }
 void MetalRHI::NotifyWindowFocusGained() {}
 void MetalRHI::DestroyRenderPass(RHIRenderPass* /*renderPass*/) {}
@@ -115,9 +148,121 @@ bool MetalRHI::AllocateDescriptorSets(const RHIDescriptorSetAllocateInfo*, RHIDe
     return false;
 }
 
-void MetalRHI::CreateSwapchain() {}
-void MetalRHI::RecreateSwapchain() {}
-void MetalRHI::CreateSwapchainImageViews() {}
+// ---------------------------------------------------------------------------
+// Swapchain (CAMetalLayer) + present
+//
+// Metal hands out a drawable per frame (nextDrawable) instead of a fixed set of
+// swapchain images: CreateSwapchain attaches a CAMetalLayer to the main window's
+// content view, PrepareBeforePass acquires the drawable and SubmitRendering
+// clears + presents it. Everything else (the actual scene / ZSlate batches) still
+// needs the Cmd* encoder implementation, so until that lands the macOS editor
+// presents a cleared frame -- see the note in EditorUIPass::Draw().
+// ---------------------------------------------------------------------------
+namespace
+{
+    // The Cocoa view that hosts the CAMetalLayer: the main window's content view.
+    NSView* GetSwapchainHostView()
+    {
+        auto* window_system = GET_SYSTEM(WindowSystem);
+        if (window_system == nullptr)
+        {
+            return nil;
+        }
+        NSWindow* ns_window = (__bridge NSWindow*)window_system->GetNativeWindowHandle();
+        if (ns_window == nil)
+        {
+            return nil;
+        }
+        return ns_window.contentView;
+    }
+
+    // Sync the layer drawable size (and the RHI extent / viewport / scissor) with
+    // the view's current backing size. Returns false when the view has no area.
+    bool SyncLayerMetrics(CAMetalLayer* layer,
+                          NSView*      view,
+                          RHIExtent2D& extent,
+                          RHIViewport* viewports,
+                          RHIRect2D*   scissors)
+    {
+        if (layer == nil || view == nil)
+        {
+            return false;
+        }
+        const NSRect backing = [view convertRectToBacking:view.bounds];
+        const double width  = backing.size.width;
+        const double height = backing.size.height;
+        if (width <= 0.0 || height <= 0.0)
+        {
+            return false;
+        }
+
+        const CGFloat scale = view.window != nil ? view.window.backingScaleFactor : 1.0;
+        layer.contentsScale  = scale > 0.0 ? scale : 1.0;
+        layer.drawableSize   = CGSizeMake(width, height);
+
+        extent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
+        for (int i = 0; i < 2; ++i)
+        {
+            viewports[i] = {0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f};
+            scissors[i]  = {{0, 0}, {extent.width, extent.height}};
+        }
+        return true;
+    }
+}  // namespace
+
+void MetalRHI::CreateSwapchain()
+{
+#ifdef __APPLE__
+    NSView* view = GetSwapchainHostView();
+    if (view == nil)
+    {
+        LOG_WARNING(ZRender, "MetalRHI::CreateSwapchain -- no Cocoa content view yet (window not created?)");
+        return;
+    }
+    m_SwapchainView = (__bridge void*)view;
+
+    if (m_MetalLayer == nil)
+    {
+        m_MetalLayer                     = [[CAMetalLayer alloc] init];
+        m_MetalLayer.device              = m_Device;
+        m_MetalLayer.pixelFormat         = MTLPixelFormatBGRA8Unorm;
+        // UI overlay / readback need the drawable to stay readable.
+        m_MetalLayer.framebufferOnly     = NO;
+        m_MetalLayer.maximumDrawableCount = k_max_frames_in_flight;
+        view.wantsLayer = YES;
+        view.layer      = m_MetalLayer;
+    }
+
+    m_SwapchainImageFormat = RHI_FORMAT_B8G8R8A8_UNORM;
+    if (SyncLayerMetrics(m_MetalLayer, view, m_SwapchainExtent, m_Viewports, m_Scissors))
+    {
+        LOG_INFO(ZRender,
+                 "MetalRHI: swapchain ready {}x{}",
+                 m_SwapchainExtent.width,
+                 m_SwapchainExtent.height);
+    }
+#endif
+}
+
+void MetalRHI::RecreateSwapchain()
+{
+#ifdef __APPLE__
+    NSView* view = m_SwapchainView != nullptr ? (__bridge NSView*)m_SwapchainView : GetSwapchainHostView();
+    if (view == nil || m_MetalLayer == nil)
+    {
+        CreateSwapchain();
+        return;
+    }
+    SyncLayerMetrics(m_MetalLayer, view, m_SwapchainExtent, m_Viewports, m_Scissors);
+#endif
+}
+
+void MetalRHI::CreateSwapchainImageViews()
+{
+    // Metal hands out drawables per frame (nextDrawable); there are no persistent
+    // swapchain image views to create -- see PrepareBeforePass().
+}
+
 void MetalRHI::CreateFramebufferImageAndView() {}
 RHISampler* MetalRHI::GetOrCreateDefaultSampler(RHIDefaultSamplerType) { return nullptr; }
 RHISampler* MetalRHI::GetOrCreateMipmapSampler(uint32_t, uint32_t) { return nullptr; }
@@ -312,20 +457,124 @@ void MetalRHI::SetCurrentFrameIndex(uint8_t index) { m_CurrentFrameIndex = index
 
 RHICommandBuffer* MetalRHI::BeginSingleTimeCommands() { return nullptr; }
 void MetalRHI::EndSingleTimeCommands(RHICommandBuffer*) {}
+// Acquires this frame's drawable. Returns true when the frame must be skipped
+// (no window yet, zero-sized window, or no drawable available).
 bool MetalRHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSwapchain)
 {
+#ifdef __APPLE__
+    if (m_MetalLayer == nil)
+    {
+        CreateSwapchain();
+    }
+    if (m_MetalLayer == nil)
+    {
+        return true;
+    }
+
+    NSView* view = m_SwapchainView != nullptr ? (__bridge NSView*)m_SwapchainView : nil;
+    if (view != nil)
+    {
+        const NSRect backing = [view convertRectToBacking:view.bounds];
+        const bool resized = backing.size.width <= 0.0 || backing.size.height <= 0.0 ||
+                             std::fabs(backing.size.width - static_cast<double>(m_SwapchainExtent.width)) > 0.5 ||
+                             std::fabs(backing.size.height - static_cast<double>(m_SwapchainExtent.height)) > 0.5;
+        if (resized)
+        {
+            if (!SyncLayerMetrics(m_MetalLayer, view, m_SwapchainExtent, m_Viewports, m_Scissors))
+            {
+                return true;  // minimised / zero-sized window
+            }
+            if (passUpdateAfterRecreateSwapchain)
+            {
+                passUpdateAfterRecreateSwapchain();
+            }
+        }
+    }
+
+    dispatch_semaphore_t semaphore = m_Semaphores[m_CurrentFrameIndex];
+    if (semaphore != nullptr)
+    {
+        dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+    }
+
+    id<CAMetalDrawable> drawable = [m_MetalLayer nextDrawable];
+    if (drawable == nil)
+    {
+        if (semaphore != nullptr)
+        {
+            dispatch_semaphore_signal(semaphore);
+        }
+        return true;
+    }
+    m_CurrentDrawable = [drawable retain];
+    return false;
+#else
     if (passUpdateAfterRecreateSwapchain)
     {
         passUpdateAfterRecreateSwapchain();
     }
     return true;
+#endif
 }
+
+// Encodes a clear pass into the drawable and presents it. The ZSlate / scene
+// command encoders are not implemented yet, so this is a cleared frame.
 void MetalRHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwapchain)
 {
+#ifdef __APPLE__
+    dispatch_semaphore_t semaphore = m_Semaphores[m_CurrentFrameIndex];
+    if (m_CurrentDrawable == nil)
+    {
+        if (semaphore != nullptr)
+        {
+            dispatch_semaphore_signal(semaphore);
+        }
+        if (passUpdateAfterRecreateSwapchain)
+        {
+            passUpdateAfterRecreateSwapchain();
+        }
+        return;
+    }
+
+    id<MTLCommandBuffer> command_buffer = [m_CommandQueue commandBuffer];
+    if (command_buffer == nil)
+    {
+        [m_CurrentDrawable release];
+        m_CurrentDrawable = nil;
+        if (semaphore != nullptr)
+        {
+            dispatch_semaphore_signal(semaphore);
+        }
+        return;
+    }
+
+    MTLRenderPassDescriptor* pass_descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass_descriptor.colorAttachments[0].texture     = m_CurrentDrawable.texture;
+    pass_descriptor.colorAttachments[0].loadAction  = MTLLoadActionClear;
+    pass_descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
+    pass_descriptor.colorAttachments[0].clearColor  = MTLClearColorMake(0.0941, 0.0941, 0.1039, 1.0);
+
+    id<MTLRenderCommandEncoder> encoder = [command_buffer renderCommandEncoderWithDescriptor:pass_descriptor];
+    [encoder endEncoding];
+
+    [command_buffer presentDrawable:m_CurrentDrawable];
+    [command_buffer addCompletedHandler:^(id<MTLCommandBuffer>) {
+        if (semaphore != nullptr)
+        {
+            dispatch_semaphore_signal(semaphore);
+        }
+    }];
+    [command_buffer commit];
+
+    [m_CurrentDrawable release];
+    m_CurrentDrawable = nil;
+    m_CurrentFrameIndex = (m_CurrentFrameIndex + 1) % k_max_frames_in_flight;
+#else
     if (passUpdateAfterRecreateSwapchain)
     {
         passUpdateAfterRecreateSwapchain();
     }
+#endif
 }
 void MetalRHI::PushEvent(RHICommandBuffer*, const char*, const float*) {}
 void MetalRHI::PopEvent(RHICommandBuffer*) {}
@@ -343,7 +592,28 @@ void MetalRHI::clear()
     m_MaxBindlessSampledImages  = 0;
     m_MaxBindlessStorageBuffers = 0;
 }
-void MetalRHI::ClearSwapchain() {}
+void MetalRHI::ClearSwapchain()
+{
+#ifdef __APPLE__
+    if (m_CurrentDrawable != nil)
+    {
+        [m_CurrentDrawable release];
+        m_CurrentDrawable = nil;
+    }
+    NSView* view = m_SwapchainView != nullptr ? (__bridge NSView*)m_SwapchainView : nil;
+    if (view != nil && view.layer == m_MetalLayer)
+    {
+        view.layer = nil;
+    }
+    if (m_MetalLayer != nil)
+    {
+        [m_MetalLayer release];
+        m_MetalLayer = nil;
+    }
+    m_SwapchainView  = nullptr;
+    m_SwapchainExtent = {0, 0};
+#endif
+}
 void MetalRHI::DestroyDefaultSampler(RHIDefaultSamplerType) {}
 void MetalRHI::DestroyMipmappedSampler() {}
 void MetalRHI::DestroyShaderModule(RHIShader*) {}

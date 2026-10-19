@@ -21,13 +21,6 @@ file(GLOB_RECURSE EDITOR_HEADERS CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*
 file(GLOB_RECURSE EDITOR_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp)
 if(APPLE)
     file(GLOB_RECURSE EDITOR_OBJC_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/*.m ${CMAKE_CURRENT_SOURCE_DIR}/*.mm)
-    # EditorUIPassMacOS.mm is the legacy ImGui-era CAMetalLayer path: it still
-    # #includes <GLFW/glfw3.h>, but GLFW is not a dependency of this repo (the
-    # desktop window layer owns its own platform implementation). Its own header
-    # comment states the file is meant to be deleted once the native ZSlate
-    # overlay has a Metal branch. Keep the source in the tree, but do not compile
-    # it -- EditorUIPass.cpp takes the "no native UI backend" path on Apple.
-    list(FILTER EDITOR_OBJC_SOURCES EXCLUDE REGEX ".*/EditorUIPassMacOS\\.mm$")
     list(APPEND EDITOR_SOURCES ${EDITOR_OBJC_SOURCES})
 endif()
 list(FILTER EDITOR_HEADERS EXCLUDE REGEX ".*/[Pp]latform/([Ww]indows|[Mm]ac[Oo][Ss]|[Ll]inux)/.*")
