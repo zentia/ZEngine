@@ -76,6 +76,13 @@ set_target_properties(ShaderLab PROPERTIES FOLDER "Engine")
 #   so ShaderLab -> ZRuntime is a one-way edge.
 target_link_libraries(ShaderLab PRIVATE ZRuntime)
 
+# ZRuntime links ZEnginePCH PRIVATE, so its PUBLIC include dirs (EASTL,
+# bqlog, mimalloc, rapidjson, xxHash) do NOT reach us through the edge above.
+# ShaderLab TUs pull in <EASTL/functional.h> via Runtime/Core/Base/Hash.h, so
+# link the PCH target as well to inherit those header search paths.
+target_link_libraries(ShaderLab PRIVATE ZEnginePCH)
+target_compile_definitions(ShaderLab PRIVATE EASTL_OPENSOURCE=1)
+
 # Platform-specific compile options.
 if(MSVC)
     # /W4 inherited from upstream config; keep it but drop /WX so the rest

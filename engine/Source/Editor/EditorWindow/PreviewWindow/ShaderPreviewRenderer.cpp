@@ -1,7 +1,5 @@
 #include "ShaderPreviewRenderer.h"
 
-#include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
-#include "Runtime/Function/Render/Interface/DX12/DX12ShaderCompiler.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Core/Math/Vector2.h"  // UV float2 in preview vertices (was ImVec2)

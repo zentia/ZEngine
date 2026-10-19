@@ -3,7 +3,9 @@
 #include "RenderDocAPI.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Command/CommandSystem.h"
-#include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
+#if defined(_WIN32)
+    #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
+#endif
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/WindowSystem.h"
@@ -17,6 +19,12 @@
     #include <string>
     #include <windows.h>
 #endif
+
+// The in-editor RenderDoc integration is Windows-only: it wraps renderdoc.dll
+// and captures through the DX12 device. Non-Windows editor builds still call
+// Runtime::RenderDoc::Init() / OnPreFrame() / OnPostFrame() unconditionally,
+// so they get the no-op definitions at the bottom of this file.
+#if defined(_WIN32)
 
 namespace Runtime
 {
@@ -324,3 +332,21 @@ namespace Runtime
     #endif
     }
 }  // namespace Runtime
+
+#else
+
+namespace Runtime
+{
+    void RenderDoc::Init() {}
+    void RenderDoc::Load() {}
+    bool RenderDoc::IsInstalled() { return false; }
+    bool RenderDoc::IsLoaded() { return false; }
+    bool RenderDoc::IsSupported() { return false; }
+    void RenderDoc::RequestCapture() {}
+    void RenderDoc::OnPreFrame() {}
+    void RenderDoc::OnPostFrame() {}
+    void RenderDoc::BeginFrameCapture() {}
+    void RenderDoc::EndFrameCapture() {}
+}  // namespace Runtime
+
+#endif

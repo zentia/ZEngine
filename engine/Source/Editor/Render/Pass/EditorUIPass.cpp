@@ -69,7 +69,7 @@ void EditorUIPass::InitializeUIRenderBackend(WindowUI* window_ui)
 #endif
 
 #if defined(__APPLE__)
-    m_BackendInitialized = EditorMetalUIInitialize(GET_SYSTEM(WindowSystem)->GetWindow());
+    m_BackendInitialized = EditorMetalUIInitialize(static_cast<GLFWwindow*>(GET_SYSTEM(WindowSystem)->GetNativeWindowHandle()));
     return;
 #elif defined(Z_HAS_VULKAN)
     // Native overlay draws inside the main-camera render pass UI subpass (see Draw()).
@@ -269,7 +269,7 @@ void EditorUIPass::Draw()
 #endif
 
 #if defined(__APPLE__)
-    (void)EditorMetalUIRender(GET_SYSTEM(WindowSystem)->GetWindow(), m_WindowUi);
+    (void)EditorMetalUIRender(static_cast<GLFWwindow*>(GET_SYSTEM(WindowSystem)->GetNativeWindowHandle()), m_WindowUi);
     return;
 #elif defined(Z_HAS_VULKAN)
     if (m_GameThreadFramePrepared)

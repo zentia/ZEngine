@@ -217,12 +217,12 @@ void ZSlateAnimationWindow::PaintPropertyList(UIRenderer& r, const ::UIRect& reg
     for (size_t i = 0; i < m_CurrentAsset->clip_data.node_channels.size(); ++i)
     {
         const AnimationChannel& channel = m_CurrentAsset->clip_data.node_channels[i];
-        const std::string key = channel.name + "_" + std::to_string(i);
+        const std::string key = std::string(channel.name.c_str()) + "_" + std::to_string(i);
         const bool expanded = m_ExpandedChannels.count(key) ? m_ExpandedChannels[key] : true;
 
         const ZSlate::UIRect head_rect(region.x, y, region.width, row_h);
         r.DrawText(ZSlate::UIRect(region.x + 4.0f * scale, y, region.width - 8.0f * scale, row_h),
-                   std::string(expanded ? "v " : "> ") + channel.name,
+                   std::string(expanded ? "v " : "> ") + channel.name.c_str(),
                    font,
                    kLabelColor,
                    ZSlate::TextAnchor::MiddleLeft,
@@ -438,7 +438,7 @@ void ZSlateAnimationWindow::HandlePropertyListClick(const ::Vector2& mouse)
             m_Selected.channel_index = row.channel_index;
             if (m_CurrentAsset != nullptr && row.channel_index >= 0 &&
                 row.channel_index < static_cast<int>(m_CurrentAsset->clip_data.node_channels.size()))
-                m_Selected.channel_name = m_CurrentAsset->clip_data.node_channels[row.channel_index].name;
+                m_Selected.channel_name = m_CurrentAsset->clip_data.node_channels[row.channel_index].name.c_str();
             m_Selected.property_type = row.prop_type;
             UpdateSelectedKeyframes();
         }

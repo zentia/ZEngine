@@ -1,7 +1,6 @@
 #include "Runtime/Function/ShaderLab/ShaderLabDx12Compiler.h"
 
 #include "Runtime/Core/Log/LogSystem.h"
-#include "Runtime/Function/Render/Interface/DX12/DX12ShaderCompiler.h"
 #include "Runtime/Function/ShaderLab/ShaderLabHlslExtract.h"
 
 #include <algorithm>
@@ -10,6 +9,8 @@
 #include <sstream>
 
 #if defined(_WIN32)
+// d3d12.h only exists on Windows; keep the DX12 header out of Apple/Linux TUs.
+#include "Runtime/Function/Render/Interface/DX12/DX12ShaderCompiler.h"
 
 namespace ZEngine::ShaderLab
 {
