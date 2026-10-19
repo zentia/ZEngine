@@ -7,6 +7,19 @@
 // id -> text registered at start-up. This module holds that table, and the
 // persisted language choice.
 //
+// Where the table's DATA comes from depends on the build:
+//   * ZENVCHECK_USE_ZRUNTIME -- a real engine DataTable. The strings are
+//     authored in resource/ui_strings_zh-CN.csv, cooked to
+//     resource/ui_strings_zh-CN.zasset by DataTableCook at build time, and read
+//     through the C ABI in Runtime/ZEngineApi/ZEngineToolApi.h. Translating the
+//     tool is a CSV edit, not a code change.
+//   * otherwise (standalone configure, no ZRuntimeShared) -- the same strings
+//     compiled into UiLocalization.cpp.
+//
+// This is the reason the collector links ZRuntimeShared at all: it needs the
+// engine's logging and its table pipeline, and both are cheaper to take from the
+// engine than to duplicate in a tool that ships to players.
+//
 // Deliberately ZSlate-free and Windows-free in its declarations: the CLI-only
 // build (EnvironmentCheckGuiFallback.cpp, no ZSlate at all) links the same
 // object, so nothing here may reach into ZSlate headers. Registering the table

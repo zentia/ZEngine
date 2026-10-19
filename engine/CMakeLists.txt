@@ -326,6 +326,14 @@ endif()
 # standalone case -- pull this block above Source/Runtime and they would create a
 # second ZSlate, colliding with the engine's.
 
+# DataTableCook bakes a LocalizationTable CSV into a .zasset at build time.
+# Declared BEFORE WindowsEnvironmentCheck because the collector's POST_BUILD
+# step runs the cooker to produce the table it ships.
+option(ZENGINE_BUILD_DATATABLE_COOK "Build the CSV -> .zasset table cooker" ON)
+if(ZENGINE_BUILD_DATATABLE_COOK)
+    add_subdirectory(tools/DataTableCook)
+endif()
+
 option(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK "Build the standalone Windows environment checker" ON)
 
 if(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK AND WIN32)

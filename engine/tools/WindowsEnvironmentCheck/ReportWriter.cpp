@@ -3,10 +3,13 @@
 #include "JsonEscape.h"
 #include "ToolVersion.h"
 
+#include <windows.h>
+
 #include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 
 namespace zengine::envcheck
 {
@@ -569,17 +572,107 @@ std::string BuildJsonReport(
     return stream.str();
 }
 
+namespace
+{
+// The name the report is built under before it is published. The process id is
+// part of it because two runs can publish the same report at the same time --
+// a launcher that starts one check per launch does exactly that -- and sharing
+// one temporary would let the slower run rename away the faster one's content.
+std::filesystem::path TemporaryReportPath(const std::filesystem::path& path)
+{
+    std::filesystem::path temporary(path);
+    temporary += "." + std::to_string(::GetCurrentProcessId()) + ".tmp";
+    return temporary;
+}
+
+// Errors that mean "someone still has the old copy open" rather than "this path
+// can never be written". The replace below needs DELETE access to the file it
+// overwrites, and an ifstream opened by MSVC's CRT shares read and write but
+// not delete -- so a launcher reading the previous report at the moment we
+// publish denies the rename. Waiting a moment is the whole fix.
+bool IsTransientPublishError(DWORD error)
+{
+    switch (error)
+    {
+    case ERROR_ACCESS_DENIED:
+    case ERROR_SHARING_VIOLATION:
+    case ERROR_LOCK_VIOLATION:
+    case ERROR_USER_MAPPED_FILE:
+        return true;
+    default:
+        return false;
+    }
+}
+} // namespace
+
 void WriteReportFile(const std::filesystem::path& path, const std::string& content)
 {
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    if (!output)
+    const std::filesystem::path temporary = TemporaryReportPath(path);
+    // Whatever fails below, the temporary must not survive next to the report:
+    // a stale one is exactly what makes a support engineer wonder which of the
+    // two files is authoritative.
+    struct TemporaryCleanup
     {
-        throw std::runtime_error("Failed to open report file: " + path.string());
+        std::filesystem::path path;
+        bool published = false;
+        ~TemporaryCleanup()
+        {
+            if (published) return;
+            std::error_code ignored;
+            std::filesystem::remove(path, ignored);
+        }
+    } cleanup{temporary};
+
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output)
+        {
+            throw std::runtime_error("Failed to open report file: " + temporary.string());
+        }
+        output.write(content.data(), static_cast<std::streamsize>(content.size()));
+        // Close explicitly and check it: close() is where a buffered write
+        // failure (disk full, removed drive) is reported, and publishing a file
+        // whose bytes never landed would be worse than not publishing at all.
+        output.close();
+        if (!output)
+        {
+            throw std::runtime_error("Failed to write report file: " + temporary.string());
+        }
     }
-    output.write(content.data(), static_cast<std::streamsize>(content.size()));
-    if (!output)
+
+    // Publish by rename. The destination directory entry flips from the old
+    // report to the new one in a single operation, so a reader that opens the
+    // path either gets all of the old file or all of the new one -- never the
+    // empty or half-written document the previous truncate-in-place write left
+    // behind for the launcher's polling loop.
+    //
+    // REPLACE_EXISTING preserves the old behaviour: a report is rewritten on
+    // every run, including the first one into an output directory a previous
+    // run already used. (The ZIP deliberately does the opposite -- see
+    // ReportArchive.cpp -- because overwriting a captured evidence package is
+    // never right; a regenerated report is.)
+    // One second in total. That is not a round number picked for luck: a
+    // launcher polling every few hundred milliseconds holds the previous report
+    // open for the few milliseconds it takes to read it, and 200 ms was enough
+    // for the retry window to expire inside one of those holds -- the publish
+    // then failed and the launcher kept showing yesterday's report.
+    constexpr int PublishAttempts = 100;
+    constexpr DWORD PublishRetryDelayMilliseconds = 10;
+    for (int attempt = 0; attempt < PublishAttempts; ++attempt)
     {
-        throw std::runtime_error("Failed to write report file: " + path.string());
+        if (::MoveFileExW(temporary.c_str(), path.c_str(),
+                          MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE)
+        {
+            cleanup.published = true;
+            return;
+        }
+        const DWORD error = ::GetLastError();
+        if (!IsTransientPublishError(error) || attempt + 1 == PublishAttempts)
+        {
+            throw std::runtime_error("Failed to publish report file " + path.string()
+                                     + ": " + std::to_string(error));
+        }
+        ::Sleep(PublishRetryDelayMilliseconds);
     }
 }
 } // namespace zengine::envcheck

@@ -37,6 +37,38 @@ struct Result
     bool partial = false;
     bool cancelled = false;
 };
+
+// ---------------------------------------------------------------------------
+// Incident anchor -- the three inputs that decide whether a package can be
+// attributed at all.
+// ---------------------------------------------------------------------------
+// Without an incident time, an incident kind and the game exe name, a package
+// can only answer "what does this machine look like" -- it cannot answer "was
+// that the game". Three real cases (20261013 r809053, 20261015 #45665,
+// 20261016 Lenovo 82RC) came back with one or more of these missing and were
+// useless for attribution, which is why the tool now says so loudly instead of
+// shipping a package that looks complete.
+//
+// Not an error: a pure machine-health sweep is a legitimate use, so a missing
+// anchor warns and is recorded, never refuses to collect.
+struct AttributionAnchor
+{
+    bool incidentTime = false;     // options.incidentTime != 0
+    bool incidentKind = false;     // options.incidentKind != Unknown
+    bool gameExecutable = false;   // profile.gameExecutable non-empty
+    bool Usable() const { return incidentTime && incidentKind && gameExecutable; }
+};
+AttributionAnchor DescribeAttributionAnchor(const Options& options);
+
+// summary.txt header, in Chinese on purpose: report files are a deliverable for
+// support, not a player-facing UI, so they never follow the language switch.
+// Empty when the anchor is complete.
+std::string BuildAttributionWarning(const AttributionAnchor& anchor);
+
+// manifest.json fragment: "\"attributionUsable\":false,\"missingAttributionInputs\":[...]".
+// Machine-readable so a triage script can sort incoming packages before a human
+// opens any of them.
+std::string BuildAttributionManifestFields(const AttributionAnchor& anchor);
 // Game log packaging (stage "gamelogs").
 constexpr std::uint32_t MaxGameLogFiles = 8;
 constexpr std::uint64_t MaxGameLogFileBytes = 16ull << 20; // matches the report archive per-file cap
@@ -58,6 +90,14 @@ GameLogCollection CollectGameLogs(const std::filesystem::path& logDirectory, con
 std::filesystem::path ResolveGameLogDirectory(const Profile& profile);
 // True for names this tool can have written into the report directory (archive whitelist).
 bool IsArchivedGameLogName(const std::string& name);
+
+// Stand-in passed to a stage worker when no game exe was specified -- --game-exe
+// needs a value, and an empty one is indistinguishable from a missing argument.
+// It is never a real exe name: the worker turns it back into "unset" the moment
+// it receives it, because a placeholder that reaches the attribution rules (or
+// events-redacted.json's gameExecutableSpecified) reads as a real game and
+// silently turns "we were never told" into "definitely not the game".
+constexpr const char* UnspecifiedGamePlaceholder = "__unspecified_game__.exe";
 
 // File name of the single distributed tool executable. After the collector GUI,
 // the GPU inspector GUI and the CLI merged into one shell, this is the only name

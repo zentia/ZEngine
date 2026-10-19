@@ -10,6 +10,18 @@
 // the ones a player cannot describe. Logging through bqlog puts them in the
 // same per-executable log file the engine uses, which is what support asks for.
 //
+// Two implementations behind this one interface, selected by the
+// ZENVCHECK_USE_ZRUNTIME define (see CMakeLists.txt):
+//
+//   * defined  -- the tool links ZRuntimeShared and logs through the engine's
+//     LogSystem, reached via the C ABI in Runtime/ZEngineApi/ZEngineToolApi.h.
+//     The DLL owns bqlog, so the process has exactly one log instance and the
+//     file sits beside the engine's own. The same ZRuntime_ToolInit() call is
+//     what makes the localization DataTable loadable, so logging and strings
+//     come up together.
+//   * undefined -- the standalone configure, which has no ZRuntimeShared target:
+//     bqlog is linked statically, exactly as before.
+//
 // Log file: %USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_*.log
 // (same rule as LogSystem; -batchmode keeps printing to stdout as well, so CI
 // captures are unaffected).

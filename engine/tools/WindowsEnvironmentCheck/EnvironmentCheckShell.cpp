@@ -51,6 +51,7 @@
 #include "Diagnosis.h"
 #include "EnvCheckLog.h"
 #include "EnvironmentCheckCommand.h"
+#include "Preflight.h"
 #include "WerCapture.h"
 
 #include <ZAppShell/AppMain.h>
@@ -115,6 +116,9 @@ int RunBatchMode(int argumentCount, wchar_t** arguments)
         if (zengine::envcheck::diagnosis::IsDiagnosisCommandLine(count, args))
             return zengine::envcheck::diagnosis::RunDiagnosis(
                 zengine::envcheck::diagnosis::ParseDiagnosisCommandLine(count, args));
+        if (zengine::envcheck::preflight::IsPreflightCommandLine(count, args))
+            return zengine::envcheck::preflight::RunPreflight(
+                zengine::envcheck::preflight::ParsePreflightCommandLine(count, args));
         if (HasGpuSelectionVerb(count, args))
             return zengine::envcheck::RunGpuSelectionCommand(count, args);
         return zengine::envcheck::RunEnvironmentCheckCommand(count, args);

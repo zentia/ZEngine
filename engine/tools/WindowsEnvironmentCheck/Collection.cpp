@@ -37,6 +37,58 @@ std::string JsonString(const std::string& value)
     }
     return out + '"';
 }
+AttributionAnchor DescribeAttributionAnchor(const Options& options)
+{
+    AttributionAnchor anchor;
+    anchor.incidentTime = options.incidentTime != 0;
+    anchor.incidentKind = options.incidentKind != IncidentKind::Unknown;
+    // The placeholder counts as "not specified": it only ever reaches a stage
+    // worker on the command line, and treating it as a name would turn "we were
+    // never told which game" into "a game was named".
+    anchor.gameExecutable = !options.profile.gameExecutable.empty()
+        && options.profile.gameExecutable != UnspecifiedGamePlaceholder;
+    return anchor;
+}
+
+std::string BuildAttributionWarning(const AttributionAnchor& anchor)
+{
+    if (anchor.Usable()) return {};
+    std::vector<std::string> missing;
+    if (!anchor.incidentTime) missing.push_back("事故发生时间（manifest 的 incidentTimeUtc）");
+    if (!anchor.incidentKind) missing.push_back("现象类型：崩溃还是卡死（manifest 的 incidentKind）");
+    if (!anchor.gameExecutable) missing.push_back("游戏 exe 名（profile 的 gameExecutable）");
+    std::ostringstream out;
+    out << "================================================================\n"
+        << "警告：本包缺少事故锚点，不能用于事故归因。\n"
+        << "它只能回答「这台机器近期系统层面有什么」，不能回答「是不是游戏导致的」，\n"
+        << "同样也不能用来证明「与游戏无关」。\n"
+        << "缺失项：";
+    for (std::size_t index = 0; index < missing.size(); ++index)
+    {
+        if (index) out << "、";
+        out << missing[index];
+    }
+    out << "\n补齐以上信息后重新采集，这份包才具备归因价值。\n"
+        << "================================================================\n\n";
+    return out.str();
+}
+
+std::string BuildAttributionManifestFields(const AttributionAnchor& anchor)
+{
+    std::vector<std::string> missing;
+    if (!anchor.incidentTime) missing.push_back("incidentTimeUtc");
+    if (!anchor.incidentKind) missing.push_back("incidentKind");
+    if (!anchor.gameExecutable) missing.push_back("gameExecutable");
+    std::ostringstream out;
+    out << "\"attributionUsable\":" << (anchor.Usable() ? "true" : "false") << ",\"missingAttributionInputs\":[";
+    for (std::size_t index = 0; index < missing.size(); ++index)
+    {
+        if (index) out << ',';
+        out << JsonString(missing[index]);
+    }
+    return out.str() + ']';
+}
+
 std::filesystem::path ExecutableDirectory()
 {
     std::vector<wchar_t> buffer(32768);
@@ -130,7 +182,7 @@ std::string RunStageProcess(const Options& options, const std::filesystem::path&
     if (!std::filesystem::is_regular_file(exe)) return "HELPER_MISSING";
     std::wstring command = Quote(exe.wstring()) + L" --collect-stage " + Utf8ToWide(stage)
         + L" --output-dir " + Quote(directory.wstring()) + L" --lookback-hours " + std::to_wstring(options.profile.lookbackHours)
-        + L" --game-exe " + Quote(Utf8ToWide(options.profile.gameExecutable.empty() ? "__unspecified_game__.exe" : options.profile.gameExecutable))
+        + L" --game-exe " + Quote(Utf8ToWide(options.profile.gameExecutable.empty() ? UnspecifiedGamePlaceholder : options.profile.gameExecutable))
         + L" --incident-kind " + Utf8ToWide(options.incidentKind == IncidentKind::Crash ? "crash" : options.incidentKind == IncidentKind::Hang ? "hang" : "unknown");
     if (options.incidentTime) command += L" --incident-time " + Quote(Utf8ToWide(FormatUtcIso8601(options.incidentTime)));
     if (options.includeEvents) command += L" --include-events";
@@ -290,15 +342,30 @@ int RunStage(const std::string& stage, const Options& options)
         WriteReportFile(options.outputDirectory / "diagnosis.json", BuildDiagnosisJson(result, context));
         if (options.includeEvents)
         {
-            std::ostringstream out; out << "{\"schemaVersion\":1,\"redacted\":true,\"replayCompatible\":false,\"events\":[";
+            // schemaVersion 2 adds isTargetGame. Until now a crash whose process
+            // was redacted to OTHER_PROCESS carried no answer at all to "is that
+            // our game crashing?" -- the one question an incoming package exists
+            // to answer. The boolean answers it while keeping the name hidden.
+            // Same predicate the anchor uses, so a placeholder can never make
+            // this file claim the game was named when it was not.
+            const bool gameSpecified = DescribeAttributionAnchor(options).gameExecutable;
+            std::ostringstream out;
+            out << "{\"schemaVersion\":2,\"redacted\":true,\"replayCompatible\":false"
+                << ",\"gameExecutableSpecified\":" << (gameSpecified ? "true" : "false")
+                << ",\"events\":[";
             bool first = true;
             for (const auto& e : events.events)
             {
                 if (!first) out << ','; first = false;
-                auto app = EqualsIgnoreCaseAscii(e.appName, options.profile.gameExecutable) ? options.profile.gameExecutable
+                const bool isGame = gameSpecified && EqualsIgnoreCaseAscii(e.appName, options.profile.gameExecutable);
+                auto app = isGame ? options.profile.gameExecutable
                     : EqualsIgnoreCaseAscii(e.appName, "dwm.exe") ? "dwm.exe" : e.appName.empty() ? "" : "OTHER_PROCESS";
                 out << "{\"timeUtc\":" << JsonString(FormatUtcIso8601(e.time)) << ",\"provider\":" << JsonString(e.provider)
                     << ",\"id\":" << e.eventId << ",\"level\":" << e.level << ",\"application\":" << JsonString(app)
+                    // null, never false, when no game exe was supplied: "we were
+                    // never told which game" and "this is definitely not that
+                    // game" are different answers and must stay distinguishable.
+                    << ",\"isTargetGame\":" << (gameSpecified ? (isGame ? "true" : "false") : "null")
                     << ",\"module\":" << JsonString(app == "OTHER_PROCESS" ? "REDACTED" : FileNameOf(e.moduleName)) << ",\"exceptionCode\":" << JsonString(e.exceptionCode)
                     << ",\"werEvent\":" << JsonString(e.werEventName)
                     << ",\"liveKernelCode\":" << JsonString(EqualsIgnoreCaseAscii(e.werEventName, "LiveKernelEvent") ? e.werP1 : "") << '}';
@@ -546,11 +613,19 @@ Result Collect(const Options& options, const std::atomic_bool& cancel, const std
     if (!logDirectory.empty()) stages.push_back({"gamelogs", "复制游戏日志", "game-logs.json"});
     std::vector<std::string> files;
     std::ostringstream manifest, summary;
+    // Computed once, from what the caller actually supplied, and echoed into
+    // both outputs: summary.txt so the person who collected it sees it, and
+    // manifest.json so triage can filter packages without opening any of them.
+    const AttributionAnchor anchor = DescribeAttributionAnchor(options);
     manifest << "{\"schemaVersion\":1,\"toolVersion\":" << JsonString(ToolVersion) << ",\"profile\":" << JsonString(options.profile.id)
         << ",\"collectedAtUtc\":" << JsonString(FormatUtcIso8601(CurrentUtcTime()))
         << ",\"incidentTimeUtc\":" << JsonString(FormatUtcIso8601(options.incidentTime))
         << ",\"incidentKind\":" << JsonString(ToString(options.incidentKind)) << ",\"lookbackHours\":" << options.profile.lookbackHours
-        << ",\"detailedEventsConsent\":" << (options.includeEvents ? "true" : "false") << ",\"stages\":[";
+        << ",\"detailedEventsConsent\":" << (options.includeEvents ? "true" : "false")
+        << ',' << BuildAttributionManifestFields(anchor) << ",\"stages\":[";
+    // The warning goes FIRST, above the boilerplate: a package that cannot be
+    // attributed has to say so before anything that makes it look complete.
+    summary << BuildAttributionWarning(anchor);
     summary << "Windows 环境采集报告\n项目: " << options.profile.displayName << "\n工具: " << ToolVersion
         << "\n不自动上传，不加载游戏DLL，不运行内存测试，不修改BIOS。\n未发现事件不等于系统正常；采集成功也不等于硬件健康。\n\n";
     bool first = true;
@@ -625,7 +700,17 @@ int RunCollectionCommand(int argc, wchar_t** argv)
         else if (key == L"--profile") options.profile = LoadProfile(value());
         else if (key == L"--output-dir") options.outputDirectory = value();
         else if (key == L"--log-dir") options.logDirectory = value();
-        else if (key == L"--game-exe") { options.profile.gameExecutable = WideToUtf8(value()); if (!SafeName(options.profile.gameExecutable)) throw std::invalid_argument("Invalid executable name"); }
+        else if (key == L"--game-exe")
+        {
+            options.profile.gameExecutable = WideToUtf8(value());
+            // The stage worker always receives a value, so "no game specified"
+            // arrives as the placeholder. Restore it to unset before anything
+            // reads it: seen as a real name it would make events-redacted.json
+            // claim the game was specified (and answer isTargetGame=false
+            // instead of null) when in fact nobody said which game it was.
+            if (options.profile.gameExecutable == UnspecifiedGamePlaceholder) options.profile.gameExecutable.clear();
+            if (!options.profile.gameExecutable.empty() && !SafeName(options.profile.gameExecutable)) throw std::invalid_argument("Invalid executable name");
+        }
         else if (key == L"--lookback-hours") options.profile.lookbackHours = Number(value(), 1, 720);
         else if (key == L"--stage-timeout-seconds") options.stageTimeoutSeconds = Number(value(), 1, 300);
         else if (key == L"--include-events") options.includeEvents = true;
@@ -649,7 +734,13 @@ int RunCollectionCommand(int argc, wchar_t** argv)
         }
         else throw std::invalid_argument("Unknown collection option");
     }
+    // Stage workers are separate processes; only the orchestrating run prints.
     if (!stage.empty()) return RunStage(stage, options);
+    // Same warning the GUI shows and summary.txt carries. A CLI run is even
+    // easier to fire off with no anchor, and stdout is the only place anyone
+    // will see it before the ZIP is handed over.
+    if (const auto anchor = DescribeAttributionAnchor(options); !anchor.Usable())
+        std::cout << BuildAttributionWarning(anchor);
     std::atomic_bool cancel{false};
     auto result = Collect(options, cancel, [](const std::string& message, bool) { std::cout << message << std::endl; });
     std::cout << "ZIP: " << WideToUtf8(result.archive.wstring()) << "\nPartial: " << result.partial << '\n';

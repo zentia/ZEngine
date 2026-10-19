@@ -175,6 +175,9 @@ public:
     std::vector<std::shared_ptr<SWidget>> interactive;
 
     std::shared_ptr<STextBlock> status, timeLabel;
+    // Shown above the collection tab whenever the package would come back
+    // unattributable (missing incident time / incident kind / game exe).
+    std::shared_ptr<STextBlock> anchorWarning;
     std::shared_ptr<SComboBox<int>> langBox;
     std::shared_ptr<SComboBox<IncidentKind>> kindBox;
     std::shared_ptr<SComboBox<int>> captureMode;
@@ -218,6 +221,17 @@ public:
     // logical units and FSlateDpiScaleRenderer applies the new factor on paint.
     void ApplyDpi(UINT dpi)
     {
+        // TEMPORARY debug hook: reproduce a user's high-DPI rendering on a
+        // 96-DPI dev machine. Remove once the glyph-scramble report is solved.
+        if (char buf[16] = {}; GetEnvironmentVariableA("ZCOLLECTOR_FORCE_DPI", buf, sizeof(buf)) > 0)
+        {
+            const int forced = std::atoi(buf);
+            if (forced >= 96 && forced <= 480)
+            {
+                ZSlate::Log(ZSlate::ELogLevel::Info, "[debug] forcing DPI %d (queried %u)", forced, dpi);
+                dpi = static_cast<UINT>(forced);
+            }
+        }
         platform.dpiScale = static_cast<float>(dpi ? dpi : 96) / 96;
         platform.scaled.SetScale(platform.dpiScale);
         RECT client{};
@@ -312,6 +326,9 @@ public:
         if (captureMode && mode >= 0 && mode < static_cast<int>(captureMode->Options.size()))
         { captureMode->SelectedIndex = mode; captureMode->SelectedItem = captureMode->Options[static_cast<std::size_t>(mode)]; }
         if (timeInput) timeInput->SetText(time);
+        // After the time box is restored: the warning reads it, and during
+        // Build() it still held the pre-rebuild (empty) text.
+        RefreshAnchorWarning();
         if (checkOutputInput) checkOutputInput->SetText(output);
         if (checkRequireInput) checkRequireInput->SetText(isa);
         if (checkMemoryInput) checkMemoryInput->SetText(memory);
@@ -405,6 +422,11 @@ public:
         column = tabs[static_cast<std::size_t>(ShellTab::Collection)] = std::make_shared<SVerticalBox>();
         Text(S("collection.title", "Windows Environment Collection"), 29);
         Text(S("collection.project", "Project: ") + options.profile.displayName, 18);
+        // Red, above everything the user fills in: the anchor decides whether
+        // the package is worth anything, and it is the one thing that has been
+        // forgotten three times in a row.
+        anchorWarning = Text("", 16);
+        anchorWarning->SetColor(FailColor);
         Text(S("collection.intro",
                "Collects hardware, BIOS, drivers, system events and existing memory test results, "
                "and attaches the newest game logs the project profile asks for."), 16);
@@ -420,7 +442,11 @@ public:
                  : kind == IncidentKind::Hang  ? S("collection.kind.hang", "Hang")
                                                : S("collection.kind.unknown", "Unsure");
         };
-        kindBox->OnSelectionChanged = [this](IncidentKind kind, int32_t) { if (!busy) options.incidentKind = kind; };
+        kindBox->OnSelectionChanged = [this](IncidentKind kind, int32_t) {
+            if (busy) return;
+            options.incidentKind = kind;
+            RefreshAnchorWarning();
+        };
         kindBox->Size = Vector2(260, 32);
         kindBox->ItemHeight = 32;
         kindBox->FontSize = 18;
@@ -822,6 +848,37 @@ public:
                 MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES;
         return true;
     }
+    // A package missing any of the three anchor inputs cannot answer the one
+    // question it was collected for -- "was that the game?" -- and the discovery
+    // used to happen on the developer's side, days later. Surface it on the
+    // form, and again before the ZIP is built.
+    void RefreshAnchorWarning()
+    {
+        if (!anchorWarning) return;
+        Options current = options;
+        if (timeInput)
+        {
+            const auto text = timeInput->GetText();
+            current.incidentTime = 0;
+            // An unparseable time is "not supplied" as far as attribution is
+            // concerned; Start() reports the format error separately.
+            if (!text.empty() && !TryParseUtcIso8601(text, current.incidentTime)) current.incidentTime = 0;
+        }
+        const auto anchor = DescribeAttributionAnchor(current);
+        if (anchor.Usable()) { anchorWarning->SetText({}); return; }
+        std::vector<std::string> missing;
+        if (!anchor.incidentTime) missing.push_back(S("collection.anchor.missing.time", "when it happened"));
+        if (!anchor.incidentKind) missing.push_back(S("collection.anchor.missing.kind", "what happened"));
+        if (!anchor.gameExecutable) missing.push_back(S("collection.anchor.missing.game", "the game exe (none in this profile)"));
+        std::string text = S("collection.anchor.warning",
+                             "This package cannot be used to attribute an incident without: ");
+        for (std::size_t index = 0; index < missing.size(); ++index)
+        {
+            if (index) text += ", ";
+            text += missing[index];
+        }
+        anchorWarning->SetText(text);
+    }
     void Start()
     {
         if (busy) return;
@@ -833,6 +890,18 @@ public:
         if (input.incidentTime > CurrentUtcTime() + 5 * TicksPerMinute)
         { status->SetText(S("status.time.future", "The incident time cannot be in the future.")); return; }
         input.includeEvents = details->IsChecked();
+        // Deliberately a confirmation, not a block: sweeping a machine's health
+        // with no incident to anchor to is a legitimate use. But the user must
+        // know, before the ZIP exists, what they will be handing over.
+        if (!DescribeAttributionAnchor(input).Usable()
+            && MessageBoxW(window,
+                W("collection.confirm.anchor.body",
+                  "This collection has no incident time, no incident type, or no game exe, so the package "
+                  "cannot say whether the game caused anything -- only what this machine looks like.\n"
+                  "If you are sending this to a developer for a crash or a freeze, go back and fill them in first.\n\n"
+                  "Collect an unattributable package anyway?").c_str(),
+                W("collection.confirm.anchor.title", "No incident anchor").c_str(),
+                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
         SetBusy(Job::Collection);
         worker = std::thread([this, input] {
             try

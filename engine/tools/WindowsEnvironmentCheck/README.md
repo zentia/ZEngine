@@ -33,15 +33,47 @@ GUI 的“兼容性检查”和“GPU 选卡验证”与命令行走的是同一
 `HKCU\Software\ZEngine\EnvironmentCollector\Language`（和 ProcDump 路径同一个键），
 下次启动自动沿用。临时覆盖：`ZEnvironmentCollector.exe --lang zh-CN`（`en` | `zh-CN`）。
 
-实现约定（多语言机制在 ZSlate，不在本工具）：
+实现约定（多语言**机制**在 ZSlate，**数据**在引擎的 DataTable）：
 
 - 机制在 `ZSlate/Core/SlateLocalization.h`：英文写在源码里（"id" + 英文原文），
   其它语言是注册表式词条表；缺词条自动回退英文，并在日志里报一次缺失的 id。
-- 本工具只持有自己的词条：`UiLocalization.cpp`（简体中文表 + 语言偏好读写），
-  它不依赖 ZSlate，CLI-only 构建也会链接它。
+- 词条**不是硬编码**的：简体中文写在 `resource/ui_strings_zh-CN.csv`，构建期由
+  `DataTableCook` 烤成 `resource/ui_strings_zh-CN.zasset`（真正的引擎 DataTable，行类型见
+  `Runtime/Resource/Asset/Data/LocalizationTable.h`），运行时通过
+  `Runtime/ZEngineApi/ZEngineToolApi.h` 的 C ABI 读取。改文案是改 CSV，不是改 C++。
+- `UiLocalization.cpp` 只负责“把表读进来 + 读写语言偏好”，它不依赖 ZSlate，
+  CLI-only 构建也会链接它。
 - 切换语言会重建控件树（字符串是在建控件时解析的，不是绘制时），表单里已填的内容会被带过去。
 - **报告文件内容（TXT/JSON）不受语言开关影响，始终中文**：那是给研发和支持的交付物，
   不是给玩家看的界面。
+
+## 与 ZRuntimeShared 的关系
+
+全树构建时本工具链接 `ZRuntimeShared.dll`，日志和多语言表都来自引擎——原因是这两件事
+引擎本来就有，而本工具正好都需要：
+
+- **日志**：引擎的 `LogSystem`（bqlog）。工具是 WINDOWS 子系统进程，双击启动时 stderr
+  没人看得见，而它要报告的失败（缺字体、WER 恢复失败、ProcDump 没产出 dump）恰恰是玩家
+  描述不出来的那些。日志落在 `%USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_*.log`。
+- **多语言表**：硬编码在代码里不好维护，走表；而表本身是引擎能力（DataTable +
+  AssetManager + SerializedFile），所以一并从引擎取。
+
+两者都只通过 `extern "C"` 入口（`ZRuntime_*`）跨模块，不传 `std::string`、不跨模块
+`new/delete`，因此 `/MT` 的 exe 也能安全消费 CRT 选择不同的 DLL。
+
+只起引擎的**最小切片**（`RegisterCore()` + `RegisterPlatform()`）：反射、内存、FileSystem、
+ObjectManager、AssetManager，加上 LogSystem。**不注册** Application / WindowSystem / 任何 RHI /
+ScriptingManager / ProjectInfo——一个被派去诊断机器的工具，不该在那台机器上开窗口或建 GPU 设备。
+
+构建方式随之改变：
+
+| 配置方式 | 后端 | 说明 |
+|---|---|---|
+| 全树 `cmake -S . -B build` | 引擎后端（链接 ZRuntimeShared） | **分发用的构建**，配合 `-DZENGINE_STATIC_CRT=ON` 让 DLL 也是 `/MT`，产物仍能发到没有 VC redist 的机器 |
+| 独立 `cmake -S engine/tools/WindowsEnvironmentCheck -B <dir>` | 自包含（静态 bqlog + 内置表） | 没有 ZRuntimeShared 目标（那要拉起整个 Runtime 依赖树），退化为旧路径 |
+
+注意：引擎后端下 `ZRuntimeShared.dll` 必须和 exe 同目录（POST_BUILD 已拷贝），
+否则进程起不来。
 
 ## 产物
 
@@ -50,6 +82,8 @@ Release 构建后需要一起分发：
 ```text
 ZEnvironmentCollector.exe
 ZDllLoadProbe.exe
+ZRuntimeShared.dll          <- 仅引擎后端（全树构建）
+resource\ui_strings_zh-CN.zasset   <- 仅引擎后端，构建期由 DataTableCook 生成
 profiles\default.ini
 profiles\osgame.ini
 LICENSE-Zydis.txt
@@ -58,6 +92,10 @@ LICENSE-Zycore.txt
 
 - `ZEnvironmentCollector.exe`：主程序（GUI + `-batchmode` CLI）。
 - `ZDllLoadProbe.exe`：无 C/C++ CRT、无 AVX/AVX2 的隔离 DLL 加载探针。
+- `ZRuntimeShared.dll`：引擎切片（日志 + 表）。缺了它进程起不来，不只是少个功能。
+  用 `-DZENGINE_STATIC_CRT=ON` 构建时它也是 `/MT`，所以目录照样是自包含的。
+- `resource\ui_strings_zh-CN.zasset`：简体中文界面表。缺失时界面降级为英文，工具仍然可用
+  （引擎日志里会写明原因）——诊断工具不能因为自己的资源目录坏了就跑不起来。
 - `profiles\*.ini`：项目配置，GUI 默认读取同目录 `profiles/default.ini`。
 - `LICENSE-*.txt`：静态链接的 Zydis/Zycore MIT 许可证。
 
@@ -269,6 +307,90 @@ GUI 使用 ZSlate，不依赖 ZRuntime、编辑器或游戏进程。公共源码
 
 `BuildEventScanOrder()` / `IsEmptyEventScanRange()` 在 `EventLogReader.h` 导出，`EnvironmentCollectorTests` 覆盖：三段切分与顺序、边界不重叠、`priority` 标记唯一、无事故时间时退回单段、优先窗口落在区间外时退回单段且不冒充事故窗口、只截断上下文时维持 `NO_SYSTEM_EVIDENCE` 且记 `SCAN_CONTEXT_TRUNCATED`、事故窗口被截断时仍 `INCONCLUSIVE`、版本 1 事件文件回放后新字段取默认值。
 
+### 1.8.1 事故锚点与 isTargetGame
+
+2026-10 连续三份采集包（r809053、#45665、Lenovo 82RC）都因为缺 `incidentTimeUtc` / `incidentKind` / `gameExecutable` 中的一项或多项而**无法归因**：包本身看起来是完整的，研发打开后才发现它既不能证明"是游戏导致的"，也不能证明"与游戏无关"。1.8.1 让工具自己把这件事说清楚，而不是留给收包的人。
+
+**事故锚点**（`DescribeAttributionAnchor`）：三项齐全才算可归因。缺任一项时——
+
+| 出口 | 行为 |
+|---|---|
+| `summary.txt` | **顶部**输出分隔线包裹的中文警告，逐项列出缺什么 |
+| `manifest.json` | 新增 `"attributionUsable"` 与 `"missingAttributionInputs":[...]`，供分诊脚本在人工打开之前过滤 |
+| GUI | 采集页在项目名下方常驻红色提示（改类型/填时间即时刷新），点「开始采集」时再弹一次确认 |
+| CLI | `-batchmode --collect` 在 stdout 打印同一段警告 |
+
+不阻断采集：纯机器体检本来就是合法用法，只是不能让它冒充具备归因价值。
+
+**`events-redacted.json` 的 `isTargetGame`**（schemaVersion `1` → `2`）：此前崩溃进程名一律脱敏成 `OTHER_PROCESS`，外部研发拿到包后**连"是不是我们的游戏在崩"都判断不了**——而这是采集包存在的唯一理由。新增字段只回答这个布尔问题，不泄露进程名：
+
+| `gameExecutableSpecified` | `isTargetGame` | 含义 |
+|---|---|---|
+| false | `null` | 没给游戏 exe，无法判定（**不是** false） |
+| true | `true` / `false` | 等于 / 不等于指定的游戏 exe |
+
+`null` 与 `false` 必须分开："从来没告诉我们是哪个游戏"和"确定不是那个游戏"是两个不同的答案，压成一个会让研发把"没填"读成"不是游戏"。文件头另有 `gameExecutableSpecified`，便于一眼看出属于哪种。
+
+`EnvironmentCollectorTests` 覆盖：三项全空 / 三项齐全 / 只缺 kind 三种组合的判定、齐全时不输出警告、`manifest` 字段内容。
+
+### 报告文件的发布方式（launcher 异步读取契约）
+
+launcher 不等工具跑完再读结果，而是工具还在跑时就轮询输出目录。所以所有报告文件
+（`OSGameDiagnosis.json`，以及 `--collect` 各阶段的 `*.json` / `summary.txt`）都改为
+**先写临时文件、再 `MoveFileEx(REPLACE_EXISTING)` 改名发布**（`ReportWriter.cpp` 的
+`WriteReportFile`）：
+
+- 临时文件是同目录下的 `<目标名>.<pid>.tmp`；无论发布成功还是失败都不会留下它。
+- 读者只会看到“旧的完整文件”或“新的完整文件”，不会看到被截断的半个 JSON。改之前是
+  `ofstream(path, trunc)` 就地写，轮询方在 truncate 之后、写完之后之间会读到空文件。
+  `EnvironmentCollectorTests` 用并发读线程覆盖了这个性质（换回旧实现该断言会失败）。
+- 发布需要目标文件的 DELETE 权限，而 MSVC 的 `std::ifstream` 只共享读和写、**不共享删除**：
+  读者一直开着文件不放会让发布失败。工具会重试约 1 秒再放弃，放弃时抛异常且不留下半成品，
+  等价于“本次没有产出报告”——launcher 应按“没检查过”处理（fail-open）。
+  **launcher 读报告时请用 `FILE_SHARE_DELETE` 打开，读完立刻关闭。**
+- 覆盖已有报告的行为不变（每次运行都重写），与 ZIP 相反：`ReportArchive.cpp` 的
+  `MoveFileW` 故意不允许覆盖已发布的证据包。
+
+### --preflight：每次拉起时的机器体检（launcher 异步调用）
+
+```
+ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-dir <path>]
+                          [--game-exe <name>] [--budget-seconds N] [--quiet]
+```
+
+产出 `OSGamePreflight.json`，**与 `OSGameDiagnosis.json` 同构**：`verdict` / `confidence` /
+`userMessage{code,zh}` / `actions[{code,zh}]` 四个键同名、同形、同顺序，launcher 一套解析代码
+读两个文件；`"mode":"preflight"` 用来区分。另有 `findings[]`、`budget{}`、`environment{}` 供
+排查与取证，launcher 可以只读那四个键。
+
+| verdict | 含义 | launcher 应当 |
+|---|---|---|
+| `Pass` | 没发现值得说的 | 不提示 |
+| `Advise` | 可提示的环境风险：同厂商驱动版本不一致、选到集显、只有软件渲染、磁盘可用空间不足、预览版系统 | 非模态提示，同一 `code` 提示一次后记住 |
+| `BelowMinimum` | 缺 AVX2、内存低于最低要求（默认 4 GB）、非 64 位 Windows | 明确提示，但**不阻断**——本方案 launcher 只提示 |
+| `Inconclusive` | 没跑完（超时或探针失败） | 当作"没检查过"，fail-open |
+
+- **硬超时**：探针跑在独立线程上，主线程最多等 `--budget-seconds`（默认 3，范围 1–30）。超时
+  就 detach 该线程、发布 `Inconclusive` 并退出——绝不让一个卡在驱动 IOCTL 里的进程留在玩家机器上。
+  超时时不采用半截的探针结果：半截的适配器列表读起来就是"这台机器没有显卡"。
+- **单实例**：互斥体按输出目录取名；抢不到锁的实例**直接退出且不写文件**，否则慢的那个会把过期
+  结论改名覆盖掉新的那个。
+- **只做廉价只读的事**：CPUID / `GlobalMemoryStatusEx` / `RtlGetVersion` / DXGI 适配器与
+  `EnumAdapterByGpuPreference` 选卡探测 / 游戏所在卷 `GetDiskFreeSpaceEx` / 读 `BuildLabEx`
+  判预览版。**不做** DLL 递归扫描与 Zydis 反汇编、`LoadLibrary(GameCore.dll)` 隔离探针、
+  `\\.\PhysicalDriveN` 全枚举、事件日志、任何注册表写入或提权。
+- **不做"驱动过旧"判断**：OEM 驱动日期格式各异、移动卡驱动滞后是常态，只在同一厂商两张卡驱动
+  版本不一致时才提示（这是 45665 那类混装的真因）。
+- **输出目录默认 `%LOCALAPPDATA%\OSGame\EnvCheck`**，绝不是当前目录：launcher 拉起时 cwd 是
+  游戏安装目录，往那里写新文件会触发启动器自己的完整性扫描/修复。
+- **退出码只有 0 和 30**：0 = 结论已写入（或已有实例在跑、本次有意不写），30 = 工具自身错误。
+  非零结论放在文件里而不是退出码里，这样 `exe && next` 不会被"查出问题"打断，launcher 一律读文件。
+- 进程自身把优先级降到 `BELOW_NORMAL_PRIORITY_CLASS`；IO 优先级需要 launcher 在创建进程时指定。
+
+`EnvironmentPreflightTests` 覆盖：四态判定、五条提示规则、"枚举失败"不等于"没有显卡"、未完成即
+`Inconclusive`、四键契约文本、超时等待本身、单实例互斥（跨线程验证，同线程测这个没有意义）、
+默认输出目录不是 cwd、端到端落盘且无临时文件残留。
+
 ### 玩家操作
 
 解压完整工具包，运行 `ZEnvironmentCollector.exe`，顶部页签切到“环境采集”，选择问题类型、可选填写带时区的发生时间，点击“开始采集并生成 ZIP”。默认输出到桌面 `EnvironmentReports`。GUI默认勾选“同意附带事件明细”，可手动取消；CLI仍需显式传入 `--include-events` 才附带脱敏事件明细。窗口右侧提供可拖动滚动条，也可使用滚轮或点击轨道翻页；滑块与内容位置同步，尺寸随DPI缩放。完成后点击打开目录，确认内容后手动发送 ZIP；不自动上传。
@@ -363,7 +485,7 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 
 从1.7.0起ZIP采用流式Deflate/ZIP64，极小文件可由库选择Store；UTF-8文件内容，压缩完成后回读CRC校验。普通环境报告仍最多32项、单文件16MiB、总内容64MiB；高级证据包单文件64GiB、总内容128GiB。只收明确生成的白名单文件：`basic.json`、`firmware.json`、`diagnosis.json`、`health-events.json`、`graphics.json`、`storage.json`、`summary.txt`、`manifest.json`；同意明细时加 `events-redacted.json`。JSON各有schemaVersion。manifest记录版本、项目、UTC时间、事故类型、同意项、各阶段状态及实际包内文件。
 
-默认不附原始XML/全系统日志/用户目录/卷标签/磁盘序列号。健康事件只保留错误类型、APIC/MCA和检测结果等白名单字段；其它程序名脱敏。`events-redacted.json` 是分享用格式，不冒充可回放原始TSV；研发回放仍用明确开启 `--diagnose-detail` 的本地TSV。
+默认不附原始XML/全系统日志/用户目录/卷标签/磁盘序列号。健康事件只保留错误类型、APIC/MCA和检测结果等白名单字段；其它程序名脱敏。`events-redacted.json` 是分享用格式，不冒充可回放原始TSV；研发回放仍用明确开启 `--diagnose-detail` 的本地TSV。程序名脱敏成 `OTHER_PROCESS` 后，自 1.8.1 起由 `isTargetGame` 布尔位回答"是不是指定的游戏"，仍不暴露进程名。
 
 窗口使用系统字体，不随包复制Windows字体。图形初始化失败会尝试WARP，再失败提示CLI采集。系统字体、D3DCompiler或权限异常可导致GUI无法启动，CLI仍可单独使用。
 
@@ -373,16 +495,40 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 
 ```powershell
 cmake -S engine\tools\WindowsEnvironmentCheck -B build\tools\ZEnvironmentCollector -G "Visual Studio 17 2022" -A x64 -DENVIRONMENT_CHECK_BUILD_GUI=ON -DBUILD_TESTING=ON
-cmake --build build\tools\ZEnvironmentCollector --config Release --target ZEnvironmentCollector EnvironmentCollectorTests EnvironmentCollectorUiTests EnvironmentCaptureTests
+cmake --build build\tools\ZEnvironmentCollector --config Release --target ZEnvironmentCollector EnvironmentCollectorTests EnvironmentCollectorUiTests EnvironmentCaptureTests EnvironmentPreflightTests
 ctest --test-dir build\tools\ZEnvironmentCollector -C Release --output-on-failure
 cmake --install build\tools\ZEnvironmentCollector --config Release --component EnvironmentCollector --prefix dist
+```
+
+### 打包分发（zip + SHA256）
+
+参考扁鹊（`E:\BianqueCCS\pack`）的做法：打包是一个**独立的、不编译任何东西的 CMake 工程**
+`engine\tools\WindowsEnvironmentCheck\pack\`，只把已经 staging 好的安装树用 CPack 打成一个包。
+之所以不放进工具自己的 `CMakeLists.txt`：那份文件也会被整树 `add_subdirectory()`，
+CPack 会在一个从没打算发东西的构建里被配置一遍。
+
+```powershell
+cmake --install build\tools\ZEnvironmentCollector --config Release --component EnvironmentCollector --prefix dist\staging
+cmake -S engine\tools\WindowsEnvironmentCheck\pack -B build\tools\ZEnvironmentCollector\pack
+cmake --build build\tools\ZEnvironmentCollector\pack --target package
+```
+
+产出 `dist\zenvironment-collector-windows-x86_64-<版本>.zip` 与同名 `.zip.sha256`：
+
+- 版本号从 `ToolVersion.h` 解析（与报告里的 `toolVersion` 同一个来源，不可能对不上）；可用
+  `-DPACK_VERSION_OVERRIDE=x.y.z` 覆盖。
+- 架构从生成器探测，可用环境变量 `USER_DEF_ARCH` 覆盖。
+- 包内是一个以包名命名的顶层目录，展开后 `README.md` + `WindowsEnvironmentCheck\`
+  （exe、`ZDllLoadProbe.exe`、`profiles\`、LICENSE）——就是能直接跑的那个目录，没有多余的层。
+- ZIP 用 CMake 自带的归档能力生成，不需要装 7-Zip。
+- staging 目录里没有 `ZEnvironmentCollector.exe` 时**直接配置失败**并打印该跑的那条命令：
+  把一个空的/过期的 staging 目录打成一个看起来很像样的包，是这里唯一一种"看起来成功了"的失败。
 
 产物不落在 build 目录里：`ZEnvironmentCollector.exe` 与 `ZDllLoadProbe.exe` 输出到
 `bin\Tools\<Config>\WindowsEnvironmentCheck\`（子目录名与源码目录同名），profiles 与
 LICENSE 也复制过去，所以该目录就是可直接打包的分发单元——而不会在共享的
 `bin\Tools\<Config>\` 里和另外三个工具的 exe 混在一起。`--prefix dist` 装出的是
 同一份目录：`dist\WindowsEnvironmentCheck\`。
-```
 
 分发 `ZEnvironmentCollector.exe`、`ZDllLoadProbe.exe`、profiles及LICENSE文件，不只发主 exe。无需ZRuntime或引擎资源；Release采用静态CRT。GUI和ZIP模式未改变旧环境报告schema5。GUI动态依赖Windows的 `d3d11.dll`、`D3DCOMPILER_47.dll` 及基础系统DLL。
 

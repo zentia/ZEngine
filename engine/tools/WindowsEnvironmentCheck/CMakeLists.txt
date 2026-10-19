@@ -119,14 +119,52 @@ if(NOT TARGET minizip-ng)
 endif()
 
 # ------------------------------------------------------------------------------
+# ZRuntimeShared -- the engine slice the collector uses (full-tree configures)
+# ------------------------------------------------------------------------------
+# Two capabilities the tool needs and the engine already owns:
+#
+#   * logging -- bqlog through LogSystem, reached over the C ABI in
+#     Runtime/ZEngineApi/ZEngineToolApi.h. The tool is a WINDOWS-subsystem
+#     binary, so stderr goes nowhere when it is double-clicked, and the failures
+#     it exists to report are exactly the ones a player cannot describe.
+#   * localised UI strings -- as a real engine DataTable
+#     (Runtime/Resource/Asset/Data/LocalizationTable.h) cooked from
+#     resource/ui_strings_zh-CN.csv, instead of string literals compiled into
+#     UiLocalization.cpp.
+#
+# Both are reached through `extern "C"` entry points only, which is what lets an
+# /MT tool consume a DLL whose CRT choice differs -- nothing that needs an
+# allocator ever crosses the boundary.
+#
+# Guarded on the target existing rather than on WIN32: a standalone configure of
+# this directory cannot produce ZRuntimeShared (it would have to pull in all of
+# engine/Source/Runtime and its dependency tree), so standalone keeps the
+# self-contained bqlog + compiled-in table path. Both builds stay buildable;
+# only the full-tree one is engine-backed.
+#
+# NOTE: the shipped configuration is the full-tree one built with
+# -DZENGINE_STATIC_CRT=ON, so the DLL is /MT and the whole directory still ships
+# to machines with no VC redist. Without that option the DLL is /MD and the
+# output directory needs the redist beside it.
+set(ENVIRONMENT_CHECK_WITH_ZRUNTIME OFF)
+if(TARGET ZRuntimeShared)
+    set(ENVIRONMENT_CHECK_WITH_ZRUNTIME ON)
+endif()
+
+# ------------------------------------------------------------------------------
 # 扁鹊 (BqLog) -- the tool's diagnostics go through it, see EnvCheckLog.h
 # ------------------------------------------------------------------------------
-# Same guard as minizip-ng: in a full-tree configure BqLog already exists from
-# engine/3rdparty; standalone we add it here so it picks up this directory's /MT.
-# The cache variables mirror engine/3rdparty/CMakeLists.txt exactly -- without
-# TARGET_PLATFORM=win64 bqlog configures for the wrong host, and without
-# BUILD_TYPE=static_lib it produces a DLL that a /MT tool cannot import.
-if(NOT TARGET BqLog)
+# Only when the engine DLL is NOT in play: with ZRuntimeShared, bqlog lives
+# inside the DLL (LogSystem owns it) and linking a second copy here would create
+# two log instances writing to two different files.
+#
+# Otherwise same guard as minizip-ng: in a full-tree configure BqLog already
+# exists from engine/3rdparty; standalone we add it here so it picks up this
+# directory's /MT. The cache variables mirror engine/3rdparty/CMakeLists.txt
+# exactly -- without TARGET_PLATFORM=win64 bqlog configures for the wrong host,
+# and without BUILD_TYPE=static_lib it produces a DLL that a /MT tool cannot
+# import.
+if(NOT ENVIRONMENT_CHECK_WITH_ZRUNTIME AND NOT TARGET BqLog)
     option(BQLOG_BUILD_EXAMPLE "" OFF)
     option(BQLOG_INSTALL "" OFF)
     set(TARGET_PLATFORM "win64" CACHE STRING "" FORCE)
@@ -167,6 +205,8 @@ add_library(ZEnvironmentCheckCore STATIC
     PeInspector.h
     ReportWriter.cpp
     ReportWriter.h
+    Preflight.cpp
+    Preflight.h
     JsonEscape.h
 )
 target_include_directories(ZEnvironmentCheckCore PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -184,11 +224,35 @@ target_compile_definitions(ZEnvironmentCheckCore PUBLIC WIN32_LEAN_AND_MEAN NOMI
 # the generated mz_config.h mz.h includes), so linking it is enough -- do not
 # hand-roll the paths here, they differ between a full-tree and a standalone
 # configure.
-target_link_libraries(ZEnvironmentCheckCore PUBLIC Zydis minizip-ng BqLog dxgi setupapi wevtapi advapi32 shell32 ole32 bcrypt wintrust crypt32 version comdlg32)
+target_link_libraries(ZEnvironmentCheckCore PUBLIC Zydis minizip-ng dxgi setupapi wevtapi advapi32 shell32 ole32 bcrypt wintrust crypt32 version comdlg32)
+if(ENVIRONMENT_CHECK_WITH_ZRUNTIME)
+    # PUBLIC: the definition has to reach the executable too -- UiLocalization.cpp
+    # lives in the exe's source list, not in this library's.
+    #
+    # ZRuntimeShared carries ZRUNTIME_SHARED_IMPORTS as an INTERFACE compile
+    # definition, so linking it is also what turns EXPORT_RUNTIME into
+    # __declspec(dllimport) on the tool side. No manual macro needed.
+    target_link_libraries(ZEnvironmentCheckCore PUBLIC ZRuntimeShared)
+    target_compile_definitions(ZEnvironmentCheckCore PUBLIC ZENVCHECK_USE_ZRUNTIME)
+else()
+    target_link_libraries(ZEnvironmentCheckCore PUBLIC BqLog)
+endif()
 if(MSVC)
     target_compile_options(ZEnvironmentCheckCore PRIVATE /W4 /permissive- /EHsc /utf-8)
 endif()
 set(DLL_PROBE_TARGET ZDllLoadProbe)
+# CMake parses the /RTC1 of the default Debug flags into the vcxproj's
+# BasicRuntimeChecks property, and MSBuild emits that AFTER AdditionalOptions --
+# so the /RTC- below loses on its own, and CMake reads the flag at generate time
+# (not at add_executable time), so a save/restore around the target does not
+# work either. Stripping it from the directory variable is what it takes.
+#
+# Scope is this directory only: Debug builds of the collector and its core lose
+# MSVC runtime stack checks, Release (what ships) is untouched -- Release flags
+# never contained /RTC1. That is the right trade, because until now a Debug
+# build of this directory could not link at all: the probe failed with LNK2019
+# on _RTC_CheckStackVars / _RTC_InitBase, so no Debug artefact existed.
+string(REPLACE "/RTC1" "" CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG}")
 add_executable(${DLL_PROBE_TARGET}
     DllProbeMain.cpp
     DllProbeProtocol.h
@@ -215,7 +279,12 @@ target_compile_definitions(${DLL_PROBE_TARGET} PRIVATE
 )
 target_link_libraries(${DLL_PROBE_TARGET} PRIVATE kernel32 shell32)
 if(MSVC)
-    target_compile_options(${DLL_PROBE_TARGET} PRIVATE /GS- /GR-)
+    # /RTC- as well: MSVC's Debug defaults add /RTC1, and the _RTC_CheckStackVars
+    # / _RTC_InitBase / _RTC_Shutdown it emits live in the CRT -- which this
+    # target does not link (/NODEFAULTLIB). Debug therefore failed with LNK2019
+    # before any probe code ran. Debug is not the shipped configuration, but a
+    # target that cannot be built Debug is a target nobody can debug.
+    target_compile_options(${DLL_PROBE_TARGET} PRIVATE /GS- /GR- /RTC-)
     target_link_options(${DLL_PROBE_TARGET} PRIVATE
         /NODEFAULTLIB
         /ENTRY:ProbeEntry
@@ -354,6 +423,22 @@ target_link_libraries(${ENVIRONMENT_CHECK_TARGET} PRIVATE
     setupapi
 )
 
+# The table the UI reads at run time. Cooked here rather than shipped pre-baked
+# so the CSV in resource/ stays the single source of truth and a stale .zasset
+# can never outlive its source in the build tree.
+if(ENVIRONMENT_CHECK_WITH_ZRUNTIME AND TARGET DataTableCook)
+    add_custom_command(TARGET ${ENVIRONMENT_CHECK_TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:${ENVIRONMENT_CHECK_TARGET}>/resource"
+        COMMAND "$<TARGET_FILE:DataTableCook>"
+            "${CMAKE_CURRENT_SOURCE_DIR}/resource/ui_strings_zh-CN.csv"
+            "$<TARGET_FILE_DIR:${ENVIRONMENT_CHECK_TARGET}>/resource/ui_strings_zh-CN.zasset"
+        COMMENT "Cooking localization table ui_strings_zh-CN.csv -> .zasset"
+        VERBATIM
+    )
+    add_dependencies(${ENVIRONMENT_CHECK_TARGET} DataTableCook)
+endif()
+
 add_custom_command(TARGET ${ENVIRONMENT_CHECK_TARGET} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${zydis_SOURCE_DIR}/LICENSE"
@@ -365,6 +450,22 @@ add_custom_command(TARGET ${ENVIRONMENT_CHECK_TARGET} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/profiles/generic.ini" "$<TARGET_FILE_DIR:${ENVIRONMENT_CHECK_TARGET}>/profiles/default.ini"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/profiles/osgame.ini" "$<TARGET_FILE_DIR:${ENVIRONMENT_CHECK_TARGET}>/profiles/osgame.ini"
 )
+
+# ZRuntimeShared.dll has to sit beside the .exe: the collector links its import
+# library, so a missing DLL is a failed process start, not a degraded feature.
+# This is the one thing that makes the output directory no longer a single
+# self-contained .exe -- the DLL is the price of using the engine's log and table
+# pipeline, and with -DZENGINE_STATIC_CRT=ON it too is /MT, so the folder still
+# runs on a machine with no VC redist installed.
+if(ENVIRONMENT_CHECK_WITH_ZRUNTIME)
+    add_custom_command(TARGET ${ENVIRONMENT_CHECK_TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:ZRuntimeShared>"
+            "$<TARGET_FILE_DIR:${ENVIRONMENT_CHECK_TARGET}>"
+        COMMENT "Copying ZRuntimeShared.dll next to ZEnvironmentCollector.exe"
+        VERBATIM
+    )
+endif()
 
 if(MSVC)
     target_compile_options(${ENVIRONMENT_CHECK_TARGET} PRIVATE
@@ -416,10 +517,27 @@ install(FILES profiles/generic.ini DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDI
         RENAME default.ini COMPONENT EnvironmentCollector)
 install(FILES profiles/osgame.ini DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}/profiles"
         COMPONENT EnvironmentCollector)
+# The README travels with the build: it is where the launcher contract
+# (report file names, the four keys, the exit codes) is written down, and the
+# person who ends up with the archive is usually not the person who cloned the
+# repository.
+install(FILES README.md DESTINATION "." COMPONENT EnvironmentCollector)
 install(FILES LICENSE-stb.txt DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}" COMPONENT EnvironmentCollector)
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../3rdparty/minizip-ng/LICENSE"
         DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}" RENAME LICENSE-minizip-ng.txt
         COMPONENT EnvironmentCollector)
+
+# The engine-backed build ships two extra things: the DLL it imports, and the
+# cooked localization table. The CSV goes along as well so a support engineer can
+# see what the shipped table was generated from without a source checkout.
+if(ENVIRONMENT_CHECK_WITH_ZRUNTIME)
+    install(TARGETS ZRuntimeShared RUNTIME
+            DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}" COMPONENT EnvironmentCollector)
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/resource/ui_strings_zh-CN.csv"
+            DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}/resource" COMPONENT EnvironmentCollector)
+    install(FILES "$<TARGET_FILE_DIR:${ENVIRONMENT_CHECK_TARGET}>/resource/ui_strings_zh-CN.zasset"
+            DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}/resource" COMPONENT EnvironmentCollector OPTIONAL)
+endif()
 
 include(CTest)
 if(BUILD_TESTING)
@@ -429,6 +547,12 @@ if(BUILD_TESTING)
         target_compile_options(EnvironmentCollectorTests PRIVATE /utf-8)
     endif()
     add_test(NAME environment_collector_core COMMAND EnvironmentCollectorTests)
+    add_executable(EnvironmentPreflightTests PreflightTests.cpp)
+    target_link_libraries(EnvironmentPreflightTests PRIVATE ZEnvironmentCheckCore)
+    if(MSVC)
+        target_compile_options(EnvironmentPreflightTests PRIVATE /utf-8)
+    endif()
+    add_test(NAME environment_preflight COMMAND EnvironmentPreflightTests)
     add_executable(EnvironmentCaptureTests CaptureTests.cpp)
     target_link_libraries(EnvironmentCaptureTests PRIVATE ZEnvironmentCheckCore)
     add_test(NAME environment_capture_safety COMMAND EnvironmentCaptureTests)
@@ -440,6 +564,19 @@ if(BUILD_TESTING)
     target_link_libraries(EnvironmentWerTests PRIVATE ZEnvironmentCheckCore dbghelp)
     add_dependencies(EnvironmentWerTests EnvironmentCaptureTestTarget ${ENVIRONMENT_CHECK_TARGET})
     add_test(NAME environment_wer_safety COMMAND EnvironmentWerTests)
+    foreach(testTarget EnvironmentCollectorTests EnvironmentCaptureTests EnvironmentCaptureTestTarget EnvironmentCaptureIntegrationTests EnvironmentWerTests)
+        # The tests live in ${CMAKE_BINARY_DIR}/bin, not beside the collector, so
+        # a ZRuntimeShared import needs its own copy -- otherwise every test
+        # process dies at startup with 0xc0000135 before main() runs.
+        if(ENVIRONMENT_CHECK_WITH_ZRUNTIME)
+            add_custom_command(TARGET ${testTarget} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "$<TARGET_FILE:ZRuntimeShared>"
+                    "$<TARGET_FILE_DIR:${testTarget}>"
+                VERBATIM
+            )
+        endif()
+    endforeach()
     foreach(testTarget EnvironmentCaptureTests EnvironmentCaptureTestTarget EnvironmentCaptureIntegrationTests EnvironmentWerTests)
         target_compile_features(${testTarget} PRIVATE cxx_std_20)
         target_compile_definitions(${testTarget} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
@@ -464,4 +601,17 @@ if(ENVIRONMENT_CHECK_WITH_ZSLATE)
 else()
     set(_shell_front_end "-batchmode CLI only (no ZSlate)")
 endif()
-message(STATUS "ZEnvironmentCollector configured: ${_shell_front_end}; no ZRuntime, GameCore, or AVX compile flags")
+if(ENVIRONMENT_CHECK_WITH_ZRUNTIME)
+    set(_shell_back_end "engine-backed (ZRuntimeShared: LogSystem + DataTable localization)")
+else()
+    set(_shell_back_end "self-contained (static bqlog + compiled-in table)")
+endif()
+# "no GameCore or AVX compile flags" stays true either way: ZRuntimeShared is
+# linked, but no gameplay module and no -mavx/-march switch is involved.
+message(STATUS "ZEnvironmentCollector configured: ${_shell_front_end}; ${_shell_back_end}; no GameCore or AVX compile flags")
+if(ENVIRONMENT_CHECK_WITH_ZRUNTIME AND WIN32 AND NOT ZENGINE_STATIC_CRT)
+    message(WARNING "ZEnvironmentCollector links ZRuntimeShared but the tree is not /MT "
+                    "(ZENGINE_STATIC_CRT=OFF). The shipped directory will need the VC "
+                    "redist present on the target machine. Reconfigure the distribution "
+                    "build with -DZENGINE_STATIC_CRT=ON.")
+endif()

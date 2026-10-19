@@ -1,14 +1,41 @@
 // ============================================================================
 // UiLocalization - see UiLocalization.h
 // ============================================================================
-// Every id here must match the id passed to ZSlate::Loc() in
+// Two sources for the same table, selected by ZENVCHECK_USE_ZRUNTIME:
+//
+//   * defined  -- the Simplified Chinese strings are DATA, not code: they are
+//     authored in resource/ui_strings_zh-CN.csv, baked into
+//     resource/ui_strings_zh-CN.zasset by DataTableCook at build time, and read
+//     back here through the engine's C ABI. Editing a label is a CSV edit; no
+//     .cpp changes, no recompilation of the table, and a translator never has
+//     to touch C++ string literals.
+//
+//   * undefined -- the standalone configure has no ZRuntimeShared, so it keeps
+//     the table compiled into this translation unit. Both builds therefore stay
+//     buildable; only the shipped (full-tree) one is table-driven.
+//
+// Either way the ids here must match the ids passed to ZSlate::Loc() in
 // EnvironmentCheckGui.cpp. A mismatch is not a compile error -- Loc() falls back
 // to the English literal and reports the missing id once through ZSlate's sink,
-// which is why the ids are listed in the same order as they appear in the UI.
+// which is why the source CSV lists the ids in the same order as they appear in
+// the UI.
+//
+// Report file content stays Chinese on purpose -- those files go to support,
+// not to the player -- so this table covers the interface only.
 
 #include "UiLocalization.h"
 
 #include <windows.h>
+
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    #include "Runtime/ZEngineApi/ZEngineToolApi.h"
+
+    #include "Collection.h"  // ExecutableDirectory()
+
+    #include <filesystem>
+    #include <string>
+    #include <vector>
+#endif
 
 namespace zengine::envcheck::ui
 {
@@ -18,6 +45,61 @@ namespace
     constexpr const wchar_t* kSettingsKey = L"Software\\ZEngine\\EnvironmentCollector";
     constexpr const wchar_t* kLanguageValue = L"Language";
 
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    // One table per language, named after ZSlate's own language id
+    // (ZSlate::LanguageId(): "en", "zh-CN"). English has no table on purpose --
+    // it is the literal written at the call site.
+    constexpr const char* kTableFileName = "ui_strings_zh-CN.zasset";
+
+    struct LoadedTable
+    {
+        std::vector<std::string> ids;
+        std::vector<std::string> texts;
+        std::vector<UiStringEntry> entries;
+    };
+
+    // Built once, on first use: the table has to outlive the caller (ZSlate keeps
+    // the `const char*`s we hand it), so it cannot be a local.
+    LoadedTable& Table()
+    {
+        static LoadedTable table;
+        static bool loaded = false;
+        if (loaded) return table;
+        loaded = true;
+
+        const std::filesystem::path path = collector::ExecutableDirectory() / "resource" / kTableFileName;
+        if (ZRuntime_LoadLocalizationTable(path.string().c_str()) == 0)
+        {
+            // Not fatal: the UI degrades to English, and the engine log already
+            // says why. A diagnostic tool must still run on a machine where its
+            // own resource directory was damaged.
+            return table;
+        }
+
+        const unsigned count = ZRuntime_LocalizationRowCount();
+        table.ids.reserve(count);
+        table.texts.reserve(count);
+        for (unsigned index = 0; index < count; ++index)
+        {
+            const char* id = nullptr;
+            const char* text = nullptr;
+            if (ZRuntime_LocalizationRowAt(index, &id, &text) != 0)
+            {
+                table.ids.emplace_back(id);
+                table.texts.emplace_back(text);
+            }
+        }
+
+        // Pointers are taken only after both vectors have stopped growing, so a
+        // reallocation cannot invalidate an entry we already published.
+        table.entries.reserve(table.ids.size());
+        for (std::size_t index = 0; index < table.ids.size(); ++index)
+        {
+            table.entries.push_back({table.ids[index].c_str(), table.texts[index].c_str()});
+        }
+        return table;
+    }
+#else
     // clang-format off
     constexpr UiStringEntry kChineseSimplified[] = {
         // Shell / tabs
@@ -154,6 +236,19 @@ namespace
         {"status.time.future", "发生时间不能在未来。"},
         {"report.truncated", "… 报告过长，已截断显示；完整内容见同目录 OSGameEnvironmentReport.txt。"},
 
+        // Incident anchor: without an incident time, an incident kind and the
+        // game exe, a package cannot say whether the game caused anything. The
+        // form says so before the ZIP exists rather than letting the developer
+        // find out days later.
+        {"collection.anchor.warning", "本包缺少以下内容，无法用于事故归因："},
+        {"collection.anchor.missing.time", "事故发生时间"},
+        {"collection.anchor.missing.kind", "现象类型（崩溃还是卡死）"},
+        {"collection.anchor.missing.game", "游戏 exe（当前 profile 未配置）"},
+        {"collection.confirm.anchor.title", "缺少事故锚点"},
+        {"collection.confirm.anchor.body",
+         "这次采集缺少事故时间、现象类型或游戏 exe，拿到的包无法回答「是不是游戏导致的」，只能回答「这台机器现在是什么状态」。\n"
+         "如果你是要发给研发排查崩溃或卡死，请先返回补齐这三项。\n\n仍然采集一个不可归因的包？"},
+
         // Start-up failures
         {"dialog.gpuinit.title", "图形初始化失败"},
         {"dialog.gpuinit.body", "图形界面启动失败。可运行同目录 ZEnvironmentCollector.exe -batchmode --collect 生成报告。"},
@@ -161,12 +256,19 @@ namespace
         {"dialog.startup.body", "无法启动采集界面。请检查项目配置、系统字体及工具分发是否完整。可使用 -batchmode --collect 模式。"},
     };
     // clang-format on
+#endif
 }
 
 const UiStringEntry* ChineseSimplifiedStrings(std::size_t& out_count)
 {
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    const LoadedTable& table = Table();
+    out_count = table.entries.size();
+    return table.entries.empty() ? nullptr : table.entries.data();
+#else
     out_count = sizeof(kChineseSimplified) / sizeof(kChineseSimplified[0]);
     return kChineseSimplified;
+#endif
 }
 
 std::string LoadLanguagePreference()

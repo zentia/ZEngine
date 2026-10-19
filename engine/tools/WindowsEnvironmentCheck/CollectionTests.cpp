@@ -4,12 +4,17 @@
 #include "AttributionRules.h"
 #include "EventLogReader.h"
 #include "GpuSelectionProbe.h"
+#include "ReportWriter.h"
 #include <Windows.h>
 #include <algorithm>
+#include <atomic>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <vector>
 
 using namespace zengine::envcheck;
 void Check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
@@ -19,6 +24,48 @@ int main()
     {
         using namespace collector;
         Check(JsonString("a\n\"\\") == "\"a\\u000a\\\"\\\\\"", "JSON escaping");
+
+        // Attribution anchor. A package that is missing any of the three inputs
+        // cannot answer "was it the game" -- and three field packages in
+        // October 2026 came back exactly like that, with the discovery left to
+        // the developer. It has to be detectable, not just documented.
+        {
+            collector::Options bare;
+            const auto none = collector::DescribeAttributionAnchor(bare);
+            Check(!none.Usable() && !none.incidentTime && !none.incidentKind && !none.gameExecutable,
+                  "options with nothing supplied are unattributable");
+            Check(!collector::BuildAttributionWarning(none).empty(), "a warning is produced for summary.txt");
+            const auto manifestNone = collector::BuildAttributionManifestFields(none);
+            Check(manifestNone.find("\"attributionUsable\":false") != std::string::npos, "manifest reports unusable");
+            Check(manifestNone.find("\"gameExecutable\"") != std::string::npos, "manifest names the missing game exe");
+
+            collector::Options full = bare;
+            full.incidentTime = diagnosis::CurrentUtcTime();
+            full.incidentKind = diagnosis::IncidentKind::Crash;
+            full.profile.gameExecutable = "Game.exe";
+            const auto complete = collector::DescribeAttributionAnchor(full);
+            Check(complete.Usable(), "all three supplied is attributable");
+            Check(collector::BuildAttributionWarning(complete).empty(), "no warning when the anchor is complete");
+            Check(collector::BuildAttributionManifestFields(complete)
+                      == "\"attributionUsable\":true,\"missingAttributionInputs\":[]",
+                  "manifest reports usable with an empty missing list");
+
+            // Half-filled is what actually happens in the field: someone fills
+            // in the time, leaves the type on "Unsure".
+            collector::Options partial = full;
+            partial.incidentKind = diagnosis::IncidentKind::Unknown;
+            Check(!collector::DescribeAttributionAnchor(partial).Usable(), "'Unsure' kind is still unattributable");
+
+            // A stage worker always receives --game-exe with a value, so "no
+            // game" travels as a placeholder. It must not read as a name: that
+            // is exactly how events-redacted.json ended up claiming the game was
+            // specified and answering isTargetGame=false instead of null.
+            collector::Options placeholder = full;
+            placeholder.profile.gameExecutable = collector::UnspecifiedGamePlaceholder;
+            const auto withPlaceholder = collector::DescribeAttributionAnchor(placeholder);
+            Check(!withPlaceholder.gameExecutable && !withPlaceholder.Usable(),
+                  "the placeholder exe name is not a specified game");
+        }
         diagnosis::UtcTicks a = 0, b = 0;
         Check(diagnosis::TryParseUtcIso8601("2026-10-12T08:00:00+08:00", a), "parse zoned time");
         Check(diagnosis::TryParseUtcIso8601("2026-10-12T00:00:00Z", b) && a == b, "timezone equivalence");
@@ -218,7 +265,105 @@ int main()
         const std::string escapedJson = BuildGpuSelectionJson({escaping}, GpuSelectionRealProbeResult{});
         Check(escapedJson.find("quote\\\" back\\\\slash") != std::string::npos, "GPU JSON escapes case name");
         Check(escapedJson.find("a\\\"b\\\\c") != std::string::npos, "GPU JSON escapes adapter name");
-        std::cout << "PASS JSON, timestamps, diagnosis replay, event scan order, ZIP whitelist, GPU mock invocation\n";
+        // Reports are published by rename, not written in place. The launcher
+        // reads OSGameDiagnosis.json asynchronously -- it polls the output
+        // directory while this tool is still running -- so the old
+        // truncate-then-stream write let it observe an empty or half-written
+        // JSON. Publishing has to be observable as atomic from a reader.
+        {
+            const auto reportDirectory = std::filesystem::temp_directory_path()
+                / ("envcollector-report-" + std::to_string(GetCurrentProcessId()));
+            std::filesystem::remove_all(reportDirectory);
+            Check(std::filesystem::create_directory(reportDirectory), "report test folder");
+            const auto report = reportDirectory / "OSGameDiagnosis.json";
+            // Multi-megabyte payloads: a torn read of a 1 KiB report is
+            // unlikely enough that the test would pass even without the fix.
+            const std::string first = std::string(3u << 20, 'a') + "}";
+            const std::string second = std::string(5u << 20, 'b') + "}";
+
+            WriteReportFile(report, first);
+            Check(std::filesystem::file_size(report) == first.size(), "report written");
+            // A second run reuses the same output directory, so an existing
+            // report has to be replaced, not kept or appended to.
+            WriteReportFile(report, second);
+            Check(std::filesystem::file_size(report) == second.size(), "existing report replaced");
+
+            std::atomic_bool stopReader{false};
+            std::atomic_int tornReads{0};
+            std::atomic_int completedReads{0};
+            // The reader shares delete, which is what WriteReportFile asks the
+            // launcher to do (see ReportWriter.h). Sharing it is also what lets
+            // this reader hammer the file continuously without starving the
+            // publish: a handle that does not share delete blocks the rename for
+            // as long as it stays open.
+            std::thread reader([&]
+            {
+                std::vector<char> buffer(std::max(first.size(), second.size()));
+                while (!stopReader.load())
+                {
+                    const HANDLE handle = CreateFileW(report.c_str(), GENERIC_READ,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                    // The rename can deny an open for an instant; that is a
+                    // transient error, not evidence of torn content.
+                    if (handle == INVALID_HANDLE_VALUE) { std::this_thread::yield(); continue; }
+                    LARGE_INTEGER size{};
+                    DWORD read = 0;
+                    const bool sized = GetFileSizeEx(handle, &size) != FALSE;
+                    const bool complete = sized
+                        && static_cast<std::uint64_t>(size.QuadPart) <= buffer.size()
+                        && ReadFile(handle, buffer.data(), static_cast<DWORD>(size.QuadPart), &read, nullptr) != FALSE
+                        && read == static_cast<DWORD>(size.QuadPart);
+                    CloseHandle(handle);
+                    if (!complete) { std::this_thread::yield(); continue; }
+                    const std::string content(buffer.data(), static_cast<std::size_t>(read));
+                    if (content != first && content != second) ++tornReads;
+                    ++completedReads;
+                }
+            });
+            // Everything below can throw (a publish that never gets through
+            // does), and unwinding past a joinable std::thread calls
+            // std::terminate -- which turns an ordinary failure into a fast-fail
+            // with no message at all. Join before anything escapes.
+            struct JoinOnExit
+            {
+                std::thread* thread;
+                std::atomic_bool* stop;
+                ~JoinOnExit()
+                {
+                    stop->store(true);
+                    if (thread->joinable()) thread->join();
+                }
+            } joinOnExit{&reader, &stopReader};
+
+            for (int iteration = 0; iteration < 12; ++iteration)
+            {
+                WriteReportFile(report, iteration % 2 == 0 ? second : first);
+            }
+            stopReader.store(true);
+            reader.join();
+            Check(completedReads.load() > 0, "the polling reader observed the report");
+            Check(tornReads.load() == 0, "a polling reader never sees a half-written report");
+
+            // A leftover temporary next to the report is what makes a support
+            // engineer wonder which of the two files is authoritative.
+            bool leftover = false;
+            for (std::filesystem::directory_iterator entry(reportDirectory), end; entry != end; ++entry)
+            {
+                if (entry->path().filename().string().find(".tmp") != std::string::npos) leftover = true;
+            }
+            Check(!leftover, "no temporary left next to the report");
+
+            bool threw = false;
+            try { WriteReportFile(reportDirectory / "missing" / "report.json", first); }
+            catch (const std::exception&) { threw = true; }
+            Check(threw, "writing into a missing directory throws");
+            Check(!std::filesystem::exists(reportDirectory / "missing"), "a failed write creates nothing");
+
+            std::filesystem::remove_all(reportDirectory);
+        }
+        std::cout << "PASS JSON, timestamps, diagnosis replay, event scan order, ZIP whitelist, "
+                     "report publishing, GPU mock invocation\n";
         return 0;
     }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

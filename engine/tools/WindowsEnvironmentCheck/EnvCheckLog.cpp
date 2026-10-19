@@ -10,11 +10,24 @@
 
 #include "EnvCheckLog.h"
 
-// The generated category wrapper (cat.ZEnvironmentCheck) plus the bqlog API.
-// engine_log.h only pulls in <bq_log/bq_log.h>, so no engine PCH and no ZRuntime
-// are needed here -- see the include dirs and the BqLog link in CMakeLists.
-#include <bq_log/bq_log.h>
-#include "Runtime/Core/Log/generated/engine_log.h"
+// Two back-ends, one interface (see EnvCheckLog.h):
+//
+//   ZENVCHECK_USE_ZRUNTIME -- the tool links ZRuntimeShared and logs through the
+//   engine's LogSystem via the C ABI in Runtime/ZEngineApi/ZEngineToolApi.h.
+//   The DLL owns bqlog, so there is exactly one log instance in the process and
+//   the file lands next to the engine's own logs.
+//
+//   otherwise (the standalone configure, which has no ZRuntimeShared target) --
+//   bqlog is linked statically, as it always was.
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    #include "Runtime/ZEngineApi/ZEngineToolApi.h"
+#else
+    // The generated category wrapper (cat.ZEnvironmentCheck) plus the bqlog API.
+    // engine_log.h only pulls in <bq_log/bq_log.h>, so no engine PCH and no ZRuntime
+    // are needed here -- see the include dirs and the BqLog link in CMakeLists.
+    #include <bq_log/bq_log.h>
+    #include "Runtime/Core/Log/generated/engine_log.h"
+#endif
 
 #include "ToolVersion.h"
 
@@ -28,6 +41,15 @@ namespace zengine::envcheck
 
 namespace
 {
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+bool& EngineStarted()
+{
+    // Function-local static so a tool that never calls LogInitialize() never
+    // starts the engine slice at all.
+    static bool started = false;
+    return started;
+}
+#else
 std::unique_ptr<bq::engine_log>& Logger()
 {
     // Function-local static: constructed on first use, so a tool that never
@@ -35,6 +57,7 @@ std::unique_ptr<bq::engine_log>& Logger()
     static std::unique_ptr<bq::engine_log> instance;
     return instance;
 }
+#endif
 
 std::string& LogPath()
 {
@@ -42,6 +65,11 @@ std::string& LogPath()
     return path;
 }
 
+#if !defined(ZENVCHECK_USE_ZRUNTIME)
+// Only the statically-linked-bqlog build resolves the log location itself; the
+// ZRuntimeShared build asks LogSystem, which already does exactly this (and
+// additionally honours -p/--project).
+//
 // Mirrors LogSystem: co-locate with the engine's own per-user logs so support
 // finds both in one directory.
 std::string BuildLogDirectory()
@@ -82,10 +110,20 @@ std::string BuildLogConfig(const std::string& filePrefix)
 			log.print_stack_levels=[fatal]
 		)";
 }
+#endif  // !ZENVCHECK_USE_ZRUNTIME
 }  // namespace
 
 void LogInitialize()
 {
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    if (EngineStarted()) return;
+    // Starts LogSystem + FileSystem + ObjectManager + AssetManager -- and
+    // nothing else. A tool that exists to diagnose broken machines must not
+    // create a window or a GPU device on one.
+    if (ZRuntime_ToolInit() == 0) return;
+    EngineStarted() = true;
+    LogPath() = ZRuntime_LogFilePath();
+#else
     std::unique_ptr<bq::engine_log>& logger = Logger();
     if (logger) return;
 
@@ -95,42 +133,71 @@ void LogInitialize()
     // Keep early console output readable in -batchmode, before anything else
     // can consume it.
     bq::log::set_console_buffer_enable(true);
+#endif
     // ToolVersion on the first line: support must be able to tell which build a
     // user's log came from -- "the log looks fine but the UI is broken" is only
     // debuggable if we know the exe matches the source we are reading.
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    ZRuntime_LogInfo((std::string("ZEnvironmentCollector ") + ToolVersion + " log files: " + LogPath()).c_str());
+#else
     logger->info(logger->cat.ZEnvironmentCheck, "ZEnvironmentCollector {} log files: {}",
                  ToolVersion, prefix);
+#endif
 }
 
 void LogShutdown()
 {
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    if (!EngineStarted()) return;
+    LogFlush();
+    // Also drops any loaded localization table -- it lives in the engine slice.
+    ZRuntime_ToolShutdown();
+    EngineStarted() = false;
+#else
     std::unique_ptr<bq::engine_log>& logger = Logger();
     if (!logger) return;
     LogFlush();
     logger.reset();
+#endif
 }
 
 void LogInfo(const std::string& message)
 {
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    ZRuntime_LogInfo(message.c_str());
+#else
     if (const auto& logger = Logger())
         logger->info(logger->cat.ZEnvironmentCheck, "{}", message.c_str());
+#endif
 }
 
 void LogWarning(const std::string& message)
 {
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    ZRuntime_LogWarning(message.c_str());
+#else
     if (const auto& logger = Logger())
         logger->warning(logger->cat.ZEnvironmentCheck, "{}", message.c_str());
+#endif
 }
 
 void LogError(const std::string& message)
 {
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    ZRuntime_LogError(message.c_str());
+#else
     if (const auto& logger = Logger())
         logger->error(logger->cat.ZEnvironmentCheck, "{}", message.c_str());
+#endif
 }
 
 void LogFlush()
 {
+#if defined(ZENVCHECK_USE_ZRUNTIME)
+    ZRuntime_LogFlush();
+#else
     bq::log::force_flush_all_logs();
+#endif
 }
 
 std::string LogFilePath()
