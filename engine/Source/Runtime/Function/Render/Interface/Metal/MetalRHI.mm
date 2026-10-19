@@ -356,6 +356,37 @@ namespace
         }
     }
 
+    MTLBlendFactor ToMetalBlendFactor(RHIBlendFactor factor)
+    {
+        switch (factor)
+        {
+            case RHI_BLEND_FACTOR_ZERO:                     return MTLBlendFactorZero;
+            case RHI_BLEND_FACTOR_ONE:                      return MTLBlendFactorOne;
+            case RHI_BLEND_FACTOR_SRC_COLOR:                return MTLBlendFactorSourceColor;
+            case RHI_BLEND_FACTOR_ONE_MINUS_SRC_COLOR:      return MTLBlendFactorOneMinusSourceColor;
+            case RHI_BLEND_FACTOR_DST_COLOR:                return MTLBlendFactorDestinationColor;
+            case RHI_BLEND_FACTOR_ONE_MINUS_DST_COLOR:      return MTLBlendFactorOneMinusDestinationColor;
+            case RHI_BLEND_FACTOR_SRC_ALPHA:                return MTLBlendFactorSourceAlpha;
+            case RHI_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA:      return MTLBlendFactorOneMinusSourceAlpha;
+            case RHI_BLEND_FACTOR_DST_ALPHA:                return MTLBlendFactorDestinationAlpha;
+            case RHI_BLEND_FACTOR_ONE_MINUS_DST_ALPHA:      return MTLBlendFactorOneMinusDestinationAlpha;
+            case RHI_BLEND_FACTOR_SRC_ALPHA_SATURATE:       return MTLBlendFactorSourceAlphaSaturated;
+            default:                                        return MTLBlendFactorOne;
+        }
+    }
+
+    MTLBlendOperation ToMetalBlendOp(RHIBlendOp op)
+    {
+        switch (op)
+        {
+            case RHI_BLEND_OP_SUBTRACT:         return MTLBlendOperationSubtract;
+            case RHI_BLEND_OP_REVERSE_SUBTRACT: return MTLBlendOperationReverseSubtract;
+            case RHI_BLEND_OP_MIN:              return MTLBlendOperationMin;
+            case RHI_BLEND_OP_MAX:              return MTLBlendOperationMax;
+            default:                            return MTLBlendOperationAdd;
+        }
+    }
+
     bool IsDepthFormat(RHIFormat format)
     {
         return format == RHI_FORMAT_D16_UNORM || format == RHI_FORMAT_D32_SFLOAT ||
@@ -1098,6 +1129,38 @@ bool MetalRHI::CreateGraphicsPipelines(RHIPipelineCache*,
     else
     {
         descriptor.colorAttachments[0].pixelFormat = ToMetalFormat(m_SwapchainImageFormat);
+    }
+
+    // Per-attachment blending -- the ZSlate / UI pipelines alpha-blend their quads.
+    if (pCreateInfos[0].pColorBlendState != nullptr && pCreateInfos[0].pColorBlendState->pAttachments != nullptr)
+    {
+        const uint32_t blend_count =
+            std::min<uint32_t>(pCreateInfos[0].pColorBlendState->attachmentCount, 8u);
+        for (uint32_t i = 0; i < blend_count; ++i)
+        {
+            const RHIPipelineColorBlendAttachmentState& blend = pCreateInfos[0].pColorBlendState->pAttachments[i];
+            MTLRenderPipelineColorAttachmentDescriptor* attachment = descriptor.colorAttachments[i];
+            attachment.blendingEnabled = blend.blendEnable ? YES : NO;
+            if (blend.colorWriteMask != 0)
+            {
+                MTLColorWriteMask mask = 0;
+                if ((blend.colorWriteMask & RHI_COLOR_COMPONENT_R_BIT) != 0) { mask |= MTLColorWriteMaskRed; }
+                if ((blend.colorWriteMask & RHI_COLOR_COMPONENT_G_BIT) != 0) { mask |= MTLColorWriteMaskGreen; }
+                if ((blend.colorWriteMask & RHI_COLOR_COMPONENT_B_BIT) != 0) { mask |= MTLColorWriteMaskBlue; }
+                if ((blend.colorWriteMask & RHI_COLOR_COMPONENT_A_BIT) != 0) { mask |= MTLColorWriteMaskAlpha; }
+                attachment.writeMask = mask;
+            }
+            if (!blend.blendEnable)
+            {
+                continue;
+            }
+            attachment.sourceRGBBlendFactor        = ToMetalBlendFactor(blend.srcColorBlendFactor);
+            attachment.destinationRGBBlendFactor   = ToMetalBlendFactor(blend.dstColorBlendFactor);
+            attachment.rgbBlendOperation           = ToMetalBlendOp(blend.colorBlendOp);
+            attachment.sourceAlphaBlendFactor      = ToMetalBlendFactor(blend.srcAlphaBlendFactor);
+            attachment.destinationAlphaBlendFactor = ToMetalBlendFactor(blend.dstAlphaBlendFactor);
+            attachment.alphaBlendOperation         = ToMetalBlendOp(blend.alphaBlendOp);
+        }
     }
 
     // Vertex layout.
@@ -2094,6 +2157,65 @@ RHISwapChainDesc MetalRHI::GetSwapchainInfo()
     return desc;
 }
 
+RHIRenderPass* MetalRHI::GetSwapchainRenderPass()
+{
+    if (m_SwapchainRenderPass != nullptr)
+    {
+        return m_SwapchainRenderPass;
+    }
+
+    RHIAttachmentDescription attachment {};
+    attachment.format  = m_SwapchainImageFormat != RHI_FORMAT_UNDEFINED ? m_SwapchainImageFormat
+                                                                        : RHI_FORMAT_B8G8R8A8_UNORM;
+    attachment.samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachment.loadOp  = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    attachment.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+
+    RHIRenderPassCreateInfo create_info {};
+    create_info.sType           = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    create_info.attachmentCount = 1;
+    create_info.pAttachments    = &attachment;
+    create_info.subpassCount    = 0;  // Metal has no subpasses.
+
+    CreateRenderPass(&create_info, m_SwapchainRenderPass);
+    return m_SwapchainRenderPass;
+}
+
+RHIFramebuffer* MetalRHI::GetSwapchainFramebuffer()
+{
+    const bool stale = m_SwapchainFramebuffer != nullptr && m_SwapchainExtent.width > 0 &&
+                       m_SwapchainExtent.height > 0 &&
+                       (m_SwapchainExtent.width != ((MetalFramebuffer*)m_SwapchainFramebuffer)->width ||
+                        m_SwapchainExtent.height != ((MetalFramebuffer*)m_SwapchainFramebuffer)->height);
+    if (m_SwapchainFramebuffer != nullptr && !stale)
+    {
+        return m_SwapchainFramebuffer;
+    }
+    if (m_SwapchainFramebuffer != nullptr)
+    {
+        delete (MetalFramebuffer*)m_SwapchainFramebuffer;
+        m_SwapchainFramebuffer = nullptr;
+    }
+    if (m_SwapchainExtent.width == 0 || m_SwapchainExtent.height == 0)
+    {
+        return nullptr;
+    }
+
+    // A null attachment means "this frame's drawable" (see CreateFramebuffer).
+    RHIImageView* attachments[1] = {nullptr};
+    RHIFramebufferCreateInfo create_info {};
+    create_info.sType           = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    create_info.renderPass      = GetSwapchainRenderPass();
+    create_info.attachmentCount = 1;
+    create_info.pAttachments    = attachments;
+    create_info.width           = m_SwapchainExtent.width;
+    create_info.height          = m_SwapchainExtent.height;
+    create_info.layers          = 1;
+
+    CreateFramebuffer(&create_info, m_SwapchainFramebuffer);
+    return m_SwapchainFramebuffer;
+}
+
 RHIDepthImageDesc MetalRHI::GetDepthImageInfo() const
 {
     RHIDepthImageDesc desc {};
@@ -2188,7 +2310,30 @@ bool MetalRHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSw
         return true;
     }
     m_CurrentDrawable = [drawable retain];
-    return false;
+
+    // The frame's command buffer: everything recorded between PrepareBeforePass()
+    // and SubmitRendering() (ZSlate overlay, copies, ...) lands here.
+    if (m_CommandBuffers[m_CurrentFrameIndex] == nullptr)
+    {
+        m_CommandBuffers[m_CurrentFrameIndex] = new MetalCommandBuffer();
+    }
+    auto* metal_buffer = (MetalCommandBuffer*)m_CommandBuffers[m_CurrentFrameIndex];
+    if (metal_buffer->commandBuffer != nil)
+    {
+        // Last frame's buffer was never submitted (skipped frame): drop it.
+        [metal_buffer->commandBuffer release];
+        metal_buffer->commandBuffer = nil;
+    }
+    id<MTLCommandBuffer> command_buffer = [m_CommandQueue commandBuffer];
+    metal_buffer->commandBuffer = command_buffer != nil ? [command_buffer retain] : nil;
+    if (command_buffer != nil)
+    {
+        [command_buffer release];
+    }
+    metal_buffer->renderEncoder  = nil;
+    metal_buffer->computeEncoder = nil;
+    m_CurrentCommandBuffer       = metal_buffer;
+    return metal_buffer->commandBuffer == nil;
 #else
     if (passUpdateAfterRecreateSwapchain)
     {
@@ -2198,14 +2343,27 @@ bool MetalRHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSw
 #endif
 }
 
-// Encodes a clear pass into the drawable and presents it. The ZSlate / scene
-// command encoders are not implemented yet, so this is a cleared frame.
+// Ends any encoder still open for the frame, presents the drawable and commits.
+// Drawing happens between PrepareBeforePass() and this call, through the RHI
+// Cmd* encoders (see RenderSystem::Tick on Apple).
 void MetalRHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwapchain)
 {
 #ifdef __APPLE__
     dispatch_semaphore_t semaphore = m_Semaphores[m_CurrentFrameIndex];
-    if (m_CurrentDrawable == nil)
+    auto* metal_buffer = (MetalCommandBuffer*)m_CurrentCommandBuffer;
+    if (m_CurrentDrawable == nil || metal_buffer == nullptr || metal_buffer->commandBuffer == nil)
     {
+        if (metal_buffer != nullptr)
+        {
+            [metal_buffer->commandBuffer release];
+            metal_buffer->commandBuffer = nil;
+        }
+        m_CurrentCommandBuffer = nullptr;
+        if (m_CurrentDrawable != nil)
+        {
+            [m_CurrentDrawable release];
+            m_CurrentDrawable = nil;
+        }
         if (semaphore != nullptr)
         {
             dispatch_semaphore_signal(semaphore);
@@ -2217,26 +2375,22 @@ void MetalRHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwap
         return;
     }
 
-    id<MTLCommandBuffer> command_buffer = [m_CommandQueue commandBuffer];
-    if (command_buffer == nil)
+    id<MTLCommandBuffer> command_buffer = metal_buffer->commandBuffer;
+
+    // A pass left its encoder open (no CmdEndRenderPass): close it so the
+    // command buffer can still be committed.
+    if (metal_buffer->renderEncoder != nil)
     {
-        [m_CurrentDrawable release];
-        m_CurrentDrawable = nil;
-        if (semaphore != nullptr)
-        {
-            dispatch_semaphore_signal(semaphore);
-        }
-        return;
+        [metal_buffer->renderEncoder endEncoding];
+        [metal_buffer->renderEncoder release];
+        metal_buffer->renderEncoder = nil;
     }
-
-    MTLRenderPassDescriptor* pass_descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
-    pass_descriptor.colorAttachments[0].texture     = m_CurrentDrawable.texture;
-    pass_descriptor.colorAttachments[0].loadAction  = MTLLoadActionClear;
-    pass_descriptor.colorAttachments[0].storeAction = MTLStoreActionStore;
-    pass_descriptor.colorAttachments[0].clearColor  = MTLClearColorMake(0.0941, 0.0941, 0.1039, 1.0);
-
-    id<MTLRenderCommandEncoder> encoder = [command_buffer renderCommandEncoderWithDescriptor:pass_descriptor];
-    [encoder endEncoding];
+    if (metal_buffer->computeEncoder != nil)
+    {
+        [metal_buffer->computeEncoder endEncoding];
+        [metal_buffer->computeEncoder release];
+        metal_buffer->computeEncoder = nil;
+    }
 
     [command_buffer presentDrawable:m_CurrentDrawable];
     [command_buffer addCompletedHandler:^(id<MTLCommandBuffer>) {
@@ -2247,6 +2401,9 @@ void MetalRHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwap
     }];
     [command_buffer commit];
 
+    metal_buffer->commandBuffer = nil;
+    [command_buffer release];
+    m_CurrentCommandBuffer = nullptr;
     [m_CurrentDrawable release];
     m_CurrentDrawable = nil;
     m_CurrentFrameIndex = (m_CurrentFrameIndex + 1) % k_max_frames_in_flight;

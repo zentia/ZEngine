@@ -276,6 +276,11 @@ public:
     virtual RHIQueue* GetGraphicsQueue() const override;
     virtual RHIQueue* GetComputeQueue() const override;
     virtual RHISwapChainDesc GetSwapchainInfo() override;
+    // Metal has no persistent swapchain images, so the "swapchain" render pass and
+    // framebuffer are single objects whose colour attachment resolves to this
+    // frame's drawable at begin-pass time (see CmdBeginRenderPassPFN).
+    virtual RHIRenderPass* GetSwapchainRenderPass() override;
+    virtual RHIFramebuffer* GetSwapchainFramebuffer() override;
     virtual RHIDepthImageDesc GetDepthImageInfo() const override;
     virtual uint8_t GetMaxFramesInFlight() const override;
     virtual uint8_t GetCurrentFrameIndex() const override;
@@ -390,6 +395,9 @@ private:
     RHICommandPool* m_RhiCommandPool {nullptr};
     RHICommandBuffer* m_CommandBuffers[k_max_frames_in_flight];
     RHICommandBuffer* m_CurrentCommandBuffer {nullptr};
+    // Swapchain render pass / framebuffer: the colour attachment is the drawable.
+    RHIRenderPass*    m_SwapchainRenderPass {nullptr};
+    RHIFramebuffer*   m_SwapchainFramebuffer {nullptr};
     QueueFamilyIndices m_QueueIndices;
 
     // Bindless texture support (Metal Tier-2 Argument Buffer)

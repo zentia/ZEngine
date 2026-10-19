@@ -24,7 +24,9 @@
 #include <string>
 #include <unordered_map>
 
-#if defined(Z_HAS_VULKAN)
+// SPIR-V payload for ui_batched.{vert,frag}: Vulkan consumes it directly, Metal
+// runs it through SPIRV-Cross inside MetalRHI::CreateShaderModule().
+#if defined(Z_HAS_VULKAN) || defined(__APPLE__)
     #include <ui_batched_frag.h>
     #include <ui_batched_vert.h>
 #endif
@@ -312,6 +314,13 @@ void ZSlateEditorOverlay::EnsurePipeline(RHI* rhi, RHIRenderPass* render_pass, u
     {
         vert_shader_module = LoadDx12UiShader(rhi, "ui_batched.vert.hlsl", ShaderStage::Vertex);
         frag_shader_module = LoadDx12UiShader(rhi, "ui_batched.frag.hlsl", ShaderStage::Fragment);
+    }
+#endif
+#if defined(__APPLE__)
+    if (rhi->getGraphicsAPI() == GraphicsAPI::Metal)
+    {
+        vert_shader_module = rhi->CreateShaderModule(UI_BATCHED_VERT);
+        frag_shader_module = rhi->CreateShaderModule(UI_BATCHED_FRAG);
     }
 #endif
 

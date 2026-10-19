@@ -505,6 +505,11 @@ public:
     virtual RHIQueue* GetGraphicsQueue() const = 0;
     virtual RHIQueue* GetComputeQueue() const = 0;
     virtual RHISwapChainDesc GetSwapchainInfo() = 0;
+    // Render pass / framebuffer used to draw straight into the swapchain (the
+    // Metal path drives the frame this way; Vulkan/DX12 keep their own objects).
+    // Default nullptr: the backend has no such object.
+    virtual RHIRenderPass* GetSwapchainRenderPass() { return nullptr; }
+    virtual RHIFramebuffer* GetSwapchainFramebuffer() { return nullptr; }
     virtual RHIDepthImageDesc GetDepthImageInfo() const = 0;
     virtual uint8_t GetMaxFramesInFlight() const = 0;
     virtual uint8_t GetCurrentFrameIndex() const = 0;

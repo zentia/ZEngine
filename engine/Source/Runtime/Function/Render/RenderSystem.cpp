@@ -56,11 +56,48 @@ void RenderSystem::Tick(float)
     if (m_Rhi)
     {
         m_Rhi->PrepareContext();
-        // Metal: acquire this frame's drawable and present it. The render pipeline
-        // has no Metal modules yet (BuildDrawLists is empty), so this is what makes
-        // the editor window show something (a cleared frame) today.
+        // Metal: acquire this frame's drawable, draw the UI straight into it, then
+        // present. The render pipeline has no Metal modules yet (BuildDrawLists is
+        // empty), so the ZSlate editor overlay is driven here through the
+        // pipeline's post-UI callbacks (EditorUIPass::Draw).
         if (!m_Rhi->PrepareBeforePass([]() {}))
         {
+            RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
+            RHIRenderPass*    render_pass    = m_Rhi->GetSwapchainRenderPass();
+            RHIFramebuffer*   framebuffer    = m_Rhi->GetSwapchainFramebuffer();
+
+            if (command_buffer != nullptr && render_pass != nullptr && framebuffer != nullptr)
+            {
+                const RHIExtent2D extent = m_Rhi->GetSwapchainInfo().extent;
+
+                RHIClearValue clear_value {};
+                clear_value.color.float32[0] = 0.0941f;
+                clear_value.color.float32[1] = 0.0941f;
+                clear_value.color.float32[2] = 0.1039f;
+                clear_value.color.float32[3] = 1.0f;
+
+                RHIRenderPassBeginInfo begin_info {};
+                begin_info.sType          = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+                begin_info.renderPass     = render_pass;
+                begin_info.framebuffer    = framebuffer;
+                begin_info.renderArea     = {{0, 0}, extent};
+                begin_info.clearValueCount = 1;
+                begin_info.pClearValues   = &clear_value;
+
+                m_Rhi->CmdBeginRenderPassPFN(command_buffer, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+                if (m_RenderPipeline)
+                {
+                    for (const auto& callback : m_RenderPipeline->getPostUIRenderCallbacks())
+                    {
+                        if (callback)
+                        {
+                            callback();
+                        }
+                    }
+                }
+                m_Rhi->CmdEndRenderPassPFN(command_buffer);
+            }
+
             m_Rhi->SubmitRendering([]() {});
         }
     }

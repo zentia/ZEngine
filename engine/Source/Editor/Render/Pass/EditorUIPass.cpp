@@ -61,15 +61,14 @@ void EditorUIPass::InitializeUIRenderBackend(WindowUI* window_ui)
     }
 #endif
 
-#if defined(Z_HAS_VULKAN)
-    // Native overlay draws inside the main-camera render pass UI subpass (see Draw()).
+#if defined(Z_HAS_VULKAN) || defined(__APPLE__)
+    // Native overlay draws inside the render pass that is already open:
+    //   - Vulkan: the main-camera pass' UI subpass (see Draw()).
+    //   - Metal:  the swapchain pass RenderSystem::Tick opens for the frame.
     m_BackendInitialized = true;
 #else
     // No compiled-in editor UI backend for this platform/config:
     //   - Windows: handled above by the DX12 branch (early-returned)
-    //   - macOS:   the legacy CAMetalLayer path (EditorUIPassMacOS.mm) is not
-    //              compiled (see the FILTER in Source/Editor/CMakeLists.txt) and
-    //              the native ZSlate overlay has no Metal branch yet.
     //   - Vulkan:  not compiled in (Z_HAS_VULKAN off; only used for Android / HarmonyOS targets)
     // Leaving m_BackendInitialized = false; Draw() will be a no-op.
 #endif
@@ -146,9 +145,7 @@ void EditorUIPass::PrepareGameThreadFrame()
     }
 #endif
 
-#if defined(__APPLE__)
-    return;
-#elif defined(Z_HAS_VULKAN)
+#if defined(__APPLE__) || defined(Z_HAS_VULKAN)
     ZSlate::ZSlateEditorOverlay::Get().BeginFrameIfEnabled();
     m_WindowUi->PreRender();
     FloatingPanelManager::Get().BuildBatches();
@@ -260,7 +257,44 @@ void EditorUIPass::Draw()
     }
 #endif
 
-#if defined(Z_HAS_VULKAN)
+#if defined(__APPLE__)
+    if (m_Rhi == nullptr)
+    {
+        SignalImGuiRenderComplete();
+        return;
+    }
+
+    if (m_GameThreadFramePrepared)
+    {
+        m_GameThreadFramePrepared = false;
+    }
+    else
+    {
+        // Non-parallel path: the game thread did not build the batch, so record it here.
+        ZSlate::ZSlateEditorOverlay::Get().BeginFrameIfEnabled();
+        m_WindowUi->PreRender();
+        FloatingPanelManager::Get().BuildBatches();
+    }
+
+    float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "EditorUI", color);
+
+    // Metal: the overlay draws into the swapchain pass RenderSystem::Tick opened,
+    // so a null render pass yields a swapchain-format pipeline (same trick as DX12).
+    // Editor tear-off panels (FloatingPanelManager::DrawSurfaces) need per-window
+    // surfaces and are not wired up on Metal yet.
+    {
+        auto& zslate_overlay = ZSlate::ZSlateEditorOverlay::Get();
+        if (zslate_overlay.IsNativeBackendEnabled())
+        {
+            zslate_overlay.EnsurePipeline(m_Rhi, nullptr, 0);
+            zslate_overlay.DrawBatch(m_Rhi);
+        }
+    }
+
+    m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
+    SignalImGuiRenderComplete();
+#elif defined(Z_HAS_VULKAN)
     if (m_GameThreadFramePrepared)
     {
         m_GameThreadFramePrepared = false;

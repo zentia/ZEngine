@@ -15,7 +15,10 @@
 #include <string>
 #include <vector>
 
-#if defined(Z_HAS_VULKAN)
+// The generated headers hold the SPIR-V bytes of ui_batched.{vert,frag}. Metal
+// cannot consume SPIR-V directly, but MetalRHI runs it through SPIRV-Cross, so
+// the same payload feeds the Vulkan and the Metal path.
+#if defined(Z_HAS_VULKAN) || defined(__APPLE__)
     #include <ui_batched_frag.h>
     #include <ui_batched_vert.h>
 #endif
@@ -137,6 +140,14 @@ void UIPass::SetupPipeline()
     {
         vert_shader_module = LoadDx12UiShader(m_Rhi, "ui_batched.vert.hlsl", ShaderStage::Vertex);
         frag_shader_module = LoadDx12UiShader(m_Rhi, "ui_batched.frag.hlsl", ShaderStage::Fragment);
+    }
+#endif
+#if defined(__APPLE__)
+    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::Metal)
+    {
+        // SPIR-V -> MSL inside MetalRHI::CreateShaderModule().
+        vert_shader_module = m_Rhi->CreateShaderModule(UI_BATCHED_VERT);
+        frag_shader_module = m_Rhi->CreateShaderModule(UI_BATCHED_FRAG);
     }
 #endif
 

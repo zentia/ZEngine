@@ -77,8 +77,32 @@ namespace
                 LOG_INFO(ZRender, "UIGpuResources: added CJK fallback font '{}'", path);
             }
         }
-#endif
-    }
+        #endif
+
+        #ifdef __APPLE__
+            // macOS ships CJK-capable fonts with the system: PingFang covers
+            // Simplified Chinese (and is also the UI font), Hiragino covers
+            // Japanese, and Apple SD Gothic Neo covers Korean.
+            const char* mac_cjk_candidates[] = {
+                "/System/Library/Fonts/PingFang.ttc",
+                "/System/Library/Fonts/STHeiti Medium.ttc",
+                "/System/Library/Fonts/Hiragino Sans GB.ttc",
+                "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+                "/Library/Fonts/Arial Unicode.ttf",
+            };
+        for (const char* path : mac_cjk_candidates)
+        {
+            if (!std::filesystem::exists(path))
+            {
+                continue;
+            }
+            if (atlas->AddFallbackFont(path))
+            {
+                LOG_INFO(ZRender, "UIGpuResources: added CJK fallback font '{}'", path);
+            }
+        }
+        #endif
+        }
 }  // namespace
 
 UIGpuResources::~UIGpuResources()
@@ -117,6 +141,23 @@ eastl::string UIGpuResources::ResolveDefaultFontPath() const
         "C:/Windows/Fonts/msyh.ttc",
     };
     for (const char* candidate : win_candidates)
+    {
+        if (std::filesystem::exists(candidate))
+        {
+            return eastl::string(candidate);
+        }
+    }
+#endif
+
+#ifdef __APPLE__
+    // PingFang is the macOS system UI font and covers Latin + Simplified Chinese.
+    const char* mac_candidates[] = {
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/SFNSText.ttf",
+        "/Library/Fonts/Arial.ttf",
+    };
+    for (const char* candidate : mac_candidates)
     {
         if (std::filesystem::exists(candidate))
         {
