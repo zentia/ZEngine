@@ -15,13 +15,6 @@
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UI/Core/WindowUI.h"
 
-#if defined(__APPLE__)
-struct GLFWwindow;
-class WindowUI;
-bool EditorMetalUIInitialize(GLFWwindow* window);
-bool EditorMetalUIRender(GLFWwindow* window, WindowUI* window_ui);
-#endif
-
 REGISTER_FACTORY(RenderPass, EditorUIPass, "EditorUIPass");
 void EditorUIPass::Initialize(const RenderPassInitInfo* init_info)
 {
@@ -68,16 +61,15 @@ void EditorUIPass::InitializeUIRenderBackend(WindowUI* window_ui)
     }
 #endif
 
-#if defined(__APPLE__)
-    m_BackendInitialized = EditorMetalUIInitialize(static_cast<GLFWwindow*>(GET_SYSTEM(WindowSystem)->GetNativeWindowHandle()));
-    return;
-#elif defined(Z_HAS_VULKAN)
+#if defined(Z_HAS_VULKAN)
     // Native overlay draws inside the main-camera render pass UI subpass (see Draw()).
     m_BackendInitialized = true;
 #else
     // No compiled-in editor UI backend for this platform/config:
     //   - Windows: handled above by the DX12 branch (early-returned)
-    //   - macOS:   handled above by the Metal branch (early-returned)
+    //   - macOS:   the legacy CAMetalLayer path (EditorUIPassMacOS.mm) is not
+    //              compiled (see the FILTER in Source/Editor/CMakeLists.txt) and
+    //              the native ZSlate overlay has no Metal branch yet.
     //   - Vulkan:  not compiled in (Z_HAS_VULKAN off; only used for Android / HarmonyOS targets)
     // Leaving m_BackendInitialized = false; Draw() will be a no-op.
 #endif
@@ -268,10 +260,7 @@ void EditorUIPass::Draw()
     }
 #endif
 
-#if defined(__APPLE__)
-    (void)EditorMetalUIRender(static_cast<GLFWwindow*>(GET_SYSTEM(WindowSystem)->GetNativeWindowHandle()), m_WindowUi);
-    return;
-#elif defined(Z_HAS_VULKAN)
+#if defined(Z_HAS_VULKAN)
     if (m_GameThreadFramePrepared)
     {
         m_GameThreadFramePrepared = false;

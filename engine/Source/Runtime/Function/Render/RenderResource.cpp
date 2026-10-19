@@ -1403,3 +1403,18 @@ void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
     static_assert(64 >= sizeof(MeshVertex::JointBinding), "");
 }
 #endif  // Z_HAS_VULKAN
+
+#if !defined(Z_HAS_VULKAN)
+// Metal / WebGL2 builds: every out-of-line virtual of RenderResource lives inside
+// the Z_HAS_VULKAN block above, so no translation unit emits its vtable/typeinfo.
+// RenderPass::Initialize() and friends still dynamic_cast to RenderResource, so
+// define the key function here to give the class a home TU.
+void RenderResource::clear()
+{
+    if (m_TextureStreamingManager)
+    {
+        m_TextureStreamingManager->Shutdown();
+        m_TextureStreamingManager.reset();
+    }
+}
+#endif

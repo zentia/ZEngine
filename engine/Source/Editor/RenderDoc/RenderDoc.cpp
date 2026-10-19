@@ -1,6 +1,10 @@
 #include "RenderDoc.h"
 
-#include "RenderDocAPI.h"
+#if defined(_WIN32)
+    // RenderDocAPI.h is empty on non-Windows (the module that owns it is desktop
+    // Windows-only), and is not on the include path there.
+    #include "RenderDocAPI.h"
+#endif
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #if defined(_WIN32)

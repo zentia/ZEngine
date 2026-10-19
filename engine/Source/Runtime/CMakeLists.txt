@@ -426,6 +426,16 @@ add_library(${SHARED_TARGET_NAME} SHARED ${HEADER_FILES} ${SOURCE_FILES})
 set_target_properties(${SHARED_TARGET_NAME} PROPERTIES CXX_STANDARD 23)
 set_target_properties(${SHARED_TARGET_NAME} PROPERTIES FOLDER "Engine")
 set_target_properties(${SHARED_TARGET_NAME} PROPERTIES UNITY_BUILD OFF)
+# The Metal (macOS) backend excludes the Vulkan render path -- Passes/, the
+# Vulkan ShaderCompiler, RenderResource's Vulkan-only out-of-line virtuals and
+# RenderSystem::GetFrameDrawList -- so the shared runtime variant has unresolved
+# symbols there. Keep the target configured (it is referenced all over this file)
+# but leave it out of the default "all" build on that configuration. iOS keeps
+# Vulkan via MoltenVK and is unaffected.
+if(APPLE AND NOT IOS AND NOT ZENGINE_USE_VULKAN)
+    set_target_properties(${SHARED_TARGET_NAME} PROPERTIES EXCLUDE_FROM_ALL TRUE)
+    message(STATUS "Runtime: ZRuntimeShared excluded from the default build (Metal backend has no Vulkan render path)")
+endif()
 # Ensure the shared target has a unique output name so its import library
 # doesn't collide with the static library archive (ZRuntime.lib). Using a
 # distinct output name avoids the import lib overwriting the static lib when

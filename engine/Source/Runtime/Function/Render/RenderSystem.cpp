@@ -211,6 +211,11 @@ void RenderSystem::ClearForLevelReloading() {}
 void RenderSystem::ResubmitActiveLevelRenderers() {}
 void RenderSystem::SyncGameCameraFromMainCamera() {}
 void RenderSystem::ProcessSwapData() {}
+void RenderSystem::FlushRenderingCommands()
+{
+    // Apple / WebGL2 path: rendering runs synchronously on the main thread, so
+    // there is no separate rendering/RHI thread queue to drain.
+}
 
 #else
     #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
