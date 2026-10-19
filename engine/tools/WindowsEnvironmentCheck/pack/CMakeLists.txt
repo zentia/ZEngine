@@ -173,7 +173,33 @@ else()
     message(STATUS "Build backend: standalone (self-contained, no runtime DLL)")
 endif()
 
-set(PACK_FILE_NAME "${PACKAGE_NAME}-windows-${DETECTED_ARCH}-${PACK_VERSION}")
+# A staging directory gets reused, and the install rule copies README.md out of
+# the source tree, so a staging populated before the README changed ships the
+# old one. That is worse than shipping a stale binary: the binary fails loudly,
+# a stale README does not -- and it is where the launcher contract lives
+# (report file names, the four keys, the exit codes). Byte-compare it.
+set(_pack_source_readme "${PACK_REPO_ROOT}/engine/tools/WindowsEnvironmentCheck/README.md")
+if(EXISTS "${_pack_source_readme}" AND EXISTS "${PACK_STAGING_DIR}/README.md")
+    file(READ "${_pack_source_readme}" _pack_readme_now)
+    file(READ "${PACK_STAGING_DIR}/README.md" _pack_readme_staged)
+    if(NOT _pack_readme_now STREQUAL _pack_readme_staged)
+        message(WARNING
+            "README.md in ${PACK_STAGING_DIR} is not the one in the source tree: "
+            "this staging directory predates a README change. Re-run the install "
+            "before packing, or the archive ships the old launcher contract.")
+    endif()
+endif()
+
+# Two backends, and until now one identical file name for both of them -- which
+# is the actual hazard: an archive that has to be opened before anyone can tell
+# which build it came from, or whether it needs a runtime DLL beside it. The
+# engine-backed one carries a qualifier; the standalone name is left alone
+# because that is what anything already consuming it expects.
+if(PACK_ENGINE_BACKED)
+    set(PACK_FILE_NAME "${PACKAGE_NAME}-zruntime-windows-${DETECTED_ARCH}-${PACK_VERSION}")
+else()
+    set(PACK_FILE_NAME "${PACKAGE_NAME}-windows-${DETECTED_ARCH}-${PACK_VERSION}")
+endif()
 
 set(CPACK_INSTALLED_DIRECTORIES "${PACK_STAGING_DIR};.")
 set(CPACK_PACKAGE_NAME "${PACKAGE_NAME}")

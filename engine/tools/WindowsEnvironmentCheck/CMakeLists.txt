@@ -500,13 +500,41 @@ endif()
 #
 # The name matches the source directory (engine/tools/WindowsEnvironmentCheck),
 # not the executable, so bin/ and engine/tools/ line up one-to-one.
+#
+# This is the INSTALL layout -- the folder inside the archive -- so it is fixed:
+# the shipped contract is "README.md + WindowsEnvironmentCheck\".
 set(ENVIRONMENT_CHECK_OUTPUT_SUBDIR WindowsEnvironmentCheck)
+
+# The BUILD layout is a separate decision, and it must NOT be one directory
+# shared by every configuration. <repo>/bin/Tools/<Config>/ is common to every
+# build tree of this repo, so a standalone tree and a full-tree one -- or two
+# full trees differing only in CRT -- took turns overwriting the same exe, and
+# `cmake --install` then faithfully shipped whichever one landed last. That is
+# not a stale file: the packaged exe silently became a different build.
+#
+# Two axes, because either one alone still collides:
+#   * backend -- engine-backed needs ZRuntimeShared.dll beside it; standalone
+#                must not find one lying there;
+#   * CRT     -- /MD and /MT engine-backed builds are different binaries
+#                (this tool's whole point is shipping to machines with no
+#                VC redist, so the two are not interchangeable).
+set(_build_subdir_tag "")
+if(ENVIRONMENT_CHECK_WITH_ZRUNTIME)
+    set(_build_subdir_tag "-zruntime")
+    if(CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "DLL")
+        string(APPEND _build_subdir_tag "-md")
+    elseif(CMAKE_MSVC_RUNTIME_LIBRARY MATCHES "MultiThreaded")
+        string(APPEND _build_subdir_tag "-mt")
+    endif()
+endif()
+set(ENVIRONMENT_CHECK_BUILD_SUBDIR "WindowsEnvironmentCheck${_build_subdir_tag}")
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/ToolOutputDir.cmake")
 z_set_tool_output_dir(${ENVIRONMENT_CHECK_TARGET} ${DLL_PROBE_TARGET}
-    SUBDIR "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}")
+    SUBDIR "${ENVIRONMENT_CHECK_BUILD_SUBDIR}")
 
-# install() mirrors the build layout: --prefix <dir> gives you the same folder
-# you would have zipped out of bin/Tools/<Config>/.
+# install() uses the fixed OUTPUT_SUBDIR, not the flavour-tagged build
+# directory: --prefix <dir> always gives you the folder that ships, whichever
+# configuration built it.
 install(TARGETS ${ENVIRONMENT_CHECK_TARGET} ${DLL_PROBE_TARGET} RUNTIME
         DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}" COMPONENT EnvironmentCollector)
 install(FILES "${zydis_SOURCE_DIR}/LICENSE" DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}"

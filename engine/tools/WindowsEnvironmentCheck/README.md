@@ -69,7 +69,7 @@ ScriptingManager / ProjectInfo——一个被派去诊断机器的工具，不�
 
 | 配置方式 | 后端 | 说明 |
 |---|---|---|
-| 全树 `cmake -S . -B build` | 引擎后端（链接 ZRuntimeShared） | **分发用的构建**，配合 `-DZENGINE_STATIC_CRT=ON` 让 DLL 也是 `/MT`，产物仍能发到没有 VC redist 的机器 |
+| 全树 `cmake -S . -B build` | 引擎后端（链接 ZRuntimeShared） | **分发用的构建**，配合 `-DZENGINE_STATIC_CRT=ON` 让 DLL 也是 `/MT`，产物仍能发到没有 VC redist 的机器（已验证：exe 与 DLL 都不再 import `MSVCP140`/`VCRUNTIME140`）。此前 Jolt 固定 `/MD`，会把 `ZRuntimeShared.dll` 的链接打断；现在它跟随该开关 |
 | 独立 `cmake -S engine/tools/WindowsEnvironmentCheck -B <dir>` | 自包含（静态 bqlog + 内置表） | 没有 ZRuntimeShared 目标（那要拉起整个 Runtime 依赖树），退化为旧路径 |
 
 注意：引擎后端下 `ZRuntimeShared.dll` 必须和 exe 同目录（POST_BUILD 已拷贝），
@@ -513,7 +513,13 @@ cmake -S engine\tools\WindowsEnvironmentCheck\pack -B build\tools\ZEnvironmentCo
 cmake --build build\tools\ZEnvironmentCollector\pack --target package
 ```
 
-产出 `dist\zenvironment-collector-windows-x86_64-<版本>.zip` 与同名 `.zip.sha256`：
+产出 `dist\<名字>-windows-x86_64-<版本>.zip` 与同名 `.zip.sha256`，名字区分两种构建：
+
+- 自包含构建 → `zenvironment-collector-windows-x86_64-<版本>.zip`
+- 引擎后端构建 → `zenvironment-collector-zruntime-windows-x86_64-<版本>.zip`
+
+多出的 `zruntime` 由 pack 读 exe 导入表自动加上，不用手填——两种构建曾产出**完全同名**的两个包，
+内容却不同，只能打开才知道是哪个。
 
 - 版本号从 `ToolVersion.h` 解析（与报告里的 `toolVersion` 同一个来源，不可能对不上）；可用
   `-DPACK_VERSION_OVERRIDE=x.y.z` 覆盖。
@@ -529,10 +535,21 @@ cmake --build build\tools\ZEnvironmentCollector\pack --target package
   把一个空的/过期的 staging 目录打成一个看起来很像样的包，是这里唯一一种"看起来成功了"的失败。
 
 产物不落在 build 目录里：`ZEnvironmentCollector.exe` 与 `ZDllLoadProbe.exe` 输出到
-`bin\Tools\<Config>\WindowsEnvironmentCheck\`（子目录名与源码目录同名），profiles 与
-LICENSE 也复制过去，所以该目录就是可直接打包的分发单元——而不会在共享的
-`bin\Tools\<Config>\` 里和另外三个工具的 exe 混在一起。`--prefix dist` 装出的是
-同一份目录：`dist\WindowsEnvironmentCheck\`。
+`bin\Tools\<Config>\`（子目录名与源码目录同名），profiles 与 LICENSE 也复制过去，所以该目录
+就是可直接打包的分发单元——而不会在共享的 `bin\Tools\<Config>\` 里和另外三个工具的 exe 混在一起。
+
+**构建目录按配置带后缀**，因为 `bin\Tools\<Config>\` 是全仓库每一棵构建树共用的：
+
+| 配置 | 构建目录 |
+|---|---|
+| 独立构建 | `WindowsEnvironmentCheck\` |
+| 引擎后端 `/MD` | `WindowsEnvironmentCheck-zruntime-md\` |
+| 引擎后端 `/MT`（分发用） | `WindowsEnvironmentCheck-zruntime-mt\` |
+
+两个维度都需要：只按后端分的话，两棵全树（`/MD` 与 `/MT`）仍然会互相覆盖同一个 exe，
+而 `cmake --install` 只会忠实地把最后落地的那个装走——包里的 exe 就悄悄变成了另一个构建。
+**安装目录不受影响**，始终是 `WindowsEnvironmentCheck\`（`--prefix dist` 装出
+`dist\WindowsEnvironmentCheck\`），那是包内的契约目录，不随配置变。
 
 分发 `ZEnvironmentCollector.exe`、`ZDllLoadProbe.exe`、profiles及LICENSE文件，不只发主 exe。无需ZRuntime或引擎资源；Release采用静态CRT。GUI和ZIP模式未改变旧环境报告schema5。GUI动态依赖Windows的 `d3d11.dll`、`D3DCOMPILER_47.dll` 及基础系统DLL。
 
