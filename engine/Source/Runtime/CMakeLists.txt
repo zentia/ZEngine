@@ -344,6 +344,15 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabUnityCompatTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabUnityCompatTest.cpp")
+# ShaderLab #include resolver smoke-test main. Same exclusion rationale. Built
+# only when ZENGINE_BUILD_SHADERLAB_INCLUDE_TEST=ON (see
+# Function/ShaderLab/Test/CMakeLists.txt). Note the resolver itself,
+# ShaderLabIncludeProcessor.cpp, is NOT excluded -- it is library code and
+# belongs in ZRuntime.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabIncludeResolverTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabIncludeResolverTest.cpp")
 # PR-V2: Vulkan bindless smoke-test main. Same exclusion rationale as
 # the DX12 entry above. Built only when ZENGINE_BUILD_VK_BINDLESS_SMOKE_TEST=ON
 # (see Function/Render/Interface/Vulkan/Test/CMakeLists.txt).

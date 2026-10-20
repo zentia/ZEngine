@@ -18,6 +18,90 @@
 #   3. Does DXC accept the Cg-flavoured body given the shim?
 # =====================================================================
 
+# =====================================================================
+# ShaderLab #include resolver smoke-test
+# ---------------------------------------------------------------------
+# Pins down ResolveIncludes() in ShaderLabIncludeProcessor.cpp. That TU is
+# deliberately free of any render-backend dependency (no Vulkan, no DX12),
+# so this target configures and runs on EVERY configuration -- including
+# ZENGINE_USE_VULKAN=OFF, where ShaderLabCompiler.cpp is excluded from
+# ZRuntime and would otherwise be completely unverified.
+#
+# Opt in with:
+#   cmake -B build -DZENGINE_BUILD_SHADERLAB_INCLUDE_TEST=ON
+#   cmake --build build --target ShaderLabIncludeResolverTest
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADERLAB_INCLUDE_TEST
+       "Build the ShaderLab #include resolver smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADERLAB_INCLUDE_TEST)
+    set(_include_target ShaderLabIncludeResolverTest)
+
+    add_executable(${_include_target}
+        ShaderLabIncludeResolverTest.cpp
+    )
+
+    set_target_properties(${_include_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # Absolute fixture path, so the test does not depend on CWD.
+    target_compile_definitions(${_include_target} PRIVATE
+        ZENGINE_SHADERLAB_INCLUDE_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+
+    # engine/Source is the root for "Runtime/Function/ShaderLab/..." includes.
+    target_include_directories(${_include_target} PRIVATE ${ENGINE_ROOT_DIR}/Source)
+
+    # ResolveIncludes() lives in ZRuntime (ShaderLab/*.cpp is globbed into it
+    # on every configuration that compiles the ShaderLab sources).
+    target_link_libraries(${_include_target} PRIVATE ZRuntime)
+
+    if(MSVC)
+        target_compile_options(${_include_target} PRIVATE /W4)
+    endif()
+
+    # Fixtures -- read at runtime, never compiled.
+    target_sources(${_include_target} PRIVATE
+        include_proc/lib/once.h
+        include_proc/lib/plain.h
+        include_proc/lib/angle.h
+        include_proc/lib/empty.h
+        include_proc/lib/self_cycle.h
+        include_proc/lib/self_once.h
+        include_proc/lib/cycle_a.h
+        include_proc/lib/cycle_b.h
+        include_proc/lib/nested_parent.h
+        include_proc/lib/nested_child.h
+        include_proc/owning/local.h
+    )
+    set_source_files_properties(
+        include_proc/lib/once.h
+        include_proc/lib/plain.h
+        include_proc/lib/angle.h
+        include_proc/lib/empty.h
+        include_proc/lib/self_cycle.h
+        include_proc/lib/self_once.h
+        include_proc/lib/cycle_a.h
+        include_proc/lib/cycle_b.h
+        include_proc/lib/nested_parent.h
+        include_proc/lib/nested_child.h
+        include_proc/owning/local.h
+        PROPERTIES VS_TOOL_OVERRIDE "None"
+    )
+
+    add_test(NAME ${_include_target} COMMAND ${_include_target})
+
+    message(STATUS "Configured ShaderLab include-resolver smoke-test: ${_include_target}")
+endif()
+
+# =====================================================================
+# ShaderLab Unity-compatibility smoke-test
+# =====================================================================
+
 option(ZENGINE_BUILD_SHADERLAB_UNITY_COMPAT_TEST
        "Build the ShaderLab Unity-compatibility smoke-test executable"
        OFF)

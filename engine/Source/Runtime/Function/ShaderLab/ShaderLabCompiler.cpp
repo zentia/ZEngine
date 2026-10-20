@@ -7,7 +7,6 @@
 #include <cstdio>
 #include <execution>
 #include <fstream>
-#include <regex>
 #include <sstream>
 #include <system_error>
 
@@ -230,10 +229,12 @@ namespace ZEngine::ShaderLab
         return ofs.good();
     }
 
-    CompiledShaderModule ShaderLabCompiler::Compile(size_t subshader_index,
-                                                    size_t pass_index,
-                                                    const std::string& program_type,
-                                                    const ShaderVariantKey& variant_key)
+    CompiledShaderModule ShaderLabCompiler::Compile(
+        size_t subshader_index,
+        size_t pass_index,
+        const std::string& program_type,
+        const ShaderVariantKey& variant_key,
+        const std::vector<std::string>& extra_include_paths)
     {
         CompiledShaderModule result;
 
@@ -331,13 +332,35 @@ namespace ZEngine::ShaderLab
         }
 
         // 处理 #include
+        //
+        // Search order: the .shader's own directory, then the configured
+        // include directory, then any caller-supplied extras. A missing or
+        // cyclic include is a hard error -- the resolver never silently
+        // comments the directive out, because doing so hands glslang a source
+        // the author never wrote and produces a diagnostic (or, worse, a
+        // success) that has nothing to do with the real problem.
         std::vector<std::string> include_paths;
         if (!m_IncludeDirectory.empty())
         {
             include_paths.push_back(m_IncludeDirectory);
         }
+        for (const auto& extra : extra_include_paths)
+        {
+            if (!extra.empty())
+            {
+                include_paths.push_back(extra);
+            }
+        }
 
-        std::string processed_code = ProcessIncludes(program.source_code, include_paths);
+        IncludeResolution resolved =
+            ResolveIncludes(program.source_code, include_paths, m_SourcePath.parent_path());
+        if (!resolved.success)
+        {
+            result.error_message = resolved.error_message;
+            return result;
+        }
+
+        std::string processed_code = std::move(resolved.code);
 
         // 编译
         ShaderStage stage = ShaderStage::Fragment;
@@ -422,82 +445,15 @@ namespace ZEngine::ShaderLab
                 for (const auto& variant : variants)
                 {
                     // Vertex shader
-                    Compile(subshader_idx, pass_idx, "vertex", variant);
+                    Compile(subshader_idx, pass_idx, "vertex", variant, include_paths);
 
                     // Fragment shader
-                    Compile(subshader_idx, pass_idx, "fragment", variant);
+                    Compile(subshader_idx, pass_idx, "fragment", variant, include_paths);
                 }
             }
         }
 
         return true;
-    }
-
-    std::string ShaderLabCompiler::ProcessIncludes(const std::string& hlsl_code,
-                                                   const std::vector<std::string>& include_paths)
-    {
-        std::string result = hlsl_code;
-
-        // 简单实现：查找 #include "..." 模式并替换
-        std::regex include_regex(R"regex(#\s*include\s+"([^"]+)")regex");
-
-        std::smatch match;
-        std::string::const_iterator search_start(result.cbegin());
-
-        while (std::regex_search(search_start, result.cend(), match, include_regex))
-        {
-            std::string include_file = match[1].str();
-
-            // 查找 include 文件
-            std::string include_content;
-            for (const auto& path : include_paths)
-            {
-                std::string full_path = path + "/" + include_file;
-                std::ifstream file(full_path);
-                if (file.is_open())
-                {
-                    std::stringstream buffer;
-                    buffer << file.rdbuf();
-                    include_content = buffer.str();
-                    file.close();
-                    break;
-                }
-            }
-
-            if (include_content.empty())
-            {
-                // 尝试在当前目录查找
-                std::ifstream file(include_file);
-                if (file.is_open())
-                {
-                    std::stringstream buffer;
-                    buffer << file.rdbuf();
-                    include_content = buffer.str();
-                    file.close();
-                }
-            }
-
-            // 替换 include 行
-            std::string matched_str = match[0].str();
-            if (!include_content.empty())
-            {
-                // 递归处理嵌套 include
-                include_content = ProcessIncludes(include_content, include_paths);
-                result.replace(match[0].first, match[0].second, include_content);
-                search_start = match[0].second;
-            }
-            else
-            {
-                // 保留 #include 行但标记为未找到
-                result.replace(match[0].first, match[0].second, "// WARNING: Could not find include: " + include_file);
-                search_start = match[0].second;
-            }
-
-            // 重新开始搜索
-            search_start = result.cbegin();
-        }
-
-        return result;
     }
 
 }  // namespace ZEngine::ShaderLab

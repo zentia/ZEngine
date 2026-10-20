@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Function/Render/Interface/Vulkan/ShaderCompiler.h"
+#include "ShaderLabIncludeProcessor.h"
 #include "ShaderLabParser.h"
 #include "ShaderLabVariant.h"
 
@@ -36,10 +37,17 @@ namespace ZEngine::ShaderLab
         bool LoadFromString(const std::string& source);
 
         // 编译指定 SubShader 和 Pass
+        //
+        // `extra_include_paths` is appended after the configured include
+        // directory. PrecompileAll() forwards its own argument here; it used
+        // to be dropped on the floor, so a precompile pass silently resolved
+        // includes against a different set of directories than an explicit
+        // Compile() call did.
         CompiledShaderModule Compile(size_t subshader_index,
                                      size_t pass_index,
                                      const std::string& program_type = "fragment",
-                                     const ShaderVariantKey& variant_key = {});
+                                     const ShaderVariantKey& variant_key = {},
+                                     const std::vector<std::string>& extra_include_paths = {});
 
         // 编译所有变体（预处理时使用）
         bool PrecompileAll(const std::vector<std::string>& include_paths = {});
@@ -76,10 +84,6 @@ namespace ZEngine::ShaderLab
         const std::filesystem::path& GetCacheDirectory() const { return m_CacheDirectory; }
 
     private:
-        // 处理 #include 指令
-        std::string ProcessIncludes(const std::string& hlsl_code,
-                                    const std::vector<std::string>& include_paths);
-
         // Disk-cache helpers (no-ops when m_CacheDirectory is empty).
         std::filesystem::path BuildCacheFilePath(size_t subshader_index,
                                                  size_t pass_index,
