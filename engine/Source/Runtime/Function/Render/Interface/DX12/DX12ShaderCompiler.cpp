@@ -303,6 +303,31 @@ namespace
 
 }  // namespace
 
+namespace
+{
+    // WideCharToMultiByte reports its size INCLUDING the NUL terminator. The old
+    // code kept that NUL inside the std::string, which is tolerated by
+    // ifstream::open() (it uses c_str()) but corrupts any string concatenation
+    // and any log output built from it. Strip it.
+    std::string WideToUtf8(LPCWSTR wide)
+    {
+        const int size_needed = WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
+        if (size_needed <= 1)
+        {
+            return {};
+        }
+
+        std::string result(static_cast<size_t>(size_needed), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, wide, -1, result.data(), size_needed, nullptr, nullptr);
+        if (!result.empty() && result.back() == '\0')
+        {
+            result.pop_back();
+        }
+        return result;
+    }
+
+}  // namespace
+
 // DX12ShaderIncluder implementation
 DX12ShaderIncluder::DX12ShaderIncluder(ComPtr<IDxcLibrary> library, const std::vector<std::string>& include_paths)
     : m_Library(library), m_IncludePaths(include_paths)
@@ -311,33 +336,97 @@ DX12ShaderIncluder::DX12ShaderIncluder(ComPtr<IDxcLibrary> library, const std::v
 
 HRESULT STDMETHODCALLTYPE DX12ShaderIncluder::LoadSource(LPCWSTR pFilename, IDxcBlob** ppIncludeSource)
 {
-    // Convert wide string to narrow string
-    int size_needed = WideCharToMultiByte(CP_UTF8, 0, pFilename, -1, NULL, 0, NULL, NULL);
-    std::string filename(size_needed, 0);
-    WideCharToMultiByte(CP_UTF8, 0, pFilename, -1, &filename[0], size_needed, NULL, NULL);
+    const std::string filename = WideToUtf8(pFilename);
 
-    // Try to find the file in include paths
     std::ifstream file;
     std::string full_path;
 
-    // First try the include paths
-    for (const auto& include_path : m_IncludePaths)
+    // ---------------------------------------------------------------------
+    // (1) Try the name exactly as DXC handed it to us.
+    //
+    //     DXC resolves a QUOTED #include against the directory of the
+    //     INCLUDING file *before* it ever calls LoadSource, so `filename`
+    //     normally arrives as an absolute path such as
+    //         E:/proj/Shaders/Foo/UnityCG.cginc
+    //     i.e. the header really does sit next to the including file. This is
+    //     the case that has always worked -- but historically it only worked by
+    //     accident, as the final fallback AFTER the (always-failing) search-root
+    //     loop below.
+    // ---------------------------------------------------------------------
+    file.open(filename, std::ios::binary);
+    if (file.is_open())
     {
-        full_path = include_path + "/" + filename;
-        file.open(full_path, std::ios::binary);
-        if (file.is_open())
-        {
-            break;
-        }
+        full_path = filename;
     }
 
-    // If not found, try the filename directly
+    // ---------------------------------------------------------------------
+    // (2) Fall back to the configured search roots.
+    //
+    //     Historical bug: the loop used to prepend every root to `filename`
+    //     WITHOUT trying `filename` itself first. Because DXC had already made
+    //     it absolute, every candidate looked like
+    //         <root>/E:/proj/Shaders/Foo/UnityCG.cginc
+    //     so the roots never contributed anything at all. That is why
+    //     SetIncludeDirectory() had zero callers and why a project-relative
+    //     include (`#include "shader/include/common.h"`) could never resolve:
+    //     the feature was wired up but structurally dead.
+    //
+    //     DXC does not tell us the as-written (relative) form, so reconstruct it:
+    //     retry every TRAILING SUFFIX of the resolved path against every root,
+    //     longest first. Longest-first matters -- it reproduces as much of the
+    //     original relative path as possible instead of latching onto an
+    //     unrelated file that happens to share a basename.
+    // ---------------------------------------------------------------------
     if (!file.is_open())
     {
-        file.open(filename, std::ios::binary);
-        if (file.is_open())
+        const std::filesystem::path resolved(filename);
+
+        for (const std::string& include_path : m_IncludePaths)
         {
-            full_path = filename;
+            if (include_path.empty())
+            {
+                continue;
+            }
+
+            if (!resolved.is_absolute())
+            {
+                // DXC did not pre-resolve this one (e.g. an <angle> include, or a
+                // root-relative name). Classic -I search.
+                const std::string candidate = include_path + "/" + filename;
+                file.open(candidate, std::ios::binary);
+                if (file.is_open())
+                {
+                    full_path = candidate;
+                }
+            }
+            else
+            {
+                for (auto it = resolved.begin(); it != resolved.end(); ++it)
+                {
+                    std::filesystem::path suffix;
+                    for (auto jt = it; jt != resolved.end(); ++jt)
+                    {
+                        suffix /= *jt;
+                    }
+                    if (suffix.empty())
+                    {
+                        continue;
+                    }
+
+                    const std::string candidate = include_path + "/" + suffix.generic_string();
+                    file.open(candidate, std::ios::binary);
+                    if (file.is_open())
+                    {
+                        full_path = candidate;
+                        break;
+                    }
+                }
+            }
+
+            if (file.is_open())
+            {
+                break;
+            }
         }
     }
 
