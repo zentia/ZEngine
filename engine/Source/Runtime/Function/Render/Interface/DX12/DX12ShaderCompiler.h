@@ -5,6 +5,7 @@
 #include <d3d12.h>
 #include <dxcapi.h>
 #include <filesystem>
+#include <cstddef>
 #include <map>
 #include <memory>
 #include <string>
@@ -64,6 +65,13 @@ public:
     //
     // `target_profile`, `hlsl_version`, and `embed_debug` default so
     // every existing call site continues to compile unchanged.
+    //
+    // `subshader_index` / `pass_index` only matter for ShaderLab `.shader`
+    // input: they select which Pass's program to extract. Both default to
+    // `SIZE_MAX`, which keeps the historical "first program found" scan.
+    // A ShaderLab caller that knows which pass it wants (e.g.
+    // ShaderLabDx12Compiler::Compile) must pass real indices -- otherwise
+    // every pass of a multi-pass shader compiles pass 0's body.
     DX12ShaderCompileResult CompileFromFile(const std::string& file_path,
                                             ShaderStage shader_stage,
                                             const std::vector<std::string>& include_paths = {},
@@ -71,7 +79,9 @@ public:
                                             const std::string& entry_point = "main",
                                             const std::string& target_profile = "",
                                             const std::string& hlsl_version = "",
-                                            bool embed_debug = false);
+                                            bool embed_debug = false,
+                                            std::size_t subshader_index = static_cast<std::size_t>(-1),
+                                            std::size_t pass_index = static_cast<std::size_t>(-1));
 
     // Compile HLSL shader from source code string. See compileFromFile
     // for the `target_profile` / `hlsl_version` semantics.

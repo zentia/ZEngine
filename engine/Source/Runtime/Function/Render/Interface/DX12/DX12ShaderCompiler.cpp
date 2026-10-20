@@ -506,7 +506,9 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileFromFile(const std::string& f
                                                             const std::string& entry_point,
                                                             const std::string& target_profile,
                                                             const std::string& hlsl_version,
-                                                            bool embed_debug)
+                                                            bool embed_debug,
+                                                            std::size_t subshader_index,
+                                                            std::size_t pass_index)
 
 {
     DX12ShaderCompileResult result;
@@ -514,7 +516,11 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileFromFile(const std::string& f
     if (IsShaderLabSourcePath(file_path))
     {
         const ZEngine::ShaderLab::ShaderLabHlslExtractResult extracted =
-            ZEngine::ShaderLab::ExtractHlslFromShaderLabFile(file_path, shader_stage, entry_point);
+            ZEngine::ShaderLab::ExtractHlslFromShaderLabFile(file_path,
+                                                             shader_stage,
+                                                             entry_point,
+                                                             subshader_index,
+                                                             pass_index);
         if (!extracted.ok)
         {
             result.error_message = extracted.error_message.empty()

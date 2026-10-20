@@ -263,6 +263,65 @@ void RequirePass(const std::filesystem::path& shader,
     ++failures;
 }
 
+// Regression guard: Compile(subshader, pass, stage) must compile THAT pass.
+//
+// Compile() used to hand the whole .shader file to
+// ExtractHlslFromShaderLabFile(), which returns the first CGPROGRAM block it
+// finds -- so every pass of a multi-pass shader produced pass 0's DXIL.
+void RequirePassSelection(const std::filesystem::path& shader,
+                          const std::string& pass0_entry,
+                          const std::string& pass1_entry,
+                          int& checks,
+                          int& failures)
+{
+    ++checks;
+
+    ShaderLabDx12Compiler compiler;
+    if (!compiler.LoadFromFile(shader.generic_string()))
+    {
+        std::cout << "  [FAIL] pass selection -- shader failed to parse\n";
+        ++failures;
+        return;
+    }
+
+    const CompiledShaderModuleDx12 p0 = compiler.Compile(0, 0, "vertex", {});
+    const CompiledShaderModuleDx12 p1 = compiler.Compile(0, 1, "vertex", {});
+
+    if (!p0.success || !p1.success)
+    {
+        std::cout << "  [FAIL] pass selection -- compile failed\n";
+        if (!p0.success)
+        {
+            std::cout << "         pass 0: " << p0.error_message << "\n";
+        }
+        if (!p1.success)
+        {
+            std::cout << "         pass 1: " << p1.error_message << "\n";
+        }
+        ++failures;
+        return;
+    }
+
+    if (p0.entry_point != pass0_entry || p1.entry_point != pass1_entry)
+    {
+        std::cout << "  [FAIL] pass selection -- expected entries '" << pass0_entry << "' / '"
+                  << pass1_entry << "', got '" << p0.entry_point << "' / '" << p1.entry_point
+                  << "'\n";
+        ++failures;
+        return;
+    }
+
+    if (p0.dxil_code == p1.dxil_code)
+    {
+        std::cout << "  [FAIL] pass selection -- pass 0 and pass 1 produced identical DXIL\n";
+        ++failures;
+        return;
+    }
+
+    std::cout << "  [ OK ] pass 0 -> '" << p0.entry_point << "' (" << p0.dxil_code.size()
+              << " B), pass 1 -> '" << p1.entry_point << "' (" << p1.dxil_code.size() << " B)\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -296,6 +355,12 @@ int main(int argc, char** argv)
     // ------------------------------------------------------------------
     std::cout << "\n---- [0b] Regression: Pass survives unknown SubShader commands ----\n";
     RequirePass(Fixture("Spine-Skeleton-Tint-CasterOnly.shader"), "Caster", checks, failures);
+
+    // ------------------------------------------------------------------
+    // 0c. Regression: Compile(subshader, pass, stage) must honour `pass`.
+    // ------------------------------------------------------------------
+    std::cout << "\n---- [0c] Regression: pass_index selects the right program ----\n";
+    RequirePassSelection(Fixture("diag_two_passes.shader"), "vertA", "vertB", checks, failures);
 
     // Ad-hoc mode: `ShaderLabUnityCompatTest <file> [<file>...]` parses and
     // compiles pass 0 of each file. Lets you drop a diagnostic fixture in and

@@ -155,12 +155,20 @@ namespace ZEngine::ShaderLab
         }
 
         const std::vector<std::string> includes = BuildIncludePaths(m_SourcePath, {});
+        // 必须把 subshader/pass 索引传下去。CompileFromFile() 以前只知道一个文件
+        // 路径，内部用 ExtractHlslFromShaderLabFile() 抓"文件里第一个 program"，
+        // 于是多 pass shader 无论请求哪个 pass_index 都在编译 pass 0 的代码。
         const DX12ShaderCompileResult dx_result =
             compiler.CompileFromFile(m_SourcePath.generic_string(),
                                      stage,
                                      includes,
                                      macros,
-                                     entry_point.empty() ? "main" : entry_point);
+                                     entry_point.empty() ? "main" : entry_point,
+                                     "" /* target_profile */,
+                                     "" /* hlsl_version */,
+                                     false /* embed_debug */,
+                                     subshader_index,
+                                     pass_index);
 
         out.entry_point = entry_point.empty() ? "main" : entry_point;
         out.success = dx_result.success;

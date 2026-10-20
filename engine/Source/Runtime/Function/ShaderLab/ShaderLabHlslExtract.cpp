@@ -136,7 +136,44 @@ namespace ZEngine::ShaderLab
             return true;
         }
 
-        bool TryExtractFromParser(const std::string& shader_source, ShaderStage stage, const std::string& fallback_entry, ShaderLabHlslExtractResult& out, std::string& parse_error)
+        bool FillFromProgram(const ShaderProgram& program,
+                             ShaderStage stage,
+                             const std::string& fallback_entry,
+                             ShaderLabHlslExtractResult& out)
+        {
+            const std::string& raw = !program.hlsl_code.empty() ? program.hlsl_code : program.source_code;
+            if (raw.empty())
+            {
+                return false;
+            }
+
+            std::string vertex_entry = program.vertex_entry;
+            std::string fragment_entry = program.fragment_entry;
+            if (vertex_entry.empty() && fragment_entry.empty())
+            {
+                ExtractEntryPointsFromProgramText(raw, vertex_entry, fragment_entry);
+            }
+
+            const std::string body = SanitizeProgramBody(raw);
+            if (body.empty())
+            {
+                return false;
+            }
+
+            out.hlsl_source = body;
+            out.entry_point = PickEntryForStage(stage, vertex_entry, fragment_entry, fallback_entry);
+            out.ok = true;
+            out.error_message.clear();
+            return true;
+        }
+
+        bool TryExtractFromParser(const std::string& shader_source,
+                                  ShaderStage stage,
+                                  const std::string& fallback_entry,
+                                  std::size_t subshader_index,
+                                  std::size_t pass_index,
+                                  ShaderLabHlslExtractResult& out,
+                                  std::string& parse_error)
         {
             ShaderLabParser parser(shader_source);
             if (!parser.Parse())
@@ -152,37 +189,50 @@ namespace ZEngine::ShaderLab
                 return false;
             }
 
+            // 指定了 SubShader / Pass：直接取那一个，不再扫全文件。
+            if (subshader_index != kExtractAnySubShader || pass_index != kExtractAnyPass)
+            {
+                const std::size_t resolved_sub = subshader_index == kExtractAnySubShader ? 0 : subshader_index;
+                const std::size_t resolved_pass = pass_index == kExtractAnyPass ? 0 : pass_index;
+
+                if (resolved_sub >= asset->subshaders.size())
+                {
+                    parse_error = "SubShader index out of range";
+                    return false;
+                }
+
+                const ShaderSubShader& subshader = asset->subshaders[resolved_sub];
+                if (resolved_pass >= subshader.passes.size())
+                {
+                    parse_error = "Pass index out of range";
+                    return false;
+                }
+
+                const ShaderPass& pass = subshader.passes[resolved_pass];
+                if (pass.programs.empty())
+                {
+                    parse_error = "No programs in pass";
+                    return false;
+                }
+
+                if (!FillFromProgram(pass.programs[0], stage, fallback_entry, out))
+                {
+                    parse_error = "Pass has no compilable program body";
+                    return false;
+                }
+                return true;
+            }
+
             for (const ShaderSubShader& subshader : asset->subshaders)
             {
                 for (const ShaderPass& pass : subshader.passes)
                 {
                     for (const ShaderProgram& program : pass.programs)
                     {
-                        const std::string& raw =
-                            !program.hlsl_code.empty() ? program.hlsl_code : program.source_code;
-                        if (raw.empty())
+                        if (FillFromProgram(program, stage, fallback_entry, out))
                         {
-                            continue;
+                            return true;
                         }
-
-                        std::string vertex_entry = program.vertex_entry;
-                        std::string fragment_entry = program.fragment_entry;
-                        if (vertex_entry.empty() && fragment_entry.empty())
-                        {
-                            ExtractEntryPointsFromProgramText(raw, vertex_entry, fragment_entry);
-                        }
-
-                        const std::string body = SanitizeProgramBody(raw);
-                        if (body.empty())
-                        {
-                            continue;
-                        }
-
-                        out.hlsl_source = body;
-                        out.entry_point = PickEntryForStage(stage, vertex_entry, fragment_entry, fallback_entry);
-                        out.ok = true;
-                        out.error_message.clear();
-                        return true;
                     }
                 }
             }
@@ -226,12 +276,14 @@ namespace ZEngine::ShaderLab
     ShaderLabHlslExtractResult ExtractHlslFromShaderLabSource(const std::string& shader_source,
                                                               const std::string& file_path_for_errors,
                                                               ShaderStage stage,
-                                                              const std::string& fallback_entry)
+                                                              const std::string& fallback_entry,
+                                                              std::size_t subshader_index,
+                                                              std::size_t pass_index)
     {
         ShaderLabHlslExtractResult out {};
         std::string parse_error;
 
-        if (TryExtractFromParser(shader_source, stage, fallback_entry, out, parse_error))
+        if (TryExtractFromParser(shader_source, stage, fallback_entry, subshader_index, pass_index, out, parse_error))
         {
             return out;
         }
@@ -255,7 +307,9 @@ namespace ZEngine::ShaderLab
 
     ShaderLabHlslExtractResult ExtractHlslFromShaderLabFile(const std::string& file_path,
                                                             ShaderStage stage,
-                                                            const std::string& fallback_entry)
+                                                            const std::string& fallback_entry,
+                                                            std::size_t subshader_index,
+                                                            std::size_t pass_index)
     {
         ShaderLabHlslExtractResult out {};
         std::ifstream file(file_path);
@@ -267,7 +321,12 @@ namespace ZEngine::ShaderLab
 
         std::stringstream buffer;
         buffer << file.rdbuf();
-        return ExtractHlslFromShaderLabSource(buffer.str(), file_path, stage, fallback_entry);
+        return ExtractHlslFromShaderLabSource(buffer.str(),
+                                              file_path,
+                                              stage,
+                                              fallback_entry,
+                                              subshader_index,
+                                              pass_index);
     }
 
 }  // namespace ZEngine::ShaderLab
