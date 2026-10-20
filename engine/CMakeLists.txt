@@ -436,3 +436,81 @@ set_target_properties("${CODEGEN_TARGET}" PROPERTIES FOLDER "Engine")
 
 add_dependencies(ZRuntime "${CODEGEN_TARGET}")
 add_dependencies(ZEnginePCH "${CODEGEN_TARGET}")
+
+# =============================================================================
+# Packaging: a runnable standalone layout
+# -----------------------------------------------------------------------------
+#   cmake --install <build> --prefix <dir>
+#   cpack -C Release -G ZIP            (or: -G TGZ on Linux/macOS)
+#
+#   <dir>/
+#   ├── ZGame(.exe)    the player
+#   ├── ZEditor.ini    DEPLOYMENT profile. CommandSystem derives the config
+#   │                  path from the executable's own directory, so the ini has
+#   │                  to sit next to it -- a packaged player is started from an
+#   │                  arbitrary working directory, not from the build tree.
+#   ├── asset/         engine content: the default textures and the global
+#   │                  rendering / particle resources RenderScene falls back to
+#   │                  (asset/texture/default/*.jpg for untextured materials).
+#   ├── resource/      icons + font
+#   └── Project/<name>/   optional, see ZENGINE_PACKAGE_PROJECT below.
+#
+# Shader sources are NOT shipped: they come from the project's own
+# GetShadersRoot(), and the engine's generated SPIR-V/DXIL headers are compiled
+# into the binary.
+#
+# NOTE: CMAKE_INSTALL_PREFIX is NOT available as the packaging prefix -- the
+# root CMakeLists.txt points it at <repo>/bin so that every target lands in one
+# output directory. `cmake --install` MUST therefore be given --prefix
+# explicitly. CPack is unaffected: it installs into its own staging directory.
+# =============================================================================
+if(TARGET ZGame)
+  install(TARGETS ZGame RUNTIME DESTINATION .)
+
+  install(FILES "${ENGINE_ROOT_DIR}/${DEPLOY_CONFIG_DIR}/ZEditor.ini" DESTINATION .)
+  install(DIRECTORY "${ENGINE_ROOT_DIR}/asset" DESTINATION .)
+  install(DIRECTORY "${ENGINE_ROOT_DIR}/resource" DESTINATION .)
+
+  # Project content. The editor's bundle build already wrote
+  # <project>/Build/<Platform>/{Bundles/, *.manifest.zasset} and ZGame finds it
+  # by scanning Build/ (see AssetBundleManager::MountBuild), but the player also
+  # needs the .zproject it is launched with -- and the compiled JS under
+  # Intermediate/Scripts, which is still NOT packed into a bundle.
+  # Intermediate/Cooked + DDC + Shaders are build caches, not runtime data.
+  if(ZENGINE_PACKAGE_PROJECT)
+    if(NOT IS_DIRECTORY "${ZENGINE_PACKAGE_PROJECT}")
+      message(FATAL_ERROR "ZENGINE_PACKAGE_PROJECT is not a directory: ${ZENGINE_PACKAGE_PROJECT}")
+    endif()
+    # Strip any trailing separator: get_filename_component(... NAME) returns an
+    # empty string for "path/to/project/", which would install into "Project/".
+    string(REGEX REPLACE "[\\\\/]+$" "" _zpkg_project_src "${ZENGINE_PACKAGE_PROJECT}")
+    get_filename_component(_zpkg_project_name "${_zpkg_project_src}" NAME)
+    install(DIRECTORY "${_zpkg_project_src}/" DESTINATION "Project/${_zpkg_project_name}"
+            PATTERN "Intermediate/Cooked" EXCLUDE
+            PATTERN "Intermediate/DDC" EXCLUDE
+            PATTERN "Intermediate/Shaders" EXCLUDE
+            PATTERN "Logs" EXCLUDE)
+    unset(_zpkg_project_src)
+    unset(_zpkg_project_name)
+    message(STATUS "Packaging project content: ${ZENGINE_PACKAGE_PROJECT} -> Project/")
+  endif()
+else()
+  message(STATUS "Packaging: ZGame is not built on this platform; install rules skipped")
+endif()
+
+set(CPACK_PACKAGE_NAME "ZGame")
+set(CPACK_PACKAGE_VENDOR "ZEngine")
+if(NOT CPACK_PACKAGE_VERSION)
+  set(CPACK_PACKAGE_VERSION "0.1.0")
+endif()
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "ZEngine standalone player")
+set(CPACK_PACKAGE_FILE_NAME "ZGame-${CPACK_PACKAGE_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
+# No extra top-level folder inside the archive: the layout above already is the
+# package, and unpacking should give you the game directory directly.
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+if(WIN32)
+  set(CPACK_GENERATOR "ZIP")
+else()
+  set(CPACK_GENERATOR "TGZ")
+endif()
+include(CPack)

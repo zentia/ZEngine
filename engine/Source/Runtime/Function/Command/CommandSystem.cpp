@@ -2,8 +2,13 @@
 
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
+#include <string>
 #include <unordered_map>
+#include <vector>
 #ifdef __APPLE__
 extern "C"
 {
@@ -11,6 +16,46 @@ extern "C"
     char*** _NSGetArgv(void);
 }
 #endif
+
+namespace
+{
+#if !defined(_WIN32) && !defined(__APPLE__)
+    // Linux / other POSIX: there is no _NSGetArgc() equivalent, so read the
+    // real command line out of /proc instead of inventing one.
+    //
+    // The previous behaviour synthesised argc=1 / "ZRuntime" and derived the
+    // executable path from the CWD. That silently discarded every argument
+    // (-c, -p, --log-level) and -- worse -- made ConfigManager look for
+    // ZEditor.ini next to "<cwd>/ZRuntime", so a launched build could not find
+    // its own configuration file: exactly the situation a packaged player is
+    // in, since it is started from an arbitrary working directory.
+    std::vector<std::string> ReadProcCommandLine()
+    {
+        std::ifstream cmdline("/proc/self/cmdline", std::ios::binary);
+        if (!cmdline.is_open())
+        {
+            return {};
+        }
+
+        // NUL-separated, trailing NUL.
+        const std::string raw((std::istreambuf_iterator<char>(cmdline)), std::istreambuf_iterator<char>());
+        std::vector<std::string> arguments;
+        std::size_t pos = 0;
+        while (pos < raw.size())
+        {
+            const std::size_t nul = raw.find('\0', pos);
+            if (nul == std::string::npos)
+            {
+                arguments.emplace_back(raw, pos, raw.size() - pos);
+                break;
+            }
+            arguments.emplace_back(raw, pos, nul - pos);
+            pos = nul + 1;
+        }
+        return arguments;
+    }
+#endif
+}  // namespace
 
 bool CommandSystem::Initialize()
 {
@@ -27,7 +72,6 @@ bool CommandSystem::Initialize()
     }
 
     argv_strings.reserve(argc);
-    argv_ptrs.reserve(argc + 1);
     for (int i = 0; i < argc; ++i)
     {
         int utf8_size = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, nullptr, 0, nullptr, nullptr);
@@ -36,7 +80,6 @@ bool CommandSystem::Initialize()
             std::string utf8_str(utf8_size - 1, '\0');
             WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, utf8_str.data(), utf8_size, nullptr, nullptr);
             argv_strings.push_back(std::move(utf8_str));
-            argv_ptrs.push_back(const_cast<char*>(argv_strings.back().c_str()));
         }
     }
 
@@ -55,19 +98,16 @@ bool CommandSystem::Initialize()
     char** raw_argv = (apple_argv != nullptr) ? *apple_argv : nullptr;
 
     argv_strings.reserve(argc > 0 ? argc : 1);
-    argv_ptrs.reserve((argc > 0 ? argc : 1) + 1);
     if (raw_argv != nullptr && argc > 0)
     {
         for (int i = 0; i < argc; ++i)
         {
             argv_strings.emplace_back(raw_argv[i] != nullptr ? raw_argv[i] : "");
-            argv_ptrs.push_back(argv_strings.back().data());
         }
     }
     else
     {
         argv_strings.emplace_back("ZEditor");
-        argv_ptrs.push_back(argv_strings.back().data());
         argc = 1;
     }
 
@@ -77,11 +117,32 @@ bool CommandSystem::Initialize()
         executable_path = std::filesystem::absolute(executable_path);
     }
 #else
-    argv_strings.emplace_back("ZRuntime");
-    argv_ptrs.push_back(argv_strings.back().data());
+    argv_strings = ReadProcCommandLine();
+    if (argv_strings.empty())
+    {
+        // No /proc (or it is not mounted): fall back to the old synthesised
+        // argv rather than failing to start, so this stays a degraded mode
+        // instead of a hard requirement on procfs.
+        argv_strings.emplace_back("ZRuntime");
+    }
     argc = static_cast<int>(argv_strings.size());
-    executable_path = std::filesystem::current_path() / "ZRuntime";
+
+    std::error_code self_ec;
+    const std::filesystem::path self_path = std::filesystem::read_symlink("/proc/self/exe", self_ec);
+    executable_path = self_ec ? std::filesystem::absolute(std::filesystem::path(argv_strings.front())) : self_path;
+    if (executable_path.is_relative())
+    {
+        executable_path = std::filesystem::absolute(executable_path);
+    }
 #endif
+
+    // NOTE: every argv_ptrs entry must be taken AFTER argv_strings has stopped
+    // growing -- reallocation would invalidate the earlier data() pointers.
+    argv_ptrs.reserve(argv_strings.size() + 1);
+    for (std::string& argument : argv_strings)
+    {
+        argv_ptrs.push_back(argument.data());
+    }
 
     argv_ptrs.push_back(nullptr);
     char** argv = argv_ptrs.data();
