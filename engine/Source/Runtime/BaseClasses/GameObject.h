@@ -110,6 +110,11 @@ public:
     ///
     /// Deliberately NOT `tryGetComponent<T>()` -- that is a template and
     /// therefore invisible to ZHeaderTool, so script code could never reach it.
+    ///
+    /// ZFUNCTION: exposed as `GetComponent`, Unity's spelling. Scripts get the
+    /// declared type `Component`, so cast-free access to a specific component
+    /// means binding that type and giving it a getter (see Transform).
+    ZFUNCTION(Name="GetComponent")
     Component* GetComponentByTypeName(const std::string& component_type_name) const;
 
     /// Convenience wrapper used by the TS Behaviour binding to publish

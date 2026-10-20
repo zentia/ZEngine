@@ -10,10 +10,14 @@ class LightComponent : public Component
     ZGENERATED_BODY(LightComponent)
 
 public:
+    ZFUNCTION()
     void SetFlux(const Vector3& flux) { m_Flux = flux; }
+    ZFUNCTION()
     Vector3 GetFlux() const { return m_Flux; }
 
+    ZFUNCTION()
     void SetRadius(float radius) { m_Radius = radius; }
+    ZFUNCTION()
     float GetRadius() const { return m_Radius; }
 
 private:

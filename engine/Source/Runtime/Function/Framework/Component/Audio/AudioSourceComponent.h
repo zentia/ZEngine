@@ -25,11 +25,17 @@ namespace Runtime
         void PostLoadResource(GameObject* parent_object) override;
         void Tick(float delta_time) override;
 
+        // AudioVoiceId is uint64_t, so it crosses the boundary as a JS number.
+        ZFUNCTION()
         AudioVoiceId Play();
+        ZFUNCTION()
         void Stop(float in_fade_out_seconds = 0.0f);
+        ZFUNCTION()
         void SetPaused(bool in_paused);
+        ZFUNCTION()
         bool IsPlaying() const;
 
+        ZFUNCTION()
         AudioVoiceId GetVoiceId() const { return m_VoiceId; }
 
     private:

@@ -334,6 +334,15 @@ class CodegenTests(unittest.TestCase):
                           "    ZPROPERTY()\n    float m_V;\n"))
         self.assertEqual(info.classes[0].methods[0].ts_signature, "GetV(): number")
 
+    def test_scalar_typedef_maps_to_number_not_the_alias(self):
+        # A bare identifier is emitted verbatim, which is right for class names
+        # (Vector3) but wrong for a typedef of an integer: it would leak an
+        # undeclared name into the .d.ts. Such aliases belong in _TS_TYPES.
+        info = parse(wrap("    ZFUNCTION()\n    AudioVoiceId Play();\n"
+                          "    ZFUNCTION()\n    GObjectID GetID() const;\n"))
+        self.assertEqual(info.classes[0].methods[0].ts_signature, "Play(): number")
+        self.assertEqual(info.classes[0].methods[1].ts_signature, "GetID(): number")
+
     def test_no_meta_no_table(self):
         source = generate_source(parse(wrap("    ZPROPERTY()\n    float m_V;\n")))
         self.assertNotIn("PropertyMeta", source)

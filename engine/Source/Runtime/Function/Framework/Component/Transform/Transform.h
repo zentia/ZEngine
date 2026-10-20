@@ -64,13 +64,20 @@ public:
     void SetLocalPositionAndRotation(const Vector3& local_position, const Quaternion& local_rotation);
 
     // ---- world space ----
+    // Same overload rule as above: only the Vector3 / Quaternion spellings are
+    // exported. The Vector3d ones stay C++-only (TS has one number type).
     Vector3d GetWorldPositionD() const;
+    ZFUNCTION()
     Vector3 GetPosition() const;
+    ZFUNCTION()
     Quaternion GetRotation() const;
+    ZFUNCTION()
     Vector3 GetLossyScale() const;
 
     void SetPosition(const Vector3d& world_position);
+    ZFUNCTION()
     void SetPosition(const Vector3& world_position) { SetPosition(Vector3d(world_position)); }
+    ZFUNCTION()
     void SetRotation(const Quaternion& world_rotation);
     void SetPositionAndRotation(const Vector3& world_position, const Quaternion& world_rotation);
 
@@ -83,7 +90,9 @@ public:
     Matrix4x4 GetWorldToLocalMatrix() const;
 
     // ---- space conversion ----
+    ZFUNCTION()
     Vector3 TransformPoint(const Vector3& local_point) const;
+    ZFUNCTION()
     Vector3 TransformDirection(const Vector3& local_direction) const;
     Vector3 TransformVector(const Vector3& local_vector) const;
     Vector3 InverseTransformPoint(const Vector3& world_point) const;
@@ -97,6 +106,9 @@ public:
     const Transform* GetRoot() const;
 
     bool SetParent(Transform* new_parent, SetParentOptions options = kWorldPositionStays);
+    // The bool spelling is the script-facing one: SetParentOptions is a scoped
+    // enum with no ZScript::Converter, and only one overload may claim a name.
+    ZFUNCTION()
     bool SetParent(Transform* new_parent, bool world_position_stays)
     {
         return SetParent(new_parent,
@@ -110,7 +122,9 @@ public:
     size_t GetChildCount() const { return m_Children.size(); }
     const std::vector<PPtr<Transform>>& GetChildren() const { return m_Children; }
 
+    ZFUNCTION()
     int GetSiblingIndex() const;
+    ZFUNCTION()
     void SetSiblingIndex(int new_index);
     void SetAsFirstSibling() { SetSiblingIndex(0); }
     void SetAsLastSibling();

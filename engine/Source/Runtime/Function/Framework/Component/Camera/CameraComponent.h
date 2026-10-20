@@ -51,6 +51,9 @@ public:
 
     void Initialize(CameraMode mode, CameraParameter* parameter);
 
+    // getCameraMode / setCameraMode are deliberately NOT annotated: CameraMode
+    // is a scoped enum and has no ZScript::Converter, so binding it would be a
+    // compile error rather than a silent misbind. Add a converter first.
     CameraMode getCameraMode() const { return m_CameraMode; }
     void setCameraMode(CameraMode mode) { m_CameraMode = mode; }
 
@@ -59,11 +62,15 @@ public:
     /// patched in after the component's own Transfer has run.
     CameraComponentRes& GetCameraResMutable() { return m_CameraRes; }
 
+    ZFUNCTION()
     bool isMainCamera() const { return m_IsMainCamera; }
+    ZFUNCTION()
     void SetMainCamera(bool is_main_camera) { m_IsMainCamera = is_main_camera; }
     CameraParameter* GetCameraParameter() const;
+    ZFUNCTION()
     Vector3 GetPosition() const { return m_Position; }
 
+    ZFUNCTION()
     Vector3 getForward() const { return m_Forward; }
     bool ApplyRenderTexture();
     void ApplyToGameRenderCamera(RenderCamera& render_camera) const;

@@ -28,6 +28,7 @@ public:
 
     /// PR-SK3: the state machine, when `controller_file_path` is set. Game code
     /// drives it with SetFloat / SetTrigger / CrossFade.
+    ZFUNCTION()
     bool HasController() const { return m_Controller != nullptr; }
     AnimatorInstance& GetAnimator() { return m_Animator; }
     const AnimatorInstance& GetAnimator() const { return m_Animator; }
@@ -41,16 +42,24 @@ public:
     const eastl::string& GetControllerPath() const { return m_AnimationRes.controller_file_path; }
     const eastl::string& GetSkeletonPath() const { return m_AnimationRes.skeleton_file_path; }
     /// Slot 0 of the legacy blend state; empty when nothing is assigned.
+    ZFUNCTION()
     eastl::string GetClipPath() const;
+    ZFUNCTION()
     eastl::string GetAnimSkelMapPath() const;
-    float         GetClipLength() const;
+    ZFUNCTION()
+    float GetClipLength() const;
 
+    /// The `const char*` setters below stay unbound on purpose: a
+    /// ZScript::Converter for `const char*` would have to own a buffer that
+    /// outlives the call, which is a lifetime trap. Add an eastl::string
+    /// overload if scripts need to set these.
     void SetControllerPath(const char* path);
     void SetSkeletonPath(const char* path);
     /// Assigns slot 0 and grows the parallel arrays into a valid single-clip
     /// state (length / ratio / weight default to 1s / 0 / 1).
     void SetClipPath(const char* path);
     void SetAnimSkelMapPath(const char* path);
+    ZFUNCTION()
     void SetClipLength(float seconds);
 
 protected:

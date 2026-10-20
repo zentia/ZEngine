@@ -107,7 +107,12 @@ _TS_TYPES = {
     "uint64_t": "number",
     "size_t": "number",
     "std::size_t": "number",
+    # Engine scalar typedefs. A bare identifier that is not listed here is
+    # emitted verbatim, which is only correct for class / struct names (a
+    # `Vector3` or a `Transform*`); a typedef of an integer leaks the C++ alias
+    # into the .d.ts as an undeclared type name, so it has to be listed.
     "GObjectID": "number",
+    "AudioVoiceId": "number",
     "std::string": "string",
     "eastl::string": "string",
 }

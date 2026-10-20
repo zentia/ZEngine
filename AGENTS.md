@@ -2726,6 +2726,25 @@ need nothing extra). Do not re-litigate Python vs C++.
   validates every table (null callbacks/names, self-inheritance, duplicate
   script names, empty or brace-unbalanced .d.ts); `--dump-script-dts` prints
   the generated block on its own. Both are wired into CTest via `TEST_ARGS`.
+- **Scalar typedefs must be listed in `_TS_TYPES`** (`zht/parser.py`). An
+  unmapped bare identifier is emitted into the .d.ts **verbatim**, which is the
+  right behaviour for class and struct names (`Vector3`, `Transform`) but leaks
+  an undeclared type name for an integer alias -- `AudioVoiceId` (= `uint64_t`)
+  used to produce `Play(): AudioVoiceId`. `GObjectID` and `AudioVoiceId` are in
+  the map; add any new `using X = <integer>` there when it first crosses the
+  boundary. Failure mode is silent (the .d.ts still generates), so this is not
+  catchable by `--check-script-bindings`.
+- Bound surface (2026-10-20): 8 classes / 48 methods --
+  `GameObject`, `Component`, `Transform`, `TypeScriptComponent`,
+  `LightComponent`, `CameraComponent`, `AnimationComponent`,
+  `AudioSourceComponent`, plus the synthetic `Behaviour`. Deliberately unbound:
+  * `const char*` setters (a Converter would have to own a buffer that outlives
+    the call; add an `eastl::string` overload instead).
+  * `enum class` parameters/returns (`CameraMode`, `SetParentOptions`) -- no
+    Converter; bind the `bool`/`int` overload where one exists.
+  * `ParticleComponent` / `MeshRenderer` expose no public accessors, and
+    `RigidBodyComponent` only has the diagnostic `HasPendingBody` /
+    `FlushPendingBody`; none are worth a binding yet.
 - **Generator v5 invariants** (both are easy to break silently):
   * A `.gen.cpp` `#include`s the header of every named type a ZFUNCTION
     signature mentions. `ZScript::Converter<T*>` static_asserts on
