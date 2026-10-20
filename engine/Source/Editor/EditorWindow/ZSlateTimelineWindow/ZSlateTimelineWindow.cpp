@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <functional>
+#include "Runtime/BaseClasses/Cast.h"
 
 // --- ZSlate <-> runtime UI type bridges (same pattern as ZSlateSceneWindow) ---
 // ZSlate::UIRect uses w/h, the runtime UIRect uses width/height, and only the
@@ -750,13 +751,13 @@ void ZSlateTimelineWindow::AddClip()
     if (object_manager == nullptr)
         return;
     TimelineClip* clip = nullptr;
-    if (dynamic_cast<AnimationTimelineTrack*>(track) != nullptr)
+    if (Cast<AnimationTimelineTrack>(track) != nullptr)
         clip = object_manager->NewObject<AnimationTimelineClip>();
-    else if (dynamic_cast<AudioTimelineTrack*>(track) != nullptr)
+    else if (Cast<AudioTimelineTrack>(track) != nullptr)
         clip = object_manager->NewObject<AudioTimelineClip>();
-    else if (dynamic_cast<ActivationTimelineTrack*>(track) != nullptr)
+    else if (Cast<ActivationTimelineTrack>(track) != nullptr)
         clip = object_manager->NewObject<ActivationTimelineClip>();
-    else if (dynamic_cast<EventTimelineTrack*>(track) != nullptr)
+    else if (Cast<EventTimelineTrack>(track) != nullptr)
         clip = object_manager->NewObject<EventTimelineClip>();
 
     if (clip == nullptr)
@@ -837,50 +838,50 @@ bool ZSlateTimelineWindow::CanMoveClip(TimelineTrack* track, int clip_index, flo
 // ---------------------------------------------------------------------------
 const char* ZSlateTimelineWindow::TrackTypeName(TimelineTrack* track) const
 {
-    if (dynamic_cast<AnimationTimelineTrack*>(track))
+    if (Cast<AnimationTimelineTrack>(track))
         return "Animation";
-    if (dynamic_cast<ActivationTimelineTrack*>(track))
+    if (Cast<ActivationTimelineTrack>(track))
         return "Activation";
-    if (dynamic_cast<AudioTimelineTrack*>(track))
+    if (Cast<AudioTimelineTrack>(track))
         return "Audio";
-    if (dynamic_cast<EventTimelineTrack*>(track))
+    if (Cast<EventTimelineTrack>(track))
         return "Event";
     return "Unknown";
 }
 
 ZSlate::UIColor ZSlateTimelineWindow::TrackColor(TimelineTrack* track) const
 {
-    if (dynamic_cast<AnimationTimelineTrack*>(track))
+    if (Cast<AnimationTimelineTrack>(track))
         return ZSlate::UIColor(0.39f, 0.59f, 1.0f, 0.39f);
-    if (dynamic_cast<ActivationTimelineTrack*>(track))
+    if (Cast<ActivationTimelineTrack>(track))
         return ZSlate::UIColor(0.59f, 0.39f, 1.0f, 0.39f);
-    if (dynamic_cast<AudioTimelineTrack*>(track))
+    if (Cast<AudioTimelineTrack>(track))
         return ZSlate::UIColor(1.0f, 0.59f, 0.39f, 0.39f);
-    if (dynamic_cast<EventTimelineTrack*>(track))
+    if (Cast<EventTimelineTrack>(track))
         return ZSlate::UIColor(0.39f, 1.0f, 0.59f, 0.39f);
     return ZSlate::UIColor(0.50f, 0.50f, 0.50f, 0.39f);
 }
 
 ZSlate::UIColor ZSlateTimelineWindow::ClipColor(TimelineClip* clip) const
 {
-    if (dynamic_cast<AnimationTimelineClip*>(clip))
+    if (Cast<AnimationTimelineClip>(clip))
         return ZSlate::UIColor(0.39f, 0.59f, 1.0f, 1.0f);
-    if (dynamic_cast<ActivationTimelineClip*>(clip))
+    if (Cast<ActivationTimelineClip>(clip))
         return ZSlate::UIColor(0.59f, 0.39f, 1.0f, 1.0f);
-    if (dynamic_cast<AudioTimelineClip*>(clip))
+    if (Cast<AudioTimelineClip>(clip))
         return ZSlate::UIColor(1.0f, 0.59f, 0.39f, 1.0f);
-    if (dynamic_cast<EventTimelineClip*>(clip))
+    if (Cast<EventTimelineClip>(clip))
         return ZSlate::UIColor(0.39f, 1.0f, 0.59f, 1.0f);
     return ZSlate::UIColor(0.50f, 0.50f, 0.50f, 1.0f);
 }
 
 std::string ZSlateTimelineWindow::ClipDisplayName(TimelineClip* clip) const
 {
-    if (auto* anim = dynamic_cast<AnimationTimelineClip*>(clip))
+    if (auto* anim = Cast<AnimationTimelineClip>(clip))
         return anim->m_AnimationPath.empty() ? std::string("Animation Clip") : std::string(anim->m_AnimationPath.c_str());
-    if (auto* audio = dynamic_cast<AudioTimelineClip*>(clip))
+    if (auto* audio = Cast<AudioTimelineClip>(clip))
         return audio->m_AudioPath.empty() ? std::string("Audio Clip") : std::string(audio->m_AudioPath.c_str());
-    if (auto* evt = dynamic_cast<EventTimelineClip*>(clip))
+    if (auto* evt = Cast<EventTimelineClip>(clip))
         return evt->m_EventName.empty() ? std::string("Event Clip") : std::string(evt->m_EventName.c_str());
     return std::string("Clip");
 }

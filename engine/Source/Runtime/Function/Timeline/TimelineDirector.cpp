@@ -6,6 +6,8 @@
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 
+#include "Runtime/BaseClasses/Cast.h"
+
 #include <algorithm>
 
 TimelineDirector::TimelineDirector() {}
@@ -137,19 +139,19 @@ void TimelineDirector::UpdateTrack(TimelineTrack* track, float time)
         float normalized_time = clip->getNormalizedTime(time);
 
         // 根据片段类型更新
-        if (auto* anim_clip = dynamic_cast<AnimationTimelineClip*>(clip))
+        if (auto* anim_clip = Cast<AnimationTimelineClip>(clip))
         {
             UpdateAnimationClip(anim_clip, normalized_time, target_object);
         }
-        else if (auto* activation_clip = dynamic_cast<ActivationTimelineClip*>(clip))
+        else if (auto* activation_clip = Cast<ActivationTimelineClip>(clip))
         {
             UpdateActivationClip(activation_clip, target_object);
         }
-        else if (auto* audio_clip = dynamic_cast<AudioTimelineClip*>(clip))
+        else if (auto* audio_clip = Cast<AudioTimelineClip>(clip))
         {
             UpdateAudioClip(audio_clip, normalized_time, target_object);
         }
-        else if (auto* event_clip = dynamic_cast<EventTimelineClip*>(clip))
+        else if (auto* event_clip = Cast<EventTimelineClip>(clip))
         {
             UpdateEventClip(event_clip, target_object);
         }

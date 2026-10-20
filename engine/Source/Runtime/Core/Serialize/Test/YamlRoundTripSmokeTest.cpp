@@ -59,6 +59,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include "Runtime/BaseClasses/Cast.h"
 
 // ---------------------------------------------------------------------
 // Test-only plain serializable structs (DECLARE_SERIALIZE). They are NOT
@@ -739,10 +740,10 @@ namespace
         Check(t0->m_Clips.size() == 1 && t1->m_Clips.size() == 2 && t2->m_Clips.size() == 1, tag, "clip counts changed");
         if (t0->m_Clips.size() != 1 || t1->m_Clips.size() != 2 || t2->m_Clips.size() != 1)
             return;
-        auto* run = dynamic_cast<AnimationTimelineClip*>(static_cast<TimelineClip*>(t0->m_Clips[0]));
-        auto* hit = dynamic_cast<EventTimelineClip*>(static_cast<TimelineClip*>(t1->m_Clips[0]));
-        auto* show = dynamic_cast<ActivationTimelineClip*>(static_cast<TimelineClip*>(t1->m_Clips[1]));
-        auto* music = dynamic_cast<AudioTimelineClip*>(static_cast<TimelineClip*>(t2->m_Clips[0]));
+        auto* run = Cast<AnimationTimelineClip>(static_cast<TimelineClip*>(t0->m_Clips[0]));
+        auto* hit = Cast<EventTimelineClip>(static_cast<TimelineClip*>(t1->m_Clips[0]));
+        auto* show = Cast<ActivationTimelineClip>(static_cast<TimelineClip*>(t1->m_Clips[1]));
+        auto* music = Cast<AudioTimelineClip>(static_cast<TimelineClip*>(t2->m_Clips[0]));
         Check(run && hit && show && music, tag, "a clip PPtr did not resolve to its concrete type");
         if (!(run && hit && show && music))
             return;

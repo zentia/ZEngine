@@ -41,6 +41,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include "Runtime/BaseClasses/Cast.h"
 
 using namespace ZSlate;
 
@@ -883,7 +884,7 @@ void ZSlateSceneWindow::UpdateCameraPreviewOverlay(const ::UIRect& work_rect,
     {
         for (auto component_ptr : selected_object->getComponents())
         {
-            selected_camera_component = dynamic_cast<CameraComponent*>(static_cast<Component*>(component_ptr));
+            selected_camera_component = Cast<CameraComponent>(static_cast<Component*>(component_ptr));
             if (selected_camera_component != nullptr)
                 break;
         }

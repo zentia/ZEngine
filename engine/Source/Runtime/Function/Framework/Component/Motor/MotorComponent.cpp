@@ -13,6 +13,7 @@
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Input/InputSystem.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
+#include "Runtime/BaseClasses/Cast.h"
 
 
 
@@ -26,7 +27,7 @@ void MotorComponent::PostLoadResource(GameObject* parent_object)
     // 结果是每个 Motor 都掉进 invalid 分支，角色根本动不了。
     // （与 Jolt/Utils.cpp toShape() 踩的是同一个坑。）
     ControllerConfig* controller_config = m_MotorRes.m_ControllerConfig;
-    if (dynamic_cast<PhysicsControllerConfig*>(controller_config) != nullptr)
+    if (Cast<PhysicsControllerConfig>(controller_config) != nullptr)
     {
         m_ControllerType = ControllerType::physics;
         PhysicsControllerConfig* physics_config = static_cast<PhysicsControllerConfig*>(controller_config);

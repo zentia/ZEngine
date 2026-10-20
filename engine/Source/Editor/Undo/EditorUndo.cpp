@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <unordered_set>
+#include "Runtime/BaseClasses/Cast.h"
 
 using EditorUndoRecords::ComponentSnapshotRecord;
 using EditorUndoRecords::GameObjectLifetimeRecord;
@@ -275,7 +276,7 @@ namespace EditorUndo
         {
             return;
         }
-        if (Transform* transform = dynamic_cast<Transform*>(component))
+        if (Transform* transform = Cast<Transform>(component))
         {
             RecordTransform(transform, title);
             return;

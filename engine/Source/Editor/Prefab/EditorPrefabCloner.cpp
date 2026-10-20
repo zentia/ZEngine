@@ -10,6 +10,7 @@
 
 #include <unordered_set>
 #include <vector>
+#include "Runtime/BaseClasses/Cast.h"
 
 namespace prefab_editor
 {
@@ -126,7 +127,7 @@ namespace prefab_editor
             std::unordered_map<Transform*, GameObject*> tc_to_owner;
             for (size_t i = 0; i < result.components.size(); ++i)
             {
-                if (auto* tc = dynamic_cast<Transform*>(result.components[i]))
+                if (auto* tc = Cast<Transform>(result.components[i]))
                 {
                     tc_to_owner[tc] = result.component_owners[i];
                 }
@@ -175,7 +176,7 @@ namespace prefab_editor
                         {
                             result.components.push_back(comp);
                             result.component_owners.push_back(child_go);
-                            if (auto* ctc = dynamic_cast<Transform*>(comp))
+                            if (auto* ctc = Cast<Transform>(comp))
                             {
                                 tc_to_owner[ctc] = child_go;
                             }
@@ -316,7 +317,7 @@ namespace prefab_editor
         for (size_t i = 0; i < walk.components.size(); ++i)
         {
             Component* src_comp = walk.components[i];
-            auto* src_tc = dynamic_cast<Transform*>(src_comp);
+            auto* src_tc = Cast<Transform>(src_comp);
             if (src_tc == nullptr)
                 continue;
             auto it = result.ptr_map.find(static_cast<Object*>(src_tc));

@@ -76,6 +76,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "Runtime/BaseClasses/Cast.h"
 
 using namespace ZSlate;
 using ZSlateInspectorDetail::ComponentEnableBinding;
@@ -986,7 +987,7 @@ namespace
 
     BaseRenderer* ResolveSelectedRenderer(size_t comp_index)
     {
-        return dynamic_cast<BaseRenderer*>(ResolveSelectedComponent(comp_index));
+        return Cast<BaseRenderer>(ResolveSelectedComponent(comp_index));
     }
 
     // Loads the material asset (if any) and refreshes the read-only info labels
@@ -1316,7 +1317,7 @@ namespace
 
     AnimationComponent* ResolveSelectedAnimationComponent(size_t index)
     {
-        return dynamic_cast<AnimationComponent*>(ResolveSelectedComponent(index));
+        return Cast<AnimationComponent>(ResolveSelectedComponent(index));
     }
 
     // AnimationComponent gets its own layout: the generic TypeTree walk shows
@@ -1432,12 +1433,12 @@ namespace
         // BaseRenderer (incl. MeshRenderer) gets a dedicated layout: per-sub-mesh
         // mesh + material assets with read-only material introspection, mirroring
         // the legacy ImGui DrawBaseRendererComponentValue.
-        if (BaseRenderer* renderer = dynamic_cast<BaseRenderer*>(component))
+        if (BaseRenderer* renderer = Cast<BaseRenderer>(component))
         {
             BuildBaseRendererSection(column, renderer, comp_index, bindings, scale);
             return;
         }
-        if (AnimationComponent* anim = dynamic_cast<AnimationComponent*>(component))
+        if (AnimationComponent* anim = Cast<AnimationComponent>(component))
         {
             BuildAnimationComponentSection(column, anim, comp_index, bindings, scale);
             return;

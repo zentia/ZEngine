@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 #include <unordered_set>
+#include "Runtime/BaseClasses/Cast.h"
 #include "GameObject.generated.h"
 
 ZCLASS(CustomTransfer)
@@ -141,7 +142,7 @@ public:
         (void)component_type_name;
         for (auto& component : m_Components)
         {
-            TComponent* typed_component = dynamic_cast<TComponent*>(static_cast<Component*>(component));
+            TComponent* typed_component = Cast<TComponent>(static_cast<Component*>(component));
             if (typed_component != nullptr)
             {
                 return typed_component;
@@ -157,7 +158,7 @@ public:
         (void)component_type_name;
         for (const auto& component : m_Components)
         {
-            const TComponent* typed_component = dynamic_cast<const TComponent*>(static_cast<Component*>(component));
+            const TComponent* typed_component = Cast<TComponent>(static_cast<Component*>(component));
             if (typed_component != nullptr)
             {
                 return typed_component;

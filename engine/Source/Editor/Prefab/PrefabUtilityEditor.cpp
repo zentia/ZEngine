@@ -15,6 +15,7 @@
 
 #include <cstring>
 #include <unordered_map>
+#include "Runtime/BaseClasses/Cast.h"
 
 namespace
 {
@@ -239,7 +240,7 @@ PrefabInstance* PrefabUtilityEditor::InstantiateAsPrefab(PrefabAsset* asset)
     // m_ParentObject back-pointer is bound to the clone-side GameObject.
     for (Object* clone_obj : clone.clones)
     {
-        if (auto* clone_go = dynamic_cast<GameObject*>(clone_obj))
+        if (auto* clone_go = Cast<GameObject>(clone_obj))
         {
             for (ImmediatePtr<Component>& comp_ptr : clone_go->getComponents())
             {
@@ -605,7 +606,7 @@ bool PrefabUtilityEditor::SuppressSourceComponent(PrefabInstance* instance,
         return false;
     }
 
-    Component* instance_comp = dynamic_cast<Component*>(static_cast<Object*>(instance_pptr));
+    Component* instance_comp = Cast<Component>(static_cast<Object*>(instance_pptr));
     if (instance_comp == nullptr)
     {
         LOG_WARNING(ZPrefab, "SuppressSourceComponent: instance counterpart is not a Component");
@@ -685,7 +686,7 @@ bool PrefabUtilityEditor::UnsuppressSourceComponent(PrefabInstance* instance,
                     "(prefab structure changed since instantiation?)");
         return false;
     }
-    GameObject* instance_host = dynamic_cast<GameObject*>(static_cast<Object*>(instance_host_pptr));
+    GameObject* instance_host = Cast<GameObject>(static_cast<Object*>(instance_host_pptr));
     if (instance_host == nullptr)
         return false;
 
@@ -700,7 +701,7 @@ bool PrefabUtilityEditor::UnsuppressSourceComponent(PrefabInstance* instance,
         LOG_ERROR(ZPrefab, "UnsuppressSourceComponent: CloneObjectViaSerialization returned null");
         return false;
     }
-    Component* clone_comp = dynamic_cast<Component*>(clone_obj);
+    Component* clone_comp = Cast<Component>(clone_obj);
     if (clone_comp == nullptr)
     {
         LOG_ERROR(ZPrefab, "UnsuppressSourceComponent: clone is not a Component");

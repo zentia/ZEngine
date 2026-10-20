@@ -13,6 +13,7 @@
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSwapContext.h"
 #include "Runtime/Function/Render/RenderSystem.h"
+#include "Runtime/BaseClasses/Cast.h"
 
 namespace
 {
@@ -57,13 +58,13 @@ void CameraComponent::OnSerializedFieldsUpdated()
         switch (m_CameraMode)
         {
             case CameraMode::first_person:
-                should_reset_parameter = dynamic_cast<FirstPersonCameraParameter*>(parameter) == nullptr;
+                should_reset_parameter = Cast<FirstPersonCameraParameter>(parameter) == nullptr;
                 break;
             case CameraMode::third_person:
-                should_reset_parameter = dynamic_cast<ThirdPersonCameraParameter*>(parameter) == nullptr;
+                should_reset_parameter = Cast<ThirdPersonCameraParameter>(parameter) == nullptr;
                 break;
             case CameraMode::free:
-                should_reset_parameter = dynamic_cast<FreeCameraParameter*>(parameter) == nullptr;
+                should_reset_parameter = Cast<FreeCameraParameter>(parameter) == nullptr;
                 break;
             case CameraMode::invalid:
             default:

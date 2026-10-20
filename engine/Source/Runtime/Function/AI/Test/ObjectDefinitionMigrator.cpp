@@ -56,6 +56,7 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include "Runtime/BaseClasses/Cast.h"
 
 namespace
 {
@@ -733,13 +734,13 @@ namespace
             {
                 continue;
             }
-            Component* component = dynamic_cast<Component*>(object);
+            Component* component = Cast<Component>(object);
             if (component == nullptr)
             {
                 continue;
             }
 
-            if (RigidBodyComponent* rigidbody = dynamic_cast<RigidBodyComponent*>(component))
+            if (RigidBodyComponent* rigidbody = Cast<RigidBodyComponent>(component))
             {
                 for (const ImmediatePtr<RigidBodyShape>& shape_ptr : rigidbody->GetRigidbodyRes().m_Shapes)
                 {
@@ -760,7 +761,7 @@ namespace
                     }
                     ++resolved;
                     std::fprintf(stderr, "    ok   %s: shape %s", where.c_str(), geometry->GetTypeName());
-                    if (Box* box = dynamic_cast<Box*>(geometry))
+                    if (Box* box = Cast<Box>(geometry))
                     {
                         std::fprintf(stderr, " half_extents=(%.4f, %.4f, %.4f)",
                                      box->m_HalfExtents.x, box->m_HalfExtents.y, box->m_HalfExtents.z);
@@ -768,7 +769,7 @@ namespace
                     std::fprintf(stderr, "\n");
                 }
             }
-            else if (MotorComponent* motor = dynamic_cast<MotorComponent*>(component))
+            else if (MotorComponent* motor = Cast<MotorComponent>(component))
             {
                 ControllerConfig* config = motor->GetMotorResMutable().m_ControllerConfig;
                 if (config == nullptr)
@@ -783,7 +784,7 @@ namespace
                     std::fprintf(stderr, "    ok   %s: controller config %s\n", where.c_str(), config->GetTypeName());
                 }
             }
-            else if (CameraComponent* camera = dynamic_cast<CameraComponent*>(component))
+            else if (CameraComponent* camera = Cast<CameraComponent>(component))
             {
                 CameraParameter* parameter = camera->GetCameraResMutable().m_Parameter;
                 if (parameter == nullptr)

@@ -6,6 +6,7 @@
 #include "Jolt/Physics/Collision/Shape/StaticCompoundShape.h"
 #include "Runtime/Resource/ResType/Components/RigidBody.h"
 #include "Runtime/Resource/ResType/Data/BasicShape.h"
+#include "Runtime/BaseClasses/Cast.h"
 
 BPLayerInterfaceImpl::BPLayerInterfaceImpl()
 {
@@ -128,18 +129,18 @@ JPH::Shape* toShape(const RigidBodyShape& shape, const Vector3& scale)
         return nullptr;
     }
 
-    if (const Box* box_geometry = dynamic_cast<const Box*>(geometry))
+    if (const Box* box_geometry = Cast<Box>(geometry))
     {
         JPH::Vec3 jph_box(scale.x * box_geometry->m_HalfExtents.x,
                           scale.y * box_geometry->m_HalfExtents.y,
                           scale.z * box_geometry->m_HalfExtents.z);
         jph_shape = new JPH::BoxShape(jph_box, 0.f);
     }
-    else if (const Sphere* sphere_geometry = dynamic_cast<const Sphere*>(geometry))
+    else if (const Sphere* sphere_geometry = Cast<Sphere>(geometry))
     {
         jph_shape = new JPH::SphereShape((scale.x + scale.y + scale.z) / 3 * sphere_geometry->m_Radius);
     }
-    else if (const Capsule* capsule_geometry = dynamic_cast<const Capsule*>(geometry))
+    else if (const Capsule* capsule_geometry = Cast<Capsule>(geometry))
     {
         jph_shape = new JPH::CapsuleShape(scale.z * capsule_geometry->m_HalfHeight,
                                           (scale.x + scale.y) / 2 * capsule_geometry->m_Radius);

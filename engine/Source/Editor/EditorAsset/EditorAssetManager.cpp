@@ -9,6 +9,7 @@
 #include "Editor/AssetPipeline/TextureImporter/TextureImporterSettings.h"
 #include "Editor/EditorWindow/PreviewWindow/MeshDataPreview.h"
 #include "Runtime/AssetBundle/AssetBundle.h"
+#include "Runtime/BaseClasses/Cast.h"
 #include "Runtime/BaseClasses/PPtr.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Serialize/SerializedFile.h"
@@ -956,7 +957,7 @@ bool EditorAssetManager::importSourceAsset(const std::filesystem::path& source_p
 
     if (auto importer = m_ImportManager.FindImporter(source_path))
     {
-        if (dynamic_cast<TextureImporter*>(importer.get()) != nullptr)
+        if (Cast<TextureImporter>(importer.get()) != nullptr)
         {
             const std::filesystem::path zasset_abs = ToAbsoluteZassetPath(output_path);
             TextureImporterSettings stored;
@@ -1319,7 +1320,7 @@ std::unique_ptr<AssetImporterSettings> EditorAssetManager::ResolveImporterSettin
         return nullptr;
     }
 
-    if (dynamic_cast<TextureImporter*>(importer.get()) == nullptr)
+    if (Cast<TextureImporter>(importer.get()) == nullptr)
     {
         if (caller_settings != nullptr)
         {

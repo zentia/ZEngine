@@ -2171,6 +2171,16 @@ Known gaps, in the order they should be closed (PR-SK3+):
   instead (`ZENGINE_BUILD_*_SMOKE_TEST`,
   `ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS` for the four `environment_*` tests
   under `engine/tools/ZEnvironmentCollector`).
+- **`ZEditor` does not compile on macOS** (pre-existing, unrelated to the
+  reflection work): `Editor/Console/EditorConsoleCommands.cpp` includes
+  `Editor/Build/AssetBundleBuilder.h`, and `engine/Source/Editor/Build/` has
+  never existed in the tree (`git log --diff-filter=A -- '*AssetBundleBuilder.h'`
+  is empty). To compile-check an Editor source on macOS, build its object file
+  directly instead of the whole target:
+  `ninja -C build engine/Source/Editor/CMakeFiles/ZEditor.dir/<Sub>/<File>.cpp.o`
+  (`ninja -t commands <obj>` prints the exact compile line). ZRuntime, ZSlate
+  and every smoke test do build on macOS; `ZRuntimeShared` also fails to link
+  there on missing D3D/Vulkan render symbols.
 
 ## 4. Active multi-phase work
 
@@ -2701,6 +2711,37 @@ need nothing extra). Do not re-litigate Python vs C++.
   validates every table (null callbacks/names, self-inheritance, duplicate
   script names, empty or brace-unbalanced .d.ts); `--dump-script-dts` prints
   the generated block on its own. Both are wired into CTest via `TEST_ARGS`.
+- `Cast<T>(p)` (phase 4, 2026-10-20) replaces `dynamic_cast` **inside the
+  Object hierarchy**. `Runtime/BaseClasses/Cast.h`, global namespace, two
+  overloads (`U*` and `const U*`, the latter returning `const T*`). It is an
+  O(1) `Type::IsBaseOf` range test on `p->GetMostDerivedType()` plus a
+  `static_cast`, and both sides are `static_assert`ed to derive from `Object`,
+  so a non-Object hierarchy cannot be silently "converted". Unrelated T/U are
+  accepted and always yield nullptr (the pointer conversion is guarded by
+  `if constexpr`, because `static_cast` -- unlike `dynamic_cast` -- rejects
+  unrelated types outright).
+  * It reads the **virtual** `GetMostDerivedType()` (a public non-virtual
+    wrapper over the private virtual `GetTypeVirtualInternal()`; access is
+    checked on the static type, which is why the wrapper lives in `Object`),
+    never `Object::GetType()`: the latter reads `m_CachedTypeIndex`, which is
+    only meaningful after `InitializeRuntimeTypeInfo()` has run.
+  * `CastDetail::Plain<T> = std::remove_cv<T>::type` for every lookup:
+    `TypeOf<const T>` would reach a *different*, unregistered
+    `TypeContainer<T>` instance. Call it as `Cast<T>(const_ptr)`, not
+    `Cast<const T>(...)`.
+  * Equivalence gate: `ReflectionCodegenSmokeTest --check-cast` cross-checks
+    `Type::IsBaseOf` against a base-chain walk for every (runtime type, target)
+    pair and spot-checks `Cast<T>` against `dynamic_cast<T*>` on 10 real pairs
+    plus a null. Wired into CTest via `TEST_ARGS`.
+- **Migrated to `Cast<T>`**: 63 call sites across 17 files (2026-10-20).
+  **Still `dynamic_cast`** (86 sites, deliberately -- these hierarchies are not
+  Object-based and `Cast<T>` would `static_assert`): `IEngineSystem` /
+  `AssetManager` -> `EditorAssetManager` (SystemRegistry's `Cast<T>` reverted
+  for the same reason, and `Core/Base` must not include `BaseClasses`),
+  `*ImporterSettings`, `DX12RHI` / `VulkanRHI` / `RenderResource` /
+  `RenderPipeline` / `DX12MainCameraPass`, `UISystem` / `BatchedUIRenderer`,
+  `FAssetDragDropOp`, and the UMG widgets (`UWidget` / `UPanelWidget` /
+  `UBoxPanel` / `UOverlay`). Do not "finish the job" by converting those.
 - Rules: `#include "<Name>.generated.h"` (base name of the header, one per
   header even with several ZCLASSes) must be the **last** include; reflected
   classes live at global scope or in **exactly one named namespace**

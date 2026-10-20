@@ -16,6 +16,7 @@
 #include "Runtime/Resource/Config/ConfigManager.h"
 #include "Runtime/Resource/Preload/PreloadManager.h"
 #include "Runtime/Project/ProjectInfo.h"
+#include "Runtime/BaseClasses/Cast.h"
 
 bool WorldManager::Initialize()
 {
@@ -276,7 +277,7 @@ void WorldManager::FlushPendingRigidBodies(Level* level)
 
         for (ImmediatePtr<Component>& component_ptr : game_object->getComponents())
         {
-            RigidBodyComponent* rigidbody = dynamic_cast<RigidBodyComponent*>(static_cast<Component*>(component_ptr));
+            RigidBodyComponent* rigidbody = Cast<RigidBodyComponent>(static_cast<Component*>(component_ptr));
             if (rigidbody == nullptr)
             {
                 continue;

@@ -16,6 +16,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include "Runtime/BaseClasses/Cast.h"
 
 namespace
 {
@@ -203,7 +204,7 @@ namespace
                 if (comp == nullptr)
                     continue;
 
-                PrefabRefComponent* ref = dynamic_cast<PrefabRefComponent*>(comp);
+                PrefabRefComponent* ref = Cast<PrefabRefComponent>(comp);
                 if (ref == nullptr || ref->IsExpanded())
                     continue;
 
@@ -406,7 +407,7 @@ namespace
         /// to the writer's object list, so their fileID references resolve.
         static void CollectEmbeddedObjects(const Component* comp, std::vector<Object*>& out)
         {
-            const RigidBodyComponent* rigidbody = dynamic_cast<const RigidBodyComponent*>(comp);
+            const RigidBodyComponent* rigidbody = Cast<RigidBodyComponent>(comp);
             if (rigidbody == nullptr)
             {
                 return;

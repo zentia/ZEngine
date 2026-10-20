@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <unordered_set>
+#include "Runtime/BaseClasses/Cast.h"
 
 namespace EditorUndoRecords
 {
@@ -207,7 +208,7 @@ namespace EditorUndoRecords
     {
         ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
         Object* object = object_manager != nullptr ? object_manager->IDToPointer(m_InstanceID) : nullptr;
-        return dynamic_cast<Component*>(object);
+        return Cast<Component>(object);
     }
 
     void ComponentSnapshotRecord::Apply()
@@ -272,7 +273,7 @@ namespace EditorUndoRecords
         if (state.parent_instance_id != 0)
         {
             ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
-            parent = dynamic_cast<Transform*>(object_manager != nullptr ? object_manager->IDToPointer(state.parent_instance_id)
+            parent = Cast<Transform>(object_manager != nullptr ? object_manager->IDToPointer(state.parent_instance_id)
                                                                         : nullptr);
             if (parent == nullptr)
             {
@@ -322,7 +323,7 @@ namespace EditorUndoRecords
     {
         ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
         Object* object = object_manager != nullptr ? object_manager->IDToPointer(m_InstanceID) : nullptr;
-        return dynamic_cast<Transform*>(object);
+        return Cast<Transform>(object);
     }
 
     void TransformStateRecord::Apply()
@@ -472,7 +473,7 @@ namespace EditorUndoRecords
             for (const ImmediatePtr<Component>& component_ptr : object->getComponents())
             {
                 Component* component = component_ptr;
-                if (component != nullptr && dynamic_cast<Transform*>(component) == nullptr)
+                if (component != nullptr && Cast<Transform>(component) == nullptr)
                 {
                     component->OnSerializedFieldsUpdated();
                 }
