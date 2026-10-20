@@ -187,6 +187,12 @@ namespace ZEngine::ShaderLab
         // 数字
         if (IsDigit(c) || (c == '.' && m_Pos + 1 < m_Source.size() && IsDigit(m_Source[m_Pos + 1])))
         {
+            // 属性类型 2D/3D 以数字开头。不特判的话会被 ReadNumber() 拆成
+            // "2" + "D"，关键字表命中不到 → 属性被静默丢弃。
+            if (IsDigitLeadingKeyword())
+            {
+                return ReadIdentifier();
+            }
             return ReadNumber();
         }
 
@@ -434,6 +440,39 @@ namespace ZEngine::ShaderLab
 
         token.type = TokenType::StringLiteral;
         return token;
+    }
+
+    bool ShaderLabLexer::IsDigitLeadingKeyword() const
+    {
+        // 扫描从 m_Pos 开始的最长 [A-Za-z0-9_.] 序列。
+        size_t pos = m_Pos;
+        bool has_alpha = false;
+        while (pos < m_Source.size())
+        {
+            const char ch = m_Source[pos];
+            if (IsAlpha(ch))
+            {
+                has_alpha = true;
+                ++pos;
+            }
+            else if (IsDigit(ch) || ch == '.')
+            {
+                ++pos;
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        if (!has_alpha || pos == m_Pos)
+        {
+            return false;
+        }
+
+        // 只有整段命中关键字表才按标识符处理。否则它更可能是带后缀的数字
+        // （"0.5f"、"16bit"），必须保持原有行为，不能回归。
+        return IdentifyKeyword(m_Source.substr(m_Pos, pos - m_Pos)) != TokenType::Identifier;
     }
 
     Token ShaderLabLexer::ReadNumber()

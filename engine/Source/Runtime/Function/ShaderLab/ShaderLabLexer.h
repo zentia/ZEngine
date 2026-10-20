@@ -205,6 +205,13 @@ namespace ZEngine::ShaderLab
         // 尝试识别关键词
         TokenType IdentifyKeyword(const std::string& text) const;
 
+        // Unity 的属性类型可以以数字开头（2D / 2d / 3D / 3d）。NextToken() 按首
+        // 字符分派，数字开头会走 ReadNumber()，把 "2D" 拆成数字 2 + 标识符 "D"，
+        // 于是关键字表里的 {"2D", Texture2D} 永远命中不到，整条属性被静默丢弃
+        // （Spine 的 _MainTex 就是这样消失的）。这里在进数字分支之前先判一次：
+        // 数字开头 + 含字母 + 整段命中关键字表 → 按标识符词法化。
+        bool IsDigitLeadingKeyword() const;
+
         // 是否为字母
         static bool IsAlpha(char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
 

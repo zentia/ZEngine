@@ -184,6 +184,40 @@ bool RunShaderFile(const char* file_name,
     return true;
 }
 
+// Regression guard: a named property must survive parsing.
+//
+// The lexer used to dispatch on the first character, so digit-leading
+// property types (2D / 3D) were split into a number plus an identifier and
+// never matched the keyword table -- the whole property was dropped. For
+// Spine that meant _MainTex (the atlas sampler) silently vanished.
+void RequireProperty(const std::filesystem::path& shader,
+                     const std::string& name,
+                     int& checks,
+                     int& failures)
+{
+    ++checks;
+
+    ShaderLabDx12Compiler compiler;
+    if (!compiler.LoadFromFile(shader.generic_string()))
+    {
+        std::cout << "  [FAIL] " << name << " -- shader failed to parse\n";
+        ++failures;
+        return;
+    }
+
+    for (const auto& p : compiler.GetAsset()->properties)
+    {
+        if (p.name == name)
+        {
+            std::cout << "  [ OK ] " << name << " (" << PropertyTypeToString(p.type) << ")\n";
+            return;
+        }
+    }
+
+    std::cout << "  [FAIL] " << name << " -- property missing after parse\n";
+    ++failures;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -195,6 +229,21 @@ int main(int argc, char** argv)
 
     int checks = 0;
     int failures = 0;
+
+    // ------------------------------------------------------------------
+    // 0. Regression: digit-leading property types must survive the lexer.
+    // ------------------------------------------------------------------
+    std::cout << "\n---- [0] Regression: 2D/3D property types ----\n";
+    RequireProperty(Fixture("Spine-Skeleton-Tint.shader"), "_MainTex", checks, failures);
+    {
+        const std::filesystem::path props = Fixture("diag_props2.shader");
+        static const char* const names[] = {
+            "_T2D_black", "_T2D_empty", "_T2D_white", "_T2D_nospace", "_T3D_empty", "_TCube_empty"};
+        for (const char* n : names)
+        {
+            RequireProperty(props, n, checks, failures);
+        }
+    }
 
     // Ad-hoc mode: `ShaderLabUnityCompatTest <file> [<file>...]` parses and
     // compiles pass 0 of each file. Lets you drop a diagnostic fixture in and
