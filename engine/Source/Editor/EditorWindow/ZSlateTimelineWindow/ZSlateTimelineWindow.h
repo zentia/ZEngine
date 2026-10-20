@@ -7,6 +7,7 @@
 #include "ZSlate/Application/SlateInput.h"
 #include "Runtime/UI/Core/UITypes.h"
 
+#include <filesystem>
 #include <memory>
 #include <string>
 
@@ -41,6 +42,13 @@ public:
     void SetTimelineAsset(TimelineAsset* asset);
     TimelineAsset* GetTimelineAsset() const { return m_CurrentAsset; }
 
+    /// Load a `.timeline` (or binary) object graph through TimelineAssetIO and
+    /// make it the edited asset. `path` is remembered for Save.
+    bool OpenAsset(const std::filesystem::path& path);
+    const std::filesystem::path& GetAssetPath() const { return m_AssetPath; }
+    /// Write the graph back to `m_AssetPath`. No-op when nothing is open.
+    bool SaveAsset();
+
     void Play();
     void Pause();
     void Stop();
@@ -73,6 +81,9 @@ private:
     // Data ops.
     void AddTrack(const std::string& track_type);
     void DeleteTrack(int track_index);
+    /// Append a clip of the selected track's type at the playhead.
+    void AddClip();
+    void DeleteClip(TimelineTrack* track, int clip_index);
     void SelectClip(TimelineTrack* track, int clip_index);
     bool IsClipSelected(TimelineTrack* track, int clip_index) const;
     void ClearSelection();
@@ -81,6 +92,7 @@ private:
 
     // ---- Model -------------------------------------------------------------
     TimelineAsset* m_CurrentAsset {nullptr};
+    std::filesystem::path m_AssetPath;  // Save target (empty = in-memory asset)
 
     TimelinePlayState m_PlayState {TimelinePlayState::Stopped};
     float m_CurrentTime {0.0f};
@@ -113,6 +125,8 @@ private:
 
     // ---- ZSlate toolbar tree (rebuilt only on scale change) ----------------
     std::shared_ptr<ZSlate::SWidget> m_Toolbar;
+    std::shared_ptr<ZSlate::STextBlock> m_StatusText;
+    std::string m_Status;  // last Save result, shown next to the asset name
     std::shared_ptr<ZSlate::STextBlock> m_PlayLabel;
     std::shared_ptr<ZSlate::STextBlock> m_TimeText;
     std::shared_ptr<ZSlate::STextBlock> m_SpeedText;

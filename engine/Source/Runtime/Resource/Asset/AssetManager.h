@@ -201,6 +201,11 @@ public:
     // True for any file indexed by AssetRegistry under Assets/.
     static bool IsRegistryIndexedAssetPath(const std::filesystem::path& path);
 
+    // The one timeline authoring extension (".timeline"): an object graph, so it
+    // must go through TimelineAssetIO, never the single-object load paths.
+    static const char* TimelineAssetExtension();
+    static bool IsTimelineAssetPath(const std::filesystem::path& path);
+
     // Path-derived GUID for binary .zasset headers and YAML authoring assets
     // (which carry no embedded GUID). Same FNV-1a scheme as ScriptRegistry.
     static std::string DeriveDeterministicAssetGuid(const std::filesystem::path& absolute_path);

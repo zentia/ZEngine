@@ -230,7 +230,7 @@ namespace
 
 const std::vector<std::string>& AssetManager::YamlAuthoringAssetExtensions()
 {
-    static const std::vector<std::string> kExtensions = {".mat", ".prefab", ".scene", ".timeline"};
+    static const std::vector<std::string> kExtensions = {".mat", ".prefab", ".scene", TimelineAssetExtension()};
     return kExtensions;
 }
 
@@ -264,6 +264,16 @@ bool AssetManager::IsYamlAuthoringAssetPath(const std::filesystem::path& path)
 bool AssetManager::IsRegistryIndexedAssetPath(const std::filesystem::path& path)
 {
     return IsRegistryIndexedAssetExtension(LowerExtension(path));
+}
+
+const char* AssetManager::TimelineAssetExtension()
+{
+    return ".timeline";
+}
+
+bool AssetManager::IsTimelineAssetPath(const std::filesystem::path& path)
+{
+    return LowerExtension(path) == TimelineAssetExtension();
 }
 
 std::string AssetManager::DeriveDeterministicAssetGuid(const std::filesystem::path& absolute_path)

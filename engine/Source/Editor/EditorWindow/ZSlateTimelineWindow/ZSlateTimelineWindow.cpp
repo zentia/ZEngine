@@ -1,12 +1,15 @@
 #include "ZSlateTimelineWindow.h"
 
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
+#include "Editor/EditorSceneManager/EditorSceneManager.h"                    // selected asset (auto-open)
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"      // native input / metrics
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"  // native RHI backend
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
+#include "Runtime/Resource/Asset/AssetManager.h"                             // IsTimelineAssetPath / Save target
 #include "Runtime/Resource/ResType/Data/TimelineAsset.h"
+#include "Runtime/Resource/ResType/Data/TimelineAssetIO.h"                   // object-graph save / load
 #include "Runtime/Resource/ResType/Data/TimelineClip.h"
 #include "Runtime/Resource/ResType/Data/TimelineTrack.h"
 #include "ZSlate/Application/SlateApplication.h"
@@ -168,6 +171,27 @@ void ZSlateTimelineWindow::BuildToolbar(float scale)
         auto add_label = MakeText("+ Animation Track", font, kLabelColor);
         add_button(add_label, [this]() { AddTrack("AnimationTimelineTrack"); });
     }
+
+    // Add / delete clip on the selected track.
+    add_button(MakeText("+ Clip", font, kLabelColor), [this]() { AddClip(); });
+    add_button(MakeText("- Clip", font, kLabelColor), [this]() {
+        if (m_SelTrack != nullptr)
+            DeleteClip(m_SelTrack, m_SelClipIndex);
+    });
+
+    add_spacer(8.0f);
+
+    // Save the whole object graph back to the opened file.
+    add_button(MakeText("Save", font, kLabelColor), [this]() {
+        if (SaveAsset())
+            m_Status = "Saved.";
+        else
+            m_Status = m_CurrentAsset == nullptr ? "Nothing to save." : "Save failed.";
+    });
+
+    // Status read-out: asset name + last save result.
+    m_StatusText = MakeText("", font, kDimColor);
+    bar->AddSlot(m_StatusText).AutoSize().SetVAlign(EVerticalAlignment::Center);
 
     root->SetContent(bar);
     m_Toolbar = root;
@@ -446,6 +470,18 @@ void ZSlateTimelineWindow::OnGUI()
         m_Input.Reset();
     }
 
+    // Follow the Content Browser selection: a .timeline becomes the edited
+    // asset (loaded as one object graph -- never through loadAsset<T>).
+    if (EditorSceneManager* scene = GET_SYSTEM(EditorSceneManager))
+    {
+        const std::filesystem::path selected = scene->getSelectedAssetPath();
+        if (!selected.empty() && selected != m_AssetPath && AssetManager::IsTimelineAssetPath(selected))
+        {
+            OpenAsset(selected);
+            m_Status.clear();
+        }
+    }
+
     AdvancePlayback();
 
     // Refresh live toolbar labels.
@@ -472,6 +508,15 @@ void ZSlateTimelineWindow::OnGUI()
     }
     if (m_ModeLabel)
         m_ModeLabel->Text = std::string("Mode: ") + kModeNames[m_EditMode % 4];
+    if (m_StatusText)
+    {
+        std::string status = m_AssetPath.empty() ? "(no asset)" : m_AssetPath.filename().string();
+        if (m_CurrentAsset == nullptr && !m_AssetPath.empty())
+            status += " <load failed>";
+        if (!m_Status.empty())
+            status += " -- " + m_Status;
+        m_StatusText->Text = status;
+    }
 
     // ---- Geometry -----------------------------------------------------------
     // P10c: native-host panels source their leaf rect from EditorView::NativeRect()
@@ -582,8 +627,34 @@ void ZSlateTimelineWindow::AdvancePlayback()
 void ZSlateTimelineWindow::SetTimelineAsset(TimelineAsset* asset)
 {
     m_CurrentAsset = asset;
+    m_AssetPath.clear();  // in-memory asset: nothing to save until OpenAsset()
     ClearSelection();
     Stop();
+}
+
+bool ZSlateTimelineWindow::OpenAsset(const std::filesystem::path& path)
+{
+    AssetManager* asset_manager = GET_SYSTEM(AssetManager);
+    if (asset_manager == nullptr)
+        return false;
+
+    // m_AssetPath is set even on failure so OnGUI does not retry every frame;
+    // the status read-out then shows "<load failed>".
+    m_AssetPath = path;
+    m_CurrentAsset = TimelineAssetIO::Load(*asset_manager, path);
+    ClearSelection();
+    Stop();
+    return m_CurrentAsset != nullptr;
+}
+
+bool ZSlateTimelineWindow::SaveAsset()
+{
+    if (m_CurrentAsset == nullptr || m_AssetPath.empty())
+        return false;
+    AssetManager* asset_manager = GET_SYSTEM(AssetManager);
+    if (asset_manager == nullptr)
+        return false;
+    return TimelineAssetIO::Save(*asset_manager, *m_CurrentAsset, m_AssetPath);
 }
 
 void ZSlateTimelineWindow::Play()
@@ -657,6 +728,51 @@ void ZSlateTimelineWindow::DeleteTrack(int track_index)
         return;
 
     m_CurrentAsset->m_Tracks.erase(m_CurrentAsset->m_Tracks.begin() + track_index);
+    ClearSelection();
+}
+
+void ZSlateTimelineWindow::AddClip()
+{
+    if (m_CurrentAsset == nullptr)
+        return;
+
+    // No explicit selection: fall back to the last track, so "+ Clip" right
+    // after "+ Animation Track" does the obvious thing.
+    TimelineTrack* track = m_SelTrack;
+    if (track == nullptr && !m_CurrentAsset->m_Tracks.empty())
+        track = m_CurrentAsset->m_Tracks.back();
+    if (track == nullptr)
+        return;
+
+    // One clip kind per track kind, matching AddTrack(). NewObject (not
+    // MemoryManager::CreateObject) so the PPtr pushed below is not null.
+    ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
+    if (object_manager == nullptr)
+        return;
+    TimelineClip* clip = nullptr;
+    if (dynamic_cast<AnimationTimelineTrack*>(track) != nullptr)
+        clip = object_manager->NewObject<AnimationTimelineClip>();
+    else if (dynamic_cast<AudioTimelineTrack*>(track) != nullptr)
+        clip = object_manager->NewObject<AudioTimelineClip>();
+    else if (dynamic_cast<ActivationTimelineTrack*>(track) != nullptr)
+        clip = object_manager->NewObject<ActivationTimelineClip>();
+    else if (dynamic_cast<EventTimelineTrack*>(track) != nullptr)
+        clip = object_manager->NewObject<EventTimelineClip>();
+
+    if (clip == nullptr)
+        return;
+
+    clip->m_StartTime = m_SnapToFrames ? FrameToTime(TimeToFrame(m_CurrentTime)) : m_CurrentTime;
+    clip->m_Duration = 1.0f;
+    track->m_Clips.push_back(clip);
+    SelectClip(track, static_cast<int>(track->m_Clips.size()) - 1);
+}
+
+void ZSlateTimelineWindow::DeleteClip(TimelineTrack* track, int clip_index)
+{
+    if (track == nullptr || clip_index < 0 || clip_index >= static_cast<int>(track->m_Clips.size()))
+        return;
+    track->m_Clips.erase(track->m_Clips.begin() + clip_index);
     ClearSelection();
 }
 
