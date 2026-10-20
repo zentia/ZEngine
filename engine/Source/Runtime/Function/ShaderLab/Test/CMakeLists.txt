@@ -87,6 +87,8 @@ target_sources(${_smoke_target} PRIVATE
     unity_compat/diag_semantic_macro.shader
     unity_compat/diag_missing_include.shader
     unity_compat/diag_two_passes.shader
+    unity_compat/inc_root/lib/shared.h
+    unity_compat/inc_root/shaders/inc_root_proj.shader
 )
 set_source_files_properties(
     unity_compat/UnityCG.cginc
@@ -100,6 +102,8 @@ set_source_files_properties(
     unity_compat/diag_semantic_macro.shader
     unity_compat/diag_missing_include.shader
     unity_compat/diag_two_passes.shader
+    unity_compat/inc_root/lib/shared.h
+    unity_compat/inc_root/shaders/inc_root_proj.shader
     PROPERTIES VS_TOOL_OVERRIDE "None"
 )
 

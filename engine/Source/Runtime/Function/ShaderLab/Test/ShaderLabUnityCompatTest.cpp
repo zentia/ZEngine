@@ -322,6 +322,75 @@ void RequirePassSelection(const std::filesystem::path& shader,
               << " B), pass 1 -> '" << p1.entry_point << "' (" << p1.dxil_code.size() << " B)\n";
 }
 
+// Regression guard: a project-relative #include must resolve through
+// SetIncludeDirectory().
+//
+// Unity resolves `#include "Foo/Bar.h"` against the project's shader include
+// root (Assets/Shaders), NOT against the .shader's own directory. ZEngine's
+// Compile() only ever searched the .shader's own directory -- and the
+// SetIncludeDirectory() that would have fixed it had zero callers, while
+// PrecompileAll()'s `include_paths` parameter was discarded outright
+// (`(void)include_paths;`). So any shader using a project-relative include
+// path failed with "fatal error: ... file not found".
+//
+// Both halves matter: without the root it MUST fail (otherwise this test
+// proves nothing), and with it it MUST succeed.
+void RequireIncludeRoot(const std::filesystem::path& shader,
+                        const std::filesystem::path& include_root,
+                        int& checks,
+                        int& failures)
+{
+    // --- negative: no include root -> header must not be found ------------
+    ++checks;
+    {
+        ShaderLabDx12Compiler compiler;
+        if (!compiler.LoadFromFile(shader.generic_string()))
+        {
+            std::cout << "  [FAIL] include root -- shader failed to parse\n";
+            ++failures;
+            return;
+        }
+
+        const CompiledShaderModuleDx12 r = compiler.Compile(0, 0, "vertex", {});
+        if (r.success)
+        {
+            std::cout << "  [FAIL] include root -- compiled WITHOUT an include root; "
+                         "expected the project-relative #include to be unresolvable\n";
+            ++failures;
+        }
+        else
+        {
+            std::cout << "  [ OK ] without include root: rejected as expected\n";
+        }
+    }
+
+    // --- positive: SetIncludeDirectory() -> header must resolve -----------
+    ++checks;
+    {
+        ShaderLabDx12Compiler compiler;
+        compiler.SetIncludeDirectory(include_root);
+        if (!compiler.LoadFromFile(shader.generic_string()))
+        {
+            std::cout << "  [FAIL] include root -- shader failed to parse\n";
+            ++failures;
+            return;
+        }
+
+        const CompiledShaderModuleDx12 r = compiler.Compile(0, 0, "vertex", {});
+        if (!r.success)
+        {
+            std::cout << "  [FAIL] include root -- compile failed with the root set: "
+                      << r.error_message << "\n";
+            ++failures;
+        }
+        else
+        {
+            std::cout << "  [ OK ] with include root: compiled (" << r.dxil_code.size()
+                      << " B)\n";
+        }
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -361,6 +430,17 @@ int main(int argc, char** argv)
     // ------------------------------------------------------------------
     std::cout << "\n---- [0c] Regression: pass_index selects the right program ----\n";
     RequirePassSelection(Fixture("diag_two_passes.shader"), "vertA", "vertB", checks, failures);
+
+    // ------------------------------------------------------------------
+    // 0d. Regression: a project-relative #include must resolve through
+    //     SetIncludeDirectory() (and must NOT resolve without it).
+    // ------------------------------------------------------------------
+    std::cout << "\n---- [0d] Regression: project include root ----\n";
+    RequireIncludeRoot(
+        Fixture("inc_root/shaders/inc_root_proj.shader"),
+        std::filesystem::path(ZENGINE_SHADERLAB_UNITY_COMPAT_TEST_DIR),
+        checks,
+        failures);
 
     // Ad-hoc mode: `ShaderLabUnityCompatTest <file> [<file>...]` parses and
     // compiles pass 0 of each file. Lets you drop a diagnostic fixture in and

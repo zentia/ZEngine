@@ -414,6 +414,13 @@ namespace Runtime
 
         ZEngine::ShaderLab::ShaderLabDx12Compiler compiler;
         compiler.SetCacheDirectory(cache_dir);
+        // 项目 shaders 根即 include 根（Unity 的 Assets/Shaders）。以前从不设置，
+        // 于是所有写项目相对路径的 #include 都 file not found。
+        if (const std::filesystem::path shaders_root = project_info->GetShadersRoot();
+            !shaders_root.empty())
+        {
+            compiler.SetIncludeDirectory(shaders_root);
+        }
         if (!compiler.LoadFromFile(source_shader_path.generic_string()))
         {
             LOG_WARNING(ZShader,

@@ -34,6 +34,22 @@ namespace ZEngine::ShaderLab
             return paths;
         }
 
+        // DXC's include handler builds `include_path + "/" + filename`, so an empty
+        // entry degrades to "/filename" -- harmless but useless, and it stops us from
+        // deduplicating properly. Drop empties and duplicates here.
+        void AppendUniquePath(std::vector<std::string>& paths, const std::string& path)
+        {
+            if (path.empty())
+            {
+                return;
+            }
+            if (std::find(paths.begin(), paths.end(), path) != paths.end())
+            {
+                return;
+            }
+            paths.push_back(path);
+        }
+
         ShaderStage ProgramTypeToStage(const std::string& program_type)
         {
             if (program_type == "vertex")
@@ -89,15 +105,37 @@ namespace ZEngine::ShaderLab
         return m_Asset != nullptr;
     }
 
+    void ShaderLabDx12Compiler::SetIncludeDirectory(const std::filesystem::path& dir)
+    {
+        m_IncludeDirectory = dir;
+    }
+
+    std::vector<std::string> ShaderLabDx12Compiler::EffectiveIncludePaths(
+        const std::vector<std::string>& extra_include_paths) const
+    {
+        std::vector<std::string> paths;
+        for (const std::string& path : extra_include_paths)
+        {
+            AppendUniquePath(paths, path);
+        }
+        if (!m_IncludeDirectory.empty())
+        {
+            AppendUniquePath(paths, m_IncludeDirectory.generic_string());
+        }
+        return paths;
+    }
+
     void ShaderLabDx12Compiler::SetCacheDirectory(const std::filesystem::path& dir)
     {
         m_CacheDirectory = dir;
     }
 
-    CompiledShaderModuleDx12 ShaderLabDx12Compiler::Compile(size_t subshader_index,
-                                                            size_t pass_index,
-                                                            const std::string& program_type,
-                                                            const ShaderVariantKey& variant_key)
+    CompiledShaderModuleDx12 ShaderLabDx12Compiler::Compile(
+        size_t subshader_index,
+        size_t pass_index,
+        const std::string& program_type,
+        const ShaderVariantKey& variant_key,
+        const std::vector<std::string>& extra_include_paths)
     {
         CompiledShaderModuleDx12 out;
 
@@ -154,7 +192,11 @@ namespace ZEngine::ShaderLab
             compiler.SetCacheDirectory(m_CacheDirectory);
         }
 
-        const std::vector<std::string> includes = BuildIncludePaths(m_SourcePath, {});
+        // 搜索顺序：PrecompileAll 传入的临时路径 -> 持久 include 根 -> .shader 自身目录。
+        // 以前这里只传 {}（外加 .shader 自身目录），凡是写项目相对路径
+        // `#include "shader/include/xxx.h"` 的 shader 必然 file not found。
+        const std::vector<std::string> includes =
+            BuildIncludePaths(m_SourcePath, EffectiveIncludePaths(extra_include_paths));
         // 必须把 subshader/pass 索引传下去。CompileFromFile() 以前只知道一个文件
         // 路径，内部用 ExtractHlslFromShaderLabFile() 抓"文件里第一个 program"，
         // 于是多 pass shader 无论请求哪个 pass_index 都在编译 pass 0 的代码。
@@ -181,8 +223,6 @@ namespace ZEngine::ShaderLab
                                               const std::vector<ShaderVariantKey>* material_variant_keys,
                                               bool strip_unused_shader_features)
     {
-        (void)include_paths;
-
         if (!m_Asset || m_SourcePath.empty())
         {
             return false;
@@ -264,7 +304,8 @@ namespace ZEngine::ShaderLab
 
                 for (const ShaderVariantKey& variant : variants)
                 {
-                    CompiledShaderModuleDx12 vs = Compile(sub_idx, pass_idx, "vertex", variant);
+                    CompiledShaderModuleDx12 vs =
+                        Compile(sub_idx, pass_idx, "vertex", variant, include_paths);
                     if (vs.success)
                     {
                         ++compiled;
@@ -281,7 +322,8 @@ namespace ZEngine::ShaderLab
                         }
                     }
 
-                    CompiledShaderModuleDx12 fs = Compile(sub_idx, pass_idx, "fragment", variant);
+                    CompiledShaderModuleDx12 fs =
+                        Compile(sub_idx, pass_idx, "fragment", variant, include_paths);
                     if (fs.success)
                     {
                         ++compiled;
@@ -364,6 +406,9 @@ namespace ZEngine::ShaderLab
 
             ShaderLabDx12Compiler compiler;
             compiler.SetCacheDirectory(cache_directory);
+            // shaders_root 就是项目的 include 根（Unity 里对应 Assets/Shaders）。
+            // 不设它的话，任何写项目相对 include 路径的 shader 都解析不到。
+            compiler.SetIncludeDirectory(shaders_root);
             if (!compiler.LoadFromFile(entry.path().generic_string()))
             {
                 LOG_WARNING(ZShader,
@@ -433,7 +478,8 @@ namespace ZEngine::ShaderLab
     CompiledShaderModuleDx12 ShaderLabDx12Compiler::Compile(size_t,
                                                             size_t,
                                                             const std::string&,
-                                                            const ShaderVariantKey&)
+                                                            const ShaderVariantKey&,
+                                                            const std::vector<std::string>&)
     {
         return {};
     }
@@ -444,6 +490,8 @@ namespace ZEngine::ShaderLab
     {
         return false;
     }
+
+    void ShaderLabDx12Compiler::SetIncludeDirectory(const std::filesystem::path&) {}
 
     void ShaderLabDx12Compiler::SetCacheDirectory(const std::filesystem::path&) {}
 
