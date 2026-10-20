@@ -35,9 +35,12 @@ jobs:
           submodules: recursive
 
       # VULKAN=OFF: runners do not ship VULKAN_SDK, and none of these tests
-      # touch the RHI -- same reasoning as the editor build in build_windows.bat.
+      # need a backend -- same reasoning as the editor build in build_windows.bat.
       # (VulkanBindlessSmokeTest is therefore not registered at all; its
-      # directory returns early when ZENGINE_USE_VULKAN is off.)
+      # directory returns early when ZENGINE_USE_VULKAN is off.
+      # RenderGraphExecuteSmokeTest does include RHI.h, but only for the ten
+      # backend signatures: it drives the executor through a stub
+      # IRGResourceDevice and never constructs a real RHI.)
       # PAPI_TYPE=quickjs: release would otherwise pull the V8 script backend.
       #
       # Not enabled: ZENGINE_BUILD_WRITE_FAULT_SMOKE_TEST -- it exercises the
@@ -64,6 +67,7 @@ jobs:
           -DZENGINE_BUILD_ANIMATOR_SMOKE_TEST=ON
           -DZENGINE_BUILD_TEXTURE_COMPRESSOR_SMOKE_TEST=ON
           -DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON
           -DZENGINE_BUILD_UNDO_SMOKE_TEST=ON
           -DZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
           -DZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS=ON
@@ -89,6 +93,7 @@ jobs:
           AnimatorSmokeTest
           TextureCompressorSmokeTest
           RenderGraphSmokeTest
+          RenderGraphExecuteSmokeTest
           UndoSystemSmokeTest
           DX12BindlessSmokeTest
           EnvironmentCollectorTests

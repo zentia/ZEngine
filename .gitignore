@@ -469,6 +469,9 @@ bc.err
 # Scratch build tree for the headless UndoSystem smoke test (see engine/Source/Editor/Undo/Test)
 build_undo_test/
 
+# Scratch build tree used by .github/workflows/smoke_tests.yml (-B build_smoke + ctest)
+build_smoke/
+
 # Scratch build tree used by .github/workflows/smoke_tests.yml (cmake -B build_smoke)
 build_smoke/
 

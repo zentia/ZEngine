@@ -424,6 +424,11 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Graph/Test/RenderGraphSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Graph/Test/RenderGraphSmokeTest.cpp")
+# Same carve-out for the executor smoke test (also owns a main()).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Graph/Test/RenderGraphExecuteSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Graph/Test/RenderGraphExecuteSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when
