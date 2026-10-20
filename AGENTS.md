@@ -2138,8 +2138,39 @@ Rules that are easy to break:
    the asset graph, not guessed.
 7. **Log category is `ZPak`.**
 
+**The builder is `Editor/Build/AssetBundleBuilder.{h,cpp}`** (added
+2026-10-20; before that the two entry points below referenced a class that had
+never been committed, which is why ZEditor stopped compiling). `Build()` never
+throws or asserts -- it runs on the editor UI thread from a menu item, so every
+failure comes back through `AssetBundleBuildResult::error`. Steps:
+1. Roots: `options.roots` if set, else every `LevelRes` / `WorldRes` /
+   `PrefabAsset` the registry indexes. `PrefabAsset` has no `Res` suffix.
+2. If the registry is still scanning, **wait** (`WaitForScanComplete`) --
+   packing against a half-built index silently omits assets, which is the one
+   failure mode invisible until runtime.
+3. Optional `cook_first` -> `TextureImporter::CookProjectTextures(target)`.
+4. BFS per root over `AssetRegistry::GetDependencies`; `>=2` roots -> `shared`.
+5. Bytes: `<Cooked>/<Platform>/<rel>` when it exists, else the source file.
+   Entries are sorted by path so the same content yields the same bytes (a CI
+   size check would otherwise flap on unordered-map iteration order).
+6. `<output>/Bundles/<name>.zbundle` + `<output>/<project>.manifest.zasset`.
+   Because the bundles sit in `Bundles/`, a player mounts
+   `MountDirectory(<Build>/<Platform>/Bundles, <Build>/<Platform>/<project>.manifest.zasset)`
+   -- `MountDirectory` only globs `*.zbundle` inside the dir it is given, so
+   passing the Build root instead finds nothing.
+
 Entry points: Build menu (`Build Asset Bundles (...)`) and the console
-command `bundle.build <standalone|android|ios|ohos|webgl>`.
+command `bundle.build <standalone|android|ios|ohos|webgl>`. Both now actually
+run.
+
+- **`.gitignore` line 1 is `build/`, which matches `Build/` case-insensitively
+  on macOS and Windows.** `Editor/Build/` was therefore invisible to `git add`
+  until `.gitignore` got `!engine/Source/Editor/Build` (same fix as the
+  pre-existing `!engine/3rdparty/JoltPhysics/Build`). Do not "fix" a missing
+  file in that directory by `git add -f` -- the next file added there would be
+  dropped the same way. A `!` rule has to name the *directory*: git does not
+  descend into an excluded directory, so a negation for a file inside it can
+  never re-include it.
 
 Known gaps, in the order they should be closed (PR-PAK2+):
 - **No player bootstrap mounts the bundles yet.** `AssetBundleManager` is
@@ -2147,6 +2178,15 @@ Known gaps, in the order they should be closed (PR-PAK2+):
   player -- a shipped build still has to be handed `Assets/` or call it
   itself. Auto-mounting is deliberately NOT implicit (rule 3: it would shadow
   real files in the editor). Wire it behind an explicit player flag.
+- **Cross-file PPtrs still resolve to null at runtime**, so a bundle-only build
+  loses nested prefabs. `AssetManager::TryGetPathForGuid` returns false
+  unconditionally (`AssetRegistry` is editor-only) and
+  `ResolveExternalAssetPath` requires the target to exist on disk. The manifest
+  says which bundles to mount, but nothing maps `m_FileID` -> bundle.
+- **Textures bypass the bundle**: `RenderResourceBase::TryLoadCookedTexture`
+  `std::filesystem::exists`-checks the .zasset and, on failure, falls back to
+  `stbi_load` on the source image. Packing is therefore not sufficient to make
+  a level render textured.
 - **No compression**: v1 writes STORED blobs (the `compression` field and
   `uncompressed_size` are already in the format). ZRuntime links no compressor.
 - No incremental build, no content-hash change detection, no per-asset
@@ -2206,16 +2246,24 @@ Known gaps, in the order they should be closed (PR-SK3+):
   instead (`ZENGINE_BUILD_*_SMOKE_TEST`,
   `ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS` for the four `environment_*` tests
   under `engine/tools/ZEnvironmentCollector`).
-- **`ZEditor` does not compile on macOS** (pre-existing, unrelated to the
-  reflection work): `Editor/Console/EditorConsoleCommands.cpp` includes
-  `Editor/Build/AssetBundleBuilder.h`, and `engine/Source/Editor/Build/` has
-  never existed in the tree (`git log --diff-filter=A -- '*AssetBundleBuilder.h'`
-  is empty). To compile-check an Editor source on macOS, build its object file
-  directly instead of the whole target:
+- **`ZEditor` compiles on macOS but does not link there.** Two things were
+  conflated for a long time:
+  * *Compile* used to fail because `Editor/Console/EditorConsoleCommands.cpp`
+    and `Editor/Menu/MenuController.cpp` included
+    `Editor/Build/AssetBundleBuilder.h`, and `engine/Source/Editor/Build/` had
+    never existed in the tree (`git log --diff-filter=A -- '*AssetBundleBuilder.h'`
+    was empty). That is fixed -- `Editor/Build/AssetBundleBuilder.{h,cpp}` now
+    exists, and every Editor translation unit compiles on macOS.
+  * *Link* still fails, for an unrelated reason: the macOS build uses the Metal
+    RHI, and the Editor pulls in `RenderSystem::GetFrameDrawList`,
+    `ShaderCompiler::*`, `UIPass::*`, `MainCameraPassShaderCommon::*` -- all
+    defined only in the DX12/Windows sources that `Runtime/CMakeLists.txt`
+    excludes on Apple. Same class of failure as `ZRuntimeShared`.
+  So to validate an Editor change on macOS, build object files directly rather
+  than the whole target:
   `ninja -C build engine/Source/Editor/CMakeFiles/ZEditor.dir/<Sub>/<File>.cpp.o`
   (`ninja -t commands <obj>` prints the exact compile line). ZRuntime, ZSlate
-  and every smoke test do build on macOS; `ZRuntimeShared` also fails to link
-  there on missing D3D/Vulkan render symbols.
+  and every smoke test do build on macOS.
 
 ## 4. Active multi-phase work
 

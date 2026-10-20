@@ -9,6 +9,12 @@ CPM_*.cmake
 *.code-workspace
 *.patch
 !engine/3rdparty/JoltPhysics/Build
+# Same trap, engine side: `build/` above matches ANY directory named "build",
+# and git matches it case-insensitively on macOS/Windows, so an Editor/Build/
+# source directory would be silently invisible to `git add`. The negation has to
+# name the directory itself -- a negation for files inside it cannot re-include
+# a directory git never descends into.
+!engine/Source/Editor/Build
 
 # Visual Studio
 CMakeSettings.json
