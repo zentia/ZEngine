@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 2026-10-20 (editor undo/redo transaction system)
+- **The editor can undo and redo for the first time.** Every scene edit (move /
+  rotate / scale with the gizmo, inspector fields, reparent, create empty,
+  place a prefab or a mesh, delete, component enable, GameObject active) was
+  previously one-way -- a mis-drag could only be fixed by hand or by reloading
+  the level.
+  - `Editor/Undo/UndoSystem.{h,cpp}` -- engine-agnostic transaction stack
+    (UE `FTransBuffer` + Unity `Undo` hybrid), standard library only: swap-based
+    `IUndoRecord` (one `Apply()` serves undo *and* redo), `Finalize()` discards
+    no-ops, coalesce keys collapse repeated snapshots, nesting transactions,
+    a per-frame implicit transaction (Unity's per-event undo group), an
+    `IUndoContext` for side state, redo-branch clearing, and 200-step / 256 MB
+    budgets.
+  - `Editor/Undo/EditorUndo.{h,cpp}` -- `EditorUndoSystem` (an `IEngineSystem`
+    in the PostInit phase) owns one `UndoSystem` and wires it to the editor:
+    selection is captured and restored with every step, committed edits mark the
+    level dirty, undoing back to the saved state clears the dirty flag again
+    (save point), the history is dropped when the level is switched or
+    reloaded, and recording is suspended in play mode.
+  - `Editor/Undo/EditorUndoRecords.{h,cpp}` -- the records. Components are
+    snapshotted as a YAML DOM taken through the normal `Transfer()` path with a
+    null `PPtr` resolver, so PPtrs round-trip as raw instance IDs and undo
+    restores floats bit-exact; `TransformStateRecord` restores local TRS,
+    parent, sibling index and the active flag through the hierarchy APIs;
+    `GameObjectLifetimeRecord` *owns* the removed subtree, so undo puts back the
+    very same objects with the same instance IDs instead of clones.
+  - `EditorUndo::` facade for call sites: `ScopedTransaction`,
+    `RecordComponent`, `RecordTransform`, `RegisterCreatedGameObject`,
+    `DestroyGameObjects`, `Undo`/`Redo`, `CanUndo`/`CanRedo`.
+  - UI: Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z (`EditorInputManager`), and a real
+    **Edit** menu -- `Undo <title>` / `Redo <title>` with live titles, an
+    `Undo History` submenu (20 entries, each undoing N steps) and
+    `Clear Undo History` (`MenuController`).
+  - Console: `undo [steps]`, `redo [steps]`, `undo.history [max rows]`,
+    `undo.clear`.
+  - `UndoSystemSmokeTest` (`-DZENGINE_BUILD_UNDO_SMOKE_TEST=ON`): 70 headless
+    checks over swapping, nesting, ordering, no-op discard, coalescing, redo
+    branch clearing, implicit grouping, cancel, re-entrancy guards, budgets,
+    context, listeners and titles.
+  - New `ZUndo` log category.
+- Supporting runtime changes:
+  - `Component::PostEditUndo()` hook; `AnimationComponent` overrides it to
+    re-resolve its skeleton / controller (they are only bound in
+    `PostLoadResource`).
+  - `Level`: `GetLoadSerial()` (bumped on load and unload, so the undo system
+    can detect a reload) and `RestoreGObject()` (re-inserts a detached object
+    with its original ID).
+  - `RenderSwapContext::CancelDeleteGameObject()` -- the swap drain runs upserts
+    before deletes, so an undo that resurrects an object in the same frame has
+    to un-delete it.
+  - `TransformSceneRoots`: fixed two latent bugs that corrupted the scene root
+    list (re-adding the last root, and unlinking a transform that is not linked
+    at all, which wiped the whole list on every `PostLoadResource`).
+
 ### Added - 2026-10-19
 - **Audio system (first vertical slice)** -- the engine previously had no audio
   at all; this lands the minimum needed to play sound in a project.

@@ -1060,6 +1060,10 @@ void ZSlateSceneWindow::HandleSceneGizmoDrag(bool chrome_capturing, const ::UIRe
 
     if (!host.IsLeftDown())
     {
+        if (m_IsDraggingGizmo)
+        {
+            scene_manager->EndGizmoUndo();  // one drag == one undo step
+        }
         m_IsDraggingGizmo = false;
         m_GizmoDragAxis = 3;
     }

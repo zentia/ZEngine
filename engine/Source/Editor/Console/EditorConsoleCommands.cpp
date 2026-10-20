@@ -11,6 +11,7 @@
     #include "Editor/RenderDoc/RenderDoc.h"
     #include "RenderDocAPI.h"
 #endif
+#include "Editor/Undo/EditorUndo.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
 #include "Runtime/Function/Framework/Level/Level.h"
@@ -556,6 +557,146 @@ namespace
                  result.output_dir.generic_string());
         return true;
     }
+
+    // ---- undo / redo ---------------------------------------------------------------
+    // Thin console front end for the editor undo system (Editor/Undo/EditorUndo.h).
+    // Useful for scripted checks: `undo 3` followed by `redo 3` must restore the scene
+    // exactly, and `undo.history` shows what is queued without opening the Edit menu.
+
+    bool ParseStepCount(const std::string& text, size_t& out)
+    {
+        try
+        {
+            size_t consumed = 0;
+            const unsigned long value = std::stoul(text, &consumed);
+            if (consumed != text.size() || value == 0)
+            {
+                return false;
+            }
+            out = static_cast<size_t>(value);
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    bool CmdUndo(const std::vector<std::string>& args)
+    {
+        EditorUndoSystem* undo = EditorUndo::GetSystem();
+        if (undo == nullptr)
+        {
+            LOG_ERROR(ZConsole, "Undo system not available");
+            return false;
+        }
+
+        size_t count = 1;
+        if (!args.empty() && !ParseStepCount(args[0], count))
+        {
+            LOG_ERROR(ZConsole, "Usage: undo [steps]");
+            return false;
+        }
+
+        const std::string top_title = undo->GetCore().GetUndoTitle();
+        const size_t done = count == 1 ? (undo->PerformUndo() ? 1u : 0u) : undo->PerformUndoMany(count);
+        if (done == 0)
+        {
+            LOG_WARNING(ZConsole, "Nothing to undo ({} queued step(s))", undo->GetCore().GetUndoCount());
+            return true;
+        }
+
+        LOG_INFO(ZConsole, "Undo: {} step(s) -- '{}'", done, count == 1 ? top_title.c_str() : undo->GetCore().GetUndoTitle().c_str());
+        LOG_INFO(ZConsole, "Undo: {} step(s) left, {} redoable", undo->GetCore().GetUndoCount(),
+                 undo->GetCore().GetRedoCount());
+        return true;
+    }
+
+    bool CmdRedo(const std::vector<std::string>& args)
+    {
+        EditorUndoSystem* undo = EditorUndo::GetSystem();
+        if (undo == nullptr)
+        {
+            LOG_ERROR(ZConsole, "Undo system not available");
+            return false;
+        }
+
+        size_t count = 1;
+        if (!args.empty() && !ParseStepCount(args[0], count))
+        {
+            LOG_ERROR(ZConsole, "Usage: redo [steps]");
+            return false;
+        }
+
+        const std::string top_title = undo->GetCore().GetRedoTitle();
+        size_t done = 0;
+        while (done < count && undo->PerformRedo())
+        {
+            ++done;
+        }
+        if (done == 0)
+        {
+            LOG_WARNING(ZConsole, "Nothing to redo ({} queued step(s))", undo->GetCore().GetRedoCount());
+            return true;
+        }
+
+        LOG_INFO(ZConsole, "Redo: {} step(s) -- '{}'", done, count == 1 ? top_title.c_str() : undo->GetCore().GetRedoTitle().c_str());
+        LOG_INFO(ZConsole, "Redo: {} step(s) left, {} undoable", undo->GetCore().GetRedoCount(),
+                 undo->GetCore().GetUndoCount());
+        return true;
+    }
+
+    bool CmdUndoHistory(const std::vector<std::string>& args)
+    {
+        EditorUndoSystem* undo = EditorUndo::GetSystem();
+        if (undo == nullptr)
+        {
+            LOG_ERROR(ZConsole, "Undo system not available");
+            return false;
+        }
+
+        size_t max_rows = 20;
+        if (!args.empty() && !ParseStepCount(args[0], max_rows))
+        {
+            LOG_ERROR(ZConsole, "Usage: undo.history [max rows]");
+            return false;
+        }
+
+        const UndoSystem& core = undo->GetCore();
+        LOG_INFO(ZConsole, "Undo history: {} undo / {} redo step(s), ~{} KB, state id {}", core.GetUndoCount(),
+                 core.GetRedoCount(), core.GetMemoryBytes() / 1024, core.GetCurrentStateId());
+        LOG_INFO(ZConsole, "  limits: {} step(s) / ~{} KB, recording {}", core.GetLimits().max_transactions,
+                 core.GetLimits().max_memory_bytes / 1024, core.IsRecordingSuspended() ? "suspended" : "on");
+
+        const std::vector<std::string> undo_titles = core.GetUndoTitles(max_rows);
+        for (size_t i = 0; i < undo_titles.size(); ++i)
+        {
+            LOG_INFO(ZConsole, "  undo [{}] {}", i + 1, undo_titles[i].c_str());
+        }
+        const std::vector<std::string> redo_titles = core.GetRedoTitles(max_rows);
+        for (size_t i = 0; i < redo_titles.size(); ++i)
+        {
+            LOG_INFO(ZConsole, "  redo [{}] {}", i + 1, redo_titles[i].c_str());
+        }
+        if (core.GetUndoCount() > undo_titles.size())
+        {
+            LOG_INFO(ZConsole, "  ... ({} more, raise the row limit)", core.GetUndoCount() - undo_titles.size());
+        }
+        return true;
+    }
+
+    bool CmdUndoClear(const std::vector<std::string>&)
+    {
+        EditorUndoSystem* undo = EditorUndo::GetSystem();
+        if (undo == nullptr)
+        {
+            LOG_ERROR(ZConsole, "Undo system not available");
+            return false;
+        }
+        undo->ClearHistory("console command");
+        LOG_INFO(ZConsole, "Undo history cleared");
+        return true;
+    }
 }  // namespace
 
 void RegisterEditorConsoleCommands(ConsoleManager& console)
@@ -571,6 +712,10 @@ void RegisterEditorConsoleCommands(ConsoleManager& console)
                             CmdAssetCook);
     console.RegisterCommand("play", "Enter play mode (editor)", CmdPlay);
     console.RegisterCommand("pause", "Pause play mode (editor)", CmdPause);
+    console.RegisterCommand("undo", "Undo editor steps. Usage: undo [steps]", CmdUndo);
+    console.RegisterCommand("redo", "Redo editor steps. Usage: redo [steps]", CmdRedo);
+    console.RegisterCommand("undo.history", "Print the undo/redo stacks. Usage: undo.history [max rows]", CmdUndoHistory);
+    console.RegisterCommand("undo.clear", "Drop the whole undo history", CmdUndoClear);
     console.RegisterCommand("r.renderpath",
                             "Switch render path. Usage: r.renderpath auto|desktop|mobile (mirrors r.RenderPath CVar)",
                             CmdRenderPath);

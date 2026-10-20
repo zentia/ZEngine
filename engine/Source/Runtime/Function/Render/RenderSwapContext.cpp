@@ -1,5 +1,6 @@
 #include "Runtime/Function/Render/RenderSwapContext.h"
 
+#include <algorithm>
 #include <utility>
 
 void GameObjectResourceDesc::Add(GameObjectDesc& desc)
@@ -175,6 +176,24 @@ void RenderSwapData::AddDeleteGameObject(GameObjectDesc&& desc)
         GameObjectResourceDesc go_descs;
         go_descs.Add(desc);
         m_GameObjectToDelete = go_descs;
+    }
+}
+
+void RenderSwapData::CancelDeleteGameObject(GObjectID go_id)
+{
+    if (!m_GameObjectToDelete.has_value())
+    {
+        return;
+    }
+
+    std::deque<GameObjectDesc>& queued = m_GameObjectToDelete->m_GameObjectDescs;
+    queued.erase(std::remove_if(queued.begin(),
+                                queued.end(),
+                                [go_id](const GameObjectDesc& desc) { return desc.getId() == go_id; }),
+                 queued.end());
+    if (queued.empty())
+    {
+        m_GameObjectToDelete.reset();
     }
 }
 

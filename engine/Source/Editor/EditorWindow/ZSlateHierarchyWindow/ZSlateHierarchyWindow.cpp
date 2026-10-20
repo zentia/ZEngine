@@ -5,9 +5,11 @@
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
 #include "Editor/EditorUI/EditorSelection.h"
+#include "Editor/Undo/EditorUndo.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"       // native input bus (P10)
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"  // native RHI backend (M3)
 #include "Runtime/BaseClasses/GameObject.h"
+#include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -327,14 +329,22 @@ GObjectID ZSlateHierarchyWindow::CreateEmpty(Level* level, GObjectID parent)
     if (level == nullptr)
         return k_invalid_gobject_id;
 
-    // Unity "Create Empty": a GameObject with just a Transform.
+    // One undo step for create + parent + select (undo removes it and restores the
+    // previous selection).
+    EditorUndo::ScopedTransaction transaction("Create Empty");
+
+    // Unity "Create Empty": a GameObject with just a Transform. NewObject (not a raw
+    // MemoryManager::CreateObject) so the Transform has an InstanceID -- PPtr-based
+    // parent / child links treat id 0 as null, which left "Create Empty under X"
+    // without a resolvable hierarchy link.
     GameObject empty_template;
     empty_template.SetName("GameObject");
-    empty_template.addComponent(MemoryManager::CreateObject<Transform>());
+    empty_template.addComponent(GET_SYSTEM(ObjectManager)->NewObject<Transform>());
 
     const GObjectID created = level->CreateObject(empty_template);
     if (created == k_invalid_gobject_id)
         return k_invalid_gobject_id;
+    EditorUndo::RegisterCreatedGameObject(created, "Create Empty");
 
     if (parent != k_invalid_gobject_id)
         EditorHierarchyReparent::Reparent(level, created, parent);

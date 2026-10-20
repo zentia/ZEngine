@@ -5,6 +5,7 @@
 #include "Editor/Build/AssetBundleBuilder.h"
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/EditorUI/EditorUI.h"
+#include "Editor/Undo/EditorUndo.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"
 #include "FileMenu/FileMenu.h"
@@ -173,7 +174,47 @@ void MenuController::EnsureZSlateMenuEntries()
                            if (window_menu != nullptr)
                                window_menu->BuildZSlateMenu(menu, scale);
                        }});
-    entries.push_back({"Edit", empty_menu});
+    entries.push_back({"Edit", [](ZSlate::SMenu& menu, float scale) {
+                           // Built every time the menu opens, so the labels name the
+                           // step that will actually be undone / redone.
+                           const bool can_undo = EditorUndo::CanUndo();
+                           const bool can_redo = EditorUndo::CanRedo();
+                           const std::string undo_label =
+                               can_undo ? "Undo " + EditorUndo::GetUndoTitle() + "    Ctrl+Z" : "Undo    Ctrl+Z";
+                           const std::string redo_label =
+                               can_redo ? "Redo " + EditorUndo::GetRedoTitle() + "    Ctrl+Y" : "Redo    Ctrl+Y";
+                           menu.AddItem(undo_label, []() { EditorUndo::Undo(); }, scale, !can_undo);
+                           menu.AddItem(redo_label, []() { EditorUndo::Redo(); }, scale, !can_redo);
+
+                           // UE-style history: pick an entry to undo back to (and
+                           // including) it.
+                           EditorUndoSystem* undo_system = EditorUndo::GetSystem();
+                           if (undo_system != nullptr && can_undo)
+                           {
+                               constexpr size_t kMaxHistoryEntries = 20;
+                               std::shared_ptr<ZSlate::SMenu> history = menu.AddSubMenu("Undo History", scale);
+                               const std::vector<std::string> titles =
+                                   undo_system->GetCore().GetUndoTitles(kMaxHistoryEntries);
+                               for (size_t i = 0; i < titles.size(); ++i)
+                               {
+                                   const size_t steps = i + 1;
+                                   history->AddItem(titles[i], [steps]() {
+                                       if (EditorUndoSystem* system = EditorUndo::GetSystem())
+                                       {
+                                           system->PerformUndoMany(steps);
+                                       }
+                                   }, scale);
+                               }
+                           }
+
+                           menu.AddSeparator(scale);
+                           menu.AddItem("Clear Undo History", []() {
+                               if (EditorUndoSystem* system = EditorUndo::GetSystem())
+                               {
+                                   system->ClearHistory("Edit > Clear Undo History");
+                               }
+                           }, scale, !can_undo && !can_redo);
+                       }});
     entries.push_back({"Tools", empty_menu});
     entries.push_back({"Build", [](ZSlate::SMenu& menu, float scale) {
                            // Texture cook (Phase 6): cook all project textures

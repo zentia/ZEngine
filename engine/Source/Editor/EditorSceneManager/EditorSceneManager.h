@@ -88,6 +88,15 @@ public:
     void OnAssetSelected(const std::filesystem::path& asset_path, const std::string& asset_type);
     void OnDeleteSelectedGObject();
 
+    /// Replace the whole GameObject selection at once (undo/redo restores the
+    /// selection a transaction was made with). Ids that no longer exist in the active
+    /// level are dropped; `active_id` falls back to the last surviving id.
+    void SetGObjectSelection(const std::vector<GObjectID>& object_ids, GObjectID active_id);
+
+    /// Close the undo transaction a gizmo drag opened on its first MoveEntity. Call
+    /// on mouse release; Tick() also closes it as a safety net once no button is down.
+    void EndGizmoUndo();
+
     void FocusSelectedGObject();
 
     // Unity-style scene file ops (.scene under Assets/).
@@ -147,6 +156,10 @@ private:
     size_t m_SelectedAxis {3};
 
     bool m_IsShowAxis = true;
+
+    // One gizmo drag == one undo step: opened lazily by the first MoveEntity of a
+    // drag (so a click that never moves records nothing), closed by EndGizmoUndo.
+    bool m_GizmoUndoOpen {false};
 
     bool m_PendingLastSceneRestore {true};
     std::string m_LastMainWindowTitle;

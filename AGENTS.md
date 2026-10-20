@@ -1939,6 +1939,60 @@ Known gaps: no layers / blend trees / sub-state machines, no graph pan/zoom, the
 Content Browser does not accept drops yet (a path cannot be dragged *into* it),
 and no live preview of the driven character's parameters while editing.
 
+### 2.29 Undo/Redo: two layers, and you record BEFORE you edit
+
+`engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).
+
+- **Two layers, one owner.** `UndoSystem.{h,cpp}` is the transaction stack and
+  depends on **nothing but the standard library** -- that is deliberate, it is
+  what makes `UndoSystemSmokeTest` run headless. Everything that knows about
+  GameObjects / selection / the level lives in `EditorUndo.{h,cpp}`
+  (`EditorUndoSystem`, an `IEngineSystem` in the PostInit phase, the single
+  owner of one `UndoSystem`) and in `EditorUndoRecords.{h,cpp}`. Do not leak
+  engine types into `UndoSystem.h`.
+- **Records are swap-based.** `IUndoRecord::Apply()` exchanges the state it
+  stores with the live state and must be its own inverse, so one implementation
+  serves both undo and redo and never needs to know the direction. UE's
+  `FTransaction` model. `Finalize()` runs once when the transaction closes and
+  returns false for "nothing changed" -- the record is then dropped, so
+  committing the same value never pollutes the history.
+- **Record BEFORE the mutation, never after.** Call sites use the
+  `EditorUndo::` facade: `RecordComponent` / `RecordTransform` /
+  `RegisterCreatedGameObject` / `DestroyGameObjects`, optionally wrapped in
+  `EditorUndo::ScopedTransaction("Title")` (RAII, has `Cancel()`). Without a
+  scope, everything one event handler records lands in the *implicit*
+  transaction that `EditorUndoSystem::Tick()` flushes once per frame -- Unity's
+  per-event undo group.
+- **Resolve targets by InstanceID, never by raw pointer.** Records go through
+  `ObjectManager::IDToPointer`; between undo and redo the object is very likely
+  at a different address. `GameObjectLifetimeRecord` therefore *owns* the
+  removed subtree, so undo restores the same objects with the same IDs (and
+  every `PPtr` to them stays valid) instead of clones.
+- **Component snapshots go through the normal `Transfer()` path** into a YAML
+  **DOM** (not emitted text) with `ScopedPPtrResolver(nullptr)` pushed, which
+  makes `PPtr` / `ImmediatePtr` serialise raw instance IDs. That is why undo is
+  bit-exact for floats and why anything that survives a scene save/load
+  survives undo. A `Transform` is the exception: it is routed to
+  `RecordTransform`, because a raw snapshot would overwrite its hierarchy links.
+- **Deleting objects must go through `EditorUndo::DestroyGameObjects`,** not
+  `Level::DeleteGObjectByID` directly -- otherwise there is no undo step (and no
+  `CancelDeleteGameObject` on the render swap).
+- **A long drag is one step.** The gizmo opens the transaction lazily on first
+  move and `EditorSceneManager::EndGizmoUndo()` closes it when the mouse is
+  released; `RecordTransform` coalesces by instance ID inside the open
+  transaction, so a 300-frame drag is still one Ctrl+Z.
+- **Not recorded:** play mode (recording is suspended, matching Unity/UE),
+  asset edits (Inspectors write straight to disk), component add/remove (no
+  editor UI for it yet).
+- **New editor entry points must add a `Record*` call** before they write.
+  Current ones: gizmo `MoveEntity`, `OnDeleteSelectedGObject`,
+  `ZSlateInspectorWindow` (every field commit), `CreateEmpty`,
+  `EditorHierarchyReparent`, `EditorScenePlacement`.
+- Entry points for the user: Ctrl/Cmd+Z, Ctrl+Y, Ctrl+Shift+Z
+  (`EditorInputManager::OnKey`), the Edit menu (`MenuController`), and the
+  console (`undo [steps]` / `redo [steps]` / `undo.history [rows]` /
+  `undo.clear`). New `ZUndo` log category -- see 2.5.
+
 ### 2.24 Packaging: `.zbundle` + manifest (PR-PAK1)
 
 There was no pak, no manifest and no dependency pruning, so "shipping" meant

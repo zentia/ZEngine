@@ -15,6 +15,10 @@ public:
 
     void PostLoadResource(GameObject* parent_object) override;
 
+    // Skeleton and controller paths are only resolved in PostLoadResource, so an
+    // undo that restores them must re-run it (the Inspector does the same on edit).
+    void PostEditUndo() override { PostLoadResource(GetParentObject()); }
+
     void Tick(float delta_time) override;
 
     const AnimationResult& GetResult() const;

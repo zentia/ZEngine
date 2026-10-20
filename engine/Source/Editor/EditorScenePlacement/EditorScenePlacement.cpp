@@ -3,8 +3,10 @@
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Editor/EditorHierarchy/EditorHierarchyReparent.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
+#include "Editor/Undo/EditorUndo.h"
 #include "Runtime/Asset/AssetFile.h"
 #include "Runtime/BaseClasses/GameObject.h"
+#include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
@@ -252,11 +254,14 @@ namespace
             return false;
         }
 
+        // One undo step for spawn + parent + select.
+        EditorUndo::ScopedTransaction transaction("Instantiate " + prefab_path.stem().string());
         const GObjectID new_id = current_active_level->CreateObject(*prefab_root);
         if (new_id == k_invalid_gobject_id)
         {
             return false;
         }
+        EditorUndo::RegisterCreatedGameObject(new_id);
 
         (void)parentSpawnedRoot(current_active_level, new_id, parent_gobject_id);
         return finalizeCreatedObjectSelection(new_id);
@@ -353,13 +358,18 @@ namespace EditorScenePlacement
 
         const std::string object_name = absolute_zasset_path.stem().string();
 
+        // One undo step for spawn + parent + select.
+        EditorUndo::ScopedTransaction transaction("Place " + object_name);
+
         GameObject object_template;
         object_template.SetName(object_name.c_str());
 
-        Transform* transform_component = MemoryManager::CreateObject<Transform>();
+        // NewObject, not MemoryManager::CreateObject: components need an InstanceID
+        // for PPtr parent links and for the undo records that refer to them.
+        Transform* transform_component = GET_SYSTEM(ObjectManager)->NewObject<Transform>();
         object_template.addComponent(transform_component);
 
-        MeshRenderer* mesh_renderer = MemoryManager::CreateObject<MeshRenderer>();
+        MeshRenderer* mesh_renderer = GET_SYSTEM(ObjectManager)->NewObject<MeshRenderer>();
         SubMeshRes sub_mesh_res;
         sub_mesh_res.m_MeshAsset = mesh_asset_path.c_str();
 
@@ -376,6 +386,7 @@ namespace EditorScenePlacement
         {
             return false;
         }
+        EditorUndo::RegisterCreatedGameObject(new_id);
 
         if (std::shared_ptr<GameObject> created_object = current_active_level->GetGObjectByID(new_id).lock())
         {

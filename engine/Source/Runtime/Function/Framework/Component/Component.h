@@ -32,6 +32,12 @@ public:
     virtual void Tick(float delta_time) {};
     virtual void OnSerializedFieldsUpdated() {}
 
+    /// Editor undo/redo just overwrote this component's serialized fields in place
+    /// (UE UObject::PostEditUndo). The default re-derives runtime state the same way
+    /// an Inspector edit does; override when a field change needs more than that --
+    /// e.g. a path that is only resolved in PostLoadResource.
+    virtual void PostEditUndo() { OnSerializedFieldsUpdated(); }
+
     bool IsDirty() const { return m_IsDirty; }
 
     void setDirtyFlag(bool is_dirty) { m_IsDirty = is_dirty; }

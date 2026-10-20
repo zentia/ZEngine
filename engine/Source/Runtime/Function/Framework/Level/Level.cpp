@@ -20,6 +20,7 @@
 #include "Runtime/Function/Framework/Component/Transform/TransformSceneRoots.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <filesystem>
 #include <limits>
@@ -121,11 +122,20 @@ void Level::FlushRenderDeletes()
     }
 }
 
+void Level::BumpLoadSerial()
+{
+    // Process-wide counter, so a Level object that is unloaded and reloaded (or a new
+    // Level allocated at a recycled address) never repeats a serial.
+    static std::atomic<uint64_t> s_next_load_serial {1};
+    m_LoadSerial = s_next_load_serial.fetch_add(1, std::memory_order_relaxed);
+}
+
 void Level::clear()
 
 {
     m_TransformSceneRoots.Clear();
     m_CurrentActiveCharacter.reset();
+    m_DetachedCharacterObjectId = k_invalid_gobject_id;
     m_Gobjects.clear();
 
     GET_SYSTEM(PhysicsManager)->DeletePhysicsScene(m_PhysicsScene);
@@ -170,6 +180,7 @@ bool Level::load(const eastl::string& levelPath)
     LOG_INFO(ZLevel, "loading level: {}", levelPath.c_str());
 
     m_LevelResUrl = levelPath;
+    BumpLoadSerial();
 
     const std::filesystem::path level_full_path = ResolveLevelLoadPath(levelPath);
     // Unity-1:1 -- a level is an object graph, never a nested object array.
@@ -250,6 +261,7 @@ void Level::Unload()
 {
     FlushRenderDeletes();
     clear();
+    BumpLoadSerial();
     LOG_INFO(ZLevel, "unload level: {}", m_LevelResUrl.c_str());
 }
 
@@ -481,9 +493,34 @@ void Level::DeleteGObjectByID(GObjectID go_id)
             if (m_CurrentActiveCharacter && m_CurrentActiveCharacter->GetObjectID() == object->GetID())
             {
                 m_CurrentActiveCharacter->SetObject(nullptr);
+                m_DetachedCharacterObjectId = object->GetID();
             }
         }
     }
 
     m_Gobjects.erase(go_id);
+}
+
+bool Level::RestoreGObject(const std::shared_ptr<GameObject>& gobject)
+{
+    if (gobject == nullptr || gobject->GetID() == k_invalid_gobject_id)
+    {
+        return false;
+    }
+
+    const auto inserted = m_Gobjects.emplace(gobject->GetID(), gobject);
+    if (!inserted.second)
+    {
+        LOG_ERROR(ZLevel, "RestoreGObject: id {} ('{}') is already in use", gobject->GetID(), gobject->GetName().c_str());
+        return false;
+    }
+
+    // DeleteGObjectByID unbinds the active character when it deletes the character's
+    // object; rebind it so undoing that delete gives the player its pawn back.
+    if (m_CurrentActiveCharacter != nullptr && m_DetachedCharacterObjectId == gobject->GetID())
+    {
+        m_CurrentActiveCharacter->SetObject(gobject);
+        m_DetachedCharacterObjectId = k_invalid_gobject_id;
+    }
+    return true;
 }

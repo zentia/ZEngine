@@ -8,6 +8,7 @@
 #include "Editor/EditorUI/EditorUI.h"
 #include "Editor/FloatingPanel/FloatingPanelManager.h"
 #include "Editor/Scripting/TypeScriptCompiler.h"
+#include "Editor/Undo/EditorUndo.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Runtime/Application/Application.h"
 #include "Runtime/Core/Thread/ThreadManager.h"
@@ -777,6 +778,14 @@ void Editor::Run(float max_seconds)
             {
                 Z_PROFILE_SCOPE("InputManager::tick");
                 GET_SYSTEM(EditorInputManager)->Tick(delta_time);
+            }
+            {
+                // Closes last frame's implicit undo group (every edit made by one UI
+                // event without an explicit transaction becomes one undo step), and
+                // drops the history when the level it refers to was replaced.
+                Z_PROFILE_SCOPE("EditorUndoSystem::Tick");
+                if (auto undo = GET_SYSTEM(EditorUndoSystem))
+                    undo->Tick();
             }
             {
                 // P9: pump the AssetRegistry's FileSystemWatcher event queue

@@ -4,6 +4,7 @@
 #include "Editor/EditorUI/EditorEulerHint.h"
 #include "Editor/EditorUI/EditorSelection.h"
 #include "Editor/EditorUI/PropertyDrawer/EditorPropertyDrawer.h"  // MakeDisplayLabel / MakeTypeHeaderLabel
+#include "Editor/Undo/EditorUndo.h"                              // Ctrl+Z for every field commit
 #include "Editor/EditorWindow/InspectorWindow/InspectorAssetCommon.h"       // ResolveInspectorAssetType / IsGenericInspectorZAssetType
 #include "Editor/EditorWindow/InspectorWindow/InspectorDataTableInspector.h"// ResolveDataTableType
 #include "Editor/EditorWindow/InspectorWindow/InspectorShaderInspector.h"   // material-row enumerators / BuildShaderInspectorWidget
@@ -442,6 +443,14 @@ namespace
         return comps[index];
     }
 
+    // Every Inspector commit is one undo step: open the transaction, snapshot the
+    // component, then let the caller write the field. The ScopedTransaction lives in
+    // the caller's scope so the step closes after the write and its side effects.
+    std::string MakeComponentUndoTitle(const Component* component)
+    {
+        return "Modify " + EditorPropertyDrawer::MakeTypeHeaderLabel(component->GetTypeName());
+    }
+
     bool IsGameObjectActive(const std::shared_ptr<GameObject>& go)
     {
         if (!go)
@@ -504,6 +513,8 @@ namespace
             Component* c = ResolveSelectedComponent(comp_index);
             if (c == nullptr)
                 return;
+            EditorUndo::ScopedTransaction undo_scope(MakeComponentUndoTitle(c));
+            EditorUndo::RecordComponent(c);
             WriteScalar(kind, reinterpret_cast<char*>(c) + offset, s);
             c->OnSerializedFieldsUpdated();
         };
@@ -583,6 +594,8 @@ namespace
                         Component* c = ResolveSelectedComponent(comp_index);
                         if (c == nullptr)
                             return;
+                        EditorUndo::ScopedTransaction undo_scope(MakeComponentUndoTitle(c));
+                        EditorUndo::RecordComponent(c);
                         Vector3& v = *reinterpret_cast<Vector3*>(reinterpret_cast<char*>(c) + offset);
                         v.x = ParseFloat(p0->Text);
                         v.y = ParseFloat(p1->Text);
@@ -623,6 +636,8 @@ namespace
                         Component* c = ResolveSelectedComponent(comp_index);
                         if (c == nullptr)
                             return;
+                        EditorUndo::ScopedTransaction undo_scope(MakeComponentUndoTitle(c));
+                        EditorUndo::RecordComponent(c);
                         *reinterpret_cast<bool*>(reinterpret_cast<char*>(c) + offset) = v;
                         c->OnSerializedFieldsUpdated();
                     };
@@ -848,6 +863,8 @@ namespace
                 std::vector<SubMeshRes> subs = r->getSubMeshes();
                 if (s >= subs.size())
                     return;
+                EditorUndo::ScopedTransaction undo_scope("Set Mesh");
+                EditorUndo::RecordComponent(r);
                 subs[s].m_MeshAsset = text.c_str();
                 r->SetSubMeshes(subs);
                 r->OnSerializedFieldsUpdated();
@@ -880,6 +897,8 @@ namespace
                     BaseRenderer* r = ResolveSelectedRenderer(comp_index);
                     if (r == nullptr)
                         return;
+                    EditorUndo::ScopedTransaction undo_scope("Set Material");
+                    EditorUndo::RecordComponent(r);
                     std::vector<eastl::string> mats = r->getSharedMaterialAssets();
                     if (mats.size() <= s)
                         mats.resize(s + 1);
@@ -937,6 +956,8 @@ namespace
                     std::vector<SubMeshRes> subs = r->getSubMeshes();
                     if (s >= subs.size())
                         return;
+                    EditorUndo::ScopedTransaction undo_scope("Modify Sub Mesh Transform");
+                    EditorUndo::RecordComponent(r);
                     TransformTRS& t = subs[s].m_Transform;
                     Vector3 v;
                     v.x = ParseFloat(p0->Text);
@@ -1055,6 +1076,8 @@ namespace
                 {
                     return;
                 }
+                EditorUndo::ScopedTransaction undo_scope(MakeComponentUndoTitle(a));
+                EditorUndo::RecordComponent(a);
                 apply(a, text);
                 a->OnSerializedFieldsUpdated();
             };
@@ -1088,6 +1111,8 @@ namespace
             {
                 return;
             }
+            EditorUndo::ScopedTransaction undo_scope("Set Clip Length");
+            EditorUndo::RecordComponent(a);
             a->SetClipLength(ParseFloat(text));
             a->OnSerializedFieldsUpdated();
         };
@@ -1115,6 +1140,9 @@ namespace
             Component* c = ResolveSelectedComponent(comp_index);
             if (c == nullptr)
                 return;
+            EditorUndo::ScopedTransaction undo_scope(std::string(enabled ? "Enable " : "Disable ") +
+                                                     EditorPropertyDrawer::MakeTypeHeaderLabel(c->GetTypeName()));
+            EditorUndo::RecordComponent(c);
             c->SetEnabled(enabled);
             c->OnSerializedFieldsUpdated();
             if (auto scene = GET_SYSTEM(EditorSceneManager))
@@ -2540,6 +2568,8 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
             Transform* xf = go->tryGetComponent(Transform);
             if (xf == nullptr)
                 return;
+            EditorUndo::ScopedTransaction undo_scope(which == 0 ? "Set Position" : which == 1 ? "Set Scale" : "Set Rotation");
+            EditorUndo::RecordTransform(xf);
             if (which == 0)
             {
                 Vector3 p = xf->GetLocalPosition();
@@ -2594,6 +2624,8 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
         Transform* xf = go->tryGetComponent(Transform);
         if (xf == nullptr)
             return;
+        EditorUndo::ScopedTransaction undo_scope(active ? "Activate GameObject" : "Deactivate GameObject");
+        EditorUndo::RecordTransform(xf);
         xf->SetEnabled(active);
         xf->OnSerializedFieldsUpdated();
         NotifyAllComponentsUpdated(go.get());

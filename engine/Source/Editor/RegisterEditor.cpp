@@ -9,6 +9,7 @@
 #include "Editor/PackageManager/PackageManager.h"
 #include "Editor/RenderDoc/RenderDocLoader.h"
 #include "Editor/Scripting/TypeScriptCompiler.h"
+#include "Editor/Undo/EditorUndo.h"
 #include "Runtime/Function/Framework/GameFramework/GameEngine.h"
 
 namespace
@@ -20,6 +21,7 @@ namespace
 #endif
         REGISTER_SYSTEM(EditorInputManager);
         REGISTER_SYSTEM(EditorSceneManager);
+        REGISTER_SYSTEM(EditorUndoSystem);
         REGISTER_SYSTEM(Editor);
         REGISTER_SYSTEM_AS(EditorAssetManager, AssetManager);
         REGISTER_SYSTEM(TypeScriptCompiler);

@@ -2,6 +2,7 @@
 
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/EditorSceneManager/EditorSceneManager.h"
+#include "Editor/Undo/EditorUndo.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"
 #include "Runtime/Application/Application.h"
 #include "Runtime/Function/Framework/Level/Level.h"
@@ -190,6 +191,13 @@ void EditorInputManager::SelectSceneObjectAtMouse()
 
 void EditorInputManager::ClearSceneViewInputCapture()
 {
+    if (m_SceneViewInputMode == SceneViewInputMode::Gizmo)
+    {
+        if (auto* scene_manager = GET_SYSTEM(EditorSceneManager))
+        {
+            scene_manager->EndGizmoUndo();  // one drag == one undo step
+        }
+    }
     m_SceneViewInputMode = SceneViewInputMode::None;
     m_SceneViewDragged = false;
     SetCursorMode(false);
@@ -366,6 +374,26 @@ void EditorInputManager::OnKeyInEditorMode(int key, int scancode, int action, in
 
 void EditorInputManager::OnKey(int key, int scancode, int action, int mods)
 {
+    // Undo / redo: Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z (Cmd on macOS). Key repeat steps
+    // through the history like Unity / UE. Skipped while a text field has focus so
+    // the field keeps the shortcut, and in play mode (play edits are not recorded).
+    if ((action == KeyCodes::PRESS || action == KeyCodes::REPEAT) && !g_isPlaying &&
+        ((mods & KeyCodes::MOD_CONTROL_VAL) || (mods & KeyCodes::MOD_SUPER_VAL)) &&
+        (key == KeyCodes::KEY_Z || key == KeyCodes::KEY_Y) &&
+        !ZSlate::EditorSlateHost::Get().IsNativeTextInputActive())
+    {
+        const bool redo = key == KeyCodes::KEY_Y || (mods & KeyCodes::MOD_SHIFT_VAL) != 0;
+        if (redo)
+        {
+            EditorUndo::Redo();
+        }
+        else
+        {
+            EditorUndo::Undo();
+        }
+        return;
+    }
+
     if (action == KeyCodes::PRESS)
     {
         switch (key)

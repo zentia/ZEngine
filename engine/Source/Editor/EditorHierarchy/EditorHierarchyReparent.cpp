@@ -1,5 +1,7 @@
 #include "Editor/EditorHierarchy/EditorHierarchyReparent.h"
 
+#include "Editor/Undo/EditorUndo.h"
+
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -88,6 +90,7 @@ namespace EditorHierarchyReparent
         {
             if (Transform* child_transform = child_object->tryGetComponent(Transform))
             {
+                EditorUndo::RecordTransform(child_transform, "Reparent");
                 child_transform->SetParent(nullptr, true);
                 GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
                 return true;
@@ -112,6 +115,7 @@ namespace EditorHierarchyReparent
             return false;
         }
 
+        EditorUndo::RecordTransform(child_transform, "Reparent");
         child_transform->SetParent(parent_transform, true);
         GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
         return true;
@@ -126,6 +130,8 @@ namespace EditorHierarchyReparent
             return 0;
         }
 
+        // One undo step for the whole multi-selection drop.
+        EditorUndo::ScopedTransaction transaction(child_ids.size() == 1 ? "Reparent" : "Reparent Objects");
         size_t success_count = 0;
         for (const GObjectID child_id : child_ids)
         {

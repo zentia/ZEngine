@@ -101,6 +101,10 @@ struct RenderSwapData
 
     void AddDirtyGameObject(GameObjectDesc&& desc);
     void AddDeleteGameObject(GameObjectDesc&& desc);
+    /// Drop a still-queued delete for `go_id` (editor undo restoring an object in the
+    /// frame it was deleted). The render-buffer drain runs upserts BEFORE deletes, so
+    /// a delete + re-upsert of the same id in one batch would otherwise lose the object.
+    void CancelDeleteGameObject(GObjectID go_id);
 
     void AddNewParticleEmitter(ParticleEmitterDesc& desc);
     void AddTickParticleEmitter(ParticleEmitterID id);

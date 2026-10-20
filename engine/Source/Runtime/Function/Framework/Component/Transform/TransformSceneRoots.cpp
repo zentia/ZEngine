@@ -18,7 +18,10 @@ void TransformSceneRoots::Clear()
 
 void TransformSceneRoots::OnTransformBecameRoot(Transform* transform)
 {
-    if (transform == nullptr || transform->GetNextSceneRoot() != nullptr || transform == m_FirstRoot)
+    // Already linked: it is the head, the tail, or has a successor. (The tail check
+    // matters -- re-adding the tail would link it to itself.)
+    if (transform == nullptr || transform->GetNextSceneRoot() != nullptr || transform == m_FirstRoot ||
+        transform == m_LastRoot)
     {
         return;
     }
@@ -44,6 +47,15 @@ void TransformSceneRoots::OnTransformLeftRoot(Transform* transform)
 
     Transform* const prev = transform->GetPrevSceneRoot();
     Transform* const next = transform->GetNextSceneRoot();
+
+    // Not in the list. Without this guard an unlinked transform (prev == next ==
+    // nullptr) was treated as "the only root" and wiped the whole list -- which is
+    // what Transform::UpdateSceneRootRegistration(nullptr) did on every
+    // PostLoadResource of a freshly created object.
+    if (prev == nullptr && next == nullptr && transform != m_FirstRoot)
+    {
+        return;
+    }
     if (prev != nullptr)
     {
         prev->SetSceneRootLinks(prev->GetPrevSceneRoot(), next);

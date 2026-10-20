@@ -3,7 +3,10 @@
 #include "Runtime/Core/Math/LargeWorldCoordinates.h"
 
 #include "Editor/EditorProjectPrefs/EditorProjectPrefs.h"
+#include "Editor/Undo/EditorUndo.h"
 #include "Editor/WorldPartition/WorldPartitionEditorDebug.h"
+#include "Editor/ZSlate/Backend/EditorSlateHost.h"
+#include "Runtime/Function/Input/KeyCodes.h"
 #include "Editor/EditorUI/ContentBrowser/ContentBrowserHelpers.h"
 #include "Editor/Platform/Interface/EditorUtility.h"
 #include "Runtime/Project/ProjectInfo.h"
@@ -214,6 +217,22 @@ void EditorSceneManager::Tick(float delta_time)
     if (m_PendingLastSceneRestore)
     {
         TryRestoreLastOpenedScene();
+    }
+
+    // Safety net for the gizmo undo step: both drag drivers (ZSlate scene window and
+    // the legacy window-callback path) call EndGizmoUndo on release, but a release
+    // that never reaches them (focus loss, window closed mid-drag) must not leave an
+    // open transaction swallowing every later edit.
+    if (m_GizmoUndoOpen)
+    {
+        WindowSystem* window_system = GET_SYSTEM(WindowSystem);
+        const bool left_down =
+            ZSlate::EditorSlateHost::Get().IsLeftDown() ||
+            (window_system != nullptr && window_system->IsMouseButtonDown(static_cast<int>(KeyCodes::MouseButtonLeft)));
+        if (!left_down)
+        {
+            EndGizmoUndo();
+        }
     }
 
     RefreshMainWindowTitle();
@@ -880,23 +899,79 @@ void EditorSceneManager::OnDeleteSelectedGObject()
         return;
     }
 
-    std::vector<GObjectID> ids_to_delete = m_SelectedGobjectIds;
-    RenderSwapContext& swap_context = GET_SYSTEM(RenderSystem)->GetSwapContext();
+    // Copy: deleting clears the selection we are iterating.
+    const std::vector<GObjectID> ids_to_delete = m_SelectedGobjectIds;
 
-    for (const GObjectID object_id : ids_to_delete)
+    // The transaction spans the selection change too, so undo brings the deleted
+    // objects back AND re-selects them. DestroyGameObjects removes each object with
+    // its whole child subtree (Unity semantics) and detaches it from its parent;
+    // previously only the selected object itself was erased, leaving children with a
+    // dangling parent and their render entities on screen.
+    EditorUndo::ScopedTransaction transaction(ids_to_delete.size() == 1 ? "Delete" : "Delete Objects");
+    const size_t removed_count = EditorUndo::DestroyGameObjects(ids_to_delete);
+    if (removed_count > 0)
     {
-        std::shared_ptr<GameObject> selected_object = current_active_level->GetGObjectByID(object_id).lock();
-        if (selected_object == nullptr)
-        {
-            continue;
-        }
+        GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
+    }
+    OnGObjectSelected(k_invalid_gobject_id, GObjectSelectionOp::Replace);
+}
 
-        current_active_level->DeleteGObjectByID(object_id);
-        swap_context.GetLogicSwapData().AddDeleteGameObject(GameObjectDesc {selected_object->GetID(), {}});
+void EditorSceneManager::SetGObjectSelection(const std::vector<GObjectID>& object_ids, GObjectID active_id)
+{
+    Level* level = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
+
+    std::vector<GObjectID> surviving_ids;
+    surviving_ids.reserve(object_ids.size());
+    for (const GObjectID object_id : object_ids)
+    {
+        if (level != nullptr && !level->GetGObjectByID(object_id).expired())
+        {
+            surviving_ids.push_back(object_id);
+        }
     }
 
-    GET_SYSTEM(WorldManager)->MarkCurrentLevelDirty();
-    OnGObjectSelected(k_invalid_gobject_id, GObjectSelectionOp::Replace);
+    if (surviving_ids.empty())
+    {
+        if (!m_SelectedGobjectIds.empty())
+        {
+            OnGObjectSelected(k_invalid_gobject_id, GObjectSelectionOp::Replace);
+        }
+        return;
+    }
+
+    if (std::find(surviving_ids.begin(), surviving_ids.end(), active_id) == surviving_ids.end())
+    {
+        active_id = surviving_ids.back();
+    }
+
+    m_SelectedAssetPath.clear();
+    m_SelectedAssetType.clear();
+    m_SelectedGobjectIds = std::move(surviving_ids);
+    m_SelectedGobjectId = active_id;
+    m_RangeSelectionAnchorId = active_id;
+    m_SelectedObjectMatrix = Matrix4x4::IDENTITY;
+
+    // The gizmo drags from m_SelectedObjectMatrix, so it must follow the restored
+    // pose -- after an undo moved the object, a stale matrix would make the next drag
+    // jump back.
+    if (std::shared_ptr<GameObject> selected_gobject = GetSelectedGObject().lock())
+    {
+        if (const Transform* transform_component = selected_gobject->tryGetComponentConst(Transform))
+        {
+            m_SelectedObjectMatrix = transform_component->GetLocalToWorldMatrix();
+        }
+    }
+    DrawSelectedEntityAxis();
+}
+
+void EditorSceneManager::EndGizmoUndo()
+{
+    if (!m_GizmoUndoOpen)
+    {
+        return;
+    }
+    m_GizmoUndoOpen = false;
+    EditorUndo::EndTransaction();
 }
 
 void EditorSceneManager::SetSceneView2D(bool enabled)
@@ -1096,7 +1171,22 @@ void EditorSceneManager::MoveEntity(float new_mouse_pos_x,
     axis_z_direction_uv.normalise();
 
     Transform* transform_component = selected_object->tryGetComponent(Transform);
+    if (transform_component == nullptr)
+    {
+        return;
+    }
 
+    // First move of a drag opens the drag's undo step and snapshots the pose before
+    // anything changes; EndGizmoUndo (mouse up) closes it.
+    if (!m_GizmoUndoOpen)
+    {
+        const char* gizmo_title = m_AxisMode == EditorAxisMode::RotateMode ? "Rotate"
+                                  : m_AxisMode == EditorAxisMode::ScaleMode ? "Scale"
+                                                                            : "Move";
+        EditorUndo::BeginTransaction(gizmo_title);
+        m_GizmoUndoOpen = true;
+    }
+    EditorUndo::RecordTransform(transform_component);
     Matrix4x4 new_model_matrix(Matrix4x4::IDENTITY);
     if (m_AxisMode == EditorAxisMode::TranslateMode)
     {

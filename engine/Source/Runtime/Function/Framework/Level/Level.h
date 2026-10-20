@@ -44,6 +44,18 @@ public:
     GObjectID CreateObject(const GameObject& object_instance_res);
     void DeleteGObjectByID(GObjectID go_id);
 
+    /// Editor undo: put back a GameObject that DeleteGObjectByID removed, keeping its
+    /// original id and its live component instances (UE keeps a deleted actor alive in
+    /// the transaction buffer the same way). Fails if the id is already in use. Only
+    /// touches the object table -- transform parenting, scene roots and render state
+    /// are the caller's job, mirroring DeleteGObjectByID which does not touch them.
+    bool RestoreGObject(const std::shared_ptr<GameObject>& gobject);
+
+    /// Changes every time this Level is loaded or unloaded. Editor undo records
+    /// refer to objects by id, which is only meaningful within one load; the undo
+    /// system drops its history when this value changes under it.
+    uint64_t GetLoadSerial() const { return m_LoadSerial; }
+
     std::weak_ptr<PhysicsScene> getPhysicsScene() const { return m_PhysicsScene; }
 
     TransformSceneRoots& GetTransformSceneRoots() { return m_TransformSceneRoots; }
@@ -53,15 +65,20 @@ public:
 protected:
     void clear();
     void FlushRenderDeletes();
+    void BumpLoadSerial();
 
     bool m_IsLoaded {false};
     bool m_IsDirty {false};
+    uint64_t m_LoadSerial {0};
     eastl::string m_LevelResUrl;
 
     // all game objects in this level, key: object id, value: object instance
     LevelObjectsMap m_Gobjects;
 
     std::shared_ptr<Character> m_CurrentActiveCharacter;
+    /// Id of the character's object after DeleteGObjectByID unbound it, so
+    /// RestoreGObject can rebind it. Invalid when the character is bound.
+    GObjectID m_DetachedCharacterObjectId {k_invalid_gobject_id};
 
     std::weak_ptr<PhysicsScene> m_PhysicsScene;
 
