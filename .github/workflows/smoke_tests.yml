@@ -1,0 +1,102 @@
+name: Smoke Tests
+
+# =============================================================================
+# Why this job exists separately from Build Windows/Linux/macOS:
+#   every smoke test is opt-in behind its own -DZENGINE_BUILD_*_SMOKE_TEST=ON
+#   flag, so the normal build workflows compile the engine and never run a
+#   single test. A test nobody runs protects nothing.
+#
+# Adding a smoke test:
+#   1. build it with zengine_add_smoke_test() -- that helper also registers it
+#      with CTest (add_test). Registering by hand is fine too, but do it.
+#   2. add its -D flag to "Configure" below,
+#   3. add its target to "Build smoke tests" below.
+#   Skipping step 2 or 3 means it is still not running in CI. A test that is
+#   registered but not built fails as "Unable to find executable", so a stale
+#   list here turns the job red rather than silently skipping -- verify a new
+#   registration locally with `ctest --test-dir <build> -C Release -N`
+#   (listing needs no build).
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  smoke:
+    name: Smoke tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # VULKAN=OFF: runners do not ship VULKAN_SDK, and none of these tests
+      # touch the RHI -- same reasoning as the editor build in build_windows.bat.
+      # (VulkanBindlessSmokeTest is therefore not registered at all; its
+      # directory returns early when ZENGINE_USE_VULKAN is off.)
+      # PAPI_TYPE=quickjs: release would otherwise pull the V8 script backend.
+      #
+      # Not enabled: ZENGINE_BUILD_WRITE_FAULT_SMOKE_TEST -- it exercises the
+      # write-failure reasons from SerializedFile/FileCacherWrite and that
+      # plumbing is not in the tree yet (the test is parked as
+      # WriteFaultSmokeTest.cpp.pending). Uncomment the flag and the target the
+      # moment it lands; a test that is not in this list is a test that does
+      # not run.
+      - name: Configure with smoke tests enabled
+        run: >
+          cmake -S . -B build_smoke
+          -DZENGINE_USE_VULKAN=OFF
+          -DPAPI_TYPE=quickjs
+          -DZENGINE_BUILD_PPTR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_SCHEMA_EVOLUTION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST=ON
+          -DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ADDRESSABLES_SMOKE_TEST=ON
+          -DZENGINE_BUILD_DDC_SMOKE_TEST=ON
+          -DZENGINE_BUILD_AI_SMOKE_TEST=ON
+          -DZENGINE_BUILD_AUDIO_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ANIMATOR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_TEXTURE_COMPRESSOR_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON
+          -DZENGINE_BUILD_UNDO_SMOKE_TEST=ON
+          -DZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
+
+      - name: Build smoke tests
+        run: >
+          cmake --build build_smoke --config Release --parallel 4
+          --target
+          PlatformTest
+          PlatformTestAdvanced
+          PlatformTestSimple
+          PPtrSmokeTest
+          SchemaEvolutionSmokeTest
+          YamlRoundTripSmokeTest
+          ReflectionCodegenSmokeTest
+          AssetBundleSmokeTest
+          AddressablesSmokeTest
+          DerivedDataCacheSmokeTest
+          AISmokeTest
+          NavMeshTest
+          AudioMixerSmokeTest
+          AnimationSkinningSmokeTest
+          AnimatorSmokeTest
+          TextureCompressorSmokeTest
+          RenderGraphSmokeTest
+          UndoSystemSmokeTest
+          DX12BindlessSmokeTest
+
+      # -C Release is required on multi-config generators; without it ctest
+      # looks in the Debug directory and reports "Unable to find executable".
+      #
+      # NavMeshTest additionally reads bin/$<CONFIG>/asset/level/1-1.level.json
+      # when the build copied the shipped assets there; it prints
+      # "(skipped: level file not found)" and still passes when they are absent,
+      # so it is safe to run before the asset copy step exists in CI.
+      - name: Run smoke tests
+        run: ctest --test-dir build_smoke -C Release --output-on-failure
