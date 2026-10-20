@@ -2,6 +2,9 @@
 
 #include "Runtime/BaseClasses/ObjectDefines.h"
 #include "Runtime/BaseClasses/TypeManager.h"
+#include "Runtime/Core/Serialize/TransferFunctions/GenerateTypeTreeTransfer.h"
+#include "Runtime/Core/Serialize/TransferFunctions/SafeBinaryRead.h"
+#include "Runtime/Core/Serialize/TransferFunctions/SerializeTransfer.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Render/ShaderRegistry.h"
 #include "Runtime/Function/Render/Texture/Texture2D.h"
@@ -96,6 +99,12 @@ void MaterialTextureProperty::Transfer(TransferFunction& transfer)
         transfer.Transfer(m_Texture, "texture_pptr");
     }
 }
+
+// Explicit: TUs that transfer a std::vector<MaterialTextureProperty> outside
+// Material (e.g. SchemaEvolutionSmokeTest's legacy MaterialRes stand-ins) link
+// against these. Material's own implicit uses get inlined, so without this some
+// specialisations (JSONWrite / YAMLWrite) never get an out-of-line symbol.
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(MaterialTextureProperty, , Transfer, void)
 
 template<typename TransferFunction>
 void Material::Transfer(TransferFunction& transfer)
