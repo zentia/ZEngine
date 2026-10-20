@@ -117,7 +117,7 @@ namespace ContentBrowserHelpers
         }
         std::string extension = std::filesystem::path(node->m_FilePath.c_str()).extension().generic_string();
         std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        return extension == ".zasset" || extension == ".mat" || extension == ".prefab" || extension == ".scene";
+        return AssetManager::IsRegistryIndexedAssetExtension(extension);
     }
 
     std::filesystem::path NormalizeContentBrowserPath(const std::filesystem::path& path)

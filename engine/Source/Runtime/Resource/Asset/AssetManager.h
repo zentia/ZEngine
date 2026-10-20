@@ -184,8 +184,18 @@ public:
     std::filesystem::path GetEditorResourcePath(const std::string& relative_path) const;
     std::string GetAssetTypeName(const std::filesystem::path& asset_path) const;
 
-    // True for YAML authoring assets under Assets/ (.mat / .prefab / .scene).
-    // Imported DDC products (.zasset) return false.
+    // Single source of truth for asset file extensions (lower-case, with the
+    // dot). Editor scanners / watchers / filters must use these instead of
+    // hard-coding their own lists.
+    //   YAML authoring assets: .mat / .prefab / .scene / .timeline
+    //   Registry-indexed:      .zasset + the YAML authoring assets
+    static const std::vector<std::string>& YamlAuthoringAssetExtensions();
+    static const std::vector<std::string>& RegistryIndexedAssetExtensions();
+    static bool IsYamlAuthoringAssetExtension(const std::string& lowercase_extension);
+    static bool IsRegistryIndexedAssetExtension(const std::string& lowercase_extension);
+
+    // True for YAML authoring assets under Assets/ (.mat / .prefab / .scene /
+    // .timeline). Imported DDC products (.zasset) return false.
     static bool IsYamlAuthoringAssetPath(const std::filesystem::path& path);
 
     // True for any file indexed by AssetRegistry under Assets/.

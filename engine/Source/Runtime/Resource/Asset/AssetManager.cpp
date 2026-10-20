@@ -97,12 +97,12 @@ namespace
 
     bool IsYamlAuthoringAssetExtension(const std::string& extension)
     {
-        return extension == ".mat" || extension == ".prefab" || extension == ".scene";
+        return AssetManager::IsYamlAuthoringAssetExtension(extension);
     }
 
     bool IsRegistryIndexedAssetExtension(const std::string& extension)
     {
-        return extension == ".zasset" || IsYamlAuthoringAssetExtension(extension);
+        return AssetManager::IsRegistryIndexedAssetExtension(extension);
     }
 
     std::string ReadTextFile(const std::filesystem::path& path)
@@ -227,6 +227,34 @@ namespace
     }
 
 }  // anonymous namespace
+
+const std::vector<std::string>& AssetManager::YamlAuthoringAssetExtensions()
+{
+    static const std::vector<std::string> kExtensions = {".mat", ".prefab", ".scene", ".timeline"};
+    return kExtensions;
+}
+
+const std::vector<std::string>& AssetManager::RegistryIndexedAssetExtensions()
+{
+    static const std::vector<std::string> kExtensions = [] {
+        std::vector<std::string> extensions = {".zasset"};
+        const std::vector<std::string>& yaml = YamlAuthoringAssetExtensions();
+        extensions.insert(extensions.end(), yaml.begin(), yaml.end());
+        return extensions;
+    }();
+    return kExtensions;
+}
+
+bool AssetManager::IsYamlAuthoringAssetExtension(const std::string& lowercase_extension)
+{
+    const std::vector<std::string>& extensions = YamlAuthoringAssetExtensions();
+    return std::find(extensions.begin(), extensions.end(), lowercase_extension) != extensions.end();
+}
+
+bool AssetManager::IsRegistryIndexedAssetExtension(const std::string& lowercase_extension)
+{
+    return lowercase_extension == ".zasset" || IsYamlAuthoringAssetExtension(lowercase_extension);
+}
 
 bool AssetManager::IsYamlAuthoringAssetPath(const std::filesystem::path& path)
 {

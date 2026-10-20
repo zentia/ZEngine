@@ -384,7 +384,7 @@ void AssetRegistry::ScanAssetsAsync(const std::filesystem::path& asset_folder)
                 const std::string extension = entry.path().extension().string();
                 std::string ext_lower = extension;
                 std::transform(ext_lower.begin(), ext_lower.end(), ext_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                if (ext_lower == ".zasset" || ext_lower == ".mat" || ext_lower == ".prefab" || ext_lower == ".scene")
+                if (AssetManager::IsRegistryIndexedAssetExtension(ext_lower))
                 {
                     asset_files.push_back(entry.path());
                 }
@@ -555,7 +555,7 @@ void AssetRegistry::IncrementalUpdate(const std::filesystem::path& asset_folder)
         }
         std::string ext_lower = entry.path().extension().string();
         std::transform(ext_lower.begin(), ext_lower.end(), ext_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (ext_lower == ".zasset" || ext_lower == ".mat" || ext_lower == ".prefab" || ext_lower == ".scene")
+        if (AssetManager::IsRegistryIndexedAssetExtension(ext_lower))
         {
             asset_files.push_back(entry.path());
         }
@@ -1512,7 +1512,7 @@ AssetIndexEntry AssetRegistry::ScanSingleAsset(const std::filesystem::path& asse
         // Try to read the asset file header directly
         std::string ext_lower = asset_path.extension().string();
         std::transform(ext_lower.begin(), ext_lower.end(), ext_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (ext_lower == ".mat" || ext_lower == ".prefab" || ext_lower == ".scene")
+        if (AssetManager::IsYamlAuthoringAssetExtension(ext_lower))
         {
             entry.asset_type = GET_SYSTEM(AssetManager)->GetAssetTypeName(asset_path);
             if (!entry.asset_type.empty())

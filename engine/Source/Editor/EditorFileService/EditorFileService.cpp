@@ -161,8 +161,7 @@ bool shouldDisplayInContentBrowser(const std::filesystem::path& path,
     // products plus legacy .json text assets only. Source files for the
     // other roots are deliberately NOT surfaced here -- they belong in
     // Scripts/, Shaders/, or Data/, even when misplaced.
-    return extension == ".json" || extension == ".zasset" ||
-           extension == ".scene" || extension == ".prefab" || extension == ".mat";
+    return extension == ".json" || AssetManager::IsRegistryIndexedAssetExtension(extension);
 }
 
 // Compute the lower-case file-extension label (no leading dot) used to

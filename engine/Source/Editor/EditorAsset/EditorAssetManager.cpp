@@ -156,7 +156,8 @@ bool EditorAssetManager::Initialize()
         [this](const std::filesystem::path& p) { OnFileChanged(p); });
     m_FileWatcher.SetOnFileDeleted(
         [this](const std::filesystem::path& p) { OnFileDeleted(p); });
-    m_FileWatcher.SetExtensionFilter({".zasset", ".mat", ".prefab", ".scene"});
+    const std::vector<std::string>& indexed_extensions = AssetManager::RegistryIndexedAssetExtensions();
+    m_FileWatcher.SetExtensionFilter(std::unordered_set<std::string>(indexed_extensions.begin(), indexed_extensions.end()));
     m_FileWatcher.WatchDirectory(projectInfo->GetProjectContent());
 
     // Register asset importers
