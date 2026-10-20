@@ -47,6 +47,8 @@
 #include "Runtime/Resource/Asset/RuntimeAssetManager.h"
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
 #include "Runtime/Resource/ResType/Common/Level.h"
+#include "Runtime/Resource/ResType/Data/TimelineAsset.h"
+#include "Runtime/Resource/ResType/Data/TimelineAssetIO.h"
 
 #include <EASTL/string.h>
 #include <EASTL/vector.h>
@@ -658,6 +660,132 @@ static void scenario_Y8_assetmanager_disk_roundtrip()
     std::filesystem::remove(scene_path, ec);
 }
 
+// ---------------------------------------------------------------------
+// Y9: TimelineAsset graph (asset + tracks + clips) through TimelineAssetIO,
+// once as a YAML .timeline and once as a binary .zasset. Every track / clip
+// is a sub-object behind a PPtr, so this proves the graph is written and
+// read as a whole and that the concrete subclasses come back by type name.
+// ---------------------------------------------------------------------
+namespace
+{
+    TimelineAsset* BuildTimeline()
+    {
+        auto om = GET_SYSTEM(ObjectManager);
+        TimelineAsset* asset = om->NewObject<TimelineAsset>();
+        asset->m_Duration = 12.5f;
+        asset->m_FrameRate = 60.0f;
+
+        AnimationTimelineTrack* anim_track = om->NewObject<AnimationTimelineTrack>();
+        anim_track->m_Name = "Hero Anim";
+        anim_track->m_TargetObjectId = 0x1122334455667788ull;
+        AnimationTimelineClip* run = om->NewObject<AnimationTimelineClip>();
+        run->m_StartTime = 0.5f;
+        run->m_Duration = 2.0f;
+        run->m_AnimationPath = "Assets/Anim/run.zasset";
+        run->m_Speed = 1.5f;
+        run->m_Loop = true;
+        anim_track->m_Clips.push_back(run);
+        asset->m_Tracks.push_back(anim_track);
+
+        EventTimelineTrack* event_track = om->NewObject<EventTimelineTrack>();
+        event_track->m_Name = "Events";
+        event_track->m_Muted = true;
+        EventTimelineClip* hit = om->NewObject<EventTimelineClip>();
+        hit->m_StartTime = 3.0f;
+        hit->m_EventName = "OnHit";
+        hit->m_EventParams = "{\"damage\": 10}";
+        ActivationTimelineClip* show = om->NewObject<ActivationTimelineClip>();
+        show->m_StartTime = 4.0f;
+        show->m_Enabled = false;
+        show->m_Active = false;
+        event_track->m_Clips.push_back(hit);
+        event_track->m_Clips.push_back(show);
+        asset->m_Tracks.push_back(event_track);
+
+        AudioTimelineTrack* audio_track = om->NewObject<AudioTimelineTrack>();
+        audio_track->m_Locked = true;
+        AudioTimelineClip* music = om->NewObject<AudioTimelineClip>();
+        music->m_AudioPath = "Assets/Audio/theme.wav";
+        music->m_Volume = 0.25f;
+        audio_track->m_Clips.push_back(music);
+        asset->m_Tracks.push_back(audio_track);
+        return asset;
+    }
+
+    void CheckTimeline(const TimelineAsset* loaded, const TimelineAsset* source, const char* tag)
+    {
+        Check(loaded != nullptr, tag, "TimelineAssetIO::Load returned null");
+        if (loaded == nullptr)
+            return;
+        Check(loaded != source, tag, "Load returned the in-memory source instead of a freshly read graph");
+        Check(loaded->m_Duration == 12.5f && loaded->m_FrameRate == 60.0f, tag, "asset fields lost");
+        Check(loaded->m_Tracks.size() == 3, tag, "track count changed");
+        if (loaded->m_Tracks.size() != 3)
+            return;
+
+        TimelineTrack* t0 = loaded->m_Tracks[0];
+        TimelineTrack* t1 = loaded->m_Tracks[1];
+        TimelineTrack* t2 = loaded->m_Tracks[2];
+        Check(t0 && t1 && t2, tag, "a track PPtr did not resolve");
+        if (!(t0 && t1 && t2))
+            return;
+        Check(t0->GetType() == TypeOf<AnimationTimelineTrack>(), tag, "track 0 lost its concrete type");
+        Check(t1->GetType() == TypeOf<EventTimelineTrack>(), tag, "track 1 lost its concrete type");
+        Check(t2->GetType() == TypeOf<AudioTimelineTrack>(), tag, "track 2 lost its concrete type");
+        Check(t0->Is(TypeOf<TimelineTrack>()), tag, "Is<TimelineTrack>() is false for a track");
+        Check(t0->m_Name == "Hero Anim" && t0->m_TargetObjectId == 0x1122334455667788ull, tag, "track 0 fields lost");
+        Check(t1->m_Muted && !t1->m_Locked && t2->m_Locked, tag, "track flags lost");
+
+        Check(t0->m_Clips.size() == 1 && t1->m_Clips.size() == 2 && t2->m_Clips.size() == 1, tag, "clip counts changed");
+        if (t0->m_Clips.size() != 1 || t1->m_Clips.size() != 2 || t2->m_Clips.size() != 1)
+            return;
+        auto* run = dynamic_cast<AnimationTimelineClip*>(static_cast<TimelineClip*>(t0->m_Clips[0]));
+        auto* hit = dynamic_cast<EventTimelineClip*>(static_cast<TimelineClip*>(t1->m_Clips[0]));
+        auto* show = dynamic_cast<ActivationTimelineClip*>(static_cast<TimelineClip*>(t1->m_Clips[1]));
+        auto* music = dynamic_cast<AudioTimelineClip*>(static_cast<TimelineClip*>(t2->m_Clips[0]));
+        Check(run && hit && show && music, tag, "a clip PPtr did not resolve to its concrete type");
+        if (!(run && hit && show && music))
+            return;
+        Check(run->m_StartTime == 0.5f && run->m_Duration == 2.0f && run->m_Speed == 1.5f && run->m_Loop &&
+                  run->m_AnimationPath == "Assets/Anim/run.zasset",
+              tag, "animation clip fields lost");
+        Check(hit->m_StartTime == 3.0f && hit->m_EventName == "OnHit" && hit->m_EventParams == "{\"damage\": 10}", tag, "event clip fields lost");
+        Check(show->m_StartTime == 4.0f && !show->m_Enabled && !show->m_Active, tag, "activation clip fields lost");
+        Check(music->m_AudioPath == "Assets/Audio/theme.wav" && music->m_Volume == 0.25f, tag, "audio clip fields lost");
+        Check(loaded->calculateActualDuration() == 4.0f, tag, "calculateActualDuration over the loaded graph is wrong");
+    }
+}  // namespace
+
+static void scenario_Y9_timeline_graph()
+{
+    std::fprintf(stderr, "[Y9] TimelineAsset graph (.timeline YAML + .zasset binary)\n");
+    TimelineAsset* source = BuildTimeline();
+
+    std::vector<Object*> objects;
+    std::vector<int64_t> ids;
+    TimelineAssetIO::CollectObjectGraph(*source, objects, ids);
+    Check(objects.size() == 8 && ids.front() == 1 && objects.front() == source, "Y9", "graph must be asset@1 + 3 tracks + 4 clips");
+
+    RuntimeAssetManager ram;
+    std::error_code ec;
+    const std::filesystem::path yaml_path = std::filesystem::temp_directory_path() / "zengine_y9_roundtrip.timeline";
+    const std::filesystem::path binary_path = std::filesystem::temp_directory_path() / "zengine_y9_roundtrip.zasset";
+    std::filesystem::remove(yaml_path, ec);
+    std::filesystem::remove(binary_path, ec);
+
+    Check(TimelineAssetIO::Save(ram, *source, yaml_path), "Y9", "YAML save failed");
+    Check(ram.GetAssetTypeName(yaml_path) == "TimelineAsset", "Y9", ".timeline is not reported as a TimelineAsset");
+    CheckTimeline(TimelineAssetIO::Load(ram, yaml_path), source, "Y9/yaml");
+
+    Check(TimelineAssetIO::Save(ram, *source, binary_path), "Y9", "binary save failed");
+    TimelineAsset* binary_loaded = TimelineAssetIO::Load(ram, binary_path);
+    CheckTimeline(binary_loaded, source, "Y9/binary");
+    Check(TimelineAssetIO::Load(ram, binary_path) == binary_loaded, "Y9", "second binary Load did not reuse the hydrated graph");
+
+    std::filesystem::remove(yaml_path, ec);
+    std::filesystem::remove(binary_path, ec);
+}
+
 int main()
 {
     std::fprintf(stderr,
@@ -680,6 +808,7 @@ int main()
     scenario_Y6_prefab_graph();
     scenario_Y7_multilevel_hierarchy();
     scenario_Y8_assetmanager_disk_roundtrip();
+    scenario_Y9_timeline_graph();
 
     SystemRegistry::GetInstance().ShutdownAll();
 

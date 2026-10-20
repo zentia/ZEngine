@@ -6,12 +6,16 @@
 #include "Runtime/Resource/ResType/Components/Timeline.h"
 
 #include <memory>
+#include "TimelineComponent.generated.h"
 
 class TimelineAsset;
 
 // Timeline组件（附加到GameObject上）
+ZCLASS()
 class TimelineComponent : public Component
 {
+    ZGENERATED_BODY(TimelineComponent)
+
 public:
     TimelineComponent() = default;
     ~TimelineComponent() override = default;
@@ -49,6 +53,7 @@ public:
     TimelineAsset* GetTimelineAsset() const;
 
 protected:
+    ZPROPERTY(Name="timeline_res")
     TimelineComponentRes m_TimelineRes;
 
 private:
@@ -56,6 +61,6 @@ private:
     bool LoadTimelineAsset();
 
     std::shared_ptr<TimelineDirector> m_Director;
-    TimelineAsset* m_TimelineAsset;
+    TimelineAsset* m_TimelineAsset {nullptr};
     bool m_AssetLoaded {false};
 };

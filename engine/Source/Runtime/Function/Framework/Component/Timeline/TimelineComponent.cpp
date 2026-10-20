@@ -5,6 +5,7 @@
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Data/TimelineAsset.h"
+#include "Runtime/Resource/ResType/Data/TimelineAssetIO.h"
 
 void TimelineComponent::PostLoadResource(GameObject* parent_object)
 {
@@ -149,8 +150,21 @@ bool TimelineComponent::LoadTimelineAsset()
         return false;
     }
 
-    // 加载Timeline资源
-    m_TimelineAsset = GET_SYSTEM(AssetManager)->loadAsset<TimelineAsset>(m_TimelineRes.m_TimelineAssetPath);
+    // Timeline 是多对象文件（资产 + 轨道 + 片段），必须整图读取；
+    // loadAsset<TimelineAsset> 只会读出 fileID 1，轨道/片段的 PPtr 全部悬空。
+    // 路径解析与 Level 一致：优先工程 Assets/，找不到再回落到引擎资源目录。
+    AssetManager* asset_manager = GET_SYSTEM(AssetManager);
+    if (asset_manager == nullptr)
+    {
+        return false;
+    }
+    std::filesystem::path timeline_path = asset_manager->ResolveProjectContentPath(m_TimelineRes.m_TimelineAssetPath);
+    std::error_code ec;
+    if (!std::filesystem::exists(timeline_path, ec))
+    {
+        timeline_path = asset_manager->GetFullPath(m_TimelineRes.m_TimelineAssetPath);
+    }
+    m_TimelineAsset = TimelineAssetIO::Load(*asset_manager, timeline_path);
     if (m_TimelineAsset != nullptr)
     {
         m_AssetLoaded = true;

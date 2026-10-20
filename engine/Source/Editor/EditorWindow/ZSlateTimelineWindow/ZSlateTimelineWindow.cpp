@@ -3,6 +3,8 @@
 #include "Editor/EditorLayout/EditorLayoutWindowIds.h"
 #include "Editor/ZSlate/Backend/EditorSlateHost.h"      // native input / metrics
 #include "Editor/ZSlate/Backend/ZSlateEditorOverlay.h"  // native RHI backend
+#include "Runtime/BaseClasses/ObjectManager.h"
+#include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Resource/ResType/Data/TimelineAsset.h"
 #include "Runtime/Resource/ResType/Data/TimelineClip.h"
@@ -269,7 +271,7 @@ void ZSlateTimelineWindow::PaintCanvas(UIRenderer& r, const ::UIRect& region, fl
 
         // Track header in left column.
         r.DrawText(ZSlate::UIRect(region.x + 8.0f * scale, y, track_list_w - 12.0f * scale, track_h),
-                   track->m_Name.empty() ? std::string(TrackTypeName(track)) : track->m_Name,
+                   track->m_Name.empty() ? std::string(TrackTypeName(track)) : std::string(track->m_Name.c_str()),
                    12.0f * scale,
                    kLabelColor,
                    ZSlate::TextAnchor::MiddleLeft,
@@ -633,17 +635,17 @@ void ZSlateTimelineWindow::AddTrack(const std::string& track_type)
 
     TimelineTrack* new_track = nullptr;
     if (track_type == "AnimationTimelineTrack")
-        new_track = MemoryManager::CreateObject<AnimationTimelineTrack>();
+        new_track = GET_SYSTEM(ObjectManager)->NewObject<AnimationTimelineTrack>();
     else if (track_type == "ActivationTimelineTrack")
-        new_track = MemoryManager::CreateObject<ActivationTimelineTrack>();
+        new_track = GET_SYSTEM(ObjectManager)->NewObject<ActivationTimelineTrack>();
     else if (track_type == "AudioTimelineTrack")
-        new_track = MemoryManager::CreateObject<AudioTimelineTrack>();
+        new_track = GET_SYSTEM(ObjectManager)->NewObject<AudioTimelineTrack>();
     else if (track_type == "EventTimelineTrack")
-        new_track = MemoryManager::CreateObject<EventTimelineTrack>();
+        new_track = GET_SYSTEM(ObjectManager)->NewObject<EventTimelineTrack>();
 
     if (new_track != nullptr)
     {
-        new_track->m_Name = track_type + " " + std::to_string(m_CurrentAsset->m_Tracks.size() + 1);
+        new_track->m_Name = (track_type + " " + std::to_string(m_CurrentAsset->m_Tracks.size() + 1)).c_str();
         m_CurrentAsset->m_Tracks.push_back(new_track);
     }
 }
@@ -759,10 +761,10 @@ ZSlate::UIColor ZSlateTimelineWindow::ClipColor(TimelineClip* clip) const
 std::string ZSlateTimelineWindow::ClipDisplayName(TimelineClip* clip) const
 {
     if (auto* anim = dynamic_cast<AnimationTimelineClip*>(clip))
-        return anim->m_AnimationPath.empty() ? std::string("Animation Clip") : anim->m_AnimationPath;
+        return anim->m_AnimationPath.empty() ? std::string("Animation Clip") : std::string(anim->m_AnimationPath.c_str());
     if (auto* audio = dynamic_cast<AudioTimelineClip*>(clip))
-        return audio->m_AudioPath.empty() ? std::string("Audio Clip") : audio->m_AudioPath;
+        return audio->m_AudioPath.empty() ? std::string("Audio Clip") : std::string(audio->m_AudioPath.c_str());
     if (auto* evt = dynamic_cast<EventTimelineClip*>(clip))
-        return evt->m_EventName.empty() ? std::string("Event Clip") : evt->m_EventName;
+        return evt->m_EventName.empty() ? std::string("Event Clip") : std::string(evt->m_EventName.c_str());
     return std::string("Clip");
 }

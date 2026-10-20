@@ -26,3 +26,13 @@ public:
     // 初始播放时间（秒）
     float m_InitialTime {0.0f};
 };
+
+template<typename TransferFunction>
+void TimelineComponentRes::Transfer(TransferFunction& transfer)
+{
+    transfer.Transfer(m_TimelineAssetPath, "timeline_asset_path");
+    transfer.Transfer(m_PlayOnAwake, "play_on_awake");
+    transfer.Transfer(m_Loop, "loop");
+    transfer.Transfer(m_Speed, "speed");
+    transfer.Transfer(m_InitialTime, "initial_time");
+}
