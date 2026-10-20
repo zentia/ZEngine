@@ -413,52 +413,17 @@ namespace
                                            "}\n";
     }
 
-    bool ensureMaterialTypeReady()
+    // Material is registered at startup by its ZHeaderTool-generated
+    // IMPLEMENT_REGISTER_CLASS (ZRuntime is whole-archived) and placed in the
+    // runtime type table by TypeManager::InitializeAllTypes(). Only verify
+    // that here -- this used to re-run RegisterKlass<Material>() and splice
+    // Material into RuntimeTypeArray by hand, which (while the builder left
+    // RuntimeTypeArray::count at 0) overwrote slot 0, i.e. Object's own Type.
+    bool isMaterialTypeRegistered()
     {
-        Type* material_type = const_cast<Type*>(TypeOf<Material>());
-        if (material_type == nullptr)
-        {
-            return false;
-        }
-
-        if (material_type->GetFactory() == nullptr || std::strcmp(material_type->GetName(), "[UNREGISTERED]") == 0)
-        {
-            RegisterKlass<Material>();
-        }
-
-        if (material_type->GetFactory() == nullptr)
-        {
-            return false;
-        }
-
-        RuntimeTypeArray& runtime_types = TypeManager::GetInstance().GetRuntimeTypes();
-        for (uint32_t type_index = 0; type_index < runtime_types.count; ++type_index)
-        {
-            if (runtime_types.types[type_index] == material_type)
-            {
-                material_type->derivedFromInfo.typeIndex = type_index;
-                material_type->derivedFromInfo.descendantCount = 1;
-                return true;
-            }
-        }
-
-        if (runtime_types.count >= RuntimeTypeArray::MAX_RUNTIME_TYPES)
-        {
-            return false;
-        }
-
-        material_type->derivedFromInfo.typeIndex = runtime_types.count;
-        material_type->derivedFromInfo.descendantCount = 1;
-        runtime_types.types[runtime_types.count] = material_type;
-        ++runtime_types.count;
-
-        Type* object_type = const_cast<Type*>(TypeOf<Object>());
-        if (object_type != nullptr && object_type->derivedFromInfo.typeIndex == 0 && object_type->derivedFromInfo.descendantCount < runtime_types.count)
-        {
-            object_type->derivedFromInfo.descendantCount = runtime_types.count;
-        }
-
-        return true;
+        const Type* material_type = TypeOf<Material>();
+        return material_type->GetFactory() != nullptr &&
+               TypeManager::GetInstance().ClassNameToType("Material") == material_type;
     }
 
     bool writeMaterialAssetToDisk(const std::filesystem::path& path, Material& material)
@@ -493,7 +458,7 @@ namespace
             return;
         }
 
-        if (!ensureMaterialTypeReady())
+        if (!isMaterialTypeRegistered())
         {
             LOG_ERROR(ZEditor, "material type is not registered for shader material creation {}", shader_path.generic_string());
             return;
@@ -1163,7 +1128,7 @@ namespace ContentBrowserAssetActions
         }
         else if (asset_type == "Material")
         {
-            if (!ensureMaterialTypeReady())
+            if (!isMaterialTypeRegistered())
             {
                 LOG_ERROR(ZEditor, "material type is not registered for asset creation {}", new_file_path.generic_string());
                 return;
