@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 2026-10-20 (RenderGraph)
+- **A real frame graph exists now.** Before this the renderer was written straight
+  through: every pass hand-wrote its `CmdPipelineBarrier` calls, every pass owned a
+  full-screen render target for its whole lifetime, the pass order was hard-coded into
+  `MainCameraPass::Draw(...)`'s parameter list, and a swapchain resize had to re-wire
+  six hard-coded view pointers by hand. There was no transient resource pool anywhere
+  in the engine.
+  - `Function/Render/Graph/RenderGraphTypes.{h,cpp}` -- the data model: handles
+    (index + generation, so a stale handle from a previous frame fails loudly), a small
+    RHI-free mirror of the format / usage / state enums, texture and buffer descriptors.
+  - `Function/Render/Graph/RenderGraphBuilder.{h,cpp}` -- the Setup-phase API:
+    `CreateTexture` / `CreateBuffer`, `ImportTexture` / `ImportBuffer` for
+    caller-owned resources, `Read/Write` dependency declaration, `KeepAlive` (UE's
+    Extract) and `RGPassFlags::NeverCull`.
+  - `Function/Render/Graph/RenderGraph.{h,cpp}` -- the compiler: dependency edges from
+    read/write (including write-after-read and write-after-write), topological sort,
+    culling of passes whose results nobody consumes, resource lifetimes, greedy memory
+    aliasing of transient resources, and barrier derivation (a barrier is emitted only
+    when the resource is not already in the state the pass needs). Idempotent and
+    deterministic. Validation turns "no format", "zero extent", "read but never
+    written", "written with a read state", "read and written in one pass" and
+    "texture used as a buffer" into errors instead of UB.
+  - `Function/Render/Graph/RenderGraphResources.{h,cpp}` -- the only RHI-aware part:
+    `RenderGraphResourcePool` (descriptor-keyed transient pool, the thing the engine
+    never had), `RenderGraphExecuteContext` (handle -> `RHIImage`/`RHIImageView`/
+    `RHIBuffer` during Execute) and `RenderGraphExecutor`, which records each pass with
+    one batched `CmdPipelineBarrier` and `PushEvent`/`PopEvent` around it and hands
+    memory back the moment a resource's lifetime ends.
+  - `RenderGraphSmokeTest` (`-DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON`): 78 headless
+    checks -- no GPU, no window, links only the three compiler files.
+- **Not wired into the render pipeline yet.** `DesktopRenderPipelineModule` and
+  `MainCameraPass::Draw(...)` are untouched; converting them needs per-frame visual
+  verification. `doc/RENDER_GRAPH.md` lists the three prepared seams, lowest risk
+  first: `RenderPassBase::AppendToDrawList`, splitting the post passes out of
+  `MainCameraFramebufferResources`, and deleting the six hand-written
+  `UpdateAfterFramebufferRecreate` calls.
+
 ### Added - 2026-10-20 (editor undo/redo transaction system)
 - **The editor can undo and redo for the first time.** Every scene edit (move /
   rotate / scale with the gizmo, inspector fields, reparent, create empty,

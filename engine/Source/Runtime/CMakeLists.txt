@@ -417,6 +417,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AISmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AISmokeTest.cpp")
+# RenderGraph compiler smoke-test main carve-out. The graph compiler itself
+# (Function/Render/Graph/*.cpp) IS part of ZRuntime -- only the test's main()
+# has to stay out of the whole-archive.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Graph/Test/RenderGraphSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Graph/Test/RenderGraphSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when
@@ -1243,6 +1250,11 @@ add_subdirectory(Function/Animation/Test)
 # glob above and built only when ZENGINE_BUILD_ADDRESSABLES_SMOKE_TEST=ON. Pure
 # file + scheduling work, so it runs headless on every host -- no GPU, no window.
 add_subdirectory(Resource/Addressables/Test)
+
+# RenderGraph compiler smoke test. Own main(); carved out of the ZRuntime glob
+# above and built only when ZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON. The
+# compiler is RHI-free by design, so this one needs no GPU and no window.
+add_subdirectory(Function/Render/Graph/Test)
 
 # =============================================================================
 # ASTC texture decompression support (Phase 6)

@@ -466,3 +466,9 @@ build_check/
 build_check2/
 bc.err
 
+# Scratch build tree for the headless UndoSystem smoke test (see engine/Source/Editor/Undo/Test)
+build_undo_test/
+
+# WorkBuddy per-user session data (memory, plans). Untracked by design.
+.workbuddy/
+

@@ -1993,6 +1993,49 @@ and no live preview of the driven character's parameters while editing.
   console (`undo [steps]` / `redo [steps]` / `undo.history [rows]` /
   `undo.clear`). New `ZUndo` log category -- see 2.5.
 
+### 2.31 RenderGraph: three phases, and the compiler must stay RHI-free
+
+`engine/Source/Runtime/Function/Render/Graph/` (`doc/RENDER_GRAPH.md`).
+
+- **Setup / Compile / Execute.** Setup (`RenderGraphBuilder`) only *declares* reads and
+  writes -- no RHI call, no allocation; it is cheap enough to run every frame. Compile
+  is pure CPU (topological sort, culling, lifetimes, memory aliasing, barriers,
+  validation) and deterministic. Execute (`RenderGraphExecutor`) resolves handles to
+  real resources and records commands.
+- **The compiler depends on nothing but the standard library.** `RenderGraphTypes.h`
+  forward-declares `RHIImage` / `RHIImageView` / `RHIBuffer` / `RHICommandBuffer` as
+  opaque pointers and mirrors the enums as `RGFormat` / `RGTextureUsage` /
+  `RGResourceState`. Do **not** include `Interface/RHI.h` in `RenderGraphTypes.h`,
+  `RenderGraphBuilder.*` or `RenderGraph.*` -- that is what lets
+  `RenderGraphSmokeTest` run headless. `RenderGraphResources.*` is the one place that
+  knows the RHI.
+- **Declare before you touch.** A pass's setup callback declares the "before" state;
+  the mutation happens in the execute callback. Same rule as the editor undo system
+  (2.29).
+- **Roots are what survive culling:** a pass is kept if it writes an imported
+  (external) resource, writes an extracted resource, or carries
+  `RGPassFlags::NeverCull`. Everything else that nobody consumes disappears. A pass
+  that only reads and writes nothing *is* culled -- that is correct, not a bug.
+- **A resource read and written by the same pass is rejected** (no RW textures), as is
+  declaring one with two different states. Both surface as `RGCompiledGraph::errors`,
+  never as UB.
+- **Never rely on pipeline stage masks for correctness.** DX12's
+  `CmdPipelineBarrier` drops `srcStageMask` / `dstStageMask` entirely and degrades
+  every buffer/UAV barrier to `D3D12_RESOURCE_BARRIER_TYPE_UAV`
+  (`DX12RHI.cpp:5346`). The stage in `RGMapState` is a hint for Vulkan only.
+- **RHI destroy/free take `T*&`** (they null the caller's pointer), so values copied
+  out of a `const` reference must go through a mutable local first.
+- **Not adopted by the render pipeline yet.** `DesktopRenderPipelineModule` and
+  `MainCameraPass::Draw(...)` are untouched. The prepared seams, lowest risk first:
+  `RenderPassBase::AppendToDrawList` (a no-op hook that already exists), splitting the
+  post passes out of `MainCameraFramebufferResources`, and deleting the six hand-written
+  `UpdateAfterFramebufferRecreate` calls in `DesktopRenderPipelineModule.cpp:480`.
+  Converting the pipeline needs per-frame visual verification -- do not attempt it
+  headless.
+- Test: `-DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON` -> `RenderGraphSmokeTest`
+  (78 checks). Its `main()` is carved out of the ZRuntime glob in
+  `Runtime/CMakeLists.txt`; the compiler files themselves are part of ZRuntime.
+
 ### 2.24 Packaging: `.zbundle` + manifest (PR-PAK1)
 
 There was no pak, no manifest and no dependency pruning, so "shipping" meant
