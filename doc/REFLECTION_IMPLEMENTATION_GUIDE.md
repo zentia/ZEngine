@@ -1,5 +1,9 @@
 # C++ 反射系统实现指南（类似 Unreal Engine）
 
+> **⚠️ 已过时（2026-10-20）**：下文描述的 `REFLECTION_TYPE` / `CLASS` / `REFLECTION_BODY` / `META` 宏与 Clang Meta Parser 在当前代码中**已不存在**。
+> 现行方案：类型/字段用 `REGISTER_CLASS` + `Transfer()` + TypeTree（Unity 式），反射代码生成由 **ZHeaderTool**（`engine/tools/ZHeaderTool`，UHT 式，Python）负责，
+> 标记宏见 `engine/Source/Runtime/BaseClasses/ObjectMacros.h`，约定见 `AGENTS.md` 的 "Reflection code generation (ZHeaderTool)" 一节。
+
 ## 概述
 
 本文档详细说明如何在 C++ 中实现类似 Unreal Engine 的反射系统。ZEngine 项目已经有一个基础的反射系统，本文将解释其工作原理以及如何进一步改进。

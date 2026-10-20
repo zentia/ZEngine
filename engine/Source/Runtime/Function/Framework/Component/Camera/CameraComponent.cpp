@@ -32,19 +32,6 @@ namespace
     }
 }  // namespace
 
-IMPLEMENT_REGISTER_CLASS(CameraComponent)
-IMPLEMENT_OBJECT_SERIALIZE(CameraComponent)
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(CameraComponent)
-
-template<typename TransferFunction>
-void CameraComponent::Transfer(TransferFunction& transfer)
-{
-    Super::Transfer(transfer);
-    transfer.Transfer(m_CameraMode, "mode");
-    transfer.Transfer(m_IsMainCamera, "main");
-    transfer.Transfer(m_CameraRes, "settings");
-}
-
 void CameraComponent::Initialize(CameraMode mode, CameraParameter* parameter)
 {
     m_CameraMode = mode;

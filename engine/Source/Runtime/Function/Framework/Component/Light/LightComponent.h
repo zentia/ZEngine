@@ -2,11 +2,12 @@
 
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Function/Framework/Component/Component.h"
+#include "LightComponent.generated.h"
 
+ZCLASS()
 class LightComponent : public Component
 {
-    REGISTER_CLASS(LightComponent);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(LightComponent)
 
 public:
     void SetFlux(const Vector3& flux) { m_Flux = flux; }
@@ -16,6 +17,8 @@ public:
     float GetRadius() const { return m_Radius; }
 
 private:
+    ZPROPERTY()
     Vector3 m_Flux {Vector3(100.0f, 100.0f, 100.0f)};
+    ZPROPERTY()
     float m_Radius {8.0f};
 };

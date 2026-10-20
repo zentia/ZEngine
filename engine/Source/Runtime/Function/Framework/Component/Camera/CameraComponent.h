@@ -7,6 +7,8 @@
 
 #include <type_traits>
 
+#include "CameraComponent.generated.h"
+
 class RenderCamera;
 
 enum class CameraMode : unsigned char
@@ -34,10 +36,10 @@ public:
     }
 };
 
+ZCLASS()
 class CameraComponent : public Component
 {
-    REGISTER_CLASS(CameraComponent);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(CameraComponent)
 
 public:
     CameraComponent() = default;
@@ -71,10 +73,14 @@ private:
     void TickThirdPersonCamera(float delta_time);
     void TickFreeCamera(float delta_time);
 
-    CameraComponentRes m_CameraRes;
-
+    // Serialized order is mode, main, settings (kept from the hand-written
+    // Transfer so existing .zasset / StreamedBinary payloads stay valid).
+    ZPROPERTY(Name="mode")
     CameraMode m_CameraMode {CameraMode::invalid};
+    ZPROPERTY(Name="main")
     bool m_IsMainCamera {false};
+    ZPROPERTY(Name="settings")
+    CameraComponentRes m_CameraRes;
 
     Vector3 m_Position;
 

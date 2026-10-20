@@ -2536,3 +2536,40 @@ the same name already exists`).
 
 
 
+
+## Reflection code generation (ZHeaderTool)
+
+Decided 2026-10-20 (phase 1 landed). UHT-style generator, **Python 3.9+,
+stdlib only** (host-side, so Android / OHOS / iOS / Emscripten cross builds
+need nothing extra). Do not re-litigate Python vs C++.
+
+- Tool: `engine/tools/ZHeaderTool/` (`ZHeaderTool.py`, `zht/` lexer -> parser
+  IR -> codegen). Unit tests: `python3 engine/tools/ZHeaderTool/tests/test_zht.py`.
+- CMake: `cmake/ZHeaderTool.cmake`, `zengine_header_tool(MODULE ... TARGETS ...
+  INCLUDE_ROOT ... HEADERS ...)`; wired for ZRuntime + ZRuntimeShared in
+  `engine/Source/Runtime/CMakeLists.txt`. Outputs go to
+  `<build>/Generated/ZHT/<Module>/{Inc,Src}` (Inc is a PUBLIC include dir).
+- Markers (`Runtime/BaseClasses/ObjectMacros.h`): `ZCLASS(Abstract|CustomTransfer)`,
+  `ZGENERATED_BODY(Name)` (replaces `REGISTER_CLASS` + `DECLARE_OBJECT_SERIALIZE`),
+  `ZPROPERTY(Name="..", HideInEditor, ReadOnly, StrongPPtr, Deprecated,
+  TreatIntegerAsBool, Hex64, Transient, meta=(Tooltip, DisplayName, Category,
+  EditCondition, ClampMin, ClampMax, UIMin, UIMax))`. `meta` is parsed and
+  validated now; consumed from phase 2 (Inspector).
+- Rules: `#include "<Name>.generated.h"` must be the **last** include; reflected
+  classes must be at **global scope** (IMPLEMENT_REGISTER_CLASS pastes names
+  globally) and derive from an Object-based class; base names of reflected
+  headers must be unique per module.
+- **Serialized order == ZPROPERTY declaration order.** When migrating a
+  hand-written `Transfer()`, reorder members to match the old Transfer order and
+  pin old field names with `Name="..."` (default name = snake_case of the member
+  without `m_`). In-memory byte offsets may change (not persisted:
+  `TypeTree::WriteTypeTree` does not write them); the serialized TypeTree and
+  payload must not.
+- Migration gate: `-DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON`, build
+  `ReflectionCodegenSmokeTest`, run `--no-offsets <Classes...>` before and
+  after migrating and compare (`--golden <file>` does the diff). Goldens are
+  ABI-specific, keep them local.
+- Adding / removing `ZCLASS` in an existing header: the first build fails once
+  with "the set of ZCLASS headers changed"; the next build re-configures
+  automatically. That is expected.
+- Migrated so far: `LightComponent`, `CameraComponent`.

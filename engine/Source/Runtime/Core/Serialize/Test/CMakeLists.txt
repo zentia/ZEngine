@@ -35,8 +35,12 @@ option(ZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST
        "Build the YAML text-serialization round-trip smoke-test executable"
        OFF)
 
+option(ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST
+       "Build the ZHeaderTool reflection-codegen TypeTree/binary dump smoke-test executable"
+       OFF)
+
 if(NOT ZENGINE_BUILD_SCHEMA_EVOLUTION_SMOKE_TEST AND NOT ZENGINE_BUILD_PPTR_SMOKE_TEST AND
-   NOT ZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST)
+   NOT ZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST AND NOT ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST)
     return()
 endif()
 
@@ -80,4 +84,15 @@ endif()
 if(ZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST)
     zengine_add_smoke_test(YamlRoundTripSmokeTest YamlRoundTripSmokeTest.cpp)
     message(STATUS "Configured YAML round-trip smoke-test target: YamlRoundTripSmokeTest")
+endif()
+
+if(ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST)
+    zengine_add_smoke_test(ReflectionCodegenSmokeTest ReflectionCodegenSmokeTest.cpp)
+    # macOS: libZRuntime.a currently has 15 unresolved render symbols on Apple
+    # and -force_load drags their callers in. This dump-only test never reaches
+    # the renderer; resolve them with aborting stubs (see the stubs file).
+    if(APPLE)
+        target_sources(ReflectionCodegenSmokeTest PRIVATE ReflectionCodegenSmokeTestAppleStubs.cpp)
+    endif()
+    message(STATUS "Configured reflection-codegen smoke-test target: ReflectionCodegenSmokeTest")
 endif()

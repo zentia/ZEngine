@@ -396,6 +396,15 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/YamlRoundTripSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/YamlRoundTripSmokeTest.cpp")
+# Reflection codegen (ZHeaderTool) smoke-test main carve-out
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/ReflectionCodegenSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/ReflectionCodegenSmokeTest.cpp")
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/ReflectionCodegenSmokeTestAppleStubs.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/ReflectionCodegenSmokeTestAppleStubs.cpp")
 # Derived Data Cache smoke-test main carve-out (texture cook P3)
 list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Cache/Test/DerivedDataCacheSmokeTest.cpp")
@@ -488,6 +497,16 @@ set_target_properties(${SHARED_TARGET_NAME} PROPERTIES OUTPUT_NAME "${SHARED_TAR
 
 # Output DLL to bin/Debug, bin/Release, etc. (same layout as Editor/Launcher/Profiler)
 z_set_config_output_dirs(${SHARED_TARGET_NAME} "${BINARY_ROOT_DIR}" LIBRARY)
+
+# ---- Reflection code generation (ZHeaderTool, UHT-style) ----
+# Headers annotated with ZCLASS / ZPROPERTY get <Name>.generated.h and
+# <Name>.gen.cpp (type registration + Transfer()). See cmake/ZHeaderTool.cmake.
+include(${Z_ROOT_DIR}/cmake/ZHeaderTool.cmake)
+zengine_header_tool(
+    MODULE       ZRuntime
+    TARGETS      ${TARGET_NAME} ${SHARED_TARGET_NAME}
+    INCLUDE_ROOT "${ENGINE_ROOT_DIR}/Source"
+    HEADERS      ${HEADER_FILES})
 
 # Consumers of the shared runtime should get the import macro defined so headers
 target_compile_definitions(${SHARED_TARGET_NAME} INTERFACE ZRUNTIME_SHARED_IMPORTS)
