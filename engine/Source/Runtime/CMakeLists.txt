@@ -337,6 +337,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/Test/DX12BindlessSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/Test/DX12BindlessSmokeTest.cpp")
+# ShaderLab Unity-compat smoke-test main. Same exclusion rationale. Built only
+# when ZENGINE_BUILD_SHADERLAB_UNITY_COMPAT_TEST=ON (see
+# Function/ShaderLab/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabUnityCompatTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabUnityCompatTest.cpp")
 # PR-V2: Vulkan bindless smoke-test main. Same exclusion rationale as
 # the DX12 entry above. Built only when ZENGINE_BUILD_VK_BINDLESS_SMOKE_TEST=ON
 # (see Function/Render/Interface/Vulkan/Test/CMakeLists.txt).
@@ -1197,6 +1204,9 @@ unset(_ZENGINE_NEEDS_SHADERLAB_SIDETARGET)
 # ---------------------------------------------------------------------------
 if(WIN32)
     add_subdirectory(Function/Render/Interface/DX12/Test)
+    # ShaderLab -> DX12 Unity-compatibility smoke-test. Same opt-in shape as
+    # the bindless test above (see Function/ShaderLab/Test/CMakeLists.txt).
+    add_subdirectory(Function/ShaderLab/Test)
 endif()
 
 # ---------------------------------------------------------------------------
