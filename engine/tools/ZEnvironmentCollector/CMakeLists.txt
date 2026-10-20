@@ -567,8 +567,21 @@ if(ENVIRONMENT_CHECK_WITH_ZRUNTIME)
             DESTINATION "${ENVIRONMENT_CHECK_OUTPUT_SUBDIR}/resource" COMPONENT EnvironmentCollector OPTIONAL)
 endif()
 
+# ------------------------------------------------------------------------------
+# Tests
+# ------------------------------------------------------------------------------
+# BUILD_TESTING is the usual gate but it is unusable in a full-tree configure:
+# minizip-ng force-sets it OFF in the cache to silence zlib-ng's own tests (see
+# the save/restore above), and turning it back ON globally also switches on
+# every 3rdparty suite (curl, Jolt, mimalloc, ...) -- none of which this build
+# ever compiles, so ctest would report them all as "Unable to find executable".
+# This option gates ONLY the collector's own tests.
+option(ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS
+       "Build the ZEnvironmentCollector test executables and register them with CTest"
+       OFF)
+
 include(CTest)
-if(BUILD_TESTING)
+if(BUILD_TESTING OR ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS)
     add_executable(EnvironmentCollectorTests CollectionTests.cpp)
     target_link_libraries(EnvironmentCollectorTests PRIVATE ZEnvironmentCheckCore)
     if(MSVC)

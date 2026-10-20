@@ -66,6 +66,7 @@ jobs:
           -DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON
           -DZENGINE_BUILD_UNDO_SMOKE_TEST=ON
           -DZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
+          -DZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS=ON
 
       - name: Build smoke tests
         run: >
@@ -90,6 +91,10 @@ jobs:
           RenderGraphSmokeTest
           UndoSystemSmokeTest
           DX12BindlessSmokeTest
+          EnvironmentCollectorTests
+          EnvironmentPreflightTests
+          EnvironmentCaptureTests
+          EnvironmentWerTests
 
       # -C Release is required on multi-config generators; without it ctest
       # looks in the Debug directory and reports "Unable to find executable".
@@ -98,5 +103,12 @@ jobs:
       # when the build copied the shipped assets there; it prints
       # "(skipped: level file not found)" and still passes when they are absent,
       # so it is safe to run before the asset copy step exists in CI.
+      #
+      # The four environment_* tests need ZEnvironmentCollector.exe and
+      # EnvironmentCaptureTestTarget.exe next to them; CMake knows that (they
+      # are add_dependencies of the test targets), so building the four test
+      # targets is enough. BUILD_TESTING stays OFF on purpose -- switching it
+      # on would register every 3rdparty suite (curl, Jolt, mimalloc, ...) and
+      # none of them are built here.
       - name: Run smoke tests
         run: ctest --test-dir build_smoke -C Release --output-on-failure
