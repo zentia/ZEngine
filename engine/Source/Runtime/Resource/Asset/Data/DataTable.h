@@ -165,9 +165,13 @@ public:
     // REGISTER_CLASS(WrapperClass) in user-derived final classes expands to
     //   typedef ThisType Super; typedef WrapperClass ThisType;
     // which requires the parent class to have a `ThisType` typedef in scope.
-    // Object provides one for DataTableBase; we manually relay it here so
-    // user wrappers compile without writing extra typedefs.
-    using ThisType = DataTable<TRow>;
+    // Relay DataTableBase (not DataTable<TRow>): this template layer is not a
+    // reflected type, so the wrapper's registered base -- TypeContainer<Super>
+    // -- must be DataTableBase. Pointing it at DataTable<TRow> left every
+    // wrapper parented to an "[UNREGISTERED]" placeholder outside the Object
+    // tree, which also broke the DataTable inspector's parent-chain walk.
+    // Super::Transfer() resolves to DataTableBase::Transfer() either way.
+    using ThisType = DataTableBase;
     using row_type = TRow;
 
     /// Row storage. Must be std::vector (not eastl::vector) because

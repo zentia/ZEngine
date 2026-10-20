@@ -2,11 +2,16 @@
 
 #include "RenderTextureDesc.h"
 #include "Texture.h"
+#include "RenderTexture.generated.h"
 
+// Not serialized yet (m_Desc is runtime-only); registered so that
+// PPtr<RenderTexture> (RenderCamera::targetTexture) resolves to a real Type.
+ZCLASS(NoSuperTransfer)
 class RenderTexture : public Texture
 {
-    REGISTER_CLASS(RenderTexture);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(RenderTexture)
+
+public:
     int GetWidth() const { return m_Desc.width; }
     int GetHeight() const { return m_Desc.height; }
 

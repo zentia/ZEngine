@@ -4,15 +4,16 @@
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 #include "BasicShape.generated.h"
 
+ZCLASS(Abstract)
 class Geometry : public Object
 {
-    REGISTER_CLASS(Geometry)
+    ZGENERATED_BODY(Geometry)
 
 public:
     virtual ~Geometry() {}
 };
 
-ZCLASS(NoSuperTransfer)
+ZCLASS()
 class Box : public Geometry
 {
     ZGENERATED_BODY(Box)
@@ -22,7 +23,7 @@ public:
     Vector3 m_HalfExtents {0.5f, 0.5f, 0.5f};
 };
 
-ZCLASS(NoSuperTransfer)
+ZCLASS()
 class Sphere : public Geometry
 {
     ZGENERATED_BODY(Sphere)
@@ -33,7 +34,7 @@ public:
     float m_Radius {0.5f};
 };
 
-ZCLASS(NoSuperTransfer)
+ZCLASS()
 class Capsule : public Geometry
 {
     ZGENERATED_BODY(Capsule)

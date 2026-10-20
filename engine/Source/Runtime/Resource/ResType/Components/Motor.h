@@ -13,15 +13,16 @@ enum class ControllerType : unsigned char
     invalid
 };
 
+ZCLASS(Abstract)
 class ControllerConfig : public Object
 {
-    REGISTER_CLASS(ControllerConfig)
+    ZGENERATED_BODY(ControllerConfig)
 
 public:
     virtual ~ControllerConfig() {}
 };
 
-ZCLASS(NoSuperTransfer)
+ZCLASS()
 class PhysicsControllerConfig : public ControllerConfig
 {
     ZGENERATED_BODY(PhysicsControllerConfig)

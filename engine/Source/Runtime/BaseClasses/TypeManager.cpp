@@ -220,10 +220,16 @@ uint32_t TypeManager::Builder::Build(const std::unordered_map<uint64_t, Type*>& 
 
     auto&& nodeCount = m_Nodes.size();
     uint32_t nextTypeIndex = 0;
+    // Number every tree depth-first from its root. Roots are the nodes without
+    // a base (Object and the KERNEL_BUILTIN value types). Add() stores the
+    // temporary node id in derivedFromInfo.typeIndex, so "typeIndex ==
+    // DefaultTypeIndex" can never identify an unvisited node here -- testing
+    // that left every range at [id, +0) (IsBaseOf always false) and the
+    // returned count at 0.
     for (uint32_t iNode = 0; iNode < nodeCount; ++iNode)
     {
         const Node& node = m_Nodes[iNode];
-        if (node.type->derivedFromInfo.typeIndex == Type::DefaultTypeIndex)
+        if (node.type->base == nullptr)
             nextTypeIndex += TraversDepthFirst(node, nextTypeIndex);
     }
     return nextTypeIndex;

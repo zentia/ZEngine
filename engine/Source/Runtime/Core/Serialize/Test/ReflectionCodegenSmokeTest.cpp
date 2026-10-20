@@ -24,6 +24,11 @@
 // If a golden file is supplied via `--golden <path>`, the test performs
 // the diff itself and exits non-zero on any mismatch.
 //
+// `--check-registry` additionally walks the whole runtime type table and
+// fails if any type is still the "[UNREGISTERED]" placeholder (a class that
+// has REGISTER_CLASS but no IMPLEMENT_REGISTER_CLASS) or if a producible
+// type's base chain does not reach Object.
+//
 // Opt in with:
 //   cmake -B build -DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON
 //   cmake --build build --target ReflectionCodegenSmokeTest
@@ -31,6 +36,7 @@
 
 #include "RegisterRuntime.h"
 #include "Runtime/BaseClasses/Object.h"
+#include "Runtime/BaseClasses/RuntimeTypeArray.h"
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Serialize/TransferUtility.h"
@@ -39,6 +45,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -80,6 +87,60 @@ namespace
 
         for (TypeTreeIterator child = node.Children(); !child.IsNull(); child = child.Next())
             DumpTypeTreeNode(out, child, depth + 1);
+    }
+
+    bool CheckRegistry()
+    {
+        const Type* object_type = TypeOf<Object>();
+        RuntimeTypeArray& types = TypeManager::GetInstance().GetRuntimeTypes();
+        int problems = 0;
+        uint32_t object_types = 0;
+        uint32_t slots = 0;
+        // Scan every slot, not just [0, count): a broken builder can leave
+        // `count` wrong while the slots are still populated.
+        for (uint32_t i = 0; i < RuntimeTypeArray::MAX_RUNTIME_TYPES; ++i)
+        {
+            const Type* type = types.types[i];
+            if (type == nullptr)
+                continue;
+            ++slots;
+            if (type->GetRuntimeTypeIndex() != i)
+            {
+                std::fprintf(stderr, "REGISTRY: '%s' sits in slot %u but has typeIndex %u\n", type->GetName(), i, type->GetRuntimeTypeIndex());
+                ++problems;
+            }
+            if (type->GetFactory() == nullptr)
+                continue;  // KERNEL_BUILTIN value types (int, float, Vector3, ...)
+            ++object_types;
+            for (const Type* base = type->base; base != nullptr; base = base->base)
+            {
+                if (std::strcmp(base->GetName(), "[UNREGISTERED]") == 0)
+                {
+                    std::fprintf(stderr, "REGISTRY: '%s' derives from an unregistered class (REGISTER_CLASS without IMPLEMENT_REGISTER_CLASS)\n", type->GetName());
+                    ++problems;
+                    break;
+                }
+                if (!base->IsBaseOf(type->GetRuntimeTypeIndex()))
+                {
+                    std::fprintf(stderr, "REGISTRY: %s::IsBaseOf(%s) is false (base range [%u, +%u), derived index %u)\n", base->GetName(), type->GetName(),
+                                 base->derivedFromInfo.typeIndex, base->derivedFromInfo.descendantCount, type->GetRuntimeTypeIndex());
+                    ++problems;
+                    break;
+                }
+            }
+            if (!object_type->IsBaseOf(type->GetRuntimeTypeIndex()))
+            {
+                std::fprintf(stderr, "REGISTRY: '%s' is not under Object in the type tree\n", type->GetName());
+                ++problems;
+            }
+        }
+        if (types.count != slots)
+        {
+            std::fprintf(stderr, "REGISTRY: RuntimeTypeArray::count is %u but %u slots are populated\n", types.count, slots);
+            ++problems;
+        }
+        std::fprintf(stderr, "REGISTRY: %u slots, %u Object types checked, %d problem(s)\n", slots, object_types, problems);
+        return problems == 0;
     }
 
     bool DumpClass(std::ostringstream& out, const char* class_name)
@@ -139,6 +200,7 @@ int main(int argc, char** argv)
 {
     std::vector<std::string> classes;
     std::string golden_path;
+    bool check_registry = false;
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
@@ -146,6 +208,8 @@ int main(int argc, char** argv)
             golden_path = argv[++i];
         else if (arg == "--no-offsets")
             g_PrintOffsets = false;
+        else if (arg == "--check-registry")
+            check_registry = true;
         else
             classes.push_back(arg);
     }
@@ -174,6 +238,11 @@ int main(int argc, char** argv)
     if (!ok)
     {
         std::fprintf(stderr, "FAIL: one or more classes could not be dumped.\n");
+        return 1;
+    }
+    if (check_registry && !CheckRegistry())
+    {
+        std::fprintf(stderr, "FAIL: type registry check failed.\n");
         return 1;
     }
 

@@ -2,18 +2,20 @@
 #include "Runtime/BaseClasses/ImmediatePtr.h"
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
+#include "Component.generated.h"
 class GameObject;
 // Component
+ZCLASS()
 class Component : public Object
 {
-    REGISTER_CLASS(Component);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(Component)
 
 protected:
     GameObject* m_ParentObject;
     bool m_IsDirty {false};
     bool m_IsScaleDirty {false};
 
+    ZPROPERTY()
     bool m_Enabled {true};
 
 public:
