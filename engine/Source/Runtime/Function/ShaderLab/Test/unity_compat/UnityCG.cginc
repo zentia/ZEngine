@@ -121,8 +121,19 @@ struct appdata_tan
 // the pass syntactically valid so we can measure whether the *rest* of the
 // Unity syntax parses and compiles.
 // ---------------------------------------------------------------------------
-#define V2F_SHADOW_CASTER        float4 shadowPos : SV_POSITION
-#define TRANSFER_SHADOW_CASTER(o) o.shadowPos = UnityObjectToClipPos(v.vertex)
-#define SHADOW_CASTER_FRAGMENT(i) return float4(0, 0, 0, 0)
+// Unity 的这几个宏展开后自带分号，所以调用处写的是
+//     TRANSFER_SHADOW_CASTER(o)      <- 没有分号
+//     SHADOW_CASTER_FRAGMENT(i)      <- 没有分号
+// shim 必须保持一致，否则 DXC 报 "expected ';' after expression"。
+#define V2F_SHADOW_CASTER         float4 shadowPos : SV_POSITION
+#define TRANSFER_SHADOW_CASTER(o)  o.shadowPos = UnityObjectToClipPos(v.vertex);
+#define SHADOW_CASTER_FRAGMENT(i)  return float4(0, 0, 0, 0);
+
+// 已知差距：Spine 的 Caster pass 写 `o.uv = v.texcoord;`，uv 是 float2 而
+// appdata_base.texcoord 是 float4（与 Unity 一致）。HLSL 允许这种隐式截断，
+// FXC 只给警告；但 ZEngine 的 DX12 后端在 _DEBUG 下给 DXC 传了 -WX
+// （DX12ShaderCompiler.cpp），于是它被升级成 error:
+//     implicit truncation of vector type [-Werror,-Wconversion]
+// Release 构建不受影响。这里保持 float4 不迁就，把问题留在明面上。
 
 #endif  // ZENGINE_UNITYCG_SHIM_INCLUDED
