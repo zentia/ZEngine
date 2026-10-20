@@ -39,6 +39,55 @@ namespace ZEngine::ShaderLab
             }
             return false;
         }
+        // 从 CGPROGRAM/HLSLPROGRAM 文本里抓 `#pragma vertex|fragment|pixel|compute <name>`。
+        //
+        // ShaderProgram::vertex_entry / fragment_entry 的初值 "vert" / "frag" 只是
+        // 默认值：ParsePragma() 在头文件里只有声明、没有实现，也从来没有调用者。
+        // 不解析的话 Compile() 永远拿默认名去找入口，凡是入口不叫 vert/frag 的
+        // shader 都会报 "missing entry point definition"。
+        void ExtractEntryPoints(const std::string& program_source,
+                                std::string& vertex_entry,
+                                std::string& fragment_entry,
+                                std::string& compute_entry)
+        {
+            std::istringstream stream(program_source);
+            std::string line;
+            while (std::getline(stream, line))
+            {
+                const size_t hash = line.find('#');
+                if (hash == std::string::npos)
+                {
+                    continue;
+                }
+
+                std::istringstream line_stream(line.substr(hash));
+                std::string pragma;
+                std::string stage;
+                std::string name;
+                line_stream >> pragma >> stage >> name;
+                if (pragma != "#pragma" || name.empty())
+                {
+                    continue;
+                }
+
+                std::transform(stage.begin(), stage.end(), stage.begin(), [](unsigned char ch) {
+                    return static_cast<char>(std::tolower(ch));
+                });
+
+                if (stage == "vertex")
+                {
+                    vertex_entry = name;
+                }
+                else if (stage == "fragment" || stage == "pixel")
+                {
+                    fragment_entry = name;
+                }
+                else if (stage == "compute" || stage == "kernel")
+                {
+                    compute_entry = name;
+                }
+            }
+        }
     }  // namespace
 
     ShaderLabParser::ShaderLabParser(const std::string& source)
@@ -667,6 +716,11 @@ namespace ZEngine::ShaderLab
                 program.language = token.type == TokenType::HLSLProgram ? ShaderLanguage::HLSL : token.type == TokenType::GLSLProgram ? ShaderLanguage::GLSL
                                                                                                                                       : ShaderLanguage::CG;
                 program.source_code = token.text;
+                // 入口名来自 #pragma vertex / #pragma fragment，不是 "vert"/"frag" 默认值。
+                ExtractEntryPoints(program.source_code,
+                                   program.vertex_entry,
+                                   program.fragment_entry,
+                                   program.compute_entry);
                 pass.programs.push_back(std::move(program));
             }
             else if (IsIgnoredLegacyCommand(id))
