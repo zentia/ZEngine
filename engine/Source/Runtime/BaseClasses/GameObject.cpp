@@ -61,13 +61,39 @@ void GameObject::Tick(float delta_time)
     }
 }
 
-bool GameObject::HasComponent(const std::string& component_type_name) const
+// Both lookups go through TypeManager::ClassNameToType + Type::IsBaseOf rather
+// than `GetTypeName() == name`: the latter reads Object::GetType(), i.e.
+// m_CachedTypeIndex, which is only meaningful after InitializeRuntimeTypeInfo()
+// has run. GetMostDerivedType() is the virtual lookup and is always valid.
+Component* GameObject::GetComponentByTypeName(const std::string& component_type_name) const
 {
+    const Type* wanted = TypeManager::GetInstance().ClassNameToType(component_type_name.c_str());
+    if (wanted == nullptr)
+        return nullptr;
+
     for (const auto& component : m_Components)
     {
+        Component* candidate = static_cast<Component*>(component);
+        if (candidate == nullptr)
+            continue;
+        const Type* runtime_type = candidate->GetMostDerivedType();
+        if (runtime_type != nullptr && wanted->IsBaseOf(runtime_type->GetRuntimeTypeIndex()))
+            return candidate;
     }
 
-    return false;
+    return nullptr;
+}
+
+// Was an empty loop that always returned false -- and phase 3 had already bound
+// it to TypeScript, so `go.HasComponent("Transform")` was a silent lie.
+bool GameObject::HasComponent(const std::string& component_type_name) const
+{
+    return GetComponentByTypeName(component_type_name) != nullptr;
+}
+
+Transform* GameObject::GetTransform() const
+{
+    return Cast<Transform>(GetComponentByTypeName("Transform"));
 }
 
 bool GameObject::load(const GameObject& object_instance_res)

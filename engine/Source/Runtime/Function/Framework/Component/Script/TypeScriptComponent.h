@@ -77,6 +77,7 @@ public:
     /// 32-char lowercase hex GUID of the source ScriptAsset. Empty until
     /// the component is bound (e.g. by Inspector drag-drop in P5+).
     void SetScriptGuid(const eastl::string& guid);
+    ZFUNCTION()
     const eastl::string& GetScriptGuid() const { return m_ScriptGuid; }
 
     /// Optional override for which exported class to instantiate. Empty
@@ -91,6 +92,11 @@ public:
     const std::string& GetModuleId() const { return m_ModuleId; }
 
     /// True iff CreateInstance succeeded and OnDestroy has not yet fired.
+    // ZFUNCTION: annotated so ZHeaderTool registers TypeScriptComponent in the
+    // pesapi registry at all. `native_object_to_value` can only wrap a pointer
+    // whose type id has been `define_class`ed, so without at least one bound
+    // method `this.component` could not be published to the script.
+    ZFUNCTION()
     bool HasLiveInstance() const { return m_JsInstance != nullptr; }
 
     /// Editor-only: try to (re-)bind this component to its JS class. Idempotent;

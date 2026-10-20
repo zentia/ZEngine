@@ -12,6 +12,11 @@
 #include "Runtime/BaseClasses/Cast.h"
 #include "GameObject.generated.h"
 
+// Forward-declared: Transform.h includes GameObject.h, so the real type is
+// only available in the .cpp. A forward declaration is enough for the
+// `Transform* GetTransform()` return type below.
+class Transform;
+
 ZCLASS(CustomTransfer)
 class GameObject : public Object
 {
@@ -98,6 +103,20 @@ public:
 
     ZFUNCTION()
     bool HasComponent(const std::string& component_type_name) const;
+
+    /// First component whose type is `type_name` or derives from it (Unity's
+    /// GetComponent-by-name semantics). Returns nullptr when the name does not
+    /// resolve to a registered Type or no component matches.
+    ///
+    /// Deliberately NOT `tryGetComponent<T>()` -- that is a template and
+    /// therefore invisible to ZHeaderTool, so script code could never reach it.
+    Component* GetComponentByTypeName(const std::string& component_type_name) const;
+
+    /// Convenience wrapper used by the TS Behaviour binding to publish
+    /// `this.transform`. Declared here and defined in the .cpp because
+    /// Transform.h includes GameObject.h (the dependency points the other way).
+    ZFUNCTION()
+    Transform* GetTransform() const;
 
     void addComponent(Component* component)
     {

@@ -162,6 +162,30 @@ def cmd_generate(args) -> int:
     expected = set(expected_paths)
     actual = set(actual_paths)
 
+    # Module-wide lookup tables for the ZFUNCTION emitters.
+    #   type_headers: "Foo" -> "Runtime/.../Foo.h" so a bound signature that
+    #     mentions a forward-declared type can pull in its real header.
+    #   bound_classes / base_of: which classes own ZFUNCTIONs and what each
+    #     class derives from, so a binding's `super` skips method-less middle
+    #     layers (Behaviour) and stays a valid prototype chain.
+    type_headers: Dict[str, str] = {}
+    bare_name_counts: Dict[str, int] = {}
+    bound_classes = set()
+    base_of: Dict[str, Optional[str]] = {}
+    for info in parsed:
+        for cls in info.classes:
+            qname = cls.qualified_name
+            type_headers[qname] = info.include_path
+            bare_name_counts[cls.name] = bare_name_counts.get(cls.name, 0) + 1
+            base_of[qname] = cls.base
+            if cls.methods:
+                bound_classes.add(qname)
+    for info in parsed:
+        for cls in info.classes:
+            # The bare spelling is only a usable key when it is unambiguous.
+            if cls.name != cls.qualified_name and bare_name_counts.get(cls.name, 0) == 1:
+                type_headers[cls.name] = info.include_path
+
     written = 0
     produced = set()
     for info in parsed:
@@ -170,7 +194,7 @@ def cmd_generate(args) -> int:
         produced.add(_key(_norm(h_path)))
         produced.add(_key(_norm(s_path)))
         written += write_if_changed(h_path, generate_header(info))
-        written += write_if_changed(s_path, generate_source(info))
+        written += write_if_changed(s_path, generate_source(info, type_headers, bound_classes, base_of))
 
     pruned = 0
     for out_dir in (args.out_inc, args.out_src):

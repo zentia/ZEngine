@@ -29,6 +29,12 @@ public:
     /// editor code (e.g. PrefabUtilityEditor's component-suppress pipeline)
     /// that needs to navigate from a Component back to its host without
     /// re-walking every GameObject's m_Components list.
+    ///
+    /// ZFUNCTION: also how the TS Behaviour binding publishes
+    /// `this.component.gameObject`. Binding `Component` at all is what makes the
+    /// pesapi registry know the type id, which `native_object_to_value` needs
+    /// before any Component* can be handed to JS.
+    ZFUNCTION()
     GameObject* GetParentObject() const { return m_ParentObject; }
 
     virtual void Tick(float delta_time) {};
@@ -43,7 +49,9 @@ public:
     bool IsDirty() const { return m_IsDirty; }
 
     void setDirtyFlag(bool is_dirty) { m_IsDirty = is_dirty; }
+    ZFUNCTION()
     virtual bool isEnabled() const { return m_Enabled; }
+    ZFUNCTION()
     virtual void SetEnabled(bool enabled) { m_Enabled = enabled; }
 
     bool m_TickInEditorMode {false};

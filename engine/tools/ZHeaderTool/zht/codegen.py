@@ -11,11 +11,11 @@ on top of the same files.
 
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List, Optional
 
 from .model import ClassInfo, HeaderInfo
 
-TOOL_VERSION = 4
+TOOL_VERSION = 5
 
 _BANNER = (
     "// ==========================================================================\n"
@@ -154,35 +154,94 @@ def _script_method_entry(cls: ClassInfo, method) -> str:
             % (method.ts_name, method.ts_signature.replace('"', '\\"'), "true" if method.is_static else "false", callback))
 
 
-def _script_block(cls: ClassInfo) -> List[str]:
+def _signature_type_names(cls: ClassInfo) -> List[str]:
+    """Every named type a bound signature mentions (return + parameters).
+
+    Used to pull in the headers that make those types COMPLETE: the
+    ZScript::Converter<T*> specialisation static_asserts on
+    std::is_base_of<Object, T>, which is a hard error on a type that is only
+    forward-declared -- and reflected headers routinely forward-declare each
+    other (Component.h / GameObject.h / Transform.h form such a cycle).
+    """
+    names: List[str] = []
+    for method in cls.methods:
+        raw = [method.return_type] + [p.cpp_type for p in method.params]
+        for text in raw:
+            for token in text.replace("*", " ").replace("&", " ").split():
+                if token in ("const", "volatile", "struct", "class", "typename"):
+                    continue
+                if token and token not in names:
+                    names.append(token)
+    return names
+
+
+def _script_signature_includes(header: HeaderInfo, type_headers: Dict[str, str]) -> List[str]:
+    if not type_headers:
+        return []
+    needed: List[str] = []
+    seen = {header.include_path}
+    for cls in header.classes:
+        for name in _signature_type_names(cls):
+            inc = type_headers.get(name)
+            if inc and inc not in seen:
+                seen.add(inc)
+                needed.append(inc)
+    return sorted(needed)
+
+
+def _effective_super(cls: ClassInfo, bound: set, bases: Dict[str, Optional[str]]) -> Optional[str]:
+    """The nearest ancestor that actually owns a script binding.
+
+    An intermediate base with no ZFUNCTION of its own (Behaviour, say) cannot
+    be a link in the pesapi prototype chain: `InstallAll` would have to
+    declare it as a root placeholder, which silently drops every method the
+    real ancestors above it contributed. Walking up to the nearest bound
+    ancestor keeps the chain intact and flattens the empty middle -- the same
+    thing UE's UHT does for non-reflected mixin layers.
+    """
+    base = cls.base
+    while base is not None and base not in bound:
+        nxt = bases.get(base)
+        if nxt is None:
+            # Not a reflected class of this module -- keep it so InstallAll
+            # still emits the placeholder declaration (e.g. Object).
+            return base
+        base = nxt
+    return base
+
+
+def _script_block(cls: ClassInfo, super_name: Optional[str]) -> List[str]:
     """Static pesapi binding table for one class's ZFUNCTIONs (phase 3)."""
     if not cls.methods:
         return []
     ident = cls.qualified_name.replace("::", "_")
-    super_type = "ZScriptTypeId<%s>::Get()" % cls.base if cls.base else "nullptr"
-    super_name = '"%s"' % cls.base if cls.base else "nullptr"
+    super_type = "ZScriptTypeId<%s>::Get()" % super_name if super_name else "nullptr"
+    super_name_lit = '"%s"' % super_name if super_name else "nullptr"
     out = ["\n", "namespace\n{\n"]
     out.append("    const ZScriptMethodEntry kZhtScriptMethods_%s[] = {\n" % ident)
     out.extend("        %s,\n" % _script_method_entry(cls, m) for m in cls.methods)
     out.append("    };\n")
     out.append("    ZClassScriptBinding kZhtScriptClass_%s {ZScriptTypeId<%s>::Get(), %s, \"%s\", %s, "
-               "kZhtScriptMethods_%s, %d};\n" % (ident, cls.qualified_name, super_type, cls.name, super_name, ident,
+               "kZhtScriptMethods_%s, %d};\n" % (ident, cls.qualified_name, super_type, cls.name, super_name_lit, ident,
                                                  len(cls.methods)))
     out.append("    const ZClassScriptBindingRegistrar kZhtScriptRegistrar_%s(kZhtScriptClass_%s);\n" % (ident, ident))
     out.append("}  // namespace\n")
     return out
 
 
-def generate_source(header: HeaderInfo) -> str:
+def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] = None,
+                    bound_classes: Optional[set] = None, base_of: Optional[Dict[str, Optional[str]]] = None) -> str:
     out = [_banner(header), "\n", '#include "%s"\n' % header.include_path]
     needs_meta = any(p.meta and not p.transient for cls in header.classes for p in cls.properties)
     needs_script = any(cls.methods for cls in header.classes)
+    script_includes = _script_signature_includes(header, type_headers or {}) if needs_script else []
     if any(not cls.custom_transfer for cls in header.classes) or needs_meta or needs_script:
         out.append("\n")
         if needs_meta:
             out.append('#include "Runtime/BaseClasses/PropertyMeta.h"\n')
         if needs_script:
             out.append('#include "Runtime/Scripting/Binding/ScriptBinding.h"\n')
+            out.extend('#include "%s"\n' % inc for inc in script_includes)
         if any(not cls.custom_transfer for cls in header.classes):
             out.extend('#include "%s"\n' % inc for inc in _TRANSFER_INCLUDES)
     for cls in header.classes:
@@ -193,7 +252,7 @@ def generate_source(header: HeaderInfo) -> str:
             out.append("// ZCLASS(CustomTransfer): IMPLEMENT_OBJECT_SERIALIZE, Transfer() and\n")
             out.append("// INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED live in the hand-written .cpp.\n")
             out.extend(_meta_block(cls))
-            out.extend(_script_block(cls))
+            out.extend(_script_block(cls, _effective_super(cls, bound_classes or set(), base_of or {})))
             continue
         out.append("IMPLEMENT_OBJECT_SERIALIZE(%s)\n" % cls.qualified_name)
         out.append("\n")
@@ -204,5 +263,5 @@ def generate_source(header: HeaderInfo) -> str:
         else:
             out.extend(_transfer_definition(cls, ""))
         out.extend(_meta_block(cls))
-        out.extend(_script_block(cls))
+        out.extend(_script_block(cls, _effective_super(cls, bound_classes or set(), base_of or {})))
     return "".join(out)
