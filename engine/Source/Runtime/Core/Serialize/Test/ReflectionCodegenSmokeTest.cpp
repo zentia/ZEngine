@@ -52,12 +52,24 @@
 // on its own (no dump, no other checks) -- handy when a new ZFUNCTION produces
 // a signature you want to eyeball without opening a project.
 //
+// `--check-cast` (ZHeaderTool phase 4) proves Cast<T> is interchangeable with
+// dynamic_cast. It runs three passes:
+//   1. every (runtime type, target type) pair: `Type::IsBaseOf` (the O(1)
+//      range test Cast uses) must agree with walking the `Type::base` chain;
+//   2. a spot-check table comparing Cast<T> against dynamic_cast<T*> on real
+//      instances, in both the matching and the non-matching direction;
+//   3. the null / const overloads.
+// Any disagreement means Cast would silently start returning null somewhere
+// dynamic_cast would have succeeded, so it fails the build.
+//
 // Opt in with:
 //   cmake -B build -DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON
 //   cmake --build build --target ReflectionCodegenSmokeTest
 // =====================================================================
 
 #include "RegisterRuntime.h"
+#include "Runtime/BaseClasses/Cast.h"
+#include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/BaseClasses/PropertyMeta.h"
 #include "Runtime/BaseClasses/RuntimeTypeArray.h"
@@ -70,7 +82,11 @@
 #include "Runtime/Core/YamlSerialize/YAMLUtility.h"
 #include "Runtime/Function/AI/AIControllerComponent.h"
 #include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
+#include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Render/RenderCamera.h"
+#include "Runtime/Resource/ResType/Data/BasicShape.h"
+#include "Runtime/Resource/ResType/Data/TimelineClip.h"
 #include "Runtime/Scripting/Binding/ScriptBinding.h"
 
 #include <cstdint>
@@ -349,6 +365,116 @@ namespace
         return problems == 0;
     }
 
+    /// True when `derived` is `base` or derives from it, decided by walking the
+    /// Type::base chain. This is the definition dynamic_cast implements for a
+    /// single-inheritance hierarchy, and it is what pass 1 compares
+    /// Type::IsBaseOf (the O(1) range test) against.
+    bool IsBaseOfByChainWalk(const Type* base, const Type* derived)
+    {
+        for (const Type* t = derived; t != nullptr; t = t->base)
+        {
+            if (t == base)
+                return true;
+        }
+        return false;
+    }
+
+    /// Pass 1: `Type::IsBaseOf` vs the base-chain walk, for every pair.
+    bool CheckCastRanges()
+    {
+        RuntimeTypeArray& types = TypeManager::GetInstance().GetRuntimeTypes();
+        std::vector<const Type*> object_types;
+        for (uint32_t i = 0; i < RuntimeTypeArray::MAX_RUNTIME_TYPES; ++i)
+        {
+            const Type* type = types.types[i];
+            if (type != nullptr && type->GetFactory() != nullptr)
+                object_types.push_back(type);
+        }
+
+        int problems = 0;
+        uint32_t pairs = 0;
+        for (const Type* derived : object_types)
+        {
+            for (const Type* base : object_types)
+            {
+                ++pairs;
+                const bool by_range = base->IsBaseOf(derived->GetRuntimeTypeIndex());
+                const bool by_chain = IsBaseOfByChainWalk(base, derived);
+                if (by_range != by_chain)
+                {
+                    std::fprintf(stderr, "CAST: %s::IsBaseOf(%s) = %d but the base chain says %d\n", base->GetName(),
+                                 derived->GetName(), static_cast<int>(by_range), static_cast<int>(by_chain));
+                    ++problems;
+                }
+            }
+        }
+        std::fprintf(stderr, "CAST: %u type pair(s) cross-checked, %d problem(s)\n", pairs, problems);
+        return problems == 0;
+    }
+
+    /// Pass 2: one real instance, compared through both mechanisms.
+    template <typename Source, typename Target>
+    bool CheckCastPair(const char* source_name, const char* target_name, bool expect)
+    {
+        Source* instance = MemoryManager::CreateObject<Source>();
+        if (instance == nullptr)
+        {
+            std::fprintf(stderr, "CAST: could not create %s\n", source_name);
+            return false;
+        }
+        const bool by_cast = Cast<Target>(instance) != nullptr;
+        const bool by_dynamic = dynamic_cast<Target*>(instance) != nullptr;
+        bool ok = true;
+        if (by_cast != by_dynamic)
+        {
+            std::fprintf(stderr, "CAST: Cast<%s>(%s) = %d but dynamic_cast says %d\n", target_name, source_name,
+                         static_cast<int>(by_cast), static_cast<int>(by_dynamic));
+            ok = false;
+        }
+        if (by_cast != expect)
+        {
+            std::fprintf(stderr, "CAST: Cast<%s>(%s) = %d, expected %d\n", target_name, source_name,
+                         static_cast<int>(by_cast), static_cast<int>(expect));
+            ok = false;
+        }
+        // The const overload (selected by the const argument, T stays
+        // unqualified) must reach the same verdict.
+        const Source* const_instance = instance;
+        if ((Cast<Target>(const_instance) != nullptr) != by_cast)
+        {
+            std::fprintf(stderr, "CAST: const Cast<%s>(%s) disagrees with the non-const overload\n", target_name, source_name);
+            ok = false;
+        }
+        return ok;
+    }
+
+    bool CheckCast()
+    {
+        bool ok = CheckCastRanges();
+
+        // Matching direction, non-matching direction (siblings under a shared
+        // base must NOT cast to each other), and the Object root.
+        ok &= CheckCastPair<Transform, Component>("Transform", "Component", true);
+        ok &= CheckCastPair<Transform, Object>("Transform", "Object", true);
+        ok &= CheckCastPair<Transform, GameObject>("Transform", "GameObject", false);
+        ok &= CheckCastPair<Box, Geometry>("Box", "Geometry", true);
+        ok &= CheckCastPair<Box, Sphere>("Box", "Sphere", false);
+        ok &= CheckCastPair<AnimationTimelineClip, TimelineClip>("AnimationTimelineClip", "TimelineClip", true);
+        ok &= CheckCastPair<AnimationTimelineClip, AudioTimelineClip>("AnimationTimelineClip", "AudioTimelineClip", false);
+        ok &= CheckCastPair<CameraComponent, Component>("CameraComponent", "Component", true);
+        ok &= CheckCastPair<GameObject, Object>("GameObject", "Object", true);
+        ok &= CheckCastPair<GameObject, Component>("GameObject", "Component", false);
+
+        // Null in, null out -- dynamic_cast's contract.
+        Component* null_component = nullptr;
+        if (Cast<Transform>(null_component) != nullptr || dynamic_cast<Transform*>(null_component) != nullptr)
+        {
+            std::fprintf(stderr, "CAST: Cast<Transform>(nullptr) must be null\n");
+            ok = false;
+        }
+        return ok;
+    }
+
     /// Cross-check the generated ZFUNCTION binding tables (phase 3).
     bool CheckScriptBindings()
     {
@@ -514,6 +640,7 @@ int main(int argc, char** argv)
     bool check_property_meta = false;
     bool check_script_bindings = false;
     bool dump_script_dts = false;
+    bool check_cast = false;
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
@@ -531,6 +658,8 @@ int main(int argc, char** argv)
             check_script_bindings = true;
         else if (arg == "--dump-script-dts")
             dump_script_dts = true;
+        else if (arg == "--check-cast")
+            check_cast = true;
         else
             classes.push_back(arg);
     }
@@ -590,6 +719,11 @@ int main(int argc, char** argv)
     if (check_script_bindings && !CheckScriptBindings())
     {
         std::fprintf(stderr, "FAIL: ZFUNCTION script binding check failed.\n");
+        return 1;
+    }
+    if (check_cast && !CheckCast())
+    {
+        std::fprintf(stderr, "FAIL: Cast<T> / dynamic_cast equivalence check failed.\n");
         return 1;
     }
 

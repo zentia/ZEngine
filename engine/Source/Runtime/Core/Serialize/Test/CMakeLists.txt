@@ -111,6 +111,6 @@ if(ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST)
     # tables / generated .d.ts.
     zengine_add_smoke_test(ReflectionCodegenSmokeTest ReflectionCodegenSmokeTest.cpp
                            TEST_ARGS --check-registry --check-behaviour-enabled --check-property-meta
-                                     --check-script-bindings)
+                                     --check-script-bindings --check-cast)
     message(STATUS "Configured reflection-codegen smoke-test target: ReflectionCodegenSmokeTest")
 endif()

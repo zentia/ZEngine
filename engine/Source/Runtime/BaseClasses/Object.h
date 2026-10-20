@@ -73,6 +73,18 @@ public:
     const char* GetTypeName() const { return GetType()->GetName(); }
     void InitializeRuntimeTypeInfo();
 
+    /// The most-derived Type of this instance, via a virtual call.
+    ///
+    /// Unlike GetType(), this does NOT read m_CachedTypeIndex, so it is valid
+    /// even before InitializeRuntimeTypeInfo() has run -- which is exactly the
+    /// property dynamic_cast had and Cast<T> (Runtime/BaseClasses/Cast.h) must
+    /// keep. The virtual itself stays private: access is checked on the static
+    /// type of the expression, so calling it on a `Transform*` would hit
+    /// Transform's private override. This non-virtual wrapper runs inside
+    /// Object, where the private declaration is visible, and then hands the
+    /// result out.
+    const Type* GetMostDerivedType() const { return GetTypeVirtualInternal(); }
+
 protected:
     template<typename TransferFunction>
     void Transfer(TransferFunction& transfer);
