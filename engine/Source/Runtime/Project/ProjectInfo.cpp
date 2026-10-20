@@ -428,6 +428,15 @@ std::filesystem::path ProjectInfo::GetIntermediateCookedRoot() const
     return project_path / interm / "Cooked";
 }
 
+std::filesystem::path ProjectInfo::GetBuildRoot() const
+{
+    if (project_path.empty())
+    {
+        return {};
+    }
+    return project_path / "Build";
+}
+
 std::filesystem::path ProjectInfo::GetDataRoot() const
 {
     if (project_path.empty())

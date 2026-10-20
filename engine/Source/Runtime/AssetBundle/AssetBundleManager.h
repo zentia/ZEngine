@@ -50,6 +50,26 @@ public:
     /// is loaded first so dependencies mount before dependents.
     int MountDirectory(const std::filesystem::path& dir, const std::filesystem::path& manifest_path = {});
 
+    /// Locate the packaged content of a finished build under `build_root`
+    /// (`<build_root>/<Platform>/`), i.e. the `Bundles/` directory and the
+    /// `*.manifest.zasset` that sits next to it.
+    ///
+    /// The platform sub-directory is named after the editor's BuildTarget
+    /// display tag, which a player cannot compute (that enum is editor-only),
+    /// so the content is FOUND rather than constructed: any directory holding
+    /// both a `Bundles/` and a `.manifest.zasset` is a packaged build. Returns
+    /// false when `build_root` holds no packaged content, which is the normal
+    /// case for a launch out of the source tree.
+    bool FindPackagedBuild(const std::filesystem::path& build_root,
+                           std::filesystem::path& out_bundles_dir,
+                           std::filesystem::path& out_manifest_path) const;
+
+    /// Mount everything a packaged build shipped: `FindPackagedBuild()` +
+    /// `MountDirectory()`. Returns the number of bundles mounted, and 0 when
+    /// there is no packaged content -- that is a source-tree launch, not an
+    /// error, so the caller must not treat 0 as failure.
+    int MountBuild(const std::filesystem::path& build_root);
+
     bool Unmount(const std::string& bundle_name);
     void UnmountAll();
 

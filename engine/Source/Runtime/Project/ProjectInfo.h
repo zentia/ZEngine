@@ -199,6 +199,17 @@ public:
     /// SOURCE asset GUID so references resolve in a player build. Gitignored.
     std::filesystem::path GetIntermediateCookedRoot() const;
 
+    /// Packaged-build output root: <project>/Build/. AssetBundleBuilder writes
+    /// one sub-directory per platform in here
+    /// (`<Build>/<Platform>/Bundles/*.zbundle` + the manifest next to it).
+    ///
+    /// The sub-directory name is a *display* tag ("Standalone", "Android", ...)
+    /// minted by the editor's BuildTarget enum, which lives in the editor and
+    /// is therefore invisible to a player. A player locates its content by
+    /// looking for the manifest inside Build/, not by naming the platform --
+    /// see AssetBundleManager::MountBuild().
+    std::filesystem::path GetBuildRoot() const;
+
     // -------------------------------------------------------------------------
     // Data paths. All return absolute paths.
     // Empty `project_path` -> empty result (caller must check).

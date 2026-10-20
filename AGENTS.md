@@ -2199,12 +2199,25 @@ Runtime resolution (added 2026-10-20, PR-PAK1 follow-ups):
   `DestroyProduced()`); objects from `MemoryManager::CreateObject` with
   `MemoryManager::DestroyObject`. Never mix the two.
 
+**The player bootstrap is `ZGame`** (added 2026-10-20), and it is
+unconditional there -- this IS the player:
+`MountPackagedContent()` -> `AssetBundleManager::MountBuild(project_info->GetBuildRoot())`,
+placed between `START_SYSTEM()` and `OpenStartupLevel()` because a level is
+just another asset. `MountBuild` = `FindPackagedBuild` + `MountDirectory`.
+It is deliberately NOT called anywhere else: in the editor a mounted bundle
+shadows real files (rule 3).
+`FindPackagedBuild` **locates** rather than constructs the platform directory:
+`<Build>/<Platform>/Bundles/` plus the `*.manifest.zasset` next to it. The
+platform name comes from `TextureImporterSettings::BuildTarget`, an
+editor-only enum a player cannot compute -- do not "simplify" this into
+`Build/Standalone`. 0 mounted means "launched from the source tree", which is
+a normal outcome, not an error.
+
 Known gaps, in the order they should be closed (PR-PAK2+):
-- **No player bootstrap mounts the bundles yet.** `AssetBundleManager` is
-  registered and `MountDirectory()` works, but nothing calls it in a standalone
-  player -- a shipped build still has to be handed `Assets/` or call it
-  itself. Auto-mounting is deliberately NOT implicit (rule 3: it would shadow
-  real files in the editor). Wire it behind an explicit player flag.
+- **No assembly / install step.** Nothing copies ZGame + the bundles into a
+  shippable layout (no `install(TARGETS ZGame)`, no `install(DIRECTORY
+  asset/)`, no CPack), so "the package" is currently whatever directory the
+  editor happened to write into.
 - **No compression**: v1 writes STORED blobs (the `compression` field and
   `uncompressed_size` are already in the format). ZRuntime links no compressor.
 - No incremental build, no content-hash change detection, no per-asset

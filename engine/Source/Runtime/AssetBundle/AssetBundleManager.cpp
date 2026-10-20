@@ -198,6 +198,74 @@ int AssetBundleManager::MountDirectory(const std::filesystem::path& dir, const s
     return mounted;
 }
 
+bool AssetBundleManager::FindPackagedBuild(const std::filesystem::path& build_root,
+                                          std::filesystem::path& out_bundles_dir,
+                                          std::filesystem::path& out_manifest_path) const
+{
+    std::error_code ec;
+    if (build_root.empty() || !std::filesystem::is_directory(build_root, ec))
+    {
+        return false;
+    }
+
+    std::vector<std::filesystem::path> platform_dirs;
+    for (const auto& entry : std::filesystem::directory_iterator(build_root, ec))
+    {
+        if (entry.is_directory(ec))
+        {
+            platform_dirs.push_back(entry.path());
+        }
+    }
+    // Sorted so the same tree always yields the same answer; a shipped build
+    // carries exactly one platform directory anyway.
+    std::sort(platform_dirs.begin(), platform_dirs.end());
+
+    for (const std::filesystem::path& platform_dir : platform_dirs)
+    {
+        const std::filesystem::path bundles_dir = platform_dir / "Bundles";
+        if (!std::filesystem::is_directory(bundles_dir, ec))
+        {
+            continue;
+        }
+
+        for (const auto& entry : std::filesystem::directory_iterator(platform_dir, ec))
+        {
+            if (!entry.is_regular_file(ec))
+            {
+                continue;
+            }
+            const std::filesystem::path candidate = entry.path();
+            // "<project>.manifest.zasset": the manifest sits NEXT TO Bundles/,
+            // not inside it.
+            if (candidate.extension() == ".zasset" && candidate.stem().extension() == ".manifest")
+            {
+                out_bundles_dir = bundles_dir;
+                out_manifest_path = candidate;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+int AssetBundleManager::MountBuild(const std::filesystem::path& build_root)
+{
+    std::filesystem::path bundles_dir;
+    std::filesystem::path manifest_path;
+    if (!FindPackagedBuild(build_root, bundles_dir, manifest_path))
+    {
+        LOG_INFO(ZPak,
+                 "AssetBundleManager: no packaged content under {}; running from the source tree",
+                 build_root.generic_string());
+        return 0;
+    }
+
+    LOG_INFO(ZPak, "AssetBundleManager: mounting packaged content from {}", bundles_dir.generic_string());
+    const int mounted = MountDirectory(bundles_dir, manifest_path);
+    LOG_INFO(ZPak, "AssetBundleManager: {} bundle(s) mounted", mounted);
+    return mounted;
+}
+
 bool AssetBundleManager::Unmount(const std::string& bundle_name)
 {
     std::lock_guard<std::mutex> lock(m_Mutex);

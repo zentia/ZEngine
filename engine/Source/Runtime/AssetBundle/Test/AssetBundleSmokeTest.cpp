@@ -332,6 +332,29 @@ int main()
         }
     }
 
+    // ---- B9: a player finds the packaged content without being told -------
+    // <Build>/<Platform>/ is named after the editor's BuildTarget enum, which
+    // a player cannot see, so MountBuild locates the manifest instead of
+    // reconstructing the path. This is the step a standalone player has been
+    // missing: nothing mounted the bundles, so a packaged build ran against an
+    // empty source tree.
+    {
+        std::filesystem::path found_bundles;
+        std::filesystem::path found_manifest;
+        Check(bundles->FindPackagedBuild(root / "Build", found_bundles, found_manifest),
+              "B9: the packaged build is found under Build/");
+        Check(found_bundles == bundles_dir && found_manifest == manifest_path,
+              "B9: it reports Bundles/ and the manifest sitting next to it");
+        Check(!bundles->FindPackagedBuild(root / "NotABuild", found_bundles, found_manifest),
+              "B9: a tree with no packaged content reports none");
+
+        bundles->UnmountAll();
+        Check(bundles->MountBuild(root / "Build") == 2, "B9: MountBuild mounts both bundles");
+        Check(bundles->IsMounted("models_hero") && bundles->IsMounted("shared"),
+              "B9: the root bundle and its dependency are both mounted");
+        Check(bundles->ContainsAsset("Textures/albedo.zasset"), "B9: packaged content is reachable again");
+    }
+
     // ---- B7: corruption is detected ---------------------------------------
     {
         std::vector<uint8_t> raw;

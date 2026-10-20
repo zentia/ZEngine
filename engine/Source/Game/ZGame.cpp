@@ -15,6 +15,7 @@
     #include <windows.h>
 #endif
 
+#include "Runtime/AssetBundle/AssetBundleManager.h"
 #include "Runtime/Core/Base/CrashHandler.h"
 #include "Runtime/Function/Framework/GameFramework/GameEngine.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
@@ -148,6 +149,33 @@ namespace
         return 1;
     }
 
+    // A packaged game ships no `Assets/` tree -- its content is the bundles
+    // under `<project>/Build/<Platform>/Bundles`, and nothing else will ever
+    // mount them. This runs before the startup level is opened because a level
+    // is just another asset: mount afterwards and the level would resolve
+    // against an empty source tree instead.
+    //
+    // Not conditional on a flag: this IS the player. Editor-side mounting would
+    // shadow real files (bundles deliberately win over disk), which is why
+    // nothing mounts them there.
+    void MountPackagedContent()
+    {
+        auto* bundles = GET_SYSTEM(AssetBundleManager);
+        if (bundles == nullptr)
+        {
+            return;  // no bundle registry in this configuration
+        }
+
+        const ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
+        const std::filesystem::path build_root = project_info != nullptr ? project_info->GetBuildRoot() : std::filesystem::path();
+        if (build_root.empty())
+        {
+            return;
+        }
+
+        bundles->MountBuild(build_root);
+    }
+
     // UE's GameDefaultMap: the level the packaged game opens on launch.
     //
     // Resolution order:
@@ -230,6 +258,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     RegisterGameRuntime(options.preferred_rhi);
     START_SYSTEM();
 
+    // Packaged content has to be mounted before anything opens an asset.
+    MountPackagedContent();
+
     auto* game_engine = GET_SYSTEM(GameEngine);
     if (game_engine == nullptr)
     {
@@ -285,6 +316,9 @@ int main(int argc, char** argv)
 
     RegisterGameRuntime(options.preferred_rhi);
     START_SYSTEM();
+
+    // Packaged content has to be mounted before anything opens an asset.
+    MountPackagedContent();
 
     auto* game_engine = GET_SYSTEM(GameEngine);
     if (game_engine == nullptr)
