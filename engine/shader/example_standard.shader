@@ -80,6 +80,11 @@ Shader "ZEngine/Standard"
                 float  _Cutoff;
             CBUFFER_END
             
+            TEXTURE2D(_BaseMap);
+            SAMPLER(sampler_BaseMap);
+            TEXTURE2D(_EmissionMap);
+            SAMPLER(sampler_EmissionMap);
+            
             struct appdata
             {
                 float4 position : POSITION;
@@ -124,7 +129,7 @@ Shader "ZEngine/Standard"
                 UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
                 
                 // 采样贴图
-                float4 albedo = SAMPLE_TEXTURE2D(_BaseMap, input.uv) * _BaseColor;
+                float4 albedo = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv) * _BaseColor;
                 
                 #if defined(_ALPHATEST_ON)
                     clip(albedo.a - _Cutoff);
@@ -139,7 +144,7 @@ Shader "ZEngine/Standard"
                 output.GBuffer2 = float4(normal * 0.5 + 0.5, 1);
                 
                 #if defined(_EMISSION)
-                    float4 emission = SAMPLE_TEXTURE2D(_EmissionMap, input.uv) * _EmissionColor;
+                    float4 emission = SAMPLE_TEXTURE2D(_EmissionMap, sampler_EmissionMap, input.uv) * _EmissionColor;
                     output.GBuffer3 = emission.rgb;
                 #else
                     output.GBuffer3 = float3(0, 0, 0);
@@ -178,6 +183,9 @@ Shader "ZEngine/Standard"
                 float4 _EmissionColor;
             CBUFFER_END
             
+            TEXTURE2D(_BaseMap);
+            SAMPLER(sampler_BaseMap);
+            
             struct appdata
             {
                 float4 position : POSITION;
@@ -205,7 +213,7 @@ Shader "ZEngine/Standard"
             
             float4 ForwardFrag(v2f input) : SV_Target
             {
-                float4 albedo = SAMPLE_TEXTURE2D(_BaseMap, input.uv) * _BaseColor;
+                float4 albedo = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv) * _BaseColor;
                 float3 viewDir = normalize(GetCameraPosition() - input.worldPos);
                 float3 normal = normalize(input.normal);
                 

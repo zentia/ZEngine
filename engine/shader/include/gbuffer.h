@@ -1,3 +1,31 @@
+// ---------------------------------------------------------------------------
+// Shared by BOTH shader languages.
+//
+//   * GLSL (engine/shader/glsl/*.frag, compiled by glslangValidator) includes
+//     this file directly and gets the branch below.
+//   * HLSL (ShaderLab HLSLPROGRAM blocks, compiled by DXC) includes
+//     common.h first, which defines ZENGINE_HLSL, so it gets the branch above.
+//     => HLSL consumers MUST include common.h before this file.
+//
+// Both sides describe the same GBuffer layout. The RP1 HLSL pipeline binds
+// gbuffer_a/b/c as SV_Target0..2 (see
+// engine/shader/hlsl/rp1/mesh_gbuffer.frag.hlsl); GBuffer3 below carries
+// emissive and is only written by the ShaderLab deferred example.
+// ---------------------------------------------------------------------------
+
+#ifdef ZENGINE_HLSL
+
+// MRT output of the GBuffer pass.
+struct GBufferOutput
+{
+    float4 GBuffer0 : SV_Target0;
+    float4 GBuffer1 : SV_Target1;
+    float4 GBuffer2 : SV_Target2;
+    float3 GBuffer3 : SV_Target3;
+};
+
+#else  // ---- GLSL ----
+
 struct PGBufferData
 {
     highp vec3  worldNormal;
@@ -62,3 +90,5 @@ void DecodeGBufferData(out PGBufferData OutGBuffer, highp vec4 InGBufferA, highp
 
     OutGBuffer.baseColor = DecodeBaseColor(InGBufferC.rgb);
 }
+
+#endif  // ZENGINE_HLSL

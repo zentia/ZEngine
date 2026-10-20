@@ -48,8 +48,13 @@ set_target_properties(${_smoke_target} PROPERTIES
 
 # Absolute path to this directory, so the test finds its fixtures without
 # depending on CWD.
+#
+# ENGINE_ROOT_DIR is <repo>/engine. engine/shader/*.shader include via
+# project-relative paths (`#include "shader/include/common.h"`), so the
+# include root for those files IS ENGINE_ROOT_DIR -- not .../engine/shader.
 target_compile_definitions(${_smoke_target} PRIVATE
     ZENGINE_SHADERLAB_UNITY_COMPAT_TEST_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    ZENGINE_SHADERLAB_ENGINE_SHADER_DIR="${ENGINE_ROOT_DIR}"
 )
 
 # ZRuntime carries ShaderLabDx12Compiler + DX12ShaderCompiler + the logging

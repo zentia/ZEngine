@@ -36,6 +36,12 @@ namespace
 #define ZENGINE_SHADERLAB_UNITY_COMPAT_TEST_DIR "."
 #endif
 
+// <repo>/engine -- the include root for engine/shader/*.shader, which write
+// project-relative paths (`#include "shader/include/common.h"`).
+#ifndef ZENGINE_SHADERLAB_ENGINE_SHADER_DIR
+#define ZENGINE_SHADERLAB_ENGINE_SHADER_DIR "."
+#endif
+
 std::filesystem::path Fixture(const char* name)
 {
     return std::filesystem::path(ZENGINE_SHADERLAB_UNITY_COMPAT_TEST_DIR) / "unity_compat" / name;
@@ -391,6 +397,87 @@ void RequireIncludeRoot(const std::filesystem::path& shader,
     }
 }
 
+// Regression guard: EVERY pass of EVERY subshader must compile.
+//
+// RunShaderFile()/TryCompile() only ever exercise pass 0, so a broken pass 1
+// (a different entry point, a missing texture declaration, an unported
+// include) would pass the suite unnoticed. example_standard.shader has two
+// passes (GBuffer + ForwardLit) with different fragment entry points and
+// different include sets -- exactly the shape that hides that class of bug.
+//
+// `expected_passes` is checked too: a parser regression that silently drops a
+// pass must not be masked by the loop simply not running.
+void RequireEveryPass(const std::filesystem::path& shader,
+                      const std::filesystem::path& include_root,
+                      size_t expected_passes,
+                      int& checks,
+                      int& failures)
+{
+    ShaderLabDx12Compiler compiler;
+    compiler.SetIncludeDirectory(include_root);
+
+    if (!compiler.LoadFromFile(shader.generic_string()))
+    {
+        ++checks;
+        ++failures;
+        std::cout << "  [FAIL] parse: " << compiler.GetParseError() << "\n";
+        return;
+    }
+
+    auto asset = compiler.GetAsset();
+    if (!asset)
+    {
+        ++checks;
+        ++failures;
+        std::cout << "  [FAIL] no asset produced\n";
+        return;
+    }
+
+    size_t total_passes = 0;
+    for (const auto& sub : asset->subshaders)
+    {
+        total_passes += sub.passes.size();
+    }
+
+    ++checks;
+    if (total_passes != expected_passes)
+    {
+        ++failures;
+        std::cout << "  [FAIL] parsed " << total_passes << " passes, expected "
+                  << expected_passes << "\n";
+        return;
+    }
+    std::cout << "  [ OK ] parsed " << total_passes << " passes\n";
+
+    for (size_t i = 0; i < asset->subshaders.size(); ++i)
+    {
+        for (size_t j = 0; j < asset->subshaders[i].passes.size(); ++j)
+        {
+            const auto& pass = asset->subshaders[i].passes[j];
+            const std::string tag = "SubShader[" + std::to_string(i) + "] Pass[" +
+                                    std::to_string(j) + "] '" + pass.name + "'";
+
+            for (const char* stage : {"vertex", "fragment"})
+            {
+                ++checks;
+                const CompiledShaderModuleDx12 r = compiler.Compile(i, j, stage, {});
+                if (r.success)
+                {
+                    std::cout << "  [ OK ] " << tag << " " << stage << " -> DXIL "
+                              << r.dxil_code.size() << " B, entry '" << r.entry_point
+                              << "'\n";
+                }
+                else
+                {
+                    ++failures;
+                    std::cout << "  [FAIL] " << tag << " " << stage << "\n         "
+                              << r.error_message << "\n";
+                }
+            }
+        }
+    }
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -442,13 +529,47 @@ int main(int argc, char** argv)
         checks,
         failures);
 
-    // Ad-hoc mode: `ShaderLabUnityCompatTest <file> [<file>...]` parses and
-    // compiles pass 0 of each file. Lets you drop a diagnostic fixture in and
-    // re-run without rebuilding.
+    // ------------------------------------------------------------------
+    // 0e. Regression: the engine's own HLSL sample shader must compile, and
+    //     EVERY pass must compile -- not just pass 0.
+    //
+    // This is what pins down the HLSL `shader/include/common.h` (Unity-style
+    // transform/buffer/texture shims) and the dual-language gbuffer.h: if
+    // either regresses, or if a later pass stops compiling, this fails.
+    // ------------------------------------------------------------------
+    std::cout << "\n---- [0e] Regression: engine/shader/example_standard.shader (all passes) ----\n";
+    RequireEveryPass(std::filesystem::path(ZENGINE_SHADERLAB_ENGINE_SHADER_DIR)
+                         / "shader" / "example_standard.shader",
+                     std::filesystem::path(ZENGINE_SHADERLAB_ENGINE_SHADER_DIR),
+                     2,
+                     checks,
+                     failures);
+
+    // Ad-hoc mode: `ShaderLabUnityCompatTest <file> [<file>...] [--include-root=<dir>]`
+    // parses and compiles pass 0 of each file. Lets you drop a diagnostic fixture in
+    // and re-run without rebuilding.
+    //
+    // `--include-root=<dir>` sets the project include root, which is what a shader
+    // writing a project-relative path (`#include "shader/include/common.h"`) needs.
+    // engine/shader/example_standard.shader is exactly that case -- its root is the
+    // engine/ directory.
     if (argc > 1)
     {
+        std::filesystem::path include_root;
         for (int a = 1; a < argc; ++a)
         {
+            const std::string arg = argv[a];
+            const std::string prefix = "--include-root=";
+            if (arg.rfind(prefix, 0) == 0)
+            {
+                include_root = arg.substr(prefix.size());
+                continue;
+            }
+            if (arg.rfind("--", 0) == 0)
+            {
+                continue;
+            }
+
             std::filesystem::path p = argv[a];
             if (!p.is_absolute())
             {
@@ -459,6 +580,10 @@ int main(int argc, char** argv)
             std::cout << "  file: " << p.generic_string() << "\n";
 
             ShaderLabDx12Compiler compiler;
+            if (!include_root.empty())
+            {
+                compiler.SetIncludeDirectory(include_root);
+            }
             if (!compiler.LoadFromFile(p.generic_string()))
             {
                 std::cout << "  [FAIL] parse: " << compiler.GetParseError() << "\n";
