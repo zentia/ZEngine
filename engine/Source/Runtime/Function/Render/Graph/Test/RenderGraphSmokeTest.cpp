@@ -107,6 +107,104 @@ namespace
         }
         return false;
     }
+
+    /// Import a texture the caller owns -- a MainCameraFramebufferResources attachment
+    /// or the swapchain. The graph never allocates, destroys or aliases these; it only
+    /// derives the barriers to reach the state each pass asks for.
+    RGTextureHandle ImportExternal(RenderGraph& graph, const char* name, RGResourceState state)
+    {
+        RGExternalTexture external;
+        external.image = FakeImage();
+        external.view = FakeView();
+        external.state = state;
+        return graph.ImportTexture(name, external);
+    }
+
+    /// The barrier a given pass slot emits for a resource, or nullptr when it emits
+    /// none -- which is the interesting case, because "already in the target state"
+    /// must produce no barrier at all.
+    const RGBarrier* FindBarrier(const RGCompiledGraph& compiled, uint32_t pass_slot, uint32_t resource_index)
+    {
+        const uint32_t begin = compiled.barrier_offsets[pass_slot];
+        const uint32_t end = compiled.barrier_offsets[pass_slot + 1];
+        for (uint32_t i = begin; i < end; ++i)
+        {
+            if (compiled.barriers[i].resource_index == resource_index)
+            {
+                return &compiled.barriers[i];
+            }
+        }
+        return nullptr;
+    }
+
+    // The handles of the RP2 chain, so the assertions can name resources instead of
+    // indexing into them.
+    struct Rp2Handles
+    {
+        RGTextureHandle backup_odd;
+        RGTextureHandle backup_even;
+        RGTextureHandle post_odd;
+        RGTextureHandle swapchain;
+    };
+
+    /// Declare the DX12 desktop frame's RP2 post-process chain in a graph.
+    ///
+    /// This is MainCameraRp2Pass::DrawRP2 (MainCameraRp2Pass.cpp:611) expressed as
+    /// declarations: ColorGrading -> (FXAA) -> CombineUI. Every texture is imported
+    /// because MainCameraFramebufferResources owns them and they survive the frame, so
+    /// the graph allocates nothing here -- what it contributes is the pass order and
+    /// the barriers, which DrawRP2() currently writes by hand with two
+    /// CmdPipelineBarrier calls (MainCameraRp2Pass.cpp:689 and :746).
+    Rp2Handles BuildRp2(RenderGraph& graph, bool enable_fxaa)
+    {
+        Rp2Handles handles;
+
+        // backup_odd arrives as a render target: RP1's forward-lighting pass just wrote
+        // it. backup_even and post_odd are scratch left over from earlier frames, and
+        // the swapchain comes back from Present.
+        handles.backup_odd = ImportExternal(graph, "backup_odd", RGResourceState::RenderTarget);
+        handles.backup_even = ImportExternal(graph, "backup_even", RGResourceState::Undefined);
+        handles.post_odd = ImportExternal(graph, "post_odd", RGResourceState::Undefined);
+        handles.swapchain = ImportExternal(graph, "Swapchain", RGResourceState::Undefined);
+
+        // With FXAA on, ColorGrading renders into post_odd and FXAA resolves it into
+        // backup_even; without it, ColorGrading goes straight to backup_even.
+        const RGTextureHandle grading_output = enable_fxaa ? handles.post_odd : handles.backup_even;
+
+        graph.AddPass(
+            "ColorGrading",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(handles.backup_odd, RGResourceState::ShaderResource);
+                builder.WriteTexture(grading_output, RGResourceState::RenderTarget);
+            },
+            nullptr);
+
+        if (enable_fxaa)
+        {
+            graph.AddPass(
+                "FXAA",
+                RGPassType::Render,
+                [&](RenderGraphBuilder& builder) {
+                    builder.ReadTexture(handles.post_odd, RGResourceState::ShaderResource);
+                    builder.WriteTexture(handles.backup_even, RGResourceState::RenderTarget);
+                },
+                nullptr);
+        }
+
+        // Writes the swapchain, so it is a root: nothing in this chain can be culled.
+        graph.AddPass(
+            "CombineUI",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(handles.backup_odd, RGResourceState::ShaderResource);
+                builder.ReadTexture(handles.backup_even, RGResourceState::ShaderResource);
+                builder.WriteTexture(handles.swapchain, RGResourceState::RenderTarget);
+            },
+            nullptr);
+
+        return handles;
+    }
 }  // namespace
 
 int main()
@@ -686,6 +784,125 @@ int main()
         CHECK(compiled.lifetimes[backbuffer.index].memory_slot == kRGInvalidIndex);
         CHECK(compiled.total_allocated_bytes == 0);
         CHECK(graph.GetResources()[backbuffer.index].external);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The declaration the pipeline integration will actually use. Getting this right
+    // headless is what has to happen before any of it is allowed to touch a pixel:
+    // DrawRP2() cannot be rewritten against a graph whose order and barriers have
+    // never been checked against what the hand-written code does today.
+    // ---------------------------------------------------------------------------------
+    BeginGroup("RP2 post-process chain (no FXAA) matches DrawRP2");
+    {
+        RenderGraph graph("RP2");
+        const Rp2Handles h = BuildRp2(graph, false);
+        const RGCompiledGraph& compiled = graph.Compile();
+        DumpErrors(compiled);
+        CHECK(compiled.valid);
+        CHECK(compiled.errors.empty());
+
+        const std::vector<std::string> names = OrderNames(graph, compiled);
+        CHECK(names.size() == 2);
+        CHECK(names[0] == "ColorGrading");
+        CHECK(names[1] == "CombineUI");
+        CHECK(compiled.culled_passes.empty());
+
+        // Every texture is imported, so the graph owns nothing and aliases nothing:
+        // the honest statement about today's RP2 is that it has no transient to reuse.
+        CHECK(compiled.total_allocated_bytes == 0);
+        CHECK(compiled.lifetimes[h.backup_odd.index].memory_slot == kRGInvalidIndex);
+        CHECK(compiled.lifetimes[h.backup_even.index].memory_slot == kRGInvalidIndex);
+        CHECK(compiled.lifetimes[h.swapchain.index].memory_slot == kRGInvalidIndex);
+
+        // ColorGrading: backup_odd RenderTarget -> ShaderResource, and backup_even
+        // Undefined -> RenderTarget.
+        const RGBarrier* odd_to_srv = FindBarrier(compiled, 0, h.backup_odd.index);
+        CHECK(odd_to_srv != nullptr);
+        CHECK(odd_to_srv->before == RGResourceState::RenderTarget);
+        CHECK(odd_to_srv->after == RGResourceState::ShaderResource);
+        const RGBarrier* even_to_rtv = FindBarrier(compiled, 0, h.backup_even.index);
+        CHECK(even_to_rtv != nullptr);
+        CHECK(even_to_rtv->before == RGResourceState::Undefined);
+        CHECK(even_to_rtv->after == RGResourceState::RenderTarget);
+
+        // CombineUI: backup_odd is already in ShaderResource, so it gets no second
+        // barrier. This "already in the target state" rule is what stands in for the
+        // hand-written visibility-only barrier at MainCameraRp2Pass.cpp:689, whose
+        // oldLayout and newLayout are the same.
+        CHECK(FindBarrier(compiled, 1, h.backup_odd.index) == nullptr);
+        const RGBarrier* even_to_srv = FindBarrier(compiled, 1, h.backup_even.index);
+        CHECK(even_to_srv != nullptr);
+        CHECK(even_to_srv->before == RGResourceState::RenderTarget);
+        CHECK(even_to_srv->after == RGResourceState::ShaderResource);
+        const RGBarrier* swap_to_rtv = FindBarrier(compiled, 1, h.swapchain.index);
+        CHECK(swap_to_rtv != nullptr);
+        CHECK(swap_to_rtv->before == RGResourceState::Undefined);
+        CHECK(swap_to_rtv->after == RGResourceState::RenderTarget);
+
+        CHECK(compiled.barriers.size() == 4);
+    }
+
+    // ---------------------------------------------------------------------------------
+    BeginGroup("RP2 post-process chain (FXAA) inserts the resolve pass");
+    {
+        RenderGraph graph("RP2-FXAA");
+        const Rp2Handles h = BuildRp2(graph, true);
+        const RGCompiledGraph& compiled = graph.Compile();
+        DumpErrors(compiled);
+        CHECK(compiled.valid);
+        CHECK(compiled.errors.empty());
+
+        const std::vector<std::string> names = OrderNames(graph, compiled);
+        CHECK(names.size() == 3);
+        CHECK(names[0] == "ColorGrading");
+        CHECK(names[1] == "FXAA");
+        CHECK(names[2] == "CombineUI");
+        CHECK(compiled.culled_passes.empty());
+
+        // With FXAA on, ColorGrading targets post_odd and leaves backup_even alone
+        // until FXAA resolves into it. That is the whole point of the extra texture,
+        // and the graph has to agree.
+        CHECK(FindBarrier(compiled, 0, h.post_odd.index) != nullptr);
+        CHECK(FindBarrier(compiled, 0, h.backup_even.index) == nullptr);
+
+        const RGBarrier* post_to_srv = FindBarrier(compiled, 1, h.post_odd.index);
+        CHECK(post_to_srv != nullptr);
+        CHECK(post_to_srv->before == RGResourceState::RenderTarget);
+        CHECK(post_to_srv->after == RGResourceState::ShaderResource);
+        CHECK(FindBarrier(compiled, 1, h.backup_even.index) != nullptr);
+
+        // CombineUI still reads both, and backup_odd still needs only one barrier.
+        CHECK(FindBarrier(compiled, 2, h.backup_odd.index) == nullptr);
+        const RGBarrier* swap_to_rtv = FindBarrier(compiled, 2, h.swapchain.index);
+        CHECK(swap_to_rtv != nullptr);
+        CHECK(swap_to_rtv->after == RGResourceState::RenderTarget);
+
+        CHECK(compiled.barriers.size() == 6);
+    }
+
+    // ---------------------------------------------------------------------------------
+    BeginGroup("RP2's documented SRV/RTV hazard is an error, not a comment");
+    {
+        // DrawRP2() carries a comment warning that the color-grading source and target
+        // must be different textures, because loadOp=CLEAR would zero the target before
+        // the fragment shader samples it (MainCameraRp2Pass.cpp:640). In the graph that
+        // stops being something a reader has to notice: reading and writing one resource
+        // in the same pass is rejected outright.
+        RenderGraph graph("RP2-InPlace");
+        const RGTextureHandle scene = ImportExternal(graph, "scene", RGResourceState::RenderTarget);
+        graph.AddPass(
+            "GradeInPlace",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(scene, RGResourceState::ShaderResource);
+                builder.WriteTexture(scene, RGResourceState::RenderTarget);
+            },
+            nullptr,
+            RGPassFlags::NeverCull);
+
+        const RGCompiledGraph& compiled = graph.Compile();
+        CHECK(!compiled.valid);
+        CHECK(!compiled.errors.empty());
     }
 
     std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);
