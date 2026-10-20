@@ -36,27 +36,27 @@ namespace Runtime
         /// Builds AudioPlayParams from the serialized fields + current transform.
         AudioPlayParams BuildPlayParams() const;
 
-        ZPROPERTY()
+        ZPROPERTY(meta=(DisplayName="Audio Clip", Tooltip="Asset path of the clip to play."))
         eastl::string m_ClipPath;
         /// Empty = master bus. Resolved by name on every Play().
-        ZPROPERTY()
+        ZPROPERTY(meta=(DisplayName="Output Bus", Tooltip="Mixer bus name; empty routes to the master bus."))
         eastl::string m_BusName;
-        ZPROPERTY()
+        ZPROPERTY(meta=(ClampMin=0, ClampMax=1))
         float m_Volume {1.0f};
-        ZPROPERTY()
+        ZPROPERTY(meta=(Tooltip="Playback rate multiplier (1 = original pitch)."))
         float m_Pitch {1.0f};
         ZPROPERTY()
         bool m_Loop {false};
         ZPROPERTY()
         bool m_PlayOnAwake {false};
         /// 0 = 2D, 1 = fully spatial.
-        ZPROPERTY()
+        ZPROPERTY(meta=(Category="3D Sound", Tooltip="0 = 2D, 1 = fully spatial.", ClampMin=0, ClampMax=1))
         float m_SpatialBlend {1.0f};
-        ZPROPERTY()
+        ZPROPERTY(meta=(Category="3D Sound", Tooltip="Distance below which the sound is not attenuated.", ClampMin=0))
         float m_MinDistance {1.0f};
-        ZPROPERTY()
+        ZPROPERTY(meta=(Category="3D Sound", Tooltip="Distance beyond which the sound stops attenuating further.", ClampMin=0))
         float m_MaxDistance {50.0f};
-        ZPROPERTY()
+        ZPROPERTY(meta=(DisplayName="Fade In (s)", ClampMin=0))
         float m_FadeInSeconds {0.0f};
         ZPROPERTY()
         int32_t m_Priority {0};

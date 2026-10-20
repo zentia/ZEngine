@@ -15,6 +15,7 @@
 #include "Editor/AssetPipeline/DataTableImporter/DataTableImporter.h"       // native DataTable inspector
 #include "Editor/AssetPipeline/DataTableImporter/XlsxImporter.h"            // native DataTable inspector (xlsx)
 #include "Runtime/BaseClasses/ObjectManager.h"                              // native DataTable inspector
+#include "Runtime/BaseClasses/PropertyMeta.h"                               // ZPROPERTY(meta=(...)) registry
 #include "Runtime/BaseClasses/TypeManager.h"                                // Type / TypeOf (DataTable)
 #include "Runtime/Core/Memory/MemoryManager.h"                              // MemoryManager::DestroyObject
 #include "Runtime/Resource/Asset/Data/DataTable.h"                          // DataTableBase
@@ -37,6 +38,7 @@
 #include "ZSlate/Widgets/Layout/SScrollBox.h"
 #include "ZSlate/Widgets/SDropTarget.h"  // Content Browser asset drop targets
 #include "ZSlate/Widgets/SSlider.h"   // compression-quality slider
+#include "ZSlate/Widgets/STooltip.h"  // hover tooltips for meta=(Tooltip="...")
 #include "ZSlate/Widgets/Text/STextBlock.h"
 #include "Runtime/UI/Core/Font.h"  // native Font asset inspector
 
@@ -71,11 +73,14 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 using namespace ZSlate;
 using ZSlateInspectorDetail::ComponentEnableBinding;
 using ZSlateInspectorDetail::FieldBinding;
+using ZSlateInspectorDetail::FieldEditGate;
 using ZSlateInspectorDetail::FieldKind;
 
 namespace
@@ -478,6 +483,152 @@ namespace
         return (static_cast<uint32_t>(flags) & static_cast<uint32_t>(flag)) != 0;
     }
 
+    // --- ZPROPERTY(meta=(...)) support ---------------------------------------
+    //
+    // ZHeaderTool emits one static ZPropertyMeta table per annotated class, keyed
+    // by the SERIALIZED field name -- the exact string a TypeTree node carries --
+    // so a row can look its metadata up without any extra plumbing.
+
+    const ZPropertyMeta* FindFieldMeta(const Type* type, const char* serialized_name)
+    {
+        return type == nullptr ? nullptr : PropertyMetaRegistry::Find(type, serialized_name);
+    }
+
+    /// Row label: meta=(DisplayName="..") wins, else the usual prettified name.
+    std::string MakeFieldLabel(const ZPropertyMeta* meta, const char* serialized_name)
+    {
+        if (meta != nullptr && meta->displayName != nullptr && meta->displayName[0] != '\0')
+            return meta->displayName;
+        return EditorPropertyDrawer::MakeDisplayLabel(serialized_name);
+    }
+
+    /// Enforce meta=(ClampMin=.., ClampMax=..) right after a scalar write. The
+    /// tool rejects clamps on non-numeric properties, so Vec3/Str/Bool never
+    /// reach here with bounds set.
+    void ApplyClamp(FieldKind kind, void* a, const ZPropertyMeta* meta)
+    {
+        if (meta == nullptr || (!meta->hasClampMin && !meta->hasClampMax))
+            return;
+        switch (kind)
+        {
+            case FieldKind::Float:
+            {
+                float& v = *static_cast<float*>(a);
+                v = static_cast<float>(meta->Clamp(v));
+                break;
+            }
+            case FieldKind::Int:
+            {
+                int& v = *static_cast<int*>(a);
+                v = static_cast<int>(meta->Clamp(v));
+                break;
+            }
+            case FieldKind::UInt:
+            {
+                uint32_t& v = *static_cast<uint32_t*>(a);
+                v = static_cast<uint32_t>(meta->Clamp(v));
+                break;
+            }
+            case FieldKind::UInt8:
+            {
+                uint8_t& v = *static_cast<uint8_t*>(a);
+                v = static_cast<uint8_t>(meta->Clamp(v));
+                break;
+            }
+            default:
+                break;
+        }
+    }
+
+    /// True when the row may be edited: no EditCondition, or the gating bool
+    /// (optionally negated) currently reads true. `c` is the owning component.
+    bool IsGateOpen(const FieldEditGate& gate, const Component* c)
+    {
+        if (!gate.active || c == nullptr)
+            return true;
+        const bool value = *reinterpret_cast<const bool*>(reinterpret_cast<const char*>(c) + gate.condition_offset);
+        return gate.negate ? !value : value;
+    }
+
+    // Depth-first search for a `bool` serialized field by name; returns its byte
+    // offset inside the component so the Inspector can re-read it every frame.
+    bool FindBoolFieldOffset(const TypeTreeIterator& node, const char* name, uint32_t& out_offset)
+    {
+        for (TypeTreeIterator child = node.Children(); !child.IsNull(); child = child.Next())
+        {
+            if (child->IsArray())
+                continue;
+            if (child.HasByteOffset() && child.Name() == name && child.Type() == "bool")
+            {
+                out_offset = child.ByteOffset();
+                return true;
+            }
+            if (FindBoolFieldOffset(child, name, out_offset))
+                return true;
+        }
+        return false;
+    }
+
+    /// Resolve meta=(EditCondition="[!]m_Flag") to a byte offset. Unresolved
+    /// conditions (field missing / not a bool) leave the gate inactive -- the
+    /// tool already rejects those at generate time, so this is belt-and-braces.
+    FieldEditGate MakeEditGate(const ZPropertyMeta* meta, const TypeTreeIterator& root)
+    {
+        FieldEditGate gate;
+        if (meta == nullptr || meta->editCondition == nullptr || meta->editCondition[0] == '\0')
+            return gate;
+        const char* name = meta->editCondition;
+        if (name[0] == '!')
+        {
+            gate.negate = true;
+            ++name;
+        }
+        uint32_t offset = 0;
+        if (!FindBoolFieldOffset(root, name, offset))
+            return FieldEditGate {};
+        gate.condition_offset = offset;
+        gate.active = true;
+        return gate;
+    }
+
+    // --- hover tooltips ------------------------------------------------------
+    //
+    // ZSlate has no parent links, and the hovered widget is the DEEPEST one under
+    // the cursor (a label's STextBlock, an axis box, ...), so identity matching
+    // against a row would miss. We therefore keep one entry per annotated row and
+    // hit-test the row's cached geometry against the pointer -- which also makes
+    // the whole row (padding included) a tooltip target.
+
+    struct TooltipEntry
+    {
+        std::weak_ptr<SWidget> row;
+        std::string text;
+    };
+    std::vector<TooltipEntry> s_tooltips;
+
+    void RegisterRowTooltip(const std::shared_ptr<SWidget>& row, const char* text)
+    {
+        if (row == nullptr || text == nullptr || text[0] == '\0')
+            return;
+        s_tooltips.push_back(TooltipEntry {row, std::string(text)});
+    }
+
+    const std::string* FindTooltipAt(const ZSlate::Vector2& mouse)
+    {
+        for (const TooltipEntry& entry : s_tooltips)
+        {
+            const std::shared_ptr<SWidget> row = entry.row.lock();
+            if (row == nullptr)
+                continue;
+            const FGeometry& geom = row->GetCachedGeometry();
+            if (geom.LocalSize.x <= 0.0f || geom.LocalSize.y <= 0.0f)
+                continue;
+            if (geom.IsUnderLocation(mouse))
+                return &entry.text;
+        }
+        return nullptr;
+    }
+
     std::shared_ptr<SBox> MakeLabelBox(const std::string& text, float scale, float width)
     {
         auto box = std::make_shared<SBox>();
@@ -487,39 +638,62 @@ namespace
         return box;
     }
 
-    void AddFieldRow(const std::shared_ptr<SVerticalBox>& column,
-                     const std::string& label,
-                     const std::shared_ptr<SWidget>& content,
-                     int depth,
-                     float scale)
+    /// Returns the row widget (so callers can attach a tooltip / dim the label).
+    std::shared_ptr<SHorizontalBox> AddFieldRow(const std::shared_ptr<SVerticalBox>& column,
+                                               const std::string& label,
+                                               const std::shared_ptr<SWidget>& content,
+                                               int depth,
+                                               float scale,
+                                               std::shared_ptr<STextBlock>* out_label = nullptr)
     {
         // Wide enough for "Compression Quality" / "Generate Mip Maps" at 14px.
         constexpr float kLabelColumnWidth = 168.0f;
         auto row = std::make_shared<SHorizontalBox>();
-        row->AddSlot(MakeLabelBox(label, scale, kLabelColumnWidth * scale))
-            .AutoSize()
-            .SetVAlign(EVerticalAlignment::Center);
+        std::shared_ptr<STextBlock> label_text = MakeText(label.c_str(), 14.0f * scale, kLabelColor);
+        auto label_box = std::make_shared<SBox>();
+        label_box->WidthOverride = kLabelColumnWidth * scale;
+        label_box->VAlign = EVerticalAlignment::Center;
+        label_box->SetContent(label_text);
+        row->AddSlot(label_box).AutoSize().SetVAlign(EVerticalAlignment::Center);
         row->AddSlot(content).Fill(1.0f).SetVAlign(EVerticalAlignment::Center);
         column->AddSlot(row).AutoSize().SetPadding(ZSlate::FMargin(depth * 12.0f * scale, 0.0f, 0.0f, 4.0f * scale));
+        if (out_label != nullptr)
+            *out_label = label_text;
+        return row;
     }
 
-    std::shared_ptr<SEditableTextBox> MakeScalarBox(FieldKind kind, size_t comp_index, uint32_t offset, float scale)
+    std::shared_ptr<SEditableTextBox> MakeScalarBox(FieldKind kind,
+                                                    size_t comp_index,
+                                                    uint32_t offset,
+                                                    float scale,
+                                                    const ZPropertyMeta* meta = nullptr,
+                                                    const FieldEditGate& gate = FieldEditGate {})
     {
         auto f = std::make_shared<SEditableTextBox>();
         f->FontSize = 14.0f * scale;
         f->MinWidth = 60.0f * scale;
         f->Padding = ZSlate::FMargin(6.0f * scale, 3.0f * scale);
-        f->OnTextCommitted = [kind, comp_index, offset](const std::string& s) {
+        f->OnTextCommitted = [kind, comp_index, offset, meta, gate](const std::string& s) {
             Component* c = ResolveSelectedComponent(comp_index);
-            if (c == nullptr)
+            if (c == nullptr || !IsGateOpen(gate, c))
                 return;
             EditorUndo::ScopedTransaction undo_scope(MakeComponentUndoTitle(c));
             EditorUndo::RecordComponent(c);
-            WriteScalar(kind, reinterpret_cast<char*>(c) + offset, s);
+            void* a = reinterpret_cast<char*>(c) + offset;
+            WriteScalar(kind, a, s);
+            ApplyClamp(kind, a, meta);
             c->OnSerializedFieldsUpdated();
         };
         return f;
     }
+
+    // Per-component build context: the component's Type* (meta lookup key) and
+    // the root of its TypeTree (EditCondition offset resolution).
+    struct FieldBuildContext
+    {
+        const Type* type {nullptr};
+        TypeTreeIterator root;
+    };
 
     // Forward decl for recursion.
     void BuildFieldChildren(const std::shared_ptr<SVerticalBox>& column,
@@ -527,14 +701,16 @@ namespace
                             std::vector<FieldBinding>& bindings,
                             size_t comp_index,
                             float scale,
-                            int depth);
+                            int depth,
+                            const FieldBuildContext& ctx);
 
     void BuildFieldNode(const std::shared_ptr<SVerticalBox>& column,
                         const TypeTreeIterator& node,
                         std::vector<FieldBinding>& bindings,
                         size_t comp_index,
                         float scale,
-                        int depth)
+                        int depth,
+                        const FieldBuildContext& ctx)
     {
         if (HasMetaFlag(node.MetaFlags(), HideInEditorMask))
             return;
@@ -544,7 +720,20 @@ namespace
             return;
 
         const bool read_only = HasMetaFlag(node.MetaFlags(), DisallowSerializedPropertyModification);
-        const std::string label = EditorPropertyDrawer::MakeDisplayLabel(node.Name().c_str());
+        const ZPropertyMeta* meta = FindFieldMeta(ctx.type, node.Name().c_str());
+        const std::string label = MakeFieldLabel(meta, node.Name().c_str());
+        const FieldEditGate gate = MakeEditGate(meta, ctx.root);
+
+        // Every row of an annotated field gets its tooltip registered; rows keep
+        // a pointer to their label so a closed EditCondition can dim it.
+        std::shared_ptr<STextBlock> row_label;
+        auto finish_row = [&](const std::shared_ptr<SHorizontalBox>& row, FieldBinding& b) {
+            RegisterRowTooltip(row, meta != nullptr ? meta->tooltip : nullptr);
+            b.meta = meta;
+            b.gate = gate;
+            b.row_label = row_label;
+            bindings.push_back(b);
+        };
 
         if (node.HasByteOffset())
         {
@@ -558,14 +747,14 @@ namespace
                     if (read_only)
                     {
                         auto value_label = MakeText("", 14.0f * scale, kValueColor);
-                        AddFieldRow(column, label, value_label, depth, scale);
+                        auto row = AddFieldRow(column, label, value_label, depth, scale, &row_label);
                         FieldBinding b;
                         b.kind = kind;
                         b.component_index = comp_index;
                         b.byte_offset = offset;
                         b.read_only = true;
                         b.label = value_label;
-                        bindings.push_back(b);
+                        finish_row(row, b);
                         return;
                     }
 
@@ -590,9 +779,9 @@ namespace
                     SEditableTextBox* p0 = boxes[0].get();
                     SEditableTextBox* p1 = boxes[1].get();
                     SEditableTextBox* p2 = boxes[2].get();
-                    auto commit = [comp_index, offset, p0, p1, p2](const std::string&) {
+                    auto commit = [comp_index, offset, p0, p1, p2, gate](const std::string&) {
                         Component* c = ResolveSelectedComponent(comp_index);
-                        if (c == nullptr)
+                        if (c == nullptr || !IsGateOpen(gate, c))
                             return;
                         EditorUndo::ScopedTransaction undo_scope(MakeComponentUndoTitle(c));
                         EditorUndo::RecordComponent(c);
@@ -605,13 +794,13 @@ namespace
                     for (int a = 0; a < 3; ++a)
                         boxes[static_cast<size_t>(a)]->OnTextCommitted = commit;
 
-                    AddFieldRow(column, label, axis_row, depth, scale);
+                    auto row = AddFieldRow(column, label, axis_row, depth, scale, &row_label);
                     FieldBinding b;
                     b.kind = kind;
                     b.component_index = comp_index;
                     b.byte_offset = offset;
                     b.boxes = boxes;
-                    bindings.push_back(b);
+                    finish_row(row, b);
                     return;
                 }
 
@@ -620,34 +809,34 @@ namespace
                     if (read_only)
                     {
                         auto value_label = MakeText("", 14.0f * scale, kValueColor);
-                        AddFieldRow(column, label, value_label, depth, scale);
+                        auto row = AddFieldRow(column, label, value_label, depth, scale, &row_label);
                         FieldBinding b;
                         b.kind = kind;
                         b.component_index = comp_index;
                         b.byte_offset = offset;
                         b.read_only = true;
                         b.label = value_label;
-                        bindings.push_back(b);
+                        finish_row(row, b);
                         return;
                     }
                     auto check = std::make_shared<SCheckBox>();
                     check->BoxSize = 16.0f * scale;
-                    check->OnCheckStateChanged = [comp_index, offset](bool v) {
+                    check->OnCheckStateChanged = [comp_index, offset, gate](bool v) {
                         Component* c = ResolveSelectedComponent(comp_index);
-                        if (c == nullptr)
+                        if (c == nullptr || !IsGateOpen(gate, c))
                             return;
                         EditorUndo::ScopedTransaction undo_scope(MakeComponentUndoTitle(c));
                         EditorUndo::RecordComponent(c);
                         *reinterpret_cast<bool*>(reinterpret_cast<char*>(c) + offset) = v;
                         c->OnSerializedFieldsUpdated();
                     };
-                    AddFieldRow(column, label, check, depth, scale);
+                    auto row = AddFieldRow(column, label, check, depth, scale, &row_label);
                     FieldBinding b;
                     b.kind = kind;
                     b.component_index = comp_index;
                     b.byte_offset = offset;
                     b.check = check;
-                    bindings.push_back(b);
+                    finish_row(row, b);
                     return;
                 }
 
@@ -655,24 +844,24 @@ namespace
                 if (read_only)
                 {
                     auto value_label = MakeText("", 14.0f * scale, kValueColor);
-                    AddFieldRow(column, label, value_label, depth, scale);
+                    auto row = AddFieldRow(column, label, value_label, depth, scale, &row_label);
                     FieldBinding b;
                     b.kind = kind;
                     b.component_index = comp_index;
                     b.byte_offset = offset;
                     b.read_only = true;
                     b.label = value_label;
-                    bindings.push_back(b);
+                    finish_row(row, b);
                     return;
                 }
-                auto box = MakeScalarBox(kind, comp_index, offset, scale);
-                AddFieldRow(column, label, box, depth, scale);
+                auto box = MakeScalarBox(kind, comp_index, offset, scale, meta, gate);
+                auto row = AddFieldRow(column, label, box, depth, scale, &row_label);
                 FieldBinding b;
                 b.kind = kind;
                 b.component_index = comp_index;
                 b.byte_offset = offset;
                 b.boxes[0] = box;
-                bindings.push_back(b);
+                finish_row(row, b);
                 return;
             }
 
@@ -680,13 +869,17 @@ namespace
             // recognized scalar type, ...). Show the type read-only so the layout
             // stays meaningful and the gap is obvious.
             const std::string placeholder = std::string("<") + type_name + ">";
-            AddFieldRow(column, label, MakeText(placeholder.c_str(), 13.0f * scale, kDimColor), depth, scale);
+            auto row = AddFieldRow(column, label, MakeText(placeholder.c_str(), 13.0f * scale, kDimColor), depth, scale,
+                                   &row_label);
+            RegisterRowTooltip(row, meta != nullptr ? meta->tooltip : nullptr);
             return;
         }
 
         if (node->IsArray())
         {
-            AddFieldRow(column, label, MakeText("<array> (not editable)", 13.0f * scale, kDimColor), depth, scale);
+            auto row = AddFieldRow(column, label, MakeText("<array> (not editable)", 13.0f * scale, kDimColor), depth, scale,
+                                   &row_label);
+            RegisterRowTooltip(row, meta != nullptr ? meta->tooltip : nullptr);
             return;
         }
 
@@ -697,12 +890,14 @@ namespace
                 .AutoSize()
                 .SetPadding(ZSlate::FMargin(depth * 12.0f * scale, 4.0f * scale, 0.0f, 2.0f * scale));
             if (depth < 8)
-                BuildFieldChildren(column, node, bindings, comp_index, scale, depth + 1);
+                BuildFieldChildren(column, node, bindings, comp_index, scale, depth + 1, ctx);
             return;
         }
 
-        AddFieldRow(column, label, MakeText((std::string("<") + node.Type().c_str() + ">").c_str(), 13.0f * scale, kDimColor),
-                    depth, scale);
+        auto row = AddFieldRow(column, label, MakeText((std::string("<") + node.Type().c_str() + ">").c_str(),
+                                                       13.0f * scale, kDimColor),
+                               depth, scale, &row_label);
+        RegisterRowTooltip(row, meta != nullptr ? meta->tooltip : nullptr);
     }
 
     void BuildFieldChildren(const std::shared_ptr<SVerticalBox>& column,
@@ -710,10 +905,81 @@ namespace
                             std::vector<FieldBinding>& bindings,
                             size_t comp_index,
                             float scale,
-                            int depth)
+                            int depth,
+                            const FieldBuildContext& ctx)
     {
         for (TypeTreeIterator child = parent.Children(); !child.IsNull(); child = child.Next())
-            BuildFieldNode(column, child, bindings, comp_index, scale, depth);
+            BuildFieldNode(column, child, bindings, comp_index, scale, depth, ctx);
+    }
+
+    /// Draw one meta=(Category="..") group of depth-0 fields.
+    void BuildCategoryGroup(const std::shared_ptr<SVerticalBox>& column,
+                            const char* category,
+                            const std::vector<TypeTreeIterator>& fields,
+                            std::vector<FieldBinding>& bindings,
+                            size_t comp_index,
+                            float scale,
+                            const FieldBuildContext& ctx)
+    {
+        if (category != nullptr && category[0] != '\0')
+        {
+            column->AddSlot(MakeText(category, 13.0f * scale, kDimColor))
+                .AutoSize()
+                .SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 2.0f * scale));
+        }
+        for (const TypeTreeIterator& field : fields)
+            BuildFieldNode(column, field, bindings, comp_index, scale, 1, ctx);
+    }
+
+    /// Depth-0 field list, grouped by meta=(Category="..") (ungrouped first, then
+    /// one labelled block per category in first-seen order). Without any category
+    /// annotation this is exactly the old flat walk.
+    void BuildComponentFields(const std::shared_ptr<SVerticalBox>& column,
+                              const TypeTreeIterator& root,
+                              std::vector<FieldBinding>& bindings,
+                              size_t comp_index,
+                              float scale,
+                              const FieldBuildContext& ctx)
+    {
+        std::vector<TypeTreeIterator> ungrouped;
+        std::vector<std::pair<std::string, std::vector<TypeTreeIterator>>> groups;
+        bool any_category = false;
+
+        for (TypeTreeIterator child = root.Children(); !child.IsNull(); child = child.Next())
+        {
+            const ZPropertyMeta* meta = FindFieldMeta(ctx.type, child.Name().c_str());
+            const char* category = (meta != nullptr) ? meta->category : nullptr;
+            if (category == nullptr || category[0] == '\0')
+            {
+                ungrouped.push_back(child);
+                continue;
+            }
+            any_category = true;
+            auto it = std::find_if(groups.begin(), groups.end(),
+                                   [category](const std::pair<std::string, std::vector<TypeTreeIterator>>& g) {
+                                       return g.first == category;
+                                   });
+            if (it == groups.end())
+            {
+                groups.emplace_back(std::string(category), std::vector<TypeTreeIterator> {});
+                groups.back().second.push_back(child);
+            }
+            else
+            {
+                it->second.push_back(child);
+            }
+        }
+
+        if (!any_category)
+        {
+            BuildFieldChildren(column, root, bindings, comp_index, scale, 0, ctx);
+            return;
+        }
+
+        for (const TypeTreeIterator& field : ungrouped)
+            BuildFieldNode(column, field, bindings, comp_index, scale, 0, ctx);
+        for (const auto& group : groups)
+            BuildCategoryGroup(column, group.first.c_str(), group.second, bindings, comp_index, scale, ctx);
     }
 
     // --- BaseRenderer custom drawing -----------------------------------------
@@ -1183,7 +1449,10 @@ namespace
             column->AddSlot(MakeText("Unable to build serialized type tree.", 13.0f * scale, kDimColor)).AutoSize();
             return;
         }
-        BuildFieldChildren(column, type_tree.Root(), bindings, comp_index, scale, 0);
+        FieldBuildContext ctx;
+        ctx.type = component->GetType();
+        ctx.root = type_tree.Root();
+        BuildComponentFields(column, ctx.root, bindings, comp_index, scale, ctx);
     }
 }  // namespace
 
@@ -1203,6 +1472,7 @@ void ZSlateInspectorWindow::BuildEmpty(float scale)
     m_RotationFields = {};
     m_ScaleFields = {};
     m_Bindings.clear();
+    s_tooltips.clear();  // rows are rebuilt below; drop the stale widget refs
 
     auto msg = MakeText("Nothing selected", 16.0f * scale, kDimColor);
     msg->Alignment = ZSlate::TextAnchor::MiddleCenter;
@@ -1219,6 +1489,7 @@ void ZSlateInspectorWindow::BuildEmpty(float scale)
 void ZSlateInspectorWindow::BuildFontAsset(const std::filesystem::path& asset_path, float scale)
 {
     m_Bindings.clear();
+    s_tooltips.clear();  // rows are rebuilt below; drop the stale widget refs
     m_NameLabel = nullptr;
     m_PositionFields = {};
     m_RotationFields = {};
@@ -1292,6 +1563,7 @@ void ZSlateInspectorWindow::BuildFontAsset(const std::filesystem::path& asset_pa
 void ZSlateInspectorWindow::BuildGenericAsset(const std::filesystem::path& asset_path, float scale)
 {
     m_Bindings.clear();
+    s_tooltips.clear();  // rows are rebuilt below; drop the stale widget refs
     m_NameLabel = nullptr;
     m_PositionFields = {};
     m_RotationFields = {};
@@ -1357,6 +1629,7 @@ std::shared_ptr<SWidget> ZSlateInspectorWindow::MakeComboButton(const std::strin
 void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset_path, float scale)
 {
     m_Bindings.clear();
+    s_tooltips.clear();  // rows are rebuilt below; drop the stale widget refs
     m_NameLabel = nullptr;
     m_PositionFields = {};
     m_RotationFields = {};
@@ -1692,6 +1965,7 @@ void ZSlateInspectorWindow::BuildTextureAsset(const std::filesystem::path& asset
 void ZSlateInspectorWindow::BuildMaterialAsset(const std::filesystem::path& asset_path, float scale)
 {
     m_Bindings.clear();
+    s_tooltips.clear();  // rows are rebuilt below; drop the stale widget refs
 
     Material& s_mat = MatRef();
     ShaderRes& s_mat_shader = MatShaderRef();
@@ -2055,6 +2329,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
                                                 float scale)
 {
     m_Bindings.clear();
+    s_tooltips.clear();  // rows are rebuilt below; drop the stale widget refs
 
     auto wrap = [this, scale](const std::shared_ptr<SVerticalBox>& col) {
         auto scroll = std::make_shared<SScrollBox>();
@@ -2544,6 +2819,7 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
 void ZSlateInspectorWindow::BuildShaderAsset(const std::filesystem::path& asset_path, float scale)
 {
     m_Bindings.clear();
+    s_tooltips.clear();  // rows are rebuilt below; drop the stale widget refs
     // The shader inspector widget tree is built inside InspectorShaderInspector's
     // TU (where the ShaderLab parse / source-IO helpers live). The request_rebuild
     // hook lets its action buttons (Refresh / Reimport / Compile / Save) force a
@@ -2554,6 +2830,7 @@ void ZSlateInspectorWindow::BuildShaderAsset(const std::filesystem::path& asset_
 void ZSlateInspectorWindow::BuildForObject(float scale)
 {
     m_Bindings.clear();
+    s_tooltips.clear();  // rows are rebuilt below; drop the stale widget refs
 
     auto make_field = [this, scale](int which, int axis) {
         auto f = std::make_shared<SEditableTextBox>();
@@ -2746,6 +3023,11 @@ void ZSlateInspectorWindow::SyncBindings()
             continue;
         void* a = reinterpret_cast<char*>(c) + b.byte_offset;
 
+        // meta=(EditCondition="[!]flag"): dim the row label and let the commit
+        // lambdas refuse writes while the condition is closed.
+        if (b.gate.active && b.row_label)
+            b.row_label->Color = IsGateOpen(b.gate, c) ? kLabelColor : kDimColor;
+
         if (b.read_only && b.label)
         {
             b.label->Text = FormatScalar(b.kind, a);
@@ -2910,6 +3192,23 @@ void ZSlateInspectorWindow::OnGUI()
         renderer.PushClipRect(region, true);
         m_Root->Paint(ctx, geometry);
         renderer.PopClipRect();
+
+        // ZPROPERTY(meta=(Tooltip="..")): floating label for the hovered row,
+        // painted in the foreground layer so it can overflow the panel body.
+        if (!m_HoverTooltip.empty() && !m_Popup.IsOpen())
+        {
+            ZSlate::STooltip tip;
+            tip.Text = m_HoverTooltip;
+            tip.FontSize = 12.0f * ui_scale;
+            const ZSlate::Vector2 size = tip.ComputeDesiredSize();
+            ZSlate::Vector2 at(m_HoverTooltipPos.x + 16.0f * ui_scale, m_HoverTooltipPos.y + 20.0f * ui_scale);
+            if (at.x + size.x > region.x + region.w)
+                at.x = region.x + region.w - size.x;
+            if (at.y + size.y > region.y + region.h)
+                at.y = region.y + region.h - size.y;
+            overlay.BeginWindowGroup(ZSlate::ZSlateEditorOverlay::kZForeground);
+            tip.OnPaint(ctx, FGeometry(at, size));
+        }
     }
 
     // P11a: input / hover / wheel / keyboard all come from the GLFW-backed
@@ -2949,5 +3248,24 @@ void ZSlateInspectorWindow::OnGUI()
             for (EKey key : host.GetKeysThisFrame())
                 m_Input.ProcessKey(key);
         }
+    }
+
+    // Resolve the hover tooltip for the NEXT frame's paint (the tree is painted
+    // before input is routed, so the label always trails the pointer by a frame).
+    if (over_canvas && !m_Popup.IsOpen())
+    {
+        if (const std::string* tip = FindTooltipAt(mouse))
+        {
+            m_HoverTooltip = *tip;
+            m_HoverTooltipPos = mouse;
+        }
+        else
+        {
+            m_HoverTooltip.clear();
+        }
+    }
+    else
+    {
+        m_HoverTooltip.clear();
     }
 }

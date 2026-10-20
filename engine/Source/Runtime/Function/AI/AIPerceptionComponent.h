@@ -79,16 +79,24 @@ private:
   ZPROPERTY()
   eastl::string m_TargetTag;
 
-  ZPROPERTY()
+  ZPROPERTY(meta=(Category="Sight", ClampMin=0, EditCondition="m_SightEnabled"))
   float m_SightRadius {20.f};
   /// Half-angle of the vision cone in degrees; 0 disables the cone test.
-  ZPROPERTY()
+  ZPROPERTY(meta=(Category="Sight", DisplayName="Sight Half Angle", Tooltip="Half-angle of the vision cone in degrees; 0 disables the cone test.", ClampMin=0, ClampMax=180, EditCondition="m_SightEnabled"))
   float m_SightHalfAngleDegrees {0.f};
-  ZPROPERTY()
+  ZPROPERTY(meta=(Category="Hearing", ClampMin=0, EditCondition="m_HearingEnabled"))
   float m_HearingRadius {8.f};
   /// Seconds between two perception scans. 0 scans every frame.
-  ZPROPERTY()
+  ZPROPERTY(meta=(Tooltip="Seconds between two perception scans; 0 scans every frame.", ClampMin=0))
   float m_UpdateInterval {0.2f};
+
+  // Per-channel master switches. The Inspector greys out the parameters of a
+  // disabled channel through meta=(EditCondition=...) above. Declared after the
+  // values they gate, which is fine: the condition is resolved by name.
+  ZPROPERTY(meta=(Tooltip="Run the vision-cone / line-of-sight test."))
+  bool m_SightEnabled {true};
+  ZPROPERTY(meta=(Tooltip="Report candidates inside the hearing radius."))
+  bool m_HearingEnabled {true};
 
   // ---- runtime state -------------------------------------------------------
 

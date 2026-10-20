@@ -27,6 +27,9 @@ class PropertyInfo:
     # Editor / UI metadata (Tooltip, Category, ClampMin...). Parsed and
     # validated in phase 1, emitted from phase 2 on.
     meta: Dict[str, SpecValue] = field(default_factory=dict)
+    # Resolved EditCondition: serialized name of the gating bool, '!'-prefixed
+    # when negated. Empty when the property has no EditCondition.
+    edit_condition: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -38,6 +41,7 @@ class PropertyInfo:
             "transfer_flags": list(self.transfer_flags),
             "transient": self.transient,
             "meta": dict(self.meta),
+            "edit_condition": self.edit_condition,
         }
 
 

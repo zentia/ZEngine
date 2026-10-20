@@ -105,7 +105,7 @@ class ParserTests(unittest.TestCase):
     def test_specifiers_flags_and_meta(self):
         info = parse(wrap(
             '    ZPROPERTY(Name="main", HideInEditor, ReadOnly, meta=(Tooltip="t", ClampMin=-1.5, ClampMax=10))\n'
-            "    bool m_IsMainCamera {false};\n"
+            "    float m_IsMainCamera {0.0f};\n"
             "    ZPROPERTY(Transient)\n"
             "    int m_Cache = 0;\n"
             "    ZPROPERTY()\n"
@@ -176,6 +176,13 @@ class ParserTests(unittest.TestCase):
             ('#include "Foo.generated.h"\nnamespace {\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) };\n}\n', "exactly one named namespace"),
             ('#include "Foo.generated.h"\nstruct Outer {\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) };\n};\n', "nested or local"),
             (wrap("", spec="CustomTransfer, NoSuperTransfer"), "no effect"),
+            (wrap("    ZPROPERTY(meta=(ClampMin=0))\n    eastl::string m_S;\n"), "only applies to numeric"),
+            (wrap("    ZPROPERTY(meta=(ClampMin=5, ClampMax=1))\n    float m_V;\n"), "greater than"),
+            (wrap("    ZPROPERTY(meta=(UIMin=2, UIMax=1))\n    float m_V;\n"), "greater than"),
+            (wrap("    ZPROPERTY(Transient, meta=(Tooltip=\"x\"))\n    float m_V;\n"), "Transient property has no effect"),
+            (wrap("    ZPROPERTY(meta=(EditCondition=\"m_Missing\"))\n    float m_V;\n"), "must name a serialized ZPROPERTY"),
+            (wrap("    ZPROPERTY()\n    int m_Mode;\n    ZPROPERTY(meta=(EditCondition=\"m_Mode\"))\n    float m_V;\n"), "must name a bool"),
+            (wrap("    ZPROPERTY(meta=(EditCondition=\"m_V\"))\n    bool m_V;\n"), "refers to itself"),
             ('#include "Foo.generated.h"\nZCLASS()\nclass Foo;\n', "forward declaration"),
             ('#include "Foo.generated.h"\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) }\n', "expected ';'"),
             ('ZPROPERTY()\nint g;\n', "outside of a ZCLASS"),
@@ -262,6 +269,38 @@ class CodegenTests(unittest.TestCase):
         self.assertIn('    transfer.Transfer(m_A, "a");\n}', source)
         empty = generate_source(parse(wrap("", spec="NoSuperTransfer")))
         self.assertIn("{\n    (void)transfer;\n}", empty)
+
+    def test_property_meta_table(self):
+        text = wrap(
+            "    ZPROPERTY()\n    bool m_UseRange {true};\n"
+            '    ZPROPERTY(meta=(DisplayName="Range (m)", Tooltip="Light \\"reach\\"", Category="Shape", '
+            'ClampMin=0, ClampMax=1000.5, UIMax=100, EditCondition="!m_UseRange"))\n'
+            "    float m_Radius {8.0f};\n"
+            "    ZPROPERTY()\n    float m_Plain;\n"
+        )
+        info = parse(text)
+        radius = info.classes[0].properties[1]
+        self.assertEqual(radius.edit_condition, "!use_range")
+        source = generate_source(info)
+        self.assertIn('#include "Runtime/BaseClasses/PropertyMeta.h"', source)
+        self.assertIn(
+            '{.serializedName = "radius", .displayName = "Range (m)", .tooltip = "Light \\"reach\\"", .category = "Shape", '
+            '.editCondition = "!use_range", .hasClampMin = true, .clampMin = 0.0, .hasClampMax = true, .clampMax = 1000.5, '
+            '.hasUIMax = true, .uiMax = 100.0},', source)
+        self.assertIn("ZClassPropertyMeta kZhtClassMeta_Foo {TypeOf<Foo>(), kZhtPropertyMeta_Foo, 1};", source)
+        self.assertIn("const ZPropertyMetaRegistrar kZhtMetaRegistrar_Foo(kZhtClassMeta_Foo);", source)
+        self.assertNotIn('.serializedName = "plain"', source)
+
+    def test_no_meta_no_table(self):
+        source = generate_source(parse(wrap("    ZPROPERTY()\n    float m_V;\n")))
+        self.assertNotIn("PropertyMeta", source)
+
+    def test_namespaced_meta_uses_qualified_type(self):
+        text = ('#include "Foo.generated.h"\nnamespace Runtime\n{\n    ZCLASS()\n    class Foo : public Component\n    {\n'
+                '        ZGENERATED_BODY(Foo)\n        ZPROPERTY(meta=(ClampMin=0))\n        float m_V;\n    };\n}\n')
+        source = generate_source(parse(text))
+        self.assertIn("kZhtClassMeta_Runtime_Foo {TypeOf<Runtime::Foo>()", source)
+        self.assertGreater(source.index("kZhtClassMeta_Runtime_Foo"), source.index("}  // namespace Runtime"))
 
     def test_struct_restores_public(self):
         self.assertTrue(generate_header(parse(wrap("", key="struct"))).rstrip().endswith("public:"))

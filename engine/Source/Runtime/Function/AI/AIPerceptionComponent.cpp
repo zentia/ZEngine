@@ -123,7 +123,7 @@ void AIPerceptionComponent::CollectCandidates(eastl::vector<AIPerceptionTarget>&
 
     bool perceived = false;
 
-    if (distance <= m_SightRadius)
+    if (m_SightEnabled && distance <= m_SightRadius)
     {
       target.is_visible = IsWithinVisionCone(owner_transform, owner_position, candidate_position) &&
                           TestLineOfSight(owner_position, candidate_position);
@@ -131,7 +131,7 @@ void AIPerceptionComponent::CollectCandidates(eastl::vector<AIPerceptionTarget>&
       perceived = true;
     }
 
-    if (distance <= m_HearingRadius)
+    if (m_HearingEnabled && distance <= m_HearingRadius)
     {
       target.channels |= static_cast<unsigned char>(AIPerceptionChannel::hearing);
       perceived = true;

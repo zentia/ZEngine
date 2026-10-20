@@ -2617,8 +2617,25 @@ need nothing extra). Do not re-litigate Python vs C++.
   `ZGENERATED_BODY(Name)` (replaces `REGISTER_CLASS` + `DECLARE_OBJECT_SERIALIZE`),
   `ZPROPERTY(Name="..", HideInEditor, ReadOnly, StrongPPtr, Deprecated,
   TreatIntegerAsBool, Hex64, Transient, meta=(Tooltip, DisplayName, Category,
-  EditCondition, ClampMin, ClampMax, UIMin, UIMax))`. `meta` is parsed and
-  validated now; consumed from phase 2 (Inspector).
+  EditCondition, ClampMin, ClampMax, UIMin, UIMax))`.
+- `meta=(...)` is parsed, validated at generate time AND consumed by the
+  Inspector (phase 2, 2026-10-20). The generator emits a `ZPropertyMeta` table
+  per class (`Runtime/BaseClasses/PropertyMeta.h`, keyed by *serialized* field
+  name, registered at static-init by `ZPropertyMetaRegistrar`) and
+  `ZSlateInspectorWindow` reads it while walking the TypeTree:
+  `DisplayName` -> row label, `Tooltip` -> hover label (hit-tested against the
+  row's cached geometry, painted in the overlay foreground layer), `Category`
+  -> groups the component's depth-0 fields under a dim sub-header,
+  `ClampMin`/`ClampMax` -> enforced right after every scalar commit, and
+  `EditCondition="[!]m_Bool"` -> the row label dims and commits are refused
+  while the named bool (a **member** name, resolved to its serialized name by
+  the tool) reads false. `UIMin`/`UIMax` are reserved (parsed, not drawn).
+  Generate-time validation: no `meta` on a Transient property, clamps/UI range
+  only on numeric scalars, `Min <= Max`, `EditCondition` must name another
+  serialized `bool` of the same class.
+- Meta/serialization drift gate: `ReflectionCodegenSmokeTest
+  --check-property-meta` cross-checks every generated table against the live
+  TypeTree (annotated name must be a real field, EditCondition must be bool).
 - Rules: `#include "<Name>.generated.h"` (base name of the header, one per
   header even with several ZCLASSes) must be the **last** include; reflected
   classes live at global scope or in **exactly one named namespace**

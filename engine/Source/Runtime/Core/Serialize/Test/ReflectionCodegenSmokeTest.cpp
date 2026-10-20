@@ -34,6 +34,12 @@
 // YAML written before that field existed still loads (field keeps its
 // default, every other field survives).
 //
+// `--check-property-meta` cross-checks every ZHeaderTool-generated
+// ZPROPERTY(meta=(...)) table against the live TypeTree of its class: every
+// annotated name must be a real serialized field, every EditCondition must
+// name a bool field, and ClampMin <= ClampMax. Catches the drift that appears
+// when an annotation and the ZPROPERTY list stop agreeing.
+//
 // Opt in with:
 //   cmake -B build -DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON
 //   cmake --build build --target ReflectionCodegenSmokeTest
@@ -41,6 +47,7 @@
 
 #include "RegisterRuntime.h"
 #include "Runtime/BaseClasses/Object.h"
+#include "Runtime/BaseClasses/PropertyMeta.h"
 #include "Runtime/BaseClasses/RuntimeTypeArray.h"
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
@@ -226,6 +233,109 @@ namespace
         return ok;
     }
 
+    // Depth-first search of a TypeTree by serialized field name.
+    bool FindTypeTreeNode(const TypeTreeIterator& node, const char* name, TypeTreeIterator& out)
+    {
+        for (TypeTreeIterator child = node.Children(); !child.IsNull(); child = child.Next())
+        {
+            if (child.Name() == name)
+            {
+                out = child;
+                return true;
+            }
+            if (!child->IsArray() && FindTypeTreeNode(child, name, out))
+                return true;
+        }
+        return false;
+    }
+
+    /// Cross-check the generated meta=(...) tables against the live TypeTree.
+    bool CheckPropertyMeta()
+    {
+        int problems = 0;
+        uint32_t classes = 0;
+        uint32_t properties = 0;
+
+        for (const ZClassPropertyMeta* cls = PropertyMetaRegistry::Classes(); cls != nullptr; cls = cls->next)
+        {
+            ++classes;
+            if (cls->type == nullptr)
+            {
+                std::fprintf(stderr, "PROPERTY_META: a class table has no Type*\n");
+                ++problems;
+                continue;
+            }
+            if (cls->type->isAbstract || cls->type->GetFactory() == nullptr)
+                continue;  // cannot instantiate -> no TypeTree to check against
+
+            Object* instance = cls->type->GetFactory()();
+            if (instance == nullptr)
+                continue;
+            instance->InitializeRuntimeTypeInfo();
+            TypeTree tree;
+            const bool have_tree = GET_SYSTEM(TypeTreeCache)->GetTypeTree(instance, kDontRequireAllMetaFlags, tree);
+
+            for (size_t i = 0; i < cls->count; ++i)
+            {
+                const ZPropertyMeta& meta = cls->properties[i];
+                ++properties;
+                const char* owner = cls->type->GetName();
+                if (meta.serializedName == nullptr || meta.serializedName[0] == '\0')
+                {
+                    std::fprintf(stderr, "PROPERTY_META: %s entry %zu has no serializedName\n", owner, i);
+                    ++problems;
+                    continue;
+                }
+                for (const char* text : {meta.displayName, meta.tooltip, meta.category})
+                {
+                    if (text != nullptr && text[0] == '\0')
+                    {
+                        std::fprintf(stderr, "PROPERTY_META: %s.%s has an empty meta string\n", owner, meta.serializedName);
+                        ++problems;
+                    }
+                }
+                if (meta.hasClampMin && meta.hasClampMax && meta.clampMin > meta.clampMax)
+                {
+                    std::fprintf(stderr, "PROPERTY_META: %s.%s has ClampMin (%g) > ClampMax (%g)\n", owner, meta.serializedName,
+                                 meta.clampMin, meta.clampMax);
+                    ++problems;
+                }
+                if (!have_tree)
+                    continue;
+
+                TypeTreeIterator node;
+                if (!FindTypeTreeNode(tree.Root(), meta.serializedName, node))
+                {
+                    std::fprintf(stderr, "PROPERTY_META: %s.%s is annotated but not a serialized field\n", owner, meta.serializedName);
+                    ++problems;
+                    continue;
+                }
+                if (meta.editCondition != nullptr && meta.editCondition[0] != '\0')
+                {
+                    const char* condition = meta.editCondition;
+                    if (condition[0] == '!')
+                        ++condition;
+                    TypeTreeIterator gate;
+                    if (!FindTypeTreeNode(tree.Root(), condition, gate))
+                    {
+                        std::fprintf(stderr, "PROPERTY_META: %s.%s EditCondition '%s' is not a serialized field\n", owner,
+                                     meta.serializedName, condition);
+                        ++problems;
+                    }
+                    else if (gate.Type() != "bool")
+                    {
+                        std::fprintf(stderr, "PROPERTY_META: %s.%s EditCondition '%s' is '%s', not bool\n", owner,
+                                     meta.serializedName, condition, gate.Type().c_str());
+                        ++problems;
+                    }
+                }
+            }
+        }
+        std::fprintf(stderr, "PROPERTY_META: %u class table(s), %u annotated field(s), %d problem(s)\n", classes, properties,
+                     problems);
+        return problems == 0;
+    }
+
     bool DumpClass(std::ostringstream& out, const char* class_name)
     {
         out << "=== " << class_name << " ===\n";
@@ -285,6 +395,7 @@ int main(int argc, char** argv)
     std::string golden_path;
     bool check_registry = false;
     bool check_enabled = false;
+    bool check_property_meta = false;
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
@@ -296,6 +407,8 @@ int main(int argc, char** argv)
             check_registry = true;
         else if (arg == "--check-behaviour-enabled")
             check_enabled = true;
+        else if (arg == "--check-property-meta")
+            check_property_meta = true;
         else
             classes.push_back(arg);
     }
@@ -334,6 +447,11 @@ int main(int argc, char** argv)
     if (check_enabled && !CheckBehaviourEnabled())
     {
         std::fprintf(stderr, "FAIL: Behaviour 'enabled' serialization check failed.\n");
+        return 1;
+    }
+    if (check_property_meta && !CheckPropertyMeta())
+    {
+        std::fprintf(stderr, "FAIL: ZPROPERTY meta check failed.\n");
         return 1;
     }
 

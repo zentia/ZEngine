@@ -82,6 +82,13 @@ META_KEYS = {
     "UIMax": "number",
 }
 
+# C++ scalar types ClampMin/ClampMax/UIMin/UIMax may annotate.
+_NUMERIC_TYPES = {
+    "float", "double", "int", "unsigned", "unsigned int", "short", "long", "long long",
+    "int8_t", "int16_t", "int32_t", "int64_t", "uint8_t", "uint16_t", "uint32_t", "uint64_t",
+    "unsigned char", "signed char", "char", "size_t",
+}
+
 _CPP_KEYWORDS_NOT_NAMES = {
     "const", "volatile", "unsigned", "signed", "int", "char", "float", "double",
     "bool", "long", "short", "void", "auto", "struct", "class", "enum", "typename",
@@ -448,6 +455,26 @@ def _parse_class(cur: _Cursor, zclass_tok: Token) -> ClassInfo:
         if other is not None:
             raise ParseError(prop.line, "serialized name '%s' of '%s' collides with '%s' (line %d)" % (prop.serialized_name, prop.member_name, other.member_name, other.line))
         seen[prop.serialized_name] = prop
+
+    # EditCondition names another ZPROPERTY bool of the same class by its C++
+    # member name, optionally negated with '!'. Resolve it to the serialized
+    # name the runtime / Inspector look up.
+    by_member = {p.member_name: p for p in info.properties}
+    for prop in info.properties:
+        cond = prop.meta.get("EditCondition")
+        if cond is None:
+            continue
+        text = str(cond).strip()
+        negate = text.startswith("!")
+        target_name = text[1:].strip() if negate else text
+        target = by_member.get(target_name)
+        if target is None or target.transient:
+            raise ParseError(prop.line, "EditCondition '%s' must name a serialized ZPROPERTY of class '%s'" % (text, info.name))
+        if target.cpp_type != "bool":
+            raise ParseError(prop.line, "EditCondition '%s' must name a bool property ('%s' is %s)" % (text, target_name, target.cpp_type))
+        if target is prop:
+            raise ParseError(prop.line, "EditCondition of '%s' refers to itself" % prop.member_name)
+        prop.edit_condition = ("!" if negate else "") + target.serialized_name
     return info
 
 
@@ -616,4 +643,13 @@ def _parse_property(cur: _Cursor, zprop_tok: Token, specs: List[Spec], meta, acc
             raise _unknown(mkey, mline, "meta", META_KEYS)
         _check_value_kind(META_KEYS[mkey], mkey, None if mvalue is True else mvalue, mline)
         prop.meta[mkey] = mvalue
+    if prop.meta:
+        if prop.transient:
+            raise ParseError(zprop_tok.line, "meta=(...) on a Transient property has no effect (the Inspector shows serialized fields only)")
+        ranged = [k for k in ("ClampMin", "ClampMax", "UIMin", "UIMax") if k in prop.meta]
+        if ranged and prop.cpp_type not in _NUMERIC_TYPES:
+            raise ParseError(zprop_tok.line, "%s only applies to numeric scalars, not '%s'" % ("/".join(ranged), prop.cpp_type))
+        for lo, hi in (("ClampMin", "ClampMax"), ("UIMin", "UIMax")):
+            if lo in prop.meta and hi in prop.meta and prop.meta[lo] > prop.meta[hi]:
+                raise ParseError(zprop_tok.line, "%s (%s) is greater than %s (%s)" % (lo, prop.meta[lo], hi, prop.meta[hi]))
     return prop

@@ -15,7 +15,7 @@ from typing import List
 
 from .model import ClassInfo, HeaderInfo
 
-TOOL_VERSION = 2
+TOOL_VERSION = 3
 
 _BANNER = (
     "// ==========================================================================\n"
@@ -98,11 +98,53 @@ def _transfer_definition(cls: ClassInfo, indent: str) -> List[str]:
     return out
 
 
+def _cpp_number(value) -> str:
+    text = repr(float(value))
+    return text if any(ch in text for ch in ".eE") or text in ("inf", "-inf", "nan") else text + ".0"
+
+
+def _property_meta_entry(prop) -> str:
+    """One ZPropertyMeta aggregate. Designated initializers, in declaration
+    order of ZPropertyMeta (Runtime/BaseClasses/PropertyMeta.h)."""
+    fields = ['.serializedName = "%s"' % prop.serialized_name]
+    for key, member in (("DisplayName", "displayName"), ("Tooltip", "tooltip"), ("Category", "category")):
+        if key in prop.meta:
+            # String tokens keep their escapes verbatim, so re-quoting is safe.
+            fields.append('.%s = "%s"' % (member, prop.meta[key]))
+    if prop.edit_condition:
+        fields.append('.editCondition = "%s"' % prop.edit_condition)
+    for key, has_member, member in (("ClampMin", "hasClampMin", "clampMin"), ("ClampMax", "hasClampMax", "clampMax"),
+                                    ("UIMin", "hasUIMin", "uiMin"), ("UIMax", "hasUIMax", "uiMax")):
+        if key in prop.meta:
+            fields.append(".%s = true" % has_member)
+            fields.append(".%s = %s" % (member, _cpp_number(prop.meta[key])))
+    return "{" + ", ".join(fields) + "}"
+
+
+def _meta_block(cls: ClassInfo) -> List[str]:
+    props = [p for p in cls.properties if p.meta and not p.transient]
+    if not props:
+        return []
+    ident = cls.qualified_name.replace("::", "_")
+    out = ["\n", "namespace\n{\n"]
+    out.append("    const ZPropertyMeta kZhtPropertyMeta_%s[] = {\n" % ident)
+    out.extend("        %s,\n" % _property_meta_entry(p) for p in props)
+    out.append("    };\n")
+    out.append("    ZClassPropertyMeta kZhtClassMeta_%s {TypeOf<%s>(), kZhtPropertyMeta_%s, %d};\n" % (ident, cls.qualified_name, ident, len(props)))
+    out.append("    const ZPropertyMetaRegistrar kZhtMetaRegistrar_%s(kZhtClassMeta_%s);\n" % (ident, ident))
+    out.append("}  // namespace\n")
+    return out
+
+
 def generate_source(header: HeaderInfo) -> str:
     out = [_banner(header), "\n", '#include "%s"\n' % header.include_path]
-    if any(not cls.custom_transfer for cls in header.classes):
+    needs_meta = any(p.meta and not p.transient for cls in header.classes for p in cls.properties)
+    if any(not cls.custom_transfer for cls in header.classes) or needs_meta:
         out.append("\n")
-        out.extend('#include "%s"\n' % inc for inc in _TRANSFER_INCLUDES)
+        if needs_meta:
+            out.append('#include "Runtime/BaseClasses/PropertyMeta.h"\n')
+        if any(not cls.custom_transfer for cls in header.classes):
+            out.extend('#include "%s"\n' % inc for inc in _TRANSFER_INCLUDES)
     for cls in header.classes:
         out.append("\n")
         out.append("// ---- %s ----\n" % cls.qualified_name)
@@ -110,6 +152,7 @@ def generate_source(header: HeaderInfo) -> str:
         if cls.custom_transfer:
             out.append("// ZCLASS(CustomTransfer): IMPLEMENT_OBJECT_SERIALIZE, Transfer() and\n")
             out.append("// INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED live in the hand-written .cpp.\n")
+            out.extend(_meta_block(cls))
             continue
         out.append("IMPLEMENT_OBJECT_SERIALIZE(%s)\n" % cls.qualified_name)
         out.append("\n")
@@ -119,4 +162,5 @@ def generate_source(header: HeaderInfo) -> str:
             out.append("}  // namespace %s\n" % cls.namespace)
         else:
             out.extend(_transfer_definition(cls, ""))
+        out.extend(_meta_block(cls))
     return "".join(out)

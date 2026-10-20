@@ -17,8 +17,8 @@ public:
     float GetRadius() const { return m_Radius; }
 
 private:
-    ZPROPERTY()
+    ZPROPERTY(meta=(Tooltip="Radiant flux per RGB channel."))
     Vector3 m_Flux {Vector3(100.0f, 100.0f, 100.0f)};
-    ZPROPERTY()
+    ZPROPERTY(meta=(Tooltip="Attenuation radius in world units; the light has no effect beyond it.", ClampMin=0))
     float m_Radius {8.0f};
 };

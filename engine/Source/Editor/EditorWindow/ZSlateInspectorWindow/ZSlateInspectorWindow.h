@@ -17,6 +17,7 @@
 
 class Component;
 class Type;
+struct ZPropertyMeta;
 
 namespace ZSlate
 {
@@ -41,6 +42,15 @@ enum class FieldKind
     Vec3,
 };
 
+// ZPROPERTY(meta=(EditCondition="[!]m_Flag")) resolved to the gating bool's
+// byte offset inside the component. Inactive when the field has no condition.
+struct FieldEditGate
+{
+    bool active {false};
+    uint32_t condition_offset {0};
+    bool negate {false};
+};
+
 // Binds a ZSlate widget to a serialized field of a selected component. The field
 // is addressed by (component index in GameObject::getComponents(), byte offset in
 // the component's TypeTree) and re-resolved every frame so we never dangle when
@@ -58,6 +68,12 @@ struct FieldBinding
     // When set, SyncBindings calls this instead of the offset-based path. Used by
     // custom component sections (e.g. BaseRenderer) whose data is not a flat field.
     std::function<void()> custom_sync;
+
+    // ZHeaderTool property metadata (null for un-annotated fields) and the
+    // EditCondition gate; row_label is dimmed while the gate is closed.
+    const ZPropertyMeta* meta {nullptr};
+    FieldEditGate gate;
+    std::shared_ptr<ZSlate::STextBlock> row_label;
 };
 
 // Unity-style per-component enable checkbox on the section header row.
@@ -143,6 +159,11 @@ private:
     // Resolved DataTableBase-derived Type* for the current DataTable selection
     // (set in OnGUI before the build dispatch; consumed by BuildDataTableAsset).
     const Type* m_DataTableType {nullptr};
+
+    // ZPROPERTY(meta=(Tooltip="..")): text + anchor of the row currently hovered,
+    // resolved from last frame's cached geometry and painted as a floating label.
+    std::string m_HoverTooltip;
+    ZSlate::Vector2 m_HoverTooltipPos {0.0f, 0.0f};
 
     // Combo dropdowns raised by native asset inspectors (texture/material/...).
     // Rendered as a foreground overlay after the canvas, mirroring the
