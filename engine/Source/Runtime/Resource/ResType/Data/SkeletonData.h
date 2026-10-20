@@ -2,6 +2,7 @@
 #include "Runtime/Core/Math/TransformTRS.h"
 
 #include <string>
+#include "SkeletonData.generated.h"
 class RawBone
 {
 public:
@@ -73,15 +74,19 @@ public:
     }
 };
 
+ZCLASS()
 class SkeletonData : public Object
 {
-    REGISTER_CLASS(SkeletonData);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(SkeletonData)
 
 public:
+    ZPROPERTY()
     std::vector<RawBone> bones_map;
+    ZPROPERTY()
     bool is_flat = false;  //"bone.index" equals index in bones_map
+    ZPROPERTY()
     int root_index;
+    ZPROPERTY()
     bool in_topological_order = false;  // TODO: if not in topological order, we need to topology sort in skeleton
                                         // build process
 };

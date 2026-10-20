@@ -4,22 +4,6 @@
 #include "Runtime/Function/AI/Navigation/NavigationSystem.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 
-IMPLEMENT_REGISTER_CLASS(NavMeshVolumeComponent);
-IMPLEMENT_OBJECT_SERIALIZE(NavMeshVolumeComponent);
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(NavMeshVolumeComponent);
-
-template <typename TransferFunction>
-void NavMeshVolumeComponent::Transfer(TransferFunction& transfer)
-{
-    Super::Transfer(transfer);
-    transfer.Transfer(m_CellSize, "cell_size");
-    transfer.Transfer(m_CellsX, "cells_x");
-    transfer.Transfer(m_CellsY, "cells_y");
-    transfer.Transfer(m_MaxSlope, "max_slope");
-    transfer.Transfer(m_AgentRadius, "agent_radius");
-    transfer.Transfer(m_MaxStepHeight, "max_step_height");
-    transfer.Transfer(m_BuildOnLoad, "build_on_load");
-}
 
 void NavMeshVolumeComponent::PostLoadResource(GameObject* parent_object)
 {

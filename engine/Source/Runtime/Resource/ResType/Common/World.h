@@ -4,11 +4,12 @@
 #include "Runtime/Resource/ResType/Common/WorldPartitionTypes.h"
 
 #include <vector>
+#include "World.generated.h"
 
+ZCLASS(CustomTransfer)
 class WorldRes : public Object
 {
-    REGISTER_CLASS(WorldRes);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(WorldRes)
 
 public:
     // all level urls for this world

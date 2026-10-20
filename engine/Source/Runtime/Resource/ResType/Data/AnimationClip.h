@@ -4,6 +4,7 @@
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 
 #include <vector>
+#include "AnimationClip.generated.h"
 
 class AnimNodeMap
 {
@@ -34,13 +35,16 @@ public:
     std::vector<AnimationChannel> node_channels;
 };
 
+ZCLASS()
 class AnimationAsset : public Object
 {
-    REGISTER_CLASS(AnimationAsset);
-    DECLARE_OBJECT_SERIALIZE(AnimationAsset)
+    ZGENERATED_BODY(AnimationAsset)
 
 public:
+    ZPROPERTY()
     AnimNodeMap node_map;
+    ZPROPERTY()
     AnimationClip clip_data;
+    ZPROPERTY()
     eastl::string skeleton_file_path;
 };

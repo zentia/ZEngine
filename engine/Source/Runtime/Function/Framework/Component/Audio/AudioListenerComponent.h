@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Function/Framework/Component/Component.h"
+#include "AudioListenerComponent.generated.h"
 
 namespace Runtime
 {
@@ -10,10 +11,10 @@ namespace Runtime
     /// several of these tick in the same frame the last one wins. That matches
     /// the engine's single-camera assumption and keeps the mixer free of a
     /// per-listener split.
+    ZCLASS()
     class AudioListenerComponent : public Component
     {
-        REGISTER_CLASS(AudioListenerComponent);
-        DECLARE_OBJECT_SERIALIZE();
+        ZGENERATED_BODY(AudioListenerComponent)
 
     public:
         AudioListenerComponent() = default;

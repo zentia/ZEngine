@@ -2549,16 +2549,31 @@ need nothing extra). Do not re-litigate Python vs C++.
   INCLUDE_ROOT ... HEADERS ...)`; wired for ZRuntime + ZRuntimeShared in
   `engine/Source/Runtime/CMakeLists.txt`. Outputs go to
   `<build>/Generated/ZHT/<Module>/{Inc,Src}` (Inc is a PUBLIC include dir).
-- Markers (`Runtime/BaseClasses/ObjectMacros.h`): `ZCLASS(Abstract|CustomTransfer)`,
+- Markers (`Runtime/BaseClasses/ObjectMacros.h`): `ZCLASS(Abstract, CustomTransfer, NoSuperTransfer)`,
   `ZGENERATED_BODY(Name)` (replaces `REGISTER_CLASS` + `DECLARE_OBJECT_SERIALIZE`),
   `ZPROPERTY(Name="..", HideInEditor, ReadOnly, StrongPPtr, Deprecated,
   TreatIntegerAsBool, Hex64, Transient, meta=(Tooltip, DisplayName, Category,
   EditCondition, ClampMin, ClampMax, UIMin, UIMax))`. `meta` is parsed and
   validated now; consumed from phase 2 (Inspector).
-- Rules: `#include "<Name>.generated.h"` must be the **last** include; reflected
-  classes must be at **global scope** (IMPLEMENT_REGISTER_CLASS pastes names
-  globally) and derive from an Object-based class; base names of reflected
-  headers must be unique per module.
+- Rules: `#include "<Name>.generated.h"` (base name of the header, one per
+  header even with several ZCLASSes) must be the **last** include; reflected
+  classes live at global scope or in **exactly one named namespace**
+  (`IMPLEMENT_REGISTER_CLASS_3` token-pastes it) and derive from an
+  Object-based class; base names of reflected headers must be unique per module.
+- `NoSuperTransfer`: the generated Transfer() skips `Super::Transfer()`. Only
+  for classes whose old Transfer() did so (Behaviour, RenderCamera, Texture2D,
+  Box/Sphere/Capsule, PhysicsControllerConfig). Note: Behaviour therefore does
+  NOT serialize Component's `enabled` -- pre-existing behaviour, kept on purpose.
+- `CustomTransfer`: only registration is generated; IMPLEMENT_OBJECT_SERIALIZE,
+  Transfer() and INSTANTIATE stay hand-written (GameObject, Transform,
+  Material, WorldRes -- WorldRes serializes the base member `Object::name`).
+- Helper structs (DECLARE_SERIALIZE) whose Transfer() template is defined in
+  a .cpp are no longer instantiated implicitly once the owning ZCLASS's
+  Transfer() moves to its .gen.cpp: add
+  `INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(Struct, , Transfer, void)` in that
+  .cpp (see AnimatorController.cpp, GlobalRendering.cpp).
+- Targets that compile reflected headers without linking the module (the
+  shared PCH) go in `INCLUDE_CONSUMERS`.
 - **Serialized order == ZPROPERTY declaration order.** When migrating a
   hand-written `Transfer()`, reorder members to match the old Transfer order and
   pin old field names with `Name="..."` (default name = snake_case of the member
@@ -2572,4 +2587,11 @@ need nothing extra). Do not re-litigate Python vs C++.
 - Adding / removing `ZCLASS` in an existing header: the first build fails once
   with "the set of ZCLASS headers changed"; the next build re-configures
   automatically. That is expected.
-- Migrated so far: `LightComponent`, `CameraComponent`.
+- Migrated: every registered ZRuntime class (51) except the ones below.
+  Not migrated: `Component`, `Geometry`, `ControllerConfig`, `RenderTexture`,
+  `TimelineClip`, `TimelineTrack` declare REGISTER_CLASS but are **never
+  registered** (no IMPLEMENT_REGISTER_CLASS -> `TypeOf<T>()` is the
+  "[UNREGISTERED]" placeholder, not under Object in the type tree): fixing that
+  changes the type hierarchy and is a separate change. `WrapperClass_` lives in
+  the IMPLEMENT_DATA_TABLE macro. Editor classes (`AssetImporter`,
+  `PrefabInstance`) wait for the ZEditor module to be wired.

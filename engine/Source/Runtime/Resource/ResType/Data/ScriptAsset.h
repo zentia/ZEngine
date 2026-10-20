@@ -3,6 +3,7 @@
 #include "Runtime/BaseClasses/Object.h"
 
 #include <string>
+#include "ScriptAsset.generated.h"
 
 /**
  * @brief A logical asset that wraps a TypeScript / JavaScript source file.
@@ -27,10 +28,10 @@
  * ScriptRegistry::FindByGuid() / FindByPath(); never `new ScriptAsset` from
  * user code.
  */
+ZCLASS()
 class ScriptAsset : public Object
 {
-    REGISTER_CLASS(ScriptAsset);
-    DECLARE_OBJECT_SERIALIZE(ScriptAsset);
+    ZGENERATED_BODY(ScriptAsset)
 
 public:
     // 128-bit GUID encoded as a 32-char lowercase hex string (no dashes).

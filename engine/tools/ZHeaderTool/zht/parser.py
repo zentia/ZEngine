@@ -44,6 +44,9 @@ CLASS_FLAGS = {
     # Registration is generated, but Transfer() stays hand-written in the
     # class's own .cpp (IMPLEMENT_OBJECT_SERIALIZE + INSTANTIATE included).
     "CustomTransfer",
+    # The generated Transfer() does not chain to Super::Transfer(). Only for
+    # classes whose hand-written Transfer() deliberately skipped the base.
+    "NoSuperTransfer",
 }
 
 # ZPROPERTY flag -> TransferMetaFlags enumerator.
@@ -306,33 +309,42 @@ def parse_header(path: str, include_path: str, text: str) -> HeaderInfo:
 
     header = HeaderInfo(path=path, include_path=include_path)
     cur = _Cursor(lexed.tokens)
-    scope: List[str] = []  # "namespace" | "block"
+    # ("namespace", "<name>") | ("block", "")
+    scope: List[Tuple[str, str]] = []
 
     while not cur.at_end():
         tok = cur.next()
         if tok.is_ident("ZCLASS"):
-            if "namespace" in scope:
-                raise ParseError(tok.line, "ZCLASS must be at global scope: IMPLEMENT_REGISTER_CLASS pastes symbol names at global scope, so namespaced reflected classes are not supported")
+            namespace = ""
             if scope:
-                raise ParseError(tok.line, "ZCLASS is not supported on nested or local classes")
-            header.classes.append(_parse_class(cur, tok))
+                if any(kind != "namespace" for kind, _ in scope):
+                    raise ParseError(tok.line, "ZCLASS is not supported on nested or local classes")
+                if len(scope) > 1 or not scope[0][1] or "::" in scope[0][1]:
+                    raise ParseError(tok.line, "ZCLASS supports global scope or exactly one named namespace (IMPLEMENT_REGISTER_CLASS_3 token-pastes the namespace)")
+                namespace = scope[0][1]
+            info = _parse_class(cur, tok)
+            info.namespace = namespace
+            header.classes.append(info)
             continue
         if tok.is_ident("ZPROPERTY") or tok.is_ident("ZGENERATED_BODY") or tok.is_ident("ZFUNCTION"):
             raise ParseError(tok.line, "%s used outside of a ZCLASS-annotated class" % tok.text)
         if tok.is_ident("namespace"):
             # namespace A {  /  namespace A::B {  /  namespace {  /  namespace X = Y;
+            name_parts: List[str] = []
             while not cur.at_end():
                 nxt = cur.peek()
                 if nxt.is_punct("{"):
                     cur.next()
-                    scope.append("namespace")
+                    scope.append(("namespace", "".join(name_parts)))
                     break
                 if nxt.is_punct(";") or nxt.is_punct("="):
                     break
+                if nxt.kind == IDENT and nxt.text != "inline" or nxt.is_punct("::"):
+                    name_parts.append(nxt.text)
                 cur.next()
             continue
         if tok.is_punct("{"):
-            scope.append("block")
+            scope.append(("block", ""))
         elif tok.is_punct("}"):
             if not scope:
                 raise ParseError(tok.line, "unbalanced '}'")
@@ -413,6 +425,10 @@ def _parse_class(cur: _Cursor, zclass_tok: Token) -> ClassInfo:
             info.abstract = True
         elif key == "CustomTransfer":
             info.custom_transfer = True
+        elif key == "NoSuperTransfer":
+            info.no_super_transfer = True
+    if info.custom_transfer and info.no_super_transfer:
+        raise ParseError(zclass_tok.line, "NoSuperTransfer has no effect with CustomTransfer (Transfer() is hand-written)")
 
     _parse_class_body(cur, open_brace, info)
 

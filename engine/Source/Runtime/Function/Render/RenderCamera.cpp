@@ -11,9 +11,6 @@ static inline Rectf GetCameraTargetRect(const RenderCamera& camera)
     return Rectf(0, 0, target->GetWidth(), target->GetHeight());
 }
 
-IMPLEMENT_REGISTER_CLASS(RenderCamera)
-IMPLEMENT_OBJECT_SERAILIZE(RenderCamera);
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(RenderCamera);
 
 void RenderCamera::SetCurrentCameraType(RenderCameraType type)
 {
@@ -204,11 +201,6 @@ void RenderCamera::RenderEditorCamera() {}
 bool RenderCamera::ExecuteCustomRenderPipeline()
 {
     return true;
-}
-
-template<typename TransferFunction>
-void RenderCamera::Transfer(TransferFunction& transfer)
-{
 }
 
 RenderTexture* RenderCamera::GetTargetTexture() const

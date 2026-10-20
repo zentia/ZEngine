@@ -3,6 +3,7 @@
 #include "Runtime/Core/Math/Vector3.h"
 
 #include <vector>
+#include "Shader.generated.h"
 
 struct ShaderPropertyDesc
 {
@@ -70,24 +71,37 @@ struct ShaderPassDesc
     }
 };
 
+ZCLASS()
 class ShaderRes : public Object
 {
-    REGISTER_CLASS(ShaderRes)
-    DECLARE_OBJECT_SERIALIZE(ShaderRes)
+    ZGENERATED_BODY(ShaderRes)
 
 public:
+    ZPROPERTY()
     eastl::string m_ShaderName;
+    ZPROPERTY()
     std::vector<ShaderPropertyDesc> m_Properties;
+    ZPROPERTY()
     std::vector<ShaderPassDesc> m_Passes;
 
+    ZPROPERTY()
     eastl::string m_VertexShaderFile;
+    ZPROPERTY()
     eastl::string m_FragmentShaderFile;
+    ZPROPERTY()
     eastl::string m_RenderPipeline {"StandardLit"};
+    ZPROPERTY()
     eastl::string m_SourceLanguage {"HLSL"};
+    ZPROPERTY()
     eastl::string m_VertexEntry {"main"};
+    ZPROPERTY()
     eastl::string m_FragmentEntry {"main"};
+    ZPROPERTY()
     eastl::string m_IncludeDirectory {"Assets/Shaders"};
+    ZPROPERTY()
     bool m_EnableDx12 {true};
+    ZPROPERTY()
     bool m_EnableVulkan {true};
+    ZPROPERTY()
     bool m_EnableMetal {false};
 };

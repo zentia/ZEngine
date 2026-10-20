@@ -1,15 +1,15 @@
 // =====================================================================
-// Apple-only link stubs for ReflectionCodegenSmokeTest.
+// Apple-only link stubs for the Core/Serialize smoke tests.
 // ---------------------------------------------------------------------
 // libZRuntime.a on macOS currently references 15 render-side symbols
 // whose defining TUs are not built for Apple (RenderResource / UIPass /
 // Vulkan ShaderCompiler / ...). Every consumer links ZRuntime with
 // -force_load, so those references must resolve even though the dump
-// test never touches the renderer. `-undefined dynamic_lookup` is not
+// tests never touch the renderer. `-undefined dynamic_lookup` is not
 // enough: some of them sit in vtables and are bound eagerly by dyld.
 //
 // Each stub is bound to the exact mangled name via an asm label and
-// aborts if ever reached. Only compiled into the smoke-test target on
+// aborts if ever reached. Only compiled into the smoke-test targets on
 // APPLE; carved out of ZRuntime in Runtime/CMakeLists.txt.
 // =====================================================================
 
@@ -22,7 +22,7 @@
         extern "C" [[noreturn]] void ZhtAppleLinkStub_##ID() __asm__(MANGLED);                 \
         extern "C" [[noreturn]] void ZhtAppleLinkStub_##ID()                                   \
         {                                                                                      \
-            std::fprintf(stderr, "ReflectionCodegenSmokeTest: render stub reached: %s\n", MANGLED); \
+            std::fprintf(stderr, "smoke test: render stub reached: %s\n", MANGLED); \
             std::abort();                                                                      \
         }
 

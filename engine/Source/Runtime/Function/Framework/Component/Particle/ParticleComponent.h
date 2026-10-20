@@ -4,13 +4,14 @@
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Particle/ParticleDesc.h"
 #include "Runtime/Resource/ResType/Components/Emitter.h"
+#include "ParticleComponent.generated.h"
 
 namespace Runtime
 {
+    ZCLASS()
     class ParticleComponent : public Component
     {
-        REGISTER_CLASS(ParticleComponent);
-        DECLARE_OBJECT_SERIALIZE();
+        ZGENERATED_BODY(ParticleComponent)
 
     public:
         ParticleComponent() {}
@@ -22,6 +23,7 @@ namespace Runtime
     private:
         void ComputeGlobalTransform();
 
+        ZPROPERTY()
         ParticleComponentRes m_ParticleRes;
 
         Matrix4x4 m_LocalTransform;

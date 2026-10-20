@@ -1,11 +1,12 @@
 #pragma once
 
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
+#include "MeshRenderer.generated.h"
 
+ZCLASS()
 class MeshRenderer : public BaseRenderer
 {
-    REGISTER_CLASS(MeshRenderer);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(MeshRenderer)
 
 public:
     MeshRenderer() = default;

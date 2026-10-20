@@ -15,7 +15,7 @@ from typing import List
 
 from .model import ClassInfo, HeaderInfo
 
-TOOL_VERSION = 1
+TOOL_VERSION = 2
 
 _BANNER = (
     "// ==========================================================================\n"
@@ -62,27 +62,61 @@ def _transfer_call(prop) -> str:
     return 'transfer.Transfer(%s, "%s");' % (prop.member_name, prop.serialized_name)
 
 
+_TRANSFER_INCLUDES = (
+    # Every TransferFunction named by INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED
+    # must be a complete type at the instantiation point.
+    "Runtime/Core/Serialize/TransferFunctions/SerializeTransfer.h",
+    "Runtime/Core/Serialize/TransferFunctions/SafeBinaryRead.h",
+    "Runtime/Core/Serialize/TransferFunctions/GenerateTypeTreeTransfer.h",
+)
+
+
+def _register_line(cls: ClassInfo) -> str:
+    if cls.namespace:
+        return "IMPLEMENT_REGISTER_CLASS_3(%s, %s, typeid(%s).hash_code())\n" % (cls.namespace, cls.name, cls.qualified_name)
+    return "IMPLEMENT_REGISTER_CLASS(%s)\n" % cls.name
+
+
+def _transfer_definition(cls: ClassInfo, indent: str) -> List[str]:
+    out = [
+        indent + "template<typename TransferFunction>\n",
+        indent + "void %s::Transfer(TransferFunction& transfer)\n" % cls.name,
+        indent + "{\n",
+    ]
+    body: List[str] = []
+    if not cls.no_super_transfer:
+        body.append("Super::Transfer(transfer);")
+    for prop in cls.properties:
+        if not prop.transient:
+            body.append(_transfer_call(prop))
+    if not body:
+        body.append("(void)transfer;")
+    out.extend(indent + "    " + line + "\n" for line in body)
+    out.append(indent + "}\n")
+    out.append("\n")
+    out.append(indent + "INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(%s)\n" % cls.name)
+    return out
+
+
 def generate_source(header: HeaderInfo) -> str:
     out = [_banner(header), "\n", '#include "%s"\n' % header.include_path]
+    if any(not cls.custom_transfer for cls in header.classes):
+        out.append("\n")
+        out.extend('#include "%s"\n' % inc for inc in _TRANSFER_INCLUDES)
     for cls in header.classes:
         out.append("\n")
-        out.append("// ---- %s ----\n" % cls.name)
-        out.append("IMPLEMENT_REGISTER_CLASS(%s)\n" % cls.name)
+        out.append("// ---- %s ----\n" % cls.qualified_name)
+        out.append(_register_line(cls))
         if cls.custom_transfer:
             out.append("// ZCLASS(CustomTransfer): IMPLEMENT_OBJECT_SERIALIZE, Transfer() and\n")
             out.append("// INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED live in the hand-written .cpp.\n")
             continue
-        out.append("IMPLEMENT_OBJECT_SERIALIZE(%s)\n" % cls.name)
+        out.append("IMPLEMENT_OBJECT_SERIALIZE(%s)\n" % cls.qualified_name)
         out.append("\n")
-        out.append("template<typename TransferFunction>\n")
-        out.append("void %s::Transfer(TransferFunction& transfer)\n" % cls.name)
-        out.append("{\n")
-        out.append("    Super::Transfer(transfer);\n")
-        for prop in cls.properties:
-            if prop.transient:
-                continue
-            out.append("    %s\n" % _transfer_call(prop))
-        out.append("}\n")
-        out.append("\n")
-        out.append("INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(%s)\n" % cls.name)
+        if cls.namespace:
+            out.append("namespace %s\n{\n" % cls.namespace)
+            out.extend(_transfer_definition(cls, "    "))
+            out.append("}  // namespace %s\n" % cls.namespace)
+        else:
+            out.extend(_transfer_definition(cls, ""))
     return "".join(out)

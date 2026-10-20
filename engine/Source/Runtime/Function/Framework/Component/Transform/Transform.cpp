@@ -13,7 +13,6 @@
 #include <cassert>
 #include <climits>
 
-IMPLEMENT_REGISTER_CLASS(Transform)
 IMPLEMENT_OBJECT_SERIALIZE(Transform)
 INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(Transform)
 

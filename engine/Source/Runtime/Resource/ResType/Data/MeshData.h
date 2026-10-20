@@ -4,6 +4,7 @@
 
 #include <string>
 #include <vector>
+#include "MeshData.generated.h"
 class Vertex
 {
 public:
@@ -66,13 +67,16 @@ void SkeletonBinding::Transfer(TransferFunction& transfer)
     transfer.Transfer(weight3, "weight3");
 }
 
+ZCLASS()
 class MeshData : public Object
 {
-    REGISTER_CLASS(MeshData);
-    DECLARE_OBJECT_SERIALIZE()
+    ZGENERATED_BODY(MeshData)
 
 public:
+    ZPROPERTY()
     std::vector<Vertex> vertex_buffer;
+    ZPROPERTY()
     std::vector<int> index_buffer;
+    ZPROPERTY()
     std::vector<SkeletonBinding> bind;
 };

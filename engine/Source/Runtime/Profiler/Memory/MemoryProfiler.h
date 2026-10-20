@@ -3,11 +3,12 @@
 #include "CSharp/CSharpMemoryProfiler.h"
 #include "Lua/LuaMemoryProfiler.h"
 #include "Runtime/BaseClasses/Object.h"
+#include "MemoryProfiler.generated.h"
 
+ZCLASS()
 class MemoryProfiler : public Object
 {
-    REGISTER_CLASS(MemoryProfiler);
-    DECLARE_OBJECT_SERIALIZE(MemoryProfiler);
+    ZGENERATED_BODY(MemoryProfiler)
 
 public:
     virtual ~MemoryProfiler() = default;
@@ -26,6 +27,8 @@ public:
     LuaMemoryProfiler& GetLuaMemoryProfiler() { return m_LuaMemoryProfiler; }
 
 private:
+    ZPROPERTY(Name="CSharp")
     CSharpMemoryProfiler m_CSharpMemoryProfiler;
+    ZPROPERTY(Name="Lua")
     LuaMemoryProfiler m_LuaMemoryProfiler;
 };

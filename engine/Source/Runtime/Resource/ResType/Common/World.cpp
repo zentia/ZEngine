@@ -2,7 +2,6 @@
 
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 
-IMPLEMENT_REGISTER_CLASS(WorldRes)
 IMPLEMENT_OBJECT_SERIALIZE(WorldRes)
 INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(WorldRes)
 

@@ -5,6 +5,7 @@
 #include "Runtime/Core/Math/AxisAligned.h"
 #include "Runtime/Core/Math/TransformTRS.h"
 #include "Runtime/Resource/ResType/Data/BasicShape.h"
+#include "RigidBody.generated.h"
 
 enum class RigidBodyShapeType : unsigned char
 {
@@ -31,17 +32,21 @@ public:
     }
 };
 
+ZCLASS()
 class RigidBodyShape : public Object
 {
-    REGISTER_CLASS(RigidBodyShape)
-    DECLARE_OBJECT_SERIALIZE()
+    ZGENERATED_BODY(RigidBodyShape)
 
 public:
+    ZPROPERTY()
     TransformTRS m_GlobalTransform;
     AxisAlignedBox m_BoundingBox;
+    ZPROPERTY()
     RigidBodyShapeType m_Type {RigidBodyShapeType::invalid};
 
+    ZPROPERTY()
     TransformTRS m_LocalTransform;
+    ZPROPERTY()
     PPtr<Geometry> m_Geometry;
 };
 

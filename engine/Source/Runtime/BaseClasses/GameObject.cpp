@@ -13,7 +13,6 @@
 #include <unordered_set>
 
 IMPLEMENT_OBJECT_SERIALIZE(GameObject);
-IMPLEMENT_REGISTER_CLASS(GameObject);
 
 bool shouldComponentTick(std::string component_type_name)
 {

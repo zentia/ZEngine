@@ -11,9 +11,6 @@
 
 #include <chrono>
 
-IMPLEMENT_REGISTER_CLASS(AIControllerComponent)
-IMPLEMENT_OBJECT_SERIALIZE(AIControllerComponent)
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(AIControllerComponent)
 
 namespace
 {
@@ -222,18 +219,6 @@ namespace
     return BTNodeStatus::running;
   }
 }  // namespace
-
-template <typename TransferFunction>
-void AIControllerComponent::Transfer(TransferFunction& transfer)
-{
-  Super::Transfer(transfer);
-  transfer.Transfer(m_Profile, "profile");
-  transfer.Transfer(m_MoveSpeedRatio, "move_speed_ratio");
-  transfer.Transfer(m_AttackRange, "attack_range");
-  transfer.Transfer(m_RetreatHealthRatio, "retreat_health_ratio");
-  transfer.Transfer(m_GuardRadius, "guard_radius");
-  transfer.Transfer(m_AttackActionName, "attack_action_name");
-}
 
 AIControllerComponent::~AIControllerComponent()
 {

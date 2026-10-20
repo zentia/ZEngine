@@ -30,6 +30,7 @@
 #include <EASTL/string.h>
 
 #include <vector>
+#include "AnimatorController.generated.h"
 
 enum class AnimatorParameterType : int
 {
@@ -141,16 +142,20 @@ struct AnimatorTransition
     int priority {0};
 };
 
+ZCLASS()
 class AnimatorController : public Object
 {
-    REGISTER_CLASS(AnimatorController);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(AnimatorController)
 
 public:
+    ZPROPERTY()
     std::vector<AnimatorParameter> parameters;
+    ZPROPERTY()
     std::vector<AnimatorState> states;
+    ZPROPERTY()
     std::vector<AnimatorTransition> transitions;
     /// Index into `states`; clamped on first evaluate. -1 = nothing plays.
+    ZPROPERTY()
     int default_state {0};
 
     int FindState(const char* state_name) const;

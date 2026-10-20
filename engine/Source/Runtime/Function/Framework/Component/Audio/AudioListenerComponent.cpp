@@ -5,18 +5,9 @@
 #include "Runtime/Function/Audio/AudioSystem.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 
-IMPLEMENT_REGISTER_CLASS_3(Runtime, AudioListenerComponent, typeid(Runtime::AudioListenerComponent).hash_code())
-IMPLEMENT_OBJECT_SERIALIZE(Runtime::AudioListenerComponent)
 
 namespace Runtime
 {
-    template<typename TransferFunction>
-    void AudioListenerComponent::Transfer(TransferFunction& transfer)
-    {
-        Super::Transfer(transfer);
-    }
-
-    INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(AudioListenerComponent)
 
     void AudioListenerComponent::PostLoadResource(GameObject* parent_object)
     {

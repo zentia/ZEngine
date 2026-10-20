@@ -4,12 +4,14 @@
 
 #include <string>
 #include <vector>
+#include "AnimSkelMap.generated.h"
 
+ZCLASS()
 class AnimSkelMap : public Object
 {
-    REGISTER_CLASS(AnimSkelMap);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(AnimSkelMap)
 
 public:
+    ZPROPERTY()
     std::vector<int> convert;
 };

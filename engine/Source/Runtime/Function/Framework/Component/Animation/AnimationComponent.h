@@ -4,11 +4,12 @@
 #include "Runtime/Function/Animation/Skeleton.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Resource/ResType/Components/Animation.h"
+#include "AnimationComponent.generated.h"
 
+ZCLASS()
 class AnimationComponent : public Component
 {
-    REGISTER_CLASS(AnimationComponent);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(AnimationComponent)
 
 public:
     AnimationComponent() = default;
@@ -53,6 +54,7 @@ public:
     void SetClipLength(float seconds);
 
 protected:
+    ZPROPERTY()
     AnimationComponentRes m_AnimationRes;
 
     Skeleton m_Skeleton;

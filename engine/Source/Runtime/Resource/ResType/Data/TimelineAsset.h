@@ -7,23 +7,27 @@
 
 #include <string>
 #include <vector>
+#include "TimelineAsset.generated.h"
 
 // Timeline资源（类似Unity的Timeline Asset）
+ZCLASS()
 class TimelineAsset : public Object
 {
-    REGISTER_CLASS(TimelineAsset);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(TimelineAsset)
 
 public:
     TimelineAsset() = default;
 
     // Timeline总时长（秒）
+    ZPROPERTY(Name="m_duration")
     float m_Duration {10.0f};
 
     // 帧率（用于时间轴显示和编辑）
+    ZPROPERTY(Name="m_frame_rate")
     float m_FrameRate {30.0f};
 
     // 所有轨道
+    ZPROPERTY(Name="m_tracks")
     std::vector<PPtr<TimelineTrack>> m_Tracks;
 
     // 获取时间对应的帧数

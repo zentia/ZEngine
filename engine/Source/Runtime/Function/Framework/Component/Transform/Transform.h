@@ -13,15 +13,18 @@
 
 #include <cstdint>
 #include <vector>
+#include "Transform.generated.h"
 
 struct TransformHierarchy;
 class TransformSceneRoots;
 
 /// Scene-graph transform (UnityEngine.Transform + internal hierarchy access).
+ZCLASS(CustomTransfer)
 class Transform : public Component
 {
-    REGISTER_CLASS(Transform);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(Transform)
+
+public:
 
     friend class TransformSceneRoots;
     friend void UpdateTransformAccessors(TransformHierarchy& hierarchy, uint32_t index);

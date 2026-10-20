@@ -9,17 +9,7 @@
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Data/Material.h"
 
-IMPLEMENT_REGISTER_CLASS(BaseRenderer)
-IMPLEMENT_OBJECT_SERIALIZE(BaseRenderer)
 
-template<typename TransferFunction>
-void BaseRenderer::Transfer(TransferFunction& transfer)
-{
-    Super::Transfer(transfer);
-    transfer.Transfer(m_SubMeshes, "sub_meshes");
-    transfer.Transfer(m_SharedMaterialAssets, "shared_materials");
-}
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(BaseRenderer)
 
 namespace
 {

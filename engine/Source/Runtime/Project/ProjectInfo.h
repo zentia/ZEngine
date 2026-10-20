@@ -8,15 +8,16 @@
 #include <filesystem>
 #include <string>
 #include <vector>
+#include "ProjectInfo.generated.h"
 
 /**
  * @brief Project information structure
  * Similar to Unreal Engine's .uproject file
  */
+ZCLASS()
 class ProjectInfo : public Object, public IEngineSystem
 {
-    REGISTER_CLASS(ProjectInfo)
-    DECLARE_OBJECT_SERIALIZE()
+    ZGENERATED_BODY(ProjectInfo)
 
 public:
     std::string GetName() const override { return GET_CLASS_NAME(ProjectInfo); }
@@ -25,6 +26,7 @@ public:
     bool Initialize() override;
     void Shutdown() override {}
     // Project metadata
+    ZPROPERTY()
     eastl::string name;                  // Project name
     std::string description;             // Project description
     std::string version;                 // Project version (e.g., "1.0.0")
@@ -35,12 +37,6 @@ public:
     std::string engine_version;  // Engine version used by this project
 
     // Project settings
-    // Startup level (UE's GameDefaultMap). Relative to the content dir, e.g.
-    // "asset/level/1-1.scene". Empty means "no level is loaded on launch".
-    // Typed eastl::string because Transfer()-based serialisation is only
-    // specialised for eastl::string (see SerializeTraits.h); std::string would
-    // silently fail to compile into the generated Transfer.
-    eastl::string startup_level;  // Default level loaded by ZGame on launch
     std::vector<std::string> tags;  // Project tags
 
     // Timestamps
@@ -69,7 +65,12 @@ public:
     // Typed as eastl::string (not std::string) because these fields participate
     // in Transfer-based serialisation, and SerializeTraits is specialised for
     // eastl::string only - see Runtime/Core/Serialize/SerializeTraits.h.
+    // New scripting fields. Persisted so users can rename Scripts/ → Code/ etc.
+    // and have it survive a reload. Defaulted in the header, so existing
+    // .zproject files without these keys still load correctly.
+    ZPROPERTY()
     eastl::string scripts_dir {"Scripts"};            // relative to project root
+    ZPROPERTY()
     eastl::string intermediate_dir {"Intermediate"};  // relative to project root (gitignored)
 
     // Shader directory (peer of Assets/ and Scripts/). Mirrors the Scripts
@@ -77,6 +78,7 @@ public:
     // to <project>/<intermediate_dir>/Shaders/ (gitignored). Typed as
     // eastl::string for the same reason scripts_dir is (Transfer-based
     // serialisation only supports eastl::string).
+    ZPROPERTY()
     eastl::string shaders_dir {"Shaders"};  // relative to project root
 
     // Data directory (peer of Assets/, Scripts/, Shaders/). Holds user-authored
@@ -87,17 +89,30 @@ public:
     // purpose so the existing AssetRegistry scan picks them up with zero
     // additional code (the _Generated subtree itself is gitignored). See
     // AGENTS.md "Data pipeline" section.
+    ZPROPERTY()
     eastl::string data_dir {"Data"};  // relative to project root
 
     // Texture source directory (peer of Assets/, Scripts/, Shaders/, Data/).
     // Holds user-authored image sources imported into Texture2D .zasset files
     // under Assets/. **Checked into VCS.** See TEXTURE_COOK_PIPELINE.md 1.1.
+    ZPROPERTY()
     eastl::string textures_dir {"Textures"};
 
     // Model source directory (peer of the other source roots). Holds .fbx/.obj/
     // /.gltf/.glb sources imported into mesh .zasset files under Assets/.
     // **Checked into VCS.**
+    ZPROPERTY()
     eastl::string models_dir {"Models"};
+
+    // Declared after the source-root dirs: serialized order is name, the
+    // *_dir fields, then startup_level.
+    // Startup level (UE's GameDefaultMap). Relative to the content dir, e.g.
+    // "asset/level/1-1.scene". Empty means "no level is loaded on launch".
+    // Typed eastl::string because Transfer()-based serialisation is only
+    // specialised for eastl::string (see SerializeTraits.h); std::string would
+    // silently fail to compile into the generated Transfer.
+    ZPROPERTY()
+    eastl::string startup_level;  // Default level loaded by ZGame on launch
 
     // Other
     std::filesystem::path m_WorkingDir;

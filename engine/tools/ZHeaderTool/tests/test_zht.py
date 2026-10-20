@@ -171,7 +171,11 @@ class ParserTests(unittest.TestCase):
             ('#include "Foo.generated.h"\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Bar) };\n', "does not match"),
             ("ZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) };\n", "is required"),
             ('#include "Foo.generated.h"\n#include <vector>\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) };\n', "must be the last"),
-            ('#include "Foo.generated.h"\nnamespace N {\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) };\n}\n', "global scope"),
+            ('#include "Foo.generated.h"\nnamespace A { namespace B {\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) };\n} }\n', "exactly one named namespace"),
+            ('#include "Foo.generated.h"\nnamespace A::B {\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) };\n}\n', "exactly one named namespace"),
+            ('#include "Foo.generated.h"\nnamespace {\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) };\n}\n', "exactly one named namespace"),
+            ('#include "Foo.generated.h"\nstruct Outer {\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) };\n};\n', "nested or local"),
+            (wrap("", spec="CustomTransfer, NoSuperTransfer"), "no effect"),
             ('#include "Foo.generated.h"\nZCLASS()\nclass Foo;\n', "forward declaration"),
             ('#include "Foo.generated.h"\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) }\n', "expected ';'"),
             ('ZPROPERTY()\nint g;\n', "outside of a ZCLASS"),
@@ -199,9 +203,9 @@ class CodegenTests(unittest.TestCase):
                       "    DECLARE_OBJECT_SERIALIZE(); \\\n"
                       "private:\n", header)
         source = generate_source(info)
+        self.assertIn('#include "Runtime/Function/Framework/Component/Light/LightComponent.h"\n', source)
+        self.assertIn('#include "Runtime/Core/Serialize/TransferFunctions/SerializeTransfer.h"\n', source)
         expected = (
-            '#include "Runtime/Function/Framework/Component/Light/LightComponent.h"\n'
-            "\n"
             "// ---- LightComponent ----\n"
             "IMPLEMENT_REGISTER_CLASS(LightComponent)\n"
             "IMPLEMENT_OBJECT_SERIALIZE(LightComponent)\n"
@@ -234,6 +238,30 @@ class CodegenTests(unittest.TestCase):
         self.assertNotIn("IMPLEMENT_OBJECT_SERIALIZE", custom.split("// ZCLASS(CustomTransfer)")[0])
         self.assertNotIn("void Foo::Transfer", custom)
         self.assertNotIn("INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(Foo)", custom)
+
+    def test_namespaced_class(self):
+        text = (
+            '#include "Foo.generated.h"\n'
+            "namespace Runtime\n{\n"
+            "    ZCLASS()\n    class Foo : public Component\n    {\n        ZGENERATED_BODY(Foo)\n"
+            "        ZPROPERTY()\n        float m_Volume {1.0f};\n    };\n"
+            "}  // namespace Runtime\n"
+        )
+        info = parse(text)
+        cls = info.classes[0]
+        self.assertEqual((cls.namespace, cls.qualified_name), ("Runtime", "Runtime::Foo"))
+        source = generate_source(info)
+        self.assertIn("IMPLEMENT_REGISTER_CLASS_3(Runtime, Foo, typeid(Runtime::Foo).hash_code())\n", source)
+        self.assertIn("IMPLEMENT_OBJECT_SERIALIZE(Runtime::Foo)\n", source)
+        self.assertIn("namespace Runtime\n{\n    template<typename TransferFunction>\n    void Foo::Transfer(", source)
+        self.assertIn("    INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(Foo)\n}  // namespace Runtime\n", source)
+
+    def test_no_super_transfer_and_empty_body(self):
+        source = generate_source(parse(wrap("    ZPROPERTY()\n    int m_A;\n", spec="NoSuperTransfer")))
+        self.assertNotIn("Super::Transfer", source)
+        self.assertIn('    transfer.Transfer(m_A, "a");\n}', source)
+        empty = generate_source(parse(wrap("", spec="NoSuperTransfer")))
+        self.assertIn("{\n    (void)transfer;\n}", empty)
 
     def test_struct_restores_public(self):
         self.assertTrue(generate_header(parse(wrap("", key="struct"))).rstrip().endswith("public:"))

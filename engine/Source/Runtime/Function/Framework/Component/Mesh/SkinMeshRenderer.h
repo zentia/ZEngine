@@ -1,13 +1,14 @@
 #pragma once
 
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
+#include "SkinMeshRenderer.generated.h"
 
 class AnimationComponent;
 
+ZCLASS()
 class SkinMeshRenderer : public BaseRenderer
 {
-    REGISTER_CLASS(SkinMeshRenderer);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(SkinMeshRenderer)
 
 public:
     SkinMeshRenderer() = default;

@@ -14,17 +14,7 @@
 #include "Runtime/Function/Input/InputSystem.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
-IMPLEMENT_REGISTER_CLASS(MotorComponent)
-IMPLEMENT_OBJECT_SERIALIZE(MotorComponent)
 
-template<typename TransferFunction>
-void MotorComponent::Transfer(TransferFunction& transfer)
-{
-    Super::Transfer(transfer);
-    transfer.Transfer(m_MotorRes, "motor_res");
-}
-
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(MotorComponent)
 
 void MotorComponent::PostLoadResource(GameObject* parent_object)
 {

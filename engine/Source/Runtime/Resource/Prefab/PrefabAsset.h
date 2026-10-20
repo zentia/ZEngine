@@ -5,6 +5,7 @@
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/BaseClasses/PPtr.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
+#include "PrefabAsset.generated.h"
 
 // =====================================================================================
 // PrefabAsset
@@ -29,10 +30,10 @@
 // reachable GameObject/Component walk the root's Transform child chain — that walk is
 // already required by InvokePostLoadResource() and lives in PrefabUtility.cpp.
 // =====================================================================================
+ZCLASS()
 class PrefabAsset : public Object
 {
-    REGISTER_CLASS(PrefabAsset);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(PrefabAsset)
 
 public:
     PrefabAsset() = default;
@@ -53,8 +54,13 @@ public:
     static constexpr uint32_t kCurrentSchemaVersion = 1u;
 
 protected:
+    // Serialized order: m_schema_version, m_root_game_object, m_variant_base.
+    ZPROPERTY(Name="m_schema_version")
+    uint32_t m_SchemaVersion {kCurrentSchemaVersion};
+
     /// Root GameObject — the entry point of the prefab tree. Other GOs/Components are
     /// reachable through its Transform.m_Children chain and its m_Components list.
+    ZPROPERTY(Name="m_root_game_object")
     ImmediatePtr<GameObject> m_RootGameObject;
 
     // NOTE: ZEngine intentionally has no per-asset stable GUID stored on the asset
@@ -71,7 +77,6 @@ protected:
 
     /// Non-null when this prefab is a Variant. Cross-file PPtr — the referenced
     /// PrefabAsset may live in a different .zasset file.
+    ZPROPERTY(Name="m_variant_base")
     PPtr<PrefabAsset> m_VariantBase;
-
-    uint32_t m_SchemaVersion {kCurrentSchemaVersion};
 };

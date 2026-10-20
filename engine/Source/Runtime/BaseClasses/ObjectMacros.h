@@ -21,7 +21,8 @@
 //         bool m_IsMainCamera {false};
 //     };
 //
-// ZCLASS specifiers:     Abstract, CustomTransfer
+// ZCLASS specifiers:     Abstract, CustomTransfer, NoSuperTransfer
+//                        (global scope or exactly one named namespace)
 // ZPROPERTY specifiers:  Name="..", HideInEditor, ReadOnly, StrongPPtr,
 //                        Deprecated, TreatIntegerAsBool, Hex64, Transient,
 //                        meta=(Tooltip="..", DisplayName="..", Category="..",

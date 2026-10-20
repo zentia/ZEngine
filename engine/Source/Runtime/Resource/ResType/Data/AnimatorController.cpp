@@ -1,8 +1,9 @@
 #include "AnimatorController.h"
 
-IMPLEMENT_REGISTER_CLASS(AnimatorController)
-IMPLEMENT_OBJECT_SERAILIZE(AnimatorController);
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(AnimatorController)
+#include "Runtime/Core/Serialize/TransferFunctions/GenerateTypeTreeTransfer.h"
+#include "Runtime/Core/Serialize/TransferFunctions/SafeBinaryRead.h"
+#include "Runtime/Core/Serialize/TransferFunctions/SerializeTransfer.h"
+
 
 template<typename TransferFunction>
 void AnimatorParameter::Transfer(TransferFunction& transfer)
@@ -57,14 +58,13 @@ void AnimatorTransition::Transfer(TransferFunction& transfer)
     transfer.Transfer(priority, "priority");
 }
 
-template<typename TransferFunction>
-void AnimatorController::Transfer(TransferFunction& transfer)
-{
-    transfer.Transfer(parameters, "parameters");
-    transfer.Transfer(states, "states");
-    transfer.Transfer(transitions, "transitions");
-    transfer.Transfer(default_state, "default_state");
-}
+
+// The owning ZCLASS's Transfer() is generated into a separate .gen.cpp, so the
+// helper structs' Transfer() templates defined here are no longer instantiated
+// implicitly by this TU -- instantiate them explicitly.
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(AnimatorParameter, , Transfer, void)
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(AnimatorState, , Transfer, void)
+INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(AnimatorTransition, , Transfer, void)
 
 int AnimatorController::FindState(const char* state_name) const
 {

@@ -6,6 +6,7 @@
 #include <string>
 #include <tuple>
 #include <vector>
+#include "TypeScriptComponent.generated.h"
 
 /**
  * @brief Engine-side host for a single user-authored TypeScript Behaviour
@@ -59,10 +60,10 @@
  * matches Unity's `[ExecuteAlways]` and is the simplest way to demo
  * scripting without needing a Play button.
  */
+ZCLASS()
 class TypeScriptComponent : public Behaviour
 {
-    REGISTER_CLASS(TypeScriptComponent);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(TypeScriptComponent)
 
 public:
     TypeScriptComponent();
@@ -145,15 +146,33 @@ public:
 private:
     // -- Serialised --------------------------------------------------
     // 32-char lowercase hex GUID into the project-level ScriptRegistry.
+    // Both fields are eastl::string -- per AGENTS.md 2.3, that's a hard
+    // requirement for any field that participates in Transfer().
+    ZPROPERTY(Name="m_script_guid")
     eastl::string m_ScriptGuid;
 
     // Class name to instantiate from the resolved module's exports.
     // Empty -> fall back to ScriptAsset.m_DefaultClassName.
+    ZPROPERTY(Name="m_class_name")
     eastl::string m_ClassName;
 
     // Phase-7 field overrides: flat alternating [k0,v0,k1,v1,...]. See
     // the GetSerializedField/Set/RemoveSerializedField docs above and
     // the design notes in doc/TYPESCRIPT_SCRIPTING_DESIGN.md (Phase 7).
+    // Phase-7: per-instance field overrides. Stored as a flat alternating
+    // [k0,v0,k1,v1,...] vector of eastl::string because that's the
+    // SerializeTraits-supported shape (see Runtime/Core/Serialize/
+    // SerializeTraits.h: vector<T> + eastl::string both specialised, no
+    // pair<eastl::string,eastl::string> path). The accessor helpers
+    // below preserve the alternating invariant so callers never see the
+    // flat layout.
+    //
+    // HideInEditorMask: the Inspector should NOT render the raw flat vector
+    // (the generic Array renderer would show "Array editing is not
+    // implemented yet." which is misleading). Inspector instead renders
+    // these via DrawTypeScriptComponentScriptFields, which knows about
+    // the alternating [k,v] layout and can present per-field widgets.
+    ZPROPERTY(Name="m_serialized_fields", HideInEditor)
     std::vector<eastl::string> m_SerializedFields;
 
     // -- Runtime only ------------------------------------------------

@@ -3,17 +3,20 @@
 #include "Runtime/BaseClasses/Object.h"
 
 #include <EASTL/string.h>
+#include "Font.generated.h"
 
 // Runtime font asset (.zasset via FontImporter). Source TTF/OTF path is stored
 // project-relative; GPU glyphs bake through UIGpuResources (ImFontAtlas).
+ZCLASS()
 class Font : public Object
 {
-    REGISTER_CLASS(Font);
-    DECLARE_OBJECT_SERIALIZE(Font);
+    ZGENERATED_BODY(Font)
 
 public:
     // Project-relative source path (forward slashes), e.g. "Fonts/MyFont.ttf".
+    ZPROPERTY()
     eastl::string m_SourceRelPath;
+    ZPROPERTY()
     int m_DefaultSize {16};
 
     const eastl::string& GetSourceRelPath() const { return m_SourceRelPath; }

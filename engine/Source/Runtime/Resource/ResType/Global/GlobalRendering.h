@@ -4,6 +4,7 @@
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 #include "Runtime/Resource/ResType/Data/CameraConfig.h"
+#include "GlobalRendering.generated.h"
 
 struct SkyBoxIrradianceMap
 {
@@ -40,20 +41,29 @@ public:
     Color m_Color;
 };
 
+ZCLASS()
 class GlobalRenderingRes : public Object
 {
-    REGISTER_CLASS(GlobalRenderingRes);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(GlobalRenderingRes)
 
 public:
+    ZPROPERTY()
     bool m_EnableFxaa {false};
+    ZPROPERTY()
     SkyBoxIrradianceMap m_SkyboxIrradianceMap;
+    ZPROPERTY()
     SkyBoxSpecularMap m_SkyboxSpecularMap;
+    ZPROPERTY()
     eastl::string m_BrdfMap;
+    ZPROPERTY()
     eastl::string m_ColorGradingMap;
 
+    ZPROPERTY()
     Color m_SkyColor;
+    ZPROPERTY()
     Color m_AmbientLight;
+    ZPROPERTY()
     CameraConfig m_CameraConfig;
+    ZPROPERTY()
     DirectionalLight m_DirectionalLight;
 };

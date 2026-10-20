@@ -56,11 +56,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include "Texture2D.generated.h"
 
+ZCLASS(NoSuperTransfer)
 class Texture2D : public Texture
 {
-    REGISTER_CLASS(Texture2D);
-    DECLARE_OBJECT_SERIALIZE(Texture2D);
+    ZGENERATED_BODY(Texture2D)
 
 public:
     Texture2D() = default;
@@ -75,7 +76,9 @@ public:
 
     // -------- Serialised state (the on-disk payload) -------------------------
     // Width / height in pixels of mip 0.
+    ZPROPERTY()
     uint32_t m_Width {0};
+    ZPROPERTY()
     uint32_t m_Height {0};
 
     // RHIFormat ordinal of the stored pixel blob. Stored as raw uint32_t so
@@ -85,6 +88,7 @@ public:
     // cast back to `RHIFormat` when feeding RHI::CreateGlobalImage. RHI types
     // are intentionally NOT pulled into this header, so whether the format is
     // block-compressed is decided by the GPU-side consumer, not here.
+    ZPROPERTY()
     uint32_t m_Format {0};
 
     // Pixel payload. Mip 0 first, then each successive (half-size, floored)
@@ -92,6 +96,7 @@ public:
     // max(1,w>>i) * max(1,h>>i) * 4; for a block-compressed format it is the
     // block-aligned size for that mip. The byte boundaries live in
     // m_MipOffsets (below) so this class needs no format math to slice mips.
+    ZPROPERTY()
     std::vector<uint8_t> m_Pixels;
 
     // Byte offset of each mip level's first byte within m_Pixels. Its SIZE is
@@ -103,6 +108,10 @@ public:
     // fully-populated table. (This is the drift-free single-source-of-truth
     // equivalent of a separate m_MipCount + m_MipOffsets pair: offsets.size()
     // IS the count.)
+    // Appended after "pixels" for schema evolution: an old single-mip .zasset
+    // has no "mip_offsets" node, so SafeBinaryRead returns kNotFound and leaves
+    // this empty -- GetMipCount()/GetMipSpan() then treat m_Pixels as one mip.
+    ZPROPERTY()
     std::vector<uint32_t> m_MipOffsets;
 
     // -------- Authoring / consumer helpers -----------------------------------

@@ -4,29 +4,9 @@
 #include "Runtime/Function/Audio/AudioSystem.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 
-IMPLEMENT_REGISTER_CLASS_3(Runtime, AudioSourceComponent, typeid(Runtime::AudioSourceComponent).hash_code())
-IMPLEMENT_OBJECT_SERIALIZE(Runtime::AudioSourceComponent)
 
 namespace Runtime
 {
-    template<typename TransferFunction>
-    void AudioSourceComponent::Transfer(TransferFunction& transfer)
-    {
-        Super::Transfer(transfer);
-        transfer.Transfer(m_ClipPath, "clip_path");
-        transfer.Transfer(m_BusName, "bus_name");
-        transfer.Transfer(m_Volume, "volume");
-        transfer.Transfer(m_Pitch, "pitch");
-        transfer.Transfer(m_Loop, "loop");
-        transfer.Transfer(m_PlayOnAwake, "play_on_awake");
-        transfer.Transfer(m_SpatialBlend, "spatial_blend");
-        transfer.Transfer(m_MinDistance, "min_distance");
-        transfer.Transfer(m_MaxDistance, "max_distance");
-        transfer.Transfer(m_FadeInSeconds, "fade_in_seconds");
-        transfer.Transfer(m_Priority, "priority");
-    }
-
-    INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(AudioSourceComponent)
 
     AudioSourceComponent::~AudioSourceComponent()
     {

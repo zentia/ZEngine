@@ -13,8 +13,6 @@
 #include <sstream>
 #include <system_error>
 
-IMPLEMENT_REGISTER_CLASS(ProjectInfo)
-IMPLEMENT_OBJECT_SERAILIZE(ProjectInfo)
 
 namespace
 {
@@ -778,18 +776,3 @@ bool ProjectInfo::EnsureScriptsScaffold()
     return all_ok;
 }
 
-template<typename TransferFunction>
-void ProjectInfo::Transfer(TransferFunction& transfer)
-{
-    transfer.Transfer(name, "name");
-    // New scripting fields. Persisted so users can rename Scripts/ → Code/ etc.
-    // and have it survive a reload. Defaulted in the header, so existing
-    // .zproject files without these keys still load correctly.
-    transfer.Transfer(scripts_dir, "scripts_dir");
-    transfer.Transfer(intermediate_dir, "intermediate_dir");
-    transfer.Transfer(shaders_dir, "shaders_dir");
-    transfer.Transfer(data_dir, "data_dir");
-    transfer.Transfer(textures_dir, "textures_dir");
-    transfer.Transfer(models_dir, "models_dir");
-    transfer.Transfer(startup_level, "startup_level");
-}

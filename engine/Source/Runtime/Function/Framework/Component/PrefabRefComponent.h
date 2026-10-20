@@ -3,6 +3,7 @@
 #include "Runtime/BaseClasses/PPtr.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
+#include "PrefabRefComponent.generated.h"
 
 class GameObject;
 class Transform;
@@ -34,10 +35,10 @@ class Transform;
 // works at runtime, but the editor's nested-prefab GUI assumes the install point
 // is "thin".
 // =====================================================================================
+ZCLASS()
 class PrefabRefComponent : public Component
 {
-    REGISTER_CLASS(PrefabRefComponent);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(PrefabRefComponent)
 
 public:
     PrefabRefComponent() = default;
@@ -51,11 +52,13 @@ public:
     void MarkExpanded() { m_Expanded = true; }
 
 protected:
+    ZPROPERTY(Name="m_referenced_prefab")
     PPtr<PrefabAsset> m_ReferencedPrefab;
 
     /// Editor-time-only marker — `PrefabUtility::Instantiate` flips this on after
     /// the first expansion to ensure idempotency. Persisted so saved scenes that
     /// already contain expanded nested subtrees don't get a second expansion when
     /// re-loaded.
+    ZPROPERTY(Name="m_expanded")
     bool m_Expanded {false};
 };

@@ -4,6 +4,7 @@
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 #include "Runtime/Resource/ResType/Data/BasicShape.h"
+#include "Motor.generated.h"
 
 enum class ControllerType : unsigned char
 {
@@ -20,22 +21,17 @@ public:
     virtual ~ControllerConfig() {}
 };
 
+ZCLASS(NoSuperTransfer)
 class PhysicsControllerConfig : public ControllerConfig
 {
-    REGISTER_CLASS(PhysicsControllerConfig)
-    DECLARE_OBJECT_SERIALIZE(PhysicsControllerConfig)
+    ZGENERATED_BODY(PhysicsControllerConfig)
 
 public:
     PhysicsControllerConfig() {}
     ~PhysicsControllerConfig() {}
+    ZPROPERTY()
     Capsule m_CapsuleShape;
 };
-
-template<typename TransferFunction>
-void PhysicsControllerConfig::Transfer(TransferFunction& transfer)
-{
-    transfer.Transfer(m_CapsuleShape, "capsule_shape");
-}
 
 class MotorComponentRes
 {
@@ -67,5 +63,4 @@ void MotorComponentRes::Transfer(TransferFunction& transfer)
     transfer.Transfer(m_ControllerConfig, "controller_config");
 }
 
-INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(PhysicsControllerConfig, , Transfer, void)
 INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(MotorComponentRes, , Transfer, void)

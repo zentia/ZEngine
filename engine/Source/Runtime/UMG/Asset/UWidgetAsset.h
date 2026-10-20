@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "UWidgetAsset.generated.h"
 
 // On-disk representation of a UMG widget tree (UE WidgetBlueprint / UWidgetTree
 // analogue). Persisted as a binary `.zasset` through the standard SerializedFile
@@ -43,16 +44,19 @@ void FUMGWidgetNode::Transfer(TransferFunction& transfer)
     transfer.Transfer(m_PropValues, "prop_values");
 }
 
+ZCLASS()
 class UWidgetAsset : public Object
 {
-    REGISTER_CLASS(UWidgetAsset);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(UWidgetAsset)
 
 public:
     UWidgetAsset() = default;
 
     static constexpr uint32_t kCurrentSchemaVersion = 1u;
 
-    std::vector<FUMGWidgetNode> m_Nodes;
+    // Serialized order: schema_version, nodes.
+    ZPROPERTY()
     uint32_t m_SchemaVersion {kCurrentSchemaVersion};
+    ZPROPERTY()
+    std::vector<FUMGWidgetNode> m_Nodes;
 };

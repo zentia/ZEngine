@@ -17,33 +17,6 @@
 // and registers TypeScriptComponent with TypeManager, so no manual entry in
 // RegisterRuntime.cpp is required.
 // =============================================================================
-IMPLEMENT_REGISTER_CLASS(TypeScriptComponent)
-IMPLEMENT_OBJECT_SERIALIZE(TypeScriptComponent)
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(TypeScriptComponent)
-
-template<typename TransferFunction>
-void TypeScriptComponent::Transfer(TransferFunction& transfer)
-{
-    Super::Transfer(transfer);
-    // Both fields are eastl::string -- per AGENTS.md 2.3, that's a hard
-    // requirement for any field that participates in Transfer().
-    transfer.Transfer(m_ScriptGuid, "m_script_guid");
-    transfer.Transfer(m_ClassName, "m_class_name");
-    // Phase-7: per-instance field overrides. Stored as a flat alternating
-    // [k0,v0,k1,v1,...] vector of eastl::string because that's the
-    // SerializeTraits-supported shape (see Runtime/Core/Serialize/
-    // SerializeTraits.h: vector<T> + eastl::string both specialised, no
-    // pair<eastl::string,eastl::string> path). The accessor helpers
-    // below preserve the alternating invariant so callers never see the
-    // flat layout.
-    //
-    // HideInEditorMask: the Inspector should NOT render the raw flat vector
-    // (the generic Array renderer would show "Array editing is not
-    // implemented yet." which is misleading). Inspector instead renders
-    // these via DrawTypeScriptComponentScriptFields, which knows about
-    // the alternating [k,v] layout and can present per-field widgets.
-    transfer.Transfer(m_SerializedFields, "m_serialized_fields", TransferMetaFlags::HideInEditorMask);
-}
 
 // -----------------------------------------------------------------------------
 // Construction / destruction

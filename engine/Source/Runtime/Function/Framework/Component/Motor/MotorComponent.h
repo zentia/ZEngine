@@ -4,6 +4,7 @@
 #include "Runtime/Function/AI/AIMoveIntent.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Resource/ResType/Components/Motor.h"
+#include "MotorComponent.generated.h"
 
 enum class MotorState : unsigned char
 {
@@ -18,10 +19,10 @@ enum class JumpState : unsigned char
     falling
 };
 
+ZCLASS()
 class MotorComponent : public Component
 {
-    REGISTER_CLASS(MotorComponent);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(MotorComponent)
 
 public:
     MotorComponent() = default;
@@ -76,6 +77,7 @@ private:
     void CalculateDesiredDisplacement(float delta_time);
     void CalculateTargetPosition(const Vector3&& current_position);
 
+    ZPROPERTY()
     MotorComponentRes m_MotorRes;
 
     float m_MoveSpeedRatio {0.f};

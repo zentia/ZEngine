@@ -1,8 +1,5 @@
 #include "AnimationClip.h"
 
-IMPLEMENT_REGISTER_CLASS(AnimationAsset);
-IMPLEMENT_OBJECT_SERAILIZE(AnimationAsset);
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(AnimationAsset);
 
 
 template<typename TransferFunction>
@@ -26,14 +23,6 @@ void AnimationClip::Transfer(TransferFunction& transfer)
     transfer.Transfer(total_frame, "total_frame");
     transfer.Transfer(node_count, "node_count");
     transfer.Transfer(node_channels, "node_channels");
-}
-
-template<typename TransferFunction>
-void AnimationAsset::Transfer(TransferFunction& transfer_function)
-{
-    transfer_function.Transfer(node_map, "node_map");
-    transfer_function.Transfer(clip_data, "clip_data");
-    transfer_function.Transfer(skeleton_file_path, "skeleton_file_path");
 }
 
 INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(AnimNodeMap, , Transfer, void)

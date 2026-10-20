@@ -4,6 +4,7 @@
 #include "Runtime/Core/Math/Vector3.h"
 
 #include <vector>
+#include "Material.generated.h"
 
 class ShaderRes;
 class Texture2D;
@@ -73,10 +74,10 @@ struct MaterialToggleProperty
 
 // Unity-style material asset: shader + saved properties + built-in PBR slots.
 // Texture and shader bindings are asset references (PPtr), not source file paths.
+ZCLASS(CustomTransfer)
 class Material : public Object
 {
-    REGISTER_CLASS(Material)
-    DECLARE_OBJECT_SERIALIZE(Material)
+    ZGENERATED_BODY(Material)
 
 public:
     // Built-in / legacy shader name string. Used when m_ShaderPptr is null

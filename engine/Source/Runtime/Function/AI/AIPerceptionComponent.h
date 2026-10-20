@@ -16,6 +16,7 @@
 #include <EASTL/vector.h>
 
 #include <type_traits>
+#include "AIPerceptionComponent.generated.h"
 
 enum class AIPerceptionMode : unsigned char
 {
@@ -42,10 +43,10 @@ public:
   }
 };
 
+ZCLASS()
 class AIPerceptionComponent : public Component
 {
-  REGISTER_CLASS(AIPerceptionComponent);
-  DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(AIPerceptionComponent)
 
 public:
   AIPerceptionComponent() = default;
@@ -73,14 +74,20 @@ private:
 
   // ---- serialized config ---------------------------------------------------
 
+  ZPROPERTY()
   AIPerceptionMode m_PerceptionMode {AIPerceptionMode::tag};
+  ZPROPERTY()
   eastl::string m_TargetTag;
 
+  ZPROPERTY()
   float m_SightRadius {20.f};
   /// Half-angle of the vision cone in degrees; 0 disables the cone test.
+  ZPROPERTY()
   float m_SightHalfAngleDegrees {0.f};
+  ZPROPERTY()
   float m_HearingRadius {8.f};
   /// Seconds between two perception scans. 0 scans every frame.
+  ZPROPERTY()
   float m_UpdateInterval {0.2f};
 
   // ---- runtime state -------------------------------------------------------

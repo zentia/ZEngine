@@ -50,7 +50,13 @@ class ClassInfo:
     generated_body_line: int = 0
     abstract: bool = False
     custom_transfer: bool = False
+    no_super_transfer: bool = False
+    namespace: str = ""
     properties: List[PropertyInfo] = field(default_factory=list)
+
+    @property
+    def qualified_name(self) -> str:
+        return self.namespace + "::" + self.name if self.namespace else self.name
 
     def to_dict(self) -> dict:
         return {
@@ -61,6 +67,8 @@ class ClassInfo:
             "generated_body_line": self.generated_body_line,
             "abstract": self.abstract,
             "custom_transfer": self.custom_transfer,
+            "no_super_transfer": self.no_super_transfer,
+            "namespace": self.namespace,
             "properties": [p.to_dict() for p in self.properties],
         }
 

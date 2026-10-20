@@ -3,9 +3,6 @@
 #include "CSharp/CSharpMemoryProfiler.h"
 #include "Lua/LuaMemoryProfiler.h"
 
-IMPLEMENT_REGISTER_CLASS(MemoryProfiler)
-IMPLEMENT_OBJECT_SERIALIZE(MemoryProfiler)
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(MemoryProfiler)
 
 void MemoryProfiler::Clear()
 {
@@ -76,9 +73,3 @@ void MemoryProfiler::RemoveUserData(uint64_t ptr)
     m_CSharpMemoryProfiler.userdata.erase(ptr);
 }
 
-template<typename TransferFunction>
-void MemoryProfiler::Transfer(TransferFunction& transfer)
-{
-    transfer.Transfer(m_CSharpMemoryProfiler, "CSharp");
-    transfer.Transfer(m_LuaMemoryProfiler, "Lua");
-}

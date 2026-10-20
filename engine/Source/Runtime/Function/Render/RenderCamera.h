@@ -8,6 +8,7 @@
 #include "Runtime/Function/Render/Texture/RenderTexture.h"
 
 #include <mutex>
+#include "RenderCamera.generated.h"
 
 enum class RenderCameraType : int
 {
@@ -15,11 +16,10 @@ enum class RenderCameraType : int
     Game
 };
 
+ZCLASS(NoSuperTransfer)
 class RenderCamera : public Behaviour
 {
-    REGISTER_CLASS_TRAITS(kTypeNoFlags);
-    REGISTER_CLASS(RenderCamera);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(RenderCamera)
 
 public:
     RenderCameraType m_CurrentCameraType {RenderCameraType::Editor};

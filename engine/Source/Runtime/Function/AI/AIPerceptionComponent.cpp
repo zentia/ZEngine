@@ -8,21 +8,6 @@
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Physics/PhysicsScene.h"
 
-IMPLEMENT_REGISTER_CLASS(AIPerceptionComponent)
-IMPLEMENT_OBJECT_SERIALIZE(AIPerceptionComponent)
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(AIPerceptionComponent)
-
-template <typename TransferFunction>
-void AIPerceptionComponent::Transfer(TransferFunction& transfer)
-{
-  Super::Transfer(transfer);
-  transfer.Transfer(m_PerceptionMode, "perception_mode");
-  transfer.Transfer(m_TargetTag, "target_tag");
-  transfer.Transfer(m_SightRadius, "sight_radius");
-  transfer.Transfer(m_SightHalfAngleDegrees, "sight_half_angle_degrees");
-  transfer.Transfer(m_HearingRadius, "hearing_radius");
-  transfer.Transfer(m_UpdateInterval, "update_interval");
-}
 
 void AIPerceptionComponent::PostLoadResource(GameObject* parent_object)
 {

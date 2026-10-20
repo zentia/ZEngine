@@ -66,17 +66,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include "DataTable.generated.h"
 
 // -----------------------------------------------------------------------------
 // DataTableBase -- abstract, type-erased base. Holds metadata that does not
 // depend on TRow, plus the virtual interface the editor uses for table-level
 // operations (count rows, get a row's key for display, trigger re-import).
 // -----------------------------------------------------------------------------
+ZCLASS(Abstract)
 class DataTableBase : public Object
 {
-    REGISTER_CLASS_TRAITS(kTypeIsAbstract);
-    REGISTER_CLASS(DataTableBase);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(DataTableBase)
 
 public:
     DataTableBase() = default;
@@ -87,6 +87,12 @@ public:
     /// time; persisted so the Inspector can show "(generated, edit source
     /// CSV)" guidance and so re-import knows where to look without a
     /// project-wide rescan.
+    // m_SourceCsvRelpath is a tiny breadcrumb so the Inspector's "edit
+    // source CSV" button can resolve the original file without consulting
+    // the AssetRegistry. Emitted exactly once, here in the base, so the
+    // per-wrapper Transfer() (see IMPLEMENT_DATA_TABLE) only has to forward
+    // its row vector.
+    ZPROPERTY(Name="m_source_csv_relpath")
     eastl::string m_SourceCsvRelpath;
 
     /// Number of rows in this table. Implemented by DataTable<TRow>.

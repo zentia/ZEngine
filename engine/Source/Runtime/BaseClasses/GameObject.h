@@ -9,11 +9,14 @@
 #include <memory>
 #include <string>
 #include <unordered_set>
+#include "GameObject.generated.h"
 
+ZCLASS(CustomTransfer)
 class GameObject : public Object
 {
-    REGISTER_CLASS(GameObject);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(GameObject)
+
+public:
     typedef std::unordered_set<std::string> TypeNameSet;
 
 public:

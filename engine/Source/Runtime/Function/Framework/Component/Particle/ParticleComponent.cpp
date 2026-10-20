@@ -6,19 +6,9 @@
 #include "Runtime/Function/Render/RenderSwapContext.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 
-IMPLEMENT_REGISTER_CLASS_3(Runtime, ParticleComponent, typeid(Runtime::ParticleComponent).hash_code())
-IMPLEMENT_OBJECT_SERIALIZE(Runtime::ParticleComponent)
 
 namespace Runtime
 {
-    template<typename TransferFunction>
-    void ParticleComponent::Transfer(TransferFunction& transfer)
-    {
-        Super::Transfer(transfer);
-        transfer.Transfer(m_ParticleRes, "particle_res");
-    }
-
-    INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(ParticleComponent)
 
     void ParticleComponent::PostLoadResource(GameObject* parent_object)
     {

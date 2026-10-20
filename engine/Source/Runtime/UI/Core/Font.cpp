@@ -5,16 +5,6 @@
 
 #include <filesystem>
 
-IMPLEMENT_REGISTER_CLASS(Font);
-IMPLEMENT_OBJECT_SERAILIZE(Font);
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(Font)
-
-template<typename TransferFunction>
-void Font::Transfer(TransferFunction& transfer)
-{
-    transfer.Transfer(m_SourceRelPath, "source_rel_path");
-    transfer.Transfer(m_DefaultSize, "default_size");
-}
 
 void Font::SetSourceRelPath(const eastl::string& path)
 {

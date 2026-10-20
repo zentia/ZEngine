@@ -13,7 +13,6 @@
 
 #include <algorithm>
 
-IMPLEMENT_REGISTER_CLASS(Material)
 IMPLEMENT_OBJECT_SERAILIZE(Material)
 
 namespace

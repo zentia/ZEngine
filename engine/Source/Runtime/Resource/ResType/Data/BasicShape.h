@@ -2,6 +2,7 @@
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
+#include "BasicShape.generated.h"
 
 class Geometry : public Object
 {
@@ -11,55 +12,37 @@ public:
     virtual ~Geometry() {}
 };
 
+ZCLASS(NoSuperTransfer)
 class Box : public Geometry
 {
-    REGISTER_CLASS(Box)
-    DECLARE_OBJECT_SERIALIZE(Box)
+    ZGENERATED_BODY(Box)
 
 public:
+    ZPROPERTY()
     Vector3 m_HalfExtents {0.5f, 0.5f, 0.5f};
 };
 
+ZCLASS(NoSuperTransfer)
 class Sphere : public Geometry
 {
-    REGISTER_CLASS(Sphere)
-    DECLARE_OBJECT_SERIALIZE(Sphere)
+    ZGENERATED_BODY(Sphere)
 
 public:
     ~Sphere() override {}
+    ZPROPERTY()
     float m_Radius {0.5f};
 };
 
+ZCLASS(NoSuperTransfer)
 class Capsule : public Geometry
 {
-    REGISTER_CLASS(Capsule)
-    DECLARE_OBJECT_SERIALIZE(Capsule)
+    ZGENERATED_BODY(Capsule)
 
 public:
     ~Capsule() override {}
+    ZPROPERTY()
     float m_Radius {0.3f};
+    ZPROPERTY()
     float m_HalfHeight {0.7f};
 };
 
-template<typename TransferFunction>
-void Box::Transfer(TransferFunction& transfer)
-{
-    transfer.Transfer(m_HalfExtents, "half_extents");
-}
-
-template<typename TransferFunction>
-void Sphere::Transfer(TransferFunction& transfer)
-{
-    transfer.Transfer(m_Radius, "radius");
-}
-
-template<typename TransferFunction>
-void Capsule::Transfer(TransferFunction& transfer)
-{
-    transfer.Transfer(m_Radius, "radius");
-    transfer.Transfer(m_HalfHeight, "half_height");
-}
-
-INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(Box, , Transfer, void)
-INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(Sphere, , Transfer, void)
-INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(Capsule, , Transfer, void)

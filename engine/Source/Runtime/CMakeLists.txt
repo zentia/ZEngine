@@ -402,9 +402,9 @@ list(REMOVE_ITEM SOURCE_FILES
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/ReflectionCodegenSmokeTest.cpp")
 list(REMOVE_ITEM SOURCE_FILES
-     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/ReflectionCodegenSmokeTestAppleStubs.cpp")
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
-     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/ReflectionCodegenSmokeTestAppleStubs.cpp")
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp")
 # Derived Data Cache smoke-test main carve-out (texture cook P3)
 list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Cache/Test/DerivedDataCacheSmokeTest.cpp")
@@ -506,7 +506,10 @@ zengine_header_tool(
     MODULE       ZRuntime
     TARGETS      ${TARGET_NAME} ${SHARED_TARGET_NAME}
     INCLUDE_ROOT "${ENGINE_ROOT_DIR}/Source"
-    HEADERS      ${HEADER_FILES})
+    HEADERS      ${HEADER_FILES}
+    # The shared PCH (CommonPCH/pch.h) transitively includes reflected
+    # headers such as ProjectInfo.h.
+    INCLUDE_CONSUMERS ZEnginePCH)
 
 # Consumers of the shared runtime should get the import macro defined so headers
 target_compile_definitions(${SHARED_TARGET_NAME} INTERFACE ZRUNTIME_SHARED_IMPORTS)

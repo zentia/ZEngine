@@ -4,12 +4,15 @@
 
 #include <string>
 #include <vector>
+#include "BoneBlendMask.generated.h"
+ZCLASS()
 class BoneBlendMask : public Object
 {
-    REGISTER_CLASS(BoneBlendMask);
-    DECLARE_OBJECT_SERIALIZE(BoneBlendMask);
+    ZGENERATED_BODY(BoneBlendMask)
 
 public:
+    ZPROPERTY()
     eastl::string skeleton_file_path;
+    ZPROPERTY()
     std::vector<int> enabled;
 };

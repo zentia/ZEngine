@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "AssetBundleManifest.generated.h"
 
 // NOTE: the serializer supports std::vector, not eastl::vector (see
 // SerializeTraitsBase.h -- it needs a GetTypeString() the EASTL containers do
@@ -54,18 +55,21 @@ void AssetBundleInfo::Transfer(TransferFunction& transfer)
 
 INSTANTIATE_TEMPLATE_TRANSFER_WITH_DECL(AssetBundleInfo, , Transfer, void)
 
+ZCLASS()
 class AssetBundleManifest : public Object
 {
-    REGISTER_CLASS(AssetBundleManifest);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(AssetBundleManifest)
 
 public:
     /// Platform tag the build was produced for ("Standalone", "Android", ...).
+    ZPROPERTY()
     eastl::string platform;
     /// Project content root the asset paths are relative to (as written at
     /// build time). The runtime uses it to normalise incoming absolute paths
     /// back to registry-relative keys.
+    ZPROPERTY()
     eastl::string content_root;
+    ZPROPERTY()
     std::vector<AssetBundleInfo> bundles;
 
     const AssetBundleInfo* FindBundle(const char* bundle_name) const;

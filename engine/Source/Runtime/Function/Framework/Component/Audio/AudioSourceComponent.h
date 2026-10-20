@@ -2,6 +2,7 @@
 
 #include "Runtime/Function/Audio/AudioCommon.h"
 #include "Runtime/Function/Framework/Component/Component.h"
+#include "AudioSourceComponent.generated.h"
 
 namespace Runtime
 {
@@ -12,10 +13,10 @@ namespace Runtime
     /// emitter, and stacking voices behind one component makes "is it playing?"
     /// unanswerable. Fire-and-forget one-shots should call
     /// AudioSystem::PlayOneShot() directly instead.
+    ZCLASS()
     class AudioSourceComponent : public Component
     {
-        REGISTER_CLASS(AudioSourceComponent);
-        DECLARE_OBJECT_SERIALIZE();
+        ZGENERATED_BODY(AudioSourceComponent)
 
     public:
         AudioSourceComponent() = default;
@@ -35,18 +36,29 @@ namespace Runtime
         /// Builds AudioPlayParams from the serialized fields + current transform.
         AudioPlayParams BuildPlayParams() const;
 
+        ZPROPERTY()
         eastl::string m_ClipPath;
         /// Empty = master bus. Resolved by name on every Play().
+        ZPROPERTY()
         eastl::string m_BusName;
+        ZPROPERTY()
         float m_Volume {1.0f};
+        ZPROPERTY()
         float m_Pitch {1.0f};
+        ZPROPERTY()
         bool m_Loop {false};
+        ZPROPERTY()
         bool m_PlayOnAwake {false};
         /// 0 = 2D, 1 = fully spatial.
+        ZPROPERTY()
         float m_SpatialBlend {1.0f};
+        ZPROPERTY()
         float m_MinDistance {1.0f};
+        ZPROPERTY()
         float m_MaxDistance {50.0f};
+        ZPROPERTY()
         float m_FadeInSeconds {0.0f};
+        ZPROPERTY()
         int32_t m_Priority {0};
 
         /// Not serialized: a voice id is only meaningful for this process.

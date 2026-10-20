@@ -69,6 +69,13 @@ function(zengine_add_smoke_test target_name source_file)
     if(MSVC)
         target_compile_options(${target_name} PRIVATE /W4)
     endif()
+
+    # macOS: libZRuntime.a currently has 15 unresolved render symbols on Apple
+    # and -force_load drags their callers in. These smoke tests never reach the
+    # renderer; resolve them with aborting stubs (see SmokeTestAppleLinkStubs.cpp).
+    if(APPLE)
+        target_sources(${target_name} PRIVATE SmokeTestAppleLinkStubs.cpp)
+    endif()
 endfunction()
 
 if(ZENGINE_BUILD_SCHEMA_EVOLUTION_SMOKE_TEST)
@@ -88,11 +95,5 @@ endif()
 
 if(ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST)
     zengine_add_smoke_test(ReflectionCodegenSmokeTest ReflectionCodegenSmokeTest.cpp)
-    # macOS: libZRuntime.a currently has 15 unresolved render symbols on Apple
-    # and -force_load drags their callers in. This dump-only test never reaches
-    # the renderer; resolve them with aborting stubs (see the stubs file).
-    if(APPLE)
-        target_sources(ReflectionCodegenSmokeTest PRIVATE ReflectionCodegenSmokeTestAppleStubs.cpp)
-    endif()
     message(STATUS "Configured reflection-codegen smoke-test target: ReflectionCodegenSmokeTest")
 endif()

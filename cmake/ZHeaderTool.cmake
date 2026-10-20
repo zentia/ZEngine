@@ -5,7 +5,9 @@
 #       MODULE        ZRuntime                       # name used for dirs / target
 #       TARGETS       ZRuntime ZRuntimeShared        # targets compiling the module
 #       INCLUDE_ROOT  ${ENGINE_ROOT_DIR}/Source      # "Runtime/..." includes are relative to this
-#       HEADERS       ${HEADER_FILES})               # every header of the module
+#       HEADERS       ${HEADER_FILES}                # every header of the module
+#       INCLUDE_CONSUMERS ZEnginePCH)                # targets that include reflected headers
+#                                                    # without linking TARGETS (e.g. the shared PCH)
 #
 # Configure time: `ZHeaderTool.py list` decides which headers carry ZCLASS
 # and therefore which <Name>.gen.cpp files are added to TARGETS.
@@ -26,7 +28,7 @@ get_filename_component(ZHT_TOOL_DIR "${ZHT_TOOL_DIR}" ABSOLUTE)
 set(ZHT_SCRIPT "${ZHT_TOOL_DIR}/ZHeaderTool.py")
 
 function(zengine_header_tool)
-    cmake_parse_arguments(ZHT "" "MODULE;INCLUDE_ROOT" "TARGETS;HEADERS" ${ARGN})
+    cmake_parse_arguments(ZHT "" "MODULE;INCLUDE_ROOT" "TARGETS;HEADERS;INCLUDE_CONSUMERS" ${ARGN})
     if(NOT ZHT_MODULE OR NOT ZHT_TARGETS OR NOT ZHT_INCLUDE_ROOT)
         message(FATAL_ERROR "zengine_header_tool: MODULE, TARGETS and INCLUDE_ROOT are required")
     endif()
@@ -101,6 +103,15 @@ function(zengine_header_tool)
         add_dependencies(${target} ${zht_target})
         target_sources(${target} PRIVATE ${gen_sources})
         target_include_directories(${target} PUBLIC "$<BUILD_INTERFACE:${inc_dir}>")
+    endforeach()
+
+    # Targets that compile reflected headers but do not link TARGETS still need
+    # the generated include dir and must not start before the tool has run.
+    foreach(target IN LISTS ZHT_INCLUDE_CONSUMERS)
+        if(TARGET ${target})
+            add_dependencies(${target} ${zht_target})
+            target_include_directories(${target} PUBLIC "$<BUILD_INTERFACE:${inc_dir}>")
+        endif()
     endforeach()
 
     list(LENGTH annotated annotated_count)

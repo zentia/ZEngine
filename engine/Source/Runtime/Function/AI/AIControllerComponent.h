@@ -21,6 +21,7 @@
 
 #include <cstdint>
 #include <type_traits>
+#include "AIControllerComponent.generated.h"
 
 /// Training/personality presets. `custom` keeps whatever tree the project built
 /// through SetTree; the others are the built-in templates from
@@ -53,10 +54,10 @@ public:
   }
 };
 
+ZCLASS()
 class AIControllerComponent : public Behaviour
 {
-  REGISTER_CLASS(AIControllerComponent);
-  DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(AIControllerComponent)
 
 public:
   AIControllerComponent() = default;
@@ -176,12 +177,18 @@ private:
   /// Advance the waypoint cursor as the agent reaches each point.
   void UpdatePathFollow(const Vector3& self_position);
 
+  ZPROPERTY()
   AIProfile m_Profile {AIProfile::chase};
 
+  ZPROPERTY()
   float m_MoveSpeedRatio {1.f};
+  ZPROPERTY()
   float m_AttackRange {2.5f};
+  ZPROPERTY()
   float m_RetreatHealthRatio {0.3f};
+  ZPROPERTY()
   float m_GuardRadius {15.f};
+  ZPROPERTY()
   eastl::string m_AttackActionName {"attack"};
 
   float m_HealthRatio {1.f};

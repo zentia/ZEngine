@@ -2,11 +2,12 @@
 
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Resource/ResType/Components/RigidBody.h"
+#include "RigidbodyComponent.generated.h"
 
+ZCLASS()
 class RigidBodyComponent : public Component
 {
-    REGISTER_CLASS(RigidBodyComponent);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(RigidBodyComponent)
 
 public:
     RigidBodyComponent() = default;
@@ -43,6 +44,7 @@ protected:
     void CreateRigidBody(const TransformTRS& global_transform);
     void RemoveRigidBody();
 
+    ZPROPERTY()
     RigidBodyComponentRes m_RigidbodyRes;
 
     /// Sentinel for "no body created yet". Matches the value the field was

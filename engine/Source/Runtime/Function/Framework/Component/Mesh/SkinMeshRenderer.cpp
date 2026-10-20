@@ -4,15 +4,7 @@
 #include "Runtime/Function/Framework/Component/Animation/AnimationComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 
-IMPLEMENT_REGISTER_CLASS(SkinMeshRenderer)
-IMPLEMENT_OBJECT_SERIALIZE(SkinMeshRenderer)
 
-template<typename TransferFunction>
-void SkinMeshRenderer::Transfer(TransferFunction& transfer)
-{
-    Super::Transfer(transfer);
-}
-INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(SkinMeshRenderer)
 
 namespace
 {

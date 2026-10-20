@@ -10,11 +10,12 @@
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Function/AI/Navigation/NavMesh.h"
 #include "Runtime/Function/Framework/Component/Component.h"
+#include "NavigationVolumeComponent.generated.h"
 
+ZCLASS()
 class NavMeshVolumeComponent : public Component
 {
-    REGISTER_CLASS(NavMeshVolumeComponent);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(NavMeshVolumeComponent)
 
 public:
     NavMeshVolumeComponent() = default;
@@ -56,11 +57,18 @@ public:
     void SetBuildOnLoad(bool build_on_load) { m_BuildOnLoad = build_on_load; }
 
 private:
+  ZPROPERTY()
   float m_CellSize {1.f};
+  ZPROPERTY()
   int m_CellsX {32};
+  ZPROPERTY()
   int m_CellsY {32};
+    ZPROPERTY()
     float m_MaxSlope {0.7f};
+    ZPROPERTY()
     float m_AgentRadius {0.4f};
+    ZPROPERTY()
     float m_MaxStepHeight {0.6f};
+    ZPROPERTY()
     bool m_BuildOnLoad {true};
 };

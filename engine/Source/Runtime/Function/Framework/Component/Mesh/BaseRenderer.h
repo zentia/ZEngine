@@ -5,13 +5,14 @@
 #include "Runtime/Resource/ResType/Components/Mesh.h"
 
 #include <vector>
+#include "BaseRenderer.generated.h"
 
 class Transform;
 
+ZCLASS()
 class BaseRenderer : public Component
 {
-    REGISTER_CLASS(BaseRenderer);
-    DECLARE_OBJECT_SERIALIZE();
+    ZGENERATED_BODY(BaseRenderer)
 
 public:
     BaseRenderer() = default;
@@ -44,7 +45,9 @@ protected:
     virtual GameObjectDesc BuildGameObjectDesc(const Transform* transform_component) const;
 
 private:
+    ZPROPERTY()
     std::vector<SubMeshRes> m_SubMeshes;
+    ZPROPERTY(Name="shared_materials")
     std::vector<eastl::string> m_SharedMaterialAssets;
     bool m_ForceDoubleSided {false};
 };
