@@ -2739,9 +2739,18 @@ need nothing extra). Do not re-litigate Python vs C++.
     agree by construction. `Vector3` / `Quaternion` are marshalled as plain JS
     objects, so the template declares them as `interface`, not class.
 - Reserved-name guard: TS/JS globals (`Object`, `String`, `Math`, `console`,
-  ...) are skipped by both the .d.ts placeholder pass and `InstallGlobals`;
-  a class whose super is one of them is emitted without `extends`. This is why
-  `declare class GameObject` has no base even though C++ derives from `Object`.
+  ...) are skipped by the .d.ts placeholder pass, the class-declaration pass
+  **and** `InstallGlobals`; a class whose super is one of them is emitted
+  without `extends`. All three go through `ScriptBindingRegistry::
+  IsReservedScriptName` (exposed so the gates consult the same list instead of
+  a copy that would drift), and `--check-script-bindings` fails if a bound
+  class actually carries one -- it would be invisible to scripts on both
+  halves. This is why `declare class GameObject` has no base even though C++
+  derives from `Object`.
+- `Behaviour` is **not** in `kZEngineDtsTemplate` any more: it is a synthetic
+  class and `AppendTypeScriptDeclarations` emits its `declare class` from the
+  same ZSyntheticProperty table C++ injects from, so keeping the hand-written
+  block was a duplicate declaration (TS "Duplicate identifier").
 - Binding drift gate: `ReflectionCodegenSmokeTest --check-script-bindings`
   validates every table (null callbacks/names, self-inheritance, duplicate
   script names, empty or brace-unbalanced .d.ts); `--dump-script-dts` prints
@@ -2768,10 +2777,22 @@ need nothing extra). Do not re-litigate Python vs C++.
     scope, and C++ checks access at the point of naming -- the fields are
     usually private, and only the *definition* (a member context) may touch
     them. This is why the generated body now emits a `public:` block.
-  * Scope: field properties only attach to a class that is already
-    script-visible (it owns ZFUNCTIONs or a ZSCRIPTPROPERTY). Widening that
-    is a one-line change in `codegen._script_field_properties`, but it would
-    publish ~30 more globals at once -- a separate decision.
+  * Scope: **every** ZCLASS with a marshallable field is script-visible,
+    ZFUNCTION or not. An asset or a settings object (ShaderRes, TimelineClip,
+    CameraParameter) is reached through a bound getter of another class, so
+    gating this on "already script-visible" left its fields unreachable from
+    TypeScript even though the Inspector edits them. The predicate to change
+    is still `codegen._script_field_properties` -- but note `cli.py`'s
+    `bound_classes` must agree (it drives the super-chain flattening and the
+    .d.ts `extends` clauses), which is why the answer comes from
+    `has_script_field_properties()` rather than being re-derived.
+  * `ZPROPERTY(Transient)` fields are **excluded**: Transient means "reflected
+    but not serialized", and the Inspector hides it too. Publishing it as
+    `obj.foo` would hand scripts a value that means something different on a
+    fresh object than on a loaded one.
+  * `.gen.cpp` `#include`s ScriptBinding.h whenever any class in the header
+    contributes methods, ZSCRIPTPROPERTY pairs **or** field properties --
+    `needs_script` in `generate_source` covers all three.
 - **`ZSCRIPTPROPERTY(Name="..", Getter=".."[, Setter=".."])`** publishes an
   existing ZFUNCTION getter/setter pair as an accessor property, with no data
   member behind it. This is how `transform.position` exists at all: Transform
@@ -2831,12 +2852,15 @@ need nothing extra). Do not re-litigate Python vs C++.
   the map; add any new `using X = <integer>` there when it first crosses the
   boundary. Failure mode is silent (the .d.ts still generates), so this is not
   catchable by `--check-script-bindings`.
-- Bound surface (2026-10-20): 8 classes / 50 methods / 24 properties /
-  1 enum --
+- Bound surface (2026-10-20): 41 class tables / 50 methods / 122 properties /
+  1 enum (d.ts ~7 KB). 8 of those classes are hand-annotated with ZFUNCTION --
   `GameObject`, `Component`, `Transform`, `TypeScriptComponent`,
   `LightComponent`, `CameraComponent`, `AnimationComponent`,
-  `AudioSourceComponent`, plus the synthetic `Behaviour` and the `CameraMode`
-  enum. Deliberately unbound:
+  `AudioSourceComponent` -- and the rest are published purely because they own
+  a marshallable ZPROPERTY field (assets / settings: `ShaderRes`, `Texture2D`,
+  `TimelineClip` + subclasses, `CameraParameter` + subclasses, `Font`,
+  `LevelRes`, ...), plus the synthetic `Behaviour` and the `CameraMode` enum.
+  Deliberately unbound:
   * `const char*` setters (a Converter would have to own a buffer that outlives
     the call; add an `eastl::string` overload instead).
   * `Transform::SetParentOptions` -- a *nested* enum, which ZENUM rejects (no

@@ -14,7 +14,8 @@ from contextlib import redirect_stderr
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from zht import cli  # noqa: E402
-from zht.codegen import generate_header, generate_source  # noqa: E402
+from zht.codegen import (generate_header, generate_source,  # noqa: E402
+                         has_script_field_properties)
 from zht.lexer import IDENT, STRING, tokenize  # noqa: E402
 from zht.parser import ParseError, default_serialized_name, has_annotations, parse_header  # noqa: E402
 
@@ -246,9 +247,17 @@ class CodegenTests(unittest.TestCase):
     def test_light_component_output(self):
         info = parse_header("/src/LightComponent.h", "Runtime/Function/Framework/Component/Light/LightComponent.h", LIGHT_H)
         header = generate_header(info)
+        # LIGHT_H has no ZFUNCTION, but its two fields are marshallable, so it is
+        # script-visible anyway and the generated body opens with the public
+        # accessors (the .gen.cpp takes their address from file scope).
         self.assertIn("#define ZGEN_BODY_LightComponent \\\n"
                       "    REGISTER_CLASS(LightComponent); \\\n"
                       "    DECLARE_OBJECT_SERIALIZE(); \\\n"
+                      "public: \\\n"
+                      "    Vector3 ZhtScriptGet_m_Flux() const; \\\n"
+                      "    void ZhtScriptSet_m_Flux(const Vector3& value); \\\n"
+                      "    float ZhtScriptGet_m_Radius() const; \\\n"
+                      "    void ZhtScriptSet_m_Radius(const float& value); \\\n"
                       "private:\n", header)
         source = generate_source(info)
         self.assertIn('#include "Runtime/Function/Framework/Component/Light/LightComponent.h"\n', source)
@@ -267,8 +276,16 @@ class CodegenTests(unittest.TestCase):
             "}\n"
             "\n"
             "INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(LightComponent)\n"
+            "\n"
+            "Vector3 LightComponent::ZhtScriptGet_m_Flux() const { return m_Flux; }\n"
+            "void LightComponent::ZhtScriptSet_m_Flux(const Vector3& value) { m_Flux = value; }\n"
+            "float LightComponent::ZhtScriptGet_m_Radius() const { return m_Radius; }\n"
+            "void LightComponent::ZhtScriptSet_m_Radius(const float& value) { m_Radius = value; }\n"
         )
-        self.assertTrue(source.endswith(expected), source)
+        self.assertIn(expected, source)
+        self.assertIn('{.name = "flux", .tsType = "Vector3"', source)
+        self.assertIn('{.name = "radius", .tsType = "number"', source)
+        self.assertIn("kZhtScriptProperties_LightComponent, 2};", source)
 
     def test_flags_transient_abstract_custom_transfer(self):
         info = parse(wrap(
@@ -366,8 +383,20 @@ class CodegenTests(unittest.TestCase):
         self.assertIn("const ZClassScriptBindingRegistrar kZhtScriptRegistrar_Foo(kZhtScriptClass_Foo);", source)
 
     def test_no_zfunction_no_binding_table(self):
-        source = generate_source(parse(wrap("    ZPROPERTY()\n    float m_V;\n")))
+        # No ZFUNCTION and nothing marshallable -> no script binding at all.
+        source = generate_source(parse(wrap("    ZPROPERTY()\n    PPtr<Foo> m_P;\n")))
         self.assertNotIn("ScriptBinding", source)
+        self.assertNotIn("kZhtScriptClass_Foo", source)
+
+    def test_transient_field_is_not_a_script_property(self):
+        # Transient is "reflected but not serialized", and the Inspector hides
+        # it too. Exposing it would give scripts a value that means something
+        # different on a fresh object than on a loaded one.
+        source = generate_source(parse(wrap(
+            "    ZPROPERTY()\n    float m_A {0.0f};\n"
+            "    ZPROPERTY(Transient)\n    float m_B {0.0f};\n")))
+        self.assertIn('{.name = "a", .tsType = "number"', source)
+        self.assertNotIn("m_B", source)
 
     def test_method_with_inline_body_is_bound(self):
         # A definition instead of a declaration is fine; the body is skipped.
@@ -436,12 +465,20 @@ class CodegenTests(unittest.TestCase):
             "    ZPROPERTY(Name=\"foo\")\n    float m_B {0.0f};\n"
         ))
 
-    def test_field_properties_need_an_already_bound_class(self):
-        # A class with a marshallable field but no ZFUNCTION is not script
-        # visible yet, so it must not sprout accessors.
-        source = generate_source(parse(wrap("private:\n    ZPROPERTY()\n    float m_V {1.0f};\n")))
-        self.assertNotIn("ZhtScriptGet_m_V", source)
-        self.assertNotIn("kZhtScriptProperties_Foo", source)
+    def test_field_properties_make_a_class_script_visible(self):
+        # Scope (deliberate): every ZCLASS with a marshallable field is exposed,
+        # whether or not it owns a ZFUNCTION. An asset or a settings object is
+        # reached through a bound getter of another class, so gating this on
+        # "already script-visible" would leave its fields unreachable from
+        # TypeScript even though the Inspector edits them.
+        info = parse(wrap("private:\n    ZPROPERTY()\n    float m_V {1.0f};\n"))
+        source = generate_source(info)
+        self.assertIn("float Foo::ZhtScriptGet_m_V() const { return m_V; }", source)
+        self.assertIn("kZhtScriptProperties_Foo, 1};", source)
+        # ...and that makes it a bound class, i.e. cli's bound_classes must
+        # agree (it drives the super chain and the .d.ts `extends` clauses).
+        self.assertTrue(has_script_field_properties(info.classes[0]))
+        self.assertFalse(has_script_field_properties(parse(wrap("private:\n    ZPROPERTY()\n    PPtr<Foo> m_P;\n")).classes[0]))
 
     def test_script_property_publishes_an_accessor_pair(self):
         info = parse(wrap(

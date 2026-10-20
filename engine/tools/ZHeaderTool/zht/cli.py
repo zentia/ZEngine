@@ -25,7 +25,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .codegen import generate_header, generate_source
+from .codegen import generate_header, generate_source, has_script_field_properties
 from .model import HeaderInfo
 from .parser import ParseError, has_annotations, parse_header
 
@@ -184,10 +184,27 @@ def cmd_generate(args) -> int:
     # Module-wide lookup tables for the ZFUNCTION emitters.
     #   type_headers: "Foo" -> "Runtime/.../Foo.h" so a bound signature that
     #     mentions a forward-declared type can pull in its real header.
-    #   bound_classes / base_of: which classes own ZFUNCTIONs and what each
-    #     class derives from, so a binding's `super` skips method-less middle
+    #   bound_classes / base_of: which classes own a binding table and what each
+    #     class derives from, so a binding's `super` skips binding-less middle
     #     layers (Behaviour) and stays a valid prototype chain.
+    #
+    # ZENUM lookup: "CameraMode" / "ns::CameraMode" -> the name scripts see.
+    # Consumed twice -- a ZPROPERTY field of that type becomes a script
+    # property declared as `mode: CameraMode`, and a bound signature mentioning
+    # it pulls in the declaring header through type_headers (a scoped enum can
+    # be forward-declared, and `std::is_enum<T>` needs the real definition).
+    # It has to be built before bound_classes: a field of enum type is what
+    # makes many of those classes script-visible in the first place.
+    script_enums: Dict[str, str] = {}
     type_headers: Dict[str, str] = {}
+    for info in parsed:
+        for enum in info.enums:
+            script_enums[enum.qualified_name] = enum.name
+            script_enums[enum.name] = enum.name
+            type_headers[enum.qualified_name] = info.include_path
+            if enum.name != enum.qualified_name:
+                type_headers[enum.name] = info.include_path
+
     bare_name_counts: Dict[str, int] = {}
     bound_classes = set()
     base_of: Dict[str, Optional[str]] = {}
@@ -197,31 +214,18 @@ def cmd_generate(args) -> int:
             type_headers[qname] = info.include_path
             bare_name_counts[cls.name] = bare_name_counts.get(cls.name, 0) + 1
             base_of[qname] = cls.base
-            # Script-visible == owns a binding table. Keep in lock-step with
-            # codegen._script_field_properties, which gates field accessors on
-            # exactly this, otherwise a class would be emitted with properties
-            # but treated as unbound when its super chain is flattened.
-            if cls.methods or cls.script_properties:
+            # Script-visible == owns a binding table: a ZFUNCTION, a
+            # ZSCRIPTPROPERTY, or at least one marshallable ZPROPERTY field.
+            # Keep in lock-step with codegen._script_field_properties, otherwise
+            # a class would be emitted with properties but treated as unbound
+            # when its super chain is flattened.
+            if cls.methods or cls.script_properties or has_script_field_properties(cls, script_enums):
                 bound_classes.add(qname)
     for info in parsed:
         for cls in info.classes:
             # The bare spelling is only a usable key when it is unambiguous.
             if cls.name != cls.qualified_name and bare_name_counts.get(cls.name, 0) == 1:
                 type_headers[cls.name] = info.include_path
-
-    # ZENUM lookup: "CameraMode" / "ns::CameraMode" -> the name scripts see.
-    # Consumed twice -- a ZPROPERTY field of that type becomes a script
-    # property declared as `mode: CameraMode`, and a bound signature mentioning
-    # it pulls in the declaring header through type_headers (a scoped enum can
-    # be forward-declared, and `std::is_enum<T>` needs the real definition).
-    script_enums: Dict[str, str] = {}
-    for info in parsed:
-        for enum in info.enums:
-            script_enums[enum.qualified_name] = enum.name
-            script_enums[enum.name] = enum.name
-            type_headers[enum.qualified_name] = info.include_path
-            if enum.name != enum.qualified_name:
-                type_headers[enum.name] = info.include_path
 
     written = 0
     produced = set()

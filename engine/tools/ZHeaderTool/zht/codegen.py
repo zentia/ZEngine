@@ -88,19 +88,37 @@ def _script_field_properties(cls: ClassInfo, script_enums: Optional[Dict[str, st
     marks a field as *serialized*, not as script-facing, so an unmarshallable
     type must not turn into a generate-time error.
 
-    Scope note: fields only contribute to a class that is already script-visible
-    (it owns ZFUNCTIONs or a ZSCRIPTPROPERTY). Widening this to "any class with a
-    marshallable field" would publish ~30 more globals and `declare class`es at
-    once; that is a separate decision, and this predicate is where to make it.
+    Scope: every ZCLASS-annotated class qualifies, whether or not it owns a
+    ZFUNCTION. A marshallable field is enough to make a class script-visible --
+    it gets an accessor property table, a `declare class` and a global of its
+    name. That is deliberate: an asset or a settings object (ShaderRes,
+    TimelineClip) is reached through a bound getter of another class, and
+    without this its fields would be unreachable from TypeScript even though
+    the Inspector already edits them.
     """
-    if not (cls.methods or cls.script_properties):
-        return []
     out: List[Tuple[object, str]] = []
     for prop in cls.properties:
+        # Transient fields are reflected but not serialized, and the Inspector
+        # does not show them either. Publishing one as `obj.foo` would hand
+        # scripts a value whose meaning differs between a freshly constructed
+        # object and a loaded one.
+        if prop.transient:
+            continue
         ts_type = _field_ts_type(prop.cpp_type, script_enums or {})
         if ts_type is not None:
             out.append((prop, ts_type))
     return out
+
+
+def has_script_field_properties(cls: ClassInfo, script_enums: Optional[Dict[str, str]] = None) -> bool:
+    """Whether this class owns any field-backed script property.
+
+    cli.py needs the same answer as _script_field_properties to decide which
+    classes are script-visible (bound_classes drives the super-chain flattening
+    and the .d.ts `extends` clauses), so the two must not be re-derived
+    independently.
+    """
+    return bool(_script_field_properties(cls, script_enums))
 
 
 def _is_readonly_field(prop) -> bool:
@@ -400,7 +418,10 @@ def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] =
     enums = script_enums or {}
     out = [_banner(header), "\n", '#include "%s"\n' % header.include_path]
     needs_meta = any(p.meta and not p.transient for cls in header.classes for p in cls.properties)
-    needs_script = any(cls.methods or cls.script_properties for cls in header.classes)
+    # Field properties count: a class with no ZFUNCTION at all still emits a
+    # ZScriptPropertyEntry table, so ScriptBinding.h has to come along.
+    needs_script = any(cls.methods or cls.script_properties or _script_field_properties(cls, enums)
+                       for cls in header.classes)
     needs_enum = bool(header.enums)
     script_includes = _script_signature_includes(header, type_headers or {}) if needs_script else []
     if any(not cls.custom_transfer for cls in header.classes) or needs_meta or needs_script or needs_enum:

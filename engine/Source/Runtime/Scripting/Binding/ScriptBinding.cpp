@@ -19,8 +19,17 @@ namespace
     // than once in tests) does not duplicate them.
     std::vector<const char*> g_EmittedPlaceholders;
 
+    /// Whether `name` is emitted as a `declare class` in the generated file.
+    ///
+    /// A reserved name is not: InstallGlobals refuses to publish it as a global
+    /// (it would shadow a JS built-in), and emitting the class anyway would
+    /// collide with lib.d.ts. Both halves have to agree, so `extends` must treat
+    /// a reserved super as absent too -- `extends Object` with no `declare class
+    /// Object` in the file is a compile error in every user project.
     bool IsDeclared(const std::vector<const ZClassScriptBinding*>& classes, const char* name)
     {
+        if (ScriptBindingRegistry::IsReservedScriptName(name))
+            return false;
         for (const ZClassScriptBinding* cls : classes)
         {
             if (cls->scriptName != nullptr && std::strcmp(cls->scriptName, name) == 0)
@@ -63,18 +72,6 @@ namespace
         "Math",   "JSON",     "Reflect", "Proxy",     "ArrayBuffer", "DataView", "console",
     };
 
-    bool IsReservedScriptName(const char* name)
-    {
-        if (name == nullptr)
-            return false;
-        for (const char* reserved : kReservedScriptNames)
-        {
-            if (std::strcmp(reserved, name) == 0)
-                return true;
-        }
-        return false;
-    }
-
     // --- Behaviour -------------------------------------------------------
     //
     // The Unity-compatible base class every user-authored TS behaviour extends.
@@ -110,6 +107,18 @@ namespace
 
 namespace ScriptBindingRegistry
 {
+    bool IsReservedScriptName(const char* name)
+    {
+        if (name == nullptr)
+            return false;
+        for (const char* reserved : kReservedScriptNames)
+        {
+            if (std::strcmp(reserved, name) == 0)
+                return true;
+        }
+        return false;
+    }
+
     void Register(ZClassScriptBinding& binding)
     {
         binding.next = g_Head;
@@ -209,7 +218,7 @@ namespace ScriptBindingRegistry
             if (cls->scriptName == nullptr || cls->scriptName[0] == '\0')
                 continue;
             // Never shadow a JS built-in (see kReservedScriptNames).
-            if (IsReservedScriptName(cls->scriptName))
+            if (ScriptBindingRegistry::IsReservedScriptName(cls->scriptName))
                 continue;
             pesapi_value ctor = apis->create_class(env, cls->typeId);
             if (ctor == nullptr)
@@ -224,7 +233,7 @@ namespace ScriptBindingRegistry
         {
             if (script_enum->scriptName == nullptr || script_enum->scriptName[0] == '\0')
                 continue;
-            if (IsReservedScriptName(script_enum->scriptName))
+            if (ScriptBindingRegistry::IsReservedScriptName(script_enum->scriptName))
                 continue;
             pesapi_value object = apis->create_object(env);
             if (object == nullptr)
@@ -255,7 +264,7 @@ namespace ScriptBindingRegistry
         {
             if (script_enum->scriptName == nullptr || script_enum->scriptName[0] == '\0')
                 continue;
-            if (IsReservedScriptName(script_enum->scriptName))
+            if (ScriptBindingRegistry::IsReservedScriptName(script_enum->scriptName))
                 continue;
             out += "declare enum ";
             out += script_enum->scriptName;
@@ -299,6 +308,11 @@ namespace ScriptBindingRegistry
 
         for (const ZClassScriptBinding* cls : classes)
         {
+            // A reserved name is skipped by InstallGlobals too, so declaring it
+            // here would be a `declare class` with no runtime counterpart (and
+            // a collision with lib.d.ts). --check-script-bindings reports it.
+            if (ScriptBindingRegistry::IsReservedScriptName(cls->scriptName))
+                continue;
             out += "declare class ";
             out += cls->scriptName != nullptr ? cls->scriptName : "?";
             // Only write `extends <Super>` when that name actually exists in

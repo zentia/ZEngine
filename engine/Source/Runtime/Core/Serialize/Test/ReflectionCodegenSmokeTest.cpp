@@ -507,6 +507,17 @@ namespace
                 std::fprintf(stderr, "SCRIPT_BINDING: %s extends itself\n", owner);
                 ++problems;
             }
+            // A JS/TS built-in name can be neither published as a global nor
+            // declared in the .d.ts, so a bound class that carries one is
+            // invisible to scripts on both halves. It only became reachable
+            // once field properties made every class with a marshallable field
+            // script-visible; before that only hand-annotated classes were in
+            // the registry. Rename the class or give it an explicit script name.
+            if (ScriptBindingRegistry::IsReservedScriptName(cls->scriptName))
+            {
+                std::fprintf(stderr, "SCRIPT_BINDING: %s collides with a JavaScript built-in global\n", owner);
+                ++problems;
+            }
             // A class is worth a table when it contributes anything: methods
             // (phase 3) or accessor properties (phase 7, a ZSCRIPTPROPERTY-only
             // class has no methods of its own).

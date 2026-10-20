@@ -119,6 +119,12 @@ namespace ScriptBindingRegistry
     /// Head of the synthetic list, for d.ts generation and gates.
     const ZSyntheticScriptClass* SyntheticClasses();
 
+    /// Whether `name` is a JS/TS built-in global (Object, String, Math,
+    /// console, ...) that must be neither published as a global nor declared in
+    /// the .d.ts. Exposed so the drift gates can consult the same list instead
+    /// of keeping a copy that would silently drift from it.
+    bool IsReservedScriptName(const char* name);
+
     /// Define every registered class (and its methods) on `registry`. Safe to
     /// call more than once; the second call is a no-op.
     void InstallAll(pesapi_registry_api* apis, pesapi_registry registry);
