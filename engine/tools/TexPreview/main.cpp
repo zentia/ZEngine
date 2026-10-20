@@ -3,7 +3,7 @@
 // =============================================================================
 // The Win32 host, the message pump, DPI handling and font loading used to be
 // ~120 lines of local code here -- a copy of what LuaMemPreview,
-// ClientProjBranches and WindowsEnvironmentCheck each also carried, and the
+// ClientProjBranches and ZEnvironmentCollector each also carried, and the
 // only copy with *no* DPI support at all (the process was DPI-virtualised, so
 // the whole window was bitmap-stretched and the text came out soft).
 //

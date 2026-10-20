@@ -12,7 +12,7 @@
 // The Win32 host (window, message pump, DPI awareness / WM_DPICHANGED, font
 // atlas, clipboard bridge, text measurer) is FSlateStandaloneApp. It used to be
 // ~180 lines of local code here -- a copy of what LuaMemPreview, TexPreview and
-// WindowsEnvironmentCheck each also carried.
+// ZEnvironmentCollector each also carried.
 #include "ZSlate/App/SlateStandaloneApp.h"
 #include "ZSlate/Application/SlateApplication.h"
 

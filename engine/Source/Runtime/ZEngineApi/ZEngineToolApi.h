@@ -13,7 +13,7 @@
 //
 // Who uses it
 // -----------
-// ZEnvironmentCollector (engine/tools/WindowsEnvironmentCheck). It needs two
+// ZEnvironmentCollector (engine/tools/ZEnvironmentCollector). It needs two
 // things the engine already owns:
 //   * logging (bqlog through LogSystem -- the tool is a WINDOWS-subsystem
 //     binary, so stderr goes nowhere when it is double-clicked);

@@ -70,7 +70,7 @@ CONFIG_MAP = {
 #                 ZEnvironmentCollector is intree for the same reason as the
 #                 other two plus one more: it links ZRuntimeShared for its log
 #                 and its localization DataTable, and a standalone configure of
-#                 engine/tools/WindowsEnvironmentCheck has no ZRuntimeShared
+#                 engine/tools/ZEnvironmentCollector has no ZRuntimeShared
 #                 target (producing one would mean pulling in all of
 #                 engine/Source/Runtime). "tree_options" is what turns the whole
 #                 tree /MT so the shipped directory still needs no VC redist;
@@ -84,7 +84,7 @@ CONFIG_MAP = {
 #                 branch -- but that is no longer what ships.
 #
 # "subdir" is the optional extra level a tool asks for via
-# z_set_tool_output_dir(... SUBDIR <name>). WindowsEnvironmentCheck uses it
+# z_set_tool_output_dir(... SUBDIR <name>). ZEnvironmentCollector uses it
 # because it ships an .exe plus a helper exe, profiles/ and LICENSE files --
 # dropped straight into bin/Tools/<Config>/ those cannot be told apart from
 # another tool's. Must match the CMake side, hence the comment there too.
@@ -108,13 +108,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "ZEnvironmentCollector": {
         "mode": "intree",
-        "source": "engine/tools/WindowsEnvironmentCheck",
+        "source": "engine/tools/ZEnvironmentCollector",
         # What ships: engine-backed (LogSystem + DataTable localization) and
         # whole-tree /MT so the output directory needs no VC redist.
         "tree_options": ["-DZENGINE_STATIC_CRT=ON",
                          "-DENVIRONMENT_CHECK_BUILD_GUI=ON"],
         "targets": ["ZEnvironmentCollector", "ZDllLoadProbe"],
-        "subdir": "WindowsEnvironmentCheck",
+        "subdir": "ZEnvironmentCollector",
         "exe": "ZEnvironmentCollector.exe",
     },
 }

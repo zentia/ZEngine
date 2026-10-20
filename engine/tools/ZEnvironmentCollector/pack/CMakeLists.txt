@@ -13,7 +13,7 @@ cmake_minimum_required(VERSION 3.19 FATAL_ERROR)
 #   cmake --build build\tools\ZEnvironmentCollector --config Release --target ZEnvironmentCollector
 #   cmake --install build\tools\ZEnvironmentCollector --config Release ^
 #         --component EnvironmentCollector --prefix dist\staging
-#   cmake -S engine\tools\WindowsEnvironmentCheck\pack -B build\tools\ZEnvironmentCollector\pack
+#   cmake -S engine\tools\ZEnvironmentCollector\pack -B build\tools\ZEnvironmentCollector\pack
 #   cmake --build build\tools\ZEnvironmentCollector\pack --target package
 project(ZEnvironmentCollectorPack LANGUAGES NONE)
 
@@ -83,7 +83,7 @@ endif()
 # ---------------------------------------------------------------------------
 # What goes in: the install tree, already staged by `cmake --install`. The
 # staging directory is the package root, so the archive opens as
-# WindowsEnvironmentCheck/ (exe + ZDllLoadProbe.exe + profiles/ + LICENSEs) plus
+# ZEnvironmentCollector/ (exe + ZDllLoadProbe.exe + profiles/ + LICENSEs) plus
 # README.md -- exactly the folder that runs, with no extra nesting to unwrap.
 # ---------------------------------------------------------------------------
 if(NOT DEFINED PACK_STAGING_DIR OR PACK_STAGING_DIR STREQUAL "")
@@ -124,7 +124,7 @@ function(pack_exe_imports_dll EXE_PATH DLL_NAME OUT_VAR)
     endif()
 endfunction()
 
-if(NOT EXISTS "${PACK_STAGING_DIR}/WindowsEnvironmentCheck/ZEnvironmentCollector.exe")
+if(NOT EXISTS "${PACK_STAGING_DIR}/ZEnvironmentCollector/ZEnvironmentCollector.exe")
     message(FATAL_ERROR
         "No staged build found at ${PACK_STAGING_DIR}. Run this first (from the "
         "repository root):\n"
@@ -134,7 +134,7 @@ if(NOT EXISTS "${PACK_STAGING_DIR}/WindowsEnvironmentCheck/ZEnvironmentCollector
         "looks like success -- it produces a plausible archive that runs nothing.")
 endif()
 
-set(PACK_RUNTIME_DIR "${PACK_STAGING_DIR}/WindowsEnvironmentCheck")
+set(PACK_RUNTIME_DIR "${PACK_STAGING_DIR}/ZEnvironmentCollector")
 # "ZRuntimeShared.dll" in hex, wrapped in the NULs that make it an import name.
 pack_exe_imports_dll("${PACK_RUNTIME_DIR}/ZEnvironmentCollector.exe"
     "005a52756e74696d655368617265642e646c6c00" PACK_ENGINE_BACKED)
@@ -178,7 +178,7 @@ endif()
 # old one. That is worse than shipping a stale binary: the binary fails loudly,
 # a stale README does not -- and it is where the launcher contract lives
 # (report file names, the four keys, the exit codes). Byte-compare it.
-set(_pack_source_readme "${PACK_REPO_ROOT}/engine/tools/WindowsEnvironmentCheck/README.md")
+set(_pack_source_readme "${PACK_REPO_ROOT}/engine/tools/ZEnvironmentCollector/README.md")
 if(EXISTS "${_pack_source_readme}" AND EXISTS "${PACK_STAGING_DIR}/README.md")
     file(READ "${_pack_source_readme}" _pack_readme_now)
     file(READ "${PACK_STAGING_DIR}/README.md" _pack_readme_staged)

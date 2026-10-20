@@ -1,6 +1,6 @@
 // ============================================================================
 // ZEnvironmentCollector — one shell for everything under
-// engine/tools/WindowsEnvironmentCheck.
+// engine/tools/ZEnvironmentCollector.
 // ============================================================================
 // Three executables used to live here and all three shipped to players:
 //   * ZEnvironmentCollector.exe     -- ZSlate GUI, safe collection + capture

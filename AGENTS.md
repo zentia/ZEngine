@@ -1548,7 +1548,7 @@ linking a /MD static library fails with LNK2038 ("RuntimeLibrary" mismatch)
 `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` must therefore either build every
 library it links itself, or inherit the tree's CRT when it is configured as part
 of the tree (where `minizip-ng` / `BqLog` / `zlib-ng` already exist as /MD).
-`engine/tools/WindowsEnvironmentCheck/CMakeLists.txt` does exactly that via
+`engine/tools/ZEnvironmentCollector/CMakeLists.txt` does exactly that via
 `ENVIRONMENT_CHECK_STANDALONE`: standalone (its own `cmake -S`, everything
 local) -> /MT, which is what ships; inside the tree -> inherit. Do not "fix" a
 link error here by forcing /MT unconditionally.
@@ -1861,6 +1861,60 @@ transitions.
   source out, on the same row.
 - Caveat: `OnDragDetected` is polled over the whole press path, so a drag inside a
   focused text box beats selecting its text. Fine for path rows, wrong for prose.
+
+### 2.29 Content Browser as a drop TARGET (move / copy)
+
+- Three drop sites, one policy: **folder rows, asset tiles, and the list
+  background** all route through `CanAcceptAssetDrop` / `HandleAssetDrop`. Rows
+  and tiles are deeper than the background catch-all, and `OnDragOver` bubbles
+  deepest -> root, so the specific row wins and the background only sees blank
+  space. Never duplicate the policy per site.
+- Ctrl decides move-vs-copy and is read at **drop** time (not at drag start): the
+  user makes up their mind mid-drag, and `CanAcceptAssetDrop` is polled every
+  frame so the highlight follows the modifier.
+- The actual work lives in `ContentBrowserDragDrop::CanDropAssetPath` /
+  `DropAssetPath`, and it is registry-aware:
+  - a registry-indexed `.zasset` goes through `EditorAssetManager::MoveAsset`,
+    which re-keys the registry + dependency graph and rolls the file back if the
+    registry update fails. A bare `std::filesystem::rename` would leave the
+    registry pointing at the old path.
+  - everything else is a plain rename, falling back to copy-then-delete because
+    `rename()` cannot cross volumes.
+- **Copying a registry `.zasset` re-writes it, it is NOT a byte copy** (see 2.30):
+  the GUID is derived from the file's absolute path and stamped into the binary
+  header, so a byte copy would carry the SOURCE's GUID to the destination -- two
+  files, one GUID, every dependency edge ambiguous. The copy goes through
+  ReadObjects* -> WriteObjectsToDiskThreadSafe so it gets its own GUID.
+  Non-registry files (shaders, json, ...) copy byte-for-byte, and Ctrl+drag in
+  place is the duplicate gesture (`"name 1"`).
+- A folder cannot be moved into itself or its own subtree; a move back into the
+  folder it already lives in is a no-op and does not light the row up.
+- After a successful drop: `RefreshContentBrowserSelection` (rebuild + select the
+  new path) and `asset_tree_dirty = true` so the window rebuilds its widget tree.
+
+### 2.30 Duplicating an asset = read the graph, write it out again
+
+- **The identity that must change is the GUID, not the local file id.** A binary
+  `.zasset` stamps `DeterministicGuidFromPath(path)` into its header and YAML
+  authoring assets derive their GUID the same way, which is exactly why a byte
+  copy is broken. Local ids are therefore kept as read: in-file `PPtr`s address
+  objects by local id, so renumbering would need a full remap pass and buys
+  nothing.
+- The copy is safe because the write session calls `RegisterLocalObject` for every
+  object it writes *before* any `PPtr` transfers: the graph is embedded in the
+  copy, not turned into external references pointing back at the source.
+  (The writer hook only fires for instances that are NOT in the write set.)
+- Reader/writer pair is chosen by `AssetManager::IsYamlAuthoringAssetPath`
+  (`.mat` / `.prefab` / `.scene` are YAML, imported `.zasset` is binary);
+  `WriteObjectsToDiskThreadSafe` routes both.
+- **Folder copies recurse file-by-file** through the same rule -- a recursive
+  `std::filesystem::copy` would byte-copy every `.zasset` inside and produce a
+  folder full of duplicate GUIDs.
+- Call `EditorAssetManager::RefreshAsset` on the copy: the directory watcher would
+  only pick it up on a later tick, and until then it is in no picker.
+- `MoveAsset` declines when the destination is outside the registry (e.g. into
+  Scripts/) and rolls back before returning false, so falling through to a plain
+  rename is safe -- do not report that as a failure.
 - Arrows are hit-tested as **fat segments** (point-to-segment distance), not
   rects, since they run at any angle; nodes are tested before arrows so an arrow
   passing under a node cannot steal its clicks. Painting and hit-testing both go
@@ -2034,9 +2088,9 @@ as lost work.
 | World Partition V3+ | `doc/world_partition/WORLD_PARTITION_DESIGN.md` | V1+V2 landed: grid streaming, async preload, level ref-count, render delete on unload, editor cell overlay. Data layers / HLOD / per-cell `.zasset` LevelRes still open. |
 | LWC (Large World Coordinates) | `doc/world_partition/LARGE_WORLD_COORDINATES.md` | L1+L2 landed: `r.LWC.Enable`, 2^21 render tiles, `Vector3d` transform/hierarchy, schema read float / write double. L3 shader types + L4 per-cell origins open. |
 
-## 6. Tools: WindowsEnvironmentCheck (env collector)
+## 6. Tools: ZEnvironmentCollector (env collector)
 
-`engine/tools/WindowsEnvironmentCheck/` ships **one** executable,
+`engine/tools/ZEnvironmentCollector/` ships **one** executable,
 `ZEnvironmentCollector.exe`: GUI by default (three tabs — collection /
 compatibility check / GPU select verification), CLI under `-batchmode`
 (`--collect`, `--diagnose`, `--gpu-selection`, and the plain check). The former
@@ -2082,7 +2136,7 @@ constant. It packages **game logs** together with the environment report:
   header, manifest `attributionUsable` / `missingAttributionInputs`, a red line
   on the GUI form plus a confirm dialog, and a CLI stdout warning. Details and
   the `isTargetGame` field of `events-redacted.json` (schemaVersion 2) live in
-  `engine/tools/WindowsEnvironmentCheck/README.md` §1.8.1.
+  `engine/tools/ZEnvironmentCollector/README.md` §1.8.1.
 
 ### 6.1 Why the collector links ZRuntimeShared, and what it must not start
 
@@ -2196,7 +2250,7 @@ shared pieces:
 | `z_embed_app_manifest(<target> [MANIFEST <file>])` | `engine/cmake/AppManifest.cmake` (+ `AppManifest.manifest`) | one call, same place. Declares per-monitor DPI v2 by embedding the shared manifest; `MANIFEST <file>` replaces it wholesale for a tool needing something else (execution level, comctl32 v6). MSVC-only — CMake has no mt.exe rule for MinGW — and a no-op elsewhere, so the call can be committed anywhere. Same include arrangement as `AppIcon`. |
 
 `z_embed_app_manifest()` is **required** for a GUI that does not go through
-`ZSlate::FSlateStandaloneApp` — today only `WindowsEnvironmentCheck`, which
+`ZSlate::FSlateStandaloneApp` — today only `ZEnvironmentCollector`, which
 registers its own `WNDCLASSEX` so `DeclareDpiAwareness()` never runs on its
 path. (ZInsights used to be in that bucket, and a prior note claimed it was
 covered "via `ZRuntime`'s `SetProcessDpiAwarenessContext()`" — it was not:
@@ -2296,14 +2350,14 @@ hunted for:
 
 A tool that ships more than its `.exe` passes `SUBDIR` and gets its own level,
 so its extra files cannot be mistaken for another tool's.
-`WindowsEnvironmentCheck` is the only one today:
+`ZEnvironmentCollector` is the only one today:
 
 ```
 bin/Tools/Release/
 ├── TexPreview.exe
 ├── LuaMemPreview.exe
 ├── ClientProjBranches.exe
-└── WindowsEnvironmentCheck/
+└── ZEnvironmentCollector/
     ├── ZEnvironmentCollector.exe
     ├── ZDllLoadProbe.exe          # re-launched from the exe's own directory
     ├── ZRuntimeShared.dll         # engine slice (log + localization table)
@@ -2350,7 +2404,7 @@ cmake --build build --config Release --target ZEnvironmentCollector
 # standalone: self-contained, no engine DLL. Kept so the directory still
 # configures on its own; the localization table is compiled into the binary and
 # logging uses a statically linked bqlog.
-cmake -S engine\tools\WindowsEnvironmentCheck -B build\tools\ZEnvironmentCollector -G "Visual Studio 17 2022" -A x64 -DENVIRONMENT_CHECK_BUILD_GUI=ON
+cmake -S engine\tools\ZEnvironmentCollector -B build\tools\ZEnvironmentCollector -G "Visual Studio 17 2022" -A x64 -DENVIRONMENT_CHECK_BUILD_GUI=ON
 ```
 
   `ClientProjBranches` stays out of the full tree on purpose (OFF there).
@@ -2365,7 +2419,7 @@ nothing with the engine's runtime layout (no configs, no assets, no ZRuntime
 DLL), and `ZEnvironmentCollector` is built `/MT` to ship to machines with no VC
 redist — its output directory *is* its distribution unit, because `profiles/`
 and the LICENSE files are copied next to the exe. "Zip
-`bin/Tools/<Config>/WindowsEnvironmentCheck`" is therefore a correct packaging
+`bin/Tools/<Config>/ZEnvironmentCollector`" is therefore a correct packaging
 step, and `install(COMPONENT EnvironmentCollector)` produces the same folder.
 
 `scripts\build_lib\win64\win_build_lua_mem_preview.bat` builds through the full
@@ -2381,7 +2435,7 @@ All four standalone GUI tools live in **one** directory, `engine/tools/`:
 |---|---|---|---|
 | `engine/tools/TexPreview` | ZRuntime (ASTC/BC7/ETC2 decompressors) | `engine/CMakeLists.txt`, desktop branch | always |
 | `engine/tools/LuaMemPreview` | ZRuntime (`SerializedFile`, asset registry) | `engine/CMakeLists.txt`, desktop branch | always |
-| `engine/tools/WindowsEnvironmentCheck` | ZSlate only, `/MT`, shipped to players | `engine/CMakeLists.txt` | ON, but GUI OFF (below) |
+| `engine/tools/ZEnvironmentCollector` | ZSlate only, `/MT`, shipped to players | `engine/CMakeLists.txt` | ON, but GUI OFF (below) |
 | `engine/tools/ClientProjBranches` | ZSlate only | `engine/CMakeLists.txt` | OFF by default |
 
 They used to be split across `engine/Source/Tools/` and root `tools/`, and the
@@ -2397,7 +2451,7 @@ path this repo keeps removing. Inside `engine/` every tool inherits
 helpers for free.
 
 **The ordering constraint is still load-bearing.** The block that adds
-`engine/tools/WindowsEnvironmentCheck` and `engine/tools/ClientProjBranches`
+`engine/tools/ZEnvironmentCollector` and `engine/tools/ClientProjBranches`
 sits *after* `add_subdirectory(Source/Runtime)`, where `ZSlate` is defined. Both
 link ZSlate, and each guards its own `add_subdirectory(.../Libraries/ZSlate)`
 with `if(NOT TARGET ZSlate)` for the standalone case — move that block above
@@ -2420,7 +2474,7 @@ the same name already exists`).
   executable is still built when this is OFF — it just swaps in
   `EnvironmentCheckGuiFallback.cpp` and serves `-batchmode` only. Build the GUI
   from its own configure:
-  `cmake -S engine/tools/WindowsEnvironmentCheck -B <dir>`.
+  `cmake -S engine/tools/ZEnvironmentCollector -B <dir>`.
 - `ZENGINE_BUILD_CLIENT_PROJ_BRANCHES`: a self-contained CMake project with its
   own C++ standard and output layout; normally configured standalone
   (`cmake -S engine/tools/ClientProjBranches -B build`). Available in-tree, but

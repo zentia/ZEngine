@@ -13,9 +13,9 @@
 #     <repo>/bin/Tools/<Config>/<subdir>/<name>.exe
 #     <repo>/bin/Tools/<Config>/<subdir>/profiles/...
 #
-# WindowsEnvironmentCheck is the one that needs it: ZEnvironmentCollector.exe
+# ZEnvironmentCollector is the one that needs it: ZEnvironmentCollector.exe
 # plus ZDllLoadProbe.exe, profiles/ and two LICENSE files, all in
-# bin/Tools/<Config>/WindowsEnvironmentCheck/ -- which is also its
+# bin/Tools/<Config>/ZEnvironmentCollector/ -- which is also its
 # distribution unit (zip the folder).
 #
 # Before this, the four tools landed in three different shapes, which is why

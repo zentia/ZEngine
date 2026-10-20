@@ -20,7 +20,7 @@ set(ENVIRONMENT_CHECK_TARGET ZEnvironmentCollector)
 # compile time and a mix is LNK2038 ("RuntimeLibrary" mismatch) plus LNK2019 on
 # the other side's `__imp_*` symbols.
 #
-# Standalone (`cmake -S engine/tools/WindowsEnvironmentCheck -B <dir>`) that is
+# Standalone (`cmake -S engine/tools/ZEnvironmentCollector -B <dir>`) that is
 # true: minizip-ng / zlib-ng / Zydis / BqLog are all added below and inherit /MT.
 # In a full-tree configure they already exist with the *tree's* CRT (/MD by
 # default) -- see the `if(NOT TARGET minizip-ng)` guard -- so forcing /MT here
@@ -302,7 +302,7 @@ endif()
 # inherits /MT. In a full tree ZSlate already exists as /MD (engine default), so
 # linking it into a /MT executable fails with LNK2038 (RuntimeLibrary mismatch).
 # One ZSlate instance cannot be both. Build the GUI from its own configure:
-#     cmake -S engine/tools/WindowsEnvironmentCheck -B <dir>
+#     cmake -S engine/tools/ZEnvironmentCollector -B <dir>
 #
 # The executable itself is built either way: without ZSlate it is CLI-only
 # (EnvironmentCheckGuiFallback.cpp), which is what a full-tree configure wants.
@@ -485,7 +485,7 @@ else()
     target_compile_options(${DLL_PROBE_TARGET} PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
-# Output: <repo>/bin/Tools/<Config>/WindowsEnvironmentCheck/ -- its own level
+# Output: <repo>/bin/Tools/<Config>/ZEnvironmentCollector/ -- its own level
 # under the shared tools directory, because this tool is not one .exe: it is
 # ZEnvironmentCollector.exe + ZDllLoadProbe.exe + profiles/ + LICENSE files, and
 # dropping those straight into bin/Tools/<Config>/ leaves you unable to tell
@@ -498,12 +498,12 @@ endif()
 # its own executable directory (ToolExecutablePath()), and reads
 # profiles/default.ini from there too.
 #
-# The name matches the source directory (engine/tools/WindowsEnvironmentCheck),
+# The name matches the source directory (engine/tools/ZEnvironmentCollector),
 # not the executable, so bin/ and engine/tools/ line up one-to-one.
 #
 # This is the INSTALL layout -- the folder inside the archive -- so it is fixed:
-# the shipped contract is "README.md + WindowsEnvironmentCheck\".
-set(ENVIRONMENT_CHECK_OUTPUT_SUBDIR WindowsEnvironmentCheck)
+# the shipped contract is "README.md + ZEnvironmentCollector\".
+set(ENVIRONMENT_CHECK_OUTPUT_SUBDIR ZEnvironmentCollector)
 
 # The BUILD layout is a separate decision, and it must NOT be one directory
 # shared by every configuration. <repo>/bin/Tools/<Config>/ is common to every
@@ -527,7 +527,7 @@ if(ENVIRONMENT_CHECK_WITH_ZRUNTIME)
         string(APPEND _build_subdir_tag "-mt")
     endif()
 endif()
-set(ENVIRONMENT_CHECK_BUILD_SUBDIR "WindowsEnvironmentCheck${_build_subdir_tag}")
+set(ENVIRONMENT_CHECK_BUILD_SUBDIR "ZEnvironmentCollector${_build_subdir_tag}")
 include("${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/ToolOutputDir.cmake")
 z_set_tool_output_dir(${ENVIRONMENT_CHECK_TARGET} ${DLL_PROBE_TARGET}
     SUBDIR "${ENVIRONMENT_CHECK_BUILD_SUBDIR}")

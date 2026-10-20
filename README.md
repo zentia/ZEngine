@@ -90,7 +90,7 @@ Built by `zbuild.py tool <name>` (or `--all`), output to `bin/Tools/<Config>/`.
 
 | Tool | Executable | What |
 |---|---|---|
-| WindowsEnvironmentCheck | `ZEnvironmentCollector.exe` | Windows compatibility report: hardware/firmware/driver probe, consented crash capture, game-log collection, ZIP64 report. GUI, or `-batchmode` for CI |
+| ZEnvironmentCollector | `ZEnvironmentCollector.exe` | Windows compatibility report: hardware/firmware/driver probe, consented crash capture, game-log collection, ZIP64 report. GUI, or `-batchmode` for CI |
 | LuaMemPreview | `LuaMemPreview.exe` | Viewer for Lua memory snapshots (`.zasset` or CSV); `-batchmode` exports CSV for one snapshot or a whole folder |
 | TexPreview | `TexPreview.exe` | Texture viewer |
 | ClientProjBranches | `ClientProjBranches.exe` | Branch / SVN / git manager |

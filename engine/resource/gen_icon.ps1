@@ -15,7 +15,7 @@
 #   .\gen_icon.ps1 -Name ClientProjBranches    -Motif branch  -OutDir ..\tools\ClientProjBranches\resource
 #   .\gen_icon.ps1 -Name LuaMemPreview         -Motif bars    -OutDir ..\tools\LuaMemPreview\resource
 #   .\gen_icon.ps1 -Name TexPreview            -Motif checker -OutDir ..\tools\TexPreview\resource
-#   .\gen_icon.ps1 -Name ZEnvironmentCollector -Motif check   -OutDir ..\tools\WindowsEnvironmentCheck\resource
+#   .\gen_icon.ps1 -Name ZEnvironmentCollector -Motif check   -OutDir ..\tools\ZEnvironmentCollector\resource
 #   .\gen_icon.ps1 -Name ZInsights             -Motif flame   -OutDir ..\Source\Insights\resource
 #
 # -OutDir is where the tool's .ico is committed; it must be the same directory

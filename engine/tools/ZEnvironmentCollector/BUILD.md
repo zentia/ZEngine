@@ -7,7 +7,7 @@
 | 配置方式 | 后端 | 说明 |
 |---|---|---|
 | 全树 `cmake -S . -B build` | 引擎后端（链接 ZRuntimeShared） | **分发用的构建**，配合 `-DZENGINE_STATIC_CRT=ON` 让 DLL 也是 `/MT`，产物仍能发到没有 VC redist 的机器（已验证：exe 与 DLL 都不再 import `MSVCP140`/`VCRUNTIME140`）。此前 Jolt 固定 `/MD`，会把 `ZRuntimeShared.dll` 的链接打断；现在它跟随该开关 |
-| 独立 `cmake -S engine/tools/WindowsEnvironmentCheck -B <dir>` | 自包含（静态 bqlog + 内置表） | 没有 ZRuntimeShared 目标（那要拉起整个 Runtime 依赖树），退化为旧路径 |
+| 独立 `cmake -S engine/tools/ZEnvironmentCollector -B <dir>` | 自包含（静态 bqlog + 内置表） | 没有 ZRuntimeShared 目标（那要拉起整个 Runtime 依赖树），退化为旧路径 |
 
 ## 与 ZRuntimeShared 的关系
 
@@ -66,21 +66,21 @@ LICENSE-Zycore.txt
 
 | 配置 | 构建目录 |
 |---|---|
-| 独立构建 | `WindowsEnvironmentCheck\` |
-| 引擎后端 `/MD` | `WindowsEnvironmentCheck-zruntime-md\` |
-| 引擎后端 `/MT`（分发用） | `WindowsEnvironmentCheck-zruntime-mt\` |
+| 独立构建 | `ZEnvironmentCollector\` |
+| 引擎后端 `/MD` | `ZEnvironmentCollector-zruntime-md\` |
+| 引擎后端 `/MT`（分发用） | `ZEnvironmentCollector-zruntime-mt\` |
 
 两个维度都需要：只按后端分的话，两棵全树（`/MD` 与 `/MT`）仍然会互相覆盖同一个 exe，
 而 `cmake --install` 只会忠实地把最后落地的那个装走——包里的 exe 就悄悄变成了另一个构建。
-**安装目录不受影响**，始终是 `WindowsEnvironmentCheck\`（`--prefix dist` 装出
-`dist\WindowsEnvironmentCheck\`），那是包内的契约目录，不随配置变。
+**安装目录不受影响**，始终是 `ZEnvironmentCollector\`（`--prefix dist` 装出
+`dist\ZEnvironmentCollector\`），那是包内的契约目录，不随配置变。
 
 ## 独立构建与分发
 
 独立构建默认包含GUI；从引擎父项目嵌入时默认关闭GUI（`ENVIRONMENT_CHECK_BUILD_GUI=OFF`），因为整树里 ZSlate 已经是 `/MD`，与本工具的 `/MT` 链接会 LNK2038。**关闭GUI不会少一个exe**：同一个 `ZEnvironmentCollector.exe` 仍然会构建，只是换成 `EnvironmentCheckGuiFallback.cpp`，双击会提示改用 `-batchmode`，命令行能力完全不变。不同运行库配置须使用独立build目录。
 
 ```powershell
-cmake -S engine\tools\WindowsEnvironmentCheck -B build\tools\ZEnvironmentCollector -G "Visual Studio 17 2022" -A x64 -DENVIRONMENT_CHECK_BUILD_GUI=ON -DBUILD_TESTING=ON
+cmake -S engine\tools\ZEnvironmentCollector -B build\tools\ZEnvironmentCollector -G "Visual Studio 17 2022" -A x64 -DENVIRONMENT_CHECK_BUILD_GUI=ON -DBUILD_TESTING=ON
 cmake --build build\tools\ZEnvironmentCollector --config Release --target ZEnvironmentCollector EnvironmentCollectorTests EnvironmentCollectorUiTests EnvironmentCaptureTests EnvironmentPreflightTests
 ctest --test-dir build\tools\ZEnvironmentCollector -C Release --output-on-failure
 cmake --install build\tools\ZEnvironmentCollector --config Release --component EnvironmentCollector --prefix dist
@@ -91,7 +91,7 @@ cmake --install build\tools\ZEnvironmentCollector --config Release --component E
 只想出命令行包时关掉GUI，产物仍是同一个 `ZEnvironmentCollector.exe`：
 
 ```powershell
-cmake -S engine\tools\WindowsEnvironmentCheck `
+cmake -S engine\tools\ZEnvironmentCollector `
   -B build\tools\ZEnvironmentCollectorCli `
   -G "Visual Studio 17 2022" `
   -A x64 `
@@ -107,13 +107,13 @@ cmake --build build\tools\ZEnvironmentCollectorCli `
 ## 打包分发（zip + SHA256）
 
 参考扁鹊（`E:\BianqueCCS\pack`）的做法：打包是一个**独立的、不编译任何东西的 CMake 工程**
-`engine\tools\WindowsEnvironmentCheck\pack\`，只把已经 staging 好的安装树用 CPack 打成一个包。
+`engine\tools\ZEnvironmentCollector\pack\`，只把已经 staging 好的安装树用 CPack 打成一个包。
 之所以不放进工具自己的 `CMakeLists.txt`：那份文件也会被整树 `add_subdirectory()`，
 CPack 会在一个从没打算发东西的构建里被配置一遍。
 
 ```powershell
 cmake --install build\tools\ZEnvironmentCollector --config Release --component EnvironmentCollector --prefix dist\staging
-cmake -S engine\tools\WindowsEnvironmentCheck\pack -B build\tools\ZEnvironmentCollector\pack
+cmake -S engine\tools\ZEnvironmentCollector\pack -B build\tools\ZEnvironmentCollector\pack
 cmake --build build\tools\ZEnvironmentCollector\pack --target package
 ```
 
@@ -128,7 +128,7 @@ cmake --build build\tools\ZEnvironmentCollector\pack --target package
 - 版本号从 `ToolVersion.h` 解析（与报告里的 `toolVersion` 同一个来源，不可能对不上）；可用
   `-DPACK_VERSION_OVERRIDE=x.y.z` 覆盖。
 - 架构从生成器探测，可用环境变量 `USER_DEF_ARCH` 覆盖。
-- 包内是一个以包名命名的顶层目录，展开后 `README.md` + `WindowsEnvironmentCheck\`
+- 包内是一个以包名命名的顶层目录，展开后 `README.md` + `ZEnvironmentCollector\`
   （exe、`ZDllLoadProbe.exe`、`profiles\`、LICENSE）——就是能直接跑的那个目录，没有多余的层。
 - ZIP 用 CMake 自带的归档能力生成，不需要装 7-Zip。
 - **两种构建打出的包同名但内容不同**：独立构建自包含（无 DLL）；引擎后端（全树构建）多出
@@ -151,3 +151,19 @@ cmake --build build\tools\ZEnvironmentCollector\pack --target package
 验证：Release构建成功，CTest核心与UI共2/2通过；UI覆盖100/125/150/200%下下拉选择/关闭/键盘/边界翻转、字形与UV的1:1映射（含裁剪）、指针重置保留编辑焦点及失焦清理。实机150%：旧版窗口DPI=96且awareness=0，新版DPI=144且awareness=2；本轮成功取得中文及下拉展开截图，并通过真实鼠标输入验证外点按住移动不穿透、Esc后第一次点击有效、选择卡住生成hang报告及ZIP校验。截图位于独立build的 `validation-1.6.1-final`。这些测试不是与ImGui/UE同字体同字号的视觉等价证明。
 
 仍为内部试用：实际跨显示器DPI切换、WARP故障回退、各厂商BIOS/WHEA字段和受限权限需进一步实机验证。GUI使用Windows 10 1607及以上的DPI API。最后打包阶段不可取消。尚未数字签名，不作为已完成现网发布验收的产物。
+
+### 高级诊断（dump 捕获）的验证记录
+
+从 README 移出的验证与定位流水账：
+
+1.7.2验证：3项CTest通过；手动集成测试`access-denied`对仅含合成数据的专用进程限制访问，产生真实`OpenProcess(capture)`错误5、OPENING_TARGET阶段，签名已通过而ProcDump未启动，生成capture-failure.zip，Python独立回读仅capture.json。首次测试运行继承了调试特权，DACL拒绝未生效并导致测试失败；已仅在测试进程内禁用该特权，并新增实际拒绝访问前置断言后重跑通过，生产采集器权限未改。GUI真实文件选择/授权触发未签名拒绝，再点击普通采集，再点捕获结果入口，资源管理器回读仍选中原crash-capture-*下verification.zip。验证截图和产物位于独立build的validation-1.7.2；未访问真实游戏。
+
+2026-10-13反馈截图与`osgame-2026-10-13T054234144Z-16144-0.zip`只能确认玩家在验证阶段被阻止。该ZIP为1.7.0普通环境报告、仅8文件，无ProcDump哈希、签名状态或dump；无法据此断言断网、文件篡改或反作弊阻止。此版是定位版，不声称已修复玩家的实际证书环境。严格吊销/微软身份校验保持不变，不加离线放行、不导入证书、不修改系统时间或关闭安全软件。
+
+验证：3项CTest通过；未签名测试文件被拒绝且返回失败诊断包；模拟错误分类覆盖0x80092013、0x80096010及非微软发布者；日志路径不可写不阻断JSON/ZIP；独立zipfile回读包内仅capture.json并确认started/verified=false。本机官方12.01签名只验证通过，未执行它；未在玩家机器复现真实错误。新版成功捕获链路本轮未重新附加测试进程，沿用1.7.0既有验证。
+
+验证（2026-10-14）：Release独立构建和4项CTest通过；HKCU唯一测试键覆盖原值不存在、原始类型/字节还原、已有备份拒绝覆盖、Token错配、外部修改冲突、Token写入前中断清理；合成dump的模块与进程创建时间校验通过。只对 `EnvironmentCaptureTestTarget.exe` 做真实HKLM启用后取消/恢复、系统异常落dump/身份匹配/恢复/打包，后者生成82,451,550字节完整dump；Python独立回读ZIP CRC、白名单和SHA256通过，最终ZIP ACL仍私有，目标配置与备份均确认移除。首次系统测试错误复用了含SEM_NOGPFAULTERRORBOX的ProcDump测试模式，导致无WER文件；仅为测试程序新增允许WER的wer-crash模式后重跑通过，没有修改系统策略。已有dump导入端到端通过。GUI 150%实际截图与鼠标选择验证两个后端，截图在独立build的wer-validation内。
+
+验证在独立build的 `capture-validation`：3项CTest通过；官方ProcDump12.01配合仅含合成数据的 `EnvironmentCaptureTestTarget.exe` 验证完整异常dump自动打包、正常退出不误报、等待取消、已附加后取消（目标仍活着且无调试器）、进度回调抛异常后安全脱离；完整dump错误PID/截断尾部拒绝。4GiB+1KiB合成文件通过独立Python解压、大小、ZIP64版本45和CRC验证。GUI文件选择及拒绝隐私授权路径已用真实窗口消息验证并截图。未附加真实游戏，反作弊/CrashSight共存、权限提升、低磁盘实际故障仍需内部实机验证。
+
+连续收集端到端验证：同一会话内对 `EnvironmentCaptureTestTarget.exe` 触发两次真实崩溃，一次启用、一次UAC恢复，得到 `crash.dmp` 82,451,550字节与 `crash-2.dmp` 82,468,078字节，两份SHA256不同（确为两次独立崩溃而非重复复制），`capturedDumpCount=2`，收到第2份后停止即打包 `capture.zip`，`HasWerBackup` 确认配置已恢复。取消路径与已有dump导入路径重跑仍通过。

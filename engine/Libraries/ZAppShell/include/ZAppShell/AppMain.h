@@ -12,7 +12,7 @@
 //   * Getting a console. A /SUBSYSTEM:WINDOWS executable has none, so printf
 //     goes nowhere and a headless mode looks like it hung. Two implementations
 //     existed and had drifted: the one in ZSlate::Win32 and a shorter one in
-//     WindowsEnvironmentCheck that lacked both the AllocConsole() fallback and
+//     ZEnvironmentCollector that lacked both the AllocConsole() fallback and
 //     the unbuffered stdout.
 //
 // Header-only, and it has to stay that way. ZEnvironmentCollector ships /MT
@@ -25,7 +25,7 @@
 //
 // Deliberately NOT here: deciding whether this run is a GUI run or a batch run.
 // The three executables that have a batch mode do not agree on what that means
-// -- WindowsEnvironmentCheck takes -batchmode as a switch anywhere on the line,
+// -- ZEnvironmentCollector takes -batchmode as a switch anywhere on the line,
 // LuaMemPreview takes it as a positional subcommand in argv[1] next to
 // --stats/--dump-ui, and ZEditor reads -p/--rhi to pick a startup mode. Sharing
 // the mechanism is worth it. Sharing that decision is not.

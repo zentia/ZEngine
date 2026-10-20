@@ -4,7 +4,7 @@
 
 ## 一个程序，两种用法
 
-以前这里有三个可执行文件（采集器 GUI、`ZGpuSelectionInspector`、CLI `ZWindowsEnvironmentCheck`），现在合并成一个 `ZEnvironmentCollector.exe`：
+只有一个程序 `ZEnvironmentCollector.exe`，图形界面和命令行都在它里面：
 
 ```powershell
 .\ZEnvironmentCollector.exe                    # 图形界面，三个页签
@@ -13,9 +13,9 @@
 
 `-batchmode` 沿用 Unity/UE 的写法：不再弹窗，结果写 stdout，退出码交给调用方。它必须成对出现——GUI 模式只认识 `--profile` / `--output-dir` / `--incident-time` / `--tab`，其它参数会直接报错提示加上 `-batchmode`。
 
-程序是 **WINDOWS 子系统**（`wWinMain`），所以双击运行时加载器根本不会创建控制台，没有黑窗口一闪。以前是 CONSOLE 子系统 + 第一行 `FreeConsole()`，但那个控制台在任何代码执行前就已经存在并被显示过了，`FreeConsole()` 只能在它闪完之后把它关掉。
+程序是 **WINDOWS 子系统**（`wWinMain`），所以双击运行时加载器根本不会创建控制台，没有黑窗口一闪。
 
-改子系统没有牺牲命令行：`-batchmode` / `--help` / 内部 worker 动词在打印任何东西之前会 `AttachConsole(ATTACH_PARENT_PROCESS)` 并把 CRT 的 stdin/stdout/stderr 重新指向调用方的控制台，所以 cmd.exe 与 PowerShell 下 stdout/stderr 照常、`%ERRORLEVEL%` 与 `$LASTEXITCODE` 照常。调用方如果已经把 stdout 重定向到管道或文件（`>`、`|`、CI 捕获），就保持不动，不去抢它的输出。cmd.exe 在 bat 里依然会等它结束，`exe && next` 仍然可用（已用"bat 里跑慢命令、下一行检查产物"实测，重定向与不重定向两种都等）。
+命令行不受影响：`-batchmode` / `--help` / 内部 worker 动词在打印任何东西之前会 `AttachConsole(ATTACH_PARENT_PROCESS)` 并把 CRT 的 stdin/stdout/stderr 重新指向调用方的控制台，所以 cmd.exe 与 PowerShell 下 stdout/stderr 照常、`%ERRORLEVEL%` 与 `$LASTEXITCODE` 照常。调用方如果已经把 stdout 重定向到管道或文件（`>`、`|`、CI 捕获），就保持不动，不去抢它的输出。cmd.exe 在 bat 里依然会等它结束，`exe && next` 仍然可用（已用"bat 里跑慢命令、下一行检查产物"实测，重定向与不重定向两种都等）。
 
 GUI 三个页签与 `-batchmode` 子命令一一对应：
 
@@ -220,21 +220,19 @@ OSGameEnvironmentReport.json
 - `DLL_PROBE_EXPORT_NOT_FOUND`
 - `DLL_PROBE_INFRASTRUCTURE_FAILED`
 
-## 事件诊断与玩家一键采集（1.7.2）
+## 事件诊断与玩家一键采集
 
 GUI 使用 ZSlate，不依赖 ZRuntime、编辑器或游戏进程。公共源码只在本目录维护；OSGame 通过 profile 和发布适配接入，G侧已删除迁移完成的旧源码，仅保留分发适配和接口说明。
 
-### 1.7.3 事件扫描顺序修复
+### 事件扫描顺序
 
-1.7.2 及更早版本按时间正序扫描整个回溯区间，命中 `MaxRelevantEvents`（5000）上限后丢弃的是**最近的**事件，也就是最可能相关的那批；填了 `--incident-time` 也只是把区间向前**扩大**，没有锚定到事故时刻。现网实测：某台机器 14 天内有 4227 条 `Windows Error Reporting/1001 crashpad_log`，上限在事故前 6 天就被占满，`events-redacted.json` 只覆盖到事故前 6 天，事故当天一条都没扫到，却输出了 `NO_SYSTEM_EVIDENCE` 之外的误导结论——此时"没发现显卡/存储异常"是无效的否定证据。
-
-1.7.3 的改动：
+按时间正序扫描整个回溯区间，命中 `MaxRelevantEvents`（5000）上限后丢弃的会是**最近的**事件，也就是最可能相关的那批。因此扫描锚定到事故时刻，而不是把区间整体向前扩大：
 
 - 提供 `--incident-time` 时，`BuildEventScanOrder()` 把区间切成 3 段并按此顺序扫描：① `[事故-30min, 事故+30min]`（决定 verdict 的窗口）→ ② 事故之后（Windows 延迟写入的 bugcheck / WER）→ ③ 更早的上下文。上限或超时只会牺牲上下文，不再牺牲事故窗口。三段边界互不重叠（闭区间之间留 1 tick），不会重复计入同一条事件。
 - 每段改用 `EvtQueryReverseDirection` 倒序读取，即使单段内命中上限，丢弃的也是最旧的记录。
 - 两个通道（System / Application）都先扫优先窗口再扫上下文，因为同一条规则（如 `GPU_TDR`）的证据可能来自任一通道。
 - 读取结束后把 `events` 与 `systemEventTimes` 重新按时间升序排序：规则本身与顺序无关，但事件文件要给人看、也要能回放。
-- `SYSTEM_ISSUES_NEARBY` 的用户文案区分远近：证据不在事故时刻附近（无事故时间或 `proximity=lookback`）时不再说"可能与你遇到的问题有关"，改为明确"该记录不在问题发生的时间点附近，无法确定与本次问题有关"。此前一条 6 天前的 `Ntfs/98` 会让玩家以为硬盘坏了。
+- `SYSTEM_ISSUES_NEARBY` 的用户文案区分远近：证据不在事故时刻附近（无事故时间或 `proximity=lookback`）时不再说"可能与你遇到的问题有关"，改为明确"该记录不在问题发生的时间点附近，无法确定与本次问题有关"。
 - `systemLogReadable` 维持原语义，只由区间查询的结果决定；读取最旧事件的探针失败或日志为空只影响 `systemOldestKnown`，不会被误判成"日志不可读"而直接 fatal。
 
 - 区分“只截断了上下文”与“事故窗口被截断”。`budgetExceeded` / `eventCapReached` / `queryErrorOccurred` 是全局标志，无法说明截断是否真的损失了事故证据，因此 `Observability` 增加两个字段：
@@ -253,9 +251,9 @@ GUI 使用 ZSlate，不依赖 ZRuntime、编辑器或游戏进程。公共源码
 
 `BuildEventScanOrder()` / `IsEmptyEventScanRange()` 在 `EventLogReader.h` 导出，`EnvironmentCollectorTests` 覆盖：三段切分与顺序、边界不重叠、`priority` 标记唯一、无事故时间时退回单段、优先窗口落在区间外时退回单段且不冒充事故窗口、只截断上下文时维持 `NO_SYSTEM_EVIDENCE` 且记 `SCAN_CONTEXT_TRUNCATED`、事故窗口被截断时仍 `INCONCLUSIVE`、版本 1 事件文件回放后新字段取默认值。
 
-### 1.8.1 事故锚点与 isTargetGame
+### 事故锚点与 isTargetGame
 
-2026-10 连续三份采集包（r809053、#45665、Lenovo 82RC）都因为缺 `incidentTimeUtc` / `incidentKind` / `gameExecutable` 中的一项或多项而**无法归因**：包本身看起来是完整的，研发打开后才发现它既不能证明"是游戏导致的"，也不能证明"与游戏无关"。1.8.1 让工具自己把这件事说清楚，而不是留给收包的人。
+采集包要能被归因，必须同时有 `incidentTimeUtc` / `incidentKind` / `gameExecutable`；缺任一项就既不能证明"是游戏导致的"，也不能证明"与游戏无关"。工具会自己把这件事说清楚，而不是留给收包的人。
 
 **事故锚点**（`DescribeAttributionAnchor`）：三项齐全才算可归因。缺任一项时——
 
@@ -268,7 +266,7 @@ GUI 使用 ZSlate，不依赖 ZRuntime、编辑器或游戏进程。公共源码
 
 不阻断采集：纯机器体检本来就是合法用法，只是不能让它冒充具备归因价值。
 
-**`events-redacted.json` 的 `isTargetGame`**（schemaVersion `1` → `2`）：此前崩溃进程名一律脱敏成 `OTHER_PROCESS`，外部研发拿到包后**连"是不是我们的游戏在崩"都判断不了**——而这是采集包存在的唯一理由。新增字段只回答这个布尔问题，不泄露进程名：
+**`events-redacted.json` 的 `isTargetGame`**（schemaVersion `2`）：只回答“崩溃的是不是指定的游戏”这个布尔问题，不泄露进程名：
 
 | `gameExecutableSpecified` | `isTargetGame` | 含义 |
 |---|---|---|
@@ -287,9 +285,7 @@ launcher 不等工具跑完再读结果，而是工具还在跑时就轮询输�
 `WriteReportFile`）：
 
 - 临时文件是同目录下的 `<目标名>.<pid>.tmp`；无论发布成功还是失败都不会留下它。
-- 读者只会看到“旧的完整文件”或“新的完整文件”，不会看到被截断的半个 JSON。改之前是
-  `ofstream(path, trunc)` 就地写，轮询方在 truncate 之后、写完之后之间会读到空文件。
-  `EnvironmentCollectorTests` 用并发读线程覆盖了这个性质（换回旧实现该断言会失败）。
+- 读者只会看到“旧的完整文件”或“新的完整文件”，不会看到被截断的半个 JSON。
 - 发布需要目标文件的 DELETE 权限，而 MSVC 的 `std::ifstream` 只共享读和写、**不共享删除**：
   读者一直开着文件不放会让发布失败。工具会重试约 1 秒再放弃，放弃时抛异常且不留下半成品，
   等价于“本次没有产出报告”——launcher 应按“没检查过”处理（fail-open）。
@@ -380,39 +376,30 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 
 保留原 `--diagnose` 的JSON schema1、四类verdict、事件回放、退出0/30语义及原OSGame文件名；原普通CLI的GPU mock/实际GPU选择探针和DLL行为保留。普通CLI并不是安全采集入口：`--check-dll`会追加路径而不是关闭递归扫描。玩家用GUI或 `--collect`。
 
-### 1.8.0：推荐Windows系统转储（WER）与已有dump导入
+### 推荐Windows系统转储（WER）与已有dump导入
 
 高级区域默认选择“Windows系统崩溃转储（推荐）”，另保留“ProcDump附加（需允许调试）”。WER不用选择或运行ProcDump：选择当前项目游戏exe → 点击开始 → 确认完整内存隐私及注册表修改 → 批准UAC → 界面提示系统捕获已启用后，正常启动游戏并复现崩溃。默认等1小时。目标需在当前用户会话运行；不同用户的游戏不会自动放宽输出目录权限。
 
-**一次启用可连续收集多次崩溃**：启用后配置一直生效，每次崩溃各自复制一份（第一份为 `crash.dmp`，之后为 `crash-2.dmp`、`crash-3.dmp`…，单次会话上限8份），点击“安全停止捕获”、等待超时或达到上限后才统一恢复注册表配置。这是行为变更：此前收到第一份dump就立即恢复配置，导致同一会话内后续崩溃完全不被收集（玩家反馈“连续崩两次都没反应”就是这个原因）。工具版本号仍为1.8.0，未随本次变更调整。每份dump独立做完整内存/异常线程/PID/模块路径校验，晚到的dump不会被当作重复文件跳过。
+**一次启用可连续收集多次崩溃**：启用后配置一直生效，每次崩溃各自复制一份（第一份为 `crash.dmp`，之后为 `crash-2.dmp`、`crash-3.dmp`…，单次会话上限8份），点击“安全停止捕获”、等待超时或达到上限后才统一恢复注册表配置。每份dump独立做完整内存/异常线程/PID/模块路径校验，晚到的dump不会被当作重复文件跳过。
 
 只写64位注册表视图的 `HKLM/SOFTWARE/Microsoft/Windows/Windows Error Reporting/LocalDumps/<exe文件名>` 三值：DumpType DWORD=2、DumpCount DWORD=2、DumpFolder REG_EXPAND_SZ=本次私有目录。WER按文件名匹配而非完整路径，因此其他同名程序也可能生成文件；采集器必须结合观测到的PID、创建时间、dump异常时间和完整模块路径才能自动接收。仅做可选的有限查询，不申请VM_READ、不调试附加、不修改反作弊。进程保护导致身份证据不足时保留原文件，提示手工确认导入，不把任意新文件当目标崩溃。
 
-普通环境采集仍只读。提权动作仅在用户启用/恢复WER时发生，调用随包CLI的严格 `--wer-config` 内部入口；参数不进入shell执行。备份写入 `HKLM/SOFTWARE/ZEngine/EnvironmentCollector/WerBackupsV1/<exe>`，ACL只允许管理员/SYSTEM修改，普通用户只读。先持久化原值的存在性、类型、原始字节与预期新值，再写目标值；异常退出后可用“恢复当前项目WER原配置”重试。恢复逐值比较，若其他工具已改动，返回冲突并保留备份，不覆盖它们。空备份/部分应用均有恢复路径；不直接删整个LocalDumps键。**恢复是恢复先前配置，不是关闭已有全局WER；以前FullDump.bat建立的全局设置不会被本工具删除。** UAC拒绝/恢复冲突时明确提示，窗口退出前对未恢复配置再次告警。
+普通环境采集仍只读。提权动作仅在用户启用/恢复WER时发生，调用随包CLI的严格 `--wer-config` 内部入口；参数不进入shell执行。备份写入 `HKLM/SOFTWARE/ZEngine/EnvironmentCollector/WerBackupsV1/<exe>`，ACL只允许管理员/SYSTEM修改，普通用户只读。先持久化原值的存在性、类型、原始字节与预期新值，再写目标值；异常退出后可用“恢复当前项目WER原配置”重试。恢复逐值比较，若其他工具已改动，返回冲突并保留备份，不覆盖它们。空备份/部分应用均有恢复路径；不直接删整个LocalDumps键。**恢复是恢复先前配置，不是关闭已有全局WER。** UAC拒绝/恢复冲突时明确提示，窗口退出前对未恢复配置再次告警。
 
 结束收集（用户停止/等待超时/达到份数上限）后按原配置恢复（可能再次弹UAC），再补采环境、计算SHA256和ZIP64压缩。多份dump全部打进同一个 `capture.zip`，`checksums.json` 逐份记录SHA256；`capture.json` 新增 `capturedDumpCount` 与 `dumps` 数组逐份记录PID、异常码、dump时间，顶层单份字段仍指向第一份以兼容旧读取器。用户主动停止且已收集到dump时按正常完成处理（不再视为取消、不再生成无dump的失败包）；一份都没收到时仍为取消/超时失败。停止标志只用于结束等待，不再传给后处理，否则会立刻自我取消。会话目录为 `EnvironmentReports/crash-capture-wer-<GUID>`，其 `system-dumps` 保留Windows原文件，验证后的副本为 `crash.dmp`，最终分享包为该私有目录内的 `capture.zip`，不把完整内存包放到可能共享的父目录。目录权限限当前用户、管理员和SYSTEM；不跟随目录链接，不覆盖已有文件。打开捕获结果按钮直接选中ZIP。空间不足/超时/后处理失败生成仅含capture.json的capture-failure.zip，不冒称含dump。停止不会终止游戏、WER或删除仍在写入的文件；晚到文件仍可手工导入。完整dump仍可能数GB，至少4GiB起步，复制前要求额外约2倍dump大小+1GiB；单dump上限64GiB。
 
-“选择已有dump并打包”不改注册表、不运行ProcDump，不删除或移动原文件；需先选择对应游戏exe并确认来源和完整内存隐私。验证完整内存/异常线程/PID/模块路径后复制、补采与打包。报告记录 `captureBackend=dump_import` 和 `identity=USER_CONFIRMED_IMPORT_AND_MODULE_PATH`，不伪称属于本次运行。1.8.0共用打包流程也将ProcDump最终包放到本次目录内的 `capture.zip`。WER/import报告schemaVersion=2，记录配置/恢复状态、身份依据、dump时间与异常码；ProcDump原schema不变。保留1.7.3事件优先窗口、逻辑像素DPI和滚动条修复，GUI事件明细仍默认勾选。
-
-验证（2026-10-14）：Release独立构建和4项CTest通过；HKCU唯一测试键覆盖原值不存在、原始类型/字节还原、已有备份拒绝覆盖、Token错配、外部修改冲突、Token写入前中断清理；合成dump的模块与进程创建时间校验通过。只对 `EnvironmentCaptureTestTarget.exe` 做真实HKLM启用后取消/恢复、系统异常落dump/身份匹配/恢复/打包，后者生成82,451,550字节完整dump；Python独立回读ZIP CRC、白名单和SHA256通过，最终ZIP ACL仍私有，目标配置与备份均确认移除。首次系统测试错误复用了含SEM_NOGPFAULTERRORBOX的ProcDump测试模式，导致无WER文件；仅为测试程序新增允许WER的wer-crash模式后重跑通过，没有修改系统策略。已有dump导入端到端通过。GUI 150%实际截图与鼠标选择验证两个后端，截图在独立build的wer-validation内。
-
-连续收集端到端验证：同一会话内对 `EnvironmentCaptureTestTarget.exe` 触发两次真实崩溃，一次启用、一次UAC恢复，得到 `crash.dmp` 82,451,550字节与 `crash-2.dmp` 82,468,078字节，两份SHA256不同（确为两次独立崩溃而非重复复制），`capturedDumpCount=2`，收到第2份后停止即打包 `capture.zip`，`HasWerBackup` 确认配置已恢复。取消路径与已有dump导入路径重跑仍通过。
+“选择已有dump并打包”不改注册表、不运行ProcDump，不删除或移动原文件；需先选择对应游戏exe并确认来源和完整内存隐私。验证完整内存/异常线程/PID/模块路径后复制、补采与打包。报告记录 `captureBackend=dump_import` 和 `identity=USER_CONFIRMED_IMPORT_AND_MODULE_PATH`，不伪称属于本次运行。ProcDump 与 WER 共用打包流程，最终包都在本次目录内的 `capture.zip`。WER/import报告schemaVersion=2，记录配置/恢复状态、身份依据、dump时间与异常码；ProcDump原schema不变。
 
 限制：真实WXQ.exe及玩家反作弊环境尚未验证；自定义崩溃处理、自动调试设置或系统策略可能阻止WER，配置成功不保证生成dump，不用于卡死/普通退出。未完成跨用户目标、标准用户UAC拒绝、异机ACL/受控文件夹环境验收；当前只支持安全exe文件名、本地普通目录，文件路径映射不同的历史dump需匹配原游戏路径。工具未数字签名、不自动上传。说明来源：https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps 。
 
-### 高级诊断：一次完整崩溃dump（1.7.2历史行为，1.8.0变更以上节为准）
+### 高级诊断：一次完整崩溃dump
 
-1.7.2修复“签名通过但访问游戏失败，没有verification.zip且打开普通报告目录”：1.7.1只在签名前置失败生成verification.zip，并且GUI普通采集和捕获共用结果对象。捕获失败后执行普通采集，会覆盖取证目录入口。现在普通报告与捕获结果分别保存；新按钮“打开捕获结果（定位ZIP或capture.json）”只使用本窗口最近一次捕获结果，直接在资源管理器选中ZIP或capture.json，不受普通采集影响。高级区域显示版本号。若重开窗口无历史结果，提示到桌面EnvironmentReports/crash-capture-*查找，不跳转普通报告冒充。
+普通报告与捕获结果分别保存。“打开捕获结果（定位ZIP或capture.json）”只使用本窗口最近一次捕获结果，直接在资源管理器选中 ZIP 或 capture.json，不受普通采集影响。高级区域显示版本号。若重开窗口无历史结果，提示到桌面 EnvironmentReports/crash-capture-* 查找，不跳转普通报告冒充。
 
-签名前置失败继续生成`verification.zip`；签名后的进程访问/监控/后处理异常生成`capture-failure.zip`，二者仅含capture.json，不混入dump或原始日志。收集根目录不可写、授权前参数失败、取消/正常退出等仍可能只有本地JSON或没有新目录，不能承诺任何失败都必有ZIP；磁盘打包失败明确提示发送JSON。报告补充failedStage、failedOperation、Win32错误码、目标PID和requestedProcessAccess；OpenProcess失败、进程已退出、路径变化、已有调试器分别提示。不自动提权、不调整真实目标DACL、不启用调试特权、不跳过签名或反作弊。旧截图的“目标进程已变化或访问被拒绝”只证明本次已通过签名且未附加；不能由截图确认错误码5或断言反作弊是原因。
+签名前置失败继续生成`verification.zip`；签名后的进程访问/监控/后处理异常生成`capture-failure.zip`，二者仅含capture.json，不混入dump或原始日志。收集根目录不可写、授权前参数失败、取消/正常退出等仍可能只有本地JSON或没有新目录，不能承诺任何失败都必有ZIP；磁盘打包失败明确提示发送JSON。报告补充failedStage、failedOperation、Win32错误码、目标PID和requestedProcessAccess；OpenProcess失败、进程已退出、路径变化、已有调试器分别提示。不自动提权、不调整真实目标DACL、不启用调试特权、不跳过签名或反作弊。截图上的“目标进程已变化或访问被拒绝”只证明本次已通过签名且未附加；不能由截图确认错误码5或断言反作弊是原因。
 
-1.7.2验证：3项CTest通过；手动集成测试`access-denied`对仅含合成数据的专用进程限制访问，产生真实`OpenProcess(capture)`错误5、OPENING_TARGET阶段，签名已通过而ProcDump未启动，生成capture-failure.zip，Python独立回读仅capture.json。首次测试运行继承了调试特权，DACL拒绝未生效并导致测试失败；已仅在测试进程内禁用该特权，并新增实际拒绝访问前置断言后重跑通过，生产采集器权限未改。GUI真实文件选择/授权触发未签名拒绝，再点击普通采集，再点捕获结果入口，资源管理器回读仍选中原crash-capture-*下verification.zip。验证截图和产物位于独立build的validation-1.7.2；未访问真实游戏。下面保留1.7.1历史说明，按钮名及异常包扩展以本节为准。
+签名前置失败自动保存仅含 `capture.json` 的 `verification.zip`，保留 WinVerifyTrust 直接返回的 LONG 及十六进制值、错误分类、签名者/颁发者、文件 SHA256/版本、策略和 `procDumpStarted`。点击“打开dump取证目录”发送此包，不要重复发送顶部普通`osgame-*.zip`。失败ZIP不是dump，也不表示捕获成功；未通过验证不会启动ProcDump，不会记住该文件。
 
-1.7.1补充签名前置失败诊断：旧1.7.0将吊销查询、证书链、摘要、缺失签名和发布者不符统一显示为一句错误，并且验证发生在取证目录建立前，失败没有capture.json。新版保留WinVerifyTrust直接返回的LONG及十六进制值、错误分类、签名者/颁发者、文件SHA256/版本、策略和`procDumpStarted`；前置失败自动保存仅含`capture.json`的`verification.zip`。点击“打开dump取证目录”发送此包，不要重复发送顶部普通`osgame-*.zip`。失败ZIP不是dump，也不表示捕获成功；未通过验证不会启动ProcDump，不会记住该文件。
-
-2026-10-13反馈截图与`osgame-2026-10-13T054234144Z-16144-0.zip`只能确认玩家在验证阶段被阻止。该ZIP为1.7.0普通环境报告、仅8文件，无ProcDump哈希、签名状态或dump；无法据此断言断网、文件篡改或反作弊阻止。此版是定位版，不声称已修复玩家的实际证书环境。严格吊销/微软身份校验保持不变，不加离线放行、不导入证书、不修改系统时间或关闭安全软件。
-
-验证：3项CTest通过；未签名测试文件被拒绝且返回失败诊断包；模拟错误分类覆盖0x80092013、0x80096010及非微软发布者；日志路径不可写不阻断JSON/ZIP；独立zipfile回读包内仅capture.json并确认started/verified=false。本机官方12.01签名只验证通过，未执行它；未在玩家机器复现真实错误。新版成功捕获链路本轮未重新附加测试进程，沿用1.7.0既有验证。
 
 用户打开GUI并滚动到“高级诊断”，选择微软官方 `procdump64.exe` 和当前profile对应的游戏exe（不是Launcher）。点击开始后需分别确认完整内存隐私和Sysinternals许可；选择否不会启动监控。ProcDump需从 https://learn.microsoft.com/en-us/sysinternals/downloads/procdump 自行下载，采集器只提供打开官网入口，不捆绑或镜像分发。通过签名/原始文件名/64位PE检查才运行，并保持只读文件句柄防止校验后修改。证书在线验证不可用时拒绝运行，不降级跳过。
 
@@ -423,15 +410,15 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 - 结果包：`crash.dmp`、`environment.zip`、`capture.json`、`procdump.log`、`checksums.json`。环境子包沿用原白名单；清单保存同意时刻、目标名/PID、EXE文件版本和SHA256、ProcDump版本及SHA256、异常码、dump时间/大小、验证结果。EXE文件版本不保证等同游戏资源版本，定位仍需结合dump模块及发布记录获取匹配PDB。原始dump始终保留；后处理取消/失败不删除它。
 - 日志/哈希：ProcDump日志保存最多1MiB输出并转UTF-8。成功后所有证据文件计算SHA256，按白名单流式Deflate压缩成ZIP64并实际解压回读CRC。64KiB文件读缓冲，不把数GB文件装入内存。大dump打包可取消；环境子包的短暂最终阶段维持原不可取消行为。
 - 设置：采集器将成功完成签名检查后的ProcDump路径记在 `HKCU/Software/ZEngine/EnvironmentCollector/ProcDumpPath`；每次GUI仍需重新确认许可与内存采集，偏好写失败不丢取证结果。ProcDump可能自行保存其EULA接受状态。没有修改全局调试器注册和反作弊设置。
-- 压缩依赖：`engine/3rdparty/minizip-ng`（主仓子模块，编辑器 XlsxImporter 用的同一份），以 deflate 单方法构建，ZIP64 由库原生支持，无补丁、无本地修改。整树构建时复用 `engine/3rdparty/CMakeLists.txt` 已建好的 `minizip-ng` 目标；独立构建时由本工程 `add_subdirectory` 并按需 FetchContent 拉取 zlib（本工程本来就 FetchContent zydis，联网配置是既有前提）。旧的 `tools/renderdoc/3rdparty/miniz` + `miniz-zip64.patch` 方案已移除：不再依赖 RenderDoc 子模块、不再在配置期跑 `git apply`、不再需要 Git。交付源码须包含 `LICENSE-minizip-ng.txt`（安装时从子模块 LICENSE 改名复制）。归档仍为流式：64KiB 读缓冲，不把数GB文件装入内存；写完回读每个条目完整内容并由库比对 CRC32。
+- 压缩依赖：`engine/3rdparty/minizip-ng`（主仓子模块，编辑器 XlsxImporter 用的同一份），以 deflate 单方法构建，ZIP64 由库原生支持，无补丁、无本地修改。交付源码须包含 `LICENSE-minizip-ng.txt`（安装时从子模块 LICENSE 改名复制）。归档仍为流式：64KiB 读缓冲，不把数GB文件装入内存；写完回读每个条目完整内容并由库比对 CRC32。
 
-验证在独立build的 `capture-validation`：3项CTest通过；官方ProcDump12.01配合仅含合成数据的 `EnvironmentCaptureTestTarget.exe` 验证完整异常dump自动打包、正常退出不误报、等待取消、已附加后取消（目标仍活着且无调试器）、进度回调抛异常后安全脱离；完整dump错误PID/截断尾部拒绝。4GiB+1KiB合成文件通过独立Python解压、大小、ZIP64版本45和CRC验证。GUI文件选择及拒绝隐私授权路径已用真实窗口消息验证并截图。未附加真实游戏，反作弊/CrashSight共存、权限提升、低磁盘实际故障仍需内部实机验证。当前微软页面列ProcDump支持Windows11及以上，此模式不承诺Windows10兼容。
+当前微软页面列 ProcDump 支持 Windows 11 及以上，此模式不承诺 Windows 10 兼容。
 
 ### ZIP契约与隐私
 
-从1.7.0起ZIP采用流式Deflate/ZIP64，极小文件可由库选择Store；UTF-8文件内容，压缩完成后回读CRC校验。普通环境报告仍最多32项、单文件16MiB、总内容64MiB；高级证据包单文件64GiB、总内容128GiB。只收明确生成的白名单文件：`basic.json`、`firmware.json`、`diagnosis.json`、`health-events.json`、`graphics.json`、`storage.json`、`summary.txt`、`manifest.json`；同意明细时加 `events-redacted.json`。JSON各有schemaVersion。manifest记录版本、项目、UTC时间、事故类型、同意项、各阶段状态及实际包内文件。
+ZIP 采用流式 Deflate/ZIP64，极小文件可由库选择 Store；UTF-8文件内容，压缩完成后回读CRC校验。普通环境报告仍最多32项、单文件16MiB、总内容64MiB；高级证据包单文件64GiB、总内容128GiB。只收明确生成的白名单文件：`basic.json`、`firmware.json`、`diagnosis.json`、`health-events.json`、`graphics.json`、`storage.json`、`summary.txt`、`manifest.json`；同意明细时加 `events-redacted.json`。JSON各有schemaVersion。manifest记录版本、项目、UTC时间、事故类型、同意项、各阶段状态及实际包内文件。
 
-默认不附原始XML/全系统日志/用户目录/卷标签/磁盘序列号。健康事件只保留错误类型、APIC/MCA和检测结果等白名单字段；其它程序名脱敏。`events-redacted.json` 是分享用格式，不冒充可回放原始TSV；研发回放仍用明确开启 `--diagnose-detail` 的本地TSV。程序名脱敏成 `OTHER_PROCESS` 后，自 1.8.1 起由 `isTargetGame` 布尔位回答"是不是指定的游戏"，仍不暴露进程名。
+默认不附原始XML/全系统日志/用户目录/卷标签/磁盘序列号。健康事件只保留错误类型、APIC/MCA和检测结果等白名单字段；其它程序名脱敏。`events-redacted.json` 是分享用格式，不冒充可回放原始TSV；研发回放仍用明确开启 `--diagnose-detail` 的本地TSV。程序名脱敏成 `OTHER_PROCESS` 后，由 `isTargetGame` 布尔位回答"是不是指定的游戏"，仍不暴露进程名。
 
 窗口使用系统字体，不随包复制Windows字体。图形初始化失败会尝试WARP，再失败提示CLI采集。系统字体、D3DCompiler或权限异常可导致GUI无法启动，CLI仍可单独使用。
 

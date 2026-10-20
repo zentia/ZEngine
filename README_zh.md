@@ -78,7 +78,7 @@
 
 | 工具 | 可执行文件 | 说明 |
 |---|---|---|
-| WindowsEnvironmentCheck | `ZEnvironmentCollector.exe` | Windows 兼容性报告：硬件/固件/驱动探测、经同意的崩溃采集、游戏日志收集、ZIP64 报告。GUI 或 `-batchmode`（供 CI 用） |
+| ZEnvironmentCollector | `ZEnvironmentCollector.exe` | Windows 兼容性报告：硬件/固件/驱动探测、经同意的崩溃采集、游戏日志收集、ZIP64 报告。GUI 或 `-batchmode`（供 CI 用） |
 | LuaMemPreview | `LuaMemPreview.exe` | Lua 内存快照查看器（`.zasset` 或 CSV）；`-batchmode` 可导出单个快照或整个目录的 CSV |
 | TexPreview | `TexPreview.exe` | 纹理查看器 |
 | ClientProjBranches | `ClientProjBranches.exe` | 分支 / SVN / git 管理 |

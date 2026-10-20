@@ -262,7 +262,7 @@ add_subdirectory(shader)
 include(cmake/ConfigOutputDirs.cmake)
 
 # z_embed_app_icon(<target>): embeds a tool's resource/<Name>.ico as IDI_ICON1.
-# Standalone tools that configure on their own (engine/tools/WindowsEnvironmentCheck)
+# Standalone tools that configure on their own (engine/tools/ZEnvironmentCollector)
 # include this file directly.
 include(cmake/AppIcon.cmake)
 
@@ -327,7 +327,7 @@ endif()
 # second ZSlate, colliding with the engine's.
 
 # DataTableCook bakes a LocalizationTable CSV into a .zasset at build time.
-# Declared BEFORE WindowsEnvironmentCheck because the collector's POST_BUILD
+# Declared BEFORE ZEnvironmentCollector because the collector's POST_BUILD
 # step runs the cooker to produce the table it ships.
 option(ZENGINE_BUILD_DATATABLE_COOK "Build the CSV -> .zasset table cooker" ON)
 if(ZENGINE_BUILD_DATATABLE_COOK)
@@ -342,14 +342,14 @@ if(ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK AND WIN32)
     # full-tree configure (ENVIRONMENT_CHECK_BUILD_GUI) and that default is
     # deliberate -- do not "fix" it:
     #
-    # WindowsEnvironmentCheck sets CMAKE_MSVC_RUNTIME_LIBRARY to /MT because it
+    # ZEnvironmentCollector sets CMAKE_MSVC_RUNTIME_LIBRARY to /MT because it
     # ships to machines with no VC redist. Standalone, ZSlate is added inside
     # that scope and inherits /MT. In a full-tree configure ZSlate already
     # exists as /MD (engine default), so linking it into a /MT collector fails
     # with LNK2038 (RuntimeLibrary mismatch). One ZSlate instance cannot be
     # both. Build the collector GUI from its own configure:
-    #     cmake -S engine/tools/WindowsEnvironmentCheck -B <dir>
-    add_subdirectory(tools/WindowsEnvironmentCheck)
+    #     cmake -S engine/tools/ZEnvironmentCollector -B <dir>
+    add_subdirectory(tools/ZEnvironmentCollector)
 endif()
 
 # ClientProjBranches is a self-contained CMake project: it configures and

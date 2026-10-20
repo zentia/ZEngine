@@ -3,7 +3,7 @@
 # z_embed_app_manifest(<target> [MANIFEST <file>])
 #
 # Declares per-monitor DPI awareness for a Windows executable. One call replaces
-# what WindowsEnvironmentCheck used to do by hand: keep a
+# what ZEnvironmentCollector used to do by hand: keep a
 # <Name>.manifest beside its sources and list it in its source list.
 #
 # Arguments:
@@ -24,7 +24,7 @@
 #
 # Who needs it:
 #   * A GUI that does NOT go through ZSlate::FSlateStandaloneApp. Today that is
-#     only WindowsEnvironmentCheck, which registers its own WNDCLASSEX: no
+#     only ZEnvironmentCollector, which registers its own WNDCLASSEX: no
 #     DeclareDpiAwareness() runs on its path, so the manifest is its only
 #     declaration and without it the window is DPI-virtualised (rendered at
 #     96 dpi, bitmap-stretched by DWM, ClearType off -> soft text).
