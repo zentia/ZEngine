@@ -9,6 +9,7 @@ namespace
     // Constant-initialized, so it is valid before any dynamic static init
     // (generated registrars run during dynamic init, in unspecified order).
     ZClassScriptBinding* g_Head = nullptr;
+    ZSyntheticScriptClass* g_SyntheticHead = nullptr;
     bool g_Installed = false;
 
     // Placeholder `declare class <Super> {}` emitted for supers that have no
@@ -72,6 +73,38 @@ namespace
         }
         return false;
     }
+
+    // --- Behaviour -------------------------------------------------------
+    //
+    // The Unity-compatible base class every user-authored TS behaviour extends.
+    // It has no C++ binding table: the instance is a plain JS object produced by
+    // `__zNewInstance`, and TypeScriptComponent injects these three properties
+    // onto it once, right after construction and before OnAwake.
+    const ZSyntheticProperty kBehaviourProperties[] = {
+        {ZBehaviourScript::kGameObject, "GameObject", true},
+        {ZBehaviourScript::kTransform, "Transform", true},
+        {ZBehaviourScript::kComponent, "TypeScriptComponent", true},
+    };
+
+    // Lifecycle hooks. These live on the JS prototype (ScriptEnv's console
+    // shim), so they are plain .d.ts lines with no C++ counterpart.
+    const char* const kBehaviourMethodLines[] = {
+        "    OnAwake(): void;",
+        "    OnStart(): void;",
+        "    OnUpdate(delta_time: number): void;",
+        "    OnDestroy(): void;",
+    };
+
+    ZSyntheticScriptClass g_BehaviourClass {
+        "Behaviour",
+        nullptr,
+        kBehaviourProperties,
+        sizeof(kBehaviourProperties) / sizeof(kBehaviourProperties[0]),
+        kBehaviourMethodLines,
+        sizeof(kBehaviourMethodLines) / sizeof(kBehaviourMethodLines[0]),
+        nullptr,
+    };
+    const ZSyntheticScriptClassRegistrar g_BehaviourRegistrar(g_BehaviourClass);
 }  // namespace
 
 namespace ScriptBindingRegistry
@@ -83,6 +116,14 @@ namespace ScriptBindingRegistry
     }
 
     const ZClassScriptBinding* Classes() { return g_Head; }
+
+    void RegisterSynthetic(ZSyntheticScriptClass& cls)
+    {
+        cls.next = g_SyntheticHead;
+        g_SyntheticHead = &cls;
+    }
+
+    const ZSyntheticScriptClass* SyntheticClasses() { return g_SyntheticHead; }
 
     void InstallAll(pesapi_registry_api* apis, pesapi_registry registry)
     {
@@ -206,6 +247,43 @@ namespace ScriptBindingRegistry
                 out += "    ";
                 out += method.tsSignature;
                 out += ";\n";
+            }
+            out += "}\n\n";
+        }
+
+        // Script-side classes last, so the reader sees the engine types their
+        // members refer to first.
+        for (const ZSyntheticScriptClass* cls = g_SyntheticHead; cls != nullptr; cls = cls->next)
+        {
+            if (cls->scriptName == nullptr || cls->scriptName[0] == '\0')
+                continue;
+            out += "declare class ";
+            out += cls->scriptName;
+            if (cls->superName != nullptr && cls->superName[0] != '\0')
+            {
+                out += " extends ";
+                out += cls->superName;
+            }
+            out += " {\n";
+            for (std::size_t i = 0; i < cls->propertyCount; ++i)
+            {
+                const ZSyntheticProperty& prop = cls->properties[i];
+                if (prop.name == nullptr || prop.typeName == nullptr)
+                    continue;
+                out += "    ";
+                if (prop.readonly)
+                    out += "readonly ";
+                out += prop.name;
+                out += ": ";
+                out += prop.typeName;
+                out += ";\n";
+            }
+            for (std::size_t i = 0; i < cls->methodCount; ++i)
+            {
+                if (cls->methodLines[i] == nullptr)
+                    continue;
+                out += cls->methodLines[i];
+                out += "\n";
             }
             out += "}\n\n";
         }

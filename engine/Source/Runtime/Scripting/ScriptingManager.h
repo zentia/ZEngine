@@ -2,6 +2,7 @@
 
 #include "Runtime/BaseClasses/Type.h"
 #include "Runtime/Core/Base/EngineSystem.h"
+#include "Runtime/Scripting/Binding/ScriptBinding.h"
 #include "Runtime/Scripting/Wrapper/ScriptEnv.h"
 #include "Runtime/Utility/Hash128.h"
 
@@ -11,6 +12,7 @@
 #include <set>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <vector>
 
 class ProjectInfo;
@@ -102,6 +104,27 @@ public:
                             const std::string& value_str);
     std::vector<std::tuple<std::string, std::string, std::string>>
     EnumerateInstanceFields(pesapi_value_ref instance);
+
+    // -----------------------------------------------------------------------
+    // Engine-context injection (Behaviour binding, forwarder to ScriptEnv).
+    //
+    // Publishes `object` as `instance[name]`. `T` is the type the script sees:
+    // it decides which methods are reachable, exactly like a declared type in
+    // C++, so publish the most specific bound type you can (a `Component*` is
+    // fine, but `Transform*` is what makes `this.transform.SetLocalPosition`
+    // callable). T must own at least one ZFUNCTION, otherwise pesapi has no
+    // type id for it and the property is published as null.
+    // -----------------------------------------------------------------------
+    template <typename T>
+    bool SetInstanceObject(pesapi_value_ref instance, const char* name, T* object)
+    {
+        static_assert(std::is_base_of<Object, T>::value,
+                      "SetInstanceObject<T>: T must derive from Object");
+        if (m_ScriptEnv == nullptr)
+            return false;
+        return m_ScriptEnv->SetInstanceNativeObject(instance, name, ZScriptTypeId<T>::Get(),
+                                             const_cast<typename std::remove_const<T>::type*>(object));
+    }
 
     /// Translate an absolute .js path back to a module id under the current
     /// js_root, or "" if the path is outside the root. Used by the

@@ -578,6 +578,154 @@ namespace
         return problems == 0;
     }
 
+    /// Cross-check the JS-side `Behaviour` declaration against reality.
+    ///
+    /// Behaviour is the one engine class with no C++ binding table behind it
+    /// (the instance is a plain JS object, so TypeScriptComponent injects its
+    /// three properties after construction). Nothing in the generated tables
+    /// therefore proves that (a) the .d.ts still declares what the C++ side
+    /// injects and (b) the declared types are classes the file actually emits.
+    /// Both are silently breakable -- a wrong type name only shows up as a
+    /// compile error inside the user's project, far away from the cause.
+    bool CheckBehaviourBinding()
+    {
+        int problems = 0;
+        uint32_t synthetic = 0;
+
+        // The set of class names the emitted .d.ts declares. Mirrors
+        // AppendTypeScriptDeclarations: bound classes, their unbound (but
+        // non-reserved) supers as empty placeholders, and synthetic classes.
+        std::vector<std::string> declared;
+        std::vector<std::string> bound_names;
+        for (const ZClassScriptBinding* cls = ScriptBindingRegistry::Classes(); cls != nullptr; cls = cls->next)
+        {
+            if (cls->scriptName != nullptr && cls->scriptName[0] != '\0')
+            {
+                declared.emplace_back(cls->scriptName);
+                bound_names.emplace_back(cls->scriptName);
+            }
+        }
+        for (const ZClassScriptBinding* cls = ScriptBindingRegistry::Classes(); cls != nullptr; cls = cls->next)
+        {
+            if (cls->superName == nullptr || cls->superName[0] == '\0')
+                continue;
+            if (std::find(bound_names.begin(), bound_names.end(), cls->superName) != bound_names.end())
+                continue;
+            // Reserved names (Object) are never emitted -- see ScriptBinding.cpp.
+            if (std::strcmp(cls->superName, "Object") == 0)
+                continue;
+            declared.emplace_back(cls->superName);
+        }
+        for (const ZSyntheticScriptClass* cls = ScriptBindingRegistry::SyntheticClasses(); cls != nullptr; cls = cls->next)
+        {
+            ++synthetic;
+            if (cls->scriptName == nullptr || cls->scriptName[0] == '\0')
+            {
+                std::fprintf(stderr, "BEHAVIOUR: a synthetic class has no script name\n");
+                ++problems;
+                continue;
+            }
+            declared.emplace_back(cls->scriptName);
+            if (std::find(bound_names.begin(), bound_names.end(), cls->scriptName) != bound_names.end())
+            {
+                std::fprintf(stderr, "BEHAVIOUR: synthetic class '%s' collides with a bound class\n", cls->scriptName);
+                ++problems;
+            }
+
+            // Property names must be unique -- they are all set with
+            // pesapi_set_property on the same instance.
+            std::vector<std::string> names;
+            for (size_t i = 0; i < cls->propertyCount; ++i)
+            {
+                const ZSyntheticProperty& prop = cls->properties[i];
+                if (prop.name == nullptr || prop.name[0] == '\0')
+                {
+                    std::fprintf(stderr, "BEHAVIOUR: %s property %zu has no name\n", cls->scriptName, i);
+                    ++problems;
+                    continue;
+                }
+                if (std::find(names.begin(), names.end(), prop.name) != names.end())
+                {
+                    std::fprintf(stderr, "BEHAVIOUR: %s declares '%s' twice\n", cls->scriptName, prop.name);
+                    ++problems;
+                }
+                names.emplace_back(prop.name);
+            }
+        }
+
+        if (synthetic == 0)
+        {
+            std::fprintf(stderr, "BEHAVIOUR: no synthetic class registered -- Behaviour is missing\n");
+            ++problems;
+        }
+
+        // The three names TypeScriptComponent actually injects must be declared,
+        // with a type that is both a real registered C++ type and a class the
+        // .d.ts emits. A mismatch here means `this.gameObject` in a user script
+        // is either undefined at runtime or uncompilable in TS.
+        const std::pair<const char*, const char*> kExpected[] = {
+            {ZBehaviourScript::kGameObject, "GameObject"},
+            {ZBehaviourScript::kTransform, "Transform"},
+            {ZBehaviourScript::kComponent, "TypeScriptComponent"},
+        };
+        const ZSyntheticScriptClass* behaviour = nullptr;
+        for (const ZSyntheticScriptClass* cls = ScriptBindingRegistry::SyntheticClasses(); cls != nullptr; cls = cls->next)
+        {
+            if (cls->scriptName != nullptr && std::strcmp(cls->scriptName, "Behaviour") == 0)
+                behaviour = cls;
+        }
+        if (behaviour == nullptr)
+        {
+            std::fprintf(stderr, "BEHAVIOUR: no synthetic class named 'Behaviour'\n");
+            ++problems;
+        }
+        else
+        {
+            for (const auto& expected : kExpected)
+            {
+                const ZSyntheticProperty* found = nullptr;
+                for (size_t i = 0; i < behaviour->propertyCount; ++i)
+                {
+                    if (std::strcmp(behaviour->properties[i].name, expected.first) == 0)
+                        found = &behaviour->properties[i];
+                }
+                if (found == nullptr)
+                {
+                    std::fprintf(stderr, "BEHAVIOUR: Behaviour declares no '%s' property\n", expected.first);
+                    ++problems;
+                    continue;
+                }
+                if (found->typeName == nullptr || found->typeName[0] == '\0')
+                {
+                    std::fprintf(stderr, "BEHAVIOUR: Behaviour.%s has no type\n", expected.first);
+                    ++problems;
+                    continue;
+                }
+                if (std::strcmp(found->typeName, expected.second) != 0)
+                {
+                    std::fprintf(stderr, "BEHAVIOUR: Behaviour.%s is declared as '%s' but is published as '%s'\n",
+                                 expected.first, found->typeName, expected.second);
+                    ++problems;
+                }
+                if (std::find(declared.begin(), declared.end(), found->typeName) == declared.end())
+                {
+                    std::fprintf(stderr, "BEHAVIOUR: Behaviour.%s refers to '%s', which the .d.ts never declares\n",
+                                 expected.first, found->typeName);
+                    ++problems;
+                }
+                if (TypeManager::GetInstance().ClassNameToType(found->typeName) == nullptr)
+                {
+                    std::fprintf(stderr, "BEHAVIOUR: Behaviour.%s refers to '%s', which is not a registered C++ type\n",
+                                 expected.first, found->typeName);
+                    ++problems;
+                }
+            }
+        }
+
+        std::fprintf(stderr, "BEHAVIOUR: %u synthetic class(es), %d problem(s)\n", synthetic, problems);
+        return problems == 0;
+    }
+
     bool DumpClass(std::ostringstream& out, const char* class_name)
     {
         out << "=== " << class_name << " ===\n";
@@ -641,6 +789,7 @@ int main(int argc, char** argv)
     bool check_script_bindings = false;
     bool dump_script_dts = false;
     bool check_cast = false;
+    bool check_behaviour_binding = false;
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
@@ -660,6 +809,8 @@ int main(int argc, char** argv)
             dump_script_dts = true;
         else if (arg == "--check-cast")
             check_cast = true;
+        else if (arg == "--check-behaviour-binding")
+            check_behaviour_binding = true;
         else
             classes.push_back(arg);
     }
@@ -724,6 +875,11 @@ int main(int argc, char** argv)
     if (check_cast && !CheckCast())
     {
         std::fprintf(stderr, "FAIL: Cast<T> / dynamic_cast equivalence check failed.\n");
+        return 1;
+    }
+    if (check_behaviour_binding && !CheckBehaviourBinding())
+    {
+        std::fprintf(stderr, "FAIL: Behaviour binding check failed.\n");
         return 1;
     }
 

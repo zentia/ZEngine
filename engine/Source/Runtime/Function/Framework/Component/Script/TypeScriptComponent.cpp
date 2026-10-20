@@ -5,6 +5,7 @@
 #include "Runtime/Core/Serialize/SerializationMetaFlags.h"  // for TransferMetaFlags::HideInEditorMask
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/ResType/Data/ScriptAsset.h"
+#include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Scripting/ScriptRegistry.h"
 #include "Runtime/Scripting/ScriptingManager.h"  // transitively brings pesapi.h via ScriptEnv.h
 
@@ -316,6 +317,21 @@ bool TypeScriptComponent::BindAndAwake()
     //     updates m_SerializedFields and pushes to JS, so they survive
     //     a subsequent reload via this exact code path.
     ApplySerializedFields();
+
+    // Engine context, also before OnAwake: a behaviour's OnAwake is the first
+    // thing that legitimately wants `this.gameObject`. The JS instance is a
+    // plain object (created by __zNewInstance), so the host objects are
+    // published as ordinary properties rather than through a native `this`.
+    //
+    // The published static types are deliberate: GameObject / Transform /
+    // TypeScriptComponent are the bound classes, so the script sees exactly the
+    // members zengine.d.ts declares. Publishing a `Component*` here instead
+    // would compile in TS but hide every Transform method at runtime.
+    GameObject* host = GetParentObject();
+    sm->SetInstanceObject(instance, ZBehaviourScript::kGameObject, host);
+    sm->SetInstanceObject(instance, ZBehaviourScript::kTransform,
+                          host != nullptr ? host->GetTransform() : nullptr);
+    sm->SetInstanceObject(instance, ZBehaviourScript::kComponent, this);
 
     // Lifecycle dispatch -- mirrors Unity's ordering. Both methods are
     // optional on the JS side (InvokeInstanceMethod no-ops if the property

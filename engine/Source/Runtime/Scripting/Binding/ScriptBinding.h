@@ -40,6 +40,9 @@ struct ZScriptMethodEntry
     pesapi_callback callback = nullptr;
 };
 
+// Forward-declared: ScriptBindingRegistry (below) hands out pointers to it.
+struct ZSyntheticScriptClass;
+
 struct ZClassScriptBinding
 {
     const void* typeId = nullptr;
@@ -57,8 +60,15 @@ namespace ScriptBindingRegistry
     /// that point, which is all the key needs.
     void Register(ZClassScriptBinding& binding);
 
+    /// Register a script-side class that has no C++ binding table (Behaviour).
+    /// It only contributes a `declare class` block to the .d.ts.
+    void RegisterSynthetic(ZSyntheticScriptClass& cls);
+
     /// Head of the intrusive list, for InstallAll / d.ts generation.
     const ZClassScriptBinding* Classes();
+
+    /// Head of the synthetic list, for d.ts generation and gates.
+    const ZSyntheticScriptClass* SyntheticClasses();
 
     /// Define every registered class (and its methods) on `registry`. Safe to
     /// call more than once; the second call is a no-op.
@@ -84,6 +94,60 @@ struct ZClassScriptBindingRegistrar
         ScriptBindingRegistry::Register(binding);
     }
 };
+
+// --- synthetic (script-side) classes --------------------------------------
+//
+// `Behaviour` is the odd one out: it has no C++ ZFUNCTION table behind it,
+// because the JS `class Foo extends Behaviour` instance is a plain JS object
+// created by `__zNewInstance` -- the engine cannot make it a pesapi native
+// object without taking over `super()` in every user class. It is instead a
+// JS class installed by ScriptEnv's console shim, and the engine injects the
+// host GameObject / Transform / Component onto each instance right after
+// construction.
+//
+// That still has to show up in zengine.d.ts, and the names the C++ side
+// injects must be the names TypeScript sees. Declaring it here (rather than
+// hand-writing the block in ProjectInfo's template) makes both come from the
+// same ZSyntheticProperty table; `--check-behaviour-binding` fails the build
+// if they ever drift apart.
+
+/// One engine-injected property of a synthetic class.
+struct ZSyntheticProperty
+{
+    const char* name = nullptr;      // JS property name (injected verbatim)
+    const char* typeName = nullptr;  // declared class name in the .d.ts
+    bool readonly = true;
+};
+
+struct ZSyntheticScriptClass
+{
+    const char* scriptName = nullptr;
+    const char* superName = nullptr;  // optional
+    const ZSyntheticProperty* properties = nullptr;
+    std::size_t propertyCount = 0;
+    // Plain .d.ts body lines for members that live on the JS side (the
+    // Unity-style lifecycle hooks). Not checked against C++.
+    const char* const* methodLines = nullptr;
+    std::size_t methodCount = 0;
+    ZSyntheticScriptClass* next = nullptr;
+};
+
+struct ZSyntheticScriptClassRegistrar
+{
+    explicit ZSyntheticScriptClassRegistrar(ZSyntheticScriptClass& cls)
+    {
+        ScriptBindingRegistry::RegisterSynthetic(cls);
+    }
+};
+
+/// Property names TypeScriptComponent injects onto every Behaviour instance.
+/// Keep in lock-step with ZSyntheticProperty above -- the gate enforces it.
+namespace ZBehaviourScript
+{
+    inline constexpr const char* kGameObject = "gameObject";
+    inline constexpr const char* kTransform = "transform";
+    inline constexpr const char* kComponent = "component";
+}  // namespace ZBehaviourScript
 
 // Stable per-type id. Mirrors puerts' own StaticTypeId<T>::get(): the address
 // of a function-local static pointer is unique per T and identical across

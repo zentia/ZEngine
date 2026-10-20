@@ -348,6 +348,44 @@ class CodegenTests(unittest.TestCase):
     def test_struct_restores_public(self):
         self.assertTrue(generate_header(parse(wrap("", key="struct"))).rstrip().endswith("public:"))
 
+    def test_bound_signature_pulls_in_the_types_header(self):
+        # ZScript::Converter<T*> static_asserts on std::is_base_of<Object, T>,
+        # which is a hard error on an incomplete type. A reflected header that
+        # only forward-declares the return type (Component.h / GameObject.h /
+        # Transform.h form such a cycle) must still compile.
+        info = parse(wrap("    ZFUNCTION()\n    Bar* GetBar() const;\n"
+                          "    ZFUNCTION()\n    void Take(Bar* bar, const Baz& baz);\n"))
+        source = generate_source(info, {"Bar": "Runtime/Bar.h", "Baz": "Runtime/Baz.h"}, set(), {})
+        self.assertIn('#include "Runtime/Bar.h"', source)
+        self.assertIn('#include "Runtime/Baz.h"', source)
+        # The class's own header is already included at the top and must not be
+        # emitted again; unknown names are left alone (std:: / eastl:: types
+        # ship their own includes through ScriptBinding.h).
+        self.assertEqual(source.count('#include "Runtime/Foo.h"'), 1)
+        self.assertNotIn('#include "Runtime/std::string.h"', source)
+
+        plain = generate_source(info)
+        self.assertNotIn("Runtime/Bar.h", plain)
+
+    def test_super_skips_methodless_bases(self):
+        # Foo -> Middle -> Base, where only Base and Foo own ZFUNCTIONs.
+        # Emitting "extends Middle" would make pesapi declare Middle as a root
+        # placeholder and drop every Base method from the prototype chain.
+        info = parse(wrap("    ZFUNCTION()\n    float GetV() const;\n", base=" : public Middle"))
+        source = generate_source(info, {}, {"Base": "Object", "Foo": "Middle"},
+                                 {"Middle": "Base", "Base": "Object", "Foo": "Middle"})
+        self.assertIn('ZScriptTypeId<Base>::Get(), "Foo", "Base"', source)
+
+        # An ancestor this module knows nothing about is kept as-is, so
+        # InstallAll still declares the placeholder.
+        source = generate_source(info, {}, {"Foo": "Middle"}, {"Middle": "Base", "Foo": "Middle"})
+        self.assertIn('ZScriptTypeId<Base>::Get(), "Foo", "Base"', source)
+
+        # A methodless root (Object) is likewise kept.
+        info2 = parse(wrap("    ZFUNCTION()\n    float GetV() const;\n", base=" : public Object"))
+        source = generate_source(info2, {}, {"Foo": "Object"}, {"Foo": "Object"})
+        self.assertIn('ZScriptTypeId<Object>::Get(), "Foo", "Object"', source)
+
 
 class CliTests(unittest.TestCase):
     def setUp(self):

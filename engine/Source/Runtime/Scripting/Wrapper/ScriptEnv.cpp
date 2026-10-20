@@ -342,10 +342,14 @@ void ScriptEnv::InstallConsoleAndDebugGlobals()
         "    }"
         "    return parts.join('\\u0002');"
         "  };"
-        // Minimal Unity-MonoBehaviour-compatible Behaviour base. Real
-        // gameObject / transform plumbing comes later (P5 binding generator);
-        // this just lets `class Foo extends Behaviour` parse and instantiate
-        // without referencing an external module.
+        // Minimal Unity-MonoBehaviour-compatible Behaviour base. It is a plain
+        // JS class on purpose: the instance is produced by __zNewInstance, so
+        // the engine cannot own `this` -- TypeScriptComponent instead publishes
+        // `gameObject` / `transform` / `component` onto every instance right
+        // after construction (see ZBehaviourScript in ScriptBinding.h, which is
+        // also where zengine.d.ts gets the matching declaration). The lifecycle
+        // hooks below are the no-op defaults, so a script may implement any
+        // subset -- exactly like Unity's MonoBehaviour.
         "  g.Behaviour = function() {};"
         "  g.Behaviour.prototype.OnAwake = function() {};"
         "  g.Behaviour.prototype.OnStart = function() {};"
@@ -785,6 +789,55 @@ bool ScriptEnv::ApplyInstanceField(pesapi_value_ref instance,
                         key,
                         value_str);
         }
+    } while (false);
+
+    pesapi_close_scope(m_Papis, scope);
+    return ok;
+}
+
+bool ScriptEnv::SetInstanceNativeObject(pesapi_value_ref instance,
+                                        const char* name,
+                                        const void* type_id,
+                                        void* object)
+{
+    if (instance == nullptr || name == nullptr || name[0] == '\0')
+        return false;
+
+    auto scope = pesapi_open_scope(m_Papis, m_EnvRef);
+    auto env = pesapi_get_env_from_ref(m_Papis, m_EnvRef);
+
+    bool ok = false;
+    do
+    {
+        pesapi_value this_val = pesapi_get_value_from_ref(m_Papis, env, instance);
+        if (this_val == nullptr)
+            break;
+
+        pesapi_value wrapped;
+        if (object == nullptr || type_id == nullptr)
+        {
+            wrapped = pesapi_create_null(m_Papis, env);
+        }
+        else
+        {
+            // call_finalize = 0: JS never owns an engine object. The pointer
+            // belongs to the scene / ObjectManager, so a JS-side GC finalizer
+            // deleting it would be a use-after-free.
+            wrapped = pesapi_native_object_to_value(m_Papis, env, type_id, object, 0);
+            if (wrapped == nullptr)
+            {
+                LOG_ERROR(ZScripting,
+                          "SetInstanceNativeObject('{}'): pesapi could not wrap the native "
+                          "object -- is its type id registered (does the class own a "
+                          "ZFUNCTION)?. Publishing null instead.",
+                          name);
+                wrapped = pesapi_create_null(m_Papis, env);
+            }
+        }
+
+        ok = pesapi_set_property(m_Papis, env, this_val, name, wrapped) != 0;
+        if (!ok)
+            LOG_ERROR(ZScripting, "SetInstanceNativeObject('{}'): set_property failed", name);
     } while (false);
 
     pesapi_close_scope(m_Papis, scope);

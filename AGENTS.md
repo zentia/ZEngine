@@ -2726,6 +2726,36 @@ need nothing extra). Do not re-litigate Python vs C++.
   validates every table (null callbacks/names, self-inheritance, duplicate
   script names, empty or brace-unbalanced .d.ts); `--dump-script-dts` prints
   the generated block on its own. Both are wired into CTest via `TEST_ARGS`.
+- **Generator v5 invariants** (both are easy to break silently):
+  * A `.gen.cpp` `#include`s the header of every named type a ZFUNCTION
+    signature mentions. `ZScript::Converter<T*>` static_asserts on
+    `std::is_base_of<Object, T>`, which is a **hard error on an incomplete
+    type** -- and the reflected headers forward-declare each other in a cycle
+    (Component.h / GameObject.h / Transform.h). Binding a method that returns
+    a forward-declared type fails to compile without this.
+  * A binding's `super` is the nearest ancestor that owns ZFUNCTIONs, not
+    necessarily the immediate C++ base. `TypeScriptComponent -> Behaviour ->
+    Component` would otherwise declare `Behaviour` as a root placeholder and
+    silently drop every Component method from the pesapi prototype chain; the
+    chain is flattened to `TypeScriptComponent -> Component`, and the .d.ts
+    agrees.
+- **`Behaviour` is synthetic** (script-side, no C++ binding table): the JS
+  `class Foo extends Behaviour` instance is a plain object created by
+  `__zNewInstance`, so the engine cannot own `this`. `TypeScriptComponent::
+  BindAndAwake` instead publishes `gameObject` / `transform` / `component`
+  onto every instance right after construction and *before* OnAwake, via
+  `ScriptingManager::SetInstanceObject<T>(instance, name, ptr)` ->
+  `ScriptEnv::SetInstanceNativeObject` (`pesapi_native_object_to_value` with
+  `call_finalize=0`: JS never owns an engine object). The property names are
+  `ZBehaviourScript::k{GameObject,Transform,Component}` and the matching
+  `declare class Behaviour` in the .d.ts is generated from the same
+  `ZSyntheticProperty` table (ScriptBinding.cpp), so the two cannot drift.
+  `SetInstanceObject<T>` requires `T` to own at least one ZFUNCTION -- pesapi
+  can only wrap a type id that `define_class` has seen, otherwise the property
+  is published as null and an error is logged.
+  * Gate `--check-behaviour-binding`: the three injected names must be
+    declared, their declared type must match what C++ publishes, must be a
+    registered C++ type, and must appear in the emitted .d.ts.
 - `Cast<T>(p)` (phase 4, 2026-10-20) replaces `dynamic_cast` **inside the
   Object hierarchy**. `Runtime/BaseClasses/Cast.h`, global namespace, two
   overloads (`U*` and `const U*`, the latter returning `const T*`). It is an

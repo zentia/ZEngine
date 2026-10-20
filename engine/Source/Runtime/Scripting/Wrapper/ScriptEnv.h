@@ -157,6 +157,21 @@ public:
     std::vector<std::tuple<std::string, std::string, std::string>>
     EnumerateInstanceFields(pesapi_value_ref instance);
 
+    // -----------------------------------------------------------------------
+    // Engine-context injection (Behaviour binding).
+    //
+    // `class Foo extends Behaviour` produces a plain JS object, so the only
+    // way to give the script `this.gameObject` / `this.transform` is to set
+    // those properties on the instance after construction. SetInstanceNative
+    // Object does exactly that: it wraps an already-existing C++ pointer into
+    // a pesapi object and assigns it to `instance[name]`.
+    //
+    // `type_id` is the STATIC type to publish (ZScriptTypeId<T>::Get()) -- it
+    // must have been define_class'd, otherwise pesapi cannot resolve it. Pass
+    // nullptr for `object` to publish null.
+    // -----------------------------------------------------------------------
+    bool SetInstanceNativeObject(pesapi_value_ref instance, const char* name, const void* type_id, void* object);
+
 protected:
     int32_t m_DebugPort;
 
