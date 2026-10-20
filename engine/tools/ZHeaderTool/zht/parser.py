@@ -27,8 +27,8 @@ import re
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .lexer import CHAR, IDENT, NUMBER, PUNCT, STRING, LexError, Token, tokenize
-from .model import (ClassInfo, HeaderInfo, MethodInfo, ParamInfo, PropertyInfo,
-                    ScriptPropertyInfo, SpecValue)
+from .model import (ClassInfo, EnumInfo, EnumValueInfo, HeaderInfo, MethodInfo,
+                    ParamInfo, PropertyInfo, ScriptPropertyInfo, SpecValue)
 
 
 class ParseError(Exception):
@@ -420,9 +420,9 @@ def _unknown(key: str, line: int, what: str, known: Sequence[str]) -> ParseError
 
 
 def has_annotations(text: str) -> bool:
-    """Cheap-but-correct detection used by `list`: a real ZCLASS( token outside
-    comments / strings / preprocessor lines."""
-    if "ZCLASS" not in text:
+    """Cheap-but-correct detection used by `list`: a real ZCLASS( or ZENUM(
+    token outside comments / strings / preprocessor lines."""
+    if "ZCLASS" not in text and "ZENUM" not in text:
         return False
     try:
         tokens = tokenize(text).tokens
@@ -430,7 +430,7 @@ def has_annotations(text: str) -> bool:
         # Let `generate` report the lexing problem with a proper location.
         return True
     for idx, tok in enumerate(tokens):
-        if tok.is_ident("ZCLASS") and idx + 1 < len(tokens) and tokens[idx + 1].is_punct("("):
+        if (tok.is_ident("ZCLASS") or tok.is_ident("ZENUM")) and idx + 1 < len(tokens) and tokens[idx + 1].is_punct("("):
             return True
     return False
 
@@ -459,6 +459,16 @@ def parse_header(path: str, include_path: str, text: str) -> HeaderInfo:
             info = _parse_class(cur, tok)
             info.namespace = namespace
             header.classes.append(info)
+            continue
+        if tok.is_ident("ZENUM"):
+            namespace = ""
+            if scope:
+                if any(kind != "namespace" for kind, _ in scope):
+                    raise ParseError(tok.line, "ZENUM is not supported on nested or local enums")
+                if len(scope) > 1 or not scope[0][1] or "::" in scope[0][1]:
+                    raise ParseError(tok.line, "ZENUM supports global scope or exactly one named namespace")
+                namespace = scope[0][1]
+            header.enums.append(_parse_enum(cur, tok, namespace))
             continue
         if tok.is_ident("ZPROPERTY") or tok.is_ident("ZGENERATED_BODY") or tok.is_ident("ZFUNCTION"):
             raise ParseError(tok.line, "%s used outside of a ZCLASS-annotated class" % tok.text)
@@ -555,6 +565,117 @@ def _validate_script_properties(info: ClassInfo) -> None:
         if other is not None:
             raise ParseError(prop.line, "duplicate ZSCRIPTPROPERTY name '%s' (first declared at line %d)" % (prop.name, other))
         taken[prop.name] = prop.line
+
+
+def _enum_value_literal(tokens: List[Token], name: str) -> int:
+    """Value of an explicit enumerator initializer, or None-safe raise.
+
+    Only a plain integer literal is accepted. Anything computed (`1u << 0`,
+    `kOther * 2`, `sizeof(int)`) is a generate-time error on purpose: the .d.ts
+    has to print a concrete number and the runtime object needs a concrete
+    value, and silently guessing one would desync the two.
+    """
+    if not tokens:
+        raise ParseError(0, "empty initializer")
+    line = tokens[0].line
+    text = "".join(t.text for t in tokens)
+    if len(tokens) == 1 and tokens[0].kind == NUMBER:
+        # Strip a C++ integer suffix (1u, 0xFFL, 1'000ull ...).
+        body = re.sub(r"[A-Za-z_]+$", "", text).replace("'", "")
+        try:
+            return int(body, 0)
+        except ValueError:
+            raise ParseError(line, "ZENUM enumerator '%s' has a non-integer value '%s'" % (name, text))
+    raise ParseError(line, "ZENUM enumerator '%s' must be a literal integer or have no initializer at all, "
+                           "got '%s'" % (name, text))
+
+
+def _parse_enum(cur: _Cursor, zenum_tok: Token, namespace: str) -> EnumInfo:
+    open_paren = cur.expect_punct("(", "after ZENUM")
+    specs, meta = parse_specifiers(_collect_balanced(cur, open_paren), zenum_tok.line)
+    if specs or meta:
+        raise ParseError(zenum_tok.line, "ZENUM takes no specifiers yet")
+
+    key = cur.next()
+    if not key.is_ident("enum"):
+        raise ParseError(key.line, "ZENUM must be followed by an enum definition, got '%s'" % key.text)
+    is_scoped = False
+    nxt = cur.peek()
+    if nxt is not None and (nxt.is_ident("class") or nxt.is_ident("struct")):
+        cur.next()
+        is_scoped = True
+    name_tok = cur.next()
+    if name_tok.kind != IDENT:
+        raise ParseError(name_tok.line, "ZENUM requires a named enum (anonymous enums cannot be referenced "
+                                        "from a ZFUNCTION signature)")
+
+    # Optional ": <underlying type>" -- recorded nowhere, just skipped.
+    if cur.peek() is not None and cur.peek().is_punct(":"):
+        cur.next()
+        while cur.peek() is not None and not cur.peek().is_punct("{") and not cur.peek().is_punct(";"):
+            cur.next()
+
+    open_brace = cur.next()
+    if not open_brace.is_punct("{"):
+        raise ParseError(open_brace.line, "ZENUM expects an enum body '{ ... }'")
+
+    body: List[Token] = []
+    depth = 1
+    while True:
+        if cur.at_end():
+            raise ParseError(open_brace.line, "unterminated enum '%s'" % name_tok.text)
+        tok = cur.next()
+        if tok.is_punct("{"):
+            depth += 1
+        elif tok.is_punct("}"):
+            depth -= 1
+            if depth == 0:
+                break
+        body.append(tok)
+
+    info = EnumInfo(name=name_tok.text, namespace=namespace, line=zenum_tok.line, is_scoped=is_scoped)
+    next_value = 0
+    seen: Dict[str, int] = {}
+    for part in _split_top_level(body, ","):
+        if not part:
+            continue
+        value_tok = part[0]
+        if value_tok.kind != IDENT:
+            raise ParseError(value_tok.line, "could not parse the enumerator '%s' of enum '%s'"
+                             % (value_tok.text, name_tok.text))
+        name = value_tok.text
+        if name in seen:
+            raise ParseError(value_tok.line, "enum '%s' declares '%s' twice" % (name_tok.text, name))
+        seen[name] = value_tok.line
+        if len(part) > 1:
+            if not part[1].is_punct("="):
+                raise ParseError(part[1].line, "expected '=' after enumerator '%s'" % name)
+            next_value = _enum_value_literal(part[2:], name)
+        info.values.append(EnumValueInfo(name=name, value=next_value, line=value_tok.line,
+                                         ts_name=_pascal_case(name)))
+        next_value += 1
+
+    if not info.values:
+        raise ParseError(open_brace.line, "ZENUM enum '%s' has no enumerators" % name_tok.text)
+
+    end_tok = cur.peek()
+    if end_tok is None or not end_tok.is_punct(";"):
+        raise ParseError(end_tok.line if end_tok else open_brace.line, "expected ';' after enum '%s'" % name_tok.text)
+    cur.next()
+    return info
+
+
+def _pascal_case(name: str) -> str:
+    """C++ enumerator spelling -> TypeScript enum member spelling.
+
+    Mirrors script_property_name's camel-casing (script-facing names follow TS
+    convention, while the C++ / serialized spelling stays as authored), so
+    `third_person` becomes `CameraMode.ThirdPerson`.
+    """
+    parts = [p for p in name.split("_") if p]
+    if not parts:
+        return name
+    return "".join(p[:1].upper() + p[1:] for p in parts)
 
 
 def _parse_class(cur: _Cursor, zclass_tok: Token) -> ClassInfo:
@@ -704,6 +825,11 @@ def _parse_class_body(cur: _Cursor, open_brace: Token, info: ClassInfo) -> None:
 
         if tok.text in ("ZPROPERTY", "ZGENERATED_BODY", "ZFUNCTION", "ZSCRIPTPROPERTY", "ZCLASS") and depth != 1:
             raise ParseError(tok.line, "%s is only allowed directly inside a ZCLASS body" % tok.text)
+        if tok.text == "ZENUM":
+            # A nested enum (Transform::SetParentOptions) cannot be a ZENUM: the
+            # runtime publishes these as globals of their bare name, so a member
+            # enum would have no unambiguous script name.
+            raise ParseError(tok.line, "ZENUM is not supported inside a class; declare the enum at file scope")
 
         if depth == 1 and tok.text in ("public", "protected", "private"):
             nxt = cur.peek()

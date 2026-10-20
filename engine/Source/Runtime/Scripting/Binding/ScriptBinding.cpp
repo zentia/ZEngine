@@ -9,6 +9,7 @@ namespace
     // Constant-initialized, so it is valid before any dynamic static init
     // (generated registrars run during dynamic init, in unspecified order).
     ZClassScriptBinding* g_Head = nullptr;
+    ZScriptEnum* g_EnumHead = nullptr;
     ZSyntheticScriptClass* g_SyntheticHead = nullptr;
     bool g_Installed = false;
 
@@ -117,6 +118,14 @@ namespace ScriptBindingRegistry
 
     const ZClassScriptBinding* Classes() { return g_Head; }
 
+    void RegisterEnum(ZScriptEnum& script_enum)
+    {
+        script_enum.next = g_EnumHead;
+        g_EnumHead = &script_enum;
+    }
+
+    const ZScriptEnum* Enums() { return g_EnumHead; }
+
     void RegisterSynthetic(ZSyntheticScriptClass& cls)
     {
         cls.next = g_SyntheticHead;
@@ -207,6 +216,28 @@ namespace ScriptBindingRegistry
                 continue;
             apis->set_property(env, global, cls->scriptName, ctor);
         }
+
+        // ZENUM: a plain object of `{ Name: value }` pairs, matching the
+        // `declare enum` the .d.ts emits from the same table. Without it the
+        // ambient declaration would type-check and then evaluate to undefined.
+        for (const ZScriptEnum* script_enum = g_EnumHead; script_enum != nullptr; script_enum = script_enum->next)
+        {
+            if (script_enum->scriptName == nullptr || script_enum->scriptName[0] == '\0')
+                continue;
+            if (IsReservedScriptName(script_enum->scriptName))
+                continue;
+            pesapi_value object = apis->create_object(env);
+            if (object == nullptr)
+                continue;
+            for (std::size_t i = 0; i < script_enum->valueCount; ++i)
+            {
+                const ZScriptEnumEntry& entry = script_enum->values[i];
+                if (entry.name == nullptr || entry.name[0] == '\0')
+                    continue;
+                apis->set_property(env, object, entry.name, apis->create_int32(env, entry.value));
+            }
+            apis->set_property(env, global, script_enum->scriptName, object);
+        }
     }
 
     void AppendTypeScriptDeclarations(std::string& out)
@@ -214,6 +245,35 @@ namespace ScriptBindingRegistry
         std::vector<const ZClassScriptBinding*> classes;
         for (const ZClassScriptBinding* cls = g_Head; cls != nullptr; cls = cls->next)
             classes.push_back(cls);
+
+        // ZENUM first: class members declare their types with these names, and
+        // a reader meeting `mode: CameraMode` before seeing what CameraMode is
+        // has to scroll up. The values are printed as literal numbers so the
+        // ambient enum and the runtime object cannot drift -- both are fed
+        // from the same ZScriptEnumEntry table.
+        for (const ZScriptEnum* script_enum = g_EnumHead; script_enum != nullptr; script_enum = script_enum->next)
+        {
+            if (script_enum->scriptName == nullptr || script_enum->scriptName[0] == '\0')
+                continue;
+            if (IsReservedScriptName(script_enum->scriptName))
+                continue;
+            out += "declare enum ";
+            out += script_enum->scriptName;
+            out += " {\n";
+            for (std::size_t i = 0; i < script_enum->valueCount; ++i)
+            {
+                const ZScriptEnumEntry& entry = script_enum->values[i];
+                if (entry.name == nullptr || entry.name[0] == '\0')
+                    continue;
+                out += "    ";
+                out += entry.name;
+                out += " = ";
+                out += std::to_string(entry.value);
+                out += ",\n";
+            }
+            out += "}\n\n";
+        }
+
         if (classes.empty())
             return;
 

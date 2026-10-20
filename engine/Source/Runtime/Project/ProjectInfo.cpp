@@ -638,12 +638,13 @@ bool ProjectInfo::EnsureScriptsScaffold()
             }
             else
             {
-                // Hand-written preamble + the ZFUNCTION-generated declarations.
+                // Hand-written preamble + the generated declarations.
                 // AppendTypeScriptDeclarations walks every registered
-                // ZClassScriptBinding, so a new ZFUNCTION shows up in the .d.ts
-                // with no change to this file.
+                // ZClassScriptBinding and ZScriptEnum, so a new ZFUNCTION, a
+                // newly marshallable ZPROPERTY field or a new ZENUM shows up in
+                // the .d.ts with no change to this file.
                 std::string dts = kZEngineDtsTemplate;
-                dts += "\n// ---- engine class bindings (generated from ZFUNCTION) ----\n\n";
+                dts += "\n// ---- engine bindings (generated from ZFUNCTION / ZPROPERTY / ZENUM) ----\n\n";
                 ScriptBindingRegistry::AppendTypeScriptDeclarations(dts);
                 if (fwrite(dts.data(), 1, dts.size(), f) != dts.size())
                 {

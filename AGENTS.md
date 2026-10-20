@@ -2752,8 +2752,9 @@ need nothing extra). Do not re-litigate Python vs C++.
   * The whitelist is `parser._SCRIPT_PROPERTY_TYPES` (bool / integers /
     floats / std::string / eastl::string / Vector3 / Quaternion). It is
     deliberately narrower than `_TS_TYPES` and fails **silently**: ZPROPERTY
-    marks a field *serialized*, not script-facing, so an `enum class`, a
-    `PPtr`, a `Res` struct or a `std::vector` field must not be an error.
+    marks a field *serialized*, not script-facing, so an unannotated
+    `enum class`, a `PPtr`, a `Res` struct or a `std::vector` field must not be
+    an error. (A **ZENUM**-annotated enum does qualify -- see below.)
     `T*` is absent on purpose (needs the pointee complete + an Object check
     the parser cannot make).
   * Script names are `script_property_name(serialized_name)`: leading `m_`
@@ -2790,6 +2791,38 @@ need nothing extra). Do not re-litigate Python vs C++.
   must agree with the setter, no collision with a bound method of the same
   class, and the property line must actually appear in the generated .d.ts.
   Wired into CTest via `TEST_ARGS`.
+- **`ZENUM` -> script enums** (phase 8, 2026-10-20). A file-scope enum (or one
+  in exactly one named namespace) may be annotated:
+  `ZENUM() enum class CameraMode : unsigned char { third_person, ... };`
+  * It crosses the boundary as `int32` through a generic
+    `ZScript::Converter<T, enable_if<is_enum<T>>>`. That specialisation must
+    stay **disjoint** from the `std::is_integral` one -- both live in the same
+    `enable_if` slot, so an overlap is an ambiguous partial specialisation.
+  * A number alone is not an API, so ZHeaderTool also emits a
+    `ZScriptEnumEntry[]` (`.name`, `.value`) + `ZScriptEnum` + registrar.
+    `InstallGlobals` publishes it as a **global object** and
+    `AppendTypeScriptDeclarations` emits `declare enum CameraMode {
+    ThirdPerson = 0, ... }` from the *same* table, so `camera.mode =
+    CameraMode.Free` both type-checks and evaluates. A `declare enum` with no
+    runtime object would compile and then be `undefined`.
+  * Enumerator names are PascalCased for scripts (`third_person` ->
+    `ThirdPerson`); the C++ / serialized spelling is untouched. An initializer
+    must be a **literal integer** -- `1u << 0` is a generate-time error,
+    because the .d.ts has to print a concrete number and the runtime object
+    needs a concrete value; guessing one would desync the two.
+  * A ZENUM-annotated enum is also a valid *field* type: `ZPROPERTY(Name=
+    "mode") CameraMode m_Mode;` becomes `mode: CameraMode`, not `mode: number`,
+    so `mode = 7` is a type error while `mode = CameraMode.Free` compiles. The
+    module-wide enum table is threaded into codegen as `script_enums`
+    (C++ spelling -> script name) from `cli.py`.
+  * **Not** supported: enums nested in a class (`Transform::SetParentOptions`
+    -- they are published as globals of their bare name, so a member enum has
+    no unambiguous script name) and a ZENUM name that collides with a class
+    (both become globals of the same name). Both are generate-time errors.
+- Gate `--check-script-enums`: every table has a name and at least one
+  enumerator, every member is a valid TypeScript identifier and appears in the
+  generated .d.ts as `    <Name> = <value>,`, no duplicate members. Wired into
+  CTest via `TEST_ARGS`.
 - **Scalar typedefs must be listed in `_TS_TYPES`** (`zht/parser.py`). An
   unmapped bare identifier is emitted into the .d.ts **verbatim**, which is the
   right behaviour for class and struct names (`Vector3`, `Transform`) but leaks
@@ -2798,24 +2831,29 @@ need nothing extra). Do not re-litigate Python vs C++.
   the map; add any new `using X = <integer>` there when it first crosses the
   boundary. Failure mode is silent (the .d.ts still generates), so this is not
   catchable by `--check-script-bindings`.
-- Bound surface (2026-10-20): 8 classes / 48 methods --
+- Bound surface (2026-10-20): 8 classes / 50 methods / 24 properties /
+  1 enum --
   `GameObject`, `Component`, `Transform`, `TypeScriptComponent`,
   `LightComponent`, `CameraComponent`, `AnimationComponent`,
-  `AudioSourceComponent`, plus the synthetic `Behaviour`. Deliberately unbound:
+  `AudioSourceComponent`, plus the synthetic `Behaviour` and the `CameraMode`
+  enum. Deliberately unbound:
   * `const char*` setters (a Converter would have to own a buffer that outlives
     the call; add an `eastl::string` overload instead).
-  * `enum class` parameters/returns (`CameraMode`, `SetParentOptions`) -- no
-    Converter; bind the `bool`/`int` overload where one exists.
+  * `Transform::SetParentOptions` -- a *nested* enum, which ZENUM rejects (no
+    unambiguous global name). Promote it to file scope if scripts need it.
   * `ParticleComponent` / `MeshRenderer` expose no public accessors, and
     `RigidBodyComponent` only has the diagnostic `HasPendingBody` /
     `FlushPendingBody`; none are worth a binding yet.
-- **Generator v5 invariants** (both are easy to break silently):
+- **Generator v7 invariants** (both are easy to break silently):
   * A `.gen.cpp` `#include`s the header of every named type a ZFUNCTION
-    signature mentions. `ZScript::Converter<T*>` static_asserts on
+    signature mentions -- classes *and* ZENUMs (`cli.py` feeds both into
+    `type_headers`). `ZScript::Converter<T*>` static_asserts on
     `std::is_base_of<Object, T>`, which is a **hard error on an incomplete
     type** -- and the reflected headers forward-declare each other in a cycle
     (Component.h / GameObject.h / Transform.h). Binding a method that returns
-    a forward-declared type fails to compile without this.
+    a forward-declared type fails to compile without this. A scoped enum can
+    likewise be forward-declared (`enum class X;`), and `std::is_enum<T>`
+    needs the real definition.
   * A binding's `super` is the nearest ancestor that owns ZFUNCTIONs, not
     necessarily the immediate C++ base. `TypeScriptComponent -> Behaviour ->
     Component` would otherwise declare `Behaviour` as a root placeholder and

@@ -87,8 +87,10 @@ def scan_annotated(headers: Sequence[str]) -> List[str]:
         except OSError:
             continue
         # Byte-level pre-filter: the vast majority of headers never mention
-        # ZCLASS, so skip decoding + tokenizing them entirely.
-        if b"ZCLASS" not in data:
+        # ZCLASS, so skip decoding + tokenizing them entirely. (A header whose
+        # only annotation is ZENUM is also worth scanning -- it produces a
+        # .gen.cpp with just the enum table.)
+        if b"ZCLASS" not in data and b"ZENUM" not in data:
             continue
         if has_annotations(_read_text(header)):
             annotated.append(header)
@@ -136,7 +138,8 @@ def cmd_generate(args) -> int:
     for info in parsed:
         other = by_base.get(info.base_name.lower())
         if other is not None:
-            errors.append(_diag(info.path, info.classes[0].line, "reflected header base name '%s' collides with %s" % (info.base_name, other.path)))
+            where = info.classes[0].line if info.classes else (info.enums[0].line if info.enums else 1)
+            errors.append(_diag(info.path, where, "reflected header base name '%s' collides with %s" % (info.base_name, other.path)))
         else:
             by_base[info.base_name.lower()] = info
 
@@ -148,6 +151,22 @@ def cmd_generate(args) -> int:
                 errors.append(_diag(info.path, cls.line, "reflected class '%s' is also declared in %s:%d" % (cls.name, prev[0].path, prev[1])))
             else:
                 seen_classes[cls.name] = (info, cls.line)
+
+    # ZENUMs become globals of their bare name, so two of them may not share
+    # one, and neither may shadow a class (both land in the same global scope).
+    seen_enums: Dict[str, Tuple[HeaderInfo, int]] = {}
+    for info in parsed:
+        for enum in info.enums:
+            prev = seen_enums.get(enum.name)
+            if prev is not None:
+                errors.append(_diag(info.path, enum.line, "reflected enum '%s' is also declared in %s:%d"
+                                    % (enum.name, prev[0].path, prev[1])))
+            elif enum.name in seen_classes:
+                prev_cls = seen_classes[enum.name]
+                errors.append(_diag(info.path, enum.line, "reflected enum '%s' collides with the class declared in %s:%d"
+                                    % (enum.name, prev_cls[0].path, prev_cls[1])))
+            else:
+                seen_enums[enum.name] = (info, enum.line)
 
     if errors:
         for e in errors:
@@ -190,6 +209,20 @@ def cmd_generate(args) -> int:
             if cls.name != cls.qualified_name and bare_name_counts.get(cls.name, 0) == 1:
                 type_headers[cls.name] = info.include_path
 
+    # ZENUM lookup: "CameraMode" / "ns::CameraMode" -> the name scripts see.
+    # Consumed twice -- a ZPROPERTY field of that type becomes a script
+    # property declared as `mode: CameraMode`, and a bound signature mentioning
+    # it pulls in the declaring header through type_headers (a scoped enum can
+    # be forward-declared, and `std::is_enum<T>` needs the real definition).
+    script_enums: Dict[str, str] = {}
+    for info in parsed:
+        for enum in info.enums:
+            script_enums[enum.qualified_name] = enum.name
+            script_enums[enum.name] = enum.name
+            type_headers[enum.qualified_name] = info.include_path
+            if enum.name != enum.qualified_name:
+                type_headers[enum.name] = info.include_path
+
     written = 0
     produced = set()
     for info in parsed:
@@ -197,8 +230,8 @@ def cmd_generate(args) -> int:
         s_path = os.path.join(args.out_src, info.generated_source_name)
         produced.add(_key(_norm(h_path)))
         produced.add(_key(_norm(s_path)))
-        written += write_if_changed(h_path, generate_header(info))
-        written += write_if_changed(s_path, generate_source(info, type_headers, bound_classes, base_of))
+        written += write_if_changed(h_path, generate_header(info, script_enums))
+        written += write_if_changed(s_path, generate_source(info, type_headers, bound_classes, base_of, script_enums))
 
     pruned = 0
     for out_dir in (args.out_inc, args.out_src):
@@ -229,7 +262,8 @@ def cmd_generate(args) -> int:
 
     os.makedirs(os.path.dirname(args.stamp) or ".", exist_ok=True)
     with open(args.stamp, "w", encoding="utf-8") as f:
-        f.write("%d headers, %d classes\n" % (len(parsed), sum(len(p.classes) for p in parsed)))
+        f.write("%d headers, %d classes, %d enums\n"
+                % (len(parsed), sum(len(p.classes) for p in parsed), sum(len(p.enums) for p in parsed)))
 
     if args.verbose:
         print("ZHeaderTool[%s]: %d reflected header(s), %d file(s) updated, %d stale file(s) removed" % (args.module, len(parsed), written, pruned))

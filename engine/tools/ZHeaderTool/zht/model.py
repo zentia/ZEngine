@@ -88,6 +88,49 @@ class MethodInfo:
 
 
 @dataclass
+class EnumValueInfo:
+    """One enumerator of a ZENUM-annotated enum."""
+    name: str
+    value: int
+    line: int
+    # Script-facing spelling (PascalCase, the TypeScript convention).
+    ts_name: str = ""
+
+    def to_dict(self) -> dict:
+        return {"name": self.name, "value": self.value, "line": self.line, "ts_name": self.ts_name}
+
+
+@dataclass
+class EnumInfo:
+    """A ZENUM-annotated enum (phase 8).
+
+    Enums cross the boundary as numbers -- that is what `std::is_enum` gives us
+    generically -- but scripts need the names, so the tool also emits a
+    (name, value) table. The runtime publishes it as a frozen global object and
+    the .d.ts declares a `declare enum`, which together make
+    `camera.mode = CameraMode.Free` type-check *and* run.
+    """
+    name: str
+    namespace: str
+    line: int
+    is_scoped: bool = False
+    values: List[EnumValueInfo] = field(default_factory=list)
+
+    @property
+    def qualified_name(self) -> str:
+        return self.namespace + "::" + self.name if self.namespace else self.name
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "namespace": self.namespace,
+            "line": self.line,
+            "is_scoped": self.is_scoped,
+            "values": [v.to_dict() for v in self.values],
+        }
+
+
+@dataclass
 class ScriptPropertyInfo:
     """A script-facing property backed by ZFUNCTION-annotated accessors
     (ZSCRIPTPROPERTY, phase 7).
@@ -154,6 +197,7 @@ class HeaderInfo:
     path: str  # absolute, as given on the command line
     include_path: str  # path relative to the include root, '/'-separated
     classes: List[ClassInfo] = field(default_factory=list)
+    enums: List[EnumInfo] = field(default_factory=list)
 
     @property
     def base_name(self) -> str:
@@ -173,4 +217,5 @@ class HeaderInfo:
             "path": self.path,
             "include_path": self.include_path,
             "classes": [c.to_dict() for c in self.classes],
+            "enums": [e.to_dict() for e in self.enums],
         }

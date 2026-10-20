@@ -186,6 +186,18 @@ class ParserTests(unittest.TestCase):
             ('#include "Foo.generated.h"\nZCLASS()\nclass Foo;\n', "forward declaration"),
             ('#include "Foo.generated.h"\nZCLASS()\nclass Foo : public Component { ZGENERATED_BODY(Foo) }\n', "expected ';'"),
             ('ZPROPERTY()\nint g;\n', "outside of a ZCLASS"),
+            # --- ZENUM ---
+            (wrap("    ZENUM()\n    enum class M { a };\n"), "not supported inside a class"),
+            ("ZENUM()\nenum class M { a = 1u << 0 };\n", "must be a literal integer"),
+            ("ZENUM()\nenum class M { a = kOther };\n", "must be a literal integer"),
+            ("ZENUM()\nenum class M { a, a };\n", "declares 'a' twice"),
+            ("ZENUM()\nenum class M { };\n", "has no enumerators"),
+            ("ZENUM()\nenum { a };\n", "named enum"),
+            ("ZENUM()\nenum class M { a }\n", "expected ';'"),
+            ("ZENUM(Bogus)\nenum class M { a };\n", "takes no specifiers"),
+            ("ZENUM()\nint x;\n", "must be followed by an enum"),
+            ("namespace A::B {\nZENUM()\nenum class M { a };\n}\n", "exactly one named namespace"),
+            ("struct Outer {\nZENUM()\nenum class M { a };\n};\n", "nested or local"),
         ]
         for text, fragment in cases:
             with self.subTest(fragment=fragment):
@@ -199,6 +211,35 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(has_annotations(LIGHT_H))
         self.assertFalse(has_annotations("// ZCLASS()\n#define ZCLASS(...)\nconst char* s = \"ZCLASS(\";\n"))
         self.assertFalse(has_annotations("class A {};\n"))
+        # A header whose only annotation is ZENUM still has to be scanned.
+        self.assertTrue(has_annotations("ZENUM()\nenum E { a };\n"))
+        self.assertFalse(has_annotations("enum E { a };\n"))
+
+    def test_zenum_numbering_pascal_case_and_underlying_type(self):
+        # Implicit values continue from the last explicit one, and `unsigned
+        # char` is skipped without being recorded (only the values matter).
+        info = parse("ZENUM()\nenum class CameraMode : unsigned char\n{\n"
+                     "    third_person,\n    first_person,\n    free = 5,\n    invalid\n};\n")
+        self.assertEqual(len(info.enums), 1)
+        enum = info.enums[0]
+        self.assertEqual(enum.name, "CameraMode")
+        self.assertTrue(enum.is_scoped)
+        self.assertEqual([(v.name, v.value, v.ts_name) for v in enum.values],
+                         [("third_person", 0, "ThirdPerson"),
+                          ("first_person", 1, "FirstPerson"),
+                          ("free", 5, "Free"),
+                          ("invalid", 6, "Invalid")])
+
+        # Unscoped enum, explicit underlying type, trailing comma.
+        plain = parse("ZENUM()\nenum Blend : int { alpha = 2, beta, };\n").enums[0]
+        self.assertFalse(plain.is_scoped)
+        self.assertEqual([(v.name, v.value) for v in plain.values], [("alpha", 2), ("beta", 3)])
+
+    def test_zenum_namespace(self):
+        info = parse("namespace gfx\n{\nZENUM()\nenum class Format { rgb, rgba };\n}\n")
+        enum = info.enums[0]
+        self.assertEqual(enum.namespace, "gfx")
+        self.assertEqual(enum.qualified_name, "gfx::Format")
 
 
 class CodegenTests(unittest.TestCase):
@@ -449,6 +490,48 @@ class CodegenTests(unittest.TestCase):
             "    ZSCRIPTPROPERTY(Name=\"p\", Getter=\"GetV\")\n"
             "public:\n    ZFUNCTION()\n    float GetV() const;\n"))
 
+    def test_zenum_emits_the_value_table_and_a_registrar(self):
+        info = parse("ZENUM()\nenum class CameraMode : unsigned char\n{\n"
+                     "    third_person,\n    first_person,\n    free,\n    invalid\n};\n")
+        source = generate_source(info)
+        # The table is what makes `CameraMode.Free` evaluate: the runtime
+        # publishes it as a global object and the .d.ts mirrors it 1:1.
+        self.assertIn("const ZScriptEnumEntry kZhtScriptEnumValues_CameraMode[] = {", source)
+        self.assertIn('{.name = "ThirdPerson", .value = 0},', source)
+        self.assertIn('{.name = "Free", .value = 2},', source)
+        self.assertIn('ZScriptEnum kZhtScriptEnum_CameraMode {"CameraMode", '
+                      'kZhtScriptEnumValues_CameraMode, 4};', source)
+        self.assertIn("const ZScriptEnumRegistrar kZhtScriptEnumRegistrar_CameraMode"
+                      "(kZhtScriptEnum_CameraMode);", source)
+        self.assertIn('#include "Runtime/Scripting/Binding/ScriptBinding.h"', source)
+        # A namespaced enum gets a flat identifier, not a qualified C++ name.
+        self.assertIn("kZhtScriptEnum_gfx_Format",
+                      generate_source(parse("namespace gfx\n{\nZENUM()\nenum class Format { rgb };\n}\n")))
+
+    def test_zenum_field_is_exposed_as_a_typed_property(self):
+        # Without the enum table the field is skipped (see
+        # test_field_property_generates_typed_accessors); with it, the script
+        # type is the enum name, not `number`, so the .d.ts typechecks
+        # `mode = CameraMode.Free` and rejects `mode = 7`.
+        head = ("ZENUM()\nenum class CameraMode : unsigned char { third_person, free };\n"
+                "#include \"Foo.generated.h\"\nZCLASS()\nclass Foo : public Component\n{\n"
+                "    ZGENERATED_BODY(Foo)\npublic:\n"
+                "    ZFUNCTION()\n    float GetV() const { return m_V; }\n"
+                "private:\n    ZPROPERTY(Name=\"mode\")\n    CameraMode m_Mode;\n"
+                "    ZPROPERTY()\n    float m_V {1.0f};\n};\n")
+        info = parse(head)
+        enums = {e.name: e.name for e in info.enums}
+        source = generate_source(info, script_enums=enums)
+        self.assertIn("CameraMode Foo::ZhtScriptGet_m_Mode() const { return m_Mode; }", source)
+        self.assertIn('{.name = "mode", .tsType = "CameraMode", .readonly = false,', source)
+        # Without ZENUM the field is still serialized (Transfer keeps it) but
+        # gets no accessor and no property: not marshallable, so skipped.
+        unannotated = parse(head.replace("ZENUM()\n", ""))
+        skipped = generate_source(unannotated)
+        self.assertIn('transfer.Transfer(m_Mode, "mode");', skipped)
+        self.assertNotIn("ZhtScriptGet_m_Mode", skipped)
+        self.assertNotIn('tsType = "CameraMode"', skipped)
+
     def test_no_meta_no_table(self):
         source = generate_source(parse(wrap("    ZPROPERTY()\n    float m_V;\n")))
         self.assertNotIn("PropertyMeta", source)
@@ -600,6 +683,37 @@ class CliTests(unittest.TestCase):
         rc, err = self.generate()
         self.assertEqual(rc, 1)
         self.assertIn("collides", err)
+
+    def test_zenum_only_header_is_scanned_and_generated(self):
+        # An enum header has no ZCLASS, so it produces no class tables -- but it
+        # is still an annotated header and must not be pruned as stale.
+        enum_h = os.path.join(self.src, "Runtime", "CameraMode.h")
+        with open(enum_h, "w") as f:
+            f.write("#pragma once\nZENUM()\nenum class CameraMode { third_person, free };\n")
+        with open(self.headers, "a") as f:
+            f.write(enum_h + "\n")
+        rc, err = self.run_cli("list", "--headers-file", self.headers, "--output", self.manifest)
+        self.assertEqual(rc, 0, err)
+        with open(self.manifest) as f:
+            self.assertIn("CameraMode.h", f.read())
+
+        rc, err = self.generate()
+        self.assertEqual(rc, 0, err)
+        with open(os.path.join(self.gen, "Src", "CameraMode.gen.cpp")) as f:
+            self.assertIn("kZhtScriptEnum_CameraMode", f.read())
+
+    def test_zenum_name_may_not_shadow_a_class(self):
+        # Both become globals of their bare name, so one silently replaces the
+        # other in every script that uses either.
+        enum_h = os.path.join(self.src, "Runtime", "CameraMode.h")
+        with open(enum_h, "w") as f:
+            f.write("#pragma once\nZENUM()\nenum class LightComponent { a };\n")
+        with open(self.headers, "a") as f:
+            f.write(enum_h + "\n")
+        self.run_cli("list", "--headers-file", self.headers, "--output", self.manifest)
+        rc, err = self.generate()
+        self.assertEqual(rc, 1)
+        self.assertIn("collides with the class", err)
 
 
 if __name__ == "__main__":

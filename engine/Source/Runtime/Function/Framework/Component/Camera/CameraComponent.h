@@ -11,6 +11,10 @@
 
 class RenderCamera;
 
+// Scripts see this as `declare enum CameraMode { ThirdPerson = 0, ... }`, and
+// the runtime publishes a global object of the same shape, so
+// `camera.mode = CameraMode.Free` both type-checks and evaluates.
+ZENUM()
 enum class CameraMode : unsigned char
 {
     third_person,
@@ -51,10 +55,11 @@ public:
 
     void Initialize(CameraMode mode, CameraParameter* parameter);
 
-    // getCameraMode / setCameraMode are deliberately NOT annotated: CameraMode
-    // is a scoped enum and has no ZScript::Converter, so binding it would be a
-    // compile error rather than a silent misbind. Add a converter first.
+    // CameraMode is a ZENUM, so it crosses as an int32 and the .d.ts declares
+    // it as `CameraMode` -- scripts write `setCameraMode(CameraMode.Free)`.
+    ZFUNCTION()
     CameraMode getCameraMode() const { return m_CameraMode; }
+    ZFUNCTION()
     void setCameraMode(CameraMode mode) { m_CameraMode = mode; }
 
     /// Mutable access for importers/migrators. The camera parameter is stored

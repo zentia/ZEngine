@@ -16,7 +16,7 @@ from typing import Dict, List, Optional, Tuple
 from .model import ClassInfo, HeaderInfo
 from .parser import script_property_name, script_property_ts_type
 
-TOOL_VERSION = 6
+TOOL_VERSION = 7
 
 _BANNER = (
     "// ==========================================================================\n"
@@ -39,14 +39,54 @@ def generated_body_macro_name(cls: ClassInfo) -> str:
     return "ZGEN_BODY_" + cls.name
 
 
-def _script_field_properties(cls: ClassInfo) -> List[Tuple[object, str]]:
+def _enum_block(header: HeaderInfo) -> List[str]:
+    """Runtime (name, value) table for every ZENUM in this header (phase 8).
+
+    The table is the single source for both halves of an enum: the d.ts
+    `declare enum` (generated from the same entries) and the JS object
+    `InstallGlobals` publishes so `CameraMode.Free` resolves at runtime. A
+    `declare enum` with no runtime object would type-check and then evaluate to
+    undefined.
+    """
+    if not header.enums:
+        return []
+    out: List[str] = []
+    for enum in header.enums:
+        ident = enum.qualified_name.replace("::", "_")
+        out.append("\nnamespace\n{\n")
+        out.append("    const ZScriptEnumEntry kZhtScriptEnumValues_%s[] = {\n" % ident)
+        out.extend('        {.name = "%s", .value = %d},\n' % (v.ts_name, v.value) for v in enum.values)
+        out.append("    };\n")
+        out.append('    ZScriptEnum kZhtScriptEnum_%s {"%s", kZhtScriptEnumValues_%s, %d};\n'
+                   % (ident, enum.name, ident, len(enum.values)))
+        out.append("    const ZScriptEnumRegistrar kZhtScriptEnumRegistrar_%s(kZhtScriptEnum_%s);\n" % (ident, ident))
+        out.append("}  // namespace\n")
+    return out
+
+
+def _field_ts_type(cpp_type: str, script_enums: Dict[str, str]) -> Optional[str]:
+    """TypeScript type of a ZPROPERTY field, or None when it is not marshallable.
+
+    `script_enums` maps the C++ spelling a field is written with (both the
+    qualified and, when unambiguous, the bare name) to the enum's script name,
+    so a ZENUM-annotated field is declared as `mode: CameraMode` and not as
+    `mode: number`.
+    """
+    text = " ".join(cpp_type.split())
+    known = script_property_ts_type(text)
+    if known is not None:
+        return known
+    return script_enums.get(text)
+
+
+def _script_field_properties(cls: ClassInfo, script_enums: Optional[Dict[str, str]] = None) -> List[Tuple[object, str]]:
     """(ZPROPERTY field, TypeScript type) pairs exposed as script properties.
 
     A field only qualifies when its type has a ZScript::Converter; see
-    parser._SCRIPT_PROPERTY_TYPES. Everything else (enum class, PPtr, a Res
-    struct, std::vector) is skipped silently -- ZPROPERTY marks a field as
-    *serialized*, not as script-facing, so an unmarshallable type must not turn
-    into a generate-time error.
+    parser._SCRIPT_PROPERTY_TYPES and the ZENUM table. Everything else (PPtr, a
+    Res struct, std::vector, a non-ZENUM enum) is skipped silently -- ZPROPERTY
+    marks a field as *serialized*, not as script-facing, so an unmarshallable
+    type must not turn into a generate-time error.
 
     Scope note: fields only contribute to a class that is already script-visible
     (it owns ZFUNCTIONs or a ZSCRIPTPROPERTY). Widening this to "any class with a
@@ -57,7 +97,7 @@ def _script_field_properties(cls: ClassInfo) -> List[Tuple[object, str]]:
         return []
     out: List[Tuple[object, str]] = []
     for prop in cls.properties:
-        ts_type = script_property_ts_type(prop.cpp_type)
+        ts_type = _field_ts_type(prop.cpp_type, script_enums or {})
         if ts_type is not None:
             out.append((prop, ts_type))
     return out
@@ -79,7 +119,7 @@ def script_accessor_setter_name(member_name: str) -> str:
     return "ZhtScriptSet_" + member_name
 
 
-def generate_header(header: HeaderInfo) -> str:
+def generate_header(header: HeaderInfo, script_enums: Optional[Dict[str, str]] = None) -> str:
     out = [_banner(header), "#pragma once\n", "\n", '#include "Runtime/BaseClasses/ObjectMacros.h"\n']
     for cls in header.classes:
         lines: List[str] = []
@@ -93,7 +133,7 @@ def generate_header(header: HeaderInfo) -> str:
         # Definitions are emitted next to Transfer(), whose member context is
         # what reaches the private field in the first place.
         accessors: List[str] = []
-        for prop, _ts in _script_field_properties(cls):
+        for prop, _ts in _script_field_properties(cls, script_enums):
             accessors.append("%s %s() const;" % (prop.cpp_type, script_accessor_getter_name(prop.member_name)))
             if not _is_readonly_field(prop):
                 accessors.append("void %s(const %s& value);" % (script_accessor_setter_name(prop.member_name), prop.cpp_type))
@@ -264,11 +304,11 @@ def _effective_super(cls: ClassInfo, bound: set, bases: Dict[str, Optional[str]]
     return base
 
 
-def _script_accessor_definitions(cls: ClassInfo, indent: str) -> List[str]:
+def _script_accessor_definitions(cls: ClassInfo, indent: str, script_enums: Optional[Dict[str, str]] = None) -> List[str]:
     """Definitions of the generated field accessors (member context, so they
     can touch private fields)."""
     out: List[str] = []
-    for prop, _ts in _script_field_properties(cls):
+    for prop, _ts in _script_field_properties(cls, script_enums):
         q = cls.qualified_name
         out.append("%s%s %s::%s() const { return %s; }\n"
                    % (indent, prop.cpp_type, q, script_accessor_getter_name(prop.member_name), prop.member_name))
@@ -278,8 +318,8 @@ def _script_accessor_definitions(cls: ClassInfo, indent: str) -> List[str]:
     return out
 
 
-def _script_accessor_block(cls: ClassInfo) -> List[str]:
-    defs = _script_accessor_definitions(cls, "    " if cls.namespace else "")
+def _script_accessor_block(cls: ClassInfo, script_enums: Optional[Dict[str, str]] = None) -> List[str]:
+    defs = _script_accessor_definitions(cls, "    " if cls.namespace else "", script_enums)
     if not defs:
         return []
     out: List[str] = ["\n"]
@@ -292,7 +332,7 @@ def _script_accessor_block(cls: ClassInfo) -> List[str]:
     return out
 
 
-def _script_property_entries(cls: ClassInfo) -> List[str]:
+def _script_property_entries(cls: ClassInfo, script_enums: Optional[Dict[str, str]] = None) -> List[str]:
     """pesapi accessor property table: ZPROPERTY fields first, then the
     ZSCRIPTPROPERTY accessor pairs.
 
@@ -303,7 +343,7 @@ def _script_property_entries(cls: ClassInfo) -> List[str]:
     """
     out: List[str] = []
     q = cls.qualified_name
-    for prop, ts in _script_field_properties(cls):
+    for prop, ts in _script_field_properties(cls, script_enums):
         readonly = _is_readonly_field(prop)
         getter = ("&ZScript::MethodCallback<static_cast<%s (%s::*)() const>(&%s::%s)>::Invoke"
                   % (prop.cpp_type, q, q, script_accessor_getter_name(prop.member_name)))
@@ -328,9 +368,9 @@ def _script_property_entries(cls: ClassInfo) -> List[str]:
     return out
 
 
-def _script_block(cls: ClassInfo, super_name: Optional[str]) -> List[str]:
+def _script_block(cls: ClassInfo, super_name: Optional[str], script_enums: Optional[Dict[str, str]] = None) -> List[str]:
     """Static pesapi binding table for one class (methods + properties)."""
-    properties = _script_property_entries(cls)
+    properties = _script_property_entries(cls, script_enums)
     if not cls.methods and not properties:
         return []
     ident = cls.qualified_name.replace("::", "_")
@@ -355,30 +395,36 @@ def _script_block(cls: ClassInfo, super_name: Optional[str]) -> List[str]:
 
 
 def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] = None,
-                    bound_classes: Optional[set] = None, base_of: Optional[Dict[str, Optional[str]]] = None) -> str:
+                    bound_classes: Optional[set] = None, base_of: Optional[Dict[str, Optional[str]]] = None,
+                    script_enums: Optional[Dict[str, str]] = None) -> str:
+    enums = script_enums or {}
     out = [_banner(header), "\n", '#include "%s"\n' % header.include_path]
     needs_meta = any(p.meta and not p.transient for cls in header.classes for p in cls.properties)
     needs_script = any(cls.methods or cls.script_properties for cls in header.classes)
+    needs_enum = bool(header.enums)
     script_includes = _script_signature_includes(header, type_headers or {}) if needs_script else []
-    if any(not cls.custom_transfer for cls in header.classes) or needs_meta or needs_script:
+    if any(not cls.custom_transfer for cls in header.classes) or needs_meta or needs_script or needs_enum:
         out.append("\n")
         if needs_meta:
             out.append('#include "Runtime/BaseClasses/PropertyMeta.h"\n')
-        if needs_script:
+        if needs_script or needs_enum:
             out.append('#include "Runtime/Scripting/Binding/ScriptBinding.h"\n')
             out.extend('#include "%s"\n' % inc for inc in script_includes)
         if any(not cls.custom_transfer for cls in header.classes):
             out.extend('#include "%s"\n' % inc for inc in _TRANSFER_INCLUDES)
+    if needs_enum:
+        out.extend(_enum_block(header))
     for cls in header.classes:
         out.append("\n")
         out.append("// ---- %s ----\n" % cls.qualified_name)
         out.append(_register_line(cls))
+        super_name = _effective_super(cls, bound_classes or set(), base_of or {})
         if cls.custom_transfer:
             out.append("// ZCLASS(CustomTransfer): IMPLEMENT_OBJECT_SERIALIZE, Transfer() and\n")
             out.append("// INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED live in the hand-written .cpp.\n")
             out.extend(_meta_block(cls))
-            out.extend(_script_accessor_block(cls))
-            out.extend(_script_block(cls, _effective_super(cls, bound_classes or set(), base_of or {})))
+            out.extend(_script_accessor_block(cls, enums))
+            out.extend(_script_block(cls, super_name, enums))
             continue
         out.append("IMPLEMENT_OBJECT_SERIALIZE(%s)\n" % cls.qualified_name)
         out.append("\n")
@@ -389,6 +435,6 @@ def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] =
         else:
             out.extend(_transfer_definition(cls, ""))
         out.extend(_meta_block(cls))
-        out.extend(_script_accessor_block(cls))
-        out.extend(_script_block(cls, _effective_super(cls, bound_classes or set(), base_of or {})))
+        out.extend(_script_accessor_block(cls, enums))
+        out.extend(_script_block(cls, super_name, enums))
     return "".join(out)

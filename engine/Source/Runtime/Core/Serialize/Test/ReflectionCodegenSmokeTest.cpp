@@ -677,6 +677,103 @@ namespace
         return problems == 0;
     }
 
+    /// Cross-check the ZScriptEnum tables (phase 8).
+    ///
+    /// An enum exists in three places that must agree: the C++ enum, the
+    /// runtime object published as a global, and the `declare enum` in the .d.ts
+    /// -- and the first is the only one the compiler checks. A `declare enum`
+    /// that is missing from the .d.ts, or a member whose printed value drifts
+    /// from the C++ enumerator, is invisible until a script compares against a
+    /// literal. The d.ts membership check is the half that matters; it is what
+    /// ties `camera.mode = CameraMode.Free` to a number the engine understands.
+    bool CheckScriptEnums()
+    {
+        int problems = 0;
+        uint32_t enums = 0;
+        uint32_t values = 0;
+
+        std::string dts;
+        ScriptBindingRegistry::AppendTypeScriptDeclarations(dts);
+
+        for (const ZScriptEnum* script_enum = ScriptBindingRegistry::Enums(); script_enum != nullptr;
+             script_enum = script_enum->next)
+        {
+            ++enums;
+            const char* owner =
+                (script_enum->scriptName != nullptr && script_enum->scriptName[0] != '\0') ? script_enum->scriptName : "<unnamed>";
+            if (script_enum->scriptName == nullptr || script_enum->scriptName[0] == '\0')
+            {
+                std::fprintf(stderr, "SCRIPT_ENUM: an enum table has no script name\n");
+                ++problems;
+            }
+            if (script_enum->valueCount == 0 || script_enum->values == nullptr)
+            {
+                std::fprintf(stderr, "SCRIPT_ENUM: %s has no enumerators\n", owner);
+                ++problems;
+                continue;
+            }
+
+            for (size_t i = 0; i < script_enum->valueCount; ++i)
+            {
+                const ZScriptEnumEntry& entry = script_enum->values[i];
+                ++values;
+                if (entry.name == nullptr || entry.name[0] == '\0')
+                {
+                    std::fprintf(stderr, "SCRIPT_ENUM: %s enumerator %zu has no name\n", owner, i);
+                    ++problems;
+                    continue;
+                }
+                // TypeScript enum members are identifiers: a stray space or a
+                // leading digit would break the whole generated file.
+                for (const char* p = entry.name; *p != '\0'; ++p)
+                {
+                    if (!(std::isalnum(static_cast<unsigned char>(*p)) != 0 || *p == '_'))
+                    {
+                        std::fprintf(stderr, "SCRIPT_ENUM: %s.%s is not a valid TypeScript identifier\n", owner, entry.name);
+                        ++problems;
+                        break;
+                    }
+                }
+                const std::string line = std::string("    ") + entry.name + " = " + std::to_string(entry.value) + ",\n";
+                if (dts.find(line) == std::string::npos)
+                {
+                    std::fprintf(stderr, "SCRIPT_ENUM: %s.%s = %d is not declared in the generated .d.ts\n", owner,
+                                 entry.name, entry.value);
+                    ++problems;
+                }
+            }
+
+            if (script_enum->scriptName != nullptr && script_enum->scriptName[0] != '\0')
+            {
+                const std::string header = std::string("declare enum ") + script_enum->scriptName + " {\n";
+                if (dts.find(header) == std::string::npos)
+                {
+                    std::fprintf(stderr, "SCRIPT_ENUM: %s is not declared in the generated .d.ts\n", owner);
+                    ++problems;
+                }
+            }
+
+            // Duplicate members: later ones silently win in both the runtime
+            // object and the ambient enum, so the two stay "consistent" while
+            // disagreeing with the C++ enum they came from.
+            for (size_t i = 0; i < script_enum->valueCount; ++i)
+            {
+                for (size_t j = i + 1; j < script_enum->valueCount; ++j)
+                {
+                    if (script_enum->values[i].name != nullptr && script_enum->values[j].name != nullptr &&
+                        std::strcmp(script_enum->values[i].name, script_enum->values[j].name) == 0)
+                    {
+                        std::fprintf(stderr, "SCRIPT_ENUM: %s declares '%s' twice\n", owner, script_enum->values[i].name);
+                        ++problems;
+                    }
+                }
+            }
+        }
+
+        std::fprintf(stderr, "SCRIPT_ENUM: %u enum table(s), %u enumerator(s), %d problem(s)\n", enums, values, problems);
+        return problems == 0;
+    }
+
     /// Cross-check the JS-side `Behaviour` declaration against reality.
     ///
     /// Behaviour is the one engine class with no C++ binding table behind it
@@ -887,6 +984,7 @@ int main(int argc, char** argv)
     bool check_property_meta = false;
     bool check_script_bindings = false;
     bool check_script_properties = false;
+    bool check_script_enums = false;
     bool dump_script_dts = false;
     bool check_cast = false;
     bool check_behaviour_binding = false;
@@ -907,6 +1005,8 @@ int main(int argc, char** argv)
             check_script_bindings = true;
         else if (arg == "--check-script-properties")
             check_script_properties = true;
+        else if (arg == "--check-script-enums")
+            check_script_enums = true;
         else if (arg == "--dump-script-dts")
             dump_script_dts = true;
         else if (arg == "--check-cast")
@@ -977,6 +1077,11 @@ int main(int argc, char** argv)
     if (check_script_properties && !CheckScriptProperties())
     {
         std::fprintf(stderr, "FAIL: script property check failed.\n");
+        return 1;
+    }
+    if (check_script_enums && !CheckScriptEnums())
+    {
+        std::fprintf(stderr, "FAIL: script enum check failed.\n");
         return 1;
     }
     if (check_cast && !CheckCast())

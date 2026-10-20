@@ -15,6 +15,12 @@
 //   * ScriptBindingRegistry::AppendTypeScriptDeclarations() -> the
 //     `declare class ...` block of the generated zengine.d.ts.
 //
+// Phase 8 adds the third kind of table: ZENUM. An enum crosses the boundary as
+// a plain int32 (see ZScript::Converter's std::is_enum specialisation), which
+// alone is not a usable API, so ZHeaderTool also emits the (name, value) list.
+// InstallGlobals publishes it as a global object and the .d.ts mirrors it with
+// `declare enum`, so `CameraMode.Free` both type-checks and evaluates.
+//
 // Nothing here affects serialization.
 // =====================================================================
 
@@ -75,11 +81,30 @@ struct ZClassScriptBinding
     ZClassScriptBinding* next = nullptr;  // intrusive registry list
 };
 
+/// One enumerator of a ZENUM-annotated enum (phase 8).
+struct ZScriptEnumEntry
+{
+    const char* name = nullptr;  // script-facing spelling (PascalCase)
+    int32_t value = 0;
+};
+
+/// A ZENUM-annotated enum: a script name plus its (name, value) table.
+struct ZScriptEnum
+{
+    const char* scriptName = nullptr;
+    const ZScriptEnumEntry* values = nullptr;
+    std::size_t valueCount = 0;
+    ZScriptEnum* next = nullptr;  // intrusive registry list
+};
+
 namespace ScriptBindingRegistry
 {
     /// Called from generated static registrars. Type ids are only addresses at
     /// that point, which is all the key needs.
     void Register(ZClassScriptBinding& binding);
+
+    /// Called from generated static registrars for every ZENUM.
+    void RegisterEnum(ZScriptEnum& script_enum);
 
     /// Register a script-side class that has no C++ binding table (Behaviour).
     /// It only contributes a `declare class` block to the .d.ts.
@@ -87,6 +112,9 @@ namespace ScriptBindingRegistry
 
     /// Head of the intrusive list, for InstallAll / d.ts generation.
     const ZClassScriptBinding* Classes();
+
+    /// Head of the enum list, for global install / d.ts generation.
+    const ZScriptEnum* Enums();
 
     /// Head of the synthetic list, for d.ts generation and gates.
     const ZSyntheticScriptClass* SyntheticClasses();
@@ -100,11 +128,15 @@ namespace ScriptBindingRegistry
     /// something real at runtime. Must run inside an open scope and AFTER the
     /// env's registry has been set (pesapi_set_registry), because the class
     /// objects are looked up through it. Safe to call more than once.
+    ///
+    /// Also publishes every ZENUM as a global object of `declare enum` shape,
+    /// so `CameraMode.Free` evaluates to the same number the C++ side sees.
     void InstallGlobals(pesapi_ffi* apis, pesapi_env env);
 
-    /// Append `declare class <Name> [extends <Super>] { ... }` for every
-    /// registered class. Super classes that have no binding of their own are
-    /// declared empty so the emitted TypeScript still compiles.
+    /// Append `declare enum <Name> { ... }` for every registered enum, then
+    /// `declare class <Name> [extends <Super>] { ... }` for every registered
+    /// class. Super classes that have no binding of their own are declared
+    /// empty so the emitted TypeScript still compiles.
     void AppendTypeScriptDeclarations(std::string& out);
 }  // namespace ScriptBindingRegistry
 
@@ -113,6 +145,14 @@ struct ZClassScriptBindingRegistrar
     explicit ZClassScriptBindingRegistrar(ZClassScriptBinding& binding)
     {
         ScriptBindingRegistry::Register(binding);
+    }
+};
+
+struct ZScriptEnumRegistrar
+{
+    explicit ZScriptEnumRegistrar(ZScriptEnum& script_enum)
+    {
+        ScriptBindingRegistry::RegisterEnum(script_enum);
     }
 };
 
@@ -357,6 +397,31 @@ namespace ZScript
             out.y = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "y")));
             out.z = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "z")));
             return out;
+        }
+    };
+
+    // --- enums ----------------------------------------------------------
+    //
+    // ZENUM-annotated enums cross the boundary as int32. `std::is_enum` is
+    // enough to select this generically, but a *number* alone is not a usable
+    // script API -- scripts need the names. ZHeaderTool therefore also emits a
+    // (name, value) table per enum, which the runtime publishes as a global
+    // object and the .d.ts mirrors with `declare enum`, so `CameraMode.Free`
+    // both type-checks and evaluates. See ZScriptEnum below.
+    //
+    // Note this must stay disjoint from the integral specialisation above: an
+    // enum is not std::is_integral, and both are checked in the same enable_if
+    // slot, so an overlap would be an ambiguous partial specialisation.
+    template <typename T>
+    struct Converter<T, typename std::enable_if<std::is_enum<T>::value>::type>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, T v)
+        {
+            return apis->create_int32(env, static_cast<int32_t>(v));
+        }
+        static T FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            return static_cast<T>(apis->get_value_int32(env, v));
         }
     };
 
