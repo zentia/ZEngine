@@ -29,6 +29,11 @@
 // has REGISTER_CLASS but no IMPLEMENT_REGISTER_CLASS) or if a producible
 // type's base chain does not reach Object.
 //
+// `--check-behaviour-enabled` verifies that Behaviour-derived components
+// serialize Component::m_Enabled ("enabled") in binary and YAML, and that
+// YAML written before that field existed still loads (field keeps its
+// default, every other field survives).
+//
 // Opt in with:
 //   cmake -B build -DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON
 //   cmake --build build --target ReflectionCodegenSmokeTest
@@ -39,9 +44,14 @@
 #include "Runtime/BaseClasses/RuntimeTypeArray.h"
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
+#include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Core/Serialize/TransferUtility.h"
 #include "Runtime/Core/Serialize/TypeTree.h"
 #include "Runtime/Core/Serialize/TypeTreeCache.h"
+#include "Runtime/Core/YamlSerialize/YAMLUtility.h"
+#include "Runtime/Function/AI/AIControllerComponent.h"
+#include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
+#include "Runtime/Function/Render/RenderCamera.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -143,6 +153,79 @@ namespace
         return problems == 0;
     }
 
+    template<typename T>
+    bool CheckEnabledRoundTrip(const char* name, bool can_set_enabled)
+    {
+        bool ok = true;
+        auto fail = [&](const char* what) {
+            std::fprintf(stderr, "ENABLED[%s]: %s\n", name, what);
+            ok = false;
+        };
+
+        // YAML: the field is written.
+        T* source = MemoryManager::CreateObject<T>();
+        eastl::string yaml;
+        YAMLUtility::SerializeToYAML(*source, yaml);
+        const char* key = std::strstr(yaml.c_str(), "enabled:");
+        if (key == nullptr)
+        {
+            fail("YAML output has no 'enabled' key");
+            return false;
+        }
+
+        // YAML: a written 'false' is read back.
+        const size_t line_begin = static_cast<size_t>(key - yaml.c_str());
+        size_t line_end = yaml.find('\n', line_begin);
+        if (line_end == eastl::string::npos)
+            line_end = yaml.size();
+        eastl::string yaml_false = yaml;
+        yaml_false.replace(line_begin, line_end - line_begin, "enabled: false");
+        T* from_false = MemoryManager::CreateObject<T>();
+        YAMLUtility::DeserializeFromYAML(yaml_false.c_str(), *from_false);
+        if (from_false->isEnabled())
+            fail("YAML 'enabled: false' was not read back");
+
+        // YAML written before the field existed: drop the line entirely.
+        eastl::string legacy = yaml;
+        size_t erase_end = line_end < legacy.size() ? line_end + 1 : line_end;
+        legacy.erase(line_begin, erase_end - line_begin);
+        T* from_legacy = MemoryManager::CreateObject<T>();
+        YAMLUtility::DeserializeFromYAML(legacy.c_str(), *from_legacy);
+        if (!from_legacy->isEnabled())
+            fail("legacy YAML without 'enabled' did not keep the default (true)");
+        eastl::string rewritten;
+        YAMLUtility::SerializeToYAML(*from_legacy, rewritten);
+        if (rewritten != yaml)
+            fail("legacy YAML did not round-trip the remaining fields unchanged");
+
+        // Binary (StreamedBinary): a disabled component stays disabled.
+        if (can_set_enabled)
+        {
+            source->SetEnabled(false);
+            std::vector<uint8_t> bytes;
+            TransferUtility::WriteObjectToVector(*source, bytes);
+            T* from_binary = MemoryManager::CreateObject<T>();
+            if (!TransferUtility::ReadObjectFromVector(*from_binary, bytes))
+                fail("binary read failed");
+            else if (from_binary->isEnabled())
+                fail("binary round-trip lost enabled=false");
+        }
+
+        std::fprintf(stderr, "ENABLED[%s]: %s\n", name, ok ? "ok" : "FAILED");
+        return ok;
+    }
+
+    bool CheckBehaviourEnabled()
+    {
+        bool ok = true;
+        ok &= CheckEnabledRoundTrip<TypeScriptComponent>("TypeScriptComponent", true);
+        ok &= CheckEnabledRoundTrip<RenderCamera>("RenderCamera", true);
+        // AIControllerComponent::SetEnabled drives the motor / blackboard and
+        // needs a parent GameObject, so only the YAML checks run for it.
+        ok &= CheckEnabledRoundTrip<AIControllerComponent>("AIControllerComponent", false);
+        return ok;
+    }
+
     bool DumpClass(std::ostringstream& out, const char* class_name)
     {
         out << "=== " << class_name << " ===\n";
@@ -201,6 +284,7 @@ int main(int argc, char** argv)
     std::vector<std::string> classes;
     std::string golden_path;
     bool check_registry = false;
+    bool check_enabled = false;
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
@@ -210,6 +294,8 @@ int main(int argc, char** argv)
             g_PrintOffsets = false;
         else if (arg == "--check-registry")
             check_registry = true;
+        else if (arg == "--check-behaviour-enabled")
+            check_enabled = true;
         else
             classes.push_back(arg);
     }
@@ -243,6 +329,11 @@ int main(int argc, char** argv)
     if (check_registry && !CheckRegistry())
     {
         std::fprintf(stderr, "FAIL: type registry check failed.\n");
+        return 1;
+    }
+    if (check_enabled && !CheckBehaviourEnabled())
+    {
+        std::fprintf(stderr, "FAIL: Behaviour 'enabled' serialization check failed.\n");
         return 1;
     }
 

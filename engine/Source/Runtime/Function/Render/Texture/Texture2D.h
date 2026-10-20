@@ -58,7 +58,7 @@
 #include <vector>
 #include "Texture2D.generated.h"
 
-ZCLASS(NoSuperTransfer)
+ZCLASS()
 class Texture2D : public Texture
 {
     ZGENERATED_BODY(Texture2D)

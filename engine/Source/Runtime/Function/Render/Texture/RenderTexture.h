@@ -6,7 +6,7 @@
 
 // Not serialized yet (m_Desc is runtime-only); registered so that
 // PPtr<RenderTexture> (RenderCamera::targetTexture) resolves to a real Type.
-ZCLASS(NoSuperTransfer)
+ZCLASS()
 class RenderTexture : public Texture
 {
     ZGENERATED_BODY(RenderTexture)

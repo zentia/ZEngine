@@ -2603,10 +2603,12 @@ need nothing extra). Do not re-litigate Python vs C++.
   classes live at global scope or in **exactly one named namespace**
   (`IMPLEMENT_REGISTER_CLASS_3` token-pastes it) and derive from an
   Object-based class; base names of reflected headers must be unique per module.
-- `NoSuperTransfer`: the generated Transfer() skips `Super::Transfer()`. Only
-  for classes whose old Transfer() did so and whose base is not Object
-  (Behaviour, RenderCamera, Texture2D, RenderTexture). Note: Behaviour therefore does
-  NOT serialize Component's `enabled` -- pre-existing behaviour, kept on purpose.
+- `NoSuperTransfer`: the generated Transfer() skips `Super::Transfer()`.
+  Escape hatch only; no class uses it today. Behaviour-derived components
+  (TypeScriptComponent, RenderCamera, AIControllerComponent) serialize
+  Component's `enabled` since 2026-10-20 -- YAML / TypeTree-backed .zasset
+  written earlier load with the default (true); a TypeTree-less legacy
+  StreamedBinary payload of those three types would be misread.
 - `CustomTransfer`: only registration is generated; IMPLEMENT_OBJECT_SERIALIZE,
   Transfer() and INSTANTIATE stay hand-written (GameObject, Transform,
   Material, WorldRes -- WorldRes serializes the base member `Object::name`).

@@ -16,7 +16,7 @@ enum class RenderCameraType : int
     Game
 };
 
-ZCLASS(NoSuperTransfer)
+ZCLASS()
 class RenderCamera : public Behaviour
 {
     ZGENERATED_BODY(RenderCamera)
