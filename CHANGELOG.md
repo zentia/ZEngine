@@ -25,12 +25,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     failed check), so no `PASS_REGULAR_EXPRESSION` is needed.
   - Deliberately NOT registered: `SceneGenTool`, `AssetMigrator`,
     `ObjectDefinitionMigrator` (migration tools that write files, not tests).
-    `NavMeshTest` is registered but stays out of the default CI flag set
-    because it reads the shipped `bin/$<CONFIG>/asset/level/1-1.level.json`.
-  - Verified: `ctest -N` lists 19 tests; `UndoSystem` (70 checks),
-    `RenderGraph` (78), `SchemaEvolution`, `PPtr`, `YamlRoundTrip`,
-    `ReflectionCodegen` and `AssetBundle` all build and pass under
-    `ctest -C Release`.
+    `VulkanBindlessSmokeTest` registers only when `ZENGINE_USE_VULKAN` is on.
+  - Verified on Windows with every `ZENGINE_BUILD_*_SMOKE_TEST` flag on:
+    `ctest -N` lists 19 tests (3 `Platform*Test` + 16 smoke) and
+    `ctest -C Release` passes **19/19**.
+
+### Added - 2026-10-20 (the smoke tests run in CI)
+- `.github/workflows/smoke_tests.yml` (Windows / Release, on push and PR to
+  `main`) turns on every opt-in smoke-test flag, builds the 19 registered
+  targets and runs them with
+  `ctest --test-dir build_smoke -C Release --output-on-failure`.
+  - `ZENGINE_USE_VULKAN=OFF` (runners ship no VULKAN_SDK) and
+    `PAPI_TYPE=quickjs` (release would otherwise pull the V8 backend).
+  - `DX12BindlessSmokeTest` is included: it falls back to the WARP adapter
+    when no hardware adapter exists, so it runs headless.
+  - `NavMeshTest` is included: it prints `(skipped: level file not found)`
+    and still passes when the shipped level has not been copied into
+    `bin/$<CONFIG>/asset/level/`.
+  - `ZENGINE_BUILD_WRITE_FAULT_SMOKE_TEST` stays `OFF` -- its plumbing is not
+    in the tree yet (`WriteFaultSmokeTest.cpp.pending`).
+
+### Fixed - 2026-10-20 (`RHI::CreateSemaphore` vs. the Win32 macro)
+- `synchapi.h` `#define`s `CreateSemaphore` to `CreateSemaphoreA`/`W`, so the
+  spelling of `RHI::CreateSemaphore` depended on whether the TU had included
+  `<windows.h>` yet. `DX12RHI.h` includes `RHI.h` **before** `<d3d12.h>`, so
+  any standalone TU that included `DX12RHI.h` first ended up with a base class
+  named `CreateSemaphore` and an override named `CreateSemaphoreA` --
+  `error C3668: ... did not override any base class methods`. Production TUs
+  never hit it because they pull in `<windows.h>` first and both sides get
+  renamed together, which is why it stayed hidden: `DX12BindlessSmokeTest` had
+  never compiled.
+  - `push_macro` / `#undef` / `pop_macro` now pin the name at the declaration
+    (`RHI.h`), both overrides (`DX12RHI.h`, `VulkanRHI.h`) and both
+    definitions (`DX12RHI.cpp`, `VulkanRHI.cpp`). The method has no call sites
+    yet.
 
 ### Added - 2026-10-20 (RenderGraph)
 - **A real frame graph exists now.** Before this the renderer was written straight

@@ -2132,9 +2132,11 @@ Known gaps, in the order they should be closed (PR-SK3+):
   `add_executable()` -- without it `ctest` never sees the test and CI runs an
   empty suite that still exits 0. Smoke tests are judged purely by exit code
   (`EXIT_FAILURE` on the first failed check), so no `PASS_REGULAR_EXPRESSION`
-  is needed. A test that needs shipped assets or a GPU device (e.g.
-  `NavMeshTest`, which reads `bin/$<CONFIG>/asset/level/1-1.level.json`) stays
-  opt-in and out of the default CI flag set. Verify a new registration with
+  is needed. A test that needs shipped assets or a GPU device must degrade
+  instead of failing when they are absent: `NavMeshTest` prints
+  `(skipped: level file not found)` and `DX12BindlessSmokeTest` falls back to
+  the WARP adapter, which is why both can run on a headless CI runner. Verify
+  a new registration with
   `ctest --test-dir <build> -C Release -N` (listing needs no build).
 
 ## 4. Active multi-phase work
