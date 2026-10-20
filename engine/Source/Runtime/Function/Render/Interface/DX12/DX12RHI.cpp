@@ -2478,6 +2478,16 @@ void DX12RHI::RecreateSwapchain()
     }
     m_SwapchainImageviews.clear();
 
+    // Same reason as in CreateSwapchainImageViews(): the wrappers alias
+    // m_SwapchainResourceStates, so drop them together with the views rather than
+    // letting a stale wrapper describe a back-buffer that ResizeBuffers is about to
+    // replace.
+    for (DX12Image*& image : m_SwapchainImages)
+    {
+        RHI_DELETE_PTR(image);
+    }
+    m_SwapchainImages.clear();
+
     if (!CheckDX12(m_Swapchain->ResizeBuffers(k_max_frames_in_flight,
                                               m_SwapchainExtent.width,
                                               m_SwapchainExtent.height,
@@ -2789,6 +2799,17 @@ void DX12RHI::CreateSwapchainImageViews()
     m_SwapchainImageviews.clear();
     m_SwapchainImageviews.reserve(k_max_frames_in_flight);
 
+    // The wrappers alias m_SwapchainResourceStates, so they must be destroyed before
+    // that array is rewritten below -- otherwise a stale wrapper keeps pointing at live
+    // storage and reports a state that no longer describes its (already released)
+    // back-buffer.
+    for (DX12Image*& image : m_SwapchainImages)
+    {
+        RHI_DELETE_PTR(image);
+    }
+    m_SwapchainImages.clear();
+    m_SwapchainImages.reserve(k_max_frames_in_flight);
+
     for (uint8_t i = 0; i < k_max_frames_in_flight; ++i)
     {
         if (!CheckDX12(m_Swapchain->GetBuffer(i, IID_PPV_ARGS(&m_RenderTargets[i])), "Get swapchain buffer failed"))
@@ -2807,12 +2828,32 @@ void DX12RHI::CreateSwapchainImageViews()
         }
         m_Device->CreateRenderTargetView(m_RenderTargets[i].Get(), nullptr, rtv_handle);
 
+        m_SwapchainResourceStates[i] = D3D12_RESOURCE_STATE_PRESENT;
+
+        // The back-buffer had no RHIImage at all until now -- only a view, whose
+        // getImage() is nullptr. That is fine for hand-written barriers (they go through
+        // TransitionSwapchainBuffer, which knows the index) but not for the render graph:
+        // a barrier transitions an image, so an importable swapchain needs one. It wraps
+        // m_RenderTargets[i] without taking ownership -- the swapchain still owns it.
+        DX12Image* swapchain_image = new DX12Image();
+        swapchain_image->setResource(m_RenderTargets[i],
+                                     ToDX12SwapchainFormat(m_SwapchainImageFormat),
+                                     m_SwapchainExtent.width,
+                                     m_SwapchainExtent.height,
+                                     1,
+                                     1,
+                                     m_SwapchainResourceStates[i]);
+        // Alias the tracker: from here on, TransitionSwapchainBuffer (DX12RHI's own path)
+        // and TransitionImage (the render graph's path, via CmdPipelineBarrier) read and
+        // write the exact same D3D12_RESOURCE_STATES. See setExternalStateStorage().
+        swapchain_image->setExternalStateStorage(&m_SwapchainResourceStates[i], 1);
+        m_SwapchainImages.push_back(swapchain_image);
+
         DX12ImageView* swapchain_view = new DX12ImageView();
         swapchain_view->setResource(nullptr, ToDX12SwapchainFormat(m_SwapchainImageFormat));
         swapchain_view->setRenderTargetHandle(rtv_handle);
         swapchain_view->setIsSwapchainView(true);
         swapchain_view->setSwapchainBackBufferIndex(i);
-        m_SwapchainResourceStates[i] = D3D12_RESOURCE_STATE_PRESENT;
         m_SwapchainImageviews.push_back(swapchain_view);
     }
 
@@ -5701,6 +5742,11 @@ RHISwapChainDesc DX12RHI::GetSwapchainInfo()
     desc.viewport_count = m_ViewportCount;
     desc.scissor = m_Scissors;
     desc.imageViews = m_SwapchainImageviews;
+    desc.images.reserve(m_SwapchainImages.size());
+    for (DX12Image* image : m_SwapchainImages)
+    {
+        desc.images.push_back(image);
+    }
     return desc;
 }
 
@@ -5942,7 +5988,17 @@ void DX12RHI::SubmitRendering(std::function<void()> passUpdateAfterRecreateSwapc
         return;
     }
 
-    if (m_SwapchainResourceStates[m_CurrentBackBufferIndex] == D3D12_RESOURCE_STATE_RENDER_TARGET)
+    // Anything that is not PRESENT has to go back before Present(), not just
+    // RENDER_TARGET. The old test was written when PrepareBeforePass was the only thing
+    // that ever touched a back-buffer, so RENDER_TARGET was the only reachable state.
+    // Once the render graph drives the swapchain it may legitimately leave it in
+    // PIXEL_SHADER_RESOURCE (a post pass that samples the back-buffer), and skipping the
+    // transition then makes Present() fail with "resource state is invalid for Present".
+    //
+    // TransitionSwapchainBuffer reads StateBefore from this same array (see
+    // setExternalStateStorage), so widening the condition cannot produce a wrong
+    // barrier -- it can only stop us from skipping one.
+    if (m_SwapchainResourceStates[m_CurrentBackBufferIndex] != D3D12_RESOURCE_STATE_PRESENT)
     {
         TransitionSwapchainBuffer(m_CurrentBackBufferIndex, D3D12_RESOURCE_STATE_PRESENT);
     }
@@ -6177,6 +6233,12 @@ void DX12RHI::ClearSwapchain()
         RHI_DELETE_PTR(image_view);
     }
     m_SwapchainImageviews.clear();
+
+    for (DX12Image*& image : m_SwapchainImages)
+    {
+        RHI_DELETE_PTR(image);
+    }
+    m_SwapchainImages.clear();
 
     m_RtvHeap.Reset();
     m_NextRtvDescriptor = 0;

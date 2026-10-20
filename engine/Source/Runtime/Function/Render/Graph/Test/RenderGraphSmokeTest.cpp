@@ -905,6 +905,76 @@ int main()
         CHECK(!compiled.errors.empty());
     }
 
+    // ---------------------------------------------------------------------------------
+    // What unblocking the swapchain actually buys. Until RHISwapChainDesc carried images,
+    // the back-buffer could not be imported at all: a barrier transitions an *image*,
+    // and the only thing the swapchain exposed was views (whose getImage() is nullptr on
+    // DX12). The import state is Present because that is where SubmitRendering leaves
+    // every back-buffer (DX12RHI.cpp:5945); getting it wrong is the difference between
+    // one correct barrier and a StateBefore the D3D12 debug layer rejects.
+    // ---------------------------------------------------------------------------------
+    BeginGroup("the swapchain round-trips Present -> RenderTarget -> CopySource");
+    {
+        RenderGraph graph("Swapchain");
+        const RGTextureHandle swapchain = ImportExternal(graph, "Swapchain", RGResourceState::Present);
+
+        graph.AddPass(
+            "CombineUI",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) { builder.WriteTexture(swapchain, RGResourceState::RenderTarget); },
+            nullptr);
+
+        // A second writer in a row -- the editor's UI overlay draws into the same
+        // back-buffer without an intervening present.
+        graph.AddPass(
+            "DebugOverlay",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) { builder.WriteTexture(swapchain, RGResourceState::RenderTarget); },
+            nullptr);
+
+        graph.AddPass(
+            "Screenshot",
+            RGPassType::Copy,
+            [&](RenderGraphBuilder& builder) { builder.ReadTexture(swapchain, RGResourceState::CopySource); },
+            nullptr,
+            RGPassFlags::NeverCull);
+
+        const RGCompiledGraph& compiled = graph.Compile();
+        DumpErrors(compiled);
+        CHECK(compiled.valid);
+        CHECK(compiled.errors.empty());
+
+        const std::vector<std::string> names = OrderNames(graph, compiled);
+        CHECK(names.size() == 3);
+        CHECK(names[0] == "CombineUI" && names[1] == "DebugOverlay" && names[2] == "Screenshot");
+
+        // Imported, so never aliased and never counted against the frame budget --
+        // writing the swapchain is a root all by itself, which is why nothing here is
+        // culled even though no pass reads the swapchain inside the graph.
+        CHECK(compiled.lifetimes[swapchain.index].memory_slot == kRGInvalidIndex);
+        CHECK(compiled.total_allocated_bytes == 0);
+        CHECK(compiled.culled_passes.empty());
+
+        const RGBarrier* present_to_rtv = FindBarrier(compiled, 0, swapchain.index);
+        CHECK(present_to_rtv != nullptr);
+        CHECK(present_to_rtv->before == RGResourceState::Present);
+        CHECK(present_to_rtv->after == RGResourceState::RenderTarget);
+
+        // Already a render target, so the overlay adds no barrier. This matters more on
+        // Vulkan than on DX12: a redundant RT -> RT transition is a tolerated no-op
+        // there, but a vkCmdPipelineBarrier whose oldLayout misstates the current layout
+        // is undefined behaviour, and VulkanRHI::CmdPipelineBarrier passes the layout
+        // through verbatim.
+        CHECK(FindBarrier(compiled, 1, swapchain.index) == nullptr);
+
+        const RGBarrier* rtv_to_copy = FindBarrier(compiled, 2, swapchain.index);
+        CHECK(rtv_to_copy != nullptr);
+        CHECK(rtv_to_copy->before == RGResourceState::RenderTarget);
+        CHECK(rtv_to_copy->after == RGResourceState::CopySource);
+
+        CHECK(compiled.barriers.size() == 2);
+    }
+
     std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);
     if (g_Failures != 0)
     {

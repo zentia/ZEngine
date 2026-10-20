@@ -1189,6 +1189,17 @@ struct RHISwapChainDesc
     uint32_t viewport_count;
     RHIRect2D* scissor;
     std::vector<RHIImageView*> imageViews;
+    /// The back-buffer images themselves, parallel to imageViews (images[i] is what
+    /// imageViews[i] views). A view alone is not enough to barrier anything: a barrier
+    /// transitions an *image*, and a view is only a window onto it. That is why the
+    /// render graph cannot import the swapchain from imageViews -- there is no image to
+    /// hang the transition on.
+    ///
+    /// Owned by the RHI: the swapchain owns the underlying GPU memory, so the graph
+    /// imports these as external resources (never allocated, destroyed or aliased).
+    /// Backends that do not expose them yet leave this empty; callers must tolerate
+    /// images.size() != imageViews.size().
+    std::vector<RHIImage*> images;
 };
 
 struct RHIDepthImageDesc

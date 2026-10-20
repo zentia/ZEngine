@@ -4110,7 +4110,17 @@ void VulkanRHI::CreateCubeMap(RHIImage*& image,
 
 void VulkanRHI::CreateSwapchainImageViews()
 {
+    // Unlike the views below (which are overwritten in place by resize()), the wrappers
+    // are ours to own: drop the previous generation before making new ones, or every
+    // swapchain resize leaks one VulkanImage per back-buffer.
+    for (VulkanImage*& image : m_SwapchainImageWrappers)
+    {
+        delete image;
+    }
+    m_SwapchainImageWrappers.clear();
+
     m_SwapchainImageviews.resize(m_SwapchainImages.size());
+    m_SwapchainImageWrappers.resize(m_SwapchainImages.size(), nullptr);
 
     // create imageview (one for each this time) for all swapchain images
     for (size_t i = 0; i < m_SwapchainImages.size(); i++)
@@ -4125,6 +4135,14 @@ void VulkanRHI::CreateSwapchainImageViews()
                                                     1);
         m_SwapchainImageviews[i] = new VulkanImageView();
         ((VulkanImageView*)m_SwapchainImageviews[i])->setResource(vk_image_view);
+
+        // The back-buffer had no RHIImage at all until now -- only a bare VkImage in
+        // m_SwapchainImages and a view over it. A barrier transitions an image, and a
+        // view is only a window onto it, so the render graph could not import the
+        // swapchain. VulkanImage stores the handle without owning it, so this wrapper
+        // neither extends nor shortens the driver-owned image's life.
+        m_SwapchainImageWrappers[i] = new VulkanImage();
+        m_SwapchainImageWrappers[i]->setResource(m_SwapchainImages[i]);
     }
 }
 
@@ -4291,6 +4309,15 @@ void VulkanRHI::ClearSwapchain()
         vkDestroyImageView(m_Device, ((VulkanImageView*)imageview)->getResource(), NULL);
     }
     vkDestroySwapchainKHR(m_Device, m_Swapchain, NULL);  // also swapchain images
+
+    // The wrappers are the only objects this RHI allocated for the swapchain images, so
+    // they are the only ones it has to free -- the VkImages themselves die with the
+    // swapchain above.
+    for (VulkanImage*& image : m_SwapchainImageWrappers)
+    {
+        delete image;
+    }
+    m_SwapchainImageWrappers.clear();
 }
 
 void VulkanRHI::DestroyDefaultSampler(RHIDefaultSamplerType type)
@@ -4930,6 +4957,11 @@ RHISwapChainDesc VulkanRHI::GetSwapchainInfo()
     desc.viewport_count = m_ViewportCount;
     desc.scissor = m_Scissors;
     desc.imageViews = m_SwapchainImageviews;
+    desc.images.reserve(m_SwapchainImageWrappers.size());
+    for (VulkanImage* image : m_SwapchainImageWrappers)
+    {
+        desc.images.push_back(image);
+    }
     return desc;
 }
 RHIDepthImageDesc VulkanRHI::GetDepthImageInfo() const

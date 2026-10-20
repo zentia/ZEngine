@@ -2057,17 +2057,24 @@ and no live preview of the driven character's parameters while editing.
   command buffer, fence, submit and full `WaitForFences`. Its pixel readback is outside
   the ten-method `IRGResourceDevice` port, and its `RHIFramebuffer` is pinned to one
   `RHIImageView*` that a pool would invalidate.
-- **Three blockers before RP2 can be wired** (details in `doc/RENDER_GRAPH.md` §5):
-  (1) the swapchain cannot be imported -- `RHISwapChainDesc` exposes only `imageViews`,
-  no images, and DX12 builds swapchain views with `setResource(nullptr, ...)`
-  (`DX12RHI.cpp:2811`); (2) DX12 keeps its own swapchain state machine
-  (`m_SwapchainResourceStates` / `m_SwapchainSurfaceState`) that would fight the graph's
-  `current_state`; (3) `UpdateDescriptorBindings()` must move into the pass callback,
-  not stay at the top of `DrawRP2()` (omitting it is a documented black screen).
+- **Blockers before RP2 can be wired** (details in `doc/RENDER_GRAPH.md` §5). Two of the
+  three are cleared: (1) `RHISwapChainDesc` now carries `images` alongside `imageViews`,
+  populated by both `CreateSwapchainImageViews()` implementations -- DX12 wraps
+  `m_RenderTargets[i]` in a `DX12Image` (ComPtr add-ref, the swapchain still owns the
+  memory), Vulkan wraps `m_SwapchainImages[i]` in the non-owning `VulkanImage`;
+  (2) DX12's swapchain state machine is no longer a second truth -- the wrappers alias
+  `m_SwapchainResourceStates[i]` through `DX12Image::setExternalStateStorage()`, so
+  `TransitionSwapchainBuffer()` and the graph's `TransitionImage()` read and write the
+  same `D3D12_RESOURCE_STATES`. `SubmitRendering` now transitions back to PRESENT from
+  any state, not just RENDER_TARGET, because the graph may legitimately leave the
+  back-buffer in PIXEL_SHADER_RESOURCE. Still open: (3) `UpdateDescriptorBindings()`
+  must move into the pass callback, not stay at the top of `DrawRP2()` (omitting it is a
+  documented black screen) -- that belongs to the wiring step itself.
   Ship the new path behind a switch that defaults to the old one and falls back when
   `Compile()` is invalid.
 - Tests: `-DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON` -> `RenderGraphSmokeTest`
-  (121 checks, compiler: 78 generic + 43 on the RP2 chain) and
+  (136 checks, compiler: 78 generic + 43 on the RP2 chain + 15 on the swapchain
+  round-trip) and
   `-DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON` ->
   `RenderGraphExecuteSmokeTest` (92 checks, pool + executor). Both `main()`s are carved
   out of the ZRuntime glob in `Runtime/CMakeLists.txt`; the compiler files *and*

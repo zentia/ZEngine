@@ -407,6 +407,15 @@ public:
 
     VkSwapchainKHR m_Swapchain {nullptr};
     std::vector<VkImage> m_SwapchainImages;
+    /// RHIImage wrappers over m_SwapchainImages[], parallel to m_SwapchainImageviews.
+    /// Purely non-owning (VulkanImage only stores the VkImage), so wrapping a swapchain
+    /// image the driver owns costs nothing and cannot change its lifetime. Exposed
+    /// through RHISwapChainDesc::images so the render graph can import the back-buffer.
+    ///
+    /// Concrete type on purpose: `RHIImage` has no virtual destructor, so deleting
+    /// through an `RHIImage*` would be undefined behaviour even though VulkanImage is
+    /// trivially destructible.
+    std::vector<VulkanImage*> m_SwapchainImageWrappers;
 
     RHIImage* m_DepthImage = new VulkanImage();
     VkDeviceMemory m_DepthImageMemory {nullptr};

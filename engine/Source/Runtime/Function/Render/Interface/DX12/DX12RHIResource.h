@@ -340,13 +340,44 @@ public:
     uint32_t getMipLevels() const { return m_MipLevels; }
     uint32_t getSubresourceCount() const { return static_cast<uint32_t>(m_States.size()); }
 
+    /// Point this image's state tracker at storage owned by someone else.
+    ///
+    /// Swapchain back-buffers need this. DX12RHI already tracks them in
+    /// m_SwapchainResourceStates and transitions them via TransitionSwapchainBuffer;
+    /// the render graph transitions them via TransitionImage -> DX12RHI::CmdPipelineBarrier.
+    /// Two trackers for one resource would drift within a single frame (one path
+    /// transitions, the other still believes the old state) and produce a barrier whose
+    /// StateBefore is a lie -- the classic D3D12 debug-layer
+    /// "StateBefore is incorrect" error. Aliasing them means both paths read and write
+    /// the same D3D12_RESOURCE_STATES, so a stale "before" state is unrepresentable.
+    ///
+    /// `states` must outlive this image (it is a member of DX12RHI).
+    void setExternalStateStorage(D3D12_RESOURCE_STATES* states, uint32_t count)
+    {
+        m_ExternalStates = states;
+        m_ExternalStateCount = states != nullptr ? count : 0;
+    }
+
+    bool hasExternalStateStorage() const { return m_ExternalStates != nullptr && m_ExternalStateCount > 0; }
+
     D3D12_RESOURCE_STATES getState(uint32_t subresource) const
     {
+        if (hasExternalStateStorage())
+        {
+            // A swapchain back-buffer has one tracked state for the whole resource, so
+            // every subresource index collapses onto it.
+            return m_ExternalStates[subresource < m_ExternalStateCount ? subresource : 0];
+        }
         return subresource < m_States.size() ? m_States[subresource] : D3D12_RESOURCE_STATE_COMMON;
     }
 
     void setState(uint32_t subresource, D3D12_RESOURCE_STATES state)
     {
+        if (hasExternalStateStorage())
+        {
+            m_ExternalStates[subresource < m_ExternalStateCount ? subresource : 0] = state;
+            return;
+        }
         if (subresource < m_States.size())
         {
             m_States[subresource] = state;
@@ -355,6 +386,14 @@ public:
 
     void setAllStates(D3D12_RESOURCE_STATES state)
     {
+        if (hasExternalStateStorage())
+        {
+            for (uint32_t i = 0; i < m_ExternalStateCount; ++i)
+            {
+                m_ExternalStates[i] = state;
+            }
+            return;
+        }
         for (D3D12_RESOURCE_STATES& current_state : m_States)
         {
             current_state = state;
@@ -369,6 +408,8 @@ private:
     uint32_t m_ArrayLayers {1};
     uint32_t m_MipLevels {1};
     std::vector<D3D12_RESOURCE_STATES> m_States;
+    D3D12_RESOURCE_STATES* m_ExternalStates {nullptr};
+    uint32_t m_ExternalStateCount {0};
 };
 
 class DX12ImageView : public RHIImageView

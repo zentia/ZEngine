@@ -648,6 +648,12 @@ private:
     RHIQueue* m_ComputeQueue {nullptr};
     RHIFormat m_SwapchainImageFormat {RHI_FORMAT_UNDEFINED};
     std::vector<RHIImageView*> m_SwapchainImageviews;
+    /// RHIImage wrappers over m_RenderTargets[], parallel to m_SwapchainImageviews.
+    /// Exposed through RHISwapChainDesc::images so the render graph can import the
+    /// back-buffer as an external texture and derive its barriers. See
+    /// CreateSwapchainImageViews() for why their state tracker is aliased onto
+    /// m_SwapchainResourceStates.
+    std::vector<DX12Image*> m_SwapchainImages;
     RHIExtent2D m_SwapchainExtent;
     RHIRect2D m_Scissors[2];
     std::string m_ActiveViewportId {"default"};
@@ -680,6 +686,12 @@ private:
         Present,
         RenderTarget,
     };
+    // Two trackers, one truth. m_SwapchainResourceStates is authoritative: it is what a
+    // barrier's StateBefore is taken from, and it is the storage the swapchain's RHIImage
+    // wrappers alias (DX12Image::setExternalStateStorage), so the render graph's
+    // TransitionImage path and DX12RHI's own TransitionSwapchainBuffer path stay in sync.
+    // m_SwapchainSurfaceState is only a cheap "might still be PRESENT" hint used to skip
+    // the frame-open transition -- never trust it over the array.
     SwapchainSurfaceState m_SwapchainSurfaceState {SwapchainSurfaceState::Present};
     std::array<D3D12_RESOURCE_STATES, 3> m_SwapchainResourceStates {};
     // RTV handles saved before RecreateSwapchain tears down image views so the

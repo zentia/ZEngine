@@ -123,10 +123,23 @@ executor.Execute(graph, command_buffer);
 
 接线之前，先把这条链在图里声明出来，并断言编译器推导出的顺序与屏障和 `DrawRP2()` 手写的一致——`RenderGraphSmokeTest` 的 group 14/15/16 就是这件事。断言覆盖：FXAA 关/开两种拓扑的执行序、各自的屏障条数（4 / 6）、`backup_odd` 只搬一次状态（CombineUI 时已在目标态，不产生第二条屏障，这正对应 `MainCameraRp2Pass.cpp:689` 那条 oldLayout == newLayout 的手写屏障），以及源码里那句"SRV 和 RTV 必须是不同贴图"的注释——在图里它是校验错误，不再是注释。
 
-### 接线前必须解决的三个阻塞项
+### 接线前的阻塞项（1、2 已清，3 属于接线步骤本身）
 
-1. **swapchain 今天无法导入。** `RGExternalTexture` 要 `RHIImage*` + `RHIImageView*`，但 `RHISwapChainDesc`（`RHIStruct.h:1184`）只有 `imageViews` 没有 images；DX12 侧的 swapchain view 更是 `setResource(nullptr, ...)` 建的（`DX12RHI.cpp:2811`），靠 `setIsSwapchainView(true)` + backbuffer index 走 RTV。需要给 `RHISwapChainDesc` 补一份 images 并在两个后端填上。
-2. **DX12 有自己的 swapchain 状态机**（`m_SwapchainResourceStates` / `m_SwapchainSurfaceState`，见 `DX12RHI.cpp:2499` 附近的注释）。图的 `current_state` 是独立的一套影子状态，两套会打架：要么让图接管，要么让 `RGRhiDeviceAdapter` 在 DX12 上写入这个 tracker。
+1. ~~**swapchain 无法导入。**~~ **已解决。** `RHISwapChainDesc`（`RHIStruct.h:1184`）补了 `std::vector<RHIImage*> images`，与 `imageViews` 平行（`images[i]` 就是 `imageViews[i]` 所视图）。两个后端都在建 view 的同一处建出 image：
+   - DX12 `CreateSwapchainImageViews()`（`DX12RHI.cpp:2830` 附近）为每个 backbuffer 建 `DX12Image`，包住 `m_RenderTargets[i]`（`ComPtr` 加引用，不夺取所有权——GPU 内存仍归 swapchain），并在 `GetSwapchainInfo()` 里导出。
+   - Vulkan 同名函数（`VulkanRHI.cpp:4144` 附近）建 `VulkanImage` 包住 `m_SwapchainImages[i]`。`VulkanImage` 只存一个 `VkImage`、完全不拥有，所以包装驱动拥有的图不花代价也不改生命周期；wrapper 由 `ClearSwapchain()` / 重建路径删除。
+   - WebGL2 / Metal 的 `GetSwapchainInfo()` 仍返回空 `images`——它们不参与这条路径，调用方必须容忍 `images.size() != imageViews.size()`。
+
+2. ~~**DX12 有自己的 swapchain 状态机。**~~ **已解决，做法是"一份真相"而不是"让图接管"。** `DX12Image` 新增 `setExternalStateStorage()`：把贴图的状态跟踪器指向外部存储。swapchain 的三张 wrapper 全部指向 `m_SwapchainResourceStates[i]`，于是：
+
+   | 路径 | 经过 | 读写的状态 |
+   | --- | --- | --- |
+   | DX12 自己 | `TransitionSwapchainBuffer()` | `m_SwapchainResourceStates[i]` |
+   | 渲染图 | `CmdPipelineBarrier` → `TransitionImage()` → `getState()/setState()` | **同一个** `m_SwapchainResourceStates[i]` |
+
+   两套跟踪器由此不可能漂移，而"StateBefore 说谎"这一类 D3D12 debug layer 报错变成不可表达。`m_SwapchainSurfaceState` 保留原职（只是"可能还是 PRESENT"的廉价提示），永远以数组为准。
+   附带加固：`SubmitRendering` 原来的 `== RENDER_TARGET` 判断改成 `!= PRESENT`（`DX12RHI.cpp:5945`）。旧写法在图驱动之前是对的（当时只有 `PrepareBeforePass` 碰 backbuffer），但图完全可以合法地把 swapchain 留在 `PIXEL_SHADER_RESOURCE`（例如后处理回读），此时跳过回退转换会让 `Present()` 报 "resource state is invalid for Present"。
+
 3. **`UpdateDescriptorBindings()` 的位置。** 它每帧从 CBV/SRV/UAV 堆分配新句柄，`MainCameraRp2Pass.cpp:623` 的注释写明漏掉会黑屏。改成图驱动时它必须留在 pass 回调里，不能留在 `DrawRP2()` 开头。
 
 ### 接线策略
@@ -189,7 +202,7 @@ cmake --build build --config Debug --target RenderGraphSmokeTest RenderGraphExec
 ctest -C Debug -R RenderGraph --output-on-failure
 ```
 
-**编译器（`RenderGraphSmokeTest`）121 项断言 / 0 失败**：链式排序、剔除与反向传播、NeverCull/Extract 保活、生命周期、别名复用与重叠拒绝、屏障推导（含"已处于目标态不产生"）、重复声明拒绝、跨帧失效句柄、四类校验错误、WAR/WAW 顺序、缓冲资源、确定性、描述符尺寸，以及**RP2 后处理链**（§5）：FXAA 关/开两种拓扑的执行序与屏障条数、`backup_odd` 只搬一次状态、"SRV/RTV 必须异贴图"落成校验错误。
+**编译器（`RenderGraphSmokeTest`）136 项断言 / 0 失败**：链式排序、剔除与反向传播、NeverCull/Extract 保活、生命周期、别名复用与重叠拒绝、屏障推导（含"已处于目标态不产生"）、重复声明拒绝、跨帧失效句柄、四类校验错误、WAR/WAW 顺序、缓冲资源、确定性、描述符尺寸、**RP2 后处理链**（§5，43 项）：FXAA 关/开两种拓扑的执行序与屏障条数、`backup_odd` 只搬一次状态、"SRV/RTV 必须异贴图"落成校验错误，以及**swapchain 往返**（15 项）：以 `Present` 导入 → 写 → 再写 → 读，断言首条是 `Present → RenderTarget` 而非 `Undefined → RenderTarget`、第二个连续写入者不产生屏障、外部资源不参与别名与预算、写外部资源的 Pass 天然是根所以不被剔除。
 
 **执行层（`RenderGraphExecuteSmokeTest`）92 项断言 / 0 失败**：池的复用与 `MaxIdlePerKey` 溢出销毁、`Flush()` 只减一次（缺陷 1 回归）、Pass 按编译序执行、句柄解析与跨代失效句柄拒绝、每 Pass 一次 `CmdPipelineBarrier` 且转的是对的 image、transient 在最后一个读者之后立刻归还、buffer 走同一条路径、被剔除的 Pass 既不执行也不分配（缺陷 3 回归）、Extract 资源活过整张图并在下一次 `Execute()` 才回收（缺陷 2 回归）、缺 device / command buffer / 校验失败时的报错路径、无 device 的池是惰性而非崩。
 
