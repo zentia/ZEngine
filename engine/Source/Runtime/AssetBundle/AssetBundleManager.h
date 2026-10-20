@@ -64,10 +64,32 @@ public:
     /// `out_bytes` is only written on success.
     bool TryReadAssetBytes(const std::filesystem::path& asset_path, std::vector<uint8_t>& out_bytes) const;
 
+    /// GUID -> registry-relative path, built from the entries of every mounted
+    /// bundle. This is the runtime stand-in for AssetRegistry's guid->path
+    /// index: a player build ships no registry, and without this every external
+    /// PPtr whose file slot carries a GUID instead of a path resolves to null.
+    bool TryResolveGuid(const std::string& guid, std::string& out_path) const;
+
+    /// Mount the bundle that owns `asset_path`, when the loaded manifest says
+    /// which one that is and it is not mounted yet. True when the asset is
+    /// reachable afterwards -- already mounted counts as success, and so does
+    /// "no manifest / no mounted bundle to derive a directory from" being
+    /// answered by a plain containment check.
+    ///
+    /// This is the FileID -> bundle mapping the build manifest makes possible:
+    /// `FileIdentifier` carries a GUID and a path but never a bundle name, so
+    /// without this a player has to mount everything up front or lose every
+    /// reference that crosses a bundle boundary.
+    bool EnsureBundleMountedForAsset(const std::string& asset_path);
+
     const AssetBundleManifest* GetManifest() const { return m_Manifest; }
 
 private:
     bool MountBundleInternal(const std::filesystem::path& bundle_path, std::vector<std::string>& in_out_visited);
+
+    /// Caller holds m_Mutex.
+    void IndexBundleGuidsLocked(const AssetBundle& bundle);
+    void RebuildGuidIndexLocked();
 
     mutable std::mutex m_Mutex;
     /// bundle name -> bundle. Stable heap addresses (never erased except by
@@ -75,4 +97,11 @@ private:
     std::unordered_map<std::string, AssetBundle*> m_Bundles;
     /// Owned by ObjectManager (loaded through AssetManager); not freed here.
     AssetBundleManifest* m_Manifest {nullptr};
+    /// guid -> registry-relative path. Rebuilt on unmount (an erase cannot be
+    /// attributed back to a single guid->path pair without a second index).
+    std::unordered_map<std::string, std::string> m_GuidToPath;
+    /// Directory of the first bundle mounted. Bundles named in the manifest but
+    /// not yet mounted are looked up here; it is the only place we can learn
+    /// where sibling bundles live.
+    std::filesystem::path m_BundleDirectory;
 };

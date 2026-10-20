@@ -1,5 +1,6 @@
 #include "AssetManager.h"
 
+#include "Runtime/AssetBundle/AssetBundleManager.h"
 #include "Runtime/BaseClasses/IPPtrResolver.h"
 #include "Runtime/BaseClasses/Object.h"
 #include "Runtime/BaseClasses/PPtr.h"
@@ -172,6 +173,21 @@ namespace
         if (std::filesystem::exists(candidate, ec))
         {
             return candidate.lexically_normal();
+        }
+
+        // A player build ships no Assets/ tree, so "the file is not on disk"
+        // is not evidence that the asset is missing -- it may live inside a
+        // bundle. Returning the path anyway is what makes the reference
+        // resolvable: it is the key the remapper mints the instance ID from,
+        // and SerializedFile::InitializeRead serves those bytes from the
+        // bundle later. Insisting on existence here made every cross-asset
+        // PPtr silently null in a packaged build.
+        if (auto* bundles = GET_SYSTEM(AssetBundleManager))
+        {
+            if (bundles->EnsureBundleMountedForAsset(candidate.generic_string()))
+            {
+                return candidate.lexically_normal();
+            }
         }
 
         return {};
@@ -515,7 +531,17 @@ Object* AssetManager::ReadObject(int32_t instanceID)
     std::filesystem::path asset_path(path_name);
     std::error_code ec;
     if (!std::filesystem::exists(asset_path, ec))
-        return nullptr;
+    {
+        // No on-disk copy is not a failure in a packaged build: the asset can
+        // be bundle-resident, and SerializedFile::InitializeRead will serve it
+        // from memory. Bailing out here made the lazy PPtr deref return null
+        // even after the reference itself had resolved correctly.
+        const AssetBundleManager* bundles = GET_SYSTEM(AssetBundleManager);
+        if (bundles == nullptr || !bundles->ContainsAsset(asset_path.generic_string()))
+        {
+            return nullptr;
+        }
+    }
 
     if (IsYamlAuthoringAssetPath(asset_path))
     {
@@ -630,16 +656,33 @@ void AssetManager::GetAssetGuidAndType(const std::filesystem::path& asset_path,
     MemoryManager::DestroyObject(serialized_file);
 }
 
-bool AssetManager::TryGetPathForGuid(const std::string& /*guid*/, std::filesystem::path& /*outPath*/) const
+bool AssetManager::TryGetPathForGuid(const std::string& guid, std::filesystem::path& outPath) const
 {
-    // Runtime fallback: no GUID -> path index. The runtime build
-    // currently doesn't ship one (AssetRegistry is editor-only); an
-    // RuntimeAssetBundle-backed equivalent will be needed when the
-    // runtime path actually starts loading PPtr-bearing assets, which
-    // is post-SE3b. Returning false here causes ReaderHook to treat
-    // every external PPtr as null, matching the documented "dangling
-    // reference at runtime in standalone build" fallback.
-    return false;
+    if (guid.empty())
+    {
+        return false;
+    }
+
+    // The runtime build ships no AssetRegistry, so the GUID -> path index has
+    // to come from the mounted bundles: every BundleEntry carries the asset
+    // GUID the build read out of the .zasset header, and AssetBundleManager
+    // indexes them on mount. Without this the reader hook had no way to
+    // resolve a FileIdentifier that carries a GUID but no usable path, and
+    // every such external PPtr came back null.
+    const AssetBundleManager* bundles = GET_SYSTEM(AssetBundleManager);
+    if (bundles == nullptr)
+    {
+        return false;
+    }
+
+    std::string path;
+    if (!bundles->TryResolveGuid(guid, path))
+    {
+        return false;
+    }
+
+    outPath = path;
+    return true;
 }
 
 Object& AssetManager::ProduceSingletonAsset(const std::string& name,

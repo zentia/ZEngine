@@ -36,6 +36,13 @@ namespace
     int g_Checks = 0;
     int g_Failures = 0;
 
+    // 32-char lowercase hex, the shape DeterministicGuidFromPath produces. The
+    // runtime has no AssetRegistry to mint these, so a build stamps the GUID it
+    // read out of each .zasset header into the bundle entry -- which is exactly
+    // what makes a GUID-only external reference resolvable in a player.
+    constexpr const char* kHeroGuid = "aaaabbbbccccddddeeeeffff00001111";
+    constexpr const char* kWeaponGuid = "11112222333344445555666677778888";
+
     void Check(bool condition, const char* name)
     {
         ++g_Checks;
@@ -127,6 +134,7 @@ int main()
     std::vector<AssetBundles::BundleSourceEntry> hero_entries;
     AssetBundles::BundleSourceEntry hero_entry;
     hero_entry.path = "Models/hero.zasset";  // registry-relative key
+    hero_entry.guid = kHeroGuid;
     hero_entry.type = "AnimSkelMap";
     hero_entry.bytes = hero_bytes;
     hero_entries.push_back(std::move(hero_entry));
@@ -134,6 +142,7 @@ int main()
     std::vector<AssetBundles::BundleSourceEntry> shared_entries;
     AssetBundles::BundleSourceEntry weapon_entry;
     weapon_entry.path = "Models/weapon.zasset";
+    weapon_entry.guid = kWeaponGuid;
     weapon_entry.type = "AnimSkelMap";
     weapon_entry.bytes = weapon_bytes;
     shared_entries.push_back(std::move(weapon_entry));
@@ -208,6 +217,43 @@ int main()
     AnimSkelMap* weapon = asset_manager->loadAsset<AnimSkelMap>(eastl::string(weapon_path.generic_string().c_str()));
     Check(weapon != nullptr && weapon->convert.size() == 2 && weapon->convert[1] == 8,
           "B6: asset from the dependency bundle loads too");
+
+    // ---- B6b: GUID -> path, the runtime's stand-in for AssetRegistry -------
+    // A player build ships no AssetRegistry, so the only GUID index available
+    // is the one AssetBundleManager builds from the mounted bundles' entries.
+    // Without it, an external PPtr whose FileIdentifier carries a GUID but no
+    // usable path resolved to null -- which is what silently dropped every
+    // nested prefab in a packaged build.
+    {
+        std::string resolved_path;
+        Check(bundles->TryResolveGuid(kHeroGuid, resolved_path) && resolved_path == "Models/hero.zasset",
+              "B6b: a mounted bundle entry GUID resolves to its registry path");
+
+        std::filesystem::path via_asset_manager;
+        Check(asset_manager->TryGetPathForGuid(kHeroGuid, via_asset_manager) &&
+                  via_asset_manager.generic_string() == "Models/hero.zasset",
+              "B6b: AssetManager::TryGetPathForGuid resolves through the bundles");
+
+        std::string should_stay_empty;
+        Check(!bundles->TryResolveGuid("00000000000000000000000000000000", should_stay_empty),
+              "B6b: an unknown GUID is refused");
+        Check(!asset_manager->TryGetPathForGuid("", via_asset_manager), "B6b: an empty GUID is refused");
+    }
+
+    // ---- B6c: a reference into an unmounted bundle mounts it on demand -----
+    // FileIdentifier carries a GUID and a path but never a bundle name, so the
+    // manifest's asset_paths list is the only thing that can answer "which
+    // bundle owns this?" -- without it a player has to mount everything up
+    // front or lose every reference that crosses a bundle boundary.
+    {
+        bundles->Unmount("shared");
+        Check(!bundles->IsMounted("shared"), "B6c: dependency unmounted to set up the test");
+        Check(bundles->EnsureBundleMountedForAsset("Models/weapon.zasset"),
+              "B6c: the manifest names the owning bundle and it gets mounted");
+        Check(bundles->IsMounted("shared"), "B6c: the owning bundle is mounted again");
+        Check(!bundles->EnsureBundleMountedForAsset("Models/not-packed.zasset"),
+              "B6c: an asset no bundle claims is refused");
+    }
 
     // ---- B7: corruption is detected ---------------------------------------
     {

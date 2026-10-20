@@ -12,6 +12,29 @@ namespace
     {
         return bundle_path.stem().string();
     }
+
+    /// True when `candidate` ends with `suffix` on a path boundary, so
+    /// "Assets/Models/hero.zasset" matches "Models/hero.zasset" (a caller
+    /// typically holds an absolute path while the bundle stores the
+    /// registry-relative key). Kept here rather than shared with
+    /// AssetBundle.cpp's copy so neither header has to expose it.
+    bool EndsWithPath(const std::string& candidate, const std::string& suffix)
+    {
+        if (suffix.empty() || candidate.size() < suffix.size())
+        {
+            return false;
+        }
+        if (candidate.compare(candidate.size() - suffix.size(), suffix.size(), suffix) != 0)
+        {
+            return false;
+        }
+        if (candidate.size() == suffix.size())
+        {
+            return true;
+        }
+        const char before = candidate[candidate.size() - suffix.size() - 1];
+        return before == '/' || before == '\\';
+    }
 }  // namespace
 
 bool AssetBundleManager::LoadManifest(const std::filesystem::path& manifest_path)
@@ -110,10 +133,40 @@ bool AssetBundleManager::MountBundleInternal(const std::filesystem::path& bundle
     {
         std::lock_guard<std::mutex> lock(m_Mutex);
         m_Bundles.emplace(name, bundle);
+        IndexBundleGuidsLocked(*bundle);
+        if (m_BundleDirectory.empty())
+        {
+            m_BundleDirectory = bundle_path.parent_path();
+        }
     }
 
     LOG_INFO(ZPak, "AssetBundleManager: mounted '{}' ({} assets) from {}", name, bundle->GetEntryCount(), bundle_path.generic_string());
     return true;
+}
+
+void AssetBundleManager::IndexBundleGuidsLocked(const AssetBundle& bundle)
+{
+    for (const AssetBundles::BundleEntry& entry : bundle.GetEntries())
+    {
+        if (entry.guid.empty())
+        {
+            continue;
+        }
+        // First mount wins: an asset belongs to exactly one bundle (the build
+        // rejects duplicates), so a collision means a stale bundle is mounted
+        // alongside a fresh one, and the already-mounted copy is the one every
+        // reader has been served from.
+        m_GuidToPath.emplace(entry.guid, entry.path);
+    }
+}
+
+void AssetBundleManager::RebuildGuidIndexLocked()
+{
+    m_GuidToPath.clear();
+    for (const auto& [name, bundle] : m_Bundles)
+    {
+        IndexBundleGuidsLocked(*bundle);
+    }
 }
 
 int AssetBundleManager::MountDirectory(const std::filesystem::path& dir, const std::filesystem::path& manifest_path)
@@ -157,6 +210,11 @@ bool AssetBundleManager::Unmount(const std::string& bundle_name)
     found->second->Unload();
     MemoryManager::DestroyObject(found->second);
     m_Bundles.erase(found);
+    RebuildGuidIndexLocked();
+    if (m_Bundles.empty())
+    {
+        m_BundleDirectory.clear();
+    }
     LOG_INFO(ZPak, "AssetBundleManager: unmounted '{}'", bundle_name);
     return true;
 }
@@ -171,6 +229,8 @@ void AssetBundleManager::UnmountAll()
     }
     m_Bundles.clear();
     m_Manifest = nullptr;
+    m_GuidToPath.clear();
+    m_BundleDirectory.clear();
 }
 
 bool AssetBundleManager::IsMounted(const std::string& bundle_name) const
@@ -210,6 +270,78 @@ bool AssetBundleManager::ContainsAsset(const std::string& asset_path) const
         }
     }
     return false;
+}
+
+bool AssetBundleManager::TryResolveGuid(const std::string& guid, std::string& out_path) const
+{
+    if (guid.empty())
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_Mutex);
+    const auto found = m_GuidToPath.find(guid);
+    if (found == m_GuidToPath.end())
+    {
+        return false;
+    }
+    out_path = found->second;
+    return true;
+}
+
+bool AssetBundleManager::EnsureBundleMountedForAsset(const std::string& asset_path)
+{
+    if (asset_path.empty())
+    {
+        return false;
+    }
+    if (ContainsAsset(asset_path))
+    {
+        return true;
+    }
+
+    std::string bundle_name;
+    std::filesystem::path directory;
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        if (m_Manifest == nullptr || m_BundleDirectory.empty())
+        {
+            return false;
+        }
+        directory = m_BundleDirectory;
+
+        for (const AssetBundleInfo& info : m_Manifest->bundles)
+        {
+            for (const eastl::string& candidate : info.asset_paths)
+            {
+                if (EndsWithPath(asset_path, candidate.c_str()))
+                {
+                    bundle_name = info.name.c_str();
+                    break;
+                }
+            }
+            if (!bundle_name.empty())
+            {
+                break;
+            }
+        }
+    }
+
+    if (bundle_name.empty())
+    {
+        return false;
+    }
+    if (IsMounted(bundle_name))
+    {
+        return ContainsAsset(asset_path);
+    }
+
+    LOG_INFO(ZPak, "AssetBundleManager: '{}' needs bundle '{}'; mounting it now", asset_path, bundle_name);
+    if (!MountBundle(directory / (bundle_name + ".zbundle")))
+    {
+        return false;
+    }
+    return ContainsAsset(asset_path);
 }
 
 bool AssetBundleManager::TryReadAssetBytes(const std::filesystem::path& asset_path, std::vector<uint8_t>& out_bytes) const

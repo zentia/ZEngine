@@ -508,7 +508,12 @@ bool EditorAssetManager::TryGetPathForGuid(const std::string& guid, std::filesys
     const std::optional<AssetIndexEntry> index = m_AssetRegistry.GetAssetIndexByGUID(guid);
     if (!index.has_value() || index->asset_path.empty())
     {
-        return false;
+        // Not in the registry -- but the editor can have bundles mounted (PIE
+        // against a packaged build, or a bundle-handed asset), and the runtime
+        // base class knows how to ask them. Fall through instead of answering
+        // "nowhere", which is what made such references null even when the
+        // bytes were mounted a few lines away.
+        return AssetManager::TryGetPathForGuid(guid, outPath);
     }
 
     const std::filesystem::path scan_root = m_AssetRegistry.GetScanRoot();
