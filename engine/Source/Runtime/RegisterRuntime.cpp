@@ -55,6 +55,7 @@
 #include "Runtime/Resource/Asset/RuntimeAssetManager.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
 #include "Runtime/Resource/Preload/PreloadManager.h"
+#include "Runtime/Resource/Addressables/AsyncLoadManager.h"
 #include "Runtime/Resource/ResType/Data/AnimSkelMap.h"
 #include "Runtime/Resource/ResType/Data/AnimationClip.h"
 #include "Runtime/Resource/ResourceManager.h"
@@ -99,6 +100,11 @@ namespace
         REGISTER_SYSTEM(ThreadManager);
         REGISTER_SYSTEM(WindowSystem);
         REGISTER_SYSTEM(PreloadManager);
+        // Addressables-style async loading. Declared with a fully-qualified
+        // name because this function lives in the global namespace while the
+        // system itself sits in zengine::addressables; SystemRegistry keys on
+        // the full type_index, so the namespace is just part of the name.
+        REGISTER_SYSTEM(zengine::addressables::AsyncLoadManager);
         REGISTER_SYSTEM(PhysicsManager);
         REGISTER_SYSTEM(WorldManager);
         REGISTER_SYSTEM(AISystem);

@@ -408,6 +408,15 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AISmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/AI/Test/AISmokeTest.cpp")
+# Addressables async-loading smoke-test main carve-out. Same rationale: it owns
+# main() and must not be whole-archived into ZRuntime, or every consumer exe
+# gets LNK2005 "main already defined". Built only when
+# ZENGINE_BUILD_ADDRESSABLES_SMOKE_TEST=ON (see
+# Resource/Addressables/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Addressables/Test/AddressablesSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Addressables/Test/AddressablesSmokeTest.cpp")
 # NavMeshTest: same rationale -- it owns its own main() and must not be
 # wholearchive'd into ZRuntime or every consumer exe gets LNK2005.
 list(REMOVE_ITEM SOURCE_FILES
@@ -1207,6 +1216,11 @@ add_subdirectory(AssetBundle/Test)
 # glob above and built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON. Pure
 # CPU math, so it runs headless on every host -- no GPU, no window.
 add_subdirectory(Function/Animation/Test)
+
+# Addressables async-loading smoke test. Own main(); carved out of the ZRuntime
+# glob above and built only when ZENGINE_BUILD_ADDRESSABLES_SMOKE_TEST=ON. Pure
+# file + scheduling work, so it runs headless on every host -- no GPU, no window.
+add_subdirectory(Resource/Addressables/Test)
 
 # =============================================================================
 # ASTC texture decompression support (Phase 6)

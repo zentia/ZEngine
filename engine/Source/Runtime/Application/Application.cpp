@@ -13,6 +13,7 @@
 #include "Runtime/UI/UISystem.h"
 #include "Runtime/Profiler/Profiler.h"
 #include "Runtime/Resource/Preload/PreloadManager.h"
+#include "Runtime/Resource/Addressables/AsyncLoadManager.h"
 #include "Runtime/Resource/UserPreferences/UserPreferences.h"
 
 #if defined(_WIN32)
@@ -152,6 +153,14 @@ void Application::LogicalTick(float delta_time)
 {
     Z_PROFILE_SCOPE("Engine::logicalTick");
     GET_SYSTEM(PreloadManager)->Tick(delta_time);
+    // Drain the Addressables completion queue. This is stage 2 of every async
+    // load: the worker threads only read bytes, and object hydration must run
+    // here because AssetManager's tables are unsynchronised. Skipping this
+    // does not crash — it just means no async load ever finishes.
+    if (auto* async_load_manager = GET_SYSTEM(zengine::addressables::AsyncLoadManager))
+    {
+        async_load_manager->Tick(delta_time);
+    }
     // 输入必须早于世界 tick。WorldManager::Tick 会驱动 Level::Tick ->
     // 组件 tick，MotorComponent 就是在那里读 InputSystem 的命令位算位移的。
     // 如果把 InputSystem::Tick() 留在后面，Motor 每帧读到的都是上一帧的
