@@ -15,9 +15,11 @@
 #include <algorithm>
 #include <cctype>
 #include <deque>
+#include <filesystem>
 #include <fstream>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace
 {
@@ -86,6 +88,58 @@ namespace
             in.read(reinterpret_cast<char*>(out_bytes.data()), size);
         }
         return static_cast<std::size_t>(in.gcount()) == out_bytes.size();
+    }
+
+    /// Every `*.js` under `root`, as (module id, absolute path), sorted by
+    /// module id. The module id is the path relative to `root` without the
+    /// `.js` suffix -- the same id `ScriptEnv::LoadModule()` takes, which is
+    /// what `ScriptAsset::m_CompiledRelPath` stores.
+    std::vector<std::pair<std::string, std::filesystem::path>> CollectScriptModules(
+        const std::filesystem::path& root)
+    {
+        std::vector<std::pair<std::string, std::filesystem::path>> found;
+        if (root.empty())
+        {
+            return found;
+        }
+
+        std::error_code ec;
+        if (!std::filesystem::is_directory(root, ec) || ec)
+        {
+            return found;
+        }
+
+        for (std::filesystem::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec))
+        {
+            if (ec || !it->is_regular_file(ec) || ec)
+            {
+                continue;
+            }
+            // .js only: tsc also emits .js.map / .d.ts next to the output and
+            // neither is ever loaded at runtime.
+            if (it->path().extension() != ".js")
+            {
+                continue;
+            }
+
+            std::string module_id = it->path().lexically_relative(root).generic_string();
+            const std::string kSuffix = ".js";
+            if (module_id.size() > kSuffix.size() &&
+                module_id.compare(module_id.size() - kSuffix.size(), kSuffix.size(), kSuffix) == 0)
+            {
+                module_id.erase(module_id.size() - kSuffix.size());
+            }
+            if (module_id.empty())
+            {
+                continue;
+            }
+            found.emplace_back(std::move(module_id), it->path());
+        }
+
+        std::sort(found.begin(), found.end(),
+                  [](const std::pair<std::string, std::filesystem::path>& a,
+                     const std::pair<std::string, std::filesystem::path>& b) { return a.first < b.first; });
+        return found;
     }
 
     /// BFS one root over the registry's dependency edges. The root itself is
@@ -319,6 +373,48 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         addAsset(kSharedBundleName, asset);
     }
 
+    // ---- 4b. compiled scripts ---------------------------------------------
+    // The .js a Behaviour runs is not reachable through the asset dependency
+    // graph: a ScriptAsset names a MODULE ("foo/Bar"), and the file lives in
+    // <project>/Intermediate/Scripts/, outside the content directory the
+    // registry indexes. Without this pass the only way to ship scripts is to
+    // copy that directory next to the player, so script and asset bytes could
+    // come from two different builds.
+    const std::vector<std::pair<std::string, std::filesystem::path>> script_modules =
+        CollectScriptModules(project_info->GetIntermediateScriptsRoot());
+
+    for (const auto& [module_id, absolute_path] : script_modules)
+    {
+        std::vector<uint8_t> bytes;
+        if (!ReadWholeFile(absolute_path, bytes))
+        {
+            LOG_WARNING(ZPak, "AssetBundleBuilder: cannot read script module '{}'; skipped", module_id);
+            continue;
+        }
+
+        AssetBundles::BundleSourceEntry entry;
+        entry.path = AssetBundles::MakeScriptEntryPath(module_id);
+        // No GUID and no runtime type: a compiled module is not a registry
+        // asset and not an Object. The prefix is what identifies it.
+        entry.type = "ScriptModule";
+        entry.bytes = std::move(bytes);
+
+        bundles[AssetBundles::kScriptBundleName].push_back(std::move(entry));
+    }
+
+    result.script_count = bundles[AssetBundles::kScriptBundleName].size();
+    if (result.script_count > 0)
+    {
+        LOG_INFO(ZPak, "AssetBundleBuilder: {} compiled script module(s)", result.script_count);
+    }
+    else
+    {
+        // Never leave an empty "scripts" bundle behind: it would be declared as
+        // a dependency of every other bundle, and MountBundle treats a missing
+        // dependency as a hard failure.
+        bundles.erase(AssetBundles::kScriptBundleName);
+    }
+
     // ---- 5. write ----------------------------------------------------------
     const std::filesystem::path bundles_dir = output_dir / kBundlesSubDir;
     std::filesystem::create_directories(bundles_dir, ec);
@@ -330,6 +426,7 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
 
     std::vector<AssetBundleInfo> infos;
     infos.reserve(bundles.size());
+    const bool has_scripts = bundles.find(AssetBundles::kScriptBundleName) != bundles.end();
     for (const auto& [name, entries] : bundles)
     {
         // Deterministic order: the same content must produce the same bundle
@@ -353,7 +450,13 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         const int64_t size_bytes = size_ec ? 0 : static_cast<int64_t>(size);
 
         result.total_bytes += static_cast<std::size_t>(size_bytes);
-        result.asset_count += sorted.size();
+        // Script modules are counted separately: they are not part of the
+        // dependency walk, so folding them into asset_count would break any
+        // "did the walk find everything" comparison against the registry.
+        if (name != AssetBundles::kScriptBundleName)
+        {
+            result.asset_count += sorted.size();
+        }
 
         AssetBundleInfo info;
         info.name = name.c_str();
@@ -365,6 +468,14 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         if (name != kSharedBundleName && !shared_assets.empty())
         {
             info.dependencies.emplace_back(kSharedBundleName);
+        }
+        // Scripts are nobody's dependency in the asset sense, so they are
+        // declared explicitly: mounting one level has to be enough to run the
+        // behaviours hanging off it. (EnsureBundleMountedForAsset would also
+        // find them, but only after the first module is already being loaded.)
+        if (name != AssetBundles::kScriptBundleName && has_scripts)
+        {
+            info.dependencies.emplace_back(AssetBundles::kScriptBundleName);
         }
 
         infos.push_back(std::move(info));
@@ -413,9 +524,10 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
     result.output_dir = output_dir;
 
     LOG_INFO(ZPak,
-             "AssetBundleBuilder: {} bundle(s), {} asset(s), {} bytes -> {}",
+             "AssetBundleBuilder: {} bundle(s), {} asset(s), {} script(s), {} bytes -> {}",
              result.bundle_count,
              result.asset_count,
+             result.script_count,
              result.total_bytes,
              output_dir.generic_string());
     return result;

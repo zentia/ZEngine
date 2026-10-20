@@ -84,6 +84,15 @@ public:
     /// `out_bytes` is only written on success.
     bool TryReadAssetBytes(const std::filesystem::path& asset_path, std::vector<uint8_t>& out_bytes) const;
 
+    /// One compiled script module, by MODULE ID ("foo/Bar", no extension).
+    ///
+    /// `EnsureBundleMountedForAsset` + `TryReadAssetBytes` behind the entry-key
+    /// convention, so the loader does not have to know the prefix. False means
+    /// "no mounted bundle carries it", which is the normal case in the editor
+    /// (bundles are never mounted there) and the caller then falls back to the
+    /// filesystem -- it is NOT an error.
+    bool TryReadScriptModule(const std::string& module_id, std::string& out_source);
+
     /// GUID -> registry-relative path, built from the entries of every mounted
     /// bundle. This is the runtime stand-in for AssetRegistry's guid->path
     /// index: a player build ships no registry, and without this every external

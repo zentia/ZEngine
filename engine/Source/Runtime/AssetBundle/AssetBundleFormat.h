@@ -126,4 +126,30 @@ namespace AssetBundles
                               const BundleEntry& entry,
                               std::vector<uint8_t>& out_bytes,
                               std::string& out_error);
+
+    // -------------------------------------------------------------------------
+    // Compiled script modules
+    // -------------------------------------------------------------------------
+    // A bundle is a path -> bytes map, and one entry table carries both kinds
+    // of payload a build ships. Script modules are the second kind: they are
+    // the tsc output under <project>/Intermediate/Scripts/, they are NOT
+    // registry assets (so they have no registry-relative path and no GUID),
+    // and the loader addresses them by MODULE ID -- "foo/Bar", no extension.
+    //
+    // They are therefore stored under a reserved prefix. "Intermediate/" cannot
+    // collide with a registry asset because AssetRegistry indexes the content
+    // directory only, and Intermediate/ is a peer of it at the project root.
+    constexpr const char* kScriptEntryPrefix = "Intermediate/Scripts/";
+    /// The bundle every compiled module goes into. Kept separate from `shared`
+    /// so "does this build ship scripts" is one manifest lookup.
+    constexpr const char* kScriptBundleName = "scripts";
+
+    /// "foo/Bar" -> "Intermediate/Scripts/foo/Bar.js".
+    /// Empty input yields an empty string (callers must check); an id that
+    /// already carries the prefix is returned unchanged.
+    std::string MakeScriptEntryPath(const std::string& module_id);
+
+    /// Inverse of `MakeScriptEntryPath`: strips the prefix and the ".js"
+    /// suffix. False when `entry_path` is not a script entry.
+    bool ParseScriptEntryPath(const std::string& entry_path, std::string& out_module_id);
 }  // namespace AssetBundles

@@ -22,7 +22,12 @@
 //      else goes into its root's bundle.
 //   4. Cook first (textures only today), then pack COOKED bytes when the
 //      platform has them and source bytes otherwise.
-//   5. Write `<output_dir>/<name>.zbundle` per bundle plus
+//   5. Pack the compiled script modules from <project>/Intermediate/Scripts/
+//      into their own `scripts` bundle. They are not part of the dependency
+//      walk (a ScriptAsset names a module id, and the .js lives outside the
+//      content directory the registry indexes), so they are collected
+//      separately and every other bundle declares `scripts` as a dependency.
+//   6. Write `<output_dir>/<name>.zbundle` per bundle plus
 //      `<output_dir>/AssetBundleManifest.zasset`.
 //
 // The manifest is what makes a bundle mountable in isolation: it records each
@@ -66,6 +71,11 @@ struct AssetBundleBuildResult
     std::string error;
     std::size_t bundle_count {0};
     std::size_t asset_count {0};
+    /// Compiled script modules packed into the `scripts` bundle. Counted
+    /// separately from `asset_count` because a module is neither a registry
+    /// asset nor an Object -- `asset_count` is what a "did the dependency walk
+    /// find everything" check should look at.
+    std::size_t script_count {0};
     /// Sum of the written .zbundle file sizes (the manifest is not counted --
     /// it is metadata about the bundles, not one of them).
     std::size_t total_bytes {0};

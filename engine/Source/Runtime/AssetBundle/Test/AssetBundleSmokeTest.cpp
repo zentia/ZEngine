@@ -27,6 +27,7 @@
 #include "Runtime/Resource/ResType/Data/AnimSkelMap.h"
 
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -44,6 +45,10 @@ namespace
     constexpr const char* kHeroGuid = "aaaabbbbccccddddeeeeffff00001111";
     constexpr const char* kWeaponGuid = "11112222333344445555666677778888";
     constexpr const char* kAlbedoGuid = "9999aaaabbbbccccddddeeeeffff0000";
+
+    // A compiled module, in the shape tsc emits for `module: commonjs` (which
+    // is what ScriptEnv's IIFE wrapper consumes).
+    constexpr const char* kMoverSource = "exports.Mover = class Mover { speed() { return 3; } };\n";
 
     void Check(bool condition, const char* name)
     {
@@ -205,6 +210,34 @@ int main()
     shared_entries.push_back(std::move(albedo_entry));
 
     std::string error;
+
+    // ---- B2b: a compiled script module -------------------------------------
+    // Scripts are not registry assets: the loader addresses them by MODULE id
+    // ("player/Mover") and the file lives under <project>/Intermediate/Scripts/,
+    // outside the content directory the registry indexes. They ride along under
+    // a reserved prefix so one entry table can carry both kinds of payload.
+    const std::string mover_entry_path = AssetBundles::MakeScriptEntryPath("player/Mover");
+    std::vector<AssetBundles::BundleSourceEntry> script_entries;
+    AssetBundles::BundleSourceEntry script_entry;
+    script_entry.path = mover_entry_path;
+    script_entry.type = "ScriptModule";
+    script_entry.bytes.assign(kMoverSource, kMoverSource + std::strlen(kMoverSource));
+    script_entries.push_back(std::move(script_entry));
+
+    const std::filesystem::path scripts_bundle_path = bundles_dir / "scripts.zbundle";
+    Check(AssetBundles::WriteBundleFile(scripts_bundle_path, script_entries, AssetBundles::BundleCompression::Stored, error),
+          "B2b: scripts bundle written");
+    Check(mover_entry_path == "Intermediate/Scripts/player/Mover.js",
+          "B2b: a module id maps to the reserved entry key");
+    Check(AssetBundles::MakeScriptEntryPath("").empty(), "B2b: an empty module id maps to nothing");
+    {
+        std::string parsed;
+        Check(AssetBundles::ParseScriptEntryPath(mover_entry_path, parsed) && parsed == "player/Mover",
+              "B2b: the entry key parses back to the module id");
+        Check(!AssetBundles::ParseScriptEntryPath("Models/hero.zasset", parsed),
+              "B2b: an asset key is not a script entry");
+    }
+
     const std::filesystem::path hero_bundle_path = bundles_dir / "models_hero.zbundle";
     const std::filesystem::path shared_bundle_path = bundles_dir / "shared.zbundle";
     Check(AssetBundles::WriteBundleFile(hero_bundle_path, hero_entries, AssetBundles::BundleCompression::Stored, error),
@@ -230,12 +263,21 @@ int main()
     hero_info.name = "models_hero";
     hero_info.asset_paths.push_back("Models/hero.zasset");
     hero_info.dependencies.push_back("shared");
+    // Scripts are nobody's dependency in the asset sense: a ScriptAsset names a
+    // module id, and the .js is not part of the dependency walk. The builder
+    // declares them explicitly so mounting one level is enough to run its
+    // behaviours.
+    hero_info.dependencies.push_back(AssetBundles::kScriptBundleName);
     AssetBundleInfo shared_info;
     shared_info.name = "shared";
     shared_info.asset_paths.push_back("Models/weapon.zasset");
     shared_info.asset_paths.push_back("Textures/albedo.zasset");
+    AssetBundleInfo scripts_info;
+    scripts_info.name = AssetBundles::kScriptBundleName;
+    scripts_info.asset_paths.push_back(mover_entry_path.c_str());
     manifest->bundles.push_back(hero_info);
     manifest->bundles.push_back(shared_info);
+    manifest->bundles.push_back(scripts_info);
 
     const std::filesystem::path manifest_path = root / "Build" / "Standalone" / "test.manifest.zasset";
     Check(GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(manifest_path, *manifest), "B3: manifest written");
@@ -247,6 +289,7 @@ int main()
     Check(bundles->LoadManifest(manifest_path), "B4: manifest loads");
     Check(bundles->MountBundle(hero_bundle_path), "B4: hero bundle mounts");
     Check(bundles->IsMounted("shared"), "B4: dependency bundle auto-mounted");
+    Check(bundles->IsMounted(AssetBundles::kScriptBundleName), "B4: the scripts dependency auto-mounts too");
 
     AssetBundle* hero_bundle = bundles->FindBundle("models_hero");
     Check(hero_bundle != nullptr && hero_bundle->GetEntryCount() == 1, "B4: mounted bundle has its entry");
@@ -349,10 +392,34 @@ int main()
               "B9: a tree with no packaged content reports none");
 
         bundles->UnmountAll();
-        Check(bundles->MountBuild(root / "Build") == 2, "B9: MountBuild mounts both bundles");
-        Check(bundles->IsMounted("models_hero") && bundles->IsMounted("shared"),
-              "B9: the root bundle and its dependency are both mounted");
+        Check(bundles->MountBuild(root / "Build") == 3, "B9: MountBuild mounts every bundle");
+        Check(bundles->IsMounted("models_hero") && bundles->IsMounted("shared") &&
+                  bundles->IsMounted(AssetBundles::kScriptBundleName),
+              "B9: the root bundle, its dependency and the scripts are mounted");
         Check(bundles->ContainsAsset("Textures/albedo.zasset"), "B9: packaged content is reachable again");
+    }
+
+    // ---- B10: compiled script modules come out of the bundle ---------------
+    // Without this the only way to ship scripts is to copy
+    // <project>/Intermediate/Scripts/ next to the player, so the script bytes
+    // and the asset bytes could come from two different builds.
+    {
+        std::string source;
+        Check(bundles->TryReadScriptModule("player/Mover", source) && source == kMoverSource,
+              "B10: a bundled module is read back by module id");
+
+        std::string missing;
+        Check(!bundles->TryReadScriptModule("player/Missing", missing), "B10: an unknown module is refused");
+        Check(!bundles->TryReadScriptModule("", missing) && missing.empty(), "B10: an empty module id is refused");
+
+        // On demand: a scripts bundle is nobody's asset dependency, so it gets
+        // mounted when the first module is asked for.
+        bundles->Unmount(AssetBundles::kScriptBundleName);
+        Check(!bundles->IsMounted(AssetBundles::kScriptBundleName), "B10: scripts unmounted to set up the test");
+        std::string remounted;
+        Check(bundles->TryReadScriptModule("player/Mover", remounted) && remounted == kMoverSource,
+              "B10: asking for a module mounts the scripts bundle on demand");
+        Check(bundles->IsMounted(AssetBundles::kScriptBundleName), "B10: the scripts bundle is mounted again");
     }
 
     // ---- B7: corruption is detected ---------------------------------------

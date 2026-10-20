@@ -327,4 +327,68 @@ namespace AssetBundles
         }
         return true;
     }
+
+    std::string MakeScriptEntryPath(const std::string& module_id)
+    {
+        if (module_id.empty())
+        {
+            return {};
+        }
+
+        std::string normalised;
+        normalised.reserve(module_id.size());
+        for (const char c : module_id)
+        {
+            normalised.push_back(c == '\\' ? '/' : c);
+        }
+        // Drop a leading '/' or "./": the entry key is relative.
+        while (!normalised.empty() && (normalised.front() == '/' || normalised.front() == '.'))
+        {
+            normalised.erase(normalised.begin());
+            if (!normalised.empty() && normalised.front() == '/')
+            {
+                normalised.erase(normalised.begin());
+            }
+        }
+        if (normalised.empty())
+        {
+            return {};
+        }
+
+        const std::string prefix(kScriptEntryPrefix);
+        if (normalised.size() >= prefix.size() && normalised.compare(0, prefix.size(), prefix) == 0)
+        {
+            return normalised;
+        }
+
+        std::string out = prefix;
+        out += normalised;
+        // The loader's module id has no extension; the entry does.
+        const std::string kSuffix = ".js";
+        if (out.size() < kSuffix.size() || out.compare(out.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0)
+        {
+            out += kSuffix;
+        }
+        return out;
+    }
+
+    bool ParseScriptEntryPath(const std::string& entry_path, std::string& out_module_id)
+    {
+        const std::string prefix(kScriptEntryPrefix);
+        const std::string kSuffix = ".js";
+        if (entry_path.size() <= prefix.size() + kSuffix.size())
+        {
+            return false;
+        }
+        if (entry_path.compare(0, prefix.size(), prefix) != 0)
+        {
+            return false;
+        }
+        if (entry_path.compare(entry_path.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0)
+        {
+            return false;
+        }
+        out_module_id = entry_path.substr(prefix.size(), entry_path.size() - prefix.size() - kSuffix.size());
+        return !out_module_id.empty();
+    }
 }  // namespace AssetBundles

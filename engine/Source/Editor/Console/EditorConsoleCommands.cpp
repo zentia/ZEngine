@@ -550,9 +550,10 @@ namespace
         }
 
         LOG_INFO(ZPak,
-                 "bundle.build: {} bundle(s), {} asset(s), {} bytes -> {}",
+                 "bundle.build: {} bundle(s), {} asset(s), {} script(s), {} bytes -> {}",
                  result.bundle_count,
                  result.asset_count,
+                 result.script_count,
                  result.total_bytes,
                  result.output_dir.generic_string());
         return true;
