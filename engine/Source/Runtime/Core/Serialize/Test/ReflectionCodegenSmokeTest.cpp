@@ -40,6 +40,18 @@
 // name a bool field, and ClampMin <= ClampMax. Catches the drift that appears
 // when an annotation and the ZPROPERTY list stop agreeing.
 //
+// `--check-script-bindings` cross-checks every ZHeaderTool-generated
+// ZFUNCTION table (ZHeaderTool phase 3). The pesapi callbacks themselves need
+// a live JS env to exercise, but the tables are pure data, and this catches
+// every way they can rot: a missing callback, an empty name, a class bound
+// under the same global name as another one (ScriptEnv installs them as
+// globals of that name), a class that inherits from itself, and a .d.ts that
+// comes out empty or brace-unbalanced.
+//
+// `--dump-script-dts` prints the generated `declare class ...` block to stdout
+// on its own (no dump, no other checks) -- handy when a new ZFUNCTION produces
+// a signature you want to eyeball without opening a project.
+//
 // Opt in with:
 //   cmake -B build -DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON
 //   cmake --build build --target ReflectionCodegenSmokeTest
@@ -59,6 +71,7 @@
 #include "Runtime/Function/AI/AIControllerComponent.h"
 #include "Runtime/Function/Framework/Component/Script/TypeScriptComponent.h"
 #include "Runtime/Function/Render/RenderCamera.h"
+#include "Runtime/Scripting/Binding/ScriptBinding.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -336,6 +349,109 @@ namespace
         return problems == 0;
     }
 
+    /// Cross-check the generated ZFUNCTION binding tables (phase 3).
+    bool CheckScriptBindings()
+    {
+        int problems = 0;
+        uint32_t classes = 0;
+        uint32_t methods = 0;
+
+        std::vector<const ZClassScriptBinding*> seen;
+        for (const ZClassScriptBinding* cls = ScriptBindingRegistry::Classes(); cls != nullptr; cls = cls->next)
+        {
+            ++classes;
+            const char* owner = (cls->scriptName != nullptr && cls->scriptName[0] != '\0') ? cls->scriptName : "<unnamed>";
+            if (cls->scriptName == nullptr || cls->scriptName[0] == '\0')
+            {
+                std::fprintf(stderr, "SCRIPT_BINDING: a class table has no script name\n");
+                ++problems;
+            }
+            if (cls->typeId == nullptr)
+            {
+                std::fprintf(stderr, "SCRIPT_BINDING: %s has no type id\n", owner);
+                ++problems;
+            }
+            if (cls->superTypeId != nullptr && cls->superTypeId == cls->typeId)
+            {
+                std::fprintf(stderr, "SCRIPT_BINDING: %s is its own super class\n", owner);
+                ++problems;
+            }
+            if (cls->superName != nullptr && cls->scriptName != nullptr && std::strcmp(cls->superName, cls->scriptName) == 0)
+            {
+                std::fprintf(stderr, "SCRIPT_BINDING: %s extends itself\n", owner);
+                ++problems;
+            }
+            if (cls->methods == nullptr || cls->methodCount == 0)
+            {
+                std::fprintf(stderr, "SCRIPT_BINDING: %s has no methods\n", owner);
+                ++problems;
+            }
+            else
+            {
+                for (size_t i = 0; i < cls->methodCount; ++i)
+                {
+                    const ZScriptMethodEntry& method = cls->methods[i];
+                    ++methods;
+                    if (method.name == nullptr || method.name[0] == '\0')
+                    {
+                        std::fprintf(stderr, "SCRIPT_BINDING: %s method %zu has no name\n", owner, i);
+                        ++problems;
+                        continue;
+                    }
+                    if (method.callback == nullptr)
+                    {
+                        std::fprintf(stderr, "SCRIPT_BINDING: %s.%s has no pesapi callback\n", owner, method.name);
+                        ++problems;
+                    }
+                    if (method.tsSignature == nullptr || method.tsSignature[0] == '\0')
+                    {
+                        std::fprintf(stderr, "SCRIPT_BINDING: %s.%s has no TypeScript signature\n", owner, method.name);
+                        ++problems;
+                    }
+                }
+            }
+            // The classes are installed as globals of their script name, so two
+            // classes sharing one name would silently shadow each other.
+            for (const ZClassScriptBinding* other : seen)
+            {
+                if (other->scriptName != nullptr && cls->scriptName != nullptr &&
+                    std::strcmp(other->scriptName, cls->scriptName) == 0)
+                {
+                    std::fprintf(stderr, "SCRIPT_BINDING: duplicate script name '%s'\n", owner);
+                    ++problems;
+                }
+            }
+            seen.push_back(cls);
+        }
+
+        std::string dts;
+        ScriptBindingRegistry::AppendTypeScriptDeclarations(dts);
+        if (classes != 0 && dts.empty())
+        {
+            std::fprintf(stderr, "SCRIPT_BINDING: %u class table(s) but the .d.ts came out empty\n", classes);
+            ++problems;
+        }
+        int depth = 0;
+        for (char c : dts)
+        {
+            if (c == '{')
+                ++depth;
+            else if (c == '}')
+                --depth;
+            if (depth < 0)
+                break;
+        }
+        if (depth != 0)
+        {
+            std::fprintf(stderr, "SCRIPT_BINDING: generated .d.ts has unbalanced braces (depth %d)\n", depth);
+            ++problems;
+        }
+
+        std::fprintf(stderr, "SCRIPT_BINDING: %u class table(s), %u bound method(s), %zu d.ts byte(s), %d problem(s)\n", classes,
+                     methods, dts.size(), problems);
+        return problems == 0;
+    }
+
     bool DumpClass(std::ostringstream& out, const char* class_name)
     {
         out << "=== " << class_name << " ===\n";
@@ -396,6 +512,8 @@ int main(int argc, char** argv)
     bool check_registry = false;
     bool check_enabled = false;
     bool check_property_meta = false;
+    bool check_script_bindings = false;
+    bool dump_script_dts = false;
     for (int i = 1; i < argc; ++i)
     {
         const std::string arg = argv[i];
@@ -409,6 +527,10 @@ int main(int argc, char** argv)
             check_enabled = true;
         else if (arg == "--check-property-meta")
             check_property_meta = true;
+        else if (arg == "--check-script-bindings")
+            check_script_bindings = true;
+        else if (arg == "--dump-script-dts")
+            dump_script_dts = true;
         else
             classes.push_back(arg);
     }
@@ -419,6 +541,17 @@ int main(int argc, char** argv)
     }
 
     RegisterCore();
+
+    // Standalone .d.ts dump: no type dump, no other checks.
+    if (dump_script_dts)
+    {
+        std::string dts;
+        ScriptBindingRegistry::AppendTypeScriptDeclarations(dts);
+        std::fwrite(dts.data(), 1, dts.size(), stdout);
+        std::fflush(stdout);
+        return dts.empty() ? 1 : 0;
+    }
+
     if (!SystemRegistry::GetInstance().InitializeAll(false))
     {
         std::fprintf(stderr, "FATAL: SystemRegistry::InitializeAll(false) failed.\n");
@@ -452,6 +585,11 @@ int main(int argc, char** argv)
     if (check_property_meta && !CheckPropertyMeta())
     {
         std::fprintf(stderr, "FAIL: ZPROPERTY meta check failed.\n");
+        return 1;
+    }
+    if (check_script_bindings && !CheckScriptBindings())
+    {
+        std::fprintf(stderr, "FAIL: ZFUNCTION script binding check failed.\n");
         return 1;
     }
 

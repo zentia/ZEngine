@@ -106,9 +106,11 @@ endif()
 
 if(ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST)
     # Bare runs are the migration dump (see the header of the .cpp); CI runs the
-    # three invariant checks instead: type registry, Behaviour 'enabled'
-    # serialization, and ZPROPERTY(meta=(...)) vs the live TypeTree.
+    # invariant checks instead: type registry, Behaviour 'enabled' serialization,
+    # ZPROPERTY(meta=(...)) vs the live TypeTree, and the ZFUNCTION binding
+    # tables / generated .d.ts.
     zengine_add_smoke_test(ReflectionCodegenSmokeTest ReflectionCodegenSmokeTest.cpp
-                           TEST_ARGS --check-registry --check-behaviour-enabled --check-property-meta)
+                           TEST_ARGS --check-registry --check-behaviour-enabled --check-property-meta
+                                     --check-script-bindings)
     message(STATUS "Configured reflection-codegen smoke-test target: ReflectionCodegenSmokeTest")
 endif()

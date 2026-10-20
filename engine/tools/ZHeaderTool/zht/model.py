@@ -46,6 +46,48 @@ class PropertyInfo:
 
 
 @dataclass
+class ParamInfo:
+    """One parameter of a ZFUNCTION-annotated method."""
+    cpp_type: str
+    name: str = ""  # may be empty for unnamed parameters
+
+    def to_dict(self) -> dict:
+        return {"cpp_type": self.cpp_type, "name": self.name}
+
+
+@dataclass
+class MethodInfo:
+    """A member function annotated with ZFUNCTION (script binding, phase 3).
+
+    `ts_name` is the name exposed to TypeScript (Name=".." overrides it) and
+    `ts_signature` is the ready-to-emit d.ts member line, both filled in by
+    codegen, which owns the C++ -> TypeScript type mapping.
+    """
+    name: str
+    return_type: str
+    line: int
+    access: str
+    params: List[ParamInfo] = field(default_factory=list)
+    is_const: bool = False
+    is_static: bool = False
+    ts_name: str = ""
+    ts_signature: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "return_type": self.return_type,
+            "line": self.line,
+            "access": self.access,
+            "params": [p.to_dict() for p in self.params],
+            "is_const": self.is_const,
+            "is_static": self.is_static,
+            "ts_name": self.ts_name,
+            "ts_signature": self.ts_signature,
+        }
+
+
+@dataclass
 class ClassInfo:
     name: str
     class_key: str  # "class" | "struct"
@@ -57,6 +99,7 @@ class ClassInfo:
     no_super_transfer: bool = False
     namespace: str = ""
     properties: List[PropertyInfo] = field(default_factory=list)
+    methods: List[MethodInfo] = field(default_factory=list)
 
     @property
     def qualified_name(self) -> str:
@@ -74,6 +117,7 @@ class ClassInfo:
             "no_super_transfer": self.no_super_transfer,
             "namespace": self.namespace,
             "properties": [p.to_dict() for p in self.properties],
+            "methods": [m.to_dict() for m in self.methods],
         }
 
 

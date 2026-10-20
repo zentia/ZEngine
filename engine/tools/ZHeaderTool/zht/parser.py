@@ -10,6 +10,9 @@ the small, regular subset of C++ that annotated declarations live in:
     <access>:
         ZPROPERTY(<specifiers>)
         <Type> <member> [{init} | = init];
+
+        ZFUNCTION(<specifiers>)
+        <Ret> <Name>([<Params>]) [const];
         ...
     };
 
@@ -24,7 +27,7 @@ import re
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .lexer import CHAR, IDENT, NUMBER, PUNCT, STRING, LexError, Token, tokenize
-from .model import ClassInfo, HeaderInfo, PropertyInfo, SpecValue
+from .model import ClassInfo, HeaderInfo, MethodInfo, ParamInfo, PropertyInfo, SpecValue
 
 
 class ParseError(Exception):
@@ -69,6 +72,52 @@ PROPERTY_VALUE_KEYS = {
     # name without its m_ prefix).
     "Name": "string",
 }
+
+# ZFUNCTION specifiers (phase 3: script bindings).
+FUNCTION_VALUE_KEYS = {
+    # Overrides the name exposed to TypeScript (default: the C++ name).
+    "Name": "string",
+}
+
+# C++ -> TypeScript type mapping for ZFUNCTION signatures. Kept here (not in
+# codegen) because an unmappable type must be a generate-time error with a line
+# number, not a silent `any` in the emitted .d.ts.
+_TS_TYPES = {
+    "void": "void",
+    "bool": "boolean",
+    "char": "number",
+    "signed char": "number",
+    "unsigned char": "number",
+    "short": "number",
+    "unsigned short": "number",
+    "int": "number",
+    "unsigned": "number",
+    "unsigned int": "number",
+    "long": "number",
+    "long long": "number",
+    "float": "number",
+    "double": "number",
+    "int8_t": "number",
+    "int16_t": "number",
+    "int32_t": "number",
+    "int64_t": "number",
+    "uint8_t": "number",
+    "uint16_t": "number",
+    "uint32_t": "number",
+    "uint64_t": "number",
+    "size_t": "number",
+    "std::size_t": "number",
+    "GObjectID": "number",
+    "std::string": "string",
+    "eastl::string": "string",
+}
+
+# Declaration specifiers that may precede a ZFUNCTION return type.
+_FUNCTION_LEADING = {"static", "virtual", "inline", "constexpr", "explicit", "FORCEINLINE"}
+
+# Trailing tokens after the parameter list. Only `const` changes the binding;
+# the rest are accepted and ignored.
+_FUNCTION_TRAILING = {"const", "noexcept", "override", "final"}
 
 # meta=(...) keys, validated now, consumed from phase 2 on.
 META_KEYS = {
@@ -475,6 +524,16 @@ def _parse_class(cur: _Cursor, zclass_tok: Token) -> ClassInfo:
         if target is prop:
             raise ParseError(prop.line, "EditCondition of '%s' refers to itself" % prop.member_name)
         prop.edit_condition = ("!" if negate else "") + target.serialized_name
+
+    # Two ZFUNCTIONs cannot expose the same TypeScript name (the .d.ts would
+    # declare a duplicate member and the binding table would overwrite a slot).
+    seen_methods: Dict[str, MethodInfo] = {}
+    for method in info.methods:
+        other = seen_methods.get(method.ts_name)
+        if other is not None:
+            raise ParseError(method.line, "script name '%s' of '%s' collides with '%s' (line %d)" % (
+                method.ts_name, method.name, other.name, other.line))
+        seen_methods[method.ts_name] = method
     return info
 
 
@@ -517,7 +576,11 @@ def _parse_class_body(cur: _Cursor, open_brace: Token, info: ClassInfo) -> None:
         if tok.text == "ZCLASS":
             raise ParseError(tok.line, "nested ZCLASS is not supported")
         if tok.text == "ZFUNCTION":
-            raise ParseError(tok.line, "ZFUNCTION is not supported yet (script bindings land in phase 3)")
+            open_paren = cur.expect_punct("(", "after ZFUNCTION")
+            func_specs, _ = parse_specifiers(_collect_balanced(cur, open_paren), tok.line)
+            _validate_function_specifiers(func_specs, tok.line)
+            info.methods.append(_parse_method(cur, tok, func_specs, access))
+            continue
 
         if tok.text == "ZGENERATED_BODY":
             open_paren = cur.expect_punct("(", "after ZGENERATED_BODY")
@@ -653,3 +716,236 @@ def _parse_property(cur: _Cursor, zprop_tok: Token, specs: List[Spec], meta, acc
             if lo in prop.meta and hi in prop.meta and prop.meta[lo] > prop.meta[hi]:
                 raise ParseError(zprop_tok.line, "%s (%s) is greater than %s (%s)" % (lo, prop.meta[lo], hi, prop.meta[hi]))
     return prop
+
+
+def ts_type_for(cpp_type: str, line: int) -> str:
+    """Map one C++ type of a ZFUNCTION signature to its TypeScript spelling.
+
+    Any other identifier is passed through as a bound class name (the .d.ts
+    declares it); anything more complex than that is a hard error.
+    """
+    text = " ".join(cpp_type.split())
+    while text.startswith("const "):
+        text = text[len("const ") :].strip()
+    while text.endswith("&&") or text.endswith("&"):
+        text = text[:-1].strip() if text.endswith("&&") is False else text[:-2].strip()
+    if text.endswith("*"):
+        inner = text[:-1].strip()
+        while inner.startswith("const "):
+            inner = inner[len("const ") :].strip()
+        if inner == "char":
+            return "string"
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", inner):
+            return inner
+        raise ParseError(line, "ZFUNCTION: '%s' cannot be mapped to a TypeScript type" % cpp_type)
+    if text in _TS_TYPES:
+        return _TS_TYPES[text]
+    if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", text):
+        return text
+    raise ParseError(line, "ZFUNCTION: '%s' cannot be mapped to a TypeScript type" % cpp_type)
+
+
+def _build_ts_signature(method: MethodInfo) -> None:
+    params = ", ".join(
+        "%s: %s" % (p.name or "arg%d" % (i + 1), ts_type_for(p.cpp_type, method.line))
+        for i, p in enumerate(method.params)
+    )
+    method.ts_signature = "%s(%s): %s" % (method.ts_name, params, ts_type_for(method.return_type, method.line))
+
+
+def _validate_function_specifiers(specs: List[Spec], line: int) -> None:
+    seen: Dict[str, int] = {}
+    for key, value, sline in specs:
+        if key in seen:
+            raise ParseError(sline, "duplicate ZFUNCTION specifier '%s'" % key)
+        seen[key] = sline
+        if key in FUNCTION_VALUE_KEYS:
+            _check_value_kind(FUNCTION_VALUE_KEYS[key], key, value, sline)
+            continue
+        raise _unknown(key, sline, "ZFUNCTION", list(FUNCTION_VALUE_KEYS))
+
+
+def _split_top_level(tokens: List[Token], separator: str) -> List[List[Token]]:
+    """Split on `separator` at bracket depth 0."""
+    out: List[List[Token]] = []
+    current: List[Token] = []
+    depth = 0
+    for tok in tokens:
+        if tok.kind == PUNCT:
+            if tok.text in "({[<":
+                depth += 1
+            elif tok.text in ")}]>":
+                depth -= 1
+            elif tok.text == separator and depth == 0:
+                out.append(current)
+                current = []
+                continue
+        current.append(tok)
+    out.append(current)
+    return [chunk for chunk in out if chunk]
+
+
+def _parse_method(cur: _Cursor, zfunc_tok: Token, specs: List[Spec], access: str) -> MethodInfo:
+    """Parse the member function declaration that follows ZFUNCTION(...).
+
+    Only the shape needed to emit a script binding is extracted: return type,
+    name, parameter types, const-ness and static-ness. Default arguments,
+    bodies, `override` / `noexcept` and ref-qualifiers are accepted and ignored.
+    """
+    decl: List[Token] = []
+    depth = 0
+    terminated = False
+    while True:
+        if cur.at_end():
+            raise ParseError(zfunc_tok.line, "unterminated declaration after ZFUNCTION")
+        tok = cur.next()
+        if tok.kind == PUNCT:
+            if tok.text == "{" and depth == 0:
+                # Inline body: skip it (balanced) and treat the declaration as
+                # done. The '{' itself stays out of `decl`, otherwise the
+                # trailing-qualifier check below would trip on it.
+                depth = 1
+                while depth > 0 and not cur.at_end():
+                    inner = cur.next()
+                    if inner.kind == PUNCT:
+                        if inner.text in "({[":
+                            depth += 1
+                        elif inner.text in ")}]":
+                            depth -= 1
+                terminated = True
+                break
+            if tok.text in "({[":
+                depth += 1
+            elif tok.text in ")}]":
+                depth -= 1
+                if depth < 0:
+                    raise ParseError(tok.line, "ZFUNCTION must be followed by a member function declaration")
+            elif tok.text == ";" and depth == 0:
+                terminated = True
+                break
+        decl.append(tok)
+
+    del terminated  # the loop above only exits via `break` or raises
+    if not decl:
+        raise ParseError(zfunc_tok.line, "ZFUNCTION must be followed by a member function declaration")
+
+    # 1) Leading declaration specifiers.
+    is_static = False
+    while decl and decl[0].is_ident() and decl[0].text in _FUNCTION_LEADING:
+        if decl[0].text == "static":
+            is_static = True
+        decl = decl[1:]
+    if not decl:
+        raise ParseError(zfunc_tok.line, "ZFUNCTION: could not find a function declaration")
+
+    # 2) Parameter list: the first '(' at depth 0. Tokens before it are
+    #    [return type] [name]; tokens after the matching ')' are qualifiers.
+    open_idx = -1
+    depth = 0
+    for idx, tok in enumerate(decl):
+        if tok.kind != PUNCT:
+            continue
+        if tok.text in "({[":
+            depth += 1
+            if tok.text == "(" and depth == 1:
+                open_idx = idx
+                break
+        elif tok.text in ")}]":
+            depth -= 1
+    if open_idx < 0:
+        raise ParseError(zfunc_tok.line, "ZFUNCTION must annotate a function declaration (no parameter list found)")
+
+    close_idx = -1
+    depth = 0
+    for idx in range(open_idx, len(decl)):
+        tok = decl[idx]
+        if tok.kind != PUNCT:
+            continue
+        if tok.text in "({[":
+            depth += 1
+        elif tok.text in ")}]":
+            depth -= 1
+            if depth == 0:
+                close_idx = idx
+                break
+    if close_idx < 0:
+        raise ParseError(zfunc_tok.line, "unbalanced parameter list after ZFUNCTION")
+
+    head = decl[:open_idx]
+    param_tokens = decl[open_idx + 1 : close_idx]
+    tail = decl[close_idx + 1 :]
+
+    # 3) Trailing qualifiers.
+    is_const = False
+    for tok in tail:
+        if tok.kind == PUNCT:
+            if tok.text == "=":
+                raise ParseError(tok.line, "ZFUNCTION on a pure-virtual / deleted function is not supported")
+            if tok.text in ("&", "&&"):
+                continue  # ref-qualifier
+            raise ParseError(tok.line, "ZFUNCTION: unsupported trailing token '%s'" % tok.text)
+        if tok.is_ident() and tok.text in _FUNCTION_TRAILING:
+            if tok.text == "const":
+                is_const = True
+            continue
+        raise ParseError(tok.line, "ZFUNCTION: unsupported trailing token '%s'" % tok.text)
+
+    # 4) Name + return type.
+    if not head:
+        raise ParseError(zfunc_tok.line, "ZFUNCTION: missing return type")
+    name_tok = head[-1]
+    if name_tok.kind != IDENT:
+        raise ParseError(zfunc_tok.line, "ZFUNCTION: could not determine the function name")
+    name = name_tok.text
+    if name.startswith("~") or name.startswith("operator"):
+        raise ParseError(zfunc_tok.line, "ZFUNCTION on '%s' is not supported" % name)
+    return_tokens = head[:-1]
+    if not return_tokens:
+        raise ParseError(zfunc_tok.line, "ZFUNCTION on '%s': a constructor cannot be bound (no return type)" % name)
+    if any(t.is_ident("operator") for t in return_tokens):
+        raise ParseError(zfunc_tok.line, "ZFUNCTION on operator overloads is not supported")
+
+    # 5) Parameters.
+    params: List[ParamInfo] = []
+    for chunk in _split_top_level(param_tokens, ","):
+        # Drop a default argument ("... = expr").
+        stripped: List[Token] = []
+        d = 0
+        for tok in chunk:
+            if tok.kind == PUNCT:
+                if tok.text in "({[<":
+                    d += 1
+                elif tok.text in ")}]>":
+                    d -= 1
+                elif tok.text == "=" and d == 0:
+                    break
+            stripped.append(tok)
+        if not stripped:
+            raise ParseError(zfunc_tok.line, "ZFUNCTION on '%s': empty parameter" % name)
+        pname = ""
+        if len(stripped) >= 2 and stripped[-1].kind == IDENT and stripped[-1].text not in _CPP_KEYWORDS_NOT_NAMES \
+                and not (stripped[-2].kind == PUNCT and stripped[-2].text == "::"):
+            pname = stripped[-1].text
+            stripped = stripped[:-1]
+        if not stripped:
+            raise ParseError(zfunc_tok.line, "ZFUNCTION on '%s': parameter '%s' has no type" % (name, pname))
+        params.append(ParamInfo(cpp_type=format_type(stripped), name=pname))
+
+    method = MethodInfo(
+        name=name,
+        return_type=format_type(return_tokens),
+        line=name_tok.line,
+        access=access,
+        params=params,
+        is_const=is_const,
+        is_static=is_static,
+    )
+    for key, value, sline in specs:
+        if key == "Name":
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", str(value)):
+                raise ParseError(sline, "Name=\"%s\" is not a valid script method name" % value)
+            method.ts_name = str(value)
+    if not method.ts_name:
+        method.ts_name = method.name
+    _build_ts_signature(method)
+    return method

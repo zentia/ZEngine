@@ -291,6 +291,49 @@ class CodegenTests(unittest.TestCase):
         self.assertIn("const ZPropertyMetaRegistrar kZhtMetaRegistrar_Foo(kZhtClassMeta_Foo);", source)
         self.assertNotIn('.serializedName = "plain"', source)
 
+    def test_script_binding_table(self):
+        text = wrap(
+            "    ZFUNCTION()\n    const eastl::string& GetName() const;\n"
+            "    ZFUNCTION()\n    void SetName(eastl::string name);\n"
+            '    ZFUNCTION(Name="id")\n    GObjectID GetID() const;\n'
+            "    ZFUNCTION()\n    Foo* GetChild(int index, bool recursive = false) const;\n"
+            "    ZFUNCTION()\n    static Foo* GetStatic(int a, float b);\n"
+        )
+        info = parse(text)
+        cls = info.classes[0]
+        self.assertEqual([m.ts_name for m in cls.methods], ["GetName", "SetName", "id", "GetChild", "GetStatic"])
+        self.assertEqual(cls.methods[0].ts_signature, "GetName(): string")
+        self.assertEqual(cls.methods[1].ts_signature, "SetName(name: string): void")
+        self.assertEqual(cls.methods[2].ts_signature, "id(): number")
+        self.assertEqual(cls.methods[3].ts_signature, "GetChild(index: number, recursive: boolean): Foo")
+        self.assertEqual(cls.methods[4].ts_signature, "GetStatic(a: number, b: number): Foo")
+        self.assertTrue(cls.methods[0].is_const)
+        self.assertFalse(cls.methods[1].is_const)
+        self.assertTrue(cls.methods[4].is_static)
+
+        source = generate_source(info)
+        self.assertIn('#include "Runtime/Scripting/Binding/ScriptBinding.h"', source)
+        # Overloads are disambiguated by casting to the exact function-pointer type.
+        self.assertIn(
+            '&ZScript::MethodCallback<static_cast<const eastl::string& (Foo::*)() const>(&Foo::GetName)>::Invoke', source)
+        self.assertIn('&ZScript::MethodCallback<static_cast<void (Foo::*)(eastl::string)>(&Foo::SetName)>::Invoke', source)
+        self.assertIn('&ZScript::MethodCallback<static_cast<Foo* (*)(int, float)>(&Foo::GetStatic)>::Invoke', source)
+        self.assertIn('{.name = "id", .tsSignature = "id(): number", .isStatic = false', source)
+        self.assertIn(
+            'ZClassScriptBinding kZhtScriptClass_Foo {ZScriptTypeId<Foo>::Get(), ZScriptTypeId<Component>::Get(), '
+            '"Foo", "Component", kZhtScriptMethods_Foo, 5};', source)
+        self.assertIn("const ZClassScriptBindingRegistrar kZhtScriptRegistrar_Foo(kZhtScriptClass_Foo);", source)
+
+    def test_no_zfunction_no_binding_table(self):
+        source = generate_source(parse(wrap("    ZPROPERTY()\n    float m_V;\n")))
+        self.assertNotIn("ScriptBinding", source)
+
+    def test_method_with_inline_body_is_bound(self):
+        # A definition instead of a declaration is fine; the body is skipped.
+        info = parse(wrap("    ZFUNCTION()\n    float GetV() const { return m_V; }\n"
+                          "    ZPROPERTY()\n    float m_V;\n"))
+        self.assertEqual(info.classes[0].methods[0].ts_signature, "GetV(): number")
+
     def test_no_meta_no_table(self):
         source = generate_source(parse(wrap("    ZPROPERTY()\n    float m_V;\n")))
         self.assertNotIn("PropertyMeta", source)

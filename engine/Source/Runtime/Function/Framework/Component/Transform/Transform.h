@@ -42,14 +42,24 @@ public:
     void OnSerializedFieldsUpdated() override;
 
     // ---- local space ----
+    // ZFUNCTION() markers are compiler no-ops picked up by ZHeaderTool, which
+    // turns them into pesapi bindings and `declare class Transform` members.
+    // Overloaded pairs (SetLocalPosition(Vector3d) / (Vector3)) can only bind
+    // one spelling per script name, so only the Vector3 one is exported.
     Vector3d GetLocalPositionD() const;
+    ZFUNCTION()
     Vector3 GetLocalPosition() const;
+    ZFUNCTION()
     Quaternion GetLocalRotation() const;
+    ZFUNCTION()
     Vector3 GetLocalScale() const;
 
     void SetLocalPosition(const Vector3d& local_position);
+    ZFUNCTION()
     void SetLocalPosition(const Vector3& local_position) { SetLocalPosition(Vector3d(local_position)); }
+    ZFUNCTION()
     void SetLocalRotation(const Quaternion& local_rotation);
+    ZFUNCTION()
     void SetLocalScale(const Vector3& local_scale);
     void SetLocalPositionAndRotation(const Vector3& local_position, const Quaternion& local_rotation);
 
@@ -81,6 +91,7 @@ public:
     Vector3 InverseTransformVector(const Vector3& world_vector) const;
 
     // ---- hierarchy ----
+    ZFUNCTION()
     Transform* GetParent() const { return m_Father; }
     Transform* GetRoot();
     const Transform* GetRoot() const;
@@ -92,7 +103,9 @@ public:
                          world_position_stays ? kWorldPositionStays : kLocalPositionStays);
     }
 
+    ZFUNCTION()
     int GetChildrenCount() const { return static_cast<int>(m_Children.size()); }
+    ZFUNCTION()
     Transform* GetChild(int index) const;
     size_t GetChildCount() const { return m_Children.size(); }
     const std::vector<PPtr<Transform>>& GetChildren() const { return m_Children; }

@@ -15,7 +15,7 @@ from typing import List
 
 from .model import ClassInfo, HeaderInfo
 
-TOOL_VERSION = 3
+TOOL_VERSION = 4
 
 _BANNER = (
     "// ==========================================================================\n"
@@ -136,13 +136,53 @@ def _meta_block(cls: ClassInfo) -> List[str]:
     return out
 
 
+def _function_pointer_type(cls: ClassInfo, method) -> str:
+    """The exact C++ function-pointer type of `method`, used to disambiguate
+    overloads when taking its address."""
+    params = ", ".join(p.cpp_type for p in method.params)
+    qualifier = " const" if method.is_const else ""
+    if method.is_static:
+        return "%s (*)(%s)" % (method.return_type, params)
+    return "%s (%s::*)(%s)%s" % (method.return_type, cls.qualified_name, params, qualifier)
+
+
+def _script_method_entry(cls: ClassInfo, method) -> str:
+    target = "&%s::%s" % (cls.qualified_name, method.name)
+    pointer = "static_cast<%s>(%s)" % (_function_pointer_type(cls, method), target)
+    callback = "&ZScript::MethodCallback<%s>::Invoke" % pointer
+    return ('{.name = "%s", .tsSignature = "%s", .isStatic = %s, .callback = %s}'
+            % (method.ts_name, method.ts_signature.replace('"', '\\"'), "true" if method.is_static else "false", callback))
+
+
+def _script_block(cls: ClassInfo) -> List[str]:
+    """Static pesapi binding table for one class's ZFUNCTIONs (phase 3)."""
+    if not cls.methods:
+        return []
+    ident = cls.qualified_name.replace("::", "_")
+    super_type = "ZScriptTypeId<%s>::Get()" % cls.base if cls.base else "nullptr"
+    super_name = '"%s"' % cls.base if cls.base else "nullptr"
+    out = ["\n", "namespace\n{\n"]
+    out.append("    const ZScriptMethodEntry kZhtScriptMethods_%s[] = {\n" % ident)
+    out.extend("        %s,\n" % _script_method_entry(cls, m) for m in cls.methods)
+    out.append("    };\n")
+    out.append("    ZClassScriptBinding kZhtScriptClass_%s {ZScriptTypeId<%s>::Get(), %s, \"%s\", %s, "
+               "kZhtScriptMethods_%s, %d};\n" % (ident, cls.qualified_name, super_type, cls.name, super_name, ident,
+                                                 len(cls.methods)))
+    out.append("    const ZClassScriptBindingRegistrar kZhtScriptRegistrar_%s(kZhtScriptClass_%s);\n" % (ident, ident))
+    out.append("}  // namespace\n")
+    return out
+
+
 def generate_source(header: HeaderInfo) -> str:
     out = [_banner(header), "\n", '#include "%s"\n' % header.include_path]
     needs_meta = any(p.meta and not p.transient for cls in header.classes for p in cls.properties)
-    if any(not cls.custom_transfer for cls in header.classes) or needs_meta:
+    needs_script = any(cls.methods for cls in header.classes)
+    if any(not cls.custom_transfer for cls in header.classes) or needs_meta or needs_script:
         out.append("\n")
         if needs_meta:
             out.append('#include "Runtime/BaseClasses/PropertyMeta.h"\n')
+        if needs_script:
+            out.append('#include "Runtime/Scripting/Binding/ScriptBinding.h"\n')
         if any(not cls.custom_transfer for cls in header.classes):
             out.extend('#include "%s"\n' % inc for inc in _TRANSFER_INCLUDES)
     for cls in header.classes:
@@ -153,6 +193,7 @@ def generate_source(header: HeaderInfo) -> str:
             out.append("// ZCLASS(CustomTransfer): IMPLEMENT_OBJECT_SERIALIZE, Transfer() and\n")
             out.append("// INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED live in the hand-written .cpp.\n")
             out.extend(_meta_block(cls))
+            out.extend(_script_block(cls))
             continue
         out.append("IMPLEMENT_OBJECT_SERIALIZE(%s)\n" % cls.qualified_name)
         out.append("\n")
@@ -163,4 +204,5 @@ def generate_source(header: HeaderInfo) -> str:
         else:
             out.extend(_transfer_definition(cls, ""))
         out.extend(_meta_block(cls))
+        out.extend(_script_block(cls))
     return "".join(out)

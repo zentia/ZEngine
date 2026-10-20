@@ -2636,6 +2636,46 @@ need nothing extra). Do not re-litigate Python vs C++.
 - Meta/serialization drift gate: `ReflectionCodegenSmokeTest
   --check-property-meta` cross-checks every generated table against the live
   TypeTree (annotated name must be a real field, EditCondition must be bool).
+- `ZFUNCTION(...)` (phase 3, 2026-10-20) annotates a **member function** and
+  makes it callable from TypeScript. Grammar:
+  `ZFUNCTION(Name="ScriptName")` followed by a declaration (`;`) or an inline
+  body (`{ ... }`). Leading `static/virtual/inline/constexpr/explicit` and
+  trailing `const/noexcept/override/final` are accepted and ignored;
+  constructors, destructors, operators and `= 0` are rejected at generate time.
+  Overloads are disambiguated by the generated `static_cast` to the exact
+  function-pointer type, but only **one** overload may claim a given script
+  name. Parameter types and the return type must have a `ZScript::Converter`
+  (bool / float / double / integers / size_t / std::string / eastl::string /
+  Vector3 / Quaternion / `T*` with T derived from Object); anything else is a
+  **compile** error by design (`static_assert`), so an unbindable signature
+  cannot slip in silently.
+- Generated output per class: a `ZScriptMethodEntry[]` (name, TS signature,
+  isStatic, pesapi trampoline) plus a `ZClassScriptBinding`
+  (`Runtime/Scripting/Binding/ScriptBinding.h`) that self-registers at
+  static-init through `ZClassScriptBindingRegistrar`. Consumed twice:
+  * `ScriptBindingRegistry::InstallAll(reg_api, registry)` -- called once from
+    `ScriptEnv`'s init block, right after `create_registry()`. It defines every
+    class with `pesapi_define_class` / `set_property_info_size` /
+    `set_method_info`, and first declares any super that has no binding of its
+    own (GameObject -> Object) so pesapi can resolve the chain.
+  * `ScriptEnv` then calls `pesapi_set_registry(env, registry)` per env -- the
+    registry was previously created but never attached to any VM, so without
+    this no class object could ever resolve -- and
+    `ScriptBindingRegistry::InstallGlobals(apis, env)`, which publishes each
+    bound class as a **global of its script name**.
+  * `ScriptBindingRegistry::AppendTypeScriptDeclarations()` appends the
+    `declare class` block to `zengine.d.ts` in
+    `ProjectInfo::EnsureScriptsScaffold`, so the .d.ts and the runtime globals
+    agree by construction. `Vector3` / `Quaternion` are marshalled as plain JS
+    objects, so the template declares them as `interface`, not class.
+- Reserved-name guard: TS/JS globals (`Object`, `String`, `Math`, `console`,
+  ...) are skipped by both the .d.ts placeholder pass and `InstallGlobals`;
+  a class whose super is one of them is emitted without `extends`. This is why
+  `declare class GameObject` has no base even though C++ derives from `Object`.
+- Binding drift gate: `ReflectionCodegenSmokeTest --check-script-bindings`
+  validates every table (null callbacks/names, self-inheritance, duplicate
+  script names, empty or brace-unbalanced .d.ts); `--dump-script-dts` prints
+  the generated block on its own. Both are wired into CTest via `TEST_ARGS`.
 - Rules: `#include "<Name>.generated.h"` (base name of the header, one per
   header even with several ZCLASSes) must be the **last** include; reflected
   classes live at global scope or in **exactly one named namespace**

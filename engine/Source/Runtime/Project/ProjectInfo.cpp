@@ -3,6 +3,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Serialize/SerializeUtility.h"
 #include "Runtime/File/FileSystem.h"
+#include "Runtime/Scripting/Binding/ScriptBinding.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 #include "core/Log/LogSystem.h"
 
@@ -105,9 +106,13 @@ namespace
     //     auto-generated UnityEngine.dll typings).
     //   * Mirrors the runtime shim installed by ScriptEnv::InstallConsoleAndDebugGlobals
     //     (see Wrapper/ScriptEnv.cpp) plus the __zNewInstance helper used by
-    //     ScriptEnv::CreateInstance. Phase 5 ships the minimum needed to compile
-    //     a user `class X extends Behaviour { OnUpdate(dt: number) {} }`; phases 7+
-    //     will extend it with engine binding types (GameObject, Vector3, etc).
+    //     ScriptEnv::CreateInstance.
+    //   * The engine-side class bindings (`declare class GameObject`, ...) are
+    //     NOT hand-written here: ZHeaderTool emits a ZClassScriptBinding per
+    //     ZFUNCTION-annotated class and ScriptBindingRegistry appends the
+    //     matching `declare class` block (see AppendTypeScriptDeclarations).
+    //     They are installed as globals of the same name by ScriptEnv, so the
+    //     .d.ts and the runtime agree by construction.
     //   * `declare class Behaviour` (not `interface`) because user scripts use
     //     `extends Behaviour`, which requires a constructor in TS's eyes.
     constexpr const char* kZEngineDtsTemplate =
@@ -117,6 +122,23 @@ namespace
         "// =========================================================================\n"
         "\n"
         "/** Base class for any script that wants to be attached to a GameObject. */\n"
+        // Value types. These are not engine Objects: ZScript::Converter
+        // marshals them as plain JS objects with these exact keys, so they are
+        // declared as structural interfaces rather than classes.
+        "/** Engine value types, marshalled as plain JS objects. */\n"
+        "declare interface Vector3 {\n"
+        "    x: number;\n"
+        "    y: number;\n"
+        "    z: number;\n"
+        "}\n"
+        "\n"
+        "declare interface Quaternion {\n"
+        "    w: number;\n"
+        "    x: number;\n"
+        "    y: number;\n"
+        "    z: number;\n"
+        "}\n"
+        "\n"
         "declare class Behaviour {\n"
         "    /** Called once when the component is first activated. */\n"
         "    OnAwake?(): void;\n"
@@ -616,8 +638,14 @@ bool ProjectInfo::EnsureScriptsScaffold()
             }
             else
             {
-                size_t len = strlen(kZEngineDtsTemplate);
-                if (fwrite(kZEngineDtsTemplate, 1, len, f) != len)
+                // Hand-written preamble + the ZFUNCTION-generated declarations.
+                // AppendTypeScriptDeclarations walks every registered
+                // ZClassScriptBinding, so a new ZFUNCTION shows up in the .d.ts
+                // with no change to this file.
+                std::string dts = kZEngineDtsTemplate;
+                dts += "\n// ---- engine class bindings (generated from ZFUNCTION) ----\n\n";
+                ScriptBindingRegistry::AppendTypeScriptDeclarations(dts);
+                if (fwrite(dts.data(), 1, dts.size(), f) != dts.size())
                 {
                     LOG_WARNING(ZProjectInfo,
                                 "ensureScriptsScaffold: failed to write {}",

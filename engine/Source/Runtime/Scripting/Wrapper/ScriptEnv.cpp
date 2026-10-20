@@ -1,6 +1,7 @@
 #include "ScriptEnv.h"
 
 #include "Runtime/Scripting/Backend.h"
+#include "Runtime/Scripting/Binding/ScriptBinding.h"
 #include "Runtime/Scripting/Native/PuertsNative.h"
 #include "Runtime/Scripting/Wrapper/ObjectPool.h"
 #include "Runtime/Scripting/Wrapper/Puerts.h"
@@ -128,6 +129,11 @@ ScriptEnv::ScriptEnv(Backend* backend, int debugPort)
             struct pesapi_registry_api* reg_api = static_cast<pesapi_registry_api*>(GetRegisterApi());
             registry = reg_api->create_registry();
             Puerts::InitialPuerts(reg_api, registry);
+            // ZHeaderTool phase 3: every ZFUNCTION-annotated class registers a
+            // ZClassScriptBinding at static-init time. This is the single point
+            // where they are turned into real pesapi classes. Must happen
+            // before any env is created, because the registry is shared.
+            ScriptBindingRegistry::InstallAll(reg_api, registry);
             isInitialized = true;
         }
     }
@@ -150,6 +156,15 @@ ScriptEnv::ScriptEnv(Backend* backend, int debugPort)
 
     auto&& scope = pesapi_open_scope(m_Papis, m_EnvRef);
     auto&& env = pesapi_get_env_from_ref(m_Papis, m_EnvRef);
+
+    // Hand the shared class registry to this env. Without this the VM cannot
+    // resolve any pesapi type id, so class objects and native-object wrapping
+    // would silently fail (create_class returns undefined).
+    m_Papis->set_registry(env, registry);
+    // Publish `GameObject`, `Transform`, ... as globals, matching the
+    // `declare class` block of the generated zengine.d.ts.
+    ScriptBindingRegistry::InstallGlobals(m_Papis, env);
+
     auto&& moduleExecutorFunc = m_Backend->GetModuleExecutor(env);
     (void)moduleExecutorFunc;
     pesapi_close_scope(m_Papis, scope);

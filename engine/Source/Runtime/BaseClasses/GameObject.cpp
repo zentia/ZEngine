@@ -61,7 +61,7 @@ void GameObject::Tick(float delta_time)
     }
 }
 
-bool GameObject::HasComponent(const std::string& compenent_type_name) const
+bool GameObject::HasComponent(const std::string& component_type_name) const
 {
     for (const auto& component : m_Components)
     {

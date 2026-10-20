@@ -74,10 +74,19 @@ public:
     /// Safe to call when the url is empty (no definition) -- a no-op.
     void ExpandDefinition();
 
+    // The ZFUNCTION() markers below are no-ops to the compiler; ZHeaderTool
+    // turns them into pesapi bindings plus `declare class GameObject` members
+    // in the generated zengine.d.ts. Only types with a ZScript::Converter may
+    // appear in a bound signature.
+    ZFUNCTION()
     GObjectID GetID() const { return m_Id; }
 
+    ZFUNCTION()
     void SetName(eastl::string name) { this->name = name; }
+
+    ZFUNCTION()
     const eastl::string& GetName() const { return name; }
+
     const eastl::string& getDefinitionUrl() const { return m_DefinitionUrl; }
 
     // Setter for the prefab/object-definition url. Authoring tools (importers,
@@ -86,7 +95,8 @@ public:
     // reachable through deserialization.
     void setDefinitionUrl(eastl::string definition_url) { m_DefinitionUrl = std::move(definition_url); }
 
-    bool HasComponent(const std::string& compenent_type_name) const;
+    ZFUNCTION()
+    bool HasComponent(const std::string& component_type_name) const;
 
     void addComponent(Component* component)
     {
@@ -126,9 +136,9 @@ public:
     }
 
     template<typename TComponent>
-    TComponent* tryGetComponent(const std::string& compenent_type_name)
+    TComponent* tryGetComponent(const std::string& component_type_name)
     {
-        (void)compenent_type_name;
+        (void)component_type_name;
         for (auto& component : m_Components)
         {
             TComponent* typed_component = dynamic_cast<TComponent*>(static_cast<Component*>(component));
@@ -142,9 +152,9 @@ public:
     }
 
     template<typename TComponent>
-    const TComponent* tryGetComponentConst(const std::string& compenent_type_name) const
+    const TComponent* tryGetComponentConst(const std::string& component_type_name) const
     {
-        (void)compenent_type_name;
+        (void)component_type_name;
         for (const auto& component : m_Components)
         {
             const TComponent* typed_component = dynamic_cast<const TComponent*>(static_cast<Component*>(component));
