@@ -2497,6 +2497,10 @@ bool VulkanRHI::CreateSampler(const RHISamplerCreateInfo* pCreateInfo, RHISample
     }
 }
 
+// See the note on RHI.h's declaration: keep the Win32 CreateSemaphore macro out
+// of this definition too so the spelling always matches the declaration.
+#pragma push_macro("CreateSemaphore")
+#undef CreateSemaphore
 bool VulkanRHI::CreateSemaphore(const RHISemaphoreCreateInfo* pCreateInfo, RHISemaphore*& pSemaphore)
 {
     VkSemaphoreCreateInfo create_info {};
@@ -2519,6 +2523,7 @@ bool VulkanRHI::CreateSemaphore(const RHISemaphoreCreateInfo* pCreateInfo, RHISe
         return false;
     }
 }
+#pragma pop_macro("CreateSemaphore")
 
 bool VulkanRHI::WaitForFencesPFN(uint32_t fenceCount, RHIFence* const* pFences, RHIBool32 waitAll, uint64_t timeout)
 {

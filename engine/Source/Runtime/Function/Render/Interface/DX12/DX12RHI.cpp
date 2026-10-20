@@ -4530,11 +4530,17 @@ bool DX12RHI::CreateSampler(const RHISamplerCreateInfo* pCreateInfo, RHISampler*
     return true;
 }
 
+// See the note on RHI.h's declaration: keep the Win32 CreateSemaphore macro out
+// of this definition too, otherwise it is spelled CreateSemaphoreA while the
+// declaration is not (and vice versa) and the two no longer match.
+#pragma push_macro("CreateSemaphore")
+#undef CreateSemaphore
 bool DX12RHI::CreateSemaphore(const RHISemaphoreCreateInfo* pCreateInfo, RHISemaphore*& pSemaphore)
 {
     // TODO: Implement DX12 createSemaphore
     return false;
 }
+#pragma pop_macro("CreateSemaphore")
 
 bool DX12RHI::WaitForFencesPFN(uint32_t fenceCount, RHIFence* const* pFence, RHIBool32 waitAll, uint64_t timeout)
 {

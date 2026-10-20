@@ -147,7 +147,13 @@ public:
     bool CreateRenderPass(const RHIRenderPassCreateInfo* pCreateInfo, RHIRenderPass*& pRenderPass) override;
     void DestroyRenderPass(RHIRenderPass* renderPass) override;
     bool CreateSampler(const RHISamplerCreateInfo* pCreateInfo, RHISampler*& pSampler) override;
+    // See the note on RHI.h's declaration: pin the name against the Win32
+    // CreateSemaphore macro so this override matches the base regardless of
+    // whether <windows.h> has been included yet in the TU.
+#pragma push_macro("CreateSemaphore")
+#undef CreateSemaphore
     bool CreateSemaphore(const RHISemaphoreCreateInfo* pCreateInfo, RHISemaphore*& pSemaphore) override;
+#pragma pop_macro("CreateSemaphore")
 
     // command and command write
     bool WaitForFencesPFN(uint32_t fenceCount, RHIFence* const* pFence, RHIBool32 waitAll, uint64_t timeout) override;

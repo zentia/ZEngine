@@ -340,7 +340,17 @@ public:
     virtual bool CreateRenderPass(const RHIRenderPassCreateInfo* pCreateInfo, RHIRenderPass*& pRenderPass) = 0;
     virtual void DestroyRenderPass(RHIRenderPass* renderPass) = 0;
     virtual bool CreateSampler(const RHISamplerCreateInfo* pCreateInfo, RHISampler*& pSampler) = 0;
+    // `CreateSemaphore` is also a Win32 entry point that synchapi.h #defines to
+    // CreateSemaphoreA / CreateSemaphoreW. Whether this declaration is renamed
+    // therefore depends on whether the TU pulled in <windows.h> yet -- and the
+    // backend headers that override it are included on the other side of
+    // <d3d12.h>, so the two spellings can disagree and the override fails with
+    // C3668 ("did not override any base class methods"). Pin the name here and
+    // in every override / definition so it never depends on include order.
+#pragma push_macro("CreateSemaphore")
+#undef CreateSemaphore
     virtual bool CreateSemaphore(const RHISemaphoreCreateInfo* pCreateInfo, RHISemaphore*& pSemaphore) = 0;
+#pragma pop_macro("CreateSemaphore")
 
     // command and command write
     virtual bool
