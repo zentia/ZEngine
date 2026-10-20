@@ -160,7 +160,8 @@ namespace ScriptBindingRegistry
         for (const ZClassScriptBinding* cls : classes)
         {
             apis->define_class(registry, cls->typeId, cls->superTypeId, nullptr, cls->scriptName, nullptr, nullptr, nullptr, 1);
-            apis->set_property_info_size(registry, cls->typeId, static_cast<int>(cls->methodCount), 0, 0, 0);
+            apis->set_property_info_size(registry, cls->typeId, static_cast<int>(cls->methodCount), 0,
+                                         static_cast<int>(cls->propertyCount), 0);
             for (std::size_t i = 0; i < cls->methodCount; ++i)
             {
                 const ZScriptMethodEntry& method = cls->methods[i];
@@ -168,6 +169,19 @@ namespace ScriptBindingRegistry
                     continue;
                 apis->set_method_info(registry, cls->typeId, static_cast<int>(i), method.name,
                                       method.isStatic ? 1 : 0, method.callback, nullptr, 1);
+            }
+            // Instance (not static) accessor properties. is_static must be 0 or
+            // pesapi files them under `Variables` (class-level) instead of
+            // `Properties`, and only Properties are installed on the prototype
+            // -- so a 1 here would silently produce an unreachable property.
+            for (std::size_t i = 0; i < cls->propertyCount; ++i)
+            {
+                const ZScriptPropertyEntry& prop = cls->properties[i];
+                if (prop.name == nullptr || prop.getter == nullptr)
+                    continue;
+                apis->set_property_info(registry, cls->typeId, static_cast<int>(i), prop.name, 0,
+                                        prop.getter, prop.readonly ? nullptr : prop.setter,
+                                        nullptr, nullptr, 1);
             }
         }
     }
@@ -239,6 +253,21 @@ namespace ScriptBindingRegistry
                 out += cls->superName;
             }
             out += " {\n";
+            // Properties first: they are what a Unity-authored script reaches
+            // for, and reading the shape of a class before its methods is the
+            // order the Inspector shows too.
+            for (std::size_t i = 0; i < cls->propertyCount; ++i)
+            {
+                const ZScriptPropertyEntry& prop = cls->properties[i];
+                if (prop.name == nullptr || prop.tsType == nullptr)
+                    continue;
+                out += "    ";
+                out += prop.readonly ? "readonly " : "";
+                out += prop.name;
+                out += ": ";
+                out += prop.tsType;
+                out += ";\n";
+            }
             for (std::size_t i = 0; i < cls->methodCount; ++i)
             {
                 const ZScriptMethodEntry& method = cls->methods[i];

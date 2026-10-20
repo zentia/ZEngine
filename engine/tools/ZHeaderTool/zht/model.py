@@ -88,6 +88,32 @@ class MethodInfo:
 
 
 @dataclass
+class ScriptPropertyInfo:
+    """A script-facing property backed by ZFUNCTION-annotated accessors
+    (ZSCRIPTPROPERTY, phase 7).
+
+    Unlike a ZPROPERTY field this has no data member of its own: it publishes an
+    existing getter (and optionally a setter) as a pesapi accessor property, so
+    scripts can write `transform.position = v` instead of `SetPosition(v)`.
+    `ts_type` is filled in from the getter's return type by codegen.
+    """
+    name: str
+    getter: str
+    setter: str = ""  # empty -> read-only
+    line: int = 0
+    ts_type: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "getter": self.getter,
+            "setter": self.setter,
+            "line": self.line,
+            "ts_type": self.ts_type,
+        }
+
+
+@dataclass
 class ClassInfo:
     name: str
     class_key: str  # "class" | "struct"
@@ -100,6 +126,7 @@ class ClassInfo:
     namespace: str = ""
     properties: List[PropertyInfo] = field(default_factory=list)
     methods: List[MethodInfo] = field(default_factory=list)
+    script_properties: List[ScriptPropertyInfo] = field(default_factory=list)
 
     @property
     def qualified_name(self) -> str:
@@ -118,6 +145,7 @@ class ClassInfo:
             "namespace": self.namespace,
             "properties": [p.to_dict() for p in self.properties],
             "methods": [m.to_dict() for m in self.methods],
+            "script_properties": [p.to_dict() for p in self.script_properties],
         }
 
 

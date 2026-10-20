@@ -154,7 +154,10 @@ private:
     // 32-char lowercase hex GUID into the project-level ScriptRegistry.
     // Both fields are eastl::string -- per AGENTS.md 2.3, that's a hard
     // requirement for any field that participates in Transfer().
-    ZPROPERTY(Name="m_script_guid")
+    // ReadOnly: also blocks the generated script setter. The guid is the key
+    // TypeScriptComponent is indexed by at awake time, so letting a script
+    // rewrite it would strand the live instance.
+    ZPROPERTY(Name="m_script_guid", ReadOnly)
     eastl::string m_ScriptGuid;
 
     // Class name to instantiate from the resolved module's exports.

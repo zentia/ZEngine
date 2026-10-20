@@ -2746,6 +2746,50 @@ need nothing extra). Do not re-litigate Python vs C++.
   validates every table (null callbacks/names, self-inheritance, duplicate
   script names, empty or brace-unbalanced .d.ts); `--dump-script-dts` prints
   the generated block on its own. Both are wired into CTest via `TEST_ARGS`.
+- **`ZPROPERTY` -> script properties** (phase 7, 2026-10-20). A ZPROPERTY
+  field whose type has a `ZScript::Converter` is published as a pesapi
+  accessor property (`light.radius = 8`) alongside the bound methods.
+  * The whitelist is `parser._SCRIPT_PROPERTY_TYPES` (bool / integers /
+    floats / std::string / eastl::string / Vector3 / Quaternion). It is
+    deliberately narrower than `_TS_TYPES` and fails **silently**: ZPROPERTY
+    marks a field *serialized*, not script-facing, so an `enum class`, a
+    `PPtr`, a `Res` struct or a `std::vector` field must not be an error.
+    `T*` is absent on purpose (needs the pointee complete + an Object check
+    the parser cannot make).
+  * Script names are `script_property_name(serialized_name)`: leading `m_`
+    dropped, then camelCase -- `m_script_guid` -> `scriptGuid`, `clip_path`
+    -> `clipPath`. Same split Unity makes between YAML and C#. Two fields
+    collapsing onto one script name is a generate-time error.
+  * `ZPROPERTY(ReadOnly)` yields a read-only property (no setter at all).
+  * The accessors are generated as **public** `ZhtScriptGet_<member>` /
+    `ZhtScriptSet_<member>` declared in `ZGEN_BODY_<Class>` and defined in the
+    .gen.cpp. Public is mandatory: the .gen.cpp takes their address from file
+    scope, and C++ checks access at the point of naming -- the fields are
+    usually private, and only the *definition* (a member context) may touch
+    them. This is why the generated body now emits a `public:` block.
+  * Scope: field properties only attach to a class that is already
+    script-visible (it owns ZFUNCTIONs or a ZSCRIPTPROPERTY). Widening that
+    is a one-line change in `codegen._script_field_properties`, but it would
+    publish ~30 more globals at once -- a separate decision.
+- **`ZSCRIPTPROPERTY(Name="..", Getter=".."[, Setter=".."])`** publishes an
+  existing ZFUNCTION getter/setter pair as an accessor property, with no data
+  member behind it. This is how `transform.position` exists at all: Transform
+  has no ZPROPERTY fields (its Transfer is hand-written). The named accessors
+  must be ZFUNCTION-annotated -- that is where the TypeScript type comes from
+  -- and the parser rejects a getter with parameters or a void return, a
+  setter without exactly one parameter, and duplicate/colliding names.
+  Omitting `Setter` gives a read-only property.
+- A property getter/setter is the ordinary `ZScript::MethodCallback`
+  trampoline: a getter is just a zero-argument method returning a value, a
+  setter a one-argument method. `InstallAll` passes `is_static=0` --
+  `pesapi_set_property_info` files a static entry under `Variables` (class
+  level) instead of `Properties` (prototype level), so a 1 there would
+  produce a property no instance can see. A null setter makes the V8 backend
+  install the accessor with `v8::ReadOnly`.
+- Gate `--check-script-properties`: name/type/callback presence, readonly
+  must agree with the setter, no collision with a bound method of the same
+  class, and the property line must actually appear in the generated .d.ts.
+  Wired into CTest via `TEST_ARGS`.
 - **Scalar typedefs must be listed in `_TS_TYPES`** (`zht/parser.py`). An
   unmapped bare identifier is emitted into the .d.ts **verbatim**, which is the
   right behaviour for class and struct names (`Vector3`, `Transform`) but leaks

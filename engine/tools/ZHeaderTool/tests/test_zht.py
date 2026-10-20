@@ -321,7 +321,7 @@ class CodegenTests(unittest.TestCase):
         self.assertIn('{.name = "id", .tsSignature = "id(): number", .isStatic = false', source)
         self.assertIn(
             'ZClassScriptBinding kZhtScriptClass_Foo {ZScriptTypeId<Foo>::Get(), ZScriptTypeId<Component>::Get(), '
-            '"Foo", "Component", kZhtScriptMethods_Foo, 5};', source)
+            '"Foo", "Component", kZhtScriptMethods_Foo, 5, nullptr, 0};', source)
         self.assertIn("const ZClassScriptBindingRegistrar kZhtScriptRegistrar_Foo(kZhtScriptClass_Foo);", source)
 
     def test_no_zfunction_no_binding_table(self):
@@ -342,6 +342,112 @@ class CodegenTests(unittest.TestCase):
                           "    ZFUNCTION()\n    GObjectID GetID() const;\n"))
         self.assertEqual(info.classes[0].methods[0].ts_signature, "Play(): number")
         self.assertEqual(info.classes[0].methods[1].ts_signature, "GetID(): number")
+
+    def test_field_property_generates_typed_accessors(self):
+        # Fields are usually private, so the accessor has to be a member
+        # (declared public in the generated body) -- the .gen.cpp takes its
+        # address from file scope, where a private name is an access error.
+        info = parse(wrap(
+            "    ZFUNCTION()\n    float GetRadius() const { return m_Radius; }\n"
+            "private:\n"
+            "    ZPROPERTY()\n    float m_Radius {8.0f};\n"
+            "    ZPROPERTY(Name=\"guid\", ReadOnly)\n    eastl::string m_Guid;\n"
+            "    ZPROPERTY()\n    CameraMode m_Mode;\n"
+        ))
+        header = generate_header(info)
+        self.assertIn("public:", header)
+        self.assertIn("float ZhtScriptGet_m_Radius() const;", header)
+        self.assertIn("void ZhtScriptSet_m_Radius(const float& value);", header)
+        self.assertIn("eastl::string ZhtScriptGet_m_Guid() const;", header)
+        # ReadOnly means no setter at all, not a setter that throws.
+        self.assertNotIn("ZhtScriptSet_m_Guid", header)
+        # An unmarshallable type is skipped, not an error.
+        self.assertNotIn("m_Mode", header)
+
+        source = generate_source(info)
+        self.assertIn("float Foo::ZhtScriptGet_m_Radius() const { return m_Radius; }", source)
+        self.assertIn("void Foo::ZhtScriptSet_m_Radius(const float& value) { m_Radius = value; }", source)
+        self.assertIn('{.name = "radius", .tsType = "number", .readonly = false,', source)
+        self.assertIn('{.name = "guid", .tsType = "string", .readonly = true,', source)
+        self.assertIn('.setter = nullptr}', source)
+        self.assertIn("kZhtScriptProperties_Foo, 2};", source)
+
+    def test_field_property_names_are_camel_cased_like_unity(self):
+        from zht.parser import script_property_name
+        # Inspector / YAML keep the C++ flavour; scripts get the Unity spelling.
+        self.assertEqual(script_property_name("clip_path"), "clipPath")
+        self.assertEqual(script_property_name("play_on_awake"), "playOnAwake")
+        self.assertEqual(script_property_name("radius"), "radius")
+        # A leading m_ is dropped, not camel-cased into the name.
+        self.assertEqual(script_property_name("m_script_guid"), "scriptGuid")
+        self.assertEqual(script_property_name("m_"), "m_")
+
+        info = parse(wrap(
+            "    ZFUNCTION()\n    float GetV() const { return m_V; }\n"
+            "private:\n    ZPROPERTY(Name=\"m_script_guid\")\n    eastl::string m_Guid;\n"
+        ))
+        self.assertIn('{.name = "scriptGuid"', generate_source(info))
+
+        # Two serialized names collapsing onto one script name is an error.
+        self.assertRaises(ParseError, parse, wrap(
+            "    ZFUNCTION()\n    float GetV() const { return m_V; }\n"
+            "private:\n    ZPROPERTY(Name=\"m_foo\")\n    float m_A {0.0f};\n"
+            "    ZPROPERTY(Name=\"foo\")\n    float m_B {0.0f};\n"
+        ))
+
+    def test_field_properties_need_an_already_bound_class(self):
+        # A class with a marshallable field but no ZFUNCTION is not script
+        # visible yet, so it must not sprout accessors.
+        source = generate_source(parse(wrap("private:\n    ZPROPERTY()\n    float m_V {1.0f};\n")))
+        self.assertNotIn("ZhtScriptGet_m_V", source)
+        self.assertNotIn("kZhtScriptProperties_Foo", source)
+
+    def test_script_property_publishes_an_accessor_pair(self):
+        info = parse(wrap(
+            "    ZSCRIPTPROPERTY(Name=\"position\", Getter=\"GetPosition\", Setter=\"SetPosition\")\n"
+            "    ZSCRIPTPROPERTY(Name=\"lossyScale\", Getter=\"GetLossyScale\")\n"
+            "public:\n"
+            "    ZFUNCTION()\n    Vector3 GetPosition() const;\n"
+            "    ZFUNCTION()\n    void SetPosition(const Vector3& value);\n"
+            "    ZFUNCTION()\n    Vector3 GetLossyScale() const;\n"
+        ))
+        cls = info.classes[0]
+        self.assertEqual([p.name for p in cls.script_properties], ["position", "lossyScale"])
+        self.assertEqual(cls.script_properties[0].ts_type, "Vector3")
+        source = generate_source(info)
+        self.assertIn('{.name = "position", .tsType = "Vector3", .readonly = false,', source)
+        self.assertIn(
+            '&ZScript::MethodCallback<static_cast<Vector3 (Foo::*)() const>(&Foo::GetPosition)>::Invoke', source)
+        self.assertIn(
+            '&ZScript::MethodCallback<static_cast<void (Foo::*)(const Vector3&)>(&Foo::SetPosition)>::Invoke', source)
+        self.assertIn('{.name = "lossyScale", .tsType = "Vector3", .readonly = true,', source)
+
+    def test_script_property_errors(self):
+        # Getter must exist as a ZFUNCTION...
+        self.assertRaises(ParseError, parse,
+                          wrap("    ZSCRIPTPROPERTY(Name=\"p\", Getter=\"Nope\")\n"))
+        # ...take no parameters...
+        self.assertRaises(ParseError, parse, wrap(
+            "    ZSCRIPTPROPERTY(Name=\"p\", Getter=\"GetChild\")\n"
+            "public:\n    ZFUNCTION()\n    Foo* GetChild(int index) const;\n"))
+        # ...and return something.
+        self.assertRaises(ParseError, parse, wrap(
+            "    ZSCRIPTPROPERTY(Name=\"p\", Getter=\"Reset\")\n"
+            "public:\n    ZFUNCTION()\n    void Reset();\n"))
+        # A setter takes exactly one parameter.
+        self.assertRaises(ParseError, parse, wrap(
+            "    ZSCRIPTPROPERTY(Name=\"p\", Getter=\"GetV\", Setter=\"SetV\")\n"
+            "public:\n    ZFUNCTION()\n    float GetV() const;\n"
+            "    ZFUNCTION()\n    void SetV(float a, float b);\n"))
+        # Name and Getter are both required.
+        self.assertRaises(ParseError, parse, wrap(
+            "    ZSCRIPTPROPERTY(Getter=\"GetV\")\n"
+            "public:\n    ZFUNCTION()\n    float GetV() const;\n"))
+        # A duplicate name is an error, not a silent shadow.
+        self.assertRaises(ParseError, parse, wrap(
+            "    ZSCRIPTPROPERTY(Name=\"p\", Getter=\"GetV\")\n"
+            "    ZSCRIPTPROPERTY(Name=\"p\", Getter=\"GetV\")\n"
+            "public:\n    ZFUNCTION()\n    float GetV() const;\n"))
 
     def test_no_meta_no_table(self):
         source = generate_source(parse(wrap("    ZPROPERTY()\n    float m_V;\n")))

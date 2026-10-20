@@ -507,9 +507,13 @@ namespace
                 std::fprintf(stderr, "SCRIPT_BINDING: %s extends itself\n", owner);
                 ++problems;
             }
-            if (cls->methods == nullptr || cls->methodCount == 0)
+            // A class is worth a table when it contributes anything: methods
+            // (phase 3) or accessor properties (phase 7, a ZSCRIPTPROPERTY-only
+            // class has no methods of its own).
+            if ((cls->methods == nullptr || cls->methodCount == 0) &&
+                (cls->properties == nullptr || cls->propertyCount == 0))
             {
-                std::fprintf(stderr, "SCRIPT_BINDING: %s has no methods\n", owner);
+                std::fprintf(stderr, "SCRIPT_BINDING: %s has neither methods nor properties\n", owner);
                 ++problems;
             }
             else
@@ -575,6 +579,101 @@ namespace
 
         std::fprintf(stderr, "SCRIPT_BINDING: %u class table(s), %u bound method(s), %zu d.ts byte(s), %d problem(s)\n", classes,
                      methods, dts.size(), problems);
+        return problems == 0;
+    }
+
+    /// Cross-check the ZScriptPropertyEntry tables (phase 7).
+    ///
+    /// A property is a name plus two callbacks living in a table the .d.ts does
+    /// not read back, so a null setter on a read-write property (or a read-only
+    /// one that still carries a setter) is invisible until a script touches it.
+    /// The .d.ts membership check is the important half: it is the only thing
+    /// tying the declared `x: T` line to the table that actually installs it.
+    bool CheckScriptProperties()
+    {
+        int problems = 0;
+        uint32_t classes = 0;
+        uint32_t properties = 0;
+
+        std::string dts;
+        ScriptBindingRegistry::AppendTypeScriptDeclarations(dts);
+
+        for (const ZClassScriptBinding* cls = ScriptBindingRegistry::Classes(); cls != nullptr; cls = cls->next)
+        {
+            if (cls->properties == nullptr || cls->propertyCount == 0)
+                continue;
+            ++classes;
+            const char* owner = (cls->scriptName != nullptr && cls->scriptName[0] != '\0') ? cls->scriptName : "<unnamed>";
+
+            for (size_t i = 0; i < cls->propertyCount; ++i)
+            {
+                const ZScriptPropertyEntry& prop = cls->properties[i];
+                ++properties;
+                if (prop.name == nullptr || prop.name[0] == '\0')
+                {
+                    std::fprintf(stderr, "SCRIPT_PROPERTY: %s property %zu has no name\n", owner, i);
+                    ++problems;
+                    continue;
+                }
+                if (prop.getter == nullptr)
+                {
+                    std::fprintf(stderr, "SCRIPT_PROPERTY: %s.%s has no getter\n", owner, prop.name);
+                    ++problems;
+                }
+                if (!prop.readonly && prop.setter == nullptr)
+                {
+                    std::fprintf(stderr, "SCRIPT_PROPERTY: %s.%s is read-write but has no setter\n", owner, prop.name);
+                    ++problems;
+                }
+                if (prop.readonly && prop.setter != nullptr)
+                {
+                    std::fprintf(stderr, "SCRIPT_PROPERTY: %s.%s is read-only but carries a setter\n", owner, prop.name);
+                    ++problems;
+                }
+                if (prop.tsType == nullptr || prop.tsType[0] == '\0')
+                {
+                    std::fprintf(stderr, "SCRIPT_PROPERTY: %s.%s has no TypeScript type\n", owner, prop.name);
+                    ++problems;
+                    continue;
+                }
+
+                // pesapi installs methods and properties on the same object; a
+                // name claimed by both resolves to one of them unpredictably.
+                for (size_t m = 0; m < cls->methodCount; ++m)
+                {
+                    if (cls->methods[m].name != nullptr && std::strcmp(cls->methods[m].name, prop.name) == 0)
+                    {
+                        std::fprintf(stderr, "SCRIPT_PROPERTY: %s.%s collides with a bound method of the same name\n",
+                                     owner, prop.name);
+                        ++problems;
+                    }
+                }
+
+                const std::string line = std::string("    ") + (prop.readonly ? "readonly " : "") + prop.name + ": " +
+                                         prop.tsType + ";\n";
+                if (dts.find(line) == std::string::npos)
+                {
+                    std::fprintf(stderr, "SCRIPT_PROPERTY: %s.%s is not declared in the generated .d.ts\n", owner, prop.name);
+                    ++problems;
+                }
+            }
+
+            for (size_t i = 0; i < cls->propertyCount; ++i)
+            {
+                for (size_t j = i + 1; j < cls->propertyCount; ++j)
+                {
+                    if (cls->properties[i].name != nullptr && cls->properties[j].name != nullptr &&
+                        std::strcmp(cls->properties[i].name, cls->properties[j].name) == 0)
+                    {
+                        std::fprintf(stderr, "SCRIPT_PROPERTY: %s declares '%s' twice\n", owner, cls->properties[i].name);
+                        ++problems;
+                    }
+                }
+            }
+        }
+
+        std::fprintf(stderr, "SCRIPT_PROPERTY: %u class table(s), %u property(ies), %d problem(s)\n", classes, properties,
+                     problems);
         return problems == 0;
     }
 
@@ -787,6 +886,7 @@ int main(int argc, char** argv)
     bool check_enabled = false;
     bool check_property_meta = false;
     bool check_script_bindings = false;
+    bool check_script_properties = false;
     bool dump_script_dts = false;
     bool check_cast = false;
     bool check_behaviour_binding = false;
@@ -805,6 +905,8 @@ int main(int argc, char** argv)
             check_property_meta = true;
         else if (arg == "--check-script-bindings")
             check_script_bindings = true;
+        else if (arg == "--check-script-properties")
+            check_script_properties = true;
         else if (arg == "--dump-script-dts")
             dump_script_dts = true;
         else if (arg == "--check-cast")
@@ -870,6 +972,11 @@ int main(int argc, char** argv)
     if (check_script_bindings && !CheckScriptBindings())
     {
         std::fprintf(stderr, "FAIL: ZFUNCTION script binding check failed.\n");
+        return 1;
+    }
+    if (check_script_properties && !CheckScriptProperties())
+    {
+        std::fprintf(stderr, "FAIL: script property check failed.\n");
         return 1;
     }
     if (check_cast && !CheckCast())

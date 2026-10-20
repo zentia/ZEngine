@@ -27,7 +27,8 @@ import re
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .lexer import CHAR, IDENT, NUMBER, PUNCT, STRING, LexError, Token, tokenize
-from .model import ClassInfo, HeaderInfo, MethodInfo, ParamInfo, PropertyInfo, SpecValue
+from .model import (ClassInfo, HeaderInfo, MethodInfo, ParamInfo, PropertyInfo,
+                    ScriptPropertyInfo, SpecValue)
 
 
 class ParseError(Exception):
@@ -115,6 +116,78 @@ _TS_TYPES = {
     "AudioVoiceId": "number",
     "std::string": "string",
     "eastl::string": "string",
+}
+
+# ZPROPERTY field types that may cross into scripts (phase 7). Deliberately a
+# separate, narrower table than _TS_TYPES: a ZPROPERTY field is annotated to be
+# *serialized*, not to be script-facing, so a type we cannot marshal is skipped
+# silently instead of being a generate-time error. That is the only way to keep
+# `enum class` / PPtr / std::vector fields (115 of the 162 reflected fields are
+# marshallable, the rest are not) from breaking every class that has one.
+#
+# Values must have a ZScript::Converter. Note the absence of `T*`: a pointer
+# field would need the pointee's header at generate time and an Object-derived
+# type check the parser cannot make, so pointer properties are not supported.
+_SCRIPT_PROPERTY_TYPES = {
+    "bool": "boolean",
+    "char": "number",
+    "signed char": "number",
+    "unsigned char": "number",
+    "short": "number",
+    "unsigned short": "number",
+    "int": "number",
+    "unsigned": "number",
+    "unsigned int": "number",
+    "long": "number",
+    "long long": "number",
+    "float": "number",
+    "double": "number",
+    "int8_t": "number",
+    "int16_t": "number",
+    "int32_t": "number",
+    "int64_t": "number",
+    "uint8_t": "number",
+    "uint16_t": "number",
+    "uint32_t": "number",
+    "uint64_t": "number",
+    "size_t": "number",
+    "std::size_t": "number",
+    "GObjectID": "number",
+    "AudioVoiceId": "number",
+    "std::string": "string",
+    "eastl::string": "string",
+    "Vector3": "Vector3",
+    "Quaternion": "Quaternion",
+}
+
+
+def script_property_ts_type(cpp_type: str) -> Optional[str]:
+    """TypeScript type of a ZPROPERTY field, or None when it cannot be
+    marshalled (that field then simply has no script property)."""
+    text = " ".join(cpp_type.split())
+    return _SCRIPT_PROPERTY_TYPES.get(text)
+
+
+def script_property_name(serialized_name: str) -> str:
+    """Serialized field name -> script property name.
+
+    Unity's own split: YAML and the Inspector keep the C++-flavoured
+    `m_script_guid` / `clip_path`, while script code sees `scriptGuid` /
+    `clipPath`. Dropping a leading `m_` first is what stops
+    `ZPROPERTY(Name="m_script_guid")` from surfacing as `mScriptGuid`.
+    """
+    text = serialized_name[2:] if serialized_name.startswith("m_") else serialized_name
+    parts = [p for p in text.split("_") if p]
+    if not parts:
+        return serialized_name
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+
+# ZSCRIPTPROPERTY specifiers.
+SCRIPT_PROPERTY_KEYS = {
+    "Name": "string",
+    "Getter": "string",
+    "Setter": "string",
 }
 
 # Declaration specifiers that may precede a ZFUNCTION return type.
@@ -428,6 +501,62 @@ def _validate_generated_include(header: HeaderInfo, includes) -> None:
         raise ParseError(matches[-1].line, '#include "%s" must come before the first ZCLASS' % expected)
 
 
+def _validate_script_properties(info: ClassInfo) -> None:
+    """Resolve ZSCRIPTPROPERTY accessor names against the class's ZFUNCTIONs.
+
+    Runs after the whole body is parsed, so the accessor may be declared
+    anywhere in the class. A ZSCRIPTPROPERTY name must also not collide with a
+    script-exposed ZPROPERTY field: both end up as a pesapi property of the same
+    class, and the later registration would silently shadow the earlier one.
+    """
+    by_name = {m.name: m for m in info.methods}
+    for prop in info.script_properties:
+        getter = by_name.get(prop.getter)
+        if getter is None:
+            raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': '%s' is not a ZFUNCTION-annotated member of '%s'"
+                             % (prop.name, prop.getter, info.name))
+        if getter.is_static:
+            raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': getter '%s' must not be static" % (prop.name, prop.getter))
+        if getter.params:
+            raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': getter '%s' must take no parameters" % (prop.name, prop.getter))
+        if getter.return_type.strip() in ("void", ""):
+            raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': getter '%s' must return a value" % (prop.name, prop.getter))
+        prop.ts_type = ts_type_for(getter.return_type, prop.line)
+
+        if prop.setter:
+            setter = by_name.get(prop.setter)
+            if setter is None:
+                raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': '%s' is not a ZFUNCTION-annotated member of '%s'"
+                                 % (prop.name, prop.setter, info.name))
+            if len(setter.params) != 1:
+                raise ParseError(prop.line, "ZSCRIPTPROPERTY '%s': setter '%s' must take exactly one parameter"
+                                 % (prop.name, prop.setter))
+
+    # Field names are keyed by the *script* spelling: two distinct serialized
+    # names can collapse onto one (`m_Foo` and `m_foo` both become `foo`), and
+    # the collision only exists after the rename.
+    field_lines: Dict[str, int] = {}
+    for prop in info.properties:
+        if script_property_ts_type(prop.cpp_type) is None:
+            continue
+        script_name = script_property_name(prop.serialized_name)
+        other = field_lines.get(script_name)
+        if other is not None:
+            raise ParseError(prop.line, "ZPROPERTY '%s' and the field of line %d both become the script property '%s'"
+                             % (prop.serialized_name, other, script_name))
+        field_lines[script_name] = prop.line
+
+    taken: Dict[str, int] = {}
+    for prop in info.script_properties:
+        if prop.name in field_lines:
+            raise ParseError(prop.line, "ZSCRIPTPROPERTY name '%s' collides with the script-exposed ZPROPERTY field of line %d"
+                             % (prop.name, field_lines[prop.name]))
+        other = taken.get(prop.name)
+        if other is not None:
+            raise ParseError(prop.line, "duplicate ZSCRIPTPROPERTY name '%s' (first declared at line %d)" % (prop.name, other))
+        taken[prop.name] = prop.line
+
+
 def _parse_class(cur: _Cursor, zclass_tok: Token) -> ClassInfo:
     open_paren = cur.expect_punct("(", "after ZCLASS")
     spec_tokens = _collect_balanced(cur, open_paren)
@@ -510,6 +639,11 @@ def _parse_class(cur: _Cursor, zclass_tok: Token) -> ClassInfo:
             raise ParseError(prop.line, "serialized name '%s' of '%s' collides with '%s' (line %d)" % (prop.serialized_name, prop.member_name, other.member_name, other.line))
         seen[prop.serialized_name] = prop
 
+    # After the serialized-name check: two fields that already serialize to the
+    # same name are reported there (a clearer message), and this pass adds the
+    # collisions that only appear once the names are camel-cased for scripts.
+    _validate_script_properties(info)
+
     # EditCondition names another ZPROPERTY bool of the same class by its C++
     # member name, optionally negated with '!'. Resolve it to the serialized
     # name the runtime / Inspector look up.
@@ -568,7 +702,7 @@ def _parse_class_body(cur: _Cursor, open_brace: Token, info: ClassInfo) -> None:
         if tok.kind != IDENT:
             continue
 
-        if tok.text in ("ZPROPERTY", "ZGENERATED_BODY", "ZFUNCTION", "ZCLASS") and depth != 1:
+        if tok.text in ("ZPROPERTY", "ZGENERATED_BODY", "ZFUNCTION", "ZSCRIPTPROPERTY", "ZCLASS") and depth != 1:
             raise ParseError(tok.line, "%s is only allowed directly inside a ZCLASS body" % tok.text)
 
         if depth == 1 and tok.text in ("public", "protected", "private"):
@@ -604,6 +738,27 @@ def _parse_class_body(cur: _Cursor, open_brace: Token, info: ClassInfo) -> None:
             spec_tokens = _collect_balanced(cur, open_paren)
             specs, meta = parse_specifiers(spec_tokens, tok.line)
             info.properties.append(_parse_property(cur, tok, specs, meta, access))
+            continue
+
+        if tok.text == "ZSCRIPTPROPERTY":
+            open_paren = cur.expect_punct("(", "after ZSCRIPTPROPERTY")
+            sp_specs, _ = parse_specifiers(_collect_balanced(cur, open_paren), tok.line)
+            values: Dict[str, str] = {}
+            for key, value, sline in sp_specs:
+                if key in SCRIPT_PROPERTY_KEYS:
+                    _check_value_kind(SCRIPT_PROPERTY_KEYS[key], key, value, sline)
+                    values[key] = str(value)
+                    continue
+                raise _unknown(key, sline, "ZSCRIPTPROPERTY specifier", sorted(SCRIPT_PROPERTY_KEYS))
+            missing = [k for k in ("Name", "Getter") if k not in values]
+            if missing:
+                raise ParseError(tok.line, "ZSCRIPTPROPERTY requires %s=..." % "=... and ".join(missing))
+            # The accessor has to be a ZFUNCTION so codegen knows its signature
+            # (the IR only records annotated methods). Checked after the class
+            # body is fully parsed -- the accessor may be declared below.
+            info.script_properties.append(
+                ScriptPropertyInfo(name=values["Name"], getter=values["Getter"],
+                                   setter=values.get("Setter", ""), line=tok.line))
             continue
 
 

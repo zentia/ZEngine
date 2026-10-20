@@ -108,10 +108,12 @@ if(ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST)
     # Bare runs are the migration dump (see the header of the .cpp); CI runs the
     # invariant checks instead: type registry, Behaviour 'enabled' serialization,
     # ZPROPERTY(meta=(...)) vs the live TypeTree, the ZFUNCTION binding tables /
-    # generated .d.ts, Cast<T> vs dynamic_cast, and the JS-side Behaviour
-    # declaration vs the properties TypeScriptComponent injects.
+    # generated .d.ts, the ZPROPERTY / ZSCRIPTPROPERTY accessor property tables,
+    # Cast<T> vs dynamic_cast, and the JS-side Behaviour declaration vs the
+    # properties TypeScriptComponent injects.
     zengine_add_smoke_test(ReflectionCodegenSmokeTest ReflectionCodegenSmokeTest.cpp
                            TEST_ARGS --check-registry --check-behaviour-enabled --check-property-meta
-                                     --check-script-bindings --check-cast --check-behaviour-binding)
+                                     --check-script-bindings --check-script-properties --check-cast
+                                     --check-behaviour-binding)
     message(STATUS "Configured reflection-codegen smoke-test target: ReflectionCodegenSmokeTest")
 endif()

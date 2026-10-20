@@ -11,11 +11,12 @@ on top of the same files.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .model import ClassInfo, HeaderInfo
+from .parser import script_property_name, script_property_ts_type
 
-TOOL_VERSION = 5
+TOOL_VERSION = 6
 
 _BANNER = (
     "// ==========================================================================\n"
@@ -38,6 +39,46 @@ def generated_body_macro_name(cls: ClassInfo) -> str:
     return "ZGEN_BODY_" + cls.name
 
 
+def _script_field_properties(cls: ClassInfo) -> List[Tuple[object, str]]:
+    """(ZPROPERTY field, TypeScript type) pairs exposed as script properties.
+
+    A field only qualifies when its type has a ZScript::Converter; see
+    parser._SCRIPT_PROPERTY_TYPES. Everything else (enum class, PPtr, a Res
+    struct, std::vector) is skipped silently -- ZPROPERTY marks a field as
+    *serialized*, not as script-facing, so an unmarshallable type must not turn
+    into a generate-time error.
+
+    Scope note: fields only contribute to a class that is already script-visible
+    (it owns ZFUNCTIONs or a ZSCRIPTPROPERTY). Widening this to "any class with a
+    marshallable field" would publish ~30 more globals and `declare class`es at
+    once; that is a separate decision, and this predicate is where to make it.
+    """
+    if not (cls.methods or cls.script_properties):
+        return []
+    out: List[Tuple[object, str]] = []
+    for prop in cls.properties:
+        ts_type = script_property_ts_type(prop.cpp_type)
+        if ts_type is not None:
+            out.append((prop, ts_type))
+    return out
+
+
+def _is_readonly_field(prop) -> bool:
+    # ZPROPERTY(ReadOnly) maps to DisallowSerializedPropertyModification. The
+    # Inspector does not honour it yet, but the script property does: writing a
+    # field the engine treats as read-only (a script GUID, say) would desync
+    # state the runtime has already indexed.
+    return "DisallowSerializedPropertyModification" in prop.transfer_flags
+
+
+def script_accessor_getter_name(member_name: str) -> str:
+    return "ZhtScriptGet_" + member_name
+
+
+def script_accessor_setter_name(member_name: str) -> str:
+    return "ZhtScriptSet_" + member_name
+
+
 def generate_header(header: HeaderInfo) -> str:
     out = [_banner(header), "#pragma once\n", "\n", '#include "Runtime/BaseClasses/ObjectMacros.h"\n']
     for cls in header.classes:
@@ -46,6 +87,19 @@ def generate_header(header: HeaderInfo) -> str:
             lines.append("REGISTER_CLASS_TRAITS(kTypeIsAbstract);")
         lines.append("REGISTER_CLASS(%s);" % cls.name)
         lines.append("DECLARE_OBJECT_SERIALIZE();")
+        # Accessors for script-exposed fields. They have to be PUBLIC: the
+        # .gen.cpp takes their address from file scope, and C++ checks access
+        # at the point of naming -- the fields themselves are usually private.
+        # Definitions are emitted next to Transfer(), whose member context is
+        # what reaches the private field in the first place.
+        accessors: List[str] = []
+        for prop, _ts in _script_field_properties(cls):
+            accessors.append("%s %s() const;" % (prop.cpp_type, script_accessor_getter_name(prop.member_name)))
+            if not _is_readonly_field(prop):
+                accessors.append("void %s(const %s& value);" % (script_accessor_setter_name(prop.member_name), prop.cpp_type))
+        if accessors:
+            lines.append("public:")
+            lines.extend(accessors)
         # Restore the default access of the class-key so code written right
         # after ZGENERATED_BODY() behaves as if the macro were not there.
         lines.append("private:" if cls.class_key == "class" else "public:")
@@ -210,20 +264,91 @@ def _effective_super(cls: ClassInfo, bound: set, bases: Dict[str, Optional[str]]
     return base
 
 
+def _script_accessor_definitions(cls: ClassInfo, indent: str) -> List[str]:
+    """Definitions of the generated field accessors (member context, so they
+    can touch private fields)."""
+    out: List[str] = []
+    for prop, _ts in _script_field_properties(cls):
+        q = cls.qualified_name
+        out.append("%s%s %s::%s() const { return %s; }\n"
+                   % (indent, prop.cpp_type, q, script_accessor_getter_name(prop.member_name), prop.member_name))
+        if not _is_readonly_field(prop):
+            out.append("%svoid %s::%s(const %s& value) { %s = value; }\n"
+                       % (indent, q, script_accessor_setter_name(prop.member_name), prop.cpp_type, prop.member_name))
+    return out
+
+
+def _script_accessor_block(cls: ClassInfo) -> List[str]:
+    defs = _script_accessor_definitions(cls, "    " if cls.namespace else "")
+    if not defs:
+        return []
+    out: List[str] = ["\n"]
+    if cls.namespace:
+        out.append("namespace %s\n{\n" % cls.namespace)
+        out.extend(defs)
+        out.append("}  // namespace %s\n" % cls.namespace)
+    else:
+        out.extend(defs)
+    return out
+
+
+def _script_property_entries(cls: ClassInfo) -> List[str]:
+    """pesapi accessor property table: ZPROPERTY fields first, then the
+    ZSCRIPTPROPERTY accessor pairs.
+
+    Both kinds end up as the same ZScriptPropertyEntry, and in both cases the
+    trampoline is the ordinary ZScript::MethodCallback -- a property getter is
+    just a zero-argument method that returns a value, and a setter is a
+    one-argument method. No new marshalling machinery is needed.
+    """
+    out: List[str] = []
+    q = cls.qualified_name
+    for prop, ts in _script_field_properties(cls):
+        readonly = _is_readonly_field(prop)
+        getter = ("&ZScript::MethodCallback<static_cast<%s (%s::*)() const>(&%s::%s)>::Invoke"
+                  % (prop.cpp_type, q, q, script_accessor_getter_name(prop.member_name)))
+        setter = "nullptr"
+        if not readonly:
+            setter = ("&ZScript::MethodCallback<static_cast<void (%s::*)(const %s&)>(&%s::%s)>::Invoke"
+                      % (q, prop.cpp_type, q, script_accessor_setter_name(prop.member_name)))
+        out.append('{.name = "%s", .tsType = "%s", .readonly = %s, .getter = %s, .setter = %s}'
+                   % (script_property_name(prop.serialized_name), ts,
+                      "true" if readonly else "false", getter, setter))
+
+    by_name = {m.name: m for m in cls.methods}
+    for sp in cls.script_properties:
+        getter = "&ZScript::MethodCallback<static_cast<%s>(&%s::%s)>::Invoke" % (
+            _function_pointer_type(cls, by_name[sp.getter]), q, sp.getter)
+        setter = "nullptr"
+        if sp.setter:
+            setter = "&ZScript::MethodCallback<static_cast<%s>(&%s::%s)>::Invoke" % (
+                _function_pointer_type(cls, by_name[sp.setter]), q, sp.setter)
+        out.append('{.name = "%s", .tsType = "%s", .readonly = %s, .getter = %s, .setter = %s}'
+                   % (sp.name, sp.ts_type, "true" if not sp.setter else "false", getter, setter))
+    return out
+
+
 def _script_block(cls: ClassInfo, super_name: Optional[str]) -> List[str]:
-    """Static pesapi binding table for one class's ZFUNCTIONs (phase 3)."""
-    if not cls.methods:
+    """Static pesapi binding table for one class (methods + properties)."""
+    properties = _script_property_entries(cls)
+    if not cls.methods and not properties:
         return []
     ident = cls.qualified_name.replace("::", "_")
     super_type = "ZScriptTypeId<%s>::Get()" % super_name if super_name else "nullptr"
     super_name_lit = '"%s"' % super_name if super_name else "nullptr"
     out = ["\n", "namespace\n{\n"]
-    out.append("    const ZScriptMethodEntry kZhtScriptMethods_%s[] = {\n" % ident)
-    out.extend("        %s,\n" % _script_method_entry(cls, m) for m in cls.methods)
-    out.append("    };\n")
-    out.append("    ZClassScriptBinding kZhtScriptClass_%s {ZScriptTypeId<%s>::Get(), %s, \"%s\", %s, "
-               "kZhtScriptMethods_%s, %d};\n" % (ident, cls.qualified_name, super_type, cls.name, super_name_lit, ident,
-                                                 len(cls.methods)))
+    if cls.methods:
+        out.append("    const ZScriptMethodEntry kZhtScriptMethods_%s[] = {\n" % ident)
+        out.extend("        %s,\n" % _script_method_entry(cls, m) for m in cls.methods)
+        out.append("    };\n")
+    if properties:
+        out.append("    const ZScriptPropertyEntry kZhtScriptProperties_%s[] = {\n" % ident)
+        out.extend("        %s,\n" % entry for entry in properties)
+        out.append("    };\n")
+    out.append("    ZClassScriptBinding kZhtScriptClass_%s {ZScriptTypeId<%s>::Get(), %s, \"%s\", %s, %s, %d, %s, %d};\n"
+               % (ident, cls.qualified_name, super_type, cls.name, super_name_lit,
+                  "kZhtScriptMethods_%s" % ident if cls.methods else "nullptr", len(cls.methods),
+                  "kZhtScriptProperties_%s" % ident if properties else "nullptr", len(properties)))
     out.append("    const ZClassScriptBindingRegistrar kZhtScriptRegistrar_%s(kZhtScriptClass_%s);\n" % (ident, ident))
     out.append("}  // namespace\n")
     return out
@@ -233,7 +358,7 @@ def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] =
                     bound_classes: Optional[set] = None, base_of: Optional[Dict[str, Optional[str]]] = None) -> str:
     out = [_banner(header), "\n", '#include "%s"\n' % header.include_path]
     needs_meta = any(p.meta and not p.transient for cls in header.classes for p in cls.properties)
-    needs_script = any(cls.methods for cls in header.classes)
+    needs_script = any(cls.methods or cls.script_properties for cls in header.classes)
     script_includes = _script_signature_includes(header, type_headers or {}) if needs_script else []
     if any(not cls.custom_transfer for cls in header.classes) or needs_meta or needs_script:
         out.append("\n")
@@ -252,6 +377,7 @@ def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] =
             out.append("// ZCLASS(CustomTransfer): IMPLEMENT_OBJECT_SERIALIZE, Transfer() and\n")
             out.append("// INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED live in the hand-written .cpp.\n")
             out.extend(_meta_block(cls))
+            out.extend(_script_accessor_block(cls))
             out.extend(_script_block(cls, _effective_super(cls, bound_classes or set(), base_of or {})))
             continue
         out.append("IMPLEMENT_OBJECT_SERIALIZE(%s)\n" % cls.qualified_name)
@@ -263,5 +389,6 @@ def generate_source(header: HeaderInfo, type_headers: Optional[Dict[str, str]] =
         else:
             out.extend(_transfer_definition(cls, ""))
         out.extend(_meta_block(cls))
+        out.extend(_script_accessor_block(cls))
         out.extend(_script_block(cls, _effective_super(cls, bound_classes or set(), base_of or {})))
     return "".join(out)

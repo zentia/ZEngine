@@ -40,6 +40,25 @@ struct ZScriptMethodEntry
     pesapi_callback callback = nullptr;
 };
 
+// A pesapi accessor property (phase 7): `obj.name` reads through `getter` and,
+// when `setter` is non-null, writes through it. Two sources feed this table:
+//   * a ZPROPERTY field whose type has a ZScript::Converter -- ZHeaderTool
+//     generates a public ZhtScriptGet_<member> / ZhtScriptSet_<member> pair,
+//     so the property stays typed even though the field itself is private.
+//   * ZSCRIPTPROPERTY(Name=..., Getter=..., Setter=...), which publishes an
+//     existing ZFUNCTION pair as a property (transform.position -> GetPosition
+//     / SetPosition). No field required.
+// A null setter makes the property read-only: the V8 backend installs it with
+// v8::ReadOnly, and the .d.ts declares it `readonly`.
+struct ZScriptPropertyEntry
+{
+    const char* name = nullptr;  // name exposed to TypeScript
+    const char* tsType = nullptr;  // d.ts type, e.g. "Vector3" / "number"
+    bool readonly = false;
+    pesapi_callback getter = nullptr;
+    pesapi_callback setter = nullptr;  // null -> read-only
+};
+
 // Forward-declared: ScriptBindingRegistry (below) hands out pointers to it.
 struct ZSyntheticScriptClass;
 
@@ -51,6 +70,8 @@ struct ZClassScriptBinding
     const char* superName = nullptr;  // for the d.ts `extends` clause
     const ZScriptMethodEntry* methods = nullptr;
     std::size_t methodCount = 0;
+    const ZScriptPropertyEntry* properties = nullptr;
+    std::size_t propertyCount = 0;
     ZClassScriptBinding* next = nullptr;  // intrusive registry list
 };
 

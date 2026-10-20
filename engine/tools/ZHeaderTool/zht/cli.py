@@ -178,7 +178,11 @@ def cmd_generate(args) -> int:
             type_headers[qname] = info.include_path
             bare_name_counts[cls.name] = bare_name_counts.get(cls.name, 0) + 1
             base_of[qname] = cls.base
-            if cls.methods:
+            # Script-visible == owns a binding table. Keep in lock-step with
+            # codegen._script_field_properties, which gates field accessors on
+            # exactly this, otherwise a class would be emitted with properties
+            # but treated as unbound when its super chain is flattened.
+            if cls.methods or cls.script_properties:
                 bound_classes.add(qname)
     for info in parsed:
         for cls in info.classes:

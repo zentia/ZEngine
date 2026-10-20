@@ -41,6 +41,24 @@ public:
     void PostLoadResource(GameObject* parent_object) override;
     void OnSerializedFieldsUpdated() override;
 
+    // ---- script properties -------------------------------------------------
+    // ZSCRIPTPROPERTY publishes an existing ZFUNCTION getter/setter pair as a
+    // pesapi accessor property, so a script writes `transform.position = v`
+    // instead of `transform.SetPosition(v)`. The getter must be ZFUNCTION-
+    // annotated (that is where ZHeaderTool reads the TypeScript type from) and
+    // take no arguments; the setter takes exactly one. Omitting Setter makes
+    // the property read-only.
+    //
+    // Transform deliberately has no ZPROPERTY fields -- its serialization is a
+    // hand-written Transfer() -- which is why these are accessor-backed rather
+    // than field-backed like LightComponent's `flux` / `radius`.
+    ZSCRIPTPROPERTY(Name="position", Getter="GetPosition", Setter="SetPosition")
+    ZSCRIPTPROPERTY(Name="localPosition", Getter="GetLocalPosition", Setter="SetLocalPosition")
+    ZSCRIPTPROPERTY(Name="rotation", Getter="GetRotation", Setter="SetRotation")
+    ZSCRIPTPROPERTY(Name="localRotation", Getter="GetLocalRotation", Setter="SetLocalRotation")
+    ZSCRIPTPROPERTY(Name="localScale", Getter="GetLocalScale", Setter="SetLocalScale")
+    ZSCRIPTPROPERTY(Name="lossyScale", Getter="GetLossyScale")
+
     // ---- local space ----
     // ZFUNCTION() markers are compiler no-ops picked up by ZHeaderTool, which
     // turns them into pesapi bindings and `declare class Transform` members.
