@@ -13,9 +13,7 @@
 
 `-batchmode` 沿用 Unity/UE 的写法：不再弹窗，结果写 stdout，退出码交给调用方。它必须成对出现——GUI 模式只认识 `--profile` / `--output-dir` / `--incident-time` / `--tab`，其它参数会直接报错提示加上 `-batchmode`。
 
-程序是 **WINDOWS 子系统**（`wWinMain`），所以双击运行时加载器根本不会创建控制台，没有黑窗口一闪。
-
-命令行不受影响：`-batchmode` / `--help` / 内部 worker 动词在打印任何东西之前会 `AttachConsole(ATTACH_PARENT_PROCESS)` 并把 CRT 的 stdin/stdout/stderr 重新指向调用方的控制台，所以 cmd.exe 与 PowerShell 下 stdout/stderr 照常、`%ERRORLEVEL%` 与 `$LASTEXITCODE` 照常。调用方如果已经把 stdout 重定向到管道或文件（`>`、`|`、CI 捕获），就保持不动，不去抢它的输出。cmd.exe 在 bat 里依然会等它结束，`exe && next` 仍然可用（已用"bat 里跑慢命令、下一行检查产物"实测，重定向与不重定向两种都等）。
+命令行在 cmd.exe 与 PowerShell 下 stdout/stderr 照常、`%ERRORLEVEL%` 与 `$LASTEXITCODE` 照常；调用方已把输出重定向到管道或文件（`>`、`|`、CI 捕获）时不会被抢走。bat 里会等它结束，`exe && next` 可用。
 
 GUI 三个页签与 `-batchmode` 子命令一一对应：
 
@@ -55,7 +53,7 @@ GUI 的“兼容性检查”和“GPU 选卡验证”与命令行走的是同一
 %USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_YYYYMMDD_N.log
 ```
 
-与引擎日志同目录。GUI 是 WINDOWS 子系统进程、没有 stderr，字体缺失、D3D 初始化失败、后台任务报错等只能在那里看到（ZSlate 的字体/图集告警也一并转发进来）。`manifest.json` 里的 `toolLog` 字段记录该路径，日志本身不进 ZIP。
+与引擎日志同目录。字体缺失、D3D 初始化失败、后台任务报错等只能在那里看到。`manifest.json` 里的 `toolLog` 字段记录该路径，日志本身不进 ZIP。
 
 ## 检查内容
 
