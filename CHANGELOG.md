@@ -30,6 +30,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `ctest -N` lists 19 tests (3 `Platform*Test` + 16 smoke) and
     `ctest -C Release` passes **19/19**.
 
+### Added - 2026-10-20 (the ZEnvironmentCollector tests are reachable again)
+- The four `environment_*` tests (`environment_collector_core`,
+  `environment_preflight`, `environment_capture_safety`,
+  `environment_wer_safety`) under `engine/tools/ZEnvironmentCollector` called
+  `add_test()` but could never register: they were gated on `BUILD_TESTING`,
+  which is `OFF` in the cache because minizip-ng force-sets it to silence
+  zlib-ng's own tests. They had been doubly invisible before that, because
+  `enable_testing()` was missing from the root `CMakeLists.txt`.
+  - New `option(ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS ...)` (default `OFF`)
+    gates them; the block now runs on
+    `if(BUILD_TESTING OR ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS)`. A dedicated
+    option rather than `-DBUILD_TESTING=ON`, which would also switch on every
+    3rdparty suite (curl, Jolt, mimalloc, ...) -- none of which this build
+    compiles, so `ctest` would just report "Unable to find executable" for all
+    of them.
+  - Enabled in CI. Verified: `ctest -N` lists 23 tests and `ctest -C Release`
+    passes **23/23**.
+
 ### Added - 2026-10-20 (the smoke tests run in CI)
 - `.github/workflows/smoke_tests.yml` (Windows / Release, on push and PR to
   `main`) turns on every opt-in smoke-test flag, builds the 19 registered

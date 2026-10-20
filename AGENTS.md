@@ -2138,6 +2138,14 @@ Known gaps, in the order they should be closed (PR-SK3+):
   the WARP adapter, which is why both can run on a headless CI runner. Verify
   a new registration with
   `ctest --test-dir <build> -C Release -N` (listing needs no build).
+- **CTest gates**: do NOT switch `BUILD_TESTING` on to get a test to run -- it
+  is OFF in the cache because minizip-ng force-sets it to silence zlib-ng's own
+  tests, and turning it on registers every 3rdparty suite (curl, Jolt,
+  mimalloc, ...) that this build never compiles, so `ctest` reports them all as
+  "Unable to find executable". Add a dedicated `option()` per test group
+  instead (`ZENGINE_BUILD_*_SMOKE_TEST`,
+  `ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS` for the four `environment_*` tests
+  under `engine/tools/ZEnvironmentCollector`).
 
 ## 4. Active multi-phase work
 
