@@ -1149,7 +1149,10 @@ bool AssetManager::WriteObjectsToDiskThreadSafe(const std::filesystem::path& pat
         return WriteObjectsToYaml(path, objects, identifiers, count);
     }
 
-    int serializedFileIndex = GET_SYSTEM(AssetManager)->GetSerializedFileIndexFromPath(path);
+    // Member function: use `this`, not the GET_SYSTEM singleton. A caller
+    // holding a different AssetManager (e.g. a local RuntimeAssetManager in a
+    // headless tool / test) would otherwise dereference a null system.
+    int serializedFileIndex = GetSerializedFileIndexFromPath(path);
     if (serializedFileIndex == -1)
         return false;
 
@@ -1164,5 +1167,5 @@ bool AssetManager::WriteObjectsToDiskThreadSafe(const std::filesystem::path& pat
         else
             writeData[i].localIdentifierInFile = i + 1;
     }
-    return GET_SYSTEM(AssetManager)->WriteFile(path, serializedFileIndex, writeData.data(), static_cast<int>(count)) == 0;
+    return WriteFile(path, serializedFileIndex, writeData.data(), static_cast<int>(count)) == 0;
 }

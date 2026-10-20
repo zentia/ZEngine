@@ -278,6 +278,18 @@ void SerializedFile::WriteObject(Object& object, int64_t fileID)
     if (unalignedByteStart % kFileAlignment != 0)
         alignedByteStart += kFileAlignment - unalignedByteStart % kFileAlignment;
 
+    // Actually emit the padding. The object table records alignedByteStart
+    // and the reader seeks there, but the payload used to be written at the
+    // unaligned cursor: every object after one whose size was not a multiple
+    // of 8 was read shifted (and byteSize came out short by the same amount).
+    // Single-object files and objects that happen to start aligned are
+    // byte-identical to before.
+    if (alignedByteStart != unalignedByteStart)
+    {
+        static const uint8_t kPadding[kFileAlignment] = {};
+        m_CachedWriter->Write(kPadding, static_cast<size_t>(alignedByteStart - unalignedByteStart));
+    }
+
     ObjectInfo& info = m_Object[fileID];
     info.byteStart = alignedByteStart;
     info.typeID = static_cast<uint64_t>(typeID);
