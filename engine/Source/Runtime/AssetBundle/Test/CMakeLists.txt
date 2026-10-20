@@ -42,6 +42,15 @@ if(MSVC)
     target_compile_options(AssetBundleSmokeTest PRIVATE /W4)
 endif()
 
+# Same Apple link fix as Core/Serialize/Test: libZRuntime.a references render
+# symbols whose TUs are not built for Apple, and -force_load drags them in even
+# though this test never touches the renderer. Without this the target cannot
+# link on macOS at all, which silently disabled every assertion below there.
+if(APPLE)
+    target_sources(AssetBundleSmokeTest PRIVATE
+        ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+endif()
+
 # Registered with CTest; the test returns EXIT_FAILURE on the first failed check.
 add_test(NAME AssetBundleSmokeTest COMMAND AssetBundleSmokeTest)
 

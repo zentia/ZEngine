@@ -2172,21 +2172,39 @@ run.
   descend into an excluded directory, so a negation for a file inside it can
   never re-include it.
 
+Runtime resolution (added 2026-10-20, PR-PAK1 follow-ups):
+
+- **GUID -> path comes from the mounted bundles at runtime.** The runtime ships
+  no `AssetRegistry`, so `AssetBundleManager` indexes every entry GUID on mount
+  (`TryResolveGuid`) and `AssetManager::TryGetPathForGuid` asks it instead of
+  returning false. `EnsureBundleMountedForAsset()` also mounts a *sibling*
+  bundle on demand by looking the asset up in the manifest's `asset_paths` --
+  `FileIdentifier` carries a GUID and a path but never a bundle name, so
+  without it a player would have to mount everything up front.
+- **"Not on disk" is not "missing" in a player.** Three places used to draw
+  that conclusion (`ResolveExternalAssetPath`, `ReadObject(instanceID)`,
+  `RenderResourceBase::TryLoadCookedTexture`) and each one silently dropped
+  content that lived only inside a bundle. They now ask `AssetBundleManager`
+  first. Keep that shape: in a packaged build there is no `Assets/` tree, so an
+  `exists()` gate is a bug, not a guard.
+- **`AssetBundleSmokeTest` runs on macOS now.** It could not link there (same
+  DX12-only symbols as ZEditor); `AssetBundle/Test/CMakeLists.txt` now adds
+  `SmokeTestAppleLinkStubs.cpp` on APPLE, exactly like `Core/Serialize/Test`.
+  It also used to crash at the first `MemoryManager::DestroyObject`:
+  `ObjectManager::Produce` allocates with plain `new`, while
+  `MemoryManager::DestroyObject` frees through mimalloc, and on Apple the
+  global `operator new/delete` is deliberately NOT routed to mimalloc (see
+  `MemoryManager.cpp`) -- the free faulted inside `mi_usable_size`. Objects
+  from `Produce` must be released with `delete` (the test's
+  `DestroyProduced()`); objects from `MemoryManager::CreateObject` with
+  `MemoryManager::DestroyObject`. Never mix the two.
+
 Known gaps, in the order they should be closed (PR-PAK2+):
 - **No player bootstrap mounts the bundles yet.** `AssetBundleManager` is
   registered and `MountDirectory()` works, but nothing calls it in a standalone
   player -- a shipped build still has to be handed `Assets/` or call it
   itself. Auto-mounting is deliberately NOT implicit (rule 3: it would shadow
   real files in the editor). Wire it behind an explicit player flag.
-- **Cross-file PPtrs still resolve to null at runtime**, so a bundle-only build
-  loses nested prefabs. `AssetManager::TryGetPathForGuid` returns false
-  unconditionally (`AssetRegistry` is editor-only) and
-  `ResolveExternalAssetPath` requires the target to exist on disk. The manifest
-  says which bundles to mount, but nothing maps `m_FileID` -> bundle.
-- **Textures bypass the bundle**: `RenderResourceBase::TryLoadCookedTexture`
-  `std::filesystem::exists`-checks the .zasset and, on failure, falls back to
-  `stbi_load` on the source image. Packing is therefore not sufficient to make
-  a level render textured.
 - **No compression**: v1 writes STORED blobs (the `compression` field and
   `uncompressed_size` are already in the format). ZRuntime links no compressor.
 - No incremental build, no content-hash change detection, no per-asset

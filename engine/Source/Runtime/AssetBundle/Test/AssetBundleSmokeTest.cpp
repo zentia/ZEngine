@@ -22,6 +22,7 @@
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
+#include "Runtime/Function/Render/Texture/Texture2D.h"
 #include "Runtime/Resource/Asset/RuntimeAssetManager.h"
 #include "Runtime/Resource/ResType/Data/AnimSkelMap.h"
 
@@ -42,6 +43,7 @@ namespace
     // what makes a GUID-only external reference resolvable in a player.
     constexpr const char* kHeroGuid = "aaaabbbbccccddddeeeeffff00001111";
     constexpr const char* kWeaponGuid = "11112222333344445555666677778888";
+    constexpr const char* kAlbedoGuid = "9999aaaabbbbccccddddeeeeffff0000";
 
     void Check(bool condition, const char* name)
     {
@@ -56,6 +58,14 @@ namespace
             std::printf("[ ok ] %s\n", name);
         }
     }
+
+    // ObjectManager::Produce allocates with plain `new` (ProduceHelper), so the
+    // matching release is `delete` -- NOT MemoryManager::DestroyObject, which
+    // frees through mimalloc. On Apple the global operator new/delete is
+    // deliberately NOT routed to mimalloc (see MemoryManager.cpp), so the two
+    // disagree there and DestroyObject faults inside mi_usable_size. `delete`
+    // is the correct pairing on every platform: off Apple `new` IS mimalloc.
+    void DestroyProduced(Object* object) { delete object; }
 
     bool WriteAsset(const std::filesystem::path& path, const std::vector<int>& convert)
     {
@@ -76,7 +86,39 @@ namespace
         std::error_code ec;
         std::filesystem::create_directories(path.parent_path(), ec);
         const bool ok = asset_manager->WriteObjectToDiskThreadSafe(path, *produced);
-        MemoryManager::DestroyObject(produced);
+        DestroyProduced(produced);
+        return ok;
+    }
+
+    // A cooked Texture2D, the asset the texture cook emits and the one
+    // RenderResourceBase::LoadTexture looks for. Deliberately backend-neutral:
+    // Texture2D holds no RHI state, so it can be authored and read headless.
+    bool WriteTexture(const std::filesystem::path& path, uint32_t width, uint32_t height)
+    {
+        auto* object_manager = GET_SYSTEM(ObjectManager);
+        auto* asset_manager = GET_SYSTEM(AssetManager);
+        if (object_manager == nullptr || asset_manager == nullptr)
+        {
+            return false;
+        }
+
+        Object* produced = object_manager->Produce(TypeOf<Texture2D>(), 0);
+        if (produced == nullptr)
+        {
+            return false;
+        }
+
+        auto* texture = static_cast<Texture2D*>(produced);
+        texture->m_Width = width;
+        texture->m_Height = height;
+        texture->m_Format = 0;  // ordinal; only the GPU-side consumer reads it
+        texture->m_Pixels.assign(static_cast<size_t>(width) * height * 4, 0xAB);
+        texture->m_MipOffsets.push_back(0);
+
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        const bool ok = asset_manager->WriteObjectToDiskThreadSafe(path, *texture);
+        DestroyProduced(produced);
         return ok;
     }
 
@@ -101,6 +143,9 @@ namespace
 
 int main()
 {
+    // Unbuffered: a crash must not swallow the checks that already passed.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+
     RegisterCore();
     RegisterPlatform();
     REGISTER_SYSTEM(AssetBundleManager);
@@ -125,10 +170,15 @@ int main()
     Check(WriteAsset(hero_path, {1, 2, 3}), "B1: hero.zasset written");
     Check(WriteAsset(weapon_path, {7, 8}), "B1: weapon.zasset written");
 
+    const std::filesystem::path albedo_path = content_root / "Textures" / "albedo.zasset";
+    Check(WriteTexture(albedo_path, 4, 4), "B1: albedo.zasset written");
+
     std::vector<uint8_t> hero_bytes;
     std::vector<uint8_t> weapon_bytes;
+    std::vector<uint8_t> albedo_bytes;
     Check(ReadFileBytes(hero_path, hero_bytes) && !hero_bytes.empty(), "B1: hero bytes on disk");
     Check(ReadFileBytes(weapon_path, weapon_bytes), "B1: weapon bytes on disk");
+    Check(ReadFileBytes(albedo_path, albedo_bytes) && !albedo_bytes.empty(), "B1: albedo bytes on disk");
 
     // ---- B2: pack them -----------------------------------------------------
     std::vector<AssetBundles::BundleSourceEntry> hero_entries;
@@ -146,6 +196,13 @@ int main()
     weapon_entry.type = "AnimSkelMap";
     weapon_entry.bytes = weapon_bytes;
     shared_entries.push_back(std::move(weapon_entry));
+
+    AssetBundles::BundleSourceEntry albedo_entry;
+    albedo_entry.path = "Textures/albedo.zasset";
+    albedo_entry.guid = kAlbedoGuid;
+    albedo_entry.type = "Texture2D";
+    albedo_entry.bytes = albedo_bytes;
+    shared_entries.push_back(std::move(albedo_entry));
 
     std::string error;
     const std::filesystem::path hero_bundle_path = bundles_dir / "models_hero.zbundle";
@@ -176,12 +233,13 @@ int main()
     AssetBundleInfo shared_info;
     shared_info.name = "shared";
     shared_info.asset_paths.push_back("Models/weapon.zasset");
+    shared_info.asset_paths.push_back("Textures/albedo.zasset");
     manifest->bundles.push_back(hero_info);
     manifest->bundles.push_back(shared_info);
 
     const std::filesystem::path manifest_path = root / "Build" / "Standalone" / "test.manifest.zasset";
     Check(GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(manifest_path, *manifest), "B3: manifest written");
-    MemoryManager::DestroyObject(produced);
+    DestroyProduced(produced);
 
     // ---- B4: mount, dependencies auto-mount -------------------------------
     auto* bundles = GET_SYSTEM(AssetBundleManager);
@@ -253,6 +311,25 @@ int main()
         Check(bundles->IsMounted("shared"), "B6c: the owning bundle is mounted again");
         Check(!bundles->EnsureBundleMountedForAsset("Models/not-packed.zasset"),
               "B6c: an asset no bundle claims is refused");
+    }
+
+    // ---- B6d: a cooked texture survives a bundle-only build ----------------
+    // RenderResourceBase::LoadTexture resolves a cooked Texture2D .zasset and
+    // used to give up the moment it was not on disk -- which is every texture
+    // in a packaged build, because a player ships neither Assets/ nor
+    // Intermediate/Cooked/. The exact call it makes (ReadObject<Texture2D>)
+    // must therefore succeed with only a bundle behind it, or every material
+    // in a player renders untextured.
+    {
+        Check(!std::filesystem::exists(albedo_path, ec), "B6d: the cooked texture has no on-disk copy");
+        std::filesystem::path texture_path = albedo_path;
+        Texture2D* texture = asset_manager->ReadObject<Texture2D>(texture_path);
+        Check(texture != nullptr && texture->IsValid(), "B6d: bundle-resident Texture2D loads through ReadObject");
+        if (texture != nullptr)
+        {
+            Check(texture->m_Width == 4 && texture->m_Height == 4 && texture->m_Pixels.size() == 4 * 4 * 4,
+                  "B6d: the texture payload round-trips");
+        }
     }
 
     // ---- B7: corruption is detected ---------------------------------------

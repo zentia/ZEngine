@@ -1,5 +1,6 @@
 #include "Runtime/Function/Render/RenderResourceBase.h"
 
+#include "Runtime/AssetBundle/AssetBundleManager.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/Texture/Texture2D.h"
@@ -118,6 +119,11 @@ namespace
     // the resolved source path with the extension swapped to ".zasset" (the
     // TextureImporter default output placement for in-Assets sources); if the
     // reference already points at a ".zasset" it is used directly.
+    //
+    // A packaged build has no on-disk copy at all: the cooked variant lives in
+    // a mounted .zbundle and SerializedFile::InitializeRead serves it, so a
+    // missing file is answered by asking the bundle manager rather than by
+    // falling through -- see the check below.
     std::shared_ptr<TextureData> TryLoadCookedTexture(const eastl::string& file)
     {
         auto asset_mgr = GET_SYSTEM(AssetManager);
@@ -139,7 +145,21 @@ namespace
         std::error_code ec;
         if (!std::filesystem::exists(zasset_path, ec) || ec)
         {
-            return nullptr;
+            // A player ships neither `Assets/` nor `Intermediate/Cooked/`, so
+            // "the .zasset is not on disk" is not evidence that there is no
+            // cooked variant -- it is exactly the situation a bundle-only build
+            // is in. Bailing out here sent every texture in a packaged build
+            // down to the stb_image fallback below, which then failed too
+            // because the source .png is not shipped either: the material
+            // ended up with no texture at all.
+            //
+            // EnsureBundleMountedForAsset also mounts a sibling bundle on
+            // demand, so a texture that only `shared` owns still resolves.
+            auto* bundles = GET_SYSTEM(AssetBundleManager);
+            if (bundles == nullptr || !bundles->EnsureBundleMountedForAsset(zasset_path.generic_string()))
+            {
+                return nullptr;
+            }
         }
 
         std::filesystem::path read_path = zasset_path;
