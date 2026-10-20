@@ -13,6 +13,7 @@ class ObjectLayerPairFilterImpl;
     #include "jolt/utils.h"
 #endif
 #include "Runtime/Core/Math/AxisAligned.h"
+#include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Function/Physics/PhysicsConfig.h"
 
 namespace JPH
@@ -29,6 +30,10 @@ namespace JPH
 class TransformTRS;
 class RigidBodyComponentRes;
 class RigidBodyShape;
+// Opaque-enum declaration: an enum with a fixed underlying type is a complete
+// type once declared, so PhysicsScene.h stays free of the RigidBody.h include
+// (which pulls in PPtr / Geometry / the generated header).
+enum class RigidBodyActorType : unsigned char;
 
 static constexpr uint32_t s_InvalidRigidbodyId = 0xffffffff;
 
@@ -63,6 +68,44 @@ public:
     void RemoveRigidBody(uint32_t body_id);
 
     void UpdateRigidBodyGlobalTransform(uint32_t body_id, const TransformTRS& global_transform);
+
+    // --- body state (public physics API) -----------------------------------
+    //
+    // Every one of these takes a body id and returns false when the id is
+    // invalid, the body has already been removed, or the query does not apply
+    // to that body's motion type (a static body has no velocity and no mass
+    // properties). Callers on the Component layer treat "false" as "nothing
+    // happened" rather than asserting -- a body can legitimately be pending
+    // creation (PostLoadResource ran before the scene existed) or already torn
+    // down while a script still holds the component.
+
+    /// Motion type of a live body. False when the body does not exist.
+    bool GetRigidBodyMotionType(uint32_t body_id, RigidBodyActorType& out_motion_type) const;
+
+    /// Change a live body's motion type. This is what makes a body start
+    /// simulating: a body created as static has no motion properties at all.
+    bool SetRigidBodyMotionType(uint32_t body_id, RigidBodyActorType motion_type);
+
+    /// Where the body actually is, which for a simulated body drifts away from
+    /// the Transform component (nothing writes the body back yet).
+    bool GetRigidBodyPosition(uint32_t body_id, Vector3& out_position) const;
+    bool GetRigidBodyRotation(uint32_t body_id, Quaternion& out_rotation) const;
+
+    bool GetLinearVelocity(uint32_t body_id, Vector3& out_velocity) const;
+    bool SetLinearVelocity(uint32_t body_id, const Vector3& velocity);
+    bool GetAngularVelocity(uint32_t body_id, Vector3& out_velocity) const;
+    bool SetAngularVelocity(uint32_t body_id, const Vector3& velocity);
+
+    /// Continuous force, accumulated for the next step and cleared by it.
+    /// No-op (false) on a non-dynamic body.
+    bool AddForce(uint32_t body_id, const Vector3& force);
+
+    /// Instantaneous change in momentum; the "kick something" primitive.
+    /// No-op (false) on a non-dynamic body.
+    bool AddImpulse(uint32_t body_id, const Vector3& impulse);
+
+    /// 1 / mass. 0 means immovable, which is what a static body reports.
+    bool GetInverseMass(uint32_t body_id, float& out_inverse_mass) const;
 
     void Tick(float delta_time);
 
@@ -99,6 +142,10 @@ public:
 #endif
 
 protected:
+    /// Shared implementation of AddForce / AddImpulse: both take a body write
+    /// lock and do nothing on a non-dynamic body.
+    bool ApplyForceOrImpulse(uint32_t body_id, const Vector3& value, bool is_force);
+
     // we use single Jolt physics system for each scene
     JoltPhysics m_Physics;
 #if defined(__EMSCRIPTEN__)

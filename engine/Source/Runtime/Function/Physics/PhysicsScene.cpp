@@ -8,6 +8,7 @@
 #include "Jolt/Core/TempAllocator.h"
 #include "Jolt/Jolt.h"
 #include "Jolt/Physics/Body/BodyCreationSettings.h"
+#include "Jolt/Physics/Body/BodyLock.h"
 #include "Jolt/Physics/Collision/CastResult.h"
 #include "Jolt/Physics/Collision/CollideShape.h"
 #include "Jolt/Physics/Collision/CollisionCollectorImpl.h"
@@ -112,9 +113,27 @@ uint32_t PhysicsScene::CreateRigidBody(const TransformTRS& global_transform,
         return JPH::BodyID::cInvalidBodyID;
     }
 
-    //$TODO: currently just support static object
+    // The serialized actor type decides the Jolt motion type. Static is the
+    // default (and what every body used to be hardcoded to), so existing levels
+    // behave exactly as before; authoring a dynamic or kinematic body is now
+    // what turns on velocity / force / gravity for it.
+    const RigidBodyActorType actor_type = rigidbody_actor_res.GetActorType();
+    const bool is_dynamic = actor_type == RigidBodyActorType::dynamic;
     JPH::EMotionType motion_type = JPH::EMotionType::Static;
     JPH::ObjectLayer layer = Layers::NON_MOVING;
+    switch (actor_type)
+    {
+        case RigidBodyActorType::kinematic:
+            motion_type = JPH::EMotionType::Kinematic;
+            layer = Layers::MOVING;
+            break;
+        case RigidBodyActorType::dynamic:
+            motion_type = JPH::EMotionType::Dynamic;
+            layer = Layers::MOVING;
+            break;
+        default:
+            break;
+    }
 
     JPH::Ref<JPH::StaticCompoundShapeSettings> compund_shape_setting = new JPH::StaticCompoundShapeSettings;
     for (const JPHShapeData& shape_data : jph_shapes)
@@ -128,11 +147,23 @@ uint32_t PhysicsScene::CreateRigidBody(const TransformTRS& global_transform,
                                         shape_data.shape);
     }
 
-    JPH::Body* jph_body = body_interface.CreateBody(JPH::BodyCreationSettings(compund_shape_setting,
-                                                                              toVec3(global_transform.m_Position.ToVector3()),
-                                                                              toQuat(global_transform.m_Rotation),
-                                                                              motion_type,
-                                                                              layer));
+    JPH::BodyCreationSettings body_settings(compund_shape_setting,
+                                           toVec3(global_transform.m_Position.ToVector3()),
+                                           toQuat(global_transform.m_Rotation),
+                                           motion_type,
+                                           layer);
+
+    // Authoring carries an inverse mass (0 == "unset"), so honour it when it is
+    // meaningful: take the mass from it and let Jolt derive the inertia tensor
+    // from the shape, scaled to that mass. Leaving it 0 keeps the shape-derived
+    // density-based mass.
+    if (is_dynamic && rigidbody_actor_res.m_InverseMass > 0.f)
+    {
+        body_settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+        body_settings.mMassPropertiesOverride.mMass = 1.f / rigidbody_actor_res.m_InverseMass;
+    }
+
+    JPH::Body* jph_body = body_interface.CreateBody(body_settings);
 
     if (jph_body == nullptr)
     {
@@ -164,6 +195,219 @@ void PhysicsScene::UpdateRigidBodyGlobalTransform(uint32_t body_id, const Transf
                                           toVec3(global_transform.m_Position.ToVector3()),
                                           toQuat(global_transform.m_Rotation),
                                           JPH::EActivation::Activate);
+}
+
+namespace
+{
+    JPH::EMotionType ToJoltMotionType(RigidBodyActorType actor_type)
+    {
+        switch (actor_type)
+        {
+            case RigidBodyActorType::kinematic:
+                return JPH::EMotionType::Kinematic;
+            case RigidBodyActorType::dynamic:
+                return JPH::EMotionType::Dynamic;
+            default:
+                return JPH::EMotionType::Static;
+        }
+    }
+
+    RigidBodyActorType FromJoltMotionType(JPH::EMotionType motion_type)
+    {
+        switch (motion_type)
+        {
+            case JPH::EMotionType::Kinematic:
+                return RigidBodyActorType::kinematic;
+            case JPH::EMotionType::Dynamic:
+                return RigidBodyActorType::dynamic;
+            default:
+                return RigidBodyActorType::static_body;
+        }
+    }
+}  // namespace
+
+bool PhysicsScene::GetRigidBodyMotionType(uint32_t body_id, RigidBodyActorType& out_motion_type) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    const JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    out_motion_type = FromJoltMotionType(body_interface.GetMotionType(JPH::BodyID(body_id)));
+    return true;
+}
+
+bool PhysicsScene::SetRigidBodyMotionType(uint32_t body_id, RigidBodyActorType motion_type)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.SetMotionType(JPH::BodyID(body_id), ToJoltMotionType(motion_type), JPH::EActivation::Activate);
+    return true;
+}
+
+bool PhysicsScene::GetRigidBodyPosition(uint32_t body_id, Vector3& out_position) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    const JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    out_position = toVec3(body_interface.GetPosition(JPH::BodyID(body_id)));
+    return true;
+}
+
+bool PhysicsScene::GetRigidBodyRotation(uint32_t body_id, Quaternion& out_rotation) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    const JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    out_rotation = toQuat(body_interface.GetRotation(JPH::BodyID(body_id)));
+    return true;
+}
+
+bool PhysicsScene::GetLinearVelocity(uint32_t body_id, Vector3& out_velocity) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    const JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    // A static body has no motion properties at all; Jolt's GetLinearVelocity
+    // already returns zero for it.
+    out_velocity = toVec3(body_interface.GetLinearVelocity(JPH::BodyID(body_id)));
+    return true;
+}
+
+bool PhysicsScene::SetLinearVelocity(uint32_t body_id, const Vector3& velocity)
+{
+    // Setting a velocity on a body whose motion type has none is an assert in
+    // Jolt, so a static body is simply left alone.
+    RigidBodyActorType motion_type {};
+    if (!GetRigidBodyMotionType(body_id, motion_type) || motion_type == RigidBodyActorType::static_body)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.SetLinearVelocity(JPH::BodyID(body_id), toVec3(velocity));
+    return true;
+}
+
+bool PhysicsScene::GetAngularVelocity(uint32_t body_id, Vector3& out_velocity) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    const JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    out_velocity = toVec3(body_interface.GetAngularVelocity(JPH::BodyID(body_id)));
+    return true;
+}
+
+bool PhysicsScene::SetAngularVelocity(uint32_t body_id, const Vector3& velocity)
+{
+    RigidBodyActorType motion_type {};
+    if (!GetRigidBodyMotionType(body_id, motion_type) || motion_type == RigidBodyActorType::static_body)
+    {
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.SetAngularVelocity(JPH::BodyID(body_id), toVec3(velocity));
+    return true;
+}
+
+bool PhysicsScene::AddForce(uint32_t body_id, const Vector3& force)
+{
+    return ApplyForceOrImpulse(body_id, force, true);
+}
+
+bool PhysicsScene::AddImpulse(uint32_t body_id, const Vector3& impulse)
+{
+    return ApplyForceOrImpulse(body_id, impulse, false);
+}
+
+bool PhysicsScene::ApplyForceOrImpulse(uint32_t body_id, const Vector3& value, bool is_force)
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    // AddForce / AddImpulse live on JPH::Body, not on BodyInterface, so the
+    // body needs a write lock.
+    JPH::BodyLockWrite body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    // GetBody() returns a reference and Succeeded() above already proved it is
+    // valid, so there is nothing left to null-check here.
+    JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        // Only dynamic bodies integrate forces. Silently ignoring it keeps a
+        // script from crashing the frame because a level author left a body
+        // static.
+        return false;
+    }
+
+    JPH::BodyInterface& body_interface = m_Physics.m_JoltPhysicsSystem->GetBodyInterface();
+    body_interface.ActivateBody(JPH::BodyID(body_id));
+
+    if (is_force)
+    {
+        jph_body.AddForce(toVec3(value));
+    }
+    else
+    {
+        jph_body.AddImpulse(toVec3(value));
+    }
+    return true;
+}
+
+bool PhysicsScene::GetInverseMass(uint32_t body_id, float& out_inverse_mass) const
+{
+    if (body_id == s_InvalidRigidbodyId)
+    {
+        return false;
+    }
+
+    JPH::BodyLockRead body_lock(m_Physics.m_JoltPhysicsSystem->GetBodyLockInterface(), JPH::BodyID(body_id));
+    if (!body_lock.Succeeded())
+    {
+        return false;
+    }
+
+    const JPH::Body& jph_body = body_lock.GetBody();
+    if (!jph_body.IsDynamic())
+    {
+        // A static / kinematic body is immovable: inverse mass 0.
+        out_inverse_mass = 0.f;
+        return false;
+    }
+
+    const JPH::MotionProperties* motion_properties = jph_body.GetMotionProperties();
+    if (motion_properties == nullptr)
+    {
+        out_inverse_mass = 0.f;
+        return false;
+    }
+
+    out_inverse_mass = motion_properties->GetInverseMass();
+    return true;
 }
 
 void PhysicsScene::Tick(float delta_time)

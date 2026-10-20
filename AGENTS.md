@@ -2852,22 +2852,59 @@ need nothing extra). Do not re-litigate Python vs C++.
   the map; add any new `using X = <integer>` there when it first crosses the
   boundary. Failure mode is silent (the .d.ts still generates), so this is not
   catchable by `--check-script-bindings`.
-- Bound surface (2026-10-20): 41 class tables / 50 methods / 122 properties /
-  1 enum (d.ts ~7 KB). 8 of those classes are hand-annotated with ZFUNCTION --
-  `GameObject`, `Component`, `Transform`, `TypeScriptComponent`,
+- Bound surface (2026-10-20): 42 class tables / 62 methods / 122 properties /
+  2 enums (d.ts ~7.6 KB). 9 of those classes are hand-annotated with ZFUNCTION
+  -- `GameObject`, `Component`, `Transform`, `TypeScriptComponent`,
   `LightComponent`, `CameraComponent`, `AnimationComponent`,
-  `AudioSourceComponent` -- and the rest are published purely because they own
-  a marshallable ZPROPERTY field (assets / settings: `ShaderRes`, `Texture2D`,
-  `TimelineClip` + subclasses, `CameraParameter` + subclasses, `Font`,
-  `LevelRes`, ...), plus the synthetic `Behaviour` and the `CameraMode` enum.
-  Deliberately unbound:
+  `AudioSourceComponent`, `RigidBodyComponent` -- and the rest are published
+  purely because they own a marshallable ZPROPERTY field (assets / settings:
+  `ShaderRes`, `Texture2D`, `TimelineClip` + subclasses, `CameraParameter` +
+  subclasses, `Font`, `LevelRes`, ...), plus the synthetic `Behaviour` and the
+  `CameraMode` / `RigidBodyActorType` enums. Deliberately unbound:
   * `const char*` setters (a Converter would have to own a buffer that outlives
     the call; add an `eastl::string` overload instead).
   * `Transform::SetParentOptions` -- a *nested* enum, which ZENUM rejects (no
     unambiguous global name). Promote it to file scope if scripts need it.
-  * `ParticleComponent` / `MeshRenderer` expose no public accessors, and
-    `RigidBodyComponent` only has the diagnostic `HasPendingBody` /
-    `FlushPendingBody`; none are worth a binding yet.
+  * `ParticleComponent` / `MeshRenderer` expose no public accessors; not worth
+    a binding yet.
+- **Physics API** (phase 10, 2026-10-20). `RigidBodyComponent` is the script
+  face of a Jolt body; `PhysicsScene` is the C++ face.
+  * `RigidBodyActorType` (`static_body` / `kinematic` / `dynamic`) is a
+    **ZENUM** in `Runtime/Resource/ResType/Components/RigidBody.h`, so scripts
+    see `RigidBodyActorType.Dynamic`. The serialized field stays an `int`
+    (`m_ActorType`) -- changing the field type would break every level already
+    on disk -- and `GetActorType()` / `SetActorType()` convert through
+    `ToRigidBodyActorType` / `ToSerializedActorType`. `PhysicsScene.h` only
+    carries `enum class RigidBodyActorType : unsigned char;` (an enum with a
+    fixed underlying type is complete once declared, so the header does not
+    pull in PPtr / Geometry / the generated header).
+  * The actor type now **drives** `CreateRigidBody`: it selects
+    `JPH::EMotionType` and the `Layers::MOVING` / `Layers::NON_MOVING` object
+    layer, and a dynamic body with an authored `m_InverseMass > 0` gets
+    `EOverrideMassProperties::CalculateInertia` + `mMassPropertiesOverride.
+    mMass` (Jolt derives the inertia tensor, scaled to that mass). It used to
+    be hardcoded static with a `//$TODO`; static stays the default, so
+    existing levels are byte-identical in behaviour.
+  * Motion type is changed through `BodyInterface::SetMotionType`, **not**
+    `Body::SetMotionType` -- the Body one is only safe on an inactive body.
+    Same reason `AddForce` / `AddImpulse` take a `JPH::BodyLockWrite`: they
+    live on `JPH::Body`, not on `BodyInterface`. `GetBody()` returns a
+    **reference** and `Succeeded()` already proved it non-null -- do not
+    null-check it.
+  * Every new `PhysicsScene` method returns `bool` and is a no-op on
+    `s_InvalidRigidbodyId` or on a body the query does not apply to (a static
+    body has no motion properties, so `GetInverseMass` reports 0 and
+    `AddForce` does nothing). Nothing asserts: a body can legitimately be
+    pending creation (`PostLoadResource` runs before `WorldManager` publishes
+    the scene) or already torn down while a script still holds the component.
+  * `RigidBodyComponent` guards everything behind `GetActivePhysicsScene()`,
+    which is null when there is no body id. `GetActorType` reads the *authored*
+    value so it stays meaningful while pending; `GetMass` prefers the live
+    body and falls back to the authored inverse mass.
+  * **`engine/Source/Platform/Web/PhysicsStubs.cpp` must be kept in lock-step**
+    -- every added `PhysicsScene` method needs a stub there or the Emscripten
+    build fails to link. It is only compiled with `__EMSCRIPTEN__`, so a macOS
+    build will not catch the drift.
 - **Generator v7 invariants** (both are easy to break silently):
   * A `.gen.cpp` `#include`s the header of every named type a ZFUNCTION
     signature mentions -- classes *and* ZENUMs (`cli.py` feeds both into

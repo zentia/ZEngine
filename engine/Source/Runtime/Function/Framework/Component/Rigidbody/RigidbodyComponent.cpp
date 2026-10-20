@@ -119,6 +119,132 @@ void RigidBodyComponent::RemoveRigidBody()
     physics_scene->RemoveRigidBody(m_RigidbodyId);
 }
 
+// A helper every call below shares: the scene is allowed to be missing (level
+// teardown destroys it before the components), and a pending / already-removed
+// body simply has no id to talk about.
+std::shared_ptr<PhysicsScene> RigidBodyComponent::GetActivePhysicsScene() const
+{
+    if (m_RigidbodyId == k_invalid_rigidbody_id)
+    {
+        return nullptr;
+    }
+
+    return GET_SYSTEM(WorldManager)->GetCurrentActivePhysicsScene().lock();
+}
+
+void RigidBodyComponent::SetActorType(RigidBodyActorType actor_type)
+{
+    m_RigidbodyRes.SetActorType(actor_type);
+
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetRigidBodyMotionType(m_RigidbodyId, actor_type);
+    }
+}
+
+Vector3 RigidBodyComponent::GetLinearVelocity() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return Vector3::ZERO;
+    }
+
+    Vector3 velocity;
+    return physics_scene->GetLinearVelocity(m_RigidbodyId, velocity) ? velocity : Vector3::ZERO;
+}
+
+void RigidBodyComponent::SetLinearVelocity(const Vector3& velocity)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetLinearVelocity(m_RigidbodyId, velocity);
+    }
+}
+
+Vector3 RigidBodyComponent::GetAngularVelocity() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return Vector3::ZERO;
+    }
+
+    Vector3 velocity;
+    return physics_scene->GetAngularVelocity(m_RigidbodyId, velocity) ? velocity : Vector3::ZERO;
+}
+
+void RigidBodyComponent::SetAngularVelocity(const Vector3& velocity)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->SetAngularVelocity(m_RigidbodyId, velocity);
+    }
+}
+
+void RigidBodyComponent::AddForce(const Vector3& force)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->AddForce(m_RigidbodyId, force);
+    }
+}
+
+void RigidBodyComponent::AddImpulse(const Vector3& impulse)
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        physics_scene->AddImpulse(m_RigidbodyId, impulse);
+    }
+}
+
+float RigidBodyComponent::GetMass() const
+{
+    // Prefer the live body: it is what actually resists a force. Fall back to
+    // the authored value while the body is still pending.
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (physics_scene)
+    {
+        float inverse_mass = 0.f;
+        if (physics_scene->GetInverseMass(m_RigidbodyId, inverse_mass) && inverse_mass > 0.f)
+        {
+            return 1.f / inverse_mass;
+        }
+    }
+
+    const float authored_inverse_mass = m_RigidbodyRes.m_InverseMass;
+    return authored_inverse_mass > 0.f ? 1.f / authored_inverse_mass : 0.f;
+}
+
+Vector3 RigidBodyComponent::GetBodyPosition() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return Vector3::ZERO;
+    }
+
+    Vector3 position;
+    return physics_scene->GetRigidBodyPosition(m_RigidbodyId, position) ? position : Vector3::ZERO;
+}
+
+Quaternion RigidBodyComponent::GetBodyRotation() const
+{
+    std::shared_ptr<PhysicsScene> physics_scene = GetActivePhysicsScene();
+    if (!physics_scene)
+    {
+        return Quaternion::IDENTITY;
+    }
+
+    Quaternion rotation;
+    return physics_scene->GetRigidBodyRotation(m_RigidbodyId, rotation) ? rotation : Quaternion::IDENTITY;
+}
+
 void RigidBodyComponent::UpdateGlobalTransform(const TransformTRS& transform, bool is_scale_dirty)
 {
     if (is_scale_dirty)
