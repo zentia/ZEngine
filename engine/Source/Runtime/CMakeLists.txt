@@ -353,6 +353,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabIncludeResolverTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabIncludeResolverTest.cpp")
+# ShaderLab SPIR-V cache-manifest smoke-test main. Same exclusion rationale.
+# Built only when ZENGINE_BUILD_SHADERLAB_CACHE_TEST=ON (see
+# Function/ShaderLab/Test/CMakeLists.txt). As with the resolver, the code under
+# test (ShaderLabCacheManifest.cpp) is NOT excluded -- it is library code.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabCacheManifestTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabCacheManifestTest.cpp")
 # PR-V2: Vulkan bindless smoke-test main. Same exclusion rationale as
 # the DX12 entry above. Built only when ZENGINE_BUILD_VK_BINDLESS_SMOKE_TEST=ON
 # (see Function/Render/Interface/Vulkan/Test/CMakeLists.txt).

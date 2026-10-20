@@ -26,6 +26,7 @@ set(SHADER_LAB_VK_FREE_SOURCES
     ShaderLabVariant.cpp
     ShaderLabDx12Compiler.cpp
     ShaderLabIncludeProcessor.cpp
+    ShaderLabCacheManifest.cpp
 )
 
 # Compiler currently depends on the Vulkan shader_compiler header. We only

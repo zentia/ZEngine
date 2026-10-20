@@ -467,6 +467,10 @@ dist/
 # Scratch build trees (a second configure of the engine, e.g. for -DZENGINE_STATIC_CRT=ON)
 build-ship/
 
+# Scratch build tree for a ZENGINE_USE_VULKAN=ON configure (ShaderLabCompiler.cpp
+# is Vulkan-gated, so verifying it needs a second tree; it must never be committed)
+build-vk/
+
 # Scratch build trees (local verification configures)
 build_check/
 build_check2/

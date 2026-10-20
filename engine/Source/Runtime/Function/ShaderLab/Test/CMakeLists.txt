@@ -1,4 +1,50 @@
 # =====================================================================
+# ShaderLab SPIR-V cache-manifest smoke-test
+# ---------------------------------------------------------------------
+# Pins down the invalidation rule for on-disk SPIR-V blobs. Like the
+# include resolver, ShaderLabCacheManifest.cpp is deliberately free of any
+# render-backend dependency, so this target configures and runs even with
+# ZENGINE_USE_VULKAN=OFF -- where ShaderLabCompiler.cpp (the only real
+# consumer) is excluded from ZRuntime and would otherwise be unverifiable.
+#
+# Opt in with:
+#   cmake -B build -DZENGINE_BUILD_SHADERLAB_CACHE_TEST=ON
+#   cmake --build build --target ShaderLabCacheManifestTest
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADERLAB_CACHE_TEST
+       "Build the ShaderLab SPIR-V cache-manifest smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADERLAB_CACHE_TEST)
+    set(_cache_target ShaderLabCacheManifestTest)
+
+    add_executable(${_cache_target}
+        ShaderLabCacheManifestTest.cpp
+    )
+
+    set_target_properties(${_cache_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # engine/Source is the root for "Runtime/Function/ShaderLab/..." includes.
+    target_include_directories(${_cache_target} PRIVATE ${ENGINE_ROOT_DIR}/Source)
+
+    # The manifest lives in ZRuntime (ShaderLab/*.cpp is globbed into it on
+    # every configuration that compiles the ShaderLab sources).
+    target_link_libraries(${_cache_target} PRIVATE ZRuntime)
+
+    if(MSVC)
+        target_compile_options(${_cache_target} PRIVATE /W4)
+    endif()
+
+    add_test(NAME ${_cache_target} COMMAND ${_cache_target})
+
+    message(STATUS "Configured ShaderLab cache-manifest smoke-test: ${_cache_target}")
+endif()
+
+# =====================================================================
 # ShaderLab Unity-compatibility smoke-test
 # ---------------------------------------------------------------------
 # Builds a standalone executable that feeds a REAL, unmodified Unity CG

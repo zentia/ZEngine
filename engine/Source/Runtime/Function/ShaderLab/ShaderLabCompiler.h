@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Function/Render/Interface/Vulkan/ShaderCompiler.h"
+#include "ShaderLabCacheManifest.h"
 #include "ShaderLabIncludeProcessor.h"
 #include "ShaderLabParser.h"
 #include "ShaderLabVariant.h"
@@ -71,7 +72,13 @@ namespace ZEngine::ShaderLab
         // successful Compile() persists its SPIR-V blob under
         //   <cache_dir>/<source-hash>_<sub>_<pass>_<variant-hash>_<stage>.spv
         // and subsequent Compile() calls (across runs) skip the heavy slang/dxc
-        // path when the cached blob is newer than the .shader source on disk.
+        // path when the blob is still valid.
+        //
+        // Validity is decided by a dependency manifest written next to the blob
+        // (see ShaderLabCacheManifest.h). The input set is the .shader PLUS
+        // every header the #include resolver pulled in -- comparing only the
+        // .shader's mtime, as this used to do, left every cached blob looking
+        // fresh after a shared header was edited.
         //
         // This is the editor-side equivalent of UE's DerivedDataCache for
         // shaders. Pass an empty path to disable caching (default).
@@ -91,8 +98,16 @@ namespace ZEngine::ShaderLab
                                                  const ShaderVariantKey& variant_key) const;
         bool TryLoadCachedSpirv(const std::filesystem::path& cache_file,
                                 std::vector<unsigned char>& out_blob) const;
+
+        // `dependencies` is the full input set the blob was built from: the
+        // .shader itself, then every file ResolveIncludes() pulled in. It is
+        // recorded next to `cache_file` so the next run can tell whether any
+        // input changed. Without it the manifest would be missing and every
+        // load would be a miss, so passing an empty set is a bug, not an
+        // optimisation.
         bool WriteCachedSpirv(const std::filesystem::path& cache_file,
-                              const std::vector<unsigned char>& blob) const;
+                              const std::vector<unsigned char>& blob,
+                              const std::vector<std::filesystem::path>& dependencies) const;
 
     private:
         std::shared_ptr<ShaderLabAsset> m_Asset;
@@ -111,8 +126,17 @@ namespace ZEngine::ShaderLab
 
         std::unique_ptr<::ShaderCompiler> m_ShaderCompiler;
 
-        // 编译缓存: (subshader_idx, pass_idx, variant_key) -> SPIR-V
-        std::map<std::tuple<size_t, size_t, std::string>, std::vector<unsigned char>> m_CompileCache;
+        // 编译缓存: (subshader_idx, pass_idx, variant_key, stage) -> SPIR-V
+        //
+        // The stage is part of the key. It used to be
+        // (subshader, pass, variant) only, which means "vertex" and
+        // "fragment" shared one slot: PrecompileAll() compiles vertex then
+        // fragment for the same variant, so the fragment request hit the
+        // in-memory entry the vertex compile had just written and returned
+        // the VERTEX blob (with a fragment entry point stapled on). The disk
+        // cache always keyed on stage, so the two tiers also disagreed.
+        std::map<std::tuple<size_t, size_t, std::string, std::string>, std::vector<unsigned char>>
+            m_CompileCache;
     };
 
     // ============= 便捷函数 =============

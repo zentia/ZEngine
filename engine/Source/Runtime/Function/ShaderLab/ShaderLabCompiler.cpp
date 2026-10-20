@@ -162,27 +162,17 @@ namespace ZEngine::ShaderLab
         {
             return false;
         }
-        if (!std::filesystem::exists(m_SourcePath, ec) || ec)
+        // Dependency manifest: the blob is only reusable when the .shader AND
+        // every header it included are byte-for-byte as they were when the
+        // blob was produced. Comparing only m_SourcePath against the blob's
+        // own mtime (the previous rule) missed edits to included headers --
+        // the single most common edit in a real shader project.
+        //
+        // The manifest check subsumes the old source-mtime check because
+        // m_SourcePath is always recorded as the first dependency.
+        std::string stale_reason;
+        if (!ShouldReuseBlob(cache_file, &stale_reason))
         {
-            // Source vanished but cache exists: prefer to recompile (which will
-            // also fail) so the user sees a coherent error rather than a stale
-            // success.
-            return false;
-        }
-
-        const auto src_time = std::filesystem::last_write_time(m_SourcePath, ec);
-        if (ec)
-        {
-            return false;
-        }
-        const auto cache_time = std::filesystem::last_write_time(cache_file, ec);
-        if (ec)
-        {
-            return false;
-        }
-        if (cache_time < src_time)
-        {
-            // Source has been edited since this cache entry was written.
             return false;
         }
 
@@ -206,8 +196,10 @@ namespace ZEngine::ShaderLab
         return true;
     }
 
-    bool ShaderLabCompiler::WriteCachedSpirv(const std::filesystem::path& cache_file,
-                                             const std::vector<unsigned char>& blob) const
+    bool ShaderLabCompiler::WriteCachedSpirv(
+        const std::filesystem::path& cache_file,
+        const std::vector<unsigned char>& blob,
+        const std::vector<std::filesystem::path>& dependencies) const
     {
         if (cache_file.empty() || blob.empty())
         {
@@ -226,7 +218,27 @@ namespace ZEngine::ShaderLab
         }
         ofs.write(reinterpret_cast<const char*>(blob.data()),
                   static_cast<std::streamsize>(blob.size()));
-        return ofs.good();
+        if (!ofs.good())
+        {
+            return false;
+        }
+
+        // Blob is on disk; now record what it was built from. Writing the
+        // manifest AFTER the blob matters: a crash between the two leaves a
+        // blob without a manifest, which reads as a miss (safe -- recompile),
+        // whereas the reverse order can leave a Fresh manifest pointing at an
+        // older blob, which reads as a hit (unsafe -- stale SPIR-V).
+        std::string manifest_error;
+        if (!WriteCacheManifest(cache_file, dependencies, &manifest_error))
+        {
+            // The blob is still valid, but the next run will treat it as a
+            // miss. That is the safe direction; report and continue.
+            std::fprintf(stderr, "[ShaderLab] SPIR-V cache manifest not written (%s)\n",
+                         manifest_error.c_str());
+            return false;
+        }
+
+        return true;
     }
 
     CompiledShaderModule ShaderLabCompiler::Compile(
@@ -269,10 +281,11 @@ namespace ZEngine::ShaderLab
         const auto& program = pass.programs[0];  // 目前只取第一个 program
 
         // 构建缓存键 (in-memory, per-instance). The variant string is
-        // canonicalised via stringifyVariant() so the key matches what the
-        // disk-cache helper produces.
+        // canonicalised via StringifyVariantKey() so the key matches what the
+        // disk-cache helper produces. The stage is part of the key so vertex
+        // and fragment blobs for the same pass/variant cannot share a slot.
         const std::string variant_key_str = StringifyVariantKey(variant_key);
-        auto cache_key = std::make_tuple(subshader_index, pass_index, variant_key_str);
+        auto cache_key = std::make_tuple(subshader_index, pass_index, variant_key_str, program_type);
 
         // 检查内存缓存（同一进程内最快）
         auto it = m_CompileCache.find(cache_key);
@@ -280,10 +293,8 @@ namespace ZEngine::ShaderLab
         {
             result.spirv_code = it->second;
             result.success = true;
-            // entry_point still needs to match the requested stage even when we
-            // hit the cache, because the in-memory blob is keyed by stage-less
-            // tuple historically. We populate it below in the same way the
-            // miss-path does.
+            // entry_point still has to be derived from the requested stage --
+            // it is not stored in the cache, only the blob is.
             if (program_type == "vertex")
             {
                 result.entry_point = program.vertex_entry;
@@ -399,10 +410,22 @@ namespace ZEngine::ShaderLab
             // 缓存结果（内存 + 磁盘）。WriteCachedSpirv silently no-ops on
             // empty cache_file, which is what we want when the cache is
             // disabled or no source path is known.
+            //
+            // The dependency set is the .shader plus every header the resolver
+            // inlined. Recording it is what makes an edit to a shared header
+            // invalidate the blob; before this, only the .shader's own mtime
+            // was looked at.
             m_CompileCache[cache_key] = result.spirv_code;
             if (!cache_file.empty())
             {
-                WriteCachedSpirv(cache_file, result.spirv_code);
+                std::vector<std::filesystem::path> dependencies;
+                dependencies.reserve(resolved.included_files.size() + 1);
+                dependencies.push_back(m_SourcePath);
+                for (const auto& included : resolved.included_files)
+                {
+                    dependencies.push_back(included);
+                }
+                WriteCachedSpirv(cache_file, result.spirv_code, dependencies);
             }
         }
         else
