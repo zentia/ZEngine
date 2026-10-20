@@ -1939,7 +1939,7 @@ Known gaps: no layers / blend trees / sub-state machines, no graph pan/zoom, the
 Content Browser does not accept drops yet (a path cannot be dragged *into* it),
 and no live preview of the driven character's parameters while editing.
 
-### 2.29 Undo/Redo: two layers, and you record BEFORE you edit
+### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).
 
@@ -2011,7 +2011,7 @@ and no live preview of the driven character's parameters while editing.
   knows the RHI.
 - **Declare before you touch.** A pass's setup callback declares the "before" state;
   the mutation happens in the execute callback. Same rule as the editor undo system
-  (2.29).
+  (2.32).
 - **Roots are what survive culling:** a pass is kept if it writes an imported
   (external) resource, writes an extracted resource, or carries
   `RGPassFlags::NeverCull`. Everything else that nobody consumes disappears. A pass
