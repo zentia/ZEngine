@@ -57,4 +57,7 @@ if(MSVC)
     target_compile_options(TextureCompressorSmokeTest PRIVATE /W3)
 endif()
 
+# Registered with CTest; the test returns EXIT_FAILURE on the first failed check.
+add_test(NAME TextureCompressorSmokeTest COMMAND TextureCompressorSmokeTest)
+
 message(STATUS "Configured TextureCompressor encode smoke-test target: TextureCompressorSmokeTest")

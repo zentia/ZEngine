@@ -46,7 +46,10 @@ endif()
 # Test Configuration
 # =============================================================================
 
-# Enable testing
+# Enable testing. The ROOT CMakeLists.txt also calls enable_testing() -- that is
+# the load-bearing one, it is what lets the opt-in smoke tests under engine/
+# register with add_test(). Do not "clean up" the root call: removing it makes
+# ctest see only this directory and CI silently runs an empty suite.
 enable_testing()
 
 # Add tests

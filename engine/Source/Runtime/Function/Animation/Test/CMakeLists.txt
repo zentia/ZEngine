@@ -44,6 +44,9 @@ if(ZENGINE_BUILD_ANIMATION_SMOKE_TEST)
         target_compile_options(AnimationSkinningSmokeTest PRIVATE /W4)
     endif()
 
+    # Registered with CTest; the test returns EXIT_FAILURE on the first failed check.
+    add_test(NAME AnimationSkinningSmokeTest COMMAND AnimationSkinningSmokeTest)
+
     message(STATUS "Configured skinning smoke-test target: AnimationSkinningSmokeTest")
 endif()
 
@@ -67,6 +70,9 @@ if(ZENGINE_BUILD_ANIMATOR_SMOKE_TEST)
     if(MSVC)
         target_compile_options(AnimatorSmokeTest PRIVATE /W4)
     endif()
+
+    # Registered with CTest; the test returns EXIT_FAILURE on the first failed check.
+    add_test(NAME AnimatorSmokeTest COMMAND AnimatorSmokeTest)
 
     message(STATUS "Configured animator smoke-test target: AnimatorSmokeTest")
 endif()

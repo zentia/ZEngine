@@ -76,6 +76,12 @@ function(zengine_add_smoke_test target_name source_file)
     if(APPLE)
         target_sources(${target_name} PRIVATE SmokeTestAppleLinkStubs.cpp)
     endif()
+
+    # Register with CTest so `ctest` (and CI) actually runs it. Every smoke test
+    # returns EXIT_FAILURE on the first failed check, so the exit code is enough.
+    # WORKING_DIRECTORY defaults to CMAKE_CURRENT_BINARY_DIR, which is where the
+    # YAML round-trip test writes and removes its scratch scene file.
+    add_test(NAME ${target_name} COMMAND ${target_name})
 endfunction()
 
 if(ZENGINE_BUILD_SCHEMA_EVOLUTION_SMOKE_TEST)

@@ -32,4 +32,7 @@ target_include_directories(UndoSystemSmokeTest PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../..
 )
 
+# Registered with CTest (exit code is the verdict: EXIT_FAILURE on any failed check).
+add_test(NAME UndoSystemSmokeTest COMMAND UndoSystemSmokeTest)
+
 message(STATUS "Configured UndoSystem smoke-test target: UndoSystemSmokeTest")

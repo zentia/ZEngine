@@ -38,4 +38,7 @@ if(MSVC)
     target_compile_options(DerivedDataCacheSmokeTest PRIVATE /W3)
 endif()
 
+# Registered with CTest; the test returns EXIT_FAILURE on the first failed check.
+add_test(NAME DerivedDataCacheSmokeTest COMMAND DerivedDataCacheSmokeTest)
+
 message(STATUS "Configured Derived Data Cache smoke-test target: DerivedDataCacheSmokeTest")

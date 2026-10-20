@@ -42,4 +42,7 @@ if(MSVC)
     target_compile_options(AssetBundleSmokeTest PRIVATE /W4)
 endif()
 
+# Registered with CTest; the test returns EXIT_FAILURE on the first failed check.
+add_test(NAME AssetBundleSmokeTest COMMAND AssetBundleSmokeTest)
+
 message(STATUS "Configured AssetBundle smoke-test target: AssetBundleSmokeTest")

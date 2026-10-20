@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 2026-10-20 (CTest actually runs the smoke tests)
+- **The opt-in smoke tests were invisible to CTest.** Every
+  `option(ZENGINE_BUILD_*_SMOKE_TEST ...)` built an executable but never called
+  `add_test()`, and `enable_testing()` was called from `tests/` instead of the
+  root `CMakeLists.txt`, so `ctest` registered only the three
+  `Platform*Test`s. A CI job that ran `ctest` therefore found the suite empty
+  and exited 0 -- a green light that protected nothing.
+  - `enable_testing()` moved to the root `CMakeLists.txt`, above
+    `add_subdirectory(tests)` / `add_subdirectory(engine)`.
+  - `add_test(NAME <t> COMMAND <t>)` added to all 16 smoke-test targets: the
+    four serialization tests (via `zengine_add_smoke_test`), `UndoSystem`,
+    `RenderGraph`, `AssetBundle`, `Addressables`, `DerivedDataCache`,
+    `TextureCompressor`, `AI`, `NavMesh`, `AnimationSkinning`, `Animator`,
+    `AudioMixer`, `DX12Bindless`, `VulkanBindless`.
+  - Verdict is the exit code (each test returns `EXIT_FAILURE` on its first
+    failed check), so no `PASS_REGULAR_EXPRESSION` is needed.
+  - Deliberately NOT registered: `SceneGenTool`, `AssetMigrator`,
+    `ObjectDefinitionMigrator` (migration tools that write files, not tests).
+    `NavMeshTest` is registered but stays out of the default CI flag set
+    because it reads the shipped `bin/$<CONFIG>/asset/level/1-1.level.json`.
+  - Verified: `ctest -N` lists 19 tests; `UndoSystem` (70 checks),
+    `RenderGraph` (78), `SchemaEvolution`, `PPtr`, `YamlRoundTrip`,
+    `ReflectionCodegen` and `AssetBundle` all build and pass under
+    `ctest -C Release`.
+
 ### Added - 2026-10-20 (RenderGraph)
 - **A real frame graph exists now.** Before this the renderer was written straight
   through: every pass hand-wrote its `CmdPipelineBarrier` calls, every pass owned a

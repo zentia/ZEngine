@@ -41,4 +41,7 @@ if(MSVC)
     target_compile_options(AudioMixerSmokeTest PRIVATE /W4)
 endif()
 
+# Registered with CTest; the test returns EXIT_FAILURE on the first failed check.
+add_test(NAME AudioMixerSmokeTest COMMAND AudioMixerSmokeTest)
+
 message(STATUS "Configured audio DSP smoke-test target: AudioMixerSmokeTest")

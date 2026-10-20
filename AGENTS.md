@@ -2125,6 +2125,17 @@ Known gaps, in the order they should be closed (PR-SK3+):
 - Editor exe lives at `bin/Debug/ZEditor.exe` (NOT under `build/`).
 - Demo project for smoke tests: `I:\ZEngineDemo\ZEngineDemo.zproject`.
   Launch with `-p <path-to-zproject>`.
+- **CTest**: `enable_testing()` lives in the ROOT `CMakeLists.txt` (not in
+  `tests/`), so any directory below can register tests. Every opt-in smoke
+  test (`option(ZENGINE_BUILD_*_SMOKE_TEST ...)`) MUST call
+  `add_test(NAME <target> COMMAND <target>)` right after its
+  `add_executable()` -- without it `ctest` never sees the test and CI runs an
+  empty suite that still exits 0. Smoke tests are judged purely by exit code
+  (`EXIT_FAILURE` on the first failed check), so no `PASS_REGULAR_EXPRESSION`
+  is needed. A test that needs shipped assets or a GPU device (e.g.
+  `NavMeshTest`, which reads `bin/$<CONFIG>/asset/level/1-1.level.json`) stays
+  opt-in and out of the default CI flag set. Verify a new registration with
+  `ctest --test-dir <build> -C Release -N` (listing needs no build).
 
 ## 4. Active multi-phase work
 

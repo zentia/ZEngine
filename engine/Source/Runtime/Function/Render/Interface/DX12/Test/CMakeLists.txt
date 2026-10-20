@@ -112,4 +112,8 @@ set_source_files_properties(
     PROPERTIES VS_TOOL_OVERRIDE "None" # don't let VS try to FXC them
 )
 
+# Registered with CTest. Headless-safe by design: the test validates the
+# DXC -> root signature -> PSO toolchain and never creates a real device.
+add_test(NAME ${_smoke_target} COMMAND ${_smoke_target})
+
 message(STATUS "Configured DX12 bindless smoke-test target: ${_smoke_target}")

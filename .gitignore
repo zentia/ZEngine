@@ -472,6 +472,9 @@ build_undo_test/
 # Scratch build tree used by .github/workflows/smoke_tests.yml (cmake -B build_smoke)
 build_smoke/
 
+# Scratch build tree used to verify CTest registration (cmake -B build_ctest_check)
+build_ctest_check/
+
 # WorkBuddy per-user session data (memory, plans). Untracked by design.
 .workbuddy/
 

@@ -476,6 +476,12 @@ endif()
 # Tests
 # =============================================================================
 
+# CTest is enabled at the TOP level so every subdirectory below can call
+# add_test() -- including the opt-in smoke tests under engine/. Calling
+# enable_testing() only from tests/ (as it used to be) means ctest registers
+# just that one directory and the smoke tests never run in CI.
+enable_testing()
+
 # Include platform tests
 add_subdirectory(tests)
 

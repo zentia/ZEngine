@@ -30,4 +30,7 @@ target_include_directories(RenderGraphSmokeTest PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../../..
 )
 
+# Registered with CTest (exit code is the verdict: 1 on any failed check).
+add_test(NAME RenderGraphSmokeTest COMMAND RenderGraphSmokeTest)
+
 message(STATUS "Configured RenderGraph smoke-test target: RenderGraphSmokeTest")

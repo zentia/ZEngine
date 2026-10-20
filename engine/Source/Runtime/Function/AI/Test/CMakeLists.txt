@@ -44,6 +44,9 @@ if(MSVC)
     target_compile_options(AISmokeTest PRIVATE /W4)
 endif()
 
+# Registered with CTest; the test returns EXIT_FAILURE on the first failed check.
+add_test(NAME AISmokeTest COMMAND AISmokeTest)
+
 message(STATUS "Configured AI layer smoke-test target: AISmokeTest")
 
 # ---------------------------------------------------------------------
@@ -86,6 +89,12 @@ target_compile_definitions(NavMeshTest PRIVATE
     ZENGINE_TEST_LEVEL_PATH="${_nav_level_path}"
     ZENGINE_TEST_BINARY_DIR="${_nav_binary_dir}"
 )
+
+# Registered with CTest. NOTE: this one reads the shipped level at
+# ZENGINE_TEST_LEVEL_PATH (bin/$<CONFIG>/asset/level/1-1.level.json), so it
+# needs the asset tree present; it is opt-in and is NOT part of the default
+# CI flag set for that reason.
+add_test(NAME NavMeshTest COMMAND NavMeshTest)
 
 message(STATUS "Configured navigation test target: NavMeshTest")
 

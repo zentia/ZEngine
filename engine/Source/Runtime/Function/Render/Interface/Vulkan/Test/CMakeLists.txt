@@ -106,4 +106,8 @@ if(MSVC)
     target_compile_options(${_smoke_target} PRIVATE /W4)
 endif()
 
+# Registered with CTest. PR-V2 is compile-time-only (static_assert), so it
+# needs no VkDevice and no installed ICD -- safe on a headless CI box.
+add_test(NAME ${_smoke_target} COMMAND ${_smoke_target})
+
 message(STATUS "Configured Vulkan bindless smoke-test target: ${_smoke_target}")
