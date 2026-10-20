@@ -148,6 +148,148 @@ RGStateMapping RGMapState(RGResourceState state, RGPassType pass_type)
 }
 
 // =====================================================================================
+// RGRhiDeviceAdapter -- the production bridge from the narrow port to the real RHI.
+// =====================================================================================
+
+void RGRhiDeviceAdapter::CreateImage(uint32_t image_width,
+                                     uint32_t image_height,
+                                     RHIFormat format,
+                                     RHIImageTiling image_tiling,
+                                     RHIImageUsageFlags image_usage_flags,
+                                     RHIMemoryPropertyFlags memory_property_flags,
+                                     RHIImage*& image,
+                                     RHIDeviceMemory*& memory,
+                                     RHIImageCreateFlags image_create_flags,
+                                     uint32_t array_layers,
+                                     uint32_t miplevels)
+{
+    if (m_Rhi == nullptr)
+    {
+        return;
+    }
+    m_Rhi->CreateImage(image_width,
+                       image_height,
+                       format,
+                       image_tiling,
+                       image_usage_flags,
+                       memory_property_flags,
+                       image,
+                       memory,
+                       image_create_flags,
+                       array_layers,
+                       miplevels);
+}
+
+void RGRhiDeviceAdapter::CreateImageView(RHIImage* image,
+                                         RHIFormat format,
+                                         RHIImageAspectFlags image_aspect_flags,
+                                         RHIImageViewType view_type,
+                                         uint32_t layout_count,
+                                         uint32_t miplevels,
+                                         RHIImageView*& image_view)
+{
+    if (m_Rhi == nullptr)
+    {
+        return;
+    }
+    m_Rhi->CreateImageView(image, format, image_aspect_flags, view_type, layout_count, miplevels, image_view);
+}
+
+void RGRhiDeviceAdapter::CreateBuffer(RHIDeviceSize size,
+                                      RHIBufferUsageFlags usage,
+                                      RHIMemoryPropertyFlags properties,
+                                      RHIBuffer*& buffer,
+                                      RHIDeviceMemory*& buffer_memory)
+{
+    if (m_Rhi == nullptr)
+    {
+        return;
+    }
+    m_Rhi->CreateBuffer(size, usage, properties, buffer, buffer_memory);
+}
+
+void RGRhiDeviceAdapter::DestroyImageView(RHIImageView* image_view)
+{
+    if (m_Rhi == nullptr || image_view == nullptr)
+    {
+        return;
+    }
+    m_Rhi->DestroyImageView(image_view);
+}
+
+void RGRhiDeviceAdapter::DestroyImage(RHIImage* image)
+{
+    if (m_Rhi == nullptr || image == nullptr)
+    {
+        return;
+    }
+    m_Rhi->DestroyImage(image);
+}
+
+void RGRhiDeviceAdapter::DestroyBuffer(RHIBuffer*& buffer)
+{
+    if (m_Rhi == nullptr || buffer == nullptr)
+    {
+        return;
+    }
+    m_Rhi->DestroyBuffer(buffer);
+}
+
+void RGRhiDeviceAdapter::FreeMemory(RHIDeviceMemory*& memory)
+{
+    if (m_Rhi == nullptr || memory == nullptr)
+    {
+        return;
+    }
+    m_Rhi->FreeMemory(memory);
+}
+
+void RGRhiDeviceAdapter::CmdPipelineBarrier(RHICommandBuffer* command_buffer,
+                                            RHIPipelineStageFlags src_stage_mask,
+                                            RHIPipelineStageFlags dst_stage_mask,
+                                            RHIDependencyFlags dependency_flags,
+                                            uint32_t memory_barrier_count,
+                                            const RHIMemoryBarrier* p_memory_barriers,
+                                            uint32_t buffer_memory_barrier_count,
+                                            const RHIBufferMemoryBarrier* p_buffer_memory_barriers,
+                                            uint32_t image_memory_barrier_count,
+                                            const RHIImageMemoryBarrier* p_image_memory_barriers)
+{
+    if (m_Rhi == nullptr)
+    {
+        return;
+    }
+    m_Rhi->CmdPipelineBarrier(command_buffer,
+                              src_stage_mask,
+                              dst_stage_mask,
+                              dependency_flags,
+                              memory_barrier_count,
+                              p_memory_barriers,
+                              buffer_memory_barrier_count,
+                              p_buffer_memory_barriers,
+                              image_memory_barrier_count,
+                              p_image_memory_barriers);
+}
+
+void RGRhiDeviceAdapter::PushEvent(RHICommandBuffer* command_buffer, const char* name, const float* color)
+{
+    if (m_Rhi == nullptr)
+    {
+        return;
+    }
+    m_Rhi->PushEvent(command_buffer, name, color);
+}
+
+void RGRhiDeviceAdapter::PopEvent(RHICommandBuffer* command_buffer)
+{
+    if (m_Rhi == nullptr)
+    {
+        return;
+    }
+    m_Rhi->PopEvent(command_buffer);
+}
+
+// =====================================================================================
 // RenderGraphExecuteContext
 // =====================================================================================
 
@@ -201,8 +343,8 @@ bool RenderGraphExecuteContext::IsResolved(RGBufferHandle handle) const
 // RenderGraphResourcePool
 // =====================================================================================
 
-RenderGraphResourcePool::RenderGraphResourcePool(RHI* rhi)
-    : m_Rhi(rhi)
+RenderGraphResourcePool::RenderGraphResourcePool(IRGResourceDevice* device)
+    : m_Device(device)
 {
 }
 
@@ -210,11 +352,11 @@ RenderGraphResourcePool::~RenderGraphResourcePool() { Flush(); }
 
 namespace
 {
-    // RHI::Destroy* / FreeMemory take `T*&` -- they clear the caller's pointer -- so the
+    // DestroyBuffer / FreeMemory take `T*&` -- they clear the caller's pointer -- so the
     // values have to be copied into mutable locals first.
-    void DestroyTexture(RHI* rhi, const RGPhysicalTexture& physical)
+    void DestroyTexture(IRGResourceDevice* device, const RGPhysicalTexture& physical)
     {
-        if (rhi == nullptr || physical.image == nullptr)
+        if (device == nullptr || physical.image == nullptr)
         {
             return;
         }
@@ -223,27 +365,27 @@ namespace
         RHIDeviceMemory* memory = physical.memory;
         if (view != nullptr)
         {
-            rhi->DestroyImageView(view);
+            device->DestroyImageView(view);
         }
-        rhi->DestroyImage(image);
+        device->DestroyImage(image);
         if (memory != nullptr)
         {
-            rhi->FreeMemory(memory);
+            device->FreeMemory(memory);
         }
     }
 
-    void DestroyBuffer(RHI* rhi, const RGPhysicalBuffer& physical)
+    void DestroyBuffer(IRGResourceDevice* device, const RGPhysicalBuffer& physical)
     {
-        if (rhi == nullptr || physical.buffer == nullptr)
+        if (device == nullptr || physical.buffer == nullptr)
         {
             return;
         }
         RHIBuffer* buffer = physical.buffer;
         RHIDeviceMemory* memory = physical.memory;
-        rhi->DestroyBuffer(buffer);
+        device->DestroyBuffer(buffer);
         if (memory != nullptr)
         {
-            rhi->FreeMemory(memory);
+            device->FreeMemory(memory);
         }
     }
 }  // namespace
@@ -280,7 +422,7 @@ uint64_t RenderGraphResourcePool::KeyOf(const RGBufferDesc& desc)
 
 RGPhysicalTexture RenderGraphResourcePool::AcquireTexture(const RGTextureDesc& desc)
 {
-    if (m_Rhi == nullptr)
+    if (m_Device == nullptr)
     {
         return RGPhysicalTexture {};
     }
@@ -305,30 +447,30 @@ RGPhysicalTexture RenderGraphResourcePool::AcquireTexture(const RGTextureDesc& d
         usage |= RHI_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT;
     }
 
-    m_Rhi->CreateImage(desc.width,
-                       desc.height,
-                       RGToRHIFormat(desc.format),
-                       RHI_IMAGE_TILING_OPTIMAL,
-                       usage,
-                       RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                       physical.image,
-                       physical.memory,
-                       0,
-                       desc.array_size,
-                       desc.mip_levels);
+    m_Device->CreateImage(desc.width,
+                          desc.height,
+                          RGToRHIFormat(desc.format),
+                          RHI_IMAGE_TILING_OPTIMAL,
+                          usage,
+                          RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                          physical.image,
+                          physical.memory,
+                          0,
+                          desc.array_size,
+                          desc.mip_levels);
 
     if (physical.image != nullptr)
     {
-        m_Rhi->CreateImageView(physical.image,
-                               RGToRHIFormat(desc.format),
-                               is_depth ? (RHI_IMAGE_ASPECT_DEPTH_BIT | RHI_IMAGE_ASPECT_STENCIL_BIT)
-                                        : RHI_IMAGE_ASPECT_COLOR_BIT,
-                               desc.depth > 1 ? RHI_IMAGE_VIEW_TYPE_3D
-                                              : (desc.array_size > 1 ? RHI_IMAGE_VIEW_TYPE_2D_ARRAY
-                                                                     : RHI_IMAGE_VIEW_TYPE_2D),
-                               1,
-                               desc.mip_levels,
-                               physical.view);
+        m_Device->CreateImageView(physical.image,
+                                  RGToRHIFormat(desc.format),
+                                  is_depth ? (RHI_IMAGE_ASPECT_DEPTH_BIT | RHI_IMAGE_ASPECT_STENCIL_BIT)
+                                           : RHI_IMAGE_ASPECT_COLOR_BIT,
+                                  desc.depth > 1 ? RHI_IMAGE_VIEW_TYPE_3D
+                                                 : (desc.array_size > 1 ? RHI_IMAGE_VIEW_TYPE_2D_ARRAY
+                                                                        : RHI_IMAGE_VIEW_TYPE_2D),
+                                  1,
+                                  desc.mip_levels,
+                                  physical.view);
         ++m_LiveObjectCount;
     }
     return physical;
@@ -336,7 +478,7 @@ RGPhysicalTexture RenderGraphResourcePool::AcquireTexture(const RGTextureDesc& d
 
 void RenderGraphResourcePool::ReleaseTexture(const RGTextureDesc& desc, const RGPhysicalTexture& physical)
 {
-    if (m_Rhi == nullptr || physical.image == nullptr)
+    if (m_Device == nullptr || physical.image == nullptr)
     {
         return;
     }
@@ -345,7 +487,7 @@ void RenderGraphResourcePool::ReleaseTexture(const RGTextureDesc& desc, const RG
     std::vector<RGPhysicalTexture>& idle = m_IdleTextures[key];
     if (idle.size() >= m_MaxIdlePerKey)
     {
-        DestroyTexture(m_Rhi, physical);
+        DestroyTexture(m_Device, physical);
         m_LiveObjectCount = m_LiveObjectCount > 0 ? m_LiveObjectCount - 1 : 0;
         return;
     }
@@ -354,7 +496,7 @@ void RenderGraphResourcePool::ReleaseTexture(const RGTextureDesc& desc, const RG
 
 RGPhysicalBuffer RenderGraphResourcePool::AcquireBuffer(const RGBufferDesc& desc)
 {
-    if (m_Rhi == nullptr)
+    if (m_Device == nullptr)
     {
         return RGPhysicalBuffer {};
     }
@@ -369,11 +511,11 @@ RGPhysicalBuffer RenderGraphResourcePool::AcquireBuffer(const RGBufferDesc& desc
     }
 
     RGPhysicalBuffer physical;
-    m_Rhi->CreateBuffer(static_cast<RHIDeviceSize>(desc.size_bytes),
-                        RGToRHIBufferUsage(desc.usage),
-                        RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                        physical.buffer,
-                        physical.memory);
+    m_Device->CreateBuffer(static_cast<RHIDeviceSize>(desc.size_bytes),
+                           RGToRHIBufferUsage(desc.usage),
+                           RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                           physical.buffer,
+                           physical.memory);
     if (physical.buffer != nullptr)
     {
         ++m_LiveObjectCount;
@@ -383,7 +525,7 @@ RGPhysicalBuffer RenderGraphResourcePool::AcquireBuffer(const RGBufferDesc& desc
 
 void RenderGraphResourcePool::ReleaseBuffer(const RGBufferDesc& desc, const RGPhysicalBuffer& physical)
 {
-    if (m_Rhi == nullptr || physical.buffer == nullptr)
+    if (m_Device == nullptr || physical.buffer == nullptr)
     {
         return;
     }
@@ -392,7 +534,7 @@ void RenderGraphResourcePool::ReleaseBuffer(const RGBufferDesc& desc, const RGPh
     std::vector<RGPhysicalBuffer>& idle = m_IdleBuffers[key];
     if (idle.size() >= m_MaxIdlePerKey)
     {
-        DestroyBuffer(m_Rhi, physical);
+        DestroyBuffer(m_Device, physical);
         m_LiveObjectCount = m_LiveObjectCount > 0 ? m_LiveObjectCount - 1 : 0;
         return;
     }
@@ -401,7 +543,7 @@ void RenderGraphResourcePool::ReleaseBuffer(const RGBufferDesc& desc, const RGPh
 
 void RenderGraphResourcePool::Flush()
 {
-    if (m_Rhi == nullptr)
+    if (m_Device == nullptr)
     {
         return;
     }
@@ -410,9 +552,11 @@ void RenderGraphResourcePool::Flush()
         (void)key;
         for (const RGPhysicalTexture& physical : textures)
         {
-            DestroyTexture(m_Rhi, physical);
+            DestroyTexture(m_Device, physical);
+            // One resource destroyed == one live object gone. (This used to decrement
+            // twice per resource, which made GetLiveObjectCount() underflow to 0 long
+            // before everything was actually freed and hid real leaks.)
             m_LiveObjectCount = m_LiveObjectCount > 0 ? m_LiveObjectCount - 1 : 0;
-        m_LiveObjectCount = m_LiveObjectCount > 0 ? m_LiveObjectCount - 1 : 0;
         }
     }
     m_IdleTextures.clear();
@@ -422,9 +566,8 @@ void RenderGraphResourcePool::Flush()
         (void)key;
         for (const RGPhysicalBuffer& physical : buffers)
         {
-            DestroyBuffer(m_Rhi, physical);
+            DestroyBuffer(m_Device, physical);
             m_LiveObjectCount = m_LiveObjectCount > 0 ? m_LiveObjectCount - 1 : 0;
-        m_LiveObjectCount = m_LiveObjectCount > 0 ? m_LiveObjectCount - 1 : 0;
         }
     }
     m_IdleBuffers.clear();
@@ -456,9 +599,47 @@ size_t RenderGraphResourcePool::GetIdleBufferCount() const
 // RenderGraphExecutor
 // =====================================================================================
 
-RenderGraphExecutor::RenderGraphExecutor(RHI* rhi, RenderGraphResourcePool* pool)
-    : m_Rhi(rhi), m_Pool(pool)
+RenderGraphExecutor::RenderGraphExecutor(RHI* rhi, IRGResourceDevice* device, RenderGraphResourcePool* pool)
+    : m_Rhi(rhi), m_Device(device), m_Pool(pool)
 {
+}
+
+RenderGraphExecutor::~RenderGraphExecutor()
+{
+    ReleaseExtracted();
+}
+
+void RenderGraphExecutor::ReleaseExtracted()
+{
+    if (m_Pool == nullptr || m_Device == nullptr)
+    {
+        m_ExtractedTextures.clear();
+        m_ExtractedBuffers.clear();
+        m_ExtractedTextureDescs.clear();
+        m_ExtractedBufferDescs.clear();
+        return;
+    }
+
+    // Descs are stored in lockstep with the physicals, so index i describes texture i.
+    for (size_t i = 0; i < m_ExtractedTextures.size(); ++i)
+    {
+        if (m_ExtractedTextures[i].image != nullptr)
+        {
+            m_Pool->ReleaseTexture(m_ExtractedTextureDescs[i], m_ExtractedTextures[i]);
+        }
+    }
+    for (size_t i = 0; i < m_ExtractedBuffers.size(); ++i)
+    {
+        if (m_ExtractedBuffers[i].buffer != nullptr)
+        {
+            m_Pool->ReleaseBuffer(m_ExtractedBufferDescs[i], m_ExtractedBuffers[i]);
+        }
+    }
+
+    m_ExtractedTextures.clear();
+    m_ExtractedBuffers.clear();
+    m_ExtractedTextureDescs.clear();
+    m_ExtractedBufferDescs.clear();
 }
 
 bool RenderGraphExecutor::Execute(RenderGraph& graph, RHICommandBuffer* command_buffer)
@@ -468,11 +649,20 @@ bool RenderGraphExecutor::Execute(RenderGraph& graph, RHICommandBuffer* command_
     m_LastBarrierCount = 0;
     m_LastAllocatedTextures = 0;
 
-    if (m_Rhi == nullptr || command_buffer == nullptr)
+    if (m_Device == nullptr)
     {
-        m_LastError = "no RHI or command buffer";
+        m_LastError = "no resource device";
         return false;
     }
+    if (command_buffer == nullptr)
+    {
+        m_LastError = "no command buffer";
+        return false;
+    }
+
+    // The previous frame's extracted resources have had a full frame to be read; hand
+    // them back before allocating anything new.
+    ReleaseExtracted();
 
     const RGCompiledGraph& compiled = graph.Compile();
     if (!compiled.valid)
@@ -496,6 +686,16 @@ bool RenderGraphExecutor::Execute(RenderGraph& graph, RHICommandBuffer* command_
     for (size_t i = 0; i < resource_count; ++i)
     {
         const RGResource& resource = graph.GetResources()[i];
+
+        // A resource no surviving pass touches costs nothing: culling is a producer
+        // closure, so if any kept pass read this, its producer would have been marked
+        // and the resource would have a real lifetime. Allocating it anyway is pure
+        // waste (a culled debug pass would still reserve its full-size render target).
+        if (compiled.lifetimes[i].first_pass == kRGInvalidIndex && !resource.external)
+        {
+            continue;
+        }
+
         if (resource.is_texture)
         {
             if (resource.external)
@@ -545,7 +745,7 @@ bool RenderGraphExecutor::Execute(RenderGraph& graph, RHICommandBuffer* command_
 
         if (m_DebugEvents)
         {
-            m_Rhi->PushEvent(command_buffer, pass.name.c_str(), nullptr);
+            m_Device->PushEvent(command_buffer, pass.name.c_str(), nullptr);
         }
 
         context.m_PassName = pass.name.c_str();
@@ -557,7 +757,7 @@ bool RenderGraphExecutor::Execute(RenderGraph& graph, RHICommandBuffer* command_
 
         if (m_DebugEvents)
         {
-            m_Rhi->PopEvent(command_buffer);
+            m_Device->PopEvent(command_buffer);
         }
 
         // Hand transient memory back as soon as the graph is done with it -- the whole
@@ -591,7 +791,10 @@ bool RenderGraphExecutor::Execute(RenderGraph& graph, RHICommandBuffer* command_
     }
 
     // Anything still held (culled resources, or ones whose producer was culled) goes
-    // back now.
+    // back now -- except extracted resources, which the caller is still reading. Those
+    // are parked in m_Extracted* and released at the top of the next Execute(). The
+    // compiler already excluded them from memory aliasing, so keeping them alive here
+    // is what actually honours that promise.
     for (size_t i = 0; i < resource_count; ++i)
     {
         const RGResource& resource = graph.GetResources()[i];
@@ -601,12 +804,28 @@ bool RenderGraphExecutor::Execute(RenderGraph& graph, RHICommandBuffer* command_
         }
         if (resource.is_texture && m_Textures[i].image != nullptr)
         {
-            m_Pool->ReleaseTexture(m_AcquiredTextureDescs[i], m_Textures[i]);
+            if (resource.extracted)
+            {
+                m_ExtractedTextures.push_back(m_Textures[i]);
+                m_ExtractedTextureDescs.push_back(m_AcquiredTextureDescs[i]);
+            }
+            else
+            {
+                m_Pool->ReleaseTexture(m_AcquiredTextureDescs[i], m_Textures[i]);
+            }
             m_Textures[i] = RGPhysicalTexture {};
         }
         else if (!resource.is_texture && m_Buffers[i].buffer != nullptr)
         {
-            m_Pool->ReleaseBuffer(m_AcquiredBufferDescs[i], m_Buffers[i]);
+            if (resource.extracted)
+            {
+                m_ExtractedBuffers.push_back(m_Buffers[i]);
+                m_ExtractedBufferDescs.push_back(m_AcquiredBufferDescs[i]);
+            }
+            else
+            {
+                m_Pool->ReleaseBuffer(m_AcquiredBufferDescs[i], m_Buffers[i]);
+            }
             m_Buffers[i] = RGPhysicalBuffer {};
         }
     }
@@ -697,7 +916,7 @@ void RenderGraphExecutor::RecordBarriers(RHICommandBuffer* command_buffer,
 
     // One call for the whole pass: the graph's main win over hand-written per-pass
     // barriers scattered through every pass file.
-    m_Rhi->CmdPipelineBarrier(command_buffer,
+    m_Device->CmdPipelineBarrier(command_buffer,
                               src_stage,
                               dst_stage,
                               0,
