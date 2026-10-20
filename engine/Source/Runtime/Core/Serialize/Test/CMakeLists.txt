@@ -50,6 +50,11 @@ endif()
 # Engine/Tests folder).
 # ---------------------------------------------------------------------
 function(zengine_add_smoke_test target_name source_file)
+    # Optional TEST_ARGS <arg>... are passed on to the executable by add_test.
+    # The bare executable is usually a dump / manual aid; the CTest gate should
+    # run its assertions, so a target that has both registers with the flags.
+    cmake_parse_arguments(ST "" "" "TEST_ARGS" ${ARGN})
+
     add_executable(${target_name} ${source_file})
 
     set_target_properties(${target_name} PROPERTIES
@@ -81,7 +86,7 @@ function(zengine_add_smoke_test target_name source_file)
     # returns EXIT_FAILURE on the first failed check, so the exit code is enough.
     # WORKING_DIRECTORY defaults to CMAKE_CURRENT_BINARY_DIR, which is where the
     # YAML round-trip test writes and removes its scratch scene file.
-    add_test(NAME ${target_name} COMMAND ${target_name})
+    add_test(NAME ${target_name} COMMAND ${target_name} ${ST_TEST_ARGS})
 endfunction()
 
 if(ZENGINE_BUILD_SCHEMA_EVOLUTION_SMOKE_TEST)
@@ -100,6 +105,10 @@ if(ZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST)
 endif()
 
 if(ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST)
-    zengine_add_smoke_test(ReflectionCodegenSmokeTest ReflectionCodegenSmokeTest.cpp)
+    # Bare runs are the migration dump (see the header of the .cpp); CI runs the
+    # three invariant checks instead: type registry, Behaviour 'enabled'
+    # serialization, and ZPROPERTY(meta=(...)) vs the live TypeTree.
+    zengine_add_smoke_test(ReflectionCodegenSmokeTest ReflectionCodegenSmokeTest.cpp
+                           TEST_ARGS --check-registry --check-behaviour-enabled --check-property-meta)
     message(STATUS "Configured reflection-codegen smoke-test target: ReflectionCodegenSmokeTest")
 endif()
