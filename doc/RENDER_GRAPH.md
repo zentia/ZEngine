@@ -105,11 +105,33 @@ executor.Execute(graph, command_buffer);
 
 **现在是并存的，还没有替换。** 现有装配（`DesktopRenderPipelineModule` + `MainCameraPass::Draw(7 参数)`）完全没动，因为改它必须逐帧目视验证，而这一点我在无头环境里做不到。
 
-准备好的接入缝有三处，按风险从低到高：
+### 第一个接入点：DX12 的 RP2 后处理链
 
-1. **`RenderPassBase::AppendToDrawList`**（`RenderPassBase.h:36`，现在是默认 no-op 钩子）——让每个 Pass 在 Setup 里声明读写，然后 `DesktopRenderPipelineModule::BuildDrawLists` 改成"收 node → Compile → 把 Execute lambda 塞进 `RHIDrawList`"。`RHIDrawList` 是 `vector<{name, function<void()>}>`，**完全不用改**。
-2. **`MainCameraFramebufferResources`**（`Passes/MainCameraFramebufferResources.h:18`，注释已经写了 "UE-style separate simple render passes"）——先把 `ColorGradingPass` / `FXAAPass` / `CombineUIPass` 拆成独立 RG node（Vulkan 下它们今天是 MainCameraPass 的 subpass，DX12 下已经是独立小 RP）。
-3. **最先吃到收益的**：用 RG 干掉 `UpdateAfterRecreate` 里那 6 处手写指针重连。
+`MainCameraRp2Pass::DrawRP2`（`Passes/MainCameraRp2Pass.cpp:611`）在帧的最末端，而且**已经被拆成了三个独立的 Begin/EndRenderPass**：
+
+| Pass | 读 | 写 |
+| --- | --- | --- |
+| ColorGrading | `backup_odd` | `backup_even`（开 FXAA 时是 `post_odd`） |
+| FXAA（可选） | `post_odd` | `backup_even` |
+| CombineUI | `backup_odd` + `backup_even` | swapchain |
+
+教科书式的 RG 场景，而且不在主几何路径上——屏障推导出错的症状是后处理不对，不是黑屏。
+
+**`PickPass` 已被排除**（早前曾误列为最低风险）。读完代码后三个理由：`Draw()` 是空的，真正的绘制在 `Pick()` 里，是点击触发的同步操作（自带 command buffer / fence / submit / 全量 `WaitForFences`），根本不在每帧流水线里；它最有价值的一半（拷贝 staging → `MapMemory` → 读一个像素）**不在 `IRGResourceDevice` 的 10 个方法内**，图表达不了；它的 `RHIFramebuffer` 一次性建好并绑死在特定 `RHIImageView*` 上，池子换一张图出来就失效。
+
+### 声明已经过验证（43 项新断言）
+
+接线之前，先把这条链在图里声明出来，并断言编译器推导出的顺序与屏障和 `DrawRP2()` 手写的一致——`RenderGraphSmokeTest` 的 group 14/15/16 就是这件事。断言覆盖：FXAA 关/开两种拓扑的执行序、各自的屏障条数（4 / 6）、`backup_odd` 只搬一次状态（CombineUI 时已在目标态，不产生第二条屏障，这正对应 `MainCameraRp2Pass.cpp:689` 那条 oldLayout == newLayout 的手写屏障），以及源码里那句"SRV 和 RTV 必须是不同贴图"的注释——在图里它是校验错误，不再是注释。
+
+### 接线前必须解决的三个阻塞项
+
+1. **swapchain 今天无法导入。** `RGExternalTexture` 要 `RHIImage*` + `RHIImageView*`，但 `RHISwapChainDesc`（`RHIStruct.h:1184`）只有 `imageViews` 没有 images；DX12 侧的 swapchain view 更是 `setResource(nullptr, ...)` 建的（`DX12RHI.cpp:2811`），靠 `setIsSwapchainView(true)` + backbuffer index 走 RTV。需要给 `RHISwapChainDesc` 补一份 images 并在两个后端填上。
+2. **DX12 有自己的 swapchain 状态机**（`m_SwapchainResourceStates` / `m_SwapchainSurfaceState`，见 `DX12RHI.cpp:2499` 附近的注释）。图的 `current_state` 是独立的一套影子状态，两套会打架：要么让图接管，要么让 `RGRhiDeviceAdapter` 在 DX12 上写入这个 tracker。
+3. **`UpdateDescriptorBindings()` 的位置。** 它每帧从 CBV/SRV/UAV 堆分配新句柄，`MainCameraRp2Pass.cpp:623` 的注释写明漏掉会黑屏。改成图驱动时它必须留在 pass 回调里，不能留在 `DrawRP2()` 开头。
+
+### 接线策略
+
+新路径放在开关后面、默认走老路径，`Compile()` 不合法就自动回落并打日志——这样即使图这一侧有 bug，关掉开关即可恢复。**这一步需要逐帧目视验证，无头环境做不了。**
 
 ### 必须自己补的三块（RHI 不管）
 
@@ -167,7 +189,7 @@ cmake --build build --config Debug --target RenderGraphSmokeTest RenderGraphExec
 ctest -C Debug -R RenderGraph --output-on-failure
 ```
 
-**编译器（`RenderGraphSmokeTest`）78 项断言 / 0 失败**：链式排序、剔除与反向传播、NeverCull/Extract 保活、生命周期、别名复用与重叠拒绝、屏障推导（含"已处于目标态不产生"）、重复声明拒绝、跨帧失效句柄、四类校验错误、WAR/WAW 顺序、缓冲资源、确定性、描述符尺寸。
+**编译器（`RenderGraphSmokeTest`）121 项断言 / 0 失败**：链式排序、剔除与反向传播、NeverCull/Extract 保活、生命周期、别名复用与重叠拒绝、屏障推导（含"已处于目标态不产生"）、重复声明拒绝、跨帧失效句柄、四类校验错误、WAR/WAW 顺序、缓冲资源、确定性、描述符尺寸，以及**RP2 后处理链**（§5）：FXAA 关/开两种拓扑的执行序与屏障条数、`backup_odd` 只搬一次状态、"SRV/RTV 必须异贴图"落成校验错误。
 
 **执行层（`RenderGraphExecuteSmokeTest`）92 项断言 / 0 失败**：池的复用与 `MaxIdlePerKey` 溢出销毁、`Flush()` 只减一次（缺陷 1 回归）、Pass 按编译序执行、句柄解析与跨代失效句柄拒绝、每 Pass 一次 `CmdPipelineBarrier` 且转的是对的 image、transient 在最后一个读者之后立刻归还、buffer 走同一条路径、被剔除的 Pass 既不执行也不分配（缺陷 3 回归）、Extract 资源活过整张图并在下一次 `Execute()` 才回收（缺陷 2 回归）、缺 device / command buffer / 校验失败时的报错路径、无 device 的池是惰性而非崩。
 

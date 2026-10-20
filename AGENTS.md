@@ -2046,14 +2046,29 @@ and no live preview of the driven character's parameters while editing.
   allocating them anyway is how a culled debug pass would still reserve a full-screen
   render target.
 - **Not adopted by the render pipeline yet.** `DesktopRenderPipelineModule` and
-  `MainCameraPass::Draw(...)` are untouched. The prepared seams, lowest risk first:
-  `RenderPassBase::AppendToDrawList` (a no-op hook that already exists), splitting the
-  post passes out of `MainCameraFramebufferResources`, and deleting the six hand-written
-  `UpdateAfterFramebufferRecreate` calls in `DesktopRenderPipelineModule.cpp:480`.
-  Converting the pipeline needs per-frame visual verification -- do not attempt it
-  headless.
+  `MainCameraPass::Draw(...)` are untouched.
+  **First target is the DX12 RP2 post-process chain** (`MainCameraRp2Pass::DrawRP2`,
+  `MainCameraRp2Pass.cpp:611`): ColorGrading -> (FXAA) -> CombineUI, already three
+  independent Begin/EndRenderPass, at the very end of the frame, off the geometry path.
+  Its declaration is already verified headless (see Tests below); wiring it up still is
+  not, and needs per-frame visual verification -- do not attempt it headless.
+- **`PickPass` is not a candidate**, despite looking self-contained: `Draw()` is empty
+  and the real work is in `Pick()`, a click-driven synchronous operation with its own
+  command buffer, fence, submit and full `WaitForFences`. Its pixel readback is outside
+  the ten-method `IRGResourceDevice` port, and its `RHIFramebuffer` is pinned to one
+  `RHIImageView*` that a pool would invalidate.
+- **Three blockers before RP2 can be wired** (details in `doc/RENDER_GRAPH.md` §5):
+  (1) the swapchain cannot be imported -- `RHISwapChainDesc` exposes only `imageViews`,
+  no images, and DX12 builds swapchain views with `setResource(nullptr, ...)`
+  (`DX12RHI.cpp:2811`); (2) DX12 keeps its own swapchain state machine
+  (`m_SwapchainResourceStates` / `m_SwapchainSurfaceState`) that would fight the graph's
+  `current_state`; (3) `UpdateDescriptorBindings()` must move into the pass callback,
+  not stay at the top of `DrawRP2()` (omitting it is a documented black screen).
+  Ship the new path behind a switch that defaults to the old one and falls back when
+  `Compile()` is invalid.
 - Tests: `-DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON` -> `RenderGraphSmokeTest`
-  (78 checks, compiler) and `-DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON` ->
+  (121 checks, compiler: 78 generic + 43 on the RP2 chain) and
+  `-DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON` ->
   `RenderGraphExecuteSmokeTest` (92 checks, pool + executor). Both `main()`s are carved
   out of the ZRuntime glob in `Runtime/CMakeLists.txt`; the compiler files *and*
   `RenderGraphResources.cpp` are part of ZRuntime, so changing them must keep the
