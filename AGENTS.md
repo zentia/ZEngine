@@ -2025,6 +2025,26 @@ and no live preview of the driven character's parameters while editing.
   (`DX12RHI.cpp:5346`). The stage in `RGMapState` is a hint for Vulkan only.
 - **RHI destroy/free take `T*&`** (they null the caller's pointer), so values copied
   out of a `const` reference must go through a mutable local first.
+- **The Execute half talks to `IRGResourceDevice`, not to `RHI`.** The pool and the
+  executor need exactly ten backend operations (create/destroy image, view, buffer,
+  memory; `CmdPipelineBarrier`; `PushEvent`/`PopEvent`). `RGRhiDeviceAdapter` is the
+  production bridge to `RHI`; a ten-method stub is what makes
+  `RenderGraphExecuteSmokeTest` possible. Do **not** widen this port casually -- every
+  method added here is one more thing a test has to fake. `RenderGraphExecutor` still
+  takes an `RHI*`, but only to hand to pass callbacks via
+  `RenderGraphExecuteContext::GetRHI()`; the executor itself never calls it, so tests
+  may pass `nullptr`.
+- **Extracted resources outlive the graph.** `KeepAlive` means the caller reads the
+  resource after `Execute()` returns, so the executor parks it in `m_Extracted*` and
+  only returns it to the pool at the start of the *next* `Execute()` (or an explicit
+  `ReleaseExtracted()`). Never release one into the idle pool during the frame that
+  produced it -- that is exactly what the compiler's "extracted resources do not
+  participate in aliasing" rule is protecting.
+- **Resources whose producer was culled are never allocated.** Culling is a producer
+  closure from the roots, so if a surviving pass read a resource, its producer would
+  have been marked. `lifetimes[i].first_pass == kRGInvalidIndex` identifies the rest;
+  allocating them anyway is how a culled debug pass would still reserve a full-screen
+  render target.
 - **Not adopted by the render pipeline yet.** `DesktopRenderPipelineModule` and
   `MainCameraPass::Draw(...)` are untouched. The prepared seams, lowest risk first:
   `RenderPassBase::AppendToDrawList` (a no-op hook that already exists), splitting the
@@ -2032,9 +2052,14 @@ and no live preview of the driven character's parameters while editing.
   `UpdateAfterFramebufferRecreate` calls in `DesktopRenderPipelineModule.cpp:480`.
   Converting the pipeline needs per-frame visual verification -- do not attempt it
   headless.
-- Test: `-DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON` -> `RenderGraphSmokeTest`
-  (78 checks). Its `main()` is carved out of the ZRuntime glob in
-  `Runtime/CMakeLists.txt`; the compiler files themselves are part of ZRuntime.
+- Tests: `-DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON` -> `RenderGraphSmokeTest`
+  (78 checks, compiler) and `-DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON` ->
+  `RenderGraphExecuteSmokeTest` (92 checks, pool + executor). Both `main()`s are carved
+  out of the ZRuntime glob in `Runtime/CMakeLists.txt`; the compiler files *and*
+  `RenderGraphResources.cpp` are part of ZRuntime, so changing them must keep the
+  whole-archive build green. Both are registered with CTest and both are listed in
+  `.github/workflows/smoke_tests.yml` -- a new smoke test must be added to that file's
+  Configure flag list *and* its target list, or it does not run in CI.
 
 ### 2.24 Packaging: `.zbundle` + manifest (PR-PAK1)
 

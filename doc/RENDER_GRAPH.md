@@ -45,7 +45,8 @@ Execute（RHI 线程，录命令）
 | `RenderGraphBuilder.{h,cpp}` | 仅标准库 | Setup 期 API：`CreateTexture` / `ImportTexture` / `ReadTexture` / `WriteTexture` / `KeepAlive` |
 | `RenderGraph.{h,cpp}` | 仅标准库 | 编译器：排序、剔除、生命周期、别名、屏障、校验 |
 | `RenderGraphResources.{h,cpp}` | **RHI** | transient 池、Registry、Executor、RG→RHI 枚举映射 |
-| `Test/RenderGraphSmokeTest.cpp` | 仅前 3 个 cpp | 78 项无头断言 |
+| `Test/RenderGraphSmokeTest.cpp` | 仅前 3 个 cpp | 78 项无头断言（Setup/Compile） |
+| `Test/RenderGraphExecuteSmokeTest.cpp` | 前 3 个 cpp + `RenderGraphResources.cpp` | 92 项无头断言（池 + Execute），见 §6 |
 
 ---
 
@@ -53,8 +54,9 @@ Execute（RHI 线程，录命令）
 
 ```cpp
 RenderGraph graph("PostChain");
-RenderGraphResourcePool pool(rhi);
-RenderGraphExecutor executor(rhi, &pool);
+RGRhiDeviceAdapter device(rhi);              // 见 §6：把 RHI 收敛成 10 个方法
+RenderGraphResourcePool pool(&device);
+RenderGraphExecutor executor(rhi, &device, &pool);   // rhi 只转发给 Pass 回调，可为 nullptr
 
 // 外部资源（swapchain / 场景深度）：永不分配、永不销毁、永不别名
 RGExternalTexture backbuffer {swap_image, swap_view, RGResourceState::Undefined};
@@ -124,14 +126,51 @@ executor.Execute(graph, command_buffer);
 
 ---
 
-## 6. 验证
+## 6. Execute 半层：窄接口 `IRGResourceDevice`
 
-```bash
-cmake -S . -B build -DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON
-cmake --build build --config Debug --target RenderGraphSmokeTest
-./build/engine/Source/Runtime/Function/Render/Graph/Test/Debug/RenderGraphSmokeTest.exe
+编译器不认识 RHI，但 `RenderGraphResources.cpp`（池 + Executor）原本直接依赖 `RHI*`，而 `RHI` 有 **135 个 virtual / 122 个 pure virtual**——要给它写测试桩就得实现 122 个方法，等于让"图的测试"变成"RHI 的测试"。所以把同样的分层原则再往下用一层：
+
+```
+RenderGraphExecutor ──► IRGResourceDevice（10 个方法）
+                             ▲
+                             └── RGRhiDeviceAdapter ──► RHI（135 个方法）
 ```
 
-78 项断言 / 0 失败，覆盖：链式排序、剔除与反向传播、NeverCull/Extract 保活、生命周期、别名复用与重叠拒绝、屏障推导（含"已处于目标态不产生"）、重复声明拒绝、跨帧失效句柄、四类校验错误、WAR/WAW 顺序、缓冲资源、确定性、描述符尺寸。
+`IRGResourceDevice` 就是 Execute 半层真正用到的全部后端能力：
+
+| 分类 | 方法 |
+| --- | --- |
+| 分配 | `CreateImage` / `CreateImageView` / `CreateBuffer` |
+| 释放 | `DestroyImage` / `DestroyImageView` / `DestroyBuffer` / `FreeMemory` |
+| 记录 | `CmdPipelineBarrier` / `PushEvent` / `PopEvent` |
+
+- **`RGRhiDeviceAdapter`** 是生产侧唯一的桥：每个方法先判空 `m_Rhi` 再转发，签名与 `RHI.h` 逐字对齐。
+- **Executor 的 `RHI*` 参数仍然保留**，但它只被塞进 `RenderGraphExecuteContext::GetRHI()` 交给 Pass 回调，Executor 自己一行都不碰——所以测试可以传 `nullptr`。
+- 好处不只是可测：RHI 签名漂移只会撞到 adapter 这一个文件，不会污染图的测试。
+
+### 顺带修掉的三个缺陷
+
+| # | 位置 | 症状 | 现状 |
+| --- | --- | --- | --- |
+| 1 | `ResourcePool::Flush()` | 每个资源把 `m_LiveObjectCount` **减了两次**（复制粘贴，缩进能看出来）。计数提前归零，真实泄漏被掩盖。因为每次都 clamp 到 0，**只有当"有资源仍被持有"时才观测得到** | 一次一个；测试里特意留一张 acquire 未还的贴图来暴露它 |
+| 2 | `Executor::Execute()` 收尾循环 | **没有跳过 `extracted` 资源**——`KeepAlive` 过的资源被直接还进池子，下一帧就能被别的 Pass 复用，与编译器"Extract 不参与别名"的承诺自相矛盾 | 收进 `m_Extracted*`，在下一次 `Execute()` 开头（或显式 `ReleaseExtracted()`）才归还；`~RenderGraphExecutor` 也会还 |
+| 3 | `Executor::Execute()` 分配循环 | 声明过的资源**全部**分配，包括生产者已被剔除的——一个被剔除的 debug Pass 照样占着全屏 RT | `lifetimes[i].first_pass == kRGInvalidIndex` 的直接跳过。剔除是"从根出发的生产者闭包"，所以存活 Pass 读到的资源不可能落进这一类，安全 |
+
+---
+
+## 7. 验证
+
+```bash
+cmake -S . -B build -DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON \
+                    -DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON
+cmake --build build --config Debug --target RenderGraphSmokeTest RenderGraphExecuteSmokeTest
+ctest -C Debug -R RenderGraph --output-on-failure
+```
+
+**编译器（`RenderGraphSmokeTest`）78 项断言 / 0 失败**：链式排序、剔除与反向传播、NeverCull/Extract 保活、生命周期、别名复用与重叠拒绝、屏障推导（含"已处于目标态不产生"）、重复声明拒绝、跨帧失效句柄、四类校验错误、WAR/WAW 顺序、缓冲资源、确定性、描述符尺寸。
+
+**执行层（`RenderGraphExecuteSmokeTest`）92 项断言 / 0 失败**：池的复用与 `MaxIdlePerKey` 溢出销毁、`Flush()` 只减一次（缺陷 1 回归）、Pass 按编译序执行、句柄解析与跨代失效句柄拒绝、每 Pass 一次 `CmdPipelineBarrier` 且转的是对的 image、transient 在最后一个读者之后立刻归还、buffer 走同一条路径、被剔除的 Pass 既不执行也不分配（缺陷 3 回归）、Extract 资源活过整张图并在下一次 `Execute()` 才回收（缺陷 2 回归）、缺 device / command buffer / 校验失败时的报错路径、无 device 的池是惰性而非崩。
+
+两者都 `add_test` 注册进 CTest（根 `CMakeLists.txt:483` 有 `enable_testing()`）。
 
 `ZRuntime` Debug 全量编译通过（含 RHI 执行层）。
