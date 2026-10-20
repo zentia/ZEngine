@@ -8,6 +8,39 @@
 namespace ZEngine::ShaderLab
 {
 
+    namespace
+    {
+        // Unity 固定管线遗留命令。ZEngine 只走可编程管线，这些命令没有对应实现，
+        // 但它们在真实 shader 里到处都是（Spine 的 SubShader 就有 Fog / Lighting）。
+        // 识别出来安静跳过，避免刷一堆 "unexpected token" 警告。
+        bool IsIgnoredLegacyCommand(const std::string& id)
+        {
+            static const char* const kLegacy[] = {
+                "fog",              // Fog { Mode Off }
+                "lighting",         // Lighting On / Off
+                "material",         // Material { Diffuse (1,1,1,1) ... }
+                "colormaterial",    // ColorMaterial AmbientAndDiffuse
+                "separatespecular", // SeparateSpecular On / Off
+                "alphatest",        // AlphaTest Greater 0.5
+                "settexture",       // SetTexture [_MainTex] { combine texture }
+                "bindchannels",     // BindChannels { Bind "Vertex", vertex }
+                "color",            // Color (1,1,1,1)
+                "zclip",            // ZClip True / False
+                "conservative",     // Conservative True / False
+                "alphatomask",      // AlphaToMask On / Off
+            };
+
+            for (const char* candidate : kLegacy)
+            {
+                if (id == candidate)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }  // namespace
+
     ShaderLabParser::ShaderLabParser(const std::string& source)
         : m_Lexer(source), m_Asset(std::make_shared<ShaderLabAsset>())
     {
@@ -442,6 +475,10 @@ namespace ZEngine::ShaderLab
             return false;
         }
 
+        // SubShader 级渲染状态（Unity 允许把 Cull/ZWrite/Blend/... 写在 SubShader
+        // 上，作为内部 Pass 的默认值）。不进序列化：解析时直接灌进每个 Pass。
+        RenderStates subshader_states;
+
         while (true)
         {
             Token token = m_Lexer.NextToken();
@@ -480,11 +517,23 @@ namespace ZEngine::ShaderLab
             else if (token.type == TokenType::Pass || id == "pass")
             {
                 ShaderPass pass;
+                // Unity 语义：SubShader 级渲染状态是该 SubShader 内所有 Pass 的
+                // 默认值，Pass 内的同名命令覆盖它。
+                pass.render_states = subshader_states;
                 if (!ParsePass(pass))
                 {
                     return false;
                 }
                 subshader.passes.push_back(std::move(pass));
+            }
+            else if (TryParseRenderStateCommand(token, subshader_states))
+            {
+                // SubShader 级渲染状态，已收集到 subshader_states。
+            }
+            else if (IsIgnoredLegacyCommand(id))
+            {
+                // Unity 固定管线遗留命令，ZEngine 不实现：安静跳过整条。
+                SkipToNextStatement();
             }
             else
             {
@@ -608,68 +657,9 @@ namespace ZEngine::ShaderLab
                 }
                 pass.name = name_token.text;
             }
-            else if (token.type == TokenType::Blend || id == "blend")
+            else if (TryParseRenderStateCommand(token, pass.render_states))
             {
-                ParseBlendState(pass.render_states);
-            }
-            else if (token.type == TokenType::ZWrite || id == "zwrite")
-            {
-                Token value = m_Lexer.NextToken();
-                if (value.type == TokenType::On || value.text == "On")
-                {
-                    pass.render_states.zwrite = true;
-                }
-                else if (value.type == TokenType::Off || value.text == "Off")
-                {
-                    pass.render_states.zwrite = false;
-                }
-            }
-            else if (token.type == TokenType::ZTest || id == "ztest")
-            {
-                Token value = m_Lexer.NextToken();
-                pass.render_states.ztest = CompareFunc::LEqual;
-                if (value.type == TokenType::Less)
-                    pass.render_states.ztest = CompareFunc::Less;
-                else if (value.type == TokenType::Greater)
-                    pass.render_states.ztest = CompareFunc::Greater;
-                else if (value.type == TokenType::LEqual)
-                    pass.render_states.ztest = CompareFunc::LEqual;
-                else if (value.type == TokenType::GEqual)
-                    pass.render_states.ztest = CompareFunc::GEqual;
-                else if (value.type == TokenType::Eq)
-                    pass.render_states.ztest = CompareFunc::Equal;
-                else if (value.type == TokenType::NotEqual)
-                    pass.render_states.ztest = CompareFunc::NotEqual;
-                else if (value.type == TokenType::Always)
-                    pass.render_states.ztest = CompareFunc::Always;
-            }
-            else if (token.type == TokenType::Cull || id == "cull")
-            {
-                Token value = m_Lexer.NextToken();
-                if (value.type == TokenType::Off || value.text == "Off")
-                {
-                    pass.render_states.cull = CullMode::Off;
-                }
-                else if (value.type == TokenType::Front || value.text == "Front")
-                {
-                    pass.render_states.cull = CullMode::Front;
-                }
-                else if (value.type == TokenType::Back || value.text == "Back")
-                {
-                    pass.render_states.cull = CullMode::Back;
-                }
-            }
-            else if (token.type == TokenType::ColorMask || id == "colormask")
-            {
-                Token value = m_Lexer.NextToken();
-                pass.render_states.color_mask = value.text == "0" ? 0 : 0xF;
-            }
-            else if (token.type == TokenType::Offset || id == "offset")
-            {
-                Token factor = m_Lexer.NextToken();
-                Token units = m_Lexer.NextToken();
-                pass.render_states.offset_factor = factor.number_value;
-                pass.render_states.offset_units = units.number_value;
+                // 渲染状态命令，已处理
             }
             else if (token.type == TokenType::HLSLProgram || token.type == TokenType::GLSLProgram || token.type == TokenType::CGProgram)
             {
@@ -679,13 +669,121 @@ namespace ZEngine::ShaderLab
                 program.source_code = token.text;
                 pass.programs.push_back(std::move(program));
             }
+            else if (IsIgnoredLegacyCommand(id))
+            {
+                // Unity 固定管线遗留命令：安静跳过整条。
+                SkipToNextStatement();
+            }
             else
             {
                 Warning("Unexpected token in Pass block: " + token.text);
+                // 必须把这条命令的剩余部分吃掉。否则 "Fog { Mode Off }" 里的
+                // '}' 会被上面的循环当成 Pass 的收尾，后面的 CGPROGRAM 全部丢失。
+                SkipToNextStatement();
             }
         }
 
         return true;
+    }
+
+    bool ShaderLabParser::TryParseRenderStateCommand(const Token& token, RenderStates& states)
+    {
+        // SubShader 和 Pass 都接受同一套渲染状态命令。以前只写在 ParsePass 里，
+        // SubShader 级的状态命令走到 "unexpected token" 分支，被 SkipToNextStatement()
+        // 连带吞掉后面的整个 Pass。
+        std::string id = token.text;
+        std::transform(id.begin(), id.end(), id.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+
+        if (token.type == TokenType::Blend || id == "blend")
+        {
+            ParseBlendState(states);
+            return true;
+        }
+
+        if (token.type == TokenType::ZWrite || id == "zwrite")
+        {
+            Token value = m_Lexer.NextToken();
+            if (value.type == TokenType::On || value.text == "On")
+            {
+                states.zwrite = true;
+            }
+            else if (value.type == TokenType::Off || value.text == "Off")
+            {
+                states.zwrite = false;
+            }
+            return true;
+        }
+
+        if (token.type == TokenType::ZTest || id == "ztest")
+        {
+            Token value = m_Lexer.NextToken();
+            states.ztest = CompareFunc::LEqual;
+            if (value.type == TokenType::Less)
+                states.ztest = CompareFunc::Less;
+            else if (value.type == TokenType::Greater)
+                states.ztest = CompareFunc::Greater;
+            else if (value.type == TokenType::LEqual)
+                states.ztest = CompareFunc::LEqual;
+            else if (value.type == TokenType::GEqual)
+                states.ztest = CompareFunc::GEqual;
+            else if (value.type == TokenType::Eq)
+                states.ztest = CompareFunc::Equal;
+            else if (value.type == TokenType::NotEqual)
+                states.ztest = CompareFunc::NotEqual;
+            else if (value.type == TokenType::Always)
+                states.ztest = CompareFunc::Always;
+            return true;
+        }
+
+        if (token.type == TokenType::Cull || id == "cull")
+        {
+            Token value = m_Lexer.NextToken();
+            if (value.type == TokenType::Off || value.text == "Off")
+            {
+                states.cull = CullMode::Off;
+            }
+            else if (value.type == TokenType::Front || value.text == "Front")
+            {
+                states.cull = CullMode::Front;
+            }
+            else if (value.type == TokenType::Back || value.text == "Back")
+            {
+                states.cull = CullMode::Back;
+            }
+            return true;
+        }
+
+        if (token.type == TokenType::ColorMask || id == "colormask")
+        {
+            Token value = m_Lexer.NextToken();
+            states.color_mask = value.text == "0" ? 0 : 0xF;
+            return true;
+        }
+
+        if (token.type == TokenType::Offset || id == "offset")
+        {
+            Token factor = m_Lexer.NextToken();
+            // "Offset 1, 1" 词法上是 数字 / 逗号 / 数字。旧实现直接连读两个
+            // token，units 拿到的是逗号（number_value = 0），斜率永远为 0。
+            if (factor.type == TokenType::Comma)
+            {
+                factor = m_Lexer.NextToken();
+            }
+
+            Token units = m_Lexer.NextToken();
+            if (units.type == TokenType::Comma)
+            {
+                units = m_Lexer.NextToken();
+            }
+
+            states.offset_factor = factor.number_value;
+            states.offset_units = units.number_value;
+            return true;
+        }
+
+        return false;
     }
 
     bool ShaderLabParser::ParseRenderState(ShaderPass& pass)
@@ -974,15 +1072,59 @@ namespace ZEngine::ShaderLab
 
     void ShaderLabParser::SkipToNextStatement()
     {
+        // ShaderLab 的命令有两种形状：
+        //   行导向：Cull Off / ZWrite On / Lighting Off / Offset 1, 1
+        //   块形式：Fog { Mode Off } / Material { ... }
+        //
+        // 旧实现一路吞到下一个 ';' 或 '}'，并且把那个 '}' 也一起吃掉。行导向命令
+        // 没有 ';'，于是从 "Cull" 开始会一直吞到后面 Pass 的收尾 '}' —— 整个
+        // Pass（连同里面的 CGPROGRAM）被静默丢弃。Spine 的 Caster pass 就是这样
+        // 消失的，SubShader 最终 passes=0。
+        //
+        // 规则：吃掉本行剩余 token；遇到 ';' 吃掉它；遇到 '{' 走块匹配整体跳过；
+        // 遇到 '}' 直接返回且不消费 —— 它是外层块的收尾，必须交回外层循环。
+
+        if (m_Lexer.IsEnd())
+        {
+            return;
+        }
+
+        const uint32_t start_line = m_Lexer.PeekToken().line;
+
         while (!m_Lexer.IsEnd())
         {
-            Token token = m_Lexer.PeekToken();
-            if (token.type == TokenType::Semicolon ||
-                token.type == TokenType::RightBrace)
+            const Token token = m_Lexer.PeekToken();
+
+            // 显式语句结束符：吃掉分号。
+            if (token.type == TokenType::Semicolon)
             {
                 m_Lexer.NextToken();
-                break;
+                return;
             }
+
+            // 块形式命令：整体跳过（含收尾 '}'）。放在换行判断之前，这样
+            // "Fog" 换行再写 "{" 也能正确识别。
+            // 注意：SkipToMatchingBrace() 假定开头的 '{' 已经被消费掉了，
+            // 所以这里先吃掉 '{' 再调。
+            if (token.type == TokenType::LeftBrace)
+            {
+                m_Lexer.NextToken();
+                SkipToMatchingBrace();
+                return;
+            }
+
+            // 外层块的收尾：不消费。
+            if (token.type == TokenType::RightBrace)
+            {
+                return;
+            }
+
+            // 换行 = 行导向语句结束。
+            if (token.line != start_line)
+            {
+                return;
+            }
+
             m_Lexer.NextToken();
         }
     }

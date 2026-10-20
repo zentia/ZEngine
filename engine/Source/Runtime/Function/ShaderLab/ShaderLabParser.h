@@ -63,6 +63,11 @@ namespace ZEngine::ShaderLab
         // 解析混合模式
         bool ParseBlendState(RenderStates& state);
 
+        // 尝试按渲染状态命令解析（Blend/ZWrite/ZTest/Cull/ColorMask/Offset）。
+        // SubShader 与 Pass 共用：命中则消费掉操作数并返回 true，否则返回 false
+        // 且不消费任何 token（此时 token 已被调用方 NextToken 取出）。
+        bool TryParseRenderStateCommand(const Token& token, RenderStates& states);
+
         // 解析程序块（HLSLPROGRAM/GLSLPROGRAM）
         bool ParseProgram(ShaderProgram& program, TokenType code_token_type);
 

@@ -218,6 +218,51 @@ void RequireProperty(const std::filesystem::path& shader,
     ++failures;
 }
 
+// Regression guard: a named Pass must survive parsing, with its CGPROGRAM.
+//
+// SkipToNextStatement() used to swallow everything up to and INCLUDING the next
+// '}'. An unrecognised line-oriented command at SubShader level ("Cull Off")
+// therefore ate the following Pass block whole -- the Spine Caster pass came
+// out as passes=0 / programs=0.
+void RequirePass(const std::filesystem::path& shader,
+                 const std::string& pass_name,
+                 int& checks,
+                 int& failures)
+{
+    ++checks;
+
+    ShaderLabDx12Compiler compiler;
+    if (!compiler.LoadFromFile(shader.generic_string()))
+    {
+        std::cout << "  [FAIL] pass '" << pass_name << "' -- shader failed to parse\n";
+        ++failures;
+        return;
+    }
+
+    const auto asset = compiler.GetAsset();
+    for (const auto& sub : asset->subshaders)
+    {
+        for (const auto& pass : sub.passes)
+        {
+            if (pass.name == pass_name)
+            {
+                if (pass.programs.empty())
+                {
+                    std::cout << "  [FAIL] pass '" << pass_name << "' parsed but has no program\n";
+                    ++failures;
+                    return;
+                }
+                std::cout << "  [ OK ] pass '" << pass_name << "' (" << pass.programs.size()
+                          << " program(s), light_mode='" << pass.light_mode << "')\n";
+                return;
+            }
+        }
+    }
+
+    std::cout << "  [FAIL] pass '" << pass_name << "' -- missing after parse\n";
+    ++failures;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -244,6 +289,13 @@ int main(int argc, char** argv)
             RequireProperty(props, n, checks, failures);
         }
     }
+
+    // ------------------------------------------------------------------
+    // 0b. Regression: unrecognised SubShader-level commands must not eat the
+    //     Pass that follows them.
+    // ------------------------------------------------------------------
+    std::cout << "\n---- [0b] Regression: Pass survives unknown SubShader commands ----\n";
+    RequirePass(Fixture("Spine-Skeleton-Tint-CasterOnly.shader"), "Caster", checks, failures);
 
     // Ad-hoc mode: `ShaderLabUnityCompatTest <file> [<file>...]` parses and
     // compiles pass 0 of each file. Lets you drop a diagnostic fixture in and
