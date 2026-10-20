@@ -23,31 +23,11 @@ GUI 三个页签与 `-batchmode` 子命令一一对应：
 | 兼容性检查 | `-batchmode`（默认命令） | 硬件快照、双显卡选卡验证、DLL 静态检查与隔离加载探针 |
 | GPU 选卡验证 | `-batchmode --gpu-selection` | 离线回归用例 + 本机真实探测 |
 
-GUI 的“兼容性检查”和“GPU 选卡验证”与命令行走的是同一份代码（`EnvironmentCheckCommand` / `GpuSelectionProbe`），不会出现两套结果。
-
-## 界面语言
-
-**默认是英文**，界面右上角的语言下拉框可切到简体中文，选择按用户记在注册表
-`HKCU\Software\ZEngine\EnvironmentCollector\Language`（和 ProcDump 路径同一个键），
-下次启动自动沿用。临时覆盖：`ZEnvironmentCollector.exe --lang zh-CN`（`en` | `zh-CN`）。
-
-实现约定（多语言**机制**在 ZSlate，**数据**在引擎的 DataTable）：
-
-- 机制在 `ZSlate/Core/SlateLocalization.h`：英文写在源码里（"id" + 英文原文），
-  其它语言是注册表式词条表；缺词条自动回退英文，并在日志里报一次缺失的 id。
-- 词条**不是硬编码**的：简体中文写在 `resource/ui_strings_zh-CN.csv`，构建期由
-  `DataTableCook` 烤成 `resource/ui_strings_zh-CN.zasset`（真正的引擎 DataTable，行类型见
-  `Runtime/Resource/Asset/Data/LocalizationTable.h`），运行时通过
-  `Runtime/ZEngineApi/ZEngineToolApi.h` 的 C ABI 读取。改文案是改 CSV，不是改 C++。
-- `UiLocalization.cpp` 只负责“把表读进来 + 读写语言偏好”，它不依赖 ZSlate，
-  CLI-only 构建也会链接它。
-- 切换语言会重建控件树（字符串是在建控件时解析的，不是绘制时），表单里已填的内容会被带过去。
-- **报告文件内容（TXT/JSON）不受语言开关影响，始终中文**：那是给研发和支持的交付物，
-  不是给玩家看的界面。
+GUI 的“兼容性检查”和“GPU 选卡验证”与命令行结果一致，不会出现两套结果。
 
 ## 日志
 
-工具自身的诊断走扁鹊（bqlog，分类 `ZEnvironmentCheck`），落盘到
+工具自身的诊断落盘到
 
 ```text
 %USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_YYYYMMDD_N.log
@@ -220,8 +200,6 @@ OSGameEnvironmentReport.json
 
 ## 事件诊断与玩家一键采集
 
-GUI 使用 ZSlate，不依赖 ZRuntime、编辑器或游戏进程。公共源码只在本目录维护；OSGame 通过 profile 和发布适配接入，G侧已删除迁移完成的旧源码，仅保留分发适配和接口说明。
-
 ### 事件扫描顺序
 
 按时间正序扫描整个回溯区间，命中 `MaxRelevantEvents`（5000）上限后丢弃的会是**最近的**事件，也就是最可能相关的那批。因此扫描锚定到事故时刻，而不是把区间整体向前扩大：
@@ -298,38 +276,26 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
                           [--game-exe <name>] [--budget-seconds N] [--quiet]
 ```
 
-产出 `OSGamePreflight.json`，**与 `OSGameDiagnosis.json` 同构**：`verdict` / `confidence` /
-`userMessage{code,zh}` / `actions[{code,zh}]` 四个键同名、同形、同顺序，launcher 一套解析代码
-读两个文件；`"mode":"preflight"` 用来区分。另有 `findings[]`、`budget{}`、`environment{}` 供
-排查与取证，launcher 可以只读那四个键。
+产出 `OSGamePreflight.json`，和诊断报告用同样的四个键：`verdict`、`confidence`、`userMessage`、
+`actions`。launcher 用同一套解析就能读两个文件，`"mode":"preflight"` 用来区分是哪一种。
 
 | verdict | 含义 | launcher 应当 |
 |---|---|---|
 | `Pass` | 没发现值得说的 | 不提示 |
-| `Advise` | 可提示的环境风险：同厂商驱动版本不一致、选到集显、只有软件渲染、磁盘可用空间不足、预览版系统 | 非模态提示，同一 `code` 提示一次后记住 |
-| `BelowMinimum` | 缺 AVX2、内存低于最低要求（默认 4 GB）、非 64 位 Windows | 明确提示，但**不阻断**——本方案 launcher 只提示 |
-| `Inconclusive` | 没跑完（超时或探针失败） | 当作"没检查过"，fail-open |
+| `Advise` | 可提示的环境风险：同厂商两张卡驱动版本不一致、选到集显、只有软件渲染、磁盘可用空间不足、预览版系统 | 非模态提示，同一个提示只说一次 |
+| `BelowMinimum` | 缺 AVX2、内存低于最低要求（默认 4 GB）、非 64 位 Windows | 明确提示，但不阻断启动 |
+| `Inconclusive` | 没跑完（超时或探针失败） | 当作“没检查过” |
 
-- **硬超时**：探针跑在独立线程上，主线程最多等 `--budget-seconds`（默认 3，范围 1–30）。超时
-  就 detach 该线程、发布 `Inconclusive` 并退出——绝不让一个卡在驱动 IOCTL 里的进程留在玩家机器上。
-  超时时不采用半截的探针结果：半截的适配器列表读起来就是"这台机器没有显卡"。
-- **单实例**：互斥体按输出目录取名；抢不到锁的实例**直接退出且不写文件**，否则慢的那个会把过期
-  结论改名覆盖掉新的那个。
-- **只做廉价只读的事**：CPUID / `GlobalMemoryStatusEx` / `RtlGetVersion` / DXGI 适配器与
-  `EnumAdapterByGpuPreference` 选卡探测 / 游戏所在卷 `GetDiskFreeSpaceEx` / 读 `BuildLabEx`
-  判预览版。**不做** DLL 递归扫描与 Zydis 反汇编、`LoadLibrary(GameCore.dll)` 隔离探针、
-  `\\.\PhysicalDriveN` 全枚举、事件日志、任何注册表写入或提权。
-- **不做"驱动过旧"判断**：OEM 驱动日期格式各异、移动卡驱动滞后是常态，只在同一厂商两张卡驱动
-  版本不一致时才提示（这是 45665 那类混装的真因）。
-- **输出目录默认 `%LOCALAPPDATA%\OSGame\EnvCheck`**，绝不是当前目录：launcher 拉起时 cwd 是
-  游戏安装目录，往那里写新文件会触发启动器自己的完整性扫描/修复。
-- **退出码只有 0 和 30**：0 = 结论已写入（或已有实例在跑、本次有意不写），30 = 工具自身错误。
-  非零结论放在文件里而不是退出码里，这样 `exe && next` 不会被"查出问题"打断，launcher 一律读文件。
-- 进程自身把优先级降到 `BELOW_NORMAL_PRIORITY_CLASS`；IO 优先级需要 launcher 在创建进程时指定。
-
-`EnvironmentPreflightTests` 覆盖：四态判定、五条提示规则、"枚举失败"不等于"没有显卡"、未完成即
-`Inconclusive`、四键契约文本、超时等待本身、单实例互斥（跨线程验证，同线程测这个没有意义）、
-默认输出目录不是 cwd、端到端落盘且无临时文件残留。
+- **限时**：默认最多 3 秒（`--budget-seconds` 可设 1–30）。到点就按 `Inconclusive` 结束，不会
+  把一个卡住的进程留在玩家机器上。
+- **同时只跑一个**：已经有实例在跑时，新的直接退出且不写文件，免得慢的那个把新结论覆盖成过期的。
+- **只做快速只读检查**：CPU、内存、系统版本、显卡选卡、游戏所在盘的剩余空间。不扫盘、不加载
+  游戏 DLL、不读事件日志、不写注册表、不提权。
+- **不判断驱动新不新**：只在同一厂商两张卡版本不一致时才提示。
+- **输出目录默认 `%LOCALAPPDATA%\OSGame\EnvCheck`**，不是当前目录：launcher 拉起时当前目录是
+  游戏安装目录，往那里写文件会触发启动器自己的完整性扫描。
+- **退出码只有 0 和 30**：0 = 结论已写入，30 = 工具自身出错。“查出问题”不算失败，结论放在文件里，
+  所以 `exe && next` 不会被打断，launcher 一律读文件。
 
 ### 玩家操作
 
@@ -362,6 +328,7 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 .\ZEnvironmentCollector.exe -batchmode --gpu-selection
 .\ZEnvironmentCollector.exe --profile .\profiles\osgame.ini          # GUI，指定profile
 .\ZEnvironmentCollector.exe --tab gpu                                 # GUI，直接打开GPU页签
+.\ZEnvironmentCollector.exe --lang zh-CN                              # 界面语言（默认英文）
 ```
 
 `--collect` 还支持 `--incident-time`、`--incident-kind crash|hang|unknown`、`--lookback-hours 1..720`、`--stage-timeout-seconds 1..300`、`--log-dir <游戏日志目录>`（覆盖profile配置，用于临时指向其它日志目录）；未填事故时间按已有事件查找，不伪装成当前时间。退出0表示ZIP生成，完整性见manifest；30为错误。
@@ -411,13 +378,5 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 - 压缩依赖：`engine/3rdparty/minizip-ng`（主仓子模块，编辑器 XlsxImporter 用的同一份），以 deflate 单方法构建，ZIP64 由库原生支持，无补丁、无本地修改。交付源码须包含 `LICENSE-minizip-ng.txt`（安装时从子模块 LICENSE 改名复制）。归档仍为流式：64KiB 读缓冲，不把数GB文件装入内存；写完回读每个条目完整内容并由库比对 CRC32。
 
 当前微软页面列 ProcDump 支持 Windows 11 及以上，此模式不承诺 Windows 10 兼容。
-
-### ZIP契约与隐私
-
-ZIP 采用流式 Deflate/ZIP64，极小文件可由库选择 Store；UTF-8文件内容，压缩完成后回读CRC校验。普通环境报告仍最多32项、单文件16MiB、总内容64MiB；高级证据包单文件64GiB、总内容128GiB。只收明确生成的白名单文件：`basic.json`、`firmware.json`、`diagnosis.json`、`health-events.json`、`graphics.json`、`storage.json`、`summary.txt`、`manifest.json`；同意明细时加 `events-redacted.json`。JSON各有schemaVersion。manifest记录版本、项目、UTC时间、事故类型、同意项、各阶段状态及实际包内文件。
-
-默认不附原始XML/全系统日志/用户目录/卷标签/磁盘序列号。健康事件只保留错误类型、APIC/MCA和检测结果等白名单字段；其它程序名脱敏。`events-redacted.json` 是分享用格式，不冒充可回放原始TSV；研发回放仍用明确开启 `--diagnose-detail` 的本地TSV。程序名脱敏成 `OTHER_PROCESS` 后，由 `isTargetGame` 布尔位回答"是不是指定的游戏"，仍不暴露进程名。
-
-窗口使用系统字体，不随包复制Windows字体。图形初始化失败会尝试WARP，再失败提示CLI采集。系统字体、D3DCompiler或权限异常可导致GUI无法启动，CLI仍可单独使用。
 
 
