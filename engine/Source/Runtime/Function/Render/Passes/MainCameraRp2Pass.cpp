@@ -5,7 +5,9 @@
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/RenderResource.h"
 
+#include <cstdlib>
 #include <exception>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -129,6 +131,7 @@ bool MainCameraRp2Pass::Initialize(bool enable_fxaa)
     }
 
     m_EnableFxaa = enable_fxaa;
+    SetupRenderGraphPath();
     m_DescriptorInfos.resize(_layout_count);
     m_RenderPipelines.resize(_pipeline_count);
 
@@ -167,6 +170,30 @@ bool MainCameraRp2Pass::Initialize(bool enable_fxaa)
     return true;
 }
 
+void MainCameraRp2Pass::SetupRenderGraphPath()
+{
+    // Opt-in. The hand-written path is the one that has been shipping, and the graph path
+    // still needs per-frame visual verification, so it stays off unless asked for.
+    const char* env = std::getenv("ZENGINE_RG_RP2");
+    m_UseRenderGraph = env != nullptr && env[0] != '\0' && env[0] != '0';
+
+    if (!m_UseRenderGraph)
+    {
+        return;
+    }
+
+    // None of this allocates GPU memory today: every resource RP2 touches is imported, so
+    // the pool is a safety net for a future pass that creates a transient target.
+    m_RgDevice = std::make_unique<RGRhiDeviceAdapter>(m_Rhi);
+    m_RgPool = std::make_unique<RenderGraphResourcePool>(m_RgDevice.get());
+    m_RgExecutor = std::make_unique<RenderGraphExecutor>(m_Rhi, m_RgDevice.get(), m_RgPool.get());
+    m_Rp2Graph = std::make_unique<RenderGraph>("RP2");
+
+    LOG_INFO(ZRender,
+             "MainCameraRp2Pass: RP2 is driven by the render graph (ZENGINE_RG_RP2=1), fxaa={}",
+             m_EnableFxaa);
+}
+
 void MainCameraRp2Pass::Shutdown()
 {
     if (!m_Initialized)
@@ -185,6 +212,14 @@ void MainCameraRp2Pass::Shutdown()
         m_Rhi->DestroyImageView(m_FallbackUiClearView);
         m_FallbackUiClearView = nullptr;
     }
+
+    // Reverse creation order: the executor and the pool only borrow the device.
+    m_Rp2Graph.reset();
+    m_RgExecutor.reset();
+    m_RgPool.reset();
+    m_RgDevice.reset();
+    m_UseRenderGraph = false;
+    m_RgFallbackLogged = false;
 
     m_RenderPipelines.clear();
     m_DescriptorInfos.clear();
@@ -521,26 +556,34 @@ void MainCameraRp2Pass::UpdateDescriptorBindings()
 void MainCameraRp2Pass::UpdateAfterFramebufferRecreate()
 {
     UpdateDescriptorBindings();
+
+    // A resize changes every attachment extent, so every pooled descriptor keyed on one
+    // is now stale. The pool never hands out a texture whose descriptor differs, so
+    // without this the idle lists would just accumulate unusable entries.
+    if (m_RgPool != nullptr)
+    {
+        m_RgPool->Flush();
+    }
 }
 
-void MainCameraRp2Pass::DrawColorGrading()
+void MainCameraRp2Pass::DrawColorGrading(RHICommandBuffer* cmd)
 {
     if (m_RenderPipelines[_pipeline_color_grading].pipeline == nullptr)
     {
         return;
     }
 
-    m_Rhi->CmdBindPipelinePFN(m_Rhi->GetCurrentCommandBuffer(),
+    m_Rhi->CmdBindPipelinePFN(cmd,
                               RHI_PIPELINE_BIND_POINT_GRAPHICS,
                               m_RenderPipelines[_pipeline_color_grading].pipeline);
 
     const auto extent = m_Rhi->GetSwapchainInfo().extent;
     RHIViewport viewport {0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
     RHIRect2D scissor {0, 0, extent.width, extent.height};
-    m_Rhi->CmdSetViewportPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, &viewport);
-    m_Rhi->CmdSetScissorPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, &scissor);
+    m_Rhi->CmdSetViewportPFN(cmd, 0, 1, &viewport);
+    m_Rhi->CmdSetScissorPFN(cmd, 0, 1, &scissor);
 
-    m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+    m_Rhi->CmdBindDescriptorSetsPFN(cmd,
                                     RHI_PIPELINE_BIND_POINT_GRAPHICS,
                                     m_RenderPipelines[_pipeline_color_grading].layout,
                                     0,
@@ -549,27 +592,27 @@ void MainCameraRp2Pass::DrawColorGrading()
                                     0,
                                     nullptr);
     
-    m_Rhi->CmdDraw(m_Rhi->GetCurrentCommandBuffer(), 3, 1, 0, 0);
+    m_Rhi->CmdDraw(cmd, 3, 1, 0, 0);
 }
 
-void MainCameraRp2Pass::DrawFxaa()
+void MainCameraRp2Pass::DrawFxaa(RHICommandBuffer* cmd)
 {
     if (!m_EnableFxaa || m_RenderPipelines[_pipeline_fxaa].pipeline == nullptr)
     {
         return;
     }
 
-    m_Rhi->CmdBindPipelinePFN(m_Rhi->GetCurrentCommandBuffer(),
+    m_Rhi->CmdBindPipelinePFN(cmd,
                               RHI_PIPELINE_BIND_POINT_GRAPHICS,
                               m_RenderPipelines[_pipeline_fxaa].pipeline);
 
     const auto extent = m_Rhi->GetSwapchainInfo().extent;
     RHIViewport viewport {0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
     RHIRect2D scissor {0, 0, extent.width, extent.height};
-    m_Rhi->CmdSetViewportPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, &viewport);
-    m_Rhi->CmdSetScissorPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, &scissor);
+    m_Rhi->CmdSetViewportPFN(cmd, 0, 1, &viewport);
+    m_Rhi->CmdSetScissorPFN(cmd, 0, 1, &scissor);
 
-    m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+    m_Rhi->CmdBindDescriptorSetsPFN(cmd,
                                     RHI_PIPELINE_BIND_POINT_GRAPHICS,
                                     m_RenderPipelines[_pipeline_fxaa].layout,
                                     0,
@@ -577,27 +620,27 @@ void MainCameraRp2Pass::DrawFxaa()
                                     &m_DescriptorInfos[_fxaa].descriptor_set,
                                     0,
                                     nullptr);
-    m_Rhi->CmdDraw(m_Rhi->GetCurrentCommandBuffer(), 3, 1, 0, 0);
+    m_Rhi->CmdDraw(cmd, 3, 1, 0, 0);
 }
 
-void MainCameraRp2Pass::DrawCombineUi()
+void MainCameraRp2Pass::DrawCombineUi(RHICommandBuffer* cmd)
 {
     if (m_RenderPipelines[_pipeline_combine_ui].pipeline == nullptr)
     {
         return;
     }
 
-    m_Rhi->CmdBindPipelinePFN(m_Rhi->GetCurrentCommandBuffer(),
+    m_Rhi->CmdBindPipelinePFN(cmd,
                               RHI_PIPELINE_BIND_POINT_GRAPHICS,
                               m_RenderPipelines[_pipeline_combine_ui].pipeline);
 
     const auto extent = m_Rhi->GetSwapchainInfo().extent;
     RHIViewport viewport {0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height), 0.0f, 1.0f};
     RHIRect2D scissor {0, 0, extent.width, extent.height};
-    m_Rhi->CmdSetViewportPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, &viewport);
-    m_Rhi->CmdSetScissorPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, &scissor);
+    m_Rhi->CmdSetViewportPFN(cmd, 0, 1, &viewport);
+    m_Rhi->CmdSetScissorPFN(cmd, 0, 1, &scissor);
 
-    m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+    m_Rhi->CmdBindDescriptorSetsPFN(cmd,
                                     RHI_PIPELINE_BIND_POINT_GRAPHICS,
                                     m_RenderPipelines[_pipeline_combine_ui].layout,
                                     0,
@@ -605,13 +648,21 @@ void MainCameraRp2Pass::DrawCombineUi()
                                     &m_DescriptorInfos[_combine_ui].descriptor_set,
                                     0,
                                     nullptr);
-    m_Rhi->CmdDraw(m_Rhi->GetCurrentCommandBuffer(), 3, 1, 0, 0);
+    m_Rhi->CmdDraw(cmd, 3, 1, 0, 0);
 }
 
 void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
                                 const std::vector<std::function<void()>>& post_ui_callbacks)
 {
     if (!m_Initialized || m_FbResources == nullptr)
+    {
+        return;
+    }
+
+    // Opt-in: ZENGINE_RG_RP2=1. DrawRP2WithGraph() returns false whenever the graph cannot
+    // take over -- most importantly when Compile() is invalid -- and the hand-written chain
+    // below then draws the frame exactly as it always has.
+    if (m_UseRenderGraph && DrawRP2WithGraph(swapchain_image_index, post_ui_callbacks))
     {
         return;
     }
@@ -653,7 +704,7 @@ void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
 
         m_Rhi->CmdBeginRenderPassPFN(cmd, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
         m_Rhi->PushEvent(cmd, "Color Grading", debug_color);
-        DrawColorGrading();
+        DrawColorGrading(cmd);
         m_Rhi->PopEvent(cmd);
         m_Rhi->CmdEndRenderPassPFN(cmd);
     }
@@ -713,7 +764,7 @@ void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
 
         m_Rhi->CmdBeginRenderPassPFN(cmd, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
         m_Rhi->PushEvent(cmd, "FXAA", debug_color);
-        DrawFxaa();
+        DrawFxaa(cmd);
         m_Rhi->PopEvent(cmd);
         m_Rhi->CmdEndRenderPassPFN(cmd);
     }
@@ -806,8 +857,239 @@ void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
 
         m_Rhi->CmdBeginRenderPassPFN(cmd, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
         m_Rhi->PushEvent(cmd, "Combine UI", debug_color);
-        DrawCombineUi();
+        DrawCombineUi(cmd);
         m_Rhi->PopEvent(cmd);
         m_Rhi->CmdEndRenderPassPFN(cmd);
     }
+}
+
+bool MainCameraRp2Pass::DrawRP2WithGraph(uint32_t swapchain_image_index,
+                                         const std::vector<std::function<void()>>& post_ui_callbacks)
+{
+    if (m_RgExecutor == nullptr || m_Rp2Graph == nullptr)
+    {
+        return false;
+    }
+
+    RHICommandBuffer* cmd = m_Rhi->GetCurrentCommandBuffer();
+    if (cmd == nullptr)
+    {
+        return false;
+    }
+
+    const RHIExtent2D extent = m_Rhi->GetSwapchainInfo().extent;
+
+    // ---- validate before recording ---------------------------------------------------
+    // Everything that can reject the graph path is checked here. Once Execute() starts
+    // recording there is no way back: the caller's fallback would append the whole
+    // hand-written chain after whatever the graph already put in the buffer.
+    const std::vector<RHIFramebuffer*>& swapchain_framebuffers = m_FbResources->getRP2Framebuffers();
+    if (swapchain_image_index >= swapchain_framebuffers.size() ||
+        swapchain_framebuffers[swapchain_image_index] == nullptr)
+    {
+        return false;
+    }
+
+    const RHISwapChainDesc swapchain = m_Rhi->GetSwapchainInfo();
+    if (swapchain_image_index >= swapchain.images.size() ||
+        swapchain.images[swapchain_image_index] == nullptr ||
+        swapchain_image_index >= swapchain.imageViews.size() ||
+        swapchain.imageViews[swapchain_image_index] == nullptr)
+    {
+        // A backend that does not publish its back-buffer images (WebGL2, Metal) cannot be
+        // driven by the graph at all: there would be nothing to hang a barrier on.
+        if (!m_RgFallbackLogged)
+        {
+            m_RgFallbackLogged = true;
+            LOG_WARNING(ZRender,
+                        "MainCameraRp2Pass: swapchain image {} exposes no RHIImage, falling back "
+                        "to the hand-written RP2 path",
+                        swapchain_image_index);
+        }
+        return false;
+    }
+
+    RHIImage* backup_odd_image = m_FbResources->getAttachmentImage(_main_camera_pass_backup_buffer_odd);
+    RHIImage* backup_even_image = m_FbResources->getAttachmentImage(_main_camera_pass_backup_buffer_even);
+    RHIImageView* backup_odd_view = m_FbResources->getAttachmentView(_main_camera_pass_backup_buffer_odd);
+    RHIImageView* backup_even_view = m_FbResources->getAttachmentView(_main_camera_pass_backup_buffer_even);
+    if (backup_odd_image == nullptr || backup_even_image == nullptr ||
+        backup_odd_view == nullptr || backup_even_view == nullptr)
+    {
+        return false;
+    }
+
+    // Same condition the hand-written path uses to decide whether the FXAA step exists.
+    const bool fxaa_enabled = m_EnableFxaa && m_RenderPipelines[_pipeline_fxaa].pipeline != nullptr;
+
+    m_Rp2Graph->Reset();
+
+    const auto import_texture = [this](const char* name,
+                                       RHIImage* image,
+                                       RHIImageView* view,
+                                       RGResourceState state) {
+        RGExternalTexture external {};
+        external.image = image;
+        external.view = view;
+        external.state = state;
+        return m_Rp2Graph->ImportTexture(name, external);
+    };
+
+    // The import state is the state the texture is ACTUALLY in when RP2 starts -- not the
+    // state RP2 would like it to be in. DeriveBarriers() walks forward from these, so a
+    // wrong one either emits a redundant barrier or, worse, omits a needed one.
+    //
+    //   backup_odd  ShaderResource -- RP1's forward-lighting pass ends in finalLayout
+    //                SHADER_READ_ONLY_OPTIMAL, and DX12MainCameraPass records its hazard
+    //                barrier on exactly that assumption.
+    //   backup_even ShaderResource -- RP2's own HDR render pass also ends in
+    //   post_odd    SHADER_READ_ONLY_OPTIMAL, so last frame's ColorGrading / FXAA left
+    //                them shader-readable.
+    //   Backbuffer  RenderTarget  -- NOT Present. PrepareBeforePass transitions the
+    //                swapchain to RENDER_TARGET and clears it at the top of every frame,
+    //                so CombineUI needs no barrier at all to write it.
+    const RGTextureHandle backup_odd =
+        import_texture("backup_odd", backup_odd_image, backup_odd_view, RGResourceState::ShaderResource);
+    const RGTextureHandle backup_even =
+        import_texture("backup_even", backup_even_image, backup_even_view, RGResourceState::ShaderResource);
+    const RGTextureHandle backbuffer =
+        import_texture("Backbuffer",
+                       swapchain.images[swapchain_image_index],
+                       swapchain.imageViews[swapchain_image_index],
+                       RGResourceState::RenderTarget);
+
+    RGTextureHandle post_odd;
+    RGTextureHandle grading_output = backup_even;
+    if (fxaa_enabled)
+    {
+        RHIImage* post_odd_image = m_FbResources->getAttachmentImage(_main_camera_pass_post_process_buffer_odd);
+        RHIImageView* post_odd_view = m_FbResources->getAttachmentView(_main_camera_pass_post_process_buffer_odd);
+        if (post_odd_image == nullptr || post_odd_view == nullptr)
+        {
+            return false;
+        }
+        post_odd = import_texture("post_odd", post_odd_image, post_odd_view, RGResourceState::ShaderResource);
+        grading_output = post_odd;
+    }
+
+    const auto begin_pass = [this, cmd, extent](RHIFramebuffer* framebuffer, RHIRenderPass* render_pass) {
+        RHIRenderPassBeginInfo begin_info {};
+        begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        begin_info.renderPass = render_pass;
+        begin_info.framebuffer = framebuffer;
+        begin_info.renderArea.offset = {0, 0};
+        begin_info.renderArea.extent = extent;
+        RHIClearValue clear_values[1] {};
+        clear_values[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
+        begin_info.clearValueCount = 1;
+        begin_info.pClearValues = clear_values;
+        m_Rhi->CmdBeginRenderPassPFN(cmd, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+    };
+
+    m_Rp2Graph->AddPass(
+        "ColorGrading",
+        RGPassType::Render,
+        [backup_odd, grading_output](RenderGraphBuilder& builder) {
+            builder.ReadTexture(backup_odd, RGResourceState::ShaderResource);
+            builder.WriteTexture(grading_output, RGResourceState::RenderTarget);
+        },
+        [this, cmd, &begin_pass](RenderGraphExecuteContext&) {
+            // Blocker 3: this has to run INSIDE the pass callback, not once at the top of
+            // DrawRP2(). It allocates this frame's SRV handles out of the CBV/SRV/UAV heap,
+            // and WaitForFences resets the per-frame counter, so handles taken earlier in
+            // the frame get recycled underneath the shader that is about to read them.
+            UpdateDescriptorBindings();
+            begin_pass(m_FbResources->getRp2ColorGradingFramebuffer(),
+                       m_FbResources->getRp2HdrRenderPass());
+            DrawColorGrading(cmd);
+            m_Rhi->CmdEndRenderPassPFN(cmd);
+        });
+
+    if (fxaa_enabled)
+    {
+        m_Rp2Graph->AddPass(
+            "FXAA",
+            RGPassType::Render,
+            [post_odd, backup_even](RenderGraphBuilder& builder) {
+                builder.ReadTexture(post_odd, RGResourceState::ShaderResource);
+                builder.WriteTexture(backup_even, RGResourceState::RenderTarget);
+            },
+            [this, cmd, &begin_pass](RenderGraphExecuteContext&) {
+                begin_pass(m_FbResources->getRp2FxaaFramebuffer(), m_FbResources->getRp2HdrRenderPass());
+                DrawFxaa(cmd);
+                m_Rhi->CmdEndRenderPassPFN(cmd);
+            });
+    }
+
+    // The UI overlay and its callbacks are a side effect the graph cannot see: they record
+    // their own render passes into backup_even. NeverCull keeps them in the order even
+    // though nothing downstream names them as a dependency.
+    m_Rp2Graph->AddPass(
+        "UI",
+        RGPassType::Render,
+        [](RenderGraphBuilder&) {},
+        [this, &post_ui_callbacks](RenderGraphExecuteContext&) {
+            const bool skip_legacy_ui_draw = m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12;
+            if (!skip_legacy_ui_draw && m_UiPass != nullptr)
+            {
+                m_UiPass->Draw();
+            }
+            for (const std::function<void()>& callback : post_ui_callbacks)
+            {
+                if (callback)
+                {
+                    callback();
+                }
+            }
+        },
+        RGPassFlags::NeverCull);
+
+    // Writes the swapchain, so it is a root and can never be culled -- the same guarantee
+    // the hand-written path gets for free by simply being the last thing in the function.
+    m_Rp2Graph->AddPass(
+        "CombineUI",
+        RGPassType::Render,
+        [backup_odd, backup_even, backbuffer](RenderGraphBuilder& builder) {
+            builder.ReadTexture(backup_odd, RGResourceState::ShaderResource);
+            builder.ReadTexture(backup_even, RGResourceState::ShaderResource);
+            builder.WriteTexture(backbuffer, RGResourceState::RenderTarget);
+        },
+        [this, cmd, &begin_pass, swapchain_image_index, &swapchain_framebuffers](RenderGraphExecuteContext&) {
+            UpdateDescriptorBindings();
+            begin_pass(swapchain_framebuffers[swapchain_image_index], m_FbResources->getRp2LdrRenderPass());
+            DrawCombineUi(cmd);
+            m_Rhi->CmdEndRenderPassPFN(cmd);
+        });
+
+    const RGCompiledGraph& compiled = m_Rp2Graph->Compile();
+    if (!compiled.valid)
+    {
+        // Logged once: the graph is rebuilt identically every frame, so a failure here is
+        // permanent and repeating it would bury everything else in the log.
+        if (!m_RgFallbackLogged)
+        {
+            m_RgFallbackLogged = true;
+            LOG_ERROR(ZRender,
+                      "MainCameraRp2Pass: the RP2 render graph is invalid, falling back to the "
+                      "hand-written path");
+            for (const std::string& error : compiled.errors)
+            {
+                LOG_ERROR(ZRender, "  render graph: {}", error);
+            }
+        }
+        return false;
+    }
+
+    // Execute() can only fail before it records anything (no device, no pool, invalid
+    // graph -- the last of which was just ruled out above), so falling back here is safe.
+    if (!m_RgExecutor->Execute(*m_Rp2Graph, cmd))
+    {
+        LOG_ERROR(ZRender,
+                  "MainCameraRp2Pass: render graph execution failed ({}), falling back to the "
+                  "hand-written path",
+                  m_RgExecutor->GetLastError());
+        return false;
+    }
+
+    return true;
 }

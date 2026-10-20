@@ -2045,13 +2045,20 @@ and no live preview of the driven character's parameters while editing.
   have been marked. `lifetimes[i].first_pass == kRGInvalidIndex` identifies the rest;
   allocating them anyway is how a culled debug pass would still reserve a full-screen
   render target.
-- **Not adopted by the render pipeline yet.** `DesktopRenderPipelineModule` and
-  `MainCameraPass::Draw(...)` are untouched.
-  **First target is the DX12 RP2 post-process chain** (`MainCameraRp2Pass::DrawRP2`,
+- **First target is the DX12 RP2 post-process chain** (`MainCameraRp2Pass::DrawRP2`,
   `MainCameraRp2Pass.cpp:611`): ColorGrading -> (FXAA) -> CombineUI, already three
   independent Begin/EndRenderPass, at the very end of the frame, off the geometry path.
-  Its declaration is already verified headless (see Tests below); wiring it up still is
-  not, and needs per-frame visual verification -- do not attempt it headless.
+  **It is wired, behind a switch.** The graph path is opt-in via `ZENGINE_RG_RP2=1`
+  (`SetupRenderGraphPath()`); when it is off not one graph object is constructed and the
+  hand-written path is byte-for-byte what it was. `DrawRP2WithGraph()` validates
+  *before recording anything* (frame index, `images[i]`/`imageViews[i]` -- WebGL2/Metal
+  publish no image and fall back with a one-time warning, not an error -- backup
+  textures), then compiles; an invalid `Compile()` logs each error once
+  (`m_RgFallbackLogged`) and returns false so the hand-written path draws the frame.
+  Fallback is safe because `Execute()` can only fail before it records. `DesktopRenderPipelineModule`
+  and `MainCameraPass::Draw(...)` are still untouched.
+  **Still needs per-frame visual verification** -- run with the switch on and compare
+  against the old path; do not claim it correct from the headless tests alone.
 - **`PickPass` is not a candidate**, despite looking self-contained: `Draw()` is empty
   and the real work is in `Pick()`, a click-driven synchronous operation with its own
   command buffer, fence, submit and full `WaitForFences`. Its pixel readback is outside
@@ -2067,14 +2074,20 @@ and no live preview of the driven character's parameters while editing.
   `TransitionSwapchainBuffer()` and the graph's `TransitionImage()` read and write the
   same `D3D12_RESOURCE_STATES`. `SubmitRendering` now transitions back to PRESENT from
   any state, not just RENDER_TARGET, because the graph may legitimately leave the
-  back-buffer in PIXEL_SHADER_RESOURCE. Still open: (3) `UpdateDescriptorBindings()`
-  must move into the pass callback, not stay at the top of `DrawRP2()` (omitting it is a
-  documented black screen) -- that belongs to the wiring step itself.
-  Ship the new path behind a switch that defaults to the old one and falls back when
-  `Compile()` is invalid.
+  back-buffer in PIXEL_SHADER_RESOURCE. (3) `UpdateDescriptorBindings()` now runs inside
+  the `ColorGrading` and `CombineUI` pass callbacks, not at the top of `DrawRP2()`
+  (omitting it is a documented black screen); a culled pass therefore allocates no
+  handles at all.
+- **Import the state the texture is actually in, not the state you wish it were.**
+  RP2's import states are `ShaderResource` for backup_odd/backup_even (RP2's HDR pass
+  ends in `finalLayout = SHADER_READ_ONLY_OPTIMAL`) and `RenderTarget` for the
+  back-buffer -- **not** `Present`, because `PrepareBeforePass()` has already
+  transitioned and cleared it at the top of the frame. Get this wrong and the graph
+  emits a barrier from a state that was never true; get it right and `CombineUI` emits
+  no back-buffer barrier at all, which is what the test asserts.
 - Tests: `-DZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON` -> `RenderGraphSmokeTest`
-  (136 checks, compiler: 78 generic + 43 on the RP2 chain + 15 on the swapchain
-  round-trip) and
+  (165 checks, compiler: 78 generic + 43 on the RP2 chain + 15 on the swapchain
+  round-trip + 29 on the wiring's real import states) and
   `-DZENGINE_BUILD_RENDERGRAPH_EXECUTE_SMOKE_TEST=ON` ->
   `RenderGraphExecuteSmokeTest` (92 checks, pool + executor). Both `main()`s are carved
   out of the ZRuntime glob in `Runtime/CMakeLists.txt`; the compiler files *and*

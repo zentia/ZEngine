@@ -1,10 +1,12 @@
 #pragma once
 
+#include "Runtime/Function/Render/Graph/RenderGraphResources.h"
 #include "Runtime/Function/Render/Passes/MainCameraFramebufferResources.h"
 #include "Runtime/Function/Render/RenderPass.h"
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <vector>
 
 class MainCameraRp2Pass : public RenderPass
@@ -25,6 +27,11 @@ public:
     void RefreshColorGradingDescriptorBindings();
 
     bool isReady() const { return m_Initialized; }
+
+    /// True when RP2 is driven by the render graph (ZENGINE_RG_RP2=1). Off by default:
+    /// the hand-written path is the one that has been shipping, and the graph path still
+    /// needs per-frame visual verification.
+    bool IsRenderGraphPathEnabled() const { return m_UseRenderGraph; }
 
 private:
     enum LayoutType : uint8_t
@@ -50,9 +57,25 @@ private:
     void EnsureFallbackLutTexture();
     void EnsureFallbackUiClearTexture();
 
-    void DrawColorGrading();
-    void DrawFxaa();
-    void DrawCombineUi();
+    /// The command buffer is threaded through instead of being pulled from
+    /// `m_Rhi->GetCurrentCommandBuffer()` inside each one: the render graph hands its pass
+    /// callbacks the buffer it was given, and tying the draws to that makes it impossible
+    /// for a callback to record into a different buffer than the barriers around it.
+    void DrawColorGrading(RHICommandBuffer* cmd);
+    void DrawFxaa(RHICommandBuffer* cmd);
+    void DrawCombineUi(RHICommandBuffer* cmd);
+
+    // ---- render graph path (ZENGINE_RG_RP2) ----------------------------------------
+    /// Reads the switch and, when it is on, builds the executor / pool / graph. Called
+    /// from Initialize(); harmless when the switch is off.
+    void SetupRenderGraphPath();
+
+    /// Declares and executes the RP2 chain through the graph. Returns false when the
+    /// graph cannot be used, in which case the caller runs the hand-written path. Every
+    /// rejection happens BEFORE the first command is recorded, so a false return never
+    /// leaves a half-drawn frame behind.
+    bool DrawRP2WithGraph(uint32_t swapchain_image_index,
+                          const std::vector<std::function<void()>>& post_ui_callbacks);
 
     RHIShader* LoadShader(const char* hlsl_relative_path, ShaderStage stage);
 
@@ -65,4 +88,16 @@ private:
     RHIImageView* m_FallbackLutView {nullptr};
     // 1x1 transparent; combine_ui t1 on DX12 when legacy UIPass is skipped.
     RHIImageView* m_FallbackUiClearView {nullptr};
+
+    // ---- render graph path ----------------------------------------------------------
+    // Owned here and rebuilt every frame's Setup; the graph itself is reused across
+    // frames and Reset() at the top of DrawRP2WithGraph().
+    bool m_UseRenderGraph {false};
+    std::unique_ptr<RGRhiDeviceAdapter> m_RgDevice;
+    std::unique_ptr<RenderGraphResourcePool> m_RgPool;
+    std::unique_ptr<RenderGraphExecutor> m_RgExecutor;
+    std::unique_ptr<RenderGraph> m_Rp2Graph;
+    /// Compile errors are logged once and then the pass silently keeps using the
+    /// hand-written path; without this the log would repeat every frame.
+    bool m_RgFallbackLogged {false};
 };

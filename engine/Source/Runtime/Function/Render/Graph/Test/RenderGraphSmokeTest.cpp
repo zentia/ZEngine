@@ -205,6 +205,75 @@ namespace
 
         return handles;
     }
+
+    // The handles of the wiring's RP2 chain.
+    struct Rp2WiredHandles
+    {
+        RGTextureHandle backup_odd;
+        RGTextureHandle backup_even;
+        RGTextureHandle post_odd;
+        RGTextureHandle backbuffer;
+    };
+
+    /// The declaration DrawRP2WithGraph() builds, with the import states it uses.
+    ///
+    /// This differs from BuildRp2() above in exactly one way that matters: the import
+    /// states are the ones the textures are ACTUALLY in when RP2 starts, not convenient
+    /// guesses. DeriveBarriers() walks forward from the import state, so the two produce
+    /// different barrier sets.
+    Rp2WiredHandles BuildRp2Wiring(RenderGraph& graph, bool enable_fxaa)
+    {
+        Rp2WiredHandles handles;
+        handles.backup_odd = ImportExternal(graph, "backup_odd", RGResourceState::ShaderResource);
+        handles.backup_even = ImportExternal(graph, "backup_even", RGResourceState::ShaderResource);
+        handles.backbuffer = ImportExternal(graph, "Backbuffer", RGResourceState::RenderTarget);
+
+        RGTextureHandle grading_output = handles.backup_even;
+        if (enable_fxaa)
+        {
+            handles.post_odd = ImportExternal(graph, "post_odd", RGResourceState::ShaderResource);
+            grading_output = handles.post_odd;
+        }
+
+        graph.AddPass(
+            "ColorGrading",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(handles.backup_odd, RGResourceState::ShaderResource);
+                builder.WriteTexture(grading_output, RGResourceState::RenderTarget);
+            },
+            nullptr);
+
+        if (enable_fxaa)
+        {
+            graph.AddPass(
+                "FXAA",
+                RGPassType::Render,
+                [&](RenderGraphBuilder& builder) {
+                    builder.ReadTexture(handles.post_odd, RGResourceState::ShaderResource);
+                    builder.WriteTexture(handles.backup_even, RGResourceState::RenderTarget);
+                },
+                nullptr);
+        }
+
+        // A side effect the graph cannot see: the UI overlay records its own render passes.
+        // It declares nothing, so nothing pulls it out of position -- the topological sort
+        // breaks ties by declaration index, which is what keeps it between the post chain
+        // and CombineUI.
+        graph.AddPass("UI", RGPassType::Render, [](RenderGraphBuilder&) {}, nullptr, RGPassFlags::NeverCull);
+
+        graph.AddPass(
+            "CombineUI",
+            RGPassType::Render,
+            [&](RenderGraphBuilder& builder) {
+                builder.ReadTexture(handles.backup_odd, RGResourceState::ShaderResource);
+                builder.ReadTexture(handles.backup_even, RGResourceState::ShaderResource);
+                builder.WriteTexture(handles.backbuffer, RGResourceState::RenderTarget);
+            },
+            nullptr);
+
+        return handles;
+    }
 }  // namespace
 
 int main()
@@ -973,6 +1042,86 @@ int main()
         CHECK(rtv_to_copy->after == RGResourceState::CopySource);
 
         CHECK(compiled.barriers.size() == 2);
+    }
+
+    // ---------------------------------------------------------------------------------
+    // What the wiring actually asks the compiler for. The import states are the true ones:
+    //   * backup_odd / backup_even -- ShaderResource, because RP1's forward-lighting pass
+    //     and RP2's own HDR pass both end in finalLayout SHADER_READ_ONLY_OPTIMAL.
+    //   * Backbuffer -- RenderTarget, NOT Present, because PrepareBeforePass transitions
+    //     the swapchain to RENDER_TARGET and clears it at the top of every frame.
+    // ---------------------------------------------------------------------------------
+    BeginGroup("the wiring's real import states give RP2 exactly the transitions it needs");
+    {
+        {
+            RenderGraph graph("RP2-Wired");
+            const Rp2WiredHandles h = BuildRp2Wiring(graph, false);
+
+            const RGCompiledGraph& compiled = graph.Compile();
+            DumpErrors(compiled);
+            CHECK(compiled.valid);
+            CHECK(compiled.pass_order.size() == 3);
+            const std::vector<std::string> names = OrderNames(graph, compiled);
+            CHECK(names.size() == 3 && names[0] == "ColorGrading" && names[1] == "UI" &&
+                  names[2] == "CombineUI");
+
+            // backup_odd arrives in the state ColorGrading reads it, so it gets no barrier.
+            // DrawRP2() records one by hand anyway (MainCameraRp2Pass.cpp:689); on DX12 that
+            // barrier has never done anything, because TransitionImage() early-returns when
+            // the tracked state already matches.
+            CHECK(FindBarrier(compiled, 0, h.backup_odd.index) == nullptr);
+
+            // backup_even round-trips: shader-readable -> render target for ColorGrading,
+            // then back for CombineUI. The Backbuffer gets nothing at all.
+            const RGBarrier* even_to_rt = FindBarrier(compiled, 0, h.backup_even.index);
+            CHECK(even_to_rt != nullptr);
+            CHECK(even_to_rt->before == RGResourceState::ShaderResource);
+            CHECK(even_to_rt->after == RGResourceState::RenderTarget);
+
+            const RGBarrier* even_to_srv = FindBarrier(compiled, 2, h.backup_even.index);
+            CHECK(even_to_srv != nullptr);
+            CHECK(even_to_srv->before == RGResourceState::RenderTarget);
+            CHECK(even_to_srv->after == RGResourceState::ShaderResource);
+
+            CHECK(FindBarrier(compiled, 2, h.backbuffer.index) == nullptr);
+            CHECK(compiled.barriers.size() == 2);
+        }
+
+        {
+            RenderGraph graph("RP2-Wired-Fxaa");
+            const Rp2WiredHandles h = BuildRp2Wiring(graph, true);
+
+            const RGCompiledGraph& compiled = graph.Compile();
+            DumpErrors(compiled);
+            CHECK(compiled.valid);
+            CHECK(compiled.pass_order.size() == 4);
+            const std::vector<std::string> names = OrderNames(graph, compiled);
+            CHECK(names.size() == 4 && names[0] == "ColorGrading" && names[1] == "FXAA" &&
+                  names[2] == "UI" && names[3] == "CombineUI");
+
+            const RGBarrier* grading_out = FindBarrier(compiled, 0, h.post_odd.index);
+            CHECK(grading_out != nullptr);
+            CHECK(grading_out->before == RGResourceState::ShaderResource);
+            CHECK(grading_out->after == RGResourceState::RenderTarget);
+
+            const RGBarrier* fxaa_in = FindBarrier(compiled, 1, h.post_odd.index);
+            CHECK(fxaa_in != nullptr);
+            CHECK(fxaa_in->before == RGResourceState::RenderTarget);
+            CHECK(fxaa_in->after == RGResourceState::ShaderResource);
+
+            const RGBarrier* fxaa_out = FindBarrier(compiled, 1, h.backup_even.index);
+            CHECK(fxaa_out != nullptr);
+            CHECK(fxaa_out->before == RGResourceState::ShaderResource);
+            CHECK(fxaa_out->after == RGResourceState::RenderTarget);
+
+            const RGBarrier* combine_in = FindBarrier(compiled, 3, h.backup_even.index);
+            CHECK(combine_in != nullptr);
+            CHECK(combine_in->before == RGResourceState::RenderTarget);
+            CHECK(combine_in->after == RGResourceState::ShaderResource);
+
+            CHECK(FindBarrier(compiled, 3, h.backbuffer.index) == nullptr);
+            CHECK(compiled.barriers.size() == 4);
+        }
     }
 
     std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);

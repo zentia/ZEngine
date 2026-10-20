@@ -45,7 +45,7 @@ Execute（RHI 线程，录命令）
 | `RenderGraphBuilder.{h,cpp}` | 仅标准库 | Setup 期 API：`CreateTexture` / `ImportTexture` / `ReadTexture` / `WriteTexture` / `KeepAlive` |
 | `RenderGraph.{h,cpp}` | 仅标准库 | 编译器：排序、剔除、生命周期、别名、屏障、校验 |
 | `RenderGraphResources.{h,cpp}` | **RHI** | transient 池、Registry、Executor、RG→RHI 枚举映射 |
-| `Test/RenderGraphSmokeTest.cpp` | 仅前 3 个 cpp | 78 项无头断言（Setup/Compile） |
+| `Test/RenderGraphSmokeTest.cpp` | 仅前 3 个 cpp | 165 项无头断言（Setup/Compile） |
 | `Test/RenderGraphExecuteSmokeTest.cpp` | 前 3 个 cpp + `RenderGraphResources.cpp` | 92 项无头断言（池 + Execute），见 §6 |
 
 ---
@@ -140,11 +140,21 @@ executor.Execute(graph, command_buffer);
    两套跟踪器由此不可能漂移，而"StateBefore 说谎"这一类 D3D12 debug layer 报错变成不可表达。`m_SwapchainSurfaceState` 保留原职（只是"可能还是 PRESENT"的廉价提示），永远以数组为准。
    附带加固：`SubmitRendering` 原来的 `== RENDER_TARGET` 判断改成 `!= PRESENT`（`DX12RHI.cpp:5945`）。旧写法在图驱动之前是对的（当时只有 `PrepareBeforePass` 碰 backbuffer），但图完全可以合法地把 swapchain 留在 `PIXEL_SHADER_RESOURCE`（例如后处理回读），此时跳过回退转换会让 `Present()` 报 "resource state is invalid for Present"。
 
-3. **`UpdateDescriptorBindings()` 的位置。** 它每帧从 CBV/SRV/UAV 堆分配新句柄，`MainCameraRp2Pass.cpp:623` 的注释写明漏掉会黑屏。改成图驱动时它必须留在 pass 回调里，不能留在 `DrawRP2()` 开头。
+3. ~~**`UpdateDescriptorBindings()` 的位置。**~~ **已解决。** 它每帧从 CBV/SRV/UAV 堆分配新句柄，`MainCameraRp2Pass.cpp:623` 的注释写明漏掉会黑屏。图驱动时它留在 pass 回调里（`ColorGrading` 与 `CombineUI` 各自的回调第一行），不在 `DrawRP2()` 开头——这样只在 Pass 真的要执行时才分配，被剔除的 Pass 不会白拿句柄。
 
 ### 接线策略
 
-新路径放在开关后面、默认走老路径，`Compile()` 不合法就自动回落并打日志——这样即使图这一侧有 bug，关掉开关即可恢复。**这一步需要逐帧目视验证，无头环境做不了。**
+**已实现。** `MainCameraRp2Pass` 里新路径与老路径并存：
+
+- **开关**：环境变量 `ZENGINE_RG_RP2=1`（`SetupRenderGraphPath()`，非空且非 `'0'` 即开）。**默认关闭**，不开时这条路径一个对象都不构造，老路径零改动。
+- **回落**：`DrawRP2WithGraph()` 在任何记录动作之前做校验——swapchain 帧号越界、`images[i]`/`imageViews[i]` 为空（WebGL2/Metal 不发布 image，这时打**一次**警告后回落，不是错误）、backup_odd/even 缺失——然后 `Compile()`，不合法就 `LOG_ERROR` 每条错误并回落。`m_RgFallbackLogged` 保证日志只打一次，不会每帧刷屏。
+- **回落是安全的**：`Execute()` 只可能在记录之前失败（无 device / 无池 / 图不合法，最后一条已被上面的 `Compile()` 排除），所以手写路径永远不会接在半张图的输出后面。
+
+四个 Pass：`ColorGrading`（读 backup_odd → 写 grading_output）、可选 `FXAA`、`UI`（`RGPassFlags::NeverCull`）、`CombineUI`（读 backup_odd + backup_even → 写 backbuffer）。导入态按**贴图实际所处状态**填：backup_* 是 `ShaderResource`（RP1/RP2 HDR 都是 `finalLayout = SHADER_READ_ONLY_OPTIMAL`），backbuffer 是 `RenderTarget` 而**不是** `Present`——`PrepareBeforePass()` 每帧开头已经转过了。这个选择让 `CombineUI` 对 backbuffer 不产生任何屏障，group 18 断言了这一点。
+
+**`UI` Pass 是一处已知脆弱点**：它不声明任何资源，只有 `NeverCull`（是根，永不剔除）和拓扑排序"同分取最小声明下标"这两件事把它钉在 FXAA 与 CombineUI 之间。group 18 断言了执行序，但 Pass 声明顺序一旦变动就会失效。
+
+**仍需逐帧目视验证**（无头环境做不了）：带 `ZENGINE_RG_RP2=1` 跑起来，与老路径逐帧对比后处理链的输出。
 
 ### 必须自己补的三块（RHI 不管）
 
@@ -202,7 +212,7 @@ cmake --build build --config Debug --target RenderGraphSmokeTest RenderGraphExec
 ctest -C Debug -R RenderGraph --output-on-failure
 ```
 
-**编译器（`RenderGraphSmokeTest`）136 项断言 / 0 失败**：链式排序、剔除与反向传播、NeverCull/Extract 保活、生命周期、别名复用与重叠拒绝、屏障推导（含"已处于目标态不产生"）、重复声明拒绝、跨帧失效句柄、四类校验错误、WAR/WAW 顺序、缓冲资源、确定性、描述符尺寸、**RP2 后处理链**（§5，43 项）：FXAA 关/开两种拓扑的执行序与屏障条数、`backup_odd` 只搬一次状态、"SRV/RTV 必须异贴图"落成校验错误，以及**swapchain 往返**（15 项）：以 `Present` 导入 → 写 → 再写 → 读，断言首条是 `Present → RenderTarget` 而非 `Undefined → RenderTarget`、第二个连续写入者不产生屏障、外部资源不参与别名与预算、写外部资源的 Pass 天然是根所以不被剔除。
+**编译器（`RenderGraphSmokeTest`）165 项断言 / 0 失败**：链式排序、剔除与反向传播、NeverCull/Extract 保活、生命周期、别名复用与重叠拒绝、屏障推导（含"已处于目标态不产生"）、重复声明拒绝、跨帧失效句柄、四类校验错误、WAR/WAW 顺序、缓冲资源、确定性、描述符尺寸、**RP2 后处理链**（§5，43 项）：FXAA 关/开两种拓扑的执行序与屏障条数、`backup_odd` 只搬一次状态、"SRV/RTV 必须异贴图"落成校验错误，以及**swapchain 往返**（15 项）：以 `Present` 导入 → 写 → 再写 → 读，断言首条是 `Present → RenderTarget` 而非 `Undefined → RenderTarget`、第二个连续写入者不产生屏障、外部资源不参与别名与预算、写外部资源的 Pass 天然是根所以不被剔除，以及**接线的真实导入态**（§5，29 项）：以 `ShaderResource/ShaderResource/RenderTarget` 导入，断言执行序为 `ColorGrading/UI/CombineUI`（开 FXAA 时中间插一个 `FXAA`）、`backup_odd` 全程不产生屏障、`backup_even` 往返 `ShaderResource → RenderTarget → ShaderResource`、backbuffer 一条屏障都没有（因为导入态已经是 `RenderTarget`）、屏障总数 2 / 4。
 
 **执行层（`RenderGraphExecuteSmokeTest`）92 项断言 / 0 失败**：池的复用与 `MaxIdlePerKey` 溢出销毁、`Flush()` 只减一次（缺陷 1 回归）、Pass 按编译序执行、句柄解析与跨代失效句柄拒绝、每 Pass 一次 `CmdPipelineBarrier` 且转的是对的 image、transient 在最后一个读者之后立刻归还、buffer 走同一条路径、被剔除的 Pass 既不执行也不分配（缺陷 3 回归）、Extract 资源活过整张图并在下一次 `Execute()` 才回收（缺陷 2 回归）、缺 device / command buffer / 校验失败时的报错路径、无 device 的池是惰性而非崩。
 
