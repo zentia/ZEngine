@@ -6,8 +6,8 @@
 
 | 配置方式 | 后端 | 说明 |
 |---|---|---|
-| 全树 `cmake -S . -B build` | 引擎后端（链接 ZRuntimeShared） | **分发用的构建**，配合 `-DZENGINE_STATIC_CRT=ON` 让 DLL 也是 `/MT`，产物仍能发到没有 VC redist 的机器（已验证：exe 与 DLL 都不再 import `MSVCP140`/`VCRUNTIME140`）。此前 Jolt 固定 `/MD`，会把 `ZRuntimeShared.dll` 的链接打断；现在它跟随该开关 |
-| 独立 `cmake -S engine/tools/ZEnvironmentCollector -B <dir>` | 自包含（静态 bqlog + 内置表） | 没有 ZRuntimeShared 目标（那要拉起整个 Runtime 依赖树），退化为旧路径 |
+| 独立 `cmake -S engine/tools/ZEnvironmentCollector -B <dir>` | 自包含（静态 bqlog + 内置中文表） | **分发用的构建**：静态 CRT、不带 DLL、不带 `resource\`，产物可直接打包发到没有 VC redist 的机器。`zbuild.py tool ZEnvironmentCollector` 走这一条 |
+| 全树 `cmake -S . -B build` | 引擎后端（链接 ZRuntimeShared） | 不再产出分发包。日志走引擎 LogSystem、词条走 `DataTableCook` 烤出的表；GUI 在此默认关闭（整树 ZSlate 是 `/MD`，与本工具 `/MT` 链接会 LNK2038），所以这一条只作编译检查与 CLI 使用 |
 
 ## 与 ZRuntimeShared 的关系
 
@@ -68,7 +68,7 @@ LICENSE-Zycore.txt
 |---|---|
 | 独立构建 | `ZEnvironmentCollector\` |
 | 引擎后端 `/MD` | `ZEnvironmentCollector-zruntime-md\` |
-| 引擎后端 `/MT`（分发用） | `ZEnvironmentCollector-zruntime-mt\` |
+| 引擎后端 `/MT` | `ZEnvironmentCollector-zruntime-mt\` |
 
 两个维度都需要：只按后端分的话，两棵全树（`/MD` 与 `/MT`）仍然会互相覆盖同一个 exe，
 而 `cmake --install` 只会忠实地把最后落地的那个装走——包里的 exe 就悄悄变成了另一个构建。
@@ -117,13 +117,10 @@ cmake -S engine\tools\ZEnvironmentCollector\pack -B build\tools\ZEnvironmentColl
 cmake --build build\tools\ZEnvironmentCollector\pack --target package
 ```
 
-产出 `dist\<名字>-windows-x86_64-<版本>.zip` 与同名 `.zip.sha256`，名字区分两种构建：
-
-- 自包含构建 → `zenvironment-collector-windows-x86_64-<版本>.zip`
-- 引擎后端构建 → `zenvironment-collector-zruntime-windows-x86_64-<版本>.zip`
-
-多出的 `zruntime` 由 pack 读 exe 导入表自动加上，不用手填——两种构建曾产出**完全同名**的两个包，
-内容却不同，只能打开才知道是哪个。
+产出 `dist\zenvironment-collector-windows-x86_64-<版本>.zip` 与同名 `.zip.sha256`。pack 读 exe
+的导入表判断后端，引擎后端构建的名字里会自动多出 `zruntime`
+（`zenvironment-collector-zruntime-windows-x86_64-<版本>.zip`），不用手填——两种构建曾产出
+**完全同名**的两个包，内容却不同，只能打开才知道是哪个。只打包自包含构建。
 
 - 版本号从 `ToolVersion.h` 解析（与报告里的 `toolVersion` 同一个来源，不可能对不上）；可用
   `-DPACK_VERSION_OVERRIDE=x.y.z` 覆盖。
@@ -131,10 +128,10 @@ cmake --build build\tools\ZEnvironmentCollector\pack --target package
 - 包内是一个以包名命名的顶层目录，展开后 `README.md` + `ZEnvironmentCollector\`
   （exe、`ZDllLoadProbe.exe`、`profiles\`、LICENSE）——就是能直接跑的那个目录，没有多余的层。
 - ZIP 用 CMake 自带的归档能力生成，不需要装 7-Zip。
-- **两种构建打出的包同名但内容不同**：独立构建自包含（无 DLL）；引擎后端（全树构建）多出
-  `ZRuntimeShared.dll` 与 `resource\ui_strings_zh-CN.zasset`。pack 会读 exe 的导入表判断是哪一种：
-  引擎后端但 staging 里没有 DLL 时**直接配置失败**（缺 DLL 是 `0xc0000135`、进程根本起不到
-  `main()`，而包看起来完全正常）；缺 zasset 只告警，因为 UI 会退回英文而不是死。
+- **两种构建内容不同**：独立构建自包含（无 DLL）；引擎后端（全树构建）多出 `ZRuntimeShared.dll`
+  与 `resource\ui_strings_zh-CN.zasset`。pack 会读 exe 的导入表判断是哪一种：引擎后端但 staging
+  里没有 DLL 时**直接配置失败**（缺 DLL 是 `0xc0000135`、进程根本起不到 `main()`，而包看起来
+  完全正常）；缺 zasset 只告警，因为 UI 会退回英文而不是死。
 - staging 目录里没有 `ZEnvironmentCollector.exe` 时**直接配置失败**并打印该跑的那条命令：
   把一个空的/过期的 staging 目录打成一个看起来很像样的包，是这里唯一一种"看起来成功了"的失败。
 - README.md 会与源码树逐字节比对，不一致时告警——staging 复用会装进旧 README，而 launcher

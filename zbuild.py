@@ -67,21 +67,20 @@ CONFIG_MAP = {
 #
 #   intree     -- links ZRuntime, so it can only come out of a full-tree
 #                 configure. Slower the first time, incremental afterwards.
-#                 ZEnvironmentCollector is intree for the same reason as the
-#                 other two plus one more: it links ZRuntimeShared for its log
-#                 and its localization DataTable, and a standalone configure of
-#                 engine/tools/ZEnvironmentCollector has no ZRuntimeShared
-#                 target (producing one would mean pulling in all of
-#                 engine/Source/Runtime). "tree_options" is what turns the whole
-#                 tree /MT so the shipped directory still needs no VC redist;
-#                 it only takes effect on a FRESH configure (pass
-#                 --reconfigure otherwise).
+#                 "tree_options" adds switches to that configure; it only takes
+#                 effect on a FRESH configure (pass --reconfigure otherwise).
 #   standalone -- self-contained project with its own configure. Kept out of the
-#                 full tree on purpose: ClientProjBranches is OFF there. The
-#                 collector's own configure still works (it falls back to a
-#                 statically linked bqlog and a compiled-in string table), which
-#                 is why its CMake still carries the ENVIRONMENT_CHECK_STANDALONE
-#                 branch -- but that is no longer what ships.
+#                 full tree on purpose: ClientProjBranches is OFF there, and
+#                 ZEnvironmentCollector ships from here rather than from a
+#                 whole-tree /MT configure. Standalone links a static bqlog and
+#                 compiles the Simplified Chinese table into the exe, so its
+#                 output directory needs neither ZRuntimeShared.dll nor a
+#                 resource/ directory nor a VC redist -- it zips as it is.
+#
+# The collector still has an engine-backed path (a full-tree configure, where
+# ENVIRONMENT_CHECK_WITH_ZRUNTIME is on): there the log goes through the
+# engine's LogSystem and the strings come from a DataTable cooked by
+# DataTableCook. Both build, but only the standalone one is produced and packed.
 #
 # "subdir" is the optional extra level a tool asks for via
 # z_set_tool_output_dir(... SUBDIR <name>). ZEnvironmentCollector uses it
@@ -107,12 +106,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "exe": "ClientProjBranches.exe",
     },
     "ZEnvironmentCollector": {
-        "mode": "intree",
+        "mode": "standalone",
         "source": "engine/tools/ZEnvironmentCollector",
-        # What ships: engine-backed (LogSystem + DataTable localization) and
-        # whole-tree /MT so the output directory needs no VC redist.
-        "tree_options": ["-DZENGINE_STATIC_CRT=ON",
-                         "-DENVIRONMENT_CHECK_BUILD_GUI=ON"],
+        "build_dir": "build/tools/ZEnvironmentCollector",
+        # What ships: the self-contained build. Static CRT, static bqlog and a
+        # compiled-in Chinese table, so the output directory runs on a machine
+        # with no VC redist and carries no DLL. The engine-backed build (log
+        # through the engine's LogSystem, strings from a cooked DataTable) is
+        # no longer produced: it shipped a second package for no user-visible
+        # difference.
         "targets": ["ZEnvironmentCollector", "ZDllLoadProbe"],
         "subdir": "ZEnvironmentCollector",
         "exe": "ZEnvironmentCollector.exe",
