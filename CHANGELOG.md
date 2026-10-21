@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 2026-10-21 (Lumen GI reaches the shader: the per-frame uniform bridge)
+
+Phase 27 ended with Lumen publishing its irradiance into `RenderScene::m_IndirectLighting`
+— and with a commit message that said so explicitly: `MainCameraPerFrame` had no GI
+field and `deferred_lighting.frag` did not composite it. GI still could not reach a
+single pixel. This closes that last metre.
+
+- **`MainCameraPerFrame::lumen_indirect`** (`Vector4`, appended last): rgb = irradiance,
+  a = blend weight. It is *weight + colour*, not "is there a value", because a scene
+  boxed in by closed geometry legitimately resolves to black — that is data, and only
+  the weight distinguishes it from "Lumen is off".
+- `SceneIndirectLighting::ToUniform()` (`RenderCommon.h`) is the single definition of
+  that packing, called by **both** `UpdatePerFrameBuffer` implementations. See the trap
+  below for why it is not written out twice.
+- **Shaders composite it**: `shader/include/mesh_lighting.inl` (forward/GLSL) and
+  `shader/hlsl/rp1/deferred_lighting.frag.hlsl` (deferred/HLSL) now `mix` / `lerp`
+  between the baked irradiance cubemap and `lumen_indirect.rgb` by `lumen_indirect.a`.
+  Blending, not adding — both are irradiance, and adding would count the sky twice.
+  Weight 0 behaves byte-for-byte as before.
+- **New `LumenPerFrameBridgeSmokeTest`** (`-DZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST=ON`,
+  20 checks): pins the packing, the C++ struct layout (`static_assert` + runtime
+  mirror), that both backend call sites publish the field, and that all four shader
+  mirrors declare / expose it — including that the consumers blend rather than add.
+  Verified to fail when a mirror is deliberately broken.
+
+#### The trap: `UpdatePerFrameBuffer` has two mutually exclusive bodies
+
+`Function/Render/RenderResource.cpp` is wrapped *entirely* in `#if defined(Z_HAS_VULKAN)`
+(lines 5–1420); `Function/Render/RenderResourceDx12.cpp` is wrapped in
+`#if defined(_WIN32)` + `#if !defined(Z_HAS_VULKAN)`. **Apple (Metal) and Web have no
+implementation at all** — the `RenderResource::UpdatePerFrameBuffer` symbol the Apple
+smoke tests link is a stub that `abort()`s. This is the same mistake class as phase 27:
+"is Lumen compiled in" (`Z_HAS_LUMEN`) and "does anything fill the per-frame buffer"
+(`Z_HAS_VULKAN` / `_WIN32`) are two different switches, and on Apple their intersection
+is empty.
+
+Practical consequence: any new per-frame field must be filled in **both** files, and any
+test that calls `UpdatePerFrameBuffer` directly will only ever run on Vulkan hosts —
+which is why the packing was hoisted into a header function the test can link anywhere.
+
 ### Added / Fixed - 2026-10-21 (Lumen render pass: wired into the frame loop, and it has CVars now)
 
 The probe grid had real content, but nothing in the engine ever asked for it.

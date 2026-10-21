@@ -52,12 +52,19 @@ jobs:
       #
       # Not enabled: ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST,
       # ZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST,
-      # ZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST and
-      # ZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST -- this job runs with
+      # ZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST,
+      # ZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST and
+      # ZENGINE_BUILD_LUMEN_RENDER_PASS_WIRING_SMOKE_TEST -- this job runs with
       # ZENGINE_USE_VULKAN=OFF, and that branch strips
       # Function/Render/Lumen/*.cpp out of ZRuntime, so there is nothing for
-      # either test to link against here. They are configured and run on the
+      # those tests to link against here. They are configured and run on the
       # hosts that do build Lumen (Apple / Linux / Windows+Vulkan).
+      #
+      # ZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST would actually link here
+      # (it only touches RenderCommon.h and reads shader sources as text), but
+      # it is grouped with the rest of the Lumen set and left out too: it is the
+      # guard for the two UpdatePerFrameBuffer implementations, both of which
+      # this job compiles out, so running it here would add noise, not signal.
       - name: Configure with smoke tests enabled
         run: >
           cmake -S . -B build_smoke

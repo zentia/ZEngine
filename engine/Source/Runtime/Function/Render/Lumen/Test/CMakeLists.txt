@@ -189,6 +189,59 @@ if(ZENGINE_BUILD_LUMEN_RENDER_PASS_WIRING_SMOKE_TEST)
     message(STATUS "Configured Lumen render-pass wiring smoke-test target: LumenRenderPassWiringSmokeTest")
 endif()
 
+# ---------------------------------------------------------------------
+# Lumen -> per-frame uniform bridge smoke test. Pins the ONLY path from
+# the CPU probe grid to a pixel: RenderScene::m_IndirectLighting is
+# copied into MainCameraPerFrame::lumen_indirect (weight + colour, so a
+# legitimately black scene is not read as "no data"), for both viewport
+# slots, and that the hand-maintained GLSL/HLSL mirrors of the struct
+# declare the field in the same place. The shaders are never compiled
+# here, so a mirror left behind would otherwise be invisible.
+# ---------------------------------------------------------------------
+option(ZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST
+       "Build the Lumen per-frame bridge smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST)
+    add_executable(LumenPerFrameBridgeSmokeTest LumenPerFrameBridgeSmokeTest.cpp)
+
+    set_target_properties(LumenPerFrameBridgeSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    target_link_libraries(LumenPerFrameBridgeSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(LumenPerFrameBridgeSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(LumenPerFrameBridgeSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(LumenPerFrameBridgeSmokeTest ZEnginePCH)
+        target_precompile_headers(LumenPerFrameBridgeSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    # The mirror checks read engine/shader/* and the two UpdatePerFrameBuffer
+    # implementations as text (none of them compiles on Apple). CMake hands the
+    # test the absolute engine root so it does not depend on the working
+    # directory.
+    if(DEFINED ENGINE_ROOT_DIR)
+        target_compile_definitions(LumenPerFrameBridgeSmokeTest PRIVATE
+            "ZENGINE_ENGINE_ROOT_DIR=\"${ENGINE_ROOT_DIR}\"")
+    endif()
+
+    if(MSVC)
+        target_compile_options(LumenPerFrameBridgeSmokeTest PRIVATE /W4)
+    endif()
+
+    if(APPLE)
+        target_sources(LumenPerFrameBridgeSmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME LumenPerFrameBridgeSmokeTest COMMAND LumenPerFrameBridgeSmokeTest)
+
+    message(STATUS "Configured Lumen per-frame bridge smoke test: LumenPerFrameBridgeSmokeTest")
+endif()
+
 set_target_properties(LumenSceneGeometrySmokeTest PROPERTIES
     CXX_STANDARD 23
     FOLDER "Engine/Tests"

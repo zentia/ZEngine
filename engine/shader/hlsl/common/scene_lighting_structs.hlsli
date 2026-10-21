@@ -51,6 +51,8 @@ struct MainCameraPerFrame
     float _pad_render_tile;
     /// Scene/game panel in framebuffer pixels (x, y, width, height).
     float4 viewport_rect;
+    /// Lumen indirect: rgb = irradiance, a = blend weight (0 = keep ambient_light).
+    float4 lumen_indirect;
 };
 
 #include "LargeWorldCoordinates.hlsl"

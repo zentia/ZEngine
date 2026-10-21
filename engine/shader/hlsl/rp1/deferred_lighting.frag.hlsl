@@ -76,6 +76,7 @@ float4 main(PsInput input) : SV_Target0
     float3 L = normalize(-scene_directional_light.direction);
     float NdotL = saturate(dot(N, L));
     float3 diffuse = albedo * scene_directional_light.color * NdotL;
-    float3 ambient = albedo * ambient_light;
+    // Lumen 的 probe 网格接管间接光，权重 0 时完全退回原来的 ambient_light。
+    float3 ambient = albedo * lerp(ambient_light, lumen_indirect.rgb, lumen_indirect.a);
     return float4(ambient + diffuse, 1.0f);
 }

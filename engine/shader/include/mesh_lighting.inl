@@ -74,7 +74,12 @@ highp vec3 La = vec3(0.0f, 0.0f, 0.0f);
 La            = basecolor * ambient_light;
 
 // indirect environment
+//
+// Lumen 的 probe 网格只在有权重的时候才接管间接漫反射：权重 0（Lumen 关掉 / 还没产出）
+// 时这里的行为跟以前一模一样，继续用 baked irradiance cubemap。两者都是辐照度，
+// 所以是**替换**而不是相加 —— 加起来会把天光算两遍。
 highp vec3 irradiance = texture(irradiance_sampler, origin_samplecube_N).rgb;
+irradiance            = mix(irradiance, lumen_indirect.rgb, lumen_indirect.a);
 highp vec3 diffuse    = irradiance * basecolor;
 
 highp vec3 F       = F_SchlickR(clamp(dot(N, V), 0.0, 1.0), F0, roughness);

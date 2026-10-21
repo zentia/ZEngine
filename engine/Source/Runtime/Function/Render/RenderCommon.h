@@ -47,6 +47,14 @@ struct SceneIndirectLighting
     float weight {0.0f};
     /// 产出这份数据的帧号，用来判断"是不是陈旧的"。
     uint64_t frame_index {0};
+
+    /// 打包成 MainCameraPerFrame::lumen_indirect。
+    ///
+    /// 放在这里而不是在两个 UpdatePerFrameBuffer 里各写一遍：那个搬运有两份实现
+    /// （Function/Render/RenderResource.cpp 是 Vulkan 专属、RenderResourceDx12.cpp
+    /// 是 Windows 专属），手抄两次迟早会漂，而且这两份在 Apple 上都编译不到 ——
+    /// 收敛成一个函数，冒烟测试才有一个所有平台都能链接的断言对象。
+    Vector4 ToUniform() const { return Vector4(irradiance, weight); }
 };
 
 struct MainCameraPerFrame
@@ -71,6 +79,14 @@ struct MainCameraPerFrame
     /// Scene/game panel in framebuffer pixels (x, y, width, height). Used by deferred sky
     /// to rebuild world rays from SV_Position (sub-viewport safe).
     Vector4 viewport_rect {0.0f, 0.0f, 1.0f, 1.0f};
+    /// Lumen 的间接光：rgb = 辐照度，a = 混合权重。
+    /// 0 = 沿用 baked irradiance cubemap（也就是 Lumen 关掉时的行为），1 = 完全用 Lumen。
+    ///
+    /// 之所以是"权重 + 颜色"而不是"有没有颜色"：被封闭几何体包住的场景算出来的辐照度
+    /// 本来就是 0，那是有数据，不是没数据。
+    /// probe 网格今天还没有 GPU 侧的 3D 纹理体积，所以 CPU 只发布一个全场景平均值；
+    /// 等体积纹理就位，这里换成纹理绑定即可，struct 不用动。
+    Vector4 lumen_indirect {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 struct RenderMeshInstance
