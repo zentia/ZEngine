@@ -438,8 +438,13 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         });
 
         const std::filesystem::path bundle_path = bundles_dir / (name + ".zbundle");
+        // Per entry, not per bundle: WriteBundleFile keeps an entry Stored when
+        // deflating it does not come out smaller, so block-compressed textures
+        // cost nothing here.
+        const AssetBundles::BundleCompression method =
+            options.compress ? AssetBundles::BundleCompression::Zlib : AssetBundles::BundleCompression::Stored;
         std::string write_error;
-        if (!AssetBundles::WriteBundleFile(bundle_path, sorted, AssetBundles::BundleCompression::Stored, write_error))
+        if (!AssetBundles::WriteBundleFile(bundle_path, sorted, method, write_error))
         {
             result.error = "cannot write " + bundle_path.generic_string() + ": " + write_error;
             return result;

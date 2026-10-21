@@ -62,6 +62,13 @@ struct AssetBundleBuildOptions
     /// editor-platform texture bytes, which is fine on desktop and wrong on
     /// mobile (BC where ASTC is expected).
     bool cook_first {true};
+
+    /// Deflate each entry, keeping the compressed copy only when it is smaller.
+    /// A cooked BC7/ASTC texture is already block-compressed and stays Stored,
+    /// so this never costs anything -- but a target whose player links no
+    /// decompressor (Emscripten) must set this to false, or the player could
+    /// not read the bundle at all.
+    bool compress {true};
 };
 
 struct AssetBundleBuildResult

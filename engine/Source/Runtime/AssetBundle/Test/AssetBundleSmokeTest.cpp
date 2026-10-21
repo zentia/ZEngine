@@ -127,6 +127,19 @@ namespace
         return ok;
     }
 
+    const AssetBundles::BundleEntry* FindEntry(const std::vector<AssetBundles::BundleEntry>& table,
+                                               const std::string& path)
+    {
+        for (const AssetBundles::BundleEntry& entry : table)
+        {
+            if (entry.path == path)
+            {
+                return &entry;
+            }
+        }
+        return nullptr;
+    }
+
     bool ReadFileBytes(const std::filesystem::path& path, std::vector<uint8_t>& out)
     {
         std::ifstream in(path, std::ios::binary);
@@ -420,6 +433,104 @@ int main()
         Check(bundles->TryReadScriptModule("player/Mover", remounted) && remounted == kMoverSource,
               "B10: asking for a module mounts the scripts bundle on demand");
         Check(bundles->IsMounted(AssetBundles::kScriptBundleName), "B10: the scripts bundle is mounted again");
+    }
+
+    // ---- B11: compression is decided PER ENTRY ----------------------------
+    // A bundle is dominated by cooked textures, and BC7 / ASTC payloads are
+    // already block-compressed: deflating them wastes CPU at build and load
+    // time and can even make them bigger. So the writer deflates each entry and
+    // keeps the compressed copy only when it actually came out smaller.
+    {
+        std::string compressible;
+        for (int i = 0; i < 200; ++i)
+        {
+            compressible += "exports.Foo = class Foo { /* padding padding padding */ };\n";
+        }
+
+        // A deterministic LCG: incompressible enough that deflate cannot win,
+        // without pulling <random> in or depending on its exact algorithm.
+        std::vector<uint8_t> incompressible(4096);
+        uint32_t rng = 0x1234567u;
+        for (uint8_t& byte : incompressible)
+        {
+            rng = rng * 1103515245u + 12345u;
+            byte = static_cast<uint8_t>(rng >> 16);
+        }
+
+        std::vector<AssetBundles::BundleSourceEntry> packed_entries;
+        AssetBundles::BundleSourceEntry text_entry;
+        text_entry.path = "Scripts/text.js";
+        text_entry.type = "ScriptModule";
+        text_entry.bytes.assign(compressible.begin(), compressible.end());
+        AssetBundles::BundleSourceEntry noise_entry;
+        noise_entry.path = "Textures/noise.zasset";
+        noise_entry.type = "Texture2D";
+        noise_entry.bytes = incompressible;
+        packed_entries.push_back(text_entry);
+        packed_entries.push_back(noise_entry);
+
+        const std::filesystem::path packed_path = root / "packed.zbundle";
+        std::string pack_error;
+        const bool wrote = AssetBundles::WriteBundleFile(
+            packed_path, packed_entries, AssetBundles::BundleCompression::Zlib, pack_error);
+
+        const bool zlib_available = AssetBundles::CanDecompress(AssetBundles::BundleCompression::Zlib);
+        if (!zlib_available)
+        {
+            // The one platform where this matters is Emscripten: a player there
+            // links no decompressor, so producing a deflated bundle would be
+            // shipping something unreadable.
+            Check(!wrote, "B11: a build without zlib refuses to write a deflated bundle");
+            std::printf("       (skipping the deflate round-trip: no zlib in this build)\n");
+        }
+        else
+        {
+            Check(wrote, "B11: a deflated bundle is written");
+
+            AssetBundles::BundleFileHeader packed_header;
+            std::vector<AssetBundles::BundleEntry> packed_table;
+            Check(AssetBundles::ReadBundleHeader(packed_path, packed_header, packed_table, pack_error) &&
+                      packed_table.size() == 2,
+                  "B11: the deflated bundle parses");
+
+            const AssetBundles::BundleEntry* text = FindEntry(packed_table, "Scripts/text.js");
+            const AssetBundles::BundleEntry* noise = FindEntry(packed_table, "Textures/noise.zasset");
+            Check(text != nullptr && noise != nullptr, "B11: both entries are in the table");
+
+            if (text != nullptr && noise != nullptr)
+            {
+                Check(AssetBundles::EntryCompression(*text) == AssetBundles::BundleCompression::Zlib &&
+                          text->stored_size < text->uncompressed_size,
+                      "B11: compressible bytes are deflated");
+                Check(AssetBundles::EntryCompression(*noise) == AssetBundles::BundleCompression::Stored &&
+                          noise->stored_size == noise->uncompressed_size,
+                      "B11: incompressible bytes stay STORED");
+                Check(packed_header.compression == AssetBundles::BundleCompression::Zlib,
+                      "B11: the header reports what actually happened");
+                std::printf("       (deflate: %llu -> %llu bytes for the compressible entry)\n",
+                            static_cast<unsigned long long>(text->uncompressed_size),
+                            static_cast<unsigned long long>(text->stored_size));
+
+                std::vector<uint8_t> back_text;
+                std::vector<uint8_t> back_noise;
+                Check(AssetBundles::ReadBundleEntryBytes(packed_path, packed_header, *text, back_text, pack_error) &&
+                          back_text == text_entry.bytes,
+                      "B11: a deflated entry round-trips byte-identically");
+                Check(AssetBundles::ReadBundleEntryBytes(packed_path, packed_header, *noise, back_noise, pack_error) &&
+                          back_noise == incompressible,
+                      "B11: the STORED entry round-trips too");
+
+                // End to end: the same path a player takes when an asset is
+                // served out of a mounted bundle.
+                Check(bundles->MountBundle(packed_path), "B11: the deflated bundle mounts");
+                AssetBundle* packed = bundles->FindBundle("packed");
+                std::string serve_error;
+                const std::vector<uint8_t>* served_text =
+                    packed != nullptr ? packed->GetAssetBytes("Scripts/text.js", serve_error) : nullptr;
+                Check(served_text != nullptr && *served_text == text_entry.bytes,
+                      "B11: a deflated asset is served inflated through the bundle");
+            }
+        }
     }
 
     // ---- B7: corruption is detected ---------------------------------------

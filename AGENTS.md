@@ -2282,12 +2282,37 @@ directory `AssetRegistry` indexes -- so the dependency walk can never reach it.
 - `AssetBundleBuildResult::script_count` counts modules separately from
   `asset_count`, which stays "what the dependency walk found".
 
+**Compression is decided PER ENTRY, not per bundle** (added 2026-10-20).
+
+- A bundle is dominated by cooked textures, and BC7 / ASTC / BC1 payloads are
+  ALREADY block-compressed: deflating them burns CPU at build and at load time
+  and can even make them bigger. Script modules and mesh data, on the other
+  hand, shrink a lot. So `WriteBundleFile` deflates each entry and keeps the
+  compressed copy **only when it came out smaller**; everything else stays
+  Stored. Incompressible content therefore pays nothing -- there is no downside
+  to leaving compression on.
+- The method lives in `BundleEntry::flags` (low 4 bits, `EntryCompression`), so
+  no header layout changed and old v1 bundles still read (`flags == 0` is
+  Stored). `BundleFileHeader::compression` reports what actually happened, not
+  what was asked for.
+- **CRC-32 guards the STORED bytes**, so a corrupt deflate stream is rejected
+  before it ever reaches the decompressor.
+- The writer REFUSES to emit a method this build cannot inflate
+  (`AssetBundles::CanDecompress`), and the reader rejects one with a clear
+  error. Never let it fall through to "return the raw bytes" -- they would be
+  parsed as a `.zasset` and fail somewhere unrecognisable.
+- zlib comes from wherever minizip-ng already found it; `find_package(ZLIB)` is
+  called again in `Source/Runtime/CMakeLists.txt` because minizip's imported
+  targets are directory-scoped. No target (Emscripten, stripped 3rdparty) =>
+  `ZENGINE_BUNDLE_HAS_ZLIB` is undefined and bundles stay Stored.
+  `AssetBundleBuildOptions::compress` is the per-target override.
+- `packed_storage.reserve(entries.size())` in the writer is load-bearing:
+  `payloads` holds pointers INTO that vector, and a reallocation would dangle.
+
 Known gaps, in the order they should be closed (PR-PAK2+):
 - **ZGame is not built on macOS.** `engine/CMakeLists.txt`'s `elseif(APPLE)`
   branch adds Editor only, so the install rules above cannot be exercised
   end-to-end on a dev machine, and there is no local player to run.
-- **No compression**: v1 writes STORED blobs (the `compression` field and
-  `uncompressed_size` are already in the format). ZRuntime links no compressor.
 - No incremental build, no content-hash change detection, no per-asset
   reference counting (unloading a bundle drops everything it cached).
 - Only textures have a real cook today; every other asset type is packed as-is.

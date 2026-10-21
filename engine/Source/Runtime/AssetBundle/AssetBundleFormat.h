@@ -29,9 +29,10 @@
 //   [padding to 16 bytes]
 //   [blob]                  entry_count * stored bytes, 16-byte aligned starts
 //
-// v1 ships STORED (uncompressed) blobs. `compression` is per-bundle and
-// already plumbed through the header + entry (`uncompressed_size`) so a
-// compressor can be added without a format change.
+// v1 deflates each entry and keeps the compressed copy only when it is smaller,
+// so already-compressed payloads (cooked BC7 / ASTC textures) cost nothing.
+// The per-entry method lives in `BundleEntry::flags`, which is why adding
+// compression needed no header change at all.
 // =============================================================================
 
 #include <cstddef>
@@ -50,8 +51,8 @@ namespace AssetBundles
     enum class BundleCompression : uint16_t
     {
         Stored = 0,
-        // Reserved: zlib (deflate). Not produced by v1 -- no compressor is
-        // linked into ZRuntime today.
+        /// zlib (deflate). Only produced when THIS build can also inflate it --
+        /// see `CanDecompress`, and the per-entry rule below.
         Zlib = 1,
     };
 
@@ -72,18 +73,58 @@ namespace AssetBundles
     /// One asset inside a bundle. `offset` is RELATIVE TO `blob_offset`.
     struct BundleEntry
     {
-        /// Registry-relative asset path, forward slashes ("Models/hero.zasset").
+        /// Registry-relative asset path, forward slashes ("Models/hero.zasset")
+        /// -- or a script module key, see `MakeScriptEntryPath`.
         std::string path;
-        /// Asset GUID from the .zasset header (may be empty for legacy files).
+        /// Asset GUID from the .zasset header (may be empty for legacy files,
+        /// and always empty for a script module).
         std::string guid;
         /// Runtime asset type name ("MeshData", "Texture2D", ...).
         std::string type;
         uint64_t offset {0};
+        /// Bytes actually in the file.
         uint64_t stored_size {0};
+        /// Bytes after inflating. Equals `stored_size` for a Stored entry.
         uint64_t uncompressed_size {0};
+        /// CRC-32 over the STORED bytes: corruption is caught before inflate,
+        /// so a bad blob never reaches the decompressor.
         uint32_t crc32 {0};
+        /// Low 4 bits: the entry's own `BundleCompression` (see
+        /// `EntryCompression`). The rest is reserved and must stay 0.
         uint32_t flags {0};
     };
+
+    // -------------------------------------------------------------------------
+    // Compression is decided PER ENTRY, not per bundle.
+    //
+    // A bundle is dominated by cooked textures, and BC7 / ASTC / BC1 payloads
+    // are ALREADY block-compressed: deflating them wastes CPU at build time and
+    // at load time and can even make them bigger. Scripts and mesh data, on the
+    // other hand, shrink a lot. So the writer deflates each entry and keeps the
+    // compressed copy only when it is actually smaller; everything else stays
+    // Stored. `BundleFileHeader::compression` therefore reports the method that
+    // was ATTEMPTED (Stored when nothing ended up compressed), and the
+    // authoritative value for a given entry is its own `flags`.
+    //
+    // The method lives in `flags` rather than in a new field so that no header
+    // layout changes and v1 bundles keep reading (flags == 0 => Stored).
+    // -------------------------------------------------------------------------
+    constexpr uint32_t kEntryCompressionMask = 0x0000000Fu;
+    /// Deflating anything smaller than this is pointless: the gain is under a
+    /// few bytes and the entry is padded to 16 bytes anyway.
+    constexpr uint64_t kCompressionMinSize = 64u;
+
+    inline BundleCompression EntryCompression(const BundleEntry& entry)
+    {
+        return static_cast<BundleCompression>(entry.flags & kEntryCompressionMask);
+    }
+
+    /// Whether THIS BUILD can read `method`. False for Zlib when ZRuntime was
+    /// configured without zlib (Emscripten, or a stripped 3rdparty set): the
+    /// writer must then stay on Stored, or a player could not read the bundle
+    /// at all. A reader that meets an unsupported method reports it as an
+    /// explicit error -- never as silently truncated bytes.
+    bool CanDecompress(BundleCompression method);
 
     /// Source material handed to the writer: entry metadata + raw asset bytes.
     struct BundleSourceEntry
@@ -107,6 +148,10 @@ namespace AssetBundles
     /// and is what "this root pulled in nothing" produces). Returns false and
     /// fills `out_error` on any I/O failure. Blobs are written in the order
     /// given; duplicate paths are rejected (an asset belongs to one bundle).
+    ///
+    /// `compression` is the method to TRY per entry, not a promise: an entry
+    /// that does not get smaller stays Stored. Passing a method this build
+    /// cannot decompress is rejected outright -- see `CanDecompress`.
     bool WriteBundleFile(const std::filesystem::path& out_path,
                          const std::vector<BundleSourceEntry>& entries,
                          BundleCompression compression,
