@@ -1090,8 +1090,14 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
             {
                 const auto& left = inputs.gpus[outer];
                 const auto& right = inputs.gpus[inner];
+                // Both versions have to be known before they can disagree. A
+                // version that could not be read is not a version that differs:
+                // it used to be reported as mixed, whose action sends the player
+                // to reinstall drivers that may already be the same version --
+                // and the detail line would have said "[]" for the silent one.
                 if (left.vendorId != 0 && left.vendorId == right.vendorId &&
-                    !left.driverVersion.empty() && left.driverVersion != right.driverVersion)
+                    !left.driverVersion.empty() && !right.driverVersion.empty() &&
+                    left.driverVersion != right.driverVersion)
                 {
                     result.findings.push_back({"GPU_DRIVER_MIXED", "gpu",
                         "检测到同一厂商的两张显卡驱动版本不一致，可能导致黑屏或掉驱动。",

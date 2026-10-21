@@ -185,6 +185,27 @@ int main()
             Check(result.userMessageCode == "ENVIRONMENT_ADVICE", "advice carries one summary code");
         }
         {
+            // A version that could not be read is not a version that differs.
+            // Only one side of the pair was checked, so "551.23" against an
+            // unread one was reported as mixed -- and the action tells the player
+            // to go and match up drivers that may already be the same version.
+            auto inputs = HealthyInputs();
+            GpuAdapterInfo second = inputs.gpus.front();
+            second.name = "Test Second GPU";
+            second.driverVersion.clear();
+            inputs.gpus.push_back(second);
+            Check(!HasFinding(Evaluate(inputs), "GPU_DRIVER_MIXED"), "an unread driver version is not a mismatch");
+
+            // The same pair the other way round: which adapter happened to be
+            // enumerated first must not decide whether the machine is blamed.
+            auto reversed = HealthyInputs();
+            GpuAdapterInfo unread = reversed.gpus.front();
+            unread.driverVersion.clear();
+            unread.name = "Test Unread GPU";
+            reversed.gpus.insert(reversed.gpus.begin(), unread);
+            Check(!HasFinding(Evaluate(reversed), "GPU_DRIVER_MIXED"), "and it is not a mismatch in either order");
+        }
+        {
             // The high-performance preference resolving to a sub-1GB part while a
             // 2GB+ part is installed is what "running on the integrated GPU" looks
             // like without having to guess from the adapter name.
