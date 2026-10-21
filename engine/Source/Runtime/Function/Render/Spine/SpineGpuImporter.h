@@ -289,6 +289,16 @@ struct SpineGpuAsset
     // 由 SpineDrawItem::uv_offset 索引。
     std::vector<float> uv_buffer;
 
+    // ---- 影响流（chunk 21 / 22）：weighted 顶点的蒙皮数据（v7 起）----
+    // 两条流**共用同一个条目下标** —— 就是 SpineWeightedVertex::influence_offset。
+    // 条目总数 = influence_bind.size() / 2 = influence_bone.size()，
+    // 读端会校验这个等式（对不上 = 两条流被配错了对，静默错形状）。
+    //
+    // 为什么搬出顶点：定长 4 槽装不下实测的影响数（最大 15），定长 16 槽又要
+    // 176 B/顶点。搬出来后顶点恒 8 B，均值 ≈ 34 B/顶点，shader 循环 2.2 次。
+    std::vector<float> influence_bind;              // chunk 21：float2 × 条目数
+    std::vector<SpineInfluenceBone> influence_bone; // chunk 22：u16 boneIdx + u8 weight
+
     std::vector<uint16_t> index_buffer;
     std::vector<SpineDrawItem> draw_items;
     std::vector<uint16_t> slot_bone;          // 每槽位的骨骼下标（rigid 用）

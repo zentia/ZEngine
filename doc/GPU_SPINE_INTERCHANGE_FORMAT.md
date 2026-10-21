@@ -159,24 +159,40 @@ wy += (vx * bone._c + vy * bone._d + bone._worldY) * weight;
 | 格式 | 布局（按偏移顺序） | 步长 |
 |---|---|---|
 | `kVtxRigid` | `bindPos f32×2` (0-7) | **8 B** |
-| `kVtxWeighted4` | `bindPos f32×2 ×4` (0-31) + `boneIdx u16×4` (32-39) + `weight unorm8×4` (40-43) + `_pad` (44-47) | **48 B** |
+| `kVtxWeighted`（v7） | `influence_offset u32` (0-3) + `influence_count u32` (4-7) | **8 B** |
 
-> ⚠️ **UV 不在这里。** 顶点只存"几何 + 蒙皮"，UV 在独立的 chunk 4 里
+**v7 起 weighted 顶点只是一条形如 `(影响流下标, 影响个数)` 的引用** ——
+真正的 `(bindPos, boneIdx, weight)` 在**两条独立的影响流**里（chunk 21 / 22），
+两条流**共用同一个条目下标**（就是 `influence_offset`）：
+
+| chunk | 内容 | 每条 | 用途 |
+|---|---|---|---|
+| 21 `influence_bind` | `bindPos f32×2` | 8 B | `bind.Load2((influence_offset + k) * 8)` |
+| 22 `influence_bone` | `boneIdx u16` (0-1) + `weight unorm8` (2) + `pad` (3) | 4 B | `bone.Load((influence_offset + k) * 4)`，整条一次 Load 再拆 |
+
+> ⚠️ **UV 不在这里。** 顶点只存"几何 / 引用"，UV 在独立的 chunk 4 里
 > （`float2` × `uv_count`，8 B/条），由 `DrawItem::uv_offset` 索引。见 §3.2。
 
-> **为什么 bindPos 放在最前面、步长补到 48**：`ByteAddressBuffer::Load2`（一次取一个
-> `float2`）要求偏移 **8 字节对齐**。步长 44 时第 k 个顶点在 `44k`，`44 % 8 == 4` ⇒
-> 第二个及以后的顶点其 bindPos 无法用对齐的 Load2 取，只能退化成标量 Load。
-> `bindPos` 放首位 + 步长 48（`48 % 8 == 0`）⇒ 每个顶点的 bindPos 都能一次 Load2。
-> 代价 4 B/顶点（约 9%），换来的是 GPU 侧对齐的向量化读取 —— 这个取舍是由验收夹具
-> 实测出来的，不是拍的。
+> **为什么两条流要分开、而不是交错成一条 12 B**：
+> `ByteAddressBuffer::Load2` 要求偏移 **8 字节对齐**。交错的 12 B 步长会让
+> 第 1、3、5…条的 bindPos 落在 12、36…（不是 8 的倍数）⇒ 只能退化成标量 Load。
+> 同理 `bone` 那条必须**整条 4 B 一次 Load 出来再拆**，不能在 `@2` 处单独 Load ——
+> 那个地址不是 4 字节对齐的。
+
+> **为什么从"定长 4 槽 48 B"改成"逐顶点变长"**（`doc/GPU_SPINE_V7_ANIMATION.md` §1.5）：
+> OSGame 782 个资产实测 —— 每顶点影响数最大 **15**、均值 **2.20**，
+> >4 的顶点占 4.1%（24 458 / 594 372）⇒ 定长 4 槽直接卡死 **297 个资产**；
+> 定长 16 槽能装下但要 176 B/顶点，与"降内存"的目标相反。
+> 变长后均值 ≈ 8 + 12 × 2.20 ≈ **34 B/顶点**（48 B 的 0.72×），
+> 且 shader 循环 **2.2 次**而不是固定 4 次 ⇒ **内存和 ALU 一起省**。
 
 - **每段 VB 只有一种格式**，绘制项记录 `vertex_format`。合批只能在同一格式内进行。
-- `MAX_INFLUENCES = 4`。导入器遇到 `n > 4` 的顶点必须**报错并报出附件名**，
-  不允许静默截断（静默截断 = 形状悄悄错）。可选 `--reduce-influences` 保留权重最大的 4 个并重新归一化。
-- 未使用的槽位：`weight = 0`、`boneIdx = 0`、`bindPos = 0`。
-- **权重归一化**：导入期把 4 个 unorm8 调整到**和恰好 255**（余量补给权重最大的那个），
-  运行时统一 `/ 255.0`。不要在 shader 里做除法归一化（每个顶点一次除法，且引入与 CPU 不一致的舍入）。
+- `MAX_INFLUENCES = 255` —— v7 起它**不再是"固定槽位数"**，只是"单个顶点影响数的硬上限"，
+  用来挡"数据坏了"（把 n 读成 300 之类）。正常资产永远碰不到它。
+  导入器遇到 `n > 255` 仍然**报错并报出附件名**，不允许静默截断。
+- **权重归一化**：导入期把该顶点 `influence_count` 个 unorm8 调整到**和恰好 255**
+  （余量补给权重最大的那个），运行时统一 `/ 255.0`。不要在 shader 里做除法归一化
+  （每个影响一次除法，且引入与 CPU 不一致的舍入）。
 - **顶点色不在静态 VB 里** —— Spine 的颜色是**槽位色**（`slot.getColor()`），每实例可变，属于实例数据。
 
 ### 3.2 UV 是独立通道（**不在顶点里**）
@@ -364,7 +380,7 @@ float2 SkinVertex(uint vertexIndex, uint drawItemIndex)   // UV 不参与，见 
 |---|---|---|
 | **Region** | 烘焙 4 顶点 | `RegionAttachment::computeWorldVertices` 用 `_vertexOffset[8]` 的 br/bl/ul/ur 四点，由**槽位骨骼**单一矩阵变换 ⇒ 天然是 rigid。UV 由图集页（可能带 90° 旋转）算好，写进独立 UV 通道（§3.2）。 |
 | **Mesh（刚性）** | 烘焙，rigid | `_bones` 为空，整块由槽位骨骼变换。**8 B/顶点**。 |
-| **Mesh（蒙皮）** | 烘焙，weighted4 | **48 B/顶点**（不是 44，见 §3.1 的对齐说明）。 |
+| **Mesh（蒙皮）** | 烘焙，weighted | v7 起顶点 **8 B（引用）** + 影响流 12 B/影响 ⇒ 均值 ≈ **34 B/顶点**（实测均值 2.20 个影响）。 |
 | **Clipping** | `_ClipData` 保留 | `SkeletonClipping::clipTriangles()` 重写顶点/三角形/UV（`SkeletonClipping.h:47-54`）⇒ **产生新三角形，VS 做不了** ⇒ **CPU fallback**：该项走 `kFallback`，顶点由 CPU 算好上传每帧动态 VB。这是 3.8 的唯一选项，不是折中（§1.1）。**回退的粒度是槽位**（不是整个资产），作用域见 §7.2。 |
 | **FFD / deform** | 同左 | 顶点每帧都变 ⇒ 静态 VB 里那份**绑定姿势**不算数 ⇒ 该项走 `kFallback`。见 §7.1。 |
 
@@ -523,7 +539,7 @@ Spine 图集默认是 **PMA（预乘 Alpha）**，对应 Unity 侧 `Blend One On
 ```
 Header (64 B)
   0x00  magic            u32   'ZSPG'  (0x5A535047)
-  0x04  version          u32   本规格版本，当前 6
+  0x04  version          u32   本规格版本，当前 7
                                v2 = 加了 skin 维度（§9.1）
                                v3 = UV 拆成独立通道 + chunk id 重排（§3.2、§14.2）
                                v4 = deform 参与烘焙（§7.1）—— 布局没变，
@@ -532,6 +548,10 @@ Header (64 B)
                                     但作用域内绘制项的 kind 从 kStatic 变成 kFallback
                                v6 = 裁剪多边形参与烘焙（§7.2）—— 绘制项 24 B → 28 B
                                     （新增 clip_index），chunk 9 起真正写数据
+                               v7 = 蒙皮数据搬出顶点（§3.1）—— weighted 顶点
+                                    48 B → 8 B 引用，新增 chunk 21 / 22；
+                                    顶点数 / 绘制项 / header 大小都没变，但旧容器
+                                    用新读端会把"引用"当 bindPos ⇒ 形状全错
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -562,11 +582,22 @@ Chunks:
   id=8  atlas_pages    图集页路径，每项 '\0' 结尾
   id=9  clip_data      ClipPolygon[]，12 B/条（§7.2）；**顶点本身在 chunk 3 里**。
                        没有裁剪时这个 chunk **根本不写**（不是写个空块）
+  id=21 influence_bind bindPos f32×2 × 影响条目数，8 B/条（§3.1，v7）
+  id=22 influence_bone (boneIdx u16, weight unorm8, pad u8) × 影响条目数，4 B/条（v7）
+                       ⚠️ 21 与 22 **共用同一个条目下标**（= 权重顶点的
+                       `influence_offset`）⇒ 读端必须校验两条的条目数**相等**，
+                       对不上就报错（配错了对不报错，只是每个影响取到别人的数据）。
+                       id 从 21 起：10..20 留给动画阶段（骨骼树 / 时间轴 / path 几何）。
 ```
 
 > ⚠️ **chunk id 在 v3 重排过**：`uv_buffer` 插在 `vertex_buffer` 与 `index_buffer` 之间，
 > 其后所有 id 顺移一位。读端按 **id** 找 chunk，**不许按下标** —— v2 的容器用 v3 读端
 > 读会拿到 `index_buffer` 当 UV，静默错位。这也正是 `kFormatVersion` 升到 3 的原因。
+>
+> ⚠️ **文件里 chunk 的顺序也不是 id 顺序**：写端按
+> `1, 2, 3, 21, 22, 4, 5, 9, 6, 7, 8` 追加（影响流紧跟顶点块；9 夹在 5 与 6 之间是
+> 历史顺序）。换了顺序文件照样能读，但字节不再逐字节相同 ⇒ 跨语言对拍（§12）立刻红，
+> 所以 C# 端必须照抄这个顺序（见 `SpineGpuContainerIo.cs`）。
 
 ### 9.1 skin 维度（v2）
 
@@ -584,12 +615,13 @@ Chunks:
 
 **为什么 header 里要有 0x30..0x38 这三个字段**：顶点缓冲是 rigid 段 + weighted 段拼起来的，
 光有 `vertex_count` 和 `draw_items` 无法反推出分界点 —— 读回来就切不开两段，
-而 `SpineRigidVertex`(8 B) 与 `SpineWeightedVertex`(48 B) 步长不同，切错就全错。
+而 `SpineRigidVertex`(8 B) 与 `SpineWeightedVertex`(8 B) 虽然步长现在相同、但**含义不同**
+（一个是 bindPos，一个是"影响流引用"），切错就全错。
 所以段信息必须由 header 显式给出，不能靠消费端重算。
 
 布局规则：
-- 所有 chunk 起点 4 B 对齐；`vertex_buffer`(id=3) 与 `uv_buffer`(id=4) 起点 **8 B 对齐**
-  （§3.1 的 `Load2` 前提；UV 是 `float2`，同样要 8 B）。
+- 所有 chunk 起点 4 B 对齐；`vertex_buffer`(id=3)、`influence_bind`(id=21) 与 `uv_buffer`(id=4)
+  起点 **8 B 对齐**（§3.1 的 `Load2` 前提；bindPos 与 UV 都是 `float2`，同样要 8 B）。
 - 对齐填充插在 chunk 之间，**因此容器总长 ≠ header + 表 + 净载荷之和**。
   要校验容器，应校验 **chunk 表里的 `size` 之和**（与填充无关的精确不变量），
   而不是写死一个总字节数 —— 后者会在对齐规则一变时就假失败。
@@ -612,7 +644,8 @@ Chunks:
 ## 11. 版本与兼容
 
 - `version` 变化 ⇒ 导入器必须拒绝旧容器并给出明确错误，不做静默兼容。
-- **v7 在设计中**：骨骼树（chunk 10）+ 动画（chunk 11-14），解算器自写、仍在 CPU。
+- **v7 已部分落地**：影响流（chunk 21 / 22）+ 逐顶点变长影响数已进容器；
+  仍在推进的是骨骼树（chunk 10）+ 动画（chunk 11-16），解算器自写、仍在 CPU。
   字段设计与转录 gap 分析见 **`doc/GPU_SPINE_V7_ANIMATION.md`**。
   v7 **不动** header（仍 64 B）、不动 chunk 1..9、不动 §5 每帧实例数据、不动 §6 shader 数学；
   新增的计数一律从 chunk 表推导（`size / stride`），不进 header。
@@ -733,6 +766,12 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
    * 二进制的 weighted 判据是**显式 bool**，json 只能靠"数组长度 ≠ vertexCount×2"猜
      （没有 uvs 可比对）⇒ 两种输入必须对到同一个结果；json 缺 `vertexCount` 必须报错
      （参考实现会把它误判成 weighted ⇒ 静默解析成垃圾骨骼索引）
+   * **影响流（chunk 21 / 22）** 两边条目数必须相等；每个权重顶点引用的区间必须落在流里
+     （读端显式校验，越界一律报错 —— 不报错的话 shader 只会读到别人的 bindPos）
+   * ⚠️ **必须有权重顶点的 `influence_offset` 非 0**：全是 0 时"写错成恒 0"测不出来
+     （跟裁剪多边形 `vertex_offset` 那条是同一个道理）
+   * 影响数 **> 4 的顶点必须能被烘焙**（v7 的目的就是这个）——夹具里放了 5 个影响的顶点
+   * `influence_count` 个 unorm8 权重的和必须**恰好 255**
 13. **必须跨语言对拍，不能两端各自自测**（§11.1）：C++ 落的 `.zspg`，C# 读回来再写一遍
     必须**逐字节相同**；同时要有语义断言，因为 round-trip 抓不到"解读"漂。
 
@@ -748,16 +787,18 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
 | 3 | Clip 策略 | **从"策略"降级为"约束"**：3.8 只有 CPU 实现 ⇒ 带裁剪的槽位走 CPU 动态 VB，同帧可混跑 | §1.1、§7 |
 | 9 | 裁剪的回退粒度 | **逐槽位**（不是整个资产）：作用域是 `(clipSlot, endSlot]`，逐皮肤模拟参考实现的状态机得出；**作用域不落盘**，只表达成作用域内绘制项的 `kind = kFallback`。**裁剪多边形要落盘**（chunk 9，12 B/条，顶点复用主顶点缓冲），绘制项加 `clip_index`（24 B → 28 B）。`kHasDeform` 只由 deform 点亮，不由裁剪点亮 | §7.2 |
 | 6 | root 变换存在哪？ | **方案 A：实例项加 `root_index`（16 B → 20 B）**，root 存每帧 root 表，24 B/项。选它而不是 B/C 是因为它不改 `bone_base` 的语义，代价只是每绘制项 4 B | §5.2、§5.3 |
-| 2 | `MAX_INFLUENCES = 4` 够吗？ | **定为 4**。导入器遇 `n > 4` **报错并报出附件名**，不静默截断 | §3.1 |
+| 2 | `MAX_INFLUENCES` 怎么定？ | **改为逐顶点变长（2026-10-22 重拍）**：定长 4 槽在 OSGame 782 个资产实测下不成立（每顶点影响数最大 15、均值 2.20，>4 的占 4.1% ⇒ 卡死 297 个资产）；定长 16 槽要 176 B/顶点，与降内存的目标相反。⇒ weighted 顶点 48 B → **8 B 引用**，蒙皮数据进 chunk 21 / 22。`MAX_INFLUENCES` 保留为 **255**，只当"数据坏了"的硬上限，遇 `n > 255` 仍然报错并报出附件名 | §3.1 |
 | 4 | 骨骼通道 structured 还是 UBO？ | **默认 structured / SSBO，24 B 紧凑**；仅当目标后端只有 UBO 时才用 32 B std140 变体（记录在 `bone_stride`） | §5.1 |
 | 7 | 容器加 skin 维度怎么加？ | **附件表多一列 `skin_id`**（4 B → 8 B），而不是另建一张 skin 表。选它是因为换装查询就是"按 (skin, slot) 查附件 id"，一列就能表达；另建表会多一次间接跳转却不省什么 | §9.1 |
 | 8 | linked mesh 的几何怎么省？ | **UV 拆成独立通道 + 顶点逐字节去重**，两条一起做。只拆 UV 不通（顶点仍按附件各存一份），只去重不拆 UV 也不通（UV 不同 ⇒ 字节不同 ⇒ 去重命中率为 0）。去重**只认逐字节完全相同**，不做近似 —— 宁可少共享，不可错共享 | §3.2、§14.2 |
 | 11 | deform 怎么回退？ | **不做稠密展开，也不做 OSGame 式全量 CPU 动态 VB** —— deform 是蒙皮之前的局部空间加数（`VertexAttachment.cpp:122-123`，rigid 则是 `:72-74` 整体替换）⇒ 走 **deform 增量**：共享 bind pose VB 不动、蒙皮仍在 GPU，每实例每帧只上传当前帧 deform 数组（实测均值 122 B/条，对比全量动态 VB 的 24.4 KB/帧）。OSGame 引擎（`SpineMesh.h:266`）那种世界空间全量动态 VB 被否决：它每实例一份 VB，**正好废掉 §0 的 VB 共享** | `doc/GPU_SPINE_V7_ANIMATION.md` §5 |
 | 10 | 动画怎么落？ | **A2（2026-10-22 拍板）**：骨骼树 + 动画烘焙进容器 → **v7**，解算器自己写，仍在 CPU（与 §0 一致）。否决 A1（运行时持有 spine 源数据 / 引入 spine-cpp），因为它与 §11.2「容器由 C++ 唯一产出」相冲，且 Unity 侧要跟着搬一整份运行时。范围与边界见 `doc/GPU_SPINE_V7_ANIMATION.md` | §11 |
+| 12 | 影响流怎么去重？ | **先对影响流（12 B/条）按"逐字节相同"去重，再用去重后的块起点改写顶点块里的本地下标，最后才对顶点块去重**。顺序颠倒不报错：先改写顶点块的话两个相同附件的本地下标都是 0 ⇒ 顶点去重看着命中了，但它们指的其实是各自那段影响流 ⇒ 其中一个取到另一份的 bindPos | §3.1 |
 
 ### 13.2 仍待拍板
 
-**无。** 全部九项已拍板；后续若再开新议题写在这里。
+**无。** 上表全部已拍板（#2 在 2026-10-22 因实测改判为"逐顶点变长"）；
+后续若再开新议题写在这里。
 
 （v7 设计内部的两个开放项，记在 `doc/GPU_SPINE_V7_ANIMATION.md` §7：
 约束（IK / transform / path）的 setup 数据未预留 chunk，届时需要 chunk 16+ 并 bump 到 v8；
@@ -778,7 +819,8 @@ v2 已补上：附件表多一列 `skin_id`（4 B → 8 B），绘制项尾部�
 
 v3 已解决，且**当初列的两条路都做了**（缺一不可，见 §13.1 第 8 项）：
 
-1. **UV 拆成独立通道**：顶点只剩"几何 + 蒙皮"（rigid 16 → **8 B**，weighted 56 → **48 B**），
+1. **UV 拆成独立通道**：顶点只剩"几何 + 蒙皮"（rigid 16 → **8 B**，weighted 56 → 48 B →
+   **v7 再降到 8 B 引用**，蒙皮数据搬去 chunk 21 / 22），
    UV 进 chunk 4 的 `uv_buffer`（`float2` × `uv_count`），由 `DrawItem::uv_offset` 索引。
 2. **顶点逐字节去重**：`ExactBlobPool` 按"整段顶点字节完全相同"合并，FNV-1a 只用来缩小比较范围，
    最终判定永远是 `memcmp`。

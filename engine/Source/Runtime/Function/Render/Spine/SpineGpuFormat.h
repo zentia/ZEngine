@@ -59,7 +59,18 @@ namespace SpineGpuConstants
     //   为什么不是"和 deform 一样不烘焙"：deform 是**逐帧动画数据**（来自时间轴），
     //   而裁剪多边形是**静态资产几何**（局部坐标 + 骨骼绑定），与顶点同类 ——
     //   顶点烘焙了它不烘焙，容器就还是不自包含。
-    constexpr uint32_t kFormatVersion = 6;
+    // 版本 7（2026-10-22）：**蒙皮数据从顶点里搬出去，改成逐顶点变长** ——
+    //   * weighted 顶点 48 B → **8 B**：只剩一条引用 (influence_offset, influence_count)
+    //   * 真正的 (bindPos, boneIdx, weight) 进 **chunk 21 / 22**（影响流）
+    //   * 顶点数、绘制项大小、header 大小**都没变**
+    //   ⇒ 但旧容器用新读端读会把"引用"当成 bindPos ⇒ 形状全错且不报错，
+    //     所以照旧是**不兼容**改动（规格 §11）。
+    //   动因是 OSGame 782 个资产实测（doc/GPU_SPINE_V7_ANIMATION.md §1.5）：
+    //   每顶点影响数最大 **15**、均值 **2.20**，定长 4 槽卡死 297 个资产（4.1%）；
+    //   定长 16 槽能装下但要 176 B/顶点，与"降内存"的目标相反。
+    //   变长后均值 ≈ 8 + 12 × 2.20 ≈ **34 B/顶点**（0.72×），且 shader 循环
+    //   2.2 次而不是固定 4 次 ⇒ **内存与 ALU 一起省**。
+    constexpr uint32_t kFormatVersion = 7;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -82,7 +93,13 @@ namespace SpineGpuConstants
 
     // 每顶点影响数上限。导入器遇到 n > 4 必须**报错并报出附件名**，
     // 不允许静默截断 —— 静默截断 = 形状悄悄错（规格 §3.1）。
-    constexpr uint32_t kMaxInfluences = 4;
+    //
+    // ⚠️ v7 起它**不再是"固定槽位数"**，而是"单个顶点影响数的硬上限"。
+    // 定长 4 槽的写法在 OSGame 实测下不成立：每顶点影响数最大 **15**、均值 2.20，
+    // >4 的顶点占 4.1%（24 458 / 594 372）⇒ 297 个资产直接导不出来。
+    // 改成**逐顶点变长**（chunk 21/22）后，这个常量只用来挡"数据坏了"
+    // （比如把文件读错段、把 n 读成了 40 亿），正常资产永远碰不到它。
+    constexpr uint32_t kMaxInfluences = 255;
 
     // 骨骼表步长：6 float 紧凑（默认）或 32 B（std140 UBO 兼容变体）。
     constexpr uint32_t kBoneStrideCompact = 24;
@@ -107,13 +124,28 @@ namespace SpineGpuConstants
     constexpr uint16_t kNoClipIndex = 0xFFFFu;
 
     // 顶点步长。**UV 已经不在这里了**（v3 起它在独立的 chunk 4 里）⇒
-    //   rigid    : bindPos 2 float                = 8 B
-    //   weighted : bindPos 4×2 + boneIdx 4×u16 + weight 4×u8 + pad = 48 B
-    // weighted 是 48 不是 44：ByteAddressBuffer::Load2 要求 8 字节对齐，
-    // 步长 44 时第 k 个顶点落在 44k，44 % 8 == 4 ⇒ 第二个及以后的顶点取不到对齐的
-    // Load2，只能退化成标量 Load。4 B/顶点（约 9%）换对齐的向量化读取（规格 §3.1）。
+    //   rigid    : bindPos 2 float                                  = 8 B
+    //   weighted : (influence_offset u32, influence_count u32)      = 8 B   ← v7 起
+    //
+    // ⚠️ v7 把 weighted 从"定长 48 B"改成"**逐顶点变长**"：顶点只存一条**引用**
+    // （影响流的起始条目 + 个数），真正的 (bindPos, boneIdx, weight) 进 chunk 21/22。
+    // 理由（OSGame 782 个资产实测，见 `doc/GPU_SPINE_V7_ANIMATION.md` §1.5）：
+    //   * 定长 4 槽不够 —— 实测最大 15 个影响，>4 的占 4.1% ⇒ 297 个资产导不出来；
+    //   * 定长 16 槽能容纳全部，但要 176 B/顶点（48 B 的 3.7×），**与降内存的目标相反**；
+    //   * 变长后均值 ≈ 8 + 12 × 2.20 ≈ **34 B/顶点**（48 B 的 0.72×），
+    //     且 shader 循环 2.2 次而不是固定 4 次 ⇒ **内存和 ALU 一起省**。
     constexpr uint32_t kRigidVertexStride = 8;
-    constexpr uint32_t kWeightedVertexStride = 48;
+    constexpr uint32_t kWeightedVertexStride = 8;
+
+    // 影响流（chunk 21 / 22）每条的大小。**两条流分开**而不是交错成一条 12 B：
+    // `ByteAddressBuffer::Load2` 要 8 字节对齐，12 B 步长会让第 1、3、5…条落在
+    // 12、36…（不是 8 的倍数）⇒ 只能退化成标量 Load。分开后 bindPos 流恒定 8 B 对齐。
+    constexpr uint32_t kInfluenceBindStride = 8;    // float2 bindPos
+    constexpr uint32_t kInfluenceBoneStride = 4;    // u16 boneIdx + u8 weight + u8 pad
+
+    // 一条影响 = bindPos(8) + bone(4)。**只用在导入期的去重池上**（当"键"用），
+    // 落盘时拆成 chunk 21 / 22 两条流 —— 12 B 步长会破坏 Load2 的 8 B 对齐。
+    constexpr uint32_t kInfluenceEntrySize = 12;
 
     // UV 条目：2 float，8 B。它自己是 8 B 对齐的 ⇒ Load2 直接可用。
     // 注意 UV 条目的个数**不等于**顶点数：同一段顶点可以被多个绘制项共用，
@@ -139,8 +171,11 @@ namespace SpineGpuConstants
 // 静态 VB 段内的顶点格式。两种并存，不要统一成一种（规格 §3.1）。
 enum class SpineVertexFormat : uint8_t
 {
-    kRigid = 0,      // _bones 为空，整块由槽位骨骼单矩阵变换
-    kWeighted4 = 1,  // 每顶点最多 4 个影响，每个影响有自己的绑定坐标
+    kRigid = 0,     // _bones 为空，整块由槽位骨骼单矩阵变换
+    // v7 起名字从 kWeighted4 改成 kWeighted：影响数**不再**是定长 4
+    // （枚举值仍是 1，落盘字节不变）。每顶点的影响数写在
+    // SpineWeightedVertex::influence_count 里，每个影响有自己的绑定坐标。
+    kWeighted = 1,
 };
 
 // 与 spine-cpp BlendMode.h:35-38 逐值对应（Normal=0 / Additive / Multiply / Screen）。
@@ -186,6 +221,11 @@ enum SpineGpuChunkId : uint32_t
     kChunkAttachments = 7,   // (皮肤, 槽位) → 附件 id 列表（换装用）
     kChunkAtlasPages = 8,    // 图集页路径 / 纹理引用
     kChunkClipData = 9,      // SpineGpuClipPolygon[]（12 B/条）；**顶点本身在 chunk 3 里**
+
+    // v7：蒙皮数据流。id 从 21 起 —— 10..20 留给 v7 动画阶段
+    // （骨骼树 / 时间轴 / path 几何），别占用。
+    kChunkInfluenceBind = 21,  // float2 × influence_count（8 B/条）；由 influence_offset 索引
+    kChunkInfluenceBone = 22,  // SpineInfluenceBone[]（4 B/条）；与 21 **共用同一个条目下标**
 };
 
 // ---------------------------------------------------------------------
@@ -299,27 +339,58 @@ static_assert(SpineGpuConstants::kRigidVertexStride % 8 == 0,
               "rigid stride must keep bindPos 8-byte aligned");
 
 // weighted：每个影响**一份** bindPos（不是每顶点一份）+ uint16 骨骼索引 + unorm8 权重。
+// weighted 顶点（v7 起）：**只是一条指向影响流的引用**，真正的蒙皮数据在
+// chunk 21（bindPos）与 chunk 22（boneIdx+weight）里。
+//
+//   influence_offset : 影响流的**条目**下标（不是字节）—— 两条流共用同一个下标
+//   influence_count  : 这个顶点有几个影响（>= 1）
+//
+// 蒙皮循环（shader）就变成：
+//   for (i = 0; i < influence_count; ++i) {
+//       float2 bp = bind.Load2((influence_offset + i) * 8);
+//       uint   bw = bone.Load ((influence_offset + i) * 4);   // boneIdx u16 | weight u8 << 16
+//       ...
+//   }
+// 均值 2.20 次迭代，而不是定长的 4 次（OSGame 实测）。
 struct SpineWeightedVertex
 {
-    float bind_pos[SpineGpuConstants::kMaxInfluences][2];  // @0，每影响一份
-    uint16_t bone_idx[SpineGpuConstants::kMaxInfluences];  // @32
-    uint8_t weight[SpineGpuConstants::kMaxInfluences];     // @40，unorm8
-    uint8_t pad[4];                                        // @44
+    uint32_t influence_offset;   // @0
+    uint32_t influence_count;    // @4
 };
 
 static_assert(sizeof(SpineWeightedVertex) == SpineGpuConstants::kWeightedVertexStride,
-              "spec 3.1: kVtxWeighted4 is 48 B (uv moved out)");
-static_assert(offsetof(SpineWeightedVertex, bind_pos) == 0, "spec 3.1: bindPos @0");
-static_assert(offsetof(SpineWeightedVertex, bone_idx) == 32, "spec 3.1: boneIdx @32");
-static_assert(offsetof(SpineWeightedVertex, weight) == 40, "spec 3.1: weight @40");
-static_assert(offsetof(SpineWeightedVertex, pad) == 44, "spec 3.1: pad @44");
+              "spec 3.1: weighted vertex is 8 B (offset + count)");
+static_assert(offsetof(SpineWeightedVertex, influence_offset) == 0, "spec 3.1: influence_offset @0");
+static_assert(offsetof(SpineWeightedVertex, influence_count) == 4, "spec 3.1: influence_count @4");
 static_assert(alignof(SpineWeightedVertex) == 4, "weighted vertex must stay 4-byte aligned");
 static_assert(SpineGpuConstants::kWeightedVertexStride % 8 == 0,
-              "weighted stride must be 8-byte aligned (Load2 on bindPos, spec 3.1)");
+              "weighted stride must be 8-byte aligned (spec 3.1)");
+
+// 影响流里的一条骨骼+权重（chunk 22，4 B）。
+// ⚠️ 用 u32 一次 Load 出来再拆，而不是 Load u16 + Load u8：后者第二次 Load 的地址
+//    不是 4 字节对齐的（boneIdx 在 @0、weight 在 @2）⇒ 越界/未定义。
+struct SpineInfluenceBone
+{
+    uint16_t bone_idx;   // @0
+    uint8_t weight;      // @2，unorm8
+    uint8_t pad;         // @3
+};
+
+static_assert(sizeof(SpineInfluenceBone) == SpineGpuConstants::kInfluenceBoneStride,
+              "spec 3.1: influence bone record is 4 B");
+static_assert(offsetof(SpineInfluenceBone, bone_idx) == 0, "spec 3.1: boneIdx @0");
+static_assert(offsetof(SpineInfluenceBone, weight) == 2, "spec 3.1: weight @2");
 // 把「3.8 ⇒ 骨骼索引是 uint16」钉成编译期断言。
-static_assert(std::is_same_v<decltype(SpineWeightedVertex::bone_idx),
-                             uint16_t[SpineGpuConstants::kMaxInfluences]>,
+static_assert(std::is_same_v<decltype(SpineInfluenceBone::bone_idx), uint16_t>,
               "Spine 3.8: _bones is Vector<unsigned short> -> bone index must be uint16 (spec 1.1)");
+
+// pad 也参与比较：它落盘必须是 0（跟裁剪多边形同一个规矩），
+// 放进去才能抓到"写端没清零"这种不报错的脏字节。
+inline bool operator==(const SpineInfluenceBone& a, const SpineInfluenceBone& b)
+{
+    return a.bone_idx == b.bone_idx && a.weight == b.weight && a.pad == b.pad;
+}
+inline bool operator!=(const SpineInfluenceBone& a, const SpineInfluenceBone& b) { return !(a == b); }
 
 // ---------------------------------------------------------------------
 // 绘制项表（静态，规格 §4）

@@ -4,8 +4,9 @@
 //
 // 三条容易漏、漏了就静默错的规矩：
 //   1. **chunk 按下标找会错位**（v2 → v3 重排过号）⇒ 只能按 id 找。
-//   2. chunk 在文件里的**顺序不是 id 顺序**：写端按 1,2,3,4,5,9,6,7,8 追加
-//      （9 夹在 5 与 6 之间，是历史顺序），C# 必须照抄，否则字节对不上。
+//   2. chunk 在文件里的**顺序不是 id 顺序**：写端按 1,2,3,21,22,4,5,9,6,7,8 追加
+//      （影响流紧跟顶点块；9 夹在 5 与 6 之间，是历史顺序），
+//      C# 必须照抄，否则字节对不上。
 //   3. 顶点 / UV chunk 的起点要 **8 B 对齐**（ByteAddressBuffer::Load2 的前提），
 //      其余 4 B 对齐。对齐产生的空档必须填 0 —— 不填就是"未初始化填充"，
 //      跨语言一比对就露。
@@ -97,6 +98,45 @@ namespace ZEngine.SpineGpu
             {
                 asset.VertexBuffer = new byte[vs];
                 Buffer.BlockCopy(data, (int)vo, asset.VertexBuffer, 0, (int)vs);
+            }
+
+            // ---- 影响流（chunk 21 / 22）。两条流**必须条目数相同** ----
+            // 它们共用同一个下标（权重顶点的 influence_offset）。对不上 = 两条流配错了对，
+            // 不报错，只是每个影响取到别人的 bindPos / 骨骼 ⇒ 形状静默错。
+            uint bindCount = 0;
+            uint boneCount = 0;
+            if (TryGet(byId, (uint)SpineGpuChunkId.InfluenceBind, out uint ibo, out uint ibs))
+            {
+                if (ibs % SpineGpuConstants.InfluenceBindStride != 0)
+                {
+                    throw new SpineGpuContainerException(
+                        "container: influence_bind 大小不是 " + SpineGpuConstants.InfluenceBindStride +
+                        " B 的整数倍（一条是 2 float）");
+                }
+                bindCount = ibs / SpineGpuConstants.InfluenceBindStride;
+                asset.InfluenceBind = new float[(ibs / 4u)];
+                for (uint i = 0; i < asset.InfluenceBind.Length; ++i)
+                {
+                    asset.InfluenceBind[i] = ReadF32(data, (int)(ibo + i * 4u));
+                }
+            }
+            if (TryGet(byId, (uint)SpineGpuChunkId.InfluenceBone, out uint ieo, out uint ies))
+            {
+                if (ies % SpineGpuConstants.InfluenceBoneStride != 0)
+                {
+                    throw new SpineGpuContainerException(
+                        "container: influence_bone 大小不是 " + SpineGpuConstants.InfluenceBoneStride +
+                        " B 的整数倍（一条是 4 B）");
+                }
+                boneCount = ies / SpineGpuConstants.InfluenceBoneStride;
+                asset.InfluenceBone = new byte[ies];
+                Buffer.BlockCopy(data, (int)ieo, asset.InfluenceBone, 0, (int)ies);
+            }
+            if (bindCount != boneCount)
+            {
+                throw new SpineGpuContainerException(
+                    "container: 影响流两条 chunk 条目数不同（bind " + bindCount + " vs bone " + boneCount +
+                    "）—— 它们必须共用同一个下标");
             }
 
             // ---- UV ----
@@ -268,6 +308,9 @@ namespace ZEngine.SpineGpu
             Add((uint)SpineGpuChunkId.Strings, BuildStrings(asset), A4);
             Add((uint)SpineGpuChunkId.SlotBone, U16Blob(asset.SlotBone), A4);
             Add((uint)SpineGpuChunkId.VertexBuffer, asset.VertexBuffer, A8);
+            // 影响流：两条**紧跟**顶点块写（落盘顺序必须与 C++ 一致，否则跨语言对拍会红）。
+            Add((uint)SpineGpuChunkId.InfluenceBind, F32Blob(asset.InfluenceBind), A8);
+            Add((uint)SpineGpuChunkId.InfluenceBone, asset.InfluenceBone, A4);
             Add((uint)SpineGpuChunkId.UvBuffer, F32Blob(asset.UvBuffer), A8);
             // ⚠️ 索引恒定按 uint16 落盘：导入器目前**从不**置 kIndex32，C++ 写端也是
             // 无条件写 u16。读端那边按 flag 两种都认，将来真要 32 位索引时

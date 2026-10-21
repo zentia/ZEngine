@@ -25,14 +25,17 @@ namespace ZEngine.SpineGpu
 
         // 版本史见 SpineGpuFormat.h::kFormatVersion。
         // v6 = 裁剪多边形进容器（绘制项 24 B → 28 B，chunk 9 起真正写数据）。
-        public const uint FormatVersion = 6;
+        // v7 = 蒙皮数据搬出顶点（weighted 顶点 48 B → 8 B 引用；新增 chunk 21 / 22）。
+        public const uint FormatVersion = 7;
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;
         // 3.7.xx -> 30700。3.7 与 3.8 的 .skel 字节布局一致，只有槽位暗色判据不同
         // ⇒ 读端必须知道是哪一个（记错不会报错，只是少数槽位颜色不对）。
         public const uint SpineRuntime37 = 30700;
-        public const int MaxInfluences = 4;
+        // v7 起**不再是固定槽位数**，只是"单个顶点影响数的硬上限"（挡坏数据）。
+        // 实测每顶点最大 15、均值 2.20 ⇒ 影响数现在是逐顶点变长的。
+        public const int MaxInfluences = 255;
 
         public const uint BoneStrideCompact = 24;
         public const uint BoneStrideStd140 = 32;
@@ -49,7 +52,15 @@ namespace ZEngine.SpineGpu
         public const ushort NoClipIndex = 0xFFFF;
 
         public const uint RigidVertexStride = 8;
-        public const uint WeightedVertexStride = 48;   // 48 不是 44：Load2 要求 8 B 对齐
+        // v7 起 weighted 顶点**只是引用**：(influence_offset u32, influence_count u32)。
+        // 蒙皮数据在 InfluenceBindStride / InfluenceBoneStride 两条流里。
+        public const uint WeightedVertexStride = 8;
+
+        // 影响流两条。**分开**而不是交错成一条 12 B：Load2 要 8 B 对齐，
+        // 12 B 步长会让第 1、3、5…条的 bindPos 落在 12、36…（不是 8 的倍数）。
+        public const uint InfluenceBindStride = 8;   // float2 bindPos
+        public const uint InfluenceBoneStride = 4;   // u16 boneIdx + u8 weight + u8 pad
+
         public const uint UvStride = 8;
 
         public const uint HeaderSize = 64;
@@ -61,7 +72,8 @@ namespace ZEngine.SpineGpu
     public enum SpineVertexFormat : byte
     {
         Rigid = 0,
-        Weighted4 = 1,
+        // v7 起名字从 Weighted4 改成 Weighted：影响数**不再**是定长 4（枚举值仍是 1）。
+        Weighted = 1,
     }
 
     // 与 spine-cpp BlendMode.h:35-38 逐值对应。
@@ -108,6 +120,11 @@ namespace ZEngine.SpineGpu
         Attachments = 7,
         AtlasPages = 8,
         ClipData = 9,
+
+        // v7：蒙皮数据流。id 从 21 起 —— 10..20 留给 v7 动画阶段
+        // （骨骼树 / 时间轴 / path 几何），别占用。
+        InfluenceBind = 21,   // float2 × 影响条目数
+        InfluenceBone = 22,   // (boneIdx u16, weight u8, pad u8) × 影响条目数
     }
 
     // -----------------------------------------------------------------
@@ -169,11 +186,14 @@ namespace ZEngine.SpineGpu
         public const int ClipVertexCount = 6;
         public const int ClipVertexOffset = 8;
 
-        // weighted vertex
-        public const int WvBindPos = 0;
-        public const int WvBoneIdx = 32;
-        public const int WvWeight = 40;
-        public const int WvPad = 44;
+        // weighted vertex（v7 起只是引用）
+        public const int WvInfluenceOffset = 0;   // u32：影响流的**条目**下标
+        public const int WvInfluenceCount = 4;    // u32：这个顶点有几个影响
+
+        // 影响流一条骨骼记录（chunk 22，4 B）
+        public const int IbBoneIdx = 0;    // u16
+        public const int IbWeight = 2;     // u8，unorm8
+        public const int IbPad = 3;        // u8，落盘必须写 0
     }
 
     // C++ 用 static_assert 挡的那层"常量之间是否自洽"。C# 没有编译期 offsetof，
@@ -188,13 +208,17 @@ namespace ZEngine.SpineGpu
             Check(SpineGpuConstants.ClipPolygonSize == 12, "clip polygon is 12 B");
             Check(SpineGpuConstants.AttachmentRecordSize == 8, "attachment record is 8 B");
             Check(SpineGpuConstants.RigidVertexStride == 8, "rigid vertex is 8 B");
-            Check(SpineGpuConstants.WeightedVertexStride == 48, "weighted vertex is 48 B");
+            Check(SpineGpuConstants.WeightedVertexStride == 8, "weighted vertex is 8 B (v7: reference only)");
+            Check(SpineGpuConstants.InfluenceBindStride == 8, "influence bind entry is 8 B");
+            Check(SpineGpuConstants.InfluenceBoneStride == 4, "influence bone entry is 4 B");
             Check(SpineGpuConstants.UvStride == 8, "uv entry is 8 B");
             Check(SpineGpuConstants.WeightedVertexStride % 8 == 0,
                   "weighted stride must be 8-byte aligned (Load2 on bindPos)");
+            Check(SpineGpuConstants.InfluenceBindStride % 8 == 0,
+                  "influence bind stride must be 8-byte aligned (Load2 on bindPos)");
             Check(SpineGpuConstants.RigidVertexStride % 8 == 0,
                   "rigid stride must keep bindPos 8-byte aligned");
-            Check(SpineGpuConstants.MaxInfluences == 4, "MAX_INFLUENCES is 4");
+            Check(SpineGpuConstants.MaxInfluences == 255, "MAX_INFLUENCES is 255 (sanity bound only)");
 
             // 偏移必须单调且落在记录内 —— 这是 offsetof 断言能在运行时表达的那一半：
             // "字段没跑出结构体"。
@@ -204,7 +228,9 @@ namespace ZEngine.SpineGpu
             CheckOffset(SpineGpuOffsets.ItemKind, 1, SpineGpuConstants.DrawItemSize, "draw item kind");
             CheckOffset(SpineGpuOffsets.ClipVertexOffset, 4, SpineGpuConstants.ClipPolygonSize, "clip vertex_offset");
             CheckOffset(SpineGpuOffsets.AttSkinId, 2, SpineGpuConstants.AttachmentRecordSize, "attachment skin_id");
-            CheckOffset(SpineGpuOffsets.WvWeight, 4, SpineGpuConstants.WeightedVertexStride, "weighted weight");
+            CheckOffset(SpineGpuOffsets.WvInfluenceCount, 4, SpineGpuConstants.WeightedVertexStride,
+                        "weighted influence_count");
+            CheckOffset(SpineGpuOffsets.IbWeight, 1, SpineGpuConstants.InfluenceBoneStride, "influence bone weight");
             CheckOffset(SpineGpuOffsets.HdrSkinCount, 4, SpineGpuConstants.HeaderSize, "header skin_count");
 
             Check(SpineGpuConstants.NoClipIndex == 0xFFFF, "NoClipIndex must be 0xFFFF, not 0");

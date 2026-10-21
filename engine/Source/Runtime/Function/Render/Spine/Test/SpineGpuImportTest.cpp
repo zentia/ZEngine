@@ -1049,28 +1049,98 @@ int main(int argc, char** argv)
     Check(asset.draw_items.size() == 2 && asset.draw_items[0].uv_offset == 0u, "绘制项 0 的 uv_offset = 0");
     Check(asset.draw_items.size() == 2 && asset.draw_items[1].uv_offset == 4u, "绘制项 1 的 uv_offset = 4");
 
-    // ---- 4. 权重：每顶点 4 个 unorm8 的和必须恰好 255 ----
-    const uint8_t* wbase = asset.vertex_buffer.data() + asset.weighted_segment_offset;
-    for (uint32_t v = 0; v < asset.weighted_vertex_count; ++v)
+    // ---- 4. 影响流：每个顶点的 unorm8 权重和必须恰好 255 ----
+    // v7 起蒙皮数据**不在顶点里**：顶点只有 (influence_offset, influence_count)，
+    // 真正的 bindPos / 骨骼 / 权重在 influence_bind（float2）与 influence_bone 里。
+    CheckEq(static_cast<long long>(asset.influence_bone.size()),
+            static_cast<long long>(asset.influence_bind.size()) / 2LL, "影响流两条 chunk 条目数相同");
+    // 夹具的 mesh 是 1,2,1,1 个影响 ⇒ 共 5 条
+    CheckEq(static_cast<long long>(asset.influence_bone.size()), 5LL, "影响流 5 条（1+2+1+1）");
     {
-        const SpineWeightedVertex* wv =
-            reinterpret_cast<const SpineWeightedVertex*>(wbase + static_cast<size_t>(v) *
-                                                                    SpineGpuConstants::kWeightedVertexStride);
-        const int sum = wv->weight[0] + wv->weight[1] + wv->weight[2] + wv->weight[3];
-        CheckEq(sum, 255, "权重和为 255");
+        const uint8_t* wbase = asset.vertex_buffer.data() + asset.weighted_segment_offset;
+        bool saw_nonzero_offset = false;
+        for (uint32_t v = 0; v < asset.weighted_vertex_count; ++v)
+        {
+            SpineWeightedVertex wv {};
+            std::memcpy(&wv, wbase + static_cast<size_t>(v) * SpineGpuConstants::kWeightedVertexStride,
+                        sizeof(wv));
+            if (wv.influence_offset != 0u)
+            {
+                saw_nonzero_offset = true;
+            }
+            Check(wv.influence_count >= 1u && wv.influence_offset + wv.influence_count <=
+                                                  static_cast<uint32_t>(asset.influence_bone.size()),
+                  "影响区间落在影响流里");
+            int sum = 0;
+            for (uint32_t k = 0; k < wv.influence_count; ++k)
+            {
+                sum += asset.influence_bone[wv.influence_offset + k].weight;
+            }
+            CheckEq(sum, 255, "权重和为 255");
+        }
+        // ⚠️ 必须有一条**偏移非 0**的影响：全是 0 时"写错成恒 0"测不出来
+        // （与裁剪多边形 vertex_offset 那条断言同一个道理）。
+        Check(saw_nonzero_offset, "有权重顶点的 influence_offset 非 0（否则测不出偏移写错）");
     }
-    // 第 2 个顶点是 0.6 / 0.4 → 153 / 102
+    // 第 2 个顶点是 0.6 / 0.4 → 153 / 102，绑到 bone 1 与 bone 0
     {
-        const SpineWeightedVertex* wv =
-            reinterpret_cast<const SpineWeightedVertex*>(wbase + SpineGpuConstants::kWeightedVertexStride);
-        CheckEq(wv->weight[0], 153, "0.6 → 153");
-        CheckEq(wv->weight[1], 102, "0.4 → 102");
-        CheckEq(wv->weight[2], 0, "未用槽位权重为 0");
-        CheckEq(wv->bone_idx[0], 1, "第 0 影响的骨骼下标");
-        CheckEq(wv->bone_idx[1], 0, "第 1 影响的骨骼下标");
+        const uint8_t* wbase2 = asset.vertex_buffer.data() + asset.weighted_segment_offset;
+        SpineWeightedVertex wv {};
+        std::memcpy(&wv, wbase2 + SpineGpuConstants::kWeightedVertexStride, sizeof(wv));
+        CheckEq(wv.influence_count, 2u, "第 2 个顶点有 2 个影响");
+        CheckEq(wv.influence_offset, 1u, "第 2 个顶点的影响从第 1 条开始（前一个顶点占了 1 条）");
+        CheckEq(asset.influence_bone[wv.influence_offset + 0].weight, 153, "0.6 → 153");
+        CheckEq(asset.influence_bone[wv.influence_offset + 1].weight, 102, "0.4 → 102");
+        CheckEq(asset.influence_bone[wv.influence_offset + 0].bone_idx, 1, "第 0 影响的骨骼下标");
+        CheckEq(asset.influence_bone[wv.influence_offset + 1].bone_idx, 0, "第 1 影响的骨骼下标");
+        // bindPos 也要对（v1 的两个影响分别是 (20,10) 与 (5,7)）
+        CheckEq(static_cast<int>(asset.influence_bind[(wv.influence_offset + 0) * 2u + 0u]), 20,
+                "影响 0 的 bindPos.x");
+        CheckEq(static_cast<int>(asset.influence_bind[(wv.influence_offset + 0) * 2u + 1u]), 10,
+                "影响 0 的 bindPos.y");
+        CheckEq(static_cast<int>(asset.influence_bind[(wv.influence_offset + 1) * 2u + 0u]), 5,
+                "影响 1 的 bindPos.x");
+        CheckEq(static_cast<int>(asset.influence_bind[(wv.influence_offset + 1) * 2u + 1u]), 7,
+                "影响 1 的 bindPos.y");
     }
 
-    // ---- 5. 报错路径：影响数超限 ----
+    // ---- 5a. 影响数 5：v7 起**必须能烘焙**（定长 4 槽的时代它会被拒）----
+    {
+        const char* five = R"({
+          "skeleton": { "spine": "3.8.99" },
+          "bones": [ { "name": "root" }, { "name": "b1" }, { "name": "b2" },
+                     { "name": "b3" }, { "name": "b4" } ],
+          "slots": [ { "name": "s0", "bone": "root" } ],
+          "skins": [ { "name": "default", "attachments": {
+            "s0": { "mesh": {
+              "type": "mesh",
+              "uvs": [ 0,0 ],
+              "triangles": [],
+              "vertices": [ 5, 0,1,2,0.2, 1,3,4,0.2, 2,5,6,0.2, 3,7,8,0.2, 4,9,10,0.2 ]
+            } }
+          } } ]
+        })";
+        SpineSourceSkeleton f_src;
+        SpineImportResult r1 = ParseSpineSkeletonJson(five, std::string(five).size(), &atlas, f_src);
+        Check(r1.ok, "5 影响的 json 能解析");
+        SpineGpuAsset f_asset;
+        SpineImportResult r2 = BakeSpineGpuAsset(f_src, f_asset);
+        Check(r2.ok, "影响数 5 ⇒ bake 成功（v7 起逐顶点变长，不再是定长 4 槽）");
+        if (!r2.ok)
+        {
+            std::printf("  error: %s\n", r2.error.c_str());
+        }
+        CheckEq(static_cast<long long>(f_asset.influence_bone.size()), 5LL, "5 个影响 ⇒ 影响流 5 条");
+        CheckEq(f_asset.weighted_vertex_count, 1u, "1 个顶点");
+        if (f_asset.weighted_vertex_count == 1u)
+        {
+            SpineWeightedVertex wv {};
+            std::memcpy(&wv, f_asset.vertex_buffer.data() + f_asset.weighted_segment_offset, sizeof(wv));
+            CheckEq(wv.influence_count, 5u, "influence_count = 5（不是被截断成 4）");
+        }
+    }
+
+    // ---- 5. 报错路径：影响数**坏掉**（300 > 硬上限 255）----
     {
         const char* bad = R"({
           "skeleton": { "spine": "3.8.99" },
@@ -1081,16 +1151,16 @@ int main(int argc, char** argv)
               "type": "mesh",
               "uvs": [ 0,0 ],
               "triangles": [],
-              "vertices": [ 5, 0,1,2,0.2, 0,3,4,0.2, 0,5,6,0.2, 0,7,8,0.2, 0,9,10,0.2 ]
+              "vertices": [ 300, 0,1,2,0.2 ]
             } }
           } } ]
         })";
         SpineSourceSkeleton bad_src;
         SpineImportResult r1 = ParseSpineSkeletonJson(bad, std::string(bad).size(), &atlas, bad_src);
-        Check(r1.ok, "5 影响的 json 能解析（烘焙时才报错）");
+        Check(r1.ok, "坏影响数的 json 能解析（烘焙时才报错）");
         SpineGpuAsset bad_asset;
         SpineImportResult r2 = BakeSpineGpuAsset(bad_src, bad_asset);
-        Check(!r2.ok, "影响数 5 > 4 ⇒ bake 必须失败");
+        Check(!r2.ok, "影响数 300 > MAX_INFLUENCES=255 ⇒ bake 必须失败");
         Check(r2.error.find("mesh") != std::string::npos, "错误信息里带附件名");
         std::printf("  (预期报错) %s\n", r2.error.c_str());
     }
@@ -1132,6 +1202,9 @@ int main(int argc, char** argv)
         CStrBytes(asset.attachment_names) + CStrBytes(asset.atlas_page_names) +      // id=1 strings
         static_cast<long long>(asset.slot_bone.size()) * 2LL +                       // id=2
         static_cast<long long>(asset.vertex_buffer.size()) +                         // id=3
+        static_cast<long long>(asset.influence_bind.size()) * 4LL +                  // id=21
+        static_cast<long long>(asset.influence_bone.size()) *
+            static_cast<long long>(sizeof(SpineInfluenceBone)) +                    // id=22
         static_cast<long long>(asset.uv_buffer.size()) * 4LL +                       // id=4
         static_cast<long long>(asset.index_buffer.size()) * 2LL +                    // id=5
         static_cast<long long>(asset.draw_items.size()) *
@@ -1146,7 +1219,8 @@ int main(int argc, char** argv)
                (static_cast<uint32_t>(bytes[off + 2]) << 16) | (static_cast<uint32_t>(bytes[off + 3]) << 24);
     };
     const uint32_t nchunk = RdU32(offsetof(SpineGpuHeader, chunk_count));
-    CheckEq(static_cast<long long>(nchunk), 8, "字节流里 chunk_count = 8（夹具没有 clip_data）");
+    CheckEq(static_cast<long long>(nchunk), 10,
+            "字节流里 chunk_count = 10（夹具没有 clip_data；v7 多了影响流 21 / 22）");
 
     long long payload_sum = 0;
     long long last_end = 0;
@@ -1158,9 +1232,14 @@ int main(int argc, char** argv)
         const uint32_t id = RdU32(at);
         const uint32_t off = RdU32(at + 4);
         const uint32_t sz = RdU32(at + 8);
-        CheckEq(static_cast<long long>(id), static_cast<long long>(i) + 1, "chunk 表: id 按 1..8 升序");
+        // ⚠️ 顺序**不是** id 升序：影响流（21 / 22）紧跟顶点块，9（裁剪）夹在 5 与 6 之间。
+        // 这是历史顺序，不是设计 —— 但 C# 必须照抄，否则跨语言对拍会红。
+        const uint32_t kExpectedIds[] = {1, 2, 3, 21, 22, 4, 5, 6, 7, 8};
+        CheckEq(static_cast<long long>(id), static_cast<long long>(kExpectedIds[i]),
+                "chunk 表: id 顺序 = 1,2,3,21,22,4,5,6,7,8");
         CheckEq(static_cast<long long>(off % SpineGpuConstants::kChunkAlignment), 0, "chunk 表: 起点 4 B 对齐");
         if (id == static_cast<uint32_t>(SpineGpuChunkId::kChunkVertexBuffer) ||
+            id == static_cast<uint32_t>(SpineGpuChunkId::kChunkInfluenceBind) ||
             id == static_cast<uint32_t>(SpineGpuChunkId::kChunkUvBuffer))
         {
             CheckEq(static_cast<long long>(off % SpineGpuConstants::kVertexSegmentAlignment), 0,
@@ -1200,7 +1279,7 @@ int main(int argc, char** argv)
     }
 
     CheckEq(back.header.magic, SpineGpuConstants::kMagic, "往返: magic");
-    CheckEq(back.header.chunk_count, 8, "往返: chunk_count = 8（夹具没有 clip_data）");
+    CheckEq(back.header.chunk_count, 10, "往返: chunk_count = 10（夹具没有 clip_data；v7 多了影响流 21 / 22）");
     CheckEq(back.header.bone_count, asset.header.bone_count, "往返: bone_count");
     CheckEq(back.header.slot_count, asset.header.slot_count, "往返: slot_count");
     CheckEq(back.header.draw_item_count, asset.header.draw_item_count, "往返: draw_item_count");
@@ -1213,6 +1292,8 @@ int main(int argc, char** argv)
     CheckEq(back.weighted_segment_offset, asset.weighted_segment_offset, "往返: weighted_segment_offset");
 
     Check(back.vertex_buffer == asset.vertex_buffer, "往返: 顶点缓冲逐字节一致");
+    Check(back.influence_bind == asset.influence_bind, "往返: 影响流 bindPos 逐字节一致");
+    Check(back.influence_bone == asset.influence_bone, "往返: 影响流骨骼/权重逐字节一致");
     Check(back.uv_buffer == asset.uv_buffer, "往返: UV 通道逐字节一致");
     Check(back.index_buffer == asset.index_buffer, "往返: 索引一致");
     CheckEq(static_cast<long long>(back.draw_items.size()),
@@ -1344,6 +1425,8 @@ int main(int argc, char** argv)
             Check(skel_asset.rigid_vertex_count == asset.rigid_vertex_count, "skel↔json: rigid 顶点数");
             Check(skel_asset.weighted_vertex_count == asset.weighted_vertex_count, "skel↔json: weighted 顶点数");
             Check(skel_asset.index_buffer == asset.index_buffer, "skel↔json: 索引缓冲相同");
+            Check(skel_asset.influence_bind == asset.influence_bind, "skel↔json: 影响流 bindPos 逐字节相同");
+            Check(skel_asset.influence_bone == asset.influence_bone, "skel↔json: 影响流骨骼/权重逐字节相同");
             Check(skel_asset.uv_buffer == asset.uv_buffer, "skel↔json: UV 通道逐字节相同");
             Check(skel_asset.slot_bone == asset.slot_bone, "skel↔json: slot_bone 相同");
             Check(skel_asset.bone_names == asset.bone_names, "skel↔json: 骨骼名相同");
@@ -2688,17 +2771,24 @@ int main(int argc, char** argv)
             if (ja.clip_polygons.size() == 1)
             {
                 const SpineGpuClipPolygon& p = ja.clip_polygons[0];
-                Check(p.vertex_format == SpineVertexFormat::kWeighted4, "clip-weighted: 顶点格式是 weighted4");
+                Check(p.vertex_format == SpineVertexFormat::kWeighted, "clip-weighted: 顶点格式是 weighted");
                 CheckEq(static_cast<long long>(p.vertex_count), 2, "clip-weighted: 2 个顶点");
                 Check(p.vertex_offset < ja.weighted_vertex_count,
                       "clip-weighted: 顶点落在 weighted 段内");
-                // 两个顶点分别绑到 bone 0 与 bone 1 ⇒ 必须真的进 weighted 顶点块
+                // 两个顶点分别绑到 bone 0 与 bone 1 ⇒ 必须真的进 weighted 顶点块。
+                // v7 起顶点只是引用，蒙皮数据要去影响流里取。
                 const SpineWeightedVertex* wv = reinterpret_cast<const SpineWeightedVertex*>(
                     ja.vertex_buffer.data() + ja.weighted_segment_offset +
                     static_cast<size_t>(p.vertex_offset) * SpineGpuConstants::kWeightedVertexStride);
-                Check(wv[0].bone_idx[0] == 0 && wv[1].bone_idx[0] == 1,
+                Check(wv[0].influence_count == 1u && wv[1].influence_count == 1u,
+                      "clip-weighted: 两个顶点各 1 个影响");
+                Check(ja.influence_bone.size() >= 2 &&
+                          ja.influence_bone[wv[0].influence_offset].bone_idx == 0 &&
+                          ja.influence_bone[wv[1].influence_offset].bone_idx == 1,
                       "clip-weighted: 两个顶点分别绑到 bone 0 / bone 1");
-                Check(wv[0].weight[0] == 255 && wv[1].weight[0] == 255,
+                Check(ja.influence_bone.size() >= 2 &&
+                          ja.influence_bone[wv[0].influence_offset].weight == 255 &&
+                          ja.influence_bone[wv[1].influence_offset].weight == 255,
                       "clip-weighted: 权重 1.0 量化成 255");
             }
 

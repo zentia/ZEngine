@@ -1,8 +1,11 @@
 // 容器在内存里的形态。与 C++ `SpineGpuAsset`（SpineGpuImporter.h）逐字段对应。
 //
 // 与 C++ 一样：**顶点缓冲是一整块字节流**，不是"顶点数组"。
-// 因为两种顶点格式步长不同（8 / 48），且同一段顶点会被多个绘制项共用 ——
+// 因为两种顶点格式步长不同（8 / 8），且同一段顶点会被多个绘制项共用 ——
 // 把它摊成对象数组既浪费也丢掉了"共用"这个事实。
+//
+// v7 起 weighted 顶点只剩 8 B 的**引用**（influence_offset / influence_count），
+// 真正的蒙皮数据在下面的影响流里。
 
 using System.Collections.Generic;
 
@@ -22,6 +25,15 @@ namespace ZEngine.SpineGpu
 
         // UV 通道（chunk 4）：每条目 2 float。**条目数 ≠ 顶点数**。
         public float[] UvBuffer = System.Array.Empty<float>();
+
+        // ---- 影响流（chunk 21 / 22）----
+        // 两条流**共用同一个条目下标**，就是权重顶点的 influence_offset。
+        // 条目数 = InfluenceBind.Length / 2 = InfluenceBone.Length。
+        public float[] InfluenceBind = System.Array.Empty<float>();      // chunk 21：float2 × 条目数
+
+        // chunk 22：(boneIdx u16, weight u8, pad u8) × 条目数，按 4 B 一条**平铺**存
+        // （不是结构数组）—— 读写两端都按偏移取，这样和 C++ 的字节流完全一致。
+        public byte[] InfluenceBone = System.Array.Empty<byte>();
 
         public ushort[] IndexBuffer = System.Array.Empty<ushort>();
         public List<SpineDrawItem> DrawItems = new List<SpineDrawItem>();

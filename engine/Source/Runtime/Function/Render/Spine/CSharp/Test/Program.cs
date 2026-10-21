@@ -86,14 +86,16 @@ namespace ZEngine.SpineGpu.Test
 
                 // ---- 基本自洽 ----
                 Check(a.Header.Magic == SpineGpuConstants.Magic, "魔数是 'ZSPG'");
-                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 6");
+                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 7");
                 Check(a.DrawItems.Count == a.Header.DrawItemCount, "绘制项数与 header 一致");
                 Check(a.BoneNames.Count == a.Header.BoneCount, "骨骼名数与 header 一致");
                 Check(a.SlotNames.Count == a.Header.SlotCount, "槽位名数与 header 一致");
                 Check(a.AttachmentNames.Count == a.AttachmentRecords.Count, "附件名数与附件记录数一致");
+                Check((uint)(a.InfluenceBind.Length / 2) == (uint)(a.InfluenceBone.Length / (int)SpineGpuConstants.InfluenceBoneStride),
+                      "影响流两条 chunk 条目数相同（bind / bone 共用同一个下标）");
 
                 // ---- chunk 按下标找会错位：这里显式验证"按 id 找"真的用上了 ----
-                // （容器里 chunk 顺序是 1,2,3,4,5,9,6,7,8 —— 顺序 ≠ id 顺序）
+                // （容器里 chunk 顺序是 1,2,3,21,22,4,5,9,6,7,8 —— 顺序 ≠ id 顺序）
                 Check(true, "（chunk 按 id 定位，顺序与 id 不一致也读对了）");
             }
             _prefix = "";
@@ -119,6 +121,29 @@ namespace ZEngine.SpineGpu.Test
                 Check(allNo, "基线每个绘制项都是 NoClipIndex");
                 Check(b.UvBuffer.Length != 0 && b.UvBuffer.Length / 2 != b.VertexBuffer.Length,
                       "UV 条目数与顶点缓冲字节数不同量纲（UV 是独立通道）");
+
+                // 影响流：基线 mesh 是 1,2,1,1 个影响 ⇒ 共 5 条，且必须有偏移非 0 的顶点
+                Check(b.InfluenceBone.Length == 5 * (int)SpineGpuConstants.InfluenceBoneStride,
+                      "影响流 5 条（1+2+1+1）× 4 B = 20 B");
+                bool nonZeroOffset = false;
+                bool allWeights255 = true;
+                for (uint v = 0; v < b.WeightedVertexCount; ++v)
+                {
+                    int o = (int)(b.WeightedSegmentOffset + v * SpineGpuConstants.WeightedVertexStride);
+                    uint off = ReadU32(b.VertexBuffer, o + SpineGpuOffsets.WvInfluenceOffset);
+                    uint cnt = ReadU32(b.VertexBuffer, o + SpineGpuOffsets.WvInfluenceCount);
+                    if (off != 0) nonZeroOffset = true;
+                    int sum = 0;
+                    for (uint k = 0; k < cnt; ++k)
+                    {
+                        sum += b.InfluenceBone[(off + k) * SpineGpuConstants.InfluenceBoneStride +
+                                               SpineGpuOffsets.IbWeight];
+                    }
+                    if (sum != 255) allWeights255 = false;
+                }
+                Check(allWeights255, "每个权重顶点的 unorm8 权重和恰好 255");
+                // ⚠️ 必须有一条**偏移非 0**的影响：全是 0 时"写错成恒 0"测不出来。
+                Check(nonZeroOffset, "有权重顶点的 influence_offset 非 0");
             }
 
             // 裁剪：被裁的项指到一条多边形上，**没被裁的必须是 NoClipIndex 而不是 0**
@@ -181,19 +206,37 @@ namespace ZEngine.SpineGpu.Test
                 if (w.ClipPolygons.Count == 1)
                 {
                     var p = w.ClipPolygons[0];
-                    Check(p.VertexFormat == SpineVertexFormat.Weighted4, "顶点格式是 weighted4");
+                    Check(p.VertexFormat == SpineVertexFormat.Weighted, "顶点格式是 weighted");
                     Check(p.VertexCount == 2, "2 个顶点");
                     int baseAt = (int)(w.WeightedSegmentOffset + p.VertexOffset * SpineGpuConstants.WeightedVertexStride);
                     bool ok = baseAt + 2 * (int)SpineGpuConstants.WeightedVertexStride <= w.VertexBuffer.Length;
                     Check(ok, "顶点落在 weighted 段内");
                     if (ok)
                     {
-                        ushort b0 = ReadU16(w.VertexBuffer, baseAt + SpineGpuOffsets.WvBoneIdx);
-                        ushort b1 = ReadU16(w.VertexBuffer, baseAt + (int)SpineGpuConstants.WeightedVertexStride + SpineGpuOffsets.WvBoneIdx);
-                        byte w0 = w.VertexBuffer[baseAt + SpineGpuOffsets.WvWeight];
-                        byte w1 = w.VertexBuffer[baseAt + (int)SpineGpuConstants.WeightedVertexStride + SpineGpuOffsets.WvWeight];
-                        Check(b0 == 0 && b1 == 1, "两个顶点分别绑到 bone 0 / bone 1");
-                        Check(w0 == 255 && w1 == 255, "权重 1.0 量化成 255");
+                        // v7 起顶点只是引用 ⇒ 蒙皮数据要去影响流里取
+                        uint i0 = ReadU32(w.VertexBuffer, baseAt + SpineGpuOffsets.WvInfluenceOffset);
+                        uint i1 = ReadU32(w.VertexBuffer, baseAt + (int)SpineGpuConstants.WeightedVertexStride +
+                                                                  SpineGpuOffsets.WvInfluenceOffset);
+                        uint c0 = ReadU32(w.VertexBuffer, baseAt + SpineGpuOffsets.WvInfluenceCount);
+                        uint c1 = ReadU32(w.VertexBuffer, baseAt + (int)SpineGpuConstants.WeightedVertexStride +
+                                                                  SpineGpuOffsets.WvInfluenceCount);
+                        Check(c0 == 1 && c1 == 1, "两个顶点各 1 个影响");
+                        bool inRange = i0 * SpineGpuConstants.InfluenceBoneStride < w.InfluenceBone.Length &&
+                                       i1 * SpineGpuConstants.InfluenceBoneStride < w.InfluenceBone.Length;
+                        Check(inRange, "影响下标落在影响流里");
+                        if (inRange)
+                        {
+                            ushort b0 = ReadU16(w.InfluenceBone, (int)(i0 * SpineGpuConstants.InfluenceBoneStride +
+                                                                      SpineGpuOffsets.IbBoneIdx));
+                            ushort b1 = ReadU16(w.InfluenceBone, (int)(i1 * SpineGpuConstants.InfluenceBoneStride +
+                                                                      SpineGpuOffsets.IbBoneIdx));
+                            byte w0 = w.InfluenceBone[i0 * SpineGpuConstants.InfluenceBoneStride +
+                                                      SpineGpuOffsets.IbWeight];
+                            byte w1 = w.InfluenceBone[i1 * SpineGpuConstants.InfluenceBoneStride +
+                                                      SpineGpuOffsets.IbWeight];
+                            Check(b0 == 0 && b1 == 1, "两个顶点分别绑到 bone 0 / bone 1");
+                            Check(w0 == 255 && w1 == 255, "权重 1.0 量化成 255");
+                        }
                     }
                 }
             }
@@ -229,8 +272,9 @@ namespace ZEngine.SpineGpu.Test
 
             // 版本改一改 ⇒ 必须明确拒绝，不做静默兼容（规格 §11）
             _prefix = "[负向] ";
-            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 7), "版本改成 7 ⇒ 拒绝");
-            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 5), "版本改成 5（旧容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 8), "版本改成 8（未来容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 6), "版本改成 6（v6 旧容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 5), "版本改成 5（更旧的容器）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrMagic, 0x11223344), "魔数破坏 ⇒ 拒绝");
 
             // 截断：chunk 表都放不下
@@ -249,6 +293,16 @@ namespace ZEngine.SpineGpu.Test
             if (atc >= 0)
             {
                 Rejects(Mutate(good, atc, ReadU32(good, atc) + 1), "clip_data 大小 +1 ⇒ 拒绝（12 B 的整数倍）");
+            }
+            int atb = FindChunkSizeField(good, (uint)SpineGpuChunkId.InfluenceBind);
+            if (atb >= 0)
+            {
+                Rejects(Mutate(good, atb, ReadU32(good, atb) + 1), "influence_bind 大小 +1 ⇒ 拒绝（8 B 的整数倍）");
+            }
+            int ate = FindChunkSizeField(good, (uint)SpineGpuChunkId.InfluenceBone);
+            if (ate >= 0)
+            {
+                Rejects(Mutate(good, ate, ReadU32(good, ate) + 1), "influence_bone 大小 +1 ⇒ 拒绝（4 B 的整数倍）");
             }
             _prefix = "";
         }

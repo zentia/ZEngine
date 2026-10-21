@@ -67,12 +67,19 @@ namespace
 //
 // 【版本锁定：Spine 3.8，规格 §1.1】bone_idx 是 **uint16**，不是随手选的，
 // 是被 3.8 钉死的（`VertexAttachment.h:79-81` 的 `Vector<unsigned short> _bones`）。
-// bindPos 放首位 + 步长 48 是为了 ByteAddressBuffer::Load2 的 8 字节对齐
-// （步长 44 ⇒ 44 % 8 == 4，第二个及以后的顶点取不到对齐的 Load2）。
+// rigid 的 bindPos 放首位 + 步长 8 是为了 ByteAddressBuffer::Load2 的 8 字节对齐。
+//
+// ⚠️ v7 起 **weighted 顶点只是 8 B 的引用**（influence_offset / influence_count），
+//    bindPos 与 (boneIdx, weight) 在**两条独立的影响流**里（chunk 21 / 22）。
+//    两条流拆开而不是交错成一条 12 B：Load2 要 8 B 对齐，12 B 步长会让
+//    第 1、3、5…条的 bindPos 落在 12、36…（不是 8 的倍数）。
+//    影响数不再固定为 4 —— 实测最大 15、均值 2.20，所以循环是 [loop] 动态次数。
+//
 // ⚠️ 顶点里**没有 uv**（v3 起 UV 是独立通道 chunk 4，由 DrawItem::uv_offset 索引）——
 //    本夹具只验证蒙皮数学，不涉及 UV，所以这里也没有 UV 什么事。
 using VtxRigid = SpineRigidVertex;
 using VtxWeighted = SpineWeightedVertex;
+using InfluBone = SpineInfluenceBone;
 using Bone = SpineBoneTransform;
 
 struct Float2
@@ -82,7 +89,9 @@ struct Float2
 
 constexpr std::uint32_t kBoneStride = SpineGpuConstants::kBoneStrideCompact;  // 24，6 float
 constexpr std::uint32_t kRigidStride = SpineGpuConstants::kRigidVertexStride;        // 8
-constexpr std::uint32_t kWeightedStride = SpineGpuConstants::kWeightedVertexStride;  // 48
+constexpr std::uint32_t kWeightedStride = SpineGpuConstants::kWeightedVertexStride;  // 8（v7：引用）
+constexpr std::uint32_t kInfluenceBindStride = SpineGpuConstants::kInfluenceBindStride;  // 8
+constexpr std::uint32_t kInfluenceBoneStride = SpineGpuConstants::kInfluenceBoneStride;  // 4
 
 // ---------------------------------------------------------------------
 // CPU 参考实现 —— 逐行对应 spine-cpp
@@ -123,16 +132,22 @@ Float2 SkinRigidCpu(const VtxRigid& v, const std::vector<Bone>& bones, std::uint
     return BoneApply(bones[bone_index], Float2 {v.bind_pos[0], v.bind_pos[1]});
 }
 
-Float2 SkinWeightedCpu(const VtxWeighted& v, const std::vector<Bone>& bones)
+// v7：影响数来自顶点自己的 influence_count，蒙皮数据在两条影响流里。
+// 循环次数是**变长**的 —— 这正是 v7 的目的（均值 2.20 次而不是定长 4 次）。
+Float2 SkinWeightedCpu(const VtxWeighted& v, const std::vector<Bone>& bones,
+                       const std::vector<float>& bind_stream, const std::vector<InfluBone>& bone_stream)
 {
     float wx = 0.0f;
     float wy = 0.0f;
-    for (int i = 0; i < 4; ++i)
+    for (std::uint32_t i = 0; i < v.influence_count; ++i)
     {
-        const Bone& bone = bones[v.bone_idx[i]];
-        const float w = static_cast<float>(v.weight[i]) / 255.0f;
-        wx += (v.bind_pos[i][0] * bone.a + v.bind_pos[i][1] * bone.b + bone.world_x) * w;
-        wy += (v.bind_pos[i][0] * bone.c + v.bind_pos[i][1] * bone.d + bone.world_y) * w;
+        const std::uint32_t at = v.influence_offset + i;
+        const Bone& bone = bones[bone_stream[at].bone_idx];
+        const float w = static_cast<float>(bone_stream[at].weight) / 255.0f;
+        const float bx = bind_stream[at * 2u + 0u];
+        const float by = bind_stream[at * 2u + 1u];
+        wx += (bx * bone.a + by * bone.b + bone.world_x) * w;
+        wy += (bx * bone.c + by * bone.d + bone.world_y) * w;
     }
     return Float2 {wx, wy};
 }
@@ -145,11 +160,13 @@ Float2 SkinWeightedCpu(const VtxWeighted& v, const std::vector<Bone>& bones)
 // 显式写出来 —— 对一个「字节布局是否符合规格」的测试来说，这是优点。
 // ---------------------------------------------------------------------
 const char* kSkinningCs = R"(
-ByteAddressBuffer gRigid      : register(t0);
-ByteAddressBuffer gWeighted   : register(t1);
-ByteAddressBuffer gBones      : register(t2);
-ByteAddressBuffer gRigidBone  : register(t3);
-RWByteAddressBuffer gOut      : register(u0);
+ByteAddressBuffer gRigid         : register(t0);
+ByteAddressBuffer gWeighted      : register(t1);
+ByteAddressBuffer gBones         : register(t2);
+ByteAddressBuffer gRigidBone     : register(t3);
+ByteAddressBuffer gInfluenceBind : register(t4);   // chunk 21：float2 × 影响条目
+ByteAddressBuffer gInfluenceBone : register(t5);   // chunk 22：u16 boneIdx | u8 weight << 16
+RWByteAddressBuffer gOut         : register(u0);
 
 cbuffer gConsts : register(b0)
 {
@@ -157,12 +174,17 @@ cbuffer gConsts : register(b0)
     uint  gWeightedCount;
     uint  gRigidStride;
     uint  gWeightedStride;
-    // ⚠️ 顶点里骨骼索引 / 权重的**字节偏移**由 C++ 侧的 offsetof 传进来，
-    //    不在 shader 里写死。写死过一次：v3 把 UV 拆出顶点（56 B → 48 B）后
-    //    这些偏移全挪了位，shader 还在老位置读 ⇒ 蒙皮静默全错，而夹具默认 OFF，
-    //    只有真跑一次 GPU 才会发现。布局再变它必须自己跟着变。
-    uint  gBoneIdxOffset;
-    uint  gWeightOffset;
+    // ⚠️ 顶点里 influence_offset / influence_count 的**字节偏移**、以及影响流
+    //    每条的大小，全部由 C++ 侧的 offsetof 传进来，不在 shader 里写死。
+    //    写死过一次：v3 把 UV 拆出顶点（56 B → 48 B）后这些偏移全挪了位，
+    //    shader 还在老位置读 ⇒ 蒙皮静默全错，而夹具默认 OFF，只有真跑一次
+    //    GPU 才会发现。v7 又把 weighted 顶点从 48 B 改成 8 B 引用 —— 布局再变
+    //    它必须自己跟着变。
+    uint  gInfOffsetField;
+    uint  gInfCountField;
+    uint  gInfBindStride;
+    uint  gInfBoneStride;
+    uint  gInfWeightShift;   // = 8 * offsetof(SpineInfluenceBone, weight)，不在 shader 里写死
     float gRootA, gRootB, gRootC, gRootD, gRootX, gRootY;
 };
 
@@ -207,21 +229,25 @@ void SkinMain(uint3 tid : SV_DispatchThreadID)
     if (i < gWeightedCount)
     {
         const uint base = i * gWeightedStride;
-        const uint packed_idx0 = gWeighted.Load(base + gBoneIdxOffset + 0);
-        const uint packed_idx1 = gWeighted.Load(base + gBoneIdxOffset + 4);
-        const uint packed_w    = gWeighted.Load(base + gWeightOffset);
+        const uint inf_offset = gWeighted.Load(base + gInfOffsetField);
+        const uint inf_count  = gWeighted.Load(base + gInfCountField);
 
         // 规格 §6：混合的是「变换后的位置」，不是矩阵 —— 绝不能先 Σwᵢ·Bᵢ。
         // 累加顺序按影响下标升序，与 spine-cpp 一致（f32 加法不满足结合律）。
         precise float wx = 0.0;
         precise float wy = 0.0;
-        [unroll]
-        for (int k = 0; k < 4; ++k)
+        // [loop] 而不是 [unroll]：影响数是**逐顶点变长**的（v7），编译期不知道。
+        [loop]
+        for (uint k = 0; k < inf_count; ++k)
         {
-            const uint packed = (k < 2) ? packed_idx0 : packed_idx1;
-            const uint bone_index = (packed >> (16 * (k & 1))) & 0xFFFFu;
-            const float w = float((packed_w >> (8 * k)) & 0xFFu) / 255.0;
-            const float2 bind_pos = asfloat(gWeighted.Load2(base + k * 8));
+            const uint at = inf_offset + k;
+            const float2 bind_pos = asfloat(gInfluenceBind.Load2(at * gInfBindStride));
+            // ⚠️ 整条 4 B 一次 Load 出来再拆，不能在 @2 处单独 Load —— 那个地址
+            //    不是 4 字节对齐的，Load 会越界/未定义（跟 CPU 侧不能 memcpy 半个
+            //    字段是同一个道理）。weight 的**位移量**由 offsetof 推出来传进来。
+            const uint packed = gInfluenceBone.Load(at * gInfBoneStride);
+            const uint bone_index = packed & 0xFFFFu;
+            const float w = float((packed >> gInfWeightShift) & 0xFFu) / 255.0;
             const float2 skinned = LoadBoneApply(bone_index, bind_pos);
             wx += skinned.x * w;
             wy += skinned.y * w;
@@ -335,7 +361,10 @@ struct Fixture
     std::vector<Bone> bones;
     std::vector<VtxRigid> rigid;
     std::vector<std::uint16_t> rigid_bone;
+    // v7：weighted 顶点只是引用，蒙皮数据在下面两条流里（共用同一个条目下标）。
     std::vector<VtxWeighted> weighted;
+    std::vector<float> influence_bind;
+    std::vector<InfluBone> influence_bone;
     SpineRootTransform root {};
 };
 
@@ -367,55 +396,76 @@ Fixture BuildFixture()
         f.rigid_bone.push_back(static_cast<std::uint16_t>(i));  // 骨骼 0..3
     }
 
-    // weighted：1 / 2 / 3 / 4 个影响
-    auto make_weighted = [](const float bind[4][2],
-                            const std::uint16_t idx[4],
-                            const std::uint8_t w[4]) {
+    // weighted：1 / 2 / 3 / 4 / 5 / 6 个影响 —— 覆盖**变长**的两端。
+    // 5 与 6 是 v7 才有的：定长 4 槽的时代这两个根本表达不出来，
+    // 而它们恰好是 OSGame 实测里那 4.1% 导不出来的顶点（最大 15）。
+    auto make_weighted = [&f](const float* bind, const std::uint16_t* idx, const std::uint8_t* w,
+                              int n) {
         VtxWeighted v {};
-        for (int i = 0; i < 4; ++i)
+        v.influence_offset = static_cast<std::uint32_t>(f.influence_bone.size());
+        v.influence_count = static_cast<std::uint32_t>(n);
+        for (int i = 0; i < n; ++i)
         {
-            v.bind_pos[i][0] = bind[i][0];
-            v.bind_pos[i][1] = bind[i][1];
-            v.bone_idx[i] = idx[i];
-            v.weight[i] = w[i];
+            f.influence_bind.push_back(bind[i * 2 + 0]);
+            f.influence_bind.push_back(bind[i * 2 + 1]);
+            InfluBone ib {};
+            ib.bone_idx = idx[i];
+            ib.weight = w[i];
+            ib.pad = 0;
+            f.influence_bone.push_back(ib);
         }
         return v;
     };
 
-    // 1 个影响（补零槽位 3 个）
+    // 1 个影响
     {
-        const float bind[4][2] = {{5.0f, 7.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}};
-        const std::uint16_t idx[4] = {1, 0, 0, 0};
-        const std::uint8_t w[4] = {255, 0, 0, 0};
-        f.weighted.push_back(make_weighted(bind, idx, w));
+        const float bind[2] = {5.0f, 7.0f};
+        const std::uint16_t idx[1] = {1};
+        const std::uint8_t w[1] = {255};
+        f.weighted.push_back(make_weighted(bind, idx, w, 1));
     }
     // 2 个影响，权重不等
     {
-        const float bind[4][2] = {{-30.0f, 12.0f}, {45.0f, -8.0f}, {0.0f, 0.0f}, {0.0f, 0.0f}};
-        const std::uint16_t idx[4] = {2, 3, 0, 0};
-        const std::uint8_t w[4] = {128, 127, 0, 0};
-        f.weighted.push_back(make_weighted(bind, idx, w));
+        const float bind[4] = {-30.0f, 12.0f, 45.0f, -8.0f};
+        const std::uint16_t idx[2] = {2, 3};
+        const std::uint8_t w[2] = {128, 127};
+        f.weighted.push_back(make_weighted(bind, idx, w, 2));
     }
     // 3 个影响（和恰好 255）
     {
-        const float bind[4][2] = {{1.0f, 2.0f}, {3.0f, 4.0f}, {5.0f, 6.0f}, {0.0f, 0.0f}};
-        const std::uint16_t idx[4] = {0, 4, 5, 0};
-        const std::uint8_t w[4] = {85, 85, 85, 0};
-        f.weighted.push_back(make_weighted(bind, idx, w));
+        const float bind[6] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f};
+        const std::uint16_t idx[3] = {0, 4, 5};
+        const std::uint8_t w[3] = {85, 85, 85};
+        f.weighted.push_back(make_weighted(bind, idx, w, 3));
     }
     // 4 个影响，权重不等（64+64+64+63 = 255）
     {
-        const float bind[4][2] = {{-100.0f, 250.0f}, {7.5f, -3.25f}, {0.5f, 0.5f}, {-1.0f, 1.0f}};
+        const float bind[8] = {-100.0f, 250.0f, 7.5f, -3.25f, 0.5f, 0.5f, -1.0f, 1.0f};
         const std::uint16_t idx[4] = {1, 2, 3, 4};
         const std::uint8_t w[4] = {64, 64, 64, 63};
-        f.weighted.push_back(make_weighted(bind, idx, w));
+        f.weighted.push_back(make_weighted(bind, idx, w, 4));
     }
     // 4 个影响，含旋转 30° + 大平移（量级到 1e3，顺带看精度）
     {
-        const float bind[4][2] = {{-512.0f, 512.0f}, {256.0f, -256.0f}, {1.0f, 1.0f}, {-1.0f, -1.0f}};
+        const float bind[8] = {-512.0f, 512.0f, 256.0f, -256.0f, 1.0f, 1.0f, -1.0f, -1.0f};
         const std::uint16_t idx[4] = {5, 5, 1, 3};
         const std::uint8_t w[4] = {100, 80, 50, 25};
-        f.weighted.push_back(make_weighted(bind, idx, w));
+        f.weighted.push_back(make_weighted(bind, idx, w, 4));
+    }
+    // 5 个影响（51×5 = 255）
+    {
+        const float bind[10] = {10.0f, 20.0f, -15.0f, 3.0f, 0.25f, -0.75f, 100.0f, -100.0f, 7.0f, 7.0f};
+        const std::uint16_t idx[5] = {0, 1, 2, 3, 4};
+        const std::uint8_t w[5] = {51, 51, 51, 51, 51};
+        f.weighted.push_back(make_weighted(bind, idx, w, 5));
+    }
+    // 6 个影响，权重不等（80+40+40+40+40+15 = 255）
+    {
+        const float bind[12] = {-3.0f, 9.0f, 12.0f, -4.0f, 0.5f, 0.0f,
+                                -0.5f, 0.0f, 33.0f, 44.0f, -55.0f, 66.0f};
+        const std::uint16_t idx[6] = {5, 4, 3, 2, 1, 0};
+        const std::uint8_t w[6] = {80, 40, 40, 40, 40, 15};
+        f.weighted.push_back(make_weighted(bind, idx, w, 6));
     }
 
     return f;
@@ -442,7 +492,8 @@ int main()
     }
     for (std::uint32_t i = 0; i < weighted_count; ++i)
     {
-        const Float2 skinned = SkinWeightedCpu(fixture.weighted[i], fixture.bones);
+        const Float2 skinned = SkinWeightedCpu(fixture.weighted[i], fixture.bones,
+                                               fixture.influence_bind, fixture.influence_bone);
         expected[rigid_count + i] = RootApply(fixture.root, skinned);
     }
 
@@ -483,7 +534,7 @@ int main()
     // 就得用 ByteAddressBuffer —— 上面已经这么写了。
     ComPtr<ID3D12RootSignature> root_signature;
     {
-        D3D12_ROOT_PARAMETER params[6] {};
+        D3D12_ROOT_PARAMETER params[8] {};
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
         params[0].Descriptor.ShaderRegister = 0;  // gRigid
         params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
@@ -496,14 +547,20 @@ int main()
         params[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
         params[3].Descriptor.ShaderRegister = 3;  // gRigidBone
         params[3].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-        params[4].Descriptor.ShaderRegister = 0;  // gOut
+        params[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        params[4].Descriptor.ShaderRegister = 4;  // gInfluenceBind（chunk 21）
         params[4].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-        params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
-        params[5].Descriptor.ShaderRegister = 0;  // gConsts
+        params[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+        params[5].Descriptor.ShaderRegister = 5;  // gInfluenceBone（chunk 22）
         params[5].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+        params[6].Descriptor.ShaderRegister = 0;  // gOut
+        params[6].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        params[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        params[7].Descriptor.ShaderRegister = 0;  // gConsts
+        params[7].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
 
-        const D3D12_ROOT_SIGNATURE_DESC desc {6, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
+        const D3D12_ROOT_SIGNATURE_DESC desc {8, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE};
 
         ComPtr<ID3DBlob> blob;
         ComPtr<ID3DBlob> error;
@@ -541,18 +598,23 @@ int main()
     const std::uint64_t weighted_bytes = static_cast<std::uint64_t>(weighted_count) * kWeightedStride;
     const std::uint64_t bone_bytes = static_cast<std::uint64_t>(fixture.bones.size()) * kBoneStride;
     const std::uint64_t rigid_bone_bytes = static_cast<std::uint64_t>(rigid_count) * sizeof(std::uint32_t);
+    const std::uint64_t influence_count = static_cast<std::uint64_t>(fixture.influence_bone.size());
+    const std::uint64_t inf_bind_bytes = influence_count * kInfluenceBindStride;
+    const std::uint64_t inf_bone_bytes = influence_count * kInfluenceBoneStride;
     const std::uint64_t out_bytes = static_cast<std::uint64_t>(total) * sizeof(float) * 2;
 
     ComPtr<ID3D12Resource> buf_rigid = CreateBuffer(device, rigid_bytes, D3D12_HEAP_TYPE_UPLOAD);
     ComPtr<ID3D12Resource> buf_weighted = CreateBuffer(device, weighted_bytes, D3D12_HEAP_TYPE_UPLOAD);
     ComPtr<ID3D12Resource> buf_bones = CreateBuffer(device, bone_bytes, D3D12_HEAP_TYPE_UPLOAD);
     ComPtr<ID3D12Resource> buf_rigid_bone = CreateBuffer(device, rigid_bone_bytes, D3D12_HEAP_TYPE_UPLOAD);
+    ComPtr<ID3D12Resource> buf_inf_bind = CreateBuffer(device, inf_bind_bytes, D3D12_HEAP_TYPE_UPLOAD);
+    ComPtr<ID3D12Resource> buf_inf_bone = CreateBuffer(device, inf_bone_bytes, D3D12_HEAP_TYPE_UPLOAD);
     ComPtr<ID3D12Resource> buf_consts = CreateBuffer(device, 256, D3D12_HEAP_TYPE_UPLOAD);
     ComPtr<ID3D12Resource> buf_out = CreateBuffer(device, out_bytes, D3D12_HEAP_TYPE_DEFAULT,
                                                   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
     ComPtr<ID3D12Resource> buf_readback = CreateBuffer(device, out_bytes, D3D12_HEAP_TYPE_READBACK);
-    if (!buf_rigid || !buf_weighted || !buf_bones || !buf_rigid_bone || !buf_consts || !buf_out ||
-        !buf_readback)
+    if (!buf_rigid || !buf_weighted || !buf_bones || !buf_rigid_bone || !buf_inf_bind || !buf_inf_bone ||
+        !buf_consts || !buf_out || !buf_readback)
     {
         std::printf("  [FAIL] buffer allocation\n");
         return 1;
@@ -573,7 +635,9 @@ int main()
 
     if (!upload(buf_rigid.Get(), fixture.rigid.data(), rigid_bytes) ||
         !upload(buf_weighted.Get(), fixture.weighted.data(), weighted_bytes) ||
-        !upload(buf_bones.Get(), fixture.bones.data(), bone_bytes))
+        !upload(buf_bones.Get(), fixture.bones.data(), bone_bytes) ||
+        !upload(buf_inf_bind.Get(), fixture.influence_bind.data(), inf_bind_bytes) ||
+        !upload(buf_inf_bone.Get(), fixture.influence_bone.data(), inf_bone_bytes))
     {
         std::printf("  [FAIL] upload static buffers\n");
         return 1;
@@ -601,8 +665,11 @@ int main()
             std::uint32_t weighted_count;
             std::uint32_t rigid_stride;
             std::uint32_t weighted_stride;
-            std::uint32_t bone_idx_offset;
-            std::uint32_t weight_offset;
+            std::uint32_t inf_offset_field;
+            std::uint32_t inf_count_field;
+            std::uint32_t inf_bind_stride;
+            std::uint32_t inf_bone_stride;
+            std::uint32_t inf_weight_shift;
             float root_a, root_b, root_c, root_d, root_x, root_y;
         } consts {};
         consts.rigid_count = rigid_count;
@@ -610,8 +677,11 @@ int main()
         consts.rigid_stride = kRigidStride;
         consts.weighted_stride = kWeightedStride;
         // 直接取 offsetof ⇒ 顶点布局再改，shader 自动跟着改，不会像上次那样静默错位。
-        consts.bone_idx_offset = static_cast<std::uint32_t>(offsetof(SpineWeightedVertex, bone_idx));
-        consts.weight_offset = static_cast<std::uint32_t>(offsetof(SpineWeightedVertex, weight));
+        consts.inf_offset_field = static_cast<std::uint32_t>(offsetof(SpineWeightedVertex, influence_offset));
+        consts.inf_count_field = static_cast<std::uint32_t>(offsetof(SpineWeightedVertex, influence_count));
+        consts.inf_bind_stride = kInfluenceBindStride;
+        consts.inf_bone_stride = kInfluenceBoneStride;
+        consts.inf_weight_shift = 8u * static_cast<std::uint32_t>(offsetof(SpineInfluenceBone, weight));
         consts.root_a = fixture.root.a;
         consts.root_b = fixture.root.b;
         consts.root_c = fixture.root.c;
@@ -646,8 +716,10 @@ int main()
     cmd->SetComputeRootShaderResourceView(1, buf_weighted->GetGPUVirtualAddress());
     cmd->SetComputeRootShaderResourceView(2, buf_bones->GetGPUVirtualAddress());
     cmd->SetComputeRootShaderResourceView(3, buf_rigid_bone->GetGPUVirtualAddress());
-    cmd->SetComputeRootUnorderedAccessView(4, buf_out->GetGPUVirtualAddress());
-    cmd->SetComputeRootConstantBufferView(5, buf_consts->GetGPUVirtualAddress());
+    cmd->SetComputeRootShaderResourceView(4, buf_inf_bind->GetGPUVirtualAddress());
+    cmd->SetComputeRootShaderResourceView(5, buf_inf_bone->GetGPUVirtualAddress());
+    cmd->SetComputeRootUnorderedAccessView(6, buf_out->GetGPUVirtualAddress());
+    cmd->SetComputeRootConstantBufferView(7, buf_consts->GetGPUVirtualAddress());
     cmd->Dispatch(group_count, 1, 1);
 
     {

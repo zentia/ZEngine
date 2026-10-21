@@ -3325,16 +3325,31 @@ private:
 // **裁剪多边形与 mesh 顶点共用这一条路径** —— 裁剪附件是 VertexAttachment，
 // 顶点跟 mesh 顶点是同一个东西（局部坐标 + 骨骼绑定），没有理由另写一份。
 //   rigid    → SpineRigidVertex    8 B，vertices 就是 [x,y, ...]
-//   weighted → SpineWeightedVertex 48 B，vertices 是每顶点 [n, (boneIdx,x,y,w) × n]
+//   weighted → SpineWeightedVertex 8 B（**只是引用**）+ 影响流，
+//              vertices 是每顶点 [n, (boneIdx,x,y,w) × n]
+//
+// ⚠️ weighted 是**两段式**：
+//     * `influence_out`（可选）收 (bindPos 8 B + bone 4 B)/影响，**本地**下标从 0 起；
+//     * `blob` 里的 influence_offset 也先写**本地**下标 —— 调用方拿去重后的
+//       块起点把它改写成全局下标（见 BakeSpineGpuAsset 里的 FixupInfluenceOffsets）。
+//   分成两段是因为：不先对影响流去重，两个几何相同的附件就会拿到不同的
+//   influence_offset ⇒ 顶点块的字节不再相同 ⇒ **顶点去重整个失效**（这才是
+//   GPU-Spine 省内存的那一下）。所以影响流必须先按"逐字节相同"去重。
 bool EncodeVertices(const std::string& what, const std::vector<float>& vertices, uint32_t vertex_count,
-                    bool weighted, uint32_t bone_count, std::vector<uint8_t>& blob, std::string& err)
+                    bool weighted, uint32_t bone_count, std::vector<uint8_t>& blob, std::string& err,
+                    std::vector<uint8_t>* influence_out = nullptr)
 {
     blob.clear();
+    if (influence_out)
+    {
+        influence_out->clear();
+    }
     if (weighted)
     {
         // 展开 spine 的扁平顶点数组：
         //   每顶点 [n, (boneIdx, x, y, w) × n]   —— SkeletonJson::readVertices
         size_t p = 0;
+        uint32_t local_offset = 0;
         for (uint32_t v = 0; v < vertex_count; ++v)
         {
             if (p >= vertices.size())
@@ -3358,10 +3373,11 @@ bool EncodeVertices(const std::string& what, const std::vector<float>& vertices,
                 return false;
             }
 
-            float w[SpineGpuConstants::kMaxInfluences] = {0, 0, 0, 0};
-            uint8_t w8[SpineGpuConstants::kMaxInfluences] = {0, 0, 0, 0};
-            uint16_t idx[SpineGpuConstants::kMaxInfluences] = {0, 0, 0, 0};
-            float bind[SpineGpuConstants::kMaxInfluences][2] = {};
+            // 变长：按实际影响数开，不是 kMaxInfluences（那只是"数据坏了"的护栏）。
+            std::vector<float> w(static_cast<size_t>(n), 0.0f);
+            std::vector<uint8_t> w8(static_cast<size_t>(n), 0u);
+            std::vector<uint16_t> idx(static_cast<size_t>(n), 0u);
+            std::vector<float> bind(static_cast<size_t>(n) * 2u, 0.0f);
 
             for (int k = 0; k < n; ++k)
             {
@@ -3380,26 +3396,40 @@ bool EncodeVertices(const std::string& what, const std::vector<float>& vertices,
                     return false;
                 }
 
-                idx[k] = static_cast<uint16_t>(bone_f);
-                w[k] = ww;
-                bind[k][0] = vx;
-                bind[k][1] = vy;
+                idx[static_cast<size_t>(k)] = static_cast<uint16_t>(bone_f);
+                w[static_cast<size_t>(k)] = ww;
+                bind[static_cast<size_t>(k) * 2u] = vx;
+                bind[static_cast<size_t>(k) * 2u + 1u] = vy;
             }
 
-            if (!QuantizeWeights(w, n, w8, err))
+            if (!QuantizeWeights(w.data(), n, w8.data(), err))
             {
                 err = what + " 第 " + std::to_string(v) + " 个顶点：" + err;
                 return false;
             }
 
-            SpineWeightedVertex out_v {};
-            for (int k = 0; k < static_cast<int>(SpineGpuConstants::kMaxInfluences); ++k)
+            if (influence_out)
             {
-                out_v.bind_pos[k][0] = bind[k][0];
-                out_v.bind_pos[k][1] = bind[k][1];
-                out_v.bone_idx[k] = idx[k];
-                out_v.weight[k] = w8[k];
+                for (int k = 0; k < n; ++k)
+                {
+                    // 一条 = bindPos(2 float) + bone 记录(4 B)，共 kInfluenceEntrySize。
+                    // 落盘时再拆成 chunk 21 / 22 —— 这里并在一起只是为了去重有个唯一的键。
+                    const size_t at = influence_out->size();
+                    influence_out->resize(at + SpineGpuConstants::kInfluenceEntrySize, 0u);
+                    std::memcpy(influence_out->data() + at, &bind[static_cast<size_t>(k) * 2u], 2u * sizeof(float));
+                    SpineInfluenceBone ib {};
+                    ib.bone_idx = idx[static_cast<size_t>(k)];
+                    ib.weight = w8[static_cast<size_t>(k)];
+                    ib.pad = 0;
+                    std::memcpy(influence_out->data() + at + SpineGpuConstants::kInfluenceBindStride, &ib,
+                                sizeof(ib));
+                }
             }
+
+            SpineWeightedVertex out_v {};
+            out_v.influence_offset = local_offset;   // 本地下标，调用方再叠加块起点
+            out_v.influence_count = static_cast<uint32_t>(n);
+            local_offset += static_cast<uint32_t>(n);
             blob.resize(blob.size() + sizeof(out_v));
             std::memcpy(blob.data() + blob.size() - sizeof(out_v), &out_v, sizeof(out_v));
         }
@@ -3423,6 +3453,43 @@ bool EncodeVertices(const std::string& what, const std::vector<float>& vertices,
         std::memcpy(blob.data() + blob.size() - sizeof(out_v), &out_v, sizeof(out_v));
     }
     return true;
+}
+
+// 把顶点块里的 influence_offset 从"附件内本地下标"改写成"影响流里的全局下标"。
+//
+// 调用顺序**必须**是：先 `influence_pool.Intern(影响流)` 拿到 base → 再本函数
+// 改写顶点块 → 最后才 `weighted_pool.Intern(顶点块)`。
+// 颠倒的后果不报错：先改写顶点块的话，两个相同附件的本地下标都是 0 ⇒ 顶点
+// 去重看着"命中"了，但它们指的其实是**各自**那段影响流 ⇒ 其中一个会取到
+// 另一份的 bindPos，形状静默错。
+void FixupInfluenceOffsets(std::vector<uint8_t>& blob, uint32_t base)
+{
+    const size_t n = blob.size() / SpineGpuConstants::kWeightedVertexStride;
+    for (size_t v = 0; v < n; ++v)
+    {
+        SpineWeightedVertex wv {};
+        std::memcpy(&wv, blob.data() + v * SpineGpuConstants::kWeightedVertexStride, sizeof(wv));
+        wv.influence_offset += base;
+        std::memcpy(blob.data() + v * SpineGpuConstants::kWeightedVertexStride, &wv, sizeof(wv));
+    }
+}
+
+// 影响流里的"本地下标 → 全局下标"改写，同时把一条 12 B 的影响拆成两条流。
+// 拆开是必须的：`ByteAddressBuffer::Load2` 要求 8 B 对齐，12 B 步长会让
+// 第 1、3、5…条的 bindPos 落在 12、36…（不是 8 的倍数）⇒ 只能退化成标量 Load。
+void SplitInfluenceStream(const std::vector<uint8_t>& combined, std::vector<float>& bind_out,
+                          std::vector<SpineInfluenceBone>& bone_out)
+{
+    const size_t count = combined.size() / SpineGpuConstants::kInfluenceEntrySize;
+    bind_out.resize(count * 2u);
+    bone_out.resize(count);
+    for (size_t i = 0; i < count; ++i)
+    {
+        const uint8_t* p = combined.data() + i * SpineGpuConstants::kInfluenceEntrySize;
+        std::memcpy(bind_out.data() + i * 2u, p, SpineGpuConstants::kInfluenceBindStride);
+        std::memcpy(&bone_out[i], p + SpineGpuConstants::kInfluenceBindStride,
+                    sizeof(SpineInfluenceBone));
+    }
 }
 
 }   // namespace
@@ -3471,6 +3538,9 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     ExactBlobPool rigid_pool(SpineGpuConstants::kRigidVertexStride);
     ExactBlobPool weighted_pool(SpineGpuConstants::kWeightedVertexStride);
     ExactBlobPool uv_pool(SpineGpuConstants::kUvStride);
+    // 影响流池（v7）。单位是一条影响 = bindPos(8) + bone(4) = 12 B。
+    // ⚠️ 它**必须**在顶点块之前去重 —— 见 FixupInfluenceOffsets 上的顺序说明。
+    ExactBlobPool influence_pool(SpineGpuConstants::kInfluenceEntrySize);
 
     // ---- 裁剪多边形：先烘进顶点池，再算作用域 ----
     // 多边形顶点与 mesh 顶点**同一个池子**（裁剪附件是 VertexAttachment，顶点同构）
@@ -3500,18 +3570,23 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                         "' 的裁剪附件顶点数为 0（空多边形裁不出任何东西）");
         }
         std::vector<uint8_t> blob;
+        std::vector<uint8_t> infl;
         std::string err;
         const std::string what = "bake: 槽位 '" + src.slots[static_cast<size_t>(c.slot_index)].name + "' 的裁剪附件";
-        if (!EncodeVertices(what, c.vertices, vc, c.weighted, bone_count, blob, err))
+        if (!EncodeVertices(what, c.vertices, vc, c.weighted, bone_count, blob, err, &infl))
         {
             return Fail(err);
+        }
+        if (c.weighted)
+        {
+            FixupInfluenceOffsets(blob, influence_pool.Intern(infl.data(), infl.size()).second);
         }
         ExactBlobPool& pool = c.weighted ? weighted_pool : rigid_pool;
 
         SpineGpuClipPolygon rec {};
         rec.slot_index = static_cast<uint16_t>(c.slot_index);
         rec.skin_id = static_cast<uint16_t>(c.skin_index);
-        rec.vertex_format = c.weighted ? SpineVertexFormat::kWeighted4 : SpineVertexFormat::kRigid;
+        rec.vertex_format = c.weighted ? SpineVertexFormat::kWeighted : SpineVertexFormat::kRigid;
         rec.vertex_count = static_cast<uint16_t>(vc);
         rec.vertex_offset = pool.Intern(blob.data(), blob.size()).second;
         out.clip_polygons.push_back(rec);
@@ -3619,14 +3694,22 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         // 先把这一份附件的顶点整块拼出来，再去重池里问"有没有一模一样的"。
         // 编码与裁剪多边形共用 EncodeVertices() —— 两者都是 VertexAttachment 的顶点。
         std::vector<uint8_t> blob;
+        std::vector<uint8_t> infl;
         blob.reserve(static_cast<size_t>(vc) * (weighted ? SpineGpuConstants::kWeightedVertexStride
                                                          : SpineGpuConstants::kRigidVertexStride));
         {
             std::string err;
-            if (!EncodeVertices("bake: 附件 '" + a.name + "'", a.vertices, vc, weighted, bone_count, blob, err))
+            if (!EncodeVertices("bake: 附件 '" + a.name + "'", a.vertices, vc, weighted, bone_count, blob, err,
+                                &infl))
             {
                 return Fail(err);
             }
+        }
+
+        // ---- 影响流去重 → 改写顶点块里的本地下标（顺序不能颠倒）----
+        if (weighted)
+        {
+            FixupInfluenceOffsets(blob, influence_pool.Intern(infl.data(), infl.size()).second);
         }
 
         // ---- 顶点块去重：几何 + 蒙皮完全相同才共用 ----
@@ -3659,7 +3742,7 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         item.index_offset = index_offset;
         item.index_count = static_cast<uint32_t>(a.triangles.size());
         item.uv_offset = uv_offset;
-        item.vertex_format = weighted ? SpineVertexFormat::kWeighted4 : SpineVertexFormat::kRigid;
+        item.vertex_format = weighted ? SpineVertexFormat::kWeighted : SpineVertexFormat::kRigid;
         item.blend_mode = SpineBlendMode::kNormal;
         item.atlas_page = 0;
         item.slot_index = static_cast<uint16_t>(a.slot_index);
@@ -3711,6 +3794,18 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     {
         std::memcpy(out.vertex_buffer.data() + weighted_offset, weighted_pool.data().data(),
                     weighted_pool.data().size());
+    }
+
+    // ---- 影响流：把去重后那条 12 B/条的流拆成 chunk 21（bindPos）与 22（bone）----
+    // 拆开而不是保留 12 B：Load2 要 8 B 对齐，12 B 步长会让第 1、3、5…条的
+    // bindPos 落在 12、36…（不是 8 的倍数）⇒ 只能退化成标量 Load（规格 §3.1）。
+    SplitInfluenceStream(influence_pool.data(), out.influence_bind, out.influence_bone);
+    // chunk 的 offset / size 是 u32，越界了会在写入时静默回绕 ⇒ 这里先挡住。
+    if (static_cast<uint64_t>(out.influence_bone.size()) * SpineGpuConstants::kInfluenceBindStride >
+        0xFFFFFFFFu)
+    {
+        return Fail("bake: 影响流 " + std::to_string(out.influence_bone.size()) +
+                    " 条，字节数超过 u32（chunk 21 的偏移存不下）");
     }
 
     // ---- UV 通道：独立数组，条目数 **≠** 顶点数 ----
@@ -3914,6 +4009,33 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         chunks.push_back(std::move(c));
     }
 
+    // id=21 influence_bind —— float2 × 影响条目数，**8 B 对齐**（Load2 读 bindPos）。
+    // 与 id=22 **共用同一个条目下标**（就是权重顶点的 influence_offset）。
+    if (!asset.influence_bind.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkInfluenceBind;
+        c.alignment = SpineGpuConstants::kVertexSegmentAlignment;
+        PutBytes(c.bytes, asset.influence_bind.data(), asset.influence_bind.size() * sizeof(float));
+        chunks.push_back(std::move(c));
+    }
+
+    // id=22 influence_bone —— SpineInfluenceBone[]（4 B/条）。
+    // 未用字节（pad）必须显式写 0 —— 跟裁剪多边形一样整块清零再拷，不靠 struct 布局。
+    if (!asset.influence_bone.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkInfluenceBone;
+        for (const SpineInfluenceBone& b : asset.influence_bone)
+        {
+            uint8_t raw[sizeof(SpineInfluenceBone)];
+            std::memset(raw, 0, sizeof(raw));
+            std::memcpy(raw, &b, sizeof(b));
+            PutBytes(c.bytes, raw, sizeof(raw));
+        }
+        chunks.push_back(std::move(c));
+    }
+
     // id=4 uv_buffer —— float2 × uv_count，**8 B 对齐**（与顶点一样靠 Load2 读取）
     if (!asset.uv_buffer.empty())
     {
@@ -4109,6 +4231,83 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
     if (const Found* f = find_chunk(SpineGpuChunkId::kChunkVertexBuffer))
     {
         out.vertex_buffer.assign(data + f->offset, data + f->offset + f->size);
+    }
+
+    // ---- 影响流（chunk 21 / 22）。两条流**必须条目数相同**： ----
+    // 它们共用同一个下标（权重顶点的 influence_offset）。对不上意味着两条流被
+    // 配错了对 —— 不报错，只是每个影响取到别人的 bindPos / 骨骼 ⇒ 形状静默错。
+    {
+        uint32_t bind_count = 0;
+        uint32_t bone_count = 0;
+        if (const Found* f = find_chunk(SpineGpuChunkId::kChunkInfluenceBind))
+        {
+            if (f->size % SpineGpuConstants::kInfluenceBindStride != 0)
+            {
+                return Fail("container: influence_bind 大小不是 " +
+                            std::to_string(SpineGpuConstants::kInfluenceBindStride) +
+                            " B 的整数倍（一条是 2 float）");
+            }
+            bind_count = f->size / SpineGpuConstants::kInfluenceBindStride;
+            out.influence_bind.resize(static_cast<size_t>(bind_count) * 2u);
+            std::memcpy(out.influence_bind.data(), data + f->offset, f->size);
+        }
+        if (const Found* f = find_chunk(SpineGpuChunkId::kChunkInfluenceBone))
+        {
+            if (f->size % sizeof(SpineInfluenceBone) != 0)
+            {
+                return Fail("container: influence_bone 大小不是 " + std::to_string(sizeof(SpineInfluenceBone)) +
+                            " B 的整数倍（一条是 4 B）");
+            }
+            bone_count = f->size / static_cast<uint32_t>(sizeof(SpineInfluenceBone));
+            out.influence_bone.resize(bone_count);
+            for (uint32_t i = 0; i < bone_count; ++i)
+            {
+                std::memcpy(&out.influence_bone[i],
+                            data + f->offset + static_cast<size_t>(i) * sizeof(SpineInfluenceBone),
+                            sizeof(SpineInfluenceBone));
+            }
+        }
+        if (bind_count != bone_count)
+        {
+            return Fail("container: 影响流两条 chunk 条目数不同（bind " + std::to_string(bind_count) +
+                        " vs bone " + std::to_string(bone_count) + "）—— 它们必须共用同一个下标");
+        }
+
+        // 每个权重顶点引用的那段影响必须**落在流里**。这是"读端拿到的容器是不是
+        // 自洽"最便宜的一道检查：越界不报错，shader 只会读到别人的 bindPos。
+        const uint64_t seg = static_cast<uint64_t>(out.weighted_segment_offset) +
+                             static_cast<uint64_t>(out.weighted_vertex_count) *
+                                 SpineGpuConstants::kWeightedVertexStride;
+        if (seg > out.vertex_buffer.size())
+        {
+            return Fail("container: weighted 段越界（顶点缓冲 " + std::to_string(out.vertex_buffer.size()) +
+                        " B，段尾 " + std::to_string(seg) + " B）");
+        }
+        for (uint32_t v = 0; v < out.weighted_vertex_count; ++v)
+        {
+            SpineWeightedVertex wv {};
+            std::memcpy(&wv,
+                        out.vertex_buffer.data() + out.weighted_segment_offset +
+                            static_cast<size_t>(v) * SpineGpuConstants::kWeightedVertexStride,
+                        sizeof(wv));
+            if (wv.influence_count == 0)
+            {
+                return Fail("container: 第 " + std::to_string(v) + " 个权重顶点的影响数是 0");
+            }
+            const uint64_t end = static_cast<uint64_t>(wv.influence_offset) + wv.influence_count;
+            if (end > bind_count)
+            {
+                return Fail("container: 第 " + std::to_string(v) + " 个权重顶点引用影响 [" +
+                            std::to_string(wv.influence_offset) + ", " + std::to_string(end) +
+                            ")，但影响流只有 " + std::to_string(bind_count) + " 条");
+            }
+            if (wv.influence_count > SpineGpuConstants::kMaxInfluences)
+            {
+                return Fail("container: 第 " + std::to_string(v) + " 个权重顶点有 " +
+                            std::to_string(wv.influence_count) + " 个影响，超过硬上限 " +
+                            std::to_string(SpineGpuConstants::kMaxInfluences));
+            }
+        }
     }
 
     // ---- UV 通道（独立 chunk）----
