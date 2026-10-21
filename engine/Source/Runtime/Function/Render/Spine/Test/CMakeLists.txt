@@ -46,4 +46,30 @@ if(ZENGINE_BUILD_SPINE_IMPORT_TEST)
     add_test(NAME ${_import_target} COMMAND ${_import_target})
 
     message(STATUS "Configured GPU-Spine importer test target: ${_import_target}")
+
+    # ---- 跨语言对拍（C++ 写 → C# 读 → C# 写，必须逐字节相同）----
+    # 两端各自自测等于各自对上了自己的想象；字节是全格式唯一的公共事实。
+    # 没装 dotnet 就跳过（这条检查是**加码**，不是构建的前置条件）。
+    #
+    # Opt out with:
+    #   cmake -B build -DZENGINE_BUILD_SPINE_CSHARP_PARITY_TEST=OFF
+    find_program(ZENGINE_DOTNET_EXECUTABLE NAMES dotnet)
+    option(ZENGINE_BUILD_SPINE_CSHARP_PARITY_TEST
+           "Cross-language check: bake containers in C++, read+rewrite them in C#, require byte-identical output"
+           ON)
+
+    if(ZENGINE_BUILD_SPINE_CSHARP_PARITY_TEST)
+        if(ZENGINE_DOTNET_EXECUTABLE)
+            add_test(NAME SpineGpuCSharpParityTest
+                     COMMAND ${CMAKE_COMMAND}
+                             -DDUMP_EXE=$<TARGET_FILE:${_import_target}>
+                             -DDUMP_DIR=${CMAKE_BINARY_DIR}/spine_containers
+                             -DCSPROJ=${CMAKE_CURRENT_SOURCE_DIR}/../CSharp/Test/ZEngine.SpineGpu.Test.csproj
+                             -DDOTNET=${ZENGINE_DOTNET_EXECUTABLE}
+                             -P ${CMAKE_CURRENT_SOURCE_DIR}/../CSharp/Test/RunParityTest.cmake)
+            message(STATUS "Configured GPU-Spine cross-language parity test (dotnet: ${ZENGINE_DOTNET_EXECUTABLE})")
+        else()
+            message(STATUS "GPU-Spine: 没找到 dotnet ⇒ 跨语言对拍不注册（C# 源码仍在 CSharp/ 下）")
+        endif()
+    endif()
 endif()

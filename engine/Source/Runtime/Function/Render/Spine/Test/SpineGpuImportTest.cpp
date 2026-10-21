@@ -18,6 +18,8 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -778,6 +780,10 @@ const char* kSkeletonClipNested = R"({
 
 // 默认那份裁剪多边形：4 个顶点，rigid（数组长度 == vertexCount*2 ⇒ 判为 rigid）
 const std::string kClipVertsRigid = "\"vertexCount\": 4, \"vertices\": [ 0,0, 10,0, 10,10, 0,10 ]";
+// weighted 版：2 个顶点，各 1 个影响（bone 0 与 bone 1）。数组长度 10 != vertexCount*2 = 4
+// ⇒ json 侧靠这个长度差判成 weighted（SkeletonJson.cpp:1218）。
+const std::string kClipVertsWeighted =
+    "\"vertexCount\": 2, \"vertices\": [ 1, 0, 0,0, 1,  1, 1, 10,10, 1 ]";
 
 // 把 kSkeletonClip 的三个占位符填掉。end_field = "\"end\": \"s2\", " 或 ""（缺 end）；
 // clip_verts 留空则用上面的 rigid 多边形（weighted 那条用例传自己的）。
@@ -811,11 +817,135 @@ std::string BuildClip(const std::string& end_field, bool with_deform,
     return s;
 }
 
+// ---- 跨语言对拍的夹具落盘（SpineGpuImportTest --dump <dir>）----
+// C# 读端（CSharp/）要对拍的是"同一副骨架经两种输入产出的**同一份字节**"，
+// 光在 C++ 里自测不够 —— 两端各自对，等于没对。所以这里把夹具容器写成 .zspg 文件，
+// 由 C# 端读回来再序列化一次，逐字节比对（规格 §12 第 2、7 项）。
+//
+// 为什么复用测试夹具而不是另写一份：夹具里那些"故意少一个字段 / 故意越界"的骨架
+// 才是真正在用的边界，另写一份只会养出第二套、然后两边一起漂。
+bool DumpContainers(const SpineAtlas& atlas, const std::string& dir)
+{
+    struct Case
+    {
+        const char* name;
+        std::string json;                 // 空 ⇒ 只落 .skel
+        std::vector<uint8_t> skel;
+    };
+
+    std::vector<Case> cases;
+    cases.push_back({"baseline", kSkeleton, BuildSkelFixture(false)});
+    cases.push_back({"linked_mesh", kSkeletonLinked, BuildSkelFixture(false, true)});
+    cases.push_back({"two_skins", kSkeletonTwoSkins, BuildSkelFixture(false, false, "3.8.99", false, "mesh", true)});
+    // kSkeletonDeform 带 %DEFORMFIELD% 占位符 ⇒ 只落 .skel（json 那条路径在套件里已经测过）
+    cases.push_back({"deform", std::string(),
+                     BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, true)});
+    // 裁剪的三种 end：json 与 .skel 的表示**不对称**（名字 vs 下标），两种都要落。
+    // ⚠️ "缺 end" 只有 json 能表达 —— .skel 的下标没有"空"这个值，越界是显式报错的。
+    cases.push_back({"clip_end_s2", BuildClip("\"end\": \"s2\", ", false),
+                     BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, false, true, 10, true, 2, 2)});
+    cases.push_back({"clip_end_self", BuildClip("\"end\": \"s1\", ", false),
+                     BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, false, true, 10, true, 1, 2)});
+    cases.push_back({"clip_no_end", BuildClip("", false), std::vector<uint8_t>()});
+    cases.push_back({"clip_nested", kSkeletonClipNested,
+                     BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, false, true, 10,
+                                      true, 4, 3, true, 3)});
+    cases.push_back({"clip_weighted", BuildClip("\"end\": \"s2\", ", false, kClipVertsWeighted),
+                     BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, false, true, 10,
+                                      true, 2, 2, false, 3, true)});
+    // nonessential 开 / 关解析路径不同（字段数都不一样），C# 端也要各对一次
+    cases.push_back({"baseline_nonessential", std::string(), BuildSkelFixture(false, false, "3.8.99", true)});
+    cases.push_back({"clip_nested_nonessential", std::string(),
+                     BuildSkelFixture(false, false, "3.8.99", true, "mesh", false, false, true, 10,
+                                      true, 4, 3, true, 3)});
+
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec)
+    {
+        std::printf("  dump: 建目录 '%s' 失败：%s\n", dir.c_str(), ec.message().c_str());
+        return false;
+    }
+
+    int written = 0;
+    auto emit = [&](const std::string& file, const SpineGpuAsset& a) {
+        std::vector<uint8_t> bytes;
+        SpineImportResult rw = WriteSpineGpuContainer(a, bytes);
+        if (!rw.ok)
+        {
+            std::printf("  dump: %s 序列化失败：%s\n", file.c_str(), rw.error.c_str());
+            return false;
+        }
+        const std::filesystem::path p = std::filesystem::path(dir) / file;
+        std::ofstream f(p, std::ios::binary | std::ios::trunc);
+        if (!f)
+        {
+            std::printf("  dump: 写 %s 失败\n", p.string().c_str());
+            return false;
+        }
+        f.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        ++written;
+        return true;
+    };
+
+    bool ok = true;
+    for (Case& c : cases)
+    {
+        if (!c.json.empty())
+        {
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(c.json.data(), c.json.size(), &atlas, s);
+            if (!r.ok)
+            {
+                std::printf("  dump: %s json 解析失败：%s\n", c.name, r.error.c_str());
+                ok = false;
+                continue;
+            }
+            SpineGpuAsset a;
+            SpineImportResult rb = BakeSpineGpuAsset(s, a);
+            if (!rb.ok)
+            {
+                std::printf("  dump: %s bake 失败：%s\n", c.name, rb.error.c_str());
+                ok = false;
+                continue;
+            }
+            ok = emit(std::string(c.name) + ".json.zspg", a) && ok;
+        }
+        if (!c.skel.empty())
+        {
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonBinary(c.skel.data(), c.skel.size(), &atlas, s);
+            if (!r.ok)
+            {
+                std::printf("  dump: %s skel 解析失败：%s\n", c.name, r.error.c_str());
+                ok = false;
+                continue;
+            }
+            SpineGpuAsset a;
+            SpineImportResult rb = BakeSpineGpuAsset(s, a);
+            if (!rb.ok)
+            {
+                std::printf("  dump: %s skel bake 失败：%s\n", c.name, rb.error.c_str());
+                ok = false;
+                continue;
+            }
+            ok = emit(std::string(c.name) + ".skel.zspg", a) && ok;
+        }
+    }
+
+    std::printf("=== dump: %d 个容器 → %s ===\n", written, dir.c_str());
+    return ok;
+}
+
 }   // namespace
 
-int main()
+int main(int argc, char** argv)
 {
-    std::printf("=== GPU-Spine importer test ===\n");
+    const bool dump_mode = (argc >= 3 && std::strcmp(argv[1], "--dump") == 0);
+    if (!dump_mode)
+    {
+        std::printf("=== GPU-Spine importer test ===\n");
+    }
 
     // ---- 1. atlas ----
     SpineAtlas atlas;
@@ -830,6 +960,12 @@ int main()
     CheckEq(static_cast<long long>(atlas.regions.size()), 2, "atlas: 2 个 region");
     CheckEq(atlas.pages[0].width, 256, "atlas: 页宽 256");
     Check(atlas.regions.size() == 2 && atlas.regions[1].name == "mesh", "atlas: 第二个 region 是 mesh");
+
+    // 只有图集就够落盘 ⇒ 夹具容器在这里就能出，不必先跑完整个套件
+    if (dump_mode)
+    {
+        return DumpContainers(atlas, argv[2]) ? 0 : 1;
+    }
 
     // ---- 2. json ----
     SpineSourceSkeleton src;

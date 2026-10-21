@@ -601,6 +601,41 @@ Chunks:
 
 ---
 
+## 11.1 两端各有一份实现（C++ / C#）
+
+格式的**权威定义**在 `SpineGpuFormat.h`（C++）。C# 侧是**照抄**，不是"参考"：
+
+| 端 | 位置 |
+|---|---|
+| C++ | `Function/Render/Spine/SpineGpuFormat.h`（布局 + static_assert）<br>`SpineGpuImporter.cpp`（导入 + `Write/ReadSpineGpuContainer`） |
+| C# | `Function/Render/Spine/CSharp/`（`SpineGpuFormat.cs` / `SpineGpuContainerIo.cs`，netstandard2.1，可整目录拷进 Unity Assets） |
+
+C++ 每个偏移都有 `static_assert` 钉着（布局错一个字节不报错，只是形状静默错）。
+C# **没有编译期 `offsetof`**，所以换三道关：
+
+1. 偏移写成**命名常量**（`SpineGpuOffsets`），读写两端共用同一组 ⇒ 不可能半边漂。
+2. `SpineGpuLayout.Validate()` 在启动时跑一遍常量自洽检查 —— 等价于 static_assert 那一层。
+3. 真正的钉子在对拍：C++ 写的字节，C# 读回来再写一遍必须**逐字节相同**。
+
+⚠️ **round-trip 只能抓"大小"漂，抓不到"解读"漂。** 读与写用同一组常量时，
+把 `clip_index` 与 `pad2` 的偏移对调，字节照样自洽（因为对称）。
+⇒ 必须有**语义断言**（哪些项被裁、多边形顶点落在哪、骨骼索引是不是 0/1）。
+
+跨语言对拍怎么跑：
+
+```
+cmake -B build -DZENGINE_BUILD_SPINE_IMPORT_TEST=ON
+cmake --build build --target SpineGpuImportTest --config Debug
+ctest -C Debug -R SpineGpuCSharpParityTest
+```
+
+`SpineGpuImportTest --dump <dir>` 把夹具容器落成 `.zspg`（18 个，覆盖
+baseline / linked mesh / 双皮肤 / deform / 裁剪的三种 end / 嵌套 / weighted 多边形 /
+nonessential 开与关），C# 端读回来再写一遍比对。
+没装 dotnet 时这条测试不注册（它是**加码**，不是构建的前置条件）。
+
+---
+
 ## 12. 如何证明两端一致（验收清单）
 
 1. **CPU ↔ GPU 对拍**：固定骨架 + 固定时间 `t`，
@@ -652,6 +687,8 @@ Chunks:
    * 二进制的 weighted 判据是**显式 bool**，json 只能靠"数组长度 ≠ vertexCount×2"猜
      （没有 uvs 可比对）⇒ 两种输入必须对到同一个结果；json 缺 `vertexCount` 必须报错
      （参考实现会把它误判成 weighted ⇒ 静默解析成垃圾骨骼索引）
+13. **必须跨语言对拍，不能两端各自自测**（§11.1）：C++ 落的 `.zspg`，C# 读回来再写一遍
+    必须**逐字节相同**；同时要有语义断言，因为 round-trip 抓不到"解读"漂。
 
 ---
 
@@ -714,6 +751,15 @@ v6 已补上：chunk 9 写 `ClipPolygon[]`（12 B/条），绘制项加 `clip_in
 必须能落盘。嵌套裁剪曾经也列在这里 —— 规则一直是明确的，但夹具里没有"两个裁剪附件叠
 在一起"的骨架，因为第二条裁剪要**占掉**一个槽位、那个槽位就没有几何了。现已补上
 5 槽位夹具，判据是**最后那个槽位**的 `kind`：见 §12 第 10 项。）
+
+### 14.4 （已修，2026-10-21）~~容器在 Unity(C#) 侧的读端~~
+
+已补上：`Function/Render/Spine/CSharp/`（`SpineGpuFormat.cs` + `SpineGpuContainerIo.cs`，
+netstandard2.1，可整目录拷进 Unity Assets），并接进 ctest：
+`SpineGpuImportTest --dump` 落盘 → C# 读回 → C# 再写 → 逐字节比对（§11.1）。
+
+**仍未做：C# 导入器** —— 从 spine 源数据在 Unity 侧产出同一个容器。现在只有读端，
+所以 Unity 侧要么等这个，要么先用 C++ 导出的 `.zspg`。
 
 ---
 

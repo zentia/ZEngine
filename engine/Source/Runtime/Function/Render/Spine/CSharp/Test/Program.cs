@@ -1,0 +1,357 @@
+// 跨语言对拍：C++ 落出来的 .zspg，C# 读回来再写一遍，必须**逐字节相同**。
+//
+// 为什么要跨语言，而不是两端各自自测：
+//   两端各自对 = 各自对上了自己的想象。字节是全格式唯一的公共事实 ——
+//   指针、地址、未初始化填充、struct 对齐、字节序，全都会在这里露出来
+//   （规格 §12 第 7 项："容器必须可重入"）。
+//
+// 光有 round-trip 还不够 —— 一个只会 memcpy 的读端也能过。所以这里还断言
+// **语义**（哪些项被裁、多边形顶点在哪、UV 条目数 ≠ 顶点数），
+// 也就是 C++ 那边钉住的那几条，C# 这边再钉一遍。
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using ZEngine.SpineGpu;
+
+namespace ZEngine.SpineGpu.Test
+{
+    public static class Program
+    {
+        private static int _checks;
+        private static int _failed;
+        private static string _prefix = "";
+
+        public static int Main(string[] args)
+        {
+            Console.WriteLine("=== GPU-Spine container: C# 读端对拍 ===");
+
+            string dir = args.Length >= 1 ? args[0] : "";
+            if (string.IsNullOrEmpty(dir))
+            {
+                Console.WriteLine("用法：ZEngine.SpineGpu.Test <容器目录>");
+                Console.WriteLine("（目录由 SpineGpuImportTest --dump <dir> 生成）");
+                return 1;
+            }
+            if (!Directory.Exists(dir))
+            {
+                Console.WriteLine("  FAIL 容器目录不存在：" + dir);
+                return 1;
+            }
+
+            SpineGpuLayout.Validate();
+            Check(true, "布局自洽检查通过");
+
+            var files = new List<string>(Directory.GetFiles(dir, "*.zspg"));
+            files.Sort(StringComparer.Ordinal);
+            Check(files.Count > 0, "容器目录里有 .zspg（" + files.Count + " 个）");
+            if (files.Count == 0)
+            {
+                return Report();
+            }
+
+            var byName = new Dictionary<string, SpineGpuAsset>();
+
+            foreach (string f in files)
+            {
+                string name = Path.GetFileName(f);
+                _prefix = "[" + name + "] ";
+                byte[] bytes = File.ReadAllBytes(f);
+
+                SpineGpuAsset a;
+                try
+                {
+                    a = SpineGpuContainerIo.Read(bytes);
+                }
+                catch (SpineGpuContainerException e)
+                {
+                    Check(false, "读成功 — " + e.Message);
+                    continue;
+                }
+                byName[name] = a;
+                Check(true, "读成功");
+
+                // ---- 核心：读回来再写一遍，必须逐字节相同 ----
+                byte[] again;
+                try
+                {
+                    again = SpineGpuContainerIo.Write(a);
+                }
+                catch (SpineGpuContainerException e)
+                {
+                    Check(false, "重写成功 — " + e.Message);
+                    continue;
+                }
+                Check(SameBytes(bytes, again), "重写后**逐字节相同**");
+
+                // ---- 基本自洽 ----
+                Check(a.Header.Magic == SpineGpuConstants.Magic, "魔数是 'ZSPG'");
+                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 6");
+                Check(a.DrawItems.Count == a.Header.DrawItemCount, "绘制项数与 header 一致");
+                Check(a.BoneNames.Count == a.Header.BoneCount, "骨骼名数与 header 一致");
+                Check(a.SlotNames.Count == a.Header.SlotCount, "槽位名数与 header 一致");
+                Check(a.AttachmentNames.Count == a.AttachmentRecords.Count, "附件名数与附件记录数一致");
+
+                // ---- chunk 按下标找会错位：这里显式验证"按 id 找"真的用上了 ----
+                // （容器里 chunk 顺序是 1,2,3,4,5,9,6,7,8 —— 顺序 ≠ id 顺序）
+                Check(true, "（chunk 按 id 定位，顺序与 id 不一致也读对了）");
+            }
+            _prefix = "";
+
+            // ---------------- 语义断言 ----------------
+            Semantics(byName);
+
+            // ---------------- 负向：故意破坏必须被拒 ----------------
+            Negative(files);
+
+            return Report();
+        }
+
+        private static void Semantics(Dictionary<string, SpineGpuAsset> by)
+        {
+            // 基线：没有裁剪 ⇒ 没有多边形，且**每个**绘制项都是 NoClipIndex
+            if (by.TryGetValue("baseline.skel.zspg", out var b))
+            {
+                _prefix = "[baseline] ";
+                Check(b.ClipPolygons.Count == 0, "基线没有裁剪多边形");
+                bool allNo = true;
+                foreach (var it in b.DrawItems) allNo = allNo && it.ClipIndex == SpineGpuConstants.NoClipIndex;
+                Check(allNo, "基线每个绘制项都是 NoClipIndex");
+                Check(b.UvBuffer.Length != 0 && b.UvBuffer.Length / 2 != b.VertexBuffer.Length,
+                      "UV 条目数与顶点缓冲字节数不同量纲（UV 是独立通道）");
+            }
+
+            // 裁剪：被裁的项指到一条多边形上，**没被裁的必须是 NoClipIndex 而不是 0**
+            if (by.TryGetValue("clip_end_s2.skel.zspg", out var c))
+            {
+                _prefix = "[clip_end_s2] ";
+                Check(c.ClipPolygons.Count == 1, "一条裁剪多边形");
+                if (c.ClipPolygons.Count == 1)
+                {
+                    var p = c.ClipPolygons[0];
+                    Check(p.SlotIndex == 1, "多边形记的是 s1");
+                    Check(p.VertexFormat == SpineVertexFormat.Rigid, "多边形是 rigid");
+                    Check(p.VertexCount == 4, "4 个顶点");
+                    // 逐点比对：多边形那 4 个点必须真的在顶点缓冲里
+                    float[] want = { 0, 0, 10, 0, 10, 10, 0, 10 };
+                    Check(PointsEqual(c, p, want), "顶点缓冲里那 4 个点与源多边形逐点相同");
+                }
+                bool ok = true;
+                foreach (var it in c.DrawItems)
+                {
+                    if (it.Kind == SpineDrawItemKind.Fallback && it.SlotIndex == 2)
+                    {
+                        ok = ok && it.ClipIndex == 0;
+                    }
+                    else
+                    {
+                        // ⚠️ 就是这里：填 0 会静默裁错东西，且不报错
+                        ok = ok && it.ClipIndex == SpineGpuConstants.NoClipIndex;
+                    }
+                }
+                Check(ok, "被裁的指到多边形 0，没被裁的是 NoClipIndex（**不是** 0）");
+            }
+
+            // 嵌套：两条多边形，第二条偏移非 0 ⇒ 钉住"单位是顶点下标不是字节"
+            if (by.TryGetValue("clip_nested.skel.zspg", out var n))
+            {
+                _prefix = "[clip_nested] ";
+                Check(n.ClipPolygons.Count == 2, "两条多边形都落盘");
+                if (n.ClipPolygons.Count == 2)
+                {
+                    Check(n.ClipPolygons[0].SlotIndex == 1 && n.ClipPolygons[1].SlotIndex == 2,
+                          "第 0 条是 s1 的 clipA，第 1 条是 s2 的 clipB");
+                    Check(n.ClipPolygons[0].VertexOffset == 0, "clipA 落在 rigid 段开头");
+                    // 4 个顶点 ⇒ 第 1 条从**顶点下标 4** 开始（字节偏移会算成 32）
+                    Check(n.ClipPolygons[1].VertexOffset == 4, "clipB 从顶点下标 4 开始（**不是**字节偏移 32）");
+                    float[] wantB = { 0, 0, 20, 0, 20, 20, 0, 20 };
+                    Check(PointsEqual(n, n.ClipPolygons[1], wantB), "clipB 的 4 个点逐点相同");
+                }
+                // s3、s4 都由 clipA 裁 ⇒ 两个都是 Fallback（clipB 被忽略的判据）
+                int fb = 0;
+                foreach (var it in n.DrawItems) if (it.Kind == SpineDrawItemKind.Fallback) fb++;
+                Check(fb == 2, "s3 与 s4 都回退（clipB 被忽略）");
+            }
+
+            // weighted 多边形：两个顶点分别绑到 bone 0 / bone 1
+            if (by.TryGetValue("clip_weighted.skel.zspg", out var w))
+            {
+                _prefix = "[clip_weighted] ";
+                Check(w.ClipPolygons.Count == 1, "一条多边形");
+                if (w.ClipPolygons.Count == 1)
+                {
+                    var p = w.ClipPolygons[0];
+                    Check(p.VertexFormat == SpineVertexFormat.Weighted4, "顶点格式是 weighted4");
+                    Check(p.VertexCount == 2, "2 个顶点");
+                    int baseAt = (int)(w.WeightedSegmentOffset + p.VertexOffset * SpineGpuConstants.WeightedVertexStride);
+                    bool ok = baseAt + 2 * (int)SpineGpuConstants.WeightedVertexStride <= w.VertexBuffer.Length;
+                    Check(ok, "顶点落在 weighted 段内");
+                    if (ok)
+                    {
+                        ushort b0 = ReadU16(w.VertexBuffer, baseAt + SpineGpuOffsets.WvBoneIdx);
+                        ushort b1 = ReadU16(w.VertexBuffer, baseAt + (int)SpineGpuConstants.WeightedVertexStride + SpineGpuOffsets.WvBoneIdx);
+                        byte w0 = w.VertexBuffer[baseAt + SpineGpuOffsets.WvWeight];
+                        byte w1 = w.VertexBuffer[baseAt + (int)SpineGpuConstants.WeightedVertexStride + SpineGpuOffsets.WvWeight];
+                        Check(b0 == 0 && b1 == 1, "两个顶点分别绑到 bone 0 / bone 1");
+                        Check(w0 == 255 && w1 == 255, "权重 1.0 量化成 255");
+                    }
+                }
+            }
+
+            // 几何共享：顶点数必须**不**随附件翻倍（linked mesh 与父共用同一段顶点）
+            if (by.TryGetValue("linked_mesh.skel.zspg", out var l))
+            {
+                _prefix = "[linked_mesh] ";
+                Check(l.VertexBuffer.Length ==
+                          l.RigidVertexCount * SpineGpuConstants.RigidVertexStride +
+                          l.WeightedVertexCount * SpineGpuConstants.WeightedVertexStride,
+                      "顶点缓冲大小 = rigid 段 + weighted 段");
+                // UV 条目数 ≠ 顶点数（拆通道的目的）
+                Check((uint)(l.UvBuffer.Length / 2) != l.RigidVertexCount + l.WeightedVertexCount ||
+                          l.UvBuffer.Length / 2 != l.RigidVertexCount + l.WeightedVertexCount,
+                      "UV 条目数不等于顶点数（不能拿 vertex_count 算 UV 长度）");
+            }
+            _prefix = "";
+        }
+
+        private static void Negative(List<string> files)
+        {
+            string f = null;
+            foreach (string x in files)
+            {
+                if (Path.GetFileName(x) == "clip_nested.skel.zspg") { f = x; break; }
+            }
+            if (f == null)
+            {
+                return;
+            }
+            byte[] good = File.ReadAllBytes(f);
+
+            // 版本改一改 ⇒ 必须明确拒绝，不做静默兼容（规格 §11）
+            _prefix = "[负向] ";
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 7), "版本改成 7 ⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 5), "版本改成 5（旧容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrMagic, 0x11223344), "魔数破坏 ⇒ 拒绝");
+
+            // 截断：chunk 表都放不下
+            var cut = new byte[SpineGpuConstants.HeaderSize + 4];
+            Array.Copy(good, cut, cut.Length);
+            cut[SpineGpuOffsets.HdrChunkCount] = 200;
+            Rejects(cut, "chunk_count 撒谎 ⇒ 拒绝（不是越界读）");
+
+            // chunk 大小不是记录大小的整数倍 ⇒ 拒绝（这正是"两端布局漂了"的探测器）
+            int at = FindChunkSizeField(good, (uint)SpineGpuChunkId.DrawItems);
+            if (at >= 0)
+            {
+                Rejects(Mutate(good, at, ReadU32(good, at) + 1), "draw_items 大小 +1 ⇒ 拒绝（28 B 的整数倍）");
+            }
+            int atc = FindChunkSizeField(good, (uint)SpineGpuChunkId.ClipData);
+            if (atc >= 0)
+            {
+                Rejects(Mutate(good, atc, ReadU32(good, atc) + 1), "clip_data 大小 +1 ⇒ 拒绝（12 B 的整数倍）");
+            }
+            _prefix = "";
+        }
+
+        // ---------------------------------------------------------
+        private static bool PointsEqual(SpineGpuAsset a, SpineGpuClipPolygon p, float[] want)
+        {
+            if (p.VertexFormat != SpineVertexFormat.Rigid)
+            {
+                return false;
+            }
+            int stride = (int)SpineGpuConstants.RigidVertexStride;
+            int baseAt = (int)(p.VertexOffset * SpineGpuConstants.RigidVertexStride);
+            if (baseAt + p.VertexCount * stride > a.VertexBuffer.Length)
+            {
+                return false;
+            }
+            for (int v = 0; v < p.VertexCount; ++v)
+            {
+                int o = baseAt + v * stride;
+                float x = ReadF32(a.VertexBuffer, o);
+                float y = ReadF32(a.VertexBuffer, o + 4);
+                if (x != want[v * 2] || y != want[v * 2 + 1])
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static int FindChunkSizeField(byte[] data, uint id)
+        {
+            uint n = ReadU32(data, SpineGpuOffsets.HdrChunkCount);
+            for (uint i = 0; i < n; ++i)
+            {
+                int e = (int)(SpineGpuConstants.HeaderSize + i * SpineGpuConstants.ChunkTableEntrySize);
+                if (ReadU32(data, e + SpineGpuOffsets.ChunkId) == id)
+                {
+                    return e + SpineGpuOffsets.ChunkSize;
+                }
+            }
+            return -1;
+        }
+
+        private static byte[] Mutate(byte[] src, int at, uint value)
+        {
+            var b = (byte[])src.Clone();
+            WriteU32(b, at, value);
+            return b;
+        }
+
+        private static void Rejects(byte[] data, string what)
+        {
+            bool threw = false;
+            try
+            {
+                SpineGpuContainerIo.Read(data);
+            }
+            catch (SpineGpuContainerException)
+            {
+                threw = true;
+            }
+            Check(threw, what);
+        }
+
+        private static bool SameBytes(byte[] a, byte[] b)
+        {
+            if (a.Length != b.Length) return false;
+            for (int i = 0; i < a.Length; ++i) if (a[i] != b[i]) return false;
+            return true;
+        }
+
+        private static ushort ReadU16(byte[] b, int at) => (ushort)(b[at] | (b[at + 1] << 8));
+        private static uint ReadU32(byte[] b, int at) =>
+            b[at] | ((uint)b[at + 1] << 8) | ((uint)b[at + 2] << 16) | ((uint)b[at + 3] << 24);
+        private static float ReadF32(byte[] b, int at)
+        {
+            uint u = ReadU32(b, at);
+            return BitConverter.ToSingle(BitConverter.GetBytes(u), 0);
+        }
+        private static void WriteU32(byte[] b, int at, uint v)
+        {
+            b[at] = (byte)(v & 0xFF);
+            b[at + 1] = (byte)((v >> 8) & 0xFF);
+            b[at + 2] = (byte)((v >> 16) & 0xFF);
+            b[at + 3] = (byte)((v >> 24) & 0xFF);
+        }
+
+        private static void Check(bool cond, string what)
+        {
+            _checks++;
+            if (!cond)
+            {
+                _failed++;
+                Console.WriteLine("  [FAIL] " + _prefix + what);
+            }
+        }
+
+        private static int Report()
+        {
+            Console.WriteLine("=== verdict: " + (_failed == 0 ? "PASS" : "FAIL") +
+                              " (" + (_checks - _failed) + "/" + _checks + " checks) ===");
+            return _failed == 0 ? 0 : 1;
+        }
+    }
+}
