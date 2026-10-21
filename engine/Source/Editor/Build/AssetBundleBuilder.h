@@ -82,7 +82,19 @@ struct AssetBundleBuildOptions
     /// Ignore the build cache and rebuild every bundle (and re-cook every
     /// texture). Use when you do not trust the cache rather than when you
     /// changed something: a changed input is detected on its own.
+    ///
+    /// Defaults to OFF so an edit -> package -> test loop only redoes what
+    /// changed, and to ON when the editor itself was built with
+    /// ZENGINE_PACKAGING_FORCE_REBUILD -- i.e. a release build. A package that
+    /// can only be reproduced by whoever owns the cache is not a release
+    /// artifact, and the extra minutes are not worth the doubt. It is only a
+    /// default: callers can still set it either way (`bundle.build --incremental`
+    /// opts back in on a release editor).
+#if defined(ZENGINE_PACKAGING_FORCE_REBUILD)
+    bool force_rebuild {true};
+#else
     bool force_rebuild {false};
+#endif
 };
 
 struct AssetBundleBuildResult

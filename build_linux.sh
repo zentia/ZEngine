@@ -85,7 +85,20 @@ if [ -n "${GENERATOR}" ]; then
     CONFIGURE_ARGS="${CONFIGURE_ARGS} --generator ${GENERATOR}"
 fi
 
-${PYTHON_CMD} zbuild.py ${CONFIGURE_ARGS}
+# A release build is what gets packaged, so its editor defaults to a full
+# rebuild (ZENGINE_PACKAGING_FORCE_REBUILD): an incremental package is only
+# reproducible by whoever owns the cache. It is a default, not a lock --
+# `bundle.build --incremental` opts back in at run time.
+# Passed explicitly both ways rather than only for release: CMake options are
+# sticky, so leaving it unset would let a previous release configure keep
+# forcing full rebuilds in a debug build that reuses the cache.
+if [ "${CONFIG}" = "release" ]; then
+    CONFIGURE_EXTRA="--extra-args -DZENGINE_PACKAGING_FORCE_REBUILD=ON"
+else
+    CONFIGURE_EXTRA="--extra-args -DZENGINE_PACKAGING_FORCE_REBUILD=OFF"
+fi
+
+${PYTHON_CMD} zbuild.py ${CONFIGURE_ARGS} ${CONFIGURE_EXTRA}
 if [ $? -ne 0 ]; then
     echo "[ERROR] Configuration failed"
     exit 1

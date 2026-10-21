@@ -2314,7 +2314,21 @@ shared machinery is `Editor/Build/BuildCache.{h,cpp}`.
   cache knows but this pass did not produce have their `.zbundle` **deleted** --
   a level removed from the project must not keep shipping.
 - `force_rebuild` (console: `bundle.build --force`) is for "I don't trust the
-  cache", not for "I changed something". A CI release build should pass it.
+  cache", not for "I changed something".
+- **A RELEASE editor defaults `force_rebuild` to true.** `-DZENGINE_PACKAGING_
+  FORCE_REBUILD=ON` is passed by `build_windows.bat` / `build_linux.sh` /
+  `build_macos.sh` for the `release` configuration, and
+  `AssetBundleBuildOptions` picks it up as `ZENGINE_PACKAGING_FORCE_REBUILD`.
+  Rationale: an incremental package is only reproducible by whoever owns the
+  cache, and a release artifact should not depend on that. It is a DEFAULT, not
+  a lock -- `bundle.build --incremental` opts back in at run time. Note that
+  `zbuild.py --extra-args` is an argparse REMAINDER, so a second `-D` has to
+  join the existing `--extra-args` (which is why the Windows script branches on
+  whether CI already added one for `ZENGINE_USE_VULKAN`).
+  Pass it explicitly in BOTH directions (`=OFF` for a non-release config): CMake
+  options are sticky, and the Windows presets are multi-config, so a debug build
+  reusing one build directory would otherwise inherit the previous release's
+  full-rebuild default.
 - `BuildCache` is deliberately engine-free (no Object / LOG / Transfer), which
   is what lets `Editor/Build/Test/BuildCacheSmokeTest.cpp` run standalone.
   Its Test/ dir is excluded from the ZEditor glob (see

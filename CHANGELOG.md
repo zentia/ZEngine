@@ -36,6 +36,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   escape hatch for "I don't trust the cache" -- it is NOT needed for "I changed
   something". `AssetBundleBuildResult` now reports `rebuilt_bundle_count`,
   `skipped_bundle_count` and `cooked_texture_count`.
+- **A RELEASE build of the editor defaults `force_rebuild` to true**
+  (`-DZENGINE_PACKAGING_FORCE_REBUILD=ON`, which `build_windows.bat` /
+  `build_linux.sh` / `build_macos.sh` pass for the `release` configuration).
+  An incremental package is only reproducible by whoever owns the cache, and
+  that is not what a release artifact should depend on. It is a DEFAULT, not a
+  lock: `bundle.build --incremental` opts back in on a release editor, and the
+  build scripts are the only place the flag is set -- nobody has to remember it.
+  The scripts pass it explicitly in both directions (`=OFF` for a non-release
+  config) because CMake options are sticky and the Windows presets are
+  multi-config: without that, a debug build reusing the cache would inherit a
+  previous release's full-rebuild default.
 - New `Editor/Build/BuildCache.{h,cpp}` (engine-free on purpose) plus
   `BuildCacheSmokeTest` (44 checks), registered with CTest and added to the
   smoke-test workflow.
