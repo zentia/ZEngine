@@ -72,6 +72,31 @@ const SpineAtlasRegion* FindAtlasRegion(const SpineAtlas& atlas, const std::stri
 // ---------------------------------------------------------------------
 // 源骨架：解析完的中间形态（还是 spine 自己的数据形状）
 // ---------------------------------------------------------------------
+
+// 源数据的 spine 版本。**只认 3.7 与 3.8**：两者的 .skel 字节布局经逐段比对完全一致
+// （骨骼 / 槽位 / IK / transform / path / 皮肤 / 附件 / 事件 / 动画），
+// 唯一的差别是槽位的暗色判据 —— 所以是"同一个解析器 + 一个分支"，不是两套。
+//
+//   * 3.7（`spine-runtimes` 3.7 `spine-csharp/src/SkeletonBinary.cs:190-192`）：
+//         int darkColor = ReadInt(input);
+//         if (darkColor != -1) slotData.hasSecondColor = true;
+//   * 3.8（`spine-cpp/src/spine/SkeletonBinary.cpp:186-189`）：
+//         读 4 个字节，!(r==0xff && g==0xff && b==0xff && a==0xff) 才算有暗色。
+//
+// ⚠️ 3.7 的 `-1` 就是 0xFFFFFFFF，但 3.8 的判据是"四个字节不全为 ff" ——
+//    3.8 里 `0xFFFFFF00`（a=0）会被判为**有**暗色，3.7 的 `!= -1` 同样判为有；
+//    差别只出现在 `0xFFFFFFFF`：3.7 判无、3.8 也判无。真正的分歧是**语义**而不只是编码，
+//    所以必须按版本分别走，不能取巧合并（3.7 没有 alpha 分量，写死 1）。
+//
+// 4.x 不在此列：`_bones` 从 `Vector<unsigned short>` 变成 `Vector<int>`，
+// 顶点布局不同，需要另一条导入路径（规格 §1.1）。
+enum class SpineSourceVersion : uint8_t
+{
+    kUnknown = 0,
+    k37 = 37,
+    k38 = 38,
+};
+
 struct SpineSourceBone
 {
     std::string name;
@@ -83,6 +108,33 @@ struct SpineSourceSlot
     std::string name;
     int bone_index = -1;
     bool has_dark = false;
+};
+
+// **没有绘制项**的附件：boundingbox / path / point / clipping。
+//
+// 记下来的唯一用途是 deform 时间轴**可以指向它们** —— 四者都是 `VertexAttachment`
+// （`ClippingAttachment.h` / `PathAttachment.h` 都继承它），而参考实现的
+// `DeformTimeline::apply` 只检查 `instanceOf(VertexAttachment::rtti)`，不检查类型。
+//
+// 本工程实测（782 个资产）：
+//   * 88 处 deform 指向 **path**（`K_Lvbu` 槽位 121、`K_Direnjie` 槽位 root..root5）
+//   * 4 处指向 **clipping**（`K_Niumo` 槽位 shandian1）
+//
+// ⇒ "deform 指向一个没有绘制项的附件" **不是错误**：
+//   * path / boundingbox / point：根本不渲染，deform 无从生效；
+//   * clipping：它本来就走 CPU fallback（§7.2），多边形每帧由那条路径重算，
+//     deform 由它处理 —— 容器里存的是未变形的多边形，不需要额外标记。
+//   把它们当错误会让 50+ 个资产整个导不出来，而理由是"某个看不见的东西被动画了"。
+//
+// 但"deform 指向一个**会产生绘制项**却找不到的附件"仍然是错误 —— 那才是真丢了数据。
+//
+// ⚠️ v7 的 S4 做 path 约束时需要 path 的几何（chunk 20），那时 path 要从
+//    "不烘焙"升级成"烘焙"，但**仍然不产生绘制项**。
+struct SpineSourceNoDrawAttachment
+{
+    int skin_index = -1;
+    int slot_index = -1;
+    std::string name;
 };
 
 struct SpineSourceAttachment
@@ -175,6 +227,10 @@ struct SpineSourceSkeleton
     // （SpineGpuFormat.h 里 kDefaultSkinId 的注释讲了为什么必须显式检查）。
     std::vector<std::string> skins;
 
+    // 解析到了但不烘焙的附件（boundingbox / path / point）。见上面的注释：
+    // 存在的意义是让"deform 指向它们"被判成"无事发生"而不是"错误"。
+    std::vector<SpineSourceNoDrawAttachment> no_draw_attachments;
+
     // 裁剪作用域（规格 §7.2）。Bake 按它把**作用域内**的绘制项标成 kFallback ——
     // 不是整个资产回退。作用域是逐皮肤的：裁剪附件本身是某个皮肤下的槽位附件，
     // 换到没有它的皮肤时作用域也就不存在（3.8 同时只有一个皮肤生效）。
@@ -187,7 +243,20 @@ struct SpineSourceSkeleton
 
     // 图集页名（写进容器 chunk 7；序列化时才知道纹理引用）
     std::vector<std::string> atlas_pages;
+
+    // ---- 源版本 ----
+    SpineSourceVersion version = SpineSourceVersion::kUnknown;
+    // 原始版本串（"3.7.83"）。**写实**：容器的 `spine_runtime` 由它算出，
+    // 不把 3.7 的资产伪装成 30800 —— 伪装会让"为什么这个资产要用 3.7 的暗色判据"
+    // 变成一个查不出来的问题。
+    std::string version_string;
 };
+
+// 从版本串判定可导入性。只认 3.7.x / 3.8.x；其它一律拒绝（不静默降级）。
+// 返回 ok 时 `out_version` / `out_runtime` 已填好（`spine_runtime` 的编码：
+// 3.7.xx → 30700、3.8.xx → 30800，与 `SpineGpuConstants::kSpineRuntime37/38` 一致）。
+bool ClassifySpineVersion(const std::string& version_string, SpineSourceVersion& out_version,
+                          uint32_t& out_runtime, std::string& out_error);
 
 // 解析 Spine 3.8 的 json 导出。atlas 可为 nullptr —— 但那样所有需要 UV 的附件
 // 都会**报错**（不是给零 UV 糊过去）。

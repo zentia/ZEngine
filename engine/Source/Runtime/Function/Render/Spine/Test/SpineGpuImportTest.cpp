@@ -216,7 +216,8 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
                                       int deform_length = 10, bool with_clipping = false,
                                       int clip_end_slot = 2, int deform_slot = 1,
                                       bool nested_clip = false, int nested_clip_end_slot = 3,
-                                      bool clip_weighted = false)
+                                      bool clip_weighted = false, bool with_path = false,
+                                      const std::string& deform_name = "mesh")
 {
     SkelWriter w;
 
@@ -322,9 +323,9 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     // ---- default skin ----
     w.Varint(slot_total);   // skin 里涉及的槽位数（本夹具每个槽位都有附件）
 
-    // 槽位 0：region "quad"
+    // 槽位 0：region "quad"（with_path 时再加一个 path 附件）
     w.Varint(0);            // slotIndex
-    w.Varint(1);            // 1 个附件
+    w.Varint(with_path ? 2 : 1);
     w.Str("quad");
     w.Str("");              // 附件名留空 ⇒ 取 skin 里的 key
     w.U8(0);                // AttachmentType_Region
@@ -338,6 +339,28 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     w.F(64.0f);             // width
     w.F(32.0f);             // height
     w.ColorWhite();
+
+    if (with_path)
+    {
+        // 槽位 0 的第二个附件：**path**（type 4）。它不渲染、没有绘制项，
+        // 但 `PathAttachment` 继承 `VertexAttachment` ⇒ deform 时间轴**可以**指向它。
+        // 本工程实测 88 处（如 `K_Lvbu` 槽位 121）—— 指向它必须是"跳过"而不是"报错"。
+        w.Str("path1");
+        w.Str("");          // 附件名留空 ⇒ 取 skin 里的 key
+        w.U8(4);            // AttachmentType_Path
+        w.Bool(false);      // closed
+        w.Bool(false);      // constantSpeed
+        w.Varint(3);        // vertexCount
+        w.Bool(false);      // readVertices：非 weighted
+        w.F(0.0f); w.F(0.0f);
+        w.F(10.0f); w.F(0.0f);
+        w.F(20.0f); w.F(10.0f);
+        w.F(1.0f);          // lengths：vertexCount / 3 = 1
+        if (nonessential)
+        {
+            w.ColorWhite();
+        }
+    }
 
     // 裁剪附件（SkeletonBinary.cpp:636-646）
     // weighted 时 `verts` 是扁平编码：每顶点 [n, (boneIdx, x, y, w) × n]
@@ -521,7 +544,7 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
             w.Varint(1);            // 1 个槽位
             w.Varint(deform_slot);  // slotIndex（裁剪夹具里 mesh 在 s2）
             w.Varint(1);            // 1 个附件
-            w.Str("mesh");
+            w.Str(deform_name);     // 附件名（with_path 时指向 "path1"）
             w.Varint(1);            // 1 帧
             w.F(0.0f);              // time
             // ⚠️ 读端是 `end = readVarint; start = readVarint; end += start;` 再读
@@ -1980,6 +2003,73 @@ int main(int argc, char** argv)
             SpineImportResult r = ParseSpineSkeletonJson(bad, std::string(bad).size(), &atlas, s);
             Check(!r.ok, "deform: 引用不存在的皮肤 ⇒ 报错");
             std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
+        // ①b **反面**：deform 指向一个**没有绘制项**的附件（path）⇒ **不是错误**，跳过。
+        //     本工程实测 88 处指向 path（`K_Lvbu` 槽位 121 等）；当错误会让 50 个资产
+        //     整个导不出来，而理由是"某个看不见的东西被动画了"。
+        //     ⚠️ 关键副作用：它**不能点亮 kHasDeform** —— 没有绘制项要回退，
+        //        点亮它等于让运行时为一个根本不存在的东西每帧准备动态 VB。
+        {
+            const std::vector<uint8_t> skel =
+                BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, true, true, 10,
+                                 false, 2, 0, false, 3, false, true, "path1");
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, s);
+            Check(r.ok, "deform→path: 解析**成功**（不报错）");
+            if (!r.ok)
+            {
+                std::printf("  error: %s\n", r.error.c_str());
+            }
+            else
+            {
+                Check(!s.no_draw_attachments.empty(), "deform→path: path 被记进 no_draw_attachments");
+                bool any_deformed = false;
+                for (const SpineSourceAttachment& a : s.attachments)
+                {
+                    if (a.deformed)
+                    {
+                        any_deformed = true;
+                    }
+                }
+                Check(!any_deformed, "deform→path: 没有任何附件被标 deformed");
+                SpineGpuAsset asset;
+                Check(BakeSpineGpuAsset(s, asset).ok, "deform→path: bake 成功");
+                Check((asset.header.flags & SpineGpuFlags::kHasDeform) == 0,
+                      "deform→path: **不点亮** kHasDeform（没有绘制项可回退）");
+            }
+        }
+        // ①c **3.7 与 3.8**：字节布局逐段比对一致，只有槽位暗色判据不同 ⇒
+        //     同一个夹具只改版本串就必须照样能导，且 `spine_runtime` **写实** 30700。
+        //     本工程 782 个资产全是 3.7.83 —— 不写实（伪装成 30800）会让读端
+        //     按 3.8 的判据解释暗色，而那个差别**不报错**。
+        {
+            SpineSourceVersion v = SpineSourceVersion::kUnknown;
+            uint32_t runtime = 0;
+            std::string err;
+            Check(ClassifySpineVersion("3.7.83", v, runtime, err), "版本: 3.7.83 被接受");
+            Check(v == SpineSourceVersion::k37, "版本: 判成 k37");
+            Check(runtime == SpineGpuConstants::kSpineRuntime37, "版本: runtime = 30700");
+            Check(ClassifySpineVersion("3.8.99", v, runtime, err), "版本: 3.8.99 被接受");
+            Check(v == SpineSourceVersion::k38 && runtime == SpineGpuConstants::kSpineRuntime38,
+                  "版本: 3.8.99 判成 k38 / 30800");
+            Check(!ClassifySpineVersion("4.0.0", v, runtime, err), "版本: 4.x 被拒绝");
+            Check(!ClassifySpineVersion("", v, runtime, err), "版本: 空串被拒绝");
+
+            const std::vector<uint8_t> skel37 = BuildSkelFixture(false, false, "3.7.83");
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonBinary(skel37.data(), skel37.size(), &atlas, s);
+            Check(r.ok, "3.7: 解析成功");
+            if (!r.ok)
+            {
+                std::printf("  error: %s\n", r.error.c_str());
+            }
+            else
+            {
+                SpineGpuAsset a;
+                Check(BakeSpineGpuAsset(s, a).ok, "3.7: bake 成功");
+                Check(a.header.spine_runtime == SpineGpuConstants::kSpineRuntime37,
+                      "3.7: header.spine_runtime **写实** 30700（不伪装成 30800）");
+            }
         }
         // ② 附件名写错：参考实现在这里**倒是**报错（"Attachment not found"）
         {

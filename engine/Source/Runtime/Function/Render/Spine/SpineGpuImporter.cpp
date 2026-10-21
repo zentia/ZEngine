@@ -729,7 +729,8 @@ size_t DeformLength(const SpineSourceAttachment& a)
 //     前者是因为 deform 可以指向 linked mesh（它是最后才插进来的）；
 //     后者是因为传播用的是 parent_index（下标，重排后就失效）。
 bool ApplyDeformRefs(std::vector<SpineSourceAttachment>& attachments,
-                     const std::vector<SpineDeformRef>& refs, std::string& err)
+                     const std::vector<SpineDeformRef>& refs,
+                     const std::vector<SpineSourceNoDrawAttachment>& skipped, std::string& err)
 {
     for (const SpineDeformRef& r : refs)
     {
@@ -745,6 +746,23 @@ bool ApplyDeformRefs(std::vector<SpineSourceAttachment>& attachments,
         }
         if (hit < 0)
         {
+            // 指向一个**我们不渲染**的附件（boundingbox / path / point）⇒ 无事发生。
+            // 它们没有绘制项，deform 对它们无从生效 —— 不是错误，跳过。
+            // 本工程实测 88 处（全是 path），把它们当错误会让 50 个资产导不出来，
+            // 而导不出来的理由是"某个看不见的东西被动画了"。
+            bool skipped_hit = false;
+            for (const SpineSourceNoDrawAttachment& s : skipped)
+            {
+                if (s.skin_index == r.skin_index && s.slot_index == r.slot_index && s.name == r.attachment)
+                {
+                    skipped_hit = true;
+                    break;
+                }
+            }
+            if (skipped_hit)
+            {
+                continue;
+            }
             err = "deform 时间轴指向的附件 '" + r.attachment + "'（皮肤 '" + r.skin_name + "'、槽位 '" +
                   r.slot_name + "'）在骨架里不存在（参考实现在这里报 \"Attachment not found\"）";
             return false;
@@ -811,6 +829,46 @@ bool ApplyDeformRefs(std::vector<SpineSourceAttachment>& attachments,
 
 }   // namespace
 
+bool ClassifySpineVersion(const std::string& version_string, SpineSourceVersion& out_version,
+                          uint32_t& out_runtime, std::string& out_error)
+{
+    out_version = SpineSourceVersion::kUnknown;
+    out_runtime = 0;
+
+    const auto fail = [&](const std::string& m) {
+        out_error = m;
+        return false;
+    };
+
+    if (version_string.empty())
+    {
+        return fail("spine 版本串为空。json 要 `skeleton.spine`、二进制要开头第二个字符串；"
+                    "没有它就无从判断按 3.7 还是 3.8 解释槽位暗色。");
+    }
+    if (version_string.size() < 3)
+    {
+        return fail("spine 版本串 '" + version_string + "' 太短，认不出主次版本。");
+    }
+
+    const std::string major_minor = version_string.substr(0, 3);
+    if (major_minor == "3.7")
+    {
+        out_version = SpineSourceVersion::k37;
+        out_runtime = SpineGpuConstants::kSpineRuntime37;
+        return true;
+    }
+    if (major_minor == "3.8")
+    {
+        out_version = SpineSourceVersion::k38;
+        out_runtime = SpineGpuConstants::kSpineRuntime38;
+        return true;
+    }
+
+    return fail("spine 版本是 '" + version_string + "'，本导入器只认 3.7.x 与 3.8.x。"
+                "4.x 的 `_bones` 是 `Vector<int>`（不再是 unsigned short），顶点布局不同，"
+                "需要另一条导入路径（规格 §1.1）。不做静默降级 —— 猜错版本只会让形状悄悄错。");
+}
+
 SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const SpineAtlas* atlas,
                                          SpineSourceSkeleton& out)
 {
@@ -833,14 +891,20 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
         return Fail("json: 根节点不是对象");
     }
 
-    // ---- 版本：本导入器只认 3.8 ----
+    // ---- 版本：只认 3.7.x / 3.8.x ----
+    // 放宽到 3.7 是因为本工程（OSGame）782 个 `.skel.bytes` **全是 3.7.83**；
+    // 两者字节布局逐段比对一致，唯一差别是槽位暗色判据（见 `SpineSourceVersion` 的注释）。
     const JsonValue* skeleton = GetMember(doc, "skeleton");
     const std::string spine_ver = skeleton ? GetString(*skeleton, "spine", "") : std::string();
-    if (spine_ver.size() < 3 || spine_ver.compare(0, 3, "3.8") != 0)
     {
-        return Fail("json: spine 版本是 '" + (spine_ver.empty() ? std::string("<未标注>") : spine_ver) +
-                    "'，本导入器锁定 3.8（规格 §1.1）。4.x 的 _bones 是 int，布局不同，需要另一条导入路径。");
+        uint32_t runtime = 0;   // Bake 阶段由 `src.version` 重新算出，这里不用
+        std::string verr;
+        if (!ClassifySpineVersion(spine_ver, out.version, runtime, verr))
+        {
+            return Fail("json: " + verr);
+        }
     }
+    out.version_string = spine_ver;
 
     // 图集页名：容器 chunk 8（atlas_pages）要用（纹理引用）。没有图集时留空 —— 但那样需要 UV 的
     // 附件会在下面报错，不会静默产出半个资产。
@@ -1343,7 +1407,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
     if (!deform_refs.empty())
     {
         std::string err;
-        if (!ApplyDeformRefs(out.attachments, deform_refs, err))
+        if (!ApplyDeformRefs(out.attachments, deform_refs, out.no_draw_attachments, err))
         {
             return Fail("json: " + err);
         }
@@ -1673,7 +1737,7 @@ public:
         if (!deform_refs_.empty())
         {
             std::string err;
-            if (!ApplyDeformRefs(out_.attachments, deform_refs_, err))
+            if (!ApplyDeformRefs(out_.attachments, deform_refs_, out_.no_draw_attachments, err))
             {
                 return r_.Fail("skel: " + err);
             }
@@ -1715,6 +1779,18 @@ private:
 
     bool Fail(const std::string& m) { return r_.Fail("skel: " + m); }
 
+    // 记下"解析到了但不烘焙"的附件。存在的唯一理由：deform 时间轴可以指向它们
+    // （三者都是 VertexAttachment），而指向它们只是"没有绘制项可影响"，不是错误。
+    // 见 `SpineSourceNoDrawAttachment` 的注释（本工程实测 88 处指向 path）。
+    void RecordNoDrawAttachment(const std::string& name, int slot_index)
+    {
+        SpineSourceNoDrawAttachment s;
+        s.skin_index = current_skin_;
+        s.slot_index = slot_index;
+        s.name = name;
+        out_.no_draw_attachments.push_back(std::move(s));
+    }
+
     bool ParseTopLevel()
     {
         std::string hash;
@@ -1723,11 +1799,17 @@ private:
         {
             return false;
         }
-        if (version.size() < 3 || version.compare(0, 3, "3.8") != 0)
+        // 只认 3.7.x / 3.8.x。3.7 与 3.8 的字节布局逐段比对完全一致，
+        // 只有槽位暗色判据不同 ⇒ 下面按版本分支，不合并。
         {
-            return Fail("spine 版本是 '" + (version.empty() ? std::string("<空>") : version) +
-                        "'，本导入器锁定 3.8（规格 §1.1）。4.x 的 _bones 是 int，布局不同，需要另一条导入路径。");
+            uint32_t runtime = 0;   // Bake 阶段由 `src.version` 重新算出，这里不用
+            std::string verr;
+            if (!ClassifySpineVersion(version, out_.version, runtime, verr))
+            {
+                return Fail(verr);
+            }
         }
+        out_.version_string = version;
 
         float width = 0.0f;
         float height = 0.0f;
@@ -1907,6 +1989,15 @@ private:
             {
                 return false;   // color
             }
+            // ⚠️ 暗色判据**分版本**，两边都是 4 个字节，但语义不同：
+            //   * 3.7（`spine-runtimes` 3.7 `spine-csharp/src/SkeletonBinary.cs:190-192`）：
+            //         int darkColor = ReadInt(input);
+            //         if (darkColor != -1) slotData.hasSecondColor = true;
+            //     —— 一个 int32，只有 -1（0xFFFFFFFF）表示"没有"。
+            //   * 3.8（`spine-cpp/src/spine/SkeletonBinary.cpp:186-189`）：
+            //         读 4 个字节，四个分量**不全是** 0xff 才算有暗色。
+            //     —— 0xFFFFFF00（a=0）在 3.8 是"有"，在 3.7 也是"有"（!= -1）；
+            //        0xFFFFFFFF 两边都是"无"。所以不能取巧合并成一种读法。
             uint8_t dark[4] = {0, 0, 0, 0};
             for (int k = 0; k < 4; ++k)
             {
@@ -1915,8 +2006,20 @@ private:
                     return false;
                 }
             }
-            // 参考实现 :186-189：四个分量**不全是** 0xff 才算有 dark color。
-            if (!(dark[0] == 0xff && dark[1] == 0xff && dark[2] == 0xff && dark[3] == 0xff))
+            bool has_dark = false;
+            if (out_.version == SpineSourceVersion::k37)
+            {
+                const uint32_t packed = static_cast<uint32_t>(dark[0]) |
+                                        (static_cast<uint32_t>(dark[1]) << 8) |
+                                        (static_cast<uint32_t>(dark[2]) << 16) |
+                                        (static_cast<uint32_t>(dark[3]) << 24);
+                has_dark = (packed != 0xFFFFFFFFu);
+            }
+            else
+            {
+                has_dark = !(dark[0] == 0xff && dark[1] == 0xff && dark[2] == 0xff && dark[3] == 0xff);
+            }
+            if (has_dark)
             {
                 slot.has_dark = true;
                 out_.uses_tint_black = true;
@@ -2355,6 +2458,9 @@ private:
                 clip.weighted = weighted;
                 out_.clips.push_back(clip);
                 out_.has_clipping = true;
+                // 裁剪附件**没有绘制项**（它只留下作用域 + 多边形），且作用域内的绘制项
+                // 本来就走 CPU fallback ⇒ 指向它的 deform 由那条路径处理，不是错误。
+                RecordNoDrawAttachment(name, slot_index);
                 return true;
             }
             case kAttBoundingBox:
@@ -2372,6 +2478,7 @@ private:
                 {
                     return false;
                 }
+                RecordNoDrawAttachment(name, slot_index);
                 return true;   // 包围盒不渲染
             }
             case kAttPath:
@@ -2401,6 +2508,7 @@ private:
                 {
                     return false;
                 }
+                RecordNoDrawAttachment(name, slot_index);
                 return true;   // path 不渲染
             }
             case kAttPoint:
@@ -2413,6 +2521,7 @@ private:
                 {
                     return false;
                 }
+                RecordNoDrawAttachment(name, slot_index);
                 return true;   // point 不渲染
             }
             case kAttLinkedMesh:
@@ -3642,7 +3751,10 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     h = SpineGpuHeader {};
     h.magic = SpineGpuConstants::kMagic;
     h.version = SpineGpuConstants::kFormatVersion;
-    h.spine_runtime = SpineGpuConstants::kSpineRuntime38;
+    // **写实**：按源版本写 30700 / 30800。把 3.7 的资产记成 30800，读端就会按 3.8 的
+    // 判据解释槽位暗色，而那个差别不报错，只是少数槽位颜色不对。
+    h.spine_runtime = (src.version == SpineSourceVersion::k37) ? SpineGpuConstants::kSpineRuntime37
+                                                               : SpineGpuConstants::kSpineRuntime38;
     h.flags = SpineGpuFlags::kNone;
     if (src.has_draw_order_timeline)
     {

@@ -55,6 +55,20 @@ CPU 蒙皮下**每个实例必须持有自己的一份顶点缓冲**，因为各
 **决策**：GPU 化在 **3.8** 内做，升 4.x **单独排期**。理由不是"3.8 更好"，而是**可归因** ——
 同一版本内做，回归能归因到"GPU 化"本身；版本升级 + 算法替换同时上，出问题无法二分。
 
+**⚠️ 2026-10-22 修订：导入器同时接受 3.7.x**（`ClassifySpineVersion()`，4.x 仍明确拒绝）。
+理由不是改了决策，而是**3.7 与 3.8 的 `.skel` 字节布局逐段比对完全一致**
+（骨骼 / 槽位 / IK / transform / path / 皮肤 / 附件 / 事件 / 动画），
+唯一的差别是槽位暗色判据：
+
+| | 判据 | 出处 |
+|---|---|---|
+| 3.7 | `int darkColor = ReadInt(input); if (darkColor != -1) hasSecondColor = true;` | 3.7 `spine-csharp/src/SkeletonBinary.cs:190-192` |
+| 3.8 | 读 4 字节，`!(r==ff && g==ff && b==ff && a==ff)` 才算有暗色 | `spine-cpp/src/spine/SkeletonBinary.cpp:186-189` |
+
+⇒ **同一个解析器 + 一个版本分支**，不是两套。容器的 `spine_runtime` **写实** 30700 / 30800
+（把 3.7 记成 30800 会让读端按 3.8 的判据解释暗色，而那个差别**不报错**）。
+本工程 OSGame 的 782 个资产**全是 3.7.83**，此前 0 个能导入。
+
 **判据（本机已核对，`G:/OSGame/unity-engine-source/Modules/Spine/spine-cpp`）**
 
 | 判据 | 出处 |
@@ -475,9 +489,13 @@ ClipPolygon                  12 B（chunk 9，一条/裁剪附件）
 `0 × stride` 还是 0，两种解释逐字节相同 ⇒ 写错了测不出来；验收必须用到**第二条**
 多边形（偏移非 0）才能钉住（见 §12 第 12 项）。
 
-⚠️ **`kHasDeform` 只由 deform 点亮，不由裁剪点亮。** 两个位都表示"有绘制项走了
-CPU fallback"，但语义不同：`kHasDeform` = 顶点**逐帧**变 ⇒ 动态 VB 每帧要重算；
-裁剪的动态 VB 只在裁剪多边形动的时候才需要重算。合成一个位，运行时会为纯裁剪的资产
+⚠️ **`kHasDeform` 只由 deform 点亮，不由裁剪点亮。** 两个位都表示"有绘制项不完全走
+GPU 路径"，但语义与**代价**都不同：
+`kHasDeform` = 顶点**逐帧**变，但变的只是**蒙皮之前的局部空间加数**（`VertexAttachment.cpp:122-123`
+`vx = (*vertices)[b] + (*deformArray)[f]`）⇒ v7 起走 **deform 增量**，共享 VB 不动、蒙皮仍在 GPU
+（`doc/GPU_SPINE_V7_ANIMATION.md` §5.2；**不再是**全量 CPU 动态 VB）；
+裁剪则是 `SkeletonClipping::clipTriangles()` 重写顶点/三角形/UV ⇒ 只能 CPU 生成动态 VB，
+且只在裁剪多边形动的时候才需要重算。合成一个位，运行时会为纯裁剪的资产
 每帧重算一份根本没变的顶点。
 
 ---
@@ -594,6 +612,10 @@ Chunks:
 ## 11. 版本与兼容
 
 - `version` 变化 ⇒ 导入器必须拒绝旧容器并给出明确错误，不做静默兼容。
+- **v7 在设计中**：骨骼树（chunk 10）+ 动画（chunk 11-14），解算器自写、仍在 CPU。
+  字段设计与转录 gap 分析见 **`doc/GPU_SPINE_V7_ANIMATION.md`**。
+  v7 **不动** header（仍 64 B）、不动 chunk 1..9、不动 §5 每帧实例数据、不动 §6 shader 数学；
+  新增的计数一律从 chunk 表推导（`size / stride`），不进 header。
 - `spine_runtime` 不匹配 ⇒ 警告但允许（布局差异只在 `_bones` 宽度，导入器已按 3.8 读；
   4.x 资产需要另一条导入路径，**不在本版本范围**）。
 - 任何"导入器静默调整数据"的行为（截断影响数、重排顶点、自动降精度）都**必须报错**，
@@ -730,10 +752,16 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
 | 4 | 骨骼通道 structured 还是 UBO？ | **默认 structured / SSBO，24 B 紧凑**；仅当目标后端只有 UBO 时才用 32 B std140 变体（记录在 `bone_stride`） | §5.1 |
 | 7 | 容器加 skin 维度怎么加？ | **附件表多一列 `skin_id`**（4 B → 8 B），而不是另建一张 skin 表。选它是因为换装查询就是"按 (skin, slot) 查附件 id"，一列就能表达；另建表会多一次间接跳转却不省什么 | §9.1 |
 | 8 | linked mesh 的几何怎么省？ | **UV 拆成独立通道 + 顶点逐字节去重**，两条一起做。只拆 UV 不通（顶点仍按附件各存一份），只去重不拆 UV 也不通（UV 不同 ⇒ 字节不同 ⇒ 去重命中率为 0）。去重**只认逐字节完全相同**，不做近似 —— 宁可少共享，不可错共享 | §3.2、§14.2 |
+| 11 | deform 怎么回退？ | **不做稠密展开，也不做 OSGame 式全量 CPU 动态 VB** —— deform 是蒙皮之前的局部空间加数（`VertexAttachment.cpp:122-123`，rigid 则是 `:72-74` 整体替换）⇒ 走 **deform 增量**：共享 bind pose VB 不动、蒙皮仍在 GPU，每实例每帧只上传当前帧 deform 数组（实测均值 122 B/条，对比全量动态 VB 的 24.4 KB/帧）。OSGame 引擎（`SpineMesh.h:266`）那种世界空间全量动态 VB 被否决：它每实例一份 VB，**正好废掉 §0 的 VB 共享** | `doc/GPU_SPINE_V7_ANIMATION.md` §5 |
+| 10 | 动画怎么落？ | **A2（2026-10-22 拍板）**：骨骼树 + 动画烘焙进容器 → **v7**，解算器自己写，仍在 CPU（与 §0 一致）。否决 A1（运行时持有 spine 源数据 / 引入 spine-cpp），因为它与 §11.2「容器由 C++ 唯一产出」相冲，且 Unity 侧要跟着搬一整份运行时。范围与边界见 `doc/GPU_SPINE_V7_ANIMATION.md` | §11 |
 
 ### 13.2 仍待拍板
 
-**无。** 全部八项已拍板；后续若再开新议题写在这里。
+**无。** 全部九项已拍板；后续若再开新议题写在这里。
+
+（v7 设计内部的两个开放项，记在 `doc/GPU_SPINE_V7_ANIMATION.md` §7：
+约束（IK / transform / path）的 setup 数据未预留 chunk，届时需要 chunk 16+ 并 bump 到 v8；
+chunk 15 变长载荷的编码未定。）
 
 ---
 
@@ -793,6 +821,34 @@ ZEditor -batchmode -suite=SpineCook <hero.json | hero.skel | 目录> [-o <输出
 `SpineCook` 是 ZEditor 的一个**工具套件**（`Source/Editor/ToolSuite/SpineCook/`），
 `-batchmode` 不弹窗、不启动引擎、不初始化 RHI，直接跑烘焙（见 §11.2）。目录输入
 保持相对结构铺开，同名骨架不会互相覆盖；有失败就退出码非 0。
+
+### 14.5 （设计已定，未实现，2026-10-22）容器里没有骨骼树与动画 —— 边界按 OSGame 实测反推
+
+v6 及以前只烘焙**绑定姿态**：`SpineGpuAsset` 有 `bone_names` 但 `SpineSourceBone::parent`
+在 Bake 时被丢掉（`SpineGpuImporter.h:78`），也**没有任何动画 chunk**（chunk 只到 9）。
+⇒ 现在一个 `.zspg` **只能画绑定姿态**，动不起来；骨骼矩阵得由外部（spine 运行时）喂。
+
+同时 `kHasDrawOrderTimeline` / `kHasClipping` 这两个 flag 的语义是"走 CPU 路径"，
+而 **ZEngine 目前根本没有 CPU 路径** —— 它们指向一条不存在的路。
+
+v7 的处理（见 `doc/GPU_SPINE_V7_ANIMATION.md`）。**边界不是拍脑袋定的**，是扫了
+`G:/OSGame/Client_proj/Project/Assets` 下 **782 个 `.skel.bytes`**（全部 3.7.83，
+782/782 解析到精确 EOF、0 失败）反推出来的：
+
+* 必须烘焙 **11 类**时间轴：rotate / translate / scale / shear / attachment / color /
+  twoColor / deform / drawOrder / pathConstraintPosition / pathConstraintMix；
+  event 与 IK / transform 约束**时间轴**实测 0 条，不做。
+* ⚠️ **但约束本身必须解算**：IK 22.5% / transform **48.3%** / path 11.1% 的资产带约束，
+  而约束在 `Skeleton::updateWorldTransform` 里**每帧都跑**，与有没有时间轴无关。
+  只做骨骼时间轴会让近一半资产姿势静默错。⇒ 约束 setup + 执行顺序也要进容器。
+* **3.7 vs 3.8 字节布局完全一致**（逐段比对），只有槽位暗色判据不同
+  ⇒ 导入器放宽版本 + 一个分支即可，**不需要第二套解析器**。
+  现在实测 **0/782 能导入**（版本检查硬拒 3.8 以外的）。
+* **deform 是 93% 资产都有**的大头（100 306 条 / 1 733 134 帧 / 2 831 万 float），
+  且帧是**稀疏**的 ⇒ 不能展开成稠密数组搬 GPU（GB 级）。v7 保持稀疏烘焙 +
+  既有 `kFallback` 语义走 CPU 动态 VB，**只回退被命中的绘制项**。
+* 曲线段实测 257 万段（linear 58% / stepped 5% / bezier 37%）⇒ 编码从
+  定长 20 B/段改成**紧凑**（u8 类型 + 每条 bezier 16 B），49 MB → 16.8 MB。
 
 ---
 

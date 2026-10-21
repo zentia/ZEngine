@@ -74,6 +74,12 @@ namespace SpineGpuConstants
     // 必须记录，因为 3.8（u16 骨骼索引）与 4.x（int）布局不同（规格 §9、§11）。
     constexpr uint32_t kSpineRuntime38 = 30800;
 
+    // 3.7.xx -> 30700。导入器接受 3.7 与 3.8：两者的 .skel 字节布局逐段比对完全一致，
+    // 只有槽位的暗色判据不同（3.7 `darkColor != -1`；3.8 四分量不全为 0xff）。
+    // ⚠️ 必须**写实**：把 3.7 资产记成 30800 会让读端按 3.8 的判据去解释暗色，
+    // 而那个差别不会报错，只会让少数槽位颜色不对。
+    constexpr uint32_t kSpineRuntime37 = 30700;
+
     // 每顶点影响数上限。导入器遇到 n > 4 必须**报错并报出附件名**，
     // 不允许静默截断 —— 静默截断 = 形状悄悄错（规格 §3.1）。
     constexpr uint32_t kMaxInfluences = 4;

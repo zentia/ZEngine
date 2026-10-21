@@ -35,13 +35,15 @@ namespace
         "用法：ZEditor -batchmode -suite=SpineCook <输入> [选项]\n"
         "\n"
         "  输入            一个 .json / .skel 骨架，或一个目录\n"
+        "                  Unity 的 `<名>.skel.bytes` 同样认（图集找 `<名>.atlas.txt`）\n"
         "\n"
         "  -o <路径>       输出 .zspg（或目录）；省略 ⇒ 与骨架同目录同名\n"
-        "  -atlas <路径>   图集；省略则取与骨架同名的 .atlas\n"
+        "  -atlas <路径>   图集；省略则取与骨架同名的 .atlas / .atlas.txt\n"
         "  --recursive     输入是目录时连子目录一起走\n"
         "\n"
         "例：\n"
         "  ZEditor -batchmode -suite=SpineCook hero.skel -o hero.zspg\n"
+        "  ZEditor -batchmode -suite=SpineCook hero.skel.bytes -atlas hero.atlas.txt -o hero.zspg\n"
         "  ZEditor -batchmode -suite=SpineCook assets/spine -o out/ --recursive\n"
         "\n"
         "退出码：0 = 全部成功，1 = 有失败（失败数会打出来）。\n";
@@ -123,6 +125,51 @@ namespace
     }
 
     // -------------------------------------------------------------------------
+    // 文件名 → 类型
+    // -------------------------------------------------------------------------
+    // Unity 的 spine-unity 把二进制骨架命名成 `<名>.skel.bytes`、图集 `<名>.atlas.txt`
+    // （`.bytes`/`.txt` 才会被 Unity 当文本资源收）。本工程 OSGame 的 782 个资产
+    // **全是这个命名**，只认 `.skel` 会一个都跑不了。
+    enum class SkeletonKind
+    {
+        kNone,
+        kJson,
+        kBinary,
+    };
+
+    bool EndsWith(const std::string& s, const char* suffix)
+    {
+        const size_t n = std::strlen(suffix);
+        return s.size() >= n && s.compare(s.size() - n, n, suffix) == 0;
+    }
+
+    SkeletonKind KindOfSkeleton(const std::filesystem::path& p)
+    {
+        const std::string name = PathToUtf8(p.filename());
+        // ⚠️ 先判 `.skel.bytes`：`.skel` 是它的前缀，顺序反了会把二进制当二进制……
+        // 实际上两者都走二进制解析器，真正的坑在 StripSkeletonSuffix 那边。
+        if (EndsWith(name, ".skel") || EndsWith(name, ".skel.bytes")) return SkeletonKind::kBinary;
+        if (EndsWith(name, ".json")) return SkeletonKind::kJson;
+        return SkeletonKind::kNone;
+    }
+
+    // `<名>.skel.bytes` → `<名>`（去掉**整个**骨架后缀）。
+    // ⚠️ 不能用 `replace_extension()`：它只换最后一个扩展名，
+    //    `X.skel.bytes` 会变成 `X.skel.zspg`，一个目录批量导出下来全是这种怪名。
+    std::filesystem::path StripSkeletonSuffix(const std::filesystem::path& p)
+    {
+        const std::string name = PathToUtf8(p.filename());
+        for (const char* suf : {".skel.bytes", ".skel", ".json"})
+        {
+            if (EndsWith(name, suf))
+            {
+                return p.parent_path() / name.substr(0, name.size() - std::strlen(suf));
+            }
+        }
+        return p;
+    }
+
+    // -------------------------------------------------------------------------
     // 单个骨架 → 容器
     // -------------------------------------------------------------------------
     // 失败时把原因写进 error（调用方负责打出来并计失败数）。
@@ -150,25 +197,26 @@ namespace
         std::vector<uint8_t> skeleton_bytes;
         if (!ReadWholeFile(skeleton_path, skeleton_bytes, error)) return false;
 
-        // ⚠️ 按**扩展名**选解析器，不是"看内容像不像 json"。
-        // .skel 既没魔数也没长度字段（SpineGpuImportTest 对每个真前缀都调一次
-        // 解析就是钉这点），猜错就是越界读。
-        SpineSourceSkeleton src;
-        const std::string   ext = skeleton_path.extension().string();
-        if (ext == ".json")
-        {
-            r = ParseSpineSkeletonJson(
-                reinterpret_cast<const char*>(skeleton_bytes.data()), skeleton_bytes.size(), &atlas, src);
-        }
-        else if (ext == ".skel")
-        {
-            r = ParseSpineSkeletonBinary(skeleton_bytes.data(), skeleton_bytes.size(), &atlas, src);
-        }
-        else
-        {
-            error = "认不出骨架类型（扩展名 '" + ext + "'，只认 .json / .skel）：" + PathToUtf8(skeleton_path);
-            return false;
-        }
+    // ⚠️ 按**扩展名**选解析器，不是"看内容像不像 json"。
+    // .skel 既没魔数也没长度字段（SpineGpuImportTest 对每个真前缀都调一次
+    // 解析就是钉这点），猜错就是越界读。
+    SpineSourceSkeleton src;
+    const std::string   ext = skeleton_path.extension().string();
+    if (KindOfSkeleton(skeleton_path) == SkeletonKind::kJson)
+    {
+        r = ParseSpineSkeletonJson(
+            reinterpret_cast<const char*>(skeleton_bytes.data()), skeleton_bytes.size(), &atlas, src);
+    }
+    else if (KindOfSkeleton(skeleton_path) == SkeletonKind::kBinary)
+    {
+        r = ParseSpineSkeletonBinary(skeleton_bytes.data(), skeleton_bytes.size(), &atlas, src);
+    }
+    else
+    {
+        error = "认不出骨架类型（'" + ext + "'，只认 .json / .skel / <名>.skel.bytes）："
+                + PathToUtf8(skeleton_path);
+        return false;
+    }
         if (!r.ok)
         {
             error = "骨架 " + skeleton_path.filename().string() + "：" + r.error;
@@ -194,8 +242,12 @@ namespace
         return WriteWholeFile(out_path, container, error);
     }
 
-    // 没给 -atlas 时找同名 .atlas。找不到就报错，不"尽力而为" ——
+    // 没给 -atlas 时找同名图集。找不到就报错，不"尽力而为" ——
     // 用错图集算出来的 UV 是静默错的（图集带裁剪时偏一点，不报任何错）。
+    //
+    // 两种命名都要找：spine 编辑器导出的是 `<名>.atlas`；Unity 的 spine-unity 是
+    // `<名>.atlas.txt`（.txt 才被 Unity 当文本资源收）。本工程 OSGame 782 个资产
+    // 全是后者。
     bool ResolveAtlas(const std::filesystem::path& skeleton_path,
                       const std::filesystem::path& explicit_atlas,
                       std::filesystem::path&       out,
@@ -206,22 +258,26 @@ namespace
             out = explicit_atlas;
             return true;
         }
-        std::filesystem::path candidate = skeleton_path;
-        candidate.replace_extension(".atlas");
-        std::error_code ec;
-        if (!std::filesystem::exists(candidate, ec) || ec)
+        const std::filesystem::path stem = StripSkeletonSuffix(skeleton_path);
+        std::error_code             ec;
+        for (const char* ext : {".atlas", ".atlas.txt"})
         {
-            error = "找不到同名图集 " + PathToUtf8(candidate) + "（用 -atlas 显式指定）";
-            return false;
+            std::filesystem::path candidate = stem;
+            candidate += ext;
+            if (std::filesystem::exists(candidate, ec) && !ec)
+            {
+                out = candidate;
+                return true;
+            }
         }
-        out = candidate;
-        return true;
+        error = "找不到同名图集（试过 " + PathToUtf8(stem) + ".atlas 与 " + PathToUtf8(stem)
+                + ".atlas.txt；用 -atlas 显式指定）";
+        return false;
     }
 
     bool IsSkeleton(const std::filesystem::path& p)
     {
-        const std::string ext = p.extension().string();
-        return ext == ".json" || ext == ".skel";
+        return KindOfSkeleton(p) != SkeletonKind::kNone;
     }
 
     // 交互分支里把路径塞给 Slate（UTF-8 文本）和把 UTF-8 文本变回路径，都用
@@ -340,7 +396,7 @@ int SpineCookSuite::RunBatch(const std::vector<std::string>& args)
 
     if (inputs.empty())
     {
-        std::fprintf(stderr, "输入里没有 .json / .skel：%s\n", PathToUtf8(input).c_str());
+        std::fprintf(stderr, "输入里没有 .json / .skel / .skel.bytes：%s\n", PathToUtf8(input).c_str());
         return 1;
     }
 
@@ -372,8 +428,10 @@ int SpineCookSuite::RunBatch(const std::vector<std::string>& args)
         std::filesystem::path out_path;
         if (!out_given)
         {
-            out_path = skeleton;
-            out_path.replace_extension(".zspg");
+            // ⚠️ 走 StripSkeletonSuffix 而不是 replace_extension：
+            // `X.skel.bytes` 要出 `X.zspg`，不是 `X.skel.zspg`。
+            out_path = StripSkeletonSuffix(skeleton);
+            out_path += ".zspg";
         }
         else if (out_is_dir)
         {
@@ -381,8 +439,11 @@ int SpineCookSuite::RunBatch(const std::vector<std::string>& args)
             // 铺平就只剩一个。
             std::error_code rel_ec;
             const std::filesystem::path rel = std::filesystem::relative(skeleton, input, rel_ec);
-            out_path = rel_ec ? (out_arg / skeleton.filename()) : (out_arg / rel);
-            out_path.replace_extension(".zspg");
+            // relative() 失败时退回"只用文件名"，至少不会把绝对路径拼到 out_arg 上
+            // （`out_arg / 绝对路径` 在 Windows 上直接变成那个绝对路径 ⇒ 写到源目录里）。
+            const std::filesystem::path base = rel_ec ? std::filesystem::path(skeleton.filename()) : rel;
+            out_path = out_arg / StripSkeletonSuffix(base);
+            out_path += ".zspg";
         }
         else
         {

@@ -29,6 +29,9 @@ namespace ZEngine.SpineGpu
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;
+        // 3.7.xx -> 30700。3.7 与 3.8 的 .skel 字节布局一致，只有槽位暗色判据不同
+        // ⇒ 读端必须知道是哪一个（记错不会报错，只是少数槽位颜色不对）。
+        public const uint SpineRuntime37 = 30700;
         public const int MaxInfluences = 4;
 
         public const uint BoneStrideCompact = 24;
