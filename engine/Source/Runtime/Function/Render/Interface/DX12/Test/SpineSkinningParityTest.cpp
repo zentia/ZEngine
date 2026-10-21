@@ -59,6 +59,13 @@ namespace
 // ---------------------------------------------------------------------
 // 顶点布局（与规格 §3.1 逐字节对应）
 // ---------------------------------------------------------------------
+// 【版本锁定：Spine 3.8，规格 §1.1】
+//   bone_idx 是 **uint16**，不是随手选的，是被 3.8 钉死的：
+//     spine-cpp `VertexAttachment.h:79-81` 声明 `Vector<unsigned short> _bones`，
+//     源码注释原话 "unsigned short is ample; a skeleton cannot reach 65535 bones."
+//   ⇒ 导入器必须按 uint16 读 `_bones`；升 4.x 时这里要跟着改（4.x 是 Vector<int>，
+//     但**未在本机核实**，升级时重新核对，别照抄这句）。
+//
 // bindPos 放首位、步长补到 56，是为了让 ByteAddressBuffer::Load2（一次取
 // 一个 float2，要求 8 字节对齐）在每个顶点上都能用：步长 52 时第 k 个顶点
 // 落在 52k，52 % 8 == 4，第二个及以后的顶点就取不了对齐的 Load2。
@@ -70,15 +77,18 @@ struct VtxRigid
 
 struct VtxWeighted
 {
-    float bind_pos[4][2];
+    float bind_pos[4][2];          // 每个影响一份，不是每顶点一份（规格 §3.1 的红字警告）
     float uv[2];
-    std::uint16_t bone_idx[4];
-    std::uint8_t weight[4];
+    std::uint16_t bone_idx[4];     // 3.8: uint16，见上面版本锁定
+    std::uint8_t weight[4];        // unorm8，导入期调到和恰好 255，运行时 /255
     std::uint8_t pad[4];
 };
 
 static_assert(sizeof(VtxRigid) == 16, "kVtxRigid must be 16 B (spec 3.1)");
 static_assert(sizeof(VtxWeighted) == 56, "kVtxWeighted4 must be 56 B (spec 3.1)");
+// 把「3.8 ⇒ 骨骼索引是 uint16」钉成编译期断言，避免以后有人随手改成 uint32。
+static_assert(std::is_same_v<decltype(VtxWeighted::bone_idx), std::uint16_t[4]>,
+              "Spine 3.8: _bones is Vector<unsigned short> -> bone index must be uint16 (spec 1.1)");
 
 // 骨骼 = 6 float：x' = a*x + b*y + worldX,  y' = c*x + d*y + worldY
 struct Bone

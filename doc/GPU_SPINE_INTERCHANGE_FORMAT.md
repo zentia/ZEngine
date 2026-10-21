@@ -5,9 +5,9 @@
 > 目的：ZEngine（C++ 导入器）与 Unity（C# 导入器）产出**同一个容器**，
 > 两端 shader 跑**同一条公式**，从而视觉一致、可互相对拍。
 >
+> **版本锁定：Spine 3.8**（已决策，见 §1.1）。
 > 所有引用 spine-cpp 行为的地方均已核对
-> `G:/OSGame/unity-engine-source/Modules/Spine/spine-cpp`（3.8 时代，`Vector<unsigned short> _bones`），
-> 行号见文末「事实来源」。
+> `G:/OSGame/unity-engine-source/Modules/Spine/spine-cpp`，行号见文末「事实来源」。
 
 ---
 
@@ -47,6 +47,47 @@ CPU 蒙皮下**每个实例必须持有自己的一份顶点缓冲**，因为各
 | **bone table** | 每帧每实例上传的骨骼世界变换数组，6 float/骨 |
 | **rigid** | `_bones.size() == 0` 的附件：整块由**槽位骨骼**单一矩阵变换 |
 | **weighted** | `_bones.size() != 0` 的附件：每顶点多个影响，每个影响**有自己的绑定坐标** |
+
+---
+
+## 1.1 版本锁定：Spine **3.8**（已决策 2026-10-21）
+
+**决策**：GPU 化在 **3.8** 内做，升 4.x **单独排期**。理由不是"3.8 更好"，而是**可归因** ——
+同一版本内做，回归能归因到"GPU 化"本身；版本升级 + 算法替换同时上，出问题无法二分。
+
+**判据（本机已核对，`G:/OSGame/unity-engine-source/Modules/Spine/spine-cpp`）**
+
+| 判据 | 出处 |
+|---|---|
+| `Vector<unsigned short> _bones`，源码注释原话：*"unsigned short is ample; a skeleton cannot reach 65535 bones."* | `VertexAttachment.h:79-81` |
+| 带 `applyDeform(VertexAttachment*)` 与 `getId()` / `const int _id`（3.8 的 deform 重做：附件带 id，deform 可跨 skin 复用） | `VertexAttachment.h:66,69,86` |
+| `computeWorldVertices` 同时提供 2 参与 6 参（start/count/offset/stride）两种重载 | `VertexAttachment.h:53-63` |
+
+**这条锁定实际钉死了什么**
+
+| 项 | 3.8 下的取值 | 出处 |
+|---|---|---|
+| 骨骼索引元素类型 | **`uint16`**（不是 uint32） | `VertexAttachment.h:81` |
+| 单骨架骨骼数上限 | 65535（`uint16` 索引的天然上限，与源码注释同义） | 同上注释 |
+| `_vertices` 每影响三元组步长 | 3 float `(vx, vy, weight)` | `VertexAttachment.cpp:97-112` |
+| deform 偏移 | 每顶点 2 float，**与影响数无关**（`f = skip << 1`） | `VertexAttachment.cpp:115-131` |
+| 混合模式枚举 | `Normal=0 / Additive / Multiply / Screen`，共 4 种 | `BlendMode.h:35-38` |
+| 裁剪 | **只有 CPU 实现** | 见下 |
+
+**顺带解决一项待拍板**：3.8 里裁剪**只有 CPU 实现** —— `SkeletonClipping::clipTriangles()` 会
+**重写顶点 / 三角形 / UV**（`SkeletonClipping.h:47-49` 的 `clipTriangles`，`:52-54` 的 `getClippedVertices/Triangles/UVs`），
+即裁剪会**产生新的顶点和新的三角形**，VS 无法表达。
+所以 §13 的"Clip 走 CPU fallback"不是折中方案，而是 **3.8 下的唯一选项** —— 它从"待拍板"降级为**格式约束**：
+
+> **带裁剪的槽位不进 GPU 路径**，走 CPU 生成的动态 VB（§7）。同一帧内两种路径可混跑。
+
+**迁移风险（写在这里，因为以后一定会有人问）**
+- 4.x 的 `_bones` 是 `Vector<int>` ⇒ 索引类型 uint16→uint32，顶点格式、骨骼表寻址、导入器全要动。
+  ⚠️ **这一条未在本机核实**（本机无 4.x 源码），升级时必须重新核对，不要照抄。
+- OSGame 项目里的 spine-unity 运行时是 **3.7**
+  （`Client_proj/Project/Assets/OSGame/3rd-Party/Spine/version.txt` 已核对：
+  *"works with data exported from Spine Editor version: 3.7.xx"*）。
+  若将来要让 ZEngine 吃 OSGame 的导出资源，`.skel` 二进制版本与 3.8 不同，导入器需要版本分支。
 
 ---
 
@@ -254,9 +295,9 @@ float2 SkinVertex(float2 uvIgnored, uint drawItemIndex)
 |---|---|---|
 | **Region** | 烘焙 4 顶点 | `RegionAttachment::computeWorldVertices` 用 `_vertexOffset[8]` 的 br/bl/ul/ur 四点，由**槽位骨骼**单一矩阵变换 ⇒ 天然是 rigid。UV 由图集页（可能带 90° 旋转）算好，烘焙进静态 UV。 |
 | **Mesh（刚性）** | 烘焙，rigid | `_bones` 为空，整块由槽位骨骼变换。16 B/顶点。 |
-| **Mesh（蒙皮）** | 烘焙，weighted4 | 52 B/顶点。 |
-| **Clipping** | `_ClipData` 保留 | 多边形裁剪 + 三角化产生新三角形 → **CPU fallback**：该项走 `kFallback`，顶点由 CPU 算好上传每帧动态 VB。 |
-| **FFD / deform** | 同左 | `vx = vertices[b] + deform[f]`（`:122-123`）。技术上可 GPU（deform 进纹理），但那样每帧又要传顶点数据，**收益被吃掉** ⇒ 只对真正在动 deform 的槽位走 CPU fallback。 |
+| **Mesh（蒙皮）** | 烘焙，weighted4 | **56 B/顶点**（不是 52，见 §3.1 的对齐说明）。 |
+| **Clipping** | `_ClipData` 保留 | `SkeletonClipping::clipTriangles()` 重写顶点/三角形/UV（`SkeletonClipping.h:47-54`）⇒ **产生新三角形，VS 做不了** ⇒ **CPU fallback**：该项走 `kFallback`，顶点由 CPU 算好上传每帧动态 VB。这是 3.8 的唯一选项，不是折中（§1.1）。 |
+| **FFD / deform** | 同左 | `vx = vertices[b] + deform[f]`（`VertexAttachment.cpp:122-123`）。技术上可 GPU（deform 进纹理），但那样每帧又要传顶点数据，**收益被吃掉** ⇒ 只对真正在动 deform 的槽位走 CPU fallback。 |
 
 Region 的 4 个顶点**烘焙进静态 VB**（而不是用共享单位四边形 + 每实例 offset/uv），
 因为静态部分按资产共享、成本一次性，而每实例数据才是内存大头。
@@ -352,13 +393,20 @@ Chunks:
 
 ---
 
-## 13. 待拍板（阻塞实现，不是文档问题）
+## 13. 决策状态
+
+### 13.1 已拍板
+
+| # | 问题 | 结论 | 落地处 |
+|---|---|---|---|
+| 1 | Spine 版本 | **3.8**，升 4.x 单独排期（理由：可归因，不是"3.8 更好"） | §1.1 |
+| 3 | Clip 策略 | **从"策略"降级为"约束"**：3.8 只有 CPU 实现 ⇒ 带裁剪的槽位走 CPU 动态 VB，同帧可混跑 | §1.1、§7 |
+
+### 13.2 仍待拍板（阻塞实现，不是文档问题）
 
 | # | 问题 | 建议 |
 |---|---|---|
-| 1 | Spine 版本：3.8（与 OSGame 引擎原生模块同版本）还是升 4.2？ | **同版本内做 GPU 化，升级单独排期**，否则回归无法归因 |
-| 2 | `MAX_INFLUENCES = 4` 是否够？ | 够；遇到 >4 报错而非截断 |
-| 3 | Clip 策略 | 保留 CPU fallback，同帧混跑 |
+| 2 | `MAX_INFLUENCES = 4` 是否够？ | 够；遇到 >4 **报错**而非静默截断（§3.1 已按此写） |
 | 4 | 骨骼通道：structured buffer 还是 UBO？ | 默认 structured/SSBO（24 B 紧凑），小骨骼数可走 UBO（32 B） |
 | 5 | 是否要 root 变换 per-instance | 要（UI Spine 必然有位置/缩放） |
 
@@ -375,4 +423,10 @@ Chunks:
 | 混合模式 4 种 | `spine-cpp/include/spine/BlendMode.h:35-38` |
 | 骨骼世界变换 getter | `spine-cpp/include/spine/Bone.h:189-209` |
 | 槽位顺序 / 骨骼顺序 | `spine-cpp/include/spine/Skeleton.h:174-180` |
-| `_bones` 是 `Vector<unsigned short>`（3.8 时代判据） | `VertexAttachment.cpp:70` |
+| `_bones` 声明为 `Vector<unsigned short>`（3.8 判据，注释："a skeleton cannot reach 65535 bones"） | `VertexAttachment.h:79-81` |
+| 3.8 deform 重做：`applyDeform(VertexAttachment*)` + `getId()` / `const int _id` | `VertexAttachment.h:66,69,86` |
+| `computeWorldVertices` 两种重载（2 参 / 6 参带 stride） | `VertexAttachment.h:53-63` |
+| rigid 公式精确行号（`:83` = x，`:84` = y） | `VertexAttachment.cpp:71,83-84` |
+| weighted 非 deform 块 `:97-112`；deform 块 `:115-131`，`vx` 在 `:122` | `VertexAttachment.cpp` |
+| 裁剪是 CPU 几何重写 | `SkeletonClipping.h:47-49`（`clipTriangles`）、`:52-54`（`getClippedVertices/Triangles/UVs`） |
+| OSGame 侧 spine-unity 运行时是 **3.7** | `Client_proj/Project/Assets/OSGame/3rd-Party/Spine/version.txt` |
