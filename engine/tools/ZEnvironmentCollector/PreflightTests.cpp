@@ -473,6 +473,44 @@ int main()
             Check(!HasFinding(Evaluate(inputs), "GAME_VOLUME_SPINNING_DISK"), "an SSD is quiet");
         }
         {
+            // Windows' own volume carries the page file, %TEMP% and the dump a
+            // crash has to write. How much room D: has says nothing about it.
+            auto inputs = HealthyInputs();
+            inputs.systemVolumeRoot = "D:\\";
+            inputs.systemVolumeFreeBytes = 600ull << 20;
+            inputs.systemVolumeKnown = true;
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise, "a full system volume advises");
+            Check(HasFinding(result, "SYSTEM_VOLUME_LOW_FREE_SPACE"), "and names the system volume");
+            Check(result.actions.front().code == "FREE_SYSTEM_DISK_SPACE", "and says which disk to clean");
+        }
+        {
+            // One volume wearing two hats is one measurement: it is reported under
+            // the name the player recognises, not twice under two names.
+            auto inputs = HealthyInputs();
+            inputs.gameVolumeRoot = "C:\\";
+            inputs.gameVolumeFreeBytes = 600ull << 20;
+            inputs.systemVolumeRoot = "C:\\";
+            inputs.systemVolumeFreeBytes = 600ull << 20;
+            inputs.systemVolumeKnown = true;
+            const auto result = Evaluate(inputs);
+            Check(HasFinding(result, "STORAGE_LOW_FREE_SPACE"), "one volume under the floor is reported");
+            Check(!HasFinding(result, "SYSTEM_VOLUME_LOW_FREE_SPACE"), "but not a second time as the system disk");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.systemVolumeKnown = false;
+            Check(!HasFinding(Evaluate(inputs), "SYSTEM_VOLUME_LOW_FREE_SPACE"),
+                  "a system volume that could not be named is not called full");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.systemVolumeRoot = "D:\\";
+            inputs.systemVolumeFreeBytes = 100ull << 30;
+            inputs.systemVolumeKnown = true;
+            Check(!HasFinding(Evaluate(inputs), "SYSTEM_VOLUME_LOW_FREE_SPACE"), "a roomy system volume is quiet");
+        }
+        {
             // Not installed, not shipped beside the game.
             auto inputs = HealthyInputs();
             inputs.vcRuntimePresent = false;
@@ -782,6 +820,7 @@ int main()
             Check(json.find("\"gpuDriverResets\": {") != std::string::npos, "gpuDriverResets is reported");
             Check(json.find("\"driveType\": ") != std::string::npos, "the game volume's drive type is reported");
             Check(json.find("\"spinning\": ") != std::string::npos, "whether the game volume is mechanical is reported");
+            Check(json.find("\"systemVolume\": ") != std::string::npos, "the system volume is reported too");
             Check(json.find("\"gamePath\": {") != std::string::npos, "the install path is reported");
             Check(json.find("\"uptimeMilliseconds\": ") != std::string::npos, "uptime is reported");
             Check(json.find("\"attachedOutputCount\": ") != std::string::npos, "each adapter reports its attached outputs");

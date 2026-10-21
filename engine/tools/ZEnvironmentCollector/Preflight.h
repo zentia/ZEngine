@@ -149,6 +149,14 @@ struct PreflightInputs
     bool gameVolumeSpinning = false;
     bool gameVolumeSpinningKnown = false;
 
+    // The volume Windows is installed on, when it is not the one the game is on.
+    // It carries the page file, %TEMP%, the shader cache and any crash dump, and
+    // how much room is left on D: says nothing about any of them. A machine can
+    // pass every other check here and still be unable to write a single file.
+    std::string systemVolumeRoot;
+    std::uint64_t systemVolumeFreeBytes = 0;
+    bool systemVolumeKnown = false;
+
     // Whether every character in the install path is ASCII. Native code that
     // opens files through the narrow API (fopen and friends) does not see the
     // path the way the rest of the game does, and a path it cannot round-trip is

@@ -230,6 +230,33 @@ bool ReadVolumeSpinning(const wchar_t* root, bool& known)
     return descriptor.IncursSeekPenalty != FALSE;
 }
 
+// The volume Windows boots from: the page file, %TEMP%, the shader cache and every
+// crash dump live there, and none of them care how much room is left on the volume
+// the game happens to be installed on. Stays quiet when it is the same volume --
+// that one is already measured -- and when it cannot be named at all.
+void CollectSystemVolume(PreflightInputs& inputs)
+{
+    wchar_t windowsDirectory[MAX_PATH]{};
+    if (::GetSystemWindowsDirectoryW(windowsDirectory, MAX_PATH) == FALSE)
+    {
+        return;
+    }
+    wchar_t root[MAX_PATH]{};
+    if (::GetVolumePathNameW(windowsDirectory, root, MAX_PATH) == FALSE)
+    {
+        return;
+    }
+    const std::string rootUtf8 = diagnosis::WideToUtf8(root);
+    ULARGE_INTEGER callerAvailable{};
+    if (::GetDiskFreeSpaceExW(root, &callerAvailable, nullptr, nullptr) == FALSE)
+    {
+        return;
+    }
+    inputs.systemVolumeRoot = rootUtf8;
+    inputs.systemVolumeFreeBytes = callerAvailable.QuadPart;
+    inputs.systemVolumeKnown = true;
+}
+
 void CollectGameVolume(PreflightInputs& inputs, const std::filesystem::path& gameDirectory)
 {
     if (gameDirectory.empty())
@@ -743,6 +770,9 @@ PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirector
     }
 
     CollectGameVolume(inputs, gameDirectory);
+    // After the game volume: the same-volume check above depends on knowing which
+    // one that is.
+    CollectSystemVolume(inputs);
     inputs.insiderPreview = ReadInsiderPreview(inputs.insiderPreviewKnown);
 
     // Two registry reads and at most three file-exists checks: cheap enough to
@@ -818,6 +848,11 @@ diagnosis::UserAction ActionFor(const std::string& findingCode)
     if (findingCode == "STORAGE_LOW_FREE_SPACE")
     {
         return {"FREE_DISK_SPACE", "清理游戏所在磁盘，至少保留 2 GB 可用空间。"};
+    }
+    if (findingCode == "SYSTEM_VOLUME_LOW_FREE_SPACE")
+    {
+        return {"FREE_SYSTEM_DISK_SPACE",
+                "清理系统盘（Windows 所在的那个盘）的空间，至少保留 2 GB 可用空间。"};
     }
     if (findingCode == "D3D11_DEVICE_UNAVAILABLE")
     {
@@ -1171,6 +1206,22 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
             "游戏所在磁盘可用空间不足，更新和日志写入可能失败。",
             inputs.gameVolumeRoot + " free " +
             std::to_string(inputs.gameVolumeFreeBytes / (1024 * 1024)) + " MB"});
+    }
+    // Not the same disk twice: Windows' own volume holds the page file, %TEMP%,
+    // the shader cache and the dump a crash needs to write. A game installed on a
+    // roomy D: with a C: that cannot take another file passes every other check
+    // here and then fails at something that looks nothing like running out of
+    // space. Deduped here rather than at collection time so that one volume
+    // wearing two hats is visibly one measurement in the rules, not just in the
+    // code that happened to collect it.
+    if (inputs.systemVolumeKnown && inputs.systemVolumeFreeBytes < requirements.minimumFreeDiskSpaceBytes &&
+        !(inputs.gameVolumeKnown &&
+          diagnosis::EqualsIgnoreCaseAscii(inputs.systemVolumeRoot, inputs.gameVolumeRoot)))
+    {
+        result.findings.push_back({"SYSTEM_VOLUME_LOW_FREE_SPACE", "storage",
+            "系统盘可用空间不足，页面文件、临时文件和崩溃转储都会写不进去。",
+            inputs.systemVolumeRoot + " free " +
+            std::to_string(inputs.systemVolumeFreeBytes / (1024 * 1024)) + " MB"});
     }
 
     // Free space says how much room is left; these two say whether the volume can
@@ -1924,6 +1975,10 @@ std::string BuildPreflightJson(
            << ", \"fileSystemKnown\": " << BoolText(inputs.gameVolumeFileSystemKnown)
            << ", \"spinning\": " << BoolText(inputs.gameVolumeSpinning)
            << ", \"spinningKnown\": " << BoolText(inputs.gameVolumeSpinningKnown)
+           << "},\n"
+           << "    \"systemVolume\": {\"known\": " << BoolText(inputs.systemVolumeKnown)
+           << ", \"root\": " << JsonString(inputs.systemVolumeRoot)
+           << ", \"availableBytes\": " << inputs.systemVolumeFreeBytes
            << "},\n"
            << "    \"gamePath\": {\"known\": " << BoolText(inputs.gamePathKnown)
            << ", \"ascii\": " << BoolText(inputs.gamePathAscii)
