@@ -1,4 +1,5 @@
 #include "Editor/Launcher/ZEditorLauncher.h"
+#include "Editor/ToolSuite/ToolSuite.h"
 
 #ifdef _WIN32
 
@@ -310,9 +311,39 @@ namespace
         return button;
     }
 
-    std::shared_ptr<ZSlate::SWidget> MakeProjectButton(ZSlate::FSlateStandaloneApp& app,
-                                                       const std::filesystem::path& project_file,
-                                                       std::filesystem::path&       picked)
+    // -------------------------------------------------------------------------
+    // 套件列表
+    //
+    // 关卡编辑器排在第一个并且默认选中：绝大多数启动就是要它，让它变成"再点一次
+    // 项目"而不是"先点套件再点项目"。其它套件是 `ZEditor::AllToolSuites()`
+    // 里自注册的那些 —— 加一个套件不用改这里。
+    // -------------------------------------------------------------------------
+    struct FSuiteEntry
+    {
+        std::string id;
+        std::string display_name;
+        std::string description;
+        bool        needs_project = false;
+    };
+
+    std::vector<FSuiteEntry> CollectSuites()
+    {
+        std::vector<FSuiteEntry> out;
+        const ZEditor::ToolSuiteDesc& level = ZEditor::LevelEditorSuiteDesc();
+        out.push_back({level.id, level.display_name, level.description, level.needs_project});
+        for (const ZEditor::IToolSuite* suite : ZEditor::AllToolSuites())
+        {
+            const ZEditor::ToolSuiteDesc& d = suite->Desc();
+            out.push_back({d.id, d.display_name, d.description, d.needs_project});
+        }
+        return out;
+    }
+
+    std::shared_ptr<ZSlate::SWidget> MakeProjectButton(ZSlate::FSlateStandaloneApp&   app,
+                                                       const std::filesystem::path&  project_file,
+                                                       const std::vector<FSuiteEntry>& suites,
+                                                       const std::shared_ptr<int>&    selected,
+                                                       LaunchChoice&                  choice)
     {
         auto button = std::make_shared<ZSlate::SButton>();
         auto body   = std::make_shared<ZSlate::SVerticalBox>();
@@ -323,26 +354,65 @@ namespace
                                 ZSlate::UIColor(0.52f, 0.55f, 0.62f, 1.0f)));
 
         button->SetContent(body);
-        button->OnClicked = [&app, &picked, project_file]()
+        button->OnClicked = [&app, &choice, &suites, selected, project_file]()
         {
-            picked = project_file;
+            choice.suite_id     = suites[*selected].id;
+            choice.project_file = project_file;
             app.RequestExit();
         };
         return button;
     }
 
-    std::shared_ptr<ZSlate::SWidget> BuildRoot(ZSlate::FSlateStandaloneApp&        app,
+    std::shared_ptr<ZSlate::SWidget> BuildRoot(ZSlate::FSlateStandaloneApp&             app,
                                                const std::vector<std::filesystem::path>& recent,
-                                               std::filesystem::path&              picked)
+                                               LaunchChoice&                            choice)
     {
         using namespace ZSlate;
+
+        const std::vector<FSuiteEntry> suites = CollectSuites();
+        // 按钮的 lambda 要在 app.Run() 期间改写它，而 BuildRoot 早就返回了 ——
+        // 必须是共享的，引用捕获栈上的 int 会在第一次点击时就悬空。
+        const auto selected = std::make_shared<int>(0);
 
         auto root = std::make_shared<SVerticalBox>();
         const UIColor kMuted(0.60f, 0.63f, 0.70f, 1.0f);
 
         root->AddSlot(MakeLabel("ZEngine Launcher", 26.0f, Colors::White));
         root->AddSlot(std::make_shared<SSpacer>(Vector2(0, 4)));
-        root->AddSlot(MakeLabel("选择一个项目开始", 14.0f, UIColor(0.60f, 0.72f, 0.92f, 1.0f)));
+        root->AddSlot(MakeLabel("选择工具套件，然后选一个项目", 14.0f, UIColor(0.60f, 0.72f, 0.92f, 1.0f)));
+        root->AddSlot(std::make_shared<SSpacer>(Vector2(0, 14)));
+
+        root->AddSlot(MakeLabel("工具套件", 15.0f, UIColor(0.78f, 0.80f, 0.86f, 1.0f)));
+        root->AddSlot(std::make_shared<SSpacer>(Vector2(0, 6)));
+
+        auto suite_hint = MakeLabel("", 12.0f, kMuted);
+        const auto refresh_hint = [suites, selected, suite_hint]()
+        {
+            suite_hint->Text = suites[*selected].description;
+        };
+        refresh_hint();
+
+        for (size_t i = 0; i < suites.size(); ++i)
+        {
+            const std::string label = (suites[i].needs_project ? "" : "[直接启动] ") + suites[i].display_name;
+            auto              button = std::make_shared<SButton>();
+            button->SetContent(MakeLabel(label, 14.0f, Colors::White));
+            button->OnClicked = [&app, &choice, suites, selected, suite_hint, refresh_hint, i]()
+            {
+                *selected = static_cast<int>(i);
+                refresh_hint();
+                // 不需要项目的套件（烘焙器 / 查看器）选完就走：再让用户去挑一个
+                // .zproject 只会让他以为这工具跟项目有关。
+                if (!suites[i].needs_project)
+                {
+                    choice.suite_id = suites[i].id;
+                    app.RequestExit();
+                }
+            };
+            root->AddSlot(button);
+            root->AddSlot(std::make_shared<SSpacer>(Vector2(0, 4)));
+        }
+        root->AddSlot(suite_hint);
         root->AddSlot(std::make_shared<SSpacer>(Vector2(0, 18)));
 
         if (!recent.empty())
@@ -350,7 +420,7 @@ namespace
             root->AddSlot(MakeLabel("最近项目", 15.0f, UIColor(0.78f, 0.80f, 0.86f, 1.0f)));
             for (const auto& project_file : recent)
             {
-                root->AddSlot(MakeProjectButton(app, project_file, picked));
+                root->AddSlot(MakeProjectButton(app, project_file, suites, selected, choice));
                 root->AddSlot(std::make_shared<SSpacer>(Vector2(0, 4)));
             }
         }
@@ -361,11 +431,12 @@ namespace
 
         root->AddSlot(std::make_shared<SSpacer>(Vector2(0, 16)));
         root->AddSlot(MakeButton("打开项目…",
-                                 [&app, &picked]()
+                                 [&app, &choice, suites, selected]()
                                  {
                                      const std::filesystem::path chosen = BrowseForProject(app.GetHwnd());
                                      if (chosen.empty()) return;
-                                     picked = chosen;
+                                     choice.suite_id     = suites[*selected].id;
+                                     choice.project_file = chosen;
                                      app.RequestExit();
                                  }));
 
@@ -391,7 +462,7 @@ namespace
         root->AddSlot(std::make_shared<SSpacer>(Vector2(0, 10)));
 
         root->AddSlot(MakeButton("创建并打开",
-                                 [&app, &picked, name_box, dir_box, status]()
+                                 [&app, &choice, suites, selected, name_box, dir_box, status]()
                                  {
                                      const std::string name = name_box->GetText();
                                      if (name.empty())
@@ -408,7 +479,8 @@ namespace
                                          return;
                                      }
 
-                                     picked = created;
+                                     choice.suite_id     = suites[*selected].id;
+                                     choice.project_file = created;
                                      app.RequestExit();
                                  }));
         root->AddSlot(status);
@@ -437,12 +509,27 @@ namespace
     }
 }  // namespace
 
-bool Run(std::filesystem::path& out_project_file)
+// 套件是否需要项目。关卡编辑器不是 IToolSuite（它要跑 START_SYSTEM() 那一整套），
+// 所以它只在这里有个 desc，查找时要单独比一次。
+bool SuiteNeedsProject(const std::string& suite_id)
+{
+    if (suite_id == ZEditor::LevelEditorSuiteDesc().id)
+    {
+        return ZEditor::LevelEditorSuiteDesc().needs_project;
+    }
+    if (const ZEditor::IToolSuite* suite = ZEditor::FindToolSuite(suite_id))
+    {
+        return suite->Desc().needs_project;
+    }
+    return true;  // 认不出就当它要项目 —— 少启动一个空壳，比多启动一个好
+}
+
+bool Run(LaunchChoice& out_choice)
 {
     const std::filesystem::path list_path   = RecentListPath();
     std::vector<std::filesystem::path> recent = LoadRecent(list_path);
 
-    std::filesystem::path picked;
+    LaunchChoice choice;
 
     ZSlate::FStandaloneAppDesc desc;
     desc.Title  = "ZEngine Launcher";
@@ -468,16 +555,22 @@ bool Run(std::filesystem::path& out_project_file)
         return false;
     }
 
-    app.SetRootContent(BuildRoot(app, recent, picked));
+    app.SetRootContent(BuildRoot(app, recent, choice));
     app.Run();
     app.Shutdown();
 
-    if (picked.empty()) return false;
+    if (choice.suite_id.empty()) return false;
 
-    PushRecent(recent, picked);
-    SaveRecent(list_path, recent);
+    const bool needs_project = SuiteNeedsProject(choice.suite_id);
+    if (needs_project && choice.project_file.empty()) return false;
 
-    out_project_file = picked;
+    if (needs_project && !choice.project_file.empty())
+    {
+        PushRecent(recent, choice.project_file);
+        SaveRecent(list_path, recent);
+    }
+
+    out_choice = choice;
     return true;
 }
 

@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -17,6 +19,7 @@
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/Launcher/ZEditorLauncher.h"
 #include "Editor/RegisterEditor.h"
+#include "Editor/ToolSuite/ToolSuite.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/RegisterRuntime.h"
@@ -35,6 +38,105 @@ namespace
         OpenLauncher,
         Abort
     };
+
+    // ---- `-batchmode`：不弹窗、不启动引擎，直接跑某个工具套件的命令行分支 ----
+    //
+    // 分流点必须在这里（RegisterRuntime() 之前）。START_SYSTEM() 会拉起 RHI、
+    // 世界、资源系统，一个"读文件 → 算 → 写文件"的烘焙器全都不需要它们；
+    // 让它们初始化只是白白拖慢 CI，而且万一某个系统初始化失败，一个跟它毫无
+    // 关系的导出任务会跟着失败。
+    struct BatchRequest
+    {
+        bool                     enabled  = false;
+        std::string              suite_id;
+        // `-batchmode` 之后的参数。套件自己负责解析；`-suite=` 可能也在这段里
+        // （套件会跳过它，见 SpineCookSuite::RunBatch）。
+        std::vector<std::string> args;
+        // 没有 -batchmode 时，`-suite=` 之后的部分 —— 交互分支的参数。
+        std::vector<std::string> suite_args;
+    };
+
+    constexpr const char* const kSuitePrefix = "-suite=";
+
+    void ScanBatchRequest(const std::vector<std::string>& argv, BatchRequest& out)
+    {
+        out = BatchRequest{};
+        for (size_t i = 1; i < argv.size(); ++i)
+        {
+            if (argv[i].rfind(kSuitePrefix, 0) == 0)
+            {
+                out.suite_id   = argv[i].substr(std::strlen(kSuitePrefix));
+                out.suite_args.assign(argv.begin() + static_cast<long>(i) + 1, argv.end());
+            }
+        }
+        for (size_t i = 1; i < argv.size(); ++i)
+        {
+            if (argv[i] == "-batchmode" || argv[i] == "--batchmode")
+            {
+                out.enabled = true;
+                out.args.assign(argv.begin() + static_cast<long>(i) + 1, argv.end());
+                break;
+            }
+        }
+    }
+
+    void PrintAvailableSuites(FILE* stream)
+    {
+        std::fprintf(stream, "  可用套件：\n");
+        const ZEditor::ToolSuiteDesc& level = ZEditor::LevelEditorSuiteDesc();
+        std::fprintf(stream,
+                     "    %-14s %s%s\n",
+                     level.id.c_str(),
+                     level.display_name.c_str(),
+                     level.supports_batch ? "" : "  (不支持 -batchmode)");
+        for (const ZEditor::IToolSuite* suite : ZEditor::AllToolSuites())
+        {
+            const ZEditor::ToolSuiteDesc& d = suite->Desc();
+            std::fprintf(stream,
+                         "    %-14s %s%s\n",
+                         d.id.c_str(),
+                         d.display_name.c_str(),
+                         d.supports_batch ? "" : "  (不支持 -batchmode)");
+        }
+    }
+
+    int RunBatchMode(const BatchRequest& batch)
+    {
+#ifdef _WIN32
+        // ZEditor 是 /SUBSYSTEM:WINDOWS，printf 默认没有地方可去。挂到调用方
+        // 的控制台上（没有就新建一个）—— 否则"跑了但看不到输出"跟"挂了"没法区分。
+        zengine::appshell::EnsureConsole();
+#endif
+        if (batch.suite_id.empty())
+        {
+            std::fprintf(stderr, "-batchmode 需要指定 -suite=<id>。\n\n");
+            PrintAvailableSuites(stderr);
+            return 1;
+        }
+
+        ZEditor::IToolSuite* suite = ZEditor::FindToolSuite(batch.suite_id);
+        if (suite == nullptr)
+        {
+            std::fprintf(stderr, "没有这个工具套件：%s\n\n", batch.suite_id.c_str());
+            PrintAvailableSuites(stderr);
+            // 关卡编辑器有 desc 但没有 IToolSuite：它要跑 START_SYSTEM() 那一
+            // 整套，正好是 -batchmode 想绕开的东西。单独说清楚，别让人以为
+            // 拼错了 id。
+            if (batch.suite_id == ZEditor::LevelEditorSuiteDesc().id)
+            {
+                std::fprintf(stderr, "\n关卡编辑器不支持 -batchmode（它就是要启动整个引擎）。\n");
+            }
+            return 1;
+        }
+
+        if (!suite->Desc().supports_batch)
+        {
+            std::fprintf(stderr, "工具套件 '%s' 不支持 -batchmode。\n", batch.suite_id.c_str());
+            return 1;
+        }
+
+        return suite->RunBatch(batch.args);
+    }
 
     StartupMode resolveStartupModeFromProjectPath(const std::filesystem::path& project_path, bool has_project_argument)
     {
@@ -205,20 +307,38 @@ namespace
         return 0;
     }
 
-    // Show the project picker, then relaunch ourselves with -p <project>.
+    // Show the suite + project picker, then dispatch.
     //
-    // Relaunching rather than carrying on in-process: CommandSystem reads the
-    // project out of argv during START_SYSTEM(), so handing it one here would
-    // mean a second, parallel way to set it. ShellExecute restarts the same exe
-    // (GetModuleFileName, not a hardcoded path) with a quoted argument -- project
-    // paths contain spaces often enough that this matters.
-    int runLauncherAndRelaunch()
+    // The level editor relaunches rather than carrying on in-process:
+    // CommandSystem reads the project out of argv during START_SYSTEM(), so
+    // handing it one here would mean a second, parallel way to set it.
+    // ShellExecute restarts the same exe (GetModuleFileName, not a hardcoded
+    // path) with a quoted argument -- project paths contain spaces often enough
+    // that this matters.
+    //
+    // A tool suite runs in-process instead: it does not start the engine, so
+    // there is nothing to re-initialise and nothing for a second process to buy.
+    int runLauncherAndDispatch()
     {
-        std::filesystem::path project_file;
-        if (!ZEditorLauncher::Run(project_file))
+        ZEditorLauncher::LaunchChoice choice;
+        if (!ZEditorLauncher::Run(choice))
         {
             return reportMissingProject();
         }
+
+        if (choice.suite_id != ZEditor::LevelEditorSuiteDesc().id)
+        {
+            if (ZEditor::IToolSuite* suite = ZEditor::FindToolSuite(choice.suite_id))
+            {
+                return suite->RunInteractive(choice.project_file, std::vector<std::string>());
+            }
+            std::cerr << "ZEditor: 没有这个工具套件：" << choice.suite_id << "\n";
+            LOG_ERROR(ZEditor, "Unknown tool suite '{}' chosen in the launcher.", choice.suite_id);
+            LogSystem::ForceFlush();
+            return 1;
+        }
+
+        const std::filesystem::path& project_file = choice.project_file;
 
         wchar_t exe_path[4096] = {};
         GetModuleFileNameW(nullptr, exe_path, ARRAYSIZE(exe_path));
@@ -329,6 +449,29 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Initialize UTF-8 locale to handle filesystem error messages properly
     Encoding::InitializeUtf8Locale();
 
+    // `-batchmode`：不弹窗、不启动引擎，直接跑某个工具套件的命令行分支。
+    // 必须在任何引擎初始化之前分流（见 BatchRequest 的注释）。
+    {
+        const std::vector<std::string> argv_utf8 = zengine::appshell::CommandLine::Acquire().Utf8();
+        BatchRequest                   batch;
+        ScanBatchRequest(argv_utf8, batch);
+        if (batch.enabled)
+        {
+            return RunBatchMode(batch);
+        }
+        // 只给了 -suite= 而没给 -batchmode：跑该套件的交互分支。
+        if (!batch.suite_id.empty() && batch.suite_id != ZEditor::LevelEditorSuiteDesc().id)
+        {
+            if (ZEditor::IToolSuite* suite = ZEditor::FindToolSuite(batch.suite_id))
+            {
+                return suite->RunInteractive(std::filesystem::path(), batch.suite_args);
+            }
+            std::cerr << "ZEditor: 没有这个工具套件：" << batch.suite_id << "\n";
+            PrintAvailableSuites(stderr);
+            return 1;
+        }
+    }
+
     // Unity/Hub 风格：先决定本次启动是打开项目还是转到 Launcher，再进入编辑器初始化。
     PreferredRHI preferred_rhi = PreferredRHI::Default;
     float pie_seconds = 0.0f;
@@ -336,7 +479,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     switch (resolveStartupModeFromCommandLine(preferred_rhi, pie_seconds, pie_stop))
     {
         case StartupMode::OpenLauncher:
-            return runLauncherAndRelaunch();
+            return runLauncherAndDispatch();
         case StartupMode::Abort:
             return 1;
         case StartupMode::OpenProject:
@@ -350,6 +493,26 @@ int main(int argc, char** argv)
 {
     // Initialize UTF-8 locale to handle filesystem error messages properly
     Encoding::InitializeUtf8Locale();
+
+    {
+        const std::vector<std::string> argv_utf8(argv, argv + argc);
+        BatchRequest                   batch;
+        ScanBatchRequest(argv_utf8, batch);
+        if (batch.enabled)
+        {
+            return RunBatchMode(batch);
+        }
+        if (!batch.suite_id.empty() && batch.suite_id != ZEditor::LevelEditorSuiteDesc().id)
+        {
+            if (ZEditor::IToolSuite* suite = ZEditor::FindToolSuite(batch.suite_id))
+            {
+                return suite->RunInteractive(std::filesystem::path(), batch.suite_args);
+            }
+            std::cerr << "ZEditor: 没有这个工具套件：" << batch.suite_id << "\n";
+            PrintAvailableSuites(stderr);
+            return 1;
+        }
+    }
 
     std::filesystem::path project_path;
     PreferredRHI preferred_rhi = PreferredRHI::Default;

@@ -1370,8 +1370,9 @@ Cooperating layers:
   pixel size (`FSlateDpiScaleRenderer` scales `font_size` before the atlas), so
   the sharpness argument did not survive — and the in-editor panel paints the
   same widget through the engine's ZSlate renderer anyway. It links the
-  **static `ZRuntime`** (same pattern as `LuaMemPreview`, which also absorbed the former
-  `ZProfilerCsvExporter` as `LuaMemPreview -batchmode <in.zasset> [out_base]`) but
+  **static `ZRuntime`** (same pattern as the `LuaMemPreview` suite, which also
+  absorbed the former `ZProfilerCsvExporter` as
+  `ZEditor -batchmode -suite=LuaMemPreview <in.zasset> [out]`) but
   references only the timing-trace + Slate-base objects, so the linker pulls no
   RHI/GLFW/scripting code. No live socket transport yet (the data path is
   offline file by design choice).
@@ -2966,9 +2967,9 @@ Missing DLL = process does not start (import-lib link, by decision). Missing
 
 ## 7. Standalone ZSlate tools: use FSlateStandaloneApp, do not hand-roll a host
 
-Every standalone ZSlate GUI tool (LuaMemPreview, TexPreview,
-ClientProjBranches, ZEnvironmentCollector — the former ZGpuSelectionInspector is
-now a tab inside the collector) used to
+Every standalone ZSlate GUI tool (TexPreview, ClientProjBranches,
+ZEnvironmentCollector — the former ZGpuSelectionInspector is now a tab inside
+the collector; LuaMemPreview is no longer standalone, see §7.5) used to
 carry its own copy of: an `ISlatePlatform` subclass, WNDCLASS + CreateWindow +
 PeekMessage host, DPI declaration / `WM_DPICHANGED` handling, and a hardcoded
 `C:\Windows\Fonts\...` atlas load. The copies drifted — two had **no DPI
@@ -2999,7 +3000,7 @@ knowledge is duplicated. Do not "unify" it by adding shell hooks only it uses.
 
 ### 7.1 SListView is NOT broken — do not repeat the old claim
 
-`LuaMemPreview/LuaMemWidgets.h` used to justify its hand-painted 180K-row table
+`ToolSuite/LuaMemPreview/LuaMemWidgets.h` used to justify its hand-painted 180K-row table
 with "SListView's recycling is broken in two ways" (stale data in recycled rows,
 and `ReleaseInvisibleWidgets()` never called → a widget retained per row).
 **Both were already fixed**: the index→widget map is keyed by index, released
@@ -3022,16 +3023,15 @@ Other pieces sunk into ZSlate in the same pass: `SScrollPanel`
 
 ### 7.2 App icons for GUI tools: one generator, one CMake function
 
-Four tools (LuaMemPreview, TexPreview, ClientProjBranches,
-ZEnvironmentCollector) each need an application icon, and each used to
-hand-roll all four pieces of it: a `.ico`, a `.rc`, an `if(MSVC)` block in its
+Three tools (TexPreview, ClientProjBranches, ZEnvironmentCollector) each need
+an application icon, and each used to hand-roll all four pieces of it: a `.ico`, a `.rc`, an `if(MSVC)` block in its
 CMakeLists, and an `#ifndef IDI_ICON1` in its `main.cpp`. That is now two
 shared pieces:
 
 | Piece | Where | What a tool does |
 |---|---|---|
 | `z_embed_app_icon(<target>)` | `engine/cmake/AppIcon.cmake` (+ `AppIcon.rc.in`) | one call in the tool's CMakeLists, after `set_target_properties(... OUTPUT_NAME ...)`. Embeds `resource/<OUTPUT_NAME>.ico`, defines `IDI_ICON1=101`, no-op off Windows / when RC is unavailable / before the .ico exists. `engine/CMakeLists.txt` includes it; tools that configure standalone `include()` it by path. |
-| `gen_icon.ps1 -Name <Tool> -Motif <...> -OutDir <tool>/resource` | `engine/resource/gen_icon.ps1` | draws the `.ico` (16/32/48/256, PNG-compressed entries) on the shared dark rounded tile. Motifs: `bars` (LuaMemPreview), `branch` (ClientProjBranches), `checker` (TexPreview), `check` (ZEnvironmentCollector). |
+| `gen_icon.ps1 -Name <Tool> -Motif <...> -OutDir <tool>/resource` | `engine/resource/gen_icon.ps1` | draws the `.ico` (16/32/48/256, PNG-compressed entries) on the shared dark rounded tile. Motifs: `branch` (ClientProjBranches), `checker` (TexPreview), `check` (ZEnvironmentCollector). |
 | `z_embed_app_manifest(<target> [MANIFEST <file>])` | `engine/cmake/AppManifest.cmake` (+ `AppManifest.manifest`) | one call, same place. Declares per-monitor DPI v2 by embedding the shared manifest; `MANIFEST <file>` replaces it wholesale for a tool needing something else (execution level, comctl32 v6). MSVC-only — CMake has no mt.exe rule for MinGW — and a no-op elsewhere, so the call can be committed anywhere. Same include arrangement as `AppIcon`. |
 
 `z_embed_app_manifest()` is **required** for a GUI that does not go through
@@ -3122,6 +3122,8 @@ arrives already mangled — and `LuaMemPreview -batchmode` takes a path.
 executables with a batch mode disagree — WEC takes `-batchmode` as a switch
 anywhere on the line, `LuaMemPreview` takes it as a positional subcommand next
 to `--stats`/`--dump-ui`, and ZEditor reads `-p`/`--rhi` to pick a startup mode.
+(LuaMemPreview is now a ZEditor tool suite: `-batchmode` is ZEditor's switch and
+`-suite=LuaMemPreview` selects it — see §7.5.)
 
 ### 7.4 Output & build directories for standalone GUI tools
 
@@ -3140,7 +3142,6 @@ so its extra files cannot be mistaken for another tool's.
 ```
 bin/Tools/Release/
 ├── TexPreview.exe
-├── LuaMemPreview.exe
 ├── ClientProjBranches.exe
 └── ZEnvironmentCollector/
     ├── ZEnvironmentCollector.exe
@@ -3165,7 +3166,7 @@ wins, so the tools follow `ZENGINE_OUTPUT_SUBDIR` too: a cross-compile layout
 python zbuild.py tools                          # list them
 python zbuild.py tool TexPreview --config release
 python zbuild.py tool ZEnvironmentCollector     # --config defaults to release
-python zbuild.py tool --all                     # all four, stops at the first failure
+python zbuild.py tool --all                     # all of them, stops at the first failure
 ```
 
 `--all` includes the two full-tree tools, so the first run also configures the
@@ -3175,7 +3176,7 @@ forces a fresh configure of either kind.
 `zbuild.py` knows that the four do *not* share a build tree, only a source
 directory and an output directory:
 
-- `TexPreview`, `LuaMemPreview` — **full tree**. They link ZRuntime, so they
+- `TexPreview`, `ZEditor` — **full tree**. They link ZRuntime, so they
   cannot configure standalone; `zbuild.py` configures the tree if it has not
   been configured yet, then builds `--target <Name>` in `build/`.
 - `ClientProjBranches` — **own configure** into `build/tools/<Name>/`.
@@ -3207,21 +3208,76 @@ and the LICENSE files are copied next to the exe. "Zip
 `bin/Tools/<Config>/ZEnvironmentCollector`" is therefore a correct packaging
 step, and `install(COMPONENT EnvironmentCollector)` produces the same folder.
 
-`scripts\build_lib\win64\win_build_lua_mem_preview.bat` builds through the full
+`scripts\build_lib\win64\win_build_zeditor.bat` builds ZEditor through the full
 tree with `-DZENGINE_OUTPUT_SUBDIR=win64/<arch>`, so its output is
-`bin\win64\<arch>\Tools\<Config>\LuaMemPreview.exe`; its echoed `Output:` lines
-and `OUT_DIR` must stay in sync with this rule.
+`bin\win64\<arch>\<Config>\ZEditor.exe`; its echoed `Output:` lines and
+`OUT_DIR` must stay in sync with this rule. (It used to build the standalone
+`LuaMemPreview.exe`; that tool is a suite now — §7.5.)
+
+### 7.5 Tool suites: one ZEditor executable, N tool sets
+
+`engine/tools/` used to hold one standalone `.exe` per GUI tool. The duplication
+that mattered was not the Win32 host (§7 fixed that) but the fact that **each exe
+has to be configured, built and distributed separately** — and then nobody knows
+which version is on a given machine.
+
+Tools that only need a window and do not have to ship on their own are therefore
+**tool suites inside ZEditor** (`engine/Source/Editor/ToolSuite/`), not exes:
+
+| Piece | Where |
+|---|---|
+| `ToolSuiteDesc` / `IToolSuite` / registry | `Source/Editor/ToolSuite/ToolSuite.h`, `ToolSuiteRegistry.cpp` |
+| Level editor's own pseudo-desc (it is the editor, not a suite) | `LevelEditorSuiteDesc()` |
+| Spine → `.zspg` container export | `Source/Editor/ToolSuite/SpineCook/` |
+| Lua memory snapshot viewer / CSV export | `Source/Editor/ToolSuite/LuaMemPreview/` |
+
+A suite self-registers with a file-scope object (`RegisterToolSuite`), so
+**adding one is one new `.cpp`** — `Main.cpp` and the launcher do not change.
+The registry's container is a function-local static, so it is constructed before
+any registrar runs regardless of translation-unit order.
+
+How a run picks a suite:
+
+* **Launcher** (no `-p`): the picker lists the suites first (level editor
+  default-selected, since that is what most launches want), then the projects.
+  A suite with `needs_project == false` starts immediately on selection — making
+  the user pick a `.zproject` for a baker would imply the baker is project-scoped.
+* **Command line**: `ZEditor -batchmode -suite=<id> ...` runs
+  `IToolSuite::RunBatch()`; `ZEditor -suite=<id> ...` runs `RunInteractive()`.
+
+⚠️ **The `-batchmode` branch must be taken before `RegisterRuntime()`.**
+`START_SYSTEM()` brings up the RHI, the world and the asset systems; a
+"read file → compute → write file" baker needs none of them, and if one of them
+fails to initialise an unrelated export job fails with it. The dispatch lives at
+the top of `WinMain`/`main` in `Source/Editor/Main/Main.cpp`.
+
+Which tools must **not** become suites:
+
+* `ZEnvironmentCollector` — `/MT`, so linking ZSlate in a full tree is `LNK2038`
+  (it ships to machines with no VC redist; that is a reason, not an accident).
+* `DataTableCook` / `ZHeaderTool` — build-time, invoked by `POST_BUILD`; a GUI
+  suite would be a detour.
+
+Suite argument handling: `RunBatch`/`RunInteractive` receive UTF-8 strings
+(`ZAppShell::CommandLine::Utf8()`), and paths go through
+`ZEditor::PathFromUtf8()` / `PathToUtf8()`. **Do not** build a
+`std::filesystem::path` straight from a narrow string: which codepage MSVC's
+`path` uses for that is an implementation detail, and a path is exactly what
+these tools take.
 
 ## 8. Where a tool lives: one home
 
-All four standalone GUI tools live in **one** directory, `engine/tools/`:
+All **standalone** GUI tools live in **one** directory, `engine/tools/`:
 
 | Tool | Needs | Added by | In a full tree |
 |---|---|---|---|
 | `engine/tools/TexPreview` | ZRuntime (ASTC/BC7/ETC2 decompressors) | `engine/CMakeLists.txt`, desktop branch | always |
-| `engine/tools/LuaMemPreview` | ZRuntime (`SerializedFile`, asset registry) | `engine/CMakeLists.txt`, desktop branch | always |
 | `engine/tools/ZEnvironmentCollector` | ZSlate only, `/MT`, shipped to players | `engine/CMakeLists.txt` | ON, but GUI OFF (below) |
 | `engine/tools/ClientProjBranches` | ZSlate only | `engine/CMakeLists.txt` | OFF by default |
+
+`engine/tools/` is for tools that are **executables of their own**. A tool that
+only needs a window and does not have to ship separately belongs in ZEditor as a
+**tool suite** (`engine/Source/Editor/ToolSuite/`) — see §7.5.
 
 They used to be split across `engine/Source/Tools/` and root `tools/`, and the
 old rule ("two homes, split by dependency") is **gone** — one directory is

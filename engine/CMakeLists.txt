@@ -322,16 +322,18 @@ else()
   add_subdirectory(Source/Insights)
   # TexPreview: standalone block-compressed texture preview tool (ASTC, BC7)
   add_subdirectory(tools/TexPreview)
-  # LuaMemPreview: standalone viewer for the Lua section of a MemoryProfiler dump;
-  # `-batchmode` exports the .zasset to CSV (replaces the old ZProfilerCsvExporter)
-  add_subdirectory(tools/LuaMemPreview)
+  # LuaMemPreview 不再是独立 exe：它是 ZEditor 的一个工具套件
+  # （Source/Editor/ToolSuite/LuaMemPreview），由启动器或
+  # `ZEditor -batchmode -suite=LuaMemPreview` 进入。原本那一份 WinMain + app
+  # icon + 独立 target 删掉了 —— ZSlate 的 FSlateStandaloneApp 已经把宿主做完，
+  # 再包一层 exe 只是多一份要单独构建、单独分发的东西。
 endif()
 
 # =============================================================================
 # Standalone GUI tools that are normally configured on their own
 # =============================================================================
-# All four GUI tools live in engine/tools/ (AGENTS.md section 8): TexPreview and
-# LuaMemPreview above (desktop branch), these two here. Both are self-contained
+# All GUI tools live in engine/tools/ (AGENTS.md section 8): TexPreview above
+# (desktop branch), these here. Both are self-contained
 # CMake projects -- `cmake -S engine/tools/<Tool> -B build/tools/<Tool>` -- and
 # both are Windows-only.
 #

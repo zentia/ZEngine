@@ -1,5 +1,13 @@
 #include "Editor/Build/BuildCache.h"
 
+// windows.h (force-included through the shared PCH) #defines GetObject ->
+// GetObjectA, which silently rewrites rapidjson's Value::GetObject() below and
+// produces a wall of "GetObjectA: is not a member of GenericValue" errors.
+// Undefine the macro rather than avoid the member: GetObject() is the API.
+#ifdef GetObject
+    #undef GetObject
+#endif
+
 #include "rapidjson/document.h"
 #include "rapidjson/istreamwrapper.h"
 #include "rapidjson/prettywriter.h"

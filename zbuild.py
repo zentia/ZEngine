@@ -93,10 +93,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "source": "engine/tools/TexPreview",
         "exe": "TexPreview.exe",
     },
-    "LuaMemPreview": {
+    # LuaMemPreview is no longer a standalone exe: it is a tool suite inside
+    # ZEditor (engine/Source/Editor/ToolSuite/LuaMemPreview), reached from the
+    # launcher or `ZEditor -batchmode -suite=LuaMemPreview`. Build ZEditor.
+    "ZEditor": {
         "mode": "intree",
-        "source": "engine/tools/LuaMemPreview",
-        "exe": "LuaMemPreview.exe",
+        "source": "engine/Source/Editor",
+        "exe": "ZEditor.exe",
     },
     "ClientProjBranches": {
         "mode": "standalone",
@@ -322,7 +325,7 @@ class BuildSystem:
         """Build every tool in TOOLS. Stops at the first failure."""
         print_header(f"Building all {len(TOOLS)} GUI tools "
                      f"({self._cmake_config_name(config)})")
-        print_info("TexPreview / LuaMemPreview come from the full tree -- the "
+        print_info("TexPreview / ZEditor come from the full tree -- the "
                    "first run also configures it, which is the slow part")
         built = []
         for name in TOOLS:

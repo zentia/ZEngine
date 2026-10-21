@@ -1,52 +1,32 @@
 // ============================================================================
-// LuaMemPreview - standalone ZSlate viewer for Lua memory snapshot CSVs
+// LuaMemPreview — ZEditor 的一个工具套件
 // ============================================================================
 //
-// Consumes the "Count,Size,Type,Stack" CSV written by LuaMemCsvExport (the
-// Lua section of a MemoryProfiler dump) and shows:
-//   * a per-type proportion bar with clickable chips (the only practical way to
-//     see where ~100 MB across ~180K rows actually went),
-//   * a sortable, virtualised table,
-//   * the full multi-line allocation stack of the selected row.
+// 原来是一个独立 exe（engine/tools/LuaMemPreview），现在是 ZEditor 里的一套
+// 工具：启动器选它、或命令行 `ZEditor -batchmode -suite=LuaMemPreview`。
+// 独立 exe 那一份（Win32 宿主 / app icon / 单独的 CMake target）已经删掉 ——
+// ZSlate 的 FSlateStandaloneApp 本来就把宿主做完了，再包一层 exe 只是多一份
+// 要单独构建、单独分发的东西。
 //
-// Why a standalone executable rather than a ZEditor window: every ZSlate
-// *window* under Source/Editor/EditorWindow is currently excluded from the
-// build (see Source/Editor/CMakeLists.txt - "Excluded until
-// UIRenderer->ISlateRenderer migration ... is complete"). Hosting this inside
-// the editor would mean waiting on that migration. A standalone target links
-// ZSlate + its D3D11 backend directly, exactly like Tools/TexPreview, and also
-// matches how the data is consumed: the CSV is produced on a device or client
-// and analysed on a desktop that need not run the editor at all.
+// 三种用法（都是套件入口，不再有独立的 argc/argv）：
+//   ZEditor -batchmode -suite=LuaMemPreview <in.zasset|目录> [输出] [--recursive]
+//                                       导出 _csharp/_userdata/_lua.csv
+//   ZEditor -batchmode -suite=LuaMemPreview --stats <file>      按类型统计
+//   ZEditor -batchmode -suite=LuaMemPreview --dump-ui <file>    无头 UI 断言
+//   ZEditor -suite=LuaMemPreview [file]                         打开 GUI
 //
-// Input: either the MemoryProfiler `.zasset` snapshot itself or the `_lua.csv`
-// exported from it. The asset is the original - -batchmode derives the
-// CSV from it - so opening it directly drops the export step. Both paths go
-// through FSnapshot and produce an identical model; on the reference snapshot
-// they agree to the byte.
+// 消费的是 LuaMemCsvExport 写的 "Count,Size,Type,Stack" CSV，展示：
+//   * 按类型的占比条 + 可点的 chip（~100 MB / ~180K 行到底去哪了，只有这个看得出来），
+//   * 可排序的虚拟表格，
+//   * 选中行的完整分配堆栈。
 //
-// Usage:
-//   LuaMemPreview.exe [path\to\LuaProfile_xxx.zasset | ..._lua.csv]
-//   LuaMemPreview.exe -batchmode <in.zasset|folder> [out]
-//                                        headless: export _csharp/_userdata/_lua.csv,
-//                                        for one snapshot or a whole folder
-//                                        (replaces the old ZProfilerCsvExporter)
-//   LuaMemPreview.exe --stats <file>     headless: per-type breakdown
-//   LuaMemPreview.exe --dump-ui <file>   headless: assert on the painted tree
-//   LuaMemPreview.exe --help             usage
+// 输入既可以是 MemoryProfiler 的 .zasset 快照本身，也可以是从它导出的
+// _lua.csv。前者是原始来源（-batchmode 就是从它导出 CSV 的），直接打开就省了
+// 一步。两条路都走 FSnapshot，产出同一个模型；在参考快照上逐字节一致。
 //
-// Entry point is WinMain (/SUBSYSTEM:WINDOWS), like ZEditor / ZInsights /
-// TexPreview, so the GUI opens with no console behind it. Arguments come from
-// the wide command line (ZAppShell) -- not the CRT's __argv, which is in the
-// ANSI codepage and mangles a non-ASCII path, and a path is what -batchmode
-// takes. The headless modes attach to the console they were launched from
-// (EnsureConsole). Their diagnostics go through bqlog (LuaMemLog) - which
-// writes the usual LuaMemPreview_*.log AND the console - while the data itself
-// (--stats table, file list, --help) stays on stdout.
-// Add --pause to keep console output on screen. A batch file does NOT need
-// `start /wait`: cmd.exe waits for this executable even though it is a
-// WINDOWS-subsystem binary.
-//
-//   Ctrl+O to open, or drag a file onto the window.
+//   Ctrl+O 打开，或把文件拖到窗口上。
+
+#include "Editor/ToolSuite/LuaMemPreview/LuaMemPreviewSuite.h"
 
 #include "LuaMemCsv.h"
 #include "LuaMemLog.h"
@@ -306,6 +286,9 @@ public:
 
 namespace
 {
+// usage 文本里的程序名：现在是 ZEditor 的一个套件，不再是独立 exe。
+constexpr const char* kExeLabel = "ZEditor -suite=LuaMemPreview";
+
 void PrintUsage(const char* exeName)
 {
     std::printf("LuaMemPreview - viewer and CSV exporter for Lua memory snapshots\n"
@@ -340,41 +323,48 @@ void PrintUsage(const char* exeName)
 // __argv is in the ANSI codepage, so a non-ASCII path arrives already mangled,
 // and a path is exactly what -batchmode takes. Same source every other ZEngine
 // executable uses (ZAppShell).
-int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
+// 归一化 + 分发。
+//
+// `args` 是 argv 形状：args[0] 是程序名（只出现在 usage 文本里），其余是套件
+// 收到的参数。修饰开关（--pause / --recursive）可以在任何位置，所以先把它们
+// 摘掉再看第一个位置参数是不是子命令 —— 老 CLI 用 "argc 减去修饰开关个数"
+// 来定位，`LuaMemPreview -batchmode --recursive <dir>` 会把 "--recursive"
+// 当成输入路径。
+//
+// `batch_context` = 这次是 `-batchmode` 进来的：没写子命令时剩下的就是
+// <输入> [输出]，不逼用户把 -batchmode 再写一遍。
+int DispatchArgs(const std::vector<std::string>& args, bool batch_context)
 {
-    const std::vector<std::string> args = zengine::appshell::CommandLine::Acquire().Utf8();
-    constexpr int kMaxArgs = 32;
-    const int argc = (static_cast<int>(args.size()) < kMaxArgs)
-                         ? static_cast<int>(args.size())
-                         : kMaxArgs;
-
-    // --pause is a modifier, so it can sit anywhere; pull it out before the
-    // positional arguments are interpreted.
     bool pause_at_exit = false;
-    bool recursive = false;
-    int arg_count = argc;
-    for (int i = 1; i < argc; ++i)
+    bool recursive     = false;
+    std::vector<std::string> positional;
+    for (size_t i = 1; i < args.size(); ++i)
     {
-        // Modifiers: they can sit anywhere, so they are pulled out before the
-        // positional arguments are interpreted.
         if (args[i] == "--pause")
         {
             pause_at_exit = true;
-            --arg_count;
+            continue;
         }
-        else if (args[i] == "--recursive")
+        if (args[i] == "--recursive")
         {
             recursive = true;
-            --arg_count;
+            continue;
         }
+        positional.push_back(args[i]);
     }
 
-    const std::string mode = (arg_count >= 2) ? args[1] : "";
+    const std::string mode = positional.empty() ? std::string() : positional[0];
+    const bool explicit_batch =
+        (mode == "-batchmode" || mode == "--batchmode" || mode == "--batch");
+    const bool is_mode = explicit_batch || mode == "--stats" || mode == "--dump-ui" ||
+                         mode == "--help" || mode == "-h" || mode == "-?";
+    const std::vector<std::string> params(positional.begin() + (is_mode ? 1 : 0), positional.end());
+    const bool csv_export = explicit_batch || (batch_context && !is_mode);
 
     if (mode == "--help" || mode == "-h" || mode == "-?")
     {
         zengine::appshell::EnsureConsole();
-        PrintUsage(args[0].c_str());
+        PrintUsage(kExeLabel);
         return ExitCode(0, pause_at_exit);
     }
 
@@ -388,10 +378,10 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // is the one worth having: a capture session drops a whole directory of
     // snapshots, and converting them one by one by hand is the whole reason
     // this tool needed a batch mode at all.
-    if (mode == "-batchmode" || mode == "--batchmode" || mode == "--batch")
+    if (csv_export)
     {
         zengine::appshell::EnsureConsole();
-        if (arg_count < 3 || arg_count > 4)
+        if (params.empty() || params.size() > 2)
         {
             std::printf("Usage: %s -batchmode <snapshot.zasset | folder> [output]\n"
                         "\n"
@@ -405,13 +395,13 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
                         "A folder:    [output] is a directory, defaulting to the folder itself.\n"
                         "             Every *.zasset in it becomes <dir>/<stem>_lua.csv; add\n"
                         "             --recursive to walk subdirectories.\n",
-                        args[0].c_str());
+                        kExeLabel);
             LogError("batchmode: expected <snapshot.zasset | folder> [output]");
             return ExitCode(1, pause_at_exit);
         }
 
-        const std::string input = args[2];
-        const std::string output = (arg_count >= 4) ? args[3] : "";
+        const std::string input  = params[0];
+        const std::string output = (params.size() >= 2) ? params[1] : "";
         const bool folder_mode = IsDirectory(input);
         const bool snapshot_mode = IsSnapshotPath(input);
 
@@ -483,17 +473,17 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // widgets emitted. Needs no GPU, no window and no font file, which is also
     // the only way to check virtualisation: a DXGI flip-model swapchain returns
     // a blank surface to PrintWindow, so a screenshot proves nothing.
-    if (mode == "--dump-ui" && arg_count >= 3)
+    if (mode == "--dump-ui" && !params.empty())
     {
         zengine::appshell::EnsureConsole();
         FPreviewApp app;
         ZSlate::SetPlatform(&app.Host);
         app.BuildUI();
-        app.LoadFile(args[2]);
+        app.LoadFile(params[0]);
         if (!app.Snapshot.IsLoaded())
         {
             std::printf("ERROR: snapshot failed to load\n");
-            LogError("dump-ui: snapshot failed to load: " + args[2]);
+            LogError("dump-ui: snapshot failed to load: " + params[0]);
             return ExitCode(1, pause_at_exit);
         }
 
@@ -797,13 +787,13 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
     // ---- Headless stats ---------------------------------------------------
     // Keeps the data layer verifiable without a window, which is also what a
     // script or CI job wants when it just needs the per-type split.
-    if (mode == "--stats" && arg_count >= 3)
+    if (mode == "--stats" && !params.empty())
     {
         zengine::appshell::EnsureConsole();
         FSnapshot snap;
         std::string err;
         const auto t0 = std::chrono::steady_clock::now();
-        if (!snap.LoadFromFile(args[2], err))
+        if (!snap.LoadFromFile(params[0], err))
         {
             std::printf("ERROR: %s\n", err.c_str());
             LogError("stats: " + err);
@@ -855,7 +845,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         if (bucket_sum != snap.GetTotalSize())
         {
             std::printf("ERROR: bucket sum != total\n");
-            LogError("stats: bucket sum != total for " + args[2]);
+            LogError("stats: bucket sum != total for " + params[0]);
             return ExitCode(2, pause_at_exit);
         }
         return ExitCode(snap.IsSelfConsistent() ? 0 : 3, pause_at_exit);
@@ -919,8 +909,64 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         PaintTypeDocCard(renderer, viewport, *app.TypeBar, app.Snapshot);
     };
 
-    if (argc > 1)
-        app.LoadFile(args[1]);
+    if (!params.empty())
+        app.LoadFile(params[0]);
 
     return app.Host.Run();
 }
+
+// ============================================================================
+// IToolSuite
+// ============================================================================
+namespace ZEditor
+{
+
+const ToolSuiteDesc& LuaMemPreviewSuite::Desc() const
+{
+    static const ToolSuiteDesc kDesc {
+        "LuaMemPreview",
+        "Lua 内存快照",
+        "Lua 内存快照（.zasset / _lua.csv）查看与 CSV 导出",
+        /* needs_project  = */ false,
+        /* supports_batch = */ true,
+    };
+    return kDesc;
+}
+
+int LuaMemPreviewSuite::RunBatch(const std::vector<std::string>& args)
+{
+    // ZEditor 已经挂过控制台（见 Main.cpp 的 RunBatchMode）；这里再把参数还原
+    // 成 argv 形状：args[0] 是程序名，其余是套件自己的参数。
+    std::vector<std::string> argv_style{kExeLabel};
+    for (const std::string& a : args)
+    {
+        if (a.rfind("-suite=", 0) == 0) continue;  // 选套件用的，不是套件的参数
+        argv_style.push_back(a);
+    }
+    return DispatchArgs(argv_style, /*batch_context=*/true);
+}
+
+int LuaMemPreviewSuite::RunInteractive(const std::filesystem::path& /*project_file*/,
+                                       const std::vector<std::string>& args)
+{
+    std::vector<std::string> argv_style{kExeLabel};
+    for (const std::string& a : args)
+    {
+        if (a.rfind("-suite=", 0) == 0) continue;
+        argv_style.push_back(a);
+    }
+    return DispatchArgs(argv_style, /*batch_context=*/false);
+}
+
+namespace
+{
+    // 自注册。静态对象在 main() 之前构造；注册表容器是函数内静态，
+    // 第一次访问时一定已经构造好了（见 ToolSuiteRegistry.cpp）。
+    struct LuaMemPreviewRegistrar
+    {
+        LuaMemPreviewRegistrar() { RegisterToolSuite(std::make_unique<LuaMemPreviewSuite>()); }
+    };
+    const LuaMemPreviewRegistrar g_lua_mem_preview_registrar;
+}   // namespace
+
+}   // namespace ZEditor

@@ -634,6 +634,30 @@ baseline / linked mesh / 双皮肤 / deform / 裁剪的三种 end / 嵌套 / wei
 nonessential 开与关），C# 端读回来再写一遍比对。
 没装 dotnet 时这条测试不注册（它是**加码**，不是构建的前置条件）。
 
+## 11.2 容器由 C++ 唯一产出（`ZEditor -batchmode -suite=SpineCook`）
+
+既然 C# 不做导入器，产出的入口就是一个：
+
+```
+ZEditor -batchmode -suite=SpineCook <输入> [-o <输出>] [-atlas <图集>] [--recursive|-r] [-h]
+```
+
+* **输入**：一个 `.json` / `.skel`，或一个目录（加 `--recursive` 连子目录一起走）。
+* **解析器按扩展名选**，不"看内容像不像 json" —— `.skel` 既没魔数也没长度字段，
+  猜错就是越界读。
+* **图集**：省略则取同名 `.atlas`；找不到**报错**，不"尽力而为"（用错图集算出的
+  UV 是静默错的，图集带裁剪时偏一点且不报任何错）。
+* **目录 → 目录**保持相对结构。⚠️ 判据是"输入是目录"或"输出已存在且是目录"，
+  **不能**只看 `is_directory(输出)`：输出目录第一次跑时还不存在，判成文件就会让
+  每个骨架写同一条路径、互相覆盖，而覆盖在批处理里退出码还是 0。
+* **有失败就退出码非 0**（"退出码 0 但少导了两个"是最难查的事故）；
+  不认识的开关直接拒绝，不静默吞掉。
+
+为什么走 `-batchmode` 而不是编辑器里的菜单：编辑器那套 `START_SYSTEM()` 会拉起
+RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘焙器全都不需要它们。
+分流点在 `Main.cpp` 里 `RegisterRuntime()` **之前**（`Editor/ToolSuite/ToolSuite.h`
+的注释写了原因）。
+
 ---
 
 ## 12. 如何证明两端一致（验收清单）
@@ -758,8 +782,17 @@ v6 已补上：chunk 9 写 `ClipPolygon[]`（12 B/条），绘制项加 `clip_in
 netstandard2.1，可整目录拷进 Unity Assets），并接进 ctest：
 `SpineGpuImportTest --dump` 落盘 → C# 读回 → C# 再写 → 逐字节比对（§11.1）。
 
-**仍未做：C# 导入器** —— 从 spine 源数据在 Unity 侧产出同一个容器。现在只有读端，
-所以 Unity 侧要么等这个，要么先用 C++ 导出的 `.zspg`。
+**C# 导入器不做**（拍板，2026-10-22）：从 spine 源数据在 Unity 侧产出同一个容器
+这条路径**放弃**了。理由就是上面那条 —— "两端各写一遍导入器"是漂移的温床，而
+Unity 侧真正要的只是**能读**。产出唯一地走 C++：
+
+```
+ZEditor -batchmode -suite=SpineCook <hero.json | hero.skel | 目录> [-o <输出>] [--recursive]
+```
+
+`SpineCook` 是 ZEditor 的一个**工具套件**（`Source/Editor/ToolSuite/SpineCook/`），
+`-batchmode` 不弹窗、不启动引擎、不初始化 RHI，直接跑烘焙（见 §11.2）。目录输入
+保持相对结构铺开，同名骨架不会互相覆盖；有失败就退出码非 0。
 
 ---
 
