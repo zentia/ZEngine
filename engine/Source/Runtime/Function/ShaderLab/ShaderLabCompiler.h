@@ -3,6 +3,7 @@
 #include "Function/Render/Interface/Vulkan/ShaderCompiler.h"
 #include "ShaderLabCacheManifest.h"
 #include "ShaderLabIncludeProcessor.h"
+#include "ShaderLabSemanticRewrite.h"
 #include "ShaderLabParser.h"
 #include "ShaderLabVariant.h"
 

@@ -12,6 +12,10 @@
 //      relative to the .shader's own directory.
 //   3. DXC accepts the Cg-flavoured body once the shim supplies the
 //      built-ins DXC does not have (fixed, sampler2D, tex2D, ...).
+//   4. Legacy Cg OUTPUT semantics are rewritten on the way in, so the
+//      shader needs no edits at all: DXC rejects `: COLOR` for ps 6.0, and
+//      the rewrite must hit only the entry function's return semantic --
+//      Spine uses `COLOR` as an input semantic too.
 //
 // Opt in with:
 //   cmake -B build -DZENGINE_BUILD_SHADERLAB_UNITY_COMPAT_TEST=ON
@@ -397,6 +401,81 @@ void RequireIncludeRoot(const std::filesystem::path& shader,
     }
 }
 
+// Regression guard: the byte-identical Unity original must now compile, and
+// must produce the SAME DXIL as the hand-edited copy.
+//
+// `Spine-Skeleton-Tint-SemanticFixed.shader` differs from the Unity original
+// by exactly two characters-classes: `: COLOR` -> `: SV_Target` on both frags.
+// That copy is the ground truth for what ZEngine's automatic rewrite is
+// allowed to do. Byte-comparing the two DXILs catches the failure mode that
+// a plain "it compiled" check cannot: a rewrite that goes further than the
+// hand edit (e.g. rewriting the `COLOR` input semantics as well) and quietly
+// changes the vertex signature.
+void RequireUnmodifiedSpineMatchesHandEdit(int& checks, int& failures)
+{
+    ++checks;
+
+    auto compile_pass0 = [](const std::filesystem::path& path,
+                            CompiledShaderModuleDx12& vs,
+                            CompiledShaderModuleDx12& fs) -> bool {
+        ShaderLabDx12Compiler compiler;
+        if (!compiler.LoadFromFile(path.generic_string()))
+        {
+            std::cout << "  [FAIL] " << path.filename().generic_string()
+                      << " -- parse: " << compiler.GetParseError() << "\n";
+            return false;
+        }
+        vs = compiler.Compile(0, 0, "vertex", {});
+        fs = compiler.Compile(0, 0, "fragment", {});
+        return vs.success && fs.success;
+    };
+
+    CompiledShaderModuleDx12 orig_vs;
+    CompiledShaderModuleDx12 orig_fs;
+    CompiledShaderModuleDx12 fixed_vs;
+    CompiledShaderModuleDx12 fixed_fs;
+
+    if (!compile_pass0(Fixture("Spine-Skeleton-Tint.shader"), orig_vs, orig_fs))
+    {
+        ++failures;
+        if (!orig_vs.success)
+        {
+            std::cout << "         unmodified vertex: " << orig_vs.error_message << "\n";
+        }
+        if (!orig_fs.success)
+        {
+            std::cout << "         unmodified fragment: " << orig_fs.error_message << "\n";
+        }
+        return;
+    }
+
+    if (!compile_pass0(Fixture("Spine-Skeleton-Tint-SemanticFixed.shader"), fixed_vs, fixed_fs))
+    {
+        ++failures;
+        std::cout << "  [FAIL] hand-edited reference failed to compile\n";
+        return;
+    }
+
+    if (orig_vs.dxil_code != fixed_vs.dxil_code)
+    {
+        ++failures;
+        std::cout << "  [FAIL] vertex DXIL differs from the hand-edited reference ("
+                  << orig_vs.dxil_code.size() << " B vs " << fixed_vs.dxil_code.size() << " B)\n";
+        return;
+    }
+
+    if (orig_fs.dxil_code != fixed_fs.dxil_code)
+    {
+        ++failures;
+        std::cout << "  [FAIL] fragment DXIL differs from the hand-edited reference ("
+                  << orig_fs.dxil_code.size() << " B vs " << fixed_fs.dxil_code.size() << " B)\n";
+        return;
+    }
+
+    std::cout << "  [ OK ] unmodified Spine == hand-edited reference, byte for byte (VS "
+              << orig_vs.dxil_code.size() << " B, FS " << orig_fs.dxil_code.size() << " B)\n";
+}
+
 // Regression guard: EVERY pass of EVERY subshader must compile.
 //
 // RunShaderFile()/TryCompile() only ever exercise pass 0, so a broken pass 1
@@ -614,6 +693,7 @@ int main(int argc, char** argv)
     // 1. Spine/Skeleton Tint with ONE change: the fragment output semantic
     //    is SV_Target instead of Unity's legacy COLOR (DXC rejects COLOR for
     //    ps 6.0). Everything else is byte-identical to the Unity original.
+    //    This is the REFERENCE the automatic rewrite is measured against.
     //
     // NOTE: ShaderLabDx12Compiler::Compile() hands the whole .shader file to
     // ExtractHlslFromShaderLabFile(), which returns the FIRST CGPROGRAM block
@@ -627,15 +707,23 @@ int main(int argc, char** argv)
                   failures);
 
     // ------------------------------------------------------------------
-    // 1b. The byte-identical Unity original. Expected to FAIL on the fragment
-    //     stage until ZEngine rewrites legacy output semantics. Informational
-    //     only -- it documents the gap, it is not a regression gate.
+    // 1b. The byte-identical Unity original -- no edits at all. It used to
+    //     fail with "invalid semantic 'COLOR' for ps 6.0"; ZEngine now
+    //     rewrites the entry function's output semantic on its own, so it
+    //     is a hard requirement.
     // ------------------------------------------------------------------
     RunShaderFile("Spine-Skeleton-Tint.shader",
-                  "[1b] Spine/Skeleton Tint (unmodified, expected to fail)",
-                  false,
+                  "[1b] Spine/Skeleton Tint (unmodified Unity original)",
+                  true,
                   checks,
                   failures);
+
+    // ------------------------------------------------------------------
+    // 1c. ...and the automatic rewrite must do NOTHING MORE than the hand
+    //     edit in [1]: same DXIL, byte for byte.
+    // ------------------------------------------------------------------
+    std::cout << "\n---- [1c] Regression: unmodified Spine == hand-edited reference ----\n";
+    RequireUnmodifiedSpineMatchesHandEdit(checks, failures);
 
     // ------------------------------------------------------------------
     // 2. The Caster pass in isolation. Currently the parser drops it

@@ -1,6 +1,7 @@
 #include "Runtime/Function/ShaderLab/ShaderLabHlslExtract.h"
 
 #include "Runtime/Function/ShaderLab/ShaderLabParser.h"
+#include "Runtime/Function/ShaderLab/ShaderLabSemanticRewrite.h"
 
 #include <algorithm>
 #include <array>
@@ -129,8 +130,9 @@ namespace ZEngine::ShaderLab
                 return false;
             }
 
-            out.hlsl_source = body;
             out.entry_point = PickEntryForStage(stage, vertex_entry, fragment_entry, fallback_entry);
+            out.hlsl_source =
+                RewriteLegacyOutputSemantics(body, out.entry_point, stage).code;
             out.ok = true;
             out.error_message.clear();
             return true;
@@ -160,8 +162,9 @@ namespace ZEngine::ShaderLab
                 return false;
             }
 
-            out.hlsl_source = body;
             out.entry_point = PickEntryForStage(stage, vertex_entry, fragment_entry, fallback_entry);
+            out.hlsl_source =
+                RewriteLegacyOutputSemantics(body, out.entry_point, stage).code;
             out.ok = true;
             out.error_message.clear();
             return true;

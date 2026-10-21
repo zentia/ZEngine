@@ -1,4 +1,58 @@
 # =====================================================================
+# ShaderLab legacy output-semantic rewrite smoke-test
+# ---------------------------------------------------------------------
+# Pins down the Cg -> Shader-Model-4+ fix (`: COLOR` -> `: SV_Target`) that
+# lets a byte-identical Unity shader compile on a modern target. Backend-free
+# like the two above, so it runs on every configuration; the end-to-end proof
+# that DXC actually accepts the result lives in ShaderLabUnityCompatTest,
+# which needs dxcompiler.dll.
+#
+# Opt in with:
+#   cmake -B build -DZENGINE_BUILD_SHADERLAB_SEMANTIC_TEST=ON
+#   cmake --build build --target ShaderLabSemanticRewriteTest
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADERLAB_SEMANTIC_TEST
+       "Build the ShaderLab legacy output-semantic rewrite smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADERLAB_SEMANTIC_TEST)
+    set(_semantic_target ShaderLabSemanticRewriteTest)
+
+    add_executable(${_semantic_target}
+        ShaderLabSemanticRewriteTest.cpp
+    )
+
+    set_target_properties(${_semantic_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # engine/Source is the root for "Runtime/Function/ShaderLab/..." includes.
+    target_include_directories(${_semantic_target} PRIVATE ${ENGINE_ROOT_DIR}/Source)
+
+    target_link_libraries(${_semantic_target} PRIVATE ZRuntime)
+
+    # ShaderLabSemanticRewrite.h pulls in RenderType.h -> Core/Base/Hash.h ->
+    # <EASTL/functional.h>. ZRuntime PRIVATE-links ZEnginePCH, so EASTL's
+    # include dir does not reach us through the edge above; link the PCH like
+    # the Unity-compat test does.
+    if(TARGET ZEnginePCH)
+        target_link_libraries(${_semantic_target} PRIVATE ZEnginePCH)
+        target_include_directories(${_semantic_target} PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(${_semantic_target} ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(${_semantic_target} PRIVATE /W4)
+    endif()
+
+    add_test(NAME ${_semantic_target} COMMAND ${_semantic_target})
+
+    message(STATUS "Configured ShaderLab semantic-rewrite smoke-test: ${_semantic_target}")
+endif()
+
+# =====================================================================
 # ShaderLab SPIR-V cache-manifest smoke-test
 # ---------------------------------------------------------------------
 # Pins down the invalidation rule for on-disk SPIR-V blobs. Like the

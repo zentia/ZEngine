@@ -361,6 +361,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabCacheManifestTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabCacheManifestTest.cpp")
+# ShaderLab legacy output-semantic rewrite smoke-test main. Same exclusion
+# rationale. Built only when ZENGINE_BUILD_SHADERLAB_SEMANTIC_TEST=ON (see
+# Function/ShaderLab/Test/CMakeLists.txt). ShaderLabSemanticRewrite.cpp is NOT
+# excluded -- it is library code.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabSemanticRewriteTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/Test/ShaderLabSemanticRewriteTest.cpp")
 # PR-V2: Vulkan bindless smoke-test main. Same exclusion rationale as
 # the DX12 entry above. Built only when ZENGINE_BUILD_VK_BINDLESS_SMOKE_TEST=ON
 # (see Function/Render/Interface/Vulkan/Test/CMakeLists.txt).

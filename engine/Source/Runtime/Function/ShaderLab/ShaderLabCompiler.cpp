@@ -390,6 +390,14 @@ namespace ZEngine::ShaderLab
             result.entry_point = program.fragment_entry;
         }
 
+        // Unity/Cg pixel shaders end with `: COLOR`, which no modern target
+        // accepts. Rewrite only the entry function's own output semantic --
+        // a blanket `#define COLOR SV_Target` would also rewrite the input
+        // semantics Spine uses for vertex colour and break them instead
+        // (see ShaderLabSemanticRewrite.h).
+        processed_code =
+            RewriteLegacyOutputSemantics(processed_code, result.entry_point, stage).code;
+
         // 构建宏定义
         const std::map<std::string, std::string> variant_macros = VariantKeyToMacros(variant_key);
         ShaderMacros macros(variant_macros.begin(), variant_macros.end());
