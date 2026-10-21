@@ -29,7 +29,24 @@
 namespace SpineGpuConstants
 {
     constexpr uint32_t kMagic = 0x5A535047u;   // 'ZSPG'
-    constexpr uint32_t kFormatVersion = 1;
+
+    // 版本 2（2026-10-21）：容器补上 **skin 维度** ——
+    //   * SpineGpuHeader 末位的 reserved 改成 skin_count
+    //   * 附件记录从 4 B（slot, attachment）扩成 8 B（slot, attachment, skin）
+    //   * SpineDrawItem 尾部 2 B 填充改成 skin_id
+    // 这三条都是**不兼容**改动：v1 的容器必须被明确拒绝，不做静默兼容（规格 §11）。
+    // 之所以现在改：换装是 Spine 的核心用法，而 v1 把所有 skin 合并成一份，
+    // 同名跨 skin 的附件会互相覆盖（规格 §14.1 记的就是这个洞）。
+    constexpr uint32_t kFormatVersion = 2;
+
+    // **id 0 恒为 default 皮肤**。
+    // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
+    // （SkeletonBinary.cpp:276，名字写死 "default"）；Spine 编辑器导出的
+    // json 里 default 也总排第一。
+    // 但"保证"不等于"可以不管"：导入器会**显式检查**名为 default 的皮肤
+    // 是否真的在首位，不在就报错 —— 悄悄挪位会让"默认外观"变成另一个皮肤，
+    // 而外观错了没有任何报错，正是最难查的那类 bug。
+    constexpr uint32_t kDefaultSkinId = 0;
 
     // 容器里记录的 spine-cpp 版本：3.8.xx -> 30800。
     // 必须记录，因为 3.8（u16 骨骼索引）与 4.x（int）布局不同（规格 §9、§11）。
@@ -50,6 +67,10 @@ namespace SpineGpuConstants
     // 每帧实例项大小（含 root_index，规格 §5.2）。
     constexpr uint32_t kDrawInstanceSize = 20;
 
+    // 静态绘制项大小（规格 §4）。与 kDrawInstanceSize 同为 20 纯属巧合，
+    // 别互相换用 —— 一个是静态表项、一个是每帧实例项。
+    constexpr uint32_t kDrawItemSize = 20;
+
     // 顶点步长。weighted 是 56 不是 52：ByteAddressBuffer::Load2 要求 8 字节对齐，
     // 步长 52 时第 k 个顶点落在 52k，52 % 8 == 4 ⇒ 第二个及以后的顶点取不到对齐的
     // Load2，只能退化成 8 次标量 Load。代价 4 B/顶点（约 7%）换对齐的向量化读取
@@ -64,6 +85,9 @@ namespace SpineGpuConstants
     constexpr uint32_t kVertexSegmentAlignment = 8;
     // 其余块 4 B 对齐。
     constexpr uint32_t kChunkAlignment = 4;
+
+    // 附件记录（chunk 6）大小。4 B → 8 B 是因为多了一列 skin_id。
+    constexpr uint32_t kAttachmentRecordSize = 8;
 }   // namespace SpineGpuConstants
 
 // ---------------------------------------------------------------------
@@ -111,7 +135,7 @@ enum SpineGpuChunkId : uint32_t
     kChunkVertexBuffer = 3,  // 按 vertex_format 分段
     kChunkIndexBuffer = 4,   // uint16（kIndex32 时 uint32）
     kChunkDrawItems = 5,     // SpineDrawItem[]
-    kChunkAttachments = 6,   // 槽位 → 附件 id 列表（换装用）
+    kChunkAttachments = 6,   // (皮肤, 槽位) → 附件 id 列表（换装用）
     kChunkAtlasPages = 7,    // 图集页路径 / 纹理引用
     kChunkClipData = 8,      // 裁剪多边形（CPU fallback 用）
 };
@@ -139,7 +163,7 @@ struct SpineGpuHeader
     uint32_t rigid_vertex_count;       // 0x30
     uint32_t weighted_segment_offset;  // 0x34 —— 8 B 对齐（Load2 的前提）
     uint32_t weighted_vertex_count;    // 0x38
-    uint32_t reserved;                 // 0x3C
+    uint32_t skin_count;               // 0x3C —— 皮肤名在 chunk 1 里紧接骨骼名之后
 };
 
 static_assert(sizeof(SpineGpuHeader) == SpineGpuConstants::kHeaderSize,
@@ -160,7 +184,7 @@ static_assert(offsetof(SpineGpuHeader, rigid_vertex_count) == 0x30, "spec 9: rig
 static_assert(offsetof(SpineGpuHeader, weighted_segment_offset) == 0x34,
               "spec 9: weighted_segment_offset @0x34");
 static_assert(offsetof(SpineGpuHeader, weighted_vertex_count) == 0x38, "spec 9: weighted_vertex_count @0x38");
-static_assert(offsetof(SpineGpuHeader, reserved) == 0x3C, "spec 9: reserved @0x3C");
+static_assert(offsetof(SpineGpuHeader, skin_count) == 0x3C, "spec 9: skin_count @0x3C");
 
 // ChunkTable 项（16 B）。
 struct SpineGpuChunk
@@ -176,6 +200,32 @@ static_assert(sizeof(SpineGpuChunk) == SpineGpuConstants::kChunkTableEntrySize,
 static_assert(offsetof(SpineGpuChunk, id) == 0x00, "spec 9: chunk.id @0x00");
 static_assert(offsetof(SpineGpuChunk, offset) == 0x04, "spec 9: chunk.offset @0x04");
 static_assert(offsetof(SpineGpuChunk, size) == 0x08, "spec 9: chunk.size @0x08");
+
+// ---------------------------------------------------------------------
+// 附件记录（chunk 6，规格 §9）
+// ---------------------------------------------------------------------
+// 一条 = 一个 (皮肤, 槽位) 下的一个附件。换装查的就是这张表。
+//
+// v1 只有 (slot_index, attachment_id)：那等于把所有 skin 合并成一份，
+// 同名跨 skin 的附件会互相覆盖 —— 而"skin2 的眼睛复用 default 的眼睛"
+// 恰好是 linked mesh 最常见的用法，一合并就丢。所以 v2 加了 skin_id 这一列。
+//
+// attachment_id 是全局下标（= 本表的行号，也 = chunk 1 里附件名的序号）。
+// 附件**名**在 chunk 1 里按 attachment_id 顺序排，所以这里不用存名字偏移。
+struct SpineGpuAttachmentRecord
+{
+    uint16_t slot_index = 0;
+    uint16_t attachment_id = 0;
+    uint16_t skin_id = 0;
+    uint16_t pad = 0;   // 凑 8 B，保持 4 B 对齐；落盘时必须写 0
+};
+
+static_assert(sizeof(SpineGpuAttachmentRecord) == SpineGpuConstants::kAttachmentRecordSize,
+              "spec 9: attachment record is 8 B (v2: +skin column)");
+static_assert(offsetof(SpineGpuAttachmentRecord, slot_index) == 0, "spec 9: record.slot_index @0");
+static_assert(offsetof(SpineGpuAttachmentRecord, attachment_id) == 2, "spec 9: record.attachment_id @2");
+static_assert(offsetof(SpineGpuAttachmentRecord, skin_id) == 4, "spec 9: record.skin_id @4");
+static_assert(offsetof(SpineGpuAttachmentRecord, pad) == 6, "spec 9: record.pad @6");
 
 // ---------------------------------------------------------------------
 // 静态顶点缓冲（规格 §3.1）
@@ -235,13 +285,18 @@ struct SpineDrawItem
     uint16_t slot_index;               // @12
     uint16_t attachment_id;            // @14
     SpineDrawItemKind kind;            // @16
-    uint8_t pad;                       // @17
+    // @18 —— 这个绘制项属于哪个皮肤。**没有它就没法换装**：
+    // 同一个 (槽位, 附件名) 在不同皮肤下是两份几何、两个绘制项，
+    // 光靠 slot_index + attachment_id 分不出该画哪一份。
+    // 它正好落在原来那 2 B 尾部填充上 ⇒ sizeof 仍是 20，一个字节都没多花。
+    uint16_t skin_id;
 };
 
-// 规格 §4 列出的字段共 18 B，结构体自然对齐到 4 ⇒ sizeof 为 20，尾部 2 B 是填充。
-// 序列化时两端都必须按 **20 B** 落盘并显式把填充字节写 0，否则 C# 与 C++ 会对不上。
-static_assert(sizeof(SpineDrawItem) == 20,
-              "spec 4: draw item serializes as 20 B (18 B payload + 2 B tail padding)");
+// 规格 §4 列出的字段共 18 B，结构体自然对齐到 4 ⇒ sizeof 为 20。
+// v1 时尾部 2 B 是纯填充；v2 把它变成 skin_id，**仍是 20 B**。
+// 序列化时两端都必须按 **20 B** 落盘并显式把未用字节写 0，否则 C# 与 C++ 会对不上。
+static_assert(sizeof(SpineDrawItem) == SpineGpuConstants::kDrawItemSize,
+              "spec 4: draw item serializes as 20 B (skin_id sits on the old tail padding)");
 static_assert(offsetof(SpineDrawItem, index_offset) == 0, "spec 4: index_offset @0");
 static_assert(offsetof(SpineDrawItem, index_count) == 4, "spec 4: index_count @4");
 static_assert(offsetof(SpineDrawItem, vertex_format) == 8, "spec 4: vertex_format @8");
@@ -250,6 +305,7 @@ static_assert(offsetof(SpineDrawItem, atlas_page) == 10, "spec 4: atlas_page @10
 static_assert(offsetof(SpineDrawItem, slot_index) == 12, "spec 4: slot_index @12");
 static_assert(offsetof(SpineDrawItem, attachment_id) == 14, "spec 4: attachment_id @14");
 static_assert(offsetof(SpineDrawItem, kind) == 16, "spec 4: kind @16");
+static_assert(offsetof(SpineDrawItem, skin_id) == 18, "spec 4: skin_id @18 (old tail padding)");
 
 // ---------------------------------------------------------------------
 // 每帧每实例数据（规格 §5）

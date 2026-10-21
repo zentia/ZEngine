@@ -98,6 +98,9 @@ struct SpineSourceAttachment
     std::string name;            // 附件名（skin 里的 key）
     std::string path;            // 图集 region 名；空则退回 name
     int slot_index = -1;
+    // 所属皮肤在 `SpineSourceSkeleton::skins` 里的下标。**不再合并皮肤**：
+    // 同一个 (槽位, 附件名) 在不同皮肤下是两份几何 —— 合并会丢掉换装。
+    int skin_index = -1;
 
     // spine 原样的扁平顶点数组，两种布局共用（参考实现 SkeletonJson::readVertices）：
     //   rigid    → [x, y, x, y, ...]                （vertices.size() == uvs.size()）
@@ -124,8 +127,13 @@ struct SpineSourceSkeleton
 {
     std::vector<SpineSourceBone> bones;
     std::vector<SpineSourceSlot> slots;
-    // 按绘制顺序（槽位顺序）排好；同一槽位只有一个附件可见。
+    // 按 (皮肤, 绘制顺序) 排好 —— 先皮肤 0（default）的全部附件，再皮肤 1……
+    // 皮肤内的顺序 = 槽位顺序（同一槽位同一时刻只有一个附件可见）。
     std::vector<SpineSourceAttachment> attachments;
+
+    // 皮肤名，下标 = 容器里的 skin_id。**id 0 必须是 default 皮肤**
+    // （SpineGpuFormat.h 里 kDefaultSkinId 的注释讲了为什么必须显式检查）。
+    std::vector<std::string> skins;
 
     // flags 来源
     bool has_draw_order_timeline = false;   // animations.*.drawOrder 存在 ⇒ 整个资产走 CPU
@@ -165,12 +173,17 @@ struct SpineGpuAsset
     std::vector<SpineDrawItem> draw_items;
     std::vector<uint16_t> slot_bone;          // 每槽位的骨骼下标（rigid 用）
 
-    // 字符串表（chunk 1）。落盘顺序固定：骨骼名 → 槽位名 → 附件名，
-    // 每项以 '\0' 结尾。读回时按 bone_count / slot_count / 附件记录数切分。
+    // 字符串表（chunk 1）。落盘顺序固定：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名，
+    // 每项以 '\0' 结尾。读回时按 bone_count / skin_count / slot_count / 附件记录数切分。
     std::vector<std::string> bone_names;
+    std::vector<std::string> skin_names;
     std::vector<std::string> slot_names;
     std::vector<std::string> attachment_names;
     std::vector<std::string> atlas_page_names;
+
+    // 附件记录（chunk 6）。Bake 时建好；序列化 / 反序列化都走它 ——
+    // 不再从 draw_items 反推（那会假设"附件与绘制项一一对应"，是个脆假设）。
+    std::vector<SpineGpuAttachmentRecord> attachment_records;
 };
 
 SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsset& out);
@@ -178,15 +191,8 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
 // ---------------------------------------------------------------------
 // 容器序列化（规格 §9）
 // ---------------------------------------------------------------------
-// 附件记录：chunk 6。换装 / 调试用（槽位 ↔ 附件 id）。
-// 附件**名**在 chunk 1 里，按附件 id 顺序排列，所以这里不用存名字偏移。
-struct SpineGpuAttachmentRecord
-{
-    uint16_t slot_index = 0;
-    uint16_t attachment_id = 0;
-};
-
-static_assert(sizeof(SpineGpuAttachmentRecord) == 4, "spec 9: attachment record is 4 B");
+// 附件记录 SpineGpuAttachmentRecord 定义在 SpineGpuFormat.h —— 它是容器布局的
+// 一部分，C# 端要照抄，放在"布局的唯一权威定义"里才不会两边漂移。
 
 SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector<uint8_t>& out);
 SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGpuAsset& out);

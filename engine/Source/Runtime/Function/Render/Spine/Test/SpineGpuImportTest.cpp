@@ -68,6 +68,11 @@ const char* kAtlas = "page0.png\n"
 // mesh 的 vertices 是 spine 的扁平格式：每顶点 [n, (boneIdx, x, y, w) × n]
 //   v0: 1 影响   v1: 2 影响(0.6/0.4)   v2: 1 影响   v3: 1 影响
 // uvs 8 个 = 4 顶点 × 2；vertices 24 个 ≠ 8 ⇒ 判为 weighted（参考实现的判据）
+//
+// ⚠️ skins 写成**对象**（皮肤名 → 槽位 → 附件），不是数组。这是 3.8 唯一的写法：
+//    SkeletonJson.cpp:439 `new Skin(skinMap->_name)` 取的是**成员名**，
+//    而 Json.cpp:402-450 的 parseArray 里数组元素是 `new Json(NULL)` 且从不赋 _name ——
+//    数组形式在参考实现里会拿到空皮肤名。
 const char* kSkeleton = R"({
   "skeleton": { "spine": "3.8.99" },
   "bones": [ { "name": "root" }, { "name": "hip", "parent": "root" } ],
@@ -75,18 +80,20 @@ const char* kSkeleton = R"({
     { "name": "s0", "bone": "root", "attachment": "quad" },
     { "name": "s1", "bone": "hip", "attachment": "mesh" }
   ],
-  "skins": [ { "name": "default", "attachments": {
-    "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
-    "s1": { "mesh": {
-      "type": "mesh",
-      "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
-      "triangles": [ 0,1,2, 0,2,3 ],
-      "vertices": [ 1, 0,-10,-5,1,
-                    2, 1, 20,10,0.6, 0,5,7,0.4,
-                    1, 1, 3,4,1,
-                    1, 0, 8,2,1 ]
-    } }
-  } } ]
+  "skins": {
+    "default": {
+      "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
+      "s1": { "mesh": {
+        "type": "mesh",
+        "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
+        "triangles": [ 0,1,2, 0,2,3 ],
+        "vertices": [ 1, 0,-10,-5,1,
+                      2, 1, 20,10,0.6, 0,5,7,0.4,
+                      1, 1, 3,4,1,
+                      1, 0, 8,2,1 ]
+      } }
+    }
+  }
 })";
 
 // ---------------------------------------------------------------------
@@ -202,7 +209,7 @@ struct SkelWriter
 // 头部多 fps/imagesPath/audioPath）。只测 false 等于把最常见的情况漏掉。
 std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = false,
                                       const std::string& version = "3.8.99", bool nonessential = false,
-                                      const std::string& linked_parent = "mesh")
+                                      const std::string& linked_parent = "mesh", bool with_second_skin = false)
 {
     SkelWriter w;
 
@@ -328,8 +335,29 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         }
     }
 
-    // ---- 具名 skin：0 个 ----
-    w.Varint(0);
+    // ---- 具名 skin ----
+    // with_second_skin 时写一个 skin2，它同样在槽位 s0 下放一个 "quad"，
+    // 但尺寸 32×16 ≠ default 的 64×32 ⇒ 两份几何必须**都**留在容器里。
+    w.Varint(with_second_skin ? 1 : 0);
+    if (with_second_skin)
+    {
+        w.Str("skin2");
+        w.Varint(1);            // 1 个槽位
+        w.Varint(0);            // slotIndex = s0
+        w.Varint(1);            // 1 个附件
+        w.Str("quad");
+        w.Str("");              // 附件名留空 ⇒ 取 skin 里的 key
+        w.U8(0);                // AttachmentType_Region
+        w.Str("");              // path 留空 ⇒ 取 name
+        w.F(0.0f);              // rotation
+        w.F(0.0f);              // x
+        w.F(0.0f);              // y
+        w.F(1.0f);              // scaleX
+        w.F(1.0f);              // scaleY
+        w.F(32.0f);             // width
+        w.F(16.0f);             // height
+        w.ColorWhite();
+    }
 
     // ---- events：0 个 ----
     w.Varint(0);
@@ -369,10 +397,74 @@ const char* kSkeletonLinked = R"({
     { "name": "s0", "bone": "root", "attachment": "quad" },
     { "name": "s1", "bone": "hip", "attachment": "mesh" }
   ],
-  "skins": [ { "name": "default", "attachments": {
-    "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
-    "s1": {
-      "mesh": {
+  "skins": {
+    "default": {
+      "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
+      "s1": {
+        "mesh": {
+          "type": "mesh",
+          "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
+          "triangles": [ 0,1,2, 0,2,3 ],
+          "vertices": [ 1, 0,-10,-5,1,
+                        2, 1, 20,10,0.6, 0,5,7,0.4,
+                        1, 1, 3,4,1,
+                        1, 0, 8,2,1 ]
+        },
+        "mesh-linked": { "type": "linkedmesh", "path": "quad", "parent": "mesh" }
+      }
+    }
+  }
+})";
+
+// 跨皮肤的 linked mesh：**父附件在哪个皮肤里找，由 "skin" 字段决定**，
+// **不是**"它所在的那个皮肤"（SkeletonJson.cpp:653 / SkeletonBinary.cpp:302）。
+// 两个皮肤里都有名为 "eye" 的 mesh，但顶点完全不同（default 是 -10/20/3/8，
+// skin2 是 99/98/97/96）；skin2 里的 "eye-linked" 省略 skin 字段 ⇒ 必须拿到
+// **default** 的那一份顶点。照错了形状会静默变成另一个皮肤的样子。
+// %SKINFIELD% 由 BuildCrossSkin() 替换。
+const char* kSkeletonLinkedCrossSkin = R"({
+  "skeleton": { "spine": "3.8.99" },
+  "bones": [ { "name": "root" } ],
+  "slots": [ { "name": "s1", "bone": "root" } ],
+  "skins": {
+    "default": {
+      "s1": {
+        "eye": {
+          "type": "mesh", "path": "mesh",
+          "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
+          "triangles": [ 0,1,2, 0,2,3 ],
+          "vertices": [ 1, 0,-10,-5,1,  1, 0,20,10,1,  1, 0,3,4,1,  1, 0,8,2,1 ]
+        }
+      }
+    },
+    "skin2": {
+      "s1": {
+        "eye": {
+          "type": "mesh", "path": "mesh",
+          "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
+          "triangles": [ 0,1,2, 0,2,3 ],
+          "vertices": [ 1, 0,99,99,1,  1, 0,98,98,1,  1, 0,97,97,1,  1, 0,96,96,1 ]
+        },
+        "eye-linked": { "type": "linkedmesh", "path": "quad", "parent": "eye"%SKINFIELD% }
+      }
+    }
+  }
+})";
+
+// 两个皮肤：default 与 skin2，**同一个槽位 s0 下都有名为 "quad" 的附件**，
+// 但尺寸不同。这就是容器 v2 加 skin 维度要解决的案子：
+// v1 会把两份合并成一份（先出现的胜出）⇒ skin2 的换装直接消失。
+const char* kSkeletonTwoSkins = R"({
+  "skeleton": { "spine": "3.8.99" },
+  "bones": [ { "name": "root" }, { "name": "hip", "parent": "root" } ],
+  "slots": [
+    { "name": "s0", "bone": "root", "attachment": "quad" },
+    { "name": "s1", "bone": "hip", "attachment": "mesh" }
+  ],
+  "skins": {
+    "default": {
+      "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
+      "s1": { "mesh": {
         "type": "mesh",
         "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
         "triangles": [ 0,1,2, 0,2,3 ],
@@ -380,10 +472,12 @@ const char* kSkeletonLinked = R"({
                       2, 1, 20,10,0.6, 0,5,7,0.4,
                       1, 1, 3,4,1,
                       1, 0, 8,2,1 ]
-      },
-      "mesh-linked": { "type": "linkedmesh", "path": "quad", "parent": "mesh" }
+      } }
+    },
+    "skin2": {
+      "s0": { "quad": { "x": 0, "y": 0, "width": 32, "height": 16, "rotation": 0 } }
     }
-  } } ]
+  }
 })";
 
 }   // namespace
@@ -418,6 +512,9 @@ int main()
     CheckEq(static_cast<long long>(src.bones.size()), 2, "json: 2 根骨骼");
     CheckEq(static_cast<long long>(src.slots.size()), 2, "json: 2 个槽位");
     CheckEq(static_cast<long long>(src.attachments.size()), 2, "json: 2 个附件");
+    CheckEq(static_cast<long long>(src.skins.size()), 1, "json: 1 个皮肤");
+    Check(src.skins.size() == 1 && src.skins[0] == "default",
+          "json: 皮肤名取自**成员名**（3.8 的 skins 是对象，不是数组）");
     Check(src.attachments.size() == 2 && !src.attachments[0].IsWeighted(), "region 是 rigid");
     Check(src.attachments.size() == 2 && src.attachments[1].IsWeighted(), "mesh 是 weighted");
     Check(!src.has_clipping, "夹具没有裁剪");
@@ -437,7 +534,11 @@ int main()
     CheckEq(asset.header.spine_runtime, SpineGpuConstants::kSpineRuntime38, "header.spine_runtime = 30800");
     CheckEq(asset.header.bone_count, 2, "header.bone_count");
     CheckEq(asset.header.slot_count, 2, "header.slot_count");
+    CheckEq(asset.header.skin_count, 1, "header.skin_count");
     CheckEq(asset.header.draw_item_count, 2, "header.draw_item_count");
+    CheckEq(static_cast<long long>(asset.skin_names.size()), 1, "bake: 皮肤名表 1 项");
+    Check(asset.skin_names.size() == 1 && asset.skin_names[0] == "default", "bake: 皮肤 0 名为 default");
+    CheckEq(asset.draw_items.size() >= 1 ? asset.draw_items[0].skin_id : 999u, 0u, "bake: 绘制项的 skin_id = 0");
     CheckEq(asset.rigid_vertex_count, 4, "rigid 顶点数 = 4（一个 region）");
     CheckEq(asset.weighted_vertex_count, 4, "weighted 顶点数 = 4");
     CheckEq(asset.header.vertex_count, 8, "header.vertex_count = 8");
@@ -533,15 +634,15 @@ int main()
         return n;
     };
     const long long want_payload =
-        CStrBytes(asset.bone_names) + CStrBytes(asset.slot_names) + CStrBytes(asset.attachment_names) +
-        CStrBytes(asset.atlas_page_names) +                                          // id=1 strings
+        CStrBytes(asset.bone_names) + CStrBytes(asset.skin_names) + CStrBytes(asset.slot_names) +
+        CStrBytes(asset.attachment_names) + CStrBytes(asset.atlas_page_names) +      // id=1 strings
         static_cast<long long>(asset.slot_bone.size()) * 2LL +                       // id=2
         static_cast<long long>(asset.vertex_buffer.size()) +                         // id=3
         static_cast<long long>(asset.index_buffer.size()) * 2LL +                    // id=4
         static_cast<long long>(asset.draw_items.size()) *
             static_cast<long long>(sizeof(SpineDrawItem)) +                          // id=5（20 B/项）
-        static_cast<long long>(asset.attachment_names.size()) *
-            static_cast<long long>(sizeof(SpineGpuAttachmentRecord)) +               // id=6（4 B/项）
+        static_cast<long long>(asset.attachment_records.size()) *
+            static_cast<long long>(sizeof(SpineGpuAttachmentRecord)) +               // id=6（8 B/项，v2 起）
         CStrBytes(asset.atlas_page_names);                                           // id=7
 
     auto RdU32 = [&bytes](size_t off) -> uint32_t
@@ -607,6 +708,7 @@ int main()
     CheckEq(back.header.bone_count, asset.header.bone_count, "往返: bone_count");
     CheckEq(back.header.slot_count, asset.header.slot_count, "往返: slot_count");
     CheckEq(back.header.draw_item_count, asset.header.draw_item_count, "往返: draw_item_count");
+    CheckEq(back.header.skin_count, asset.header.skin_count, "往返: skin_count");
     CheckEq(back.header.vertex_count, asset.header.vertex_count, "往返: vertex_count");
     CheckEq(back.header.index_count, asset.header.index_count, "往返: index_count");
     CheckEq(back.header.atlas_page_count, asset.header.atlas_page_count, "往返: atlas_page_count");
@@ -629,9 +731,37 @@ int main()
     CheckEq(static_cast<long long>(back.slot_bone.size()), static_cast<long long>(asset.slot_bone.size()),
             "往返: slot_bone 数量");
     Check(back.bone_names == asset.bone_names, "往返: 骨骼名");
+    Check(back.skin_names == asset.skin_names, "往返: 皮肤名");
     Check(back.slot_names == asset.slot_names, "往返: 槽位名");
     Check(back.attachment_names == asset.attachment_names, "往返: 附件名");
     Check(back.atlas_page_names == asset.atlas_page_names, "往返: 图集页名");
+    CheckEq(static_cast<long long>(back.attachment_records.size()),
+            static_cast<long long>(asset.attachment_records.size()), "往返: 附件记录数");
+    bool records_same = back.attachment_records.size() == asset.attachment_records.size();
+    for (size_t i = 0; records_same && i < asset.attachment_records.size(); ++i)
+    {
+        records_same = std::memcmp(&back.attachment_records[i], &asset.attachment_records[i],
+                                   sizeof(SpineGpuAttachmentRecord)) == 0;
+    }
+    Check(records_same, "往返: 附件记录逐字节一致（含 skin 列）");
+    // 记录里的 (skin, slot) 必须与绘制项对得上 —— 换装查的就是这张表
+    if (back.attachment_records.size() == asset.draw_items.size())
+    {
+        for (size_t i = 0; i < asset.draw_items.size(); ++i)
+        {
+            CheckEq(back.attachment_records[i].skin_id, asset.draw_items[i].skin_id, "往返: 记录与绘制项 skin_id 一致");
+            CheckEq(back.attachment_records[i].slot_index, asset.draw_items[i].slot_index,
+                    "往返: 记录与绘制项 slot_index 一致");
+        }
+    }
+
+    // 再写一遍：读回来的资产重新序列化，字节必须完全一致（否则 C# 端读不出同一个东西）
+    {
+        std::vector<uint8_t> again;
+        SpineImportResult rw2 = WriteSpineGpuContainer(back, again);
+        Check(rw2.ok, "再序列化成功");
+        Check(rw2.ok && again == bytes, "读→写 逐字节一致（容器是稳定的，不含指针/地址）");
+    }
 
     // ---- 8. 报错路径：版本不符必须拒绝，不做静默兼容 ----
     {
@@ -677,6 +807,15 @@ int main()
                 "skel: 槽位数与 json 一致");
         CheckEq(static_cast<long long>(skel_src.attachments.size()),
                 static_cast<long long>(src.attachments.size()), "skel: 附件数与 json 一致");
+        CheckEq(static_cast<long long>(skel_src.skins.size()), static_cast<long long>(src.skins.size()),
+                "skel: 皮肤数与 json 一致");
+        if (skel_src.skins.size() == src.skins.size())
+        {
+            for (size_t i = 0; i < src.skins.size(); ++i)
+            {
+                Check(skel_src.skins[i] == src.skins[i], "skel: 皮肤名与 json 一致");
+            }
+        }
 
         for (size_t i = 0; i < src.attachments.size() && i < skel_src.attachments.size(); ++i)
         {
@@ -710,6 +849,7 @@ int main()
             Check(skel_asset.index_buffer == asset.index_buffer, "skel↔json: 索引缓冲相同");
             Check(skel_asset.slot_bone == asset.slot_bone, "skel↔json: slot_bone 相同");
             Check(skel_asset.bone_names == asset.bone_names, "skel↔json: 骨骼名相同");
+            Check(skel_asset.skin_names == asset.skin_names, "skel↔json: 皮肤名相同");
             Check(skel_asset.slot_names == asset.slot_names, "skel↔json: 槽位名相同");
             CheckEq(static_cast<long long>(skel_asset.draw_items.size()),
                     static_cast<long long>(asset.draw_items.size()), "skel↔json: 绘制项数相同");
@@ -871,6 +1011,285 @@ int main()
                     "linked: 3 个绘制项（换装时由 CPU 挑可见的那几个）");
         }
         g_prefix.clear();
+    }
+
+    // ---- 11. skin 维度（容器 v2）----
+    // 容器 v1 把所有 skin 合并成一份 ⇒ 同一个 (槽位, 附件名) 在不同皮肤下只剩一份，
+    // 换装直接失效。v2 给附件表加了 skin 列、给绘制项加了 skin_id，这里验的是：
+    //   两份同名附件**都**留在容器里，且能按 (skin, slot) 查回去。
+    auto FindAttSkin = [](const std::vector<SpineSourceAttachment>& v, int skin,
+                          const std::string& n) -> const SpineSourceAttachment*
+    {
+        for (const SpineSourceAttachment& a : v)
+        {
+            if (a.skin_index == skin && a.name == n)
+            {
+                return &a;
+            }
+        }
+        return nullptr;
+    };
+
+    for (bool nonessential : {false, true})
+    {
+        g_prefix = std::string("[skin/nonessential=") + (nonessential ? "true" : "false") + "] ";
+
+        // ---- json：两个皮肤，s0 下都有 "quad"，尺寸 64×32 vs 32×16 ----
+        SpineSourceSkeleton tj;
+        SpineImportResult rtj = ParseSpineSkeletonJson(kSkeletonTwoSkins, std::string(kSkeletonTwoSkins).size(),
+                                                       &atlas, tj);
+        Check(rtj.ok, "skin: json 解析成功");
+        if (!rtj.ok)
+        {
+            std::printf("  error: %s\n", rtj.error.c_str());
+            g_prefix.clear();
+            continue;
+        }
+        CheckEq(static_cast<long long>(tj.skins.size()), 2, "skin: 2 个皮肤");
+        Check(tj.skins.size() == 2 && tj.skins[0] == "default" && tj.skins[1] == "skin2",
+              "skin: 皮肤 0 是 default、皮肤 1 是 skin2");
+        CheckEq(static_cast<long long>(tj.attachments.size()), 3,
+                "skin: 3 个附件 ⇒ 同名跨皮肤的附件**没有**被合并掉");
+
+        const SpineSourceAttachment* q0 = FindAttSkin(tj.attachments, 0, "quad");
+        const SpineSourceAttachment* q1 = FindAttSkin(tj.attachments, 1, "quad");
+        Check(q0 != nullptr && q1 != nullptr, "skin: 两个皮肤里的 'quad' 都在");
+        if (q0 != nullptr && q1 != nullptr)
+        {
+            Check(q0->vertices != q1->vertices, "skin: 两份 'quad' 几何不同（64×32 vs 32×16）");
+            Check(q0->slot_index == q1->slot_index, "skin: 两份 'quad' 同槽位 ⇒ 只有 skin_id 能区分");
+        }
+
+        // ---- .skel：同样的内容，手写字节流 ----
+        const std::vector<uint8_t> tk = BuildSkelFixture(false, false, "3.8.99", nonessential, "mesh", true);
+        SpineSourceSkeleton tk_src;
+        SpineImportResult rtk = ParseSpineSkeletonBinary(tk.data(), tk.size(), &atlas, tk_src);
+        Check(rtk.ok, "skin: skel 解析成功");
+        if (!rtk.ok)
+        {
+            std::printf("  error: %s\n", rtk.error.c_str());
+            g_prefix.clear();
+            continue;
+        }
+        CheckEq(static_cast<long long>(tk_src.skins.size()), 2, "skin: skel 也是 2 个皮肤");
+        Check(tk_src.skins.size() == 2 && tk_src.skins[0] == "default" && tk_src.skins[1] == "skin2",
+              "skin: skel 的皮肤顺序与 json 一致（default 先，具名皮肤后）");
+        CheckEq(static_cast<long long>(tk_src.attachments.size()),
+                static_cast<long long>(tj.attachments.size()), "skin: skel 附件数与 json 一致");
+        for (size_t i = 0; i < tj.attachments.size() && i < tk_src.attachments.size(); ++i)
+        {
+            Check(tk_src.attachments[i].name == tj.attachments[i].name, "skin: skel/json 附件名一致");
+            Check(tk_src.attachments[i].skin_index == tj.attachments[i].skin_index,
+                  "skin: skel/json 附件所属皮肤一致");
+            Check(tk_src.attachments[i].vertices == tj.attachments[i].vertices, "skin: skel/json 顶点一致");
+            Check(tk_src.attachments[i].uvs == tj.attachments[i].uvs, "skin: skel/json UV 一致");
+        }
+
+        // ---- bake 两条路径 ----
+        SpineGpuAsset aj;
+        SpineImportResult rbj = BakeSpineGpuAsset(tj, aj);
+        SpineGpuAsset ak;
+        SpineImportResult rbk = BakeSpineGpuAsset(tk_src, ak);
+        Check(rbj.ok && rbk.ok, "skin: 两条路径都 bake 成功");
+        if (!rbj.ok || !rbk.ok)
+        {
+            if (!rbj.ok)
+            {
+                std::printf("  error(json): %s\n", rbj.error.c_str());
+            }
+            if (!rbk.ok)
+            {
+                std::printf("  error(skel): %s\n", rbk.error.c_str());
+            }
+            g_prefix.clear();
+            continue;
+        }
+        CheckEq(aj.header.skin_count, 2, "skin: header.skin_count = 2");
+        CheckEq(static_cast<long long>(aj.draw_items.size()), 3, "skin: 3 个绘制项");
+        if (aj.draw_items.size() == 3)
+        {
+            // 附件顺序是 (皮肤, 槽位)：default.s0 / default.s1 / skin2.s0
+            CheckEq(aj.draw_items[0].skin_id, 0u, "skin: 绘制项 0 属 default");
+            CheckEq(aj.draw_items[1].skin_id, 0u, "skin: 绘制项 1 属 default");
+            CheckEq(aj.draw_items[2].skin_id, 1u, "skin: 绘制项 2 属 skin2");
+            CheckEq(aj.draw_items[0].slot_index, aj.draw_items[2].slot_index,
+                    "skin: 绘制项 0 与 2 同槽位 ⇒ 换装就是换这两个");
+        }
+        CheckEq(static_cast<long long>(aj.rigid_vertex_count), 8,
+                "skin: rigid 顶点 = default 的 quad 4 + skin2 的 quad 4");
+        CheckEq(static_cast<long long>(aj.weighted_vertex_count), 4, "skin: weighted 顶点仍 4（只有一个 mesh）");
+        Check(aj.vertex_buffer == ak.vertex_buffer, "skin: skel↔json 顶点缓冲逐字节相同");
+        Check(aj.index_buffer == ak.index_buffer, "skin: skel↔json 索引相同");
+
+        // ---- 容器往返：皮肤名与 (skin, slot) 都得能读回去 ----
+        CheckEq(static_cast<long long>(aj.attachment_records.size()), 3, "skin: 3 条附件记录");
+        std::vector<uint8_t> sbytes;
+        SpineImportResult rsw = WriteSpineGpuContainer(aj, sbytes);
+        Check(rsw.ok, "skin: 序列化成功");
+        SpineGpuAsset sback;
+        SpineImportResult rsr = ReadSpineGpuContainer(sbytes.data(), sbytes.size(), sback);
+        Check(rsr.ok, "skin: 反序列化成功");
+        if (rsr.ok)
+        {
+            CheckEq(sback.header.skin_count, 2, "skin: 往返 skin_count = 2");
+            Check(sback.skin_names == aj.skin_names, "skin: 往返 皮肤名一致");
+            CheckEq(static_cast<long long>(sback.attachment_records.size()), 3, "skin: 往返 记录数 3");
+            // 换装真正要做的查询：给定 (skin, slot)，查出该画哪个附件
+            int found_skin2 = -1;
+            for (size_t i = 0; i < sback.attachment_records.size(); ++i)
+            {
+                if (sback.attachment_records[i].skin_id == 1u &&
+                    sback.attachment_records[i].slot_index == 0u)
+                {
+                    found_skin2 = static_cast<int>(sback.attachment_records[i].attachment_id);
+                }
+            }
+            CheckEq(found_skin2, 2, "skin: 按 (skin=1, slot=0) 查到附件 id 2");
+            Check(sback.attachment_names.size() == 3 && sback.attachment_names[2] == "quad",
+                  "skin: 附件 id 2 的名字是 quad（与 attachment_id 同序）");
+        }
+        g_prefix.clear();
+    }
+
+    // 11b. 跨皮肤 linked mesh：父附件由 "skin" 字段决定，不是"所在的皮肤"
+    {
+        auto BuildCrossSkin = [](const std::string& skin_field) -> std::string
+        {
+            std::string s(kSkeletonLinkedCrossSkin);
+            const std::string key = "%SKINFIELD%";
+            const size_t at = s.find(key);
+            if (at == std::string::npos)
+            {
+                return std::string();   // 夹具被改坏了 ⇒ 下面所有解析都会失败
+            }
+            s.replace(at, key.size(), skin_field);
+            return s;
+        };
+
+        struct Case
+        {
+            const char* label;
+            std::string skin_field;
+            int want_parent_skin;   // 期望父附件取自哪个皮肤
+        };
+        // 省略 skin 字段 ⇒ **default**（这正是最容易照错的一条）
+        const Case cases[] = {
+            {"省略 skin 字段", "", 0},
+            {"skin=default", ", \"skin\": \"default\"", 0},
+            {"skin=skin2", ", \"skin\": \"skin2\"", 1},
+        };
+
+        for (const Case& c : cases)
+        {
+            g_prefix = std::string("[cross-skin/") + c.label + "] ";
+            const std::string json = BuildCrossSkin(c.skin_field);
+            Check(!json.empty(), "cross-skin: 夹具替换成功");
+            if (json.empty())
+            {
+                g_prefix.clear();
+                continue;
+            }
+
+            SpineSourceSkeleton cs;
+            SpineImportResult r = ParseSpineSkeletonJson(json.data(), json.size(), &atlas, cs);
+            Check(r.ok, "cross-skin: json 解析成功");
+            if (!r.ok)
+            {
+                std::printf("  error: %s\n", r.error.c_str());
+                g_prefix.clear();
+                continue;
+            }
+            CheckEq(static_cast<long long>(cs.attachments.size()), 3,
+                    "cross-skin: 3 个附件（default.eye / skin2.eye / skin2.eye-linked）");
+
+            const SpineSourceAttachment* eye0 = FindAttSkin(cs.attachments, 0, "eye");
+            const SpineSourceAttachment* eye1 = FindAttSkin(cs.attachments, 1, "eye");
+            const SpineSourceAttachment* linked = FindAttSkin(cs.attachments, 1, "eye-linked");
+            Check(eye0 != nullptr && eye1 != nullptr && linked != nullptr, "cross-skin: 三个附件都在");
+            if (eye0 == nullptr || eye1 == nullptr || linked == nullptr)
+            {
+                g_prefix.clear();
+                continue;
+            }
+            Check(eye0->vertices != eye1->vertices, "cross-skin: 两个皮肤的 'eye' 几何不同（判据本身成立）");
+            CheckEq(linked->skin_index, 1, "cross-skin: eye-linked 归**它所在的** skin2");
+            const SpineSourceAttachment& want = (c.want_parent_skin == 0) ? *eye0 : *eye1;
+            const SpineSourceAttachment& other = (c.want_parent_skin == 0) ? *eye1 : *eye0;
+            Check(linked->vertices == want.vertices,
+                  "cross-skin: 顶点取自 skin 字段指定的那个皮肤的 'eye'");
+            Check(linked->vertices != other.vertices,
+                  "cross-skin: 顶点**不是**另一个皮肤的 'eye'（照错会静默变成那份）");
+            Check(linked->region_uvs == want.region_uvs, "cross-skin: regionUV 也取自同一个父附件");
+
+            SpineGpuAsset ca;
+            SpineImportResult rcb = BakeSpineGpuAsset(cs, ca);
+            Check(rcb.ok, "cross-skin: bake 成功");
+            if (rcb.ok)
+            {
+                CheckEq(static_cast<long long>(ca.weighted_vertex_count), 12,
+                        "cross-skin: weighted 顶点 3 × 4（几何是复制的，不共享）");
+            }
+            g_prefix.clear();
+        }
+    }
+
+    // 11c. 报错路径：皮肤相关
+    {
+        // linked mesh 的 "skin" 指向不存在的皮肤 ⇒ 必须报错（参考实现报 "Skin not found"）
+        const char* bad = R"({
+          "skeleton": { "spine": "3.8.99" },
+          "bones": [ { "name": "root" } ],
+          "slots": [ { "name": "s1", "bone": "root" } ],
+          "skins": { "default": {
+            "s1": {
+              "mesh": { "type": "mesh", "uvs": [0,0, 1,0, 1,1], "triangles": [0,1,2],
+                        "vertices": [ 1, 0,0,0,1, 1,0,1,0,1, 1,0,2,0,1 ] },
+              "linked": { "type": "linkedmesh", "path": "mesh", "parent": "mesh", "skin": "no-such-skin" }
+            }
+          } }
+        })";
+        SpineSourceSkeleton s;
+        SpineImportResult r = ParseSpineSkeletonJson(bad, std::string(bad).size(), &atlas, s);
+        Check(!r.ok, "skin: linked mesh 引用不存在的皮肤 ⇒ 报错");
+        std::printf("  (预期报错) %s\n", r.error.c_str());
+    }
+    {
+        // default 皮肤不在首位 ⇒ bake 必须报错（悄悄挪位会让默认外观变成另一个皮肤）
+        const char* bad = R"({
+          "skeleton": { "spine": "3.8.99" },
+          "bones": [ { "name": "root" } ],
+          "slots": [ { "name": "s0", "bone": "root" } ],
+          "skins": {
+            "skin2": { "s0": { "quad": { "width": 32, "height": 16 } } },
+            "default": { "s0": { "quad": { "width": 64, "height": 32 } } }
+          }
+        })";
+        SpineSourceSkeleton s;
+        SpineImportResult r = ParseSpineSkeletonJson(bad, std::string(bad).size(), &atlas, s);
+        Check(r.ok, "skin: default 不在首位时**解析**仍成功");
+        if (r.ok)
+        {
+            SpineGpuAsset a;
+            SpineImportResult rb_skin = BakeSpineGpuAsset(s, a);
+            Check(!rb_skin.ok, "skin: default 不在首位 ⇒ bake 必须报错（不静默挪位）");
+            std::printf("  (预期报错) %s\n", rb_skin.error.c_str());
+        }
+    }
+    {
+        // 数组形式的 skins（后面版本的写法）皮肤名取 "name" 字段 —— 参考实现读不了，
+        // 我们顺手接住，但至少要保证名字拿对了。
+        const char* arr = R"({
+          "skeleton": { "spine": "3.8.99" },
+          "bones": [ { "name": "root" } ],
+          "slots": [ { "name": "s0", "bone": "root" } ],
+          "skins": [ { "name": "default", "attachments": {
+            "s0": { "quad": { "width": 64, "height": 32 } }
+          } } ]
+        })";
+        SpineSourceSkeleton s;
+        SpineImportResult r = ParseSpineSkeletonJson(arr, std::string(arr).size(), &atlas, s);
+        Check(r.ok, "skin: 数组形式的 skins 也能解析（非 3.8 写法，兜住）");
+        Check(r.ok && s.skins.size() == 1 && s.skins[0] == "default", "skin: 数组形式取 \"name\" 字段作皮肤名");
     }
 
     std::printf("=== verdict: %s (%d/%d checks) ===\n", g_failed == 0 ? "PASS" : "FAIL",

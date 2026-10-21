@@ -171,20 +171,25 @@ Unity 原生模块里是实打实的浪费（~8 B/顶点）。
 
 ## 4. 绘制项表（静态）
 
-按 `skeleton.getDrawOrder()` 的**槽位顺序**排好。每项：
+按 (皮肤, `skeleton.getDrawOrder()` 的**槽位顺序**) 排好 —— 先 default 皮肤的全部附件，
+再下一个皮肤；皮肤内按槽位顺序。每项：
 
 ```
-DrawItem
-  index_offset  u32
-  index_count   u32
-  vertex_format u8    (kVtxRigid / kVtxWeighted4)
-  blend_mode    u8    (见 §8)
-  atlas_page    u16
-  slot_index    u16
-  attachment_id u16
-  kind          u8    (kStatic / kFallback)
-  _pad          u8
+DrawItem                     20 B
+  index_offset  u32   @0
+  index_count   u32   @4
+  vertex_format u8    @8   (kVtxRigid / kVtxWeighted4)
+  blend_mode    u8    @9   (见 §8)
+  atlas_page    u16   @10
+  slot_index    u16   @12
+  attachment_id u16   @14
+  kind          u8    @16  (kStatic / kFallback)
+  skin_id       u16   @18
 ```
+
+`skin_id` 落在 v1 那 2 B 尾部填充上 ⇒ **仍是 20 B**，一个字节都没多花。
+**没有它就没法换装**：同一个 (槽位, 附件名) 在不同皮肤下是两份几何、两个绘制项，
+光靠 `slot_index + attachment_id` 分不出该画哪一份。
 
 合批键 = `(atlas_page, blend_mode, vertex_format, kind)`。
 连续同键的绘制项可合成一次实例化绘制。
@@ -347,7 +352,7 @@ Spine 图集默认是 **PMA（预乘 Alpha）**，对应 Unity 侧 `Blend One On
 ```
 Header (64 B)
   0x00  magic            u32   'ZSPG'  (0x5A535047)
-  0x04  version          u32   本规格版本，当前 1
+  0x04  version          u32   本规格版本，当前 2（v2 = 加了 skin 维度，见 §9.1）
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -362,19 +367,33 @@ Header (64 B)
   0x30  rigid_vertex_count      u32
   0x34  weighted_segment_offset u32   weighted 段在 vertex_buffer 里的字节起点，8 B 对齐
   0x38  weighted_vertex_count   u32
-  0x3C  reserved        u32   0
+  0x3C  skin_count      u32   （v1 这里是 reserved）
 
 ChunkTable  (chunk_count × 16 B)  { id u32, offset u32, size u32, _pad u32 }
 Chunks:
-  id=1  strings        骨骼名 → 槽位名 → 附件名 → 图集页名，每项 UTF-8 且 '\0' 结尾
+  id=1  strings        骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名，每项 UTF-8 且 '\0' 结尾
   id=2  slot_bone      每槽位的骨骼下标（u16 × slot_count）—— rigid 用
   id=3  vertex_buffer  按 vertex_format 分段，段首 8 B 对齐
   id=4  index_buffer   uint16（或 flags 打开时 uint32）
-  id=5  draw_items     DrawItem[]，20 B/项
-  id=6  attachments    (slot_index u16, attachment_id u16) × attachment_count，换装用
+  id=5  draw_items     DrawItem[]，20 B/项（含 skin_id）
+  id=6  attachments    (slot_index u16, attachment_id u16, skin_id u16, _pad u16) × attachment_count
+                       —— 8 B/项，换装查的就是这张表
   id=7  atlas_pages    图集页路径，每项 '\0' 结尾
   id=8  clip_data      裁剪多边形（CPU fallback 用）
 ```
+
+### 9.1 skin 维度（v2）
+
+容器里的"一个附件"= **(皮肤, 槽位, 附件名)** 三元组，不再跨皮肤合并。
+换装的查询是：给定 `(skin_id, slot_index)` → `attachment_id` → 绘制项。
+
+- **`skin_id` 0 恒为 default 皮肤。** 二进制格式的 default 皮肤就是先读的那一个
+  （`SkeletonBinary.cpp:276`，名字写死 `"default"`）；编辑器导出的 json 里 default 也总排第一。
+  但**导入器会显式检查**：名为 `default` 的皮肤若不在首位就**报错**，绝不静默挪位 ——
+  挪了默认外观就变成另一个皮肤，而外观错没有任何报错。
+- 字符串表里皮肤名紧跟骨骼名之后，读端靠 `header.skin_count` 切分。
+- 代价（§14.2 那条没有因此消失）：同一个 (槽位, 附件名) 在 N 个皮肤下就是 N 份几何。
+  这是**用内存换"能表达"**，不是浪费 —— v1 省下了内存，代价是换装根本没法用。
 
 **为什么 header 里要有 0x30..0x38 这三个字段**：顶点缓冲是 rigid 段 + weighted 段拼起来的，
 光有 `vertex_count` 和 `draw_items` 无法反推出分界点 —— 读回来就切不开两段，
@@ -425,8 +444,13 @@ Chunks:
 4. **导入器负向用例**：`n > 4` 的顶点必须报错；`weights` 和不为 255 必须报错。
 5. **两种输入必须对拍**：`.skel`（编辑器默认导出）与 json 是两条独立解析路径，
    同一副骨架经两条路径 Bake 后必须产出**逐字节相同**的容器。
-   另：对 `.skel` 夹具的**每个真前缀**都调一次解析，必须全部失败 —— 它既没魔数也没长度字段，
-   截断是最容易触发越界读的场景。
+另：对 `.skel` 夹具的**每个真前缀**都调一次解析，必须全部失败 —— 它既没魔数也没长度字段，
+截断是最容易触发越界读的场景。
+6. **换装必须验两个皮肤**：同一副骨架里两个皮肤在同一槽位放同名的附件（几何不同），
+   两份都必须留在容器里，且能按 `(skin_id, slot_index)` 查回各自的 `attachment_id`。
+   （v1 会把它们合并成一份 ⇒ 换装静默失效，这条就是为它设的回归。）
+7. **容器必须可重入**：读回来的资产再序列化一次，字节必须与原来**逐字节相同** ——
+   否则 C# 端读到的就不是同一个东西（指针 / 地址 / 未初始化填充都会在这里露出来）。
 
 ---
 
@@ -441,29 +465,21 @@ Chunks:
 | 6 | root 变换存在哪？ | **方案 A：实例项加 `root_index`（16 B → 20 B）**，root 存每帧 root 表，24 B/项。选它而不是 B/C 是因为它不改 `bone_base` 的语义，代价只是每绘制项 4 B | §5.2、§5.3 |
 | 2 | `MAX_INFLUENCES = 4` 够吗？ | **定为 4**。导入器遇 `n > 4` **报错并报出附件名**，不静默截断 | §3.1 |
 | 4 | 骨骼通道 structured 还是 UBO？ | **默认 structured / SSBO，24 B 紧凑**；仅当目标后端只有 UBO 时才用 32 B std140 变体（记录在 `bone_stride`） | §5.1 |
+| 7 | 容器加 skin 维度怎么加？ | **附件表多一列 `skin_id`**（4 B → 8 B），而不是另建一张 skin 表。选它是因为换装查询就是"按 (skin, slot) 查附件 id"，一列就能表达；另建表会多一次间接跳转却不省什么 | §9.1 |
 
 ### 13.2 仍待拍板
 
-**无。** 全部六项已拍板；后续若再开新议题写在这里。
-
-是否需要给容器加 **skin 维度**？（见 §14）
+**无。** 全部七项已拍板；后续若再开新议题写在这里。
 
 ---
 
 ## 14. 已知限制
 
-### 14.1 容器里没有 skin 维度
+### 14.1 （已修，2026-10-21）~~容器里没有 skin 维度~~
 
-导入器把**所有 skin 合并成一份**附件表（同槽位同名时**先出现的胜出**），
-容器只有 `(slot_index, attachment_id)`，没有"这个附件属于哪个 skin"。
-后果：
-
-- 同名跨 skin 的附件（含最常见的 linked mesh 用法：skin2 里的 "eye" 链接
-  到 default 里的 "eye"）会**塌成一个**，换装时拿不到另一份。
-- 参考实现按 `(skin, slotIndex, parent)` 找父附件；我们按 `(槽位, 名字)` 找。
-
-要不要修是**规格级**的决定（容器要加 skin 表 / 附件表要多一列），不是导入器
-能自己定的。当前行为有测试钉住，不是意外。
+v2 已补上：附件表多一列 `skin_id`（4 B → 8 B），绘制项尾部填充改成 `skin_id`
+（仍是 20 B），header 的 `reserved` 改成 `skin_count`，字符串表插入皮肤名。
+附件 = (皮肤, 槽位, 附件名) 三元组，**不再跨皮肤合并**。见 §9.1。
 
 ### 14.2 linked mesh 的几何是复制的，不是共享的
 
@@ -523,7 +539,20 @@ region 重算 UV。我们的顶点格式把 UV 编在顶点里 ⇒ UV 不同就�
 | ⚠️ `configureAttachment` 是**空函数**，region 在 `newMeshAttachment` 里就设好了 | `AtlasAttachmentLoader.cpp:120-122`、`:73-98` |
 | json 里 linked mesh 有两种写法：`type:"linkedmesh"`，或 `type:"mesh"` 带 `"parent"` | `SkeletonJson.cpp:462-465`、`:538` |
 | linked mesh 解析：按 skin 找父附件，找不到报 "Parent mesh not found" | `SkeletonBinary.cpp:302-323`、`SkeletonJson.cpp:649-669` |
+| ⚠️ 找父附件用的 skin = `"skin"` 字段（**空 ⇒ default**），**不是** linked mesh 所在的那个 skin | `SkeletonBinary.cpp:302-303`、`SkeletonJson.cpp:653-654` |
 | `inheritDeform` 是运行时概念（deform 时间轴是否作用于继承方） | `MeshAttachment.cpp:94-96` |
+
+### skin 的出处（容器 v2）
+
+| 断言 | 出处 |
+|---|---|
+| 3.8 的 json：skins 是**对象**（皮肤名 → 槽位 → 附件），皮肤名取自**成员名** | `SkeletonJson.cpp:439` `new Skin(skinMap->_name)` |
+| ⚠️ 数组形式读不了：数组成员是 `new Json(NULL)` 且**从不**赋 `_name` | `Json.cpp:402-450`（`parseArray`）对比 `:479/507`（`parseObject` 才赋 `_name`） |
+| 二进制：default 皮肤是**先读的**那一个，名字写死 `"default"` | `SkeletonBinary.cpp:276` |
+| ⚠️ 空皮肤**占位不对称**：default 空 ⇒ 不占下标；具名皮肤空 ⇒ 仍占下标 | `SkeletonBinary.cpp:277-283`（`skinsCount` 只在 defaultSkin 非空时 +1）、`:293-295` |
+| 二进制具名皮肤数 = 单独一个 varint，不含 default | `SkeletonBinary.cpp:277` |
+| 同一皮肤内 `(slotIndex, name)` 重复 ⇒ **后写的覆盖**先写的 | `Skin.h:118-120`（`addAttachment` 注释） |
+| 皮肤内查附件只在**该皮肤**内 | `Skin.h:126`（`getAttachment(slotIndex, name)`） |
 
 **`.skel` 与 json 必须产出同一个容器。** 这一条有一个硬测试钉住
 （`SpineGpuImportTest` 第 9 节）：手写的 `.skel` 字节流夹具与 json 夹具内容等价，

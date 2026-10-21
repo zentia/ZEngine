@@ -500,31 +500,49 @@ void ComputeMeshUvs(const SpineAtlasRegion& reg, const std::vector<float>& regio
 // ⚠️ `configureAttachment()` 是**空函数**（AtlasAttachmentLoader.cpp:120-122），
 //    region 在 `newMeshAttachment()` 里就设好了 —— 别以为它会重算一次 UV。
 //
-// ⚠️ skin：参考实现按 (skin, slotIndex, parent) 找父附件。本导入器把所有 skin
-//    合并成一份（先出现的胜出），容器里**没有 skin 维度** ⇒ 同名跨 skin 的附件无法区分。
-//    这里沿用同一条规则：父附件按 (槽位, 名字) 在合并后的集合里找；
-//    解析出的 linked mesh 若 (槽位, 名字) 已存在则丢弃。
-//    （要让"换装"真正可用，得先给容器加 skin 维度 —— 那是另一项改动。）
+// ⚠️ 父附件在**哪个皮肤里找**，由 linked mesh 的 "skin" 字段决定 ——
+//    **不是**"它所在的那个皮肤"：
+//      skin 字段为空 ⇒ 在 **default 皮肤**里找
+//      （SkeletonJson.cpp:653-654 / SkeletonBinary.cpp:302-303：
+//       `linkedMesh->_skin.length() == 0 ? getDefaultSkin() : findSkin(...)`）
+//    这条最容易照错：写一个"在 skin2 里放 linked mesh、省略 skin 字段"的资源，
+//    照错了会静默拿到 default 的父附件（形状错但不报错）。
+//
+//    找到之后，linked mesh 自己是加在**它所在的那个皮肤**里的
+//    （参考实现 :643 `skin->addAttachment(...)`，skin 是外层循环的那个）。
 struct SpineLinkedMeshRef
 {
     int slot_index = -1;
+    int skin_index = -1;     // **它所在的**皮肤
     std::string name;
     std::string path;
     std::string parent;
-    std::string skin;
+    std::string skin;        // 去哪个皮肤里找父附件；空 ⇒ default
 };
 
-bool ResolveLinkedMeshes(const SpineAtlas* atlas, const std::vector<SpineSourceSlot>& slots,
+bool ResolveLinkedMeshes(const SpineAtlas* atlas, const std::vector<std::string>& skins,
+                         const std::vector<SpineSourceSlot>& slots,
                          std::vector<SpineSourceAttachment>& attachments,
                          const std::vector<SpineLinkedMeshRef>& linked, std::string& err)
 {
+    auto find_skin = [&skins](const std::string& name) -> int {
+        for (size_t i = 0; i < skins.size(); ++i)
+        {
+            if (skins[static_cast<size_t>(i)] == name)
+            {
+                return static_cast<int>(i);
+            }
+        }
+        return -1;
+    };
+
     for (const SpineLinkedMeshRef& lm : linked)
     {
-        // 与常规附件同一条去重规则：先出现的胜出。
+        // 与常规附件同一条去重规则：先出现的胜出（同一皮肤内同名同槽位）。
         bool dup = false;
         for (const SpineSourceAttachment& a : attachments)
         {
-            if (a.slot_index == lm.slot_index && a.name == lm.name)
+            if (a.skin_index == lm.skin_index && a.slot_index == lm.slot_index && a.name == lm.name)
             {
                 dup = true;
                 break;
@@ -535,21 +553,42 @@ bool ResolveLinkedMeshes(const SpineAtlas* atlas, const std::vector<SpineSourceS
             continue;
         }
 
+        const std::string slot_name =
+            (lm.slot_index >= 0 && static_cast<size_t>(lm.slot_index) < slots.size())
+                ? slots[static_cast<size_t>(lm.slot_index)].name
+                : std::string("?");
+
+        // 参考实现 :653-658 —— skin 找不到直接报错，不退回"当前皮肤"。
+        int lookup_skin = lm.skin.empty() ? find_skin("default") : find_skin(lm.skin);
+        if (lookup_skin < 0)
+        {
+            if (lm.skin.empty())
+            {
+                err = "槽位 '" + slot_name + "' 的 linked mesh '" + lm.name +
+                      "' 没有 skin 字段，而文件里没有名为 \"default\" 的皮肤"
+                      "（参考实现 getDefaultSkin() 在这里返回 NULL，报 \"Skin not found\"）";
+            }
+            else
+            {
+                err = "槽位 '" + slot_name + "' 的 linked mesh '" + lm.name + "' 引用了不存在的皮肤 '" +
+                      lm.skin + "'（参考实现在这里报 \"Skin not found\"）";
+            }
+            return false;
+        }
+
         const SpineSourceAttachment* parent = nullptr;
         for (const SpineSourceAttachment& a : attachments)
         {
-            if (a.slot_index == lm.slot_index && a.name == lm.parent)
+            if (a.skin_index == lookup_skin && a.slot_index == lm.slot_index && a.name == lm.parent)
             {
                 parent = &a;
                 break;
             }
         }
-        const std::string slot_name =
-            (lm.slot_index >= 0 && static_cast<size_t>(lm.slot_index) < slots.size()) ? slots[static_cast<size_t>(lm.slot_index)].name
-                                                                                      : std::string("?");
         if (parent == nullptr)
         {
-            err = "槽位 '" + slot_name + "' 的 linked mesh '" + lm.name + "' 找不到父附件 '" + lm.parent +
+            err = "槽位 '" + slot_name + "' 的 linked mesh '" + lm.name + "' 在皮肤 '" +
+                  skins[static_cast<size_t>(lookup_skin)] + "' 里找不到父附件 '" + lm.parent +
                   "'（参考实现在这里报 \"Parent mesh not found\"）";
             return false;
         }
@@ -566,6 +605,8 @@ bool ResolveLinkedMeshes(const SpineAtlas* atlas, const std::vector<SpineSourceS
         att.name = lm.name;
         att.path = lm.path;
         att.slot_index = lm.slot_index;
+        // 归**它所在的**皮肤，不是查父附件用的那个皮肤。
+        att.skin_index = lm.skin_index;
 
         // setParentMesh：顶点 / 骨骼 / regionUV / 三角形全部来自父附件
         att.vertices = parent->vertices;
@@ -594,6 +635,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
     out.bones.clear();
     out.slots.clear();
     out.attachments.clear();
+    out.skins.clear();
     out.has_draw_order_timeline = false;
     out.uses_tint_black = false;
     out.has_clipping = false;
@@ -686,8 +728,18 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
     }
 
     // ---- skins ----
-    // 3.8 导出是数组（[{name, attachments}]），老版本是对象；两种都接。
-    std::vector<const JsonValue*> skin_attachment_maps;
+    // ⚠️ 3.8 的 json 是**对象**形式：skins → { 皮肤名 → { 槽位名 → { 附件名 → {...} } } }
+    //    判据在参考实现自己身上：SkeletonJson.cpp:439 `new Skin(skinMap->_name)` ——
+    //    皮肤名取自**成员名**；而 Json.cpp:402-450 的 parseArray 里数组成员是
+    //    `new Json(NULL)`、之后**从不**赋 _name —— 数组形式会拿到空名。
+    //    数组形式（[{ "name": ..., "attachments": {...} }]）是后面的版本才有的，
+    //    3.8 的参考实现读不了；这里顺手接住，皮肤名改取 "name" 字段。
+    struct SkinEntry
+    {
+        std::string name;
+        const JsonValue* atts = nullptr;
+    };
+    std::vector<SkinEntry> skin_entries;
     const JsonValue* skins = GetMember(doc, "skins");
     if (skins && skins->IsArray())
     {
@@ -695,7 +747,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
         {
             if (const JsonValue* atts = GetMember(sk, "attachments"))
             {
-                skin_attachment_maps.push_back(atts);
+                skin_entries.push_back(SkinEntry {GetString(sk, "name", ""), atts});
             }
         }
     }
@@ -703,21 +755,37 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
     {
         for (auto it = skins->MemberBegin(); it != skins->MemberEnd(); ++it)
         {
-            skin_attachment_maps.push_back(&it->value);
+            skin_entries.push_back(SkinEntry {std::string(it->name.GetString()), &it->value});
         }
     }
 
-    // 收集：按 (slot, 附件名) 去重，先出现的胜出（default skin 在前）
+    // 皮肤名必须唯一：重名会让"按名换装"落到哪一个变不确定
+    // （参考实现 findSkin() 取第一个，是**静默**的）。
+    for (const SkinEntry& se : skin_entries)
+    {
+        for (const std::string& s : out.skins)
+        {
+            if (s == se.name)
+            {
+                return Fail("json: 重复的皮肤名 '" + se.name + "'（换装会按名字查，重名取哪个是不确定的）");
+            }
+        }
+        out.skins.push_back(se.name);
+    }
+
+    // 收集：**不再跨皮肤合并** —— 同一个 (槽位, 附件名) 在不同皮肤下是两份几何。
     struct PendingAttachment
     {
+        int skin_index;
         int slot_index;
         std::string name;
         const JsonValue* json;
     };
     std::vector<PendingAttachment> pending;
 
-    for (const JsonValue* atts : skin_attachment_maps)
+    for (size_t si = 0; si < skin_entries.size(); ++si)
     {
+        const JsonValue* atts = skin_entries[si].atts;
         if (!atts || !atts->IsObject())
         {
             continue;
@@ -744,7 +812,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
                 bool dup = false;
                 for (const PendingAttachment& p : pending)
                 {
-                    if (p.slot_index == slot_index && p.name == att_name)
+                    if (p.skin_index == static_cast<int>(si) && p.slot_index == slot_index && p.name == att_name)
                     {
                         dup = true;
                         break;
@@ -752,15 +820,23 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
                 }
                 if (!dup)
                 {
-                    pending.push_back(PendingAttachment {slot_index, att_name, &att_it->value});
+                    pending.push_back(PendingAttachment {static_cast<int>(si), slot_index, att_name,
+                                                         &att_it->value});
                 }
             }
         }
     }
 
-    // 按绘制顺序（槽位顺序）排
+    // 按 (皮肤, 绘制顺序) 排：先 default 皮肤的全部附件，再下一个皮肤。
     std::sort(pending.begin(), pending.end(),
-              [](const PendingAttachment& a, const PendingAttachment& b) { return a.slot_index < b.slot_index; });
+              [](const PendingAttachment& a, const PendingAttachment& b)
+              {
+                  if (a.skin_index != b.skin_index)
+                  {
+                      return a.skin_index < b.skin_index;
+                  }
+                  return a.slot_index < b.slot_index;
+              });
 
     // linked mesh 要等所有附件都解析完才能解引用父附件（父可能在**后面**的 skin 里）
     std::vector<SpineLinkedMeshRef> linked;
@@ -777,6 +853,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
         {
             SpineLinkedMeshRef lm;
             lm.slot_index = p.slot_index;
+            lm.skin_index = p.skin_index;
             lm.name = p.name;
             lm.path = GetString(a, "path", "");
             lm.parent = jparent != nullptr && jparent->IsString() ? jparent->GetString() : std::string();
@@ -803,6 +880,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
         att.name = p.name;
         att.path = GetString(a, "path", "");
         att.slot_index = p.slot_index;
+        att.skin_index = p.skin_index;
 
         const std::string region_name = att.path.empty() ? att.name : att.path;
         const SpineAtlasRegion* reg = atlas ? FindAtlasRegion(*atlas, region_name) : nullptr;
@@ -948,18 +1026,24 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
         }
     }
 
-    // ---- linked mesh：所有附件（含所有 skin）读完后才解引用父附件 ----
+    // ---- linked mesh：所有皮肤读完后才解引用父附件 ----
     if (!linked.empty())
     {
         std::string err;
-        if (!ResolveLinkedMeshes(atlas, out.slots, out.attachments, linked, err))
+        if (!ResolveLinkedMeshes(atlas, out.skins, out.slots, out.attachments, linked, err))
         {
             return Fail("json: " + err);
         }
-        // 解出来的附件插在末尾 ⇒ 重排一次，保证"按绘制顺序（槽位顺序）"。
+        // 解出来的附件插在末尾 ⇒ 重排一次，保证 (皮肤, 槽位) 有序。
         std::stable_sort(out.attachments.begin(), out.attachments.end(),
                          [](const SpineSourceAttachment& a, const SpineSourceAttachment& b)
-                         { return a.slot_index < b.slot_index; });
+                         {
+                             if (a.skin_index != b.skin_index)
+                             {
+                                 return a.skin_index < b.skin_index;
+                             }
+                             return a.slot_index < b.slot_index;
+                         });
     }
 
     return Ok();
@@ -1252,23 +1336,19 @@ public:
         {
             return false;
         }
-        // 与 json 版一致：去重（先出现的胜出）后按槽位顺序排。
-        std::stable_sort(collected_.begin(), collected_.end(),
-                         [](const SpineSourceAttachment& a, const SpineSourceAttachment& b)
-                         { return a.slot_index < b.slot_index; });
+        // 与 json 版一致：去重（同皮肤内先出现的胜出）后按 (皮肤, 槽位) 排。
+        std::stable_sort(collected_.begin(), collected_.end(), CompareAttachmentOrder);
         out_.attachments = std::move(collected_);
 
         // linked mesh：所有 skin 读完后才解引用父附件（父可能在后面的 skin 里）
         if (!linked_.empty())
         {
             std::string err;
-            if (!ResolveLinkedMeshes(atlas_, out_.slots, out_.attachments, linked_, err))
+            if (!ResolveLinkedMeshes(atlas_, out_.skins, out_.slots, out_.attachments, linked_, err))
             {
                 return r_.Fail("skel: " + err);
             }
-            std::stable_sort(out_.attachments.begin(), out_.attachments.end(),
-                             [](const SpineSourceAttachment& a, const SpineSourceAttachment& b)
-                             { return a.slot_index < b.slot_index; });
+            std::stable_sort(out_.attachments.begin(), out_.attachments.end(), CompareAttachmentOrder);
         }
         return true;
     }
@@ -1283,6 +1363,18 @@ private:
     std::vector<SpineSourceAttachment> collected_;
     std::vector<bool> event_has_audio_;
     std::vector<SpineLinkedMeshRef> linked_;
+    int current_skin_ = -1;   // 正在读的皮肤下标（附件 / linked mesh 都记它）
+
+    // 附件顺序：先皮肤、皮肤内按槽位。与 json 路径**同一个**次序，
+    // 两条路径烘焙出来的容器才能逐字节相同。
+    static bool CompareAttachmentOrder(const SpineSourceAttachment& a, const SpineSourceAttachment& b)
+    {
+        if (a.skin_index != b.skin_index)
+        {
+            return a.skin_index < b.skin_index;
+        }
+        return a.slot_index < b.slot_index;
+    }
 
     bool Fail(const std::string& m) { return r_.Fail("skel: " + m); }
 
@@ -1330,7 +1422,13 @@ private:
 
         // default skin + 具名 skin。注意 varint 读出来的就是**具名** skin 的个数
         // （参考实现 :277-292：default skin 在读到 count 之后才 +1）。
-        if (!ParseSkin())
+        //
+        // ⚠️ 两者还有一个不对称：default skin 在 slotCount == 0 时**不占位**
+        // （:279-281 直接 return NULL，:278 的 skinsCount 也因此没 +1），
+        // 而具名 skin 即使空也占一个下标（:293-295 只是把它写成 NULL）。
+        // 少这一条，后面**每一个** skin 下标都会整体偏移一格 ——
+        // 换装会拿到隔壁皮肤的附件，而且不报错。
+        if (!ParseSkin("default", false))
         {
             return false;
         }
@@ -1339,6 +1437,10 @@ private:
         {
             return false;
         }
+        if (named_skin_count < 0)
+        {
+            return Fail("具名皮肤数为负 " + std::to_string(named_skin_count));
+        }
         for (int32_t i = 0; i < named_skin_count; ++i)
         {
             std::string skin_name;
@@ -1346,7 +1448,7 @@ private:
             {
                 return false;
             }
-            if (!ParseSkin())
+            if (!ParseSkin(skin_name, true))
             {
                 return false;
             }
@@ -1645,16 +1747,29 @@ private:
     }
 
     // ---- skin（:492-513）----
-    bool ParseSkin()
+    // reserve_index_when_empty：空 skin 要不要占一个下标（见调用处的注释）。
+    bool ParseSkin(const std::string& skin_name, bool reserve_index_when_empty)
     {
         int32_t slot_count = 0;
         if (!r_.Varint(true, slot_count))
         {
             return false;
         }
+        if (slot_count < 0)
+        {
+            return Fail("skin 的槽位数为负 " + std::to_string(slot_count));
+        }
         if (slot_count == 0)
         {
-            return true;   // 空 skin（参考实现直接返回 NULL）
+            if (!reserve_index_when_empty)
+            {
+                return true;   // 参考实现直接返回 NULL，且不占下标
+            }
+            return AddSkin(skin_name);
+        }
+        if (!AddSkin(skin_name))
+        {
+            return false;
         }
         for (int32_t i = 0; i < slot_count; ++i)
         {
@@ -1689,6 +1804,20 @@ private:
                 }
             }
         }
+        return true;
+    }
+
+    bool AddSkin(const std::string& skin_name)
+    {
+        for (const std::string& s : out_.skins)
+        {
+            if (s == skin_name)
+            {
+                return Fail("重复的皮肤名 '" + skin_name + "'（换装按名字查，重名取哪个是不确定的）");
+            }
+        }
+        out_.skins.push_back(skin_name);
+        current_skin_ = static_cast<int>(out_.skins.size()) - 1;
         return true;
     }
 
@@ -1942,6 +2071,7 @@ private:
                 }
                 SpineLinkedMeshRef lm;
                 lm.slot_index = slot_index;
+                lm.skin_index = current_skin_;
                 lm.name = name;
                 lm.path = path;
                 if (!r_.String(lm.skin) || !r_.String(lm.parent))
@@ -2064,11 +2194,13 @@ private:
 
     void Collect(SpineSourceAttachment att)
     {
+        att.skin_index = current_skin_;
         for (const SpineSourceAttachment& existing : collected_)
         {
-            if (existing.slot_index == att.slot_index && existing.name == att.name)
+            if (existing.skin_index == att.skin_index && existing.slot_index == att.slot_index &&
+                existing.name == att.name)
             {
-                return;   // 先出现的胜出（default skin 在前）
+                return;   // 同一皮肤内先出现的胜出
             }
         }
         collected_.push_back(std::move(att));
@@ -2521,6 +2653,7 @@ SpineImportResult ParseSpineSkeletonBinary(const uint8_t* data, size_t len, cons
     out.bones.clear();
     out.slots.clear();
     out.attachments.clear();
+    out.skins.clear();
     out.has_draw_order_timeline = false;
     out.uses_tint_black = false;
     out.has_clipping = false;
@@ -2609,6 +2742,28 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     const uint32_t bone_count = static_cast<uint32_t>(src.bones.size());
     const uint32_t slot_count = static_cast<uint32_t>(src.slots.size());
 
+    // ---- 皮肤的门：容器约定 skin 0 = default（SpineGpuFormat.h 的 kDefaultSkinId）----
+    // 两个来源的导出顺序都满足它，但"通常满足"不等于"可以不查"：
+    // 不满足时若照单全收，默认外观会悄悄变成另一个皮肤，而没有任何报错。
+    for (size_t i = 0; i < src.skins.size(); ++i)
+    {
+        if (src.skins[i] == "default" && i != SpineGpuConstants::kDefaultSkinId)
+        {
+            return Fail("bake: 名为 \"default\" 的皮肤排在第 " + std::to_string(i) +
+                        " 位，但容器约定 **skin 0 恒为 default 皮肤**。"
+                        "不静默挪位 —— 挪了默认外观就变成另一个皮肤，而外观错没有任何报错。");
+        }
+    }
+    if (src.skins.size() > 0xFFFFu)
+    {
+        return Fail("bake: 皮肤数 " + std::to_string(src.skins.size()) + " 超过 uint16 上限（skin_id 存不下）");
+    }
+    if (src.attachments.size() > 0xFFFFu)
+    {
+        return Fail("bake: 附件数 " + std::to_string(src.attachments.size()) +
+                    " 超过 uint16 上限（attachment_id 存不下）");
+    }
+
     // ---- pass 1：分类与统计 ----
     uint32_t rigid_verts = 0;
     uint32_t weighted_verts = 0;
@@ -2650,6 +2805,14 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         const SpineSourceAttachment& a = src.attachments[ai];
         const uint32_t vc = a.VertexCount();
         const bool weighted = a.IsWeighted();
+
+        // 没有 skin_index 的附件进不了容器（skin_id 是换装的键）。
+        // 解析路径漏设它是内部 bug，但不能让它静默变成 0 —— 那就是"悄悄披上 default 皮肤"。
+        if (a.skin_index < 0 || static_cast<size_t>(a.skin_index) >= src.skins.size())
+        {
+            return Fail("bake: 附件 '" + a.name + "' 的 skin_index 是 " + std::to_string(a.skin_index) +
+                        "（皮肤数 " + std::to_string(src.skins.size()) + "）—— 解析路径没给它归皮肤");
+        }
 
         uint32_t vertex_base = 0;
         uint32_t write_offset = 0;
@@ -2771,8 +2934,15 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         item.slot_index = static_cast<uint16_t>(a.slot_index);
         item.attachment_id = static_cast<uint16_t>(ai);
         item.kind = SpineDrawItemKind::kStatic;
-        item.pad = 0;
+        item.skin_id = static_cast<uint16_t>(a.skin_index);
         out.draw_items.push_back(item);
+
+        SpineGpuAttachmentRecord rec {};
+        rec.slot_index = static_cast<uint16_t>(a.slot_index);
+        rec.attachment_id = static_cast<uint16_t>(ai);
+        rec.skin_id = static_cast<uint16_t>(a.skin_index);
+        rec.pad = 0;
+        out.attachment_records.push_back(rec);
     }
 
     // ---- slot_bone：rigid 用（槽位骨骼下标） ----
@@ -2787,6 +2957,7 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     {
         out.bone_names.push_back(b.name);
     }
+    out.skin_names = src.skins;
     out.slot_names.reserve(src.slots.size());
     for (const SpineSourceSlot& s : src.slots)
     {
@@ -2820,6 +2991,7 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     }
     h.bone_count = bone_count;
     h.slot_count = slot_count;
+    h.skin_count = static_cast<uint32_t>(src.skins.size());
     h.draw_item_count = static_cast<uint32_t>(out.draw_items.size());
     h.vertex_count = rigid_verts + weighted_verts;
     h.index_count = static_cast<uint32_t>(out.index_buffer.size());
@@ -2897,11 +3069,16 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
     // ---- 组装各 chunk ----
     std::vector<ChunkBuilder> chunks;
 
-    // id=1 strings：骨骼名 → 槽位名 → 附件名 → 图集页名，每项 '\0' 结尾
+    // id=1 strings：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名，每项 '\0' 结尾
+    //                        ↑ 皮肤名插在这里：读端靠 header.skin_count 切分
     {
         ChunkBuilder c;
         c.id = SpineGpuChunkId::kChunkStrings;
         for (const std::string& s : asset.bone_names)
+        {
+            PutCString(c.bytes, s);
+        }
+        for (const std::string& s : asset.skin_names)
         {
             PutCString(c.bytes, s);
         }
@@ -2972,15 +3149,16 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         chunks.push_back(std::move(c));
     }
 
-    // id=6 attachments
+    // id=6 attachments —— 8 B/项：(槽位, 附件 id, 皮肤 id)
     {
         ChunkBuilder c;
         c.id = SpineGpuChunkId::kChunkAttachments;
-        for (size_t i = 0; i < asset.attachment_names.size(); ++i)
+        for (const SpineGpuAttachmentRecord& r : asset.attachment_records)
         {
-            const uint16_t slot_index = (i < asset.draw_items.size()) ? asset.draw_items[i].slot_index : 0;
-            PutU16(c.bytes, slot_index);
-            PutU16(c.bytes, static_cast<uint16_t>(i));
+            uint8_t raw[sizeof(SpineGpuAttachmentRecord)];
+            std::memset(raw, 0, sizeof(raw));
+            std::memcpy(raw, &r, sizeof(r));
+            PutBytes(c.bytes, raw, sizeof(raw));
         }
         if (!c.bytes.empty())
         {
@@ -3021,6 +3199,7 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
     h.rigid_vertex_count = asset.rigid_vertex_count;
     h.weighted_segment_offset = asset.weighted_segment_offset;
     h.weighted_vertex_count = asset.weighted_vertex_count;
+    h.skin_count = static_cast<uint32_t>(asset.skin_names.size());
     std::memcpy(out.data(), &h, sizeof(h));
 
     for (size_t i = 0; i < chunks.size(); ++i)
@@ -3160,12 +3339,21 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
     {
         if (f->size % sizeof(SpineGpuAttachmentRecord) != 0)
         {
-            return Fail("container: attachments 大小不是 4 B 的整数倍");
+            return Fail("container: attachments 大小不是 " + std::to_string(sizeof(SpineGpuAttachmentRecord)) +
+                        " B 的整数倍（v2 起一条记录是 8 B：多了 skin 列）");
         }
-        attachment_count = f->size / sizeof(SpineGpuAttachmentRecord);
+        const uint32_t count = f->size / static_cast<uint32_t>(sizeof(SpineGpuAttachmentRecord));
+        out.attachment_records.resize(count);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            std::memcpy(&out.attachment_records[i],
+                        data + f->offset + static_cast<size_t>(i) * sizeof(SpineGpuAttachmentRecord),
+                        sizeof(SpineGpuAttachmentRecord));
+        }
+        attachment_count = count;
     }
 
-    // ---- 字符串：骨骼名 → 槽位名 → 附件名 → 图集页名 ----
+    // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名 ----
     if (const Found* f = find_chunk(SpineGpuChunkId::kChunkStrings))
     {
         std::vector<std::string> all;
@@ -3191,6 +3379,7 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
             }
         };
         take(out.header.bone_count, out.bone_names);
+        take(out.header.skin_count, out.skin_names);
         take(out.header.slot_count, out.slot_names);
         take(attachment_count, out.attachment_names);
         take(out.header.atlas_page_count, out.atlas_page_names);
