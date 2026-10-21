@@ -133,7 +133,13 @@ struct SpineGpuHeader
     uint32_t atlas_page_count;
     uint32_t bone_stride;       // 24 或 32
     uint32_t chunk_count;
-    uint32_t reserved[4];       // 0x30..0x3F
+    // 0x30..0x3F 原本是"保留"，但**顶点缓冲的分段信息必须进容器**：
+    // 光有 vertex_buffer 的字节流，读回来分不出哪段是 rigid、哪段是 weighted
+    // （两种格式步长不同），也就无从建立顶点缓冲视图。
+    uint32_t rigid_vertex_count;       // 0x30
+    uint32_t weighted_segment_offset;  // 0x34 —— 8 B 对齐（Load2 的前提）
+    uint32_t weighted_vertex_count;    // 0x38
+    uint32_t reserved;                 // 0x3C
 };
 
 static_assert(sizeof(SpineGpuHeader) == SpineGpuConstants::kHeaderSize,
@@ -150,7 +156,11 @@ static_assert(offsetof(SpineGpuHeader, index_count) == 0x20, "spec 9: index_coun
 static_assert(offsetof(SpineGpuHeader, atlas_page_count) == 0x24, "spec 9: atlas_page_count @0x24");
 static_assert(offsetof(SpineGpuHeader, bone_stride) == 0x28, "spec 9: bone_stride @0x28");
 static_assert(offsetof(SpineGpuHeader, chunk_count) == 0x2C, "spec 9: chunk_count @0x2C");
-static_assert(offsetof(SpineGpuHeader, reserved) == 0x30, "spec 9: reserved @0x30");
+static_assert(offsetof(SpineGpuHeader, rigid_vertex_count) == 0x30, "spec 9: rigid_vertex_count @0x30");
+static_assert(offsetof(SpineGpuHeader, weighted_segment_offset) == 0x34,
+              "spec 9: weighted_segment_offset @0x34");
+static_assert(offsetof(SpineGpuHeader, weighted_vertex_count) == 0x38, "spec 9: weighted_vertex_count @0x38");
+static_assert(offsetof(SpineGpuHeader, reserved) == 0x3C, "spec 9: reserved @0x3C");
 
 // ChunkTable 项（16 B）。
 struct SpineGpuChunk

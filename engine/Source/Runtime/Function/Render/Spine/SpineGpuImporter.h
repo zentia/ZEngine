@@ -124,6 +124,9 @@ struct SpineSourceSkeleton
     bool has_draw_order_timeline = false;   // animations.*.drawOrder 存在 ⇒ 整个资产走 CPU
     bool uses_tint_black = false;           // 任一槽位带 dark
     bool has_clipping = false;              // 存在 clipping 附件
+
+    // 图集页名（写进容器 chunk 7；序列化时才知道纹理引用）
+    std::vector<std::string> atlas_pages;
 };
 
 // 解析 Spine 3.8 的 json 导出。atlas 可为 nullptr —— 但那样所有需要 UV 的附件
@@ -149,8 +152,29 @@ struct SpineGpuAsset
     std::vector<uint16_t> index_buffer;
     std::vector<SpineDrawItem> draw_items;
     std::vector<uint16_t> slot_bone;          // 每槽位的骨骼下标（rigid 用）
+
+    // 字符串表（chunk 1）。落盘顺序固定：骨骼名 → 槽位名 → 附件名，
+    // 每项以 '\0' 结尾。读回时按 bone_count / slot_count / 附件记录数切分。
     std::vector<std::string> bone_names;
     std::vector<std::string> slot_names;
+    std::vector<std::string> attachment_names;
+    std::vector<std::string> atlas_page_names;
 };
 
 SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsset& out);
+
+// ---------------------------------------------------------------------
+// 容器序列化（规格 §9）
+// ---------------------------------------------------------------------
+// 附件记录：chunk 6。换装 / 调试用（槽位 ↔ 附件 id）。
+// 附件**名**在 chunk 1 里，按附件 id 顺序排列，所以这里不用存名字偏移。
+struct SpineGpuAttachmentRecord
+{
+    uint16_t slot_index = 0;
+    uint16_t attachment_id = 0;
+};
+
+static_assert(sizeof(SpineGpuAttachmentRecord) == 4, "spec 9: attachment record is 4 B");
+
+SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector<uint8_t>& out);
+SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGpuAsset& out);

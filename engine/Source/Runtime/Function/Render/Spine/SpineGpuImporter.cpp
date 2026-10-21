@@ -516,6 +516,17 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
                     "'，本导入器锁定 3.8（规格 §1.1）。4.x 的 _bones 是 int，布局不同，需要另一条导入路径。");
     }
 
+    // 图集页名：容器 chunk 7 要用（纹理引用）。没有图集时留空 —— 但那样需要 UV 的
+    // 附件会在下面报错，不会静默产出半个资产。
+    if (atlas)
+    {
+        out.atlas_pages.reserve(atlas->pages.size());
+        for (const SpineAtlasPage& p : atlas->pages)
+        {
+            out.atlas_pages.push_back(p.name);
+        }
+    }
+
     // ---- bones ----
     const JsonValue* bones = GetMember(doc, "bones");
     if (bones && bones->IsArray())
@@ -1055,6 +1066,12 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     {
         out.slot_names.push_back(s.name);
     }
+    out.attachment_names.reserve(src.attachments.size());
+    for (const SpineSourceAttachment& a : src.attachments)
+    {
+        out.attachment_names.push_back(a.name);
+    }
+    out.atlas_page_names = src.atlas_pages;
 
     // ---- header ----
     SpineGpuHeader& h = out.header;
@@ -1080,9 +1097,378 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     h.draw_item_count = static_cast<uint32_t>(out.draw_items.size());
     h.vertex_count = rigid_verts + weighted_verts;
     h.index_count = static_cast<uint32_t>(out.index_buffer.size());
-    h.atlas_page_count = 1;
+    h.atlas_page_count = static_cast<uint32_t>(out.atlas_page_names.size());
     h.bone_stride = SpineGpuConstants::kBoneStrideCompact;
-    h.chunk_count = 0;   // 序列化到容器是下一步
+    h.chunk_count = 0;   // WriteSpineGpuContainer() 填
+
+    return Ok();
+}
+
+// =====================================================================
+// 容器序列化（规格 §9）
+// =====================================================================
+namespace
+{
+
+struct ChunkBuilder
+{
+    uint32_t id = 0;
+    std::vector<uint8_t> bytes;
+    uint32_t alignment = SpineGpuConstants::kChunkAlignment;
+};
+
+void PutU32(std::vector<uint8_t>& v, uint32_t x)
+{
+    v.push_back(static_cast<uint8_t>(x & 0xFFu));
+    v.push_back(static_cast<uint8_t>((x >> 8) & 0xFFu));
+    v.push_back(static_cast<uint8_t>((x >> 16) & 0xFFu));
+    v.push_back(static_cast<uint8_t>((x >> 24) & 0xFFu));
+}
+
+void PutU32To(uint8_t* p, uint32_t x)
+{
+    p[0] = static_cast<uint8_t>(x & 0xFFu);
+    p[1] = static_cast<uint8_t>((x >> 8) & 0xFFu);
+    p[2] = static_cast<uint8_t>((x >> 16) & 0xFFu);
+    p[3] = static_cast<uint8_t>((x >> 24) & 0xFFu);
+}
+
+uint32_t GetU32(const uint8_t* p)
+{
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+void PutU16(std::vector<uint8_t>& v, uint16_t x)
+{
+    v.push_back(static_cast<uint8_t>(x & 0xFFu));
+    v.push_back(static_cast<uint8_t>((x >> 8) & 0xFFu));
+}
+
+void PutBytes(std::vector<uint8_t>& v, const void* src, size_t n)
+{
+    const uint8_t* p = static_cast<const uint8_t*>(src);
+    v.insert(v.end(), p, p + n);
+}
+
+void PutCString(std::vector<uint8_t>& v, const std::string& s)
+{
+    v.insert(v.end(), s.begin(), s.end());
+    v.push_back(0);
+}
+
+uint32_t AlignUp(uint32_t x, uint32_t a)
+{
+    return (x + a - 1) / a * a;
+}
+
+}   // namespace
+
+SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector<uint8_t>& out)
+{
+    out.clear();
+
+    // ---- 组装各 chunk ----
+    std::vector<ChunkBuilder> chunks;
+
+    // id=1 strings：骨骼名 → 槽位名 → 附件名 → 图集页名，每项 '\0' 结尾
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkStrings;
+        for (const std::string& s : asset.bone_names)
+        {
+            PutCString(c.bytes, s);
+        }
+        for (const std::string& s : asset.slot_names)
+        {
+            PutCString(c.bytes, s);
+        }
+        for (const std::string& s : asset.attachment_names)
+        {
+            PutCString(c.bytes, s);
+        }
+        for (const std::string& s : asset.atlas_page_names)
+        {
+            PutCString(c.bytes, s);
+        }
+        if (!c.bytes.empty())
+        {
+            chunks.push_back(std::move(c));
+        }
+    }
+
+    // id=2 slot_bone
+    if (!asset.slot_bone.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkSlotBone;
+        for (uint16_t b : asset.slot_bone)
+        {
+            PutU16(c.bytes, b);
+        }
+        chunks.push_back(std::move(c));
+    }
+
+    // id=3 vertex_buffer（段起点 8 B 对齐 ⇒ chunk 本身也要 8 对齐）
+    if (!asset.vertex_buffer.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkVertexBuffer;
+        c.alignment = SpineGpuConstants::kVertexSegmentAlignment;
+        PutBytes(c.bytes, asset.vertex_buffer.data(), asset.vertex_buffer.size());
+        chunks.push_back(std::move(c));
+    }
+
+    // id=4 index_buffer
+    if (!asset.index_buffer.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkIndexBuffer;
+        for (uint16_t i : asset.index_buffer)
+        {
+            PutU16(c.bytes, i);
+        }
+        chunks.push_back(std::move(c));
+    }
+
+    // id=5 draw_items —— **20 B/项**，尾部 2 B 填充显式写 0（规格 §4）
+    if (!asset.draw_items.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkDrawItems;
+        for (const SpineDrawItem& d : asset.draw_items)
+        {
+            uint8_t raw[sizeof(SpineDrawItem)];
+            std::memset(raw, 0, sizeof(raw));
+            std::memcpy(raw, &d, sizeof(d));
+            PutBytes(c.bytes, raw, sizeof(raw));
+        }
+        chunks.push_back(std::move(c));
+    }
+
+    // id=6 attachments
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkAttachments;
+        for (size_t i = 0; i < asset.attachment_names.size(); ++i)
+        {
+            const uint16_t slot_index = (i < asset.draw_items.size()) ? asset.draw_items[i].slot_index : 0;
+            PutU16(c.bytes, slot_index);
+            PutU16(c.bytes, static_cast<uint16_t>(i));
+        }
+        if (!c.bytes.empty())
+        {
+            chunks.push_back(std::move(c));
+        }
+    }
+
+    // id=7 atlas_pages
+    if (!asset.atlas_page_names.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkAtlasPages;
+        for (const std::string& s : asset.atlas_page_names)
+        {
+            PutCString(c.bytes, s);
+        }
+        chunks.push_back(std::move(c));
+    }
+
+    // ---- 布局：header(64) + chunk table(16×n) + payloads ----
+    const uint32_t table_bytes = static_cast<uint32_t>(chunks.size()) * SpineGpuConstants::kChunkTableEntrySize;
+    uint32_t cursor = SpineGpuConstants::kHeaderSize + table_bytes;
+
+    std::vector<uint32_t> offsets(chunks.size());
+    for (size_t i = 0; i < chunks.size(); ++i)
+    {
+        cursor = AlignUp(cursor, chunks[i].alignment);
+        offsets[i] = cursor;
+        cursor += static_cast<uint32_t>(chunks[i].bytes.size());
+    }
+
+    out.assign(cursor, 0u);
+
+    SpineGpuHeader h = asset.header;
+    h.magic = SpineGpuConstants::kMagic;
+    h.version = SpineGpuConstants::kFormatVersion;
+    h.chunk_count = static_cast<uint32_t>(chunks.size());
+    h.rigid_vertex_count = asset.rigid_vertex_count;
+    h.weighted_segment_offset = asset.weighted_segment_offset;
+    h.weighted_vertex_count = asset.weighted_vertex_count;
+    std::memcpy(out.data(), &h, sizeof(h));
+
+    for (size_t i = 0; i < chunks.size(); ++i)
+    {
+        uint8_t* entry = out.data() + SpineGpuConstants::kHeaderSize +
+                         static_cast<size_t>(i) * SpineGpuConstants::kChunkTableEntrySize;
+        PutU32To(entry, chunks[i].id);
+        PutU32To(entry + 4, offsets[i]);
+        PutU32To(entry + 8, static_cast<uint32_t>(chunks[i].bytes.size()));
+        PutU32To(entry + 12, 0u);
+        if (!chunks[i].bytes.empty())
+        {
+            std::memcpy(out.data() + offsets[i], chunks[i].bytes.data(), chunks[i].bytes.size());
+        }
+    }
+
+    return Ok();
+}
+
+SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGpuAsset& out)
+{
+    out = SpineGpuAsset {};
+
+    if (len < SpineGpuConstants::kHeaderSize)
+    {
+        return Fail("container: 长度 " + std::to_string(len) + " < header 64 B");
+    }
+
+    std::memcpy(&out.header, data, sizeof(SpineGpuHeader));
+    if (out.header.magic != SpineGpuConstants::kMagic)
+    {
+        return Fail("container: 魔数不是 'ZSPG'");
+    }
+    if (out.header.version != SpineGpuConstants::kFormatVersion)
+    {
+        return Fail("container: 版本 " + std::to_string(out.header.version) + " != " +
+                    std::to_string(SpineGpuConstants::kFormatVersion) +
+                    "。规格 §11：版本变了必须明确拒绝，不做静默兼容。");
+    }
+
+    const uint32_t n = out.header.chunk_count;
+    const uint64_t need = static_cast<uint64_t>(SpineGpuConstants::kHeaderSize) +
+                          static_cast<uint64_t>(n) * SpineGpuConstants::kChunkTableEntrySize;
+    if (need > len)
+    {
+        return Fail("container: chunk 表越界");
+    }
+
+    struct Found
+    {
+        uint32_t id = 0;
+        uint32_t offset = 0;
+        uint32_t size = 0;
+    };
+    std::vector<Found> found;
+    found.reserve(n);
+
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const uint8_t* e = data + SpineGpuConstants::kHeaderSize +
+                           static_cast<size_t>(i) * SpineGpuConstants::kChunkTableEntrySize;
+        Found f;
+        f.id = GetU32(e);
+        f.offset = GetU32(e + 4);
+        f.size = GetU32(e + 8);
+        if (static_cast<uint64_t>(f.offset) + f.size > len)
+        {
+            return Fail("container: chunk " + std::to_string(f.id) + " 越界");
+        }
+        found.push_back(f);
+    }
+
+    auto find_chunk = [&](uint32_t id) -> const Found* {
+        for (const Found& f : found)
+        {
+            if (f.id == id)
+            {
+                return &f;
+            }
+        }
+        return nullptr;
+    };
+
+    // ---- 顶点 ----
+    out.rigid_vertex_count = out.header.rigid_vertex_count;
+    out.weighted_segment_offset = out.header.weighted_segment_offset;
+    out.weighted_vertex_count = out.header.weighted_vertex_count;
+
+    if (const Found* f = find_chunk(SpineGpuChunkId::kChunkVertexBuffer))
+    {
+        out.vertex_buffer.assign(data + f->offset, data + f->offset + f->size);
+    }
+
+    // ---- 索引 ----
+    if (const Found* f = find_chunk(SpineGpuChunkId::kChunkIndexBuffer))
+    {
+        const uint32_t count = f->size / 2u;
+        out.index_buffer.resize(count);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            const uint8_t* p = data + f->offset + static_cast<size_t>(i) * 2u;
+            out.index_buffer[i] = static_cast<uint16_t>(p[0] | (static_cast<uint16_t>(p[1]) << 8));
+        }
+    }
+
+    // ---- 绘制项（20 B/项） ----
+    if (const Found* f = find_chunk(SpineGpuChunkId::kChunkDrawItems))
+    {
+        if (f->size % sizeof(SpineDrawItem) != 0)
+        {
+            return Fail("container: draw_items 大小不是 20 B 的整数倍");
+        }
+        const uint32_t count = f->size / static_cast<uint32_t>(sizeof(SpineDrawItem));
+        out.draw_items.resize(count);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            std::memcpy(&out.draw_items[i], data + f->offset + static_cast<size_t>(i) * sizeof(SpineDrawItem),
+                        sizeof(SpineDrawItem));
+        }
+    }
+
+    // ---- slot_bone ----
+    if (const Found* f = find_chunk(SpineGpuChunkId::kChunkSlotBone))
+    {
+        const uint32_t count = f->size / 2u;
+        out.slot_bone.resize(count);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            const uint8_t* p = data + f->offset + static_cast<size_t>(i) * 2u;
+            out.slot_bone[i] = static_cast<uint16_t>(p[0] | (static_cast<uint16_t>(p[1]) << 8));
+        }
+    }
+
+    // ---- attachments：拿到附件数，才能切分字符串表 ----
+    size_t attachment_count = 0;
+    if (const Found* f = find_chunk(SpineGpuChunkId::kChunkAttachments))
+    {
+        if (f->size % sizeof(SpineGpuAttachmentRecord) != 0)
+        {
+            return Fail("container: attachments 大小不是 4 B 的整数倍");
+        }
+        attachment_count = f->size / sizeof(SpineGpuAttachmentRecord);
+    }
+
+    // ---- 字符串：骨骼名 → 槽位名 → 附件名 → 图集页名 ----
+    if (const Found* f = find_chunk(SpineGpuChunkId::kChunkStrings))
+    {
+        std::vector<std::string> all;
+        const uint8_t* p = data + f->offset;
+        const uint8_t* end = p + f->size;
+        while (p < end)
+        {
+            const uint8_t* z = static_cast<const uint8_t*>(std::memchr(p, 0, static_cast<size_t>(end - p)));
+            if (!z)
+            {
+                all.emplace_back(reinterpret_cast<const char*>(p), static_cast<size_t>(end - p));
+                break;
+            }
+            all.emplace_back(reinterpret_cast<const char*>(p), static_cast<size_t>(z - p));
+            p = z + 1;
+        }
+
+        size_t i = 0;
+        auto take = [&](size_t count, std::vector<std::string>& dst) {
+            for (size_t k = 0; k < count && i < all.size(); ++k)
+            {
+                dst.push_back(all[i++]);
+            }
+        };
+        take(out.header.bone_count, out.bone_names);
+        take(out.header.slot_count, out.slot_names);
+        take(attachment_count, out.attachment_names);
+        take(out.header.atlas_page_count, out.atlas_page_names);
+    }
 
     return Ok();
 }

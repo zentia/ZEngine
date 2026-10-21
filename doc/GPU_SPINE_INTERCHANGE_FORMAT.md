@@ -358,22 +358,35 @@ Header (64 B)
   0x20  index_count      u32
   0x24  atlas_page_count u32
   0x28  bone_stride      u32   24 或 32
-  0x2C  chunk_count      u32
-  0x30.. 保留
+  0x2C  chunk_count      u32   由 writer 填（内存中未烘焙的 asset 里是 0）
+  0x30  rigid_vertex_count      u32
+  0x34  weighted_segment_offset u32   weighted 段在 vertex_buffer 里的字节起点，8 B 对齐
+  0x38  weighted_vertex_count   u32
+  0x3C  reserved        u32   0
 
 ChunkTable  (chunk_count × 16 B)  { id u32, offset u32, size u32, _pad u32 }
 Chunks:
-  id=1  strings        骨骼名 / 槽位名 / 附件名（UTF-8，调试与挂点）
+  id=1  strings        骨骼名 → 槽位名 → 附件名 → 图集页名，每项 UTF-8 且 '\0' 结尾
   id=2  slot_bone      每槽位的骨骼下标（u16 × slot_count）—— rigid 用
-  id=3  vertex_buffer  按 vertex_format 分段，段首 4 B 对齐
+  id=3  vertex_buffer  按 vertex_format 分段，段首 8 B 对齐
   id=4  index_buffer   uint16（或 flags 打开时 uint32）
-  id=5  draw_items     DrawItem[]
-  id=6  attachments    槽位 → 附件 id 列表（换装用）
-  id=7  atlas_pages    图集页路径 / 纹理引用
+  id=5  draw_items     DrawItem[]，20 B/项
+  id=6  attachments    (slot_index u16, attachment_id u16) × attachment_count，换装用
+  id=7  atlas_pages    图集页路径，每项 '\0' 结尾
   id=8  clip_data      裁剪多边形（CPU fallback 用）
 ```
 
-所有偏移 4 B 对齐；`vertex_buffer` 每段起点 **8 B 对齐**（见 §3.1 的对齐说明）。
+**为什么 header 里要有 0x30..0x38 这三个字段**：顶点缓冲是 rigid 段 + weighted 段拼起来的，
+光有 `vertex_count` 和 `draw_items` 无法反推出分界点 —— 读回来就切不开两段，
+而 `SpineRigidVertex`(16 B) 与 `SpineWeightedVertex`(56 B) 步长不同，切错就全错。
+所以段信息必须由 header 显式给出，不能靠消费端重算。
+
+布局规则：
+- 所有 chunk 起点 4 B 对齐；`vertex_buffer`(id=3) 起点 **8 B 对齐**（§3.1 的 `Load2` 前提）。
+- 对齐填充插在 chunk 之间，**因此容器总长 ≠ header + 表 + 净载荷之和**。
+  要校验容器，应校验 **chunk 表里的 `size` 之和**（与填充无关的精确不变量），
+  而不是写死一个总字节数 —— 后者会在对齐规则一变时就假失败。
+- 最后一个 chunk 的 `offset + size` 必须正好等于文件长度：不留尾部冗余，也没被截断。
 
 ---
 
