@@ -209,7 +209,9 @@ struct SkelWriter
 // 头部多 fps/imagesPath/audioPath）。只测 false 等于把最常见的情况漏掉。
 std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = false,
                                       const std::string& version = "3.8.99", bool nonessential = false,
-                                      const std::string& linked_parent = "mesh", bool with_second_skin = false)
+                                      const std::string& linked_parent = "mesh", bool with_second_skin = false,
+                                      bool with_deform = false, bool linked_inherit_deform = true,
+                                      int deform_length = 10)
 {
     SkelWriter w;
 
@@ -327,7 +329,9 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         w.ColorWhite();         // color
         w.Str("");              // skin（空 ⇒ default skin）
         w.Str(linked_parent);   // parent
-        w.Bool(true);           // inheritDeform（运行时概念，导入期用不到）
+        // inheritDeform：父附件的 deform 是否也作用于继承方
+        // （MeshAttachment::applyDeform，:94-95）。导入期要用 —— 继承方得一起回退。
+        w.Bool(linked_inherit_deform);
         if (nonessential)
         {
             w.F(64.0f);         // width
@@ -363,7 +367,7 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     w.Varint(0);
 
     // ---- animations ----
-    if (with_draw_order)
+    if (with_draw_order || with_deform)
     {
         w.Varint(1);
         w.Str("walk");
@@ -372,10 +376,36 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         w.Varint(0);        // IK
         w.Varint(0);        // transform 约束
         w.Varint(0);        // path 约束
-        w.Varint(0);        // deform
-        w.Varint(1);        // 绘制顺序：1 帧
-        w.F(0.0f);          // time
-        w.Varint(0);        // offsetCount
+
+        // ---- deform 时间轴（SkeletonBinary.cpp:957-1030）----
+        w.Varint(with_deform ? 1 : 0);
+        if (with_deform)
+        {
+            w.Varint(0);            // 皮肤下标 = default
+            w.Varint(1);            // 1 个槽位
+            w.Varint(1);            // slotIndex = s1
+            w.Varint(1);            // 1 个附件
+            w.Str("mesh");
+            w.Varint(1);            // 1 帧
+            w.F(0.0f);              // time
+            // ⚠️ 读端是 `end = readVarint; start = readVarint; end += start;` 再读
+            //    end-start 个 float ⇒ **落盘第二个 varint 是"个数"，不是"终点"**。
+            w.Varint(deform_length);
+            w.Varint(0);            // start（= json 的 "offset"）
+            for (int i = 0; i < deform_length; ++i)
+            {
+                w.F(0.0f);
+            }
+            // 最后一帧后面没有 curve
+        }
+
+        // ---- 绘制顺序 ----
+        w.Varint(with_draw_order ? 1 : 0);
+        if (with_draw_order)
+        {
+            w.F(0.0f);          // time
+            w.Varint(0);        // offsetCount
+        }
         w.Varint(0);        // 事件时间轴
     }
     else
@@ -476,6 +506,56 @@ const char* kSkeletonTwoSkins = R"({
     },
     "skin2": {
       "s0": { "quad": { "x": 0, "y": 0, "width": 32, "height": 16, "rotation": 0 } }
+    }
+  }
+})";
+
+// deform（FFD）夹具 = kSkeletonLinked 的骨架 + 一条 deform 时间轴，命中 default/s1/mesh。
+//
+// 关键长度：mesh 的顶点是 4 个，影响数分别 1/2/1/1 ⇒ **总影响数 5**
+// ⇒ weighted 的 deform 长度 = 5 × 2 = **10** 个 float
+//   （SkeletonJson.cpp:1071 `deformLength = verts.size() / 3 * 2`，注意是**每影响** 2 个，
+//    不是每顶点 2 个 —— 运行时 computeWorldVertices 里 f 也是随影响 +2，
+//    VertexAttachment.cpp:115-127）。
+// 下面那帧正好写 10 个 float，是**贴着上限**的；越界那条用例改 offset 就能触发。
+//
+// %DEFORMFIELD% 由 BuildDeform() 替换成 linked mesh 的 inheritDeform 开关。
+// ⚠️ json 里这个字段就叫 **"deform"**（不是 "inheritDeform"），默认 1
+// （SkeletonJson.cpp:572）。
+const char* kSkeletonDeform = R"({
+  "skeleton": { "spine": "3.8.99" },
+  "bones": [ { "name": "root" }, { "name": "hip", "parent": "root" } ],
+  "slots": [
+    { "name": "s0", "bone": "root", "attachment": "quad" },
+    { "name": "s1", "bone": "hip", "attachment": "mesh" }
+  ],
+  "skins": {
+    "default": {
+      "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
+      "s1": {
+        "mesh": {
+          "type": "mesh",
+          "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
+          "triangles": [ 0,1,2, 0,2,3 ],
+          "vertices": [ 1, 0,-10,-5,1,
+                        2, 1, 20,10,0.6, 0,5,7,0.4,
+                        1, 1, 3,4,1,
+                        1, 0, 8,2,1 ]
+        },
+        "mesh-linked": { "type": "linkedmesh", "path": "quad", "parent": "mesh"%DEFORMFIELD% }
+      }
+    }
+  },
+  "animations": {
+    "walk": {
+      "deform": {
+        "default": {
+          "s1": {
+            "mesh": [ { "time": 0, "offset": 0,
+                        "vertices": [ 0,0, 0,0, 0,0, 0,0, 0,0 ] } ]
+          }
+        }
+      }
     }
   }
 })";
@@ -1334,6 +1414,277 @@ int main()
         SpineImportResult r = ParseSpineSkeletonJson(arr, std::string(arr).size(), &atlas, s);
         Check(r.ok, "skin: 数组形式的 skins 也能解析（非 3.8 写法，兜住）");
         Check(r.ok && s.skins.size() == 1 && s.skins[0] == "default", "skin: 数组形式取 \"name\" 字段作皮肤名");
+    }
+
+    // ---- 12. deform（FFD）----
+    // 顶点每帧都变 ⇒ 烘不进静态 VB（里面存的是**绑定姿势**）⇒ 被命中的绘制项走
+    // CPU fallback（规格 §7.1）。**不是整个资产**回退 —— 只有被命中的那几项。
+    {
+        // 按名字找附件（deform 夹具里每个名字只出现一次）
+        auto FindByName = [](const std::vector<SpineSourceAttachment>& v,
+                             const std::string& n) -> const SpineSourceAttachment*
+        {
+            for (const SpineSourceAttachment& a : v)
+            {
+                if (a.name == n)
+                {
+                    return &a;
+                }
+            }
+            return nullptr;
+        };
+
+        auto BuildDeform = [](bool inherit) -> std::string
+        {
+            std::string s(kSkeletonDeform);
+            const std::string key = "%DEFORMFIELD%";
+            const size_t at = s.find(key);
+            if (at == std::string::npos)
+            {
+                return std::string();   // 夹具被改坏了 ⇒ 下面所有解析都会失败
+            }
+            s.replace(at, key.size(), inherit ? ", \"deform\": 1" : ", \"deform\": 0");
+            return s;
+        };
+
+        // 基线：没有动画的同一副骨架 ⇒ 一个 fallback 都没有
+        {
+            SpineSourceSkeleton base;
+            SpineImportResult rb = ParseSpineSkeletonJson(kSkeletonLinked, std::string(kSkeletonLinked).size(),
+                                                          &atlas, base);
+            Check(rb.ok, "deform: 基线骨架解析成功");
+            if (rb.ok)
+            {
+                SpineGpuAsset ba;
+                Check(BakeSpineGpuAsset(base, ba).ok, "deform: 基线 bake 成功");
+                bool any_fallback = false;
+                for (const SpineDrawItem& it : ba.draw_items)
+                {
+                    any_fallback = any_fallback || it.kind == SpineDrawItemKind::kFallback;
+                }
+                Check(!any_fallback, "deform: 没有 deform 时间轴 ⇒ 一个 fallback 都没有");
+                Check((ba.header.flags & SpineGpuFlags::kHasDeform) == 0, "deform: 基线不置 kHasDeform");
+            }
+        }
+
+        for (int inherit_i = 1; inherit_i >= 0; --inherit_i)
+        {
+            const bool inherit = inherit_i != 0;
+            for (int ne = 0; ne < 2; ++ne)
+            {
+                const bool nonessential = ne != 0;
+                g_prefix = std::string("[deform/继承=") + (inherit ? "1" : "0") +
+                           (nonessential ? "/nonessential" : "") + "] ";
+
+                const std::string json = BuildDeform(inherit);
+                Check(!json.empty(), "deform: 夹具替换成功");
+                if (json.empty())
+                {
+                    g_prefix.clear();
+                    continue;
+                }
+
+                SpineSourceSkeleton dj;
+                SpineImportResult rj = ParseSpineSkeletonJson(json.data(), json.size(), &atlas, dj);
+                Check(rj.ok, "deform: json 解析成功");
+                if (!rj.ok)
+                {
+                    std::printf("  error: %s\n", rj.error.c_str());
+                    g_prefix.clear();
+                    continue;
+                }
+
+                const SpineSourceAttachment* mesh = FindByName(dj.attachments, "mesh");
+                const SpineSourceAttachment* linked = FindByName(dj.attachments, "mesh-linked");
+                const SpineSourceAttachment* quad = FindByName(dj.attachments, "quad");
+                Check(mesh != nullptr && linked != nullptr && quad != nullptr, "deform: 三个附件都在");
+                if (mesh == nullptr || linked == nullptr || quad == nullptr)
+                {
+                    g_prefix.clear();
+                    continue;
+                }
+                Check(mesh->deformed, "deform: 被时间轴命中的 'mesh' 标上了 deformed");
+                Check(!quad->deformed, "deform: 同一个骨架里的 region 'quad' **没有**被标");
+                Check(linked->deformed == inherit,
+                      inherit ? "deform: inheritDeform=1 ⇒ linked mesh 跟着回退"
+                              : "deform: inheritDeform=0 ⇒ linked mesh 不跟着回退");
+
+                SpineGpuAsset da;
+                SpineImportResult rdb = BakeSpineGpuAsset(dj, da);
+                Check(rdb.ok, "deform: bake 成功");
+                if (!rdb.ok)
+                {
+                    std::printf("  error: %s\n", rdb.error.c_str());
+                    g_prefix.clear();
+                    continue;
+                }
+
+                Check(da.draw_items.size() == 3, "deform: 3 个绘制项");
+                if (da.draw_items.size() == 3)
+                {
+                    Check(da.draw_items[0].kind == SpineDrawItemKind::kStatic,
+                          "deform: 绘制项 0（quad）仍是 kStatic");
+                    Check(da.draw_items[1].kind == SpineDrawItemKind::kFallback,
+                          "deform: 绘制项 1（mesh）是 kFallback");
+                    Check(da.draw_items[2].kind ==
+                              (inherit ? SpineDrawItemKind::kFallback : SpineDrawItemKind::kStatic),
+                          inherit ? "deform: 绘制项 2（mesh-linked）也是 kFallback"
+                                  : "deform: 绘制项 2（mesh-linked）仍是 kStatic");
+                }
+                Check((da.header.flags & SpineGpuFlags::kHasDeform) != 0, "deform: 置上了 kHasDeform");
+
+                // ---- 同一副骨架走 .skel：必须产出**逐字节相同**的容器 ----
+                const std::vector<uint8_t> skel = BuildSkelFixture(false, true, "3.8.99", nonessential, "mesh",
+                                                                   false, true, inherit);
+                SpineSourceSkeleton ds;
+                SpineImportResult rs = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, ds);
+                Check(rs.ok, "deform: skel 解析成功");
+                if (!rs.ok)
+                {
+                    std::printf("  error: %s\n", rs.error.c_str());
+                    g_prefix.clear();
+                    continue;
+                }
+                const SpineSourceAttachment* smesh = FindByName(ds.attachments, "mesh");
+                const SpineSourceAttachment* slinked = FindByName(ds.attachments, "mesh-linked");
+                Check(smesh != nullptr && slinked != nullptr, "deform: skel 里两个 mesh 都在");
+                if (smesh != nullptr && slinked != nullptr)
+                {
+                    Check(smesh->deformed, "deform: skel 的 'mesh' 也被标上 deformed");
+                    Check(slinked->deformed == inherit, "deform: skel 的 inheritDeform 与 json 一致");
+                }
+
+                SpineGpuAsset sa;
+                Check(BakeSpineGpuAsset(ds, sa).ok, "deform: skel bake 成功");
+                // SpineDrawItem 没有 operator==（也不该有：逐字节比较才是要验的）
+                Check(sa.draw_items.size() == da.draw_items.size() &&
+                          std::memcmp(sa.draw_items.data(), da.draw_items.data(),
+                                      sa.draw_items.size() * sizeof(SpineDrawItem)) == 0,
+                      "deform: skel↔json 绘制项逐字节相同（含 kind）");
+                Check(sa.header.flags == da.header.flags, "deform: skel↔json flags 相同");
+
+                std::vector<uint8_t> bytes_j;
+                std::vector<uint8_t> bytes_s;
+                Check(WriteSpineGpuContainer(da, bytes_j).ok && WriteSpineGpuContainer(sa, bytes_s).ok,
+                      "deform: 两个容器都序列化成功");
+                Check(bytes_j == bytes_s, "deform: skel↔json 容器**逐字节相同**");
+
+                g_prefix.clear();
+            }
+        }
+    }
+
+    // ---- 12b. deform 的报错路径 ----
+    {
+        // ① 皮肤名写错：参考实现 findSkin 返回 NULL 后紧接着 skin->getAttachment ⇒ 空指针
+        {
+            const char* bad = R"({
+              "skeleton": { "spine": "3.8.99" },
+              "bones": [ { "name": "root" } ],
+              "slots": [ { "name": "s1", "bone": "root" } ],
+              "skins": { "default": {
+                "s1": { "mesh": { "type": "mesh", "uvs": [0,0, 1,0, 1,1], "triangles": [0,1,2],
+                                  "vertices": [ 1, 0,0,0,1, 1,0,1,0,1, 1,0,2,0,1 ] } }
+              } },
+              "animations": { "walk": { "deform": { "no-such-skin": { "s1": {
+                "mesh": [ { "time": 0 } ] } } } } }
+            })";
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(bad, std::string(bad).size(), &atlas, s);
+            Check(!r.ok, "deform: 引用不存在的皮肤 ⇒ 报错");
+            std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
+        // ② 附件名写错：参考实现在这里**倒是**报错（"Attachment not found"）
+        {
+            const char* bad = R"({
+              "skeleton": { "spine": "3.8.99" },
+              "bones": [ { "name": "root" } ],
+              "slots": [ { "name": "s1", "bone": "root" } ],
+              "skins": { "default": {
+                "s1": { "mesh": { "type": "mesh", "uvs": [0,0, 1,0, 1,1], "triangles": [0,1,2],
+                                  "vertices": [ 1, 0,0,0,1, 1,0,1,0,1, 1,0,2,0,1 ] } }
+              } },
+              "animations": { "walk": { "deform": { "default": { "s1": {
+                "no-such-mesh": [ { "time": 0 } ] } } } } }
+            })";
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(bad, std::string(bad).size(), &atlas, s);
+            Check(!r.ok, "deform: 引用不存在的附件 ⇒ 报错");
+            std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
+        // ③ deform 指向 **region**：3.8 的 RegionAttachment 不是 VertexAttachment
+        //    ⇒ 参考实现是未定义的 static_cast，运行时是静默不生效。两边都不能要。
+        {
+            const char* bad = R"({
+              "skeleton": { "spine": "3.8.99" },
+              "bones": [ { "name": "root" } ],
+              "slots": [ { "name": "s0", "bone": "root" } ],
+              "skins": { "default": {
+                "s0": { "quad": { "width": 64, "height": 32 } }
+              } },
+              "animations": { "walk": { "deform": { "default": { "s0": {
+                "quad": [ { "time": 0 } ] } } } } }
+            })";
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(bad, std::string(bad).size(), &atlas, s);
+            Check(!r.ok, "deform: 指向 region ⇒ 报错（参考实现是 UB / 运行时静默不生效）");
+            std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
+        // ④ 帧的 offset + 顶点数 超过该附件的 deform 长度
+        //    （weighted 是每**影响** 2 个 ⇒ 3 个影响只有 6 个 float，写 offset 4 + 4 个就爆了）
+        {
+            const char* bad = R"({
+              "skeleton": { "spine": "3.8.99" },
+              "bones": [ { "name": "root" } ],
+              "slots": [ { "name": "s1", "bone": "root" } ],
+              "skins": { "default": {
+                "s1": { "mesh": { "type": "mesh", "uvs": [0,0, 1,0, 1,1], "triangles": [0,1,2],
+                                  "vertices": [ 1, 0,0,0,1, 1,0,1,0,1, 1,0,2,0,1 ] } }
+              } },
+              "animations": { "walk": { "deform": { "default": { "s1": {
+                "mesh": [ { "time": 0, "offset": 4, "vertices": [ 0,0,0,0 ] } ] } } } } }
+            })";
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(bad, std::string(bad).size(), &atlas, s);
+            Check(!r.ok, "deform: 帧 offset+数量 越界 ⇒ 报错（参考实现是越界写）");
+            std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
+        // ⑤ .skel 同一条：deform 帧长度写过头 ⇒ 也要报错（两条路径都不能越界）
+        {
+            const std::vector<uint8_t> bad = BuildSkelFixture(false, false, "3.8.99", false, "mesh", false,
+                                                              true, true, 11);
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonBinary(bad.data(), bad.size(), &atlas, s);
+            Check(!r.ok, "deform: skel 帧长度超过 deform 长度 ⇒ 报错");
+            std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
+        // ⑥ .skel 的 deform 皮肤下标越界（参考实现是不检查的数组访问 ⇒ 越界读）
+        {
+            std::vector<uint8_t> bad = BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, true);
+            // 把 deform 段里的皮肤下标 0 改成 9：定位方式与夹具写入顺序一致
+            // （最后一个 "walk" 动画段里，deform 的第一个 varint 就是它）。
+            bool patched = false;
+            for (size_t i = 0; i + 5 < bad.size(); ++i)
+            {
+                if (bad[i] == 'w' && bad[i + 1] == 'a' && bad[i + 2] == 'l' && bad[i + 3] == 'k')
+                {
+                    // "walk" 后面紧跟 5 个 varint(0)（slot/bone/ik/transform/path），
+                    // 再后面就是 deform 数（1）和皮肤下标（0）。
+                    const size_t at = i + 4 + 5 + 1;
+                    if (at < bad.size() && bad[at] == 0)
+                    {
+                        bad[at] = 9;
+                        patched = true;
+                    }
+                    break;
+                }
+            }
+            Check(patched, "deform: 找到要改的皮肤下标字节");
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonBinary(bad.data(), bad.size(), &atlas, s);
+            Check(!r.ok, "deform: skel 皮肤下标越界 ⇒ 报错（参考实现是越界读）");
+            std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
     }
 
     std::printf("=== verdict: %s (%d/%d checks) ===\n", g_failed == 0 ? "PASS" : "FAIL",

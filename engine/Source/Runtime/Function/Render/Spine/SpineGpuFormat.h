@@ -40,8 +40,12 @@ namespace SpineGpuConstants
     //   * chunk id 重新编号（uv 插在顶点缓冲后面）
     //   目的：顶点只存"几何 + 蒙皮"，几何相同的附件可以**共用**同一段顶点，
     //   UV 各取各的（规格 §14.2 —— linked mesh / 换装变体的几何是重复的）。
-    // 两版都是**不兼容**改动：旧容器必须被明确拒绝，不做静默兼容（规格 §11）。
-    constexpr uint32_t kFormatVersion = 3;
+    // 版本 4（2026-10-21）：**deform（FFD）参与烘焙** ——
+    //   * 布局**没变**（flags 多一个 kHasDeform 位，绘制项的 kind 字段本来就有）
+    //   * 但语义变了：被 deform 时间轴命中的附件，绘制项 kind 从 kStatic 变成 kFallback
+    //   ⇒ v3 的容器会把带 FFD 的附件标成 kStatic，画出来是**静默错的**（顶点不动）
+    //   所以照样是**不兼容**改动：旧容器必须被明确拒绝，不做静默兼容（规格 §11）。
+    constexpr uint32_t kFormatVersion = 4;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -136,6 +140,9 @@ enum SpineGpuFlags : uint32_t
     kHasDrawOrderTimeline = 1u << 1,  // 有绘制顺序时间轴 ⇒ 整个资产走 CPU 路径
     kUsesTintBlack = 1u << 2,         // 用到 tintBlack（dark tint）
     kHasClipping = 1u << 3,           // 有裁剪数据 ⇒ 相关槽位走 CPU fallback
+    // 有 deform（FFD）时间轴 ⇒ **被它命中的**绘制项走 CPU fallback（不是整个资产）。
+    // per-frame 顶点数据烘不进静态 VB —— 顶点缓冲存的是**绑定姿势**（规格 §7.1）。
+    kHasDeform = 1u << 4,
 };
 
 // ChunkTable 的 id。

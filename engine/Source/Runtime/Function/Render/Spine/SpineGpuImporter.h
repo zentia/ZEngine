@@ -119,6 +119,21 @@ struct SpineSourceAttachment
     // region 附件没有这个（它的 UV 来自 `setUVs()`，与 mesh 的公式不同）。
     std::vector<float> region_uvs;
 
+    // linked mesh 的父附件在 SpineSourceSkeleton::attachments 里的下标；
+    // **非 linked mesh 恒为 -1**。deform 要沿它传播（见下面 inherit_deform）。
+    // ⚠️ 只在解析期内有效：随后 attachments 会重排，别拿它当持久引用。
+    int parent_index = -1;
+
+    // linked mesh 是否继承父附件的 deform。json 字段名是 **"deform"**（不是
+    // "inheritDeform"），默认 1（SkeletonJson.cpp:572）；二进制是一个 bool 字段
+    // （SkeletonBinary.cpp:594）。判据是 MeshAttachment::applyDeform()（:94-95）：
+    //   this == source || (inheritDeform && parentMesh == source)
+    bool inherit_deform = true;
+
+    // 有 deform（FFD）时间轴命中它 ⇒ 顶点每帧都变 ⇒ 画不动静态 VB ⇒ 走 CPU fallback
+    // （规格 §7.1）。注意：**不是整个资产**回退，只有被命中的绘制项。
+    bool deformed = false;
+
     bool IsWeighted() const { return vertices.size() != uvs.size(); }
     uint32_t VertexCount() const { return static_cast<uint32_t>(uvs.size()) / 2u; }
 };

@@ -70,7 +70,7 @@ CPU 蒙皮下**每个实例必须持有自己的一份顶点缓冲**，因为各
 | 骨骼索引元素类型 | **`uint16`**（不是 uint32） | `VertexAttachment.h:81` |
 | 单骨架骨骼数上限 | 65535（`uint16` 索引的天然上限，与源码注释同义） | 同上注释 |
 | `_vertices` 每影响三元组步长 | 3 float `(vx, vy, weight)` | `VertexAttachment.cpp:97-112` |
-| deform 偏移 | 每顶点 2 float，**与影响数无关**（`f = skip << 1`） | `VertexAttachment.cpp:115-131` |
+| deform 长度 | weighted **每影响 2 float**、rigid 每顶点 2 float（`deformLength = verts.size()/3*2`） | `SkeletonJson.cpp:1071`、`SkeletonBinary.cpp:976` |
 | 混合模式枚举 | `Normal=0 / Additive / Multiply / Screen`，共 4 种 | `BlendMode.h:35-38` |
 | 裁剪 | **只有 CPU 实现** | 见下 |
 
@@ -350,10 +350,61 @@ float2 SkinVertex(uint vertexIndex, uint drawItemIndex)   // UV 不参与，见 
 | **Mesh（刚性）** | 烘焙，rigid | `_bones` 为空，整块由槽位骨骼变换。**8 B/顶点**。 |
 | **Mesh（蒙皮）** | 烘焙，weighted4 | **48 B/顶点**（不是 44，见 §3.1 的对齐说明）。 |
 | **Clipping** | `_ClipData` 保留 | `SkeletonClipping::clipTriangles()` 重写顶点/三角形/UV（`SkeletonClipping.h:47-54`）⇒ **产生新三角形，VS 做不了** ⇒ **CPU fallback**：该项走 `kFallback`，顶点由 CPU 算好上传每帧动态 VB。这是 3.8 的唯一选项，不是折中（§1.1）。 |
-| **FFD / deform** | 同左 | `vx = vertices[b] + deform[f]`（`VertexAttachment.cpp:122-123`）。技术上可 GPU（deform 进纹理），但那样每帧又要传顶点数据，**收益被吃掉** ⇒ 只对真正在动 deform 的槽位走 CPU fallback。 |
+| **FFD / deform** | 同左 | 顶点每帧都变 ⇒ 静态 VB 里那份**绑定姿势**不算数 ⇒ 该项走 `kFallback`。见 §7.1。 |
 
 Region 的 4 个顶点**烘焙进静态 VB**（而不是用共享单位四边形 + 每实例 offset/uv），
 因为静态部分按资产共享、成本一次性，而每实例数据才是内存大头。
+
+### 7.1 deform（FFD）
+
+deform 时间轴命中的附件，顶点**每帧都不一样**。静态 VB 存的是绑定姿势，
+所以这些绘制项必须走 **CPU fallback**（`SpineDrawItem::kind = kFallback`），
+并在 `flags` 置 `kHasDeform`。
+
+技术上可以把 deform 传进纹理、在 VS 里加，但那样每帧都要传顶点数据 ——
+**"共享一份静态 VB"这个唯一收益正好被它吃掉**（§0），所以不做。
+
+**只回退被命中的绘制项，不是整个资产。** 与 `kHasDrawOrderTimeline`（那个是整体走 CPU）
+是两回事。
+
+#### 两种附件的 deform 语义**不一样**（照错就是静默错形状）
+
+| | 存的是什么 | 运行时怎么用 | 长度 |
+|---|---|---|---|
+| **rigid** | **绝对**局部坐标（setup + 偏移） | 整体**替换** `_vertices` | 每顶点 2 float |
+| **weighted** | **偏移** | 逐影响**相加**：`vx = vertices[b] + deform[f]` | 每**影响** 2 float |
+
+出处：`VertexAttachment.cpp:72-73`（rigid 替换）、`:122-123`（weighted 相加）、
+`SkeletonJson.cpp:1071` / `SkeletonBinary.cpp:976`（长度公式）。
+
+⚠️ weighted 是**每影响 2 个**，不是每顶点 2 个。长度公式里的 `verts.size()/3`
+除的是**已剥掉 n 的**每影响三元组 ⇒ `size/3` = 总影响数。运行时也对得上：
+`f = skip << 1` 里的 `skip` 累加的是 `n`（影响数），循环里 `f += 2` 是**逐影响**
+（`VertexAttachment.cpp:115-127`）。
+
+#### inheritDeform 必须沿 linked mesh 传播
+
+判据照抄 `MeshAttachment::applyDeform`（`MeshAttachment.cpp:94-95`）：
+
+```
+this == source || (_inheritDeform && _parentMesh == source)
+```
+
+⇒ 父附件被 FFD 动到时，**开了 inheritDeform 的继承方顶点同样每帧变**，得一起回退。
+linked mesh 的父**也可以**是 linked mesh，所以传播要循环到不动点。
+json 里这个开关的字段名是 **`"deform"`**（不是 `"inheritDeform"`），默认 1
+（`SkeletonJson.cpp:572`）；二进制是紧跟 parent 的一个 bool（`SkeletonBinary.cpp:594`）。
+
+#### 导入期必须挡住的四件事
+
+参考实现在这四处**都不安全**，导入器一律**报错**而不是照抄：
+
+| 情况 | 参考实现的行为 |
+|---|---|
+| deform 引用的皮肤不存在 | `findSkin` 返回 NULL 后紧接着 `skin->getAttachment(...)` ⇒ **空指针**（`SkeletonJson.cpp:1051`）；二进制是 ` _skins[i]` 不检查下标（`:959`） |
+| deform 引用的附件不存在 | 这个**倒是**报错："Attachment not found"（`:1061-1065` / `:966-970`） |
+| deform 指向 **region** | **无检查的** `static_cast<VertexAttachment*>`（`:1067` / `:972`）；而 3.8 的 `RegionAttachment` 继承自 `Attachment`、**不是** `VertexAttachment`（`RegionAttachment.h:46`）⇒ **未定义行为**。运行时有 RTTI 检查，会**静默不生效**（`DeformTimeline.cpp:72-74`） |
+| 帧的 `offset + 顶点数` 超过 deform 长度 | `deformed[v] = ...` 无边界检查 ⇒ **越界写**（`:1092-1099`） |
 
 ---
 
@@ -380,12 +431,15 @@ Spine 图集默认是 **PMA（预乘 Alpha）**，对应 Unity 侧 `Blend One On
 ```
 Header (64 B)
   0x00  magic            u32   'ZSPG'  (0x5A535047)
-  0x04  version          u32   本规格版本，当前 3
+  0x04  version          u32   本规格版本，当前 4
                                v2 = 加了 skin 维度（§9.1）
                                v3 = UV 拆成独立通道 + chunk id 重排（§3.2、§14.2）
+                               v4 = deform 参与烘焙（§7.1）—— 布局没变，
+                                    但带 FFD 的绘制项 kind 从 kStatic 变成 kFallback
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
+                               / kHasDeform（有绘制项因 FFD 走了 CPU fallback，见 §7.1）
   0x10  bone_count       u32
   0x14  slot_count       u32
   0x18  draw_item_count  u32
@@ -492,6 +546,10 @@ Chunks:
    （而不是翻倍），同时两个绘制项的 `uv_offset` 不同、UV 值不同。
    只断言"能画出来"不够 —— 去重一旦退化成复制，画出来照样是对的，内存却悄悄翻倍。
    配套断言：**`uv_count ≠ vertex_count`**，防止有人拿 `vertex_count` 去算 UV 数组长度。
+9. **deform 必须逐项回退，不能整体回退**：带 FFD 的骨架里，**只有**被时间轴命中的绘制项
+   是 `kFallback`，同一个骨架里的其它项必须仍是 `kStatic`；开了 `inheritDeform` 的
+   linked mesh 跟着回退，关了的**不**跟着回退（§7.1）。
+   只断言"deform 存在 ⇒ 有 fallback"不够 —— 那会把"整个资产回退"也放过。
 
 ---
 
@@ -589,7 +647,25 @@ v3 已解决，且**当初列的两条路都做了**（缺一不可，见 §13.1
 | json 里 linked mesh 有两种写法：`type:"linkedmesh"`，或 `type:"mesh"` 带 `"parent"` | `SkeletonJson.cpp:462-465`、`:538` |
 | linked mesh 解析：按 skin 找父附件，找不到报 "Parent mesh not found" | `SkeletonBinary.cpp:302-323`、`SkeletonJson.cpp:649-669` |
 | ⚠️ 找父附件用的 skin = `"skin"` 字段（**空 ⇒ default**），**不是** linked mesh 所在的那个 skin | `SkeletonBinary.cpp:302-303`、`SkeletonJson.cpp:653-654` |
-| `inheritDeform` 是运行时概念（deform 时间轴是否作用于继承方） | `MeshAttachment.cpp:94-96` |
+| `applyDeform(source)` = `this == source \|\| (_inheritDeform && _parentMesh == source)` | `MeshAttachment.cpp:94-95`（基类版只判 `this == source`：`VertexAttachment.cpp:134-136`） |
+
+### deform / FFD 的出处（容器 v4）
+
+| 断言 | 出处 |
+|---|---|
+| deform 长度 = `weighted ? verts.size()/3*2 : verts.size()` | `SkeletonJson.cpp:1071`、`SkeletonBinary.cpp:976` |
+| rigid 的 deform 存**绝对**局部坐标，运行时整体**替换** `_vertices` | `VertexAttachment.cpp:72-73`；构造处 `:1085`、`:1100-1104` |
+| weighted 的 deform 存**偏移**，运行时逐影响**相加** | `VertexAttachment.cpp:122-123` |
+| `f = skip << 1` 里的 `skip` 累加的是**影响数** ⇒ weighted 是每影响 2 float | `VertexAttachment.cpp:90-94`、`:115-127` |
+| ⚠️ rigid：3.8 的 `RegionAttachment` 继承自 `Attachment`，**不是** `VertexAttachment` ⇒ deform 指向 region 时参考实现是未定义行为 | `RegionAttachment.h:46`、`SkeletonJson.cpp:1067`、`SkeletonBinary.cpp:972` |
+| 运行时对非 VertexAttachment 的附件**静默不生效**（有 RTTI 检查） | `DeformTimeline.cpp:72-74` |
+| deform 段结构 = { skin: { slot: { attachment: [帧] } } }；帧可缺省 `vertices`（= 回到 setup） | `SkeletonJson.cpp:1049-1115`、`:1081-1086` |
+| 二进制帧：`end==0` 表示无顶点；否则读 `start` 后 `end += start`，再读 `end-start` 个 float ⇒ **落盘第二个 varint 是"个数"不是"终点"** | `SkeletonBinary.cpp:989-1018` |
+| ⚠️ 帧的 `offset + 顶点数` 无边界检查 ⇒ 参考实现会**越界写** | `SkeletonJson.cpp:1092-1099` |
+| 皮肤找不到时参考实现是**空指针**（json）/ **越界读**（二进制） | `SkeletonJson.cpp:1051`、`SkeletonBinary.cpp:959` |
+| 附件找不到时参考实现**倒是**报错："Attachment not found" | `SkeletonJson.cpp:1061-1065`、`SkeletonBinary.cpp:966-970` |
+| json 里 inheritDeform 的字段名是 **`"deform"`**（不是 "inheritDeform"），默认 1 | `SkeletonJson.cpp:572` |
+| 二进制里 inheritDeform 是紧跟 parent 的一个 bool | `SkeletonBinary.cpp:594` |
 
 ### skin 的出处（容器 v2）
 

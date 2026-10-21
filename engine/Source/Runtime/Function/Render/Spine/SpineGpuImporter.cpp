@@ -368,6 +368,22 @@ std::string GetString(const JsonValue& v, const char* key, const char* fallback)
     return (m && m->IsString()) ? std::string(m->GetString()) : std::string(fallback);
 }
 
+// 与参考实现的 Json::getInt(..., fallback) 对齐：非数字取 fallback。
+// 用到它的地方（linked mesh 的 "deform"）在 spine 里就是 0/1 的开关。
+int GetInt(const JsonValue& v, const char* key, int fallback)
+{
+    const JsonValue* m = GetMember(v, key);
+    if (m == nullptr)
+    {
+        return fallback;
+    }
+    if (m->IsInt())
+    {
+        return m->GetInt();
+    }
+    return m->IsNumber() ? static_cast<int>(m->GetFloat()) : fallback;
+}
+
 // region 附件的 4 个顶点：照抄 RegionAttachment::updateOffset()
 //   （RegionAttachment.cpp:77-103），顶点顺序 BL, UL, UR, BR（BLX=0,ULX=2,URX=4,BRX=6）。
 // 参数里的 region_* 全部来自图集 region。
@@ -520,6 +536,30 @@ struct SpineLinkedMeshRef
     std::string path;
     std::string parent;
     std::string skin;        // 去哪个皮肤里找父附件；空 ⇒ default
+    // json 字段名是 **"deform"**（SkeletonJson.cpp:572），默认 1；
+    // 二进制是紧跟 parent 的一个 bool（SkeletonBinary.cpp:594）。
+    bool inherit_deform = true;
+};
+
+// ---------------------------------------------------------------------
+// deform（FFD）时间轴的一项：**解析期**只记 (皮肤, 槽位, 附件名)
+// ---------------------------------------------------------------------
+// 帧数据本身是 per-frame 的，烘不进静态 VB —— 导入器只需要知道"哪些附件被 FFD 动到"
+// （规格 §7.1）。真正的顶点在运行时由 spine 的 AnimationState 算。
+//
+// ⚠️ 必须等 linked mesh 解引用完之后再解析：deform 时间轴完全可以指向一个
+// linked mesh，而它是**最后**才被插进 attachments 的。
+struct SpineDeformRef
+{
+    int skin_index = -1;
+    int slot_index = -1;
+    std::string attachment;
+    // 只为了报错时说清出处
+    std::string skin_name;
+    std::string slot_name;
+    // 所有帧里最大的 (offset + 顶点数)。上限要等附件解出来才比得了 ⇒ 先记着。
+    // 0 = 所有帧都没写 vertices（"回到 setup"），不需要比对。
+    size_t required_length = 0;
 };
 
 bool ResolveLinkedMeshes(const SpineAtlas* atlas, const std::vector<std::string>& skins,
@@ -578,23 +618,26 @@ bool ResolveLinkedMeshes(const SpineAtlas* atlas, const std::vector<std::string>
             return false;
         }
 
-        const SpineSourceAttachment* parent = nullptr;
-        for (const SpineSourceAttachment& a : attachments)
+        // 记**下标**而不是指针：deform 传播要用它（下面 push_back 会让指针失效）。
+        int parent_index = -1;
+        for (size_t i = 0; i < attachments.size(); ++i)
         {
+            const SpineSourceAttachment& a = attachments[i];
             if (a.skin_index == lookup_skin && a.slot_index == lm.slot_index && a.name == lm.parent)
             {
-                parent = &a;
+                parent_index = static_cast<int>(i);
                 break;
             }
         }
-        if (parent == nullptr)
+        if (parent_index < 0)
         {
             err = "槽位 '" + slot_name + "' 的 linked mesh '" + lm.name + "' 在皮肤 '" +
                   skins[static_cast<size_t>(lookup_skin)] + "' 里找不到父附件 '" + lm.parent +
                   "'（参考实现在这里报 \"Parent mesh not found\"）";
             return false;
         }
-        if (parent->type != SpineSourceAttachment::Type::kMesh || parent->region_uvs.empty())
+        const SpineSourceAttachment& parent = attachments[static_cast<size_t>(parent_index)];
+        if (parent.type != SpineSourceAttachment::Type::kMesh || parent.region_uvs.empty())
         {
             err = "槽位 '" + slot_name + "' 的 linked mesh '" + lm.name + "' 的父附件 '" + lm.parent +
                   "' 不是带 regionUV 的 mesh（参考实现在这里直接 static_cast 成 MeshAttachment，"
@@ -609,11 +652,13 @@ bool ResolveLinkedMeshes(const SpineAtlas* atlas, const std::vector<std::string>
         att.slot_index = lm.slot_index;
         // 归**它所在的**皮肤，不是查父附件用的那个皮肤。
         att.skin_index = lm.skin_index;
+        att.parent_index = parent_index;
+        att.inherit_deform = lm.inherit_deform;
 
         // setParentMesh：顶点 / 骨骼 / regionUV / 三角形全部来自父附件
-        att.vertices = parent->vertices;
-        att.region_uvs = parent->region_uvs;
-        att.triangles = parent->triangles;
+        att.vertices = parent.vertices;
+        att.region_uvs = parent.region_uvs;
+        att.triangles = parent.triangles;
 
         const std::string region_name = lm.path.empty() ? lm.name : lm.path;
         const SpineAtlasRegion* reg = (atlas != nullptr) ? FindAtlasRegion(*atlas, region_name) : nullptr;
@@ -623,9 +668,129 @@ bool ResolveLinkedMeshes(const SpineAtlas* atlas, const std::vector<std::string>
                   region_name + "'。它继承父附件的几何，但贴图区域是自己的 —— 缺了算不出 UV。";
             return false;
         }
-        ComputeMeshUvs(*reg, parent->region_uvs, att.uvs);
+        ComputeMeshUvs(*reg, parent.region_uvs, att.uvs);
         attachments.push_back(std::move(att));
     }
+    return true;
+}
+
+// ---------------------------------------------------------------------
+// deform（FFD）—— 参考实现 SkeletonJson.cpp:1071 / SkeletonBinary.cpp:976
+// ---------------------------------------------------------------------
+//   deformLength = weighted ? _vertices.size() / 3 * 2 : _vertices.size()
+//
+// ⚠️ 两处容易照错的地方：
+//   1. 参考实现的 _vertices 已经**剥掉**了每顶点那个 n（n 进了 _bones），
+//      所以 size/3 是**总影响数** ⇒ weighted 时 deform 是**每影响 2 个 float**，
+//      不是每顶点 2 个。运行时也印证：computeWorldVertices 里 f 随影响 +2
+//      （VertexAttachment.cpp:115-127）。
+//   2. rigid 与 weighted 存的东西**不一样**：
+//        rigid    → **绝对**局部坐标（setup + 偏移），运行时整体**替换** _vertices（:72-73）
+//        weighted → **偏移**，运行时逐影响**相加**（:122-123）
+//      我们存的是带 n 的原始扁平数组，所以得先把 n 累加回总影响数。
+size_t DeformLength(const SpineSourceAttachment& a)
+{
+    if (!a.IsWeighted())
+    {
+        return a.vertices.size();
+    }
+    size_t influences = 0;
+    size_t p = 0;
+    for (uint32_t v = 0; v < a.VertexCount(); ++v)
+    {
+        if (p >= a.vertices.size())
+        {
+            break;
+        }
+        const int n = static_cast<int>(a.vertices[p]);
+        p += 1u + static_cast<size_t>(n) * 4u;   // [n, (boneIdx, x, y, w) × n]
+        influences += static_cast<size_t>(n);
+    }
+    return influences * 2u;
+}
+
+// 把解析期收集的 deform 引用落到附件上，并按 inheritDeform 传播。
+// ⚠️ 必须在 linked mesh 解引用**之后**、attachments 重排**之前**调用：
+//     前者是因为 deform 可以指向 linked mesh（它是最后才插进来的）；
+//     后者是因为传播用的是 parent_index（下标，重排后就失效）。
+bool ApplyDeformRefs(std::vector<SpineSourceAttachment>& attachments,
+                     const std::vector<SpineDeformRef>& refs, std::string& err)
+{
+    for (const SpineDeformRef& r : refs)
+    {
+        int hit = -1;
+        for (size_t i = 0; i < attachments.size(); ++i)
+        {
+            const SpineSourceAttachment& a = attachments[i];
+            if (a.skin_index == r.skin_index && a.slot_index == r.slot_index && a.name == r.attachment)
+            {
+                hit = static_cast<int>(i);
+                break;
+            }
+        }
+        if (hit < 0)
+        {
+            err = "deform 时间轴指向的附件 '" + r.attachment + "'（皮肤 '" + r.skin_name + "'、槽位 '" +
+                  r.slot_name + "'）在骨架里不存在（参考实现在这里报 \"Attachment not found\"）";
+            return false;
+        }
+
+        SpineSourceAttachment& a = attachments[static_cast<size_t>(hit)];
+
+        // 帧的 (offset + 顶点数) 不能超过这个附件的 deform 长度。
+        // 参考实现是直接写 `deformed[v]`，越界了也不报错（SkeletonJson.cpp:1092-1099）。
+        if (r.required_length > 0)
+        {
+            const size_t cap = DeformLength(a);
+            if (r.required_length > cap)
+            {
+                err = "deform 时间轴对附件 '" + r.attachment + "'（皮肤 '" + r.skin_name + "'、槽位 '" +
+                      r.slot_name + "'）需要 " + std::to_string(r.required_length) +
+                      " 个 float，但该附件的 deform 长度只有 " + std::to_string(cap) +
+                      "（weighted 是每**影响** 2 个、rigid 是每顶点 2 个 —— "
+                      "SkeletonJson.cpp:1071 / SkeletonBinary.cpp:976）。"
+                      "参考实现在这里是越界写";
+                return false;
+            }
+        }
+
+        // 参考实现是**无检查**的 static_cast<VertexAttachment*>（SkeletonJson.cpp:1067 /
+        // SkeletonBinary.cpp:972）：而 3.8 的 RegionAttachment 继承自 Attachment、
+        // **不是** VertexAttachment（RegionAttachment.h:46）⇒ 指到 region 就是未定义行为。
+        // 运行时那边有 RTTI 检查，会**静默不生效**（DeformTimeline.cpp:72-74）。
+        // 一边 UB、一边静默，都不能要 ⇒ 报错。
+        if (a.type != SpineSourceAttachment::Type::kMesh)
+        {
+            err = "deform 时间轴指向的附件 '" + r.attachment + "'（皮肤 '" + r.skin_name + "'、槽位 '" +
+                  r.slot_name + "'）不是 mesh —— 3.8 的 RegionAttachment 不是 VertexAttachment，"
+                  "参考实现在这里是未定义的 static_cast，运行时则静默不生效";
+            return false;
+        }
+        a.deformed = true;
+    }
+
+    // inheritDeform 传播。判据照抄 MeshAttachment::applyDeform（:94-95）：
+    //   this == source || (inheritDeform && parentMesh == source)
+    // 父被 FFD 动到 ⇒ 继承方的顶点同样每帧变 ⇒ 一起回退。
+    // linked mesh 的父**也可以**是 linked mesh，所以循环到不动点（而不是只走一层）。
+    bool changed = true;
+    while (changed)
+    {
+        changed = false;
+        for (SpineSourceAttachment& a : attachments)
+        {
+            if (a.deformed || a.parent_index < 0 || !a.inherit_deform)
+            {
+                continue;
+            }
+            if (attachments[static_cast<size_t>(a.parent_index)].deformed)
+            {
+                a.deformed = true;
+                changed = true;
+            }
+        }
+    }
+
     return true;
 }
 
@@ -864,8 +1029,11 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
             {
                 return Fail("json: 附件 '" + lm.name + "' 标成 linked mesh 但没有 parent");
             }
-            // "deform"（inheritDeform，默认 1）是**运行时**概念：deform 时间轴是否
-            // 也作用于继承方。导入器不导入动画，用不到它。
+            // json 里这个字段就叫 **"deform"**（不是 "inheritDeform"），默认 1
+            // （SkeletonJson.cpp:572 `Json::getInt(attachmentMap, "deform", 1)`）。
+            // 它决定父附件的 deform 是否也作用于继承方
+            // （MeshAttachment::applyDeform，:94-95）⇒ 导入期要用：继承方得一起回退。
+            lm.inherit_deform = GetInt(a, "deform", 1) != 0;
             linked.push_back(std::move(lm));
             continue;
         }
@@ -972,7 +1140,10 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
         out.attachments.push_back(std::move(att));
     }
 
-    // ---- animations：只取 flags ----
+    // ---- animations：只取 flags + deform 引用 ----
+    // deform 引用**不能**在这里就落到附件上：deform 可以指向 linked mesh，
+    // 而它是最后才被 ResolveLinkedMeshes 插进来的。
+    std::vector<SpineDeformRef> deform_refs;
     const JsonValue* anims = GetMember(doc, "animations");
     if (anims && anims->IsObject())
     {
@@ -987,40 +1158,105 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
             {
                 out.has_draw_order_timeline = true;
             }
+            // deform: { skin: { slot: { attachment: [ {time, offset, vertices}, ... ] } } }
+            // 参考实现 SkeletonJson.cpp:1049-1115。帧数据本身是 per-frame 的，
+            // 烘不进静态 VB ⇒ 这里只收 (皮肤, 槽位, 附件名)，等 linked mesh 解引用完
+            // 再统一落到附件上（deform 可以指向 linked mesh）。
             if (const JsonValue* deform = GetMember(anim, "deform"))
             {
-                // deform: { skin: { slot: { attachment: [...] } } }
-                if (deform->IsObject())
+                if (!deform->IsObject())
                 {
-                    for (auto sit = deform->MemberBegin(); sit != deform->MemberEnd(); ++sit)
+                    return Fail("json: animations." + std::string(it->name.GetString()) + ".deform 不是对象");
+                }
+                for (auto sit = deform->MemberBegin(); sit != deform->MemberEnd(); ++sit)
+                {
+                    const std::string skin_name(sit->name.GetString());
+                    if (!sit->value.IsObject())
                     {
-                        if (!sit->value.IsObject())
+                        return Fail("json: deform 里皮肤 '" + skin_name + "' 的值不是对象");
+                    }
+                    // 参考实现 `findSkin(...)` 返回 NULL 后紧接着 `skin->getAttachment(...)`
+                    // ⇒ 皮肤名写错是**空指针**，不是报错。我们要报错。
+                    int skin_index = -1;
+                    for (size_t i = 0; i < out.skins.size(); ++i)
+                    {
+                        if (out.skins[i] == skin_name)
                         {
-                            continue;
+                            skin_index = static_cast<int>(i);
+                            break;
                         }
-                        for (auto slot_it = sit->value.MemberBegin(); slot_it != sit->value.MemberEnd(); ++slot_it)
+                    }
+                    if (skin_index < 0)
+                    {
+                        return Fail("json: deform 时间轴引用了不存在的皮肤 '" + skin_name +
+                                    "'（参考实现在这里是空指针解引用）");
+                    }
+
+                    for (auto slot_it = sit->value.MemberBegin(); slot_it != sit->value.MemberEnd(); ++slot_it)
+                    {
+                        const std::string slot_name(slot_it->name.GetString());
+                        if (!slot_it->value.IsObject())
                         {
-                            const std::string slot_name(slot_it->name.GetString());
-                            if (!slot_it->value.IsObject())
+                            return Fail("json: deform 里槽位 '" + slot_name + "' 的值不是对象");
+                        }
+                        // 同理：findSlotIndex 返回 -1 ⇒ getAttachment(-1, ...) 也是 UB。
+                        int slot_index = -1;
+                        for (size_t i = 0; i < out.slots.size(); ++i)
+                        {
+                            if (out.slots[i].name == slot_name)
                             {
-                                continue;
+                                slot_index = static_cast<int>(i);
+                                break;
                             }
-                            for (auto att_it = slot_it->value.MemberBegin(); att_it != slot_it->value.MemberEnd();
-                                 ++att_it)
+                        }
+                        if (slot_index < 0)
+                        {
+                            return Fail("json: deform 时间轴引用了不存在的槽位 '" + slot_name +
+                                        "'（参考实现在这里是 -1 下标）");
+                        }
+
+                        for (auto att_it = slot_it->value.MemberBegin(); att_it != slot_it->value.MemberEnd();
+                             ++att_it)
+                        {
+                            const std::string att_name(att_it->name.GetString());
+                            if (!att_it->value.IsArray())
                             {
-                                const std::string att_name(att_it->name.GetString());
-                                for (size_t k = 0; k < out.attachments.size(); ++k)
+                                return Fail("json: deform 里附件 '" + att_name + "' 的值不是帧数组");
+                            }
+
+                            SpineDeformRef ref;
+                            ref.skin_index = skin_index;
+                            ref.slot_index = slot_index;
+                            ref.attachment = att_name;
+                            ref.skin_name = skin_name;
+                            ref.slot_name = slot_name;
+
+                            // ---- 帧校验：offset + 顶点数不能越界 ----
+                            // 参考实现 `deformed[v] = ...`（:1092-1099）**没有**边界检查：
+                            // offset 写大了就是越界写。上限要等附件解出来才知道
+                            // （deform 可以指向 linked mesh）⇒ 这里只记"需要多长"，
+                            // 到 ApplyDeformRefs() 里比对。
+                            for (const JsonValue& frame : att_it->value.GetArray())
+                            {
+                                const JsonValue* verts = GetMember(frame, "vertices");
+                                if (verts == nullptr || !verts->IsArray())
                                 {
-                                    SpineSourceAttachment& cand = out.attachments[k];
-                                    if (cand.name == att_name &&
-                                        out.slots[static_cast<size_t>(cand.slot_index)].name == slot_name)
-                                    {
-                                        // deform 在动的槽位走 CPU fallback（规格 §7）
-                                        cand.type = SpineSourceAttachment::Type::kMesh;
-                                        break;
-                                    }
+                                    // 没有 vertices ⇒ 该帧是"回到 setup"（:1081-1086）
+                                    continue;
+                                }
+                                const int offset = static_cast<int>(GetFloat(frame, "offset", 0.0f));
+                                if (offset < 0)
+                                {
+                                    return Fail("json: deform 附件 '" + att_name + "' 的帧 offset " +
+                                                std::to_string(offset) + " 为负");
+                                }
+                                const size_t need = static_cast<size_t>(offset) + verts->Size();
+                                if (need > ref.required_length)
+                                {
+                                    ref.required_length = need;
                                 }
                             }
+                            deform_refs.push_back(std::move(ref));
                         }
                     }
                 }
@@ -1029,13 +1265,28 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
     }
 
     // ---- linked mesh：所有皮肤读完后才解引用父附件 ----
-    if (!linked.empty())
+    const bool need_sort = !linked.empty();
+    if (need_sort)
     {
         std::string err;
         if (!ResolveLinkedMeshes(atlas, out.skins, out.slots, out.attachments, linked, err))
         {
             return Fail("json: " + err);
         }
+    }
+
+    // ---- deform：linked mesh 解完之后才落，且必须在重排之前（传播要用 parent_index）----
+    if (!deform_refs.empty())
+    {
+        std::string err;
+        if (!ApplyDeformRefs(out.attachments, deform_refs, err))
+        {
+            return Fail("json: " + err);
+        }
+    }
+
+    if (need_sort)
+    {
         // 解出来的附件插在末尾 ⇒ 重排一次，保证 (皮肤, 槽位) 有序。
         std::stable_sort(out.attachments.begin(), out.attachments.end(),
                          [](const SpineSourceAttachment& a, const SpineSourceAttachment& b)
@@ -1343,6 +1594,7 @@ public:
         out_.attachments = std::move(collected_);
 
         // linked mesh：所有 skin 读完后才解引用父附件（父可能在后面的 skin 里）
+        const bool need_resort = !linked_.empty();
         if (!linked_.empty())
         {
             std::string err;
@@ -1350,6 +1602,21 @@ public:
             {
                 return r_.Fail("skel: " + err);
             }
+        }
+
+        // deform：必须在 linked mesh 解完之后（deform 可以指向它），
+        // 且必须在重排之前（inheritDeform 传播用的是 parent_index 下标）。
+        if (!deform_refs_.empty())
+        {
+            std::string err;
+            if (!ApplyDeformRefs(out_.attachments, deform_refs_, err))
+            {
+                return r_.Fail("skel: " + err);
+            }
+        }
+
+        if (need_resort)
+        {
             std::stable_sort(out_.attachments.begin(), out_.attachments.end(), CompareAttachmentOrder);
         }
         return true;
@@ -1365,6 +1632,9 @@ private:
     std::vector<SpineSourceAttachment> collected_;
     std::vector<bool> event_has_audio_;
     std::vector<SpineLinkedMeshRef> linked_;
+    // deform 时间轴命中的 (皮肤, 槽位, 附件名)。**动画段在最后**，而 deform 可以指向
+    // linked mesh ⇒ 只能先收着，等 Run() 里 linked mesh 解完再落。
+    std::vector<SpineDeformRef> deform_refs_;
     int current_skin_ = -1;   // 正在读的皮肤下标（附件 / linked mesh 都记它）
 
     // 附件顺序：先皮肤、皮肤内按槽位。与 json 路径**同一个**次序，
@@ -2085,8 +2355,10 @@ private:
                 {
                     return false;
                 }
-                // inheritDeform 是**运行时**概念（deform 时间轴是否作用于继承方），
-                // 导入器不导入动画，用不到它。
+                // json 那边同一个开关写在字段 "deform" 里（SkeletonJson.cpp:572），
+                // 二进制是一个 bool（:594）。父附件的 deform 是否作用于继承方由它决定
+                // （MeshAttachment::applyDeform，:94-95）⇒ 导入期要用。
+                lm.inherit_deform = inherit_deform;
                 if (nonessential_ && !SkipFloats(2))
                 {
                     return false;   // width, height
@@ -2479,11 +2751,17 @@ private:
             }
         }
 
-        // deform 时间轴（:957-1030）。跳过时不需要附件 —— end 就是本帧的 float 个数。
+        // ---- deform 时间轴（:957-1030）----
+        // 以前这里是"精确跳过"。现在要收 (皮肤, 槽位, 附件名)：被 FFD 动到的附件
+        // 烘不进静态 VB，得在容器里标成 CPU fallback（规格 §7.1）。
         int32_t def_n = 0;
         if (!r_.Varint(true, def_n))
         {
             return false;
+        }
+        if (def_n < 0)
+        {
+            return Fail("deform 时间轴数为负 " + std::to_string(def_n));
         }
         for (int32_t i = 0; i < def_n; ++i)
         {
@@ -2493,6 +2771,17 @@ private:
             {
                 return false;
             }
+            // 参考实现 `skeletonData->_skins[skinIndex]`（:959）**不检查**下标 ⇒
+            // 越界读。我们要报错。
+            if (skin_index < 0 || static_cast<size_t>(skin_index) >= out_.skins.size())
+            {
+                return Fail("deform 时间轴引用了不存在的皮肤下标 " + std::to_string(skin_index) + "（皮肤数是 " +
+                            std::to_string(out_.skins.size()) + "）—— 参考实现在这里是越界读");
+            }
+            if (slot_n < 0)
+            {
+                return Fail("deform 时间轴的槽位数为负 " + std::to_string(slot_n));
+            }
             for (int32_t ii = 0; ii < slot_n; ++ii)
             {
                 int32_t slot_index = 0;
@@ -2500,6 +2789,15 @@ private:
                 if (!r_.Varint(true, slot_index) || !r_.Varint(true, att_n))
                 {
                     return false;
+                }
+                if (slot_index < 0 || static_cast<size_t>(slot_index) >= out_.slots.size())
+                {
+                    return Fail("deform 时间轴引用了不存在的槽位下标 " + std::to_string(slot_index) + "（槽位数是 " +
+                                std::to_string(out_.slots.size()) + "）");
+                }
+                if (att_n < 0)
+                {
+                    return Fail("deform 时间轴的附件数为负 " + std::to_string(att_n));
                 }
                 for (int32_t iii = 0; iii < att_n; ++iii)
                 {
@@ -2517,8 +2815,17 @@ private:
                     {
                         return Fail("deform 时间轴帧数为负 " + std::to_string(frames));
                     }
+
+                    SpineDeformRef ref;
+                    ref.skin_index = static_cast<int>(skin_index);
+                    ref.slot_index = static_cast<int>(slot_index);
+                    ref.attachment = att_name;
+                    ref.skin_name = out_.skins[static_cast<size_t>(skin_index)];
+                    ref.slot_name = out_.slots[static_cast<size_t>(slot_index)].name;
+
                     for (int32_t f = 0; f < frames; ++f)
                     {
+                        // time（用不上，但要跳过）
                         int32_t end = 0;
                         if (!SkipFloats(1) || !r_.Varint(true, end))
                         {
@@ -2535,6 +2842,17 @@ private:
                             {
                                 return Fail("deform 帧长度 " + std::to_string(end) + " 为负");
                             }
+                            if (start < 0)
+                            {
+                                return Fail("deform 帧 offset " + std::to_string(start) + " 为负");
+                            }
+                            // 读端是 `end += start` 再读 end-start 个 float ⇒
+                            // **落盘的第二个 varint 是"个数"不是"终点"**。
+                            const size_t need = static_cast<size_t>(start) + static_cast<size_t>(end);
+                            if (need > ref.required_length)
+                            {
+                                ref.required_length = need;
+                            }
                             if (!SkipFloats(end))
                             {
                                 return false;
@@ -2545,6 +2863,7 @@ private:
                             return false;
                         }
                     }
+                    deform_refs_.push_back(std::move(ref));
                 }
             }
         }
@@ -2985,7 +3304,10 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         item.slot_index = static_cast<uint16_t>(a.slot_index);
         item.attachment_id = static_cast<uint16_t>(ai);
         item.skin_id = static_cast<uint16_t>(a.skin_index);
-        item.kind = SpineDrawItemKind::kStatic;
+        // deform（FFD）命中的附件顶点每帧都变 ⇒ 静态 VB 里那份绑定姿势不算数
+        // ⇒ 走 CPU fallback（规格 §7.1）。**只有被命中的绘制项**回退，
+        // 不是整个资产 —— 这和 kHasDrawOrderTimeline 那种"整体走 CPU"是两回事。
+        item.kind = a.deformed ? SpineDrawItemKind::kFallback : SpineDrawItemKind::kStatic;
         item.pad = 0;
         out.draw_items.push_back(item);
 
@@ -3071,6 +3393,17 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     if (src.has_clipping)
     {
         h.flags |= SpineGpuFlags::kHasClipping;
+    }
+    // 有绘制项因 deform 走了 CPU fallback ⇒ 运行时得为它准备每帧动态 VB。
+    // 逐个绘制项看 kind 也能知道，但那是 O(绘制项) 的扫描 —— 标志位让运行时
+    // 一眼决定"要不要建动态 VB"。
+    for (const SpineDrawItem& item : out.draw_items)
+    {
+        if (item.kind == SpineDrawItemKind::kFallback)
+        {
+            h.flags |= SpineGpuFlags::kHasDeform;
+            break;
+        }
     }
     h.bone_count = bone_count;
     h.slot_count = slot_count;
