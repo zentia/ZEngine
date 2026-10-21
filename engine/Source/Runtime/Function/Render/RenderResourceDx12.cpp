@@ -442,6 +442,8 @@ void RenderResource::UploadGpuMeshDx12(RHI* rhi, GpuMesh& now_mesh, RenderMeshDa
 
 void RenderResource::clear()
 {
+    ClearMeshGeometryCache();
+
     if (m_TextureStreamingManager)
     {
         m_TextureStreamingManager->Shutdown();
@@ -938,6 +940,12 @@ GpuMesh& RenderResource::GetOrCreateMesh(RHI* rhi,
                                                   RenderMeshData mesh_data)
 {
     const size_t assetid = entity.m_MeshAssetId;
+
+    // Keep a CPU copy of the geometry while we still have it: after this function
+    // returns, mesh_data is gone (BufferData frees its malloc) and nothing can read
+    // vertex positions back from the GPU buffers.
+    CacheMeshGeometry(assetid, mesh_data, entity.m_BoundingBox);
+
     auto it = m_Meshes.find(assetid);
     if (it != m_Meshes.end() && meshDrawDataIsValid(&it->second) &&
         it->second.mesh_vertex_interleaved_buffer != nullptr)

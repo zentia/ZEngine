@@ -16,6 +16,9 @@ namespace LumenConstants
     constexpr uint32_t kMaxReflectionBounces = 4;
     constexpr uint32_t kDefaultSurfaceCacheResolution = 512;
     constexpr uint32_t kDefaultDistanceFieldResolution = 256;
+    // 体素化目前是 CPU 上的暴力实现（O(体素数 × 实例数))，256³ 的量级要跑几分钟。
+    // 这里把分辨率压到 CPU 扛得住的上限；等距离场搬上 GPU 再放开。
+    constexpr uint32_t kMaxCpuDistanceFieldResolution = 64;
     constexpr float kMinTraceStep = 0.1f;
     constexpr float kMaxTraceStep = 100.0f;
     constexpr uint32_t kMaxSurfaceCachePages = 1024;

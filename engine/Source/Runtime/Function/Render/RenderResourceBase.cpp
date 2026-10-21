@@ -618,6 +618,82 @@ AxisAlignedBox RenderResourceBase::GetCachedBoudingBox(const MeshSourceDesc& sou
     return AxisAlignedBox();
 }
 
+void RenderResourceBase::CacheMeshGeometry(size_t mesh_asset_id,
+                                           const RenderMeshData& mesh_data,
+                                           const AxisAlignedBox& local_bounds)
+{
+    if (mesh_asset_id == 0 || m_MeshGeometryCache.find(mesh_asset_id) != m_MeshGeometryCache.end())
+    {
+        return;
+    }
+
+    const BufferData* vertex_buffer = mesh_data.m_StaticMeshData.m_VertexBuffer.get();
+    const BufferData* index_buffer = mesh_data.m_StaticMeshData.m_IndexBuffer.get();
+    if (vertex_buffer == nullptr || vertex_buffer->m_Data == nullptr || index_buffer == nullptr ||
+        index_buffer->m_Data == nullptr)
+    {
+        return;
+    }
+
+    // Index buffers are uint16_t in every loader we have (LoadStaticMesh and the
+    // MeshData asset path both write uint16_t). Bail out instead of guessing if that
+    // ever changes.
+    const size_t vertex_count = vertex_buffer->m_Size / sizeof(MeshVertexDataDefinition);
+    const size_t index_count = index_buffer->m_Size / sizeof(uint16_t);
+    if (vertex_count == 0 || index_count < 3)
+    {
+        return;
+    }
+
+    CpuMeshGeometry geometry;
+    geometry.positions.reserve(vertex_count);
+    const MeshVertexDataDefinition* vertices =
+        static_cast<const MeshVertexDataDefinition*>(vertex_buffer->m_Data);
+    for (size_t i = 0; i < vertex_count; ++i)
+    {
+        geometry.positions.emplace_back(vertices[i].x, vertices[i].y, vertices[i].z);
+    }
+
+    // A triangle soup is what every consumer walks; a trailing 1- or 2-index run would
+    // make them read past the end, so drop the remainder.
+    geometry.indices.reserve(index_count - (index_count % 3));
+    const uint16_t* indices = static_cast<const uint16_t*>(index_buffer->m_Data);
+    for (size_t i = 0; i + 2 < index_count; i += 3)
+    {
+        geometry.indices.push_back(static_cast<uint32_t>(indices[i]));
+        geometry.indices.push_back(static_cast<uint32_t>(indices[i + 1]));
+        geometry.indices.push_back(static_cast<uint32_t>(indices[i + 2]));
+    }
+
+    // Indices must address the positions we just copied.
+    for (uint32_t index : geometry.indices)
+    {
+        if (index >= geometry.positions.size())
+        {
+            LOG_WARNING(ZRender,
+                        "cpuMeshCache: mesh asset id {} has an out-of-range index ({} >= {}); cache skipped",
+                        mesh_asset_id,
+                        index,
+                        geometry.positions.size());
+            return;
+        }
+    }
+
+    geometry.local_bounds = local_bounds;
+    m_MeshGeometryCache.emplace(mesh_asset_id, std::move(geometry));
+}
+
+const CpuMeshGeometry* RenderResourceBase::FindMeshGeometry(size_t mesh_asset_id) const
+{
+    const auto it = m_MeshGeometryCache.find(mesh_asset_id);
+    return it != m_MeshGeometryCache.end() ? &it->second : nullptr;
+}
+
+void RenderResourceBase::ClearMeshGeometryCache()
+{
+    m_MeshGeometryCache.clear();
+}
+
 StaticMeshData RenderResourceBase::LoadStaticMesh(eastl::string filename, AxisAlignedBox& bounding_box)
 {
     StaticMeshData mesh_data;

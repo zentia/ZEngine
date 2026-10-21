@@ -18,6 +18,8 @@
 
 void RenderResource::clear()
 {
+    ClearMeshGeometryCache();
+
     if (m_TextureStreamingManager)
     {
         m_TextureStreamingManager->Shutdown();
@@ -401,6 +403,11 @@ GpuMesh&
 RenderResource::GetOrCreateMesh(RHI* rhi, RenderEntity entity, RenderMeshData mesh_data)
 {
     size_t assetid = entity.m_MeshAssetId;
+
+    // Keep a CPU copy of the geometry while we still have it: after this function
+    // returns, mesh_data is gone and nothing can read vertex positions back from the
+    // GPU buffers. Lumen's distance field is the consumer today.
+    CacheMeshGeometry(assetid, mesh_data, entity.m_BoundingBox);
 
     auto it = m_Meshes.find(assetid);
     if (it != m_Meshes.end() && meshDrawDataIsValid(&it->second))
@@ -1415,6 +1422,8 @@ void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
 // so defining it here too is a duplicate symbol at link time.
 void RenderResource::clear()
 {
+    ClearMeshGeometryCache();
+
     if (m_TextureStreamingManager)
     {
         m_TextureStreamingManager->Shutdown();

@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-21 (Lumen distance field: real scene geometry)
+
+`LumenDistanceField::GenerateFromScene` had a TODO where the geometry was
+supposed to be collected, so `m_SceneGeometryCache` stayed empty, every voxel
+kept its initial `FLT_MAX`, the software ray marcher could never satisfy
+`distance < 0.01f` and **GI was mathematically zero**. Filled in:
+
+- **`RenderResourceBase` now keeps a CPU copy of mesh geometry**
+  (`CpuMeshGeometry`: local-space positions + widened indices, keyed by
+  `RenderEntity::m_MeshAssetId`). `RenderMeshData` is handed to
+  `UploadGameObjectRenderResource` **by value** and freed the moment the GPU
+  buffers are filled, so nothing could read vertex positions back afterwards --
+  that gap is exactly why the cache had to be invented. Only positions and
+  indices are retained (12 + 4 bytes per vertex/index, not the 44-byte
+  `MeshVertexDataDefinition`). Populated from `RenderResource::GetOrCreateMesh`
+  on both the Vulkan/Metal and the DX12 upload paths.
+- **`SceneGeometryCache` is now actually filled**, and extended with a
+  per-instance `MeshRange` so it can express what the flat vectors could not:
+  geometry is stored **once per mesh asset** and N instances share one range,
+  so `ranges` / `transforms` / `bounds` are parallel arrays of length = instance
+  count. `bounds` holds world-space AABBs (`RenderEntity::m_BoundingBox` is
+  local, exactly as the visibility code already assumes).
+- **`geometry_hash`** (FNV-1a over instance ids + mesh asset ids + model
+  matrices) lets `GenerateFromScene` skip the whole voxelization when neither
+  the scene nor the bounds changed. `UpdateDistanceField` runs every frame, so
+  without this the field would be rebuilt every frame.
+- **The voxelizer computes real distances** instead of leaving `FLT_MAX`:
+  each instance is pre-pruned by its world AABB (distance-to-box is a lower
+  bound on distance-to-any-triangle), and the world->local matrix is inverted
+  once per instance rather than once per voxel per instance.
+- **Fixed `DistanceToTriangle`**: its barycentric solve used
+  `edge · (point - v0)` where the algorithm (Ericson, RTCD 5.1.5) requires
+  `edge · (v0 - point)`. The whole region test then took the wrong branch --
+  a point *inside* the triangle was reported as the distance to `v0` (0.89
+  instead of 0.125 in the smoke test). Nothing noticed until now because the
+  function had no callers that reached it with geometry.
+- **CPU voxelization resolution is capped** at
+  `LumenConstants::kMaxCpuDistanceFieldResolution` (64). The default config asks
+  for 256, i.e. 16.7M voxels of brute-force triangle distance -- minutes of CPU.
+  `Initialize` clamps and warns; the cap disappears once the field is built on
+  the GPU.
+- **`LumenRenderer`** passes its `RenderResourceBase` down and no longer
+  hard-codes a ±1000 world box (that made the voxel size so large the field was
+  meaningless); when the bounds are invalid they are derived from the scene.
+- **`LumenSceneGeometrySmokeTest`** (36 checks, `-DZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST=ON`)
+  covers cache -> voxel -> query end to end headlessly. Not in the Windows
+  smoke-test workflow: that job runs with `ZENGINE_USE_VULKAN=OFF`, which strips
+  `Function/Render/Lumen/*.cpp` from ZRuntime.
+
 ### Fixed / Added - 2026-10-21 (RHI groundwork for the GPU-driven path)
 - **`VulkanRHI::CreateComputePipelines` / `CreateGraphicsPipelines` read and wrote
   past their own stack** for any `createInfoCount > 1`: only one

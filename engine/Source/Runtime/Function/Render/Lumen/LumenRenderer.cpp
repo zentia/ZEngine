@@ -114,15 +114,14 @@ void LumenRenderer::ComputeReflections(std::shared_ptr<RenderScene> render_scene
 
 void LumenRenderer::UpdateDistanceField(std::shared_ptr<RenderScene> render_scene, const Vector3& camera_position)
 {
-    // 计算或更新世界空间边界
-    if (!m_WorldBounds.IsValid())
-    {
-        // TODO: 从场景计算世界空间边界
-        m_WorldBounds = AxisAlignedBox(Vector3(-1000.0f, -1000.0f, -1000.0f), Vector3(1000.0f, 1000.0f, 1000.0f));
-    }
+    // 世界空间边界交给 LumenDistanceField 从场景几何推导（m_WorldBounds 还无效时）。
+    // 以前这里写死一个 ±1000 的盒子，体素尺寸会大到距离场完全没有意义。
+    //
+    // render_resource 是 CPU 侧网格几何（CpuMeshGeometry 缓存）的唯一来源，没有它
+    // 距离场连一个三角形都拿不到。
+    m_DistanceField.UpdateDistanceField(render_scene, m_RenderResource.get(), camera_position);
 
-    // 更新距离场
-    m_DistanceField.UpdateDistanceField(render_scene, camera_position);
+    m_WorldBounds = m_DistanceField.getWorldBounds();
 }
 
 void LumenRenderer::UpdateSurfaceCache(std::shared_ptr<RenderScene> render_scene, const Vector3& camera_position)

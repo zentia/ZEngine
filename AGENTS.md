@@ -1980,6 +1980,46 @@ four backends.
   `Interface/Vulkan` nor `Interface/DX12` is compiled**, so it is the only
   thing that catches a field drifting apart there.
 
+### 2.34 Lumen: where distance-field geometry comes from
+
+`engine/Source/Runtime/Function/Render/Lumen/` — CPU-side distance field
+(`LumenDistanceField`). Nothing here runs on the GPU yet.
+
+- **`RenderMeshData` dies right after the GPU upload.** It is passed **by value**
+  into `RenderResource::UploadGameObjectRenderResource` and `BufferData::m_Data`
+  is `free()`d in the destructor. Anything that needs vertex positions later
+  (Lumen, CPU occlusion, ...) must read them from
+  **`RenderResourceBase::CpuMeshGeometry`**, keyed by
+  `RenderEntity::m_MeshAssetId`. It retains only local-space positions and
+  indices widened to `uint32_t` (the asset form is `uint16_t`); do not add
+  normals/UVs back — 12 + 4 bytes per vertex/index is the whole point.
+  `CacheMeshGeometry` is idempotent and is called from *both*
+  `RenderResource::GetOrCreateMesh` implementations (Vulkan/Metal in
+  `RenderResource.cpp`, DX12 in `RenderResourceDx12.cpp`) — add a new upload
+  path and you must call it there too.
+- **`SceneGeometryCache` stores geometry once per mesh asset, not per instance.**
+  `positions` / `indices` are the concatenated local-space geometry; `ranges`,
+  `transforms` and `bounds` are parallel arrays of length = instance count, and
+  several instances legitimately share one `MeshRange`. Do not try to derive a
+  range from an instance index — that is exactly why `MeshRange` exists.
+- **`RenderEntity::m_BoundingBox` is LOCAL space.** The visibility code
+  (`RenderScene::UpdateVisibleObjects*`) transforms it by `m_ModelMatrix` before
+  comparing against a frustum; the distance field does the same via
+  `BoundingBoxTransform`. `bounds` in the cache is the world-space result.
+- **`geometry_hash` is the "did the scene change" gate.**
+  `LumenRenderer::Update` calls `UpdateDistanceField` **every frame**, so
+  `GenerateFromScene` short-circuits when the hash and the world bounds are
+  unchanged. `markForUpdate()` (`needs_update`) is the force-rebuild switch.
+- **The voxelizer is CPU brute force, so resolution is capped** at
+  `LumenConstants::kMaxCpuDistanceFieldResolution` (64) inside `Initialize`.
+  The default config asks for 256 → 16.7M voxels. Lower the cap's relevance by
+  moving the voxelization to a compute shader; do not just raise the number.
+- **`DistanceToTriangle` needs `edge · (v0 - point)`, not `edge · (point - v0)`.**
+  This is Ericson RTCD 5.1.5. Flipping the sign sends every region test down the
+  wrong branch and a point *inside* the triangle comes back as the distance to
+  `v0`. It shipped wrong and nothing noticed because no caller ever reached it
+  with real geometry. `LumenSceneGeometrySmokeTest` pins it.
+
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).

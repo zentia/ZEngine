@@ -481,6 +481,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Test/RHIIndirectDrawSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Test/RHIIndirectDrawSmokeTest.cpp")
+# Lumen scene-geometry smoke-test main carve-out (same rationale). Built only
+# when ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST=ON (see
+# Function/Render/Lumen/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenSceneGeometrySmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenSceneGeometrySmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when
@@ -1378,6 +1385,18 @@ add_subdirectory(Resource/Addressables/Test)
 # above and built only when ZENGINE_BUILD_RENDERGRAPH_SMOKE_TEST=ON. The
 # compiler is RHI-free by design, so this one needs no GPU and no window.
 add_subdirectory(Function/Render/Graph/Test)
+
+# Lumen scene-geometry smoke test. Own main(); carved out of the ZRuntime glob
+# above and built only when ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST=ON.
+# Pure CPU work (mesh cache -> distance field voxelizer), so no GPU/window.
+#
+# Gated on the same condition the Lumen sources are gated on: the
+# "Windows without Vulkan" and Emscripten branches strip
+# Function/Render/Lumen/*.cpp out of ZRuntime, and the test links ZRuntime, so
+# it would fail to link there.
+if(NOT (WIN32 AND NOT ZENGINE_USE_VULKAN) AND NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten"))
+    add_subdirectory(Function/Render/Lumen/Test)
+endif()
 
 # =============================================================================
 # ASTC texture decompression support (Phase 6)
