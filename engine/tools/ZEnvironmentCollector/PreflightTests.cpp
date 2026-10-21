@@ -448,6 +448,35 @@ int main()
             Check(!HasFinding(Evaluate(inputs), "GAME_PATH_NON_ASCII"), "a plain path is quiet");
         }
         {
+            // The one machine where the premise is false rather than merely less
+            // risky: the narrow APIs decode UTF-8, so the bytes the launcher sent
+            // come back unchanged. Telling this player to reinstall would be
+            // advice to fix something that is not broken.
+            auto inputs = HealthyInputs();
+            inputs.gamePathKnown = true;
+            inputs.gamePathAscii = false;
+            inputs.systemAnsiCodePage = 65001;
+            inputs.systemAnsiCodePageKnown = true;
+            Check(!HasFinding(Evaluate(inputs), "GAME_PATH_NON_ASCII"),
+                  "a system whose narrow APIs take UTF-8 is not told to reinstall");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.gamePathKnown = true;
+            inputs.gamePathAscii = false;
+            inputs.systemAnsiCodePage = 936;
+            inputs.systemAnsiCodePageKnown = true;
+            Check(HasFinding(Evaluate(inputs), "GAME_PATH_NON_ASCII"), "a GBK system still warns");
+        }
+        {
+            // Not knowing the code page is not the same as knowing it is UTF-8.
+            auto inputs = HealthyInputs();
+            inputs.gamePathKnown = true;
+            inputs.gamePathAscii = false;
+            inputs.systemAnsiCodePageKnown = false;
+            Check(HasFinding(Evaluate(inputs), "GAME_PATH_NON_ASCII"), "an unknown code page still warns");
+        }
+        {
             // The question that used to need a full collection report to answer:
             // is the game on a disk that has to move a head to read it.
             auto inputs = HealthyInputs();
@@ -821,6 +850,7 @@ int main()
             Check(json.find("\"driveType\": ") != std::string::npos, "the game volume's drive type is reported");
             Check(json.find("\"spinning\": ") != std::string::npos, "whether the game volume is mechanical is reported");
             Check(json.find("\"systemVolume\": ") != std::string::npos, "the system volume is reported too");
+            Check(json.find("\"ansiCodePage\": ") != std::string::npos, "the system code page is reported");
             Check(json.find("\"gamePath\": {") != std::string::npos, "the install path is reported");
             Check(json.find("\"uptimeMilliseconds\": ") != std::string::npos, "uptime is reported");
             Check(json.find("\"attachedOutputCount\": ") != std::string::npos, "each adapter reports its attached outputs");

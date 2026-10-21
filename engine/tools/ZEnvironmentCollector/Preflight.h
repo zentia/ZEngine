@@ -166,6 +166,13 @@ struct PreflightInputs
     bool gamePathKnown = false;
     std::string gamePath;
 
+    // The code page the narrow file APIs decode a char* path with, as the system
+    // has it (not as this process happens to have it). 65001 means they take UTF-8,
+    // which is exactly what the launcher hands the game: the bytes stop being
+    // mojibake and "reinstall to an ASCII path" stops being true advice.
+    std::uint32_t systemAnsiCodePage = 0;
+    bool systemAnsiCodePageKnown = false;
+
     // SMBIOS system-enclosure type. It is here for one rule only: telling a
     // desktop apart from a laptop. On a switchable-graphics laptop the panel is
     // driven by the integrated part by design, so "the monitor is on the

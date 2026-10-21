@@ -336,6 +336,41 @@ bool ReadInsiderPreview(bool& known)
     return std::wstring(buffer).find(L"rs_prerelease") != std::wstring::npos;
 }
 
+// The system's ANSI code page, read from where the system keeps it rather than
+// from GetACP(), which answers for this process and would silently follow this
+// tool's own manifest if it ever declared one. What the narrow APIs do with a
+// char* path is a system-wide fact, and it decides whether the non-ASCII path
+// below is a real problem or a non-problem the tool should keep quiet about.
+std::uint32_t ReadSystemAnsiCodePage(bool& known)
+{
+    known = false;
+    HKEY key = nullptr;
+    if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage", 0,
+                        KEY_READ, &key) != ERROR_SUCCESS)
+    {
+        return 0;
+    }
+    wchar_t buffer[64]{};
+    DWORD size = sizeof(buffer);
+    DWORD type = 0;
+    const LONG queryResult = ::RegQueryValueExW(key, L"ACP", nullptr, &type,
+                                                reinterpret_cast<LPBYTE>(buffer), &size);
+    ::RegCloseKey(key);
+    if (queryResult != ERROR_SUCCESS || type != REG_SZ)
+    {
+        return 0;
+    }
+    // The value is a decimal string like "936" or, when the machine has opted into
+    // UTF-8 for worldwide language support, "65001".
+    const std::wstring text(buffer);
+    if (text.empty() || !std::all_of(text.begin(), text.end(), [](wchar_t c) { return c >= L'0' && c <= L'9'; }))
+    {
+        return 0;
+    }
+    known = true;
+    return static_cast<std::uint32_t>(std::stoul(text));
+}
+
 // Visual C++ 2015-2022 redistributable, x64. Read from the runtime's own
 // registration rather than from the uninstall list: the uninstall entry is
 // per-installer and disappears after some in-place upgrades, while this key is
@@ -774,6 +809,7 @@ PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirector
     // one that is.
     CollectSystemVolume(inputs);
     inputs.insiderPreview = ReadInsiderPreview(inputs.insiderPreviewKnown);
+    inputs.systemAnsiCodePage = ReadSystemAnsiCodePage(inputs.systemAnsiCodePageKnown);
 
     // Two registry reads and at most three file-exists checks: cheap enough to
     // sit inside a three-second budget.
@@ -1257,8 +1293,16 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
     // Narrow-API file opens are the reason this is worth saying: the path is
     // UTF-8 to the launcher and mojibake to a `fopen` that never asked which
     // encoding it was handed. The failure is silent and looks like a missing
-    // asset, not like a path problem.
-    if (inputs.gamePathKnown && !inputs.gamePathAscii)
+    // asset, not like a path problem. One machine is exempt, and it is exempt
+    // because the premise is false there rather than because the risk is smaller:
+    // a system whose narrow APIs decode as UTF-8 gets back exactly the bytes the
+    // launcher sent, so there is nothing to warn about, and telling that player to
+    // reinstall would be advice to fix something that is not broken. Unknown stays
+    // on the warning side -- not knowing the code page is not the same as knowing
+    // it is UTF-8.
+    const bool narrowApisTakeUtf8 =
+        inputs.systemAnsiCodePageKnown && inputs.systemAnsiCodePage == 65001;
+    if (inputs.gamePathKnown && !inputs.gamePathAscii && !narrowApisTakeUtf8)
     {
         result.findings.push_back({"GAME_PATH_NON_ASCII", "storage",
             "游戏安装路径含有中文或特殊字符，部分组件读取文件时会失败（表现为过场动画不播放、资源加载失败）。",
@@ -1907,7 +1951,9 @@ std::string BuildPreflightJson(
            << ", \"physicalMemoryBytes\": " << inputs.system.physicalMemoryBytes
            << ", \"availablePhysicalMemoryBytes\": " << inputs.system.availablePhysicalMemoryBytes
            << ", \"uptimeMilliseconds\": " << inputs.system.uptimeMilliseconds
-           << ", \"insiderPreview\": " << BoolText(inputs.insiderPreview) << "},\n"
+           << ", \"insiderPreview\": " << BoolText(inputs.insiderPreview)
+           << ", \"ansiCodePage\": " << inputs.systemAnsiCodePage
+           << ", \"ansiCodePageKnown\": " << BoolText(inputs.systemAnsiCodePageKnown) << "},\n"
            << "    \"pageFile\": {\"totalBytes\": " << inputs.system.totalPageFileBytes
            << ", \"availableBytes\": " << inputs.system.availablePageFileBytes
            << ", \"effectivePageFileBytes\": "
