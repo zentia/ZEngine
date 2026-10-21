@@ -109,6 +109,13 @@ struct SpineSourceAttachment
     std::vector<float> uvs;
     std::vector<uint16_t> triangles;
 
+    // mesh 的**原始** regionUV（图集空间，未归一化），只有 linked mesh 非它不可：
+    // linked mesh 继承父附件的 regionUVs，却要用**自己的**图集 region 重算最终 UV
+    // （`MeshAttachment::setParentMesh()` 拷 _regionUVs，`updateUVs()` 用自己的
+    //  _regionU/V/…，见 MeshAttachment.cpp:226-239 与 :64-92）。
+    // region 附件没有这个（它的 UV 来自 `setUVs()`，与 mesh 的公式不同）。
+    std::vector<float> region_uvs;
+
     bool IsWeighted() const { return vertices.size() != uvs.size(); }
     uint32_t VertexCount() const { return static_cast<uint32_t>(uvs.size()) / 2u; }
 };

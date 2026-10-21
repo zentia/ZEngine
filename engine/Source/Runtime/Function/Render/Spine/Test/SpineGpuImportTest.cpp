@@ -201,7 +201,8 @@ struct SkelWriter
 // 而它一开，后面几乎每个结构的字段数都不一样（骨骼多一个 color、mesh 多 edges+宽高、
 // 头部多 fps/imagesPath/audioPath）。只测 false 等于把最常见的情况漏掉。
 std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = false,
-                                      const std::string& version = "3.8.99", bool nonessential = false)
+                                      const std::string& version = "3.8.99", bool nonessential = false,
+                                      const std::string& linked_parent = "mesh")
 {
     SkelWriter w;
 
@@ -284,10 +285,10 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
 
     // 槽位 1：mesh "mesh"（4 顶点，第 2 个顶点 2 影响 0.6/0.4）
     w.Varint(1);
-    w.Varint(1);
+    w.Varint(linked_mesh ? 2 : 1);
     w.Str("mesh");
     w.Str("");
-    w.U8(linked_mesh ? 3 : 2);   // 2 = Mesh；3 = LinkedMesh（应为报错路径）
+    w.U8(2);                // AttachmentType_Mesh
     w.Str("");
     w.ColorWhite();
     w.Varint(4);            // vertexCount
@@ -307,6 +308,24 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         w.ShortArray({});   // edges
         w.F(64.0f);         // width
         w.F(32.0f);         // height
+    }
+
+    // linked mesh：几何继承 "mesh"，贴图区域用自己的 "quad"
+    if (linked_mesh)
+    {
+        w.Str("mesh-linked");
+        w.Str("");              // 附件名留空 ⇒ 取 skin 里的 key
+        w.U8(3);                // AttachmentType_Linkedmesh
+        w.Str("quad");          // path（自己的图集 region）
+        w.ColorWhite();         // color
+        w.Str("");              // skin（空 ⇒ default skin）
+        w.Str(linked_parent);   // parent
+        w.Bool(true);           // inheritDeform（运行时概念，导入期用不到）
+        if (nonessential)
+        {
+            w.F(64.0f);         // width
+            w.F(32.0f);         // height
+        }
     }
 
     // ---- 具名 skin：0 个 ----
@@ -338,6 +357,34 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
 
     return w.b;
 }
+
+// 带 linked mesh 的夹具：槽位 s1 里除了真 mesh，还有一个 `mesh-linked`，
+// parent = "mesh"，但**自己的** path 指向另一个图集 region（"quad"）。
+// 选不同 region 是故意的：linked mesh 的 UV 必须用**自己的** region 重算，
+// 若错用父附件的 region，UV 会和父附件一模一样 —— 这条断言才抓得住。
+const char* kSkeletonLinked = R"({
+  "skeleton": { "spine": "3.8.99" },
+  "bones": [ { "name": "root" }, { "name": "hip", "parent": "root" } ],
+  "slots": [
+    { "name": "s0", "bone": "root", "attachment": "quad" },
+    { "name": "s1", "bone": "hip", "attachment": "mesh" }
+  ],
+  "skins": [ { "name": "default", "attachments": {
+    "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
+    "s1": {
+      "mesh": {
+        "type": "mesh",
+        "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
+        "triangles": [ 0,1,2, 0,2,3 ],
+        "vertices": [ 1, 0,-10,-5,1,
+                      2, 1, 20,10,0.6, 0,5,7,0.4,
+                      1, 1, 3,4,1,
+                      1, 0, 8,2,1 ]
+      },
+      "mesh-linked": { "type": "linkedmesh", "path": "quad", "parent": "mesh" }
+    }
+  } } ]
+})";
 
 }   // namespace
 
@@ -707,10 +754,11 @@ int main()
         std::printf("  (预期报错) %s\n", r.error.c_str());
     }
     {
-        const std::vector<uint8_t> bad = BuildSkelFixture(false, true);
+        // parent 指向不存在的附件 ⇒ 必须报错（参考实现在这里报 "Parent mesh not found"）
+        const std::vector<uint8_t> bad = BuildSkelFixture(false, true, "3.8.99", false, "no-such-attachment");
         SpineSourceSkeleton s;
         SpineImportResult r = ParseSpineSkeletonBinary(bad.data(), bad.size(), &atlas, s);
-        Check(!r.ok, "skel: linked mesh ⇒ 报错（与 json 路径一致）");
+        Check(!r.ok, "skel: linked mesh 的 parent 不存在 ⇒ 报错");
         std::printf("  (预期报错) %s\n", r.error.c_str());
     }
     // 9d. 越界：任何真前缀都必须**失败**，绝不能越界读。
@@ -730,6 +778,98 @@ int main()
             }
         }
         CheckEq(wrong_ok, 0, "skel: 任意真前缀都必须解析失败（截断不能假装成功，更不能越界读）");
+        g_prefix.clear();
+    }
+
+    // ---- 10. linked mesh（附属网格）----
+    // 几何继承父附件，贴图区域用自己的 ⇒ 顶点/三角形/regionUV 与父相同，**UV 不同**。
+    // json 与 .skel 两条路径都要能解，且互相一致。
+    auto FindAtt = [](const std::vector<SpineSourceAttachment>& v, const std::string& n) -> const SpineSourceAttachment*
+    {
+        for (const SpineSourceAttachment& a : v)
+        {
+            if (a.name == n)
+            {
+                return &a;
+            }
+        }
+        return nullptr;
+    };
+
+    for (bool nonessential : {false, true})
+    {
+        g_prefix = std::string("[linked/nonessential=") + (nonessential ? "true" : "false") + "] ";
+
+        SpineSourceSkeleton lj;
+        SpineImportResult rlj = ParseSpineSkeletonJson(kSkeletonLinked, std::string(kSkeletonLinked).size(), &atlas, lj);
+        Check(rlj.ok, "linked: json 解析成功");
+        if (!rlj.ok)
+        {
+            std::printf("  error: %s\n", rlj.error.c_str());
+            g_prefix.clear();
+            continue;
+        }
+
+        const std::vector<uint8_t> lk = BuildSkelFixture(false, true, "3.8.99", nonessential);
+        SpineSourceSkeleton lk_src;
+        SpineImportResult rlk = ParseSpineSkeletonBinary(lk.data(), lk.size(), &atlas, lk_src);
+        Check(rlk.ok, "linked: skel 解析成功");
+        if (!rlk.ok)
+        {
+            std::printf("  error: %s\n", rlk.error.c_str());
+            g_prefix.clear();
+            continue;
+        }
+
+        CheckEq(static_cast<long long>(lj.attachments.size()), 3, "linked: 3 个附件（region + mesh + linked mesh）");
+        CheckEq(static_cast<long long>(lk_src.attachments.size()),
+                static_cast<long long>(lj.attachments.size()), "linked: skel 附件数与 json 一致");
+
+        const SpineSourceAttachment* parent = FindAtt(lj.attachments, "mesh");
+        const SpineSourceAttachment* child = FindAtt(lj.attachments, "mesh-linked");
+        Check(parent != nullptr && child != nullptr, "linked: 父附件与 linked mesh 都在");
+        if (parent != nullptr && child != nullptr)
+        {
+            // setParentMesh（MeshAttachment.cpp:226-239）
+            Check(child->vertices == parent->vertices, "linked: 顶点（含骨骼权重）与父附件相同");
+            Check(child->region_uvs == parent->region_uvs, "linked: regionUV 与父附件相同");
+            Check(child->triangles == parent->triangles, "linked: 三角形与父附件相同");
+            Check(child->slot_index == parent->slot_index, "linked: 与父附件同槽位");
+            Check(child->IsWeighted() == parent->IsWeighted(), "linked: rigid/weighted 判定与父附件相同");
+            // updateUVs（:64-92）用**自己的** region ⇒ UV 必须与父附件不同
+            CheckEq(static_cast<long long>(child->uvs.size()), static_cast<long long>(parent->uvs.size()),
+                    "linked: UV 数量与父附件相同");
+            Check(child->uvs != parent->uvs,
+                  "linked: UV 与父附件**不同** —— 用**自己的**图集 region 算（'quad' vs 'mesh'）");
+        }
+
+        // json ↔ skel 交叉验证
+        for (size_t i = 0; i < lj.attachments.size() && i < lk_src.attachments.size(); ++i)
+        {
+            Check(lk_src.attachments[i].name == lj.attachments[i].name, "linked: skel/json 附件名一致");
+            Check(lk_src.attachments[i].vertices == lj.attachments[i].vertices, "linked: skel/json 顶点一致");
+            Check(lk_src.attachments[i].uvs == lj.attachments[i].uvs, "linked: skel/json UV 一致");
+            Check(lk_src.attachments[i].region_uvs == lj.attachments[i].region_uvs, "linked: skel/json regionUV 一致");
+        }
+
+        SpineGpuAsset aj;
+        SpineImportResult rbj = BakeSpineGpuAsset(lj, aj);
+        SpineGpuAsset ak;
+        SpineImportResult rbk = BakeSpineGpuAsset(lk_src, ak);
+        Check(rbj.ok && rbk.ok, "linked: 两条路径都 bake 成功");
+        if (rbj.ok && rbk.ok)
+        {
+            Check(aj.vertex_buffer == ak.vertex_buffer, "linked: skel↔json 顶点缓冲逐字节相同");
+            Check(aj.index_buffer == ak.index_buffer, "linked: skel↔json 索引相同");
+            // ⚠️ 几何是**复制**的，不是共享的：我们的顶点格式把 UV 编在顶点里，
+            //    linked mesh 的 UV 不同 ⇒ 只能再来一份顶点。
+            CheckEq(static_cast<long long>(aj.weighted_vertex_count), 8,
+                    "linked: weighted 顶点 = 父 4 + linked 4（复制，不共享）");
+            CheckEq(static_cast<long long>(aj.rigid_vertex_count), 4, "linked: rigid 顶点仍 4（region）");
+            CheckEq(static_cast<long long>(aj.index_buffer.size()), 18, "linked: 索引 3 × 6");
+            CheckEq(static_cast<long long>(aj.draw_items.size()), 3,
+                    "linked: 3 个绘制项（换装时由 CPU 挑可见的那几个）");
+        }
         g_prefix.clear();
     }
 

@@ -446,6 +446,34 @@ Chunks:
 
 **无。** 全部六项已拍板；后续若再开新议题写在这里。
 
+是否需要给容器加 **skin 维度**？（见 §14）
+
+---
+
+## 14. 已知限制
+
+### 14.1 容器里没有 skin 维度
+
+导入器把**所有 skin 合并成一份**附件表（同槽位同名时**先出现的胜出**），
+容器只有 `(slot_index, attachment_id)`，没有"这个附件属于哪个 skin"。
+后果：
+
+- 同名跨 skin 的附件（含最常见的 linked mesh 用法：skin2 里的 "eye" 链接
+  到 default 里的 "eye"）会**塌成一个**，换装时拿不到另一份。
+- 参考实现按 `(skin, slotIndex, parent)` 找父附件；我们按 `(槽位, 名字)` 找。
+
+要不要修是**规格级**的决定（容器要加 skin 表 / 附件表要多一列），不是导入器
+能自己定的。当前行为有测试钉住，不是意外。
+
+### 14.2 linked mesh 的几何是复制的，不是共享的
+
+linked mesh 继承父附件的顶点 / 骨骼 / 三角形 / regionUV，但用**自己的**图集
+region 重算 UV。我们的顶点格式把 UV 编在顶点里 ⇒ UV 不同就没法共用顶点，
+只能再来一份。一个典型的换装角色会有 N(skin) × M(mesh) 份几何。
+
+想省这块要么把 UV 拆成独立通道（顶点只存位置 + 骨骼，UV 按 draw item 索引），
+要么让导入器按"顶点 + UV 完全相同的附件"去重 —— 两者都是另一项改动。
+
 （历史：#1 版本、#2 影响数、#3 Clip、#4 骨骼通道、#5 root 是否 per-instance、#6 root 存放方式。）
 
 ---
@@ -490,6 +518,12 @@ Chunks:
 | 动画里 7 段顺序：slot/bone/IK/transform/path/deform/**drawOrder**/event | `:725-1107` |
 | ⚠️ 事件时间轴每帧末尾是否多 2 个 float，**取决于对应事件有没有 audioPath** | `:1098-1101` ⇒ events 段不能跳过 |
 | curve：0=linear、1=stepped 无数据；2=bezier 带 4 个 float | `:1112-1127` |
+| linked mesh：`setParentMesh` 拷父的 _vertices/_bones/_regionUVs/_triangles/_hullLength | `MeshAttachment.cpp:226-239` |
+| linked mesh 的 UV = **父的 regionUVs × 自己的 region** | `MeshAttachment.cpp:64-92`（`updateUVs` 读自己的 `_regionU/V/…`） |
+| ⚠️ `configureAttachment` 是**空函数**，region 在 `newMeshAttachment` 里就设好了 | `AtlasAttachmentLoader.cpp:120-122`、`:73-98` |
+| json 里 linked mesh 有两种写法：`type:"linkedmesh"`，或 `type:"mesh"` 带 `"parent"` | `SkeletonJson.cpp:462-465`、`:538` |
+| linked mesh 解析：按 skin 找父附件，找不到报 "Parent mesh not found" | `SkeletonBinary.cpp:302-323`、`SkeletonJson.cpp:649-669` |
+| `inheritDeform` 是运行时概念（deform 时间轴是否作用于继承方） | `MeshAttachment.cpp:94-96` |
 
 **`.skel` 与 json 必须产出同一个容器。** 这一条有一个硬测试钉住
 （`SpineGpuImportTest` 第 9 节）：手写的 `.skel` 字节流夹具与 json 夹具内容等价，

@@ -484,6 +484,108 @@ void ComputeMeshUvs(const SpineAtlasRegion& reg, const std::vector<float>& regio
     }
 }
 
+// ---------------------------------------------------------------------
+// linked mesh（附属网格）
+// ---------------------------------------------------------------------
+// 参考实现的两处：SkeletonBinary.cpp:302-323、SkeletonJson.cpp:649-669，逻辑相同。
+//
+// linked mesh **不自带几何**：它只是"我复用那个 mesh 的顶点/三角形/regionUV，
+// 但贴图区域用我自己的"。所以：
+//   * `setParentMesh()` 拷父的 _vertices / _bones / _regionUVs / _triangles / _hullLength
+//     （MeshAttachment.cpp:226-239）
+//   * `updateUVs()` 用**自己的** region（_regionU/V/U2/V2、尺寸、offset、rotate）
+//     去算最终 UV（:64-92）
+//   ⇒ 最终 UV = 父的 regionUVs × 自己的图集 region。
+//
+// ⚠️ `configureAttachment()` 是**空函数**（AtlasAttachmentLoader.cpp:120-122），
+//    region 在 `newMeshAttachment()` 里就设好了 —— 别以为它会重算一次 UV。
+//
+// ⚠️ skin：参考实现按 (skin, slotIndex, parent) 找父附件。本导入器把所有 skin
+//    合并成一份（先出现的胜出），容器里**没有 skin 维度** ⇒ 同名跨 skin 的附件无法区分。
+//    这里沿用同一条规则：父附件按 (槽位, 名字) 在合并后的集合里找；
+//    解析出的 linked mesh 若 (槽位, 名字) 已存在则丢弃。
+//    （要让"换装"真正可用，得先给容器加 skin 维度 —— 那是另一项改动。）
+struct SpineLinkedMeshRef
+{
+    int slot_index = -1;
+    std::string name;
+    std::string path;
+    std::string parent;
+    std::string skin;
+};
+
+bool ResolveLinkedMeshes(const SpineAtlas* atlas, const std::vector<SpineSourceSlot>& slots,
+                         std::vector<SpineSourceAttachment>& attachments,
+                         const std::vector<SpineLinkedMeshRef>& linked, std::string& err)
+{
+    for (const SpineLinkedMeshRef& lm : linked)
+    {
+        // 与常规附件同一条去重规则：先出现的胜出。
+        bool dup = false;
+        for (const SpineSourceAttachment& a : attachments)
+        {
+            if (a.slot_index == lm.slot_index && a.name == lm.name)
+            {
+                dup = true;
+                break;
+            }
+        }
+        if (dup)
+        {
+            continue;
+        }
+
+        const SpineSourceAttachment* parent = nullptr;
+        for (const SpineSourceAttachment& a : attachments)
+        {
+            if (a.slot_index == lm.slot_index && a.name == lm.parent)
+            {
+                parent = &a;
+                break;
+            }
+        }
+        const std::string slot_name =
+            (lm.slot_index >= 0 && static_cast<size_t>(lm.slot_index) < slots.size()) ? slots[static_cast<size_t>(lm.slot_index)].name
+                                                                                      : std::string("?");
+        if (parent == nullptr)
+        {
+            err = "槽位 '" + slot_name + "' 的 linked mesh '" + lm.name + "' 找不到父附件 '" + lm.parent +
+                  "'（参考实现在这里报 \"Parent mesh not found\"）";
+            return false;
+        }
+        if (parent->type != SpineSourceAttachment::Type::kMesh || parent->region_uvs.empty())
+        {
+            err = "槽位 '" + slot_name + "' 的 linked mesh '" + lm.name + "' 的父附件 '" + lm.parent +
+                  "' 不是带 regionUV 的 mesh（参考实现在这里直接 static_cast 成 MeshAttachment，"
+                  "父附件不是 mesh 就是未定义行为）";
+            return false;
+        }
+
+        SpineSourceAttachment att;
+        att.type = SpineSourceAttachment::Type::kMesh;
+        att.name = lm.name;
+        att.path = lm.path;
+        att.slot_index = lm.slot_index;
+
+        // setParentMesh：顶点 / 骨骼 / regionUV / 三角形全部来自父附件
+        att.vertices = parent->vertices;
+        att.region_uvs = parent->region_uvs;
+        att.triangles = parent->triangles;
+
+        const std::string region_name = lm.path.empty() ? lm.name : lm.path;
+        const SpineAtlasRegion* reg = (atlas != nullptr) ? FindAtlasRegion(*atlas, region_name) : nullptr;
+        if (reg == nullptr)
+        {
+            err = "atlas: linked mesh '" + lm.name + "'（槽位 '" + slot_name + "'）找不到图集 region '" +
+                  region_name + "'。它继承父附件的几何，但贴图区域是自己的 —— 缺了算不出 UV。";
+            return false;
+        }
+        ComputeMeshUvs(*reg, parent->region_uvs, att.uvs);
+        attachments.push_back(std::move(att));
+    }
+    return true;
+}
+
 }   // namespace
 
 SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const SpineAtlas* atlas,
@@ -660,10 +762,34 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
     std::sort(pending.begin(), pending.end(),
               [](const PendingAttachment& a, const PendingAttachment& b) { return a.slot_index < b.slot_index; });
 
+    // linked mesh 要等所有附件都解析完才能解引用父附件（父可能在**后面**的 skin 里）
+    std::vector<SpineLinkedMeshRef> linked;
+
     for (const PendingAttachment& p : pending)
     {
         const JsonValue& a = *p.json;
         const std::string type = GetString(a, "type", "region");
+
+        // json 里 linked mesh 有两种写法：type="linkedmesh"，或 type="mesh" 带 "parent"
+        // （参考实现 SkeletonJson.cpp:462-465 判类型、:538 判 parent）。
+        const JsonValue* jparent = GetMember(a, "parent");
+        if (type == "linkedmesh" || (type == "mesh" && jparent != nullptr))
+        {
+            SpineLinkedMeshRef lm;
+            lm.slot_index = p.slot_index;
+            lm.name = p.name;
+            lm.path = GetString(a, "path", "");
+            lm.parent = jparent != nullptr && jparent->IsString() ? jparent->GetString() : std::string();
+            lm.skin = GetString(a, "skin", "");
+            if (lm.parent.empty())
+            {
+                return Fail("json: 附件 '" + lm.name + "' 标成 linked mesh 但没有 parent");
+            }
+            // "deform"（inheritDeform，默认 1）是**运行时**概念：deform 时间轴是否
+            // 也作用于继承方。导入器不导入动画，用不到它。
+            linked.push_back(std::move(lm));
+            continue;
+        }
 
         if (type == "clipping")
         {
@@ -718,11 +844,6 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
         {
             att.type = SpineSourceAttachment::Type::kMesh;
 
-            if (GetMember(a, "parent") != nullptr)
-            {
-                return Fail("json: 附件 '" + att.name + "' 是 linked mesh（有 parent），本版本导入器不支持");
-            }
-
             const JsonValue* juvs = GetMember(a, "uvs");
             const JsonValue* jtri = GetMember(a, "triangles");
             const JsonValue* jverts = GetMember(a, "vertices");
@@ -760,6 +881,8 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
             std::vector<float> final_uvs;
             ComputeMeshUvs(*reg, region_uvs, final_uvs);
             att.uvs = std::move(final_uvs);
+            // 留给将来引用它的 linked mesh（它要拿父的 regionUVs 配自己的 region 重算）
+            att.region_uvs = std::move(region_uvs);
         }
         else
         {
@@ -823,6 +946,20 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
                 }
             }
         }
+    }
+
+    // ---- linked mesh：所有附件（含所有 skin）读完后才解引用父附件 ----
+    if (!linked.empty())
+    {
+        std::string err;
+        if (!ResolveLinkedMeshes(atlas, out.slots, out.attachments, linked, err))
+        {
+            return Fail("json: " + err);
+        }
+        // 解出来的附件插在末尾 ⇒ 重排一次，保证"按绘制顺序（槽位顺序）"。
+        std::stable_sort(out.attachments.begin(), out.attachments.end(),
+                         [](const SpineSourceAttachment& a, const SpineSourceAttachment& b)
+                         { return a.slot_index < b.slot_index; });
     }
 
     return Ok();
@@ -1120,6 +1257,19 @@ public:
                          [](const SpineSourceAttachment& a, const SpineSourceAttachment& b)
                          { return a.slot_index < b.slot_index; });
         out_.attachments = std::move(collected_);
+
+        // linked mesh：所有 skin 读完后才解引用父附件（父可能在后面的 skin 里）
+        if (!linked_.empty())
+        {
+            std::string err;
+            if (!ResolveLinkedMeshes(atlas_, out_.slots, out_.attachments, linked_, err))
+            {
+                return r_.Fail("skel: " + err);
+            }
+            std::stable_sort(out_.attachments.begin(), out_.attachments.end(),
+                             [](const SpineSourceAttachment& a, const SpineSourceAttachment& b)
+                             { return a.slot_index < b.slot_index; });
+        }
         return true;
     }
 
@@ -1132,6 +1282,7 @@ private:
     bool nonessential_ = false;
     std::vector<SpineSourceAttachment> collected_;
     std::vector<bool> event_has_audio_;
+    std::vector<SpineLinkedMeshRef> linked_;
 
     bool Fail(const std::string& m) { return r_.Fail("skel: " + m); }
 
@@ -1689,6 +1840,8 @@ private:
                 std::vector<float> final_uvs;
                 ComputeMeshUvs(*reg, region_uvs, final_uvs);
                 att.uvs = std::move(final_uvs);
+                // 留给将来引用它的 linked mesh（它要拿父的 regionUVs 配自己的 region 重算）
+                att.region_uvs = std::move(region_uvs);
                 Collect(std::move(att));
                 return true;
             }
@@ -1772,8 +1925,42 @@ private:
             }
             case kAttLinkedMesh:
             {
-                return Fail("附件 '" + name + "'（槽位 '" + out_.slots[static_cast<size_t>(slot_index)].name +
-                            "'）是 linked mesh，本版本导入器不支持（与 json 路径一致）");
+                // 参考实现 :584-604：path, color, skin, parent, inheritDeform,
+                // [nonessential: width, height]
+                std::string path;
+                if (!r_.String(path))
+                {
+                    return false;
+                }
+                if (path.empty())
+                {
+                    path = name;
+                }
+                if (!r_.Skip(4))
+                {
+                    return false;   // color
+                }
+                SpineLinkedMeshRef lm;
+                lm.slot_index = slot_index;
+                lm.name = name;
+                lm.path = path;
+                if (!r_.String(lm.skin) || !r_.String(lm.parent))
+                {
+                    return false;
+                }
+                bool inherit_deform = false;
+                if (!r_.Boolean(inherit_deform))
+                {
+                    return false;
+                }
+                // inheritDeform 是**运行时**概念（deform 时间轴是否作用于继承方），
+                // 导入器不导入动画，用不到它。
+                if (nonessential_ && !SkipFloats(2))
+                {
+                    return false;   // width, height
+                }
+                linked_.push_back(std::move(lm));
+                return true;
             }
             default:
             {
