@@ -138,6 +138,23 @@ struct SpineSourceAttachment
     uint32_t VertexCount() const { return static_cast<uint32_t>(uvs.size()) / 2u; }
 };
 
+// 一个裁剪附件（ClippingAttachment）的**作用域**（规格 §7.2）。
+//
+// 作用域是 **(slot_index, end_slot_index]** —— 半开半闭，两头都不对称：
+//   * 裁剪附件自己那个槽位**不**被裁：参考实现一命中 clipping 就 `clipStart()` 然后
+//     `continue`，该槽位根本不画（MeshGeneration/SpineMesh.h:153-159）。
+//   * 结束槽位**含在内**：槽位收尾调 `clipEnd(slot)`，而它只在
+//     `_clipAttachment->_endSlot == &slot._data` 时才真的收尾（SkeletonClipping.cpp:72-76）。
+struct SpineSourceClip
+{
+    int skin_index = -1;
+    int slot_index = -1;
+    // 结束槽位（含）。**< 0 表示"没有结束槽位"** —— json 没写 "end" 或名字查不到时
+    // `_endSlot` 是 NULL，`clipEnd(slot)` 永不成立 ⇒ 一路裁到最后一个槽位
+    // （只剩整条绘制指令末尾那次无条件 `clipEnd()`，SpineMesh.h:259）。
+    int end_slot_index = -1;
+};
+
 struct SpineSourceSkeleton
 {
     std::vector<SpineSourceBone> bones;
@@ -150,10 +167,15 @@ struct SpineSourceSkeleton
     // （SpineGpuFormat.h 里 kDefaultSkinId 的注释讲了为什么必须显式检查）。
     std::vector<std::string> skins;
 
+    // 裁剪作用域（规格 §7.2）。Bake 按它把**作用域内**的绘制项标成 kFallback ——
+    // 不是整个资产回退。作用域是逐皮肤的：裁剪附件本身是某个皮肤下的槽位附件，
+    // 换到没有它的皮肤时作用域也就不存在（3.8 同时只有一个皮肤生效）。
+    std::vector<SpineSourceClip> clips;
+
     // flags 来源
     bool has_draw_order_timeline = false;   // animations.*.drawOrder 存在 ⇒ 整个资产走 CPU
     bool uses_tint_black = false;           // 任一槽位带 dark
-    bool has_clipping = false;              // 存在 clipping 附件
+    bool has_clipping = false;              // 存在 clipping 附件（= !clips.empty()）
 
     // 图集页名（写进容器 chunk 7；序列化时才知道纹理引用）
     std::vector<std::string> atlas_pages;

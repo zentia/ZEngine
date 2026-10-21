@@ -211,7 +211,8 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
                                       const std::string& version = "3.8.99", bool nonessential = false,
                                       const std::string& linked_parent = "mesh", bool with_second_skin = false,
                                       bool with_deform = false, bool linked_inherit_deform = true,
-                                      int deform_length = 10)
+                                      int deform_length = 10, bool with_clipping = false,
+                                      int clip_end_slot = 2, int deform_slot = 1)
 {
     SkelWriter w;
 
@@ -253,19 +254,40 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     }
 
     // ---- slots ----
-    w.Varint(2);
+    w.Varint(with_clipping ? 4 : 2);
     w.Str("s0");
     w.Varint(0);            // bone = root
     w.ColorWhite();         // color
     w.ColorWhite();         // dark：全 0xff ⇒ **不**开 tint black
     w.Str("quad");
     w.Varint(0);            // blendMode = Normal
-    w.Str("s1");
+    if (with_clipping)
+    {
+        // 裁剪附件所在槽位。**它自己不被裁**：参考实现一命中 clipping 就
+        // clipStart() + continue（SpineMesh.h:153-159）。
+        w.Str("s1");
+        w.Varint(1);
+        w.ColorWhite();
+        w.ColorWhite();
+        w.Str("clip");
+        w.Varint(0);
+    }
+    w.Str(with_clipping ? "s2" : "s1");
     w.Varint(1);            // bone = hip
     w.ColorWhite();
     w.ColorWhite();
     w.Str("mesh");
     w.Varint(0);
+    if (with_clipping)
+    {
+        // 作用域**边界**槽位：end 指向它时它被裁，end 指向 s2 时它不被裁。
+        w.Str("s3");
+        w.Varint(1);
+        w.ColorWhite();
+        w.ColorWhite();
+        w.Str("tail");
+        w.Varint(0);
+    }
 
     // ---- 约束：全 0 ----
     w.Varint(0);            // IK
@@ -273,7 +295,7 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     w.Varint(0);            // path
 
     // ---- default skin ----
-    w.Varint(2);            // skin 里涉及 2 个槽位
+    w.Varint(with_clipping ? 4 : 2);   // skin 里涉及的槽位数
 
     // 槽位 0：region "quad"
     w.Varint(0);            // slotIndex
@@ -292,8 +314,28 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     w.F(32.0f);             // height
     w.ColorWhite();
 
-    // 槽位 1：mesh "mesh"（4 顶点，第 2 个顶点 2 影响 0.6/0.4）
-    w.Varint(1);
+    // 槽位 1：裁剪附件 "clip"（SkeletonBinary.cpp:636-646）
+    if (with_clipping)
+    {
+        w.Varint(1);            // slotIndex = s1
+        w.Varint(1);            // 1 个附件
+        w.Str("clip");
+        w.Str("");              // 附件名留空 ⇒ 取 skin 里的 key
+        w.U8(6);                // AttachmentType_Clipping
+        // ⚠️ 顺序是 **endSlotIndex 在前、vertexCount 在后**（:637-638），与 json 那边
+        // 一个是下标、一个是名字，别互相抄。
+        w.Varint(clip_end_slot);
+        w.Varint(4);            // vertexCount
+        w.Bool(false);          // 非 weighted ⇒ 直接 4×2 个 float（裁剪多边形）
+        w.F(0.0f); w.F(0.0f); w.F(10.0f); w.F(0.0f); w.F(10.0f); w.F(10.0f); w.F(0.0f); w.F(10.0f);
+        if (nonessential)
+        {
+            w.ColorWhite();     // color
+        }
+    }
+
+    // 槽位 1（裁剪夹具里是 2）：mesh "mesh"（4 顶点，第 2 个顶点 2 影响 0.6/0.4）
+    w.Varint(with_clipping ? 2 : 1);
     w.Varint(linked_mesh ? 2 : 1);
     w.Str("mesh");
     w.Str("");
@@ -337,6 +379,25 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
             w.F(64.0f);         // width
             w.F(32.0f);         // height
         }
+    }
+
+    // 槽位 3：region "tail"，path 指向图集里已有的 "quad"（图集只有 quad / mesh 两块）
+    if (with_clipping)
+    {
+        w.Varint(3);            // slotIndex = s3
+        w.Varint(1);            // 1 个附件
+        w.Str("tail");
+        w.Str("");              // 附件名留空 ⇒ 取 skin 里的 key
+        w.U8(0);                // AttachmentType_Region
+        w.Str("quad");          // path ⇒ 图集 region 用 "quad"
+        w.F(0.0f);              // rotation
+        w.F(0.0f);              // x
+        w.F(0.0f);              // y
+        w.F(1.0f);              // scaleX
+        w.F(1.0f);              // scaleY
+        w.F(16.0f);             // width
+        w.F(8.0f);              // height
+        w.ColorWhite();
     }
 
     // ---- 具名 skin ----
@@ -383,7 +444,7 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         {
             w.Varint(0);            // 皮肤下标 = default
             w.Varint(1);            // 1 个槽位
-            w.Varint(1);            // slotIndex = s1
+            w.Varint(deform_slot);  // slotIndex（裁剪夹具里 mesh 在 s2）
             w.Varint(1);            // 1 个附件
             w.Str("mesh");
             w.Varint(1);            // 1 帧
@@ -558,6 +619,45 @@ const char* kSkeletonDeform = R"({
       }
     }
   }
+})";
+
+// 裁剪（clipping）夹具：4 个槽位
+//   s0 = quad（裁剪**之前** ⇒ 不被裁）
+//   s1 = clip（裁剪附件自己 ⇒ **不被裁**，参考实现一命中就 clipStart + continue）
+//   s2 = mesh（作用域内）
+//   s3 = tail（作用域**边界**槽位：end="s2" 时不该被裁，缺 end 时该被裁）
+//
+// %ENDFIELD% 由 BuildClip() 替换：
+//   "\"end\": \"s2\", " → 作用域 (s1, s2]
+//   ""                → 没有 end ⇒ 一路裁到最后一个槽位
+// %ANIMFIELD% 由 BuildClipDeform() 替换成一条命中 default/s2/mesh 的 deform 时间轴
+//   （用来验 kHasDeform 只由 deform 点亮，不由裁剪点亮）。
+const char* kSkeletonClip = R"({
+  "skeleton": { "spine": "3.8.99" },
+  "bones": [ { "name": "root" }, { "name": "hip", "parent": "root" } ],
+  "slots": [
+    { "name": "s0", "bone": "root", "attachment": "quad" },
+    { "name": "s1", "bone": "hip", "attachment": "clip" },
+    { "name": "s2", "bone": "hip", "attachment": "mesh" },
+    { "name": "s3", "bone": "hip", "attachment": "tail" }
+  ],
+  "skins": {
+    "default": {
+      "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
+      "s1": { "clip": { "type": "clipping", %ENDFIELD%"vertexCount": 4,
+                        "vertices": [ 0,0, 10,0, 10,10, 0,10 ] } },
+      "s2": { "mesh": {
+        "type": "mesh",
+        "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
+        "triangles": [ 0,1,2, 0,2,3 ],
+        "vertices": [ 1, 0,-10,-5,1,
+                      2, 1, 20,10,0.6, 0,5,7,0.4,
+                      1, 1, 3,4,1,
+                      1, 0, 8,2,1 ]
+      } },
+      "s3": { "tail": { "x": 0, "y": 0, "width": 16, "height": 8, "rotation": 0, "path": "quad" } }
+    }
+  }%ANIMFIELD%
 })";
 
 }   // namespace
@@ -1683,6 +1783,261 @@ int main()
             SpineSourceSkeleton s;
             SpineImportResult r = ParseSpineSkeletonBinary(bad.data(), bad.size(), &atlas, s);
             Check(!r.ok, "deform: skel 皮肤下标越界 ⇒ 报错（参考实现是越界读）");
+            std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
+    }
+
+    // ---- 13. 裁剪作用域（规格 §7.2）----
+    // 裁剪要在运行时用 CPU 重写顶点 / 三角形 / UV（SkeletonClipping.h:47-54），
+    // 三角形个数都会变 ⇒ 静态 VB 里那份画不出来 ⇒ 作用域内的绘制项走 kFallback。
+    // 关键是**作用域的边界**，参考实现有三条不对称规则，各由一条用例钉住：
+    //   s0 = 裁剪之前      ⇒ 永不裁
+    //   s1 = 裁剪附件自己  ⇒ 永不裁（clipStart 后立刻 continue）
+    //   s2 = 作用域内
+    //   s3 = 边界槽位      ⇒ end 指向它才裁
+    {
+        auto BuildClip = [](const std::string& end_field, bool with_deform) -> std::string
+        {
+            std::string s(kSkeletonClip);
+            size_t at = s.find("%ENDFIELD%");
+            if (at == std::string::npos)
+            {
+                return std::string();
+            }
+            s.replace(at, std::string("%ENDFIELD%").size(), end_field);
+            at = s.find("%ANIMFIELD%");
+            if (at == std::string::npos)
+            {
+                return std::string();
+            }
+            // deform 时间轴命中 default/s2/mesh：与裁剪**同一个**绘制项，用来验
+            // kHasDeform 只由 deform 点亮（裁剪不点亮它）。
+            s.replace(at, std::string("%ANIMFIELD%").size(),
+                      with_deform ? R"(, "animations": { "walk": { "deform": { "default": { "s2": {
+                "mesh": [ { "time": 0, "offset": 0,
+                            "vertices": [ 0,0, 0,0, 0,0, 0,0, 0,0 ] } ] } } } } })" : "");
+            return s;
+        };
+
+        // 按槽位取绘制项的处置；-1 = 该槽位没有绘制项（裁剪附件就是这种情况）
+        auto KindAtSlot = [](const SpineGpuAsset& a, uint16_t slot) -> int
+        {
+            for (const SpineDrawItem& it : a.draw_items)
+            {
+                if (it.slot_index == slot)
+                {
+                    return it.kind == SpineDrawItemKind::kFallback ? 1 : 0;
+                }
+            }
+            return -1;
+        };
+
+        // 基线：没有裁剪附件的骨架
+        {
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(kSkeleton, std::string(kSkeleton).size(), &atlas, s);
+            Check(r.ok, "clip: 基线骨架解析成功");
+            if (r.ok)
+            {
+                SpineGpuAsset a;
+                Check(BakeSpineGpuAsset(s, a).ok, "clip: 基线 bake 成功");
+                Check((a.header.flags & SpineGpuFlags::kHasClipping) == 0, "clip: 基线不置 kHasClipping");
+                for (const SpineDrawItem& it : a.draw_items)
+                {
+                    Check(it.kind == SpineDrawItemKind::kStatic, "clip: 基线每个绘制项都是 kStatic");
+                }
+            }
+        }
+
+        // ---- 作用域矩阵：json × .skel × nonessential × 四种 end ----
+        //   end="s2"     ⇒ (s1, s2]        ⇒ s2 裁、s3 不裁
+        //   end="s1"     ⇒ 结束槽位 = 自己 ⇒ clipEnd(slot) 永不成立 ⇒ 裁到最后一个槽位
+        //   end="s0"     ⇒ 结束槽位在前面 ⇒ 同上
+        //   （缺 end      ⇒ json 专属：_endSlot 是 NULL ⇒ 裁到最后一个槽位）
+        struct ClipCase
+        {
+            const char* name;
+            const char* end_field;
+            int clip_end_slot;   // .skel 用的下标；< 0 表示该用例没有 .skel 对应物
+            int want_s2;
+            int want_s3;
+        };
+        const ClipCase kCases[] = {
+            {"end=s2", "\"end\": \"s2\", ", 2, 1, 0},
+            {"end=s1（自己）", "\"end\": \"s1\", ", 1, 1, 1},
+            {"end=s0（在前面）", "\"end\": \"s0\", ", 0, 1, 1},
+        };
+
+        for (const ClipCase& c : kCases)
+        {
+            for (int deform_i = 0; deform_i < 2; ++deform_i)
+            {
+                const bool with_deform = deform_i != 0;
+                for (int ne = 0; ne < 2; ++ne)
+                {
+                    const bool nonessential = ne != 0;
+                    g_prefix = std::string("[clip/") + c.name + (with_deform ? "/deform" : "") +
+                               (nonessential ? "/nonessential" : "") + "] ";
+
+                    const std::string json = BuildClip(c.end_field, with_deform);
+                    Check(!json.empty(), "clip: 夹具替换成功");
+                    if (json.empty())
+                    {
+                        g_prefix.clear();
+                        continue;
+                    }
+
+                    SpineSourceSkeleton cj;
+                    SpineImportResult rj = ParseSpineSkeletonJson(json.data(), json.size(), &atlas, cj);
+                    Check(rj.ok, "clip: json 解析成功");
+                    if (!rj.ok)
+                    {
+                        std::printf("  error: %s\n", rj.error.c_str());
+                        g_prefix.clear();
+                        continue;
+                    }
+                    Check(cj.has_clipping, "clip: json 认出了裁剪附件");
+                    CheckEq(static_cast<long long>(cj.clips.size()), 1, "clip: json 只解析出一条裁剪作用域");
+                    Check(cj.clips.size() == 1 && cj.clips[0].slot_index == 1, "clip: 作用域起点槽位是 s1");
+
+                    SpineGpuAsset ja;
+                    SpineImportResult rjb = BakeSpineGpuAsset(cj, ja);
+                    Check(rjb.ok, "clip: json bake 成功");
+                    if (!rjb.ok)
+                    {
+                        std::printf("  error: %s\n", rjb.error.c_str());
+                        g_prefix.clear();
+                        continue;
+                    }
+
+                    // s1 是裁剪附件 ⇒ **没有**绘制项
+                    CheckEq(static_cast<long long>(ja.draw_items.size()), 3, "clip: 3 个绘制项（裁剪附件不画）");
+                    CheckEq(static_cast<long long>(KindAtSlot(ja, 1)), -1, "clip: s1（裁剪附件自己）没有绘制项");
+                    CheckEq(static_cast<long long>(KindAtSlot(ja, 0)), 0, "clip: s0（裁剪之前）仍是 kStatic");
+                    CheckEq(static_cast<long long>(KindAtSlot(ja, 2)), c.want_s2,
+                            c.want_s2 ? "clip: s2 在作用域内 ⇒ kFallback" : "clip: s2 不在作用域内 ⇒ kStatic");
+                    CheckEq(static_cast<long long>(KindAtSlot(ja, 3)), c.want_s3,
+                            c.want_s3 ? "clip: s3 在作用域内 ⇒ kFallback" : "clip: s3 不在作用域内 ⇒ kStatic");
+                    Check((ja.header.flags & SpineGpuFlags::kHasClipping) != 0, "clip: 置上了 kHasClipping");
+                    // 裁剪**不**点亮 kHasDeform —— 那个位的语义是"有逐帧变动的顶点"，
+                    // 运行时据此决定要不要每帧重算动态 VB，与裁剪不是一回事。
+                    Check((ja.header.flags & SpineGpuFlags::kHasDeform) == (with_deform ? SpineGpuFlags::kHasDeform : 0u),
+                          with_deform ? "clip: 有 deform ⇒ kHasDeform 置上"
+                                      : "clip: 只有裁剪 ⇒ **不**置 kHasDeform");
+
+                    // ---- 同一副骨架走 .skel：必须产出**逐字节相同**的容器 ----
+                    const std::vector<uint8_t> skel =
+                        BuildSkelFixture(false, false, "3.8.99", nonessential, "mesh", false, with_deform, true,
+                                         10, true, c.clip_end_slot, 2);
+                    SpineSourceSkeleton cs;
+                    SpineImportResult rs = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, cs);
+                    Check(rs.ok, "clip: skel 解析成功");
+                    if (!rs.ok)
+                    {
+                        std::printf("  error: %s\n", rs.error.c_str());
+                        g_prefix.clear();
+                        continue;
+                    }
+                    Check(cs.clips.size() == 1 && cs.clips[0].slot_index == 1 &&
+                              cs.clips[0].end_slot_index == c.clip_end_slot,
+                          "clip: skel 解析出的 endSlot 与夹具一致");
+
+                    SpineGpuAsset sa;
+                    Check(BakeSpineGpuAsset(cs, sa).ok, "clip: skel bake 成功");
+                    Check(sa.draw_items.size() == ja.draw_items.size() &&
+                              std::memcmp(sa.draw_items.data(), ja.draw_items.data(),
+                                          sa.draw_items.size() * sizeof(SpineDrawItem)) == 0,
+                          "clip: skel↔json 绘制项逐字节相同（含 kind）");
+                    Check(sa.header.flags == ja.header.flags, "clip: skel↔json flags 相同");
+
+                    std::vector<uint8_t> bytes_j;
+                    std::vector<uint8_t> bytes_s;
+                    Check(WriteSpineGpuContainer(ja, bytes_j).ok && WriteSpineGpuContainer(sa, bytes_s).ok,
+                          "clip: 两个容器都序列化成功");
+                    Check(bytes_j == bytes_s, "clip: skel↔json 容器**逐字节相同**");
+
+                    g_prefix.clear();
+                }
+            }
+        }
+
+        // ---- json 专属：缺 "end" ⇒ _endSlot 是 NULL ⇒ 裁到最后一个槽位 ----
+        // 参考实现拿到 NULL 也不会报错（SkeletonJson.cpp:631-635 不检查 findSlot 的
+        // 返回值），只是作用域悄悄变成"到末尾"。这里照样不报错，但**必须**把它和
+        // "end 指向 s3" 区分开 —— 所以 s3 要真的被裁。
+        {
+            g_prefix = "[clip/缺 end] ";
+            const std::string json = BuildClip("", false);
+            Check(!json.empty(), "clip: 缺 end 的夹具替换成功");
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(json.data(), json.size(), &atlas, s);
+            Check(r.ok, "clip: 缺 end 也能解析（参考实现也是 NULL，不是错误）");
+            if (r.ok)
+            {
+                Check(s.clips.size() == 1 && s.clips[0].end_slot_index < 0,
+                      "clip: 缺 end ⇒ end_slot_index 记为负数（表示裁到最后一个槽位）");
+                SpineGpuAsset a;
+                Check(BakeSpineGpuAsset(s, a).ok, "clip: 缺 end 时 bake 成功");
+                int k2 = -1;
+                int k3 = -1;
+                for (const SpineDrawItem& it : a.draw_items)
+                {
+                    if (it.slot_index == 2)
+                    {
+                        k2 = it.kind == SpineDrawItemKind::kFallback ? 1 : 0;
+                    }
+                    if (it.slot_index == 3)
+                    {
+                        k3 = it.kind == SpineDrawItemKind::kFallback ? 1 : 0;
+                    }
+                }
+                CheckEq(static_cast<long long>(k2), 1, "clip: 缺 end ⇒ s2 被裁");
+                CheckEq(static_cast<long long>(k3), 1, "clip: 缺 end ⇒ 一路裁到最后一个槽位 s3");
+            }
+            g_prefix.clear();
+        }
+    }
+
+    // ---- 13b. 裁剪的报错路径 ----
+    {
+        // ① json 的 "end" 槽位名不存在：参考实现 findSlot 返回 NULL 后
+        //   **不检查**（SkeletonJson.cpp:631-635）⇒ 作用域从"到某槽"变成"到末尾"，
+        //   画面差异极大且没有报错。这里必须报错。
+        {
+            const char* bad = R"({
+              "skeleton": { "spine": "3.8.99" },
+              "bones": [ { "name": "root" } ],
+              "slots": [ { "name": "s0", "bone": "root" }, { "name": "s1", "bone": "root" } ],
+              "skins": { "default": {
+                "s0": { "quad": { "width": 64, "height": 32 } },
+                "s1": { "clip": { "type": "clipping", "end": "no-such-slot", "vertexCount": 4,
+                                  "vertices": [ 0,0, 10,0, 10,10, 0,10 ] } }
+              } }
+            })";
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(bad, std::string(bad).size(), &atlas, s);
+            Check(!r.ok, "clip: json 的 end 槽位名不存在 ⇒ 报错（参考实现在这里静默当成 NULL）");
+            std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
+        // ② .skel 的 endSlot 下标越界：与参考实现同一条检查
+        //   （SkeletonBinary.cpp:641-645 "parse clip attachment failed!"）
+        {
+            const std::vector<uint8_t> bad = BuildSkelFixture(false, false, "3.8.99", false, "mesh", false,
+                                                              false, true, 10, true, 9, 2);
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonBinary(bad.data(), bad.size(), &atlas, s);
+            Check(!r.ok, "clip: skel 的 endSlot 下标越界 ⇒ 报错");
+            std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
+        // ③ .skel 的 endSlot 是负数
+        //   （参考实现是 `int >= size_t` 的比较，负数会被转成巨大的无符号数 ⇒ 也报错，
+        //    但那是**碰巧**对的；这里显式判 < 0，不依赖整型提升的方向。）
+        {
+            const std::vector<uint8_t> bad = BuildSkelFixture(false, false, "3.8.99", false, "mesh", false,
+                                                              false, true, 10, true, -1, 2);
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonBinary(bad.data(), bad.size(), &atlas, s);
+            Check(!r.ok, "clip: skel 的 endSlot 为负 ⇒ 报错");
             std::printf("  (预期报错) %s\n", r.error.c_str());
         }
     }

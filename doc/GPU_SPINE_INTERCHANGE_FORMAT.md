@@ -72,7 +72,7 @@ CPU 蒙皮下**每个实例必须持有自己的一份顶点缓冲**，因为各
 | `_vertices` 每影响三元组步长 | 3 float `(vx, vy, weight)` | `VertexAttachment.cpp:97-112` |
 | deform 长度 | weighted **每影响 2 float**、rigid 每顶点 2 float（`deformLength = verts.size()/3*2`） | `SkeletonJson.cpp:1071`、`SkeletonBinary.cpp:976` |
 | 混合模式枚举 | `Normal=0 / Additive / Multiply / Screen`，共 4 种 | `BlendMode.h:35-38` |
-| 裁剪 | **只有 CPU 实现** | 见下 |
+| 裁剪 | **只有 CPU 实现** | §1.1 下文、§7.2 |
 
 **顺带解决一项待拍板**：3.8 里裁剪**只有 CPU 实现** —— `SkeletonClipping::clipTriangles()` 会
 **重写顶点 / 三角形 / UV**（`SkeletonClipping.h:47-49` 的 `clipTriangles`，`:52-54` 的 `getClippedVertices/Triangles/UVs`），
@@ -349,7 +349,7 @@ float2 SkinVertex(uint vertexIndex, uint drawItemIndex)   // UV 不参与，见 
 | **Region** | 烘焙 4 顶点 | `RegionAttachment::computeWorldVertices` 用 `_vertexOffset[8]` 的 br/bl/ul/ur 四点，由**槽位骨骼**单一矩阵变换 ⇒ 天然是 rigid。UV 由图集页（可能带 90° 旋转）算好，写进独立 UV 通道（§3.2）。 |
 | **Mesh（刚性）** | 烘焙，rigid | `_bones` 为空，整块由槽位骨骼变换。**8 B/顶点**。 |
 | **Mesh（蒙皮）** | 烘焙，weighted4 | **48 B/顶点**（不是 44，见 §3.1 的对齐说明）。 |
-| **Clipping** | `_ClipData` 保留 | `SkeletonClipping::clipTriangles()` 重写顶点/三角形/UV（`SkeletonClipping.h:47-54`）⇒ **产生新三角形，VS 做不了** ⇒ **CPU fallback**：该项走 `kFallback`，顶点由 CPU 算好上传每帧动态 VB。这是 3.8 的唯一选项，不是折中（§1.1）。 |
+| **Clipping** | `_ClipData` 保留 | `SkeletonClipping::clipTriangles()` 重写顶点/三角形/UV（`SkeletonClipping.h:47-54`）⇒ **产生新三角形，VS 做不了** ⇒ **CPU fallback**：该项走 `kFallback`，顶点由 CPU 算好上传每帧动态 VB。这是 3.8 的唯一选项，不是折中（§1.1）。**回退的粒度是槽位**（不是整个资产），作用域见 §7.2。 |
 | **FFD / deform** | 同左 | 顶点每帧都变 ⇒ 静态 VB 里那份**绑定姿势**不算数 ⇒ 该项走 `kFallback`。见 §7.1。 |
 
 Region 的 4 个顶点**烘焙进静态 VB**（而不是用共享单位四边形 + 每实例 offset/uv），
@@ -406,6 +406,52 @@ json 里这个开关的字段名是 **`"deform"`**（不是 `"inheritDeform"`）
 | deform 指向 **region** | **无检查的** `static_cast<VertexAttachment*>`（`:1067` / `:972`）；而 3.8 的 `RegionAttachment` 继承自 `Attachment`、**不是** `VertexAttachment`（`RegionAttachment.h:46`）⇒ **未定义行为**。运行时有 RTTI 检查，会**静默不生效**（`DeformTimeline.cpp:72-74`） |
 | 帧的 `offset + 顶点数` 超过 deform 长度 | `deformed[v] = ...` 无边界检查 ⇒ **越界写**（`:1092-1099`） |
 
+### 7.2 裁剪作用域（per-slot）
+
+裁剪也是"画不进静态 VB"（`clipTriangles()` 会重写顶点 / **三角形** / UV，
+三角形个数都变了，`SkeletonClipping.h:47-54`），但它的作用范围是**一批槽位**，
+不是某一个附件 ⇒ 导入期必须先把作用域算出来，再把作用域内的绘制项标成 `kFallback`。
+
+作用域是 **(clipSlot, endSlot]**，两头都不对称：
+
+| 位置 | 是否被裁 | 出处 |
+|---|---|---|
+| 裁剪附件**自己**那个槽位 | **不裁**（它压根不画） | `SpineMesh.h:153-159`：命中 clipping ⇒ `clipStart()` 然后 `continue` |
+| 它**之后**的槽位 | 裁 | `:189-197` `isClipping()` 为真就走 `clipTriangles()` |
+| **endSlot** | **含在内** | `:257` 槽位收尾调 `clipEnd(slot)`，而它只在 `_clipAttachment->_endSlot == &slot._data` 时收尾（`SkeletonClipping.cpp:72-76`） |
+| endSlot 之后 | 不裁 | 同上 |
+
+三条容易漏、漏了就**静默**错的规则：
+
+1. **裁剪附件那个槽位被 `continue` 掉了**，连槽位收尾的 `clipEnd(*slot)` 也一起跳过了
+   （`:159` 的 continue 在 `:257` 之前）。⇒ **end 写成"自己或更靠前的槽位"时，
+   `active_end == s` 永远不成立**，这次裁剪只能靠整条绘制指令末尾那次无条件
+   `clipEnd()` 收尾（`:259`）⇒ **一路裁到最后一个槽位**，且不报任何错。
+2. **嵌套裁剪被忽略**：已经有一个裁剪在跑时 `clipStart()` 直接返回 0
+   （`SkeletonClipping.cpp:49-51`）⇒ 后面那条裁剪**永远开不起来**，
+   哪怕它的 endSlot 更靠后，也不会在前者结束后补上。
+   ⇒ 作用域**不能**用"存在某条 clip 覆盖这个槽"的宽松判定，必须把槽位序列走一遍。
+3. **作用域是逐皮肤的**：裁剪附件本身是某皮肤下某槽位的附件，3.8 同时只有一个皮肤生效
+   （容器里 `skin_id` 是绘制项的键之一）⇒ 换到没有它的皮肤时作用域不存在。
+
+#### 导入期从两种输入里取作用域（两者**不对称**）
+
+| 输入 | 结束槽位的表示 | 参考实现 | 本导入器 |
+|---|---|---|---|
+| json | 槽位**名**（`"end"`） | `findSlot()` 的返回值**不检查**（`SkeletonJson.cpp:631-635`）⇒ 槽位名写错 / 缺失时 `_endSlot` 静默变 NULL ⇒ 作用域从"到某槽"变成"到末尾" | **报错**（报出附件名 + 槽位名）；**缺 `"end"` 则是合法的** ⇒ 记为"裁到最后一个槽位" |
+| `.skel` | 槽位**下标**（varint，**在 vertexCount 之前**） | 有显式边界检查，越界报 "parse clip attachment failed!"（`SkeletonBinary.cpp:641-645`） | 同一条检查，`< 0` 也显式判（不依赖 `int >= size_t` 的整型提升方向） |
+
+#### 容器里存什么
+
+**作用域本身不落盘。** 它已经完整表达成"作用域内绘制项的 `kind = kFallback`"，
+运行时不需要再算一遍；裁剪多边形（chunk 9 `clip_data`）与 deform 数据一样
+**目前也不烘焙** —— `kFallback` 的语义就是"这项别用静态 VB，从 spine 源数据走 CPU 生成"。
+
+⚠️ **`kHasDeform` 只由 deform 点亮，不由裁剪点亮。** 两个位都表示"有绘制项走了
+CPU fallback"，但语义不同：`kHasDeform` = 顶点**逐帧**变 ⇒ 动态 VB 每帧要重算；
+裁剪的动态 VB 只在裁剪多边形动的时候才需要重算。合成一个位，运行时会为纯裁剪的资产
+每帧重算一份根本没变的顶点。
+
 ---
 
 ## 8. 混合模式与预乘 Alpha
@@ -431,7 +477,7 @@ Spine 图集默认是 **PMA（预乘 Alpha）**，对应 Unity 侧 `Blend One On
 ```
 Header (64 B)
   0x00  magic            u32   'ZSPG'  (0x5A535047)
-  0x04  version          u32   本规格版本，当前 4
+  0x04  version          u32   本规格版本，当前 5
                                v2 = 加了 skin 维度（§9.1）
                                v3 = UV 拆成独立通道 + chunk id 重排（§3.2、§14.2）
                                v4 = deform 参与烘焙（§7.1）—— 布局没变，
@@ -550,6 +596,14 @@ Chunks:
    是 `kFallback`，同一个骨架里的其它项必须仍是 `kStatic`；开了 `inheritDeform` 的
    linked mesh 跟着回退，关了的**不**跟着回退（§7.1）。
    只断言"deform 存在 ⇒ 有 fallback"不够 —— 那会把"整个资产回退"也放过。
+10. **裁剪作用域的**两头**都要钉住**：4 槽位夹具（`s0` 在裁剪之前、`s1` 是裁剪附件自己、
+   `s2` 在作用域内、`s3` 是边界槽位）里 ——
+   * `end = s2` ⇒ `s2` 回退、**`s3` 不回退**（结束槽位是**含**在内的）
+   * `end = s1`（自己）/ `end = s0`（更靠前）⇒ `s2`、`s3` **都**回退（收尾检查被 `continue` 跳过了）
+   * 缺 `"end"` ⇒ 一路裁到最后一个槽位
+   * 裁剪附件自己那个槽位**没有**绘制项
+   且 **只有裁剪时不置 `kHasDeform`**（§7.2）。
+   只断言"有裁剪 ⇒ 有 fallback"不够 —— 那既放过"整个资产回退"，也放过"结束槽位开/闭写反"。
 
 ---
 
@@ -561,6 +615,7 @@ Chunks:
 |---|---|---|---|
 | 1 | Spine 版本 | **3.8**，升 4.x 单独排期（理由：可归因，不是"3.8 更好"） | §1.1 |
 | 3 | Clip 策略 | **从"策略"降级为"约束"**：3.8 只有 CPU 实现 ⇒ 带裁剪的槽位走 CPU 动态 VB，同帧可混跑 | §1.1、§7 |
+| 9 | 裁剪的回退粒度 | **逐槽位**（不是整个资产）：作用域是 `(clipSlot, endSlot]`，逐皮肤模拟参考实现的状态机得出；**作用域不落盘**，只表达成作用域内绘制项的 `kind = kFallback`。`kHasDeform` 只由 deform 点亮，不由裁剪点亮 | §7.2 |
 | 6 | root 变换存在哪？ | **方案 A：实例项加 `root_index`（16 B → 20 B）**，root 存每帧 root 表，24 B/项。选它而不是 B/C 是因为它不改 `bone_base` 的语义，代价只是每绘制项 4 B | §5.2、§5.3 |
 | 2 | `MAX_INFLUENCES = 4` 够吗？ | **定为 4**。导入器遇 `n > 4` **报错并报出附件名**，不静默截断 | §3.1 |
 | 4 | 骨骼通道 structured 还是 UBO？ | **默认 structured / SSBO，24 B 紧凑**；仅当目标后端只有 UBO 时才用 32 B std140 变体（记录在 `bone_stride`） | §5.1 |
@@ -598,6 +653,15 @@ v3 已解决，且**当初列的两条路都做了**（缺一不可，见 §13.1
 再 `uv_buffer[drawItem.uv_offset + vertexIndex]`）。这条**不能省** —— 它就是"能共用"的前提。
 
 （历史：#1 版本、#2 影响数、#3 Clip、#4 骨骼通道、#5 root 是否 per-instance、#6 root 存放方式。）
+
+### 14.3 裁剪还有两处没做（不是 bug，是尚未需要）
+
+1. **裁剪多边形本身不烘焙**（chunk 9 `clip_data` 仍是空的）。`kFallback` 的语义是
+   "这项别用静态 VB"，运行时走 CPU 时会从 **spine 源数据**取多边形 —— deform 数据同理，
+   所以两端的处置是一致的。什么时候需要：runtime 想**只**靠容器渲染、不再持有 spine 源数据时。
+2. **嵌套裁剪只有代码、没有夹具**。规则本身是明确的（`clipStart()` 在已有裁剪时返回 0，
+   `SkeletonClipping.cpp:49-51`），但测试夹具里没有"两个裁剪附件叠在一起"的骨架 ——
+   要造它必须让第二个裁剪附件占掉一个槽位（于是那个槽位没有几何），代价是夹具要再加一个槽位。
 
 ---
 
@@ -666,6 +730,19 @@ v3 已解决，且**当初列的两条路都做了**（缺一不可，见 §13.1
 | 附件找不到时参考实现**倒是**报错："Attachment not found" | `SkeletonJson.cpp:1061-1065`、`SkeletonBinary.cpp:966-970` |
 | json 里 inheritDeform 的字段名是 **`"deform"`**（不是 "inheritDeform"），默认 1 | `SkeletonJson.cpp:572` |
 | 二进制里 inheritDeform 是紧跟 parent 的一个 bool | `SkeletonBinary.cpp:594` |
+
+### 裁剪作用域的出处（容器 v5）
+
+| 断言 | 出处 |
+|---|---|
+| `ClippingAttachment : VertexAttachment`，只有一个私有的 `SlotData* _endSlot`，构造时置 NULL | `ClippingAttachment.h:38-53`、`ClippingAttachment.cpp:42` |
+| json：名字取自 `"end"`，`findSlot()` 的返回值**不检查** ⇒ 槽位名写错 / 缺失时 `_endSlot` 静默变 NULL | `SkeletonJson.cpp:631-635` |
+| 二进制：**先 `endSlotIndex`（varint）再 `vertexCount`**；越界报 "parse clip attachment failed!" | `SkeletonBinary.cpp:637-646` |
+| `clipEnd(Slot&)` 只在 `_clipAttachment->_endSlot == &slot._data` 时收尾 | `SkeletonClipping.cpp:72-76` |
+| 已经有一个裁剪在跑时 `clipStart()` 直接返回 0 ⇒ **嵌套裁剪被忽略** | `SkeletonClipping.cpp:49-51` |
+| 走到裁剪附件所在槽位 ⇒ `clipStart()` 后**立刻 continue** ⇒ 该槽位不画，且**跳过**了收尾的 `clipEnd(*slot)` | `MeshGeneration/SpineMesh.h:153-159`（对比 `:257`） |
+| 槽位在裁剪中 ⇒ `clipTriangles()` 重写顶点 / 三角形 / UV | 同文件 `:189-197` |
+| 整条绘制指令末尾还有一次**无条件**的 `clipEnd()` | 同文件 `:259` |
 
 ### skin 的出处（容器 v2）
 

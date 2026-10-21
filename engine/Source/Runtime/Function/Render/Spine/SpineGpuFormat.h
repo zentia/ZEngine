@@ -45,7 +45,12 @@ namespace SpineGpuConstants
     //   * 但语义变了：被 deform 时间轴命中的附件，绘制项 kind 从 kStatic 变成 kFallback
     //   ⇒ v3 的容器会把带 FFD 的附件标成 kStatic，画出来是**静默错的**（顶点不动）
     //   所以照样是**不兼容**改动：旧容器必须被明确拒绝，不做静默兼容（规格 §11）。
-    constexpr uint32_t kFormatVersion = 4;
+    // 版本 5（2026-10-21）：**裁剪作用域参与烘焙** ——
+    //   * 布局还是没变（作用域不落盘：它已经表达成"作用域内绘制项的 kind = kFallback"）
+    //   * 但语义变了：落在裁剪作用域里的绘制项，kind 从 kStatic 变成 kFallback
+    //   ⇒ v4 的容器会把这些项标成 kStatic，画出来是**不裁剪**的（静默错），
+    //   所以同样是不兼容改动（规格 §7.2、§11）。
+    constexpr uint32_t kFormatVersion = 5;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -167,7 +172,7 @@ enum SpineGpuChunkId : uint32_t
 struct SpineGpuHeader
 {
     uint32_t magic;             // 'ZSPG'
-    uint32_t version;           // 本规格版本，当前 3（见 kFormatVersion 的版本史）
+    uint32_t version;           // 本规格版本，当前 5（见 kFormatVersion 的版本史）
     uint32_t spine_runtime;     // 产生它的 spine-cpp 版本（3.8.xx → 30800）
     uint32_t flags;             // SpineGpuFlags
     uint32_t bone_count;

@@ -384,6 +384,21 @@ int GetInt(const JsonValue& v, const char* key, int fallback)
     return m->IsNumber() ? static_cast<int>(m->GetFloat()) : fallback;
 }
 
+// 槽位名 → 下标。参考实现里到处是 `skeletonData->findSlot(name)`，而它返回 NULL 后
+// 调用方常常不检查（deform 的 :1051 空指针解引用、clip 的 :634 静默变 NULL）。
+// 这里统一走这个函数，找不到就**报错**，不让作用域/目标悄悄变。
+int FindSlotIndex(const std::vector<SpineSourceSlot>& slots, const std::string& name)
+{
+    for (size_t i = 0; i < slots.size(); ++i)
+    {
+        if (slots[i].name == name)
+        {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
 // region 附件的 4 个顶点：照抄 RegionAttachment::updateOffset()
 //   （RegionAttachment.cpp:77-103），顶点顺序 BL, UL, UR, BR（BLX=0,ULX=2,URX=4,BRX=6）。
 // 参数里的 region_* 全部来自图集 region。
@@ -1040,9 +1055,31 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
 
         if (type == "clipping")
         {
+            // 字段顺序照抄参考实现（SkeletonJson.cpp:625-640）："end" 槽位名 →
+            // vertexCount → vertices。
+            //
+            // ⚠️ `Json::getString(map, "end", 0)` 拿到名字后 `findSlot()` 的返回值
+            // **没有检查**（:631-635）⇒ 槽位名写错 / 槽位不存在时 `_endSlot` 静默变 NULL，
+            // 作用域从"裁到某个槽"变成"裁到最后一个槽"。画面差别极大却没有任何报错
+            // （二进制那边反而是显式报错的，见下面 ParseSkelAttachment）⇒ 这里必须报错。
+            SpineSourceClip clip;
+            clip.skin_index = p.skin_index;
+            clip.slot_index = p.slot_index;
+            const std::string end_name = GetString(a, "end", "");
+            if (!end_name.empty())
+            {
+                const int end_index = FindSlotIndex(out.slots, end_name);
+                if (end_index < 0)
+                {
+                    return Fail("json: 裁剪附件 '" + p.name + "'（槽位 '" +
+                                out.slots[static_cast<size_t>(p.slot_index)].name + "'）的 end 槽位 '" +
+                                end_name + "' 不存在（参考实现在这里静默当成 NULL ⇒ 裁剪一路延伸到最后一个槽位）");
+                }
+                clip.end_slot_index = end_index;
+            }
+            // 没写 "end"（或写了空串）⇒ end_slot_index 保持 -1 ⇒ 裁到最后一个槽位。
+            out.clips.push_back(clip);
             out.has_clipping = true;
-            // 裁剪附件本身不产生几何；受它影响的槽位由**运行时**按 clip 作用域决定，
-            // 导入期只能置 kHasClipping（作用域是运行时概念，这里猜不得）。
             continue;
         }
 
@@ -2248,11 +2285,22 @@ private:
             }
             case kAttClipping:
             {
+                // 顺序照抄参考实现（SkeletonBinary.cpp:636-646）：先 endSlotIndex
+                // 再 vertexCount。⚠️ json 那边是"名字"，这边是"下标"。
                 int32_t end_slot = 0;
                 int32_t vertex_count = 0;
                 if (!r_.Varint(true, end_slot) || !r_.Varint(true, vertex_count))
                 {
                     return false;
+                }
+                // 与参考实现**同一条**边界检查（:641-645 "parse clip attachment failed!"）。
+                // 它是唯一一处对裁剪作用域做校验的地方 —— 越界就意味着作用域算不出来，
+                // 不是"可选信息"，必须报错而不是当成"裁到末尾"。
+                if (end_slot < 0 || static_cast<size_t>(end_slot) >= out_.slots.size())
+                {
+                    return Fail("裁剪附件 '" + name + "' 的 endSlot 下标 " + std::to_string(end_slot) +
+                                " 越界（槽位数 " + std::to_string(out_.slots.size()) +
+                                "）；参考实现在这里报 parse clip attachment failed!");
                 }
                 if (!ReadVertices(vertex_count, nullptr))
                 {
@@ -2262,7 +2310,13 @@ private:
                 {
                     return false;
                 }
-                // 与 json 版一致：裁剪附件本身不产生几何，只置 kHasClipping。
+                // 裁剪附件本身不产生几何 ⇒ 不进 attachments（也就没有绘制项）。
+                // 它留下的是**作用域**，Bake 拿它把作用域内的绘制项标成 kFallback。
+                SpineSourceClip clip;
+                clip.skin_index = current_skin_;
+                clip.slot_index = slot_index;
+                clip.end_slot_index = end_slot;
+                out_.clips.push_back(clip);
                 out_.has_clipping = true;
                 return true;
             }
@@ -3162,6 +3216,77 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     ExactBlobPool weighted_pool(SpineGpuConstants::kWeightedVertexStride);
     ExactBlobPool uv_pool(SpineGpuConstants::kUvStride);
 
+    // ---- 裁剪作用域：逐皮肤**模拟**参考实现的状态机 ----
+    // 不能用"存在某条 clip 覆盖这个槽"的宽松判定，因为参考实现有三条不对称的规则，
+    // 少一条就会把不该回退的项也回退（或者反过来）：
+    //   · 走到裁剪附件所在槽位 ⇒ `clipStart()` 然后 `continue`（MeshGeneration/SpineMesh.h:153-159）
+    //     ⇒ **该槽位自己不被裁**，而且它也不会调 `clipEnd(slot)`。
+    //   · 已经有一个裁剪在跑时 `clipStart()` 直接返回 0（SkeletonClipping.cpp:49-51）
+    //     ⇒ **嵌套裁剪被忽略**：后面那条 clip 永远等不到它"开始"的机会，
+    //     哪怕它的 endSlot 更靠后，也不会在前者结束后补上。
+    //   · 槽位收尾调 `clipEnd(slot)`，只在 `slot == endSlot` 时收尾（:72-76）。
+    // ⇒ 只有把槽位序列从头走一遍，才能知道每个槽位当时"是不是正在被裁"。
+    //
+    // 作用域是**逐皮肤**的：裁剪附件是某个皮肤下某槽位的附件，3.8 同时只有一个皮肤
+    // 生效，换到没有它的皮肤时作用域就不存在（容器里 skin_id 是绘制项的键之一）。
+    const uint32_t skin_count = static_cast<uint32_t>(src.skins.size());
+    // clip_end[skin][slot]：该皮肤下该槽位**挂着**裁剪附件时的 endSlot；kNoClip = 没有。
+    // 值是 -1 时表示"没有结束槽位"（json 缺 "end"）⇒ 裁到最后一个槽位。
+    constexpr int kNoClip = -2;
+    std::vector<std::vector<int>> clip_end(static_cast<size_t>(skin_count),
+                                           std::vector<int>(static_cast<size_t>(slot_count), kNoClip));
+    for (const SpineSourceClip& c : src.clips)
+    {
+        if (c.skin_index < 0 || c.slot_index < 0 ||
+            static_cast<size_t>(c.skin_index) >= skin_count ||
+            static_cast<size_t>(c.slot_index) >= slot_count)
+        {
+            return Fail("bake: 裁剪附件的下标越界（skin " + std::to_string(c.skin_index) + " / slot " +
+                        std::to_string(c.slot_index) + "）—— 解析路径没把它归到已有的皮肤 / 槽位");
+        }
+        clip_end[static_cast<size_t>(c.skin_index)][static_cast<size_t>(c.slot_index)] = c.end_slot_index;
+    }
+
+    // clipped[skin][slot] = 1 ⇒ 该皮肤下该槽位的几何要由 CPU 裁剪 ⇒ kind = kFallback。
+    std::vector<std::vector<uint8_t>> clipped(static_cast<size_t>(skin_count),
+                                              std::vector<uint8_t>(static_cast<size_t>(slot_count), 0u));
+    for (uint32_t sk = 0; sk < skin_count; ++sk)
+    {
+        int active_end = kNoClip;   // 当前生效裁剪的结束槽位
+        for (uint32_t s = 0; s < slot_count; ++s)
+        {
+            const int here = clip_end[sk][s];
+            if (here != kNoClip)
+            {
+                // 该槽位挂的是裁剪附件 ⇒ 参考实现 `clipStart()` 之后**立刻 continue**
+                // （SpineMesh.h:153-159），也就是**跳过了**槽位收尾那句 `clipEnd(*slot)`
+                // （:257）。两个后果，都不能省：
+                //   · 这个槽位自己不画、也**不结束**任何进行中的裁剪；
+                //   · 嵌套时 `clipStart()` 直接返回 0（SkeletonClipping.cpp:49-51）
+                //     ⇒ 后一条裁剪**永远开不起来**，哪怕它的 endSlot 更靠后。
+                if (active_end == kNoClip)
+                {
+                    // ⚠️ end <= 自己（含"没有 end" ⇒ here < 0）时**不需要**特殊处理：
+                    // 收尾检查在下面那个分支里，而本槽位被 continue 掉了 ⇒
+                    // `active_end == s` 永远不成立 ⇒ 这次裁剪只能靠整条绘制指令末尾
+                    // 那次无条件 `clipEnd()` 收尾（:259）⇒ 一路裁到最后一个槽位。
+                    // 这**正是**参考实现的行为：end 写错成"自己或更前面"时，
+                    // 画面会一路裁到末尾，且不报任何错。
+                    active_end = here;
+                }
+                continue;
+            }
+            if (active_end != kNoClip)
+            {
+                clipped[sk][s] = 1u;
+                if (active_end == static_cast<int>(s))
+                {
+                    active_end = kNoClip;   // clipEnd(slot)
+                }
+            }
+        }
+    }
+
     // ---- pass 2：写顶点 / UV / 索引 / 绘制项 ----
     for (size_t ai = 0; ai < src.attachments.size(); ++ai)
     {
@@ -3304,10 +3429,13 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         item.slot_index = static_cast<uint16_t>(a.slot_index);
         item.attachment_id = static_cast<uint16_t>(ai);
         item.skin_id = static_cast<uint16_t>(a.skin_index);
-        // deform（FFD）命中的附件顶点每帧都变 ⇒ 静态 VB 里那份绑定姿势不算数
-        // ⇒ 走 CPU fallback（规格 §7.1）。**只有被命中的绘制项**回退，
-        // 不是整个资产 —— 这和 kHasDrawOrderTimeline 那种"整体走 CPU"是两回事。
-        item.kind = a.deformed ? SpineDrawItemKind::kFallback : SpineDrawItemKind::kStatic;
+        // 两个"画不动静态 VB"的原因，合起来决定 kind，**都只回退自己这一项**：
+        //   * deform（FFD）命中 ⇒ 顶点每帧都变，静态 VB 里那份绑定姿势不算数（规格 §7.1）
+        //   * 落在裁剪作用域内 ⇒ `clipTriangles()` 会重写顶点 / 三角形 / UV
+        //     （SkeletonClipping.h:47-54），三角形个数都变了（规格 §7.2）
+        // 这与 kHasDrawOrderTimeline 那种"整个资产走 CPU"是两回事。
+        const bool clipped_here = clipped[static_cast<size_t>(a.skin_index)][static_cast<size_t>(a.slot_index)] != 0u;
+        item.kind = (a.deformed || clipped_here) ? SpineDrawItemKind::kFallback : SpineDrawItemKind::kStatic;
         item.pad = 0;
         out.draw_items.push_back(item);
 
@@ -3394,12 +3522,14 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     {
         h.flags |= SpineGpuFlags::kHasClipping;
     }
-    // 有绘制项因 deform 走了 CPU fallback ⇒ 运行时得为它准备每帧动态 VB。
-    // 逐个绘制项看 kind 也能知道，但那是 O(绘制项) 的扫描 —— 标志位让运行时
-    // 一眼决定"要不要建动态 VB"。
-    for (const SpineDrawItem& item : out.draw_items)
+    // 有绘制项因 deform 走了 CPU fallback ⇒ 运行时得为它准备每帧动态 VB
+    // （deform 是**逐帧**改顶点，所以动态 VB 每帧都要重算）。
+    // ⚠️ 不能扫 draw_items 的 kind —— kFallback 还有**裁剪**这个来源，而裁剪的
+    // 动态 VB 只在裁剪多边形动的时候才需要重算。把两者混成一个位，运行时就会
+    // 为纯裁剪的资产每帧重算一份根本没变的顶点。
+    for (const SpineSourceAttachment& a : src.attachments)
     {
-        if (item.kind == SpineDrawItemKind::kFallback)
+        if (a.deformed)
         {
             h.flags |= SpineGpuFlags::kHasDeform;
             break;
