@@ -1,5 +1,23 @@
 set(TARGET_NAME ZEditor)
 
+# ---------------------------------------------------------------------------
+# Packaging default for release builds.
+#
+# Incremental packaging is an optimisation for the edit -> package -> test
+# loop, not a guarantee a release should lean on: the cache is a local file
+# nobody else can inspect, and a package produced from it cannot be
+# reproduced from a clean checkout. So a RELEASE build compiles
+# AssetBundleBuildOptions::force_rebuild to true by default -- a packaged
+# build always re-cooks and rewrites everything.
+#
+# The build scripts pass this for `release` (see build_{windows,linux,macos}).
+# It only changes the DEFAULT: `bundle.build --incremental` still opts in per
+# run, and `--force` still forces it on a debug build.
+# ---------------------------------------------------------------------------
+option(ZENGINE_PACKAGING_FORCE_REBUILD
+       "Make packaging ignore the build cache by default (release builds)"
+       OFF)
+
 # Determine editor platform-specific directory.
 # Keep platform/interface in the common glob, but add exactly one platform implementation folder.
 set(PLATFORM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/Platform")
@@ -196,6 +214,13 @@ endif()
 
 set_target_properties(${TARGET_NAME} PROPERTIES CXX_STANDARD 23 OUTPUT_NAME "ZEditor")
 set_target_properties(${TARGET_NAME} PROPERTIES FOLDER "Engine")
+
+if(ZENGINE_PACKAGING_FORCE_REBUILD)
+    # Read by AssetBundleBuildOptions::force_rebuild's default initialiser.
+    # PRIVATE: it is a default, not an ABI -- nothing else should branch on it.
+    target_compile_definitions(${TARGET_NAME} PRIVATE ZENGINE_PACKAGING_FORCE_REBUILD=1)
+    message(STATUS "Editor: packaging defaults to a full rebuild (force_rebuild)")
+endif()
 z_set_config_output_dirs(ZEditor "${BINARY_ROOT_DIR}" RUNTIME)
 
 # App icon: embeds app_icon/ZEditor.ico as IDI_ICON1=101. After the OUTPUT_NAME

@@ -74,6 +74,26 @@ if defined GITHUB_ACTIONS (
 ) else (
     set "CONFIGURE_EXTRA=%GIT_EXTRA%"
 )
+REM A release build is what gets packaged, so its editor defaults to a full
+REM rebuild (ZENGINE_PACKAGING_FORCE_REBUILD): an incremental package is only
+REM reproducible by whoever owns the cache. Still just a default -- the console
+REM command `bundle.build --incremental` opts back in at run time.
+REM --extra-args is a REMAINDER, so a -D has to join the one already present
+REM (CI) rather than start a second one.
+REM Passed explicitly both ways rather than only for release: CMake options are
+REM sticky and the Windows presets are multi-config (one build dir for both),
+REM so leaving it unset would let a previous release configure keep forcing
+REM full rebuilds in a debug build.
+if "%CONFIG%"=="release" (
+    set "FORCE_REBUILD_ARG=-DZENGINE_PACKAGING_FORCE_REBUILD=ON"
+) else (
+    set "FORCE_REBUILD_ARG=-DZENGINE_PACKAGING_FORCE_REBUILD=OFF"
+)
+if defined GITHUB_ACTIONS (
+    set "CONFIGURE_EXTRA=%CONFIGURE_EXTRA% %FORCE_REBUILD_ARG%"
+) else (
+    set "CONFIGURE_EXTRA=%CONFIGURE_EXTRA% --extra-args %FORCE_REBUILD_ARG%"
+)
 python zbuild.py configure --config %CONFIG% %CONFIGURE_EXTRA%
 if errorlevel 1 (
     echo [ERROR] Configuration failed

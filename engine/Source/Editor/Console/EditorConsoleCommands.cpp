@@ -517,13 +517,21 @@ namespace
         // --force is the escape hatch for "I don't believe the cache": it
         // re-cooks and rewrites everything. It is NOT needed for "I changed
         // something" -- changed inputs are detected by content hash.
-        bool force = false;
+        // --incremental is the other direction: a RELEASE editor defaults
+        // force_rebuild to true (a package nobody can reproduce from a clean
+        // checkout is not a release artifact), and this opts back in.
+        bool force = AssetBundleBuildOptions{}.force_rebuild;
         std::string platform;
         for (const std::string& arg : args)
         {
             if (arg == "--force" || arg == "-f")
             {
                 force = true;
+                continue;
+            }
+            if (arg == "--incremental")
+            {
+                force = false;
                 continue;
             }
             if (platform.empty())
@@ -756,6 +764,7 @@ void RegisterEditorConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("renderdoc.status", "Print RenderDoc integration status", CmdRenderDocStatus);
     console.RegisterCommand("bundle.build",
                             "Package the project into .zbundle files (incremental; --force rebuilds "
-                            "everything). Usage: bundle.build [standalone|android|ios|ohos|webgl] [--force]",
+                            "everything). Usage: bundle.build [standalone|android|ios|ohos|webgl] "
+                            "[--force|--incremental]",
                             CmdBundleBuild);
 }
