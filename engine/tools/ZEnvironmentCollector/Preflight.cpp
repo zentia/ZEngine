@@ -207,6 +207,27 @@ void CollectGameVolume(PreflightInputs& inputs, const std::filesystem::path& gam
     // whether a patch can land, not the number the disk reports.
     inputs.gameVolumeFreeBytes = callerAvailable.QuadPart;
     inputs.gameVolumeKnown = true;
+
+    // The same root answers two more questions for one call each.
+    const std::uint32_t driveType = ::GetDriveTypeW(root);
+    // DRIVE_UNKNOWN and DRIVE_NO_ROOT_DIR mean the question was not answered: an
+    // empty card reader looks exactly like that, and "no idea" is not "removable".
+    if (driveType != DRIVE_UNKNOWN && driveType != DRIVE_NO_ROOT_DIR)
+    {
+        inputs.gameVolumeDriveType = driveType;
+        inputs.gameVolumeDriveTypeKnown = true;
+    }
+    wchar_t fileSystem[MAX_PATH + 1]{};
+    if (::GetVolumeInformationW(root, nullptr, 0, nullptr, nullptr, nullptr, fileSystem, MAX_PATH) != FALSE)
+    {
+        inputs.gameVolumeFileSystem = diagnosis::WideToUtf8(fileSystem);
+        inputs.gameVolumeFileSystemKnown = true;
+    }
+
+    inputs.gamePathKnown = true;
+    inputs.gamePath = diagnosis::SanitizePath(diagnosis::WideToUtf8(target));
+    inputs.gamePathAscii = std::all_of(target.begin(), target.end(),
+                                       [](wchar_t character) { return character > 0 && character <= 127; });
 }
 
 // An Insider build is worth naming because it is a stability problem the player
@@ -770,6 +791,15 @@ diagnosis::UserAction ActionFor(const std::string& findingCode)
         // are "the graphics driver on this machine is not one you want to play on".
         return {"INSTALL_GPU_DRIVER", "安装显卡厂商官方驱动后重启电脑。"};
     }
+    if (findingCode == "GAME_VOLUME_REMOVABLE_OR_REMOTE" || findingCode == "GAME_VOLUME_NOT_NTFS")
+    {
+        return {"REINSTALL_ON_LOCAL_DISK", "把游戏重新安装到本地固定磁盘的 NTFS 分区上再启动。"};
+    }
+    if (findingCode == "GAME_PATH_NON_ASCII")
+    {
+        return {"REINSTALL_TO_ASCII_PATH",
+                "把游戏重新安装到只有英文和数字的路径下（例如 D:\\Games\\）再启动。"};
+    }
     if (findingCode == "WINDOWS_INSIDER_PREVIEW")
     {
         return {"LEAVE_INSIDER", "退出 Windows 预览体验计划，回到正式版系统。"};
@@ -890,6 +920,15 @@ void AppendBlockingFindings(PreflightResult& result, const PreflightInputs& inpu
             inputs.direct3d11.adapterName + ", " +
             FeatureLevelName(requirements.minimumFeatureLevel) + " required"});
     }
+}
+
+// Everything except a fixed local disk. Windows reports a USB flash drive or an
+// SD card as DRIVE_REMOVABLE and a network share as DRIVE_REMOTE, so this names
+// the installs whose files can stop being there while the game is running.
+bool IsUnsuitableDriveType(std::uint32_t driveType)
+{
+    return driveType == DRIVE_REMOVABLE || driveType == DRIVE_REMOTE ||
+           driveType == DRIVE_CDROM || driveType == DRIVE_RAMDISK;
 }
 
 // Everything here is advisory. A preflight that blocks a launch is a preflight
@@ -1056,6 +1095,37 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
             "游戏所在磁盘可用空间不足，更新和日志写入可能失败。",
             inputs.gameVolumeRoot + " free " +
             std::to_string(inputs.gameVolumeFreeBytes / (1024 * 1024)) + " MB"});
+    }
+
+    // Free space says how much room is left; these two say whether the volume can
+    // hold a game at all. A game on a USB stick or a network share is one whose
+    // files can go away mid-session, and whose read latency nothing in the engine
+    // was sized for.
+    if (inputs.gameVolumeDriveTypeKnown && IsUnsuitableDriveType(inputs.gameVolumeDriveType))
+    {
+        result.findings.push_back({"GAME_VOLUME_REMOVABLE_OR_REMOTE", "storage",
+            "游戏装在 U 盘、SD 卡或网络盘上，读资源会非常慢，也可能中途断开导致闪退。",
+            inputs.gameVolumeRoot + " drive type " + std::to_string(inputs.gameVolumeDriveType)});
+    }
+    // FAT32 cannot hold a file above 4 GB -- the size a patch or a bundle reaches
+    // without trying -- and neither FAT32 nor exFAT has the ACLs that half the
+    // "can I write here" questions on Windows are actually asking for.
+    if (inputs.gameVolumeFileSystemKnown && !inputs.gameVolumeFileSystem.empty() &&
+        !diagnosis::EqualsIgnoreCaseAscii(inputs.gameVolumeFileSystem, "NTFS"))
+    {
+        result.findings.push_back({"GAME_VOLUME_NOT_NTFS", "storage",
+            "游戏所在分区不是 NTFS，大文件写入和文件权限相关操作可能失败。",
+            inputs.gameVolumeRoot + " is " + inputs.gameVolumeFileSystem});
+    }
+    // Narrow-API file opens are the reason this is worth saying: the path is
+    // UTF-8 to the launcher and mojibake to a `fopen` that never asked which
+    // encoding it was handed. The failure is silent and looks like a missing
+    // asset, not like a path problem.
+    if (inputs.gamePathKnown && !inputs.gamePathAscii)
+    {
+        result.findings.push_back({"GAME_PATH_NON_ASCII", "storage",
+            "游戏安装路径含有中文或特殊字符，部分组件读取文件时会失败（表现为过场动画不播放、资源加载失败）。",
+            inputs.gamePath});
     }
 
     if (inputs.insiderPreviewKnown && inputs.insiderPreview)
@@ -1758,7 +1828,15 @@ std::string BuildPreflightJson(
            << "},\n"
            << "    \"gameVolume\": {\"known\": " << BoolText(inputs.gameVolumeKnown)
            << ", \"root\": " << JsonString(inputs.gameVolumeRoot)
-           << ", \"availableBytes\": " << inputs.gameVolumeFreeBytes << "}\n"
+           << ", \"availableBytes\": " << inputs.gameVolumeFreeBytes
+           << ", \"driveType\": " << inputs.gameVolumeDriveType
+           << ", \"driveTypeKnown\": " << BoolText(inputs.gameVolumeDriveTypeKnown)
+           << ", \"fileSystem\": " << JsonString(inputs.gameVolumeFileSystem)
+           << ", \"fileSystemKnown\": " << BoolText(inputs.gameVolumeFileSystemKnown)
+           << "},\n"
+           << "    \"gamePath\": {\"known\": " << BoolText(inputs.gamePathKnown)
+           << ", \"ascii\": " << BoolText(inputs.gamePathAscii)
+           << ", \"path\": " << JsonString(inputs.gamePath) << "}\n"
            << "  }\n"
            << "}\n";
     return stream.str();

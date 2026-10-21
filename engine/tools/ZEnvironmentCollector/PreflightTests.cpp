@@ -359,6 +359,60 @@ int main()
             Check(!HasFinding(Evaluate(inputs), "GPU_DRIVER_RESET_RECENT"), "a machine with no resets is quiet");
         }
         {
+            // A game on a USB stick or an SD card: the files can stop being there
+            // while it runs, and no read path in the engine was sized for it.
+            auto inputs = HealthyInputs();
+            inputs.gameVolumeRoot = "E:\\";
+            inputs.gameVolumeDriveType = DRIVE_REMOVABLE;
+            inputs.gameVolumeDriveTypeKnown = true;
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise, "a removable install advises");
+            Check(HasFinding(result, "GAME_VOLUME_REMOVABLE_OR_REMOTE"), "and says the volume is removable");
+            Check(result.actions.front().code == "REINSTALL_ON_LOCAL_DISK", "and asks for a local disk");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.gameVolumeDriveType = DRIVE_REMOVABLE;
+            inputs.gameVolumeDriveTypeKnown = false;
+            Check(!HasFinding(Evaluate(inputs), "GAME_VOLUME_REMOVABLE_OR_REMOTE"),
+                  "a drive type that could not be read is not evidence of a removable disk");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.gameVolumeRoot = "E:\\";
+            inputs.gameVolumeFileSystem = "exFAT";
+            inputs.gameVolumeFileSystemKnown = true;
+            const auto result = Evaluate(inputs);
+            Check(HasFinding(result, "GAME_VOLUME_NOT_NTFS"), "a non-NTFS install is named");
+            Check(result.actions.front().code == "REINSTALL_ON_LOCAL_DISK", "and asks for a local disk");
+        }
+        {
+            // Case is not something to bet a rule on, and NTFS is the one name
+            // that must never fire.
+            auto inputs = HealthyInputs();
+            inputs.gameVolumeFileSystem = "ntfs";
+            inputs.gameVolumeFileSystemKnown = true;
+            Check(!HasFinding(Evaluate(inputs), "GAME_VOLUME_NOT_NTFS"), "NTFS in any case is not a finding");
+        }
+        {
+            // The machine whose cutscene never played: the path is UTF-8 to the
+            // launcher and mojibake to a narrow fopen that was never told so.
+            auto inputs = HealthyInputs();
+            inputs.gamePathKnown = true;
+            inputs.gamePathAscii = false;
+            inputs.gamePath = "D:\\Games\\万象大赛\\";
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise, "a non-ASCII install path advises");
+            Check(HasFinding(result, "GAME_PATH_NON_ASCII"), "and says the path is the problem");
+            Check(result.actions.front().code == "REINSTALL_TO_ASCII_PATH", "and asks for a plain path");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.gamePathKnown = true;
+            inputs.gamePathAscii = true;
+            Check(!HasFinding(Evaluate(inputs), "GAME_PATH_NON_ASCII"), "a plain path is quiet");
+        }
+        {
             // Not installed, not shipped beside the game.
             auto inputs = HealthyInputs();
             inputs.vcRuntimePresent = false;
@@ -656,6 +710,8 @@ int main()
             Check(json.find("\"direct3d11\": {") != std::string::npos, "direct3d11 is reported");
             Check(json.find("\"reboot\": {") != std::string::npos, "reboot is reported");
             Check(json.find("\"gpuDriverResets\": {") != std::string::npos, "gpuDriverResets is reported");
+            Check(json.find("\"driveType\": ") != std::string::npos, "the game volume's drive type is reported");
+            Check(json.find("\"gamePath\": {") != std::string::npos, "the install path is reported");
             Check(json.find("\"uptimeMilliseconds\": ") != std::string::npos, "uptime is reported");
             Check(json.find("\"attachedOutputCount\": ") != std::string::npos, "each adapter reports its attached outputs");
             Check(json.find("\"code\": \"FREE_DISK_SPACE\", \"zh\": ") != std::string::npos, "actions carry Chinese text");

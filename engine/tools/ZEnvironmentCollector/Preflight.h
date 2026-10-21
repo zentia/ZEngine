@@ -132,6 +132,25 @@ struct PreflightInputs
     std::uint64_t gameVolumeFreeBytes = 0;
     bool gameVolumeKnown = false;
 
+    // What the game is installed *on*, not how much room is left there. Two calls
+    // on the volume root, and together they decide whether the install can behave
+    // like a local disk at all: files on a USB stick, an SD card or a network
+    // share can disappear while the game is running, and a FAT32 volume cannot
+    // hold a file above 4 GB or answer a question about permissions.
+    std::uint32_t gameVolumeDriveType = 0;  // GetDriveTypeW result; 0 = never asked
+    bool gameVolumeDriveTypeKnown = false;
+    std::string gameVolumeFileSystem;       // "NTFS", "exFAT", "FAT32"...
+    bool gameVolumeFileSystemKnown = false;
+
+    // Whether every character in the install path is ASCII. Native code that
+    // opens files through the narrow API (fopen and friends) does not see the
+    // path the way the rest of the game does, and a path it cannot round-trip is
+    // a file it cannot open -- which is what "the cutscene never plays" turns out
+    // to be. Stored sanitized: the path is where the player's name usually lives.
+    bool gamePathAscii = true;
+    bool gamePathKnown = false;
+    std::string gamePath;
+
     // SMBIOS system-enclosure type. It is here for one rule only: telling a
     // desktop apart from a laptop. On a switchable-graphics laptop the panel is
     // driven by the integrated part by design, so "the monitor is on the
