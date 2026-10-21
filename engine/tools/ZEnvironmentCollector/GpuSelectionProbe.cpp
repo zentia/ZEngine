@@ -140,6 +140,22 @@ std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases()
         mockCase.adapters.push_back(MakeAdapter("Intel(R) Iris(R) Xe Graphics", 0x8086, 0x9a49, 4200, 8192));
         mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 4060 Laptop", 0x10de, 0x28a0, 4096, 256));
         mockCase.expectedAdapterIndex = 1;
+        mockCase.expectedExcludedIntegrated = true;
+        cases.push_back(mockCase);
+    }
+    {
+        // The same bug scenario with the adapters the other way round. Enumeration
+        // order is whatever the driver hands back, so the fix cannot depend on the
+        // real card arriving first -- and this shape catches something the case
+        // above cannot: an off-by-one in "did we find a non-integrated card at
+        // all". With the real card at index 1 the mistake is invisible in the
+        // chosen index; with it at index 0 the machine picks the iGPU.
+        GpuSelectionMockCase mockCase;
+        mockCase.name = "Real dGPU enumerated first, iGPU reporting more memory second";
+        mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 4060 Laptop", 0x10de, 0x28a0, 4096, 256));
+        mockCase.adapters.push_back(MakeAdapter("Intel(R) Iris(R) Xe Graphics", 0x8086, 0x9a49, 4200, 8192));
+        mockCase.expectedAdapterIndex = 0;
+        mockCase.expectedExcludedIntegrated = true;
         cases.push_back(mockCase);
     }
     {
@@ -148,6 +164,7 @@ std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases()
         mockCase.adapters.push_back(MakeAdapter("AMD Radeon Graphics (iGPU)", 0x1002, 0x1636, 8192, 16384));
         mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 4070 Laptop", 0x10de, 0x2820, 6144, 256));
         mockCase.expectedAdapterIndex = 1;
+        mockCase.expectedExcludedIntegrated = true;
         cases.push_back(mockCase);
     }
     {
@@ -155,6 +172,7 @@ std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases()
         mockCase.name = "Single dGPU only (regression check)";
         mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 5080", 0x10de, 0x2c02, 16384, 256));
         mockCase.expectedAdapterIndex = 0;
+        mockCase.expectedExcludedIntegrated = true;
         cases.push_back(mockCase);
     }
     {
@@ -162,6 +180,10 @@ std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases()
         mockCase.name = "Integrated-only machine (all adapters look integrated)";
         mockCase.adapters.push_back(MakeAdapter("Intel(R) UHD Graphics 630", 0x8086, 0x3e92, 128, 8192));
         mockCase.expectedAdapterIndex = 0;
+        // Every adapter looks integrated, so there is no non-integrated pool to
+        // prefer: the answer comes from the plain memory compare, and that is the
+        // claim being made here.
+        mockCase.expectedExcludedIntegrated = false;
         cases.push_back(mockCase);
     }
     {
@@ -178,6 +200,7 @@ std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases()
         mockCase.adapters.push_back(MakeAdapter("Microsoft Basic Render Driver", 0x1414, 0x8c, 8192, 0));
         mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 4060 Laptop", 0x10de, 0x28a0, 4096, 256));
         mockCase.expectedAdapterIndex = 1;
+        mockCase.expectedExcludedIntegrated = true;
         cases.push_back(mockCase);
     }
     {
@@ -188,6 +211,9 @@ std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases()
         mockCase.name = "Software renderer only (index 0, not a failure)";
         mockCase.adapters.push_back(MakeAdapter("Microsoft Basic Render Driver", 0x1414, 0x8c, 0, 0));
         mockCase.expectedAdapterIndex = 0;
+        // No non-integrated pool exists here either, so index 0 is the plain
+        // memory compare's answer rather than a filtered one.
+        mockCase.expectedExcludedIntegrated = false;
         cases.push_back(mockCase);
     }
     {
@@ -199,6 +225,7 @@ std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases()
         mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 5080 (slot 1)", 0x10de, 0x2c02, 16384, 256));
         mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 5080 (slot 2)", 0x10de, 0x2c02, 16384, 256));
         mockCase.expectedAdapterIndex = 0;
+        mockCase.expectedExcludedIntegrated = true;
         cases.push_back(mockCase);
     }
     {
@@ -210,6 +237,7 @@ std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases()
         mockCase.adapters.push_back(MakeAdapter("Microsoft adapter, not the Basic Render Driver", 0x1414, 0x8d, 8192, 0));
         mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 3050", 0x10de, 0x25a2, 4096, 256));
         mockCase.expectedAdapterIndex = 0;
+        mockCase.expectedExcludedIntegrated = true;
         cases.push_back(mockCase);
     }
     {
@@ -222,6 +250,7 @@ std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases()
         mockCase.adapters.push_back(MakeAdapter("Intel(R) Arc(TM) A770 Graphics", 0x8086, 0x56a0, 16384, 256));
         mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 3060", 0x10de, 0x2504, 12288, 256));
         mockCase.expectedAdapterIndex = 1;
+        mockCase.expectedExcludedIntegrated = true;
         cases.push_back(mockCase);
     }
 
@@ -234,11 +263,16 @@ GpuSelectionMockCaseResult RunGpuSelectionMockCase(const GpuSelectionMockCase& m
     result.caseName = mockCase.name;
     result.adapters = mockCase.adapters;
     result.expectedAdapterIndex = mockCase.expectedAdapterIndex;
+    result.expectedExcludedIntegrated = mockCase.expectedExcludedIntegrated;
 
     const GpuFallbackSelectionResult selection = SelectBestAdapterFallback(result.adapters);
     result.chosenAdapterIndex = selection.chosenAdapterIndex;
     result.excludedIntegrated = selection.excludedIntegrated;
-    result.passed = (result.chosenAdapterIndex == result.expectedAdapterIndex);
+    // Both, not just the index: whether the integrated filter did the work is a
+    // separate claim, and it is the one that decides the machines a case says
+    // nothing about.
+    result.passed = (result.chosenAdapterIndex == result.expectedAdapterIndex) &&
+        (result.excludedIntegrated == result.expectedExcludedIntegrated);
     return result;
 }
 
@@ -380,7 +414,8 @@ std::string FormatGpuSelectionReport(
         }
         report += "  chosen=" + std::to_string(mockResult.chosenAdapterIndex)
             + "  expected=" + std::to_string(mockResult.expectedAdapterIndex)
-            + "  excludedIntegrated=" + (mockResult.excludedIntegrated ? "true" : "false") + "\n";
+            + "  excludedIntegrated=" + (mockResult.excludedIntegrated ? "true" : "false")
+            + "  expected=" + (mockResult.expectedExcludedIntegrated ? "true" : "false") + "\n";
     }
     report += AllGpuSelectionMockCasesPassed(mockResults) ? "Mock regression: ALL PASS\n\n"
                                                           : "Mock regression: HAS FAILURE\n\n";
@@ -421,6 +456,7 @@ std::string BuildGpuSelectionJson(
                << "        \"chosenAdapterIndex\": " << mockResult.chosenAdapterIndex << ",\n"
                << "        \"expectedAdapterIndex\": " << mockResult.expectedAdapterIndex << ",\n"
                << "        \"excludedIntegrated\": " << (mockResult.excludedIntegrated ? "true" : "false") << ",\n"
+               << "        \"expectedExcludedIntegrated\": " << (mockResult.expectedExcludedIntegrated ? "true" : "false") << ",\n"
                << "        \"adapters\": [";
         for (std::size_t adapterIndex = 0; adapterIndex < mockResult.adapters.size(); ++adapterIndex)
         {

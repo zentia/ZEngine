@@ -38,21 +38,34 @@ struct GpuFallbackSelectionResult
 GpuFallbackSelectionResult SelectBestAdapterFallback(std::vector<GpuSelectionAdapter>& adapters);
 
 // A single named regression case for the offline mock test: a fixed list of
-// synthetic adapters plus the adapter index the heuristic is expected to pick.
+// synthetic adapters, the adapter index the heuristic is expected to pick, and
+// whether it is expected to get there by excluding the integrated parts or by
+// falling back to plain "most dedicated memory". Both are asserted, because the
+// right index can be reached for the wrong reason: a machine whose only real card
+// sits at index 0 picks that card either way today, and only the reason tells you
+// what happens on a machine where it does not.
 struct GpuSelectionMockCase
 {
     std::string name;
     std::vector<GpuSelectionAdapter> adapters;
     int expectedAdapterIndex = 0;
+    bool expectedExcludedIntegrated = false;
 };
 
-// The same four regression cases exercised by the standalone command-line
-// verification tool used to validate the GfxDeviceSetup.cpp fix (see
+// The regression cases exercised by the standalone command-line verification tool
+// used to validate the GfxDeviceSetup.cpp fix (see
 // G:\OSGame\doc\...\20260915_PC双显卡自动选卡选中集显导致启动白屏_分析\分析.md):
 //   1. Exact bug scenario: Intel iGPU over-reports VRAM above a real dGPU.
 //   2. Extreme over-report: iGPU reports 8GB vs a real 6GB dGPU.
 //   3. Single dGPU only (regression check, no iGPU present).
 //   4. Integrated-only machine (must still pick something, not fail open).
+//   5. Software adapter reporting more memory than the real card (never wins).
+//   6. Software adapter alone: still an answer, not a failure.
+//   7. Two identical dGPUs: the strictly-greater compare keeps the first.
+//   8. Vendor 0x1414 with another device id is not the software adapter.
+//   9. Intel Arc discrete, which the vendor rule classifies as integrated.
+//  10. Real dGPU enumerated before an iGPU that reports more memory: order must
+//      not matter, and excluding the integrated part is what saves it.
 std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases();
 
 // Result of running one mock case: whether the heuristic picked the expected
@@ -64,6 +77,7 @@ struct GpuSelectionMockCaseResult
     int chosenAdapterIndex = 0;
     int expectedAdapterIndex = 0;
     bool excludedIntegrated = false;
+    bool expectedExcludedIntegrated = false;
     bool passed = false;
 };
 
@@ -106,8 +120,9 @@ std::string BuildGpuSelectionJson(
     const std::vector<GpuSelectionMockCaseResult>& mockResults,
     const GpuSelectionRealProbeResult& realResult);
 
-// True when every mock regression case picked the expected adapter. A false
-// result means the selection heuristic in GfxDeviceSetup.cpp regressed, which is
-// a tool-verifiable failure (exit code 1) independent of the host machine.
+// True when every mock regression case picked the expected adapter for the
+// expected reason. A false result means the selection heuristic in
+// GfxDeviceSetup.cpp regressed, which is a tool-verifiable failure (exit code 1)
+// independent of the host machine.
 bool AllGpuSelectionMockCasesPassed(const std::vector<GpuSelectionMockCaseResult>& mockResults);
 } // namespace zengine::envcheck
