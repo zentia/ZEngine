@@ -1,4 +1,69 @@
 # =====================================================================
+# GPU-Spine 蒙皮验收夹具：CPU 参考实现 vs GPU 回读，逐顶点对拍
+# ---------------------------------------------------------------------
+# 规格见 doc/GPU_SPINE_INTERCHANGE_FORMAT.md（§12 验收清单第 1 条）。
+#
+# 与下面的 bindless smoke-test 同一套路：独立 exe、无窗口、无 swapchain，
+# 硬件适配器优先、WARP 兜底，跑不了就返回 77（CTest skip 约定）。
+#
+# 注意：本块必须放在 bindless 那个 `if(NOT ...) return()` **之前** ——
+# 那是文件级 return，写在它后面的任何 option 都不会被处理（CMake 只会
+# 报 "Manually-specified variables were not used by the project"）。
+#
+# Opt in with:
+#   cmake -B build -DZENGINE_BUILD_SPINE_SKINNING_PARITY_TEST=ON
+#   cmake --build build --target SpineSkinningParityTest --config Debug
+#
+# 运行前把 dxcompiler.dll 所在目录放进 PATH（它只在 bin/Debug 里）：
+#   PATH=<repo>/bin/Debug:$PATH ./build/.../SpineSkinningParityTest.exe
+# =====================================================================
+
+option(ZENGINE_BUILD_SPINE_SKINNING_PARITY_TEST
+       "Build the GPU-Spine skinning parity test (CPU reference vs GPU readback)"
+       OFF)
+
+if(ZENGINE_BUILD_SPINE_SKINNING_PARITY_TEST AND WIN32)
+    set(_parity_target SpineSkinningParityTest)
+
+    add_executable(${_parity_target}
+        SpineSkinningParityTest.cpp
+    )
+
+    set_target_properties(${_parity_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # ZRuntime 提供 DX12ShaderCompiler（本测试唯一的引擎依赖：用它把内嵌的
+    # HLSL 编成 DXIL）。PRIVATE 链接，避免 main() 被 WHOLEARCHIVE 拖进别处。
+    target_link_libraries(${_parity_target} PRIVATE
+        ZRuntime
+        d3d12
+        dxgi
+    )
+
+    # 同 bindless smoke-test：ZRuntime PRIVATE 链 ZEnginePCH，EASTL 的
+    # include 目录不会传过来，而 RenderType.h / Hash.h 需要它。
+    if(TARGET ZEnginePCH)
+        target_link_libraries(${_parity_target} PRIVATE ZEnginePCH)
+        target_include_directories(${_parity_target} PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(${_parity_target} ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(${_parity_target} PRIVATE /W4)
+    endif()
+
+    add_test(NAME ${_parity_target} COMMAND ${_parity_target})
+
+    message(STATUS "Configured GPU-Spine skinning parity test target: ${_parity_target}")
+elseif(ZENGINE_BUILD_SPINE_SKINNING_PARITY_TEST)
+    message(WARNING
+        "ZENGINE_BUILD_SPINE_SKINNING_PARITY_TEST is ON but the host platform is "
+        "not Windows -- the parity test needs D3D12. Skipping.")
+endif()
+
+# =====================================================================
 # PR5c: DX12 bindless smoke-test
 # ---------------------------------------------------------------------
 # Builds a standalone executable that validates the DX12 bindless

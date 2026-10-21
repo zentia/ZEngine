@@ -337,6 +337,12 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/Test/DX12BindlessSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/Test/DX12BindlessSmokeTest.cpp")
+# GPU-Spine 蒙皮验收夹具的 main。同一套排除理由：它有独立 exe，且由
+# ZENGINE_BUILD_SPINE_SKINNING_PARITY_TEST 单独控制是否构建。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/Test/SpineSkinningParityTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/Test/SpineSkinningParityTest.cpp")
 # ShaderLab Unity-compat smoke-test main. Same exclusion rationale. Built only
 # when ZENGINE_BUILD_SHADERLAB_UNITY_COMPAT_TEST=ON (see
 # Function/ShaderLab/Test/CMakeLists.txt).
