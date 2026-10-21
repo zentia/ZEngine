@@ -91,6 +91,18 @@ public:
     // 获取世界空间边界
     const AxisAlignedBox& getWorldBounds() const { return m_DistanceField.world_bounds; }
 
+    // 距离场是否已经有可用数据。软件光追必须先看这个：没生成过的话 QueryDistance
+    // 一律返回 FLT_MAX，"没命中"和"没数据"会混成一回事。
+    bool isLoaded() const { return m_DistanceField.is_loaded; }
+
+    // 世界空间体素尺寸（三轴各自一份，通常不等）。距离场的精度上限就是它 —— 任何
+    // 比体素还细的判定（命中阈值、法线梯度步长、表面自相交偏移）都要按它换算，
+    // 写死常量的话换个分辨率就失效。
+    Vector3 GetVoxelSize() const;
+
+    // 体素盒的对角线长度，方便调用方直接当"一个体素的尺度"用
+    float GetVoxelDiagonal() const { return GetVoxelSize().length(); }
+
     // 获取场景几何缓存（调试与测试用）
     const SceneGeometryCache& getSceneGeometryCache() const { return m_SceneGeometryCache; }
 

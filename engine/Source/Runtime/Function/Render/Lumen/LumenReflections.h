@@ -34,6 +34,13 @@ public:
     // 设置光线追踪引用
     void setRayTracing(LumenRayTracing* ray_tracing) { m_RayTracing = ray_tracing; }
 
+    // 设置距离场引用（软件光追的输入，同时决定自相交偏移）
+    void setDistanceField(LumenDistanceField* distance_field) { m_DistanceField = distance_field; }
+
+private:
+    // 着色点本身在表面上，距离场在那里几乎为 0，不抬出去的话反射光线第一脚就命中自己
+    Vector3 OffsetOriginFromSurface(const Vector3& world_position, const Vector3& normal) const;
+
 private:
     // 屏幕空间反射
     LumenReflectionData ComputeScreenSpaceReflection(const Vector3& world_position,
@@ -42,6 +49,7 @@ private:
 
     // 距离场反射
     LumenReflectionData ComputeDistanceFieldReflection(const Vector3& world_position,
+                                                       const Vector3& normal,
                                                        const Vector3& reflection_direction,
                                                        float roughness,
                                                        LumenRayTracing* ray_tracing) const;
@@ -67,4 +75,5 @@ private:
 
     // 子系统引用
     LumenRayTracing* m_RayTracing = nullptr;
+    LumenDistanceField* m_DistanceField = nullptr;
 };

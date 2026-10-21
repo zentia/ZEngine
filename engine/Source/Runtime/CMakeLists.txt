@@ -488,6 +488,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenSceneGeometrySmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenSceneGeometrySmokeTest.cpp")
+# Lumen software ray-tracing smoke-test main carve-out (same rationale). Built only
+# when ZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST=ON (see
+# Function/Render/Lumen/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenRayTracingSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenRayTracingSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when

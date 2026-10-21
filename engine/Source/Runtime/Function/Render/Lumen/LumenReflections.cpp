@@ -22,6 +22,15 @@ bool LumenReflections::Initialize(RHI* rhi, const LumenConfig& config)
 void LumenReflections::clear()
 {
     m_RayTracing = nullptr;
+    m_DistanceField = nullptr;
+}
+
+Vector3 LumenReflections::OffsetOriginFromSurface(const Vector3& world_position, const Vector3& normal) const
+{
+    // 一个体素对角线是距离场能分辨的最小尺度；没有距离场时就退回配置的最小步长
+    const float offset = m_DistanceField != nullptr ? std::max(m_Config.min_trace_step, m_DistanceField->GetVoxelDiagonal())
+                                                    : m_Config.min_trace_step;
+    return world_position + normal * offset;
 }
 
 LumenReflectionData LumenReflections::ComputeReflection(const Vector3& world_position,
@@ -30,7 +39,7 @@ LumenReflectionData LumenReflections::ComputeReflection(const Vector3& world_pos
                                                         float roughness,
                                                         LumenRayTracing* ray_tracing) const
 {
-    LumenReflectionData result;
+    LumenReflectionData result {};
     result.reflection_color = Vector3(0.0f, 0.0f, 0.0f);
     result.reflection_distance = 0.0f;
     result.roughness_factor = roughness;
@@ -55,7 +64,7 @@ LumenReflectionData LumenReflections::ComputeReflection(const Vector3& world_pos
     LumenReflectionData dfr_result;
     if (ray_tracing)
     {
-        dfr_result = ComputeDistanceFieldReflection(world_position, reflection_direction, roughness, ray_tracing);
+        dfr_result = ComputeDistanceFieldReflection(world_position, normal, reflection_direction, roughness, ray_tracing);
     }
 
     // 硬件光线追踪反射（远距离，高质量）
@@ -75,7 +84,7 @@ LumenReflectionData LumenReflections::ComputeScreenSpaceReflection(const Vector3
                                                                    const Vector3& reflection_direction,
                                                                    float roughness) const
 {
-    LumenReflectionData result;
+    LumenReflectionData result {};
     result.reflection_type = RayTracingType::Software;  // SSR使用软件追踪
 
     // TODO: 实现屏幕空间反射
@@ -85,11 +94,12 @@ LumenReflectionData LumenReflections::ComputeScreenSpaceReflection(const Vector3
 }
 
 LumenReflectionData LumenReflections::ComputeDistanceFieldReflection(const Vector3& world_position,
+                                                                     const Vector3& normal,
                                                                      const Vector3& reflection_direction,
                                                                      float roughness,
                                                                      LumenRayTracing* ray_tracing) const
 {
-    LumenReflectionData result;
+    LumenReflectionData result {};
     result.reflection_type = RayTracingType::Software;
 
     if (!ray_tracing)
@@ -97,10 +107,12 @@ LumenReflectionData LumenReflections::ComputeDistanceFieldReflection(const Vecto
         return result;
     }
 
-    // 使用光线追踪计算反射
+    // 使用光线追踪计算反射。起点抬出表面 + 显式传距离场：以前这里传 nullptr，距离场
+    // 反射永远拿不到命中，reflection_color 恒为 0。
     float max_distance = m_Config.max_trace_distance;
+    const Vector3 ray_origin = OffsetOriginFromSurface(world_position, normal);
     LumenRayTracingResult trace_result =
-        ray_tracing->TraceRay(world_position, reflection_direction, max_distance, nullptr);
+        ray_tracing->TraceRay(ray_origin, reflection_direction, max_distance, m_DistanceField);
 
     if (trace_result.hit)
     {
@@ -120,7 +132,7 @@ LumenReflectionData LumenReflections::ComputeHardwareRayTracingReflection(const 
                                                                           float roughness,
                                                                           LumenRayTracing* ray_tracing) const
 {
-    LumenReflectionData result;
+    LumenReflectionData result {};
     result.reflection_type = RayTracingType::Hardware;
 
     if (!ray_tracing || !ray_tracing->isHardwareRayTracingSupported())

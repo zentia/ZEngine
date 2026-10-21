@@ -2020,6 +2020,41 @@ four backends.
   `v0`. It shipped wrong and nothing noticed because no caller ever reached it
   with real geometry. `LumenSceneGeometrySmokeTest` pins it.
 
+### 2.35 Lumen: software ray tracing and the resolution limit of the field
+
+`LumenRayTracing` is a CPU sphere-tracer over `LumenDistanceField`. Everything
+about it has to be scaled by the voxel size — **never write a distance constant
+in this subsystem**.
+
+- **The field has no value below half a voxel diagonal.** `QueryDistance`
+  returns the distance stored at the enclosing *voxel centre*, so the smallest
+  value any query can produce is ~½ voxel diagonal. A hit test like
+  `distance < 0.01f` is therefore unreachable: every ray burns all
+  `kMaxSoftwareTraceSteps` and reports a miss. The threshold is
+  `max(min_trace_step, GetVoxelDiagonal() * 0.5f)`. Same reasoning applies to
+  the normal gradient epsilon in `QueryNearestSurface` — a hard-coded `0.1`
+  put all three samples in one voxel, the gradient became zero and
+  `normalisedCopy()` produced NaN.
+- **`QueryDistance` returns `FLT_MAX` outside `world_bounds`, and that means "no
+  data", not "very far".** Marching must clip the ray to the world box first
+  (`ClipRayToAxisAlignedBox`), otherwise an origin outside the box drifts at
+  maximum step size and never reaches anything. Treat `FLT_MAX` as
+  "terminate", not as a large distance.
+- **`TraceRaySoftware` is argument-first, member-second.** The
+  `LumenDistanceField*` argument wins; `nullptr` falls back to
+  `setDistanceField()`. Do not reintroduce an early `return` on `nullptr` —
+  that is exactly the bug that made all three call sites (GI x2, reflections x1)
+  trace against nothing. An unloaded field is rejected up front.
+- **Shading origins must be lifted off their own surface.** GI and reflections
+  start on a surface where the field reads ~0, so the first step "hits" the
+  surface being shaded. Both offset along the shading normal by one voxel
+  diagonal (see `LumenGlobalIllumination::OffsetOriginFromSurface` /
+  `LumenReflections::OffsetOriginFromSurface`). If you add another ray origin
+  on a surface, do the same.
+- `hit_distance` is refined by `kTraceBinaryRefinementSteps` bisections so it
+  lands on the surface crossing rather than a voxel away. More iterations than
+  ~8 are pointless: the field itself is not that accurate.
+
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).

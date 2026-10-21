@@ -23,6 +23,46 @@ endif()
 
 add_executable(LumenSceneGeometrySmokeTest LumenSceneGeometrySmokeTest.cpp)
 
+# ---------------------------------------------------------------------
+# Software ray-tracing smoke test. Same pattern, separate option: it pins the
+# fixed marcher (argument wins over member, voxel-scaled hit threshold, box
+# clipping) and the end-to-end "GI is no longer identically zero" result.
+# ---------------------------------------------------------------------
+option(ZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST
+       "Build the Lumen software ray-tracing smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST)
+    add_executable(LumenRayTracingSmokeTest LumenRayTracingSmokeTest.cpp)
+
+    set_target_properties(LumenRayTracingSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    target_link_libraries(LumenRayTracingSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(LumenRayTracingSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(LumenRayTracingSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(LumenRayTracingSmokeTest ZEnginePCH)
+        target_precompile_headers(LumenRayTracingSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(LumenRayTracingSmokeTest PRIVATE /W4)
+    endif()
+
+    if(APPLE)
+        target_sources(LumenRayTracingSmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME LumenRayTracingSmokeTest COMMAND LumenRayTracingSmokeTest)
+
+    message(STATUS "Configured Lumen ray-tracing smoke-test target: LumenRayTracingSmokeTest")
+endif()
+
 set_target_properties(LumenSceneGeometrySmokeTest PROPERTIES
     CXX_STANDARD 23
     FOLDER "Engine/Tests"

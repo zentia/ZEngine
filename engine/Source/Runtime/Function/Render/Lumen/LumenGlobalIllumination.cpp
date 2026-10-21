@@ -26,6 +26,23 @@ void LumenGlobalIllumination::clear()
     m_LightingCache.clear();
     m_RayTracing = nullptr;
     m_SurfaceCache = nullptr;
+    m_DistanceField = nullptr;
+}
+
+float LumenGlobalIllumination::GetSurfaceOffset() const
+{
+    if (m_DistanceField == nullptr)
+    {
+        return m_Config.min_trace_step;
+    }
+
+    // 一个体素对角线：距离场里小于这个尺度的东西根本不存在
+    return std::max(m_Config.min_trace_step, m_DistanceField->GetVoxelDiagonal());
+}
+
+Vector3 LumenGlobalIllumination::OffsetOriginFromSurface(const Vector3& world_position, const Vector3& normal) const
+{
+    return world_position + normal * GetSurfaceOffset();
 }
 
 bool LumenGlobalIllumination::ComputeGlobalIllumination(std::shared_ptr<RenderScene> render_scene,
@@ -74,9 +91,12 @@ Vector3 LumenGlobalIllumination::ComputeSingleBounceGI(const Vector3& world_posi
     // 采样间接光照方向
     Vector3 indirect_dir = SampleIndirectDirection(normal, 0.5f);
 
-    // 追踪光线
-    LumenRayTracingResult result =
-        m_RayTracing->TraceRay(world_position, indirect_dir, m_Config.max_trace_distance, nullptr);
+    // 追踪光线。起点要抬出表面，距离场要显式传入 —— 以前这里传 nullptr，软件光追
+    // 直接返回未命中，间接光照恒为 0。
+    LumenRayTracingResult result = m_RayTracing->TraceRay(OffsetOriginFromSurface(world_position, normal),
+                                                          indirect_dir,
+                                                          m_Config.max_trace_distance,
+                                                          m_DistanceField);
 
     if (result.hit)
     {
@@ -111,9 +131,11 @@ Vector3 LumenGlobalIllumination::ComputeMultiBounceGI(const Vector3& world_posit
         // 采样间接方向
         Vector3 indirect_dir = SampleIndirectDirection(normal, 0.5f);
 
-        // 追踪光线
-        LumenRayTracingResult result =
-            m_RayTracing->TraceRay(world_position, indirect_dir, m_Config.max_trace_distance, nullptr);
+        // 追踪光线（同样要抬出表面 + 显式传距离场）
+        LumenRayTracingResult result = m_RayTracing->TraceRay(OffsetOriginFromSurface(world_position, normal),
+                                                              indirect_dir,
+                                                              m_Config.max_trace_distance,
+                                                              m_DistanceField);
 
         if (result.hit)
         {

@@ -45,10 +45,15 @@ bool LumenRenderer::Initialize(RHI* rhi,
     }
 
     // 设置子系统之间的引用
+    //
+    // 距离场除了给 LumenRayTracing，也要直接给 GI / Reflections：它们要用它把着色点
+    // 抬出表面（自相交偏移按体素尺寸算），并且追踪时必须显式把它传进 TraceRay。
     m_RayTracing.setDistanceField(&m_DistanceField);
     m_GlobalIllumination.setRayTracing(&m_RayTracing);
     m_GlobalIllumination.setSurfaceCache(&m_SurfaceCache);
+    m_GlobalIllumination.setDistanceField(&m_DistanceField);
     m_Reflections.setRayTracing(&m_RayTracing);
+    m_Reflections.setDistanceField(&m_DistanceField);
 
     // 初始化统计信息
     m_Stats = LumenStats {};

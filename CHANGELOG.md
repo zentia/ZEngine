@@ -56,6 +56,50 @@ kept its initial `FLT_MAX`, the software ray marcher could never satisfy
   smoke-test workflow: that job runs with `ZENGINE_USE_VULKAN=OFF`, which strips
   `Function/Render/Lumen/*.cpp` from ZRuntime.
 
+### Added / Fixed - 2026-10-21 (Lumen software ray tracing: it can now hit)
+
+A filled distance field was necessary but not sufficient -- the software marcher
+still reported a miss for every single ray, so GI was still exactly zero. Two
+independent blockers, both fixed:
+
+- **`TraceRaySoftware` ignored its own parameter.** It took a
+  `LumenDistanceField*` and returned "no hit" immediately when it was `nullptr`,
+  while all three call sites (`LumenGlobalIllumination` x2, `LumenReflections`
+  x1) passed literal `nullptr`. The member installed by `setDistanceField()` was
+  never consulted. It is now **argument-first with a member fallback**: the
+  callers pass the real field explicitly, `nullptr` still falls back to the
+  member so nothing silently regresses, and an unloaded field is rejected up
+  front instead of being marched over. The undefined
+  `traceRayWithDistanceField` declaration (declared, never defined) is gone.
+- **`DistanceFieldMarch` used an unreachable hit threshold.** It treated
+  `distance < 0.01f` as a hit, but the field only holds values at voxel centres,
+  so the smallest distance any query can return is on the order of half a voxel
+  diagonal. Every ray therefore burned all 256 steps and returned a miss. The
+  threshold is now `max(min_trace_step, voxel_diagonal * 0.5f)`, computed from
+  the new `LumenDistanceField::GetVoxelSize()` / `GetVoxelDiagonal()`.
+  Additionally: the ray is **clipped to the field's world box** (outside it
+  `QueryDistance` is `FLT_MAX`, which means "no data", not "far away", so an
+  origin outside the box used to wander off at maximum step size), a hit is
+  **refined by binary search** (8 iterations) so `hit_distance` lands on the
+  surface rather than a voxel away, and a zero-length direction is rejected.
+- **Shading points are lifted off their own surface.** GI and reflections start
+  their rays on a surface, where the field reads ~0 -- without an offset the
+  first step "hits" the surface the ray is leaving. Both now offset the origin
+  along the shading normal by one voxel diagonal, which is the smallest scale
+  the field can resolve.
+- **`QueryNearestSurface` no longer produces NaN normals.** Its gradient step
+  was hard-coded to `0.1`; on coarse voxels all three samples landed in the same
+  voxel, the difference was zero, and `normalisedCopy()` of a zero vector fed
+  NaN into the lighting. The epsilon is now voxel-scaled, out-of-bounds samples
+  are treated as "no change" rather than `FLT_MAX`, and a degenerate gradient
+  falls back to a finite normal.
+- **`LumenRayTracingSmokeTest`** (32 checks, `-DZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST=ON`,
+  registered with CTest) pins all of the above headlessly: a ray hits the floor
+  at the right distance with a finite unit normal, empty space misses, an origin
+  outside the world box is clipped and still hits, the argument beats the
+  member, and -- end to end -- GI returns non-zero indirect light (it was
+  identically zero before) while a hemisphere facing empty space returns zero.
+
 ### Fixed / Added - 2026-10-21 (RHI groundwork for the GPU-driven path)
 - **`VulkanRHI::CreateComputePipelines` / `CreateGraphicsPipelines` read and wrote
   past their own stack** for any `createInfoCount > 1`: only one

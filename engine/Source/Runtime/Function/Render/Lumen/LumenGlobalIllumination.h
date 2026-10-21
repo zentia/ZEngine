@@ -41,6 +41,18 @@ public:
     // 设置表面缓存引用
     void setSurfaceCache(LumenSurfaceCacheManager* surface_cache) { m_SurfaceCache = surface_cache; }
 
+    // 设置距离场引用。软件光追的必需输入，同时决定"离表面多远才算离开自己"的偏移量。
+    void setDistanceField(LumenDistanceField* distance_field) { m_DistanceField = distance_field; }
+
+private:
+    // 从表面点出发时的自相交偏移。着色点本身就在面上，距离场在那个体素里的值约等于
+    // 0（小于命中阈值），不偏移的话第一脚就"命中自己"，GI 会退化成全黑或全自照明。
+    // 偏移量取一个体素对角线：距离场能分辨的最小尺度就是这个。
+    float GetSurfaceOffset() const;
+
+    // 把着色点沿法线抬到表面之外
+    Vector3 OffsetOriginFromSurface(const Vector3& world_position, const Vector3& normal) const;
+
 private:
     // 计算单次间接光照
     Vector3
@@ -70,6 +82,7 @@ private:
     // 子系统引用
     LumenRayTracing* m_RayTracing = nullptr;
     LumenSurfaceCacheManager* m_SurfaceCache = nullptr;
+    LumenDistanceField* m_DistanceField = nullptr;
 
     // 光照缓存（用于时间累积和空间复用）
     struct LightingCacheEntry

@@ -50,11 +50,12 @@ jobs:
       # moment it lands; a test that is not in this list is a test that does
       # not run.
       #
-      # Not enabled: ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST -- this job
-      # runs with ZENGINE_USE_VULKAN=OFF, and that branch strips
+      # Not enabled: ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST and
+      # ZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST -- this job runs with
+      # ZENGINE_USE_VULKAN=OFF, and that branch strips
       # Function/Render/Lumen/*.cpp out of ZRuntime, so there is nothing for
-      # the test to link against here. It is configured and run on the hosts
-      # that do build Lumen (Apple / Linux / Windows+Vulkan).
+      # either test to link against here. They are configured and run on the
+      # hosts that do build Lumen (Apple / Linux / Windows+Vulkan).
       - name: Configure with smoke tests enabled
         run: >
           cmake -S . -B build_smoke

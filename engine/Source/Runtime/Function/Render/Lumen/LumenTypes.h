@@ -21,6 +21,12 @@ namespace LumenConstants
     constexpr uint32_t kMaxCpuDistanceFieldResolution = 64;
     constexpr float kMinTraceStep = 0.1f;
     constexpr float kMaxTraceStep = 100.0f;
+    // 软件光追（距离场 sphere tracing）的上限。球追踪在开阔空间里是几何收敛的，
+    // 但贴着表面走时会退化成最小步长爬行，必须有个步数上限兜住。
+    constexpr uint32_t kMaxSoftwareTraceSteps = 256;
+    // 命中后用来把"跨过阈值的那一段"收敛到表面的二分次数。8 次把区间压到 1/256，
+    // 已经远细于体素本身，再多没有意义。
+    constexpr uint32_t kTraceBinaryRefinementSteps = 8;
     constexpr uint32_t kMaxSurfaceCachePages = 1024;
     constexpr uint32_t kSurfaceCachePageSize = 64;  // 64x64 texels per page
 }  // namespace LumenConstants

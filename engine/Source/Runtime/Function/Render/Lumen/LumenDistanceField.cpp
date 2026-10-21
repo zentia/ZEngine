@@ -356,6 +356,26 @@ float LumenDistanceField::QueryDistance(const Vector3& world_position) const
     return std::numeric_limits<float>::max();
 }
 
+Vector3 LumenDistanceField::GetVoxelSize() const
+{
+    if (m_DistanceField.resolution_x == 0 || m_DistanceField.resolution_y == 0 || m_DistanceField.resolution_z == 0)
+    {
+        return Vector3(0.0f, 0.0f, 0.0f);
+    }
+
+    if (!m_DistanceField.world_bounds.IsValid())
+    {
+        return Vector3(0.0f, 0.0f, 0.0f);
+    }
+
+    const Vector3 bounds_size =
+        m_DistanceField.world_bounds.getMaxCorner() - m_DistanceField.world_bounds.getMinCorner();
+
+    return Vector3(bounds_size.x / static_cast<float>(m_DistanceField.resolution_x),
+                   bounds_size.y / static_cast<float>(m_DistanceField.resolution_y),
+                   bounds_size.z / static_cast<float>(m_DistanceField.resolution_z));
+}
+
 bool LumenDistanceField::QueryNearestSurface(const Vector3& world_position,
                                              Vector3& out_surface_position,
                                              Vector3& out_surface_normal) const
@@ -366,13 +386,35 @@ bool LumenDistanceField::QueryNearestSurface(const Vector3& world_position,
         return false;
     }
 
-    // 使用梯度计算法线
-    const float epsilon = 0.1f;
-    float dx = QueryDistance(world_position + Vector3(epsilon, 0.0f, 0.0f)) - distance;
-    float dy = QueryDistance(world_position + Vector3(0.0f, epsilon, 0.0f)) - distance;
-    float dz = QueryDistance(world_position + Vector3(0.0f, 0.0f, epsilon)) - distance;
+    // 梯度步长必须和体素同量级。原来写死 0.1：体素比它大的时候三个采样点会落进同一
+    // 个体素，差分全是 0，normalisedCopy() 对零向量求归一化 -> NaN 法线一路传播到
+    // 着色结果。体素比它小的时候又会把噪声当成梯度。
+    const Vector3 voxel_size = GetVoxelSize();
+    const float epsilon = std::max({voxel_size.x, voxel_size.y, voxel_size.z, 1e-4f});
 
-    out_surface_normal = Vector3(dx, dy, dz).normalisedCopy();
+    // 采样点跑出世界盒时 QueryDistance 返回 FLT_MAX，那不是"远处有面"，是"没数据"。
+    // 当成无变化处理，否则边界体素会得到一个指向无穷的梯度。
+    const float infinite = std::numeric_limits<float>::max();
+    const auto sample_offset = [&](const Vector3& offset) {
+        const float value = QueryDistance(world_position + offset);
+        return value >= infinite - 1.0f ? distance : value;
+    };
+
+    float dx = sample_offset(Vector3(epsilon, 0.0f, 0.0f)) - distance;
+    float dy = sample_offset(Vector3(0.0f, epsilon, 0.0f)) - distance;
+    float dz = sample_offset(Vector3(0.0f, 0.0f, epsilon)) - distance;
+
+    Vector3 gradient(dx, dy, dz);
+    if (gradient.squaredLength() < 1e-12f)
+    {
+        // 梯度退化（距离场在这一带是常数，例如体素正中）。宁可返回一个平庸但有限的
+        // 法线，也不要让 NaN 进入光照计算。
+        out_surface_normal = Vector3(0.0f, 1.0f, 0.0f);
+        out_surface_position = world_position;
+        return true;
+    }
+
+    out_surface_normal = gradient.normalisedCopy();
     out_surface_position = world_position - out_surface_normal * distance;
 
     return true;
