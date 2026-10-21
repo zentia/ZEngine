@@ -329,6 +329,20 @@ using PFN_D3D11_CREATE_DEVICE = HRESULT(WINAPI*)(IDXGIAdapter*, D3D_DRIVER_TYPE,
                                                  ID3D11Device**, D3D_FEATURE_LEVEL*,
                                                  ID3D11DeviceContext**);
 
+// Same yardstick HardwareProbe.cpp uses for GpuInfo::softwareAdapter, so the
+// "only software rendering" advisory and this check never disagree about which
+// adapter is software. The vendor/device pair is Microsoft Basic Render Driver,
+// which is what the check falls back on when an older driver stack does not set
+// the flag.
+bool IsSoftwareAdapter(const DXGI_ADAPTER_DESC1& description)
+{
+    if ((description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
+    {
+        return true;
+    }
+    return description.VendorId == 0x1414 && description.DeviceId == 0x8c;
+}
+
 bool TryCreateD3D11Device(PFN_D3D11_CREATE_DEVICE create, IDXGIAdapter1* adapter,
                           std::uint32_t& featureLevel, std::uint32_t& failureHresult)
 {
@@ -399,17 +413,26 @@ Direct3D11Probe ProbeDirect3D11()
         DXGI_ADAPTER_DESC1 description{};
         preferred->GetDesc1(&description);
         probe.known = true;
-        std::uint32_t level = 0;
-        std::uint32_t failure = 0;
-        if (TryCreateD3D11Device(create, preferred.Get(), level, failure))
+
+        // A software adapter winning the preference means there is no GPU driver
+        // installed at all. It is not allowed to answer for the machine: the game
+        // would start on WARP and run at a few frames a second, and saying "it
+        // cannot start" about a machine that does start is the kind of thing a
+        // player reports back verbatim.
+        if (!IsSoftwareAdapter(description))
         {
-            probe.deviceCreated = true;
-            probe.onPreferredAdapter = true;
-            probe.featureLevel = level;
-            probe.adapterName = diagnosis::WideToUtf8(description.Description);
-            return probe;
+            std::uint32_t level = 0;
+            std::uint32_t failure = 0;
+            if (TryCreateD3D11Device(create, preferred.Get(), level, failure))
+            {
+                probe.deviceCreated = true;
+                probe.onPreferredAdapter = true;
+                probe.featureLevel = level;
+                probe.adapterName = diagnosis::WideToUtf8(description.Description);
+                return probe;
+            }
+            probe.failureHresult = failure;
         }
-        probe.failureHresult = failure;
     }
 
     // The card the game would pick said no. Before telling the player it cannot
@@ -432,18 +455,24 @@ Direct3D11Probe ProbeDirect3D11()
         {
             continue;
         }
-        // A software adapter answering yes is worse than no answer at all: it
-        // would report D3D11 as available on a machine with no GPU driver
-        // installed, which is exactly the machine this check exists to catch.
-        if ((description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
-        {
-            continue;
-        }
         probe.known = true;
         std::uint32_t level = 0;
         std::uint32_t failure = 0;
         if (TryCreateD3D11Device(create, adapter.Get(), level, failure))
         {
+            // The software adapter is tried but never accepted as an answer.
+            // Recording that it *could* create a device is what lets the rule say
+            // "no GPU driver installed" instead of "no Direct3D 11"; the loop
+            // keeps going in case a real card is still to come.
+            if (IsSoftwareAdapter(description))
+            {
+                probe.softwareOnlyAdapter = true;
+                if (probe.adapterName.empty())
+                {
+                    probe.adapterName = diagnosis::WideToUtf8(description.Description);
+                }
+                continue;
+            }
             probe.deviceCreated = true;
             probe.onPreferredAdapter = false;
             probe.featureLevel = level;
@@ -561,6 +590,10 @@ diagnosis::UserAction ActionFor(const std::string& findingCode)
     {
         return {"INSTALL_GPU_DRIVER", "安装显卡厂商官方驱动后重启电脑。"};
     }
+    if (findingCode == "D3D11_ONLY_SOFTWARE_ADAPTER")
+    {
+        return {"INSTALL_GPU_DRIVER", "安装显卡厂商官方驱动后重启电脑。"};
+    }
     if (findingCode == "D3D_FEATURE_LEVEL_BELOW_MINIMUM")
     {
         return {"UPGRADE_GPU", "显卡不支持游戏需要的功能级别，需要升级显卡或更新驱动后重启电脑。"};
@@ -658,9 +691,22 @@ void AppendBlockingFindings(PreflightResult& result, const PreflightInputs& inpu
     // first and only reports this when none of them could do it.
     if (inputs.direct3d11.known && !inputs.direct3d11.deviceCreated)
     {
-        result.findings.push_back({"D3D11_DEVICE_UNAVAILABLE", "gpu",
-            "这台电脑的显卡无法初始化 Direct3D 11，游戏无法启动。",
-            "D3D11CreateDevice failed, hr=" + HexText(inputs.direct3d11.failureHresult)});
+        // Two machines, two sentences. "Only the software adapter could create a
+        // device" means the driver is missing; the game does start there, on
+        // WARP, and telling a player it cannot start about a game that does is
+        // the one thing they will quote back at support.
+        if (inputs.direct3d11.softwareOnlyAdapter)
+        {
+            result.findings.push_back({"D3D11_ONLY_SOFTWARE_ADAPTER", "gpu",
+                "这台电脑上只有软件渲染器可以运行 Direct3D 11（显卡驱动没有装好），画面和帧率会非常差。",
+                "only the software adapter created a device: " + inputs.direct3d11.adapterName});
+        }
+        else
+        {
+            result.findings.push_back({"D3D11_DEVICE_UNAVAILABLE", "gpu",
+                "这台电脑的显卡无法初始化 Direct3D 11，游戏无法启动。",
+                "D3D11CreateDevice failed, hr=" + HexText(inputs.direct3d11.failureHresult)});
+        }
     }
 
     // Only when the game states a level of its own. A D3D11 game running at
@@ -837,6 +883,7 @@ bool IsBlocking(const std::string& findingCode)
            findingCode == "CPU_ISA_UNSUPPORTED" ||
            findingCode == "PHYSICAL_MEMORY_INSUFFICIENT" ||
            findingCode == "D3D11_DEVICE_UNAVAILABLE" ||
+           findingCode == "D3D11_ONLY_SOFTWARE_ADAPTER" ||
            findingCode == "D3D_FEATURE_LEVEL_BELOW_MINIMUM";
 }
 
@@ -1425,6 +1472,7 @@ std::string BuildPreflightJson(
            << "    \"direct3d11\": {\"known\": " << BoolText(inputs.direct3d11.known)
            << ", \"deviceCreated\": " << BoolText(inputs.direct3d11.deviceCreated)
            << ", \"onPreferredAdapter\": " << BoolText(inputs.direct3d11.onPreferredAdapter)
+           << ", \"softwareOnlyAdapter\": " << BoolText(inputs.direct3d11.softwareOnlyAdapter)
            << ", \"featureLevel\": " << JsonString(FeatureLevelName(inputs.direct3d11.featureLevel))
            << ", \"featureLevelValue\": " << inputs.direct3d11.featureLevel
            << ", \"adapterName\": " << JsonString(inputs.direct3d11.adapterName)

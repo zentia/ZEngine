@@ -465,6 +465,23 @@ int main()
                   "the player is told to install a driver");
         }
         {
+            // No GPU driver installed: the software adapter can create a device,
+            // so the game does start -- on WARP. It must not be told it cannot.
+            auto inputs = HealthyInputs();
+            inputs.direct3d11.deviceCreated = false;
+            inputs.direct3d11.onPreferredAdapter = false;
+            inputs.direct3d11.softwareOnlyAdapter = true;
+            inputs.direct3d11.adapterName = "Microsoft Basic Render Driver";
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::BelowMinimum,
+                  "a machine with no GPU driver is below the minimum");
+            Check(HasFinding(result, "D3D11_ONLY_SOFTWARE_ADAPTER"), "and says it is software only");
+            Check(!HasFinding(result, "D3D11_DEVICE_UNAVAILABLE"),
+                  "without claiming D3D11 is unavailable -- the game does start there");
+            Check(result.actions.front().code == "INSTALL_GPU_DRIVER",
+                  "and the player is told to install a driver");
+        }
+        {
             // Never asked is not the same as answered no. A probe that did not
             // finish, or a machine with no d3d11.dll, must not block a launch.
             auto inputs = HealthyInputs();

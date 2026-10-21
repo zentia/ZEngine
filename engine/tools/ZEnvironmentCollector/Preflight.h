@@ -90,6 +90,10 @@ struct Direct3D11Probe
     // probe did not finish. "Did not ask" must never read as "cannot".
     bool known = false;
     bool deviceCreated = false;
+    // True when something could create a device but only the software adapter
+    // could -- i.e. no GPU driver is installed. Reported as "unusable", never as
+    // "cannot start": Unity does start on WARP, at a few frames a second.
+    bool softwareOnlyAdapter = false;
     // True when the adapter that produced the device is the one the game picks.
     // A machine where only some *other* adapter can do D3D11 may still start, so
     // it advises instead of blocking -- blocking a player who can actually play

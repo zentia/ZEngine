@@ -283,7 +283,7 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 |---|---|---|
 | `Pass` | 没发现值得说的 | 不提示 |
 | `Advise` | 可提示的环境风险：同厂商两张卡驱动版本不一致、选到集显、显示器接在集显上、只有软件渲染、可用内存过低、页面文件过小或未启用、未检测到 VC++ 运行库、游戏默认要用的显卡无法初始化 Direct3D 11（另一张可以）、磁盘可用空间不足、预览版系统 | 非模态提示，同一个提示只说一次 |
-| `BelowMinimum` | 缺 AVX2、内存低于最低要求（默认 4 GB）、非 64 位 Windows、没有任何一张显卡能初始化 Direct3D 11、功能级别低于 `minimumFeatureLevel` | 明确提示，但不阻断启动 |
+| `BelowMinimum` | 缺 AVX2、内存低于最低要求（默认 4 GB）、非 64 位 Windows、没有任何一张显卡能初始化 Direct3D 11、只有软件渲染器能初始化 Direct3D 11（显卡驱动没装）、功能级别低于 `minimumFeatureLevel` | 明确提示，但不阻断启动 |
 | `Inconclusive` | 没跑完（超时或探针失败） | 当作“没检查过” |
 
 - **限时**：默认最多 3 秒（`--budget-seconds` 可设 1–30）。到点就按 `Inconclusive` 结束，不会
@@ -299,16 +299,26 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
   随包放在游戏目录里，从进程外都看不出来。两种在位方式都算有，判断不出来时不提示。
 - **"显示器接在集显上"只在台式机上提示**：笔记本的双显卡切换机型本来就是由集显输出画面的，
   独显没有接显示器是正常状态，所以机箱类型报笔记本或读不出来时不会提示。
-- **Direct3D 11 是这里唯一"起不来"级别的显卡检查**，也是唯一会启动显卡驱动的检查。游戏跑 D3D11，
-  所以"这台机器能不能初始化 D3D11"决定游戏能不能启动——这是"双击没反应"里最硬的一类原因。
-  四条刻意的取舍：
+- **Direct3D 11 是这里唯一"起不来"级别的显卡检查**，也是唯一会启动显卡驱动的检查。Windows 客户端只
+  跑 D3D11：游戏工程 `ProjectSettings.asset` 里 `WindowsStandaloneSupport` 的 `m_APIs: 02000000`，
+  按引擎 `Runtime/Export/Graphics/GraphicsEnums.cs` 的 `GraphicsDeviceType` 枚举就是 `Direct3D11 = 2`
+  （且 `m_Automatic: 0`，不是自动挑）。所以"这台机器能不能初始化 D3D11"决定游戏能不能启动——这是
+  "双击没反应"里最硬的一类原因。五条刻意的取舍：
   - **必须建设备才能问**。`IDXGIAdapter::CheckInterfaceSupport` 对 D3D11 和 D3D12 在实测的每一张
     卡上都返回 `DXGI_ERROR_UNSUPPORTED`，没有更便宜的问法。代价是几十毫秒（本机实测热 85–95 ms、
     冷最高 0.9 s），所以它在探针预算内跑，超时就 `Inconclusive`，绝不拖住启动。
-  - **钉在游戏会选的那张卡上，并且排除软件适配器**。微软基本渲染驱动程序**能**成功创建 D3D11 设
-    备并报 11_1——问"这台机器能不能建设备"会在一台根本没装显卡驱动的机器上回答"能"。
+  - **钉在游戏会选的那张卡上**：引擎 `Runtime/GfxDevice/GfxDeviceSetup.cpp` 在没有 `-force-device-index`
+    时用 `EnumAdapterByGpuPreference(HIGH_PERFORMANCE)` 选卡并赋给 `g_D3D11Adapter`，这里用的是同一个
+    调用。
+  - **软件适配器只记录、不算数**。微软基本渲染驱动程序**能**成功创建 D3D11 设备并报 11_1，而引擎在
+    只有它的时候**真的会启动**（跑 WARP）。所以"只有软件渲染器能建设备"和"一张都建不出"是两个不同
+    的结论：`D3D11_ONLY_SOFTWARE_ADAPTER`（驱动没装，游戏能起但帧率极差）与 `D3D11_DEVICE_UNAVAILABLE`
+    （真跑不起来），前者不会说"无法启动"。
   - **首选的卡不行时，会去问其它卡**。只有一张都不行才判 `BelowMinimum`；另一张能行只 `Advise`。
     把能玩的人拦在门外是这里唯一无法挽回的错误。
+  - **请求的级别阶梯与引擎逐项一致**：`11_1 / 11_0 / 10_1 / 10_0`，同引擎 `Runtime/GfxDevice/d3d11/
+    D3D11Context.cpp` 的 `GetSupportedFeatureLevels()`。所以"建不出设备"正好等价于"低于 10_0"，即引擎
+    自己的下限；`minimumFeatureLevel` 只在游戏着色器另有要求（例如 SM5.0 要写 `11_0`）时才需要写。
   - `d3d11.dll` 是**运行时加载**而不是链接：硬链接会把它不存在变成进程起不来，这是 preflight 绝
     不能有的失败模式。
 - **不判断驱动新不新**：只在同一厂商两张卡版本不一致时才提示。
