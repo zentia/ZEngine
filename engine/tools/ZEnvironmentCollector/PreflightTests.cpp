@@ -196,6 +196,41 @@ int main()
             Check(HasFinding(result, "GPU_INTEGRATED_SELECTED"), "the integrated pick is named");
         }
         {
+            // Dedicated memory is collected and reported on every machine, but only
+            // the game knows how much it needs, so the floor lives in min-spec and
+            // defaults to off. This is the game asking for more than the card has.
+            auto inputs = HealthyInputs();
+            Requirements requirements = preflight::DefaultPreflightRequirements();
+            requirements.minimumVramBytes = 12ull << 30;
+            const auto result = Evaluate(inputs, requirements);
+            Check(result.verdict == preflight::PreflightVerdict::Advise, "a card under the game's floor advises");
+            Check(HasFinding(result, "GPU_VIDEO_MEMORY_BELOW_MINIMUM"), "and the shortfall is named");
+            Check(result.actions.front().code == "LOWER_GAME_SETTINGS", "and the player is told what helps");
+        }
+        {
+            auto inputs = HealthyInputs();
+            Check(!HasFinding(Evaluate(inputs), "GPU_VIDEO_MEMORY_BELOW_MINIMUM"),
+                  "a game that asks for no floor gets no verdict about one");
+        }
+        {
+            auto inputs = HealthyInputs();
+            Requirements requirements = preflight::DefaultPreflightRequirements();
+            requirements.minimumVramBytes = 4ull << 30;
+            Check(!HasFinding(Evaluate(inputs, requirements), "GPU_VIDEO_MEMORY_BELOW_MINIMUM"),
+                  "a card above the floor is left alone");
+        }
+        {
+            // A software renderer reports no dedicated memory at all and has its own
+            // finding; calling it short of memory on top of that would just be noise.
+            auto inputs = HealthyInputs();
+            inputs.gpuSelection.preferredAdapter.isSoftwareAdapter = true;
+            inputs.gpuSelection.preferredAdapter.dedicatedVideoMemoryBytes = 0;
+            Requirements requirements = preflight::DefaultPreflightRequirements();
+            requirements.minimumVramBytes = 4ull << 30;
+            Check(!HasFinding(Evaluate(inputs, requirements), "GPU_VIDEO_MEMORY_BELOW_MINIMUM"),
+                  "a software renderer is not also called short of memory");
+        }
+        {
             // The discrete part is installed but nothing is plugged into it.
             auto inputs = DisplayOnIntegratedInputs();
             const auto result = Evaluate(inputs);
@@ -546,13 +581,23 @@ int main()
         {
             // A key added by a newer tool: the keys this one understands must
             // still apply, and the one it does not must be visible.
-            const std::string text = "{\"minimumMemoryBytes\": 8192, \"minimumVramBytes\": 4096}";
+            const std::string text = "{\"minimumMemoryBytes\": 8192, \"minimumGpuClockMhz\": 1200}";
             Requirements requirements;
             std::vector<std::string> problems;
             Check(preflight::ParseRequirementsJson(text, requirements, problems), "an unknown key is not fatal");
             Check(requirements.minimumMemoryBytes == 8192ull, "the known key still applied");
-            Check(problems.size() == 1 && problems[0].find("minimumVramBytes") != std::string::npos,
+            Check(problems.size() == 1 && problems[0].find("minimumGpuClockMhz") != std::string::npos,
                   "the unknown key is named in the report");
+        }
+        {
+            // The floor the game sets for the card it will run on, parsed like every
+            // other threshold: from outside this tool, not decided inside it.
+            const std::string text = "{\"minimumVramBytes\": 4294967296}";
+            Requirements requirements;
+            std::vector<std::string> problems;
+            Check(preflight::ParseRequirementsJson(text, requirements, problems), "the vram floor parses");
+            Check(problems.empty(), "and is a key this tool knows");
+            Check(requirements.minimumVramBytes == 4ull << 30, "and lands on the requirement");
         }
         {
             // Zero is how a game switches a rule off, not a typo to be repaired.

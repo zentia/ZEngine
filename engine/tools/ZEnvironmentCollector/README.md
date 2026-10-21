@@ -282,7 +282,7 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 | verdict | 含义 | launcher 应当 |
 |---|---|---|
 | `Pass` | 没发现值得说的 | 不提示 |
-| `Advise` | 可提示的环境风险：同厂商两张卡驱动版本不一致、选到集显、显示器接在集显上、只有软件渲染、可用内存过低、页面文件过小或未启用、未检测到 VC++ 运行库、游戏默认要用的显卡无法初始化 Direct3D 11（另一张可以）、磁盘可用空间不足、有更新或驱动装完在等重启、很久没重启、最近显卡驱动崩溃重置过、游戏装在机械硬盘上、装在 U 盘/SD 卡/网络盘或非 NTFS 分区、安装路径含非 ASCII 字符、预览版系统 | 非模态提示，同一个提示只说一次 |
+| `Advise` | 可提示的环境风险：同厂商两张卡驱动版本不一致、选到集显、显示器接在集显上、只有软件渲染、可用内存过低、页面文件过小或未启用、未检测到 VC++ 运行库、游戏默认要用的显卡无法初始化 Direct3D 11（另一张可以）、显存低于游戏要求、磁盘可用空间不足、有更新或驱动装完在等重启、很久没重启、最近显卡驱动崩溃重置过、游戏装在机械硬盘上、装在 U 盘/SD 卡/网络盘或非 NTFS 分区、安装路径含非 ASCII 字符、预览版系统 | 非模态提示，同一个提示只说一次 |
 | `BelowMinimum` | 缺 AVX2、内存低于最低要求（默认 4 GB）、非 64 位 Windows、没有任何一张显卡能初始化 Direct3D 11、只有软件渲染器能初始化 Direct3D 11（显卡驱动没装）、功能级别低于 `minimumFeatureLevel` | 明确提示，但不阻断启动 |
 | `Inconclusive` | 没跑完（超时或探针失败） | 当作“没检查过” |
 
@@ -347,6 +347,12 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 - **安装路径含非 ASCII 单独一条**：路径对启动器是 UTF-8，对一个从没被告知编码的窄 `fopen` 就是乱
   码，而打不开的文件表现为"资源缺失"而不是"路径错了"，所以值得单独点名。报告里的路径走
   `SanitizePath`，用户名不进报告。
+- **显存给了阈值，但门槛默认关着**（`GPU_VIDEO_MEMORY_BELOW_MINIMUM`，`minimumVramBytes`）：每张卡的
+  `dedicatedVideoMemoryBytes` 一直在采、一直在报，但**够不够只有游戏知道**，所以判的是"游戏实际会跑的那张卡"
+  （`gpuSelection.preferredAdapter`），门槛写在 min-spec 里，**默认 `0`＝不判**。为什么默认不判而不像内存那样
+  给个内置下限：DXGI 报的这个数不够可信，**集显会虚报**（有 Intel 核显报得比旁边真卡还多的实例），而且跑在
+  核显上的笔记本显存小是设计如此、不是缺陷。所以它只 `Advise` 不 `BelowMinimum`，软件渲染器另有一条自己的
+  提示、不再叠一条"显存不足"。玩家侧能做的只有降画质，动作就是这么写的。
 - **机械硬盘单独一条，而且现在 preflight 自己就能答**（`GAME_VOLUME_SPINNING_DISK`）：判据是游戏卷上
   的一次 `IOCTL_STORAGE_QUERY_PROPERTY`（`StorageDeviceSeekPenaltyProperty`）——**要付寻道惩罚就是有磁头
   要移动**，这是 Windows 从 Vista 起自己给出的"是不是 SSD"，一次 `CreateFile` + 一次 IOCTL，不需要管理员、
@@ -380,6 +386,7 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
   "minimumPageFilePercentOfRam": 25,
   "pageFileShareCapBytes": 8589934592,
   "maximumUptimeDays": 14,
+  "minimumVramBytes": 4294967296,
   "minimumFreeDiskSpaceBytes": 2147483648,
   "minimumFeatureLevel": "11_0"
 }
@@ -394,7 +401,7 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
   里的写法；写成裸数字会被拒。删掉这一行＝不限制功能级别。D3D11 设备在 10_0 上通常照样能跑游戏，
   所以工具不会替你猜一个下限——不写就是不限。
   一次启动绝不会因为一个配置文件被打断——宁可用一份已知的默认配置，也不要用半份读出来的配置。
-- **认不出的键会被点名**：`"minimumVramBytes"` 这种新键会被跳过并记进 `notes`，其余键照常生效。这是一条
+- **认不出的键会被点名**：`"minimumGpuClockMhz"` 这种新键会被跳过并记进 `notes`，其余键照常生效。这是一条
   重要的留痕：否则键名改了、阈值其实没生效，报告上完全看不出来。
 - 报告里有 `"requirements"`（本次判定用的全部阈值）和 `"requirementsSource"`（`default` 或
   `file:<路径>`）。玩家拿着一份“Pass”来投诉时，这两个键是唯一的答案：到底是机器没问题，还是给工具的

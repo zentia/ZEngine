@@ -804,6 +804,12 @@ diagnosis::UserAction ActionFor(const std::string& findingCode)
     {
         return {"INSTALL_GPU_DRIVER", "安装显卡厂商官方驱动后重启电脑。"};
     }
+    if (findingCode == "GPU_VIDEO_MEMORY_BELOW_MINIMUM")
+    {
+        // Nothing the player can install: it is a hardware number. So the advice is
+        // the two things that actually help, in the order they help.
+        return {"LOWER_GAME_SETTINGS", "把游戏画质和分辨率调低一些再启动；显存不足时读资源会失败或很慢。"};
+    }
     if (findingCode == "MONITOR_ON_INTEGRATED_GPU")
     {
         return {"PLUG_MONITOR_INTO_DISCRETE_GPU",
@@ -1057,6 +1063,22 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
                 picked.name + " with " +
                 std::to_string(picked.dedicatedVideoMemoryBytes / (1024 * 1024)) + " MB, " +
                 "this machine has " + std::to_string(best / (1024 * 1024)) + " MB available"});
+        }
+
+        // Dedicated memory on the card the game will actually run on. Off unless
+        // the game asks for a floor, and only advisory when it does: the number
+        // DXGI reports is not trustworthy enough to turn anyone away -- integrated
+        // parts are known to over-report it -- and on a laptop that runs on one it
+        // is small by design rather than by defect. A software renderer has no
+        // dedicated memory to speak of, and says so in its own finding.
+        if (!picked.isSoftwareAdapter && requirements.minimumVramBytes != 0 &&
+            picked.dedicatedVideoMemoryBytes < requirements.minimumVramBytes)
+        {
+            result.findings.push_back({"GPU_VIDEO_MEMORY_BELOW_MINIMUM", "gpu",
+                "游戏默认要用的这张显卡显存低于游戏要求，读资源可能失败或明显变慢。",
+                picked.name + " has " +
+                std::to_string(picked.dedicatedVideoMemoryBytes / (1024 * 1024)) + " MB, " +
+                std::to_string(requirements.minimumVramBytes / (1024 * 1024)) + " MB required"});
         }
     }
 
@@ -1582,7 +1604,8 @@ bool ParseRequirementsJson(const std::string& text, Requirements& requirements,
         else if (key == "minimumMemoryBytes" || key == "minimumAvailableMemoryBytes" ||
                  key == "minimumPageFileBytes" || key == "pageFileRuleMaxMemoryBytes" ||
                  key == "minimumPageFilePercentOfRam" || key == "pageFileShareCapBytes" ||
-                 key == "maximumUptimeDays" || key == "minimumFreeDiskSpaceBytes")
+                 key == "maximumUptimeDays" || key == "minimumVramBytes" ||
+                 key == "minimumFreeDiskSpaceBytes")
         {
             std::uint64_t value = 0;
             if (!cursor.ReadUnsigned(value))
@@ -1599,6 +1622,7 @@ bool ParseRequirementsJson(const std::string& text, Requirements& requirements,
                 parsed.minimumPageFilePercentOfRam = static_cast<std::uint32_t>(value);
             }
             else if (key == "pageFileShareCapBytes") { parsed.pageFileShareCapBytes = value; }
+            else if (key == "minimumVramBytes") { parsed.minimumVramBytes = value; }
             else if (key == "maximumUptimeDays") { parsed.maximumUptimeDays = static_cast<std::uint32_t>(value); }
             else { parsed.minimumFreeDiskSpaceBytes = value; }
         }
@@ -1814,6 +1838,7 @@ std::string BuildPreflightJson(
            << ", \"minimumFreeDiskSpaceBytes\": " << context.requirements.minimumFreeDiskSpaceBytes
            << ", \"minimumPageFilePercentOfRam\": " << context.requirements.minimumPageFilePercentOfRam
            << ", \"pageFileShareCapBytes\": " << context.requirements.pageFileShareCapBytes
+           << ", \"minimumVramBytes\": " << context.requirements.minimumVramBytes
            << ", \"maximumUptimeDays\": " << context.requirements.maximumUptimeDays
            << ", \"minimumFeatureLevel\": " << JsonString(FeatureLevelName(context.requirements.minimumFeatureLevel))
            << "},\n"

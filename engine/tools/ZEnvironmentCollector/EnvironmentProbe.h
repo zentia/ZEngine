@@ -160,6 +160,13 @@ struct Requirements
     // does not count time spent asleep, so this measures uptime, not calendar
     // days. 0 turns the rule off.
     std::uint32_t maximumUptimeDays = 14;
+    // Dedicated video memory on the card the game is going to run on. 0 means the
+    // game has not asked for a floor, and the tool does not invent one: the number
+    // DXGI reports is not trustworthy enough to be the reason a player is told
+    // their machine is below spec. Integrated parts over-report it -- there is a
+    // known case of an Intel iGPU claiming more than the real card beside it --
+    // and a laptop that runs on one is not below spec, it is just a laptop.
+    std::uint64_t minimumVramBytes = 0;
     // Free space on the volume the game sits on: patches and logs land there.
     std::uint64_t minimumFreeDiskSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
     // Raw D3D_FEATURE_LEVEL number (0xb000 for 11_0), kept as a plain integer so
