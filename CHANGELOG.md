@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 2026-10-21 (PlayerSettings is a real settings object)
+- **`PlayerSettings` was a 7-line stub**, and the empty `m_ProductName` it left
+  behind had a real consequence: `UserPreferences` derives its per-user
+  directory from that field, so every project on a machine collapsed onto the
+  same `ZEngine` folder and shared one `preferences.json`.
+  - Fields now filled from the project: `m_ProductName` (defaults to the
+    project name), `m_CompanyName`, `m_Version` (project version, else
+    `1.0.0`), plus `m_DefaultScreenWidth/Height`.
+  - Persisted to `<project>/<config_dir>/player_settings.json` (rapidjson,
+    atomic temp+rename). Missing / malformed / partial files fall back to the
+    defaults instead of failing; a resolution <= 0 is rejected.
+  - `WindowSystem` now resolves the window size as UserPreferences >
+    PlayerSettings > built-in fallback, so a project can actually pick a
+    default resolution (it was hardcoded to 1280x720 before).
+  - `VulkanRHI` no longer dereferences `GET_SYSTEM(PlayerSettings)` blindly --
+    `RegisterRuntimeLight()` deliberately does not register it, so that path
+    crashed on instance creation.
+- New `PlayerSettingsSmokeTest` (32 checks), registered with CTest and added to
+  the Windows smoke-test workflow.
+
 ### Fixed - 2026-10-20 (CTest actually runs the smoke tests)
 - **The opt-in smoke tests were invisible to CTest.** Every
   `option(ZENGINE_BUILD_*_SMOKE_TEST ...)` built an executable but never called

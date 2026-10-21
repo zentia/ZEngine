@@ -2,6 +2,7 @@
 
 #include "Application/Application.h"
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Function/PlayerSettings/PlayerSettings.h"
 #include "Runtime/Resource/Config/ConfigManager.h"
 
 #if Z_PLATFORM_WINDOWS
@@ -60,8 +61,16 @@ bool WindowSystem::Initialize()
     auto* user_prefs   = SystemRegistry::GetInstance().GetSystem<UserPreferences>();
     auto* app           = SystemRegistry::GetInstance().GetSystem<Application>();
 
-    const int width  = std::max(1280, user_prefs ? user_prefs->GetInt("Window.Width", 1280) : 1280);
-    const int height = std::max(720,  user_prefs ? user_prefs->GetInt("Window.Height", 720) : 720);
+    // Precedence, highest first: per-user state (UserPreferences, written when
+    // the window is resized) > the project default (PlayerSettings) > the
+    // built-in fallback. Previously the fallback was the only thing here, so a
+    // project could not ask for a resolution at all.
+    const auto* player_settings = SystemRegistry::GetInstance().GetSystem<PlayerSettings>();
+    const int fallback_width = player_settings != nullptr ? player_settings->m_DefaultScreenWidth : 1280;
+    const int fallback_height = player_settings != nullptr ? player_settings->m_DefaultScreenHeight : 720;
+
+    const int width  = std::max(fallback_width,  user_prefs ? user_prefs->GetInt("Window.Width",  fallback_width)  : fallback_width);
+    const int height = std::max(fallback_height, user_prefs ? user_prefs->GetInt("Window.Height", fallback_height) : fallback_height);
 
     m_Application = CreatePlatformApplication();
 

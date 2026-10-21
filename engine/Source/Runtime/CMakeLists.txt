@@ -392,6 +392,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/AssetBundle/Test/AssetBundleSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/AssetBundle/Test/AssetBundleSmokeTest.cpp")
+# PlayerSettings smoke-test main. Same carve-out rationale: it owns main() and
+# must not be whole-archived into ZRuntime. Built only when
+# ZENGINE_BUILD_PLAYER_SETTINGS_SMOKE_TEST=ON.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/PlayerSettings/Test/PlayerSettingsSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/PlayerSettings/Test/PlayerSettingsSmokeTest.cpp")
 # PR-SK1: skeletal skinning smoke-test main. Same carve-out rationale as every
 # entry above: it owns main() and must not be whole-archived into ZRuntime.
 # Built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON (see
@@ -1324,6 +1331,11 @@ add_subdirectory(Function/Audio/Test)
 # above and built only when ZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON. Pure file
 # + memory work, so it runs headless on every host.
 add_subdirectory(AssetBundle/Test)
+
+# PlayerSettings smoke test. Own main(); carved out of the ZRuntime glob above
+# and built only when ZENGINE_BUILD_PLAYER_SETTINGS_SMOKE_TEST=ON. Pure file
+# work, so it runs headless on every host.
+add_subdirectory(Function/PlayerSettings/Test)
 
 # Skeletal skinning smoke test (PR-SK1). Own main(); carved out of the ZRuntime
 # glob above and built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON. Pure

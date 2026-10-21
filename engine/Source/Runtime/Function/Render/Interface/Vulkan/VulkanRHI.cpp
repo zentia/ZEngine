@@ -1055,7 +1055,15 @@ void VulkanRHI::CreateInstance()
     // app info
     VkApplicationInfo appInfo {};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = GET_SYSTEM(PlayerSettings)->m_ProjectName.c_str();
+    // NOT a bare dereference: RegisterRuntimeLight() deliberately does not
+    // register PlayerSettings, so any Vulkan path started that way crashed here.
+    // pApplicationName is a raw const char* that Vulkan copies during
+    // vkCreateInstance, so a string literal (static storage) is a safe fallback.
+    constexpr const char* kFallbackApplicationName = "ZEngine";
+    const PlayerSettings* player_settings = GET_SYSTEM(PlayerSettings);
+    appInfo.pApplicationName = (player_settings != nullptr && !player_settings->m_ProjectName.empty())
+                                   ? player_settings->m_ProjectName.c_str()
+                                   : kFallbackApplicationName;
     appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.pEngineName = "ZEngine";
     appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
