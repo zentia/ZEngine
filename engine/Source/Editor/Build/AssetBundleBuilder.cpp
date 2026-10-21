@@ -1,6 +1,7 @@
 #include "Editor/Build/AssetBundleBuilder.h"
 
 #include "Editor/AssetPipeline/TextureImporter/TextureImporter.h"
+#include "Editor/Build/BuildCache.h"
 #include "Editor/AssetRegistry/AssetRegistry.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Runtime/AssetBundle/AssetBundleFormat.h"
@@ -29,6 +30,18 @@ namespace
     const char* const kRootAssetTypes[] = {"LevelRes", "WorldRes", "PrefabAsset"};
 
     constexpr const char* kSharedBundleName = "shared";
+    /// Next to the manifest, not in Bundles/: it describes the whole output
+    /// directory, so a written cache always matches the artifacts beside it
+    /// (delete Build/<Platform>/ and the next pass is a full one).
+    constexpr const char* kCacheFileName = "AssetBundleBuildCache.json";
+    /// Reserved key for the manifest's own fingerprint. A bundle name can never
+    /// collide with it -- BundleNameFromRoot() strips anything but
+    /// [A-Za-z0-9_-], and the leading "__" is not a legal bundle name anyway.
+    constexpr const char* kManifestCacheKey = "__manifest__";
+    /// Bump when this pass starts feeding something new into a fingerprint
+    /// (a new entry field, a different writer, ...). Old caches are discarded.
+    constexpr int kBuilderVersion = 1;
+
     // Layout is the one AGENTS.md 2.24 documents: bundles live in a Bundles/
     // subdirectory so the manifest sits next to a directory, not next to
     // content, and manifest-relative dependency names keep resolving when a
@@ -65,29 +78,6 @@ namespace
             }
         }
         return raw;
-    }
-
-    bool ReadWholeFile(const std::filesystem::path& path, std::vector<uint8_t>& out_bytes)
-    {
-        std::ifstream in(path, std::ios::binary | std::ios::ate);
-        if (!in)
-        {
-            return false;
-        }
-
-        const std::streamoff size = in.tellg();
-        if (size < 0)
-        {
-            return false;
-        }
-
-        in.seekg(0, std::ios::beg);
-        out_bytes.resize(static_cast<std::size_t>(size));
-        if (size > 0)
-        {
-            in.read(reinterpret_cast<char*>(out_bytes.data()), size);
-        }
-        return static_cast<std::size_t>(in.gcount()) == out_bytes.size();
     }
 
     /// Every `*.js` under `root`, as (module id, absolute path), sorted by
@@ -274,9 +264,14 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
     LOG_INFO(ZPak, "AssetBundleBuilder: {} root(s), target {}", roots.size(), platform_tag);
 
     // ---- 2. cook -----------------------------------------------------------
+    // Incremental too, and this is where the time actually goes: re-encoding a
+    // BC7/ASTC texture dwarfs everything the packing pass does. `force_rebuild`
+    // turns it back into the "cook everything, always" behaviour the cook menu
+    // items still have.
     if (options.cook_first)
     {
-        const int cooked = TextureImporter::CookProjectTextures(options.target);
+        const int cooked = TextureImporter::CookProjectTextures(options.target, !options.force_rebuild);
+        result.cooked_texture_count = cooked > 0 ? static_cast<std::size_t>(cooked) : 0;
         LOG_INFO(ZPak, "AssetBundleBuilder: cooked {} texture(s) for {}", cooked, platform_tag);
     }
 
@@ -308,43 +303,54 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         }
     }
 
-    // ---- 4. collect bytes --------------------------------------------------
+    // ---- 4. collect inputs -------------------------------------------------
+    // Nothing is read yet. A no-op build must be able to decide "unchanged"
+    // from stat() + a cached hash alone, which is the whole point: reading
+    // every asset is what made a rebuild cost the same as a first build.
+    struct PlannedEntry
+    {
+        std::string path;              ///< key inside the bundle
+        std::filesystem::path file;    ///< what to read: cooked bytes when there are any
+        std::filesystem::path source;  ///< editor-platform fallback (see below)
+        std::string guid;
+        std::string type;
+    };
+
     const std::filesystem::path cooked_root = project_info->GetIntermediateCookedRoot();
     const std::filesystem::path cooked_platform_root = cooked_root.empty() ? std::filesystem::path()
                                                                            : cooked_root / platform_tag;
 
-    std::unordered_map<std::string, std::vector<AssetBundles::BundleSourceEntry>> bundles;
+    std::unordered_map<std::string, std::vector<PlannedEntry>> bundles;
 
     auto addAsset = [&](const std::string& bundle_name, const std::string& asset) {
-        std::vector<uint8_t> bytes;
-
         const std::filesystem::path source_path = content_root / asset;
-        bool read_ok = false;
+        std::filesystem::path read_path = source_path;
+
         if (!cooked_platform_root.empty())
         {
             const std::filesystem::path cooked_path = cooked_platform_root / asset;
             std::error_code exists_ec;
             if (std::filesystem::exists(cooked_path, exists_ec))
             {
-                read_ok = ReadWholeFile(cooked_path, bytes);
-                if (!read_ok)
-                {
-                    LOG_WARNING(ZPak, "AssetBundleBuilder: cannot read cooked asset {}", cooked_path.generic_string());
-                }
-            }
-        }
-        if (!read_ok)
-        {
-            if (!ReadWholeFile(source_path, bytes))
-            {
-                LOG_WARNING(ZPak, "AssetBundleBuilder: cannot read asset {}; skipped", source_path.generic_string());
-                return;
+                read_path = cooked_path;
             }
         }
 
-        AssetBundles::BundleSourceEntry entry;
+        std::error_code exists_ec;
+        if (!std::filesystem::exists(read_path, exists_ec) || exists_ec)
+        {
+            LOG_WARNING(ZPak, "AssetBundleBuilder: cannot read asset {}; skipped", source_path.generic_string());
+            return;
+        }
+
+        PlannedEntry entry;
         entry.path = asset;
-        entry.bytes = std::move(bytes);
+        entry.file = std::move(read_path);
+        // Kept even when `file` is the cooked copy: a cooked file that exists
+        // but cannot be read (truncated by a killed cook) used to fall back to
+        // the editor bytes, and shipping the wrong platform's texture is still
+        // better than shipping no texture at all.
+        entry.source = source_path;
 
         if (const std::optional<AssetIndexEntry> index = registry.GetAssetIndex(asset))
         {
@@ -385,19 +391,19 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
 
     for (const auto& [module_id, absolute_path] : script_modules)
     {
-        std::vector<uint8_t> bytes;
-        if (!ReadWholeFile(absolute_path, bytes))
+        std::error_code exists_ec;
+        if (!std::filesystem::exists(absolute_path, exists_ec) || exists_ec)
         {
             LOG_WARNING(ZPak, "AssetBundleBuilder: cannot read script module '{}'; skipped", module_id);
             continue;
         }
 
-        AssetBundles::BundleSourceEntry entry;
+        PlannedEntry entry;
         entry.path = AssetBundles::MakeScriptEntryPath(module_id);
         // No GUID and no runtime type: a compiled module is not a registry
         // asset and not an Object. The prefix is what identifies it.
         entry.type = "ScriptModule";
-        entry.bytes = std::move(bytes);
+        entry.file = absolute_path;
 
         bundles[AssetBundles::kScriptBundleName].push_back(std::move(entry));
     }
@@ -415,7 +421,11 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         bundles.erase(AssetBundles::kScriptBundleName);
     }
 
-    // ---- 5. write ----------------------------------------------------------
+    // ---- 5. write (incrementally) ------------------------------------------
+    // A bundle is rewritten only when its FINGERPRINT changed: the content hash
+    // of every entry plus everything that decides how entries become bytes
+    // (platform, compression switch, the bundle's dependency list). See
+    // BuildCache.h for why a timestamp is only a fast path, never the verdict.
     const std::filesystem::path bundles_dir = output_dir / kBundlesSubDir;
     std::filesystem::create_directories(bundles_dir, ec);
     if (ec)
@@ -424,35 +434,165 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         return result;
     }
 
+    // The cache sits next to the manifest, not inside Bundles/: it describes
+    // the whole output directory, so it can never outlive the artifacts it
+    // vouchsafes. Wiping Build/<Platform>/ -- the first thing anyone tries
+    // when a build looks wrong -- yields a clean full build.
+    const std::filesystem::path cache_path = output_dir / kCacheFileName;
+    BuildCache cache;
+    std::string cache_error;
+    if (!cache.Load(cache_path, cache_error) && !cache_error.empty())
+    {
+        LOG_WARNING(ZPak, "AssetBundleBuilder: build cache unusable ({}); rebuilding everything", cache_error);
+    }
+
+    // Anything that changes how inputs turn into bytes. One mismatch drops the
+    // whole cache -- there is no partial invalidation to get wrong.
+    BuildHasher env_hasher;
+    env_hasher.Add(std::to_string(kBuilderVersion));
+    env_hasher.Add(platform_tag);
+    env_hasher.Add(options.compress ? "1" : "0");
+    env_hasher.Add(content_root.generic_string());
+    const std::string environment = env_hasher.Hex();
+    if (options.force_rebuild || !cache.loaded() || cache.environment != environment)
+    {
+        cache.Reset();
+        cache.environment = environment;
+    }
+
     std::vector<AssetBundleInfo> infos;
     infos.reserve(bundles.size());
+    std::unordered_map<std::string, std::string> fingerprints;
     const bool has_scripts = bundles.find(AssetBundles::kScriptBundleName) != bundles.end();
+
+    // Sorted: the fingerprints below do not depend on iteration order, but the
+    // log does, and a build whose "changed" set differs run to run is
+    // impossible to reason about.
+    std::vector<std::string> bundle_names;
+    bundle_names.reserve(bundles.size());
     for (const auto& [name, entries] : bundles)
+    {
+        bundle_names.push_back(name);
+    }
+    std::sort(bundle_names.begin(), bundle_names.end());
+
+    for (const std::string& name : bundle_names)
     {
         // Deterministic order: the same content must produce the same bundle
         // bytes, or a CI size regression check would flap on map iteration.
-        std::vector<AssetBundles::BundleSourceEntry> sorted = entries;
-        std::sort(sorted.begin(), sorted.end(), [](const AssetBundles::BundleSourceEntry& a,
-                                                   const AssetBundles::BundleSourceEntry& b) {
-            return a.path < b.path;
-        });
+        std::vector<PlannedEntry> sorted = bundles[name];
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const PlannedEntry& a, const PlannedEntry& b) { return a.path < b.path; });
 
-        const std::filesystem::path bundle_path = bundles_dir / (name + ".zbundle");
-        // Per entry, not per bundle: WriteBundleFile keeps an entry Stored when
-        // deflating it does not come out smaller, so block-compressed textures
-        // cost nothing here.
-        const AssetBundles::BundleCompression method =
-            options.compress ? AssetBundles::BundleCompression::Zlib : AssetBundles::BundleCompression::Stored;
-        std::string write_error;
-        if (!AssetBundles::WriteBundleFile(bundle_path, sorted, method, write_error))
+        // Dependencies go INTO the fingerprint: a bundle that gains one (shared
+        // content appeared, script modules arrived) has to be rewritten even
+        // when none of its own bytes changed, because the dependency list is
+        // part of what the manifest records for it.
+        std::vector<std::string> dependencies;
+        if (name != kSharedBundleName && !shared_assets.empty())
         {
-            result.error = "cannot write " + bundle_path.generic_string() + ": " + write_error;
-            return result;
+            dependencies.emplace_back(kSharedBundleName);
+        }
+        // Scripts are nobody's dependency in the asset sense, so they are
+        // declared explicitly: mounting one level has to be enough to run the
+        // behaviours hanging off it. (EnsureBundleMountedForAsset would also
+        // find them, but only after the first module is already being loaded.)
+        if (name != AssetBundles::kScriptBundleName && has_scripts)
+        {
+            dependencies.emplace_back(AssetBundles::kScriptBundleName);
         }
 
-        std::error_code size_ec;
-        const std::uintmax_t size = std::filesystem::file_size(bundle_path, size_ec);
-        const int64_t size_bytes = size_ec ? 0 : static_cast<int64_t>(size);
+        BuildHasher fp;
+        fp.Add(std::to_string(kBuilderVersion));
+        fp.Add(platform_tag);
+        fp.Add(options.compress ? "1" : "0");
+        for (const std::string& dependency : dependencies)
+        {
+            fp.Add(dependency);
+        }
+
+        bool inputs_readable = true;
+        for (const PlannedEntry& entry : sorted)
+        {
+            fp.Add(entry.path);
+            fp.Add(entry.guid);
+            fp.Add(entry.type);
+
+            bool hash_ok = false;
+            const std::string hash = cache.ContentHash(name + "|" + entry.path, entry.file, hash_ok);
+            if (!hash_ok)
+            {
+                // An input we cannot hash is an input we cannot reproduce; the
+                // bundle must be rebuilt, and the pack pass below is what
+                // reports the unreadable file.
+                inputs_readable = false;
+                continue;
+            }
+            fp.Add(hash);
+        }
+        const std::string fingerprint = fp.Hex();
+        fingerprints[name] = fingerprint;
+
+        const std::filesystem::path bundle_path = bundles_dir / (name + ".zbundle");
+        const bool skip = inputs_readable && cache.IsUpToDate(name, fingerprint, bundle_path);
+
+        if (skip)
+        {
+            ++result.skipped_bundle_count;
+        }
+        else
+        {
+            std::vector<AssetBundles::BundleSourceEntry> packed;
+            packed.reserve(sorted.size());
+            for (const PlannedEntry& planned : sorted)
+            {
+                std::vector<uint8_t> bytes;
+                bool read = BuildReadWholeFile(planned.file, bytes);
+                if (!read && !planned.source.empty() && planned.source != planned.file)
+                {
+                    read = BuildReadWholeFile(planned.source, bytes);
+                }
+                if (!read)
+                {
+                    LOG_WARNING(ZPak, "AssetBundleBuilder: cannot read asset {}; skipped",
+                                planned.file.generic_string());
+                    continue;
+                }
+
+                AssetBundles::BundleSourceEntry entry;
+                entry.path = planned.path;
+                entry.guid = planned.guid;
+                entry.type = planned.type;
+                entry.bytes = std::move(bytes);
+                packed.push_back(std::move(entry));
+            }
+
+            // Per entry, not per bundle: WriteBundleFile keeps an entry Stored when
+            // deflating it does not come out smaller, so block-compressed textures
+            // cost nothing here.
+            const AssetBundles::BundleCompression method =
+                options.compress ? AssetBundles::BundleCompression::Zlib : AssetBundles::BundleCompression::Stored;
+            std::string write_error;
+            if (!AssetBundles::WriteBundleFile(bundle_path, packed, method, write_error))
+            {
+                result.error = "cannot write " + bundle_path.generic_string() + ": " + write_error;
+                return result;
+            }
+            ++result.rebuilt_bundle_count;
+        }
+
+        int64_t size_bytes = 0;
+        if (const auto recorded = cache.outputs.find(name); skip && recorded != cache.outputs.end())
+        {
+            size_bytes = recorded->second.size_bytes;
+        }
+        else
+        {
+            std::error_code size_ec;
+            const std::uintmax_t size = std::filesystem::file_size(bundle_path, size_ec);
+            size_bytes = size_ec ? 0 : static_cast<int64_t>(size);
+            cache.Record(name, fingerprint, size_bytes);
+        }
 
         result.total_bytes += static_cast<std::size_t>(size_bytes);
         // Script modules are counted separately: they are not part of the
@@ -466,48 +606,43 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         AssetBundleInfo info;
         info.name = name.c_str();
         info.size_bytes = size_bytes;
-        for (const AssetBundles::BundleSourceEntry& entry : sorted)
+        for (const PlannedEntry& entry : sorted)
         {
             info.asset_paths.emplace_back(entry.path.c_str());
         }
-        if (name != kSharedBundleName && !shared_assets.empty())
+        for (const std::string& dependency : dependencies)
         {
-            info.dependencies.emplace_back(kSharedBundleName);
-        }
-        // Scripts are nobody's dependency in the asset sense, so they are
-        // declared explicitly: mounting one level has to be enough to run the
-        // behaviours hanging off it. (EnsureBundleMountedForAsset would also
-        // find them, but only after the first module is already being loaded.)
-        if (name != AssetBundles::kScriptBundleName && has_scripts)
-        {
-            info.dependencies.emplace_back(AssetBundles::kScriptBundleName);
+            info.dependencies.emplace_back(dependency.c_str());
         }
 
         infos.push_back(std::move(info));
     }
 
+    // ---- 5b. drop artifacts nothing produces any more ----------------------
+    // A level deleted since the last build would otherwise keep shipping: the
+    // manifest no longer lists it, but the .zbundle is still on disk, and a
+    // "just copy Build/ over again" deploy picks up whatever is there.
+    std::vector<std::string> current_keys = bundle_names;
+    current_keys.push_back(kManifestCacheKey);
+
+    std::size_t stale_removed = 0;
+    for (const std::string& key : cache.StaleKeys(current_keys))
+    {
+        std::error_code remove_ec;
+        if (std::filesystem::remove(bundles_dir / (key + ".zbundle"), remove_ec))
+        {
+            ++stale_removed;
+        }
+        cache.Erase(key);
+    }
+    if (stale_removed > 0)
+    {
+        LOG_INFO(ZPak, "AssetBundleBuilder: removed {} stale bundle(s)", stale_removed);
+        // The manifest listed them, so it has to be written again.
+        cache.Erase(kManifestCacheKey);
+    }
+
     // ---- 6. manifest -------------------------------------------------------
-    auto* object_manager = GET_SYSTEM(ObjectManager);
-    if (object_manager == nullptr)
-    {
-        result.error = "ObjectManager is not available; cannot write the manifest";
-        return result;
-    }
-
-    Object* produced = object_manager->Produce(TypeOf<AssetBundleManifest>(), 0);
-    if (produced == nullptr)
-    {
-        result.error = "cannot produce an AssetBundleManifest";
-        return result;
-    }
-
-    const std::size_t bundle_count = infos.size();
-
-    auto* manifest = static_cast<AssetBundleManifest*>(produced);
-    manifest->platform = platform_tag.c_str();
-    manifest->content_root = content_root.generic_string().c_str();
-    manifest->bundles = std::move(infos);
-
     std::string manifest_file_name = project_info->name.c_str();
     if (manifest_file_name.empty())
     {
@@ -515,22 +650,81 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
     }
     manifest_file_name += ".manifest.zasset";
     const std::filesystem::path manifest_path = output_dir / manifest_file_name;
-    const bool manifest_ok = GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(manifest_path, *manifest);
-    MemoryManager::DestroyObject(produced);
 
-    if (!manifest_ok)
+    // The manifest is content-addressed too: it changes exactly when the set of
+    // bundles or any bundle's fingerprint does, so a build that rewrote nothing
+    // leaves it alone.
+    BuildHasher manifest_hasher;
+    manifest_hasher.Add(std::to_string(kBuilderVersion));
+    manifest_hasher.Add(platform_tag);
+    manifest_hasher.Add(content_root.generic_string());
+    manifest_hasher.Add(manifest_file_name);
+    for (const AssetBundleInfo& info : infos)
     {
-        result.error = "cannot write the manifest to " + manifest_path.generic_string();
-        return result;
+        manifest_hasher.Add(info.name.c_str());
+        if (const auto it = fingerprints.find(info.name.c_str()); it != fingerprints.end())
+        {
+            manifest_hasher.Add(it->second);
+        }
+    }
+    const std::string manifest_fingerprint = manifest_hasher.Hex();
+
+    if (!cache.IsUpToDate(kManifestCacheKey, manifest_fingerprint, manifest_path))
+    {
+        auto* object_manager = GET_SYSTEM(ObjectManager);
+        if (object_manager == nullptr)
+        {
+            result.error = "ObjectManager is not available; cannot write the manifest";
+            return result;
+        }
+
+        Object* produced = object_manager->Produce(TypeOf<AssetBundleManifest>(), 0);
+        if (produced == nullptr)
+        {
+            result.error = "cannot produce an AssetBundleManifest";
+            return result;
+        }
+
+        auto* manifest = static_cast<AssetBundleManifest*>(produced);
+        manifest->platform = platform_tag.c_str();
+        manifest->content_root = content_root.generic_string().c_str();
+        manifest->bundles = infos;
+
+        const bool manifest_ok = GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(manifest_path, *manifest);
+        MemoryManager::DestroyObject(produced);
+
+        if (!manifest_ok)
+        {
+            result.error = "cannot write the manifest to " + manifest_path.generic_string();
+            return result;
+        }
+
+        std::error_code manifest_size_ec;
+        const std::uintmax_t manifest_size = std::filesystem::file_size(manifest_path, manifest_size_ec);
+        cache.Record(kManifestCacheKey, manifest_fingerprint,
+                     manifest_size_ec ? 0 : static_cast<int64_t>(manifest_size));
+    }
+
+    // ---- 7. persist what this pass decided ---------------------------------
+    std::string save_error;
+    if (!cache.Save(cache_path, save_error))
+    {
+        // Not fatal: this build produced correct artifacts either way. All that
+        // is lost is the next build's ability to skip work.
+        LOG_WARNING(ZPak,
+                    "AssetBundleBuilder: cannot save the build cache ({}); the next build will be a full one",
+                    save_error);
     }
 
     result.succeeded = true;
-    result.bundle_count = bundle_count;
+    result.bundle_count = infos.size();
     result.output_dir = output_dir;
 
     LOG_INFO(ZPak,
-             "AssetBundleBuilder: {} bundle(s), {} asset(s), {} script(s), {} bytes -> {}",
+             "AssetBundleBuilder: {} bundle(s) ({} rebuilt, {} skipped), {} asset(s), {} script(s), {} bytes -> {}",
              result.bundle_count,
+             result.rebuilt_bundle_count,
+             result.skipped_bundle_count,
              result.asset_count,
              result.script_count,
              result.total_bytes,

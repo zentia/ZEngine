@@ -30,6 +30,8 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/[Pp]latform/([Ww]indows|[Mm]ac[Oo][
 # guarded targets (see add_subdirectory below).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/AssetPipeline/.*/[Tt]est/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Undo/[Tt]est/.*")
+# Editor/Build/Test/ carries BuildCacheSmokeTest.cpp, which has its own main().
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Build/[Tt]est/.*")
 
 # ---- ZSlate-heavy editor windows (P2) ----
 # Excluded until UIRenderer->ISlateRenderer migration and ZSlate::/::type bridging
@@ -327,6 +329,7 @@ message(STATUS "Z_ROOT_DIR:${Z_ROOT_DIR}")
 # Opt-in editor-side smoke tests (own main(); excluded from the ZEditor glob above).
 add_subdirectory(AssetPipeline/TextureImporter/Test)
 add_subdirectory(Undo/Test)
+add_subdirectory(Build/Test)
 
 set(_EDITOR_CONFIG_BIN "${BINARY_ROOT_DIR}/$<CONFIG>")
 set(POST_BUILD_COMMANDS
