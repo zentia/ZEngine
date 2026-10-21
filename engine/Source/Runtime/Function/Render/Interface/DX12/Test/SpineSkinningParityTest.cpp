@@ -108,6 +108,14 @@ Float2 BoneApply(const Bone& bone, Float2 p)
                    p.x * bone.c + p.y * bone.d + bone.world_y};
 }
 
+// root 与骨骼数学上同构（都是 2×3 仿射），但**类型不同** —— 故意分开，
+// 这样把 root 当骨骼用（或反过来）会编译不过，而不是悄悄算错。
+Float2 RootApply(const SpineRootTransform& root, Float2 p)
+{
+    return Float2 {p.x * root.a + p.y * root.b + root.tx,
+                   p.x * root.c + p.y * root.d + root.ty};
+}
+
 Float2 SkinRigidCpu(const VtxRigid& v, const std::vector<Bone>& bones, std::uint16_t bone_index)
 {
     return BoneApply(bones[bone_index], Float2 {v.bind_pos[0], v.bind_pos[1]});
@@ -320,7 +328,7 @@ struct Fixture
     std::vector<VtxRigid> rigid;
     std::vector<std::uint16_t> rigid_bone;
     std::vector<VtxWeighted> weighted;
-    Bone root {};
+    SpineRootTransform root {};
 };
 
 Fixture BuildFixture()
@@ -335,8 +343,10 @@ Fixture BuildFixture()
     f.bones.push_back(Bone {-1.5f, 0.25f, 0.5f, 2.0f, -300.0f, 700.0f});             // 4 斜切 + 镜像 + 大平移
     f.bones.push_back(Bone {0.866f, -0.5f, 0.5f, 0.866f, 1000.0f, 1000.0f});         // 5 旋转 30° + 大平移
 
-    // 非等比 root：a=1.5, d=0.5 —— 蒙皮之后再乘，若被预乘进骨骼表会二次缩放
-    f.root = Bone {1.5f, 0.0f, 0.0f, 0.5f, -20.0f, 33.0f};
+    // 非等比 root：a=1.5, d=0.5 —— 蒙皮之后再乘，若被预乘进骨骼表会二次缩放。
+    // 类型是 SpineRootTransform 而不是 Bone：两者同构但语义不同（实例根变换 vs 骨骼世界变换），
+    // 混用能编译能跑、只是角色整体位移/缩放悄悄错，所以让类型系统挡住。
+    f.root = SpineRootTransform {1.5f, 0.0f, 0.0f, 0.5f, -20.0f, 33.0f};
 
     // rigid：一个四边形，四个角各用一根不同的骨骼（单位 / 旋转 / 缩放 / 镜像）
     const float quad[4][2] = {{10.0f, 20.0f}, {-10.0f, 20.0f}, {-10.0f, -20.0f}, {10.0f, -20.0f}};
@@ -424,12 +434,12 @@ int main()
     for (std::uint32_t i = 0; i < rigid_count; ++i)
     {
         const Float2 skinned = SkinRigidCpu(fixture.rigid[i], fixture.bones, fixture.rigid_bone[i]);
-        expected[i] = BoneApply(fixture.root, skinned);
+        expected[i] = RootApply(fixture.root, skinned);
     }
     for (std::uint32_t i = 0; i < weighted_count; ++i)
     {
         const Float2 skinned = SkinWeightedCpu(fixture.weighted[i], fixture.bones);
-        expected[rigid_count + i] = BoneApply(fixture.root, skinned);
+        expected[rigid_count + i] = RootApply(fixture.root, skinned);
     }
 
     // ---- 2. DXC：编译 compute shader -----------------------------------
@@ -597,8 +607,8 @@ int main()
         consts.root_b = fixture.root.b;
         consts.root_c = fixture.root.c;
         consts.root_d = fixture.root.d;
-        consts.root_x = fixture.root.world_x;
-        consts.root_y = fixture.root.world_y;
+        consts.root_x = fixture.root.tx;
+        consts.root_y = fixture.root.ty;
         if (!upload(buf_consts.Get(), &consts, sizeof(consts)))
         {
             std::printf("  [FAIL] upload constants\n");

@@ -43,6 +43,13 @@ namespace SpineGpuConstants
     constexpr uint32_t kBoneStrideCompact = 24;
     constexpr uint32_t kBoneStrideStd140 = 32;
 
+    // 根变换步长。root 与骨骼同构（都是 2×3 仿射），std140 变体跟着 bone_stride 走。
+    constexpr uint32_t kRootStrideCompact = 24;
+    constexpr uint32_t kRootStrideStd140 = 32;
+
+    // 每帧实例项大小（含 root_index，规格 §5.2）。
+    constexpr uint32_t kDrawInstanceSize = 20;
+
     // 顶点步长。weighted 是 56 不是 52：ByteAddressBuffer::Load2 要求 8 字节对齐，
     // 步长 52 时第 k 个顶点落在 52k，52 % 8 == 4 ⇒ 第二个及以后的顶点取不到对齐的
     // Load2，只能退化成 8 次标量 Load。代价 4 B/顶点（约 7%）换对齐的向量化读取
@@ -264,19 +271,42 @@ struct SpineDrawInstance
     uint32_t bone_base;        // 该实例骨骼表在大 buffer 里的起始骨下标
     uint32_t tint;             // RGBA8，槽位色（直 alpha，非预乘）
     uint32_t dark_tint;        // RGBA8，tintBlack（kUsesTintBlack 才有意义）
+    uint32_t root_index;       // @16 —— 索引每帧 root 表（单位是「根变换条目」，不是字节）
 };
 
-static_assert(sizeof(SpineDrawInstance) == 16, "spec 5.2: instance item is 16 B");
+// 20 B：5 个 u32，无尾部填充（对齐刚好是 4）。
+// root_index 追加在**末尾**（而不是紧跟 bone_base）是有意的：保持既有四个字段的
+// 偏移不变，序列化代码不用整体挪位。
+static_assert(sizeof(SpineDrawInstance) == 20, "spec 5.2: instance item is 20 B (5 x u32)");
 static_assert(offsetof(SpineDrawInstance, draw_item_index) == 0, "spec 5.2: draw_item_index @0");
 static_assert(offsetof(SpineDrawInstance, bone_base) == 4, "spec 5.2: bone_base @4");
 static_assert(offsetof(SpineDrawInstance, tint) == 8, "spec 5.2: tint @8");
 static_assert(offsetof(SpineDrawInstance, dark_tint) == 12, "spec 5.2: dark_tint @12");
+static_assert(offsetof(SpineDrawInstance, root_index) == 16, "spec 5.2: root_index @16");
 
-// ---------------------------------------------------------------------
-// 尚未落定的部分（不要在这里猜）
-// ---------------------------------------------------------------------
-// 根变换（规格 §5.3）：实例的世界变换，蒙皮**之后**施加 p = root.apply(skinned)，
-// 不能预乘进骨骼表（骨骼表存的是骨骼世界变换，乘进去会二次缩放）。
-// 它在容器里没有位置（是运行时每实例数据，不是资产数据），但 §5.2 的 16 B 实例项
-// 里也没有它的位置 ⇒ **存放方式未定**，见规格 §13.2 第 6 项。
-// 在定下来之前不要往本头文件里加 root 字段 —— 加了就得假设它按什么索引。
+// 根变换（规格 §5.3）：实例自身的世界变换（UI 里的位置 / 缩放 / 旋转），
+// 每实例一个，存在**每帧 root 表**里，由 SpineDrawInstance::root_index 索引。
+//
+// 施加顺序是**蒙皮之后**：p = root.apply(skinned)。
+// 不能预乘进骨骼表 —— 骨骼表存的是骨骼世界变换，把 root 乘进去会二次缩放。
+//
+// 与 SpineBoneTransform 完全同构（都是 2×3 仿射、都是 24 B），但**语义不同**：
+// 一个是骨骼世界变换、一个是实例根变换。保持两个类型是为了防止互相换用 ——
+// 换用了能编译、能跑，只是角色整体位移/缩放悄悄错。
+struct SpineRootTransform
+{
+    float a = 1.0f, b = 0.0f, c = 0.0f, d = 1.0f;  // x' = a*x + b*y + tx
+    float tx = 0.0f, ty = 0.0f;                    // y' = c*x + d*y + ty
+};
+
+static_assert(sizeof(SpineRootTransform) == SpineGpuConstants::kRootStrideCompact,
+              "spec 5.3: root is 24 B (6 float, compact)");
+static_assert(offsetof(SpineRootTransform, a) == 0, "spec 5.3: a @0");
+static_assert(offsetof(SpineRootTransform, b) == 4, "spec 5.3: b @4");
+static_assert(offsetof(SpineRootTransform, c) == 8, "spec 5.3: c @8");
+static_assert(offsetof(SpineRootTransform, d) == 12, "spec 5.3: d @12");
+static_assert(offsetof(SpineRootTransform, tx) == 16, "spec 5.3: tx @16");
+static_assert(offsetof(SpineRootTransform, ty) == 20, "spec 5.3: ty @20");
+static_assert(std::is_standard_layout_v<SpineRootTransform> &&
+                  std::is_standard_layout_v<SpineBoneTransform>,
+              "root and bone must stay standard-layout (they are memcpy'd / read as raw bytes)");
