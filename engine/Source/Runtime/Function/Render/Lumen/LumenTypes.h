@@ -33,6 +33,9 @@ namespace LumenConstants
     // 一个页面空转多少帧之后允许被驱逐（60fps 下约 5 秒）。必须大于一帧，否则刚建好
     // 的页面会在被任何光线查到之前就被清掉。
     constexpr uint64_t kMaxSurfaceCachePageIdleFrames = 300;
+    // GI probe 网格每轴的分辨率上限（32³ = 32768 个 probe）。CPU 侧一次 probe 就是
+    // gi_sample_count 条光线，没有上限的话大场景里一次更新就能吃掉整帧。
+    constexpr uint32_t kMaxGiProbeResolution = 32;
 }  // namespace LumenConstants
 
 // Lumen质量等级
@@ -197,6 +200,65 @@ struct LumenRayTracingResult
     RayTracingType tracing_type;
 };
 
+// GI 的产物：世界空间辐照度 probe 网格
+//
+// 网格锚定在距离场的世界盒上（**不跟着相机走**）—— 相机一动网格就重算的话，probe
+// 的历史全丢，时间累积也就无从谈起。相机只用来决定"本帧优先更新哪些 probe"。
+//
+// probe 位于格心。每个 probe 存一个**无方向**的平均入射辐射（相当于 ambient 项）；
+// 要做方向性的间接光需要 SH 或者六面辐照度，那是 GPU 路径的事。
+struct LumenProbeGrid
+{
+    AxisAlignedBox world_bounds;
+    Vector3 probe_spacing {1.0f, 1.0f, 1.0f};
+    uint32_t resolution_x {0};
+    uint32_t resolution_y {0};
+    uint32_t resolution_z {0};
+
+    // 每个 probe 累积的间接光
+    std::vector<Vector3> irradiance;
+    // 命中率：这个 probe 打出去的光线有多大比例撞到东西（0 = 四面全空，1 = 全封闭）
+    std::vector<float> visibility;
+    // 上次被更新的帧号；0 表示从没更新过
+    std::vector<uint64_t> last_updated_frame;
+
+    uint32_t GetProbeCount() const { return resolution_x * resolution_y * resolution_z; }
+
+    bool IsValid() const
+    {
+        return GetProbeCount() > 0 && irradiance.size() == GetProbeCount() &&
+               visibility.size() == GetProbeCount() && last_updated_frame.size() == GetProbeCount();
+    }
+
+    uint32_t GetProbeIndex(uint32_t x, uint32_t y, uint32_t z) const
+    {
+        return z * resolution_x * resolution_y + y * resolution_x + x;
+    }
+
+    Vector3 GetProbeWorldPosition(uint32_t index) const
+    {
+        const uint32_t x = resolution_x > 0 ? index % resolution_x : 0;
+        const uint32_t y = resolution_x > 0 ? (index / resolution_x) % resolution_y : 0;
+        const uint32_t z = resolution_x > 0 ? index / (resolution_x * resolution_y) : 0;
+
+        return world_bounds.getMinCorner() + Vector3((static_cast<float>(x) + 0.5f) * probe_spacing.x,
+                                                     (static_cast<float>(y) + 0.5f) * probe_spacing.y,
+                                                     (static_cast<float>(z) + 0.5f) * probe_spacing.z);
+    }
+
+    void Reset()
+    {
+        world_bounds = AxisAlignedBox();
+        probe_spacing = Vector3(1.0f, 1.0f, 1.0f);
+        resolution_x = 0;
+        resolution_y = 0;
+        resolution_z = 0;
+        irradiance.clear();
+        visibility.clear();
+        last_updated_frame.clear();
+    }
+};
+
 // 全局光照数据
 struct LumenGlobalIlluminationData
 {
@@ -272,6 +334,13 @@ struct LumenConfig
     bool enable_spatial_reuse = true;
     uint32_t gi_sample_count = 1;
     uint32_t reflection_sample_count = 1;
+
+    // GI probe 网格设置
+    float gi_probe_spacing = 4.0f;         // 期望的 probe 间距（世界单位），会按分辨率上限被拉大
+    uint32_t gi_probe_update_budget = 128;  // 每帧最多更新多少个 probe
+    float gi_probe_max_distance = 200.0f;   // 离相机超过这个距离的 probe 本帧不更新
+    float gi_temporal_blend_rate = 4.0f;    // 时间累积的收敛速率（每秒），0 = 完全不更新
+    float gi_probe_max_surface_distance_factor = 2.0f;  // 离表面超过 (该值 × probe 间距) 的 probe 跳过
 
     // 调试设置
     bool debug_visualize_distance_field = false;

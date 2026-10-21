@@ -51,8 +51,9 @@ jobs:
       # not run.
       #
       # Not enabled: ZENGINE_BUILD_LUMEN_SCENE_GEOMETRY_SMOKE_TEST,
-      # ZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST and
-      # ZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST -- this job runs with
+      # ZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST,
+      # ZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST and
+      # ZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST -- this job runs with
       # ZENGINE_USE_VULKAN=OFF, and that branch strips
       # Function/Render/Lumen/*.cpp out of ZRuntime, so there is nothing for
       # either test to link against here. They are configured and run on the

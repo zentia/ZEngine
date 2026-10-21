@@ -104,6 +104,49 @@ if(ZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST)
     message(STATUS "Configured Lumen surface-cache smoke-test target: LumenSurfaceCacheSmokeTest")
 endif()
 
+# ---------------------------------------------------------------------
+# Global-illumination smoke test. Pins that ComputeGlobalIllumination
+# fills a world-space irradiance probe grid (it used to be a TODO that
+# returned true and did nothing), that the grid is anchored to the
+# distance field rather than the camera, that probe updates are
+# budgeted, that temporal accumulation actually lags behind a change,
+# and that the colour comes from the surface cache.
+# ---------------------------------------------------------------------
+option(ZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST
+       "Build the Lumen global-illumination smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST)
+    add_executable(LumenGlobalIlluminationSmokeTest LumenGlobalIlluminationSmokeTest.cpp)
+
+    set_target_properties(LumenGlobalIlluminationSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    target_link_libraries(LumenGlobalIlluminationSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(LumenGlobalIlluminationSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(LumenGlobalIlluminationSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(LumenGlobalIlluminationSmokeTest ZEnginePCH)
+        target_precompile_headers(LumenGlobalIlluminationSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(LumenGlobalIlluminationSmokeTest PRIVATE /W4)
+    endif()
+
+    if(APPLE)
+        target_sources(LumenGlobalIlluminationSmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME LumenGlobalIlluminationSmokeTest COMMAND LumenGlobalIlluminationSmokeTest)
+
+    message(STATUS "Configured Lumen global-illumination smoke-test target: LumenGlobalIlluminationSmokeTest")
+endif()
+
 set_target_properties(LumenSceneGeometrySmokeTest PROPERTIES
     CXX_STANDARD 23
     FOLDER "Engine/Tests"

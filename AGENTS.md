@@ -2087,6 +2087,37 @@ covering its world AABB, carrying its constant material.
 - Material comes from `RenderEntity`'s factors; textures cannot be sampled on the
   CPU, so a page has **one** albedo/roughness/metallic/emissive today.
 
+### 2.37 Lumen GI: the probe grid, and why it must not follow the camera
+
+`LumenGlobalIllumination` produces a world-space irradiance probe grid
+(`LumenProbeGrid`, `LumenTypes.h`) — that grid **is** the GI output; everything
+downstream reads it.
+
+- **The grid is anchored to the distance field's world box, not the camera.** A
+  camera-anchored grid would be rebuilt whenever the camera moves, discarding
+  every probe's history — and history is the entire point of temporal
+  accumulation. `ResizeProbeGrid` deliberately keeps the existing probes when
+  neither the box nor the resolution changed. The camera only filters *which*
+  probes get this frame's budget (`gi_probe_max_distance`).
+- **Updates are budgeted and rotate** (`gi_probe_update_budget`, `m_ProbeCursor`):
+  one probe costs `gi_sample_count` rays, so updating the whole grid in one frame
+  is not affordable. Per-axis resolution is clamped to
+  `LumenConstants::kMaxGiProbeResolution` for the same reason.
+- **`last_updated_frame == 0` means "no data", and that is not the same as "the
+  value is zero".** A probe boxed in by closed geometry legitimately holds black.
+  `SampleProbeGrid` gates on the timestamp, never on the length of the value —
+  otherwise every query inside a dark volume re-traces forever.
+- **`GetIndirectLighting` is intentionally non-const**: on a cache miss it traces
+  and writes the result back ("query and fill"). The write path only *fills*
+  empty probes (`dt <= 0` ⇒ alpha 0 ⇒ filled probes keep their value), so it can
+  never fight the per-frame accumulation in `UpdateProbes`.
+- **Probes store one directionless `Vector3`** (whole-sphere average of
+  `emissive + albedo * 0.1`), so interpolation does not weight by normal. When
+  this grows into SH or a six-face irradiance volume, `SpatialReuse` is where the
+  normal starts to matter.
+- **`gi_temporal_blend_rate = 0` means freeze, not "instant"** — see
+  `ComputeTemporalAlpha`, which returns 0 there.
+
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).
