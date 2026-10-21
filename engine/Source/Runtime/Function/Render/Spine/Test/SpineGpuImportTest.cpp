@@ -212,9 +212,20 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
                                       const std::string& linked_parent = "mesh", bool with_second_skin = false,
                                       bool with_deform = false, bool linked_inherit_deform = true,
                                       int deform_length = 10, bool with_clipping = false,
-                                      int clip_end_slot = 2, int deform_slot = 1)
+                                      int clip_end_slot = 2, int deform_slot = 1,
+                                      bool nested_clip = false, int nested_clip_end_slot = 3)
 {
     SkelWriter w;
+
+    // 裁剪夹具的槽位布局。嵌套版多一个槽位，因为第二条裁剪附件要**占掉**一个槽位
+    // （于是那个槽位没有几何）—— 这正是它此前一直没有夹具的原因。
+    //   非裁剪    : s0=quad, s1=mesh
+    //   裁剪      : s0=quad, s1=clip,  s2=mesh, s3=tail
+    //   裁剪+嵌套 : s0=quad, s1=clipA, s2=clipB, s3=mesh, s4=tail
+    const bool clip5 = with_clipping && nested_clip;
+    const int slot_total = with_clipping ? (clip5 ? 5 : 4) : 2;
+    const int mesh_slot = with_clipping ? (clip5 ? 3 : 2) : 1;
+    const int tail_slot = with_clipping ? (clip5 ? 4 : 3) : -1;
 
     // ---- 头：hash + version（**没有魔数**）----
     w.Str("hash");
@@ -254,7 +265,7 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     }
 
     // ---- slots ----
-    w.Varint(with_clipping ? 4 : 2);
+    w.Varint(slot_total);
     w.Str("s0");
     w.Varint(0);            // bone = root
     w.ColorWhite();         // color
@@ -271,8 +282,19 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         w.ColorWhite();
         w.Str("clip");
         w.Varint(0);
+        if (clip5)
+        {
+            // 第二条裁剪，**嵌套**在 clipA 的作用域里 ⇒ 永远开不起来
+            // （clipStart 在已有裁剪时返回 0，SkeletonClipping.cpp:49-51）。
+            w.Str("s2");
+            w.Varint(1);
+            w.ColorWhite();
+            w.ColorWhite();
+            w.Str("clipb");
+            w.Varint(0);
+        }
     }
-    w.Str(with_clipping ? "s2" : "s1");
+    w.Str("s" + std::to_string(mesh_slot));
     w.Varint(1);            // bone = hip
     w.ColorWhite();
     w.ColorWhite();
@@ -280,8 +302,8 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     w.Varint(0);
     if (with_clipping)
     {
-        // 作用域**边界**槽位：end 指向它时它被裁，end 指向 s2 时它不被裁。
-        w.Str("s3");
+        // 作用域**边界**槽位：end 指向它时它被裁，end 指向它前面时它不被裁。
+        w.Str("s" + std::to_string(tail_slot));
         w.Varint(1);
         w.ColorWhite();
         w.ColorWhite();
@@ -295,7 +317,7 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     w.Varint(0);            // path
 
     // ---- default skin ----
-    w.Varint(with_clipping ? 4 : 2);   // skin 里涉及的槽位数
+    w.Varint(slot_total);   // skin 里涉及的槽位数（本夹具每个槽位都有附件）
 
     // 槽位 0：region "quad"
     w.Varint(0);            // slotIndex
@@ -314,17 +336,17 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     w.F(32.0f);             // height
     w.ColorWhite();
 
-    // 槽位 1：裁剪附件 "clip"（SkeletonBinary.cpp:636-646）
-    if (with_clipping)
+    // 裁剪附件（SkeletonBinary.cpp:636-646）
+    auto WriteClip = [&](int slot, const char* name, int end_slot)
     {
-        w.Varint(1);            // slotIndex = s1
+        w.Varint(slot);         // slotIndex
         w.Varint(1);            // 1 个附件
-        w.Str("clip");
+        w.Str(name);
         w.Str("");              // 附件名留空 ⇒ 取 skin 里的 key
         w.U8(6);                // AttachmentType_Clipping
         // ⚠️ 顺序是 **endSlotIndex 在前、vertexCount 在后**（:637-638），与 json 那边
         // 一个是下标、一个是名字，别互相抄。
-        w.Varint(clip_end_slot);
+        w.Varint(end_slot);
         w.Varint(4);            // vertexCount
         w.Bool(false);          // 非 weighted ⇒ 直接 4×2 个 float（裁剪多边形）
         w.F(0.0f); w.F(0.0f); w.F(10.0f); w.F(0.0f); w.F(10.0f); w.F(10.0f); w.F(0.0f); w.F(10.0f);
@@ -332,10 +354,19 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         {
             w.ColorWhite();     // color
         }
+    };
+
+    if (with_clipping)
+    {
+        WriteClip(1, "clip", clip_end_slot);
+        if (clip5)
+        {
+            WriteClip(2, "clipb", nested_clip_end_slot);
+        }
     }
 
-    // 槽位 1（裁剪夹具里是 2）：mesh "mesh"（4 顶点，第 2 个顶点 2 影响 0.6/0.4）
-    w.Varint(with_clipping ? 2 : 1);
+    // mesh "mesh"（4 顶点，第 2 个顶点 2 影响 0.6/0.4）
+    w.Varint(mesh_slot);
     w.Varint(linked_mesh ? 2 : 1);
     w.Str("mesh");
     w.Str("");
@@ -381,10 +412,10 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         }
     }
 
-    // 槽位 3：region "tail"，path 指向图集里已有的 "quad"（图集只有 quad / mesh 两块）
+    // region "tail"，path 指向图集里已有的 "quad"（图集只有 quad / mesh 两块）
     if (with_clipping)
     {
-        w.Varint(3);            // slotIndex = s3
+        w.Varint(tail_slot);    // slotIndex
         w.Varint(1);            // 1 个附件
         w.Str("tail");
         w.Str("");              // 附件名留空 ⇒ 取 skin 里的 key
@@ -658,6 +689,47 @@ const char* kSkeletonClip = R"({
       "s3": { "tail": { "x": 0, "y": 0, "width": 16, "height": 8, "rotation": 0, "path": "quad" } }
     }
   }%ANIMFIELD%
+})";
+
+// 嵌套裁剪夹具：**两条**裁剪叠在一起
+//   s0 = quad  （裁剪之前）
+//   s1 = clipA，end = "s4"（覆盖 s2..s4）
+//   s2 = clipB，end = "s3"（**嵌套**在 clipA 的作用域里）
+//   s3 = mesh
+//   s4 = tail
+// 判据是 **s4**：
+//   正确行为（clipB 被忽略）⇒ s3、s4 都由 **clipA** 裁 ⇒ s4 是 kFallback
+//   错误行为（clipB 生效并终结 clipA）⇒ clipB 在 s3 就收尾 ⇒ **s4 不被裁** ⇒ s4 是 kStatic
+// ⇒ 少了"嵌套被忽略"这条规则，s4 的 kind 就会错，而且**没有任何报错**。
+const char* kSkeletonClipNested = R"({
+  "skeleton": { "spine": "3.8.99" },
+  "bones": [ { "name": "root" }, { "name": "hip", "parent": "root" } ],
+  "slots": [
+    { "name": "s0", "bone": "root", "attachment": "quad" },
+    { "name": "s1", "bone": "hip", "attachment": "clip" },
+    { "name": "s2", "bone": "hip", "attachment": "clipb" },
+    { "name": "s3", "bone": "hip", "attachment": "mesh" },
+    { "name": "s4", "bone": "hip", "attachment": "tail" }
+  ],
+  "skins": {
+    "default": {
+      "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
+      "s1": { "clip": { "type": "clipping", "end": "s4", "vertexCount": 4,
+                        "vertices": [ 0,0, 10,0, 10,10, 0,10 ] } },
+      "s2": { "clipb": { "type": "clipping", "end": "s3", "vertexCount": 4,
+                         "vertices": [ 0,0, 20,0, 20,20, 0,20 ] } },
+      "s3": { "mesh": {
+        "type": "mesh",
+        "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
+        "triangles": [ 0,1,2, 0,2,3 ],
+        "vertices": [ 1, 0,-10,-5,1,
+                      2, 1, 20,10,0.6, 0,5,7,0.4,
+                      1, 1, 3,4,1,
+                      1, 0, 8,2,1 ]
+      } },
+      "s4": { "tail": { "x": 0, "y": 0, "width": 16, "height": 8, "rotation": 0, "path": "quad" } }
+    }
+  }
 })";
 
 }   // namespace
@@ -2039,6 +2111,102 @@ int main()
             SpineImportResult r = ParseSpineSkeletonBinary(bad.data(), bad.size(), &atlas, s);
             Check(!r.ok, "clip: skel 的 endSlot 为负 ⇒ 报错");
             std::printf("  (预期报错) %s\n", r.error.c_str());
+        }
+    }
+
+    // ---- 13c. 嵌套裁剪：后一条裁剪**永远开不起来** ----
+    // clipA(s1 → s4) 里套着 clipB(s2 → s3)。`clipStart()` 在已有裁剪时直接返回 0
+    // （SkeletonClipping.cpp:49-51）⇒ clipB 开不起来，s3 / s4 都由 **clipA** 裁。
+    // 少了这条规则会怎样：clipB 生效并在 s3 收尾 ⇒ **s4 不被裁** ⇒ s4 从 kFallback
+    // 变成 kStatic，而且**没有任何报错**。所以 s4 的 kind 就是这条规则的判据 ——
+    // 只断言"s3 被裁"是不够的，两种实现都会让它成立。
+    {
+        auto KindAt = [](const SpineGpuAsset& a, uint16_t slot) -> int
+        {
+            for (const SpineDrawItem& it : a.draw_items)
+            {
+                if (it.slot_index == slot)
+                {
+                    return it.kind == SpineDrawItemKind::kFallback ? 1 : 0;
+                }
+            }
+            return -1;
+        };
+
+        for (int ne = 0; ne < 2; ++ne)
+        {
+            const bool nonessential = ne != 0;
+            g_prefix = std::string("[clip/嵌套") + (nonessential ? "/nonessential" : "") + "] ";
+
+            SpineSourceSkeleton cj;
+            SpineImportResult rj = ParseSpineSkeletonJson(kSkeletonClipNested,
+                                                          std::string(kSkeletonClipNested).size(), &atlas, cj);
+            Check(rj.ok, "nested: json 解析成功");
+            if (!rj.ok)
+            {
+                std::printf("  error: %s\n", rj.error.c_str());
+                g_prefix.clear();
+                continue;
+            }
+            CheckEq(static_cast<long long>(cj.clips.size()), 2, "nested: json 解析出两条裁剪作用域");
+            // 两条都要照单记下来 —— clipB 的 end 更靠前，正是"一旦让它生效就会提前收尾"的那条
+            Check(cj.clips.size() == 2 && cj.clips[0].slot_index == 1 && cj.clips[0].end_slot_index == 4,
+                  "nested: clipA 记为 s1 → s4");
+            Check(cj.clips.size() == 2 && cj.clips[1].slot_index == 2 && cj.clips[1].end_slot_index == 3,
+                  "nested: clipB 记为 s2 → s3");
+
+            SpineGpuAsset ja;
+            SpineImportResult rjb = BakeSpineGpuAsset(cj, ja);
+            Check(rjb.ok, "nested: json bake 成功");
+            if (!rjb.ok)
+            {
+                std::printf("  error: %s\n", rjb.error.c_str());
+                g_prefix.clear();
+                continue;
+            }
+            // 两个裁剪附件各占掉一个槽位 ⇒ 只有 s0 / s3 / s4 有绘制项
+            CheckEq(static_cast<long long>(ja.draw_items.size()), 3, "nested: 3 个绘制项");
+            CheckEq(static_cast<long long>(KindAt(ja, 1)), -1, "nested: s1（clipA 自己）没有绘制项");
+            CheckEq(static_cast<long long>(KindAt(ja, 2)), -1, "nested: s2（clipB 自己）没有绘制项");
+            CheckEq(static_cast<long long>(KindAt(ja, 0)), 0, "nested: s0（裁剪之前）仍是 kStatic");
+            CheckEq(static_cast<long long>(KindAt(ja, 3)), 1, "nested: s3 被裁 ⇒ kFallback");
+            CheckEq(static_cast<long long>(KindAt(ja, 4)), 1,
+                    "nested: s4 由 **clipA** 裁 ⇒ kFallback（clipB 被忽略的判据）");
+            Check((ja.header.flags & SpineGpuFlags::kHasClipping) != 0, "nested: 置上了 kHasClipping");
+            Check((ja.header.flags & SpineGpuFlags::kHasDeform) == 0, "nested: 不置 kHasDeform");
+
+            // ---- 同一副骨架走 .skel：必须产出**逐字节相同**的容器 ----
+            const std::vector<uint8_t> skel =
+                BuildSkelFixture(false, false, "3.8.99", nonessential, "mesh", false, false, true, 10,
+                                 true, 4, 3, true, 3);
+            SpineSourceSkeleton cs;
+            SpineImportResult rs = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, cs);
+            Check(rs.ok, "nested: skel 解析成功");
+            if (!rs.ok)
+            {
+                std::printf("  error: %s\n", rs.error.c_str());
+                g_prefix.clear();
+                continue;
+            }
+            CheckEq(static_cast<long long>(cs.clips.size()), 2, "nested: skel 也解析出两条裁剪作用域");
+            Check(cs.clips.size() == 2 && cs.clips[0].end_slot_index == 4 && cs.clips[1].end_slot_index == 3,
+                  "nested: skel 的两条 endSlot 与 json 一致");
+
+            SpineGpuAsset sa;
+            Check(BakeSpineGpuAsset(cs, sa).ok, "nested: skel bake 成功");
+            Check(sa.draw_items.size() == ja.draw_items.size() &&
+                      std::memcmp(sa.draw_items.data(), ja.draw_items.data(),
+                                  sa.draw_items.size() * sizeof(SpineDrawItem)) == 0,
+                  "nested: skel↔json 绘制项逐字节相同（含 kind）");
+            Check(sa.header.flags == ja.header.flags, "nested: skel↔json flags 相同");
+
+            std::vector<uint8_t> bytes_j;
+            std::vector<uint8_t> bytes_s;
+            Check(WriteSpineGpuContainer(ja, bytes_j).ok && WriteSpineGpuContainer(sa, bytes_s).ok,
+                  "nested: 两个容器都序列化成功");
+            Check(bytes_j == bytes_s, "nested: skel↔json 容器**逐字节相同**");
+
+            g_prefix.clear();
         }
     }
 
