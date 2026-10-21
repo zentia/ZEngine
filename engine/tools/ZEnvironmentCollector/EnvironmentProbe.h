@@ -142,6 +142,8 @@ struct Requirements
     // Above this much installed RAM a small or absent page file is a deliberate
     // choice, so the rule stays quiet instead of arguing with it.
     std::uint64_t pageFileRuleMaxMemoryBytes = 16ull * 1024ull * 1024ull * 1024ull;
+    // Free space on the volume the game sits on: patches and logs land there.
+    std::uint64_t minimumFreeDiskSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
 };
 
 enum class CompatibilityStatus

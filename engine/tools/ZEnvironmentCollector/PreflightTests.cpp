@@ -94,6 +94,15 @@ preflight::PreflightResult Evaluate(const preflight::PreflightInputs& inputs, bo
     return preflight::EvaluatePreflight(inputs, preflight::DefaultPreflightRequirements(), probesComplete);
 }
 
+// The same rules against a spec the caller supplies, which is the whole point of
+// the minimum living outside this tool.
+preflight::PreflightResult Evaluate(const preflight::PreflightInputs& inputs,
+                                    const Requirements& requirements,
+                                    bool probesComplete = true)
+{
+    return preflight::EvaluatePreflight(inputs, requirements, probesComplete);
+}
+
 bool HasFinding(const preflight::PreflightResult& result, const std::string& code)
 {
     for (const auto& finding : result.findings)
@@ -318,6 +327,120 @@ int main()
             Check(result.budgetExceeded && !result.probesComplete, "the unfinished result says why");
             Check(result.findings.empty(), "an unfinished check reports no findings");
             Check(result.userMessageCode == "PREFLIGHT_INCOMPLETE", "the inconclusive result carries a message code");
+        }
+
+        // ---- the minimum spec belongs to the game, not to this tool ----
+        {
+            const std::string text =
+                "{\n"
+                "  \"avx2\": false,\n"
+                "  \"minimumMemoryBytes\": 8589934592,\n"
+                "  \"minimumFreeDiskSpaceBytes\": 10737418240\n"
+                "}";
+            Requirements requirements;
+            std::vector<std::string> problems;
+            Check(preflight::ParseRequirementsJson(text, requirements, problems), "a hand-written spec parses");
+            Check(problems.empty(), "a well-formed spec has nothing to complain about");
+            Check(!requirements.avx2, "the game turned the AVX2 requirement off");
+            Check(requirements.minimumMemoryBytes == 8589934592ull, "the memory floor came from the file");
+            Check(requirements.minimumFreeDiskSpaceBytes == 10737418240ull, "the disk floor came from the file");
+            // Untouched keys keep the built-in value: a file that sets three
+            // things overrides three things, it does not redefine the spec.
+            Check(requirements.minimumAvailableMemoryBytes == 2ull * 1024ull * 1024ull * 1024ull,
+                  "a key the file did not mention keeps the built-in value");
+        }
+        {
+            // A BOM and CRLF is what a text editor on Windows writes.
+            const std::string text = "\xEF\xBB\xBF{\"minimumMemoryBytes\": 1024}\r\n";
+            Requirements requirements;
+            std::vector<std::string> problems;
+            Check(preflight::ParseRequirementsJson(text, requirements, problems), "a BOM is not a parse error");
+            Check(requirements.minimumMemoryBytes == 1024ull, "the value after a BOM still reads");
+        }
+        {
+            Requirements requirements;
+            std::vector<std::string> problems;
+            Check(!preflight::ParseRequirementsJson("{\"minimumMemoryBytes\": 4096", requirements, problems),
+                  "a truncated file is rejected");
+            Check(!problems.empty(), "a rejected file says why");
+            Check(requirements.minimumMemoryBytes == 4ull * 1024ull * 1024ull * 1024ull,
+                  "a rejected file leaves the built-in spec in place");
+        }
+        {
+            Requirements requirements;
+            std::vector<std::string> problems;
+            Check(!preflight::ParseRequirementsJson("not json at all", requirements, problems),
+                  "a file that is not an object is rejected");
+        }
+        {
+            // A key added by a newer tool: the keys this one understands must
+            // still apply, and the one it does not must be visible.
+            const std::string text = "{\"minimumMemoryBytes\": 8192, \"minimumVramBytes\": 4096}";
+            Requirements requirements;
+            std::vector<std::string> problems;
+            Check(preflight::ParseRequirementsJson(text, requirements, problems), "an unknown key is not fatal");
+            Check(requirements.minimumMemoryBytes == 8192ull, "the known key still applied");
+            Check(problems.size() == 1 && problems[0].find("minimumVramBytes") != std::string::npos,
+                  "the unknown key is named in the report");
+        }
+        {
+            // Zero is how a game switches a rule off, not a typo to be repaired.
+            const std::string text = "{\"minimumMemoryBytes\": 0}";
+            Requirements requirements;
+            std::vector<std::string> problems;
+            Check(preflight::ParseRequirementsJson(text, requirements, problems), "zero parses");
+            auto inputs = HealthyInputs();
+            inputs.system.physicalMemoryBytes = 2ull << 30;
+            const auto result = Evaluate(inputs, requirements);
+            Check(result.verdict == preflight::PreflightVerdict::Pass,
+                  "a zero memory floor disables the rule it belongs to");
+        }
+        {
+            // No file at all: the built-in spec, and nothing in the report --
+            // this is a supported way to ship, not a fault.
+            const auto loaded = preflight::LoadRequirements(std::filesystem::path(), "does-not-exist.json");
+            Check(loaded.source == "default", "an absent file reports the built-in spec as the source");
+            Check(loaded.problems.empty(), "an absent file is not a problem to report");
+            Check(loaded.requirements.minimumMemoryBytes == 4ull * 1024ull * 1024ull * 1024ull,
+                  "an absent file leaves the built-in spec in place");
+        }
+        {
+            // The whole point: a game that raises its minimum makes a machine
+            // that used to pass report BelowMinimum, with no rebuild of this tool.
+            const auto directory = std::filesystem::temp_directory_path() / "zec-minspec-test";
+            std::filesystem::create_directories(directory);
+            const auto file = directory / "min-spec.json";
+            {
+                std::ofstream out(file, std::ios::binary);
+                out << "{\"minimumMemoryBytes\": 68719476736}";
+            }
+            const auto loaded = preflight::LoadRequirements(directory, std::filesystem::path());
+            Check(loaded.source.find("file:") == 0, "a file that was read is the reported source");
+            Check(loaded.requirements.minimumMemoryBytes == 68719476736ull, "the spec came off disk");
+
+            const auto result = Evaluate(HealthyInputs(), loaded.requirements);
+            Check(result.verdict == preflight::PreflightVerdict::BelowMinimum,
+                  "a raised minimum turns a healthy machine into BelowMinimum");
+            std::error_code ignored;
+            std::filesystem::remove_all(directory, ignored);
+        }
+        {
+            // Malformed on disk falls back to the whole built-in spec, not to
+            // the half that parsed.
+            const auto directory = std::filesystem::temp_directory_path() / "zec-minspec-bad";
+            std::filesystem::create_directories(directory);
+            const auto file = directory / "min-spec.json";
+            {
+                std::ofstream out(file, std::ios::binary);
+                out << "{\"minimumMemoryBytes\": 8589934592, \"minimumAvailableMemoryBytes\":";
+            }
+            const auto loaded = preflight::LoadRequirements(directory, std::filesystem::path());
+            Check(loaded.source == "default", "a malformed file is not the reported source");
+            Check(!loaded.problems.empty(), "a malformed file says why it was not used");
+            Check(loaded.requirements.minimumMemoryBytes == 4ull * 1024ull * 1024ull * 1024ull,
+                  "a malformed file leaves the whole built-in spec in place");
+            std::error_code ignored;
+            std::filesystem::remove_all(directory, ignored);
         }
 
         // ---- the launcher contract ----

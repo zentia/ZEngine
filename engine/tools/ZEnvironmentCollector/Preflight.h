@@ -36,6 +36,10 @@ struct PreflightOptions
     // Which volume's free space to check. Defaults to the directory this tool
     // runs from, which ships next to the game executable.
     std::filesystem::path gameDirectory;
+    // Where the game's minimum spec is read from. Empty means
+    // <gameDirectory>/min-spec.json, and a game that ships no such file gets
+    // the built-in fallback rather than an error.
+    std::filesystem::path minSpecPath;
     std::string gameExecutable = "WXQ.exe";
     std::uint32_t budgetSeconds = 3;
     bool quiet = false;
@@ -117,9 +121,43 @@ struct PreflightReportContext
     diagnosis::UtcTicks generatedAt = 0;
     std::string gameExecutable;
     std::uint32_t budgetSeconds = 0;
+    // What the verdict was measured against, and where those numbers came from.
+    // A player whose "Pass" looks wrong is a support ticket, and the answer is
+    // the spec that was applied -- not the one this tool happened to ship with.
+    Requirements requirements;
+    std::string requirementsSource = "default";
 };
 
 Requirements DefaultPreflightRequirements();
+
+// A game's minimum spec is data about the game, not about this tool, so it does
+// not live in the binary: it ships beside the game in min-spec.json and is read
+// at every launch. What stays compiled in is only a fallback for a game that
+// ships no file.
+std::filesystem::path DefaultMinSpecPath(const std::filesystem::path& gameDirectory);
+
+// Pure: file text in, requirements out. Exposed so reading a hand-written file
+// is tested without one on disk.
+bool ParseRequirementsJson(const std::string& text, Requirements& requirements,
+                           std::vector<std::string>& problems);
+
+struct LoadedRequirements
+{
+    Requirements requirements;
+    // Verbatim in the report -- see the note on PreflightReportContext.
+    std::string source = "default";
+    // Empty on the happy path. Populated only when a file was found and could
+    // not be used: a game that ships no file is a supported configuration, and
+    // reporting it would put a line in every report for nothing.
+    std::vector<std::string> problems;
+};
+
+// Reads `overridePath` when given, else <gameDirectory>/min-spec.json. Never
+// fails and never throws: absent, unreadable or malformed all fall back to
+// DefaultPreflightRequirements(). A preflight that refuses to run because of a
+// config file is a preflight that stops a launch over a typo.
+LoadedRequirements LoadRequirements(const std::filesystem::path& gameDirectory,
+                                    const std::filesystem::path& overridePath);
 
 // Pure: inputs in, conclusion out. The launcher contract lives here, not in the
 // probes, so "what counts as below minimum" is one function you can read.

@@ -10,7 +10,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -30,8 +32,9 @@ constexpr std::uint32_t MinBudgetSeconds = 1;
 constexpr std::uint32_t MaxBudgetSeconds = 30;
 constexpr std::uint64_t MillisecondsPerSecond = 1000;
 
-// Below this, a patch cannot land and the game's own log writer starts failing.
-constexpr std::uint64_t LowFreeSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
+// The free-space floor is part of the minimum spec now (minimumFreeDiskSpaceBytes)
+// rather than a constant here, so a game can move it without a rebuild of this
+// tool.
 // "The high-performance GPU has under this much dedicated memory" is the signal
 // that the preference resolved to an integrated part.
 constexpr std::uint64_t IntegratedVideoMemoryCeiling = 1ull * 1024ull * 1024ull * 1024ull;
@@ -582,7 +585,7 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
             "没有检测到 Visual C++ 运行库，如果游戏点开后没有任何反应，需要先安装它。", ""});
     }
 
-    if (inputs.gameVolumeKnown && inputs.gameVolumeFreeBytes < LowFreeSpaceBytes)
+    if (inputs.gameVolumeKnown && inputs.gameVolumeFreeBytes < requirements.minimumFreeDiskSpaceBytes)
     {
         result.findings.push_back({"STORAGE_LOW_FREE_SPACE", "storage",
             "游戏所在磁盘可用空间不足，更新和日志写入可能失败。",
@@ -638,6 +641,9 @@ void PrintPreflightUsage()
         << "                               passes the game install directory as cwd.\n"
         << "  --game-dir <path>            Directory whose free space is checked.\n"
         << "                               Default: the directory this tool runs from.\n"
+        << "  --min-spec <path>            Minimum-spec file to measure against.\n"
+        << "                               Default: <game-dir>/min-spec.json. A game\n"
+        << "                               that ships none uses the built-in spec.\n"
         << "  --game-exe <name>            Game executable name. Default: WXQ.exe.\n"
         << "  --budget-seconds N           Hard probe budget. Default: 3, range 1-30.\n"
         << "  --quiet                      Do not print the summary.\n\n"
@@ -691,6 +697,287 @@ Requirements DefaultPreflightRequirements()
     requirements.minimumPageFileBytes = 2ull * 1024ull * 1024ull * 1024ull;
     requirements.pageFileRuleMaxMemoryBytes = 16ull * 1024ull * 1024ull * 1024ull;
     return requirements;
+}
+
+// A reader for the one shape min-spec.json is allowed to have: a flat object of
+// booleans and integers. Deliberately not a JSON parser -- a file that nests,
+// escapes, or turns into an array is rejected outright, and a game that writes
+// something else gets the fallback rather than a half-understood spec. What is
+// accepted is what a human can write by hand and still be sure of.
+class SpecFileCursor
+{
+public:
+    explicit SpecFileCursor(const std::string& text) : text_(text)
+    {
+        // A BOM is what a text editor leaves behind, and without this every file
+        // saved on Windows would be unreadable.
+        if (text_.size() >= 3 &&
+            static_cast<unsigned char>(text_[0]) == 0xEF &&
+            static_cast<unsigned char>(text_[1]) == 0xBB &&
+            static_cast<unsigned char>(text_[2]) == 0xBF)
+        {
+            at_ = 3;
+        }
+    }
+
+    void SkipSpace()
+    {
+        while (at_ < text_.size() && IsSpace(text_[at_]))
+        {
+            ++at_;
+        }
+    }
+
+    bool Done() const { return at_ >= text_.size(); }
+    char Peek() const { return at_ < text_.size() ? text_[at_] : '\0'; }
+
+    bool Take(char expected)
+    {
+        if (Peek() != expected)
+        {
+            return false;
+        }
+        ++at_;
+        return true;
+    }
+
+    bool ReadQuoted(std::string& out)
+    {
+        if (!Take('"'))
+        {
+            return false;
+        }
+        out.clear();
+        while (at_ < text_.size() && text_[at_] != '"')
+        {
+            out.push_back(text_[at_++]);
+        }
+        return Take('"');
+    }
+
+    bool ReadUnsigned(std::uint64_t& out)
+    {
+        const std::size_t begin = at_;
+        while (at_ < text_.size() && text_[at_] >= '0' && text_[at_] <= '9')
+        {
+            ++at_;
+        }
+        if (at_ == begin)
+        {
+            return false;
+        }
+        try
+        {
+            out = std::stoull(text_.substr(begin, at_ - begin));
+        }
+        catch (const std::exception&)
+        {
+            return false;
+        }
+        return true;
+    }
+
+    bool ReadBoolean(bool& out)
+    {
+        if (text_.compare(at_, 4, "true") == 0)
+        {
+            at_ += 4;
+            out = true;
+            return true;
+        }
+        if (text_.compare(at_, 5, "false") == 0)
+        {
+            at_ += 5;
+            out = false;
+            return true;
+        }
+        return false;
+    }
+
+    // Consumes a value of any supported shape, so an unrecognised key can be
+    // skipped and the rest of the file still used.
+    bool SkipValue()
+    {
+        std::uint64_t number = 0;
+        if (ReadUnsigned(number))
+        {
+            return true;
+        }
+        bool flag = false;
+        if (ReadBoolean(flag))
+        {
+            return true;
+        }
+        std::string text;
+        return ReadQuoted(text);
+    }
+
+private:
+    static bool IsSpace(char c)
+    {
+        return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+    }
+
+    const std::string& text_;
+    std::size_t at_ = 0;
+};
+
+bool ParseRequirementsJson(const std::string& text, Requirements& requirements,
+                           std::vector<std::string>& problems)
+{
+    // Built on top of the built-in spec so a file that sets two keys overrides
+    // two keys instead of redefining the whole minimum -- and published only on
+    // success, because a caller that carries on after a failed parse must not be
+    // holding half a minimum spec and believing it.
+    Requirements parsed = DefaultPreflightRequirements();
+    problems.clear();
+
+    SpecFileCursor cursor(text);
+    cursor.SkipSpace();
+    if (!cursor.Take('{'))
+    {
+        problems.push_back("min-spec: expected '{' at the start of the file");
+        return false;
+    }
+
+    bool closed = false;
+    while (!closed)
+    {
+        cursor.SkipSpace();
+        if (cursor.Take('}'))
+        {
+            closed = true;
+            break;
+        }
+        std::string key;
+        if (!cursor.ReadQuoted(key))
+        {
+            problems.push_back("min-spec: expected a quoted key");
+            return false;
+        }
+        cursor.SkipSpace();
+        if (!cursor.Take(':'))
+        {
+            problems.push_back("min-spec: expected ':' after \"" + key + "\"");
+            return false;
+        }
+        cursor.SkipSpace();
+
+        if (key == "avx" || key == "avx2" || key == "fma" || key == "f16c")
+        {
+            bool value = false;
+            if (!cursor.ReadBoolean(value))
+            {
+                problems.push_back("min-spec: \"" + key + "\" must be true or false");
+                return false;
+            }
+            if (key == "avx") { parsed.avx = value; }
+            else if (key == "avx2") { parsed.avx2 = value; }
+            else if (key == "fma") { parsed.fma = value; }
+            else { parsed.f16c = value; }
+        }
+        else if (key == "minimumMemoryBytes" || key == "minimumAvailableMemoryBytes" ||
+                 key == "minimumPageFileBytes" || key == "pageFileRuleMaxMemoryBytes" ||
+                 key == "minimumFreeDiskSpaceBytes")
+        {
+            std::uint64_t value = 0;
+            if (!cursor.ReadUnsigned(value))
+            {
+                problems.push_back("min-spec: \"" + key + "\" must be a whole number of bytes");
+                return false;
+            }
+            if (key == "minimumMemoryBytes") { parsed.minimumMemoryBytes = value; }
+            else if (key == "minimumAvailableMemoryBytes") { parsed.minimumAvailableMemoryBytes = value; }
+            else if (key == "minimumPageFileBytes") { parsed.minimumPageFileBytes = value; }
+            else if (key == "pageFileRuleMaxMemoryBytes") { parsed.pageFileRuleMaxMemoryBytes = value; }
+            else { parsed.minimumFreeDiskSpaceBytes = value; }
+        }
+        else
+        {
+            // An unknown key is reported and skipped, not fatal: a file written
+            // for a newer tool still carries keys this one understands, and
+            // dropping all of them over one rename would apply a spec nobody
+            // wrote. Zero is how a game turns a rule off, so this is also the
+            // only way to find a threshold that was meant to be set and is not.
+            if (!cursor.SkipValue())
+            {
+                problems.push_back("min-spec: cannot read the value of \"" + key + "\"");
+                return false;
+            }
+            problems.push_back("min-spec: unrecognised key \"" + key + "\" was ignored");
+        }
+
+        cursor.SkipSpace();
+        if (cursor.Take(','))
+        {
+            continue;
+        }
+        if (cursor.Take('}'))
+        {
+            closed = true;
+            break;
+        }
+        problems.push_back("min-spec: expected ',' or '}' after \"" + key + "\"");
+        return false;
+    }
+
+    cursor.SkipSpace();
+    if (!cursor.Done())
+    {
+        problems.push_back("min-spec: trailing content after the closing '}'");
+        return false;
+    }
+    requirements = parsed;
+    return true;
+}
+
+std::filesystem::path DefaultMinSpecPath(const std::filesystem::path& gameDirectory)
+{
+    return gameDirectory / "min-spec.json";
+}
+
+LoadedRequirements LoadRequirements(const std::filesystem::path& gameDirectory,
+                                    const std::filesystem::path& overridePath)
+{
+    LoadedRequirements loaded;
+    loaded.requirements = DefaultPreflightRequirements();
+
+    const std::filesystem::path path = overridePath.empty()
+        ? DefaultMinSpecPath(gameDirectory)
+        : overridePath;
+    if (path.empty())
+    {
+        return loaded;
+    }
+
+    std::error_code ignored;
+    if (!std::filesystem::exists(path, ignored))
+    {
+        // Shipping no file is a supported configuration, not a fault: it means
+        // "measure against the spec this tool was built with". Staying quiet
+        // here is what keeps a line out of every report for nothing.
+        return loaded;
+    }
+
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream.is_open())
+    {
+        loaded.problems.push_back(
+            "min-spec: " + diagnosis::WideToUtf8(path.wstring()) + " exists but could not be opened");
+        return loaded;
+    }
+    const std::string text((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+
+    if (!ParseRequirementsJson(text, loaded.requirements, loaded.problems))
+    {
+        // Nothing to undo: the parser publishes only a complete spec, so what is
+        // left here is the built-in one this function started from. A partial
+        // minimum would be worse than a known default, because at least the
+        // default is the same one every other report was measured against.
+        return loaded;
+    }
+    loaded.source = "file:" + diagnosis::WideToUtf8(path.wstring());
+    return loaded;
 }
 
 PreflightResult EvaluatePreflight(
@@ -802,6 +1089,21 @@ std::string BuildPreflightJson(
         stream << (index == 0 ? "" : ", ") << JsonString(result.notes[index]);
     }
     stream << "],\n";
+
+    // What the verdict was measured against. A report that says Pass is
+    // unanswerable without it: support cannot tell whether the machine was fine
+    // or the spec handed to this tool was.
+    stream << "  \"requirements\": {\"avx\": " << BoolText(context.requirements.avx)
+           << ", \"avx2\": " << BoolText(context.requirements.avx2)
+           << ", \"fma\": " << BoolText(context.requirements.fma)
+           << ", \"f16c\": " << BoolText(context.requirements.f16c)
+           << ", \"minimumMemoryBytes\": " << context.requirements.minimumMemoryBytes
+           << ", \"minimumAvailableMemoryBytes\": " << context.requirements.minimumAvailableMemoryBytes
+           << ", \"minimumPageFileBytes\": " << context.requirements.minimumPageFileBytes
+           << ", \"pageFileRuleMaxMemoryBytes\": " << context.requirements.pageFileRuleMaxMemoryBytes
+           << ", \"minimumFreeDiskSpaceBytes\": " << context.requirements.minimumFreeDiskSpaceBytes
+           << "},\n"
+           << "  \"requirementsSource\": " << JsonString(context.requirementsSource) << ",\n";
 
     stream << "  \"environment\": {\n"
            << "    \"cpu\": {\"brand\": " << JsonString(inputs.cpu.brand)
@@ -936,6 +1238,10 @@ PreflightOptions ParsePreflightCommandLine(int argumentCount, wchar_t** argument
         {
             options.gameDirectory = RequireValue(index, argumentCount, arguments, "--game-dir");
         }
+        else if (argument == L"--min-spec")
+        {
+            options.minSpecPath = RequireValue(index, argumentCount, arguments, "--min-spec");
+        }
         else if (argument == L"--game-exe")
         {
             const std::string value = diagnosis::FileNameOf(
@@ -1032,12 +1338,23 @@ int RunPreflight(const PreflightOptions& options)
     // are being written by a thread we just detached, and a half-filled adapter
     // list would read as "this machine has no graphics card".
     const PreflightInputs inputs = withinBudget ? *job->inputs : PreflightInputs{};
-    const PreflightResult result = EvaluatePreflight(inputs, DefaultPreflightRequirements(), withinBudget);
+    // The minimum spec is the game's business, not this tool's, so it is read
+    // from beside the game at every launch instead of being compiled in. Read
+    // after the probes: it is one small local file, and it cannot change what
+    // the probes measured.
+    const LoadedRequirements loaded = LoadRequirements(gameDirectory, options.minSpecPath);
+    PreflightResult result = EvaluatePreflight(inputs, loaded.requirements, withinBudget);
+    for (const auto& problem : loaded.problems)
+    {
+        result.notes.push_back(problem);
+    }
 
     PreflightReportContext context;
     context.generatedAt = generatedAt;
     context.gameExecutable = options.gameExecutable;
     context.budgetSeconds = options.budgetSeconds;
+    context.requirements = loaded.requirements;
+    context.requirementsSource = loaded.source;
     const auto path = outputDirectory / PreflightFileNameValue;
     WriteReportFile(path, BuildPreflightJson(result, inputs, context));
 

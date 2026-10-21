@@ -273,7 +273,7 @@ launcher 不等工具跑完再读结果，而是工具还在跑时就轮询输�
 
 ```
 ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-dir <path>]
-                          [--game-exe <name>] [--budget-seconds N] [--quiet]
+                          [--min-spec <path>] [--game-exe <name>] [--budget-seconds N] [--quiet]
 ```
 
 产出 `OSGamePreflight.json`，和诊断报告用同样的四个键：`verdict`、`confidence`、`userMessage`、
@@ -304,6 +304,40 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
   游戏安装目录，往那里写文件会触发启动器自己的完整性扫描。
 - **退出码只有 0 和 30**：0 = 结论已写入，30 = 工具自身出错。“查出问题”不算失败，结论放在文件里，
   所以 `exe && next` 不会被打断，launcher 一律读文件。
+
+### 最低配置不由工具决定：min-spec.json
+
+最低配置是**游戏**的属性，不是采集工具的属性，所以它不编译进 exe，而是随游戏发布、每次拉起时读取：
+
+```
+<游戏目录>\min-spec.json        # 默认位置，可用 --min-spec <path> 覆盖
+```
+
+```json
+{
+  "avx": false,
+  "avx2": true,
+  "fma": false,
+  "f16c": false,
+  "minimumMemoryBytes": 4294967296,
+  "minimumAvailableMemoryBytes": 2147483648,
+  "minimumPageFileBytes": 2147483648,
+  "pageFileRuleMaxMemoryBytes": 17179869184,
+  "minimumFreeDiskSpaceBytes": 2147483648
+}
+```
+
+- **只认这一种形状**：一个扁平对象，值只有布尔和整数。嵌套、数组、字符串一律拒绝——能被人手写错的东西，
+  宁可拒掉也不要半懂。
+- **没写的键沿用内置默认**：写两个键就是覆盖两个键，不是重写整份最低配置。
+- **`0` 是关掉这条规则**，不是“要求 0”。想放宽某条而不想记它的默认值，就写 0。
+- **解析失败一律回落**：文件不存在、打不开、写坏了，都用内置默认继续跑，并把原因写进报告的 `notes`。
+  一次启动绝不会因为一个配置文件被打断——宁可用一份已知的默认配置，也不要用半份读出来的配置。
+- **认不出的键会被点名**：`"minimumVramBytes"` 这种新键会被跳过并记进 `notes`，其余键照常生效。这是一条
+  重要的留痕：否则键名改了、阈值其实没生效，报告上完全看不出来。
+- 报告里有 `"requirements"`（本次判定用的全部阈值）和 `"requirementsSource"`（`default` 或
+  `file:<路径>`）。玩家拿着一份“Pass”来投诉时，这两个键是唯一的答案：到底是机器没问题，还是给工具的
+  就是这么一份配置。
 
 ### 玩家操作
 
