@@ -464,6 +464,111 @@ RHISampler* MetalRHI::GetOrCreateMipmapSampler(uint32_t width, uint32_t height)
 #ifdef __APPLE__
 namespace
 {
+    // 关掉还开着的 compute encoder。Metal 不允许一个 command buffer 上同时存在两个
+    // encoder，所以任何"要开 render encoder"或"要收尾"的地方都得先关它。
+    void EndComputeEncoder(MetalCommandBuffer* metal_buffer)
+    {
+        if (metal_buffer == nullptr || metal_buffer->computeEncoder == nil)
+        {
+            return;
+        }
+        [metal_buffer->computeEncoder endEncoding];
+        [metal_buffer->computeEncoder release];
+        metal_buffer->computeEncoder = nil;
+    }
+
+    // SPIR-V: 扫 OpExecutionMode（opcode 16）找 LocalSize（17）或 LocalSizeId（38）。
+    //
+    // 为什么不问 SPIRV-Cross：它把 workgroup 尺寸藏在 EntryPoint 结构里，而这个仓库
+    // vendored 的版本没有稳定的公开访问器；直接扫字节码只依赖 SPIR-V 自己的布局，
+    // 二十行且和版本无关。
+    void ReadWorkgroupSizeFromSpirv(const std::vector<uint32_t>& words, uint32_t out_size[3])
+    {
+        out_size[0] = out_size[1] = out_size[2] = 1;
+
+        constexpr uint32_t kOpExecutionMode = 16;
+        constexpr uint32_t kExecutionModeLocalSize = 17;
+        constexpr uint32_t kExecutionModeLocalSizeId = 38;
+
+        size_t i = 5;  // 跳过 header（magic/version/generator/bound/schema）
+        while (i < words.size())
+        {
+            const uint32_t word = words[i];
+            const uint32_t opcode = word & 0xFFFFu;
+            const uint32_t count = word >> 16;
+            if (count == 0 || i + count > words.size())
+            {
+                break;
+            }
+            if (opcode == kOpExecutionMode && count >= 4)
+            {
+                const uint32_t mode = words[i + 2];
+                if ((mode == kExecutionModeLocalSize || mode == kExecutionModeLocalSizeId) && count >= 6)
+                {
+                    out_size[0] = words[i + 3];
+                    out_size[1] = words[i + 4];
+                    out_size[2] = words[i + 5];
+                    for (uint32_t axis = 0; axis < 3; ++axis)
+                    {
+                        if (out_size[axis] == 0)
+                        {
+                            out_size[axis] = 1;
+                        }
+                    }
+                    return;
+                }
+            }
+            i += count;
+        }
+    }
+
+    // MSL: `[[threads_per_threadgroup(256, 1, 1)]]`。MSL 源串是引擎自己拼的（Nanite
+    // 的剔除 kernel 走 CreateShaderModuleFromSource），所以手写解析就够了。
+    void ReadWorkgroupSizeFromMsl(const std::string& source, uint32_t out_size[3])
+    {
+        out_size[0] = out_size[1] = out_size[2] = 1;
+
+        const std::string marker = "threads_per_threadgroup";
+        const size_t at = source.find(marker);
+        if (at == std::string::npos)
+        {
+            return;
+        }
+        const size_t open = source.find('(', at);
+        if (open == std::string::npos)
+        {
+            return;
+        }
+        const size_t close = source.find(')', open);
+        if (close == std::string::npos)
+        {
+            return;
+        }
+
+        uint32_t axis = 0;
+        size_t cursor = open + 1;
+        while (axis < 3 && cursor < close)
+        {
+            const size_t comma = source.find(',', cursor);
+            const size_t end = (comma == std::string::npos || comma > close) ? close : comma;
+            const std::string token = source.substr(cursor, end - cursor);
+            try
+            {
+                out_size[axis] = static_cast<uint32_t>(std::max(std::stoul(token), 1ul));
+            }
+            catch (const std::exception&)
+            {
+                out_size[axis] = 1;
+            }
+            ++axis;
+            if (comma == std::string::npos || comma > close)
+            {
+                break;
+            }
+            cursor = comma + 1;
+        }
+    }
+
     // Compiles MSL source into a Metal shader module. `entry_point` is the MSL
     // function name -- SPIRV-Cross may rename the SPIR-V entry point (e.g.
     // "main" -> "main0"), so callers pass the name back explicitly.
@@ -515,10 +620,15 @@ namespace
         shader->setFunction(function);
         shader->stage      = static_cast<uint32_t>(stage);
         shader->entryPoint = entry_point;
+        if (stage == ShaderStage::Compute)
+        {
+            ReadWorkgroupSizeFromMsl(source, shader->workgroupSize);
+        }
         [library release];
         [function release];
         return shader;
     }
+
 
     ShaderStage ToShaderStage(uint32_t execution_model)
     {
@@ -630,7 +740,13 @@ RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader
         const std::string msl_source = compiler.compile();
         const std::string msl_entry  = compiler.get_cleansed_entry_point_name(entry, model);
 
-        return CreateMetalShaderFromMSL(m_Device, msl_source, ToShaderStage(model), entry, msl_entry);
+        auto* shader = CreateMetalShaderFromMSL(m_Device, msl_source, ToShaderStage(model), entry, msl_entry);
+        if (shader != nullptr && model == spv::ExecutionModelGLCompute)
+        {
+            // MSL 侧 SPIRV-Cross 不一定保留 local_size 属性，SPIR-V 里那份才是权威。
+            ReadWorkgroupSizeFromSpirv(words, static_cast<MetalShader*>(shader)->workgroupSize);
+        }
+        return shader;
     }
     catch (const std::exception& error)
     {
@@ -735,19 +851,49 @@ void MetalRHI::CreateBufferAndInitialize(RHIBufferUsageFlags    usage,
         options = MTLResourceStorageModePrivate;
     }
 
+    // **容量是 `size`，不是 `datasize`**。以前带初值时用 `newBufferWithBytes:length:datasize`
+    // 分配，于是 size=4096 / datasize=16 在 Metal 上只得到 16 字节的 buffer，而 Vulkan
+    // 分配的是 size（只 memcpy datasize）—— 同一个调用在两个后端拿到不同大小的东西，
+    // 往第 16 字节之后写的任何数据都是越界。Nanite 的集群/索引缓冲都是"先按容量建、
+    // 后面再整块填"，一旦按 datasize 分配就必然越界。
     const size_t byte_size = static_cast<size_t>(size > 0 ? size : 1);
-    id<MTLBuffer> mtl_buffer = nil;
-    if (data != nullptr && datasize > 0)
-    {
-        mtl_buffer = [m_Device newBufferWithBytes:data length:static_cast<NSUInteger>(datasize) options:options];
-    }
-    else
-    {
-        mtl_buffer = [m_Device newBufferWithLength:static_cast<NSUInteger>(byte_size) options:options];
-    }
+    const size_t copy_bytes =
+        (data != nullptr && datasize > 0) ? std::min(static_cast<size_t>(datasize), byte_size) : 0;
+
+    id<MTLBuffer> mtl_buffer = [m_Device newBufferWithLength:static_cast<NSUInteger>(byte_size) options:options];
     if (mtl_buffer == nil)
     {
         return;
+    }
+
+    if (copy_bytes > 0)
+    {
+        if (options == MTLResourceStorageModePrivate)
+        {
+            // device-private 缓冲 CPU 写不进去，走一次 staging + blit，这也是 Vulkan
+            // 侧同样的语义（VulkanUtil 对非 host-visible 内存根本没法 memcpy）。
+            id<MTLBuffer> staging =
+                [m_Device newBufferWithBytes:data length:static_cast<NSUInteger>(copy_bytes)
+                                     options:MTLResourceStorageModeShared];
+            if (staging != nil)
+            {
+                id<MTLCommandBuffer>     copy_command    = [m_CommandQueue commandBuffer];
+                id<MTLBlitCommandEncoder> blit_encoder   = [copy_command blitCommandEncoder];
+                [blit_encoder copyFromBuffer:staging
+                                sourceOffset:0
+                                    toBuffer:mtl_buffer
+                           destinationOffset:0
+                                        size:static_cast<NSUInteger>(copy_bytes)];
+                [blit_encoder endEncoding];
+                [copy_command commit];
+                [copy_command waitUntilCompleted];
+                [staging release];
+            }
+        }
+        else
+        {
+            std::memcpy(mtl_buffer.contents, data, copy_bytes);
+        }
     }
     (void)usage;
 
@@ -1310,6 +1456,11 @@ bool MetalRHI::CreateComputePipelines(RHIPipelineCache*,
     auto* pipeline = new MetalPipeline();
     pipeline->computeState = [state retain];
     [state release];
+    // CmdDispatch 只能看到 pipeline，看不到 shader，所以在这里抄一份。
+    for (uint32_t axis = 0; axis < 3; ++axis)
+    {
+        pipeline->workgroupSize[axis] = shader->workgroupSize[axis];
+    }
     pPipelines = pipeline;
     return true;
 #else
@@ -1465,6 +1616,10 @@ void MetalRHI::CmdBeginRenderPassPFN(RHICommandBuffer*              commandBuffe
     {
         return;
     }
+
+    // 前面如果有 compute（Nanite 的剔除就是 dispatch → draw），必须先关掉 compute
+    // encoder 才能开 render encoder。CmdDispatch 不再自己收尾，所以这一步在这里。
+    EndComputeEncoder(metal_buffer);
 
     MTLRenderPassDescriptor* descriptor = [MTLRenderPassDescriptor renderPassDescriptor];
     const size_t attachment_count = framebuffer->textures.size();
@@ -1730,9 +1885,15 @@ void MetalRHI::CmdBindDescriptorSetsPFN(RHICommandBuffer*           commandBuffe
             {
                 if (compute && metal_buffer->computeEncoder != nil)
                 {
+                    // **必须和 CreateShaderModule() 里 SPIRV-Cross 的
+                    // `binding.msl_buffer = slot + k_msl_descriptor_buffer_offset`
+                    // 用同一个索引**。以前这里用的是 texture_index（= slot，没有 +8），
+                    // 于是 compute 的 storage buffer 全部绑到错误的 [[buffer(n)]] 上：
+                    // kernel 读到的不是集群数据，而是别的槽位（通常是空/未定义），
+                    // 剔除结果恒为垃圾。
                     [metal_buffer->computeEncoder setBuffer:binding.buffer
                                                      offset:static_cast<NSUInteger>(binding.offset)
-                                                    atIndex:texture_index];
+                                                    atIndex:buffer_index];
                 }
                 else if (metal_buffer->renderEncoder != nil)
                 {
@@ -1825,6 +1986,15 @@ void MetalRHI::CmdDrawIndexedIndirect(RHICommandBuffer* commandBuffer,
     // draws -- still GPU-driven (the counts come from the buffer), just not a
     // single call. MTLDrawIndexedPrimitivesIndirectArguments is byte-identical
     // to RHIDrawIndexedIndirectCommand, so `stride` steps command to command.
+    //
+    // firstIndex is NOT applied here on purpose. The per-command
+    // RHIDrawIndexedIndirectCommand::firstIndex is read by the GPU out of the
+    // indirect buffer and lands in MTLDrawIndexedPrimitivesIndirectArguments::
+    // indexStart, whose unit (index elements) already matches Vulkan's
+    // firstIndex and D3D12's StartIndexLocation. indexBufferOffset below is the
+    // pure byte base recorded by CmdBindIndexBufferPFN -- do not add
+    // firstIndex * index_size to it the way CmdDrawIndexedPFN does: that
+    // variant takes firstIndex as a CPU argument and this one never sees it.
     const MTLPrimitiveType primitive_type =
         metal_buffer->graphicsPipeline != nullptr ? metal_buffer->graphicsPipeline->primitiveType
                                                   : MTLPrimitiveTypeTriangle;
@@ -2058,11 +2228,23 @@ void MetalRHI::CmdDispatch(RHICommandBuffer* commandBuffer,
     {
         [metal_buffer->computeEncoder setComputePipelineState:metal_buffer->computePipeline->computeState];
     }
+
+    // threadsPerThreadgroup 必须跟 kernel 声明的 local_size 一致 —— 以前硬编码
+    // (1,1,1)，于是 `local_size_x = 256` 的 kernel 在 Metal 上只有一个线程干活，
+    // 和 Vulkan 同一份 shader 的行为完全不同。
+    MTLSize threads_per_group = MTLSizeMake(1, 1, 1);
+    if (metal_buffer->computePipeline != nullptr)
+    {
+        threads_per_group = MTLSizeMake(metal_buffer->computePipeline->workgroupSize[0],
+                                        metal_buffer->computePipeline->workgroupSize[1],
+                                        metal_buffer->computePipeline->workgroupSize[2]);
+    }
     [metal_buffer->computeEncoder dispatchThreadgroups:MTLSizeMake(groupCountX, groupCountY, groupCountZ)
-                                 threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-    [metal_buffer->computeEncoder endEncoding];
-    [metal_buffer->computeEncoder release];
-    metal_buffer->computeEncoder = nil;
+                                 threadsPerThreadgroup:threads_per_group];
+    // **不要在这里 endEncoding**：一次 dispatch 就把 encoder 关掉的话，后面再
+    // CmdBindDescriptorSets / 再 CmdDispatch 全部静默失效（绑定要求 computeEncoder
+    // 非 nil）。encoder 的生命周期交给 EndCommandBuffer / CmdBeginRenderPassPFN /
+    // QueueSubmit，它们都已经会收尾。
 #endif
 }
 
@@ -2075,15 +2257,28 @@ void MetalRHI::CmdDispatchIndirect(RHICommandBuffer* commandBuffer, RHIBuffer* b
     {
         return;
     }
-    id<MTLComputeCommandEncoder> encoder = [metal_buffer->commandBuffer computeCommandEncoder];
+    if (metal_buffer->computeEncoder == nil)
+    {
+        id<MTLComputeCommandEncoder> encoder = [metal_buffer->commandBuffer computeCommandEncoder];
+        metal_buffer->computeEncoder = [encoder retain];
+        [encoder release];
+    }
     if (metal_buffer->computePipeline != nullptr && metal_buffer->computePipeline->computeState != nil)
     {
-        [encoder setComputePipelineState:metal_buffer->computePipeline->computeState];
+        [metal_buffer->computeEncoder setComputePipelineState:metal_buffer->computePipeline->computeState];
     }
-    [encoder dispatchThreadgroupsWithIndirectBuffer:metal_buffer_resource->getResource()
-                               indirectBufferOffset:static_cast<NSUInteger>(offset)
-                              threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
-    [encoder endEncoding];
+
+    MTLSize threads_per_group = MTLSizeMake(1, 1, 1);
+    if (metal_buffer->computePipeline != nullptr)
+    {
+        threads_per_group = MTLSizeMake(metal_buffer->computePipeline->workgroupSize[0],
+                                        metal_buffer->computePipeline->workgroupSize[1],
+                                        metal_buffer->computePipeline->workgroupSize[2]);
+    }
+    [metal_buffer->computeEncoder
+        dispatchThreadgroupsWithIndirectBuffer:metal_buffer_resource->getResource()
+                         indirectBufferOffset:static_cast<NSUInteger>(offset)
+                        threadsPerThreadgroup:threads_per_group];
 #endif
 }
 

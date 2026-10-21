@@ -131,6 +131,15 @@ public:
     uint32_t    stage {0};
     std::string entryPoint;
 
+    // compute kernel 声明的 workgroup 尺寸（GLSL 的 `layout(local_size_x/y/z)`，
+    // MSL 的 `[[threads_per_threadgroup(x, y, z)]]`）。
+    //
+    // Metal 与 Vulkan 不同：`dispatchThreadgroups` 必须在 CPU 侧给出
+    // threadsPerThreadgroup，Metal 不会从 shader 里读它。以前这里硬编码 (1,1,1)，
+    // 于是 `local_size_x = 256` 的 kernel 在 Metal 上只有一个线程在跑 —— 剔除结果
+    // 恒等于"只处理了第 0 个元素"，而且和 Vulkan 的结果不一致。
+    uint32_t workgroupSize[3] {1, 1, 1};
+
 private:
     id<MTLFunction> m_Function = nil;
     id<MTLLibrary>  m_Library  = nil;
@@ -214,6 +223,10 @@ public:
     MTLPrimitiveType primitiveType {MTLPrimitiveTypeTriangle};
     MTLCullMode      cullMode {MTLCullModeNone};
     MTLWinding       winding {MTLWindingCounterClockwise};
+
+    // compute 管线建好时把 kernel 的 workgroup 尺寸抄一份过来：CmdDispatch 拿得到
+    // 的只有 pipeline，拿不到 shader。
+    uint32_t workgroupSize[3] {1, 1, 1};
 };
 
 // ---- Render pass / framebuffer ----

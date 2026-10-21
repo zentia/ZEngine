@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 2026-10-21 (Metal RHI: the four defects that made any GPU-driven pass impossible)
+
+Nanite needs compute dispatch, storage-buffer bindings and indirect draws. On
+Apple, Metal is the only backend that compiles at all (the build excludes
+`Interface/Vulkan` and `Interface/DX12` because no Vulkan headers exist here), so
+its state decides whether a GPU-driven Nanite can work on this host. Four of its
+paths were wrong, all of them silently:
+
+* **`CmdDispatch` used `threadsPerThreadgroup = (1,1,1)` regardless of the
+  kernel.** A `layout(local_size_x = 256)` kernel therefore ran one thread per
+  group on Metal and 256 on Vulkan — same shader, different behaviour. The size
+  is now read at pipeline creation: from the SPIR-V `OpExecutionMode`
+  (`LocalSize` 17 / `LocalSizeId` 38) for compiled shaders, and from
+  `[[threads_per_threadgroup(...)]]` for MSL handed in through
+  `CreateShaderModuleFromSource`. `CmdDispatchIndirect` picks it up too.
+* **`CmdDispatch` ended the compute encoder after every dispatch.** Any subsequent
+  `CmdBindDescriptorSets` or second dispatch then found
+  `computeEncoder == nil` and did nothing. The encoder's lifetime now belongs to
+  `EndCommandBuffer` / `CmdBeginRenderPassPFN` / `QueueSubmit`, and
+  `CmdBeginRenderPassPFN` closes it first (Metal forbids two live encoders on one
+  command buffer — dispatch-then-draw is exactly Nanite's shape).
+* **Compute descriptor buffers were bound at the wrong index.**
+  `CreateShaderModule` gives SPIRV-Cross `msl_buffer = slot + 8`, but
+  `CmdBindDescriptorSetsPFN` bound at `slot`, so every compute storage buffer
+  landed on the wrong `[[buffer(n)]]` and kernels read garbage.
+* **`CreateBufferAndInitialize` allocated `datasize` bytes instead of `size`.**
+  `newBufferWithBytes:length:` was handed `datasize`, so `size=4096/datasize=16`
+  produced a 16-byte buffer on Metal while Vulkan produced 4096. It now always
+  allocates `size` and copies `min(datasize, size)`, staging through a blit
+  encoder when the storage mode is device-private.
+
+`CmdDrawIndexedIndirect` was **not** changed: `firstIndex` is deliberately not
+applied on the CPU. The GPU reads it out of the indirect buffer into
+`MTLDrawIndexedPrimitivesIndirectArguments::indexStart`, whose unit (index
+elements) already matches Vulkan's `firstIndex` and D3D12's
+`StartIndexLocation`. A comment now says so, because the obvious "fix" of
+mirroring `CmdDrawIndexedPFN`'s `firstIndex * index_size` would double-count.
+
 ### Added / Fixed - 2026-10-21 (Nanite: wired into the frame loop, and it can finally see a scene)
 
 Phase 31 left Nanite working but uncalled: `NaniteRenderer` had no way to see a
