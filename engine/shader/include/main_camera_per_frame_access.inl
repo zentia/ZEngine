@@ -12,3 +12,4 @@
 #define pre_view_translation per_frame.pre_view_translation
 #define render_tile per_frame.render_tile
 #define viewport_rect per_frame.viewport_rect
+#define lumen_indirect per_frame.lumen_indirect

@@ -239,6 +239,13 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
     mesh_perframe_storage_buffer_object.point_light_num = point_light_num;
     mesh_perframe_storage_buffer_object.show_skybox = 1U;
 
+    // Lumen 的间接光。这是 CPU probe 网格到 shader 的唯一通路：Lumen 自己写进
+    // RenderScene（够不到渲染管线），这里把它搬进 per-frame SSBO。
+    //
+    // 权重为 0 时（Lumen 关掉 / 没有距离场 / 一个 probe 都还没更新）shader 侧的行为
+    // 跟加这个字段之前**完全一致** —— 继续用 baked irradiance cubemap。
+    mesh_perframe_storage_buffer_object.lumen_indirect = render_scene->m_IndirectLighting.ToUniform();
+
     m_PointLightShadowPerFrame.point_light_num = point_light_num;
     // point lights
     for (uint32_t i = 0; i < point_light_num; i++)

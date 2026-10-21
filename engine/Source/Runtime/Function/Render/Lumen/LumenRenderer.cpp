@@ -62,6 +62,29 @@ bool LumenRenderer::Initialize(RHI* rhi,
     return true;
 }
 
+void LumenRenderer::ApplyConfig(const LumenConfig& config)
+{
+    m_Config = config;
+
+    // 只有子系统需要跟着改 —— 它们各自持有一份 config 副本。
+    // 距离场分辨率变了的话，下一次 UpdateDistanceField 会因为分辨率不匹配而重建。
+    m_DistanceField.setConfig(config);
+    m_SurfaceCache.setConfig(config);
+    m_RayTracing.setConfig(config);
+    m_GlobalIllumination.setConfig(config);
+    m_Reflections.setConfig(config);
+}
+
+bool LumenRenderer::GetIndirectLighting(Vector3& out_irradiance, uint32_t& out_probe_count) const
+{
+    if (!m_Config.enabled || !m_Config.enable_global_illumination)
+    {
+        return false;
+    }
+
+    return m_GlobalIllumination.GetAverageIrradiance(out_irradiance, out_probe_count);
+}
+
 void LumenRenderer::clear()
 {
     m_Reflections.clear();

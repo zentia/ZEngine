@@ -132,6 +132,39 @@ struct RenderUpdateSceneCmd final : IRenderCommand
     const char* GetDebugName() const override { return "RenderUpdateScene"; }
 };
 
+// Lumen 是纯 CPU 的（距离场体素化 + 表面缓存 + 辐照度 probe 网格），所以它在帧里
+// 的位置是"场景更新之后、PreparePassData 之前"：GI 读的是场景实体，而它算出来的
+// 间接光要在本帧的 GPU 资源上传之前写好，才能进 per-frame uniform。
+struct RenderLumenCmd final : IRenderCommand
+{
+    RenderSystem* system {nullptr};
+    float delta_time {0.0f};
+
+    RenderLumenCmd(RenderSystem* in_system, float in_delta_time)
+        : system(in_system), delta_time(in_delta_time)
+    {
+    }
+
+    void Execute() override
+    {
+        if (system == nullptr || system->m_RenderPipeline == nullptr)
+        {
+            return;
+        }
+
+        auto render_scene = system->m_RenderScene;
+        auto camera = system->GetRenderCamera(ViewportType::game);
+        if (render_scene == nullptr || camera == nullptr)
+        {
+            return;
+        }
+
+        system->m_RenderPipeline->UpdateLumen(render_scene, camera, delta_time);
+    }
+
+    const char* GetDebugName() const override { return "RenderLumen"; }
+};
+
 struct RenderPreparePassDataCmd final : IRenderCommand
 {
     RenderSystem* system {nullptr};
@@ -245,6 +278,7 @@ void BuildRenderSystemFrameCommands(RenderSystem& render_system, float delta_tim
         ENQUEUE_RENDER_COMMAND(RenderSyncGameCameraCmd, &render_system);
         ENQUEUE_RENDER_COMMAND(RenderProcessSwapDataCmd, &render_system);
         ENQUEUE_RENDER_COMMAND(RenderUpdateSceneCmd, &render_system, delta_time);
+        ENQUEUE_RENDER_COMMAND(RenderLumenCmd, &render_system, delta_time);
         ENQUEUE_RENDER_COMMAND(RenderPreparePassDataCmd, &render_system);
         ENQUEUE_RENDER_COMMAND(RenderBuildDrawListsCmd, &render_system, frame_draw_list_slot);
         ENQUEUE_RENDER_COMMAND(RenderDispatchRHICommandsCmd, &render_system, frame_draw_list_slot);
@@ -255,6 +289,7 @@ void BuildRenderSystemFrameCommands(RenderSystem& render_system, float delta_tim
     ENQUEUE_RENDER_COMMAND(RenderProcessSwapDataCmd, &render_system);
     ENQUEUE_RENDER_COMMAND(RenderSyncGameCameraCmd, &render_system);
     ENQUEUE_RENDER_COMMAND(RenderUpdateSceneCmd, &render_system, delta_time);
+    ENQUEUE_RENDER_COMMAND(RenderLumenCmd, &render_system, delta_time);
     ENQUEUE_RENDER_COMMAND(RenderPreparePassDataCmd, &render_system);
     ENQUEUE_RENDER_COMMAND(RenderBuildDrawListsCmd, &render_system, frame_draw_list_slot);
     ENQUEUE_RENDER_COMMAND(RenderDispatchRHICommandsCmd, &render_system, frame_draw_list_slot);

@@ -7,9 +7,11 @@
 #if defined(__APPLE__)
     #include <TargetConditionals.h>
 #endif
+#if defined(Z_HAS_LUMEN)
+    #include "Runtime/Function/Render/Lumen/LumenRenderPass.h"
+#endif
 #if defined(Z_HAS_VULKAN)
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
-    #include "Runtime/Function/Render/Lumen/LumenRenderPass.h"
     #include "Runtime/Function/Render/Passes/BindlessTonemapPass.h"
     #include "Runtime/Function/Render/Passes/ColorGradingPass.h"
     #include "Runtime/Function/Render/Passes/CombineUIPass.h"
@@ -59,6 +61,24 @@ namespace
 
 void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
 {
+    // Lumen 是**纯 CPU** 的：距离场体素化、表面缓存、辐照度 probe 网格，一行都不跑在
+    // GPU 上。它不需要 render pass、framebuffer 或 swapchain，所以在任何编译了它的
+    // 配置上都能建 —— 包括 Metal/Apple，而这个函数剩下的部分在那里是直接 return 的。
+    //
+    // 以前这行在 `#if defined(Z_HAS_VULKAN)` 块里，于是 Apple（编译 Lumen 但没有
+    // Vulkan）永远拿不到 m_LumenPass。Z_HAS_LUMEN 才是"Lumen 的 .cpp 在不在这份
+    // ZRuntime 里"的正确开关。
+#if defined(Z_HAS_LUMEN)
+    {
+        RenderPassCommonInfo pass_common_info;
+        pass_common_info.rhi = m_Pipeline.m_Rhi;
+        pass_common_info.render_resource = init_info.render_resource;
+
+        m_Pipeline.m_LumenPass = std::make_shared<LumenRenderPass>();
+        m_Pipeline.m_LumenPass->SetCommonInfo(pass_common_info);
+        m_Pipeline.m_LumenPass->Initialize(nullptr);
+    }
+#endif
 #if defined(__APPLE__)
     (void)init_info;
     return;
@@ -158,7 +178,6 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
     m_Pipeline.m_PointLightShadowPass = std::make_shared<PointLightShadowPass>();
     m_Pipeline.m_DirectionalLightPass = std::make_shared<DirectionalLightShadowPass>();
     m_Pipeline.m_MainCameraPass = std::make_shared<MainCameraPass>();
-    m_Pipeline.m_LumenPass = std::make_shared<LumenRenderPass>();
     m_Pipeline.m_ToneMappingPass = std::make_shared<BindlessTonemapPass>();
     m_Pipeline.m_ColorGradingPass = std::make_shared<ColorGradingPass>();
     m_Pipeline.m_UiPass = std::make_shared<UIPass>();
@@ -174,7 +193,6 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
     m_Pipeline.m_PointLightShadowPass->SetCommonInfo(pass_common_info);
     m_Pipeline.m_DirectionalLightPass->SetCommonInfo(pass_common_info);
     m_Pipeline.m_MainCameraPass->SetCommonInfo(pass_common_info);
-    m_Pipeline.m_LumenPass->SetCommonInfo(pass_common_info);
     m_Pipeline.m_ToneMappingPass->SetCommonInfo(pass_common_info);
     m_Pipeline.m_ColorGradingPass->SetCommonInfo(pass_common_info);
     m_Pipeline.m_UiPass->SetCommonInfo(pass_common_info);
@@ -185,7 +203,6 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
 
     m_Pipeline.m_PointLightShadowPass->Initialize(nullptr);
     m_Pipeline.m_DirectionalLightPass->Initialize(nullptr);
-    m_Pipeline.m_LumenPass->Initialize(nullptr);
 
     MainCameraPass* main_camera_pass =
         static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get());

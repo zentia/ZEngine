@@ -31,6 +31,11 @@ public:
     // render entities
     std::vector<RenderEntity> m_RenderEntities;
 
+    // Lumen 的间接光结果（由 LumenRenderPass 每帧写入，渲染器读它填 per-frame
+    // uniform）。放在场景上而不是渲染器上，是因为 UpdatePerFrameBuffer 手里只有
+    // 场景和相机，够不到渲染管线。
+    SceneIndirectLighting m_IndirectLighting;
+
     // axis, for editor
     std::optional<RenderEntity> m_RenderAxis;
 

@@ -521,6 +521,20 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenGlobalIlluminationSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenGlobalIlluminationSmokeTest.cpp")
+# Lumen render-pass wiring smoke-test main carve-out (same rationale). Built only
+# when ZENGINE_BUILD_LUMEN_RENDER_PASS_WIRING_SMOKE_TEST=ON (see
+# Function/Render/Lumen/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenRenderPassWiringSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenRenderPassWiringSmokeTest.cpp")
+# Lumen per-frame bridge smoke-test main carve-out (same rationale). Built only
+# when ZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST=ON (see
+# Function/Render/Lumen/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenPerFrameBridgeSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenPerFrameBridgeSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when

@@ -44,6 +44,14 @@ public:
     const LumenConfig& getConfig() const { return m_Config; }
     LumenConfig& getConfig() { return m_Config; }
 
+    // 运行时热改配置（CVar）。把配置推给所有子系统，**不**重新 Initialize ——
+    // 那是唯一能保住 probe 网格历史与表面缓存页面的做法。
+    void ApplyConfig(const LumenConfig& config);
+
+    // 把本帧的 GI 结果汇总出来，供渲染器写进 per-frame uniform。
+    // 返回 false 表示 Lumen 没有产出（关掉了 / 没有距离场 / 一个 probe 都还没更新）。
+    bool GetIndirectLighting(Vector3& out_irradiance, uint32_t& out_probe_count) const;
+
     // 获取统计信息
     const LumenStats& GetStats() const { return m_Stats; }
 

@@ -7,6 +7,98 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 2026-10-21 (Lumen GI reaches the shader: the per-frame uniform bridge)
+
+Phase 27 ended with Lumen publishing its irradiance into `RenderScene::m_IndirectLighting`
+— and with a commit message that said so explicitly: `MainCameraPerFrame` had no GI
+field and `deferred_lighting.frag` did not composite it. GI still could not reach a
+single pixel. This closes that last metre.
+
+- **`MainCameraPerFrame::lumen_indirect`** (`Vector4`, appended last): rgb = irradiance,
+  a = blend weight. It is *weight + colour*, not "is there a value", because a scene
+  boxed in by closed geometry legitimately resolves to black — that is data, and only
+  the weight distinguishes it from "Lumen is off".
+- `SceneIndirectLighting::ToUniform()` (`RenderCommon.h`) is the single definition of
+  that packing, called by **both** `UpdatePerFrameBuffer` implementations. See the trap
+  below for why it is not written out twice.
+- **Shaders composite it**: `shader/include/mesh_lighting.inl` (forward/GLSL) and
+  `shader/hlsl/rp1/deferred_lighting.frag.hlsl` (deferred/HLSL) now `mix` / `lerp`
+  between the baked irradiance cubemap and `lumen_indirect.rgb` by `lumen_indirect.a`.
+  Blending, not adding — both are irradiance, and adding would count the sky twice.
+  Weight 0 behaves byte-for-byte as before.
+- **New `LumenPerFrameBridgeSmokeTest`** (`-DZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST=ON`,
+  20 checks): pins the packing, the C++ struct layout (`static_assert` + runtime
+  mirror), that both backend call sites publish the field, and that all four shader
+  mirrors declare / expose it — including that the consumers blend rather than add.
+  Verified to fail when a mirror is deliberately broken.
+
+#### The trap: `UpdatePerFrameBuffer` has two mutually exclusive bodies
+
+`Function/Render/RenderResource.cpp` is wrapped *entirely* in `#if defined(Z_HAS_VULKAN)`
+(lines 5–1420); `Function/Render/RenderResourceDx12.cpp` is wrapped in
+`#if defined(_WIN32)` + `#if !defined(Z_HAS_VULKAN)`. **Apple (Metal) and Web have no
+implementation at all** — the `RenderResource::UpdatePerFrameBuffer` symbol the Apple
+smoke tests link is a stub that `abort()`s. This is the same mistake class as phase 27:
+"is Lumen compiled in" (`Z_HAS_LUMEN`) and "does anything fill the per-frame buffer"
+(`Z_HAS_VULKAN` / `_WIN32`) are two different switches, and on Apple their intersection
+is empty.
+
+Practical consequence: any new per-frame field must be filled in **both** files, and any
+test that calls `UpdatePerFrameBuffer` directly will only ever run on Vulkan hosts —
+which is why the packing was hoisted into a header function the test can link anywhere.
+
+### Added / Fixed - 2026-10-21 (Lumen render pass: wired into the frame loop, and it has CVars now)
+
+The probe grid had real content, but nothing in the engine ever asked for it.
+`LumenRenderPass::Render()` — the only function that drives `Update` /
+`ComputeGlobalIllumination` / `ComputeReflections` — had **zero callers** (only
+`PreparePassData` was invoked, from `RenderPipelineBase`). It also ended in a
+TODO, so even if it had run the result went nowhere. And there were no CVars at
+all: GI could not be switched off at runtime and probe density was a hard-coded
+constant.
+
+- **`Z_HAS_LUMEN`** (new compile definition, `engine/CMakeLists.txt`) now mirrors
+  which configurations actually strip `Function/Render/Lumen` from ZRuntime
+  (Emscripten, and Windows with `ZENGINE_USE_VULKAN=OFF`). This is *not* the same
+  as `Z_HAS_VULKAN`: Apple builds Metal and has no Vulkan, yet does compile
+  Lumen — which is exactly why guarding the pass on `Z_HAS_VULKAN` left it
+  uncreated there.
+- **`m_LumenPass` is now created on every build that compiles Lumen**, in
+  `DesktopRenderPipelineModule::Setup()` before the Apple early-return. Lumen is
+  pure CPU (distance-field voxelization, surface cache, probe grid) — it needs no
+  render pass, framebuffer or swapchain.
+- **`RenderPipelineBase::UpdateLumen(scene, camera, delta_time)`** dispatches to
+  the pass through a `dynamic_cast` (the slot is shared by all passes, and on
+  stripped configurations `LumenRenderPass` does not exist at all). No-op when
+  there is no Lumen pass, so the Mobile path is unaffected.
+- **New `RenderLumenCmd` frame command**, enqueued right after
+  `RenderUpdateSceneCmd`: GI reads scene entities, so it must follow the
+  visibility update, and it must precede `PreparePassData` so its result is
+  available to this frame's per-frame uniform.
+- **`Render()` now publishes**: it writes the probe grid's mean irradiance into
+  `RenderScene::m_IndirectLighting` (new POD `SceneIndirectLighting` in
+  `RenderCommon.h`, deliberately Lumen-free so stripped configurations still
+  compile). The published payload carries a **weight**, not just a colour: an
+  enclosed scene legitimately resolves to black, and that is data, not "no data".
+- **`LumenRenderPass::Initialize` no longer requires an RHI.** Lumen runs entirely
+  on the CPU today; gating it on `m_Rhi` left the whole subsystem uninitialized
+  whenever the RHI was not up yet.
+- **New `Lumen/LumenSettings.{h,cpp}`** registers `r.Lumen.Enable`,
+  `r.Lumen.GlobalIllumination`, `r.Lumen.Reflections`, `r.Lumen.ProbeBudget`,
+  `r.Lumen.SampleCount`, `r.Lumen.ProbeSpacing`, `r.Lumen.TemporalBlendRate` and
+  `r.Lumen.IndirectIntensity`, following the MegaLights pattern. They are **live**:
+  `Render()` re-applies them every frame via the new
+  `LumenRenderer::ApplyConfig()`, which pushes the config down to all five
+  subsystems without re-initializing them (that is the only way to keep the probe
+  grid's history and the surface cache's pages).
+- **`LumenRenderPassWiringSmokeTest`** (37 checks,
+  `-DZENGINE_BUILD_LUMEN_RENDER_PASS_WIRING_SMOKE_TEST=ON`, registered with
+  CTest) pins it headlessly: the pass publishes a red-dominant irradiance for a
+  red floor, `r.Lumen.Enable=0` zeroes the weight rather than leaving stale light,
+  `r.Lumen.IndirectIntensity` scales the result, `r.Lumen.ProbeSpacing` resizes
+  the grid without restarting the pipeline, and `UpdateLumen` drives a Lumen pass
+  while ignoring a non-Lumen one.
+
 ### Added / Fixed - 2026-10-21 (Lumen global illumination: GI produces something, and it is not noise)
 
 `ComputeGlobalIllumination` was a TODO that returned `true` without touching

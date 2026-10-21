@@ -22,6 +22,12 @@ public:
     // 初始化
     bool Initialize(RHI* rhi, const LumenConfig& config);
 
+    // 运行时改配置（CVar）。probe 网格保留：ResizeProbeGrid 只在世界盒或分辨率
+    // 真的变了时才重建。
+    void setConfig(const LumenConfig& config) { m_Config = config; }
+
+    const LumenConfig& getConfig() const { return m_Config; }
+
     // 清理
     void clear();
 
@@ -54,6 +60,16 @@ public:
 
     // GI 自己维护的帧号（probe 时间累积的时基）
     uint64_t getFrameIndex() const { return m_FrameIndex; }
+
+    // 把 probe 网格汇总成一个**场景级**的间接辐照度。
+    //
+    // 这是 CPU probe 网格到 per-frame uniform 的桥。probe 网格今天还没有 GPU 侧的
+    // 3D 纹理体积（Lumen 完全没有 shader），所以只能先把它压成一个全场景平均值 ——
+    // 也就是一个"会跟着场景变色"的 ambient 项。等体积纹理就位，这个函数的调用方
+    // 换成上传整张网格即可，probe 网格本身不用动。
+    //
+    // 返回 false 表示"一个 probe 都还没被更新过"，此时 out_irradiance 无意义。
+    bool GetAverageIrradiance(Vector3& out_irradiance, uint32_t& out_probe_count) const;
 
 private:
     // 从表面点出发时的自相交偏移。着色点本身就在面上，距离场在那个体素里的值约等于

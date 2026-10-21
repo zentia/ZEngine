@@ -239,6 +239,21 @@ if(ZENGINE_USE_VULKAN)
   add_compile_definitions(Z_HAS_VULKAN=1)
 endif()
 
+# Lumen (CPU global illumination) is stripped from ZRuntime on Emscripten and on
+# Windows builds that opt out of Vulkan -- see the two `list(FILTER ... EXCLUDE
+# REGEX "...Function/Render/Lumen/...")` blocks in Source/Runtime/CMakeLists.txt.
+# Mirror that here so pipeline / render-system code can `#include` and construct
+# LumenRenderPass without breaking those configurations. Note this is NOT the same
+# as Z_HAS_VULKAN: Apple builds Metal (no Vulkan) but do compile Lumen, which is
+# exactly why guarding the pass on Z_HAS_VULKAN left it uncreated there.
+if(NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+   AND NOT (WIN32 AND NOT ZENGINE_USE_VULKAN))
+  add_compile_definitions(Z_HAS_LUMEN=1)
+  message(STATUS "Engine: Lumen (CPU GI) enabled")
+else()
+  message(STATUS "Engine: Lumen (CPU GI) disabled (sources stripped from ZRuntime)")
+endif()
+
 
 # Metal/macOS builds disable Vulkan but still benefit from glslangValidator for
 # offline SPIR-V generation when the tool is on PATH (brew install glslang).

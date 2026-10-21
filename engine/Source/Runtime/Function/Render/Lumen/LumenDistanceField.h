@@ -54,6 +54,12 @@ public:
     // 初始化
     bool Initialize(RHI* rhi, const LumenConfig& config);
 
+    // 运行时改配置（CVar）。不释放任何资源；分辨率变了之后下一次
+    // UpdateDistanceField 会因为几何哈希/分辨率不匹配而重建。
+    void setConfig(const LumenConfig& config) { m_Config = config; }
+
+    const LumenConfig& getConfig() const { return m_Config; }
+
     // 清理
     void clear();
 

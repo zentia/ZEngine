@@ -2118,6 +2118,57 @@ downstream reads it.
 - **`gi_temporal_blend_rate = 0` means freeze, not "instant"** — see
   `ComputeTemporalAlpha`, which returns 0 there.
 
+### 2.38 Lumen 的接线：Z_HAS_LUMEN、UpdateLumen 和 RenderScene 上的发布点
+
+- **`Z_HAS_LUMEN` 才是"Lumen 在不在"的开关**，不是 `Z_HAS_VULKAN`。Lumen 的 .cpp
+  只在两处被剥掉（Emscripten、`WIN32 AND NOT ZENGINE_USE_VULKAN`，见
+  `Source/Runtime/CMakeLists.txt`），而 Apple 编 Metal、没有 Vulkan、却**编 Lumen**
+  —— 以前把 `m_LumenPass` 放在 `#if defined(Z_HAS_VULKAN)` 里，Apple 永远拿不到它。
+  所有引用 `LumenRenderPass` / `LumenSettings` 的管线/控制台代码都必须包在
+  `Z_HAS_LUMEN` 里。
+- **GI 在帧里的位置是"场景更新之后、PreparePassData 之前"**（`RenderLumenCmd`）。
+  GI 读场景实体，必须等可见性更新完；它算出来的间接光又必须早于本帧的 GPU 资源
+  上传，否则进不了 per-frame uniform。
+- **Lumen 是纯 CPU 的**，所以 `LumenRenderPass::Initialize` 只需要 `render_resource`
+  （CPU 网格几何的唯一来源），**不要**再拿 `m_Rhi` 去 gate 初始化。
+- Lumen 的结果通过 `RenderScene::m_IndirectLighting`（POD `SceneIndirectLighting`，
+  在 `RenderCommon.h`，**刻意不依赖任何 Lumen 头**）发布。渲染器够不到渲染管线，
+  只有场景和相机，所以发布点只能在场景上。
+- **发布的是"权重 + 颜色"，不是"有没有值"**：全黑的场景（被封闭几何体包住）算出来
+  的辐照度本来就是 0，那是有数据。关掉 Lumen 时权重归零，让延迟光照退回 baked
+  irradiance cubemap，而不是留下上一帧的陈旧颜色。
+- `r.Lumen.*` 是**热生效**的：`Render()` 每帧调 `LumenRenderer::ApplyConfig()`，把
+  配置推给五个子系统而**不**重新 Initialize —— 只有这样才能保住 probe 网格的历史
+  和表面缓存的页面。结构性字段（`distance_field_resolution` /
+  `surface_cache_resolution`）不在热改范围内，改它们要重建资源。
+
+### 2.39 Lumen 进画面：per-frame uniform 桥，以及"哪份 UpdatePerFrameBuffer 是真身"
+
+- **`UpdatePerFrameBuffer` 有两份互斥的真身**，而且都不是 Apple 的：
+  `Function/Render/RenderResource.cpp` 的函数体整个包在 `#if defined(Z_HAS_VULKAN)`
+  里（5–1420 行），`Function/Render/RenderResourceDx12.cpp` 包在
+  `#if defined(_WIN32)` + `#if !defined(Z_HAS_VULKAN)` 里。**Apple（Metal）和 Web
+  根本没有实现** —— 冒烟测试里那个 `RenderResource::UpdatePerFrameBuffer` 桩是会
+  `abort()` 的。往这两个文件里加 per-frame 字段必须**两边都加**，否则只有一半平台
+  有数据。
+- 这是阶段 27 那个 `Z_HAS_VULKAN` / `Z_HAS_LUMEN` 错误的翻版：**"Lumen 在不在"和
+  "per-frame buffer 有没有人填"是两个不同的开关**。填 per-frame 的代码按 Vulkan /
+  DX12 切分，跟 Lumen 按 Emscripten / Win-non-Vulkan 切分，两者交集为空的平台上
+  （Apple）就是"Lumen 编了但结果没人搬"。
+- 打包逻辑因此收敛到 **`SceneIndirectLighting::ToUniform()`**（`RenderCommon.h`）：
+  两份 `UpdatePerFrameBuffer` 都调它。这样既不会手抄漂移，也让
+  `LumenPerFrameBridgeSmokeTest` 有一个**所有平台都能链接**的断言对象 —— 直接调
+  `UpdatePerFrameBuffer` 的测试在 Apple 上只能链到 abort 桩。
+- **`MainCameraPerFrame` 有三份手工维护的镜像**（C++ `RenderCommon.h`、GLSL
+  `shader/include/structures.h`、HLSL `shader/hlsl/common/scene_lighting_structs.hlsli`）。
+  只在一边加字段，后面每个 per-frame 常量都会错位 16 字节，而 shader 在本机从不编译，
+  没有别的东西能发现它。新字段必须追加在**末尾**，并同步三处 + 两个 bare-name
+  accessor（`main_camera_per_frame_access.{inl,hlsli}`）。
+- **间接光是"替换"不是"相加"**：`mesh_lighting.inl` 用
+  `mix(irradiance, lumen_indirect.rgb, lumen_indirect.a)`、`deferred_lighting.frag.hlsl`
+  用 `lerp(ambient_light, ...)`。两者都是辐照度，加起来会把天光算两遍。权重 0 时的
+  行为必须和加字段之前**逐字节一致**。
+
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).
