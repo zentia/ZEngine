@@ -167,6 +167,7 @@ private:
     friend struct RenderProcessSwapDataCmd;
     friend struct RenderUpdateSceneCmd;
     friend struct RenderLumenCmd;
+    friend struct RenderNaniteCmd;
     friend struct RenderPreparePassDataCmd;
     friend struct RenderBuildDrawListsCmd;
     friend struct RenderDispatchRHICommandsCmd;

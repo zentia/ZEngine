@@ -1,10 +1,15 @@
 #include "NaniteRenderer.h"
 
 #include "NaniteTypes.h"
+#include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/RenderCamera.h"
+#include "Runtime/Function/Render/RenderEntity.h"
 #include "Runtime/Function/Render/RenderResourceBase.h"
 #include "Runtime/Function/Render/RenderScene.h"
+#include "Runtime/Function/Render/Nanite/NaniteSettings.h"
+
+#include <cstdint>
 
 // ==================== NaniteRenderer ====================
 
@@ -46,6 +51,163 @@ void NaniteRenderer::clear()
     m_Instances.clear();
     m_InstanceIdToIndex.clear();
     m_RenderBatches.clear();
+
+    // 集群随实例一起没了：下次 UpdateFromScene 必须重新认一遍场景，否则哈希还匹配、
+    // 实例列表却是空的，Nanite 就永久静默了。
+    m_SceneTopologyHash = 0;
+    ClearFrameResults();
+}
+
+// ---- 场景 → 实例 / 集群 -------------------------------------------------------
+
+// FNV-1a 64。用 offset basis 起头（而不是 0）是为了让"空场景"的哈希也不等于
+// m_SceneTopologyHash 的初值 —— 否则首帧会被误判成"场景没变"而跳过重建。
+uint64_t NaniteRenderer::ComputeSceneTopologyHash(const std::vector<RenderEntity>& entities,
+                                                  RenderResourceBase& render_resource) const
+{
+    uint64_t hash = 14695981039346656037ull;
+
+    auto mix = [&hash](uint64_t value) {
+        hash ^= value;
+        hash *= 1099511628211ull;
+    };
+
+    for (const RenderEntity& entity : entities)
+    {
+        const CpuMeshGeometry* geometry = render_resource.FindMeshGeometry(entity.m_MeshAssetId);
+        if (geometry == nullptr || !geometry->IsValid())
+        {
+            // 没有 CPU 几何的实体进不了 Nanite。它**不**进哈希，否则"某个网格资产
+            // 晚一帧才上传完成"会被当成拓扑变化，白白重建一次。
+            continue;
+        }
+
+        mix(static_cast<uint64_t>(entity.m_InstanceId));
+        mix(static_cast<uint64_t>(entity.m_MeshAssetId));
+    }
+
+    return hash;
+}
+
+bool NaniteRenderer::EnsureMeshResource(uint64_t mesh_id, const CpuMeshGeometry& geometry)
+{
+    if (m_ClusterManager.GetMeshResource(mesh_id) != nullptr)
+    {
+        return true;
+    }
+
+    NaniteMeshResource mesh_resource {};
+    mesh_resource.mesh_id = mesh_id;
+
+    // CPU 网格缓存只留了 position + index（12 + 4 字节/顶点，够距离场和裁剪用），
+    // 法线和 UV 是没有的。集群构建器今天也只读 position + index，所以传空是对的；
+    // 等 GPU 路径需要完整顶点属性时，这里得换成真的顶点缓冲。
+    const std::vector<Vector3> empty_normals;
+    const std::vector<Vector2> empty_uvs;
+
+    if (!m_ClusterBuilder.BuildClustersFromMesh(geometry.positions,
+                                                empty_normals,
+                                                empty_uvs,
+                                                geometry.indices,
+                                                mesh_resource,
+                                                m_Config))
+    {
+        LOG_WARNING(ZRender, "nanite: cluster build failed for mesh asset {}", mesh_id);
+        return false;
+    }
+
+    return m_ClusterManager.RegisterMeshResource(mesh_id, mesh_resource);
+}
+
+bool NaniteRenderer::RebuildInstancesFromScene(const std::vector<RenderEntity>& entities,
+                                               RenderResourceBase& render_resource)
+{
+    m_Instances.clear();
+    m_InstanceIdToIndex.clear();
+    ClearFrameResults();
+
+    for (const RenderEntity& entity : entities)
+    {
+        const CpuMeshGeometry* geometry = render_resource.FindMeshGeometry(entity.m_MeshAssetId);
+        if (geometry == nullptr || !geometry->IsValid())
+        {
+            continue;
+        }
+
+        const uint64_t mesh_id = static_cast<uint64_t>(entity.m_MeshAssetId);
+        if (!EnsureMeshResource(mesh_id, *geometry))
+        {
+            continue;
+        }
+
+        const uint64_t instance_id = static_cast<uint64_t>(entity.m_InstanceId);
+        if (m_InstanceIdToIndex.find(instance_id) != m_InstanceIdToIndex.end())
+        {
+            // 同一个实例 id 出现两次：m_InstanceIdToIndex 只能指向一个位置，第二个会
+            // 变成"注册了但更新不到"。宁可跳过也不要这种半死状态。
+            continue;
+        }
+
+        NaniteInstance instance {};
+        instance.instance_id = instance_id;
+        instance.mesh_id = mesh_id;
+        instance.transform = entity.m_ModelMatrix;
+        instance.prev_transform = entity.m_ModelMatrix;
+        // RenderEntity::m_BoundingBox 是模型空间的（可见性剔除也要乘 m_ModelMatrix 才拿
+        // 去和视锥比）。资产没带包围盒就退回缓存里的几何包围盒。
+        instance.local_bounds = entity.m_BoundingBox.IsValid() ? entity.m_BoundingBox : geometry->local_bounds;
+
+        RegisterInstance(instance);
+    }
+
+    return !m_Instances.empty();
+}
+
+void NaniteRenderer::UpdateInstanceTransforms(const std::vector<RenderEntity>& entities)
+{
+    for (const RenderEntity& entity : entities)
+    {
+        const auto it = m_InstanceIdToIndex.find(static_cast<uint64_t>(entity.m_InstanceId));
+        if (it == m_InstanceIdToIndex.end())
+        {
+            continue;
+        }
+
+        NaniteInstance& instance = m_Instances[it->second];
+        instance.prev_transform = instance.transform;
+        instance.transform = entity.m_ModelMatrix;
+    }
+}
+
+bool NaniteRenderer::UpdateFromScene(std::shared_ptr<RenderScene> render_scene, RenderResourceBase* render_resource)
+{
+    if (render_scene == nullptr || render_resource == nullptr)
+    {
+        return false;
+    }
+
+    const std::vector<RenderEntity>& entities = render_scene->m_RenderEntities;
+
+    const uint64_t topology_hash = ComputeSceneTopologyHash(entities, *render_resource);
+    if (topology_hash != m_SceneTopologyHash)
+    {
+        m_SceneTopologyHash = topology_hash;
+        RebuildInstancesFromScene(entities, *render_resource);
+    }
+    else
+    {
+        UpdateInstanceTransforms(entities);
+    }
+
+    return !m_Instances.empty();
+}
+
+void NaniteRenderer::ClearFrameResults()
+{
+    m_RenderBatches.clear();
+    m_VisibleClusters.clear();
+    m_InstanceRanges.clear();
+    m_LastVisibilityResult = NaniteVisibilityResult {};
 }
 
 void NaniteRenderer::Render(RHI* rhi,
@@ -55,11 +217,15 @@ void NaniteRenderer::Render(RHI* rhi,
 {
     if (!config.enabled)
     {
+        // 关掉之后必须把上一帧的产物清掉：批次挂在渲染器上，下游（和未来要读它的
+        // 编辑器/统计）会一直拿到最后一帧的陈旧结果。
+        ClearFrameResults();
         return;
     }
 
     if (camera == nullptr)
     {
+        ClearFrameResults();
         return;
     }
 
@@ -272,18 +438,88 @@ NaniteRenderPass::~NaniteRenderPass()
 
 void NaniteRenderPass::Initialize(const RenderPassInitInfo* init_info)
 {
-    // TODO: 初始化渲染通道
+    (void)init_info;
+
+    // 初始配置来自 CVar，而不是写死在这里。
+    m_NaniteConfig = NaniteSettings::BuildConfig();
+
+    // Nanite 今天**完全是 CPU 的**（集群构建、逐簇裁剪、批次组装），一行都不跑在
+    // GPU 上。所以初始化只真的需要 render_resource（CPU 网格几何的唯一来源）。
+    m_RendererInitialized = false;
+    if (m_RenderResource)
+    {
+        m_RendererInitialized = m_NaniteRenderer.Initialize(m_Rhi, m_RenderResource, m_NaniteConfig);
+    }
 }
 
-void NaniteRenderPass::Draw()
+void NaniteRenderPass::PreparePassData(std::shared_ptr<RenderResourceBase> render_resource)
 {
-    if (m_NaniteRenderer)
+    m_RenderResource = render_resource;
+
+    // Initialize 常常在 render_resource 还没建好时就被调用（管线 Setup 的顺序），
+    // 所以真正的初始化在这里补 —— 没有 CPU 网格几何的话 Nanite 一个三角形都拿不到。
+    if (m_RenderResource && !m_RendererInitialized)
     {
-        // TODO: 执行Nanite渲染
+        m_RendererInitialized = m_NaniteRenderer.Initialize(m_Rhi, m_RenderResource, m_NaniteConfig);
     }
+}
+
+void NaniteRenderPass::Render(std::shared_ptr<RenderScene> render_scene,
+                              std::shared_ptr<RenderCamera> camera,
+                              float delta_time)
+{
+    (void)delta_time;
+
+    if (!render_scene || !camera)
+    {
+        return;
+    }
+
+    if (!m_RendererInitialized)
+    {
+        return;
+    }
+
+    ApplyConsoleVariables();
+
+    if (!m_NaniteConfig.enabled)
+    {
+        // 让渲染器自己清掉上一帧的产物（批次挂在它身上，不清就是陈旧数据）。
+        m_NaniteRenderer.Render(m_Rhi, render_scene, camera, m_NaniteConfig);
+        m_HasVisibleClusters = false;
+        return;
+    }
+
+    // 场景 → Nanite 实例 + 集群资源（几何来自 RenderResourceBase 的 CPU 网格缓存）
+    m_NaniteRenderer.UpdateFromScene(render_scene, m_RenderResource.get());
+
+    // 实例级裁剪 → 逐簇裁剪 → 批次
+    m_NaniteRenderer.Render(m_Rhi, render_scene, camera, m_NaniteConfig);
+
+    m_HasVisibleClusters = !m_NaniteRenderer.GetVisibleClusters().empty();
+}
+
+void NaniteRenderPass::ApplyConsoleVariables()
+{
+    // 每帧都推一次，所以 r.Nanite.* 是热生效的。
+    NaniteConfig desired = m_NaniteConfig;
+    NaniteSettings::ApplyTo(desired);
+
+    if (desired.enabled == m_NaniteConfig.enabled && desired.enable_lod == m_NaniteConfig.enable_lod &&
+        desired.enable_culling == m_NaniteConfig.enable_culling &&
+        desired.max_screen_error == m_NaniteConfig.max_screen_error &&
+        desired.lod_bias == m_NaniteConfig.lod_bias)
+    {
+        return;
+    }
+
+    m_NaniteConfig = desired;
+    m_NaniteRenderer.SetConfig(m_NaniteConfig);
 }
 
 void NaniteRenderPass::clear()
 {
-    m_NaniteRenderer.reset();
+    m_NaniteRenderer.clear();
+    m_HasVisibleClusters = false;
+    m_RendererInitialized = false;
 }

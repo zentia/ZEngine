@@ -7,6 +7,7 @@
 #if defined(Z_HAS_LUMEN)
     #include "Runtime/Function/Render/Lumen/LumenSettings.h"
 #endif
+#include "Runtime/Function/Render/Nanite/NaniteSettings.h"
 #include "Runtime/Function/Render/Pipeline/RenderPipelineSettings.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UMG/Asset/UMGAssetIO.h"
@@ -156,4 +157,6 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
     // Lumen (CPU distance-field GI): every knob is live (re-applied each frame).
     LumenSettings::RegisterConsoleVariables(console);
 #endif
+    // Nanite (CPU cluster build + culling): every knob is live (re-applied each frame).
+    NaniteSettings::RegisterConsoleVariables(console);
 }

@@ -9,6 +9,9 @@
 #if defined(Z_HAS_LUMEN)
     #include "Runtime/Function/Render/Lumen/LumenRenderPass.h"
 #endif
+// Nanite 不像 Lumen 那样会被剥离：Runtime/CMakeLists.txt 从不把
+// Function/Render/Nanite/*.cpp 过滤掉，所以这个通道在任何配置上都存在。
+#include "Runtime/Function/Render/Nanite/NaniteRenderer.h"
 #if defined(Z_HAS_VULKAN)
     #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #endif
@@ -24,6 +27,10 @@ void RenderPipelineBase::PreparePassData(std::shared_ptr<RenderResourceBase> ren
     if (m_LumenPass)
     {
         m_LumenPass->PreparePassData(render_resource);
+    }
+    if (m_NanitePass)
+    {
+        m_NanitePass->PreparePassData(render_resource);
     }
     if (m_PickPass)
     {
@@ -71,6 +78,26 @@ void RenderPipelineBase::UpdateLumen(std::shared_ptr<RenderScene> render_scene,
     (void)camera;
     (void)delta_time;
 #endif
+}
+
+void RenderPipelineBase::UpdateNanite(std::shared_ptr<RenderScene> render_scene,
+                                      std::shared_ptr<RenderCamera> camera,
+                                      float delta_time)
+{
+    if (m_NanitePass == nullptr || render_scene == nullptr || camera == nullptr)
+    {
+        return;
+    }
+
+    // 槽位的静态类型是 RenderPassBase（所有 Pass 共用），用 dynamic_cast 而不是在基类
+    // 里放一个 Nanite 指针：基类不该知道 Nanite 的存在。
+    auto* nanite_pass = dynamic_cast<NaniteRenderPass*>(m_NanitePass.get());
+    if (nanite_pass == nullptr)
+    {
+        return;
+    }
+
+    nanite_pass->Render(render_scene, camera, delta_time);
 }
 
 void RenderPipelineBase::ConsumeParticleSwapData(RenderSwapData& swap_data, RenderSwapContext& swap_context)

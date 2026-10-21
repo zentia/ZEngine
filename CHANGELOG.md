@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-21 (Nanite: wired into the frame loop, and it can finally see a scene)
+
+Phase 31 left Nanite working but uncalled: `NaniteRenderer` had no way to see a
+scene (`RegisterInstance()` had **zero callers** in the whole repo),
+`NaniteRenderPass` was never constructed anywhere, and its `Draw()` was an empty
+TODO behind a null check on a renderer nobody ever set. There was no pipeline
+hook, no frame command and no CVar.
+
+* **`NaniteRenderer::UpdateFromScene(scene, render_resource)`** turns a
+  `RenderScene` into instances + clusters. Geometry comes from
+  `RenderResourceBase::FindMeshGeometry()` (`CpuMeshGeometry`) — the same source
+  Lumen's distance field uses, because `RenderMeshData` is dropped the moment
+  the GPU buffers are filled. Entities whose asset was never uploaded are
+  skipped, not crashed on.
+* **A scene-topology hash decides whether to rebuild.** It covers
+  `(instance_id, mesh_asset_id)` pairs only: transforms are excluded (they change
+  every frame and do not need a rebuild — they get pushed into
+  `transform` / `prev_transform` instead), and so are entities without CPU
+  geometry (otherwise an asset finishing its upload one frame late would look
+  like a topology change). `clear()` resets the hash, or the next call takes the
+  "transforms only" branch against an empty instance list and Nanite goes
+  silently dead.
+* **Cluster building is once per mesh asset.** `EnsureMeshResource` returns
+  early when `NaniteClusterManager` already knows the id — the builder is a
+  recursive spatial bisection, running it twice on one asset is pure waste.
+* **`NaniteRenderPass` mirrors `LumenRenderPass`:** it owns its renderer, reads
+  its config from CVars, initialises lazily in `PreparePassData` (the render
+  resource often does not exist yet at `Initialize` time), and exposes
+  `Render(scene, camera, dt)` + `GetRenderBatches()` / `hasVisibleClusters()`.
+  The phantom `Draw()` (a virtual that `RenderPassBase` does not declare and
+  nothing calls) is gone.
+* **Wiring, following the Lumen precedent:** `RenderPipelineBase::UpdateNanite`
+  + an `m_NanitePass` slot, `RenderNaniteCmd` in the frame command list (right
+  after `RenderLumenCmd`, before `RenderPreparePassDataCmd`), and the pass is
+  constructed in `DesktopRenderPipelineModule::Setup` **before the Apple early
+  return**. There is no `Z_HAS_NANITE`: Nanite is never stripped from ZRuntime.
+* **`r.Nanite.*` CVars** (`Enable`, `LOD`, `Culling`, `MaxScreenError`,
+  `LodBias`), re-applied every frame. Disabling Nanite now clears the previous
+  frame's batches instead of leaving them behind.
+* `NaniteInstance`'s `instance_id` / `mesh_id` / `transform` / `prev_transform`
+  had no default member initialisers — a default-constructed instance was
+  garbage.
+* New `NaniteSceneWiringSmokeTest` (50 checks), enabled in `smoke_tests.yml`.
+
 ### Added / Fixed - 2026-10-21 (Nanite: culling that culls, and a LOD that points the right way)
 
 Every meaningful branch in `NaniteCullingSystem` was a stub:

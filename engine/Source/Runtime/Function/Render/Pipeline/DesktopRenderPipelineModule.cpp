@@ -10,6 +10,7 @@
 #if defined(Z_HAS_LUMEN)
     #include "Runtime/Function/Render/Lumen/LumenRenderPass.h"
 #endif
+#include "Runtime/Function/Render/Nanite/NaniteRenderer.h"
 #if defined(Z_HAS_VULKAN)
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
     #include "Runtime/Function/Render/Passes/BindlessTonemapPass.h"
@@ -79,6 +80,18 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
         m_Pipeline.m_LumenPass->Initialize(nullptr);
     }
 #endif
+    // Nanite 同样是纯 CPU 的（集群构建 + 逐簇裁剪 + 批次组装），不需要 render pass /
+    // framebuffer / swapchain，所以在任何配置上都能建 —— 包括下面的 Apple 早退分支
+    // （那里连 Vulkan 通道都没建）。
+    {
+        RenderPassCommonInfo pass_common_info;
+        pass_common_info.rhi = m_Pipeline.m_Rhi;
+        pass_common_info.render_resource = init_info.render_resource;
+
+        m_Pipeline.m_NanitePass = std::make_shared<NaniteRenderPass>();
+        m_Pipeline.m_NanitePass->SetCommonInfo(pass_common_info);
+        m_Pipeline.m_NanitePass->Initialize(nullptr);
+    }
 #if defined(__APPLE__)
     (void)init_info;
     return;
@@ -305,6 +318,7 @@ void DesktopRenderPipelineModule::Shutdown()
     m_Pipeline.m_DirectionalLightPass.reset();
     m_Pipeline.m_PointLightShadowPass.reset();
     m_Pipeline.m_LumenPass.reset();
+    m_Pipeline.m_NanitePass.reset();
 }
 
 void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceBase> render_resource,

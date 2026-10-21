@@ -87,3 +87,46 @@ if(ZENGINE_BUILD_NANITE_CULLING_SMOKE_TEST)
 
     message(STATUS "Configured Nanite culling smoke test: NaniteCullingSmokeTest")
 endif()
+
+# =====================================================================
+# Nanite scene-wiring smoke test. Same pattern. Pins that Nanite can see a
+# real scene: RenderScene -> RenderResourceBase CPU mesh cache -> clusters
+# -> instances -> culling -> batches, plus the two dispatchers above it
+# (NaniteRenderPass::Render and RenderPipelineBase::UpdateNanite) and the
+# r.Nanite.* CVars. Before this, NaniteRenderer::RegisterInstance had zero
+# callers and NaniteRenderPass was never constructed anywhere.
+# =====================================================================
+option(ZENGINE_BUILD_NANITE_SCENE_WIRING_SMOKE_TEST
+       "Build the Nanite scene-wiring smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_NANITE_SCENE_WIRING_SMOKE_TEST)
+    add_executable(NaniteSceneWiringSmokeTest NaniteSceneWiringSmokeTest.cpp)
+
+    set_target_properties(NaniteSceneWiringSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    target_link_libraries(NaniteSceneWiringSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(NaniteSceneWiringSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(NaniteSceneWiringSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(NaniteSceneWiringSmokeTest ZEnginePCH)
+        target_precompile_headers(NaniteSceneWiringSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(NaniteSceneWiringSmokeTest PRIVATE /W4)
+    endif()
+
+    if(APPLE)
+        target_sources(NaniteSceneWiringSmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME NaniteSceneWiringSmokeTest COMMAND NaniteSceneWiringSmokeTest)
+
+    message(STATUS "Configured Nanite scene-wiring smoke test: NaniteSceneWiringSmokeTest")
+endif()
