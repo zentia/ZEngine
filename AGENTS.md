@@ -2055,6 +2055,38 @@ in this subsystem**.
   lands on the surface crossing rather than a voxel away. More iterations than
   ~8 are pointless: the field itself is not that accurate.
 
+### 2.36 Lumen surface cache: pages, lookup, and why the page key is gone
+
+`LumenSurfaceCacheManager` — one page per scene instance (`RenderEntity`),
+covering its world AABB, carrying its constant material.
+
+- **Lookup is spatial, never a hash of position floats.** The old key,
+  `(uint64_t(x*1000) << 32) | (uint64_t(y*1000) << 16) | uint64_t(z*1000)`, is
+  broken three ways: `x` overflows the field it shifts into, `y`'s field overlaps
+  `x`'s low bits, `z` is never shifted — and a negative coordinate cast to
+  `uint64_t` is UB. Any new "world position -> bucket" key must be a proper
+  quantised cell index, not float arithmetic packed into an integer.
+- **A page registers into every grid cell its AABB covers**, and the cell size is
+  the largest page extent, so registration is bounded at 2×2×2 = 8 cells per
+  page. If you change the cell size rule, keep that bound or add a cap.
+- **Page boxes are grown by a margin** (2 % of the scene's largest extent)
+  because the distance field stops rays about half a voxel *off* the surface and
+  a flat quad's AABB has zero thickness. Lookup falls back to "nearest page
+  centre" for the same reason — do not drop that fallback.
+- **`GetSurfaceInfo` is intentionally non-const**: a hit refreshes the page's LRU
+  timestamp, which is the only signal eviction has. Do not make it const for
+  convenience; `LumenRayTracing`'s methods can stay const because they reach the
+  cache through a pointer.
+- **Rebuild is gated on a scene hash** (instance id + mesh/material asset id +
+  model matrix + material factors) *and* on `active_page_count == 0`. The second
+  condition is what stops an evicted cache from staying empty forever.
+- **Per-texel arrays stay empty on the CPU path** (`page.resolution == 0`): there
+  is no card rasterizer, so 64×64 × 7 arrays × 1024 pages would be several
+  hundred MB holding one repeated constant. Allocate them only when a
+  rasterizer actually fills them.
+- Material comes from `RenderEntity`'s factors; textures cannot be sampled on the
+  CPU, so a page has **one** albedo/roughness/metallic/emissive today.
+
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).

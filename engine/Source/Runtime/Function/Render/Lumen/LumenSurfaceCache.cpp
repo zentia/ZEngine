@@ -1,9 +1,13 @@
 #include "LumenSurfaceCache.h"
 
+#include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
+#include "Runtime/Function/Render/RenderHelper.h"
+#include "Runtime/Function/Render/RenderResourceBase.h"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 LumenSurfaceCacheManager::LumenSurfaceCacheManager() {}
 
@@ -24,15 +28,20 @@ bool LumenSurfaceCacheManager::Initialize(RHI* rhi, const LumenConfig& config)
     m_SurfaceCache.active_page_count = 0;
     m_SurfaceCache.total_page_count = config.max_surface_cache_pages;
 
-    // 预分配页面
+    // 预分配页面槽位。注意这里**不**分配任何 per-texel 数组 —— CPU 路径没有卡片
+    // 光栅化，按 64×64 预分配 7 个数组 × 1024 页是几百 MB，而每个 texel 存的还是
+    // 同一个常量材质。等光栅化真的存在了再按 resolution 分配。
+    m_SurfaceCache.pages.clear();
     m_SurfaceCache.pages.resize(config.max_surface_cache_pages);
     for (uint32_t i = 0; i < config.max_surface_cache_pages; ++i)
     {
+        m_SurfaceCache.pages[i] = LumenSurfaceCachePage {};
         m_SurfaceCache.pages[i].page_id = i;
-        m_SurfaceCache.pages[i].resolution = config.surface_cache_page_size;
+        m_SurfaceCache.pages[i].resolution = 0;
         m_SurfaceCache.pages[i].is_valid = false;
-        m_FreePages.push_back(i);
     }
+
+    ResetPages();
 
     return true;
 }
@@ -53,21 +62,190 @@ void LumenSurfaceCacheManager::clear()
 
     // 清理数据
     m_SurfaceCache.pages.clear();
-    m_PositionToPageMap.clear();
+    m_PageGrid.clear();
+    m_InstanceToPage.clear();
     m_FreePages.clear();
+    m_SceneHash = 0;
+    m_SurfaceCache.active_page_count = 0;
 }
 
-bool LumenSurfaceCacheManager::BuildFromScene(std::shared_ptr<RenderScene> render_scene, const Vector3& camera_position)
+void LumenSurfaceCacheManager::ResetPages()
+{
+    m_PageGrid.clear();
+    m_InstanceToPage.clear();
+    m_FreePages.clear();
+
+    for (uint32_t i = 0; i < m_SurfaceCache.pages.size(); ++i)
+    {
+        m_SurfaceCache.pages[i].is_valid = false;
+        m_SurfaceCache.pages[i].world_bounds = AxisAlignedBox();
+        m_SurfaceCache.pages[i].last_access_time = 0;
+        m_FreePages.push_back(i);
+    }
+
+    m_SurfaceCache.active_page_count = 0;
+}
+
+uint64_t LumenSurfaceCacheManager::ComputeSceneHash(const std::vector<RenderEntity>& entities)
+{
+    // FNV-1a 64。同进程内的"变没变"判定，位级比较正是想要的（NaN/±0 也不该被当成没变）。
+    uint64_t hash = 1469598103934665603ull;
+    const auto add_bytes = [&hash](const void* data, size_t size) {
+        const unsigned char* bytes = static_cast<const unsigned char*>(data);
+        for (size_t i = 0; i < size; ++i)
+        {
+            hash ^= static_cast<uint64_t>(bytes[i]);
+            hash *= 1099511628211ull;
+        }
+    };
+
+    const uint64_t entity_count = entities.size();
+    add_bytes(&entity_count, sizeof(entity_count));
+
+    for (const RenderEntity& entity : entities)
+    {
+        add_bytes(&entity.m_InstanceId, sizeof(entity.m_InstanceId));
+        add_bytes(&entity.m_MeshAssetId, sizeof(entity.m_MeshAssetId));
+        add_bytes(&entity.m_MaterialAssetId, sizeof(entity.m_MaterialAssetId));
+        add_bytes(entity.m_ModelMatrix.m_Mat, sizeof(entity.m_ModelMatrix.m_Mat));
+        // 材质 factor：改了颜色必须重建缓存，否则 GI 会带着旧的反照率继续弹光
+        add_bytes(&entity.m_BaseColorFactor, sizeof(entity.m_BaseColorFactor));
+        add_bytes(&entity.m_MetallicFactor, sizeof(entity.m_MetallicFactor));
+        add_bytes(&entity.m_RoughnessFactor, sizeof(entity.m_RoughnessFactor));
+        add_bytes(&entity.m_EmissiveFactor, sizeof(entity.m_EmissiveFactor));
+    }
+
+    return hash;
+}
+
+AxisAlignedBox LumenSurfaceCacheManager::ComputeInstanceWorldBounds(const RenderEntity& entity,
+                                                                    RenderResourceBase* render_resource)
+{
+    // RenderEntity::m_BoundingBox 是局部空间的，要拿 m_ModelMatrix 变换一遍
+    // （可见性剔除和距离场那边都是这么做的）。网格资产加载失败的实例包围盒是无效的，
+    // 退回 CPU 几何缓存里的局部包围盒。
+    AxisAlignedBox local_bounds = entity.m_BoundingBox;
+    if (!local_bounds.IsValid() && render_resource != nullptr)
+    {
+        const CpuMeshGeometry* geometry = render_resource->FindMeshGeometry(entity.m_MeshAssetId);
+        if (geometry != nullptr)
+        {
+            local_bounds = geometry->local_bounds;
+        }
+    }
+
+    if (!local_bounds.IsValid())
+    {
+        return AxisAlignedBox();
+    }
+
+    const BoundingBox local_box {local_bounds.getMinCorner(), local_bounds.getMaxCorner()};
+    const BoundingBox world_box = BoundingBoxTransform(local_box, entity.m_ModelMatrix);
+
+    AxisAlignedBox instance_bounds;
+    instance_bounds.Merge(world_box.min_bound);
+    instance_bounds.Merge(world_box.max_bound);
+    return instance_bounds;
+}
+
+bool LumenSurfaceCacheManager::BuildFromScene(std::shared_ptr<RenderScene> render_scene,
+                                              RenderResourceBase* render_resource,
+                                              const Vector3& camera_position)
 {
     if (!render_scene)
     {
         return false;
     }
 
-    // TODO: 从场景几何构建表面缓存
-    // 这里需要访问GBuffer或场景几何来构建表面信息
+    const std::vector<RenderEntity>& entities = render_scene->m_RenderEntities;
 
+    // 先把每个实例的世界 AABB 收齐：格子边长要按它们的最大值来定（见 m_PageGrid 注释）
+    struct PageCandidate
+    {
+        const RenderEntity* entity {nullptr};
+        AxisAlignedBox bounds;
+    };
+
+    std::vector<PageCandidate> candidates;
+    candidates.reserve(entities.size());
+    for (const RenderEntity& entity : entities)
+    {
+        const AxisAlignedBox bounds = ComputeInstanceWorldBounds(entity, render_resource);
+        if (!bounds.IsValid())
+        {
+            continue;
+        }
+        candidates.push_back(PageCandidate {&entity, bounds});
+    }
+
+    ResetPages();
+
+    if (candidates.empty())
+    {
+        m_SceneHash = ComputeSceneHash(entities);
+        m_SurfaceCache.needs_update = false;
+        m_SurfaceCache.world_bounds = AxisAlignedBox();
+        return true;
+    }
+
+    float max_extent = 0.0f;
+    AxisAlignedBox scene_bounds;
+    for (const PageCandidate& candidate : candidates)
+    {
+        const Vector3 size = candidate.bounds.getMaxCorner() - candidate.bounds.getMinCorner();
+        max_extent = std::max({max_extent, size.x, size.y, size.z});
+        scene_bounds.Merge(candidate.bounds.getMinCorner());
+        scene_bounds.Merge(candidate.bounds.getMaxCorner());
+    }
+    m_CellSize = std::max(max_extent, 1e-3f);
+
+    // 页面覆盖区域要在实例 AABB 外留一点余量：距离场命中点最多落在表面外半个 voxel
+    // 对角线处（见 LumenRayTracing），薄壳几何（比如一张地板 quad）的 AABB 厚度为 0，
+    // 不留余量的话 Contains 永远为 false。余量按场景尺度取百分比 —— 距离场的 voxel
+    // 尺寸本来就是"场景尺寸 / 分辨率"，两者是同阶的。
+    const Vector3 scene_size = scene_bounds.getMaxCorner() - scene_bounds.getMinCorner();
+    const float margin = std::max({scene_size.x, scene_size.y, scene_size.z, 1.0f}) * 0.02f;
+
+    for (const PageCandidate& candidate : candidates)
+    {
+        const uint32_t page_id = AllocatePage();
+        if (page_id == kInvalidPage)
+        {
+            LOG_WARNING(ZRender,
+                        "lumenSurfaceCache: ran out of pages ({}); {} instances left without a cached surface",
+                        m_SurfaceCache.pages.size(),
+                        candidates.size() - m_SurfaceCache.active_page_count);
+            break;
+        }
+
+        LumenSurfaceCachePage& page = m_SurfaceCache.pages[page_id];
+        page.page_id = page_id;
+        page.resolution = 0;  // CPU 路径无卡片光栅化，不分配 texel
+        page.world_position = (candidate.bounds.getMinCorner() + candidate.bounds.getMaxCorner()) * 0.5f;
+        page.normal = Vector3(0.0f, 1.0f, 0.0f);
+        page.world_bounds = candidate.bounds;
+        page.world_bounds.Merge(candidate.bounds.getMinCorner() - Vector3(margin, margin, margin));
+        page.world_bounds.Merge(candidate.bounds.getMaxCorner() + Vector3(margin, margin, margin));
+
+        page.albedo = Vector3(candidate.entity->m_BaseColorFactor.x,
+                              candidate.entity->m_BaseColorFactor.y,
+                              candidate.entity->m_BaseColorFactor.z);
+        page.roughness = candidate.entity->m_RoughnessFactor;
+        page.metallic = candidate.entity->m_MetallicFactor;
+        page.emissive = candidate.entity->m_EmissiveFactor;
+        page.instance_id = candidate.entity->m_InstanceId;
+
+        page.lod_level = CalculatePageLOD(page.world_position, camera_position);
+        page.last_access_time = m_FrameIndex;
+        page.is_valid = true;
+
+        m_InstanceToPage[candidate.entity->m_InstanceId] = page_id;
+        RegisterPageInGrid(page_id);
+    }
+
+    m_SceneHash = ComputeSceneHash(entities);
     m_SurfaceCache.needs_update = false;
+    m_SurfaceCache.world_bounds = scene_bounds;
 
     // 更新GPU资源
     UpdateGPUResources();
@@ -76,68 +254,273 @@ bool LumenSurfaceCacheManager::BuildFromScene(std::shared_ptr<RenderScene> rende
 }
 
 void LumenSurfaceCacheManager::UpdateSurfaceCache(std::shared_ptr<RenderScene> render_scene,
+                                                  RenderResourceBase* render_resource,
                                                   const Vector3& camera_position)
 {
-    if (!m_SurfaceCache.needs_update)
+    // 帧号是所有 LRU 判定的时基，必须每帧推进
+    ++m_FrameIndex;
+
+    const uint64_t scene_hash = render_scene != nullptr ? ComputeSceneHash(render_scene->m_RenderEntities) : 0;
+
+    // 场景变了 / 被 markForUpdate() 强制 / 缓存是空的 —— 三者任一都要重建。
+    // 最后一条不能省：页面被驱逐光之后如果只看哈希，缓存会永远空着不再回填。
+    if (scene_hash != m_SceneHash || m_SurfaceCache.needs_update || m_SurfaceCache.active_page_count == 0)
+    {
+        BuildFromScene(render_scene, render_resource, camera_position);
+        return;
+    }
+
+    CleanupInvalidPages();
+}
+
+LumenSurfaceCacheManager::CellCoord LumenSurfaceCacheManager::CellOf(const Vector3& world_position) const
+{
+    CellCoord cell;
+    cell.x = static_cast<int32_t>(std::floor(world_position.x / m_CellSize));
+    cell.y = static_cast<int32_t>(std::floor(world_position.y / m_CellSize));
+    cell.z = static_cast<int32_t>(std::floor(world_position.z / m_CellSize));
+    return cell;
+}
+
+void LumenSurfaceCacheManager::RegisterPageInGrid(uint32_t page_id)
+{
+    if (page_id >= m_SurfaceCache.pages.size())
     {
         return;
     }
 
-    // 清理无效页面
-    CleanupInvalidPages();
+    const AxisAlignedBox& bounds = m_SurfaceCache.pages[page_id].world_bounds;
+    if (!bounds.IsValid())
+    {
+        return;
+    }
 
-    // 重新构建表面缓存
-    BuildFromScene(render_scene, camera_position);
+    // 页面登记到它覆盖的**每一个**格子，所以落在页面内的点所在的格子一定能查到它。
+    // 格子边长 = 所有页面里最大的轴长，因此任一页面最多跨 2×2×2 = 8 个格子。
+    const CellCoord low = CellOf(bounds.getMinCorner());
+    const CellCoord high = CellOf(bounds.getMaxCorner());
+
+    for (int32_t z = low.z; z <= high.z; ++z)
+    {
+        for (int32_t y = low.y; y <= high.y; ++y)
+        {
+            for (int32_t x = low.x; x <= high.x; ++x)
+            {
+                m_PageGrid[CellCoord {x, y, z}].push_back(page_id);
+            }
+        }
+    }
+}
+
+void LumenSurfaceCacheManager::UnregisterPageFromGrid(uint32_t page_id)
+{
+    if (page_id >= m_SurfaceCache.pages.size())
+    {
+        return;
+    }
+
+    const AxisAlignedBox& bounds = m_SurfaceCache.pages[page_id].world_bounds;
+    if (!bounds.IsValid())
+    {
+        return;
+    }
+
+    const CellCoord low = CellOf(bounds.getMinCorner());
+    const CellCoord high = CellOf(bounds.getMaxCorner());
+
+    for (int32_t z = low.z; z <= high.z; ++z)
+    {
+        for (int32_t y = low.y; y <= high.y; ++y)
+        {
+            for (int32_t x = low.x; x <= high.x; ++x)
+            {
+                const auto cell = m_PageGrid.find(CellCoord {x, y, z});
+                if (cell == m_PageGrid.end())
+                {
+                    continue;
+                }
+                std::vector<uint32_t>& bucket = cell->second;
+                bucket.erase(std::remove(bucket.begin(), bucket.end(), page_id), bucket.end());
+                if (bucket.empty())
+                {
+                    m_PageGrid.erase(cell);
+                }
+            }
+        }
+    }
+}
+
+const std::vector<uint32_t>* LumenSurfaceCacheManager::FindGridCell(const Vector3& world_position) const
+{
+    const auto cell = m_PageGrid.find(CellOf(world_position));
+    return cell != m_PageGrid.end() ? &cell->second : nullptr;
+}
+
+uint32_t LumenSurfaceCacheManager::FindPageAt(const Vector3& world_position) const
+{
+    const std::vector<uint32_t>* bucket = FindGridCell(world_position);
+    if (bucket == nullptr)
+    {
+        return kInvalidPage;
+    }
+
+    // 先看有没有真正包含这个点的页面；重叠时取体积最小的那个 —— 它才是最贴身的表面
+    uint32_t best = kInvalidPage;
+    float best_volume = std::numeric_limits<float>::max();
+    for (uint32_t page_id : *bucket)
+    {
+        if (page_id >= m_SurfaceCache.pages.size())
+        {
+            continue;
+        }
+        const LumenSurfaceCachePage& page = m_SurfaceCache.pages[page_id];
+        if (!page.is_valid || !page.world_bounds.IsValid())
+        {
+            continue;
+        }
+        if (!page.world_bounds.Contains(world_position))
+        {
+            continue;
+        }
+        const float volume = page.GetBoundsVolume();
+        if (volume < best_volume)
+        {
+            best_volume = volume;
+            best = page_id;
+        }
+    }
+    if (best != kInvalidPage)
+    {
+        return best;
+    }
+
+    // 没有精确命中（点在页面外侧一点点）：退回"中心最近"的页面。命中点确实可能落在
+    // 页面外 —— 距离场把射线停在表面外侧约半个 voxel 处，而薄壳几何的 AABB 是扁的。
+    float best_distance = std::numeric_limits<float>::max();
+    for (uint32_t page_id : *bucket)
+    {
+        if (page_id >= m_SurfaceCache.pages.size())
+        {
+            continue;
+        }
+        const LumenSurfaceCachePage& page = m_SurfaceCache.pages[page_id];
+        if (!page.is_valid)
+        {
+            continue;
+        }
+        const float distance = (page.world_position - world_position).length();
+        if (distance < best_distance)
+        {
+            best_distance = distance;
+            best = page_id;
+        }
+    }
+
+    return best;
 }
 
 bool LumenSurfaceCacheManager::GetSurfaceInfo(const Vector3& world_position,
                                               const Vector3& normal,
-                                              LumenSurfaceCachePage& out_page) const
+                                              LumenSurfaceCachePage& out_page)
 {
-    // 查找对应的页面
-    // 使用位置和法线的哈希值作为键
-    uint64_t key = (static_cast<uint64_t>(world_position.x * 1000.0f) << 32) |
-                   (static_cast<uint64_t>(world_position.y * 1000.0f) << 16) |
-                   static_cast<uint64_t>(world_position.z * 1000.0f);
+    // normal 目前只影响 LOD / 将来的 card 选择，位置就足以定位页面
+    (void)normal;
 
-    auto it = m_PositionToPageMap.find(key);
-    if (it != m_PositionToPageMap.end())
+    const uint32_t page_id = FindPageAt(world_position);
+    if (page_id == kInvalidPage || page_id >= m_SurfaceCache.pages.size())
     {
-        uint32_t page_id = it->second;
-        if (page_id < m_SurfaceCache.pages.size() && m_SurfaceCache.pages[page_id].is_valid)
-        {
-            out_page = m_SurfaceCache.pages[page_id];
-            return true;
-        }
+        return false;
     }
 
-    return false;
+    LumenSurfaceCachePage& page = m_SurfaceCache.pages[page_id];
+    page.last_access_time = m_FrameIndex;
+    out_page = page;
+    return true;
 }
 
 void LumenSurfaceCacheManager::CleanupInvalidPages()
 {
-    // 清理长时间未访问的页面
-    const uint64_t max_age = 1000;  // 最大年龄（帧数）
-
-    for (auto& page : m_SurfaceCache.pages)
+    for (uint32_t page_id = 0; page_id < m_SurfaceCache.pages.size(); ++page_id)
     {
-        if (page.is_valid)
+        LumenSurfaceCachePage& page = m_SurfaceCache.pages[page_id];
+        if (!page.is_valid)
         {
-            // TODO: 实现基于时间的清理逻辑
-            // 这里需要跟踪页面访问时间
+            continue;
+        }
+
+        // 时钟回绕（页面来自更大的帧号）时不要误判成"空转了很久"
+        if (m_FrameIndex < page.last_access_time)
+        {
+            continue;
+        }
+
+        if (m_FrameIndex - page.last_access_time < LumenConstants::kMaxSurfaceCachePageIdleFrames)
+        {
+            continue;
+        }
+
+        EvictPage(page_id);
+    }
+}
+
+void LumenSurfaceCacheManager::EvictPage(uint32_t page_id)
+{
+    UnregisterPageFromGrid(page_id);
+
+    if (page_id < m_SurfaceCache.pages.size())
+    {
+        const uint64_t instance_id = m_SurfaceCache.pages[page_id].instance_id;
+        const auto mapped = m_InstanceToPage.find(instance_id);
+        if (mapped != m_InstanceToPage.end() && mapped->second == page_id)
+        {
+            m_InstanceToPage.erase(mapped);
         }
     }
+
+    FreePage(page_id);
+}
+
+bool LumenSurfaceCacheManager::EvictOldestPage()
+{
+    uint32_t oldest = kInvalidPage;
+    uint64_t oldest_time = m_FrameIndex;
+
+    for (uint32_t page_id = 0; page_id < m_SurfaceCache.pages.size(); ++page_id)
+    {
+        const LumenSurfaceCachePage& page = m_SurfaceCache.pages[page_id];
+        if (!page.is_valid)
+        {
+            continue;
+        }
+        if (page.last_access_time <= oldest_time)
+        {
+            oldest_time = page.last_access_time;
+            oldest = page_id;
+        }
+    }
+
+    if (oldest == kInvalidPage)
+    {
+        return false;
+    }
+
+    EvictPage(oldest);
+    return true;
 }
 
 uint32_t LumenSurfaceCacheManager::AllocatePage()
 {
     if (m_FreePages.empty())
     {
-        // 没有空闲页面，需要清理或扩展
         CleanupInvalidPages();
-        if (m_FreePages.empty())
+    }
+
+    // 还是没有（场景实例数超过页面上限）：强行按 LRU 驱逐，直到让出槽位
+    while (m_FreePages.empty())
+    {
+        if (!EvictOldestPage())
         {
-            return UINT32_MAX;  // 分配失败
+            return kInvalidPage;
         }
     }
 
@@ -150,85 +533,24 @@ uint32_t LumenSurfaceCacheManager::AllocatePage()
 
 void LumenSurfaceCacheManager::FreePage(uint32_t page_id)
 {
-    if (page_id < m_SurfaceCache.pages.size())
-    {
-        m_SurfaceCache.pages[page_id].is_valid = false;
-        m_FreePages.push_back(page_id);
-        m_SurfaceCache.active_page_count--;
-    }
-}
-
-uint32_t LumenSurfaceCacheManager::FindOrCreatePage(const Vector3& world_position, const Vector3& normal)
-{
-    // 查找现有页面
-    uint64_t key = (static_cast<uint64_t>(world_position.x * 1000.0f) << 32) |
-                   (static_cast<uint64_t>(world_position.y * 1000.0f) << 16) |
-                   static_cast<uint64_t>(world_position.z * 1000.0f);
-
-    auto it = m_PositionToPageMap.find(key);
-    if (it != m_PositionToPageMap.end())
-    {
-        uint32_t page_id = it->second;
-        if (page_id < m_SurfaceCache.pages.size() && m_SurfaceCache.pages[page_id].is_valid)
-        {
-            return page_id;
-        }
-    }
-
-    // 创建新页面
-    uint32_t page_id = AllocatePage();
-    if (page_id != UINT32_MAX)
-    {
-        auto& page = m_SurfaceCache.pages[page_id];
-        page.world_position = world_position;
-        page.normal = normal;
-        page.is_valid = true;
-        page.resolution = m_Config.surface_cache_page_size;
-        page.lod_level = 0;  // 将在后续计算
-
-        // 初始化数据
-        uint32_t texel_count = page.resolution * page.resolution;
-        page.albedo_data.resize(texel_count);
-        page.normal_data.resize(texel_count);
-        page.roughness_data.resize(texel_count);
-        page.metallic_data.resize(texel_count);
-        page.emissive_data.resize(texel_count);
-        page.indirect_lighting.resize(texel_count);
-        page.visibility.resize(texel_count);
-
-        m_PositionToPageMap[key] = page_id;
-    }
-
-    return page_id;
-}
-
-bool LumenSurfaceCacheManager::BuildPageFromGBuffer(uint32_t page_id,
-                                                    const Vector3& world_position,
-                                                    const Vector3& normal)
-{
-    if (page_id >= m_SurfaceCache.pages.size())
-    {
-        return false;
-    }
-
-    auto& page = m_SurfaceCache.pages[page_id];
-
-    // TODO: 从GBuffer读取表面信息
-    // 这里需要访问GBuffer纹理来获取表面材质信息
-
-    return true;
-}
-
-void LumenSurfaceCacheManager::UpdatePageData(uint32_t page_id, const Vector3& world_position, const Vector3& normal)
-{
     if (page_id >= m_SurfaceCache.pages.size())
     {
         return;
     }
 
-    auto& page = m_SurfaceCache.pages[page_id];
-    page.world_position = world_position;
-    page.normal = normal;
+    LumenSurfaceCachePage& page = m_SurfaceCache.pages[page_id];
+    if (!page.is_valid)
+    {
+        // 重复释放会把 active_page_count 减成负数（它是无符号的，会绕成一个天文数字）
+        return;
+    }
+
+    page.is_valid = false;
+    m_FreePages.push_back(page_id);
+    if (m_SurfaceCache.active_page_count > 0)
+    {
+        m_SurfaceCache.active_page_count--;
+    }
 }
 
 uint8_t LumenSurfaceCacheManager::CalculatePageLOD(const Vector3& world_position, const Vector3& camera_position) const

@@ -86,6 +86,7 @@ void LumenRayTracing::clear()
 {
     // TODO: 清理硬件光线追踪资源
     m_DistanceField = nullptr;
+    m_SurfaceCache = nullptr;
 }
 
 LumenRayTracingResult LumenRayTracing::TraceRaySoftware(const Vector3& ray_origin,
@@ -118,14 +119,40 @@ LumenRayTracingResult LumenRayTracing::TraceRaySoftware(const Vector3& ray_origi
         result.hit_normal = hit_normal;
         result.hit_distance = hit_distance;
 
-        // TODO: 从表面缓存或GBuffer获取材质信息
-        result.albedo = Vector3(0.5f, 0.5f, 0.5f);
-        result.roughness = 0.5f;
-        result.metallic = 0.0f;
-        result.emissive = Vector3(0.0f, 0.0f, 0.0f);
+        // 材质来自表面缓存：命中了谁的几何，就带谁的反照率/自发光。以前这里写死
+        // albedo=0.5，于是"红地板"和"白墙"弹回来的间接光一模一样。
+        FillSurfaceMaterial(hit_position, hit_normal, result);
     }
 
     return result;
+}
+
+void LumenRayTracing::FillSurfaceMaterial(const Vector3& hit_position,
+                                          const Vector3& hit_normal,
+                                          LumenRayTracingResult& out_result) const
+{
+    // 查不到页面时的中性缺省值：50% 灰、半粗糙、不发光
+    out_result.albedo = Vector3(0.5f, 0.5f, 0.5f);
+    out_result.roughness = 0.5f;
+    out_result.metallic = 0.0f;
+    out_result.emissive = Vector3(0.0f, 0.0f, 0.0f);
+
+    if (m_SurfaceCache == nullptr)
+    {
+        return;
+    }
+
+    LumenSurfaceCachePage page;
+    if (!m_SurfaceCache->GetSurfaceInfo(hit_position, hit_normal, page))
+    {
+        return;
+    }
+
+    out_result.albedo = page.albedo;
+    out_result.roughness = page.roughness;
+    out_result.metallic = page.metallic;
+    out_result.emissive = page.emissive;
+    out_result.instance_id = page.instance_id;
 }
 
 LumenRayTracingResult

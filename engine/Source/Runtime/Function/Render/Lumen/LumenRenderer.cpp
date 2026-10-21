@@ -49,6 +49,7 @@ bool LumenRenderer::Initialize(RHI* rhi,
     // 距离场除了给 LumenRayTracing，也要直接给 GI / Reflections：它们要用它把着色点
     // 抬出表面（自相交偏移按体素尺寸算），并且追踪时必须显式把它传进 TraceRay。
     m_RayTracing.setDistanceField(&m_DistanceField);
+    m_RayTracing.setSurfaceCache(&m_SurfaceCache);
     m_GlobalIllumination.setRayTracing(&m_RayTracing);
     m_GlobalIllumination.setSurfaceCache(&m_SurfaceCache);
     m_GlobalIllumination.setDistanceField(&m_DistanceField);
@@ -131,5 +132,7 @@ void LumenRenderer::UpdateDistanceField(std::shared_ptr<RenderScene> render_scen
 
 void LumenRenderer::UpdateSurfaceCache(std::shared_ptr<RenderScene> render_scene, const Vector3& camera_position)
 {
-    m_SurfaceCache.UpdateSurfaceCache(render_scene, camera_position);
+    // 与 UpdateDistanceField 一样，CPU 几何来源就是 m_RenderResource：实例包围盒无效时
+    // 表面缓存要靠它退回网格的局部包围盒。
+    m_SurfaceCache.UpdateSurfaceCache(render_scene, m_RenderResource.get(), camera_position);
 }

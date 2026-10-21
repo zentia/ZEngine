@@ -6,6 +6,7 @@
 #include "Runtime/Core/Math/Vector4.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -29,6 +30,9 @@ namespace LumenConstants
     constexpr uint32_t kTraceBinaryRefinementSteps = 8;
     constexpr uint32_t kMaxSurfaceCachePages = 1024;
     constexpr uint32_t kSurfaceCachePageSize = 64;  // 64x64 texels per page
+    // 一个页面空转多少帧之后允许被驱逐（60fps 下约 5 秒）。必须大于一帧，否则刚建好
+    // 的页面会在被任何光线查到之前就被清掉。
+    constexpr uint64_t kMaxSurfaceCachePageIdleFrames = 300;
 }  // namespace LumenConstants
 
 // Lumen质量等级
@@ -84,16 +88,36 @@ struct LumenDistanceFieldData
 };
 
 // 表面缓存页面
+//
+// 一个页面目前对应**一个场景实例**（= 一个 RenderEntity）。真正的 Lumen 是把网格拆成
+// 若干张 axis-aligned 的 card，每张 card 光栅化出一张带材质的图集页；这一步必须在
+// GPU 上做，CPU 路径没有光栅化器，所以这里退化成"一个实例一组常量材质"。
 struct LumenSurfaceCachePage
 {
     uint32_t page_id;
+    // 每页 texel 边长。CPU 路径下是 0 —— 下面那些 per-texel 数组留空，等卡片光栅化
+    // 真正存在了再填。以前这里无条件按 64×64 预分配 7 个数组，1024 页就是几百 MB，
+    // 而每个 texel 存的还是同一个常量。
     uint32_t resolution;
 
     // 世界空间位置和方向
     Vector3 world_position;
     Vector3 normal;
 
-    // 缓存数据
+    // 这个页面覆盖的世界空间区域（实例的世界 AABB）。查询页靠的是它，不是位置哈希。
+    AxisAlignedBox world_bounds;
+
+    // 常量材质（来自 RenderEntity 的 factor）。贴图在 CPU 上没法采样，所以这就是
+    // CPU Lumen 今天能拿到的全部材质信息。
+    Vector3 albedo {0.5f, 0.5f, 0.5f};
+    float roughness {0.5f};
+    float metallic {0.0f};
+    Vector3 emissive {0.0f, 0.0f, 0.0f};
+
+    // 来源实例，用于识别"命中了谁"
+    uint64_t instance_id {0};
+
+    // 缓存数据（per-texel，卡片光栅化就位后才有内容）
     std::vector<Vector4> albedo_data;     // RGB + Alpha
     std::vector<Vector4> normal_data;     // XYZ + unused
     std::vector<Vector4> roughness_data;  // R + unused
@@ -110,6 +134,16 @@ struct LumenSurfaceCachePage
     // 时间戳（用于缓存管理）
     uint64_t last_access_time;
     bool is_valid;
+
+    float GetBoundsVolume() const
+    {
+        if (!world_bounds.IsValid())
+        {
+            return std::numeric_limits<float>::max();
+        }
+        const Vector3 size = world_bounds.getMaxCorner() - world_bounds.getMinCorner();
+        return size.x * size.y * size.z;
+    }
 };
 
 // 表面缓存

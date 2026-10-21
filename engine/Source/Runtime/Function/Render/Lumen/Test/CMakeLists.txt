@@ -63,6 +63,47 @@ if(ZENGINE_BUILD_LUMEN_RAY_TRACING_SMOKE_TEST)
     message(STATUS "Configured Lumen ray-tracing smoke-test target: LumenRayTracingSmokeTest")
 endif()
 
+# ---------------------------------------------------------------------
+# Surface-cache smoke test. Pins that pages are actually built from the
+# scene with real materials, that lookup is spatial (the old key was
+# overflowing garbage), that LRU eviction works, and that a ray landing
+# on a red floor reports a red albedo instead of the hard-coded grey.
+# ---------------------------------------------------------------------
+option(ZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST
+       "Build the Lumen surface-cache smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST)
+    add_executable(LumenSurfaceCacheSmokeTest LumenSurfaceCacheSmokeTest.cpp)
+
+    set_target_properties(LumenSurfaceCacheSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    target_link_libraries(LumenSurfaceCacheSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(LumenSurfaceCacheSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(LumenSurfaceCacheSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(LumenSurfaceCacheSmokeTest ZEnginePCH)
+        target_precompile_headers(LumenSurfaceCacheSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(LumenSurfaceCacheSmokeTest PRIVATE /W4)
+    endif()
+
+    if(APPLE)
+        target_sources(LumenSurfaceCacheSmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME LumenSurfaceCacheSmokeTest COMMAND LumenSurfaceCacheSmokeTest)
+
+    message(STATUS "Configured Lumen surface-cache smoke-test target: LumenSurfaceCacheSmokeTest")
+endif()
+
 set_target_properties(LumenSceneGeometrySmokeTest PROPERTIES
     CXX_STANDARD 23
     FOLDER "Engine/Tests"

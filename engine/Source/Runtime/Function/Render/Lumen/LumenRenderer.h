@@ -58,7 +58,7 @@ private:
     // 更新距离场
     void UpdateDistanceField(std::shared_ptr<RenderScene> render_scene, const Vector3& camera_position);
 
-    // 更新表面缓存
+    // 更新表面缓存（render_resource 从 m_RenderResource 取，与 UpdateDistanceField 一致）
     void UpdateSurfaceCache(std::shared_ptr<RenderScene> render_scene, const Vector3& camera_position);
 
     // 配置

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "LumenDistanceField.h"
+#include "LumenSurfaceCache.h"
 #include "LumenTypes.h"
 #include "Runtime/Core/Math/Vector3.h"
 
@@ -50,7 +51,18 @@ public:
 
     LumenDistanceField* getDistanceField() const { return m_DistanceField; }
 
+    // 设置表面缓存引用。命中点要在这里查材质 —— 没有它的话命中结果只能带一组硬编码
+    // 的常量材质，GI 就退化成"任何表面都弹同样的光"。
+    void setSurfaceCache(LumenSurfaceCacheManager* surface_cache) { m_SurfaceCache = surface_cache; }
+
 private:
+    // 用表面缓存填命中点的材质；查不到时填一组中性的缺省值。
+    //
+    // 它是 const，但会通过指针去改表面缓存的 LRU 时间戳 —— 指针本身是 const，指向的
+    // 对象不是，这和 DistanceFieldMarch 通过指针读距离场是同一回事。
+    void FillSurfaceMaterial(const Vector3& hit_position,
+                             const Vector3& hit_normal,
+                             LumenRayTracingResult& out_result) const;
     // 距离场步进追踪（sphere tracing）。distance_field 由调用方显式给出，不再偷偷
     // 去读成员 —— 成员是 nullptr 时旧代码会直接返回"未命中"，看起来就跟场景是空的一样。
     bool DistanceFieldMarch(const Vector3& ray_origin,
@@ -72,6 +84,9 @@ private:
 
     // 距离场引用
     LumenDistanceField* m_DistanceField = nullptr;
+
+    // 表面缓存引用（命中点材质的来源）
+    LumenSurfaceCacheManager* m_SurfaceCache = nullptr;
 
     // 硬件光线追踪支持
     bool m_HardwareRayTracingSupported = false;

@@ -7,7 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added / Fixed - 2026-10-21 (Lumen distance field: real scene geometry)
+### Added / Fixed - 2026-10-21 (Lumen surface cache: it exists now, and rays carry real material)
+
+The surface cache was a dead subsystem: `BuildFromScene` was a TODO, so no page was
+ever created, `GetSurfaceInfo` (which had **zero callers**) always returned false,
+and `TraceRaySoftware` handed back a hard-coded `albedo = 0.5`. Consequence: every
+surface in the scene bounced identical grey light. Rebuilt:
+
+- **`BuildFromScene` now builds a page per scene instance.** Page = one
+  `RenderEntity`, covering its world AABB (transformed by `m_ModelMatrix`, falling
+  back to the CPU geometry cache when the entity box is invalid — same rule the
+  distance field already uses), carrying the entity's real material from
+  `m_BaseColorFactor` / `m_RoughnessFactor` / `m_MetallicFactor` /
+  `m_EmissiveFactor`.
+- **The page key is gone, replaced by a uniform grid.** The old key was
+  `(uint64_t(x*1000) << 32) | (uint64_t(y*1000) << 16) | uint64_t(z*1000)` — `x`
+  overflows the field it is shifted into, `y`'s 16-bit field overlaps `x`'s low
+  bits, `z` is not shifted at all, and a negative coordinate converted to
+  `uint64_t` is undefined behaviour. Lookup is now spatial: each page registers
+  into every grid cell its AABB covers, and the grid cell size is the largest
+  page extent, so a page spans at most 2×2×2 = 8 cells (bounded registration).
+  Points inside a page's box win by "smallest box"; otherwise the nearest page
+  centre is used, because the distance field stops rays about half a voxel *off*
+  the surface and a flat quad's AABB has zero thickness.
+- **`CleanupInvalidPages` actually evicts**, by LRU against a frame counter that
+  `UpdateSurfaceCache` advances. `GetSurfaceInfo` is deliberately **non-const**:
+  a hit refreshes the page's LRU timestamp, which is the only signal eviction
+  has. `AllocatePage` falls back to forced LRU eviction when the page pool is
+  exhausted, and `FreePage` no longer double-decrements `active_page_count`
+  (it is unsigned, so that wrapped to an astronomical number).
+- **A scene hash gates the rebuild** (instance id + mesh/material asset id +
+  model matrix + material factors), so changing a colour rebuilds the page
+  instead of leaving GI bouncing the old albedo. Rebuild also triggers when the
+  cache is empty — without that, an evicted cache would stay empty forever.
+- **Per-texel arrays are no longer pre-allocated.** 64×64 × 7 arrays × 1024
+  pages is several hundred MB, and every texel held the same constant anyway:
+  there is no card rasterizer on the CPU path. `page.resolution` is 0 there.
+- **`TraceRaySoftware` fills the hit's material from the surface cache**, so a
+  ray landing on a red floor now reports red, and reports which instance it hit.
+  With no surface cache it falls back to the neutral 0.5 grey.
+- **`LumenSurfaceCacheSmokeTest`** (42 checks, `-DZENGINE_BUILD_LUMEN_SURFACE_CACHE_SMOKE_TEST=ON`,
+  registered with CTest) pins all of it headlessly, including the cases the old
+  key mangled: huge coordinates, negative coordinates, and a 1 mm nudge.
+
+### Added / Fixed - 2026-10-21 (Lumen software ray tracing: it can now hit)
 
 `LumenDistanceField::GenerateFromScene` had a TODO where the geometry was
 supposed to be collected, so `m_SceneGeometryCache` stayed empty, every voxel
