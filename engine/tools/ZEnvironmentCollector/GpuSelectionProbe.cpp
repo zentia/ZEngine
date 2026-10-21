@@ -164,6 +164,66 @@ std::vector<GpuSelectionMockCase> BuildGpuSelectionMockCases()
         mockCase.expectedAdapterIndex = 0;
         cases.push_back(mockCase);
     }
+    {
+        // The software-adapter branch had no case at all. It matters because the
+        // Basic Render Driver can sit in the enumeration next to a real card, and
+        // picking it is the one mistake here that costs the player the whole GPU.
+        // It is given more dedicated memory than the real card on purpose: shared
+        // stays 0 so it does not also look integrated, which leaves the software
+        // flag as the only thing that can exclude it. A software adapter with no
+        // memory would be excluded by the memory compare anyway and would pass
+        // even with the branch deleted.
+        GpuSelectionMockCase mockCase;
+        mockCase.name = "Software adapter never wins, even reporting more memory than the real card";
+        mockCase.adapters.push_back(MakeAdapter("Microsoft Basic Render Driver", 0x1414, 0x8c, 8192, 0));
+        mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 4060 Laptop", 0x10de, 0x28a0, 4096, 256));
+        mockCase.expectedAdapterIndex = 1;
+        cases.push_back(mockCase);
+    }
+    {
+        // Nothing else to pick, so the mirror falls back to index 0 rather than
+        // reporting a failure. Pinned because "software only" has to stay an
+        // answer the caller can act on, not an error the caller has to invent.
+        GpuSelectionMockCase mockCase;
+        mockCase.name = "Software renderer only (index 0, not a failure)";
+        mockCase.adapters.push_back(MakeAdapter("Microsoft Basic Render Driver", 0x1414, 0x8c, 0, 0));
+        mockCase.expectedAdapterIndex = 0;
+        cases.push_back(mockCase);
+    }
+    {
+        GpuSelectionMockCase mockCase;
+        // Two identical cards: the compare is strictly greater, so the first one
+        // wins and stays won. Ties must not be resolved by enumeration order
+        // changing under a driver update.
+        mockCase.name = "Two identical dGPUs: strictly-greater compare keeps the first";
+        mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 5080 (slot 1)", 0x10de, 0x2c02, 16384, 256));
+        mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 5080 (slot 2)", 0x10de, 0x2c02, 16384, 256));
+        mockCase.expectedAdapterIndex = 0;
+        cases.push_back(mockCase);
+    }
+    {
+        GpuSelectionMockCase mockCase;
+        // The software test is a conjunction. Vendor 0x1414 on its own is not the
+        // Basic Render Driver, and widening it to the vendor alone would drop a real
+        // card out of the running on any machine that reports one.
+        mockCase.name = "Vendor 0x1414 with another device id is not the software adapter";
+        mockCase.adapters.push_back(MakeAdapter("Microsoft adapter, not the Basic Render Driver", 0x1414, 0x8d, 8192, 0));
+        mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 3050", 0x10de, 0x25a2, 4096, 256));
+        mockCase.expectedAdapterIndex = 0;
+        cases.push_back(mockCase);
+    }
+    {
+        GpuSelectionMockCase mockCase;
+        // The vendor rule is what it is: every 0x8086 part counts as integrated, so
+        // a discrete Intel card loses to a smaller card from another vendor. Pinned
+        // on purpose -- if that rule is ever narrowed to real integrated parts, it
+        // should break this case and be changed deliberately rather than drift.
+        mockCase.name = "Intel Arc discrete is classified integrated by the vendor rule (current behavior)";
+        mockCase.adapters.push_back(MakeAdapter("Intel(R) Arc(TM) A770 Graphics", 0x8086, 0x56a0, 16384, 256));
+        mockCase.adapters.push_back(MakeAdapter("NVIDIA GeForce RTX 3060", 0x10de, 0x2504, 12288, 256));
+        mockCase.expectedAdapterIndex = 1;
+        cases.push_back(mockCase);
+    }
 
     return cases;
 }
