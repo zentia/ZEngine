@@ -38,6 +38,9 @@
 
 #include "Runtime/Function/Render/Interface/DX12/DX12ShaderCompiler.h"
 #include "Runtime/Function/Render/RenderType.h"
+// 顶点/骨骼布局直接吃规格头文件，不在这里重抄一份 ——
+// 否则头文件改了、夹具没改，static_assert 就形同虚设。
+#include "Runtime/Function/Render/Spine/SpineGpuFormat.h"
 
 #include <cfloat>
 #include <cmath>
@@ -57,54 +60,27 @@ namespace
 {
 
 // ---------------------------------------------------------------------
-// 顶点布局（与规格 §3.1 逐字节对应）
+// 顶点 / 骨骼布局：直接用规格头文件 SpineGpuFormat.h，不在本文件重抄。
 // ---------------------------------------------------------------------
-// 【版本锁定：Spine 3.8，规格 §1.1】
-//   bone_idx 是 **uint16**，不是随手选的，是被 3.8 钉死的：
-//     spine-cpp `VertexAttachment.h:79-81` 声明 `Vector<unsigned short> _bones`，
-//     源码注释原话 "unsigned short is ample; a skeleton cannot reach 65535 bones."
-//   ⇒ 导入器必须按 uint16 读 `_bones`；升 4.x 时这里要跟着改（4.x 是 Vector<int>，
-//     但**未在本机核实**，升级时重新核对，别照抄这句）。
+// 这样做是有意的：布局的 static_assert 全在头文件里，如果夹具自己再定义一份
+// 结构体，头文件改了夹具也不会察觉，断言就成了摆设。
 //
-// bindPos 放首位、步长补到 56，是为了让 ByteAddressBuffer::Load2（一次取
-// 一个 float2，要求 8 字节对齐）在每个顶点上都能用：步长 52 时第 k 个顶点
-// 落在 52k，52 % 8 == 4，第二个及以后的顶点就取不了对齐的 Load2。
-struct VtxRigid
-{
-    float bind_pos[2];
-    float uv[2];
-};
-
-struct VtxWeighted
-{
-    float bind_pos[4][2];          // 每个影响一份，不是每顶点一份（规格 §3.1 的红字警告）
-    float uv[2];
-    std::uint16_t bone_idx[4];     // 3.8: uint16，见上面版本锁定
-    std::uint8_t weight[4];        // unorm8，导入期调到和恰好 255，运行时 /255
-    std::uint8_t pad[4];
-};
-
-static_assert(sizeof(VtxRigid) == 16, "kVtxRigid must be 16 B (spec 3.1)");
-static_assert(sizeof(VtxWeighted) == 56, "kVtxWeighted4 must be 56 B (spec 3.1)");
-// 把「3.8 ⇒ 骨骼索引是 uint16」钉成编译期断言，避免以后有人随手改成 uint32。
-static_assert(std::is_same_v<decltype(VtxWeighted::bone_idx), std::uint16_t[4]>,
-              "Spine 3.8: _bones is Vector<unsigned short> -> bone index must be uint16 (spec 1.1)");
-
-// 骨骼 = 6 float：x' = a*x + b*y + worldX,  y' = c*x + d*y + worldY
-struct Bone
-{
-    float a = 1.0f, b = 0.0f, c = 0.0f, d = 1.0f;
-    float world_x = 0.0f, world_y = 0.0f;
-};
+// 【版本锁定：Spine 3.8，规格 §1.1】bone_idx 是 **uint16**，不是随手选的，
+// 是被 3.8 钉死的（`VertexAttachment.h:79-81` 的 `Vector<unsigned short> _bones`）。
+// bindPos 放首位 + 步长 56 是为了 ByteAddressBuffer::Load2 的 8 字节对齐
+// （步长 52 ⇒ 52 % 8 == 4，第二个及以后的顶点取不到对齐的 Load2）。
+using VtxRigid = SpineRigidVertex;
+using VtxWeighted = SpineWeightedVertex;
+using Bone = SpineBoneTransform;
 
 struct Float2
 {
     float x = 0.0f, y = 0.0f;
 };
 
-constexpr std::uint32_t kBoneStride = 24;  // 6 float，紧凑（规格 §5.1）
-constexpr std::uint32_t kRigidStride = 16;
-constexpr std::uint32_t kWeightedStride = 56;
+constexpr std::uint32_t kBoneStride = SpineGpuConstants::kBoneStrideCompact;  // 24，6 float
+constexpr std::uint32_t kRigidStride = SpineGpuConstants::kRigidVertexStride;        // 16
+constexpr std::uint32_t kWeightedStride = SpineGpuConstants::kWeightedVertexStride;  // 56
 
 // ---------------------------------------------------------------------
 // CPU 参考实现 —— 逐行对应 spine-cpp

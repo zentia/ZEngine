@@ -129,7 +129,7 @@ worldVertices[w]     = vx * a + vy * b + x;
 worldVertices[w + 1] = vx * c + vy * d + y;
 ```
 
-**weighted（`:97-113`）** —— 每顶点 `n` 个影响，`_vertices` 里
+**weighted（`VertexAttachment.cpp:97-112`）** —— 每顶点 `n` 个影响，`_vertices` 里
 **每个影响一份三元组 `(vx, vy, weight)`**（步长 3），权重**不在 `_bones` 里**：
 
 ```
@@ -409,6 +409,19 @@ Chunks:
 | 2 | `MAX_INFLUENCES = 4` 是否够？ | 够；遇到 >4 **报错**而非静默截断（§3.1 已按此写） |
 | 4 | 骨骼通道：structured buffer 还是 UBO？ | 默认 structured/SSBO（24 B 紧凑），小骨骼数可走 UBO（32 B） |
 | 5 | 是否要 root 变换 per-instance | 要（UI Spine 必然有位置/缩放） |
+| 6 | **root 变换存在哪？**（§5.3 说了"要"，但没说放哪） | 见下 |
+
+**#6 展开**：root 是**运行时每实例**数据，容器里没有它的位置；而 §5.2 的 16 B 实例项是
+**每可见绘制项**一项（一个骨架有多个绘制项），也没给它留槽位 —— 所以"按什么索引取 root"
+是个真空缺，不是笔误。三个候选：
+
+| 方案 | 代价 |
+|---|---|
+| A. 实例项加一个 `root_index u32`（16 B → 20 B） | 每帧每绘制项多 4 B；最直接 |
+| B. root 紧跟在该实例的骨骼块前面（同一个大 buffer），由 `bone_base` 推出 | 实例项不变，但 `bone_base` 的语义变脏（既是骨下标又隐含 block 头） |
+| C. 单独的 root 表，按实例顺序排，实例项加 `instance_index` | 与 A 同量级，但多一层间接 |
+
+在定下来之前，`SpineGpuFormat.h` **故意不含 root 字段** —— 加进去就等于替这个决定做了假设。
 
 ---
 
