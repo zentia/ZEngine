@@ -134,6 +134,11 @@ struct SpineSourceSkeleton
 SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const SpineAtlas* atlas,
                                          SpineSourceSkeleton& out);
 
+// 解析 Spine 3.8 的**二进制** `.skel` 导出（Spine 编辑器的默认导出格式）。
+// 产出与 json 版**同一个** SpineSourceSkeleton —— 后面的 Bake 完全不知道数据来自哪种。
+SpineImportResult ParseSpineSkeletonBinary(const uint8_t* data, size_t len, const SpineAtlas* atlas,
+                                           SpineSourceSkeleton& out);
+
 // ---------------------------------------------------------------------
 // 烘焙产物（容器在内存里的形态；序列化到文件是下一步）
 // ---------------------------------------------------------------------

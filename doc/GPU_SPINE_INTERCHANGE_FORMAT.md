@@ -423,6 +423,10 @@ Chunks:
 3. **回归夹具**：至少一份含 **Region + 刚性 Mesh + 蒙皮 Mesh + tintBlack + 四种混合模式**
    的骨架，作为永久对拍资产。
 4. **导入器负向用例**：`n > 4` 的顶点必须报错；`weights` 和不为 255 必须报错。
+5. **两种输入必须对拍**：`.skel`（编辑器默认导出）与 json 是两条独立解析路径，
+   同一副骨架经两条路径 Bake 后必须产出**逐字节相同**的容器。
+   另：对 `.skel` 夹具的**每个真前缀**都调一次解析，必须全部失败 —— 它既没魔数也没长度字段，
+   截断是最容易触发越界读的场景。
 
 ---
 
@@ -464,3 +468,33 @@ Chunks:
 | weighted 非 deform 块 `:97-112`；deform 块 `:115-131`，`vx` 在 `:122` | `VertexAttachment.cpp` |
 | 裁剪是 CPU 几何重写 | `SkeletonClipping.h:47-49`（`clipTriangles`）、`:52-54`（`getClippedVertices/Triangles/UVs`） |
 | OSGame 侧 spine-unity 运行时是 **3.7** | `Client_proj/Project/Assets/OSGame/3rd-Party/Spine/version.txt` |
+
+### 二进制 `.skel` 的出处（导入器两种输入之一）
+
+`.skel` 是 Spine 编辑器的**默认**导出格式，所以导入器必须支持它，不能只读 json。
+字段顺序全部照抄 `spine-cpp/src/spine/SkeletonBinary.cpp`：
+
+| 断言 | 出处 |
+|---|---|
+| 顶层：hash 串 → version 串 → width/height → `nonessential` | `:132-148` |
+| ⚠️ **文件没有魔数**，开头就是 hash 串 | `:132`（传错文件不会立刻失败，会顺着 varint 读飞） |
+| bones：父下标**只在 `i != 0` 时**读，且指向已读过的骨骼 | `:150-171` |
+| slots：dark 四分量**无条件读**，不全是 `0xff` 才算有 dark color | `:173-193` |
+| ⚠️ region 字段顺序 = rotation,x,y,scaleX,scaleY,width,height | `:530-536`（**与 json 的 x,y,width,height,rotation 不同**） |
+| mesh 顺序 = path,color,vertexCount,regionUVs,triangles,vertices,hull | `:553-582` |
+| `readVertices`：先一个 bool 决定 weighted；weighted 时每顶点 `[n, (idx,x,y,w)×n]` | `:658-691` |
+| varint = LEB128，最多 5 字节；`optimizePositive=false` 时是 zigzag | `:467-489` |
+| 字符串：varint 长度**含**结尾 `'\0'`，但结尾不落盘；长度 0 = 空串 | `:413-424` |
+| 大端：`readInt` / `readFloat`（int32 按位重解释）/ `readShortArray` | `:449-458`、`:708-717` |
+| 附件类型枚举 0..6（region,bbox,mesh,linkedmesh,path,point,clipping） | `include/spine/AttachmentType.h:34-42` |
+| 动画里 7 段顺序：slot/bone/IK/transform/path/deform/**drawOrder**/event | `:725-1107` |
+| ⚠️ 事件时间轴每帧末尾是否多 2 个 float，**取决于对应事件有没有 audioPath** | `:1098-1101` ⇒ events 段不能跳过 |
+| curve：0=linear、1=stepped 无数据；2=bezier 带 4 个 float | `:1112-1127` |
+
+**`.skel` 与 json 必须产出同一个容器。** 这一条有一个硬测试钉住
+（`SpineGpuImportTest` 第 9 节）：手写的 `.skel` 字节流夹具与 json 夹具内容等价，
+两条解析路径各自 Bake 后**顶点缓冲逐字节相同**。二进制那边的字段顺序、大端、varint、
+weighted 扁平编码只要错一处，两边就会分叉 —— 这是唯一能自动发现这类错误的手段。
+
+**越界读的守卫**：`.skel` 既没有魔数也没有长度字段，截断文件是最容易触发越界读的场景。
+测试对夹具的**每一个真前缀**都调一次解析，要求全部失败（不能"假装成功"，更不能越界读）。

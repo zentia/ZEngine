@@ -829,6 +829,1545 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
 }
 
 // =====================================================================
+// 二进制 .skel（Spine 3.8）
+// ---------------------------------------------------------------------
+// 布局**逐字段照抄** `SkeletonBinary.cpp`，没有"我觉得应该是这样"的部分：
+//   readSkeletonData :132-386   readSkin       :492-513   readAttachment :515-656
+//   readVertices     :658-691   readVarint     :467-489   readString     :413-424
+//   readInt/Float    :426-458   readFloatArray :693-706   readShortArray :708-717
+//   readAnimation    :719-1110  readCurve      :1112-1127
+//
+// ⚠️ 四个踩了就**静默产出垃圾**的点：
+//   1. 文件**没有魔数**，开头就是 hash 字符串 —— 传错文件不会立刻失败，
+//      会顺着 varint 一路读飞。所以这里额外挡一道"开头是 '{'"。
+//   2. `nonessential` 这一个 bool 会改变后面几乎每个结构的字段数。
+//   3. region 在二进制里的字段顺序是 rotation,x,y,scaleX,scaleY,width,height，
+//      和 json 的 x,y,width,height,rotation **不一样**。抄 json 那边的顺序
+//      能编译、能跑，region 会整体错位/转错角度。
+//   4. 事件时间轴每帧是否多 2 个 float，取决于**对应事件有没有 audioPath**
+//      ⇒ 必须先把 events 段解析出来，不能跳过。
+// =====================================================================
+namespace
+{
+
+// 对应参考实现的 DataInput。每个 Read 都做越界检查：
+// 二进制格式 + 无越界检查 = 崩溃，而且是取决于文件尾部内容的那种偶发崩溃。
+struct SkelReader
+{
+    const uint8_t* data = nullptr;
+    size_t len = 0;
+    size_t pos = 0;
+    std::string err;
+
+    bool Fail(const std::string& m)
+    {
+        err = m;
+        return false;
+    }
+
+    bool Have(size_t n) const
+    {
+        return n <= len && pos <= len - n;
+    }
+
+    bool FailEof(size_t n)
+    {
+        return Fail("skel: 偏移 " + std::to_string(pos) + " 处要读 " + std::to_string(n) + " 字节，但只剩 " +
+                    std::to_string(len - pos) + " 字节");
+    }
+
+    bool Byte(uint8_t& v)
+    {
+        if (!Have(1))
+        {
+            return FailEof(1);
+        }
+        v = data[pos++];
+        return true;
+    }
+
+    bool Skip(size_t n)
+    {
+        if (!Have(n))
+        {
+            return FailEof(n);
+        }
+        pos += n;
+        return true;
+    }
+
+    // 照抄 :467-489。optimizePositive=false 时是 zigzag（有符号）。
+    bool Varint(bool optimize_positive, int32_t& v)
+    {
+        uint8_t b = 0;
+        if (!Byte(b))
+        {
+            return false;
+        }
+        uint32_t value = b & 0x7Fu;
+        if (b & 0x80u)
+        {
+            if (!Byte(b))
+            {
+                return false;
+            }
+            value |= static_cast<uint32_t>(b & 0x7Fu) << 7;
+            if (b & 0x80u)
+            {
+                if (!Byte(b))
+                {
+                    return false;
+                }
+                value |= static_cast<uint32_t>(b & 0x7Fu) << 14;
+                if (b & 0x80u)
+                {
+                    if (!Byte(b))
+                    {
+                        return false;
+                    }
+                    value |= static_cast<uint32_t>(b & 0x7Fu) << 21;
+                    if (b & 0x80u)
+                    {
+                        if (!Byte(b))
+                        {
+                            return false;
+                        }
+                        value |= static_cast<uint32_t>(b & 0x7Fu) << 28;
+                    }
+                }
+            }
+        }
+        if (!optimize_positive)
+        {
+            // zigzag: (u >> 1) ^ -(u & 1)
+            value = (value >> 1) ^ (0u - (value & 1u));
+        }
+        v = static_cast<int32_t>(value);
+        return true;
+    }
+
+    bool Int32Be(int32_t& v)
+    {
+        uint8_t b[4] = {0, 0, 0, 0};
+        for (int i = 0; i < 4; ++i)
+        {
+            if (!Byte(b[i]))
+            {
+                return false;
+            }
+        }
+        v = (static_cast<int32_t>(b[0]) << 24) | (static_cast<int32_t>(b[1]) << 16) |
+            (static_cast<int32_t>(b[2]) << 8) | static_cast<int32_t>(b[3]);
+        return true;
+    }
+
+    // 照抄 :426-435：大端 int32 再按位重解释成 float。
+    bool Float(float& v)
+    {
+        int32_t i = 0;
+        if (!Int32Be(i))
+        {
+            return false;
+        }
+        std::memcpy(&v, &i, sizeof(v));
+        return true;
+    }
+
+    bool Boolean(bool& v)
+    {
+        uint8_t b = 0;
+        if (!Byte(b))
+        {
+            return false;
+        }
+        v = b != 0;
+        return true;
+    }
+
+    // 照抄 :413-424：varint 长度含结尾 '\0'，但结尾不落在文件里。长度 0 ⇒ 空串。
+    bool String(std::string& out)
+    {
+        int32_t n = 0;
+        if (!Varint(true, n))
+        {
+            return false;
+        }
+        out.clear();
+        if (n == 0)
+        {
+            return true;
+        }
+        if (!Have(static_cast<size_t>(n) - 1))
+        {
+            return FailEof(static_cast<size_t>(n) - 1);
+        }
+        out.assign(reinterpret_cast<const char*>(data + pos), static_cast<size_t>(n) - 1);
+        pos += static_cast<size_t>(n) - 1;
+        return true;
+    }
+
+    // 照抄 :693-706（scale 恒为 1）
+    bool FloatArray(size_t n, std::vector<float>& out)
+    {
+        if (n > len)
+        {
+            return Fail("skel: 浮点数组声明了 " + std::to_string(n) + " 个元素，比整个文件还长");
+        }
+        if (!Have(n * 4))
+        {
+            return FailEof(n * 4);
+        }
+        out.resize(n);
+        for (size_t i = 0; i < n; ++i)
+        {
+            float f = 0.0f;
+            if (!Float(f))
+            {
+                return false;
+            }
+            out[i] = f;
+        }
+        return true;
+    }
+
+    // 照抄 :708-717：元素数是 varint，每个元素是**大端** u16。
+    bool ShortArray(std::vector<uint16_t>& out)
+    {
+        int32_t n = 0;
+        if (!Varint(true, n))
+        {
+            return false;
+        }
+        if (n < 0)
+        {
+            return Fail("skel: 短整型数组元素数为负 " + std::to_string(n));
+        }
+        const size_t cnt = static_cast<size_t>(n);
+        if (cnt > len)
+        {
+            return Fail("skel: 短整型数组声明了 " + std::to_string(cnt) + " 个元素，比整个文件还长");
+        }
+        if (!Have(cnt * 2))
+        {
+            return FailEof(cnt * 2);
+        }
+        out.clear();
+        out.reserve(cnt);
+        for (size_t i = 0; i < cnt; ++i)
+        {
+            uint8_t hi = 0;
+            uint8_t lo = 0;
+            if (!Byte(hi) || !Byte(lo))
+            {
+                return false;
+            }
+            out.push_back(static_cast<uint16_t>((static_cast<uint16_t>(hi) << 8) | static_cast<uint16_t>(lo)));
+        }
+        return true;
+    }
+};
+
+// 附件类型：照抄 AttachmentType.h:34-42
+enum SkelAttachmentType
+{
+    kAttRegion = 0,
+    kAttBoundingBox = 1,
+    kAttMesh = 2,
+    kAttLinkedMesh = 3,
+    kAttPath = 4,
+    kAttPoint = 5,
+    kAttClipping = 6,
+};
+
+// 时间轴类型：照抄 SkeletonBinary.cpp:80-95
+enum SkelTimelineType
+{
+    kBoneRotate = 0,
+    kBoneTranslate = 1,
+    kBoneScale = 2,
+    kBoneShear = 3,
+    kSlotAttachment = 0,
+    kSlotColor = 1,
+    kSlotTwoColor = 2,
+    kPathPosition = 0,
+    kPathSpacing = 1,
+    kPathMix = 2,
+};
+
+constexpr uint8_t kCurveLinear = 0;
+constexpr uint8_t kCurveStepped = 1;
+constexpr uint8_t kCurveBezier = 2;
+
+class SkelParser
+{
+public:
+    SkelParser(const uint8_t* data, size_t len, const SpineAtlas* atlas, SpineSourceSkeleton& out)
+        : atlas_(atlas)
+        , out_(out)
+    {
+        r_.data = data;
+        r_.len = len;
+    }
+
+    bool Run()
+    {
+        if (!ParseTopLevel())
+        {
+            return false;
+        }
+        // 与 json 版一致：去重（先出现的胜出）后按槽位顺序排。
+        std::stable_sort(collected_.begin(), collected_.end(),
+                         [](const SpineSourceAttachment& a, const SpineSourceAttachment& b)
+                         { return a.slot_index < b.slot_index; });
+        out_.attachments = std::move(collected_);
+        return true;
+    }
+
+    const std::string& error() const { return r_.err; }
+
+private:
+    SkelReader r_;
+    const SpineAtlas* atlas_;
+    SpineSourceSkeleton& out_;
+    bool nonessential_ = false;
+    std::vector<SpineSourceAttachment> collected_;
+    std::vector<bool> event_has_audio_;
+
+    bool Fail(const std::string& m) { return r_.Fail("skel: " + m); }
+
+    bool ParseTopLevel()
+    {
+        std::string hash;
+        std::string version;
+        if (!r_.String(hash) || !r_.String(version))
+        {
+            return false;
+        }
+        if (version.size() < 3 || version.compare(0, 3, "3.8") != 0)
+        {
+            return Fail("spine 版本是 '" + (version.empty() ? std::string("<空>") : version) +
+                        "'，本导入器锁定 3.8（规格 §1.1）。4.x 的 _bones 是 int，布局不同，需要另一条导入路径。");
+        }
+
+        float width = 0.0f;
+        float height = 0.0f;
+        if (!r_.Float(width) || !r_.Float(height))
+        {
+            return false;
+        }
+        if (!r_.Boolean(nonessential_))
+        {
+            return false;
+        }
+        if (nonessential_)
+        {
+            // fps + imagesPath + audioPath（参考实现 :143-148 全部跳过）
+            float fps = 0.0f;
+            std::string images;
+            std::string audio;
+            if (!r_.Float(fps) || !r_.String(images) || !r_.String(audio))
+            {
+                return false;
+            }
+        }
+
+        if (!ParseBones() || !ParseSlots() || !SkipIk() || !SkipTransformConstraints() ||
+            !SkipPathConstraints())
+        {
+            return false;
+        }
+
+        // default skin + 具名 skin。注意 varint 读出来的就是**具名** skin 的个数
+        // （参考实现 :277-292：default skin 在读到 count 之后才 +1）。
+        if (!ParseSkin())
+        {
+            return false;
+        }
+        int32_t named_skin_count = 0;
+        if (!r_.Varint(true, named_skin_count))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < named_skin_count; ++i)
+        {
+            std::string skin_name;
+            if (!r_.String(skin_name))
+            {
+                return false;
+            }
+            if (!ParseSkin())
+            {
+                return false;
+            }
+        }
+
+        // 事件：必须先解析 —— 事件时间轴每帧多不多 2 个 float 取决于它。
+        if (!ParseEvents())
+        {
+            return false;
+        }
+
+        int32_t anim_count = 0;
+        if (!r_.Varint(true, anim_count))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < anim_count; ++i)
+        {
+            std::string anim_name;
+            if (!r_.String(anim_name))
+            {
+                return false;
+            }
+            if (!SkipAnimation())
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ---- bones（:150-171）----
+    bool ParseBones()
+    {
+        int32_t n = 0;
+        if (!r_.Varint(true, n))
+        {
+            return false;
+        }
+        if (n < 0)
+        {
+            return Fail("骨骼数为负 " + std::to_string(n));
+        }
+        out_.bones.reserve(static_cast<size_t>(n));
+        for (int32_t i = 0; i < n; ++i)
+        {
+            SpineSourceBone bone;
+            if (!r_.String(bone.name))
+            {
+                return false;
+            }
+            bone.parent = -1;
+            if (i != 0)
+            {
+                int32_t parent = 0;
+                if (!r_.Varint(true, parent))
+                {
+                    return false;
+                }
+                // 二进制里父骨骼下标指向**已读过的**骨骼，所以必须 < i。
+                if (parent < 0 || parent >= i)
+                {
+                    return Fail("骨骼 '" + bone.name + "' 的父下标 " + std::to_string(parent) +
+                                " 非法（当前已读 " + std::to_string(i) + " 根，父骨骼必须排在自己之前）");
+                }
+                bone.parent = parent;
+            }
+            // rotation,x,y,scaleX,scaleY,shearX,shearY,length
+            if (!SkipFloats(8))
+            {
+                return false;
+            }
+            int32_t transform_mode = 0;
+            if (!r_.Varint(true, transform_mode))
+            {
+                return false;
+            }
+            if (nonessential_ && !r_.Skip(4))
+            {
+                return false;   // bone color
+            }
+            out_.bones.push_back(std::move(bone));
+        }
+        return true;
+    }
+
+    // ---- slots（:173-193）----
+    bool ParseSlots()
+    {
+        int32_t n = 0;
+        if (!r_.Varint(true, n))
+        {
+            return false;
+        }
+        if (n < 0)
+        {
+            return Fail("槽位数为负 " + std::to_string(n));
+        }
+        out_.slots.reserve(static_cast<size_t>(n));
+        for (int32_t i = 0; i < n; ++i)
+        {
+            SpineSourceSlot slot;
+            if (!r_.String(slot.name))
+            {
+                return false;
+            }
+            int32_t bone_index = 0;
+            if (!r_.Varint(true, bone_index))
+            {
+                return false;
+            }
+            if (bone_index < 0 || static_cast<size_t>(bone_index) >= out_.bones.size())
+            {
+                return Fail("槽位 '" + slot.name + "' 引用了不存在的骨骼下标 " + std::to_string(bone_index));
+            }
+            slot.bone_index = bone_index;
+
+            if (!r_.Skip(4))
+            {
+                return false;   // color
+            }
+            uint8_t dark[4] = {0, 0, 0, 0};
+            for (int k = 0; k < 4; ++k)
+            {
+                if (!r_.Byte(dark[k]))
+                {
+                    return false;
+                }
+            }
+            // 参考实现 :186-189：四个分量**不全是** 0xff 才算有 dark color。
+            if (!(dark[0] == 0xff && dark[1] == 0xff && dark[2] == 0xff && dark[3] == 0xff))
+            {
+                slot.has_dark = true;
+                out_.uses_tint_black = true;
+            }
+            std::string attachment_name;
+            if (!r_.String(attachment_name))
+            {
+                return false;
+            }
+            int32_t blend_mode = 0;
+            if (!r_.Varint(true, blend_mode))
+            {
+                return false;
+            }
+            out_.slots.push_back(std::move(slot));
+        }
+        return true;
+    }
+
+    // ---- 约束：全部跳过，但必须按字段数精确跳过 ----
+    bool SkipIk()
+    {
+        int32_t n = 0;
+        if (!r_.Varint(true, n))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < n; ++i)
+        {
+            std::string name;
+            int32_t order = 0;
+            if (!r_.String(name) || !r_.Varint(true, order))
+            {
+                return false;
+            }
+            if (!SkipVarintArray())
+            {
+                return false;   // bones
+            }
+            int32_t target = 0;
+            if (!r_.Varint(true, target))
+            {
+                return false;
+            }
+            if (!SkipFloats(1))
+            {
+                return false;   // mix
+            }
+            // bendDirection(sbyte) + compress + stretch + uniform
+            if (!r_.Skip(4))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool SkipTransformConstraints()
+    {
+        int32_t n = 0;
+        if (!r_.Varint(true, n))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < n; ++i)
+        {
+            std::string name;
+            int32_t order = 0;
+            if (!r_.String(name) || !r_.Varint(true, order))
+            {
+                return false;
+            }
+            if (!SkipVarintArray())
+            {
+                return false;
+            }
+            int32_t target = 0;
+            if (!r_.Varint(true, target))
+            {
+                return false;
+            }
+            if (!r_.Skip(2))
+            {
+                return false;   // local + relative
+            }
+            // offsetRotation, offsetX/Y, offsetScaleX/Y, offsetShearY, rotateMix, translateMix, scaleMix, shearMix
+            if (!SkipFloats(10))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool SkipPathConstraints()
+    {
+        int32_t n = 0;
+        if (!r_.Varint(true, n))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < n; ++i)
+        {
+            std::string name;
+            int32_t order = 0;
+            if (!r_.String(name) || !r_.Varint(true, order))
+            {
+                return false;
+            }
+            if (!SkipVarintArray())
+            {
+                return false;
+            }
+            int32_t target = 0;
+            int32_t position_mode = 0;
+            int32_t spacing_mode = 0;
+            int32_t rotate_mode = 0;
+            if (!r_.Varint(true, target) || !r_.Varint(true, position_mode) || !r_.Varint(true, spacing_mode) ||
+                !r_.Varint(true, rotate_mode))
+            {
+                return false;
+            }
+            // offsetRotation, position, spacing, rotateMix, translateMix
+            if (!SkipFloats(5))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool SkipVarintArray()
+    {
+        int32_t n = 0;
+        if (!r_.Varint(true, n))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < n; ++i)
+        {
+            int32_t dummy = 0;
+            if (!r_.Varint(true, dummy))
+            {
+                return false;
+            }
+            if (dummy < 0)
+            {
+                return Fail("约束引用的骨骼下标为负 " + std::to_string(dummy));
+            }
+        }
+        return true;
+    }
+
+    bool SkipFloats(int count)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            float f = 0.0f;
+            if (!r_.Float(f))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // ---- skin（:492-513）----
+    bool ParseSkin()
+    {
+        int32_t slot_count = 0;
+        if (!r_.Varint(true, slot_count))
+        {
+            return false;
+        }
+        if (slot_count == 0)
+        {
+            return true;   // 空 skin（参考实现直接返回 NULL）
+        }
+        for (int32_t i = 0; i < slot_count; ++i)
+        {
+            int32_t slot_index = 0;
+            if (!r_.Varint(true, slot_index))
+            {
+                return false;
+            }
+            if (slot_index < 0 || static_cast<size_t>(slot_index) >= out_.slots.size())
+            {
+                return Fail("skin 引用了不存在的槽位下标 " + std::to_string(slot_index));
+            }
+            int32_t att_count = 0;
+            if (!r_.Varint(true, att_count))
+            {
+                return false;
+            }
+            for (int32_t ii = 0; ii < att_count; ++ii)
+            {
+                std::string name;
+                if (!r_.String(name))
+                {
+                    return false;
+                }
+                if (name.empty())
+                {
+                    break;   // 参考实现 :500-503
+                }
+                if (!ParseAttachment(slot_index, name))
+                {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    // ---- attachment（:515-656）----
+    bool ParseAttachment(int32_t slot_index, const std::string& skin_attachment_name)
+    {
+        std::string name;
+        if (!r_.String(name))
+        {
+            return false;
+        }
+        if (name.empty())
+        {
+            name = skin_attachment_name;
+        }
+
+        uint8_t type_byte = 0;
+        if (!r_.Byte(type_byte))
+        {
+            return false;
+        }
+
+        switch (type_byte)
+        {
+            case kAttRegion:
+            {
+                std::string path;
+                if (!r_.String(path))
+                {
+                    return false;
+                }
+                if (path.empty())
+                {
+                    path = name;
+                }
+                // ⚠️ 顺序和 json 不一样：rotation,x,y,scaleX,scaleY,width,height
+                float rotation = 0.0f;
+                float x = 0.0f;
+                float y = 0.0f;
+                float sx = 0.0f;
+                float sy = 0.0f;
+                float w = 0.0f;
+                float h = 0.0f;
+                if (!r_.Float(rotation) || !r_.Float(x) || !r_.Float(y) || !r_.Float(sx) || !r_.Float(sy) ||
+                    !r_.Float(w) || !r_.Float(h))
+                {
+                    return false;
+                }
+                if (!r_.Skip(4))
+                {
+                    return false;   // color
+                }
+
+                SpineSourceAttachment att;
+                att.type = SpineSourceAttachment::Type::kRegion;
+                att.name = name;
+                att.path = path;
+                att.slot_index = slot_index;
+
+                const SpineAtlasRegion* reg = LookupRegion(att, path);
+                if (reg == nullptr)
+                {
+                    return false;
+                }
+
+                float xy[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+                ComputeRegionVertices(x, y, w, h, sx, sy, rotation, static_cast<float>(reg->width),
+                                      static_cast<float>(reg->height), static_cast<float>(reg->offset_x),
+                                      static_cast<float>(reg->offset_y), static_cast<float>(reg->orig_w),
+                                      static_cast<float>(reg->orig_h), xy);
+                att.vertices.assign(xy, xy + 8);
+
+                float uv[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+                ComputeRegionUvs(*reg, uv);
+                att.uvs.assign(uv, uv + 8);
+
+                // Spine 的 region 三角形固定 BL,UL,UR / UR,BR,BL
+                att.triangles = {0, 1, 2, 2, 3, 0};
+                Collect(std::move(att));
+                return true;
+            }
+            case kAttMesh:
+            {
+                std::string path;
+                if (!r_.String(path))
+                {
+                    return false;
+                }
+                if (path.empty())
+                {
+                    path = name;
+                }
+                if (!r_.Skip(4))
+                {
+                    return false;   // color
+                }
+                int32_t vertex_count = 0;
+                if (!r_.Varint(true, vertex_count))
+                {
+                    return false;
+                }
+                if (vertex_count < 0)
+                {
+                    return Fail("mesh 附件 '" + name + "' 顶点数为负");
+                }
+
+                std::vector<float> region_uvs;
+                if (!r_.FloatArray(static_cast<size_t>(vertex_count) * 2u, region_uvs))
+                {
+                    return false;
+                }
+                std::vector<uint16_t> triangles;
+                if (!r_.ShortArray(triangles))
+                {
+                    return false;
+                }
+                std::vector<float> vertices;
+                if (!ReadVertices(vertex_count, &vertices))
+                {
+                    return false;
+                }
+                int32_t hull = 0;
+                if (!r_.Varint(true, hull))
+                {
+                    return false;
+                }
+                if (nonessential_)
+                {
+                    std::vector<uint16_t> edges;
+                    if (!r_.ShortArray(edges) || !SkipFloats(2))
+                    {
+                        return false;   // edges, width, height
+                    }
+                }
+
+                SpineSourceAttachment att;
+                att.type = SpineSourceAttachment::Type::kMesh;
+                att.name = name;
+                att.path = path;
+                att.slot_index = slot_index;
+                att.triangles = std::move(triangles);
+                att.vertices = std::move(vertices);
+
+                const SpineAtlasRegion* reg = LookupRegion(att, path);
+                if (reg == nullptr)
+                {
+                    return false;
+                }
+                std::vector<float> final_uvs;
+                ComputeMeshUvs(*reg, region_uvs, final_uvs);
+                att.uvs = std::move(final_uvs);
+                Collect(std::move(att));
+                return true;
+            }
+            case kAttClipping:
+            {
+                int32_t end_slot = 0;
+                int32_t vertex_count = 0;
+                if (!r_.Varint(true, end_slot) || !r_.Varint(true, vertex_count))
+                {
+                    return false;
+                }
+                if (!ReadVertices(vertex_count, nullptr))
+                {
+                    return false;
+                }
+                if (nonessential_ && !r_.Skip(4))
+                {
+                    return false;
+                }
+                // 与 json 版一致：裁剪附件本身不产生几何，只置 kHasClipping。
+                out_.has_clipping = true;
+                return true;
+            }
+            case kAttBoundingBox:
+            {
+                int32_t vertex_count = 0;
+                if (!r_.Varint(true, vertex_count))
+                {
+                    return false;
+                }
+                if (!ReadVertices(vertex_count, nullptr))
+                {
+                    return false;
+                }
+                if (nonessential_ && !r_.Skip(4))
+                {
+                    return false;
+                }
+                return true;   // 包围盒不渲染
+            }
+            case kAttPath:
+            {
+                if (!r_.Skip(2))
+                {
+                    return false;   // closed + constantSpeed
+                }
+                int32_t vertex_count = 0;
+                if (!r_.Varint(true, vertex_count))
+                {
+                    return false;
+                }
+                if (!ReadVertices(vertex_count, nullptr))
+                {
+                    return false;
+                }
+                if (vertex_count < 0)
+                {
+                    return Fail("path 附件 '" + name + "' 顶点数为负");
+                }
+                if (!SkipFloats(vertex_count / 3))
+                {
+                    return false;   // lengths
+                }
+                if (nonessential_ && !r_.Skip(4))
+                {
+                    return false;
+                }
+                return true;   // path 不渲染
+            }
+            case kAttPoint:
+            {
+                if (!SkipFloats(3))
+                {
+                    return false;   // rotation, x, y
+                }
+                if (nonessential_ && !r_.Skip(4))
+                {
+                    return false;
+                }
+                return true;   // point 不渲染
+            }
+            case kAttLinkedMesh:
+            {
+                return Fail("附件 '" + name + "'（槽位 '" + out_.slots[static_cast<size_t>(slot_index)].name +
+                            "'）是 linked mesh，本版本导入器不支持（与 json 路径一致）");
+            }
+            default:
+            {
+                return Fail("附件 '" + name + "' 的附件类型是 " + std::to_string(static_cast<int>(type_byte)) +
+                            "，3.8 只到 6（clipping）");
+            }
+        }
+    }
+
+    // readVertices（:658-691）。out 为 nullptr 时只推进游标（跳过）。
+    // 扁平编码与 json 版一致：weighted 时每顶点 [n, (boneIdx, x, y, w) × n]。
+    bool ReadVertices(int32_t vertex_count, std::vector<float>* out)
+    {
+        if (vertex_count < 0)
+        {
+            return Fail("顶点数为负 " + std::to_string(vertex_count));
+        }
+        bool weighted = false;
+        if (!r_.Boolean(weighted))
+        {
+            return false;
+        }
+        if (!weighted)
+        {
+            std::vector<float> tmp;
+            if (!r_.FloatArray(static_cast<size_t>(vertex_count) * 2u, tmp))
+            {
+                return false;
+            }
+            if (out != nullptr)
+            {
+                *out = std::move(tmp);
+            }
+            return true;
+        }
+        if (out != nullptr)
+        {
+            out->clear();
+        }
+        for (int32_t i = 0; i < vertex_count; ++i)
+        {
+            int32_t bone_count = 0;
+            if (!r_.Varint(true, bone_count))
+            {
+                return false;
+            }
+            if (bone_count <= 0)
+            {
+                return Fail("第 " + std::to_string(i) + " 个顶点的影响数是 " + std::to_string(bone_count) +
+                            "，但这一层已被标成 weighted");
+            }
+            if (out != nullptr)
+            {
+                out->push_back(static_cast<float>(bone_count));
+            }
+            for (int32_t ii = 0; ii < bone_count; ++ii)
+            {
+                int32_t bone_index = 0;
+                if (!r_.Varint(true, bone_index))
+                {
+                    return false;
+                }
+                // 3.8 的 _bones 是 unsigned short（VertexAttachment.h:79-81）。
+                // 参考实现在这里是 assert —— 我们报错，不静默截断。
+                if (bone_index < 0 || bone_index > 65535)
+                {
+                    return Fail("骨骼下标 " + std::to_string(bone_index) +
+                                " 超出 3.8 的 unsigned short 范围，截断会直接毁掉蒙皮");
+                }
+                float x = 0.0f;
+                float y = 0.0f;
+                float w = 0.0f;
+                if (!r_.Float(x) || !r_.Float(y) || !r_.Float(w))
+                {
+                    return false;
+                }
+                if (out != nullptr)
+                {
+                    out->push_back(static_cast<float>(bone_index));
+                    out->push_back(x);
+                    out->push_back(y);
+                    out->push_back(w);
+                }
+            }
+        }
+        return true;
+    }
+
+    const SpineAtlasRegion* LookupRegion(const SpineSourceAttachment& att, const std::string& path)
+    {
+        const std::string region_name = path.empty() ? att.name : path;
+        const SpineAtlasRegion* reg = (atlas_ != nullptr) ? FindAtlasRegion(*atlas_, region_name) : nullptr;
+        if (reg == nullptr)
+        {
+            r_.err = "skel: atlas: 附件 '" + att.name + "'（槽位 '" +
+                     out_.slots[static_cast<size_t>(att.slot_index)].name + "'）找不到图集 region '" + region_name +
+                     "'。缺图集就算不出 UV —— 不拿零 UV 糊过去。";
+        }
+        return reg;
+    }
+
+    void Collect(SpineSourceAttachment att)
+    {
+        for (const SpineSourceAttachment& existing : collected_)
+        {
+            if (existing.slot_index == att.slot_index && existing.name == att.name)
+            {
+                return;   // 先出现的胜出（default skin 在前）
+            }
+        }
+        collected_.push_back(std::move(att));
+    }
+
+    // ---- events（:327-347）----
+    bool ParseEvents()
+    {
+        int32_t n = 0;
+        if (!r_.Varint(true, n))
+        {
+            return false;
+        }
+        if (n < 0)
+        {
+            return Fail("事件数为负 " + std::to_string(n));
+        }
+        event_has_audio_.reserve(static_cast<size_t>(n));
+        for (int32_t i = 0; i < n; ++i)
+        {
+            std::string name;
+            int32_t int_value = 0;
+            float float_value = 0.0f;
+            std::string string_value;
+            std::string audio_path;
+            if (!r_.String(name) || !r_.Varint(false, int_value) || !r_.Float(float_value) ||
+                !r_.String(string_value) || !r_.String(audio_path))
+            {
+                return false;
+            }
+            bool has_audio = !audio_path.empty();
+            if (has_audio && !SkipFloats(2))
+            {
+                return false;   // volume, balance
+            }
+            event_has_audio_.push_back(has_audio);
+        }
+        return true;
+    }
+
+    // ---- animation：只为取 has_draw_order_timeline，其余精确跳过 ----
+    bool SkipAnimation()
+    {
+        // 槽位时间轴（:725-793）
+        int32_t slot_n = 0;
+        if (!r_.Varint(true, slot_n))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < slot_n; ++i)
+        {
+            int32_t slot_index = 0;
+            int32_t tl_n = 0;
+            if (!r_.Varint(true, slot_index) || !r_.Varint(true, tl_n))
+            {
+                return false;
+            }
+            for (int32_t ii = 0; ii < tl_n; ++ii)
+            {
+                uint8_t t = 0;
+                if (!r_.Byte(t))
+                {
+                    return false;
+                }
+                int32_t frames = 0;
+                if (!r_.Varint(true, frames))
+                {
+                    return false;
+                }
+                if (frames < 0)
+                {
+                    return Fail("槽位时间轴帧数为负 " + std::to_string(frames));
+                }
+                if (t == kSlotAttachment)
+                {
+                    // 每帧 (time, attachmentName)，**没有** curve
+                    for (int32_t f = 0; f < frames; ++f)
+                    {
+                        std::string s;
+                        if (!SkipFloats(1) || !r_.String(s))
+                        {
+                            return false;
+                        }
+                    }
+                }
+                else if (t == kSlotColor || t == kSlotTwoColor)
+                {
+                    const int colors = (t == kSlotTwoColor) ? 2 : 1;
+                    for (int32_t f = 0; f < frames; ++f)
+                    {
+                        if (!SkipFloats(1) || !r_.Skip(static_cast<size_t>(4) * colors))
+                        {
+                            return false;
+                        }
+                        if (f < frames - 1 && !Curve())
+                        {
+                            return false;
+                        }
+                    }
+                }
+                else
+                {
+                    return Fail("槽位时间轴类型 " + std::to_string(static_cast<int>(t)) + " 未知（3.8 只到 2）");
+                }
+            }
+        }
+
+        // 骨骼时间轴（:795-852）
+        int32_t bone_n = 0;
+        if (!r_.Varint(true, bone_n))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < bone_n; ++i)
+        {
+            int32_t bone_index = 0;
+            int32_t tl_n = 0;
+            if (!r_.Varint(true, bone_index) || !r_.Varint(true, tl_n))
+            {
+                return false;
+            }
+            for (int32_t ii = 0; ii < tl_n; ++ii)
+            {
+                uint8_t t = 0;
+                if (!r_.Byte(t))
+                {
+                    return false;
+                }
+                int32_t frames = 0;
+                if (!r_.Varint(true, frames))
+                {
+                    return false;
+                }
+                if (frames < 0)
+                {
+                    return Fail("骨骼时间轴帧数为负 " + std::to_string(frames));
+                }
+                // rotate 是 (time, degrees)；translate / scale / shear 是 (time, x, y)
+                const int values = (t == kBoneRotate) ? 1 : 2;
+                if (t > kBoneShear)
+                {
+                    return Fail("骨骼时间轴类型 " + std::to_string(static_cast<int>(t)) + " 未知（3.8 只到 3）");
+                }
+                for (int32_t f = 0; f < frames; ++f)
+                {
+                    if (!SkipFloats(1 + values))
+                    {
+                        return false;
+                    }
+                    if (f < frames - 1 && !Curve())
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // IK 约束时间轴（:854-873）：每帧 time,mix,sbyte,bool,bool
+        int32_t ik_n = 0;
+        if (!r_.Varint(true, ik_n))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < ik_n; ++i)
+        {
+            int32_t index = 0;
+            int32_t frames = 0;
+            if (!r_.Varint(true, index) || !r_.Varint(true, frames))
+            {
+                return false;
+            }
+            if (frames < 0)
+            {
+                return Fail("IK 时间轴帧数为负 " + std::to_string(frames));
+            }
+            for (int32_t f = 0; f < frames; ++f)
+            {
+                if (!SkipFloats(2) || !r_.Skip(3))
+                {
+                    return false;
+                }
+                if (f < frames - 1 && !Curve())
+                {
+                    return false;
+                }
+            }
+        }
+
+        // transform 约束时间轴（:875-894）：每帧 5 个 float
+        int32_t tc_n = 0;
+        if (!r_.Varint(true, tc_n))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < tc_n; ++i)
+        {
+            int32_t index = 0;
+            int32_t frames = 0;
+            if (!r_.Varint(true, index) || !r_.Varint(true, frames))
+            {
+                return false;
+            }
+            if (frames < 0)
+            {
+                return Fail("transform 约束时间轴帧数为负 " + std::to_string(frames));
+            }
+            for (int32_t f = 0; f < frames; ++f)
+            {
+                if (!SkipFloats(5))
+                {
+                    return false;
+                }
+                if (f < frames - 1 && !Curve())
+                {
+                    return false;
+                }
+            }
+        }
+
+        // path 约束时间轴（:896-955）：类型字段是 **sbyte**
+        int32_t pc_n = 0;
+        if (!r_.Varint(true, pc_n))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < pc_n; ++i)
+        {
+            int32_t index = 0;
+            int32_t tl_n = 0;
+            if (!r_.Varint(true, index) || !r_.Varint(true, tl_n))
+            {
+                return false;
+            }
+            for (int32_t ii = 0; ii < tl_n; ++ii)
+            {
+                uint8_t t = 0;
+                if (!r_.Byte(t))
+                {
+                    return false;
+                }
+                int32_t frames = 0;
+                if (!r_.Varint(true, frames))
+                {
+                    return false;
+                }
+                if (frames < 0)
+                {
+                    return Fail("path 约束时间轴帧数为负 " + std::to_string(frames));
+                }
+                int values = 0;
+                if (t == kPathPosition || t == kPathSpacing)
+                {
+                    values = 1;
+                }
+                else if (t == kPathMix)
+                {
+                    values = 2;
+                }
+                else
+                {
+                    return Fail("path 约束时间轴类型 " + std::to_string(static_cast<int>(t)) + " 未知（3.8 只到 2）");
+                }
+                for (int32_t f = 0; f < frames; ++f)
+                {
+                    if (!SkipFloats(1 + values))
+                    {
+                        return false;
+                    }
+                    if (f < frames - 1 && !Curve())
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // deform 时间轴（:957-1030）。跳过时不需要附件 —— end 就是本帧的 float 个数。
+        int32_t def_n = 0;
+        if (!r_.Varint(true, def_n))
+        {
+            return false;
+        }
+        for (int32_t i = 0; i < def_n; ++i)
+        {
+            int32_t skin_index = 0;
+            int32_t slot_n = 0;
+            if (!r_.Varint(true, skin_index) || !r_.Varint(true, slot_n))
+            {
+                return false;
+            }
+            for (int32_t ii = 0; ii < slot_n; ++ii)
+            {
+                int32_t slot_index = 0;
+                int32_t att_n = 0;
+                if (!r_.Varint(true, slot_index) || !r_.Varint(true, att_n))
+                {
+                    return false;
+                }
+                for (int32_t iii = 0; iii < att_n; ++iii)
+                {
+                    std::string att_name;
+                    if (!r_.String(att_name))
+                    {
+                        return false;
+                    }
+                    int32_t frames = 0;
+                    if (!r_.Varint(true, frames))
+                    {
+                        return false;
+                    }
+                    if (frames < 0)
+                    {
+                        return Fail("deform 时间轴帧数为负 " + std::to_string(frames));
+                    }
+                    for (int32_t f = 0; f < frames; ++f)
+                    {
+                        int32_t end = 0;
+                        if (!SkipFloats(1) || !r_.Varint(true, end))
+                        {
+                            return false;
+                        }
+                        if (end != 0)
+                        {
+                            int32_t start = 0;
+                            if (!r_.Varint(true, start))
+                            {
+                                return false;
+                            }
+                            if (end < 0)
+                            {
+                                return Fail("deform 帧长度 " + std::to_string(end) + " 为负");
+                            }
+                            if (!SkipFloats(end))
+                            {
+                                return false;
+                            }
+                        }
+                        if (f < frames - 1 && !Curve())
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- 绘制顺序时间轴（:1032-1077）：这条决定资产要不要整体走 CPU ----
+        int32_t draw_order_count = 0;
+        if (!r_.Varint(true, draw_order_count))
+        {
+            return false;
+        }
+        if (draw_order_count < 0)
+        {
+            return Fail("绘制顺序时间轴帧数为负 " + std::to_string(draw_order_count));
+        }
+        if (draw_order_count > 0)
+        {
+            out_.has_draw_order_timeline = true;
+            for (int32_t i = 0; i < draw_order_count; ++i)
+            {
+                int32_t offset_count = 0;
+                if (!SkipFloats(1) || !r_.Varint(true, offset_count))
+                {
+                    return false;
+                }
+                if (offset_count < 0)
+                {
+                    return Fail("绘制顺序帧的 offset 数为负 " + std::to_string(offset_count));
+                }
+                // 每个 offset 两个 varint（slotIndex, 位移量）
+                for (int32_t ii = 0; ii < offset_count; ++ii)
+                {
+                    int32_t a = 0;
+                    int32_t b = 0;
+                    if (!r_.Varint(true, a) || !r_.Varint(true, b))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // 事件时间轴（:1079-1107）。⚠️ 末尾那 2 个 float 取决于对应事件有没有 audioPath。
+        int32_t ev_n = 0;
+        if (!r_.Varint(true, ev_n))
+        {
+            return false;
+        }
+        if (ev_n < 0)
+        {
+            return Fail("事件时间轴帧数为负 " + std::to_string(ev_n));
+        }
+        for (int32_t i = 0; i < ev_n; ++i)
+        {
+            int32_t event_index = 0;
+            int32_t int_value = 0;
+            bool free_string = false;
+            if (!SkipFloats(1) || !r_.Varint(true, event_index) || !r_.Varint(false, int_value) ||
+                !SkipFloats(1) || !r_.Boolean(free_string))
+            {
+                return false;
+            }
+            if (event_index < 0 || static_cast<size_t>(event_index) >= event_has_audio_.size())
+            {
+                return Fail("事件时间轴引用了不存在的事件下标 " + std::to_string(event_index) + "（事件数是 " +
+                            std::to_string(event_has_audio_.size()) + "）");
+            }
+            if (free_string)
+            {
+                std::string s;
+                if (!r_.String(s))
+                {
+                    return false;
+                }
+            }
+            if (event_has_audio_[static_cast<size_t>(event_index)] && !SkipFloats(2))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // readCurve（:1112-1127）：只有 bezier 带 4 个 float。
+    bool Curve()
+    {
+        uint8_t t = 0;
+        if (!r_.Byte(t))
+        {
+            return false;
+        }
+        if (t == kCurveBezier)
+        {
+            return SkipFloats(4);
+        }
+        if (t == kCurveLinear || t == kCurveStepped)
+        {
+            return true;
+        }
+        return Fail("curve 类型 " + std::to_string(static_cast<int>(t)) + " 未知（3.8 只到 2）");
+    }
+};
+
+}   // namespace
+
+SpineImportResult ParseSpineSkeletonBinary(const uint8_t* data, size_t len, const SpineAtlas* atlas,
+                                           SpineSourceSkeleton& out)
+{
+    out.bones.clear();
+    out.slots.clear();
+    out.attachments.clear();
+    out.has_draw_order_timeline = false;
+    out.uses_tint_black = false;
+    out.has_clipping = false;
+
+    if (atlas != nullptr)
+    {
+        out.atlas_pages.clear();
+        out.atlas_pages.reserve(atlas->pages.size());
+        for (const SpineAtlasPage& p : atlas->pages)
+        {
+            out.atlas_pages.push_back(p.name);
+        }
+    }
+
+    if (data == nullptr || len == 0)
+    {
+        return Fail("skel: 数据为空");
+    }
+    // .skel **没有魔数**，开头就是 hash 字符串。json 传进来不会立刻失败，
+    // 而是顺着 varint 读飞 ⇒ 这里挡一道，给人能看懂的错误。
+    if (data[0] == '{')
+    {
+        return Fail("skel: 开头是 '{'，看起来是 json —— 请改用 ParseSpineSkeletonJson()");
+    }
+
+    SkelParser parser(data, len, atlas, out);
+    if (!parser.Run())
+    {
+        return Fail(parser.error());
+    }
+    return Ok();
+}
+
+// =====================================================================
 // 烘焙：切成 GPU 布局
 // =====================================================================
 namespace

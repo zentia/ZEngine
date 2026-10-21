@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -25,6 +26,9 @@ namespace
 
 int g_checks = 0;
 int g_failed = 0;
+// 同一批检查跑两遍时（如 .skel 的 nonessential 开/关）用来区分是哪一轮失败，
+// 免得每条消息都要手写前缀。
+std::string g_prefix;
 
 void Check(bool cond, const char* what)
 {
@@ -32,7 +36,7 @@ void Check(bool cond, const char* what)
     if (!cond)
     {
         ++g_failed;
-        std::printf("  [FAIL] %s\n", what);
+        std::printf("  [FAIL] %s%s\n", g_prefix.c_str(), what);
     }
 }
 
@@ -42,7 +46,7 @@ void CheckEq(long long got, long long want, const char* what)
     if (got != want)
     {
         ++g_failed;
-        std::printf("  [FAIL] %s (got %lld, want %lld)\n", what, got, want);
+        std::printf("  [FAIL] %s%s (got %lld, want %lld)\n", g_prefix.c_str(), what, got, want);
     }
 }
 
@@ -84,6 +88,256 @@ const char* kSkeleton = R"({
     } }
   } } ]
 })";
+
+// ---------------------------------------------------------------------
+// 手写 .skel 字节流
+// ---------------------------------------------------------------------
+// 按 SkeletonBinary.cpp 的字段顺序逐字节拼出来，内容与上面的 json 夹具**等价**
+// ⇒ 两条完全独立的解析路径必须产出逐字节相同的烘焙结果。这是本文件最强的检查：
+// 二进制那边的字段顺序、大端、varint、weighted 扁平编码只要错一处，两边就会分叉。
+//
+// 写 varint 照抄 spine 的 writeVarint（LEB128，末字节不带续位）：
+//   v < 2^7 → 1 字节；< 2^14 → 2；< 2^21 → 3；< 2^28 → 4；否则 5
+struct SkelWriter
+{
+    std::vector<uint8_t> b;
+
+    void U8(uint8_t v) { b.push_back(v); }
+
+    void Varint(int32_t v, bool optimize_positive = true)
+    {
+        uint32_t value = 0;
+        if (optimize_positive)
+        {
+            value = static_cast<uint32_t>(v);
+        }
+        else
+        {
+            // zigzag：与读端的 (u >> 1) ^ -(u & 1) 互逆
+            value = (static_cast<uint32_t>(v) << 1) ^ static_cast<uint32_t>(v >> 31);
+        }
+        if ((value >> 7) == 0)
+        {
+            U8(static_cast<uint8_t>(value));
+            return;
+        }
+        if ((value >> 14) == 0)
+        {
+            U8(static_cast<uint8_t>((value & 0x7Fu) | 0x80u));
+            U8(static_cast<uint8_t>(value >> 7));
+            return;
+        }
+        if ((value >> 21) == 0)
+        {
+            U8(static_cast<uint8_t>((value & 0x7Fu) | 0x80u));
+            U8(static_cast<uint8_t>(((value >> 7) & 0x7Fu) | 0x80u));
+            U8(static_cast<uint8_t>(value >> 14));
+            return;
+        }
+        if ((value >> 28) == 0)
+        {
+            U8(static_cast<uint8_t>((value & 0x7Fu) | 0x80u));
+            U8(static_cast<uint8_t>(((value >> 7) & 0x7Fu) | 0x80u));
+            U8(static_cast<uint8_t>(((value >> 14) & 0x7Fu) | 0x80u));
+            U8(static_cast<uint8_t>(value >> 21));
+            return;
+        }
+        U8(static_cast<uint8_t>((value & 0x7Fu) | 0x80u));
+        U8(static_cast<uint8_t>(((value >> 7) & 0x7Fu) | 0x80u));
+        U8(static_cast<uint8_t>(((value >> 14) & 0x7Fu) | 0x80u));
+        U8(static_cast<uint8_t>(((value >> 21) & 0x7Fu) | 0x80u));
+        U8(static_cast<uint8_t>(value >> 28));
+    }
+
+    // varint 长度含结尾 '\0'，但结尾不落盘；空串写 0
+    void Str(const std::string& s)
+    {
+        if (s.empty())
+        {
+            Varint(0);
+            return;
+        }
+        Varint(static_cast<int32_t>(s.size() + 1));
+        for (char c : s)
+        {
+            U8(static_cast<uint8_t>(c));
+        }
+    }
+
+    void F(float v)
+    {
+        uint32_t u = 0;
+        std::memcpy(&u, &v, sizeof(u));
+        U8(static_cast<uint8_t>((u >> 24) & 0xFFu));
+        U8(static_cast<uint8_t>((u >> 16) & 0xFFu));
+        U8(static_cast<uint8_t>((u >> 8) & 0xFFu));
+        U8(static_cast<uint8_t>(u & 0xFFu));
+    }
+
+    void Bool(bool v) { U8(v ? 1u : 0u); }
+
+    void ColorWhite()
+    {
+        U8(0xFF);
+        U8(0xFF);
+        U8(0xFF);
+        U8(0xFF);
+    }
+
+    void ShortArray(const std::vector<uint16_t>& a)
+    {
+        Varint(static_cast<int32_t>(a.size()));
+        for (uint16_t v : a)
+        {
+            U8(static_cast<uint8_t>(v >> 8));
+            U8(static_cast<uint8_t>(v & 0xFFu));
+        }
+    }
+};
+
+// with_draw_order 时多写一个只含绘制顺序时间轴的动画（用于验 kHasDrawOrderTimeline）。
+// linked_mesh 时把 mesh 的类型字节写成 3（应报错）。
+// nonessential 必须两种都测 —— **Spine 编辑器默认就带 nonessential 数据**，
+// 而它一开，后面几乎每个结构的字段数都不一样（骨骼多一个 color、mesh 多 edges+宽高、
+// 头部多 fps/imagesPath/audioPath）。只测 false 等于把最常见的情况漏掉。
+std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = false,
+                                      const std::string& version = "3.8.99", bool nonessential = false)
+{
+    SkelWriter w;
+
+    // ---- 头：hash + version（**没有魔数**）----
+    w.Str("hash");
+    w.Str(version);
+    w.F(0.0f);           // width
+    w.F(0.0f);           // height
+    w.Bool(nonessential);
+    if (nonessential)
+    {
+        w.F(30.0f);          // fps
+        w.Str("images/");    // imagesPath
+        w.Str("");           // audioPath
+    }
+
+    // ---- bones ----
+    w.Varint(2);
+    w.Str("root");
+    w.F(0.0f); w.F(0.0f); w.F(0.0f);       // rotation, x, y
+    w.F(1.0f); w.F(1.0f);                   // scaleX, scaleY
+    w.F(0.0f); w.F(0.0f);                   // shearX, shearY
+    w.F(0.0f);                              // length
+    w.Varint(0);                            // transformMode
+    if (nonessential)
+    {
+        w.ColorWhite();                     // bone color（int）
+    }
+    w.Str("hip");
+    w.Varint(0);                            // parent = root（i != 0 才有）
+    w.F(0.0f); w.F(0.0f); w.F(0.0f);
+    w.F(1.0f); w.F(1.0f);
+    w.F(0.0f); w.F(0.0f);
+    w.F(0.0f);
+    w.Varint(0);
+    if (nonessential)
+    {
+        w.ColorWhite();
+    }
+
+    // ---- slots ----
+    w.Varint(2);
+    w.Str("s0");
+    w.Varint(0);            // bone = root
+    w.ColorWhite();         // color
+    w.ColorWhite();         // dark：全 0xff ⇒ **不**开 tint black
+    w.Str("quad");
+    w.Varint(0);            // blendMode = Normal
+    w.Str("s1");
+    w.Varint(1);            // bone = hip
+    w.ColorWhite();
+    w.ColorWhite();
+    w.Str("mesh");
+    w.Varint(0);
+
+    // ---- 约束：全 0 ----
+    w.Varint(0);            // IK
+    w.Varint(0);            // transform
+    w.Varint(0);            // path
+
+    // ---- default skin ----
+    w.Varint(2);            // skin 里涉及 2 个槽位
+
+    // 槽位 0：region "quad"
+    w.Varint(0);            // slotIndex
+    w.Varint(1);            // 1 个附件
+    w.Str("quad");
+    w.Str("");              // 附件名留空 ⇒ 取 skin 里的 key
+    w.U8(0);                // AttachmentType_Region
+    w.Str("");              // path 留空 ⇒ 取 name
+    // ⚠️ 二进制顺序：rotation, x, y, scaleX, scaleY, width, height
+    w.F(0.0f);              // rotation
+    w.F(0.0f);              // x
+    w.F(0.0f);              // y
+    w.F(1.0f);              // scaleX
+    w.F(1.0f);              // scaleY
+    w.F(64.0f);             // width
+    w.F(32.0f);             // height
+    w.ColorWhite();
+
+    // 槽位 1：mesh "mesh"（4 顶点，第 2 个顶点 2 影响 0.6/0.4）
+    w.Varint(1);
+    w.Varint(1);
+    w.Str("mesh");
+    w.Str("");
+    w.U8(linked_mesh ? 3 : 2);   // 2 = Mesh；3 = LinkedMesh（应为报错路径）
+    w.Str("");
+    w.ColorWhite();
+    w.Varint(4);            // vertexCount
+    // regionUVs：与 json 夹具的 "uvs" 一致
+    w.F(0.0f); w.F(0.0f); w.F(1.0f); w.F(0.0f); w.F(1.0f); w.F(1.0f); w.F(0.0f); w.F(1.0f);
+    w.ShortArray({0, 1, 2, 0, 2, 3});
+    w.Bool(true);           // weighted
+    w.Varint(1); w.Varint(0); w.F(-10.0f); w.F(-5.0f); w.F(1.0f);
+    w.Varint(2);
+    w.Varint(1); w.F(20.0f); w.F(10.0f); w.F(0.6f);
+    w.Varint(0); w.F(5.0f); w.F(7.0f); w.F(0.4f);
+    w.Varint(1); w.Varint(1); w.F(3.0f); w.F(4.0f); w.F(1.0f);
+    w.Varint(1); w.Varint(0); w.F(8.0f); w.F(2.0f); w.F(1.0f);
+    w.Varint(0);            // hullLength
+    if (nonessential)
+    {
+        w.ShortArray({});   // edges
+        w.F(64.0f);         // width
+        w.F(32.0f);         // height
+    }
+
+    // ---- 具名 skin：0 个 ----
+    w.Varint(0);
+
+    // ---- events：0 个 ----
+    w.Varint(0);
+
+    // ---- animations ----
+    if (with_draw_order)
+    {
+        w.Varint(1);
+        w.Str("walk");
+        w.Varint(0);        // slot 时间轴
+        w.Varint(0);        // bone 时间轴
+        w.Varint(0);        // IK
+        w.Varint(0);        // transform 约束
+        w.Varint(0);        // path 约束
+        w.Varint(0);        // deform
+        w.Varint(1);        // 绘制顺序：1 帧
+        w.F(0.0f);          // time
+        w.Varint(0);        // offsetCount
+        w.Varint(0);        // 事件时间轴
+    }
+    else
+    {
+        w.Varint(0);
+    }
+
+    return w.b;
+}
 
 }   // namespace
 
@@ -348,6 +602,135 @@ int main()
         SpineGpuAsset dummy;
         SpineImportResult r = ReadSpineGpuContainer(bad.data(), bad.size(), dummy);
         Check(!r.ok, "魔数不对 ⇒ 读回必须失败");
+    }
+
+    // ---- 9. 二进制 .skel ----
+    // 夹具是手写字节流，内容与 json 夹具**等价** ⇒ 两条独立的解析路径必须产出
+    // 逐字节相同的烘焙结果。二进制的字段顺序 / 大端 / varint / weighted 扁平编码
+    // 只要错一处，这里就会分叉。
+    // nonessential 开 / 关各跑一遍：Spine 编辑器**默认带** nonessential 数据，
+    // 而它一开，头部 / 骨骼 / mesh 的字段数全变了。只跑一种等于漏掉最常见的情况。
+    auto RunSkelAgainstJson = [&](bool nonessential)
+    {
+        g_prefix = std::string("[nonessential=") + (nonessential ? "true" : "false") + "] ";
+        const std::vector<uint8_t> skel = BuildSkelFixture(false, false, "3.8.99", nonessential);
+        SpineSourceSkeleton skel_src;
+        SpineImportResult rsk = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, skel_src);
+        Check(rsk.ok, "skel 解析成功");
+        if (!rsk.ok)
+        {
+            std::printf("  error: %s\n", rsk.error.c_str());
+            g_prefix.clear();
+            return;
+        }
+        CheckEq(static_cast<long long>(skel_src.bones.size()), static_cast<long long>(src.bones.size()),
+                "skel: 骨骼数与 json 一致");
+        Check(skel_src.bones.size() == 2 && skel_src.bones[1].parent == 0, "skel: hip 的父是 root（父下标 < 自己）");
+        CheckEq(static_cast<long long>(skel_src.slots.size()), static_cast<long long>(src.slots.size()),
+                "skel: 槽位数与 json 一致");
+        CheckEq(static_cast<long long>(skel_src.attachments.size()),
+                static_cast<long long>(src.attachments.size()), "skel: 附件数与 json 一致");
+
+        for (size_t i = 0; i < src.attachments.size() && i < skel_src.attachments.size(); ++i)
+        {
+            const SpineSourceAttachment& a = src.attachments[i];
+            const SpineSourceAttachment& k = skel_src.attachments[i];
+            Check(k.name == a.name, "skel: 附件名与 json 一致");
+            Check(k.slot_index == a.slot_index, "skel: 附件槽位与 json 一致");
+            Check(k.IsWeighted() == a.IsWeighted(), "skel: rigid/weighted 判定与 json 一致");
+            Check(k.vertices == a.vertices, "skel: 顶点扁平数组与 json **逐值相同**");
+            Check(k.uvs == a.uvs, "skel: UV 与 json 逐值相同");
+            Check(k.triangles == a.triangles, "skel: 三角形与 json 一致");
+        }
+
+        Check(!skel_src.uses_tint_black, "skel: dark 分量全 0xff ⇒ **不**开 tint black");
+        Check(!skel_src.has_clipping, "skel: 夹具没有裁剪");
+        Check(!skel_src.has_draw_order_timeline, "skel: 没有动画 ⇒ 不置绘制顺序标志");
+
+        SpineGpuAsset skel_asset;
+        SpineImportResult rsk2 = BakeSpineGpuAsset(skel_src, skel_asset);
+        Check(rsk2.ok, "skel: bake 成功");
+        if (!rsk2.ok)
+        {
+            std::printf("  error: %s\n", rsk2.error.c_str());
+        }
+        else
+        {
+            Check(skel_asset.vertex_buffer == asset.vertex_buffer,
+                  "skel↔json：烘焙后的顶点缓冲**逐字节相同**（两条路径的唯一交叉验证）");
+            Check(skel_asset.rigid_vertex_count == asset.rigid_vertex_count, "skel↔json: rigid 顶点数");
+            Check(skel_asset.weighted_vertex_count == asset.weighted_vertex_count, "skel↔json: weighted 顶点数");
+            Check(skel_asset.index_buffer == asset.index_buffer, "skel↔json: 索引缓冲相同");
+            Check(skel_asset.slot_bone == asset.slot_bone, "skel↔json: slot_bone 相同");
+            Check(skel_asset.bone_names == asset.bone_names, "skel↔json: 骨骼名相同");
+            Check(skel_asset.slot_names == asset.slot_names, "skel↔json: 槽位名相同");
+            CheckEq(static_cast<long long>(skel_asset.draw_items.size()),
+                    static_cast<long long>(asset.draw_items.size()), "skel↔json: 绘制项数相同");
+            if (skel_asset.draw_items.size() == asset.draw_items.size())
+            {
+                for (size_t i = 0; i < asset.draw_items.size(); ++i)
+                {
+                    Check(std::memcmp(&skel_asset.draw_items[i], &asset.draw_items[i], sizeof(SpineDrawItem)) == 0,
+                          "skel↔json: 绘制项逐字节相同");
+                }
+            }
+        }
+        g_prefix.clear();
+    };
+    RunSkelAgainstJson(false);
+    RunSkelAgainstJson(true);
+
+    // 9b. 绘制顺序时间轴 ⇒ 整个资产走 CPU（规格 §7）
+    {
+        const std::vector<uint8_t> skel_do = BuildSkelFixture(true);
+        SpineSourceSkeleton s_do;
+        SpineImportResult r_do = ParseSpineSkeletonBinary(skel_do.data(), skel_do.size(), &atlas, s_do);
+        Check(r_do.ok, "skel: 带绘制顺序动画的夹具能解析");
+        Check(r_do.ok && s_do.has_draw_order_timeline,
+              "skel: 有绘制顺序时间轴 ⇒ 置 kHasDrawOrderTimeline（为拿到这个标志必须把前面 5 类时间轴逐个跳过）");
+    }
+
+    // 9c. 报错路径
+    {
+        const std::vector<uint8_t> bad = BuildSkelFixture(false, false, "4.2.11");
+        SpineSourceSkeleton s;
+        SpineImportResult r = ParseSpineSkeletonBinary(bad.data(), bad.size(), &atlas, s);
+        Check(!r.ok, "skel: 版本 4.2 ⇒ 报错（与 json 路径同一道门）");
+        std::printf("  (预期报错) %s\n", r.error.c_str());
+    }
+    {
+        const std::string as_text(kSkeleton);
+        SpineSourceSkeleton s;
+        SpineImportResult r =
+            ParseSpineSkeletonBinary(reinterpret_cast<const uint8_t*>(as_text.data()), as_text.size(), &atlas, s);
+        Check(!r.ok, "skel: 拿 json 当二进制传 ⇒ 报错（.skel 没有魔数，不挡会顺着 varint 读飞）");
+        std::printf("  (预期报错) %s\n", r.error.c_str());
+    }
+    {
+        const std::vector<uint8_t> bad = BuildSkelFixture(false, true);
+        SpineSourceSkeleton s;
+        SpineImportResult r = ParseSpineSkeletonBinary(bad.data(), bad.size(), &atlas, s);
+        Check(!r.ok, "skel: linked mesh ⇒ 报错（与 json 路径一致）");
+        std::printf("  (预期报错) %s\n", r.error.c_str());
+    }
+    // 9d. 越界：任何真前缀都必须**失败**，绝不能越界读。
+    //     .skel 没有魔数也没有长度字段，截断是最容易触发越界读的场景。
+    for (bool nonessential : {false, true})
+    {
+        g_prefix = std::string("[nonessential=") + (nonessential ? "true" : "false") + "] ";
+        const std::vector<uint8_t> full = BuildSkelFixture(false, false, "3.8.99", nonessential);
+        int wrong_ok = 0;
+        for (size_t n = 0; n < full.size(); ++n)
+        {
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonBinary(full.data(), n, &atlas, s);
+            if (r.ok)
+            {
+                ++wrong_ok;
+            }
+        }
+        CheckEq(wrong_ok, 0, "skel: 任意真前缀都必须解析失败（截断不能假装成功，更不能越界读）");
+        g_prefix.clear();
     }
 
     std::printf("=== verdict: %s (%d/%d checks) ===\n", g_failed == 0 ? "PASS" : "FAIL",
