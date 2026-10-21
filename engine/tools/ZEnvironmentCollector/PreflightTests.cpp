@@ -35,6 +35,10 @@ preflight::PreflightInputs HealthyInputs()
     inputs.system.windowsVersion = "Windows 11 (build 26100)";
     inputs.system.physicalMemoryBytes = 16ull << 30;
     inputs.system.availablePhysicalMemoryBytes = 8ull << 30;
+    // ullTotalPageFile is the commit limit -- RAM plus page file -- so a healthy
+    // machine reports more than it has RAM.
+    inputs.system.totalPageFileBytes = (16ull << 30) + (8ull << 30);
+    inputs.system.availablePageFileBytes = 20ull << 30;
 
     GpuAdapterInfo gpu;
     gpu.name = "Test Discrete GPU";
@@ -58,6 +62,9 @@ preflight::PreflightInputs HealthyInputs()
 
     inputs.insiderPreview = false;
     inputs.insiderPreviewKnown = true;
+
+    inputs.vcRuntimePresent = true;
+    inputs.vcRuntimeKnown = true;
     return inputs;
 }
 
@@ -213,6 +220,61 @@ int main()
             Check(!HasFinding(result, "MONITOR_ON_INTEGRATED_GPU"), "a display on the discrete GPU is not reported");
         }
         {
+            // 16 GB installed, 512 MB free: passes the minimum-spec rule and is
+            // still the machine that crashes. Installed size says nothing here.
+            auto inputs = HealthyInputs();
+            inputs.system.availablePhysicalMemoryBytes = 512ull << 20;
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise, "a full machine advises");
+            Check(HasFinding(result, "MEMORY_AVAILABLE_LOW"), "low available memory is named");
+        }
+        {
+            // Below the minimum the machine already reports as blocking; adding
+            // "also low right now" on top of it is noise.
+            auto inputs = HealthyInputs();
+            inputs.system.physicalMemoryBytes = 2ull << 30;
+            inputs.system.availablePhysicalMemoryBytes = 512ull << 20;
+            const auto result = Evaluate(inputs);
+            Check(!HasFinding(result, "MEMORY_AVAILABLE_LOW"),
+                  "a machine already below the minimum is not also told it is full");
+        }
+        {
+            // No page file at all: commit limit == RAM.
+            auto inputs = HealthyInputs();
+            inputs.system.physicalMemoryBytes = 8ull << 30;
+            inputs.system.availablePhysicalMemoryBytes = 4ull << 30;
+            inputs.system.totalPageFileBytes = 8ull << 30;
+            inputs.system.availablePageFileBytes = 4ull << 30;
+            const auto result = Evaluate(inputs);
+            Check(HasFinding(result, "PAGE_FILE_TOO_SMALL"), "no page file on a small-RAM machine is named");
+        }
+        {
+            // The same absence above the RAM ceiling is a considered choice.
+            auto inputs = HealthyInputs();
+            inputs.system.totalPageFileBytes = 16ull << 30;
+            inputs.system.availablePageFileBytes = 8ull << 30;
+            const auto result = Evaluate(inputs);
+            Check(!HasFinding(result, "PAGE_FILE_TOO_SMALL"),
+                  "a large-RAM machine without a page file is left alone");
+        }
+        {
+            // Not installed, not shipped beside the game.
+            auto inputs = HealthyInputs();
+            inputs.vcRuntimePresent = false;
+            inputs.vcRuntimeKnown = true;
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise, "a missing runtime advises, never blocks");
+            Check(HasFinding(result, "VC_RUNTIME_MISSING"), "the missing runtime is named");
+        }
+        {
+            // Could not read the registry key is not "the runtime is absent".
+            auto inputs = HealthyInputs();
+            inputs.vcRuntimePresent = false;
+            inputs.vcRuntimeKnown = false;
+            const auto result = Evaluate(inputs);
+            Check(!HasFinding(result, "VC_RUNTIME_MISSING"), "an unknown runtime state says nothing");
+        }
+        {
             auto inputs = HealthyInputs();
             inputs.gpus.front().softwareAdapter = true;
             const auto result = Evaluate(inputs);
@@ -274,6 +336,8 @@ int main()
             Check(json.find("\"actions\": [") != std::string::npos, "actions key");
             Check(json.find("\"mode\": \"preflight\"") != std::string::npos, "mode discriminates the two files");
             Check(json.find("\"monitorAttachment\": {") != std::string::npos, "monitorAttachment is reported");
+            Check(json.find("\"pageFile\": {") != std::string::npos, "pageFile is reported");
+            Check(json.find("\"runtime\": {") != std::string::npos, "runtime is reported");
             Check(json.find("\"attachedOutputCount\": ") != std::string::npos, "each adapter reports its attached outputs");
             Check(json.find("\"code\": \"FREE_DISK_SPACE\", \"zh\": ") != std::string::npos, "actions carry Chinese text");
             Check(json.find('\t') == std::string::npos, "no raw control characters in the JSON");

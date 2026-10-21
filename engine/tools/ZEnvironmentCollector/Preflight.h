@@ -101,6 +101,14 @@ struct PreflightInputs
 
     bool insiderPreview = false;
     bool insiderPreviewKnown = false;
+
+    // The game's DLLs link the Visual C++ runtime dynamically unless they were
+    // built /MT. Without it the process dies with 0xc0000135 before WinMain and
+    // the player sees nothing at all -- the classic "double-click, no reaction"
+    // report. Read from the runtime's own registry key and from an app-local
+    // copy beside the game, because both are legitimate ways to have it.
+    bool vcRuntimePresent = false;
+    bool vcRuntimeKnown = false;
 };
 
 struct PreflightReportContext

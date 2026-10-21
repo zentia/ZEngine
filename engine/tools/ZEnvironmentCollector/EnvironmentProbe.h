@@ -131,6 +131,17 @@ struct Requirements
     bool f16c = false;
     bool rejectDebugRuntime = true;
     std::uint64_t minimumMemoryBytes = 4ull * 1024ull * 1024ull * 1024ull;
+    // Available, not installed. The crash report we actually receive is the
+    // 16 GB machine with 300 MB free, and "installed >= minimum" says nothing
+    // at all about that state.
+    std::uint64_t minimumAvailableMemoryBytes = 2ull * 1024ull * 1024ull * 1024ull;
+    // How much page file a machine that cannot do without one needs. Windows
+    // reports ullTotalPageFile as the commit limit, which is RAM plus page
+    // file -- the rule subtracts to get the page file itself.
+    std::uint64_t minimumPageFileBytes = 2ull * 1024ull * 1024ull * 1024ull;
+    // Above this much installed RAM a small or absent page file is a deliberate
+    // choice, so the rule stays quiet instead of arguing with it.
+    std::uint64_t pageFileRuleMaxMemoryBytes = 16ull * 1024ull * 1024ull * 1024ull;
 };
 
 enum class CompatibilityStatus

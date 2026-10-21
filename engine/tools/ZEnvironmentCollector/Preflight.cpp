@@ -230,6 +230,65 @@ bool ReadInsiderPreview(bool& known)
     return std::wstring(buffer).find(L"rs_prerelease") != std::wstring::npos;
 }
 
+// Visual C++ 2015-2022 redistributable, x64. Read from the runtime's own
+// registration rather than from the uninstall list: the uninstall entry is
+// per-installer and disappears after some in-place upgrades, while this key is
+// written by the runtime itself.
+bool ReadVcRuntimeInstalled(bool& known)
+{
+    known = false;
+    static const wchar_t* kRuntimeKeys[] = {
+        L"SOFTWARE\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64",
+        L"SOFTWARE\\WOW6432Node\\Microsoft\\VisualStudio\\14.0\\VC\\Runtimes\\x64",
+    };
+    for (const wchar_t* subKey : kRuntimeKeys)
+    {
+        HKEY key = nullptr;
+        if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, subKey, 0, KEY_READ, &key) != ERROR_SUCCESS)
+        {
+            continue;
+        }
+        DWORD installed = 0;
+        DWORD size = sizeof(installed);
+        DWORD type = 0;
+        const LONG queryResult = ::RegQueryValueExW(
+            key, L"Installed", nullptr, &type,
+            reinterpret_cast<LPBYTE>(&installed), &size);
+        ::RegCloseKey(key);
+        if (queryResult != ERROR_SUCCESS || type != REG_DWORD)
+        {
+            continue;
+        }
+        known = true;
+        if (installed != 0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Plenty of games ship the runtime DLLs beside the executable instead of
+// installing them. Counting that as present is the whole difference between a
+// useful hint and a false alarm on a machine that runs the game fine.
+bool HasAppLocalVcRuntime(const std::filesystem::path& gameDirectory)
+{
+    if (gameDirectory.empty())
+    {
+        return false;
+    }
+    static const char* kRuntimeDlls[] = {"vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"};
+    for (const char* dll : kRuntimeDlls)
+    {
+        std::error_code ignored;
+        if (std::filesystem::exists(gameDirectory / dll, ignored))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirectory)
 {
     PreflightInputs inputs;
@@ -276,6 +335,15 @@ PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirector
 
     CollectGameVolume(inputs, gameDirectory);
     inputs.insiderPreview = ReadInsiderPreview(inputs.insiderPreviewKnown);
+
+    // Two registry reads and at most three file-exists checks: cheap enough to
+    // sit inside a three-second budget.
+    inputs.vcRuntimePresent = ReadVcRuntimeInstalled(inputs.vcRuntimeKnown);
+    if (!inputs.vcRuntimePresent && HasAppLocalVcRuntime(gameDirectory))
+    {
+        inputs.vcRuntimePresent = true;
+        inputs.vcRuntimeKnown = true;
+    }
     return inputs;
 }
 
@@ -311,6 +379,19 @@ diagnosis::UserAction ActionFor(const std::string& findingCode)
     if (findingCode == "PHYSICAL_MEMORY_INSUFFICIENT")
     {
         return {"FREE_MEMORY", "关闭其它占用内存的程序，或升级内存后再启动游戏。"};
+    }
+    if (findingCode == "MEMORY_AVAILABLE_LOW")
+    {
+        return {"CLOSE_BACKGROUND_APPS", "关闭占用内存的程序（浏览器、录屏、下载工具等）后再启动游戏。"};
+    }
+    if (findingCode == "PAGE_FILE_TOO_SMALL")
+    {
+        return {"ENABLE_SYSTEM_MANAGED_PAGE_FILE",
+                "在“系统属性 → 高级 → 性能 → 虚拟内存”里交回给系统管理，然后重启电脑。"};
+    }
+    if (findingCode == "VC_RUNTIME_MISSING")
+    {
+        return {"INSTALL_VC_REDIST", "安装 Microsoft Visual C++ 2015-2022 运行库（x64）后重启电脑。"};
     }
     if (findingCode == "WINDOWS_X64_REQUIRED")
     {
@@ -377,7 +458,8 @@ void AppendBlockingFindings(PreflightResult& result, const PreflightInputs& inpu
 // Everything here is advisory. A preflight that blocks a launch is a preflight
 // that will one day block a paying player over a false positive, and the
 // launcher is the one that decides how loudly to say it.
-void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inputs)
+void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inputs,
+                            const Requirements& requirements)
 {
     if (inputs.gpusKnown)
     {
@@ -453,6 +535,51 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
                 std::to_string(attachment.displayAdapter->attachedOutputCount) + " attached), " +
                 attachment.discrete->name + " has no attached output"});
         }
+    }
+
+    // Installed memory below the minimum is reported as blocking above. This one
+    // is for the machine that qualifies on paper and is simply full right now --
+    // which is what the crash reports actually look like.
+    if (inputs.system.availablePhysicalMemoryBytes != 0 &&
+        inputs.system.physicalMemoryBytes >= requirements.minimumMemoryBytes &&
+        inputs.system.availablePhysicalMemoryBytes < requirements.minimumAvailableMemoryBytes)
+    {
+        result.findings.push_back({"MEMORY_AVAILABLE_LOW", "memory",
+            "当前可用内存很少，游戏启动后很可能卡顿或被系统直接终止。",
+            std::to_string(inputs.system.availablePhysicalMemoryBytes / (1024 * 1024)) + " MB available of " +
+            std::to_string(inputs.system.physicalMemoryBytes / (1024 * 1024)) + " MB installed"});
+    }
+
+    // ullTotalPageFile is the commit limit: RAM plus page file, so subtracting
+    // RAM is how much page file there is. None at all turns a memory spike into
+    // an out-of-memory kill instead of a slow swap. Gated on installed RAM
+    // because above pageFileRuleMaxMemoryBytes going without one is a considered
+    // choice, and a tool that argues with that just gets muted.
+    if (inputs.system.totalPageFileBytes != 0 &&
+        inputs.system.physicalMemoryBytes != 0 &&
+        inputs.system.physicalMemoryBytes < requirements.pageFileRuleMaxMemoryBytes)
+    {
+        const std::uint64_t pageFileBytes =
+            inputs.system.totalPageFileBytes > inputs.system.physicalMemoryBytes
+                ? inputs.system.totalPageFileBytes - inputs.system.physicalMemoryBytes
+                : 0;
+        if (pageFileBytes < requirements.minimumPageFileBytes)
+        {
+            result.findings.push_back({"PAGE_FILE_TOO_SMALL", "memory",
+                "系统页面文件过小或未启用，内存吃紧时游戏会被系统终止而不是变慢。",
+                "page file " + std::to_string(pageFileBytes / (1024 * 1024)) + " MB, RAM " +
+                std::to_string(inputs.system.physicalMemoryBytes / (1024 * 1024)) + " MB"});
+        }
+    }
+
+    // Advisory and never blocking, on purpose: whether the game needs the
+    // runtime at all depends on how it was linked, and this tool cannot tell
+    // that from outside the process. "Might be why nothing happens" is honest;
+    // "cannot run" would be a guess.
+    if (inputs.vcRuntimeKnown && !inputs.vcRuntimePresent)
+    {
+        result.findings.push_back({"VC_RUNTIME_MISSING", "runtime",
+            "没有检测到 Visual C++ 运行库，如果游戏点开后没有任何反应，需要先安装它。", ""});
     }
 
     if (inputs.gameVolumeKnown && inputs.gameVolumeFreeBytes < LowFreeSpaceBytes)
@@ -557,6 +684,12 @@ Requirements DefaultPreflightRequirements()
     // by the full compatibility check, not by a per-launch preflight.
     requirements.avx2 = true;
     requirements.minimumMemoryBytes = 4ull * 1024ull * 1024ull * 1024ull;
+    // Both memory floors below are advisory and deliberately below what the game
+    // would like to have: they exist to catch the machine that is technically
+    // fine and practically full, not to second-guess the minimum spec.
+    requirements.minimumAvailableMemoryBytes = 2ull * 1024ull * 1024ull * 1024ull;
+    requirements.minimumPageFileBytes = 2ull * 1024ull * 1024ull * 1024ull;
+    requirements.pageFileRuleMaxMemoryBytes = 16ull * 1024ull * 1024ull * 1024ull;
     return requirements;
 }
 
@@ -580,7 +713,7 @@ PreflightResult EvaluatePreflight(
     }
 
     AppendBlockingFindings(result, inputs, requirements);
-    AppendAdvisoryFindings(result, inputs);
+    AppendAdvisoryFindings(result, inputs, requirements);
 
     std::size_t blocking = 0;
     for (const auto& finding : result.findings)
@@ -681,7 +814,16 @@ std::string BuildPreflightJson(
            << ", \"is64BitOs\": " << BoolText(inputs.system.is64BitOs)
            << ", \"physicalMemoryBytes\": " << inputs.system.physicalMemoryBytes
            << ", \"availablePhysicalMemoryBytes\": " << inputs.system.availablePhysicalMemoryBytes
-           << ", \"insiderPreview\": " << BoolText(inputs.insiderPreview) << "},\n";
+           << ", \"insiderPreview\": " << BoolText(inputs.insiderPreview) << "},\n"
+           << "    \"pageFile\": {\"totalBytes\": " << inputs.system.totalPageFileBytes
+           << ", \"availableBytes\": " << inputs.system.availablePageFileBytes
+           << ", \"effectivePageFileBytes\": "
+           << (inputs.system.totalPageFileBytes > inputs.system.physicalMemoryBytes
+                   ? inputs.system.totalPageFileBytes - inputs.system.physicalMemoryBytes
+                   : 0ull)
+           << "},\n"
+           << "    \"runtime\": {\"vcRuntimePresent\": " << BoolText(inputs.vcRuntimePresent)
+           << ", \"vcRuntimeKnown\": " << BoolText(inputs.vcRuntimeKnown) << "},\n";
 
     stream << "    \"gpuAdapters\": [";
     for (std::size_t index = 0; index < inputs.gpus.size(); ++index)
