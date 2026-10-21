@@ -929,6 +929,9 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
             bone.parent = -1;
             if (!parent.empty())
             {
+                // 父骨骼必须在自己**之前** —— 参考实现也是只查已加进去的骨骼
+                // （`skeletonData->findBone(parentName)`，SkeletonJson.cpp:155），
+                // 所以这条不变量是格式自带的，不是我们加的约束。
                 for (size_t k = 0; k < out.bones.size(); ++k)
                 {
                     if (out.bones[k].name == parent)
@@ -937,7 +940,58 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
                         break;
                     }
                 }
+                // ⚠️ 参考实现在这里**报错**（SkeletonJson.cpp:156-160 "Parent bone not found"）。
+                // 早先我们漏了这一步：查不到就把 parent 留在 -1，于是那根骨骼**静默变成
+                // 根骨骼** —— 整棵子树的位移/旋转全错，而"看起来只是摆位不对"没有任何报错。
+                if (bone.parent < 0)
+                {
+                    return Fail("json: 骨骼 '" + bone.name + "' 引用了不存在的父骨骼 '" + parent +
+                                "'（参考实现在这里报 Parent bone not found）");
+                }
             }
+
+            // 默认值逐条抄 SkeletonJson.cpp:165-172。⚠️ scaleX/scaleY 的默认是 **1**。
+            bone.length = GetFloat(b, "length", 0.0f);
+            bone.x = GetFloat(b, "x", 0.0f);
+            bone.y = GetFloat(b, "y", 0.0f);
+            bone.rotation = GetFloat(b, "rotation", 0.0f);
+            bone.scale_x = GetFloat(b, "scaleX", 1.0f);
+            bone.scale_y = GetFloat(b, "scaleY", 1.0f);
+            bone.shear_x = GetFloat(b, "shearX", 0.0f);
+            bone.shear_y = GetFloat(b, "shearY", 0.0f);
+
+            // 字段名是 **"transform"**（不是 "transformMode"）。5 个 if 都没有 else
+            // （SkeletonJson.cpp:173-189）⇒ 认不出的串会被**静默留在 Normal**。
+            // 那是"整棵子树的 inherit 行为变了且不报错"，所以我们显式报错。
+            const std::string mode = GetString(b, "transform", "normal");
+            if (mode == "normal")
+            {
+                bone.transform_mode = SpineTransformMode::kNormal;
+            }
+            else if (mode == "onlyTranslation")
+            {
+                bone.transform_mode = SpineTransformMode::kOnlyTranslation;
+            }
+            else if (mode == "noRotationOrReflection")
+            {
+                bone.transform_mode = SpineTransformMode::kNoRotationOrReflection;
+            }
+            else if (mode == "noScale")
+            {
+                bone.transform_mode = SpineTransformMode::kNoScale;
+            }
+            else if (mode == "noScaleOrReflection")
+            {
+                bone.transform_mode = SpineTransformMode::kNoScaleOrReflection;
+            }
+            else
+            {
+                return Fail("json: 骨骼 '" + bone.name + "' 的 transform 模式 '" + mode +
+                            "' 不认识（只认 normal / onlyTranslation / noRotationOrReflection / "
+                            "noScale / noScaleOrReflection —— 参考实现在这里静默退回 normal，"
+                            "那会让整棵子树的继承行为悄悄变掉）");
+            }
+
             out.bones.push_back(bone);
         }
     }
@@ -1935,8 +1989,13 @@ private:
                 }
                 bone.parent = parent;
             }
-            // rotation,x,y,scaleX,scaleY,shearX,shearY,length
-            if (!SkipFloats(8))
+            // 顺序抄 SkeletonBinary.cpp:157-164 —— 注意 **rotation 在最前**，
+            // 与 json 的书写顺序（length, x, y, rotation, …）不一样；
+            // 顺序错了不报错，只是每根骨骼摆位全错。
+            // （x / y / length 在参考实现里还要乘 `_scale`，我们恒为 1。）
+            if (!r_.Float(bone.rotation) || !r_.Float(bone.x) || !r_.Float(bone.y) ||
+                !r_.Float(bone.scale_x) || !r_.Float(bone.scale_y) || !r_.Float(bone.shear_x) ||
+                !r_.Float(bone.shear_y) || !r_.Float(bone.length))
             {
                 return false;
             }
@@ -1945,6 +2004,18 @@ private:
             {
                 return false;
             }
+            // 参考实现是 `static_cast<TransformMode>(...)`（SkeletonBinary.cpp:165），
+            // 越界值会被**静默**当成枚举外的数，落到 `Bone::updateWorldTransform` 的
+            // switch 里没有 default ⇒ 那根骨骼的世界变换根本不更新（保持单位阵），
+            // 且无任何报错。所以这里显式挡。
+            if (transform_mode < 0 || transform_mode > static_cast<int32_t>(SpineTransformMode::kNoScaleOrReflection))
+            {
+                return Fail("骨骼 '" + bone.name + "' 的 transform 模式 " +
+                            std::to_string(transform_mode) + " 越界（TransformMode 只有 0..4，"
+                            "见 TransformMode.h:34-40；越界值在参考实现的 switch 里没有分支，"
+                            "那根骨骼的世界变换会静默保持单位阵）");
+            }
+            bone.transform_mode = static_cast<SpineTransformMode>(transform_mode);
             if (nonessential_ && !r_.Skip(4))
             {
                 return false;   // bone color
@@ -3501,6 +3572,49 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     const uint32_t bone_count = static_cast<uint32_t>(src.bones.size());
     const uint32_t slot_count = static_cast<uint32_t>(src.slots.size());
 
+    // ---- 骨骼 setup（chunk 10）----
+    // 骨骼下标是容器里**唯一**的骨骼编号空间：chunk 1 的骨骼名、影响流的 bone_idx、
+    // 槽位的 bone_index、时间轴的 target 全指它。所以这里的校验都在保"只有一个空间"。
+    if (bone_count > SpineGpuConstants::kMaxBones)
+    {
+        return Fail("bake: 骨骼数 " + std::to_string(bone_count) + " 超过上限 " +
+                    std::to_string(SpineGpuConstants::kMaxBones) +
+                    "（parent 是 int16，且影响流的 bone_idx 是 uint16）");
+    }
+    out.bones.reserve(bone_count);
+    for (uint32_t i = 0; i < bone_count; ++i)
+    {
+        const SpineSourceBone& s = src.bones[i];
+        // ⚠️ **parent < index** 是"正向遍历即拓扑序"的前提。重排一下不会报错，
+        // 只会让"骨骼下标"在容器里同时表示两种顺序 ⇒ 蒙皮取到错的骨骼。
+        if (s.parent >= static_cast<int>(i))
+        {
+            return Fail("bake: 骨骼 '" + s.name + "'（下标 " + std::to_string(i) + "）的父下标是 " +
+                        std::to_string(s.parent) + "，但父骨骼必须排在自己之前"
+                        "（容器依赖这条不变量做单趟正向求解，不能静默重排）");
+        }
+        if (s.parent < -1)
+        {
+            return Fail("bake: 骨骼 '" + s.name + "' 的父下标 " + std::to_string(s.parent) + " 非法（-1 = 根）");
+        }
+
+        SpineGpuBone b;
+        b.x = s.x;
+        b.y = s.y;
+        b.rotation = s.rotation;
+        b.scale_x = s.scale_x;
+        b.scale_y = s.scale_y;
+        b.shear_x = s.shear_x;
+        b.shear_y = s.shear_y;
+        b.length = s.length;
+        b.parent = static_cast<int16_t>(s.parent);
+        b.transform_mode = static_cast<uint8_t>(s.transform_mode);
+        // pad 保持 0：它是落盘字节的一部分，不清零会让 C++ 与 C# 的逐字节对拍
+        // 拿到栈上的脏值，而这种"两个字节不一样"查起来极烦。
+        b.pad = 0;
+        out.bones.push_back(b);
+    }
+
     // ---- 皮肤的门：容器约定 skin 0 = default（SpineGpuFormat.h 的 kDefaultSkinId）----
     // 两个来源的导出顺序都满足它，但"通常满足"不等于"可以不查"：
     // 不满足时若照单全收，默认外观会悄悄变成另一个皮肤，而没有任何报错。
@@ -3930,6 +4044,21 @@ void PutU16(std::vector<uint8_t>& v, uint16_t x)
     v.push_back(static_cast<uint8_t>((x >> 8) & 0xFFu));
 }
 
+void PutU8(std::vector<uint8_t>& v, uint8_t x)
+{
+    v.push_back(x);
+}
+
+// float 按**小端**逐字节写 —— 与别的 float 块（chunk 4 / 21 走 PutBytes）同一个约定。
+// 不 memcpy 整个结构体：那会把"结构体有没有尾部填充"变成一个隐式前提
+// （sizeof 断言能挡住，但逐字段写更不容易被以后加字段的人踩到）。
+void PutF32(std::vector<uint8_t>& v, float x)
+{
+    uint8_t b[4];
+    std::memcpy(b, &x, sizeof(float));
+    v.insert(v.end(), b, b + 4);
+}
+
 void PutBytes(std::vector<uint8_t>& v, const void* src, size_t n)
 {
     const uint8_t* p = static_cast<const uint8_t*>(src);
@@ -3995,6 +4124,29 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         for (uint16_t b : asset.slot_bone)
         {
             PutU16(c.bytes, b);
+        }
+        chunks.push_back(std::move(c));
+    }
+
+    // id=10 bone_setup（36 B/骨）。下标 = header.bone_count 的序。
+    // 落盘位置紧挨 slot_bone：两者都是"骨架的静态描述"，读起来是一段。
+    if (!asset.bones.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkBoneSetup;
+        for (const SpineGpuBone& b : asset.bones)
+        {
+            PutF32(c.bytes, b.x);
+            PutF32(c.bytes, b.y);
+            PutF32(c.bytes, b.rotation);
+            PutF32(c.bytes, b.scale_x);
+            PutF32(c.bytes, b.scale_y);
+            PutF32(c.bytes, b.shear_x);
+            PutF32(c.bytes, b.shear_y);
+            PutF32(c.bytes, b.length);
+            PutU16(c.bytes, static_cast<uint16_t>(static_cast<int16_t>(b.parent)));
+            PutU8(c.bytes, b.transform_mode);
+            PutU8(c.bytes, b.pad);   // 显式写 0（跟裁剪多边形同一个规矩）
         }
         chunks.push_back(std::move(c));
     }
@@ -4231,6 +4383,65 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
     if (const Found* f = find_chunk(SpineGpuChunkId::kChunkVertexBuffer))
     {
         out.vertex_buffer.assign(data + f->offset, data + f->offset + f->size);
+    }
+
+    // ---- 骨骼 setup（chunk 10，36 B/骨）----
+    // ⚠️ "chunk 不存在"本身不报错（空 chunk 不落盘），所以必须拿 header.bone_count 对：
+    // 少了它，读端会得到 0 根骨骼，而后面所有 bone_idx 全部越界 —— 越界在 shader 里
+    // 不报错，只是蒙皮取到 0 号骨骼。这是加 chunk 10 时最需要钉住的一条。
+    {
+        const Found* f = find_chunk(SpineGpuChunkId::kChunkBoneSetup);
+        if (out.header.bone_count != 0 && f == nullptr)
+        {
+            return Fail("container: header 说有 " + std::to_string(out.header.bone_count) +
+                        " 根骨骼，但没有 chunk 10（bone_setup）—— v8 起骨骼 setup 必须落盘，"
+                        "缺了它动画就无从解算（时间轴是相对 setup 的增量）");
+        }
+        if (f != nullptr)
+        {
+            if (f->size % SpineGpuConstants::kBoneSetupSize != 0)
+            {
+                return Fail("container: bone_setup 大小不是 " +
+                            std::to_string(SpineGpuConstants::kBoneSetupSize) +
+                            " B 的整数倍（v8 起一条是 36 B）");
+            }
+            const uint32_t count = f->size / SpineGpuConstants::kBoneSetupSize;
+            if (count != out.header.bone_count)
+            {
+                return Fail("container: bone_setup 有 " + std::to_string(count) + " 条，但 header.bone_count 是 " +
+                            std::to_string(out.header.bone_count));
+            }
+            out.bones.resize(count);
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                const uint8_t* p = data + f->offset + static_cast<size_t>(i) * SpineGpuConstants::kBoneSetupSize;
+                SpineGpuBone b;
+                // 8 个 float 连续，且与顶点缓冲同一约定（IEEE754 binary32 小端）。
+                std::memcpy(&b.x, p, 8u * sizeof(float));
+                b.parent = static_cast<int16_t>(static_cast<uint16_t>(p[32] | (static_cast<uint16_t>(p[33]) << 8)));
+                b.transform_mode = p[34];
+                b.pad = p[35];
+
+                if (b.pad != 0)
+                {
+                    return Fail("container: 第 " + std::to_string(i) +
+                                " 根骨骼的 pad 不是 0（落盘必须清零 —— 脏字节会让跨语言逐字节对拍对不上）");
+                }
+                // **parent < i**：容器靠这条不变量做单趟正向求解。重排过的表不报错，
+                // 只是"骨骼下标"同时表示两种顺序 ⇒ 蒙皮取到错的骨骼。
+                if (b.parent >= static_cast<int16_t>(i) || b.parent < -1)
+                {
+                    return Fail("container: 第 " + std::to_string(i) + " 根骨骼的父下标是 " +
+                                std::to_string(b.parent) + "，但父骨骼必须排在自己之前（-1 = 根）");
+                }
+                if (b.transform_mode > static_cast<uint8_t>(SpineTransformMode::kNoScaleOrReflection))
+                {
+                    return Fail("container: 第 " + std::to_string(i) + " 根骨骼的 transform 模式 " +
+                                std::to_string(b.transform_mode) + " 越界（TransformMode 只有 0..4）");
+                }
+                out.bones[i] = b;
+            }
+        }
     }
 
     // ---- 影响流（chunk 21 / 22）。两条流**必须条目数相同**： ----

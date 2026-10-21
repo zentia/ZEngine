@@ -70,7 +70,13 @@ namespace SpineGpuConstants
     //   定长 16 槽能装下但要 176 B/顶点，与"降内存"的目标相反。
     //   变长后均值 ≈ 8 + 12 × 2.20 ≈ **34 B/顶点**（0.72×），且 shader 循环
     //   2.2 次而不是固定 4 次 ⇒ **内存与 ALU 一起省**。
-    constexpr uint32_t kFormatVersion = 7;
+    // 版本 8（2026-10-22）：**骨骼树进容器**（chunk 10，36 B/骨）——
+    //   * header 没变（bone_count 本来就在 0x10），绘制项 / 顶点布局都没动
+    //   * 但"容器里没有骨骼 setup"这件事本身就是不自包含：动画（S2）与时间轴
+    //     都是**相对 setup pose** 的增量，没有 setup 就无从解算
+    //   ⇒ 不兼容：v7 容器被新读端读会得到 0 根骨骼（chunk 10 不存在），
+    //     所有蒙皮索引全部越界，而"没有 chunk 10"本身不报错。
+    constexpr uint32_t kFormatVersion = 8;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -162,6 +168,16 @@ namespace SpineGpuConstants
 
     // 附件记录（chunk 7）大小。4 B → 8 B 是因为多了一列 skin_id。
     constexpr uint32_t kAttachmentRecordSize = 8;
+
+    // 骨骼 setup 记录（chunk 10）大小：7 float + length + int16 parent + u8 mode + pad。
+    // 字段集合抄 `BoneData.h:110-115`，transform_mode 取值抄 `TransformMode.h:34-40`。
+    constexpr uint32_t kBoneSetupSize = 36;
+
+    // 骨骼数上限。两个约束中取严的：
+    //   * `SpineGpuBone::parent` 是 int16 ⇒ 下标必须能用 int16 表示（含 -1）
+    //   * `SpineInfluenceBone::bone_idx` 是 uint16（3.8 的 _bones 是 unsigned short）
+    // 实测 OSGame 782 个资产远低于此，设它是为了挡"读错段读出一个天文数字"。
+    constexpr uint32_t kMaxBones = 32767;
 }   // namespace SpineGpuConstants
 
 // ---------------------------------------------------------------------
@@ -185,6 +201,21 @@ enum class SpineBlendMode : uint8_t
     kAdditive = 1,
     kMultiply = 2,
     kScreen = 3,
+};
+
+// 逐值抄 spine-cpp `TransformMode.h:34-40`。落盘的就是这个整数
+// （不自造一套枚举值 —— 换一套值会让"参考实现的 switch 分支"对不上号）。
+//
+// 语义见 `Bone.cpp:126-185` 的 `updateWorldTransform()` switch：
+// 它决定父骨骼的世界变换里哪些分量传给子骨骼。5 个值**都是实测会出现的**
+// （S4 约束阶段要用），不是"理论上存在"。
+enum class SpineTransformMode : uint8_t
+{
+    kNormal = 0,
+    kOnlyTranslation = 1,
+    kNoRotationOrReflection = 2,
+    kNoScale = 3,
+    kNoScaleOrReflection = 4,
 };
 
 // 绘制项的处置方式。kFallback = 该项顶点由 CPU 算好、走每帧动态 VB。
@@ -222,6 +253,9 @@ enum SpineGpuChunkId : uint32_t
     kChunkAtlasPages = 8,    // 图集页路径 / 纹理引用
     kChunkClipData = 9,      // SpineGpuClipPolygon[]（12 B/条）；**顶点本身在 chunk 3 里**
 
+    // v8：骨骼 setup（36 B/骨）。id 10 就是当初留给它的。
+    kChunkBoneSetup = 10,    // SpineGpuBone[]（36 B/条）；下标 = header.bone_count 的序
+
     // v7：蒙皮数据流。id 从 21 起 —— 10..20 留给 v7 动画阶段
     // （骨骼树 / 时间轴 / path 几何），别占用。
     kChunkInfluenceBind = 21,  // float2 × influence_count（8 B/条）；由 influence_offset 索引
@@ -234,7 +268,7 @@ enum SpineGpuChunkId : uint32_t
 struct SpineGpuHeader
 {
     uint32_t magic;             // 'ZSPG'
-    uint32_t version;           // 本规格版本，当前 6（见 kFormatVersion 的版本史）
+    uint32_t version;           // 本规格版本，当前 8（见 kFormatVersion 的版本史）
     uint32_t spine_runtime;     // 产生它的 spine-cpp 版本（3.8.xx → 30800）
     uint32_t flags;             // SpineGpuFlags
     uint32_t bone_count;
@@ -288,6 +322,65 @@ static_assert(sizeof(SpineGpuChunk) == SpineGpuConstants::kChunkTableEntrySize,
 static_assert(offsetof(SpineGpuChunk, id) == 0x00, "spec 9: chunk.id @0x00");
 static_assert(offsetof(SpineGpuChunk, offset) == 0x04, "spec 9: chunk.offset @0x04");
 static_assert(offsetof(SpineGpuChunk, size) == 0x08, "spec 9: chunk.size @0x08");
+
+// ---------------------------------------------------------------------
+// 骨骼 setup（chunk 10，36 B/骨）
+// ---------------------------------------------------------------------
+// 逐字段抄 spine-cpp：
+//   * 字段集合 `BoneData.h:110-115` —— _index / _name / _parent / _length /
+//     _x,_y,_rotation,_scaleX,_scaleY,_shearX,_shearY / _transformMode
+//     （_name 不在这里，它在 chunk 1 的字符串表里，按下标取）
+//   * `transform_mode` 取值 `TransformMode.h:34-40`（0..4，见下面的枚举）
+//
+// 为什么必须有它：动画是**相对 setup pose 的增量**。没有 setup 的 x/y/rotation/
+// scale/shear，时间轴给的"rotation += 30"就无从合成；槽位的暗色混合、IK 的
+// bone length、约束的 offset 也都挂在 setup 上。容器里缺了它，动画阶段（S2 起）
+// 就只能再回头读源文件 —— 那容器就不自包含了。
+//
+// ⚠️ 顺序不变量 **parent < index**（根是 -1）。有它之后：
+//   * 正向 for 一遍就是拓扑序 ⇒ `updateWorldTransform` 不需要排序/递归/栈；
+//   * 反序列化时**必须校验**：parent 不在这个范围里就说明骨骼表被重排过或读坏了，
+//     而重排的后果是"骨骼下标在容器里有了两种含义"，静默错且查不出来。
+struct SpineGpuBone
+{
+    float x = 0.0f;            // @0
+    float y = 0.0f;            // @4
+    float rotation = 0.0f;     // @8   度，不是弧度（spine 全线用度）
+    float scale_x = 1.0f;      // @12  ⚠️ 默认 **1** 不是 0（SkeletonJson.cpp:169-170）
+    float scale_y = 1.0f;      // @16
+    float shear_x = 0.0f;      // @20
+    float shear_y = 0.0f;      // @24
+    float length = 0.0f;       // @28  IK / 编辑器挂点用；不画
+    int16_t parent = -1;       // @32  -1 = 根；否则必须 **< 自己的下标**
+    uint8_t transform_mode = 0;// @34  SpineTransformMode
+    uint8_t pad = 0;           // @35  落盘必须写 0
+};
+
+static_assert(sizeof(SpineGpuBone) == SpineGpuConstants::kBoneSetupSize,
+              "spec 3.1: bone setup record is 36 B");
+static_assert(offsetof(SpineGpuBone, x) == 0, "spec 3.1: bone.x @0");
+static_assert(offsetof(SpineGpuBone, y) == 4, "spec 3.1: bone.y @4");
+static_assert(offsetof(SpineGpuBone, rotation) == 8, "spec 3.1: bone.rotation @8");
+static_assert(offsetof(SpineGpuBone, scale_x) == 12, "spec 3.1: bone.scale_x @12");
+static_assert(offsetof(SpineGpuBone, scale_y) == 16, "spec 3.1: bone.scale_y @16");
+static_assert(offsetof(SpineGpuBone, shear_x) == 20, "spec 3.1: bone.shear_x @20");
+static_assert(offsetof(SpineGpuBone, shear_y) == 24, "spec 3.1: bone.shear_y @24");
+static_assert(offsetof(SpineGpuBone, length) == 28, "spec 3.1: bone.length @28");
+static_assert(offsetof(SpineGpuBone, parent) == 32, "spec 3.1: bone.parent @32");
+static_assert(offsetof(SpineGpuBone, transform_mode) == 34, "spec 3.1: bone.transform_mode @34");
+static_assert(offsetof(SpineGpuBone, pad) == 35, "spec 3.1: bone.pad @35");
+static_assert(std::is_standard_layout_v<SpineGpuBone>,
+              "bone setup must stay standard-layout (it is read/written as raw bytes)");
+static_assert(alignof(SpineGpuBone) == 4, "bone setup is 4-byte aligned (36 = 9 x u32)");
+
+inline bool operator==(const SpineGpuBone& a, const SpineGpuBone& b)
+{
+    return a.x == b.x && a.y == b.y && a.rotation == b.rotation && a.scale_x == b.scale_x &&
+           a.scale_y == b.scale_y && a.shear_x == b.shear_x && a.shear_y == b.shear_y &&
+           a.length == b.length && a.parent == b.parent && a.transform_mode == b.transform_mode &&
+           a.pad == b.pad;   // pad 参与比较：落盘必须是 0，放进来才能抓"写端没清零"
+}
+inline bool operator!=(const SpineGpuBone& a, const SpineGpuBone& b) { return !(a == b); }
 
 // ---------------------------------------------------------------------
 // 附件记录（chunk 7，规格 §9）

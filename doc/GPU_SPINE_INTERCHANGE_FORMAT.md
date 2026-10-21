@@ -223,6 +223,54 @@ UV 编在顶点里时，UV 不同 ⇒ 顶点不能共用 ⇒ 只能整份复制�
 `kIndex32` 打开 uint32 变体 —— 默认 uint16 是因为 `std::vector<uint32>` 索引在
 Unity 原生模块里是实打实的浪费（~8 B/顶点）。
 
+### 3.4 骨骼 setup（chunk 10，36 B/骨，v8）
+
+```
+SpineGpuBone                 36 B
+  x              f32    @0
+  y              f32    @4
+  rotation       f32    @8    度（spine 全线用度，不是弧度）
+  scale_x        f32    @12   ⚠️ 默认 **1** 不是 0
+  scale_y        f32    @16
+  shear_x        f32    @20
+  shear_y        f32    @24
+  length         f32    @28   IK / 编辑器挂点；不参与蒙皮
+  parent         i16    @32   -1 = 根；否则必须 **< 自己的下标**
+  transform_mode u8     @34   SpineTransformMode（抄 TransformMode.h:34-40）
+  _pad           u8     @35   落盘必须写 0
+```
+
+字段集合抄 `BoneData.h:110-115`；`transform_mode` 的 5 个取值抄 `TransformMode.h:34-40`
+（normal / onlyTranslation / noRotationOrReflection / noScale / noScaleOrReflection），
+语义在 `Bone.cpp:126-185` 的 `updateWorldTransform()` switch —— 决定父骨骼的世界变换
+里哪些分量传给子骨骼。json 侧的字段名是 **"transform"**（不是 transformMode），
+默认值与解析顺序抄 `SkeletonJson.cpp:165-189`；二进制侧 8 个 float 的顺序是
+**rotation, x, y, scaleX, scaleY, shearX, shearY, length**（`SkeletonBinary.cpp:157-164`）
+—— 与 json 的书写顺序**不同**，写反了不报错，只是每根骨骼摆位全错。
+
+**为什么必须有它**：动画是**相对 setup pose 的增量**。没有 setup 的 x/y/rotation/
+scale/shear，时间轴给的"rotation += 30"无从合成；IK 的 bone length、约束的 offset
+也都挂在 setup 上。容器里缺了它，动画阶段就只能回头读源文件 ⇒ 容器不自包含。
+
+- **顺序不变量 `parent < index`**。有它之后正向 for 一遍就是拓扑序，
+  `updateWorldTransform` 不需要排序 / 递归 / 栈。反序列化必须校验：
+  违反说明骨骼表被重排过或读坏了，而重排的后果是"骨骼下标在容器里有两种含义"。
+- 读端还要校验：`chunk 10 条数 == header.bone_count`。⚠️ **"chunk 不存在"本身不报错**
+  （空 chunk 不落盘），少了这个等式，读端会得到 0 根骨骼，而后面所有 `bone_idx`
+  全部越界 —— 越界在 shader 里不报错，只是蒙皮取到 0 号骨骼。
+- `transform_mode` 越界（> 4）必须报错：参考实现是 `static_cast` 后在 switch 里
+  **没有 default 分支**（`Bone.cpp:126-185`）⇒ 那根骨骼的世界变换静默保持单位阵。
+- json 里认不出的 `transform` 串也必须报错：参考实现 5 个 `if` 都没有 `else`
+  （`SkeletonJson.cpp:173-189`）⇒ 静默留在 Normal，整棵子树的继承行为悄悄变掉。
+
+**实测（781 个 OSGame 容器，`doc/scripts/measure_zspg_chunks.py`）**：
+骨骼总数 **32 036**（均 41.0 根/资产，最深树 **33** 层），chunk 10 合计 **1.10 MB**。
+transform 模式分布：normal **93.68%** / noRotationOrReflection **6.26%** /
+onlyTranslation 0.04% / noScale 0.02% / **noScaleOrReflection 0 次**。
+⇒ 5 个值里 4 个在真实资产上出现过，`noScaleOrReflection` 没有 —— 它仍要按
+`Bone.cpp:172-185` 实现，但**没有真实资产能给它的解算结果背书**
+（S4 阶段要用合成夹具对拍）。
+
 ---
 
 ## 4. 绘制项表（静态）
@@ -539,7 +587,7 @@ Spine 图集默认是 **PMA（预乘 Alpha）**，对应 Unity 侧 `Blend One On
 ```
 Header (64 B)
   0x00  magic            u32   'ZSPG'  (0x5A535047)
-  0x04  version          u32   本规格版本，当前 7
+  0x04  version          u32   本规格版本，当前 8
                                v2 = 加了 skin 维度（§9.1）
                                v3 = UV 拆成独立通道 + chunk id 重排（§3.2、§14.2）
                                v4 = deform 参与烘焙（§7.1）—— 布局没变，
@@ -552,6 +600,9 @@ Header (64 B)
                                     48 B → 8 B 引用，新增 chunk 21 / 22；
                                     顶点数 / 绘制项 / header 大小都没变，但旧容器
                                     用新读端会把"引用"当 bindPos ⇒ 形状全错
+                               v8 = 骨骼树进容器（§3.4）—— 新增 chunk 10，36 B/骨；
+                                    header / 绘制项 / 顶点布局都没动，但没有它
+                                    动画就无从解算（时间轴是相对 setup pose 的增量）
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -573,6 +624,11 @@ ChunkTable  (chunk_count × 16 B)  { id u32, offset u32, size u32, _pad u32 }
 Chunks:
   id=1  strings        骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名，每项 UTF-8 且 '\0' 结尾
   id=2  slot_bone      每槽位的骨骼下标（u16 × slot_count）—— rigid 用
+  id=10 bone_setup     SpineGpuBone[]，36 B/骨（§3.4，v8）
+                       { x, y, rotation, scale_x, scale_y, shear_x, shear_y, length,
+                         parent i16, transform_mode u8, _pad u8 }
+                       下标 = header.bone_count 的序，也 = 骨骼名的序号，
+                       也 = 影响流 bone_idx 引用的同一个下标 ⇒ **三处必须同一空间**
   id=3  vertex_buffer  按 vertex_format 分段，段首 8 B 对齐（**不含 UV**）
   id=4  uv_buffer      float2 × uv_count，8 B/条，段首 8 B 对齐（§3.2）
   id=5  index_buffer   uint16（或 flags 打开时 uint32）
@@ -595,7 +651,8 @@ Chunks:
 > 读会拿到 `index_buffer` 当 UV，静默错位。这也正是 `kFormatVersion` 升到 3 的原因。
 >
 > ⚠️ **文件里 chunk 的顺序也不是 id 顺序**：写端按
-> `1, 2, 3, 21, 22, 4, 5, 9, 6, 7, 8` 追加（影响流紧跟顶点块；9 夹在 5 与 6 之间是
+> `1, 2, 10, 3, 21, 22, 4, 5, 9, 6, 7, 8` 追加（骨骼 setup 紧挨 slot_bone；影响流紧跟
+> 顶点块；9 夹在 5 与 6 之间是
 > 历史顺序）。换了顺序文件照样能读，但字节不再逐字节相同 ⇒ 跨语言对拍（§12）立刻红，
 > 所以 C# 端必须照抄这个顺序（见 `SpineGpuContainerIo.cs`）。
 
@@ -644,11 +701,12 @@ Chunks:
 ## 11. 版本与兼容
 
 - `version` 变化 ⇒ 导入器必须拒绝旧容器并给出明确错误，不做静默兼容。
-- **v7 已部分落地**：影响流（chunk 21 / 22）+ 逐顶点变长影响数已进容器；
-  仍在推进的是骨骼树（chunk 10）+ 动画（chunk 11-16），解算器自写、仍在 CPU。
+- **v7 → v8 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
+  **v8 追加骨骼树（chunk 10，§3.4）**。仍在推进的是动画（chunk 11-16）、
+  槽位颜色（17）、约束（18-20），解算器自写、仍在 CPU。
   字段设计与转录 gap 分析见 **`doc/GPU_SPINE_V7_ANIMATION.md`**。
-  v7 **不动** header（仍 64 B）、不动 chunk 1..9、不动 §5 每帧实例数据、不动 §6 shader 数学；
-  新增的计数一律从 chunk 表推导（`size / stride`），不进 header。
+  v7 / v8 **都不动** header（仍 64 B）、不动 chunk 1..9、不动 §5 每帧实例数据、
+  不动 §6 shader 数学；新增的计数一律从 chunk 表推导（`size / stride`），不进 header。
 - `spine_runtime` 不匹配 ⇒ 警告但允许（布局差异只在 `_bones` 宽度，导入器已按 3.8 读；
   4.x 资产需要另一条导入路径，**不在本版本范围**）。
 - 任何"导入器静默调整数据"的行为（截断影响数、重排顶点、自动降精度）都**必须报错**，
@@ -725,9 +783,15 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
    骨架与图集必须同源（同一份 `.skel` + `.atlas`）。
 3. **回归夹具**：至少一份含 **Region + 刚性 Mesh + 蒙皮 Mesh + tintBlack + 四种混合模式**
    的骨架，作为永久对拍资产。
-4. **导入器负向用例**：`n > 4` 的顶点必须报错；`weights` 和不为 255 必须报错。
-5. **两种输入必须对拍**：`.skel`（编辑器默认导出）与 json 是两条独立解析路径，
-   同一副骨架经两条路径 Bake 后必须产出**逐字节相同**的容器。
+4. **导入器负向用例**：`n > 255` 的顶点必须报错；`weights` 和不为 255 必须报错；
+   认不出的 `transform` 串必须报错（参考实现静默退回 normal）；
+   父骨骼不存在必须报错（不能静默当成根骨骼）；`transform_mode > 4` 必须报错。
+5. **骨骼 setup 的语义断言**（§3.4）：夹具里两根骨骼必须带**非默认**的
+   x/y/rotation/scale/shear/length，其中一根的 `parent` **非 -1**，
+   且两根的 `transform_mode` 不同 —— 只比"条数对不对"抓不到解读漂。
+6. **两种输入必须对拍**：`.skel`（编辑器默认导出）与 json 是两条独立解析路径，
+   同一副骨架经两条路径 Bake 后必须产出**逐字节相同**的容器 ——
+   v8 起这条也覆盖了骨骼 setup：二进制的字段顺序与 json 的默认值必须殊途同归。
 另：对 `.skel` 夹具的**每个真前缀**都调一次解析，必须全部失败 —— 它既没魔数也没长度字段，
 截断是最容易触发越界读的场景。
 6. **换装必须验两个皮肤**：同一副骨架里两个皮肤在同一槽位放同名的附件（几何不同），

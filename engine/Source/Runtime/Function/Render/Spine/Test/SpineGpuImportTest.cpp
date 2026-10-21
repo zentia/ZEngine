@@ -77,7 +77,13 @@ const char* kAtlas = "page0.png\n"
 //    数组形式在参考实现里会拿到空皮肤名。
 const char* kSkeleton = R"({
   "skeleton": { "spine": "3.8.99" },
-  "bones": [ { "name": "root" }, { "name": "hip", "parent": "root" } ],
+  "bones": [
+    { "name": "root", "x": 3, "y": -4, "rotation": 15, "scaleX": 2, "scaleY": 0.5,
+      "shearX": 7, "shearY": -9, "length": 42 },
+    { "name": "hip", "parent": "root", "x": 1.5, "y": 2.5, "rotation": -30,
+      "scaleX": 1.25, "scaleY": 3, "shearX": -1.5, "shearY": 0.25, "length": 17,
+      "transform": "noScaleOrReflection" }
+  ],
   "slots": [
     { "name": "s0", "bone": "root", "attachment": "quad" },
     { "name": "s1", "bone": "hip", "attachment": "mesh" }
@@ -246,23 +252,27 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
 
     // ---- bones ----
     w.Varint(2);
+    // ⚠️ 数值必须与 json 夹具**逐字段相同**：两份字节流是两条独立解析路径的输入，
+    // 最后要比"烘焙结果逐字节相同"。全取 2 的幂次小数 ⇒ f32 精确可表示，比较不受舍入影响。
+    // 顺序是 **rotation, x, y, scaleX, scaleY, shearX, shearY, length**
+    // （SkeletonBinary.cpp:157-164）—— 与 json 的书写顺序不同，写反了不报错。
     w.Str("root");
-    w.F(0.0f); w.F(0.0f); w.F(0.0f);       // rotation, x, y
-    w.F(1.0f); w.F(1.0f);                   // scaleX, scaleY
-    w.F(0.0f); w.F(0.0f);                   // shearX, shearY
-    w.F(0.0f);                              // length
-    w.Varint(0);                            // transformMode
+    w.F(15.0f); w.F(3.0f); w.F(-4.0f);      // rotation, x, y
+    w.F(2.0f); w.F(0.5f);                   // scaleX, scaleY
+    w.F(7.0f); w.F(-9.0f);                  // shearX, shearY
+    w.F(42.0f);                             // length
+    w.Varint(0);                            // transformMode = Normal
     if (nonessential)
     {
         w.ColorWhite();                     // bone color（int）
     }
     w.Str("hip");
     w.Varint(0);                            // parent = root（i != 0 才有）
-    w.F(0.0f); w.F(0.0f); w.F(0.0f);
-    w.F(1.0f); w.F(1.0f);
-    w.F(0.0f); w.F(0.0f);
-    w.F(0.0f);
-    w.Varint(0);
+    w.F(-30.0f); w.F(1.5f); w.F(2.5f);
+    w.F(1.25f); w.F(3.0f);
+    w.F(-1.5f); w.F(0.25f);
+    w.F(17.0f);
+    w.Varint(4);                            // transformMode = NoScaleOrReflection
     if (nonessential)
     {
         w.ColorWhite();
@@ -683,7 +693,13 @@ const char* kSkeletonTwoSkins = R"({
 // （SkeletonJson.cpp:572）。
 const char* kSkeletonDeform = R"({
   "skeleton": { "spine": "3.8.99" },
-  "bones": [ { "name": "root" }, { "name": "hip", "parent": "root" } ],
+  "bones": [
+    { "name": "root", "x": 3, "y": -4, "rotation": 15, "scaleX": 2, "scaleY": 0.5,
+      "shearX": 7, "shearY": -9, "length": 42 },
+    { "name": "hip", "parent": "root", "x": 1.5, "y": 2.5, "rotation": -30,
+      "scaleX": 1.25, "scaleY": 3, "shearX": -1.5, "shearY": 0.25, "length": 17,
+      "transform": "noScaleOrReflection" }
+  ],
   "slots": [
     { "name": "s0", "bone": "root", "attachment": "quad" },
     { "name": "s1", "bone": "hip", "attachment": "mesh" }
@@ -735,7 +751,13 @@ const char* kSkeletonDeform = R"({
 //   （用来验 kHasDeform 只由 deform 点亮，不由裁剪点亮）。
 const char* kSkeletonClip = R"({
   "skeleton": { "spine": "3.8.99" },
-  "bones": [ { "name": "root" }, { "name": "hip", "parent": "root" } ],
+  "bones": [
+    { "name": "root", "x": 3, "y": -4, "rotation": 15, "scaleX": 2, "scaleY": 0.5,
+      "shearX": 7, "shearY": -9, "length": 42 },
+    { "name": "hip", "parent": "root", "x": 1.5, "y": 2.5, "rotation": -30,
+      "scaleX": 1.25, "scaleY": 3, "shearX": -1.5, "shearY": 0.25, "length": 17,
+      "transform": "noScaleOrReflection" }
+  ],
   "slots": [
     { "name": "s0", "bone": "root", "attachment": "quad" },
     { "name": "s1", "bone": "hip", "attachment": "clip" },
@@ -772,7 +794,13 @@ const char* kSkeletonClip = R"({
 // ⇒ 少了"嵌套被忽略"这条规则，s4 的 kind 就会错，而且**没有任何报错**。
 const char* kSkeletonClipNested = R"({
   "skeleton": { "spine": "3.8.99" },
-  "bones": [ { "name": "root" }, { "name": "hip", "parent": "root" } ],
+  "bones": [
+    { "name": "root", "x": 3, "y": -4, "rotation": 15, "scaleX": 2, "scaleY": 0.5,
+      "shearX": 7, "shearY": -9, "length": 42 },
+    { "name": "hip", "parent": "root", "x": 1.5, "y": 2.5, "rotation": -30,
+      "scaleX": 1.25, "scaleY": 3, "shearX": -1.5, "shearY": 0.25, "length": 17,
+      "transform": "noScaleOrReflection" }
+  ],
   "slots": [
     { "name": "s0", "bone": "root", "attachment": "quad" },
     { "name": "s1", "bone": "hip", "attachment": "clip" },
@@ -1010,6 +1038,31 @@ int main(int argc, char** argv)
     Check(!src.has_clipping, "夹具没有裁剪");
     Check(!src.has_draw_order_timeline, "夹具没有绘制顺序时间轴");
 
+    // ---- 骨骼 setup（S1 / chunk 10 的源）----
+    // 逐字段比，而不是只比"骨数对不对"：round-trip 只能抓"大小"漂，抓不到"解读"漂 ——
+    // 把 x 与 y 的偏移对调，字节照样自洽，只有逐字段断言能抓到。
+    // 参考默认值 SkeletonJson.cpp:165-172，⚠️ scaleX/scaleY 默认是 **1** 不是 0。
+    if (src.bones.size() == 2)
+    {
+        const SpineSourceBone& r = src.bones[0];
+        const SpineSourceBone& h = src.bones[1];
+        Check(r.parent == -1, "json: root 是根（parent = -1）");
+        Check(h.parent == 0, "json: hip 的父是 root（父下标 < 自己）");
+        Check(r.x == 3.0f && r.y == -4.0f, "json: root 的 x/y");
+        Check(r.rotation == 15.0f, "json: root 的 rotation（度，不是弧度）");
+        Check(r.scale_x == 2.0f && r.scale_y == 0.5f, "json: root 的 scaleX/scaleY");
+        Check(r.shear_x == 7.0f && r.shear_y == -9.0f, "json: root 的 shearX/shearY");
+        Check(r.length == 42.0f, "json: root 的 length");
+        Check(r.transform_mode == SpineTransformMode::kNormal, "json: root 的 transform 缺省 = normal");
+        Check(h.x == 1.5f && h.y == 2.5f, "json: hip 的 x/y");
+        Check(h.rotation == -30.0f, "json: hip 的 rotation");
+        Check(h.scale_x == 1.25f && h.scale_y == 3.0f, "json: hip 的 scaleX/scaleY");
+        Check(h.shear_x == -1.5f && h.shear_y == 0.25f, "json: hip 的 shearX/shearY");
+        Check(h.length == 17.0f, "json: hip 的 length");
+        Check(h.transform_mode == SpineTransformMode::kNoScaleOrReflection,
+              "json: hip 的 transform = noScaleOrReflection（字段名是 \"transform\"，不是 transformMode）");
+    }
+
     // ---- 3. bake ----
     SpineGpuAsset asset;
     SpineImportResult rb = BakeSpineGpuAsset(src, asset);
@@ -1034,6 +1087,34 @@ int main(int argc, char** argv)
     CheckEq(asset.header.vertex_count, 8, "header.vertex_count = 8");
     // region 2 个三角形（6 索引）+ mesh 2 个三角形（6 索引）
     CheckEq(static_cast<long long>(asset.index_buffer.size()), 12, "索引数 = 6 + 6");
+
+    // ---- chunk 10：骨骼 setup 进了容器（36 B/骨）----
+    CheckEq(static_cast<long long>(asset.bones.size()), 2, "bake: 骨骼 setup 2 条");
+    CheckEq(static_cast<long long>(asset.bones.size()), static_cast<long long>(asset.header.bone_count),
+            "bake: 骨骼 setup 条数 = header.bone_count（读端靠这个等式挡『缺 chunk 10』）");
+    CheckEq(static_cast<long long>(asset.bones.size()), static_cast<long long>(asset.bone_names.size()),
+            "bake: 骨骼 setup 条数 = 骨骼名数（同一个下标空间）");
+    if (asset.bones.size() == 2)
+    {
+        const SpineGpuBone& r = asset.bones[0];
+        const SpineGpuBone& h = asset.bones[1];
+        Check(r.x == 3.0f && r.y == -4.0f && r.rotation == 15.0f, "chunk10: root 的 x/y/rotation");
+        Check(r.scale_x == 2.0f && r.scale_y == 0.5f, "chunk10: root 的 scaleX/scaleY");
+        Check(r.shear_x == 7.0f && r.shear_y == -9.0f, "chunk10: root 的 shearX/shearY");
+        Check(r.length == 42.0f, "chunk10: root 的 length");
+        Check(r.parent == -1, "chunk10: root 的 parent = -1");
+        Check(r.transform_mode == static_cast<uint8_t>(SpineTransformMode::kNormal), "chunk10: root 的 transform_mode = 0");
+        Check(h.parent == 0, "chunk10: hip 的 parent = 0（必须 **< 自己的下标**）");
+        Check(h.transform_mode == static_cast<uint8_t>(SpineTransformMode::kNoScaleOrReflection),
+              "chunk10: hip 的 transform_mode = 4");
+        Check(h.x == 1.5f && h.y == 2.5f && h.rotation == -30.0f, "chunk10: hip 的 x/y/rotation");
+        Check(h.scale_x == 1.25f && h.scale_y == 3.0f, "chunk10: hip 的 scaleX/scaleY");
+        Check(h.shear_x == -1.5f && h.shear_y == 0.25f, "chunk10: hip 的 shearX/shearY");
+        Check(h.length == 17.0f, "chunk10: hip 的 length");
+        // ⚠️ 必须有**非 0** 的父下标样本：只有 -1 时"parent 写成了 0"之类也成立。
+        Check(h.parent != -1, "chunk10: 夹具至少有一根非根骨骼（否则 parent 字段写错测不出来）");
+        Check(r.pad == 0 && h.pad == 0, "chunk10: pad 落盘为 0（跨语言逐字节对拍的前提）");
+    }
 
     // weighted 段起点必须 8 B 对齐（Load2 的前提，规格 §3.1）
     CheckEq(asset.weighted_segment_offset % SpineGpuConstants::kVertexSegmentAlignment, 0,
@@ -1165,6 +1246,37 @@ int main(int argc, char** argv)
         std::printf("  (预期报错) %s\n", r2.error.c_str());
     }
 
+    // ---- 5b. 报错路径：骨骼的两条"静默就会错"的规则 ----
+    // 两条都是参考实现**不报错**而我们报错的地方 —— 所以要把报错本身钉住。
+    {
+        // (1) transform 串认不出。参考实现 5 个 if 都没有 else（SkeletonJson.cpp:173-189）
+        //     ⇒ 静默留在 Normal，整棵子树的继承行为悄悄变掉。
+        const char* bad_mode = R"({
+          "skeleton": { "spine": "3.8.99" },
+          "bones": [ { "name": "root", "transform": "noSuchMode" } ],
+          "slots": [], "skins": {}
+        })";
+        SpineSourceSkeleton bm;
+        SpineImportResult r = ParseSpineSkeletonJson(bad_mode, std::string(bad_mode).size(), &atlas, bm);
+        Check(!r.ok, "认不出的 transform 串 ⇒ 必须报错（参考实现静默退回 normal）");
+        Check(r.error.find("noSuchMode") != std::string::npos, "错误信息里带那个串");
+        std::printf("  (预期报错) %s\n", r.error.c_str());
+    }
+    {
+        // (2) 父骨骼不存在。我们早先漏了这一步 ⇒ 那根骨骼**静默变成根骨骼**，
+        //     整棵子树的位移/旋转全错，而"看起来只是摆位不对"没有任何报错。
+        const char* bad_parent = R"({
+          "skeleton": { "spine": "3.8.99" },
+          "bones": [ { "name": "root", "parent": "nope" } ],
+          "slots": [], "skins": {}
+        })";
+        SpineSourceSkeleton bp;
+        SpineImportResult r = ParseSpineSkeletonJson(bad_parent, std::string(bad_parent).size(), &atlas, bp);
+        Check(!r.ok, "父骨骼不存在 ⇒ 必须报错（不能静默当成根骨骼）");
+        Check(r.error.find("nope") != std::string::npos, "错误信息里带父骨骼名");
+        std::printf("  (预期报错) %s\n", r.error.c_str());
+    }
+
     // ---- 6. 报错路径：版本不是 3.8 ----
     {
         const char* v4 = R"({ "skeleton": { "spine": "4.2.11" }, "bones": [], "slots": [] })";
@@ -1184,7 +1296,8 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // 8 个 chunk：strings / slot_bone / vertex / uv / index / draw_items / attachments / atlas_pages
+    // 11 个 chunk：strings / slot_bone / bone_setup / vertex / 影响流 21,22 / uv / index /
+    //              draw_items / attachments / atlas_pages（夹具没有 clip_data）
     //
     // 不写死总字节数：总长里含对齐填充，填充规则一改常数就失效，而它失效时并不代表出错。
     // 真正该钉死的是 chunk 表本身 —— 净载荷大小与填充无关。
@@ -1201,6 +1314,8 @@ int main(int argc, char** argv)
         CStrBytes(asset.bone_names) + CStrBytes(asset.skin_names) + CStrBytes(asset.slot_names) +
         CStrBytes(asset.attachment_names) + CStrBytes(asset.atlas_page_names) +      // id=1 strings
         static_cast<long long>(asset.slot_bone.size()) * 2LL +                       // id=2
+        static_cast<long long>(asset.bones.size()) *
+            static_cast<long long>(sizeof(SpineGpuBone)) +                          // id=10（36 B/骨）
         static_cast<long long>(asset.vertex_buffer.size()) +                         // id=3
         static_cast<long long>(asset.influence_bind.size()) * 4LL +                  // id=21
         static_cast<long long>(asset.influence_bone.size()) *
@@ -1219,8 +1334,8 @@ int main(int argc, char** argv)
                (static_cast<uint32_t>(bytes[off + 2]) << 16) | (static_cast<uint32_t>(bytes[off + 3]) << 24);
     };
     const uint32_t nchunk = RdU32(offsetof(SpineGpuHeader, chunk_count));
-    CheckEq(static_cast<long long>(nchunk), 10,
-            "字节流里 chunk_count = 10（夹具没有 clip_data；v7 多了影响流 21 / 22）");
+    CheckEq(static_cast<long long>(nchunk), 11,
+            "字节流里 chunk_count = 11（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10）");
 
     long long payload_sum = 0;
     long long last_end = 0;
@@ -1234,9 +1349,9 @@ int main(int argc, char** argv)
         const uint32_t sz = RdU32(at + 8);
         // ⚠️ 顺序**不是** id 升序：影响流（21 / 22）紧跟顶点块，9（裁剪）夹在 5 与 6 之间。
         // 这是历史顺序，不是设计 —— 但 C# 必须照抄，否则跨语言对拍会红。
-        const uint32_t kExpectedIds[] = {1, 2, 3, 21, 22, 4, 5, 6, 7, 8};
+        const uint32_t kExpectedIds[] = {1, 2, 10, 3, 21, 22, 4, 5, 6, 7, 8};
         CheckEq(static_cast<long long>(id), static_cast<long long>(kExpectedIds[i]),
-                "chunk 表: id 顺序 = 1,2,3,21,22,4,5,6,7,8");
+                "chunk 表: id 顺序 = 1,2,10,3,21,22,4,5,6,7,8");
         CheckEq(static_cast<long long>(off % SpineGpuConstants::kChunkAlignment), 0, "chunk 表: 起点 4 B 对齐");
         if (id == static_cast<uint32_t>(SpineGpuChunkId::kChunkVertexBuffer) ||
             id == static_cast<uint32_t>(SpineGpuChunkId::kChunkInfluenceBind) ||
@@ -1279,7 +1394,7 @@ int main(int argc, char** argv)
     }
 
     CheckEq(back.header.magic, SpineGpuConstants::kMagic, "往返: magic");
-    CheckEq(back.header.chunk_count, 10, "往返: chunk_count = 10（夹具没有 clip_data；v7 多了影响流 21 / 22）");
+    CheckEq(back.header.chunk_count, 11, "往返: chunk_count = 11（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10）");
     CheckEq(back.header.bone_count, asset.header.bone_count, "往返: bone_count");
     CheckEq(back.header.slot_count, asset.header.slot_count, "往返: slot_count");
     CheckEq(back.header.draw_item_count, asset.header.draw_item_count, "往返: draw_item_count");
@@ -1309,6 +1424,9 @@ int main(int argc, char** argv)
     CheckEq(static_cast<long long>(back.slot_bone.size()), static_cast<long long>(asset.slot_bone.size()),
             "往返: slot_bone 数量");
     Check(back.bone_names == asset.bone_names, "往返: 骨骼名");
+    CheckEq(static_cast<long long>(back.bones.size()), static_cast<long long>(asset.bones.size()),
+            "往返: 骨骼 setup 条数");
+    Check(back.bones == asset.bones, "往返: 骨骼 setup 逐字节一致（含 pad）");
     Check(back.skin_names == asset.skin_names, "往返: 皮肤名");
     Check(back.slot_names == asset.slot_names, "往返: 槽位名");
     Check(back.attachment_names == asset.attachment_names, "往返: 附件名");
@@ -1422,6 +1540,10 @@ int main(int argc, char** argv)
         {
             Check(skel_asset.vertex_buffer == asset.vertex_buffer,
                   "skel↔json：烘焙后的顶点缓冲**逐字节相同**（两条路径的唯一交叉验证）");
+            // 二进制的骨骼字段顺序是 rotation,x,y,scaleX,scaleY,shearX,shearY,length，
+            // json 的书写顺序是 length,x,y,rotation,… ⇒ 顺序写反了这里会红。
+            Check(skel_asset.bones == asset.bones,
+                  "skel↔json：骨骼 setup **逐字节相同**（二进制字段顺序 vs json 默认值）");
             Check(skel_asset.rigid_vertex_count == asset.rigid_vertex_count, "skel↔json: rigid 顶点数");
             Check(skel_asset.weighted_vertex_count == asset.weighted_vertex_count, "skel↔json: weighted 顶点数");
             Check(skel_asset.index_buffer == asset.index_buffer, "skel↔json: 索引缓冲相同");

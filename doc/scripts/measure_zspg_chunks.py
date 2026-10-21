@@ -41,6 +41,17 @@ kChunkEntrySize = 16
 kOffChunkCount = 0x2C
 kOffRigidVertexCount = 0x30
 kOffWeightedVertexCount = 0x38
+kOffBoneCount = 0x10
+
+# chunk 10 = SpineGpuBone[]，36 B/条（v8）
+kBoneSetupSize = 36
+kOffBoneParent = 32
+kOffBoneTransformMode = 34
+kOffBonePad = 35
+
+# 逐值抄 spine-cpp TransformMode.h:34-40
+kTransformModeNames = ["normal", "onlyTranslation", "noRotationOrReflection",
+                       "noScale", "noScaleOrReflection"]
 
 
 def Mb(n):
@@ -54,9 +65,14 @@ def main():
 
     root = sys.argv[1]
     sizes = collections.Counter()
+    offsets = {}          # chunk id -> (offset, size)，只留最后一个文件（用来取骨骼名以外的字段）
     files = 0
     rigid_vertices = 0
     weighted_vertices = 0
+    bone_total = 0
+    mode_hist = collections.Counter()
+    max_depth = 0
+    bad_pad = 0
 
     for dirpath, _, filenames in os.walk(root):
         for fn in filenames:
@@ -70,10 +86,32 @@ def main():
             files += 1
             rigid_vertices += struct.unpack_from("<I", d, kOffRigidVertexCount)[0]
             weighted_vertices += struct.unpack_from("<I", d, kOffWeightedVertexCount)[0]
+            bone_total += struct.unpack_from("<I", d, kOffBoneCount)[0]
             nchunk = struct.unpack_from("<I", d, kOffChunkCount)[0]
+            offsets = {}
             for i in range(nchunk):
-                cid, _, size = struct.unpack_from("<III", d, kHeaderSize + i * kChunkEntrySize)
+                cid, off, size = struct.unpack_from("<III", d, kHeaderSize + i * kChunkEntrySize)
                 sizes[cid] += size
+                offsets[cid] = (off, size)
+
+            # ---- chunk 10：骨骼 setup ----
+            if 10 in offsets:
+                bo, bs = offsets[10]
+                n = bs // kBoneSetupSize
+                parents = []
+                for k in range(n):
+                    p = bo + k * kBoneSetupSize
+                    mode_hist[d[p + kOffBoneTransformMode]] += 1
+                    if d[p + kOffBonePad] != 0:
+                        bad_pad += 1
+                    parents.append(struct.unpack_from("<h", d, p + kOffBoneParent)[0])
+                # 树深：有 parent < index 这条不变量在，一遍正向扫就能算
+                depth = [0] * n
+                for k in range(n):
+                    par = parents[k]
+                    depth[k] = 1 if par < 0 else depth[par] + 1
+                if depth:
+                    max_depth = max(max_depth, max(depth))
 
     if files == 0:
         print("目录里没有 .zspg：" + root)
@@ -86,6 +124,18 @@ def main():
     print("影响条目      : %d  (= chunk22 / 4)" % influences)
     if weighted_vertices:
         print("均值影响数    : %.3f" % (influences / float(weighted_vertices)))
+    print()
+    print("骨骼总数      : %d  (chunk 10，36 B/骨)" % bone_total)
+    if bone_total:
+        print("chunk 10 字节 : %s" % Mb(sizes[10]))
+        print("均骨骼数/资产 : %.1f" % (bone_total / float(files)))
+        print("最大树深      : %d" % max_depth)
+        print("transform 模式分布（TransformMode.h:34-40）：")
+        for v, c in sorted(mode_hist.items()):
+            name = kTransformModeNames[v] if 0 <= v < len(kTransformModeNames) else "<越界 %d>" % v
+            print("    %d %-24s %7d  %5.2f%%" % (v, name, c, 100.0 * c / bone_total))
+        # pad 必须是 0：非 0 说明写端没清零，跨语言逐字节对拍会红
+        print("pad 非 0 的骨骼: %d  （必须 0）" % bad_pad)
     print()
 
     print("chunk 3  顶点      : %s  (rigid 8B + weighted 8B 引用)" % Mb(sizes[3]))

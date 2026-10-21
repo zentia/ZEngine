@@ -158,7 +158,7 @@ header 大小一旦随版本变，C# 读端就得"按 version 分支读 header"�
 | 19 | update 顺序（(kind, index) 序列） | 4 B/项 |
 | 20 | PathAttachment（lengths / closed / constantSpeed） | 见 §3.7 |
 
-### 3.1 chunk 10 — 骨骼 setup（36 B/骨）
+### 3.1 chunk 10 — 骨骼 setup（36 B/骨）—— **已落地，见 §7.0.2**
 
 ```
 float    x, y, rotation, scale_x, scale_y, shear_x, shear_y;  // @0 .. @27
@@ -420,13 +420,42 @@ deform 数组长度对 weighted 是 **ΣboneCount × 2**（不是 vertexCount ×
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | **S0** | 导入器放宽到 3.7 + 逐顶点变长影响（方案 C） | **已完成**，781/782（见 7.0 / 7.0.1） |
-| **S1** | chunk 10 骨骼树；C++ 写/读 + C# 读 + 字节 round-trip | 语义断言（逐字段），不只比大小 |
+| **S1** | chunk 10 骨骼树；C++ 写/读 + C# 读 + 字节 round-trip | **已完成**（见 7.0.2） |
 | **S2** | 动画解析（json + 二进制）+ chunk 11-16；11 类时间轴全覆盖 | 夹具：单帧 / 多帧 / linear / stepped / bezier / 负缩放 / 超 180° 旋转 / 稀疏 deform / 非 0 偏移 |
 | **S3** | 槽位颜色（chunk 17）+ color / twoColor / attachment / drawOrder 解算 | 对拍 |
 | **S4** | 约束（chunk 18-20）+ update 顺序 | 对拍：376 个有约束的资产子集，逐骨骼比世界变换 |
 | **S5** | 多轨混合（`AnimationState` 转录，含 `_timelinesRotation` 最短弧记忆） | 对拍：随机切轨 / 混出，逐帧比对 |
 | **S6a** | deform 求解 + per-instance deform 缓冲（方案 C：只给命中项写"deform 后局部坐标"，蒙皮仍在 GPU） | 与 `SpineSkinningParityTest` 接上；断言共享 VB **没被改写** |
 | **S6b** | 方案 B：deform 缓冲直接由 GPU 采样，shader 里 rigid 替换 / weighted 相加 | 同上，且逐实例上传量 ≤ 122 B × 命中条数 |
+
+### 7.0.2 S1 已落地（2026-10-22）：骨骼 setup 进容器（chunk 10，格式 v7 → v8）
+
+| 项 | 落地 |
+|---|---|
+| 布局 | `SpineGpuBone` **36 B/骨**：x, y, rotation, scale_x, scale_y, shear_x, shear_y, length, parent(i16), transform_mode(u8), pad |
+| 来源 | 字段集合 `BoneData.h:110-115`；`transform_mode` 取值 `TransformMode.h:34-40`；json 默认值与字段名 `SkeletonJson.cpp:165-189`；二进制顺序 `SkeletonBinary.cpp:157-164` |
+| 顺序不变量 | **parent < index** ⇒ 正向 for 一遍就是拓扑序；Bake 与读端**都**校验 |
+| 读端校验 | chunk 10 条数 == `header.bone_count`（"chunk 不存在"本身不报错）；`transform_mode ≤ 4`；`pad == 0` |
+| 新增报错（参考实现都静默） | 认不出的 `transform` 串；父骨骼不存在（原本会静默变成根骨骼）；`transform_mode` 越界 |
+| 落盘顺序 | `1,2,**10**,3,21,22,4,5,9,6,7,8`（C# 照抄） |
+
+**782 个资产重跑**：**781 成功 / 1 失败**，与 v7 完全一致 ⇒ 无回归，
+且真实资产里 `transform_mode` 全部落在 0..3（越界那条硬报错没被触发）。
+
+**实测（`doc/scripts/measure_zspg_chunks.py`，781 个容器）**：
+
+| 项 | 值 |
+|---|---|
+| 骨骼总数 | **32 036**（均 **41.0** 根/资产） |
+| 最深树 | **33** 层 |
+| chunk 10 合计 | **1.10 MB** |
+| transform 模式 | normal **93.68%** / noRotationOrReflection **6.26%** / onlyTranslation 0.04% / noScale 0.02% / **noScaleOrReflection 0** |
+
+⇒ 5 个枚举值里 4 个在真实资产上出现过。`noScaleOrReflection` **0 次**：仍按
+`Bone.cpp:172-185` 实现，但**没有真实资产能给它的解算结果背书** —— S4 必须用合成夹具对拍。
+
+`SpineGpuImportTest` 933 → **977/977**；C# 跨语言对拍 219 → **254/254**；
+`SpineSkinningParityTest` **11/11 顶点、0.68 ulp**（未受影响）。
 
 **对拍夹具是硬要求**（照 `SpineSkinningParityTest` 9/9、0.68 ulp 的先例）。
 动画解算没有对拍的话，"看起来在动"会掩盖所有语义错误。

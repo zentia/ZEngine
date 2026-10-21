@@ -4,7 +4,7 @@
 //
 // 三条容易漏、漏了就静默错的规矩：
 //   1. **chunk 按下标找会错位**（v2 → v3 重排过号）⇒ 只能按 id 找。
-//   2. chunk 在文件里的**顺序不是 id 顺序**：写端按 1,2,3,21,22,4,5,9,6,7,8 追加
+//   2. chunk 在文件里的**顺序不是 id 顺序**：写端按 1,2,10,3,21,22,4,5,9,6,7,8 追加
 //      （影响流紧跟顶点块；9 夹在 5 与 6 之间，是历史顺序），
 //      C# 必须照抄，否则字节对不上。
 //   3. 顶点 / UV chunk 的起点要 **8 B 对齐**（ByteAddressBuffer::Load2 的前提），
@@ -235,6 +235,63 @@ namespace ZEngine.SpineGpu
                 }
             }
 
+            // ---- 骨骼 setup（chunk 10，36 B/骨）----
+            // ⚠️ "chunk 不存在"不报错（空 chunk 不落盘），所以必须拿 header.BoneCount 对：
+            // 少了它读端会得到 0 根骨骼，而后面所有 bone_idx 全部越界 —— 越界在 shader 里
+            // 不报错，只是蒙皮取到 0 号骨骼。
+            bool hasBoneSetup = TryGet(byId, (uint)SpineGpuChunkId.BoneSetup, out uint bso, out uint bss);
+            if (asset.Header.BoneCount != 0 && !hasBoneSetup)
+            {
+                throw new SpineGpuContainerException(
+                    "container: header 说有 " + asset.Header.BoneCount + " 根骨骼，但没有 chunk 10（bone_setup）");
+            }
+            if (hasBoneSetup)
+            {
+                if (bss % SpineGpuConstants.BoneSetupSize != 0)
+                {
+                    throw new SpineGpuContainerException(
+                        "container: bone_setup 大小不是 " + SpineGpuConstants.BoneSetupSize + " B 的整数倍");
+                }
+                uint n = bss / SpineGpuConstants.BoneSetupSize;
+                if (n != asset.Header.BoneCount)
+                {
+                    throw new SpineGpuContainerException(
+                        "container: bone_setup 有 " + n + " 条，但 header.bone_count 是 " + asset.Header.BoneCount);
+                }
+                for (uint i = 0; i < n; ++i)
+                {
+                    int p = (int)(bso + i * SpineGpuConstants.BoneSetupSize);
+                    var b = new SpineGpuBone
+                    {
+                        X = ReadF32(data, p + SpineGpuOffsets.BoneX),
+                        Y = ReadF32(data, p + SpineGpuOffsets.BoneY),
+                        Rotation = ReadF32(data, p + SpineGpuOffsets.BoneRotation),
+                        ScaleX = ReadF32(data, p + SpineGpuOffsets.BoneScaleX),
+                        ScaleY = ReadF32(data, p + SpineGpuOffsets.BoneScaleY),
+                        ShearX = ReadF32(data, p + SpineGpuOffsets.BoneShearX),
+                        ShearY = ReadF32(data, p + SpineGpuOffsets.BoneShearY),
+                        Length = ReadF32(data, p + SpineGpuOffsets.BoneLength),
+                        Parent = (short)ReadU16(data, p + SpineGpuOffsets.BoneParent),
+                        TransformMode = (SpineTransformMode)data[p + SpineGpuOffsets.BoneTransformMode],
+                    };
+                    if (data[p + SpineGpuOffsets.BonePad] != 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 根骨骼的 pad 不是 0");
+                    }
+                    if (b.Parent >= (short)i || b.Parent < -1)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + i + " 根骨骼的父下标是 " + b.Parent + "，但父骨骼必须排在自己之前");
+                    }
+                    if (b.TransformMode > SpineTransformMode.NoScaleOrReflection)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + i + " 根骨骼的 transform 模式 " + (int)b.TransformMode + " 越界（只有 0..4）");
+                    }
+                    asset.Bones.Add(b);
+                }
+            }
+
             // ---- attachments：拿到附件数，才能切分字符串表 ----
             int attachmentCount = 0;
             if (TryGet(byId, (uint)SpineGpuChunkId.Attachments, out uint ao, out uint asz))
@@ -307,6 +364,31 @@ namespace ZEngine.SpineGpu
 
             Add((uint)SpineGpuChunkId.Strings, BuildStrings(asset), A4);
             Add((uint)SpineGpuChunkId.SlotBone, U16Blob(asset.SlotBone), A4);
+
+            // 骨骼 setup 36 B/条。位置紧挨 slot_bone —— 落盘顺序必须与 C++ 一致
+            // （C++ 那边是 1,2,10,3,21,22,4,5,9,6,7,8），否则跨语言逐字节对拍会红。
+            // pad 恒写 0：整块 new 出来本来就是 0，这里仍然显式留空以说明"它参与字节"。
+            if (asset.Bones.Count > 0)
+            {
+                var b = new byte[asset.Bones.Count * (int)SpineGpuConstants.BoneSetupSize];
+                for (int i = 0; i < asset.Bones.Count; ++i)
+                {
+                    var s = asset.Bones[i];
+                    int o = i * (int)SpineGpuConstants.BoneSetupSize;
+                    WriteF32(b, o + SpineGpuOffsets.BoneX, s.X);
+                    WriteF32(b, o + SpineGpuOffsets.BoneY, s.Y);
+                    WriteF32(b, o + SpineGpuOffsets.BoneRotation, s.Rotation);
+                    WriteF32(b, o + SpineGpuOffsets.BoneScaleX, s.ScaleX);
+                    WriteF32(b, o + SpineGpuOffsets.BoneScaleY, s.ScaleY);
+                    WriteF32(b, o + SpineGpuOffsets.BoneShearX, s.ShearX);
+                    WriteF32(b, o + SpineGpuOffsets.BoneShearY, s.ShearY);
+                    WriteF32(b, o + SpineGpuOffsets.BoneLength, s.Length);
+                    WriteU16(b, o + SpineGpuOffsets.BoneParent, (ushort)(short)s.Parent);
+                    b[o + SpineGpuOffsets.BoneTransformMode] = (byte)s.TransformMode;
+                }
+                Add((uint)SpineGpuChunkId.BoneSetup, b, A4);
+            }
+
             Add((uint)SpineGpuChunkId.VertexBuffer, asset.VertexBuffer, A8);
             // 影响流：两条**紧跟**顶点块写（落盘顺序必须与 C++ 一致，否则跨语言对拍会红）。
             Add((uint)SpineGpuChunkId.InfluenceBind, F32Blob(asset.InfluenceBind), A8);

@@ -26,7 +26,9 @@ namespace ZEngine.SpineGpu
         // 版本史见 SpineGpuFormat.h::kFormatVersion。
         // v6 = 裁剪多边形进容器（绘制项 24 B → 28 B，chunk 9 起真正写数据）。
         // v7 = 蒙皮数据搬出顶点（weighted 顶点 48 B → 8 B 引用；新增 chunk 21 / 22）。
-        public const uint FormatVersion = 7;
+        // v8 = 骨骼树进容器（新增 chunk 10，36 B/骨）。header / 绘制项 / 顶点布局都没动，
+        //      但没有它动画就无从解算（时间轴是相对 setup pose 的增量）。
+        public const uint FormatVersion = 8;
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;
@@ -46,6 +48,10 @@ namespace ZEngine.SpineGpu
         public const uint DrawItemSize = 28;       // 静态绘制项（v6）
         public const uint ClipPolygonSize = 12;    // 裁剪多边形记录（v6）
         public const uint AttachmentRecordSize = 8;
+        public const uint BoneSetupSize = 36;      // 骨骼 setup 记录（v8，chunk 10）
+
+        // 骨骼数上限：parent 是 int16（要能表示 -1），bone_idx 是 uint16 ⇒ 取严的。
+        public const uint MaxBones = 32767;
 
         // clip_index 的"没有"值。用 0xFFFF 而不是 0 —— 0 是一条**真实存在的**多边形，
         // 用它会让运行时拿第一条多边形去裁根本不该裁的项，且不报错。
@@ -85,6 +91,18 @@ namespace ZEngine.SpineGpu
         Screen = 3,
     }
 
+    // 逐值抄 spine-cpp `TransformMode.h:34-40`（C++ 侧同名枚举）。
+    // 语义在 `Bone.cpp:126-185` 的 `updateWorldTransform()` switch：
+    // 决定父骨骼的世界变换里哪些分量传给子骨骼。5 个值都是实测会出现的。
+    public enum SpineTransformMode : byte
+    {
+        Normal = 0,
+        OnlyTranslation = 1,
+        NoRotationOrReflection = 2,
+        NoScale = 3,
+        NoScaleOrReflection = 4,
+    }
+
     public enum SpineDrawItemKind : byte
     {
         Static = 0,     // 可进 GPU 蒙皮路径
@@ -120,6 +138,7 @@ namespace ZEngine.SpineGpu
         Attachments = 7,
         AtlasPages = 8,
         ClipData = 9,
+        BoneSetup = 10,     // v8：骨骼 setup（36 B/骨），下标 = header.bone_count 的序
 
         // v7：蒙皮数据流。id 从 21 起 —— 10..20 留给 v7 动画阶段
         // （骨骼树 / 时间轴 / path 几何），别占用。
@@ -194,6 +213,19 @@ namespace ZEngine.SpineGpu
         public const int IbBoneIdx = 0;    // u16
         public const int IbWeight = 2;     // u8，unorm8
         public const int IbPad = 3;        // u8，落盘必须写 0
+
+        // 骨骼 setup 一条（chunk 10，36 B）
+        public const int BoneX = 0;
+        public const int BoneY = 4;
+        public const int BoneRotation = 8;    // 度，不是弧度
+        public const int BoneScaleX = 12;     // 默认 **1** 不是 0
+        public const int BoneScaleY = 16;
+        public const int BoneShearX = 20;
+        public const int BoneShearY = 24;
+        public const int BoneLength = 28;
+        public const int BoneParent = 32;          // int16，-1 = 根，否则必须 < 自己的下标
+        public const int BoneTransformMode = 34;   // SpineTransformMode
+        public const int BonePad = 35;             // 落盘必须写 0
     }
 
     // C++ 用 static_assert 挡的那层"常量之间是否自洽"。C# 没有编译期 offsetof，
@@ -232,6 +264,12 @@ namespace ZEngine.SpineGpu
                         "weighted influence_count");
             CheckOffset(SpineGpuOffsets.IbWeight, 1, SpineGpuConstants.InfluenceBoneStride, "influence bone weight");
             CheckOffset(SpineGpuOffsets.HdrSkinCount, 4, SpineGpuConstants.HeaderSize, "header skin_count");
+            CheckOffset(SpineGpuOffsets.BoneParent, 2, SpineGpuConstants.BoneSetupSize, "bone parent");
+            CheckOffset(SpineGpuOffsets.BoneTransformMode, 1, SpineGpuConstants.BoneSetupSize, "bone transform_mode");
+            CheckOffset(SpineGpuOffsets.BonePad, 1, SpineGpuConstants.BoneSetupSize, "bone pad");
+
+            Check(SpineGpuConstants.BoneSetupSize == 36, "bone setup record is 36 B (v8)");
+            Check(SpineGpuConstants.MaxBones == 32767, "MaxBones is 32767 (int16 parent)");
 
             Check(SpineGpuConstants.NoClipIndex == 0xFFFF, "NoClipIndex must be 0xFFFF, not 0");
         }
@@ -306,6 +344,23 @@ namespace ZEngine.SpineGpu
         public ushort VertexCount;
         // 进入**所在顶点段**的顶点下标，不是字节偏移；段由 VertexFormat 决定。
         public uint VertexOffset;
+    }
+
+    // 骨骼 setup（chunk 10）。逐字段抄 spine-cpp `BoneData.h:110-115`。
+    // ⚠️ 顺序不变量 **Parent < 自己的下标**：有它之后正向 for 一遍就是拓扑序，
+    //    `updateWorldTransform` 不需要排序 / 递归 / 栈。
+    public sealed class SpineGpuBone
+    {
+        public float X;
+        public float Y;
+        public float Rotation;      // 度
+        public float ScaleX = 1.0f; // 默认 **1**（SkeletonJson.cpp:169-170）
+        public float ScaleY = 1.0f;
+        public float ShearX;
+        public float ShearY;
+        public float Length;        // IK / 编辑器挂点；不参与蒙皮
+        public short Parent = -1;   // -1 = 根
+        public SpineTransformMode TransformMode = SpineTransformMode.Normal;
     }
 
     public class SpineGpuContainerException : Exception

@@ -86,9 +86,12 @@ namespace ZEngine.SpineGpu.Test
 
                 // ---- 基本自洽 ----
                 Check(a.Header.Magic == SpineGpuConstants.Magic, "魔数是 'ZSPG'");
-                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 7");
+                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 8");
                 Check(a.DrawItems.Count == a.Header.DrawItemCount, "绘制项数与 header 一致");
                 Check(a.BoneNames.Count == a.Header.BoneCount, "骨骼名数与 header 一致");
+                // v8：骨骼 setup 必须落盘且条数与 header 一致 —— "chunk 不存在"本身不报错，
+                // 少了这等式读端会拿到 0 根骨骼，后面所有 bone_idx 全部越界且不报错。
+                Check((uint)a.Bones.Count == a.Header.BoneCount, "骨骼 setup 条数与 header 一致");
                 Check(a.SlotNames.Count == a.Header.SlotCount, "槽位名数与 header 一致");
                 Check(a.AttachmentNames.Count == a.AttachmentRecords.Count, "附件名数与附件记录数一致");
                 Check((uint)(a.InfluenceBind.Length / 2) == (uint)(a.InfluenceBone.Length / (int)SpineGpuConstants.InfluenceBoneStride),
@@ -144,6 +147,30 @@ namespace ZEngine.SpineGpu.Test
                 Check(allWeights255, "每个权重顶点的 unorm8 权重和恰好 255");
                 // ⚠️ 必须有一条**偏移非 0**的影响：全是 0 时"写错成恒 0"测不出来。
                 Check(nonZeroOffset, "有权重顶点的 influence_offset 非 0");
+
+                // ---- 骨骼 setup（chunk 10）----
+                // 逐字段比，不只是比条数：把 x 与 y 的偏移对调，字节照样自洽
+                // （读写共用同一组常量 ⇒ round-trip 抓不到"解读"漂，只有语义断言能抓到）。
+                if (b.Bones.Count == 2)
+                {
+                    var r = b.Bones[0];
+                    var h = b.Bones[1];
+                    Check(r.Parent == -1, "root 的 parent = -1");
+                    Check(h.Parent == 0, "hip 的 parent = 0（必须 < 自己的下标）");
+                    Check(r.X == 3.0f && r.Y == -4.0f, "root 的 x/y");
+                    Check(r.Rotation == 15.0f, "root 的 rotation（度）");
+                    Check(r.ScaleX == 2.0f && r.ScaleY == 0.5f, "root 的 scaleX/scaleY");
+                    Check(r.ShearX == 7.0f && r.ShearY == -9.0f, "root 的 shearX/shearY");
+                    Check(r.Length == 42.0f, "root 的 length");
+                    Check(r.TransformMode == SpineTransformMode.Normal, "root 的 transform_mode = Normal");
+                    Check(h.X == 1.5f && h.Y == 2.5f, "hip 的 x/y");
+                    Check(h.Rotation == -30.0f, "hip 的 rotation");
+                    Check(h.ScaleX == 1.25f && h.ScaleY == 3.0f, "hip 的 scaleX/scaleY");
+                    Check(h.ShearX == -1.5f && h.ShearY == 0.25f, "hip 的 shearX/shearY");
+                    Check(h.Length == 17.0f, "hip 的 length");
+                    Check(h.TransformMode == SpineTransformMode.NoScaleOrReflection,
+                          "hip 的 transform_mode = NoScaleOrReflection(4)");
+                }
             }
 
             // 裁剪：被裁的项指到一条多边形上，**没被裁的必须是 NoClipIndex 而不是 0**
@@ -272,7 +299,10 @@ namespace ZEngine.SpineGpu.Test
 
             // 版本改一改 ⇒ 必须明确拒绝，不做静默兼容（规格 §11）
             _prefix = "[负向] ";
-            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 8), "版本改成 8（未来容器）⇒ 拒绝");
+            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v8 是当前版本，
+            //    所以"未来"是 9，而 7 已经变成"旧容器"了。
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 9), "版本改成 9（未来容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 7), "版本改成 7（v7 旧容器：没有 chunk 10）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 6), "版本改成 6（v6 旧容器）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 5), "版本改成 5（更旧的容器）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrMagic, 0x11223344), "魔数破坏 ⇒ 拒绝");
@@ -303,6 +333,15 @@ namespace ZEngine.SpineGpu.Test
             if (ate >= 0)
             {
                 Rejects(Mutate(good, ate, ReadU32(good, ate) + 1), "influence_bone 大小 +1 ⇒ 拒绝（4 B 的整数倍）");
+            }
+            int atBone = FindChunkSizeField(good, (uint)SpineGpuChunkId.BoneSetup);
+            if (atBone >= 0)
+            {
+                Rejects(Mutate(good, atBone, ReadU32(good, atBone) + 1),
+                        "bone_setup 大小 +1 ⇒ 拒绝（36 B 的整数倍）");
+                // 条数与 header 对不上 ⇒ 拒绝（"chunk 缺了"本身不报错，只有这个等式能挡）
+                Rejects(Mutate(good, atBone, ReadU32(good, atBone) - (uint)SpineGpuConstants.BoneSetupSize),
+                        "bone_setup 少一条 ⇒ 拒绝（条数必须 = header.bone_count）");
             }
             _prefix = "";
         }

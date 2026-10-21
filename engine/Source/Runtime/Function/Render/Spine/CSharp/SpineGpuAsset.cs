@@ -39,6 +39,10 @@ namespace ZEngine.SpineGpu
         public List<SpineDrawItem> DrawItems = new List<SpineDrawItem>();
         public ushort[] SlotBone = System.Array.Empty<ushort>();
 
+        // 骨骼 setup（chunk 10，36 B/骨）。下标 = header.bone_count 的序，
+        // 也 = 骨骼名的序号，也 = 影响流 bone_idx 引用的同一个下标 —— 三处必须同一个空间。
+        public List<SpineGpuBone> Bones = new List<SpineGpuBone>();
+
         // 字符串表（chunk 1）。落盘顺序固定：
         // 骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名，每项 '\0' 结尾。
         // 读回时按 bone_count / skin_count / slot_count / 附件记录数切分。

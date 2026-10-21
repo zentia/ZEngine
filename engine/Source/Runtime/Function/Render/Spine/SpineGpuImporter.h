@@ -97,10 +97,29 @@ enum class SpineSourceVersion : uint8_t
     k38 = 38,
 };
 
+// 骨骼 setup。字段与 `BoneData.h:110-115` 一一对应，默认值抄
+// `SkeletonJson.cpp:165-172`（二进制没有默认值 —— 8 个 float 全是显式写入的）。
+//
+// ⚠️ scale 的默认是 **1** 不是 0。写 0 的话整棵子树会退化成一个点，
+//    而"看起来只是这部分没画出来"是不报错的。
+//
+// ⚠️ `transform_mode` 的 json 字段名是 **"transform"**（不是 "transformMode"），
+//    值是那 5 个驼峰串；认不出的串参考实现会**静默留在 Normal**
+//    （SkeletonJson.cpp:173-189，5 个 if 都没有 else）⇒ 我们报显式错。
 struct SpineSourceBone
 {
     std::string name;
     int parent = -1;
+
+    float x = 0.0f;
+    float y = 0.0f;
+    float rotation = 0.0f;    // 度
+    float scale_x = 1.0f;
+    float scale_y = 1.0f;
+    float shear_x = 0.0f;
+    float shear_y = 0.0f;
+    float length = 0.0f;      // IK / 编辑器挂点；不参与蒙皮
+    SpineTransformMode transform_mode = SpineTransformMode::kNormal;
 };
 
 struct SpineSourceSlot
@@ -302,6 +321,13 @@ struct SpineGpuAsset
     std::vector<uint16_t> index_buffer;
     std::vector<SpineDrawItem> draw_items;
     std::vector<uint16_t> slot_bone;          // 每槽位的骨骼下标（rigid 用）
+
+    // 骨骼 setup（chunk 10，36 B/骨）。下标 = header.bone_count 的序，
+    // 也 = chunk 1 里骨骼名的序号，也 = 影响流里 bone_idx 引用的同一个下标。
+    // ⚠️ 三处必须是同一个下标空间 —— 分叉了不报错，只是蒙皮取到别人的骨骼。
+    //
+    // **顺序不变量 parent < index**：正向 for 一遍就是拓扑序。
+    std::vector<SpineGpuBone> bones;
 
     // 字符串表（chunk 1）。落盘顺序固定：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名，
     // 每项以 '\0' 结尾。读回时按 bone_count / skin_count / slot_count / 附件记录数切分。
