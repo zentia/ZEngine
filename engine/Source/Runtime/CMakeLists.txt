@@ -542,6 +542,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenReflectionsSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenReflectionsSmokeTest.cpp")
+# Nanite cluster-builder smoke-test main carve-out (same rationale). Built only
+# when ZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST=ON (see
+# Function/Render/Nanite/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteClusterBuilderSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteClusterBuilderSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when
@@ -1451,6 +1458,12 @@ add_subdirectory(Function/Render/Graph/Test)
 if(NOT (WIN32 AND NOT ZENGINE_USE_VULKAN) AND NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten"))
     add_subdirectory(Function/Render/Lumen/Test)
 endif()
+
+# Nanite cluster-builder smoke test. Own main(); carved out of the ZRuntime glob
+# above and built only when ZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST=ON. Pure CPU
+# (split -> hierarchy -> geometry bytes), so no GPU/window. Not gated on the
+# Lumen conditions: Function/Render/Nanite is never stripped from ZRuntime.
+add_subdirectory(Function/Render/Nanite/Test)
 
 # GPU-Spine importer test. Own main(); carved out of the ZRuntime glob above and
 # built only when ZENGINE_BUILD_SPINE_IMPORT_TEST=ON. Pure CPU (atlas + json -> bake),

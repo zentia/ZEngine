@@ -2192,6 +2192,43 @@ downstream reads it.
   着色点和视线方向。它在 shader 里的角色是粗糙的 specular 环境项。延迟通道（HLSL）今天
   没有 specular IBL 项，所以只有前向 GLSL 路径消费它。
 
+### 2.41 Nanite：集群构建器、层次树，以及"没有简化器"意味着什么
+
+`engine/Source/Runtime/Function/Render/Nanite/` —— **全仓库零外部调用者**，整个子目录
+（构建器 / 裁剪 / 渲染器 / `NaniteSystem`）都没被任何地方调用过，所以下面的 bug 从没被
+执行过。修的时候记住：**"看着像真的"和"跑过"是两回事**。
+
+- **构建器以前产出为空，不是"粗一档"而是零字节**：`BuildClustersFromMesh` 在开头
+  `clear()` 掉 `vertex_data`/`index_data` 之后**再也没人写过** ⇒ `NaniteMeshResource`
+  带着一堆正确的 offset/count 和**零几何字节**出门。现在几何真写进去了（未压缩，
+  布局写在 `NaniteTypes.h` 的 `NaniteMeshResource` 上）。
+- **递归触顶不能丢三角形**：以前 `depth >= kMaxHierarchyDepth` 直接 `return`，那一整棵
+  子树的三角形被静默丢掉。触顶要**降级成叶子**（可以超过 `kMaxTrianglesPerCluster`），
+  不能什么都不产出。
+- **层次树要按"两次递归各自的返回值"认领直接子节点**，不要按"子树在数组里的区间"回填父
+  指针 —— 区间里还包含更深层的节点，它们的父指针已被更深的那一层写好，按区间回填会把
+  它们全部覆盖，整棵树退化成"所有节点挂同一个父"。内部节点**后序**创建（子节点建完才
+  建自己），几何区间取 `[进入时的 positions.size(), 递归结束后的 size())`，深度优先保证
+  它连续。
+- **`lod_level` 的 0 是根**（覆盖整个网格、最粗），数值越大越细。内部节点 `is_leaf =
+  false`，**只有叶子能被提交渲染**：没有网格简化器，粗一档并不会少画三角形，内部节点
+  存在的意义只是让层次结构与逐层误差可查询。
+- **`error_metric` 必须被赋值且单调（父 ≥ 子）**。以前它**从来没人赋值**，而
+  `NaniteCluster` 又没有默认成员初始化 ⇒ `SelectLOD` 读到的是未初始化内存。值取 `radius`
+  （空间二分下随细分单调变小）；原来那个 `radius * (1 + lod_level * 0.1)` 方向是反的，
+  会让**越细的簇误差越大**。退化成一个点的簇半径要抬到 `kMinClusterSize`，否则凡是拿它
+  当分母/基准的计算都失去意义。
+- **输入要在边界就拒**：`indices.size() % 3 != 0` 和越界索引以前都会一路走到
+  `positions[indices[i]]` 读越界。
+- **Nanite 从不被剥出 ZRuntime**（不像 Lumen 那两处 `list(FILTER ... EXCLUDE)`），所以
+  `Nanite/Test/` 的冒烟测试在 `smoke_tests.yml` 里是**开着**的，`ZENGINE_USE_VULKAN=OFF`
+  也连得上。
+- 下一个缺口（还没做）：`NaniteCullingSystem::FrustumCull` 恒返回 true（TODO）、
+  实例包围盒是个默认构造的空盒、`ExtractFrustumPlanes`/`AabbFrustumTest` 是 private 且
+  零调用者、`SelectLOD` 方向反了且用了成员 `m_Config` 而不是参数 `config`、
+  `NaniteRenderer::BuildRenderBatches` 产出 `cluster_count = 0` 的空批次、
+  `NaniteRenderPass::Draw()` 是空 TODO。
+
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).

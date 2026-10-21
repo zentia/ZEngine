@@ -12,6 +12,10 @@
 // Nanite常量定义
 namespace NaniteConstants
 {
+    // 集群索引的"空"值。以前代码里到处写字面量 UINT32_MAX，读起来要对照上下文才知道
+    // 那是"没有父节点"还是"越界"。
+    constexpr uint32_t kInvalidClusterIndex = UINT32_MAX;
+
     constexpr uint32_t kMaxClustersPerMesh = 65536;
     constexpr uint32_t kMaxVerticesPerCluster = 128;
     constexpr uint32_t kMaxTrianglesPerCluster = 64;
@@ -31,35 +35,47 @@ enum class NaniteClusterBoundType : uint8_t
 };
 
 // 集群数据结构
+//
+// 两类节点都装在这个结构里：
+//   * 叶子集群（is_leaf == true）—— 真正可渲染的单元，三角形数不超过
+//     kMaxTrianglesPerCluster。
+//   * 内部节点（is_leaf == false）—— 只把它子树里所有叶子的几何区间**聚合**
+//     成一个 LOD 节点。没有网格简化器，所以"粗一档"并不会少画三角形；内部节点
+//     存在的意义是让层次结构与逐层误差可查询，渲染时只画叶子。
 struct NaniteCluster
 {
     // 边界信息
-    Vector3 center;
-    float radius;
+    Vector3 center {0.0f, 0.0f, 0.0f};
+    float radius {0.0f};
     AxisAlignedBox bounds;
 
-    // 几何数据
-    uint32_t vertex_count;
-    uint32_t triangle_count;
-    uint32_t vertex_offset;
-    uint32_t index_offset;
+    // 几何数据（顶点数/索引数都是**元素个数**，不是字节数）
+    uint32_t vertex_count {0};
+    uint32_t triangle_count {0};
+    uint32_t vertex_offset {0};
+    uint32_t index_offset {0};
 
-    // LOD层级
-    uint8_t lod_level;
+    // LOD层级：0 = 根（覆盖整个网格、最粗），数值越大越细
+    uint8_t lod_level {0};
 
     // 父级和子级索引
-    uint32_t parent_cluster_index;
+    uint32_t parent_cluster_index {NaniteConstants::kInvalidClusterIndex};
     std::vector<uint32_t> child_cluster_indices;
 
     // 材质信息
-    uint32_t material_id;
+    uint32_t material_id {0};
 
-    // 错误度量（用于LOD选择）
-    float error_metric;
+    // 错误度量（用于LOD选择）。单位是世界/模型空间长度，父节点恒 >= 子节点。
+    // 以前这个字段**从来没有人赋值**，而 NaniteCluster 也没有默认初始化 ⇒
+    // SelectLOD 读到的是未初始化的栈内存。
+    float error_metric {0.0f};
 
     // 可见性标志
-    bool is_visible;
-    bool is_loaded;
+    bool is_visible {false};
+    bool is_loaded {false};
+
+    // 见上面的说明：只有叶子集群能被提交渲染。
+    bool is_leaf {false};
 };
 
 // 集群组（用于批量处理）
@@ -82,21 +98,25 @@ struct NaniteMeshResource
     std::vector<NaniteCluster> clusters;
     std::vector<NaniteClusterGroup> cluster_groups;
 
-    // 几何数据（压缩格式）
+    // 几何数据。目前**未压缩**（压缩仍是 TODO），布局固定为：
+    //   vertex_data : total_vertex_count 个 Vector3，每个 12 字节
+    //   index_data  : total_triangle_count * 3 个 uint32_t，每个 4 字节
+    // 每个集群用 vertex_offset/vertex_count 与 index_offset/triangle_count 在这两段里
+    // 取一段连续的窗口 —— 深度优先的分割顺序保证了同一子树的窗口是连续的。
     std::vector<uint8_t> vertex_data;
     std::vector<uint8_t> index_data;
 
     // 层次结构
-    uint32_t root_cluster_index;
-    uint8_t hierarchy_depth;
+    uint32_t root_cluster_index {NaniteConstants::kInvalidClusterIndex};
+    uint8_t hierarchy_depth {0};
 
     // 边界信息
     AxisAlignedBox global_bounds;
 
     // 统计信息
-    uint32_t total_vertex_count;
-    uint32_t total_triangle_count;
-    uint32_t total_cluster_count;
+    uint32_t total_vertex_count {0};
+    uint32_t total_triangle_count {0};
+    uint32_t total_cluster_count {0};
 };
 
 // 实例数据
@@ -110,19 +130,19 @@ struct NaniteInstance
     Matrix4x4 prev_transform;  // 用于运动模糊
 
     // 可见性信息
-    bool is_visible;
-    uint8_t current_lod_level;
+    bool is_visible {false};
+    uint8_t current_lod_level {0};
 
     // 裁剪信息
-    bool is_culled;
-    uint32_t visible_cluster_count;
+    bool is_culled {false};
+    uint32_t visible_cluster_count {0};
 };
 
 // 可见性结果
 struct NaniteVisibilityResult
 {
-    uint32_t visible_instance_count;
-    uint32_t visible_cluster_count;
+    uint32_t visible_instance_count {0};
+    uint32_t visible_cluster_count {0};
     std::vector<uint32_t> visible_instance_indices;
     std::vector<uint32_t> visible_cluster_indices;
 };
@@ -130,11 +150,11 @@ struct NaniteVisibilityResult
 // 渲染批次
 struct NaniteRenderBatch
 {
-    uint32_t batch_id;
-    uint32_t instance_id;
-    uint32_t cluster_start;
-    uint32_t cluster_count;
-    uint8_t lod_level;
+    uint32_t batch_id {0};
+    uint32_t instance_id {0};
+    uint32_t cluster_start {0};
+    uint32_t cluster_count {0};
+    uint8_t lod_level {0};
 };
 
 // GPU缓冲区布局

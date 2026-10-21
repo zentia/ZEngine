@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-21 (Nanite: the cluster builder produced nothing)
+
+`NaniteClusterBuilder` did not build a coarse approximation of the mesh — it
+built nothing at all. `Nanite` has **zero callers outside its own directory**, so
+none of this had ever been executed. Four independent defects:
+
+* **`BuildClustersFromMesh()` cleared `vertex_data`/`index_data` at the top and
+  never wrote them again.** The mesh resource walked out with plausible-looking
+  cluster metadata (offsets and counts were computed correctly) and **zero
+  geometry bytes**. Anything downstream — GPU upload, render batches, visibility
+  stats — had nothing to read. The geometry is now written out (uncompressed;
+  compression is still a TODO), with the layout documented on
+  `NaniteMeshResource`.
+* **`RecursiveClusterSplit()` returned early when `depth` reached
+  `kMaxHierarchyDepth`**, silently dropping every triangle under that node. Deep
+  meshes lost a chunk of geometry with no error. Reaching the depth limit now
+  makes the node a leaf (possibly oversized) instead of discarding it.
+* **`BuildHierarchy()` was an O(n²) guess.** Each cluster picked as its parent
+  the first other cluster with a lower `lod_level` whose centre was within
+  `2 * radius` — which cluster that is depends on array order, and because the
+  loop `break`s a parent could collect the same child repeatedly. And
+  `root_cluster_index` was hard-coded to `0`, but cluster 0 is the first *leaf*
+  in depth-first order, never the root. The tree is now built during the split:
+  internal nodes are created post-order and claim exactly the two roots their
+  recursive calls returned. (Writing the parent pointer over the whole subtree
+  *range* instead is the obvious-looking mistake here: it overwrites the pointers
+  the deeper levels already wrote, collapsing the tree into "everything hangs
+  off one parent".)
+* **`error_metric` was never assigned by anyone**, and `NaniteCluster` had no
+  default member initialisers, so `SelectLOD()` read uninitialised memory. The
+  metric is now `radius` (monotone under spatial subdivision — the previous
+  `radius * (1 + lod_level * 0.1)` ran the wrong way, making *finer* clusters
+  look worse), floors degenerate radii, and is forced monotone parent ≥ child so
+  LOD selection can rely on it.
+
+Also: rejected input is now rejected (`indices.size() % 3 != 0` and out-of-range
+indices used to walk off the end of `positions`), `lod_level` is documented as
+"0 = root", and internal nodes are marked `is_leaf = false` — without a mesh
+simplifier there is no coarser-but-cheaper representation, so only leaves are
+renderable and internal nodes exist to make the hierarchy and per-level error
+queryable.
+
+**Test**: `NaniteClusterBuilderSmokeTest` — 54 checks, 5 consecutive green runs
+(`-DZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST=ON`). It pins the byte counts, that
+no triangle is lost, that leaf windows tile the geometry exactly once, that leaf
+bounds match the vertices actually stored in their window, and the tree
+invariants. Removing the geometry write fails 7 of the 54; the range-based
+parent write fails the parent/child check. Unlike the Lumen tests this one is
+enabled in `smoke_tests.yml`, because `Function/Render/Nanite` is never stripped
+from ZRuntime. ctest 19/19 on Apple.
+
 ### Added / Fixed - 2026-10-21 (Lumen reflections: from a zero-caller dead end to the shader)
 
 `LumenRenderer::ComputeReflections()` was an empty TODO, so

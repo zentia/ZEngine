@@ -61,6 +61,11 @@ jobs:
       # those tests to link against here. They are configured and run on the
       # hosts that do build Lumen (Apple / Linux / Windows+Vulkan).
       #
+      # ZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST is enabled here on purpose,
+      # unlike the Lumen set: Function/Render/Nanite is never stripped from
+      # ZRuntime, so it links with ZENGINE_USE_VULKAN=OFF. It is pure CPU
+      # (split -> hierarchy -> geometry bytes) and needs no backend.
+      #
       # ZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST would actually link here
       # (it only touches RenderCommon.h and reads shader sources as text), but
       # it is grouped with the rest of the Lumen set and left out too: it is the
@@ -90,6 +95,7 @@ jobs:
           -DZENGINE_BUILD_BUILD_CACHE_SMOKE_TEST=ON
           -DZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
           -DZENGINE_BUILD_RHI_INDIRECT_DRAW_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST=ON
           -DZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS=ON
 
       - name: Build smoke tests
@@ -118,6 +124,7 @@ jobs:
           UndoSystemSmokeTest
           BuildCacheSmokeTest
           RHIIndirectDrawSmokeTest
+          NaniteClusterBuilderSmokeTest
           DX12BindlessSmokeTest
           EnvironmentCollectorTests
           EnvironmentPreflightTests

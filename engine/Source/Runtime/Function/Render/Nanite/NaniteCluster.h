@@ -2,8 +2,13 @@
 
 #include "NaniteTypes.h"
 #include "Runtime/Core/Math/AxisAligned.h"
+// BuildClustersFromMesh takes std::vector<Vector2> **by value**, so every caller
+// needs the complete type, not just a forward declaration.
+#include "Runtime/Core/Math/Vector2.h"
 
 #include <memory>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 class RHI;
@@ -27,19 +32,24 @@ public:
     // 构建层次结构
     bool BuildHierarchy(NaniteMeshResource& mesh_resource);
 
-    // 计算集群的错误度量
-    float CalculateClusterError(const NaniteCluster& cluster, const NaniteMeshResource& mesh_resource);
+    // 计算集群的错误度量。只取决于集群本身的空间尺度：分割是空间的二分，
+    // 所以越细的集群半径越小、误差越小，父节点天然 >= 子节点。
+    float CalculateClusterError(const NaniteCluster& cluster) const;
 
 private:
-    // 递归分割网格为集群
-    void RecursiveClusterSplit(const std::vector<Vector3>& positions,
-                               const std::vector<uint32_t>& indices,
-                               const AxisAlignedBox& bounds,
-                               uint32_t depth,
-                               uint32_t max_depth,
-                               std::vector<NaniteCluster>& out_clusters,
-                               std::vector<Vector3>& out_positions,
-                               std::vector<uint32_t>& out_indices);
+    // 递归分割网格为集群。
+    //
+    // 返回本次调用为**当前节点**创建的集群索引（kInvalidClusterIndex 表示这个节点
+    // 没有任何三角形）。分割产生的内部节点在它的子节点都建好之后才创建（后序），
+    // 这样它能把自己子树里那段连续的几何区间聚合成一个 LOD 节点。
+    uint32_t RecursiveClusterSplit(const std::vector<Vector3>& positions,
+                                   const std::vector<uint32_t>& indices,
+                                   const AxisAlignedBox& bounds,
+                                   uint32_t depth,
+                                   uint32_t max_depth,
+                                   std::vector<NaniteCluster>& out_clusters,
+                                   std::vector<Vector3>& out_positions,
+                                   std::vector<uint32_t>& out_indices);
 
     // 计算集群边界
     void CalculateClusterBounds(const std::vector<Vector3>& positions,
