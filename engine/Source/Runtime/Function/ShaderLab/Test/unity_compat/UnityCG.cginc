@@ -120,6 +120,9 @@ struct appdata_tan
     float4 texcoord : TEXCOORD0;
 };
 
+// appdata_full lives in section 7, next to the instance-ID macros it uses --
+// macro expansion happens in source order, so it cannot be declared here.
+
 // ---------------------------------------------------------------------------
 // 5. Shadow-caster macros (stubs).
 //
@@ -166,13 +169,14 @@ struct SurfaceOutput
 };
 
 // ---------------------------------------------------------------------------
-// 7. Instancing buffer macros.
+// 7. Instancing macros.
 //
 // Unity's real expansion declares a cbuffer whose members are ARRAYS sized by
 // UNITY_INSTANCED_ARRAY_SIZE (one slot per instance in the batch) and whose
 // accessors index it with the instance ID. ZEngine has no instancing path
 // wired to ShaderLab yet, so this is the degenerate one-instance form: a
-// plain cbuffer with plain members.
+// plain cbuffer with plain members and an instance ID that is read but never
+// used to index anything.
 //
 // That keeps the ubiquitous
 //     UNITY_INSTANCING_BUFFER_START(Props)
@@ -180,29 +184,94 @@ struct SurfaceOutput
 //     UNITY_INSTANCING_BUFFER_END(Props)
 //     ... UNITY_ACCESS_INSTANCED_PROP(Props, _Color) ...
 // syntactically valid and type-correct, which is all a compile check needs.
-// ACCESS is included because a buffer you cannot read from is useless, and
-// reading a plain member is the correct one-instance behaviour anyway.
 //
-// Still NOT provided -- these would compile into something that looks right
-// and quietly drops instancing, which is worse than a build error:
-//   UNITY_VERTEX_INPUT_INSTANCE_ID, UNITY_SETUP_INSTANCE_ID,
-//   UNITY_TRANSFER_INSTANCE_ID, UNITY_INSTANCED_ARRAY_SIZE.
+// HONESTY NOTE: this is the case the older version of this shim refused to
+// provide, on the grounds that a macro that compiles into a silently dropped
+// instancing is worse than a build error. That is still true -- and it is why
+// ShaderLabSurface.cpp emits an explicit warning when a surface shader uses
+// these macros, rather than letting the shader look like it works. The
+// instance ID itself is NOT faked: UNITY_VERTEX_INPUT_INSTANCE_ID really does
+// declare an SV_InstanceID field and UNITY_SETUP_INSTANCE_ID really does
+// store it, so the moment the engine grows a per-instance cbuffer this shim is
+// the only thing that has to change.
 // ---------------------------------------------------------------------------
+#define UNITY_INSTANCED_ARRAY_SIZE 1
+
+#define UNITY_VERTEX_INPUT_INSTANCE_ID uint instanceID : SV_InstanceID;
+#define UNITY_SETUP_INSTANCE_ID(input)      unity_InstanceID = input.instanceID;
+#define UNITY_TRANSFER_INSTANCE_ID(input, output) output.instanceID = input.instanceID;
+
 #define UNITY_INSTANCING_BUFFER_START(name)      cbuffer UnityInstancing_##name {
 #define UNITY_INSTANCING_BUFFER_END(name)        };
 #define UNITY_DEFINE_INSTANCED_PROP(type, name)  type name;
 #define UNITY_ACCESS_INSTANCED_PROP(buffer, name) name
 
+// `static` so UNITY_SETUP_INSTANCE_ID can actually write to it: a plain global
+// would land in the $Globals cbuffer, which a shader cannot assign to.
+static uint unity_InstanceID;
+
+// appdata_full: the type Unity hands to a surface shader's `vertex:<fn>`
+// modifier, so ShaderLabSurface.cpp can only call the author's function if
+// this exists. It has to come AFTER the instance-ID macros above, because
+// UNITY_VERTEX_INPUT_INSTANCE_ID is a macro and macros expand in source order.
+struct appdata_full
+{
+    float4 vertex    : POSITION;
+    float4 tangent   : TANGENT;
+    float3 normal    : NORMAL;
+    float4 texcoord  : TEXCOORD0;
+    float4 texcoord1 : TEXCOORD1;
+    float4 texcoord2 : TEXCOORD2;
+    float4 texcoord3 : TEXCOORD3;
+    fixed4 color     : COLOR;
+    UNITY_VERTEX_INPUT_INSTANCE_ID
+};
+
 // ---------------------------------------------------------------------------
-// 8. Built-in lighting globals.
+// 8. Built-in lighting globals and helpers.
 //
 // UnityShaderVariables.cginc / Lighting.cginc. The surface-shader desugaring
 // (ShaderLabSurface.cpp) generates lighting code that reads these, exactly as
 // Unity's generated passes do.
+//
+// _LightColor1 / _WorldSpaceLightPos1 are the ForwardAdd pass's light. They
+// are unbound today, i.e. black, which under additive blending makes that
+// pass a no-op instead of a darkening -- the seam a real light list plugs
+// into.
 // ---------------------------------------------------------------------------
 float4 _LightColor0;
 float4 _WorldSpaceLightPos0;
+float4 _LightColor1;
+float4 _WorldSpaceLightPos1;
 float3 _WorldSpaceCameraPos;
+float4 unity_WorldTransformParams;
+
+// Unity's own definitions (UnityCG.cginc). `.w == 0` marks a directional
+// light, so the same expression serves both shapes.
+float3 UnityWorldSpaceLightDir(float3 worldPos)
+{
+    return normalize(_WorldSpaceLightPos0.xyz - worldPos * _WorldSpaceLightPos0.w);
+}
+
+float3 UnityWorldSpaceViewDir(float3 worldPos)
+{
+    return _WorldSpaceCameraPos - worldPos;
+}
+
+// ---------------------------------------------------------------------------
+// 9. Normal-map unpacking.
+//
+// A real Unity normal map stores [0,1] and has to be expanded to [-1,1].
+// Unity's UnpackNormal() picks between the plain and the DXT5nm layouts
+// according to UNITY_NO_DXT5nm; ZEngine has no platform matrix here, so this
+// is the plain (RGB) form. Type-correct and dimensionally right -- which is
+// what a compile check needs -- but a DXT5nm-packed texture will come out
+// wrong, so this is a stand-in, not a port.
+// ---------------------------------------------------------------------------
+float3 UnpackNormal(float4 packed)
+{
+    return packed.xyz * 2.0 - 1.0;
+}
 
 // 历史记录：Spine 的 Caster pass 写 `o.uv = v.texcoord;`，uv 是 float2 而
 // appdata_base.texcoord 是 float4（与 Unity 一致）。HLSL 允许这种隐式截断，

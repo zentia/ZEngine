@@ -41,6 +41,26 @@ namespace ZEngine::ShaderLab
             return std::isspace(static_cast<unsigned char>(c)) != 0;
         }
 
+        bool IsValidIdentifier(const std::string& s)
+        {
+            if (s.empty())
+            {
+                return false;
+            }
+            if (!std::isalpha(static_cast<unsigned char>(s[0])) && s[0] != '_')
+            {
+                return false;
+            }
+            for (const char c : s)
+            {
+                if (!IsIdentChar(c))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         // Blanks out comments and string/char literals, preserving length and
         // newline positions so offsets into the masked copy stay valid offsets
         // into the original.
@@ -288,6 +308,44 @@ namespace ZEngine::ShaderLab
             return parts;
         }
 
+        // ---- function lookup ---------------------------------------------
+
+        struct FunctionRef
+        {
+            bool found = false;
+            std::vector<std::string> parameters;  // raw, qualifiers included
+        };
+
+        // Finds `<name> (...)` in `masked` and returns its parameter list.
+        // The first hit wins, which is the declaration/definition for every
+        // shape a surface shader actually uses.
+        FunctionRef FindFunctionParams(const std::string& masked, const std::string& name)
+        {
+            FunctionRef out;
+            size_t from = 0;
+            while (true)
+            {
+                const size_t at = FindWholeWord(masked, name, from);
+                if (at == kNpos)
+                {
+                    break;
+                }
+                const size_t paren = SkipBlanks(masked, at + name.size());
+                if (paren < masked.size() && masked[paren] == '(')
+                {
+                    const size_t close = MatchingDelimiter(masked, paren, '(', ')');
+                    if (close != kNpos)
+                    {
+                        out.found = true;
+                        out.parameters = SplitTopLevel(masked, paren + 1, close);
+                        return out;
+                    }
+                }
+                from = at + name.size();
+            }
+            return out;
+        }
+
         struct SurfaceSignature
         {
             bool found = false;
@@ -302,32 +360,12 @@ namespace ZEngine::ShaderLab
         SurfaceSignature FindSurfaceSignature(const std::string& masked, const std::string& function)
         {
             SurfaceSignature out;
-            size_t from = 0;
-            while (true)
+            const FunctionRef ref = FindFunctionParams(masked, function);
+            if (ref.found && ref.parameters.size() >= 2)
             {
-                const size_t at = FindWholeWord(masked, function, from);
-                if (at == kNpos)
-                {
-                    break;
-                }
-                const size_t paren = SkipBlanks(masked, at + function.size());
-                if (paren < masked.size() && masked[paren] == '(')
-                {
-                    const size_t close = MatchingDelimiter(masked, paren, '(', ')');
-                    if (close != kNpos)
-                    {
-                        const std::vector<std::string> params =
-                            SplitTopLevel(masked, paren + 1, close);
-                        if (params.size() >= 2)
-                        {
-                            out.found = true;
-                            out.input_type = ParameterTypeOf(params[0]);
-                            out.output_type = ParameterTypeOf(params[1]);
-                            return out;
-                        }
-                    }
-                }
-                from = at + function.size();
+                out.found = true;
+                out.input_type = ParameterTypeOf(ref.parameters[0]);
+                out.output_type = ParameterTypeOf(ref.parameters[1]);
             }
             return out;
         }
@@ -517,6 +555,42 @@ namespace ZEngine::ShaderLab
             return false;
         }
 
+        // Same as `masked`, but with every preprocessor line blanked out.
+        //
+        // Needed because "does the body already declare X" must not be
+        // answered from a `#pragma surface ... alphatest:_Cutoff` line: the
+        // option names the variable, it does not declare it. Counting that as
+        // a declaration leaves `_Cutoff` undeclared and the shader fails to
+        // compile -- with an error about a variable that is plainly written
+        // right there in the pragma.
+        std::string MaskPreprocessorLines(const std::string& masked)
+        {
+            std::string out = masked;
+            size_t line_begin = 0;
+            while (line_begin <= out.size())
+            {
+                const size_t line_end = out.find('\n', line_begin);
+                const size_t stop = (line_end == kNpos) ? out.size() : line_end;
+                const size_t first = SkipBlanks(out, line_begin);
+                if (first < stop && out[first] == '#')
+                {
+                    for (size_t i = line_begin; i < stop; ++i)
+                    {
+                        if (out[i] != '\n' && out[i] != '\r')
+                        {
+                            out[i] = ' ';
+                        }
+                    }
+                }
+                if (line_end == kNpos)
+                {
+                    break;
+                }
+                line_begin = line_end + 1;
+            }
+            return out;
+        }
+
         bool BodyDeclaresName(const std::string& masked, const std::string& name)
         {
             // A declaration is what we care about, but any occurrence is good
@@ -525,12 +599,101 @@ namespace ZEngine::ShaderLab
             return FindWholeWord(masked, name, 0) != kNpos;
         }
 
+        // ---- surface options ---------------------------------------------
+        //
+        // `known && implemented`  -- ZEngine honours it (or it is genuinely a
+        //                            no-op here, e.g. `nometa`: no Meta pass
+        //                            is generated in the first place).
+        // `known && !implemented` -- a real Unity option ZEngine ignores.
+        //                            Warned about, never silently dropped.
+        // `!known`                -- misspelling or something Unity added
+        //                            later. Also warned about.
+        struct OptionInfo
+        {
+            bool known = false;
+            bool implemented = false;
+        };
+
+        OptionInfo ClassifyOption(const std::string& option)
+        {
+            const size_t colon = option.find(':');
+            const std::string name = (colon == kNpos) ? option : option.substr(0, colon);
+
+            // --- implemented (or a genuine no-op under ZEngine) -------------
+            static const char* const kImplemented[] = {
+                "addshadow",           // extra ShadowCaster pass
+                "noforwardadd",        // suppress the ForwardAdd pass
+                "noshadow",            // no shadow pass is generated anyway
+                "nometa",              // no Meta pass is generated
+                "nofog", "noambient", "novertexlights", "nolightmap",
+                "nodynlightmap", "nodirlightmap", "noshadowmask",
+                "noinstancing",        // instancing is not wired up either way
+                "alpha",               // alpha blending on the forward passes
+                "keepalpha",           // do not force opaque alpha
+            };
+            for (const char* candidate : kImplemented)
+            {
+                if (name == candidate)
+                {
+                    return {true, true};
+                }
+            }
+
+            if (name == "exclude_path")
+            {
+                // We generate neither a Deferred nor a legacy PrePass pass,
+                // so both exclusions are already satisfied.
+                return {true, true};
+            }
+
+            // Value-bearing options ZEngine does implement.
+            if (name == "vertex" || name == "finalcolor" || name == "alphatest")
+            {
+                return {true, true};
+            }
+
+            // --- known but ignored ------------------------------------------
+            static const char* const kUnimplemented[] = {
+                "fullforwardshadows",  // shadows in the add pass: no shadow
+                                       // pipeline, and no add-pass shadows
+                "softvegetation", "interpolateview", "halfasview", "approxview",
+                "dualforward", "directional", "lerpdetail",
+                "decal", "tessellate", "tessphong",
+                "finalgbuffer", "finalprepass",
+            };
+            for (const char* candidate : kUnimplemented)
+            {
+                if (name == candidate)
+                {
+                    return {true, false};
+                }
+            }
+
+            return {false, false};
+        }
+
     }  // namespace
 
     bool SurfaceShaderDirective::HasOption(const std::string& option) const
     {
         const std::string wanted = ToLower(option);
         return std::find(options.begin(), options.end(), wanted) != options.end();
+    }
+
+    bool SurfaceShaderDirective::OptionValue(const std::string& prefix,
+                                             std::string& value_out) const
+    {
+        const std::string wanted = ToLower(prefix);
+        for (const std::string& raw : raw_options)
+        {
+            if (ToLower(raw).rfind(wanted, 0) != 0)
+            {
+                continue;
+            }
+            value_out = raw.substr(prefix.size());
+            return !value_out.empty();
+        }
+        return false;
     }
 
     SurfaceShaderDirective ParseSurfaceDirective(const std::string& program_source)
@@ -597,11 +760,20 @@ namespace ZEngine::ShaderLab
             {
                 out.model = SurfaceLightingModel::BlinnPhong;
             }
+            else if (IsValidIdentifier(out.model_name))
+            {
+                // Not one of Unity's built-ins: the shader is expected to
+                // supply `Lighting<Name>()`. Resolved in
+                // GenerateSurfacePasses(), which is where the body is
+                // available -- an unknown model is a *valid* name until then.
+                out.model = SurfaceLightingModel::Custom;
+            }
             else
             {
                 out.model = SurfaceLightingModel::Unknown;
-                out.error = "unsupported surface lighting model '" + out.model_name +
-                            "' (supported: Standard, Lambert, BlinnPhong)";
+                out.error = "invalid surface lighting model '" + out.model_name +
+                            "' (built-ins: Standard, Lambert, BlinnPhong; otherwise the "
+                            "name of a Lighting<Name> function)";
                 return out;
             }
 
@@ -613,6 +785,7 @@ namespace ZEngine::ShaderLab
                     break;
                 }
                 out.options.push_back(ToLower(tokens[i]));
+                out.raw_options.push_back(tokens[i]);
             }
 
             out.valid = true;
@@ -634,6 +807,9 @@ namespace ZEngine::ShaderLab
         }
 
         const std::string masked = MaskNonCode(program_source);
+        // Used wherever the question is "does the body already declare this?":
+        // a `#pragma` line that merely mentions a name must not count.
+        const std::string masked_body = MaskPreprocessorLines(masked);
 
         const SurfaceSignature signature = FindSurfaceSignature(masked, directive.function);
         if (!signature.found)
@@ -662,14 +838,155 @@ namespace ZEngine::ShaderLab
             return out;
         }
 
-        const bool model_wants_standard = (directive.model == SurfaceLightingModel::Standard);
-        if (model_wants_standard != output_is_standard)
+        // ---- custom lighting model ----------------------------------------
+        // `#pragma surface surf Simple` means "call LightingSimple()". Unity
+        // accepts two shapes; the GI forms (`LightingX_GI`, and a two-argument
+        // `LightingX(s, UnityGI)`) are rejected because ZEngine has no GI.
+        struct CustomLighting
         {
-            out.error = "lighting model '" + directive.model_name + "' expects inout " +
-                        (model_wants_standard ? "SurfaceOutputStandard" : "SurfaceOutput") +
-                        ", but '" + directive.function + "' declares inout " +
-                        signature.output_type;
+            std::string name;
+            int argument_count = 0;  // 3 = (s, lightDir, atten), 4 = + viewDir
+        };
+        CustomLighting custom;
+
+        if (directive.model == SurfaceLightingModel::Custom)
+        {
+            custom.name = "Lighting" + directive.model_name;
+            const FunctionRef ref = FindFunctionParams(masked, custom.name);
+            if (!ref.found)
+            {
+                out.error = "lighting model '" + directive.model_name + "' requires '" +
+                            custom.name + "()', which is not defined in this CGPROGRAM";
+                return out;
+            }
+            if (ref.parameters.size() != 3 && ref.parameters.size() != 4)
+            {
+                out.error = "'" + custom.name + "()' takes " +
+                            std::to_string(ref.parameters.size()) +
+                            " parameters; ZEngine supports the two Unity forms "
+                            "(SurfaceOutput s, half3 lightDir, half atten) and "
+                            "(SurfaceOutput s, half3 lightDir, half3 viewDir, half atten) -- "
+                            "the UnityGI form is not supported";
+                return out;
+            }
+            const std::string first = ParameterTypeOf(ref.parameters[0]);
+            if (first != signature.output_type)
+            {
+                out.error = "'" + custom.name + "()' takes '" + first + "', but '" +
+                            directive.function + "' writes '" + signature.output_type +
+                            "' -- the two must agree";
+                return out;
+            }
+            custom.argument_count = static_cast<int>(ref.parameters.size());
+        }
+        else
+        {
+            const bool model_wants_standard = (directive.model == SurfaceLightingModel::Standard);
+            if (model_wants_standard != output_is_standard)
+            {
+                out.error = "lighting model '" + directive.model_name + "' expects inout " +
+                            (model_wants_standard ? "SurfaceOutputStandard" : "SurfaceOutput") +
+                            ", but '" + directive.function + "' declares inout " +
+                            signature.output_type;
+                return out;
+            }
+        }
+
+        // ---- `vertex:` / `finalcolor:` ------------------------------------
+        std::string vertex_modifier;
+        if (directive.OptionValue("vertex:", vertex_modifier))
+        {
+            if (!IsValidIdentifier(vertex_modifier))
+            {
+                out.error = "'vertex:" + vertex_modifier + "' is not a function name";
+                return out;
+            }
+            if (!FindFunctionParams(masked, vertex_modifier).found)
+            {
+                out.error = "'vertex:" + vertex_modifier + "' names a function that is not "
+                            "defined in this CGPROGRAM";
+                return out;
+            }
+        }
+        else
+        {
+            vertex_modifier.clear();
+        }
+
+        std::string final_color;
+        if (directive.OptionValue("finalcolor:", final_color))
+        {
+            if (!IsValidIdentifier(final_color))
+            {
+                out.error = "'finalcolor:" + final_color + "' is not a function name";
+                return out;
+            }
+            if (!FindFunctionParams(masked, final_color).found)
+            {
+                out.error = "'finalcolor:" + final_color + "' names a function that is not "
+                            "defined in this CGPROGRAM";
+                return out;
+            }
+        }
+        else
+        {
+            final_color.clear();
+        }
+
+        std::string alpha_test;
+        if (directive.OptionValue("alphatest:", alpha_test) && !IsValidIdentifier(alpha_test))
+        {
+            out.error = "'alphatest:" + alpha_test + "' is not a variable name";
             return out;
+        }
+
+        // The UnityCG shim's instancing macros compile -- but into a
+        // one-instance form, so every instance would render identically. That
+        // is a silent wrong result, so it has to be said out loud here rather
+        // than being discoverable only by reading the shim.
+        //
+        // UNITY_INSTANCING_BUFFER_START alone is NOT enough to warn: Unity's
+        // own "Standard Surface Shader" template carries an empty Props block,
+        // so warning on it would fire for every template-derived shader. Only
+        // a shader that actually declares or reads an instanced property is
+        // relying on instancing.
+        static const char* const kInstancingMacros[] = {
+            "UNITY_DEFINE_INSTANCED_PROP",
+            "UNITY_ACCESS_INSTANCED_PROP",
+            "UNITY_SETUP_INSTANCE_ID",
+            "UNITY_TRANSFER_INSTANCE_ID",
+        };
+        for (const char* macro : kInstancingMacros)
+        {
+            if (FindWholeWord(masked, macro, 0) != kNpos)
+            {
+                out.warnings.push_back(std::string("'") + macro +
+                                       "': ZEngine has no instancing path yet, so every "
+                                       "instance renders identically");
+                break;
+            }
+        }
+
+        // ---- options: warn instead of silently ignoring -------------------
+        for (size_t i = 0; i < directive.options.size(); ++i)
+        {
+            const std::string& option = directive.options[i];
+            // Report the option AS WRITTEN: `options` is lower-cased for
+            // matching, so a warning quoting it would not match what the
+            // author sees in the shader.
+            const std::string& as_written =
+                (i < directive.raw_options.size()) ? directive.raw_options[i] : option;
+
+            const OptionInfo info = ClassifyOption(option);
+            if (!info.known)
+            {
+                out.warnings.push_back("unknown surface option '" + as_written + "'; ignored");
+            }
+            else if (!info.implemented)
+            {
+                out.warnings.push_back("surface option '" + as_written +
+                                       "' is recognised but not implemented yet; ignored");
+            }
         }
 
         std::vector<InputMember> members =
@@ -691,14 +1008,24 @@ namespace ZEngine::ShaderLab
             }
             const std::string st = member.texture + "_ST";
             if (std::find(st_uniforms.begin(), st_uniforms.end(), st) == st_uniforms.end() &&
-                !BodyDeclaresName(masked, st))
+                !BodyDeclaresName(masked_body, st))
             {
                 st_uniforms.push_back(st);
             }
         }
 
+        bool has_view_dir_member = false;
+        bool need_screen_pos = false;
         for (const InputMember& member : members)
         {
+            if (member.kind == InputMemberKind::ViewDir)
+            {
+                has_view_dir_member = true;
+            }
+            if (member.kind == InputMemberKind::ScreenPos)
+            {
+                need_screen_pos = true;
+            }
             if (member.kind == InputMemberKind::Unsupported)
             {
                 out.warnings.push_back("Input member '" + member.name +
@@ -707,6 +1034,22 @@ namespace ZEngine::ShaderLab
             }
         }
 
+        // `o.Normal` is a TANGENT-space normal, so honouring it costs a
+        // tangent/bitangent pair of varyings. Only pay for it when the author
+        // actually writes one -- an unwritten `o.Normal` is (0,0,1), which
+        // leaves the vertex normal alone.
+        //
+        // The test is textual (`.Normal` anywhere in the body) because the
+        // write may be behind a helper or a macro; over-detecting only costs
+        // one interpolator, under-detecting silently drops normal mapping.
+        const bool need_tangent = masked.find(".Normal") != kNpos;
+
+        const bool need_view_dir =
+            has_view_dir_member ||
+            directive.model == SurfaceLightingModel::Standard ||
+            directive.model == SurfaceLightingModel::BlinnPhong ||
+            custom.argument_count == 4;
+
         // ---- varying layout -------------------------------------------------
         // worldPos / worldNormal are unconditional: the lighting math needs
         // them even when `Input` does not ask for them.
@@ -714,8 +1057,8 @@ namespace ZEngine::ShaderLab
         {
             std::string type;
             std::string name;
-            std::string assignment;  // vertex-shader RHS
-            std::string source;      // "texcoord" / "texcoord1" / generated
+            int uv_channel = -1;  // 0 = TEXCOORD0 source, 1 = TEXCOORD1 source
+            std::string texture;  // uv members only
         };
 
         std::vector<VaryingField> varyings;
@@ -723,22 +1066,13 @@ namespace ZEngine::ShaderLab
 
         for (const InputMember& member : members)
         {
-            if (member.kind == InputMemberKind::Uv)
+            if (member.kind == InputMemberKind::Uv || member.kind == InputMemberKind::Uv2)
             {
                 VaryingField field;
                 field.type = "float2";
                 field.name = member.name;
-                field.assignment = "v.texcoord * " + member.texture + "_ST.xy + " +
-                                   member.texture + "_ST.zw";
-                varyings.push_back(field);
-            }
-            else if (member.kind == InputMemberKind::Uv2)
-            {
-                VaryingField field;
-                field.type = "float2";
-                field.name = member.name;
-                field.assignment = "v.texcoord1 * " + member.texture + "_ST.xy + " +
-                                   member.texture + "_ST.zw";
+                field.uv_channel = (member.kind == InputMemberKind::Uv) ? 0 : 1;
+                field.texture = member.texture;
                 varyings.push_back(field);
             }
         }
@@ -753,14 +1087,14 @@ namespace ZEngine::ShaderLab
         world_normal.name = "zWorldNormal";
         varyings.push_back(world_normal);
 
-        bool need_screen_pos = false;
-        for (const InputMember& member : members)
+        if (need_tangent)
         {
-            if (member.kind == InputMemberKind::ScreenPos)
-            {
-                need_screen_pos = true;
-            }
+            VaryingField world_tangent;
+            world_tangent.type = "float4";  // xyz = world tangent, w = handedness
+            world_tangent.name = "zWorldTangent";
+            varyings.push_back(world_tangent);
         }
+
         if (need_screen_pos)
         {
             VaryingField screen_pos;
@@ -788,13 +1122,21 @@ namespace ZEngine::ShaderLab
             preamble += "float4 " + st + ";\n";
         }
 
+        // `alphatest:_Cutoff` reads a variable the shader may never declare
+        // (Unity's own templates declare it because a Properties block implies
+        // it, which ZEngine's pass generator does not know about).
+        if (!alpha_test.empty() && !BodyDeclaresName(masked_body, alpha_test))
+        {
+            preamble += "float " + alpha_test + ";\n";
+        }
+
         // ---- build the common preamble --------------------------------------
         std::ostringstream code;
         code << "\n";
         code << "// ------------------------------------------------------------------\n";
         code << "// Generated by ZEngine's surface-shader desugaring for\n";
         code << "//   #pragma surface " << directive.function << " " << directive.model_name;
-        for (const std::string& option : directive.options)
+        for (const std::string& option : directive.raw_options)
         {
             code << " " << option;
         }
@@ -816,33 +1158,63 @@ namespace ZEngine::ShaderLab
         code << "    float4 zClipPos : SV_POSITION;\n";
         for (VaryingField& field : varyings)
         {
-            field.source = "TEXCOORD" + std::to_string(texcoord_index);
-            code << "    " << field.type << " " << field.name << " : " << field.source << ";\n";
+            code << "    " << field.type << " " << field.name << " : TEXCOORD"
+                 << texcoord_index << ";\n";
             ++texcoord_index;
         }
         code << "};\n";
 
         // ---- vertex shader ---------------------------------------------------
+        //
+        // With `vertex:<fn>` the generated vertex shader works on an
+        // `appdata_full` copy instead of its own input struct, because that is
+        // the type Unity hands to a vertex modifier -- the author's function
+        // is written against `appdata_full`'s members.
+        const bool use_appdata = !vertex_modifier.empty();
+        const std::string vsrc = use_appdata ? "zApp" : "v";
+        // appdata_full.texcoord is a float4 (Unity); ZSurfaceVertexInput's is
+        // a float2, so the uv expression has to differ between the two.
+        const std::string uv0 = use_appdata ? "zApp.texcoord.xy" : "v.texcoord";
+        const std::string uv1 = use_appdata ? "zApp.texcoord1.xy" : "v.texcoord1";
+
         code << "\n";
         code << "ZSurfaceVarying zSurf_vert (ZSurfaceVertexInput v)\n";
         code << "{\n";
         code << "    ZSurfaceVarying o;\n";
-        code << "    o.zClipPos = UnityObjectToClipPos(v.vertex);\n";
-        code << "    const float4 zWorldPos4 = mul(unity_ObjectToWorld, v.vertex);\n";
+        if (use_appdata)
+        {
+            code << "    appdata_full zApp;\n";
+            code << "    zApp.vertex    = v.vertex;\n";
+            code << "    zApp.tangent   = v.tangent;\n";
+            code << "    zApp.normal    = v.normal;\n";
+            code << "    zApp.texcoord  = float4(v.texcoord, 0.0, 0.0);\n";
+            code << "    zApp.texcoord1 = float4(v.texcoord1, 0.0, 0.0);\n";
+            code << "    zApp.texcoord2 = float4(0.0, 0.0, 0.0, 0.0);\n";
+            code << "    zApp.texcoord3 = float4(0.0, 0.0, 0.0, 0.0);\n";
+            code << "    zApp.color     = float4(1.0, 1.0, 1.0, 1.0);\n";
+            code << "    " << vertex_modifier << " (zApp);\n";
+        }
+        code << "    o.zClipPos = UnityObjectToClipPos(" << vsrc << ".vertex);\n";
+        code << "    const float4 zWorldPos4 = mul(unity_ObjectToWorld, " << vsrc << ".vertex);\n";
         code << "    o.zWorldPos = zWorldPos4.xyz;\n";
-        code << "    o.zWorldNormal = UnityObjectToWorldDir(v.normal);\n";
+        code << "    o.zWorldNormal = UnityObjectToWorldDir(" << vsrc << ".normal);\n";
+        if (need_tangent)
+        {
+            code << "    o.zWorldTangent = float4(UnityObjectToWorldDir(" << vsrc
+                 << ".tangent.xyz), " << vsrc << ".tangent.w);\n";
+        }
         for (const VaryingField& field : varyings)
         {
-            if (field.name == "zWorldPos" || field.name == "zWorldNormal")
+            if (field.uv_channel == 0 || field.uv_channel == 1)
             {
-                continue;
+                const std::string& source_uv = (field.uv_channel == 0) ? uv0 : uv1;
+                code << "    o." << field.name << " = " << source_uv << " * " << field.texture
+                     << "_ST.xy + " << field.texture << "_ST.zw;\n";
             }
-            if (field.name == "zScreenPos")
+            else if (field.name == "zScreenPos")
             {
                 code << "    o.zScreenPos = o.zClipPos;\n";
-                continue;
             }
-            code << "    o." << field.name << " = " << field.assignment << ";\n";
         }
         code << "    return o;\n";
         code << "}\n";
@@ -903,61 +1275,202 @@ namespace ZEngine::ShaderLab
             }
             target << "\n";
             target << "    " << directive.function << " (zSurfIN, o);\n";
+            if (!alpha_test.empty())
+            {
+                // Unity emits this right after `surf`, in EVERY pass -- so a
+                // cut-out shader discards in the shadow pass too.
+                target << "    clip(o.Alpha - " << alpha_test << ");\n";
+            }
         };
 
-        // ---- forward (lighting) pass ----------------------------------------
-        {
-            std::ostringstream pass_code;
-            pass_code << code.str();
-            pass_code << "\n";
-            pass_code << "float4 zSurf_frag (ZSurfaceVarying IN) : SV_Target\n";
-            pass_code << "{\n";
-            emit_surf_setup(pass_code);
-            pass_code << "\n";
-            pass_code << "    const float3 zN = normalize(IN.zWorldNormal);\n";
-            pass_code << "    const float3 zL = normalize(_WorldSpaceLightPos0.xyz);\n";
-            pass_code << "    const float zNdL = saturate(dot(zN, zL));\n";
+        // ---- lighting -------------------------------------------------------
+        //
+        // One generator, parameterised by which light it is lit by:
+        // ForwardBase uses _WorldSpaceLightPos0, ForwardAdd uses
+        // _WorldSpaceLightPos1.
+        auto emit_lit_fragment = [&](std::ostringstream& target,
+                                     const std::string& fragment_name,
+                                     const std::string& light_color,
+                                     const std::string& light_pos) {
+            target << "\n";
+            target << "float4 " << fragment_name << " (ZSurfaceVarying IN) : SV_Target\n";
+            target << "{\n";
+            emit_surf_setup(target);
+            target << "\n";
 
-            if (directive.model == SurfaceLightingModel::Standard)
+            const bool is_custom = (custom.argument_count != 0);
+
+            target << "    const float3 zVertexNormal = normalize(IN.zWorldNormal);\n";
+            target << "    float3 zN = zVertexNormal;\n";
+            if (need_tangent)
+            {
+                target << "\n";
+                target << "    // o.Normal is TANGENT space (Unity's convention); (0,0,1) is\n";
+                target << "    // 'unperturbed'. Build the tangent frame and rotate into\n";
+                target << "    // world space so a normal map actually does something.\n";
+                target << "    float3 zT = IN.zWorldTangent.xyz;\n";
+                target << "    float zTSign = IN.zWorldTangent.w;\n";
+                target << "    if (dot(zT, zT) < 1e-8)\n";
+                target << "    {\n";
+                target << "        // A mesh without tangents (or with degenerate ones) would\n";
+                target << "        // make normalize() NaN and poison every pixel. Pick any\n";
+                target << "        // vector that is not parallel to the normal instead, so\n";
+                target << "        // o.Normal still tilts the surface.\n";
+                target << "        zT = (abs(zVertexNormal.y) < 0.999)\n";
+                target << "            ? normalize(cross(float3(0.0, 1.0, 0.0), zVertexNormal))\n";
+                target << "            : normalize(cross(float3(1.0, 0.0, 0.0), zVertexNormal));\n";
+                target << "        zTSign = 1.0;\n";
+                target << "    }\n";
+                target << "    zT = normalize(zT);\n";
+                target << "    const float3 zB = cross(zVertexNormal, zT) * ((zTSign < 0.0) ? -1.0 : 1.0);\n";
+                target << "    zN = normalize(o.Normal.x * zT + o.Normal.y * zB + o.Normal.z * zVertexNormal);\n";
+            }
+
+            target << "\n";
+            target << "    // Unity's UnityWorldSpaceLightDir(): _WorldSpaceLightPos0.w is 0\n";
+            target << "    // for a directional light (so .xyz already IS the direction) and\n";
+            target << "    // 1 for a point light (so the direction is pos - worldPos).\n";
+            target << "    const float3 zL = normalize(" << light_pos
+                   << ".xyz - IN.zWorldPos * " << light_pos << ".w);\n";
+            if (need_view_dir)
+            {
+                target << "    const float3 zV = normalize(_WorldSpaceCameraPos - IN.zWorldPos);\n";
+            }
+            target << "    const float zNdL = saturate(dot(zN, zL));\n";
+            target << "\n";
+
+            if (is_custom)
+            {
+                target << "    // " << custom.name << "() is the author's own lighting\n";
+                target << "    // function. `atten` is 1.0: ZEngine has no shadow or\n";
+                target << "    // per-light attenuation pipeline wired to ShaderLab yet.\n";
+                if (custom.argument_count == 3)
+                {
+                    target << "    const float4 zLit = " << custom.name
+                           << " (o, zL, 1.0);\n";
+                }
+                else
+                {
+                    target << "    const float4 zLit = " << custom.name
+                           << " (o, zL, zV, 1.0);\n";
+                }
+                target << "    float3 zColor = zLit.rgb;\n";
+                target << "    zColor += o.Emission;\n";
+                target << "    float4 zColor4 = float4(zColor, "
+                       << (directive.HasOption("keepalpha") ? "zLit.a" : "o.Alpha") << ");\n";
+            }
+            else if (directive.model == SurfaceLightingModel::Standard)
             {
                 // A deliberately simplified metallic/roughness approximation.
                 // It is NOT Unity's Standard BRDF -- ZEngine has no GI, no
                 // light list and no BRDF data yet. What matters structurally is
                 // that every field the author wrote is read.
-                pass_code << "    const float3 zV = normalize(_WorldSpaceCameraPos - IN.zWorldPos);\n";
-                pass_code << "    const float3 zH = normalize(zL + zV);\n";
-                pass_code << "    const float zNdH = saturate(dot(zN, zH));\n";
-                pass_code << "    const float zSpecPower = exp2(10.0 * o.Smoothness + 1.0);\n";
-                pass_code << "    const float3 zSpecColor = lerp(float3(0.04, 0.04, 0.04), o.Albedo, o.Metallic);\n";
-                pass_code << "    const float3 zDiffuseColor = o.Albedo * (1.0 - o.Metallic);\n";
-                pass_code << "    float3 zColor = zDiffuseColor * _LightColor0.rgb * zNdL;\n";
-                pass_code << "    zColor += zSpecColor * _LightColor0.rgb * pow(zNdH, zSpecPower) * zNdL;\n";
-                pass_code << "    zColor *= o.Occlusion;\n";
-                pass_code << "    zColor += o.Emission;\n";
+                target << "    const float3 zH = normalize(zL + zV);\n";
+                target << "    const float zNdH = saturate(dot(zN, zH));\n";
+                target << "    const float zSpecPower = exp2(10.0 * o.Smoothness + 1.0);\n";
+                target << "    const float3 zSpecColor = lerp(float3(0.04, 0.04, 0.04), o.Albedo, o.Metallic);\n";
+                target << "    const float3 zDiffuseColor = o.Albedo * (1.0 - o.Metallic);\n";
+                target << "    float3 zColor = zDiffuseColor * " << light_color << ".rgb * zNdL;\n";
+                target << "    zColor += zSpecColor * " << light_color
+                       << ".rgb * pow(zNdH, zSpecPower) * zNdL;\n";
+                target << "    zColor *= o.Occlusion;\n";
+                target << "    zColor += o.Emission;\n";
+                target << "    float4 zColor4 = float4(zColor, o.Alpha);\n";
             }
             else if (directive.model == SurfaceLightingModel::BlinnPhong)
             {
-                pass_code << "    const float3 zV = normalize(_WorldSpaceCameraPos - IN.zWorldPos);\n";
-                pass_code << "    const float3 zH = normalize(zL + zV);\n";
-                pass_code << "    const float zNdH = saturate(dot(zN, zH));\n";
-                pass_code << "    float3 zColor = o.Albedo * _LightColor0.rgb * zNdL;\n";
-                pass_code << "    zColor += _LightColor0.rgb * o.Specular * pow(zNdH, o.Gloss * 128.0 + 1.0) * zNdL;\n";
-                pass_code << "    zColor += o.Emission;\n";
+                target << "    const float3 zH = normalize(zL + zV);\n";
+                target << "    const float zNdH = saturate(dot(zN, zH));\n";
+                target << "    float3 zColor = o.Albedo * " << light_color << ".rgb * zNdL;\n";
+                target << "    zColor += " << light_color
+                       << ".rgb * o.Specular * pow(zNdH, o.Gloss * 128.0 + 1.0) * zNdL;\n";
+                target << "    zColor += o.Emission;\n";
+                target << "    float4 zColor4 = float4(zColor, o.Alpha);\n";
             }
             else  // Lambert
             {
-                pass_code << "    float3 zColor = o.Albedo * _LightColor0.rgb * zNdL;\n";
-                pass_code << "    zColor += o.Emission;\n";
+                target << "    float3 zColor = o.Albedo * " << light_color << ".rgb * zNdL;\n";
+                target << "    zColor += o.Emission;\n";
+                target << "    float4 zColor4 = float4(zColor, o.Alpha);\n";
             }
 
-            pass_code << "    return float4(zColor, o.Alpha);\n";
-            pass_code << "}\n";
+            // Unity's UNITY_OPAQUE_ALPHA: without `alpha` / `keepalpha` a
+            // surface shader is opaque, and an `o.Alpha` the author wrote is
+            // ignored on purpose -- a fade written into an opaque queue would
+            // be a silent sorting bug, not a feature.
+            if (!directive.HasOption("alpha") && !directive.HasOption("keepalpha"))
+            {
+                target << "    zColor4.a = 1.0;\n";
+            }
+
+            if (!final_color.empty())
+            {
+                target << "    " << final_color << " (zSurfIN, o, zColor4);\n";
+            }
+
+            target << "    return zColor4;\n";
+            target << "}\n";
+        };
+
+        // `alpha` turns the forward passes transparent.
+        SurfaceRenderStateOverride forward_state;
+        if (directive.HasOption("alpha"))
+        {
+            forward_state.has_blend = true;
+            forward_state.blend_src = SurfaceBlendFactor::SrcAlpha;
+            forward_state.blend_dst = SurfaceBlendFactor::OneMinusSrcAlpha;
+            forward_state.zwrite = true;
+        }
+
+        // ---- ForwardBase ----------------------------------------------------
+        {
+            std::ostringstream pass_code;
+            pass_code << code.str();
+            emit_lit_fragment(pass_code, "zSurf_frag", "_LightColor0", "_WorldSpaceLightPos0");
 
             SurfacePass pass;
             pass.name = "ForwardBase";
             pass.light_mode = "ForwardBase";
             pass.vertex_entry = "zSurf_vert";
             pass.fragment_entry = "zSurf_frag";
+            pass.render_state = forward_state;
+            pass.source_code = preamble + program_source + pass_code.str();
+            out.passes.push_back(std::move(pass));
+        }
+
+        // ---- ForwardAdd -----------------------------------------------------
+        //
+        // Unity always emits this pass (unless `noforwardadd`): one additive
+        // draw per additional light. ZEngine has no per-object light list, so
+        // it is lit by a single second light, `_LightColor1` /
+        // `_WorldSpaceLightPos1` -- unbound, i.e. black, i.e. a no-op until
+        // the engine learns to fill them. Generating it keeps the pass list
+        // structurally identical to Unity's and gives a real seam to plug a
+        // light list into; `noforwardadd` skips the draw entirely.
+        if (!directive.HasOption("noforwardadd"))
+        {
+            SurfaceRenderStateOverride add_state = forward_state;
+            add_state.has_blend = true;
+            add_state.blend_src = SurfaceBlendFactor::One;
+            add_state.blend_dst = SurfaceBlendFactor::One;
+            add_state.has_zwrite = true;
+            add_state.zwrite = false;
+
+            std::ostringstream pass_code;
+            pass_code << code.str();
+            pass_code << "\n";
+            pass_code << "// Additional per-pixel lights. ZEngine exposes one light, so this\n";
+            pass_code << "// pass reads _LightColor1/_WorldSpaceLightPos1 -- unbound (black)\n";
+            pass_code << "// until a real light list exists. Additive blending makes an\n";
+            pass_code << "// unlit second light a genuine no-op rather than a darkening.\n";
+            emit_lit_fragment(pass_code, "zSurf_addFrag", "_LightColor1", "_WorldSpaceLightPos1");
+
+            SurfacePass pass;
+            pass.name = "ForwardAdd";
+            pass.light_mode = "ForwardAdd";
+            pass.vertex_entry = "zSurf_vert";
+            pass.fragment_entry = "zSurf_addFrag";
+            pass.render_state = add_state;
             pass.source_code = preamble + program_source + pass_code.str();
             out.passes.push_back(std::move(pass));
         }
@@ -974,7 +1487,7 @@ namespace ZEngine::ShaderLab
             pass_code << "\n";
             pass_code << "// Shadow caster: ZEngine has no shadow pipeline wired to ShaderLab\n";
             pass_code << "// yet, so this writes depth only. `surf` is still called so that a\n";
-            pass_code << "// cutout shader can later drive `clip()` from o.Alpha.\n";
+            pass_code << "// cutout shader's alphatest clip() applies here too.\n";
             pass_code << "float4 zSurf_shadowFrag (ZSurfaceVarying IN) : SV_Target\n";
             pass_code << "{\n";
             emit_surf_setup(pass_code);

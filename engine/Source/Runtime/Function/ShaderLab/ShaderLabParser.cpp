@@ -41,6 +41,21 @@ namespace ZEngine::ShaderLab
             }
             return false;
         }
+        // Surface shader 选项携带的混合因子 -> ShaderLab 的 BlendFunc 枚举。
+        // ShaderLabSurface.h 刻意不依赖 ShaderLabAsset.h（它只 include
+        // <string>/<vector>，这样才能当纯 C++ 单测），所以这一层转换落在parser。
+        BlendFunc SurfaceBlendFactorToBlendFunc(SurfaceBlendFactor factor)
+        {
+            switch (factor)
+            {
+                case SurfaceBlendFactor::Zero:             return BlendFunc::Zero;
+                case SurfaceBlendFactor::SrcAlpha:         return BlendFunc::SrcAlpha;
+                case SurfaceBlendFactor::OneMinusSrcAlpha: return BlendFunc::OneMinusSrcAlpha;
+                case SurfaceBlendFactor::One:
+                default:                                   return BlendFunc::One;
+            }
+        }
+
         // 从 CGPROGRAM/HLSLPROGRAM 文本里抓 `#pragma vertex|fragment|pixel|compute <name>`。
         //
         // ShaderProgram::vertex_entry / fragment_entry 的初值 "vert" / "frag" 只是
@@ -801,6 +816,25 @@ namespace ZEngine::ShaderLab
             pass.tags["LightMode"] = surface_pass.light_mode;
             // Surface shader 内部的 Pass 同样继承 SubShader 级渲染状态。
             pass.render_states = inherited_states;
+
+            // `#pragma surface` 的选项本身携带渲染状态：`alpha` 打开透明混合，
+            // ForwardAdd 附加混合且不写深度。这些是 pass 级的，覆盖继承来的值。
+            const SurfaceRenderStateOverride& override_state = surface_pass.render_state;
+            if (override_state.has_blend)
+            {
+                pass.render_states.blend_enable = true;
+                pass.render_states.blend_src =
+                    SurfaceBlendFactorToBlendFunc(override_state.blend_src);
+                pass.render_states.blend_dst =
+                    SurfaceBlendFactorToBlendFunc(override_state.blend_dst);
+                pass.render_states.blend_src_alpha = pass.render_states.blend_src;
+                pass.render_states.blend_dst_alpha = pass.render_states.blend_dst;
+                pass.render_states.blend_op = BlendOp::Add;
+            }
+            if (override_state.has_zwrite)
+            {
+                pass.render_states.zwrite = override_state.zwrite;
+            }
 
             ShaderProgram program;
             program.language = language;

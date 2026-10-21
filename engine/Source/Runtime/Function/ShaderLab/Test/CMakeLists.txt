@@ -319,6 +319,8 @@ target_sources(${_smoke_target} PRIVATE
     unity_compat/Spine-Skeleton-Tint-CasterOnly.shader
     unity_compat/Surface-Standard.shader
     unity_compat/Surface-Lambert-AddShadow.shader
+    unity_compat/Surface-NormalMap-AlphaTest.shader
+    unity_compat/Surface-Custom-Lighting.shader
     unity_compat/diag_props.shader
     unity_compat/diag_props2.shader
     unity_compat/diag_pass_variants.shader
@@ -336,6 +338,8 @@ set_source_files_properties(
     unity_compat/Spine-Skeleton-Tint-CasterOnly.shader
     unity_compat/Surface-Standard.shader
     unity_compat/Surface-Lambert-AddShadow.shader
+    unity_compat/Surface-NormalMap-AlphaTest.shader
+    unity_compat/Surface-Custom-Lighting.shader
     unity_compat/diag_props.shader
     unity_compat/diag_props2.shader
     unity_compat/diag_pass_variants.shader

@@ -26,6 +26,7 @@
 
 #include "Runtime/Function/ShaderLab/ShaderLabDx12Compiler.h"
 
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -745,6 +746,20 @@ int main(int argc, char** argv)
                 ++failures;
                 continue;
             }
+
+            // ZENGINE_SHADERLAB_DUMP_SOURCE=1 prints the fully expanded HLSL
+            // ZEngine hands to DXC. For a surface shader that is the ONLY way
+            // to see what the desugaring generated -- the .shader file itself
+            // contains none of it, and "it compiled" says nothing about
+            // whether e.g. o.Normal actually reaches the lighting math.
+            if (std::getenv("ZENGINE_SHADERLAB_DUMP_SOURCE") != nullptr)
+            {
+                const ShaderProgram& program =
+                    compiler.GetAsset()->subshaders[0].passes[0].programs[0];
+                std::cout << "\n---- source handed to DXC (fragment: "
+                          << program.fragment_entry << ") ----\n"
+                          << program.source_code << "\n";
+            }
             TryCompile(compiler, "vertex", "vertex stage", true, checks, failures);
             TryCompile(compiler, "fragment", "fragment stage", true, checks, failures);
         }
@@ -863,14 +878,71 @@ int main(int argc, char** argv)
                   failures);
 
     // ------------------------------------------------------------------
-    // 5b. `addshadow` must actually produce a second, compilable pass.
+    // 5b. `addshadow` must actually produce a compilable shadow pass.
+    //
+    //     Index 2, not 1: Unity's pass order is ForwardBase, ForwardAdd,
+    //     ShadowCaster, and the ForwardAdd pass exists because this shader
+    //     does not say `noforwardadd`.
     // ------------------------------------------------------------------
     RequireSurfacePass(Fixture("Surface-Lambert-AddShadow.shader"),
                       "[5b] Surface Lambert + addshadow (shadow caster pass)",
-                      1,
+                      2,
                       "ShadowCaster",
                       checks,
                       failures);
+
+    // ------------------------------------------------------------------
+    // 5c. ...and the ForwardAdd pass itself must compile too. It is lit by
+    //     the (unbound) second light, so the risk it guards against is a
+    //     generated fragment shader that references a uniform that does not
+    //     exist.
+    // ------------------------------------------------------------------
+    RequireSurfacePass(Fixture("Surface-Lambert-AddShadow.shader"),
+                      "[5c] Surface Lambert (ForwardAdd pass)",
+                      1,
+                      "ForwardAdd",
+                      checks,
+                      failures);
+
+    // ------------------------------------------------------------------
+    // 6. Normal mapping + alpha test.
+    //
+    //    `o.Normal` is a TANGENT-space normal, so honouring it means the
+    //    generated vertex shader has to carry a world-space tangent and the
+    //    fragment shader has to build a TBN -- if that regresses, the shader
+    //    still COMPILES and the normal map silently does nothing, which no
+    //    "it compiled" check can catch. Compiling is the floor here, not the
+    //    whole test; the structural assertions live in ShaderLabSurfaceTest.
+    //
+    //    `alphatest:_Cutoff` also pins down that the desugaring declares the
+    //    cutoff variable itself (it only exists in the Properties block) and
+    //    clips in the shadow pass as well.
+    // ------------------------------------------------------------------
+    RunShaderFile("Surface-NormalMap-AlphaTest.shader",
+                  "[6] Surface Standard + normal map + alphatest (forward pass)",
+                  true,
+                  checks,
+                  failures);
+
+    RequireSurfacePass(Fixture("Surface-NormalMap-AlphaTest.shader"),
+                      "[6b] Surface normal map (shadow caster, must clip too)",
+                      2,
+                      "ShadowCaster",
+                      checks,
+                      failures);
+
+    // ------------------------------------------------------------------
+    // 7. Custom lighting model + vertex modifier + finalcolor + alpha.
+    //
+    //    LightingWrapLambert() is the author's own model; myVert() receives
+    //    an appdata_full, which is the whole reason the shim has to provide
+    //    that struct and the instance-ID macros it expands.
+    // ------------------------------------------------------------------
+    RunShaderFile("Surface-Custom-Lighting.shader",
+                  "[7] Surface custom Lighting<Name> + vertex: + finalcolor: + alpha",
+                  true,
+                  checks,
+                  failures);
 
     std::cout << "\n=== verdict: " << (failures == 0 ? "PASS" : "FAIL")
               << " (" << (checks - failures) << "/" << checks << " checks) ===\n";
