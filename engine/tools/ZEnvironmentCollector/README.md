@@ -282,7 +282,7 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 | verdict | 含义 | launcher 应当 |
 |---|---|---|
 | `Pass` | 没发现值得说的 | 不提示 |
-| `Advise` | 可提示的环境风险：同厂商两张卡驱动版本不一致、选到集显、显示器接在集显上、只有软件渲染、可用内存过低、页面文件过小或未启用、未检测到 VC++ 运行库、游戏默认要用的显卡无法初始化 Direct3D 11（另一张可以）、磁盘可用空间不足、有更新或驱动装完在等重启、很久没重启、最近显卡驱动崩溃重置过、游戏装在 U 盘/SD 卡/网络盘或非 NTFS 分区、安装路径含非 ASCII 字符、预览版系统 | 非模态提示，同一个提示只说一次 |
+| `Advise` | 可提示的环境风险：同厂商两张卡驱动版本不一致、选到集显、显示器接在集显上、只有软件渲染、可用内存过低、页面文件过小或未启用、未检测到 VC++ 运行库、游戏默认要用的显卡无法初始化 Direct3D 11（另一张可以）、磁盘可用空间不足、有更新或驱动装完在等重启、很久没重启、最近显卡驱动崩溃重置过、游戏装在机械硬盘上、装在 U 盘/SD 卡/网络盘或非 NTFS 分区、安装路径含非 ASCII 字符、预览版系统 | 非模态提示，同一个提示只说一次 |
 | `BelowMinimum` | 缺 AVX2、内存低于最低要求（默认 4 GB）、非 64 位 Windows、没有任何一张显卡能初始化 Direct3D 11、只有软件渲染器能初始化 Direct3D 11（显卡驱动没装）、功能级别低于 `minimumFeatureLevel` | 明确提示，但不阻断启动 |
 | `Inconclusive` | 没跑完（超时或探针失败） | 当作“没检查过” |
 
@@ -347,6 +347,12 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 - **安装路径含非 ASCII 单独一条**：路径对启动器是 UTF-8，对一个从没被告知编码的窄 `fopen` 就是乱
   码，而打不开的文件表现为"资源缺失"而不是"路径错了"，所以值得单独点名。报告里的路径走
   `SanitizePath`，用户名不进报告。
+- **机械硬盘单独一条，而且现在 preflight 自己就能答**（`GAME_VOLUME_SPINNING_DISK`）：判据是游戏卷上
+  的一次 `IOCTL_STORAGE_QUERY_PROPERTY`（`StorageDeviceSeekPenaltyProperty`）——**要付寻道惩罚就是有磁头
+  要移动**，这是 Windows 从 Vista 起自己给出的"是不是 SSD"，一次 `CreateFile` + 一次 IOCTL，不需要管理员、
+  不扫盘、不遍历 PhysicalDrive。以前这个问题只能靠发完整采集包回答（反馈 5 例里有 4 台标注"磁盘类型未知"）。
+  它不是故障，只是慢，所以只提示、动作是"挪到 SSD 上"。USB 硬盘盒和 RAID 卷可能答错，卷不回答就是
+  `known=false`，不猜成机械盘。
 - **不判断驱动新不新**：只在同一厂商两张卡版本不一致时才提示。
 - **输出目录默认 `%LOCALAPPDATA%\OSGame\EnvCheck`**，不是当前目录：launcher 拉起时当前目录是
   游戏安装目录，往那里写文件会触发启动器自己的完整性扫描。

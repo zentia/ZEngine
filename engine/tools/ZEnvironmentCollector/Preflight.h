@@ -142,6 +142,13 @@ struct PreflightInputs
     std::string gameVolumeFileSystem;       // "NTFS", "exFAT", "FAT32"...
     bool gameVolumeFileSystemKnown = false;
 
+    // Whether reads on this volume have to wait for a head to move. A mechanical
+    // disk is not a broken disk, but it is the difference between a first load the
+    // player waits through and one they do not -- and it is the one question about
+    // these machines that used to need a full collection to answer.
+    bool gameVolumeSpinning = false;
+    bool gameVolumeSpinningKnown = false;
+
     // Whether every character in the install path is ASCII. Native code that
     // opens files through the narrow API (fopen and friends) does not see the
     // path the way the rest of the game does, and a path it cannot round-trip is

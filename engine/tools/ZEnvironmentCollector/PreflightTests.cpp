@@ -413,6 +413,31 @@ int main()
             Check(!HasFinding(Evaluate(inputs), "GAME_PATH_NON_ASCII"), "a plain path is quiet");
         }
         {
+            // The question that used to need a full collection report to answer:
+            // is the game on a disk that has to move a head to read it.
+            auto inputs = HealthyInputs();
+            inputs.gameVolumeRoot = "D:\\";
+            inputs.gameVolumeSpinning = true;
+            inputs.gameVolumeSpinningKnown = true;
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise, "a mechanical disk advises");
+            Check(HasFinding(result, "GAME_VOLUME_SPINNING_DISK"), "and says the disk is mechanical");
+            Check(result.actions.front().code == "REINSTALL_ON_SSD", "and points at an SSD");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.gameVolumeSpinning = true;
+            inputs.gameVolumeSpinningKnown = false;
+            Check(!HasFinding(Evaluate(inputs), "GAME_VOLUME_SPINNING_DISK"),
+                  "a volume that would not answer is not called mechanical");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.gameVolumeSpinning = false;
+            inputs.gameVolumeSpinningKnown = true;
+            Check(!HasFinding(Evaluate(inputs), "GAME_VOLUME_SPINNING_DISK"), "an SSD is quiet");
+        }
+        {
             // Not installed, not shipped beside the game.
             auto inputs = HealthyInputs();
             inputs.vcRuntimePresent = false;
@@ -711,6 +736,7 @@ int main()
             Check(json.find("\"reboot\": {") != std::string::npos, "reboot is reported");
             Check(json.find("\"gpuDriverResets\": {") != std::string::npos, "gpuDriverResets is reported");
             Check(json.find("\"driveType\": ") != std::string::npos, "the game volume's drive type is reported");
+            Check(json.find("\"spinning\": ") != std::string::npos, "whether the game volume is mechanical is reported");
             Check(json.find("\"gamePath\": {") != std::string::npos, "the install path is reported");
             Check(json.find("\"uptimeMilliseconds\": ") != std::string::npos, "uptime is reported");
             Check(json.find("\"attachedOutputCount\": ") != std::string::npos, "each adapter reports its attached outputs");

@@ -9,6 +9,10 @@
 #include "ToolVersion.h"
 
 #include <Windows.h>
+// Only for IOCTL_STORAGE_QUERY_PROPERTY: whether the game's volume has to move a
+// head to read is one query on one handle, and it is the platform's own answer to
+// "is this an SSD".
+#include <winioctl.h>
 
 #include <d3d11.h>
 // Only for the adapter enumeration and the feature-level constants: d3d11.dll is
@@ -183,6 +187,49 @@ std::wstring PreflightInstanceName(const std::filesystem::path& outputDirectory)
     return stream.str();
 }
 
+// Whether reads on this volume have to wait for a head to move. Windows answers
+// this with one IOCTL on the volume, and that answer is what "is this an SSD" has
+// meant on this platform since Vista: a disk that incurs no seek penalty has no
+// head to move. A USB enclosure or a RAID volume can get it wrong, which is why
+// the result only ever advises, and why a volume that will not answer the query
+// stays unknown rather than becoming "probably mechanical".
+bool ReadVolumeSpinning(const wchar_t* root, bool& known)
+{
+    known = false;
+    wchar_t volumeName[MAX_PATH]{};
+    if (::GetVolumeNameForVolumeMountPointW(root, volumeName, MAX_PATH) == FALSE)
+    {
+        return false;
+    }
+    const std::wstring volume(volumeName);
+    if (volume.size() < 2)
+    {
+        return false;
+    }
+    // CreateFile takes the volume GUID without its trailing backslash.
+    const std::wstring device = volume.substr(0, volume.size() - 1);
+    const HANDLE handle = ::CreateFileW(device.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                        OPEN_EXISTING, 0, nullptr);
+    if (handle == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+    STORAGE_PROPERTY_QUERY query{};
+    query.PropertyId = StorageDeviceSeekPenaltyProperty;
+    query.QueryType = PropertyStandardQuery;
+    DEVICE_SEEK_PENALTY_DESCRIPTOR descriptor{};
+    DWORD returned = 0;
+    const BOOL answered = ::DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY, &query, sizeof(query),
+                                            &descriptor, sizeof(descriptor), &returned, nullptr);
+    ::CloseHandle(handle);
+    if (answered == FALSE || returned < sizeof(DEVICE_SEEK_PENALTY_DESCRIPTOR))
+    {
+        return false;
+    }
+    known = true;
+    return descriptor.IncursSeekPenalty != FALSE;
+}
+
 void CollectGameVolume(PreflightInputs& inputs, const std::filesystem::path& gameDirectory)
 {
     if (gameDirectory.empty())
@@ -223,6 +270,7 @@ void CollectGameVolume(PreflightInputs& inputs, const std::filesystem::path& gam
         inputs.gameVolumeFileSystem = diagnosis::WideToUtf8(fileSystem);
         inputs.gameVolumeFileSystemKnown = true;
     }
+    inputs.gameVolumeSpinning = ReadVolumeSpinning(root, inputs.gameVolumeSpinningKnown);
 
     inputs.gamePathKnown = true;
     inputs.gamePath = diagnosis::SanitizePath(diagnosis::WideToUtf8(target));
@@ -800,6 +848,12 @@ diagnosis::UserAction ActionFor(const std::string& findingCode)
         return {"REINSTALL_TO_ASCII_PATH",
                 "把游戏重新安装到只有英文和数字的路径下（例如 D:\\Games\\）再启动。"};
     }
+    if (findingCode == "GAME_VOLUME_SPINNING_DISK")
+    {
+        // Not "the disk is broken" -- the disk is fine, it is just slow, and the
+        // only fix that helps is moving the game off it.
+        return {"REINSTALL_ON_SSD", "把游戏移动到固态硬盘（SSD）上再启动，加载和读资源会快很多。"};
+    }
     if (findingCode == "WINDOWS_INSIDER_PREVIEW")
     {
         return {"LEAVE_INSIDER", "退出 Windows 预览体验计划，回到正式版系统。"};
@@ -1116,6 +1170,16 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
         result.findings.push_back({"GAME_VOLUME_NOT_NTFS", "storage",
             "游戏所在分区不是 NTFS，大文件写入和文件权限相关操作可能失败。",
             inputs.gameVolumeRoot + " is " + inputs.gameVolumeFileSystem});
+    }
+    // A mechanical disk is not a broken disk and this is not a fault, but it is
+    // the difference between a load the player waits through and one they do not,
+    // and "is it on a hard disk" is a question this tool could only answer by
+    // shipping a full collection report. Now it takes one IOCTL.
+    if (inputs.gameVolumeSpinningKnown && inputs.gameVolumeSpinning)
+    {
+        result.findings.push_back({"GAME_VOLUME_SPINNING_DISK", "storage",
+            "游戏装在机械硬盘上，首次加载和读资源会明显偏慢。",
+            inputs.gameVolumeRoot + " incurs a seek penalty"});
     }
     // Narrow-API file opens are the reason this is worth saying: the path is
     // UTF-8 to the launcher and mojibake to a `fopen` that never asked which
@@ -1833,6 +1897,8 @@ std::string BuildPreflightJson(
            << ", \"driveTypeKnown\": " << BoolText(inputs.gameVolumeDriveTypeKnown)
            << ", \"fileSystem\": " << JsonString(inputs.gameVolumeFileSystem)
            << ", \"fileSystemKnown\": " << BoolText(inputs.gameVolumeFileSystemKnown)
+           << ", \"spinning\": " << BoolText(inputs.gameVolumeSpinning)
+           << ", \"spinningKnown\": " << BoolText(inputs.gameVolumeSpinningKnown)
            << "},\n"
            << "    \"gamePath\": {\"known\": " << BoolText(inputs.gamePathKnown)
            << ", \"ascii\": " << BoolText(inputs.gamePathAscii)
