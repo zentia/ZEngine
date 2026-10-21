@@ -8,6 +8,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -227,6 +228,44 @@ int main()
             const auto empty = CollectGameLogs(directory / "EmptyLogs", directory / "log-out3", 336, 0);
             Check(empty.status == GameLogStatus::NoLogs && empty.json.find("NO_LOG_FILES_IN_WINDOW") != std::string::npos,
                 "empty log folder is reported");
+
+            // The index says it does not follow links. A junction inside the log
+            // folder is a link to somewhere else, and following it would package
+            // logs that are not the game's into a report somebody sends -- carrying
+            // a relativePath that quietly claims they came from the game's folder.
+            {
+                const auto outside = directory / "OutsideLogs";
+                std::filesystem::create_directories(outside);
+                std::ofstream(outside / "elsewhere.log", std::ios::binary) << "not the game\n";
+                const auto linked = directory / "JunctionLogs";
+                std::filesystem::create_directories(linked);
+                // A junction rather than a directory symlink: creating one needs no
+                // privilege, so this case runs on any machine that can run the tool.
+                const std::string link = "cmd /c mklink /J \"" + (linked / "pointed").string()
+                    + "\" \"" + outside.string() + "\" >nul";
+                if (std::system(link.c_str()) == 0)
+                {
+                    const auto junction = CollectGameLogs(linked, directory / "log-out4", 336, 0);
+                    Check(junction.archiveNames.empty(), "a junction inside the log folder is not followed");
+                    Check(junction.json.find("elsewhere.log") == std::string::npos,
+                          "logs reachable only through a link stay out of the report");
+                }
+            }
+            // Every other cap says why a log was left out. The count cap was the
+            // only one that dropped files without a word, which left the index
+            // reading like a complete list of what the window held.
+            {
+                const auto many = directory / "ManyLogs";
+                std::filesystem::create_directories(many);
+                for (std::uint32_t i = 0; i < MaxGameLogFiles + 2; ++i)
+                {
+                    std::ofstream(many / ("session" + std::to_string(i) + ".log"), std::ios::binary) << "line\n";
+                }
+                const auto capped = CollectGameLogs(many, directory / "log-out5", 336, 0);
+                Check(capped.archiveNames.size() == MaxGameLogFiles, "the file cap holds");
+                Check(capped.json.find("FILE_LIMIT") != std::string::npos,
+                      "and the logs it had to drop are named, not silently omitted");
+            }
 
             Profile configured;
             configured.logSubPath = "Tencent\\osgameCNOfficial\\Cache\\Logs";

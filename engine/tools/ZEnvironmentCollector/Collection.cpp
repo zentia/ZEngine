@@ -408,14 +408,20 @@ void ScanLogFiles(const std::filesystem::path& directory, int depth, std::vector
     do
     {
         const std::wstring name = data.cFileName;
+        const bool isLink = (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
         if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
         {
-            if (depth + 1 < MaxGameLogScanDepth && name != L"." && name != L"..")
+            // A link can point anywhere: another volume, the whole system drive, or
+            // back up the tree. Recursing into one would package logs that are not
+            // the game's, into a report someone sends, behind a relativePath that
+            // quietly claims they came from the game's own folder. Depth alone does
+            // not save us -- one level of a junction onto C: is already the machine.
+            if (!isLink && depth + 1 < MaxGameLogScanDepth && name != L"." && name != L"..")
                 ScanLogFiles(directory / name, depth + 1, out);
             continue;
         }
         // A link inside the log folder could point anywhere; never follow it.
-        if (data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+        if (isLink) continue;
         std::filesystem::path file = directory / name;
         if (!IsLogExtension(name)) continue;
         const auto bytes = (static_cast<std::uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
@@ -553,7 +559,15 @@ GameLogCollection CollectGameLogs(const std::filesystem::path& logDirectory, con
     bool firstFile = true, firstSkipped = true;
     for (const auto& candidate : candidates)
     {
-        if (result.archiveNames.size() >= MaxGameLogFiles) break;
+        if (result.archiveNames.size() >= MaxGameLogFiles)
+        {
+            // Every other cap says why a log was left out. Dropping these in silence
+            // left the index reading like a complete list of what the window held,
+            // and the cap bites hardest exactly when it matters -- when there are
+            // more logs near the incident than the cap allows.
+            skipped.push_back({RelativeLogPath(candidate.path, logDirectory), "FILE_LIMIT"});
+            continue;
+        }
         if (candidate.bytes > MaxGameLogFileBytes || total + candidate.bytes > MaxGameLogTotalBytes)
         {
             skipped.push_back({RelativeLogPath(candidate.path, logDirectory), candidate.bytes > MaxGameLogFileBytes ? "TOO_LARGE" : "TOTAL_LIMIT"});
