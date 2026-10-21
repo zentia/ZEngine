@@ -281,20 +281,28 @@ struct LumenGlobalIlluminationData
 // 反射数据
 struct LumenReflectionData
 {
+    // 这一份结果是不是真的追踪到了东西。
+    //
+    // 不能靠"颜色非零"判断：命中一个纯黑的表面本来就该返回黑色，而一个没命中任何
+    // 东西的结果也是黑色 —— 两者必须能区分，否则混合阶段会把"没命中"当成"命中了
+    // 黑色"从而压掉真正有用的距离场结果（这正是屏幕空间反射那个 TODO 造成的 bug：
+    // 它恒返回零，却在混合里拿到了 100% 权重）。
+    bool valid {false};
+
     // 反射颜色
-    Vector3 reflection_color;
+    Vector3 reflection_color {0.0f, 0.0f, 0.0f};
 
     // 反射方向
-    Vector3 reflection_direction;
+    Vector3 reflection_direction {0.0f, 0.0f, 0.0f};
 
     // 反射距离
-    float reflection_distance;
+    float reflection_distance {0.0f};
 
     // 反射类型
-    RayTracingType reflection_type;
+    RayTracingType reflection_type {RayTracingType::Software};
 
     // 粗糙度影响
-    float roughness_factor;
+    float roughness_factor {0.0f};
 };
 
 // Lumen配置
@@ -341,6 +349,12 @@ struct LumenConfig
     float gi_probe_max_distance = 200.0f;   // 离相机超过这个距离的 probe 本帧不更新
     float gi_temporal_blend_rate = 4.0f;    // 时间累积的收敛速率（每秒），0 = 完全不更新
     float gi_probe_max_surface_distance_factor = 2.0f;  // 离表面超过 (该值 × probe 间距) 的 probe 跳过
+
+    // 反射设置。反射的采样点是表面缓存的页面（它们带世界位置和法线，天然就是一个
+    // 着色点），所以预算和距离裁剪的单位跟 GI 的 probe 网格一致。
+    uint32_t reflection_update_budget = 32;   // 每帧最多更新多少个页面的反射
+    float reflection_temporal_blend_rate = 4.0f;  // 时间累积速率（每秒），0 = 冻结
+    float reflection_max_distance = 200.0f;   // 离相机超过这个距离的页面本帧不更新
 
     // 调试设置
     bool debug_visualize_distance_field = false;

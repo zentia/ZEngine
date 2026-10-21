@@ -48,6 +48,18 @@ struct SceneIndirectLighting
     /// 产出这份数据的帧号，用来判断"是不是陈旧的"。
     uint64_t frame_index {0};
 
+    /// 场景级的反射辐射（rgb）。已经对所有采样点做过平均。
+    ///
+    /// 注意这是**场景平均**，不是逐像素反射：CPU 路径既没有屏幕探针也没有 GBuffer，
+    /// 拿不到逐像素的着色点和视线方向。它在 shader 里的角色等价于一个粗糙的
+    /// specular 环境项（就像 baked specular cubemap 的最粗一级 mip）。
+    /// 真要做逐像素反射必须有 GPU 侧的屏幕探针，那是另一件事。
+    Vector3 reflection {0.0f, 0.0f, 0.0f};
+    /// 反射的混合权重：0 = 沿用 baked specular cubemap，1 = 完全用 Lumen 的反射。
+    /// 与 weight 分开是因为 GI 和反射可以各自独立开关（r.Lumen.GlobalIllumination
+    /// 和 r.Lumen.Reflections 是两个 CVar）。
+    float reflection_weight {0.0f};
+
     /// 打包成 MainCameraPerFrame::lumen_indirect。
     ///
     /// 放在这里而不是在两个 UpdatePerFrameBuffer 里各写一遍：那个搬运有两份实现
@@ -55,6 +67,9 @@ struct SceneIndirectLighting
     /// 是 Windows 专属），手抄两次迟早会漂，而且这两份在 Apple 上都编译不到 ——
     /// 收敛成一个函数，冒烟测试才有一个所有平台都能链接的断言对象。
     Vector4 ToUniform() const { return Vector4(irradiance, weight); }
+
+    /// 打包成 MainCameraPerFrame::lumen_reflection。同样收敛成一处，理由同上。
+    Vector4 ToReflectionUniform() const { return Vector4(reflection, reflection_weight); }
 };
 
 struct MainCameraPerFrame
@@ -87,6 +102,11 @@ struct MainCameraPerFrame
     /// probe 网格今天还没有 GPU 侧的 3D 纹理体积，所以 CPU 只发布一个全场景平均值；
     /// 等体积纹理就位，这里换成纹理绑定即可，struct 不用动。
     Vector4 lumen_indirect {0.0f, 0.0f, 0.0f, 0.0f};
+    /// Lumen 的反射：rgb = 场景级反射辐射，a = 混合权重。
+    /// 0 = 沿用 baked specular cubemap，1 = 完全用 Lumen 的反射。
+    ///
+    /// 与 lumen_indirect 分开是两个独立权重：GI 和反射由两个 CVar 各自开关。
+    Vector4 lumen_reflection {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 struct RenderMeshInstance

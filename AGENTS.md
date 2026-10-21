@@ -2169,6 +2169,29 @@ downstream reads it.
   用 `lerp(ambient_light, ...)`。两者都是辐照度，加起来会把天光算两遍。权重 0 时的
   行为必须和加字段之前**逐字节一致**。
 
+### 2.40 Lumen 反射：从零调用者到进 shader
+
+- **`LumenRenderer::ComputeReflections()` 曾经是个空 TODO**，所以
+  `LumenReflections::ComputeReflection()` 零调用者、`LumenReflectionData` 从不离开
+  `Function/Render/Lumen/`。这是"代码看着像真的但从没跑过"的典型 —— 一跑就暴露三个 bug：
+  ①`BlendReflections` 用 `max_trace_distance`（**常量**）挑分支，`<100` 且 `roughness<0.3`
+  时选中 SSR，而 SSR 是恒空 TODO ⇒ 已追到的命中被换成黑色。现在按"哪份真的命中"加权。
+  ②`ComputeReflection` 算出的镜像方向被 `BlendReflections` 的返回值整体覆盖掉（它从不
+  设这个字段）。③粗糙度 TODO 没实现，粗糙面仍打单条镜面光线，再被 `(1-roughness)` 压暗
+  ⇒ `roughness=1` 时恒为纯黑。现在粗糙度是**把圆锥张开、多条光线取平均**，辐射本身不衰减
+  （粗糙度是 shader 里 BRDF 波瓣的事，两边都算就重复了）。
+- **"有没有命中"必须有独立的 `valid` 字段**，不能靠颜色判断：命中一个纯黑表面本来就是黑的。
+  这和 GI 的"用 `last_updated_frame` 而不是用值非零判断有没有数据"是同一条教训。
+- **反射的采样点是表面缓存的页面**（自带 `world_position` + `normal`，天然就是着色点），
+  所以反射依赖表面缓存而不只是距离场 ⇒ `UpdateSurfaceCache` 的开关条件必须带上
+  `enable_reflections`，否则"GI 关、反射开"时反射一个采样点都拿不到。
+- 累积按 **`instance_id` 做键**，不按页面下标：页面会因重建/驱逐换槽位，换槽位不该丢历史。
+- `lumen_indirect` 与 `lumen_reflection` 是**两个独立权重**（GI 和反射是两个 CVar）。
+  发布失败时只清自己那两个字段，不要整份 `SceneIndirectLighting` 清掉。
+- **发布的是场景平均**，不是逐像素反射：CPU 既没有屏幕探针也没有 GBuffer，拿不到逐像素的
+  着色点和视线方向。它在 shader 里的角色是粗糙的 specular 环境项。延迟通道（HLSL）今天
+  没有 specular IBL 项，所以只有前向 GLSL 路径消费它。
+
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).

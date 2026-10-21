@@ -59,9 +59,12 @@
 static_assert(offsetof(MainCameraPerFrame, lumen_indirect) ==
                   offsetof(MainCameraPerFrame, viewport_rect) + sizeof(Vector4),
               "lumen_indirect must directly follow viewport_rect (matches the GLSL/HLSL mirrors)");
-static_assert(offsetof(MainCameraPerFrame, lumen_indirect) + sizeof(Vector4) ==
+static_assert(offsetof(MainCameraPerFrame, lumen_reflection) ==
+                  offsetof(MainCameraPerFrame, lumen_indirect) + sizeof(Vector4),
+              "lumen_reflection must directly follow lumen_indirect");
+static_assert(offsetof(MainCameraPerFrame, lumen_reflection) + sizeof(Vector4) ==
                   sizeof(MainCameraPerFrame),
-              "lumen_indirect must be the last field of MainCameraPerFrame");
+              "lumen_reflection must be the last field of MainCameraPerFrame");
 static_assert(sizeof(MainCameraPerFrame) % 16 == 0,
               "MainCameraPerFrame must stay 16-byte aligned (it is a uniform/storage buffer)");
 
@@ -127,9 +130,10 @@ namespace
         }
     }
 
-    // The struct mirrors must declare lumen_indirect as a 4-component vector,
-    // after viewport_rect. The three copies are laid out by hand in parallel.
-    void CheckStructMirror(const std::string& path, const char* vector_type)
+    // The struct mirrors must declare the field as a 4-component vector, after
+    // the given anchor. The three copies are laid out by hand in parallel.
+    void CheckStructMirror(const std::string& path, const char* field, const char* anchor,
+                           const char* vector_type)
     {
         const std::string text = ReadTextFile(path);
         if (text.empty())
@@ -140,19 +144,19 @@ namespace
             return;
         }
 
-        const std::size_t viewport_rect = text.find("viewport_rect");
-        const std::size_t lumen = text.find("lumen_indirect");
+        const std::size_t anchor_at = text.find(anchor);
+        const std::size_t field_at = text.find(field);
         bool ok = true;
 
-        if (lumen == std::string::npos)
+        if (field_at == std::string::npos)
         {
             ok = false;
-            std::printf("[FAIL] %s does not declare lumen_indirect\n", path.c_str());
+            std::printf("[FAIL] %s does not declare %s\n", path.c_str(), field);
         }
         else
         {
-            const std::size_t line_start = text.rfind('\n', lumen);
-            const std::size_t line_end = text.find('\n', lumen);
+            const std::size_t line_start = text.rfind('\n', field_at);
+            const std::size_t line_end = text.find('\n', field_at);
             const std::string line = text.substr(line_start == std::string::npos ? 0 : line_start,
                                                  line_end == std::string::npos
                                                      ? std::string::npos
@@ -160,21 +164,20 @@ namespace
             if (!Contains(line, vector_type))
             {
                 ok = false;
-                std::printf("[FAIL] %s declares lumen_indirect without %s\n", path.c_str(), vector_type);
+                std::printf("[FAIL] %s declares %s without %s\n", path.c_str(), field, vector_type);
             }
         }
 
-        if (viewport_rect == std::string::npos || lumen == std::string::npos || lumen < viewport_rect)
+        if (anchor_at == std::string::npos || field_at == std::string::npos || field_at < anchor_at)
         {
             ok = false;
-            std::printf("[FAIL] %s declares lumen_indirect before viewport_rect\n", path.c_str());
+            std::printf("[FAIL] %s declares %s before %s\n", path.c_str(), field, anchor);
         }
 
         ++g_Checks;
         if (ok)
         {
-            std::printf("[ ok ] %s mirrors lumen_indirect as %s after viewport_rect\n", path.c_str(),
-                        vector_type);
+            std::printf("[ ok ] %s mirrors %s as %s after %s\n", path.c_str(), field, vector_type, anchor);
         }
         else
         {
@@ -184,11 +187,13 @@ namespace
 
     // A consumer must BLEND with the weight, not add to the baked irradiance --
     // adding would count the sky twice.
-    void CheckConsumer(const std::string& path, const char* blend_function)
+    void CheckConsumer(const std::string& path, const char* field, const char* blend_function)
     {
         const std::string text = ReadTextFile(path);
-        const std::size_t use = text.find("lumen_indirect.rgb");
-        bool ok = use != std::string::npos && Contains(text, "lumen_indirect.a");
+        const std::string rgb_access = std::string(field) + ".rgb";
+        const std::string a_access = std::string(field) + ".a";
+        const std::size_t use = text.find(rgb_access);
+        bool ok = use != std::string::npos && Contains(text, a_access.c_str());
 
         if (ok)
         {
@@ -201,20 +206,20 @@ namespace
             ok = Contains(line, blend_function);
             if (!ok)
             {
-                std::printf("[FAIL] %s uses lumen_indirect without %s (adding it would double-count "
-                            "the baked sky)\n",
-                            path.c_str(), blend_function);
+                std::printf("[FAIL] %s uses %s without %s (adding it would double-count the baked "
+                            "environment)\n",
+                            path.c_str(), field, blend_function);
             }
         }
         else
         {
-            std::printf("[FAIL] %s does not consume lumen_indirect\n", path.c_str());
+            std::printf("[FAIL] %s does not consume %s\n", path.c_str(), field);
         }
 
         ++g_Checks;
         if (ok)
         {
-            std::printf("[ ok ] %s blends lumen_indirect with %s\n", path.c_str(), blend_function);
+            std::printf("[ ok ] %s blends %s with %s\n", path.c_str(), field, blend_function);
         }
         else
         {
@@ -238,8 +243,12 @@ int main()
         Check(fresh.weight == 0.0f, "SceneIndirectLighting defaults to weight 0");
         Check(fresh.irradiance == Vector3::ZERO, "SceneIndirectLighting defaults to black");
         Check(fresh.frame_index == 0, "SceneIndirectLighting defaults to frame 0");
+        Check(fresh.reflection == Vector3::ZERO, "SceneIndirectLighting defaults to no reflection");
+        Check(fresh.reflection_weight == 0.0f, "SceneIndirectLighting defaults to reflection weight 0");
         Check(SameVector4(fresh.ToUniform(), Vector4(0.0f, 0.0f, 0.0f, 0.0f)),
               "a fresh scene packs to (0,0,0,0)");
+        Check(SameVector4(fresh.ToReflectionUniform(), Vector4(0.0f, 0.0f, 0.0f, 0.0f)),
+              "a fresh scene packs reflection to (0,0,0,0)");
     }
 
     // -------------------------------------------------------------------------
@@ -257,6 +266,18 @@ int main()
               "the irradiance channels pack in order (rgb)");
         Check(NearlyEqual(packed.w, 1.0f), "the weight packs into .a");
         Check(red_bounce.frame_index == 7, "the frame index is NOT packed (only irradiance + weight reach the GPU)");
+
+        // GI 和反射是两套独立的权重（r.Lumen.GlobalIllumination 与 r.Lumen.Reflections
+        // 是两个 CVar），所以各自的打包互不干扰：GI 关掉不该把反射也关掉。
+        red_bounce.reflection = Vector3(0.2f, 0.3f, 0.4f);
+        red_bounce.reflection_weight = 1.0f;
+        const Vector4 packed_reflection = red_bounce.ToReflectionUniform();
+        Check(NearlyEqual(packed_reflection.x, 0.2f) && NearlyEqual(packed_reflection.y, 0.3f) &&
+                  NearlyEqual(packed_reflection.z, 0.4f),
+              "the reflection channels pack in order (rgb)");
+        Check(NearlyEqual(packed_reflection.w, 1.0f), "the reflection weight packs into .a");
+        Check(SameVector4(red_bounce.ToUniform(), Vector4(0.4f, 0.1f, 0.05f, 1.0f)),
+              "packing the reflection leaves the GI packing untouched");
     }
 
     // -------------------------------------------------------------------------
@@ -275,6 +296,15 @@ int main()
         off.weight = 0.0f;
         Check(NearlyEqual(off.ToUniform().w, 0.0f),
               "weight 0 stays weight 0 no matter what colour is left over");
+
+        // 关掉反射而 GI 还开着：反射权重必须归零，GI 权重必须还是 1
+        SceneIndirectLighting gi_only {};
+        gi_only.irradiance = Vector3(0.4f, 0.1f, 0.05f);
+        gi_only.weight = 1.0f;
+        gi_only.reflection_weight = 0.0f;
+        Check(NearlyEqual(gi_only.ToReflectionUniform().w, 0.0f),
+              "GI on + reflections off packs reflection weight 0");
+        Check(NearlyEqual(gi_only.ToUniform().w, 1.0f), "...and leaves the GI weight at 1");
     }
 
     // -------------------------------------------------------------------------
@@ -284,8 +314,11 @@ int main()
     Check(offsetof(MainCameraPerFrame, lumen_indirect) ==
               offsetof(MainCameraPerFrame, viewport_rect) + sizeof(Vector4),
           "lumen_indirect directly follows viewport_rect in C++");
-    Check(offsetof(MainCameraPerFrame, lumen_indirect) + sizeof(Vector4) == sizeof(MainCameraPerFrame),
-          "lumen_indirect is the last field of MainCameraPerFrame");
+    Check(offsetof(MainCameraPerFrame, lumen_reflection) ==
+              offsetof(MainCameraPerFrame, lumen_indirect) + sizeof(Vector4),
+          "lumen_reflection directly follows lumen_indirect in C++");
+    Check(offsetof(MainCameraPerFrame, lumen_reflection) + sizeof(Vector4) == sizeof(MainCameraPerFrame),
+          "lumen_reflection is the last field of MainCameraPerFrame");
     Check(sizeof(MainCameraPerFrame) % 16 == 0, "MainCameraPerFrame stays 16-byte aligned");
 
     // -------------------------------------------------------------------------
@@ -301,18 +334,34 @@ int main()
                 "the Vulkan UpdatePerFrameBuffer publishes lumen_indirect");
     CheckSource(render_dir + "/RenderResourceDx12.cpp", "lumen_indirect",
                 "the DX12 UpdatePerFrameBuffer publishes lumen_indirect");
+    CheckSource(render_dir + "/RenderResource.cpp", "lumen_reflection",
+                "the Vulkan UpdatePerFrameBuffer publishes lumen_reflection");
+    CheckSource(render_dir + "/RenderResourceDx12.cpp", "lumen_reflection",
+                "the DX12 UpdatePerFrameBuffer publishes lumen_reflection");
 
     const std::string shader = root + "/shader";
-    CheckStructMirror(shader + "/include/structures.h", "vec4");
-    CheckStructMirror(shader + "/hlsl/common/scene_lighting_structs.hlsli", "float4");
+    CheckStructMirror(shader + "/include/structures.h", "lumen_indirect", "viewport_rect", "vec4");
+    CheckStructMirror(shader + "/include/structures.h", "lumen_reflection", "lumen_indirect", "vec4");
+    CheckStructMirror(shader + "/hlsl/common/scene_lighting_structs.hlsli", "lumen_indirect",
+                      "viewport_rect", "float4");
+    CheckStructMirror(shader + "/hlsl/common/scene_lighting_structs.hlsli", "lumen_reflection",
+                      "lumen_indirect", "float4");
     CheckSource(shader + "/include/main_camera_per_frame_access.inl",
                 "#define lumen_indirect per_frame.lumen_indirect",
                 "the GLSL bare-name accessor exposes lumen_indirect");
+    CheckSource(shader + "/include/main_camera_per_frame_access.inl",
+                "#define lumen_reflection per_frame.lumen_reflection",
+                "the GLSL bare-name accessor exposes lumen_reflection");
     CheckSource(shader + "/hlsl/common/main_camera_per_frame_access.hlsli",
                 "#define lumen_indirect per_frame.lumen_indirect",
                 "the HLSL bare-name accessor exposes lumen_indirect");
-    CheckConsumer(shader + "/include/mesh_lighting.inl", "mix(");
-    CheckConsumer(shader + "/hlsl/rp1/deferred_lighting.frag.hlsl", "lerp(");
+    CheckSource(shader + "/hlsl/common/main_camera_per_frame_access.hlsli",
+                "#define lumen_reflection per_frame.lumen_reflection",
+                "the HLSL bare-name accessor exposes lumen_reflection");
+    CheckConsumer(shader + "/include/mesh_lighting.inl", "lumen_indirect", "mix(");
+    CheckConsumer(shader + "/include/mesh_lighting.inl", "lumen_reflection", "mix(");
+    // 延迟通道（HLSL）没有 specular IBL 项可以混，所以它只消费 GI。
+    CheckConsumer(shader + "/hlsl/rp1/deferred_lighting.frag.hlsl", "lumen_indirect", "lerp(");
 #endif
 
     std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);

@@ -87,6 +87,9 @@ highp vec2 brdfLUT = texture(brdfLUT_sampler, vec2(clamp(dot(N, V), 0.0, 1.0), r
 
 highp float lod        = roughness * MAX_REFLECTION_LOD;
 highp vec3  reflection = textureLod(specular_sampler, origin_samplecube_R, lod).rgb;
+// Lumen 的反射同样只替换不相加：两者都是环境反射辐射，加起来会算两遍。
+// 权重 0（Lumen 关掉 / 反射关掉 / 一个页面都还没更新）时继续用 baked specular cubemap。
+reflection            = mix(reflection, lumen_reflection.rgb, lumen_reflection.a);
 highp vec3  specular   = reflection * (F * brdfLUT.x + brdfLUT.y);
 
 highp vec3 kD = 1.0 - F;

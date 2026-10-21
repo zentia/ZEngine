@@ -91,6 +91,8 @@ struct MainCameraPerFrame
     highp vec4 viewport_rect;
     // Lumen 的间接光（rgb = 辐照度, a = 混合权重）。0 = 沿用 baked irradiance cubemap。
     highp vec4 lumen_indirect;
+    // Lumen 的反射（rgb = 场景级反射辐射, a = 混合权重）。0 = 沿用 baked specular cubemap。
+    highp vec4 lumen_reflection;
 };
 
 struct AxisDrawStorage

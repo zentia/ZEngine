@@ -112,7 +112,10 @@ void LumenRenderer::Update(std::shared_ptr<RenderScene> render_scene,
     }
 
     // 更新表面缓存
-    if (m_Config.enable_global_illumination)
+    //
+    // 反射也要用：它的采样点就是表面缓存的页面（页面自带世界位置和法线）。以前这里
+    // 只挂了 GI，于是 GI 关掉、反射打开时反射一个采样点都拿不到。
+    if (m_Config.enable_global_illumination || m_Config.enable_reflections)
     {
         UpdateSurfaceCache(render_scene, camera_position);
     }
@@ -130,15 +133,30 @@ void LumenRenderer::ComputeGlobalIllumination(std::shared_ptr<RenderScene> rende
     m_GlobalIllumination.ComputeGlobalIllumination(render_scene, camera, &m_RayTracing, &m_SurfaceCache, delta_time);
 }
 
-void LumenRenderer::ComputeReflections(std::shared_ptr<RenderScene> render_scene, std::shared_ptr<RenderCamera> camera)
+void LumenRenderer::ComputeReflections(std::shared_ptr<RenderScene> render_scene,
+                                       std::shared_ptr<RenderCamera> camera,
+                                       float delta_time)
 {
     if (!m_Config.enable_reflections)
     {
         return;
     }
 
-    // TODO: 实现反射计算
-    // 这里需要在渲染Pass中调用
+    // 以前这里是空的 TODO，所以 LumenReflections::ComputeReflection 全仓库零调用者 ——
+    // 距离场反射的代码写得再对也没有人跑它。
+    //
+    // 反射的采样点是表面缓存的页面（带世界位置和法线），所以反射依赖表面缓存，不
+    // 只依赖距离场。
+    m_Reflections.UpdateReflections(render_scene, camera, &m_RayTracing, &m_SurfaceCache, delta_time);
+}
+
+bool LumenRenderer::GetReflection(Vector3& out_color, uint32_t& out_sample_count) const
+{
+    if (!m_Config.enabled || !m_Config.enable_reflections)
+    {
+        return false;
+    }
+    return m_Reflections.GetAverageReflection(out_color, out_sample_count);
 }
 
 void LumenRenderer::UpdateDistanceField(std::shared_ptr<RenderScene> render_scene, const Vector3& camera_position)

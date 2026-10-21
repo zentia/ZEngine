@@ -42,6 +42,9 @@ private:
     // 把本帧的 GI 结果写进场景
     void PublishIndirectLighting(RenderScene& render_scene);
 
+    // 把本帧的反射结果写进场景（与 GI 是独立的开关，所以单独发布、单独一个权重）
+    void PublishReflection(RenderScene& render_scene);
+
     // Lumen渲染器
     LumenRenderer m_LumenRenderer;
 
