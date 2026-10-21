@@ -83,6 +83,18 @@ struct GameLogCollection
     std::string json;
     std::vector<std::string> archiveNames;
 };
+// One copied log file. `complete` is false when the source still had more to
+// give after the copy -- the game was appending while we read, so the copy is
+// missing the tail, which is the part a crash shows up in.
+struct GameLogCopy
+{
+    std::uint64_t bytes = 0;
+    bool complete = false;
+};
+// Copies one log the game may still be writing; `size` is what the scan measured.
+// Exposed for regression tests: see the note at its definition.
+GameLogCopy CopyLogFile(const std::filesystem::path& source, std::uint64_t size, const std::filesystem::path& target);
+
 // Copies the newest .log/.logcompr/.txt files of logDirectory into outputDirectory and returns the index JSON.
 // Files are never modified or deleted; oversized ones are skipped and recorded in the index.
 GameLogCollection CollectGameLogs(const std::filesystem::path& logDirectory, const std::filesystem::path& outputDirectory,

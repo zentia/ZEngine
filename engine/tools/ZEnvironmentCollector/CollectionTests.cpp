@@ -248,6 +248,24 @@ int main()
             Check(collected.json.find("weird") != std::string::npos, "index keeps the relative path");
             Check(collected.json.find("ignored.bin") == std::string::npos, "other extensions skipped");
             Check(collected.json.find("\"sha256\"") != std::string::npos, "index hashes each copy");
+            Check(collected.json.find("\"complete\":true") != std::string::npos, "index marks an unchanged log complete");
+
+            // The copy is what a crash report reads, and the end of a log is where
+            // a crash shows up. The scan measures a file and the copy then reads
+            // exactly that many bytes, so a log the game was appending to came back
+            // as a "complete" copy of a file it had stopped short of. Asking for
+            // fewer bytes than the file holds is the same arithmetic, and it is the
+            // only way to test it that does not race a writer.
+            {
+                const auto growing = directory / "growing.log";
+                std::ofstream(growing, std::ios::binary) << std::string(4096, 'x');
+                const auto whole = collector::CopyLogFile(growing, 4096, directory / "copy-whole.log");
+                Check(whole.bytes == 4096 && whole.complete, "a log that stopped changing copies whole");
+
+                const auto cut = collector::CopyLogFile(growing, 1024, directory / "copy-cut.log");
+                Check(cut.bytes == 1024, "the copy stops where the scan said the file ended");
+                Check(!cut.complete, "and says so, instead of passing itself off as the whole log");
+            }
 
             const auto missing = CollectGameLogs(directory / "NoSuchLogs", directory / "log-out2", 336, 0);
             Check(missing.status == GameLogStatus::NoLogs && missing.archiveNames.empty()

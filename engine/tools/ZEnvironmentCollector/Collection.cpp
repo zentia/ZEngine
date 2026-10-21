@@ -109,6 +109,13 @@ std::filesystem::path DefaultOutputDirectory()
     CoTaskMemFree(path);
     return result;
 }
+// Closes on scope exit. Outside the anonymous namespace below because the log
+// copy it belongs to is exported for tests.
+struct Handle
+{
+    HANDLE h = nullptr;
+    ~Handle() { if (h && h != INVALID_HANDLE_VALUE) CloseHandle(h); }
+};
 namespace
 {
 bool SafeName(const std::string& name)
@@ -163,11 +170,6 @@ std::wstring Quote(const std::wstring& value)
     out.append(slash * 2, L'\\');
     return out + L'"';
 }
-struct Handle
-{
-    HANDLE h = nullptr;
-    ~Handle() { if (h && h != INVALID_HANDLE_VALUE) CloseHandle(h); }
-};
 // FindFirstFile handles must be released with FindClose, not CloseHandle.
 struct FindHandle
 {
@@ -419,15 +421,24 @@ std::string RelativeLogPath(const std::filesystem::path& file, const std::filesy
         return WideToUtf8(text.substr(base.size() + 1));
     return WideToUtf8(file.filename().wstring());
 }
-// Reads a log that may still be open for writing by the game; returns the copied byte count.
-std::uint64_t CopyLogFile(const std::filesystem::path& source, std::uint64_t size, const std::filesystem::path& target)
+}
+// Reads a log that may still be open for writing by the game. `size` is what the
+// scan measured, and the copy stops there on purpose: a writer we cannot outrun
+// would otherwise keep it going forever.
+//
+// Exported for tests. The case this function exists for -- the game appending
+// while we read -- needs the file to change between the scan and the copy, and
+// inside one CollectGameLogs() call that can only be produced by racing a
+// thread. Calling it with a `size` below the file's real size is the same
+// arithmetic, and it is deterministic.
+GameLogCopy CopyLogFile(const std::filesystem::path& source, std::uint64_t size, const std::filesystem::path& target)
 {
     Handle input{CreateFileW(source.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
-    if (!input.h || input.h == INVALID_HANDLE_VALUE) return 0;
+    if (!input.h || input.h == INVALID_HANDLE_VALUE) return {};
     FILE_ATTRIBUTE_TAG_INFO info{};
     if (!GetFileInformationByHandleEx(input.h, FileAttributeTagInfo, &info, sizeof(info)) ||
-        (info.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))) return 0;
+        (info.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY))) return {};
     Handle output{CreateFileW(target.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr)};
     if (!output.h || output.h == INVALID_HANDLE_VALUE) throw std::runtime_error("无法写入日志副本");
     std::vector<char> buffer(65536);
@@ -441,8 +452,13 @@ std::uint64_t CopyLogFile(const std::filesystem::path& source, std::uint64_t siz
         copied += got;
     }
     if (!FlushFileBuffers(output.h)) throw std::runtime_error("日志副本未能落盘");
-    return copied;
-}
+    // Ask the file how big it is now. The scan measured it before we opened it,
+    // so a log the game kept writing comes back exactly `size` bytes long and
+    // looks like a faithful copy -- while the tail, the newest lines, the part a
+    // crash shows up in, is still in the original and not in here.
+    LARGE_INTEGER now{};
+    const bool knownSize = GetFileSizeEx(input.h, &now) != FALSE;
+    return {copied, copied == size && (!knownSize || static_cast<std::uint64_t>(now.QuadPart) <= copied)};
 }
 std::string BuildRedactedEventsJson(const std::vector<diagnosis::NormalizedEvent>& events, bool gameSpecified,
     const std::string& gameExecutable)
@@ -584,15 +600,15 @@ GameLogCollection CollectGameLogs(const std::filesystem::path& logDirectory, con
             continue;
         }
         const auto name = ArchiveLogName(static_cast<std::uint32_t>(result.archiveNames.size()), candidate.path);
-        const auto copied = CopyLogFile(candidate.path, candidate.bytes, outputDirectory / name);
-        if (copied == 0) { skipped.push_back({RelativeLogPath(candidate.path, logDirectory), "UNREADABLE"}); continue; }
-        total += copied;
+        const auto copy = CopyLogFile(candidate.path, candidate.bytes, outputDirectory / name);
+        if (copy.bytes == 0) { skipped.push_back({RelativeLogPath(candidate.path, logDirectory), "UNREADABLE"}); continue; }
+        total += copy.bytes;
         result.archiveNames.push_back(name);
         if (!firstFile) files << ','; firstFile = false;
         files << "{\"archiveName\":" << JsonString(name) << ",\"relativePath\":" << JsonString(RelativeLogPath(candidate.path, logDirectory))
-            << ",\"bytes\":" << copied << ",\"modifiedUtc\":" << JsonString(FormatUtcIso8601(candidate.modified))
+            << ",\"bytes\":" << copy.bytes << ",\"modifiedUtc\":" << JsonString(FormatUtcIso8601(candidate.modified))
             << ",\"sha256\":" << JsonString(Sha256File(outputDirectory / name))
-            << ",\"complete\":" << (copied == candidate.bytes ? "true" : "false") << '}';
+            << ",\"complete\":" << (copy.complete ? "true" : "false") << '}';
     }
     for (const auto& entry : skipped)
     {

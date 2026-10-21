@@ -438,9 +438,9 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 - 只复制不修改：以 `FILE_SHARE_READ|WRITE|DELETE` 打开，游戏仍在写也能读；**不跟随目录/文件链接**（重解析点在递归之前就排除，不只是文件那条分支）：日志目录里一个指向别处的
   Junction 会把整台机器的日志收进一份要发出去的报告，而 `relativePath` 还会写成"来自游戏日志目录"；深度上限救不了——一层指向 `C:\` 的链接已经是整台机器了。副本落到本次报告目录，命名 `gamelog-NN-<原名>.log`（非白名单字符替换为 `_`），原文件不改名、不删除、不截断。
 - 不递归到底：只扫描日志目录及其下一层子目录（深度上限3层由 `MaxGameLogScanDepth` 控制，当前只走一层）。
-- 索引记录每个副本的原始相对路径、字节数、修改时间、SHA256 与 `complete`（复制期间被追加导致短读时为 false）；日志目录路径用 `SanitizePath` 去掉用户名。
+- 索引记录每个副本的原始相对路径、字节数、修改时间、SHA256 与 `complete`（复制期间被追加时为 false）：写完后再问一次原文件大小，比复制到的更长就说明**尾巴没进来**——而日志的尾巴正是崩溃出现的地方。只知道"复制到的字节数 == 扫描时的字节数"是不够的，追加中的日志恰好满足这个等式。日志目录路径用 `SanitizePath` 去掉用户名。
 - 状态语义：目录不存在或窗口内没有日志时返回 `NO_LOGS`（manifest 中体现），**不计入 `partial`**——这不是采集失败，也不代表机器有问题；`game-logs.json` 仍然写入并给出 `reason`（`NOT_CONFIGURED` / `LOG_DIRECTORY_MISSING` / `NO_LOG_FILES_IN_WINDOW` / `NO_LOG_FILES_COLLECTED`）。
-- 隐私：日志可能含账号、聊天等信息。副本只留在本地报告目录，不自动上传；`summary.txt` 在包含日志副本时追加提示，发送前需人工确认。`EnvironmentCollectorTests` 覆盖：只收 `.log`/`.txt`、名字白名单化、副本真实落盘、缺目录与空目录返回 `NO_LOGS`、profile 路径解析、**日志目录里的 Junction 不被跟进**、**数量上限丢掉的日志会记 `FILE_LIMIT`**。
+- 隐私：日志可能含账号、聊天等信息。副本只留在本地报告目录，不自动上传；`summary.txt` 在包含日志副本时追加提示，发送前需人工确认。`EnvironmentCollectorTests` 覆盖：只收 `.log`/`.txt`、名字白名单化、副本真实落盘、缺目录与空目录返回 `NO_LOGS`、profile 路径解析、**日志目录里的 Junction 不被跟进**、**数量上限丢掉的日志会记 `FILE_LIMIT`**、**复制没拿到尾巴时 `complete` 为 false**。`complete` 的这条用 `CopyLogFile()` 单测：它导出了"按扫描到的大小复制"这一步，测试用一个小于实际大小的值去调（**同一套算术**，且不需要靠竞态线程去撞"复制期间被追加"这个窗口）。
 
 微码仅保存 `Update Revision` 原始字节，不声称跨CPU统一解码或应用桌面Intel门槛。内存标称/配置速率不等于XMP判定。BIOS日期不是安装日期。没有WHEA或内存检测结果不等于通过检测。
 
