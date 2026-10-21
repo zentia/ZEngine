@@ -15,6 +15,13 @@ constexpr UtcTicks IncidentWindowMargin = 30ull * TicksPerMinute;
 // source of truth for "which events matter". providerLower must be lowercase.
 bool IsRelevantEvent(EventChannel channel, const std::string& providerLower, std::uint32_t eventId, std::uint32_t level);
 
+// Shared with the preflight so that its "the driver reset recently" rule and this
+// table's GPU_TDR finding cannot drift apart: one definition of what a graphics
+// driver reset looks like in the log. A reset is never a normal event, which is
+// why the preflight can count them without knowing anything else about the
+// machine.
+bool IsGpuDriverResetEvent(const NormalizedEvent& event);
+
 // Pure function: no system calls. Same input always gives the same result, which
 // lets the events file be replayed for regression tests.
 DiagnosisResult Diagnose(const DiagnosisRequest& request, const EventCollection& collection);

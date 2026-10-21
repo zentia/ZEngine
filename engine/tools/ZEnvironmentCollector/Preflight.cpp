@@ -1,6 +1,8 @@
 #include "Preflight.h"
 
+#include "AttributionRules.h"
 #include "DiagnosisUtil.h"
+#include "EventLogReader.h"
 #include "HardwareProbe.h"
 #include "JsonEscape.h"
 #include "ReportWriter.h"
@@ -487,6 +489,146 @@ Direct3D11Probe ProbeDirect3D11()
     return probe;
 }
 
+// RegOpenKeyEx reports a key that is not there as ERROR_FILE_NOT_FOUND, which is
+// an answer and not a failure. Only an unexpected error leaves `asked` false, so
+// that "could not look" never reads as "nothing is waiting".
+bool RebootKeyPresent(const wchar_t* subKey, bool& asked)
+{
+    HKEY key = nullptr;
+    const LONG result = ::RegOpenKeyExW(HKEY_LOCAL_MACHINE, subKey, 0, KEY_READ, &key);
+    if (result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND)
+    {
+        asked = true;
+        return false;
+    }
+    if (result != ERROR_SUCCESS)
+    {
+        return false;
+    }
+    ::RegCloseKey(key);
+    asked = true;
+    return true;
+}
+
+// A pending rename is worth a reboot prompt only when it is replacing a driver:
+// \DriverStore\ is where every display driver lands and \System32\drivers\ where
+// its kernel-mode half lands. The rest of this value is ordinary file churn, and
+// entries in it survive reboots -- a machine one day after boot was still
+// carrying three temp renames from desktop security software, so taking the value
+// at face value would have told that player to reboot for nothing.
+bool NamesDriverPath(const std::wstring& value)
+{
+    std::wstring lower;
+    lower.reserve(value.size());
+    for (const wchar_t character : value)
+    {
+        lower.push_back(character < 128 ? static_cast<wchar_t>(std::tolower(character)) : character);
+    }
+    return lower.find(L"\\driverstore\\") != std::wstring::npos ||
+           lower.find(L"\\system32\\drivers\\") != std::wstring::npos;
+}
+
+bool PendingDriverReplacementPresent(bool& asked)
+{
+    HKEY key = nullptr;
+    if (::RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager",
+                        0, KEY_READ, &key) != ERROR_SUCCESS)
+    {
+        return false;
+    }
+    DWORD size = 0;
+    LONG query = ::RegQueryValueExW(key, L"PendingFileRenameOperations", nullptr, nullptr, nullptr, &size);
+    if (query == ERROR_FILE_NOT_FOUND)
+    {
+        ::RegCloseKey(key);
+        asked = true;
+        return false;
+    }
+    if (query != ERROR_SUCCESS || size < sizeof(wchar_t))
+    {
+        ::RegCloseKey(key);
+        return false;
+    }
+    std::vector<wchar_t> buffer(size / sizeof(wchar_t) + 2, L'\0');
+    DWORD stored = size;
+    query = ::RegQueryValueExW(key, L"PendingFileRenameOperations", nullptr, nullptr,
+                               reinterpret_cast<LPBYTE>(buffer.data()), &stored);
+    ::RegCloseKey(key);
+    if (query != ERROR_SUCCESS)
+    {
+        return false;
+    }
+    asked = true;
+    return NamesDriverPath(std::wstring(buffer.data(), stored / sizeof(wchar_t)));
+}
+
+// The places Windows records that something has finished installing and is
+// waiting for the next boot. Read as existence checks: the interesting part is
+// that the key or value is there at all, and none of them carry a state worth
+// parsing.
+bool ReadRebootPending(bool& known)
+{
+    known = false;
+    bool asked = false;
+    bool pending = false;
+    if (RebootKeyPresent(
+            L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending", asked))
+    {
+        pending = true;
+    }
+    if (RebootKeyPresent(
+            L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired", asked))
+    {
+        pending = true;
+    }
+    if (PendingDriverReplacementPresent(asked))
+    {
+        pending = true;
+    }
+    known = asked;
+    return pending;
+}
+
+// How far back the driver-reset scan looks, and how long it may take. Both are
+// small on purpose: this runs at every launch, and a machine that reset its
+// graphics driver three months ago does not have a graphics problem today.
+constexpr std::uint32_t GpuResetsLookbackDays = 7;
+constexpr std::uint32_t GpuResetsScanDeadlineMilliseconds = 600;
+
+// Counts graphics driver resets (TDR) in the last few days. The reader walks the
+// log newest first, so a scan the cap or the deadline cut short still holds the
+// most recent events: an incomplete scan can understate the count, never invent
+// one. Stays `known = false` when neither channel could be read, because "could
+// not look" must not become "nothing happened".
+void ScanRecentGpuDriverResets(PreflightInputs& inputs)
+{
+    const UtcTicks now = diagnosis::CurrentUtcTime();
+    diagnosis::EventLogReadOptions options;
+    options.rangeEnd = now;
+    options.rangeStart = diagnosis::SubtractClamped(
+        now, static_cast<UtcTicks>(GpuResetsLookbackDays) * 24ull * diagnosis::TicksPerHour);
+    options.deadlineTickCount = ::GetTickCount64() + GpuResetsScanDeadlineMilliseconds;
+
+    const diagnosis::EventCollection collection = diagnosis::ReadEventLogs(options);
+    if (!collection.observability.systemLogReadable && !collection.observability.applicationLogReadable)
+    {
+        return;
+    }
+    inputs.gpuTdrKnown = true;
+    for (const auto& event : collection.events)
+    {
+        if (!diagnosis::IsGpuDriverResetEvent(event))
+        {
+            continue;
+        }
+        ++inputs.gpuTdrCount;
+        if (event.time > inputs.gpuTdrLatestAt)
+        {
+            inputs.gpuTdrLatestAt = event.time;
+        }
+    }
+}
+
 PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirectory)
 {
     PreflightInputs inputs;
@@ -542,6 +684,7 @@ PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirector
         inputs.vcRuntimePresent = true;
         inputs.vcRuntimeKnown = true;
     }
+    inputs.rebootPending = ReadRebootPending(inputs.rebootPendingKnown);
 
     // This one starts a graphics driver and costs tens of milliseconds, which
     // makes it the most expensive thing the preflight does -- and also the only
@@ -555,6 +698,21 @@ PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirector
     catch (const std::exception&)
     {
         inputs.direct3d11 = Direct3D11Probe{};
+    }
+
+    // Deliberately last: it is the one part of the collection that can be slow on
+    // a machine with a busy event log, and the D3D11 probe above is the one that
+    // decides whether the game starts at all. A scan that eats the rest of the
+    // budget must not cost that answer.
+    try
+    {
+        ScanRecentGpuDriverResets(inputs);
+    }
+    catch (const std::exception&)
+    {
+        inputs.gpuTdrKnown = false;
+        inputs.gpuTdrCount = 0;
+        inputs.gpuTdrLatestAt = 0;
     }
     return inputs;
 }
@@ -601,6 +759,16 @@ diagnosis::UserAction ActionFor(const std::string& findingCode)
     if (findingCode == "D3D11_NOT_ON_PREFERRED_ADAPTER")
     {
         return {"SELECT_DISCRETE_GPU", "在显卡控制面板里把游戏指定为使用高性能（独立）显卡。"};
+    }
+    if (findingCode == "REBOOT_PENDING" || findingCode == "UPTIME_VERY_LONG")
+    {
+        return {"RESTART_COMPUTER", "保存好手头的工作，重启电脑后再启动游戏。"};
+    }
+    if (findingCode == "GPU_DRIVER_RESET_RECENT")
+    {
+        // The same sentence as a machine that cannot create a device at all: both
+        // are "the graphics driver on this machine is not one you want to play on".
+        return {"INSTALL_GPU_DRIVER", "安装显卡厂商官方驱动后重启电脑。"};
     }
     if (findingCode == "WINDOWS_INSIDER_PREVIEW")
     {
@@ -832,23 +1000,43 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
 
     // ullTotalPageFile is the commit limit: RAM plus page file, so subtracting
     // RAM is how much page file there is. None at all turns a memory spike into
-    // an out-of-memory kill instead of a slow swap. Gated on installed RAM
-    // because above pageFileRuleMaxMemoryBytes going without one is a considered
-    // choice, and a tool that argues with that just gets muted.
-    if (inputs.system.totalPageFileBytes != 0 &&
-        inputs.system.physicalMemoryBytes != 0 &&
-        inputs.system.physicalMemoryBytes < requirements.pageFileRuleMaxMemoryBytes)
+    // an out-of-memory kill instead of a slow swap.
+    //
+    // Two ways to be wrong here, and they are not the same machine. The absolute
+    // floor catches the machine with almost none. The share of RAM catches the
+    // 32 GB laptop with a 3.9 GB page file that exhausted its commit limit with
+    // 17 GB of physical memory still free: it clears any absolute floor, because
+    // the ceiling it keeps hitting is one nobody can see from the outside.
+    // No page file at all on a large machine is still left alone -- that is a
+    // choice its owner made deliberately and can defend.
+    if (inputs.system.totalPageFileBytes != 0 && inputs.system.physicalMemoryBytes != 0)
     {
         const std::uint64_t pageFileBytes =
             inputs.system.totalPageFileBytes > inputs.system.physicalMemoryBytes
                 ? inputs.system.totalPageFileBytes - inputs.system.physicalMemoryBytes
                 : 0;
-        if (pageFileBytes < requirements.minimumPageFileBytes)
+        const bool deliberatelyWithoutOne =
+            pageFileBytes == 0 &&
+            inputs.system.physicalMemoryBytes >= requirements.pageFileRuleMaxMemoryBytes;
+        const bool belowFloor = pageFileBytes < requirements.minimumPageFileBytes;
+        std::uint64_t requiredByShare = 0;
+        if (requirements.minimumPageFilePercentOfRam != 0)
+        {
+            requiredByShare =
+                inputs.system.physicalMemoryBytes * requirements.minimumPageFilePercentOfRam / 100;
+            if (requirements.pageFileShareCapBytes != 0)
+            {
+                requiredByShare = std::min(requiredByShare, requirements.pageFileShareCapBytes);
+            }
+        }
+        const bool belowShare = requiredByShare != 0 && pageFileBytes < requiredByShare;
+        if (!deliberatelyWithoutOne && (belowFloor || belowShare))
         {
             result.findings.push_back({"PAGE_FILE_TOO_SMALL", "memory",
                 "系统页面文件过小或未启用，内存吃紧时游戏会被系统终止而不是变慢。",
                 "page file " + std::to_string(pageFileBytes / (1024 * 1024)) + " MB, RAM " +
-                std::to_string(inputs.system.physicalMemoryBytes / (1024 * 1024)) + " MB"});
+                std::to_string(inputs.system.physicalMemoryBytes / (1024 * 1024)) + " MB (" +
+                std::to_string(pageFileBytes * 100 / inputs.system.physicalMemoryBytes) + "% of RAM)"});
         }
     }
 
@@ -874,6 +1062,42 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
     {
         result.findings.push_back({"WINDOWS_INSIDER_PREVIEW", "system",
             "当前系统是 Windows 预览体验版，稳定性没有保证。", ""});
+    }
+
+    // A driver or an update that finished installing and is waiting for a reboot.
+    // Every other number here describes the version on disk while the machine is
+    // still running the one it booted with, so this is the state that makes the
+    // rest of the report read healthier than the machine actually is.
+    if (inputs.rebootPendingKnown && inputs.rebootPending)
+    {
+        result.findings.push_back({"REBOOT_PENDING", "system",
+            "系统里有更新或驱动装完了但还没重启，重启之后才会真正生效。", ""});
+    }
+
+    // Long uptime on its own proves little, which is why the threshold is weeks
+    // and the finding is advisory. Measured in powered-on time, not calendar days:
+    // a machine that sleeps every night is not a stale machine.
+    if (requirements.maximumUptimeDays != 0 && inputs.system.uptimeMilliseconds != 0)
+    {
+        const std::uint64_t uptimeDays = inputs.system.uptimeMilliseconds / (1000ull * 60 * 60 * 24);
+        if (uptimeDays >= requirements.maximumUptimeDays)
+        {
+            result.findings.push_back({"UPTIME_VERY_LONG", "system",
+                "这台电脑已经很久没有重启，建议重启后再启动游戏。",
+                std::to_string(uptimeDays) + " days since boot"});
+        }
+    }
+
+    // Graphics driver resets in the last week. One is already worth saying: a
+    // reset is never a normal event, and a player who came here because the game
+    // went black or froze is usually looking at exactly this. The events are read
+    // newest first, so a truncated scan can understate the count, never invent it.
+    if (inputs.gpuTdrKnown && inputs.gpuTdrCount != 0)
+    {
+        result.findings.push_back({"GPU_DRIVER_RESET_RECENT", "gpu",
+            "最近显卡驱动崩溃并重置过，游戏可能出现黑屏、画面卡住或闪退。",
+            std::to_string(inputs.gpuTdrCount) + " resets, latest at " +
+            diagnosis::FormatUtcIso8601(inputs.gpuTdrLatestAt)});
     }
 }
 
@@ -1019,6 +1243,9 @@ Requirements DefaultPreflightRequirements()
     requirements.minimumAvailableMemoryBytes = 2ull * 1024ull * 1024ull * 1024ull;
     requirements.minimumPageFileBytes = 2ull * 1024ull * 1024ull * 1024ull;
     requirements.pageFileRuleMaxMemoryBytes = 16ull * 1024ull * 1024ull * 1024ull;
+    requirements.minimumPageFilePercentOfRam = 25;
+    requirements.pageFileShareCapBytes = 8ull * 1024ull * 1024ull * 1024ull;
+    requirements.maximumUptimeDays = 14;
     return requirements;
 }
 
@@ -1220,7 +1447,8 @@ bool ParseRequirementsJson(const std::string& text, Requirements& requirements,
         }
         else if (key == "minimumMemoryBytes" || key == "minimumAvailableMemoryBytes" ||
                  key == "minimumPageFileBytes" || key == "pageFileRuleMaxMemoryBytes" ||
-                 key == "minimumFreeDiskSpaceBytes")
+                 key == "minimumPageFilePercentOfRam" || key == "pageFileShareCapBytes" ||
+                 key == "maximumUptimeDays" || key == "minimumFreeDiskSpaceBytes")
         {
             std::uint64_t value = 0;
             if (!cursor.ReadUnsigned(value))
@@ -1232,6 +1460,12 @@ bool ParseRequirementsJson(const std::string& text, Requirements& requirements,
             else if (key == "minimumAvailableMemoryBytes") { parsed.minimumAvailableMemoryBytes = value; }
             else if (key == "minimumPageFileBytes") { parsed.minimumPageFileBytes = value; }
             else if (key == "pageFileRuleMaxMemoryBytes") { parsed.pageFileRuleMaxMemoryBytes = value; }
+            else if (key == "minimumPageFilePercentOfRam")
+            {
+                parsed.minimumPageFilePercentOfRam = static_cast<std::uint32_t>(value);
+            }
+            else if (key == "pageFileShareCapBytes") { parsed.pageFileShareCapBytes = value; }
+            else if (key == "maximumUptimeDays") { parsed.maximumUptimeDays = static_cast<std::uint32_t>(value); }
             else { parsed.minimumFreeDiskSpaceBytes = value; }
         }
         else
@@ -1444,6 +1678,9 @@ std::string BuildPreflightJson(
            << ", \"minimumPageFileBytes\": " << context.requirements.minimumPageFileBytes
            << ", \"pageFileRuleMaxMemoryBytes\": " << context.requirements.pageFileRuleMaxMemoryBytes
            << ", \"minimumFreeDiskSpaceBytes\": " << context.requirements.minimumFreeDiskSpaceBytes
+           << ", \"minimumPageFilePercentOfRam\": " << context.requirements.minimumPageFilePercentOfRam
+           << ", \"pageFileShareCapBytes\": " << context.requirements.pageFileShareCapBytes
+           << ", \"maximumUptimeDays\": " << context.requirements.maximumUptimeDays
            << ", \"minimumFeatureLevel\": " << JsonString(FeatureLevelName(context.requirements.minimumFeatureLevel))
            << "},\n"
            << "  \"requirementsSource\": " << JsonString(context.requirementsSource) << ",\n";
@@ -1459,6 +1696,7 @@ std::string BuildPreflightJson(
            << ", \"is64BitOs\": " << BoolText(inputs.system.is64BitOs)
            << ", \"physicalMemoryBytes\": " << inputs.system.physicalMemoryBytes
            << ", \"availablePhysicalMemoryBytes\": " << inputs.system.availablePhysicalMemoryBytes
+           << ", \"uptimeMilliseconds\": " << inputs.system.uptimeMilliseconds
            << ", \"insiderPreview\": " << BoolText(inputs.insiderPreview) << "},\n"
            << "    \"pageFile\": {\"totalBytes\": " << inputs.system.totalPageFileBytes
            << ", \"availableBytes\": " << inputs.system.availablePageFileBytes
@@ -1469,6 +1707,12 @@ std::string BuildPreflightJson(
            << "},\n"
            << "    \"runtime\": {\"vcRuntimePresent\": " << BoolText(inputs.vcRuntimePresent)
            << ", \"vcRuntimeKnown\": " << BoolText(inputs.vcRuntimeKnown) << "},\n"
+           << "    \"reboot\": {\"pending\": " << BoolText(inputs.rebootPending)
+           << ", \"known\": " << BoolText(inputs.rebootPendingKnown) << "},\n"
+           << "    \"gpuDriverResets\": {\"known\": " << BoolText(inputs.gpuTdrKnown)
+           << ", \"count\": " << inputs.gpuTdrCount
+           << ", \"latestAt\": " << JsonString(diagnosis::FormatUtcIso8601(inputs.gpuTdrLatestAt))
+           << "},\n"
            << "    \"direct3d11\": {\"known\": " << BoolText(inputs.direct3d11.known)
            << ", \"deviceCreated\": " << BoolText(inputs.direct3d11.deviceCreated)
            << ", \"onPreferredAdapter\": " << BoolText(inputs.direct3d11.onPreferredAdapter)

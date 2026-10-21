@@ -118,6 +118,11 @@ bool IsWarningOrWorse(std::uint32_t level)
     return level != 0 && level <= EventLevelWarning;
 }
 
+// Forwarded: the definition sits below NormalizeWerCode, which the Windows Error
+// Reporting branch needs, and both classifiers are defined above that.
+bool MatchesGpuDriverReset(EventChannel channel, const std::string& providerLower, std::uint32_t eventId,
+                           const std::string& werEventName, const std::string& werP1);
+
 Classification Make(
     const char* ruleId,
     std::string code,
@@ -137,7 +142,7 @@ Classification Make(
 
 Classification ClassifySystemEvent(const std::string& provider, std::uint32_t eventId, std::uint32_t level)
 {
-    if (provider == ProviderDisplay && eventId == EventDisplayTdrRecovered)
+    if (MatchesGpuDriverReset(EventChannel::System, provider, eventId, std::string{}, std::string{}))
     {
         return Make("GPU_TDR", "DISPLAY_TDR_RECOVERED", FindingLayer::GpuDriver, FindingStrength::Strong);
     }
@@ -226,6 +231,26 @@ std::string ToUpperAscii(std::string value)
     return value;
 }
 
+// The two shapes a graphics driver reset takes in the log: the display subsystem
+// recovering one, and Windows Error Reporting filing a LiveKernelEvent for one.
+// Both live here so the rule table and the preflight count the same events.
+bool MatchesGpuDriverReset(EventChannel channel, const std::string& providerLower, std::uint32_t eventId,
+                           const std::string& werEventName, const std::string& werP1)
+{
+    if (channel == EventChannel::System)
+    {
+        return providerLower == ProviderDisplay && eventId == EventDisplayTdrRecovered;
+    }
+    if (providerLower == ProviderWindowsErrorReporting && eventId == EventWindowsErrorReporting)
+    {
+        return ToLowerAscii(werEventName) == WerLiveKernelEvent &&
+               EqualsAny(NormalizeWerCode(werP1), GpuLiveKernelEventCodes);
+    }
+    return false;
+}
+
+
+
 bool IsUnderGameDirectory(const std::string& pathLower, const std::string& gameDirectoryLower)
 {
     return !gameDirectoryLower.empty() && StartsWith(pathLower, gameDirectoryLower);
@@ -252,10 +277,10 @@ Classification ClassifyApplicationEvent(
     const std::string provider = ToLowerAscii(event.provider);
     if (provider == ProviderWindowsErrorReporting && event.eventId == EventWindowsErrorReporting)
     {
-        const std::string code = NormalizeWerCode(event.werP1);
-        if (ToLowerAscii(event.werEventName) == WerLiveKernelEvent && EqualsAny(code, GpuLiveKernelEventCodes))
+        if (MatchesGpuDriverReset(EventChannel::Application, provider, event.eventId,
+                                  event.werEventName, event.werP1))
         {
-            return Make("GPU_TDR", "LIVE_KERNEL_EVENT_" + ToUpperAscii(code),
+            return Make("GPU_TDR", "LIVE_KERNEL_EVENT_" + ToUpperAscii(NormalizeWerCode(event.werP1)),
                 FindingLayer::GpuDriver, FindingStrength::Strong);
         }
         return {};
@@ -903,6 +928,15 @@ void DecideVerdict(
     SetActions(result, nullptr);
 }
 } // namespace
+
+bool IsGpuDriverResetEvent(const NormalizedEvent& event)
+{
+    // MatchesGpuDriverReset has internal linkage, which is fine: it is the same
+    // translation unit the rule table above lives in, so the preflight and the
+    // GPU_TDR finding are counting from one definition.
+    return MatchesGpuDriverReset(event.channel, ToLowerAscii(event.provider), event.eventId,
+                                 event.werEventName, event.werP1);
+}
 
 bool IsRelevantEvent(EventChannel channel, const std::string& providerLower, std::uint32_t eventId, std::uint32_t level)
 {

@@ -273,6 +273,92 @@ int main()
                   "a large-RAM machine without a page file is left alone");
         }
         {
+            // The 32 GB laptop that exhausted its commit limit with 17 GB of
+            // physical memory still free: its 3.9 GB page file clears any absolute
+            // floor, which is why the share of RAM has to be checked as well.
+            auto inputs = HealthyInputs();
+            inputs.system.physicalMemoryBytes = 32ull << 30;
+            inputs.system.availablePhysicalMemoryBytes = 17ull << 30;
+            inputs.system.totalPageFileBytes = (32ull << 30) + (4ull << 30);
+            const auto result = Evaluate(inputs);
+            Check(HasFinding(result, "PAGE_FILE_TOO_SMALL"),
+                  "a page file far too small for the RAM is named, not excused by the RAM");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.system.physicalMemoryBytes = 32ull << 30;
+            inputs.system.totalPageFileBytes = (32ull << 30) + (32ull << 30);
+            Check(!HasFinding(Evaluate(inputs), "PAGE_FILE_TOO_SMALL"),
+                  "a page file the size of the RAM is not a finding");
+        }
+        {
+            // The share cannot grow without bound. Windows does not keep a
+            // system-managed page file proportional to RAM on a large machine, so
+            // 12 GB beside 196 GB of RAM is healthy, not 6% of what is needed.
+            auto inputs = HealthyInputs();
+            inputs.system.physicalMemoryBytes = 196ull << 30;
+            inputs.system.availablePhysicalMemoryBytes = 96ull << 30;
+            inputs.system.totalPageFileBytes = (196ull << 30) + (12ull << 30);
+            Check(!HasFinding(Evaluate(inputs), "PAGE_FILE_TOO_SMALL"),
+                  "a large machine with a decent-sized page file is left alone");
+        }
+        {
+            // A driver that finished installing and is waiting for the next boot.
+            // Every other number in this report describes the new one.
+            auto inputs = HealthyInputs();
+            inputs.rebootPending = true;
+            inputs.rebootPendingKnown = true;
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise, "a pending reboot advises");
+            Check(HasFinding(result, "REBOOT_PENDING"), "and says what is waiting");
+            Check(result.actions.front().code == "RESTART_COMPUTER", "and asks for a restart");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.rebootPending = true;
+            inputs.rebootPendingKnown = false;
+            Check(!HasFinding(Evaluate(inputs), "REBOOT_PENDING"),
+                  "a reboot check that could not be made says nothing");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.system.uptimeMilliseconds = 20ull * 24 * 60 * 60 * 1000;
+            const auto result = Evaluate(inputs);
+            Check(HasFinding(result, "UPTIME_VERY_LONG"), "three weeks of uptime is worth a restart prompt");
+            Check(result.actions.front().code == "RESTART_COMPUTER", "and asks for a restart");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.system.uptimeMilliseconds = 2ull * 24 * 60 * 60 * 1000;
+            Check(!HasFinding(Evaluate(inputs), "UPTIME_VERY_LONG"),
+                  "a machine rebooted two days ago is left alone");
+        }
+        {
+            // The machine whose graphics driver reset itself: the player who came
+            // here because the game went black is usually looking at this.
+            auto inputs = HealthyInputs();
+            inputs.gpuTdrKnown = true;
+            inputs.gpuTdrCount = 9;
+            inputs.gpuTdrLatestAt = 133000000000000000ull;
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise, "recent driver resets advise");
+            Check(HasFinding(result, "GPU_DRIVER_RESET_RECENT"), "and are named");
+            Check(result.actions.front().code == "INSTALL_GPU_DRIVER", "and the player is sent to the driver");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.gpuTdrKnown = false;
+            inputs.gpuTdrCount = 9;
+            Check(!HasFinding(Evaluate(inputs), "GPU_DRIVER_RESET_RECENT"),
+                  "a log that could not be read is not evidence of resets");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.gpuTdrKnown = true;
+            inputs.gpuTdrCount = 0;
+            Check(!HasFinding(Evaluate(inputs), "GPU_DRIVER_RESET_RECENT"), "a machine with no resets is quiet");
+        }
+        {
             // Not installed, not shipped beside the game.
             auto inputs = HealthyInputs();
             inputs.vcRuntimePresent = false;
@@ -568,6 +654,9 @@ int main()
             Check(json.find("\"pageFile\": {") != std::string::npos, "pageFile is reported");
             Check(json.find("\"runtime\": {") != std::string::npos, "runtime is reported");
             Check(json.find("\"direct3d11\": {") != std::string::npos, "direct3d11 is reported");
+            Check(json.find("\"reboot\": {") != std::string::npos, "reboot is reported");
+            Check(json.find("\"gpuDriverResets\": {") != std::string::npos, "gpuDriverResets is reported");
+            Check(json.find("\"uptimeMilliseconds\": ") != std::string::npos, "uptime is reported");
             Check(json.find("\"attachedOutputCount\": ") != std::string::npos, "each adapter reports its attached outputs");
             Check(json.find("\"code\": \"FREE_DISK_SPACE\", \"zh\": ") != std::string::npos, "actions carry Chinese text");
             Check(json.find('\t') == std::string::npos, "no raw control characters in the JSON");

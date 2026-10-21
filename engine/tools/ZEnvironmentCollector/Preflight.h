@@ -151,6 +151,22 @@ struct PreflightInputs
     bool vcRuntimePresent = false;
     bool vcRuntimeKnown = false;
 
+    // An update or a driver that has been installed but not rebooted into. It is
+    // invisible in every other number this tool reads: the machine reports the new
+    // driver version while still running the old one, and a preflight that only
+    // reads versions calls that machine healthy.
+    bool rebootPending = false;
+    bool rebootPendingKnown = false;
+
+    // Graphics driver resets (TDR) in the last few days, read from the event log
+    // rather than from the driver: a reset the player saw as a black screen or a
+    // frozen frame happened whether or not the driver recovered from it.
+    // `gpuTdrKnown` is false when the log could not be read inside the budget --
+    // "could not look" must never read as "nothing happened".
+    bool gpuTdrKnown = false;
+    std::uint32_t gpuTdrCount = 0;
+    diagnosis::UtcTicks gpuTdrLatestAt = 0;
+
     Direct3D11Probe direct3d11;
 };
 

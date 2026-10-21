@@ -139,9 +139,27 @@ struct Requirements
     // reports ullTotalPageFile as the commit limit, which is RAM plus page
     // file -- the rule subtracts to get the page file itself.
     std::uint64_t minimumPageFileBytes = 2ull * 1024ull * 1024ull * 1024ull;
-    // Above this much installed RAM a small or absent page file is a deliberate
-    // choice, so the rule stays quiet instead of arguing with it.
+    // Above this much installed RAM a *missing* page file is a deliberate choice,
+    // so the rule stays quiet instead of arguing with it. It does not excuse a
+    // page file that exists but is far too small: the 32 GB laptop that exhausted
+    // its commit limit with 17 GB of physical memory still free had a 3.9 GB page
+    // file, which passes any absolute floor and is invisible to the owner.
     std::uint64_t pageFileRuleMaxMemoryBytes = 16ull * 1024ull * 1024ull * 1024ull;
+    // Page file as a percentage of installed RAM. Windows sizes a system-managed
+    // one at roughly RAM or more, so a page file at a small fraction of RAM means
+    // the commit ceiling is the binding constraint rather than the memory itself.
+    // 0 turns the share check off and leaves only the absolute floor above.
+    std::uint32_t minimumPageFilePercentOfRam = 25;
+    // Ceiling for that share. It has to be there: Windows does not keep growing a
+    // system-managed page file with RAM, so a 196 GB machine with a 12 GB one is
+    // healthy and healthy-looking, while the share alone would call it 6%.
+    // 0 means no ceiling, i.e. the share is taken literally at any RAM size.
+    std::uint64_t pageFileShareCapBytes = 8ull * 1024ull * 1024ull * 1024ull;
+    // Days of powered-on time above which the machine is worth a restart prompt.
+    // Deliberately long: a machine that sleeps is not stale, and GetTickCount64
+    // does not count time spent asleep, so this measures uptime, not calendar
+    // days. 0 turns the rule off.
+    std::uint32_t maximumUptimeDays = 14;
     // Free space on the volume the game sits on: patches and logs land there.
     std::uint64_t minimumFreeDiskSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
     // Raw D3D_FEATURE_LEVEL number (0xb000 for 11_0), kept as a plain integer so
