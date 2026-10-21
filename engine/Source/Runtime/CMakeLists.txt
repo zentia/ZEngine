@@ -508,6 +508,12 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenSurfaceCacheSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Lumen/Test/LumenSurfaceCacheSmokeTest.cpp")
+# GPU-Spine importer test main carve-out (same rationale). Built only when
+# ZENGINE_BUILD_SPINE_IMPORT_TEST=ON (see Function/Render/Spine/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuImportTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuImportTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when
@@ -1417,6 +1423,11 @@ add_subdirectory(Function/Render/Graph/Test)
 if(NOT (WIN32 AND NOT ZENGINE_USE_VULKAN) AND NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten"))
     add_subdirectory(Function/Render/Lumen/Test)
 endif()
+
+# GPU-Spine importer test. Own main(); carved out of the ZRuntime glob above and
+# built only when ZENGINE_BUILD_SPINE_IMPORT_TEST=ON. Pure CPU (atlas + json -> bake),
+# so it needs no GPU and no window.
+add_subdirectory(Function/Render/Spine/Test)
 
 # =============================================================================
 # ASTC texture decompression support (Phase 6)
