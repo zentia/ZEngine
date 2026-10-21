@@ -213,7 +213,8 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
                                       bool with_deform = false, bool linked_inherit_deform = true,
                                       int deform_length = 10, bool with_clipping = false,
                                       int clip_end_slot = 2, int deform_slot = 1,
-                                      bool nested_clip = false, int nested_clip_end_slot = 3)
+                                      bool nested_clip = false, int nested_clip_end_slot = 3,
+                                      bool clip_weighted = false)
 {
     SkelWriter w;
 
@@ -337,7 +338,9 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     w.ColorWhite();
 
     // 裁剪附件（SkeletonBinary.cpp:636-646）
-    auto WriteClip = [&](int slot, const char* name, int end_slot)
+    // weighted 时 `verts` 是扁平编码：每顶点 [n, (boneIdx, x, y, w) × n]
+    auto WriteClip = [&](int slot, const char* name, int end_slot, const float* verts, int vert_count,
+                         bool weighted, size_t vert_floats)
     {
         w.Varint(slot);         // slotIndex
         w.Varint(1);            // 1 个附件
@@ -347,9 +350,35 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         // ⚠️ 顺序是 **endSlotIndex 在前、vertexCount 在后**（:637-638），与 json 那边
         // 一个是下标、一个是名字，别互相抄。
         w.Varint(end_slot);
-        w.Varint(4);            // vertexCount
-        w.Bool(false);          // 非 weighted ⇒ 直接 4×2 个 float（裁剪多边形）
-        w.F(0.0f); w.F(0.0f); w.F(10.0f); w.F(0.0f); w.F(10.0f); w.F(10.0f); w.F(0.0f); w.F(10.0f);
+        w.Varint(vert_count);   // vertexCount（**顶点数**，不是 float 数）
+        // ⚠️ 二进制有**显式**的 weighted 标志；json 那边只能靠数组长度猜（:1218）。
+        w.Bool(weighted);
+        if (!weighted)
+        {
+            for (size_t i = 0; i < vert_floats; ++i)
+            {
+                w.F(verts[i]);
+            }
+        }
+        else
+        {
+            // ⚠️ weighted 的 `verts` 是**扁平编码**（每顶点 [n, (boneIdx,x,y,w) × n]），
+            // 但二进制落盘时 n 与 boneIdx 是 **varint**，只有 x/y/w 是 float
+            // （SkeletonBinary.cpp:658-691）—— 照抄 json 的"全是 float"会整段错位。
+            size_t i = 0;
+            for (int v = 0; v < vert_count; ++v)
+            {
+                const int n = static_cast<int>(verts[i++]);
+                w.Varint(n);
+                for (int k = 0; k < n; ++k)
+                {
+                    w.Varint(static_cast<int>(verts[i++]));   // boneIdx
+                    w.F(verts[i++]);                          // x
+                    w.F(verts[i++]);                          // y
+                    w.F(verts[i++]);                          // w
+                }
+            }
+        }
         if (nonessential)
         {
             w.ColorWhite();     // color
@@ -358,10 +387,23 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
 
     if (with_clipping)
     {
-        WriteClip(1, "clip", clip_end_slot);
+        // 与 json 夹具**逐点相同**：v6 起裁剪多边形要落盘，两边不一样就对不上了。
+        static const float kClipA[] = {0.0f, 0.0f, 10.0f, 0.0f, 10.0f, 10.0f, 0.0f, 10.0f};
+        static const float kClipB[] = {0.0f, 0.0f, 20.0f, 0.0f, 20.0f, 20.0f, 0.0f, 20.0f};
+        // weighted 版：2 个顶点，各 1 个影响（bone 0 与 bone 1）
+        static const float kClipW[] = {1.0f, 0.0f, 0.0f, 0.0f, 1.0f,
+                                       1.0f, 1.0f, 10.0f, 10.0f, 1.0f};
+        if (clip_weighted)
+        {
+            WriteClip(1, "clip", clip_end_slot, kClipW, 2, true, sizeof(kClipW) / sizeof(kClipW[0]));
+        }
+        else
+        {
+            WriteClip(1, "clip", clip_end_slot, kClipA, 4, false, 8);
+        }
         if (clip5)
         {
-            WriteClip(2, "clipb", nested_clip_end_slot);
+            WriteClip(2, "clipb", nested_clip_end_slot, kClipB, 4, false, 8);
         }
     }
 
@@ -661,6 +703,9 @@ const char* kSkeletonDeform = R"({
 // %ENDFIELD% 由 BuildClip() 替换：
 //   "\"end\": \"s2\", " → 作用域 (s1, s2]
 //   ""                → 没有 end ⇒ 一路裁到最后一个槽位
+// %CLIPVERTSFIELD% 由 BuildClip() 替换（默认 = 下面那份 rigid 多边形）。
+//   weighted 那条用例换成 "vertexCount" 与扁平编码的 vertices —— 判据是
+//   **数组长度 != vertexCount*2**（SkeletonJson.cpp:1218），没有 uvs 可比对。
 // %ANIMFIELD% 由 BuildClipDeform() 替换成一条命中 default/s2/mesh 的 deform 时间轴
 //   （用来验 kHasDeform 只由 deform 点亮，不由裁剪点亮）。
 const char* kSkeletonClip = R"({
@@ -675,8 +720,7 @@ const char* kSkeletonClip = R"({
   "skins": {
     "default": {
       "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
-      "s1": { "clip": { "type": "clipping", %ENDFIELD%"vertexCount": 4,
-                        "vertices": [ 0,0, 10,0, 10,10, 0,10 ] } },
+      "s1": { "clip": { "type": "clipping", %ENDFIELD%%CLIPVERTSFIELD% } },
       "s2": { "mesh": {
         "type": "mesh",
         "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
@@ -731,6 +775,41 @@ const char* kSkeletonClipNested = R"({
     }
   }
 })";
+
+// 默认那份裁剪多边形：4 个顶点，rigid（数组长度 == vertexCount*2 ⇒ 判为 rigid）
+const std::string kClipVertsRigid = "\"vertexCount\": 4, \"vertices\": [ 0,0, 10,0, 10,10, 0,10 ]";
+
+// 把 kSkeletonClip 的三个占位符填掉。end_field = "\"end\": \"s2\", " 或 ""（缺 end）；
+// clip_verts 留空则用上面的 rigid 多边形（weighted 那条用例传自己的）。
+std::string BuildClip(const std::string& end_field, bool with_deform,
+                      const std::string& clip_verts = std::string())
+{
+    std::string s(kSkeletonClip);
+    size_t at = s.find("%ENDFIELD%");
+    if (at == std::string::npos)
+    {
+        return std::string();
+    }
+    s.replace(at, std::string("%ENDFIELD%").size(), end_field);
+    at = s.find("%CLIPVERTSFIELD%");
+    if (at == std::string::npos)
+    {
+        return std::string();
+    }
+    s.replace(at, std::string("%CLIPVERTSFIELD%").size(), clip_verts.empty() ? kClipVertsRigid : clip_verts);
+    at = s.find("%ANIMFIELD%");
+    if (at == std::string::npos)
+    {
+        return std::string();
+    }
+    // deform 时间轴命中 default/s2/mesh：与裁剪**同一个**绘制项，用来验
+    // kHasDeform 只由 deform 点亮（裁剪不点亮它）。
+    s.replace(at, std::string("%ANIMFIELD%").size(),
+              with_deform ? R"(, "animations": { "walk": { "deform": { "default": { "s2": {
+                "mesh": [ { "time": 0, "offset": 0,
+                            "vertices": [ 0,0, 0,0, 0,0, 0,0, 0,0 ] } ] } } } } })" : "");
+    return s;
+}
 
 }   // namespace
 
@@ -1868,29 +1947,6 @@ int main()
     //   s2 = 作用域内
     //   s3 = 边界槽位      ⇒ end 指向它才裁
     {
-        auto BuildClip = [](const std::string& end_field, bool with_deform) -> std::string
-        {
-            std::string s(kSkeletonClip);
-            size_t at = s.find("%ENDFIELD%");
-            if (at == std::string::npos)
-            {
-                return std::string();
-            }
-            s.replace(at, std::string("%ENDFIELD%").size(), end_field);
-            at = s.find("%ANIMFIELD%");
-            if (at == std::string::npos)
-            {
-                return std::string();
-            }
-            // deform 时间轴命中 default/s2/mesh：与裁剪**同一个**绘制项，用来验
-            // kHasDeform 只由 deform 点亮（裁剪不点亮它）。
-            s.replace(at, std::string("%ANIMFIELD%").size(),
-                      with_deform ? R"(, "animations": { "walk": { "deform": { "default": { "s2": {
-                "mesh": [ { "time": 0, "offset": 0,
-                            "vertices": [ 0,0, 0,0, 0,0, 0,0, 0,0 ] } ] } } } } })" : "");
-            return s;
-        };
-
         // 按槽位取绘制项的处置；-1 = 该槽位没有绘制项（裁剪附件就是这种情况）
         auto KindAtSlot = [](const SpineGpuAsset& a, uint16_t slot) -> int
         {
@@ -2175,6 +2231,34 @@ int main()
             Check((ja.header.flags & SpineGpuFlags::kHasClipping) != 0, "nested: 置上了 kHasClipping");
             Check((ja.header.flags & SpineGpuFlags::kHasDeform) == 0, "nested: 不置 kHasDeform");
 
+            // 两条多边形都要落盘，而且**第二条**的偏移非 0 —— 这是唯一能钉住
+            // "vertex_offset 的单位是**顶点下标**而不是字节偏移"的地方：只有一条多边形时
+            // 它落在段首，0 × stride 还是 0，两种解释逐字节相同，写错也测不出来。
+            CheckEq(static_cast<long long>(ja.clip_polygons.size()), 2, "nested: 两条多边形都落盘");
+            if (ja.clip_polygons.size() == 2)
+            {
+                const SpineGpuClipPolygon& pa = ja.clip_polygons[0];
+                const SpineGpuClipPolygon& pb = ja.clip_polygons[1];
+                CheckEq(static_cast<long long>(pa.slot_index), 1, "nested: 第 0 条是 s1 的 clipA");
+                CheckEq(static_cast<long long>(pb.slot_index), 2, "nested: 第 1 条是 s2 的 clipB");
+                CheckEq(static_cast<long long>(pa.vertex_offset), 0, "nested: clipA 落在 rigid 段开头");
+                // 4 个顶点 ⇒ 第 1 条从**顶点下标 4** 开始（字节偏移会算成 32）
+                CheckEq(static_cast<long long>(pb.vertex_offset), 4,
+                        "nested: clipB 从顶点下标 4 开始（**不是**字节偏移 32）");
+                const float kWantB[8] = {0.0f, 0.0f, 20.0f, 0.0f, 20.0f, 20.0f, 0.0f, 20.0f};
+                bool same_b = true;
+                for (int v = 0; v < 4; ++v)
+                {
+                    const uint8_t* pv = ja.vertex_buffer.data() +
+                                        static_cast<size_t>(pb.vertex_offset + static_cast<uint32_t>(v)) *
+                                            SpineGpuConstants::kRigidVertexStride;
+                    float xy[2] = {0.0f, 0.0f};
+                    std::memcpy(xy, pv, sizeof(xy));
+                    same_b = same_b && xy[0] == kWantB[v * 2] && xy[1] == kWantB[v * 2 + 1];
+                }
+                Check(same_b, "nested: clipB 的 4 个点在顶点缓冲里逐点相同");
+            }
+
             // ---- 同一副骨架走 .skel：必须产出**逐字节相同**的容器 ----
             const std::vector<uint8_t> skel =
                 BuildSkelFixture(false, false, "3.8.99", nonessential, "mesh", false, false, true, 10,
@@ -2207,6 +2291,240 @@ int main()
             Check(bytes_j == bytes_s, "nested: skel↔json 容器**逐字节相同**");
 
             g_prefix.clear();
+        }
+    }
+
+    // ---- 13d. 裁剪多边形本身要落盘（v6）----
+    // 它与 deform 不同：deform 是**逐帧动画数据**（来自时间轴，不该烘焙），
+    // 裁剪多边形是**静态资产几何**（局部坐标 + 骨骼绑定），和顶点同类 ——
+    // 顶点烘焙了它不烘焙，容器就还是不自包含。
+    {
+        auto FindChunk = [](const std::vector<uint8_t>& bytes, uint32_t id) -> uint32_t
+        {
+            uint32_t chunk_count = 0;
+            std::memcpy(&chunk_count, bytes.data() + 0x2C, sizeof(chunk_count));
+            for (uint32_t i = 0; i < chunk_count; ++i)
+            {
+                const uint8_t* e = bytes.data() + SpineGpuConstants::kHeaderSize +
+                                   static_cast<size_t>(i) * SpineGpuConstants::kChunkTableEntrySize;
+                uint32_t cid = 0;
+                uint32_t csize = 0;
+                std::memcpy(&cid, e, sizeof(cid));
+                std::memcpy(&csize, e + 8, sizeof(csize));
+                if (cid == id)
+                {
+                    return csize;
+                }
+            }
+            return 0xFFFFFFFFu;   // 没有这个 chunk
+        };
+
+        // 基线：没有裁剪 ⇒ chunk 9 **根本不写**，且每个绘制项都是 kNoClipIndex
+        {
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(kSkeleton, std::string(kSkeleton).size(), &atlas, s);
+            SpineGpuAsset a;
+            Check(r.ok && BakeSpineGpuAsset(s, a).ok, "clip-data: 基线解析 + bake 成功");
+            Check(a.clip_polygons.empty(), "clip-data: 基线没有裁剪多边形");
+            std::vector<uint8_t> bytes;
+            Check(WriteSpineGpuContainer(a, bytes).ok, "clip-data: 基线序列化成功");
+            CheckEq(static_cast<long long>(FindChunk(bytes, SpineGpuChunkId::kChunkClipData)), 0xFFFFFFFF,
+                    "clip-data: 没有裁剪时 chunk 9 **不存在**（不是写个空块）");
+            for (const SpineDrawItem& it : a.draw_items)
+            {
+                CheckEq(static_cast<long long>(it.clip_index),
+                        static_cast<long long>(SpineGpuConstants::kNoClipIndex),
+                        "clip-data: 基线每个绘制项的 clip_index 都是 kNoClipIndex");
+            }
+        }
+
+        for (int ne = 0; ne < 2; ++ne)
+        {
+            const bool nonessential = ne != 0;
+            g_prefix = std::string("[clip-data") + (nonessential ? "/nonessential" : "") + "] ";
+
+            const std::string json = BuildClip("\"end\": \"s2\", ", false);
+            Check(!json.empty(), "clip-data: 夹具替换成功");
+            if (json.empty())
+            {
+                g_prefix.clear();
+                continue;
+            }
+            SpineSourceSkeleton cj;
+            SpineImportResult rj = ParseSpineSkeletonJson(json.data(), json.size(), &atlas, cj);
+            Check(rj.ok, "clip-data: json 解析成功");
+            if (!rj.ok)
+            {
+                std::printf("  error: %s\n", rj.error.c_str());
+                g_prefix.clear();
+                continue;
+            }
+            SpineGpuAsset ja;
+            Check(BakeSpineGpuAsset(cj, ja).ok, "clip-data: json bake 成功");
+
+            CheckEq(static_cast<long long>(ja.clip_polygons.size()), 1, "clip-data: 一条裁剪多边形");
+            if (ja.clip_polygons.size() == 1)
+            {
+                const SpineGpuClipPolygon& p = ja.clip_polygons[0];
+                CheckEq(static_cast<long long>(p.slot_index), 1, "clip-data: 多边形记的是 s1");
+                CheckEq(static_cast<long long>(p.skin_id), 0, "clip-data: 多边形记的是 default 皮肤");
+                Check(p.vertex_format == SpineVertexFormat::kRigid,
+                      "clip-data: 这份多边形的顶点是 rigid（数组长度 == vertexCount*2）");
+                CheckEq(static_cast<long long>(p.vertex_count), 4, "clip-data: 4 个顶点");
+                // 顶点**复用主顶点缓冲**（chunk 3）⇒ 偏移必须落在 rigid 段内
+                Check(p.vertex_offset < ja.rigid_vertex_count, "clip-data: 顶点落在 rigid 段内（复用主顶点缓冲）");
+
+                // 逐点比对：多边形那 4 个点必须真的在顶点缓冲里
+                const float kWant[8] = {0.0f, 0.0f, 10.0f, 0.0f, 10.0f, 10.0f, 0.0f, 10.0f};
+                bool same = true;
+                for (int v = 0; v < 4; ++v)
+                {
+                    const uint8_t* pv = ja.vertex_buffer.data() +
+                                        static_cast<size_t>(p.vertex_offset + static_cast<uint32_t>(v)) *
+                                            SpineGpuConstants::kRigidVertexStride;
+                    float xy[2] = {0.0f, 0.0f};
+                    std::memcpy(xy, pv, sizeof(xy));
+                    same = same && xy[0] == kWant[v * 2] && xy[1] == kWant[v * 2 + 1];
+                }
+                Check(same, "clip-data: 顶点缓冲里那 4 个点与 json 里的多边形逐点相同");
+            }
+
+            // 被裁的项指到那条多边形上；**没被裁的必须是 kNoClipIndex，不能是 0** ——
+            // 0 是一条真实存在的多边形，填 0 会让运行时拿它去裁根本不该裁的项，且不报错。
+            for (const SpineDrawItem& it : ja.draw_items)
+            {
+                if (it.kind == SpineDrawItemKind::kFallback && it.slot_index == 2)
+                {
+                    CheckEq(static_cast<long long>(it.clip_index), 0, "clip-data: 被裁的项 clip_index = 0");
+                }
+                else
+                {
+                    CheckEq(static_cast<long long>(it.clip_index),
+                            static_cast<long long>(SpineGpuConstants::kNoClipIndex),
+                            "clip-data: **没**被裁的项 clip_index 是 kNoClipIndex（不是 0）");
+                }
+            }
+
+            std::vector<uint8_t> bytes;
+            Check(WriteSpineGpuContainer(ja, bytes).ok, "clip-data: 序列化成功");
+            CheckEq(static_cast<long long>(FindChunk(bytes, SpineGpuChunkId::kChunkClipData)), 12,
+                    "clip-data: chunk 9 = 12 B × 1 条");
+
+            // 容器必须可重入：读回来再写一遍要逐字节相同（多边形与 clip_index 都得保住）
+            SpineGpuAsset back;
+            Check(ReadSpineGpuContainer(bytes.data(), bytes.size(), back).ok, "clip-data: 读回成功");
+            CheckEq(static_cast<long long>(back.clip_polygons.size()), 1, "clip-data: 读回后多边形还在");
+            std::vector<uint8_t> again;
+            Check(WriteSpineGpuContainer(back, again).ok, "clip-data: 再序列化成功");
+            Check(bytes == again, "clip-data: round-trip 逐字节相同（含裁剪多边形与 clip_index）");
+
+            g_prefix.clear();
+        }
+    }
+
+    // ---- 13e. weighted 裁剪多边形：两种输入的判据**不一样** ----
+    // 二进制有**显式**的 weighted 标志（readVertices 先读一个 bool）；
+    // json 只能靠 `vertices.size() != vertexCount*2` 猜（SkeletonJson.cpp:1218）。
+    // 裁剪附件不贴图 ⇒ 没有 uvs 可比对 ⇒ 这个"猜"是唯一手段，两条路径必须殊途同归。
+    {
+        const std::string kClipVertsWeighted =
+            "\"vertexCount\": 2, \"vertices\": [ 1, 0, 0,0, 1,  1, 1, 10,10, 1 ]";
+
+        for (int ne = 0; ne < 2; ++ne)
+        {
+            const bool nonessential = ne != 0;
+            g_prefix = std::string("[clip/weighted") + (nonessential ? "/nonessential" : "") + "] ";
+
+            const std::string json = BuildClip("\"end\": \"s2\", ", false, kClipVertsWeighted);
+            Check(!json.empty(), "clip-weighted: 夹具替换成功");
+            if (json.empty())
+            {
+                g_prefix.clear();
+                continue;
+            }
+            SpineSourceSkeleton cj;
+            SpineImportResult rj = ParseSpineSkeletonJson(json.data(), json.size(), &atlas, cj);
+            Check(rj.ok, "clip-weighted: json 解析成功");
+            if (!rj.ok)
+            {
+                std::printf("  error: %s\n", rj.error.c_str());
+                g_prefix.clear();
+                continue;
+            }
+            Check(cj.clips.size() == 1 && cj.clips[0].weighted,
+                  "clip-weighted: json 判成 weighted（数组长度 10 != vertexCount*2 = 4）");
+            Check(cj.clips.size() == 1 && cj.clips[0].vertex_count == 2,
+                  "clip-weighted: json 记下 2 个顶点（**不是** 5 —— 扁平编码里 n 不算顶点）");
+
+            SpineGpuAsset ja;
+            Check(BakeSpineGpuAsset(cj, ja).ok, "clip-weighted: json bake 成功");
+            CheckEq(static_cast<long long>(ja.clip_polygons.size()), 1, "clip-weighted: 一条多边形");
+            if (ja.clip_polygons.size() == 1)
+            {
+                const SpineGpuClipPolygon& p = ja.clip_polygons[0];
+                Check(p.vertex_format == SpineVertexFormat::kWeighted4, "clip-weighted: 顶点格式是 weighted4");
+                CheckEq(static_cast<long long>(p.vertex_count), 2, "clip-weighted: 2 个顶点");
+                Check(p.vertex_offset < ja.weighted_vertex_count,
+                      "clip-weighted: 顶点落在 weighted 段内");
+                // 两个顶点分别绑到 bone 0 与 bone 1 ⇒ 必须真的进 weighted 顶点块
+                const SpineWeightedVertex* wv = reinterpret_cast<const SpineWeightedVertex*>(
+                    ja.vertex_buffer.data() + ja.weighted_segment_offset +
+                    static_cast<size_t>(p.vertex_offset) * SpineGpuConstants::kWeightedVertexStride);
+                Check(wv[0].bone_idx[0] == 0 && wv[1].bone_idx[0] == 1,
+                      "clip-weighted: 两个顶点分别绑到 bone 0 / bone 1");
+                Check(wv[0].weight[0] == 255 && wv[1].weight[0] == 255,
+                      "clip-weighted: 权重 1.0 量化成 255");
+            }
+
+            // ---- .skel：二进制是**显式**标志，但结果必须一样 ----
+            const std::vector<uint8_t> skel =
+                BuildSkelFixture(false, false, "3.8.99", nonessential, "mesh", false, false, true, 10,
+                                 true, 2, 2, false, 3, true);
+            SpineSourceSkeleton cs;
+            SpineImportResult rs = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, cs);
+            Check(rs.ok, "clip-weighted: skel 解析成功");
+            if (!rs.ok)
+            {
+                std::printf("  error: %s\n", rs.error.c_str());
+                g_prefix.clear();
+                continue;
+            }
+            Check(cs.clips.size() == 1 && cs.clips[0].weighted && cs.clips[0].vertex_count == 2,
+                  "clip-weighted: skel 也判成 weighted（**显式**的 bool，不用猜）");
+
+            SpineGpuAsset sa;
+            Check(BakeSpineGpuAsset(cs, sa).ok, "clip-weighted: skel bake 成功");
+            Check(sa.clip_polygons.size() == ja.clip_polygons.size() &&
+                      std::memcmp(sa.clip_polygons.data(), ja.clip_polygons.data(),
+                                  sa.clip_polygons.size() * sizeof(SpineGpuClipPolygon)) == 0,
+                  "clip-weighted: skel↔json 多边形记录逐字节相同");
+
+            std::vector<uint8_t> bytes_j;
+            std::vector<uint8_t> bytes_s;
+            Check(WriteSpineGpuContainer(ja, bytes_j).ok && WriteSpineGpuContainer(sa, bytes_s).ok,
+                  "clip-weighted: 两个容器都序列化成功");
+            Check(bytes_j == bytes_s, "clip-weighted: skel↔json 容器**逐字节相同**");
+
+            g_prefix.clear();
+        }
+
+        // 报错：json 缺 "vertexCount" ⇒ 参考实现会把 rigid 多边形**误判成 weighted**
+        // （verticesLength=0 != entrySize ⇒ 走扁平编码）⇒ 静默解析成垃圾骨骼索引
+        {
+            const char* bad = R"({
+              "skeleton": { "spine": "3.8.99" },
+              "bones": [ { "name": "root" } ],
+              "slots": [ { "name": "s0", "bone": "root" }, { "name": "s1", "bone": "root" } ],
+              "skins": { "default": {
+                "s0": { "quad": { "width": 64, "height": 32 } },
+                "s1": { "clip": { "type": "clipping", "end": "s1",
+                                  "vertices": [ 0,0, 10,0, 10,10, 0,10 ] } }
+              } }
+            })";
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(bad, std::string(bad).size(), &atlas, s);
+            Check(!r.ok, "clip-weighted: json 缺 vertexCount ⇒ 报错（参考实现会误判成 weighted）");
+            std::printf("  (预期报错) %s\n", r.error.c_str());
         }
     }
 

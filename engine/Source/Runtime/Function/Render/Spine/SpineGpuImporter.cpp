@@ -1078,6 +1078,33 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
                 clip.end_slot_index = end_index;
             }
             // 没写 "end"（或写了空串）⇒ end_slot_index 保持 -1 ⇒ 裁到最后一个槽位。
+
+            // ---- 裁剪多边形本身（SkeletonJson.cpp:636-637）----
+            // `vertexCount = Json::getInt(map, "vertexCount", 0)` 是**顶点数**，
+            // readVertices 里拿它当 worldVerticesLength（float 数 = 顶点数 × 2）。
+            const int vertex_count = GetInt(a, "vertexCount", 0);
+            const JsonValue* jverts = GetMember(a, "vertices");
+            // ⚠️ 参考实现在这里有个坑：缺 "vertexCount" ⇒ verticesLength == 0 ≠ entrySize
+            // ⇒ `readVertices` 会走 **weighted** 分支（:1218 的判据），把一串局部坐标
+            // 当成 [n, (bone,x,y,w)×n] 去解析 ⇒ 多边形变成一堆垃圾骨骼索引，且不报错。
+            // 这里必须显式挡住。
+            if (vertex_count <= 0 || jverts == nullptr || !jverts->IsArray())
+            {
+                return Fail("json: 裁剪附件 '" + p.name + "'（槽位 '" +
+                            out.slots[static_cast<size_t>(p.slot_index)].name +
+                            "'）缺 vertexCount 或 vertices（参考实现在这里会把 rigid 多边形"
+                            "误判成 weighted ⇒ 静默解析成垃圾骨骼索引）");
+            }
+            clip.vertex_count = vertex_count;
+            clip.vertices.reserve(jverts->Size());
+            for (const JsonValue& f : jverts->GetArray())
+            {
+                clip.vertices.push_back(f.IsNumber() ? f.GetFloat() : 0.0f);
+            }
+            // ⚠️ weighted 的判据照抄 `readVertices`（:1218）：**数组长度 == vertexCount*2
+            // 才是 rigid**。裁剪附件不贴图 ⇒ 没有 uvs 可比对，只能比这个数。
+            clip.weighted = clip.vertices.size() != static_cast<size_t>(vertex_count) * 2u;
+
             out.clips.push_back(clip);
             out.has_clipping = true;
             continue;
@@ -1673,6 +1700,7 @@ private:
     // linked mesh ⇒ 只能先收着，等 Run() 里 linked mesh 解完再落。
     std::vector<SpineDeformRef> deform_refs_;
     int current_skin_ = -1;   // 正在读的皮肤下标（附件 / linked mesh 都记它）
+    std::vector<float> clip_vertices_;   // ReadVertices 的临时落地（裁剪附件用）
 
     // 附件顺序：先皮肤、皮肤内按槽位。与 json 路径**同一个**次序，
     // 两条路径烘焙出来的容器才能逐字节相同。
@@ -2302,7 +2330,11 @@ private:
                                 " 越界（槽位数 " + std::to_string(out_.slots.size()) +
                                 "）；参考实现在这里报 parse clip attachment failed!");
                 }
-                if (!ReadVertices(vertex_count, nullptr))
+                // 裁剪多边形本身也要读 —— 它是**静态资产几何**（局部坐标 + 骨骼绑定），
+                // 与 deform 那种逐帧动画数据不同，必须进容器（规格 §7.2）。
+                // ⚠️ 二进制有**显式**的 weighted 标志，比 json 那边"靠数组长度猜"可靠。
+                bool weighted = false;
+                if (!ReadVertices(vertex_count, &clip_vertices_, &weighted))
                 {
                     return false;
                 }
@@ -2311,11 +2343,16 @@ private:
                     return false;
                 }
                 // 裁剪附件本身不产生几何 ⇒ 不进 attachments（也就没有绘制项）。
-                // 它留下的是**作用域**，Bake 拿它把作用域内的绘制项标成 kFallback。
+                // 它留下的是**作用域** + **多边形**，Bake 拿它们把作用域内的绘制项
+                // 标成 kFallback 并指到这条多边形上。
                 SpineSourceClip clip;
                 clip.skin_index = current_skin_;
                 clip.slot_index = slot_index;
                 clip.end_slot_index = end_slot;
+                clip.vertices = std::move(clip_vertices_);
+                clip_vertices_.clear();
+                clip.vertex_count = vertex_count;
+                clip.weighted = weighted;
                 out_.clips.push_back(clip);
                 out_.has_clipping = true;
                 return true;
@@ -2430,7 +2467,9 @@ private:
 
     // readVertices（:658-691）。out 为 nullptr 时只推进游标（跳过）。
     // 扁平编码与 json 版一致：weighted 时每顶点 [n, (boneIdx, x, y, w) × n]。
-    bool ReadVertices(int32_t vertex_count, std::vector<float>* out)
+    // weighted_out 非空时把那个 bool 传出去 —— json 那边只能靠"数组长度猜"，
+    // 二进制这边是**显式**的，调用方要拿这个更可靠的答案。
+    bool ReadVertices(int32_t vertex_count, std::vector<float>* out, bool* weighted_out = nullptr)
     {
         if (vertex_count < 0)
         {
@@ -2440,6 +2479,10 @@ private:
         if (!r_.Boolean(weighted))
         {
             return false;
+        }
+        if (weighted_out != nullptr)
+        {
+            *weighted_out = weighted;
         }
         if (!weighted)
         {
@@ -3169,6 +3212,110 @@ private:
     std::unordered_map<uint64_t, std::vector<uint32_t>> by_hash_;
 };
 
+// 把 spine 的扁平顶点数组编码成容器顶点块（规格 §3.1）。
+// **裁剪多边形与 mesh 顶点共用这一条路径** —— 裁剪附件是 VertexAttachment，
+// 顶点跟 mesh 顶点是同一个东西（局部坐标 + 骨骼绑定），没有理由另写一份。
+//   rigid    → SpineRigidVertex    8 B，vertices 就是 [x,y, ...]
+//   weighted → SpineWeightedVertex 48 B，vertices 是每顶点 [n, (boneIdx,x,y,w) × n]
+bool EncodeVertices(const std::string& what, const std::vector<float>& vertices, uint32_t vertex_count,
+                    bool weighted, uint32_t bone_count, std::vector<uint8_t>& blob, std::string& err)
+{
+    blob.clear();
+    if (weighted)
+    {
+        // 展开 spine 的扁平顶点数组：
+        //   每顶点 [n, (boneIdx, x, y, w) × n]   —— SkeletonJson::readVertices
+        size_t p = 0;
+        for (uint32_t v = 0; v < vertex_count; ++v)
+        {
+            if (p >= vertices.size())
+            {
+                err = what + " 的 vertices 在第 " + std::to_string(v) + " 个顶点处提前结束";
+                return false;
+            }
+
+            const float nf = vertices[p++];
+            const int n = static_cast<int>(nf);
+            if (n <= 0 || n > static_cast<int>(SpineGpuConstants::kMaxInfluences))
+            {
+                err = what + " 第 " + std::to_string(v) + " 个顶点有 " + std::to_string(n) +
+                      " 个影响，超过 MAX_INFLUENCES=" + std::to_string(SpineGpuConstants::kMaxInfluences) +
+                      "。不静默截断 —— 截断会让形状悄悄错。";
+                return false;
+            }
+            if (p + static_cast<size_t>(n) * 4u > vertices.size())
+            {
+                err = what + " 的 vertices 在第 " + std::to_string(v) + " 个顶点处越界";
+                return false;
+            }
+
+            float w[SpineGpuConstants::kMaxInfluences] = {0, 0, 0, 0};
+            uint8_t w8[SpineGpuConstants::kMaxInfluences] = {0, 0, 0, 0};
+            uint16_t idx[SpineGpuConstants::kMaxInfluences] = {0, 0, 0, 0};
+            float bind[SpineGpuConstants::kMaxInfluences][2] = {};
+
+            for (int k = 0; k < n; ++k)
+            {
+                const float bone_f = vertices[p];
+                const float vx = vertices[p + 1];
+                const float vy = vertices[p + 2];
+                const float ww = vertices[p + 3];
+                p += 4;
+
+                // 3.8 的 _bones 是 unsigned short，截断会直接毁掉蒙皮
+                if (bone_f < 0.0f || bone_f > 65535.0f || static_cast<uint32_t>(bone_f) >= bone_count)
+                {
+                    err = what + " 第 " + std::to_string(v) + " 个顶点引用骨骼 " +
+                          std::to_string(static_cast<int>(bone_f)) + "，超出范围（bone_count=" +
+                          std::to_string(bone_count) + "）";
+                    return false;
+                }
+
+                idx[k] = static_cast<uint16_t>(bone_f);
+                w[k] = ww;
+                bind[k][0] = vx;
+                bind[k][1] = vy;
+            }
+
+            if (!QuantizeWeights(w, n, w8, err))
+            {
+                err = what + " 第 " + std::to_string(v) + " 个顶点：" + err;
+                return false;
+            }
+
+            SpineWeightedVertex out_v {};
+            for (int k = 0; k < static_cast<int>(SpineGpuConstants::kMaxInfluences); ++k)
+            {
+                out_v.bind_pos[k][0] = bind[k][0];
+                out_v.bind_pos[k][1] = bind[k][1];
+                out_v.bone_idx[k] = idx[k];
+                out_v.weight[k] = w8[k];
+            }
+            blob.resize(blob.size() + sizeof(out_v));
+            std::memcpy(blob.data() + blob.size() - sizeof(out_v), &out_v, sizeof(out_v));
+        }
+        return true;
+    }
+
+    // rigid：⚠️ 这里要**显式**查顶点数 × 2 是否超出 —— 原来直接 `vertices[v*2]`
+    // 是越界读（附件判成 rigid 但 vertices 比 uvs 短时就会踩到）。
+    if (static_cast<size_t>(vertex_count) * 2u > vertices.size())
+    {
+        err = what + " 需要 " + std::to_string(vertex_count * 2u) + " 个 float，但只有 " +
+              std::to_string(vertices.size()) + " 个（rigid 是每顶点 2 个）";
+        return false;
+    }
+    for (uint32_t v = 0; v < vertex_count; ++v)
+    {
+        SpineRigidVertex out_v {};
+        out_v.bind_pos[0] = vertices[static_cast<size_t>(v) * 2u];
+        out_v.bind_pos[1] = vertices[static_cast<size_t>(v) * 2u + 1u];
+        blob.resize(blob.size() + sizeof(out_v));
+        std::memcpy(blob.data() + blob.size() - sizeof(out_v), &out_v, sizeof(out_v));
+    }
+    return true;
+}
+
 }   // namespace
 
 SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsset& out)
@@ -3216,6 +3363,51 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     ExactBlobPool weighted_pool(SpineGpuConstants::kWeightedVertexStride);
     ExactBlobPool uv_pool(SpineGpuConstants::kUvStride);
 
+    // ---- 裁剪多边形：先烘进顶点池，再算作用域 ----
+    // 多边形顶点与 mesh 顶点**同一个池子**（裁剪附件是 VertexAttachment，顶点同构）
+    // ⇒ 几何相同的两条裁剪多边形也共用一段，且不占 header 里任何新字段。
+    // 顺序上必须在 pass 2 之前：这样裁剪顶点占据段的前部，后面的附件照常往后排。
+    if (src.clips.size() > SpineGpuConstants::kNoClipIndex)
+    {
+        return Fail("bake: 裁剪附件数 " + std::to_string(src.clips.size()) +
+                    " 超过 uint16 上限（绘制项的 clip_index 存不下）");
+    }
+    std::vector<SpineSourceClip> clips_sorted = src.clips;
+    std::sort(clips_sorted.begin(), clips_sorted.end(),
+              [](const SpineSourceClip& a, const SpineSourceClip& b)
+              {
+                  if (a.skin_index != b.skin_index)
+                  {
+                      return a.skin_index < b.skin_index;
+                  }
+                  return a.slot_index < b.slot_index;
+              });
+    for (const SpineSourceClip& c : clips_sorted)
+    {
+        const uint32_t vc = static_cast<uint32_t>(c.vertex_count);
+        if (vc == 0)
+        {
+            return Fail("bake: 槽位 '" + src.slots[static_cast<size_t>(c.slot_index)].name +
+                        "' 的裁剪附件顶点数为 0（空多边形裁不出任何东西）");
+        }
+        std::vector<uint8_t> blob;
+        std::string err;
+        const std::string what = "bake: 槽位 '" + src.slots[static_cast<size_t>(c.slot_index)].name + "' 的裁剪附件";
+        if (!EncodeVertices(what, c.vertices, vc, c.weighted, bone_count, blob, err))
+        {
+            return Fail(err);
+        }
+        ExactBlobPool& pool = c.weighted ? weighted_pool : rigid_pool;
+
+        SpineGpuClipPolygon rec {};
+        rec.slot_index = static_cast<uint16_t>(c.slot_index);
+        rec.skin_id = static_cast<uint16_t>(c.skin_index);
+        rec.vertex_format = c.weighted ? SpineVertexFormat::kWeighted4 : SpineVertexFormat::kRigid;
+        rec.vertex_count = static_cast<uint16_t>(vc);
+        rec.vertex_offset = pool.Intern(blob.data(), blob.size()).second;
+        out.clip_polygons.push_back(rec);
+    }
+
     // ---- 裁剪作用域：逐皮肤**模拟**参考实现的状态机 ----
     // 不能用"存在某条 clip 覆盖这个槽"的宽松判定，因为参考实现有三条不对称的规则，
     // 少一条就会把不该回退的项也回退（或者反过来）：
@@ -3232,11 +3424,16 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     const uint32_t skin_count = static_cast<uint32_t>(src.skins.size());
     // clip_end[skin][slot]：该皮肤下该槽位**挂着**裁剪附件时的 endSlot；kNoClip = 没有。
     // 值是 -1 时表示"没有结束槽位"（json 缺 "end"）⇒ 裁到最后一个槽位。
+    // clip_rec[skin][slot]：那条裁剪附件在 `out.clip_polygons` 里的**行号**
+    // （= 绘制项 clip_index 要填的值）。两个矩阵下标一一对应。
     constexpr int kNoClip = -2;
     std::vector<std::vector<int>> clip_end(static_cast<size_t>(skin_count),
                                            std::vector<int>(static_cast<size_t>(slot_count), kNoClip));
-    for (const SpineSourceClip& c : src.clips)
+    std::vector<std::vector<int>> clip_rec(static_cast<size_t>(skin_count),
+                                           std::vector<int>(static_cast<size_t>(slot_count), -1));
+    for (size_t ci = 0; ci < clips_sorted.size(); ++ci)
     {
+        const SpineSourceClip& c = clips_sorted[ci];
         if (c.skin_index < 0 || c.slot_index < 0 ||
             static_cast<size_t>(c.skin_index) >= skin_count ||
             static_cast<size_t>(c.slot_index) >= slot_count)
@@ -3245,14 +3442,19 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                         std::to_string(c.slot_index) + "）—— 解析路径没把它归到已有的皮肤 / 槽位");
         }
         clip_end[static_cast<size_t>(c.skin_index)][static_cast<size_t>(c.slot_index)] = c.end_slot_index;
+        clip_rec[static_cast<size_t>(c.skin_index)][static_cast<size_t>(c.slot_index)] = static_cast<int>(ci);
     }
 
     // clipped[skin][slot] = 1 ⇒ 该皮肤下该槽位的几何要由 CPU 裁剪 ⇒ kind = kFallback。
+    // clip_of[skin][slot] = 当时生效的那条裁剪在 clip_polygons 里的行号（-1 = 没被裁）。
     std::vector<std::vector<uint8_t>> clipped(static_cast<size_t>(skin_count),
                                               std::vector<uint8_t>(static_cast<size_t>(slot_count), 0u));
+    std::vector<std::vector<int>> clip_of(static_cast<size_t>(skin_count),
+                                          std::vector<int>(static_cast<size_t>(slot_count), -1));
     for (uint32_t sk = 0; sk < skin_count; ++sk)
     {
         int active_end = kNoClip;   // 当前生效裁剪的结束槽位
+        int active_rec = -1;        // 当前生效裁剪在 clip_polygons 里的行号
         for (uint32_t s = 0; s < slot_count; ++s)
         {
             const int here = clip_end[sk][s];
@@ -3273,15 +3475,18 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                     // 这**正是**参考实现的行为：end 写错成"自己或更前面"时，
                     // 画面会一路裁到末尾，且不报任何错。
                     active_end = here;
+                    active_rec = clip_rec[sk][s];
                 }
                 continue;
             }
             if (active_end != kNoClip)
             {
                 clipped[sk][s] = 1u;
+                clip_of[sk][s] = active_rec;
                 if (active_end == static_cast<int>(s))
                 {
                     active_end = kNoClip;   // clipEnd(slot)
+                    active_rec = -1;
                 }
             }
         }
@@ -3303,99 +3508,21 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         }
 
         // 先把这一份附件的顶点整块拼出来，再去重池里问"有没有一模一样的"。
+        // 编码与裁剪多边形共用 EncodeVertices() —— 两者都是 VertexAttachment 的顶点。
         std::vector<uint8_t> blob;
         blob.reserve(static_cast<size_t>(vc) * (weighted ? SpineGpuConstants::kWeightedVertexStride
                                                          : SpineGpuConstants::kRigidVertexStride));
-        uint32_t vertex_base = 0;
-
-        if (weighted)
         {
-            // 展开 spine 的扁平顶点数组：
-            //   每顶点 [n, (boneIdx, x, y, w) × n]   —— SkeletonJson::readVertices
-            size_t p = 0;
-            for (uint32_t v = 0; v < vc; ++v)
+            std::string err;
+            if (!EncodeVertices("bake: 附件 '" + a.name + "'", a.vertices, vc, weighted, bone_count, blob, err))
             {
-                if (p >= a.vertices.size())
-                {
-                    return Fail("bake: 附件 '" + a.name + "' 的 vertices 在第 " + std::to_string(v) +
-                                " 个顶点处提前结束");
-                }
-
-                const float nf = a.vertices[p++];
-                const int n = static_cast<int>(nf);
-                if (n <= 0 || n > static_cast<int>(SpineGpuConstants::kMaxInfluences))
-                {
-                    return Fail("bake: 附件 '" + a.name + "' 第 " + std::to_string(v) + " 个顶点有 " +
-                                std::to_string(n) + " 个影响，超过 MAX_INFLUENCES=" +
-                                std::to_string(SpineGpuConstants::kMaxInfluences) +
-                                "。不静默截断 —— 截断会让形状悄悄错。");
-                }
-                if (p + static_cast<size_t>(n) * 4u > a.vertices.size())
-                {
-                    return Fail("bake: 附件 '" + a.name + "' 的 vertices 在第 " + std::to_string(v) +
-                                " 个顶点处越界");
-                }
-
-                float w[SpineGpuConstants::kMaxInfluences] = {0, 0, 0, 0};
-                uint8_t w8[SpineGpuConstants::kMaxInfluences] = {0, 0, 0, 0};
-                uint16_t idx[SpineGpuConstants::kMaxInfluences] = {0, 0, 0, 0};
-                float bind[SpineGpuConstants::kMaxInfluences][2] = {};
-
-                for (int k = 0; k < n; ++k)
-                {
-                    const float bone_f = a.vertices[p];
-                    const float vx = a.vertices[p + 1];
-                    const float vy = a.vertices[p + 2];
-                    const float ww = a.vertices[p + 3];
-                    p += 4;
-
-                    // 3.8 的 _bones 是 unsigned short，截断会直接毁掉蒙皮
-                    if (bone_f < 0.0f || bone_f > 65535.0f || static_cast<uint32_t>(bone_f) >= bone_count)
-                    {
-                        return Fail("bake: 附件 '" + a.name + "' 第 " + std::to_string(v) + " 个顶点引用骨骼 " +
-                                    std::to_string(static_cast<int>(bone_f)) + "，超出范围（bone_count=" +
-                                    std::to_string(bone_count) + "）");
-                    }
-
-                    idx[k] = static_cast<uint16_t>(bone_f);
-                    w[k] = ww;
-                    bind[k][0] = vx;
-                    bind[k][1] = vy;
-                }
-
-                std::string err;
-                if (!QuantizeWeights(w, n, w8, err))
-                {
-                    return Fail("bake: 附件 '" + a.name + "' 第 " + std::to_string(v) + " 个顶点：" + err);
-                }
-
-                SpineWeightedVertex out_v {};
-                for (int k = 0; k < static_cast<int>(SpineGpuConstants::kMaxInfluences); ++k)
-                {
-                    out_v.bind_pos[k][0] = bind[k][0];
-                    out_v.bind_pos[k][1] = bind[k][1];
-                    out_v.bone_idx[k] = idx[k];
-                    out_v.weight[k] = w8[k];
-                }
-                blob.resize(blob.size() + sizeof(out_v));
-                std::memcpy(blob.data() + blob.size() - sizeof(out_v), &out_v, sizeof(out_v));
-            }
-        }
-        else
-        {
-            for (uint32_t v = 0; v < vc; ++v)
-            {
-                SpineRigidVertex out_v {};
-                out_v.bind_pos[0] = a.vertices[static_cast<size_t>(v) * 2u];
-                out_v.bind_pos[1] = a.vertices[static_cast<size_t>(v) * 2u + 1u];
-                blob.resize(blob.size() + sizeof(out_v));
-                std::memcpy(blob.data() + blob.size() - sizeof(out_v), &out_v, sizeof(out_v));
+                return Fail(err);
             }
         }
 
         // ---- 顶点块去重：几何 + 蒙皮完全相同才共用 ----
         ExactBlobPool& pool = weighted ? weighted_pool : rigid_pool;
-        vertex_base = pool.Intern(blob.data(), blob.size()).second;
+        const uint32_t vertex_base = pool.Intern(blob.data(), blob.size()).second;
 
         // ---- UV：每个绘制项一份，**不参与顶点去重** ----
         // 这正是拆通道的目的：linked mesh 继承父附件的几何，却用自己的图集 region
@@ -3437,6 +3564,13 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         const bool clipped_here = clipped[static_cast<size_t>(a.skin_index)][static_cast<size_t>(a.slot_index)] != 0u;
         item.kind = (a.deformed || clipped_here) ? SpineDrawItemKind::kFallback : SpineDrawItemKind::kStatic;
         item.pad = 0;
+        // 被裁的项指到**当时生效**的那条裁剪多边形上（chunk 9 的行号）。
+        // 没被裁时是 kNoClipIndex（0xFFFF）—— **不是 0**：0 是一条真实存在的多边形，
+        // 填 0 会让运行时拿第一条多边形去裁根本不该裁的项，而且不报错。
+        const int clip_of_here = clip_of[static_cast<size_t>(a.skin_index)][static_cast<size_t>(a.slot_index)];
+        item.clip_index = clip_of_here >= 0 ? static_cast<uint16_t>(clip_of_here)
+                                            : SpineGpuConstants::kNoClipIndex;
+        item.pad2 = 0;
         out.draw_items.push_back(item);
 
         SpineGpuAttachmentRecord rec {};
@@ -3690,7 +3824,23 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         chunks.push_back(std::move(c));
     }
 
-    // id=6 draw_items —— **24 B/项**，未用字节显式写 0（规格 §4）
+    // id=9 clip_polygons —— 12 B/条。**顶点本身在 chunk 3 里**（裁剪附件是
+    // VertexAttachment，顶点与 mesh 顶点同构，连去重都共用同一个池子）。
+    if (!asset.clip_polygons.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkClipData;
+        for (const SpineGpuClipPolygon& p : asset.clip_polygons)
+        {
+            uint8_t raw[sizeof(SpineGpuClipPolygon)];
+            std::memset(raw, 0, sizeof(raw));
+            std::memcpy(raw, &p, sizeof(p));
+            PutBytes(c.bytes, raw, sizeof(raw));
+        }
+        chunks.push_back(std::move(c));
+    }
+
+    // id=6 draw_items —— **28 B/项**，未用字节显式写 0（规格 §4）
     if (!asset.draw_items.empty())
     {
         ChunkBuilder c;
@@ -3875,13 +4025,30 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         }
     }
 
-    // ---- 绘制项（20 B/项） ----
+    // ---- 裁剪多边形（chunk 9，12 B/条）----
+    if (const Found* f = find_chunk(SpineGpuChunkId::kChunkClipData))
+    {
+        if (f->size % sizeof(SpineGpuClipPolygon) != 0)
+        {
+            return Fail("container: clip_data 大小不是 " + std::to_string(sizeof(SpineGpuClipPolygon)) +
+                        " B 的整数倍（v6 起一条是 12 B）");
+        }
+        const uint32_t count = f->size / static_cast<uint32_t>(sizeof(SpineGpuClipPolygon));
+        out.clip_polygons.resize(count);
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            std::memcpy(&out.clip_polygons[i], data + f->offset + static_cast<size_t>(i) * sizeof(SpineGpuClipPolygon),
+                        sizeof(SpineGpuClipPolygon));
+        }
+    }
+
+    // ---- 绘制项（28 B/项） ----
     if (const Found* f = find_chunk(SpineGpuChunkId::kChunkDrawItems))
     {
         if (f->size % sizeof(SpineDrawItem) != 0)
         {
             return Fail("container: draw_items 大小不是 " + std::to_string(sizeof(SpineDrawItem)) +
-                        " B 的整数倍（v3 起一项是 24 B：多了 uv_offset）");
+                        " B 的整数倍（v3 起一项是 24 B：多了 uv_offset；v6 起是 28 B：多了 clip_index）");
         }
         const uint32_t count = f->size / static_cast<uint32_t>(sizeof(SpineDrawItem));
         out.draw_items.resize(count);

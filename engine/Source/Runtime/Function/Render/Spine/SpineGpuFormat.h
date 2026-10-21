@@ -50,7 +50,16 @@ namespace SpineGpuConstants
     //   * 但语义变了：落在裁剪作用域里的绘制项，kind 从 kStatic 变成 kFallback
     //   ⇒ v4 的容器会把这些项标成 kStatic，画出来是**不裁剪**的（静默错），
     //   所以同样是不兼容改动（规格 §7.2、§11）。
-    constexpr uint32_t kFormatVersion = 5;
+    // 版本 6（2026-10-21）：**裁剪多边形进容器**（chunk 9 不再是空的）——
+    //   * 绘制项 24 B → **28 B**（多了 clip_index：这一项被哪条裁剪多边形裁）
+    //   * chunk 9 = SpineGpuClipPolygon[]，12 B/条
+    //   * 多边形顶点**复用主顶点缓冲**（chunk 3）：裁剪附件是 VertexAttachment，
+    //     顶点与 mesh 顶点同构（rigid / weighted 两种），连去重都能一起做
+    //     ⇒ 不需要新的段信息，header 64 B 保持不动。
+    //   为什么不是"和 deform 一样不烘焙"：deform 是**逐帧动画数据**（来自时间轴），
+    //   而裁剪多边形是**静态资产几何**（局部坐标 + 骨骼绑定），与顶点同类 ——
+    //   顶点烘焙了它不烘焙，容器就还是不自包含。
+    constexpr uint32_t kFormatVersion = 6;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -80,9 +89,16 @@ namespace SpineGpuConstants
     // 每帧实例项大小（含 root_index，规格 §5.2）。
     constexpr uint32_t kDrawInstanceSize = 20;
 
-    // 静态绘制项大小（规格 §4）。v3 起是 24 B（多了 uv_offset）。
+    // 静态绘制项大小（规格 §4）。v3 起是 24 B（多了 uv_offset），v6 起是 28 B（多了 clip_index）。
     // 与 kDrawInstanceSize 别互相换用 —— 一个是静态表项、一个是每帧实例项。
-    constexpr uint32_t kDrawItemSize = 24;
+    constexpr uint32_t kDrawItemSize = 28;
+
+    // 裁剪多边形记录大小（chunk 9，规格 §7.2）。
+    constexpr uint32_t kClipPolygonSize = 12;
+
+    // clip_index 的"没有"值。绘制项里存的是 chunk 9 的行号，
+    // 用 0xFFFF 而不是 0 —— 0 是一条**真实存在的**多边形，用它会静默裁错。
+    constexpr uint16_t kNoClipIndex = 0xFFFFu;
 
     // 顶点步长。**UV 已经不在这里了**（v3 起它在独立的 chunk 4 里）⇒
     //   rigid    : bindPos 2 float                = 8 B
@@ -163,7 +179,7 @@ enum SpineGpuChunkId : uint32_t
     kChunkDrawItems = 6,     // SpineDrawItem[]
     kChunkAttachments = 7,   // (皮肤, 槽位) → 附件 id 列表（换装用）
     kChunkAtlasPages = 8,    // 图集页路径 / 纹理引用
-    kChunkClipData = 9,      // 裁剪多边形（CPU fallback 用）
+    kChunkClipData = 9,      // SpineGpuClipPolygon[]（12 B/条）；**顶点本身在 chunk 3 里**
 };
 
 // ---------------------------------------------------------------------
@@ -172,7 +188,7 @@ enum SpineGpuChunkId : uint32_t
 struct SpineGpuHeader
 {
     uint32_t magic;             // 'ZSPG'
-    uint32_t version;           // 本规格版本，当前 5（见 kFormatVersion 的版本史）
+    uint32_t version;           // 本规格版本，当前 6（见 kFormatVersion 的版本史）
     uint32_t spine_runtime;     // 产生它的 spine-cpp 版本（3.8.xx → 30800）
     uint32_t flags;             // SpineGpuFlags
     uint32_t bone_count;
@@ -321,6 +337,12 @@ struct SpineDrawItem
     uint16_t skin_id;
     SpineDrawItemKind kind;            // @22
     uint8_t pad;                       // @23
+    // @24 —— 这一项被哪条裁剪多边形裁（chunk 9 的行号）。**不被裁时是 kNoClipIndex**。
+    // 为什么要存下标而不是让运行时按 (skin_id, slot_index) 去查：一个槽位在**静态上**
+    // 可能被多条裁剪覆盖过（不同皮肤 / 嵌套），绘制项要的是"当时生效的那一条"，
+    // 而这个只有导入期模拟状态机才知道。
+    uint16_t clip_index;
+    uint16_t pad2;                     // @26 —— 凑 28 B，落盘必须写 0
 };
 
 // v3 起是 **24 B**（20 B + uv_offset）。
@@ -337,6 +359,36 @@ static_assert(offsetof(SpineDrawItem, slot_index) == 16, "spec 4: slot_index @16
 static_assert(offsetof(SpineDrawItem, attachment_id) == 18, "spec 4: attachment_id @18");
 static_assert(offsetof(SpineDrawItem, skin_id) == 20, "spec 4: skin_id @20");
 static_assert(offsetof(SpineDrawItem, kind) == 22, "spec 4: kind @22");
+static_assert(offsetof(SpineDrawItem, clip_index) == 24, "spec 4: clip_index @24 (v6)");
+static_assert(offsetof(SpineDrawItem, pad2) == 26, "spec 4: pad2 @26 (v6)");
+
+// ---------------------------------------------------------------------
+// 裁剪多边形记录（chunk 9，规格 §7.2）
+// ---------------------------------------------------------------------
+// 一条 = 一个 ClippingAttachment。**顶点不在这一块里** —— 它复用主顶点缓冲
+// （chunk 3）的 rigid / weighted 段，因为裁剪附件是 VertexAttachment，
+// 顶点和 mesh 顶点是同一个东西（局部坐标 + 骨骼绑定），连逐字节去重都能共用。
+//
+// 运行时拿到它之后：用槽位骨骼（rigid）或每个影响自己的骨骼（weighted）
+// 把多边形变换到世界空间，再对作用域内的绘制项做 CPU 裁剪。
+struct SpineGpuClipPolygon
+{
+    uint16_t slot_index = 0;                        // @0 —— 裁剪附件所在槽位
+    uint16_t skin_id = 0;                           // @2 —— 逐皮肤（换装时作用域也换）
+    SpineVertexFormat vertex_format = SpineVertexFormat::kRigid;   // @4
+    uint8_t pad = 0;                                // @5
+    uint16_t vertex_count = 0;                      // @6
+    // @8 —— 进入**所在顶点段**的顶点下标（不是字节偏移）；段由 vertex_format 决定。
+    uint32_t vertex_offset = 0;
+};
+
+static_assert(sizeof(SpineGpuClipPolygon) == SpineGpuConstants::kClipPolygonSize,
+              "spec 7.2: clip polygon record is 12 B");
+static_assert(offsetof(SpineGpuClipPolygon, slot_index) == 0, "spec 7.2: clip.slot_index @0");
+static_assert(offsetof(SpineGpuClipPolygon, skin_id) == 2, "spec 7.2: clip.skin_id @2");
+static_assert(offsetof(SpineGpuClipPolygon, vertex_format) == 4, "spec 7.2: clip.vertex_format @4");
+static_assert(offsetof(SpineGpuClipPolygon, vertex_count) == 6, "spec 7.2: clip.vertex_count @6");
+static_assert(offsetof(SpineGpuClipPolygon, vertex_offset) == 8, "spec 7.2: clip.vertex_offset @8");
 
 // ---------------------------------------------------------------------
 // 每帧每实例数据（规格 §5）

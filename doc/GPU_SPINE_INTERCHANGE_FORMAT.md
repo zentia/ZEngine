@@ -201,7 +201,7 @@ Unity 原生模块里是实打实的浪费（~8 B/顶点）。
 再下一个皮肤；皮肤内按槽位顺序。每项：
 
 ```
-DrawItem                     24 B
+DrawItem                     28 B（v6 起；v5 是 24 B）
   index_offset  u32   @0
   index_count   u32   @4
   uv_offset     u32   @8   （单位：**UV 条目**，不是字节；见 §3.2）
@@ -213,6 +213,8 @@ DrawItem                     24 B
   skin_id       u16   @20
   kind          u8    @22  (kStatic / kFallback)
   _pad          u8    @23
+  clip_index    u16   @24  chunk 9 的行号；**没被裁时是 kNoClipIndex = 0xFFFF**（见 §7.2）
+  _pad2         u16   @26
 ```
 
 **没有 `skin_id` 就没法换装**：同一个 (槽位, 附件名) 在不同皮肤下是两个绘制项，
@@ -444,8 +446,34 @@ json 里这个开关的字段名是 **`"deform"`**（不是 `"inheritDeform"`）
 #### 容器里存什么
 
 **作用域本身不落盘。** 它已经完整表达成"作用域内绘制项的 `kind = kFallback`"，
-运行时不需要再算一遍；裁剪多边形（chunk 9 `clip_data`）与 deform 数据一样
-**目前也不烘焙** —— `kFallback` 的语义就是"这项别用静态 VB，从 spine 源数据走 CPU 生成"。
+运行时不需要再算一遍。
+
+**裁剪多边形要落盘**（chunk 9 `clip_data`，v6 起）。它和 deform **不同**：
+deform 是逐帧动画数据（来自时间轴，永远不该烘焙），而裁剪多边形是
+**静态资产几何** —— 局部坐标 + 骨骼绑定，和 mesh 顶点同源
+（`ClippingAttachment : VertexAttachment`），不烘焙的话运行时想"只靠容器渲染、
+不再持有 spine 源数据"就不成立。
+
+```
+ClipPolygon                  12 B（chunk 9，一条/裁剪附件）
+  slot_index    u16   @0   裁剪附件所在槽位（调试/校验用）
+  skin_id       u16   @2   作用域是逐皮肤的
+  vertex_format u8    @4   kRigid / kWeighted4
+  _pad          u8    @5
+  vertex_count  u16   @6
+  vertex_offset u32   @8   **段内顶点下标**，不是字节偏移（见 §3.1 的 stride）
+```
+
+⚠️ **多边形顶点复用主顶点缓冲**（chunk 3），不另开一块：`ClippingAttachment` 就是
+`VertexAttachment`，编码方式与 mesh 顶点**完全相同**，也走同一个 `ExactBlobPool`
+逐字节去重 ⇒ header 不需要新增字段，仍是 64 B。
+被裁的绘制项通过 `clip_index` 指到这张表的行号；**没被裁时必须是 `kNoClipIndex = 0xFFFF`，
+不能是 0 —— 0 是一条真实存在的多边形**，填 0 会让运行时拿第一条多边形去裁根本不该裁的项，
+而且不报错。
+
+⚠️ `vertex_offset` 的单位是**顶点下标**不是字节。只有一条多边形时它落在段首，
+`0 × stride` 还是 0，两种解释逐字节相同 ⇒ 写错了测不出来；验收必须用到**第二条**
+多边形（偏移非 0）才能钉住（见 §12 第 12 项）。
 
 ⚠️ **`kHasDeform` 只由 deform 点亮，不由裁剪点亮。** 两个位都表示"有绘制项走了
 CPU fallback"，但语义不同：`kHasDeform` = 顶点**逐帧**变 ⇒ 动态 VB 每帧要重算；
@@ -477,11 +505,15 @@ Spine 图集默认是 **PMA（预乘 Alpha）**，对应 Unity 侧 `Blend One On
 ```
 Header (64 B)
   0x00  magic            u32   'ZSPG'  (0x5A535047)
-  0x04  version          u32   本规格版本，当前 5
+  0x04  version          u32   本规格版本，当前 6
                                v2 = 加了 skin 维度（§9.1）
                                v3 = UV 拆成独立通道 + chunk id 重排（§3.2、§14.2）
                                v4 = deform 参与烘焙（§7.1）—— 布局没变，
                                     但带 FFD 的绘制项 kind 从 kStatic 变成 kFallback
+                               v5 = 裁剪作用域参与烘焙（§7.2）—— 布局没变，
+                                    但作用域内绘制项的 kind 从 kStatic 变成 kFallback
+                               v6 = 裁剪多边形参与烘焙（§7.2）—— 绘制项 24 B → 28 B
+                                    （新增 clip_index），chunk 9 起真正写数据
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -506,11 +538,12 @@ Chunks:
   id=3  vertex_buffer  按 vertex_format 分段，段首 8 B 对齐（**不含 UV**）
   id=4  uv_buffer      float2 × uv_count，8 B/条，段首 8 B 对齐（§3.2）
   id=5  index_buffer   uint16（或 flags 打开时 uint32）
-  id=6  draw_items     DrawItem[]，24 B/项（含 uv_offset + skin_id）
+  id=6  draw_items     DrawItem[]，28 B/项（含 uv_offset + skin_id + clip_index）
   id=7  attachments    (slot_index u16, attachment_id u16, skin_id u16, _pad u16) × attachment_count
                        —— 8 B/项，换装查的就是这张表
   id=8  atlas_pages    图集页路径，每项 '\0' 结尾
-  id=9  clip_data      裁剪多边形（CPU fallback 用）
+  id=9  clip_data      ClipPolygon[]，12 B/条（§7.2）；**顶点本身在 chunk 3 里**。
+                       没有裁剪时这个 chunk **根本不写**（不是写个空块）
 ```
 
 > ⚠️ **chunk id 在 v3 重排过**：`uv_buffer` 插在 `vertex_buffer` 与 `index_buffer` 之间，
@@ -609,6 +642,16 @@ Chunks:
    * 正确（clipB 被忽略）⇒ `s3`、`s4` 都由 **clipA** 裁 ⇒ `s4` 是 `kFallback`
    * 错误（clipB 生效并终结 clipA）⇒ clipB 在 `s3` 就收尾 ⇒ **`s4` 变成 `kStatic`**
    ⚠️ 只断言 `s3` 不够 —— 两种实现都会让 `s3` 被裁，只有 `s4` 分得开。
+12. **裁剪多边形必须落盘，且 `clip_index` / `vertex_offset` 的语义要钉住**：
+   * 没有裁剪时 chunk 9 **根本不存在**（不是写个空块），且每个绘制项都是 `kNoClipIndex`
+   * 被裁的项 `clip_index` 指到那条多边形；**没被裁的必须是 `kNoClipIndex` 而不是 0**
+     —— 0 是一条真实存在的多边形，填 0 会让运行时裁错东西且不报错
+   * 多边形顶点复用主顶点缓冲（chunk 3），逐点与 json/`.skel` 里的多边形相同
+   * **`vertex_offset` 的单位是顶点下标不是字节** ⇒ 必须用到**第二条**多边形（偏移非 0）
+     才能测出来；只有一条时它在段首，`0 × stride` 与 `0` 逐字节相同，写错也测不出来
+   * 二进制的 weighted 判据是**显式 bool**，json 只能靠"数组长度 ≠ vertexCount×2"猜
+     （没有 uvs 可比对）⇒ 两种输入必须对到同一个结果；json 缺 `vertexCount` 必须报错
+     （参考实现会把它误判成 weighted ⇒ 静默解析成垃圾骨骼索引）
 
 ---
 
@@ -620,7 +663,7 @@ Chunks:
 |---|---|---|---|
 | 1 | Spine 版本 | **3.8**，升 4.x 单独排期（理由：可归因，不是"3.8 更好"） | §1.1 |
 | 3 | Clip 策略 | **从"策略"降级为"约束"**：3.8 只有 CPU 实现 ⇒ 带裁剪的槽位走 CPU 动态 VB，同帧可混跑 | §1.1、§7 |
-| 9 | 裁剪的回退粒度 | **逐槽位**（不是整个资产）：作用域是 `(clipSlot, endSlot]`，逐皮肤模拟参考实现的状态机得出；**作用域不落盘**，只表达成作用域内绘制项的 `kind = kFallback`。`kHasDeform` 只由 deform 点亮，不由裁剪点亮 | §7.2 |
+| 9 | 裁剪的回退粒度 | **逐槽位**（不是整个资产）：作用域是 `(clipSlot, endSlot]`，逐皮肤模拟参考实现的状态机得出；**作用域不落盘**，只表达成作用域内绘制项的 `kind = kFallback`。**裁剪多边形要落盘**（chunk 9，12 B/条，顶点复用主顶点缓冲），绘制项加 `clip_index`（24 B → 28 B）。`kHasDeform` 只由 deform 点亮，不由裁剪点亮 | §7.2 |
 | 6 | root 变换存在哪？ | **方案 A：实例项加 `root_index`（16 B → 20 B）**，root 存每帧 root 表，24 B/项。选它而不是 B/C 是因为它不改 `bone_base` 的语义，代价只是每绘制项 4 B | §5.2、§5.3 |
 | 2 | `MAX_INFLUENCES = 4` 够吗？ | **定为 4**。导入器遇 `n > 4` **报错并报出附件名**，不静默截断 | §3.1 |
 | 4 | 骨骼通道 structured 还是 UBO？ | **默认 structured / SSBO，24 B 紧凑**；仅当目标后端只有 UBO 时才用 32 B std140 变体（记录在 `bone_stride`） | §5.1 |
@@ -659,15 +702,18 @@ v3 已解决，且**当初列的两条路都做了**（缺一不可，见 §13.1
 
 （历史：#1 版本、#2 影响数、#3 Clip、#4 骨骼通道、#5 root 是否 per-instance、#6 root 存放方式。）
 
-### 14.3 裁剪还剩一处没做（不是 bug，是尚未需要）
+### 14.3 （已修，2026-10-21）~~裁剪多边形本身不烘焙~~
 
-**裁剪多边形本身不烘焙**（chunk 9 `clip_data` 仍是空的）。`kFallback` 的语义是
-"这项别用静态 VB"，运行时走 CPU 时会从 **spine 源数据**取多边形 —— deform 数据同理，
-所以两端的处置是一致的。什么时候需要：runtime 想**只**靠容器渲染、不再持有 spine 源数据时。
+v6 已补上：chunk 9 写 `ClipPolygon[]`（12 B/条），绘制项加 `clip_index`（24 B → 28 B）。
+多边形顶点**复用主顶点缓冲**（chunk 3）—— `ClippingAttachment : VertexAttachment`，
+编码方式与 mesh 顶点完全相同、走同一个 `ExactBlobPool` 去重，所以 header 不用新增字段。
 
-（历史：嵌套裁剪曾经也列在这里 —— 规则一直是明确的，但夹具里没有"两个裁剪附件叠在一起"
-的骨架，因为第二条裁剪要**占掉**一个槽位、那个槽位就没有几何了。现已补上 5 槽位夹具，
-判据是**最后那个槽位**的 `kind`：见 §12 第 10 项。）
+（历史：v5 时这里写的是"多边形不烘焙，运行时从 spine 源数据取"。这不成立 ——
+`kFallback` 的语义只说"别用静态 VB"，而"只靠容器渲染、不再持有 spine 源数据"是
+整个容器格式的目标之一，裁剪多边形是**静态资产几何**（和 deform 那种逐帧数据不同），
+必须能落盘。嵌套裁剪曾经也列在这里 —— 规则一直是明确的，但夹具里没有"两个裁剪附件叠
+在一起"的骨架，因为第二条裁剪要**占掉**一个槽位、那个槽位就没有几何了。现已补上
+5 槽位夹具，判据是**最后那个槽位**的 `kind`：见 §12 第 10 项。）
 
 ---
 
@@ -688,6 +734,9 @@ v3 已解决，且**当初列的两条路都做了**（缺一不可，见 §13.1
 | rigid 公式精确行号（`:83` = x，`:84` = y） | `VertexAttachment.cpp:71,83-84` |
 | weighted 非 deform 块 `:97-112`；deform 块 `:115-131`，`vx` 在 `:122` | `VertexAttachment.cpp` |
 | 裁剪是 CPU 几何重写 | `SkeletonClipping.h:47-49`（`clipTriangles`）、`:52-54`（`getClippedVertices/Triangles/UVs`） |
+| `ClippingAttachment : public VertexAttachment`（多边形与 mesh 顶点**同源** ⇒ 可复用主顶点缓冲 + 同一去重池，header 不用加字段） | `ClippingAttachment.h:38` |
+| 二进制 `readVertices`：weighted 是**显式 bool**，且 `boneCount`/`boneIdx` 是 **varint**（只有 x/y/w 是 float） | `SkeletonBinary.cpp:658-691` |
+| json `readVertices` 的 weighted 判据 = 数组长度 ≠ `vertexCount*2`（裁剪附件没有 uvs 可比对，只能靠这个数） | `SkeletonJson.cpp:1218` |
 | OSGame 侧 spine-unity 运行时是 **3.7** | `Client_proj/Project/Assets/OSGame/3rd-Party/Spine/version.txt` |
 
 ### 二进制 `.skel` 的出处（导入器两种输入之一）

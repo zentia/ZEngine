@@ -153,6 +153,14 @@ struct SpineSourceClip
     // `_endSlot` 是 NULL，`clipEnd(slot)` 永不成立 ⇒ 一路裁到最后一个槽位
     // （只剩整条绘制指令末尾那次无条件 `clipEnd()`，SpineMesh.h:259）。
     int end_slot_index = -1;
+
+    // 裁剪多边形本身（局部坐标 + 骨骼绑定）。它是 **VertexAttachment**，顶点与 mesh
+    // 顶点同构 —— 所以在 Bake 里复用同一套编码与去重，顶点进主顶点缓冲（规格 §7.2）。
+    //   rigid    → [x, y, x, y, ...]，顶点数 = vertices.size() / 2
+    //   weighted → 每顶点 [n, (boneIdx, x, y, w) × n]，顶点数 = vertex_count
+    std::vector<float> vertices;
+    int vertex_count = 0;
+    bool weighted = false;
 };
 
 struct SpineSourceSkeleton
@@ -223,6 +231,10 @@ struct SpineGpuAsset
     std::vector<std::string> slot_names;
     std::vector<std::string> attachment_names;
     std::vector<std::string> atlas_page_names;
+
+    // 裁剪多边形记录（chunk 9，12 B/条）。按 (皮肤, 槽位) 排，
+    // 下标就是绘制项 `clip_index` 引用的行号。**顶点本身在 vertex_buffer 里**。
+    std::vector<SpineGpuClipPolygon> clip_polygons;
 
     // 附件记录（chunk 6）。Bake 时建好；序列化 / 反序列化都走它 ——
     // 不再从 draw_items 反推（那会假设"附件与绘制项一一对应"，是个脆假设）。
