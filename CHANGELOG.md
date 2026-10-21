@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-21 (Lumen global illumination: GI produces something, and it is not noise)
+
+`ComputeGlobalIllumination` was a TODO that returned `true` without touching
+anything, so nothing ever wrote `m_LightingCache` — which meant `SpatialReuse`
+(a linear scan over that permanently empty cache) always returned zero, which
+meant every `GetIndirectLighting` call fell through to a fresh stochastic trace.
+`TemporalAccumulation` was likewise an empty TODO body, so the noise had nowhere
+to go. Rebuilt around a world-space irradiance probe grid:
+
+- **`ComputeGlobalIllumination` now fills `LumenProbeGrid`** (new struct in
+  `LumenTypes.h`): per-probe accumulated irradiance, a hit-rate "visibility"
+  term, and the frame each probe was last updated. `ResizeProbeGrid` anchors the
+  grid to the distance field's **world box** and derives the per-axis resolution
+  from `gi_probe_spacing`, clamped to `LumenConstants::kMaxGiProbeResolution`
+  (a probe costs `gi_sample_count` rays, so the probe count has to be bounded).
+  No distance field ⇒ no world box ⇒ no grid, and the call now reports failure
+  instead of pretending to succeed.
+- **The grid deliberately does not follow the camera.** A camera-anchored grid
+  would be rebuilt on every camera move, throwing away the history that temporal
+  accumulation exists to exploit. The camera only decides which probes get this
+  frame's budget (distance filter + a "don't bother with probes far from any
+  surface" filter).
+- **`UpdateProbes` is budgeted and rotates** (`gi_probe_update_budget` +
+  `m_ProbeCursor`), so one frame never traces the whole grid. A probe's first
+  update is trusted outright; every later one blends with
+  `alpha = 1 - exp(-gi_temporal_blend_rate * dt)`, which is frame-rate
+  independent. `gi_temporal_blend_rate = 0` now means "freeze the probe", not
+  "update it instantly".
+- **`SpatialReuse` is real trilinear interpolation** over the grid, and
+  `SampleProbeGrid` gates on `last_updated_frame`, never on the length of the
+  value — a probe boxed in by closed geometry legitimately holds black, and
+  treating that as "no data" would re-trace forever.
+- **`GetIndirectLighting` is intentionally non-const** and does query-and-fill:
+  on a miss it traces and writes the result back through `TemporalAccumulation`.
+  The write path only fills *empty* probes, so it never fights the per-frame
+  accumulation.
+- **`LumenGlobalIlluminationSmokeTest`** (49 checks,
+  `-DZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST=ON`, registered with
+  CTest) pins it headlessly: the grid gets built at the expected resolution,
+  moving the camera neither resizes nor discards it, a budgeted frame updates
+  exactly `gi_probe_update_budget` probes, sampling at a probe centre returns
+  that probe's own value while a point between two probes lands between them,
+  and — end to end — recolouring the floor from red to blue flips the probes'
+  hue under a large blend rate while a zero blend rate freezes them on red.
+
 ### Added / Fixed - 2026-10-21 (Lumen surface cache: it exists now, and rays carry real material)
 
 The surface cache was a dead subsystem: `BuildFromScene` was a TODO, so no page was
