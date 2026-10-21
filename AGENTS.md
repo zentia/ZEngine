@@ -2223,11 +2223,26 @@ downstream reads it.
 - **Nanite 从不被剥出 ZRuntime**（不像 Lumen 那两处 `list(FILTER ... EXCLUDE)`），所以
   `Nanite/Test/` 的冒烟测试在 `smoke_tests.yml` 里是**开着**的，`ZENGINE_USE_VULKAN=OFF`
   也连得上。
-- 下一个缺口（还没做）：`NaniteCullingSystem::FrustumCull` 恒返回 true（TODO）、
-  实例包围盒是个默认构造的空盒、`ExtractFrustumPlanes`/`AabbFrustumTest` 是 private 且
-  零调用者、`SelectLOD` 方向反了且用了成员 `m_Config` 而不是参数 `config`、
-  `NaniteRenderer::BuildRenderBatches` 产出 `cluster_count = 0` 的空批次、
-  `NaniteRenderPass::Draw()` 是空 TODO。
+- **裁剪返回值的约定统一为"true = 被剔除"**。以前 `FrustumCull` 返回"可见"、
+  同文件的 `OcclusionCull` 返回"被剔除"，两个相反约定只能靠试调用点才能发现。
+- **`ExtractFrustumPlanes` 必须用行主序**：本仓库 `Matrix4x4` 是 `m_Mat[row][col]`、
+  `clip = M * v`（`operator*(Vector4)`：clip.x = 第 0 行点乘 v，clip.w = 第 3 行点乘 v）。
+  所以六个平面是 **row3 ± row_i**（Left/Right=±row0，Bottom/Top=±row1，Near/Far=±row2）。
+  抄 Ogre 那套（把 `m[i][j]` 当 `m[col][row]`、向量写左边）会得到六个完全不相干的平面。
+- **`NaniteInstance::local_bounds` 是模型空间盒**，由 `NaniteRenderer::RegisterInstance`
+  从网格资源补。包围盒**无效时不剔除**（不知道边界就裁掉，比不裁更糟）—— 所以"全都
+  没被裁"是注册路径出问题的症状，不是裁剪失效。
+- **`SelectLOD` 的方向**：屏幕误差（error_metric/距离）**小 ⇒ 可以粗一档（往 0/根走）**，
+  **大 ⇒ 需要更细（往叶子走）**。距离为 0 直接返回自己的层级（除零会得到 inf）。
+- **没有网格简化器 ⇒ 没有"粗一档但三角形更少"**。所以：内部节点永不提交（几何区间只是
+  子树聚合），唯一站得住的 LOD 是**丢掉投影误差低于预算的簇**（留下的洞是亚像素的）。
+  别指望 LOD 减少远处网格的三角形数 —— 那需要简化器。
+- `PrepareRenderData` 与 `BuildRenderBatches` 以前往**同一个** vector 里写、后者一进来就
+  `clear()` ⇒ 前者的产物每帧被抹掉。批次不产出空批次（`cluster_count == 0` 曾经是唯一产出）。
+- 下一个缺口（还没做）：`NaniteRenderer` 仍然**没有从场景构建实例的路径**
+  （`UpdateFromScene`，复用 `RenderResourceBase::CpuMeshGeometry`，与 Lumen 距离场同源），
+  `NaniteRenderPass::Draw()` 是空 TODO，`UpdateGPUBuffers` 是 TODO，
+  `NaniteHierarchicalZBuffer` 全是 TODO（所以遮挡剔除恒 false，是有意的）。
 
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 

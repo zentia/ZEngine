@@ -96,6 +96,7 @@ jobs:
           -DZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
           -DZENGINE_BUILD_RHI_INDIRECT_DRAW_SMOKE_TEST=ON
           -DZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST=ON
+          -DZENGINE_BUILD_NANITE_CULLING_SMOKE_TEST=ON
           -DZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS=ON
 
       - name: Build smoke tests
@@ -125,6 +126,7 @@ jobs:
           BuildCacheSmokeTest
           RHIIndirectDrawSmokeTest
           NaniteClusterBuilderSmokeTest
+          NaniteCullingSmokeTest
           DX12BindlessSmokeTest
           EnvironmentCollectorTests
           EnvironmentPreflightTests

@@ -129,6 +129,12 @@ struct NaniteInstance
     Matrix4x4 transform;
     Matrix4x4 prev_transform;  // 用于运动模糊
 
+    // **模型空间**包围盒。视锥裁剪拿它乘 transform 得到世界盒。
+    // 以前裁剪用的是一个默认构造的空盒（代码里写着"需要从mesh资源获取"的 TODO），
+    // 于是"视锥裁剪"其实什么都没裁掉 —— 而 FrustumCull 本身又恒返回 true，两层都没干活。
+    // NaniteRenderer::RegisterInstance 会在注册时从网格资源替你填上。
+    AxisAlignedBox local_bounds;
+
     // 可见性信息
     bool is_visible {false};
     uint8_t current_lod_level {0};

@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-21 (Nanite: culling that culls, and a LOD that points the right way)
+
+Every meaningful branch in `NaniteCullingSystem` was a stub:
+
+* **`FrustumCull()` was `return true;` with two TODOs inside** — nothing was ever
+  culled. It was also handed a **default-constructed box**
+  (`AxisAlignedBox instance_bounds;  // 需要从mesh资源获取`), so even a working
+  test would have had nothing to test. `NaniteInstance` now carries
+  `local_bounds`, and `NaniteRenderer::RegisterInstance` fills it from the mesh
+  resource when the caller leaves it empty.
+* **`ExtractFrustumPlanes()` used the Ogre / column-major form** (`m[col][row]`,
+  vector on the left) on matrices that are **row-major, `m_Mat[row][col]`,
+  `clip = M * v`**. Six planes, all wrong. It was private with zero callers,
+  which is why nobody noticed. Now `Left = row3 + row0`, `Right = row3 - row0`,
+  `Bottom = row3 + row1`, `Top = row3 - row1`, `Near = row3 + row2`,
+  `Far = row3 - row2`.
+* **`FrustumCull` and `OcclusionCull` had opposite conventions** in the same
+  file: one returned "visible", the other "culled". Both now return
+  **true = culled**, matching their names.
+* **`SelectLOD()` moved the level the wrong way** — small screen error asked for
+  a *finer* level, large error for a *coarser* one, so the farther away
+  something was, the more detail it demanded. It also divided by a distance that
+  can be zero, and read the member `m_Config` instead of its own `config`
+  argument.
+* **There was no cluster-level culling at all**, and `BuildRenderBatches()`
+  emitted batches with `cluster_count = 0` — the only thing it ever produced.
+  It now walks the leaf clusters of each visible instance (per-cluster frustum
+  test + LOD test), groups the survivors into one contiguous range per instance,
+  and emits no empty batches. `PrepareRenderData` and `BuildRenderBatches` were
+  both writing into the same vector, with the second one `clear()`ing it first —
+  the first one's output was discarded every frame.
+
+`IsClusterVisible()` is new and is deliberately modest: **without a mesh
+simplifier there is no coarser-but-cheaper representation**, so the only honest
+LOD is dropping clusters whose projected error is under the budget — the hole
+they leave is sub-pixel. Internal hierarchy nodes are never submitted, because
+their geometry window is just the aggregate of their subtree.
+
+Also: `NaniteClusterManager` gained `GetMeshResource` / `GetClusterCount` /
+`SetVisibleClusters` (its `visible_clusters` field had never been written), and
+registered meshes now count as loaded — with no streaming, registering a mesh
+means it is resident, and `IsClusterLoaded` used to return false for everything.
+
+**Test**: `NaniteCullingSmokeTest` — 52 checks, 5 consecutive green runs
+(`-DZENGINE_BUILD_NANITE_CULLING_SMOKE_TEST=ON`). It builds the view/projection
+by hand so the plane extraction is pinned independently of `RenderCamera`, and
+checks inside / outside / straddling for both points and boxes. Reverting
+`FrustumCull` to `return true;` fails 7 of the 52. ctest 20/20 on Apple.
+
 ### Added / Fixed - 2026-10-21 (Nanite: the cluster builder produced nothing)
 
 `NaniteClusterBuilder` did not build a coarse approximation of the mesh — it

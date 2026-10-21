@@ -58,35 +58,60 @@ void NaniteRenderer::Render(RHI* rhi,
         return;
     }
 
+    if (camera == nullptr)
+    {
+        return;
+    }
+
     // 执行裁剪
     NaniteVisibilityResult visibility_result;
     if (config.use_gpu_culling)
     {
-        visibility_result = PerformGPUCulling(camera);
+        visibility_result = PerformGPUCulling(camera, config);
     }
     else
     {
         visibility_result = m_CullingSystem.CullInstancesCPU(m_Instances, camera, config);
     }
+    m_LastVisibilityResult = visibility_result;
 
-    // 准备渲染数据
-    PrepareRenderData(camera, m_RenderBatches);
+    // 逐集群裁剪
+    PrepareRenderData(camera, visibility_result, config);
 
-    // 构建渲染批次
-    BuildRenderBatches(visibility_result, m_RenderBatches);
+    // 构建渲染批次。
+    // 以前这两步都往**同一个** m_RenderBatches 里写，而 BuildRenderBatches 一进来就
+    // clear() ⇒ PrepareRenderData 的产物被立刻抹掉。
+    BuildRenderBatches(m_RenderBatches);
 
     // 更新GPU缓冲区
     UpdateGPUBuffers();
 
-    // TODO: 执行实际渲染
+    // TODO: 执行实际渲染（需要 Nanite 的 shader 与间接绘制，两者都还没有）
+}
+
+bool NaniteRenderer::RegisterMeshResource(uint64_t mesh_id, const NaniteMeshResource& mesh_resource)
+{
+    return m_ClusterManager.RegisterMeshResource(mesh_id, mesh_resource);
 }
 
 uint64_t NaniteRenderer::RegisterInstance(const NaniteInstance& instance)
 {
+    NaniteInstance stored = instance;
+
+    // 没填包围盒就从网格资源上补。裁剪拿不到边界时会保守地"不裁"，那等于关掉裁剪，
+    // 所以这里补不上是个真问题 —— 但也不能因此拒绝注册（网格可能后注册）。
+    if (!stored.local_bounds.IsValid())
+    {
+        if (const NaniteMeshResource* mesh = m_ClusterManager.GetMeshResource(stored.mesh_id))
+        {
+            stored.local_bounds = mesh->global_bounds;
+        }
+    }
+
     uint32_t index = static_cast<uint32_t>(m_Instances.size());
-    m_Instances.push_back(instance);
-    m_InstanceIdToIndex[instance.instance_id] = index;
-    return instance.instance_id;
+    m_Instances.push_back(stored);
+    m_InstanceIdToIndex[stored.instance_id] = index;
+    return stored.instance_id;
 }
 
 void NaniteRenderer::UnregisterInstance(uint64_t instance_id)
@@ -119,36 +144,102 @@ void NaniteRenderer::UpdateInstance(uint64_t instance_id, const NaniteInstance& 
 }
 
 void NaniteRenderer::PrepareRenderData(const std::shared_ptr<RenderCamera>& camera,
-                                       std::vector<NaniteRenderBatch>& out_batches)
+                                       const NaniteVisibilityResult& visibility_result,
+                                       const NaniteConfig& config)
 {
-    out_batches.clear();
+    m_VisibleClusters.clear();
+    m_InstanceRanges.clear();
 
-    // TODO: 准备渲染数据
-    // 1. 选择LOD级别
-    // 2. 组织渲染批次
-}
+    if (camera == nullptr)
+    {
+        return;
+    }
 
-void NaniteRenderer::BuildRenderBatches(const NaniteVisibilityResult& visibility_result,
-                                        std::vector<NaniteRenderBatch>& out_batches)
-{
-    out_batches.clear();
+    // 视锥平面只需要算一次，不是每个集群一次。
+    const Matrix4x4 view_projection = camera->GetProjectionMatrix() * camera->GetViewMatrix();
+    const Vector3 camera_position = camera->position();
 
-    // 按实例和LOD级别组织批次
     for (uint32_t instance_idx : visibility_result.visible_instance_indices)
     {
         if (instance_idx >= m_Instances.size())
+        {
             continue;
+        }
 
-        const auto& instance = m_Instances[instance_idx];
+        const NaniteInstance& instance = m_Instances[instance_idx];
+        const NaniteMeshResource* mesh = m_ClusterManager.GetMeshResource(instance.mesh_id);
+        if (mesh == nullptr)
+        {
+            continue;
+        }
 
-        // TODO: 获取可见集群
-        // 构建批次
+        const uint32_t range_start = static_cast<uint32_t>(m_VisibleClusters.size());
+        std::vector<uint32_t> visible_for_instance;
+        uint8_t finest_lod = 0;
+
+        for (uint32_t cluster_index = 0; cluster_index < mesh->clusters.size(); ++cluster_index)
+        {
+            const NaniteCluster& cluster = mesh->clusters[cluster_index];
+
+            // 内部节点不可渲染（它的几何区间只是子树的聚合）
+            if (!cluster.is_leaf)
+            {
+                continue;
+            }
+
+            if (m_CullingSystem.FrustumCull(cluster.bounds, instance.transform, view_projection))
+            {
+                continue;
+            }
+
+            if (!m_CullingSystem.IsClusterVisible(cluster, camera_position, instance.transform, config))
+            {
+                continue;
+            }
+
+            visible_for_instance.push_back(cluster_index);
+            finest_lod = std::max(finest_lod, cluster.lod_level);
+        }
+
+        if (visible_for_instance.empty())
+        {
+            // 这个实例整个被裁掉了，不占段、也不产批次
+            continue;
+        }
+
+        m_VisibleClusters.insert(m_VisibleClusters.end(), visible_for_instance.begin(), visible_for_instance.end());
+
+        InstanceClusterRange range;
+        range.instance_index = instance_idx;
+        range.start = range_start;
+        range.count = static_cast<uint32_t>(visible_for_instance.size());
+        range.lod_level = finest_lod;
+        m_InstanceRanges.push_back(range);
+
+        // 把结果写回集群管理器：它的 visible_clusters 字段以前从来没人写过。
+        m_ClusterManager.SetVisibleClusters(instance.mesh_id, visible_for_instance);
+    }
+}
+
+void NaniteRenderer::BuildRenderBatches(std::vector<NaniteRenderBatch>& out_batches)
+{
+    out_batches.clear();
+
+    // 按实例组织批次：每个实例一段连续的可见集群。
+    // **不产出空批次** —— 旧实现唯一的产出就是 cluster_count == 0 的批次。
+    for (const InstanceClusterRange& range : m_InstanceRanges)
+    {
+        if (range.count == 0)
+        {
+            continue;
+        }
+
         NaniteRenderBatch batch;
         batch.batch_id = static_cast<uint32_t>(out_batches.size());
-        batch.instance_id = instance_idx;
-        batch.cluster_start = 0;
-        batch.cluster_count = 0;
-        batch.lod_level = instance.current_lod_level;
+        batch.instance_id = range.instance_index;
+        batch.cluster_start = range.start;
+        batch.cluster_count = range.count;
+        batch.lod_level = range.lod_level;
 
         out_batches.push_back(batch);
     }
@@ -162,9 +253,12 @@ void NaniteRenderer::UpdateGPUBuffers()
     // 3. 更新可见性数据
 }
 
-NaniteVisibilityResult NaniteRenderer::PerformGPUCulling(const std::shared_ptr<RenderCamera>& camera)
+NaniteVisibilityResult NaniteRenderer::PerformGPUCulling(const std::shared_ptr<RenderCamera>& camera,
+                                                         const NaniteConfig& config)
 {
-    return m_CullingSystem.CullInstancesGPU(m_Instances, camera, m_Config);
+    // GPU 裁剪还没有实现，CullInstancesGPU 现在就是 CPU 版本。用传进来的 config 而不是
+    // 成员 m_Config —— 否则这一帧改的配置不生效。
+    return m_CullingSystem.CullInstancesGPU(m_Instances, camera, config);
 }
 
 // ==================== NaniteRenderPass ====================

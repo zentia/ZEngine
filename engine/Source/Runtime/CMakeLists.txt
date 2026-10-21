@@ -549,6 +549,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteClusterBuilderSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteClusterBuilderSmokeTest.cpp")
+# Nanite culling / LOD smoke-test main carve-out (same rationale). Built only
+# when ZENGINE_BUILD_NANITE_CULLING_SMOKE_TEST=ON (see
+# Function/Render/Nanite/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteCullingSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteCullingSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when
