@@ -40,8 +40,17 @@ public:
     // caches it in the DDC, and writes a cooked Texture2D .zasset to
     // <Project>/Intermediate/Cooked/<Platform>/<rel>.zasset. The cooked asset
     // reuses the SOURCE asset's GUID (read from the Assets/<stem>.zasset header)
-    // so references resolve identically in a player build. Always re-cooks
-    // (overwrites) -- this is the deliberate "build" action, not first-time
-    // seeding. Returns the number of textures cooked.
-    static int CookProjectTextures(TextureImporterSettings::BuildTarget target);
+    // so references resolve identically in a player build. Returns the number of
+    // textures actually cooked.
+    //
+    // `only_stale` makes it incremental: a texture whose source bytes, import
+    // settings and platform are unchanged AND whose cooked output is still
+    // there is left alone (and does not count towards the return value). The
+    // default (false) keeps the historical "re-cook everything, always"
+    // behaviour, which is what the Cook menu items and `asset.cook` want --
+    // they are the deliberate "redo it" action. Packaging passes true.
+    //
+    // The state lives in `<Cooked>/<Platform>/cook_cache.json`; deleting the
+    // platform directory is a full re-cook.
+    static int CookProjectTextures(TextureImporterSettings::BuildTarget target, bool only_stale = false);
 };

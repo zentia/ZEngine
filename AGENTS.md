@@ -2282,6 +2282,45 @@ directory `AssetRegistry` indexes -- so the dependency walk can never reach it.
 - `AssetBundleBuildResult::script_count` counts modules separately from
   `asset_count`, which stays "what the dependency walk found".
 
+**Packaging is incremental** (added 2026-10-21): both the cook and the
+`.zbundle` write are skipped when nothing that goes into them changed. The
+shared machinery is `Editor/Build/BuildCache.{h,cpp}`.
+
+- **The verdict is a content hash (FNV-1a 64), never a timestamp.** (size,
+  mtime) is only a FAST PATH: unchanged stamp => reuse the hash recorded last
+  time without reading the file; changed stamp => read and re-hash, and if the
+  bytes turn out to be identical after all (`git checkout` moved mtimes) the
+  hash still matches and the artifact is still skipped. The one hole is a file
+  whose bytes changed while size AND mtime stayed identical -- that needs a
+  deliberately rewritten timestamp, and `force_rebuild` covers it.
+- **A bundle's fingerprint** = builder version + platform + compression switch
+  + the bundle's dependency list + every entry's (path, guid, type, content
+  hash). The dependency list is in there on purpose: a bundle that *gains* a
+  dependency (shared content appeared, script modules arrived) has to be
+  rewritten even though none of its own bytes changed.
+- **A cook's fingerprint** = cook version + platform + `PlatformSettings::
+  StableKey()` + the source image hash + the editor `.zasset` hash. Settings
+  are part of it because changing the compression format is a different cook
+  with identical source bytes. `StableKey()` is field-by-field and uses the
+  format NAME, never the struct bytes (padding is indeterminate) and never the
+  enum integer (inserting a format would silently invalidate every key).
+- **Cache files sit next to what they describe**, so they can never outlive it:
+  `<output_dir>/AssetBundleBuildCache.json`, and
+  `<Cooked>/<Platform>/cook_cache.json` for the cook. Delete the output
+  directory and the next pass is a full one.
+- **Everything fails safe**: a missing / corrupt / wrong-version cache yields
+  an empty cache and logs why; `IsUpToDate` also checks the artifact exists and
+  still has the recorded size, so a deleted bundle always loses; and keys the
+  cache knows but this pass did not produce have their `.zbundle` **deleted** --
+  a level removed from the project must not keep shipping.
+- `force_rebuild` (console: `bundle.build --force`) is for "I don't trust the
+  cache", not for "I changed something". A CI release build should pass it.
+- `BuildCache` is deliberately engine-free (no Object / LOG / Transfer), which
+  is what lets `Editor/Build/Test/BuildCacheSmokeTest.cpp` run standalone.
+  Its Test/ dir is excluded from the ZEditor glob (see
+  `engine/Source/Editor/CMakeLists.txt`) -- a stray `main()` in the glob is
+  LNK2005.
+
 **Compression is decided PER ENTRY, not per bundle** (added 2026-10-20).
 
 - A bundle is dominated by cooked textures, and BC7 / ASTC / BC1 payloads are

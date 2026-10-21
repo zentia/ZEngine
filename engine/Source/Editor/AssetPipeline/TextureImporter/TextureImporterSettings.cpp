@@ -305,3 +305,14 @@ std::string TextureImporterSettings::SaveToJsonString() const
     doc.Accept(writer);
     return buffer.GetString();
 }
+
+std::string TextureImporterSettings::PlatformSettings::StableKey() const
+{
+    // Field by field, and by NAME for the enum: hashing the struct's bytes
+    // would hash padding (indeterminate), and hashing the enum's integer would
+    // silently change every cached key the day someone inserts a format in the
+    // middle of the list.
+    return std::string(FormatDisplayName(format)) + "|" + (generate_mipmaps ? "mips" : "nomips") + "|" +
+           (sRGB ? "srgb" : "linear") + "|" + std::to_string(max_size) + "|" +
+           std::to_string(compression_quality);
+}

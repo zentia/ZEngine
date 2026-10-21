@@ -511,9 +511,30 @@ namespace
 
     bool CmdBundleBuild(const std::vector<std::string>& args)
     {
-        // PR-PAK1: bundle.build [platform] -- dependency walk + cook + .zbundle
-        // + manifest under <project>/Build/<Platform>/.
-        std::string platform = args.empty() ? std::string("standalone") : args[0];
+        // PR-PAK1: bundle.build [platform] [--force] -- dependency walk + cook
+        // + .zbundle + manifest under <project>/Build/<Platform>/.
+        //
+        // --force is the escape hatch for "I don't believe the cache": it
+        // re-cooks and rewrites everything. It is NOT needed for "I changed
+        // something" -- changed inputs are detected by content hash.
+        bool force = false;
+        std::string platform;
+        for (const std::string& arg : args)
+        {
+            if (arg == "--force" || arg == "-f")
+            {
+                force = true;
+                continue;
+            }
+            if (platform.empty())
+            {
+                platform = arg;
+            }
+        }
+        if (platform.empty())
+        {
+            platform = "standalone";
+        }
         std::transform(platform.begin(), platform.end(), platform.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
@@ -542,6 +563,7 @@ namespace
 
         AssetBundleBuildOptions options;
         options.target = target;
+        options.force_rebuild = force;
         const AssetBundleBuildResult result = AssetBundleBuilder::Build(options);
         if (!result.succeeded)
         {
@@ -550,10 +572,14 @@ namespace
         }
 
         LOG_INFO(ZPak,
-                 "bundle.build: {} bundle(s), {} asset(s), {} script(s), {} bytes -> {}",
+                 "bundle.build: {} bundle(s) ({} rebuilt, {} skipped), {} asset(s), {} script(s), {} "
+                 "cooked texture(s), {} bytes -> {}",
                  result.bundle_count,
+                 result.rebuilt_bundle_count,
+                 result.skipped_bundle_count,
                  result.asset_count,
                  result.script_count,
+                 result.cooked_texture_count,
                  result.total_bytes,
                  result.output_dir.generic_string());
         return true;
@@ -729,6 +755,7 @@ void RegisterEditorConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("renderdoc.capture", "Capture the next rendered frame with RenderDoc", CmdRenderDocCapture);
     console.RegisterCommand("renderdoc.status", "Print RenderDoc integration status", CmdRenderDocStatus);
     console.RegisterCommand("bundle.build",
-                            "Package the project into .zbundle files. Usage: bundle.build <standalone|android|ios|ohos|webgl>",
+                            "Package the project into .zbundle files (incremental; --force rebuilds "
+                            "everything). Usage: bundle.build [standalone|android|ios|ohos|webgl] [--force]",
                             CmdBundleBuild);
 }

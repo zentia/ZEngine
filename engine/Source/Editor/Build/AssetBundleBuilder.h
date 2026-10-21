@@ -34,6 +34,15 @@
 // bundle's dependencies so AssetBundleManager can mount them first. Without it
 // a player would have to mount everything or fail at the first cross-asset
 // reference.
+//
+// Incremental: steps 5 and 6 are skipped per artifact when nothing that goes
+// INTO it changed, and the cook in step 2 is skipped per texture for the same
+// reason. A "nothing to do" build therefore costs a stat() per asset instead
+// of a full cook + deflate. The verdict is always a content hash, never a
+// timestamp -- see Editor/Build/BuildCache.h for the full reasoning. The state
+// lives in `<output_dir>/AssetBundleBuildCache.json`; deleting it (or the
+// output directory) is a full rebuild. `force_rebuild` is the explicit escape
+// hatch, and is also what a CI release build should pass.
 // =============================================================================
 
 #include "Editor/AssetPipeline/TextureImporter/TextureImporterSettings.h"
@@ -69,6 +78,11 @@ struct AssetBundleBuildOptions
     /// decompressor (Emscripten) must set this to false, or the player could
     /// not read the bundle at all.
     bool compress {true};
+
+    /// Ignore the build cache and rebuild every bundle (and re-cook every
+    /// texture). Use when you do not trust the cache rather than when you
+    /// changed something: a changed input is detected on its own.
+    bool force_rebuild {false};
 };
 
 struct AssetBundleBuildResult
@@ -77,6 +91,13 @@ struct AssetBundleBuildResult
     /// Empty on success. Human-readable, goes straight into a log line.
     std::string error;
     std::size_t bundle_count {0};
+    /// Bundles this pass actually wrote. `bundle_count - rebuilt` were skipped
+    /// because their fingerprint still matched.
+    std::size_t rebuilt_bundle_count {0};
+    std::size_t skipped_bundle_count {0};
+    /// Cooked textures that were actually re-encoded this pass (0 when the
+    /// cook cache said every texture was still current).
+    std::size_t cooked_texture_count {0};
     std::size_t asset_count {0};
     /// Compiled script modules packed into the `scripts` bundle. Counted
     /// separately from `asset_count` because a module is neither a registry

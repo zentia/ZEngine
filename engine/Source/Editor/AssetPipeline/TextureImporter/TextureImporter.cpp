@@ -32,6 +32,7 @@
 
 #include "TextureImporter.h"
 
+#include "Editor/Build/BuildCache.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/BaseClasses/Type.h"
@@ -867,7 +868,7 @@ int TextureImporter::ImportProjectTextures()
     return imported;
 }
 
-int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget target)
+int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget target, bool only_stale)
 {
     ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
     if (project_info == nullptr || project_info->project_path.empty())
@@ -915,6 +916,41 @@ int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget ta
 
     std::unordered_set<std::string> processed_zassets;
 
+    // ---- incremental cook --------------------------------------------------
+    // Re-encoding is the single most expensive thing a packaging pass does, so
+    // it is worth carrying state for. Same rules as the bundle builder (see
+    // Editor/Build/BuildCache.h): the verdict is the content hash of every
+    // input -- source pixels, the editor-platform .zasset and the effective
+    // import settings -- and a timestamp only spares us reading the file.
+    // A changed compression format invalidates the cook even though no byte of
+    // the texture moved, because settings are part of the fingerprint.
+    constexpr int kCookVersion = 1;
+    const std::filesystem::path cook_cache_path = platform_root / "cook_cache.json";
+    BuildCache cook_cache;
+    std::string cook_cache_error;
+    if (only_stale && !cook_cache.Load(cook_cache_path, cook_cache_error) && !cook_cache_error.empty())
+    {
+        LOG_WARNING(ZEditor,
+                    "TextureImporter: cook cache unusable ({}); re-cooking everything",
+                    cook_cache_error);
+    }
+
+    BuildHasher cook_env;
+    cook_env.Add(std::to_string(kCookVersion));
+    cook_env.Add(platform_tag);
+    cook_env.Add(content_root.generic_string());
+    const std::string cook_environment = cook_env.Hex();
+    if (!only_stale || !cook_cache.loaded() || cook_cache.environment != cook_environment)
+    {
+        cook_cache.Reset();
+        cook_cache.environment = cook_environment;
+    }
+
+    // Fingerprints of the textures this pass actually cooks, recorded only if
+    // the cook succeeds -- a failed cook must not be remembered as done.
+    std::unordered_map<std::string, std::string> cooked_fingerprints;
+    int skipped_unchanged = 0;
+
     auto tryCookZasset = [&](const std::filesystem::path& zasset_abs) -> bool {
         const std::string key = normalisePathKey(zasset_abs);
         if (!processed_zassets.insert(key).second)
@@ -945,15 +981,69 @@ int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget ta
         const TextureImporterSettings::PlatformSettings effective =
             effectiveSettingsForCook(zasset_abs, target, editor_asset_mgr, default_texture_settings);
 
-        return cookTextureToPlatform(zasset_abs,
-                                     source_path,
-                                     source_guid,
-                                     effective,
-                                     target,
-                                     platform_tag,
-                                     platform_root,
-                                     content_root,
-                                     *asset_mgr);
+        std::string fingerprint;
+        if (only_stale)
+        {
+            BuildHasher hasher;
+            hasher.Add(std::to_string(kCookVersion));
+            hasher.Add(platform_tag);
+            hasher.Add(effective.StableKey());
+
+            bool inputs_ok = true;
+            bool zasset_ok = false;
+            const std::string zasset_hash = cook_cache.ContentHash(key + "|zasset", zasset_abs, zasset_ok);
+            if (!zasset_ok)
+            {
+                inputs_ok = false;
+            }
+            else
+            {
+                hasher.Add(zasset_hash);
+            }
+
+            if (source_path.has_value())
+            {
+                bool source_ok = false;
+                const std::string source_hash =
+                    cook_cache.ContentHash(key + "|source", *source_path, source_ok);
+                if (!source_ok)
+                {
+                    inputs_ok = false;
+                }
+                else
+                {
+                    hasher.Add(source_hash);
+                }
+            }
+
+            fingerprint = hasher.Hex();
+
+            if (inputs_ok)
+            {
+                if (const std::optional<std::filesystem::path> out_path =
+                        cookedOutputPathForZasset(zasset_abs, platform_root, content_root);
+                    out_path.has_value() && cook_cache.IsUpToDate(key, fingerprint, *out_path))
+                {
+                    ++skipped_unchanged;
+                    return false;  // already cooked to exactly this input
+                }
+            }
+        }
+
+        const bool cooked = cookTextureToPlatform(zasset_abs,
+                                                  source_path,
+                                                  source_guid,
+                                                  effective,
+                                                  target,
+                                                  platform_tag,
+                                                  platform_root,
+                                                  content_root,
+                                                  *asset_mgr);
+        if (cooked && !fingerprint.empty())
+        {
+            cooked_fingerprints[zasset_abs.generic_string()] = fingerprint;
+        }
+        return cooked;
     };
 
     int cooked_count = 0;
@@ -998,7 +1088,35 @@ int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget ta
         }
     }
 
-    LOG_INFO(ZEditor, "TextureImporter: CookProjectTextures({}) wrote {} cooked texture(s) to {}",
-             platform_tag, cooked_count, platform_root.generic_string());
+    if (only_stale)
+    {
+        for (const auto& [zasset, fingerprint] : cooked_fingerprints)
+        {
+            const std::filesystem::path zasset_abs(zasset);
+            const std::optional<std::filesystem::path> out_path =
+                cookedOutputPathForZasset(zasset_abs, platform_root, content_root);
+            if (!out_path.has_value())
+            {
+                continue;
+            }
+            std::error_code size_ec;
+            const std::uintmax_t size = std::filesystem::file_size(*out_path, size_ec);
+            cook_cache.Record(normalisePathKey(zasset_abs), fingerprint,
+                              size_ec ? 0 : static_cast<int64_t>(size));
+        }
+
+        std::string save_error;
+        if (!cook_cache.Save(cook_cache_path, save_error))
+        {
+            // Not fatal: the textures on disk are correct, only the next pass
+            // loses its ability to skip work.
+            LOG_WARNING(ZEditor,
+                        "TextureImporter: cannot save the cook cache ({}); the next cook will be a full one",
+                        save_error);
+        }
+    }
+
+    LOG_INFO(ZEditor, "TextureImporter: CookProjectTextures({}) wrote {} cooked texture(s) to {} ({} unchanged)",
+             platform_tag, cooked_count, platform_root.generic_string(), skipped_unchanged);
     return cooked_count;
 }

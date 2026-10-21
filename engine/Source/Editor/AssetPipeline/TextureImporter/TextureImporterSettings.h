@@ -49,6 +49,12 @@ public:
         int max_size = 4096;
         // 0 = fastest/lowest, 100 = best quality (BC / ASTC encoders).
         int compression_quality = 50;
+
+        /// Stable textual identity of these settings, for the cook cache: a
+        /// texture whose settings changed is a different cook even though its
+        /// source bytes did not. Field by field on purpose -- hashing the struct
+        /// bytes would hash padding, which is not initialised deterministically.
+        std::string StableKey() const;
     };
 
     PlatformSettings default_settings;

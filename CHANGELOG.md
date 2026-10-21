@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - 2026-10-21 (packaging is incremental)
+- Every `AssetBundleBuilder::Build()` used to redo everything: re-cook every
+  texture in the project, then deflate and rewrite every `.zbundle`. Editing
+  one material cost a full cook.
+- Both halves are now skipped when nothing that goes into them changed:
+  - **cook** (`TextureImporter::CookProjectTextures(target, only_stale)`) --
+    re-encoding is the expensive part; a texture whose source pixels, editor
+    `.zasset` and effective import settings are unchanged, and whose cooked
+    output is still on disk, is left alone. The Cook menu items and
+    `asset.cook` keep the old "always re-cook" behaviour on purpose -- they
+    are the deliberate redo action.
+  - **packing** -- a bundle is rewritten only when its fingerprint changed.
+- **The verdict is a content hash, never a timestamp.** (size, mtime) is only
+  a fast path that lets a no-op build skip *reading* the assets: when the
+  stamp is unchanged the hash recorded last time is reused, and when it is not
+  the file is re-hashed -- so a `git checkout` that only moved mtimes still
+  produces no rebuild, and a changed byte always does.
+- State lives next to what it describes, so it can never outlive it:
+  `<output_dir>/AssetBundleBuildCache.json` and
+  `<Cooked>/<Platform>/cook_cache.json` (the latter is already excluded from
+  the install rules). Deleting the output directory is a full rebuild.
+- Fails safe: a missing, corrupt or wrong-version cache rebuilds everything and
+  logs why; an artifact that was deleted or resized loses its cache entry; a
+  bundle nothing produces any more is **deleted**, otherwise a removed level
+  would keep shipping.
+- `AssetBundleBuildOptions::force_rebuild` (and `bundle.build --force`) is the
+  escape hatch for "I don't trust the cache" -- it is NOT needed for "I changed
+  something". `AssetBundleBuildResult` now reports `rebuilt_bundle_count`,
+  `skipped_bundle_count` and `cooked_texture_count`.
+- New `Editor/Build/BuildCache.{h,cpp}` (engine-free on purpose) plus
+  `BuildCacheSmokeTest` (44 checks), registered with CTest and added to the
+  smoke-test workflow.
+
 ### Fixed - 2026-10-21 (zlib is vendored, not looked up on the host)
 - **`zlib.h` was not findable on several machines.** Both consumers -- the
   `.zbundle` per-entry DEFLATE in ZRuntime and minizip-ng's `.xlsx` reader --
