@@ -554,6 +554,10 @@ int main()
             static_cast<long long>(asset.weighted_segment_offset) +
                 4LL * SpineGpuConstants::kWeightedVertexStride,
             "顶点缓冲大小");
+    // UV 是**独立通道**：条目数 = 各附件顶点数之和（这里 4 rigid + 4 weighted = 8 条 = 16 float）
+    CheckEq(static_cast<long long>(asset.uv_buffer.size()), 16LL, "UV 通道 = 8 条 × 2 float = 16 个 float");
+    Check(asset.draw_items.size() == 2 && asset.draw_items[0].uv_offset == 0u, "绘制项 0 的 uv_offset = 0");
+    Check(asset.draw_items.size() == 2 && asset.draw_items[1].uv_offset == 4u, "绘制项 1 的 uv_offset = 4");
 
     // ---- 4. 权重：每顶点 4 个 unorm8 的和必须恰好 255 ----
     const uint8_t* wbase = asset.vertex_buffer.data() + asset.weighted_segment_offset;
@@ -620,7 +624,7 @@ int main()
         return 1;
     }
 
-    // 7 个 chunk：strings / slot_bone / vertex / index / draw_items / attachments / atlas_pages
+    // 8 个 chunk：strings / slot_bone / vertex / uv / index / draw_items / attachments / atlas_pages
     //
     // 不写死总字节数：总长里含对齐填充，填充规则一改常数就失效，而它失效时并不代表出错。
     // 真正该钉死的是 chunk 表本身 —— 净载荷大小与填充无关。
@@ -638,12 +642,13 @@ int main()
         CStrBytes(asset.attachment_names) + CStrBytes(asset.atlas_page_names) +      // id=1 strings
         static_cast<long long>(asset.slot_bone.size()) * 2LL +                       // id=2
         static_cast<long long>(asset.vertex_buffer.size()) +                         // id=3
-        static_cast<long long>(asset.index_buffer.size()) * 2LL +                    // id=4
+        static_cast<long long>(asset.uv_buffer.size()) * 4LL +                       // id=4
+        static_cast<long long>(asset.index_buffer.size()) * 2LL +                    // id=5
         static_cast<long long>(asset.draw_items.size()) *
-            static_cast<long long>(sizeof(SpineDrawItem)) +                          // id=5（20 B/项）
+            static_cast<long long>(sizeof(SpineDrawItem)) +                          // id=6（24 B/项）
         static_cast<long long>(asset.attachment_records.size()) *
-            static_cast<long long>(sizeof(SpineGpuAttachmentRecord)) +               // id=6（8 B/项，v2 起）
-        CStrBytes(asset.atlas_page_names);                                           // id=7
+            static_cast<long long>(sizeof(SpineGpuAttachmentRecord)) +               // id=7（8 B/项）
+        CStrBytes(asset.atlas_page_names);                                           // id=8
 
     auto RdU32 = [&bytes](size_t off) -> uint32_t
     {
@@ -651,7 +656,7 @@ int main()
                (static_cast<uint32_t>(bytes[off + 2]) << 16) | (static_cast<uint32_t>(bytes[off + 3]) << 24);
     };
     const uint32_t nchunk = RdU32(offsetof(SpineGpuHeader, chunk_count));
-    CheckEq(static_cast<long long>(nchunk), 7, "字节流里 chunk_count = 7（夹具没有 clip_data）");
+    CheckEq(static_cast<long long>(nchunk), 8, "字节流里 chunk_count = 8（夹具没有 clip_data）");
 
     long long payload_sum = 0;
     long long last_end = 0;
@@ -663,9 +668,10 @@ int main()
         const uint32_t id = RdU32(at);
         const uint32_t off = RdU32(at + 4);
         const uint32_t sz = RdU32(at + 8);
-        CheckEq(static_cast<long long>(id), static_cast<long long>(i) + 1, "chunk 表: id 按 1..7 升序");
+        CheckEq(static_cast<long long>(id), static_cast<long long>(i) + 1, "chunk 表: id 按 1..8 升序");
         CheckEq(static_cast<long long>(off % SpineGpuConstants::kChunkAlignment), 0, "chunk 表: 起点 4 B 对齐");
-        if (id == static_cast<uint32_t>(SpineGpuChunkId::kChunkVertexBuffer))
+        if (id == static_cast<uint32_t>(SpineGpuChunkId::kChunkVertexBuffer) ||
+            id == static_cast<uint32_t>(SpineGpuChunkId::kChunkUvBuffer))
         {
             CheckEq(static_cast<long long>(off % SpineGpuConstants::kVertexSegmentAlignment), 0,
                     "chunk 表: 顶点 chunk 起点 8 B 对齐（Load2 的前提）");
@@ -704,7 +710,7 @@ int main()
     }
 
     CheckEq(back.header.magic, SpineGpuConstants::kMagic, "往返: magic");
-    CheckEq(back.header.chunk_count, 7, "往返: chunk_count = 7（夹具没有 clip_data）");
+    CheckEq(back.header.chunk_count, 8, "往返: chunk_count = 8（夹具没有 clip_data）");
     CheckEq(back.header.bone_count, asset.header.bone_count, "往返: bone_count");
     CheckEq(back.header.slot_count, asset.header.slot_count, "往返: slot_count");
     CheckEq(back.header.draw_item_count, asset.header.draw_item_count, "往返: draw_item_count");
@@ -717,6 +723,7 @@ int main()
     CheckEq(back.weighted_segment_offset, asset.weighted_segment_offset, "往返: weighted_segment_offset");
 
     Check(back.vertex_buffer == asset.vertex_buffer, "往返: 顶点缓冲逐字节一致");
+    Check(back.uv_buffer == asset.uv_buffer, "往返: UV 通道逐字节一致");
     Check(back.index_buffer == asset.index_buffer, "往返: 索引一致");
     CheckEq(static_cast<long long>(back.draw_items.size()),
             static_cast<long long>(asset.draw_items.size()), "往返: 绘制项数一致");
@@ -847,6 +854,7 @@ int main()
             Check(skel_asset.rigid_vertex_count == asset.rigid_vertex_count, "skel↔json: rigid 顶点数");
             Check(skel_asset.weighted_vertex_count == asset.weighted_vertex_count, "skel↔json: weighted 顶点数");
             Check(skel_asset.index_buffer == asset.index_buffer, "skel↔json: 索引缓冲相同");
+            Check(skel_asset.uv_buffer == asset.uv_buffer, "skel↔json: UV 通道逐字节相同");
             Check(skel_asset.slot_bone == asset.slot_bone, "skel↔json: slot_bone 相同");
             Check(skel_asset.bone_names == asset.bone_names, "skel↔json: 骨骼名相同");
             Check(skel_asset.skin_names == asset.skin_names, "skel↔json: 皮肤名相同");
@@ -1001,14 +1009,48 @@ int main()
         {
             Check(aj.vertex_buffer == ak.vertex_buffer, "linked: skel↔json 顶点缓冲逐字节相同");
             Check(aj.index_buffer == ak.index_buffer, "linked: skel↔json 索引相同");
-            // ⚠️ 几何是**复制**的，不是共享的：我们的顶点格式把 UV 编在顶点里，
-            //    linked mesh 的 UV 不同 ⇒ 只能再来一份顶点。
-            CheckEq(static_cast<long long>(aj.weighted_vertex_count), 8,
-                    "linked: weighted 顶点 = 父 4 + linked 4（复制，不共享）");
+            Check(aj.uv_buffer == ak.uv_buffer, "linked: skel↔json UV 通道逐字节相同");
+            // ✅ UV 拆成独立通道之后，linked mesh **共用父附件的顶点**：
+            //    几何（位置 + 骨骼 + 权重）与父附件逐字节相同 ⇒ 顶点池里命中同一段。
+            CheckEq(static_cast<long long>(aj.weighted_vertex_count), 4,
+                    "linked: weighted 顶点仍 4 ⇒ linked mesh **共用**了父附件的顶点（拆通道的收益）");
             CheckEq(static_cast<long long>(aj.rigid_vertex_count), 4, "linked: rigid 顶点仍 4（region）");
             CheckEq(static_cast<long long>(aj.index_buffer.size()), 18, "linked: 索引 3 × 6");
             CheckEq(static_cast<long long>(aj.draw_items.size()), 3,
                     "linked: 3 个绘制项（换装时由 CPU 挑可见的那几个）");
+            // UV **不**共用：各 4 条，共 12 条
+            CheckEq(static_cast<long long>(aj.uv_buffer.size()), 24,
+                    "linked: UV 条目 12 × 2 float = 24 个 float（region 4 + 父 mesh 4 + linked 4）");
+            if (aj.draw_items.size() == 3)
+            {
+                // 父 mesh 与 linked mesh 的顶点段**相同** ⇒ 索引值完全相同
+                bool same_indices = true;
+                for (uint32_t k = 0; k < 6u && k + 6u < aj.index_buffer.size(); ++k)
+                {
+                    // 绘制项 1（父 mesh）与 2（linked mesh）的 6 个索引逐值比较
+                    const size_t base1 = aj.draw_items[1].index_offset;
+                    const size_t base2 = aj.draw_items[2].index_offset;
+                    if (aj.index_buffer[base1 + k] != aj.index_buffer[base2 + k])
+                    {
+                        same_indices = false;
+                    }
+                }
+                Check(same_indices, "linked: 父 mesh 与 linked mesh 的索引逐值相同 ⇒ 确实共用顶点");
+                // 但 UV **不同**：各自的 uv_offset 指向不同的 4 条
+                CheckEq(aj.draw_items[2].uv_offset - aj.draw_items[1].uv_offset, 4u,
+                        "linked: 两个绘制项的 uv_offset 相差 4 ⇒ UV 各一份");
+                // 且与父附件的 UV 逐值不同（用**自己的**图集 region 算的）
+                bool uv_differs = false;
+                for (uint32_t k = 0; k < 8u; ++k)
+                {
+                    if (aj.uv_buffer[aj.draw_items[1].uv_offset * 2u + k] !=
+                        aj.uv_buffer[aj.draw_items[2].uv_offset * 2u + k])
+                    {
+                        uv_differs = true;
+                    }
+                }
+                Check(uv_differs, "linked: 共用顶点但 UV 不同（UV 走独立通道）");
+            }
         }
         g_prefix.clear();
     }
@@ -1226,8 +1268,10 @@ int main()
             Check(rcb.ok, "cross-skin: bake 成功");
             if (rcb.ok)
             {
-                CheckEq(static_cast<long long>(ca.weighted_vertex_count), 12,
-                        "cross-skin: weighted 顶点 3 × 4（几何是复制的，不共享）");
+                // 两个皮肤的 'eye' 几何不同 ⇒ 各 4 个顶点；linked mesh 与**它引用的那个**
+                // 'eye' 共用顶点 ⇒ 总共 **8** 个而不是 12 个（拆通道的收益）。
+                CheckEq(static_cast<long long>(ca.weighted_vertex_count), 8,
+                        "cross-skin: weighted 顶点 = 8 ⇒ linked mesh 共用了父附件的顶点");
             }
             g_prefix.clear();
         }

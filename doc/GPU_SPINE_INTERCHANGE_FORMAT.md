@@ -23,7 +23,7 @@ CPU 蒙皮下**每个实例必须持有自己的一份顶点缓冲**，因为各
 因此本规格的核心不是"怎么把矩阵传到 GPU"，而是**如何把"与实例无关"的部分和"与实例有关"的部分切干净**。
 
 ### 范围
-- 静态几何（绑定姿势 + UV + 骨骼槽 + 权重）的布局
+- 静态几何（绑定姿势 + 骨骼槽 + 权重）的布局，以及**独立 UV 通道**（§3.2）
 - 每帧每实例数据（骨骼表 + 槽位染色）的布局
 - 两端必须一致的蒙皮公式
 - 绘制项 / 混合模式 / 裁剪的处置
@@ -97,7 +97,8 @@ CPU 蒙皮下**每个实例必须持有自己的一份顶点缓冲**，因为各
 SpineGpuAsset
 ├─ Header              魔数 / 版本 / spine runtime 版本 / 各段偏移
 ├─ BoneTable           骨骼名（仅调试与挂点，不参与渲染）
-├─ VertexBuffer        静态：绑定姿势 + UV + 骨骼槽 + 权重   ★ 按资产共享
+├─ VertexBuffer        静态：绑定姿势 + 骨骼槽 + 权重       ★ 按资产共享、逐字节去重
+├─ UvBuffer            静态：float2 × uv_count              ★ 独立通道，见 §3.2
 ├─ IndexBuffer         静态：uint16
 ├─ DrawItemTable       静态：按 draw order 排好的绘制项
 ├─ SlotTable           槽位 → 附件列表（换装 / 显隐用）
@@ -143,15 +144,18 @@ wy += (vx * bone._c + vy * bone._d + bone._worldY) * weight;
 
 | 格式 | 布局（按偏移顺序） | 步长 |
 |---|---|---|
-| `kVtxRigid` | `bindPos f32×2` (0-7) + `uv f32×2` (8-15) | **16 B** |
-| `kVtxWeighted4` | `bindPos f32×2 ×4` (0-31) + `uv f32×2` (32-39) + `boneIdx u16×4` (40-47) + `weight unorm8×4` (48-51) + `_pad` (52-55) | **56 B** |
+| `kVtxRigid` | `bindPos f32×2` (0-7) | **8 B** |
+| `kVtxWeighted4` | `bindPos f32×2 ×4` (0-31) + `boneIdx u16×4` (32-39) + `weight unorm8×4` (40-43) + `_pad` (44-47) | **48 B** |
 
-> **为什么 bindPos 放在最前面、步长补到 56**：`ByteAddressBuffer::Load2`（一次取一个
-> `float2`）要求偏移 **8 字节对齐**。步长 52 时第 k 个顶点在 `52k`，`52 % 8 == 4` ⇒
-> 第二个及以后的顶点其 bindPos 无法用对齐的 Load2 取，只能退化成 8 次标量 Load。
-> `bindPos` 放首位 + 步长 56（`56 % 8 == 0`）⇒ 每个顶点的 bindPos 都能一次 Load2。
-> 代价 4 B/顶点（约 7%），换来的是 GPU 侧对齐的向量化读取 —— 这个取舍是由
-> `doc/GPU_SPINE_INTERCHANGE_FORMAT.md` 的验收夹具实测出来的，不是拍的。
+> ⚠️ **UV 不在这里。** 顶点只存"几何 + 蒙皮"，UV 在独立的 chunk 4 里
+> （`float2` × `uv_count`，8 B/条），由 `DrawItem::uv_offset` 索引。见 §3.2。
+
+> **为什么 bindPos 放在最前面、步长补到 48**：`ByteAddressBuffer::Load2`（一次取一个
+> `float2`）要求偏移 **8 字节对齐**。步长 44 时第 k 个顶点在 `44k`，`44 % 8 == 4` ⇒
+> 第二个及以后的顶点其 bindPos 无法用对齐的 Load2 取，只能退化成标量 Load。
+> `bindPos` 放首位 + 步长 48（`48 % 8 == 0`）⇒ 每个顶点的 bindPos 都能一次 Load2。
+> 代价 4 B/顶点（约 9%），换来的是 GPU 侧对齐的向量化读取 —— 这个取舍是由验收夹具
+> 实测出来的，不是拍的。
 
 - **每段 VB 只有一种格式**，绘制项记录 `vertex_format`。合批只能在同一格式内进行。
 - `MAX_INFLUENCES = 4`。导入器遇到 `n > 4` 的顶点必须**报错并报出附件名**，
@@ -161,8 +165,30 @@ wy += (vx * bone._c + vy * bone._d + bone._worldY) * weight;
   运行时统一 `/ 255.0`。不要在 shader 里做除法归一化（每个顶点一次除法，且引入与 CPU 不一致的舍入）。
 - **顶点色不在静态 VB 里** —— Spine 的颜色是**槽位色**（`slot.getColor()`），每实例可变，属于实例数据。
 
-### 3.2 索引
+### 3.2 UV 是独立通道（**不在顶点里**）
 
+UV 存在单独的 `uv_buffer`（chunk 4）：`float2` × `uv_count`，8 B/条。
+绘制项带 `uv_offset`（单位是**UV 条目**，不是字节）；第 k 个顶点的 UV 在
+`uv_buffer[uv_offset + vertexIndex]`，`vertexIndex` 由索引缓冲给出。
+
+**为什么要拆开**：让**几何相同的附件共用同一段顶点**。两类最常见的重复：
+
+- **linked mesh**（附属网格）：继承父附件的顶点 / 骨骼 / 三角形 / regionUV，
+  但用**自己的**图集 region 重算 UV。
+- **换装变体**：不同皮肤往往只换贴图 region，网格一模一样。
+
+UV 编在顶点里时，UV 不同 ⇒ 顶点不能共用 ⇒ 只能整份复制（旧 §14.2）。
+拆开之后顶点池按**逐字节完全相同**去重，UV 各取各的一份。
+
+- **顶点数 ≠ UV 条目数**（顶点被共用时 UV 更多）。不要拿 `vertex_count` 去算 UV 数组长度，
+  用 chunk 4 的大小 / 8。
+- 代价：shader 里多一次间接读取（先取 `indexBuffer[...]` 得到顶点下标，再取 UV）。
+
+**去重只认"完全相同"，绝不做近似匹配**：近似意味着"我觉得这两个差不多"，
+差一点点形状就静默错，且没有任何报错。宁可少共享，不可错共享。
+（实现用 FNV-1a 哈希**缩小比较范围**，判定始终是逐字节比较 —— 哈希撞了也不会出错。）
+
+### 3.3 索引
 `uint16`。Spine 附件极小，单个骨架超过 65535 顶点的情况用 `flags` 里的
 `kIndex32` 打开 uint32 变体 —— 默认 uint16 是因为 `std::vector<uint32>` 索引在
 Unity 原生模块里是实打实的浪费（~8 B/顶点）。
@@ -175,21 +201,23 @@ Unity 原生模块里是实打实的浪费（~8 B/顶点）。
 再下一个皮肤；皮肤内按槽位顺序。每项：
 
 ```
-DrawItem                     20 B
+DrawItem                     24 B
   index_offset  u32   @0
   index_count   u32   @4
-  vertex_format u8    @8   (kVtxRigid / kVtxWeighted4)
-  blend_mode    u8    @9   (见 §8)
-  atlas_page    u16   @10
-  slot_index    u16   @12
-  attachment_id u16   @14
-  kind          u8    @16  (kStatic / kFallback)
-  skin_id       u16   @18
+  uv_offset     u32   @8   （单位：**UV 条目**，不是字节；见 §3.2）
+  vertex_format u8    @12  (kVtxRigid / kVtxWeighted4)
+  blend_mode    u8    @13  (见 §8)
+  atlas_page    u16   @14
+  slot_index    u16   @16
+  attachment_id u16   @18
+  skin_id       u16   @20
+  kind          u8    @22  (kStatic / kFallback)
+  _pad          u8    @23
 ```
 
-`skin_id` 落在 v1 那 2 B 尾部填充上 ⇒ **仍是 20 B**，一个字节都没多花。
-**没有它就没法换装**：同一个 (槽位, 附件名) 在不同皮肤下是两份几何、两个绘制项，
-光靠 `slot_index + attachment_id` 分不出该画哪一份。
+**没有 `skin_id` 就没法换装**：同一个 (槽位, 附件名) 在不同皮肤下是两个绘制项，
+光靠 `slot_index + attachment_id` 分不出该画哪一个。
+**没有 `uv_offset` 就没法共用顶点**：几何相同的附件共用同一段顶点，UV 各取各的（§3.2）。
 
 合批键 = `(atlas_page, blend_mode, vertex_format, kind)`。
 连续同键的绘制项可合成一次实例化绘制。
@@ -273,7 +301,7 @@ RootTransform { float a, b, c, d; float tx, ty; }   // 24 B 紧凑
 ```hlsl
 // bones: 全局骨骼 buffer（所有实例打包）
 // inst : 当前实例项
-float2 SkinVertex(float2 uvIgnored, uint drawItemIndex)
+float2 SkinVertex(uint vertexIndex, uint drawItemIndex)   // UV 不参与，见 §3.2
 {
     float2 p = 0;
 
@@ -318,9 +346,9 @@ float2 SkinVertex(float2 uvIgnored, uint drawItemIndex)
 
 | 附件 | 静态 VB | 说明 |
 |---|---|---|
-| **Region** | 烘焙 4 顶点 | `RegionAttachment::computeWorldVertices` 用 `_vertexOffset[8]` 的 br/bl/ul/ur 四点，由**槽位骨骼**单一矩阵变换 ⇒ 天然是 rigid。UV 由图集页（可能带 90° 旋转）算好，烘焙进静态 UV。 |
-| **Mesh（刚性）** | 烘焙，rigid | `_bones` 为空，整块由槽位骨骼变换。16 B/顶点。 |
-| **Mesh（蒙皮）** | 烘焙，weighted4 | **56 B/顶点**（不是 52，见 §3.1 的对齐说明）。 |
+| **Region** | 烘焙 4 顶点 | `RegionAttachment::computeWorldVertices` 用 `_vertexOffset[8]` 的 br/bl/ul/ur 四点，由**槽位骨骼**单一矩阵变换 ⇒ 天然是 rigid。UV 由图集页（可能带 90° 旋转）算好，写进独立 UV 通道（§3.2）。 |
+| **Mesh（刚性）** | 烘焙，rigid | `_bones` 为空，整块由槽位骨骼变换。**8 B/顶点**。 |
+| **Mesh（蒙皮）** | 烘焙，weighted4 | **48 B/顶点**（不是 44，见 §3.1 的对齐说明）。 |
 | **Clipping** | `_ClipData` 保留 | `SkeletonClipping::clipTriangles()` 重写顶点/三角形/UV（`SkeletonClipping.h:47-54`）⇒ **产生新三角形，VS 做不了** ⇒ **CPU fallback**：该项走 `kFallback`，顶点由 CPU 算好上传每帧动态 VB。这是 3.8 的唯一选项，不是折中（§1.1）。 |
 | **FFD / deform** | 同左 | `vx = vertices[b] + deform[f]`（`VertexAttachment.cpp:122-123`）。技术上可 GPU（deform 进纹理），但那样每帧又要传顶点数据，**收益被吃掉** ⇒ 只对真正在动 deform 的槽位走 CPU fallback。 |
 
@@ -352,7 +380,9 @@ Spine 图集默认是 **PMA（预乘 Alpha）**，对应 Unity 侧 `Blend One On
 ```
 Header (64 B)
   0x00  magic            u32   'ZSPG'  (0x5A535047)
-  0x04  version          u32   本规格版本，当前 2（v2 = 加了 skin 维度，见 §9.1）
+  0x04  version          u32   本规格版本，当前 3
+                               v2 = 加了 skin 维度（§9.1）
+                               v3 = UV 拆成独立通道 + chunk id 重排（§3.2、§14.2）
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -373,14 +403,19 @@ ChunkTable  (chunk_count × 16 B)  { id u32, offset u32, size u32, _pad u32 }
 Chunks:
   id=1  strings        骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名，每项 UTF-8 且 '\0' 结尾
   id=2  slot_bone      每槽位的骨骼下标（u16 × slot_count）—— rigid 用
-  id=3  vertex_buffer  按 vertex_format 分段，段首 8 B 对齐
-  id=4  index_buffer   uint16（或 flags 打开时 uint32）
-  id=5  draw_items     DrawItem[]，20 B/项（含 skin_id）
-  id=6  attachments    (slot_index u16, attachment_id u16, skin_id u16, _pad u16) × attachment_count
+  id=3  vertex_buffer  按 vertex_format 分段，段首 8 B 对齐（**不含 UV**）
+  id=4  uv_buffer      float2 × uv_count，8 B/条，段首 8 B 对齐（§3.2）
+  id=5  index_buffer   uint16（或 flags 打开时 uint32）
+  id=6  draw_items     DrawItem[]，24 B/项（含 uv_offset + skin_id）
+  id=7  attachments    (slot_index u16, attachment_id u16, skin_id u16, _pad u16) × attachment_count
                        —— 8 B/项，换装查的就是这张表
-  id=7  atlas_pages    图集页路径，每项 '\0' 结尾
-  id=8  clip_data      裁剪多边形（CPU fallback 用）
+  id=8  atlas_pages    图集页路径，每项 '\0' 结尾
+  id=9  clip_data      裁剪多边形（CPU fallback 用）
 ```
+
+> ⚠️ **chunk id 在 v3 重排过**：`uv_buffer` 插在 `vertex_buffer` 与 `index_buffer` 之间，
+> 其后所有 id 顺移一位。读端按 **id** 找 chunk，**不许按下标** —— v2 的容器用 v3 读端
+> 读会拿到 `index_buffer` 当 UV，静默错位。这也正是 `kFormatVersion` 升到 3 的原因。
 
 ### 9.1 skin 维度（v2）
 
@@ -392,16 +427,18 @@ Chunks:
   但**导入器会显式检查**：名为 `default` 的皮肤若不在首位就**报错**，绝不静默挪位 ——
   挪了默认外观就变成另一个皮肤，而外观错没有任何报错。
 - 字符串表里皮肤名紧跟骨骼名之后，读端靠 `header.skin_count` 切分。
-- 代价（§14.2 那条没有因此消失）：同一个 (槽位, 附件名) 在 N 个皮肤下就是 N 份几何。
-  这是**用内存换"能表达"**，不是浪费 —— v1 省下了内存，代价是换装根本没法用。
+- 代价：**同一个 (槽位, 附件名) 在 N 个皮肤下仍是 N 份附件记录**，但 v3 之后
+  **几何不再跟着翻 N 倍** —— 顶点逐字节去重，跨皮肤只多一份 UV（§3.2、§14.2）。
+  剩下的 N 份只是绘制项 + 附件记录 + UV 条目，是"能表达换装"的必要成本，不是浪费。
 
 **为什么 header 里要有 0x30..0x38 这三个字段**：顶点缓冲是 rigid 段 + weighted 段拼起来的，
 光有 `vertex_count` 和 `draw_items` 无法反推出分界点 —— 读回来就切不开两段，
-而 `SpineRigidVertex`(16 B) 与 `SpineWeightedVertex`(56 B) 步长不同，切错就全错。
+而 `SpineRigidVertex`(8 B) 与 `SpineWeightedVertex`(48 B) 步长不同，切错就全错。
 所以段信息必须由 header 显式给出，不能靠消费端重算。
 
 布局规则：
-- 所有 chunk 起点 4 B 对齐；`vertex_buffer`(id=3) 起点 **8 B 对齐**（§3.1 的 `Load2` 前提）。
+- 所有 chunk 起点 4 B 对齐；`vertex_buffer`(id=3) 与 `uv_buffer`(id=4) 起点 **8 B 对齐**
+  （§3.1 的 `Load2` 前提；UV 是 `float2`，同样要 8 B）。
 - 对齐填充插在 chunk 之间，**因此容器总长 ≠ header + 表 + 净载荷之和**。
   要校验容器，应校验 **chunk 表里的 `size` 之和**（与填充无关的精确不变量），
   而不是写死一个总字节数 —— 后者会在对齐规则一变时就假失败。
@@ -451,6 +488,10 @@ Chunks:
    （v1 会把它们合并成一份 ⇒ 换装静默失效，这条就是为它设的回归。）
 7. **容器必须可重入**：读回来的资产再序列化一次，字节必须与原来**逐字节相同** ——
    否则 C# 端读到的就不是同一个东西（指针 / 地址 / 未初始化填充都会在这里露出来）。
+8. **几何共享必须被钉住**：含 linked mesh 的骨架，Bake 后**顶点数必须等于父附件的顶点数**
+   （而不是翻倍），同时两个绘制项的 `uv_offset` 不同、UV 值不同。
+   只断言"能画出来"不够 —— 去重一旦退化成复制，画出来照样是对的，内存却悄悄翻倍。
+   配套断言：**`uv_count ≠ vertex_count`**，防止有人拿 `vertex_count` 去算 UV 数组长度。
 
 ---
 
@@ -466,10 +507,11 @@ Chunks:
 | 2 | `MAX_INFLUENCES = 4` 够吗？ | **定为 4**。导入器遇 `n > 4` **报错并报出附件名**，不静默截断 | §3.1 |
 | 4 | 骨骼通道 structured 还是 UBO？ | **默认 structured / SSBO，24 B 紧凑**；仅当目标后端只有 UBO 时才用 32 B std140 变体（记录在 `bone_stride`） | §5.1 |
 | 7 | 容器加 skin 维度怎么加？ | **附件表多一列 `skin_id`**（4 B → 8 B），而不是另建一张 skin 表。选它是因为换装查询就是"按 (skin, slot) 查附件 id"，一列就能表达；另建表会多一次间接跳转却不省什么 | §9.1 |
+| 8 | linked mesh 的几何怎么省？ | **UV 拆成独立通道 + 顶点逐字节去重**，两条一起做。只拆 UV 不通（顶点仍按附件各存一份），只去重不拆 UV 也不通（UV 不同 ⇒ 字节不同 ⇒ 去重命中率为 0）。去重**只认逐字节完全相同**，不做近似 —— 宁可少共享，不可错共享 | §3.2、§14.2 |
 
 ### 13.2 仍待拍板
 
-**无。** 全部七项已拍板；后续若再开新议题写在这里。
+**无。** 全部八项已拍板；后续若再开新议题写在这里。
 
 ---
 
@@ -478,17 +520,24 @@ Chunks:
 ### 14.1 （已修，2026-10-21）~~容器里没有 skin 维度~~
 
 v2 已补上：附件表多一列 `skin_id`（4 B → 8 B），绘制项尾部填充改成 `skin_id`
-（仍是 20 B），header 的 `reserved` 改成 `skin_count`，字符串表插入皮肤名。
+（v2 仍是 20 B，v3 起因 `uv_offset` 变 24 B），header 的 `reserved` 改成 `skin_count`，
+字符串表插入皮肤名。
 附件 = (皮肤, 槽位, 附件名) 三元组，**不再跨皮肤合并**。见 §9.1。
 
-### 14.2 linked mesh 的几何是复制的，不是共享的
+### 14.2 （已修，2026-10-21）~~linked mesh 的几何是复制的，不是共享的~~
 
-linked mesh 继承父附件的顶点 / 骨骼 / 三角形 / regionUV，但用**自己的**图集
-region 重算 UV。我们的顶点格式把 UV 编在顶点里 ⇒ UV 不同就没法共用顶点，
-只能再来一份。一个典型的换装角色会有 N(skin) × M(mesh) 份几何。
+v3 已解决，且**当初列的两条路都做了**（缺一不可，见 §13.1 第 8 项）：
 
-想省这块要么把 UV 拆成独立通道（顶点只存位置 + 骨骼，UV 按 draw item 索引），
-要么让导入器按"顶点 + UV 完全相同的附件"去重 —— 两者都是另一项改动。
+1. **UV 拆成独立通道**：顶点只剩"几何 + 蒙皮"（rigid 16 → **8 B**，weighted 56 → **48 B**），
+   UV 进 chunk 4 的 `uv_buffer`（`float2` × `uv_count`），由 `DrawItem::uv_offset` 索引。
+2. **顶点逐字节去重**：`ExactBlobPool` 按"整段顶点字节完全相同"合并，FNV-1a 只用来缩小比较范围，
+   最终判定永远是 `memcmp`。
+
+现在 linked mesh 与父附件**共用同一段顶点**，各自只多一份 UV。测试里量到的实际收缩：
+单皮肤 linked mesh 8 → **4** 个 weighted 顶点；跨皮肤 linked mesh 12 → **8**。
+
+剩下的代价只有一条：shader 里多一次间接读取（先 `indexBuffer[...]` 拿顶点下标，
+再 `uv_buffer[drawItem.uv_offset + vertexIndex]`）。这条**不能省** —— 它就是"能共用"的前提。
 
 （历史：#1 版本、#2 影响数、#3 Clip、#4 骨骼通道、#5 root 是否 per-instance、#6 root 存放方式。）
 

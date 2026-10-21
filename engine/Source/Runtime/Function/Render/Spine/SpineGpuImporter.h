@@ -163,11 +163,17 @@ struct SpineGpuAsset
 
     // 顶点缓冲按格式分段：先所有 rigid 段、再所有 weighted 段。
     // 每段起点 8 B 对齐（为了对齐的 ByteAddressBuffer::Load2，规格 §3.1）。
+    // **不含 UV** —— 顶点只存几何 + 蒙皮，几何相同的附件**共用**同一段顶点。
     std::vector<uint8_t> vertex_buffer;
     uint32_t rigid_vertex_count = 0;
     uint32_t weighted_vertex_count = 0;
     uint32_t rigid_segment_offset = 0;
     uint32_t weighted_segment_offset = 0;
+
+    // UV 通道（chunk 4）：每条目 2 float。**条目数 ≠ 顶点数** ——
+    // 顶点被共用时，每个绘制项各有一份 UV（这正是拆通道换来的省法）。
+    // 由 SpineDrawItem::uv_offset 索引。
+    std::vector<float> uv_buffer;
 
     std::vector<uint16_t> index_buffer;
     std::vector<SpineDrawItem> draw_items;

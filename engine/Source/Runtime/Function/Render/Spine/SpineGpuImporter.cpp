@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <rapidjson/document.h>
@@ -660,7 +662,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
                     "'，本导入器锁定 3.8（规格 §1.1）。4.x 的 _bones 是 int，布局不同，需要另一条导入路径。");
     }
 
-    // 图集页名：容器 chunk 7 要用（纹理引用）。没有图集时留空 —— 但那样需要 UV 的
+    // 图集页名：容器 chunk 8（atlas_pages）要用（纹理引用）。没有图集时留空 —— 但那样需要 UV 的
     // 附件会在下面报错，不会静默产出半个资产。
     if (atlas)
     {
@@ -2733,6 +2735,67 @@ bool QuantizeWeights(const float* w, int n, uint8_t* out8, std::string& err)
     return true;
 }
 
+// 顶点块 / UV 块的去重池：内容**逐字节完全相同**才共用。
+//
+// 为什么敢共用顶点：共用的是"几何 + 蒙皮"这一段字节，它只决定形状；
+// 而槽位骨骼（rigid 用）、UV、皮肤全在**绘制项**上，不在这段字节里
+// ⇒ 两个绘制项共用同一段顶点，各自的骨骼 / UV / 皮肤仍然各算各的，不会互相污染。
+//
+// 为什么只做完全相同、绝不做"近似"：近似就是"我觉得这两个差不多"，
+// 差一点点形状就静默错，而且没有任何报错。宁可少共享，不可错共享。
+// （哈希只用来**缩小比较范围**；判定始终是逐字节比较 —— 哈希撞了也不会出错。）
+//
+// 起点单位是**条目**（顶点块 → 顶点；UV 块 → UV 条目），不是字节。
+class ExactBlobPool
+{
+public:
+    explicit ExactBlobPool(uint32_t unit_size) : unit_size_(unit_size) {}
+
+    // 返回 {是否命中已有块, 起点}。没命中时块已被追加进池子。
+    std::pair<bool, uint32_t> Intern(const uint8_t* bytes, size_t n)
+    {
+        const uint64_t h = Fnv1a(bytes, n);
+        const auto it = by_hash_.find(h);
+        if (it != by_hash_.end())
+        {
+            for (uint32_t base : it->second)
+            {
+                const size_t at = static_cast<size_t>(base) * unit_size_;
+                if (at + n <= data_.size() && std::memcmp(data_.data() + at, bytes, n) == 0)
+                {
+                    return {true, base};
+                }
+            }
+        }
+        // 调用方只传"整条目"（vc × stride），所以这里一定是整数倍。
+        const uint32_t base = unit_count_;
+        data_.insert(data_.end(), bytes, bytes + n);
+        unit_count_ += static_cast<uint32_t>(n) / unit_size_;
+        by_hash_[h].push_back(base);
+        return {false, base};
+    }
+
+    uint32_t unit_count() const { return unit_count_; }
+    const std::vector<uint8_t>& data() const { return data_; }
+
+private:
+    static uint64_t Fnv1a(const uint8_t* p, size_t n)
+    {
+        uint64_t h = 1469598103934665603ull;   // FNV-1a 64 位偏移基数
+        for (size_t i = 0; i < n; ++i)
+        {
+            h ^= static_cast<uint64_t>(p[i]);
+            h *= 1099511628211ull;
+        }
+        return h;
+    }
+
+    uint32_t unit_size_ = 1;
+    uint32_t unit_count_ = 0;
+    std::vector<uint8_t> data_;
+    std::unordered_map<uint64_t, std::vector<uint32_t>> by_hash_;
+};
+
 }   // namespace
 
 SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsset& out)
@@ -2764,42 +2827,23 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                     " 超过 uint16 上限（attachment_id 存不下）");
     }
 
-    // ---- pass 1：分类与统计 ----
-    uint32_t rigid_verts = 0;
-    uint32_t weighted_verts = 0;
+    // ---- pass 1：只统计索引数 ----
+    // 顶点数**不能**在 pass 1 算：几何相同的附件会共用同一段顶点（见下面的池子），
+    // 最终顶点数要等去重跑完才知道。
     uint32_t index_count = 0;
-
     for (const SpineSourceAttachment& a : src.attachments)
     {
-        const uint32_t vc = a.VertexCount();
-        if (a.IsWeighted())
-        {
-            weighted_verts += vc;
-        }
-        else
-        {
-            rigid_verts += vc;
-        }
         index_count += static_cast<uint32_t>(a.triangles.size());
     }
-
-    const uint32_t rigid_bytes = rigid_verts * SpineGpuConstants::kRigidVertexStride;
-    const uint32_t weighted_offset = (rigid_bytes + SpineGpuConstants::kVertexSegmentAlignment - 1) /
-                                     SpineGpuConstants::kVertexSegmentAlignment *
-                                     SpineGpuConstants::kVertexSegmentAlignment;
-    const uint32_t weighted_bytes = weighted_verts * SpineGpuConstants::kWeightedVertexStride;
-
-    out.rigid_segment_offset = 0;
-    out.weighted_segment_offset = weighted_offset;
-    out.rigid_vertex_count = rigid_verts;
-    out.weighted_vertex_count = weighted_verts;
-    out.vertex_buffer.assign(static_cast<size_t>(weighted_offset) + weighted_bytes, 0u);
     out.index_buffer.reserve(index_count);
 
-    uint32_t rigid_written = 0;
-    uint32_t weighted_written = 0;
+    // 顶点块分两个池子（rigid / weighted），因为**索引是段内局部下标** ——
+    // 两个段的顶点起点都从 0 开始，不能共用一个计数。
+    ExactBlobPool rigid_pool(SpineGpuConstants::kRigidVertexStride);
+    ExactBlobPool weighted_pool(SpineGpuConstants::kWeightedVertexStride);
+    ExactBlobPool uv_pool(SpineGpuConstants::kUvStride);
 
-    // ---- pass 2：写顶点 / 索引 / 绘制项 ----
+    // ---- pass 2：写顶点 / UV / 索引 / 绘制项 ----
     for (size_t ai = 0; ai < src.attachments.size(); ++ai)
     {
         const SpineSourceAttachment& a = src.attachments[ai];
@@ -2814,14 +2858,14 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                         "（皮肤数 " + std::to_string(src.skins.size()) + "）—— 解析路径没给它归皮肤");
         }
 
+        // 先把这一份附件的顶点整块拼出来，再去重池里问"有没有一模一样的"。
+        std::vector<uint8_t> blob;
+        blob.reserve(static_cast<size_t>(vc) * (weighted ? SpineGpuConstants::kWeightedVertexStride
+                                                         : SpineGpuConstants::kRigidVertexStride));
         uint32_t vertex_base = 0;
-        uint32_t write_offset = 0;
 
         if (weighted)
         {
-            vertex_base = weighted_written;
-            write_offset = weighted_offset + weighted_written * SpineGpuConstants::kWeightedVertexStride;
-
             // 展开 spine 的扁平顶点数组：
             //   每顶点 [n, (boneIdx, x, y, w) × n]   —— SkeletonJson::readVertices
             size_t p = 0;
@@ -2889,33 +2933,39 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                     out_v.bone_idx[k] = idx[k];
                     out_v.weight[k] = w8[k];
                 }
-                out_v.uv[0] = a.uvs[static_cast<size_t>(v) * 2u];
-                out_v.uv[1] = a.uvs[static_cast<size_t>(v) * 2u + 1u];
-
-                std::memcpy(out.vertex_buffer.data() + write_offset +
-                                static_cast<size_t>(v) * SpineGpuConstants::kWeightedVertexStride,
-                            &out_v, sizeof(out_v));
+                blob.resize(blob.size() + sizeof(out_v));
+                std::memcpy(blob.data() + blob.size() - sizeof(out_v), &out_v, sizeof(out_v));
             }
-            weighted_written += vc;
         }
         else
         {
-            vertex_base = rigid_written;
-            write_offset = rigid_written * SpineGpuConstants::kRigidVertexStride;
-
             for (uint32_t v = 0; v < vc; ++v)
             {
                 SpineRigidVertex out_v {};
                 out_v.bind_pos[0] = a.vertices[static_cast<size_t>(v) * 2u];
                 out_v.bind_pos[1] = a.vertices[static_cast<size_t>(v) * 2u + 1u];
-                out_v.uv[0] = a.uvs[static_cast<size_t>(v) * 2u];
-                out_v.uv[1] = a.uvs[static_cast<size_t>(v) * 2u + 1u];
-                std::memcpy(out.vertex_buffer.data() + write_offset +
-                                static_cast<size_t>(v) * SpineGpuConstants::kRigidVertexStride,
-                            &out_v, sizeof(out_v));
+                blob.resize(blob.size() + sizeof(out_v));
+                std::memcpy(blob.data() + blob.size() - sizeof(out_v), &out_v, sizeof(out_v));
             }
-            rigid_written += vc;
         }
+
+        // ---- 顶点块去重：几何 + 蒙皮完全相同才共用 ----
+        ExactBlobPool& pool = weighted ? weighted_pool : rigid_pool;
+        vertex_base = pool.Intern(blob.data(), blob.size()).second;
+
+        // ---- UV：每个绘制项一份，**不参与顶点去重** ----
+        // 这正是拆通道的目的：linked mesh 继承父附件的几何，却用自己的图集 region
+        // 算 UV ⇒ 几何共用、UV 各一份。
+        std::vector<uint8_t> uv_blob(static_cast<size_t>(vc) * SpineGpuConstants::kUvStride, 0u);
+        for (uint32_t v = 0; v < vc; ++v)
+        {
+            const float u = a.uvs[static_cast<size_t>(v) * 2u];
+            const float wv = a.uvs[static_cast<size_t>(v) * 2u + 1u];
+            std::memcpy(uv_blob.data() + static_cast<size_t>(v) * SpineGpuConstants::kUvStride, &u, sizeof(u));
+            std::memcpy(uv_blob.data() + static_cast<size_t>(v) * SpineGpuConstants::kUvStride + 4u, &wv,
+                        sizeof(wv));
+        }
+        const uint32_t uv_offset = uv_pool.Intern(uv_blob.data(), uv_blob.size()).second;
 
         // ---- 索引：相对**所在顶点段**的局部下标 ----
         // 两种格式是两个独立的顶点段、两次独立的绘制，索引不能跨段。
@@ -2928,13 +2978,15 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         SpineDrawItem item {};
         item.index_offset = index_offset;
         item.index_count = static_cast<uint32_t>(a.triangles.size());
+        item.uv_offset = uv_offset;
         item.vertex_format = weighted ? SpineVertexFormat::kWeighted4 : SpineVertexFormat::kRigid;
         item.blend_mode = SpineBlendMode::kNormal;
         item.atlas_page = 0;
         item.slot_index = static_cast<uint16_t>(a.slot_index);
         item.attachment_id = static_cast<uint16_t>(ai);
-        item.kind = SpineDrawItemKind::kStatic;
         item.skin_id = static_cast<uint16_t>(a.skin_index);
+        item.kind = SpineDrawItemKind::kStatic;
+        item.pad = 0;
         out.draw_items.push_back(item);
 
         SpineGpuAttachmentRecord rec {};
@@ -2943,6 +2995,37 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         rec.skin_id = static_cast<uint16_t>(a.skin_index);
         rec.pad = 0;
         out.attachment_records.push_back(rec);
+    }
+
+    // ---- 拼顶点缓冲：rigid 段 → 8 B 对齐 → weighted 段 ----
+    // （去重之后才知道各段多长，所以放到循环之后。）
+    const uint32_t rigid_bytes = static_cast<uint32_t>(rigid_pool.data().size());
+    const uint32_t weighted_offset = (rigid_bytes + SpineGpuConstants::kVertexSegmentAlignment - 1) /
+                                     SpineGpuConstants::kVertexSegmentAlignment *
+                                     SpineGpuConstants::kVertexSegmentAlignment;
+    const uint32_t weighted_bytes = static_cast<uint32_t>(weighted_pool.data().size());
+
+    out.rigid_segment_offset = 0;
+    out.weighted_segment_offset = weighted_offset;
+    out.rigid_vertex_count = rigid_pool.unit_count();
+    out.weighted_vertex_count = weighted_pool.unit_count();
+    out.vertex_buffer.assign(static_cast<size_t>(weighted_offset) + weighted_bytes, 0u);
+    if (!rigid_pool.data().empty())
+    {
+        std::memcpy(out.vertex_buffer.data(), rigid_pool.data().data(), rigid_pool.data().size());
+    }
+    if (!weighted_pool.data().empty())
+    {
+        std::memcpy(out.vertex_buffer.data() + weighted_offset, weighted_pool.data().data(),
+                    weighted_pool.data().size());
+    }
+
+    // ---- UV 通道：独立数组，条目数 **≠** 顶点数 ----
+    const std::vector<uint8_t>& uv_bytes = uv_pool.data();
+    out.uv_buffer.resize(uv_bytes.size() / sizeof(float));
+    if (!uv_bytes.empty())
+    {
+        std::memcpy(out.uv_buffer.data(), uv_bytes.data(), uv_bytes.size());
     }
 
     // ---- slot_bone：rigid 用（槽位骨骼下标） ----
@@ -2993,7 +3076,7 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     h.slot_count = slot_count;
     h.skin_count = static_cast<uint32_t>(src.skins.size());
     h.draw_item_count = static_cast<uint32_t>(out.draw_items.size());
-    h.vertex_count = rigid_verts + weighted_verts;
+    h.vertex_count = rigid_pool.unit_count() + weighted_pool.unit_count();
     h.index_count = static_cast<uint32_t>(out.index_buffer.size());
     h.atlas_page_count = static_cast<uint32_t>(out.atlas_page_names.size());
     h.bone_stride = SpineGpuConstants::kBoneStrideCompact;
@@ -3122,7 +3205,17 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         chunks.push_back(std::move(c));
     }
 
-    // id=4 index_buffer
+    // id=4 uv_buffer —— float2 × uv_count，**8 B 对齐**（与顶点一样靠 Load2 读取）
+    if (!asset.uv_buffer.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkUvBuffer;
+        c.alignment = SpineGpuConstants::kVertexSegmentAlignment;
+        PutBytes(c.bytes, asset.uv_buffer.data(), asset.uv_buffer.size() * sizeof(float));
+        chunks.push_back(std::move(c));
+    }
+
+    // id=5 index_buffer
     if (!asset.index_buffer.empty())
     {
         ChunkBuilder c;
@@ -3134,7 +3227,7 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         chunks.push_back(std::move(c));
     }
 
-    // id=5 draw_items —— **20 B/项**，尾部 2 B 填充显式写 0（规格 §4）
+    // id=6 draw_items —— **24 B/项**，未用字节显式写 0（规格 §4）
     if (!asset.draw_items.empty())
     {
         ChunkBuilder c;
@@ -3149,7 +3242,7 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         chunks.push_back(std::move(c));
     }
 
-    // id=6 attachments —— 8 B/项：(槽位, 附件 id, 皮肤 id)
+    // id=7 attachments —— 8 B/项：(槽位, 附件 id, 皮肤 id)
     {
         ChunkBuilder c;
         c.id = SpineGpuChunkId::kChunkAttachments;
@@ -3166,7 +3259,7 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         }
     }
 
-    // id=7 atlas_pages
+    // id=8 atlas_pages
     if (!asset.atlas_page_names.empty())
     {
         ChunkBuilder c;
@@ -3293,6 +3386,20 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         out.vertex_buffer.assign(data + f->offset, data + f->offset + f->size);
     }
 
+    // ---- UV 通道（独立 chunk）----
+    if (const Found* f = find_chunk(SpineGpuChunkId::kChunkUvBuffer))
+    {
+        if (f->size % SpineGpuConstants::kUvStride != 0)
+        {
+            return Fail("container: uv_buffer 大小不是 " + std::to_string(SpineGpuConstants::kUvStride) +
+                        " B 的整数倍（一条 UV 是 2 float）");
+        }
+        const uint32_t count = f->size / sizeof(float);
+        out.uv_buffer.resize(count);
+        // float 与顶点缓冲一样按 IEEE754 binary32 小端存放（见规格 §9 的布局规则）
+        std::memcpy(out.uv_buffer.data(), data + f->offset, f->size);
+    }
+
     // ---- 索引 ----
     if (const Found* f = find_chunk(SpineGpuChunkId::kChunkIndexBuffer))
     {
@@ -3310,7 +3417,8 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
     {
         if (f->size % sizeof(SpineDrawItem) != 0)
         {
-            return Fail("container: draw_items 大小不是 20 B 的整数倍");
+            return Fail("container: draw_items 大小不是 " + std::to_string(sizeof(SpineDrawItem)) +
+                        " B 的整数倍（v3 起一项是 24 B：多了 uv_offset）");
         }
         const uint32_t count = f->size / static_cast<uint32_t>(sizeof(SpineDrawItem));
         out.draw_items.resize(count);

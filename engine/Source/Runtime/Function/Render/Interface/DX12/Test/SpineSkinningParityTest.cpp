@@ -67,8 +67,10 @@ namespace
 //
 // 【版本锁定：Spine 3.8，规格 §1.1】bone_idx 是 **uint16**，不是随手选的，
 // 是被 3.8 钉死的（`VertexAttachment.h:79-81` 的 `Vector<unsigned short> _bones`）。
-// bindPos 放首位 + 步长 56 是为了 ByteAddressBuffer::Load2 的 8 字节对齐
-// （步长 52 ⇒ 52 % 8 == 4，第二个及以后的顶点取不到对齐的 Load2）。
+// bindPos 放首位 + 步长 48 是为了 ByteAddressBuffer::Load2 的 8 字节对齐
+// （步长 44 ⇒ 44 % 8 == 4，第二个及以后的顶点取不到对齐的 Load2）。
+// ⚠️ 顶点里**没有 uv**（v3 起 UV 是独立通道 chunk 4，由 DrawItem::uv_offset 索引）——
+//    本夹具只验证蒙皮数学，不涉及 UV，所以这里也没有 UV 什么事。
 using VtxRigid = SpineRigidVertex;
 using VtxWeighted = SpineWeightedVertex;
 using Bone = SpineBoneTransform;
@@ -79,8 +81,8 @@ struct Float2
 };
 
 constexpr std::uint32_t kBoneStride = SpineGpuConstants::kBoneStrideCompact;  // 24，6 float
-constexpr std::uint32_t kRigidStride = SpineGpuConstants::kRigidVertexStride;        // 16
-constexpr std::uint32_t kWeightedStride = SpineGpuConstants::kWeightedVertexStride;  // 56
+constexpr std::uint32_t kRigidStride = SpineGpuConstants::kRigidVertexStride;        // 8
+constexpr std::uint32_t kWeightedStride = SpineGpuConstants::kWeightedVertexStride;  // 48
 
 // ---------------------------------------------------------------------
 // CPU 参考实现 —— 逐行对应 spine-cpp
@@ -155,6 +157,12 @@ cbuffer gConsts : register(b0)
     uint  gWeightedCount;
     uint  gRigidStride;
     uint  gWeightedStride;
+    // ⚠️ 顶点里骨骼索引 / 权重的**字节偏移**由 C++ 侧的 offsetof 传进来，
+    //    不在 shader 里写死。写死过一次：v3 把 UV 拆出顶点（56 B → 48 B）后
+    //    这些偏移全挪了位，shader 还在老位置读 ⇒ 蒙皮静默全错，而夹具默认 OFF，
+    //    只有真跑一次 GPU 才会发现。布局再变它必须自己跟着变。
+    uint  gBoneIdxOffset;
+    uint  gWeightOffset;
     float gRootA, gRootB, gRootC, gRootD, gRootX, gRootY;
 };
 
@@ -199,9 +207,9 @@ void SkinMain(uint3 tid : SV_DispatchThreadID)
     if (i < gWeightedCount)
     {
         const uint base = i * gWeightedStride;
-        const uint packed_idx0 = gWeighted.Load(base + 40);
-        const uint packed_idx1 = gWeighted.Load(base + 44);
-        const uint packed_w    = gWeighted.Load(base + 48);
+        const uint packed_idx0 = gWeighted.Load(base + gBoneIdxOffset + 0);
+        const uint packed_idx1 = gWeighted.Load(base + gBoneIdxOffset + 4);
+        const uint packed_w    = gWeighted.Load(base + gWeightOffset);
 
         // 规格 §6：混合的是「变换后的位置」，不是矩阵 —— 绝不能先 Σwᵢ·Bᵢ。
         // 累加顺序按影响下标升序，与 spine-cpp 一致（f32 加法不满足结合律）。
@@ -355,8 +363,6 @@ Fixture BuildFixture()
         VtxRigid v {};
         v.bind_pos[0] = quad[i][0];
         v.bind_pos[1] = quad[i][1];
-        v.uv[0] = (i & 1) ? 1.0f : 0.0f;
-        v.uv[1] = (i & 2) ? 1.0f : 0.0f;
         f.rigid.push_back(v);
         f.rigid_bone.push_back(static_cast<std::uint16_t>(i));  // 骨骼 0..3
     }
@@ -373,8 +379,6 @@ Fixture BuildFixture()
             v.bone_idx[i] = idx[i];
             v.weight[i] = w[i];
         }
-        v.uv[0] = 0.25f;
-        v.uv[1] = 0.75f;
         return v;
     };
 
@@ -597,12 +601,17 @@ int main()
             std::uint32_t weighted_count;
             std::uint32_t rigid_stride;
             std::uint32_t weighted_stride;
+            std::uint32_t bone_idx_offset;
+            std::uint32_t weight_offset;
             float root_a, root_b, root_c, root_d, root_x, root_y;
         } consts {};
         consts.rigid_count = rigid_count;
         consts.weighted_count = weighted_count;
         consts.rigid_stride = kRigidStride;
         consts.weighted_stride = kWeightedStride;
+        // 直接取 offsetof ⇒ 顶点布局再改，shader 自动跟着改，不会像上次那样静默错位。
+        consts.bone_idx_offset = static_cast<std::uint32_t>(offsetof(SpineWeightedVertex, bone_idx));
+        consts.weight_offset = static_cast<std::uint32_t>(offsetof(SpineWeightedVertex, weight));
         consts.root_a = fixture.root.a;
         consts.root_b = fixture.root.b;
         consts.root_c = fixture.root.c;

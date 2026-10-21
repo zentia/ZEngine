@@ -34,10 +34,14 @@ namespace SpineGpuConstants
     //   * SpineGpuHeader 末位的 reserved 改成 skin_count
     //   * 附件记录从 4 B（slot, attachment）扩成 8 B（slot, attachment, skin）
     //   * SpineDrawItem 尾部 2 B 填充改成 skin_id
-    // 这三条都是**不兼容**改动：v1 的容器必须被明确拒绝，不做静默兼容（规格 §11）。
-    // 之所以现在改：换装是 Spine 的核心用法，而 v1 把所有 skin 合并成一份，
-    // 同名跨 skin 的附件会互相覆盖（规格 §14.1 记的就是这个洞）。
-    constexpr uint32_t kFormatVersion = 2;
+    // 版本 3（2026-10-21）：**UV 拆成独立通道** ——
+    //   * 顶点里不再有 uv：rigid 16 B → 8 B，weighted 56 B → 48 B
+    //   * 新增 chunk 4（uv_buffer），绘制项新增 uv_offset（⇒ 绘制项 20 B → 24 B）
+    //   * chunk id 重新编号（uv 插在顶点缓冲后面）
+    //   目的：顶点只存"几何 + 蒙皮"，几何相同的附件可以**共用**同一段顶点，
+    //   UV 各取各的（规格 §14.2 —— linked mesh / 换装变体的几何是重复的）。
+    // 两版都是**不兼容**改动：旧容器必须被明确拒绝，不做静默兼容（规格 §11）。
+    constexpr uint32_t kFormatVersion = 3;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -67,16 +71,23 @@ namespace SpineGpuConstants
     // 每帧实例项大小（含 root_index，规格 §5.2）。
     constexpr uint32_t kDrawInstanceSize = 20;
 
-    // 静态绘制项大小（规格 §4）。与 kDrawInstanceSize 同为 20 纯属巧合，
-    // 别互相换用 —— 一个是静态表项、一个是每帧实例项。
-    constexpr uint32_t kDrawItemSize = 20;
+    // 静态绘制项大小（规格 §4）。v3 起是 24 B（多了 uv_offset）。
+    // 与 kDrawInstanceSize 别互相换用 —— 一个是静态表项、一个是每帧实例项。
+    constexpr uint32_t kDrawItemSize = 24;
 
-    // 顶点步长。weighted 是 56 不是 52：ByteAddressBuffer::Load2 要求 8 字节对齐，
-    // 步长 52 时第 k 个顶点落在 52k，52 % 8 == 4 ⇒ 第二个及以后的顶点取不到对齐的
-    // Load2，只能退化成 8 次标量 Load。代价 4 B/顶点（约 7%）换对齐的向量化读取
-    // —— 这个取舍由验收夹具实测得出（规格 §3.1）。
-    constexpr uint32_t kRigidVertexStride = 16;
-    constexpr uint32_t kWeightedVertexStride = 56;
+    // 顶点步长。**UV 已经不在这里了**（v3 起它在独立的 chunk 4 里）⇒
+    //   rigid    : bindPos 2 float                = 8 B
+    //   weighted : bindPos 4×2 + boneIdx 4×u16 + weight 4×u8 + pad = 48 B
+    // weighted 是 48 不是 44：ByteAddressBuffer::Load2 要求 8 字节对齐，
+    // 步长 44 时第 k 个顶点落在 44k，44 % 8 == 4 ⇒ 第二个及以后的顶点取不到对齐的
+    // Load2，只能退化成标量 Load。4 B/顶点（约 9%）换对齐的向量化读取（规格 §3.1）。
+    constexpr uint32_t kRigidVertexStride = 8;
+    constexpr uint32_t kWeightedVertexStride = 48;
+
+    // UV 条目：2 float，8 B。它自己是 8 B 对齐的 ⇒ Load2 直接可用。
+    // 注意 UV 条目的个数**不等于**顶点数：同一段顶点可以被多个绘制项共用，
+    // 每个绘制项各有一份 UV（这正是拆通道的目的）。
+    constexpr uint32_t kUvStride = 8;
 
     constexpr uint32_t kHeaderSize = 64;
     constexpr uint32_t kChunkTableEntrySize = 16;
@@ -86,7 +97,7 @@ namespace SpineGpuConstants
     // 其余块 4 B 对齐。
     constexpr uint32_t kChunkAlignment = 4;
 
-    // 附件记录（chunk 6）大小。4 B → 8 B 是因为多了一列 skin_id。
+    // 附件记录（chunk 7）大小。4 B → 8 B 是因为多了一列 skin_id。
     constexpr uint32_t kAttachmentRecordSize = 8;
 }   // namespace SpineGpuConstants
 
@@ -128,16 +139,19 @@ enum SpineGpuFlags : uint32_t
 };
 
 // ChunkTable 的 id。
+// v3 重新编过号：UV 缓冲插在顶点缓冲后面（id 4），后面整体 +1。
+// v2 的 id（strings=1 … clip=8）已经作废 —— 容器版本变了，不做静默兼容。
 enum SpineGpuChunkId : uint32_t
 {
-    kChunkStrings = 1,       // 骨骼名 / 槽位名 / 附件名（UTF-8，调试与挂点）
+    kChunkStrings = 1,       // 骨骼名 / 皮肤名 / 槽位名 / 附件名（UTF-8，调试与挂点）
     kChunkSlotBone = 2,      // 每槽位的骨骼下标（u16 × slot_count），rigid 用
-    kChunkVertexBuffer = 3,  // 按 vertex_format 分段
-    kChunkIndexBuffer = 4,   // uint16（kIndex32 时 uint32）
-    kChunkDrawItems = 5,     // SpineDrawItem[]
-    kChunkAttachments = 6,   // (皮肤, 槽位) → 附件 id 列表（换装用）
-    kChunkAtlasPages = 7,    // 图集页路径 / 纹理引用
-    kChunkClipData = 8,      // 裁剪多边形（CPU fallback 用）
+    kChunkVertexBuffer = 3,  // 按 vertex_format 分段；**不含 UV**
+    kChunkUvBuffer = 4,      // float2 × uv_count，8 B/条；由 DrawItem::uv_offset 索引
+    kChunkIndexBuffer = 5,   // uint16（kIndex32 时 uint32）
+    kChunkDrawItems = 6,     // SpineDrawItem[]
+    kChunkAttachments = 7,   // (皮肤, 槽位) → 附件 id 列表（换装用）
+    kChunkAtlasPages = 8,    // 图集页路径 / 纹理引用
+    kChunkClipData = 9,      // 裁剪多边形（CPU fallback 用）
 };
 
 // ---------------------------------------------------------------------
@@ -146,7 +160,7 @@ enum SpineGpuChunkId : uint32_t
 struct SpineGpuHeader
 {
     uint32_t magic;             // 'ZSPG'
-    uint32_t version;           // 本规格版本，当前 1
+    uint32_t version;           // 本规格版本，当前 3（见 kFormatVersion 的版本史）
     uint32_t spine_runtime;     // 产生它的 spine-cpp 版本（3.8.xx → 30800）
     uint32_t flags;             // SpineGpuFlags
     uint32_t bone_count;
@@ -202,7 +216,7 @@ static_assert(offsetof(SpineGpuChunk, offset) == 0x04, "spec 9: chunk.offset @0x
 static_assert(offsetof(SpineGpuChunk, size) == 0x08, "spec 9: chunk.size @0x08");
 
 // ---------------------------------------------------------------------
-// 附件记录（chunk 6，规格 §9）
+// 附件记录（chunk 7，规格 §9）
 // ---------------------------------------------------------------------
 // 一条 = 一个 (皮肤, 槽位) 下的一个附件。换装查的就是这张表。
 //
@@ -230,39 +244,41 @@ static_assert(offsetof(SpineGpuAttachmentRecord, pad) == 6, "spec 9: record.pad 
 // ---------------------------------------------------------------------
 // 静态顶点缓冲（规格 §3.1）
 // ---------------------------------------------------------------------
+// ⚠️ **UV 不在这里**（v3 起）。顶点只存"几何 + 蒙皮"，
+//    UV 在独立的 chunk 4 里，由 DrawItem::uv_offset 索引。
+//    拆开是为了让**几何相同的附件共用同一段顶点** —— linked mesh 继承父附件的
+//    顶点却用自己的图集 region 算 UV；换装变体也常常只换贴图不改网格。
+//    UV 编在顶点里时这两类都只能整份复制（规格 §14.2）。
+//    代价：shader 里多一次间接读取（先取索引、再取 UV）。
 
-// rigid：bindPos 2 float + uv 2 float。整块由槽位骨骼单矩阵变换。
+// rigid：bindPos 2 float。整块由槽位骨骼单矩阵变换。
 struct SpineRigidVertex
 {
     float bind_pos[2];
-    float uv[2];
 };
 
 static_assert(sizeof(SpineRigidVertex) == SpineGpuConstants::kRigidVertexStride,
-              "spec 3.1: kVtxRigid is 16 B");
+              "spec 3.1: kVtxRigid is 8 B (uv moved out)");
 static_assert(offsetof(SpineRigidVertex, bind_pos) == 0, "spec 3.1: bindPos @0");
-static_assert(offsetof(SpineRigidVertex, uv) == 8, "spec 3.1: uv @8");
-// bindPos 必须在最前：Load2 要求 8 字节对齐，步长 16 时每个顶点都在 16 的倍数上。
+// bindPos 必须在最前：Load2 要求 8 字节对齐，步长 8 时每个顶点都在 8 的倍数上。
 static_assert(SpineGpuConstants::kRigidVertexStride % 8 == 0,
               "rigid stride must keep bindPos 8-byte aligned");
 
-// weighted：每个影响**一份** bindPos（不是每顶点一份）+ uv + uint16 骨骼索引 + unorm8 权重。
+// weighted：每个影响**一份** bindPos（不是每顶点一份）+ uint16 骨骼索引 + unorm8 权重。
 struct SpineWeightedVertex
 {
     float bind_pos[SpineGpuConstants::kMaxInfluences][2];  // @0，每影响一份
-    float uv[2];                                           // @32
-    uint16_t bone_idx[SpineGpuConstants::kMaxInfluences];  // @40
-    uint8_t weight[SpineGpuConstants::kMaxInfluences];     // @48，unorm8
-    uint8_t pad[4];                                        // @52
+    uint16_t bone_idx[SpineGpuConstants::kMaxInfluences];  // @32
+    uint8_t weight[SpineGpuConstants::kMaxInfluences];     // @40，unorm8
+    uint8_t pad[4];                                        // @44
 };
 
 static_assert(sizeof(SpineWeightedVertex) == SpineGpuConstants::kWeightedVertexStride,
-              "spec 3.1: kVtxWeighted4 is 56 B");
+              "spec 3.1: kVtxWeighted4 is 48 B (uv moved out)");
 static_assert(offsetof(SpineWeightedVertex, bind_pos) == 0, "spec 3.1: bindPos @0");
-static_assert(offsetof(SpineWeightedVertex, uv) == 32, "spec 3.1: uv @32");
-static_assert(offsetof(SpineWeightedVertex, bone_idx) == 40, "spec 3.1: boneIdx @40");
-static_assert(offsetof(SpineWeightedVertex, weight) == 48, "spec 3.1: weight @48");
-static_assert(offsetof(SpineWeightedVertex, pad) == 52, "spec 3.1: pad @52");
+static_assert(offsetof(SpineWeightedVertex, bone_idx) == 32, "spec 3.1: boneIdx @32");
+static_assert(offsetof(SpineWeightedVertex, weight) == 40, "spec 3.1: weight @40");
+static_assert(offsetof(SpineWeightedVertex, pad) == 44, "spec 3.1: pad @44");
 static_assert(alignof(SpineWeightedVertex) == 4, "weighted vertex must stay 4-byte aligned");
 static_assert(SpineGpuConstants::kWeightedVertexStride % 8 == 0,
               "weighted stride must be 8-byte aligned (Load2 on bindPos, spec 3.1)");
@@ -279,33 +295,36 @@ struct SpineDrawItem
 {
     uint32_t index_offset;
     uint32_t index_count;
-    SpineVertexFormat vertex_format;   // @8
-    SpineBlendMode blend_mode;         // @9
-    uint16_t atlas_page;               // @10
-    uint16_t slot_index;               // @12
-    uint16_t attachment_id;            // @14
-    SpineDrawItemKind kind;            // @16
-    // @18 —— 这个绘制项属于哪个皮肤。**没有它就没法换装**：
-    // 同一个 (槽位, 附件名) 在不同皮肤下是两份几何、两个绘制项，
-    // 光靠 slot_index + attachment_id 分不出该画哪一份。
-    // 它正好落在原来那 2 B 尾部填充上 ⇒ sizeof 仍是 20，一个字节都没多花。
+    // ⚠️ **UV 条目的下标，不是字节偏移**（chunk 4 里一条 8 B）。
+    // 顶点可以被多个绘制项共用（几何相同），但 UV 各取各的 ⇒ 必须有这一项。
+    uint32_t uv_offset;                // @8
+    SpineVertexFormat vertex_format;   // @12
+    SpineBlendMode blend_mode;         // @13
+    uint16_t atlas_page;               // @14
+    uint16_t slot_index;               // @16
+    uint16_t attachment_id;            // @18
+    // @20 —— 这个绘制项属于哪个皮肤。**没有它就没法换装**：
+    // 同一个 (槽位, 附件名) 在不同皮肤下是两个绘制项，
+    // 光靠 slot_index + attachment_id 分不出该画哪一个。
     uint16_t skin_id;
+    SpineDrawItemKind kind;            // @22
+    uint8_t pad;                       // @23
 };
 
-// 规格 §4 列出的字段共 18 B，结构体自然对齐到 4 ⇒ sizeof 为 20。
-// v1 时尾部 2 B 是纯填充；v2 把它变成 skin_id，**仍是 20 B**。
-// 序列化时两端都必须按 **20 B** 落盘并显式把未用字节写 0，否则 C# 与 C++ 会对不上。
+// v3 起是 **24 B**（20 B + uv_offset）。
+// 序列化时两端都必须按 **24 B** 落盘并显式把未用字节写 0，否则 C# 与 C++ 会对不上。
 static_assert(sizeof(SpineDrawItem) == SpineGpuConstants::kDrawItemSize,
-              "spec 4: draw item serializes as 20 B (skin_id sits on the old tail padding)");
+              "spec 4: draw item serializes as 24 B");
 static_assert(offsetof(SpineDrawItem, index_offset) == 0, "spec 4: index_offset @0");
 static_assert(offsetof(SpineDrawItem, index_count) == 4, "spec 4: index_count @4");
-static_assert(offsetof(SpineDrawItem, vertex_format) == 8, "spec 4: vertex_format @8");
-static_assert(offsetof(SpineDrawItem, blend_mode) == 9, "spec 4: blend_mode @9");
-static_assert(offsetof(SpineDrawItem, atlas_page) == 10, "spec 4: atlas_page @10");
-static_assert(offsetof(SpineDrawItem, slot_index) == 12, "spec 4: slot_index @12");
-static_assert(offsetof(SpineDrawItem, attachment_id) == 14, "spec 4: attachment_id @14");
-static_assert(offsetof(SpineDrawItem, kind) == 16, "spec 4: kind @16");
-static_assert(offsetof(SpineDrawItem, skin_id) == 18, "spec 4: skin_id @18 (old tail padding)");
+static_assert(offsetof(SpineDrawItem, uv_offset) == 8, "spec 4: uv_offset @8");
+static_assert(offsetof(SpineDrawItem, vertex_format) == 12, "spec 4: vertex_format @12");
+static_assert(offsetof(SpineDrawItem, blend_mode) == 13, "spec 4: blend_mode @13");
+static_assert(offsetof(SpineDrawItem, atlas_page) == 14, "spec 4: atlas_page @14");
+static_assert(offsetof(SpineDrawItem, slot_index) == 16, "spec 4: slot_index @16");
+static_assert(offsetof(SpineDrawItem, attachment_id) == 18, "spec 4: attachment_id @18");
+static_assert(offsetof(SpineDrawItem, skin_id) == 20, "spec 4: skin_id @20");
+static_assert(offsetof(SpineDrawItem, kind) == 22, "spec 4: kind @22");
 
 // ---------------------------------------------------------------------
 // 每帧每实例数据（规格 §5）
