@@ -478,7 +478,9 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 
 “选择已有dump并打包”不改注册表、不运行ProcDump，不删除或移动原文件；需先选择对应游戏exe并确认来源和完整内存隐私。验证完整内存/异常线程/PID/模块路径后复制、补采与打包。报告记录 `captureBackend=dump_import` 和 `identity=USER_CONFIRMED_IMPORT_AND_MODULE_PATH`，不伪称属于本次运行。ProcDump 与 WER 共用打包流程，最终包都在本次目录内的 `capture.zip`。WER/import报告schemaVersion=2，记录配置/恢复状态、身份依据、dump时间与异常码；ProcDump原schema不变。
 
-限制：真实WXQ.exe及玩家反作弊环境尚未验证；自定义崩溃处理、自动调试设置或系统策略可能阻止WER，配置成功不保证生成dump，不用于卡死/普通退出。未完成跨用户目标、标准用户UAC拒绝、异机ACL/受控文件夹环境验收；当前只支持安全exe文件名、本地普通目录，文件路径映射不同的历史dump需匹配原游戏路径。工具未数字签名、不自动上传。说明来源：https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps 。
+限制：真实WXQ.exe及玩家反作弊环境尚未验证；自定义崩溃处理、自动调试设置或系统策略可能阻止WER，配置成功不保证生成dump，不用于卡死/普通退出。**跨用户目标、标准用户UAC拒绝、异机ACL/受控文件夹三项仍未验收**（本机单会话且已提权，构造不出来）；当前只支持安全exe文件名、本地普通目录，文件路径映射不同的历史dump需匹配原游戏路径。工具未数字签名、不自动上传。说明来源：https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps 。
+
+验收记录（本机、已提权会话，2026-10）：HKLM 真路径走通了完整一圈——启用 → 真实连续捕获两份 → 恢复，`LocalDumps` 与备份键均无残留；备份键 ACL 实测为 `SYSTEM`/`Administrators` FullControl + `BUILTIN\Users` 只读，与上面的声明一致。手工验收命令 `EnvironmentWerTests.exe --consent-system-test normal <目录>`（未挂进 ctest，需手工跑），**前提是与 `ZEnvironmentCollector.exe` 同目录**：提权重启的是同目录的自己，缺了它根本不会弹 UAC，直接报“同目录缺少 `ZEnvironmentCollector.exe`”——这不等于 UAC 被取消，报后者时才该去批准提示。
 
 ### 高级诊断：一次完整崩溃dump
 

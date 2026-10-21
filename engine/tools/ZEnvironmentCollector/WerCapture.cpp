@@ -183,8 +183,23 @@ CaptureResult CaptureWer(const WerOptions& options, const std::atomic_bool& stop
             progress("请确认UAC：仅启用当前exe的系统崩溃转储", false);
             configurationAttempted = true;
             enableCode = RequestWerEnable(name, incoming, token, options.owner);
-            restoreNeeded = enableCode != ERROR_CANCELLED && enableCode != ERROR_ALREADY_EXISTS;
-            if (enableCode) throw std::runtime_error("WER启用失败或UAC被取消（Win32=" + std::to_string(enableCode) + "）");
+            // Nothing was written when elevation never happened (cancelled) or
+            // could not happen (no helper to elevate), so neither needs a restore
+            // -- and claiming otherwise would warn about a configuration this run
+            // never touched.
+            restoreNeeded = enableCode != ERROR_CANCELLED && enableCode != ERROR_FILE_NOT_FOUND &&
+                enableCode != ERROR_ALREADY_EXISTS;
+            if (enableCode)
+            {
+                // Which failure it was decides what the player can do about it:
+                // "UAC was cancelled" asks them to approve a prompt, which cannot
+                // fix a tool that is missing, and a missing tool is not a UAC
+                // problem at all.
+                const char* cause = enableCode == ERROR_CANCELLED ? "UAC被取消，未修改系统转储设置（Win32="
+                    : enableCode == ERROR_FILE_NOT_FOUND ? "同目录缺少 ZEnvironmentCollector.exe，无法请求提权（Win32="
+                    : "WER启用失败（Win32=";
+                throw std::runtime_error(std::string(cause) + std::to_string(enableCode) + "）");
+            }
             enabled = true; state = "WAITING_FOR_SYSTEM_DUMP"; manifest();
             progress("系统捕获已启用，请正常启动游戏并复现崩溃；最多等待1小时", true);
         }

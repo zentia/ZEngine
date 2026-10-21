@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cwctype>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 
@@ -151,6 +152,12 @@ DWORD Request(const std::wstring& args, HWND owner)
         ~ComScope() { if (SUCCEEDED(status)) CoUninitialize(); }
     } com;
     const auto exe = ToolExecutablePath();
+    // Elevation re-launches this tool from its own directory. When it is not
+    // there, no UAC prompt is ever shown and ShellExecuteEx fails in a way that
+    // looks exactly like the user cancelling -- so without this check the caller
+    // tells the player to approve a prompt that never appeared, for a problem
+    // approving anything cannot fix. The collection stage guards the same thing.
+    if (!std::filesystem::is_regular_file(exe)) return ERROR_FILE_NOT_FOUND;
     SHELLEXECUTEINFOW launch{sizeof(launch)};
     launch.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC; launch.hwnd = owner;
     launch.lpVerb = L"runas"; launch.lpFile = exe.c_str(); launch.lpParameters = args.c_str(); launch.nShow = SW_HIDE;
