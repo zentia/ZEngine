@@ -53,6 +53,54 @@ if(ZENGINE_BUILD_SHADERLAB_SEMANTIC_TEST)
 endif()
 
 # =====================================================================
+# ShaderLab surface-shader desugaring smoke-test
+# ---------------------------------------------------------------------
+# Pins down ParseSurfaceDirective() and GenerateSurfacePasses() -- the
+# `#pragma surface` expansion that turns one Pass-less CGPROGRAM under a
+# SubShader into the ordinary passes every backend already understands.
+# Backend-free like the ones below (ShaderLabSurface.h pulls in nothing but
+# <string>/<vector>), so it configures and runs on every configuration.
+# The end-to-end proof that DXC accepts the generated code lives in
+# ShaderLabUnityCompatTest.
+#
+# Opt in with:
+#   cmake -B build -DZENGINE_BUILD_SHADERLAB_SURFACE_TEST=ON
+#   cmake --build build --target ShaderLabSurfaceTest
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADERLAB_SURFACE_TEST
+       "Build the ShaderLab surface-shader desugaring smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADERLAB_SURFACE_TEST)
+    set(_surface_target ShaderLabSurfaceTest)
+
+    add_executable(${_surface_target}
+        ShaderLabSurfaceTest.cpp
+    )
+
+    set_target_properties(${_surface_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # engine/Source is the root for "Runtime/Function/ShaderLab/..." includes.
+    target_include_directories(${_surface_target} PRIVATE ${ENGINE_ROOT_DIR}/Source)
+
+    # The generator lives in ZRuntime (ShaderLab/*.cpp is globbed into it on
+    # every configuration that compiles the ShaderLab sources).
+    target_link_libraries(${_surface_target} PRIVATE ZRuntime)
+
+    if(MSVC)
+        target_compile_options(${_surface_target} PRIVATE /W4)
+    endif()
+
+    add_test(NAME ${_surface_target} COMMAND ${_surface_target})
+
+    message(STATUS "Configured ShaderLab surface-shader smoke-test: ${_surface_target}")
+endif()
+
+# =====================================================================
 # ShaderLab SPIR-V cache-manifest smoke-test
 # ---------------------------------------------------------------------
 # Pins down the invalidation rule for on-disk SPIR-V blobs. Like the
@@ -269,6 +317,8 @@ target_sources(${_smoke_target} PRIVATE
     unity_compat/Spine-Skeleton-Tint.shader
     unity_compat/Spine-Skeleton-Tint-SemanticFixed.shader
     unity_compat/Spine-Skeleton-Tint-CasterOnly.shader
+    unity_compat/Surface-Standard.shader
+    unity_compat/Surface-Lambert-AddShadow.shader
     unity_compat/diag_props.shader
     unity_compat/diag_props2.shader
     unity_compat/diag_pass_variants.shader
@@ -284,6 +334,8 @@ set_source_files_properties(
     unity_compat/Spine-Skeleton-Tint.shader
     unity_compat/Spine-Skeleton-Tint-SemanticFixed.shader
     unity_compat/Spine-Skeleton-Tint-CasterOnly.shader
+    unity_compat/Surface-Standard.shader
+    unity_compat/Surface-Lambert-AddShadow.shader
     unity_compat/diag_props.shader
     unity_compat/diag_props2.shader
     unity_compat/diag_pass_variants.shader

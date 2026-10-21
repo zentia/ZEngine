@@ -1,5 +1,7 @@
 #include "Runtime/Function/ShaderLab/ShaderLabParser.h"
 
+#include "Runtime/Function/ShaderLab/ShaderLabSurface.h"
+
 #include <algorithm>
 #include <cctype>
 #include <fstream>
@@ -575,6 +577,18 @@ namespace ZEngine::ShaderLab
                 }
                 subshader.passes.push_back(std::move(pass));
             }
+            else if (token.type == TokenType::HLSLProgram || token.type == TokenType::GLSLProgram ||
+                     token.type == TokenType::CGProgram)
+            {
+                // 直接挂在 SubShader 下的程序块 = surface shader。放在
+                // TryParseRenderStateCommand 之前没用（它只认状态命令），
+                // 但必须放在最后那个 "unexpected token" 之前：那条分支会
+                // SkipToNextStatement()，把整段 shader 代码吞掉。
+                if (!ParseSubShaderProgram(subshader, token, subshader_states))
+                {
+                    return false;
+                }
+            }
             else if (TryParseRenderStateCommand(token, subshader_states))
             {
                 // SubShader 级渲染状态，已收集到 subshader_states。
@@ -735,6 +749,67 @@ namespace ZEngine::ShaderLab
                 // '}' 会被上面的循环当成 Pass 的收尾，后面的 CGPROGRAM 全部丢失。
                 SkipToNextStatement();
             }
+        }
+
+        return true;
+    }
+
+    bool ShaderLabParser::ParseSubShaderProgram(ShaderSubShader& subshader,
+                                               const Token& code_token,
+                                               const RenderStates& inherited_states)
+    {
+        const ShaderLanguage language =
+            code_token.type == TokenType::HLSLProgram  ? ShaderLanguage::HLSL
+            : code_token.type == TokenType::GLSLProgram ? ShaderLanguage::GLSL
+                                                        : ShaderLanguage::CG;
+
+        const SurfaceShaderDirective directive = ParseSurfaceDirective(code_token.text);
+
+        if (!directive.valid)
+        {
+            // Unity 只允许 surface shader 把程序块直接挂在 SubShader 下。没有
+            // #pragma surface 就没有可展开的东西，也没有 Pass 可供归属 —— 明确
+            // 说出来，而不是像以前那样被 "unexpected token" 分支静默吞掉。
+            if (!directive.error.empty())
+            {
+                Error("Bad '#pragma surface': " + directive.error);
+                return false;
+            }
+
+            Warning("CGPROGRAM block outside a Pass has no '#pragma surface'; nothing to "
+                    "generate. Wrap it in a Pass, or declare it as a surface shader.");
+            return true;  // 不致命：SubShader 里剩下的内容照常解析
+        }
+
+        const SurfaceGenerateResult generated = GenerateSurfacePasses(code_token.text, directive);
+        if (!generated.ok)
+        {
+            Error("surface shader '" + directive.function + "': " + generated.error);
+            return false;
+        }
+
+        for (const std::string& warning : generated.warnings)
+        {
+            Warning("surface shader '" + directive.function + "': " + warning);
+        }
+
+        for (const SurfacePass& surface_pass : generated.passes)
+        {
+            ShaderPass pass;
+            pass.name = surface_pass.name;
+            pass.light_mode = surface_pass.light_mode;
+            pass.tags["LightMode"] = surface_pass.light_mode;
+            // Surface shader 内部的 Pass 同样继承 SubShader 级渲染状态。
+            pass.render_states = inherited_states;
+
+            ShaderProgram program;
+            program.language = language;
+            program.source_code = surface_pass.source_code;
+            program.vertex_entry = surface_pass.vertex_entry;
+            program.fragment_entry = surface_pass.fragment_entry;
+            pass.programs.push_back(std::move(program));
+
+            subshader.passes.push_back(std::move(pass));
         }
 
         return true;

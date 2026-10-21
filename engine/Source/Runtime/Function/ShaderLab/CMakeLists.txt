@@ -28,6 +28,7 @@ set(SHADER_LAB_VK_FREE_SOURCES
     ShaderLabIncludeProcessor.cpp
     ShaderLabCacheManifest.cpp
     ShaderLabSemanticRewrite.cpp
+    ShaderLabSurface.cpp
 )
 
 # Compiler currently depends on the Vulkan shader_compiler header. We only

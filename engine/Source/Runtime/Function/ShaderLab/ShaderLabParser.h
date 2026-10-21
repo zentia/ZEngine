@@ -57,6 +57,17 @@ namespace ZEngine::ShaderLab
         // 解析 Pass
         bool ParsePass(ShaderPass& pass);
 
+        // 解析直接写在 SubShader 下的 CGPROGRAM/HLSLPROGRAM 块。
+        //
+        // 这在 Unity 里只有一个含义：surface shader。它没有 Pass、没有
+        // #pragma vertex/fragment，Unity 的编译器会把这一个块展开成若干
+        // 个 Pass。ZEngine 在解析期做同样的事（见 ShaderLabSurface.h），
+        // 这样下游（DX12 / Vulkan / 编辑器）看到的仍旧是带完整入口点的
+        // 普通 ShaderPass。
+        bool ParseSubShaderProgram(ShaderSubShader& subshader,
+                                   const Token& code_token,
+                                   const RenderStates& inherited_states);
+
         // 解析渲染状态
         bool ParseRenderState(ShaderPass& pass);
 

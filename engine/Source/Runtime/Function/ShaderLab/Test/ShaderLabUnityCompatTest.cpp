@@ -101,9 +101,10 @@ bool TryCompile(ShaderLabDx12Compiler& compiler,
                 const std::string& label,
                 bool require_success,
                 int& checks,
-                int& failures)
+                int& failures,
+                size_t pass_index = 0)
 {
-    auto result = compiler.Compile(0, 0, program_type, {});
+    auto result = compiler.Compile(0, pass_index, program_type, {});
     const bool ok = result.success;
 
     // Informational checks are reported but never gate the exit code.
@@ -557,6 +558,70 @@ void RequireEveryPass(const std::filesystem::path& shader,
     }
 }
 
+// RunShaderFile() only ever exercises pass 0, because TryCompile() used to
+// hard-code `Compile(0, 0, ...)`. A surface shader declared with `addshadow`
+// produces a SECOND pass, so that one needs its own check -- otherwise the
+// shadow caster could stop compiling and this suite would still be green.
+void RequireSurfacePass(const std::filesystem::path& shader,
+                        const char* title,
+                        size_t pass_index,
+                        const char* expected_light_mode,
+                        int& checks,
+                        int& failures)
+{
+    std::cout << "\n---- " << title << " ----\n";
+
+    ShaderLabDx12Compiler compiler;
+    if (!compiler.LoadFromFile(shader.generic_string()))
+    {
+        ++checks;
+        ++failures;
+        std::cout << "  [FAIL] load/parse: " << compiler.GetParseError() << "\n";
+        return;
+    }
+
+    const auto asset = compiler.GetAsset();
+    if (!asset || asset->subshaders.empty())
+    {
+        ++checks;
+        ++failures;
+        std::cout << "  [FAIL] no subshader parsed\n";
+        return;
+    }
+
+    const ShaderSubShader& subshader = asset->subshaders[0];
+    std::cout << "  passes parsed: " << subshader.passes.size() << "\n";
+    for (size_t i = 0; i < subshader.passes.size(); ++i)
+    {
+        std::cout << "    Pass[" << i << "] name='" << subshader.passes[i].name
+                  << "' light_mode='" << subshader.passes[i].light_mode << "'\n";
+    }
+
+    ++checks;
+    if (pass_index >= subshader.passes.size())
+    {
+        ++failures;
+        std::cout << "  [FAIL] pass " << pass_index << " does not exist\n";
+        return;
+    }
+    std::cout << "  [ OK ] pass " << pass_index << " exists\n";
+
+    ++checks;
+    if (subshader.passes[pass_index].light_mode != expected_light_mode)
+    {
+        ++failures;
+        std::cout << "  [FAIL] expected LightMode '" << expected_light_mode << "', got '"
+                  << subshader.passes[pass_index].light_mode << "'\n";
+    }
+    else
+    {
+        std::cout << "  [ OK ] LightMode == " << expected_light_mode << "\n";
+    }
+
+    TryCompile(compiler, "vertex", "vertex stage", true, checks, failures, pass_index);
+    TryCompile(compiler, "fragment", "fragment stage", true, checks, failures, pass_index);
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -769,6 +834,43 @@ int main(int argc, char** argv)
             std::cout << "  (load failed: " << neg.GetParseError() << ")\n";
         }
     }
+
+    // ------------------------------------------------------------------
+    // 4. Surface shader: Unity's own "Standard Surface Shader" template.
+    //
+    //    This is the shape ZEngine could not parse at all before: a
+    //    CGPROGRAM sitting directly under SubShader, with no Pass and no
+    //    #pragma vertex/fragment. It is also the fixture that needs both
+    //    halves of the UnityCG shim that were missing --
+    //    SurfaceOutputStandard (the surf() output struct) and
+    //    UNITY_INSTANCING_BUFFER_START/END (the template carries an
+    //    instancing block even when nothing is instanced).
+    // ------------------------------------------------------------------
+    RunShaderFile("Surface-Standard.shader",
+                  "[4] Unity Standard Surface Shader template (unmodified)",
+                  true,
+                  checks,
+                  failures);
+
+    // ------------------------------------------------------------------
+    // 5. Same machinery, other branch: Lambert (legacy SurfaceOutput, not
+    //    SurfaceOutputStandard) plus four auto-filled Input members.
+    // ------------------------------------------------------------------
+    RunShaderFile("Surface-Lambert-AddShadow.shader",
+                  "[5] Surface Lambert + addshadow (forward pass)",
+                  true,
+                  checks,
+                  failures);
+
+    // ------------------------------------------------------------------
+    // 5b. `addshadow` must actually produce a second, compilable pass.
+    // ------------------------------------------------------------------
+    RequireSurfacePass(Fixture("Surface-Lambert-AddShadow.shader"),
+                      "[5b] Surface Lambert + addshadow (shadow caster pass)",
+                      1,
+                      "ShadowCaster",
+                      checks,
+                      failures);
 
     std::cout << "\n=== verdict: " << (failures == 0 ? "PASS" : "FAIL")
               << " (" << (checks - failures) << "/" << checks << " checks) ===\n";
