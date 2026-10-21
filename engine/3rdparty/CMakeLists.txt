@@ -556,6 +556,56 @@ if(NOT TARGET xxhash)
 endif()
 
 # =============================================================================
+# zlib -- vendored as a git submodule at engine/3rdparty/zlib (pinned v1.3.2).
+#
+# Why vendored instead of find_package(ZLIB):
+#   zlib.h was simply not findable on several machines (Windows CI agents in
+#   particular). Two consumers need it -- the .zbundle per-entry DEFLATE in
+#   ZRuntime and minizip-ng's .xlsx reader -- and both used to depend on
+#   whatever the host happened to provide. When nothing was installed,
+#   minizip-ng's fallback was
+#       clone_repo(zlib https://github.com/zlib-ng/zlib-ng stable)
+#   i.e. a *configure-time git clone over the network*; if that failed (or the
+#   agent had no GitHub access) the build silently degraded to MZ_ZLIB=OFF and
+#   ZENGINE_BUNDLE_HAS_ZLIB undefined -- "zlib.h not found", or worse, a build
+#   that quietly stopped compressing. Building the submodule here makes every
+#   host compile the same 1.3.2 sources with the same DEFLATE behaviour.
+#
+# Flavour: static only (ZLIB_BUILD_SHARED OFF). We ship no zlib DLL next to
+# ZGame, and both consumers link `zlibstatic`, so exactly ONE zlib is ever in
+# the link graph -- see the minizip-ng block below, which is pointed at this
+# copy instead of cloning its own.
+# =============================================================================
+set(ZENGINE_VENDORED_ZLIB OFF)
+if(NOT EMSCRIPTEN AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/zlib/CMakeLists.txt")
+    set(ZLIB_BUILD_SHARED  OFF CACHE BOOL "" FORCE)
+    set(ZLIB_BUILD_STATIC  ON  CACHE BOOL "" FORCE)
+    set(ZLIB_BUILD_TESTING OFF CACHE BOOL "" FORCE)   # pulls in examples + enable_testing()
+    set(ZLIB_INSTALL       OFF CACHE BOOL "" FORCE)   # never join our install/CPack rules
+
+    add_subdirectory(zlib EXCLUDE_FROM_ALL)
+
+    if(TARGET zlibstatic)
+        set(ZENGINE_VENDORED_ZLIB ON)
+        set_target_properties(zlibstatic PROPERTIES FOLDER ${third_party_folder}/zlib)
+        # Plain C library; don't let a unity build concatenate its TUs.
+        set_target_properties(zlibstatic PROPERTIES UNITY_BUILD OFF)
+        z_set_config_archive_dirs(zlibstatic "${CMAKE_CURRENT_BINARY_DIR}/zlib")
+
+        # Publish this copy to any in-tree find_package(ZLIB): FindZLIB skips
+        # its own search when ZLIB_LIBRARY is already set, and it leaves an
+        # existing ZLIB::ZLIB target alone. Seeding both makes the package
+        # "found" without touching the network or a system install.
+        set(ZLIB_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/zlib" CACHE PATH "" FORCE)
+        set(ZLIB_LIBRARY "zlibstatic" CACHE STRING "" FORCE)
+        if(NOT TARGET ZLIB::ZLIB)
+            add_library(ZLIB::ZLIB ALIAS zlibstatic)
+        endif()
+        message(STATUS "zlib: vendored submodule in use (engine/3rdparty/zlib)")
+    endif()
+endif()
+
+# =============================================================================
 # minizip-ng -- ZIP container reader/writer, used by the editor's XlsxImporter
 # (PR #8) to crack open .xlsx files (which are ZIP archives of XML parts) under
 # <Project>/Data/. Only the editor links it; it is NOT pulled into ZRuntime,
@@ -583,13 +633,17 @@ endif()
 #                        -- save build time; the upstream tests reference
 #                           several files only present in their CI cache.
 #
-# zlib is NOT vendored under engine/3rdparty/. minizip-ng's CMake will
-# `FetchContent_Declare(zlib ...)` from upstream the first time CMake
-# configures (MZ_FETCH_LIBS defaults to ON on WIN32; we force it on for
-# every host for consistency). The fetched copy lives under the build/
-# directory and is gitignored. If a developer is offline on first config
-# they can pre-place a zlib source tree at ${CMAKE_CURRENT_BINARY_DIR}/_deps/
-# or set ZLIB_ROOT to a system install.
+# zlib comes from the vendored submodule (see the zlib block above), not from
+# the host and not from the network: minizip-ng's CMake does
+# `find_package(ZLIB QUIET)` and, when that misses, falls back to
+# `clone_repo(zlib https://github.com/zlib-ng/zlib-ng stable)` -- a
+# configure-time git clone. On a machine with no system zlib *and* no GitHub
+# access that clone is what used to produce "zlib.h not found" / a silently
+# uncompressed build. With the submodule present we pre-seed ZLIB_LIBRARY /
+# ZLIB_INCLUDE_DIR (and the ZLIB::ZLIB alias) so find_package succeeds and
+# MZ_FETCH_LIBS can stay OFF -- no clone, and no second zlib in the graph.
+# MZ_FETCH_LIBS is only left ON as a last resort when the submodule is
+# missing (someone configured without `git submodule update --init`).
 #
 # CRT selection: minizip-ng is a plain C library that respects
 # CMAKE_MSVC_RUNTIME_LIBRARY, so it picks up whatever CRT mode the top-level
@@ -605,6 +659,9 @@ endif()
 if(NOT EMSCRIPTEN)
     set(MZ_COMPAT OFF CACHE BOOL "" FORCE)
     set(MZ_ZLIB ON CACHE BOOL "" FORCE)
+    # Skip minizip-ng's ZLIB-NG CONFIG probe; we always want the classic zlib
+    # ABI (ZLIB::ZLIB -> our vendored zlibstatic).
+    set(MZ_ZLIB_FLAVOR "zlib" CACHE STRING "" FORCE)
     set(MZ_BZIP2 OFF CACHE BOOL "" FORCE)
     set(MZ_LZMA OFF CACHE BOOL "" FORCE)
     set(MZ_PPMD OFF CACHE BOOL "" FORCE)
@@ -615,7 +672,13 @@ if(NOT EMSCRIPTEN)
     set(MZ_OPENSSL OFF CACHE BOOL "" FORCE)
     set(MZ_LIBBSD OFF CACHE BOOL "" FORCE)
     set(MZ_ICONV OFF CACHE BOOL "" FORCE)
-    set(MZ_FETCH_LIBS ON CACHE BOOL "" FORCE)
+    if(ZENGINE_VENDORED_ZLIB)
+        set(MZ_FETCH_LIBS OFF CACHE BOOL "" FORCE)
+    else()
+        # No vendored copy: keep the upstream clone as a last resort so the
+        # .xlsx importer still gets DEFLATE instead of silently losing MZ_ZLIB.
+        set(MZ_FETCH_LIBS ON CACHE BOOL "" FORCE)
+    endif()
     set(MZ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(MZ_BUILD_UNIT_TESTS OFF CACHE BOOL "" FORCE)
     set(MZ_BUILD_FUZZ_TESTS OFF CACHE BOOL "" FORCE)
@@ -638,6 +701,9 @@ if(NOT EMSCRIPTEN)
     # Keep them tucked away in the same VS solution group so they don't
     # pollute the top-level project view.
     foreach(_zlib_target IN ITEMS zlibstatic zlib zlib-ng zlib-ng-static example example64 minigzip64 minigzip)
+        if(ZENGINE_VENDORED_ZLIB AND _zlib_target STREQUAL "zlibstatic")
+            continue()  # ours; already filed under ThirdParty/zlib above
+        endif()
         if(TARGET ${_zlib_target})
             # CMake 4.x rejects set_target_properties on ALIAS targets; resolve
             # the alias to its underlying real target before setting properties

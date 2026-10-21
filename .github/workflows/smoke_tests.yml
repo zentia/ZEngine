@@ -59,6 +59,7 @@ jobs:
           -DZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST=ON
           -DZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST=ON
           -DZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON
+          -DZENGINE_BUILD_PLAYER_SETTINGS_SMOKE_TEST=ON
           -DZENGINE_BUILD_ADDRESSABLES_SMOKE_TEST=ON
           -DZENGINE_BUILD_DDC_SMOKE_TEST=ON
           -DZENGINE_BUILD_AI_SMOKE_TEST=ON
@@ -84,6 +85,7 @@ jobs:
           YamlRoundTripSmokeTest
           ReflectionCodegenSmokeTest
           AssetBundleSmokeTest
+          PlayerSettingsSmokeTest
           AddressablesSmokeTest
           DerivedDataCacheSmokeTest
           AISmokeTest

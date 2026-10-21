@@ -40,3 +40,6 @@
 [submodule "engine/3rdparty/spirv-cross"]
 	path = engine/3rdparty/spirv-cross
 	url = https://github.com/KhronosGroup/SPIRV-Cross.git
+[submodule "engine/3rdparty/zlib"]
+	path = engine/3rdparty/zlib
+	url = https://github.com/madler/zlib.git

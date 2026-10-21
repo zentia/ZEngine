@@ -392,6 +392,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/AssetBundle/Test/AssetBundleSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/AssetBundle/Test/AssetBundleSmokeTest.cpp")
+# PlayerSettings smoke-test main. Same carve-out rationale: it owns main() and
+# must not be whole-archived into ZRuntime. Built only when
+# ZENGINE_BUILD_PLAYER_SETTINGS_SMOKE_TEST=ON.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/PlayerSettings/Test/PlayerSettingsSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/PlayerSettings/Test/PlayerSettingsSmokeTest.cpp")
 # PR-SK1: skeletal skinning smoke-test main. Same carve-out rationale as every
 # entry above: it owns main() and must not be whole-archived into ZRuntime.
 # Built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON (see
@@ -567,28 +574,33 @@ add_library(ZRuntime::Shared ALIAS ${SHARED_TARGET_NAME})
 # time), but a player still needs an INFLATE side, or a compressed bundle is
 # unreadable.
 #
-# zlib is already in the build graph -- minizip-ng pulls it in for the editor's
-# XlsxImporter -- so nothing is fetched here. When the target is absent
-# (Emscripten, a stripped 3rdparty set) we simply build without it: the writer
-# then refuses to emit a compressed entry and the reader rejects one with a
-# clear message, instead of handing back deflate bytes that get parsed as a
-# .zasset.
+# zlib is a vendored submodule (engine/3rdparty/zlib, built by
+# engine/3rdparty/CMakeLists.txt as `zlibstatic`), so zlib.h is available on
+# every host -- no system package, no configure-time git clone. Real
+# (non-imported) targets are global, so `zlibstatic` is visible here even
+# though it was declared under engine/3rdparty. Linking the same target
+# minizip-ng uses guarantees there is only ONE zlib in the graph.
+#
+# When it is absent (Emscripten, a 3rdparty tree without the submodule) we
+# fall back to a system zlib, and if that misses too we build without it: the
+# writer then refuses to emit a compressed entry and the reader rejects one
+# with a clear message, instead of handing back deflate bytes that get parsed
+# as a .zasset.
 set(_zengine_zlib_target "")
 if(NOT EMSCRIPTEN)
-    # minizip-ng found zlib for itself ("Using ZLIB 1.2.12" at configure time)
-    # but its imported targets are directory-scoped, so they are not visible
-    # here. Resolve it again in this scope -- on a system that has zlib this
-    # only re-reads the same result.
-    find_package(ZLIB QUIET)
-    # minizip-ng's CMake names the fetched target `zlibstatic` and a system
-    # zlib `ZLIB::ZLIB`; accept either so Windows (fetch) and macOS/Linux
-    # (system) both work.
-    if(TARGET ZLIB::ZLIB)
-        set(_zengine_zlib_target ZLIB::ZLIB)
-    elseif(TARGET zlibstatic)
+    if(TARGET zlibstatic)
+        # Vendored submodule -- the normal path.
         set(_zengine_zlib_target zlibstatic)
-    elseif(TARGET zlib)
-        set(_zengine_zlib_target zlib)
+    else()
+        # Imported targets are directory-scoped: minizip-ng may have found zlib
+        # for itself, but ZLIB::ZLIB is not visible from this scope, so resolve
+        # it again here.
+        find_package(ZLIB QUIET)
+        if(TARGET ZLIB::ZLIB)
+            set(_zengine_zlib_target ZLIB::ZLIB)
+        elseif(TARGET zlib)
+            set(_zengine_zlib_target zlib)
+        endif()
     endif()
 endif()
 
@@ -1324,6 +1336,11 @@ add_subdirectory(Function/Audio/Test)
 # above and built only when ZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON. Pure file
 # + memory work, so it runs headless on every host.
 add_subdirectory(AssetBundle/Test)
+
+# PlayerSettings smoke test. Own main(); carved out of the ZRuntime glob above
+# and built only when ZENGINE_BUILD_PLAYER_SETTINGS_SMOKE_TEST=ON. Pure file
+# work, so it runs headless on every host.
+add_subdirectory(Function/PlayerSettings/Test)
 
 # Skeletal skinning smoke test (PR-SK1). Own main(); carved out of the ZRuntime
 # glob above and built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON. Pure
