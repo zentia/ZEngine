@@ -44,6 +44,15 @@ struct SystemInfo
     std::uint64_t uptimeMilliseconds = 0;
 };
 
+// One output on an adapter, i.e. one port something could be plugged into.
+// `attachedToDesktop` is the part that matters: an output that exists but is not
+// attached is not the one carrying the picture.
+struct GpuOutputInfo
+{
+    std::string deviceName;
+    bool attachedToDesktop = false;
+};
+
 struct GpuAdapterInfo
 {
     std::string name;
@@ -58,6 +67,12 @@ struct GpuAdapterInfo
     std::uint64_t dedicatedSystemMemoryBytes = 0;
     std::uint64_t sharedSystemMemoryBytes = 0;
     unsigned int outputCount = 0;
+    unsigned int attachedOutputCount = 0;
+    std::vector<GpuOutputInfo> outputs;
+    // False when EnumOutputs failed part-way. Without this, "no outputs" and
+    // "could not ask" look the same, and the latter must never be reported as
+    // the former -- that is the same trap as an empty adapter list.
+    bool outputsEnumerated = false;
     bool softwareAdapter = false;
 };
 

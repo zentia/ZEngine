@@ -61,6 +61,27 @@ preflight::PreflightInputs HealthyInputs()
     return inputs;
 }
 
+// A desktop whose panel is wired to the integrated part while a discrete GPU
+// sits there unused: the "cable in the motherboard port" build. Every variant
+// below starts here and changes exactly one thing.
+preflight::PreflightInputs DisplayOnIntegratedInputs()
+{
+    auto inputs = HealthyInputs();
+    inputs.gpus.front().outputsEnumerated = true;
+    inputs.gpus.front().attachedOutputCount = 0;
+    GpuAdapterInfo integrated;
+    integrated.name = "Test Integrated GPU";
+    integrated.vendorId = inputs.gpus.front().vendorId;
+    integrated.driverVersion = inputs.gpus.front().driverVersion;
+    integrated.dedicatedVideoMemoryBytes = 512ull << 20;
+    integrated.outputsEnumerated = true;
+    integrated.attachedOutputCount = 1;
+    inputs.gpus.push_back(integrated);
+    inputs.chassisType = 3; // SMBIOS: Desktop
+    inputs.chassisKnown = true;
+    return inputs;
+}
+
 preflight::PreflightResult Evaluate(const preflight::PreflightInputs& inputs, bool probesComplete = true)
 {
     return preflight::EvaluatePreflight(inputs, preflight::DefaultPreflightRequirements(), probesComplete);
@@ -153,6 +174,45 @@ int main()
             Check(HasFinding(result, "GPU_INTEGRATED_SELECTED"), "the integrated pick is named");
         }
         {
+            // The discrete part is installed but nothing is plugged into it.
+            auto inputs = DisplayOnIntegratedInputs();
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise, "a mis-cabled desktop advises");
+            Check(HasFinding(result, "MONITOR_ON_INTEGRATED_GPU"), "the mis-cabled finding is named");
+        }
+        {
+            // Exactly the same GPU layout on a laptop is working as designed:
+            // switchable graphics drive the panel through the integrated part,
+            // so the discrete part legitimately reports no attached output.
+            auto inputs = DisplayOnIntegratedInputs();
+            inputs.chassisType = 9; // SMBIOS: Laptop
+            const auto result = Evaluate(inputs);
+            Check(!HasFinding(result, "MONITOR_ON_INTEGRATED_GPU"), "a laptop in the same state is not reported");
+        }
+        {
+            // No usable enclosure type (VM, odd OEM table): guessing would make
+            // this fire on machines where it is not true.
+            auto inputs = DisplayOnIntegratedInputs();
+            inputs.chassisKnown = false;
+            const auto result = Evaluate(inputs);
+            Check(!HasFinding(result, "MONITOR_ON_INTEGRATED_GPU"), "an unknown chassis says nothing about the monitor");
+        }
+        {
+            // Unknown is not absent. "Could not enumerate the discrete card's
+            // outputs" is not "the discrete card has no monitor".
+            auto inputs = DisplayOnIntegratedInputs();
+            inputs.gpus.front().outputsEnumerated = false;
+            const auto result = Evaluate(inputs);
+            Check(!HasFinding(result, "MONITOR_ON_INTEGRATED_GPU"), "a failed output enumeration is not a mis-cabled verdict");
+        }
+        {
+            // The cable in the right place.
+            auto inputs = DisplayOnIntegratedInputs();
+            inputs.gpus.front().attachedOutputCount = 1;
+            const auto result = Evaluate(inputs);
+            Check(!HasFinding(result, "MONITOR_ON_INTEGRATED_GPU"), "a display on the discrete GPU is not reported");
+        }
+        {
             auto inputs = HealthyInputs();
             inputs.gpus.front().softwareAdapter = true;
             const auto result = Evaluate(inputs);
@@ -213,6 +273,8 @@ int main()
             Check(json.find("\"userMessage\": {\"code\": ") != std::string::npos, "userMessage key");
             Check(json.find("\"actions\": [") != std::string::npos, "actions key");
             Check(json.find("\"mode\": \"preflight\"") != std::string::npos, "mode discriminates the two files");
+            Check(json.find("\"monitorAttachment\": {") != std::string::npos, "monitorAttachment is reported");
+            Check(json.find("\"attachedOutputCount\": ") != std::string::npos, "each adapter reports its attached outputs");
             Check(json.find("\"code\": \"FREE_DISK_SPACE\", \"zh\": ") != std::string::npos, "actions carry Chinese text");
             Check(json.find('\t') == std::string::npos, "no raw control characters in the JSON");
         }

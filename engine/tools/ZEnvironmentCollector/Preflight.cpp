@@ -37,6 +37,83 @@ constexpr std::uint64_t LowFreeSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
 constexpr std::uint64_t IntegratedVideoMemoryCeiling = 1ull * 1024ull * 1024ull * 1024ull;
 constexpr std::uint64_t DiscreteVideoMemoryFloor = 2ull * 1024ull * 1024ull * 1024ull;
 
+// SMBIOS enclosure types that mean "a box with a monitor someone can plug into
+// the wrong port". Laptops are absent on purpose -- see the chassis note in
+// Preflight.h: on switchable graphics a laptop looks exactly like a mis-cabled
+// desktop, and there the state is correct.
+bool IsDesktopChassis(unsigned int chassisType)
+{
+    switch (chassisType & 0x7F)
+    {
+    case 3:  // Desktop
+    case 4:  // Low Profile Desktop
+    case 5:  // Pizza Box
+    case 6:  // Mini Tower
+    case 7:  // Tower
+    case 13: // All In One
+    case 15: // Space-saving
+    case 16: // Lunch Box
+    case 17: // Main Server Chassis
+    case 24: // Sealed-case PC
+    case 35: // Stick PC
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Which GPU the picture is actually coming out of. Nothing here infers from the
+// adapter name: it is EnumOutputs plus AttachedToDesktop, which is the only
+// honest answer Windows gives.
+struct MonitorAttachment
+{
+    bool known = false;               // every candidate adapter enumerated cleanly
+    bool discretePresent = false;
+    bool discreteHasAttachedOutput = false;
+    const GpuAdapterInfo* discrete = nullptr;
+    const GpuAdapterInfo* displayAdapter = nullptr;  // integrated part carrying the display
+};
+
+MonitorAttachment InspectMonitorAttachment(const PreflightInputs& inputs)
+{
+    MonitorAttachment attachment;
+    bool anyUnenumerated = false;
+    bool sawCandidate = false;
+
+    for (const auto& gpu : inputs.gpus)
+    {
+        if (gpu.softwareAdapter)
+        {
+            continue;
+        }
+        if (!gpu.outputsEnumerated)
+        {
+            // An adapter we could not ask is not an adapter with no monitor.
+            anyUnenumerated = true;
+            continue;
+        }
+        sawCandidate = true;
+        if (gpu.dedicatedVideoMemoryBytes >= DiscreteVideoMemoryFloor)
+        {
+            attachment.discrete = &gpu;
+            attachment.discretePresent = true;
+            if (gpu.attachedOutputCount != 0)
+            {
+                attachment.discreteHasAttachedOutput = true;
+            }
+        }
+        else if (gpu.dedicatedVideoMemoryBytes < IntegratedVideoMemoryCeiling &&
+                 gpu.attachedOutputCount != 0 &&
+                 attachment.displayAdapter == nullptr)
+        {
+            attachment.displayAdapter = &gpu;
+        }
+    }
+
+    attachment.known = sawCandidate && !anyUnenumerated;
+    return attachment;
+}
+
 std::string JsonString(const std::string& value)
 {
     return "\"" + EscapeJson(value) + "\"";
@@ -186,6 +263,17 @@ PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirector
         inputs.gpuSelectionKnown = false;
     }
 
+    // Firmware table read only: no registry, no microcode, no SMBIOS memory
+    // walk. One syscall-sized copy out of the firmware table.
+    try
+    {
+        inputs.chassisType = ReadSmbiosChassisType(inputs.chassisKnown);
+    }
+    catch (const std::exception&)
+    {
+        inputs.chassisKnown = false;
+    }
+
     CollectGameVolume(inputs, gameDirectory);
     inputs.insiderPreview = ReadInsiderPreview(inputs.insiderPreviewKnown);
     return inputs;
@@ -206,6 +294,11 @@ diagnosis::UserAction ActionFor(const std::string& findingCode)
     if (findingCode == "GPU_SOFTWARE_RENDERER")
     {
         return {"INSTALL_GPU_DRIVER", "安装显卡厂商官方驱动后重启电脑。"};
+    }
+    if (findingCode == "MONITOR_ON_INTEGRATED_GPU")
+    {
+        return {"PLUG_MONITOR_INTO_DISCRETE_GPU",
+                "把显示器的视频线接到独立显卡的输出口上，不要接主板上的接口。"};
     }
     if (findingCode == "STORAGE_LOW_FREE_SPACE")
     {
@@ -341,6 +434,24 @@ void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inpu
                 picked.name + " with " +
                 std::to_string(picked.dedicatedVideoMemoryBytes / (1024 * 1024)) + " MB, " +
                 "this machine has " + std::to_string(best / (1024 * 1024)) + " MB available"});
+        }
+    }
+
+    // The discrete GPU is installed but the picture is coming out of the
+    // integrated one. Gated on a desktop chassis because a laptop in this exact
+    // state is working as designed, and gated on `known` because an adapter
+    // whose outputs could not be enumerated is not evidence of anything.
+    if (inputs.gpusKnown && inputs.chassisKnown && IsDesktopChassis(inputs.chassisType))
+    {
+        const auto attachment = InspectMonitorAttachment(inputs);
+        if (attachment.known && attachment.discretePresent && !attachment.discreteHasAttachedOutput &&
+            attachment.displayAdapter != nullptr)
+        {
+            result.findings.push_back({"MONITOR_ON_INTEGRATED_GPU", "gpu",
+                "显示器接在集成显卡上，独立显卡没有接显示器，游戏可能跑不到独立显卡的性能。",
+                "display on " + attachment.displayAdapter->name + " (" +
+                std::to_string(attachment.displayAdapter->attachedOutputCount) + " attached), " +
+                attachment.discrete->name + " has no attached output"});
         }
     }
 
@@ -582,9 +693,23 @@ std::string BuildPreflightJson(
                << ", \"driverVersion\": " << JsonString(gpu.driverVersion)
                << ", \"driverDate\": " << JsonString(gpu.driverDate)
                << ", \"dedicatedVideoMemoryBytes\": " << gpu.dedicatedVideoMemoryBytes
+               << ", \"outputCount\": " << gpu.outputCount
+               << ", \"attachedOutputCount\": " << gpu.attachedOutputCount
                << ", \"softwareAdapter\": " << BoolText(gpu.softwareAdapter) << "}";
     }
     stream << (inputs.gpus.empty() ? "" : "\n    ") << "],\n";
+
+    const auto attachment = InspectMonitorAttachment(inputs);
+    stream << "    \"monitorAttachment\": {\"known\": " << BoolText(attachment.known)
+           << ", \"discretePresent\": " << BoolText(attachment.discretePresent)
+           << ", \"discreteHasAttachedOutput\": " << BoolText(attachment.discreteHasAttachedOutput)
+           << ", \"displayAdapter\": " << JsonString(attachment.displayAdapter != nullptr ? attachment.displayAdapter->name : "")
+           << ", \"discreteAdapter\": " << JsonString(attachment.discrete != nullptr ? attachment.discrete->name : "")
+           << "},\n";
+
+    stream << "    \"chassis\": {\"known\": " << BoolText(inputs.chassisKnown)
+           << ", \"smbiosType\": " << inputs.chassisType
+           << ", \"desktop\": " << BoolText(inputs.chassisKnown && IsDesktopChassis(inputs.chassisType)) << "},\n";
 
     stream << "    \"gpuPreference\": {\"known\": " << BoolText(inputs.gpuSelectionKnown)
            << ", \"picked\": " << BoolText(inputs.gpuSelection.gpuPreferencePicked)

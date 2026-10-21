@@ -10,6 +10,7 @@
 #include <array>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <cwchar>
 #include <cwctype>
 #include <iomanip>
@@ -314,12 +315,16 @@ void CollectGraphicsInformation(EnvironmentSnapshot& snapshot)
             gpu.driverDate = driver->date;
         }
 
+        bool outputsClean = false;
         for (UINT outputIndex = 0;; ++outputIndex)
         {
             ComPtr<IDXGIOutput> output;
             const HRESULT outputResult = adapter->EnumOutputs(outputIndex, output.Put());
             if (outputResult == DXGI_ERROR_NOT_FOUND)
             {
+                // Reaching the end of the list is the only way to know the
+                // enumeration actually worked.
+                outputsClean = true;
                 break;
             }
             if (FAILED(outputResult))
@@ -327,7 +332,21 @@ void CollectGraphicsInformation(EnvironmentSnapshot& snapshot)
                 continue;
             }
             ++gpu.outputCount;
+
+            GpuOutputInfo info;
+            DXGI_OUTPUT_DESC outputDescription{};
+            if (SUCCEEDED(output->GetDesc(&outputDescription)))
+            {
+                info.deviceName = WideToUtf8(outputDescription.DeviceName);
+                info.attachedToDesktop = outputDescription.AttachedToDesktop != FALSE;
+                if (info.attachedToDesktop)
+                {
+                    ++gpu.attachedOutputCount;
+                }
+            }
+            gpu.outputs.push_back(std::move(info));
         }
+        gpu.outputsEnumerated = outputsClean;
         snapshot.gpuAdapters.push_back(std::move(gpu));
     }
 
@@ -367,6 +386,57 @@ void CollectGraphicsInformation(EnvironmentSnapshot& snapshot)
         }
         snapshot.displays.push_back(std::move(info));
     }
+}
+
+unsigned int ReadSmbiosChassisType(bool& known)
+{
+    known = false;
+    const DWORD signature = ('R' << 24) | ('S' << 16) | ('M' << 8) | 'B';
+    const DWORD needed = ::GetSystemFirmwareTable(signature, 0, nullptr, 0);
+    if (needed < 8 || needed > 16 * 1024 * 1024)
+    {
+        return 0;
+    }
+    std::vector<BYTE> data(static_cast<std::size_t>(needed));
+    if (::GetSystemFirmwareTable(signature, 0, data.data(), needed) != needed)
+    {
+        return 0;
+    }
+    DWORD tableLength = 0;
+    std::memcpy(&tableLength, data.data() + 4, 4);
+    const std::size_t end = 8 + static_cast<std::size_t>(tableLength);
+    if (tableLength < 4 || end > data.size())
+    {
+        return 0;
+    }
+
+    std::size_t offset = 8;
+    while (offset + 4 <= end)
+    {
+        const BYTE type = data[offset];
+        const BYTE size = data[offset + 1];
+        if (size < 4 || offset + size > end)
+        {
+            break;
+        }
+        if (type == 3 && size >= 6)
+        {
+            // SMBIOS 2.1+: chassis type at 0x05; bit 7 is the "locked" flag.
+            known = true;
+            return data[offset + 5] & 0x7F;
+        }
+        std::size_t next = offset + size;
+        while (next + 1 < end && (data[next] != 0 || data[next + 1] != 0))
+        {
+            ++next;
+        }
+        offset = next + 2;
+        if (type == 127)
+        {
+            break;
+        }
+    }
+    return 0;
 }
 
 void CollectStorageInformation(EnvironmentSnapshot& snapshot)

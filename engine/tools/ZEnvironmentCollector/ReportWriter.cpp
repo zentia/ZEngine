@@ -115,6 +115,7 @@ std::string BuildTextReport(
                << "      Shared system memory: "
                << static_cast<double>(gpu.sharedSystemMemoryBytes) / BytesPerGiB << " GiB\n"
                << "      Outputs: " << gpu.outputCount
+               << " (" << gpu.attachedOutputCount << " attached to desktop)"
                << ", software adapter: " << BoolText(gpu.softwareAdapter) << '\n';
     }
 
@@ -382,6 +383,7 @@ std::string BuildJsonReport(
                << "      \"dedicatedSystemMemoryBytes\": " << gpu.dedicatedSystemMemoryBytes << ",\n"
                << "      \"sharedSystemMemoryBytes\": " << gpu.sharedSystemMemoryBytes << ",\n"
                << "      \"outputCount\": " << gpu.outputCount << ",\n"
+               << "      \"attachedOutputCount\": " << gpu.attachedOutputCount << ",\n"
                << "      \"softwareAdapter\": " << BoolText(gpu.softwareAdapter) << "\n"
                << "    }" << (index + 1 == snapshot.gpuAdapters.size() ? "" : ",") << '\n';
     }

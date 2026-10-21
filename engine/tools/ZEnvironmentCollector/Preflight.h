@@ -91,6 +91,14 @@ struct PreflightInputs
     std::uint64_t gameVolumeFreeBytes = 0;
     bool gameVolumeKnown = false;
 
+    // SMBIOS system-enclosure type. It is here for one rule only: telling a
+    // desktop apart from a laptop. On a switchable-graphics laptop the panel is
+    // driven by the integrated part by design, so "the monitor is on the
+    // integrated GPU" is the normal state there and saying otherwise would fire
+    // on most gaming laptops sold.
+    unsigned int chassisType = 0;
+    bool chassisKnown = false;
+
     bool insiderPreview = false;
     bool insiderPreviewKnown = false;
 };
