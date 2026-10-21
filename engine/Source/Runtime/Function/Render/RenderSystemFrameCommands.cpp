@@ -165,6 +165,38 @@ struct RenderLumenCmd final : IRenderCommand
     const char* GetDebugName() const override { return "RenderLumen"; }
 };
 
+// Nanite 也是纯 CPU 的（集群构建 + 逐簇裁剪 + 批次组装），所以它和 Lumen 站在帧里同一
+// 个位置：读场景实体，必须在可见性更新之后；产出的批次要在 PreparePassData 之前写好。
+struct RenderNaniteCmd final : IRenderCommand
+{
+    RenderSystem* system {nullptr};
+    float delta_time {0.0f};
+
+    RenderNaniteCmd(RenderSystem* in_system, float in_delta_time)
+        : system(in_system), delta_time(in_delta_time)
+    {
+    }
+
+    void Execute() override
+    {
+        if (system == nullptr || system->m_RenderPipeline == nullptr)
+        {
+            return;
+        }
+
+        auto render_scene = system->m_RenderScene;
+        auto camera = system->GetRenderCamera(ViewportType::game);
+        if (render_scene == nullptr || camera == nullptr)
+        {
+            return;
+        }
+
+        system->m_RenderPipeline->UpdateNanite(render_scene, camera, delta_time);
+    }
+
+    const char* GetDebugName() const override { return "RenderNanite"; }
+};
+
 struct RenderPreparePassDataCmd final : IRenderCommand
 {
     RenderSystem* system {nullptr};
@@ -279,6 +311,7 @@ void BuildRenderSystemFrameCommands(RenderSystem& render_system, float delta_tim
         ENQUEUE_RENDER_COMMAND(RenderProcessSwapDataCmd, &render_system);
         ENQUEUE_RENDER_COMMAND(RenderUpdateSceneCmd, &render_system, delta_time);
         ENQUEUE_RENDER_COMMAND(RenderLumenCmd, &render_system, delta_time);
+        ENQUEUE_RENDER_COMMAND(RenderNaniteCmd, &render_system, delta_time);
         ENQUEUE_RENDER_COMMAND(RenderPreparePassDataCmd, &render_system);
         ENQUEUE_RENDER_COMMAND(RenderBuildDrawListsCmd, &render_system, frame_draw_list_slot);
         ENQUEUE_RENDER_COMMAND(RenderDispatchRHICommandsCmd, &render_system, frame_draw_list_slot);

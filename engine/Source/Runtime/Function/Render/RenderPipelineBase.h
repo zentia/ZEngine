@@ -64,6 +64,19 @@ public:
                              std::shared_ptr<RenderCamera> camera,
                              float delta_time);
 
+    // 每帧推进 Nanite（场景 → 集群实例 → 逐簇裁剪 → 渲染批次）。
+    //
+    // 和 Lumen 一样是**纯 CPU** 的：Nanite 今天没有 shader、也没有间接绘制，通道的
+    // 终点只是"产出渲染批次"。放在帧里和 Lumen 同一个位置：读场景实体，所以必须在
+    // 可见性更新之后；要早于 PreparePassData，因为后者上传本帧的 GPU 资源。
+    //
+    // `NaniteRenderPass::Render()` 以前**一个调用者都没有**（全代码库没有任何地方
+    // 构造过 NaniteRenderPass，也没有地方填 NaniteRenderer 的实例），所以集群构建、
+    // 裁剪、批次组装从来没在真实帧循环里跑过。没有 Nanite pass 时这里是 no-op。
+    virtual void UpdateNanite(std::shared_ptr<RenderScene> render_scene,
+                              std::shared_ptr<RenderCamera> camera,
+                              float delta_time);
+
     virtual void BuildDrawLists(std::shared_ptr<RenderResourceBase> render_resource, RHIDrawList& out_draw_list);
     virtual void SubmitDrawLists(RHI* rhi,
                                  std::shared_ptr<RenderResourceBase> render_resource,
@@ -147,6 +160,7 @@ protected:
     std::shared_ptr<RenderPassBase> m_PointLightShadowPass;
     std::shared_ptr<RenderPassBase> m_MainCameraPass;
     std::shared_ptr<RenderPassBase> m_LumenPass;
+    std::shared_ptr<RenderPassBase> m_NanitePass;
     std::shared_ptr<RenderPassBase> m_ColorGradingPass;
     std::shared_ptr<RenderPassBase> m_FxaaPass;
     std::shared_ptr<RenderPassBase> m_ToneMappingPass;

@@ -450,7 +450,9 @@ bool NaniteClusterManager::RegisterMeshResource(uint64_t mesh_id, const NaniteMe
 {
     MeshResourceEntry entry;
     entry.mesh_resource = mesh_resource;
-    entry.cluster_loaded_flags.resize(mesh_resource.clusters.size(), false);
+    // 没有流式加载（UpdateStreaming 是 TODO），一个网格注册进来就是整个驻留在内存里。
+    // 以前这里一律填 false ⇒ IsClusterLoaded 永远返回 false，好像什么都没加载过。
+    entry.cluster_loaded_flags.resize(mesh_resource.clusters.size(), true);
     entry.visible_clusters.clear();
 
     m_MeshResources[mesh_id] = entry;
@@ -477,6 +479,35 @@ const std::vector<uint32_t>& NaniteClusterManager::GetVisibleClusters(uint64_t m
     }
     static std::vector<uint32_t> empty;
     return empty;
+}
+
+void NaniteClusterManager::SetVisibleClusters(uint64_t mesh_id, std::vector<uint32_t> visible_clusters)
+{
+    auto it = m_MeshResources.find(mesh_id);
+    if (it != m_MeshResources.end())
+    {
+        it->second.visible_clusters = std::move(visible_clusters);
+    }
+}
+
+const NaniteMeshResource* NaniteClusterManager::GetMeshResource(uint64_t mesh_id) const
+{
+    auto it = m_MeshResources.find(mesh_id);
+    if (it != m_MeshResources.end())
+    {
+        return &it->second.mesh_resource;
+    }
+    return nullptr;
+}
+
+uint32_t NaniteClusterManager::GetClusterCount(uint64_t mesh_id) const
+{
+    auto it = m_MeshResources.find(mesh_id);
+    if (it != m_MeshResources.end())
+    {
+        return static_cast<uint32_t>(it->second.mesh_resource.clusters.size());
+    }
+    return 0;
 }
 
 bool NaniteClusterManager::IsClusterLoaded(uint64_t mesh_id, uint32_t cluster_index) const

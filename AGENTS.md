@@ -2194,9 +2194,11 @@ downstream reads it.
 
 ### 2.41 Nanite：集群构建器、层次树，以及"没有简化器"意味着什么
 
-`engine/Source/Runtime/Function/Render/Nanite/` —— **全仓库零外部调用者**，整个子目录
-（构建器 / 裁剪 / 渲染器 / `NaniteSystem`）都没被任何地方调用过，所以下面的 bug 从没被
-执行过。修的时候记住：**"看着像真的"和"跑过"是两回事**。
+`engine/Source/Runtime/Function/Render/Nanite/` —— 阶段 30/31 之前**全仓库零外部调用者**，
+整个子目录（构建器 / 裁剪 / 渲染器 / `NaniteSystem`）都没被任何地方调用过，所以下面的 bug
+从没被执行过。修的时候记住：**"看着像真的"和"跑过"是两回事**。阶段 32 起 Nanite 有了一条
+真实的帧内路径（`RenderNaniteCmd` → `RenderPipelineBase::UpdateNanite` →
+`NaniteRenderPass::Render`），但它**仍然一行都不跑在 GPU 上**。
 
 - **构建器以前产出为空，不是"粗一档"而是零字节**：`BuildClustersFromMesh` 在开头
   `clear()` 掉 `vertex_data`/`index_data` 之后**再也没人写过** ⇒ `NaniteMeshResource`
@@ -2223,11 +2225,47 @@ downstream reads it.
 - **Nanite 从不被剥出 ZRuntime**（不像 Lumen 那两处 `list(FILTER ... EXCLUDE)`），所以
   `Nanite/Test/` 的冒烟测试在 `smoke_tests.yml` 里是**开着**的，`ZENGINE_USE_VULKAN=OFF`
   也连得上。
-- 下一个缺口（还没做）：`NaniteCullingSystem::FrustumCull` 恒返回 true（TODO）、
-  实例包围盒是个默认构造的空盒、`ExtractFrustumPlanes`/`AabbFrustumTest` 是 private 且
-  零调用者、`SelectLOD` 方向反了且用了成员 `m_Config` 而不是参数 `config`、
-  `NaniteRenderer::BuildRenderBatches` 产出 `cluster_count = 0` 的空批次、
-  `NaniteRenderPass::Draw()` 是空 TODO。
+- **裁剪返回值的约定统一为"true = 被剔除"**。以前 `FrustumCull` 返回"可见"、
+  同文件的 `OcclusionCull` 返回"被剔除"，两个相反约定只能靠试调用点才能发现。
+- **`ExtractFrustumPlanes` 必须用行主序**：本仓库 `Matrix4x4` 是 `m_Mat[row][col]`、
+  `clip = M * v`（`operator*(Vector4)`：clip.x = 第 0 行点乘 v，clip.w = 第 3 行点乘 v）。
+  所以六个平面是 **row3 ± row_i**（Left/Right=±row0，Bottom/Top=±row1，Near/Far=±row2）。
+  抄 Ogre 那套（把 `m[i][j]` 当 `m[col][row]`、向量写左边）会得到六个完全不相干的平面。
+- **`NaniteInstance::local_bounds` 是模型空间盒**，由 `NaniteRenderer::RegisterInstance`
+  从网格资源补。包围盒**无效时不剔除**（不知道边界就裁掉，比不裁更糟）—— 所以"全都
+  没被裁"是注册路径出问题的症状，不是裁剪失效。
+- **`SelectLOD` 的方向**：屏幕误差（error_metric/距离）**小 ⇒ 可以粗一档（往 0/根走）**，
+  **大 ⇒ 需要更细（往叶子走）**。距离为 0 直接返回自己的层级（除零会得到 inf）。
+- **没有网格简化器 ⇒ 没有"粗一档但三角形更少"**。所以：内部节点永不提交（几何区间只是
+  子树聚合），唯一站得住的 LOD 是**丢掉投影误差低于预算的簇**（留下的洞是亚像素的）。
+  别指望 LOD 减少远处网格的三角形数 —— 那需要简化器。
+- `PrepareRenderData` 与 `BuildRenderBatches` 以前往**同一个** vector 里写、后者一进来就
+  `clear()` ⇒ 前者的产物每帧被抹掉。批次不产出空批次（`cluster_count == 0` 曾经是唯一产出）。
+- **接进帧循环的三件套**（阶段 32，照 Lumen 的先例）：`RenderPipelineBase::UpdateNanite`
+  虚函数 + `m_NanitePass` 槽位（槽位静态类型是 `RenderPassBase`，用 `dynamic_cast` 取
+  `NaniteRenderPass*`，基类不该知道 Nanite）；`RenderSystemFrameCommands.cpp` 里的
+  `RenderNaniteCmd`（紧跟 `RenderLumenCmd`，在 `RenderPreparePassDataCmd` 之前）；
+  `RenderSystem.h` 里的 `friend struct RenderNaniteCmd;`。
+  **Nanite 不像 Lumen 那样有 `Z_HAS_NANITE` 宏** —— 它从不从 ZRuntime 剥离，所以
+  `RenderPipelineBase.cpp` 里那个 include 没有 `#if`。
+- **`DesktopRenderPipelineModule::Setup` 在 Apple 上会早退**（`#if defined(__APPLE__) return`）。
+  要在早退**之前**建 `m_NanitePass`，否则 Apple 上通道根本不存在（Lumen 当年就踩过这个：
+  它原来被塞在 `Z_HAS_VULKAN` 块里）。
+- **`NaniteRenderer::UpdateFromScene` 用"场景拓扑哈希"决定是否重建**：哈希只含
+  `(instance_id, mesh_asset_id)` 对，**不含变换矩阵**（矩阵每帧都可能变，变了不需要重建
+  集群），也**不含没有 CPU 几何的实体**（否则"某资产晚一帧上传完"会被当成拓扑变化）。
+  哈希要**用 FNV offset basis 起头**，不能从 0 开始 —— 否则首帧会被误判成"场景没变"。
+- **`clear()` 必须把拓扑哈希清回 0**：实例和集群都没了，哈希还匹配的话下次
+  `UpdateFromScene` 会走"只更新变换"分支，实例列表永久是空的，Nanite 静默失效。
+- **关掉 Nanite 时要清掉上一帧的批次**：`NaniteRenderer::Render` 在 `!config.enabled`
+  时调 `ClearFrameResults()`。批次挂在渲染器上，不清的话下游（和未来的编辑器/统计）会一直
+  读到最后一次启用时的陈旧结果。
+- `NaniteInstance` 的 `instance_id` / `mesh_id` / `transform` / `prev_transform` **以前没有
+  默认成员初始化**，默认构造出来的是垃圾（除了那条零调用者的手工注册路径）。
+  现在都补上了。
+- 下一个缺口（还没做）：`NaniteRenderPass` 的终点仍然只是"产出渲染批次" —— `UpdateGPUBuffers`
+  是 TODO，`NaniteHierarchicalZBuffer` 全是 TODO（所以遮挡剔除恒 false，是有意的），
+  **没有 Nanite shader、也没有间接绘制**，批次产出来还没有人消费。
 
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 

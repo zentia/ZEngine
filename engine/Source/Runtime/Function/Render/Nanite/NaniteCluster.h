@@ -90,6 +90,14 @@ public:
     // 获取可见集群
     const std::vector<uint32_t>& GetVisibleClusters(uint64_t mesh_id) const;
 
+    // 写入本帧的可见集群（裁剪结果）。以前这个字段从来没人写过，所以永远为空。
+    void SetVisibleClusters(uint64_t mesh_id, std::vector<uint32_t> visible_clusters);
+
+    // 获取整个网格资源（渲染器要按簇遍历它）
+    const NaniteMeshResource* GetMeshResource(uint64_t mesh_id) const;
+
+    uint32_t GetClusterCount(uint64_t mesh_id) const;
+
     // 检查集群是否已加载
     bool IsClusterLoaded(uint64_t mesh_id, uint32_t cluster_index) const;
 
