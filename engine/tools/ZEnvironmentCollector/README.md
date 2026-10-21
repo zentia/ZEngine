@@ -252,6 +252,8 @@ OSGameEnvironmentReport.json
 
 `null` 与 `false` 必须分开："从来没告诉我们是哪个游戏"和"确定不是那个游戏"是两个不同的答案，压成一个会让研发把"没填"读成"不是游戏"。文件头另有 `gameExecutableSpecified`，便于一眼看出属于哪种。
 
+`module` 只在**该文件已经点名了这个进程**时才可读（指定的游戏、或 `dwm.exe`）：Application Error 的 `ModuleName` 是独立于 `AppName` 取的一个字段，而崩溃就发生在 exe 自身时这个模块名往往就是那个进程名——`application` 解析不出来时若保留 `module`，等于把 `OTHER_PROCESS` 想藏的名字原样交出去。其余一律 `REDACTED`。
+
 `EnvironmentCollectorTests` 覆盖：三项全空 / 三项齐全 / 只缺 kind 三种组合的判定、齐全时不输出警告、`manifest` 字段内容。
 
 ### 报告文件的发布方式（launcher 异步读取契约）

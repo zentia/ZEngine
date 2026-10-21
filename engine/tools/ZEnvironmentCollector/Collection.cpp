@@ -341,38 +341,9 @@ int RunStage(const std::string& stage, const Options& options)
         context.lookbackHours = options.profile.lookbackHours;
         WriteReportFile(options.outputDirectory / "diagnosis.json", BuildDiagnosisJson(result, context));
         if (options.includeEvents)
-        {
-            // schemaVersion 2 adds isTargetGame. Until now a crash whose process
-            // was redacted to OTHER_PROCESS carried no answer at all to "is that
-            // our game crashing?" -- the one question an incoming package exists
-            // to answer. The boolean answers it while keeping the name hidden.
-            // Same predicate the anchor uses, so a placeholder can never make
-            // this file claim the game was named when it was not.
-            const bool gameSpecified = DescribeAttributionAnchor(options).gameExecutable;
-            std::ostringstream out;
-            out << "{\"schemaVersion\":2,\"redacted\":true,\"replayCompatible\":false"
-                << ",\"gameExecutableSpecified\":" << (gameSpecified ? "true" : "false")
-                << ",\"events\":[";
-            bool first = true;
-            for (const auto& e : events.events)
-            {
-                if (!first) out << ','; first = false;
-                const bool isGame = gameSpecified && EqualsIgnoreCaseAscii(e.appName, options.profile.gameExecutable);
-                auto app = isGame ? options.profile.gameExecutable
-                    : EqualsIgnoreCaseAscii(e.appName, "dwm.exe") ? "dwm.exe" : e.appName.empty() ? "" : "OTHER_PROCESS";
-                out << "{\"timeUtc\":" << JsonString(FormatUtcIso8601(e.time)) << ",\"provider\":" << JsonString(e.provider)
-                    << ",\"id\":" << e.eventId << ",\"level\":" << e.level << ",\"application\":" << JsonString(app)
-                    // null, never false, when no game exe was supplied: "we were
-                    // never told which game" and "this is definitely not that
-                    // game" are different answers and must stay distinguishable.
-                    << ",\"isTargetGame\":" << (gameSpecified ? (isGame ? "true" : "false") : "null")
-                    << ",\"module\":" << JsonString(app == "OTHER_PROCESS" ? "REDACTED" : FileNameOf(e.moduleName)) << ",\"exceptionCode\":" << JsonString(e.exceptionCode)
-                    << ",\"werEvent\":" << JsonString(e.werEventName)
-                    << ",\"liveKernelCode\":" << JsonString(EqualsIgnoreCaseAscii(e.werEventName, "LiveKernelEvent") ? e.werP1 : "") << '}';
-            }
-            out << "]}";
-            WriteReportFile(options.outputDirectory / "events-redacted.json", out.str());
-        }
+            WriteReportFile(options.outputDirectory / "events-redacted.json",
+                BuildRedactedEventsJson(events.events, DescribeAttributionAnchor(options).gameExecutable,
+                    options.profile.gameExecutable));
     }
     else if (stage == "gamelogs")
     {
@@ -472,6 +443,45 @@ std::uint64_t CopyLogFile(const std::filesystem::path& source, std::uint64_t siz
     if (!FlushFileBuffers(output.h)) throw std::runtime_error("日志副本未能落盘");
     return copied;
 }
+}
+std::string BuildRedactedEventsJson(const std::vector<diagnosis::NormalizedEvent>& events, bool gameSpecified,
+    const std::string& gameExecutable)
+{
+    // schemaVersion 2 adds isTargetGame. Until now a crash whose process
+    // was redacted to OTHER_PROCESS carried no answer at all to "is that
+    // our game crashing?" -- the one question an incoming package exists
+    // to answer. The boolean answers it while keeping the name hidden.
+    // Same predicate the anchor uses, so a placeholder can never make
+    // this file claim the game was named when it was not.
+    std::ostringstream out;
+    out << "{\"schemaVersion\":2,\"redacted\":true,\"replayCompatible\":false"
+        << ",\"gameExecutableSpecified\":" << (gameSpecified ? "true" : "false")
+        << ",\"events\":[";
+    bool first = true;
+    for (const auto& e : events)
+    {
+        if (!first) out << ','; first = false;
+        const bool isGame = gameSpecified && EqualsIgnoreCaseAscii(e.appName, gameExecutable);
+        auto app = isGame ? gameExecutable
+            : EqualsIgnoreCaseAscii(e.appName, "dwm.exe") ? "dwm.exe" : e.appName.empty() ? "" : "OTHER_PROCESS";
+        // The module is only readable for a process this file already names.
+        // Application Error carries the faulting module in a field of its own,
+        // and when the application name never resolved, that module is often the
+        // crashing executable itself -- printing it would hand over exactly the
+        // name OTHER_PROCESS exists to hide.
+        const bool namedProcess = isGame || app == "dwm.exe";
+        out << "{\"timeUtc\":" << JsonString(FormatUtcIso8601(e.time)) << ",\"provider\":" << JsonString(e.provider)
+            << ",\"id\":" << e.eventId << ",\"level\":" << e.level << ",\"application\":" << JsonString(app)
+            // null, never false, when no game exe was supplied: "we were
+            // never told which game" and "this is definitely not that
+            // game" are different answers and must stay distinguishable.
+            << ",\"isTargetGame\":" << (gameSpecified ? (isGame ? "true" : "false") : "null")
+            << ",\"module\":" << JsonString(namedProcess ? FileNameOf(e.moduleName) : "REDACTED") << ",\"exceptionCode\":" << JsonString(e.exceptionCode)
+            << ",\"werEvent\":" << JsonString(e.werEventName)
+            << ",\"liveKernelCode\":" << JsonString(EqualsIgnoreCaseAscii(e.werEventName, "LiveKernelEvent") ? e.werP1 : "") << '}';
+    }
+    out << "]}";
+    return out.str();
 }
 Profile LoadProfile(const std::filesystem::path& file)
 {

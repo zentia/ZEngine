@@ -66,6 +66,34 @@ int main()
             const auto withPlaceholder = collector::DescribeAttributionAnchor(placeholder);
             Check(!withPlaceholder.gameExecutable && !withPlaceholder.Usable(),
                   "the placeholder exe name is not a specified game");
+
+            // The shareable event file replaces process names. Application Error
+            // carries the faulting module in a field of its own, and for a crash
+            // in the executable itself that module IS the process -- so keeping
+            // it for an event whose application name never resolved hands over
+            // exactly the name OTHER_PROCESS exists to hide.
+            diagnosis::NormalizedEvent unnamed;
+            unnamed.appName.clear();
+            unnamed.moduleName = "C:\\Program Files\\Browser\\browser.exe";
+            unnamed.provider = "Application Error";
+            const auto redacted = collector::BuildRedactedEventsJson({unnamed}, true, "Game.exe");
+            Check(redacted.find("\"application\":\"\"") != std::string::npos, "an unresolved application name stays empty");
+            Check(redacted.find("browser.exe") == std::string::npos, "the module of an unnamed process is redacted too");
+
+            // A process this file does name keeps its module: the game is named
+            // by whoever supplied the exe, and dwm.exe is a system process.
+            diagnosis::NormalizedEvent gameCrash;
+            gameCrash.appName = "Game.exe";
+            gameCrash.moduleName = "C:\\Game\\Game.exe";
+            const auto gameJson = collector::BuildRedactedEventsJson({gameCrash}, true, "Game.exe");
+            Check(gameJson.find("\"module\":\"Game.exe\"") != std::string::npos, "the game's own module is readable");
+
+            diagnosis::NormalizedEvent other;
+            other.appName = "Other.exe";
+            other.moduleName = "C:\\Other\\helper.dll";
+            const auto otherJson = collector::BuildRedactedEventsJson({other}, true, "Game.exe");
+            Check(otherJson.find("\"application\":\"OTHER_PROCESS\"") != std::string::npos, "other processes stay unnamed");
+            Check(otherJson.find("helper.dll") == std::string::npos, "and so does their module");
         }
         diagnosis::UtcTicks a = 0, b = 0;
         Check(diagnosis::TryParseUtcIso8601("2026-10-12T08:00:00+08:00", a), "parse zoned time");

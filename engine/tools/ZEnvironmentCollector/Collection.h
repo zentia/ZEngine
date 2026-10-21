@@ -91,6 +91,12 @@ std::filesystem::path ResolveGameLogDirectory(const Profile& profile);
 // True for names this tool can have written into the report directory (archive whitelist).
 bool IsArchivedGameLogName(const std::string& name);
 
+// The shareable copy of the event list: process names are replaced and only the
+// boolean "is this our game" survives. Split out of the events stage so the
+// redaction itself can be checked without reading the live event log.
+std::string BuildRedactedEventsJson(const std::vector<diagnosis::NormalizedEvent>& events, bool gameExecutableSpecified,
+                                    const std::string& gameExecutable);
+
 // Stand-in passed to a stage worker when no game exe was specified -- --game-exe
 // needs a value, and an empty one is indistinguishable from a missing argument.
 // It is never a real exe name: the worker turns it back into "unset" the moment
