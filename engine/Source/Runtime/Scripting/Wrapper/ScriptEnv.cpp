@@ -1,5 +1,7 @@
 #include "ScriptEnv.h"
 
+#include "Runtime/AssetBundle/AssetBundleManager.h"
+#include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Scripting/Backend.h"
 #include "Runtime/Scripting/Binding/ScriptBinding.h"
 #include "Runtime/Scripting/Native/PuertsNative.h"
@@ -443,24 +445,41 @@ bool ScriptEnv::LoadModuleInternal(const std::string& module_id)
     js_path.append(module_id);
     js_path.append(".js");
 
-    // 2. Read source. Use binary mode so we don't translate CRLF and
-    //    introduce off-by-one offsets in error messages.
-    FILE* file = fopen(js_path.c_str(), "rb");
-    if (!file)
-    {
-        LOG_ERROR(ZScripting, "LoadModule('{}'): cannot open '{}'", module_id, js_path);
-        return false;
-    }
-    fseek(file, 0, SEEK_END);
-    long fsz = ftell(file);
+    // 2. Read source.
+    //
+    //    A packaged build carries the compiled modules inside the `scripts`
+    //    bundle, and a player is allowed to ship no Intermediate/Scripts/ tree
+    //    at all, so the bundle is asked FIRST. Not finding it there is the
+    //    normal editing case (the editor mounts no bundle because a mounted
+    //    bundle would shadow real files), so it falls through to the
+    //    filesystem rather than failing.
     std::string raw;
-    if (fsz > 0)
+    bool have_source = false;
+    if (auto* bundles = GET_SYSTEM(AssetBundleManager); bundles != nullptr)
     {
-        raw.resize(static_cast<size_t>(fsz));
-        fseek(file, 0, SEEK_SET);
-        fread(raw.data(), 1, static_cast<size_t>(fsz), file);
+        have_source = bundles->TryReadScriptModule(module_id, raw);
     }
-    fclose(file);
+
+    if (!have_source)
+    {
+        // Binary mode so we don't translate CRLF and introduce off-by-one
+        // offsets in error messages.
+        FILE* file = fopen(js_path.c_str(), "rb");
+        if (!file)
+        {
+            LOG_ERROR(ZScripting, "LoadModule('{}'): cannot open '{}'", module_id, js_path);
+            return false;
+        }
+        fseek(file, 0, SEEK_END);
+        const long fsz = ftell(file);
+        if (fsz > 0)
+        {
+            raw.resize(static_cast<size_t>(fsz));
+            fseek(file, 0, SEEK_SET);
+            fread(raw.data(), 1, static_cast<size_t>(fsz), file);
+        }
+        fclose(file);
+    }
 
     // 3. Wrap in IIFE-factory so we get a function value back. The QuickJS
     //    in puerts doesn't expose CommonJS `require`, so we synthesize one

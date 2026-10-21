@@ -412,6 +412,29 @@ bool AssetBundleManager::EnsureBundleMountedForAsset(const std::string& asset_pa
     return ContainsAsset(asset_path);
 }
 
+bool AssetBundleManager::TryReadScriptModule(const std::string& module_id, std::string& out_source)
+{
+    const std::string entry_path = AssetBundles::MakeScriptEntryPath(module_id);
+    if (entry_path.empty())
+    {
+        return false;
+    }
+
+    // A script bundle is only mounted on demand: it is nobody's dependency in
+    // the asset sense, so a player that loaded no level yet has no reason to
+    // have it open.
+    EnsureBundleMountedForAsset(entry_path);
+
+    std::vector<uint8_t> bytes;
+    if (!TryReadAssetBytes(entry_path, bytes))
+    {
+        return false;
+    }
+
+    out_source.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    return true;
+}
+
 bool AssetBundleManager::TryReadAssetBytes(const std::filesystem::path& asset_path, std::vector<uint8_t>& out_bytes) const
 {
     const std::string key = asset_path.generic_string();

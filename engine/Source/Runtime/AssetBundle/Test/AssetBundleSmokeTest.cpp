@@ -27,6 +27,7 @@
 #include "Runtime/Resource/ResType/Data/AnimSkelMap.h"
 
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -44,6 +45,10 @@ namespace
     constexpr const char* kHeroGuid = "aaaabbbbccccddddeeeeffff00001111";
     constexpr const char* kWeaponGuid = "11112222333344445555666677778888";
     constexpr const char* kAlbedoGuid = "9999aaaabbbbccccddddeeeeffff0000";
+
+    // A compiled module, in the shape tsc emits for `module: commonjs` (which
+    // is what ScriptEnv's IIFE wrapper consumes).
+    constexpr const char* kMoverSource = "exports.Mover = class Mover { speed() { return 3; } };\n";
 
     void Check(bool condition, const char* name)
     {
@@ -120,6 +125,19 @@ namespace
         const bool ok = asset_manager->WriteObjectToDiskThreadSafe(path, *texture);
         DestroyProduced(produced);
         return ok;
+    }
+
+    const AssetBundles::BundleEntry* FindEntry(const std::vector<AssetBundles::BundleEntry>& table,
+                                               const std::string& path)
+    {
+        for (const AssetBundles::BundleEntry& entry : table)
+        {
+            if (entry.path == path)
+            {
+                return &entry;
+            }
+        }
+        return nullptr;
     }
 
     bool ReadFileBytes(const std::filesystem::path& path, std::vector<uint8_t>& out)
@@ -205,6 +223,34 @@ int main()
     shared_entries.push_back(std::move(albedo_entry));
 
     std::string error;
+
+    // ---- B2b: a compiled script module -------------------------------------
+    // Scripts are not registry assets: the loader addresses them by MODULE id
+    // ("player/Mover") and the file lives under <project>/Intermediate/Scripts/,
+    // outside the content directory the registry indexes. They ride along under
+    // a reserved prefix so one entry table can carry both kinds of payload.
+    const std::string mover_entry_path = AssetBundles::MakeScriptEntryPath("player/Mover");
+    std::vector<AssetBundles::BundleSourceEntry> script_entries;
+    AssetBundles::BundleSourceEntry script_entry;
+    script_entry.path = mover_entry_path;
+    script_entry.type = "ScriptModule";
+    script_entry.bytes.assign(kMoverSource, kMoverSource + std::strlen(kMoverSource));
+    script_entries.push_back(std::move(script_entry));
+
+    const std::filesystem::path scripts_bundle_path = bundles_dir / "scripts.zbundle";
+    Check(AssetBundles::WriteBundleFile(scripts_bundle_path, script_entries, AssetBundles::BundleCompression::Stored, error),
+          "B2b: scripts bundle written");
+    Check(mover_entry_path == "Intermediate/Scripts/player/Mover.js",
+          "B2b: a module id maps to the reserved entry key");
+    Check(AssetBundles::MakeScriptEntryPath("").empty(), "B2b: an empty module id maps to nothing");
+    {
+        std::string parsed;
+        Check(AssetBundles::ParseScriptEntryPath(mover_entry_path, parsed) && parsed == "player/Mover",
+              "B2b: the entry key parses back to the module id");
+        Check(!AssetBundles::ParseScriptEntryPath("Models/hero.zasset", parsed),
+              "B2b: an asset key is not a script entry");
+    }
+
     const std::filesystem::path hero_bundle_path = bundles_dir / "models_hero.zbundle";
     const std::filesystem::path shared_bundle_path = bundles_dir / "shared.zbundle";
     Check(AssetBundles::WriteBundleFile(hero_bundle_path, hero_entries, AssetBundles::BundleCompression::Stored, error),
@@ -230,12 +276,21 @@ int main()
     hero_info.name = "models_hero";
     hero_info.asset_paths.push_back("Models/hero.zasset");
     hero_info.dependencies.push_back("shared");
+    // Scripts are nobody's dependency in the asset sense: a ScriptAsset names a
+    // module id, and the .js is not part of the dependency walk. The builder
+    // declares them explicitly so mounting one level is enough to run its
+    // behaviours.
+    hero_info.dependencies.push_back(AssetBundles::kScriptBundleName);
     AssetBundleInfo shared_info;
     shared_info.name = "shared";
     shared_info.asset_paths.push_back("Models/weapon.zasset");
     shared_info.asset_paths.push_back("Textures/albedo.zasset");
+    AssetBundleInfo scripts_info;
+    scripts_info.name = AssetBundles::kScriptBundleName;
+    scripts_info.asset_paths.push_back(mover_entry_path.c_str());
     manifest->bundles.push_back(hero_info);
     manifest->bundles.push_back(shared_info);
+    manifest->bundles.push_back(scripts_info);
 
     const std::filesystem::path manifest_path = root / "Build" / "Standalone" / "test.manifest.zasset";
     Check(GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(manifest_path, *manifest), "B3: manifest written");
@@ -247,6 +302,7 @@ int main()
     Check(bundles->LoadManifest(manifest_path), "B4: manifest loads");
     Check(bundles->MountBundle(hero_bundle_path), "B4: hero bundle mounts");
     Check(bundles->IsMounted("shared"), "B4: dependency bundle auto-mounted");
+    Check(bundles->IsMounted(AssetBundles::kScriptBundleName), "B4: the scripts dependency auto-mounts too");
 
     AssetBundle* hero_bundle = bundles->FindBundle("models_hero");
     Check(hero_bundle != nullptr && hero_bundle->GetEntryCount() == 1, "B4: mounted bundle has its entry");
@@ -349,10 +405,132 @@ int main()
               "B9: a tree with no packaged content reports none");
 
         bundles->UnmountAll();
-        Check(bundles->MountBuild(root / "Build") == 2, "B9: MountBuild mounts both bundles");
-        Check(bundles->IsMounted("models_hero") && bundles->IsMounted("shared"),
-              "B9: the root bundle and its dependency are both mounted");
+        Check(bundles->MountBuild(root / "Build") == 3, "B9: MountBuild mounts every bundle");
+        Check(bundles->IsMounted("models_hero") && bundles->IsMounted("shared") &&
+                  bundles->IsMounted(AssetBundles::kScriptBundleName),
+              "B9: the root bundle, its dependency and the scripts are mounted");
         Check(bundles->ContainsAsset("Textures/albedo.zasset"), "B9: packaged content is reachable again");
+    }
+
+    // ---- B10: compiled script modules come out of the bundle ---------------
+    // Without this the only way to ship scripts is to copy
+    // <project>/Intermediate/Scripts/ next to the player, so the script bytes
+    // and the asset bytes could come from two different builds.
+    {
+        std::string source;
+        Check(bundles->TryReadScriptModule("player/Mover", source) && source == kMoverSource,
+              "B10: a bundled module is read back by module id");
+
+        std::string missing;
+        Check(!bundles->TryReadScriptModule("player/Missing", missing), "B10: an unknown module is refused");
+        Check(!bundles->TryReadScriptModule("", missing) && missing.empty(), "B10: an empty module id is refused");
+
+        // On demand: a scripts bundle is nobody's asset dependency, so it gets
+        // mounted when the first module is asked for.
+        bundles->Unmount(AssetBundles::kScriptBundleName);
+        Check(!bundles->IsMounted(AssetBundles::kScriptBundleName), "B10: scripts unmounted to set up the test");
+        std::string remounted;
+        Check(bundles->TryReadScriptModule("player/Mover", remounted) && remounted == kMoverSource,
+              "B10: asking for a module mounts the scripts bundle on demand");
+        Check(bundles->IsMounted(AssetBundles::kScriptBundleName), "B10: the scripts bundle is mounted again");
+    }
+
+    // ---- B11: compression is decided PER ENTRY ----------------------------
+    // A bundle is dominated by cooked textures, and BC7 / ASTC payloads are
+    // already block-compressed: deflating them wastes CPU at build and load
+    // time and can even make them bigger. So the writer deflates each entry and
+    // keeps the compressed copy only when it actually came out smaller.
+    {
+        std::string compressible;
+        for (int i = 0; i < 200; ++i)
+        {
+            compressible += "exports.Foo = class Foo { /* padding padding padding */ };\n";
+        }
+
+        // A deterministic LCG: incompressible enough that deflate cannot win,
+        // without pulling <random> in or depending on its exact algorithm.
+        std::vector<uint8_t> incompressible(4096);
+        uint32_t rng = 0x1234567u;
+        for (uint8_t& byte : incompressible)
+        {
+            rng = rng * 1103515245u + 12345u;
+            byte = static_cast<uint8_t>(rng >> 16);
+        }
+
+        std::vector<AssetBundles::BundleSourceEntry> packed_entries;
+        AssetBundles::BundleSourceEntry text_entry;
+        text_entry.path = "Scripts/text.js";
+        text_entry.type = "ScriptModule";
+        text_entry.bytes.assign(compressible.begin(), compressible.end());
+        AssetBundles::BundleSourceEntry noise_entry;
+        noise_entry.path = "Textures/noise.zasset";
+        noise_entry.type = "Texture2D";
+        noise_entry.bytes = incompressible;
+        packed_entries.push_back(text_entry);
+        packed_entries.push_back(noise_entry);
+
+        const std::filesystem::path packed_path = root / "packed.zbundle";
+        std::string pack_error;
+        const bool wrote = AssetBundles::WriteBundleFile(
+            packed_path, packed_entries, AssetBundles::BundleCompression::Zlib, pack_error);
+
+        const bool zlib_available = AssetBundles::CanDecompress(AssetBundles::BundleCompression::Zlib);
+        if (!zlib_available)
+        {
+            // The one platform where this matters is Emscripten: a player there
+            // links no decompressor, so producing a deflated bundle would be
+            // shipping something unreadable.
+            Check(!wrote, "B11: a build without zlib refuses to write a deflated bundle");
+            std::printf("       (skipping the deflate round-trip: no zlib in this build)\n");
+        }
+        else
+        {
+            Check(wrote, "B11: a deflated bundle is written");
+
+            AssetBundles::BundleFileHeader packed_header;
+            std::vector<AssetBundles::BundleEntry> packed_table;
+            Check(AssetBundles::ReadBundleHeader(packed_path, packed_header, packed_table, pack_error) &&
+                      packed_table.size() == 2,
+                  "B11: the deflated bundle parses");
+
+            const AssetBundles::BundleEntry* text = FindEntry(packed_table, "Scripts/text.js");
+            const AssetBundles::BundleEntry* noise = FindEntry(packed_table, "Textures/noise.zasset");
+            Check(text != nullptr && noise != nullptr, "B11: both entries are in the table");
+
+            if (text != nullptr && noise != nullptr)
+            {
+                Check(AssetBundles::EntryCompression(*text) == AssetBundles::BundleCompression::Zlib &&
+                          text->stored_size < text->uncompressed_size,
+                      "B11: compressible bytes are deflated");
+                Check(AssetBundles::EntryCompression(*noise) == AssetBundles::BundleCompression::Stored &&
+                          noise->stored_size == noise->uncompressed_size,
+                      "B11: incompressible bytes stay STORED");
+                Check(packed_header.compression == AssetBundles::BundleCompression::Zlib,
+                      "B11: the header reports what actually happened");
+                std::printf("       (deflate: %llu -> %llu bytes for the compressible entry)\n",
+                            static_cast<unsigned long long>(text->uncompressed_size),
+                            static_cast<unsigned long long>(text->stored_size));
+
+                std::vector<uint8_t> back_text;
+                std::vector<uint8_t> back_noise;
+                Check(AssetBundles::ReadBundleEntryBytes(packed_path, packed_header, *text, back_text, pack_error) &&
+                          back_text == text_entry.bytes,
+                      "B11: a deflated entry round-trips byte-identically");
+                Check(AssetBundles::ReadBundleEntryBytes(packed_path, packed_header, *noise, back_noise, pack_error) &&
+                          back_noise == incompressible,
+                      "B11: the STORED entry round-trips too");
+
+                // End to end: the same path a player takes when an asset is
+                // served out of a mounted bundle.
+                Check(bundles->MountBundle(packed_path), "B11: the deflated bundle mounts");
+                AssetBundle* packed = bundles->FindBundle("packed");
+                std::string serve_error;
+                const std::vector<uint8_t>* served_text =
+                    packed != nullptr ? packed->GetAssetBytes("Scripts/text.js", serve_error) : nullptr;
+                Check(served_text != nullptr && *served_text == text_entry.bytes,
+                      "B11: a deflated asset is served inflated through the bundle");
+            }
+        }
     }
 
     // ---- B7: corruption is detected ---------------------------------------

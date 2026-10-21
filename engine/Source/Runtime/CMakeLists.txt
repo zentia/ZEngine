@@ -561,6 +561,50 @@ target_compile_definitions(${SHARED_TARGET_NAME} INTERFACE ZRUNTIME_SHARED_IMPOR
 # Create an alias so other CMakeLists can link to ZRuntime and receive the shared target
 add_library(ZRuntime::Shared ALIAS ${SHARED_TARGET_NAME})
 
+# ---- Bundle compression (zlib) ---------------------------------------------
+# `.zbundle` v1 wrote STORED blobs. Compression is decided PER ENTRY (a cooked
+# BC7/ASTC texture is already block-compressed and deflating it only costs
+# time), but a player still needs an INFLATE side, or a compressed bundle is
+# unreadable.
+#
+# zlib is already in the build graph -- minizip-ng pulls it in for the editor's
+# XlsxImporter -- so nothing is fetched here. When the target is absent
+# (Emscripten, a stripped 3rdparty set) we simply build without it: the writer
+# then refuses to emit a compressed entry and the reader rejects one with a
+# clear message, instead of handing back deflate bytes that get parsed as a
+# .zasset.
+set(_zengine_zlib_target "")
+if(NOT EMSCRIPTEN)
+    # minizip-ng found zlib for itself ("Using ZLIB 1.2.12" at configure time)
+    # but its imported targets are directory-scoped, so they are not visible
+    # here. Resolve it again in this scope -- on a system that has zlib this
+    # only re-reads the same result.
+    find_package(ZLIB QUIET)
+    # minizip-ng's CMake names the fetched target `zlibstatic` and a system
+    # zlib `ZLIB::ZLIB`; accept either so Windows (fetch) and macOS/Linux
+    # (system) both work.
+    if(TARGET ZLIB::ZLIB)
+        set(_zengine_zlib_target ZLIB::ZLIB)
+    elseif(TARGET zlibstatic)
+        set(_zengine_zlib_target zlibstatic)
+    elseif(TARGET zlib)
+        set(_zengine_zlib_target zlib)
+    endif()
+endif()
+
+if(_zengine_zlib_target)
+    # PRIVATE is enough for the static lib: consumers still link zlib transitively
+    # ($<LINK_ONLY:>), and nothing outside AssetBundleFormat.cpp needs the macro.
+    target_link_libraries(${TARGET_NAME} PRIVATE ${_zengine_zlib_target})
+    target_link_libraries(${SHARED_TARGET_NAME} PRIVATE ${_zengine_zlib_target})
+    target_compile_definitions(${TARGET_NAME} PRIVATE ZENGINE_BUNDLE_HAS_ZLIB=1)
+    target_compile_definitions(${SHARED_TARGET_NAME} PRIVATE ZENGINE_BUNDLE_HAS_ZLIB=1)
+    message(STATUS "Runtime: bundle compression enabled (zlib via ${_zengine_zlib_target})")
+else()
+    message(STATUS "Runtime: bundle compression unavailable (no zlib target); bundles stay STORED")
+endif()
+unset(_zengine_zlib_target)
+
 # Win64 builds may compile both Vulkan and DX12; runtime can still select DX12.
 # Keep shader search roots available whenever DX12 sources are in the link set.
 if(WIN32)

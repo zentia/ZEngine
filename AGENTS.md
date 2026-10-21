@@ -2213,16 +2213,110 @@ editor-only enum a player cannot compute -- do not "simplify" this into
 `Build/Standalone`. 0 mounted means "launched from the source tree", which is
 a normal outcome, not an error.
 
+**Assembly is `install()` + CPack** (added 2026-10-20), at the bottom of
+`engine/CMakeLists.txt`:
+
+```
+cmake --install <build> --prefix <dir>     # <dir> is the shippable tree
+cpack -C Release -G ZIP                    # -G TGZ on Linux/macOS
+```
+
+```
+<dir>/
+├── ZGame(.exe)      player
+├── ZEditor.ini      DEPLOYMENT profile
+├── asset/           default textures + global render/particle resources
+├── resource/        icons + font
+└── Project/<name>/  optional (ZENGINE_PACKAGE_PROJECT)
+```
+
+- **`CMAKE_INSTALL_PREFIX` is NOT a usable packaging prefix.** The root
+  `CMakeLists.txt` already points it at `<repo>/bin` so every target lands in
+  one output directory. `cmake --install` must be given `--prefix` explicitly.
+  CPack is unaffected -- it installs into its own staging directory.
+- **The ini has to sit next to the executable.** `CommandSystem` derives the
+  config path from the executable's own directory, and a packaged player is
+  started from an arbitrary CWD. Shipping the ini somewhere else is the kind of
+  bug that only shows up after packaging.
+- **`ZENGINE_PACKAGE_PROJECT`** copies project content into `Project/<name>/`,
+  excluding `Intermediate/Cooked`, `Intermediate/DDC`, `Intermediate/Shaders`
+  and `Logs` -- build caches, not runtime data. `Intermediate/Scripts` is
+  deliberately kept as a FALLBACK: compiled JS is packed into the `scripts`
+  bundle (below), but a player pointed at a build produced before that existed
+  still finds loose `.js` there.
+- Shader sources are not shipped: they come from the project's own
+  `GetShadersRoot()`, and the engine's generated SPIR-V/DXIL headers are
+  compiled into the binary.
+- The whole block is wrapped in `if(TARGET ZGame)`: **`ZGame` is not built on
+  macOS** (the desktop branch of `engine/CMakeLists.txt` adds only Editor
+  there), and `install(TARGETS)` naming a missing target is a fatal configure
+  error, not a warning.
+
+Related: `CommandSystem::Initialize()` reads the real command line on
+Linux/POSIX (`/proc/self/cmdline` + `/proc/self/exe`) instead of synthesising
+`argc=1` and deriving the executable path from the CWD. The fake argv
+discarded every argument and left a launched player unable to find its own
+`ZEditor.ini`. `argv_ptrs` is filled **once, after** the platform `#endif` --
+it holds `data()` pointers into `argv_strings`, so any later `push_back`
+invalidates the earlier entries.
+
+**Compiled scripts are packed too** (added 2026-10-20). A `.js` is not a
+registry asset: `ScriptAsset` names a MODULE (`"player/Mover"`, no extension)
+and the file lives in `<project>/Intermediate/Scripts/`, outside the content
+directory `AssetRegistry` indexes -- so the dependency walk can never reach it.
+
+- Entry key: `AssetBundles::MakeScriptEntryPath(module_id)` ->
+  `"Intermediate/Scripts/player/Mover.js"`, a reserved prefix. `Intermediate/`
+  cannot collide with a registry asset because the registry indexes the content
+  directory only and `Intermediate/` is its peer at the project root. Both
+  directions live in `AssetBundleFormat.{h,cpp}` -- do not re-derive the prefix
+  at a call site.
+- They go into their own `scripts` bundle, and **every other bundle declares
+  `scripts` as a dependency**: mounting one level must be enough to run the
+  behaviours hanging off it. An empty scripts bundle is erased rather than
+  written -- `MountBundle` treats a missing dependency as a hard failure.
+- Runtime: `AssetBundleManager::TryReadScriptModule()` =
+  `EnsureBundleMountedForAsset` + `TryReadAssetBytes`, and
+  `ScriptEnv::LoadModuleInternal` asks it FIRST and falls back to `fopen`.
+  False is the normal editing case (the editor mounts nothing), not an error.
+- `AssetBundleBuildResult::script_count` counts modules separately from
+  `asset_count`, which stays "what the dependency walk found".
+
+**Compression is decided PER ENTRY, not per bundle** (added 2026-10-20).
+
+- A bundle is dominated by cooked textures, and BC7 / ASTC / BC1 payloads are
+  ALREADY block-compressed: deflating them burns CPU at build and at load time
+  and can even make them bigger. Script modules and mesh data, on the other
+  hand, shrink a lot. So `WriteBundleFile` deflates each entry and keeps the
+  compressed copy **only when it came out smaller**; everything else stays
+  Stored. Incompressible content therefore pays nothing -- there is no downside
+  to leaving compression on.
+- The method lives in `BundleEntry::flags` (low 4 bits, `EntryCompression`), so
+  no header layout changed and old v1 bundles still read (`flags == 0` is
+  Stored). `BundleFileHeader::compression` reports what actually happened, not
+  what was asked for.
+- **CRC-32 guards the STORED bytes**, so a corrupt deflate stream is rejected
+  before it ever reaches the decompressor.
+- The writer REFUSES to emit a method this build cannot inflate
+  (`AssetBundles::CanDecompress`), and the reader rejects one with a clear
+  error. Never let it fall through to "return the raw bytes" -- they would be
+  parsed as a `.zasset` and fail somewhere unrecognisable.
+- zlib comes from wherever minizip-ng already found it; `find_package(ZLIB)` is
+  called again in `Source/Runtime/CMakeLists.txt` because minizip's imported
+  targets are directory-scoped. No target (Emscripten, stripped 3rdparty) =>
+  `ZENGINE_BUNDLE_HAS_ZLIB` is undefined and bundles stay Stored.
+  `AssetBundleBuildOptions::compress` is the per-target override.
+- `packed_storage.reserve(entries.size())` in the writer is load-bearing:
+  `payloads` holds pointers INTO that vector, and a reallocation would dangle.
+
 Known gaps, in the order they should be closed (PR-PAK2+):
-- **No assembly / install step.** Nothing copies ZGame + the bundles into a
-  shippable layout (no `install(TARGETS ZGame)`, no `install(DIRECTORY
-  asset/)`, no CPack), so "the package" is currently whatever directory the
-  editor happened to write into.
-- **No compression**: v1 writes STORED blobs (the `compression` field and
-  `uncompressed_size` are already in the format). ZRuntime links no compressor.
+- **ZGame is not built on macOS.** `engine/CMakeLists.txt`'s `elseif(APPLE)`
+  branch adds Editor only, so the install rules above cannot be exercised
+  end-to-end on a dev machine, and there is no local player to run.
 - No incremental build, no content-hash change detection, no per-asset
   reference counting (unloading a bundle drops everything it cached).
 - Only textures have a real cook today; every other asset type is packed as-is.
+- `PlayerSettings.cpp` is a 7-line stub.
 
 Known gaps, in the order they should be closed (PR-SK3+):
 - **No importer test coverage**: the baking path is compile-verified only.

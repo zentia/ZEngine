@@ -1,8 +1,16 @@
 #include "AssetBundleFormat.h"
 
+// ZENGINE_BUNDLE_HAS_ZLIB is set by engine/Source/Runtime/CMakeLists.txt when
+// zlib is linked into this build. Without it the container still reads and
+// writes fine -- it just cannot produce or consume deflated entries.
+#if defined(ZENGINE_BUNDLE_HAS_ZLIB)
+#include <zlib.h>
+#endif
+
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <utility>
 
 namespace AssetBundles
 {
@@ -29,6 +37,57 @@ namespace AssetBundles
             }
             return table;
         }
+
+#if defined(ZENGINE_BUNDLE_HAS_ZLIB)
+        /// Deflate. `out` is only written on success.
+        bool Deflate(const std::vector<uint8_t>& in, std::vector<uint8_t>& out)
+        {
+            if (in.empty())
+            {
+                return false;
+            }
+
+            // compressBound() is an exact upper bound for compress2(), so one
+            // allocation is enough -- no retry loop.
+            uLongf capacity = ::compressBound(static_cast<uLong>(in.size()));
+            out.resize(static_cast<size_t>(capacity));
+            const int rc = ::compress2(out.data(),
+                                       &capacity,
+                                       in.data(),
+                                       static_cast<uLong>(in.size()),
+                                       Z_DEFAULT_COMPRESSION);
+            if (rc != Z_OK)
+            {
+                out.clear();
+                return false;
+            }
+            out.resize(static_cast<size_t>(capacity));
+            return true;
+        }
+
+        /// Inflate. `expected_size` is the entry's `uncompressed_size`; zlib is
+        /// told the exact output capacity so a lying size cannot make it write
+        /// past the buffer.
+        bool Inflate(const std::vector<uint8_t>& in, size_t expected_size, std::vector<uint8_t>& out)
+        {
+            out.assign(expected_size, 0);
+            if (expected_size == 0)
+            {
+                return true;
+            }
+
+            uLongf capacity = static_cast<uLongf>(expected_size);
+            const int rc = ::uncompress(
+                out.data(), &capacity, in.data(), static_cast<uLong>(in.size()));
+            if (rc != Z_OK)
+            {
+                out.clear();
+                return false;
+            }
+            out.resize(static_cast<size_t>(capacity));
+            return true;
+        }
+#endif
 
         void AppendU32(std::vector<uint8_t>& out, uint32_t value)
         {
@@ -100,14 +159,34 @@ namespace AssetBundles
         return crc ^ 0xFFFFFFFFu;
     }
 
+    bool CanDecompress(BundleCompression method)
+    {
+        switch (method)
+        {
+            case BundleCompression::Stored:
+                return true;
+            case BundleCompression::Zlib:
+#if defined(ZENGINE_BUNDLE_HAS_ZLIB)
+                return true;
+#else
+                return false;
+#endif
+            default:
+                return false;
+        }
+    }
+
     bool WriteBundleFile(const std::filesystem::path& out_path,
                          const std::vector<BundleSourceEntry>& entries,
                          BundleCompression compression,
                          std::string& out_error)
     {
-        if (compression != BundleCompression::Stored)
+        // Refuse up front rather than shipping a bundle this build could not
+        // read back: a player links no decompressor on some platforms, and the
+        // failure would otherwise surface as "asset failed to load" at runtime.
+        if (!CanDecompress(compression))
         {
-            out_error = "only stored (uncompressed) bundles are supported in v1";
+            out_error = "this build has no decompressor for the requested bundle compression method";
             return false;
         }
 
@@ -123,6 +202,47 @@ namespace AssetBundles
             }
         }
 
+        // ---- per-entry compression ----------------------------------------
+        // Deflate each entry and keep the compressed copy only when it is
+        // actually smaller. A cooked BC7/ASTC texture is already block-
+        // compressed and would come back the same size or bigger; a script
+        // module or a mesh payload shrinks a lot. Deciding per entry means
+        // incompressible content pays nothing.
+        //
+        // `packed_storage` owns the compressed buffers. It is reserved up
+        // front: `payload` holds pointers INTO it, and a later reallocation
+        // would silently dangle.
+        std::vector<std::vector<uint8_t>> packed_storage;
+        packed_storage.reserve(entries.size());
+        std::vector<const std::vector<uint8_t>*> payloads;
+        payloads.reserve(entries.size());
+        std::vector<BundleCompression> methods;
+        methods.reserve(entries.size());
+
+        bool any_compressed = false;
+        for (const BundleSourceEntry& source : entries)
+        {
+            const std::vector<uint8_t>* payload = &source.bytes;
+            BundleCompression method = BundleCompression::Stored;
+
+            if (compression != BundleCompression::Stored && source.bytes.size() >= kCompressionMinSize)
+            {
+#if defined(ZENGINE_BUNDLE_HAS_ZLIB)
+                std::vector<uint8_t> packed;
+                if (Deflate(source.bytes, packed) && packed.size() < source.bytes.size())
+                {
+                    packed_storage.push_back(std::move(packed));
+                    payload = &packed_storage.back();
+                    method = compression;
+                    any_compressed = true;
+                }
+#endif
+            }
+
+            payloads.push_back(payload);
+            methods.push_back(method);
+        }
+
         // Entry table first, so the header (which points at it) can be written
         // once the blob offsets are known.
         std::vector<BundleEntry> table;
@@ -130,17 +250,22 @@ namespace AssetBundles
 
         std::vector<uint8_t> entry_table;
         uint64_t cursor = 0;
-        for (const BundleSourceEntry& source : entries)
+        for (size_t index = 0; index < entries.size(); ++index)
         {
+            const BundleSourceEntry& source = entries[index];
+            const std::vector<uint8_t>& payload = *payloads[index];
+
             BundleEntry entry;
             entry.path = source.path;
             entry.guid = source.guid;
             entry.type = source.type;
             entry.offset = cursor;
-            entry.stored_size = source.bytes.size();
+            entry.stored_size = payload.size();
             entry.uncompressed_size = source.bytes.size();
-            entry.crc32 = Crc32(source.bytes.data(), source.bytes.size());
-            entry.flags = 0;
+            // CRC over the STORED bytes: corruption is then caught before the
+            // decompressor ever sees the blob.
+            entry.crc32 = Crc32(payload.data(), payload.size());
+            entry.flags = static_cast<uint32_t>(methods[index]);
 
             AppendString(entry_table, entry.path);
             AppendString(entry_table, entry.guid);
@@ -158,7 +283,9 @@ namespace AssetBundles
         BundleFileHeader header;
         header.magic = kBundleMagic;
         header.version = kBundleVersion;
-        header.compression = compression;
+        // What actually happened, not what was asked for: every entry may have
+        // stayed Stored because deflating it did not pay off.
+        header.compression = any_compressed ? compression : BundleCompression::Stored;
         header.entry_count = static_cast<uint16_t>(table.size());
         header.entry_table_offset = sizeof(BundleFileHeader);
         header.entry_table_size = entry_table.size();
@@ -200,7 +327,7 @@ namespace AssetBundles
 
         for (size_t i = 0; i < entries.size(); ++i)
         {
-            const std::vector<uint8_t>& bytes = entries[i].bytes;
+            const std::vector<uint8_t>& bytes = *payloads[i];
             if (!bytes.empty())
             {
                 out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -287,9 +414,14 @@ namespace AssetBundles
                               std::vector<uint8_t>& out_bytes,
                               std::string& out_error)
     {
-        if (header.compression != BundleCompression::Stored)
+        // The per-entry method is authoritative; the header only records what
+        // the writer attempted. Checked up front so a bundle this build cannot
+        // inflate fails with a clear message instead of returning raw deflate
+        // bytes that would then be parsed as a .zasset.
+        const BundleCompression method = EntryCompression(entry);
+        if (!CanDecompress(method))
         {
-            out_error = "bundle uses an unsupported compression scheme";
+            out_error = "this build has no decompressor for '" + entry.path + "' in " + in_path.string();
             return false;
         }
 
@@ -319,12 +451,104 @@ namespace AssetBundles
             }
         }
 
+        // CRC guards the STORED bytes, so a corrupt deflate stream is rejected
+        // here instead of being fed to the decompressor.
         const uint32_t checksum = Crc32(out_bytes.data(), out_bytes.size());
         if (checksum != entry.crc32)
         {
             out_error = "crc mismatch on " + entry.path + " (bundle is corrupt)";
             return false;
         }
-        return true;
+
+        if (method == BundleCompression::Stored)
+        {
+            return true;
+        }
+
+#if defined(ZENGINE_BUNDLE_HAS_ZLIB)
+        if (method == BundleCompression::Zlib)
+        {
+            std::vector<uint8_t> inflated;
+            if (!Inflate(out_bytes, static_cast<size_t>(entry.uncompressed_size), inflated))
+            {
+                out_error = "cannot inflate " + entry.path + " (bundle is corrupt)";
+                return false;
+            }
+            if (inflated.size() != static_cast<size_t>(entry.uncompressed_size))
+            {
+                out_error = "inflated size does not match the entry table for " + entry.path;
+                return false;
+            }
+            out_bytes = std::move(inflated);
+            return true;
+        }
+#endif
+
+        out_error = "unhandled compression method for " + entry.path;
+        return false;
+    }
+
+    std::string MakeScriptEntryPath(const std::string& module_id)
+    {
+        if (module_id.empty())
+        {
+            return {};
+        }
+
+        std::string normalised;
+        normalised.reserve(module_id.size());
+        for (const char c : module_id)
+        {
+            normalised.push_back(c == '\\' ? '/' : c);
+        }
+        // Drop a leading '/' or "./": the entry key is relative.
+        while (!normalised.empty() && (normalised.front() == '/' || normalised.front() == '.'))
+        {
+            normalised.erase(normalised.begin());
+            if (!normalised.empty() && normalised.front() == '/')
+            {
+                normalised.erase(normalised.begin());
+            }
+        }
+        if (normalised.empty())
+        {
+            return {};
+        }
+
+        const std::string prefix(kScriptEntryPrefix);
+        if (normalised.size() >= prefix.size() && normalised.compare(0, prefix.size(), prefix) == 0)
+        {
+            return normalised;
+        }
+
+        std::string out = prefix;
+        out += normalised;
+        // The loader's module id has no extension; the entry does.
+        const std::string kSuffix = ".js";
+        if (out.size() < kSuffix.size() || out.compare(out.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0)
+        {
+            out += kSuffix;
+        }
+        return out;
+    }
+
+    bool ParseScriptEntryPath(const std::string& entry_path, std::string& out_module_id)
+    {
+        const std::string prefix(kScriptEntryPrefix);
+        const std::string kSuffix = ".js";
+        if (entry_path.size() <= prefix.size() + kSuffix.size())
+        {
+            return false;
+        }
+        if (entry_path.compare(0, prefix.size(), prefix) != 0)
+        {
+            return false;
+        }
+        if (entry_path.compare(entry_path.size() - kSuffix.size(), kSuffix.size(), kSuffix) != 0)
+        {
+            return false;
+        }
+        out_module_id = entry_path.substr(prefix.size(), entry_path.size() - prefix.size() - kSuffix.size());
+        return !out_module_id.empty();
     }
 }  // namespace AssetBundles
