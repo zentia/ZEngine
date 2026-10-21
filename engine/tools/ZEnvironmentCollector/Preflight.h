@@ -77,6 +77,39 @@ struct PreflightResult
 };
 
 // Everything the preflight is allowed to look at. Kept separate from the probe
+// The game renders through Direct3D 11, so "can the adapter this machine is
+// going to pick actually initialise D3D11" is the one graphics question whose
+// answer is launch-blocking. There is no cheap way to ask it:
+// IDXGIAdapter::CheckInterfaceSupport returns DXGI_ERROR_UNSUPPORTED for D3D11
+// on every adapter measured, so a driver has to be started to get a truthful
+// answer. That costs tens of milliseconds, which is why this is collected
+// inside the probe budget rather than after it.
+struct Direct3D11Probe
+{
+    // False when the question was never asked: no d3d11.dll, no adapter, or the
+    // probe did not finish. "Did not ask" must never read as "cannot".
+    bool known = false;
+    bool deviceCreated = false;
+    // True when the adapter that produced the device is the one the game picks.
+    // A machine where only some *other* adapter can do D3D11 may still start, so
+    // it advises instead of blocking -- blocking a player who can actually play
+    // is the one mistake here that cannot be walked back.
+    bool onPreferredAdapter = false;
+    std::uint32_t featureLevel = 0;
+    std::string adapterName;
+    // Why the preferred adapter said no. Worth keeping: "the driver does not
+    // support this" and "the driver crashed" are different phone calls.
+    std::uint32_t failureHresult = 0;
+};
+
+// Feature levels are named in min-spec.json ("11_0") and compared as the raw
+// D3D_FEATURE_LEVEL number the runtime hands back, so both spellings live here
+// and no DirectX header has to be pulled into EnvironmentProbe.h.
+std::uint32_t ParseFeatureLevelName(const std::string& name);
+std::string FeatureLevelName(std::uint32_t value);
+// HRESULTs land in the report the way support reads them, not the way C++ does.
+std::string HexText(std::uint32_t value);
+
 // calls so the rules can be regression-tested with a synthetic machine: a CI
 // agent has no GPU, and a rule that cannot be tested is a rule nobody trusts.
 struct PreflightInputs
@@ -113,6 +146,8 @@ struct PreflightInputs
     // copy beside the game, because both are legitimate ways to have it.
     bool vcRuntimePresent = false;
     bool vcRuntimeKnown = false;
+
+    Direct3D11Probe direct3d11;
 };
 
 struct PreflightReportContext

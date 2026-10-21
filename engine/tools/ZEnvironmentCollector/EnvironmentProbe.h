@@ -144,6 +144,12 @@ struct Requirements
     std::uint64_t pageFileRuleMaxMemoryBytes = 16ull * 1024ull * 1024ull * 1024ull;
     // Free space on the volume the game sits on: patches and logs land there.
     std::uint64_t minimumFreeDiskSpaceBytes = 2ull * 1024ull * 1024ull * 1024ull;
+    // Raw D3D_FEATURE_LEVEL number (0xb000 for 11_0), kept as a plain integer so
+    // this header needs no DirectX header. 0 means "no feature level of its own":
+    // device creation is still checked, but a machine that comes back with a
+    // lower level is not blocked for it, because a D3D11 game running at 10_0 is
+    // a game that usually runs fine.
+    std::uint32_t minimumFeatureLevel = 0;
 };
 
 enum class CompatibilityStatus

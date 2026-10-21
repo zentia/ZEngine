@@ -8,6 +8,11 @@
 
 #include <Windows.h>
 
+#include <d3d11.h>
+// Only for the adapter enumeration and the feature-level constants: d3d11.dll is
+// loaded at runtime, so nothing here adds a link-time dependency on DirectX.
+#include <dxgi1_6.h>
+
 #include <algorithm>
 #include <atomic>
 #include <fstream>
@@ -292,6 +297,167 @@ bool HasAppLocalVcRuntime(const std::filesystem::path& gameDirectory)
     return false;
 }
 
+// Minimal COM holder, mirroring the one already local to HardwareProbe.cpp and
+// GpuSelectionProbe.cpp. Kept in this translation unit so asking one DirectX
+// question does not put a COM helper into a header every module includes.
+template <typename T>
+class ComPtr
+{
+public:
+    ComPtr() = default;
+    ~ComPtr() { Reset(); }
+    ComPtr(const ComPtr&) = delete;
+    ComPtr& operator=(const ComPtr&) = delete;
+    T** Put() { return &pointer_; }
+    T* Get() const { return pointer_; }
+    T* operator->() const { return pointer_; }
+    void Reset()
+    {
+        if (pointer_ != nullptr)
+        {
+            pointer_->Release();
+            pointer_ = nullptr;
+        }
+    }
+
+private:
+    T* pointer_ = nullptr;
+};
+
+using PFN_D3D11_CREATE_DEVICE = HRESULT(WINAPI*)(IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
+                                                 const D3D_FEATURE_LEVEL*, UINT, UINT,
+                                                 ID3D11Device**, D3D_FEATURE_LEVEL*,
+                                                 ID3D11DeviceContext**);
+
+bool TryCreateD3D11Device(PFN_D3D11_CREATE_DEVICE create, IDXGIAdapter1* adapter,
+                          std::uint32_t& featureLevel, std::uint32_t& failureHresult)
+{
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    D3D_FEATURE_LEVEL granted = D3D_FEATURE_LEVEL_9_1;
+    // The whole ladder rather than one level: that is how you learn the highest
+    // level a driver will give, instead of whether one specific level exists.
+    const D3D_FEATURE_LEVEL ladder[] = {
+        D3D_FEATURE_LEVEL_11_1,
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_1,
+        D3D_FEATURE_LEVEL_10_0,
+    };
+    const HRESULT result = create(adapter, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0,
+                                  ladder, static_cast<UINT>(std::size(ladder)), D3D11_SDK_VERSION,
+                                  device.Put(), &granted, context.Put());
+    if (FAILED(result) || device.Get() == nullptr)
+    {
+        failureHresult = static_cast<std::uint32_t>(result);
+        return false;
+    }
+    featureLevel = static_cast<std::uint32_t>(granted);
+    return true;
+}
+
+Direct3D11Probe ProbeDirect3D11()
+{
+    Direct3D11Probe probe;
+
+    // Loaded, never linked: a hard dependency on d3d11.lib would turn "this
+    // machine has no d3d11.dll" into a process that cannot start at all, and a
+    // preflight that cannot start is worse than one that answers nothing.
+    HMODULE library = ::LoadLibraryW(L"d3d11.dll");
+    if (library == nullptr)
+    {
+        return probe;
+    }
+    const auto create = reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(
+        ::GetProcAddress(library, "D3D11CreateDevice"));
+    if (create == nullptr)
+    {
+        return probe;
+    }
+
+    ComPtr<IDXGIFactory1> factory;
+    if (FAILED(::CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(factory.Put()))) ||
+        factory.Get() == nullptr)
+    {
+        return probe;
+    }
+
+    // The adapter the game is going to pick, chosen by the same call the game
+    // makes, so the answer is about that card and not about whichever one
+    // happens to be first in the list.
+    ComPtr<IDXGIFactory6> factory6;
+    ComPtr<IDXGIAdapter1> preferred;
+    if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory6), reinterpret_cast<void**>(factory6.Put()))) &&
+        factory6.Get() != nullptr)
+    {
+        factory6->EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                                             __uuidof(IDXGIAdapter1),
+                                             reinterpret_cast<void**>(preferred.Put()));
+    }
+
+    if (preferred.Get() != nullptr)
+    {
+        DXGI_ADAPTER_DESC1 description{};
+        preferred->GetDesc1(&description);
+        probe.known = true;
+        std::uint32_t level = 0;
+        std::uint32_t failure = 0;
+        if (TryCreateD3D11Device(create, preferred.Get(), level, failure))
+        {
+            probe.deviceCreated = true;
+            probe.onPreferredAdapter = true;
+            probe.featureLevel = level;
+            probe.adapterName = diagnosis::WideToUtf8(description.Description);
+            return probe;
+        }
+        probe.failureHresult = failure;
+    }
+
+    // The card the game would pick said no. Before telling the player it cannot
+    // run, ask the rest: production code falls back through the adapter list, and
+    // blocking a player whose second card works is the one mistake here that
+    // cannot be walked back afterwards.
+    for (UINT index = 0;; ++index)
+    {
+        ComPtr<IDXGIAdapter1> adapter;
+        if (factory->EnumAdapters1(index, adapter.Put()) == DXGI_ERROR_NOT_FOUND)
+        {
+            break;
+        }
+        if (adapter.Get() == nullptr)
+        {
+            continue;
+        }
+        DXGI_ADAPTER_DESC1 description{};
+        if (FAILED(adapter->GetDesc1(&description)))
+        {
+            continue;
+        }
+        // A software adapter answering yes is worse than no answer at all: it
+        // would report D3D11 as available on a machine with no GPU driver
+        // installed, which is exactly the machine this check exists to catch.
+        if ((description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0)
+        {
+            continue;
+        }
+        probe.known = true;
+        std::uint32_t level = 0;
+        std::uint32_t failure = 0;
+        if (TryCreateD3D11Device(create, adapter.Get(), level, failure))
+        {
+            probe.deviceCreated = true;
+            probe.onPreferredAdapter = false;
+            probe.featureLevel = level;
+            probe.adapterName = diagnosis::WideToUtf8(description.Description);
+            return probe;
+        }
+        if (probe.failureHresult == 0)
+        {
+            probe.failureHresult = failure;
+        }
+    }
+    return probe;
+}
+
 PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirectory)
 {
     PreflightInputs inputs;
@@ -347,8 +513,24 @@ PreflightInputs CollectPreflightInputs(const std::filesystem::path& gameDirector
         inputs.vcRuntimePresent = true;
         inputs.vcRuntimeKnown = true;
     }
+
+    // This one starts a graphics driver and costs tens of milliseconds, which
+    // makes it the most expensive thing the preflight does -- and also the only
+    // thing in it that can answer "the game will not start at all". It belongs
+    // with the probes, inside the budget, so that a driver that hangs turns into
+    // an Inconclusive verdict instead of a hung process.
+    try
+    {
+        inputs.direct3d11 = ProbeDirect3D11();
+    }
+    catch (const std::exception&)
+    {
+        inputs.direct3d11 = Direct3D11Probe{};
+    }
     return inputs;
 }
+
+
 
 // One code -> one thing the player can do. The launcher shows these verbatim, so
 // they are sentences rather than identifiers with a table on the other side.
@@ -374,6 +556,18 @@ diagnosis::UserAction ActionFor(const std::string& findingCode)
     if (findingCode == "STORAGE_LOW_FREE_SPACE")
     {
         return {"FREE_DISK_SPACE", "清理游戏所在磁盘，至少保留 2 GB 可用空间。"};
+    }
+    if (findingCode == "D3D11_DEVICE_UNAVAILABLE")
+    {
+        return {"INSTALL_GPU_DRIVER", "安装显卡厂商官方驱动后重启电脑。"};
+    }
+    if (findingCode == "D3D_FEATURE_LEVEL_BELOW_MINIMUM")
+    {
+        return {"UPGRADE_GPU", "显卡不支持游戏需要的功能级别，需要升级显卡或更新驱动后重启电脑。"};
+    }
+    if (findingCode == "D3D11_NOT_ON_PREFERRED_ADAPTER")
+    {
+        return {"SELECT_DISCRETE_GPU", "在显卡控制面板里把游戏指定为使用高性能（独立）显卡。"};
     }
     if (findingCode == "WINDOWS_INSIDER_PREVIEW")
     {
@@ -456,6 +650,32 @@ void AppendBlockingFindings(PreflightResult& result, const PreflightInputs& inpu
             "内存低于游戏的最低要求，进入游戏后很可能频繁卡顿或闪退。",
             std::to_string(inputs.system.physicalMemoryBytes / (1024 * 1024)) + " MB installed"});
     }
+
+    // The game renders through Direct3D 11, so a machine where no real adapter
+    // can initialise it is a machine where the game does not start at all --
+    // the "double-click and nothing happens" report that no other rule here
+    // catches. Blocking is only honest because the probe asks the other adapters
+    // first and only reports this when none of them could do it.
+    if (inputs.direct3d11.known && !inputs.direct3d11.deviceCreated)
+    {
+        result.findings.push_back({"D3D11_DEVICE_UNAVAILABLE", "gpu",
+            "这台电脑的显卡无法初始化 Direct3D 11，游戏无法启动。",
+            "D3D11CreateDevice failed, hr=" + HexText(inputs.direct3d11.failureHresult)});
+    }
+
+    // Only when the game states a level of its own. A D3D11 game running at
+    // 10_0 usually runs, so inventing a floor here would block machines that
+    // work -- which is the one mistake a preflight cannot undo.
+    if (inputs.direct3d11.known && inputs.direct3d11.deviceCreated &&
+        requirements.minimumFeatureLevel != 0 &&
+        inputs.direct3d11.featureLevel < requirements.minimumFeatureLevel)
+    {
+        result.findings.push_back({"D3D_FEATURE_LEVEL_BELOW_MINIMUM", "gpu",
+            "显卡支持的功能级别低于游戏要求，游戏无法启动。",
+            FeatureLevelName(inputs.direct3d11.featureLevel) + " on " +
+            inputs.direct3d11.adapterName + ", " +
+            FeatureLevelName(requirements.minimumFeatureLevel) + " required"});
+    }
 }
 
 // Everything here is advisory. A preflight that blocks a launch is a preflight
@@ -464,6 +684,17 @@ void AppendBlockingFindings(PreflightResult& result, const PreflightInputs& inpu
 void AppendAdvisoryFindings(PreflightResult& result, const PreflightInputs& inputs,
                             const Requirements& requirements)
 {
+    // D3D11 works somewhere on this machine, but not on the card the game is
+    // going to pick. Advising rather than blocking: production code walks the
+    // adapter list too, and the game may well start on the other one.
+    if (inputs.direct3d11.known && inputs.direct3d11.deviceCreated &&
+        !inputs.direct3d11.onPreferredAdapter)
+    {
+        result.findings.push_back({"D3D11_NOT_ON_PREFERRED_ADAPTER", "gpu",
+            "游戏默认使用的显卡无法初始化 Direct3D 11，游戏可能会改用另一张显卡或无法启动。",
+            "D3D11 available on " + inputs.direct3d11.adapterName});
+    }
+
     if (inputs.gpusKnown)
     {
         // Same vendor, two different driver versions: what a mixed Intel Arc +
@@ -604,7 +835,9 @@ bool IsBlocking(const std::string& findingCode)
 {
     return findingCode == "WINDOWS_X64_REQUIRED" ||
            findingCode == "CPU_ISA_UNSUPPORTED" ||
-           findingCode == "PHYSICAL_MEMORY_INSUFFICIENT";
+           findingCode == "PHYSICAL_MEMORY_INSUFFICIENT" ||
+           findingCode == "D3D11_DEVICE_UNAVAILABLE" ||
+           findingCode == "D3D_FEATURE_LEVEL_BELOW_MINIMUM";
 }
 
 std::filesystem::path DefaultGameDirectory()
@@ -654,6 +887,49 @@ void PrintPreflightUsage()
 }
 
 } // namespace
+
+std::uint32_t ParseFeatureLevelName(const std::string& name)
+{
+    // The runtime's own numbering, which is what a device hands back and what
+    // comparisons are made against. Written out because these are the only
+    // levels Direct3D has ever defined and anything else is a typo worth naming.
+    if (name == "9_1") { return 0x9100; }
+    if (name == "9_2") { return 0x9200; }
+    if (name == "9_3") { return 0x9300; }
+    if (name == "10_0") { return 0xa000; }
+    if (name == "10_1") { return 0xa100; }
+    if (name == "11_0") { return 0xb000; }
+    if (name == "11_1") { return 0xb100; }
+    if (name == "12_0") { return 0xc000; }
+    if (name == "12_1") { return 0xc100; }
+    if (name == "12_2") { return 0xc200; }
+    return 0;
+}
+
+std::string FeatureLevelName(std::uint32_t value)
+{
+    switch (value)
+    {
+        case 0x9100: return "9_1";
+        case 0x9200: return "9_2";
+        case 0x9300: return "9_3";
+        case 0xa000: return "10_0";
+        case 0xa100: return "10_1";
+        case 0xb000: return "11_0";
+        case 0xb100: return "11_1";
+        case 0xc000: return "12_0";
+        case 0xc100: return "12_1";
+        case 0xc200: return "12_2";
+        default: return "none";
+    }
+}
+
+std::string HexText(std::uint32_t value)
+{
+    std::ostringstream stream;
+    stream << "0x" << std::hex << value;
+    return stream.str();
+}
 
 const char* PreflightFileName()
 {
@@ -863,7 +1139,26 @@ bool ParseRequirementsJson(const std::string& text, Requirements& requirements,
         }
         cursor.SkipSpace();
 
-        if (key == "avx" || key == "avx2" || key == "fma" || key == "f16c")
+        if (key == "minimumFeatureLevel")
+        {
+            // The one non-numeric threshold, and the only one spelled as text:
+            // "11_0" is how the requirement is written down everywhere else,
+            // and a bare number here would be a guess at the runtime's encoding.
+            std::string name;
+            if (!cursor.ReadQuoted(name))
+            {
+                problems.push_back("min-spec: \"minimumFeatureLevel\" must be a name like \"11_0\"");
+                return false;
+            }
+            const std::uint32_t level = ParseFeatureLevelName(name);
+            if (level == 0)
+            {
+                problems.push_back("min-spec: \"" + name + "\" is not a feature level");
+                return false;
+            }
+            parsed.minimumFeatureLevel = level;
+        }
+        else if (key == "avx" || key == "avx2" || key == "fma" || key == "f16c")
         {
             bool value = false;
             if (!cursor.ReadBoolean(value))
@@ -1102,6 +1397,7 @@ std::string BuildPreflightJson(
            << ", \"minimumPageFileBytes\": " << context.requirements.minimumPageFileBytes
            << ", \"pageFileRuleMaxMemoryBytes\": " << context.requirements.pageFileRuleMaxMemoryBytes
            << ", \"minimumFreeDiskSpaceBytes\": " << context.requirements.minimumFreeDiskSpaceBytes
+           << ", \"minimumFeatureLevel\": " << JsonString(FeatureLevelName(context.requirements.minimumFeatureLevel))
            << "},\n"
            << "  \"requirementsSource\": " << JsonString(context.requirementsSource) << ",\n";
 
@@ -1125,7 +1421,15 @@ std::string BuildPreflightJson(
                    : 0ull)
            << "},\n"
            << "    \"runtime\": {\"vcRuntimePresent\": " << BoolText(inputs.vcRuntimePresent)
-           << ", \"vcRuntimeKnown\": " << BoolText(inputs.vcRuntimeKnown) << "},\n";
+           << ", \"vcRuntimeKnown\": " << BoolText(inputs.vcRuntimeKnown) << "},\n"
+           << "    \"direct3d11\": {\"known\": " << BoolText(inputs.direct3d11.known)
+           << ", \"deviceCreated\": " << BoolText(inputs.direct3d11.deviceCreated)
+           << ", \"onPreferredAdapter\": " << BoolText(inputs.direct3d11.onPreferredAdapter)
+           << ", \"featureLevel\": " << JsonString(FeatureLevelName(inputs.direct3d11.featureLevel))
+           << ", \"featureLevelValue\": " << inputs.direct3d11.featureLevel
+           << ", \"adapterName\": " << JsonString(inputs.direct3d11.adapterName)
+           << ", \"failureHresult\": " << JsonString(HexText(inputs.direct3d11.failureHresult))
+           << "},\n";
 
     stream << "    \"gpuAdapters\": [";
     for (std::size_t index = 0; index < inputs.gpus.size(); ++index)

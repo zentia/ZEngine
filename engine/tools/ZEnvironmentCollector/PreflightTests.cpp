@@ -65,6 +65,12 @@ preflight::PreflightInputs HealthyInputs()
 
     inputs.vcRuntimePresent = true;
     inputs.vcRuntimeKnown = true;
+
+    inputs.direct3d11.known = true;
+    inputs.direct3d11.deviceCreated = true;
+    inputs.direct3d11.onPreferredAdapter = true;
+    inputs.direct3d11.featureLevel = preflight::ParseFeatureLevelName("11_1");
+    inputs.direct3d11.adapterName = "NVIDIA GeForce RTX 5080";
     return inputs;
 }
 
@@ -443,6 +449,89 @@ int main()
             std::filesystem::remove_all(directory, ignored);
         }
 
+        // ---- Direct3D 11: the one graphics question that decides whether the
+        // game starts at all. The game is D3D11, so a machine that cannot
+        // initialise it is not a slow machine, it is a machine that does nothing.
+        {
+            auto inputs = HealthyInputs();
+            inputs.direct3d11.deviceCreated = false;
+            inputs.direct3d11.onPreferredAdapter = false;
+            inputs.direct3d11.failureHresult = 0x887a0004u;
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::BelowMinimum,
+                  "a machine with no D3D11 at all is below the minimum");
+            Check(HasFinding(result, "D3D11_DEVICE_UNAVAILABLE"), "the reason is named");
+            Check(result.actions.front().code == "INSTALL_GPU_DRIVER",
+                  "the player is told to install a driver");
+        }
+        {
+            // Never asked is not the same as answered no. A probe that did not
+            // finish, or a machine with no d3d11.dll, must not block a launch.
+            auto inputs = HealthyInputs();
+            inputs.direct3d11 = preflight::Direct3D11Probe{};
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Pass, "an unanswered probe says nothing");
+            Check(!HasFinding(result, "D3D11_DEVICE_UNAVAILABLE"), "and does not claim D3D11 is missing");
+        }
+        {
+            // The card the game would pick cannot do it, another one can. The
+            // game may well start, so this advises and never blocks -- blocking
+            // a player who can play is the mistake that cannot be walked back.
+            auto inputs = HealthyInputs();
+            inputs.direct3d11.onPreferredAdapter = false;
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Advise,
+                  "D3D11 only on another adapter advises");
+            Check(HasFinding(result, "D3D11_NOT_ON_PREFERRED_ADAPTER"), "and says which way it went");
+            Check(!HasFinding(result, "D3D11_DEVICE_UNAVAILABLE"),
+                  "without claiming the machine has no D3D11");
+        }
+        {
+            // A feature level floor blocks only because the game asked for one.
+            auto inputs = HealthyInputs();
+            inputs.direct3d11.featureLevel = preflight::ParseFeatureLevelName("10_0");
+            Requirements requirements;
+            requirements.minimumFeatureLevel = preflight::ParseFeatureLevelName("11_0");
+            const auto result = Evaluate(inputs, requirements);
+            Check(result.verdict == preflight::PreflightVerdict::BelowMinimum,
+                  "a level below the stated floor is below the minimum");
+            Check(HasFinding(result, "D3D_FEATURE_LEVEL_BELOW_MINIMUM"), "and names the gap");
+        }
+        {
+            // Same machine, no floor stated: 10_0 is a level a D3D11 game very
+            // often runs on, so guessing one here would block machines that work.
+            auto inputs = HealthyInputs();
+            inputs.direct3d11.featureLevel = preflight::ParseFeatureLevelName("10_0");
+            const auto result = Evaluate(inputs);
+            Check(result.verdict == preflight::PreflightVerdict::Pass,
+                  "no stated floor means no level requirement");
+        }
+        {
+            auto inputs = HealthyInputs();
+            inputs.direct3d11.featureLevel = preflight::ParseFeatureLevelName("11_0");
+            Requirements requirements;
+            requirements.minimumFeatureLevel = preflight::ParseFeatureLevelName("11_0");
+            Check(!HasFinding(Evaluate(inputs, requirements), "D3D_FEATURE_LEVEL_BELOW_MINIMUM"),
+                  "meeting the floor exactly is not below it");
+        }
+        {
+            // The one threshold spelled as text.
+            Requirements requirements;
+            std::vector<std::string> problems;
+            Check(preflight::ParseRequirementsJson("{\"minimumFeatureLevel\": \"11_0\"}", requirements, problems),
+                  "a feature level name parses");
+            Check(requirements.minimumFeatureLevel == preflight::ParseFeatureLevelName("11_0"),
+                  "and lands as the runtime's own number");
+        }
+        {
+            Requirements requirements;
+            std::vector<std::string> problems;
+            Check(!preflight::ParseRequirementsJson("{\"minimumFeatureLevel\": \"11_7\"}", requirements, problems),
+                  "a level that does not exist is rejected");
+            Check(!preflight::ParseRequirementsJson("{\"minimumFeatureLevel\": 45312}", requirements, problems),
+                  "a bare number is not a feature level");
+        }
+
         // ---- the launcher contract ----
         {
             preflight::PreflightReportContext context;
@@ -461,6 +550,7 @@ int main()
             Check(json.find("\"monitorAttachment\": {") != std::string::npos, "monitorAttachment is reported");
             Check(json.find("\"pageFile\": {") != std::string::npos, "pageFile is reported");
             Check(json.find("\"runtime\": {") != std::string::npos, "runtime is reported");
+            Check(json.find("\"direct3d11\": {") != std::string::npos, "direct3d11 is reported");
             Check(json.find("\"attachedOutputCount\": ") != std::string::npos, "each adapter reports its attached outputs");
             Check(json.find("\"code\": \"FREE_DISK_SPACE\", \"zh\": ") != std::string::npos, "actions carry Chinese text");
             Check(json.find('\t') == std::string::npos, "no raw control characters in the JSON");
