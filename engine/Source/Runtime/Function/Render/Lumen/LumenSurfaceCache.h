@@ -29,6 +29,11 @@ public:
     // 初始化
     bool Initialize(RHI* rhi, const LumenConfig& config);
 
+    // 运行时改配置（CVar）。页面已经建好的话会由场景哈希决定要不要重建。
+    void setConfig(const LumenConfig& config) { m_Config = config; }
+
+    const LumenConfig& getConfig() const { return m_Config; }
+
     // 清理
     void clear();
 

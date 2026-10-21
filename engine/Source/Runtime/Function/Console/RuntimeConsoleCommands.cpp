@@ -4,6 +4,9 @@
 #include "Runtime/Application/Application.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Render/LargeWorldCoordinatesSettings.h"
+#if defined(Z_HAS_LUMEN)
+    #include "Runtime/Function/Render/Lumen/LumenSettings.h"
+#endif
 #include "Runtime/Function/Render/Pipeline/RenderPipelineSettings.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UMG/Asset/UMGAssetIO.h"
@@ -149,4 +152,8 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
     // The RenderSystem applies a change at the next safe frame boundary.
     RenderPipelineSettings::RegisterConsoleVariables(console);
     LargeWorldCoordinatesSettings::RegisterConsoleVariables(console);
+#if defined(Z_HAS_LUMEN)
+    // Lumen (CPU distance-field GI): every knob is live (re-applied each frame).
+    LumenSettings::RegisterConsoleVariables(console);
+#endif
 }

@@ -76,6 +76,38 @@ bool LumenGlobalIllumination::ComputeGlobalIllumination(std::shared_ptr<RenderSc
     return true;
 }
 
+bool LumenGlobalIllumination::GetAverageIrradiance(Vector3& out_irradiance, uint32_t& out_probe_count) const
+{
+    out_irradiance = Vector3(0.0f, 0.0f, 0.0f);
+    out_probe_count = 0;
+
+    if (!m_ProbeGrid.IsValid())
+    {
+        return false;
+    }
+
+    Vector3 accumulated(0.0f, 0.0f, 0.0f);
+    uint32_t counted = 0;
+    for (uint32_t i = 0; i < m_ProbeGrid.GetProbeCount(); ++i)
+    {
+        if (m_ProbeGrid.last_updated_frame[i] == 0)
+        {
+            continue;
+        }
+        accumulated += m_ProbeGrid.irradiance[i];
+        ++counted;
+    }
+
+    if (counted == 0)
+    {
+        return false;
+    }
+
+    out_irradiance = accumulated / static_cast<float>(counted);
+    out_probe_count = counted;
+    return true;
+}
+
 void LumenGlobalIllumination::ResizeProbeGrid()
 {
     if (m_DistanceField == nullptr || !m_DistanceField->isLoaded())

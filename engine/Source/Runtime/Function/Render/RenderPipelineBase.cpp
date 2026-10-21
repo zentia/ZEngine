@@ -1,9 +1,14 @@
 #include "Runtime/Function/Render/RenderPipelineBase.h"
 
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Function/Render/RenderCamera.h"
+#include "Runtime/Function/Render/RenderScene.h"
 #include "Runtime/Function/Render/RenderSwapContext.h"
 #include "Runtime/Function/Render/RenderingThread/RenderThreadChecks.h"
 #include "Runtime/Profiler/Profiler.h"
+#if defined(Z_HAS_LUMEN)
+    #include "Runtime/Function/Render/Lumen/LumenRenderPass.h"
+#endif
 #if defined(Z_HAS_VULKAN)
     #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #endif
@@ -38,6 +43,33 @@ void RenderPipelineBase::PreparePassData(std::shared_ptr<RenderResourceBase> ren
     }
 #if defined(Z_HAS_VULKAN)
     GET_SYSTEM(DebugDrawManager)->PreparePassData(render_resource);
+#endif
+}
+
+void RenderPipelineBase::UpdateLumen(std::shared_ptr<RenderScene> render_scene,
+                                     std::shared_ptr<RenderCamera> camera,
+                                     float delta_time)
+{
+#if defined(Z_HAS_LUMEN)
+    if (m_LumenPass == nullptr || render_scene == nullptr || camera == nullptr)
+    {
+        return;
+    }
+
+    // m_LumenPass 的静态类型是 RenderPassBase，因为槽位是给所有 Pass 共用的。
+    // 用 dynamic_cast 而不是在基类里放一个 Lumen 指针：剥掉 Lumen 的配置里
+    // LumenRenderPass 这个类根本不存在。
+    auto* lumen_pass = dynamic_cast<LumenRenderPass*>(m_LumenPass.get());
+    if (lumen_pass == nullptr)
+    {
+        return;
+    }
+
+    lumen_pass->Render(render_scene, camera, delta_time);
+#else
+    (void)render_scene;
+    (void)camera;
+    (void)delta_time;
 #endif
 }
 

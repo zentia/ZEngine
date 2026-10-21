@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-21 (Lumen render pass: wired into the frame loop, and it has CVars now)
+
+The probe grid had real content, but nothing in the engine ever asked for it.
+`LumenRenderPass::Render()` — the only function that drives `Update` /
+`ComputeGlobalIllumination` / `ComputeReflections` — had **zero callers** (only
+`PreparePassData` was invoked, from `RenderPipelineBase`). It also ended in a
+TODO, so even if it had run the result went nowhere. And there were no CVars at
+all: GI could not be switched off at runtime and probe density was a hard-coded
+constant.
+
+- **`Z_HAS_LUMEN`** (new compile definition, `engine/CMakeLists.txt`) now mirrors
+  which configurations actually strip `Function/Render/Lumen` from ZRuntime
+  (Emscripten, and Windows with `ZENGINE_USE_VULKAN=OFF`). This is *not* the same
+  as `Z_HAS_VULKAN`: Apple builds Metal and has no Vulkan, yet does compile
+  Lumen — which is exactly why guarding the pass on `Z_HAS_VULKAN` left it
+  uncreated there.
+- **`m_LumenPass` is now created on every build that compiles Lumen**, in
+  `DesktopRenderPipelineModule::Setup()` before the Apple early-return. Lumen is
+  pure CPU (distance-field voxelization, surface cache, probe grid) — it needs no
+  render pass, framebuffer or swapchain.
+- **`RenderPipelineBase::UpdateLumen(scene, camera, delta_time)`** dispatches to
+  the pass through a `dynamic_cast` (the slot is shared by all passes, and on
+  stripped configurations `LumenRenderPass` does not exist at all). No-op when
+  there is no Lumen pass, so the Mobile path is unaffected.
+- **New `RenderLumenCmd` frame command**, enqueued right after
+  `RenderUpdateSceneCmd`: GI reads scene entities, so it must follow the
+  visibility update, and it must precede `PreparePassData` so its result is
+  available to this frame's per-frame uniform.
+- **`Render()` now publishes**: it writes the probe grid's mean irradiance into
+  `RenderScene::m_IndirectLighting` (new POD `SceneIndirectLighting` in
+  `RenderCommon.h`, deliberately Lumen-free so stripped configurations still
+  compile). The published payload carries a **weight**, not just a colour: an
+  enclosed scene legitimately resolves to black, and that is data, not "no data".
+- **`LumenRenderPass::Initialize` no longer requires an RHI.** Lumen runs entirely
+  on the CPU today; gating it on `m_Rhi` left the whole subsystem uninitialized
+  whenever the RHI was not up yet.
+- **New `Lumen/LumenSettings.{h,cpp}`** registers `r.Lumen.Enable`,
+  `r.Lumen.GlobalIllumination`, `r.Lumen.Reflections`, `r.Lumen.ProbeBudget`,
+  `r.Lumen.SampleCount`, `r.Lumen.ProbeSpacing`, `r.Lumen.TemporalBlendRate` and
+  `r.Lumen.IndirectIntensity`, following the MegaLights pattern. They are **live**:
+  `Render()` re-applies them every frame via the new
+  `LumenRenderer::ApplyConfig()`, which pushes the config down to all five
+  subsystems without re-initializing them (that is the only way to keep the probe
+  grid's history and the surface cache's pages).
+- **`LumenRenderPassWiringSmokeTest`** (37 checks,
+  `-DZENGINE_BUILD_LUMEN_RENDER_PASS_WIRING_SMOKE_TEST=ON`, registered with
+  CTest) pins it headlessly: the pass publishes a red-dominant irradiance for a
+  red floor, `r.Lumen.Enable=0` zeroes the weight rather than leaving stale light,
+  `r.Lumen.IndirectIntensity` scales the result, `r.Lumen.ProbeSpacing` resizes
+  the grid without restarting the pipeline, and `UpdateLumen` drives a Lumen pass
+  while ignoring a non-Lumen one.
+
 ### Added / Fixed - 2026-10-21 (Lumen global illumination: GI produces something, and it is not noise)
 
 `ComputeGlobalIllumination` was a TODO that returned `true` without touching

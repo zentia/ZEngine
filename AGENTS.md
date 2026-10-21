@@ -2118,6 +2118,30 @@ downstream reads it.
 - **`gi_temporal_blend_rate = 0` means freeze, not "instant"** — see
   `ComputeTemporalAlpha`, which returns 0 there.
 
+### 2.38 Lumen 的接线：Z_HAS_LUMEN、UpdateLumen 和 RenderScene 上的发布点
+
+- **`Z_HAS_LUMEN` 才是"Lumen 在不在"的开关**，不是 `Z_HAS_VULKAN`。Lumen 的 .cpp
+  只在两处被剥掉（Emscripten、`WIN32 AND NOT ZENGINE_USE_VULKAN`，见
+  `Source/Runtime/CMakeLists.txt`），而 Apple 编 Metal、没有 Vulkan、却**编 Lumen**
+  —— 以前把 `m_LumenPass` 放在 `#if defined(Z_HAS_VULKAN)` 里，Apple 永远拿不到它。
+  所有引用 `LumenRenderPass` / `LumenSettings` 的管线/控制台代码都必须包在
+  `Z_HAS_LUMEN` 里。
+- **GI 在帧里的位置是"场景更新之后、PreparePassData 之前"**（`RenderLumenCmd`）。
+  GI 读场景实体，必须等可见性更新完；它算出来的间接光又必须早于本帧的 GPU 资源
+  上传，否则进不了 per-frame uniform。
+- **Lumen 是纯 CPU 的**，所以 `LumenRenderPass::Initialize` 只需要 `render_resource`
+  （CPU 网格几何的唯一来源），**不要**再拿 `m_Rhi` 去 gate 初始化。
+- Lumen 的结果通过 `RenderScene::m_IndirectLighting`（POD `SceneIndirectLighting`，
+  在 `RenderCommon.h`，**刻意不依赖任何 Lumen 头**）发布。渲染器够不到渲染管线，
+  只有场景和相机，所以发布点只能在场景上。
+- **发布的是"权重 + 颜色"，不是"有没有值"**：全黑的场景（被封闭几何体包住）算出来
+  的辐照度本来就是 0，那是有数据。关掉 Lumen 时权重归零，让延迟光照退回 baked
+  irradiance cubemap，而不是留下上一帧的陈旧颜色。
+- `r.Lumen.*` 是**热生效**的：`Render()` 每帧调 `LumenRenderer::ApplyConfig()`，把
+  配置推给五个子系统而**不**重新 Initialize —— 只有这样才能保住 probe 网格的历史
+  和表面缓存的页面。结构性字段（`distance_field_resolution` /
+  `surface_cache_resolution`）不在热改范围内，改它们要重建资源。
+
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).

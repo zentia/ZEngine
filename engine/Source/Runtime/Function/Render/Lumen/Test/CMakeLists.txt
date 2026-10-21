@@ -147,6 +147,48 @@ if(ZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST)
     message(STATUS "Configured Lumen global-illumination smoke-test target: LumenGlobalIlluminationSmokeTest")
 endif()
 
+# ---------------------------------------------------------------------
+# Render-pass wiring smoke test. Pins that LumenRenderPass::Render
+# actually publishes its irradiance into RenderScene (it used to end in
+# a TODO with zero callers), that the r.Lumen.* CVars are registered and
+# live, and that RenderPipelineBase::UpdateLumen dispatches to a Lumen
+# pass while ignoring anything else.
+# ---------------------------------------------------------------------
+option(ZENGINE_BUILD_LUMEN_RENDER_PASS_WIRING_SMOKE_TEST
+       "Build the Lumen render-pass wiring smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_LUMEN_RENDER_PASS_WIRING_SMOKE_TEST)
+    add_executable(LumenRenderPassWiringSmokeTest LumenRenderPassWiringSmokeTest.cpp)
+
+    set_target_properties(LumenRenderPassWiringSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    target_link_libraries(LumenRenderPassWiringSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(LumenRenderPassWiringSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(LumenRenderPassWiringSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(LumenRenderPassWiringSmokeTest ZEnginePCH)
+        target_precompile_headers(LumenRenderPassWiringSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(LumenRenderPassWiringSmokeTest PRIVATE /W4)
+    endif()
+
+    if(APPLE)
+        target_sources(LumenRenderPassWiringSmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME LumenRenderPassWiringSmokeTest COMMAND LumenRenderPassWiringSmokeTest)
+
+    message(STATUS "Configured Lumen render-pass wiring smoke-test target: LumenRenderPassWiringSmokeTest")
+endif()
+
 set_target_properties(LumenSceneGeometrySmokeTest PROPERTIES
     CXX_STANDARD 23
     FOLDER "Engine/Tests"

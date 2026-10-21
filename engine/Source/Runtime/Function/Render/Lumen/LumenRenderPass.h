@@ -11,6 +11,9 @@ class RHI;
 class RenderResourceBase;
 
 // Lumen渲染Pass
+//
+// 这是 Lumen 唯一的生产者：每帧在渲染线程上被 RenderPipelineBase::UpdateLumen 调用，
+// 跑完把结果写进 RenderScene::m_IndirectLighting，供后续 Pass / per-frame uniform 取用。
 class LumenRenderPass : public RenderPassBase
 {
 public:
@@ -29,16 +32,25 @@ public:
     // 获取Lumen渲染器
     LumenRenderer* getLumenRenderer() { return &m_LumenRenderer; }
 
-private:
-    // 初始化渲染资源
-    void InitializeRenderResources();
+    // 最近一次 Render 有没有产出间接光。给调试/编辑器用。
+    bool hasPublishedIndirectLighting() const { return m_HasPublished; }
 
-    // 更新渲染资源
-    void UpdateRenderResources(std::shared_ptr<RenderResourceBase> render_resource);
+private:
+    // 把 r.Lumen.* 的当前值推给渲染器（每帧都做，所以 CVar 是热生效的）
+    void ApplyConsoleVariables();
+
+    // 把本帧的 GI 结果写进场景
+    void PublishIndirectLighting(RenderScene& render_scene);
 
     // Lumen渲染器
     LumenRenderer m_LumenRenderer;
 
     // Lumen配置
     LumenConfig m_LumenConfig;
+
+    // 最近一次 Render 是否产出了间接光
+    bool m_HasPublished {false};
+
+    // 子系统是否真的初始化过（需要 render_resource，而它在 Initialize 时经常还没有）
+    bool m_RendererInitialized {false};
 };

@@ -12,6 +12,8 @@
 class RHI;
 class RHIRenderPass;
 class RenderResourceBase;
+class RenderScene;
+class RenderCamera;
 class RenderSwapContext;
 class WindowUI;
 class RenderPipelineModule;
@@ -48,6 +50,20 @@ public:
     virtual void Initialize(RenderPipelineInitInfo init_info) = 0;
 
     virtual void PreparePassData(std::shared_ptr<RenderResourceBase> render_resource);
+
+    // 每帧推进 Lumen（纯 CPU：距离场 + 表面缓存 + 辐照度 probe 网格）。
+    //
+    // 调用点在 RenderSystem 的帧命令里，紧跟在场景可见性更新之后 —— GI 读的是
+    // 场景实体，必须等它们更新完；它又必须早于 PreparePassData，因为后者上传
+    // 本帧的 GPU 资源。
+    //
+    // `LumenRenderPass::Render()` 以前**一个调用者都没有**，所以整条链（距离场 →
+    // 表面缓存 → probe 网格）从来没在真实帧循环里跑过。没有 Lumen pass 时这里是
+    // no-op，所以 Mobile 管线和剥掉 Lumen 的配置都不受影响。
+    virtual void UpdateLumen(std::shared_ptr<RenderScene> render_scene,
+                             std::shared_ptr<RenderCamera> camera,
+                             float delta_time);
+
     virtual void BuildDrawLists(std::shared_ptr<RenderResourceBase> render_resource, RHIDrawList& out_draw_list);
     virtual void SubmitDrawLists(RHI* rhi,
                                  std::shared_ptr<RenderResourceBase> render_resource,
