@@ -726,12 +726,19 @@ int main(int argc, char** argv)
     RequireUnmodifiedSpineMatchesHandEdit(checks, failures);
 
     // ------------------------------------------------------------------
-    // 2. The Caster pass in isolation. Currently the parser drops it
-    //    (unknown pass-level commands swallow the block), so informational.
+    // 2. The Caster pass in isolation, exercising the shadow macros.
+    //
+    //    Required (not informational) since the legacy-output-semantic fix:
+    //    this is the pass that carries `o.uv = v.texcoord;` -- a float4 ->
+    //    float2 assignment that is legal HLSL, that FXC only warned about,
+    //    and that DXC rejects outright under -WX as
+    //        implicit truncation of vector type [-Werror,-Wconversion]
+    //    -WX is opt-in now (r.Shaders.WarningsAsErrors); this check is what
+    //    stops someone from hard-coding it back on without noticing.
     // ------------------------------------------------------------------
     RunShaderFile("Spine-Skeleton-Tint-CasterOnly.shader",
                   "[2] Spine Caster pass (isolated, exercises shadow macros)",
-                  false,
+                  true,
                   checks,
                   failures);
 

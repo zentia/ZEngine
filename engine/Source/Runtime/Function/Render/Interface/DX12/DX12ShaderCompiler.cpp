@@ -25,6 +25,24 @@ namespace
     // Controlled by console variable `r.Shaders.EmbedDebugInfo`.
     static bool g_embed_debug_info = false;
 
+    // Global warnings-as-errors flag for DXC (`-WX`).
+    //
+    // `-WX` used to be hard-coded ON in _DEBUG builds. That made Debug the
+    // ONLY configuration that rejected shaders every other configuration
+    // accepted -- which sounds like a feature and is not. DXC enables warning
+    // groups FXC and Cg never had, so any Unity/Cg-era shader that relies on
+    // an implicit conversion FXC has always permitted fails to compile,
+    // in Debug only, with
+    //
+    //     implicit truncation of vector type [-Werror,-Wconversion]
+    //
+    // The concrete case: Spine's Caster pass does `o.uv = v.texcoord;`, where
+    // appdata_base::texcoord is a float4 (as in real UnityCG.cginc) and o.uv
+    // is a float2. Legal HLSL, warned about by FXC, fatal under -WX.
+    //
+    // Off by default; `r.Shaders.WarningsAsErrors 1` opts back in.
+    static bool g_shader_warnings_as_errors = false;
+
     // FNV-1a 64. Same hash style as ShaderLab::ShaderLabCompiler so the two
     // caches can coexist on disk without semantic confusion. Cache-key
     // collisions are not a security issue here -- a collided slot fails the
@@ -542,6 +560,23 @@ DX12ShaderCompiler::DX12ShaderCompiler()
             "(delete Intermediate/Shaders/ cache or touch the .hlsl file).",
             false,
             &g_embed_debug_info);
+
+        // `-WX` is opt-in now. It used to be unconditional under _DEBUG, which
+        // made Debug the only configuration that rejected Cg-authored shaders
+        // for warnings DXC invented (see g_shader_warnings_as_errors).
+        console->RegisterBoolVariable(
+            "r.Shaders.WarningsAsErrors",
+            "Treat DXC warnings as errors (-WX) when compiling DX12 shaders.\n"
+            "Off by default: DXC enables warning groups FXC/Cg never had, so\n"
+            "-WX rejects shaders that are legal HLSL -- e.g. an implicit\n"
+            "float4->float2 truncation, which is what assigning Unity's\n"
+            "appdata_base::texcoord to a float2 does, and which FXC only\n"
+            "warned about. It used to be hard-coded ON in _DEBUG builds, which\n"
+            "made Debug the only configuration that failed.\n"
+            "Shaders that already failed under -WX must be recompiled to pick\n"
+            "up the change (delete Intermediate/Shaders/ or touch the .hlsl).",
+            false,
+            &g_shader_warnings_as_errors);
     }
 }
 
@@ -1154,10 +1189,17 @@ DX12ShaderCompileResult DX12ShaderCompiler::CompileInternal(const std::string& h
         arguments.push_back(hv_arg_wide.c_str());
     }
 
-    // Enable warnings as errors in debug
-#ifdef _DEBUG
-    arguments.push_back(L"-WX");
-#endif
+    // Warnings as errors, opt-in via `r.Shaders.WarningsAsErrors`.
+    //
+    // Deliberately NOT tied to _DEBUG any more. A compile-time switch made
+    // Debug stricter than Release, so a shader could build in Release and
+    // fail in Debug -- and the failures were not real language errors but
+    // DXC warning groups (notably -Wconversion, on by default) firing on
+    // HLSL that FXC accepted. See g_shader_warnings_as_errors.
+    if (g_shader_warnings_as_errors)
+    {
+        arguments.push_back(L"-WX");
+    }
 
     // Compile shader
     ComPtr<IDxcOperationResult> compile_result;
