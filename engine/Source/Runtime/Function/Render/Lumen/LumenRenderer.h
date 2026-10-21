@@ -38,7 +38,9 @@ public:
                                    float delta_time);
 
     // 计算反射
-    void ComputeReflections(std::shared_ptr<RenderScene> render_scene, std::shared_ptr<RenderCamera> camera);
+    void ComputeReflections(std::shared_ptr<RenderScene> render_scene,
+                            std::shared_ptr<RenderCamera> camera,
+                            float delta_time);
 
     // 获取配置
     const LumenConfig& getConfig() const { return m_Config; }
@@ -51,6 +53,10 @@ public:
     // 把本帧的 GI 结果汇总出来，供渲染器写进 per-frame uniform。
     // 返回 false 表示 Lumen 没有产出（关掉了 / 没有距离场 / 一个 probe 都还没更新）。
     bool GetIndirectLighting(Vector3& out_irradiance, uint32_t& out_probe_count) const;
+
+    // 把本帧的反射结果汇总出来，供渲染器写进 per-frame uniform。
+    // 返回 false 表示 Lumen 没有产出（关掉了 / 没有距离场 / 一个页面都还没更新）。
+    bool GetReflection(Vector3& out_color, uint32_t& out_sample_count) const;
 
     // 获取统计信息
     const LumenStats& GetStats() const { return m_Stats; }

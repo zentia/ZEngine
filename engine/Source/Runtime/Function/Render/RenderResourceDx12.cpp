@@ -816,6 +816,7 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
     // Lumen 的间接光：CPU probe 网格 -> shader 的唯一通路（与 RenderResource.cpp 保持
     // 一致）。权重 0 时 shader 侧行为与加字段之前完全一致，继续用 ambient_light。
     mesh_perframe_storage_buffer_object.lumen_indirect = render_scene->m_IndirectLighting.ToUniform();
+    mesh_perframe_storage_buffer_object.lumen_reflection = render_scene->m_IndirectLighting.ToReflectionUniform();
 
     m_PointLightShadowPerFrame.point_light_num = point_light_num;
     for (uint32_t i = 0; i < point_light_num; ++i)

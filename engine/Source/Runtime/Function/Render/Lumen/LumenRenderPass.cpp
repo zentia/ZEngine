@@ -67,10 +67,11 @@ void LumenRenderPass::Render(std::shared_ptr<RenderScene> render_scene,
     m_LumenRenderer.ComputeGlobalIllumination(render_scene, camera, delta_time);
 
     // 计算反射
-    m_LumenRenderer.ComputeReflections(render_scene, camera);
+    m_LumenRenderer.ComputeReflections(render_scene, camera, delta_time);
 
     // 把结果写出来，供后续 Pass / per-frame uniform 使用
     PublishIndirectLighting(*render_scene);
+    PublishReflection(*render_scene);
 }
 
 void LumenRenderPass::ApplyConsoleVariables()
@@ -87,7 +88,11 @@ void LumenRenderPass::ApplyConsoleVariables()
         desired.gi_probe_update_budget == m_LumenConfig.gi_probe_update_budget &&
         desired.gi_sample_count == m_LumenConfig.gi_sample_count &&
         desired.gi_probe_spacing == m_LumenConfig.gi_probe_spacing &&
-        desired.gi_temporal_blend_rate == m_LumenConfig.gi_temporal_blend_rate)
+        desired.gi_temporal_blend_rate == m_LumenConfig.gi_temporal_blend_rate &&
+        // reflection_temporal_blend_rate 由 r.Lumen.TemporalBlendRate 同一份值推出，
+        // 所以上面那一行已经覆盖；这两个是各自的预算 / 采样数。
+        desired.reflection_update_budget == m_LumenConfig.reflection_update_budget &&
+        desired.reflection_sample_count == m_LumenConfig.reflection_sample_count)
     {
         return;
     }
@@ -115,4 +120,24 @@ void LumenRenderPass::PublishIndirectLighting(RenderScene& render_scene)
     published.irradiance = irradiance * LumenSettings::GetIndirectIntensity();
     published.weight = 1.0f;
     published.frame_index = m_LumenRenderer.getGlobalIllumination()->getFrameIndex();
+}
+
+void LumenRenderPass::PublishReflection(RenderScene& render_scene)
+{
+    Vector3 reflection(0.0f, 0.0f, 0.0f);
+    uint32_t sample_count = 0;
+    const bool published_ok = m_LumenRenderer.GetReflection(reflection, sample_count);
+
+    SceneIndirectLighting& published = render_scene.m_IndirectLighting;
+    if (!published_ok)
+    {
+        // 关掉了 / 没有距离场 / 一个页面都还没更新。只清反射那两个字段，不要动
+        // PublishIndirectLighting 刚写好的 GI —— 两者是独立的开关。
+        published.reflection = Vector3(0.0f, 0.0f, 0.0f);
+        published.reflection_weight = 0.0f;
+        return;
+    }
+
+    published.reflection = reflection;
+    published.reflection_weight = 1.0f;
 }

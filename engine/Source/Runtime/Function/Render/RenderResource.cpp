@@ -245,6 +245,7 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
     // 权重为 0 时（Lumen 关掉 / 没有距离场 / 一个 probe 都还没更新）shader 侧的行为
     // 跟加这个字段之前**完全一致** —— 继续用 baked irradiance cubemap。
     mesh_perframe_storage_buffer_object.lumen_indirect = render_scene->m_IndirectLighting.ToUniform();
+    mesh_perframe_storage_buffer_object.lumen_reflection = render_scene->m_IndirectLighting.ToReflectionUniform();
 
     m_PointLightShadowPerFrame.point_light_num = point_light_num;
     // point lights

@@ -13,3 +13,4 @@
 #define render_tile per_frame.render_tile
 #define viewport_rect per_frame.viewport_rect
 #define lumen_indirect per_frame.lumen_indirect
+#define lumen_reflection per_frame.lumen_reflection

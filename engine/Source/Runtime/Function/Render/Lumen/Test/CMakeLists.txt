@@ -242,6 +242,51 @@ if(ZENGINE_BUILD_LUMEN_PER_FRAME_BRIDGE_SMOKE_TEST)
     message(STATUS "Configured Lumen per-frame bridge smoke test: LumenPerFrameBridgeSmokeTest")
 endif()
 
+# ---------------------------------------------------------------------
+# Lumen reflections smoke test. LumenRenderer::ComputeReflections was an
+# empty TODO, so ComputeReflection had zero callers and
+# LumenReflectionData never left the Lumen directory. This pins the
+# computation (screen-space reflections used to steal the result via a
+# constant max_trace_distance branch; the mirror direction was dropped
+# by the blend; roughness dimmed the radiance to black instead of
+# spreading the ray) and the budgeted + temporally blended accumulation
+# over the surface-cache pages.
+# ---------------------------------------------------------------------
+option(ZENGINE_BUILD_LUMEN_REFLECTIONS_SMOKE_TEST
+       "Build the Lumen reflections smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_LUMEN_REFLECTIONS_SMOKE_TEST)
+    add_executable(LumenReflectionsSmokeTest LumenReflectionsSmokeTest.cpp)
+
+    set_target_properties(LumenReflectionsSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    target_link_libraries(LumenReflectionsSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(LumenReflectionsSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(LumenReflectionsSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(LumenReflectionsSmokeTest ZEnginePCH)
+        target_precompile_headers(LumenReflectionsSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(MSVC)
+        target_compile_options(LumenReflectionsSmokeTest PRIVATE /W4)
+    endif()
+
+    if(APPLE)
+        target_sources(LumenReflectionsSmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME LumenReflectionsSmokeTest COMMAND LumenReflectionsSmokeTest)
+
+    message(STATUS "Configured Lumen reflections smoke test: LumenReflectionsSmokeTest")
+endif()
+
 set_target_properties(LumenSceneGeometrySmokeTest PROPERTIES
     CXX_STANDARD 23
     FOLDER "Engine/Tests"

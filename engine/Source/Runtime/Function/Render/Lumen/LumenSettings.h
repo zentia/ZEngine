@@ -23,6 +23,7 @@ namespace LumenSettings
     // 质量 / 性能
     float GetProbeSpacing();
     uint32_t GetProbeUpdateBudget();
+    uint32_t GetReflectionUpdateBudget();
     float GetTemporalBlendRate();
     uint32_t GetSampleCount();
     float GetIndirectIntensity();

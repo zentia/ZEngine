@@ -53,6 +53,9 @@ struct MainCameraPerFrame
     float4 viewport_rect;
     /// Lumen indirect: rgb = irradiance, a = blend weight (0 = keep ambient_light).
     float4 lumen_indirect;
+    /// Lumen reflection: rgb = scene-level radiance, a = blend weight (0 = keep the baked
+    /// specular cubemap). No consumer in the deferred pass yet: it has no specular IBL term.
+    float4 lumen_reflection;
 };
 
 #include "LargeWorldCoordinates.hlsl"

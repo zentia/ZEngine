@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-21 (Lumen reflections: from a zero-caller dead end to the shader)
+
+`LumenRenderer::ComputeReflections()` was an empty TODO, so
+`LumenReflections::ComputeReflection()` had **zero callers** and
+`LumenReflectionData` never left `Function/Render/Lumen/` — no shader, no
+`RenderScene` field, no consumer. Reflections were a dead end, and the code
+behind them had never been executed.
+
+**Fixed in the computation** (bugs that only exist because nobody called it):
+
+* `BlendReflections()` picked a source using `max_trace_distance` — a *constant*.
+  With `max_trace_distance < 100` and `roughness < 0.3` it chose screen-space
+  reflections, and `ComputeScreenSpaceReflection()` is a TODO that returns
+  nothing, so a distance-field hit that had already been traced was discarded
+  and replaced with black. Weighting is now "did this actually hit", via a new
+  explicit `LumenReflectionData::valid` flag — the colour cannot answer that,
+  because a hit on a black surface is legitimately black.
+* `ComputeReflection()` computed the mirror direction into
+  `result.reflection_direction` and then overwrote `result` wholesale with
+  `BlendReflections()`'s output, which never set that field. The direction was
+  silently lost.
+* The roughness TODO was never implemented, so a rough surface still traced one
+  perfect mirror ray, and the result was then multiplied by `(1 - roughness)` —
+  which double-counts roughness (the BRDF lobe in the shader already handles it)
+  and sends `roughness = 1` to exactly black. Roughness now widens a cone
+  (`reflection_sample_count` rays, averaged) instead of dimming the radiance.
+
+**Wired**: `ComputeReflections()` now runs `UpdateReflections()`, which uses the
+surface-cache pages as shading points (they already carry a world position and a
+normal), budgeted and round-robin, with the same frame-rate-independent temporal
+blend as the GI probe grid. The scene-average result is published into
+`RenderScene::m_IndirectLighting.reflection` and reaches the shader as
+`MainCameraPerFrame::lumen_reflection`, where `mesh_lighting.inl` blends it into
+the specular IBL term (blend, not add). `lumen_indirect` and `lumen_reflection`
+carry **separate weights** because `r.Lumen.GlobalIllumination` and
+`r.Lumen.Reflections` are independent switches.
+
+**Two caveats, both deliberate.** The published reflection is a *scene average*:
+the CPU path has neither screen probes nor a GBuffer, so it cannot get a
+per-pixel shading point and view direction — it stands in for a coarse specular
+environment term, not for real reflections. And the deferred HLSL pass has no
+specular IBL term to blend into, so today only the forward GLSL path consumes it.
+
+New CVars: `r.Lumen.ReflectionBudget`. `r.Lumen.SampleCount` and
+`r.Lumen.TemporalBlendRate` now drive reflections as well as probes.
+
+New `LumenReflectionsSmokeTest` (32 checks,
+`-DZENGINE_BUILD_LUMEN_REFLECTIONS_SMOKE_TEST=ON`) pins the mirror direction
+surviving the blend, that a 50-unit trace range still reflects (the SSR
+regression), that `roughness = 1.0` no longer resolves to black, the budgeted
+round-robin, and that rate 0 freezes while a large rate catches up.
+`LumenPerFrameBridgeSmokeTest` grew to 36 checks — and it caught a real one:
+adding `lumen_reflection` broke its "lumen_indirect is last" assertion, which is
+exactly what that test is for.
+
+ctest 18/18 on Apple.
+
 ### Added - 2026-10-21 (Lumen GI reaches the shader: the per-frame uniform bridge)
 
 Phase 27 ended with Lumen publishing its irradiance into `RenderScene::m_IndirectLighting`
