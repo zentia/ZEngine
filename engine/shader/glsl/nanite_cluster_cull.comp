@@ -1,0 +1,192 @@
+#version 450
+
+// ===========================================================================
+// Nanite 集群剔除。
+//
+// 一个线程一个集群。产物是**写在 GPU 上的** RHIDrawIndexedIndirectCommand：
+// CPU 只负责发一次 dispatch 和一次 CmdDrawIndexedIndirect，它从来不知道这一帧
+// 有多少个集群活着 —— 这正是 Nanite 这类 GPU-driven 几何的意义。
+//
+// 被剔除的集群不写"跳过"，而是写一条 indexCount == 0 的空命令。原因：
+// CmdDrawIndexedIndirect 的 drawCount 是 CPU 传的上界（= 集群总数），GPU 拿到
+// 一堆空命令几乎不花钱，而 CPU 因此完全不必把计数读回来（读回要等一帧，会把
+// 整条 GPU-driven 链路变成同步的）。
+//
+// 注意 draw_commands 是**不清零复用**的：多出来的线程（group 向上取整）直接
+// return，对应槽位保留上一帧的值。所以 CPU 每帧必须先把整段命令清零，否则尾部
+// 的陈旧命令会被重放。NaniteRenderer::DispatchClusterCulling 负责这件事。
+// ===========================================================================
+
+#extension GL_GOOGLE_include_directive : enable
+
+#include "nanite_common.h"
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) uniform _nanite_cull_constants
+{
+    mat4 view_projection;
+    vec4 frustum_planes[6];  // 顺序同 NaniteCullingSystem::ExtractFrustumPlanes
+    vec4 camera_position;
+    vec4 lod_params;         // x = max_screen_error
+    uvec4 counts;            // x = cluster_count, y = instance_count, z = enable_lod, w = enable_culling
+} u_constants;
+
+layout(std430, set = 0, binding = 1) readonly buffer _nanite_clusters
+{
+    NaniteGPUCluster clusters[];
+};
+
+layout(std430, set = 0, binding = 2) readonly buffer _nanite_instances
+{
+    NaniteGPUInstance instances[];
+};
+
+layout(std430, set = 0, binding = 3) writeonly buffer _nanite_visible_list
+{
+    uint visible_list[];
+};
+
+layout(std430, set = 0, binding = 4) buffer _nanite_draw_commands
+{
+    NaniteDrawCommand draw_commands[];
+};
+
+layout(std430, set = 0, binding = 5) buffer _nanite_cull_counter
+{
+    uint visible_count;
+    uint draw_count;
+    uint culled_count;
+    uint reserved;
+} u_counter;
+
+// 把模型空间的 AABB 变成世界空间的 AABB。
+// 8 个角点全变换一遍再取 min/max —— 和 CPU 侧
+// NaniteCullingSystem::AabbFrustumTest 的做法一致，两边对"在不在视锥里"的判断
+// 才会完全相同，冒烟测试的比对才有意义。
+void WorldAabb(in NaniteGPUInstance instance, in vec3 box_min, in vec3 box_max, out vec3 out_min, out vec3 out_max)
+{
+    out_min = vec3(3.402823466e+38);
+    out_max = vec3(-3.402823466e+38);
+
+    for (int corner = 0; corner < 8; ++corner)
+    {
+        vec3 local_corner = vec3(((corner & 1) == 0) ? box_min.x : box_max.x,
+                                 ((corner & 2) == 0) ? box_min.y : box_max.y,
+                                 ((corner & 4) == 0) ? box_min.z : box_max.z);
+        vec3 world_corner = (instance.transform * vec4(local_corner, 1.0)).xyz;
+        out_min = min(out_min, world_corner);
+        out_max = max(out_max, world_corner);
+    }
+}
+
+// 返回 true = 被剔除（和 CPU 侧 FrustumCull 的约定一致）。
+//
+// 判据：对某个平面，如果盒子上**沿法线方向最远的那个角点**都在平面负侧，那么
+// 所有角点都在负侧 ⇒ 整个盒子在视锥外。这和"逐角点计数"是等价的（凸体上
+// dot(n, p) 的最大值一定在某个角点取到），但只用 6 次点乘而不是 48 次。
+bool FrustumCullWorldAabb(in vec3 world_min, in vec3 world_max)
+{
+    for (int i = 0; i < 6; ++i)
+    {
+        vec4 plane = u_constants.frustum_planes[i];
+        vec3 n = plane.xyz;
+        vec3 support = vec3(n.x >= 0.0 ? world_max.x : world_min.x,
+                            n.y >= 0.0 ? world_max.y : world_min.y,
+                            n.z >= 0.0 ? world_max.z : world_min.z);
+        if (dot(n, support) + plane.w < 0.0)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// LOD 判据，逐行对应 NaniteCullingSystem::SelectLOD + IsClusterVisible。
+// 返回 true = 这一档还要画。
+bool LodKeepsCluster(in NaniteGPUCluster cluster, in vec3 world_center)
+{
+    if (u_constants.counts.z == 0u)  // enable_lod == 0：不挑，照画
+    {
+        return true;
+    }
+
+    float max_screen_error = u_constants.lod_params.x;
+
+    // error_metric 是"丢掉这个集群会留下的洞"的世界尺度，除以距离就是它在屏幕上
+    // 占多大 —— 越大越需要更细的一档。
+    float dist = max(length(world_center - u_constants.camera_position.xyz), 1.0e-4);
+    float screen_error = cluster.bounds_min.w / dist;
+
+    uint lod_level = uint(cluster.bounds_max.w);
+    if (screen_error < max_screen_error * 0.5)
+    {
+        // 已经够细了，可以粗一档（往根走）
+        lod_level = (lod_level > 0u) ? (lod_level - 1u) : 0u;
+    }
+    else if (screen_error > max_screen_error * 2.0)
+    {
+        // 太粗了，要更细一档（往叶子走）
+        lod_level = min(lod_level + 1u, uint(NANITE_MAX_HIERARCHY_DEPTH));
+    }
+
+    return lod_level >= uint(cluster.bounds_max.w);
+}
+
+void main()
+{
+    uint cluster_index = gl_GlobalInvocationID.x;
+    if (cluster_index >= u_constants.counts.x)
+    {
+        return;
+    }
+
+    NaniteGPUCluster cluster = clusters[cluster_index];
+
+    // 先落一条空命令，之后每一步剔除都是直接 return —— 这样任何一条提前返回的
+    // 路径都不会在命令缓冲里留下上一帧的脏数据。
+    NaniteDrawCommand command;
+    command.indexCount = 0u;
+    command.instanceCount = 0u;
+    command.firstIndex = cluster.geometry.y;
+    command.vertexOffset = 0;  // 索引值已经是全局顶点下标，见 NaniteGPUData.h
+    command.firstInstance = cluster_index;  // 光栅阶段靠 gl_InstanceIndex 反查集群
+    draw_commands[cluster_index] = command;
+
+    // 内部节点不可渲染：它的几何区间只是整棵子树的聚合，画它等于把子树重画一遍
+    // （没有网格简化器，粗一档并不会少画三角形）。
+    if (cluster.flags.x == 0u)
+    {
+        atomicAdd(u_counter.culled_count, 1u);
+        return;
+    }
+
+    NaniteGPUInstance instance = instances[cluster.geometry.w];
+
+    vec3 world_min;
+    vec3 world_max;
+    WorldAabb(instance, cluster.bounds_min.xyz, cluster.bounds_max.xyz, world_min, world_max);
+
+    if (u_constants.counts.w != 0u)  // enable_culling
+    {
+        if (FrustumCullWorldAabb(world_min, world_max))
+        {
+            atomicAdd(u_counter.culled_count, 1u);
+            return;
+        }
+    }
+
+    if (!LodKeepsCluster(cluster, (world_min + world_max) * 0.5))
+    {
+        atomicAdd(u_counter.culled_count, 1u);
+        return;
+    }
+
+    uint slot = atomicAdd(u_counter.visible_count, 1u);
+    visible_list[slot] = cluster_index;
+
+    command.indexCount = cluster.geometry.z;  // triangle_count * 3
+    command.instanceCount = 1u;
+    draw_commands[cluster_index] = command;
+    atomicAdd(u_counter.draw_count, 1u);
+}

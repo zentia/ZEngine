@@ -51,6 +51,15 @@ bool MetalRHI::Initialize()
         return false;
     }
 
+    // GetDescriptorPoor() 是 RHI 的公开契约，调用方（Nanite 的剔除管线、各种 pass）
+    // 拿它去 AllocateDescriptorSets。以前这个成员从来没被赋过值，Metal 上恒为
+    // nullptr —— 目前 AllocateDescriptorSets 不读它所以看不出问题，但任何一个后端
+    // 真的按 pool 记账就会立刻空指针。
+    if (m_DescriptorPool == nullptr)
+    {
+        CreateDescriptorPool(nullptr, m_DescriptorPool);
+    }
+
     // Frame pacing: one binary semaphore per in-flight frame (k_max_frames_in_flight).
     for (uint8_t i = 0; i < k_max_frames_in_flight; ++i)
     {
@@ -477,6 +486,28 @@ namespace
         metal_buffer->computeEncoder = nil;
     }
 
+    // 拿到一个还活着的 compute encoder（没有就开一个）。
+    //
+    // 以前只有 CmdDispatch 会开它，于是**在 dispatch 之前**发的
+    // CmdBindDescriptorSetsPFN(COMPUTE) 全部落空：那时 computeEncoder 还是 nil，
+    // 那句 `if (compute && metal_buffer->computeEncoder != nil)` 直接跳过，一个
+    // buffer 都没绑上 —— kernel 读到的 [[buffer(n)]] 全是空的，剔除结果恒为 0。
+    // 绑定必须在 dispatch 之前，所以"开 encoder"这一步不能只属于 dispatch。
+    id<MTLComputeCommandEncoder> BeginComputeEncoder(MetalCommandBuffer* metal_buffer)
+    {
+        if (metal_buffer == nullptr || metal_buffer->commandBuffer == nil)
+        {
+            return nil;
+        }
+        if (metal_buffer->computeEncoder == nil)
+        {
+            id<MTLComputeCommandEncoder> encoder = [metal_buffer->commandBuffer computeCommandEncoder];
+            metal_buffer->computeEncoder = [encoder retain];
+            [encoder release];
+        }
+        return metal_buffer->computeEncoder;
+    }
+
     // SPIR-V: 扫 OpExecutionMode（opcode 16）找 LocalSize（17）或 LocalSizeId（38）。
     //
     // 为什么不问 SPIRV-Cross：它把 workgroup 尺寸藏在 EntryPoint 结构里，而这个仓库
@@ -667,6 +698,14 @@ RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader
     std::vector<uint32_t> words(shader_code.size() / 4);
     std::memcpy(words.data(), shader_code.data(), shader_code.size());
 
+    // **必须在 words 被 move 进 SPIRV-Cross 之前读 workgroup 尺寸。**
+    // 以前这一段放在 try 的最后（`spirv_cross::CompilerMSL compiler(std::move(words))`
+    // 之后），而 move 过的 vector 通常是空的 —— 扫描器什么都扫不到，于是恒返回
+    // (1,1,1)：`local_size_x = 64` 的 kernel 在 Metal 上只有一个线程干活，和 Vulkan
+    // 同一份 shader 的行为完全不同。而且它不报错、不警告，只是"结果少得离谱"。
+    uint32_t spirv_workgroup_size[3] = {1, 1, 1};
+    ReadWorkgroupSizeFromSpirv(words, spirv_workgroup_size);
+
     try
     {
         spirv_cross::CompilerMSL compiler(std::move(words));
@@ -744,7 +783,11 @@ RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader
         if (shader != nullptr && model == spv::ExecutionModelGLCompute)
         {
             // MSL 侧 SPIRV-Cross 不一定保留 local_size 属性，SPIR-V 里那份才是权威。
-            ReadWorkgroupSizeFromSpirv(words, static_cast<MetalShader*>(shader)->workgroupSize);
+            auto* metal_shader = static_cast<MetalShader*>(shader);
+            for (int axis = 0; axis < 3; ++axis)
+            {
+                metal_shader->workgroupSize[axis] = spirv_workgroup_size[axis];
+            }
         }
         return shader;
     }
@@ -1726,6 +1769,9 @@ void MetalRHI::CmdBindPipelinePFN(RHICommandBuffer*    commandBuffer,
     if (pipelineBindPoint == RHI_PIPELINE_BIND_POINT_COMPUTE)
     {
         metal_buffer->computePipeline = metal_pipeline;
+        // 把 encoder 在这里就开起来：调用方接下来的动作是绑描述符再 dispatch，
+        // 而绑定需要 encoder 已经存在（见 BeginComputeEncoder 的注释）。
+        BeginComputeEncoder(metal_buffer);
         return;
     }
     metal_buffer->graphicsPipeline = metal_pipeline;
@@ -1883,8 +1929,14 @@ void MetalRHI::CmdBindDescriptorSetsPFN(RHICommandBuffer*           commandBuffe
 
             if (binding.buffer != nil)
             {
-                if (compute && metal_buffer->computeEncoder != nil)
+                if (compute)
                 {
+                    // encoder 在这里按需开：这一句通常跑在 CmdDispatch 之前，
+                    // 不能指望 dispatch 已经把 encoder 准备好了。
+                    if (BeginComputeEncoder(metal_buffer) == nil)
+                    {
+                        continue;
+                    }
                     // **必须和 CreateShaderModule() 里 SPIRV-Cross 的
                     // `binding.msl_buffer = slot + k_msl_descriptor_buffer_offset`
                     // 用同一个索引**。以前这里用的是 texture_index（= slot，没有 +8），
@@ -2218,11 +2270,9 @@ void MetalRHI::CmdDispatch(RHICommandBuffer* commandBuffer,
     {
         return;
     }
-    if (metal_buffer->computeEncoder == nil)
+    if (BeginComputeEncoder(metal_buffer) == nil)
     {
-        id<MTLComputeCommandEncoder> encoder = [metal_buffer->commandBuffer computeCommandEncoder];
-        metal_buffer->computeEncoder = [encoder retain];
-        [encoder release];
+        return;
     }
     if (metal_buffer->computePipeline != nullptr && metal_buffer->computePipeline->computeState != nil)
     {
@@ -2532,11 +2582,23 @@ void MetalRHI::EndSingleTimeCommands(RHICommandBuffer* command_buffer)
     {
         return;
     }
+    // renderEncoder 也要关：一个只做 CmdCopyBuffer 的单次命令缓冲不会开它，但一个
+    // 顺手画了点什么（或者 pass 没配对 CmdEndRenderPass）的会 —— 留着它 commit 会
+    // 直接失败，命令全部丢失。
+    if (metal_buffer->renderEncoder != nil)
+    {
+        [metal_buffer->renderEncoder endEncoding];
+    }
     if (metal_buffer->computeEncoder != nil)
     {
         [metal_buffer->computeEncoder endEncoding];
     }
     [metal_buffer->commandBuffer commit];
+    // **"单次命令"的契约是同步的**：Vulkan 侧是 vkQueueSubmit + vkQueueWaitIdle，
+    // DX12 侧是 ExecuteCommandLists + Signal + WaitForFences。这里以前只 commit
+    // 就返回，于是 PickPass 那种"End 之后立刻 MapMemory 读回"的用法读到的是还没
+    // 跑完（甚至还没开始跑）的缓冲。Nanite 的 GPU 剔除也是同一个用法。
+    [metal_buffer->commandBuffer waitUntilCompleted];
     delete metal_buffer;
 #endif
 }

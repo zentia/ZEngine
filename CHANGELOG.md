@@ -7,6 +7,101 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-21 (Nanite: the cull really runs on the GPU now)
+
+Nanite had never executed a single instruction on a GPU. `NaniteGPUResources`
+was eight `void*` members, `UpdateGPUBuffers` / `PerformGPUCulling` were two
+TODOs, and the `use_gpu_culling` config flag was printed and nothing else — the
+whole chain (cluster build, hierarchy, per-cluster culling, batch assembly) ran
+on the CPU, and there was no GPU version of the per-cluster culling at all.
+
+* **`Nanite/NaniteGPUData.h`** — the CPU↔shader byte contract. `NaniteGPUCluster`
+  (80 B), `NaniteGPUInstance` (176 B), `NaniteCullConstants` (208 B),
+  `NaniteCullCounter` (16 B), every one pinned by `static_assert` on `sizeof` and
+  `offsetof`. Vertices and indices are **one big array for the whole scene**, so
+  index values are already global vertex indices and `vertexOffset` is always 0 —
+  that sidesteps the one thing the four backends disagree about (`gl_VertexIndex`
+  and baseVertex). `NaniteGPUPackMatrix` transposes explicitly: `Matrix4x4` is
+  row-major, a GLSL `mat4` in a storage buffer is column-major, and a plain
+  `memcpy` gives `Mᵀ·p` — wrong positions, no error.
+* **`engine/shader/glsl/nanite_cluster_cull.comp`** — one thread per cluster,
+  `local_size_x = 64`. Culled clusters write an `indexCount == 0` empty command
+  rather than "skipping", so `drawCount` stays the CPU's cluster-count upper
+  bound and the CPU never has to read the count back (readback would make the
+  whole GPU-driven chain synchronous). `LodKeepsCluster` mirrors
+  `NaniteCullingSystem::SelectLOD` + `IsClusterVisible` line by line.
+* **`engine/shader/glsl/nanite_cluster.{vert,frag}`** — rasterisation with **no
+  vertex attributes**: positions come from a storage buffer via `gl_VertexIndex`,
+  the cluster id from `gl_InstanceIndex`. (DX12's `SV_InstanceID` does not
+  include `StartInstanceLocation`; that backend has to add it back — the shader
+  says so.)
+* **`NaniteRenderer`** — the eight `void*`s became real `RHIBuffer*` +
+  `RHIDeviceMemory*` pairs (grow-only, host-visible), plus a descriptor set, a
+  compute pipeline and a lazily-built raster pipeline. `Render()` ends with
+  `PrepareGPUData` → `DispatchClusterCulling` → `DrawClustersIndirect`. When
+  there is no frame command buffer (headless, editor offscreen update) the
+  dispatch falls back to `BeginSingleTimeCommands` so it still runs.
+* **`r.Nanite.GPU`** — a live CVar, wired through
+  `NaniteRenderPass::ApplyConsoleVariables`.
+* **`NaniteGPUCullingSmokeTest`** (52 checks) — see the entry below.
+
+### Added - 2026-10-21 (NaniteGPUCullingSmokeTest: the test that can prove the kernel ran)
+
+A GPU cull that silently produces zeros looks exactly like a GPU cull that never
+ran. This test is what separates them. On Apple it creates a real `MetalRHI`
+headlessly (`Initialize` needs only an `MTLDevice` — no window, no
+`CAMetalLayer`), uploads the packed scene, builds the compute pipeline,
+dispatches, and reads the counter, the visible list and the indirect draw
+commands back:
+
+* `visible + culled == cluster_count` — every thread must land in exactly one
+  bucket. A kernel that never ran reports `0 + 0`.
+* culling and LOD off ⇒ `visible == 2 × leaf_count`, exactly.
+* frustum culling on ⇒ **not one** cluster of the instance behind the camera
+  produces a draw command; turning the camera away leaves nothing at all.
+* a huge LOD error budget keeps only LOD-0 clusters; an impossibly tight one
+  keeps every leaf.
+* the tail slots the kernel never writes (group-count rounding) are cleared
+  before the next dispatch.
+
+Two more sections run everywhere, including CI on Windows with no GPU: the
+C++/GLSL byte contract, verified by reading the three shader sources as text
+(field order, `binding = N` slots, `local_size_x`), and the
+`NaniteBuildSceneGPUData` packing (contiguous per-instance ranges, global index
+values, the column-major transpose).
+
+Five mutations were used to confirm it actually goes red: dropping the
+workgroup-size read (7 failures), removing the compute-encoder creation from
+both the pipeline and the descriptor-set path (9), removing the command-buffer
+clear (1), dropping `+ vertex_base` from the packed indices (1), and swapping
+two GLSL binding slots (5).
+
+### Fixed - 2026-10-21 (Metal RHI: five more defects, all of them found by that test)
+
+* **The workgroup-size read in the previous entry never worked.** It ran *after*
+  `spirv_cross::CompilerMSL compiler(std::move(words))`, and a moved-from vector
+  is empty — the scanner found nothing and returned `(1,1,1)`, so a
+  `local_size_x = 64` kernel still ran one thread. It now reads the size before
+  the move. This one is the reason the entry above claims a fix that did not
+  take effect.
+* **Compute descriptor sets were bound into a void.** `CmdBindDescriptorSetsPFN`
+  guarded on `computeEncoder != nil`, but only `CmdDispatch` ever created the
+  encoder — and binding happens *before* the dispatch, so every compute buffer
+  binding was dropped. `BeginComputeEncoder` now opens it on demand from
+  `CmdBindPipelinePFN` and `CmdBindDescriptorSetsPFN` as well.
+* **`EndSingleTimeCommands` did not wait.** Vulkan does `vkQueueWaitIdle` and
+  DX12 does `Signal` + `WaitForFences`; Metal only committed and deleted. Any
+  caller that maps and reads right after `EndSingleTimeCommands` (PickPass does
+  exactly that) was reading a buffer that had not finished. It now calls
+  `waitUntilCompleted` and also closes a stray render encoder, which otherwise
+  made the commit fail outright.
+* **`GetDescriptorPoor()` returned `nullptr` forever** on Metal — the member was
+  never assigned. `Initialize` now creates the pool.
+* **`DispatchClusterCulling` cleared only `[0, cluster_count)` of the command
+  buffer** — the same range the kernel already overwrites — while the slots that
+  nobody writes (the group-rounding tail) were left stale. It now clears the
+  whole capacity.
+
 ### Fixed - 2026-10-21 (Metal RHI: the four defects that made any GPU-driven pass impossible)
 
 Nanite needs compute dispatch, storage-buffer bindings and indirect draws. On
@@ -37,6 +132,10 @@ paths were wrong, all of them silently:
   produced a 16-byte buffer on Metal while Vulkan produced 4096. It now always
   allocates `size` and copies `min(datasize, size)`, staging through a blit
   encoder when the storage mode is device-private.
+
+*Caveat, discovered one commit later:* the first bullet did not actually take
+effect — the SPIR-V scan ran after `words` had been moved into SPIRV-Cross, so it
+always returned `(1,1,1)`. See the "five more defects" entry above.
 
 `CmdDrawIndexedIndirect` was **not** changed: `firstIndex` is deliberately not
 applied on the CPU. The GPU reads it out of the indirect buffer into

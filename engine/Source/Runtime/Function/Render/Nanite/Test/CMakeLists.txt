@@ -130,3 +130,68 @@ if(ZENGINE_BUILD_NANITE_SCENE_WIRING_SMOKE_TEST)
 
     message(STATUS "Configured Nanite scene-wiring smoke test: NaniteSceneWiringSmokeTest")
 endif()
+
+# =====================================================================
+# Nanite GPU-culling smoke test. Same pattern. This is the one that proves
+# Nanite actually runs on the GPU: it creates a real MetalRHI headlessly
+# (Initialize only needs an MTLDevice -- no window, no CAMetalLayer), uploads
+# the packed scene, builds the compute pipeline, dispatches the cull kernel and
+# reads the counter + indirect draw commands back.
+#
+# On Apple it also links Metal/QuartzCore through ZRuntime. Where
+# <nanite_cluster_cull_comp.h> was never generated (no glslangValidator) the
+# GPU section degrades to a printed skip instead of a false failure.
+# =====================================================================
+option(ZENGINE_BUILD_NANITE_GPU_CULLING_SMOKE_TEST
+       "Build the Nanite GPU-culling smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_NANITE_GPU_CULLING_SMOKE_TEST)
+    add_executable(NaniteGPUCullingSmokeTest NaniteGPUCullingSmokeTest.cpp)
+
+    set_target_properties(NaniteGPUCullingSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # On Apple this TU includes MetalRHI.h (RHI's Initialize/Shutdown are
+    # protected, so the test has to drive the concrete backend), and MetalRHI.h
+    # pulls in <Metal/Metal.h> + <QuartzCore/CAMetalLayer.h> -- Objective-C
+    # headers. Same treatment RegisterRuntime.cpp gets in Runtime/CMakeLists.txt:
+    # compile it as ObjC++ and opt out of the C++ PCH, which was built for C++.
+    if(APPLE)
+        set_source_files_properties(
+            "${CMAKE_CURRENT_SOURCE_DIR}/NaniteGPUCullingSmokeTest.cpp"
+            PROPERTIES LANGUAGE OBJCXX SKIP_PRECOMPILE_HEADERS ON)
+    endif()
+
+    target_link_libraries(NaniteGPUCullingSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(NaniteGPUCullingSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(NaniteGPUCullingSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(NaniteGPUCullingSmokeTest ZEnginePCH)
+        target_precompile_headers(NaniteGPUCullingSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    # The GLSL mirror checks read engine/shader/** as text (the shaders are never
+    # compiled here). CMake hands the test the absolute engine root so it does not
+    # depend on the working directory.
+    if(DEFINED ENGINE_ROOT_DIR)
+        target_compile_definitions(NaniteGPUCullingSmokeTest PRIVATE
+            "ZENGINE_ENGINE_ROOT_DIR=\"${ENGINE_ROOT_DIR}\"")
+    endif()
+
+    if(MSVC)
+        target_compile_options(NaniteGPUCullingSmokeTest PRIVATE /W4)
+    endif()
+
+    if(APPLE)
+        target_sources(NaniteGPUCullingSmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME NaniteGPUCullingSmokeTest COMMAND NaniteGPUCullingSmokeTest)
+
+    message(STATUS "Configured Nanite GPU-culling smoke test: NaniteGPUCullingSmokeTest")
+endif()

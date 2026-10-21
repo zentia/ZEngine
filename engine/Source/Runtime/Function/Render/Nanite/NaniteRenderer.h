@@ -2,6 +2,7 @@
 
 #include "NaniteCluster.h"
 #include "NaniteCulling.h"
+#include "NaniteGPUData.h"
 #include "NaniteTypes.h"
 #include "Runtime/Function/Render/RenderPassBase.h"
 
@@ -14,6 +15,68 @@ class RenderScene;
 class RenderCamera;
 class RenderEntity;
 struct CpuMeshGeometry;
+
+// ---------------------------------------------------------------------------
+// Nanite 的 GPU 资源。
+//
+// 以前这些全是 `void*` 加一行 "TODO: 初始化GPU资源"，也就是说 Nanite 一行都不曾
+// 跑在 GPU 上：集群构建、逐簇裁剪、批次组装全部在 CPU。
+//
+// 现在的分工是：
+//   * CPU 负责"场景里有哪些实例、每个网格怎么切成集群"（NaniteClusterBuilder），
+//     并把结果**打包**成 NaniteSceneGPUData；
+//   * GPU 负责"这一帧哪些集群活着"（nanite_cluster_cull.comp），并直接把
+//     RHIDrawIndexedIndirectCommand 写进间接缓冲；
+//   * CPU 只发一次 dispatch 和一次 CmdDrawIndexedIndirect，**永远不读回计数**。
+//
+// 缓冲全部建在 host-visible 内存上（不是 device-local）：几何要每帧更新实例变换，
+// 而这套 RHI 没有 staging 抽象，host-visible 是唯一能简单地反复写的选项。
+// 等有了真正的流式加载再换成 device-local + blit。
+// ---------------------------------------------------------------------------
+struct NaniteGPUResources
+{
+    RHIBuffer* clusters {nullptr};
+    RHIBuffer* instances {nullptr};
+    RHIBuffer* positions {nullptr};
+    RHIBuffer* indices {nullptr};
+    RHIBuffer* visible_list {nullptr};
+    RHIBuffer* draw_commands {nullptr};
+    RHIBuffer* cull_counter {nullptr};
+    RHIBuffer* cull_constants {nullptr};
+
+    // CreateBuffer 还会吐一个 RHIDeviceMemory，得自己拿着（MapMemory 要用，
+    // 析构时要 FreeMemory）。Metal 上它就是 buffer 的 host 指针包装。
+    RHIDeviceMemory* clusters_memory {nullptr};
+    RHIDeviceMemory* instances_memory {nullptr};
+    RHIDeviceMemory* positions_memory {nullptr};
+    RHIDeviceMemory* indices_memory {nullptr};
+    RHIDeviceMemory* visible_list_memory {nullptr};
+    RHIDeviceMemory* draw_commands_memory {nullptr};
+    RHIDeviceMemory* cull_counter_memory {nullptr};
+    RHIDeviceMemory* cull_constants_memory {nullptr};
+
+    // 当前**容量**（元素个数）。数据变多就重建，变少只是少传一点 —— 避免每帧重建。
+    uint32_t cluster_capacity {0};
+    uint32_t instance_capacity {0};
+    uint32_t position_capacity {0};
+    uint32_t index_capacity {0};
+
+    // 光栅阶段可选：NaniteRenderPass 拿到 render pass 之后才建光栅管线。
+    // 没有它的时候只跑 GPU 剔除（仍然产出完整的间接绘制命令）。
+    RHIRenderPass* raster_render_pass {nullptr};
+    RHIPipeline* cull_pipeline {nullptr};
+    RHIPipeline* raster_pipeline {nullptr};
+    RHIPipelineLayout* pipeline_layout {nullptr};
+    RHIDescriptorSetLayout* descriptor_set_layout {nullptr};
+    RHIDescriptorPool* descriptor_pool {nullptr};
+    RHIDescriptorSet* descriptor_set {nullptr};
+
+    bool compute_ready {false};
+    bool raster_ready {false};
+
+    // 上一帧排队的绘制命令上界（= 集群总数）。间接绘制要它做 drawCount。
+    uint32_t dispatch_cluster_count {0};
+};
 
 // Nanite渲染器 - 负责Nanite几何的渲染
 class NaniteRenderer
@@ -76,6 +139,37 @@ public:
     // 某个网格资产已经建好的集群数（0 = 还没建 / 建失败）。测试与统计用。
     uint32_t GetClusterCount(uint64_t mesh_id) const { return m_ClusterManager.GetClusterCount(mesh_id); }
 
+    // ---- GPU 路径（真正的实现，以前的 "TODO: 初始化GPU资源"）--------------------
+
+    // 把当前场景打包成 NaniteSceneGPUData，并保证 GPU 缓冲的容量够。
+    // 返回是否有东西可画。
+    bool PrepareGPUData(const std::shared_ptr<RenderCamera>& camera, const NaniteConfig& config);
+
+    // 发一次 nanite_cluster_cull.comp。之后 draw_commands 缓冲里就是这一帧的完整
+    // 间接绘制命令 —— CPU 不读回，也不知道有多少条是活的。
+    //
+    // 没有帧命令缓冲时（headless、编辑器离屏更新、还没 PrepareBeforePass）退到
+    // BeginSingleTimeCommands：自己开、自己提交并等它跑完。返回之后缓冲的内容对
+    // CPU 就是可见的 —— 冒烟测试的读回靠的正是这一点。
+    void DispatchClusterCulling(const std::shared_ptr<RenderCamera>& camera, const NaniteConfig& config);
+
+    // 绑好索引缓冲与描述符集后发 CmdDrawIndexedIndirect。drawCount 是集群总数
+    // （上界），被剔除的集群贡献的是 indexCount == 0 的空命令。
+    // 没有光栅管线时（还没拿到 render pass）什么都不做 —— 不是错误，只是这一帧
+    // 只跑剔除。
+    void DrawClustersIndirect();
+
+    // NaniteRenderPass 拿到主 render pass 之后调这个，光栅管线才能建起来。
+    void SetRasterRenderPass(RHIRenderPass* render_pass);
+
+    const NaniteGPUResources& GetGPUResources() const { return m_GPU; }
+    const NaniteSceneGPUData& GetSceneGPUData() const { return m_SceneGPUData; }
+
+    // 把当前打包好的数据按给定的相机参数填一份 NaniteCullConstants。
+    // 非 const：视锥平面要问 NaniteCullingSystem（它的方法不是 const 的）。
+    NaniteCullConstants BuildCullConstants(const std::shared_ptr<RenderCamera>& camera,
+                                           const NaniteConfig& config);
+
 private:
     // 一个可见实例在 m_VisibleClusters 里占的一段
     struct InstanceClusterRange
@@ -109,21 +203,9 @@ private:
     std::vector<InstanceClusterRange> m_InstanceRanges;
     NaniteVisibilityResult m_LastVisibilityResult;
 
-    // GPU资源
-    void* m_InstanceBuffer = nullptr;
-    void* m_ClusterBuffer = nullptr;
-    void* m_VertexBuffer = nullptr;
-    void* m_IndexBuffer = nullptr;
-    void* m_VisibilityBuffer = nullptr;
-
-    // 着色器资源
-    void* m_NaniteVertexShader = nullptr;
-    void* m_NanitePixelShader = nullptr;
-    void* m_NaniteComputeShader = nullptr;
-
-    // 渲染管线
-    void* m_NanitePipeline = nullptr;
-    void* m_NanitePipelineLayout = nullptr;
+    // GPU 资源（真实的 RHI 句柄，不再是 void* 占位）
+    NaniteGPUResources m_GPU;
+    NaniteSceneGPUData m_SceneGPUData;
 
     // 场景里"有哪些实例、各自用哪个网格"的指纹。变换矩阵**不**进哈希 ——
     // 它每帧都可能变，而变了不需要重建集群。
@@ -153,11 +235,29 @@ private:
     // 是常态（旧实现的唯一产出），下游拿到它只会画出一堆空绘制。
     void BuildRenderBatches(std::vector<NaniteRenderBatch>& out_batches);
 
-    // 更新GPU缓冲区
+    // 更新GPU缓冲区：容量不够就重建，够就直接上传。
     void UpdateGPUBuffers();
 
     // 执行GPU裁剪
     NaniteVisibilityResult PerformGPUCulling(const std::shared_ptr<RenderCamera>& camera, const NaniteConfig& config);
+
+private:
+    // 容量不足就重建缓冲；返回是否全部就绪。
+    bool EnsureGPUResources(uint32_t cluster_count, uint32_t instance_count, uint32_t position_count, uint32_t index_count);
+
+    // 把 CPU 字节推到 GPU（MapMemory + memcpy + UnmapMemory）。
+    bool UploadBytes(RHIBuffer* buffer, RHIDeviceMemory* memory, const void* data, size_t bytes);
+
+    // 描述符集绑定。缓冲重建之后必须重调一次，否则 kernel 还指着旧的句柄。
+    void UpdateDescriptorWrites();
+
+    // 建剔除的 compute 管线（懒建：shader 不可用时失败，之后不再重试到每帧刷日志）。
+    bool EnsureComputePipeline();
+
+    // 建光栅管线。需要 raster_render_pass。
+    bool EnsureRasterPipeline();
+
+    void DestroyGPUResources();
 };
 
 // Nanite渲染通道

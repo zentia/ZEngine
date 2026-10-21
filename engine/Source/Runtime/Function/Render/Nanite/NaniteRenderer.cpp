@@ -9,7 +9,47 @@
 #include "Runtime/Function/Render/RenderScene.h"
 #include "Runtime/Function/Render/Nanite/NaniteSettings.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <cstring>
+
+// ===========================================================================
+// 生成的 SPIR-V（engine/shader/glsl → engine/shader/generated/cpp）。
+//
+// 这些头文件是构建时由 glslangValidator 生成的，没有它的环境根本不会产生。所以
+// 每个都单独 __has_include 保护：缺了就退化成"没有 shader"，Nanite 的 GPU 路径
+// 安静地不启用 —— 而不是让整个 ZRuntime 编译不过。
+// ===========================================================================
+#if defined(__has_include)
+#if __has_include(<nanite_cluster_cull_comp.h>)
+#include <nanite_cluster_cull_comp.h>
+#define ZENGINE_NANITE_HAS_CULL_SPIRV 1
+#endif
+#if __has_include(<nanite_cluster_vert.h>)
+#include <nanite_cluster_vert.h>
+#define ZENGINE_NANITE_HAS_VERT_SPIRV 1
+#endif
+#if __has_include(<nanite_cluster_frag.h>)
+#include <nanite_cluster_frag.h>
+#define ZENGINE_NANITE_HAS_FRAG_SPIRV 1
+#endif
+#endif
+
+#ifndef ZENGINE_NANITE_HAS_CULL_SPIRV
+namespace Z { namespace Shader {
+static const std::vector<unsigned char> NANITE_CLUSTER_CULL_COMP {};
+}}  // namespace Z::Shader
+#endif
+#ifndef ZENGINE_NANITE_HAS_VERT_SPIRV
+namespace Z { namespace Shader {
+static const std::vector<unsigned char> NANITE_CLUSTER_VERT {};
+}}  // namespace Z::Shader
+#endif
+#ifndef ZENGINE_NANITE_HAS_FRAG_SPIRV
+namespace Z { namespace Shader {
+static const std::vector<unsigned char> NANITE_CLUSTER_FRAG {};
+}}  // namespace Z::Shader
+#endif
 
 // ==================== NaniteRenderer ====================
 
@@ -47,6 +87,13 @@ void NaniteRenderer::clear()
 {
     m_ClusterManager.clear();
     m_CullingSystem.clear();
+
+    // GPU 缓冲跟着实例一起没了。留着它们只会让下一帧的剔除对着一份空场景发 dispatch。
+    if (m_Rhi != nullptr)
+    {
+        DestroyGPUResources();
+    }
+    m_SceneGPUData.clear();
 
     m_Instances.clear();
     m_InstanceIdToIndex.clear();
@@ -249,10 +296,19 @@ void NaniteRenderer::Render(RHI* rhi,
     // clear() ⇒ PrepareRenderData 的产物被立刻抹掉。
     BuildRenderBatches(m_RenderBatches);
 
-    // 更新GPU缓冲区
-    UpdateGPUBuffers();
-
-    // TODO: 执行实际渲染（需要 Nanite 的 shader 与间接绘制，两者都还没有）
+    // ---- GPU 路径 ----
+    //
+    // CPU 到这里就交棒了：上传打包好的场景 → 发一次剔除 kernel → 发一次间接绘制。
+    // 命令缓冲里现在躺着这一帧全部（且只躺着这一帧）的绘制命令，而 CPU 不知道
+    // 有多少条是活的 —— 这正是 GPU-driven 的意义。
+    //
+    // 失败（没有 RHI、shader 没编译出来、缓冲建不起来）时静默退回 CPU 结果：
+    // m_RenderBatches 还在，编辑器和统计不会因此变成空的。
+    if (config.use_gpu_culling && PrepareGPUData(camera, config))
+    {
+        DispatchClusterCulling(camera, config);
+        DrawClustersIndirect();
+    }
 }
 
 bool NaniteRenderer::RegisterMeshResource(uint64_t mesh_id, const NaniteMeshResource& mesh_resource)
@@ -411,19 +467,702 @@ void NaniteRenderer::BuildRenderBatches(std::vector<NaniteRenderBatch>& out_batc
     }
 }
 
+// ===========================================================================
+// GPU 路径。
+//
+// 以前这里是 "TODO: 更新GPU缓冲区" 加上一堆 void* 成员 —— Nanite 一行都不跑在
+// GPU 上。现在 CPU 只做两件事：把场景打包上传，然后发一次 dispatch。剩下的
+// （哪些集群活着、画多少）全在 GPU 上决定。
+// ===========================================================================
+
+namespace
+{
+    // 全部缓冲建在 host-visible 上：实例变换每帧都要更新，而这套 RHI 没有 staging
+    // 抽象，host-visible 是唯一能简单地反复写的选项。
+    constexpr RHIMemoryPropertyFlags kNaniteHostMemory =
+        RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+
+    // 容量按 2 的幂增长。集群数随场景变化，每帧精确重建会把分配抖动变成卡顿。
+    uint32_t NaniteGrowCapacity(uint32_t needed)
+    {
+        uint32_t capacity = 64;
+        while (capacity < needed)
+        {
+            capacity = (capacity > (1u << 30)) ? needed : capacity * 2;
+        }
+        return capacity;
+    }
+}  // namespace
+
+void NaniteRenderer::DestroyGPUResources()
+{
+    auto release = [this](RHIBuffer*& buffer, RHIDeviceMemory*& memory) {
+        if (memory != nullptr)
+        {
+            m_Rhi->FreeMemory(memory);
+        }
+        if (buffer != nullptr)
+        {
+            m_Rhi->DestroyBuffer(buffer);
+        }
+    };
+
+    release(m_GPU.clusters, m_GPU.clusters_memory);
+    release(m_GPU.instances, m_GPU.instances_memory);
+    release(m_GPU.positions, m_GPU.positions_memory);
+    release(m_GPU.indices, m_GPU.indices_memory);
+    release(m_GPU.visible_list, m_GPU.visible_list_memory);
+    release(m_GPU.draw_commands, m_GPU.draw_commands_memory);
+    release(m_GPU.cull_counter, m_GPU.cull_counter_memory);
+    release(m_GPU.cull_constants, m_GPU.cull_constants_memory);
+
+    m_GPU.cluster_capacity = 0;
+    m_GPU.instance_capacity = 0;
+    m_GPU.position_capacity = 0;
+    m_GPU.index_capacity = 0;
+    m_GPU.compute_ready = false;
+    m_GPU.raster_ready = false;
+}
+
+bool NaniteRenderer::UploadBytes(RHIBuffer* buffer, RHIDeviceMemory* memory, const void* data, size_t bytes)
+{
+    if (m_Rhi == nullptr || buffer == nullptr || memory == nullptr || bytes == 0)
+    {
+        return false;
+    }
+
+    void* mapped = nullptr;
+    if (!m_Rhi->MapMemory(memory, 0, static_cast<RHIDeviceSize>(bytes), 0, &mapped) || mapped == nullptr)
+    {
+        return false;
+    }
+    std::memcpy(mapped, data, bytes);
+    m_Rhi->UnmapMemory(memory);
+    return true;
+}
+
+bool NaniteRenderer::EnsureGPUResources(uint32_t cluster_count,
+                                        uint32_t instance_count,
+                                        uint32_t position_count,
+                                        uint32_t index_count)
+{
+    if (m_Rhi == nullptr || cluster_count == 0 || instance_count == 0)
+    {
+        return false;
+    }
+
+    auto ensure = [this](RHIBuffer*& buffer,
+                         RHIDeviceMemory*& memory,
+                         uint32_t& capacity,
+                         uint32_t needed,
+                         uint32_t element_size,
+                         RHIBufferUsageFlags usage) {
+        if (buffer != nullptr && memory != nullptr && capacity >= needed)
+        {
+            return true;
+        }
+        if (memory != nullptr)
+        {
+            m_Rhi->FreeMemory(memory);
+        }
+        if (buffer != nullptr)
+        {
+            m_Rhi->DestroyBuffer(buffer);
+        }
+        capacity = NaniteGrowCapacity(needed);
+        m_Rhi->CreateBuffer(static_cast<RHIDeviceSize>(capacity) * static_cast<RHIDeviceSize>(element_size),
+                            usage,
+                            kNaniteHostMemory,
+                            buffer,
+                            memory);
+        return buffer != nullptr && memory != nullptr;
+    };
+
+    const bool ok_clusters =
+        ensure(m_GPU.clusters, m_GPU.clusters_memory, m_GPU.cluster_capacity, cluster_count,
+               static_cast<uint32_t>(sizeof(NaniteGPUCluster)),
+               RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT);
+    const bool ok_instances =
+        ensure(m_GPU.instances, m_GPU.instances_memory, m_GPU.instance_capacity, instance_count,
+               static_cast<uint32_t>(sizeof(NaniteGPUInstance)),
+               RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT);
+    const bool ok_positions =
+        ensure(m_GPU.positions, m_GPU.positions_memory, m_GPU.position_capacity, position_count,
+               static_cast<uint32_t>(sizeof(Vector4)),
+               RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT);
+    const bool ok_indices =
+        ensure(m_GPU.indices, m_GPU.indices_memory, m_GPU.index_capacity, index_count,
+               static_cast<uint32_t>(sizeof(uint32_t)),
+               RHI_BUFFER_USAGE_INDEX_BUFFER_BIT | RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                   RHI_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+    // 剔除的产出：可见列表、间接命令、计数器。容量跟着集群数走。
+    const bool ok_visible =
+        ensure(m_GPU.visible_list, m_GPU.visible_list_memory, m_GPU.cluster_capacity, cluster_count,
+               static_cast<uint32_t>(sizeof(uint32_t)),
+               RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT);
+    const bool ok_commands =
+        ensure(m_GPU.draw_commands, m_GPU.draw_commands_memory, m_GPU.cluster_capacity, cluster_count,
+               static_cast<uint32_t>(sizeof(RHIDrawIndexedIndirectCommand)),
+               RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT | RHI_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+                   RHI_BUFFER_USAGE_TRANSFER_DST_BIT);
+    const bool ok_counter =
+        ensure(m_GPU.cull_counter, m_GPU.cull_counter_memory, m_GPU.cluster_capacity, cluster_count,
+               static_cast<uint32_t>(sizeof(NaniteCullCounter)),
+               RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT);
+    const bool ok_constants =
+        ensure(m_GPU.cull_constants, m_GPU.cull_constants_memory, m_GPU.cluster_capacity, cluster_count,
+               static_cast<uint32_t>(sizeof(NaniteCullConstants)),
+               RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT);
+
+    // cluster_capacity 被上面四个共用，取一次就够 —— 但 ensure 会在容量变小时
+    // 不动它，所以这里只要确认它不小于需求即可。
+    m_GPU.cluster_capacity = std::max(m_GPU.cluster_capacity, cluster_count);
+
+    return ok_clusters && ok_instances && ok_positions && ok_indices && ok_visible && ok_commands &&
+           ok_counter && ok_constants;
+}
+
+void NaniteRenderer::UpdateDescriptorWrites()
+{
+    if (m_Rhi == nullptr || m_GPU.descriptor_set == nullptr)
+    {
+        return;
+    }
+
+    auto make_write = [](RHIDescriptorSet* set, uint32_t binding) {
+        RHIWriteDescriptorSet write {};
+        write.sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.dstSet = set;
+        write.dstBinding = binding;
+        write.dstArrayElement = 0;
+        write.descriptorCount = 1;
+        return write;
+    };
+
+    RHIDescriptorBufferInfo cluster_info {};
+    cluster_info.offset = 0;
+    cluster_info.range = static_cast<RHIDeviceSize>(m_GPU.cluster_capacity) * sizeof(NaniteGPUCluster);
+    cluster_info.buffer = m_GPU.clusters;
+
+    RHIDescriptorBufferInfo instance_info {};
+    instance_info.offset = 0;
+    instance_info.range = static_cast<RHIDeviceSize>(m_GPU.instance_capacity) * sizeof(NaniteGPUInstance);
+    instance_info.buffer = m_GPU.instances;
+
+    RHIDescriptorBufferInfo visible_info {};
+    visible_info.offset = 0;
+    visible_info.range = static_cast<RHIDeviceSize>(m_GPU.cluster_capacity) * sizeof(uint32_t);
+    visible_info.buffer = m_GPU.visible_list;
+
+    RHIDescriptorBufferInfo command_info {};
+    command_info.offset = 0;
+    command_info.range =
+        static_cast<RHIDeviceSize>(m_GPU.cluster_capacity) * sizeof(RHIDrawIndexedIndirectCommand);
+    command_info.buffer = m_GPU.draw_commands;
+
+    RHIDescriptorBufferInfo counter_info {};
+    counter_info.offset = 0;
+    counter_info.range = sizeof(NaniteCullCounter);
+    counter_info.buffer = m_GPU.cull_counter;
+
+    RHIDescriptorBufferInfo constants_info {};
+    constants_info.offset = 0;
+    constants_info.range = sizeof(NaniteCullConstants);
+    constants_info.buffer = m_GPU.cull_constants;
+
+    RHIDescriptorBufferInfo positions_info {};
+    positions_info.offset = 0;
+    positions_info.range = static_cast<RHIDeviceSize>(m_GPU.position_capacity) * sizeof(Vector4);
+    positions_info.buffer = m_GPU.positions;
+
+    RHIWriteDescriptorSet writes[] = {
+        make_write(m_GPU.descriptor_set, NaniteGPUBinding::kCullConstants),
+        make_write(m_GPU.descriptor_set, NaniteGPUBinding::kClusters),
+        make_write(m_GPU.descriptor_set, NaniteGPUBinding::kInstances),
+        make_write(m_GPU.descriptor_set, NaniteGPUBinding::kVisibleList),
+        make_write(m_GPU.descriptor_set, NaniteGPUBinding::kDrawCommands),
+        make_write(m_GPU.descriptor_set, NaniteGPUBinding::kDrawCounter),
+        make_write(m_GPU.descriptor_set, NaniteGPUBinding::kPositions),
+    };
+
+    writes[0].descriptorType = RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].pBufferInfo = &constants_info;
+    for (size_t i = 1; i < sizeof(writes) / sizeof(writes[0]); ++i)
+    {
+        writes[i].descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    }
+    writes[1].pBufferInfo = &cluster_info;
+    writes[2].pBufferInfo = &instance_info;
+    writes[3].pBufferInfo = &visible_info;
+    writes[4].pBufferInfo = &command_info;
+    writes[5].pBufferInfo = &counter_info;
+    writes[6].pBufferInfo = &positions_info;
+
+    m_Rhi->UpdateDescriptorSets(static_cast<uint32_t>(sizeof(writes) / sizeof(writes[0])), writes, 0, nullptr);
+}
+
+bool NaniteRenderer::EnsureComputePipeline()
+{
+    if (m_GPU.compute_ready)
+    {
+        return true;
+    }
+    if (m_Rhi == nullptr || Z::Shader::NANITE_CLUSTER_CULL_COMP.empty())
+    {
+        return false;
+    }
+
+    // descriptor set layout：一个 set 同时给 compute 和 graphics。
+    if (m_GPU.descriptor_set_layout == nullptr)
+    {
+        RHIDescriptorSetLayoutBinding bindings[NaniteGPUBinding::kBindingCount] = {};
+        bindings[NaniteGPUBinding::kCullConstants] = {NaniteGPUBinding::kCullConstants,
+                                                      RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+                                                      1,
+                                                      RHI_SHADER_STAGE_COMPUTE_BIT | RHI_SHADER_STAGE_VERTEX_BIT,
+                                                      nullptr};
+        for (uint32_t slot = 1; slot < NaniteGPUBinding::kBindingCount; ++slot)
+        {
+            bindings[slot] = {slot,
+                              RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                              1,
+                              RHI_SHADER_STAGE_COMPUTE_BIT | RHI_SHADER_STAGE_VERTEX_BIT,
+                              nullptr};
+        }
+
+        RHIDescriptorSetLayoutCreateInfo layout_info {};
+        layout_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = NaniteGPUBinding::kBindingCount;
+        layout_info.pBindings = bindings;
+        if (!m_Rhi->CreateDescriptorSetLayout(&layout_info, m_GPU.descriptor_set_layout))
+        {
+            return false;
+        }
+    }
+
+    if (m_GPU.pipeline_layout == nullptr)
+    {
+        RHIPipelineLayoutCreateInfo layout_info {};
+        layout_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layout_info.setLayoutCount = 1;
+        layout_info.pSetLayouts = &m_GPU.descriptor_set_layout;
+        if (!m_Rhi->CreatePipelineLayout(&layout_info, m_GPU.pipeline_layout))
+        {
+            return false;
+        }
+    }
+
+    if (m_GPU.descriptor_set == nullptr)
+    {
+        RHIDescriptorSetAllocateInfo alloc_info {};
+        alloc_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.descriptorPool = m_Rhi->GetDescriptorPoor();
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = &m_GPU.descriptor_set_layout;
+        if (RHI_SUCCESS != m_Rhi->AllocateDescriptorSets(&alloc_info, m_GPU.descriptor_set))
+        {
+            return false;
+        }
+    }
+
+    if (m_GPU.cull_pipeline == nullptr)
+    {
+        RHIShader* shader = m_Rhi->CreateShaderModule(Z::Shader::NANITE_CLUSTER_CULL_COMP);
+        if (shader == nullptr)
+        {
+            LOG_WARNING(ZRender, "nanite: cluster-cull compute shader unavailable -- GPU culling stays off");
+            return false;
+        }
+
+        RHIPipelineShaderStageCreateInfo stage {};
+        stage.sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage.stage = RHI_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = shader;
+        stage.pName = "main";
+
+        RHIComputePipelineCreateInfo pipeline_info {};
+        pipeline_info.sType = RHI_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        pipeline_info.pStages = &stage;
+        pipeline_info.layout = m_GPU.pipeline_layout;
+
+        const bool ok = m_Rhi->CreateComputePipelines(RHI_NULL_HANDLE, 1, &pipeline_info, m_GPU.cull_pipeline);
+        m_Rhi->DestroyShaderModule(shader);
+        if (!ok || m_GPU.cull_pipeline == nullptr)
+        {
+            LOG_WARNING(ZRender, "nanite: cluster-cull compute pipeline creation failed");
+            return false;
+        }
+    }
+
+    m_GPU.compute_ready = true;
+    return true;
+}
+
+bool NaniteRenderer::EnsureRasterPipeline()
+{
+    if (m_GPU.raster_ready)
+    {
+        return true;
+    }
+    if (m_Rhi == nullptr || m_GPU.raster_render_pass == nullptr)
+    {
+        return false;
+    }
+    if (Z::Shader::NANITE_CLUSTER_VERT.empty() || Z::Shader::NANITE_CLUSTER_FRAG.empty())
+    {
+        return false;
+    }
+    if (!EnsureComputePipeline())
+    {
+        // 光栅管线共用同一份 layout / descriptor set。
+        return false;
+    }
+
+    RHIShader* vert = m_Rhi->CreateShaderModule(Z::Shader::NANITE_CLUSTER_VERT);
+    RHIShader* frag = m_Rhi->CreateShaderModule(Z::Shader::NANITE_CLUSTER_FRAG);
+    if (vert == nullptr || frag == nullptr)
+    {
+        if (vert != nullptr)
+        {
+            m_Rhi->DestroyShaderModule(vert);
+        }
+        if (frag != nullptr)
+        {
+            m_Rhi->DestroyShaderModule(frag);
+        }
+        return false;
+    }
+
+    RHIPipelineShaderStageCreateInfo stages[2] = {};
+    stages[0].sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = RHI_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vert;
+    stages[0].pName = "main";
+    stages[1].sType = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = RHI_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = frag;
+    stages[1].pName = "main";
+
+    // **没有顶点输入状态**：顶点位置是从 storage buffer 里按 gl_VertexIndex 取的，
+    // 顶点属性一个都不用。只绑索引缓冲。
+    RHIPipelineVertexInputStateCreateInfo vertex_input {};
+    vertex_input.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input.vertexBindingDescriptionCount = 0;
+    vertex_input.pVertexBindingDescriptions = nullptr;
+    vertex_input.vertexAttributeDescriptionCount = 0;
+    vertex_input.pVertexAttributeDescriptions = nullptr;
+
+    RHIPipelineInputAssemblyStateCreateInfo input_assembly {};
+    input_assembly.sType = RHI_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly.topology = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    input_assembly.primitiveRestartEnable = RHI_FALSE;
+
+    RHIPipelineViewportStateCreateInfo viewport_state {};
+    viewport_state.sType = RHI_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state.viewportCount = 1;
+    viewport_state.pViewports = m_Rhi->GetSwapchainInfo().viewport;
+    viewport_state.scissorCount = 1;
+    viewport_state.pScissors = m_Rhi->GetSwapchainInfo().scissor;
+
+    RHIPipelineRasterizationStateCreateInfo rasterization {};
+    rasterization.sType = RHI_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterization.polygonMode = RHI_POLYGON_MODE_FILL;
+    rasterization.cullMode = RHI_CULL_MODE_BACK_BIT;
+    rasterization.frontFace = RHI_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterization.lineWidth = 1.0f;
+
+    RHIPipelineMultisampleStateCreateInfo multisample {};
+    multisample.sType = RHI_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
+
+    RHIPipelineColorBlendAttachmentState blend {};
+    blend.colorWriteMask = RHI_COLOR_COMPONENT_R_BIT | RHI_COLOR_COMPONENT_G_BIT |
+                           RHI_COLOR_COMPONENT_B_BIT | RHI_COLOR_COMPONENT_A_BIT;
+
+    RHIPipelineColorBlendStateCreateInfo blend_state {};
+    blend_state.sType = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    blend_state.attachmentCount = 1;
+    blend_state.pAttachments = &blend;
+
+    RHIPipelineDepthStencilStateCreateInfo depth_stencil {};
+    depth_stencil.sType = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil.depthTestEnable = RHI_TRUE;
+    depth_stencil.depthWriteEnable = RHI_TRUE;
+    depth_stencil.depthCompareOp = RHI_COMPARE_OP_LESS;
+
+    RHIDynamicState dynamic_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
+    RHIPipelineDynamicStateCreateInfo dynamic_state {};
+    dynamic_state.sType = RHI_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state.dynamicStateCount = 2;
+    dynamic_state.pDynamicStates = dynamic_states;
+
+    RHIGraphicsPipelineCreateInfo pipeline_info {};
+    pipeline_info.sType = RHI_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_info.stageCount = 2;
+    pipeline_info.pStages = stages;
+    pipeline_info.pVertexInputState = &vertex_input;
+    pipeline_info.pInputAssemblyState = &input_assembly;
+    pipeline_info.pViewportState = &viewport_state;
+    pipeline_info.pRasterizationState = &rasterization;
+    pipeline_info.pMultisampleState = &multisample;
+    pipeline_info.pColorBlendState = &blend_state;
+    pipeline_info.pDepthStencilState = &depth_stencil;
+    pipeline_info.pDynamicState = &dynamic_state;
+    pipeline_info.layout = m_GPU.pipeline_layout;
+    pipeline_info.renderPass = m_GPU.raster_render_pass;
+    pipeline_info.subpass = 0;
+
+    const bool ok =
+        m_Rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &pipeline_info, m_GPU.raster_pipeline);
+    m_Rhi->DestroyShaderModule(vert);
+    m_Rhi->DestroyShaderModule(frag);
+
+    if (!ok || m_GPU.raster_pipeline == nullptr)
+    {
+        LOG_WARNING(ZRender, "nanite: cluster raster pipeline creation failed");
+        return false;
+    }
+
+    m_GPU.raster_ready = true;
+    return true;
+}
+
+NaniteCullConstants NaniteRenderer::BuildCullConstants(const std::shared_ptr<RenderCamera>& camera,
+                                                       const NaniteConfig& config)
+{
+    NaniteCullConstants constants {};
+
+    if (camera != nullptr)
+    {
+        const Matrix4x4 view_projection = camera->GetProjectionMatrix() * camera->GetViewMatrix();
+        NaniteGPUPackMatrix(view_projection, &constants.view_projection.m_Mat[0][0]);
+
+        std::vector<Vector4> planes;
+        m_CullingSystem.ExtractFrustumPlanes(view_projection, planes);
+        for (size_t i = 0; i < planes.size() && i < 6; ++i)
+        {
+            constants.frustum_planes[i] = planes[i];
+        }
+
+        const Vector3 position = camera->position();
+        constants.camera_position = Vector4(position.x, position.y, position.z, 0.0f);
+    }
+
+    constants.lod_params = Vector4(config.max_screen_error, config.lod_bias, 0.0f, 0.0f);
+    constants.counts.x = static_cast<uint32_t>(m_SceneGPUData.clusters.size());
+    constants.counts.y = static_cast<uint32_t>(m_SceneGPUData.instances.size());
+    constants.counts.z = config.enable_lod ? 1u : 0u;
+    constants.counts.w = config.enable_culling ? 1u : 0u;
+
+    return constants;
+}
+
+bool NaniteRenderer::PrepareGPUData(const std::shared_ptr<RenderCamera>& camera, const NaniteConfig& config)
+{
+    if (m_Rhi == nullptr)
+    {
+        return false;
+    }
+
+    NaniteBuildSceneGPUData(m_Instances, m_ClusterManager, m_SceneGPUData);
+    if (m_SceneGPUData.empty())
+    {
+        return false;
+    }
+
+    const uint32_t cluster_count = static_cast<uint32_t>(m_SceneGPUData.clusters.size());
+    const uint32_t instance_count = static_cast<uint32_t>(m_SceneGPUData.instances.size());
+    const uint32_t position_count = static_cast<uint32_t>(m_SceneGPUData.positions.size());
+    const uint32_t index_count = static_cast<uint32_t>(m_SceneGPUData.indices.size());
+
+    const uint32_t old_cluster_capacity = m_GPU.cluster_capacity;
+    if (!EnsureGPUResources(cluster_count, instance_count, position_count, index_count))
+    {
+        return false;
+    }
+
+    // 几何和集群只在容量变化（也就是缓冲被重建）时才需要重传；但实例变换每帧都可能
+    // 变，所以它每帧都传。这样"相机不动、物体动"这种最常见的情况不会被跳过。
+    const bool buffers_recreated = m_GPU.cluster_capacity != old_cluster_capacity;
+
+    if (buffers_recreated || !m_GPU.compute_ready)
+    {
+        UploadBytes(m_GPU.clusters, m_GPU.clusters_memory, m_SceneGPUData.clusters.data(),
+                    m_SceneGPUData.clusters.size() * sizeof(NaniteGPUCluster));
+        UploadBytes(m_GPU.positions, m_GPU.positions_memory, m_SceneGPUData.positions.data(),
+                    m_SceneGPUData.positions.size() * sizeof(Vector4));
+        UploadBytes(m_GPU.indices, m_GPU.indices_memory, m_SceneGPUData.indices.data(),
+                    m_SceneGPUData.indices.size() * sizeof(uint32_t));
+    }
+
+    UploadBytes(m_GPU.instances, m_GPU.instances_memory, m_SceneGPUData.instances.data(),
+                m_SceneGPUData.instances.size() * sizeof(NaniteGPUInstance));
+
+    if (!EnsureComputePipeline())
+    {
+        return false;
+    }
+
+    // 描述符写入必须放在缓冲都建好之后 —— 缓冲重建过就得重写，否则 kernel 还指着
+    // 被销毁的旧句柄。
+    UpdateDescriptorWrites();
+
+    const NaniteCullConstants constants = BuildCullConstants(camera, config);
+    UploadBytes(m_GPU.cull_constants, m_GPU.cull_constants_memory, &constants, sizeof(constants));
+
+    return true;
+}
+
+void NaniteRenderer::DispatchClusterCulling(const std::shared_ptr<RenderCamera>& camera, const NaniteConfig& config)
+{
+    if (m_Rhi == nullptr || !m_GPU.compute_ready || m_GPU.cull_pipeline == nullptr)
+    {
+        return;
+    }
+
+    const uint32_t cluster_count = static_cast<uint32_t>(m_SceneGPUData.clusters.size());
+    if (cluster_count == 0)
+    {
+        return;
+    }
+
+    RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
+
+    // 没有帧命令缓冲（编辑器离屏更新、无窗口的 headless、或者这一帧还没
+    // PrepareBeforePass）时退到"单次命令缓冲"：自己开、自己提交并等它跑完。
+    // 以前这里是直接 return —— 于是除了完整帧循环之外，Nanite 的 GPU 剔除一行都
+    // 跑不起来，也没有任何办法在没有窗口的机器上验证它。
+    const bool owns_command_buffer = (command_buffer == nullptr);
+    if (owns_command_buffer)
+    {
+        command_buffer = m_Rhi->BeginSingleTimeCommands();
+    }
+    if (command_buffer == nullptr)
+    {
+        return;
+    }
+
+    // **计数器必须清零**：kernel 用 atomicAdd，不清零就是往上一帧的结果上累加。
+    NaniteCullCounter zero_counter {};
+    UploadBytes(m_GPU.cull_counter, m_GPU.cull_counter_memory, &zero_counter, sizeof(zero_counter));
+
+    // 命令缓冲清的是**整个容量段**，不是 [0, cluster_count)。
+    //
+    // kernel 会给每个 cluster_index < counts.x 的槽位写一条命令（被剔除的写的是
+    // indexCount == 0 的空命令），所以 [0, cluster_count) 这段其实它自己就刷干净了。
+    // 真正没人写的是**尾部**：group 数向上取整多出来的那些线程直接 return，对应槽
+    // 位留的是上一帧的值。只清 cluster_count 个等于把唯一需要保护的那段漏掉了 ——
+    // 变异测试（把这段上传删掉）之所以抓不到，正是因为清的和 kernel 清的是同一段。
+    //
+    // 尾部今天确实不会被 CmdDrawIndexedIndirect 读到（drawCount = cluster_count），
+    // 但它是"容量涨回去"那一刻的定时炸弹：集群数一变多，那些槽位立刻进入绘制范围。
+    std::vector<RHIDrawIndexedIndirectCommand> zero_commands(m_GPU.cluster_capacity);
+    for (RHIDrawIndexedIndirectCommand& command : zero_commands)
+    {
+        command = RHIDrawIndexedIndirectCommand {};
+        command.vertexOffset = 0;
+    }
+    UploadBytes(m_GPU.draw_commands,
+                m_GPU.draw_commands_memory,
+                zero_commands.data(),
+                zero_commands.size() * sizeof(RHIDrawIndexedIndirectCommand));
+
+    const NaniteCullConstants constants = BuildCullConstants(camera, config);
+    UploadBytes(m_GPU.cull_constants, m_GPU.cull_constants_memory, &constants, sizeof(constants));
+
+    m_Rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_COMPUTE, m_GPU.cull_pipeline);
+    m_Rhi->CmdBindDescriptorSetsPFN(command_buffer,
+                                    RHI_PIPELINE_BIND_POINT_COMPUTE,
+                                    m_GPU.pipeline_layout,
+                                    0,
+                                    1,
+                                    &m_GPU.descriptor_set,
+                                    0,
+                                    nullptr);
+
+    // local_size_x = 64，group 数向上取整。
+    const uint32_t group_count = (cluster_count + 63u) / 64u;
+    m_Rhi->CmdDispatch(command_buffer, group_count, 1, 1);
+
+    // 自己开的缓冲就得自己收尾：EndSingleTimeCommands 的契约是"提交并等它跑完"
+    // （Vulkan 是 vkQueueWaitIdle，DX12 是 Signal + WaitForFences，Metal 之前漏了
+    // 这一步，见 MetalRHI 的改动）。等完这一步，draw_commands 的内容才对 CPU 可见
+    // —— 冒烟测试就是靠这一点把结果读回来的。
+    if (owns_command_buffer)
+    {
+        m_Rhi->EndSingleTimeCommands(command_buffer);
+    }
+
+    m_GPU.dispatch_cluster_count = cluster_count;
+}
+
+void NaniteRenderer::DrawClustersIndirect()
+{
+    if (m_Rhi == nullptr || m_GPU.dispatch_cluster_count == 0)
+    {
+        return;
+    }
+
+    // 光栅管线需要 render pass。还没拿到就只跑剔除 —— 命令已经在 GPU 上了，
+    // 只是这一帧不画。
+    if (!m_GPU.raster_ready && !EnsureRasterPipeline())
+    {
+        return;
+    }
+
+    RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
+    if (command_buffer == nullptr)
+    {
+        return;
+    }
+
+    m_Rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_GRAPHICS, m_GPU.raster_pipeline);
+    m_Rhi->CmdBindDescriptorSetsPFN(command_buffer,
+                                    RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                    m_GPU.pipeline_layout,
+                                    0,
+                                    1,
+                                    &m_GPU.descriptor_set,
+                                    0,
+                                    nullptr);
+    m_Rhi->CmdBindIndexBufferPFN(command_buffer, m_GPU.indices, 0, RHI_INDEX_TYPE_UINT32);
+
+    // drawCount 是**上界**（集群总数）。被剔除的集群贡献 indexCount == 0 的空命令，
+    // GPU 处理它们几乎不花钱，CPU 因此不必把计数读回来。
+    m_Rhi->CmdDrawIndexedIndirect(command_buffer,
+                                  m_GPU.draw_commands,
+                                  0,
+                                  m_GPU.dispatch_cluster_count,
+                                  static_cast<uint32_t>(sizeof(RHIDrawIndexedIndirectCommand)));
+}
+
+void NaniteRenderer::SetRasterRenderPass(RHIRenderPass* render_pass)
+{
+    if (m_GPU.raster_render_pass == render_pass)
+    {
+        return;
+    }
+    m_GPU.raster_render_pass = render_pass;
+    m_GPU.raster_ready = false;
+}
+
 void NaniteRenderer::UpdateGPUBuffers()
 {
-    // TODO: 更新GPU缓冲区
-    // 1. 更新实例数据
-    // 2. 更新集群数据
-    // 3. 更新可见性数据
+    // 真正的上传在 PrepareGPUData 里（它在 dispatch 之前，且知道相机与配置）。
+    // 这里保留为空实现是为了不破坏既有的调用顺序 —— Render() 里 PrepareGPUData
+    // 已经覆盖了它原本的职责。
 }
 
 NaniteVisibilityResult NaniteRenderer::PerformGPUCulling(const std::shared_ptr<RenderCamera>& camera,
                                                          const NaniteConfig& config)
 {
-    // GPU 裁剪还没有实现，CullInstancesGPU 现在就是 CPU 版本。用传进来的 config 而不是
-    // 成员 m_Config —— 否则这一帧改的配置不生效。
+    // GPU 剔除的结果是**留在 GPU 上的**（间接绘制命令 + 计数），CPU 这一帧不读回 ——
+    // 读回要等一帧，整条 GPU-driven 链路就退化成同步的了。所以这里返回的是实例级的
+    // CPU 结果：CPU 侧仍然需要它来组装 m_RenderBatches（编辑器/统计/调试在用），
+    // 而逐集群的裁决完全交给 kernel。
+    //
+    // 用传进来的 config 而不是成员 m_Config —— 否则这一帧改的配置不生效。
     return m_CullingSystem.CullInstancesGPU(m_Instances, camera, config);
 }
 
@@ -507,6 +1246,7 @@ void NaniteRenderPass::ApplyConsoleVariables()
 
     if (desired.enabled == m_NaniteConfig.enabled && desired.enable_lod == m_NaniteConfig.enable_lod &&
         desired.enable_culling == m_NaniteConfig.enable_culling &&
+        desired.use_gpu_culling == m_NaniteConfig.use_gpu_culling &&
         desired.max_screen_error == m_NaniteConfig.max_screen_error &&
         desired.lod_bias == m_NaniteConfig.lod_bias)
     {

@@ -15,6 +15,7 @@ namespace
     int g_enable {kDefaults.enabled ? 1 : 0};
     int g_lod {kDefaults.enable_lod ? 1 : 0};
     int g_culling {kDefaults.enable_culling ? 1 : 0};
+    int g_gpu {kDefaults.use_gpu_culling ? 1 : 0};
     float g_max_screen_error {kDefaults.max_screen_error};
     float g_lod_bias {kDefaults.lod_bias};
 }  // namespace
@@ -22,6 +23,7 @@ namespace
 bool IsEnabled() { return g_enable != 0; }
 bool IsLodEnabled() { return g_enable != 0 && g_lod != 0; }
 bool IsCullingEnabled() { return g_enable != 0 && g_culling != 0; }
+bool IsGPUEnabled() { return g_enable != 0 && g_gpu != 0; }
 float GetMaxScreenError() { return g_max_screen_error; }
 float GetLodBias() { return g_lod_bias; }
 
@@ -30,6 +32,7 @@ void ApplyTo(NaniteConfig& out_config)
     out_config.enabled = g_enable != 0;
     out_config.enable_lod = g_lod != 0;
     out_config.enable_culling = g_culling != 0;
+    out_config.use_gpu_culling = g_gpu != 0;
     // 0 像素的误差预算意味着"永远选最细的一档"，那等于关掉 LOD 却还留着它的开销，
     // 所以这里给一个下限。
     out_config.max_screen_error = std::max(g_max_screen_error, 0.01f);
@@ -60,6 +63,13 @@ void RegisterConsoleVariables(ConsoleManager& console)
                                 "Enable per-cluster frustum + LOD culling. Requires r.Nanite.Enable.",
                                 g_culling,
                                 &g_culling);
+    console.RegisterIntVariable("r.Nanite.GPU",
+                                "Run the per-cluster culling on the GPU (nanite_cluster_cull.comp) and "
+                                "draw the result with a single CmdDrawIndexedIndirect, instead of doing "
+                                "it all on the CPU. Requires r.Nanite.Enable. When the compute shader is "
+                                "unavailable this silently falls back to the CPU path.",
+                                g_gpu,
+                                &g_gpu);
     console.RegisterFloatVariable("r.Nanite.MaxScreenError",
                                   "Screen-space error budget (pixels) a cluster may have before it is "
                                   "dropped: larger = coarser and cheaper.",

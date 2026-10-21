@@ -8,8 +8,8 @@ class ConsoleManager;
 // int/float 存储，再用 ApplyTo 组装成 NaniteConfig。
 //
 // 为什么接进帧循环的同时就要这一层：UpdateFromScene 在**场景拓扑变化**时会重建集群
-// （递归二分整个网格），而 Nanite 今天还没有 GPU 路径 —— 没有 shader、没有间接绘制，
-// 批次产出来也没人消费。没有开关的话，接线就等于给每个项目无条件加一份纯 CPU 开销。
+// （递归二分整个网格），这是一份纯 CPU 开销，不是每个项目都想要。r.Nanite.GPU 决定
+// 逐集群的裁剪是跑在 GPU 上（一次 dispatch + 一次间接绘制）还是 CPU 上。
 //
 // 这些 CVar 是**每帧生效**的（NaniteRenderPass::Render 开头会重新 ApplyTo）。
 namespace NaniteSettings
@@ -18,6 +18,8 @@ namespace NaniteSettings
     bool IsEnabled();
     bool IsLodEnabled();
     bool IsCullingEnabled();
+    // 逐集群裁剪跑在 GPU 上（compute 剔除 + 一次间接绘制），而不是 CPU。
+    bool IsGPUEnabled();
 
     // 质量
     float GetMaxScreenError();
