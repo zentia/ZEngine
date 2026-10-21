@@ -28,7 +28,9 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 
 using namespace ZEngine::ShaderLab;
@@ -559,6 +561,169 @@ void RequireEveryPass(const std::filesystem::path& shader,
     }
 }
 
+// ---------------------------------------------------------------------------
+// GBuffer layout guard.
+//
+// "Exactly three render targets" is enforced nowhere at compile time. DXC is
+// happy to compile four SV_Targets; the failure only happens at PSO creation,
+// because the RP1 render pass owns gbuffer_a/b/c and nothing else
+// (RenderPass.h defines no fourth attachment, CreateRuntimeMeshPipeline(..., 3)
+// binds three). That failure is silent: the material falls back to the built-in
+// mesh_gbuffer shader and everything the pass did is thrown away.
+//
+// So pin it here, on the two files that define the layout:
+//   1. shader/include/gbuffer.h -- the struct every GBuffer pass writes through.
+//   2. example_standard.shader -- must fill GBuffer0..2 and never a fourth.
+// ---------------------------------------------------------------------------
+int CountOccurrences(const std::string& haystack, const std::string& needle)
+{
+    int count = 0;
+    for (size_t at = haystack.find(needle); at != std::string::npos;
+         at = haystack.find(needle, at + needle.size()))
+    {
+        ++count;
+    }
+    return count;
+}
+
+// Same, but over CODE lines only -- `//` comment lines are skipped.
+//
+// Not paranoia: gbuffer.h documents the layout in a comment block that spells
+// out SV_Target0..2, so counting over the whole file reports 7 targets instead
+// of 3. Same trap as counting a token in generated source that repeats it in
+// prose.
+int CountOccurrencesInCode(const std::string& text, const std::string& needle)
+{
+    int count = 0;
+    size_t line_begin = 0;
+    while (line_begin < text.size())
+    {
+        const size_t line_end = text.find('\n', line_begin);
+        const std::string line = (line_end == std::string::npos)
+                                     ? text.substr(line_begin)
+                                     : text.substr(line_begin, line_end - line_begin);
+
+        const size_t first = line.find_first_not_of(" \t\r");
+        const bool is_comment = first != std::string::npos && line.compare(first, 2, "//") == 0;
+        if (!is_comment)
+        {
+            count += CountOccurrences(line, needle);
+        }
+
+        if (line_end == std::string::npos)
+        {
+            break;
+        }
+        line_begin = line_end + 1;
+    }
+    return count;
+}
+
+std::string ReadFileText(const std::filesystem::path& path)
+{
+    std::ifstream in(path);
+    if (!in)
+    {
+        return {};
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+void RequireGbufferLayout(int& checks, int& failures)
+{
+    std::cout << "\n---- [0f] GBuffer layout = exactly three render targets ----\n";
+
+    const std::filesystem::path engine_dir(ZENGINE_SHADERLAB_ENGINE_SHADER_DIR);
+
+    // (1) The shared struct advertises three targets and no more.
+    ++checks;
+    const std::string gbuffer_h =
+        ReadFileText(engine_dir / "shader" / "include" / "gbuffer.h");
+    if (gbuffer_h.empty())
+    {
+        ++failures;
+        std::cout << "  [FAIL] cannot read shader/include/gbuffer.h\n";
+    }
+    else
+    {
+        const int targets = CountOccurrencesInCode(gbuffer_h, "SV_Target");
+        if (targets != 3)
+        {
+            ++failures;
+            std::cout << "  [FAIL] gbuffer.h declares " << targets
+                      << " SV_Target fields, expected 3 (a 4th cannot form a PSO"
+                         " against the 3-attachment RP1 render pass)\n";
+        }
+        else
+        {
+            std::cout << "  [ OK ] gbuffer.h declares 3 SV_Target fields\n";
+        }
+    }
+
+    // (2) The engine's own GBuffer pass writes all three and none beyond.
+    ShaderLabDx12Compiler compiler;
+    compiler.SetIncludeDirectory(engine_dir.generic_string());
+    ++checks;
+    if (!compiler.LoadFromFile((engine_dir / "shader" / "example_standard.shader").generic_string()))
+    {
+        ++failures;
+        std::cout << "  [FAIL] parse: " << compiler.GetParseError() << "\n";
+        return;
+    }
+
+    const auto asset = compiler.GetAsset();
+    std::string gbuffer_source;
+    bool found = false;
+    for (const auto& sub : asset->subshaders)
+    {
+        for (const auto& pass : sub.passes)
+        {
+            if (pass.light_mode == "GBuffer" && !pass.programs.empty())
+            {
+                found = true;
+                gbuffer_source = pass.programs[0].source_code;
+            }
+        }
+    }
+
+    ++checks;
+    if (!found)
+    {
+        ++failures;
+        std::cout << "  [FAIL] no GBuffer pass parsed from example_standard.shader\n";
+        return;
+    }
+    std::cout << "  [ OK ] GBuffer pass found\n";
+
+    for (const char* target : {"GBuffer0", "GBuffer1", "GBuffer2"})
+    {
+        ++checks;
+        if (CountOccurrencesInCode(gbuffer_source, target) == 0)
+        {
+            ++failures;
+            std::cout << "  [FAIL] GBuffer pass never writes " << target << "\n";
+        }
+        else
+        {
+            std::cout << "  [ OK ] writes " << target << "\n";
+        }
+    }
+
+    ++checks;
+    if (CountOccurrencesInCode(gbuffer_source, "GBuffer3") != 0)
+    {
+        ++failures;
+        std::cout << "  [FAIL] GBuffer pass still writes GBuffer3 -- 4 targets cannot"
+                     " form a PSO and fall back to the built-in mesh_gbuffer\n";
+    }
+    else
+    {
+        std::cout << "  [ OK ] no GBuffer3 (would be an unbindable 4th target)\n";
+    }
+}
+
 // RunShaderFile() only ever exercises pass 0, because TryCompile() used to
 // hard-code `Compile(0, 0, ...)`. A surface shader declared with `addshadow`
 // produces a SECOND pass, so that one needs its own check -- otherwise the
@@ -690,6 +855,11 @@ int main(int argc, char** argv)
                      checks,
                      failures);
 
+    // 0f. The GBuffer layout itself: three render targets, no fourth.
+    //     (Separate from 0e because 0e only proves "it compiles", and a fourth
+    //     target compiles fine -- it fails later, silently, at PSO creation.)
+    RequireGbufferLayout(checks, failures);
+
     // Ad-hoc mode: `ShaderLabUnityCompatTest <file> [<file>...] [--include-root=<dir>]`
     // parses and compiles pass 0 of each file. Lets you drop a diagnostic fixture in
     // and re-run without rebuilding.
@@ -757,12 +927,12 @@ int main(int argc, char** argv)
                 // Every pass, not just pass 0: a surface shader expands into
                 // several, and the interesting one is rarely the first.
                 const auto& passes = compiler.GetAsset()->subshaders[0].passes;
-                for (size_t p = 0; p < passes.size(); ++p)
+                for (size_t pi = 0; pi < passes.size(); ++pi)
                 {
-                    for (const ShaderProgram& program : passes[p].programs)
+                    for (const ShaderProgram& program : passes[pi].programs)
                     {
-                        std::cout << "\n---- source handed to DXC: Pass[" << p << "] '"
-                                  << passes[p].name << "' (vertex: " << program.vertex_entry
+                        std::cout << "\n---- source handed to DXC: Pass[" << pi << "] '"
+                                  << passes[pi].name << "' (vertex: " << program.vertex_entry
                                   << ", fragment: " << program.fragment_entry << ") ----\n"
                                   << program.source_code << "\n";
                     }

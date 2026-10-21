@@ -1535,8 +1535,8 @@ namespace ZEngine::ShaderLab
         //     silently fall back to the built-in mesh_gbuffer shader, which
         //     throws away everything the author's surf() did.
         //
-        //   * The layout is normal / material / albedo, NOT the order
-        //     engine/shader/example_standard.shader writes. deferred_lighting
+        //   * The layout is normal / material / albedo -- the same one
+        //     engine/shader/example_standard.shader now writes. deferred_lighting
         //     .frag.hlsl decodes gbuffer_a with DecodeNormal() and MainCamera
         //     Rp1Pass binds gbuffer_a as "gbuffer_normal" and gbuffer_c as
         //     "gbuffer_albedo", matching hlsl/rp1/mesh_gbuffer.frag.hlsl.

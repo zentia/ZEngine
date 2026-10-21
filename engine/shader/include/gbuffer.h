@@ -7,22 +7,42 @@
 //     common.h first, which defines ZENGINE_HLSL, so it gets the branch above.
 //     => HLSL consumers MUST include common.h before this file.
 //
-// Both sides describe the same GBuffer layout. The RP1 HLSL pipeline binds
-// gbuffer_a/b/c as SV_Target0..2 (see
-// engine/shader/hlsl/rp1/mesh_gbuffer.frag.hlsl); GBuffer3 below carries
-// emissive and is only written by the ShaderLab deferred example.
+// Both sides describe the same GBuffer layout: THREE render targets, in
+// normal / material / albedo order (see EncodeGBufferData below and
+// engine/shader/hlsl/rp1/mesh_gbuffer.frag.hlsl). There is no emissive
+// target -- every channel of all three is already spoken for.
 // ---------------------------------------------------------------------------
 
 #ifdef ZENGINE_HLSL
 
-// MRT output of the GBuffer pass.
+// MRT output of the GBuffer pass -- EXACTLY THREE render targets.
+//
+// The RP1 render pass owns gbuffer_a/b/c and nothing else: RenderPass.h
+// defines no fourth attachment and CreateRuntimeMeshPipeline(..., 3) binds
+// three. A fragment shader that declares a fourth SV_Target cannot form a PSO
+// against that render pass, so the material silently falls back to the
+// built-in mesh_gbuffer shader and everything the author wrote is discarded.
+//
+//   GBuffer0 : SV_Target0 = EncodeNormal(worldNormal)   (.a unused)
+//   GBuffer1 : SV_Target1 = metallic, specular, roughness, shading model id
+//   GBuffer2 : SV_Target2 = baseColor                   (.a unused)
 struct GBufferOutput
 {
     float4 GBuffer0 : SV_Target0;
     float4 GBuffer1 : SV_Target1;
     float4 GBuffer2 : SV_Target2;
-    float3 GBuffer3 : SV_Target3;
 };
+
+#define SHADINGMODELID_UNLIT 0u
+#define SHADINGMODELID_DEFAULT_LIT 1u
+#define SHADINGMODELID_SKY 2u
+
+// Mirrors of the GLSL helpers below, so a ShaderLab pass can write the layout
+// instead of hand-rolling the packing (and getting the target order wrong).
+float3 EncodeNormal(float3 N) { return N * 0.5 + 0.5; }
+float3 DecodeNormal(float3 N) { return N * 2.0 - 1.0; }
+float  EncodeShadingModelId(uint id) { return float(id) / 255.0; }
+uint   DecodeShadingModelId(float packed) { return (uint)round(packed * 255.0); }
 
 #else  // ---- GLSL ----
 

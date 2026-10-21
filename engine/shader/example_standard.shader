@@ -64,8 +64,10 @@ Shader "ZEngine/Standard"
             #pragma multi_compile _ SHADOWS_SHADOWMASK
             #pragma multi_compile_fragment _ SHADOWS_SOFT
             
+            // _EMISSION is deliberately NOT declared here: the GBuffer has no
+            // emissive target (see the note at the bottom of StandardFrag), so
+            // the keyword belongs to the ForwardLit pass below.
             #pragma shader_feature _ _ALPHATEST_ON
-            #pragma shader_feature _ _EMISSION
             
             #include "shader/include/common.h"
             #include "shader/include/gbuffer.h"
@@ -76,14 +78,13 @@ Shader "ZEngine/Standard"
                 float  _Metallic;
                 float  _Smoothness;
                 float  _NormalScale;
-                float4 _EmissionColor;
                 float  _Cutoff;
             CBUFFER_END
             
             TEXTURE2D(_BaseMap);
             SAMPLER(sampler_BaseMap);
-            TEXTURE2D(_EmissionMap);
-            SAMPLER(sampler_EmissionMap);
+            TEXTURE2D(_NormalMap);
+            SAMPLER(sampler_NormalMap);
             
             struct appdata
             {
@@ -135,20 +136,33 @@ Shader "ZEngine/Standard"
                     clip(albedo.a - _Cutoff);
                 #endif
                 
-                // Normal
-                float3 normal = normalize(input.normal);
+                // 着色法线：法线贴图是切线空间的，用 VS 传下来的 TBN 转到世界空间。
+                // 展开成线性组合而不是 mul(float3x3(T,B,N), n)，避免去猜行列主序。
+                // 没有 Tangent 的网格会让 T 退化成 0 => normalize(0) = NaN，
+                // 所以先按长度兜住（退化时退回顶点法线）。
+                float3 N = normalize(input.normal);
+                float3 T = normalize(input.tangent);
+                float3 B = normalize(input.bitangent);
+                float3 tangentNormal = SAMPLE_TEXTURE2D(_NormalMap, sampler_NormalMap, input.uv).xyz * 2.0 - 1.0;
+                tangentNormal.xy *= _NormalScale;
+                float3 shadingNormal = tangentNormal.x * T + tangentNormal.y * B + tangentNormal.z * N;
+                N = (dot(shadingNormal, shadingNormal) > 1e-8) ? normalize(shadingNormal) : N;
                 
-                // 输出 GBuffer
-                output.GBuffer0 = float4(albedo.rgb, _Metallic);
-                output.GBuffer1 = float4(_Smoothness, 0, 0, 0);
-                output.GBuffer2 = float4(normal * 0.5 + 0.5, 1);
+                // 输出 GBuffer —— 布局见 shader/include/gbuffer.h，三个 RT，顺序是
+                // 法线 / 材质 / albedo（deferred_lighting.frag.hlsl 就是这么读的：
+                // gbuffer_a 过 DecodeNormal、gbuffer_c 当 albedo）。
+                output.GBuffer0 = float4(EncodeNormal(N), 1.0);
+                output.GBuffer1 = float4(_Metallic,
+                                         0.5,                          // specular
+                                         saturate(1.0 - _Smoothness),  // roughness
+                                         EncodeShadingModelId(SHADINGMODELID_DEFAULT_LIT));
+                output.GBuffer2 = float4(albedo.rgb, 1.0);
                 
-                #if defined(_EMISSION)
-                    float4 emission = SAMPLE_TEXTURE2D(_EmissionMap, sampler_EmissionMap, input.uv) * _EmissionColor;
-                    output.GBuffer3 = emission.rgb;
-                #else
-                    output.GBuffer3 = float3(0, 0, 0);
-                #endif
+                // 这里没有自发光出口：三个 RT 的通道已经被法线 xyz、
+                // metallic+specular+roughness+shadingModel、albedo rgb 占满，
+                // 而且 RP1 的 render pass 只有 gbuffer_a/b/c 三个附件 —— 多声明一个
+                // SV_Target 组不出 PSO，会静默回退到内置 mesh_gbuffer，整个 pass 白写。
+                // 自发光走下面的 ForwardLit。
             }
             ENDHLSL
         }
@@ -172,6 +186,9 @@ Shader "ZEngine/Standard"
             #pragma multi_compile _ LIGHTMAP_ON
             #pragma multi_compile _ DIRECTIONAL
             
+            // 自发光只能在这里落地：GBuffer 没有 emissive 通道（见上面那个 pass）。
+            #pragma shader_feature _ _EMISSION
+            
             #include "shader/include/common.h"
             
             CBUFFER_START(UnityPerMaterial)
@@ -185,6 +202,8 @@ Shader "ZEngine/Standard"
             
             TEXTURE2D(_BaseMap);
             SAMPLER(sampler_BaseMap);
+            TEXTURE2D(_EmissionMap);
+            SAMPLER(sampler_EmissionMap);
             
             struct appdata
             {
@@ -221,7 +240,14 @@ Shader "ZEngine/Standard"
                 float3 lightDir = normalize(float3(1, 1, 1));
                 float3 diffuse = max(dot(normal, lightDir), 0) * albedo.rgb;
                 
-                return float4(diffuse, albedo.a);
+                #if defined(_EMISSION)
+                    float3 emission = SAMPLE_TEXTURE2D(_EmissionMap, sampler_EmissionMap, input.uv).rgb
+                                    * _EmissionColor.rgb;
+                #else
+                    float3 emission = float3(0, 0, 0);
+                #endif
+                
+                return float4(diffuse + emission, albedo.a);
             }
             ENDHLSL
         }
