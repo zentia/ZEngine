@@ -72,6 +72,7 @@ jobs:
           -DZENGINE_BUILD_UNDO_SMOKE_TEST=ON
           -DZENGINE_BUILD_BUILD_CACHE_SMOKE_TEST=ON
           -DZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
+          -DZENGINE_BUILD_RHI_INDIRECT_DRAW_SMOKE_TEST=ON
           -DZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS=ON
 
       - name: Build smoke tests
@@ -99,6 +100,7 @@ jobs:
           RenderGraphExecuteSmokeTest
           UndoSystemSmokeTest
           BuildCacheSmokeTest
+          RHIIndirectDrawSmokeTest
           DX12BindlessSmokeTest
           EnvironmentCollectorTests
           EnvironmentPreflightTests

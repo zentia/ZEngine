@@ -327,6 +327,22 @@ public:
                                            RHIDescriptorSetLayout*& pSetLayout) = 0;
     virtual bool CreateFence(const RHIFenceCreateInfo* pCreateInfo, RHIFence*& pFence) = 0;
     virtual bool CreateFramebuffer(const RHIFramebufferCreateInfo* pCreateInfo, RHIFramebuffer*& pFramebuffer) = 0;
+    // -----------------------------------------------------------------
+    // Pipeline creation: ONE CALL CREATES ONE PIPELINE.
+    //
+    // The createInfoCount parameter is a Vulkan-ism that this abstraction does
+    // not actually support: `pPipelines` is a single RHIPipeline*, and
+    // RHIPipeline is an empty base class, so indexing it as an array would
+    // stride by sizeof(RHIPipeline) (== 1) rather than sizeof(<Backend>Pipeline).
+    // The Vulkan backend used to forward createInfoCount to
+    // vkCreate*Pipelines while only filling one create-info struct and one
+    // output slot -- which read past the struct and wrote past the output
+    // (a stack overflow) for any count > 1. It went unnoticed only because
+    // every caller passes 1.
+    //
+    // Every backend now rejects createInfoCount != 1 instead. Create N
+    // pipelines with N calls.
+    // -----------------------------------------------------------------
     virtual bool CreateGraphicsPipelines(RHIPipelineCache* pipelineCache,
                                          uint32_t createInfoCount,
                                          const RHIGraphicsPipelineCreateInfo* pCreateInfos,
@@ -437,6 +453,33 @@ public:
                                    uint32_t firstIndex,
                                    int32_t vertexOffset,
                                    uint32_t firstInstance) = 0;
+    // -----------------------------------------------------------------
+    // Indirect draws: the arguments are read from `buffer` at `offset`
+    // instead of being passed on the CPU. This is what makes GPU-driven
+    // geometry possible -- a compute pass (Nanite cluster culling, GPU
+    // particle compaction) writes the commands and the CPU never learns
+    // how many draws there were.
+    //
+    // `drawCount` commands of `stride` bytes each are read, starting at
+    // `offset`. The per-command layout is RHIDrawIndexedIndirectCommand /
+    // RHIDrawIndirectCommand; pass `sizeof` of the matching struct as
+    // `stride` unless you are deliberately packing them tighter.
+    //
+    // The buffer must have been created with
+    // RHI_BUFFER_USAGE_INDIRECT_BUFFER_BIT. Note that drawCount > 1 (a
+    // "multi draw indirect" style batch) is only well-defined on backends
+    // whose device reports multiDrawIndirect; Vulkan/DX12/Metal all accept
+    // it, WebGL2 does not implement indirect draws at all and no-ops.
+    virtual void CmdDrawIndexedIndirect(RHICommandBuffer* commandBuffer,
+                                        RHIBuffer* buffer,
+                                        RHIDeviceSize offset,
+                                        uint32_t drawCount,
+                                        uint32_t stride) = 0;
+    virtual void CmdDrawIndirect(RHICommandBuffer* commandBuffer,
+                                 RHIBuffer* buffer,
+                                 RHIDeviceSize offset,
+                                 uint32_t drawCount,
+                                 uint32_t stride) = 0;
     virtual void CmdClearAttachmentsPFN(RHICommandBuffer* commandBuffer,
                                         uint32_t attachmentCount,
                                         const RHIClearAttachment* pAttachments,

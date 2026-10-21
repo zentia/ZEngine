@@ -105,6 +105,8 @@ struct RHIAttachmentDescription;
 struct RHIBufferCopy;
 struct RHIBufferCreateInfo;
 struct RHIBufferImageCopy;
+struct RHIDrawIndexedIndirectCommand;
+struct RHIDrawIndirectCommand;
 struct RHICommandBufferAllocateInfo;
 struct RHICommandBufferBeginInfo;
 struct RHICommandBufferInheritanceInfo;
@@ -307,6 +309,38 @@ struct RHIBufferCopy
     RHIDeviceSize srcOffset;
     RHIDeviceSize dstOffset;
     RHIDeviceSize size;
+};
+
+// ---------------------------------------------------------------------------
+// Indirect draw arguments.
+//
+// These are the ONE layout a caller writes into an
+// RHI_BUFFER_USAGE_INDIRECT_BUFFER_BIT buffer and hands to
+// RHI::CmdDrawIndexedIndirect / RHI::CmdDrawIndirect. The field order and sizes
+// are deliberately the ones all four backends already agree on:
+//   Vulkan  VkDrawIndexedIndirectCommand
+//   DX12    D3D12_DRAW_INDEXED_ARGUMENTS
+//   Metal   MTLDrawIndexedPrimitivesIndirectArguments
+// so the same bytes work everywhere -- Nanite's culling pass writes them on the
+// GPU and never gets to know which backend consumed them.
+//
+// Both are 20 / 16 bytes with no padding; keep them that way (add a static_assert
+// in the TU that first depends on it if this ever needs to change).
+struct RHIDrawIndexedIndirectCommand
+{
+    uint32_t indexCount;
+    uint32_t instanceCount;
+    uint32_t firstIndex;
+    int32_t vertexOffset;
+    uint32_t firstInstance;
+};
+
+struct RHIDrawIndirectCommand
+{
+    uint32_t vertexCount;
+    uint32_t instanceCount;
+    uint32_t firstVertex;
+    uint32_t firstInstance;
 };
 
 struct RHIBufferCreateInfo

@@ -487,6 +487,16 @@ namespace ZEngine
         void WebGL2RHI::CmdDispatchIndirect(RHICommandBuffer*, RHIBuffer*, RHIDeviceSize)
         { /* unsupported */
         }
+        // WebGL2 has no indirect draw of any kind (there is no
+        // glMultiDrawElementsIndirect equivalent), and Lumen/Nanite are not
+        // compiled for Emscripten anyway. Silent no-ops, matching
+        // CmdDispatchIndirect: an unsupported draw does nothing rather than fail.
+        void WebGL2RHI::CmdDrawIndexedIndirect(RHICommandBuffer*, RHIBuffer*, RHIDeviceSize, uint32_t, uint32_t)
+        { /* unsupported */
+        }
+        void WebGL2RHI::CmdDrawIndirect(RHICommandBuffer*, RHIBuffer*, RHIDeviceSize, uint32_t, uint32_t)
+        { /* unsupported */
+        }
         void WebGL2RHI::CmdPipelineBarrier(RHICommandBuffer*, RHIPipelineStageFlags, RHIPipelineStageFlags, RHIDependencyFlags, uint32_t, const RHIMemoryBarrier*, uint32_t, const RHIBufferMemoryBarrier*, uint32_t, const RHIImageMemoryBarrier*)
         { /* implicit in GL */
         }

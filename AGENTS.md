@@ -1939,6 +1939,47 @@ Known gaps: no layers / blend trees / sub-state machines, no graph pan/zoom, the
 Content Browser does not accept drops yet (a path cannot be dragged *into* it),
 and no live preview of the driven character's parameters while editing.
 
+### 2.33 RHI: one pipeline per call, and indirect draws
+
+`engine/Source/Runtime/Function/Render/Interface/` — `RHI.h` is the abstract
+interface, `RHIStruct.h` the plain data, and `Vulkan/ DX12/ Metal/ WebGL2/` the
+four backends.
+
+- **`CreateGraphicsPipelines` / `CreateComputePipelines` create ONE pipeline per
+  call.** `pPipelines` is a single `RHIPipeline*`, and `RHIPipeline` is an
+  **empty base class** (`class RHIPipeline {};`), so indexing it as an array
+  would stride by `sizeof(RHIPipeline)` (== 1) instead of
+  `sizeof(VulkanPipeline)` — N pipelines cannot be handed back through this
+  out-parameter at all. The Vulkan backend used to forward `createInfoCount` to
+  `vkCreate*Pipelines` while filling only one create-info struct and one output
+  slot, which **read past the struct and wrote past the output** for any count
+  > 1 (a stack overflow nobody hit because every caller passes 1). All backends
+  now reject `createInfoCount != 1`. **Create N pipelines with N calls.**
+- **`CmdDrawIndexedIndirect` / `CmdDrawIndirect`** (added 2026-10-21) are the
+  primitive that makes GPU-driven geometry possible: a compute pass writes the
+  arguments into an `RHI_BUFFER_USAGE_INDIRECT_BUFFER_BIT` buffer and the CPU
+  never learns how many draws there were. Per-backend caveats:
+  - Vulkan: `multiDrawIndirect` is optional in Vulkan 1.0, so it is probed in
+    `CreateLogicalDevice` and cached in `m_MultiDrawIndirectSupported`; a batch
+    is clamped to 1 with a warning rather than silently truncated. Requesting
+    an unsupported feature makes `vkCreateDevice` fail outright — probe, never
+    assume.
+  - DX12: `ExecuteIndirect` bakes the stride into the command signature at
+    creation, so it cannot follow a per-call stride the way Vulkan's can; a
+    mismatched stride is refused rather than reinterpreted.
+  - Metal: there is **no** multi-draw indirect, so a batch is a loop of single
+    draws at `offset + i * stride`.
+  - WebGL2: no indirect draw exists; silent no-op (Lumen/Nanite are not
+    compiled for Emscripten anyway).
+- **`RHIDrawIndexedIndirectCommand` / `RHIDrawIndirectCommand`** are the shared
+  argument layout. Their size and field offsets are the ones
+  `VkDraw*IndirectCommand`, `D3D12_DRAW_*_ARGUMENTS` and
+  `MTLDraw*PrimitivesIndirectArguments` all already agree on — keep them that
+  way. `RHIIndirectDrawSmokeTest` pins them with `static_assert` and a stride
+  walk, and it matters more than it looks: **on Apple neither
+  `Interface/Vulkan` nor `Interface/DX12` is compiled**, so it is the only
+  thing that catches a field drifting apart there.
+
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).

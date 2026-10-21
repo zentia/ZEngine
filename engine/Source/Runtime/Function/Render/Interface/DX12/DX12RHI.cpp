@@ -1694,6 +1694,56 @@ bool DX12RHI::EnsureDispatchIndirectSignature()
                      "Create dispatch indirect command signature failed");
 }
 
+bool DX12RHI::EnsureDrawIndexedIndirectSignature()
+{
+    if (m_DrawIndexedIndirectSignature)
+    {
+        return true;
+    }
+    if (!m_Device)
+    {
+        return false;
+    }
+
+    D3D12_INDIRECT_ARGUMENT_DESC argument_desc = {};
+    argument_desc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW_INDEXED;
+
+    D3D12_COMMAND_SIGNATURE_DESC signature_desc = {};
+    signature_desc.ByteStride = sizeof(D3D12_DRAW_INDEXED_ARGUMENTS);
+    signature_desc.NumArgumentDescs = 1;
+    signature_desc.pArgumentDescs = &argument_desc;
+
+    return CheckDX12(m_Device->CreateCommandSignature(&signature_desc,
+                                                      nullptr,
+                                                      IID_PPV_ARGS(&m_DrawIndexedIndirectSignature)),
+                     "Create draw-indexed indirect command signature failed");
+}
+
+bool DX12RHI::EnsureDrawIndirectSignature()
+{
+    if (m_DrawIndirectSignature)
+    {
+        return true;
+    }
+    if (!m_Device)
+    {
+        return false;
+    }
+
+    D3D12_INDIRECT_ARGUMENT_DESC argument_desc = {};
+    argument_desc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DRAW;
+
+    D3D12_COMMAND_SIGNATURE_DESC signature_desc = {};
+    signature_desc.ByteStride = sizeof(D3D12_DRAW_ARGUMENTS);
+    signature_desc.NumArgumentDescs = 1;
+    signature_desc.pArgumentDescs = &argument_desc;
+
+    return CheckDX12(m_Device->CreateCommandSignature(&signature_desc,
+                                                      nullptr,
+                                                      IID_PPV_ARGS(&m_DrawIndirectSignature)),
+                     "Create draw indirect command signature failed");
+}
+
 void DX12RHI::DrainDebugLayerMessages() const
 {
     if (!m_DebugInfoQueue)
@@ -3752,6 +3802,18 @@ bool DX12RHI::CreateGraphicsPipelines(RHIPipelineCache* pipelineCache,
         return false;
     }
 
+    // One call creates one pipeline -- same contract as the Vulkan backend (see
+    // the comment there). This backend used to quietly build pCreateInfos[0] and
+    // drop the rest; a caller that gets a hard error on Vulkan must not get a
+    // silent "here is one" here, or the bug only reproduces on one platform.
+    if (createInfoCount != 1)
+    {
+        LOG_ERROR(ZRender,
+                  "DX12 createGraphicsPipelines: createInfoCount must be 1, got {} -- call once per pipeline",
+                  createInfoCount);
+        return false;
+    }
+
     const RHIGraphicsPipelineCreateInfo& create_info = pCreateInfos[0];
     DX12PipelineLayout* pipeline_layout = static_cast<DX12PipelineLayout*>(create_info.layout);
     if (pipeline_layout == nullptr || pipeline_layout->getRootSignature() == nullptr)
@@ -3934,6 +3996,17 @@ bool DX12RHI::CreateComputePipelines(RHIPipelineCache* pipelineCache,
     pPipelines = nullptr;
     if (!m_Device || createInfoCount == 0 || pCreateInfos == nullptr)
     {
+        return false;
+    }
+
+    // Same one-call-one-pipeline contract as CreateGraphicsPipelines above and
+    // the Vulkan backend. Nanite wants several compute pipelines; each needs its
+    // own call so a backend cannot disagree about how many it produced.
+    if (createInfoCount != 1)
+    {
+        LOG_ERROR(ZRender,
+                  "DX12 createComputePipelines: createInfoCount must be 1, got {} -- call once per pipeline",
+                  createInfoCount);
         return false;
     }
 
@@ -5368,6 +5441,75 @@ void DX12RHI::CmdDispatchIndirect(RHICommandBuffer* commandBuffer, RHIBuffer* bu
 
     m_CommandLists[m_CurrentFrameIndex]->ExecuteIndirect(m_DispatchIndirectSignature.Get(),
                                                          1,
+                                                         dx12_buffer->getResource(),
+                                                         offset,
+                                                         nullptr,
+                                                         0);
+}
+
+void DX12RHI::CmdDrawIndexedIndirect(RHICommandBuffer* commandBuffer,
+                                     RHIBuffer* buffer,
+                                     RHIDeviceSize offset,
+                                     uint32_t drawCount,
+                                     uint32_t stride)
+{
+    DX12Buffer* dx12_buffer = static_cast<DX12Buffer*>(buffer);
+    if (!m_CommandLists[m_CurrentFrameIndex] || dx12_buffer == nullptr || dx12_buffer->getResource() == nullptr)
+    {
+        return;
+    }
+
+    // ExecuteIndirect bakes the stride into the command signature at creation
+    // time, so it cannot follow a per-call stride the way Vulkan's can. Refuse
+    // rather than reinterpret the buffer with a stride the caller did not write.
+    if (stride != sizeof(D3D12_DRAW_INDEXED_ARGUMENTS))
+    {
+        LOG_ERROR(ZRender,
+                  "CmdDrawIndexedIndirect: stride {} does not match D3D12_DRAW_INDEXED_ARGUMENTS ({})",
+                  stride,
+                  static_cast<uint32_t>(sizeof(D3D12_DRAW_INDEXED_ARGUMENTS)));
+        return;
+    }
+    if (!EnsureDrawIndexedIndirectSignature())
+    {
+        return;
+    }
+
+    m_CommandLists[m_CurrentFrameIndex]->ExecuteIndirect(m_DrawIndexedIndirectSignature.Get(),
+                                                         drawCount,
+                                                         dx12_buffer->getResource(),
+                                                         offset,
+                                                         nullptr,
+                                                         0);
+}
+
+void DX12RHI::CmdDrawIndirect(RHICommandBuffer* commandBuffer,
+                              RHIBuffer* buffer,
+                              RHIDeviceSize offset,
+                              uint32_t drawCount,
+                              uint32_t stride)
+{
+    DX12Buffer* dx12_buffer = static_cast<DX12Buffer*>(buffer);
+    if (!m_CommandLists[m_CurrentFrameIndex] || dx12_buffer == nullptr || dx12_buffer->getResource() == nullptr)
+    {
+        return;
+    }
+
+    if (stride != sizeof(D3D12_DRAW_ARGUMENTS))
+    {
+        LOG_ERROR(ZRender,
+                  "CmdDrawIndirect: stride {} does not match D3D12_DRAW_ARGUMENTS ({})",
+                  stride,
+                  static_cast<uint32_t>(sizeof(D3D12_DRAW_ARGUMENTS)));
+        return;
+    }
+    if (!EnsureDrawIndirectSignature())
+    {
+        return;
+    }
+
+    m_CommandLists[m_CurrentFrameIndex]->ExecuteIndirect(m_DrawIndirectSignature.Get(),
+                                                         drawCount,
                                                          dx12_buffer->getResource(),
                                                          offset,
                                                          nullptr,

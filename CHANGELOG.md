@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed / Added - 2026-10-21 (RHI groundwork for the GPU-driven path)
+- **`VulkanRHI::CreateComputePipelines` / `CreateGraphicsPipelines` read and wrote
+  past their own stack** for any `createInfoCount > 1`: only one
+  `Vk*PipelineCreateInfo` and one output slot were ever filled, yet
+  `createInfoCount` was forwarded verbatim to `vkCreate*Pipelines`. It stayed
+  hidden because every caller passes `1` -- and Nanite needs several compute
+  pipelines, so it would have been the first thing to trip it.
+  Both now build and return exactly one pipeline, and every backend (Vulkan,
+  DX12, Metal) **rejects** `createInfoCount != 1` instead of silently dropping
+  the rest. `RHI.h` documents the contract: create N pipelines with N calls.
+  The out-parameter cannot carry N anyway -- `RHIPipeline` is an empty base, so
+  indexing it as an array would stride by `sizeof(RHIPipeline)` (== 1).
+- Compute **specialization constants were unconditionally discarded** on Vulkan
+  (both branches of the `if/else` assigned `nullptr`), so a compute shader that
+  asked for one silently got the default. They are now translated properly.
+- **Added `RHI::CmdDrawIndexedIndirect` and `RHI::CmdDrawIndirect`** -- the
+  missing primitive for GPU-driven geometry. A compute pass can now write the
+  draw arguments and the CPU never learns how many draws there were. Implemented
+  on Vulkan (`vkCmdDrawIndexedIndirect`, with a `multiDrawIndirect` feature
+  probe so a batch is clamped rather than silently truncated), DX12
+  (`ExecuteIndirect` + a new draw command signature; the stride is baked into
+  the signature, so a mismatched stride is refused instead of reinterpreted),
+  Metal (no multi-draw indirect exists, so a batch loops with
+  `offset + i * stride`), and WebGL2 (no-op -- no indirect draw exists there).
+- `RHIDrawIndexedIndirectCommand` / `RHIDrawIndirectCommand` are the shared
+  argument layout; their size and field offsets are the ones Vulkan, DX12 and
+  Metal already agree on, and `RHIIndirectDrawSmokeTest` (35 checks, registered
+  with CTest and added to the smoke-test workflow) pins them, because on Apple
+  neither the Vulkan nor the DX12 backend is compiled and nothing else would
+  catch a field drifting apart.
+
 ### Added - 2026-10-21 (packaging is incremental)
 - Every `AssetBundleBuilder::Build()` used to redo everything: re-cook every
   texture in the project, then deflate and rewrite every `.zbundle`. Editing

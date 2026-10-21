@@ -288,6 +288,16 @@ namespace ZEngine
                                      uint32_t groupCountY,
                                      uint32_t groupCountZ) override;
             virtual void CmdDispatchIndirect(RHICommandBuffer* commandBuffer, RHIBuffer* buffer, RHIDeviceSize offset) override;
+            virtual void CmdDrawIndexedIndirect(RHICommandBuffer* commandBuffer,
+                                                RHIBuffer* buffer,
+                                                RHIDeviceSize offset,
+                                                uint32_t drawCount,
+                                                uint32_t stride) override;
+            virtual void CmdDrawIndirect(RHICommandBuffer* commandBuffer,
+                                         RHIBuffer* buffer,
+                                         RHIDeviceSize offset,
+                                         uint32_t drawCount,
+                                         uint32_t stride) override;
             virtual void CmdPipelineBarrier(RHICommandBuffer* commandBuffer,
                                             RHIPipelineStageFlags srcStageMask,
                                             RHIPipelineStageFlags dstStageMask,

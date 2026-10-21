@@ -1077,6 +1077,15 @@ bool MetalRHI::CreateGraphicsPipelines(RHIPipelineCache*,
     {
         return false;
     }
+    // One call creates one pipeline (see CreateComputePipelines below and the
+    // Vulkan backend for the reasoning).
+    if (createInfoCount != 1)
+    {
+        LOG_ERROR(ZRender,
+                  "MetalRHI::CreateGraphicsPipelines: createInfoCount must be 1, got {} -- call once per pipeline",
+                  createInfoCount);
+        return false;
+    }
 
     auto* pipeline = new MetalPipeline();
     bool  ok = true;
@@ -1270,6 +1279,16 @@ bool MetalRHI::CreateComputePipelines(RHIPipelineCache*,
 #ifdef __APPLE__
     if (m_Device == nil || pCreateInfos == nullptr || createInfoCount == 0)
     {
+        return false;
+    }
+    // One call creates one pipeline -- the same contract Vulkan and DX12 now
+    // enforce. This backend only ever read pCreateInfos[0], so a count > 1 would
+    // have silently dropped the rest; reject it instead.
+    if (createInfoCount != 1)
+    {
+        LOG_ERROR(ZRender,
+                  "MetalRHI::CreateComputePipelines: createInfoCount must be 1, got {} -- call once per pipeline",
+                  createInfoCount);
         return false;
     }
     auto* shader = pCreateInfos[0].pStages != nullptr ? (MetalShader*)pCreateInfos[0].pStages->module : nullptr;
@@ -1784,6 +1803,72 @@ void MetalRHI::CmdDrawIndexedPFN(RHICommandBuffer* commandBuffer,
                                          instanceCount:instanceCount
                                             baseVertex:static_cast<NSInteger>(vertexOffset)
                                           baseInstance:firstInstance];
+#endif
+}
+
+void MetalRHI::CmdDrawIndexedIndirect(RHICommandBuffer* commandBuffer,
+                                      RHIBuffer* buffer,
+                                      RHIDeviceSize offset,
+                                      uint32_t drawCount,
+                                      uint32_t stride)
+{
+#ifdef __APPLE__
+    auto* metal_buffer = (MetalCommandBuffer*)commandBuffer;
+    auto* metal_indirect_buffer = (MetalBuffer*)buffer;
+    if (metal_buffer == nullptr || metal_buffer->renderEncoder == nil || metal_buffer->indexBuffer == nil ||
+        metal_indirect_buffer == nullptr)
+    {
+        return;
+    }
+
+    // Metal has no multi-draw indirect, so a batch becomes a loop of single
+    // draws -- still GPU-driven (the counts come from the buffer), just not a
+    // single call. MTLDrawIndexedPrimitivesIndirectArguments is byte-identical
+    // to RHIDrawIndexedIndirectCommand, so `stride` steps command to command.
+    const MTLPrimitiveType primitive_type =
+        metal_buffer->graphicsPipeline != nullptr ? metal_buffer->graphicsPipeline->primitiveType
+                                                  : MTLPrimitiveTypeTriangle;
+    for (uint32_t i = 0; i < drawCount; ++i)
+    {
+        const NSUInteger command_offset =
+            static_cast<NSUInteger>(offset) + static_cast<NSUInteger>(i) * static_cast<NSUInteger>(stride);
+
+        [metal_buffer->renderEncoder drawIndexedPrimitives:primitive_type
+                                                 indexType:metal_buffer->indexType
+                                               indexBuffer:metal_buffer->indexBuffer
+                                         indexBufferOffset:static_cast<NSUInteger>(metal_buffer->indexBufferOffset)
+                                            indirectBuffer:metal_indirect_buffer->getResource()
+                                      indirectBufferOffset:command_offset];
+    }
+#endif
+}
+
+void MetalRHI::CmdDrawIndirect(RHICommandBuffer* commandBuffer,
+                               RHIBuffer* buffer,
+                               RHIDeviceSize offset,
+                               uint32_t drawCount,
+                               uint32_t stride)
+{
+#ifdef __APPLE__
+    auto* metal_buffer = (MetalCommandBuffer*)commandBuffer;
+    auto* metal_indirect_buffer = (MetalBuffer*)buffer;
+    if (metal_buffer == nullptr || metal_buffer->renderEncoder == nil || metal_indirect_buffer == nullptr)
+    {
+        return;
+    }
+
+    const MTLPrimitiveType primitive_type =
+        metal_buffer->graphicsPipeline != nullptr ? metal_buffer->graphicsPipeline->primitiveType
+                                                  : MTLPrimitiveTypeTriangle;
+    for (uint32_t i = 0; i < drawCount; ++i)
+    {
+        const NSUInteger command_offset =
+            static_cast<NSUInteger>(offset) + static_cast<NSUInteger>(i) * static_cast<NSUInteger>(stride);
+
+        [metal_buffer->renderEncoder drawPrimitives:primitive_type
+                                     indirectBuffer:metal_indirect_buffer->getResource()
+                               indirectBufferOffset:command_offset];
+    }
 #endif
 }
 

@@ -476,6 +476,11 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Graph/Test/RenderGraphExecuteSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Graph/Test/RenderGraphExecuteSmokeTest.cpp")
+# RHI indirect-draw contract smoke-test main carve-out (same rationale).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Test/RHIIndirectDrawSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/Test/RHIIndirectDrawSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when
@@ -1311,6 +1316,15 @@ endif()
 # has a Vulkan SDK, so the smoke-test can link anywhere ZRuntime can.
 # ---------------------------------------------------------------------------
 add_subdirectory(Function/Render/Interface/Vulkan/Test)
+
+# ---------------------------------------------------------------------------
+# Indirect-draw contract smoke-test.
+#
+# Deliberately NOT gated on a backend or an OS: the point of the test is the
+# data contract that all four backends share, and Apple builds none of the
+# Vulkan/DX12 backends -- this is the only thing that checks them there.
+# ---------------------------------------------------------------------------
+add_subdirectory(Function/Render/Interface/Test)
 
 # ---------------------------------------------------------------------------
 # PR-SE2: SerializedFile schema-evolution smoke-test side-target.

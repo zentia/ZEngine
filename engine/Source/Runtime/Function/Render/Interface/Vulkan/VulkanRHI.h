@@ -263,6 +263,16 @@ public:
                      uint32_t groupCountY,
                      uint32_t groupCountZ) override;
     void CmdDispatchIndirect(RHICommandBuffer* commandBuffer, RHIBuffer* buffer, RHIDeviceSize offset) override;
+    void CmdDrawIndexedIndirect(RHICommandBuffer* commandBuffer,
+                                RHIBuffer* buffer,
+                                RHIDeviceSize offset,
+                                uint32_t drawCount,
+                                uint32_t stride) override;
+    void CmdDrawIndirect(RHICommandBuffer* commandBuffer,
+                         RHIBuffer* buffer,
+                         RHIDeviceSize offset,
+                         uint32_t drawCount,
+                         uint32_t stride) override;
     void CmdPipelineBarrier(RHICommandBuffer* commandBuffer,
                             RHIPipelineStageFlags srcStageMask,
                             RHIPipelineStageFlags dstStageMask,
@@ -404,6 +414,13 @@ public:
     VkPhysicalDevice m_PhysicalDevice {nullptr};
     VkDevice m_Device {nullptr};
     VkQueue m_PresentQueue {nullptr};
+
+    /// Probed once in CreateLogicalDevice and cached: multiDrawIndirect is
+    /// optional in Vulkan 1.0, and the draw path needs to know without calling
+    /// vkGetPhysicalDeviceFeatures per command. When false, CmdDraw*Indirect
+    /// clamps drawCount to 1 instead of asking the driver for a batch it does
+    /// not support.
+    bool m_MultiDrawIndirectSupported {false};
 
     VkSwapchainKHR m_Swapchain {nullptr};
     std::vector<VkImage> m_SwapchainImages;

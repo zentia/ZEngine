@@ -285,6 +285,16 @@ public:
                              uint32_t groupCountY,
                              uint32_t groupCountZ) override;
     virtual void CmdDispatchIndirect(RHICommandBuffer* commandBuffer, RHIBuffer* buffer, RHIDeviceSize offset) override;
+    virtual void CmdDrawIndexedIndirect(RHICommandBuffer* commandBuffer,
+                                        RHIBuffer* buffer,
+                                        RHIDeviceSize offset,
+                                        uint32_t drawCount,
+                                        uint32_t stride) override;
+    virtual void CmdDrawIndirect(RHICommandBuffer* commandBuffer,
+                                 RHIBuffer* buffer,
+                                 RHIDeviceSize offset,
+                                 uint32_t drawCount,
+                                 uint32_t stride) override;
     virtual void CmdPipelineBarrier(RHICommandBuffer* commandBuffer,
                                     RHIPipelineStageFlags srcStageMask,
                                     RHIPipelineStageFlags dstStageMask,
@@ -553,6 +563,12 @@ private:
                                       uint32_t dynamic_offset,
                                       D3D12_GPU_DESCRIPTOR_HANDLE& out_gpu_handle);
     bool EnsureDispatchIndirectSignature();
+    // Draw variants of the same idea. The stride is baked into the command
+    // signature at creation, so both are created with the canonical
+    // D3D12_*_ARGUMENTS size and CmdDraw*Indirect rejects any other stride
+    // instead of silently reinterpreting the buffer.
+    bool EnsureDrawIndexedIndirectSignature();
+    bool EnsureDrawIndirectSignature();
 
     // ---- PR6: root-signature flag set OR'd in when a pipeline layout
     // contains at least one bindless descriptor set. Today this is just
@@ -615,6 +631,8 @@ private:
     ComPtr<ID3D12DescriptorHeap> m_CbvSrvUavHeap;
     ComPtr<ID3D12DescriptorHeap> m_SamplerHeap;
     ComPtr<ID3D12CommandSignature> m_DispatchIndirectSignature;
+    ComPtr<ID3D12CommandSignature> m_DrawIndexedIndirectSignature;
+    ComPtr<ID3D12CommandSignature> m_DrawIndirectSignature;
     ComPtr<ID3D12Resource> m_RenderTargets[3];
     ComPtr<ID3D12Resource> m_DepthStencil;
     ComPtr<ID3D12Fence> m_Fences[3];

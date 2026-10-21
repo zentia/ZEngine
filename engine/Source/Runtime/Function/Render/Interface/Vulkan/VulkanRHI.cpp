@@ -1264,6 +1264,33 @@ void VulkanRHI::CreateLogicalDevice()
     // physical device features
     VkPhysicalDeviceFeatures physical_device_features = {};
 
+    // -----------------------------------------------------------------
+    // multiDrawIndirect is what lets ONE indirect call drive a batch of draws
+    // (Nanite issues one command per visible cluster; without it the CPU has to
+    // call once per cluster and the GPU-driven path buys nothing). It is core
+    // in Vulkan 1.1 but only optional in 1.0, so probe instead of assuming --
+    // requesting an unsupported feature makes vkCreateDevice fail outright.
+    // -----------------------------------------------------------------
+    VkPhysicalDeviceFeatures supported_device_features = {};
+    vkGetPhysicalDeviceFeatures(m_PhysicalDevice, &supported_device_features);
+    m_MultiDrawIndirectSupported = (supported_device_features.multiDrawIndirect == VK_TRUE);
+    if (m_MultiDrawIndirectSupported)
+    {
+        physical_device_features.multiDrawIndirect = VK_TRUE;
+        // Nanite also puts the cluster index in firstInstance, which needs its
+        // own feature bit to be honoured.
+        if (supported_device_features.drawIndirectFirstInstance == VK_TRUE)
+        {
+            physical_device_features.drawIndirectFirstInstance = VK_TRUE;
+        }
+    }
+    else
+    {
+        LOG_WARNING(ZVulkan,
+                    "multiDrawIndirect unsupported by this device -- CmdDraw*Indirect will draw only the first "
+                    "command of a batch");
+    }
+
     physical_device_features.samplerAnisotropy = VK_TRUE;
 
     // support inefficient readback storage buffer
@@ -1785,6 +1812,23 @@ bool VulkanRHI::CreateGraphicsPipelines(RHIPipelineCache* pipelineCache,
                                         const RHIGraphicsPipelineCreateInfo* pCreateInfo,
                                         RHIPipeline*& pPipelines)
 {
+    // One call creates one pipeline. pPipelines is a single RHIPipeline*, and
+    // RHIPipeline is an empty base of VulkanPipeline, so indexing it as an array
+    // would stride by sizeof(RHIPipeline) (== 1) instead of sizeof(VulkanPipeline)
+    // -- there is no way to hand back N pipelines through this out-parameter.
+    // Forwarding createInfoCount to vkCreateGraphicsPipelines while only one
+    // VkGraphicsPipelineCreateInfo and one output slot exist made count > 1 read
+    // past `create_info` and write past `vk_pipelines`: a stack overflow that
+    // only stayed hidden because every caller passes 1. Call once per pipeline.
+    // Checked before anything dereferences pCreateInfo.
+    if (createInfoCount != 1 || pCreateInfo == nullptr)
+    {
+        LOG_ERROR(ZVulkan,
+                  "vkCreateGraphicsPipelines: createInfoCount must be 1, got {} -- call once per pipeline",
+                  createInfoCount);
+        return false;
+    }
+
     // pipeline_shader_stage_create_info
     int pipeline_shader_stage_create_info_size = pCreateInfo->stageCount;
     std::vector<VkPipelineShaderStageCreateInfo> vk_pipeline_shader_stage_create_info_list(
@@ -2158,7 +2202,7 @@ bool VulkanRHI::CreateGraphicsPipelines(RHIPipelineCache* pipelineCache,
         vk_pipeline_cache = ((VulkanPipelineCache*)pipelineCache)->getResource();
     }
     VkResult result =
-        vkCreateGraphicsPipelines(m_Device, vk_pipeline_cache, createInfoCount, &create_info, nullptr, &vk_pipelines);
+        vkCreateGraphicsPipelines(m_Device, vk_pipeline_cache, 1, &create_info, nullptr, &vk_pipelines);
     ((VulkanPipeline*)pPipelines)->setResource(vk_pipelines);
 
     if (result == VK_SUCCESS)
@@ -2177,16 +2221,51 @@ bool VulkanRHI::CreateComputePipelines(RHIPipelineCache* pipelineCache,
                                        const RHIComputePipelineCreateInfo* pCreateInfos,
                                        RHIPipeline*& pPipelines)
 {
-    VkPipelineShaderStageCreateInfo shader_stage_create_info {};
+    // Same one-call-one-pipeline contract as CreateGraphicsPipelines (see the
+    // comment there for why). Forwarding createInfoCount to
+    // vkCreateComputePipelines while only one VkComputePipelineCreateInfo and one
+    // output slot exist made count > 1 read past `create_info` and write past
+    // `vk_pipelines`. Nanite/Lumen want several compute pipelines, so this would
+    // have been the first thing they hit -- call once per pipeline. Checked
+    // before anything dereferences pCreateInfos.
+    if (createInfoCount != 1 || pCreateInfos == nullptr || pCreateInfos->pStages == nullptr)
+    {
+        LOG_ERROR(ZVulkan,
+                  "vkCreateComputePipelines: createInfoCount must be 1, got {} -- call once per pipeline",
+                  createInfoCount);
+        return false;
+    }
+
+    // Specialization constants used to be dropped here: both branches of the old
+    // if/else assigned nullptr, so a shader that asked for one silently got the
+    // default. They have to outlive the vkCreateComputePipelines call below, so
+    // they are locals declared before the call.
+    VkSpecializationInfo vk_specialization_info {};
+    std::vector<VkSpecializationMapEntry> vk_specialization_map_entry_list;
     if (pCreateInfos->pStages->pSpecializationInfo != nullptr)
     {
-        // will be complete soon if needed.
-        shader_stage_create_info.pSpecializationInfo = nullptr;
+        const RHISpecializationInfo* rhi_specialization_info = pCreateInfos->pStages->pSpecializationInfo;
+
+        vk_specialization_map_entry_list.resize(rhi_specialization_info->mapEntryCount);
+        for (uint32_t i = 0; i < rhi_specialization_info->mapEntryCount; ++i)
+        {
+            const RHISpecializationMapEntry* rhi_specialization_map_entry = rhi_specialization_info->pMapEntries[i];
+
+            auto& vk_specialization_map_entry = vk_specialization_map_entry_list[i];
+            vk_specialization_map_entry.constantID = rhi_specialization_map_entry->constantID;
+            vk_specialization_map_entry.offset = rhi_specialization_map_entry->offset;
+            vk_specialization_map_entry.size = rhi_specialization_map_entry->size;
+        }
+
+        vk_specialization_info.mapEntryCount = rhi_specialization_info->mapEntryCount;
+        vk_specialization_info.pMapEntries = vk_specialization_map_entry_list.data();
+        vk_specialization_info.dataSize = rhi_specialization_info->dataSize;
+        vk_specialization_info.pData = rhi_specialization_info->pData;
     }
-    else
-    {
-        shader_stage_create_info.pSpecializationInfo = nullptr;
-    }
+
+    VkPipelineShaderStageCreateInfo shader_stage_create_info {};
+    shader_stage_create_info.pSpecializationInfo =
+        (pCreateInfos->pStages->pSpecializationInfo != nullptr) ? &vk_specialization_info : nullptr;
     shader_stage_create_info.sType = (VkStructureType)pCreateInfos->pStages->sType;
     shader_stage_create_info.pNext = (const void*)pCreateInfos->pStages->pNext;
     shader_stage_create_info.flags = (VkPipelineShaderStageCreateFlags)pCreateInfos->pStages->flags;
@@ -2200,7 +2279,6 @@ bool VulkanRHI::CreateComputePipelines(RHIPipelineCache* pipelineCache,
     create_info.flags = (VkPipelineCreateFlags)pCreateInfos->flags;
     create_info.stage = shader_stage_create_info;
     create_info.layout = ((VulkanPipelineLayout*)pCreateInfos->layout)->getResource();
-    ;
     if (pCreateInfos->basePipelineHandle != nullptr)
     {
         create_info.basePipelineHandle = ((VulkanPipeline*)pCreateInfos->basePipelineHandle)->getResource();
@@ -2219,7 +2297,7 @@ bool VulkanRHI::CreateComputePipelines(RHIPipelineCache* pipelineCache,
         vk_pipeline_cache = ((VulkanPipelineCache*)pipelineCache)->getResource();
     }
     VkResult result =
-        vkCreateComputePipelines(m_Device, vk_pipeline_cache, createInfoCount, &create_info, nullptr, &vk_pipelines);
+        vkCreateComputePipelines(m_Device, vk_pipeline_cache, 1, &create_info, nullptr, &vk_pipelines);
     ((VulkanPipeline*)pPipelines)->setResource(vk_pipelines);
 
     if (result == VK_SUCCESS)
@@ -3464,6 +3542,55 @@ void VulkanRHI::CmdDispatchIndirect(RHICommandBuffer* commandBuffer, RHIBuffer* 
 {
     vkCmdDispatchIndirect(
         ((VulkanCommandBuffer*)commandBuffer)->getResource(), ((VulkanBuffer*)buffer)->getResource(), offset);
+}
+
+void VulkanRHI::CmdDrawIndexedIndirect(RHICommandBuffer* commandBuffer,
+                                       RHIBuffer* buffer,
+                                       RHIDeviceSize offset,
+                                       uint32_t drawCount,
+                                       uint32_t stride)
+{
+    // VkDrawIndexedIndirectCommand is laid out exactly like
+    // RHIDrawIndexedIndirectCommand, so the bytes a GPU culling pass wrote can
+    // be consumed as-is. drawCount > 1 needs the device's multiDrawIndirect;
+    // Vulkan 1.0 core only guarantees 1, so warn rather than silently drawing
+    // one and pretending the rest happened.
+    if (drawCount > 1 && !m_MultiDrawIndirectSupported)
+    {
+        LOG_WARNING(ZVulkan,
+                    "CmdDrawIndexedIndirect: drawCount {} requested but multiDrawIndirect is unsupported -- only "
+                    "the first command will be drawn",
+                    drawCount);
+        drawCount = 1;
+    }
+
+    vkCmdDrawIndexedIndirect(((VulkanCommandBuffer*)commandBuffer)->getResource(),
+                             ((VulkanBuffer*)buffer)->getResource(),
+                             offset,
+                             drawCount,
+                             stride);
+}
+
+void VulkanRHI::CmdDrawIndirect(RHICommandBuffer* commandBuffer,
+                                RHIBuffer* buffer,
+                                RHIDeviceSize offset,
+                                uint32_t drawCount,
+                                uint32_t stride)
+{
+    if (drawCount > 1 && !m_MultiDrawIndirectSupported)
+    {
+        LOG_WARNING(ZVulkan,
+                    "CmdDrawIndirect: drawCount {} requested but multiDrawIndirect is unsupported -- only the "
+                    "first command will be drawn",
+                    drawCount);
+        drawCount = 1;
+    }
+
+    vkCmdDrawIndirect(((VulkanCommandBuffer*)commandBuffer)->getResource(),
+                      ((VulkanBuffer*)buffer)->getResource(),
+                      offset,
+                      drawCount,
+                      stride);
 }
 
 void VulkanRHI::CmdCopyImageToBuffer(RHICommandBuffer* commandBuffer,
