@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 2026-10-21 (zlib is vendored, not looked up on the host)
+- **`zlib.h` was not findable on several machines.** Both consumers -- the
+  `.zbundle` per-entry DEFLATE in ZRuntime and minizip-ng's `.xlsx` reader --
+  depended on whatever zlib the host happened to provide. Where none was
+  installed, minizip-ng's fallback was `clone_repo(zlib
+  https://github.com/zlib-ng/zlib-ng stable)`, i.e. a **git clone at configure
+  time**; when that failed (no GitHub access on the agent) the build silently
+  degraded to `MZ_ZLIB=OFF` / no `ZENGINE_BUNDLE_HAS_ZLIB` -- either a hard
+  "zlib.h not found" or, worse, a build that quietly stopped compressing.
+- zlib is now a **git submodule at `engine/3rdparty/zlib`** (pinned `v1.3.2`),
+  built static-only as `zlibstatic` (`ZLIB_INSTALL OFF`, so it never joins the
+  install/CPack rules). Same sources and same DEFLATE behaviour on every host,
+  no system package and no network access at configure time.
+- `Source/Runtime` links `zlibstatic` directly, and minizip-ng is pointed at
+  the *same* target (its `find_package(ZLIB)` is pre-seeded with
+  `ZLIB_LIBRARY` / `ZLIB_INCLUDE_DIR` + a `ZLIB::ZLIB -> zlibstatic` alias),
+  which lets `MZ_FETCH_LIBS` stay OFF. Exactly one zlib is in the link graph;
+  `MZ_FETCH_LIBS` is only left ON as a last resort when the submodule is
+  missing.
+
 ### Fixed - 2026-10-21 (PlayerSettings is a real settings object)
 - **`PlayerSettings` was a 7-line stub**, and the empty `m_ProductName` it left
   behind had a real consequence: `UserPreferences` derives its per-user

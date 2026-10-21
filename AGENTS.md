@@ -2301,11 +2301,25 @@ directory `AssetRegistry` indexes -- so the dependency walk can never reach it.
   (`AssetBundles::CanDecompress`), and the reader rejects one with a clear
   error. Never let it fall through to "return the raw bytes" -- they would be
   parsed as a `.zasset` and fail somewhere unrecognisable.
-- zlib comes from wherever minizip-ng already found it; `find_package(ZLIB)` is
-  called again in `Source/Runtime/CMakeLists.txt` because minizip's imported
-  targets are directory-scoped. No target (Emscripten, stripped 3rdparty) =>
-  `ZENGINE_BUNDLE_HAS_ZLIB` is undefined and bundles stay Stored.
+- zlib is a **vendored submodule** at `engine/3rdparty/zlib` (pinned v1.3.2),
+  built by `engine/3rdparty/CMakeLists.txt` as the real target `zlibstatic`
+  (static only, `ZLIB_INSTALL OFF` so it never joins our install/CPack rules).
+  Do NOT go back to `find_package(ZLIB)`: the host copy was missing on several
+  machines ("zlib.h not found") and minizip-ng's fallback was a configure-time
+  `git clone` of zlib-ng. `Source/Runtime` links `zlibstatic` directly (real
+  targets are global, so it is visible there); it only falls back to
+  `find_package(ZLIB)` when the submodule is absent. No zlib at all
+  (Emscripten) => `ZENGINE_BUNDLE_HAS_ZLIB` undefined, bundles stay Stored.
   `AssetBundleBuildOptions::compress` is the per-target override.
+- minizip-ng consumes the SAME `zlibstatic`: its CMake does
+  `find_package(ZLIB QUIET)`, and `FindZLIB` skips its own search when
+  `ZLIB_LIBRARY` is already set and leaves an existing `ZLIB::ZLIB` alone --
+  so `engine/3rdparty/CMakeLists.txt` pre-seeds `ZLIB_LIBRARY` /
+  `ZLIB_INCLUDE_DIR` and aliases `ZLIB::ZLIB -> zlibstatic` *before*
+  `add_subdirectory(minizip-ng)`, which is what lets `MZ_FETCH_LIBS` stay OFF.
+  Keep that ordering: dropping it re-enables the network clone and/or links a
+  second zlib. If the submodule is missing, `MZ_FETCH_LIBS` is left ON as a
+  last resort.
 - `packed_storage.reserve(entries.size())` in the writer is load-bearing:
   `payloads` holds pointers INTO that vector, and a reallocation would dangle.
 
