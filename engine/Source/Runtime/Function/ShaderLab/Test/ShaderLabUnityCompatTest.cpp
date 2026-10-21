@@ -754,11 +754,19 @@ int main(int argc, char** argv)
             // whether e.g. o.Normal actually reaches the lighting math.
             if (std::getenv("ZENGINE_SHADERLAB_DUMP_SOURCE") != nullptr)
             {
-                const ShaderProgram& program =
-                    compiler.GetAsset()->subshaders[0].passes[0].programs[0];
-                std::cout << "\n---- source handed to DXC (fragment: "
-                          << program.fragment_entry << ") ----\n"
-                          << program.source_code << "\n";
+                // Every pass, not just pass 0: a surface shader expands into
+                // several, and the interesting one is rarely the first.
+                const auto& passes = compiler.GetAsset()->subshaders[0].passes;
+                for (size_t p = 0; p < passes.size(); ++p)
+                {
+                    for (const ShaderProgram& program : passes[p].programs)
+                    {
+                        std::cout << "\n---- source handed to DXC: Pass[" << p << "] '"
+                                  << passes[p].name << "' (vertex: " << program.vertex_entry
+                                  << ", fragment: " << program.fragment_entry << ") ----\n"
+                                  << program.source_code << "\n";
+                    }
+                }
             }
             TryCompile(compiler, "vertex", "vertex stage", true, checks, failures);
             TryCompile(compiler, "fragment", "fragment stage", true, checks, failures);
@@ -943,6 +951,30 @@ int main(int argc, char** argv)
                   true,
                   checks,
                   failures);
+
+    // ------------------------------------------------------------------
+    // 8. The GBuffer (deferred) pass must compile too.
+    //
+    //    This is the pass that decides whether a surface shader takes
+    //    ZEngine's deferred path at all: RenderScene routes a material that
+    //    HAS a GBuffer pass into the opaque/deferred bucket, and
+    //    MainCameraRp1Pass builds a pipeline from this pass's own entry
+    //    points. If it fails to compile, the shader silently falls back to
+    //    the built-in mesh_gbuffer shader and everything surf() did is lost.
+    // ------------------------------------------------------------------
+    RequireSurfacePass(Fixture("Surface-Standard.shader"),
+                      "[8] Surface Standard (GBuffer / deferred pass)",
+                      3,
+                      "GBuffer",
+                      checks,
+                      failures);
+
+    RequireSurfacePass(Fixture("Surface-NormalMap-AlphaTest.shader"),
+                      "[8b] Surface normal map (GBuffer pass, must clip)",
+                      3,
+                      "GBuffer",
+                      checks,
+                      failures);
 
     std::cout << "\n=== verdict: " << (failures == 0 ? "PASS" : "FAIL")
               << " (" << (checks - failures) << "/" << checks << " checks) ===\n";

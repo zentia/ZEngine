@@ -185,14 +185,19 @@ int main()
         const SurfaceShaderDirective d = ParseSurfaceDirective(kStandardBody);
         const SurfaceGenerateResult r = GenerateSurfacePasses(kStandardBody, d);
         Check(r.ok, "generation succeeded", r.error);
-        Check(r.passes.size() == 2, "two passes: ForwardBase + ForwardAdd (no addshadow)",
+        Check(r.passes.size() == 4, "four passes: ForwardBase, ForwardAdd, ShadowCaster, "
+                                    "GBuffer (no noforwardadd / noshadow)",
               std::to_string(r.passes.size()));
-        if (r.passes.size() == 2)
+        if (r.passes.size() == 4)
         {
             Check(r.passes[0].light_mode == "ForwardBase", "first is ForwardBase",
                   r.passes[0].light_mode);
             Check(r.passes[1].light_mode == "ForwardAdd", "second is ForwardAdd",
                   r.passes[1].light_mode);
+            Check(r.passes[2].light_mode == "ShadowCaster", "third is ShadowCaster",
+                  r.passes[2].light_mode);
+            Check(r.passes[3].light_mode == "GBuffer", "fourth is GBuffer",
+                  r.passes[3].light_mode);
         }
         if (!r.passes.empty())
         {
@@ -287,9 +292,9 @@ int main()
         const SurfaceShaderDirective d = ParseSurfaceDirective(body);
         const SurfaceGenerateResult r = GenerateSurfacePasses(body, d);
         Check(r.ok, "generation succeeded", r.error);
-        Check(r.passes.size() == 3, "three passes (base, add, shadow)",
+        Check(r.passes.size() == 4, "four passes (base, add, shadow, gbuffer)",
               std::to_string(r.passes.size()));
-        if (r.passes.size() == 3)
+        if (r.passes.size() == 4)
         {
             Check(r.passes[0].light_mode == "ForwardBase", "first is ForwardBase",
                   r.passes[0].light_mode);
@@ -311,7 +316,8 @@ int main()
         const SurfaceShaderDirective d = ParseSurfaceDirective(body);
         const SurfaceGenerateResult r = GenerateSurfacePasses(body, d);
         Check(r.ok, "generation succeeded", r.error);
-        Check(r.passes.size() == 1, "one pass", std::to_string(r.passes.size()));
+        Check(r.passes.size() == 3, "three passes (base, shadow, gbuffer)",
+              std::to_string(r.passes.size()));
         Check(r.warnings.empty(), "noforwardadd is implemented, not warned about",
               r.warnings.empty() ? "" : r.warnings[0]);
     }
@@ -671,10 +677,12 @@ int main()
                   "declares the cutoff variable the body never declared");
             Check(Contains(src, "clip(o.Alpha - _Cutoff);"), "and clips against it");
         }
-        if (r.passes.size() == 3)
+        if (r.passes.size() == 4)
         {
             Check(Contains(r.passes[2].source_code, "clip(o.Alpha - _Cutoff);"),
                   "the shadow caster clips too -- otherwise cut-out shadows leak");
+            Check(Contains(r.passes[3].source_code, "clip(o.Alpha - _Cutoff);"),
+                  "and so does the GBuffer pass");
         }
     }
 
@@ -716,6 +724,202 @@ int main()
             }
         }
         Check(flagged, "warns that every instance renders identically");
+    }
+
+    std::cout << "\n---- [gen-gbuffer] the deferred pass, in ZEngine's GBuffer layout ----\n";
+    {
+        const std::string body =
+            "#pragma surface surf Standard\n"
+            "struct Input { float2 uv_MainTex; float2 uv_BumpMap; };\n"
+            "void surf (Input IN, inout SurfaceOutputStandard o)\n"
+            "{\n"
+            "    o.Albedo = 1;\n"
+            "    o.Normal = UnpackNormal(tex2D(_BumpMap, IN.uv_BumpMap));\n"
+            "    o.Metallic = 0.25;\n"
+            "    o.Smoothness = 0.75;\n"
+            "}\n";
+        const SurfaceShaderDirective d = ParseSurfaceDirective(body);
+        const SurfaceGenerateResult r = GenerateSurfacePasses(body, d);
+        Check(r.ok, "generation succeeded", r.error);
+
+        const SurfacePass* gbuffer = nullptr;
+        for (const SurfacePass& pass : r.passes)
+        {
+            if (pass.light_mode == "GBuffer")
+            {
+                gbuffer = &pass;
+            }
+        }
+        Check(gbuffer != nullptr, "a GBuffer pass is generated");
+        if (gbuffer != nullptr)
+        {
+            const std::string& src = gbuffer->source_code;
+            Check(gbuffer->fragment_entry == "zSurf_gbufferFrag", "own fragment entry",
+                  gbuffer->fragment_entry);
+            // Count the DECLARATIONS (`: SV_Target`), not the bare token --
+            // the generated header comment names the three targets too.
+            Check(CountOccurrences(src, ": SV_Target") == 3,
+                  "exactly THREE render targets -- CreateRuntimeMeshPipeline() binds "
+                  "gbuffer_a/b/c and there is no fourth attachment",
+                  std::to_string(CountOccurrences(src, ": SV_Target")));
+            Check(!Contains(src, "SV_Target3"), "no SV_Target3");
+            Check(Contains(src, "zOut.zGBuffer0 = float4(zN * 0.5 + 0.5, 1.0);"),
+                  "SV_Target0 is the packed world normal (deferred_lighting decodes "
+                  "gbuffer_a with DecodeNormal)");
+            Check(Contains(src, "zOut.zGBuffer2 = float4(o.Albedo, 1.0);"),
+                  "SV_Target2 is albedo (MainCameraRp1Pass binds gbuffer_c as "
+                  "gbuffer_albedo)");
+            Check(Contains(src, "1.0 / 255.0"),
+                  "shading model id packed for DecodeShadingModelId()");
+            Check(Contains(src, "zRoughness = saturate(1.0 - o.Smoothness);"),
+                  "Smoothness is converted to roughness");
+            Check(Contains(src, "zN = normalize(o.Normal.x * zT"),
+                  "and the normal map reaches the GBuffer too, not just the forward pass");
+        }
+    }
+
+    std::cout << "\n---- [gen-gbuffer-legacy] SurfaceOutput -> GBuffer ----\n";
+    {
+        const std::string body =
+            "#pragma surface surf BlinnPhong\n"
+            "struct Input { float2 uv_MainTex; };\n"
+            "void surf (Input IN, inout SurfaceOutput o) { o.Albedo = 1; o.Gloss = 0.5; }\n";
+        const SurfaceShaderDirective d = ParseSurfaceDirective(body);
+        const SurfaceGenerateResult r = GenerateSurfacePasses(body, d);
+        Check(r.ok, "generation succeeded", r.error);
+        for (const SurfacePass& pass : r.passes)
+        {
+            if (pass.light_mode == "GBuffer")
+            {
+                Check(Contains(pass.source_code, "zRoughness = saturate(1.0 - o.Gloss);"),
+                      "legacy Gloss maps to roughness");
+                Check(Contains(pass.source_code, "zSpecular = saturate(o.Specular);"),
+                      "legacy Specular is carried through");
+            }
+        }
+    }
+
+    std::cout << "\n---- [gen-gbuffer-emission] no emissive slot -> no GBuffer ----\n";
+    {
+        const std::string body =
+            "#pragma surface surf Standard\n"
+            "struct Input { float2 uv_MainTex; };\n"
+            "void surf (Input IN, inout SurfaceOutputStandard o)\n"
+            "{\n"
+            "    o.Albedo = 1;\n"
+            "    o.Emission = 0.5;\n"
+            "}\n";
+        const SurfaceShaderDirective d = ParseSurfaceDirective(body);
+        const SurfaceGenerateResult r = GenerateSurfacePasses(body, d);
+        Check(r.ok, "generation succeeded", r.error);
+        bool has_gbuffer = false;
+        for (const SurfacePass& pass : r.passes)
+        {
+            if (pass.light_mode == "GBuffer")
+            {
+                has_gbuffer = true;
+            }
+        }
+        Check(!has_gbuffer,
+              "no GBuffer pass: ZEngine's GBuffer has no emissive slot, and having a "
+              "GBuffer pass routes the material away from the forward pass where "
+              "emission DOES work");
+        bool explained = false;
+        for (const std::string& warning : r.warnings)
+        {
+            if (Contains(warning, "Emission"))
+            {
+                explained = true;
+            }
+        }
+        Check(explained, "and the reason is reported, not silent");
+    }
+
+    std::cout << "\n---- [gen-gbuffer-alpha] a transparent surface shader stays forward ----\n";
+    {
+        const std::string body =
+            "#pragma surface surf Standard alpha\n"
+            "struct Input { float2 uv_MainTex; };\n"
+            "void surf (Input IN, inout SurfaceOutputStandard o) { o.Albedo = 1; }\n";
+        const SurfaceShaderDirective d = ParseSurfaceDirective(body);
+        const SurfaceGenerateResult r = GenerateSurfacePasses(body, d);
+        Check(r.ok, "generation succeeded", r.error);
+        bool has_gbuffer = false;
+        for (const SurfacePass& pass : r.passes)
+        {
+            if (pass.light_mode == "GBuffer")
+            {
+                has_gbuffer = true;
+            }
+        }
+        Check(!has_gbuffer, "no GBuffer pass for an alpha-blended surface shader");
+    }
+
+    std::cout << "\n---- [gen-exclude-deferred] exclude_path:deferred ----\n";
+    {
+        const std::string body =
+            "#pragma surface surf Standard exclude_path:deferred\n"
+            "struct Input { float2 uv_MainTex; };\n"
+            "void surf (Input IN, inout SurfaceOutputStandard o) { o.Albedo = 1; }\n";
+        const SurfaceShaderDirective d = ParseSurfaceDirective(body);
+        const SurfaceGenerateResult r = GenerateSurfacePasses(body, d);
+        Check(r.ok, "generation succeeded", r.error);
+        bool has_gbuffer = false;
+        for (const SurfacePass& pass : r.passes)
+        {
+            if (pass.light_mode == "GBuffer")
+            {
+                has_gbuffer = true;
+            }
+        }
+        Check(!has_gbuffer, "exclude_path:deferred suppresses the GBuffer pass");
+        Check(r.warnings.empty(), "and is not warned about -- it is honoured, not ignored",
+              r.warnings.empty() ? "" : r.warnings[0]);
+    }
+
+    std::cout << "\n---- [gen-shadow-default] a shadow caster without addshadow ----\n";
+    {
+        const std::string body =
+            "#pragma surface surf Lambert\n"
+            "struct Input { float2 uv_MainTex; };\n"
+            "void surf (Input IN, inout SurfaceOutput o) { o.Albedo = 1; }\n";
+        const SurfaceShaderDirective d = ParseSurfaceDirective(body);
+        const SurfaceGenerateResult r = GenerateSurfacePasses(body, d);
+        Check(r.ok, "generation succeeded", r.error);
+        bool has_shadow = false;
+        for (const SurfacePass& pass : r.passes)
+        {
+            if (pass.light_mode == "ShadowCaster")
+            {
+                has_shadow = true;
+            }
+        }
+        // Unity gets its shadow caster from the Fallback; ZEngine does not
+        // resolve Fallback, so without this the pass would simply not exist --
+        // while DirectionalLightPass/PointLightPass both look it up.
+        Check(has_shadow, "ShadowCaster is generated by default");
+    }
+
+    std::cout << "\n---- [gen-noshadow] noshadow suppresses it ----\n";
+    {
+        const std::string body =
+            "#pragma surface surf Lambert noshadow\n"
+            "struct Input { float2 uv_MainTex; };\n"
+            "void surf (Input IN, inout SurfaceOutput o) { o.Albedo = 1; }\n";
+        const SurfaceShaderDirective d = ParseSurfaceDirective(body);
+        const SurfaceGenerateResult r = GenerateSurfacePasses(body, d);
+        Check(r.ok, "generation succeeded", r.error);
+        bool has_shadow = false;
+        for (const SurfacePass& pass : r.passes)
+        {
+            if (pass.light_mode == "ShadowCaster")
+            {
+                has_shadow = true;
+            }
+        }
+        Check(!has_shadow, "noshadow is honoured");
+        Check(r.warnings.empty(), "and is not warned about",
+              r.warnings.empty() ? "" : r.warnings[0]);
     }
 
     // ==================================================================
