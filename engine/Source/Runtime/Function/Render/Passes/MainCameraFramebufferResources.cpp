@@ -313,10 +313,23 @@ void MainCameraFramebufferResources::SetupGBufferPass()
     attachments[kAttachment_GBufferA].finalLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     // GBufferB
+    //
+    // storeOp 必须是 STORE：延迟光照是**另一个** render pass（SetupDeferredLightingPass），
+    // 它 LOAD 这三张 GBuffer 当输入。
+    //
+    // DONT_CARE 是从 Vulkan 那条路（MainCameraPass::SetupRenderPass1）抄来的：那里
+    // GBuffer 的消费者是**同一个 render pass 里的第二个 subpass**，用 input attachment
+    // 读 —— Vulkan 保证 subpass 之间内容还在，storeOp 只管 render pass 结束时的交接，
+    // 所以那边 DONT_CARE 是对的（还是个省带宽的优化），别照着改回去。
+    //
+    // 这里没有 subpass：GBuffer pass 一结束，内容就必须已经落到显存里；DONT_CARE 的
+    // 意思是"pass 结束后内容未定义"。今天看不出问题是因为 DX12 后端压根不读 storeOp
+    // （没有 discard 的实现），等于永远 STORE。一旦 Rp1 跑在 Vulkan / Metal 上
+    // （这两个都真的实现了 storeOp），延迟光照读到的就是垃圾。
     attachments[kAttachment_GBufferB].format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_b].format;
     attachments[kAttachment_GBufferB].samples = RHI_SAMPLE_COUNT_1_BIT;
     attachments[kAttachment_GBufferB].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[kAttachment_GBufferB].storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kAttachment_GBufferB].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
     attachments[kAttachment_GBufferB].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[kAttachment_GBufferB].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[kAttachment_GBufferB].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
@@ -326,7 +339,8 @@ void MainCameraFramebufferResources::SetupGBufferPass()
     attachments[kAttachment_GBufferC].format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_c].format;
     attachments[kAttachment_GBufferC].samples = RHI_SAMPLE_COUNT_1_BIT;
     attachments[kAttachment_GBufferC].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[kAttachment_GBufferC].storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    // 同 GBufferB：下一个 pass 要 LOAD 它，见上面的说明。
+    attachments[kAttachment_GBufferC].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
     attachments[kAttachment_GBufferC].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[kAttachment_GBufferC].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[kAttachment_GBufferC].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;

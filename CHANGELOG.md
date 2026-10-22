@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 2026-10-22 (GBuffer pass: GBufferB / GBufferC were discarded before the deferred pass read them)
+
+`MainCameraFramebufferResources::SetupGBufferPass` declared GBufferB and GBufferC
+`storeOp = DONT_CARE` while GBufferA was `STORE`. The deferred lighting pass is a
+**separate** render pass that LOADs all three, so "don't care" means the lighting
+pass reads undefined pixels.
+
+* Where the `DONT_CARE` came from: `MainCameraPass::SetupRenderPass1` (the Vulkan
+  path), where the consumer is a **second subpass of the same render pass** reading
+  through input attachments. Vulkan keeps contents across subpasses and `storeOp`
+  only governs the hand-off at the end of the render pass, so `DONT_CARE` there is
+  both correct and a bandwidth win. It is **not** correct once the passes are split,
+  and the comment now says so in both directions so nobody "restores" it.
+* Why it has never been seen: `DX12RHI` does not read `storeOp` at all (no discard
+  is ever issued), which is equivalent to always storing. Vulkan
+  (`vk_desc.storeOp = ...`) and Metal (`MTLStoreActionDontCare`) both honour it, so
+  this would have become visible the moment RP1 runs on either — the header already
+  advertises RP1 as "DX12 and future Vulkan dedup".
+* No behaviour change on DX12 today; verified by review plus a `-fsyntax-only`
+  type check of the TU (it is excluded from the Apple build).
+
 ### Added - 2026-10-22 (Nanite: the main camera's GBuffer pass draws Nanite's clusters)
 
 Nanite's cull runs at `RenderNaniteCmd`, before any pass is open, so it can only
