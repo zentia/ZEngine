@@ -234,10 +234,32 @@ deform 用"附件记录下标"是有意的：一条记录 = (皮肤, 槽位, 附
 - **drawOrder（type 8）**：每帧 `[u32 offset_count][(u32 slot, u32 offset) × offset_count]`，
   未列出的槽位按 setup 顺序填（抄 `SkeletonBinary` 的 unchanged 收集规则）。
 
-### 3.5 chunk 17 — 槽位 setup（32 B/槽）
+### 3.5 chunk 17 — 槽位 setup（**40 B/槽**，已落地，见 §7.0.4）
 
-`color rgba` f32×4 @0 + `dark rgba` f32×4 @16。
-color / twoColor 时间轴是**相对 setup 颜色**混合的，容器里没有 setup 颜色就没法算。
+| 偏移 | 字段 | 说明 |
+|---|---|---|
+| @0..@12 | `color rgba` f32×4 | 默认 **(1,1,1,1)**（`SlotData.cpp:39`）。color / twoColor 时间轴是**相对 setup 颜色**的，容器里没有 setup 颜色就没法算 |
+| @16..@28 | `dark rgba` f32×4 | 默认 **(0,0,0,0)**（`SlotData.cpp:40`） |
+| @32 | `setup_attachment_name_offset` u32 | 字符串表**第 4 组**的字节偏移；`kNoAttachmentName = 0xFFFFFFFF` = 空名 |
+| @36 | `flags` u32 | 目前只有 bit0 = `has_dark` |
+
+> 原设计写的是 32 B/槽。实现时**不够**：还要一格放 setup 附件名偏移（attachment 时间轴的
+> 复位基线，`AttachmentTimeline.cpp:65-68`）和一格放逐槽位 flags。⇒ **40 B = 5 × 8**，仍是 8 B 对齐。
+
+三条**反直觉**的（每条都能造成"能跑、不报错、结果错"）：
+
+1. **dark 的 alpha 恒为 1**（只要这个槽位有暗色）—— 参考实现写死的：
+   二进制 `SkeletonBinary.cpp:188` `set(r/255, g/255, b/255, 1)`；
+   json `SkeletonJson.cpp:230` `darkColor.a = 1`。
+   二进制里读进来的第 4 个字节只用来判"有没有暗色"，**从不作为 alpha 落地**。
+   json 的 `"dark"` 是 **6 位**十六进制（只有 rgb），而 `"color"` 是 **8 位**（rgba）。
+2. **`has_dark` 不能由 dark 是否全 0 推断** ⇒ 必须有显式 flag：
+   默认 dark 就是 (0,0,0,0)（`SlotData.cpp:40`），而 3.7 的判据是
+   `读到的 int32 != -1`（`SkeletonBinary.cs:190-192`）⇒ **0x00000000（纯黑）照样是"有暗色"**。
+3. **`SlotData::_attachmentName` 是 attachment 时间轴的复位基线**（`AttachmentTimeline.cpp:65-68`）：
+   `time < frames[0]` 时槽位**复位到 setup 附件**，不是"隐藏"。
+   ⇒ 它必须落盘，否则只能复位成"空"（`time < frames[0]` 这段的附件全画错）。
+
 （v6 只有一个 `uses_tint_black` 布尔，没有颜色值 —— 这是一个既有缺口，不是新增需求。）
 
 ### 3.6 chunk 18 — 约束 setup
@@ -441,7 +463,7 @@ deform 数组长度对 weighted 是 **ΣboneCount × 2**（不是 vertexCount ×
 | **S0** | 导入器放宽到 3.7 + 逐顶点变长影响（方案 C） | **已完成**，781/782（见 7.0 / 7.0.1） |
 | **S1** | chunk 10 骨骼树；C++ 写/读 + C# 读 + 字节 round-trip | **已完成**（见 7.0.2） |
 | **S2** | 动画解析（json + 二进制）+ chunk 11-16；11 类时间轴全覆盖 | **已完成**（见 7.0.3） |
-| **S3** | 槽位颜色（chunk 17）+ color / twoColor / attachment / drawOrder 解算 | 对拍 |
+| **S3** | 槽位 setup（chunk 17）+ color / twoColor / attachment / drawOrder 解算 | **已完成**（见 7.0.4） |
 | **S4** | 约束（chunk 18-20）+ update 顺序 | 对拍：376 个有约束的资产子集，逐骨骼比世界变换 |
 | **S5** | 多轨混合（`AnimationState` 转录，含 `_timelinesRotation` 最短弧记忆） | 对拍：随机切轨 / 混出，逐帧比对 |
 | **S6a** | deform 求解 + per-instance deform 缓冲（方案 C：只给命中项写"deform 后局部坐标"，蒙皮仍在 GPU） | 与 `SpineSkinningParityTest` 接上；断言共享 VB **没被改写** |
@@ -547,6 +569,93 @@ deform 载荷：**1 731 940 帧、28 282 880 个 float、均值 16.3 float/帧**
 
 ---
 
+### 7.0.4 S3 已落地（2026-10-22）：槽位 setup（chunk 17，格式 v9 → v10）+ 槽位侧解算
+
+| 项 | 落地 |
+|---|---|
+| 布局 | chunk 17 **40 B/槽**：color rgba f32×4 @0 + dark rgba f32×4 @16 + `setup_attachment_name_offset` u32 @32 + `flags` u32 @36（详见 §3.5） |
+| 字符串表 | 新增**第 4 组**「槽位 setup 附件名」，`slot_count` 条（**空名也占一条**，否则按 `slot_count` 切分会错位） |
+| 新增解析 | 二进制 `ParseSlots()` 原来 `Skip(4)` 把 color **整个丢掉**、还把 `attachment_name` 丢掉 —— 现在两处都真读；json 侧读 `"color"`（8 位 hex）/ `"dark"`（6 位 hex，alpha 恒 1）/ `"attachment"` |
+| 新增解算 | `SpineGpuAnimSolver.{h,cpp}`：`SpineGpuSampleSlots(asset, anim_index, time, out)` 出**逐槽位**的 (color, dark, attachment) + 绘制顺序 |
+| 落盘顺序 | `1,2,10,11,12,13,14,15,16,**17**,3,21,22,4,5,9,6,7,8`（C# 照抄） |
+
+**⚠️ 先把这个阶段要补的缺口说清楚**：容器里原本**没有槽位颜色**（只有一个 `uses_tint_black`
+布尔）。而 color / twoColor 时间轴写的是**绝对**颜色（`ColorTimeline.cpp:110`
+`slot._color.set(r,g,b,a)`），"没被时间轴命中"的槽位停在 **setup 色**
+⇒ 没有 setup 色就只能默认纯白，而**纯白与 setup 白在多数资产上完全看不出区别**
+（典型的"错了但不报错"）。实测（781 个资产）**139 / 781 个资产（17.8%）至少有一个
+非纯白 setup 色**的槽位 —— 规模不小，不是理论风险。
+
+#### 采样口径（必须先钉死，否则"看起来在动"会掩盖一切）
+
+解算的语义 = `Animation::apply(..., alpha=1, MixBlend_First, MixDirection_In)`
+（`AnimationState.cpp:388` `blend = i==0 ? MixBlend_First : ...`；`:402`）。
+alpha == 1 时它就等价于 **"先把所有槽位复位到 setup，再让时间轴覆盖"**。
+
+三条**照抄**的算法（每一条抄错了都不报错）：
+
+1. **帧定位** = `Animation::binarySearch()`（`Animation.cpp:84-106`）。
+   ⚠️ 它不是标准二分：`high` 从 `count-2` 起、`high==0` 时直接返回 `step`，
+   而且**返回的是后一帧的下标** ⇒ 段号 = `frame / ENTRIES - 1`。
+2. **插值参数** = `(time - prev) / (cur - prev)`，再过 `CurveTimeline::getCurvePercent()`
+   （`CurveTimeline.cpp:110-141`）：LINEAR 恒等；**STEPPED 恒为 0**（不是"取前一帧"这种
+   等价写法能替的）；BEZIER 从 4 个控制点**重建**那 18 个 float 的前向差分表，
+   常数是 `0.03f / 0.006f / 0.3f / 0.16666667f`（`CurveTimeline.cpp:78-81`）——
+   化简一下它就变成另一条曲线，且完全看不出来。
+3. **drawOrder 重建**（`SkeletonBinary.cpp:1040-1072` / `SkeletonJson.cpp:1129-1165`）
+   **不是**"把槽位挪到 index+offset"：`drawOrder[originalIndex + offset] = originalIndex`
+   用的是**原始（setup）下标**，offset 是**有符号**（zigzag varint），
+   没被列出的槽位进 `unchanged`、**从数组尾往回填**。
+   ⚠️ 并且槽位下标必须**严格升序**，否则参考实现的 `while (originalIndex != slotIndex)`
+   永不终止（死循环 + 越界写）⇒ **Bake 期就拒绝**（新增报错）。
+
+#### 本阶段**故意不做**的（不做 ≠ 做错了）
+
+`SpineGpuAnimSolver.h` 开头写死了范围：**只**做 color / twoColor / attachment / drawOrder。
+
+* **骨骼时间轴**（rotate / translate / scale / shear）→ **S4**（要先有约束与 update 顺序）。
+* **deform** → **S6**（共享 VB 不动、蒙皮仍在 GPU，只给命中项写增量）。
+* 多轨混合 → S5。
+
+⇒ 现在"骨骼不动、槽位在动"是**预期状态**。留着边界清楚，比"一半对一半猜"好排查。
+
+**782 个资产重跑**：**781 成功 / 1 失败**，与 v9 完全一致 ⇒ 无回归
+（唯一失败仍是那个资产自己缺图集 region 的真 bug，见 7.0.1）。
+
+**实测（`doc/scripts/measure_zspg_chunks.py`，781 个容器）**：
+
+| 项 | 值 |
+|---|---|
+| 槽位总数 | **56 704**（均 **72.6** 个/资产） |
+| chunk 17 合计 | **2.16 MB**（容器的 **1.03%**） |
+| 带暗色（tint black） | **96** 槽位（0.17%），涉及 **5 / 781** 个资产 |
+| setup 色非纯白 | **1 210** 槽位（2.13%），涉及 **139 / 781** 个资产 |
+| 有 setup 附件名 | **33 055** 槽位（**58.29%**） |
+| flags 有未知位 | **0**（必须 0） |
+
+两点值得记：
+
+* **暗色 96 槽位 / 5 资产**与 §7.0 里 S0 的独立实测（"96 个双色槽位判对"）**对上了** ——
+  两条互不依赖的路径给出同一个数，是"3.7 暗色判据正确"的又一条证据。
+* **58% 的槽位有 setup 附件名** ⇒ attachment 时间轴（40 007 条，占时间轴 15.72%）的
+  复位基线是**常用路径**不是边角，必须落盘。
+
+容器合计 **206.32 MB → 208.79 MB**（+1.2%，就是 chunk 17 那 2.16 MB）；
+源 `.skel.bytes` 合计 197.28 MB ⇒ 比值 1.05 → **1.058**。
+
+`SpineGpuImportTest` 1116 → **1214/1214**；C# 跨语言对拍 294 → **323/323**；
+`SpineSkinningParityTest` **11/11 顶点、0.68 ulp**（未受影响）。
+
+**解算侧的断言怎么写才有用**（三条都踩过）：
+
+1. 期望值**手算**，不从实现里抄回去 —— 只有这样才能抓到"两边一起错"。
+2. 夹具必须有**非默认**值：全是纯白的往返什么也挡不住（读回来还是纯白 ⇒ 通过）。
+   ⇒ `kSkeleton` 的 s1 带 `"color": "80c0ff40"` + `"dark": "204060"`。
+3. **读回来的容器必须解算出同一个结果**（`asset` 与 `back` 在 6 个时间点上逐分量比）。
+   写端对了、读端错了，往返的逐字节断言**全**看不出来 —— 只有解算能抓到。
+
+---
+
 ## 8. 风险 / 未决
 
 1. ~~**deform 的取舍需拍板**~~ —— **已定**：稠密展开否决、OSGame 式全量 CPU 动态 VB 否决，
@@ -554,12 +663,15 @@ deform 载荷：**1 731 940 帧、28 282 880 个 float、均值 16.3 float/帧**
 2. **约束解算的参考源**：本机 3.8 C++ 有 `IkConstraint.cpp` / `TransformConstraint.cpp` /
    `PathConstraint.cpp`，但本工程资产是 **3.7**。3.7/3.8 的约束**数学**是否一致尚未逐行核对
    （只核对了**字节布局**）。S4 开工前必须补这一步。
-3. **双色（tint black）**：96 槽位 / 5 文件，规模很小，但要在渲染侧多一路颜色。
-   若嫌麻烦可先 bake 报错，但那样这 5 个资产就出不来。
+3. **双色（tint black）**：~~96 槽位 / 5 文件，规模很小，但要在渲染侧多一路颜色~~
+   —— **数据侧已落地**（S3：chunk 17 的 `has_dark` flag + dark rgba，实测 96 槽位 / 5 资产，
+   与 §7.0 的独立实测对上）。**剩下的只是渲染侧**：走双色分支要第二路颜色，
+   目前还没有接。⇒ S4 之后、接渲染时补。
 4. **多皮肤 = 0**：v2 的皮肤维度在本工程没用上。不删（换装是容器承诺的能力），
    但也说明皮肤相关的测试覆盖对 OSGame 没价值。
 5. **容器体量**：~~按 §3.3 的紧凑曲线 + 稀疏 deform 粗估，容器 ≈ 源 .skel 的 75%~80%~~
-   —— **估算已被实测推翻**（见 7.0.3）：容器 **206.32 MB** vs 源 **197.28 MB** = **1.05×**。
+   —— **估算已被实测推翻**（见 7.0.3，S3 后重测见 7.0.4）：
+   容器 **208.79 MB** vs 源 **197.28 MB** = **1.058×**（v10 的 chunk 17 加了 2.16 MB）。
    动画块占 80.8%，deform 载荷独占 59.5%（28.28 M 个 float）。
    下一个真正可压的点是 **deform 载荷**（f32 → fp16 或 i16 定点，理论 −50%），
    但它会引入精度分歧，且与 S6 的 deform 求解绑在一起 ⇒ **等 S6 落地后再动**。

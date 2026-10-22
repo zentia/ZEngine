@@ -1722,11 +1722,64 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
             {
                 return Fail("json: slot '" + slot.name + "' 引用了不存在的骨骼 '" + bone_name + "'");
             }
+            // ---- 颜色（SkeletonJson.cpp:219-232）----
+            // ⚠️ 默认值是 **(1,1,1,1)**（`SlotData.cpp:39`），不是 0。
+            //    setup 色是 color / twoColor 时间轴的基线：
+            //    时间轴写的是**绝对颜色**（ColorTimeline.cpp:110 `slot._color.set(r,g,b,a)`），
+            //    而"没有时间轴命中"时槽位停在 setup 色 —— 容器里没有 setup 色，
+            //    解算器只能默认成纯白，而**纯白与 setup 白在多数资产上完全看不出区别**
+            //    （正是那种"错了但不报错"的坑）。
+            if (GetMember(s, "color") != nullptr)
+            {
+                const std::string col = GetString(s, "color", "");
+                std::string err;
+                const float rgba[4] = {ToColorComponent(col, 0), ToColorComponent(col, 1),
+                                       ToColorComponent(col, 2), ToColorComponent(col, 3)};
+                for (int k = 0; k < 4; ++k)
+                {
+                    if (rgba[k] < 0.0f)
+                    {
+                        err = "颜色串 '" + col + "' 不是 8 位十六进制";
+                        break;
+                    }
+                }
+                if (!err.empty())
+                {
+                    return Fail("json: slot '" + slot.name + "'.color: " + err);
+                }
+                for (int k = 0; k < 4; ++k)
+                {
+                    slot.color[k] = rgba[k];
+                }
+            }
             if (GetMember(s, "dark") != nullptr)
             {
+                const std::string dk = GetString(s, "dark", "");
+                std::string err;
+                // ⚠️ dark 只有 **rgb** 三个分量（:227-230），alpha 写死 **1**（:230）。
+                const float rgb[3] = {ToColorComponent(dk, 0), ToColorComponent(dk, 1),
+                                      ToColorComponent(dk, 2)};
+                for (int k = 0; k < 3; ++k)
+                {
+                    if (rgb[k] < 0.0f)
+                    {
+                        err = "颜色串 '" + dk + "' 不是 6 位十六进制";
+                        break;
+                    }
+                }
+                if (!err.empty())
+                {
+                    return Fail("json: slot '" + slot.name + "'.dark: " + err);
+                }
+                for (int k = 0; k < 3; ++k)
+                {
+                    slot.dark[k] = rgb[k];
+                }
+                slot.dark[3] = 1.0f;
                 slot.has_dark = true;
                 out.uses_tint_black = true;
             }
+            slot.attachment_name = GetString(s, "attachment", "");
             out.slots.push_back(slot);
         }
     }
@@ -2723,9 +2776,21 @@ private:
             }
             slot.bone_index = bone_index;
 
-            if (!r_.Skip(4))
+            // ---- color（`SkeletonBinary.cpp:182` 的 readColor）----
+            // ⚠️ 二进制**没有默认值**：4 个字节全是显式写入的（`SlotData` 的默认
+            //    (1,1,1,1) 只在 json 路径里靠"字段不存在"体现）。所以这里必须原样读，
+            //    不能"跳过" —— 之前就是 Skip(4)，setup 色因此全丢（v9 及更早的既有缺口）。
+            uint8_t color[4] = {0, 0, 0, 0};
+            for (int k = 0; k < 4; ++k)
             {
-                return false;   // color
+                if (!r_.Byte(color[k]))
+                {
+                    return false;
+                }
+            }
+            for (int k = 0; k < 4; ++k)
+            {
+                slot.color[k] = static_cast<float>(color[k]) / 255.0f;
             }
             // ⚠️ 暗色判据**分版本**，两边都是 4 个字节，但语义不同：
             //   * 3.7（`spine-runtimes` 3.7 `spine-csharp/src/SkeletonBinary.cs:190-192`）：
@@ -2759,11 +2824,17 @@ private:
             }
             if (has_dark)
             {
+                for (int k = 0; k < 3; ++k)
+                {
+                    slot.dark[k] = static_cast<float>(dark[k]) / 255.0f;
+                }
+                // ⚠️ alpha 写死 **1**（:188 `set(r/255, g/255, b/255, 1)`）；
+                //    读进来的第 4 个字节只用来判"有没有暗色"，**从不作为 alpha 落地**。
+                slot.dark[3] = 1.0f;
                 slot.has_dark = true;
                 out_.uses_tint_black = true;
             }
-            std::string attachment_name;
-            if (!r_.String(attachment_name))
+            if (!r_.String(slot.attachment_name))
             {
                 return false;
             }
@@ -4425,14 +4496,20 @@ void AppendF32To(std::vector<uint8_t>& v, float x)
 //   * Write     拿它拼 chunk 1 的字节
 // 两处共用一份实现，才不会出现"写端按 A 顺序、Bake 按 B 顺序算偏移"的静默错位。
 //
-// 顺序固定：骨骼 → 皮肤 → 槽位 → 附件 → 图集页 → **动画名** → **动画附件名**。
-// 前五组按 header 里的计数切分，第六组按 chunk 11 的条目数切分；
+// 顺序固定：骨骼 → 皮肤 → 槽位 → **槽位 setup 附件名** → 附件 → 图集页 →
+//            **动画名** → **动画附件名**。
+// 前六组按 header 里的计数切分（槽位 setup 附件名按 slot_count 切），
+// 第七组按 chunk 11 的条目数切分；
 // 最后一组**只按偏移访问**（attachment 时间轴存的是偏移不是下标）⇒ 不需要计数。
+// ⚠️ v10 插进来的"槽位 setup 附件名"每组都是 slot_count 条 —— 空名也要占一条
+//    （写一个 '\0'）⇒ 条数恒定，读端才能靠 header.slot_count 切准。
 void BuildSpineStringTable(const SpineGpuAsset& a, std::vector<uint8_t>& blob,
+                           std::vector<uint32_t>& slot_setup_attachment_offsets,
                            std::vector<uint32_t>& anim_name_offsets,
                            std::vector<uint32_t>& anim_attachment_offsets)
 {
     blob.clear();
+    slot_setup_attachment_offsets.clear();
     anim_name_offsets.clear();
     anim_attachment_offsets.clear();
 
@@ -4451,6 +4528,7 @@ void BuildSpineStringTable(const SpineGpuAsset& a, std::vector<uint8_t>& blob,
     group(a.bone_names, nullptr);
     group(a.skin_names, nullptr);
     group(a.slot_names, nullptr);
+    group(a.slot_setup_attachment_names, &slot_setup_attachment_offsets);  // v10：chunk 17 引用
     group(a.attachment_names, nullptr);
     group(a.atlas_page_names, nullptr);
     group(a.anim_names, &anim_name_offsets);
@@ -4850,9 +4928,31 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     }
     out.skin_names = src.skins;
     out.slot_names.reserve(src.slots.size());
+    // ---- 槽位 setup（chunk 17）----
+    // ⚠️ 颜色**必须**进容器：color / twoColor 时间轴写的是**绝对颜色**
+    //    （`ColorTimeline.cpp:110` `slot._color.set(r,g,b,a)`），而"没有时间轴命中"
+    //    的槽位停在 setup 色。容器里只有 `kUsesTintBlack` 一个布尔、没有色值 ⇒
+    //    解算器只能默认成纯白，而**纯白与 setup 白在多数资产上完全看不出区别**。
+    out.slots.reserve(src.slots.size());
+    out.slot_setup_attachment_names.reserve(src.slots.size());
     for (const SpineSourceSlot& s : src.slots)
     {
         out.slot_names.push_back(s.name);
+
+        SpineGpuSlot rec;
+        rec.color_r = s.color[0];
+        rec.color_g = s.color[1];
+        rec.color_b = s.color[2];
+        rec.color_a = s.color[3];
+        rec.dark_r = s.dark[0];
+        rec.dark_g = s.dark[1];
+        rec.dark_b = s.dark[2];
+        rec.dark_a = s.dark[3];
+        rec.flags = s.has_dark ? SpineGpuSlotFlags::kSlotFlagHasDark : SpineGpuSlotFlags::kSlotFlagNone;
+        out.slots.push_back(rec);
+
+        // 空名也占一条（写一个 '\0'）⇒ 这一组恒为 slot_count 条，读端能切准。
+        out.slot_setup_attachment_names.push_back(s.attachment_name);
     }
     out.attachment_names.reserve(src.attachments.size());
     for (const SpineSourceAttachment& a : src.attachments)
@@ -4890,12 +4990,25 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     }
     {
         std::vector<uint8_t> blob;
+        std::vector<uint32_t> slot_setup_att_off;
         std::vector<uint32_t> anim_name_off;
         std::vector<uint32_t> anim_att_off;
-        BuildSpineStringTable(out, blob, anim_name_off, anim_att_off);
+        BuildSpineStringTable(out, blob, slot_setup_att_off, anim_name_off, anim_att_off);
         if (anim_name_off.size() != out.anim_names.size())
         {
             return Fail("bake: 字符串表内部错误 —— 动画名偏移数与动画数不符");
+        }
+        if (slot_setup_att_off.size() != out.slots.size())
+        {
+            return Fail("bake: 字符串表内部错误 —— 槽位 setup 附件名偏移数与槽位数不符");
+        }
+        // 空名 ⇒ `kNoAttachmentName`（**不是 0**：0 是字符串表里第一个名字的合法偏移，
+        // 填 0 会让"没挂附件"变成"挂了某个真实附件"且不报错）。
+        for (size_t i = 0; i < out.slots.size(); ++i)
+        {
+            out.slots[i].setup_attachment_name_offset = out.slot_setup_attachment_names[i].empty()
+                ? SpineGpuConstants::kNoAttachmentName
+                : slot_setup_att_off[i];
         }
 
         // 第二趟：真正建表。
@@ -5100,10 +5213,30 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                     }
                     for (const SpineSourceDrawOrderFrame& dof : tl.draw_order_frames)
                     {
+                        // ⚠️ 槽位下标必须**严格升序**。参考实现的重建循环是
+                        //    `while (originalIndex != slotIndex) unchanged[ui++] = originalIndex++;`
+                        //    （`SkeletonBinary.cpp:1050-1053` / `SkeletonJson.cpp:1144-1147`）：
+                        //    下一个 slotIndex 小于当前 originalIndex 时那个 while **永不退出**，
+                        //    一路写穿 `unchanged` ⇒ 死循环 + 越界写，不是"结果略有不同的容错"。
+                        //    ⇒ 我们在这里显式报错，绝不静默重排（重排会改变绘制顺序的语义）。
+                        for (size_t k = 1; k < dof.slots.size(); ++k)
+                        {
+                            if (dof.slots[k] <= dof.slots[k - 1])
+                            {
+                                return Fail("bake: 动画 '" + sa.name + "' 的 drawOrder 时间轴槽位下标不是严格升序（" +
+                                            std::to_string(dof.slots[k - 1]) + " → " + std::to_string(dof.slots[k]) +
+                                            "）—— 参考实现在这里是死循环 + 越界写");
+                            }
+                        }
                         AppendU32To(out.timeline_payload, static_cast<uint32_t>(dof.slots.size()));
                         for (size_t k = 0; k < dof.slots.size(); ++k)
                         {
                             AppendU32To(out.timeline_payload, dof.slots[k]);
+                            // ⚠️ offset 是**有符号**的（参考实现读的是 zigzag varint，
+                            //    `drawOrder[index + readVarint()] = ...`，可以是负的）。
+                            //    按 u32 的**位模式**存，读端照 int32 解释回来 ——
+                            //    二进制补码下这是无损的，但"存成 u32"这件事必须写清楚，
+                            //    否则后来者会以为是"忘了符号"而改成"取绝对值"。
                             AppendU32To(out.timeline_payload, static_cast<uint32_t>(dof.offsets[k]));
                         }
                     }
@@ -5270,9 +5403,10 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
     {
         ChunkBuilder c;
         c.id = SpineGpuChunkId::kChunkStrings;
+        std::vector<uint32_t> slot_setup_att_off;
         std::vector<uint32_t> anim_name_off;
         std::vector<uint32_t> anim_att_off;
-        BuildSpineStringTable(asset, c.bytes, anim_name_off, anim_att_off);
+        BuildSpineStringTable(asset, c.bytes, slot_setup_att_off, anim_name_off, anim_att_off);
         if (!c.bytes.empty())
         {
             chunks.push_back(std::move(c));
@@ -5383,6 +5517,28 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         ChunkBuilder c;
         c.id = SpineGpuChunkId::kChunkTimelinePayload;
         PutBytes(c.bytes, asset.timeline_payload.data(), asset.timeline_payload.size());
+        chunks.push_back(std::move(c));
+    }
+
+    // id=17 slot_setup（40 B/槽，v10）。紧跟动画块后面：两者都是"解算需要的静态输入"。
+    // 逐字段写（不 memcpy 整个结构体）—— 加字段的人因此必须同时改这里和 static_assert。
+    if (!asset.slots.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkSlotSetup;
+        for (const SpineGpuSlot& s : asset.slots)
+        {
+            PutF32(c.bytes, s.color_r);
+            PutF32(c.bytes, s.color_g);
+            PutF32(c.bytes, s.color_b);
+            PutF32(c.bytes, s.color_a);
+            PutF32(c.bytes, s.dark_r);
+            PutF32(c.bytes, s.dark_g);
+            PutF32(c.bytes, s.dark_b);
+            PutF32(c.bytes, s.dark_a);
+            PutU32(c.bytes, s.setup_attachment_name_offset);
+            PutU32(c.bytes, s.flags);
+        }
         chunks.push_back(std::move(c));
     }
 
@@ -5932,6 +6088,53 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         }
     }
 
+    // ---- 槽位 setup（chunk 17，v10）----
+    // ⚠️ "chunk 不存在"本身**不**报错（v9 及更早的容器没有它），但"存在而条数不等于
+    //    header.slot_count"必须报错：少一条 ⇒ 后面的槽位读到别人的颜色，
+    //    而"颜色略偏"是那种跑起来才发现、且查不出来的错。
+    {
+        const Found* f_strings = find_chunk(SpineGpuChunkId::kChunkStrings);
+        if (const Found* f = find_chunk(SpineGpuChunkId::kChunkSlotSetup))
+        {
+            if (f->size % SpineGpuConstants::kSlotSetupSize != 0)
+            {
+                return Fail("container: slot_setup 大小不是 " + std::to_string(SpineGpuConstants::kSlotSetupSize) +
+                            " B 的整数倍（一条是 40 B）");
+            }
+            const uint32_t count = f->size / SpineGpuConstants::kSlotSetupSize;
+            if (count != out.header.slot_count)
+            {
+                return Fail("container: slot_setup 有 " + std::to_string(count) + " 条，但 header.slot_count 是 " +
+                            std::to_string(out.header.slot_count));
+            }
+            out.slots.resize(count);
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                const uint8_t* p = data + f->offset + static_cast<size_t>(i) * SpineGpuConstants::kSlotSetupSize;
+                SpineGpuSlot s;
+                std::memcpy(&s.color_r, p, 8u * sizeof(float));   // 8 个 float 连续
+                s.setup_attachment_name_offset = GetU32(p + 32);
+                s.flags = GetU32(p + 36);
+
+                // setup 附件名偏移必须落在字符串块里；`kNoAttachmentName` = "没挂附件"。
+                // 指到别的组（比如骨骼名）不报错，只是槽位挂上了错误名字的附件。
+                if (s.setup_attachment_name_offset != SpineGpuConstants::kNoAttachmentName &&
+                    (f_strings == nullptr || s.setup_attachment_name_offset >= f_strings->size))
+                {
+                    return Fail("container: 第 " + std::to_string(i) + " 个槽位的 setup 附件名偏移 " +
+                                std::to_string(s.setup_attachment_name_offset) + " 超出字符串块");
+                }
+                // 已知位之外的 flag 必须清零 —— 留着脏字节会让跨语言逐字节对拍对不上。
+                if ((s.flags & ~SpineGpuSlotFlags::kSlotFlagHasDark) != 0u)
+                {
+                    return Fail("container: 第 " + std::to_string(i) + " 个槽位的 flags 有未知位（0x" +
+                                std::to_string(s.flags) + "，目前只有 bit0 = has_dark）");
+                }
+                out.slots[i] = s;
+            }
+        }
+    }
+
     // ---- 影响流（chunk 21 / 22）。两条流**必须条目数相同**： ----
     // 它们共用同一个下标（权重顶点的 influence_offset）。对不上意味着两条流被
     // 配错了对 —— 不报错，只是每个影响取到别人的 bindPos / 骨骼 ⇒ 形状静默错。
@@ -6129,6 +6332,7 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         take(out.header.bone_count, out.bone_names);
         take(out.header.skin_count, out.skin_names);
         take(out.header.slot_count, out.slot_names);
+        take(out.header.slot_count, out.slot_setup_attachment_names);   // v10：chunk 17 引用
         take(attachment_count, out.attachment_names);
         take(out.header.atlas_page_count, out.atlas_page_names);
         // 动画名：数量 = chunk 11 的条目数（header 里没有 anim_count 的位置 ——
@@ -6139,6 +6343,14 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         while (i < all.size())
         {
             out.anim_attachment_names.push_back(all[i++]);
+        }
+        // 槽位 setup 附件名是 chunk 17 的复位基线 ⇒ 少一条就会让后面的槽位
+        // 挂上别人的附件名（不报错，只是"这个槽位画错了图"）。
+        if (out.slot_setup_attachment_names.size() != out.header.slot_count)
+        {
+            return Fail("container: 槽位 setup 附件名只有 " +
+                        std::to_string(out.slot_setup_attachment_names.size()) + " 条，但 header.slot_count 是 " +
+                        std::to_string(out.header.slot_count));
         }
         // ⚠️ 但每个 name_offset 必须真的落在这一块里 —— 指到前面几组（比如骨骼名）
         // 不报错，只是动画挂载了错误名字的附件。

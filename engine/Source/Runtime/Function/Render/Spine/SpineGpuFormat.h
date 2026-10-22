@@ -85,7 +85,15 @@ namespace SpineGpuConstants
     //   * flags 多一位 kHasEventTimeline（事件时间轴**不烘焙**，但不许静默当没看见）
     //   ⇒ 不兼容：v8 容器被新读端读会得到 0 个动画（chunk 11 不存在），
     //     而"没有动画"本身不报错 —— 与 chunk 10 是同一类坑。
-    constexpr uint32_t kFormatVersion = 9;
+    // 版本 10（2026-10-22）：**槽位 setup 进容器**（chunk 17，32 B/槽）——
+    //   * 之前容器里只有一个 `kUsesTintBlack` 布尔、**没有颜色值**。而 color /
+    //     twoColor 时间轴是**相对 setup 颜色**混合的（`ColorTimeline::apply` 直接
+    //     往 `slot._color` 上写绝对颜色，setup 色则是"没有时间轴命中"时的基线）⇒
+    //     容器里没有 setup 颜色就无从解算。这是一个既有缺口，不是新增需求。
+    //   * header / 绘制项 / 顶点布局全都没动（槽位数本来就在 header 0x14）。
+    //   ⇒ 不兼容：v9 容器被新读端读会得到"所有槽位纯白 + 无暗色"，
+    //     而"纯白"本身不报错 —— 与 chunk 10 / 11 是同一类坑。
+    constexpr uint32_t kFormatVersion = 10;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -193,6 +201,24 @@ namespace SpineGpuConstants
     //    （`CurveTimeline::BEZIER_VALUES = 10*2-2`）：实测 2 567 358 段里 bezier 占
     //    36.6%，定长 20 B/段要 49.0 MB，紧凑写法 16.8 MB（差 65%）。
     constexpr uint32_t kBezierSize = 16;
+
+    // 槽位 setup 记录（chunk 17）大小：
+    //   color rgba f32×4 @0 + dark rgba f32×4 @16 +
+    //   setup_attachment_name_offset u32 @32 + flags u32 @36。
+    // 字段集合抄 `SlotData.cpp:39-41`（color 默认 **1,1,1,1**、dark 默认 0,0,0,0）；
+    // 二进制读法抄 `SkeletonBinary.cpp:182-189`，json 读法抄 `SkeletonJson.cpp:219-232`。
+    //
+    // 32 B 不够：还要一格放 **setup 附件名偏移**（attachment 时间轴的复位基线，
+    // `AttachmentTimeline.cpp:65-68`）和一格放 **逐槽位 flags**（has_dark ——
+    // 它**不能**由 dark 是否全 0 推断：3.7 的暗色判据是 `int32 != -1`，
+    // 0x00000000（纯黑）照样是"有暗色"，见 `SpineGpuSlot` 的注释）。
+    // 40 = 5 × 8 ⇒ 仍是 8 B 对齐，结构化缓冲可以整条 4 B 读。
+    //
+    // ⚠️ dark 的 alpha **恒为 1**（`SkeletonBinary.cpp:188` 的 `set(r,g,b,1)`、
+    //    `SkeletonJson.cpp:230` 的 `darkColor.a = 1`）—— 二进制里读进来的第 4 个字节
+    //    只用来判"有没有暗色"（3.8 判据：四分量不全为 0xff），**从不作为 alpha 落地**。
+    //    照抄这个不对称，别把它当"读漏了一个字节"去补。
+    constexpr uint32_t kSlotSetupSize = 40;
 
     // attachment 时间轴里"这一帧没有附件"的哨兵。**不是 0** —— 0 是 chunk 1 里
     // 第一个字符串的合法偏移，填 0 会让空帧变成"挂上某个真实附件"且不报错。
@@ -366,6 +392,9 @@ enum SpineGpuChunkId : uint32_t
     kChunkBeziers = 15,      // SpineGpuBezier[]（16 B/条，按段序）
     kChunkTimelinePayload = 16,  // 字节（attachment 名 / deform 稀疏帧 / drawOrder 偏移）
 
+    // v10：槽位 setup（32 B/槽）。id 17 就是当初留给它的（10..20 是 v7 动画阶段）。
+    kChunkSlotSetup = 17,  // SpineGpuSlot[]（32 B/条）；下标 = header.slot_count 的序
+
     // v7：蒙皮数据流。id 从 21 起 —— 10..20 留给 v7 动画阶段
     // （骨骼树 / 时间轴 / path 几何），别占用。
     kChunkInfluenceBind = 21,  // float2 × influence_count（8 B/条）；由 influence_offset 索引
@@ -378,7 +407,7 @@ enum SpineGpuChunkId : uint32_t
 struct SpineGpuHeader
 {
     uint32_t magic;             // 'ZSPG'
-    uint32_t version;           // 本规格版本，当前 8（见 kFormatVersion 的版本史）
+    uint32_t version;           // 本规格版本，当前 10（见 kFormatVersion 的版本史）
     uint32_t spine_runtime;     // 产生它的 spine-cpp 版本（3.8.xx → 30800）
     uint32_t flags;             // SpineGpuFlags
     uint32_t bone_count;
@@ -613,6 +642,78 @@ inline bool operator==(const SpineGpuBezier& a, const SpineGpuBezier& b)
     return a.cx1 == b.cx1 && a.cy1 == b.cy1 && a.cx2 == b.cx2 && a.cy2 == b.cy2;
 }
 inline bool operator!=(const SpineGpuBezier& a, const SpineGpuBezier& b) { return !(a == b); }
+
+// ---------------------------------------------------------------------
+// 槽位 setup（chunk 17，32 B/条）
+// ---------------------------------------------------------------------
+// 下标 = header.slot_count 的序 = chunk 1 里槽位名的序号 = 时间轴 `target`
+// （attachment / color / twoColor）引用的同一个下标空间。
+//
+// ⚠️ 三处必须是同一个下标空间 —— 分叉了不报错，只是颜色/附件挂到别的槽位上。
+//
+// 为什么必须进容器：color / twoColor 时间轴写的是**绝对颜色**（`ColorTimeline.cpp`
+// 的 apply 直接把插值结果写进 `slot._color`），而"没有时间轴命中"时槽位必须回到
+// **setup 色**（`Slot::setToSetupPose()` 就是 `SlotData::getColor()` 拷过来）。
+// 容器里只有 `kUsesTintBlack` 一个布尔、没有色值 ⇒ 解算器会把"没被动画"的槽位
+// 默认成纯白，而纯白和 setup 白在**不写 dark 的资产上完全看不出区别** ——
+// 正是那种"错了但不报错"的坑。
+//
+// ⚠️ dark 全 0 **不等于**"没有暗色"：参考实现里 dark 的默认值就是 (0,0,0,0)
+// （`SlotData.cpp:40`），而 3.7 的暗色判据是"读到的 int32 != -1"，
+// 0x00000000 照样 != -1 ⇒ **黑也是一种合法的暗色**。
+// 所以"有没有暗色"这件事由 `kUsesTintBlack` + 逐槽位的 `has_dark` 表达，
+// 不能靠 dark 是否全 0 去推。
+// 逐槽位 flags（chunk 17 @36）。
+enum SpineGpuSlotFlags : uint32_t
+{
+    kSlotFlagNone = 0u,
+    // 这个槽位**有暗色**（tint black）。渲染要不要走双色分支看的是它，
+    // 不是"dark 是否全 0" —— 3.7 的判据是 `读到的 int32 != -1`，0x00000000（纯黑）
+    // 照样是"有暗色"（`SkeletonBinary` 3.7 :190-192）。
+    kSlotFlagHasDark = 1u << 0,
+};
+
+struct SpineGpuSlot
+{
+    float color_r = 1.0f;   // @0
+    float color_g = 1.0f;   // @4
+    float color_b = 1.0f;   // @8
+    float color_a = 1.0f;   // @12
+    float dark_r = 0.0f;    // @16
+    float dark_g = 0.0f;    // @20
+    float dark_b = 0.0f;    // @24
+    float dark_a = 0.0f;    // @28  **有暗色时恒 1**（参考实现写死的，见上）
+    // setup 附件名在 chunk 1 里的**字节**偏移；`kNoAttachmentName` = 空名
+    // （这个槽位默认不挂附件）。attachment 时间轴在 `time < frames[0]` 时复位到它
+    // （`AttachmentTimeline.cpp:65-68`）。
+    uint32_t setup_attachment_name_offset = SpineGpuConstants::kNoAttachmentName;  // @32
+    uint32_t flags = 0;      // @36  SpineGpuSlotFlags
+};
+
+static_assert(sizeof(SpineGpuSlot) == SpineGpuConstants::kSlotSetupSize,
+              "spec 3.5: slot setup record is 40 B");
+static_assert(offsetof(SpineGpuSlot, color_r) == 0, "spec 3.5: slot.color_r @0");
+static_assert(offsetof(SpineGpuSlot, color_g) == 4, "spec 3.5: slot.color_g @4");
+static_assert(offsetof(SpineGpuSlot, color_b) == 8, "spec 3.5: slot.color_b @8");
+static_assert(offsetof(SpineGpuSlot, color_a) == 12, "spec 3.5: slot.color_a @12");
+static_assert(offsetof(SpineGpuSlot, dark_r) == 16, "spec 3.5: slot.dark_r @16");
+static_assert(offsetof(SpineGpuSlot, dark_g) == 20, "spec 3.5: slot.dark_g @20");
+static_assert(offsetof(SpineGpuSlot, dark_b) == 24, "spec 3.5: slot.dark_b @24");
+static_assert(offsetof(SpineGpuSlot, dark_a) == 28, "spec 3.5: slot.dark_a @28");
+static_assert(offsetof(SpineGpuSlot, setup_attachment_name_offset) == 32,
+              "spec 3.5: slot.setup_attachment_name_offset @32");
+static_assert(offsetof(SpineGpuSlot, flags) == 36, "spec 3.5: slot.flags @36");
+static_assert(std::is_standard_layout_v<SpineGpuSlot>, "slot setup must stay standard-layout");
+static_assert(alignof(SpineGpuSlot) == 4, "slot setup is 4-byte aligned (40 = 10 x u32)");
+
+inline bool operator==(const SpineGpuSlot& a, const SpineGpuSlot& b)
+{
+    return a.color_r == b.color_r && a.color_g == b.color_g && a.color_b == b.color_b &&
+           a.color_a == b.color_a && a.dark_r == b.dark_r && a.dark_g == b.dark_g &&
+           a.dark_b == b.dark_b && a.dark_a == b.dark_a &&
+           a.setup_attachment_name_offset == b.setup_attachment_name_offset && a.flags == b.flags;
+}
+inline bool operator!=(const SpineGpuSlot& a, const SpineGpuSlot& b) { return !(a == b); }
 
 // ---------------------------------------------------------------------
 // 附件记录（chunk 7，规格 §9）

@@ -33,7 +33,13 @@ namespace ZEngine.SpineGpu
         //      flags 多一位 HasEventTimeline。
         //      ⇒ 不兼容：v8 容器被新读端读会得到 **0 个动画**（chunk 11 不存在），
         //        而"没有动画"本身不报错 —— 与 chunk 10 是同一类坑。
-        public const uint FormatVersion = 9;
+        // v10 = 槽位 setup 进容器（新增 chunk 17，40 B/槽）。之前容器里只有一个
+        //       UsesTintBlack 布尔、**没有颜色值**；而 color / twoColor 时间轴是
+        //       相对 setup 颜色混合的（时间轴写绝对颜色，"没被命中"的槽位停在 setup 色）
+        //       ⇒ 没有 setup 色就无从解算。这是一个既有缺口，不是新增需求。
+        //       ⇒ 不兼容：v9 容器被新读端读会得到"所有槽位纯白 + 无暗色"，
+        //         而"纯白"本身不报错 —— 与 chunk 10 / 11 是同一类坑。
+        public const uint FormatVersion = 10;
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;
@@ -61,6 +67,20 @@ namespace ZEngine.SpineGpu
         //    （`CurveTimeline::BEZIER_VALUES = 10*2-2`）：实测 2 567 358 段里 bezier 占
         //    36.6%，定长 20 B/段要 49.0 MB，紧凑写法 16.8 MB（差 65%）。
         public const uint BezierSize = 16;
+
+        // 槽位 setup 记录（v10，chunk 17）：
+        //   color rgba f32×4 @0 + dark rgba f32×4 @16 +
+        //   setup_attachment_name_offset u32 @32 + flags u32 @36。
+        // 32 B 不够：还要一格放 setup 附件名偏移（attachment 时间轴的复位基线，
+        // `AttachmentTimeline.cpp:65-68`）和一格放逐槽位 flags（has_dark ——
+        // 它**不能**由 dark 是否全 0 推断：3.7 的判据是 `读到的 int32 != -1`，
+        // 0x00000000（纯黑）照样是"有暗色"）。40 = 5 × 8 ⇒ 仍是 8 B 对齐。
+        //
+        // ⚠️ dark 的 alpha **恒为 1**（只要这个槽位有暗色）—— 参考实现写死的：
+        //   二进制 `SkeletonBinary.cpp:188` `set(r/255, g/255, b/255, 1)`；
+        //   json    `SkeletonJson.cpp:230`  `darkColor.a = 1`。
+        //   二进制里读进来的第 4 个字节只用来判"有没有暗色"，**从不作为 alpha 落地**。
+        public const uint SlotSetupSize = 40;
 
         // attachment 时间轴里"这一帧没有附件"的哨兵。**不是 0** —— 0 是 chunk 1 里
         // 第一个字符串的合法偏移，填 0 会让空帧变成"挂上某个真实附件"且不报错。
@@ -246,6 +266,8 @@ namespace ZEngine.SpineGpu
         Beziers = 15,          // SpineGpuBezier[]（16 B/条，按段序）
         TimelinePayload = 16,  // 字节（attachment 名 / deform 稀疏帧 / drawOrder 偏移）
 
+        SlotSetup = 17,     // v10：槽位 setup（40 B/槽），下标 = header.slot_count 的序
+
         // v7：蒙皮数据流。id 从 21 起 —— 10..20 留给 v7 动画阶段
         // （骨骼树 / 时间轴 / path 几何），别占用。
         InfluenceBind = 21,   // float2 × 影响条目数
@@ -356,6 +378,18 @@ namespace ZEngine.SpineGpu
         public const int BezCy1 = 4;
         public const int BezCx2 = 8;
         public const int BezCy2 = 12;
+
+        // 槽位 setup 一条（chunk 17，40 B）
+        public const int SlotColorR = 0;
+        public const int SlotColorG = 4;
+        public const int SlotColorB = 8;
+        public const int SlotColorA = 12;
+        public const int SlotDarkR = 16;
+        public const int SlotDarkG = 20;
+        public const int SlotDarkB = 24;
+        public const int SlotDarkA = 28;      // 有暗色时恒 1（参考实现写死）
+        public const int SlotSetupAttachmentNameOffset = 32;
+        public const int SlotFlags = 36;
     }
 
     // C++ 用 static_assert 挡的那层"常量之间是否自洽"。C# 没有编译期 offsetof，
@@ -428,6 +462,16 @@ namespace ZEngine.SpineGpu
             Check(!SpineTimelineInfo.HasCurve(SpineTimelineType.DrawOrder), "drawOrder has no curve");
             Check(!SpineTimelineInfo.HasCurve(SpineTimelineType.Event), "event has no curve");
             Check(SpineTimelineInfo.HasCurve(SpineTimelineType.Rotate), "rotate has curve");
+
+            // ---- v10 槽位 setup ----
+            Check(SpineGpuConstants.SlotSetupSize == 40, "slot setup record is 40 B (v10)");
+            Check(SpineGpuConstants.SlotSetupSize % 8 == 0, "slot setup stride is 8-byte aligned (40 = 5 x 8)");
+            CheckOffset(SpineGpuOffsets.SlotColorA, 4, SpineGpuConstants.SlotSetupSize, "slot color_a");
+            CheckOffset(SpineGpuOffsets.SlotDarkA, 4, SpineGpuConstants.SlotSetupSize, "slot dark_a");
+            CheckOffset(SpineGpuOffsets.SlotSetupAttachmentNameOffset, 4, SpineGpuConstants.SlotSetupSize,
+                        "slot setup_attachment_name_offset");
+            CheckOffset(SpineGpuOffsets.SlotFlags, 4, SpineGpuConstants.SlotSetupSize, "slot flags");
+            Check((uint)SpineGpuSlotFlags.HasDark == 1u, "slot flag has_dark is bit0");
         }
 
         private static void Check(bool cond, string what)
@@ -568,6 +612,37 @@ namespace ZEngine.SpineGpu
         public float Cy1;
         public float Cx2;
         public float Cy2;
+    }
+
+    // 逐槽位 flags（chunk 17 @36）。
+    [Flags]
+    public enum SpineGpuSlotFlags : uint
+    {
+        None = 0,
+        // 这个槽位**有暗色**（tint black）。渲染要不要走双色分支看的是它，
+        // 不是"dark 是否全 0" —— 3.7 的判据是 `读到的 int32 != -1`，
+        // 0x00000000（纯黑）照样是"有暗色"。
+        HasDark = 1u << 0,
+    }
+
+    // 槽位 setup（chunk 17，40 B/条）。下标 = header.slot_count 的序
+    // = chunk 1 里槽位名的序号 = 时间轴 Target（attachment / color / twoColor）
+    // 引用的同一个下标空间。三处必须同一个下标空间 —— 分叉了不报错，
+    // 只是颜色 / 附件挂到别的槽位上。
+    public sealed class SpineGpuSlot
+    {
+        public float ColorR = 1.0f;
+        public float ColorG = 1.0f;
+        public float ColorB = 1.0f;
+        public float ColorA = 1.0f;      // 默认 (1,1,1,1)（SlotData.cpp:39）
+        public float DarkR;
+        public float DarkG;
+        public float DarkB;
+        public float DarkA;              // 默认 (0,0,0,0)（SlotData.cpp:40）
+        // setup 附件名在 chunk 1 里的字节偏移；NoAttachmentName = 空名（默认不挂附件）。
+        // attachment 时间轴在 time < frames[0] 时复位到它（AttachmentTimeline.cpp:65-68）。
+        public uint SetupAttachmentNameOffset = SpineGpuConstants.NoAttachmentName;
+        public SpineGpuSlotFlags Flags = SpineGpuSlotFlags.None;
     }
 
     public class SpineGpuContainerException : Exception

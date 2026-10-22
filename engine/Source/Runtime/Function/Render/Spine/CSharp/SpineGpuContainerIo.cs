@@ -5,9 +5,10 @@
 // 三条容易漏、漏了就静默错的规矩：
 //   1. **chunk 按下标找会错位**（v2 → v3 重排过号）⇒ 只能按 id 找。
 //   2. chunk 在文件里的**顺序不是 id 顺序**：写端按
-//      1,2,10,11,12,13,14,15,16,3,21,22,4,5,9,6,7,8 追加
-//      （v9 的动画块 11-16 紧跟骨骼 setup；影响流紧跟顶点块；9 夹在 5 与 6 之间，
-//      是历史顺序），C# 必须照抄，否则字节对不上。
+//      1,2,10,11,12,13,14,15,16,17,3,21,22,4,5,9,6,7,8 追加
+//      （v9 的动画块 11-16 紧跟骨骼 setup，v10 的槽位 setup 17 紧跟动画块；
+//      影响流紧跟顶点块；9 夹在 5 与 6 之间，是历史顺序），
+//      C# 必须照抄，否则字节对不上。
 //   3. 顶点 / UV chunk 的起点要 **8 B 对齐**（ByteAddressBuffer::Load2 的前提），
 //      其余 4 B 对齐。对齐产生的空档必须填 0 —— 不填就是"未初始化填充"，
 //      跨语言一比对就露。
@@ -573,7 +574,61 @@ namespace ZEngine.SpineGpu
                 attachmentCount = (int)n;
             }
 
-            // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名 → 动画名 → 动画附件名 ----
+            // ---- 槽位 setup（chunk 17，v10）----
+            // ⚠️ "chunk 不存在"本身**不**报错（v9 及更早的容器没有它），但"存在而条数
+            //    不等于 header.slot_count"必须报错：少一条 ⇒ 后面的槽位读到别人的颜色，
+            //    而"颜色略偏"是那种跑起来才发现、且查不出来的错。
+            // 字符串块的大小要在**读 chunk 17 之前**拿到：槽位的 setup 附件名偏移
+            // 必须落在它里面，而字符串块是在槽位块之后才被切分的。
+            TryGet(byId, (uint)SpineGpuChunkId.Strings, out uint _, out uint stsAll);
+            if (TryGet(byId, (uint)SpineGpuChunkId.SlotSetup, out uint sso, out uint sss))
+            {
+                if (sss % SpineGpuConstants.SlotSetupSize != 0)
+                {
+                    throw new SpineGpuContainerException("container: slot_setup 大小不是 " +
+                        SpineGpuConstants.SlotSetupSize + " B 的整数倍（一条是 40 B）");
+                }
+                uint n = sss / SpineGpuConstants.SlotSetupSize;
+                if (n != h.SlotCount)
+                {
+                    throw new SpineGpuContainerException("container: slot_setup 有 " + n +
+                        " 条，但 header.slot_count 是 " + h.SlotCount);
+                }
+                for (uint i = 0; i < n; ++i)
+                {
+                    int p = (int)(sso + i * SpineGpuConstants.SlotSetupSize);
+                    var s = new SpineGpuSlot
+                    {
+                        ColorR = ReadF32(data, p + SpineGpuOffsets.SlotColorR),
+                        ColorG = ReadF32(data, p + SpineGpuOffsets.SlotColorG),
+                        ColorB = ReadF32(data, p + SpineGpuOffsets.SlotColorB),
+                        ColorA = ReadF32(data, p + SpineGpuOffsets.SlotColorA),
+                        DarkR = ReadF32(data, p + SpineGpuOffsets.SlotDarkR),
+                        DarkG = ReadF32(data, p + SpineGpuOffsets.SlotDarkG),
+                        DarkB = ReadF32(data, p + SpineGpuOffsets.SlotDarkB),
+                        DarkA = ReadF32(data, p + SpineGpuOffsets.SlotDarkA),
+                        SetupAttachmentNameOffset = ReadU32(data, p + SpineGpuOffsets.SlotSetupAttachmentNameOffset),
+                        Flags = (SpineGpuSlotFlags)ReadU32(data, p + SpineGpuOffsets.SlotFlags),
+                    };
+                    // setup 附件名偏移必须落在字符串块里；NoAttachmentName = "没挂附件"。
+                    if (s.SetupAttachmentNameOffset != SpineGpuConstants.NoAttachmentName &&
+                        (!byId.ContainsKey((uint)SpineGpuChunkId.Strings) ||
+                         s.SetupAttachmentNameOffset >= stsAll))
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 个槽位的 setup 附件名偏移 " +
+                            s.SetupAttachmentNameOffset + " 超出字符串块");
+                    }
+                    // 已知位之外的 flag 必须清零 —— 留着脏字节会让跨语言逐字节对拍对不上。
+                    if ((s.Flags & ~SpineGpuSlotFlags.HasDark) != 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 个槽位的 flags 有未知位（" +
+                            s.Flags + "，目前只有 bit0 = has_dark）");
+                    }
+                    asset.Slots.Add(s);
+                }
+            }
+
+            // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 槽位 setup 附件名 → 附件名 → 图集页名 → 动画名 → 动画附件名 ----
             if (TryGet(byId, (uint)SpineGpuChunkId.Strings, out uint sto, out uint sts))
             {
                 var all = SplitCStrings(data, (int)sto, (int)sts);
@@ -581,8 +636,16 @@ namespace ZEngine.SpineGpu
                 Take(all, h.BoneCount, asset.BoneNames, ref i);
                 Take(all, h.SkinCount, asset.SkinNames, ref i);
                 Take(all, h.SlotCount, asset.SlotNames, ref i);
+                Take(all, h.SlotCount, asset.SlotSetupAttachmentNames, ref i);
                 Take(all, (uint)attachmentCount, asset.AttachmentNames, ref i);
                 Take(all, h.AtlasPageCount, asset.AtlasPageNames, ref i);
+                // 槽位 setup 附件名是 chunk 17 的复位基线 ⇒ 少一条就会让后面的槽位
+                // 挂上别人的附件名（不报错，只是"这个槽位画错了图"）。
+                if (asset.SlotSetupAttachmentNames.Count != h.SlotCount)
+                {
+                    throw new SpineGpuContainerException("container: 槽位 setup 附件名只有 " +
+                        asset.SlotSetupAttachmentNames.Count + " 条，但 header.slot_count 是 " + h.SlotCount);
+                }
                 // 动画名：数量 = chunk 11 的条目数（header 里没有 anim_count 的位置 ——
                 // 64 B 的 header 早就排满了，而定长块的大小本身就是计数）。
                 Take(all, (uint)asset.Anims.Count, asset.AnimNames, ref i);
@@ -731,6 +794,29 @@ namespace ZEngine.SpineGpu
                 var b = new byte[asset.TimelinePayload.Length];
                 Buffer.BlockCopy(asset.TimelinePayload, 0, b, 0, asset.TimelinePayload.Length);
                 Add((uint)SpineGpuChunkId.TimelinePayload, b, A4);
+            }
+
+            // ---- v10：槽位 setup（id 17，40 B/槽），紧跟动画块后面 ----
+            // 落盘顺序必须与 C++ 一致（1,2,10,11,12,13,14,15,16,17,3,21,22,4,5,9,6,7,8）。
+            if (asset.Slots.Count > 0)
+            {
+                var b = new byte[asset.Slots.Count * (int)SpineGpuConstants.SlotSetupSize];
+                for (int i = 0; i < asset.Slots.Count; ++i)
+                {
+                    var s = asset.Slots[i];
+                    int o = i * (int)SpineGpuConstants.SlotSetupSize;
+                    WriteF32(b, o + SpineGpuOffsets.SlotColorR, s.ColorR);
+                    WriteF32(b, o + SpineGpuOffsets.SlotColorG, s.ColorG);
+                    WriteF32(b, o + SpineGpuOffsets.SlotColorB, s.ColorB);
+                    WriteF32(b, o + SpineGpuOffsets.SlotColorA, s.ColorA);
+                    WriteF32(b, o + SpineGpuOffsets.SlotDarkR, s.DarkR);
+                    WriteF32(b, o + SpineGpuOffsets.SlotDarkG, s.DarkG);
+                    WriteF32(b, o + SpineGpuOffsets.SlotDarkB, s.DarkB);
+                    WriteF32(b, o + SpineGpuOffsets.SlotDarkA, s.DarkA);
+                    WriteU32(b, o + SpineGpuOffsets.SlotSetupAttachmentNameOffset, s.SetupAttachmentNameOffset);
+                    WriteU32(b, o + SpineGpuOffsets.SlotFlags, (uint)s.Flags);
+                }
+                Add((uint)SpineGpuChunkId.SlotSetup, b, A4);
             }
 
             Add((uint)SpineGpuChunkId.VertexBuffer, asset.VertexBuffer, A8);
@@ -926,6 +1012,8 @@ namespace ZEngine.SpineGpu
             Put(a.BoneNames);
             Put(a.SkinNames);
             Put(a.SlotNames);
+            // v10：槽位 setup 附件名，紧跟槽位名（条数 = slot_count，空名也占一条）。
+            Put(a.SlotSetupAttachmentNames);
             Put(a.AttachmentNames);
             Put(a.AtlasPageNames);
             // v9：动画名 → 动画附件名，**排在最后** —— 前五组的数量各自能从

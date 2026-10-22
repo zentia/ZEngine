@@ -86,7 +86,11 @@ namespace ZEngine.SpineGpu.Test
 
                 // ---- 基本自洽 ----
                 Check(a.Header.Magic == SpineGpuConstants.Magic, "魔数是 'ZSPG'");
-                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 9");
+                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 10");
+                // v10：槽位 setup 是 chunk 17，条数必须 = header.slot_count。
+                // "chunk 不存在"本身不报错，少了这等式读端会得到"所有槽位纯白"
+                // —— 而纯白与 setup 白在多数资产上完全看不出区别（坑与 chunk 10 同类）。
+                Check((uint)a.Slots.Count == a.Header.SlotCount, "槽位 setup 条数与 header 一致");
                 Check(a.DrawItems.Count == a.Header.DrawItemCount, "绘制项数与 header 一致");
                 Check(a.BoneNames.Count == a.Header.BoneCount, "骨骼名数与 header 一致");
                 // v8：骨骼 setup 必须落盘且条数与 header 一致 —— "chunk 不存在"本身不报错，
@@ -243,6 +247,35 @@ namespace ZEngine.SpineGpu.Test
                     Check(p1 == SpineGpuConstants.NoAttachmentName,
                           "attachment 第 1 帧是空名 ⇒ NoAttachmentName（**不是** 0）");
                 }
+                // ---- 槽位 setup（chunk 17，v10）----
+                // 逐字段比，不只是比条数：把 color 与 dark 的偏移对调，字节照样自洽
+                // （读写共用同一组常量 ⇒ round-trip 抓不到"解读"漂，只有语义断言能抓到）。
+                // ⚠️ 夹具的 s1 有显式色 + 暗色 ⇒ 断言必须**非零**：
+                //    "读回来还是纯白"这种断言在"写端根本没写颜色"时也会通过。
+                Check(b.SlotSetupAttachmentNames.Count == 2 &&
+                      b.SlotSetupAttachmentNames[0] == "quad" && b.SlotSetupAttachmentNames[1] == "mesh",
+                      "槽位 setup 附件名是 quad / mesh（attachment 时间轴的复位基线）");
+                if (b.Slots.Count == 2)
+                {
+                    var s0 = b.Slots[0];
+                    var s1 = b.Slots[1];
+                    Check(Near(s0.ColorR, 1.0f) && Near(s0.ColorA, 1.0f) && Near(s0.DarkA, 0.0f) &&
+                          s0.Flags == SpineGpuSlotFlags.None,
+                          "s0 是默认（纯白 / 无暗色 / flags=0）");
+                    Check(s1.Flags == SpineGpuSlotFlags.HasDark, "s1 的 flags 带 has_dark");
+                    Check(Near(s1.ColorR, 0x80 / 255.0f) && Near(s1.ColorG, 0xC0 / 255.0f) &&
+                          Near(s1.ColorB, 1.0f) && Near(s1.ColorA, 0x40 / 255.0f),
+                          "s1 的 setup 色 = 80c0ff40（**不是**默认纯白）");
+                    Check(Near(s1.DarkR, 0x20 / 255.0f) && Near(s1.DarkG, 0x40 / 255.0f) &&
+                          Near(s1.DarkB, 0x60 / 255.0f) && Near(s1.DarkA, 1.0f),
+                          "s1 的 setup 暗色 = 204060 且 alpha **恒 1**（参考实现写死）");
+                    // setup 附件名偏移必须落在**第 4 组**字符串里 —— 指到前面几组（比如槽位名）
+                    // 不报错，只是解算时挂了个错名字的附件。
+                    Check(b.Slots[0].SetupAttachmentNameOffset == ExpectedSetupAttachmentOffset(b, 0) &&
+                          b.Slots[1].SetupAttachmentNameOffset == ExpectedSetupAttachmentOffset(b, 1),
+                          "两个槽位的 setup 附件名偏移落在字符串表第 4 组的对应条目上");
+                }
+
                 bool noDeformOrDrawOrder = true;
                 foreach (var t in b.Timelines)
                 {
@@ -381,9 +414,10 @@ namespace ZEngine.SpineGpu.Test
 
             // 版本改一改 ⇒ 必须明确拒绝，不做静默兼容（规格 §11）
             _prefix = "[负向] ";
-            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v9 是当前版本，
-            //    所以"未来"是 10，而 8 已经变成"旧容器"了（没有 chunk 11-16）。
-            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 10), "版本改成 10（未来容器）⇒ 拒绝");
+            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v10 是当前版本，
+            //    所以"未来"是 11，而 9 已经变成"旧容器"了（没有 chunk 17）。
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 11), "版本改成 11（未来容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 9), "版本改成 9（v9 旧容器：没有 chunk 17）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 8), "版本改成 8（v8 旧容器：没有 chunk 11-16）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 7), "版本改成 7（v7 旧容器：没有 chunk 10）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 6), "版本改成 6（v6 旧容器）⇒ 拒绝");
@@ -459,8 +493,48 @@ namespace ZEngine.SpineGpu.Test
                     Rejects(Mutate(baseBytes, atTl + SpineGpuOffsets.TlFrameCount, 0),
                             "时间轴 0 帧 ⇒ 拒绝（参考实现在这里是负下标读）");
                 }
+
+                // ---- v10 槽位块：越界 / 脏位必须被**读端**挡住 ----
+                _prefix = "[负向/槽位] ";
+                int atSs = FindChunkSizeField(baseBytes, (uint)SpineGpuChunkId.SlotSetup);
+                if (atSs >= 0)
+                {
+                    Rejects(Mutate(baseBytes, atSs, ReadU32(baseBytes, atSs) + 1),
+                            "slot_setup 大小 +1 ⇒ 拒绝（40 B 的整数倍）");
+                    // 条数与 header 对不上 ⇒ 拒绝（"chunk 缺了"本身不报错，
+                    // 只有这个等式能挡住"后面的槽位读到别人的颜色"）
+                    Rejects(Mutate(baseBytes, atSs, ReadU32(baseBytes, atSs) - SpineGpuConstants.SlotSetupSize),
+                            "slot_setup 少一条 ⇒ 拒绝（条数必须 = header.slot_count）");
+                }
+                int atSsData = FindChunk(baseBytes, (uint)SpineGpuChunkId.SlotSetup);
+                if (atSsData >= 0)
+                {
+                    Rejects(Mutate(baseBytes, atSsData + SpineGpuOffsets.SlotFlags, 2u),
+                            "槽位 flags 有未知位 ⇒ 拒绝（留着脏字节会让跨语言逐字节对拍对不上）");
+                    Rejects(Mutate(baseBytes, atSsData + SpineGpuOffsets.SlotSetupAttachmentNameOffset, 0xFFFFFFF0u),
+                            "setup 附件名偏移越界 ⇒ 拒绝（指到别的组不报错，只是挂错附件）");
+                }
             }
             _prefix = "";
+        }
+
+        // 字符串表第 4 组（槽位 setup 附件名）第 index 条的期望字节偏移。
+        // **手算**一遍而不是直接信 offset —— 这样"偏移指到槽位名那组"才会被测出来
+        // （指错组不报错，只是 attachment 时间轴复位到一个错名字的附件上）。
+        // 夹具全是 ASCII ⇒ C# 的 char 数与 UTF-8 字节数相同；非 ASCII 名要按字节算。
+        private static uint ExpectedSetupAttachmentOffset(SpineGpuAsset a, int index)
+        {
+            uint off = 0;
+            foreach (string s in a.BoneNames) off += (uint)(s.Length + 1);
+            foreach (string s in a.SkinNames) off += (uint)(s.Length + 1);
+            foreach (string s in a.SlotNames) off += (uint)(s.Length + 1);
+            for (int i = 0; i < index; ++i) off += (uint)(a.SlotSetupAttachmentNames[i].Length + 1);
+            return off;
+        }
+
+        private static bool Near(float got, float want)
+        {
+            return Math.Abs(got - want) < 1e-6f;
         }
 
         private static int FindChunk(byte[] data, uint id)

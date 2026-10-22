@@ -122,11 +122,29 @@ struct SpineSourceBone
     SpineTransformMode transform_mode = SpineTransformMode::kNormal;
 };
 
+// 槽位 setup。字段与 `SlotData.cpp:39-41` 的默认构造一一对应：
+//   `_color(1,1,1,1)`、`_darkColor(0,0,0,0)`、`_hasDarkColor(false)`。
+//
+// ⚠️ `dark_a` **恒为 1**（只要这个槽位有暗色）—— 参考实现写死的：
+//   * 二进制 `SkeletonBinary.cpp:188`：`getDarkColor().set(r/255, g/255, b/255, 1)`
+//   * json    `SkeletonJson.cpp:230` ：`darkColor.a = 1`
+//   二进制里读进来的第 4 个字节**只用来判"有没有暗色"**（3.8 判据：四分量不全为 0xff），
+//   从不作为 alpha 落地。照抄这个不对称，别把它当"读漏了一个字节"去补。
+//
+// ⚠️ json 的 dark 只有 **rgb 三个分量**（`SkeletonJson.cpp:227-230` 只读 0/1/2），
+//    与动画帧里 twoColor 的 dark 一样（`SkeletonJson.cpp:863-866`）。
 struct SpineSourceSlot
 {
     std::string name;
     int bone_index = -1;
     bool has_dark = false;
+    float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    float dark[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    // setup 附件名（`SlotData::_attachmentName`）。空串 = 这个槽位默认不挂附件。
+    // ⚠️ 它是 attachment 时间轴的**基线**：`AttachmentTimeline::apply` 在
+    //    `time < frames[0]` 或 direction==Out 时把槽位复位到它 —— 没有它，
+    //    "动画开始前该挂什么"就无从回答（默认成"什么都不挂"会静默少画东西）。
+    std::string attachment_name;
 };
 
 // **没有绘制项**的附件：boundingbox / path / point / clipping。
@@ -412,6 +430,12 @@ struct SpineGpuAsset
     std::vector<SpineDrawItem> draw_items;
     std::vector<uint16_t> slot_bone;          // 每槽位的骨骼下标（rigid 用）
 
+    // 槽位 setup（chunk 17，40 B/槽）。下标 = header.slot_count 的序
+    // = chunk 1 里槽位名的序号 = 时间轴 `target`（attachment / color / twoColor）
+    // 引用的同一个下标空间。
+    // ⚠️ 三处必须同一个下标空间 —— 分叉了不报错，只是颜色/附件挂到别的槽位上。
+    std::vector<SpineGpuSlot> slots;
+
     // 骨骼 setup（chunk 10，36 B/骨）。下标 = header.bone_count 的序，
     // 也 = chunk 1 里骨骼名的序号，也 = 影响流里 bone_idx 引用的同一个下标。
     // ⚠️ 三处必须是同一个下标空间 —— 分叉了不报错，只是蒙皮取到别人的骨骼。
@@ -450,6 +474,11 @@ struct SpineGpuAsset
     std::vector<SpineGpuBezier> beziers;
     std::vector<uint8_t> timeline_payload;
 
+    // 槽位的 setup 附件名（chunk 1，紧跟槽位名之后；条数 = header.slot_count）。
+    // 空串 = 这个槽位默认不挂附件 ⇒ chunk 17 里写 `kNoAttachmentName`。
+    // 这是 attachment 时间轴的**复位基线**（`AttachmentTimeline.cpp:65-68`）。
+    std::vector<std::string> slot_setup_attachment_names;
+
     // 动画名（chunk 1，排在槽位名 / 附件名 / 图集页名**之后**）。
     // 数量 = anims.size()，读端按 chunk 11 的大小反推。
     std::vector<std::string> anim_names;
@@ -467,4 +496,14 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
 // 一部分，C# 端要照抄，放在"布局的唯一权威定义"里才不会两边漂移。
 
 SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector<uint8_t>& out);
+
+// 字符串表的落盘顺序与偏移计算。**只有这一处**实现 —— Bake 拿它算 chunk 11/17 的
+// name_offset，Write 拿它拼 chunk 1 的字节，解算器拿它把偏移翻译回字符串。
+// 三处共用一份实现，才不会出现"写端按 A 顺序、Bake 按 B 顺序算偏移"的静默错位。
+//
+// 顺序：骨骼 → 皮肤 → 槽位 → 槽位 setup 附件名 → 附件 → 图集页 → 动画名 → 动画附件名。
+void BuildSpineStringTable(const SpineGpuAsset& a, std::vector<uint8_t>& blob,
+                           std::vector<uint32_t>& slot_setup_attachment_offsets,
+                           std::vector<uint32_t>& anim_name_offsets,
+                           std::vector<uint32_t>& anim_attachment_offsets);
 SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGpuAsset& out);

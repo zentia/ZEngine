@@ -43,13 +43,21 @@ namespace ZEngine.SpineGpu
         // 也 = 骨骼名的序号，也 = 影响流 bone_idx 引用的同一个下标 —— 三处必须同一个空间。
         public List<SpineGpuBone> Bones = new List<SpineGpuBone>();
 
+        // 槽位 setup（chunk 17，40 B/槽）。下标 = header.slot_count 的序
+        // = 槽位名的序号 = 时间轴 Target（attachment / color / twoColor）的同一个空间。
+        // ⚠️ 颜色**必须**在容器里：时间轴写的是绝对颜色，"没被命中"的槽位停在 setup 色，
+        //    缺了它就只能默认纯白 —— 而纯白与 setup 白在多数资产上完全看不出区别。
+        public List<SpineGpuSlot> Slots = new List<SpineGpuSlot>();
+
         // 字符串表（chunk 1）。落盘顺序固定：
-        // 骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名 → **动画名** → **动画附件名**，
-        // 每项 '\0' 结尾。读回时按 bone_count / skin_count / slot_count / 附件记录数 /
+        // 骨骼名 → 皮肤名 → 槽位名 → **槽位 setup 附件名** → 附件名 → 图集页名 →
+        // **动画名** → **动画附件名**，每项 '\0' 结尾。
+        // 读回时按 bone_count / skin_count / slot_count / slot_count / 附件记录数 /
         // 动画数切分；最后一组（动画附件名）没有计数，只按偏移访问。
         public List<string> BoneNames = new List<string>();
         public List<string> SkinNames = new List<string>();
         public List<string> SlotNames = new List<string>();
+        public List<string> SlotSetupAttachmentNames = new List<string>();
         public List<string> AttachmentNames = new List<string>();
         public List<string> AtlasPageNames = new List<string>();
         public List<string> AnimNames = new List<string>();

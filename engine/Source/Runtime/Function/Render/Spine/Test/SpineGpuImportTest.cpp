@@ -12,9 +12,11 @@
 //   cmake --build build --target SpineGpuImportTest --config Debug
 // =====================================================================
 
+#include "Runtime/Function/Render/Spine/SpineGpuAnimSolver.h"
 #include "Runtime/Function/Render/Spine/SpineGpuFormat.h"
 #include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
 
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
@@ -84,6 +86,10 @@ const char* kAtlas = "page0.png\n"
 // ⚠️ curve **只能**写在非最后一帧上：参考实现把每帧的 curve 都写进只含
 //    frameCount-1 段的数组里（Release 下是越界写）⇒ 夹具里最后一帧不写 curve。
 // ⚠️ 夹具是**真 JSON**，里面不能写 `//` 注释（解析器不开 comment 开关）。
+// ⚠️ 槽位 s1 带**非默认**的 color 与 dark —— chunk 17 的往返断言必须有一条非默认：
+//    "全是默认色"的往返什么也挡不住（纯白读回来还是纯白，纯白与 setup 白看不出区别）。
+//    dark 只写 6 位十六进制：json 里的 dark 只有 **rgb** 三个分量
+//    （SkeletonJson.cpp:227-230），alpha 参考实现写死 1（:230）。
 const char* kSkeleton = R"({
   "skeleton": { "spine": "3.8.99" },
   "bones": [
@@ -95,7 +101,7 @@ const char* kSkeleton = R"({
   ],
   "slots": [
     { "name": "s0", "bone": "root", "attachment": "quad" },
-    { "name": "s1", "bone": "hip", "attachment": "mesh" }
+    { "name": "s1", "bone": "hip", "attachment": "mesh", "color": "80c0ff40", "dark": "204060" }
   ],
   "skins": {
     "default": {
@@ -280,7 +286,11 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
                                       int clip_end_slot = 2, int deform_slot = 1,
                       bool nested_clip = false, int nested_clip_end_slot = 3,
                       bool clip_weighted = false, bool with_path = false,
-                      const std::string& deform_name = "mesh", bool with_animation = false)
+                      const std::string& deform_name = "mesh", bool with_animation = false,
+                      // v10：槽位 s1 带**非默认**的 color 与 dark（与 json 夹具 kSkeleton 对齐）。
+                      // 默认 false —— 夹具的颜色会进 header.flags（kUsesTintBlack），
+                      // 而裁剪 / deform 那几组用例要比"skel↔json flags 相同"，不能随手开。
+                      bool slot_colors = false)
 {
     SkelWriter w;
 
@@ -367,8 +377,20 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
     }
     w.Str("s" + std::to_string(mesh_slot));
     w.Varint(1);            // bone = hip
-    w.ColorWhite();
-    w.ColorWhite();
+    if (slot_colors)
+    {
+        // ⚠️ 与 json 夹具的 `"color": "80c0ff40"` 对齐（同样的 4 个字节 / 255.0f）。
+        w.Color(0x80C0FF40u);
+        // ⚠️ dark 的**第 4 个字节只用来判"有没有暗色"**（3.8：四分量不全为 0xff），
+        //    从不作为 alpha 落地（参考实现写死 1，`SkeletonBinary.cpp:188`）。
+        //    ⇒ 这里写 0xFF 是为了让 has_dark 成立；它的值不进容器。
+        w.Color(0x204060FFu);
+    }
+    else
+    {
+        w.ColorWhite();
+        w.ColorWhite();
+    }
     w.Str("mesh");
     w.Varint(0);
     if (with_clipping)
@@ -626,11 +648,20 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         }
 
         // ---- 绘制顺序 ----
-        w.Varint(with_draw_order ? 1 : 0);
+        // 两帧：第一帧 offsetCount=0（⇒ 复位成 setup 序），第二帧把 s0 往后挪一位
+        // （⇒ 两个槽位**对调**）。第二帧是 S3 的 drawOrder 重建算法唯一有区分力的输入：
+        // 重建不是"把槽位挪到 index+offset"，未列出的槽位收进 `unchanged` 后要
+        // **从数组末尾往前**填（SkeletonBinary.cpp:1063-1070）—— 只有 2 个槽位时
+        // 恰好能把这个"从后往前"暴露出来。
+        w.Varint(with_draw_order ? 2 : 0);
         if (with_draw_order)
         {
             w.F(0.0f);          // time
-            w.Varint(0);        // offsetCount
+            w.Varint(0);        // offsetCount = 0 ⇒ 这一帧复位成 setup 序
+            w.F(0.5f);          // time
+            w.Varint(1);        // offsetCount = 1
+            w.Varint(0);        // slotIndex = s0
+            w.Varint(1);        // offset = +1（**有符号** varint，这里取正）
         }
         w.Varint(0);        // 事件时间轴
     }
@@ -1078,7 +1109,7 @@ bool DumpContainers(const SpineAtlas& atlas, const std::string& dir)
     // 否则两边烘焙出的容器会在 chunk 11-16 上分叉，而"少几个 chunk"不报错。
     cases.push_back({"baseline", kSkeleton,
                      BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, false, true, 10, false,
-                                      2, 1, false, 3, false, false, "mesh", true)});
+                                      2, 1, false, 3, false, false, "mesh", true, true)});
     cases.push_back({"linked_mesh", kSkeletonLinked, BuildSkelFixture(false, true)});
     cases.push_back({"two_skins", kSkeletonTwoSkins, BuildSkelFixture(false, false, "3.8.99", false, "mesh", true)});
     // kSkeletonDeform 带 %DEFORMFIELD% 占位符 ⇒ 只落 .skel（json 那条路径在套件里已经测过）
@@ -1591,6 +1622,7 @@ int main(int argc, char** argv)
     const long long want_payload =
         CStrBytes(asset.bone_names) + CStrBytes(asset.skin_names) + CStrBytes(asset.slot_names) +
         CStrBytes(asset.attachment_names) + CStrBytes(asset.atlas_page_names) +
+        CStrBytes(asset.slot_setup_attachment_names) +                                // id=1（v10 组）
         CStrBytes(asset.anim_names) + CStrBytes(asset.anim_attachment_names) +        // id=1 strings
         static_cast<long long>(asset.slot_bone.size()) * 2LL +                       // id=2
         static_cast<long long>(asset.bones.size()) *
@@ -1604,6 +1636,8 @@ int main(int argc, char** argv)
         static_cast<long long>(asset.beziers.size()) *
             static_cast<long long>(sizeof(SpineGpuBezier)) +                          // id=15（16 B/段）
         static_cast<long long>(asset.timeline_payload.size()) +                       // id=16（变长净载荷）
+        static_cast<long long>(asset.slots.size()) *
+            static_cast<long long>(sizeof(SpineGpuSlot)) +                             // id=17（40 B/槽）
         static_cast<long long>(asset.vertex_buffer.size()) +                         // id=3
         static_cast<long long>(asset.influence_bind.size()) * 4LL +                  // id=21
         static_cast<long long>(asset.influence_bone.size()) *
@@ -1622,9 +1656,9 @@ int main(int argc, char** argv)
                (static_cast<uint32_t>(bytes[off + 2]) << 16) | (static_cast<uint32_t>(bytes[off + 3]) << 24);
     };
     const uint32_t nchunk = RdU32(offsetof(SpineGpuHeader, chunk_count));
-    CheckEq(static_cast<long long>(nchunk), 17,
-            "字节流里 chunk_count = 17（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10，"
-            "v9 多了动画 11-16）");
+    CheckEq(static_cast<long long>(nchunk), 18,
+            "字节流里 chunk_count = 18（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10，"
+            "v9 多了动画 11-16，v10 多了槽位 setup 17）");
 
     long long payload_sum = 0;
     long long last_end = 0;
@@ -1638,9 +1672,9 @@ int main(int argc, char** argv)
         const uint32_t sz = RdU32(at + 8);
         // ⚠️ 顺序**不是** id 升序：影响流（21 / 22）紧跟顶点块，9（裁剪）夹在 5 与 6 之间。
         // 这是历史顺序，不是设计 —— 但 C# 必须照抄，否则跨语言对拍会红。
-        const uint32_t kExpectedIds[] = {1, 2, 10, 11, 12, 13, 14, 15, 16, 3, 21, 22, 4, 5, 6, 7, 8};
+        const uint32_t kExpectedIds[] = {1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 3, 21, 22, 4, 5, 6, 7, 8};
         CheckEq(static_cast<long long>(id), static_cast<long long>(kExpectedIds[i]),
-                "chunk 表: id 顺序 = 1,2,10,11,12,13,14,15,16,3,21,22,4,5,6,7,8");
+                "chunk 表: id 顺序 = 1,2,10,11,12,13,14,15,16,17,3,21,22,4,5,6,7,8");
         CheckEq(static_cast<long long>(off % SpineGpuConstants::kChunkAlignment), 0, "chunk 表: 起点 4 B 对齐");
         if (id == static_cast<uint32_t>(SpineGpuChunkId::kChunkVertexBuffer) ||
             id == static_cast<uint32_t>(SpineGpuChunkId::kChunkInfluenceBind) ||
@@ -1683,7 +1717,7 @@ int main(int argc, char** argv)
     }
 
     CheckEq(back.header.magic, SpineGpuConstants::kMagic, "往返: magic");
-    CheckEq(back.header.chunk_count, 17, "往返: chunk_count = 17（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10，v9 多了动画 11-16）");
+    CheckEq(back.header.chunk_count, 18, "往返: chunk_count = 18（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10，v9 多了动画 11-16，v10 多了槽位 setup 17）");
     CheckEq(back.header.bone_count, asset.header.bone_count, "往返: bone_count");
     CheckEq(back.header.slot_count, asset.header.slot_count, "往返: slot_count");
     CheckEq(back.header.draw_item_count, asset.header.draw_item_count, "往返: draw_item_count");
@@ -1739,9 +1773,218 @@ int main(int argc, char** argv)
     Check(back.curve_types == asset.curve_types, "往返: 曲线类型逐段一致");
     Check(back.beziers == asset.beziers, "往返: bezier 控制点逐值一致");
     Check(back.timeline_payload == asset.timeline_payload, "往返: 变长载荷逐字节一致");
-    Check(back.anim_names == asset.anim_names, "往返: 动画名（字符串表第 6 组）");
-    Check(back.anim_attachment_names == asset.anim_attachment_names, "往返: 动画附件名（第 7 组）");
+    Check(back.anim_names == asset.anim_names, "往返: 动画名（字符串表第 7 组）");
+    Check(back.anim_attachment_names == asset.anim_attachment_names, "往返: 动画附件名（第 8 组）");
+
+    // ---- 槽位 setup 往返（chunk 17）----
+    // ⚠️ 夹具里槽位 0 是**默认色**、槽位 1 起才带显式色与暗色 ——
+    //    "全是默认值"的往返什么也挡不住（纯白读回来还是纯白），必须有一条非默认。
+    CheckEq(static_cast<long long>(back.slots.size()), static_cast<long long>(asset.slots.size()),
+            "往返: 槽位 setup 条数");
+    Check(back.slots == asset.slots, "往返: 槽位 setup 逐字节一致（含 flags）");
+    Check(back.slot_setup_attachment_names == asset.slot_setup_attachment_names,
+          "往返: 槽位 setup 附件名（字符串表第 4 组）");
+    // ⚠️ 夹具的 s1 有显式颜色 + 暗色 ⇒ 断言必须**非零**：
+    //    "读回来还是纯白"这种断言在"写端根本没写颜色"时也会通过。
+    CheckEq(static_cast<long long>(asset.slots.size()), 2LL, "往返: 槽位数 = 2");
+    if (asset.slots.size() == 2)
+    {
+        Check(asset.slots[0].color_r == 1.0f && asset.slots[0].color_a == 1.0f &&
+                  asset.slots[0].dark_a == 0.0f && asset.slots[0].flags == 0u,
+              "chunk 17: s0 是默认（纯白 / 无暗色 / flags=0）");
+        Check(asset.slots[1].flags == SpineGpuSlotFlags::kSlotFlagHasDark, "chunk 17: s1 的 flags 带 has_dark");
+        Check(std::fabs(asset.slots[1].color_r - 0x80 / 255.0f) < 1e-6f &&
+                  std::fabs(asset.slots[1].color_g - 0xC0 / 255.0f) < 1e-6f &&
+                  std::fabs(asset.slots[1].color_b - 1.0f) < 1e-6f &&
+                  std::fabs(asset.slots[1].color_a - 0x40 / 255.0f) < 1e-6f,
+              "chunk 17: s1 的 setup 色 = 80c0ff40（**不是**默认纯白）");
+        Check(std::fabs(asset.slots[1].dark_r - 0x20 / 255.0f) < 1e-6f &&
+                  std::fabs(asset.slots[1].dark_g - 0x40 / 255.0f) < 1e-6f &&
+                  std::fabs(asset.slots[1].dark_b - 0x60 / 255.0f) < 1e-6f &&
+                  std::fabs(asset.slots[1].dark_a - 1.0f) < 1e-6f,
+              "chunk 17: s1 的 setup 暗色 = 204060 + alpha **恒 1**（参考实现写死）");
+        // setup 附件名偏移必须指向真名字（不是 0xFFFFFFFF、也不是错位到别人身上）
+        const std::vector<uint8_t> blob = BuildSpineStringBlob(asset);
+        const char* s0_att = SpineGpuStringAt(blob, asset.slots[0].setup_attachment_name_offset);
+        const char* s1_att = SpineGpuStringAt(blob, asset.slots[1].setup_attachment_name_offset);
+        Check(s0_att != nullptr && std::string(s0_att) == "quad",
+              "chunk 17: s0 的 setup 附件名偏移解析出来是 'quad'");
+        Check(s1_att != nullptr && std::string(s1_att) == "mesh",
+              "chunk 17: s1 的 setup 附件名偏移解析出来是 'mesh'");
+    }
     CheckEq(static_cast<long long>(back.anims.size()), 2LL, "往返: 动画数 = 2");
+
+    // =================================================================
+    // S3：槽位解算（color / twoColor / attachment / drawOrder）
+    // -----------------------------------------------------------------
+    // 期望值是**手算**的，不是从实现里抄回来的 —— 只有这样才能抓到"两边一起错"。
+    // 每条都带参考实现的公式出处（doc/GPU_SPINE_V7_ANIMATION.md §7.0.4）：
+    //   * 采样口径 = `Animation::apply(..., alpha=1, MixBlend_First, In)`
+    //     （AnimationState.cpp:388/402），alpha==1 时它就是"先复位 setup 再覆盖"。
+    //   * 帧定位 = `Animation::binarySearch(...)`（Animation.cpp:84-106），
+    //     返回的是**后**一帧 ⇒ 段号 = frame/ENTRIES - 1。
+    //   * 插值参数 = (time - prev) / (cur - prev)，再过 `getCurvePercent()`。
+    // =================================================================
+    {
+        g_prefix = "[S3/解算] ";
+        const std::vector<uint8_t> blob = BuildSpineStringBlob(asset);
+
+        // 夹具里的颜色常量（/255.0f，与十六进制串逐分量对应）
+        const float k80 = 0x80 / 255.0f;   // 0.50196…
+        const float kC0 = 0xC0 / 255.0f;
+        const float k40 = 0x40 / 255.0f;
+        const float k20 = 0x20 / 255.0f;
+        const float k10 = 0x10 / 255.0f;
+        const float k30 = 0x30 / 255.0f;
+        const float k60 = 0x60 / 255.0f;
+        const auto Lerp = [](float a, float b, float t) { return a + (b - a) * t; };
+
+        auto AttName = [&blob](const SpineGpuAsset&, uint32_t off) -> std::string {
+            const char* s = SpineGpuStringAt(blob, off);
+            return (s == nullptr) ? std::string("<none>") : std::string(s);
+        };
+        auto Sample = [&](const SpineGpuAsset& a, uint32_t ai, float t, SpineGpuSlotSampleResult& out) -> bool {
+            const SpineImportResult r = SpineGpuSampleSlots(a, ai, t, out);
+            if (!r.ok)
+            {
+                std::printf("  error: %s\n", r.error.c_str());
+            }
+            Check(r.ok, (std::string("采样 anim ") + std::to_string(ai) + " @ t=" + std::to_string(t) + " 成功").c_str());
+            return r.ok;
+        };
+        auto Near = [](float got, float want) { return std::fabs(got - want) < 1e-5f; };
+        auto Color4 = [&](const float* c, float r, float g, float b, float a) {
+            return Near(c[0], r) && Near(c[1], g) && Near(c[2], b) && Near(c[3], a);
+        };
+
+        SpineGpuSlotSampleResult s;
+        const uint32_t kWalk = 0;
+        const uint32_t kIdle = 1;
+
+        // ---- s0：attachment 时间轴（2 帧：t0 "quad" / t0.5 空名）+ color 时间轴（2 帧 linear）----
+        Check(Sample(asset, kWalk, -1.0f, s), "S3: t=-1 采样成功");
+        if (Sample(asset, kWalk, 0.0f, s))
+        {
+            Check(Color4(s.slots[0].color, 1.0f, 0.0f, 0.0f, 1.0f), "S3: t=0 s0 颜色 = ff0000ff（取帧 0）");
+            Check(AttName(asset, s.slots[0].attachment_name_offset) == "quad", "S3: t=0 s0 挂 'quad'");
+        }
+        if (Sample(asset, kWalk, -1.0f, s))
+        {
+            // `time < frames[0]` ⇒ **保持 setup**（ColorTimeline.cpp:72-81 / AttachmentTimeline.cpp:64-70）
+            Check(Color4(s.slots[0].color, 1.0f, 1.0f, 1.0f, 1.0f), "S3: t<首帧 ⇒ s0 停在 setup 色（纯白）");
+            Check(AttName(asset, s.slots[0].attachment_name_offset) == "quad",
+                  "S3: t<首帧 ⇒ s0 复位到 **setup 附件** 'quad'（不是「隐藏」）");
+        }
+        if (Sample(asset, kWalk, 0.25f, s))
+        {
+            Check(Color4(s.slots[0].color, Lerp(1.0f, 0.0f, 0.25f), Lerp(0.0f, 1.0f, 0.25f), 0.0f,
+                         Lerp(1.0f, k80, 0.25f)),
+                  "S3: t=0.25 s0 颜色 = 线性插值 25%（linear 段，无 curve）");
+            Check(AttName(asset, s.slots[0].attachment_name_offset) == "quad",
+                  "S3: t=0.25 s0 仍是 'quad'（binarySearch 返回后一帧 ⇒ 帧号 = 1-1 = 0）");
+        }
+        if (Sample(asset, kWalk, 0.5f, s))
+        {
+            Check(Color4(s.slots[0].color, 0.5f, 0.5f, 0.0f, Lerp(1.0f, k80, 0.5f)),
+                  "S3: t=0.5 s0 颜色 = 插值 50%");
+            Check(s.slots[0].attachment_name_offset == SpineGpuConstants::kNoAttachmentName,
+                  "S3: t=0.5 s0 **空名** ⇒ 这一帧隐藏（kNoAttachmentName，不是偏移 0）");
+        }
+        if (Sample(asset, kWalk, 1.0f, s))
+        {
+            Check(Color4(s.slots[0].color, 0.0f, 1.0f, 0.0f, k80), "S3: t=1 s0 颜色 = 00ff0080（末帧）");
+            Check(s.slots[0].attachment_name_offset == SpineGpuConstants::kNoAttachmentName,
+                  "S3: t=1 s0 仍隐藏（time >= 末帧 ⇒ 取末帧）");
+        }
+        if (Sample(asset, kWalk, 2.0f, s))
+        {
+            Check(Color4(s.slots[0].color, 0.0f, 1.0f, 0.0f, k80), "S3: t=2（越过末帧）s0 颜色不变");
+        }
+
+        // ---- s1：twoColor 时间轴（2 帧 linear：light ffffffff→808080ff，dark 000000→102030）----
+        if (Sample(asset, kWalk, -1.0f, s))
+        {
+            Check(Color4(s.slots[1].color, k80, kC0, 1.0f, k40), "S3: t<首帧 ⇒ s1 停在 **setup 色** 80c0ff40");
+            Check(Color4(s.slots[1].dark, k20, k40, k60, 1.0f), "S3: t<首帧 ⇒ s1 停在 setup 暗色");
+        }
+        if (Sample(asset, kWalk, 0.0f, s))
+        {
+            Check(Color4(s.slots[1].color, 1.0f, 1.0f, 1.0f, 1.0f), "S3: t=0 s1 light = ffffffff");
+            Check(Color4(s.slots[1].dark, 0.0f, 0.0f, 0.0f, 1.0f),
+                  "S3: t=0 s1 dark = 000000 且 **alpha 恒 1**（TwoColorTimeline.cpp:139）");
+        }
+        if (Sample(asset, kWalk, 0.25f, s))
+        {
+            Check(Color4(s.slots[1].color, Lerp(1.0f, k80, 0.5f), Lerp(1.0f, k80, 0.5f),
+                         Lerp(1.0f, k80, 0.5f), 1.0f),
+                  "S3: t=0.25 s1 light 插值 50%（帧间距 0.5）");
+            Check(Color4(s.slots[1].dark, Lerp(0.0f, k10, 0.5f), Lerp(0.0f, k20, 0.5f),
+                         Lerp(0.0f, k30, 0.5f), 1.0f),
+                  "S3: t=0.25 s1 dark 插值 50%，alpha 仍恒 1（dark 的 alpha 不参与插值）");
+        }
+        if (Sample(asset, kWalk, 0.5f, s))
+        {
+            Check(Color4(s.slots[1].color, k80, k80, k80, 1.0f), "S3: t=0.5 s1 light = 808080ff");
+            Check(Color4(s.slots[1].dark, k10, k20, k30, 1.0f), "S3: t=0.5 s1 dark = 102030");
+        }
+        if (Sample(asset, kWalk, 1.0f, s))
+        {
+            Check(Color4(s.slots[1].color, k80, k80, k80, 1.0f), "S3: t=1 s1 停在末帧（time >= 末帧）");
+        }
+
+        // ---- drawOrder：夹具没有这条时间轴 ⇒ 恒为 setup 序 ----
+        if (Sample(asset, kWalk, 0.25f, s))
+        {
+            Check(s.draw_order.size() == 2 && s.draw_order[0] == 0 && s.draw_order[1] == 1,
+                  "S3: 没有 drawOrder 时间轴 ⇒ 绘制顺序 = setup 序 0,1");
+        }
+
+        // ---- idle（只有一条骨骼 rotate 时间轴）⇒ 槽位全是 setup ----
+        if (Sample(asset, kIdle, 0.0f, s))
+        {
+            Check(Color4(s.slots[0].color, 1.0f, 1.0f, 1.0f, 1.0f), "S3: idle ⇒ s0 停在 setup 色");
+            Check(Color4(s.slots[1].color, k80, kC0, 1.0f, k40), "S3: idle ⇒ s1 停在 setup 色");
+            Check(AttName(asset, s.slots[0].attachment_name_offset) == "quad" &&
+                      AttName(asset, s.slots[1].attachment_name_offset) == "mesh",
+                  "S3: idle ⇒ 两个槽位都停在 setup 附件");
+        }
+
+        // ---- 读回来的容器必须解算出**同一个结果** ----
+        // 写端对了、读端错了，往返的逐字节断言全都看不出来 —— 只有解算能抓到。
+        SpineGpuSlotSampleResult s_back;
+        bool same = true;
+        for (float t : {-1.0f, 0.0f, 0.25f, 0.5f, 1.0f, 2.0f})
+        {
+            if (!Sample(asset, kWalk, t, s) || !Sample(back, kWalk, t, s_back))
+            {
+                same = false;
+                continue;
+            }
+            if (s.slots.size() != s_back.slots.size())
+            {
+                same = false;
+                continue;
+            }
+            for (size_t i = 0; i < s.slots.size(); ++i)
+            {
+                if (!Color4(s_back.slots[i].color, s.slots[i].color[0], s.slots[i].color[1],
+                            s.slots[i].color[2], s.slots[i].color[3]) ||
+                    !Color4(s_back.slots[i].dark, s.slots[i].dark[0], s.slots[i].dark[1],
+                            s.slots[i].dark[2], s.slots[i].dark[3]) ||
+                    s_back.slots[i].attachment_name_offset != s.slots[i].attachment_name_offset)
+                {
+                    same = false;
+                }
+            }
+            if (s.draw_order != s_back.draw_order)
+            {
+                same = false;
+            }
+        }
+        Check(same, "S3: 原始资产与**读回来**的容器解算出同一个结果（读端漂移的唯一拦网）");
+        g_prefix.clear();
+    }
+
     // 记录里的 (skin, slot) 必须与绘制项对得上 —— 换装查的就是这张表
     if (back.attachment_records.size() == asset.draw_items.size())
     {
@@ -1790,7 +2033,7 @@ int main(int argc, char** argv)
         g_prefix = std::string("[nonessential=") + (nonessential ? "true" : "false") + "] ";
         const std::vector<uint8_t> skel =
             BuildSkelFixture(false, false, "3.8.99", nonessential, "mesh", false, false, true, 10, false,
-                             2, 1, false, 3, false, false, "mesh", true);
+                             2, 1, false, 3, false, false, "mesh", true, true);
         SpineSourceSkeleton skel_src;
         SpineImportResult rsk = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, skel_src);
         Check(rsk.ok, "skel 解析成功");
@@ -1829,7 +2072,32 @@ int main(int argc, char** argv)
             Check(k.triangles == a.triangles, "skel: 三角形与 json 一致");
         }
 
-        Check(!skel_src.uses_tint_black, "skel: dark 分量全 0xff ⇒ **不**开 tint black");
+        // ⚠️ 夹具的 s1 带 dark（0x204060FF：四分量不全为 0xff）⇒ 3.8 判据成立。
+        //    这条断言的意义不只是"标志置上了"，更是**两条路径的判据一致**：
+        //    json 那边的判据是"有没有 'dark' 这个键"，二进制这边是"四个字节不全为 ff"。
+        Check(skel_src.uses_tint_black, "skel: s1 的 dark 不全 0xff ⇒ 开 tint black（与 json 路径一致）");
+        Check(src.uses_tint_black, "json: s1 写了 'dark' ⇒ 开 tint black");
+        if (skel_src.slots.size() == 2 && src.slots.size() == 2)
+        {
+            // dark 的 alpha **恒为 1**（参考实现写死），而读进来的第 4 个字节不落地 ⇒
+            // 两条路径必须都拿到 (0x20,0x40,0x60)/255 与 alpha 1，逐值相同。
+            for (int k = 0; k < 4; ++k)
+            {
+                CheckEq(static_cast<long long>(static_cast<int>(
+                            skel_src.slots[1].color[k] * 255.0f + 0.5f)),
+                        static_cast<long long>(static_cast<int>(src.slots[1].color[k] * 255.0f + 0.5f)),
+                        "skel↔json: s1 的 setup 颜色逐分量相同");
+            }
+            CheckEq(static_cast<long long>(static_cast<int>(skel_src.slots[1].dark[0] * 255.0f + 0.5f)), 0x20LL,
+                    "skel: s1 的 dark.r = 0x20/255");
+            CheckEq(static_cast<long long>(static_cast<int>(skel_src.slots[1].dark[3] * 255.0f + 0.5f)), 0xFFLL,
+                    "skel: s1 的 dark.a 恒为 1（参考实现写死，不是读进来的第 4 个字节）");
+            Check(skel_src.slots[1].has_dark && src.slots[1].has_dark, "skel↔json: s1 都判成有暗色");
+            Check(!skel_src.slots[0].has_dark && !src.slots[0].has_dark, "skel↔json: s0 **没有**暗色");
+            Check(skel_src.slots[0].attachment_name == src.slots[0].attachment_name &&
+                      skel_src.slots[0].attachment_name == "quad",
+                  "skel↔json: s0 的 setup 附件名是 'quad'（attachment 时间轴的复位基线）");
+        }
         Check(!skel_src.has_clipping, "skel: 夹具没有裁剪");
         Check(!skel_src.has_draw_order_timeline, "skel: 没有动画 ⇒ 不置绘制顺序标志");
 
@@ -1896,6 +2164,59 @@ int main(int argc, char** argv)
         Check(r_do.ok, "skel: 带绘制顺序动画的夹具能解析");
         Check(r_do.ok && s_do.has_draw_order_timeline,
               "skel: 有绘制顺序时间轴 ⇒ 置 kHasDrawOrderTimeline（为拿到这个标志必须把前面 5 类时间轴逐个跳过）");
+
+        // ---- S3: drawOrder 解算 ----
+        // 夹具的两帧：t=0 的 offsetCount=0（⇒ setup 序），t=0.5 把 s0 挪到 +1（⇒ 对调）。
+        // 期望值手算（照 SkeletonBinary.cpp:1040-1072 的重建算法推一遍）：
+        //   slotCount=2, offsetCount=1, (slot 0, offset +1)
+        //   drawOrder=[-1,-1] → drawOrder[0+1]=0, originalIndex=1
+        //   → unchanged=[1] → 从后往前填空洞：drawOrder[0]=1
+        //   ⇒ [1, 0]（两个槽位**对调**，不是"s0 挪到下标 1、s1 补到下标 0"的巧合版）
+        if (r_do.ok)
+        {
+            SpineGpuAsset a_do;
+            const SpineImportResult rb = BakeSpineGpuAsset(s_do, a_do);
+            Check(rb.ok, "drawOrder: bake 成功");
+            if (rb.ok)
+            {
+                std::vector<uint8_t> bytes;
+                Check(WriteSpineGpuContainer(a_do, bytes).ok, "drawOrder: 序列化成功");
+                SpineGpuAsset back_do;
+                const SpineImportResult rr = ReadSpineGpuContainer(bytes.data(), bytes.size(), back_do);
+                Check(rr.ok, "drawOrder: 读回成功");
+
+                SpineGpuSlotSampleResult sd;
+                const auto sample_do = [&](float t) {
+                    const SpineImportResult r = SpineGpuSampleSlots(back_do, 0, t, sd);
+                    if (!r.ok)
+                    {
+                        std::printf("  error: %s\n", r.error.c_str());
+                    }
+                    Check(r.ok, (std::string("drawOrder: 采样 t=") + std::to_string(t) + " 成功").c_str());
+                    return r.ok;
+                };
+                if (sample_do(-1.0f))
+                {
+                    Check(sd.draw_order.size() == 2 && sd.draw_order[0] == 0 && sd.draw_order[1] == 1,
+                          "drawOrder: t<首帧 ⇒ 复位成 setup 序 0,1（DrawOrderTimeline.cpp:75-83）");
+                }
+                if (sample_do(0.0f))
+                {
+                    Check(sd.draw_order.size() == 2 && sd.draw_order[0] == 0 && sd.draw_order[1] == 1,
+                          "drawOrder: t=0 的 offsetCount=0 ⇒ 仍是 setup 序（:87-92）");
+                }
+                if (sample_do(0.5f))
+                {
+                    Check(sd.draw_order.size() == 2 && sd.draw_order[0] == 1 && sd.draw_order[1] == 0,
+                          "drawOrder: t=0.5 ⇒ [1,0]（s0 挪 +1，未列出的 s1 **从后往前**补进空洞）");
+                }
+                if (sample_do(1.0f))
+                {
+                    Check(sd.draw_order.size() == 2 && sd.draw_order[0] == 1 && sd.draw_order[1] == 0,
+                          "drawOrder: t>=末帧 ⇒ 停在末帧 [1,0]");
+                }
+            }
+        }
     }
 
     // 9c. 报错路径

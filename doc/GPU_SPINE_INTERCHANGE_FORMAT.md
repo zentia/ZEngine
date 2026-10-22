@@ -323,6 +323,44 @@ chunk 16  变长载荷  字节       attachment 名 / deform 稀疏帧 / drawOrd
 15 类时间轴里真实出现的 **11 类**；曲线 linear 58.26% / bezier 36.57% / stepped 5.17%。
 完整表格见 `doc/GPU_SPINE_V7_ANIMATION.md` §7.0.3。
 
+### 3.6 槽位 setup（chunk 17，40 B/槽，v10）
+
+```
+SpineGpuSlot（chunk 17）        40 B/条，条数 == header.slot_count
+  color_r/g/b/a   f32×4 @0     默认 (1,1,1,1)（SlotData.cpp:39）
+  dark_r/g/b/a    f32×4 @16    默认 (0,0,0,0)（SlotData.cpp:40）
+  setup_attachment_name_offset u32 @32   进 chunk 1 **第 4 组**的字节偏移
+  flags           u32   @36    bit0 = has_dark（其余位必须 0）
+```
+
+- **为什么必须落盘**：color / twoColor 时间轴写的是**绝对**颜色
+  （`ColorTimeline.cpp:110` `slot._color.set(r,g,b,a)`），没被时间轴命中的槽位停在
+  **setup 色**。容器里原本只有一个 `uses_tint_black` 布尔、**没有颜色值**
+  ⇒ 解算只能默认纯白，而**纯白与 setup 白在多数资产上完全看不出区别**。
+  实测 **139 / 781 个资产（17.8%）至少有一个非纯白 setup 色**。
+- ⚠️ **dark 的 alpha 恒为 1**（只要这个槽位有暗色）—— 参考实现写死：
+  二进制 `SkeletonBinary.cpp:188` `set(r/255, g/255, b/255, 1)`；
+  json `SkeletonJson.cpp:230` `darkColor.a = 1`。
+  二进制读进来的第 4 个字节**只**用于判"有没有暗色"，从不作为 alpha 落地。
+  json 的 `"dark"` 是 **6 位** hex（只有 rgb），`"color"` 是 **8 位**（rgba）。
+- ⚠️ **`has_dark` 必须由显式 flag 记录，不能由 dark 是否全 0 推断**：
+  默认 dark 就是 (0,0,0,0)，而 3.7 的判据是 `读到的 int32 != -1`
+  （`SkeletonBinary.cs:190-192`）⇒ **0x00000000（纯黑）照样是"有暗色"**。
+- ⚠️ `setup_attachment_name_offset` 是 **attachment 时间轴的复位基线**
+  （`AttachmentTimeline.cpp:65-68`）：`time < frames[0]` 时槽位复位到 setup 附件，
+  **不是**"隐藏"。空名 = `kNoAttachmentName = 0xFFFFFFFF`（**不是 0**）。
+- **字符串表多一组**：第 4 组「槽位 setup 附件名」，`slot_count` 条，
+  **空名也占一条**（否则按 `slot_count` 切分会整体错位）。
+  顺序：骨骼名 → 皮肤名 → 槽位名 → **槽位 setup 附件名** → 附件名 → 图集页名 →
+  动画名 → 动画附件名。
+- 读端校验：大小是 40 B 的整数倍；条数 == `header.slot_count`；
+  `setup_attachment_name_offset` 落在字符串块内（或 == `kNoAttachmentName`）；
+  flags 未知位必须 0。
+
+**实测（781 个 OSGame 容器）**：槽位 **56 704** 个（均 72.6/资产），chunk 17 合计
+**2.16 MB**（容器的 **1.03%**）；带暗色 **96** 槽位 / 5 个资产；
+有 setup 附件名 **33 055** 槽位（**58.29%**）。
+
 ---
 
 ## 4. 绘制项表（静态）
@@ -639,7 +677,7 @@ Spine 图集默认是 **PMA（预乘 Alpha）**，对应 Unity 侧 `Blend One On
 ```
 Header (64 B)
   0x00  magic            u32   'ZSPG'  (0x5A535047)
-  0x04  version          u32   本规格版本，当前 8
+  0x04  version          u32   本规格版本，当前 10
                                v2 = 加了 skin 维度（§9.1）
                                v3 = UV 拆成独立通道 + chunk id 重排（§3.2、§14.2）
                                v4 = deform 参与烘焙（§7.1）—— 布局没变，
@@ -658,6 +696,13 @@ Header (64 B)
                                v9 = 动画进容器（§3.5）—— 新增 chunk 11-16；
                                     header 与既有 chunk 全都没动（动画数量由 chunk 11
                                     的大小反推）；flags 多一位 kHasEventTimeline
+                               v10 = 槽位 setup 进容器（§3.6）—— 新增 chunk 17，40 B/槽；
+                                    header 与既有 chunk 全都没动，字符串块多一组
+                                    「槽位 setup 附件名」（slot_count 条）。
+                                    之前容器里**没有颜色值**（只有一个 uses_tint_black
+                                    布尔），而 color / twoColor 时间轴是相对 setup 色的
+                                    ⇒ 缺了它就只能默认纯白，而纯白与 setup 白在多数资产
+                                    上完全看不出区别（与 v8 / v9 同一类坑）
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -679,8 +724,11 @@ Header (64 B)
 
 ChunkTable  (chunk_count × 16 B)  { id u32, offset u32, size u32, _pad u32 }
 Chunks:
-  id=1  strings        骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名
-                       → **动画名** → **动画附件名**（v9），每项 UTF-8 且 '\0' 结尾。
+  id=1  strings        骨骼名 → 皮肤名 → 槽位名 → **槽位 setup 附件名（v10）** →
+                       附件名 → 图集页名 → **动画名** → **动画附件名**（v9），
+                       每项 UTF-8 且 '\0' 结尾。
+                       ⚠️ 第 4 组**每条槽位一条，空名也占一条** —— 不占位就没法按
+                       slot_count 切分，后面几组会整体错位（不报错，只是名字错）。
                        最后两组只有"动画名"有计数（= chunk 11 的条目数）；
                        "动画附件名"只按偏移访问，没有计数。
   id=2  slot_bone      每槽位的骨骼下标（u16 × slot_count）—— rigid 用
@@ -704,6 +752,12 @@ Chunks:
   id=14 curve_types     u8[]，每段一个（§3.5，v9）
   id=15 beziers         SpineGpuBezier[]，16 B/条（§3.5，v9）
   id=16 timeline_payload 字节：attachment 名 / deform 稀疏帧 / drawOrder 偏移（§3.5，v9）
+  id=17 slot_setup     SpineGpuSlot[]，40 B/槽（§3.6，v10）
+                       { color rgba f32×4 @0, dark rgba f32×4 @16,
+                         setup_attachment_name_offset u32 @32, flags u32 @36 }
+                       下标 = header.slot_count 的序 = 槽位名的序号 =
+                       时间轴 Target（attachment / color / twoColor）的同一个空间
+                       ⇒ **三处必须同一空间**（分叉了不报错，只是颜色挂到别的槽位上）
   id=21 influence_bind bindPos f32×2 × 影响条目数，8 B/条（§3.1，v7）
   id=22 influence_bone (boneIdx u16, weight unorm8, pad u8) × 影响条目数，4 B/条（v7）
                        ⚠️ 21 与 22 **共用同一个条目下标**（= 权重顶点的
@@ -717,8 +771,9 @@ Chunks:
 > 读会拿到 `index_buffer` 当 UV，静默错位。这也正是 `kFormatVersion` 升到 3 的原因。
 >
 > ⚠️ **文件里 chunk 的顺序也不是 id 顺序**：写端按
-> `1, 2, 10, 11, 12, 13, 14, 15, 16, 3, 21, 22, 4, 5, 9, 6, 7, 8` 追加
-> （骨骼 setup 紧挨 slot_bone；v9 的动画块 11-16 紧跟其后；影响流紧跟
+> `1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 3, 21, 22, 4, 5, 9, 6, 7, 8` 追加
+> （骨骼 setup 紧挨 slot_bone；v9 的动画块 11-16 紧跟其后、v10 的槽位块 17 再跟其后；
+> 影响流紧跟
 > 顶点块；9 夹在 5 与 6 之间是
 > 历史顺序）。换了顺序文件照样能读，但字节不再逐字节相同 ⇒ 跨语言对拍（§12）立刻红，
 > 所以 C# 端必须照抄这个顺序（见 `SpineGpuContainerIo.cs`）。
@@ -768,15 +823,19 @@ Chunks:
 ## 11. 版本与兼容
 
 - `version` 变化 ⇒ 导入器必须拒绝旧容器并给出明确错误，不做静默兼容。
-- **v7 → v9 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
-  **v8 追加骨骼树（chunk 10，§3.4）**；**v9 追加动画（chunk 11-16，§3.5）**。
-  仍在推进的是槽位颜色（17）、约束（18-20），解算器自写、仍在 CPU。
+- **v7 → v10 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
+  **v8 追加骨骼树（chunk 10，§3.4）**；**v9 追加动画（chunk 11-16，§3.5）**；
+  **v10 追加槽位 setup（chunk 17，§3.6）**。
+  仍在推进的是约束（18-20），解算器自写、仍在 CPU。
   字段设计与转录 gap 分析见 **`doc/GPU_SPINE_V7_ANIMATION.md`**。
-  v7 / v8 / v9 **都不动** header（仍 64 B）、不动 chunk 1..9、不动 §5 每帧实例数据、
+  v7 / v8 / v9 / v10 **都不动** header（仍 64 B）、不动 chunk 1..9、不动 §5 每帧实例数据、
   不动 §6 shader 数学；新增的计数一律从 chunk 表推导（`size / stride`），不进 header
   （v9 的动画数量就是从 chunk 11 的大小反推的）。
   ⚠️ v8 容器被 v9 读端读会得到 **0 个动画**（chunk 11 不存在），而"没有动画"本身
   不报错 —— 与 chunk 10 那一类是同一个坑，所以仍然是不兼容升级。
+  ⚠️ v9 容器被 v10 读端读会得到 **"所有槽位纯白 + 无暗色"**（chunk 17 不存在），
+  而"纯白"本身不报错 —— 实测 **139 / 781 个资产**真的有非纯白 setup 色，
+  是同类的第三个坑。
 - `spine_runtime` 不匹配 ⇒ 警告但允许（布局差异只在 `_bones` 宽度，导入器已按 3.8 读；
   4.x 资产需要另一条导入路径，**不在本版本范围**）。
 - 任何"导入器静默调整数据"的行为（截断影响数、重排顶点、自动降精度）都**必须报错**，
@@ -911,6 +970,24 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
    * `influence_count` 个 unorm8 权重的和必须**恰好 255**
 13. **必须跨语言对拍，不能两端各自自测**（§11.1）：C++ 落的 `.zspg`，C# 读回来再写一遍
     必须**逐字节相同**；同时要有语义断言，因为 round-trip 抓不到"解读"漂。
+14. **槽位 setup 的语义断言**（§3.6，v10）—— 三条都是"错了不报错"的：
+    * **夹具必须有非默认色的槽位**：全是纯白的话，"写端根本没写颜色"也会被判通过
+      （读回来还是纯白）。⇒ 基线的 `s1` 带 `"color": "80c0ff40"` + `"dark": "204060"`。
+    * **dark 的 alpha 必须断言 == 1**（只要 `has_dark` 成立）—— 它是参考实现**写死**的
+      （`SkeletonBinary.cpp:188` / `SkeletonJson.cpp:230`），不是插值出来的。
+      且 `has_dark` 要看 **flag**，不能看"dark 是否全 0"（3.7 的判据是 `int32 != -1`，
+      纯黑照样是"有暗色"）。
+    * **`setup_attachment_name_offset` 必须解析回真名字**，且解析出来的是**第 4 组**
+      字符串那条（手算一遍期望偏移）—— 指到槽位名那组不报错，只是 attachment 时间轴
+      复位到一个错名字的附件上。
+15. **解算必须拿"读回来的容器"再算一遍**（`doc/GPU_SPINE_V7_ANIMATION.md` §7.0.4）：
+    同一个动画在 6 个时间点上，`asset` 与 `back`（C++ 读回的）必须给出**完全相同**的
+    (color, dark, attachment, draw_order)。写端对了、读端错了，往返的逐字节断言
+    **全**看不出来 —— 只有解算能抓到。
+    * 解算侧还有一条独立的坑：drawOrder 的重建**不是**"把槽位挪到 index+offset"
+      （`SkeletonBinary.cpp:1040-1072`），且槽位下标必须**严格升序**
+      （否则参考实现 `while (originalIndex != slotIndex)` 永不终止）⇒ 夹具要 **2 帧**，
+      第二帧才分得开（1 帧时两种实现都给出 setup 序）。
 
 ---
 
@@ -938,7 +1015,8 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
 后续若再开新议题写在这里。
 
 （v7 设计内部的开放项，记在 `doc/GPU_SPINE_V7_ANIMATION.md` §7：
-约束（IK / transform / path）的 setup 数据仍未落盘，S4 需要 chunk 17+ 并 bump 到 v10；
+**槽位 setup 已落地**（v10，chunk 17，§3.6）；
+约束（IK / transform / path）的 setup 数据仍未落盘，**S4 需要 chunk 18-20 并 bump 到 v11**；
 chunk 15/16 的曲线与变长载荷编码**已定**——紧凑曲线（u8/段 + 16 B bezier）+ 稀疏 deform，
 见 §3.5。）
 
@@ -1002,11 +1080,15 @@ ZEditor -batchmode -suite=SpineCook <hero.json | hero.skel | 目录> [-o <输出
 `-batchmode` 不弹窗、不启动引擎、不初始化 RHI，直接跑烘焙（见 §11.2）。目录输入
 保持相对结构铺开，同名骨架不会互相覆盖；有失败就退出码非 0。
 
-### 14.5 （设计已定，未实现，2026-10-22）容器里没有骨骼树与动画 —— 边界按 OSGame 实测反推
+### 14.5 v8/v9/v10 已补上骨骼树、动画与槽位 setup（**边界**按 OSGame 实测反推，这部分永久有效）
+
+> **进度**：v8 = 骨骼树（chunk 10，**已落地**，§3.4）；v9 = 动画（chunk 11-16，
+> **已落地**，§3.5）；v10 = 槽位 setup（chunk 17，**已落地**，§3.6）。
+> 剩下的**只有约束**（chunk 18-20，S4）—— 下面"边界怎么定的"这部分不随进度失效。
 
 v6 及以前只烘焙**绑定姿态**：`SpineGpuAsset` 有 `bone_names` 但 `SpineSourceBone::parent`
 在 Bake 时被丢掉（`SpineGpuImporter.h:78`），也**没有任何动画 chunk**（chunk 只到 9）。
-⇒ 现在一个 `.zspg` **只能画绑定姿态**，动不起来；骨骼矩阵得由外部（spine 运行时）喂。
+⇒ 那时一个 `.zspg` **只能画绑定姿态**，动不起来；骨骼矩阵得由外部（spine 运行时）喂。
 
 同时 `kHasDrawOrderTimeline` / `kHasClipping` 这两个 flag 的语义是"走 CPU 路径"，
 而 **ZEngine 目前根本没有 CPU 路径** —— 它们指向一条不存在的路。

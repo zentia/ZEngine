@@ -54,6 +54,15 @@ kOffBonePad = 35
 kTransformModeNames = ["normal", "onlyTranslation", "noRotationOrReflection",
                        "noScale", "noScaleOrReflection"]
 
+# ---- v10 槽位 setup（chunk 17）----
+# 40 B/条：color rgba f32×4 @0 + dark rgba f32×4 @16 + name_offset u32 @32 + flags u32 @36
+kSlotSetupSize = 40
+kOffSlotColorR = 0
+kOffSlotDarkA = 28
+kOffSlotNameOffset = 32
+kOffSlotFlags = 36
+kNoAttachmentName = 0xFFFFFFFF
+
 # ---- v9 动画块（chunk 11-16）----
 kAnimDirSize = 20        # SpineGpuAnim
 kTimelineEntrySize = 32  # SpineGpuTimeline
@@ -88,6 +97,18 @@ def main():
     mode_hist = collections.Counter()
     max_depth = 0
     bad_pad = 0
+
+    # ---- v10 槽位 setup ----
+    slot_total = 0
+    slot_has_dark = 0
+    slot_non_default_color = 0
+    slot_with_setup_attachment = 0
+    bad_slot_flags = 0
+    files_with_slots = 0
+    # ⚠️ 真正要回答的是"**多少个资产**会画错"，不是"多少个槽位" ——
+    #   一个资产里只要有一个非默认色的槽位，缺 setup 色就会让它画错。
+    files_with_non_default_color = 0
+    files_with_dark = 0
 
     # ---- v9 动画 ----
     anim_total = 0
@@ -141,6 +162,36 @@ def main():
                     depth[k] = 1 if par < 0 else depth[par] + 1
                 if depth:
                     max_depth = max(max_depth, max(depth))
+
+            # ---- chunk 17：槽位 setup ----
+            # "有多少槽位真的带暗色 / 非默认色"决定两件事：
+            #   * 渲染要不要走双色分支（tint black）—— 走错分支是"画出来偏色"不是报错；
+            #   * S3 的 color / twoColor 解算到底影响多少资产（没有 setup 色就无从解算）。
+            if 17 in offsets:
+                so, ss = offsets[17]
+                n = ss // kSlotSetupSize
+                slot_total += n
+                files_with_slots += 1
+                this_file_color = False
+                this_file_dark = False
+                for k in range(n):
+                    p = so + k * kSlotSetupSize
+                    flags = struct.unpack_from("<I", d, p + kOffSlotFlags)[0]
+                    if flags & ~1:      # 已知位只有 bit0 = has_dark
+                        bad_slot_flags += 1
+                    if flags & 1:
+                        slot_has_dark += 1
+                        this_file_dark = True
+                    if struct.unpack_from("<I", d, p + kOffSlotNameOffset)[0] != kNoAttachmentName:
+                        slot_with_setup_attachment += 1
+                    # setup 色不是纯白（1,1,1,1）⇒ 这个槽位真的有作者指定的颜色
+                    if struct.unpack_from("<f", d, p + kOffSlotColorR)[0] != 1.0:
+                        slot_non_default_color += 1
+                        this_file_color = True
+                if this_file_color:
+                    files_with_non_default_color += 1
+                if this_file_dark:
+                    files_with_dark += 1
 
             # ---- chunk 11：动画目录（20 B/条）----
             if 11 in offsets:
@@ -226,6 +277,24 @@ def main():
             print("    %d %-24s %7d  %5.2f%%" % (v, name, c, 100.0 * c / bone_total))
         # pad 必须是 0：非 0 说明写端没清零，跨语言逐字节对拍会红
         print("pad 非 0 的骨骼: %d  （必须 0）" % bad_pad)
+    print()
+
+    # ---- v10 槽位块 ----
+    print("---- v10 槽位（chunk 17）----")
+    print("有槽位块的容器: %d / %d" % (files_with_slots, files))
+    print("槽位总数      : %d  (chunk 17 / 40 B)" % slot_total)
+    if slot_total:
+        print("chunk 17 字节 : %s" % Mb(sizes[17]))
+        print("均槽位数/资产 : %.1f" % (slot_total / float(files)))
+        print("带暗色(tint)  : %d  %5.2f%%  涉及 %d / %d 个资产"
+              % (slot_has_dark, 100.0 * slot_has_dark / slot_total, files_with_dark, files))
+        print("setup 色非纯白: %d  %5.2f%%  （纯白 ⇒ 缺 setup 色也看不出区别）"
+              % (slot_non_default_color, 100.0 * slot_non_default_color / slot_total))
+        print("  ⇒ 涉及资产  : %d / %d  （**这些**才是「缺 setup 色会静默画错」的规模）"
+              % (files_with_non_default_color, files))
+        print("有 setup 附件 : %d  %5.2f%%  （attachment 时间轴的复位基线）"
+              % (slot_with_setup_attachment, 100.0 * slot_with_setup_attachment / slot_total))
+        print("flags 未知位  : %d  （必须 0）" % bad_slot_flags)
     print()
 
     print("chunk 3  顶点      : %s  (rigid 8B + weighted 8B 引用)" % Mb(sizes[3]))
