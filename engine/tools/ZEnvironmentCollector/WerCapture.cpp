@@ -137,7 +137,7 @@ CaptureResult CaptureWer(const WerOptions& options, const std::atomic_bool& stop
         json << "{\"schemaVersion\":2,\"toolVersion\":" << JsonString(ToolVersion) << ",\"captureBackend\":" << JsonString(imported ? "dump_import" : "wer")
             << ",\"status\":" << JsonString(state) << ",\"targetName\":" << JsonString(WideToUtf8(game.filename().wstring()))
             << ",\"consentUtc\":" << JsonString(FormatUtcIso8601(consent)) << ",\"fullMemoryConsent\":true,\"automaticUpload\":false,\"memoryRedacted\":false"
-            << ",\"procDumpStarted\":false,\"configurationAttempted\":" << (configurationAttempted ? "true" : "false")
+            << ",\"configurationAttempted\":" << (configurationAttempted ? "true" : "false")
             << ",\"configurationEnabled\":" << (enabled ? "true" : "false") << ",\"configurationWin32\":" << enableCode
             << ",\"registryScope\":" << JsonString(imported ? "NOT_APPLICABLE" : "HKLM_64_PER_EXE_BASENAME")
             << ",\"dumpType\":" << (imported ? "null" : "2") << ",\"dumpCount\":" << (imported ? "null" : "2")

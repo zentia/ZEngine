@@ -30,9 +30,8 @@
 #include "EnvironmentCheckGui.h"
 
 #include "Collection.h"
-#include "CrashCapture.h"
-#include "EnvCheckLog.h"
 #include "WerCapture.h"
+#include "EnvCheckLog.h"
 #include "ToolVersion.h"
 #include "DiagnosisUtil.h"
 #include "EnvironmentCheckCommand.h"
@@ -176,11 +175,10 @@ public:
     std::shared_ptr<STextBlock> anchorWarning;
     std::shared_ptr<SComboBox<int>> langBox;
     std::shared_ptr<SComboBox<IncidentKind>> kindBox;
-    std::shared_ptr<SComboBox<int>> captureMode;
     std::shared_ptr<SEditableTextBox> timeInput;
     std::shared_ptr<SCheckBox> details;
-    std::filesystem::path procDumpPath, targetPath;
-    std::shared_ptr<STextBlock> procDumpLabel, targetLabel, captureStatus;
+    std::filesystem::path targetPath;
+    std::shared_ptr<STextBlock> targetLabel, captureStatus;
     std::string captureMessage;
 
     std::shared_ptr<SEditableTextBox> gameDirInput;
@@ -227,7 +225,6 @@ public:
         if (window && GetClientRect(window, &client) && client.right > 0 && client.bottom > 0)
             SetPhysicalSize(client.right, client.bottom);
         if (kindBox) kindBox->ClosePopup();
-        if (captureMode) captureMode->ClosePopup();
         if (langBox) langBox->ClosePopup();
         ResetPointerGesture();
     }
@@ -404,8 +401,8 @@ public:
         if (language == GetLanguage()) return;
         SetLanguage(language);
         zengine::envcheck::LogInfo(std::string("UI language -> ") + LanguageId(language));
-        // Remembered per user, next to the ProcDump path: an operator who picked
-        // Chinese once should not have to pick it again on every launch.
+        // Remembered per user: an operator who picked Chinese once should not
+        // have to pick it again on every launch.
         zengine::envcheck::ui::SaveLanguagePreference(LanguageId(language));
         UpdateWindowTitle();
         RebuildUi();
@@ -418,7 +415,6 @@ public:
     {
         const ShellTab current = tab;
         const IncidentKind kind = kindBox ? kindBox->SelectedItem : options.incidentKind;
-        const int mode = captureMode ? captureMode->SelectedIndex : 0;
         const std::string time = timeInput ? timeInput->GetText() : std::string();
         const std::string gameDir = gameDirInput ? gameDirInput->GetText() : std::string();
         const bool events = details && details->IsChecked();
@@ -428,8 +424,6 @@ public:
 
         options.incidentKind = kind;
         if (kindBox) { kindBox->SelectedItem = kind; kindBox->SelectedIndex = static_cast<int32_t>(kind); }
-        if (captureMode && mode >= 0 && mode < static_cast<int>(captureMode->Options.size()))
-        { captureMode->SelectedIndex = mode; captureMode->SelectedItem = captureMode->Options[static_cast<std::size_t>(mode)]; }
         if (timeInput) timeInput->SetText(time);
         // After the time box is restored: the warning reads it, and during
         // Build() it still held the pre-rebuild (empty) text.
@@ -491,7 +485,6 @@ public:
             tabs[static_cast<std::size_t>(index)]->Visibility = isActive ? EVisibility::Visible : EVisibility::Collapsed;
         }
         if (kindBox) kindBox->ClosePopup();
-        if (captureMode) captureMode->ClosePopup();
         if (langBox) langBox->ClosePopup();
         if (scroll) scroll->ScrollOffset = 0;
         ResetPointerGesture();
@@ -580,36 +573,15 @@ public:
         Text(std::string(S("capture.section", "Advanced diagnostics: capture one crash · ")) + zengine::envcheck::ToolVersion, 24);
         Text(S("capture.privacy",
                "A full memory dump may contain account and chat data. It stays on this machine; do not share it publicly."), 16);
-        captureMode = std::make_shared<SComboBox<int>>();
-        captureMode->Options = {0, 1}; captureMode->SelectedIndex = 0; captureMode->SelectedItem = 0;
-        captureMode->Size = Vector2(460, 32); captureMode->FontSize = 18;
-        captureMode->ItemHeight = 32; captureMode->MaxDropdownHeight = 64; captureMode->ExternalPopup = true;
-        captureMode->OnGetLabel = [](int mode) {
-            return mode == 0 ? S("capture.mode.wer", "Windows system crash dump (recommended)")
-                             : S("capture.mode.procdump", "Attach ProcDump (needs debug permission)");
-        };
-        AddWidget(captureMode, 6);
-        Interactive(captureMode);
         Text(S("capture.wer.note",
                "WER is configured for the current exe name only. It needs UAC, stays enabled for repeated crashes "
                "in this session, is restored only after you click 'Stop capture safely', and never attaches to the game."), 16);
-        Text(S("capture.procdump.note", "The ProcDump download and selection below are for ProcDump mode only."), 16);
-        Button(S("capture.procdump.download", "Open the Microsoft ProcDump download and license page"), [this] {
-            if (!busy) ShellExecuteW(window, L"open", L"https://learn.microsoft.com/en-us/sysinternals/downloads/procdump", nullptr, nullptr, SW_SHOWNORMAL);
-        });
-        procDumpPath = LoadProcDumpPreference();
-        procDumpLabel = Button(procDumpPath.empty() ? S("capture.procdump.pick", "Select procdump64.exe")
-                                                    : S("capture.procdump.reselect", "Reselect ProcDump (location remembered)"), [this] {
-            if (busy) return;
-            auto path = ChooseExecutable(W("capture.procdump.dialog", "Select the official Microsoft procdump64.exe").c_str());
-            if (!path.empty()) { procDumpPath = path; procDumpLabel->SetText(S("capture.procdump.selected", "ProcDump selected (signature verified before start)")); }
-        });
         targetLabel = Button(S("capture.target.pick", "Select the game program (the current project target)"), [this] {
             if (busy) return;
             auto path = ChooseExecutable(W("capture.target.dialog", "Select the project's game exe, not the launcher").c_str());
             if (!path.empty()) { targetPath = path; targetLabel->SetText(S("capture.target.prefix", "Target: ") + WideToUtf8(path.filename().wstring())); }
         });
-        Button(S("capture.start", "Start crash capture (as selected)"), [this] { StartCapture(); });
+        Button(S("capture.start", "Start crash capture (Windows system dump)"), [this] { StartCapture(); });
         Button(S("capture.import", "Pick an existing dump and pack it (no system change)"), [this] {
             if (busy) return;
             auto file = ChooseExecutable(W("capture.import.dialog", "Select an existing full dump").c_str(), L"Memory dump (*.dmp)\0*.dmp\0\0");
@@ -655,7 +627,6 @@ public:
         finished = false;
         cancellable = true;
         if (kindBox) kindBox->ClosePopup();
-        if (captureMode) captureMode->ClosePopup();
         if (langBox) langBox->ClosePopup();
         for (const auto& widget : interactive) widget->Visibility = EVisibility::HitTestInvisible;
         { std::lock_guard lock(mutex); progress = S("status.preparing", "Preparing"); error.clear(); }
@@ -669,10 +640,8 @@ public:
     void StartCapture(const std::filesystem::path& import = {})
     {
         if (busy) return;
-        const bool wer = captureMode->SelectedItem == 0 || !import.empty();
-        if (targetPath.empty() || (!wer && procDumpPath.empty()))
-        { captureStatus->SetText(wer ? S("capture.need.target", "Select the game program first.")
-                                     : S("capture.need.both", "Select ProcDump and the game program first.")); return; }
+        if (targetPath.empty())
+        { captureStatus->SetText(S("capture.need.target", "Select the game program first.")); return; }
         if (options.profile.gameExecutable.empty())
         { captureStatus->SetText(S("capture.need.profile", "The current profile has no target exe; use a project profile.")); return; }
         // Consent dialogs are the one place the wording is contractual, so they
@@ -682,7 +651,7 @@ public:
                 "Confirm this full dump came from the selected game. Import only checks the structure and module "
                 "paths; it cannot prove the dump belongs to this run.\nIt may contain accounts, chats and tokens, "
                 "uses several GB, is never uploaded, and the original file is not deleted.\n\nConfirm the source and pack it?")
-            : wer ? W("capture.consent.wer.prefix", "Only the ") + Utf8ToWide(options.profile.gameExecutable)
+            : W("capture.consent.wer.prefix", "Only the ") + Utf8ToWide(options.profile.gameExecutable)
                     + W("capture.consent.wer.suffix",
                         " key under HKLM LocalDumps is configured, DumpType=2, writing to this report's private "
                         "system-dumps folder.\nThe setting applies to every program with that exe name; it needs UAC, "
@@ -690,43 +659,24 @@ public:
                         "crashes in this session (several GB each, 8 at most); it stays in force until you click "
                         "'Stop capture safely'.\nA full dump contains sensitive data, uses several GB and is never "
                         "uploaded. Configuring it does not guarantee a dump.\nIt does not attach to the game and does "
-                        "not stop WER; use the restore button after an abnormal exit.\n\nDo you agree?")
-            : W("capture.consent.procdump",
-                "Only the selected game is monitored. A full dump contains accounts, chats and other sensitive data, "
-                "uses several GB and is never uploaded.\nOn stop, ProcDump is waited for and neither the game nor the "
-                "debugger is killed.\n\nDo you agree?");
+                        "not stop WER; use the restore button after an abnormal exit.\n\nDo you agree?");
         if (MessageBoxW(window, notice.c_str(),
             W("capture.consent.title", "Full memory capture authorisation").c_str(),
             MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) return;
-        if (!wer && MessageBoxW(window,
-            W("capture.license.body",
-              "Please read the Microsoft Sysinternals license first (the download page and the Eula.txt shipped with ProcDump).\n"
-              "Choosing Yes means you have read and accepted it; the collector will call the ProcDump you selected with -accepteula.\n"
-              "This tool does not contain ProcDump and does not obtain that third-party license for you.\n\nAccept the license?").c_str(),
-            W("capture.license.title", "Sysinternals license").c_str(),
-            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
-        CaptureOptions input;
-        input.environment = options; input.environment.includeEvents = details->IsChecked();
-        input.procDump = procDumpPath; input.gameExecutable = targetPath;
-        input.memoryConsent = true; input.licenseAccepted = !wer;
-        WerOptions system; system.environment = input.environment; system.gameExecutable = targetPath;
+        WerOptions system; system.environment = options;
+        system.environment.includeEvents = details->IsChecked();
+        system.gameExecutable = targetPath;
         system.memoryConsent = true; system.importDump = import; system.importConfirmed = !import.empty(); system.owner = window;
         SetBusy(Job::Capture);
         { std::lock_guard lock(mutex); error.clear(); captureMessage.clear(); captureReport = {}; progress = S("capture.preparing", "Preparing capture"); }
-        worker = std::thread([this, input, system, wer] {
+        worker = std::thread([this, system] {
             try
             {
                 auto update = [this](const std::string& message, bool canCancel) {
                     cancellable = canCancel; std::lock_guard lock(mutex); progress = message;
                 };
-                auto captured = wer ? CaptureWer(system, cancel, update) : CaptureCrash(input, cancel, update);
-                const bool remember = captured.procDumpVerified;
+                auto captured = CaptureWer(system, cancel, update);
                 { std::lock_guard lock(mutex); captureReport = std::move(captured.report); captureMessage = captured.message; }
-                if (remember)
-                {
-                    try { SaveProcDumpPreference(input.procDump); }
-                    catch (...) { std::lock_guard lock(mutex); captureMessage += S("capture.forget.failed", " (could not remember the ProcDump location; the evidence is unaffected)"); }
-                }
             }
             catch (const std::exception& exception) { std::lock_guard lock(mutex); error = exception.what(); }
             finished = true;
@@ -882,11 +832,6 @@ public:
                 if (!kindBox->IsOpen()) ResetPointerGesture();
                 return;
             }
-            if (captureMode && captureMode->ProcessPopupMouse(platform.mouse, platform.down, wheel))
-            {
-                if (!captureMode->IsOpen()) ResetPointerGesture();
-                return;
-            }
         }
         router.ProcessMouse(SlateApplication::Get().GetRootContent(), platform.mouse,
             platform.mouse.x >= 0 && platform.mouse.y >= 0 && platform.mouse.x < platform.size.x && platform.mouse.y < platform.size.y,
@@ -937,7 +882,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
     case WM_KILLFOCUS:
         app->platform.down = false;
         if (app->kindBox) app->kindBox->ClosePopup();
-        if (app->captureMode) app->captureMode->ClosePopup();
         if (app->langBox) app->langBox->ClosePopup();
         app->router.Reset(); return 0;
     case WM_MOUSEWHEEL:
@@ -963,11 +907,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
                 app->kindBox->OnKeyDown(key);
                 if (!app->kindBox->IsOpen()) app->ResetPointerGesture();
             }
-            else if (app->captureMode && app->captureMode->IsOpen())
-            {
-                app->captureMode->OnKeyDown(key);
-                if (!app->captureMode->IsOpen()) app->ResetPointerGesture();
-            }
             else if (!app->busy) app->router.ProcessKey(key);
         }
         else if (!app->busy)
@@ -978,7 +917,7 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
     }
     case WM_CHAR:
         if (!app->busy && w < 128 && (!app->kindBox || !app->kindBox->IsOpen())
-            && (!app->captureMode || !app->captureMode->IsOpen()) && (!app->langBox || !app->langBox->IsOpen()))
+            && (!app->langBox || !app->langBox->IsOpen()))
             app->router.ProcessChar(static_cast<unsigned>(w));
         return 0;
     case WM_CLOSE:
@@ -1140,7 +1079,6 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
                 if (app.tab == ShellTab::Collection)
                 {
                     app.kindBox->PaintPopup(&scaled, viewport);
-                    app.captureMode->PaintPopup(&scaled, viewport);
                 }
                 scaled.EndFrame();
                 app.backend->Render(app.platform.renderer, &app.fonts);

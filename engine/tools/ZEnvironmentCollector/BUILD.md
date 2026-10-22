@@ -15,8 +15,8 @@
 引擎本来就有，而本工具正好都需要：
 
 - **日志**：引擎的 `LogSystem`（bqlog）。工具是 WINDOWS 子系统进程，双击启动时 stderr
-  没人看得见，而它要报告的失败（缺字体、WER 恢复失败、ProcDump 没产出 dump）恰恰是玩家
-  描述不出来的那些。日志落在 `%USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_*.log`。
+  没人看得见，而它要报告的失败（缺字体、WER 恢复失败、启用了系统转储却没产出 dump）恰恰是
+  玩家描述不出来的那些。日志落在 `%USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_*.log`。
 - **多语言表**：硬编码在代码里不好维护，走表；而表本身是引擎能力（DataTable +
   AssetManager + SerializedFile），所以一并从引擎取。
 
@@ -151,7 +151,8 @@ cmake --build build\tools\ZEnvironmentCollector\pack --target package
 
 ### 高级诊断（dump 捕获）的验证记录
 
-从 README 移出的验证与定位流水账：
+从 README 移出的验证与定位流水账。ProcDump 后端已移除、只剩 WER，下面涉及 ProcDump 的
+条目（签名校验、附加/脱离、访问被拒）只作历史记录，不再对应任何现存代码路径：
 
 1.7.2验证：3项CTest通过；手动集成测试`access-denied`对仅含合成数据的专用进程限制访问，产生真实`OpenProcess(capture)`错误5、OPENING_TARGET阶段，签名已通过而ProcDump未启动，生成capture-failure.zip，Python独立回读仅capture.json。首次测试运行继承了调试特权，DACL拒绝未生效并导致测试失败；已仅在测试进程内禁用该特权，并新增实际拒绝访问前置断言后重跑通过，生产采集器权限未改。GUI真实文件选择/授权触发未签名拒绝，再点击普通采集，再点捕获结果入口，资源管理器回读仍选中原crash-capture-*下verification.zip。验证截图和产物位于独立build的validation-1.7.2；未访问真实游戏。
 

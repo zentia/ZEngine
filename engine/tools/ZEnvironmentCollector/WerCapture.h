@@ -1,8 +1,19 @@
 #pragma once
-#include "CrashCapture.h"
+#include "Collection.h"
+#include "EvidenceFiles.h"
 
 namespace zengine::envcheck::collector
 {
+// Shared by both capture backends that remain: a WER session and an imported
+// dump. `report` carries the session directory, the archive and the partial
+// flag; `dumpCaptured` is the only thing that distinguishes a real capture
+// from a diagnostic-only package.
+struct CaptureResult
+{
+    Result report;
+    bool dumpCaptured = false;
+    std::string message;
+};
 struct WerOptions
 {
     Options environment;

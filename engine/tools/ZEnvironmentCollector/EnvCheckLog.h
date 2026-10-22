@@ -6,7 +6,7 @@
 // Every other ZEngine executable logs through bqlog, and this tool is the one
 // that most needs it: it is a WINDOWS-subsystem binary, so stderr goes nowhere
 // when it is double-clicked, and the failures it exists to report (a missing
-// font, a failed WER restore, a ProcDump that never produced a dump) are exactly
+// font, a failed WER restore, an enabled session that never produced a dump) are
 // the ones a player cannot describe. Logging through bqlog puts them in the
 // same per-executable log file the engine uses, which is what support asks for.
 //

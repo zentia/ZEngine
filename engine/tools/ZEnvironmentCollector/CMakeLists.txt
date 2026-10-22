@@ -188,7 +188,6 @@ add_library(ZEnvironmentCheckCore STATIC
     FirmwareProbe.cpp
     ReportArchive.cpp
     EvidenceFiles.cpp
-    CrashCapture.cpp
     CapturePackage.cpp
     WerRegistry.cpp
     WerCapture.cpp
@@ -224,7 +223,7 @@ target_compile_definitions(ZEnvironmentCheckCore PUBLIC WIN32_LEAN_AND_MEAN NOMI
 # the generated mz_config.h mz.h includes), so linking it is enough -- do not
 # hand-roll the paths here, they differ between a full-tree and a standalone
 # configure.
-target_link_libraries(ZEnvironmentCheckCore PUBLIC Zydis minizip-ng dxgi setupapi wevtapi advapi32 shell32 ole32 bcrypt wintrust crypt32 version comdlg32)
+target_link_libraries(ZEnvironmentCheckCore PUBLIC Zydis minizip-ng dxgi setupapi wevtapi advapi32 shell32 ole32 bcrypt comdlg32)
 if(ENVIRONMENT_CHECK_WITH_ZRUNTIME)
     # PUBLIC: the definition has to reach the executable too -- UiLocalization.cpp
     # lives in the exe's source list, not in this library's.
@@ -598,14 +597,11 @@ if(BUILD_TESTING OR ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS)
     target_link_libraries(EnvironmentCaptureTests PRIVATE ZEnvironmentCheckCore)
     add_test(NAME environment_capture_safety COMMAND EnvironmentCaptureTests)
     add_executable(EnvironmentCaptureTestTarget CaptureTestTarget.cpp)
-    add_executable(EnvironmentCaptureIntegrationTests CaptureIntegrationTests.cpp)
-    target_link_libraries(EnvironmentCaptureIntegrationTests PRIVATE ZEnvironmentCheckCore)
-    add_dependencies(EnvironmentCaptureIntegrationTests EnvironmentCaptureTestTarget ${ENVIRONMENT_CHECK_TARGET})
     add_executable(EnvironmentWerTests WerTests.cpp)
     target_link_libraries(EnvironmentWerTests PRIVATE ZEnvironmentCheckCore dbghelp)
     add_dependencies(EnvironmentWerTests EnvironmentCaptureTestTarget ${ENVIRONMENT_CHECK_TARGET})
     add_test(NAME environment_wer_safety COMMAND EnvironmentWerTests)
-    foreach(testTarget EnvironmentCollectorTests EnvironmentCaptureTests EnvironmentCaptureTestTarget EnvironmentCaptureIntegrationTests EnvironmentWerTests)
+    foreach(testTarget EnvironmentCollectorTests EnvironmentCaptureTests EnvironmentCaptureTestTarget EnvironmentWerTests)
         # The tests live in ${CMAKE_BINARY_DIR}/bin, not beside the collector, so
         # a ZRuntimeShared import needs its own copy -- otherwise every test
         # process dies at startup with 0xc0000135 before main() runs.
@@ -618,7 +614,7 @@ if(BUILD_TESTING OR ZENGINE_BUILD_ENVIRONMENT_CHECK_TESTS)
             )
         endif()
     endforeach()
-    foreach(testTarget EnvironmentCaptureTests EnvironmentCaptureTestTarget EnvironmentCaptureIntegrationTests EnvironmentWerTests)
+    foreach(testTarget EnvironmentCaptureTests EnvironmentCaptureTestTarget EnvironmentWerTests)
         target_compile_features(${testTarget} PRIVATE cxx_std_20)
         target_compile_definitions(${testTarget} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
         if(MSVC)

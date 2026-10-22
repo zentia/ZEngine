@@ -252,28 +252,20 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 
 ### 推荐 Windows 系统转储（WER）与已有 dump 导入
 
-高级区域默认选择"Windows 系统崩溃转储（推荐）"，另保留"ProcDump 附加（需允许调试）"。WER 不用选择或运行 ProcDump：选择当前项目游戏 exe → 点击开始 → 确认完整内存隐私及注册表修改 → 批准 UAC → 界面提示系统捕获已启用后，正常启动游戏并复现崩溃。默认等 1 小时。目标需在当前用户会话运行；不同用户的游戏不会自动放宽输出目录权限。
+高级区域只有一种后端：Windows 系统崩溃转储（WER）。选择当前项目游戏 exe → 点击开始 → 确认完整内存隐私及注册表修改 → 批准 UAC → 界面提示系统捕获已启用后，正常启动游戏并复现崩溃。默认等 1 小时。目标需在当前用户会话运行；不同用户的游戏不会自动放宽输出目录权限。
 
 - **一次启用可连续收集多次崩溃**：每次崩溃各复制一份（`crash.dmp`、`crash-2.dmp`…，单次会话上限 8 份），点"安全停止捕获"、等待超时或达到上限后才统一恢复注册表。每份 dump 独立做完整内存/异常线程/PID/模块路径校验，晚到的 dump 不会被当重复文件跳过。
 - **只写 64 位注册表视图** `HKLM/SOFTWARE/Microsoft/Windows/Windows Error Reporting/LocalDumps/<exe文件名>` 三值：DumpType DWORD=2、DumpCount DWORD=2、DumpFolder REG_EXPAND_SZ=本次私有目录。WER 按文件名匹配而非完整路径，所以采集器要结合观测到的 PID、创建时间、dump 异常时间和完整模块路径才能自动接收；身份证据不足时保留原文件并提示手工确认，不把任意新文件当目标崩溃。仅做有限查询，不申请 VM_READ、不调试附加、不修改反作弊。
 - **提权只在启用/恢复时发生**，走随包 CLI 的 `--wer-config` 内部入口，参数不进入 shell。备份写在 `HKLM/SOFTWARE/ZEngine/EnvironmentCollector/WerBackupsV1/<exe>`，ACL 只允许管理员/SYSTEM 修改；恢复逐值比较，若其他工具已改动则返回冲突并保留备份。**恢复是恢复先前配置，不是关闭已有全局 WER。** UAC 拒绝/恢复冲突时明确提示，窗口退出前对未恢复配置再次告警。
 - **结束收集后**按原配置恢复（可能再次弹 UAC），再补采环境、算 SHA256、ZIP64 压缩。多份 dump 打进同一个 `capture.zip`，`checksums.json` 逐份记录 SHA256；`capture.json` 有 `capturedDumpCount` 与 `dumps` 数组（PID、异常码、dump 时间），顶层单份字段仍指向第一份以兼容旧读取器。用户主动停止且已收到 dump 时按正常完成处理；一份都没收到时仍为取消/超时失败。
 - **会话目录** `EnvironmentReports/crash-capture-wer-<GUID>`：`system-dumps` 保留 Windows 原文件，验证后的副本为 `crash.dmp`，最终分享包是该私有目录内的 `capture.zip`。目录权限限当前用户、管理员和 SYSTEM；不跟随目录链接，不覆盖已有文件。空间不足/超时/后处理失败生成仅含 `capture.json` 的 `capture-failure.zip`，不冒称含 dump。复制前要求额外约 2 倍 dump 大小 + 1GiB（至少 4GiB 起步），单 dump 上限 64GiB。
-- **"选择已有 dump 并打包"**不改注册表、不运行 ProcDump，不删除或移动原文件；验证后复制、补采与打包，报告记 `captureBackend=dump_import` 与 `identity=USER_CONFIRMED_IMPORT_AND_MODULE_PATH`，不伪称属于本次运行。WER/import 报告 schemaVersion=2；ProcDump 原 schema 不变。
+- **"选择已有 dump 并打包"**不改注册表，不删除或移动原文件；验证后复制、补采与打包，报告记 `captureBackend=dump_import` 与 `identity=USER_CONFIRMED_IMPORT_AND_MODULE_PATH`，不伪称属于本次运行。WER/import 报告 schemaVersion=2。
 - **限制**：真实 WXQ.exe 及反作弊环境未验证；自定义崩溃处理、自动调试设置或系统策略可能阻止 WER，配置成功不保证生成 dump，不用于卡死/普通退出。**跨用户目标、标准用户 UAC 拒绝、异机 ACL/受控文件夹三项仍未验收**。只支持安全 exe 文件名、本地普通目录；工具未数字签名、不自动上传。参考：<https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps>。
 - **验收**：本机已提权会话（2026-10）走通启用 → 连续捕获两份 → 恢复，`LocalDumps` 与备份键均无残留。手工命令 `EnvironmentWerTests.exe --consent-system-test normal <目录>`（未挂进 ctest），**必须与 `ZEnvironmentCollector.exe` 同目录**：提权重启的是同目录的自己，缺了它不会弹 UAC，只报"同目录缺少 `ZEnvironmentCollector.exe`"。
 
-### 高级诊断：一次完整崩溃 dump
+### 高级诊断的产出与入口
 
 普通报告与捕获结果分别保存。"打开捕获结果"只使用本窗口最近一次捕获结果，不受普通采集影响；重开窗口无历史结果时提示到桌面 `EnvironmentReports/crash-capture-*` 查找，不拿普通报告冒充。
 
-选择微软官方 `procdump64.exe` 和当前 profile 对应的游戏 exe（不是 Launcher），点击开始后需分别确认完整内存隐私和 Sysinternals 许可。ProcDump 需从 <https://learn.microsoft.com/en-us/sysinternals/downloads/procdump> 自行下载，采集器只提供打开官网入口，不捆绑分发。通过签名/原始文件名/64 位 PE 检查才运行，并保持只读文件句柄防止校验后修改；证书在线验证不可用时拒绝运行。当前微软页面列 ProcDump 支持 Windows 11 及以上，此模式不承诺 Windows 10 兼容。
-
-- **目标约束**：名称匹配 profile、完整路径匹配用户选择、同一 Windows 会话、单个 64 位实例，且无已有调试器/ProcDump。以 PID 调用 `-accepteula -ma -e -n 1`，不使用全局 AeDebug 注册，不注入游戏、不主动启动游戏。默认等待及监控合计 1 小时；正常退出或未捕获异常时只保存失败/无 dump 清单，不假报成功。
-- **空间**：预检至少 4GiB 且不低于预计已提交内存两倍加 2GiB，监控中持续检查 1GiB 余量；完整 dump 最大 64GiB，不足时拒绝启动或请求安全停止。完整 dump 可能含账号/聊天/令牌和完整路径，无法脱敏，仅本地保存、经安全渠道手动发送，ZIP 本身未加密。
-- **停止**：只通过微软支持的 `ProcDump-<目标PID>` 事件请求优雅退出并等待恢复目标（该事件影响同目标的所有实例，故启动前拒绝已有监控）。绝不把 KillOnJobClose/TerminateProcess 用于 ProcDump；安全入口不可用时会等待而不是强杀。用户强杀采集器、系统关机等场景不保证取证完成。
-- **完成判定**：等待 ProcDump 退出并关闭输出文件，联合完成文本、支持的退出码、MDMP 头、FullMemory 标志、Memory64 负载范围、Exception/Thread/MiscInfo、目标 PID 验证再标记 dump 有效。官方 12.01 实测重定向输出为 UTF-16LE、成功一份 dump 返回 1，不能按 exit 0 判断；其他输出格式未知时保留原始文件并报告未确认。
-- **结果包**：`crash.dmp`、`environment.zip`、`capture.json`、`procdump.log`、`checksums.json`。清单保存同意时刻、目标名/PID、EXE 版本与 SHA256、ProcDump 版本与 SHA256、异常码、dump 时间/大小、验证结果。EXE 版本不保证等同游戏资源版本，定位仍需结合 dump 模块与发布记录取匹配 PDB。原始 dump 始终保留。
-- **日志/哈希**：ProcDump 日志最多保存 1MiB 并转 UTF-8；成功后所有证据文件算 SHA256，按白名单流式 Deflate 压成 ZIP64 并实际解压回读 CRC（64KiB 读缓冲，不把数 GB 文件装入内存）。大 dump 打包可取消。
-- **设置**：通过的 ProcDump 路径记在 `HKCU/Software/ZEngine/EnvironmentCollector/ProcDumpPath`；每次 GUI 仍需重新确认许可与内存采集，偏好写失败不丢取证结果。不修改全局调试器注册和反作弊设置。压缩依赖 `engine/3rdparty/minizip-ng`（deflate 单方法，ZIP64 原生支持），交付源码须包含 `LICENSE-minizip-ng.txt`。
-- **失败包**：签名前置失败生成 `verification.zip`，签名后的进程访问/监控/后处理异常生成 `capture-failure.zip`，二者仅含 `capture.json`。报告补充 `failedStage`、`failedOperation`、Win32 错误码、目标 PID 和 `requestedProcessAccess`。收集根目录不可写、授权前参数失败、取消/正常退出等仍可能只有本地 JSON，不能承诺任何失败都必有 ZIP。不自动提权、不调整真实目标 DACL、不启用调试特权、不跳过签名或反作弊。截图上的"目标进程已变化或访问被拒绝"只证明本次已通过签名且未附加，不能据此确认错误码 5 或断言反作弊是原因。
+- **打包**：成功后所有证据文件算 SHA256，按白名单流式 Deflate 压成 ZIP64 并实际解压回读 CRC（64KiB 读缓冲，不把数 GB 文件装入内存）；大 dump 打包可取消。压缩依赖 `engine/3rdparty/minizip-ng`（deflate 单方法，ZIP64 原生支持），交付源码须包含 `LICENSE-minizip-ng.txt`。
+- **隐私**：完整 dump 可能含账号/聊天/令牌和完整路径，无法脱敏，仅本地保存、经安全渠道手动发送；ZIP 本身未加密，不自动上传。

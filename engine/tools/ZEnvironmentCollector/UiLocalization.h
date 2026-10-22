@@ -46,7 +46,7 @@ const UiStringEntry* ChineseSimplifiedStrings(std::size_t& out_count);
 
 // The remembered language, as one of ZSlate's language ids ("en", "zh-CN").
 // Empty means "not chosen yet", which the caller treats as the default.
-// HKCU\Software\ZEngine\EnvironmentCollector, same key as the ProcDump path.
+// HKCU\Software\ZEngine\EnvironmentCollector.
 std::string LoadLanguagePreference();
 void SaveLanguagePreference(const std::string& languageId);
 

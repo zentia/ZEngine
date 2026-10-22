@@ -133,19 +133,11 @@ namespace
         // Capture (advanced diagnostics)
         {"capture.section", "高级诊断：捕获一次游戏崩溃 · "},
         {"capture.privacy", "完整内存可能包含账号和聊天信息；仅本地保存，请勿公开分享。"},
-        {"capture.mode.wer", "Windows系统崩溃转储（推荐）"},
-        {"capture.mode.procdump", "ProcDump附加（需允许调试）"},
         {"capture.wer.note", "WER仅配置当前exe名称；需要UAC，一次启用可连续收集多次崩溃，点“安全停止捕获”后才恢复，不附加游戏。"},
-        {"capture.procdump.note", "下方ProcDump下载与选择只用于ProcDump模式。"},
-        {"capture.procdump.download", "打开微软ProcDump下载及许可页面"},
-        {"capture.procdump.pick", "选择 procdump64.exe"},
-        {"capture.procdump.reselect", "重新选择 ProcDump（已记住位置）"},
-        {"capture.procdump.selected", "ProcDump已选择（启动前验证签名）"},
-        {"capture.procdump.dialog", "选择微软官方 procdump64.exe"},
         {"capture.target.pick", "选择游戏程序（当前项目目标）"},
         {"capture.target.dialog", "选择当前项目的游戏exe，不是启动器"},
         {"capture.target.prefix", "目标："},
-        {"capture.start", "开始捕获崩溃（按所选方式）"},
+        {"capture.start", "开始捕获崩溃（Windows系统转储）"},
         {"capture.import", "选择已有dump并打包（不改系统配置）"},
         {"capture.import.dialog", "选择已生成的完整dump"},
         {"capture.stop", "安全停止捕获 / 取消后处理"},
@@ -157,9 +149,7 @@ namespace
         {"capture.open.failed", "无法打开捕获目录，请到EnvironmentReports/crash-capture-*查找capture.json。"},
         {"capture.preparing", "准备捕获"},
         {"capture.need.target", "请先选择游戏程序。"},
-        {"capture.need.both", "请先选择ProcDump和游戏程序。"},
         {"capture.need.profile", "当前profile没有目标exe，请使用具体项目配置。"},
-        {"capture.forget.failed", "（未能记住ProcDump位置，不影响取证结果）"},
 
         // Capture confirmation dialogs
         {"capture.consent.title", "完整内存采集授权"},
@@ -174,14 +164,6 @@ namespace
          "一次启用可连续收集本次会话内的多次崩溃（每份数GB，最多8份）；点击“安全停止捕获”后才结束并统一恢复配置，未点击前配置一直生效。\n"
          "完整内存含敏感数据，占用数GB，不自动上传。配置成功不保证产生dump。\n"
          "不附加游戏，不终止WER；异常退出可用恢复按钮处理。\n\n是否同意？"},
-        {"capture.consent.procdump",
-         "仅监控所选游戏。完整内存含账号、聊天等敏感数据，占用数GB，不自动上传。\n"
-         "停止时等待ProcDump安全退出，不强杀游戏或调试器。\n\n是否同意？"},
-        {"capture.license.title", "Sysinternals许可确认"},
-        {"capture.license.body",
-         "请先阅读微软Sysinternals许可（下载页及ProcDump自带Eula.txt）。\n"
-         "选择“是”表示你已阅读并接受，采集器将以 -accepteula 参数调用你选择的ProcDump。\n"
-         "工具不包含ProcDump，也不代替你取得第三方使用许可。\n\n是否接受该许可？"},
 
         // WER restore / close guard
         {"capture.restore.dialog.title", "恢复系统捕获配置"},
