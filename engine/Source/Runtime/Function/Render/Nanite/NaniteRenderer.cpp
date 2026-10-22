@@ -914,14 +914,22 @@ bool NaniteRenderer::EnsureRasterPipeline()
     multisample.sType = RHI_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisample.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
 
-    RHIPipelineColorBlendAttachmentState blend {};
-    blend.colorWriteMask = RHI_COLOR_COMPONENT_R_BIT | RHI_COLOR_COMPONENT_G_BIT |
-                           RHI_COLOR_COMPONENT_B_BIT | RHI_COLOR_COMPONENT_A_BIT;
+    // 三个 blend 附件 —— 一片元写三个 GBuffer target，一个不多一个不少。
+    // 写 1 个的话 Vulkan 直接拒绝建管线（附件数与 subpass 不符），Metal 会在开
+    // pass 时因为附件 1/2 没配而炸；写 4 个则配不上 GBuffer 的 render pass。
+    RHIPipelineColorBlendAttachmentState
+        blend[kNaniteRasterColorAttachmentCount] {};
+    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+    {
+        blend[i].blendEnable = RHI_FALSE;
+        blend[i].colorWriteMask = RHI_COLOR_COMPONENT_R_BIT | RHI_COLOR_COMPONENT_G_BIT |
+                                  RHI_COLOR_COMPONENT_B_BIT | RHI_COLOR_COMPONENT_A_BIT;
+    }
 
     RHIPipelineColorBlendStateCreateInfo blend_state {};
     blend_state.sType = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    blend_state.attachmentCount = 1;
-    blend_state.pAttachments = &blend;
+    blend_state.attachmentCount = kNaniteRasterColorAttachmentCount;
+    blend_state.pAttachments = blend;
 
     RHIPipelineDepthStencilStateCreateInfo depth_stencil {};
     depth_stencil.sType = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -1196,15 +1204,26 @@ void NaniteRenderer::DrawClustersIndirect()
     const uint32_t width = m_GPU.target_width;
     const uint32_t height = m_GPU.target_height;
 
-    // 清成深灰 + 深度 1.0。离屏 target 的颜色是"有没有画出东西"的判据：
-    // 冒烟测试读回这张图，只要有像素不等于这个颜色，就说明真的有三角形落上去。
-    RHIClearValue clear_values[2] = {};
-    clear_values[0].color.float32[0] = 0.05f;
-    clear_values[0].color.float32[1] = 0.05f;
-    clear_values[0].color.float32[2] = 0.06f;
-    clear_values[0].color.float32[3] = 1.0f;
-    clear_values[1].depthStencil.depth = 1.0f;
-    clear_values[1].depthStencil.stencil = 0;
+    // 三张 GBuffer 全部清成 0（alpha 也是 0），深度清成 1.0 —— 和主相机
+    // DrawGBufferPass 的清屏值逐项一致。
+    //
+    // 全零是有语义的，不是随便挑的：GBufferB 全零 ⇒ shadingModelId = 0（unlit），
+    // 正是"这块像素没有几何"该有的值，延迟光照不会去给它打光。
+    //
+    // 别改成"深灰当背景"那种非零值：GBufferC 是 R8G8B8A8_SRGB，清屏值会被做一次
+    // linear→sRGB 编码，0.05 落到字节上是 62 —— 一个看起来"很暗"的清屏色会被读回
+    // 来当成"有东西画上去了"。0 的编码还是 0，这才是唯一安全的"空"标记。
+    constexpr uint32_t kClearCount = kNaniteRasterColorAttachmentCount + 1;
+    RHIClearValue     clear_values[kClearCount] = {};
+    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+    {
+        clear_values[i].color.float32[0] = 0.0f;
+        clear_values[i].color.float32[1] = 0.0f;
+        clear_values[i].color.float32[2] = 0.0f;
+        clear_values[i].color.float32[3] = 0.0f;
+    }
+    clear_values[kNaniteRasterColorAttachmentCount].depthStencil.depth = 1.0f;
+    clear_values[kNaniteRasterColorAttachmentCount].depthStencil.stencil = 0;
 
     RHIRenderPassBeginInfo begin_info {};
     begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1215,7 +1234,7 @@ void NaniteRenderer::DrawClustersIndirect()
     begin_info.renderArea.offset.y = 0;
     begin_info.renderArea.extent.width = width;
     begin_info.renderArea.extent.height = height;
-    begin_info.clearValueCount = 2;
+    begin_info.clearValueCount = kClearCount;
     begin_info.pClearValues = clear_values;
 
     m_Rhi->CmdBeginRenderPassPFN(command_buffer, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
@@ -1413,29 +1432,41 @@ bool NaniteRenderer::EnsureRasterTarget()
 
     DestroyRasterTarget();
 
-    // ---- 颜色 + 深度两张离屏图 -------------------------------------------------
-    // color 带上 TRANSFER_SRC：冒烟测试要把这张图读回 CPU 才能断言"真的画出了东西"。
-    constexpr RHIFormat kColorFormat = RHI_FORMAT_B8G8R8A8_UNORM;
+    // ---- GBuffer 形状的三张颜色图 + 一张深度 -------------------------------------
+    //
+    // 格式抄 MainCameraFramebufferResources::SetupAttachments：A/B 是 R8G8B8A8_UNORM，
+    // C 是 R8G8B8A8_SRGB（sRGB 给暗部多一点精度）。离屏 target 照抄真实 GBuffer 是
+    // 故意的 —— 这样本机跑的就是主相机那条通路，而不是一个"形状差不多"的替身。
+    //
+    // 三张都带 TRANSFER_SRC：冒烟测试要把它们读回 CPU 才能断言写进去的值对不对。
+    constexpr RHIFormat kGbufferFormats[kNaniteRasterColorAttachmentCount] = {
+        RHI_FORMAT_R8G8B8A8_UNORM,  // GBufferA：编码后的世界法线
+        RHI_FORMAT_R8G8B8A8_UNORM,  // GBufferB：metallic / specular / roughness / shading model
+        RHI_FORMAT_R8G8B8A8_SRGB,   // GBufferC：baseColor
+    };
     constexpr RHIFormat kDepthFormat = RHI_FORMAT_D32_SFLOAT;
 
-    m_Rhi->CreateImage(width,
-                       height,
-                       kColorFormat,
-                       RHI_IMAGE_TILING_OPTIMAL,
-                       RHI_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | RHI_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                       RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                       m_GPU.target_color,
-                       m_GPU.target_color_memory,
-                       0,
-                       1,
-                       1);
-    m_Rhi->CreateImageView(m_GPU.target_color,
-                           kColorFormat,
-                           RHI_IMAGE_ASPECT_COLOR_BIT,
-                           RHI_IMAGE_VIEW_TYPE_2D,
+    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+    {
+        m_Rhi->CreateImage(width,
+                           height,
+                           kGbufferFormats[i],
+                           RHI_IMAGE_TILING_OPTIMAL,
+                           RHI_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | RHI_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                           RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                           m_GPU.target_gbuffer[i],
+                           m_GPU.target_gbuffer_memory[i],
+                           0,
                            1,
-                           1,
-                           m_GPU.target_color_view);
+                           1);
+        m_Rhi->CreateImageView(m_GPU.target_gbuffer[i],
+                               kGbufferFormats[i],
+                               RHI_IMAGE_ASPECT_COLOR_BIT,
+                               RHI_IMAGE_VIEW_TYPE_2D,
+                               1,
+                               1,
+                               m_GPU.target_gbuffer_view[i]);
+    }
 
     m_Rhi->CreateImage(width,
                        height,
@@ -1456,41 +1487,58 @@ bool NaniteRenderer::EnsureRasterTarget()
                            1,
                            m_GPU.target_depth_view);
 
-    if (m_GPU.target_color_view == nullptr || m_GPU.target_depth_view == nullptr)
+    bool gbuffer_views_ready = m_GPU.target_depth_view != nullptr;
+    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+    {
+        if (m_GPU.target_gbuffer_view[i] == nullptr)
+        {
+            gbuffer_views_ready = false;
+        }
+    }
+    if (!gbuffer_views_ready)
     {
         LOG_WARNING(ZRender, "nanite: offscreen raster target allocation failed");
         DestroyRasterTarget();
         return false;
     }
 
-    // ---- render pass：1 color + 1 depth，都 clear --------------------------------
-    RHIAttachmentDescription attachments[2] = {};
-    attachments[0].flags = 0;
-    attachments[0].format = kColorFormat;
-    attachments[0].samples = RHI_SAMPLE_COUNT_1_BIT;
-    attachments[0].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[0].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
-    attachments[0].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[0].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[0].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    // ---- render pass：3 color + 1 depth，都 clear --------------------------------
+    constexpr uint32_t kDepthAttachmentIndex = kNaniteRasterColorAttachmentCount;
+    constexpr uint32_t kAttachmentCount = kNaniteRasterColorAttachmentCount + 1;
 
-    attachments[1].flags = 0;
-    attachments[1].format = kDepthFormat;
-    attachments[1].samples = RHI_SAMPLE_COUNT_1_BIT;
-    attachments[1].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-    attachments[1].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
-    attachments[1].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
-    attachments[1].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
-    attachments[1].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-    attachments[1].finalLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    RHIAttachmentDescription attachments[kAttachmentCount] = {};
+    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+    {
+        attachments[i].flags = 0;
+        attachments[i].format = kGbufferFormats[i];
+        attachments[i].samples = RHI_SAMPLE_COUNT_1_BIT;
+        attachments[i].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[i].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+        attachments[i].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachments[i].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachments[i].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+        attachments[i].finalLayout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 
-    RHIAttachmentReference color_reference {};
-    color_reference.attachment = 0;
-    color_reference.layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachments[kDepthAttachmentIndex].flags = 0;
+    attachments[kDepthAttachmentIndex].format = kDepthFormat;
+    attachments[kDepthAttachmentIndex].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[kDepthAttachmentIndex].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[kDepthAttachmentIndex].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+    attachments[kDepthAttachmentIndex].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[kDepthAttachmentIndex].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[kDepthAttachmentIndex].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+    attachments[kDepthAttachmentIndex].finalLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    RHIAttachmentReference color_references[kNaniteRasterColorAttachmentCount] = {};
+    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+    {
+        color_references[i].attachment = i;
+        color_references[i].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
 
     RHIAttachmentReference depth_reference {};
-    depth_reference.attachment = 1;
+    depth_reference.attachment = kDepthAttachmentIndex;
     depth_reference.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     RHISubpassDescription subpass {};
@@ -1498,8 +1546,8 @@ bool NaniteRenderer::EnsureRasterTarget()
     subpass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.inputAttachmentCount = 0;
     subpass.pInputAttachments = nullptr;
-    subpass.colorAttachmentCount = 1;
-    subpass.pColorAttachments = &color_reference;
+    subpass.colorAttachmentCount = kNaniteRasterColorAttachmentCount;
+    subpass.pColorAttachments = color_references;
     subpass.pResolveAttachments = nullptr;
     subpass.pDepthStencilAttachment = &depth_reference;
     subpass.preserveAttachmentCount = 0;
@@ -1509,7 +1557,7 @@ bool NaniteRenderer::EnsureRasterTarget()
     render_pass_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
     render_pass_info.pNext = nullptr;
     render_pass_info.flags = 0;
-    render_pass_info.attachmentCount = 2;
+    render_pass_info.attachmentCount = kAttachmentCount;
     render_pass_info.pAttachments = attachments;
     render_pass_info.subpassCount = 1;
     render_pass_info.pSubpasses = &subpass;
@@ -1524,13 +1572,19 @@ bool NaniteRenderer::EnsureRasterTarget()
     }
 
     // ---- framebuffer ------------------------------------------------------------
-    RHIImageView* views[2] = {m_GPU.target_color_view, m_GPU.target_depth_view};
+    RHIImageView* views[kAttachmentCount] = {};
+    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+    {
+        views[i] = m_GPU.target_gbuffer_view[i];
+    }
+    views[kDepthAttachmentIndex] = m_GPU.target_depth_view;
+
     RHIFramebufferCreateInfo framebuffer_info {};
     framebuffer_info.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     framebuffer_info.pNext = nullptr;
     framebuffer_info.flags = 0;
     framebuffer_info.renderPass = m_GPU.target_render_pass;
-    framebuffer_info.attachmentCount = 2;
+    framebuffer_info.attachmentCount = kAttachmentCount;
     framebuffer_info.pAttachments = views;
     framebuffer_info.width = width;
     framebuffer_info.height = height;
@@ -1565,30 +1619,42 @@ void NaniteRenderer::DestroyRasterTarget()
         m_Rhi->DestroyRenderPass(m_GPU.target_render_pass);
         m_GPU.target_render_pass = nullptr;
     }
-    if (m_GPU.target_color_view != nullptr)
+
+    // 逆序销毁：view 先于 image，image 先于 memory。顺序写反在 Metal 上不会报错，
+    // 但在 Vulkan 上是对已销毁句柄的 use-after-free。
+    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
     {
-        m_Rhi->DestroyImageView(m_GPU.target_color_view);
-        m_GPU.target_color_view = nullptr;
+        if (m_GPU.target_gbuffer_view[i] != nullptr)
+        {
+            m_Rhi->DestroyImageView(m_GPU.target_gbuffer_view[i]);
+            m_GPU.target_gbuffer_view[i] = nullptr;
+        }
     }
     if (m_GPU.target_depth_view != nullptr)
     {
         m_Rhi->DestroyImageView(m_GPU.target_depth_view);
         m_GPU.target_depth_view = nullptr;
     }
-    if (m_GPU.target_color != nullptr)
+    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
     {
-        m_Rhi->DestroyImage(m_GPU.target_color);
-        m_GPU.target_color = nullptr;
+        if (m_GPU.target_gbuffer[i] != nullptr)
+        {
+            m_Rhi->DestroyImage(m_GPU.target_gbuffer[i]);
+            m_GPU.target_gbuffer[i] = nullptr;
+        }
     }
     if (m_GPU.target_depth != nullptr)
     {
         m_Rhi->DestroyImage(m_GPU.target_depth);
         m_GPU.target_depth = nullptr;
     }
-    if (m_GPU.target_color_memory != nullptr)
+    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
     {
-        m_Rhi->FreeMemory(m_GPU.target_color_memory);
-        m_GPU.target_color_memory = nullptr;
+        if (m_GPU.target_gbuffer_memory[i] != nullptr)
+        {
+            m_Rhi->FreeMemory(m_GPU.target_gbuffer_memory[i]);
+            m_GPU.target_gbuffer_memory[i] = nullptr;
+        }
     }
     if (m_GPU.target_depth_memory != nullptr)
     {

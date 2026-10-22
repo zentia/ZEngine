@@ -61,6 +61,7 @@
 #include "Runtime/Function/Render/RenderCamera.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -204,6 +205,61 @@ namespace
             cursor = found + std::strlen(token);
         }
         return true;
+    }
+
+    // 按出现顺序抽出所有**片元/顶点输出**的 `layout(location = N) out` 槽位。
+    //
+    // 只认紧跟 `out` 的那些：`layout(location = N) in` 是输入，混进来会让"恰好三
+    // 个输出"这个断言变成恒真。
+    std::vector<uint32_t> ExtractOutputLocations(const std::string& text)
+    {
+        std::vector<uint32_t> locations;
+        size_t cursor = 0;
+        while (true)
+        {
+            const size_t at = text.find("layout(location =", cursor);
+            if (at == std::string::npos)
+            {
+                break;
+            }
+            cursor = at + std::strlen("layout(location =");
+
+            while (cursor < text.size() && (text[cursor] == ' ' || text[cursor] == '\t'))
+            {
+                ++cursor;
+            }
+            uint32_t value = 0;
+            size_t digits = 0;
+            while (cursor < text.size() && text[cursor] >= '0' && text[cursor] <= '9')
+            {
+                value = value * 10u + static_cast<uint32_t>(text[cursor] - '0');
+                ++digits;
+                ++cursor;
+            }
+            if (digits == 0)
+            {
+                continue;
+            }
+
+            // `layout(location = N)` 之后跳到 `)`，再看跟着的是不是 `out`。
+            const size_t close = text.find(')', cursor);
+            if (close == std::string::npos)
+            {
+                break;
+            }
+            size_t after = close + 1;
+            while (after < text.size() && (text[after] == ' ' || text[after] == '\t' || text[after] == '\n'))
+            {
+                ++after;
+            }
+            if (text.compare(after, 3, "out") == 0 &&
+                (after + 3 >= text.size() || !std::isalnum(static_cast<unsigned char>(text[after + 3]))))
+            {
+                locations.push_back(value);
+            }
+            cursor = close + 1;
+        }
+        return locations;
     }
 
     // 按出现顺序抽出所有 `binding = N` 的数字。
@@ -391,9 +447,13 @@ namespace
         return pixels;
     }
 
-    // 清屏色是 (0.05, 0.05, 0.06)，三个通道都 ≤ 15。shader 写的是 LodDebugColor，
-    // 最暗那一档也有 G = 0.75 ⇒ 191。取 60 当阈值，两者差一个数量级；而且只看
-    // "三个通道里最大的那个"，跟 BGRA / RGBA 的通道顺序无关。
+    // 两边（Nanite 自己的离屏 target 和测试自建的调用方 target）的 GBuffer 清屏值
+    // 都是全零 —— 和主相机 DrawGBufferPass 一致。shader 写进去的最暗一档也有
+    // G = 0.75 ⇒ 191。取 60 当阈值，跟 0 差两个数量级；而且只看"三个通道里最大的
+    // 那个"，跟 BGRA / RGBA 的通道顺序无关。
+    //
+    // 注意 GBufferC 是 SRGB 格式：清屏值会被编码一次，所以清屏值**必须是 0** ——
+    // 换成 0.05 会被编码成 62，直接越过这个阈值，"没画东西"会被读成"画了"。
     constexpr uint8_t kCoveredThreshold = 60;
 
     uint32_t CountCoveredPixels(RHI* rhi, RHIImage* image, uint32_t width, uint32_t height)
@@ -456,9 +516,10 @@ namespace
     // -----------------------------------------------------------------------
     struct CallerTarget
     {
-        RHIImage*        color {nullptr};
-        RHIDeviceMemory* color_memory {nullptr};
-        RHIImageView*    color_view {nullptr};
+        // 三张颜色图 = GBufferA / B / C，格式和主相机一致。
+        RHIImage*        gbuffer[kNaniteRasterColorAttachmentCount] {};
+        RHIDeviceMemory* gbuffer_memory[kNaniteRasterColorAttachmentCount] {};
+        RHIImageView*    gbuffer_view[kNaniteRasterColorAttachmentCount] {};
         RHIImage*        depth {nullptr};
         RHIDeviceMemory* depth_memory {nullptr};
         RHIImageView*    depth_view {nullptr};
@@ -474,27 +535,34 @@ namespace
             return target;
         }
 
-        constexpr RHIFormat kColorFormat = RHI_FORMAT_B8G8R8A8_UNORM;
+        constexpr RHIFormat kGbufferFormats[kNaniteRasterColorAttachmentCount] = {
+            RHI_FORMAT_R8G8B8A8_UNORM,  // GBufferA
+            RHI_FORMAT_R8G8B8A8_UNORM,  // GBufferB
+            RHI_FORMAT_R8G8B8A8_SRGB,   // GBufferC
+        };
         constexpr RHIFormat kDepthFormat = RHI_FORMAT_D32_SFLOAT;
 
-        rhi->CreateImage(width,
-                         height,
-                         kColorFormat,
-                         RHI_IMAGE_TILING_OPTIMAL,
-                         RHI_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | RHI_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                         RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                         target.color,
-                         target.color_memory,
-                         0,
-                         1,
-                         1);
-        rhi->CreateImageView(target.color,
-                             kColorFormat,
-                             RHI_IMAGE_ASPECT_COLOR_BIT,
-                             RHI_IMAGE_VIEW_TYPE_2D,
+        for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+        {
+            rhi->CreateImage(width,
+                             height,
+                             kGbufferFormats[i],
+                             RHI_IMAGE_TILING_OPTIMAL,
+                             RHI_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | RHI_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                             RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                             target.gbuffer[i],
+                             target.gbuffer_memory[i],
+                             0,
                              1,
-                             1,
-                             target.color_view);
+                             1);
+            rhi->CreateImageView(target.gbuffer[i],
+                                 kGbufferFormats[i],
+                                 RHI_IMAGE_ASPECT_COLOR_BIT,
+                                 RHI_IMAGE_VIEW_TYPE_2D,
+                                 1,
+                                 1,
+                                 target.gbuffer_view[i]);
+        }
 
         rhi->CreateImage(width,
                          height,
@@ -515,43 +583,59 @@ namespace
                              1,
                              target.depth_view);
 
-        if (target.color_view == nullptr || target.depth_view == nullptr)
+        bool ready = target.depth_view != nullptr;
+        for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+        {
+            if (target.gbuffer_view[i] == nullptr)
+            {
+                ready = false;
+            }
+        }
+        if (!ready)
         {
             return target;
         }
 
-        RHIAttachmentDescription attachments[2] = {};
-        attachments[0].format        = kColorFormat;
-        attachments[0].samples       = RHI_SAMPLE_COUNT_1_BIT;
-        attachments[0].loadOp        = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-        attachments[0].storeOp       = RHI_ATTACHMENT_STORE_OP_STORE;
-        attachments[0].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-        attachments[0].finalLayout   = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        constexpr uint32_t kDepthAttachmentIndex = kNaniteRasterColorAttachmentCount;
+        constexpr uint32_t kAttachmentCount = kNaniteRasterColorAttachmentCount + 1;
 
-        attachments[1].format        = kDepthFormat;
-        attachments[1].samples       = RHI_SAMPLE_COUNT_1_BIT;
-        attachments[1].loadOp        = RHI_ATTACHMENT_LOAD_OP_CLEAR;
-        attachments[1].storeOp       = RHI_ATTACHMENT_STORE_OP_STORE;
-        attachments[1].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
-        attachments[1].finalLayout   = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        RHIAttachmentDescription attachments[kAttachmentCount] = {};
+        for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+        {
+            attachments[i].format        = kGbufferFormats[i];
+            attachments[i].samples       = RHI_SAMPLE_COUNT_1_BIT;
+            attachments[i].loadOp        = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+            attachments[i].storeOp       = RHI_ATTACHMENT_STORE_OP_STORE;
+            attachments[i].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+            attachments[i].finalLayout   = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
+        attachments[kDepthAttachmentIndex].format        = kDepthFormat;
+        attachments[kDepthAttachmentIndex].samples       = RHI_SAMPLE_COUNT_1_BIT;
+        attachments[kDepthAttachmentIndex].loadOp        = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+        attachments[kDepthAttachmentIndex].storeOp       = RHI_ATTACHMENT_STORE_OP_STORE;
+        attachments[kDepthAttachmentIndex].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+        attachments[kDepthAttachmentIndex].finalLayout   = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-        RHIAttachmentReference color_reference {};
-        color_reference.attachment = 0;
-        color_reference.layout     = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        RHIAttachmentReference color_references[kNaniteRasterColorAttachmentCount] = {};
+        for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+        {
+            color_references[i].attachment = i;
+            color_references[i].layout     = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        }
 
         RHIAttachmentReference depth_reference {};
-        depth_reference.attachment = 1;
+        depth_reference.attachment = kDepthAttachmentIndex;
         depth_reference.layout     = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
         RHISubpassDescription subpass {};
         subpass.pipelineBindPoint     = RHI_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.colorAttachmentCount  = 1;
-        subpass.pColorAttachments     = &color_reference;
+        subpass.colorAttachmentCount  = kNaniteRasterColorAttachmentCount;
+        subpass.pColorAttachments     = color_references;
         subpass.pDepthStencilAttachment = &depth_reference;
 
         RHIRenderPassCreateInfo render_pass_info {};
         render_pass_info.sType           = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        render_pass_info.attachmentCount = 2;
+        render_pass_info.attachmentCount = kAttachmentCount;
         render_pass_info.pAttachments    = attachments;
         render_pass_info.subpassCount    = 1;
         render_pass_info.pSubpasses      = &subpass;
@@ -561,11 +645,17 @@ namespace
             return target;
         }
 
-        RHIImageView* views[2] = {target.color_view, target.depth_view};
+        RHIImageView* views[kAttachmentCount] = {};
+        for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+        {
+            views[i] = target.gbuffer_view[i];
+        }
+        views[kDepthAttachmentIndex] = target.depth_view;
+
         RHIFramebufferCreateInfo framebuffer_info {};
         framebuffer_info.sType         = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         framebuffer_info.renderPass    = target.render_pass;
-        framebuffer_info.attachmentCount = 2;
+        framebuffer_info.attachmentCount = kAttachmentCount;
         framebuffer_info.pAttachments  = views;
         framebuffer_info.width         = width;
         framebuffer_info.height        = height;
@@ -589,31 +679,155 @@ namespace
         {
             rhi->DestroyRenderPass(target.render_pass);
         }
-        if (target.color_view != nullptr)
+        for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
         {
-            rhi->DestroyImageView(target.color_view);
+            if (target.gbuffer_view[i] != nullptr)
+            {
+                rhi->DestroyImageView(target.gbuffer_view[i]);
+            }
         }
         if (target.depth_view != nullptr)
         {
             rhi->DestroyImageView(target.depth_view);
         }
-        if (target.color != nullptr)
+        for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
         {
-            rhi->DestroyImage(target.color);
+            if (target.gbuffer[i] != nullptr)
+            {
+                rhi->DestroyImage(target.gbuffer[i]);
+            }
         }
         if (target.depth != nullptr)
         {
             rhi->DestroyImage(target.depth);
         }
-        if (target.color_memory != nullptr)
+        for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
         {
-            rhi->FreeMemory(target.color_memory);
+            if (target.gbuffer_memory[i] != nullptr)
+            {
+                rhi->FreeMemory(target.gbuffer_memory[i]);
+            }
         }
         if (target.depth_memory != nullptr)
         {
             rhi->FreeMemory(target.depth_memory);
         }
         target = CallerTarget {};
+    }
+
+    // -----------------------------------------------------------------------
+    // 从 GBuffer 的**像素**里把语义读回来。
+    //
+    // 只数像素是不够的：写 1 个 target 和写 3 个都会"有像素"。这里把 GBufferA 解
+    // 码成法线、GBufferB.a 解码成 shading model id、GBufferC 当 baseColor，逐项
+    // 比对 —— 少写一个 target，对应的那一项就是清屏值。
+    // -----------------------------------------------------------------------
+    struct GBufferProbe
+    {
+        uint32_t covered {0};       // 有内容的像素数（三张里任意一张不等于清屏色）
+        bool     normal_valid {false};    // 每个覆盖像素解码出的法线都指向 +Y
+        bool     shading_model_valid {false};  // GBufferB.a 解码出 DEFAULT_LIT(1)
+        bool     base_color_valid {false};     // GBufferC 不是清屏色
+        bool     clear_intact {false};    // 没被覆盖的像素仍是纯黑（清屏色没被改写）
+        float    normal_y {0.0f};   // 覆盖像素解码法线的 y 分量（取第一个）
+    };
+
+    GBufferProbe ProbeGBuffer(RHI* rhi, RHIImage* const* gbuffer, uint32_t width, uint32_t height)
+    {
+        GBufferProbe probe;
+        if (rhi == nullptr || gbuffer == nullptr)
+        {
+            return probe;
+        }
+
+        std::vector<uint8_t> targets[kNaniteRasterColorAttachmentCount];
+        for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+        {
+            targets[i] = ReadBackPixels(rhi, gbuffer[i], width, height);
+            if (targets[i].size() < static_cast<size_t>(width) * height * 4u)
+            {
+                return probe;
+            }
+        }
+
+        bool  any_covered = false;
+        bool  normal_ok = true;
+        bool  shading_ok = true;
+        bool  base_ok = true;
+        bool  clear_ok = true;
+        uint32_t uncovered = 0;
+        float first_normal_y = -2.0f;
+
+        for (uint32_t y = 0; y < height; ++y)
+        {
+            for (uint32_t x = 0; x < width; ++x)
+            {
+                const size_t offset = (static_cast<size_t>(y) * width + x) * 4u;
+                const uint8_t* a = targets[0].data() + offset;
+                const uint8_t* b = targets[1].data() + offset;
+                const uint8_t* c = targets[2].data() + offset;
+
+                // 清屏色 (0.05, 0.05, 0.06) ⇒ (13, 13, 15)。阈值 60 离它一个数量级。
+                const bool a_covered = a[0] > kCoveredThreshold || a[1] > kCoveredThreshold ||
+                                       a[2] > kCoveredThreshold;
+                const bool c_covered = c[0] > kCoveredThreshold || c[1] > kCoveredThreshold ||
+                                       c[2] > kCoveredThreshold;
+                if (!a_covered && !c_covered)
+                {
+                    // 这个像素没被 Nanite 碰到 ⇒ 它必须还停在调用方的清屏色上。
+                    // 纯黑 = (0,0,0)；Nanite 自己的清屏色是 (13,13,15)，一旦它自己
+                    // 重开了一次 pass 就会留在图上，这里立刻变红。
+                    ++uncovered;
+                    if (a[0] != 0 || a[1] != 0 || a[2] != 0 || c[0] != 0 || c[1] != 0 || c[2] != 0)
+                    {
+                        clear_ok = false;
+                    }
+                    continue;
+                }
+
+                ++probe.covered;
+                any_covered = true;
+
+                // GBufferA.rgb = N * 0.5 + 0.5 ⇒ N = a/255 * 2 - 1
+                const float nx = static_cast<float>(a[0]) / 255.0f * 2.0f - 1.0f;
+                const float ny = static_cast<float>(a[1]) / 255.0f * 2.0f - 1.0f;
+                const float nz = static_cast<float>(a[2]) / 255.0f * 2.0f - 1.0f;
+                if (!(ny > 0.5f))
+                {
+                    // 测试网格是 y = 0 的水平面、相机在上方，正面法线必须指向 +Y。
+                    // 方向反了只可能是 cross(dFdx, dFdy) 的两项写反了。
+                    normal_ok = false;
+                }
+                if (first_normal_y < -1.0f)
+                {
+                    first_normal_y = ny;
+                }
+                // 顺便要求它是个像样的方向向量（不是清屏色解码出的垃圾）
+                if (std::fabs(nx) > 0.5f || std::fabs(nz) > 0.5f)
+                {
+                    normal_ok = false;
+                }
+
+                // GBufferB.a = shadingModelId / 255 ⇒ DEFAULT_LIT(1) ⇒ 1
+                if (b[3] != 1)
+                {
+                    shading_ok = false;
+                }
+
+                if (!c_covered)
+                {
+                    base_ok = false;
+                }
+            }
+        }
+
+        (void)any_covered;
+        probe.normal_valid = normal_ok;
+        probe.shading_model_valid = shading_ok;
+        probe.base_color_valid = base_ok;
+        probe.clear_intact = (uncovered > 0) && clear_ok;
+        probe.normal_y = first_normal_y;
+        return probe;
     }
 #endif
 }  // namespace
@@ -639,10 +853,14 @@ int main()
     const std::string common_source = ReadFileText(shader_root + "include/nanite_common.h");
     const std::string cull_source = ReadFileText(shader_root + "glsl/nanite_cluster_cull.comp");
     const std::string vert_source = ReadFileText(shader_root + "glsl/nanite_cluster.vert");
+    const std::string frag_source = ReadFileText(shader_root + "glsl/nanite_cluster.frag");
+    const std::string gbuffer_source = ReadFileText(shader_root + "include/gbuffer.h");
 
     Check(!common_source.empty(), "the shared GLSL struct header was read");
     Check(!cull_source.empty(), "the cluster-cull compute shader was read");
     Check(!vert_source.empty(), "the cluster raster vertex shader was read");
+    Check(!frag_source.empty(), "the cluster raster fragment shader was read");
+    Check(!gbuffer_source.empty(), "the shared GBuffer layout header was read");
 
     // NaniteGPUCluster：80 字节，五个 vec4/uvec4，**顺序**必须和 C++ 一致。
     Check(ContainsInOrder(common_source,
@@ -696,6 +914,26 @@ int main()
     // 而 CPU 没改 ⇒ 一半集群永远轮不到线程，静默少画。
     Check(cull_source.find("local_size_x = 64") != std::string::npos,
           "the cull kernel still declares local_size_x = 64 (DispatchClusterCulling hard-codes it)");
+
+    // ---- GBuffer：片元输出必须恰好三个，槽位 0/1/2 ----
+    //
+    // gbuffer.h 里那句 "EXACTLY THREE" 不是修辞：GBuffer 的 render pass 只有三个
+    // 颜色附件，多声明一个输出就配不上 pass（Vulkan 拒绝建管线、DX12 静默回退到
+    // 内置 shader，作者写的东西全丢）。而少声明一个 ⇒ GBufferB/C 留着清屏色，
+    // 延迟光照拿到的是"法线对、材质空"的半成品 —— 画面不会报错，只会不对。
+    //
+    // 光栅管线在 C++ 侧按 kNaniteRasterColorAttachmentCount 声明 blend 附件，所以
+    // 这两边也得对上。
+    Check(SameSequence(ExtractOutputLocations(frag_source),
+                       {0, 1, 2}),
+          "the raster fragment shader writes exactly three outputs, at locations 0/1/2");
+    Check(frag_source.find("#include \"gbuffer.h\"") != std::string::npos &&
+              frag_source.find("EncodeGBufferData") != std::string::npos,
+          "it encodes them through the shared GBuffer helpers instead of hand-rolling the packing");
+    Check(frag_source.find("SHADINGMODELID_DEFAULT_LIT") != std::string::npos,
+          "Nanite surfaces are tagged DEFAULT_LIT so the deferred pass actually lights them");
+    Check(gbuffer_source.find("OutGBufferB.a = EncodeShadingModelId") != std::string::npos,
+          "the shared encoder still packs the shading model id into GBufferB.a");
 #else
     std::printf("[skip] ZENGINE_ENGINE_ROOT_DIR is not defined -- GLSL mirror checks skipped\n");
 #endif
@@ -1088,8 +1326,9 @@ int main()
             const NaniteGPUResources& raster = renderer.GetGPUResources();
             Check(raster.raster_ready,
                   "the raster pipeline was built (DrawClustersIndirect is no longer a no-op)");
-            Check(raster.target_color != nullptr && raster.target_depth != nullptr,
-                  "Nanite created its own offscreen colour and depth targets");
+            Check(raster.target_gbuffer[0] != nullptr && raster.target_gbuffer[1] != nullptr &&
+                      raster.target_gbuffer[2] != nullptr && raster.target_depth != nullptr,
+                  "Nanite created its own offscreen GBuffer (three colour targets + depth)");
             Check(raster.target_render_pass != nullptr && raster.target_framebuffer != nullptr,
                   "and it owns the render pass that draws into them");
             Check(raster.target_width == kTargetSize && raster.target_height == kTargetSize,
@@ -1097,10 +1336,16 @@ int main()
             Check(raster.raster_framebuffer == raster.target_framebuffer,
                   "Nanite opens and closes the pass itself when none was injected");
 
-            const uint32_t covered =
-                CountCoveredPixels(rhi, raster.target_color, raster.target_width, raster.target_height);
-            Check(covered > 0,
-                  "the offscreen target holds pixels the clear colour cannot explain (clusters were rasterised)");
+            const GBufferProbe drawn = ProbeGBuffer(
+                rhi, raster.target_gbuffer, raster.target_width, raster.target_height);
+            Check(drawn.covered > 0,
+                  "the offscreen GBuffer holds pixels the clear colour cannot explain (clusters were rasterised)");
+            Check(drawn.normal_valid,
+                  "GBufferA decodes to a +Y world normal on every covered pixel (the test plane is horizontal)");
+            Check(drawn.shading_model_valid,
+                  "GBufferB.a decodes to SHADINGMODELID_DEFAULT_LIT, so the deferred pass will light Nanite geometry");
+            Check(drawn.base_color_valid,
+                  "GBufferC is written too -- all three targets, not just the first");
 
             // 对照：**同一个视点**把相机转开 ⇒ 一个集群都活不下来 ⇒ 目标只剩清屏色。
             // 没有这一条，"读回来有东西"完全可能只是没清干净的垃圾。用同一个高度是
@@ -1115,10 +1360,9 @@ int main()
             renderer.DrawClustersIndirect();
 
             const NaniteGPUResources& away_gpu = renderer.GetGPUResources();
-            const uint32_t covered_away =
-                CountCoveredPixels(rhi, away_gpu.target_color, away_gpu.target_width, away_gpu.target_height);
-            Check(covered_away == 0,
-                  "with the camera turned away the target is left at the clear colour");
+            Check(ProbeGBuffer(rhi, away_gpu.target_gbuffer, away_gpu.target_width, away_gpu.target_height)
+                      .covered == 0,
+                  "with the camera turned away the GBuffer is left at the clear colour");
         }
 #endif
 
@@ -1129,20 +1373,23 @@ int main()
         // UpdateNanite 在任何 pass 之前执行，那时没有 pass 可开，画出来的东西也没
         // 人读 —— 只有主相机把自己的 GBuffer pass 开着的时候画才有意义。
         //
-        // 判据分三层，缺一层就会被某种"看起来对"的实现骗过去：
-        //   * 有像素                ⇒ 排除"注入被忽略 / 退回没人读的离屏 target"
-        //   * 覆盖全落在 16×16 里   ⇒ 排除"Nanite 自己开了 pass 并设了全尺寸视口"
-        //   * 清屏色是调用方的纯黑  ⇒ 排除"Nanite 用自己的清屏色重清了一遍"
+        // 判据分四层，缺一层就会被某种"看起来对"的实现骗过去：
+        //   * 有像素                      ⇒ 排除"注入被忽略 / 退回没人读的离屏 target"
+        //   * 三张 GBuffer 都有语义内容   ⇒ 排除"只写了第一个附件 / 还是 LOD 调试色那套"
+        //   * 覆盖全落在 16×16 里         ⇒ 排除"Nanite 自己开了 pass 并设了全尺寸视口"
+        //   * 没覆盖的像素仍是调用方的纯黑 ⇒ 排除"Nanite 用自己的清屏色重清了一遍"
 #if defined(ZENGINE_NANITE_TEST_HAS_VERT_SPIRV) && defined(ZENGINE_NANITE_TEST_HAS_FRAG_SPIRV)
         {
             constexpr uint32_t kCallerSize = 32;    // 调用方 target：32×32
             constexpr uint32_t kViewportSize = 16;  // 只给左上角四分之一
+            constexpr uint32_t kInjectedClearCount = kNaniteRasterColorAttachmentCount + 1;  // 3 张 GBuffer + 深度
 
             auto inject_camera = MakeCamera(Vector3(0.0f, 6.0f, 10.0f), Vector3(0.0f, 0.0f, 0.0f));
 
             CallerTarget caller = MakeCallerTarget(rhi, kCallerSize, kCallerSize);
             const bool caller_ready = caller.render_pass != nullptr && caller.framebuffer != nullptr;
-            Check(caller_ready, "the caller built its own colour + depth target and render pass");
+            Check(caller_ready,
+                  "the caller built its own GBuffer (three colour + depth) target and render pass");
 
             if (caller_ready)
             {
@@ -1156,19 +1403,26 @@ int main()
                 // 注入生效期间，离屏那条路必须让位：否则每帧会往没人读的图上多画一份。
                 renderer.DrawClustersIndirect();
                 const NaniteGPUResources& offscreen_during = renderer.GetGPUResources();
-                const uint32_t            offscreen_during_injection = CountCoveredPixels(
-                    rhi, offscreen_during.target_color, offscreen_during.target_width, offscreen_during.target_height);
-                Check(offscreen_during_injection == 0,
-                      "while a pass is injected, DrawClustersIndirect does not also draw into the offscreen target");
+                Check(ProbeGBuffer(rhi,
+                                   offscreen_during.target_gbuffer,
+                                   offscreen_during.target_width,
+                                   offscreen_during.target_height)
+                          .covered == 0,
+                      "while a pass is injected, DrawClustersIndirect does not also draw into the offscreen GBuffer");
 
                 RHICommandBuffer* injected_cb = rhi->BeginSingleTimeCommands();
                 Check(injected_cb != nullptr, "a one-shot command buffer is available for the injected pass");
                 if (injected_cb != nullptr)
                 {
-                    // 调用方开 pass，清成**纯黑**（不是 Nanite 的 0.05/0.05/0.06）。
-                    RHIClearValue injected_clears[2] = {};
-                    injected_clears[0].color.float32[3] = 1.0f;  // 纯黑 + alpha 1
-                    injected_clears[1].depthStencil.depth = 1.0f;
+                    // 调用方开 pass，三张 GBuffer 全部清成**纯黑**（不是 Nanite 的
+                    // 0.05/0.05/0.06）。纯黑是"这个像素没人写过"的标记：GBufferA 解
+                    // 码出来是 (-1,-1,-1)，既不是法线也不可能被当成清屏色混过去。
+                    RHIClearValue injected_clears[kInjectedClearCount] = {};
+                    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+                    {
+                        injected_clears[i].color.float32[3] = 1.0f;  // 纯黑 + alpha 1
+                    }
+                    injected_clears[kNaniteRasterColorAttachmentCount].depthStencil.depth = 1.0f;
 
                     RHIRenderPassBeginInfo injected_begin {};
                     injected_begin.sType              = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1176,7 +1430,7 @@ int main()
                     injected_begin.framebuffer         = caller.framebuffer;
                     injected_begin.renderArea.extent.width  = kCallerSize;
                     injected_begin.renderArea.extent.height = kCallerSize;
-                    injected_begin.clearValueCount     = 2;
+                    injected_begin.clearValueCount     = kInjectedClearCount;
                     injected_begin.pClearValues        = injected_clears;
                     rhi->CmdBeginRenderPassPFN(injected_cb, &injected_begin, RHI_SUBPASS_CONTENTS_INLINE);
 
@@ -1205,12 +1459,34 @@ int main()
                     rhi->CmdEndRenderPassPFN(injected_cb);
                     rhi->EndSingleTimeCommands(injected_cb);
 
-                    const CoveredBounds injected_bounds =
-                        CoveredPixelBounds(rhi, caller.color, kCallerSize, kCallerSize);
-                    Check(injected_bounds.count > 0,
+                    // 内容判据：注入画出来的必须是**真的 GBuffer**，不是"有像素"。
+                    // 只写第一个附件的实现在这里会挂 —— GBufferC 仍停在纯黑上。
+                    const GBufferProbe injected_probe =
+                        ProbeGBuffer(rhi, caller.gbuffer, kCallerSize, kCallerSize);
+                    Check(injected_probe.covered > 0,
                           "Nanite's triangles landed in the caller's own render pass");
+                    Check(injected_probe.normal_valid,
+                          "the caller's GBufferA carries a +Y world normal (Nanite's frag writes GBuffer semantics, not a debug colour)");
+                    Check(injected_probe.shading_model_valid,
+                          "the caller's GBufferB.a decodes to DEFAULT_LIT, so the deferred pass can light it");
+                    Check(injected_probe.base_color_valid,
+                          "the caller's GBufferC was written too -- all three attachments, not just the first");
+                    Check(injected_probe.clear_intact,
+                          "the pixels Nanite never touched are still the caller's pure-black clear (Nanite did not re-clear the pass)");
+
+                    // 边界判据：调用方的视口只给了左上角 16×16。Nanite 不许碰它 ——
+                    // 它要是自己开了 pass 就会设一个全尺寸视口，覆盖立刻铺满 32×32。
+                    const CoveredBounds injected_bounds =
+                        CoveredPixelBounds(rhi, caller.gbuffer[0], kCallerSize, kCallerSize);
                     Check(injected_bounds.max_x < kViewportSize && injected_bounds.max_y < kViewportSize,
                           "every covered pixel is inside the caller's 16x16 viewport (Nanite never opened the pass)");
+                    // 光看包围盒还不够：调用方的 scissor 也是 16×16，会顺手把"被放大
+                    // 的几何"裁掉，包围盒照样在界内。真正的判据是**铺满程度** ——
+                    // Nanite 一旦抢设一个更大的 viewport，几何就被放大，16×16 里每一
+                    // 个像素都会被盖上（实测 184 → 256）。这条同时钉住视口的尺寸和变换。
+                    Check(injected_bounds.count > 0 &&
+                              injected_bounds.count < kViewportSize * kViewportSize,
+                          "the caller's viewport is only partly covered -- Nanite did not rescale it (a hijacked viewport zooms in and fills every pixel)");
                 }
 
                 // 反面：给了 render pass 却不给 framebuffer ⇒ 注入被拒绝，退回离屏。
@@ -1222,9 +1498,12 @@ int main()
                 RHICommandBuffer* half_cb = rhi->BeginSingleTimeCommands();
                 if (half_cb != nullptr)
                 {
-                    RHIClearValue half_clears[2] = {};
-                    half_clears[0].color.float32[3] = 1.0f;
-                    half_clears[1].depthStencil.depth = 1.0f;
+                    RHIClearValue half_clears[kInjectedClearCount] = {};
+                    for (uint32_t i = 0; i < kNaniteRasterColorAttachmentCount; ++i)
+                    {
+                        half_clears[i].color.float32[3] = 1.0f;
+                    }
+                    half_clears[kNaniteRasterColorAttachmentCount].depthStencil.depth = 1.0f;
 
                     RHIRenderPassBeginInfo half_begin {};
                     half_begin.sType              = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -1232,7 +1511,7 @@ int main()
                     half_begin.framebuffer        = caller.framebuffer;
                     half_begin.renderArea.extent.width  = kCallerSize;
                     half_begin.renderArea.extent.height = kCallerSize;
-                    half_begin.clearValueCount    = 2;
+                    half_begin.clearValueCount    = kInjectedClearCount;
                     half_begin.pClearValues       = half_clears;
                     rhi->CmdBeginRenderPassPFN(half_cb, &half_begin, RHI_SUBPASS_CONTENTS_INLINE);
 
@@ -1241,7 +1520,7 @@ int main()
                     rhi->CmdEndRenderPassPFN(half_cb);
                     rhi->EndSingleTimeCommands(half_cb);
 
-                    Check(CountCoveredPixels(rhi, caller.color, kCallerSize, kCallerSize) == 0,
+                    Check(ProbeGBuffer(rhi, caller.gbuffer, kCallerSize, kCallerSize).covered == 0,
                           "with the injection refused, nothing is drawn into the caller's pass");
                 }
 

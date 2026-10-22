@@ -33,6 +33,14 @@ struct CpuMeshGeometry;
 // 而这套 RHI 没有 staging 抽象，host-visible 是唯一能简单地反复写的选项。
 // 等有了真正的流式加载再换成 device-local + blit。
 // ---------------------------------------------------------------------------
+
+// Nanite 的光栅目标有**且只有三个颜色附件**：GBufferA / B / C。
+//
+// 这个数字必须和 engine/shader/include/gbuffer.h 里那句 "EXACTLY THREE" 一致：
+// shader 声明三个 out，管线就得声明三个 blend 附件，render pass 就得有三个颜色
+// 附件。任何一边少一个，Vulkan 会直接拒绝建管线，Metal 会在开 pass 时炸。
+constexpr uint32_t kNaniteRasterColorAttachmentCount = 3;
+
 struct NaniteGPUResources
 {
     RHIBuffer* clusters {nullptr};
@@ -75,9 +83,14 @@ struct NaniteGPUResources
     // Nanite 自己的离屏目标：没有外部注入时用它，Nanite 自己开/关 pass。
     // headless、编辑器离屏更新、以及还没有场景 pass 的平台（macOS 的 Metal 就是）
     // 全都走这一条 —— 它是唯一能在本机被冒烟测试证明的通路。
-    RHIImage* target_color {nullptr};
-    RHIDeviceMemory* target_color_memory {nullptr};
-    RHIImageView* target_color_view {nullptr};
+    //
+    // 它刻意是**GBuffer 形状的**（三张颜色图 + 一张深度），和主相机的 GBuffer 逐
+    // 格式一致。这样离屏这条通路跑的就是真实 GBuffer 那条代码路径：shader 写三个
+    // target、管线声明三个 blend 附件，换到注入的主相机 pass 上时没有任何一处会
+    // 悄悄改变行为。
+    RHIImage* target_gbuffer[kNaniteRasterColorAttachmentCount] {};
+    RHIDeviceMemory* target_gbuffer_memory[kNaniteRasterColorAttachmentCount] {};
+    RHIImageView* target_gbuffer_view[kNaniteRasterColorAttachmentCount] {};
     RHIImage* target_depth {nullptr};
     RHIDeviceMemory* target_depth_memory {nullptr};
     RHIImageView* target_depth_view {nullptr};
