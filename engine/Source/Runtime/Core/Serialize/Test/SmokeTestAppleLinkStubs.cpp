@@ -29,7 +29,11 @@
 ZHT_APPLE_LINK_STUB(0, "__ZN12RenderSystem16GetFrameDrawListEj")
 ZHT_APPLE_LINK_STUB(1, "__ZN14RenderResource13GetEntityMeshE12RenderEntity")
 ZHT_APPLE_LINK_STUB(2, "__ZN14RenderResource17GetEntityMaterialE12RenderEntity")
-ZHT_APPLE_LINK_STUB(3, "__ZN14RenderResource20UpdatePerFrameBufferENSt3__110shared_ptrI11RenderSceneEENS1_I12RenderCameraEE")
+// 3 曾是 RenderResource::UpdatePerFrameBuffer —— 已移除：它以前只在 Vulkan /
+// DX12 两个后端文件里有实现（都编译不到 Apple），现在合并成一份平台无关的
+// `Function/Render/RenderResourcePerFrame.cpp`，Apple 上也有真定义了。再留桩会
+// 和真符号撞重复定义。
+// ZHT_APPLE_LINK_STUB(3, "__ZN14RenderResource20UpdatePerFrameBufferE...")
 ZHT_APPLE_LINK_STUB(4, "__ZN14RenderResource25CreateAndMapStorageBufferEP3RHI")
 ZHT_APPLE_LINK_STUB(5, "__ZN14RenderResource26UploadGlobalRenderResourceEP3RHI17LevelResourceDesc")
 ZHT_APPLE_LINK_STUB(6, "__ZN14RenderResource30UploadGameObjectRenderResourceEP3RHI12RenderEntity14RenderMeshData")
@@ -38,9 +42,10 @@ ZHT_APPLE_LINK_STUB(8, "__ZN14RenderResource30UploadGameObjectRenderResourceEP3R
 ZHT_APPLE_LINK_STUB(9, "__ZN14ShaderCompiler17CompileFromSourceERKNSt3__112basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE11ShaderStageS8_RKNS0_6vectorIS6_NS4_IS6_EEEERKNS0_3mapIS6_S6_NS0_4lessIS6_EENS4_INS0_4pairIS7_S6_EEEEEE")
 ZHT_APPLE_LINK_STUB(10, "__ZN14ShaderCompilerC1Ev")
 ZHT_APPLE_LINK_STUB(11, "__ZN14ShaderCompilerD1Ev")
-ZHT_APPLE_LINK_STUB(12, "__ZN26MainCameraPassShaderCommon13IsSkyMaterialERK14GpuPBRMaterial")
-ZHT_APPLE_LINK_STUB(13, "__ZN6UIPass25InitializeUIRenderBackendEP8WindowUI")
-ZHT_APPLE_LINK_STUB(14, "__ZN6UIPass4DrawEv")
+// 12/13/14 已移除：MainCameraPassShaderCommon::IsSkyMaterial、UIPass::Draw、
+// UIPass::InitializeUIRenderBackend。它们所在的 TU 以前被 Apple 构建整目录排除，
+// 现在 Passes/ 改成精确排除后这三个都有真实现了，再留桩会撞重复定义。
+// （15 及以后若再有，同理：Apple 上能真编的就不要再桩。）
 
     #undef ZHT_APPLE_LINK_STUB
 

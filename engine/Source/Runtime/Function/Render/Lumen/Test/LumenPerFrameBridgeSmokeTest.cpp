@@ -10,15 +10,15 @@
 //
 // Why this test does not simply call UpdatePerFrameBuffer
 // ------------------------------------------------------
-// There are two real implementations and they are mutually exclusive:
+// There is now ONE implementation, Function/Render/RenderResourcePerFrame.cpp,
+// compiled on every platform. It used to be two mutually exclusive copies:
 //
-//   Function/Render/RenderResource.cpp      -> body guarded by Z_HAS_VULKAN
-//   Function/Render/RenderResourceDx12.cpp  -> body guarded by _WIN32 &&
-//                                              !Z_HAS_VULKAN
+//   RenderResource.cpp     -> body guarded by Z_HAS_VULKAN
+//   RenderResourceDx12.cpp -> body guarded by _WIN32 && !Z_HAS_VULKAN
 //
-// Apple builds Metal, so Z_HAS_VULKAN is off and neither TU compiles: there is
-// no UpdatePerFrameBuffer to link at all (the Apple smoke-test stubs abort if
-// reached). That is the same trap as phase 27 -- "is Lumen compiled in" is
+// so on Apple (Metal, Z_HAS_VULKAN off) there was no UpdatePerFrameBuffer to
+// link at all -- the Apple smoke-test stubs aborted if reached. The one copy
+// also means the two variants can no longer drift apart. That is the same trap as phase 27 -- "is Lumen compiled in" is
 // Z_HAS_LUMEN, not Z_HAS_VULKAN -- so a test that called it would only ever run
 // on Vulkan hosts.
 //
@@ -329,15 +329,12 @@ int main()
     const std::string root = ZENGINE_ENGINE_ROOT_DIR;
     const std::string render_dir = root + "/Source/Runtime/Function/Render";
 
-    // Both backend implementations must publish; neither compiles on this host.
-    CheckSource(render_dir + "/RenderResource.cpp", "lumen_indirect",
-                "the Vulkan UpdatePerFrameBuffer publishes lumen_indirect");
-    CheckSource(render_dir + "/RenderResourceDx12.cpp", "lumen_indirect",
-                "the DX12 UpdatePerFrameBuffer publishes lumen_indirect");
-    CheckSource(render_dir + "/RenderResource.cpp", "lumen_reflection",
-                "the Vulkan UpdatePerFrameBuffer publishes lumen_reflection");
-    CheckSource(render_dir + "/RenderResourceDx12.cpp", "lumen_reflection",
-                "the DX12 UpdatePerFrameBuffer publishes lumen_reflection");
+    // 只有一份实现（RenderResourcePerFrame.cpp），Vulkan / DX12 / Metal 三个后端
+    // 共用，所以查一个文件就等于查全部。以前这里要分别查两个后端文件。
+    CheckSource(render_dir + "/RenderResourcePerFrame.cpp", "lumen_indirect",
+                "UpdatePerFrameBuffer publishes lumen_indirect");
+    CheckSource(render_dir + "/RenderResourcePerFrame.cpp", "lumen_reflection",
+                "UpdatePerFrameBuffer publishes lumen_reflection");
 
     const std::string shader = root + "/shader";
     CheckStructMirror(shader + "/include/structures.h", "lumen_indirect", "viewport_rect", "vec4");
