@@ -11,7 +11,7 @@
 .\ZEnvironmentCollector.exe -batchmode --help  # 命令行，无窗口
 ```
 
-`-batchmode` 沿用 Unity/UE 的写法：不再弹窗，结果写 stdout，退出码交给调用方。它必须成对出现——GUI 模式只认识 `--profile` / `--output-dir` / `--incident-time` / `--tab`，其它参数会直接报错提示加上 `-batchmode`。
+`-batchmode` 沿用 Unity/UE 的写法：不开窗口，结果写 stdout，退出码交给调用方。GUI 模式只认识 `--profile` / `--output-dir` / `--incident-time` / `--lang`，其它参数直接报错。
 
 命令行在 cmd.exe 与 PowerShell 下 stdout/stderr 照常、`%ERRORLEVEL%` 与 `$LASTEXITCODE` 照常；调用方已把输出重定向到管道或文件（`>`、`|`、CI 捕获）时不会被抢走。bat 里会等它结束，`exe && next` 可用。
 
