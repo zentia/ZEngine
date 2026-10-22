@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 160 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；以及 `m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12） |
+| `AppleSceneBlitSmokeTest` | 176 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
@@ -524,6 +524,53 @@ AppleRender: frame=121 entities=30 visible=2 scene_color_view=1 blit_ready=1 rp2
 `TryRestoreLastOpenedScene` 就会真走一次 `OpenSceneInternal` → `AfterSceneOpened`。
 注意 `scripts/run_editor_macos.sh` 会 `rm -rf bin/Debug/asset` 重拷，跑之前先确认 1-2 还在。
 
+### 3.13 视口链路：Metal 的 `UpdateViewport` 从不更新 scissor（DX12 会）
+
+**发现的曲折**：本来以为 Apple 上场景视口整条链路是断的
+（`TryGetRenderSceneViewport` 是 `return false;` 的桩）。修到一半发现两个假设都不对 ——
+`RenderResourcePerFrame` 那两处消费者紧跟一段一模一样的 RHI 退化解，等于没差；而真正的
+主相机 pass 在 Apple 上走的是 **`game`（type 0）** 视口，编辑器场景面板的矩形由它承载，
+而且真的被发布和应用了。在 `SetViewportScissor` 里塞了个临时探针（真机 50 秒、6027 次）：
+
+```text
+[PROBE] SetViewportScissor type=0 vp=(389,104) 1525x915 sc=(389,104) 1524x915   ← 每帧的主路径
+[PROBE] SetViewportScissor type=1 vp=(0,0) 2560x1440 sc=(0,0) 2560x1440        ← 只在启动出现 3 次
+```
+
+**真正的 bug**：`DX12RHI::UpdateViewport` 同时写 `m_Viewports[id]` **和** `m_Scissors[id]`，
+`MetalRHI::UpdateViewport`（`MetalRHI.mm`）只写 `m_Viewports` —— `m_Scissors` 只有
+`SyncLayerMetrics`（swapchain 创建 / resize）会重算，一进来就重置成整窗。真机证实
+（去掉那一行 = 修复前行为）：
+
+```text
+修复前  game_sc=(0,0) 2560x1440   ← scissor 永远整窗，编辑器面板挪动不跟
+修复后  game_sc=(389,104) 1524x915  ← 跟着面板走
+```
+
+viewport 变换会把几何钳在面板矩形里，所以修复前画面"看起来也对"——但任何**只靠
+scissor 钳制**的路径（pipeline 静态 scissor、只设 scissor 的全屏 pass、`DebugDrawManager`
+）都允许把像素画到编辑器其它面板的区域上，而且 `scene`（type 1）那份在 macOS 上没有
+发布者（只有 `PlayModeView` 关窗时清成 0x0），整个字段是无人维护状态。
+
+**修了三处**：
+
+1. `MetalRHI::UpdateViewport` —— 补上 scissor 同步（和 DX12 一字对齐）；
+2. `RenderSystem::TryGetRenderSceneViewport`（Apple 分支）—— 删掉 `return false;` 的桩，
+   直接从 RHI 读 viewport + scissor。Apple 没有渲染线程，RHI 状态就是最新的，
+   不需要非 Apple 那条跨线程快照往返；
+3. `RenderSystem::UpdateViewport`（Apple 分支）—— 视口矩形**变化时**打一条
+   `AppleViewport[i]: rect = ...`（game / scene 都记），顺带把 `AppleRender` 心跳扩成
+   打印两个视口的 vp + sc —— 0x0 的视口一格像素都画不出来且**不报任何错**，
+   必须出现在心跳里才能验收。
+
+**验收**：启动后心跳里应该看到 `game_vp` 和 `game_sc` **完全一致**且跟随编辑器面板
+（拖动/分屏后值会变），`scene_vp=0x0` 是正常的（没有发布者）：
+
+```text
+AppleViewport[0]: rect = (389, 104) 1524x915
+AppleRender: frame=1921 ... game_vp=(389,104) 1524x915 game_sc=(389,104) 1524x915 scene_vp=(0,0) 0x0 scene_sc=(0,0) 0x0
+```
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - **RP2 只有 step 0（显示变换）+ LUT**：FXAA 没做 —— 它要一个只在 `enable_fxaa=true` 时才
@@ -543,6 +590,11 @@ AppleRender: frame=121 entities=30 visible=2 scene_color_view=1 blit_ready=1 rp2
   （`RenderSystem::RequestGlobalResourceUpload()`），两条 `ProcessSwapData()` 上传完都会重绑
   `MainCameraRp1Pass::RefreshMeshGlobalIblDescriptors()`。顺带挖出并修掉了 Apple 上整条 swap
   通道的死锁（任何关卡切换的数据以前都送不到渲染线程）。
+- ~~**Metal 的 `UpdateViewport` 不更新 scissor**~~ —— 已修，见 §3.13。修复前裁剪矩形永远停在
+  `SyncLayerMetrics` 给的整窗值，任何只靠 scissor 钳制的路径都能把像素画到编辑器其它面板上。
+- **`scene`（type 1）视口在 macOS 上没有发布者**：只有 `PlayModeView` 关窗时清成 0x0，
+  主相机走的是 `game`（type 0）视口。哪天有人真的需要 scene 视口（比如场景相机预览），
+  得先给 macOS 补发布者，不然它永远是 0x0 —— 心跳里的 `scene_vp=0x0` 是预期值。
 - **Apple 上粒子仍然没有消费者**：`ProcessSwapData` 只把粒子的三个 swap 字段**清掉**（它们
   是 `IsReadyToSwap()` 的门闩，不清就死锁），并没有交给
   `RenderPipeline::ConsumeParticleSwapData()` —— 那条路径会在 Metal 上建粒子的 GPU 资源，

@@ -254,9 +254,27 @@ void RenderSystem::Tick(float)
                                              ? m_RenderScene->m_MainCameraVisibleMeshNodesPerViewport[0].size()
                                              : 0u;
             const RHIExtent2D extent = m_Rhi != nullptr ? m_Rhi->GetSwapchainInfo().extent : RHIExtent2D {};
+            // 视口/裁剪矩形：RP1 的 SetViewportScissor 用完 TryGetRenderSceneViewport
+            // 之后兜底用的就是这两个值。真机探针证实主相机走 **game**（type 0），
+            // 所以两个都打。任何一个是 0x0 而它又被人用着，整块画面一格像素都画
+            // 不出来，而且**不报任何错** —— 所以必须出现在心跳里。
+            RHIViewport vp[2] {};
+            RHIRect2D   sc[2] {};
+            if (m_Rhi != nullptr)
+            {
+                for (int i = 0; i < 2; ++i)
+                {
+                    if (RHIViewport* v = m_Rhi->GetViewport(static_cast<ViewportType>(i)))
+                    {
+                        vp[i] = *v;
+                    }
+                    sc[i] = m_Rhi->GetSwapchainInfo().scissor[i];
+                }
+            }
             LOG_INFO(ZRender,
                      "AppleRender: frame={} entities={} visible={} scene_color_view={} blit_ready={} "
-                     "rp2_tonemapped={} swapchain={}x{}",
+                     "rp2_tonemapped={} swapchain={}x{} "
+                     "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
                      visible_count,
@@ -264,7 +282,13 @@ void RenderSystem::Tick(float)
                      m_SceneBlit.IsReady() ? 1 : 0,
                      m_RenderPipeline != nullptr && m_RenderPipeline->IsSceneColorTonemapped() ? 1 : 0,
                      extent.width,
-                     extent.height);
+                     extent.height,
+                     static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
+                     static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
+                     sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,
+                     static_cast<int>(vp[1].x), static_cast<int>(vp[1].y),
+                     static_cast<int>(vp[1].width), static_cast<int>(vp[1].height),
+                     sc[1].offset.x, sc[1].offset.y, sc[1].extent.width, sc[1].extent.height);
         }
     }
 #endif
@@ -344,6 +368,32 @@ void RenderSystem::UpdateViewport(ViewportType viewport_id, float offset_x, floa
         m_Rhi->UpdateViewport(viewport_id, viewport);
     }
 
+    // Apple 真机验收的可观测性：视口矩形到底有没有送到 RHI。以前
+    // `TryGetRenderSceneViewport` 是 `return false` 的桩、Metal 的 UpdateViewport 也
+    // 不动 scissor，这条链路出了问题是完全无声的。这里只在**值变化**时打一条。
+    //
+    // **两个都要记**：真机探针证实主相机 pass 在 Apple 上走的是 `game`（type 0）
+    // 视口（编辑器场景面板的矩形由它承载），`scene`（type 1）在 macOS 上没有
+    // 发布者（只有 PlayModeView 关窗时清成 0x0）—— 只看 scene 会被误导。
+    const int vp_index = static_cast<int>(viewport_id);
+    if (vp_index >= 0 && vp_index <= 1)
+    {
+        static float s_last_viewport_rect[2][4] = {{-1.0f, -1.0f, -1.0f, -1.0f}, {-1.0f, -1.0f, -1.0f, -1.0f}};
+        float*      last    = s_last_viewport_rect[vp_index];
+        const float rect[4] = {viewport.x, viewport.y, viewport.width, viewport.height};
+        if (last[0] != rect[0] || last[1] != rect[1] || last[2] != rect[2] || last[3] != rect[3])
+        {
+            std::memcpy(last, rect, sizeof(rect));
+            LOG_INFO(ZRender,
+                     "AppleViewport[{}]: rect = ({}, {}) {}x{}",
+                     vp_index,
+                     static_cast<int>(viewport.x),
+                     static_cast<int>(viewport.y),
+                     static_cast<int>(viewport.width),
+                     static_cast<int>(viewport.height));
+        }
+    }
+
     auto camera = GetCamera(viewport_id);
     if (camera && height > 0.0f)
     {
@@ -373,9 +423,43 @@ EngineContentViewport RenderSystem::GetViewport(ViewportType type) const
 
     return {viewport->x, viewport->y, viewport->width, viewport->height};
 }
-bool RenderSystem::TryGetRenderSceneViewport(RHIViewport&, RHIRect2D&) const
+bool RenderSystem::TryGetRenderSceneViewport(RHIViewport& out_viewport, RHIRect2D& out_scissor) const
 {
-    return false;
+    // Apple / Metal 上**没有**渲染线程（`FlushRenderingCommands` 是空体，渲染就在
+    // 主线程同步跑），所以 RHI 里的视口状态本身就是最新的 —— 不需要非 Apple 那条
+    // "logic swap → render swap" 的快照往返。那条往返存在的唯一理由是游戏线程和
+    // 渲染线程不能同时碰 `m_Rhi` 的状态，Apple 上这个前提不成立。
+    //
+    // 以前这里是 `return false;`，于是 5 个平台无关的消费者全走退化路径：
+    //   - MainCameraRp1Pass::SetViewportScissor（5 处）：视口退化成
+    //     `m_Rhi->GetViewport(viewport_type)` —— 这个其实是对的（Apple 的
+    //     UpdateViewport 有把它设成编辑器给的矩形），但**裁剪矩形**退化成
+    //     `GetSwapchainInfo().scissor[viewport_type]`，而 MetalRHI::UpdateViewport
+    //     以前只更新 m_Viewports、不动 m_Scissors ⇒ scissor 永远停在 SyncLayerMetrics
+    //     给它的整窗值（真机探针证实：修复前 game_sc=(0,0) 2560x1440，修复后
+    //     game_sc=(389,104) 1524x915 跟着面板走）。现在 MetalRHI 也同步写 scissor 了
+    //     （见那里的注释），这里再把它读出来，两边就和 DX12 一致。
+    //   - RenderResourcePerFrame（2 处）：紧跟在后面有一段一模一样的 RHI 退化解，
+    //     所以那两处以前也没差；现在走的是同一个值。
+    //
+    // 顺带一个真机事实：Apple 上主相机 pass 用的是 **game**（type 0）视口承载
+    // 编辑器场景面板的矩形；`scene`（type 1）在 macOS 上没有发布者（只有
+    // PlayModeView 关窗时清成 0x0）。所以这个函数在 Apple 上当前没有活跃消费者，
+    // 修它是为了语义对齐 + 将来谁接上谁就对。
+    if (m_Rhi == nullptr)
+    {
+        return false;
+    }
+
+    RHIViewport* viewport = m_Rhi->GetViewport(ViewportType::scene);
+    if (viewport == nullptr || viewport->width <= 0.0f || viewport->height <= 0.0f)
+    {
+        return false;
+    }
+
+    out_viewport = *viewport;
+    out_scissor  = m_Rhi->GetSwapchainInfo().scissor[static_cast<uint32_t>(ViewportType::scene)];
+    return true;
 }
 void RenderSystem::CreateAxis(std::array<RenderEntity, 3>, std::array<RenderMeshData, 3>) {}
 void RenderSystem::SetVisibleAxis(std::optional<RenderEntity> axis)
@@ -522,8 +606,19 @@ void RenderSystem::ProcessSwapData()
     m_SwapContext.ResetEmitterTickSwapData();
     m_SwapContext.ResetEmitterTransformSwapData();
 
-    // 相机 / 场景视口：Apple 上同样没有消费者（SyncGameCameraFromMainCamera 是
-    // 空体），一样不能留着 —— 否则下一帧就又是死锁。
+    // 相机 / 场景视口：Apple 上同样不走 swap 往返。
+    //
+    // 相机：Apple 是单线程，`SyncGameCameraFromMainCamera` 是空体（没有"游戏相机
+    // → 渲染相机"这份拷贝要同步），swap data 里的 FOV / view matrix 对不上任何
+    // 需要更新的东西。
+    //
+    // 场景视口：Apple 的 `TryGetRenderSceneViewport` 是**直接从 RHI 读**的（见那个
+    // 函数的注释），不需要"logic swap → render swap"这份快照 —— 那份快照只是为
+    // 了让渲染线程不碰游戏线程正在改的 RHI 状态。所以这里同样是"清掉即可"。
+    //
+    // 注意这里**不消费**是有意的、也是安全的：正因为不依赖这条通道，
+    // `TryGetRenderSceneViewport` 在 Apple 上永远拿得到当前帧的值，不存在"卡在
+    // swap 里没送过来"的中间态。
     if (swap_data.m_CameraSwapData.has_value())
     {
         m_SwapContext.ResetCameraSwapData();
