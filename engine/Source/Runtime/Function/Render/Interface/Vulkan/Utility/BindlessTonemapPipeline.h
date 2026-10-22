@@ -55,7 +55,7 @@
 //
 // Cross-references:
 //   - sibling: vulkan/utility/bindless_texture_blit_pipeline.{h,cpp}
-//   - shader: vulkan/utility/shaders/tone_mapping_bindless.frag
+//   - shader: engine/shader/glsl/tone_mapping_bindless.{vert,frag} (compiled at build time)
 //   - vertex shader: re-uses the same fullscreen-triangle VS as the
 //     blit sibling (`bindless_blit.vert` / inlined `k_bindless_blit_vert`).
 // =====================================================================

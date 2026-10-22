@@ -68,83 +68,25 @@
 #include "Runtime/Function/Render/Interface/Vulkan/Utility/BindlessTonemapPipeline.h"
 
 #include "Runtime/Core/Base/Macro.h"
-#include "Runtime/Function/Render/Interface/Vulkan/ShaderCompiler.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanBindlessTextureManager.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHIResource.h"
 #include "Runtime/Function/Render/RenderType.h"
 
-namespace
-{
-    // GLSL sources kept INLINE -- same rationale as the blit sibling
-    // (no runtime file-system dependency, glslang accepts source
-    // strings). See bindless_texture_blit_pipeline.cpp's anonymous
-    // namespace for the full reasoning. The on-disk
-    // `vulkan/utility/shaders/tone_mapping_bindless.frag` is the
-    // human-edited source of truth + IDE syntax-highlighting source;
-    // it MUST be kept in sync with the literal below.
-    //
-    // The vertex shader is identical to the blit sibling
-    // (`bindless_blit.vert`): a single SV_VertexID-driven fullscreen
-    // triangle. We re-declare the same source string here rather than
-    // pulling it across translation units to keep this TU
-    // self-contained -- if the blit sibling's vert ever drifts (e.g.
-    // a future Y-flip change for headless capture), the tonemap
-    // version stays pinned to its tested form.
-    constexpr const char* k_bindless_tonemap_vert = R"(#version 450
-#extension GL_ARB_separate_shader_objects : enable
-
-layout(location = 0) out vec2 v_uv;
-
-void main()
-{
-    vec2 uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
-    v_uv = uv;
-    gl_Position = vec4(uv * vec2(2.0, -2.0) + vec2(-1.0, 1.0), 0.0, 1.0);
-}
-)";
-
-    constexpr const char* k_bindless_tonemap_frag = R"(#version 450
-#extension GL_ARB_separate_shader_objects : enable
-#extension GL_EXT_nonuniform_qualifier     : require
-
-layout(set = 0, binding = 0) uniform sampler2D u_bindless[];
-
-layout(push_constant) uniform BindlessPush
-{
-    uint g_packed_indices;
-} u_push;
-
-layout(location = 0) in  vec2 v_uv;
-layout(location = 0) out vec4 o_color;
-
-vec3 Uncharted2Tonemap(vec3 x)
-{
-    float A = 0.15;
-    float B = 0.50;
-    float C = 0.10;
-    float D = 0.20;
-    float E = 0.02;
-    float F = 0.30;
-    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
-}
-
-void main()
-{
-    uint texture_index = u_push.g_packed_indices & 0xFFFFu;
-    vec3 color = texture(u_bindless[nonuniformEXT(texture_index)], v_uv).rgb;
-
-    color = Uncharted2Tonemap(color * 4.5);
-    color = color * (1.0 / Uncharted2Tonemap(vec3(11.2)));
-
-    color = vec3(pow(color.x, 1.0 / 2.2),
-                 pow(color.y, 1.0 / 2.2),
-                 pow(color.z, 1.0 / 2.2));
-
-    o_color = vec4(color, 1.0);
-}
-)";
-}  // namespace
+// SPIR-V compiled at BUILD time from engine/shader/glsl/tone_mapping_bindless.{vert,frag}
+// by engine/shader/CMakeLists.txt.
+//
+// These used to be inline GLSL strings compiled at runtime through
+// CreateShaderModuleFromSource, i.e. by spawning glslangValidator from inside the
+// editor. On Windows that child dies with 0xC0000005 before printing anything --
+// under every spawn recipe tried (pipe / log file / CREATE_NO_WINDOW /
+// DETACHED_PROCESS / an explicit handle list / ShellExecuteEx), while the exact same
+// command line succeeds from a shell. Because this was the only shader on the
+// Vulkan frame path compiled at runtime, BindlessTonemapPass never became ready and
+// RP2 rendered nothing. Every other engine shader already goes through the build-time
+// path, so this one now does too: no child process, no runtime dependency on the SDK.
+#include "tone_mapping_bindless_frag.h"
+#include "tone_mapping_bindless_vert.h"
 
 bool VulkanBindlessTonemapPipeline::Initialize(RHI* rhi, RHIRenderPass* target_render_pass)
 {
@@ -331,33 +273,26 @@ bool VulkanBindlessTonemapPipeline::CompileShaders(RHIShader*& out_vs,
     out_vs = nullptr;
     out_ps = nullptr;
 
-    // createShaderModuleFromSource takes `enum class ShaderStage`
-    // integer values, NOT RHI_SHADER_STAGE_*_BIT bitflags. See PR-V3
-    // semantic divergence note 5 in BINDLESS_TEXTURE_PATH.md for the
-    // footgun history; we match the existing convention to stay
-    // consistent with main_camera_pass.cpp et al.
-    out_vs = m_Rhi->CreateShaderModuleFromSource(k_bindless_tonemap_vert,
-                                                 ShaderStage::Vertex,
-                                                 "tone_mapping_bindless.vert",
-                                                 /*include_paths*/ {},
-                                                 /*macros*/ {});
+    // Build-time SPIR-V (see the include block at the top). A failure here is a
+    // vkCreateShaderModule failure, not a compile failure -- the GLSL was already
+    // validated by glslangValidator when the engine was built.
+    out_vs = m_Rhi->CreateShaderModule(Z::Shader::TONE_MAPPING_BINDLESS_VERT);
     if (out_vs == nullptr)
     {
-        LOG_ERROR(ZRender, "VulkanBindlessTonemapPipeline: failed to compile tonemap_bindless.vert");
+        LOG_ERROR(ZRender,
+                  "VulkanBindlessTonemapPipeline: CreateShaderModule failed for tone_mapping_bindless.vert "
+                  "({} bytes of build-time SPIR-V)",
+                  Z::Shader::TONE_MAPPING_BINDLESS_VERT.size());
         return false;
     }
 
-    out_ps = m_Rhi->CreateShaderModuleFromSource(k_bindless_tonemap_frag,
-                                                 ShaderStage::Fragment,
-                                                 "tone_mapping_bindless.frag",
-                                                 /*include_paths*/ {},
-                                                 /*macros*/ {});
+    out_ps = m_Rhi->CreateShaderModule(Z::Shader::TONE_MAPPING_BINDLESS_FRAG);
     if (out_ps == nullptr)
     {
         LOG_ERROR(ZRender,
-                  "VulkanBindlessTonemapPipeline: failed to compile tone_mapping_bindless.frag "
-                  "(check that glslang reports VK_EXT_descriptor_indexing / "
-                  "GL_EXT_nonuniform_qualifier support).");
+                  "VulkanBindlessTonemapPipeline: CreateShaderModule failed for tone_mapping_bindless.frag "
+                  "({} bytes of build-time SPIR-V)",
+                  Z::Shader::TONE_MAPPING_BINDLESS_FRAG.size());
         m_Rhi->DestroyShaderModule(out_vs);
         out_vs = nullptr;
         return false;
