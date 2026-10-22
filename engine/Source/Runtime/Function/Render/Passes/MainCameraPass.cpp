@@ -2,6 +2,8 @@
 
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
+#include "Runtime/Function/Render/Pipeline/RenderPipelineModule.h"
+#include "Runtime/Function/Render/RenderingThread/RHIDrawList.h"
 #include "Runtime/Function/Render/RenderGpuResources.h"
 #include "Runtime/Function/Render/Interface/Vulkan/VulkanUtil.h"
 #include "Runtime/Function/Render/RenderCamera.h"
@@ -3209,16 +3211,79 @@ void MainCameraPass::UpdateAfterFramebufferRecreate()
     SetupSwapchainFramebuffers();
 
     SetupParticlePass();
+
+    // 兄弟 pass 的 input attachment 全部指向**本 pass 的附件**，所以 resize 之后必须
+    // 跟着重连 —— 这 5 处（加 ParticlePass 那处）早先手写在
+    // `DesktopRenderPipelineModule::UpdateAfterRecreate` 里，被 `doc/RENDER_GRAPH.md`
+    // 记为「接入缝 3」。挪到这里之后：重连的**唯一真相**就是本 pass 的附件表，模块侧
+    // 不再需要知道 backup_odd/backup_even/post_process_odd 这些下标。
+    //
+    // ⚠️ 与 `Setup()` 里的初始接线**逐字一致**（同一个下标、同一个语义），否则第一次
+    // resize 前后画面就不一样了 —— 这类 bug 只在 resize 之后才出现，无头测不出来。
+    if (m_ToneMappingPass)
+    {
+        m_ToneMappingPass->UpdateAfterFramebufferRecreate(
+            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view,
+            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_even].view,
+            m_Rhi->GetSwapchainInfo().extent.width,
+            m_Rhi->GetSwapchainInfo().extent.height);
+    }
+    if (m_ColorGradingPass)
+    {
+        m_ColorGradingPass->UpdateAfterFramebufferRecreate(
+            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_even].view);
+    }
+    if (m_FxaaPass)
+    {
+        m_FxaaPass->UpdateAfterFramebufferRecreate(
+            m_Framebuffer.attachments[_main_camera_pass_post_process_buffer_odd].view);
+    }
+    if (m_CombineUiPass)
+    {
+        m_CombineUiPass->UpdateAfterFramebufferRecreate(
+            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view,
+            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_even].view);
+    }
 }
 
-void MainCameraPass::Draw(ColorGradingPass& color_grading_pass,
-                          FXAAPass& fxaa_pass,
-                          BindlessTonemapPass& tone_mapping_pass,
-                          RenderPass& ui_pass,
-                          CombineUIPass& combine_ui_pass,
-                          ParticlePass& particle_pass,
-                          uint32_t current_swapchain_image_index,
-                          const std::vector<RenderCallback>& post_ui_callbacks)
+void MainCameraPass::SetPostPasses(std::shared_ptr<ColorGradingPass> color_grading_pass,
+                                   std::shared_ptr<FXAAPass> fxaa_pass,
+                                   std::shared_ptr<BindlessTonemapPass> tone_mapping_pass,
+                                   std::shared_ptr<RenderPass> ui_pass,
+                                   std::shared_ptr<CombineUIPass> combine_ui_pass)
+{
+    m_ColorGradingPass = std::move(color_grading_pass);
+    m_FxaaPass = std::move(fxaa_pass);
+    m_ToneMappingPass = std::move(tone_mapping_pass);
+    m_UiPass = std::move(ui_pass);
+    m_CombineUiPass = std::move(combine_ui_pass);
+}
+
+void MainCameraPass::AppendToDrawList(RHIDrawList& out_draw_list, const RenderPassContext& context)
+{
+    // per-frame 开关在 **Build 期**落到成员上，与旧代码在 BuildDrawLists 里做的时机一致；
+    // 条目执行时只读成员，不再碰 context。
+    m_IsShowAxis = context.show_axis;
+    m_IsShowSkybox = context.show_skybox;
+    m_SelectedAxis = context.selected_axis;
+
+    const std::vector<RenderCallback> post_ui_callbacks = context.post_ui_callbacks;
+    VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Rhi);
+
+    out_draw_list.Add("MainCamera.RP1", [this]() { DrawRp1(); });
+
+    out_draw_list.Add("MainCamera.Tonemap", [this]() { DrawTonemap(); });
+
+    // swapchain 索引在 **执行时**读：PrepareBeforePass()（acquire）在 BuildDrawLists
+    // 之后、ExecuteAll() 之前跑，Build 期读会拿到上一帧的索引。
+    out_draw_list.Add(
+        "MainCamera.RP2",
+        [this, vulkan_rhi, post_ui_callbacks]() {
+            DrawRp2(vulkan_rhi->m_CurrentSwapchainImageIndex, post_ui_callbacks);
+        });
+}
+
+void MainCameraPass::DrawRp1()
 {
     constexpr float k_scene_clear_r = 0.290f;
     constexpr float k_scene_clear_g = 0.345f;
@@ -3304,10 +3369,15 @@ void MainCameraPass::Draw(ColorGradingPass& color_grading_pass,
         SetPerViewportData(viewport_type);
         DrawMeshTransparent(viewport_type);
     }
-    particle_pass.Draw();
+    m_ParticlePass->Draw();
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
     m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
+}
+
+void MainCameraPass::DrawTonemap()
+{
+    float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 
     // ====================================================================
     // Bindless tonemap (between RP1 and RP2): samples backup_odd, writes
@@ -3315,8 +3385,16 @@ void MainCameraPass::Draw(ColorGradingPass& color_grading_pass,
     // SHADER_READ_ONLY_OPTIMAL after this call.
     // ====================================================================
     m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "BindlessTonemap", color);
-    tone_mapping_pass.Draw();
+    m_ToneMappingPass->Draw();
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
+}
+
+void MainCameraPass::DrawRp2(uint32_t current_swapchain_image_index,
+                             const std::vector<RenderCallback>& post_ui_callbacks)
+{
+    constexpr float k_scene_clear_r = 0.290f;
+    constexpr float k_scene_clear_g = 0.345f;
+    constexpr float k_scene_clear_b = 0.435f;
 
     // ====================================================================
     // RP2: color_grading -> fxaa -> ui -> combine_ui
@@ -3348,12 +3426,12 @@ void MainCameraPass::Draw(ColorGradingPass& color_grading_pass,
             m_Rhi->GetCurrentCommandBuffer(), &renderpass_begin_info, RHI_SUBPASS_CONTENTS_INLINE);
     }
 
-    color_grading_pass.Draw();
+    m_ColorGradingPass->Draw();
 
     m_Rhi->CmdNextSubpassPFN(m_Rhi->GetCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
 
     if (m_EnableFxaa)
-        fxaa_pass.Draw();
+        m_FxaaPass->Draw();
 
     m_Rhi->CmdNextSubpassPFN(m_Rhi->GetCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
 
@@ -3380,7 +3458,7 @@ void MainCameraPass::Draw(ColorGradingPass& color_grading_pass,
 
     DrawAxis();
 
-    ui_pass.Draw();
+    m_UiPass->Draw();
 
     // 执行 UI 渲染后的回调（Editor 的 ImGui 在这里渲染）
     for (const auto& callback : post_ui_callbacks)
@@ -3390,7 +3468,7 @@ void MainCameraPass::Draw(ColorGradingPass& color_grading_pass,
 
     m_Rhi->CmdNextSubpassPFN(m_Rhi->GetCurrentCommandBuffer(), RHI_SUBPASS_CONTENTS_INLINE);
 
-    combine_ui_pass.Draw();
+    m_CombineUiPass->Draw();
 
     m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
 }

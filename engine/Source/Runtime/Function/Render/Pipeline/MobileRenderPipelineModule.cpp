@@ -95,16 +95,6 @@ void MobileRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceBa
     }
     #endif
     #if defined(Z_HAS_VULKAN)
-    MainCameraPass* main_camera_pass = static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get());
-    if (main_camera_pass)
-    {
-        main_camera_pass->m_IsShowAxis = m_Pipeline.m_IsShowAxis;
-        main_camera_pass->m_IsShowSkybox = m_Pipeline.m_IsShowSkybox;
-        main_camera_pass->m_SelectedAxis = m_Pipeline.m_SelectedAxis;
-    }
-
-    const auto post_ui_callbacks = m_Pipeline.m_PostUiRenderCallbacks;
-
     if (m_Pipeline.m_DirectionalLightPass)
     {
         out_draw_list.Add(
@@ -114,29 +104,13 @@ void MobileRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceBa
     // NOTE (forward-lite strip): no "PointShadow" entry under Mobile.
     if (m_Pipeline.m_MainCameraPass)
     {
-        out_draw_list.Add(
-            "MainCamera",
-            [this, post_ui_callbacks]() {
-                ColorGradingPass& color_grading_pass =
-                    *(static_cast<ColorGradingPass*>(m_Pipeline.m_ColorGradingPass.get()));
-                FXAAPass& fxaa_pass = *(static_cast<FXAAPass*>(m_Pipeline.m_FxaaPass.get()));
-                BindlessTonemapPass& tone_mapping_pass =
-                    *(static_cast<BindlessTonemapPass*>(m_Pipeline.m_ToneMappingPass.get()));
-                RenderPass& ui_pass = *(static_cast<RenderPass*>(m_Pipeline.m_UiPass.get()));
-                CombineUIPass& combine_ui_pass = *(static_cast<CombineUIPass*>(m_Pipeline.m_CombineUiPass.get()));
-                ParticlePass& particle_pass = *(static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get()));
-                MainCameraPass* main_camera_pass = static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get());
-                VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Pipeline.m_Rhi);
-
-                main_camera_pass->Draw(color_grading_pass,
-                                       fxaa_pass,
-                                       tone_mapping_pass,
-                                       ui_pass,
-                                       combine_ui_pass,
-                                       particle_pass,
-                                       vulkan_rhi->m_CurrentSwapchainImageIndex,
-                                       post_ui_callbacks);
-            });
+        // 与 Desktop 同一条链（Mobile 复用 Desktop 的 Setup，兄弟 pass 已注册）。
+        RenderPassContext context;
+        context.post_ui_callbacks = m_Pipeline.m_PostUiRenderCallbacks;
+        context.show_skybox = m_Pipeline.m_IsShowSkybox;
+        context.show_axis = m_Pipeline.m_IsShowAxis;
+        context.selected_axis = m_Pipeline.m_SelectedAxis;
+        m_Pipeline.m_MainCameraPass->AppendToDrawList(out_draw_list, context);
     }
 
     out_draw_list.Add(

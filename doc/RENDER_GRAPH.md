@@ -14,7 +14,7 @@
 | --- | --- |
 | **屏障全靠手写** | `CmdPipelineBarrier` 的调用点几乎全在 Pass 层：`ParticlePass.cpp` 14+ 处、`MainCameraRp2Pass.cpp`、`DX12MainCameraPass.cpp`、`MegaLightsSystem.cpp`。`MainCameraRp2Pass.cpp:671` 还能看到 oldLayout == newLayout 的"只同步可见性"手写屏障 |
 | **临时 RT 永不复用** | 每个 Pass 自己 `CreateImage` 一张全屏 RT，生命周期 = Pass 对象生命周期：`MainCameraPass.cpp:789`（7 张）、`PickPass.cpp:48`、`ParticlePass.cpp:267`。全仓库**没有**任何帧级 RT 池 |
-| **Pass 图硬编码在函数签名里** | `MainCameraPass::Draw(ColorGradingPass&, FXAAPass&, BindlessTonemapPass&, RenderPass&, CombineUIPass&, ParticlePass&, ...)` —— 换顺序要改 C++ 签名 |
+| ~~**Pass 图硬编码在函数签名里**~~ | ~~`MainCameraPass::Draw(ColorGradingPass&, FXAAPass&, BindlessTonemapPass&, RenderPass&, CombineUIPass&, ParticlePass&, ...)` —— 换顺序要改 C++ 签名~~ **已解决（2026-10-22）**，见 §5.0：不是靠接图，而是靠 `RenderPassBase::AppendToDrawList` |
 | **resize 要手工重连指针** | `DesktopRenderPipelineModule.cpp:480` 的 `UpdateAfterRecreate` 里 6 处 `UpdateAfterFramebufferRecreate(a, b, c)` |
 | **Vulkan 侧没有 layout 影子状态** | DX12 有 `DX12RHIResource.h:371` 的 `m_States` 自动跟踪，Vulkan 完全靠 `finalLayout` 兜 |
 
@@ -103,7 +103,25 @@ executor.Execute(graph, command_buffer);
 
 ## 5. 与现有流水线的关系（重要）
 
-**现在是并存的，还没有替换。** 现有装配（`DesktopRenderPipelineModule` + `MainCameraPass::Draw(7 参数)`）完全没动，因为改它必须逐帧目视验证，而这一点我在无头环境里做不到。
+**RenderGraph 与现有装配并存。**
+
+### 5.0 已解决：`MainCameraPass::Draw(7 参数)`（2026-10-22）
+
+| 项 | 改前 | 改后 |
+| --- | --- | --- |
+| 签名 | `Draw(ColorGradingPass&, FXAAPass&, BindlessTonemapPass&, RenderPass&, CombineUIPass&, ParticlePass&, uint32_t, ...)` | `SetPostPasses(...)`（Setup 期注册一次）+ `AppendToDrawList(...)`（每帧贡献条目） |
+| 顺序活在哪 | C++ 形参表；Desktop 与 Mobile 两个调用点各抄一遍 8 个实参 | `MainCameraPass::AppendToDrawList` 的条目顺序 |
+| draw-list 条目 | 整条主相机链挤在一个 `"MainCamera"` 里 | `MainCamera.RP1` / `MainCamera.Tonemap` / `MainCamera.RP2` |
+| resize 重连 | 模块里手抄 6 处（backup_odd / backup_even / post_process_odd 三个下标抄了 5 遍） | `MainCameraPass::UpdateAfterFramebufferRecreate()` 一处，唯一真相是本 pass 的附件表 |
+
+**为什么不是"接入 RenderGraph"。** RP1（gbuffer → 延迟光照 → 前向）与 RP2（color grading → fxaa → UI → combine UI）内部全靠 `subpassInput`，而 `Render/Graph/*.h` 全文搜不到 `subpass` —— 图只能表达"整段"级别。所以那 7 个参数**不会**因为接图而消失；真正消除它的是 `RenderPassBase::AppendToDrawList`（`RenderPassBase.h:36`），那句 "so leaf passes stop taking long arg lists" 本来就是为它写的，只是之前没人覆写。
+
+**两个不能踩的时序点**（改错都不报错，只在特定帧才看得出来）：
+
+1. `BuildDrawLists` 在 `PrepareBeforePass()`（swapchain acquire）**之前**跑，所以 swapchain 索引必须在条目**执行时**读。把它塞进 `RenderPassContext` 会让 RP2 用到上一帧的 framebuffer —— 这也是 `RenderPassContext` 里刻意没有 swapchain 索引的原因。
+2. per-frame 开关（`m_IsShowAxis` / `m_IsShowSkybox` / `m_SelectedAxis`）仍落在 **Build 期**，与旧代码在 `BuildDrawLists` 里赋值的时机一致。
+
+**等价性**：RHI 调用序列逐条不变（RP1 Begin→3 个 subpass→End、tonemap 的 PushEvent/PopEvent、RP2 Begin→4 个 subpass→End），唯一差别是一个 draw-list 条目拆成三个，**仍需跑一次看画面确认**。
 
 ### 第一个接入点：DX12 的 RP2 后处理链
 

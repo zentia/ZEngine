@@ -343,6 +343,14 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
     MainCameraPassInitInfo main_camera_init_info;
     main_camera_init_info.enable_fxaa = init_info.enable_fxaa;
     main_camera_pass->SetParticlePass(particle_pass);
+    // 兄弟 pass 一次性注册（见 `MainCameraPass::SetPostPasses`）。它们都是 RP1/RP2 内的
+    // **subpass** 而不是独立 render pass，所以只能由 MainCameraPass 持有并在 subpass
+    // 边界上依次调用 —— 也因此不再出现在 Draw 的形参表里。
+    main_camera_pass->SetPostPasses(std::static_pointer_cast<ColorGradingPass>(m_Pipeline.m_ColorGradingPass),
+                                    std::static_pointer_cast<FXAAPass>(m_Pipeline.m_FxaaPass),
+                                    std::static_pointer_cast<BindlessTonemapPass>(m_Pipeline.m_ToneMappingPass),
+                                    std::static_pointer_cast<RenderPass>(m_Pipeline.m_UiPass),
+                                    std::static_pointer_cast<CombineUIPass>(m_Pipeline.m_CombineUiPass));
     m_Pipeline.m_MainCameraPass->Initialize(&main_camera_init_info);
 
     static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get())->SetupParticlePass();
@@ -535,16 +543,6 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
     }
     #endif
     #if defined(Z_HAS_VULKAN)
-    MainCameraPass* main_camera_pass = static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get());
-    if (main_camera_pass)
-    {
-        main_camera_pass->m_IsShowAxis = m_Pipeline.m_IsShowAxis;
-        main_camera_pass->m_IsShowSkybox = m_Pipeline.m_IsShowSkybox;
-        main_camera_pass->m_SelectedAxis = m_Pipeline.m_SelectedAxis;
-    }
-
-    const auto post_ui_callbacks = m_Pipeline.m_PostUiRenderCallbacks;
-
     if (m_Pipeline.m_DirectionalLightPass)
     {
         out_draw_list.Add(
@@ -559,29 +557,15 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
     }
     if (m_Pipeline.m_MainCameraPass)
     {
-        out_draw_list.Add(
-            "MainCamera",
-            [this, post_ui_callbacks]() {
-                ColorGradingPass& color_grading_pass =
-                    *(static_cast<ColorGradingPass*>(m_Pipeline.m_ColorGradingPass.get()));
-                FXAAPass& fxaa_pass = *(static_cast<FXAAPass*>(m_Pipeline.m_FxaaPass.get()));
-                BindlessTonemapPass& tone_mapping_pass =
-                    *(static_cast<BindlessTonemapPass*>(m_Pipeline.m_ToneMappingPass.get()));
-                RenderPass& ui_pass = *(static_cast<RenderPass*>(m_Pipeline.m_UiPass.get()));
-                CombineUIPass& combine_ui_pass = *(static_cast<CombineUIPass*>(m_Pipeline.m_CombineUiPass.get()));
-                ParticlePass& particle_pass = *(static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get()));
-                MainCameraPass* main_camera_pass = static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get());
-                VulkanRHI* vulkan_rhi = static_cast<VulkanRHI*>(m_Pipeline.m_Rhi);
-
-                main_camera_pass->Draw(color_grading_pass,
-                                       fxaa_pass,
-                                       tone_mapping_pass,
-                                       ui_pass,
-                                       combine_ui_pass,
-                                       particle_pass,
-                                       vulkan_rhi->m_CurrentSwapchainImageIndex,
-                                       post_ui_callbacks);
-            });
+        // 主相机那条链（RP1 / BindlessTonemap / RP2）由 pass 自己声明，模块不再拼
+        // "谁传给谁"的 lambda —— 换顺序改的是 `MainCameraPass::AppendToDrawList`，
+        // 不是这里的调用点，也不是 C++ 签名。
+        RenderPassContext context;
+        context.post_ui_callbacks = m_Pipeline.m_PostUiRenderCallbacks;
+        context.show_skybox = m_Pipeline.m_IsShowSkybox;
+        context.show_axis = m_Pipeline.m_IsShowAxis;
+        context.selected_axis = m_Pipeline.m_SelectedAxis;
+        m_Pipeline.m_MainCameraPass->AppendToDrawList(out_draw_list, context);
     }
 
     out_draw_list.Add(
@@ -705,35 +689,19 @@ void DesktopRenderPipelineModule::UpdateAfterRecreate()
     }
     #endif
     #if defined(Z_HAS_VULKAN)
-    if (!m_Pipeline.m_MainCameraPass || !m_Pipeline.m_ToneMappingPass || !m_Pipeline.m_ColorGradingPass ||
-        !m_Pipeline.m_FxaaPass || !m_Pipeline.m_CombineUiPass || !m_Pipeline.m_PickPass || !m_Pipeline.m_ParticlePass)
+    if (!m_Pipeline.m_MainCameraPass || !m_Pipeline.m_PickPass || !m_Pipeline.m_ParticlePass)
     {
         return;
     }
 
-    MainCameraPass& main_camera_pass = *(static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get()));
-    ColorGradingPass& color_grading_pass = *(static_cast<ColorGradingPass*>(m_Pipeline.m_ColorGradingPass.get()));
-    FXAAPass& fxaa_pass = *(static_cast<FXAAPass*>(m_Pipeline.m_FxaaPass.get()));
-    BindlessTonemapPass& tone_mapping_pass = *(static_cast<BindlessTonemapPass*>(m_Pipeline.m_ToneMappingPass.get()));
-    CombineUIPass& combine_ui_pass = *(static_cast<CombineUIPass*>(m_Pipeline.m_CombineUiPass.get()));
-    PickPass& pick_pass = *(static_cast<PickPass*>(m_Pipeline.m_PickPass.get()));
-    ParticlePass& particle_pass = *(static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get()));
+    // resize 后要重连的附件**只有一处真相**：MainCameraPass 自己的附件表。原来这里
+    // 手工把 5 个兄弟 pass 的 input attachment 一个个重指过去（backup_odd /
+    // backup_even / post_process_odd 三个下标抄了 5 遍），现在整段搬进
+    // `MainCameraPass::UpdateAfterFramebufferRecreate()`，见那里的注释。
+    static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get())->UpdateAfterFramebufferRecreate();
 
-    main_camera_pass.UpdateAfterFramebufferRecreate();
-    tone_mapping_pass.UpdateAfterFramebufferRecreate(
-        main_camera_pass.GetFramebufferImageViews()[_main_camera_pass_backup_buffer_odd],
-        main_camera_pass.GetFramebufferImageViews()[_main_camera_pass_backup_buffer_even],
-        m_Pipeline.m_Rhi->GetSwapchainInfo().extent.width,
-        m_Pipeline.m_Rhi->GetSwapchainInfo().extent.height);
-    color_grading_pass.UpdateAfterFramebufferRecreate(
-        main_camera_pass.GetFramebufferImageViews()[_main_camera_pass_backup_buffer_even]);
-    fxaa_pass.UpdateAfterFramebufferRecreate(
-        main_camera_pass.GetFramebufferImageViews()[_main_camera_pass_post_process_buffer_odd]);
-    combine_ui_pass.UpdateAfterFramebufferRecreate(
-        main_camera_pass.GetFramebufferImageViews()[_main_camera_pass_backup_buffer_odd],
-        main_camera_pass.GetFramebufferImageViews()[_main_camera_pass_backup_buffer_even]);
-    pick_pass.RecreateFramebuffer();
-    particle_pass.UpdateAfterFramebufferRecreate();
+    static_cast<PickPass*>(m_Pipeline.m_PickPass.get())->RecreateFramebuffer();
+    static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get())->UpdateAfterFramebufferRecreate();
     GET_SYSTEM(DebugDrawManager)->UpdateAfterRecreateSwapchain();
     #endif  // Z_HAS_VULKAN
 #endif      // __APPLE__

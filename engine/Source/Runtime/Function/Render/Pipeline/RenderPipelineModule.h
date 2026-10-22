@@ -19,8 +19,13 @@ struct RenderSwapData;
 
 // Per-frame state a render path needs to assemble its draw list. Carried into
 // RenderPassBase::AppendToDrawList so leaf passes stop taking long arg lists.
-// (Milestone 1: the Desktop module keeps its composite-pass lambdas inline; the
-// Mobile module is the first consumer of the AppendToDrawList hook.)
+//
+// 第一个真实消费者：`MainCameraPass`（Vulkan），Desktop 与 Mobile 两个路径模块都
+// 已经改用它，主相机那条链不再以 7 个形参的形式出现在 C++ 签名里。
+//
+// ⚠️ 这里**没有** swapchain 索引：它在 `BuildDrawLists` 之后才由
+// `PrepareBeforePass()`（acquire）确定，放进 context 会让 pass 读到上一帧的索引。
+// 需要它的 pass 在条目执行时自己从 RHI 读。
 struct RenderPassContext
 {
     std::vector<std::function<void()>> post_ui_callbacks;

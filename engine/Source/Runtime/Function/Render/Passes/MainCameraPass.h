@@ -92,14 +92,33 @@ public:
     // 渲染回调类型
     using RenderCallback = std::function<void()>;
 
-    void Draw(ColorGradingPass& color_grading_pass,
-              FXAAPass& fxaa_pass,
-              BindlessTonemapPass& tone_mapping_pass,
-              RenderPass& ui_pass,
-              CombineUIPass& combine_ui_pass,
-              ParticlePass& particle_pass,
-              uint32_t current_swapchain_image_index,
-              const std::vector<RenderCallback>& post_ui_callbacks = {});
+    // 兄弟 pass 在 Setup 期注册一次（先例：`SetParticlePass` / `SetupParticlePass`），
+    // Draw 不再把它们当形参。
+    //
+    // 这就是 `doc/RENDER_GRAPH.md` §1「Pass 图硬编码在函数签名里」那一行的修法：
+    // 旧签名 `Draw(ColorGradingPass&, FXAAPass&, BindlessTonemapPass&, RenderPass&,
+    // CombineUIPass&, ParticlePass&, uint32_t, ...)` 把"谁在谁之后跑"焊进了 C++ 形参表，
+    // 换顺序要改签名、两个调用点（Desktop / Mobile）跟着改。现在顺序活在
+    // `AppendToDrawList` 里，是数据不是类型。
+    void SetPostPasses(std::shared_ptr<ColorGradingPass> color_grading_pass,
+                       std::shared_ptr<FXAAPass> fxaa_pass,
+                       std::shared_ptr<BindlessTonemapPass> tone_mapping_pass,
+                       std::shared_ptr<RenderPass> ui_pass,
+                       std::shared_ptr<CombineUIPass> combine_ui_pass);
+
+    // 一个 draw-list 条目 = 一对配平的 Begin/EndRenderPass。RP1、BindlessTonemap、RP2
+    // 三段各自配平，所以各自成为一个条目，由本函数按序贡献给渲染路径模块。
+    //
+    // ⚠️ `current_swapchain_image_index` **必须在条目执行时**读，不能在 Build 时读：
+    // `SubmitDrawLists` 的顺序是 `PrepareBeforePass()`（acquire swapchain）→
+    // `draw_list.ExecuteAll()`，而 `BuildDrawLists` 在 acquire **之前**跑，Build 期读到的是
+    // 上一帧的索引。
+    void AppendToDrawList(RHIDrawList& out_draw_list, const RenderPassContext& context) override;
+
+    void DrawRp1();
+    void DrawTonemap();
+    void DrawRp2(uint32_t current_swapchain_image_index,
+                 const std::vector<RenderCallback>& post_ui_callbacks = {});
 
     RHIImageView* m_PointLightShadowColorImageView;
     RHIImageView* m_DirectionalLightShadowColorImageView;
@@ -178,6 +197,15 @@ private:
     RHIFramebuffer* m_Rp1Framebuffer {nullptr};
     std::vector<RHIFramebuffer*> m_SwapchainFramebuffers;  // RP2 fbs (per swapchain image)
     std::shared_ptr<ParticlePass> m_ParticlePass;
+    // Setup 期注册的兄弟 pass（见 SetPostPasses）。它们都是 RP1/RP2 内的 **subpass**，
+    // 不是独立的 render pass —— 这点很重要：RenderGraph 里没有 subpass 概念
+    // （`Render/Graph/*.h` 全文无 subpass），所以这几条**不可能**搬进图，只能由
+    // 本 pass 持有并在 RP2 的 subpass 边界上依次调用。
+    std::shared_ptr<ColorGradingPass> m_ColorGradingPass;
+    std::shared_ptr<FXAAPass> m_FxaaPass;
+    std::shared_ptr<BindlessTonemapPass> m_ToneMappingPass;
+    std::shared_ptr<RenderPass> m_UiPass;
+    std::shared_ptr<CombineUIPass> m_CombineUiPass;
     std::map<MeshGBufferPipelineKey, RHIPipeline*> m_MeshGbufferMaterialPipelines;
     std::map<MeshGBufferPipelineKey, RHIPipeline*> m_MeshTransparentMaterialPipelines;
 };
