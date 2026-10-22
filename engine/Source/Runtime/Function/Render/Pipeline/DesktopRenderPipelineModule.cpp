@@ -188,7 +188,26 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
             rp1->SetNaniteRenderer(nanite_pass->getNaniteRenderer());
         }
 
-        LOG_INFO(ZRender, "DesktopRenderPipelineModule(Metal): shadow passes + MainCameraRp1Pass initialized");
+        // RP2：离屏后处理链，读 backup_odd 写 backup_even。
+        //
+        // 放在 RP1 之后而不是塞进 RP1 内部：RP1 是三个独立 render pass 的序列，
+        // 再加一站会把"GBuffer / 延迟光照 / forward"和"显示变换"两件事混在一个
+        // 对象里，将来加 FXAA / combine_ui 时又得拆。
+        //
+        // 失败了**不要** return：RP2 只是把 tonemap 从 blit 里挪出来，缺席时
+        // RenderSystem 会退回"blit 自己 tonemap"那条老路，画面照旧。
+        m_AppleRp2 = std::make_unique<AppleRp2Chain>();
+        if (!m_AppleRp2->Initialize(m_Pipeline.m_Rhi, m_AppleMainCameraFramebuffers.get()))
+        {
+            LOG_ERROR(ZRender,
+                      "DesktopRenderPipelineModule(Metal): AppleRp2Chain init failed -- "
+                      "falling back to tonemap inside AppleSceneBlit");
+            m_AppleRp2.reset();
+        }
+
+        LOG_INFO(ZRender,
+                 "DesktopRenderPipelineModule(Metal): shadow passes + MainCameraRp1Pass initialized (rp2={})",
+                 m_AppleRp2 != nullptr);
         return;
     }
 #else
@@ -441,6 +460,8 @@ void DesktopRenderPipelineModule::Shutdown()
         rp1->SetNaniteRenderer(nullptr);
         rp1->SetFramebufferResources(nullptr);
     }
+    // RP2 只是借用 attachment，先销毁再销毁提供者。
+    m_AppleRp2.reset();
     if (m_AppleMainCameraFramebuffers)
     {
         m_AppleMainCameraFramebuffers->Shutdown();
@@ -491,6 +512,18 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
                 rp1->DrawDeferredLightingPass(show_skybox);
                 rp1->DrawForwardLightingPass(show_skybox);
             });
+    }
+    // RP2：离屏后处理（backup_odd -> backup_even）。必须在 MainCamera **之后**
+    // （它读的是 RP1 的产物），也必须在 swapchain pass **之前**（RenderSystem
+    // 在 draw list 跑完之后才开 swapchain pass，两个 pass 套着开是非法的）。
+    //
+    // 用 GetOutputView() 而不是 IsReady() 当门：和 RenderSystem 那边给 blit 的
+    // 判据是同一个，不会出现"RP2 说跑过了但 blit 还在 tonemap"（或反过来）。
+    if (m_AppleRp2 != nullptr && m_AppleRp2->GetOutputView() != nullptr)
+    {
+        out_draw_list.Add(
+            "MainCameraRp2",
+            [this]() { m_AppleRp2->Record(m_Pipeline.m_Rhi->GetCurrentCommandBuffer()); });
     }
 
     // PostUI 仍然留在列表里，但**只在没有场景 pass 时才自己执行**。有场景时 UI
@@ -795,20 +828,41 @@ RHIImageView* DesktopRenderPipelineModule::GetUiLayerColorView() const
 RHIImageView* DesktopRenderPipelineModule::GetSceneColorView() const
 {
 #if defined(__APPLE__)
-    // RP1 三个 pass 走完，场景（含天空）落在 backup_odd 上 —— 延迟光照和 forward
-    // 都往它里写。Metal 上没有 RP2 把它搬去 swapchain，所以这就是 RenderSystem
-    // 那次全屏采样要读的图。
-    //
     // resize 会重建 framebuffer，所以调用方必须**每帧**重新取，不能缓存。
     if (m_AppleMainCameraFramebuffers == nullptr)
     {
         return nullptr;
     }
+    // RP2 这一帧跑得了 ⇒ 读它变换过的输出；否则退回 RP1 的 backup_odd。
+    //
+    // 判据直接复用 AppleRp2Chain::GetOutputView()（它和 CanRender() 是同一套），
+    // 不在这里另写一份"RP2 起没起来" —— 两份判据只要差一帧，blit 就会直通读到
+    // 一张从没被写过的 backup_even，整屏黑且只在 resize 那一帧出现。
+    if (m_AppleRp2 != nullptr)
+    {
+        if (RHIImageView* rp2_output = m_AppleRp2->GetOutputView())
+        {
+            return rp2_output;
+        }
+    }
+    // RP1 三个 pass 走完，场景（含天空）落在 backup_odd 上 —— 延迟光照和 forward
+    // 都往它里写。线性 HDR，blit 得自己做显示变换。
     return m_AppleMainCameraFramebuffers->getAttachmentView(_main_camera_pass_backup_buffer_odd);
 #else
     // 其它平台直接画进 swapchain（RP2 的 combine_ui 那一步），没有"离屏场景色"
     // 这个概念。
     return nullptr;
+#endif
+}
+
+bool DesktopRenderPipelineModule::IsSceneColorTonemapped() const
+{
+#if defined(__APPLE__)
+    // "返回的那张图是不是 RP2 的输出" 和 GetSceneColorView() 必须逐字一致，否则
+    // 画面要么二次 tonemap（发灰）要么漏 tonemap（死白 + 死黑）。
+    return m_AppleRp2 != nullptr && m_AppleRp2->GetOutputView() != nullptr;
+#else
+    return false;
 #endif
 }
 

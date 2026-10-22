@@ -167,14 +167,24 @@ elseif(APPLE)
     # 下面只排除真正拉 Vulkan / DX12 头的文件（逐个用 Apple 的真实编译参数验过）：
     #   MainCameraPass / ColorGradingPass / CombineUIPass / FXAAPass / ParticlePass /
     #   PickPass  -> include VulkanRHI.h
-    #   DX12MainCameraPass / MainCameraRp2Pass / BindlessTonemapPass -> d3d12 / DX12RHI.h
-    # 留下的都是干净的：MainCameraRp1Pass / MainCameraFramebufferResources /
-    # MainCameraPassShaderCommon / ShadowPassShared / DirectionalLightPass /
-    # PointLightPass / UIPass。
+    #   DX12MainCameraPass / BindlessTonemapPass -> d3d12 / DX12RHI.h
+    #
+    # MainCameraRp2Pass 已经不在名单里了：它 include DX12RHI.h 只为 <d3d12.h>，
+    # 而整个 TU 一个 d3d12 符号都不用（全程走 RHI 抽象，连 input attachment 都没
+    # 碰 —— 两个 descriptor 都是 COMBINED_IMAGE_SAMPLER）。把那句 include 收进
+    # _WIN32 守卫之后它在 Apple 上编译通过，于是本机也能校验这个 TU。
+    #
+    # ⚠️ 它在 Apple 上**只是参与编译，不在运行时被使用**：它的 LoadShader 只认
+    # HLSL，而 MetalRHI 的 CreateShaderModuleFromFile 只收 .metal。Apple 真正跑的
+    # RP2 是 AppleRp2Chain（MSL，离屏那一半），见那个文件的头注释。
+    #
+    # 留下的都是干净的：MainCameraRp1Pass / MainCameraRp2Pass /
+    # MainCameraFramebufferResources / MainCameraPassShaderCommon /
+    # ShadowPassShared / DirectionalLightPass / PointLightPass / UIPass。
     # 注意 MainCameraPass\\.cpp$ 不会误伤 MainCameraRp1Pass.cpp /
     # MainCameraFramebufferResources.cpp / MainCameraPassShaderCommon.cpp。
     set(ZENGINE_APPLE_EXCLUDED_PASSES
-        "(^|.*/)Function/Render/Passes/(DX12.*|MainCameraRp2Pass|BindlessTonemapPass|MainCameraPass|ColorGradingPass|CombineUIPass|FXAAPass|ParticlePass|PickPass)\\.cpp$")
+        "(^|.*/)Function/Render/Passes/(DX12.*|BindlessTonemapPass|MainCameraPass|ColorGradingPass|CombineUIPass|FXAAPass|ParticlePass|PickPass)\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "${ZENGINE_APPLE_EXCLUDED_PASSES}")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Dd]ebug[Dd]raw/DebugDrawBuffer\\.cpp$")

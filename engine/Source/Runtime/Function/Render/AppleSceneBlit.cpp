@@ -71,8 +71,14 @@ struct BlitVertexOut
 // 不做的后果：>1 的地方硬切成纯白，其余整体偏暗 —— 线性值被当显示值直接写进
 // UNORM 就是这个结果，而且不报任何错。
 //
-// 等 RP2 哪天在 Apple 上启用，这个 blit 就该退化成直通（或整个删掉）：那时候
-// 进来的是已经 tonemap 过的 LDR，再 tonemap 一次画面就发灰。
+// 这段 tonemap 现在只在 **RP2 没启用** 时是必要的。AppleRp2Chain 接上之后，
+// 进来的是已经做过显示变换的图，再 tonemap 一次画面就发灰 —— 所以本文件同时
+// 提供直通版 fragment（见 BlitFragmentPassthrough），由 Record() 按
+// `apply_tonemap` 选。
+//
+// 两个 variant 各自是一个**独立**的 MSL 字符串，不是同一个 library 里的两个
+// 函数：MetalRHI 找入口时硬编码 "main"，落空就退回
+// `library.functionNames.firstObject`，一个 library 放两个函数必然取错。
 static float3 Uncharted2Tonemap(float3 x)
 {
     const float A = 0.15;
@@ -97,6 +103,119 @@ fragment float4 BlitFragmentMain(BlitVertexOut     in            [[stage_in]],
     return float4(color, 1.0);
 }
 )MSL";
+
+    const char* kAppleSceneBlitFragPassthroughMsl = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct BlitVertexOut
+{
+    float4 position [[position]];
+    float2 uv;
+};
+
+// RP2 已把 HDR 压成显示值，这里只负责搬到 swapchain。多 tonemap 一次会把
+// 亮部又压一遍、暗部抬起来 —— 画面整体发灰。
+fragment float4 BlitFragmentPassthrough(BlitVertexOut     in            [[stage_in]],
+                                        texture2d<float> scene_texture [[texture(0)]],
+                                        sampler          scene_sampler [[sampler(0)]])
+{
+    return float4(scene_texture.sample(scene_sampler, in.uv).rgb, 1.0);
+}
+)MSL";
+}  // namespace
+
+namespace
+{
+    // 除 fragment 函数体以外的一切（顶点、槽位、状态）两个 variant 完全一样。
+    RHIPipeline* CreateBlitPipeline(RHI*                 rhi,
+                                    RHIPipelineLayout*   pipeline_layout,
+                                    RHIRenderPass*       swapchain_render_pass,
+                                    RHIShader*           vert,
+                                    const char*          fragment_msl)
+    {
+        RHIShader* frag =
+            rhi->CreateShaderModuleFromSource(fragment_msl, ShaderStage::Fragment, "apple_scene_blit.frag");
+        if (frag == nullptr)
+        {
+            return nullptr;
+        }
+
+        RHIPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0].sType  = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage  = RHI_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vert;
+        stages[0].pName  = "main";
+        stages[1].sType  = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage  = RHI_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = frag;
+        stages[1].pName  = "main";
+
+        // 顶点位置由 vertex_id 生成，一个顶点缓冲都不绑。
+        RHIPipelineVertexInputStateCreateInfo vertex_input {};
+        vertex_input.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        RHIPipelineInputAssemblyStateCreateInfo input_assembly {};
+        input_assembly.sType                  = RHI_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        input_assembly.topology               = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        input_assembly.primitiveRestartEnable = RHI_FALSE;
+
+        RHIPipelineViewportStateCreateInfo viewport_state {};
+        viewport_state.sType         = RHI_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewport_state.viewportCount = 1;
+        viewport_state.scissorCount  = 1;
+
+        RHIPipelineRasterizationStateCreateInfo rasterization {};
+        rasterization.sType      = RHI_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterization.polygonMode = RHI_POLYGON_MODE_FILL;
+        // 全屏三角形的绕序和场景网格相反（它是按 vertex_id 直接给的 NDC），所以
+        // 关掉剔除 —— 剔错了就是整屏黑。
+        rasterization.cullMode    = RHI_CULL_MODE_NONE;
+        rasterization.frontFace   = RHI_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterization.lineWidth   = 1.0f;
+
+        RHIPipelineMultisampleStateCreateInfo multisample {};
+        multisample.sType                = RHI_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisample.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
+
+        // 只写 swapchain 那一个颜色附件。不能多写一个：Metal 是按 render pass 的附件
+        // 数来校验的（Nanite 那边踩过同一类问题）。
+        RHIPipelineColorBlendAttachmentState blend {};
+        blend.blendEnable    = RHI_FALSE;
+        blend.colorWriteMask = RHI_COLOR_COMPONENT_R_BIT | RHI_COLOR_COMPONENT_G_BIT |
+                               RHI_COLOR_COMPONENT_B_BIT | RHI_COLOR_COMPONENT_A_BIT;
+
+        RHIPipelineColorBlendStateCreateInfo blend_state {};
+        blend_state.sType           = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        blend_state.attachmentCount = 1;
+        blend_state.pAttachments    = &blend;
+
+        RHIDynamicState dynamic_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
+        RHIPipelineDynamicStateCreateInfo dynamic_state {};
+        dynamic_state.sType             = RHI_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamic_state.dynamicStateCount = 2;
+        dynamic_state.pDynamicStates    = dynamic_states;
+
+        RHIGraphicsPipelineCreateInfo pipeline_info {};
+        pipeline_info.sType                = RHI_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipeline_info.stageCount           = 2;
+        pipeline_info.pStages              = stages;
+        pipeline_info.pVertexInputState    = &vertex_input;
+        pipeline_info.pInputAssemblyState  = &input_assembly;
+        pipeline_info.pViewportState       = &viewport_state;
+        pipeline_info.pRasterizationState  = &rasterization;
+        pipeline_info.pMultisampleState    = &multisample;
+        pipeline_info.pColorBlendState     = &blend_state;
+        pipeline_info.pDynamicState        = &dynamic_state;
+        pipeline_info.layout               = pipeline_layout;
+        pipeline_info.renderPass           = swapchain_render_pass;
+        pipeline_info.subpass              = 0;
+
+        RHIPipeline* pipeline = nullptr;
+        const bool ok = rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &pipeline_info, pipeline);
+        rhi->DestroyShaderModule(frag);
+        return ok ? pipeline : nullptr;
+    }
 }  // namespace
 
 bool AppleSceneBlit::Initialize(RHI* rhi, RHIRenderPass* swapchain_render_pass)
@@ -162,104 +281,32 @@ bool AppleSceneBlit::Initialize(RHI* rhi, RHIRenderPass* swapchain_render_pass)
     }
 
     RHIShader* vert = rhi->CreateShaderModuleFromSource(kAppleSceneBlitVertMsl, ShaderStage::Vertex, "apple_scene_blit.vert");
-    RHIShader* frag = rhi->CreateShaderModuleFromSource(kAppleSceneBlitFragMsl, ShaderStage::Fragment, "apple_scene_blit.frag");
-    if (vert == nullptr || frag == nullptr)
+    if (vert == nullptr)
     {
-        LOG_ERROR(ZRender, "AppleSceneBlit: MSL compilation failed");
-        if (vert != nullptr)
-        {
-            rhi->DestroyShaderModule(vert);
-        }
-        if (frag != nullptr)
-        {
-            rhi->DestroyShaderModule(frag);
-        }
+        LOG_ERROR(ZRender, "AppleSceneBlit: vertex MSL compilation failed");
         Shutdown();
         return false;
     }
 
-    RHIPipelineShaderStageCreateInfo stages[2] = {};
-    stages[0].sType  = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage  = RHI_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = vert;
-    stages[0].pName  = "main";
-    stages[1].sType  = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage  = RHI_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = frag;
-    stages[1].pName  = "main";
-
-    // 顶点位置由 vertex_id 生成，一个顶点缓冲都不绑。
-    RHIPipelineVertexInputStateCreateInfo vertex_input {};
-    vertex_input.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-
-    RHIPipelineInputAssemblyStateCreateInfo input_assembly {};
-    input_assembly.sType                  = RHI_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    input_assembly.topology               = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    input_assembly.primitiveRestartEnable = RHI_FALSE;
-
-    RHIPipelineViewportStateCreateInfo viewport_state {};
-    viewport_state.sType        = RHI_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-    viewport_state.viewportCount = 1;
-    viewport_state.scissorCount  = 1;
-
-    RHIPipelineRasterizationStateCreateInfo rasterization {};
-    rasterization.sType      = RHI_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterization.polygonMode = RHI_POLYGON_MODE_FILL;
-    // 全屏三角形的绕序和场景网格相反（它是按 vertex_id 直接给的 NDC），所以
-    // 关掉剔除 —— 剔错了就是整屏黑。
-    rasterization.cullMode    = RHI_CULL_MODE_NONE;
-    rasterization.frontFace   = RHI_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterization.lineWidth   = 1.0f;
-
-    RHIPipelineMultisampleStateCreateInfo multisample {};
-    multisample.sType                = RHI_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisample.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
-
-    // 只写 swapchain 那一个颜色附件。不能多写一个：Metal 是按 render pass 的附件
-    // 数来校验的（Nanite 那边踩过同一类问题）。
-    RHIPipelineColorBlendAttachmentState blend {};
-    blend.blendEnable    = RHI_FALSE;
-    blend.colorWriteMask = RHI_COLOR_COMPONENT_R_BIT | RHI_COLOR_COMPONENT_G_BIT |
-                           RHI_COLOR_COMPONENT_B_BIT | RHI_COLOR_COMPONENT_A_BIT;
-
-    RHIPipelineColorBlendStateCreateInfo blend_state {};
-    blend_state.sType           = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    blend_state.attachmentCount = 1;
-    blend_state.pAttachments    = &blend;
-
-    RHIDynamicState dynamic_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
-    RHIPipelineDynamicStateCreateInfo dynamic_state {};
-    dynamic_state.sType             = RHI_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dynamic_state.dynamicStateCount = 2;
-    dynamic_state.pDynamicStates    = dynamic_states;
-
-    RHIGraphicsPipelineCreateInfo pipeline_info {};
-    pipeline_info.sType                = RHI_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-    pipeline_info.stageCount           = 2;
-    pipeline_info.pStages              = stages;
-    pipeline_info.pVertexInputState    = &vertex_input;
-    pipeline_info.pInputAssemblyState  = &input_assembly;
-    pipeline_info.pViewportState       = &viewport_state;
-    pipeline_info.pRasterizationState  = &rasterization;
-    pipeline_info.pMultisampleState    = &multisample;
-    pipeline_info.pColorBlendState     = &blend_state;
-    pipeline_info.pDynamicState        = &dynamic_state;
-    pipeline_info.layout               = m_PipelineLayout;
-    pipeline_info.renderPass           = swapchain_render_pass;
-    pipeline_info.subpass              = 0;
-
-    const bool ok = rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &pipeline_info, m_Pipeline);
+    // 两条管线一次建好，而不是"等知道 RP2 起没起来再建"：
+    //
+    // RenderSystem 里 blit 是**惰性初始化**的（m_SceneBlitAttempted 只报一次错），
+    // 而 RP2 是在别的地方建的。如果只建一条，就要保证"第一次 Record 时 RP2 的
+    // 状态已经是终态"—— 这个顺序谁都保证不了（比如 RP2 因为 swapchain 还是 0x0
+    // 晚一帧才好）。建两条之后，直通还是 tonemap 变成**每帧**决定，顺序问题消失。
+    m_Pipeline = CreateBlitPipeline(rhi, m_PipelineLayout, swapchain_render_pass, vert, kAppleSceneBlitFragMsl);
+    m_PipelinePassthrough =
+        CreateBlitPipeline(rhi, m_PipelineLayout, swapchain_render_pass, vert, kAppleSceneBlitFragPassthroughMsl);
     rhi->DestroyShaderModule(vert);
-    rhi->DestroyShaderModule(frag);
 
-    if (!ok || m_Pipeline == nullptr)
+    if (m_Pipeline == nullptr || m_PipelinePassthrough == nullptr)
     {
         LOG_ERROR(ZRender, "AppleSceneBlit: graphics pipeline creation failed");
         Shutdown();
         return false;
     }
 
-    LOG_INFO(ZRender, "AppleSceneBlit: fullscreen scene -> swapchain pipeline ready");
+    LOG_INFO(ZRender, "AppleSceneBlit: fullscreen scene -> swapchain pipelines ready (tonemap + passthrough)");
     return true;
 }
 
@@ -273,6 +320,7 @@ void AppleSceneBlit::Shutdown()
     // 只能置空让它们泄漏 —— 和引擎里其它 pass 一样，见 RenderResource::
     // DestroyGPUResources 里的说明。
     m_Pipeline     = nullptr;
+    m_PipelinePassthrough = nullptr;
     m_DescriptorSet = nullptr;
     m_PipelineLayout = nullptr;
     m_DescriptorSetLayout = nullptr;
@@ -280,7 +328,7 @@ void AppleSceneBlit::Shutdown()
     m_Rhi         = nullptr;
 }
 
-void AppleSceneBlit::Record(RHICommandBuffer* command_buffer, RHIImageView* source)
+void AppleSceneBlit::Record(RHICommandBuffer* command_buffer, RHIImageView* source, bool apply_tonemap)
 {
     if (!IsReady() || command_buffer == nullptr || source == nullptr)
     {
@@ -303,7 +351,9 @@ void AppleSceneBlit::Record(RHICommandBuffer* command_buffer, RHIImageView* sour
     write.pImageInfo      = &image_info;
     m_Rhi->UpdateDescriptorSets(1, &write, 0, nullptr);
 
-    m_Rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
+    m_Rhi->CmdBindPipelinePFN(command_buffer,
+                              RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                              apply_tonemap ? m_Pipeline : m_PipelinePassthrough);
     m_Rhi->CmdBindDescriptorSetsPFN(command_buffer,
                                     RHI_PIPELINE_BIND_POINT_GRAPHICS,
                                     m_PipelineLayout,

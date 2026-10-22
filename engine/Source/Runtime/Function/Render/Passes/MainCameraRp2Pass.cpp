@@ -1,7 +1,12 @@
 #include "Runtime/Function/Render/Passes/MainCameraRp2Pass.h"
 
 #include "Runtime/Core/Base/Macro.h"
-#include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
+// DX12RHI.h 只为 <d3d12.h> 而存在，而这个 TU 一个 d3d12 符号都不用（RP2 全程走
+// RHI 抽象层）。以前无条件 include，于是 Apple（没有 d3d12.h）只能整 TU 排除 ——
+// 和 MainCameraRp1Pass 当年踩的是同一个坑。
+#if defined(_WIN32)
+    #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
+#endif
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/RenderResource.h"
 

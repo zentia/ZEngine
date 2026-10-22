@@ -117,6 +117,11 @@ RHIImageView* RenderPipeline::GetSceneColorView() const
     return m_ActiveModule ? m_ActiveModule->GetSceneColorView() : nullptr;
 }
 
+bool RenderPipeline::IsSceneColorTonemapped() const
+{
+    return m_ActiveModule != nullptr && m_ActiveModule->IsSceneColorTonemapped();
+}
+
 void RenderPipeline::FinishDx12ShadowPassDescriptorSetup()
 {
     if (m_ActiveModule)

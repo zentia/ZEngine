@@ -139,8 +139,16 @@ void RenderSystem::Tick(float)
                 }
                 if (m_SceneBlit.IsReady())
                 {
+                    // 源图和"要不要 tonemap"必须来自同一个判断：
+                    //   RP2 这一帧跑了 —— 源是它的输出（已做过显示变换）⇒ 直通；
+                    //   没有          —— 源是 RP1 的线性 HDR ⇒ 这里补 tonemap。
+                    // 两边不一致的后果是二次 tonemap（画面发灰）或漏 tonemap
+                    // （>1 死白、其余死黑），而两者都不会报任何错。
+                    const bool already_tonemapped =
+                        m_RenderPipeline != nullptr && m_RenderPipeline->IsSceneColorTonemapped();
                     m_SceneBlit.Record(command_buffer,
-                                       m_RenderPipeline ? m_RenderPipeline->GetSceneColorView() : nullptr);
+                                       m_RenderPipeline ? m_RenderPipeline->GetSceneColorView() : nullptr,
+                                       !already_tonemapped);
                 }
 
                 if (m_RenderPipeline)
@@ -186,12 +194,13 @@ void RenderSystem::Tick(float)
             const RHIExtent2D extent = m_Rhi != nullptr ? m_Rhi->GetSwapchainInfo().extent : RHIExtent2D {};
             LOG_INFO(ZRender,
                      "AppleRender: frame={} entities={} visible={} scene_color_view={} blit_ready={} "
-                     "swapchain={}x{}",
+                     "rp2_tonemapped={} swapchain={}x{}",
                      s_apple_frame_tick,
                      entity_count,
                      visible_count,
                      (m_RenderPipeline != nullptr && m_RenderPipeline->GetSceneColorView() != nullptr) ? 1 : 0,
                      m_SceneBlit.IsReady() ? 1 : 0,
+                     m_RenderPipeline != nullptr && m_RenderPipeline->IsSceneColorTonemapped() ? 1 : 0,
                      extent.width,
                      extent.height);
         }

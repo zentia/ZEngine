@@ -79,7 +79,19 @@ public:
     // 在 Apple 上都不存在），所以场景结果是**离屏**的，得有人把它采样到 swapchain
     // 上 —— 调用方需要一个"场景色在哪"的入口。其它平台返回 nullptr（它们直接
     // 画进 swapchain，不需要这一步）。见 AppleSceneBlit.h。
+    //
+    // RP2 起来之后这里返回的是 **RP2 的输出**（backup_even，已做过显示变换）；
+    // RP2 没起来时才是 RP1 的 backup_odd（线性 HDR）。
     virtual RHIImageView* GetSceneColorView() const { return nullptr; }
+
+    // Apple(Metal) 专用：上面那张图**是否已经做过显示变换**。
+    //
+    // 判据必须和 GetSceneColorView() 逐字一致：调用方拿它决定 blit 还要不要
+    // tonemap。差一帧的后果是二次 tonemap（画面发灰）或漏 tonemap（>1 死白）。
+    // 每帧问，不要缓存 —— RP2 跟着 framebuffer 走，swapchain 头几帧还是 0x0。
+    //
+    // 其它平台恒 false（RP2 自己把结果写进 swapchain，不走这条路径）。
+    virtual bool IsSceneColorTonemapped() const { return false; }
 
     virtual void FinishDx12ShadowPassDescriptorSetup() {}
 

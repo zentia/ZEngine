@@ -120,7 +120,19 @@ public:
     // Apple(Metal) 专用：场景结果所在的离屏 attachment，由当前 render-path 模块
     // 提供（金属上没有 RP2，结果不会自己进 swapchain）。其它平台 nullptr。
     // 见 AppleSceneBlit.h。
+    //
+    // RP2 起来之后这里返回的是 **RP2 的输出**（backup_even，已做过显示变换）；
+    // RP2 没起来时才是 RP1 的 backup_odd（线性 HDR）。两者的区别由下面的
+    // IsSceneColorTonemapped() 表达 —— 调用方必须照它决定还要不要 tonemap。
     virtual RHIImageView* GetSceneColorView() const { return nullptr; }
+
+    // Apple(Metal) 专用：GetSceneColorView() 那张图**是否已经做过显示变换**。
+    //
+    // 每帧问，不要缓存：RP2 是跟着 framebuffer 走的，swapchain 头几帧还没尺寸，
+    // RP2 那一帧跑不了，源图会退回 backup_odd。
+    //
+    // 其它平台恒 false —— 那边 RP2 自己把结果写进 swapchain，压根不走这条路径。
+    virtual bool IsSceneColorTonemapped() const { return false; }
 
     void registerFramebufferRecreateCallback(RenderCallback callback)
     {

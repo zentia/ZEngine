@@ -35,18 +35,26 @@ cd bin/Debug && ./ZEditor -p ZGameSmoke.zproject
 日志在 `~/Library/Logs/ZEngine/engine_<日期>_1.log`，搜 `AppleRender`：
 
 ```
-AppleRender: frame=241 entities=31 visible=3 scene_color_view=1 blit_ready=1 swapchain=2560x1440
+AppleRender: frame=241 entities=31 visible=3 scene_color_view=1 blit_ready=1 rp2_tonemapped=1 swapchain=2560x1440
 ```
 
-四个字段的含义与判定：
+六个字段的含义与判定：
 
 | 字段 | 含义 | 不通过说明 |
 |---|---|---|
 | `entities` | `RenderScene` 里的实体数 | 0 = 关卡没加载进来 |
 | `visible` | 主相机视锥内的网格节点数 | 0 = 可见性/相机有问题，画面必然空 |
-| `scene_color_view` | RP1 离屏结果（backup_odd）的 `RHIImageView` 在不在 | **0 = 全屏 blit 没有源图，屏幕只有清屏色**（见 §3.3） |
-| `blit_ready` | `AppleSceneBlit` 的管线是否建成 | 0 = MSL 编译失败或 shader 没拿到 |
+| `scene_color_view` | 全屏 blit 要读的那张离屏图在不在 | **0 = blit 没有源图，屏幕只有清屏色**（见 §3.3） |
+| `blit_ready` | `AppleSceneBlit` 的两条管线（tonemap + 直通）是否都建成 | 0 = MSL 编译失败或 shader 没拿到 |
+| `rp2_tonemapped` | 源图是不是 **RP2 已经变换过的输出** | 1 = `backup_even`（blit 走直通）；0 = `backup_odd`（blit 自己 tonemap）。两个都是"能出画面"的正常值，但**必须和 `scene_color_view` 同源**，见 §3.9 |
 | `swapchain` | 当前 swapchain 尺寸 | `0x0` = 窗口还没就绪 |
+
+启动时还应该看到这两行（RP2 起来了）：
+
+```
+AppleRp2Chain: offscreen post chain (backup_odd -> backup_even) ready
+DesktopRenderPipelineModule(Metal): shadow passes + MainCameraRp1Pass initialized (rp2=TRUE)
+```
 
 ### 2.3 画面
 
@@ -181,8 +189,8 @@ gamma 1/2.2）**逐系数**抄进 blit 的 fragment MSL。
 像素等于镜像算出来的值（实测 156.0/192.0/210.0 vs 156.4/191.6/210.4）。三份实现
 （`tone_mapping.frag` / blit 的 MSL / 测试镜像）互相看不见，这是唯一把它们对齐的手段。
 
-> **将来 RP2 在 Apple 上启用之后，这段 tonemap 必须退化成直通（或整个删掉 blit）**：
-> 那时候进来的是已经 tonemap 过的 LDR，再 tonemap 一次画面就发灰。
+> 这段 tonemap 现在**已经**从 blit 里挪走了 —— 见 §3.9：Apple 上有了真正的 RP2
+> （`AppleRp2Chain`），blit 退化成直通。
 
 ### 3.7 两个"完全无声"的资源管线 bug（贴图永远是占位白图）
 
@@ -269,7 +277,58 @@ asset/objects/_textures/gold.tga
 legacy 告警仍然 0（说明材质走新路径解析到了）；**第二次启动不再出现 `seeded` 行**（导入
 幂等，这是挪位之前做不到的）。`ProjectInfoPathsSmokeTest` 补 4 条路径映射断言（27 检查）。
 
+### 3.9 Apple 上启用 RP2：显示变换回到它该在的位置
+
+§3.6 的修法把"把离屏结果搬到屏幕"和"把 HDR 压成 LDR"两件事焊进了一次采样。现在拆开了：
+
+```
+RP1 → backup_odd (线性 HDR)
+      ↓  AppleRp2Chain step 0（离屏，自己的 render pass）
+      backup_even (LDR)
+      ↓  AppleSceneBlit（直通，在 swapchain pass 里）
+      swapchain
+      ↓  post-UI 回调
+      编辑器 UI
+```
+
+**为什么不是复用 `Passes/MainCameraRp2Pass.cpp`**（两个硬障碍）：
+
+1. 它只认 HLSL（`CreateShaderModuleFromFile` 传 `.hlsl`），而 MetalRHI 的
+   `CreateShaderModuleFromFile` **只收 `.metal`**，HLSL 直接返回 nullptr。换 SPIR-V blob
+   也不行：`glsl/color_grading.frag` 和 `glsl/combine_ui.frag` 用的是 `subpassInput`
+   （Vulkan input attachment），Metal 没这个概念，那份 SPIR-V 在 Metal 上编译不了。
+2. 它的 step 3（combine_ui）写 swapchain framebuffer，而 Metal **没有持久 swapchain
+   image**（`GetSwapchainInfo().imageViews` 是空的），那一步在 Apple 上没有可绑的目标。
+   Apple 的 UI 本来就直接画进 swapchain，也不需要它。
+
+所以新增 `AppleRp2Chain`（MSL，只跑离屏那一半），顺带把 `MainCameraRp2Pass.cpp` 的
+`DX12RHI.h` include 收进 `_WIN32` 守卫 —— 那个 TU 一个 d3d12 符号都没用，收完之后它在
+Apple 上**编译通过**，从 `ZENGINE_APPLE_EXCLUDED_PASSES` 里放了出来（只是编译校验，运行时
+不用它）。
+
+附件和 render pass 全部是现成的：`MainCameraFramebufferResources` 早就建好了
+`m_Rp2HdrRenderPass` / `m_Rp2ColorGradingFramebuffer`，之前只是没人用。
+
+**最容易悄悄坏掉的一环（也是这次唯一的新风险）**：blit 现在有**两条**管线（tonemap /
+直通），共用同一个 pipeline layout 和 descriptor，只有 fragment 函数不同。"源图"和"要不
+要 tonemap"必须来自**同一个**判断，否则画面只是"有点发灰"，没人会当 bug 报。钉法：
+
+- `AppleRp2Chain::GetOutputView()` 和 `CanRender()` 用**同一套**判据（不写第二份近似）；
+  `DesktopRenderPipelineModule::GetSceneColorView()` 与 `IsSceneColorTonemapped()` 都直接
+  复用它；`RenderSystem` 用 `!IsSceneColorTonemapped()` 决定 blit 的那一位。
+- 判据每帧重算：swapchain 头几帧是 0x0，RP2 那一帧跑不了，源图要能退回 `backup_odd`。
+- 两条 MSL 是**两个独立的字符串**，不是一个 library 里的两个函数：MetalRHI 找入口时
+  硬编码 `"main"`，落空会退回 `library.functionNames.firstObject`，放两个函数必然取错。
+- `AppleSceneBlitSmokeTest` 里跑真 GPU 对拍：直通那次要求**逐行等于源值**
+  （实测 66.0/129.0/189.0 = 源），同时必须**不等于** tonemap 那次的 156/192/210 ——
+  差 40+ 灰阶，误用管线一眼就能看出来。加上 RP2 的文本契约，测试从 51 检查涨到 62。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
+
+- **RP2 只有 step 0（显示变换）**：color grading LUT 还没接（DX12 那边 `color_grading.frag`
+  也是"bind 了但没用"，同一个 TODO）；FXAA 没做 —— 它要一个只在 `enable_fxaa=true` 时才
+  存在的 framebuffer，而 Apple 上这个 flag 目前是 false，写了也是跑不到的死代码。
+  UI 合成在 Apple 上不需要 RP2 做（UI 直接画进 swapchain）。
 
 - **点光源阴影 pass 在 Metal 上不做**：它靠 geometry shader 做 cubemap 展开，Metal 没有
   geometry shader。现在和 DX12 一样是 clear-only，不抛错。

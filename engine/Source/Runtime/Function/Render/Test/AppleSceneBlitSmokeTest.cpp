@@ -208,6 +208,65 @@ namespace
               "the MSL gamma-encodes with 1/2.2 (the swapchain is BGRA8Unorm, not sRGB)");
     }
 
+    // =======================================================================
+    // 1b. RP2 接线的文本契约（所有平台都跑）
+    //
+    // 钉的是"源图"和"要不要 tonemap"必须来自**同一个**判断这件事。RP2 在真机上
+    // 跑起来了却让 blit 再 tonemap 一次（或反过来），画面只是"有点发灰"，没人会
+    // 当 bug 报；而这两处散在三个文件里，编译器一个字都不会说。
+    // =======================================================================
+    void CheckRp2Contracts()
+    {
+        const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string blit_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/AppleSceneBlit.cpp");
+        const std::string rp2_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/AppleRp2Chain.cpp");
+        const std::string system_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+
+        Check(!rp2_source.empty(), "AppleRp2Chain.cpp is readable as text (engine root from CMake)");
+        Check(!system_source.empty(), "RenderSystem.cpp is readable as text (engine root from CMake)");
+
+        // ---- blit 必须真的有两条管线 ----
+        Check(Contains(blit_source, "BlitFragmentPassthrough"),
+              "AppleSceneBlit has a second, passthrough fragment entry point");
+        Check(Contains(blit_source, "m_PipelinePassthrough"),
+              "the passthrough pipeline is a distinct RHIPipeline (not a branch inside one shader)");
+        Check(Contains(blit_source, "apply_tonemap ? m_Pipeline : m_PipelinePassthrough"),
+              "Record picks the pipeline from apply_tonemap every frame");
+        // 两个 MSL 字符串必须**各自**只有一个入口：MetalRHI 找 "main" 落空时会退回
+        // library.functionNames.firstObject，一个 library 里放两个函数必然取错。
+        Check(Contains(blit_source, "kAppleSceneBlitFragMsl"), "the tonemap MSL is its own string literal");
+        Check(Contains(blit_source, "kAppleSceneBlitFragPassthroughMsl"),
+              "the passthrough MSL is a separate string literal (one entry function per library)");
+        // ---- RP2 的 MSL ----
+        Check(!Contains(rp2_source, "vertex Rp2VertexOut main(") && !Contains(rp2_source, "fragment float4 main("),
+              "AppleRp2Chain: no MSL entry point is named main (Metal rejects that outright)");
+        Check(Contains(rp2_source, "vertex Rp2VertexOut Rp2VertexMain("), "AppleRp2Chain has a vertex entry point");
+        Check(Contains(rp2_source, "fragment float4 Rp2FragmentMain("), "AppleRp2Chain has a fragment entry point");
+        // uv 映射必须和 blit 逐字相同，否则 RP2 就不是一次恒等搬运，画面会翻。
+        Check(Contains(rp2_source, "0.5 - xy.y * 0.5"),
+              "AppleRp2Chain flips v the same way AppleSceneBlit does (otherwise the image flips)");
+        // 显示变换的三个常量必须和 blit / tone_mapping.frag 一致，否则"RP2 开关"
+        // 会让画面亮度跳变。
+        Check(Contains(rp2_source, "Uncharted2Tonemap(color * 4.5)"),
+              "AppleRp2Chain uses the same 4.5 exposure as the blit did");
+        Check(Contains(rp2_source, "Uncharted2Tonemap(float3(11.2))"),
+              "AppleRp2Chain uses the same 11.2 white point as the blit did");
+        Check(Contains(rp2_source, "pow(color, float3(1.0 / 2.2))"), "AppleRp2Chain gamma-encodes with 1/2.2");
+        // RP2 写的是 RP2 自己的附件（backup_even），不是 swapchain —— Metal 没有
+        // 持久 swapchain image，step 3（combine_ui）在 Apple 上根本没法绑目标。
+        Check(Contains(rp2_source, "getRp2ColorGradingFramebuffer"),
+              "AppleRp2Chain renders into the existing RP2 color-grading framebuffer, not the swapchain");
+
+        // ---- "源图"和"要不要 tonemap"必须同源 ----
+        Check(Contains(system_source, "IsSceneColorTonemapped()"),
+              "RenderSystem asks the pipeline whether the scene colour is already tonemapped");
+        Check(Contains(system_source, "!already_tonemapped"),
+              "RenderSystem tonemaps in the blit exactly when RP2 did NOT (never both, never neither)");
+    }
+
 #if defined(__APPLE__)
     // =======================================================================
     // 2. 离屏 target：32×32 的 R8G8B8A8_UNORM，一个颜色附件。
@@ -580,6 +639,9 @@ int main()
     // =======================================================================
     CheckSourceContracts();
 
+    // RP2 接线的文本契约（Apple 专属的两条管线 + RenderSystem 的同源判据）。
+    CheckRp2Contracts();
+
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();
 
@@ -592,7 +654,7 @@ int main()
         AppleSceneBlit blit;
         Check(!blit.IsReady(), "a default-constructed AppleSceneBlit is not ready");
         Check(!blit.Initialize(nullptr, nullptr), "Initialize rejects a null RHI");
-        blit.Record(nullptr, nullptr);  // 守卫：不能崩
+        blit.Record(nullptr, nullptr, true);  // 守卫：不能崩
         Check(true, "Record survives null command buffer and null source");
     }
 
@@ -683,8 +745,8 @@ int main()
 
             // 先来一次 null source：必须被守卫生吞，且不能影响后面那次真正的绘制
             // （descriptor 是每次 Record 重写的，这一次什么都没绑）。
-            blit.Record(command_buffer, nullptr);
-            blit.Record(command_buffer, scene.view);
+            blit.Record(command_buffer, nullptr, true);
+            blit.Record(command_buffer, scene.view, true);
 
             rhi->CmdEndRenderPassPFN(command_buffer);
             rhi->EndSingleTimeCommands(command_buffer);
@@ -744,6 +806,62 @@ int main()
         // 反证 —— 源的暗端 ≈0.25，出来必须明显高于它，否则 tonemap 那段被删了。
         Check(screen_top > scene_top + 40.0f,
               "gamma lifts the dark end (a raw copy would have written linear values straight to the UNORM swapchain)");
+
+        // ---- 直通那条管线：RP2 起来之后 blit 走的就是它 ----
+        //
+        // 这是整条 RP2 接线里最容易悄悄坏掉的一环：两条管线共用同一个
+        // pipeline layout / descriptor，只有 fragment 函数不同。挑错了不会报错，
+        // 只会让画面二次 tonemap（发灰）—— 而"发灰"在真机上没有人会当成 bug 报。
+        //
+        // 断言方式是"照抄源值"：源是 UNORM8，直通出来必须还是同一个值（±2）。
+        // 同时必须**不等于**刚才 tonemap 出来的那组值 —— 否则说明
+        // `apply_tonemap=false` 被忽略了。
+        Offscreen passthrough = MakeOffscreen(rhi, kSize, kSize, 0);
+        Check(passthrough.framebuffer != nullptr, "the passthrough target was built");
+        if (blit_ready && passthrough.framebuffer != nullptr)
+        {
+            RHIClearValue clear {};
+            clear.color.float32[3] = 1.0f;
+
+            RHIRenderPassBeginInfo begin {};
+            begin.sType                  = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            begin.renderPass             = passthrough.render_pass;
+            begin.framebuffer            = passthrough.framebuffer;
+            begin.renderArea.extent.width  = kSize;
+            begin.renderArea.extent.height = kSize;
+            begin.clearValueCount        = 1;
+            begin.pClearValues           = &clear;
+
+            RHICommandBuffer* command_buffer = rhi->BeginSingleTimeCommands();
+            rhi->CmdBeginRenderPassPFN(command_buffer, &begin, RHI_SUBPASS_CONTENTS_INLINE);
+            SetFullViewport(rhi, command_buffer);
+            blit.Record(command_buffer, scene.view, false);
+            rhi->CmdEndRenderPassPFN(command_buffer);
+            rhi->EndSingleTimeCommands(command_buffer);
+        }
+
+        const std::vector<uint8_t> passthrough_pixels = ReadBackPixels(rhi, passthrough.image, kSize, kSize);
+        if (!passthrough_pixels.empty())
+        {
+            const float pt_top    = RowValue(passthrough_pixels, kSize, 0);
+            const float pt_middle = RowValue(passthrough_pixels, kSize, kSize / 2);
+            const float pt_bottom = RowValue(passthrough_pixels, kSize, kSize - 1);
+            std::printf("       passthrough top=%6.1f mid=%6.1f bottom=%6.1f (source: %6.1f/%6.1f/%6.1f)\n",
+                        pt_top, pt_middle, pt_bottom, scene_top, scene_middle, scene_bottom);
+
+            // 直通 = 原样搬运：和源逐行相等（UNORM8 → UNORM8，只有采样精度误差）。
+            Check(std::fabs(pt_top - scene_top) < 2.0f, "the passthrough pipeline copies the top row verbatim");
+            Check(std::fabs(pt_middle - scene_middle) < 2.0f,
+                  "the passthrough pipeline copies the middle row verbatim");
+            Check(std::fabs(pt_bottom - scene_bottom) < 2.0f,
+                  "the passthrough pipeline copies the bottom row verbatim");
+
+            // 而且一定**不是** tonemap 出来的那组值 —— 这两组差了 40+ 个灰阶，
+            // 误用 tonemap 管线一眼就能看出来。
+            Check(std::fabs(pt_top - screen_top) > 40.0f,
+                  "apply_tonemap=false really skips the tonemap (not the same numbers as the tonemap run)");
+        }
+        DestroyOffscreen(rhi, passthrough);
 
         DestroyOffscreen(rhi, scene);
         DestroyOffscreen(rhi, screen);
