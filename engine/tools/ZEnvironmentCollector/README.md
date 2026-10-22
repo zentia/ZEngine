@@ -250,9 +250,9 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 
 普通 CLI 并不是安全采集入口：`--check-dll` 会追加路径而不是关闭递归扫描。玩家用 GUI 或 `--collect`。
 
-### 推荐 Windows 系统转储（WER）与已有 dump 导入
+### Windows 系统转储（WER）与已有 dump 导入
 
-高级区域只有一种后端：Windows 系统崩溃转储（WER）。选择当前项目游戏 exe → 点击开始 → 确认完整内存隐私及注册表修改 → 批准 UAC → 界面提示系统捕获已启用后，正常启动游戏并复现崩溃。默认等 1 小时。目标需在当前用户会话运行；不同用户的游戏不会自动放宽输出目录权限。
+高级区只有 Windows 系统转储一条路：选择当前项目游戏 exe → 点击开始 → 确认完整内存隐私及注册表修改 → 批准 UAC → 界面提示系统捕获已启用后，正常启动游戏并复现崩溃。默认等 1 小时。目标需在当前用户会话运行；不同用户的游戏不会自动放宽输出目录权限。
 
 - **一次启用可连续收集多次崩溃**：每次崩溃各复制一份（`crash.dmp`、`crash-2.dmp`…，单次会话上限 8 份），点"安全停止捕获"、等待超时或达到上限后才统一恢复注册表。每份 dump 独立做完整内存/异常线程/PID/模块路径校验，晚到的 dump 不会被当重复文件跳过。
 - **只写 64 位注册表视图** `HKLM/SOFTWARE/Microsoft/Windows/Windows Error Reporting/LocalDumps/<exe文件名>` 三值：DumpType DWORD=2、DumpCount DWORD=2、DumpFolder REG_EXPAND_SZ=本次私有目录。WER 按文件名匹配而非完整路径，所以采集器要结合观测到的 PID、创建时间、dump 异常时间和完整模块路径才能自动接收；身份证据不足时保留原文件并提示手工确认，不把任意新文件当目标崩溃。仅做有限查询，不申请 VM_READ、不调试附加、不修改反作弊。
@@ -263,9 +263,7 @@ GUI 默认读取同目录 `profiles/default.ini`；其他项目只需设置 `[pr
 - **限制**：真实 WXQ.exe 及反作弊环境未验证；自定义崩溃处理、自动调试设置或系统策略可能阻止 WER，配置成功不保证生成 dump，不用于卡死/普通退出。**跨用户目标、标准用户 UAC 拒绝、异机 ACL/受控文件夹三项仍未验收**。只支持安全 exe 文件名、本地普通目录；工具未数字签名、不自动上传。参考：<https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps>。
 - **验收**：本机已提权会话（2026-10）走通启用 → 连续捕获两份 → 恢复，`LocalDumps` 与备份键均无残留。手工命令 `EnvironmentWerTests.exe --consent-system-test normal <目录>`（未挂进 ctest），**必须与 `ZEnvironmentCollector.exe` 同目录**：提权重启的是同目录的自己，缺了它不会弹 UAC，只报"同目录缺少 `ZEnvironmentCollector.exe`"。
 
-### 高级诊断的产出与入口
-
-普通报告与捕获结果分别保存。"打开捕获结果"只使用本窗口最近一次捕获结果，不受普通采集影响；重开窗口无历史结果时提示到桌面 `EnvironmentReports/crash-capture-*` 查找，不拿普通报告冒充。
+捕获结果与普通报告分开保存："打开捕获结果"只使用本窗口最近一次捕获结果，不受普通采集影响；重开窗口无历史结果时提示到桌面 `EnvironmentReports/crash-capture-*` 查找，不拿普通报告冒充。
 
 - **打包**：成功后所有证据文件算 SHA256，按白名单流式 Deflate 压成 ZIP64 并实际解压回读 CRC（64KiB 读缓冲，不把数 GB 文件装入内存）；大 dump 打包可取消。压缩依赖 `engine/3rdparty/minizip-ng`（deflate 单方法，ZIP64 原生支持），交付源码须包含 `LICENSE-minizip-ng.txt`。
 - **隐私**：完整 dump 可能含账号/聊天/令牌和完整路径，无法脱敏，仅本地保存、经安全渠道手动发送；ZIP 本身未加密，不自动上传。
