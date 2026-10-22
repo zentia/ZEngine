@@ -816,6 +816,26 @@ RHIImageView* DesktopRenderPipelineModule::GetUiLayerColorView() const
 #endif  // __APPLE__
 }
 
+RHIImageView* DesktopRenderPipelineModule::GetSceneColorView() const
+{
+#if defined(__APPLE__)
+    // RP1 三个 pass 走完，场景（含天空）落在 backup_odd 上 —— 延迟光照和 forward
+    // 都往它里写。Metal 上没有 RP2 把它搬去 swapchain，所以这就是 RenderSystem
+    // 那次全屏采样要读的图。
+    //
+    // resize 会重建 framebuffer，所以调用方必须**每帧**重新取，不能缓存。
+    if (m_AppleMainCameraFramebuffers == nullptr)
+    {
+        return nullptr;
+    }
+    return m_AppleMainCameraFramebuffers->getAttachmentView(_main_camera_pass_backup_buffer_odd);
+#else
+    // 其它平台直接画进 swapchain（RP2 的 combine_ui 那一步），没有"离屏场景色"
+    // 这个概念。
+    return nullptr;
+#endif
+}
+
 void DesktopRenderPipelineModule::FinishDx12ShadowPassDescriptorSetup()
 {
 #if defined(_WIN32)

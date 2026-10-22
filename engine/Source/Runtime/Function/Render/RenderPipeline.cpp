@@ -112,6 +112,11 @@ RHIImageView* RenderPipeline::GetUiLayerColorView() const
     return m_ActiveModule ? m_ActiveModule->GetUiLayerColorView() : nullptr;
 }
 
+RHIImageView* RenderPipeline::GetSceneColorView() const
+{
+    return m_ActiveModule ? m_ActiveModule->GetSceneColorView() : nullptr;
+}
+
 void RenderPipeline::FinishDx12ShadowPassDescriptorSetup()
 {
     if (m_ActiveModule)

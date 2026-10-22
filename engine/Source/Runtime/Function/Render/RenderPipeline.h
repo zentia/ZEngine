@@ -38,6 +38,8 @@ public:
 
     virtual RHIImageView* GetUiLayerColorView() const override final;
 
+    virtual RHIImageView* GetSceneColorView() const override final;
+
     // Swap the active render path at runtime. MUST be called with the GPU idle and
     // no in-flight frame referencing the current module (the RenderSystem drives this
     // after FlushRenderingCommands, on the RHI thread). No-op if already on `path`.

@@ -30,6 +30,7 @@ public:
     uint32_t GetGuidOfPickedMesh(const Vector2& picked_uv) override;
     RHIRenderPass* GetUIRenderPass() const override;
     RHIImageView* GetUiLayerColorView() const override;
+    RHIImageView* GetSceneColorView() const override;
     void FinishDx12ShadowPassDescriptorSetup() override;
     void ConsumeParticleSwapData(RenderSwapData& swap_data, RenderSwapContext& swap_context) override;
 

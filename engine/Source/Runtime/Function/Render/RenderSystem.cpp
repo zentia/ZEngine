@@ -103,14 +103,6 @@ void RenderSystem::Tick(float)
                 m_RenderPipeline->BuildDrawLists(m_RenderResource, draw_list);
                 draw_list.ExecuteAll();
 
-                // TODO(Apple present)：上面画完的是 MainCameraFramebufferResources
-                // 的离屏 attachment，还没有搬到 swapchain 上，所以目前画面里看不
-                // 到场景（UI 照常）。Metal 没有持久 swapchain image，CmdBlitImage
-                // 到 swapchain 这条路走不通 —— 需要在下面的 swapchain pass 里做
-                // 一次全屏采样。候选：走 MetalBindlessTextureBlitPipeline（已实现
-                // 但目前零调用者，要先把场景色注册进 bindless 表），或者用 RHI
-                // 建一条全屏 blit 管线。
-
             }
 
             RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
@@ -136,6 +128,21 @@ void RenderSystem::Tick(float)
                 begin_info.pClearValues   = &clear_value;
 
                 m_Rhi->CmdBeginRenderPassPFN(command_buffer, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+
+                // 场景 → swapchain：一次全屏采样。Metal 没有持久 swapchain image，
+                // 也没有 RP2，这是唯一能把 RP1 的离屏结果搬到屏幕上的路。
+                // 必须画在 UI **之前**，否则 UI 会被场景盖掉。
+                if (!m_SceneBlitAttempted)
+                {
+                    m_SceneBlitAttempted = true;
+                    m_SceneBlit.Initialize(m_Rhi, render_pass);
+                }
+                if (m_SceneBlit.IsReady())
+                {
+                    m_SceneBlit.Record(command_buffer,
+                                       m_RenderPipeline ? m_RenderPipeline->GetSceneColorView() : nullptr);
+                }
+
                 if (m_RenderPipeline)
                 {
                     for (const auto& callback : m_RenderPipeline->getPostUIRenderCallbacks())

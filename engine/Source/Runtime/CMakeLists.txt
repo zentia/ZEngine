@@ -589,6 +589,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteGPUCullingSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Nanite/Test/NaniteGPUCullingSmokeTest.cpp")
+# AppleSceneBlit smoke-test main carve-out (same rationale). Built only when
+# ZENGINE_BUILD_APPLE_SCENE_BLIT_SMOKE_TEST=ON (see
+# Function/Render/Test/CMakeLists.txt). It is the only guard on the MSL that
+# carries the Metal scene onto the swapchain.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/AppleSceneBlitSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/AppleSceneBlitSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when
@@ -1504,6 +1512,12 @@ endif()
 # (split -> hierarchy -> geometry bytes), so no GPU/window. Not gated on the
 # Lumen conditions: Function/Render/Nanite is never stripped from ZRuntime.
 add_subdirectory(Function/Render/Nanite/Test)
+
+# AppleSceneBlit smoke test. Own main(); carved out of the ZRuntime glob above
+# and built only when ZENGINE_BUILD_APPLE_SCENE_BLIT_SMOKE_TEST=ON. On Apple it
+# creates a headless MetalRHI (no window) and runs the blit; elsewhere it stops
+# at the source-text contract checks.
+add_subdirectory(Function/Render/Test)
 
 # GPU-Spine importer test. Own main(); carved out of the ZRuntime glob above and
 # built only when ZENGINE_BUILD_SPINE_IMPORT_TEST=ON. Pure CPU (atlas + json -> bake),

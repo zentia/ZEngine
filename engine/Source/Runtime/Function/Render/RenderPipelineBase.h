@@ -117,6 +117,11 @@ public:
     // RP2 UI subpass color target (backup_even). nullptr when not on the main-camera path.
     virtual RHIImageView* GetUiLayerColorView() const { return nullptr; }
 
+    // Apple(Metal) 专用：场景结果所在的离屏 attachment，由当前 render-path 模块
+    // 提供（金属上没有 RP2，结果不会自己进 swapchain）。其它平台 nullptr。
+    // 见 AppleSceneBlit.h。
+    virtual RHIImageView* GetSceneColorView() const { return nullptr; }
+
     void registerFramebufferRecreateCallback(RenderCallback callback)
     {
         m_FramebufferRecreateCallbacks.push_back(std::move(callback));

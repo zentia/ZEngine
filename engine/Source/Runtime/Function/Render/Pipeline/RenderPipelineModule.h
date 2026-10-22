@@ -67,6 +67,15 @@ public:
     }
     virtual RHIRenderPass* GetUIRenderPass() const { return nullptr; }
     virtual RHIImageView* GetUiLayerColorView() const { return nullptr; }
+
+    // Apple(Metal) 专用：RP1 画完之后场景所在的那个离屏 attachment。
+    //
+    // Metal 没有持久 swapchain image，也没有 RP2（tonemap / combine UI 那些 TU
+    // 在 Apple 上都不存在），所以场景结果是**离屏**的，得有人把它采样到 swapchain
+    // 上 —— 调用方需要一个"场景色在哪"的入口。其它平台返回 nullptr（它们直接
+    // 画进 swapchain，不需要这一步）。见 AppleSceneBlit.h。
+    virtual RHIImageView* GetSceneColorView() const { return nullptr; }
+
     virtual void FinishDx12ShadowPassDescriptorSetup() {}
 
     // Default mirrors RenderPipelineBase::ConsumeParticleSwapData (just clears

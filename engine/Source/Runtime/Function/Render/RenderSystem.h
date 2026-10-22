@@ -8,6 +8,7 @@
 #include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/Render/RenderingThread/RHIDrawList.h"
 
+#include "Runtime/Function/Render/AppleSceneBlit.h"
 #include "Runtime/Function/Render/Interface/RHIStruct.h"
 
 #include <array>
@@ -137,6 +138,13 @@ private:
     RHIViewport m_RenderThreadSceneViewport {};
     RHIRect2D m_RenderThreadSceneScissor {};
     bool m_HasRenderThreadSceneViewport {false};
+
+#if defined(__APPLE__)
+    // Metal 上没有 RP2，RP1 的结果是离屏的，得由它采样到 swapchain 上。
+    // m_SceneBlitAttempted 是为了"初始化失败也只报一次错"，不然每帧刷一条日志。
+    AppleSceneBlit m_SceneBlit;
+    bool           m_SceneBlitAttempted {false};
+#endif
 
     void SyncGameCameraFromMainCamera();
 
