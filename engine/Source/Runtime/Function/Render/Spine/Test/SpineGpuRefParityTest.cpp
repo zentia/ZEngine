@@ -194,6 +194,172 @@ bool CloseEnough(float a, float b, float& worst_rel)
     return rel <= 1.0e-4f;
 }
 
+// ---------------------------------------------------------------------
+// 逐帧目视验证：把「我们」和「参考实现」的骨架叠在同一张 SVG 上，一帧一帧翻
+//
+// 为什么值得单独做一个：
+//   数值对拍只能告诉你"第 10 根骨骼的 worldY 差 199"，看不出**姿势**错成什么样。
+//   而姿势错了（比如 IK 方向反了、path 把尾巴摆到头顶）肉眼**一眼**就看见，
+//   并且能立刻指回是哪些骨骼、哪个约束。两端都在同一个进程里 ⇒ 叠图是免费的。
+//
+// 画什么：**骨骼段**（父骨骼世界坐标 → 自己的世界坐标）。
+//   不画 mesh：mesh 要 GPU 蒙皮路径（S6 之后才有），而且 deform 还没解算。
+//   骨骼是"所有可见错误的公共上游" —— 骨骼对了，剩下的错误只在顶点级。
+// ---------------------------------------------------------------------
+struct FlipFrame
+{
+    float time = 0.0f;
+    // 每根骨骼：(worldX, worldY)
+    std::vector<float> ours;
+    std::vector<float> ref;
+    float max_dist = 0.0f;   // 该帧两端同下标骨骼的最大距离（像素/世界单位）
+};
+
+bool WriteFlipBook(const fs::path& out_path, const std::string& title, size_t anim_index,
+                   const std::vector<std::string>& bone_names, const std::vector<int16_t>& parents,
+                   const std::vector<FlipFrame>& frames)
+{
+    if (frames.empty())
+    {
+        return false;
+    }
+    const size_t bone_count = frames[0].ours.size() / 2;
+
+    // 包围盒：两端都算进去，否则其中一端会画出界
+    float min_x = 1.0e30f;
+    float min_y = 1.0e30f;
+    float max_x = -1.0e30f;
+    float max_y = -1.0e30f;
+    for (const FlipFrame& f : frames)
+    {
+        for (size_t i = 0; i < bone_count; ++i)
+        {
+            for (int side = 0; side < 2; ++side)
+            {
+                const float* src = side == 0 ? f.ours.data() : f.ref.data();
+                const float x = src[i * 2];
+                const float y = src[i * 2 + 1];
+                min_x = std::fmin(min_x, x);
+                min_y = std::fmin(min_y, y);
+                max_x = std::fmax(max_x, x);
+                max_y = std::fmax(max_y, y);
+            }
+        }
+    }
+    const float pad = std::fmax(20.0f, (max_x - min_x) * 0.05f);
+    min_x -= pad;
+    min_y -= pad;
+    max_x += pad;
+    max_y += pad;
+
+    const double view_w = 900.0;
+    const double view_h = 620.0;
+    const double sx = view_w / static_cast<double>(max_x - min_x);
+    const double sy = view_h / static_cast<double>(max_y - min_y);
+    const double s = std::fmin(sx, sy);
+    // spine 是 Y 向上，SVG 是 Y 向下 ⇒ 翻 Y
+    auto px = [&](float x) { return (static_cast<double>(x) - min_x) * s; };
+    auto py = [&](float y) { return (static_cast<double>(max_y) - static_cast<double>(y)) * s; };
+
+    std::string svg;
+    for (size_t fi = 0; fi < frames.size(); ++fi)
+    {
+        const FlipFrame& f = frames[fi];
+        char head[256];
+        std::snprintf(head, sizeof(head),
+                      "<g class=\"frame\" data-f=\"%zu\" data-t=\"%.4f\" data-d=\"%.3f\"%s>", fi,
+                      static_cast<double>(f.time), static_cast<double>(f.max_dist),
+                      fi == 0 ? "" : " style=\"display:none\"");
+        svg += head;
+        for (size_t i = 0; i < bone_count; ++i)
+        {
+            const int16_t p = parents[i];
+            if (p < 0 || static_cast<size_t>(p) >= bone_count)
+            {
+                continue;
+            }
+            // 参考实现（橙、虚线）在下，我们（蓝、实线）在上
+            svg += "<line class=\"ref\" x1=\"" + std::to_string(px(f.ref[p * 2])) + "\" y1=\"" +
+                   std::to_string(py(f.ref[p * 2 + 1])) + "\" x2=\"" + std::to_string(px(f.ref[i * 2])) +
+                   "\" y2=\"" + std::to_string(py(f.ref[i * 2 + 1])) + "\"/>";
+            svg += "<line class=\"ours\" x1=\"" + std::to_string(px(f.ours[p * 2])) + "\" y1=\"" +
+                   std::to_string(py(f.ours[p * 2 + 1])) + "\" x2=\"" + std::to_string(px(f.ours[i * 2])) +
+                   "\" y2=\"" + std::to_string(py(f.ours[i * 2 + 1])) + "\"/>";
+        }
+        for (size_t i = 0; i < bone_count; ++i)
+        {
+            svg += "<circle class=\"joint\" cx=\"" + std::to_string(px(f.ours[i * 2])) + "\" cy=\"" +
+                   std::to_string(py(f.ours[i * 2 + 1])) + "\" r=\"1.6\"><title>" +
+                   std::to_string(i) + " " + bone_names[i] + "</title></circle>";
+        }
+        svg += "</g>";
+    }
+
+    std::string html =
+        "<!DOCTYPE html><html lang=\"zh\"><head><meta charset=\"utf-8\"><title>flip-book: " + title +
+        "</title><style>"
+        "body{background:#f7f8fa;color:#1c1e21;font:13px/1.5 system-ui,sans-serif;margin:0;padding:16px}"
+        "h2{margin:0 0 4px;font-size:15px}"
+        ".meta{color:#6b7280;margin-bottom:10px}"
+        "svg{background:#fff;border:1px solid #d7dbe0;border-radius:6px;display:block}"
+        "line.ref{stroke:#e8590c;stroke-width:2.2;stroke-dasharray:5 3;opacity:.85}"
+        "line.ours{stroke:#1c7ed6;stroke-width:1.4}"
+        "circle.joint{fill:#1c7ed6}"
+        ".bar{display:flex;align-items:center;gap:10px;margin:10px 0}"
+        "input[type=range]{flex:1}"
+        "button{padding:4px 10px;border:1px solid #c4c9cf;background:#fff;border-radius:4px;cursor:pointer}"
+        ".legend span{display:inline-block;margin-right:14px}"
+        ".sw{display:inline-block;width:16px;height:3px;vertical-align:middle;margin-right:5px}"
+        ".num{font-variant-numeric:tabular-nums}"
+        "</style></head><body>"
+        "<h2>" +
+        title + "</h2><div class=\"meta\">动画 #" + std::to_string(anim_index) + " · " +
+        std::to_string(frames.size()) + " 帧 · 骨骼 " + std::to_string(bone_count) +
+        " 根 · 蓝=我们，橙虚线=参考实现（spine-cpp 3.8）</div>"
+        "<svg id=\"cv\" width=\"" +
+        std::to_string(view_w) + "\" height=\"" + std::to_string(view_h) + "\" viewBox=\"0 0 " +
+        std::to_string(view_w) + " " + std::to_string(view_h) + "\">" + svg +
+        "</svg>"
+        "<div class=\"bar\"><button id=\"prev\">◀</button><input type=\"range\" id=\"r\" min=\"0\" max=\"" +
+        std::to_string(frames.empty() ? 0 : frames.size() - 1) +
+        "\" value=\"0\"><button id=\"next\">▶</button><button id=\"play\">播放</button>"
+        "<span class=\"num\">帧 <b id=\"fi\">0</b>/" + std::to_string(frames.size() - 1) +
+        " · t=<b id=\"ft\">0</b>s · 最大骨骼偏差 <b id=\"fd\">0</b></span></div>"
+        "<div class=\"legend\"><span><i class=\"sw\" style=\"background:#1c7ed6\"></i>我们</span>"
+        "<span><i class=\"sw\" style=\"background:#e8590c\"></i>参考（3.8）</span>"
+        "<span>← → 翻帧，空格播放/暂停</span></div>"
+        "<script>"
+        "var gs=[].slice.call(document.querySelectorAll('.frame'));"
+        "var r=document.getElementById('r'),fi=document.getElementById('fi'),"
+        "ft=document.getElementById('ft'),fd=document.getElementById('fd');"
+        "var timer=null;"
+        "function show(i){i=Math.max(0,Math.min(gs.length-1,i|0));"
+        "gs.forEach(function(g,k){g.style.display=k===i?'':'none'});"
+        "r.value=i;fi.textContent=i;"
+        "ft.textContent=(+gs[i].dataset.t).toFixed(3);"
+        "fd.textContent=(+gs[i].dataset.d).toFixed(3);}"
+        "r.oninput=function(){show(+r.value)};"
+        "document.getElementById('prev').onclick=function(){show(+r.value-1)};"
+        "document.getElementById('next').onclick=function(){show(+r.value+1)};"
+        "document.getElementById('play').onclick=toggle;"
+        "function toggle(){if(timer){clearInterval(timer);timer=null;}"
+        "else{timer=setInterval(function(){show((+r.value+1)%gs.length)},100)}}"
+        "document.addEventListener('keydown',function(e){"
+        "if(e.key==='ArrowLeft'){show(+r.value-1);e.preventDefault()}"
+        "if(e.key==='ArrowRight'){show(+r.value+1);e.preventDefault()}"
+        "if(e.key===' '){toggle();e.preventDefault()}});"
+        "show(0);"
+        "</script></body></html>";
+
+    std::ofstream f(out_path, std::ios::binary);
+    if (!f)
+    {
+        return false;
+    }
+    f.write(html.data(), static_cast<std::streamsize>(html.size()));
+    return true;
+}
+
 struct Stats
 {
     size_t files_seen = 0;
@@ -220,12 +386,32 @@ int main(int argc, char** argv)
     size_t limit = 0;   // 0 = 不限
     size_t max_details = 1;
     bool verbose = false;
+    std::string flip_book;      // 非空 = 出一份逐帧叠图 HTML
+    std::string flip_asset;     // 只对路径含这个子串的资产生成（空 = 第一个烘焙成功的）
+    size_t flip_anim = 0;
+    size_t flip_frames = 60;
     for (int i = 1; i < argc; ++i)
     {
         const std::string a = argv[i];
         if (a == "--limit" && i + 1 < argc)
         {
             limit = static_cast<size_t>(std::atoi(argv[++i]));
+        }
+        else if (a == "--flip-book" && i + 1 < argc)
+        {
+            flip_book = argv[++i];
+        }
+        else if (a == "--asset" && i + 1 < argc)
+        {
+            flip_asset = argv[++i];
+        }
+        else if (a == "--anim" && i + 1 < argc)
+        {
+            flip_anim = static_cast<size_t>(std::atoi(argv[++i]));
+        }
+        else if (a == "--frames" && i + 1 < argc)
+        {
+            flip_frames = static_cast<size_t>(std::atoi(argv[++i]));
         }
         else if (a == "--details" && i + 1 < argc)
         {
@@ -242,7 +428,8 @@ int main(int argc, char** argv)
     }
     if (dir.empty())
     {
-        std::printf("用法: SpineGpuRefParityTest <目录> [--limit N] [--details N] [--verbose]\n");
+        std::printf("用法: SpineGpuRefParityTest <目录> [--limit N] [--details N] [--verbose]\n"
+                    "      [--flip-book <out.html> [--asset <名字子串>] [--anim N] [--frames N]]\n");
         return 2;
     }
 
@@ -370,6 +557,70 @@ int main(int argc, char** argv)
                         ref_data->getAnimations().size(), loaded.anims.size());
             ++st.mismatches;
             continue;
+        }
+
+        // ---- 逐帧叠图（--flip-book）----
+        // 只在命中的第一个文件上生成一次，然后直接收工（这是目视工具，不是回归）。
+        if (!flip_book.empty() && loaded.anims.size() > flip_anim &&
+            (flip_asset.empty() || skel_path.string().find(flip_asset) != std::string::npos))
+        {
+            const float dur = loaded.anims[flip_anim].duration;
+            const size_t nf = flip_frames < 2 ? 2 : flip_frames;
+            std::vector<FlipFrame> frames;
+            std::vector<int16_t> parents;
+            for (const SpineGpuBone& b : loaded.bones)
+            {
+                parents.push_back(b.parent);
+            }
+            float worst = 0.0f;
+            for (size_t k = 0; k < nf; ++k)
+            {
+                const float t = dur * static_cast<float>(k) / static_cast<float>(nf - 1);
+                FlipFrame fr;
+                fr.time = t;
+                SpineGpuPoseResult pose;
+                const SpineImportResult pr = SpineGpuSamplePose(loaded, static_cast<uint32_t>(flip_anim), t, pose);
+                if (!pr.ok)
+                {
+                    std::printf("[flip-book] 我们的解算失败 t=%g: %s\n", static_cast<double>(t), pr.error.c_str());
+                    return 1;
+                }
+                fr.ours.reserve(pose.bones.size() * 2);
+                for (const SpineGpuBoneSample& s : pose.bones)
+                {
+                    fr.ours.push_back(s.world_x);
+                    fr.ours.push_back(s.world_y);
+                }
+                spine::Animation* fa = ref_data->getAnimations()[flip_anim];
+                ref_skel.setToSetupPose();
+                fa->apply(ref_skel, 0.0f, t, false, nullptr, 1.0f, spine::MixBlend_First, spine::MixDirection_In);
+                ref_skel.updateWorldTransform();
+                spine::Vector<spine::Bone*>& rb = ref_skel.getBones();
+                fr.ref.reserve(rb.size() * 2);
+                for (size_t bi = 0; bi < rb.size(); ++bi)
+                {
+                    fr.ref.push_back(rb[bi]->getWorldX());
+                    fr.ref.push_back(rb[bi]->getWorldY());
+                }
+                for (size_t bi = 0; bi < pose.bones.size() && bi < rb.size(); ++bi)
+                {
+                    const float dx = fr.ours[bi * 2] - fr.ref[bi * 2];
+                    const float dy = fr.ours[bi * 2 + 1] - fr.ref[bi * 2 + 1];
+                    fr.max_dist = std::fmax(fr.max_dist, std::sqrt(dx * dx + dy * dy));
+                }
+                worst = std::fmax(worst, fr.max_dist);
+                frames.push_back(std::move(fr));
+            }
+            if (!WriteFlipBook(fs::path(flip_book), skel_path.filename().string(), flip_anim, loaded.bone_names,
+                               parents, frames))
+            {
+                std::printf("[flip-book] 写文件失败: %s\n", flip_book.c_str());
+                return 1;
+            }
+            std::printf("[flip-book] %s 动画 #%zu，%zu 帧，骨骼 %zu 根\n", flip_book.c_str(), flip_anim,
+                        frames.size(), loaded.bones.size());
+            std::printf("[flip-book] 逐帧最大骨骼偏差（世界单位）: %.4f\n", static_cast<double>(worst));
+            return 0;
         }
 
         bool file_ok = true;
