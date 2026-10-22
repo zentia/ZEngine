@@ -39,6 +39,13 @@
 #include "Runtime/Function/Render/RenderResource.h"
 #include "Runtime/Function/Render/RenderSwapContext.h"
 #include "Runtime/Function/Render/RenderSystem.h"
+#if defined(__APPLE__)
+    #include "Runtime/Function/Render/Passes/DirectionalLightPass.h"
+    #include "Runtime/Function/Render/Passes/MainCameraFramebufferResources.h"
+    #include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
+    #include "Runtime/Function/Render/Passes/PointLightPass.h"
+    #include "Runtime/Function/Render/Passes/ShadowPassShared.h"
+#endif
 
 #if defined(_WIN32)
 namespace
@@ -93,8 +100,97 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
         m_Pipeline.m_NanitePass->Initialize(nullptr);
     }
 #if defined(__APPLE__)
-    (void)init_info;
-    return;
+    // Metal 场景管线：shadow 两个 pass + MainCameraRp1Pass（GBuffer / 延迟光照 /
+    // forward 三个独立 pass，无 subpass）。
+    //
+    // RP2 那一整套（BindlessTonemap / ColorGrading / FXAA / CombineUI）在 Apple 上
+    // 根本没有 TU（它们拉 VulkanRHI.h 或 d3d12.h），所以这里**不做**后处理，场景
+    // 结果是离屏的：由 RenderSystem::Tick 把 RP1 的颜色 blit 上 swapchain，UI
+    // 再在 swapchain pass 里直接画（那里是 Apple 上唯一开着的命令缓冲）。
+    //
+    // 门：RenderSystem 还没把 RenderResource / RenderScene 建好时（init_info.
+    // render_resource == nullptr）保持旧行为 —— 只跑 UI，不建场景 pass。少这个
+    // 门的话，Apple 上 Setup 会带着空 render resource 去 Initialize 一堆 pass，
+    // 把现在唯一能跑的 UI 路径一起搞坏。
+    if (init_info.render_resource == nullptr)
+    {
+        return;
+    }
+
+    {
+        RHIDescriptorSetLayout* per_mesh_layout = nullptr;
+        if (!ShadowPassShared::CreatePerMeshDescriptorSetLayout(m_Pipeline.m_Rhi, per_mesh_layout))
+        {
+            LOG_ERROR(ZRender, "DesktopRenderPipelineModule(Metal): failed to create shadow per-mesh descriptor layout");
+            return;
+        }
+
+        if (auto* render_resource = dynamic_cast<RenderResource*>(init_info.render_resource.get()))
+        {
+            render_resource->m_MeshDescriptorSetLayout = &ShadowPassShared::GetPerMeshLayoutPtr();
+        }
+
+        m_Pipeline.m_PointLightShadowPass = std::make_shared<PointLightShadowPass>();
+        m_Pipeline.m_DirectionalLightPass = std::make_shared<DirectionalLightShadowPass>();
+        m_Pipeline.m_MainCameraPass       = std::make_shared<MainCameraRp1Pass>();
+
+        RenderPassCommonInfo pass_common_info;
+        pass_common_info.rhi = m_Pipeline.m_Rhi;
+        pass_common_info.render_resource = init_info.render_resource;
+
+        m_Pipeline.m_PointLightShadowPass->SetCommonInfo(pass_common_info);
+        m_Pipeline.m_DirectionalLightPass->SetCommonInfo(pass_common_info);
+        m_Pipeline.m_MainCameraPass->SetCommonInfo(pass_common_info);
+
+        m_Pipeline.m_PointLightShadowPass->Initialize(nullptr);
+        m_Pipeline.m_DirectionalLightPass->Initialize(nullptr);
+
+        static_cast<PointLightShadowPass*>(m_Pipeline.m_PointLightShadowPass.get())
+            ->setPerMeshLayout(per_mesh_layout);
+        static_cast<DirectionalLightShadowPass*>(m_Pipeline.m_DirectionalLightPass.get())
+            ->setPerMeshLayout(per_mesh_layout);
+
+        m_Pipeline.m_PointLightShadowPass->PostInitialize();
+        m_Pipeline.m_DirectionalLightPass->PostInitialize();
+
+        auto* rp1 = static_cast<MainCameraRp1Pass*>(m_Pipeline.m_MainCameraPass.get());
+
+        m_AppleMainCameraFramebuffers = std::make_unique<MainCameraFramebufferResources>();
+        if (!m_AppleMainCameraFramebuffers->Initialize(m_Pipeline.m_Rhi, init_info.enable_fxaa))
+        {
+            LOG_ERROR(ZRender, "DesktopRenderPipelineModule(Metal): failed to create main camera framebuffers");
+            m_AppleMainCameraFramebuffers.reset();
+            m_Pipeline.m_MainCameraPass.reset();
+            return;
+        }
+        rp1->SetFramebufferResources(m_AppleMainCameraFramebuffers.get());
+        rp1->SetPerMeshLayout(per_mesh_layout);
+        rp1->SetShadowImageViews(
+            static_cast<RenderPass*>(m_Pipeline.m_DirectionalLightPass.get())->m_Framebuffer.attachments[0].view,
+            static_cast<RenderPass*>(m_Pipeline.m_PointLightShadowPass.get())->GetFramebufferImageViews()[0]);
+
+        if (!rp1->Initialize())
+        {
+            LOG_ERROR(ZRender, "DesktopRenderPipelineModule(Metal): MainCameraRp1Pass::Initialize failed");
+            m_Pipeline.m_MainCameraPass.reset();
+            return;
+        }
+
+        if (auto* render_resource = dynamic_cast<RenderResource*>(init_info.render_resource.get()))
+        {
+            render_resource->m_MaterialDescriptorSetLayout = &rp1->GetMaterialDescriptorSetLayoutPtr();
+        }
+
+        // 和 DX12 一样：把 Nanite 交给 RP1，让集群绘制发生在 GBuffer pass 里，
+        // 而不是 Nanite 自己的离屏 target（那等于每帧一次全量 GPU 同步）。
+        if (auto* nanite_pass = dynamic_cast<NaniteRenderPass*>(m_Pipeline.m_NanitePass.get()))
+        {
+            rp1->SetNaniteRenderer(nanite_pass->getNaniteRenderer());
+        }
+
+        LOG_INFO(ZRender, "DesktopRenderPipelineModule(Metal): shadow passes + MainCameraRp1Pass initialized");
+        return;
+    }
 #else
     #if defined(_WIN32)
     if (m_Pipeline.m_Rhi && m_Pipeline.m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
@@ -330,6 +426,19 @@ void DesktopRenderPipelineModule::Shutdown()
     m_Pipeline.m_PointLightShadowPass.reset();
     m_Pipeline.m_LumenPass.reset();
     m_Pipeline.m_NanitePass.reset();
+#if defined(__APPLE__)
+    // RP1 只是借用，先解引用再销毁，避免它拿着已释放的 attachment。
+    if (auto* rp1 = dynamic_cast<MainCameraRp1Pass*>(m_Pipeline.m_MainCameraPass.get()))
+    {
+        rp1->SetNaniteRenderer(nullptr);
+        rp1->SetFramebufferResources(nullptr);
+    }
+    if (m_AppleMainCameraFramebuffers)
+    {
+        m_AppleMainCameraFramebuffers->Shutdown();
+        m_AppleMainCameraFramebuffers.reset();
+    }
+#endif
 }
 
 void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceBase> render_resource,
@@ -340,17 +449,52 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
 
 #if defined(__APPLE__)
     const auto post_ui_callbacks = m_Pipeline.m_PostUiRenderCallbacks;
-    out_draw_list.Add(
-        "PostUI",
-        [post_ui_callbacks]() {
-            for (const auto& callback : post_ui_callbacks)
-            {
-                if (callback)
+    const auto show_skybox = m_Pipeline.m_IsShowSkybox;
+
+    if (m_Pipeline.m_DirectionalLightPass)
+    {
+        out_draw_list.Add(
+            "DirectionalShadow",
+            [this]() {
+                static_cast<DirectionalLightShadowPass*>(m_Pipeline.m_DirectionalLightPass.get())->Draw();
+            });
+    }
+    if (m_Pipeline.m_PointLightShadowPass)
+    {
+        out_draw_list.Add(
+            "PointShadow",
+            [this]() { static_cast<PointLightShadowPass*>(m_Pipeline.m_PointLightShadowPass.get())->Draw(); });
+    }
+    if (m_Pipeline.m_MainCameraPass)
+    {
+        out_draw_list.Add(
+            "MainCamera",
+            [this, show_skybox]() {
+                auto* rp1 = static_cast<MainCameraRp1Pass*>(m_Pipeline.m_MainCameraPass.get());
+                rp1->DrawGBufferPass(show_skybox);
+                rp1->DrawDeferredLightingPass(show_skybox);
+                rp1->DrawForwardLightingPass(show_skybox);
+            });
+    }
+
+    // PostUI 仍然留在列表里，但**只在没有场景 pass 时才自己执行**。有场景时 UI
+    // 由 RenderSystem::Tick 在 swapchain pass 里跑（见那边的注释）：RP1 画的是
+    // 离屏 target，draw list 是在 swapchain pass 打开之前被执行完的，在那里
+    // PostUI 会往一个还没 begin 的 pass 里录命令。
+    if (!m_Pipeline.m_MainCameraPass)
+    {
+        out_draw_list.Add(
+            "PostUI",
+            [post_ui_callbacks]() {
+                for (const auto& callback : post_ui_callbacks)
                 {
-                    callback();
+                    if (callback)
+                    {
+                        callback();
+                    }
                 }
-            }
-        });
+            });
+    }
     return;
 #else
     #if defined(_WIN32)
@@ -522,6 +666,25 @@ void DesktopRenderPipelineModule::SubmitDrawLists(RHI* rhi,
 void DesktopRenderPipelineModule::UpdateAfterRecreate()
 {
 #if defined(__APPLE__)
+    // resize 会销毁重建 framebuffer。RP1 手里那两份东西是跨帧保持的（Nanite 的
+    // GBuffer 注入、延迟光照读的 GBuffer 输入附件），不及时换掉就会拿着已销毁的
+    // 句柄 —— 这正是"resize 之后场景变白"的来源。
+    if (m_AppleMainCameraFramebuffers)
+    {
+        m_AppleMainCameraFramebuffers->UpdateAfterFramebufferRecreate();
+    }
+    if (auto* rp1 = dynamic_cast<MainCameraRp1Pass*>(m_Pipeline.m_MainCameraPass.get()))
+    {
+        rp1->RefreshNaniteInjection();
+        rp1->RefreshDeferredLightingInputAttachments();
+    }
+    for (const auto& callback : m_Pipeline.m_FramebufferRecreateCallbacks)
+    {
+        if (callback)
+        {
+            callback();
+        }
+    }
     return;
 #else
     #if defined(_WIN32)

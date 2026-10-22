@@ -10,6 +10,8 @@
     #include "Runtime/Function/Render/Interface/RHI.h"
     #include "Runtime/Function/Render/RenderCamera.h"
     #include "Runtime/Function/Render/RenderPipeline.h"
+    #include "Runtime/Function/Render/RenderResource.h"
+    #include "Runtime/Function/Render/RenderScene.h"
 
 std::vector<std::type_index> RenderSystem::GetDependencies() const
 {
@@ -44,7 +46,25 @@ bool RenderSystem::Initialize()
     scene_camera->m_CurrentCameraType = RenderCameraType::Editor;
     m_Cameras.push_back(scene_camera);
 
+    // 场景渲染的地基：RenderScene（可见物体 / 光源）和 RenderResource（GPU 资源 +
+    // per-frame UBO）。以前 Apple 上一个都没有，管线只能画 UI。
+    //
+    // 这里**不**去加载 GlobalRenderingRes（要 ConfigManager + AssetManager 把资源
+    // 读出来），IBL / 环境光用默认值 —— DesktopRenderPipelineModule 那边有
+    // EnsureFallbackIblTextures 兜底，descriptor 始终是合法的。
+    m_RenderScene = std::make_shared<RenderScene>();
+    m_RenderScene->SetUploadRhi(m_Rhi);
+    m_RenderScene->SetVisibleNodesReference();
+
+    auto render_resource = std::make_shared<RenderResource>();
+    m_RenderResource = render_resource;
+
+    // 必须在 RenderPipeline::Initialize 之前：RP1 的 SetupDescriptorSets 会直接
+    // 绑上传 ringbuffer，晚一步 descriptor 就指向空 buffer。
+    render_resource->CreateAndMapStorageBuffer(m_Rhi);
+
     RenderPipelineInitInfo pipeline_init_info;
+    pipeline_init_info.render_resource = m_RenderResource;
     m_RenderPipeline = std::make_shared<RenderPipeline>();
     m_RenderPipeline->m_Rhi = m_Rhi;
     m_RenderPipeline->Initialize(pipeline_init_info);
@@ -57,12 +77,42 @@ void RenderSystem::Tick(float)
     {
         m_Rhi->PrepareContext();
         // Metal: acquire this frame's drawable, draw the UI straight into it, then
-        // present. The render pipeline has no Metal scene modules yet, so the ZSlate
-        // editor overlay is driven here, inside the swapchain pass, through the
-        // pipeline's post-UI callbacks (EditorUIPass::Draw) -- the only place a
-        // Metal command buffer is open.
+        // present. The ZSlate editor overlay is driven here, inside the swapchain
+        // pass, through the pipeline's post-UI callbacks (EditorUIPass::Draw) --
+        // the only place a Metal command buffer is open.
+        //
+        // 场景 pass 必须在 swapchain pass 打开**之前**录完：它们画的是
+        // MainCameraFramebufferResources 自己的离屏 attachment，不占 swapchain。
         if (!m_Rhi->PrepareBeforePass([]() {}))
         {
+            if (m_RenderPipeline && m_RenderScene && m_RenderResource)
+            {
+                ProcessSwapData();
+
+                const auto render_resource = std::static_pointer_cast<RenderResource>(m_RenderResource);
+                m_RenderScene->SetVisibleNodesReference();
+                for (auto&& camera : m_Cameras)
+                {
+                    m_RenderResource->UpdatePerFrameBuffer(m_RenderScene, camera);
+                    m_RenderScene->UpdateVisibleObjects(render_resource, camera);
+                }
+
+                m_RenderPipeline->PreparePassData(m_RenderResource);
+                m_ActiveFrameDrawListSlot = 0;
+                RHIDrawList& draw_list = GetFrameDrawList(m_ActiveFrameDrawListSlot);
+                m_RenderPipeline->BuildDrawLists(m_RenderResource, draw_list);
+                draw_list.ExecuteAll();
+
+                // TODO(Apple present)：上面画完的是 MainCameraFramebufferResources
+                // 的离屏 attachment，还没有搬到 swapchain 上，所以目前画面里看不
+                // 到场景（UI 照常）。Metal 没有持久 swapchain image，CmdBlitImage
+                // 到 swapchain 这条路走不通 —— 需要在下面的 swapchain pass 里做
+                // 一次全屏采样。候选：走 MetalBindlessTextureBlitPipeline（已实现
+                // 但目前零调用者，要先把场景色注册进 bindless 表），或者用 RHI
+                // 建一条全屏 blit 管线。
+
+            }
+
             RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
             RHIRenderPass*    render_pass    = m_Rhi->GetSwapchainRenderPass();
             RHIFramebuffer*   framebuffer    = m_Rhi->GetSwapchainFramebuffer();
@@ -103,10 +153,14 @@ void RenderSystem::Tick(float)
         }
     }
     // On Metal this is skipped: DesktopRenderPipelineModule::BuildDrawLists
-    // registers a single entry, "PostUI", holding the very same callbacks the
-    // swapchain pass above just ran. Executing it here would re-record
+    // registers entries the swapchain pass above just ran (or, with no scene
+    // passes, a single "PostUI"). Executing it here would re-record
     // EditorUIPass::Draw after SubmitRendering() committed the command buffer,
     // i.e. against a null command buffer where every draw is silently dropped.
+    //
+    // 场景那一串（ProcessSwapData → UpdatePerFrameBuffer → UpdateVisibleObjects →
+    // PreparePassData → BuildDrawLists → ExecuteAll）已经上移到 swapchain pass
+    // 之前，见上面。
 #if !defined(__APPLE__)
     if (m_RenderPipeline)
     {
@@ -121,6 +175,16 @@ void RenderSystem::Shutdown()
     {
         m_RenderPipeline->clear();
         m_RenderPipeline.reset();
+    }
+    if (m_RenderScene)
+    {
+        m_RenderScene->clear();
+        m_RenderScene.reset();
+    }
+    if (m_RenderResource)
+    {
+        m_RenderResource->clear();
+        m_RenderResource.reset();
     }
     m_Cameras.clear();
     m_Rhi = nullptr;
@@ -262,7 +326,55 @@ GuidAllocator<MeshSourceDesc>& RenderSystem::GetMeshAssetIdAllocator()
 void RenderSystem::ClearForLevelReloading() {}
 void RenderSystem::ResubmitActiveLevelRenderers() {}
 void RenderSystem::SyncGameCameraFromMainCamera() {}
-void RenderSystem::ProcessSwapData() {}
+void RenderSystem::ProcessSwapData()
+{
+    // 场景物体的唯一入口：Level / GameObject 的增删改从 swap data 里取出来喂给
+    // RenderScene。以前这里是空体，等于 Apple 上永远没有任何网格被上传 —— 就算
+    // 管线接好了也只会画出背景色。
+    //
+    // 只处理三件真正影响"有没有东西可画"的事：全局资源（IBL）、GameObject 增删改。
+    // 相机 / 粒子 / 视口那几段 Apple 上没有对应的消费者，先不动。
+    if (!m_RenderScene || !m_RenderResource || m_Rhi == nullptr)
+    {
+        return;
+    }
+
+    RenderSwapData& swap_data = m_SwapContext.GetRenderSwapData();
+
+    if (swap_data.m_LevelResourceDesc.has_value())
+    {
+        m_RenderResource->UploadGlobalRenderResource(m_Rhi, *swap_data.m_LevelResourceDesc);
+        m_SwapContext.ResetLevelRsourceSwapData();
+    }
+
+    if (swap_data.m_GameObjectResourceDesc.has_value())
+    {
+        while (!swap_data.m_GameObjectResourceDesc->IsEmpty())
+        {
+            GameObjectDesc gobject = swap_data.m_GameObjectResourceDesc->GetNextProcessObject();
+            m_RenderScene->UpsertGameObject(m_Rhi, *m_RenderResource, gobject);
+            swap_data.m_GameObjectResourceDesc->pop();
+        }
+        m_SwapContext.ResetGameObjectResourceSwapData();
+    }
+
+    if (swap_data.m_GameObjectToDelete.has_value())
+    {
+        while (!swap_data.m_GameObjectToDelete->IsEmpty())
+        {
+            GameObjectDesc gobject = swap_data.m_GameObjectToDelete->GetNextProcessObject();
+            m_RenderScene->DeleteEntityByGObjectID(gobject.getId());
+            swap_data.m_GameObjectToDelete->pop();
+        }
+        m_SwapContext.ResetGameObjectToDelete();
+    }
+
+    if (swap_data.m_VisibleAxisUpdatePending)
+    {
+        m_RenderScene->m_RenderAxis = swap_data.m_VisibleAxis;
+        m_SwapContext.ResetVisibleAxisSwapData();
+    }
+}
 void RenderSystem::FlushRenderingCommands()
 {
     // Apple / WebGL2 path: rendering runs synchronously on the main thread, so
