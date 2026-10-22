@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -125,6 +126,10 @@ struct PoseContext
     std::vector<float> path_translate_mix;
     // 每条 path 约束**当前**看到的那条 chunk 20 记录；`kNoPathAttachment` = 不生效。
     std::vector<uint32_t> path_att;
+    // 每条 chunk 20 记录的 deform 数组（= 参考实现里该槽位的 `_attachmentVertices`）。
+    // 空 = 没有 deform（用 setup 顶点）。rigid 是**绝对坐标**、weighted 是**偏移**，
+    // 两者长度都是 `SpineGpuPathDeformLength()`。
+    std::vector<std::vector<float>> path_deform;
 
     // PathConstraint::computeWorldPositions 的暂存（`_positions` / `_world` / `_curves` / `_segments`）
     std::vector<float> positions;
@@ -311,11 +316,10 @@ inline void BoneUpdate(PoseContext& ctx, uint32_t i)
     UpdateWorldTransform(ctx, i, bo.x, bo.y, bo.rotation, bo.scale_x, bo.scale_y, bo.shear_x, bo.shear_y);
 }
 
-// `Bone::updateAppliedTransform()`：把 applied 值同步成**当前局部值**。
-//
-// 参考实现在"约束要读 applied 值但 `!_appliedValid`"时调它。少了它，
-// 被上一个约束改过的骨骼会把 `updateWorldTransform` 时写入的旧值当成当前值。
-inline void UpdateAppliedTransform(PoseContext& ctx, uint32_t i)
+// `Skeleton::updateWorldTransform()` 第一段（Skeleton.cpp:200-211）：复位表里的骨骼
+// applied = **局部**值。这是"每帧开头抹掉上一帧约束残留"，与下面的
+// `UpdateAppliedTransform`（从世界矩阵**反推**）不是同一个操作。
+inline void ResetAppliedToLocal(PoseContext& ctx, uint32_t i)
 {
     BoneState& bo = ctx.bones[i];
     bo.ax = bo.x;
@@ -326,6 +330,67 @@ inline void UpdateAppliedTransform(PoseContext& ctx, uint32_t i)
     bo.ashear_x = bo.shear_x;
     bo.ashear_y = bo.shear_y;
     bo.applied_valid = true;
+}
+
+// `Bone::updateAppliedTransform()`（Bone.cpp:501-540）：从**当前世界矩阵**相对父骨骼
+// **反推** applied 值。
+//
+// 参考实现在"约束要读 applied 值但 `!_appliedValid`"时调它；`_appliedValid` 被清掉
+// 的唯一原因是 world 模式的 transform / path 约束**直接改了世界矩阵**。
+// ⚠️ 早先这里写成"applied = 局部值"——那会把约束改过的世界姿势整个丢掉：
+//    下一个 IK 从**约束前**的姿势出发去解。OSGame 实测 13 个资产（全是
+//    "transform 约束 → IK"串联）逐骨骼对不上，就是这一个原因。
+inline void UpdateAppliedTransform(PoseContext& ctx, uint32_t i)
+{
+    BoneState& bo = ctx.bones[i];
+    bo.applied_valid = true;
+    if (bo.parent < 0)
+    {
+        bo.ax = bo.world_x;
+        bo.ay = bo.world_y;
+        bo.arotation = Atan2(bo.c, bo.a) * kRadDeg;
+        bo.ascale_x = Sqrt(bo.a * bo.a + bo.c * bo.c);
+        bo.ascale_y = Sqrt(bo.b * bo.b + bo.d * bo.d);
+        bo.ashear_x = 0.0f;
+        bo.ashear_y = Atan2(bo.a * bo.b + bo.c * bo.d, bo.a * bo.d - bo.b * bo.c) * kRadDeg;
+        return;
+    }
+    const BoneState& p = ctx.bones[static_cast<size_t>(bo.parent)];
+    const float pa = p.a;
+    const float pb = p.b;
+    const float pc = p.c;
+    const float pd = p.d;
+    const float pid = 1.0f / (pa * pd - pb * pc);
+    const float dx = bo.world_x - p.world_x;
+    const float dy = bo.world_y - p.world_y;
+    const float ia = pid * pd;
+    const float id = pid * pa;
+    const float ib = pid * pb;
+    const float ic = pid * pc;
+    const float ra = ia * bo.a - ib * bo.c;
+    const float rb = ia * bo.b - ib * bo.d;
+    const float rc = id * bo.c - ic * bo.a;
+    const float rd = id * bo.d - ic * bo.b;
+    // ⚠️ 逐字照抄运算顺序（`dx * pd * pid`，不是 `dx * ia`）：两种写法数学等价，
+    //    浮点结果差最后几位，而对拍的容差就是按"逐字照抄"定的。
+    bo.ax = (dx * pd * pid - dy * pb * pid);
+    bo.ay = (dy * pa * pid - dx * pc * pid);
+    bo.ashear_x = 0.0f;
+    bo.ascale_x = Sqrt(ra * ra + rc * rc);
+    if (bo.ascale_x > 0.0001f)
+    {
+        const float det = ra * rd - rb * rc;
+        bo.ascale_y = det / bo.ascale_x;
+        bo.ashear_y = Atan2(ra * rb + rc * rd, det) * kRadDeg;
+        bo.arotation = Atan2(rc, ra) * kRadDeg;
+    }
+    else
+    {
+        bo.ascale_x = 0.0f;
+        bo.ascale_y = Sqrt(rb * rb + rd * rd);
+        bo.ashear_y = 0.0f;
+        bo.arotation = 90.0f - Atan2(rd, rb) * kRadDeg;
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -934,8 +999,11 @@ void IkApplyTwoBones(PoseContext& ctx, uint32_t parent_i, uint32_t child_i, floa
 // `start` / `count` 的单位是 **float**（参考实现的口径：`count = offset + (count >> 1) * stride`，
 // stride 默认 2）。抄错单位时偏移为 0 的那次调用逐字节相同，只有**非 0** 的调用能测出来。
 //
-// ⚠️ deform 数组（`slot.getAttachmentVertices()`）对 path 附件恒为空 ——
-//    `DeformTimeline` 只挂在 mesh 上 ⇒ 这里不需要 deform 分支。
+// ⚠️ 槽位的 deform 数组（`slot.getAttachmentVertices()`）**会**作用于 path：
+//    rigid 分支**整体替换**顶点（VertexAttachment.cpp:69-70），weighted 分支**逐影响相加**
+//    偏移（:117-118）。早先这里写的是"DeformTimeline 只挂在 mesh 上，path 恒为空"——
+//    那是错的：OSGame 75 个逐骨骼对不上的资产里 62 个就是 path 的 deform 被跳过。
+//    deform 数组由 `SampleTimelines` 的 5b 步算好放在 `ctx.path_deform`。
 void PathComputeWorldVertices(PoseContext& ctx, const SpineGpuPathAttachment& att, uint32_t slot_bone, uint32_t start,
                               uint32_t count, std::vector<float>& out, uint32_t offset)
 {
@@ -943,6 +1011,16 @@ void PathComputeWorldVertices(PoseContext& ctx, const SpineGpuPathAttachment& at
     if (limit > out.size())
     {
         out.resize(limit, 0.0f);
+    }
+    // `att` 是 chunk 20 里的元素 ⇒ 下标就是它在数组里的位置（deform 按这个下标存）。
+    const std::vector<float>* deform = nullptr;
+    {
+        const SpineGpuPathAttachment* base = ctx.asset.path_attachments.data();
+        const size_t att_index = static_cast<size_t>(&att - base);
+        if (att_index < ctx.path_deform.size() && !ctx.path_deform[att_index].empty())
+        {
+            deform = &ctx.path_deform[att_index];
+        }
     }
     const std::vector<float>& verts = ctx.asset.path_vertices;
     const std::vector<uint16_t>& pool = ctx.asset.path_bone_pool;
@@ -967,15 +1045,19 @@ void PathComputeWorldVertices(PoseContext& ctx, const SpineGpuPathAttachment& at
         const float b = bone.b;
         const float c = bone.c;
         const float d = bone.d;
+        // 有 deform 时**整体换成** deform 数组（它存的是绝对坐标，下标从 0 起，不加 vbase）
+        const std::vector<float>& src = deform != nullptr ? *deform : verts;
+        const size_t sbase = deform != nullptr ? 0u : vbase;
+        const size_t send = deform != nullptr ? deform->size() : vend;
         for (uint32_t vv = start, w = offset; w < limit; vv += 2, w += 2)
         {
-            const size_t vi = vbase + vv;
-            if (vi + 1 >= vend || vi + 1 >= verts.size())
+            const size_t vi = sbase + vv;
+            if (vi + 1 >= send || vi + 1 >= src.size())
             {
                 break;
             }
-            const float vx = verts[vi];
-            const float vy = verts[vi + 1];
+            const float vx = src[vi];
+            const float vy = src[vi + 1];
             out[w] = vx * a + vy * b + x;
             out[w + 1] = vx * c + vy * d + y;
         }
@@ -996,7 +1078,9 @@ void PathComputeWorldVertices(PoseContext& ctx, const SpineGpuPathAttachment& at
         skip += n;
     }
     const uint32_t bone_count = ctx.bones.size() != 0 ? static_cast<uint32_t>(ctx.bones.size()) : 0u;
-    for (uint32_t w = offset, bb = skip * 3u; w < limit; w += 2)
+    // deform 下标 `f` 从 `skip << 1` 起、每个影响 +2（VertexAttachment.cpp:110）——
+    // 与顶点下标 `bb`（每影响 +3）不是同一个步长。
+    for (uint32_t w = offset, bb = skip * 3u, f = skip << 1; w < limit; w += 2)
     {
         if (static_cast<size_t>(att.bone_offset) + v >= pool.size())
         {
@@ -1007,7 +1091,7 @@ void PathComputeWorldVertices(PoseContext& ctx, const SpineGpuPathAttachment& at
         n += v;
         float wx = 0.0f;
         float wy = 0.0f;
-        for (; v < n; ++v, bb += 3u)
+        for (; v < n; ++v, bb += 3u, f += 2u)
         {
             const size_t vi = vbase + bb;
             if (static_cast<size_t>(att.bone_offset) + v >= pool.size() || vi + 2u >= vend ||
@@ -1021,8 +1105,13 @@ void PathComputeWorldVertices(PoseContext& ctx, const SpineGpuPathAttachment& at
                 continue;
             }
             const BoneState& bone = ctx.bones[bone_index];
-            const float vx = verts[vi];
-            const float vy = verts[vi + 1];
+            float vx = verts[vi];
+            float vy = verts[vi + 1];
+            if (deform != nullptr && f + 1u < deform->size())
+            {
+                vx += (*deform)[f];
+                vy += (*deform)[f + 1u];
+            }
             const float weight = verts[vi + 2];
             wx += (vx * bone.a + vy * bone.b + bone.world_x) * weight;
             wy += (vx * bone.c + vy * bone.d + bone.world_y) * weight;
@@ -1724,8 +1813,43 @@ bool PathApply(PoseContext& ctx, uint32_t ci, std::string& err)
 // 对外入口
 // ---------------------------------------------------------------------
 
+namespace
+{
+    void TraceWorld(const PoseContext& ctx, SpineGpuPoseTrace* trace, uint8_t kind, uint32_t index)
+    {
+        if (trace == nullptr)
+        {
+            return;
+        }
+        trace->step_kind.push_back(kind);
+        trace->step_index.push_back(index);
+        std::vector<SpineGpuBoneSample> snap(ctx.bones.size());
+        for (size_t i = 0; i < ctx.bones.size(); ++i)
+        {
+            const BoneState& b = ctx.bones[i];
+            snap[i].a = b.a;
+            snap[i].b = b.b;
+            snap[i].c = b.c;
+            snap[i].d = b.d;
+            snap[i].world_x = b.world_x;
+            snap[i].world_y = b.world_y;
+        }
+        trace->after_step.push_back(std::move(snap));
+        std::vector<SpineGpuPoseTrace::Local> ap(ctx.bones.size());
+        std::vector<uint8_t> av(ctx.bones.size());
+        for (size_t i = 0; i < ctx.bones.size(); ++i)
+        {
+            const BoneState& b = ctx.bones[i];
+            ap[i] = {b.ax, b.ay, b.arotation, b.ascale_x, b.ascale_y, b.ashear_x, b.ashear_y};
+            av[i] = b.applied_valid ? 1u : 0u;
+        }
+        trace->applied_after_step.push_back(std::move(ap));
+        trace->applied_valid_after_step.push_back(std::move(av));
+    }
+}  // namespace
+
 SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_index, float time,
-                                     SpineGpuPoseResult& out)
+                                     SpineGpuPoseResult& out, SpineGpuPoseTrace* trace)
 {
     const uint32_t bone_count = asset.header.bone_count;
     if (asset.bones.size() != bone_count)
@@ -1985,8 +2109,9 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
 
         if (type == SpineTimelineType::kDeform || type == SpineTimelineType::kEvent)
         {
-            // deform 是 S6（共享 VB 不动、只给命中项写增量）；event 不改渲染状态。
-            // 两者都不影响**骨骼**姿势 ⇒ 跳过是明确的（不是"忘了实现"）。
+            // mesh 的 deform 是 S6（共享 VB 不动、只给命中项写增量），不影响骨骼；
+            // **path 的 deform 会影响骨骼**，在第 5b 步单独算（需要先知道槽位当前附件）。
+            // event 不改渲染状态。
             continue;
         }
 
@@ -2023,35 +2148,189 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
     // `PathConstraint::update()` 取 `_target->getAttachment()` —— 槽位当前挂的附件。
     // 判据是**名字**（不是"这个槽位的第一条 path"）：一个槽位挂两条 path 是合法的
     // （实测 6 / 782），取第一条会去摆一条别人的曲线，不报错。
+    const std::vector<uint8_t> blob = BuildSpineStringBlob(asset);
+    // 槽位 → 它此刻挂着的 chunk 20 记录（没有 / 不是 path ⇒ kNoPathAttachment）。
+    // 约束（第 5 步）与 deform（第 5b 步）**必须用同一个答案**：deform 只在
+    // "槽位当前附件 == 时间轴的附件"时生效（`DeformTimeline::apply` 的 `applyDeform`，
+    // DeformTimeline.cpp:77），两处各查一遍就可能一边认这条、一边认那条。
+    std::string slot_err;
+    const auto current_path_of_slot = [&](uint32_t slot) -> uint32_t {
+        if (slot >= out.slots.size())
+        {
+            slot_err = "槽位下标 " + std::to_string(slot) + " 越界";
+            return SpineGpuConstants::kNoPathAttachment;
+        }
+        const uint32_t name_off = out.slots[slot].attachment_name_offset;
+        if (name_off == SpineGpuConstants::kNoAttachmentName)
+        {
+            return SpineGpuConstants::kNoPathAttachment;   // 这一帧不挂附件
+        }
+        const char* name = SpineGpuStringAt(blob, name_off);
+        if (name == nullptr)
+        {
+            slot_err = "槽位 " + std::to_string(slot) + " 的附件名偏移越界";
+            return SpineGpuConstants::kNoPathAttachment;
+        }
+        for (size_t k = 0; k < asset.path_attachments.size(); ++k)
+        {
+            if (asset.path_attachments[k].slot_index == slot && asset.path_attachment_names[k] == name)
+            {
+                return static_cast<uint32_t>(k);
+            }
+        }
+        return SpineGpuConstants::kNoPathAttachment;
+    };
     {
-        const std::vector<uint8_t> blob = BuildSpineStringBlob(asset);
         ctx.path_att.assign(asset.paths.size(), SpineGpuConstants::kNoPathAttachment);
         for (size_t i = 0; i < asset.paths.size(); ++i)
         {
             const SpineGpuPathConstraint& c = asset.paths[i];
-            if (c.target_slot >= out.slots.size())
+            ctx.path_att[i] = current_path_of_slot(c.target_slot);
+            if (!slot_err.empty())
             {
-                return Fail("sample: path 约束 " + std::to_string(i) + " 的槽位下标越界");
+                return Fail("sample: path 约束 " + std::to_string(i) + ": " + slot_err);
             }
-            const uint32_t name_off = out.slots[static_cast<size_t>(c.target_slot)].attachment_name_offset;
-            if (name_off == SpineGpuConstants::kNoAttachmentName)
+        }
+    }
+
+    // ---- 5b) path 附件的 deform（`DeformTimeline::apply`，DeformTimeline.cpp:62-...）----
+    //
+    // 只算 path 的：mesh 的 deform 只改顶点、由 GPU 那一路（S6）做，不影响骨骼。
+    // path 的 deform 改的是 path 约束的**输入曲线** ⇒ 骨骼位置跟着变，必须在 CPU 上做。
+    //
+    // 口径：参考对拍是 `setToSetupPose()` 之后 `apply(alpha=1, MixBlend_First)`。
+    // `Slot::setToSetupPose()` 先把 `_attachment` 置空再挂回去（Slot.cpp:59-60）⇒
+    // deform 数组**必然被清空** ⇒ apply 里 `verticesArray.size()==0` 把 blend 改成
+    // MixBlend_Setup（DeformTimeline.cpp:82-84）。alpha==1 时各分支收敛成：
+    //   time < 第 0 帧  → 清空（:91-93）
+    //   time >= 末帧    → 末帧整份（:139 memcpy）
+    //   其余            → prev + (next - prev) * percent（:200-204）
+    // "整份"是参考实现**读文件时**拼出来的（SkeletonBinary.cpp:986-1016）：
+    // 稀疏区间外补 0，rigid 再逐个加上 setup 顶点（rigid 存绝对坐标、weighted 存偏移）。
+    ctx.path_deform.assign(asset.path_attachments.size(), std::vector<float>());
+    for (uint32_t ti = 0; ti < anim.timeline_count; ++ti)
+    {
+        const uint32_t tl_index = anim.timeline_first + ti;
+        const SpineGpuTimeline& tl = asset.timelines[tl_index];
+        if (static_cast<SpineTimelineType>(tl.type) != SpineTimelineType::kDeform ||
+            (tl.target & SpineGpuConstants::kDeformTargetPathBit) == 0)
+        {
+            continue;
+        }
+        const uint32_t k = tl.target & SpineGpuConstants::kDeformTargetIndexMask;
+        if (k >= asset.path_attachments.size())
+        {
+            return Fail("sample: 第 " + std::to_string(tl_index) + " 条 deform 时间轴指向越界的 path 附件 " +
+                        std::to_string(k));
+        }
+        const SpineGpuPathAttachment& att = asset.path_attachments[k];
+        // `applyDeform`：槽位此刻挂的不是这条 path ⇒ 整条时间轴不生效（:77-79）
+        if (current_path_of_slot(att.slot_index) != k)
+        {
+            if (!slot_err.empty())
             {
-                continue;   // 这一帧不挂附件 ⇒ 约束不生效
+                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + ": " + slot_err);
             }
-            const char* name = SpineGpuStringAt(blob, name_off);
-            if (name == nullptr)
+            continue;
+        }
+        const float* frames = asset.frames.data() + tl.frame_first;
+        if (time < frames[0])
+        {
+            continue;   // 清空 ⇒ 用 setup 顶点
+        }
+
+        // 逐帧解出稀疏载荷 (start, count, values*)
+        struct SparseFrame
+        {
+            uint32_t start;
+            uint32_t count;
+            const uint8_t* values;
+        };
+        std::vector<SparseFrame> sparse(tl.frame_count);
+        size_t pos = tl.payload_offset;
+        for (uint32_t fr = 0; fr < tl.frame_count; ++fr)
+        {
+            if (pos + 8u > asset.timeline_payload.size())
             {
-                return Fail("sample: path 约束 " + std::to_string(i) + " 的槽位附件名偏移越界");
+                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的载荷被截断");
             }
-            for (size_t k = 0; k < asset.path_attachments.size(); ++k)
+            SparseFrame& sf = sparse[fr];
+            std::memcpy(&sf.start, asset.timeline_payload.data() + pos, 4);
+            std::memcpy(&sf.count, asset.timeline_payload.data() + pos + 4u, 4);
+            sf.values = asset.timeline_payload.data() + pos + 8u;
+            pos += 8u + static_cast<size_t>(sf.count) * 4u;
+            if (pos > asset.timeline_payload.size())
             {
-                if (asset.path_attachments[k].slot_index == c.target_slot &&
-                    asset.path_attachment_names[k] == name)
+                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的载荷被截断");
+            }
+        }
+
+        const uint32_t deform_len = SpineGpuPathDeformLength(att);
+        const bool rigid = att.bone_count == 0;
+        const float* setup = asset.path_vertices.data() + att.vertex_offset;
+        if (rigid && static_cast<size_t>(att.vertex_offset) + deform_len > asset.path_vertices.size())
+        {
+            return Fail("sample: path 附件 " + std::to_string(k) + " 的顶点区间越界");
+        }
+        // 拼出"整份"帧（SkeletonBinary.cpp:999-1016）
+        const auto expand = [&](uint32_t fr, std::vector<float>& full) -> bool {
+            full.assign(deform_len, 0.0f);
+            const SparseFrame& sf = sparse[fr];
+            if (static_cast<uint64_t>(sf.start) + sf.count > deform_len)
+            {
+                return false;
+            }
+            for (uint32_t q = 0; q < sf.count; ++q)
+            {
+                std::memcpy(&full[sf.start + q], sf.values + static_cast<size_t>(q) * 4u, 4);
+            }
+            if (rigid)
+            {
+                for (uint32_t q = 0; q < deform_len; ++q)
                 {
-                    ctx.path_att[i] = static_cast<uint32_t>(k);
-                    break;
+                    full[q] += setup[q];
                 }
             }
+            return true;
+        };
+
+        std::vector<float>& dst = ctx.path_deform[k];
+        const uint32_t last = tl.frame_count - 1u;
+        if (time >= frames[last])
+        {
+            if (!expand(last, dst))
+            {
+                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的帧超出 deform 长度");
+            }
+            continue;
+        }
+        const uint32_t cur = SpineGpuBinarySearchFrames(frames, tl.frame_count, 1u, time);
+        float percent = 0.0f;
+        const SpineImportResult cr = SpineGpuCurvePercentAt(asset, tl, tl_index, cur, time, percent);
+        if (!cr.ok)
+        {
+            return cr;
+        }
+        std::vector<float> prev;
+        std::vector<float> next;
+        if (!expand(cur - 1u, prev) || !expand(cur, next))
+        {
+            return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的帧超出 deform 长度");
+        }
+        dst.resize(deform_len);
+        for (uint32_t q = 0; q < deform_len; ++q)
+        {
+            dst[q] = prev[q] + (next[q] - prev[q]) * percent;
+        }
+    }
+
+    if (trace != nullptr)
+    {
+        trace->local.resize(bone_count);
+        for (uint32_t i = 0; i < bone_count; ++i)
+        {
+            const BoneState& b = ctx.bones[i];
+            trace->local[i] = {b.x, b.y, b.rotation, b.scale_x, b.scale_y, b.shear_x, b.shear_y};
         }
     }
 
@@ -2063,7 +2342,7 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
         {
             return Fail("sample: 复位表里有越界的骨骼下标 " + std::to_string(reset_bone));
         }
-        UpdateAppliedTransform(ctx, reset_bone);
+        ResetAppliedToLocal(ctx, reset_bone);
     }
 
     // ---- 7) 按 chunk 19 遍历 ----
@@ -2080,6 +2359,7 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
         for (uint32_t i = 0; i < bone_count; ++i)
         {
             BoneUpdate(ctx, i);
+            TraceWorld(ctx, trace, SpineGpuUpdateKind::kUpdateBone, i);
         }
     }
     else
@@ -2196,6 +2476,7 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
                 default:
                     return Fail("sample: 执行步骤的 kind " + std::to_string(step.kind) + " 不认识");
             }
+            TraceWorld(ctx, trace, step.kind, step.index);
         }
     }
 

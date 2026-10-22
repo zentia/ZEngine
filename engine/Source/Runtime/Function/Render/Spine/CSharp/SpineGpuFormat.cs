@@ -44,7 +44,10 @@ namespace ZEngine.SpineGpu
         //       path 11.1% 的资产带约束），容器里没有它们就无从解算。
         //       ⇒ 不兼容：v10 容器被新读端读会得到「0 条约束」，而"没有约束"本身
         //         不报错 —— 与 chunk 10 / 11 / 17 是同一类坑。
-        public const uint FormatVersion = 11;
+        // v12 = deform 时间轴可以指向 **path 附件**（Target 最高位，见 DeformTargetPathBit）。
+        //       布局没变、**语义**变了：v11 读端会把 0x8000+k 当附件记录下标，
+        //       v11 容器被新读端读则"path 的 deform 恒不存在"—— 两个方向都不报错。
+        public const uint FormatVersion = 12;
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;
@@ -130,6 +133,19 @@ namespace ZEngine.SpineGpu
         // "这个槽位上没有 path 附件"。**不是 0** —— 0 是 chunk 20 里第一条
         // 合法记录，填 0 会让约束沿一条别人的曲线摆骨骼，且不报错。
         public const uint NoPathAttachment = 0xFFFFFFFFu;
+
+        // v12：deform 时间轴 Target 的最高位 = "低 15 位是 chunk 20 的 path 附件下标"
+        // （不是附件记录下标）。path 的 deform 会改 path 约束摆出来的骨骼
+        // （VertexAttachment.cpp:69-70），不能在烘焙期跳过。
+        public const ushort DeformTargetPathBit = 0x8000;
+        public const ushort DeformTargetIndexMask = 0x7FFF;
+
+        // 一条 path 附件的 deform 长度（float 个数）：weighted ? floats / 3 * 2 : floats
+        // （SkeletonBinary.cpp:976-977）。与 C++ `SpineGpuPathDeformLength()` 同一公式。
+        public static uint PathDeformLength(SpineGpuPathAttachment a)
+        {
+            return a.BoneCount == 0 ? a.VertexFloatCount : a.VertexFloatCount / 3u * 2u;
+        }
     }
 
     public enum SpineVertexFormat : byte

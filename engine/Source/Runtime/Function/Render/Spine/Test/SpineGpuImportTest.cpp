@@ -1212,6 +1212,11 @@ bool DumpContainers(const SpineAtlas& atlas, const std::string& dir)
     // kSkeletonDeform 带 %DEFORMFIELD% 占位符 ⇒ 只落 .skel（json 那条路径在套件里已经测过）
     cases.push_back({"deform", std::string(),
                      BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, true)});
+    // v12：deform 指向 **path 附件**（target 最高位）⇒ C# 读端必须认得最高位、按 chunk 20 校验，
+    // 并原样写回同一份字节。path1 是 rigid 3 顶点 ⇒ deform 长度 6。
+    cases.push_back({"deform_on_path", std::string(),
+                     BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, true, true, 6,
+                                      false, 2, 0, false, 3, false, true, "path1")});
     // 裁剪的三种 end：json 与 .skel 的表示**不对称**（名字 vs 下标），两种都要落。
     // ⚠️ "缺 end" 只有 json 能表达 —— .skel 的下标没有"空"这个值，越界是显式报错的。
     cases.push_back({"clip_end_s2", BuildClip("\"end\": \"s2\", ", false),
@@ -3370,14 +3375,19 @@ int main(int argc, char** argv)
             Check(!r.ok, "deform: 引用不存在的皮肤 ⇒ 报错");
             std::printf("  (预期报错) %s\n", r.error.c_str());
         }
-        // ①b **反面**：deform 指向一个**没有绘制项**的附件（path）⇒ **不是错误**，跳过。
+        // ①b deform 指向一个**没有绘制项**的附件（path）⇒ **不是错误**。
         //     本工程实测 88 处指向 path（`K_Lvbu` 槽位 121 等）；当错误会让 50 个资产
         //     整个导不出来，而理由是"某个看不见的东西被动画了"。
-        //     ⚠️ 关键副作用：它**不能点亮 kHasDeform** —— 没有绘制项要回退，
-        //        点亮它等于让运行时为一个根本不存在的东西每帧准备动态 VB。
+        //     ⚠️ 它**不能点亮 kHasDeform** —— 没有绘制项要回退，点亮它等于让运行时
+        //        为一个根本不存在的东西每帧准备动态 VB。
+        //     v12：它**不再被跳过**。path 的 deform 会改 path 约束摆出来的骨骼
+        //     （VertexAttachment.cpp:69-70），跳过它曾让 62 个资产逐骨骼对不上。
+        //     ⇒ 烘成一条 target = kDeformTargetPathBit | path 下标 的 deform 时间轴。
+        //     （解算语义由 SpineGpuRefParityTest 对着参考实现逐骨骼钉住；这里钉的是编码。）
         {
+            // path1 是 rigid、3 个顶点 ⇒ deform 长度 6（SkeletonBinary.cpp:976-977）
             const std::vector<uint8_t> skel =
-                BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, true, true, 10,
+                BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, true, true, 6,
                                  false, 2, 0, false, 3, false, true, "path1");
             SpineSourceSkeleton s;
             SpineImportResult r = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, s);
@@ -3399,9 +3409,70 @@ int main(int argc, char** argv)
                 }
                 Check(!any_deformed, "deform→path: 没有任何附件被标 deformed");
                 SpineGpuAsset asset;
-                Check(BakeSpineGpuAsset(s, asset).ok, "deform→path: bake 成功");
+                const SpineImportResult br = BakeSpineGpuAsset(s, asset);
+                Check(br.ok, "deform→path: bake 成功");
+                if (!br.ok)
+                {
+                    std::printf("  error: %s\n", br.error.c_str());
+                }
                 Check((asset.header.flags & SpineGpuFlags::kHasDeform) == 0,
                       "deform→path: **不点亮** kHasDeform（没有绘制项可回退）");
+                CheckEq(asset.header.version, SpineGpuConstants::kFormatVersion, "deform→path: 容器版本是 v12");
+                size_t n_deform = 0;
+                for (const SpineGpuTimeline& t : asset.timelines)
+                {
+                    if (t.type == static_cast<uint16_t>(SpineTimelineType::kDeform))
+                    {
+                        ++n_deform;
+                        CheckEq(static_cast<long long>(t.target),
+                                static_cast<long long>(SpineGpuConstants::kDeformTargetPathBit | 0u),
+                                "deform→path: target = 最高位 | path 下标 0（**不是**附件记录 0）");
+                    }
+                }
+                CheckEq(static_cast<long long>(n_deform), 1LL, "deform→path: 烘出 1 条 deform 时间轴（v11 是 0 条）");
+                // 往返：读端必须认得最高位，并按 path 附件校验
+                std::vector<uint8_t> bytes;
+                Check(WriteSpineGpuContainer(asset, bytes).ok, "deform→path: 写容器");
+                SpineGpuAsset back;
+                const SpineImportResult rr = ReadSpineGpuContainer(bytes.data(), bytes.size(), back);
+                Check(rr.ok, "deform→path: 读回来");
+                Check(back.timelines == asset.timelines, "deform→path: 时间轴往返一致");
+                // 读端校验：把 target 改成越界的 path 下标 ⇒ 必须报错（不是读到别的 path）
+                if (rr.ok)
+                {
+                    SpineGpuAsset bad = asset;
+                    for (SpineGpuTimeline& t : bad.timelines)
+                    {
+                        if (t.type == static_cast<uint16_t>(SpineTimelineType::kDeform))
+                        {
+                            t.target = static_cast<uint16_t>(SpineGpuConstants::kDeformTargetPathBit | 5u);
+                        }
+                    }
+                    std::vector<uint8_t> bad_bytes;
+                    Check(WriteSpineGpuContainer(bad, bad_bytes).ok, "deform→path: 写坏容器");
+                    SpineGpuAsset bad_back;
+                    const SpineImportResult br2 = ReadSpineGpuContainer(bad_bytes.data(), bad_bytes.size(), bad_back);
+                    Check(!br2.ok, "deform→path: 越界的 path 下标 ⇒ 读端报错");
+                    std::printf("  (预期报错) %s\n", br2.error.c_str());
+                }
+            }
+        }
+        // ①b' 反面：deform 帧写出 path 的 deform 长度（10 > 6）⇒ **烘焙报错**。
+        //     参考实现是 `setFixedSize(deformLength)` 后直接写 `deform[v]`（越界 UB），
+        //     我们不截断、不静默。
+        {
+            const std::vector<uint8_t> skel =
+                BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, true, true, 10,
+                                 false, 2, 0, false, 3, false, true, "path1");
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, s);
+            Check(r.ok, "deform→path 过长: 解析成功（越界在烘焙期判）");
+            if (r.ok)
+            {
+                SpineGpuAsset asset;
+                const SpineImportResult br = BakeSpineGpuAsset(s, asset);
+                Check(!br.ok, "deform→path 过长: bake 报错");
+                std::printf("  (预期报错) %s\n", br.error.c_str());
             }
         }
         // ①c **3.7 与 3.8**：字节布局逐段比对一致，只有槽位暗色判据不同 ⇒

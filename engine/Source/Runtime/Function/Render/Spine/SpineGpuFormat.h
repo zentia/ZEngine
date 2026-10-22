@@ -100,7 +100,11 @@ namespace SpineGpuConstants
     //     ⚠️ 执行顺序（chunk 19）**直接落参考实现 `updateCache()` 的结果**，
     //        不落"让运行时自己重排"：重排规则是 `sortBone` 的递归 +
     //        约束 order 两层，运行时再实现一遍就是给自己多一次写反的机会。
-    constexpr uint32_t kFormatVersion = 11;
+    // * v12 = deform 时间轴可以指向 **path 附件**（`target` 最高位，见
+    //     `kDeformTargetPathBit`）。布局一个字节都没变，但**语义**变了：v11 读端会把
+    //     0x8000+k 当成附件记录下标（越界 / 读到别人），v11 容器被新读端读则"path 的
+    //     deform 恒不存在"—— 两个方向都不报错，所以照规矩升版本。
+    constexpr uint32_t kFormatVersion = 12;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -246,6 +250,20 @@ namespace SpineGpuConstants
     // attachment 时间轴里"这一帧没有附件"的哨兵。**不是 0** —— 0 是 chunk 1 里
     // 第一个字符串的合法偏移，填 0 会让空帧变成"挂上某个真实附件"且不报错。
     constexpr uint32_t kNoAttachmentName = 0xFFFFFFFFu;
+
+    // v12：deform 时间轴的 `target` 最高位 = "低 15 位是 chunk 20 的 **path 附件**下标"，
+    // 不是附件记录（chunk 7）下标。
+    //
+    // 为什么 path 的 deform 必须进容器：`VertexAttachment::computeWorldVertices()` 在
+    // rigid 分支里**整体替换**、weighted 分支里**逐影响相加**槽位的 deform 数组
+    // （VertexAttachment.cpp:69-70 / :117-118）⇒ deform 改了 path 曲线的形状，
+    // path 约束摆出来的**骨骼**跟着变。v11 及以前在烘焙期把它当"不渲染、无效果"跳过，
+    // 实测 OSGame 75 个逐骨骼对不上的资产里 62 个就是这个原因。
+    //
+    // 用最高位而不是新时间轴类型：类型值逐个抄参考实现 `TimelineType.h`，不许自造。
+    // 代价是附件记录与 path 附件的下标都必须 < 0x8000（烘焙期显式报错，不截断）。
+    constexpr uint16_t kDeformTargetPathBit = 0x8000u;
+    constexpr uint16_t kDeformTargetIndexMask = 0x7FFFu;
 
     // 骨骼数上限。两个约束中取严的：
     //   * `SpineGpuBone::parent` 是 int16 ⇒ 下标必须能用 int16 表示（含 -1）
@@ -603,8 +621,9 @@ inline bool operator!=(const SpineGpuAnim& a, const SpineGpuAnim& b) { return !(
 //
 // deform 用"附件记录下标"是有意的：一条记录 = (皮肤, 槽位, 附件) 三元组，
 // 正好是 deform 时间轴的寻址键，不需要再给 32 B 塞三个字段。
-// 代价是"deform 指向一个不产生绘制项的附件"（path / boundingbox / clipping）
-// 无从表达 —— 但它们**本来就不渲染**，deform 对它们没有效果，烘焙期直接跳过。
+// v12 起 `target` 最高位置 1 时，低 15 位是 chunk 20 的 **path 附件**下标
+// （`kDeformTargetPathBit`）—— path 不产生绘制项，但它的 deform 会改 path 约束摆出来的
+// 骨骼位置，不能跳过。boundingbox / clipping / point 仍在烘焙期跳过（不影响任何姿势）。
 struct SpineGpuTimeline
 {
     uint16_t type = 0;            // @0   SpineTimelineType（TimelineType.h:35-49 原值）
@@ -1034,6 +1053,15 @@ static_assert(offsetof(SpineGpuPathAttachment, length_offset) == 28, "path_att.l
 static_assert(offsetof(SpineGpuPathAttachment, length_count) == 32, "path_att.length_count @32");
 static_assert(offsetof(SpineGpuPathAttachment, name_offset) == 36, "path_att.name_offset @36");
 static_assert(std::is_standard_layout_v<SpineGpuPathAttachment>, "path_att stays standard-layout");
+
+// 一条 path 附件的 deform 数组长度（float 个数）。抄 `SkeletonBinary.cpp:976-977`：
+//   weighted ? vertices.size() / 3 * 2 : vertices.size()
+// weighted 的 `vertices` 是每个影响 (x, y, weight) 3 个 float，deform 是每个影响 (dx, dy)
+// 2 个 ⇒ 不是"顶点数 × 2"。用错时 rigid（偏移 0、长度相同）测不出来，只有 weighted 能。
+inline constexpr uint32_t SpineGpuPathDeformLength(const SpineGpuPathAttachment& a)
+{
+    return a.bone_count == 0 ? a.vertex_float_count : a.vertex_float_count / 3u * 2u;
+}
 
 inline bool operator==(const SpineGpuPathAttachment& a, const SpineGpuPathAttachment& b)
 {

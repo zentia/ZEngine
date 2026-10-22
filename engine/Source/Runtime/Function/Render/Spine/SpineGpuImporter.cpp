@@ -6129,28 +6129,79 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                     }
                     if (hit < 0)
                     {
-                        // 指向一个**不产生绘制项**的附件（boundingbox / path / point）⇒
-                        // deform 对它无从生效（没有顶点可改）⇒ 整条时间轴不烘焙。
-                        // 这不是静默丢弃：渲染结果**完全相同**（那些附件根本不画）。
-                        bool no_draw = false;
-                        for (const SpineSourceNoDrawAttachment& s : src.no_draw_attachments)
+                        // ---- v12：指向 **path 附件** ⇒ 照样烘焙，target 置最高位 ----
+                        // deform 会改 path 曲线 ⇒ 改 path 约束摆出来的骨骼
+                        // （VertexAttachment.cpp:69-70 rigid 整体替换 / :117-118 weighted 相加）。
+                        // chunk 20 在动画之前已经烘好，按 (皮肤, 槽位, 名字) 精确命中。
+                        int path_hit = -1;
+                        for (size_t k = 0; k < out.path_attachments.size(); ++k)
                         {
-                            if (s.skin_index == tl.deform_skin && s.slot_index == tl.deform_slot &&
-                                s.name == tl.deform_attachment)
+                            const SpineGpuPathAttachment& pa = out.path_attachments[k];
+                            if (static_cast<int>(pa.skin_index) == tl.deform_skin &&
+                                static_cast<int>(pa.slot_index) == tl.deform_slot &&
+                                out.path_attachment_names[k] == tl.deform_attachment)
                             {
-                                no_draw = true;
+                                path_hit = static_cast<int>(k);
                                 break;
                             }
                         }
-                        if (!no_draw)
+                        if (path_hit >= 0)
                         {
-                            return Fail("bake: deform 时间轴指向的附件 '" + tl.deform_attachment +
-                                        "' 找不到对应的附件记录（它既不产生绘制项、也不在"
-                                        "不渲染附件表里）");
+                            if (path_hit > static_cast<int>(SpineGpuConstants::kDeformTargetIndexMask))
+                            {
+                                return Fail("bake: deform 时间轴指向第 " + std::to_string(path_hit) +
+                                            " 条 path 附件，超出 target 低 15 位能表示的范围");
+                            }
+                            // 每帧 start + count 必须落在 deform 数组里：参考实现是
+                            // `deform.setFixedSize(deformLength)` 后直接写 `deform[v]`
+                            // （SkeletonBinary.cpp:992-1003），越界是 UB 不是截断。
+                            const uint32_t deform_len =
+                                SpineGpuPathDeformLength(out.path_attachments[static_cast<size_t>(path_hit)]);
+                            for (const SpineSourceDeformFrame& df : tl.deform_frames)
+                            {
+                                if (static_cast<uint64_t>(df.start) + df.values.size() > deform_len)
+                                {
+                                    return Fail("bake: path 附件 '" + tl.deform_attachment + "' 的 deform 帧写到 [" +
+                                                std::to_string(df.start) + ", " +
+                                                std::to_string(df.start + df.values.size()) + ")，超出它的 deform 长度 " +
+                                                std::to_string(deform_len));
+                                }
+                            }
+                            target = static_cast<int>(SpineGpuConstants::kDeformTargetPathBit) | path_hit;
                         }
-                        continue;
+                        else
+                        {
+                            // 指向一个**不产生绘制项、也不是 path** 的附件（boundingbox / point /
+                            // clipping）⇒ deform 不改任何姿势 ⇒ 整条时间轴不烘焙。
+                            // 这不是静默丢弃：渲染与骨骼结果都**完全相同**。
+                            bool no_draw = false;
+                            for (const SpineSourceNoDrawAttachment& s : src.no_draw_attachments)
+                            {
+                                if (s.skin_index == tl.deform_skin && s.slot_index == tl.deform_slot &&
+                                    s.name == tl.deform_attachment)
+                                {
+                                    no_draw = true;
+                                    break;
+                                }
+                            }
+                            if (!no_draw)
+                            {
+                                return Fail("bake: deform 时间轴指向的附件 '" + tl.deform_attachment +
+                                            "' 找不到对应的附件记录（它既不产生绘制项、也不在"
+                                            "不渲染附件表里）");
+                            }
+                            continue;
+                        }
                     }
-                    target = hit;
+                    else
+                    {
+                        if (hit > static_cast<int>(SpineGpuConstants::kDeformTargetIndexMask))
+                        {
+                            return Fail("bake: deform 时间轴指向第 " + std::to_string(hit) +
+                                        " 条附件记录，超出 target 低 15 位（最高位留给 path 附件）");
+                        }
+                        target = hit;
+                    }
                 }
 
                 SpineGpuTimeline t;
@@ -7778,6 +7829,43 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
                 return Fail("container: 第 " + std::to_string(i) + " 条 path 约束的 path_index " +
                             std::to_string(c.path_index) + " 越界（chunk 20 只有 " +
                             std::to_string(out.path_attachments.size()) + " 条）");
+            }
+        }
+    }
+
+    // ---- 交叉检查（v12）：指向 path 附件的 deform 时间轴 ----
+    // target 最高位 = 低 15 位是 chunk 20 下标。越界或帧写出 deform 数组都是坏容器：
+    // 解算器会读到别的 path 的曲线 / 越界，不报错。
+    {
+        for (uint32_t i = 0; i < out.timelines.size(); ++i)
+        {
+            const SpineGpuTimeline& t = out.timelines[i];
+            if (static_cast<SpineTimelineType>(t.type) != SpineTimelineType::kDeform ||
+                (t.target & SpineGpuConstants::kDeformTargetPathBit) == 0)
+            {
+                continue;
+            }
+            const uint32_t k = t.target & SpineGpuConstants::kDeformTargetIndexMask;
+            if (k >= out.path_attachments.size())
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 条 deform 时间轴指向 path 附件 " +
+                            std::to_string(k) + "，越界（chunk 20 只有 " +
+                            std::to_string(out.path_attachments.size()) + " 条）");
+            }
+            const uint32_t deform_len = SpineGpuPathDeformLength(out.path_attachments[k]);
+            size_t pos = t.payload_offset;   // 载荷已在时间轴校验里走过一遍，这里不会截断
+            for (uint32_t fr = 0; fr < t.payload_count; ++fr)
+            {
+                const uint32_t start = GetU32(out.timeline_payload.data() + pos);
+                const uint32_t count = GetU32(out.timeline_payload.data() + pos + 4u);
+                pos += 8u + static_cast<size_t>(count) * 4u;
+                if (static_cast<uint64_t>(start) + count > deform_len)
+                {
+                    return Fail("container: 第 " + std::to_string(i) + " 条 deform 时间轴第 " + std::to_string(fr) +
+                                " 帧写到 [" + std::to_string(start) + ", " + std::to_string(start + count) +
+                                ")，超出 path 附件 " + std::to_string(k) + " 的 deform 长度 " +
+                                std::to_string(deform_len));
+                }
             }
         }
     }

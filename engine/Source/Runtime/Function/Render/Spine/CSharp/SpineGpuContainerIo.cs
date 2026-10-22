@@ -1043,6 +1043,38 @@ namespace ZEngine.SpineGpu
                 }
             }
 
+            // ---- 交叉检查（v12）：指向 path 附件的 deform 时间轴 ----
+            // 越界或帧写出 deform 数组都是坏容器：解算会读到别的 path 的曲线，不报错。
+            for (int i = 0; i < asset.Timelines.Count; ++i)
+            {
+                var t = asset.Timelines[i];
+                if ((SpineTimelineType)t.Type != SpineTimelineType.Deform ||
+                    (t.Target & SpineGpuConstants.DeformTargetPathBit) == 0)
+                {
+                    continue;
+                }
+                int k = t.Target & SpineGpuConstants.DeformTargetIndexMask;
+                if (k >= asset.PathAttachments.Count)
+                {
+                    throw new SpineGpuContainerException("container: 第 " + i + " 条 deform 时间轴指向 path 附件 " + k +
+                        "，越界（chunk 20 只有 " + asset.PathAttachments.Count + " 条）");
+                }
+                uint deformLen = SpineGpuConstants.PathDeformLength(asset.PathAttachments[k]);
+                long pos = t.PayloadOffset;   // 载荷已在时间轴校验里走过一遍
+                for (uint fr = 0; fr < t.PayloadCount; ++fr)
+                {
+                    uint start = ReadU32(asset.TimelinePayload, (int)pos);
+                    uint count = ReadU32(asset.TimelinePayload, (int)(pos + 4));
+                    pos += 8 + (long)count * 4;
+                    if ((ulong)start + count > deformLen)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 deform 时间轴第 " + fr +
+                            " 帧写到 [" + start + ", " + (start + count) + ")，超出 path 附件 " + k +
+                            " 的 deform 长度 " + deformLen);
+                    }
+                }
+            }
+
             // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 槽位 setup 附件名 → 附件名 →
             //              图集页名 → 动画名 → path 附件名（v11）→ 动画附件名 ----
             if (TryGet(byId, (uint)SpineGpuChunkId.Strings, out uint sto, out uint sts))

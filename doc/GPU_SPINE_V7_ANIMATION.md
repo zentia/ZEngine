@@ -514,7 +514,7 @@ deform 数组长度对 weighted 是 **ΣboneCount × 2**（不是 vertexCount ×
 | **S1** | chunk 10 骨骼树；C++ 写/读 + C# 读 + 字节 round-trip | **已完成**（见 7.0.2） |
 | **S2** | 动画解析（json + 二进制）+ chunk 11-16；11 类时间轴全覆盖 | **已完成**（见 7.0.3） |
 | **S3** | 槽位 setup（chunk 17）+ color / twoColor / attachment / drawOrder 解算 | **已完成**（见 7.0.4） |
-| **S4** | 约束（chunk 18-20）+ update 顺序（前置核对**已完成**，见 §4.1：3.7/3.8 数学差 2 处，按 3.8 实现） | 对拍：376 个有约束的资产子集，逐骨骼比世界变换 |
+| **S4** | 约束（chunk 18-20）+ update 顺序（前置核对**已完成**，见 §4.1：3.7/3.8 数学差 2 处，按 3.8 实现） | **已完成**：对着 spine-cpp 3.8 逐骨骼对拍 **781/781**（见 7.0.5 / 7.0.6） |
 | **S5** | 多轨混合（`AnimationState` 转录，含 `_timelinesRotation` 最短弧记忆） | 对拍：随机切轨 / 混出，逐帧比对 |
 | **S6a** | deform 求解 + per-instance deform 缓冲（方案 C：只给命中项写"deform 后局部坐标"，蒙皮仍在 GPU） | 与 `SpineSkinningParityTest` 接上；断言共享 VB **没被改写** |
 | **S6b** | 方案 B：deform 缓冲直接由 GPU 采样，shader 里 rigid 替换 / weighted 相加 | 同上，且逐实例上传量 ≤ 122 B × 命中条数 |
@@ -782,7 +782,7 @@ rotate **tangent 99.10%** / chainScale 0.90% ⇒ 固定值模式几乎没用到�
 
 ---
 
-### 7.0.6 S4b 在途（2026-10-22）：解算器已写出 + 参考实现对拍台已通
+### 7.0.6 S4b 已落地（2026-10-22）：解算器 + 参考实现对拍台，781 / 781 逐骨骼全对
 
 **代码**：`SpineGpuPoseSolver.h/.cpp`（新增）导出 `SpineGpuSamplePose(asset, anim, time, out)`，
 一次调用给出该帧每根骨骼的 `(a,b,c,d,worldX,worldY)`。
@@ -816,7 +816,7 @@ rotate **tangent 99.10%** / chainScale 0.90% ⇒ 固定值模式几乎没用到�
 | 骨骼分量比较次数 | 2 267 244 |
 | 通过部分的最大相对误差 | ~6e-6 |
 
-**对拍台立刻抓到的两个 bug**（都是"静默"型，靠夹具永远测不出来）：
+**对拍台抓到的四个 bug**（全是"静默"型，靠夹具永远测不出来）：
 
 1. **chunk 20 的池偏移没用**（已修）。`PathComputeWorldVertices` /
    `PathComputeWorldPositions` 直接用 `verts[i]` / `lengths[i]`，漏掉了
@@ -824,15 +824,51 @@ rotate **tangent 99.10%** / chainScale 0.90% ⇒ 固定值模式几乎没用到�
    **所有 path 附件共用**的（`SpineGpuImporter.cpp:5244/5247`），偏移单位是 **f32 下标**。
    漏掉它 ⇒ 每条 path 都读第 0 条曲线的控制点 ⇒ 所有 path 约束把骨骼摆到**同一个点**。
    ⚠️ 这正是"偏移为 0 的那次测不出来"的老坑：资产只有一条 path 时完全正确。
-2. **deform 会改 path 的形状，进而改骨骼位置**（**未修，占 62 / 75**）。
-   `VertexAttachment::computeWorldVertices()` 在 **rigid** 分支里会
-   **优先用槽位的 deform 数组整体替换顶点**（VertexAttachment.cpp:68-70），
-   而我们目前**跳过** deform 时间轴（理由是"它只影响顶点、在 GPU 上做"）。
-   对普通 mesh 这个理由成立；**对 path 附件不成立** —— deform 改的是约束的**输入**，
-   骨骼位置会跟着变。⇒ S4b 必须给"path 约束的目标槽位"在 CPU 上做 deform。
+2. **deform 会改 path 的形状，进而改骨骼位置**（已修，**62 个**，⇒ 格式 **v12**）。
+   `VertexAttachment::computeWorldVertices()` 在 rigid 分支**整体替换**、weighted 分支
+   **逐影响相加**槽位的 deform 数组（VertexAttachment.cpp:69-70 / :117-118）。v11 烘焙期把
+   "deform 指向不产生绘制项的附件"一律跳过 —— 对 mesh 之外的 boundingbox / point /
+   clipping 成立，**对 path 不成立**。
+   * 容器：deform 时间轴 `target` 最高位（`kDeformTargetPathBit`）= 低 15 位是 chunk 20 下标。
+     布局不变、语义变 ⇒ 照规矩升 v12。烘焙期与两端读端都校验"下标在 chunk 20 内、每帧
+     `start+count` ≤ deform 长度"（长度公式抄 `SkeletonBinary.cpp:976-977`：weighted 是
+     `floats / 3 * 2`，不是"顶点数 × 2"）。
+   * 解算：`SpineGpuSamplePose` 第 5b 步。槽位当前附件**必须就是**这条 path 才生效
+     （`applyDeform`，DeformTimeline.cpp:77）——与第 5 步的约束**共用同一个"槽位当前 path"
+     查找**，两处各查一遍就可能一边认这条、一边认那条。对拍口径 `setToSetupPose()` 后
+     `apply(alpha=1, MixBlend_First)`：`Slot::setToSetupPose` 先把附件置空再挂回（Slot.cpp:59）
+     ⇒ deform 必然被清空 ⇒ blend 退化成 Setup ⇒ 三个分支（第 0 帧前清空 / 末帧后整份 /
+     中间 prev+(next-prev)·percent）。"整份帧"按读文件时的拼法重建：稀疏区间外补 0，
+     rigid 再逐个加 setup 顶点（rigid 存绝对坐标、weighted 存偏移）。
+   * mesh 的 deform **仍不在 CPU 上做**（S6，不影响骨骼）。
+3. **`Bone::updateAppliedTransform()` 写错了**（已修，**13 个**，全是"transform 约束 → IK"
+   串联的资产）。参考实现是**从当前世界矩阵相对父骨骼反推** applied 值
+   （Bone.cpp:501-540）；我们写成了"applied = 局部值"，于是 world 模式 transform 约束改过的
+   世界姿势被整个丢掉，下一个 IK 从**约束前**的姿势出发去解。⚠️ "applied = 局部值"是
+   **另一个**操作（`Skeleton::updateWorldTransform` 开头对复位表做的，Skeleton.cpp:200-211），
+   现在拆成 `ResetAppliedToLocal` 与 `UpdateAppliedTransform` 两个函数，名字不再混。
+   定位靠新加的 `--trace <t>`：沿参考实现的 `getUpdateCacheList()` 逐步 update，每步后比全体
+   骨骼，报出第一个分叉的步骤与该步之前的 applied 输入 —— 5 个资产全部指向 IK、IK 输入的
+   applied 值都对，唯一不同的是 `applied_valid=0` 的骨骼走了 `updateAppliedTransform`。
+4. **曲线进度的浮点写法**（已修，**1 个**，`UI_Yixing_Spine`）。参考实现所有 CurveTimeline 都是
+   `1 - (time - frameTime) / (prevTime - frameTime)`；我们写的 `(time - prev) / (next - prev)`
+   数学相等、差 1-2 ulp，经 24 个 transform + 2 个 IK 的链放大后超出 1e-4。`--tol 1e-6`
+   能把分叉点推到第一根骨骼，照抄后整条链逐骨骼对上。
 
-**状态**：解算器可编译、可跑、706/781 对得上；**尚未**接到渲染侧，也**没有**注册进
-ctest（它依赖 `G:/OSGame` 的引擎源码，是加码不是门禁）。
+**实测（810 个 .skel.bytes / .json，781 个烘焙成功）**：
+
+| 指标 | 修前 | 修后 |
+| --- | --- | --- |
+| 逐骨骼比对通过的文件 | 706 / 781 | **781 / 781** |
+| 动画 × 时间点采样 | 8 957 | 9 660 |
+| 骨骼分量比较次数 | 2 267 244 | 2 410 290 |
+| 最大相对误差 | 1.95（失败样本） | **1.5e-5** |
+
+（采样数变多是因为以前一个文件一出错就停，现在每个文件都跑完。）
+
+**状态**：S4 收尾。解算器尚未接到渲染侧；对拍台没有注册进 ctest（它依赖 `G:/OSGame`
+的引擎源码，是加码不是门禁），ctest 里的 `SpineGpuImportTest`（1293/1293，含 v12 的编码与
+读端负向用例）与 `SpineGpuCSharpParityTest`（385/385，新增 `deform_on_path` 容器）都过。
 
 ---
 

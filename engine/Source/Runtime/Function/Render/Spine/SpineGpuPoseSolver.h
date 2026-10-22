@@ -62,5 +62,25 @@ struct SpineGpuPoseResult : SpineGpuSlotSampleResult
 //
 // 出错（返回 !ok）只可能是"容器不自洽"或"遇到了本阶段不做的时间轴"。
 // 后者**显式报错**而不是跳过 —— 跳过会得到"看起来合理但错"的姿势。
+// 诊断用：逐步记录解算过程（对拍台定位"第一个分叉的步骤"）。
+// 生产代码传 nullptr，零开销。
+struct SpineGpuPoseTrace
+{
+    struct Local
+    {
+        float x, y, rotation, scale_x, scale_y, shear_x, shear_y;
+    };
+    // 时间轴写完、复位表之前的**局部**值（= 参考实现 `Bone::_x` 等）
+    std::vector<Local> local;
+    // chunk 19 每一步之后的全体骨骼世界变换（与 `step_kind` / `step_index` 一一对应）
+    std::vector<uint8_t> step_kind;     // SpineGpuUpdateKind
+    std::vector<uint32_t> step_index;
+    std::vector<std::vector<SpineGpuBoneSample>> after_step;
+    // 同一时刻的 applied 值（ax, ay, arotation, ascale_x, ascale_y, ashear_x, ashear_y）
+    // 与 applied_valid。世界矩阵对得上、applied 对不上时，下一个约束照样会解错。
+    std::vector<std::vector<Local>> applied_after_step;
+    std::vector<std::vector<uint8_t>> applied_valid_after_step;
+};
+
 SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_index, float time,
-                                     SpineGpuPoseResult& out);
+                                     SpineGpuPoseResult& out, SpineGpuPoseTrace* trace = nullptr);

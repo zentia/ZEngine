@@ -82,7 +82,12 @@ SpineImportResult SpineGpuCurvePercentAt(const SpineGpuAsset& asset, const Spine
     }
     const float ft = asset.frames[static_cast<size_t>(abs_cur)];
     const float pt = asset.frames[static_cast<size_t>(abs_prev)];
-    float percent = (time - pt) / (ft - pt);
+    // ⚠️ 逐字照抄参考实现的写法 `1 - (time - frameTime) / (prevTime - frameTime)`
+    //    （RotateTimeline.cpp:101-102、TranslateTimeline.cpp:96-97、DeformTimeline.cpp:186 …
+    //    所有 CurveTimeline 都是这一句）。`(time - pt) / (ft - pt)` 数学上相等，浮点结果差
+    //    最后 1-2 ulp；经过 IK / transform 约束链放大后，OSGame 的 `UI_Yixing_Spine`
+    //    就因此超出 1e-4 的对拍容差（唯一一个对不上的资产）。
+    float percent = 1.0f - (time - ft) / (pt - ft);
 
     // 段号 = 前一帧的下标（`ColorTimeline.cpp:93` `frame / ENTRIES - 1`）
     const uint32_t segment = cur / entries - 1u;

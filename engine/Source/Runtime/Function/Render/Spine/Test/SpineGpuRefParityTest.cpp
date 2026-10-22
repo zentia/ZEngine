@@ -29,6 +29,13 @@
 #include <spine/PathAttachment.h>
 #include <spine/PointAttachment.h>
 #include <spine/ClippingAttachment.h>
+#include <spine/IkConstraint.h>
+#include <spine/TransformConstraint.h>
+#include <spine/PathConstraint.h>
+#include <spine/Updatable.h>
+#include <spine/IkConstraintData.h>
+#include <spine/TransformConstraintData.h>
+#include <spine/PathConstraintData.h>
 #include <spine/Animation.h>
 #include <spine/AnimationState.h>
 #include <spine/AtlasAttachmentLoader.h>
@@ -172,6 +179,9 @@ bool ReadFile(const fs::path& p, std::vector<char>& out)
 // ulp 差：两端都按 float 算，但中间表达式的**结合顺序**不完全一样
 // （参考实现写 `1 - (time - frameTime) / (prevTime - frameTime)`，我们用标准写法），
 // 所以是"接近逐位"而不是逐位。用相对容差 + 绝对地板。
+// 逐步对拍（--trace）可以用 --tol 收紧，用来找"最早出现的浮点分叉"。
+float g_tolerance = 1.0e-4f;
+
 bool CloseEnough(float a, float b, float& worst_rel)
 {
     if (std::isnan(a) && std::isnan(b))
@@ -191,7 +201,7 @@ bool CloseEnough(float a, float b, float& worst_rel)
     }
     // 1e-4 相对：足够抓"用了 3.7 的数学 / 遍历顺序写反 / 约束没跑"，
     // 又不会因为最后几个 ulp 的浮点噪声失败。
-    return rel <= 1.0e-4f;
+    return rel <= g_tolerance;
 }
 
 // ---------------------------------------------------------------------
@@ -390,6 +400,7 @@ int main(int argc, char** argv)
     std::string flip_asset;     // 只对路径含这个子串的资产生成（空 = 第一个烘焙成功的）
     size_t flip_anim = 0;
     size_t flip_frames = 60;
+    float trace_time = -1.0f;   // >= 0 = 逐步对拍模式（--trace <t>，配 --asset / --anim）
     for (int i = 1; i < argc; ++i)
     {
         const std::string a = argv[i];
@@ -416,6 +427,14 @@ int main(int argc, char** argv)
         else if (a == "--details" && i + 1 < argc)
         {
             max_details = static_cast<size_t>(std::atoi(argv[++i]));
+        }
+        else if (a == "--tol" && i + 1 < argc)
+        {
+            g_tolerance = static_cast<float>(std::atof(argv[++i]));
+        }
+        else if (a == "--trace" && i + 1 < argc)
+        {
+            trace_time = static_cast<float>(std::atof(argv[++i]));
         }
         else if (a == "--verbose")
         {
@@ -557,6 +576,202 @@ int main(int argc, char** argv)
                         ref_data->getAnimations().size(), loaded.anims.size());
             ++st.mismatches;
             continue;
+        }
+
+
+        // ---- 逐步对拍（--trace <t>）----
+        // 只在命中的第一个文件上跑一次：先比时间轴写完后的**局部**值，再沿参考实现的
+        // `getUpdateCacheList()` 逐步 update、每步后比全体骨骼世界变换，报出**第一个
+        // 分叉的步骤** —— 区分"时间轴采样错"与"某个约束解算错"，以及是哪一个约束。
+        if (trace_time >= 0.0f && loaded.anims.size() > flip_anim &&
+            (flip_asset.empty() || skel_path.string().find(flip_asset) != std::string::npos))
+        {
+            SpineGpuPoseResult pose;
+            SpineGpuPoseTrace tr;
+            const SpineImportResult pr =
+                SpineGpuSamplePose(loaded, static_cast<uint32_t>(flip_anim), trace_time, pose, &tr);
+            if (!pr.ok)
+            {
+                std::printf("[trace] 我们的解算失败: %s\n", pr.error.c_str());
+                return 1;
+            }
+            spine::Animation* ta = ref_data->getAnimations()[flip_anim];
+            ref_skel.setToSetupPose();
+            ta->apply(ref_skel, 0.0f, trace_time, false, nullptr, 1.0f, spine::MixBlend_First,
+                      spine::MixDirection_In);
+            spine::Vector<spine::Bone*>& rb = ref_skel.getBones();
+            std::printf("[trace] %s 动画 #%zu '%s' t=%g，骨骼 %zu，参考 updateCache %zu 步 / 我们 %zu 步\n",
+                        skel_path.string().c_str(), flip_anim, ta->getName().buffer(),
+                        static_cast<double>(trace_time), rb.size(), ref_skel.getUpdateCacheList().size(),
+                        tr.after_step.size());
+            // 1) 局部值
+            size_t local_bad = 0;
+            for (size_t bi = 0; bi < rb.size() && bi < tr.local.size(); ++bi)
+            {
+                const SpineGpuPoseTrace::Local& l = tr.local[bi];
+                const float ov[7] = {l.x, l.y, l.rotation, l.scale_x, l.scale_y, l.shear_x, l.shear_y};
+                const float rv[7] = {rb[bi]->getX(),      rb[bi]->getY(),      rb[bi]->getRotation(),
+                                     rb[bi]->getScaleX(), rb[bi]->getScaleY(), rb[bi]->getShearX(),
+                                     rb[bi]->getShearY()};
+                float w = 0.0f;
+                bool ok = true;
+                for (int k = 0; k < 7; ++k)
+                {
+                    ok = CloseEnough(ov[k], rv[k], w) && ok;
+                }
+                if (!ok && local_bad++ < 8)
+                {
+                    std::printf("  局部值不同 骨骼 %zu '%s': 我们 (x=%g y=%g r=%g sx=%g sy=%g hx=%g hy=%g) "
+                                "参考 (x=%g y=%g r=%g sx=%g sy=%g hx=%g hy=%g)\n",
+                                bi, rb[bi]->getData().getName().buffer(), ov[0], ov[1], ov[2], ov[3], ov[4], ov[5],
+                                ov[6], rv[0], rv[1], rv[2], rv[3], rv[4], rv[5], rv[6]);
+                }
+            }
+            std::printf("  局部值不同的骨骼: %zu\n", local_bad);
+            // 2) 复位：参考的 `_updateCacheReset` 是私有的；对**全部**骨骼复位与之等价
+            //    （不在复位表里的骨骼，其 applied 值只在它自己 update() 之后才会被读）。
+            for (size_t bi = 0; bi < rb.size(); ++bi)
+            {
+                spine::Bone& b = *rb[bi];
+                b.setAX(b.getX());
+                b.setAY(b.getY());
+                b.setAppliedRotation(b.getRotation());
+                b.setAScaleX(b.getScaleX());
+                b.setAScaleY(b.getScaleY());
+                b.setAShearX(b.getShearX());
+                b.setAShearY(b.getShearY());
+                b.setAppliedValid(true);
+            }
+            spine::Vector<spine::Updatable*>& cache = ref_skel.getUpdateCacheList();
+            const size_t steps = std::min(cache.size(), tr.after_step.size());
+            std::vector<SpineGpuPoseTrace::Local> ref_prev_applied(rb.size());
+            std::vector<uint8_t> ref_prev_valid(rb.size());
+            for (size_t si = 0; si < steps; ++si)
+            {
+                for (size_t bi = 0; bi < rb.size(); ++bi)
+                {
+                    spine::Bone& b = *rb[bi];
+                    ref_prev_applied[bi] = {b.getAX(), b.getAY(), b.getAppliedRotation(), b.getAScaleX(),
+                                            b.getAScaleY(), b.getAShearX(), b.getAShearY()};
+                    ref_prev_valid[bi] = b.isAppliedValid() ? 1u : 0u;
+                }
+                cache[si]->update();
+                const char* kind_name = "bone";
+                std::string ref_what;
+                if (cache[si]->getRTTI().instanceOf(spine::Bone::rtti))
+                {
+                    ref_what = std::string("bone '") + static_cast<spine::Bone*>(cache[si])->getData().getName().buffer() + "'";
+                }
+                else if (cache[si]->getRTTI().instanceOf(spine::IkConstraint::rtti))
+                {
+                    ref_what = std::string("ik '") +
+                               static_cast<spine::IkConstraint*>(cache[si])->getData().getName().buffer() + "'";
+                }
+                else if (cache[si]->getRTTI().instanceOf(spine::TransformConstraint::rtti))
+                {
+                    ref_what = std::string("transform '") +
+                               static_cast<spine::TransformConstraint*>(cache[si])->getData().getName().buffer() + "'";
+                }
+                else if (cache[si]->getRTTI().instanceOf(spine::PathConstraint::rtti))
+                {
+                    ref_what = std::string("path '") +
+                               static_cast<spine::PathConstraint*>(cache[si])->getData().getName().buffer() + "'";
+                }
+                switch (tr.step_kind[si])
+                {
+                    case SpineGpuUpdateKind::kUpdateIk: kind_name = "ik"; break;
+                    case SpineGpuUpdateKind::kUpdateTransform: kind_name = "transform"; break;
+                    case SpineGpuUpdateKind::kUpdatePath: kind_name = "path"; break;
+                    default: break;
+                }
+                size_t bad = 0;
+                std::string bad_list;
+                std::vector<size_t> bad_set;
+                for (size_t bi = 0; bi < rb.size() && bi < tr.after_step[si].size(); ++bi)
+                {
+                    const SpineGpuBoneSample& o = tr.after_step[si][bi];
+                    const float ov[6] = {o.a, o.b, o.c, o.d, o.world_x, o.world_y};
+                    const float rv[6] = {rb[bi]->getA(), rb[bi]->getB(), rb[bi]->getC(),
+                                         rb[bi]->getD(), rb[bi]->getWorldX(), rb[bi]->getWorldY()};
+                    float w = 0.0f;
+                    bool ok = true;
+                    for (int k = 0; k < 6; ++k)
+                    {
+                        ok = CloseEnough(ov[k], rv[k], w) && ok;
+                    }
+                    if (!ok)
+                    {
+                        bad_set.push_back(bi);
+                        if (bad < 6)
+                        {
+                            char b2[512];
+                            std::snprintf(b2, sizeof(b2),
+                                          "\n      骨骼 %zu '%s' 我们 (a=%g b=%g c=%g d=%g wx=%g wy=%g) 参考 "
+                                          "(a=%g b=%g c=%g d=%g wx=%g wy=%g)",
+                                          bi, rb[bi]->getData().getName().buffer(), ov[0], ov[1], ov[2], ov[3],
+                                          ov[4], ov[5], rv[0], rv[1], rv[2], rv[3], rv[4], rv[5]);
+                            bad_list += b2;
+                        }
+                        ++bad;
+                    }
+                }
+                if (bad != 0)
+                {
+                    std::printf("  第一个分叉：第 %zu 步  我们 %s #%u / 参考 %s  ⇒ %zu 根骨骼不同%s\n", si, kind_name,
+                                tr.step_index[si], ref_what.c_str(), bad, bad_list.c_str());
+                    // 这一步**之前**的 applied 值（约束的真正输入），全体骨骼里不一致的都列出来
+                    if (si > 0)
+                    {
+                        const auto& oap = tr.applied_after_step[si - 1];
+                        const auto& oav = tr.applied_valid_after_step[si - 1];
+                        size_t shown = 0;
+                        std::vector<size_t> focus;
+                        for (size_t bb : bad_set)
+                        {
+                            focus.push_back(bb);
+                            if (rb[bb]->getParent() != nullptr)
+                            {
+                                for (size_t q = 0; q < rb.size(); ++q)
+                                {
+                                    if (rb[q] == rb[bb]->getParent())
+                                    {
+                                        focus.push_back(q);
+                                    }
+                                }
+                            }
+                        }
+                        for (size_t bi : focus)
+                        {
+                            if (bi >= oap.size())
+                            {
+                                continue;
+                            }
+                            const SpineGpuPoseTrace::Local& o = oap[bi];
+                            const SpineGpuPoseTrace::Local& r = ref_prev_applied[bi];
+                            const float ov[7] = {o.x, o.y, o.rotation, o.scale_x, o.scale_y, o.shear_x, o.shear_y};
+                            const float rv[7] = {r.x, r.y, r.rotation, r.scale_x, r.scale_y, r.shear_x, r.shear_y};
+                            float w = 0.0f;
+                            bool ok = oav[bi] == ref_prev_valid[bi];
+                            for (int k = 0; k < 7; ++k)
+                            {
+                                ok = CloseEnough(ov[k], rv[k], w) && ok;
+                            }
+                            if (shown++ < 8)
+                            {
+                                std::printf("      步前 applied%s 骨骼 %zu '%s': 我们 valid=%d (ax=%g ay=%g ar=%g asx=%g asy=%g ahx=%g ahy=%g)"
+                                            " 参考 valid=%d (ax=%g ay=%g ar=%g asx=%g asy=%g ahx=%g ahy=%g)\n",
+                                            ok ? "（一致）" : "【不同】", bi, rb[bi]->getData().getName().buffer(), oav[bi], ov[0], ov[1], ov[2], ov[3],
+                                            ov[4], ov[5], ov[6], ref_prev_valid[bi], rv[0], rv[1], rv[2], rv[3], rv[4],
+                                            rv[5], rv[6]);
+                            }
+                        }
+
+                    }
+                    return 1;
+                }
+            }
+            std::printf("  逐步全部一致（%zu 步）\n", steps);
+            return 0;
         }
 
         // ---- 逐帧叠图（--flip-book）----

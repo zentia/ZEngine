@@ -864,6 +864,14 @@ Header (64 B)
                                     实测 481 / 781（61.6%）个资产带约束
                                     ⇒ 缺了它们的表现是"姿势不动"，与 v8 / v9 / v10
                                     是同一类坑（"没有 X"本身不报错）
+                               v12 = deform 时间轴可以指向 **path 附件**：`target` 最高位
+                                    （`kDeformTargetPathBit = 0x8000`）置 1 时，低 15 位是
+                                    chunk 20 的下标（否则仍是附件记录下标）。**字节布局一个
+                                    都没变**，变的是语义：v11 烘焙期把它当"不渲染、无效果"
+                                    跳过，但 path 的 deform 会改 path 约束摆出来的骨骼
+                                    （VertexAttachment.cpp:69-70）。读端校验下标落在
+                                    chunk 20 内、每帧 start+count ≤ deform 长度
+                                    （rigid = 顶点 float 数；weighted = float 数 / 3 × 2）
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -994,10 +1002,11 @@ Chunks:
 ## 11. 版本与兼容
 
 - `version` 变化 ⇒ 导入器必须拒绝旧容器并给出明确错误，不做静默兼容。
-- **v7 → v11 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
+- **v7 → v12 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
   **v8 追加骨骼树（chunk 10，§3.4）**；**v9 追加动画（chunk 11-16，§3.5）**；
   **v10 追加槽位 setup（chunk 17，§3.6）**；
-  **v11 追加约束 setup / 执行顺序 / PathAttachment（chunk 18 / 19 / 20，§3.7）**。
+  **v11 追加约束 setup / 执行顺序 / PathAttachment（chunk 18 / 19 / 20，§3.7）**；
+  **v12 让 deform 时间轴可以指向 path 附件（`target` 最高位，布局不变、语义变）**。
   仍在推进的是**约束解算**（S4b：骨骼时间轴 + 三类约束求解 + 按 chunk 19 遍历），
   解算器自写、仍在 CPU。
   字段设计与转录 gap 分析见 **`doc/GPU_SPINE_V7_ANIMATION.md`**。
@@ -1301,12 +1310,12 @@ ZEditor -batchmode -suite=SpineCook <hero.json | hero.skel | 目录> [-o <输出
 > v11 = 约束 setup + 执行顺序 + PathAttachment（chunk 18 / 19 / 20，**已落地**，§3.7）。
 > 剩下的**只有约束解算**（S4b）与 GPU 蒙皮上线路 —— 下面"边界怎么定的"这部分不随进度失效。
 >
-> **S4b 进度（2026-10-22）**：解算器 `SpineGpuPoseSolver` 已写出，并搭了**参考实现对拍台**
+> **S4b 已落地（2026-10-22）**：解算器 `SpineGpuPoseSolver` + **参考实现对拍台**
 > （`Test/SpineGpuRefParityTest`，把 spine-cpp 3.8 编进来逐骨骼比）。
-> 实测 **706 / 781** 个资产逐骨骼全对（2 267 244 次分量比较）。
-> 对拍台抓到的两个 bug：**(a) chunk 20 的 `vertex_offset` / `length_offset` 没用**（已修，
-> 症状是所有 path 约束把骨骼摆到同一个点；资产只有一条 path 时测不出来）；
-> **(b) deform 会改 path 形状从而改骨骼位置**（未修，占剩余 75 个里的 **62** 个）。
+> 实测 **781 / 781** 个资产逐骨骼全对（9 660 个采样、2 410 290 次分量比较，最大相对误差 1.5e-5）。
+> 对拍台抓到的四个 bug（全是"不报错、只是姿势偏"）：**(a)** chunk 20 的偏移没用；
+> **(b)** path 的 deform 被跳过（62 个，⇒ v12）；**(c)** `updateAppliedTransform` 写成了
+> "applied = 局部值"（13 个）；**(d)** 曲线进度没逐字照抄参考实现的浮点写法（1 个）。
 > 详见 `doc/GPU_SPINE_V7_ANIMATION.md` §7.0.6。
 
 v6 及以前只烘焙**绑定姿态**：`SpineGpuAsset` 有 `bone_names` 但 `SpineSourceBone::parent`
