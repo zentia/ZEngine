@@ -876,7 +876,7 @@ ShaderCompileResult ShaderCompiler::CompileInternal(const std::string& source_co
     TBuiltInResource resources = *default_resources;
     EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
 
-    if (!shader.Parse(&resources, 100, false, messages, includer))
+    if (!shader.parse(&resources, 100, false, messages, includer))
     {
         result.error_message = "Shader compilation failed:\n";
         result.error_message += shader.getInfoLog();
