@@ -70,7 +70,10 @@ struct RenderUpdateSceneCmd final : IRenderCommand
 #if defined(_WIN32)
         if (system->m_Rhi && system->m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
         {
-            system->m_RenderScene->SetVisibleNodesReference();
+            // Rotate **once per frame**, not once per camera: the scene is filled
+            // for every camera in turn and only the last one's result would
+            // survive a per-call rotation.
+            system->m_RenderScene->BeginVisibleNodeUpdate();
 
             Level* active_level = nullptr;
             if (auto world_manager = GET_SYSTEM(WorldManager))
@@ -85,6 +88,10 @@ struct RenderUpdateSceneCmd final : IRenderCommand
                 system->m_RenderResource->UpdatePerFrameBuffer(system->m_RenderScene, camera);
                 system->m_RenderScene->UpdateVisibleObjects(render_resource, camera);
             }
+
+            // Publish only now that the set is complete -- the RHI thread may still
+            // be drawing an earlier frame out of one of the other slots.
+            system->m_RenderScene->PublishVisibleNodes();
             return;
         }
 #endif
@@ -98,6 +105,10 @@ struct RenderUpdateSceneCmd final : IRenderCommand
             }
             system->m_RenderScene->SyncPointLightsFromLevel(active_level);
         }
+
+        // See the DX12 branch above: rotate once per frame, publish once the whole
+        // set is complete.
+        system->m_RenderScene->BeginVisibleNodeUpdate();
 
         auto render_resource = std::static_pointer_cast<RenderResource>(system->m_RenderResource);
         for (auto&& camera : system->m_Cameras)
@@ -120,6 +131,8 @@ struct RenderUpdateSceneCmd final : IRenderCommand
 
             system->m_RenderScene->UpdateVisibleObjects(render_resource, camera);
         }
+
+        system->m_RenderScene->PublishVisibleNodes();
 
 #if defined(Z_HAS_VULKAN)
         if (auto debug_draw = GET_SYSTEM(DebugDrawManager))

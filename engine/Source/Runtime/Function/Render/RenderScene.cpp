@@ -151,49 +151,61 @@ void RenderScene::SyncPointLightsFromLevel(Level* level)
     }
 }
 
+void RenderScene::BeginVisibleNodeUpdate()
+{
+    m_VisibleNodeWriteIndex = (m_VisibleNodeWriteIndex + 1) % kVisibleNodeSetCount;
+}
+
+void RenderScene::PublishVisibleNodes()
+{
+    SetVisibleNodesReference();
+}
+
 void RenderScene::UpdateVisibleObjects(std::shared_ptr<RenderResource> render_resource,
                                        std::shared_ptr<RenderCamera> camera)
 {
     Z_PROFILE_SCOPE("RenderScene::updateVisibleObjects");
-    UpdateVisibleObjectsDirectionalLight(render_resource, camera);
-    UpdateVisibleObjectsPointLight(render_resource);
-    UpdateVisibleObjectsMainCamera(render_resource, camera);
-    UpdateVisibleObjectsAxis(render_resource);
+    VisibleNodeSet& nodes = writeNodeSet();
+    UpdateVisibleObjectsDirectionalLight(nodes, render_resource, camera);
+    UpdateVisibleObjectsPointLight(nodes, render_resource);
+    UpdateVisibleObjectsMainCamera(nodes, render_resource, camera);
+    UpdateVisibleObjectsAxis(nodes, render_resource);
     UpdateVisibleObjectsParticle(render_resource);
 }
 
 const std::vector<RenderMeshNode>& RenderScene::GetMainCameraVisibleMeshNodes(ViewportType viewport) const
 {
-    return m_MainCameraVisibleMeshNodesPerViewport[static_cast<size_t>(viewport)];
+    return publishedNodeSet().main_camera_per_viewport[static_cast<size_t>(viewport)];
 }
 
 const std::vector<RenderMeshNode>& RenderScene::GetMainCameraOpaqueMeshNodes(ViewportType viewport) const
 {
-    return m_MainCameraOpaqueMeshNodesPerViewport[static_cast<size_t>(viewport)];
+    return publishedNodeSet().opaque_per_viewport[static_cast<size_t>(viewport)];
 }
 
 const std::vector<RenderMeshNode>& RenderScene::GetMainCameraForwardMeshNodes(ViewportType viewport) const
 {
-    return m_MainCameraForwardMeshNodesPerViewport[static_cast<size_t>(viewport)];
+    return publishedNodeSet().forward_per_viewport[static_cast<size_t>(viewport)];
 }
 
 const std::vector<RenderMeshNode>& RenderScene::GetMainCameraTransparentMeshNodes(ViewportType viewport) const
 {
-    return m_MainCameraTransparentMeshNodesPerViewport[static_cast<size_t>(viewport)];
+    return publishedNodeSet().transparent_per_viewport[static_cast<size_t>(viewport)];
 }
 
 const std::vector<RenderMeshNode>& RenderScene::GetMainCameraSkyMeshNodes(ViewportType viewport) const
 {
-    return m_MainCameraSkyMeshNodesPerViewport[static_cast<size_t>(viewport)];
+    return publishedNodeSet().sky_per_viewport[static_cast<size_t>(viewport)];
 }
 
 void RenderScene::SetVisibleNodesReference()
 
 {
-    RenderPass::m_VisiableNodes.p_directional_light_visible_mesh_nodes = &m_DirectionalLightVisibleMeshNodes;
-    RenderPass::m_VisiableNodes.p_point_lights_visible_mesh_nodes = &m_PointLightsVisibleMeshNodes;
-    RenderPass::m_VisiableNodes.p_main_camera_visible_mesh_nodes = &m_MainCameraVisibleMeshNodes;
-    RenderPass::m_VisiableNodes.p_axis_node = &m_AxisNode;
+    VisibleNodeSet& nodes = writeNodeSet();
+    RenderPass::m_VisiableNodes.p_directional_light_visible_mesh_nodes = &nodes.directional_light;
+    RenderPass::m_VisiableNodes.p_point_lights_visible_mesh_nodes = &nodes.point_lights;
+    RenderPass::m_VisiableNodes.p_main_camera_visible_mesh_nodes = &nodes.main_camera;
+    RenderPass::m_VisiableNodes.p_axis_node = &nodes.axis_node;
 }
 
 GuidAllocator<GameObjectPartId>& RenderScene::GetInstanceIdAllocator()
@@ -476,7 +488,8 @@ void RenderScene::ClearForLevelReloading()
     g_debug_last_main_camera_visibility.clear();
 }
 
-void RenderScene::UpdateVisibleObjectsDirectionalLight(std::shared_ptr<RenderResource> render_resource,
+void RenderScene::UpdateVisibleObjectsDirectionalLight(VisibleNodeSet& nodes,
+                                                       std::shared_ptr<RenderResource> render_resource,
                                                        std::shared_ptr<RenderCamera> camera)
 {
     Matrix4x4 directional_light_proj_view = CalculateDirectionalLightCamera(*this, *camera);
@@ -489,7 +502,7 @@ void RenderScene::UpdateVisibleObjectsDirectionalLight(std::shared_ptr<RenderRes
     render_resource->m_DirectionalLightShadowPerFrame.light_proj_view =
         directional_light_proj_view;
 
-    m_DirectionalLightVisibleMeshNodes.clear();
+    nodes.directional_light.clear();
 
     ClusterFrustum frustum =
         CreateClusterFrustumFromMatrix(directional_light_proj_view, -1.0, 1.0, -1.0, 1.0, 0.0, 1.0);
@@ -501,8 +514,8 @@ void RenderScene::UpdateVisibleObjectsDirectionalLight(std::shared_ptr<RenderRes
 
         if (TiledFrustumIntersectBox(frustum, BoundingBoxTransform(mesh_asset_bounding_box, entity.m_ModelMatrix)))
         {
-            m_DirectionalLightVisibleMeshNodes.emplace_back();
-            RenderMeshNode& temp_node = m_DirectionalLightVisibleMeshNodes.back();
+            nodes.directional_light.emplace_back();
+            RenderMeshNode& temp_node = nodes.directional_light.back();
 
             temp_node.model_matrix = &entity.m_ModelMatrix;
 
@@ -524,9 +537,10 @@ void RenderScene::UpdateVisibleObjectsDirectionalLight(std::shared_ptr<RenderRes
     }
 }
 
-void RenderScene::UpdateVisibleObjectsPointLight(std::shared_ptr<RenderResource> render_resource)
+void RenderScene::UpdateVisibleObjectsPointLight(VisibleNodeSet& nodes,
+                                                 std::shared_ptr<RenderResource> render_resource)
 {
-    m_PointLightsVisibleMeshNodes.clear();
+    nodes.point_lights.clear();
 
     std::vector<BoundingSphere> point_lights_bounding_spheres;
     uint32_t point_light_num = static_cast<uint32_t>(m_PointLightList.m_Lights.size());
@@ -555,8 +569,8 @@ void RenderScene::UpdateVisibleObjectsPointLight(std::shared_ptr<RenderResource>
 
         if (intersect_with_point_lights)
         {
-            m_PointLightsVisibleMeshNodes.emplace_back();
-            RenderMeshNode& temp_node = m_PointLightsVisibleMeshNodes.back();
+            nodes.point_lights.emplace_back();
+            RenderMeshNode& temp_node = nodes.point_lights.back();
 
             temp_node.model_matrix = &entity.m_ModelMatrix;
 
@@ -578,18 +592,19 @@ void RenderScene::UpdateVisibleObjectsPointLight(std::shared_ptr<RenderResource>
     }
 }
 
-void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource> render_resource,
+void RenderScene::UpdateVisibleObjectsMainCamera(VisibleNodeSet& nodes,
+                                                 std::shared_ptr<RenderResource> render_resource,
                                                  std::shared_ptr<RenderCamera> camera)
 {
     ViewportType viewport_type =
         (camera->m_CurrentCameraType == RenderCameraType::Game) ? ViewportType::game : ViewportType::scene;
     const size_t viewport_index = static_cast<size_t>(viewport_type);
 
-    auto& visible_mesh_nodes = m_MainCameraVisibleMeshNodesPerViewport[viewport_index];
-    auto& opaque_mesh_nodes = m_MainCameraOpaqueMeshNodesPerViewport[viewport_index];
-    auto& forward_mesh_nodes = m_MainCameraForwardMeshNodesPerViewport[viewport_index];
-    auto& transparent_mesh_nodes = m_MainCameraTransparentMeshNodesPerViewport[viewport_index];
-    auto& sky_mesh_nodes = m_MainCameraSkyMeshNodesPerViewport[viewport_index];
+    auto& visible_mesh_nodes = nodes.main_camera_per_viewport[viewport_index];
+    auto& opaque_mesh_nodes = nodes.opaque_per_viewport[viewport_index];
+    auto& forward_mesh_nodes = nodes.forward_per_viewport[viewport_index];
+    auto& transparent_mesh_nodes = nodes.transparent_per_viewport[viewport_index];
+    auto& sky_mesh_nodes = nodes.sky_per_viewport[viewport_index];
     visible_mesh_nodes.clear();
     opaque_mesh_nodes.clear();
     forward_mesh_nodes.clear();
@@ -738,7 +753,7 @@ void RenderScene::UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource>
                   return lhs_distance > rhs_distance;
               });
 
-    m_MainCameraVisibleMeshNodes = visible_mesh_nodes;
+    nodes.main_camera = visible_mesh_nodes;
 }
 
 void RenderScene::RegisterAxisMeshSources(const std::array<size_t, 3>& mesh_asset_ids,
@@ -767,24 +782,24 @@ const RenderMeshData* RenderScene::FindAxisMeshSourceData(size_t mesh_asset_id) 
     return nullptr;
 }
 
-void RenderScene::UpdateVisibleObjectsAxis(std::shared_ptr<RenderResource> render_resource)
+void RenderScene::UpdateVisibleObjectsAxis(VisibleNodeSet& nodes, std::shared_ptr<RenderResource> render_resource)
 {
     if (!m_RenderAxis.has_value())
     {
-        m_AxisNode.ref_mesh = nullptr;
+        nodes.axis_node.ref_mesh = nullptr;
         return;
     }
 
     RenderEntity axis = *m_RenderAxis;
 
-    m_AxisNode.model_matrix = axis.m_ModelMatrix;
-    m_AxisNode.node_id = axis.m_InstanceId;
-    m_AxisNode.mesh_asset_id = axis.m_MeshAssetId;
-    m_AxisNode.enable_vertex_blending = axis.m_EnableVertexBlending;
+    nodes.axis_node.model_matrix = axis.m_ModelMatrix;
+    nodes.axis_node.node_id = axis.m_InstanceId;
+    nodes.axis_node.mesh_asset_id = axis.m_MeshAssetId;
+    nodes.axis_node.enable_vertex_blending = axis.m_EnableVertexBlending;
 
     if (render_resource == nullptr || axis.m_MeshAssetId == 0)
     {
-        m_AxisNode.ref_mesh = nullptr;
+        nodes.axis_node.ref_mesh = nullptr;
         return;
     }
 
@@ -824,12 +839,12 @@ void RenderScene::UpdateVisibleObjectsAxis(std::shared_ptr<RenderResource> rende
                         axis.m_MeshAssetId,
                         axis_source_index);
         }
-        m_AxisNode.ref_mesh = nullptr;
+        nodes.axis_node.ref_mesh = nullptr;
         return;
     }
 
     RenderMeshGPUResource& mesh_asset = render_resource->GetEntityMesh(axis);
-    m_AxisNode.ref_mesh = &mesh_asset;
+    nodes.axis_node.ref_mesh = &mesh_asset;
 }
 
 void RenderScene::UpdateVisibleObjectsParticle(std::shared_ptr<RenderResource> render_resource)

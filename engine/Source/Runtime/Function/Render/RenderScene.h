@@ -40,18 +40,43 @@ public:
     std::optional<RenderEntity> m_RenderAxis;
 
     // visible objects (updated per frame)
-    std::vector<RenderMeshNode> m_DirectionalLightVisibleMeshNodes;
-    std::vector<RenderMeshNode> m_PointLightsVisibleMeshNodes;
-    std::array<std::vector<RenderMeshNode>, 2> m_MainCameraVisibleMeshNodesPerViewport;
-    std::array<std::vector<RenderMeshNode>, 2> m_MainCameraOpaqueMeshNodesPerViewport;
-    std::array<std::vector<RenderMeshNode>, 2> m_MainCameraForwardMeshNodesPerViewport;
-    std::array<std::vector<RenderMeshNode>, 2> m_MainCameraTransparentMeshNodesPerViewport;
-    std::array<std::vector<RenderMeshNode>, 2> m_MainCameraSkyMeshNodesPerViewport;
-    std::vector<RenderMeshNode> m_MainCameraVisibleMeshNodes;
-    RenderAxisNode m_AxisNode;
+    //
+    // These lists are written on the **render thread** (RenderUpdateSceneCmd) and
+    // read on the **RHI thread**: RenderDispatchRHICommandsCmd hands the draw list
+    // over and returns immediately, so the RHI thread can still be executing frame
+    // N-k while the render thread is already refilling the lists for frame N.
+    // A single set therefore lets a pass read a node mid-construction --
+    // RenderMeshNode default-constructs ref_material to nullptr, which is exactly
+    // how DirectionalLightShadowPass ended up dereferencing a null material -- or
+    // a vector that is being reallocated under it.
+    //
+    // So keep a ring and publish only once the set is complete. Ring size must
+    // exceed the RHI thread's worst-case lag, which RenderFramePipeline caps at
+    // kMaxFramesInFlight (2); 3 leaves one slot of slack.
+    static constexpr size_t kVisibleNodeSetCount = 3;
+
+    struct VisibleNodeSet
+    {
+        std::vector<RenderMeshNode> directional_light;
+        std::vector<RenderMeshNode> point_lights;
+        std::vector<RenderMeshNode> main_camera;
+        std::array<std::vector<RenderMeshNode>, 2> main_camera_per_viewport;
+        std::array<std::vector<RenderMeshNode>, 2> opaque_per_viewport;
+        std::array<std::vector<RenderMeshNode>, 2> forward_per_viewport;
+        std::array<std::vector<RenderMeshNode>, 2> transparent_per_viewport;
+        std::array<std::vector<RenderMeshNode>, 2> sky_per_viewport;
+        RenderAxisNode axis_node {};
+    };
 
     // clear
     void clear();
+
+    // Rotate to the next set. Called once per frame, before any
+    // UpdateVisibleObjects() call (the scene is updated once per camera).
+    void BeginVisibleNodeUpdate();
+    // Point the render passes at the set that was just filled. Called once per
+    // frame, after every UpdateVisibleObjects() call.
+    void PublishVisibleNodes();
 
     // update visible objects in each frame
     void UpdateVisibleObjects(std::shared_ptr<RenderResource> render_resource, std::shared_ptr<RenderCamera> camera);
@@ -64,6 +89,15 @@ public:
     // set visible nodes ptr in render pass
 
     void SetVisibleNodesReference();
+
+private:
+    VisibleNodeSet& writeNodeSet() { return m_VisibleNodeSets[m_VisibleNodeWriteIndex]; }
+    const VisibleNodeSet& publishedNodeSet() const { return m_VisibleNodeSets[m_VisibleNodeWriteIndex]; }
+
+    std::array<VisibleNodeSet, kVisibleNodeSetCount> m_VisibleNodeSets;
+    size_t m_VisibleNodeWriteIndex {0};
+
+public:
 
     GuidAllocator<GameObjectPartId>& GetInstanceIdAllocator();
     GuidAllocator<MeshSourceDesc>& GetMeshAssetIdAllocator();
@@ -108,12 +142,14 @@ private:
     std::array<size_t, 3> m_AxisMeshAssetIds {};
     std::array<RenderMeshData, 3> m_AxisMeshDatas {};
 
-    void UpdateVisibleObjectsDirectionalLight(std::shared_ptr<RenderResource> render_resource,
+    void UpdateVisibleObjectsDirectionalLight(VisibleNodeSet& nodes,
+                                              std::shared_ptr<RenderResource> render_resource,
 
                                               std::shared_ptr<RenderCamera> camera);
-    void UpdateVisibleObjectsPointLight(std::shared_ptr<RenderResource> render_resource);
-    void UpdateVisibleObjectsMainCamera(std::shared_ptr<RenderResource> render_resource,
+    void UpdateVisibleObjectsPointLight(VisibleNodeSet& nodes, std::shared_ptr<RenderResource> render_resource);
+    void UpdateVisibleObjectsMainCamera(VisibleNodeSet& nodes,
+                                        std::shared_ptr<RenderResource> render_resource,
                                         std::shared_ptr<RenderCamera> camera);
-    void UpdateVisibleObjectsAxis(std::shared_ptr<RenderResource> render_resource);
+    void UpdateVisibleObjectsAxis(VisibleNodeSet& nodes, std::shared_ptr<RenderResource> render_resource);
     void UpdateVisibleObjectsParticle(std::shared_ptr<RenderResource> render_resource);
 };
