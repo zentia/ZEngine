@@ -254,6 +254,25 @@ else()
   message(STATUS "Engine: Lumen (CPU GI) disabled (sources stripped from ZRuntime)")
 endif()
 
+# Whether the engine's GLSL shaders are available as SPIR-V blobs
+# (shader/generated/cpp/*.h, produced by SHADER_COMPILE_TARGET at build time).
+#
+# This is deliberately NOT the same as Z_HAS_VULKAN, for the same reason Z_HAS_LUMEN
+# is not: Apple builds Metal with no Vulkan in sight, yet MetalRHI runs those very
+# SPIR-V blobs through SPIRV-Cross to get MSL (see MetalRHI::CreateShaderModule).
+# Guarding "load the built-in mesh shader" on Z_HAS_VULKAN therefore left Apple with
+# no shaders at all -- MainCameraRp1Pass threw on startup and nothing was ever drawn.
+#
+# Off where there is no SPIR-V path: Emscripten (WebGL2 eats GLSL, not SPIR-V) and
+# Windows-without-Vulkan (that configuration compiles HLSL sources instead).
+if(NOT (EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
+   AND NOT (WIN32 AND NOT ZENGINE_USE_VULKAN))
+  add_compile_definitions(Z_HAS_SPIRV_SHADERS=1)
+  message(STATUS "Engine: built-in shaders available as SPIR-V (Vulkan path + Metal via SPIRV-Cross)")
+else()
+  message(STATUS "Engine: built-in shaders not taken from SPIR-V (HLSL / GLSL sources instead)")
+endif()
+
 
 # Metal/macOS builds disable Vulkan but still benefit from glslangValidator for
 # offline SPIR-V generation when the tool is on PATH (brew install glslang).

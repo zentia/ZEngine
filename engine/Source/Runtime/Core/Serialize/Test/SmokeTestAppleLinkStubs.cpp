@@ -26,7 +26,9 @@
             std::abort();                                                                      \
         }
 
-ZHT_APPLE_LINK_STUB(0, "__ZN12RenderSystem16GetFrameDrawListEj")
+// 0 已移除：RenderSystem::GetFrameDrawList。它以前只定义在非 Apple 的 `#else` 分支里
+// （Apple 上编译不到 ⇒ 只能桩），现在和 AllocateFrameDrawListSlot 一起挪到了
+// RenderSystem.cpp 尾部平台无关处 —— 桩再留着就是 duplicate symbol。
 // 1–8 已移除：RenderResource 的 GetEntityMesh / GetEntityMaterial /
 // CreateAndMapStorageBuffer / UploadGlobalRenderResource /
 // UploadGameObjectRenderResource ×3 —— 它们以前住在 `RenderResource.cpp` 那个

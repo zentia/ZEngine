@@ -24,6 +24,32 @@ static constexpr uint32_t k_msl_descriptor_buffer_offset = 8;
 // Metal has a flat index space per resource kind, while Vulkan/GLSL descriptors
 // are (set, binding) pairs, so each descriptor set gets its own slice.
 static constexpr uint32_t k_msl_descriptor_set_stride = 8;
+// MSL 对 sampler 的索引空间有硬上限：`[[sampler(n)]]` 的 n 必须落在 [0, 15]，
+// 越界是编译期错误（'sampler' attribute parameter is out of bounds）。texture
+// 那边可以到 127，所以两个不能共用一个编号（详见 MetalShader::samplerIndexBySlot
+// 的注释）：sampler 单独从 0 开始紧凑编号，最多 16 个。
+static constexpr uint32_t k_msl_max_sampler_index = 15;
+
+// ---- MSL sampler 索引翻译 ------------------------------------------------
+// 见 MetalShader::samplerIndexBySlot：sampler 在 MSL 里是独立的紧凑编号空间，
+// 描述符槽位（set*stride + binding）必须先翻译成那个编号才能绑。
+
+using MslSamplerIndexMap = std::unordered_map<uint32_t, uint32_t>;
+
+const MslSamplerIndexMap& EmptySamplerIndexMap()
+{
+    static const MslSamplerIndexMap empty;
+    return empty;
+}
+
+// 表里查不到说明这个 shader 根本没用到这个 sampler —— 回退成槽位本身，由调用方
+// 用 `<= k_msl_max_sampler_index` 过滤掉（越界索引 Metal 会直接拒绝，绑上去
+// 只会把整条 encoder 废掉）。
+uint32_t SamplerIndexForSlot(const MslSamplerIndexMap& map, uint32_t slot)
+{
+    const auto found = map.find(slot);
+    return found != map.end() ? found->second : slot;
+}
 
 #ifdef __APPLE__
     #define Component AppleComponent
@@ -729,7 +755,13 @@ RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader
         const std::string entry = entry_points[0].name;
         const auto        model = entry_points[0].execution_model;
 
-        auto add_msl_binding = [&](const spirv_cross::Resource& resource, bool is_buffer) {
+        // Sampler 在 MSL 里是独立的紧凑编号空间（见 k_msl_max_sampler_index），
+        // 按本模块内遇到的顺序从 0 开始发号，并记下"描述符槽位 -> 紧凑编号"
+        // 的翻译表供 CmdBindDescriptorSetsPFN 使用。
+        uint32_t                              next_sampler_index = 0;
+        std::unordered_map<uint32_t, uint32_t> sampler_index_by_slot;
+
+        auto add_msl_binding = [&](const spirv_cross::Resource& resource, bool is_buffer, bool has_sampler) {
             spirv_cross::MSLResourceBinding binding {};
             binding.stage = model;
             binding.basetype = compiler.get_type(resource.base_type_id).basetype;
@@ -748,7 +780,30 @@ RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader
             else
             {
                 binding.msl_texture = slot;
-                binding.msl_sampler = slot;
+                if (has_sampler)
+                {
+                    uint32_t sampler_index = next_sampler_index;
+                    if (sampler_index > k_msl_max_sampler_index)
+                    {
+                        // 一个 stage 用超过 16 个 sampler：Metal 无论如何都编不过，
+                        // 夹住并留一条警告，比让 MSL 编译器甩一句越界更好定位。
+                        LOG_WARNING(ZRender,
+                                    "MetalRHI: shader uses more than {} samplers (slot {}) -- clamped",
+                                    k_msl_max_sampler_index + 1,
+                                    slot);
+                        sampler_index = k_msl_max_sampler_index;
+                    }
+                    else
+                    {
+                        ++next_sampler_index;
+                    }
+                    binding.msl_sampler = sampler_index;
+                    sampler_index_by_slot[slot] = sampler_index;
+                }
+                else
+                {
+                    binding.msl_sampler = slot;
+                }
             }
             compiler.add_msl_resource_binding(binding);
         };
@@ -756,23 +811,38 @@ RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader
         const spirv_cross::ShaderResources resources = compiler.get_shader_resources();
         for (const spirv_cross::Resource& resource : resources.uniform_buffers)
         {
-            add_msl_binding(resource, true);
+            add_msl_binding(resource, true, false);
         }
         for (const spirv_cross::Resource& resource : resources.storage_buffers)
         {
-            add_msl_binding(resource, true);
+            add_msl_binding(resource, true, false);
         }
         for (const spirv_cross::Resource& resource : resources.sampled_images)
         {
-            add_msl_binding(resource, false);
+            // combined image sampler：texture 走槽位，sampler 走紧凑编号。
+            add_msl_binding(resource, false, true);
         }
         for (const spirv_cross::Resource& resource : resources.separate_images)
         {
-            add_msl_binding(resource, false);
+            add_msl_binding(resource, false, false);
         }
         for (const spirv_cross::Resource& resource : resources.separate_samplers)
         {
-            add_msl_binding(resource, false);
+            add_msl_binding(resource, false, true);
+        }
+        // **subpassInput 一定要显式给槽位**。它既不在 sampled_images 里也不在
+        // separate_images 里（SPIRV-Cross 单列 `subpass_inputs`），漏掉的话
+        // SPIRV-Cross 会自己从 0 开始编号：deferred_lighting.frag 的
+        // `in_scene_depth`(set 1 binding 3) 就被编成 [[texture(3)]]，正好和
+        // `brdfLUT_sampler`(set 0 binding 3) 撞车 —— MSL 直接报
+        // "cannot reserve 'texture' resource location at index 3"。
+        for (const spirv_cross::Resource& resource : resources.subpass_inputs)
+        {
+            add_msl_binding(resource, false, false);
+        }
+        for (const spirv_cross::Resource& resource : resources.storage_images)
+        {
+            add_msl_binding(resource, false, false);
         }
 
         spirv_cross::CompilerMSL::Options options;
@@ -789,11 +859,15 @@ RHIShader* MetalRHI::CreateShaderModule(const std::vector<unsigned char>& shader
         const std::string msl_source = compiler.compile();
         const std::string msl_entry  = compiler.get_cleansed_entry_point_name(entry, model);
 
-        auto* shader = CreateMetalShaderFromMSL(m_Device, msl_source, ToShaderStage(model), entry, msl_entry);
-        if (shader != nullptr && model == spv::ExecutionModelGLCompute)
+        auto*       shader       = CreateMetalShaderFromMSL(m_Device, msl_source, ToShaderStage(model), entry, msl_entry);
+        auto*       metal_shader = static_cast<MetalShader*>(shader);
+        if (metal_shader != nullptr)
+        {
+            metal_shader->samplerIndexBySlot = std::move(sampler_index_by_slot);
+        }
+        if (metal_shader != nullptr && model == spv::ExecutionModelGLCompute)
         {
             // MSL 侧 SPIRV-Cross 不一定保留 local_size 属性，SPIR-V 里那份才是权威。
-            auto* metal_shader = static_cast<MetalShader*>(shader);
             for (int axis = 0; axis < 3; ++axis)
             {
                 metal_shader->workgroupSize[axis] = spirv_workgroup_size[axis];
@@ -1302,10 +1376,13 @@ bool MetalRHI::CreateGraphicsPipelines(RHIPipelineCache*,
         if (stage.stage == RHI_SHADER_STAGE_VERTEX_BIT)
         {
             descriptor.vertexFunction = shader->getFunction();
+            // 拷贝而不是存指针：pass 建完管线就 DestroyShaderModule()，shader 先死。
+            pipeline->vertexSamplerIndexBySlot = shader->samplerIndexBySlot;
         }
         else if (stage.stage == RHI_SHADER_STAGE_FRAGMENT_BIT)
         {
             descriptor.fragmentFunction = shader->getFunction();
+            pipeline->fragmentSamplerIndexBySlot = shader->samplerIndexBySlot;
         }
     }
     if (descriptor.vertexFunction == nil)
@@ -1519,6 +1596,7 @@ bool MetalRHI::CreateComputePipelines(RHIPipelineCache*,
 
     auto* pipeline = new MetalPipeline();
     pipeline->computeState = [state retain];
+    pipeline->computeSamplerIndexBySlot = shader->samplerIndexBySlot;
     [state release];
     // CmdDispatch 只能看到 pipeline，看不到 shader，所以在这里抄一份。
     for (uint32_t axis = 0; axis < 3; ++axis)
@@ -1928,6 +2006,11 @@ void MetalRHI::CmdBindDescriptorSetsPFN(RHICommandBuffer*           commandBuffe
     (void)pDynamicOffsets;
 
     const bool compute = pipelineBindPoint == RHI_PIPELINE_BIND_POINT_COMPUTE;
+    // Sampler 的 MSL 索引要在"当前绑定的管线"里查（见 MetalShader::samplerIndexBySlot）：
+    // 槽位可以是 17、21 这种数，但 [[sampler(n)]] 只允许 n <= 15，所以两边必须
+    // 各自用同一张紧凑编号表。管线还没绑就先不绑 sampler（见下面的注释）。
+    auto* graphics_pipeline = metal_buffer->graphicsPipeline;
+    auto* compute_pipeline = metal_buffer->computePipeline;
     for (uint32_t s = 0; s < descriptorSetCount; ++s)
     {
         auto* set = (MetalDescriptorSet*)pDescriptorSets[s];
@@ -1999,11 +2082,35 @@ void MetalRHI::CmdBindDescriptorSetsPFN(RHICommandBuffer*           commandBuffe
             {
                 if (vertex_stage || (!fragment_stage))
                 {
-                    [metal_buffer->renderEncoder setVertexSamplerState:binding.sampler atIndex:texture_index];
+                    const MslSamplerIndexMap* sampler_map = &EmptySamplerIndexMap();
+                    if (graphics_pipeline != nullptr)
+                    {
+                        sampler_map = &graphics_pipeline->vertexSamplerIndexBySlot;
+                    }
+                    else if (compute_pipeline != nullptr)
+                    {
+                        sampler_map = &compute_pipeline->computeSamplerIndexBySlot;
+                    }
+                    const uint32_t sampler_index = SamplerIndexForSlot(*sampler_map, static_cast<uint32_t>(slot));
+                    if (sampler_index <= k_msl_max_sampler_index)
+                    {
+                        [metal_buffer->renderEncoder setVertexSamplerState:binding.sampler
+                                                                  atIndex:static_cast<NSUInteger>(sampler_index)];
+                    }
                 }
                 if (fragment_stage)
                 {
-                    [metal_buffer->renderEncoder setFragmentSamplerState:binding.sampler atIndex:texture_index];
+                    const MslSamplerIndexMap* sampler_map = &EmptySamplerIndexMap();
+                    if (graphics_pipeline != nullptr)
+                    {
+                        sampler_map = &graphics_pipeline->fragmentSamplerIndexBySlot;
+                    }
+                    const uint32_t sampler_index = SamplerIndexForSlot(*sampler_map, static_cast<uint32_t>(slot));
+                    if (sampler_index <= k_msl_max_sampler_index)
+                    {
+                        [metal_buffer->renderEncoder setFragmentSamplerState:binding.sampler
+                                                                    atIndex:static_cast<NSUInteger>(sampler_index)];
+                    }
                 }
             }
         }

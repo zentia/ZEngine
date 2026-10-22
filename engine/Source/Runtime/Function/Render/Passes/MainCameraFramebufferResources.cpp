@@ -27,6 +27,7 @@ bool MainCameraFramebufferResources::Initialize(RHI* rhi, bool enable_fxaa)
     SetupFramebuffers();
 
     m_Initialized = true;
+    m_Extent      = m_Rhi->GetSwapchainInfo().extent;
     LOG_INFO(ZRender,
              "MainCameraFramebufferResources: simplified RP1 (3 independent passes) + RP2 ready ({}x{}, fxaa={})",
              m_Rhi->GetSwapchainInfo().extent.width,
@@ -85,10 +86,43 @@ void MainCameraFramebufferResources::UpdateAfterFramebufferRecreate()
     SetupAttachments();
     SetupFramebuffers();
 
+    m_Extent = m_Rhi->GetSwapchainInfo().extent;
     LOG_INFO(ZRender,
              "MainCameraFramebufferResources: recreated FBs ({}x{})",
              m_Rhi->GetSwapchainInfo().extent.width,
              m_Rhi->GetSwapchainInfo().extent.height);
+}
+
+bool MainCameraFramebufferResources::SyncExtent()
+{
+    if (!m_Initialized || m_Rhi == nullptr)
+    {
+        return false;
+    }
+
+    const RHIExtent2D extent = m_Rhi->GetSwapchainInfo().extent;
+    // headless / 未就绪时 swapchain 尺寸是垃圾（拿过 4249268848），用 (0,16384] 筛。
+    const bool extent_valid = extent.width > 0 && extent.width <= 16384 && extent.height > 0 &&
+                              extent.height <= 16384;
+    if (!extent_valid)
+    {
+        return false;
+    }
+    if (extent.width == m_Extent.width && extent.height == m_Extent.height)
+    {
+        return false;
+    }
+
+    LOG_INFO(ZRender,
+             "MainCameraFramebufferResources: swapchain {}x{} != framebuffers {}x{} -- rebuild needed",
+             extent.width,
+             extent.height,
+             m_Extent.width,
+             m_Extent.height);
+    // 只报告，不重建：重建要连带刷新 RP1 手上那批句柄（Nanite 注入、延迟光照的
+    // 输入附件），那是 DesktopRenderPipelineModule::UpdateAfterRecreate() 的活，
+    // 由调用方接着调。
+    return true;
 }
 
 RHIImageView* MainCameraFramebufferResources::getAttachmentView(uint32_t attachment_index) const

@@ -24,6 +24,17 @@ public:
     // Swapchain resize: rebuild images + framebuffers (render passes are kept).
     void UpdateAfterFramebufferRecreate();
 
+    // 当前这套 attachment / framebuffer 是按多大建的。
+    const RHIExtent2D& GetExtent() const { return m_Extent; }
+
+    // swapchain 尺寸和建的时候不一样就走一次 resize，返回是否真的重建了。
+    //
+    // Apple 上必须有这个自愈：**Initialize() 跑在 swapchain 就绪之前**，那时
+    // `GetSwapchainInfo().extent` 还是 (0,0)，所有 attachment 都是 0x0 ——
+    // `GetSceneColorView()` 于是恒 nullptr，全屏 blit 没有源图，屏幕永远是清屏色。
+    // 以前只有窗口 resize 才触发重建，所以"第一次拿到真尺寸"这一步从来没人做。
+    bool SyncExtent();
+
     // RP1 – Simplified: 3 independent render passes (no subpasses).
     // G-Buffer Pass: writes GBufferA, GBufferB, GBufferC, Depth.
     RHIRenderPass* getGBufferRenderPass() const { return m_GBufferRenderPass; }
@@ -69,6 +80,9 @@ private:
     RHI* m_Rhi {nullptr};
     bool m_EnableFxaa {false};
     bool m_Initialized {false};
+
+    // 这套 attachment / framebuffer 是按哪个尺寸建的（见 SyncExtent）。
+    RHIExtent2D m_Extent {0, 0};
 
     // Color/post attachments (indices match render_pass.h _main_camera_pass_*).
     // Stores all attachment images/views for RP1 and RP2.

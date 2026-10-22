@@ -108,27 +108,43 @@ struct GpuPBRMaterial : RenderMaterialGPUResource
 inline GpuMesh* AsGpuMesh(RenderMeshGPUResource* resource)
 {
     assert(resource == nullptr || resource->backend == RenderResourceBackend::Vulkan ||
-           resource->backend == RenderResourceBackend::DirectX12);
+           resource->backend == RenderResourceBackend::DirectX12 ||
+           // Metal 走的是同一套 GpuMesh / GpuPBRMaterial 布局（只是 VmaAllocation
+           // 那几个字段恒为 nullptr），所以这里必须放行；以前漏了 Metal，Apple 上
+           // 一有网格进场景就 assert 崩。
+           resource->backend == RenderResourceBackend::Metal);
     return static_cast<GpuMesh*>(resource);
 }
 
 inline const GpuMesh* AsGpuMesh(const RenderMeshGPUResource* resource)
 {
     assert(resource == nullptr || resource->backend == RenderResourceBackend::Vulkan ||
-           resource->backend == RenderResourceBackend::DirectX12);
+           resource->backend == RenderResourceBackend::DirectX12 ||
+           // Metal 走的是同一套 GpuMesh / GpuPBRMaterial 布局（只是 VmaAllocation
+           // 那几个字段恒为 nullptr），所以这里必须放行；以前漏了 Metal，Apple 上
+           // 一有网格进场景就 assert 崩。
+           resource->backend == RenderResourceBackend::Metal);
     return static_cast<const GpuMesh*>(resource);
 }
 
 inline GpuPBRMaterial* AsGpuMaterial(RenderMaterialGPUResource* resource)
 {
     assert(resource == nullptr || resource->backend == RenderResourceBackend::Vulkan ||
-           resource->backend == RenderResourceBackend::DirectX12);
+           resource->backend == RenderResourceBackend::DirectX12 ||
+           // Metal 走的是同一套 GpuMesh / GpuPBRMaterial 布局（只是 VmaAllocation
+           // 那几个字段恒为 nullptr），所以这里必须放行；以前漏了 Metal，Apple 上
+           // 一有网格进场景就 assert 崩。
+           resource->backend == RenderResourceBackend::Metal);
     return static_cast<GpuPBRMaterial*>(resource);
 }
 
 inline const GpuPBRMaterial* AsGpuMaterial(const RenderMaterialGPUResource* resource)
 {
     assert(resource == nullptr || resource->backend == RenderResourceBackend::Vulkan ||
-           resource->backend == RenderResourceBackend::DirectX12);
+           resource->backend == RenderResourceBackend::DirectX12 ||
+           // Metal 走的是同一套 GpuMesh / GpuPBRMaterial 布局（只是 VmaAllocation
+           // 那几个字段恒为 nullptr），所以这里必须放行；以前漏了 Metal，Apple 上
+           // 一有网格进场景就 assert 崩。
+           resource->backend == RenderResourceBackend::Metal);
     return static_cast<const GpuPBRMaterial*>(resource);
 }

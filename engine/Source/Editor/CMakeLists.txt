@@ -50,6 +50,13 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/AssetPipeline/.*/[Tt]est/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Undo/[Tt]est/.*")
 # Editor/Build/Test/ carries BuildCacheSmokeTest.cpp, which has its own main().
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Build/[Tt]est/.*")
+# LuaMemPreview is Windows-only: it pulls <windows.h> / <commdlg.h> / <shellapi.h>
+# for the open-file dialog and console attachment. The directory is self-contained
+# (nothing outside it calls in), so dropping it whole costs nothing elsewhere.
+if(NOT WIN32)
+    list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/ToolSuite/LuaMemPreview/.*")
+    list(FILTER EDITOR_HEADERS EXCLUDE REGEX ".*/ToolSuite/LuaMemPreview/.*")
+endif()
 
 # ---- ZSlate-heavy editor windows (P2) ----
 # Excluded until UIRenderer->ISlateRenderer migration and ZSlate::/::type bridging

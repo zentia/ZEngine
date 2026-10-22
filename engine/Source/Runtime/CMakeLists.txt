@@ -182,6 +182,13 @@ elseif(APPLE)
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Vv]ulkan/.*\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabDx12.*\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabDx12.*\\.cpp$")
+    # ShaderLab's SPIR-V compiler TU is the only thing that pulls in Vulkan's
+    # ShaderCompiler, and that TU is removed on Apple (see REMOVE_ITEM above).
+    # Keep the parser + HLSL extract in ZRuntime -- same split the Vulkan-free
+    # Windows branch already makes -- or ZEditor fails to link with three
+    # undefined ShaderCompiler symbols.
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabCompiler\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabCompiler\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "${ZENGINE_APPLE_EXCLUDED_PASSES}")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Dd]ebug[Dd]raw/DebugDrawBuffer\\.cpp$")
@@ -604,6 +611,12 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/AppleSceneBlitSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/AppleSceneBlitSmokeTest.cpp")
+# Metal SPIR-V shader smoke-test main carve-out (same rationale). Guards the
+# built-in shader -> MSL translation (see Function/Render/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/MetalSpirvShaderSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/MetalSpirvShaderSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when

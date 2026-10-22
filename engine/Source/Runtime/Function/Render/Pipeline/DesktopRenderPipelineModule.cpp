@@ -456,6 +456,14 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
     (void)render_resource;
 
 #if defined(__APPLE__)
+    // 每帧对一次尺寸：Initialize() 时 swapchain 还没就绪，attachment 是 0x0，
+    // 必须等真尺寸到了重建一次，否则 GetSceneColorView() 永远是 nullptr。
+    // （见 MainCameraFramebufferResources::SyncExtent 的注释。）
+    if (m_AppleMainCameraFramebuffers != nullptr && m_AppleMainCameraFramebuffers->SyncExtent())
+    {
+        UpdateAfterRecreate();
+    }
+
     const auto post_ui_callbacks = m_Pipeline.m_PostUiRenderCallbacks;
     const auto show_skybox = m_Pipeline.m_IsShowSkybox;
 

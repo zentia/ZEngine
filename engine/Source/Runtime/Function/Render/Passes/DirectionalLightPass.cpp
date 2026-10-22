@@ -15,7 +15,9 @@
 #include <tuple>
 #include <vector>
 
-#if defined(Z_HAS_VULKAN)
+// Z_HAS_SPIRV_SHADERS, not Z_HAS_VULKAN: MetalRHI converts these SPIR-V bytes to
+// MSL with SPIRV-Cross, so the Metal path needs them just as much as Vulkan does.
+#if defined(Z_HAS_SPIRV_SHADERS)
     #include <mesh_directional_light_shadow_frag.h>
     #include <mesh_directional_light_shadow_vert.h>
 #endif
@@ -666,7 +668,7 @@ void DirectionalLightShadowPass::SetupPipelines()
                                                                  {},
                                                                  {});
     }
-#if defined(Z_HAS_VULKAN)
+#if defined(Z_HAS_SPIRV_SHADERS)
     else
     {
         vert_shader_module = m_Rhi->CreateShaderModule(MESH_DIRECTIONAL_LIGHT_SHADOW_VERT);

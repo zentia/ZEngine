@@ -20,7 +20,9 @@
 
 #include "Runtime/Function/Render/Interface/RHIStruct.h"
 
+#include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // ---- Image ----
@@ -140,6 +142,20 @@ public:
     // 恒等于"只处理了第 0 个元素"，而且和 Vulkan 的结果不一致。
     uint32_t workgroupSize[3] {1, 1, 1};
 
+    // ---- MSL sampler 索引是另一套紧凑编号，不能复用描述符槽位 ----
+    //
+    // Metal 的两个上限不一样：`[[texture(n)]]` 的 n 可以到 127，但
+    // `[[sampler(n)]]` 的 n **必须 <= 15**（MSL 编译器直接报
+    // "'sampler' attribute parameter is out of bounds: must be between 0 and 15"）。
+    // 而我们的描述符槽位是 `set * k_msl_descriptor_set_stride + binding`，
+    // 材质集（set 2）的 binding 1/2/3/5 就已经是 17/18/19/21，全部越界。
+    //
+    // 所以 sampler 单独编号：模块内按"出现顺序"从 0 开始分配，key 是描述符
+    // 槽位（`set*stride + binding`），value 是 MSL 里的 `[[sampler(n)]]` 的 n。
+    // 绑描述符时（CmdBindDescriptorSetsPFN）必须用这张表把槽位翻译回紧凑编号，
+    // 否则 sampler 绑到越界索引上，Metal 直接拒绝。
+    std::unordered_map<uint32_t, uint32_t> samplerIndexBySlot;
+
 private:
     id<MTLFunction> m_Function = nil;
     id<MTLLibrary>  m_Library  = nil;
@@ -227,6 +243,14 @@ public:
     // compute 管线建好时把 kernel 的 workgroup 尺寸抄一份过来：CmdDispatch 拿得到
     // 的只有 pipeline，拿不到 shader。
     uint32_t workgroupSize[3] {1, 1, 1};
+
+    // 每个 stage 的 sampler 槽位翻译表（见 MetalShader::samplerIndexBySlot）。
+    //
+    // **必须拷贝而不是持有 shader 指针**：pass 建完管线立刻
+    // `DestroyShaderModule()`，shader 对象会比管线先死，留指针就是悬垂。
+    std::unordered_map<uint32_t, uint32_t> vertexSamplerIndexBySlot;
+    std::unordered_map<uint32_t, uint32_t> fragmentSamplerIndexBySlot;
+    std::unordered_map<uint32_t, uint32_t> computeSamplerIndexBySlot;
 };
 
 // ---- Render pass / framebuffer ----

@@ -18,7 +18,11 @@
 #include <unordered_map>
 #include <vector>
 
-#if defined(Z_HAS_VULKAN)
+// Z_HAS_SPIRV_SHADERS, not Z_HAS_VULKAN: these are just the SPIR-V bytes of the
+// engine's GLSL, and MetalRHI runs them through SPIRV-Cross to get MSL. Gating on
+// Z_HAS_VULKAN left Apple with no mesh shaders at all -- the pass threw on startup
+// and the scene was never drawn.
+#if defined(Z_HAS_SPIRV_SHADERS)
     #include <deferred_lighting_frag.h>
     #include <deferred_lighting_vert.h>
     #include <mesh_frag.h>
@@ -594,7 +598,7 @@ namespace
         {
             return LoadRp1ShaderFromFile(rhi, "mesh.vert.hlsl", ShaderStage::Vertex);
         }
-#if defined(Z_HAS_VULKAN)
+#if defined(Z_HAS_SPIRV_SHADERS)
         return rhi->CreateShaderModule(MESH_VERT);
 #else
         return nullptr;
@@ -607,7 +611,7 @@ namespace
         {
             return LoadRp1ShaderFromFile(rhi, dx12_hlsl_path, ShaderStage::Fragment);
         }
-#if defined(Z_HAS_VULKAN)
+#if defined(Z_HAS_SPIRV_SHADERS)
         if (std::strcmp(dx12_hlsl_path, "mesh_gbuffer.frag.hlsl") == 0)
         {
             return rhi->CreateShaderModule(MESH_GBUFFER_FRAG);
@@ -630,7 +634,7 @@ namespace
         {
             return LoadRp1ShaderFromFile(rhi, "deferred_lighting.vert.hlsl", ShaderStage::Vertex);
         }
-#if defined(Z_HAS_VULKAN)
+#if defined(Z_HAS_SPIRV_SHADERS)
         return rhi->CreateShaderModule(DEFERRED_LIGHTING_VERT);
 #else
         return nullptr;

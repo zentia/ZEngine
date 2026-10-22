@@ -70,3 +70,58 @@ if(ZENGINE_BUILD_APPLE_SCENE_BLIT_SMOKE_TEST)
 
     message(STATUS "Configured AppleSceneBlit smoke test: AppleSceneBlitSmokeTest")
 endif()
+
+# =====================================================================
+# Metal SPIR-V shader smoke test.
+#
+# Guards the two links in "built-in shader -> Metal" that the build can never
+# check: whether the passes hand their SPIR-V blobs to the RHI at all
+# (Z_HAS_SPIRV_SHADERS) and whether SPIRV-Cross's MSL survives the runtime
+# Metal compiler (sampler indices <= 15, subpassInput slots, ...).
+#
+#   cmake -B build -DZENGINE_BUILD_METAL_SPIRV_SHADER_SMOKE_TEST=ON
+#   cmake --build build --target MetalSpirvShaderSmokeTest
+#
+# Off Apple it degrades to the blob sanity checks (size, alignment, magic).
+# =====================================================================
+
+option(ZENGINE_BUILD_METAL_SPIRV_SHADER_SMOKE_TEST
+       "Build the built-in SPIR-V -> MSL smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_METAL_SPIRV_SHADER_SMOKE_TEST)
+    add_executable(MetalSpirvShaderSmokeTest MetalSpirvShaderSmokeTest.cpp)
+
+    set_target_properties(MetalSpirvShaderSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # Same treatment as AppleSceneBlitSmokeTest: the TU reaches into MetalRHI.h
+    # (Objective-C headers), so it is compiled as ObjC++ without the C++ PCH.
+    if(APPLE)
+        set_source_files_properties(
+            "${CMAKE_CURRENT_SOURCE_DIR}/MetalSpirvShaderSmokeTest.cpp"
+            PROPERTIES LANGUAGE OBJCXX SKIP_PRECOMPILE_HEADERS ON)
+    endif()
+
+    # ZRuntime exposes engine/shader/generated/cpp publicly, which is where the
+    # generated SPIR-V headers live.
+    target_link_libraries(MetalSpirvShaderSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(MetalSpirvShaderSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(MetalSpirvShaderSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(MetalSpirvShaderSmokeTest ZEnginePCH)
+        target_precompile_headers(MetalSpirvShaderSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(APPLE)
+        target_sources(MetalSpirvShaderSmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME MetalSpirvShaderSmokeTest COMMAND MetalSpirvShaderSmokeTest)
+
+    message(STATUS "Configured Metal SPIR-V shader smoke test: MetalSpirvShaderSmokeTest")
+endif()

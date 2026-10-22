@@ -168,6 +168,35 @@ void RenderSystem::Tick(float)
     // 场景那一串（ProcessSwapData → UpdatePerFrameBuffer → UpdateVisibleObjects →
     // PreparePassData → BuildDrawLists → ExecuteAll）已经上移到 swapchain pass
     // 之前，见上面。
+#if defined(__APPLE__)
+    // ---- Apple 真机验收的可观测性 ------------------------------------------
+    // MSL 只在运行时编译、shader 创建失败往往是静默 nullptr，"窗口是黑的"根本
+    // 定位不到是哪一段断了。这里每 ~120 帧打一条，把链路上的四个关键状态全说清：
+    // 场景有没有物体 / 视锥里有没有可见网格 / 离屏颜色视图在不在 / blit 通不通。
+    // 任何一项是 0 或 false 就直接指向那一段。
+    {
+        static uint32_t s_apple_frame_tick = 0;
+        ++s_apple_frame_tick;
+        if ((s_apple_frame_tick % 120) == 1)
+        {
+            const size_t entity_count  = m_RenderScene != nullptr ? m_RenderScene->m_RenderEntities.size() : 0u;
+            const size_t visible_count = m_RenderScene != nullptr
+                                             ? m_RenderScene->m_MainCameraVisibleMeshNodesPerViewport[0].size()
+                                             : 0u;
+            const RHIExtent2D extent = m_Rhi != nullptr ? m_Rhi->GetSwapchainInfo().extent : RHIExtent2D {};
+            LOG_INFO(ZRender,
+                     "AppleRender: frame={} entities={} visible={} scene_color_view={} blit_ready={} "
+                     "swapchain={}x{}",
+                     s_apple_frame_tick,
+                     entity_count,
+                     visible_count,
+                     (m_RenderPipeline != nullptr && m_RenderPipeline->GetSceneColorView() != nullptr) ? 1 : 0,
+                     m_SceneBlit.IsReady() ? 1 : 0,
+                     extent.width,
+                     extent.height);
+        }
+    }
+#endif
 #if !defined(__APPLE__)
     if (m_RenderPipeline)
     {
@@ -738,17 +767,10 @@ void RenderSystem::TickSingleThreaded(float delta_time)
     TickRHIThread();
 }
 
-uint32_t RenderSystem::AllocateFrameDrawListSlot()
-{
-    const uint32_t max_frames = std::max(1u, RenderFramePipeline::GetMaxFramesInFlight());
-    return m_FrameDrawListSerial.fetch_add(1, std::memory_order_relaxed) % max_frames;
-}
-
-RHIDrawList& RenderSystem::GetFrameDrawList(uint32_t slot)
-{
-    const uint32_t max_frames = std::max(1u, RenderFramePipeline::GetMaxFramesInFlight());
-    return m_FrameDrawLists[slot % max_frames];
-}
+// AllocateFrameDrawListSlot / GetFrameDrawList 是**平台无关**的，所以它们住在这
+// 个文件的公共尾巴上（见文件末尾），不跟着上面那两个大分支走。以前它们在这个
+// #else 里，于是 Apple / Emscripten 上根本没有定义 —— ZRuntime 是静态库，缺符号
+// 不会报错，但任何一个链它的可执行文件都会 undefined symbol。
 
 void RenderSystem::TickRenderThread(float delta_time)
 {
@@ -1325,3 +1347,23 @@ void RenderSystem::ProcessSwapData()
     }
 }
 #endif
+
+// ===========================================================================
+// 平台无关的一小撮：帧绘制列表的槽位分配。
+//
+// 这两个函数以前住在 `#else`（非 Apple / 非 Emscripten）那个大分支里，于是
+// Apple 与 Emscripten 上 **没有定义** —— Apple 的 Tick 现在要取 draw list
+// （RenderSystem.cpp 里那条 Apple 分支），链接时就是 undefined symbol。
+// 静态库不会暴露这个问题，只有真正链出可执行文件才会炸（ZEditor 就是这么红的）。
+// ===========================================================================
+uint32_t RenderSystem::AllocateFrameDrawListSlot()
+{
+    const uint32_t max_frames = std::max(1u, RenderFramePipeline::GetMaxFramesInFlight());
+    return m_FrameDrawListSerial.fetch_add(1, std::memory_order_relaxed) % max_frames;
+}
+
+RHIDrawList& RenderSystem::GetFrameDrawList(uint32_t slot)
+{
+    const uint32_t max_frames = std::max(1u, RenderFramePipeline::GetMaxFramesInFlight());
+    return m_FrameDrawLists[slot % max_frames];
+}
