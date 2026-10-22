@@ -119,7 +119,7 @@
 
 两者都为真时截断只记 `SCAN_CONTEXT_TRUNCATED`，不再置 `scanIncomplete`，无发现的结论保持 `NO_SYSTEM_EVIDENCE`（`confidence=medium`）；截断发生在优先窗口内则仍判 `INCONCLUSIVE`；优先窗口落在采集区间之外时按单段扫描，`priority` 为 false，结论保守。
 
-契约：事件明细文件版本 `1` → `2`（新增两个布尔键），解析器接受 `1` 与 `2`、旧样本仍可回放、缺失的键取默认值 false、版本超范围时报明确错误。`OSGameDiagnosis.json` 的 `schemaVersion` 保持 `1`（只在 `observability` 下新增两个字段），launcher 只读 `verdict` / `confidence` / `userMessage` / `actions`，不受影响。
+契约：事件明细文件版本 `1` → `2`（新增两个布尔键），解析器同时接受两者，缺失的键取 false，版本超范围报明确错误。`OSGameDiagnosis.json` 的 `schemaVersion` 保持 `1`（只在 `observability` 下新增字段），launcher 只读 `verdict` / `confidence` / `userMessage` / `actions`，不受影响。
 
 ### 事故锚点与 isTargetGame
 
@@ -213,21 +213,24 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 }
 ```
 
-- **只认这一种形状**：扁平对象，值是布尔、整数，或 `minimumFeatureLevel` 这一项的名称字符串；嵌套、数组、其它键上的字符串一律拒绝。
-- **没写的键沿用内置默认**；**`0` 是关掉这条规则**，不是"要求 0"。
-- **解析失败一律回落**：文件不存在、打不开、写坏了都用内置默认继续跑，并把原因写进报告的 `notes`。
-- **`minimumFeatureLevel` 是唯一用文本写的阈值**（`"11_0"`、`"10_1"`…），写成裸数字会被拒；不写＝不限。
-- **认不出的键会被点名**：跳过并记进 `notes`，其余键照常生效。
-- 报告里有 `"requirements"`（本次判定用的全部阈值）和 `"requirementsSource"`（`default` 或 `file:<路径>`）。
+- **只认这一种形状**：扁平对象，值是布尔或整数，唯一例外是 `minimumFeatureLevel` 写名称字符串（`"11_0"`、`"10_1"`…，裸数字会被拒，不写＝不限）。嵌套、数组、其它键上的字符串一律拒绝；认不出的键跳过并记进 `notes`，其余照常生效。
+- **没写的键沿用内置默认，`0` 是关掉这条规则**而不是"要求 0"。
+- **解析失败一律回落**：文件不存在、打不开、写坏了都用内置默认继续跑，原因写进 `notes`。报告另有 `"requirements"`（本次判定用的全部阈值）与 `"requirementsSource"`（`default` 或 `file:<路径>`）。
 
 ### 玩家操作
 
-解压完整工具包，运行 `ZEnvironmentCollector.exe`，填事故三要素（问题类型、可选填带时区的发生时间）、可选填**游戏目录**（`--game-dir` 的同义输入框），点"开始采集并生成 ZIP"，一次拿到全部结果：CPU、内存、BIOS/整机/主板型号、SMBIOS 内存配置、原始微码注册表字节、显卡/驱动、双显卡选卡验证（`gpu-selection.json`）、磁盘容量、事件诊断、WHEA 及已有内存诊断结果、**DLL 静态检查与隔离加载探针（`compatibility.json`）**，并在项目配置了日志目录时附带最新的游戏日志副本。默认输出到桌面 `EnvironmentReports`。
+解压完整工具包，运行 `ZEnvironmentCollector.exe`，填事故三要素（问题类型、可选填带时区的发生时间）、可选填**游戏目录**（`--game-dir` 的同义输入框），点"开始采集并生成 ZIP"，一次拿到「检查内容」里的全部结果；项目配置了日志目录时附带最新的游戏日志副本。默认输出到桌面 `EnvironmentReports`。
 
-- 不读取序列号、不运行内存测试、不重启、不改 BIOS。每个采集阶段在独立受 Job 管理的子进程执行，默认 45 秒超时；失败/取消保留已完成信息。权限不足、字段缺失、事件覆盖不完整会记录在报告中，不代表硬件健康。
-- GUI 默认勾选"同意附带事件明细"，可手动取消；CLI 仍需显式 `--include-events`。窗口右侧有可拖动滚动条，也支持滚轮或点击轨道翻页，尺寸随 DPI 缩放。完成后点"打开目录"，确认内容后手动发送 ZIP；不自动上传。
+- 不读取序列号、不运行内存测试、不重启、不改 BIOS。每个采集阶段在独立受 Job 管理的子进程执行，失败/取消保留已完成信息。权限不足、字段缺失、事件覆盖不完整会记录在报告中，不代表硬件健康。
+- GUI 默认勾选"同意附带事件明细"，可手动取消；CLI 仍需显式 `--include-events`。完成后点"打开目录"，确认内容后手动发送 ZIP；不自动上传。
 - `compatibility` 阶段会在隔离子进程里加载 `GameCore.dll` / `GameCore_Standalone.dll`（`ZDllLoadProbe.exe`，无 CRT、无 AVX，进程外执行），所以这一步**不再只读**。`--game-dir` 不给时扫描根只有工具自身目录。
-- 上限：最多 64 个 DLL（`MaxDllCheckFiles`），成文后超过 8MiB 从**列表尾部**丢弃重建，两种情况都记 `INCOMPLETE` 并在 `manifest` 里体现 `partial`。`GameCore` 永远排在最前。该阶段超时下限 180 秒（`--stage-timeout-seconds` 可调）。归档单文件上限 16MiB，超限会导致整个包打包失败。
+
+| 上限 | 值 | 超出时 |
+|---|---|---|
+| 采集阶段超时 | 45 秒（`--stage-timeout-seconds` 可调，`compatibility` 下限 180 秒） | 保留已完成信息 |
+| `compatibility` 检查的 DLL 数 | 64（`MaxDllCheckFiles`，`GameCore` 永远排最前） | 记 `INCOMPLETE` |
+| `compatibility.json` 大小 | 8 MiB | 从**列表尾部**丢弃重建，同样记 `INCOMPLETE`；两者都体现为 `manifest.partial` |
+| 归档单文件 | 16 MiB | 整个包打包失败 |
 
 微码仅保存 `Update Revision` 原始字节，不声称跨 CPU 统一解码；内存标称/配置速率不等于 XMP 判定；BIOS 日期不是安装日期；没有 WHEA 或内存检测结果不等于通过检测。
 
@@ -235,11 +238,15 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 
 把游戏日志目录里**窗口内最新的** `.log` / `.logcompr` / `.txt` 复制进报告目录并打进 ZIP，索引写入 `game-logs.json`。`.logcompr` 是游戏在 `Cache\Logs` 下写的压缩会话日志，漏掉它就等于没有游戏自己的记录。
 
-- 目录由 profile 声明，不猜测：`logRoot`（`localLow` 默认，另支持 `localAppData` / `roaming` / `programData`）+ `logSubPath`（相对路径，禁止绝对路径、`..`、驱动器号）。OSGame 配置为 `logRoot=localLow` + `logSubPath=Tencent\osgameCNOfficial\Cache\Logs`。未配置 `logSubPath` 的 profile 不运行该阶段。CLI 可用 `--log-dir <绝对路径>` 覆盖。
-- 挑选：先取事故时间 ±窗口内写过的日志，其余按最后写入时间倒序；上限 8 个文件、单文件 16MiB、合计 48MiB，超限文件不截断、只记 `skipped`（`TOO_LARGE` / `TOTAL_LIMIT` / `UNREADABLE` / `FILE_LIMIT`）。
-- 只复制不修改：以 `FILE_SHARE_READ|WRITE|DELETE` 打开，游戏仍在写也能读；**不跟随目录/文件链接**（重解析点在递归之前就排除）。副本命名 `gamelog-NN-<原名>.log`，原文件不改名、不删除、不截断。只扫描日志目录及其下一层子目录。
-- 索引记录原始相对路径、字节数、修改时间、SHA256 与 `complete`（复制期间被追加时为 false）：写完后再问一次原文件大小，比复制到的更长就说明**尾巴没进来**。日志目录路径用 `SanitizePath` 去掉用户名。
-- 目录不存在或窗口内没有日志时返回 `NO_LOGS`，**不计入 `partial`**；`game-logs.json` 仍写入并给出 `reason`（`NOT_CONFIGURED` / `LOG_DIRECTORY_MISSING` / `NO_LOG_FILES_IN_WINDOW` / `NO_LOG_FILES_COLLECTED`）。
+目录由 profile 声明，不猜测：`logRoot`（默认 `localLow`，另支持 `localAppData` / `roaming` / `programData`）+ `logSubPath`（相对路径，禁止绝对路径、`..`、驱动器号）。OSGame 配置为 `logRoot=localLow` + `logSubPath=Tencent\osgameCNOfficial\Cache\Logs`。未配置 `logSubPath` 的 profile 不运行该阶段；CLI 可用 `--log-dir <绝对路径>` 覆盖。挑选顺序：先取事故时间 ±窗口内写过的日志，其余按最后写入时间倒序；只扫描日志目录及其下一层子目录。索引记录原始相对路径、字节数、修改时间、SHA256 与 `complete`，日志目录路径用 `SanitizePath` 去掉用户名。
+
+| 情况 | 行为 |
+|---|---|
+| 超过 8 个文件 / 单文件 16 MiB / 合计 48 MiB | 超限文件不截断，只记 `skipped`（`TOO_LARGE` / `TOTAL_LIMIT` / `UNREADABLE` / `FILE_LIMIT`） |
+| 复制期间被追加 | `complete=false`：写完后再问一次原文件大小，比复制到的更长说明**尾巴没进来** |
+| 目录不存在或窗口内没有日志 | 返回 `NO_LOGS`，**不计入 `partial`**；`game-logs.json` 仍写入并给出 `reason`（`NOT_CONFIGURED` / `LOG_DIRECTORY_MISSING` / `NO_LOG_FILES_IN_WINDOW` / `NO_LOG_FILES_COLLECTED`） |
+
+- 只复制不修改：以 `FILE_SHARE_READ|WRITE|DELETE` 打开，游戏仍在写也能读；**不跟随目录/文件链接**（重解析点在递归之前就排除）。副本命名 `gamelog-NN-<原名>.log`，原文件不改名、不删除、不截断。
 - 隐私：日志可能含账号、聊天等信息。副本只留在本地报告目录，不自动上传；`summary.txt` 在包含日志副本时追加提示，发送前需人工确认。
 
 ### CLI 与配置
