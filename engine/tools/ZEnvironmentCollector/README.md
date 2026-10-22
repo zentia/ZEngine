@@ -167,17 +167,28 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 | `BelowMinimum` | 缺 AVX2、内存低于最低要求（默认 4 GB）、非 64 位 Windows、没有任何一张显卡能初始化 Direct3D 11、只有软件渲染器能初始化 D3D11（驱动没装）、功能级别低于 `minimumFeatureLevel` | 明确提示，但不阻断启动 |
 | `Inconclusive` | 没跑完（超时或探针失败） | 当作"没检查过" |
 
-`Advise` 覆盖：同厂商两张卡驱动版本不一致、选到集显、显示器接在集显上（仅台式机）、只有软件渲染、可用内存过低、页面文件过小或未启用、未检测到 VC++ 运行库、游戏默认要用的显卡无法初始化 D3D11（另一张可以）、显存低于游戏要求、游戏盘或系统盘空间不足、有更新或驱动装完在等重启、很久没重启、最近显卡驱动崩溃重置过、游戏装在机械硬盘上、装在 U 盘/SD 卡/网络盘或非 NTFS 分区、安装路径含非 ASCII 字符（系统代码页非 UTF-8 时）、预览版系统。
+`Advise` 的信号与判据：
+
+| 信号 | 判据 |
+|---|---|
+| 内存 | 已装低于最低（默认 4 GB）是 `BelowMinimum`；已装够但**当前可用**很少才是 `Advise` |
+| 页面文件 | 低于绝对下限，或占物理内存比例超上限（默认 8 GB）；已装 ≥ 16 GB 且根本没设页面文件时不提示 |
+| 选卡风险 | 同厂商两张卡驱动版本不一致、选到集显、显示器接在集显上（仅台式机）、只有软件渲染器能初始化 D3D11 |
+| 显卡不可用 | 游戏默认要用的卡不能初始化 D3D11 但另一张可以；一张都不行 → `BelowMinimum` |
+| 显存 | 低于游戏要求；阈值默认关（`minimumVramBytes` 默认 `0`） |
+| 缺 VC++ 运行库 | 未检测到 |
+| 磁盘空间 | 游戏卷或系统卷可用空间不足（系统卷仅在与游戏卷不同盘时判） |
+| 安装介质 | 机械硬盘（`IOCTL_STORAGE_QUERY_PROPERTY`）、U 盘/SD 卡/网络盘、非 NTFS（`GetDriveTypeW`） |
+| 安装路径 | 含非 ASCII 字符；系统 ANSI 代码页为 `65001` 时不提示（ACP 读 `HKLM\...\Nls\CodePage\ACP`） |
+| 等重启 | CBS `RebootPending`、Windows Update `RebootRequired`、`PendingFileRenameOperations` 里指向 `\DriverStore\` / `\System32\drivers\` 的那几条 |
+| 很久没重启 | 开机超 14 天（`maximumUptimeDays`，写 0 关掉） |
+| 显卡驱动崩溃重置 | 近 7 天 TDR：Display 4101、LiveKernelEvent 117/141/142；倒序读 + 独立 600 ms 截止，两个通道都读不到记 `known=false` |
+| 预览版系统 | 系统版本为预览版 |
 
 - **限时**：默认最多 3 秒（`--budget-seconds` 1–30），到点按 `Inconclusive` 结束。已有实例在跑时直接退出且不写文件。
-- **只读**：CPU、已装与可用内存、页面文件、运行时间、系统版本、显卡选卡、每张卡接了几个显示器、机箱类型、VC++ 运行库、游戏卷与系统卷可用空间（后者仅在与游戏卷不同盘时判）。不扫盘、不加载游戏 DLL、不写注册表、不提权；唯一例外是下面那条事件日志查询。
-- **内存看两个数**：已装内存低于最低要求 → `BelowMinimum`；已装够但**当前可用**很少 → `Advise`。
-- **显卡只问 D3D11 能不能初始化**（Windows 客户端只跑 D3D11：`ProjectSettings.asset` 的 `m_APIs: 02000000`、`m_Automatic: 0`）。必须建设备才能问（代价热 85–95 ms、冷最高 0.9 s，在预算内跑）；钉在游戏会选的那张卡（`EnumAdapterByGpuPreference(HIGH_PERFORMANCE)`）；软件适配器只记录不算数，`D3D11_ONLY_SOFTWARE_ADAPTER`（能起但帧率极差）与 `D3D11_DEVICE_UNAVAILABLE`（真跑不起来）是两个结论；首选的卡不行时去问其它卡，一张都不行才 `BelowMinimum`；级别阶梯 `11_1 / 11_0 / 10_1 / 10_0` 与引擎一致。`d3d11.dll` 运行时加载，不硬链接。
-- **页面文件看两个数**：绝对下限，以及占物理内存的比例（上限 `pageFileShareCapBytes`，默认 8 GB）；内存 ≥ `pageFileRuleMaxMemoryBytes`（默认 16 GB）且根本没设页面文件时不提示。
-- **等重启**：CBS `RebootPending`、Windows Update `RebootRequired`、`PendingFileRenameOperations` 里**指向驱动目录的那几条**（`\DriverStore\`、`\System32\drivers\`）。
-- **最近显卡驱动崩溃重置**：preflight 里唯一读事件日志的规则，只看近 7 天的 TDR（Display 4101、LiveKernelEvent 117/141/142），判据与完整采集共用同一个函数；倒序读取 + 独立 600 ms 截止时间，两个通道都读不到就是 `known=false`。
-- **其它**：开机时长 14 天（`maximumUptimeDays`，写 0 关掉）；游戏卷类型（`GetDriveTypeW`）与文件系统（非 NTFS 提示）；安装路径含非 ASCII（系统 ANSI 代码页 `65001` 时不提示，ACP 从注册表 `HKLM\...\Nls\CodePage\ACP` 读）；显存阈值默认关（`minimumVramBytes` 默认 `0`）；机械硬盘走 `IOCTL_STORAGE_QUERY_PROPERTY`；系统盘是另一个盘时空间单独算一份。
-- 报告里的路径走 `SanitizePath`，用户名不进报告。**输出目录默认 `%LOCALAPPDATA%\OSGame\EnvCheck`**（不是当前目录：launcher 拉起时当前目录是游戏安装目录）。**退出码只有 0 和 30**：0 = 结论已写入，30 = 工具自身出错。
+- **只读**：CPU、已装与可用内存、页面文件、运行时间、系统版本、显卡选卡、每张卡接了几个显示器、机箱类型、VC++ 运行库、游戏卷与系统卷可用空间。不扫盘、不加载游戏 DLL、不写注册表、不提权；唯一例外是上表的 TDR 查询（判据与完整采集共用同一个函数）。
+- **显卡只问 D3D11 能不能初始化**（Windows 客户端只跑 D3D11：`ProjectSettings.asset` 的 `m_APIs: 02000000`、`m_Automatic: 0`）。必须建设备才能问（热 85–95 ms、冷最高 0.9 s，在预算内）；钉在游戏会选的那张卡（`EnumAdapterByGpuPreference(HIGH_PERFORMANCE)`）；软件适配器只记录不算数，`D3D11_ONLY_SOFTWARE_ADAPTER`（能起但帧率极差）与 `D3D11_DEVICE_UNAVAILABLE`（真跑不起来）是两个结论；级别阶梯 `11_1 / 11_0 / 10_1 / 10_0` 与引擎一致。`d3d11.dll` 运行时加载，不硬链接。
+- **输出**：路径走 `SanitizePath`，用户名不进报告；默认目录 `%LOCALAPPDATA%\OSGame\EnvCheck`（不是当前目录：launcher 拉起时当前目录是游戏安装目录）；退出码只有 0（结论已写入）和 30（工具自身出错）。
 
 ### 最低配置不由工具决定：min-spec.json
 
