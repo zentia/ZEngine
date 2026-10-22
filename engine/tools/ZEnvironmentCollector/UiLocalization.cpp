@@ -256,6 +256,8 @@ namespace
         {"dialog.gpuinit.body", "图形界面启动失败。可运行同目录 ZEnvironmentCollector.exe -batchmode --collect 生成报告。"},
         {"dialog.startup.title", "环境采集"},
         {"dialog.startup.body", "无法启动采集界面。请检查项目配置、系统字体及工具分发是否完整。可使用 -batchmode --collect 模式。"},
+        {"dialog.startup.option.body", "无法启动采集界面。\n\n不支持的参数：{0}"},
+        {"dialog.startup.option.tail", "命令行用法见 ZEnvironmentCollector.exe -batchmode --help。"},
     };
     // clang-format on
 #endif

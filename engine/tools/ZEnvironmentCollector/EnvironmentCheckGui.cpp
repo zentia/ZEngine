@@ -990,6 +990,16 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM w, LPARAM l)
 }
 } // namespace
 
+// A bad command line is not the same failure as a missing font: the person who
+// launched us can fix it, but only if we say which option is wrong. Carried as
+// its own type so the start-up catch can name the option instead of falling
+// back to the generic "cannot start" wording a missing font gets.
+struct CommandLineError
+{
+    std::wstring option;
+    std::string detail;   // English, for the log; may be empty
+};
+
 int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
 {
     // No FreeConsole() here any more: as a WINDOWS-subsystem binary there is no
@@ -1003,11 +1013,22 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
         if (std::filesystem::is_regular_file(defaultProfile)) app.options.profile = LoadProfile(defaultProfile);
         for (int i = 1; i < argumentCount; ++i)
         {
-            auto value = [&]() -> std::wstring { if (++i >= argumentCount) throw std::invalid_argument("Missing value"); return arguments[i]; };
+            // `key` first: the value lambda reports the missing value against it.
             std::wstring key = arguments[i];
-            if (key == L"--profile") app.options.profile = LoadProfile(value());
+            auto value = [&]() -> std::wstring { if (++i >= argumentCount) throw CommandLineError{key, "Missing value"}; return arguments[i]; };
+            if (key == L"--profile")
+            {
+                // Named here too: a profile path that will not load is the
+                // caller's typo, not a broken package.
+                try { app.options.profile = LoadProfile(value()); }
+                catch (const std::exception& failure) { throw CommandLineError{key, failure.what()}; }
+            }
             else if (key == L"--output-dir") app.options.outputDirectory = value();
-            else if (key == L"--incident-time") { if (!TryParseUtcIso8601(WideToUtf8(value()), app.options.incidentTime)) throw std::invalid_argument("Invalid incident time"); }
+            else if (key == L"--incident-time")
+            {
+                if (!TryParseUtcIso8601(WideToUtf8(value()), app.options.incidentTime))
+                    throw CommandLineError{key, "Invalid incident time; expected ISO 8601 with a timezone"};
+            }
             // --tab is gone with the tab strip: collection / check / gpu all
             // landed on the one page there is. Passing it now falls through to
             // the unrecognized-option message below.
@@ -1018,12 +1039,11 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
                 // registry.
                 ZSlate::ELanguage language{};
                 if (!ZSlate::LanguageFromId(WideToUtf8(value()).c_str(), language))
-                    throw std::invalid_argument("Unknown language; use en|zh-CN");
+                    throw CommandLineError{key, "Unknown language; use en|zh-CN"};
                 ZSlate::SetLanguage(language);
                 languageFromCommandLine = true;
             }
-            else throw std::invalid_argument("Unsupported GUI option. CLI commands need -batchmode; "
-                                             "see ZEnvironmentCollector.exe -batchmode --help");
+            else throw CommandLineError{key, {}};
         }
         // UI language: default English, remembered per user from the last visit.
         // Registration happens before Build() so every string the tree asks for
@@ -1128,6 +1148,29 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
             Sleep(app.minimized ? 50 : 10);
         }
         return 0;
+    }
+    catch (const CommandLineError& error)
+    {
+        // Name the option: "cannot start the window" alone sends someone to
+        // check fonts and profiles for what is really a wrong argument.
+        const std::string option = WideToUtf8(error.option);
+        zengine::envcheck::LogError("GUI startup failed: " + option
+                                    + (error.detail.empty() ? std::string() : " (" + error.detail + ")"));
+        std::string body = ZSlate::Loc("dialog.startup.option.body",
+                                       "Cannot start the collection window.\n\nUnsupported option: {0}");
+        if (const std::size_t at = body.find("{0}"); at != std::string::npos) body.replace(at, 3, option);
+        if (!error.detail.empty())
+        {
+            body += "\n";
+            body += error.detail;
+        }
+        body += "\n\n";
+        body += ZSlate::Loc("dialog.startup.option.tail",
+                            "Run ZEnvironmentCollector.exe -batchmode --help for the command line.");
+        MessageBoxW(nullptr, Utf8ToWide(body).c_str(),
+                    Utf8ToWide(ZSlate::Loc("dialog.startup.title", "Environment Collection")).c_str(),
+                    MB_OK | MB_ICONERROR);
+        return 30;
     }
     catch (const std::exception& exception)
     {
