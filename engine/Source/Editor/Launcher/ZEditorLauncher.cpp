@@ -354,7 +354,10 @@ namespace
                                 ZSlate::UIColor(0.52f, 0.55f, 0.62f, 1.0f)));
 
         button->SetContent(body);
-        button->OnClicked = [&app, &choice, &suites, selected, project_file]()
+        // suites 必须按值捕获：它是 BuildRoot 的局部变量，点击发生在 app.Run() 期间，
+        // BuildRoot 早就返回了。引用捕获 ⇒ 读悬空 vector ⇒ 拷贝 id 时 bad_alloc 崩溃
+        // （crash_stack.txt：MakeProjectButton lambda -> basic_string::operator=）。
+        button->OnClicked = [&app, &choice, suites, selected, project_file]()
         {
             choice.suite_id     = suites[*selected].id;
             choice.project_file = project_file;
