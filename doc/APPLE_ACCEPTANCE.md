@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 205 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16） |
+| `AppleSceneBlitSmokeTest` | 218 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
@@ -675,6 +675,39 @@ AppleRender: frame=1921 ... game_vp=(389,104) 1524x915 game_sc=(389,104) 1524x91
 **踩坑**：心跳的格式串和实参顺序必须逐位对齐，我把相机字段插进格式串中间、实参却排在后面，
 第一次打出来是 `game_cam=(389,104,1524) fov=915`（scissor 的值跑到了相机字段上）。
 
+### 3.17 光照：Apple 上环境光和方向光从来没被设置过
+
+`m_AmbientLight` / `m_DirectionalLight` **只有非 Apple 那条 `Initialize` 设过**（用
+`GlobalRenderingRes` 里的值），Apple 这一条从来没设 ⇒ `RenderScene` 里一直是默认构造的
+`(0,0,0)`（`Vector3` 的成员是 `float x {0.f}`，`normalise()` 对零向量原样返回，所以不会
+NaN，只是**静默地等于没有光**）。
+
+而 `RenderResourcePerFrame` 正是拿这两个填每帧 UBO 的（`scene_directional_light.color` /
+`ambient_light`）⇒ Apple 上主光方向=颜色=(0,0,0)、环境光=0，画面只剩 IBL 在照。
+和 §3.15 / §3.16 完全同一类：精简版 Initialize 当初只为把 UI 画出来。
+
+**改动**：Apple 版 Initialize 在 `RenderScene` 建好之后、建 `RenderPipeline` 之前把两样
+都设上（用的就是 §3.16 已经提前 load 的那份 `GlobalRenderingRes`）；心跳新增
+`dir_light` / `dir_color` / `ambient`。
+
+**真机**：
+
+```
+修复前  dir_light=(0,0,0)             dir_color=(0,0,0)  ambient=(0,0,0)
+修复后  dir_light=(0.577,0.577,0.577) dir_color=(1,1,1)  ambient=(0.03,0.03,0.03)
+        （rendering.global.json 里是方向 (0.5,-0.5,0.5) / 颜色 (1,1,1) / 环境光 (0.03,0.03,0.03)）
+```
+
+观测到的方向 y 是 **+0.577** 而配置里写 `y: -0.5`：那是 JSON 反序列化里的坐标转换
+（两个平台同一份代码），与本次改动无关 —— 我这条用的表达式和非 Apple 那条**逐字相同**，
+所以 Apple 现在与 Windows 一致。
+
+**验证**：冒烟测试新增 13 条契约（205 → 218 checks）。三次变异：漏环境光 ⇒ 2 条红；漏方向光
+颜色 ⇒ 1 条红。
+契约自己也踩了坑：只搜 `m_RenderScene->m_AmbientLight` 会被**心跳探针里那句**
+`ambient_light = m_RenderScene->m_AmbientLight.m_Irradiance` 蒙过去（第一次变异只红了 1 条），
+必须搜带 ` =` 的赋值形式。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - **RP2 只有 step 0（显示变换）+ LUT**：FXAA 没做 —— 它要一个只在 `enable_fxaa=true` 时才
@@ -707,6 +740,15 @@ AppleRender: frame=1921 ... game_vp=(389,104) 1524x915 game_sc=(389,104) 1524x91
 
 - **点光源阴影 pass 在 Metal 上不做**：它靠 geometry shader 做 cubemap 展开，Metal 没有
   geometry shader。现在和 DX12 一样是 clear-only，不抛错。
+- **Apple 的 Tick 从不调 `SyncPointLightsFromLevel`**（审计发现，**未修**）：非 Apple 那条
+  每帧用它重建 `m_PointLightList`，而 `RenderResourcePerFrame` 正是拿它填每帧 UBO 的 ⇒
+  Apple 上点光源永远是 0 盏。今天看不出来，是因为这个工程的资产里**没有任何
+  LightComponent**（`bin/Debug/asset` 全库搜不到），所以真机无法证伪 —— 等哪天场景里真有
+  点光源再修，或者先给 `ZGameSmoke` 补一个带灯的关卡。
+- **编辑器 gizmo（axis）在 Apple 上两半都缺**（审计发现，**未修**）：`CreateAxis` 在 Apple
+  上是 `{}`（不注册 mesh source、不上传），而 `p_axis_node` 只有 `DX12MainCameraPass` 和
+  `MainCameraPass`（Vulkan，Apple 构建里排除）会画 —— `MainCameraRp1Pass` 没有 axis 绘制
+  路径。只补 `CreateAxis` 会上传一堆没人画的 mesh，所以要补就得两半一起补。
 - **每次构建仍会冲掉已导入的贴图**：`CopyEngineDataToOutput` 是
   `rm -rf <bin>/<cfg>/asset` + 整目录重拷，而 `_Generated/` 就在 content 底下，所以
   一构建派生数据就没了、下次启动重新导入一遍（重启不会，只有构建会）。

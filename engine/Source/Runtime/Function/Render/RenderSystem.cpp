@@ -119,6 +119,27 @@ bool RenderSystem::Initialize()
     m_RenderScene->SetUploadRhi(m_Rhi);
     m_RenderScene->SetVisibleNodesReference();
 
+    // ---- 环境光 + 方向光 ----
+    //
+    // 这两样**只有非 Apple 那条 Initialize 设过**（`m_AmbientLight` /
+    // `m_DirectionalLight`），Apple 这一条从来没设 ⇒ RenderScene 里一直是默认
+    // 构造的 (0,0,0)。而 `RenderResourcePerFrame` 正是拿它们填每帧 UBO 的
+    // （`scene_directional_light.color` / `ambient_light`），所以 Apple 上：
+    //   * 方向光方向 = 颜色 = (0,0,0) ⇒ 主光**完全不参与**；
+    //   * 环境光 = 0；
+    //   * 画面只剩 IBL 在照，而且**不报任何错**（和 0x0 视口、16:9 相机同一类）。
+    // 真机探针（修复前）：dir_light=(0,0,0) dir_color=(0,0,0) ambient=(0,0,0)，
+    // 而 rendering.global.json 是方向 (0.5,-0.5,0.5)、颜色 (1,1,1)、环境光
+    // (0.03,0.03,0.03)。
+    if (global_rendering_res != nullptr)
+    {
+        m_RenderScene->m_AmbientLight = {global_rendering_res->m_AmbientLight.toVector3()};
+        m_RenderScene->m_DirectionalLight.m_Direction =
+            global_rendering_res->m_DirectionalLight.m_Direction.normalisedCopy();
+        m_RenderScene->m_DirectionalLight.m_Color =
+            global_rendering_res->m_DirectionalLight.m_Color.toVector3();
+    }
+
     auto render_resource = std::make_shared<RenderResource>();
     m_RenderResource = render_resource;
 
@@ -319,6 +340,20 @@ void RenderSystem::Tick(float)
             Vector3   main_cam_pos {Vector3::ZERO};
             int       main_cam_valid = 0;
             int       cam_sync = -1;  // -1 = 关卡里没有主相机组件，无从比较
+
+            // 光照探针（阶段 54）：Apple 版 Initialize 从来没有设置过
+            // `m_AmbientLight` / `m_DirectionalLight`（只有非 Apple 那条设），而
+            // RenderResourcePerFrame 正是拿它们填每帧 UBO 的 ⇒ Apple 上方向光
+            // 方向=颜色=(0,0,0)、环境光=0，画面只剩 IBL 在照，且**不报任何错**。
+            Vector3 dir_light_dir {Vector3::ZERO};
+            Vector3 dir_light_col {Vector3::ZERO};
+            Vector3 ambient_light {Vector3::ZERO};
+            if (m_RenderScene != nullptr)
+            {
+                dir_light_dir = m_RenderScene->m_DirectionalLight.m_Direction;
+                dir_light_col = m_RenderScene->m_DirectionalLight.m_Color;
+                ambient_light = m_RenderScene->m_AmbientLight.m_Irradiance;
+            }
             if (const std::shared_ptr<RenderCamera> game_cam = GetCamera(ViewportType::game))
             {
                 game_cam_pos = game_cam->position();
@@ -340,6 +375,7 @@ void RenderSystem::Tick(float)
                      "AppleRender: frame={} entities={} visible={} scene_color_view={} blit_ready={} "
                      "rp2_tonemapped={} swapchain={}x{} "
                      "game_cam=({},{},{}) fov={} main_cam_valid={} main_cam=({},{},{}) cam_sync={} "
+                     "dir_light=({},{},{}) dir_color=({},{},{}) ambient=({},{},{}) "
                      "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
@@ -353,6 +389,9 @@ void RenderSystem::Tick(float)
                      game_cam_pos.x, game_cam_pos.y, game_cam_pos.z,
                      game_cam_fov.x, main_cam_valid,
                      main_cam_pos.x, main_cam_pos.y, main_cam_pos.z, cam_sync,
+                     dir_light_dir.x, dir_light_dir.y, dir_light_dir.z,
+                     dir_light_col.x, dir_light_col.y, dir_light_col.z,
+                     ambient_light.x, ambient_light.y, ambient_light.z,
                      static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
                      static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
                      sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,

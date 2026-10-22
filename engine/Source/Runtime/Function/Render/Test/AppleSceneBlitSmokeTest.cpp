@@ -868,6 +868,65 @@ namespace
               "the Apple heartbeat also carries cam_sync (game camera vs. the level's main camera component)");
     }
 
+    // =======================================================================
+    // Apple 版 Initialize 的**光照**契约。
+    //
+    // `m_AmbientLight` / `m_DirectionalLight` 以前**只有非 Apple 那条 Initialize 设过**，
+    // Apple 这一条从来没设 ⇒ RenderScene 里一直是默认构造的 (0,0,0)。而
+    // `RenderResourcePerFrame` 正是拿它们填每帧 UBO 的（scene_directional_light.color /
+    // ambient_light）⇒ Apple 上主光完全不参与、环境光为 0，画面只剩 IBL 在照，
+    // 而且**不报任何错**。
+    //
+    // 真机探针：修复前 dir_light=(0,0,0) dir_color=(0,0,0) ambient=(0,0,0)；修复后
+    // dir_light=(0.577,0.577,0.577) dir_color=(1,1,1) ambient=(0.03,0.03,0.03)。
+    // （观测到的方向与 rendering.global.json 里的 y:-0.5 符号相反 —— 那是 JSON
+    // 反序列化里的坐标转换，两个平台走的是同一份代码，与本次改动无关。）
+    // =======================================================================
+    void CheckGlobalLightingContracts()
+    {
+        const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string sys_source  = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+        Check(!sys_source.empty(), "RenderSystem.cpp is readable as text (global lighting)");
+
+        const size_t init_at = sys_source.find("bool RenderSystem::Initialize()");
+        Check(init_at != std::string::npos, "RenderSystem::Initialize exists (global lighting)");
+        const size_t init_else = sys_source.find("\n#else", init_at);
+        Check(init_else != std::string::npos, "the Apple Initialize is followed by an #else (global lighting)");
+        const std::string apple_init = sys_source.substr(init_at, init_else - init_at);
+
+        // ---- 三样必须都在 Apple 版 Initialize 里 ----
+        // 注意必须搜**赋值**（带 ` =`）：心跳探针里也有 `m_RenderScene->m_AmbientLight`，
+        // 只搜名字会被探针自己蒙过去。
+        Check(Contains(apple_init, "m_RenderScene->m_AmbientLight ="),
+              "the Apple Initialize sets the AMBIENT light (it used to stay at the default (0,0,0))");
+        Check(Contains(apple_init, "m_DirectionalLight.m_Direction ="),
+              "the Apple Initialize sets the directional light DIRECTION");
+        Check(Contains(apple_init, "m_DirectionalLight.m_Color ="),
+              "the Apple Initialize sets the directional light COLOR");
+        Check(Contains(apple_init, "normalisedCopy()"),
+              "the direction is normalised on the way in (the shader expects a unit vector)");
+
+        // ---- 必须来自全局资源，而不是另一个硬编码 ----
+        Check(Contains(apple_init, "global_rendering_res->m_AmbientLight"),
+              "the ambient light comes from GlobalRenderingRes");
+        Check(Contains(apple_init, "global_rendering_res->m_DirectionalLight"),
+              "the directional light comes from GlobalRenderingRes");
+
+        // ---- 顺序：必须在建 RenderScene 之后、建 RenderPipeline 之前 ----
+        const size_t scene_at   = apple_init.find("m_RenderScene = std::make_shared<RenderScene>()");
+        const size_t ambient_at = apple_init.find("m_RenderScene->m_AmbientLight");
+        Check(scene_at != std::string::npos && ambient_at != std::string::npos && scene_at < ambient_at,
+              "the lighting is applied AFTER the RenderScene exists (otherwise it writes into nothing)");
+
+        // ---- 可观测：这东西错了不报错，只能靠心跳看出来 ----
+        Check(Contains(sys_source, "dir_light="),
+              "the Apple heartbeat carries the directional light direction");
+        Check(Contains(sys_source, "dir_color="),
+              "the Apple heartbeat carries the directional light color");
+        Check(Contains(sys_source, "ambient="),
+              "the Apple heartbeat carries the ambient light (a zero light looks like a correct dim scene)");
+    }
+
 #if defined(__APPLE__)
     // =======================================================================
     // 2. 离屏 target：32×32 的 R8G8B8A8_UNORM，一个颜色附件。
@@ -1621,6 +1680,9 @@ int main()
     // Apple 版 Initialize 的相机来源契约：pose / near-far / aspect 必须来自
     // GlobalRenderingRes::m_CameraConfig，硬编码只能当兜底。
     CheckCameraConfigContracts();
+
+    // Apple 版 Initialize 的光照契约：环境光 + 方向光必须真的设进 RenderScene。
+    CheckGlobalLightingContracts();
 
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();
