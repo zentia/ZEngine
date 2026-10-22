@@ -109,6 +109,10 @@ struct NaniteGPUResources
     bool compute_ready {false};
     bool raster_ready {false};
 
+    // Latched once the GPU path is known to be unavailable, so we stop retrying
+    // (and logging) the same failure on every frame. See EnsureComputePipeline().
+    bool gpu_pipelines_unsupported {false};
+
     // 上一帧排队的绘制命令上界（= 集群总数）。间接绘制要它做 drawCount。
     uint32_t dispatch_cluster_count {0};
 };

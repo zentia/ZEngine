@@ -746,8 +746,29 @@ bool NaniteRenderer::EnsureComputePipeline()
     {
         return true;
     }
+    if (m_GPU.gpu_pipelines_unsupported)
+    {
+        return false;
+    }
     if (m_Rhi == nullptr || Z::Shader::NANITE_CLUSTER_CULL_COMP.empty())
     {
+        return false;
+    }
+
+    // The nanite cull shaders only ship as SPIR-V (see the ZENGINE_NANITE_*_SPIRV
+    // guards at the top of this file). CreateShaderModule() happily wraps the blob
+    // on any backend, but CreateComputePipelines() then fails with E_FAIL, so on a
+    // non-Vulkan RHI this used to be retried -- and to log "cluster-cull compute
+    // pipeline creation failed" -- once per frame, forever. Those per-frame
+    // failures are also what pushed frames past the EditorUI 500 ms RHI wait,
+    // which is what let the game thread run ahead in the first place.
+    if (m_Rhi->getGraphicsAPI() != GraphicsAPI::Vulkan)
+    {
+        m_GPU.gpu_pipelines_unsupported = true;
+        LOG_WARNING(ZRender,
+                    "nanite: GPU cluster culling needs SPIR-V shaders; unavailable on this RHI "
+                    "(graphics api {}), falling back to the CPU path",
+                    static_cast<int>(m_Rhi->getGraphicsAPI()));
         return false;
     }
 
@@ -828,7 +849,12 @@ bool NaniteRenderer::EnsureComputePipeline()
         m_Rhi->DestroyShaderModule(shader);
         if (!ok || m_GPU.cull_pipeline == nullptr)
         {
-            LOG_WARNING(ZRender, "nanite: cluster-cull compute pipeline creation failed");
+            // Latch it: pipeline creation is deterministic, so retrying every frame
+            // only spams the log and stalls the frame.
+            m_GPU.gpu_pipelines_unsupported = true;
+            LOG_WARNING(ZRender,
+                        "nanite: cluster-cull compute pipeline creation failed; GPU culling "
+                        "stays off for this session");
             return false;
         }
     }
