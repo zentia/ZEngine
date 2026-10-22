@@ -525,13 +525,64 @@ void RenderSystem::ProcessSwapData()
     // 管线接好了也只会画出背景色。
     //
     // 只处理三件真正影响"有没有东西可画"的事：全局资源（IBL）、GameObject 增删改。
-    // 相机 / 粒子 / 视口那几段 Apple 上没有对应的消费者，先不动。
+    // 相机 / 视口那几段 Apple 上没有对应的消费者（见下面各自的注释）。
+    RenderSwapData& swap_data = m_SwapContext.GetRenderSwapData();
+
+    // ---- 粒子：门闩字段，**必须**在下面的早退之前清 ----
+    //
+    // IsReadyToSwap() 是拿"render buffer 里还有没有待处理项"当门闩的：只要有一个
+    // 字段一直挂着，swap() 就**永远**不会被调用 —— 于是游戏线程写进 logic buffer
+    // 的任何东西都再也送不到渲染线程。以前这三个 Reset 写在函数末尾，而函数开头
+    // 有一个 `!m_RenderScene || !m_RenderResource || m_Rhi == nullptr` 的早退 ——
+    // 只要那个早退被触发一次（比如关卡切换的瞬间），粒子的门闩就永远没人清。
+    //
+    // 走 `RenderPipeline::ConsumeParticleSwapData()` 而不是在这里手写三个 Reset：
+    // 和非 Apple 那条走的是同一段代码，Metal 上哪天真有了 ParticlePass 就自动接上。
+    //
+    // 现在 Metal 上拿不到 ParticlePass，原因是**编译期**的，不是运行期的：
+    // `ParticlePass.cpp` 经传递 include 拉到 `vulkan/vulkan.h`，所以
+    // `ZENGINE_APPLE_EXCLUDED_PASSES`（Runtime/CMakeLists.txt）把它整个排除在
+    // Apple 构建之外 ⇒ `DesktopRenderPipelineModule::ConsumeParticleSwapData` 里
+    // 那段消费代码被 `#if defined(Z_HAS_VULKAN)` 门住，Metal 落到"只清"分支。
+    // 也就是说：**DX12 同样不冒粒子** —— 这不是 Apple 独有的洞。要让粒子真跑起来，
+    // 第一步是把 ParticlePass 那个 TU 从 Vulkan 头里解耦出来。
+    if (m_RenderPipeline != nullptr)
+    {
+        m_RenderPipeline->ConsumeParticleSwapData(swap_data, m_SwapContext);
+    }
+    else
+    {
+        m_SwapContext.ResetPartilceBatchSwapData();
+        m_SwapContext.ResetEmitterTickSwapData();
+        m_SwapContext.ResetEmitterTransformSwapData();
+    }
+
+    // 相机 / 场景视口：Apple 上同样不走 swap 往返，"清掉即可"。
+    //
+    // 相机：Apple 是单线程，`SyncGameCameraFromMainCamera` 是空体（没有"游戏相机
+    // → 渲染相机"这份拷贝要同步），swap data 里的 FOV / view matrix 对不上任何
+    // 需要更新的东西。
+    //
+    // 场景视口：Apple 的 `TryGetRenderSceneViewport` 是**直接从 RHI 读**的（见那个
+    // 函数的注释），不需要"logic swap → render swap"这份快照 —— 那份快照只是为
+    // 了让渲染线程不碰游戏线程正在改的 RHI 状态。
+    //
+    // 注意这里**不消费**是有意的、也是安全的：正因为不依赖这条通道，
+    // `TryGetRenderSceneViewport` 在 Apple 上永远拿得到当前帧的值，不存在"卡在
+    // swap 里没送过来"的中间态。
+    if (swap_data.m_CameraSwapData.has_value())
+    {
+        m_SwapContext.ResetCameraSwapData();
+    }
+    if (swap_data.m_SceneViewportUpdatePending)
+    {
+        m_SwapContext.ResetSceneViewportSwapData();
+    }
+
     if (!m_RenderScene || !m_RenderResource || m_Rhi == nullptr)
     {
         return;
     }
-
-    RenderSwapData& swap_data = m_SwapContext.GetRenderSwapData();
 
     if (swap_data.m_LevelResourceDesc.has_value())
     {
@@ -588,45 +639,7 @@ void RenderSystem::ProcessSwapData()
         m_SwapContext.ResetVisibleAxisSwapData();
     }
 
-    // ---- 下面这批字段 Apple 上没有消费者，但**必须**清掉 ----
-    //
-    // IsReadyToSwap() 是拿"render buffer 里还有没有待处理项"当门闩的：只要有一个
-    // 字段一直挂着，swap() 就**永远**不会被调用 —— 于是游戏线程写进 logic buffer
-    // 的任何东西都再也送不到渲染线程。
-    //
-    // 真机上就是这么死的：1-1.scene 里有个粒子发射器，ParticleManager 提交一次
-    // m_ParticleSubmitRequest 之后 Apple 的 ProcessSwapData 从不碰它 ⇒ 第 N 帧之后
-    // 整条 swap 通道永久死锁。表现是"关卡热重载完全没反应"：连
-    // ResubmitActiveLevelRenderers 重新提交的 30 个 renderer 都进不来。
-    //
-    // 粒子这里**故意不走** m_RenderPipeline->ConsumeParticleSwapData()：那条路径
-    // 会在 Metal 上建粒子的 GPU 资源，从来没验过；而 Apple 在此之前本来也从来没
-    // 消费过粒子（只是以前连"没消费"都看不出来，因为整个 swap 已经死了）。
-    m_SwapContext.ResetPartilceBatchSwapData();
-    m_SwapContext.ResetEmitterTickSwapData();
-    m_SwapContext.ResetEmitterTransformSwapData();
-
-    // 相机 / 场景视口：Apple 上同样不走 swap 往返。
-    //
-    // 相机：Apple 是单线程，`SyncGameCameraFromMainCamera` 是空体（没有"游戏相机
-    // → 渲染相机"这份拷贝要同步），swap data 里的 FOV / view matrix 对不上任何
-    // 需要更新的东西。
-    //
-    // 场景视口：Apple 的 `TryGetRenderSceneViewport` 是**直接从 RHI 读**的（见那个
-    // 函数的注释），不需要"logic swap → render swap"这份快照 —— 那份快照只是为
-    // 了让渲染线程不碰游戏线程正在改的 RHI 状态。所以这里同样是"清掉即可"。
-    //
-    // 注意这里**不消费**是有意的、也是安全的：正因为不依赖这条通道，
-    // `TryGetRenderSceneViewport` 在 Apple 上永远拿得到当前帧的值，不存在"卡在
-    // swap 里没送过来"的中间态。
-    if (swap_data.m_CameraSwapData.has_value())
-    {
-        m_SwapContext.ResetCameraSwapData();
-    }
-    if (swap_data.m_SceneViewportUpdatePending)
-    {
-        m_SwapContext.ResetSceneViewportSwapData();
-    }
+    // 相机 / 场景视口这两个门闩字段已经和粒子一起上移到函数开头（见那里）。
 }
 void RenderSystem::FlushRenderingCommands()
 {

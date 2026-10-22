@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 176 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13） |
+| `AppleSceneBlitSmokeTest` | 181 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
@@ -571,6 +571,35 @@ AppleViewport[0]: rect = (389, 104) 1524x915
 AppleRender: frame=1921 ... game_vp=(389,104) 1524x915 game_sc=(389,104) 1524x915 scene_vp=(0,0) 0x0 scene_sc=(0,0) 0x0
 ```
 
+### 3.14 粒子：门闩清在哪，比清没清更重要（顺带查清"为什么不冒粒子"）
+
+§3.12 修死锁时把粒子三个门闩字段的 `Reset` 加在了 `ProcessSwapData` 的**末尾** —— 而那个
+函数开头有一个 `if (!m_RenderScene || !m_RenderResource || m_Rhi == nullptr) return;`。只要那个
+早退被触发一次（关卡切换的瞬间就够），门闩就再也没人清 ⇒ 又是同一个死锁。
+
+**这次的改动**：
+
+1. 粒子 / 相机 / 场景视口的门闩清理**全部上移到早退之前**；
+2. 粒子不再手写三个 `Reset`，改成走 `RenderPipeline::ConsumeParticleSwapData()` —— 和非 Apple
+   那条是同一段代码，将来 Metal 上真有了 `ParticlePass` 就自动接上。
+
+**顺带查清了"Apple 上粒子不冒"的根因，它比"Apple 没接"更普遍**：
+
+- `ParticlePass.cpp` 经传递 include 拉到 `vulkan/vulkan.h`，所以 `ZENGINE_APPLE_EXCLUDED_PASSES`
+  （`Runtime/CMakeLists.txt`）把它整个排除在 Apple 构建之外；
+- 于是 `DesktopRenderPipelineModule::ConsumeParticleSwapData` 里那段消费代码被
+  `#if defined(Z_HAS_VULKAN)` 门住，**Metal 和 DX12 都落到"只清"分支**；
+- 也就是说 **DX12 同样不冒粒子**，这不是 Apple 独有的洞。
+
+试过把 `ParticlePass` 从排除名单里放出来，编译直接 `fatal error: 'vulkan/vulkan.h' file not found`
+（经 `VulkanRHI.h` → `VulkanBindlessTextureManager.h` 传进来）⇒ 排除名单是对的。要让粒子真跑
+起来，第一步是把那个 TU 从 Vulkan 头里解耦出来，之后才能谈在 Metal 上创建 pass（它还挂在
+`MainCameraPass` 上，而 Apple 用的是 `MainCameraRp1Pass`，没有粒子挂载点）。
+
+**验证**：冒烟测试新增 5 条契约盯"门闩必须在早退之前"（176 → 181 checks）。变异：把那批
+清理挪回早退之后 ⇒ 3 条红。（契约自己先踩了一个坑：搜早退时只匹配条件会先命中**注释里**
+引用的同一句，必须带 `if (`。）
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - **RP2 只有 step 0（显示变换）+ LUT**：FXAA 没做 —— 它要一个只在 `enable_fxaa=true` 时才
@@ -595,10 +624,11 @@ AppleRender: frame=1921 ... game_vp=(389,104) 1524x915 game_sc=(389,104) 1524x91
 - **`scene`（type 1）视口在 macOS 上没有发布者**：只有 `PlayModeView` 关窗时清成 0x0，
   主相机走的是 `game`（type 0）视口。哪天有人真的需要 scene 视口（比如场景相机预览），
   得先给 macOS 补发布者，不然它永远是 0x0 —— 心跳里的 `scene_vp=0x0` 是预期值。
-- **Apple 上粒子仍然没有消费者**：`ProcessSwapData` 只把粒子的三个 swap 字段**清掉**（它们
-  是 `IsReadyToSwap()` 的门闩，不清就死锁），并没有交给
-  `RenderPipeline::ConsumeParticleSwapData()` —— 那条路径会在 Metal 上建粒子的 GPU 资源，
-  从来没验过。表现是场景里的发射器不冒粒子，且不报错。
+- **粒子在 Vulkan 之外的所有后端都不冒（不是 Apple 独有的）**：`ParticlePass.cpp` 经传递
+  include 拉 `vulkan/vulkan.h`，被 `ZENGINE_APPLE_EXCLUDED_PASSES` 排除在 Apple 构建之外；
+  `ConsumeParticleSwapData` 的消费代码被 `#if defined(Z_HAS_VULKAN)` 门住 ⇒ **Metal 和 DX12
+  都走"只清"分支**。详见 §3.14。`ProcessSwapData` 现在走共享的
+  `RenderPipeline::ConsumeParticleSwapData()`（门闩照清），将来 Metal 上真有 pass 就自动接上。
 
 - **点光源阴影 pass 在 Metal 上不做**：它靠 geometry shader 做 cubemap 展开，Metal 没有
   geometry shader。现在和 DX12 一样是 clear-only，不抛错。

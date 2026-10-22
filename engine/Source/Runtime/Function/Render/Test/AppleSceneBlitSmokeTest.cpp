@@ -671,6 +671,30 @@ namespace
               "the Apple ProcessSwapData drains the scene viewport update (IsReadyToSwap gate)");
         Check(Contains(apple_psd, "IsReadyToSwap"),
               "the Apple ProcessSwapData explains WHY those unused fields must still be drained");
+
+        // ---- 门闩清在哪，比"清没清"更重要：必须在早退之前 ----
+        //
+        // Apple 的 ProcessSwapData 开头有一个
+        // `if (!m_RenderScene || !m_RenderResource || m_Rhi == nullptr) return;`。
+        // 门闩字段的清理只要写在那个 return 之后，早退被触发一次（关卡切换的瞬间
+        // 就够）就永远没人清 ⇒ 整条 swap 通道死锁。以前粒子那三个 Reset 恰好就写在
+        // 那里，这次一并上移，并且改成走共享的 ConsumeParticleSwapData。
+        // 必须带 `if (`：正文注释里引用了同一句早退，光搜条件会先命中注释。
+        const size_t early_return_at = apple_psd.find("if (!m_RenderScene || !m_RenderResource");
+        Check(early_return_at != std::string::npos,
+              "the Apple ProcessSwapData still has the not-ready early return (the hazard being guarded)");
+        Check(Contains(apple_psd, "m_RenderPipeline->ConsumeParticleSwapData(swap_data, m_SwapContext)"),
+              "the Apple ProcessSwapData drains particles through the SHARED ConsumeParticleSwapData "
+              "(same code path as non-Apple; a future Metal ParticlePass is picked up automatically)");
+        const size_t consume_at = apple_psd.find("ConsumeParticleSwapData(swap_data, m_SwapContext)");
+        Check(consume_at != std::string::npos && consume_at < early_return_at,
+              "the particle drain happens BEFORE the early return (otherwise one early return deadlocks swap)");
+        const size_t camera_reset_at = apple_psd.find("ResetCameraSwapData()");
+        Check(camera_reset_at != std::string::npos && camera_reset_at < early_return_at,
+              "the camera drain happens BEFORE the early return (IsReadyToSwap gate)");
+        const size_t viewport_reset_at = apple_psd.find("ResetSceneViewportSwapData()");
+        Check(viewport_reset_at != std::string::npos && viewport_reset_at < early_return_at,
+              "the scene viewport drain happens BEFORE the early return (IsReadyToSwap gate)");
     }
 
     // =======================================================================
