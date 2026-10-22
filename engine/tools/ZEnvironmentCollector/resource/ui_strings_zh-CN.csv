@@ -6,7 +6,9 @@ window.title,环境信息采集 - ZSlate
 collection.title,Windows 环境信息采集
 collection.project,项目：
 collection.intro,采集硬件、BIOS、驱动、系统事件、已有内存检测结果，并按项目配置附带最新游戏日志。
-collection.safety,不上传、不启动游戏、不压测、不重启、不修改BIOS。
+collection.safety,不上传、不启动游戏、不压测、不重启、不修改BIOS。加载探针会运行GameCore——在隔离子进程里，不在本进程。
+collection.gamedir,游戏目录（可选；游戏 DLL 所在处，用于静态检查与加载探针）
+collection.gamedir.hint,例如 C:\Program Files\TheGame
 collection.kind,问题类型
 collection.kind.crash,闪退
 collection.kind.hang,卡住

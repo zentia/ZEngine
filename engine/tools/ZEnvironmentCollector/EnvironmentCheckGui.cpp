@@ -1,11 +1,11 @@
 // ============================================================================
-// ZSlate front-end of ZEnvironmentCollector -- three tabs over the one core.
+// ZSlate front-end of ZEnvironmentCollector -- one tab over the one core.
 // ============================================================================
-//   tab 0  Collection          -- safe collection + crash capture
-//   tab 1  Compatibility       -- the old CLI's plain check, run through the same
-//                                 EnvironmentCheckCommand pipeline that -batchmode
-//                                 uses
-//   tab 2  GPU Selection       -- the old ZGpuSelectionInspector
+//   tab 0  Collection  -- collection + crash capture. It also carries what the
+//                         compatibility and GPU tabs used to produce: the static
+//                         DLL checks and the isolated load probe land in
+//                         compatibility.json, the dual-GPU selection check in
+//                         gpu-selection.json, both inside the same package.
 //
 // User-visible text is English in the source and looked up through ZSlate's
 // localization (ZSlate/Core/SlateLocalization.h); the Chinese table lives in
@@ -81,7 +81,10 @@ using namespace ZSlate;
 using namespace zengine::envcheck::collector;
 using namespace zengine::envcheck::diagnosis;
 
-constexpr int TabCount = 3;
+// One tab: the collection now carries what the compatibility and GPU tabs used
+// to produce (compatibility.json, gpu-selection.json in the same package), and
+// two more tabs over the same pipeline only gave three places to look.
+constexpr int TabCount = 1;
 // Long reports are cut here so a pathological machine cannot allocate tens of
 // thousands of STextBlocks; the full text is always on disk.
 constexpr int MaxReportLines = 600;
@@ -96,8 +99,6 @@ const UIColor IdleTabColor(0.20f, 0.20f, 0.22f, 1.0f);
 enum class ShellTab
 {
     Collection = 0,
-    Compatibility = 1,
-    GpuSelection = 2,
 };
 
 // Every user-visible string goes through ZSlate's localization. The English
@@ -114,7 +115,6 @@ enum class Job
     Collection,
     Capture,
     WerRestore,
-    Compatibility,
 };
 
 // Only used to label log lines -- the UI never shows it.
@@ -125,7 +125,6 @@ const char* JobName(Job job)
     case Job::Collection:    return "collection";
     case Job::Capture:       return "capture";
     case Job::WerRestore:    return "wer-restore";
-    case Job::Compatibility: return "compatibility";
     case Job::None:          break;
     }
     return "idle";
@@ -187,14 +186,7 @@ public:
     std::shared_ptr<STextBlock> procDumpLabel, targetLabel, captureStatus;
     std::string captureMessage;
 
-    std::shared_ptr<SEditableTextBox> checkOutputInput, checkRequireInput, checkMemoryInput;
-    std::shared_ptr<SCheckBox> checkDllBox;
-    std::shared_ptr<STextBlock> checkStatus;
-    std::shared_ptr<SVerticalBox> checkReportBox;
-    zengine::envcheck::EnvironmentCheckOutcome checkOutcome;
-
-    std::shared_ptr<STextBlock> gpuStatus;
-    std::shared_ptr<SVerticalBox> gpuReportBox;
+    std::shared_ptr<SEditableTextBox> gameDirInput;
 
     std::atomic_bool cancel{false}, finished{false}, cancellable{false};
     std::thread worker;
@@ -310,11 +302,8 @@ public:
         const IncidentKind kind = kindBox ? kindBox->SelectedItem : options.incidentKind;
         const int mode = captureMode ? captureMode->SelectedIndex : 0;
         const std::string time = timeInput ? timeInput->GetText() : std::string();
-        const std::string output = checkOutputInput ? checkOutputInput->GetText() : std::string();
-        const std::string isa = checkRequireInput ? checkRequireInput->GetText() : std::string();
-        const std::string memory = checkMemoryInput ? checkMemoryInput->GetText() : std::string();
+        const std::string gameDir = gameDirInput ? gameDirInput->GetText() : std::string();
         const bool events = details && details->IsChecked();
-        const bool dll = checkDllBox && checkDllBox->IsChecked();
 
         interactive.clear();
         tabButtons.clear();
@@ -329,11 +318,8 @@ public:
         // After the time box is restored: the warning reads it, and during
         // Build() it still held the pre-rebuild (empty) text.
         RefreshAnchorWarning();
-        if (checkOutputInput) checkOutputInput->SetText(output);
-        if (checkRequireInput) checkRequireInput->SetText(isa);
-        if (checkMemoryInput) checkMemoryInput->SetText(memory);
+        if (gameDirInput) gameDirInput->SetText(gameDir);
         if (details) details->SetChecked(events);
-        if (checkDllBox) checkDllBox->SetChecked(dll);
         SelectTab(current);
     }
     void Build()
@@ -341,8 +327,6 @@ public:
         auto strip = std::make_shared<SHorizontalBox>();
         const std::array<const char*, TabCount> names{
             S("tab.collection", "Collection"),
-            S("tab.compatibility", "Compatibility"),
-            S("tab.gpu", "GPU Selection"),
         };
         for (int index = 0; index < TabCount; ++index)
         {
@@ -389,15 +373,10 @@ public:
         SlateApplication::Get().SetRootContent(root);
 
         BuildCollection();
-        BuildCompatibility();
-        BuildGpu();
         for (int index = 0; index < TabCount; ++index)
         {
             scroll->AddChild(tabs[static_cast<std::size_t>(index)]);
         }
-        // Populate the GPU tab up front: DXGI enumeration is cheap and an empty
-        // tab is worse than one that already has the answer in it.
-        RefreshGpu();
         SelectTab(tab);
     }
     void SelectTab(ShellTab next)
@@ -430,7 +409,8 @@ public:
         Text(S("collection.intro",
                "Collects hardware, BIOS, drivers, system events and existing memory test results, "
                "and attaches the newest game logs the project profile asks for."), 16);
-        Text(S("collection.safety", "No uploading, no launching the game, no stress test, no reboot, no BIOS change."), 16);
+        Text(S("collection.safety", "No uploading, no launching the game, no stress test, no reboot, no BIOS change. "
+                                    "The load probe does run GameCore -- in an isolated child process, never in this one."), 16);
         Text(S("collection.kind", "Incident type"), 16);
         kindBox = std::make_shared<SComboBox<IncidentKind>>();
         kindBox->Options = {IncidentKind::Unknown, IncidentKind::Crash, IncidentKind::Hang};
@@ -469,6 +449,17 @@ public:
         details->Size = Vector2(260, 28);
         AddWidget(details, 9);
         Interactive(details);
+        // Where the game's DLLs live. The tool cannot derive it -- a player puts
+        // the package anywhere, and the game exe in the profile is a name, not a
+        // path -- so without this the compatibility stage only inspects the DLLs
+        // sitting next to the tool, which are usually none.
+        Text(S("collection.gamedir", "Game directory (optional; where the game's DLLs are, for the static checks and the load probe)"), 16);
+        gameDirInput = std::make_shared<SEditableTextBox>();
+        gameDirInput->FontSize = 18; gameDirInput->MinWidth = 560;
+        gameDirInput->SetHintText(S("collection.gamedir.hint", "e.g. C:\\Program Files\\TheGame"));
+        gameDirInput->SetText(WideToUtf8(options.gameDirectory.wstring()));
+        AddWidget(gameDirInput, 6);
+        Interactive(gameDirInput);
         Button(S("collection.start", "Start collection and build ZIP"), [this] { Start(); });
         Button(S("collection.cancel", "Cancel collection (not cancellable while packing)"),
                [this] { if (busy && job == Job::Collection && cancellable.load()) cancel = true; });
@@ -547,137 +538,6 @@ public:
             }
         });
     }
-    void BuildCompatibility()
-    {
-        column = tabs[static_cast<std::size_t>(ShellTab::Compatibility)] = std::make_shared<SVerticalBox>();
-        Text(S("check.title", "Windows Environment Compatibility Check"), 29);
-        Text(S("check.intro",
-               "The same pipeline as the default -batchmode command: hardware snapshot, dual-GPU selection check, "
-               "static DLL checks and the isolated load probe."), 16);
-        Text(S("check.output", "Report directory"), 16);
-        checkOutputInput = std::make_shared<SEditableTextBox>();
-        checkOutputInput->FontSize = 18; checkOutputInput->MinWidth = 560;
-        checkOutputInput->SetHintText(S("check.output.hint", "Leave empty to use EnvironmentReports on the desktop"));
-        checkOutputInput->SetText(WideToUtf8(DefaultOutputDirectory().wstring()));
-        AddWidget(checkOutputInput, 6);
-        Interactive(checkOutputInput);
-        Text(S("check.isa", "Required instruction sets (none, or avx,avx2,fma,f16c)"), 16);
-        checkRequireInput = std::make_shared<SEditableTextBox>();
-        checkRequireInput->FontSize = 18; checkRequireInput->MinWidth = 560;
-        checkRequireInput->SetHintText("none");
-        checkRequireInput->SetText("none");
-        AddWidget(checkRequireInput, 6);
-        Interactive(checkRequireInput);
-        Text(S("check.memory", "Minimum physical memory (GB)"), 16);
-        checkMemoryInput = std::make_shared<SEditableTextBox>();
-        checkMemoryInput->FontSize = 18; checkMemoryInput->MinWidth = 560;
-        checkMemoryInput->SetHintText("4");
-        checkMemoryInput->SetText("4");
-        AddWidget(checkMemoryInput, 6);
-        Interactive(checkMemoryInput);
-        checkDllBox = std::make_shared<SCheckBox>();
-        checkDllBox->SetLabel(S("check.dll", "Include recursive static DLL checks and the isolated load probe (can be slow)"));
-        checkDllBox->SetChecked(true);
-        checkDllBox->FontSize = 16; checkDllBox->BoxSize = 18;
-        checkDllBox->Size = Vector2(560, 28);
-        AddWidget(checkDllBox, 9);
-        Interactive(checkDllBox);
-        Button(S("check.start", "Start check and build report"), [this] { StartCompatibility(); });
-        Button(S("check.cancel", "Cancel check"), [this] { if (busy && job == Job::Compatibility && cancellable.load()) cancel = true; });
-        checkStatus = Text(S("check.ready", "Ready."), 16);
-        checkReportBox = std::make_shared<SVerticalBox>();
-        AddWidget(checkReportBox, 6);
-    }
-    void BuildGpu()
-    {
-        column = tabs[static_cast<std::size_t>(ShellTab::GpuSelection)] = std::make_shared<SVerticalBox>();
-        Text(S("gpu.title", "GPU Automatic Selection Check"), 29);
-        Text(S("gpu.intro", "Byte-identical to the selection logic in GfxDeviceSetup.cpp. Links neither the engine nor the game, and never launches the game."), 16);
-        Text(S("gpu.intro2", "The top half is offline regression cases; the bottom half probes this machine (switch the discrete GPU in the BIOS and click Re-probe to check again)."), 16);
-        Button(S("gpu.reprobe", "Re-probe"), [this] { if (!busy) RefreshGpu(); });
-        gpuStatus = Text(S("gpu.ready", "Ready."), 16);
-        gpuReportBox = std::make_shared<SVerticalBox>();
-        AddWidget(gpuReportBox, 6);
-    }
-    // Report lines are one STextBlock each: STextBlock has no wrapping, so a
-    // multi-line report has to be split before it reaches the widget tree.
-    static void FillReportLines(const std::shared_ptr<SVerticalBox>& box, const std::string& report)
-    {
-        box->ClearChildren();
-        std::istringstream stream(report);
-        std::string line;
-        int count = 0;
-        while (std::getline(stream, line))
-        {
-            if (++count > MaxReportLines)
-            {
-                auto truncated = std::make_shared<STextBlock>();
-                truncated->SetText(S("report.truncated", "... report too long, display truncated; the full text is in OSGameEnvironmentReport.txt next to it."));
-                truncated->SetFontSize(13); truncated->SetColor(DimColor);
-                box->AddSlot(truncated).AutoSize().SetPadding(FMargin(22, 1));
-                break;
-            }
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            auto text = std::make_shared<STextBlock>();
-            text->SetText(line);
-            text->SetFontSize(13);
-            const bool failure = line.rfind("[FAIL", 0) == 0;
-            const bool success = line.rfind("[PASS", 0) == 0;
-            text->SetColor(failure ? FailColor : success ? PassColor : DimColor);
-            box->AddSlot(text).AutoSize().SetPadding(FMargin(22, 1));
-        }
-    }
-    void RefreshGpu()
-    {
-        const std::vector<zengine::envcheck::GpuSelectionMockCaseResult> mockResults =
-            zengine::envcheck::RunAllGpuSelectionMockCases();
-        const auto realResult = zengine::envcheck::ProbeRealGpuSelection();
-        gpuReportBox->ClearChildren();
-        const auto add = [this](const std::string& text, float size, const UIColor& color)
-        {
-            auto widget = std::make_shared<STextBlock>();
-            widget->SetText(text); widget->SetFontSize(size); widget->SetColor(color);
-            gpuReportBox->AddSlot(widget).AutoSize().SetPadding(FMargin(22, 1));
-        };
-        add(S("gpu.section.mock", "== Offline regression cases =="), 17, Colors::White);
-        for (const auto& mockResult : mockResults)
-        {
-            add((mockResult.passed ? "[PASS] " : "[FAIL] ") + mockResult.caseName,
-                15, mockResult.passed ? PassColor : FailColor);
-            for (std::size_t index = 0; index < mockResult.adapters.size(); ++index)
-            {
-                add(zengine::envcheck::FormatGpuAdapterLine(index, mockResult.adapters[index], true), 13, DimColor);
-            }
-            add("  chosen=" + std::to_string(mockResult.chosenAdapterIndex)
-                + "  expected=" + std::to_string(mockResult.expectedAdapterIndex)
-                + "  excludedIntegrated=" + (mockResult.excludedIntegrated ? "true" : "false"), 13, DimColor);
-        }
-        const bool allPassed = zengine::envcheck::AllGpuSelectionMockCasesPassed(mockResults);
-        add(allPassed ? S("gpu.regression.pass", "Regression: all passed")
-                      : S("gpu.regression.fail", "Regression: there are failures (the selection logic may differ from GfxDeviceSetup.cpp)"),
-            16, allPassed ? PassColor : FailColor);
-        add(S("gpu.section.real", "== Real probe on this machine =="), 17, Colors::White);
-        add(S("gpu.all.adapters", "All adapters (EnumAdapters1):"), 14, AccentColor);
-        for (std::size_t index = 0; index < realResult.allAdapters.size(); ++index)
-        {
-            add(zengine::envcheck::FormatGpuAdapterLine(index, realResult.allAdapters[index], false), 13, DimColor);
-        }
-        if (realResult.gpuPreferencePicked)
-        {
-            add(S("gpu.preference.picked", "EnumAdapterByGpuPreference(HIGH_PERFORMANCE) selected: ")
-                + realResult.preferredAdapter.name
-                + "  dedicated=" + zengine::envcheck::FormatGpuMegabytes(realResult.preferredAdapter.dedicatedVideoMemoryBytes),
-                14, PassColor);
-        }
-        else
-        {
-            add(S("gpu.preference.failed", "EnumAdapterByGpuPreference unavailable or failed: ")
-                + (realResult.errorMessage.empty() ? std::string(S("gpu.reason.unknown", "unknown reason")) : realResult.errorMessage),
-                14, FailColor);
-        }
-        gpuStatus->SetText(allPassed ? S("gpu.status.pass", "Probe finished, regression all passed.")
-                                     : S("gpu.status.fail", "Probe finished, regression has failures; please screenshot this page and send it to the developers."));
-    }
     std::filesystem::path ChooseExecutable(const wchar_t* title, const wchar_t* filter = L"Windows program (*.exe)\0*.exe\0\0")
     {
         std::array<wchar_t, 32768> path{};
@@ -705,52 +565,6 @@ public:
         busy = false;
         job = Job::None;
         for (const auto& widget : interactive) widget->Visibility = EVisibility::Visible;
-    }
-    void StartCompatibility()
-    {
-        if (busy) return;
-        zengine::envcheck::EnvironmentCheckOptions input;
-        const std::string directory = checkOutputInput->GetText();
-        input.outputDirectory = directory.empty() ? DefaultOutputDirectory() : std::filesystem::path(Utf8ToWide(directory));
-        try
-        {
-            zengine::envcheck::ApplyRequiredFeatures(input.requirements, checkRequireInput->GetText());
-        }
-        catch (const std::exception&)
-        {
-            checkStatus->SetText(S("check.isa.invalid", "Invalid instruction set; use none or a combination of avx,avx2,fma,f16c."));
-            return;
-        }
-        try
-        {
-            const std::string memory = checkMemoryInput->GetText();
-            if (!memory.empty())
-            {
-                const unsigned long long gibibytes = std::stoull(memory);
-                input.requirements.minimumMemoryBytes = gibibytes * 1024ull * 1024ull * 1024ull;
-            }
-        }
-        catch (const std::exception&)
-        {
-            checkStatus->SetText(S("check.memory.invalid", "Minimum memory must be a whole number of GB."));
-            return;
-        }
-        input.includeDllChecks = checkDllBox->IsChecked();
-        input.quiet = true;   // the GUI shows the report itself
-        checkOutcome = {};
-        FillReportLines(checkReportBox, std::string{});
-        SetBusy(Job::Compatibility);
-        worker = std::thread([this, input] {
-            try
-            {
-                auto outcome = zengine::envcheck::RunEnvironmentCheck(input, cancel, [this](const std::string& message) {
-                    std::lock_guard lock(mutex); progress = message;
-                });
-                std::lock_guard lock(mutex); checkOutcome = std::move(outcome);
-            }
-            catch (const std::exception& exception) { std::lock_guard lock(mutex); error = exception.what(); }
-            finished = true;
-        });
     }
     void StartCapture(const std::filesystem::path& import = {})
     {
@@ -890,6 +704,7 @@ public:
         if (input.incidentTime > CurrentUtcTime() + 5 * TicksPerMinute)
         { status->SetText(S("status.time.future", "The incident time cannot be in the future.")); return; }
         input.includeEvents = details->IsChecked();
+        input.gameDirectory = gameDirInput->GetText();
         // Deliberately a confirmation, not a block: sweeping a machine's health
         // with no incident to anchor to is a legitimate use. But the user must
         // know, before the ZIP exists, what they will be handing over.
@@ -924,7 +739,6 @@ public:
             std::lock_guard lock(mutex);
             status->SetText(progress + " …");
             if (job == Job::Capture || job == Job::WerRestore) captureStatus->SetText(progress + " …");
-            if (job == Job::Compatibility) checkStatus->SetText(progress + " …");
         }
         if (finished.load())
         {
@@ -935,15 +749,7 @@ public:
             // A failed job is the reason someone sends us the log, so it goes in
             // there as well as on the status line.
             if (!error.empty()) zengine::envcheck::LogError(std::string(JobName(completed)) + " failed: " + error);
-            if (completed == Job::Compatibility)
-            {
-                FillReportLines(checkReportBox, checkOutcome.textReport);
-                checkStatus->SetText(error.empty()
-                    ? S("check.done.prefix", "Check finished, exit code ") + std::to_string(checkOutcome.exitCode)
-                        + S("check.done.suffix", ". Report: ") + checkOutcome.textPath.string()
-                    : error);
-            }
-            else if (completed == Job::Capture || completed == Job::WerRestore)
+            if (completed == Job::Capture || completed == Job::WerRestore)
             {
                 captureStatus->SetText(error.empty() ? captureMessage : error);
                 status->SetText(error.empty() ? captureMessage : error);
@@ -1105,10 +911,8 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
             else if (key == L"--tab")
             {
                 const std::wstring name = value();
-                if (name == L"collection") app.tab = ShellTab::Collection;
-                else if (name == L"compatibility" || name == L"check") app.tab = ShellTab::Compatibility;
-                else if (name == L"gpu") app.tab = ShellTab::GpuSelection;
-                else throw std::invalid_argument("Unknown tab; use collection|compatibility|gpu");
+                if (name == L"collection" || name == L"check" || name == L"gpu") app.tab = ShellTab::Collection;
+                else throw std::invalid_argument("Unknown tab; use collection (the compatibility and GPU tabs are part of it now)");
             }
             else if (key == L"--lang")
             {

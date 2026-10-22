@@ -1,5 +1,6 @@
 #pragma once
 #include "DiagnosisTypes.h"
+#include "EnvironmentProbe.h"
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
@@ -25,6 +26,14 @@ struct Options
     std::filesystem::path outputDirectory;
     // Resolved game log directory; overrides Profile when set from the command line.
     std::filesystem::path logDirectory;
+    // Where the game's DLLs live. Scanned by the compatibility stage for the
+    // static PE checks and the isolated load probe; empty means the tool's own
+    // directory is the only root. The tool cannot guess it: a player puts the
+    // package anywhere, and the game executable is a name, not a path.
+    std::filesystem::path gameDirectory;
+    // Product minimums the compatibility verdict is measured against. Defaults
+    // accept any x64 Windows machine; --require and --min-memory-gb raise them.
+    Requirements requirements;
     diagnosis::UtcTicks incidentTime = 0;
     diagnosis::IncidentKind incidentKind = diagnosis::IncidentKind::Unknown;
     bool includeEvents = false;
@@ -94,6 +103,26 @@ struct GameLogCopy
 // Copies one log the game may still be writing; `size` is what the scan measured.
 // Exposed for regression tests: see the note at its definition.
 GameLogCopy CopyLogFile(const std::filesystem::path& source, std::uint64_t size, const std::filesystem::path& target);
+
+// Static DLL checks and the isolated load probe (stage "compatibility").
+// A game directory holds hundreds of DLLs and each inspected one contributes an
+// import list and instruction samples, so the list is capped -- one file in the
+// archive is capped at 16 MiB and blowing it would fail the whole package.
+constexpr std::uint32_t MaxDllCheckFiles = 64;
+// Second net, on the finished document rather than on the input: dropping the
+// tail of the list and rebuilding is cheap, failing to pack is not.
+constexpr std::uint64_t MaxDllCheckJsonBytes = 8ull << 20;
+struct DllCheckTargets
+{
+    std::vector<std::filesystem::path> inspect; // PE images, the game's own DLLs first
+    std::vector<std::filesystem::path> probe;   // GameCore DLLs, loaded in isolation
+    std::uint64_t found = 0;                    // .dll files seen before the cap
+    bool truncated = false;                     // some were left out
+};
+// Which DLLs the compatibility stage looks at: the tool's own directory plus
+// `gameDirectory`. Exposed for regression tests -- neither the cap nor the
+// "GameCore is never the one dropped" rule shows up in a normal run.
+DllCheckTargets ResolveDllCheckTargets(const std::filesystem::path& gameDirectory);
 
 // Copies the newest .log/.logcompr/.txt files of logDirectory into outputDirectory and returns the index JSON.
 // Files are never modified or deleted; oversized ones are skipped and recorded in the index.

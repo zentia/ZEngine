@@ -267,6 +267,34 @@ int main()
                 Check(!cut.complete, "and says so, instead of passing itself off as the whole log");
             }
 
+            // A game directory holds hundreds of DLLs and each inspected one
+            // brings an import list and instruction samples, so the list is
+            // capped. GameCore is the one that gets loaded in isolation and the
+            // one the report is actually about: it must never be the DLL the cap
+            // happens to drop, or a big directory reads as "no load probe".
+            {
+                const auto dlls = directory / "GameDlls";
+                std::filesystem::create_directories(dlls);
+                for (std::uint32_t i = 0; i < collector::MaxDllCheckFiles + 20; ++i)
+                {
+                    std::ofstream(dlls / ("plugin" + std::to_string(i) + ".dll"), std::ios::binary) << "not a pe";
+                }
+                std::ofstream(dlls / "GameCore.dll", std::ios::binary) << "not a pe";
+                const auto targets = collector::ResolveDllCheckTargets(dlls);
+                Check(targets.found >= collector::MaxDllCheckFiles + 21, "every .dll in the directory is found");
+                Check(targets.inspect.size() == collector::MaxDllCheckFiles, "the inspected list is capped");
+                Check(targets.truncated, "and the cap is reported rather than implied");
+                Check(!targets.probe.empty() && targets.probe.front().filename() == "GameCore.dll",
+                    "GameCore is never the one the cap drops");
+
+                const auto few = directory / "FewDlls";
+                std::filesystem::create_directories(few);
+                std::ofstream(few / "one.dll", std::ios::binary) << "not a pe";
+                const auto uncapped = collector::ResolveDllCheckTargets(few);
+                Check(!uncapped.truncated && uncapped.inspect.size() == uncapped.found,
+                    "a directory below the cap is not reported as capped");
+            }
+
             const auto missing = CollectGameLogs(directory / "NoSuchLogs", directory / "log-out2", 336, 0);
             Check(missing.status == GameLogStatus::NoLogs && missing.archiveNames.empty()
                 && missing.json.find("LOG_DIRECTORY_MISSING") != std::string::npos, "missing log folder is reported, not blamed");

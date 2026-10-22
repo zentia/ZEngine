@@ -3,8 +3,11 @@
 #include "DiagnosisReport.h"
 #include "DiagnosisUtil.h"
 #include "EnvCheckLog.h"
+#include "DllProbe.h"
+#include "EnvironmentCheckCommand.h"
 #include "EnvironmentProbe.h"
 #include "EvidenceFiles.h"
+#include "PeInspector.h"
 #include "HardwareProbe.h"
 #include "EventLogReader.h"
 #include "ReportWriter.h"
@@ -17,6 +20,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -176,6 +180,18 @@ struct FindHandle
     HANDLE h = INVALID_HANDLE_VALUE;
     ~FindHandle() { if (h != INVALID_HANDLE_VALUE) FindClose(h); }
 };
+// Back to the spelling --require takes, so a stage worker measures against the
+// same minimums its caller was given.
+std::string RequiredFeaturesText(const Requirements& requirements)
+{
+    std::string text;
+    if (requirements.avx) text += "avx,";
+    if (requirements.avx2) text += "avx2,";
+    if (requirements.fma) text += "fma,";
+    if (requirements.f16c) text += "f16c,";
+    if (!text.empty()) text.pop_back();
+    return text.empty() ? "none" : text;
+}
 std::string RunStageProcess(const Options& options, const std::filesystem::path& logDirectory,
                            const std::filesystem::path& directory,
                            const std::string& stage, const std::atomic_bool& cancel)
@@ -184,8 +200,11 @@ std::string RunStageProcess(const Options& options, const std::filesystem::path&
     if (!std::filesystem::is_regular_file(exe)) return "HELPER_MISSING";
     std::wstring command = Quote(exe.wstring()) + L" --collect-stage " + Utf8ToWide(stage)
         + L" --output-dir " + Quote(directory.wstring()) + L" --lookback-hours " + std::to_wstring(options.profile.lookbackHours)
+        + L" --require " + Utf8ToWide(RequiredFeaturesText(options.requirements))
+        + L" --min-memory-gb " + std::to_wstring(options.requirements.minimumMemoryBytes / (1024ull * 1024ull * 1024ull))
         + L" --game-exe " + Quote(Utf8ToWide(options.profile.gameExecutable.empty() ? UnspecifiedGamePlaceholder : options.profile.gameExecutable))
         + L" --incident-kind " + Utf8ToWide(options.incidentKind == IncidentKind::Crash ? "crash" : options.incidentKind == IncidentKind::Hang ? "hang" : "unknown");
+    if (!options.gameDirectory.empty()) command += L" --game-dir " + Quote(options.gameDirectory.wstring());
     if (options.incidentTime) command += L" --incident-time " + Quote(Utf8ToWide(FormatUtcIso8601(options.incidentTime)));
     if (options.includeEvents) command += L" --include-events";
     if (!logDirectory.empty()) command += L" --log-dir " + Quote(logDirectory.wstring());
@@ -209,7 +228,13 @@ std::string RunStageProcess(const Options& options, const std::filesystem::path&
     {
         TerminateJobObject(job.h, 30); WaitForSingleObject(process.hProcess, 5000); return "HELPER_RESUME_FAILED";
     }
-    auto deadline = GetTickCount64() + options.stageTimeoutSeconds * 1000ull;
+    // The compatibility stage walks a directory and launches one isolated process
+    // per GameCore DLL, so the shared per-stage budget is a floor for it rather
+    // than a ceiling: 45 s is not enough for a real game directory, and being
+    // killed halfway would lose the whole section rather than shorten it.
+    const auto timeoutSeconds = stage == "compatibility"
+        ? (std::max)(options.stageTimeoutSeconds, 180u) : options.stageTimeoutSeconds;
+    auto deadline = GetTickCount64() + timeoutSeconds * 1000ull;
     for (;;)
     {
         DWORD wait = WaitForSingleObject(process.hProcess, 100);
@@ -267,6 +292,11 @@ std::string EnvironmentJson(const EnvironmentSnapshot& s)
     out << "],\"note\":\"Only this stage's fields are populated; empty/default values in other sections are not measurements.\"}";
     return out.str();
 }
+bool IsGameCoreDllName(const std::filesystem::path& path)
+{
+    const auto name = ToLowerAscii(WideToUtf8(path.filename().wstring()));
+    return name == "gamecore.dll" || name == "gamecore_standalone.dll";
+}
 int RunStage(const std::string& stage, const Options& options)
 {
     bool complete = true;
@@ -311,6 +341,45 @@ int RunStage(const std::string& stage, const Options& options)
         out << "{\"schemaVersion\":1,\"toolVersion\":" << JsonString(ToolVersion)
             << ",\"gpuAutoSelection\":{\n" << BuildGpuSelectionJson(mockResults, realResult) << "\n}}\n";
         WriteReportFile(options.outputDirectory / "gpu-selection.json", out.str());
+    }
+    else if (stage == "compatibility")
+    {
+        // What the compatibility tab used to produce, now inside the collected
+        // package: the static PE checks and the isolated load probe, next to the
+        // hardware snapshot they are judged against. Same CollectEnvironment()
+        // and BuildJsonReport() the -batchmode report uses, so the two paths
+        // cannot drift into disagreeing about one machine.
+        auto snapshot = CollectEnvironment();
+        const auto targets = ResolveDllCheckTargets(options.gameDirectory);
+        for (const auto& dll : targets.inspect) snapshot.inspectedImages.push_back(InspectPeImage(dll));
+        bool truncated = targets.truncated;
+        if (!targets.probe.empty())
+        {
+            DllProbeOptions probeOptions;
+            probeOptions.probeExecutable = ExecutableDirectory() / ProbeExecutableName;
+            probeOptions.timeoutMilliseconds = 60000; // matches the -batchmode default
+            for (const auto& dll : targets.probe)
+            {
+                probeOptions.exportName = IsGameCoreDllName(dll) ? "OSG_LocalPredictHardwareCapable" : std::string();
+                snapshot.dllProbeResults.push_back(RunDllProbe(dll, probeOptions));
+            }
+        }
+        const auto evaluation = EvaluateEnvironment(snapshot, options.requirements);
+        auto json = BuildJsonReport(snapshot, options.requirements, evaluation);
+        // The tail of the list is the part that is least likely to matter, so
+        // that is what goes when the document gets too big: one file in the
+        // archive is capped at 16 MiB and exceeding it fails the whole package.
+        while (json.size() > MaxDllCheckJsonBytes && !snapshot.inspectedImages.empty())
+        {
+            snapshot.inspectedImages.pop_back();
+            truncated = true;
+            json = BuildJsonReport(snapshot, options.requirements, evaluation);
+        }
+        // A capped list is not a complete one, and the manifest says so: the
+        // package still packs, but nobody should read it as "every DLL here is
+        // fine".
+        complete = !truncated;
+        WriteReportFile(options.outputDirectory / "compatibility.json", json);
     }
     else if (stage == "firmware") WriteReportFile(options.outputDirectory / "firmware.json", CollectFirmwareJson(complete));
     else if (stage == "health") WriteReportFile(options.outputDirectory / "health-events.json", CollectHealthEventsJson(options.profile.lookbackHours, complete));
@@ -459,6 +528,46 @@ GameLogCopy CopyLogFile(const std::filesystem::path& source, std::uint64_t size,
     LARGE_INTEGER now{};
     const bool knownSize = GetFileSizeEx(input.h, &now) != FALSE;
     return {copied, copied == size && (!knownSize || static_cast<std::uint64_t>(now.QuadPart) <= copied)};
+}
+DllCheckTargets ResolveDllCheckTargets(const std::filesystem::path& gameDirectory)
+{
+    DllCheckTargets result;
+    std::vector<std::filesystem::path> gameDlls, otherDlls;
+    std::set<std::wstring> seen;
+    std::vector<std::filesystem::path> roots{ExecutableDirectory()};
+    if (!gameDirectory.empty()) roots.push_back(gameDirectory);
+    std::error_code ignored;
+    for (const auto& root : roots)
+    {
+        if (!std::filesystem::is_directory(root, ignored)) continue;
+        for (std::filesystem::recursive_directory_iterator it(root, ignored), end; it != end; ++it)
+        {
+            const auto path = it->path();
+            if (!it->is_regular_file(ignored) || ToLowerAscii(WideToUtf8(path.extension().wstring())) != ".dll") continue;
+            auto key = path.lexically_normal().wstring();
+            std::transform(key.begin(), key.end(), key.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+            if (!seen.insert(key).second) continue;
+            ++result.found;
+            (IsGameCoreDllName(path) ? gameDlls : otherDlls).push_back(path);
+        }
+    }
+    // The game's own DLLs are the reason this stage exists, so they go in first.
+    // A cap that dropped GameCore.dll while keeping sixty unrelated plugins
+    // would report "no load probe" for a machine that merely had a big directory.
+    if (gameDlls.size() > MaxDllCheckFiles)
+    {
+        gameDlls.resize(MaxDllCheckFiles);
+        result.truncated = true;
+    }
+    result.inspect = gameDlls;
+    for (const auto& dll : otherDlls)
+    {
+        if (result.inspect.size() >= MaxDllCheckFiles) { result.truncated = true; break; }
+        result.inspect.push_back(dll);
+    }
+    for (const auto& dll : result.inspect)
+        if (IsGameCoreDllName(dll)) result.probe.push_back(dll);
+    return result;
 }
 std::string BuildRedactedEventsJson(const std::vector<diagnosis::NormalizedEvent>& events, bool gameSpecified,
     const std::string& gameExecutable)
@@ -647,7 +756,8 @@ Result Collect(const Options& options, const std::atomic_bool& cancel, const std
     std::vector<Stage> stages = {{"basic", "采集CPU与内存", "basic.json"}, {"firmware", "采集BIOS与内存配置", "firmware.json"},
         {"events", "分析系统事件", "diagnosis.json"}, {"health", "采集WHEA与内存诊断历史", "health-events.json"},
         {"graphics", "采集显卡与驱动", "graphics.json"}, {"storage", "采集存储信息", "storage.json"},
-        {"gpu-selection", "验证双显卡自动选卡规则", "gpu-selection.json"}};
+        {"gpu-selection", "验证双显卡自动选卡规则", "gpu-selection.json"},
+        {"compatibility", "静态检查DLL并隔离加载GameCore", "compatibility.json"}};
     // Game logs only exist for profiles that declare where the game writes them.
     const auto logDirectory = options.logDirectory.empty() ? ResolveGameLogDirectory(options.profile) : options.logDirectory;
     if (!logDirectory.empty()) stages.push_back({"gamelogs", "复制游戏日志", "game-logs.json"});
@@ -667,7 +777,9 @@ Result Collect(const Options& options, const std::atomic_bool& cancel, const std
     // attributed has to say so before anything that makes it look complete.
     summary << BuildAttributionWarning(anchor);
     summary << "Windows 环境采集报告\n项目: " << options.profile.displayName << "\n工具: " << ToolVersion
-        << "\n不自动上传，不加载游戏DLL，不运行内存测试，不修改BIOS。\n未发现事件不等于系统正常；采集成功也不等于硬件健康。\n\n";
+        << "\n不自动上传，不压测，不运行内存测试，不重启，不修改BIOS。"
+        << "\n兼容性检查（compatibility.json）会静态扫描 DLL，并在隔离子进程中加载 GameCore；不影响本进程与游戏本身。"
+        << "\n未发现事件不等于系统正常；采集成功也不等于硬件健康。\n\n";
     bool first = true;
     for (const auto& stage : stages)
     {
@@ -752,6 +864,10 @@ int RunCollectionCommand(int argc, wchar_t** argv)
             if (!options.profile.gameExecutable.empty() && !SafeName(options.profile.gameExecutable)) throw std::invalid_argument("Invalid executable name");
         }
         else if (key == L"--lookback-hours") options.profile.lookbackHours = Number(value(), 1, 720);
+        else if (key == L"--game-dir") options.gameDirectory = value();
+        else if (key == L"--require") ApplyRequiredFeatures(options.requirements, WideToUtf8(value()));
+        else if (key == L"--min-memory-gb")
+            options.requirements.minimumMemoryBytes = static_cast<std::uint64_t>(Number(value(), 1, 1024)) << 30;
         else if (key == L"--stage-timeout-seconds") options.stageTimeoutSeconds = Number(value(), 1, 300);
         else if (key == L"--include-events") options.includeEvents = true;
         else if (key == L"--incident-time") { if (!TryParseUtcIso8601(WideToUtf8(value()), options.incidentTime)) throw std::invalid_argument("Incident time requires ISO8601 timezone"); }
@@ -768,7 +884,14 @@ int RunCollectionCommand(int argc, wchar_t** argv)
                 "  [--incident-time ISO8601-with-zone] [--incident-kind crash|hang|unknown]\n"
                 "  [--lookback-hours 1..720] [--include-events] [--stage-timeout-seconds 1..300]\n"
                 "  [--log-dir path]  # override the profile's game log directory\n"
-                "Safe read-only collection. No DLL loading, reboot, stress test or upload.\n"
+                "  [--game-dir path] # where the game's DLLs live: static PE checks and\n"
+                "                    # the isolated load probe look there\n"
+                "  [--require avx,avx2,fma,f16c|none] [--min-memory-gb 1..1024]\n"
+                "One package with everything: hardware, dual-GPU selection, event\n"
+                "diagnosis, and the DLL checks (compatibility.json). No reboot, stress\n"
+                "test or upload; the load probe runs GameCore in an isolated child\n"
+                "process. A big --game-dir can exceed the per-stage timeout: that\n"
+                "stage gets at least 180 s, and --stage-timeout-seconds raises it.\n"
                 "Exit: 0=ZIP created (inspect manifest for partial data), 30=error.\n";
             return 0;
         }
