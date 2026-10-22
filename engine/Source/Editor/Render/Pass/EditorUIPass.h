@@ -44,10 +44,21 @@ public:
     void RefreshUiLayerTarget(RHIImageView* ui_layer_color_view);
 
 private:
+    // RHI thread, inside Draw(): make sure there is a batch to draw. Consumes the
+    // game thread's prepared frame if there is one; otherwise records the UI here --
+    // but ONLY when parallel rendering is off. With parallel rendering on, the game
+    // thread owns PreRender(), so "not prepared" means "the game thread is (about to
+    // be) recording it", and recording here too would run two PreRender()s on the
+    // same UIRenderBatch at once.
+    void ConsumeOrRecordFrameOnRhiThread();
+
     WindowUI* m_WindowUi {nullptr};
     RHIImageView* m_UiLayerColorView {nullptr};
     bool m_BackendInitialized {false};
-    bool m_GameThreadFramePrepared {false};
+    // Set by the game thread (PrepareGameThreadFrame), consumed by the RHI thread
+    // (Draw) and cleared by the game thread on a wait timeout -- three writers on
+    // two threads, so it must be atomic.
+    std::atomic<bool> m_GameThreadFramePrepared {false};
     std::atomic<bool> m_ImGuiFrameRendered {false};
     std::mutex m_ImGuiRenderMutex;
     std::condition_variable m_ImGuiRenderCv;

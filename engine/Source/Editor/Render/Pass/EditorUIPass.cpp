@@ -10,6 +10,7 @@
     #include "Runtime/Function/Render/Passes/DX12MainCameraPass.h"
 #endif
 #include "Runtime/Function/Render/RenderPipelineBase.h"
+#include "Runtime/Function/Render/RenderingThread/RenderingThread.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/Render/WindowSystem.h"
@@ -108,13 +109,37 @@ void EditorUIPass::SignalImGuiRenderComplete()
 
 void EditorUIPass::CompletePreparedImGuiFrameOnEarlyOut()
 {
-    if (!m_GameThreadFramePrepared)
+    if (!m_GameThreadFramePrepared.exchange(false, std::memory_order_acq_rel))
     {
         return;
     }
 
-    m_GameThreadFramePrepared = false;
     SignalImGuiRenderComplete();
+}
+
+void EditorUIPass::ConsumeOrRecordFrameOnRhiThread()
+{
+    if (m_GameThreadFramePrepared.exchange(false, std::memory_order_acq_rel))
+    {
+        return;  // the game thread recorded this frame's batch
+    }
+
+    // The flag is also false when the game thread timed out waiting for us
+    // (EditorUI::FinalizePendingImGuiPlatformFrame -> NotifySkippedRHIFrame clears
+    // it) -- which happens whenever one RHI frame takes > 500 ms, e.g. a Debug
+    // build at 4K. Treating that as "non-parallel, record it yourself" ran
+    // PreRender() here while the game thread was already in PrepareGameThreadFrame()
+    // -> PreRender() for the next frame: two threads push_back()ing into the same
+    // UIRenderBatch vectors, crashing in memmove under UIRenderBatch::AppendTexturedQuad.
+    // In parallel mode we draw the last published batch instead.
+    if (RenderingThread::IsParallelRenderingEnabled())
+    {
+        return;
+    }
+
+    ZSlate::ZSlateEditorOverlay::Get().BeginFrameIfEnabled();
+    m_WindowUi->PreRender();
+    FloatingPanelManager::Get().BuildBatches();
 }
 
 void EditorUIPass::NotifySkippedRHIFrame()
@@ -189,17 +214,7 @@ void EditorUIPass::Draw()
             return;
         }
 
-        if (m_GameThreadFramePrepared)
-        {
-            m_GameThreadFramePrepared = false;
-        }
-        else
-        {
-            // Non-parallel path: the game thread did not build the batch, so record it here.
-            ZSlate::ZSlateEditorOverlay::Get().BeginFrameIfEnabled();
-            m_WindowUi->PreRender();
-            FloatingPanelManager::Get().BuildBatches();
-        }
+        ConsumeOrRecordFrameOnRhiThread();
 
         float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
         m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "EditorUI", color);
@@ -270,17 +285,7 @@ void EditorUIPass::Draw()
     // every ZSlate draw silently no-ops, so bootstrap them here.
     UIGpuResources::EnsureInstance(m_Rhi);
 
-    if (m_GameThreadFramePrepared)
-    {
-        m_GameThreadFramePrepared = false;
-    }
-    else
-    {
-        // Non-parallel path: the game thread did not build the batch, so record it here.
-        ZSlate::ZSlateEditorOverlay::Get().BeginFrameIfEnabled();
-        m_WindowUi->PreRender();
-        FloatingPanelManager::Get().BuildBatches();
-    }
+    ConsumeOrRecordFrameOnRhiThread();
 
     float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "EditorUI", color);
@@ -301,17 +306,7 @@ void EditorUIPass::Draw()
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
     SignalImGuiRenderComplete();
 #elif defined(Z_HAS_VULKAN)
-    if (m_GameThreadFramePrepared)
-    {
-        m_GameThreadFramePrepared = false;
-    }
-    else
-    {
-        // Non-parallel path: the game thread did not build the batch, so record it here.
-        ZSlate::ZSlateEditorOverlay::Get().BeginFrameIfEnabled();
-        m_WindowUi->PreRender();
-        FloatingPanelManager::Get().BuildBatches();
-    }
+    ConsumeOrRecordFrameOnRhiThread();
 
     float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "EditorUI", color);
