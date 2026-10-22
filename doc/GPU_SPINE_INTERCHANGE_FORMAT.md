@@ -363,6 +363,159 @@ SpineGpuSlot（chunk 17）        40 B/条，条数 == header.slot_count
 
 ---
 
+### 3.7 约束 setup（chunk 18 / 19 / 20，v11）
+
+**为什么必须落盘**：约束**每帧都跑**，与时间轴无关。实测 **481 / 781 个资产
+（61.6%）至少有一条约束**（transform 2082 条、IK 344 条、path 333 条）——
+容器里没有它们，动画解算只能"摆骨骼"，而"约束没跑"的表现是**姿势不动**，不报错。
+
+#### 3.7.1 约束 setup（chunk 18）
+
+```
+块头 16 B：ik_count, transform_count, path_count, bone_pool_count（各 u32）
+紧随其后：SpineGpuIkConstraint[ik_count]       20 B/条
+          SpineGpuTransformConstraint[tf_count] 56 B/条
+          SpineGpuPathConstraint[path_count]    40 B/条
+          uint16 bone_pool[bone_pool_count]      2 B/条（三类**共用**一个池）
+
+SpineGpuIkConstraint（20 B）
+  order      u16 @0   三类约束**共用**一个排名空间（不是数组下标）
+  bone_count u16 @2
+  bone_first u32 @4   进 bone_pool 的**下标**（不是字节）
+  target     u32 @8   目标**骨骼**下标
+  mix        f32 @12  默认 1（SkeletonJson.cpp:290）
+  bend_dir   i16 @16  1 或 -1
+  flags      u16 @18  bit0=compress bit1=stretch bit2=uniform
+
+SpineGpuTransformConstraint（56 B）
+  order/target/bone_first/bone_count 同上；target 也是**骨骼**下标
+  offset_rotation/x/y/scale_x/scale_y/shear_y  f32 @12..@32
+  rotate_mix/translate_mix/scale_mix/shear_mix f32 @36..@48
+  flags u16 @52  bit0=local bit1=relative
+  pad   u16 @54  落盘必须 0
+
+SpineGpuPathConstraint（40 B）
+  order/bone_count/bone_first 同上
+  target_slot   u32 @8   ⚠️ 是**槽位**下标（SkeletonBinary.cpp:249 取 `_slots[...]`）
+  position_mode u8 @12   0=fixed 1=percent
+  spacing_mode  u8 @13   0=length 1=fixed 2=percent
+  rotate_mode   u8 @14   0=tangent 1=chain 2=chainScale
+  pad           u8 @15   落盘必须 0
+  offset_rotation/position/spacing/rotate_mix/translate_mix  f32 @16..@32
+  path_index    u32 @36  见下
+```
+
+- ⚠️ **path 的 target 是槽位、IK / transform 的 target 是骨骼** ——
+  字段名两边都叫 "target"（甚至偏移都是 @8），但**取值域不同**。
+  拿 `bone_count` 去查 path 的 target、或拿 `slot_count` 去查 IK 的 target，
+  都会漏掉另一半越界。`SpineGpuLayout.Validate()` 里钉了一条
+  「两者偏移相同但 index space 不同」的检查提醒这一点。
+- ⚠️ **`order` 必须是 0..N-1 的一个排列**（N = 三类约束总数）。
+  参考实现的 `updateCache()` 按 `i = 0..N-1` 逐个找 `order == i` 的那条，
+  **找不到就静默跳过**（`Skeleton.cpp:147-175`）；负数还会以 `int == size_t`
+  比较变成天文数字，同样静默。⇒ **导入期与读端都显式报错**。
+- ⚠️ **`bend_dir` 在二进制里是 sbyte、在 json 里是 `bendPositive` 布尔**。
+  json 侧 `"bendPositive": false` ⇒ **-1**（`SkeletonJson.cpp:291`
+  `getInt(..., 1) ? 1 : -1`）。Spine 的 json 解析器把 true/false 写进同一个
+  `_valueInt`（`Json.cpp:165,173`）⇒ 读端若只认数字，布尔会回落到默认值 **1**，
+  **不报错、方向反了**。实测踩到过一次，靠 skel↔json 逐字段对拍抓到。
+- json 的 mode 串认不出时（三个 if 都没 else）会停在构造函数的默认值；
+  缺键时回落 percent / length / tangent —— **两者不一致** ⇒ 我们选择显式报错。
+
+#### 3.7.2 执行顺序（chunk 19）
+
+```
+块头 8 B：step_count, reset_count（各 u32）
+SpineGpuUpdateStep[step_count]  4 B/条：kind u8 @0 | pad u8 @1 | index u16 @2
+uint16 reset[reset_count]       2 B/条
+kind: 0=bone 1=ik 2=transform 3=path
+```
+
+`Skeleton::updateCache()`（3.7 `Skeleton.cpp:134-178`）算出来的 `_updateCache`
+**原样落盘**，运行时照着遍历就行。
+
+- **为什么不落"让运行时重排"**：重排规则有 `sortBone` 的递归 + 三类约束共用的
+  `order` 两层；运行时再实现一遍就是给自己多一次写反的机会，而写反的表现是
+  "姿势略偏"，查不出来。落**结果**是唯一能对齐的。
+- ⚠️ `_updateCacheReset` 也要落：它是"遍历之前要把哪些骨骼复位到 setup"的列表
+  （`Skeleton.cpp:200-211`）。少复位会让上一帧的应用值残留，表现是**动作拖影**。
+- ⚠️ **只在有约束时落盘**。无约束时 `updateCache()` 的结果**可证恒等于**
+  `0..bone_count-1`（因为 `parent < index` ⇒ 正向遍历就是拓扑序），reset 为空。
+  读端按同一规则重建 ⇒ Bake 内存与 Read 内存一致、读→写逐字节相同。
+  这不是兜底，是等价 —— 少写 781 个资产里 300 个的纯冗余数据。
+- **反向约束**：有约束（chunk 18 非空）却**没有** chunk 19 ⇒ 容器坏了，**必须报错**
+  （静默退化成"没有约束"，与"约束没排进去"在字节上完全看不出区别）。
+
+#### 3.7.3 PathAttachment 几何（chunk 20，40 B/条）
+
+```
+块头 16 B：att_count, bone_count, vertex_float_count, length_count（各 u32）
+SpineGpuPathAttachment[att_count]  40 B/条
+uint16 bone_pool[bone_count]
+float  vertices[vertex_float_count]
+float  lengths[length_count]
+
+SpineGpuPathAttachment（40 B）
+  slot_index  u16 @0
+  skin_index  u16 @2   ⚠️ 皮肤**必须**落盘（见下）
+  flags       u16 @4   bit0=closed bit1=constantSpeed bit2=weighted
+  pad         u16 @6   落盘必须 0
+  vertex_count u32 @8
+  bone_offset/count         u32 @12/@16
+  vertex_offset/float_count u32 @20/@24
+  length_offset/count       u32 @28/@32   count == vertex_count / 3
+  name_offset  u32 @36  ⚠️ 进字符串表第 8 组
+```
+
+- **它不产生绘制项**（与 boundingbox / point / clipping 一样），但**必须烘焙** ——
+  没有它就算不出 `PathConstraint::computeWorldPositions()`。
+  这是 v11 把 path 从"只留个名字"升级成"烘焙但不画"的原因。
+- ⚠️ **皮肤必须落盘**：`PathConstraint::update()` 用的是 `_target->getAttachment()`
+  （`PathConstraint.cpp:76-80`）—— 槽位**当前**挂的附件，而"当前"取决于激活的皮肤。
+  只按槽位找会在换装后拿到别的皮肤的曲线。
+- ⚠️ **附件名必须落盘**：同一个槽位在同一皮肤下挂**两条** path 附件是**合法的**
+  （实测 6 / 781，如 `K_Lubandashi_Spine` 的槽位 `EFFTAIYILIZI` 挂了
+  `EFFTAIYILIZI` 与 `EFFTAIYILIZI2`）。`update()` 取的是"当前"那条，
+  而"当前"会被 attachment 时间轴改掉 ⇒ 静态烘焙只能给出 **setup 状态下**的答案
+  （`path_index`），运行时换装 / 换附件后必须**按名字重新查**。
+- ⚠️ `path_index` 的判据是"**名字 == 槽位的 setup 附件名**"，不是"这个槽位的
+  第一条 path"。取第一条在单条时看不出区别，在两条时会去摆一条别人的曲线
+  （不报错，只是动作飘）。
+  setup 附件不是任何 path ⇒ `kNoPathAttachment`，约束在 setup 状态下不生效
+  （`update()` 直接 return）。**`kNoPathAttachment = 0xFFFFFFFF`，不是 0** ——
+  0 是 chunk 20 里第一条的合法下标。
+- **字符串表多一组**：第 8 组「path 附件名」，`att_count` 条，
+  与 chunk 20 的记录**一一对应**（不去重）。
+  ⚠️ 它必须排在「动画附件名」**前面** —— 后者是"剩下的全归它"，没有计数，
+  排在它后面的组读端切不出来。
+  顺序：骨骼名 → 皮肤名 → 槽位名 → 槽位 setup 附件名 → 附件名 → 图集页名 →
+  动画名 → **path 附件名** → 动画附件名。
+
+#### 3.7.4 读端校验（chunk 18 / 19 / 20）
+
+- 三个块头都带 count ⇒ "chunk 不存在"与"chunk 被截断"能分开；
+  **净载荷大小必须与块头算出来的相等**（差一个字节都会让后面的池整体错位）。
+- flags / pad：未知位与 pad 必须 0（脏字节会让跨语言逐字节对拍对不上）。
+- 骨骼区间 `[bone_first, bone_first + bone_count)` 必须落在池里；
+  **池里的每个索引必须 < `bone_count`**；IK / transform 的 `target < bone_count`；
+  path 的 `target_slot < slot_count`。
+- `order` 必须是 0..N-1 的排列；`bend_dir` 只能是 ±1；mode 枚举不能越界；
+  step 的 `kind ≤ 3`、约束下标不越界。
+- `path_index` 必须是 `kNoPathAttachment` 或 < `att_count`
+  （放在 chunk 20 之后交叉检查，因为它要引用那边的条数）。
+- `length_count == vertex_count / 3`（`SkeletonBinary.cpp:550`）。
+
+**实测（781 个 OSGame 容器）**：带约束 **481 / 781（61.6%）**；
+IK **344** 条 / transform **2082** 条 / path **333** 条；约束骨骼池 **3150** 条；
+chunk 18 **0.14 MB**、chunk 20 **0.08 MB**、三块合计 **0.33 MB**（容器的 **0.16%**）。
+执行顺序 **27 468** 步（带约束的资产共 24 941 根骨骼 ⇒ 约束给遍历表加了
+**2 527** 步，**9.2%**）。PathAttachment **690** 条（11592 个顶点 float、
+1921 个 length float）。`path_index` 全部有效（333 / 333）⇒ 这些资产的
+path 约束在 setup 状态下就生效。全部 781 个容器：pad 非 0 / bend_dir 非法 /
+kind 越界 / order 非排列 **均为 0**。
+
+---
+
 ## 4. 绘制项表（静态）
 
 按 (皮肤, `skeleton.getDrawOrder()` 的**槽位顺序**) 排好 —— 先 default 皮肤的全部附件，
@@ -677,7 +830,7 @@ Spine 图集默认是 **PMA（预乘 Alpha）**，对应 Unity 侧 `Blend One On
 ```
 Header (64 B)
   0x00  magic            u32   'ZSPG'  (0x5A535047)
-  0x04  version          u32   本规格版本，当前 10
+  0x04  version          u32   本规格版本，当前 11
                                v2 = 加了 skin 维度（§9.1）
                                v3 = UV 拆成独立通道 + chunk id 重排（§3.2、§14.2）
                                v4 = deform 参与烘焙（§7.1）—— 布局没变，
@@ -703,6 +856,14 @@ Header (64 B)
                                     布尔），而 color / twoColor 时间轴是相对 setup 色的
                                     ⇒ 缺了它就只能默认纯白，而纯白与 setup 白在多数资产
                                     上完全看不出区别（与 v8 / v9 同一类坑）
+                               v11 = 约束进容器（§3.7）—— 新增 chunk 18 约束 setup、
+                                    19 执行顺序、20 PathAttachment 几何；
+                                    header 与既有 chunk 全都没动，字符串块多一组
+                                    「path 附件名」（chunk 20 的条数，排在动画附件名
+                                    **前面**）。约束**每帧都跑**、与时间轴无关，
+                                    实测 481 / 781（61.6%）个资产带约束
+                                    ⇒ 缺了它们的表现是"姿势不动"，与 v8 / v9 / v10
+                                    是同一类坑（"没有 X"本身不报错）
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -725,12 +886,13 @@ Header (64 B)
 ChunkTable  (chunk_count × 16 B)  { id u32, offset u32, size u32, _pad u32 }
 Chunks:
   id=1  strings        骨骼名 → 皮肤名 → 槽位名 → **槽位 setup 附件名（v10）** →
-                       附件名 → 图集页名 → **动画名** → **动画附件名**（v9），
-                       每项 UTF-8 且 '\0' 结尾。
+                       附件名 → 图集页名 → **动画名** → **path 附件名（v11）** →
+                       **动画附件名**（v9），每项 UTF-8 且 '\0' 结尾。
                        ⚠️ 第 4 组**每条槽位一条，空名也占一条** —— 不占位就没法按
                        slot_count 切分，后面几组会整体错位（不报错，只是名字错）。
-                       最后两组只有"动画名"有计数（= chunk 11 的条目数）；
-                       "动画附件名"只按偏移访问，没有计数。
+                       ⚠️ 第 8 组（path 附件名）按 chunk 20 的条数切分
+                       （**一一对应，不去重**），且**必须排在动画附件名前面** ——
+                       "动画附件名"只按偏移访问、没有计数 ⇒ 排在它后面就切不出来。
   id=2  slot_bone      每槽位的骨骼下标（u16 × slot_count）—— rigid 用
   id=10 bone_setup     SpineGpuBone[]，36 B/骨（§3.4，v8）
                        { x, y, rotation, scale_x, scale_y, shear_x, shear_y, length,
@@ -758,6 +920,15 @@ Chunks:
                        下标 = header.slot_count 的序 = 槽位名的序号 =
                        时间轴 Target（attachment / color / twoColor）的同一个空间
                        ⇒ **三处必须同一空间**（分叉了不报错，只是颜色挂到别的槽位上）
+  id=18 constraint_setup 块头 16 B（ik/tf/path/bone_pool 四个 count）+ 三段定长数组
+                       + 尾部共用的 u16 骨骼池（§3.7.1，v11）。
+                       没有约束时这个 chunk **根本不写**（不是写个空块）
+  id=19 update_order   块头 8 B（step/reset 两个 count）+ SpineGpuUpdateStep[] 4 B/步
+                       + uint16 reset[]（§3.7.2，v11）。同样只在有约束时写。
+                       ⚠️ **有 chunk 18 却没有 chunk 19 ⇒ 必须报错**
+  id=20 path_attachments 块头 16 B（att/bone/vertex/length 四个 count）
+                       + SpineGpuPathAttachment[] 40 B/条 + u16 骨骼池
+                       + f32 顶点池 + f32 lengths 池（§3.7.3，v11）
   id=21 influence_bind bindPos f32×2 × 影响条目数，8 B/条（§3.1，v7）
   id=22 influence_bone (boneIdx u16, weight unorm8, pad u8) × 影响条目数，4 B/条（v7）
                        ⚠️ 21 与 22 **共用同一个条目下标**（= 权重顶点的
@@ -771,9 +942,9 @@ Chunks:
 > 读会拿到 `index_buffer` 当 UV，静默错位。这也正是 `kFormatVersion` 升到 3 的原因。
 >
 > ⚠️ **文件里 chunk 的顺序也不是 id 顺序**：写端按
-> `1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 3, 21, 22, 4, 5, 9, 6, 7, 8` 追加
-> （骨骼 setup 紧挨 slot_bone；v9 的动画块 11-16 紧跟其后、v10 的槽位块 17 再跟其后；
-> 影响流紧跟
+> `1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 3, 21, 22, 4, 5, 9, 6, 7, 8` 追加
+> （骨骼 setup 紧挨 slot_bone；v9 的动画块 11-16 紧跟其后、v10 的槽位块 17 再跟其后、
+> v11 的约束块 18-20 又跟其后；影响流紧跟
 > 顶点块；9 夹在 5 与 6 之间是
 > 历史顺序）。换了顺序文件照样能读，但字节不再逐字节相同 ⇒ 跨语言对拍（§12）立刻红，
 > 所以 C# 端必须照抄这个顺序（见 `SpineGpuContainerIo.cs`）。
@@ -823,10 +994,12 @@ Chunks:
 ## 11. 版本与兼容
 
 - `version` 变化 ⇒ 导入器必须拒绝旧容器并给出明确错误，不做静默兼容。
-- **v7 → v10 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
+- **v7 → v11 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
   **v8 追加骨骼树（chunk 10，§3.4）**；**v9 追加动画（chunk 11-16，§3.5）**；
-  **v10 追加槽位 setup（chunk 17，§3.6）**。
-  仍在推进的是约束（18-20），解算器自写、仍在 CPU。
+  **v10 追加槽位 setup（chunk 17，§3.6）**；
+  **v11 追加约束 setup / 执行顺序 / PathAttachment（chunk 18 / 19 / 20，§3.7）**。
+  仍在推进的是**约束解算**（S4b：骨骼时间轴 + 三类约束求解 + 按 chunk 19 遍历），
+  解算器自写、仍在 CPU。
   字段设计与转录 gap 分析见 **`doc/GPU_SPINE_V7_ANIMATION.md`**。
   v7 / v8 / v9 / v10 **都不动** header（仍 64 B）、不动 chunk 1..9、不动 §5 每帧实例数据、
   不动 §6 shader 数学；新增的计数一律从 chunk 表推导（`size / stride`），不进 header
@@ -836,6 +1009,12 @@ Chunks:
   ⚠️ v9 容器被 v10 读端读会得到 **"所有槽位纯白 + 无暗色"**（chunk 17 不存在），
   而"纯白"本身不报错 —— 实测 **139 / 781 个资产**真的有非纯白 setup 色，
   是同类的第三个坑。
+  ⚠️ v10 容器被 v11 读端读会得到 **"0 条约束"**（chunk 18 / 19 / 20 都不存在），
+  而"没有约束"本身不报错 —— 实测 **481 / 781 个资产（61.6%）真的有约束**，
+  缺了它们的表现只是**姿势不动**，是同类的第四个坑。
+  ⇒ **四个坑的共性**：新增的语义在旧容器里都表现为"某个合理的默认值"，
+  逐字节读得通、读得合法，只是结果静默错。所以每次加 chunk 都必须连带 bump
+  `version` 并让读端**硬拒**，不能"尽力而为"。
 - `spine_runtime` 不匹配 ⇒ 警告但允许（布局差异只在 `_bones` 宽度，导入器已按 3.8 读；
   4.x 资产需要另一条导入路径，**不在本版本范围**）。
 - 任何"导入器静默调整数据"的行为（截断影响数、重排顶点、自动降精度）都**必须报错**，
@@ -988,6 +1167,36 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
       （`SkeletonBinary.cpp:1040-1072`），且槽位下标必须**严格升序**
       （否则参考实现 `while (originalIndex != slotIndex)` 永不终止）⇒ 夹具要 **2 帧**，
       第二帧才分得开（1 帧时两种实现都给出 setup 序）。
+16. **约束 setup 的语义断言**（§3.7，v11）—— 全部是"错了不报错"的，逐条对应一类静默错：
+    * **夹具必须含非默认值的三类约束**：IK 带 `bend_dir = -1`（`bendPositive:false`）
+      + `mix ≠ 1` + compress/stretch/uniform 三个 flag 至少亮一个；transform 的
+      6 个 offset + 4 个 mix 全非 0/1、flags 亮 `relative|local`；
+      path 的三种 mode 都**不是**默认值。
+      全是默认值的话，"写端根本没解析约束"也会被判通过（读回来还是默认值）。
+    * **`order` 必须是 0..N-1 的排列**（N = 三类约束总数），导入期与读端**都要**报错：
+      参考实现按 `i` 找 `order == i` 的那条，找不到就静默跳过；负数还会以
+      `int == size_t` 比较变成天文数字，同样静默（`Skeleton.cpp:147-175`）。
+    * ⚠️ **json 的布尔必须被当成 0/1 读**：Spine 的 json 解析器把 `true/false` 写进
+      `_valueInt`（`Json.cpp:165,173`），`getInt()` 读的正是它（`Json.cpp:89-91`）。
+      只认数字的话 `bendPositive:false` ⇒ 回落默认 **1** ⇒ **方向反了且不报错**；
+      `constantSpeed:false` 同理会变成 1。
+      ⇒ **只有 `.skel` ↔ json 逐字段对拍能抓到**（实测就是靠它抓出来的：
+      json 侧曾得到 `bend=1,flags=0`，skel 侧是 `bend=-1,flags=5`）。
+    * **path 的 `target_slot` 越界判据是 `slot_count`，IK / transform 的 `target`
+      越界判据是 `bone_count`** —— 字段名都叫 target、偏移都是 @8，但取值域不同。
+      夹具里两边都要有**非 0** 的下标（全是 0 时"写错成恒 0"测不出来），
+      且各自要有一条**越界**的负向用例。
+    * **`path_index` 的判据必须是名字匹配，夹具要放两条 path**：同一槽位挂
+      `p1`（= setup 附件）与 `p2`，setup 指向 `p1` ⇒ `path_index == 0`；
+      改成指向 `p2` ⇒ `path_index == 1`。
+      ⚠️ **只有第二条分得开"取第一条"与"按名字取"** —— 单条时两者恒等。
+      第三条：setup 指向一个**不是** path 的附件 ⇒ `kNoPathAttachment`（且它
+      **不是 0**，0 是合法下标）。
+    * **chunk 19 只在有约束时落盘**，且这条"可证恒等"要钉住：无约束资产读回来
+      重建出 `0..bone_count-1`、reset 为空 ⇒ **读→写仍逐字节相同**。
+      反向：有 chunk 18 却**没有** chunk 19 ⇒ **必须报错**（负向用例）。
+    * **`_updateCacheReset` 也要断言**（`Skeleton.cpp:200-211`）：少复位会让上一帧
+      的应用值残留，表现是**动作拖影** —— 夹具里至少一根骨骼被约束改动过 ⇒ reset 非空。
 
 ---
 
@@ -1008,6 +1217,9 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
 | 11 | deform 怎么回退？ | **不做稠密展开，也不做 OSGame 式全量 CPU 动态 VB** —— deform 是蒙皮之前的局部空间加数（`VertexAttachment.cpp:122-123`，rigid 则是 `:72-74` 整体替换）⇒ 走 **deform 增量**：共享 bind pose VB 不动、蒙皮仍在 GPU，每实例每帧只上传当前帧 deform 数组（实测均值 122 B/条，对比全量动态 VB 的 24.4 KB/帧）。OSGame 引擎（`SpineMesh.h:266`）那种世界空间全量动态 VB 被否决：它每实例一份 VB，**正好废掉 §0 的 VB 共享** | `doc/GPU_SPINE_V7_ANIMATION.md` §5 |
 | 10 | 动画怎么落？ | **A2（2026-10-22 拍板）**：骨骼树 + 动画烘焙进容器 → **v7**，解算器自己写，仍在 CPU（与 §0 一致）。否决 A1（运行时持有 spine 源数据 / 引入 spine-cpp），因为它与 §11.2「容器由 C++ 唯一产出」相冲，且 Unity 侧要跟着搬一整份运行时。范围与边界见 `doc/GPU_SPINE_V7_ANIMATION.md` | §11 |
 | 12 | 影响流怎么去重？ | **先对影响流（12 B/条）按"逐字节相同"去重，再用去重后的块起点改写顶点块里的本地下标，最后才对顶点块去重**。顺序颠倒不报错：先改写顶点块的话两个相同附件的本地下标都是 0 ⇒ 顶点去重看着命中了，但它们指的其实是各自那段影响流 ⇒ 其中一个取到另一份的 bindPos | §3.1 |
+| 13 | 执行顺序（chunk 19）落"结果"还是落"规则"？ | **落 `Skeleton::updateCache()` 算出来的结果**（`_updateCache` + `_updateCacheReset` 原样落盘），而不是让运行时按 `sortBone` 递归 + 三类约束共用的 `order` 重排一遍。重排再写一遍就是给自己多一次写反的机会，而写反的表现是"姿势略偏"，查不出来。落结果是唯一能对齐的 | §3.7.2 |
+| 14 | 3.7 与 3.8 的约束数学不一致怎么办？ | **按 3.8 实现**。逐文件 diff 出 2 处真差异（都是 3.8 修的 3.7 bug）：`Bone::updateWorldTransform()` 根骨骼分支把 `sx`/`sy` 用反；`IkConstraint::apply()` 单骨骼分支 `&&` 绑定优先级 ⇒ `b≈0` 且 compress 时 NaN。3.7 的错解算出来不报错，只是姿势错 | `doc/GPU_SPINE_V7_ANIMATION.md` §4.1 |
+| 15 | 同一槽位挂两条 path 附件算不算错？ | **不算，两条都烘焙。** 实测 6 / 781 资产这样（如 `K_Lubandashi_Spine` 的槽位 `EFFTAIYILIZI`）。参考实现 `sortPathConstraint` 会遍历**全部**；我最初加的"重复 ⇒ 报错"一次卡掉 12 个真资产（769/41 对不上 781/29 基线），已撤回 | §3.7.3 |
 
 ### 13.2 仍待拍板
 
@@ -1016,7 +1228,9 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
 
 （v7 设计内部的开放项，记在 `doc/GPU_SPINE_V7_ANIMATION.md` §7：
 **槽位 setup 已落地**（v10，chunk 17，§3.6）；
-约束（IK / transform / path）的 setup 数据仍未落盘，**S4 需要 chunk 18-20 并 bump 到 v11**；
+**约束 setup 已落地**（v11，chunk 18 / 19 / 20，§3.7）—— 落的是 setup 与执行顺序，
+**解算本身（S4b）还没写**：骨骼时间轴（rotate/translate/scale/shear）+ 三类约束求解 +
+按 chunk 19 遍历，按 3.8 数学实现；
 chunk 15/16 的曲线与变长载荷编码**已定**——紧凑曲线（u8/段 + 16 B bezier）+ 稀疏 deform，
 见 §3.5。）
 
@@ -1080,11 +1294,12 @@ ZEditor -batchmode -suite=SpineCook <hero.json | hero.skel | 目录> [-o <输出
 `-batchmode` 不弹窗、不启动引擎、不初始化 RHI，直接跑烘焙（见 §11.2）。目录输入
 保持相对结构铺开，同名骨架不会互相覆盖；有失败就退出码非 0。
 
-### 14.5 v8/v9/v10 已补上骨骼树、动画与槽位 setup（**边界**按 OSGame 实测反推，这部分永久有效）
+### 14.5 v8/v9/v10/v11 已补上骨骼树、动画、槽位 setup 与约束 setup（**边界**按 OSGame 实测反推，这部分永久有效）
 
 > **进度**：v8 = 骨骼树（chunk 10，**已落地**，§3.4）；v9 = 动画（chunk 11-16，
-> **已落地**，§3.5）；v10 = 槽位 setup（chunk 17，**已落地**，§3.6）。
-> 剩下的**只有约束**（chunk 18-20，S4）—— 下面"边界怎么定的"这部分不随进度失效。
+> **已落地**，§3.5）；v10 = 槽位 setup（chunk 17，**已落地**，§3.6）；
+> v11 = 约束 setup + 执行顺序 + PathAttachment（chunk 18 / 19 / 20，**已落地**，§3.7）。
+> 剩下的**只有约束解算**（S4b）与 GPU 蒙皮上线路 —— 下面"边界怎么定的"这部分不随进度失效。
 
 v6 及以前只烘焙**绑定姿态**：`SpineGpuAsset` 有 `bone_names` 但 `SpineSourceBone::parent`
 在 Bake 时被丢掉（`SpineGpuImporter.h:78`），也**没有任何动画 chunk**（chunk 只到 9）。
@@ -1102,7 +1317,12 @@ v7 的处理（见 `doc/GPU_SPINE_V7_ANIMATION.md`）。**边界不是拍脑袋�
   event 与 IK / transform 约束**时间轴**实测 0 条，不做。
 * ⚠️ **但约束本身必须解算**：IK 22.5% / transform **48.3%** / path 11.1% 的资产带约束，
   而约束在 `Skeleton::updateWorldTransform` 里**每帧都跑**，与有没有时间轴无关。
-  只做骨骼时间轴会让近一半资产姿势静默错。⇒ 约束 setup + 执行顺序也要进容器。
+  只做骨骼时间轴会让近一半资产姿势静默错。⇒ 约束 setup + 执行顺序也要进容器
+  （**v11 已落地**：chunk 18 = 三类约束 setup + 共用骨骼池、chunk 19 = `updateCache()`
+  的执行顺序与复位表、chunk 20 = PathAttachment 几何，§3.7）。
+  实测带约束 **481 / 781（61.6%）**；三块合计 **0.33 MB**（容器的 0.16%）——
+  落盘的代价可以忽略，不落的代价是姿势静默不动。
+  ⚠️ 落盘 ≠ 解算：**S4b 还没做**（骨骼时间轴 + 三类约束求解 + 按 chunk 19 遍历）。
 * **3.7 vs 3.8 字节布局完全一致**（逐段比对），只有槽位暗色判据不同
   ⇒ 导入器放宽版本 + 一个分支即可，**不需要第二套解析器**。
   现在实测 **0/782 能导入**（版本检查硬拒 3.8 以外的）。
@@ -1207,6 +1427,29 @@ v7 的处理（见 `doc/GPU_SPINE_V7_ANIMATION.md`）。**边界不是拍脑袋�
 | 二进制具名皮肤数 = 单独一个 varint，不含 default | `SkeletonBinary.cpp:277` |
 | 同一皮肤内 `(slotIndex, name)` 重复 ⇒ **后写的覆盖**先写的 | `Skin.h:118-120`（`addAttachment` 注释） |
 | 皮肤内查附件只在**该皮肤**内 | `Skin.h:126`（`getAttachment(slotIndex, name)`） |
+
+### 约束与执行顺序的出处（容器 v11）
+
+| 断言 | 出处 |
+|---|---|
+| `updateCache()` 按 `i = 0..N-1` 扫 `ik → transform → path` 找 `order == i` 的那条；**找不到就跳过** | `Skeleton.cpp:147-175` |
+| ⚠️ `order` 是**三类约束共用的**一个排名空间，不是数组下标 | 同文件（三类混在同一个 `i` 循环里） |
+| `_updateCacheReset`：约束动过的骨骼要在每次遍历前复位到 setup | `Skeleton.cpp:200-211` |
+| ⚠️ path 约束的 target 是**槽位**（取 `skeletonData->_slots[...]`），IK / transform 的 target 是**骨骼** | `SkeletonBinary.cpp:249`、`SkeletonJson.cpp`（对应分支） |
+| json 的 IK 字段：`mix` 默认 **1**，`bendPositive` 布尔 ⇒ `? 1 : -1` | `SkeletonJson.cpp:289-292` |
+| ⚠️ Spine 的 json 解析器把 `true/false` 写进 `_valueInt`，而 `getInt()` 读的正是它 ⇒ **布尔必须当 0/1** | `Json.cpp:89-91`、`Json.cpp:165`（calloc ⇒ 0）、`:173`（⇒ 1） |
+| json 的 mode 串认不出时**没有 else** ⇒ 停在构造函数默认 Fixed/Length/Tangent；**缺键**时才回落 percent/length/tangent（两者不一致） | `PathConstraintData.cpp:48-50` |
+| `PathConstraint::update()` 用 `_target->getAttachment()`（槽位**当前**挂的附件），取不到就 `return` | `PathConstraint.cpp:76-80` |
+| ⚠️ `sortPathConstraint` 遍历**所有**皮肤的该槽位附件 ⇒ 一槽两位 path 是合法的 | `Skeleton.cpp:557-635` |
+| `PathAttachment` 的 lengths 条数 = `vertex_count / 3` | `SkeletonBinary.cpp:550` |
+| 3.7 vs 3.8 约束数学的 **2 处**真差异（都是 3.8 修的 3.7 bug） | `Bone.cpp:110-113`（根骨骼 `sx`/`sy` 用反）、`IkConstraint.cpp:63`（单骨骼 `&&` 优先级 ⇒ NaN） |
+| ⚠️ 逐文件 diff 前必须剥掉 license 头 | 不剥则 500+ 行噪声淹掉真差异 |
+
+**一槽两位 path 的处理是"撤回自己"的典型案例**：我最初按"重复 ⇒ 数据坏了"报错，
+一次卡掉 12 个真资产（769/41 对不上 781/29 基线）。回查 `Skeleton.cpp:557-635`
+发现参考实现会把**两条**都遍历 ⇒ 合法。改成两条都烘焙 + 名字进字符串表 +
+`path_index` 按**名字 == setup 附件名**解析后回到基线。
+⇒ 判据永远是"参考实现真的会遍历它"，不是"我觉得重复就是错"。
 
 **`.skel` 与 json 必须产出同一个容器。** 这一条有一个硬测试钉住
 （`SpineGpuImportTest` 第 9 节）：手写的 `.skel` 字节流夹具与 json 夹具内容等价，

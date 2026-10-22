@@ -253,6 +253,98 @@ struct SpineSourceClip
 };
 
 // ---------------------------------------------------------------------
+// 约束（源形态）—— S4
+// ---------------------------------------------------------------------
+// 字段集合逐条抄 3.7：
+//   * IK       `SkeletonBinary.cpp:190-208` / `SkeletonJson.cpp:263-294`
+//   * transform `SkeletonBinary.cpp:217-237` / `SkeletonJson.cpp:307-345`
+//   * path      `SkeletonBinary.cpp:239-257` / `SkeletonJson.cpp:360-422`
+//
+// ⚠️ 三条的 `target` **不是同一个下标空间**：IK / transform 指向**骨骼**，
+//    path 指向**槽位**（`SkeletonBinary.cpp:249` 取的是 `_slots[...]`）。
+//
+// ⚠️ `order` 是**三类约束共用的排名空间**：`Skeleton::updateCache()`
+//    （`Skeleton.cpp:147-175`）按 i = 0..N-1 逐个找 `order == i` 的那条约束
+//    （先扫 ik、再 transform、再 path），找不到就**跳过**。
+//    ⇒ order 不是 0..N-1 的一个排列时，参考实现会**静默丢掉**约束；
+//      我们报显式错（见 Bake）。
+//
+// ⚠️ `position` / `spacing` 的缩放是**解析期**的事：
+//    `positionMode == Fixed` / `spacingMode ∈ {Length, Fixed}` 时才乘 `_scale`
+//    （`SkeletonBinary.cpp:252-255`、`SkeletonJson.cpp:410-417`）。
+//    落盘的是**已经乘过**的值，运行时不要再乘一次。
+struct SpineSourceIkConstraint
+{
+    std::string name;
+    int order = 0;
+    std::vector<int> bones;      // 骨骼下标，**至少 1 条**
+    int target = -1;             // 目标骨骼
+    float mix = 1.0f;
+    int bend_dir = 1;            // 1 或 -1（json 是 `bendPositive` 布尔）
+    bool compress = false;
+    bool stretch = false;
+    bool uniform = false;
+};
+
+struct SpineSourceTransformConstraint
+{
+    std::string name;
+    int order = 0;
+    std::vector<int> bones;
+    int target = -1;             // 目标骨骼
+    bool local = false;
+    bool relative = false;
+    float offset_rotation = 0.0f;
+    float offset_x = 0.0f;
+    float offset_y = 0.0f;
+    float offset_scale_x = 0.0f;
+    float offset_scale_y = 0.0f;
+    float offset_shear_y = 0.0f;
+    float rotate_mix = 1.0f;
+    float translate_mix = 1.0f;
+    float scale_mix = 1.0f;
+    float shear_mix = 1.0f;
+};
+
+struct SpineSourcePathConstraint
+{
+    std::string name;
+    int order = 0;
+    std::vector<int> bones;
+    // ⚠️ **槽位**下标不是骨骼（`SkeletonBinary.cpp:249`）
+    int target_slot = -1;
+    int position_mode = 1;   // 0 fixed / 1 percent（json 默认 "percent"）
+    int spacing_mode = 0;    // 0 length / 1 fixed / 2 percent（json 默认 "length"）
+    int rotate_mode = 0;     // 0 tangent / 1 chain / 2 chainScale（json 默认 "tangent"）
+    float offset_rotation = 0.0f;
+    float position = 0.0f;
+    float spacing = 0.0f;
+    float rotate_mix = 1.0f;
+    float translate_mix = 1.0f;
+};
+
+// PathAttachment 的几何。它**不产生绘制项**，但 path 约束要沿它摆骨骼
+// （`PathConstraint::computeWorldPositions` 走 `PathAttachment::computeWorldVertices`）。
+//
+// 顶点编码与 mesh **同构**（`SkeletonBinary::readVertices`，:1108-1130）：
+//   rigid    → vertices = [x, y] × vertex_count，bones 空
+//   weighted → bones = [n, idx × n] × vertex_count，vertices = [x, y, w] × Σn
+// lengths 长度 = vertex_count / 3（`SkeletonBinary.cpp:550`）。
+struct SpineSourcePathAttachment
+{
+    int skin_index = -1;
+    int slot_index = -1;
+    std::string name;
+    bool closed = false;
+    bool constant_speed = true;   // json 默认 **1**（SkeletonJson.cpp:596）
+    int vertex_count = 0;
+    bool weighted = false;
+    std::vector<float> vertices;   // rigid [x,y]×n / weighted [x,y,w]×Σn
+    std::vector<int> bones;        // weighted 才有：[n, idx×n]×n
+    std::vector<float> lengths;
+};
+
+// ---------------------------------------------------------------------
 // 动画（源形态，仍是 spine 自己的数据形状）
 // ---------------------------------------------------------------------
 
@@ -356,11 +448,22 @@ struct SpineSourceSkeleton
     // **名字**换算成下标（参考实现 `findIkConstraint()` 找不到时把下标**静默留在 0**，
     // SkeletonJson.cpp:933-940 ⇒ 我们报显式错）。
     //
-    // ⚠️ 只要名字和顺序 —— 约束的 setup 字段（chunk 18）是 S4 的事。
-    // ⚠️ 二进制**不需要**它：二进制的时间轴里写的就是下标本身。
+    // ⚠️ 顺序必须与 iks / transforms / paths **一致**：时间轴里的约束下标、
+    // chunk 18 里各类数组的下标、chunk 19 里 `SpineGpuUpdateStep::index`
+    // 用的是同一个下标空间。
+    // ⚠️ 二进制**不需要**它做换算：二进制的时间轴里写的就是下标本身。
     std::vector<std::string> ik_names;
     std::vector<std::string> transform_names;
     std::vector<std::string> path_names;
+
+    // ---- 约束 setup（chunk 18，v11）----
+    // 解析顺序 = 文件里的顺序，也就是 `ik_names` / `transform_names` / `path_names` 的序。
+    std::vector<SpineSourceIkConstraint> iks;
+    std::vector<SpineSourceTransformConstraint> transforms;
+    std::vector<SpineSourcePathConstraint> paths;
+
+    // PathAttachment 几何（chunk 20，v11）。**不产生绘制项**，只给 path 约束用。
+    std::vector<SpineSourcePathAttachment> path_attachments;
 
     // flags 来源
     bool has_draw_order_timeline = false;   // animations.*.drawOrder 存在 ⇒ 整个资产走 CPU
@@ -485,6 +588,34 @@ struct SpineGpuAsset
     // attachment 时间轴用到的附件名（chunk 1 的最末尾一组）。
     // **只按偏移访问**，读端不需要知道它有多少条 ⇒ 不会破坏前面几组的切分。
     std::vector<std::string> anim_attachment_names;
+
+    // ---- 约束 setup（chunk 18，v11）----
+    // 下标空间统一：`iks[i]` / `transforms[i]` / `paths[i]` 的 i 就是
+    // chunk 19 里 `SpineGpuUpdateStep::index`（配 kind 用）与时间轴里
+    // `ik / transform / path` 时间轴的 target 引用的同一个下标。
+    std::vector<SpineGpuIkConstraint> iks;
+    std::vector<SpineGpuTransformConstraint> transforms;
+    std::vector<SpineGpuPathConstraint> paths;
+    // 三类约束的 `bones[]` **共用**一段 u16 索引池（长度可变 ⇒ 不能内联）。
+    // 每条约束存 (bone_first, bone_count)，与 v7 影响流同一个思路。
+    std::vector<uint16_t> constraint_bone_pool;
+
+    // ---- 执行顺序（chunk 19，v11）----
+    // `Skeleton::updateCache()` 的结果**原样落盘**，运行时照着遍历。
+    std::vector<SpineGpuUpdateStep> update_steps;
+    // `_updateCacheReset`：遍历之前要把哪些骨骼复位到 setup（3.7 `Skeleton.cpp:200-211`）。
+    // 少复位 ⇒ 上一帧的应用值残留，表现是"动作拖影"，不报错。
+    std::vector<uint16_t> update_reset;
+
+    // ---- PathAttachment 几何（chunk 20，v11）----
+    // 不产生绘制项，只给 path 约束用（沿它摆骨骼）。
+    std::vector<SpineGpuPathAttachment> path_attachments;
+    std::vector<uint16_t> path_bone_pool;   // weighted 才有：[n, idx×n]×vertex_count
+    std::vector<float> path_vertices;       // rigid [x,y]×n / weighted [x,y,w]×Σn
+    std::vector<float> path_lengths;        // = vertex_count / 3 条
+    // 一条 path 附件一个名字，**与 path_attachments 一一对应**（不去重）。
+    // 运行时在 attachment 时间轴改掉槽位挂的附件后，要按名字重新查是哪条曲线。
+    std::vector<std::string> path_attachment_names;
 };
 
 SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsset& out);
@@ -501,9 +632,12 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
 // name_offset，Write 拿它拼 chunk 1 的字节，解算器拿它把偏移翻译回字符串。
 // 三处共用一份实现，才不会出现"写端按 A 顺序、Bake 按 B 顺序算偏移"的静默错位。
 //
-// 顺序：骨骼 → 皮肤 → 槽位 → 槽位 setup 附件名 → 附件 → 图集页 → 动画名 → 动画附件名。
+// 顺序：骨骼 → 皮肤 → 槽位 → 槽位 setup 附件名 → 附件 → 图集页 →
+//       动画名 → path 附件名（v11）→ 动画附件名。
+// ⚠️ 动画附件名**必须**最后：它是"剩下的全归它"，没有计数 ⇒ 排在它后面就切不出来。
 void BuildSpineStringTable(const SpineGpuAsset& a, std::vector<uint8_t>& blob,
                            std::vector<uint32_t>& slot_setup_attachment_offsets,
                            std::vector<uint32_t>& anim_name_offsets,
-                           std::vector<uint32_t>& anim_attachment_offsets);
+                           std::vector<uint32_t>& anim_attachment_offsets,
+                           std::vector<uint32_t>& path_attachment_name_offsets);
 SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGpuAsset& out);

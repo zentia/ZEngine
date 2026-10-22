@@ -78,5 +78,29 @@ namespace ZEngine.SpineGpu
         public List<SpineGpuClipPolygon> ClipPolygons = new List<SpineGpuClipPolygon>();
 
         public List<SpineGpuAttachmentRecord> AttachmentRecords = new List<SpineGpuAttachmentRecord>();
+
+        // ---- 约束（chunk 18 / 19 / 20，v11）----
+        // 下标空间统一：Iks[i] / Transforms[i] / Paths[i] 的 i 就是 chunk 19 里
+        // SpineGpuUpdateStep.Index（配 Kind 用）与时间轴里约束时间轴 Target
+        // 引用的同一个下标。
+        public List<SpineGpuIkConstraint> Iks = new List<SpineGpuIkConstraint>();
+        public List<SpineGpuTransformConstraint> Transforms = new List<SpineGpuTransformConstraint>();
+        public List<SpineGpuPathConstraint> Paths = new List<SpineGpuPathConstraint>();
+        // 三类约束的 `bones[]` **共用**一段 u16 索引池（长度可变 ⇒ 不能内联）。
+        public ushort[] ConstraintBonePool = System.Array.Empty<ushort>();
+
+        // `Skeleton::updateCache()` 的结果**原样落盘**，运行时照着遍历。
+        public List<SpineGpuUpdateStep> UpdateSteps = new List<SpineGpuUpdateStep>();
+        // `_updateCacheReset`：遍历之前要把哪些骨骼复位到 setup
+        // （Skeleton.cpp:200-211）。少复位 ⇒ 上一帧的应用值残留（"动作拖影"），不报错。
+        public ushort[] UpdateReset = System.Array.Empty<ushort>();
+
+        // PathAttachment 几何。**不产生绘制项**，只给 path 约束用。
+        public List<SpineGpuPathAttachment> PathAttachments = new List<SpineGpuPathAttachment>();
+        public ushort[] PathBonePool = System.Array.Empty<ushort>();
+        public float[] PathVertices = System.Array.Empty<float>();
+        public float[] PathLengths = System.Array.Empty<float>();
+        // 一条 path 附件一个名字，**与 PathAttachments 一一对应**（不去重）。
+        public List<string> PathAttachmentNames = new List<string>();
     }
 }

@@ -628,7 +628,423 @@ namespace ZEngine.SpineGpu
                 }
             }
 
-            // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 槽位 setup 附件名 → 附件名 → 图集页名 → 动画名 → 动画附件名 ----
+            // ---- 约束 setup（chunk 18，v11）----
+            // 块头带 ik/tf/path/bone_pool 四个 count：**没有**它们的话，"chunk 不存在"
+            // 和"chunk 被截断"在字节上分不开（v11 之前 chunk 10 / 11 / 17 都栽过）。
+            if (TryGet(byId, (uint)SpineGpuChunkId.ConstraintSetup, out uint cso, out uint css))
+            {
+                if (css < SpineGpuConstants.ConstraintHeaderSize)
+                {
+                    throw new SpineGpuContainerException("container: constraint_setup 比块头（" +
+                        SpineGpuConstants.ConstraintHeaderSize + " B）还小");
+                }
+                uint ikN = ReadU32(data, (int)cso + 0);
+                uint tfN = ReadU32(data, (int)cso + 4);
+                uint pathN = ReadU32(data, (int)cso + 8);
+                uint poolN = ReadU32(data, (int)cso + 12);
+
+                ulong want = SpineGpuConstants.ConstraintHeaderSize
+                             + (ulong)ikN * SpineGpuConstants.IkConstraintSize
+                             + (ulong)tfN * SpineGpuConstants.TransformConstraintSize
+                             + (ulong)pathN * SpineGpuConstants.PathConstraintSize
+                             + (ulong)poolN * 2u;
+                if (want != css)
+                {
+                    throw new SpineGpuContainerException("container: constraint_setup 大小 " + css +
+                        " B 与块头算出来的 " + want + " B 不一致（ik=" + ikN + " tf=" + tfN +
+                        " path=" + pathN + " pool=" + poolN + "）");
+                }
+
+                uint off = SpineGpuConstants.ConstraintHeaderSize;
+                for (uint i = 0; i < ikN; ++i)
+                {
+                    int p = (int)(cso + off);
+                    var k = new SpineGpuIkConstraint
+                    {
+                        Order = ReadU16(data, p + SpineGpuOffsets.IkOrder),
+                        BoneCount = ReadU16(data, p + SpineGpuOffsets.IkBoneCount),
+                        BoneFirst = ReadU32(data, p + SpineGpuOffsets.IkBoneFirst),
+                        Target = ReadU32(data, p + SpineGpuOffsets.IkTarget),
+                        Mix = ReadF32(data, p + SpineGpuOffsets.IkMix),
+                        BendDir = (short)ReadU16(data, p + SpineGpuOffsets.IkBendDir),
+                        Flags = (SpineGpuIkFlags)ReadU16(data, p + SpineGpuOffsets.IkFlags),
+                    };
+                    ushort ikKnown = (ushort)(SpineGpuIkFlags.Compress | SpineGpuIkFlags.Stretch |
+                                                   SpineGpuIkFlags.Uniform);
+                    if (((ushort)k.Flags & (ushort)~ikKnown) != 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 IK 约束的 flags 有未知位（" +
+                            k.Flags + "）");
+                    }
+                    if (k.BendDir != 1 && k.BendDir != -1)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 IK 约束的 bend_dir 是 " +
+                            k.BendDir + "（只可能是 1 / -1）");
+                    }
+                    // ⚠️ target 是**骨骼**下标，越界不报错 —— 解算时读到别人的变换矩阵。
+                    if (k.Target >= asset.Header.BoneCount)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 IK 约束的目标骨骼 " +
+                            k.Target + " 越界（只有 " + asset.Header.BoneCount + " 根骨骼）");
+                    }
+                    asset.Iks.Add(k);
+                    off += SpineGpuConstants.IkConstraintSize;
+                }
+                for (uint i = 0; i < tfN; ++i)
+                {
+                    int p = (int)(cso + off);
+                    var t = new SpineGpuTransformConstraint
+                    {
+                        Order = ReadU16(data, p + SpineGpuOffsets.TfOrder),
+                        BoneCount = ReadU16(data, p + SpineGpuOffsets.TfBoneCount),
+                        BoneFirst = ReadU32(data, p + SpineGpuOffsets.TfBoneFirst),
+                        Target = ReadU32(data, p + SpineGpuOffsets.TfTarget),
+                        OffsetRotation = ReadF32(data, p + SpineGpuOffsets.TfOffsetRotation),
+                        OffsetX = ReadF32(data, p + SpineGpuOffsets.TfOffsetX),
+                        OffsetY = ReadF32(data, p + SpineGpuOffsets.TfOffsetY),
+                        OffsetScaleX = ReadF32(data, p + SpineGpuOffsets.TfOffsetScaleX),
+                        OffsetScaleY = ReadF32(data, p + SpineGpuOffsets.TfOffsetScaleY),
+                        OffsetShearY = ReadF32(data, p + SpineGpuOffsets.TfOffsetShearY),
+                        RotateMix = ReadF32(data, p + SpineGpuOffsets.TfRotateMix),
+                        TranslateMix = ReadF32(data, p + SpineGpuOffsets.TfTranslateMix),
+                        ScaleMix = ReadF32(data, p + SpineGpuOffsets.TfScaleMix),
+                        ShearMix = ReadF32(data, p + SpineGpuOffsets.TfShearMix),
+                        Flags = (SpineGpuTransformFlags)ReadU16(data, p + SpineGpuOffsets.TfFlags),
+                        Pad = ReadU16(data, p + SpineGpuOffsets.TfPad),
+                    };
+                    ushort tfKnown = (ushort)(SpineGpuTransformFlags.Local | SpineGpuTransformFlags.Relative);
+                    if (((ushort)t.Flags & (ushort)~tfKnown) != 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i +
+                            " 条 transform 约束的 flags 有未知位（" + t.Flags + "）");
+                    }
+                    if (t.Pad != 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i +
+                            " 条 transform 约束的 pad 不是 0");
+                    }
+                    if (t.Target >= asset.Header.BoneCount)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i +
+                            " 条 transform 约束的目标骨骼 " + t.Target + " 越界（只有 " +
+                            asset.Header.BoneCount + " 根骨骼）");
+                    }
+                    asset.Transforms.Add(t);
+                    off += SpineGpuConstants.TransformConstraintSize;
+                }
+                for (uint i = 0; i < pathN; ++i)
+                {
+                    int p = (int)(cso + off);
+                    var pc = new SpineGpuPathConstraint
+                    {
+                        Order = ReadU16(data, p + SpineGpuOffsets.PathOrder),
+                        BoneCount = ReadU16(data, p + SpineGpuOffsets.PathBoneCount),
+                        BoneFirst = ReadU32(data, p + SpineGpuOffsets.PathBoneFirst),
+                        TargetSlot = ReadU32(data, p + SpineGpuOffsets.PathTargetSlot),
+                        PositionMode = (SpineGpuPathPositionMode)ReadU8(data, p + SpineGpuOffsets.PathPositionMode),
+                        SpacingMode = (SpineGpuPathSpacingMode)ReadU8(data, p + SpineGpuOffsets.PathSpacingMode),
+                        RotateMode = (SpineGpuPathRotateMode)ReadU8(data, p + SpineGpuOffsets.PathRotateMode),
+                        Pad = ReadU8(data, p + SpineGpuOffsets.PathPad),
+                        OffsetRotation = ReadF32(data, p + SpineGpuOffsets.PathOffsetRotation),
+                        Position = ReadF32(data, p + SpineGpuOffsets.PathPosition),
+                        Spacing = ReadF32(data, p + SpineGpuOffsets.PathSpacing),
+                        RotateMix = ReadF32(data, p + SpineGpuOffsets.PathRotateMix),
+                        TranslateMix = ReadF32(data, p + SpineGpuOffsets.PathTranslateMix),
+                        PathIndex = ReadU32(data, p + SpineGpuOffsets.PathIndex),
+                    };
+                    if (pc.PositionMode != SpineGpuPathPositionMode.Fixed &&
+                        pc.PositionMode != SpineGpuPathPositionMode.Percent)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i +
+                            " 条 path 约束的 positionMode 是 " + pc.PositionMode);
+                    }
+                    if ((byte)pc.SpacingMode > (byte)SpineGpuPathSpacingMode.Percent)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i +
+                            " 条 path 约束的 spacingMode 是 " + pc.SpacingMode);
+                    }
+                    if ((byte)pc.RotateMode > (byte)SpineGpuPathRotateMode.ChainScale)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i +
+                            " 条 path 约束的 rotateMode 是 " + pc.RotateMode);
+                    }
+                    if (pc.Pad != 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 path 约束的 pad 不是 0");
+                    }
+                    // ⚠️ 是**槽位**下标（`SkeletonBinary.cpp:249` 取 `_slots[...]`）——
+                    //    与 IK / transform 的 target 同名但 index space 不同。
+                    if (pc.TargetSlot >= asset.Header.SlotCount)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 path 约束的目标槽位 " +
+                            pc.TargetSlot + " 越界（只有 " + asset.Header.SlotCount + " 个槽位）");
+                    }
+                    asset.Paths.Add(pc);
+                    off += SpineGpuConstants.PathConstraintSize;
+                }
+                asset.ConstraintBonePool = new ushort[poolN];
+                for (uint i = 0; i < poolN; ++i)
+                {
+                    ushort bb = ReadU16(data, (int)(cso + off));
+                    if (bb >= asset.Header.BoneCount)
+                    {
+                        throw new SpineGpuContainerException("container: 约束骨骼池第 " + i + " 条是 " + bb +
+                            "，越界（只有 " + asset.Header.BoneCount + " 根骨骼）");
+                    }
+                    asset.ConstraintBonePool[i] = bb;
+                    off += 2;
+                }
+                // 每条约束的 [BoneFirst, BoneFirst + BoneCount) 必须落在池里 ——
+                // 越界不报错，只是约束拿到别人的骨骼列表。
+                Action<uint, uint, string, uint> checkRange = (first, count, what, i) =>
+                {
+                    ulong end = (ulong)first + count;
+                    if (end > poolN)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 " + what +
+                            " 约束的骨骼区间 [ " + first + ", " + end + " ) 超出骨骼池（" + poolN + " 条）");
+                    }
+                };
+                for (uint i = 0; i < asset.Iks.Count; ++i)
+                {
+                    checkRange(asset.Iks[(int)i].BoneFirst, asset.Iks[(int)i].BoneCount, "IK", i);
+                }
+                for (uint i = 0; i < asset.Transforms.Count; ++i)
+                {
+                    checkRange(asset.Transforms[(int)i].BoneFirst, asset.Transforms[(int)i].BoneCount,
+                               "transform", i);
+                }
+                for (uint i = 0; i < asset.Paths.Count; ++i)
+                {
+                    checkRange(asset.Paths[(int)i].BoneFirst, asset.Paths[(int)i].BoneCount, "path", i);
+                }
+                // order 必须是 0..N-1 的排列（Bake 侧已校验；这里是"读别人的容器"也要挡住）
+                {
+                    var orders = new List<uint>();
+                    foreach (var k in asset.Iks) orders.Add(k.Order);
+                    foreach (var t in asset.Transforms) orders.Add(t.Order);
+                    foreach (var pc2 in asset.Paths) orders.Add(pc2.Order);
+                    orders.Sort();
+                    for (int i = 0; i < orders.Count; ++i)
+                    {
+                        if (orders[i] != (uint)i)
+                        {
+                            throw new SpineGpuContainerException("container: 约束的 order 不是 0.." +
+                                (orders.Count - 1) + " 的一个排列（第 " + i + " 个是 " + orders[i] + "）");
+                        }
+                    }
+                }
+            }
+
+            // ---- 执行顺序（chunk 19，v11）----
+            // ⚠️ chunk 19 缺失 = 这个资产**没有约束**（写端只在有约束时落它），此时
+            //    updateCache 的结果恒等于 0..bone_count-1。反过来：有约束却没有 chunk 19
+            //    ⇒ 容器坏了，必须报错（静默退化会让约束全都不跑，"姿势不动"也不报错）。
+            {
+                bool anyConstraint = asset.Iks.Count > 0 || asset.Transforms.Count > 0 || asset.Paths.Count > 0;
+                if (TryGet(byId, (uint)SpineGpuChunkId.UpdateOrder, out uint uoo, out uint uos))
+                {
+                    if (uos < SpineGpuConstants.UpdateOrderHeaderSize)
+                    {
+                        throw new SpineGpuContainerException("container: update_order 比块头（" +
+                            SpineGpuConstants.UpdateOrderHeaderSize + " B）还小");
+                    }
+                    uint stepN = ReadU32(data, (int)uoo + 0);
+                    uint resetN = ReadU32(data, (int)uoo + 4);
+                    ulong want = SpineGpuConstants.UpdateOrderHeaderSize
+                                 + (ulong)stepN * SpineGpuConstants.UpdateStepSize + (ulong)resetN * 2u;
+                    if (want != uos)
+                    {
+                        throw new SpineGpuContainerException("container: update_order 大小 " + uos +
+                            " B 与块头算出来的 " + want + " B 不一致");
+                    }
+                    uint off = SpineGpuConstants.UpdateOrderHeaderSize;
+                    for (uint i = 0; i < stepN; ++i)
+                    {
+                        int p = (int)(uoo + off);
+                        var s = new SpineGpuUpdateStep
+                        {
+                            Kind = (SpineGpuUpdateKind)ReadU8(data, p + SpineGpuOffsets.StepKind),
+                            Pad = ReadU8(data, p + SpineGpuOffsets.StepPad),
+                            Index = ReadU16(data, p + SpineGpuOffsets.StepIndex),
+                        };
+                        if ((byte)s.Kind > (byte)SpineGpuUpdateKind.Path)
+                        {
+                            throw new SpineGpuContainerException("container: 第 " + i + " 步的 kind 是 " +
+                                s.Kind + "（只到 3 = path）");
+                        }
+                        if (s.Pad != 0)
+                        {
+                            throw new SpineGpuContainerException("container: 第 " + i + " 步的 pad 不是 0");
+                        }
+                        // 下标必须落在对应表里 —— 越界不报错，只是解算器跑到别人的对象上。
+                        uint limit = s.Kind == SpineGpuUpdateKind.Bone ? h.BoneCount
+                            : s.Kind == SpineGpuUpdateKind.Ik ? (uint)asset.Iks.Count
+                            : s.Kind == SpineGpuUpdateKind.Transform ? (uint)asset.Transforms.Count
+                            : (uint)asset.Paths.Count;
+                        if (s.Index >= limit)
+                        {
+                            throw new SpineGpuContainerException("container: 第 " + i + " 步的 index " +
+                                s.Index + " 超出该类对象的个数 " + limit);
+                        }
+                        asset.UpdateSteps.Add(s);
+                        off += SpineGpuConstants.UpdateStepSize;
+                    }
+                    asset.UpdateReset = new ushort[resetN];
+                    for (uint i = 0; i < resetN; ++i)
+                    {
+                        ushort b = ReadU16(data, (int)(uoo + off));
+                        if (b >= h.BoneCount)
+                        {
+                            throw new SpineGpuContainerException("container: update_reset 第 " + i +
+                                " 项的骨骼下标 " + b + " 超出骨骼数 " + h.BoneCount);
+                        }
+                        asset.UpdateReset[i] = b;
+                        off += 2;
+                    }
+                }
+                else if (anyConstraint)
+                {
+                    throw new SpineGpuContainerException("container: 有约束（ik=" + asset.Iks.Count +
+                        " tf=" + asset.Transforms.Count + " path=" + asset.Paths.Count +
+                        "）却没有 chunk 19（update_order）—— 约束会全部不跑，表现是「姿势不动」而不是报错");
+                }
+                else
+                {
+                    // 可证等价：无约束时 updateCache = 正向遍历全部骨骼，而 parent < index
+                    // ⇒ 结果就是 0..bone_count-1，reset 为空。
+                    for (uint i = 0; i < h.BoneCount; ++i)
+                    {
+                        asset.UpdateSteps.Add(new SpineGpuUpdateStep
+                        {
+                            Kind = SpineGpuUpdateKind.Bone,
+                            Pad = 0,
+                            Index = (ushort)i,
+                        });
+                    }
+                    asset.UpdateReset = System.Array.Empty<ushort>();
+                }
+            }
+
+            // ---- PathAttachment 几何（chunk 20，v11）----
+            if (TryGet(byId, (uint)SpineGpuChunkId.PathAttachments, out uint pao, out uint pas))
+            {
+                if (pas < SpineGpuConstants.PathAttHeaderSize)
+                {
+                    throw new SpineGpuContainerException("container: path_attachments 比块头（" +
+                        SpineGpuConstants.PathAttHeaderSize + " B）还小");
+                }
+                uint attN = ReadU32(data, (int)pao + 0);
+                uint boneN = ReadU32(data, (int)pao + 4);
+                uint vertN = ReadU32(data, (int)pao + 8);
+                uint lenN = ReadU32(data, (int)pao + 12);
+                ulong want = SpineGpuConstants.PathAttHeaderSize
+                             + (ulong)attN * SpineGpuConstants.PathAttachmentSize
+                             + (ulong)boneN * 2u + (ulong)vertN * 4u + (ulong)lenN * 4u;
+                if (want != pas)
+                {
+                    throw new SpineGpuContainerException("container: path_attachments 大小 " + pas +
+                        " B 与块头算出来的 " + want + " B 不一致");
+                }
+                uint off = SpineGpuConstants.PathAttHeaderSize;
+                for (uint i = 0; i < attN; ++i)
+                {
+                    int p = (int)(pao + off);
+                    var a = new SpineGpuPathAttachment
+                    {
+                        SlotIndex = ReadU16(data, p + SpineGpuOffsets.PathAttSlotIndex),
+                        SkinIndex = ReadU16(data, p + SpineGpuOffsets.PathAttSkinIndex),
+                        Flags = (SpineGpuPathAttachmentFlags)ReadU16(data, p + SpineGpuOffsets.PathAttFlags),
+                        Pad = ReadU16(data, p + SpineGpuOffsets.PathAttPad),
+                        VertexCount = ReadU32(data, p + SpineGpuOffsets.PathAttVertexCount),
+                        BoneOffset = ReadU32(data, p + SpineGpuOffsets.PathAttBoneOffset),
+                        BoneCount = ReadU32(data, p + SpineGpuOffsets.PathAttBoneCount),
+                        VertexOffset = ReadU32(data, p + SpineGpuOffsets.PathAttVertexOffset),
+                        VertexFloatCount = ReadU32(data, p + SpineGpuOffsets.PathAttVertexFloatCount),
+                        LengthOffset = ReadU32(data, p + SpineGpuOffsets.PathAttLengthOffset),
+                        LengthCount = ReadU32(data, p + SpineGpuOffsets.PathAttLengthCount),
+                        NameOffset = ReadU32(data, p + SpineGpuOffsets.PathAttNameOffset),
+                    };
+                    ushort paKnown = (ushort)(SpineGpuPathAttachmentFlags.Closed |
+                                                   SpineGpuPathAttachmentFlags.ConstantSpeed |
+                                                   SpineGpuPathAttachmentFlags.Weighted);
+                    if (((ushort)a.Flags & (ushort)~paKnown) != 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i +
+                            " 条 path 附件的 flags 有未知位（" + a.Flags + "）");
+                    }
+                    if (a.Pad != 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 path 附件的 pad 不是 0");
+                    }
+                    if (a.SlotIndex >= h.SlotCount)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 path 附件的槽位下标 " +
+                            a.SlotIndex + " 超出槽位数 " + h.SlotCount);
+                    }
+                    Action<uint, uint, uint, string> inPool = (first, count, pool, what) =>
+                    {
+                        if ((ulong)first + count > pool)
+                        {
+                            throw new SpineGpuContainerException("container: 第 " + i + " 条 path 附件的 " + what +
+                                " 区间 [ " + first + ", " + ((ulong)first + count) + " ) 超出池（" + pool + "）");
+                        }
+                    };
+                    inPool(a.BoneOffset, a.BoneCount, boneN, "骨骼");
+                    inPool(a.VertexOffset, a.VertexFloatCount, vertN, "顶点");
+                    inPool(a.LengthOffset, a.LengthCount, lenN, "lengths");
+                    // lengths 条数 = 点数 / 3（SkeletonBinary.cpp:550）—— Bake 侧也是这个式子。
+                    if (a.LengthCount != a.VertexCount / 3u)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 path 附件的 lengths 有 " +
+                            a.LengthCount + " 条，但点数 " + a.VertexCount + " 对应 " +
+                            (a.VertexCount / 3u) + " 条");
+                    }
+                    asset.PathAttachments.Add(a);
+                    off += SpineGpuConstants.PathAttachmentSize;
+                }
+                asset.PathBonePool = new ushort[boneN];
+                for (uint i = 0; i < boneN; ++i)
+                {
+                    ushort b = ReadU16(data, (int)(pao + off));
+                    if (b >= h.BoneCount)
+                    {
+                        throw new SpineGpuContainerException("container: path 附件的骨骼池第 " + i + " 项 " +
+                            b + " 超出骨骼数 " + h.BoneCount);
+                    }
+                    asset.PathBonePool[i] = b;
+                    off += 2;
+                }
+                asset.PathVertices = new float[vertN];
+                for (uint i = 0; i < vertN; ++i)
+                {
+                    asset.PathVertices[i] = ReadF32(data, (int)(pao + off));
+                    off += 4;
+                }
+                asset.PathLengths = new float[lenN];
+                for (uint i = 0; i < lenN; ++i)
+                {
+                    asset.PathLengths[i] = ReadF32(data, (int)(pao + off));
+                    off += 4;
+                }
+            }
+
+            // ---- 交叉检查：path 约束的 PathIndex 必须落在 chunk 20 里 ----
+            // ⚠️ NoPathAttachment 是合法的（"这个槽位上没有 path 附件"），而 0 **也**是
+            //    合法的下标 ⇒ 不能拿"非 0"判断，必须显式比 NoPathAttachment。
+            for (int i = 0; i < asset.Paths.Count; ++i)
+            {
+                var pcx = asset.Paths[i];
+                if (pcx.PathIndex != SpineGpuConstants.NoPathAttachment &&
+                    pcx.PathIndex >= (uint)asset.PathAttachments.Count)
+                {
+                    throw new SpineGpuContainerException("container: 第 " + i + " 条 path 约束的 path_index " +
+                        pcx.PathIndex + " 越界（chunk 20 只有 " + asset.PathAttachments.Count + " 条）");
+                }
+            }
+
+            // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 槽位 setup 附件名 → 附件名 →
+            //              图集页名 → 动画名 → path 附件名（v11）→ 动画附件名 ----
             if (TryGet(byId, (uint)SpineGpuChunkId.Strings, out uint sto, out uint sts))
             {
                 var all = SplitCStrings(data, (int)sto, (int)sts);
@@ -649,6 +1065,14 @@ namespace ZEngine.SpineGpu
                 // 动画名：数量 = chunk 11 的条目数（header 里没有 anim_count 的位置 ——
                 // 64 B 的 header 早就排满了，而定长块的大小本身就是计数）。
                 Take(all, (uint)asset.Anims.Count, asset.AnimNames, ref i);
+                // v11 path 附件名：数量 = chunk 20 的条目数（一一对应，不去重）。
+                Take(all, (uint)asset.PathAttachments.Count, asset.PathAttachmentNames, ref i);
+                if (asset.PathAttachmentNames.Count != asset.PathAttachments.Count)
+                {
+                    throw new SpineGpuContainerException("container: path 附件名只有 " +
+                        asset.PathAttachmentNames.Count + " 条，但 chunk 20 有 " +
+                        asset.PathAttachments.Count + " 条");
+                }
                 // 剩下的全是"动画附件名"。**只按偏移访问**，所以不需要知道有几条 ⇒
                 // 不校验"是否刚好读完"（多出来的是合法数据，不是错误）。
                 while (i < all.Count)
@@ -664,6 +1088,16 @@ namespace ZEngine.SpineGpu
                         throw new SpineGpuContainerException(
                             "container: 第 " + k + " 个动画的 name_offset " + asset.Anims[k].NameOffset +
                             " 超出字符串块（大小 " + sts + "）");
+                    }
+                }
+                // path 附件的名字同理：指到骨骼名那组不报错，只是"换装后摆错了曲线"。
+                for (int k = 0; k < asset.PathAttachments.Count; ++k)
+                {
+                    if (asset.PathAttachments[k].NameOffset >= sts)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + k + " 条 path 附件的 name_offset " +
+                            asset.PathAttachments[k].NameOffset + " 超出字符串块（大小 " + sts + "）");
                     }
                 }
             }
@@ -819,6 +1253,158 @@ namespace ZEngine.SpineGpu
                 Add((uint)SpineGpuChunkId.SlotSetup, b, A4);
             }
 
+            // ---- v11：约束（id 18 / 19 / 20），紧跟槽位 setup 后面 ----
+            // 落盘顺序必须与 C++ 一致（1,2,10,11..16,17,18,19,20,3,21,22,4,5,9,6,7,8）。
+            bool hasConstraints = asset.Iks.Count > 0 || asset.Transforms.Count > 0 || asset.Paths.Count > 0;
+            if (hasConstraints)
+            {
+                int poolN = asset.ConstraintBonePool.Length;
+                int total = (int)SpineGpuConstants.ConstraintHeaderSize
+                            + asset.Iks.Count * (int)SpineGpuConstants.IkConstraintSize
+                            + asset.Transforms.Count * (int)SpineGpuConstants.TransformConstraintSize
+                            + asset.Paths.Count * (int)SpineGpuConstants.PathConstraintSize
+                            + poolN * 2;
+                var b = new byte[total];
+                WriteU32(b, 0, (uint)asset.Iks.Count);
+                WriteU32(b, 4, (uint)asset.Transforms.Count);
+                WriteU32(b, 8, (uint)asset.Paths.Count);
+                WriteU32(b, 12, (uint)poolN);
+                int o = (int)SpineGpuConstants.ConstraintHeaderSize;
+                for (int i = 0; i < asset.Iks.Count; ++i)
+                {
+                    var k = asset.Iks[i];
+                    WriteU16(b, o + SpineGpuOffsets.IkOrder, k.Order);
+                    WriteU16(b, o + SpineGpuOffsets.IkBoneCount, k.BoneCount);
+                    WriteU32(b, o + SpineGpuOffsets.IkBoneFirst, k.BoneFirst);
+                    WriteU32(b, o + SpineGpuOffsets.IkTarget, k.Target);
+                    WriteF32(b, o + SpineGpuOffsets.IkMix, k.Mix);
+                    WriteU16(b, o + SpineGpuOffsets.IkBendDir, (ushort)k.BendDir);
+                    WriteU16(b, o + SpineGpuOffsets.IkFlags, (ushort)k.Flags);
+                    o += (int)SpineGpuConstants.IkConstraintSize;
+                }
+                for (int i = 0; i < asset.Transforms.Count; ++i)
+                {
+                    var t = asset.Transforms[i];
+                    WriteU16(b, o + SpineGpuOffsets.TfOrder, t.Order);
+                    WriteU16(b, o + SpineGpuOffsets.TfBoneCount, t.BoneCount);
+                    WriteU32(b, o + SpineGpuOffsets.TfBoneFirst, t.BoneFirst);
+                    WriteU32(b, o + SpineGpuOffsets.TfTarget, t.Target);
+                    WriteF32(b, o + SpineGpuOffsets.TfOffsetRotation, t.OffsetRotation);
+                    WriteF32(b, o + SpineGpuOffsets.TfOffsetX, t.OffsetX);
+                    WriteF32(b, o + SpineGpuOffsets.TfOffsetY, t.OffsetY);
+                    WriteF32(b, o + SpineGpuOffsets.TfOffsetScaleX, t.OffsetScaleX);
+                    WriteF32(b, o + SpineGpuOffsets.TfOffsetScaleY, t.OffsetScaleY);
+                    WriteF32(b, o + SpineGpuOffsets.TfOffsetShearY, t.OffsetShearY);
+                    WriteF32(b, o + SpineGpuOffsets.TfRotateMix, t.RotateMix);
+                    WriteF32(b, o + SpineGpuOffsets.TfTranslateMix, t.TranslateMix);
+                    WriteF32(b, o + SpineGpuOffsets.TfScaleMix, t.ScaleMix);
+                    WriteF32(b, o + SpineGpuOffsets.TfShearMix, t.ShearMix);
+                    WriteU16(b, o + SpineGpuOffsets.TfFlags, (ushort)t.Flags);
+                    WriteU16(b, o + SpineGpuOffsets.TfPad, t.Pad);
+                    o += (int)SpineGpuConstants.TransformConstraintSize;
+                }
+                for (int i = 0; i < asset.Paths.Count; ++i)
+                {
+                    var pc = asset.Paths[i];
+                    WriteU16(b, o + SpineGpuOffsets.PathOrder, pc.Order);
+                    WriteU16(b, o + SpineGpuOffsets.PathBoneCount, pc.BoneCount);
+                    WriteU32(b, o + SpineGpuOffsets.PathBoneFirst, pc.BoneFirst);
+                    WriteU32(b, o + SpineGpuOffsets.PathTargetSlot, pc.TargetSlot);
+                    b[o + SpineGpuOffsets.PathPositionMode] = (byte)pc.PositionMode;
+                    b[o + SpineGpuOffsets.PathSpacingMode] = (byte)pc.SpacingMode;
+                    b[o + SpineGpuOffsets.PathRotateMode] = (byte)pc.RotateMode;
+                    b[o + SpineGpuOffsets.PathPad] = pc.Pad;
+                    WriteF32(b, o + SpineGpuOffsets.PathOffsetRotation, pc.OffsetRotation);
+                    WriteF32(b, o + SpineGpuOffsets.PathPosition, pc.Position);
+                    WriteF32(b, o + SpineGpuOffsets.PathSpacing, pc.Spacing);
+                    WriteF32(b, o + SpineGpuOffsets.PathRotateMix, pc.RotateMix);
+                    WriteF32(b, o + SpineGpuOffsets.PathTranslateMix, pc.TranslateMix);
+                    WriteU32(b, o + SpineGpuOffsets.PathIndex, pc.PathIndex);
+                    o += (int)SpineGpuConstants.PathConstraintSize;
+                }
+                for (int i = 0; i < poolN; ++i)
+                {
+                    WriteU16(b, o, asset.ConstraintBonePool[i]);
+                    o += 2;
+                }
+                Add((uint)SpineGpuChunkId.ConstraintSetup, b, A4);
+            }
+
+            // ⚠️ 只在**有约束**时落 chunk 19：无约束时 updateCache 的结果恒等于
+            //    0..bone_count-1（parent < index ⇒ 正向遍历即拓扑序），写下来纯属冗余。
+            //    读端按同一条规则重建 ⇒ 读→写能逐字节相同。
+            if (hasConstraints)
+            {
+                int total = (int)SpineGpuConstants.UpdateOrderHeaderSize
+                            + asset.UpdateSteps.Count * (int)SpineGpuConstants.UpdateStepSize
+                            + asset.UpdateReset.Length * 2;
+                var b = new byte[total];
+                WriteU32(b, 0, (uint)asset.UpdateSteps.Count);
+                WriteU32(b, 4, (uint)asset.UpdateReset.Length);
+                int o = (int)SpineGpuConstants.UpdateOrderHeaderSize;
+                for (int i = 0; i < asset.UpdateSteps.Count; ++i)
+                {
+                    var s = asset.UpdateSteps[i];
+                    b[o + SpineGpuOffsets.StepKind] = (byte)s.Kind;
+                    b[o + SpineGpuOffsets.StepPad] = s.Pad;
+                    WriteU16(b, o + SpineGpuOffsets.StepIndex, s.Index);
+                    o += (int)SpineGpuConstants.UpdateStepSize;
+                }
+                for (int i = 0; i < asset.UpdateReset.Length; ++i)
+                {
+                    WriteU16(b, o, asset.UpdateReset[i]);
+                    o += 2;
+                }
+                Add((uint)SpineGpuChunkId.UpdateOrder, b, A4);
+            }
+
+            if (asset.PathAttachments.Count > 0)
+            {
+                int total = (int)SpineGpuConstants.PathAttHeaderSize
+                            + asset.PathAttachments.Count * (int)SpineGpuConstants.PathAttachmentSize
+                            + asset.PathBonePool.Length * 2
+                            + asset.PathVertices.Length * 4 + asset.PathLengths.Length * 4;
+                var b = new byte[total];
+                WriteU32(b, 0, (uint)asset.PathAttachments.Count);
+                WriteU32(b, 4, (uint)asset.PathBonePool.Length);
+                WriteU32(b, 8, (uint)asset.PathVertices.Length);
+                WriteU32(b, 12, (uint)asset.PathLengths.Length);
+                int o = (int)SpineGpuConstants.PathAttHeaderSize;
+                for (int i = 0; i < asset.PathAttachments.Count; ++i)
+                {
+                    var a = asset.PathAttachments[i];
+                    WriteU16(b, o + SpineGpuOffsets.PathAttSlotIndex, a.SlotIndex);
+                    WriteU16(b, o + SpineGpuOffsets.PathAttSkinIndex, a.SkinIndex);
+                    WriteU16(b, o + SpineGpuOffsets.PathAttFlags, (ushort)a.Flags);
+                    WriteU16(b, o + SpineGpuOffsets.PathAttPad, a.Pad);
+                    WriteU32(b, o + SpineGpuOffsets.PathAttVertexCount, a.VertexCount);
+                    WriteU32(b, o + SpineGpuOffsets.PathAttBoneOffset, a.BoneOffset);
+                    WriteU32(b, o + SpineGpuOffsets.PathAttBoneCount, a.BoneCount);
+                    WriteU32(b, o + SpineGpuOffsets.PathAttVertexOffset, a.VertexOffset);
+                    WriteU32(b, o + SpineGpuOffsets.PathAttVertexFloatCount, a.VertexFloatCount);
+                    WriteU32(b, o + SpineGpuOffsets.PathAttLengthOffset, a.LengthOffset);
+                    WriteU32(b, o + SpineGpuOffsets.PathAttLengthCount, a.LengthCount);
+                    WriteU32(b, o + SpineGpuOffsets.PathAttNameOffset, a.NameOffset);
+                    o += (int)SpineGpuConstants.PathAttachmentSize;
+                }
+                for (int i = 0; i < asset.PathBonePool.Length; ++i)
+                {
+                    WriteU16(b, o, asset.PathBonePool[i]);
+                    o += 2;
+                }
+                for (int i = 0; i < asset.PathVertices.Length; ++i)
+                {
+                    WriteF32(b, o, asset.PathVertices[i]);
+                    o += 4;
+                }
+                for (int i = 0; i < asset.PathLengths.Length; ++i)
+                {
+                    WriteF32(b, o, asset.PathLengths[i]);
+                    o += 4;
+                }
+                Add((uint)SpineGpuChunkId.PathAttachments, b, A4);
+            }
+
             Add((uint)SpineGpuChunkId.VertexBuffer, asset.VertexBuffer, A8);
             // 影响流：两条**紧跟**顶点块写（落盘顺序必须与 C++ 一致，否则跨语言对拍会红）。
             Add((uint)SpineGpuChunkId.InfluenceBind, F32Blob(asset.InfluenceBind), A8);
@@ -958,6 +1544,7 @@ namespace ZEngine.SpineGpu
         // 走 int32 的位模式而不是 BitConverter.ToSingle(...) —— 后者按**本机**字节序，
         // 在大端机上会静默反着读。（netstandard2.1 没有 BinaryPrimitives.ReadSingle*，
         // 所以先读 int32 再 Int32BitsToSingle —— 位模式不变，纯 reinterpret。）
+        private static byte ReadU8(byte[] b, int at) => b[at];
         private static float ReadF32(byte[] b, int at) =>
             BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(new ReadOnlySpan<byte>(b, at, 4)));
 
@@ -1020,6 +1607,9 @@ namespace ZEngine.SpineGpu
             // header / 附件记录数反推，这两组里只有"动画名"有计数（= 动画数），
             // 动画附件名只按偏移访问。顺序一变，name_offset 全部错位且不报错。
             Put(a.AnimNames);
+            // v11：path 附件名必须排在"动画附件名"**前面** —— 后者是"剩下的全归它"，
+            // 没有计数 ⇒ 排在它后面的组读端切不出来。
+            Put(a.PathAttachmentNames);
             Put(a.AnimAttachmentNames);
             return ms.ToArray();
         }

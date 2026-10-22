@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -33,6 +34,7 @@ int g_failed = 0;
 // 同一批检查跑两遍时（如 .skel 的 nonessential 开/关）用来区分是哪一轮失败，
 // 免得每条消息都要手写前缀。
 std::string g_prefix;
+bool g_verbose_v11 = (std::getenv("ZENGINE_SPINE_V11_DUMP") != nullptr);
 
 void Check(bool cond, const char* what)
 {
@@ -90,6 +92,17 @@ const char* kAtlas = "page0.png\n"
 //    "全是默认色"的往返什么也挡不住（纯白读回来还是纯白，纯白与 setup 白看不出区别）。
 //    dark 只写 6 位十六进制：json 里的 dark 只有 **rgb** 三个分量
 //    （SkeletonJson.cpp:227-230），alpha 参考实现写死 1（:230）。
+//
+// ---- 约束（v11 chunk 18-20）：与 BuildSkelFixture(with_constraints=true) 逐字段等价 ----
+// 三条约束的字段**全部**取非默认值，且 order 交错（transform=0, path=1, ik=2）：
+//   * 默认值全对也能让 round-trip 通过 ⇒ 只有非默认才能抓到"字段错位"；
+//   * order 不等于数组下标 ⇒ 能抓到"把 order 当下标"的写法（参考实现是按
+//     i = 0..N-1 逐个找 order == i 的那条，找不到就**静默跳过**）；
+//   * IK 挂 **2** 根骨骼 ⇒ 走到 `sortIkConstraint` 里 `constrained.size() > 1`
+//     那条复位分支（单骨骼时 `_updateCacheReset` 恒空，测不出来）；
+//   * path 的三个 mode 全取**非默认**（fixed / percent / chainScale）⇒
+//     能抓到"mode 写反"或"缺 key 时默认值猜错"（json 缺 key 是 percent/length/
+//     tangent，认不出的串却落在构造函数的 Fixed/Length/Tangent —— 两者不一致）。
 const char* kSkeleton = R"({
   "skeleton": { "spine": "3.8.99" },
   "bones": [
@@ -103,9 +116,27 @@ const char* kSkeleton = R"({
     { "name": "s0", "bone": "root", "attachment": "quad" },
     { "name": "s1", "bone": "hip", "attachment": "mesh", "color": "80c0ff40", "dark": "204060" }
   ],
+  "ik": [
+    { "name": "ik1", "order": 2, "bones": [ "root", "hip" ], "target": "hip",
+      "mix": 0.75, "bendPositive": false, "compress": true, "stretch": false, "uniform": true }
+  ],
+  "transform": [
+    { "name": "tf1", "order": 0, "bones": [ "hip" ], "target": "root",
+      "local": false, "relative": true, "rotation": 11, "x": 2, "y": -3,
+      "scaleX": 0.5, "scaleY": 1.5, "shearY": -7,
+      "rotateMix": 0.25, "translateMix": 0.5, "scaleMix": 0.75, "shearMix": 0.125 }
+  ],
+  "path": [
+    { "name": "path1", "order": 1, "bones": [ "hip" ], "target": "s0",
+      "positionMode": "fixed", "spacingMode": "percent", "rotateMode": "chainScale",
+      "rotation": 30, "position": 0.4, "spacing": 0.6,
+      "rotateMix": 0.3, "translateMix": 0.7 }
+  ],
   "skins": {
     "default": {
-      "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 } },
+      "s0": { "quad": { "x": 0, "y": 0, "width": 64, "height": 32, "rotation": 0 },
+              "path1": { "type": "path", "closed": false, "constantSpeed": false,
+                         "vertexCount": 3, "vertices": [ 0,0, 10,0, 20,10 ], "lengths": [ 1 ] } },
       "s1": { "mesh": {
         "type": "mesh",
         "uvs": [ 0,0, 1,0, 1,1, 0,1 ],
@@ -290,7 +321,7 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
                       // v10：槽位 s1 带**非默认**的 color 与 dark（与 json 夹具 kSkeleton 对齐）。
                       // 默认 false —— 夹具的颜色会进 header.flags（kUsesTintBlack），
                       // 而裁剪 / deform 那几组用例要比"skel↔json flags 相同"，不能随手开。
-                      bool slot_colors = false)
+                      bool slot_colors = false, bool with_constraints = false)
 {
     SkelWriter w;
 
@@ -404,10 +435,73 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         w.Varint(0);
     }
 
-    // ---- 约束：全 0 ----
-    w.Varint(0);            // IK
-    w.Varint(0);            // transform
-    w.Varint(0);            // path
+    // ---- 约束 setup（chunk 18，v11）----
+    // with_constraints 时与 json 夹具 kSkeleton 的 ik / transform / path 三段
+    // **逐字段等价**（含 order 交错 tf=0, path=1, ik=2），两边烘焙出的容器必须
+    // 逐字节相同 —— 这是二进制侧字段顺序 / sbyte / varint 的最强检查。
+    if (!with_constraints)
+    {
+        w.Varint(0);            // IK
+        w.Varint(0);            // transform
+        w.Varint(0);            // path
+    }
+    else
+    {
+        // ---- IK：name, order, bones[], target, mix, bendDirection(sbyte),
+        //          compress, stretch, uniform（SkeletonBinary.cpp:192-208）----
+        w.Varint(1);
+        w.Str("ik1");
+        w.Varint(2);            // order
+        w.Varint(2);            // bones 条数
+        w.Varint(0);            // root
+        w.Varint(1);            // hip
+        w.Varint(1);            // target = hip
+        w.F(0.75f);             // mix
+        w.U8(static_cast<uint8_t>(static_cast<int8_t>(-1)));   // bendDirection（**sbyte**）
+        w.Bool(true);           // compress
+        w.Bool(false);          // stretch
+        w.Bool(true);           // uniform
+
+        // ---- transform：name, order, bones[], target, local, relative,
+        //          rotation, x, y, scaleX, scaleY, shearY,
+        //          rotateMix, translateMix, scaleMix, shearMix（:217-237）----
+        w.Varint(1);
+        w.Str("tf1");
+        w.Varint(0);            // order
+        w.Varint(1);            // bones 条数
+        w.Varint(1);            // hip
+        w.Varint(0);            // target = root
+        w.Bool(false);          // local
+        w.Bool(true);           // relative
+        w.F(11.0f);             // offsetRotation
+        w.F(2.0f);              // offsetX
+        w.F(-3.0f);             // offsetY
+        w.F(0.5f);              // offsetScaleX
+        w.F(1.5f);              // offsetScaleY
+        w.F(-7.0f);             // offsetShearY
+        w.F(0.25f);             // rotateMix
+        w.F(0.5f);              // translateMix
+        w.F(0.75f);             // scaleMix
+        w.F(0.125f);            // shearMix
+
+        // ---- path：name, order, bones[], target(**槽位**), positionMode,
+        //          spacingMode, rotateMode, rotation, position, spacing,
+        //          rotateMix, translateMix（:239-257）----
+        w.Varint(1);
+        w.Str("path1");
+        w.Varint(1);            // order
+        w.Varint(1);            // bones 条数
+        w.Varint(1);            // hip
+        w.Varint(0);            // target = **槽位** s0
+        w.Varint(0);            // positionMode  = fixed
+        w.Varint(2);            // spacingMode   = percent
+        w.Varint(2);            // rotateMode    = chainScale
+        w.F(30.0f);             // offsetRotation
+        w.F(0.4f);              // position
+        w.F(0.6f);              // spacing
+        w.F(0.3f);              // rotateMix
+        w.F(0.7f);              // translateMix
+    }
 
     // ---- default skin ----
     w.Varint(slot_total);   // skin 里涉及的槽位数（本夹具每个槽位都有附件）
@@ -1107,9 +1201,12 @@ bool DumpContainers(const SpineAtlas& atlas, const std::string& dir)
     std::vector<Case> cases;
     // baseline：json 带完整动画 ⇒ .skel 那一份也必须带（with_animation=true），
     // 否则两边烘焙出的容器会在 chunk 11-16 上分叉，而"少几个 chunk"不报错。
+    // baseline：json 带完整动画 ⇒ .skel 那一份也必须带（with_animation=true），
+    // 否则两边烘焙出的容器会在 chunk 11-16 上分叉，而"少几个 chunk"不报错。
+    // v11 起同样要求 with_constraints / with_path 两边都开 —— chunk 18/19/20 也一样。
     cases.push_back({"baseline", kSkeleton,
                      BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, false, true, 10, false,
-                                      2, 1, false, 3, false, false, "mesh", true, true)});
+                                      2, 1, false, 3, false, true, "mesh", true, true, true)});
     cases.push_back({"linked_mesh", kSkeletonLinked, BuildSkelFixture(false, true)});
     cases.push_back({"two_skins", kSkeletonTwoSkins, BuildSkelFixture(false, false, "3.8.99", false, "mesh", true)});
     // kSkeletonDeform 带 %DEFORMFIELD% 占位符 ⇒ 只落 .skel（json 那条路径在套件里已经测过）
@@ -1605,8 +1702,10 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    // 11 个 chunk：strings / slot_bone / bone_setup / vertex / 影响流 21,22 / uv / index /
-    //              draw_items / attachments / atlas_pages（夹具没有 clip_data）
+    // 21 个 chunk：strings / slot_bone / bone_setup / 动画 11-16 / 槽位 setup 17 /
+    //              约束 setup 18 / 执行顺序 19 / path 几何 20 /
+    //              vertex / 影响流 21,22 / uv / index / draw_items / attachments / atlas_pages
+    //              （夹具没有 clip_data = 9）
     //
     // 不写死总字节数：总长里含对齐填充，填充规则一改常数就失效，而它失效时并不代表出错。
     // 真正该钉死的是 chunk 表本身 —— 净载荷大小与填充无关。
@@ -1619,11 +1718,22 @@ int main(int argc, char** argv)
         }
         return n;
     };
+    // v11：夹具带约束 ⇒ chunk 18 / 19 都落盘；带 path 附件 ⇒ chunk 20 落盘。
+    // 落盘条件与写入端一致（`has_constraints` / `!path_attachments.empty()`），
+    // 但这里**不**用条件表达式去算 —— 而是先断言夹具确实带约束，再按"全落"求和：
+    // 万一哪天夹具被改成不带约束，这里会先红，而不是悄悄少算三项。
+    const bool has_constraints =
+        !asset.iks.empty() || !asset.transforms.empty() || !asset.paths.empty();
+    const bool has_path_att = !asset.path_attachments.empty();
+    Check(has_constraints, "夹具带约束（否则 v11 的 chunk 18 / 19 不落盘，本段断言失去意义）");
+    Check(has_path_att, "夹具带 path 附件（否则 v11 的 chunk 20 不落盘，本段断言失去意义）");
+
     const long long want_payload =
         CStrBytes(asset.bone_names) + CStrBytes(asset.skin_names) + CStrBytes(asset.slot_names) +
         CStrBytes(asset.attachment_names) + CStrBytes(asset.atlas_page_names) +
         CStrBytes(asset.slot_setup_attachment_names) +                                // id=1（v10 组）
         CStrBytes(asset.anim_names) + CStrBytes(asset.anim_attachment_names) +        // id=1 strings
+        CStrBytes(asset.path_attachment_names) +                                      // id=1（v11 组）
         static_cast<long long>(asset.slot_bone.size()) * 2LL +                       // id=2
         static_cast<long long>(asset.bones.size()) *
             static_cast<long long>(sizeof(SpineGpuBone)) +                          // id=10（36 B/骨）
@@ -1638,6 +1748,19 @@ int main(int argc, char** argv)
         static_cast<long long>(asset.timeline_payload.size()) +                       // id=16（变长净载荷）
         static_cast<long long>(asset.slots.size()) *
             static_cast<long long>(sizeof(SpineGpuSlot)) +                             // id=17（40 B/槽）
+        (SpineGpuConstants::kConstraintHeaderSize +                                   // id=18（v11）
+         static_cast<long long>(asset.iks.size()) * sizeof(SpineGpuIkConstraint) +
+         static_cast<long long>(asset.transforms.size()) * sizeof(SpineGpuTransformConstraint) +
+         static_cast<long long>(asset.paths.size()) * sizeof(SpineGpuPathConstraint) +
+         static_cast<long long>(asset.constraint_bone_pool.size()) * 2LL) +
+        (SpineGpuConstants::kUpdateOrderHeaderSize +                                  // id=19（v11）
+         static_cast<long long>(asset.update_steps.size()) * sizeof(SpineGpuUpdateStep) +
+         static_cast<long long>(asset.update_reset.size()) * 2LL) +
+        (SpineGpuConstants::kPathAttHeaderSize +                                      // id=20（v11）
+         static_cast<long long>(asset.path_attachments.size()) * sizeof(SpineGpuPathAttachment) +
+         static_cast<long long>(asset.path_bone_pool.size()) * 2LL +
+         static_cast<long long>(asset.path_vertices.size()) * 4LL +
+         static_cast<long long>(asset.path_lengths.size()) * 4LL) +
         static_cast<long long>(asset.vertex_buffer.size()) +                         // id=3
         static_cast<long long>(asset.influence_bind.size()) * 4LL +                  // id=21
         static_cast<long long>(asset.influence_bone.size()) *
@@ -1656,9 +1779,9 @@ int main(int argc, char** argv)
                (static_cast<uint32_t>(bytes[off + 2]) << 16) | (static_cast<uint32_t>(bytes[off + 3]) << 24);
     };
     const uint32_t nchunk = RdU32(offsetof(SpineGpuHeader, chunk_count));
-    CheckEq(static_cast<long long>(nchunk), 18,
-            "字节流里 chunk_count = 18（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10，"
-            "v9 多了动画 11-16，v10 多了槽位 setup 17）");
+    CheckEq(static_cast<long long>(nchunk), 21,
+            "字节流里 chunk_count = 21（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10，"
+            "v9 多了动画 11-16，v10 多了槽位 setup 17，v11 多了约束 setup 18 / 执行顺序 19 / path 几何 20）");
 
     long long payload_sum = 0;
     long long last_end = 0;
@@ -1672,9 +1795,10 @@ int main(int argc, char** argv)
         const uint32_t sz = RdU32(at + 8);
         // ⚠️ 顺序**不是** id 升序：影响流（21 / 22）紧跟顶点块，9（裁剪）夹在 5 与 6 之间。
         // 这是历史顺序，不是设计 —— 但 C# 必须照抄，否则跨语言对拍会红。
-        const uint32_t kExpectedIds[] = {1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 3, 21, 22, 4, 5, 6, 7, 8};
+        const uint32_t kExpectedIds[] = {1,  2,  10, 11, 12, 13, 14, 15, 16, 17, 18,
+                                         19, 20, 3,  21, 22, 4,  5,  6,  7,  8};
         CheckEq(static_cast<long long>(id), static_cast<long long>(kExpectedIds[i]),
-                "chunk 表: id 顺序 = 1,2,10,11,12,13,14,15,16,17,3,21,22,4,5,6,7,8");
+                "chunk 表: id 顺序 = 1,2,10,11,12,13,14,15,16,17,18,19,20,3,21,22,4,5,6,7,8");
         CheckEq(static_cast<long long>(off % SpineGpuConstants::kChunkAlignment), 0, "chunk 表: 起点 4 B 对齐");
         if (id == static_cast<uint32_t>(SpineGpuChunkId::kChunkVertexBuffer) ||
             id == static_cast<uint32_t>(SpineGpuChunkId::kChunkInfluenceBind) ||
@@ -1717,7 +1841,7 @@ int main(int argc, char** argv)
     }
 
     CheckEq(back.header.magic, SpineGpuConstants::kMagic, "往返: magic");
-    CheckEq(back.header.chunk_count, 18, "往返: chunk_count = 18（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10，v9 多了动画 11-16，v10 多了槽位 setup 17）");
+    CheckEq(back.header.chunk_count, 21, "往返: chunk_count = 21（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10，v9 多了动画 11-16，v10 多了槽位 setup 17，v11 多了约束 setup 18 / 执行顺序 19 / path 几何 20）");
     CheckEq(back.header.bone_count, asset.header.bone_count, "往返: bone_count");
     CheckEq(back.header.slot_count, asset.header.slot_count, "往返: slot_count");
     CheckEq(back.header.draw_item_count, asset.header.draw_item_count, "往返: draw_item_count");
@@ -1774,7 +1898,42 @@ int main(int argc, char** argv)
     Check(back.beziers == asset.beziers, "往返: bezier 控制点逐值一致");
     Check(back.timeline_payload == asset.timeline_payload, "往返: 变长载荷逐字节一致");
     Check(back.anim_names == asset.anim_names, "往返: 动画名（字符串表第 7 组）");
-    Check(back.anim_attachment_names == asset.anim_attachment_names, "往返: 动画附件名（第 8 组）");
+    Check(back.anim_attachment_names == asset.anim_attachment_names, "往返: 动画附件名（第 9 组）");
+
+    // ---- 约束往返（chunk 18-20，v11）----
+    Check(back.iks == asset.iks, "往返: IK 约束逐字段一致");
+    Check(back.transforms == asset.transforms, "往返: transform 约束逐字段一致");
+    Check(back.paths == asset.paths, "往返: path 约束逐字段一致（含 path_index）");
+    Check(back.constraint_bone_pool == asset.constraint_bone_pool, "往返: 约束骨骼池一致");
+    Check(back.update_steps == asset.update_steps, "往返: 执行顺序逐字段一致");
+    Check(back.update_reset == asset.update_reset, "往返: 复位骨骼列表一致");
+    Check(back.path_attachments == asset.path_attachments, "往返: PathAttachment 记录逐字段一致");
+    Check(back.path_bone_pool == asset.path_bone_pool, "往返: path 骨骼池一致");
+    Check(back.path_vertices == asset.path_vertices, "往返: path 顶点逐值一致");
+    Check(back.path_lengths == asset.path_lengths, "往返: path lengths 逐值一致");
+    Check(back.path_attachment_names == asset.path_attachment_names,
+          "往返: path 附件名（字符串表第 8 组）");
+    // ⚠️ 光比"名字符合预期"不够 —— 必须验证 name_offset 真的**指到了那个名字**。
+    //    偏移算错（比如把 path 名那组排到动画附件名之后）字节照样自洽，
+    //    只有把偏移翻译回字符串才能抓到。
+    {
+        std::vector<uint8_t> blob;
+        std::vector<uint32_t> slot_off;
+        std::vector<uint32_t> anim_off;
+        std::vector<uint32_t> anim_att_off;
+        std::vector<uint32_t> path_att_off;
+        BuildSpineStringTable(back, blob, slot_off, anim_off, anim_att_off, path_att_off);
+        bool name_ok = asset.path_attachment_names.size() == 1 &&
+                       back.path_attachments.size() == 1 &&
+                       back.path_attachments[0].name_offset < blob.size() &&
+                       std::string(reinterpret_cast<const char*>(blob.data() +
+                                       back.path_attachments[0].name_offset)) == "path1";
+        Check(name_ok, "往返: path 附件的 name_offset 翻译回字符串 = 'path1'");
+        // 顺带钉住"槽位 setup 附件名"的组序没被 v11 插进来的新组挤歪
+        bool slot_name_ok = back.slot_setup_attachment_names.size() == 2 && slot_off.size() == 2 &&
+                            std::string(reinterpret_cast<const char*>(blob.data() + slot_off[1])) == "mesh";
+        Check(slot_name_ok, "往返: 槽位 setup 附件名偏移仍指向 'mesh'（v11 新组没挤歪旧组）");
+    }
 
     // ---- 槽位 setup 往返（chunk 17）----
     // ⚠️ 夹具里槽位 0 是**默认色**、槽位 1 起才带显式色与暗色 ——
@@ -1813,6 +1972,115 @@ int main(int argc, char** argv)
               "chunk 17: s1 的 setup 附件名偏移解析出来是 'mesh'");
     }
     CheckEq(static_cast<long long>(back.anims.size()), 2LL, "往返: 动画数 = 2");
+
+    // =================================================================
+    // v11 专项：path 约束的 `path_index` 到底指向哪条 PathAttachment
+    // -----------------------------------------------------------------
+    // 主夹具（kSkeleton）里槽位 s0 的 setup 附件是**区域** quad ⇒ 答案是
+    // kNoPathAttachment（约束在 setup 状态下不生效）。那只是半个用例 ——
+    // 另一半"setup 附件**就是** path"必须由下面这个最小夹具补上，
+    // 否则"恒等于 kNoPathAttachment"的实现也能通过全部断言。
+    // =================================================================
+    {
+        g_prefix = "[path_index] ";
+        const char* kPathSetup = R"({
+  "skeleton": { "spine": "3.8.99" },
+  "bones": [ { "name": "root" } ],
+  "slots": [ { "name": "s0", "bone": "root", "attachment": "p1" } ],
+  "path": [
+    { "name": "pc", "order": 0, "bones": [ "root" ], "target": "s0",
+      "positionMode": "fixed", "spacingMode": "length", "rotateMode": "tangent",
+      "rotation": 0, "position": 0, "spacing": 0, "rotateMix": 1, "translateMix": 1 }
+  ],
+  "skins": {
+    "default": {
+      "s0": {
+        "p1": { "type": "path", "closed": false, "constantSpeed": false,
+                "vertexCount": 3, "vertices": [ 0,0, 10,0, 20,10 ], "lengths": [ 1 ] },
+        "p2": { "type": "path", "closed": true, "constantSpeed": true,
+                "vertexCount": 3, "vertices": [ 0,0, 5,0, 7,7 ], "lengths": [ 1 ] }
+      }
+    }
+  }
+})";
+        SpineSourceSkeleton ps;
+        const SpineImportResult rps =
+            ParseSpineSkeletonJson(kPathSetup, std::string(kPathSetup).size(), &atlas, ps);
+        Check(rps.ok, "最小夹具（槽位 setup 附件是 path）解析成功");
+        if (!rps.ok)
+        {
+            std::printf("  error: %s\n", rps.error.c_str());
+        }
+        else
+        {
+            CheckEq(static_cast<long long>(ps.path_attachments.size()), 2LL,
+                    "同一个槽位挂两条 path 附件是**合法的**（不报错）");
+            SpineGpuAsset pa;
+            const SpineImportResult rpb = BakeSpineGpuAsset(ps, pa);
+            Check(rpb.ok, "bake 成功（不再因「两条 path」报错）");
+            if (!rpb.ok)
+            {
+                std::printf("  error: %s\n", rpb.error.c_str());
+            }
+            else
+            {
+                CheckEq(static_cast<long long>(pa.paths.size()), 1LL, "一条 path 约束");
+                if (pa.paths.size() == 1)
+                {
+                    // ⚠️ 判据是"名字 == 槽位 setup 附件名（p1）"，不是"第一条"。
+                    //    排序后 p1 在前，所以这条还**不能**区分两种实现 ——
+                    //    下面再验一次名字本身，两条合起来才钉得住。
+                    CheckEq(static_cast<long long>(pa.paths[0].path_index), 0LL,
+                            "path_index = 0（setup 附件 p1 是 path ⇒ 约束生效）");
+                }
+                CheckEq(static_cast<long long>(pa.path_attachment_names.size()), 2LL,
+                        "path 附件名 2 条（与记录一一对应）");
+                if (pa.path_attachment_names.size() == 2)
+                {
+                    Check(pa.path_attachment_names[0] == "p1" && pa.path_attachment_names[1] == "p2",
+                          "path 附件名按 (skin, slot, name) 排序 ⇒ p1 / p2");
+                }
+                if (pa.path_attachments.size() == 2)
+                {
+                    // p2 是 closed + constantSpeed ⇒ flags = 3。它**不是**约束用的那条，
+                    //    但必须完整落盘（换装 / attachment 时间轴可能切到它）。
+                    CheckEq(static_cast<long long>(pa.path_attachments[1].flags), 3LL,
+                            "p2 的 flags = closed|constantSpeed = 3（不是约束用的那条也要落盘）");
+                    Check(pa.path_vertices[6] == 0.0f && pa.path_vertices[8] == 5.0f &&
+                              pa.path_vertices[10] == 7.0f,
+                          "p2 的顶点独立成段（(0,0) (5,0) (7,7)）");
+                }
+                // 反过来：把槽位的 setup 附件换成不是 path 的名字 ⇒ kNoPathAttachment。
+                //   这条才是真正区分"按名字匹配"与"取第一条"的断言。
+                SpineSourceSkeleton ps2 = ps;
+                ps2.slots[0].attachment_name = "p2";
+                SpineGpuAsset pa2;
+                const SpineImportResult rpb2 = BakeSpineGpuAsset(ps2, pa2);
+                Check(rpb2.ok, "setup 附件改成 p2 后 bake 成功");
+                if (rpb2.ok && pa2.paths.size() == 1 && pa2.path_attachments.size() == 2)
+                {
+                    // ⚠️ 关键：setup = p2 时匹配到的是**第 1 条**而不是第 0 条。
+                    //    "取槽位上第一条 path"的实现在这里会给 0 ⇒ 抓得到。
+                    CheckEq(static_cast<long long>(pa2.paths[0].path_index), 1LL,
+                            "setup 附件 = p2 ⇒ path_index = 1（按名字匹配，不是取第一条）");
+                    // ⚠️ 关键：把 setup 附件改成一个**不存在**的名字，
+                    //    按名字匹配 ⇒ kNoPathAttachment；"取第一条"会给出 0。
+                    SpineSourceSkeleton ps3 = ps;
+                    ps3.slots[0].attachment_name = "not-a-path";
+                    SpineGpuAsset pa3;
+                    const SpineImportResult rpb3 = BakeSpineGpuAsset(ps3, pa3);
+                    Check(rpb3.ok, "setup 附件改成不存在的名字后 bake 成功");
+                    if (rpb3.ok && pa3.paths.size() == 1)
+                    {
+                        CheckEq(static_cast<long long>(pa3.paths[0].path_index),
+                                static_cast<long long>(SpineGpuConstants::kNoPathAttachment),
+                                "setup 附件不是任何 path ⇒ path_index = kNoPathAttachment（不是 0）");
+                    }
+                }
+            }
+        }
+        g_prefix.clear();
+    }
 
     // =================================================================
     // S3：槽位解算（color / twoColor / attachment / drawOrder）
@@ -2032,8 +2300,11 @@ int main(int argc, char** argv)
     {
         g_prefix = std::string("[nonessential=") + (nonessential ? "true" : "false") + "] ";
         const std::vector<uint8_t> skel =
+            // ⚠️ with_path / with_constraints **必须都开**：json 夹具 kSkeleton 带 path1 附件与
+            //    ik/tf/path 三条约束，.skel 少一样就会在 chunk 18/19/20 上分叉，
+            //    而"少几个 chunk"不报错 —— 只有这里的逐字段对拍能抓到。
             BuildSkelFixture(false, false, "3.8.99", nonessential, "mesh", false, false, true, 10, false,
-                             2, 1, false, 3, false, false, "mesh", true, true);
+                             2, 1, false, 3, false, true, "mesh", true, true, true);
         SpineSourceSkeleton skel_src;
         SpineImportResult rsk = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, skel_src);
         Check(rsk.ok, "skel 解析成功");
@@ -2150,6 +2421,101 @@ int main(int argc, char** argv)
                           "skel↔json: 绘制项逐字节相同");
                 }
             }
+
+            // ---- 约束（chunk 18-20，v11）：两条路径各解析一遍，必须**逐字段相同** ----
+            // ⚠️ 这里的价值不只是"值对"，而是**两条路径的编解码口径一致**：
+            //   · IK 的 bendDirection 在二进制里是 **sbyte**，json 里是 ±1；
+            //   · transform 的字段顺序两边不同（json 是 rotate/translate/scale/shear 四段嵌套，
+            //     二进制是 rotation,x,y,scaleX,scaleY,shearY 一串 float）；
+            //   · path 的三个 mode 在 json 里是**字符串**（缺键回落默认值），
+            //     二进制里是 varint 枚举 —— 任何一边口径错，这里就会红。
+#ifndef NDEBUG
+            if (g_verbose_v11)
+            {
+                for (int side = 0; side < 2; ++side)
+                {
+                    const SpineGpuAsset& a = side ? skel_asset : asset;
+                    std::printf("  [%s] iks=%zu tf=%zu path=%zu pool=%zu paa=%zu pv=%zu pl=%zu\n",
+                                side ? "skel" : "json", a.iks.size(), a.transforms.size(), a.paths.size(),
+                                a.constraint_bone_pool.size(), a.path_attachments.size(),
+                                a.path_vertices.size(), a.path_lengths.size());
+                    for (const SpineGpuIkConstraint& k : a.iks)
+                    {
+                        std::printf("    ik order=%u n=%u first=%u tgt=%u mix=%g bend=%d flags=%u\n",
+                                    k.order, k.bone_count, k.bone_first, k.target,
+                                    static_cast<double>(k.mix), k.bend_dir, k.flags);
+                    }
+                    for (const SpineGpuTransformConstraint& t : a.transforms)
+                    {
+                        std::printf("    tf order=%u n=%u first=%u tgt=%u rot=%g x=%g y=%g sx=%g sy=%g shy=%g"
+                                    " rm=%g tm=%g sm=%g shm=%g flags=%u pad=%u\n",
+                                    t.order, t.bone_count, t.bone_first, t.target,
+                                    static_cast<double>(t.offset_rotation), static_cast<double>(t.offset_x),
+                                    static_cast<double>(t.offset_y), static_cast<double>(t.offset_scale_x),
+                                    static_cast<double>(t.offset_scale_y), static_cast<double>(t.offset_shear_y),
+                                    static_cast<double>(t.rotate_mix), static_cast<double>(t.translate_mix),
+                                    static_cast<double>(t.scale_mix), static_cast<double>(t.shear_mix),
+                                    t.flags, t.pad);
+                    }
+                    for (const SpineGpuPathConstraint& p : a.paths)
+                    {
+                        std::printf("    path order=%u n=%u first=%u slot=%u pm=%u sm=%u rm=%u"
+                                    " rot=%g pos=%g sp=%g rmix=%g tmix=%g pidx=%u\n",
+                                    p.order, p.bone_count, p.bone_first, p.target_slot,
+                                    p.position_mode, p.spacing_mode, p.rotate_mode,
+                                    static_cast<double>(p.offset_rotation), static_cast<double>(p.position),
+                                    static_cast<double>(p.spacing), static_cast<double>(p.rotate_mix),
+                                    static_cast<double>(p.translate_mix), p.path_index);
+                    }
+                    for (const SpineGpuPathAttachment& p : a.path_attachments)
+                    {
+                        std::printf("    pAtt slot=%u skin=%u flags=%u pad=%u vc=%u bo=%u bc=%u vo=%u vfc=%u"
+                                    " lo=%u lc=%u\n",
+                                    p.slot_index, p.skin_index, p.flags, p.pad, p.vertex_count,
+                                    p.bone_offset, p.bone_count, p.vertex_offset, p.vertex_float_count,
+                                    p.length_offset, p.length_count);
+                    }
+                    std::printf("    steps=");
+                    for (const SpineGpuUpdateStep& s : a.update_steps)
+                    {
+                        std::printf("(%u,%u) ", s.kind, s.index);
+                    }
+                    std::printf(" reset=");
+                    for (uint16_t b : a.update_reset)
+                    {
+                        std::printf("%u ", b);
+                    }
+                    std::printf("\n");
+                }
+            }
+#endif
+            Check(skel_asset.iks == asset.iks, "skel↔json: IK 约束逐字段相同（含 sbyte bendDirection）");
+            Check(skel_asset.transforms == asset.transforms,
+                  "skel↔json: transform 约束逐字段相同（二进制 float 顺序 vs json 嵌套键）");
+            Check(skel_asset.paths == asset.paths,
+                  "skel↔json: path 约束逐字段相同（mode 枚举 vs json 字符串）");
+            Check(skel_asset.constraint_bone_pool == asset.constraint_bone_pool,
+                  "skel↔json: 约束骨骼池相同（IK 两条 / tf 一条 / path 一条，共 4）");
+            Check(skel_asset.update_steps == asset.update_steps,
+                  "skel↔json: 执行顺序逐字段相同（updateCache 的结果，跨三类约束的共享 order 排序）");
+            Check(skel_asset.update_reset == asset.update_reset, "skel↔json: 复位骨骼列表相同");
+            Check(skel_asset.path_attachments == asset.path_attachments,
+                  "skel↔json: PathAttachment 记录逐字段相同（含 skin_index）");
+            Check(skel_asset.path_bone_pool == asset.path_bone_pool, "skel↔json: path 骨骼池相同");
+            Check(skel_asset.path_vertices == asset.path_vertices,
+                  "skel↔json: path 顶点逐值相同（二进制 weighted 标记 vs json 的 verticesLength 推断）");
+            Check(skel_asset.path_lengths == asset.path_lengths,
+                  "skel↔json: path lengths 逐值相同（条数 = vertex_count / 3）");
+
+            // ⚠️ 三条"错了不报错"的坑，各钉一颗钉子（值本身由上面的逐字段比较保证，
+            //    这里钉的是**非空**：空数组时上面的比较会"双空相同"，什么都证明不了）。
+            Check(asset.iks.size() == 1 && asset.transforms.size() == 1 && asset.paths.size() == 1,
+                  "json: 三条约束各 1 条（否则上面的逐字段比较是「双空相同」，证明不了任何事）");
+            Check(asset.update_steps.size() > static_cast<size_t>(asset.header.bone_count),
+                  "json: 执行顺序步数 > 骨骼数（否则等于没把约束排进去，updateCache 是空的）");
+            Check(asset.path_attachments.size() == 1 && asset.path_vertices.size() == 6 &&
+                      asset.path_lengths.size() == 1,
+                  "json: path 几何非空（3 顶点 × 2 float = 6，lengths = 3/3 = 1）");
         }
         g_prefix.clear();
     };

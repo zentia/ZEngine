@@ -77,6 +77,50 @@ kTimelineNames = [
 # 逐值抄 CurveTimeline.cpp:42-44
 kCurveNames = ["linear", "stepped", "bezier"]
 
+# ---- v11 约束块（chunk 18 / 19 / 20）----
+kIkSize = 20               # SpineGpuIkConstraint
+kTfSize = 56               # SpineGpuTransformConstraint
+kPathSize = 40             # SpineGpuPathConstraint
+kStepSize = 4              # SpineGpuUpdateStep
+kPathAttSize = 40          # SpineGpuPathAttachment
+kConstraintHeader = 16     # ik_n, tf_n, path_n, pool_n
+kUpdateOrderHeader = 8     # step_n, reset_n
+kPathAttHeader = 16        # att_n, bone_n, vert_n, len_n
+kNoPathAttachment = 0xFFFFFFFF
+
+kOffIkOrder = 0
+kOffIkTarget = 8
+kOffIkBendDir = 16
+kOffIkFlags = 18
+kOffTfOrder = 0
+kOffPathOrder = 0
+
+kOffTfTarget = 8
+kOffTfFlags = 52
+kOffTfPad = 54
+
+kOffPathTargetSlot = 8
+kOffPathPositionMode = 12
+kOffPathSpacingMode = 13
+kOffPathRotateMode = 14
+kOffPathPad = 15
+kOffPathIndex = 36
+
+kOffStepKind = 0
+kOffStepPad = 1
+kOffStepIndex = 2
+
+kOffPathAttFlags = 4
+kOffPathAttPad = 6
+kOffPathAttVertexCount = 8
+kOffPathAttNameOffset = 36
+
+# 逐值抄 PathConstraintData.h:39-43
+kPositionModeNames = ["fixed", "percent"]
+kSpacingModeNames = ["length", "fixed", "percent"]
+kRotateModeNames = ["tangent", "chain", "chainScale"]
+kUpdateKindNames = ["bone", "ik", "transform", "path"]
+
 
 def Mb(n):
     return "%.2f MB" % (n / 1048576.0)
@@ -123,6 +167,39 @@ def main():
     deform_floats = 0
     attachment_frames = 0
     draworder_frames = 0
+
+    # ---- v11 约束 ----
+    # 要回答的三个问题：
+    #   1. 多少**资产**带约束（决定"容器里没有约束"会影响多大规模）；
+    #   2. 三类各多少条、order 是不是排列（数据坏了就静默丢约束）；
+    #   3. chunk 19 的步数 vs 骨骼数（约束到底给遍历表加了多少步）。
+    files_with_constraints = 0
+    ik_total = 0
+    tf_total = 0
+    path_total = 0
+    pool_total = 0
+    step_total = 0
+    reset_total = 0
+    # ⚠️ 步数只能跟"**带约束的**那些资产的骨骼数"比：chunk 19 只在有约束时落盘，
+    #    拿全部资产的骨骼数去比会得到"步数 < 骨骼数"的假结论（不是 bug，是分母错了）。
+    bone_total_with_constraints = 0
+    step_kind_hist = collections.Counter()
+    path_att_total = 0
+    path_att_bones = 0
+    path_vert_floats = 0
+    path_len_floats = 0
+    path_index_none = 0      # 槽位的 setup 附件不是 path ⇒ 约束在 setup 下不生效
+    path_index_set = 0
+    pos_mode_hist = collections.Counter()
+    spacing_mode_hist = collections.Counter()
+    rotate_mode_hist = collections.Counter()
+    ik_flag_hist = collections.Counter()
+    tf_flag_hist = collections.Counter()
+    path_att_flag_hist = collections.Counter()
+    bad_constraint_pad = 0
+    bad_bend_dir = 0
+    bad_step_kind = 0
+    order_not_permutation = 0
 
     for dirpath, _, filenames in os.walk(root):
         for fn in filenames:
@@ -250,6 +327,79 @@ def main():
                             n, = struct.unpack_from("<I", d, q)
                             q += 4 + n * 8
 
+            # ---- chunk 18：约束 setup ----
+            # 块头是 (ik_n, tf_n, path_n, pool_n)，三段定长数组紧随其后、再跟 u16 池。
+            if 18 in offsets:
+                co, csz = offsets[18]
+                ik_n, tf_n, path_n, pool_n = struct.unpack_from("<IIII", d, co)
+                files_with_constraints += 1
+                ik_total += ik_n
+                tf_total += tf_n
+                path_total += path_n
+                pool_total += pool_n
+                p = co + kConstraintHeader
+                orders = []
+                for _ in range(ik_n):
+                    orders.append(struct.unpack_from("<H", d, p + kOffIkOrder)[0])
+                    bend = struct.unpack_from("<h", d, p + kOffIkBendDir)[0]
+                    if bend not in (1, -1):
+                        bad_bend_dir += 1
+                    ik_flag_hist[struct.unpack_from("<H", d, p + kOffIkFlags)[0]] += 1
+                    p += kIkSize
+                for _ in range(tf_n):
+                    orders.append(struct.unpack_from("<H", d, p + kOffTfOrder)[0])
+                    tf_flag_hist[struct.unpack_from("<H", d, p + kOffTfFlags)[0]] += 1
+                    if struct.unpack_from("<H", d, p + kOffTfPad)[0] != 0:
+                        bad_constraint_pad += 1
+                    p += kTfSize
+                for _ in range(path_n):
+                    orders.append(struct.unpack_from("<H", d, p + kOffPathOrder)[0])
+                    pos_mode_hist[min(d[p + kOffPathPositionMode], 1)] += 1
+                    spacing_mode_hist[min(d[p + kOffPathSpacingMode], 2)] += 1
+                    rotate_mode_hist[min(d[p + kOffPathRotateMode], 2)] += 1
+                    if d[p + kOffPathPad] != 0:
+                        bad_constraint_pad += 1
+                    pi = struct.unpack_from("<I", d, p + kOffPathIndex)[0]
+                    if pi == kNoPathAttachment:
+                        path_index_none += 1
+                    else:
+                        path_index_set += 1
+                    p += kPathSize
+                # order 必须是 0..N-1 的排列（写端已校验；这里是"量出来的资产"再验一遍）
+                if sorted(orders) != list(range(len(orders))):
+                    order_not_permutation += 1
+
+            # ---- chunk 19：执行顺序 ----
+            if 19 in offsets:
+                uo, usz = offsets[19]
+                step_n, reset_n = struct.unpack_from("<II", d, uo)
+                bone_total_with_constraints += struct.unpack_from("<I", d, kOffBoneCount)[0]
+                step_total += step_n
+                reset_total += reset_n
+                for k in range(step_n):
+                    q = uo + kUpdateOrderHeader + k * kStepSize
+                    kind = d[q + kOffStepKind]
+                    if kind > 3:
+                        bad_step_kind += 1
+                    step_kind_hist[min(kind, 3)] += 1
+                    if d[q + kOffStepPad] != 0:
+                        bad_constraint_pad += 1
+
+            # ---- chunk 20：PathAttachment 几何 ----
+            if 20 in offsets:
+                ao, asz = offsets[20]
+                att_n, bone_n, vert_n, len_n = struct.unpack_from("<IIII", d, ao)
+                path_att_total += att_n
+                path_att_bones += bone_n
+                path_vert_floats += vert_n
+                path_len_floats += len_n
+                p = ao + kPathAttHeader
+                for _ in range(att_n):
+                    path_att_flag_hist[struct.unpack_from("<H", d, p + kOffPathAttFlags)[0]] += 1
+                    if struct.unpack_from("<H", d, p + kOffPathAttPad)[0] != 0:
+                        bad_constraint_pad += 1
+                    p += kPathAttSize
+
     if files == 0:
         print("目录里没有 .zspg：" + root)
         return 1
@@ -295,6 +445,68 @@ def main():
         print("有 setup 附件 : %d  %5.2f%%  （attachment 时间轴的复位基线）"
               % (slot_with_setup_attachment, 100.0 * slot_with_setup_attachment / slot_total))
         print("flags 未知位  : %d  （必须 0）" % bad_slot_flags)
+    print()
+
+    # ---- v11 约束块 ----
+    # 这三个 chunk 是"没有它动画就解算不出来"的第三类（前两类是 chunk 10 / 17）：
+    # 约束**每帧都跑**，与时间轴无关 ⇒ 量出"多少资产带约束"就是量出影响面。
+    print("---- v11 约束（chunk 18 / 19 / 20）----")
+    print("带约束的容器  : %d / %d  (%.1f%%)"
+          % (files_with_constraints, files, 100.0 * files_with_constraints / files))
+    print("IK 约束       : %d  (chunk 18，20 B/条)" % ik_total)
+    print("transform     : %d  (56 B/条)" % tf_total)
+    print("path          : %d  (40 B/条)" % path_total)
+    print("约束骨骼池    : %d 条 u16" % pool_total)
+    if ik_total or tf_total or path_total:
+        print("chunk 18 字节 : %s" % Mb(sizes[18]))
+    print("执行顺序步数  : %d  (chunk 19，4 B/步)" % step_total)
+    print("复位骨骼      : %d 条" % reset_total)
+    if bone_total_with_constraints:
+        print("  （带约束的资产共 %d 根骨骼 ⇒ 约束给遍历表加了 %d 步，占 %.1f%%）"
+              % (bone_total_with_constraints, step_total - bone_total_with_constraints,
+                 100.0 * (step_total - bone_total_with_constraints) / step_total
+                 if step_total else 0.0))
+    print("PathAttachment: %d 条  (chunk 20，40 B/条)" % path_att_total)
+    print("  path 骨骼   : %d 条 u16（weighted 才有）" % path_att_bones)
+    print("  path 顶点   : %d 个 float" % path_vert_floats)
+    print("  path 长度   : %d 个 float  (= 点数 / 3)" % path_len_floats)
+    if path_att_total:
+        print("chunk 20 字节 : %s" % Mb(sizes[20]))
+    print("  约束块合计  : %s" % Mb(sizes[18] + sizes[19] + sizes[20]))
+    # path_index 的分布决定"解算器需要按名字重查"的规模：
+    #   NoPathAttachment ⇒ setup 状态下约束不生效（槽位挂的不是 path）
+    if path_total:
+        print("path_index = 无: %d  %5.2f%%  （setup 附件不是 path ⇒ 约束起始不生效）"
+              % (path_index_none, 100.0 * path_index_none / path_total))
+        print("path_index 有效: %d  %5.2f%%" % (path_index_set, 100.0 * path_index_set / path_total))
+    print("pad 非 0 / bend_dir 非法 / kind 越界 / order 非排列: %d / %d / %d / %d  （前三个必须 0）"
+          % (bad_constraint_pad, bad_bend_dir, bad_step_kind, order_not_permutation))
+    if step_total:
+        print("执行步骤类型分布：")
+        for v, c in sorted(step_kind_hist.items()):
+            print("    %d %-12s %7d  %5.2f%%" % (v, kUpdateKindNames[v], c, 100.0 * c / step_total))
+    if path_total:
+        print("path positionMode 分布：")
+        for v, c in sorted(pos_mode_hist.items()):
+            print("    %d %-10s %7d  %5.2f%%" % (v, kPositionModeNames[v], c, 100.0 * c / path_total))
+        print("path spacingMode 分布：")
+        for v, c in sorted(spacing_mode_hist.items()):
+            print("    %d %-10s %7d  %5.2f%%" % (v, kSpacingModeNames[v], c, 100.0 * c / path_total))
+        print("path rotateMode 分布：")
+        for v, c in sorted(rotate_mode_hist.items()):
+            print("    %d %-12s %7d  %5.2f%%" % (v, kRotateModeNames[v], c, 100.0 * c / path_total))
+    if ik_total:
+        print("IK flags 分布（bit0=compress bit1=stretch bit2=uniform）：")
+        for v, c in sorted(ik_flag_hist.items()):
+            print("    %d %7d  %5.2f%%" % (v, c, 100.0 * c / ik_total))
+    if tf_total:
+        print("transform flags 分布（bit0=local bit1=relative）：")
+        for v, c in sorted(tf_flag_hist.items()):
+            print("    %d %7d  %5.2f%%" % (v, c, 100.0 * c / tf_total))
+    if path_att_total:
+        print("path 附件 flags 分布（bit0=closed bit1=constantSpeed bit2=weighted）：")
+        for v, c in sorted(path_att_flag_hist.items()):
+            print("    %d %7d  %5.2f%%" % (v, c, 100.0 * c / path_att_total))
     print()
 
     print("chunk 3  顶点      : %s  (rigid 8B + weighted 8B 引用)" % Mb(sizes[3]))

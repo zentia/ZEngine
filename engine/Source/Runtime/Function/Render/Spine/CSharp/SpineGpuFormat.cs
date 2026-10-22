@@ -39,7 +39,12 @@ namespace ZEngine.SpineGpu
         //       ⇒ 没有 setup 色就无从解算。这是一个既有缺口，不是新增需求。
         //       ⇒ 不兼容：v9 容器被新读端读会得到"所有槽位纯白 + 无暗色"，
         //         而"纯白"本身不报错 —— 与 chunk 10 / 11 是同一类坑。
-        public const uint FormatVersion = 10;
+        // v11 = 约束进容器（新增 chunk 18 约束 setup / 19 执行顺序 / 20 path 几何）。
+        //       约束**每帧都跑**，与时间轴无关（实测 transform 48.3% / IK 22.5% /
+        //       path 11.1% 的资产带约束），容器里没有它们就无从解算。
+        //       ⇒ 不兼容：v10 容器被新读端读会得到「0 条约束」，而"没有约束"本身
+        //         不报错 —— 与 chunk 10 / 11 / 17 是同一类坑。
+        public const uint FormatVersion = 11;
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;
@@ -109,6 +114,22 @@ namespace ZEngine.SpineGpu
         public const uint ChunkTableEntrySize = 16;
         public const uint VertexSegmentAlignment = 8;
         public const uint ChunkAlignment = 4;
+
+        // ---- v11 约束 ----
+        public const uint IkConstraintSize = 20;
+        public const uint TransformConstraintSize = 56;
+        public const uint PathConstraintSize = 40;
+        public const uint UpdateStepSize = 4;
+        public const uint PathAttachmentSize = 40;
+        // 三个块头。**必需**：没有它们，"chunk 不存在"和"chunk 被截断"在字节上
+        // 分不开（v11 之前 chunk 10 / 11 / 17 都栽过同一个坑）。
+        public const uint ConstraintHeaderSize = 16;   // ik_count, tf_count, path_count, bone_pool_count
+        public const uint UpdateOrderHeaderSize = 8;   // update_count, reset_count
+        public const uint PathAttHeaderSize = 16;      // path_count, bone_count, vertex_float_count, length_count
+
+        // "这个槽位上没有 path 附件"。**不是 0** —— 0 是 chunk 20 里第一条
+        // 合法记录，填 0 会让约束沿一条别人的曲线摆骨骼，且不报错。
+        public const uint NoPathAttachment = 0xFFFFFFFFu;
     }
 
     public enum SpineVertexFormat : byte
@@ -268,6 +289,13 @@ namespace ZEngine.SpineGpu
 
         SlotSetup = 17,     // v10：槽位 setup（40 B/槽），下标 = header.slot_count 的序
 
+        // v11：约束。约束**必须**烘焙 —— 实测有约束的资产占
+        //   transform 48.3% / IK 22.5% / path 11.1%（v7 文档 §1.3），
+        //   而且约束是**每帧都跑**的，与时间轴无关。
+        ConstraintSetup = 18,   // 约束 setup：IK / transform / path + 共用的 u16 骨骼池
+        UpdateOrder = 19,       // `Skeleton::updateCache()` 的结果（**直接落结果**）
+        PathAttachments = 20,   // PathAttachment 几何（path 约束要沿它摆骨骼）
+
         // v7：蒙皮数据流。id 从 21 起 —— 10..20 留给 v7 动画阶段
         // （骨骼树 / 时间轴 / path 几何），别占用。
         InfluenceBind = 21,   // float2 × 影响条目数
@@ -390,6 +418,69 @@ namespace ZEngine.SpineGpu
         public const int SlotDarkA = 28;      // 有暗色时恒 1（参考实现写死）
         public const int SlotSetupAttachmentNameOffset = 32;
         public const int SlotFlags = 36;
+
+        // ---- 约束 setup（chunk 18，v11）----
+        // IK 一条（20 B）
+        public const int IkOrder = 0;         // u16，三类约束**共用**一个排名空间
+        public const int IkBoneCount = 2;     // u16
+        public const int IkBoneFirst = 4;     // u32，进 chunk 18 的 u16 骨骼池
+        public const int IkTarget = 8;        // u32，目标**骨骼**下标
+        public const int IkMix = 12;          // f32，json 默认 1
+        public const int IkBendDir = 16;      // i16，1 或 -1
+        public const int IkFlags = 18;        // u16，kIkFlag*
+
+        // transform 一条（56 B）
+        public const int TfOrder = 0;
+        public const int TfBoneCount = 2;
+        public const int TfBoneFirst = 4;
+        public const int TfTarget = 8;        // 目标**骨骼**下标
+        public const int TfOffsetRotation = 12;
+        public const int TfOffsetX = 16;
+        public const int TfOffsetY = 20;
+        public const int TfOffsetScaleX = 24;
+        public const int TfOffsetScaleY = 28;
+        public const int TfOffsetShearY = 32;
+        public const int TfRotateMix = 36;
+        public const int TfTranslateMix = 40;
+        public const int TfScaleMix = 44;
+        public const int TfShearMix = 48;
+        public const int TfFlags = 52;        // u16，kTfFlag*
+        public const int TfPad = 54;          // 落盘必须写 0
+
+        // path 一条（40 B）
+        public const int PathOrder = 0;
+        public const int PathBoneCount = 2;
+        public const int PathBoneFirst = 4;
+        public const int PathTargetSlot = 8;  // ⚠️ **槽位**下标不是骨骼
+        public const int PathPositionMode = 12;
+        public const int PathSpacingMode = 13;
+        public const int PathRotateMode = 14;
+        public const int PathPad = 15;        // 落盘必须写 0
+        public const int PathOffsetRotation = 16;
+        public const int PathPosition = 20;
+        public const int PathSpacing = 24;
+        public const int PathRotateMix = 28;
+        public const int PathTranslateMix = 32;
+        public const int PathIndex = 36;      // default 皮肤下该槽位的 path 附件下标
+
+        // 执行顺序一条（chunk 19，4 B）
+        public const int StepKind = 0;        // u8，SpineGpuUpdateKind
+        public const int StepPad = 1;         // 落盘必须写 0
+        public const int StepIndex = 2;       // u16，该类内的下标
+
+        // PathAttachment 一条（chunk 20，36 B）
+        public const int PathAttSlotIndex = 0;
+        public const int PathAttSkinIndex = 2;   // ⚠️ 必须落：曲线取决于激活的皮肤
+        public const int PathAttFlags = 4;
+        public const int PathAttPad = 6;         // 落盘必须写 0
+        public const int PathAttVertexCount = 8;
+        public const int PathAttBoneOffset = 12;
+        public const int PathAttBoneCount = 16;
+        public const int PathAttVertexOffset = 20;
+        public const int PathAttVertexFloatCount = 24;
+        public const int PathAttLengthOffset = 28;
+        public const int PathAttLengthCount = 32;
+        public const int PathAttNameOffset = 36;   // u32，进字符串表第 8 组
     }
 
     // C++ 用 static_assert 挡的那层"常量之间是否自洽"。C# 没有编译期 offsetof，
@@ -472,6 +563,54 @@ namespace ZEngine.SpineGpu
                         "slot setup_attachment_name_offset");
             CheckOffset(SpineGpuOffsets.SlotFlags, 4, SpineGpuConstants.SlotSetupSize, "slot flags");
             Check((uint)SpineGpuSlotFlags.HasDark == 1u, "slot flag has_dark is bit0");
+
+            // ---- v11 约束 ----
+            Check(SpineGpuConstants.IkConstraintSize == 20, "ik constraint is 20 B (v11)");
+            Check(SpineGpuConstants.TransformConstraintSize == 56, "transform constraint is 56 B (v11)");
+            Check(SpineGpuConstants.PathConstraintSize == 40, "path constraint is 40 B (v11)");
+            Check(SpineGpuConstants.UpdateStepSize == 4, "update step is 4 B (v11)");
+            Check(SpineGpuConstants.PathAttachmentSize == 40, "path attachment record is 40 B (v11)");
+            Check(SpineGpuConstants.ConstraintHeaderSize == 16, "constraint chunk header is 16 B (v11)");
+            Check(SpineGpuConstants.UpdateOrderHeaderSize == 8, "update order chunk header is 8 B (v11)");
+            Check(SpineGpuConstants.PathAttHeaderSize == 16, "path attachment chunk header is 16 B (v11)");
+            Check(SpineGpuConstants.NoPathAttachment == 0xFFFFFFFFu, "NoPathAttachment must be 0xFFFFFFFF, not 0");
+
+            // 56 B 的 transform 必须 4 B 对齐（里面有 11 个 float + 2 个 u16 + 2 个 u16）
+            Check(SpineGpuConstants.TransformConstraintSize % 4 == 0, "transform constraint stride is 4-byte aligned");
+            Check(SpineGpuConstants.PathAttachmentSize % 4 == 0, "path attachment stride is 4-byte aligned");
+
+            CheckOffset(SpineGpuOffsets.IkTarget, 4, SpineGpuConstants.IkConstraintSize, "ik target");
+            CheckOffset(SpineGpuOffsets.IkFlags, 2, SpineGpuConstants.IkConstraintSize, "ik flags");
+            CheckOffset(SpineGpuOffsets.TfShearMix, 4, SpineGpuConstants.TransformConstraintSize, "tf shear_mix");
+            CheckOffset(SpineGpuOffsets.TfFlags, 2, SpineGpuConstants.TransformConstraintSize, "tf flags");
+            CheckOffset(SpineGpuOffsets.TfPad, 2, SpineGpuConstants.TransformConstraintSize, "tf pad");
+            CheckOffset(SpineGpuOffsets.PathTargetSlot, 4, SpineGpuConstants.PathConstraintSize, "path target_slot");
+            CheckOffset(SpineGpuOffsets.PathTranslateMix, 4, SpineGpuConstants.PathConstraintSize,
+                        "path translate_mix");
+            CheckOffset(SpineGpuOffsets.PathIndex, 4, SpineGpuConstants.PathConstraintSize, "path path_index");
+            CheckOffset(SpineGpuOffsets.StepIndex, 2, SpineGpuConstants.UpdateStepSize, "step index");
+            CheckOffset(SpineGpuOffsets.PathAttSkinIndex, 2, SpineGpuConstants.PathAttachmentSize,
+                        "path attachment skin_index");
+            CheckOffset(SpineGpuOffsets.PathAttLengthCount, 4, SpineGpuConstants.PathAttachmentSize,
+                        "path attachment length_count");
+            CheckOffset(SpineGpuOffsets.PathAttNameOffset, 4, SpineGpuConstants.PathAttachmentSize,
+                        "path attachment name_offset");
+
+            Check((uint)SpineGpuIkFlags.Compress == 1u, "ik flag compress is bit0");
+            Check((uint)SpineGpuIkFlags.Stretch == 2u, "ik flag stretch is bit1");
+            Check((uint)SpineGpuIkFlags.Uniform == 4u, "ik flag uniform is bit2");
+            Check((uint)SpineGpuTransformFlags.Local == 1u, "tf flag local is bit0");
+            Check((uint)SpineGpuTransformFlags.Relative == 2u, "tf flag relative is bit1");
+            Check((uint)SpineGpuPathAttachmentFlags.ConstantSpeed == 2u, "path att flag constant_speed is bit1");
+            Check((uint)SpineGpuPathAttachmentFlags.Weighted == 4u, "path att flag weighted is bit2");
+
+            // ⚠️ path 的 target 是槽位、IK/transform 的 target 是骨骼 —— 两个下标的
+            //    **取值域**不同，但字段名在两边都叫"target"。把这条钉在启动路径上，
+            //    免得以后有人把 path 的 target_slot 当成骨骼下标用（不报错，只是
+            //    约束一直作用在错误的对象上）。
+            Check(SpineGpuOffsets.IkTarget == SpineGpuOffsets.TfTarget, "ik/tf target share the same slot");
+            Check(SpineGpuOffsets.IkTarget == SpineGpuOffsets.PathTargetSlot,
+                  "path target_slot sits where ik/tf target sits (different index space!)");
         }
 
         private static void Check(bool cond, string what)
@@ -643,6 +782,147 @@ namespace ZEngine.SpineGpu
         // attachment 时间轴在 time < frames[0] 时复位到它（AttachmentTimeline.cpp:65-68）。
         public uint SetupAttachmentNameOffset = SpineGpuConstants.NoAttachmentName;
         public SpineGpuSlotFlags Flags = SpineGpuSlotFlags.None;
+    }
+
+    // -----------------------------------------------------------------
+    // 约束（chunk 18 / 19 / 20，v11）
+    // -----------------------------------------------------------------
+    // 三条约束的 `target` **不是同一个下标空间**：
+    //   IK / transform 的 target 是**骨骼**下标，path 的 target 是**槽位**下标
+    //   （`PathConstraintData::_target` 是 `SlotData*`）。写反了不报错，
+    //   只是约束一直作用在错误的对象上。
+
+    [Flags]
+    public enum SpineGpuIkFlags : ushort
+    {
+        None = 0,
+        Compress = 1 << 0,
+        Stretch = 1 << 1,
+        Uniform = 1 << 2,
+    }
+
+    [Flags]
+    public enum SpineGpuTransformFlags : ushort
+    {
+        None = 0,
+        Local = 1 << 0,
+        Relative = 1 << 1,
+    }
+
+    // 逐值抄 3.7 `PathConstraintData.h:39-43`（PositionMode / SpacingMode / RotateMode）
+    public enum SpineGpuPathPositionMode : byte { Fixed = 0, Percent = 1 }
+    public enum SpineGpuPathSpacingMode : byte { Length = 0, Fixed = 1, Percent = 2 }
+    public enum SpineGpuPathRotateMode : byte { Tangent = 0, Chain = 1, ChainScale = 2 }
+
+    // IK 一条（chunk 18，20 B）
+    public sealed class SpineGpuIkConstraint
+    {
+        public ushort Order;          // 三类约束**共用**一个排名空间
+        public ushort BoneCount;
+        public uint BoneFirst;        // 进 chunk 18 的 u16 骨骼池
+        public uint Target;           // 目标**骨骼**下标
+        public float Mix = 1.0f;      // json 默认 1（SkeletonJson.cpp:290）
+        public short BendDir = 1;     // 1 或 -1；json 是 `bendPositive` 布尔
+        public SpineGpuIkFlags Flags = SpineGpuIkFlags.None;
+    }
+
+    // transform 一条（chunk 18，56 B）
+    public sealed class SpineGpuTransformConstraint
+    {
+        public ushort Order;
+        public ushort BoneCount;
+        public uint BoneFirst;
+        public uint Target;           // 目标**骨骼**下标
+        public float OffsetRotation;
+        public float OffsetX;
+        public float OffsetY;
+        public float OffsetScaleX;
+        public float OffsetScaleY;
+        public float OffsetShearY;
+        public float RotateMix = 1.0f;
+        public float TranslateMix = 1.0f;
+        public float ScaleMix = 1.0f;
+        public float ShearMix = 1.0f;
+        public SpineGpuTransformFlags Flags = SpineGpuTransformFlags.None;
+        public ushort Pad;            // 落盘必须写 0
+    }
+
+    // path 一条（chunk 18，40 B）
+    public sealed class SpineGpuPathConstraint
+    {
+        public ushort Order;
+        public ushort BoneCount;
+        public uint BoneFirst;
+        // ⚠️ 是**槽位**下标不是骨骼（SkeletonBinary.cpp:249 取的是 `_slots[...]`）
+        public uint TargetSlot;
+        public SpineGpuPathPositionMode PositionMode = SpineGpuPathPositionMode.Percent;
+        public SpineGpuPathSpacingMode SpacingMode = SpineGpuPathSpacingMode.Length;
+        public SpineGpuPathRotateMode RotateMode = SpineGpuPathRotateMode.Tangent;
+        public byte Pad;              // 落盘必须写 0
+        public float OffsetRotation;
+        // ⚠️ `position` / `spacing` 是否乘 scale 取决于 mode（Fixed / Length）——
+        //    那是**解析期**的事（SkeletonBinary.cpp:252-255），运行时不要再乘一次。
+        public float Position;
+        public float Spacing;
+        public float RotateMix = 1.0f;
+        public float TranslateMix = 1.0f;
+        // default 皮肤下该槽位的 PathAttachment 在 chunk 20 里的下标；
+        // NoPathAttachment = "这个槽位上没有 path 附件"。
+        // ⚠️ 换装后必须按 (激活皮肤, 槽位) 重查 —— `PathConstraint::update()`
+        //    用的是槽位**当前**挂的附件（PathConstraint.cpp:77）。
+        public uint PathIndex = SpineGpuConstants.NoPathAttachment;
+    }
+
+    // 执行顺序一步（chunk 19，4 B）
+    public enum SpineGpuUpdateKind : byte
+    {
+        Bone = 0,
+        Ik = 1,
+        Transform = 2,
+        Path = 3,
+    }
+
+    public sealed class SpineGpuUpdateStep
+    {
+        public SpineGpuUpdateKind Kind = SpineGpuUpdateKind.Bone;
+        public byte Pad;              // 落盘必须写 0
+        // 约束下标是**该类内的**下标（ik / transform / path 各自从 0 数），
+        // 与 chunk 18 三段数组的下标一致。
+        public ushort Index;
+    }
+
+    // PathAttachment 几何（chunk 20，36 B）
+    [Flags]
+    public enum SpineGpuPathAttachmentFlags : ushort
+    {
+        None = 0,
+        Closed = 1 << 0,
+        ConstantSpeed = 1 << 1,
+        Weighted = 1 << 2,
+    }
+
+    public sealed class SpineGpuPathAttachment
+    {
+        public ushort SlotIndex;
+        // ⚠️ 皮肤**必须**落盘：`PathConstraint::update()` 用的是
+        //    `_target->getAttachment()`（PathConstraint.cpp:77）—— 槽位**当前**挂的附件，
+        //    而"当前"取决于激活的皮肤。只按槽位找会在换装后拿到别的皮肤的曲线。
+        public ushort SkinIndex;
+        public SpineGpuPathAttachmentFlags Flags = SpineGpuPathAttachmentFlags.None;
+        public ushort Pad;            // 落盘必须写 0
+        public uint VertexCount;
+        public uint BoneOffset;       // 进 chunk 20 的 u16 池（**下标**不是字节）
+        public uint BoneCount;
+        public uint VertexOffset;     // 进 chunk 20 的 f32 池（**下标**不是字节）
+        public uint VertexFloatCount;
+        public uint LengthOffset;
+        public uint LengthCount;      // = VertexCount / 3（SkeletonBinary.cpp:550）
+        // ⚠️ 附件名**必须**落盘：`PathConstraint::update()` 取的是槽位**当前**挂的附件
+        //    （PathConstraint.cpp:76-80），而"当前"会被 attachment 时间轴改掉。
+        //    一个槽位在同一皮肤下挂两条 path 附件是**合法的**（实测 782 个资产里
+        //    有 6 个）⇒ 静态烘焙只能给出"setup 时用的是哪条"（PathIndex），
+        //    运行时换装 / 换附件后必须**按名字重新查**。
+        public uint NameOffset;       // 进字符串表第 8 组
     }
 
     public class SpineGpuContainerException : Exception

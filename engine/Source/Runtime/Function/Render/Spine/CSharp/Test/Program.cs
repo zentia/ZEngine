@@ -86,7 +86,7 @@ namespace ZEngine.SpineGpu.Test
 
                 // ---- 基本自洽 ----
                 Check(a.Header.Magic == SpineGpuConstants.Magic, "魔数是 'ZSPG'");
-                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 10");
+                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 11");
                 // v10：槽位 setup 是 chunk 17，条数必须 = header.slot_count。
                 // "chunk 不存在"本身不报错，少了这等式读端会得到"所有槽位纯白"
                 // —— 而纯白与 setup 白在多数资产上完全看不出区别（坑与 chunk 10 同类）。
@@ -276,6 +276,107 @@ namespace ZEngine.SpineGpu.Test
                           "两个槽位的 setup 附件名偏移落在字符串表第 4 组的对应条目上");
                 }
 
+                // ---- 约束（chunk 18-20，v11）----
+                // 逐字段比，不只是比条数 —— 读写两端共用同一组常量，round-trip
+                // 抓不到"解读"漂。夹具三条约束的字段**全非默认**且 order 交错
+                // （transform=0, path=1, ik=2）⇒ 能抓到"把 order 当下标"。
+                Check(b.Iks.Count == 1 && b.Transforms.Count == 1 && b.Paths.Count == 1,
+                      "三条约束各一条（空数组的话下面每条断言都是「双空相同」，证明不了任何事）");
+                Check(b.ConstraintBonePool.Length == 4,
+                      "约束骨骼池 4 条（IK 的 root+hip、transform 的 hip、path 的 hip）");
+                if (b.Iks.Count == 1)
+                {
+                    var k = b.Iks[0];
+                    Check(k.Order == 2, "IK 的 order = 2（**不是**数组下标 0）");
+                    Check(k.BoneCount == 2 && k.BoneFirst == 0, "IK 挂 2 根骨骼，从池第 0 条起");
+                    Check(k.Target == 1, "IK 的目标是骨骼 hip(1)");
+                    Check(Near(k.Mix, 0.75f), "IK 的 mix = 0.75");
+                    // ⚠️ json 里写的是 `"bendPositive": false` ⇒ -1。
+                    //    `"bendPositive"` 是**布尔**而参考实现的 Json::getInt 把
+                    //    false 读成 0（Json.cpp:165）—— 读端若只认数字就会落到默认 1。
+                    Check(k.BendDir == -1, "IK 的 bend_dir = -1（json 的 bendPositive=false）");
+                    Check(k.Flags == (SpineGpuIkFlags.Compress | SpineGpuIkFlags.Uniform),
+                          "IK 的 flags = compress|uniform = 5（stretch=false ⇒ 位 1 不置）");
+                }
+                if (b.Transforms.Count == 1)
+                {
+                    var t = b.Transforms[0];
+                    Check(t.Order == 0, "transform 的 order = 0");
+                    Check(t.BoneCount == 1 && t.BoneFirst == 2 && t.Target == 0,
+                          "transform 挂 hip(1)（池第 2 条），目标骨骼 root(0)");
+                    Check(Near(t.OffsetRotation, 11.0f) && Near(t.OffsetX, 2.0f) && Near(t.OffsetY, -3.0f),
+                          "transform 的 rotation/x/y = 11 / 2 / -3");
+                    Check(Near(t.OffsetScaleX, 0.5f) && Near(t.OffsetScaleY, 1.5f) &&
+                          Near(t.OffsetShearY, -7.0f),
+                          "transform 的 scaleX/scaleY/shearY = 0.5 / 1.5 / -7");
+                    Check(Near(t.RotateMix, 0.25f) && Near(t.TranslateMix, 0.5f) &&
+                          Near(t.ScaleMix, 0.75f) && Near(t.ShearMix, 0.125f),
+                          "transform 的四个 mix = 0.25 / 0.5 / 0.75 / 0.125");
+                    // ⚠️ local=false, relative=true ⇒ 只有位 1。两个位写反了字节照样自洽。
+                    Check(t.Flags == SpineGpuTransformFlags.Relative, "transform 的 flags = relative(2)");
+                    Check(t.Pad == 0, "transform 的 pad 落盘为 0");
+                }
+                if (b.Paths.Count == 1)
+                {
+                    var p = b.Paths[0];
+                    Check(p.Order == 1, "path 的 order = 1");
+                    Check(p.BoneCount == 1 && p.BoneFirst == 3, "path 挂 hip(1)（池第 3 条）");
+                    // ⚠️ 目标是**槽位** s0，不是骨骼 —— 两个 index space 同名字段，
+                    //    读错不报错（槽位 0 与骨骼 0 都存在）。
+                    Check(p.TargetSlot == 0, "path 的目标是**槽位** s0（不是骨骼）");
+                    Check(p.PositionMode == SpineGpuPathPositionMode.Fixed &&
+                          p.SpacingMode == SpineGpuPathSpacingMode.Percent &&
+                          p.RotateMode == SpineGpuPathRotateMode.ChainScale,
+                          "path 的三个 mode = fixed / percent / chainScale（全非默认）");
+                    Check(Near(p.OffsetRotation, 30.0f) && Near(p.Position, 0.4f) &&
+                          Near(p.Spacing, 0.6f) && Near(p.RotateMix, 0.3f) && Near(p.TranslateMix, 0.7f),
+                          "path 的 rotation/position/spacing/rotateMix/translateMix");
+                    // ⚠️ 期望是 **NoPathAttachment**，不是 0：槽位 s0 的 setup 附件是
+                    //    区域 `quad`，不是 path ⇒ `PathConstraint::update()` 直接 return
+                    //    （PathConstraint.cpp:76-80），约束在 setup 状态下不生效。
+                    //    这条断言钉的是"按**名字**匹配"而不是"取槽位上第一条 path" ——
+                    //    后者在这个夹具上会给 0，看起来更"合理"却是错的。
+                    Check(p.PathIndex == SpineGpuConstants.NoPathAttachment,
+                          "path 的 path_index = NoPathAttachment（s0 的 setup 附件是 quad，不是 path）");
+                    Check(p.Pad == 0, "path 的 pad 落盘为 0");
+                }
+                // ---- 执行顺序（chunk 19）----
+                // order 是**三类约束共用**的排名空间，参考实现按 i = 0..N-1 逐个找
+                // order == i 的那条 ⇒ 期望序列 tf(2,0) 插在两根骨骼之后、path 之后是 ik。
+                Check(b.UpdateSteps.Count == 5, "执行顺序 5 步（2 骨骼 + tf + path + ik）");
+                if (b.UpdateSteps.Count == 5)
+                {
+                    var st = b.UpdateSteps;
+                    Check(st[0].Kind == SpineGpuUpdateKind.Bone && st[0].Index == 0 &&
+                          st[1].Kind == SpineGpuUpdateKind.Bone && st[1].Index == 1,
+                          "前两步是骨骼 root / hip（正向遍历即拓扑序）");
+                    Check(st[2].Kind == SpineGpuUpdateKind.Transform && st[2].Index == 0 &&
+                          st[3].Kind == SpineGpuUpdateKind.Path && st[3].Index == 0 &&
+                          st[4].Kind == SpineGpuUpdateKind.Ik && st[4].Index == 0,
+                          "后三步按 order 排：transform(0) → path(1) → ik(2)");
+                    bool pad0 = true;
+                    foreach (var s in st) pad0 = pad0 && s.Pad == 0;
+                    Check(pad0, "每个执行步骤的 pad 落盘为 0");
+                }
+                // ---- PathAttachment 几何（chunk 20）----
+                Check(b.PathAttachments.Count == 1 && b.PathVertices.Length == 6 && b.PathLengths.Length == 1,
+                      "path 几何：1 条记录、6 个顶点 float、1 个 length");
+                if (b.PathAttachments.Count == 1)
+                {
+                    var pa = b.PathAttachments[0];
+                    Check(pa.SlotIndex == 0 && pa.SkinIndex == 0, "path1 挂在槽位 s0 / 皮肤 default");
+                    Check(pa.Flags == SpineGpuPathAttachmentFlags.None,
+                          "path1 的 flags = 0（closed 与 constantSpeed 都是 false）");
+                    Check(pa.Pad == 0, "path 记录的 pad 落盘为 0");
+                    Check(pa.VertexCount == 3 && pa.VertexFloatCount == 6,
+                          "path1 = 3 顶点 × 2 float（**非** weighted ⇒ 没有骨重）");
+                    Check(pa.BoneCount == 0, "path1 是 rigid ⇒ 骨骼池条目 0");
+                    Check(pa.LengthCount == 1, "lengths 条数 = vertex_count / 3 = 1");
+                    Check(b.PathVertices[0] == 0.0f && b.PathVertices[2] == 10.0f &&
+                          b.PathVertices[4] == 20.0f && b.PathVertices[5] == 10.0f,
+                          "path1 的顶点 = (0,0) (10,0) (20,10)");
+                }
+
                 bool noDeformOrDrawOrder = true;
                 foreach (var t in b.Timelines)
                 {
@@ -414,9 +515,10 @@ namespace ZEngine.SpineGpu.Test
 
             // 版本改一改 ⇒ 必须明确拒绝，不做静默兼容（规格 §11）
             _prefix = "[负向] ";
-            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v10 是当前版本，
-            //    所以"未来"是 11，而 9 已经变成"旧容器"了（没有 chunk 17）。
-            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 11), "版本改成 11（未来容器）⇒ 拒绝");
+            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v11 是当前版本，
+            //    所以"未来"是 12，而 10 已经变成"旧容器"了（没有 chunk 18-20）。
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 12), "版本改成 12（未来容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 10), "版本改成 10（v10 旧容器：没有 chunk 18-20）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 9), "版本改成 9（v9 旧容器：没有 chunk 17）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 8), "版本改成 8（v8 旧容器：没有 chunk 11-16）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 7), "版本改成 7（v7 旧容器：没有 chunk 10）⇒ 拒绝");
@@ -514,6 +616,90 @@ namespace ZEngine.SpineGpu.Test
                     Rejects(Mutate(baseBytes, atSsData + SpineGpuOffsets.SlotSetupAttachmentNameOffset, 0xFFFFFFF0u),
                             "setup 附件名偏移越界 ⇒ 拒绝（指到别的组不报错，只是挂错附件）");
                 }
+
+                // ---- v11 约束块：越界 / 脏位 / order 不是排列，都必须被**读端**挡住 ----
+                _prefix = "[负向/约束] ";
+                int atCs = FindChunkSizeField(baseBytes, (uint)SpineGpuChunkId.ConstraintSetup);
+                if (atCs >= 0)
+                {
+                    // chunk 18 的净载荷 = 16 B 头 + 三段定长数组 + u16 池，
+                    // 不是任何一个记录大小的整数倍 ⇒ +1 必须被拒。
+                    Rejects(Mutate(baseBytes, atCs, ReadU32(baseBytes, atCs) + 1),
+                            "constraint_setup 大小 +1 ⇒ 拒绝（定长块的整数倍）");
+                }
+                int atCsData = FindChunk(baseBytes, (uint)SpineGpuChunkId.ConstraintSetup);
+                if (atCsData >= 0)
+                {
+                    // 三段数组在 chunk 里的起始位置：16 B 头之后依次是 ik / transform / path
+                    int ik0 = atCsData + (int)SpineGpuConstants.ConstraintHeaderSize;
+                    int tf0 = ik0 + (int)SpineGpuConstants.IkConstraintSize;
+                    int pt0 = tf0 + (int)SpineGpuConstants.TransformConstraintSize;
+
+                    // IK 的 flags 有未知位 ⇒ 拒（脏字节会让跨语言逐字节对拍对不上）
+                    var f8 = (byte[])baseBytes.Clone();
+                    WriteU16(f8, ik0 + SpineGpuOffsets.IkFlags, 8);
+                    Rejects(f8, "IK flags 有未知位（bit3）⇒ 拒绝");
+                    // IK 的目标骨骼越界 ⇒ 拒（不报错的话 shader 里读到别人的变换矩阵）
+                    Rejects(Mutate(baseBytes, ik0 + SpineGpuOffsets.IkTarget, 0xFFFFFFF0u),
+                            "IK 目标骨骼越界 ⇒ 拒绝");
+                    // transform 的 pad 非 0 ⇒ 拒（与 C++ 写端逐字节对不上）
+                    var tp = (byte[])baseBytes.Clone();
+                    WriteU16(tp, tf0 + SpineGpuOffsets.TfPad, 1);
+                    Rejects(tp, "transform 的 pad 非 0 ⇒ 拒绝");
+                    // transform 的 flags 有未知位 ⇒ 拒
+                    var tf8 = (byte[])baseBytes.Clone();
+                    WriteU16(tf8, tf0 + SpineGpuOffsets.TfFlags, 4);
+                    Rejects(tf8, "transform flags 有未知位（bit2）⇒ 拒绝");
+                    // path 的 pad 非 0 ⇒ 拒
+                    var pp = (byte[])baseBytes.Clone();
+                    pp[pt0 + SpineGpuOffsets.PathPad] = 1;
+                    Rejects(pp, "path 的 pad 非 0 ⇒ 拒绝");
+                }
+                int atUo = FindChunkSizeField(baseBytes, (uint)SpineGpuChunkId.UpdateOrder);
+                if (atUo >= 0)
+                {
+                    Rejects(Mutate(baseBytes, atUo, ReadU32(baseBytes, atUo) + 1),
+                            "update_order 大小 +1 ⇒ 拒绝（4 B 的整数倍）");
+                }
+                int atUoData = FindChunk(baseBytes, (uint)SpineGpuChunkId.UpdateOrder);
+                if (atUoData >= 0)
+                {
+                    int st0 = atUoData + (int)SpineGpuConstants.UpdateOrderHeaderSize;
+                    // kind = 9 不认识 ⇒ 拒（遍历时会被当成"跳过"，姿势悄悄错）
+                    var k9 = (byte[])baseBytes.Clone();
+                    k9[st0 + SpineGpuOffsets.StepKind] = 9;
+                    Rejects(k9, "执行步骤 kind = 9 ⇒ 拒绝（UpdateKind 只到 3）");
+                    // 最后一步（第 5 步 = ik，index 0）的 index 改成越界 ⇒ 拒
+                    var si = (byte[])baseBytes.Clone();
+                    WriteU16(si, st0 + 4 * (int)SpineGpuConstants.UpdateStepSize +
+                                 SpineGpuOffsets.StepIndex, 99);
+                    Rejects(si, "执行步骤的约束下标越界 ⇒ 拒绝");
+                }
+                // ⚠️ chunk 19 缺失但 chunk 18 有约束 ⇒ 必须拒。
+                //    "chunk 不存在"本身不报错，漏了这条读端会退化成"没有约束"，
+                //    而"没有约束"与"约束没排进去"在字节上完全看不出区别。
+                if (atCs >= 0 && atUo >= 0)
+                {
+                    Rejects(DropChunk(baseBytes, (uint)SpineGpuChunkId.UpdateOrder),
+                            "有约束但没有 chunk 19 ⇒ 拒绝（否则读端静默退化成「没有约束」）");
+                }
+                int atPa = FindChunkSizeField(baseBytes, (uint)SpineGpuChunkId.PathAttachments);
+                if (atPa >= 0)
+                {
+                    Rejects(Mutate(baseBytes, atPa, ReadU32(baseBytes, atPa) + 1),
+                            "path_attachments 大小 +1 ⇒ 拒绝（36 B 的整数倍）");
+                }
+                int atPaData = FindChunk(baseBytes, (uint)SpineGpuChunkId.PathAttachments);
+                if (atPaData >= 0)
+                {
+                    int pa0 = atPaData + (int)SpineGpuConstants.PathAttHeaderSize;
+                    var pf = (byte[])baseBytes.Clone();
+                    WriteU16(pf, pa0 + SpineGpuOffsets.PathAttFlags, 8);
+                    Rejects(pf, "path 附件 flags 有未知位（bit3）⇒ 拒绝");
+                    var ps = (byte[])baseBytes.Clone();
+                    WriteU16(ps, pa0 + SpineGpuOffsets.PathAttSlotIndex, 0xFFF0);
+                    Rejects(ps, "path 附件的槽位下标越界 ⇒ 拒绝");
+                }
             }
             _prefix = "";
         }
@@ -596,6 +782,41 @@ namespace ZEngine.SpineGpu.Test
                 }
             }
             return -1;
+        }
+
+        // 把某个 chunk 从容器里**整个摘掉**（chunk_count 减一、表里删一项）。
+        // 用来验证"chunk 不存在"这类**静默**情况：缺 chunk 时字节照样自洽，
+        // 只有读端的硬性等式（比如"有 chunk 18 就必须有 chunk 19"）能挡住。
+        private static byte[] DropChunk(byte[] src, uint id)
+        {
+            uint n = ReadU32(src, SpineGpuOffsets.HdrChunkCount);
+            int hit = -1;
+            for (uint i = 0; i < n; ++i)
+            {
+                int e = (int)(SpineGpuConstants.HeaderSize + i * SpineGpuConstants.ChunkTableEntrySize);
+                if (ReadU32(src, e + SpineGpuOffsets.ChunkId) == id) { hit = (int)i; break; }
+            }
+            if (hit < 0)
+            {
+                return src;
+            }
+            var b = new byte[src.Length - (int)SpineGpuConstants.ChunkTableEntrySize];
+            // 1) 复制 header，把 chunk_count 减一
+            Array.Copy(src, 0, b, 0, (int)SpineGpuConstants.HeaderSize);
+            WriteU32(b, SpineGpuOffsets.HdrChunkCount, n - 1);
+            // 2) 复制 chunk 表，跳过 hit 那一项
+            int dst = (int)SpineGpuConstants.HeaderSize;
+            for (uint i = 0; i < n; ++i)
+            {
+                if (i == (uint)hit) { continue; }
+                int e = (int)(SpineGpuConstants.HeaderSize + i * SpineGpuConstants.ChunkTableEntrySize);
+                Array.Copy(src, e, b, dst, (int)SpineGpuConstants.ChunkTableEntrySize);
+                dst += (int)SpineGpuConstants.ChunkTableEntrySize;
+            }
+            // 3) 载荷原样照搬（留个空洞没关系 —— 读端只按表里的 (offset, size) 找）
+            Array.Copy(src, dst + (int)SpineGpuConstants.ChunkTableEntrySize,
+                       b, dst, src.Length - dst - (int)SpineGpuConstants.ChunkTableEntrySize);
+            return b;
         }
 
         private static byte[] Mutate(byte[] src, int at, uint value)

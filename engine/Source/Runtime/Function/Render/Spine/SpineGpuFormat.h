@@ -93,7 +93,14 @@ namespace SpineGpuConstants
     //   * header / 绘制项 / 顶点布局全都没动（槽位数本来就在 header 0x14）。
     //   ⇒ 不兼容：v9 容器被新读端读会得到"所有槽位纯白 + 无暗色"，
     //     而"纯白"本身不报错 —— 与 chunk 10 / 11 是同一类坑。
-    constexpr uint32_t kFormatVersion = 10;
+    // * v11 = 约束 setup 进容器（chunk 18 约束 / 19 执行顺序 / 20 path 几何）。
+    //     header 与既有 chunk 全都没动；三个 chunk 都**自带计数头**，所以
+    //     "chunk 不存在"读端看到的是"0 条约束"而不是报错 —— 与前面同一类坑，
+    //     所以仍然是不兼容升级。
+    //     ⚠️ 执行顺序（chunk 19）**直接落参考实现 `updateCache()` 的结果**，
+    //        不落"让运行时自己重排"：重排规则是 `sortBone` 的递归 +
+    //        约束 order 两层，运行时再实现一遍就是给自己多一次写反的机会。
+    constexpr uint32_t kFormatVersion = 11;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -219,6 +226,22 @@ namespace SpineGpuConstants
     //    只用来判"有没有暗色"（3.8 判据：四分量不全为 0xff），**从不作为 alpha 落地**。
     //    照抄这个不对称，别把它当"读漏了一个字节"去补。
     constexpr uint32_t kSlotSetupSize = 40;
+
+    // ---- v11 约束（chunk 18 / 19 / 20）----
+    constexpr uint32_t kIkConstraintSize = 20;
+    constexpr uint32_t kTransformConstraintSize = 56;
+    constexpr uint32_t kPathConstraintSize = 40;
+    constexpr uint32_t kUpdateStepSize = 4;
+    constexpr uint32_t kPathAttachmentSize = 40;
+    // chunk 18 / 19 / 20 各自带一个"计数头"，所以"chunk 不存在"读端看到的是
+    // "0 条"而不是报错 ⇒ 三个 chunk 的**条数必须与其它 chunk 对得上**（见读端校验）。
+    constexpr uint32_t kConstraintHeaderSize = 16;   // ik_count, tf_count, path_count, bone_pool_count
+    constexpr uint32_t kUpdateOrderHeaderSize = 8;   // update_count, reset_count
+    constexpr uint32_t kPathAttHeaderSize = 16;      // path_count, bone_count, vertex_float_count, length_count
+
+    // path 约束的 target 槽位上**没有** PathAttachment。**不是 0** —— 0 是 chunk 20 里
+    // 第一条的合法下标，填 0 会让这条约束去摆一条别人的路径，且不报错。
+    constexpr uint32_t kNoPathAttachment = 0xFFFFFFFFu;
 
     // attachment 时间轴里"这一帧没有附件"的哨兵。**不是 0** —— 0 是 chunk 1 里
     // 第一个字符串的合法偏移，填 0 会让空帧变成"挂上某个真实附件"且不报错。
@@ -392,11 +415,19 @@ enum SpineGpuChunkId : uint32_t
     kChunkBeziers = 15,      // SpineGpuBezier[]（16 B/条，按段序）
     kChunkTimelinePayload = 16,  // 字节（attachment 名 / deform 稀疏帧 / drawOrder 偏移）
 
-    // v10：槽位 setup（32 B/槽）。id 17 就是当初留给它的（10..20 是 v7 动画阶段）。
-    kChunkSlotSetup = 17,  // SpineGpuSlot[]（32 B/条）；下标 = header.slot_count 的序
+    // v10：槽位 setup（40 B/槽）。id 17 就是当初留给它的（10..20 是 v7 动画阶段）。
+    kChunkSlotSetup = 17,  // SpineGpuSlot[]（40 B/条）；下标 = header.slot_count 的序
+
+    // v11：约束（S4）。id 18..20 —— 10..20 就是当初留给"v7 动画阶段"的。
+    // ⚠️ 为什么必须落盘：约束在 `Skeleton::updateWorldTransform` 里**每帧都跑**，
+    //    与有没有时间轴无关（IK 22.5% / transform 48.3% / path 11.1% 的资产有约束）。
+    //    只做骨骼时间轴会让近一半资产的姿势静默错（doc/GPU_SPINE_V7_ANIMATION.md §1.3）。
+    kChunkConstraintSetup = 18,  // 约束 setup（IK / transform / path + 共用的骨骼索引池）
+    kChunkUpdateOrder = 19,      // `Skeleton::updateCache()` 的结果（**直接落结果**）
+    kChunkPathAttachments = 20,  // PathAttachment 几何（path 约束要沿它摆骨骼）
 
     // v7：蒙皮数据流。id 从 21 起 —— 10..20 留给 v7 动画阶段
-    // （骨骼树 / 时间轴 / path 几何），别占用。
+    // （骨骼树 / 时间轴 / 约束 / path 几何），别占用。
     kChunkInfluenceBind = 21,  // float2 × influence_count（8 B/条）；由 influence_offset 索引
     kChunkInfluenceBone = 22,  // SpineInfluenceBone[]（4 B/条）；与 21 **共用同一个条目下标**
 };
@@ -407,7 +438,7 @@ enum SpineGpuChunkId : uint32_t
 struct SpineGpuHeader
 {
     uint32_t magic;             // 'ZSPG'
-    uint32_t version;           // 本规格版本，当前 10（见 kFormatVersion 的版本史）
+    uint32_t version;           // 本规格版本，当前 11（见 kFormatVersion 的版本史）
     uint32_t spine_runtime;     // 产生它的 spine-cpp 版本（3.8.xx → 30800）
     uint32_t flags;             // SpineGpuFlags
     uint32_t bone_count;
@@ -714,6 +745,309 @@ inline bool operator==(const SpineGpuSlot& a, const SpineGpuSlot& b)
            a.setup_attachment_name_offset == b.setup_attachment_name_offset && a.flags == b.flags;
 }
 inline bool operator!=(const SpineGpuSlot& a, const SpineGpuSlot& b) { return !(a == b); }
+
+// ---------------------------------------------------------------------
+// 约束（chunk 18，v11）
+// ---------------------------------------------------------------------
+// 为什么必须进容器：约束在 `Skeleton::updateWorldTransform()` 里**每帧都跑**，
+// 与"这条约束有没有时间轴"无关 —— 时间轴改的是 mix / position 这些**参数**，
+// 约束本身的存在性与参数由 setup 决定。只烘焙骨骼时间轴会让近一半资产的
+// 姿势静默错（IK 22.5% / transform 48.3% / path 11.1%，见 v7 文档 §1.3）。
+//
+// ⚠️ 三条约束的 `target` **不是同一个下标空间**：
+//    IK / transform 的 target 是**骨骼**下标，path 的 target 是**槽位**下标
+//    （`PathConstraintData::_target` 是 `SlotData*`）。写反了不报错，
+//    只是约束一直作用在错误的对象上。
+//
+// 字段集合逐条抄 3.7 `SkeletonBinary.cpp:190-257` / `SkeletonJson.cpp:255-422`；
+// 两份输入的默认值不一样（json 有默认、二进制全是显式写入），
+// 由"skel ↔ json Bake 后逐字节相同"这条对拍钉住。
+//
+// `bones[]` 长度可变 ⇒ 三类**共用** chunk 18 尾部的一段 u16 索引池，
+// 每条约束存 `bone_first` + `bone_count`（与 v7 影响流同一个思路）。
+
+// IK（20 B/条），字段抄 `IkConstraintData.h` + `SkeletonBinary.cpp:190-208`
+struct SpineGpuIkConstraint
+{
+    uint16_t order = 0;        // @0  三类约束**共用**一个 order 排名空间（见 chunk 19）
+    uint16_t bone_count = 0;   // @2
+    uint32_t bone_first = 0;   // @4  进 chunk 18 的 u16 骨骼索引池
+    uint32_t target = 0;       // @8  目标**骨骼**下标
+    float mix = 1.0f;          // @12 json 默认 1（SkeletonJson.cpp:290）
+    int16_t bend_dir = 1;      // @16 1 或 -1；json 是 `bendPositive` 布尔（:291）
+    uint16_t flags = 0;        // @18 见 kIkFlag*
+};
+
+// transform（56 B/条），字段抄 `TransformConstraintData.h` + `SkeletonBinary.cpp:217-237`
+struct SpineGpuTransformConstraint
+{
+    uint16_t order = 0;        // @0
+    uint16_t bone_count = 0;   // @2
+    uint32_t bone_first = 0;   // @4
+    uint32_t target = 0;       // @8  目标**骨骼**下标
+    float offset_rotation = 0.0f;  // @12
+    float offset_x = 0.0f;         // @16
+    float offset_y = 0.0f;         // @20
+    float offset_scale_x = 0.0f;   // @24
+    float offset_scale_y = 0.0f;   // @28
+    float offset_shear_y = 0.0f;   // @32
+    float rotate_mix = 1.0f;       // @36
+    float translate_mix = 1.0f;    // @40
+    float scale_mix = 1.0f;        // @44
+    float shear_mix = 1.0f;        // @48
+    uint16_t flags = 0;            // @52 见 kTfFlag*
+    uint16_t pad = 0;              // @54 落盘必须写 0
+};
+
+// path（40 B/条），字段抄 `PathConstraintData.h` + `SkeletonBinary.cpp:239-257`
+struct SpineGpuPathConstraint
+{
+    uint16_t order = 0;        // @0
+    uint16_t bone_count = 0;   // @2
+    uint32_t bone_first = 0;   // @4
+    // ⚠️ 是**槽位**下标不是骨骼（`SkeletonBinary.cpp:249` 取的是 `_slots[...]`）
+    uint32_t target_slot = 0;  // @8
+    uint8_t position_mode = 0; // @12 kPathPositionMode*
+    uint8_t spacing_mode = 0;  // @13 kPathSpacingMode*
+    uint8_t rotate_mode = 0;   // @14 kPathRotateMode*
+    uint8_t pad = 0;           // @15 落盘必须写 0
+    float offset_rotation = 0.0f;  // @16
+    // ⚠️ `position` / `spacing` 是否乘 scale 取决于 mode（Fixed / Length）—— 那是
+    //    **解析期**的事（`SkeletonBinary.cpp:252-255`），运行时不要再乘一次。
+    float position = 0.0f;         // @20
+    float spacing = 0.0f;          // @24
+    float rotate_mix = 1.0f;       // @28
+    float translate_mix = 1.0f;    // @32
+    // target 槽位上的 PathAttachment 在 chunk 20 里的下标；
+    // kNoPathAttachment = "这个槽位上没有 path 附件"（参考实现 `sortPathConstraint`
+    // 会退化成 `sortBone(slot.getBone())`）。
+    uint32_t path_index = SpineGpuConstants::kNoPathAttachment;  // @36
+};
+
+enum SpineGpuIkFlags : uint16_t
+{
+    kIkFlagNone = 0u,
+    kIkFlagCompress = 1u << 0,
+    kIkFlagStretch = 1u << 1,
+    kIkFlagUniform = 1u << 2,
+};
+
+enum SpineGpuTransformFlags : uint16_t
+{
+    kTfFlagNone = 0u,
+    kTfFlagLocal = 1u << 0,
+    kTfFlagRelative = 1u << 1,
+};
+
+// 逐值抄 3.7 `PathConstraintData.h:39-43`（PositionMode / SpacingMode / RotateMode）
+enum SpineGpuPathPositionMode : uint8_t { kPathPosFixed = 0, kPathPosPercent = 1 };
+enum SpineGpuPathSpacingMode : uint8_t
+{
+    kPathSpacingLength = 0, kPathSpacingFixed = 1, kPathSpacingPercent = 2,
+};
+enum SpineGpuPathRotateMode : uint8_t
+{
+    kPathRotateTangent = 0, kPathRotateChain = 1, kPathRotateChainScale = 2,
+};
+
+static_assert(sizeof(SpineGpuIkConstraint) == SpineGpuConstants::kIkConstraintSize,
+              "spec: ik constraint is 20 B");
+static_assert(offsetof(SpineGpuIkConstraint, order) == 0, "ik.order @0");
+static_assert(offsetof(SpineGpuIkConstraint, bone_count) == 2, "ik.bone_count @2");
+static_assert(offsetof(SpineGpuIkConstraint, bone_first) == 4, "ik.bone_first @4");
+static_assert(offsetof(SpineGpuIkConstraint, target) == 8, "ik.target @8");
+static_assert(offsetof(SpineGpuIkConstraint, mix) == 12, "ik.mix @12");
+static_assert(offsetof(SpineGpuIkConstraint, bend_dir) == 16, "ik.bend_dir @16");
+static_assert(offsetof(SpineGpuIkConstraint, flags) == 18, "ik.flags @18");
+
+static_assert(sizeof(SpineGpuTransformConstraint) == SpineGpuConstants::kTransformConstraintSize,
+              "spec: transform constraint is 56 B");
+static_assert(offsetof(SpineGpuTransformConstraint, target) == 8, "tf.target @8");
+static_assert(offsetof(SpineGpuTransformConstraint, offset_rotation) == 12, "tf.offset_rotation @12");
+static_assert(offsetof(SpineGpuTransformConstraint, offset_shear_y) == 32, "tf.offset_shear_y @32");
+static_assert(offsetof(SpineGpuTransformConstraint, shear_mix) == 48, "tf.shear_mix @48");
+static_assert(offsetof(SpineGpuTransformConstraint, flags) == 52, "tf.flags @52");
+static_assert(offsetof(SpineGpuTransformConstraint, pad) == 54, "tf.pad @54");
+
+static_assert(sizeof(SpineGpuPathConstraint) == SpineGpuConstants::kPathConstraintSize,
+              "spec: path constraint is 40 B");
+static_assert(offsetof(SpineGpuPathConstraint, target_slot) == 8, "path.target_slot @8");
+static_assert(offsetof(SpineGpuPathConstraint, position_mode) == 12, "path.position_mode @12");
+static_assert(offsetof(SpineGpuPathConstraint, spacing_mode) == 13, "path.spacing_mode @13");
+static_assert(offsetof(SpineGpuPathConstraint, rotate_mode) == 14, "path.rotate_mode @14");
+static_assert(offsetof(SpineGpuPathConstraint, pad) == 15, "path.pad @15");
+static_assert(offsetof(SpineGpuPathConstraint, offset_rotation) == 16, "path.offset_rotation @16");
+static_assert(offsetof(SpineGpuPathConstraint, translate_mix) == 32, "path.translate_mix @32");
+static_assert(offsetof(SpineGpuPathConstraint, path_index) == 36, "path.path_index @36");
+
+static_assert(std::is_standard_layout_v<SpineGpuIkConstraint>, "ik must stay standard-layout");
+static_assert(std::is_standard_layout_v<SpineGpuTransformConstraint>, "tf must stay standard-layout");
+static_assert(std::is_standard_layout_v<SpineGpuPathConstraint>, "path must stay standard-layout");
+
+inline bool operator==(const SpineGpuIkConstraint& a, const SpineGpuIkConstraint& b)
+{
+    return a.order == b.order && a.bone_count == b.bone_count && a.bone_first == b.bone_first &&
+           a.target == b.target && a.mix == b.mix && a.bend_dir == b.bend_dir && a.flags == b.flags;
+}
+inline bool operator!=(const SpineGpuIkConstraint& a, const SpineGpuIkConstraint& b)
+{
+    return !(a == b);
+}
+
+inline bool operator==(const SpineGpuTransformConstraint& a, const SpineGpuTransformConstraint& b)
+{
+    return a.order == b.order && a.bone_count == b.bone_count && a.bone_first == b.bone_first &&
+           a.target == b.target && a.offset_rotation == b.offset_rotation && a.offset_x == b.offset_x &&
+           a.offset_y == b.offset_y && a.offset_scale_x == b.offset_scale_x &&
+           a.offset_scale_y == b.offset_scale_y && a.offset_shear_y == b.offset_shear_y &&
+           a.rotate_mix == b.rotate_mix && a.translate_mix == b.translate_mix &&
+           a.scale_mix == b.scale_mix && a.shear_mix == b.shear_mix && a.flags == b.flags &&
+           a.pad == b.pad;
+}
+inline bool operator!=(const SpineGpuTransformConstraint& a, const SpineGpuTransformConstraint& b)
+{
+    return !(a == b);
+}
+
+inline bool operator==(const SpineGpuPathConstraint& a, const SpineGpuPathConstraint& b)
+{
+    return a.order == b.order && a.bone_count == b.bone_count && a.bone_first == b.bone_first &&
+           a.target_slot == b.target_slot && a.position_mode == b.position_mode &&
+           a.spacing_mode == b.spacing_mode && a.rotate_mode == b.rotate_mode && a.pad == b.pad &&
+           a.offset_rotation == b.offset_rotation && a.position == b.position &&
+           a.spacing == b.spacing && a.rotate_mix == b.rotate_mix &&
+           a.translate_mix == b.translate_mix && a.path_index == b.path_index;
+}
+inline bool operator!=(const SpineGpuPathConstraint& a, const SpineGpuPathConstraint& b)
+{
+    return !(a == b);
+}
+
+// ---------------------------------------------------------------------
+// 执行顺序（chunk 19，4 B/条，v11）
+// ---------------------------------------------------------------------
+// `Skeleton::updateCache()`（3.7 `Skeleton.cpp:134-178`）算出来的 `_updateCache`
+// **原样落盘**，运行时照着遍历就行。
+//
+// 为什么不落"让运行时重排"：重排规则有 `sortBone` 的递归 + 约束 order 两层
+// （`order` 是**三类约束共用的排名**，且 `updateCache` 用 `goto continue_outer`
+//  按 i = 0..N-1 逐个找 order == i 的那条）。运行时再实现一遍就是给自己
+// 多一次写反的机会，而写反的表现是"姿势略偏"，查不出来。
+//
+// ⚠️ `_updateCacheReset` 也要落：它是"在遍历之前要把哪些骨骼复位到 setup"
+// 的列表（3.7 `Skeleton.cpp:200-211`）。少复位会让上一帧的应用值残留，
+// 表现是"动作拖影"，同样不报错。
+enum SpineGpuUpdateKind : uint8_t
+{
+    kUpdateBone = 0,
+    kUpdateIk = 1,
+    kUpdateTransform = 2,
+    kUpdatePath = 3,
+};
+
+struct SpineGpuUpdateStep
+{
+    uint8_t kind = 0;       // @0  SpineGpuUpdateKind
+    uint8_t pad = 0;        // @1  落盘必须写 0
+    // 约束下标是**该类内的**下标（ik / transform / path 各自从 0 数），
+    // 与 chunk 18 三段数组的下标一致。
+    uint16_t index = 0;     // @2
+};
+
+static_assert(sizeof(SpineGpuUpdateStep) == SpineGpuConstants::kUpdateStepSize,
+              "spec: update step is 4 B");
+static_assert(offsetof(SpineGpuUpdateStep, kind) == 0, "step.kind @0");
+static_assert(offsetof(SpineGpuUpdateStep, pad) == 1, "step.pad @1");
+static_assert(offsetof(SpineGpuUpdateStep, index) == 2, "step.index @2");
+static_assert(std::is_standard_layout_v<SpineGpuUpdateStep>, "step must stay standard-layout");
+
+inline bool operator==(const SpineGpuUpdateStep& a, const SpineGpuUpdateStep& b)
+{
+    return a.kind == b.kind && a.pad == b.pad && a.index == b.index;
+}
+inline bool operator!=(const SpineGpuUpdateStep& a, const SpineGpuUpdateStep& b)
+{
+    return !(a == b);
+}
+
+// ---------------------------------------------------------------------
+// PathAttachment 几何（chunk 20，36 B/条，v11）
+// ---------------------------------------------------------------------
+// path 约束的 target 是**槽位**，槽位上挂的 PathAttachment 才是骨骼要摆的曲线。
+// 没有它就算不出 `PathConstraint::computeWorldPositions()` ⇒ 必须落盘。
+//
+// ⚠️ 它**不产生绘制项**（与 boundingbox / point / clipping 一样），
+//    但仍然要烘焙 —— 这是 v11 把 path 从"不烘焙"升级成"烘焙但不画"的原因
+//    （v10 及以前 path 只在 `no_draw_attachments` 里留个名字）。
+//
+// 编码与 mesh 顶点**同构**（`SkeletonBinary::readVertices`，:1108-1130）：
+//   rigid    → vertices = [x, y] × vertex_count，bones 为空
+//   weighted → bones = [n, idx × n] × vertex_count（游程拼接），
+//              vertices = [x, y, w] × Σn
+// ⇒ `weighted` 必须显式存一个 bit：bones 为空既可能是 rigid，也可能是数据坏。
+struct SpineGpuPathAttachment
+{
+    uint16_t slot_index = 0;      // @0
+    // ⚠️ 皮肤**必须**落盘：`PathConstraint::update()` 用的是
+    //    `_target->getAttachment()`（PathConstraint.cpp:77）—— 槽位**当前**挂的附件，
+    //    而"当前"取决于激活的皮肤。只按槽位找会在换装后拿到别的皮肤的曲线。
+    uint16_t skin_index = 0;      // @2
+    uint16_t flags = 0;           // @4  kPathAttFlag*
+    uint16_t pad = 0;             // @6  落盘必须写 0
+    uint32_t vertex_count = 0;    // @8
+    uint32_t bone_offset = 0;     // @12 进 chunk 20 的 u16 池（**下标**不是字节）
+    uint32_t bone_count = 0;      // @16 u16 池条目数（rigid = 0）
+    uint32_t vertex_offset = 0;   // @20 进 chunk 20 的 f32 池（**下标**不是字节）
+    uint32_t vertex_float_count = 0;  // @24
+    uint32_t length_offset = 0;   // @28 进 lengths 池（f32 下标）
+    uint32_t length_count = 0;    // @32  = vertex_count / 3（SkeletonBinary.cpp:550）
+    // ⚠️ 附件名**必须**落盘：`PathConstraint::update()` 用的是
+    //    `_target->getAttachment()`（PathConstraint.cpp:76-80）—— 槽位**当前**挂的附件，
+    //    而"当前"会被 attachment 时间轴改掉。一个槽位在同一皮肤下挂两条 path
+    //    附件是**合法的**（实测 782 个资产里有 6 个，如 `K_Lubandashi_Spine` 的
+    //    槽位 `EFFTAIYILIZI` 挂了 `EFFTAIYILIZI` 与 `EFFTAIYILIZI2`），
+    //    ⇒ 静态烘焙只能给出"setup 时用的是哪条"（`path_index`），
+    //      运行时在 attachment 时间轴命中后必须**按名字重新查**。
+    uint32_t name_offset = 0;     // @36 进字符串表第 9 组
+};
+
+enum SpineGpuPathAttachmentFlags : uint16_t
+{
+    kPathAttFlagNone = 0u,
+    kPathAttFlagClosed = 1u << 0,
+    kPathAttFlagConstantSpeed = 1u << 1,
+    kPathAttFlagWeighted = 1u << 2,
+};
+
+static_assert(sizeof(SpineGpuPathAttachment) == SpineGpuConstants::kPathAttachmentSize,
+              "spec: path attachment record is 40 B");
+static_assert(offsetof(SpineGpuPathAttachment, slot_index) == 0, "path_att.slot_index @0");
+static_assert(offsetof(SpineGpuPathAttachment, skin_index) == 2, "path_att.skin_index @2");
+static_assert(offsetof(SpineGpuPathAttachment, flags) == 4, "path_att.flags @4");
+static_assert(offsetof(SpineGpuPathAttachment, pad) == 6, "path_att.pad @6");
+static_assert(offsetof(SpineGpuPathAttachment, vertex_count) == 8, "path_att.vertex_count @8");
+static_assert(offsetof(SpineGpuPathAttachment, bone_offset) == 12, "path_att.bone_offset @12");
+static_assert(offsetof(SpineGpuPathAttachment, bone_count) == 16, "path_att.bone_count @16");
+static_assert(offsetof(SpineGpuPathAttachment, vertex_offset) == 20, "path_att.vertex_offset @20");
+static_assert(offsetof(SpineGpuPathAttachment, vertex_float_count) == 24, "path_att.vertex_float_count @24");
+static_assert(offsetof(SpineGpuPathAttachment, length_offset) == 28, "path_att.length_offset @28");
+static_assert(offsetof(SpineGpuPathAttachment, length_count) == 32, "path_att.length_count @32");
+static_assert(offsetof(SpineGpuPathAttachment, name_offset) == 36, "path_att.name_offset @36");
+static_assert(std::is_standard_layout_v<SpineGpuPathAttachment>, "path_att stays standard-layout");
+
+inline bool operator==(const SpineGpuPathAttachment& a, const SpineGpuPathAttachment& b)
+{
+    return a.slot_index == b.slot_index && a.skin_index == b.skin_index && a.flags == b.flags &&
+           a.pad == b.pad && a.vertex_count == b.vertex_count &&
+           a.bone_offset == b.bone_offset && a.bone_count == b.bone_count &&
+           a.vertex_offset == b.vertex_offset && a.vertex_float_count == b.vertex_float_count &&
+           a.length_offset == b.length_offset && a.length_count == b.length_count &&
+           a.name_offset == b.name_offset;
+}
+inline bool operator!=(const SpineGpuPathAttachment& a, const SpineGpuPathAttachment& b)
+{
+    return !(a == b);
+}
 
 // ---------------------------------------------------------------------
 // 附件记录（chunk 7，规格 §9）
