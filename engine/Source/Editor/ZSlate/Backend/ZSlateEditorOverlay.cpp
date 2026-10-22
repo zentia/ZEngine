@@ -391,8 +391,14 @@ void ZSlateEditorOverlay::EnsurePipeline(RHI* rhi, RHIRenderPass* render_pass, u
     blend_attachment.srcColorBlendFactor = RHI_BLEND_FACTOR_SRC_ALPHA;
     blend_attachment.dstColorBlendFactor = RHI_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     blend_attachment.colorBlendOp = RHI_BLEND_OP_ADD;
+    // Alpha accumulates as "over" (a_src + a_dst * (1 - a_src)). On Vulkan the
+    // overlay draws into an offscreen UI layer that combine_ui.frag later lays over
+    // the scene, so the layer's alpha IS the coverage. With the old ONE/ZERO every
+    // quad overwrote it: a glyph quad on top of a panel wrote its own (mostly 0)
+    // alpha across the whole glyph rectangle and punched the panel out. On DX12 and
+    // Metal the overlay draws straight into the swapchain, whose alpha is ignored.
     blend_attachment.srcAlphaBlendFactor = RHI_BLEND_FACTOR_ONE;
-    blend_attachment.dstAlphaBlendFactor = RHI_BLEND_FACTOR_ZERO;
+    blend_attachment.dstAlphaBlendFactor = RHI_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     blend_attachment.alphaBlendOp = RHI_BLEND_OP_ADD;
 
     RHIPipelineColorBlendStateCreateInfo color_blend {};

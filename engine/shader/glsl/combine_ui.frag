@@ -16,14 +16,18 @@ void main()
     
     highp vec4 ui_color = subpassLoad(in_ui_color).rgba;
     
-    // Tonemap leaves alpha=1 in backup_even; only blend real UI (0 < a < 254/255).
-    if (ui_color.a < (1.0 / 255.0) || ui_color.a >= (254.0 / 255.0))
-    {
-        out_color = vec4(scene_color.rgb, 1.0);
-    }
-    else
-    {
-        ui_color = vec4(pow(ui_color.r, 1.0 / 2.2), pow(ui_color.g, 1.0 / 2.2), pow(ui_color.b, 1.0 / 2.2), pow(ui_color.a, 1.0 / 2.2));
-        out_color = vec4(mix(scene_color.rgb, ui_color.rgb, ui_color.a), 1.0);
-    }
+    // UI over scene.
+    //
+    // The UI layer (backup_even) is cleared to 0 at the start of the UI subpass and
+    // the UI pipelines blend colour as src*a + dst*(1-a) into it, so its rgb is
+    // already premultiplied by coverage and its alpha is the coverage
+    // (ZSlateEditorOverlay accumulates alpha as "over"). Premultiplied over is
+    // therefore ui.rgb + scene * (1 - ui.a); mix() would multiply by a twice.
+    //
+    // This used to skip every pixel with ui.a >= 254/255 ("tonemap leaves alpha=1
+    // in backup_even") and gamma-encode the rest -- written when the UI layer still
+    // held the tonemap output. Since backup_even is cleared before any UI is drawn,
+    // a == 1 can only mean opaque UI, and that test threw exactly those pixels away:
+    // every editor panel vanished and the swapchain showed the scene edge to edge.
+    out_color = vec4(ui_color.rgb + scene_color.rgb * (1.0 - ui_color.a), 1.0);
 }
