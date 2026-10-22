@@ -151,6 +151,12 @@ void RenderSwapContext::swap()
     std::swap(m_LogicSwapDataIndex, m_RenderSwapDataIndex);
 }
 
+void RenderSwapData::SetLevelResourceDesc(const LevelResourceDesc& desc)
+{
+    // 覆盖而不是 push_back：见头文件里的说明。
+    m_LevelResourceDesc = desc;
+}
+
 void RenderSwapData::AddDirtyGameObject(GameObjectDesc&& desc)
 {
     if (m_GameObjectResourceDesc.has_value())

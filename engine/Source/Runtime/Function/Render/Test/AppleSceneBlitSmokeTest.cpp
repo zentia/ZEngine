@@ -60,6 +60,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -106,6 +107,18 @@ namespace
     bool Contains(const std::string& text, const char* token)
     {
         return text.find(token) != std::string::npos;
+    }
+
+    int CountOccurrences(const std::string& text, const char* token)
+    {
+        int   count = 0;
+        size_t at   = 0;
+        while ((at = text.find(token, at)) != std::string::npos)
+        {
+            ++count;
+            at += std::strlen(token);
+        }
+        return count;
     }
 
     // =======================================================================
@@ -551,6 +564,113 @@ namespace
         // "环境光其实是 4x4 中性灰"这件事以前在日志里完全看不出来。
         Check(Contains(rp1_source, "'real' = the uploaded HDR cubemaps, 'fallback' = the 4x4 neutral stand-in"),
               "MainCameraRp1Pass logs whether it bound the real HDR cubemaps or the neutral fallback");
+    }
+
+    // =======================================================================
+    // 1d. RenderSwapData::m_LevelResourceDesc 的生产者（所有平台都跑）
+    //
+    // 钉的是"这个字段很久以前就有人读了，但全库没有一个写它的人"这件事。两个
+    // ProcessSwapData() 都读它、IsReadyToSwap() 拿它当门闩 —— 编译期一切正常，
+    // 于是"关卡热重载刷新全局资源"在任何平台都是死的，而且死得悄无声息。
+    //
+    // 契约分三层：生产者存在且唯一、有人触发它（关卡重载）、上传之后真的重绑。
+    // =======================================================================
+    void CheckLevelResourceProducerContracts()
+    {
+        const std::string engine_root  = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string swap_header  = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSwapContext.h");
+        const std::string swap_source  = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSwapContext.cpp");
+        const std::string sys_header   = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.h");
+        const std::string sys_source   = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+        Check(!swap_header.empty(), "RenderSwapContext.h is readable as text (level resource producer)");
+        Check(!swap_source.empty(), "RenderSwapContext.cpp is readable as text (level resource producer)");
+        Check(!sys_header.empty(), "RenderSystem.h is readable as text (level resource producer)");
+        Check(!sys_source.empty(), "RenderSystem.cpp is readable as text (level resource producer)");
+
+        // ---- 生产者存在 ----
+        Check(Contains(swap_header, "void SetLevelResourceDesc(const LevelResourceDesc& desc);"),
+              "RenderSwapData has a SetLevelResourceDesc producer (m_LevelResourceDesc had none anywhere)");
+        Check(Contains(swap_source, "void RenderSwapData::SetLevelResourceDesc"),
+              "SetLevelResourceDesc is defined");
+        Check(CountOccurrences(sys_source, "SetLevelResourceDesc(") == 1,
+              "RenderSystem writes m_LevelResourceDesc from exactly one place");
+
+        // ---- 去重用的比较 ----
+        Check(Contains(swap_header, "inline bool operator==(const LevelResourceDesc& a, const LevelResourceDesc& b)"),
+              "LevelResourceDesc is comparable (the producer de-duplicates a still-pending identical request)");
+
+        // ---- 触发点：关卡重载 ----
+        Check(Contains(sys_header, "void RequestGlobalResourceUpload();"),
+              "RenderSystem exposes RequestGlobalResourceUpload (the only producer of m_LevelResourceDesc)");
+        Check(Contains(sys_source, "void RenderSystem::RequestGlobalResourceUpload()"),
+              "RequestGlobalResourceUpload is defined");
+        Check(Contains(sys_source, "logic_swap_data.SetLevelResourceDesc(desc);"),
+              "RequestGlobalResourceUpload writes the LOGIC swap data (the render thread drains it)");
+        // Apple 上 ResubmitActiveLevelRenderers 以前是空桩，编辑器重载场景什么都不做。
+        Check(!Contains(sys_source, "void RenderSystem::ResubmitActiveLevelRenderers() {}"),
+              "RenderSystem::ResubmitActiveLevelRenderers is no longer an empty Apple stub");
+        Check(CountOccurrences(sys_source, "void RenderSystem::ResubmitActiveLevelRenderers(") == 1,
+              "there is exactly one ResubmitActiveLevelRenderers (platform-neutral, so Apple runs it too)");
+        const size_t resubmit_at = sys_source.find("void RenderSystem::ResubmitActiveLevelRenderers(");
+        const size_t request_in_resubmit =
+            sys_source.find("RequestGlobalResourceUpload();", resubmit_at);
+        Check(resubmit_at != std::string::npos && request_in_resubmit != std::string::npos,
+              "ResubmitActiveLevelRenderers requests a global resource upload (level reload now refreshes IBL)");
+
+        // ---- 上传之后必须重绑：两个 ProcessSwapData 都要 ----
+        Check(Contains(sys_source, "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"),
+              "RenderSystem includes MainCameraRp1Pass.h (needed to rebind the mesh-global IBL descriptors)");
+        Check(CountOccurrences(sys_source, "RefreshMeshGlobalIblDescriptors()") == 2,
+              "both ProcessSwapData overloads rebind the IBL descriptors after the upload (Apple + PC)");
+        const size_t apple_upload_at =
+            sys_source.find("UploadIblResources(m_Rhi, swap_data.m_LevelResourceDesc->m_IblResourceDesc)");
+        const size_t full_upload_at =
+            sys_source.find("UploadGlobalRenderResource(m_Rhi, *swap_data.m_LevelResourceDesc)");
+        const size_t rebind_1_at = sys_source.find("RefreshMeshGlobalIblDescriptors()");
+        const size_t rebind_2_at =
+            sys_source.find("RefreshMeshGlobalIblDescriptors()", rebind_1_at + 1);
+        Check(apple_upload_at != std::string::npos && rebind_1_at != std::string::npos &&
+                  apple_upload_at < rebind_1_at,
+              "the Apple upload happens before the first rebind (otherwise the descriptors point at old textures)");
+        Check(full_upload_at != std::string::npos && rebind_2_at != std::string::npos &&
+                  full_upload_at < rebind_2_at,
+              "the full upload happens before the second rebind");
+
+        // ---- Apple 那条走的是"只补 IBL + LUT"，不是整套全局上传 ----
+        Check(CountOccurrences(sys_source, "UploadGlobalRenderResource(m_Rhi, *swap_data.m_LevelResourceDesc)") == 1,
+              "only the non-Apple ProcessSwapData consumes the swap data through the full "
+              "UploadGlobalRenderResource (Apple's trimmed path never does -- it drags in "
+              "texture streaming / MegaLights)");
+        Check(Contains(sys_source, "swap_data.m_LevelResourceDesc->m_ColorGradingResourceDesc.m_ColorGradingMap"),
+              "the Apple ProcessSwapData also refreshes the color grading LUT");
+
+        // ---- 去重的边界：不能拿"上次已上传的那一份"去重，否则永远不重绑 ----
+        Check(Contains(sys_source, "identical request still pending"),
+              "the de-dup only skips a request that is still pending (a level reload always re-uploads)");
+
+        // ---- swap 门闩：Apple 的 ProcessSwapData 必须把每个门闩字段都清掉 ----
+        //
+        // IsReadyToSwap() 是拿"render buffer 里还有没有待处理项"当门闩的。Apple 那份
+        // ProcessSwapData 以前只处理三件事（全局资源 / GameObject 增删改 / 坐标轴），
+        // 粒子、相机、场景视口一概不碰 ⇒ 只要场景里有一个粒子发射器，swap() 就永久
+        // 不再被调用，游戏线程之后写的一切（包括上面那个生产者）全都送不到渲染线程。
+        const size_t apple_psd_at = sys_source.find("void RenderSystem::ProcessSwapData()");
+        const size_t else_at      = sys_source.find("\n#else", apple_psd_at);
+        Check(apple_psd_at != std::string::npos && else_at != std::string::npos,
+              "the Apple ProcessSwapData is the first of the two overloads (checked up to the #else)");
+        const std::string apple_psd = sys_source.substr(apple_psd_at, else_at - apple_psd_at);
+        Check(Contains(apple_psd, "ResetPartilceBatchSwapData()"),
+              "the Apple ProcessSwapData drains the particle submit request (IsReadyToSwap gate)");
+        Check(Contains(apple_psd, "ResetEmitterTickSwapData()"),
+              "the Apple ProcessSwapData drains the emitter tick request (IsReadyToSwap gate)");
+        Check(Contains(apple_psd, "ResetEmitterTransformSwapData()"),
+              "the Apple ProcessSwapData drains the emitter transform request (IsReadyToSwap gate)");
+        Check(Contains(apple_psd, "ResetCameraSwapData()"),
+              "the Apple ProcessSwapData drains the camera swap data (IsReadyToSwap gate)");
+        Check(Contains(apple_psd, "ResetSceneViewportSwapData()"),
+              "the Apple ProcessSwapData drains the scene viewport update (IsReadyToSwap gate)");
+        Check(Contains(apple_psd, "IsReadyToSwap"),
+              "the Apple ProcessSwapData explains WHY those unused fields must still be drained");
     }
 
 #if defined(__APPLE__)
@@ -1298,6 +1418,7 @@ int main()
 
     // IBL 的文本契约：Metal 上传的每 texel 字节数 + Apple 自己上传 + 顺序 + 日志。
     CheckIblContracts();
+    CheckLevelResourceProducerContracts();
 
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();

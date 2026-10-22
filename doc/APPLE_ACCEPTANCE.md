@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 132 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；以及 IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch） |
+| `AppleSceneBlitSmokeTest` | 160 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；以及 `m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
@@ -458,6 +458,72 @@ MainCameraRp1Pass::SetupDescriptorSets: IBL bound (irradiance=real, specular=rea
 AppleRp2Chain: offscreen post chain (backup_odd -> backup_even) ready (lut=TRUE)
 ```
 
+### 3.12 全局资源热重载：补生产者，顺带挖出整条 swap 通道的死锁
+
+**坑 A —— `m_LevelResourceDesc` 全库没有生产者。** `RenderSwapData::m_LevelResourceDesc` 被
+两条 `ProcessSwapData()` 读、`IsReadyToSwap()` 拿它当门闩，但**没有任何地方赋值** ⇒ "关卡
+热重载刷新全局资源"在任何平台都是死路，而且死得无声无息：编译期一切正常，运行期只是"换
+关卡后 IBL 还是旧的那份"。
+
+补的东西：
+
+- `RenderSwapData::SetLevelResourceDesc()`（**覆盖**语义：全局资源是一整份替换，同一帧排
+  两次只有最后一次有意义）＋ `LevelResourceDesc` 的 `operator==`/`!=`。
+- `RenderSystem::RequestGlobalResourceUpload()`：读 `GlobalRenderingRes` → 组装
+  `LevelResourceDesc` → 写 **logic** swap data。挂在 `ResubmitActiveLevelRenderers()` 上
+  （`EditorSceneManager::AfterSceneOpened` / `FileMenu` / `ZSlateSceneWindow` 三个关卡切换点
+  都调它）。Apple 上这个函数以前是空桩，现在和 PC 共用一份平台无关实现。
+- 去重**只**针对"上一次请求还在 render buffer 里没被消费"。**故意不跟"上次已上传的那一份"
+  比**：重载关卡要的不只是"内容变了要重传"，更是"传完要重绑 descriptor"；按内容去重的话
+  开场景时 desc 永远和启动时那份相同 ⇒ 一次都不会重绑。
+- 两个 `ProcessSwapData()` 上传完都调 `MainCameraRp1Pass::RefreshMeshGlobalIblDescriptors()`
+  （RP1 的 `mesh_global` descriptor 在 `SetupDescriptorSets` 里就写死了）。Apple 那条只补
+  `UploadIblResources` + `UploadColorGradingLut`，不走整套 `UploadGlobalRenderResource`
+  （那要顺带建 texture streaming / MegaLights，在 Metal 上没验过）。
+
+**坑 B —— Apple 的 `ProcessSwapData` 漏消费 ⇒ swap 永久死锁。** A 补完以后真机一跑：日志里
+`RequestGlobalResourceUpload: queued ...` 出现了，但渲染线程那行永远不出现。查下去是
+
+```cpp
+bool IsReadyToSwap() const   // 只要有一个字段挂着，swap() 就永远不会被调用
+```
+
+而 Apple 那份 `ProcessSwapData` 只处理三件事（全局资源 / GameObject 增删改 / 坐标轴），
+粒子、相机、场景视口一概不碰。`1-1.scene` 里有一个粒子发射器，`ParticleManager` 提交一次
+`m_ParticleSubmitRequest` 之后就再没人清它 ⇒ **第 N 帧之后整条 swap 通道永久死锁**。
+
+临时打点（`SwapLogicRenderData` 里打印 render buffer 的每个门闩字段）确认：
+
+```
+[SWAP-BLOCKED] level=0 go=0 del=0 cam=0 particle=1 tick=0 xform=0 viewport=0
+```
+
+影响远不止热重载：游戏线程之后写的**任何** swap 数据都送不到渲染线程。修完以后
+`entities` 从 31 变成 30（1-2.scene 的 30 个 renderer 真正进来了）—— 以前那 31 个只是死锁
+之前抢进去的第一批。
+
+修法：Apple 的 `ProcessSwapData` 末尾把粒子 / 相机 / 场景视口三个门闩字段清掉（Apple 上没
+有消费者，但**必须**清，否则下一帧继续死锁）。粒子**故意不**交给
+`RenderPipeline::ConsumeParticleSwapData()`：那条路径会在 Metal 上建 GPU 资源，没验过。
+
+真机（切到另一张关卡，18:05:15）：
+
+```
+RequestGlobalResourceUpload: queued global resource upload (brdf=asset/texture/global/brdf_schilk.hdr, lut=asset/texture/lut/color_grading_lut_01.png)
+ResubmitActiveLevelRenderers: 30 renderer(s)
+Restored last scene: level/1-2.scene
+ProcessSwapData: level resource swap data arrived -- re-uploading IBL + LUT and rebinding
+RenderResource: IBL HDR upload complete (irradiance 256x256, specular 256x256, BRDF 256x256, api=2)
+RenderResource: color grading LUT 'asset/texture/lut/color_grading_lut_01.png' uploaded (256x16, format=37)
+AppleRender: frame=121 entities=30 visible=2 scene_color_view=1 blit_ready=1 rp2_tonemapped=1 swapchain=2560x1440
+```
+
+想自己复现：把 `asset/level/1-1.scene` 复制成 `1-2.scene`，再写
+`bin/Debug/saved/config/editor_project_prefs.json` = `{"LastOpenedScene": "level/1-2.scene"}`
+（level url **不带** `asset/` 前缀，`LevelUrlToAbsolutePath` 自己会加），启动时
+`TryRestoreLastOpenedScene` 就会真走一次 `OpenSceneInternal` → `AfterSceneOpened`。
+注意 `scripts/run_editor_macos.sh` 会 `rm -rf bin/Debug/asset` 重拷，跑之前先确认 1-2 还在。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - **RP2 只有 step 0（显示变换）+ LUT**：FXAA 没做 —— 它要一个只在 `enable_fxaa=true` 时才
@@ -473,12 +539,14 @@ AppleRp2Chain: offscreen post chain (backup_odd -> backup_even) ready (lut=TRUE)
   `IBL bound (irradiance=real, specular=real, brdf=real)`，那条
   `IBL textures unavailable` 已经不再出现（它顺带从 `[E]` 降级成 `[W]` 并改成了准确措辞，
   因为它从来不是"设备掉了"，只是"还没上传"）。
-- **IBL 的热重载只有 DX12 有**：`RenderSwapContext::m_LevelResourceDesc` 全库没有生产者，
-  两条 `ProcessSwapData()` 都读它，但没有任何地方给它赋值 ⇒ "关卡热重载刷新全局资源"这条
-  路目前在任何平台都不通。DX12 靠 `OnGlobalRenderResourceUploaded()` /
-  `MainCameraRp1Pass::RefreshMeshGlobalIblDescriptors()` 走另一条路；Apple 因为把上传排在
-  `RenderPipeline::Initialize` 之前，初始化时就绑到了真图，不需要重绑 —— 但**换关卡换 IBL
-  依然不会生效**。LUT 的热重载是靠 RP2 每帧重取 view 绕过去的。
+- ~~**IBL 的热重载只有 DX12 有**~~ —— 已修，见 §3.12：`m_LevelResourceDesc` 现在有生产者
+  （`RenderSystem::RequestGlobalResourceUpload()`），两条 `ProcessSwapData()` 上传完都会重绑
+  `MainCameraRp1Pass::RefreshMeshGlobalIblDescriptors()`。顺带挖出并修掉了 Apple 上整条 swap
+  通道的死锁（任何关卡切换的数据以前都送不到渲染线程）。
+- **Apple 上粒子仍然没有消费者**：`ProcessSwapData` 只把粒子的三个 swap 字段**清掉**（它们
+  是 `IsReadyToSwap()` 的门闩，不清就死锁），并没有交给
+  `RenderPipeline::ConsumeParticleSwapData()` —— 那条路径会在 Metal 上建粒子的 GPU 资源，
+  从来没验过。表现是场景里的发射器不冒粒子，且不报错。
 
 - **点光源阴影 pass 在 Metal 上不做**：它靠 geometry shader 做 cubemap 展开，Metal 没有
   geometry shader。现在和 DX12 一样是 clear-only，不抛错。

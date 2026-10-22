@@ -1,5 +1,18 @@
 #include "RenderSystem.h"
 
+// 这三个放在 `#if` 外面：关卡重载 / 全局资源上传现在是**平台无关**的一份实现
+// （文件末尾那段），两个平台都要这几个头。
+//
+// MainCameraRp1Pass.h 在所有平台都编译（见 Runtime/CMakeLists.txt 里
+// "MainCameraRp1Pass / MainCameraFramebufferResources / ShadowPassShared 这些完全
+// 平台无关的 TU" 那段注释），它自己也只 include 平台无关的 pass 头。
+#include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Memory/MemoryManager.h"
+#include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
+#include "Runtime/Function/Framework/Level/Level.h"
+#include "Runtime/Function/Framework/World/WorldManager.h"
+#include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
+
 // Lightweight stub only on Metal (Apple) and WebGL2 (Emscripten). Windows
 // DX12-only builds (ZENGINE_USE_VULKAN=OFF) must use the full implementation
 // below so SwapLogicRenderData / ProcessSwapData / RenderScene mesh upload work.
@@ -418,7 +431,8 @@ GuidAllocator<MeshSourceDesc>& RenderSystem::GetMeshAssetIdAllocator()
     return allocator;
 }
 void RenderSystem::ClearForLevelReloading() {}
-void RenderSystem::ResubmitActiveLevelRenderers() {}
+// ResubmitActiveLevelRenderers 不再有 Apple 专属的空桩：它的实现现在是平台无关
+// 的一份（文件末尾），Apple 上也会真正跑起来 —— 顺带把全局资源上传排上。
 void RenderSystem::SyncGameCameraFromMainCamera() {}
 void RenderSystem::ProcessSwapData()
 {
@@ -437,7 +451,28 @@ void RenderSystem::ProcessSwapData()
 
     if (swap_data.m_LevelResourceDesc.has_value())
     {
-        m_RenderResource->UploadGlobalRenderResource(m_Rhi, *swap_data.m_LevelResourceDesc);
+        // Apple / Metal 走的是精简 Initialize，**从不**调 UploadGlobalRenderResource
+        // （那要顺带建 texture streaming manager / MegaLights / storage buffer，是
+        // 另一件事，而且在 Metal 上没验过），所以这里也只补它自己补的那两样：
+        // IBL + 颜色分级 LUT。
+        LOG_INFO(ZRender,
+                 "ProcessSwapData: level resource swap data arrived -- re-uploading IBL + LUT and rebinding");
+        const auto render_resource = std::static_pointer_cast<RenderResource>(m_RenderResource);
+        render_resource->UploadIblResources(m_Rhi, swap_data.m_LevelResourceDesc->m_IblResourceDesc);
+        render_resource->UploadColorGradingLut(
+            m_Rhi, swap_data.m_LevelResourceDesc->m_ColorGradingResourceDesc.m_ColorGradingMap);
+
+        // 上传完**必须重绑**：RP1 的 mesh_global descriptor 在 SetupDescriptorSets
+        // 里就写死了，不重绑的话新 cubemap 永远进不了 shader —— 热重载前后画面
+        // 完全一样，看起来就像"没生效"。
+        if (m_RenderPipeline != nullptr)
+        {
+            if (auto* rp1 = dynamic_cast<MainCameraRp1Pass*>(m_RenderPipeline->GetMainCameraPass()))
+            {
+                rp1->RefreshMeshGlobalIblDescriptors();
+            }
+        }
+
         m_SwapContext.ResetLevelRsourceSwapData();
     }
 
@@ -467,6 +502,35 @@ void RenderSystem::ProcessSwapData()
     {
         m_RenderScene->m_RenderAxis = swap_data.m_VisibleAxis;
         m_SwapContext.ResetVisibleAxisSwapData();
+    }
+
+    // ---- 下面这批字段 Apple 上没有消费者，但**必须**清掉 ----
+    //
+    // IsReadyToSwap() 是拿"render buffer 里还有没有待处理项"当门闩的：只要有一个
+    // 字段一直挂着，swap() 就**永远**不会被调用 —— 于是游戏线程写进 logic buffer
+    // 的任何东西都再也送不到渲染线程。
+    //
+    // 真机上就是这么死的：1-1.scene 里有个粒子发射器，ParticleManager 提交一次
+    // m_ParticleSubmitRequest 之后 Apple 的 ProcessSwapData 从不碰它 ⇒ 第 N 帧之后
+    // 整条 swap 通道永久死锁。表现是"关卡热重载完全没反应"：连
+    // ResubmitActiveLevelRenderers 重新提交的 30 个 renderer 都进不来。
+    //
+    // 粒子这里**故意不走** m_RenderPipeline->ConsumeParticleSwapData()：那条路径
+    // 会在 Metal 上建粒子的 GPU 资源，从来没验过；而 Apple 在此之前本来也从来没
+    // 消费过粒子（只是以前连"没消费"都看不出来，因为整个 swap 已经死了）。
+    m_SwapContext.ResetPartilceBatchSwapData();
+    m_SwapContext.ResetEmitterTickSwapData();
+    m_SwapContext.ResetEmitterTransformSwapData();
+
+    // 相机 / 场景视口：Apple 上同样没有消费者（SyncGameCameraFromMainCamera 是
+    // 空体），一样不能留着 —— 否则下一帧就又是死锁。
+    if (swap_data.m_CameraSwapData.has_value())
+    {
+        m_SwapContext.ResetCameraSwapData();
+    }
+    if (swap_data.m_SceneViewportUpdatePending)
+    {
+        m_SwapContext.ResetSceneViewportSwapData();
     }
 }
 void RenderSystem::FlushRenderingCommands()
@@ -1199,38 +1263,7 @@ void RenderSystem::ClearForLevelReloading()
     m_SwapContext.ResetLogicGameObjectSwapData();
 }
 
-void RenderSystem::ResubmitActiveLevelRenderers()
-{
-    WorldManager* world_manager = GET_SYSTEM(WorldManager);
-    if (world_manager == nullptr)
-    {
-        return;
-    }
-
-    Level* active_level = world_manager->getCurrentActiveLevel();
-    if (active_level == nullptr)
-    {
-        return;
-    }
-
-    uint32_t resubmit_count = 0;
-    for (const auto& id_object_pair : active_level->getAllGObjects())
-    {
-        const std::shared_ptr<GameObject>& object = id_object_pair.second;
-        if (object == nullptr)
-        {
-            continue;
-        }
-
-        if (BaseRenderer* renderer = object->tryGetComponent(BaseRenderer))
-        {
-            renderer->RefreshRenderStateFromTransformDispatch();
-            ++resubmit_count;
-        }
-    }
-
-    LOG_INFO(ZRender, "ResubmitActiveLevelRenderers: {} renderer(s)", resubmit_count);
-}
+// ResubmitActiveLevelRenderers 搬到文件末尾的平台无关段了（Apple 也要跑）。
 
 void RenderSystem::InitializeUIRenderBackend(WindowUI* window_ui)
 {
@@ -1274,6 +1307,18 @@ void RenderSystem::ProcessSwapData()
     if (swap_data.m_LevelResourceDesc.has_value())
     {
         m_RenderResource->UploadGlobalRenderResource(m_Rhi, *swap_data.m_LevelResourceDesc);
+
+        // 平台无关的重绑：RP1（DX12 和 Metal 都用它）在 SetupDescriptorSets 里就把
+        // mesh_global descriptor 写死了，上传完不重绑 ⇒ shader 里拿的还是旧
+        // cubemap。以前只有 DX12 那条（OnGlobalRenderResourceUploaded），Apple /
+        // Metal 上上传完没人管。
+        if (m_RenderPipeline != nullptr)
+        {
+            if (auto* rp1 = dynamic_cast<MainCameraRp1Pass*>(m_RenderPipeline->GetMainCameraPass()))
+            {
+                rp1->RefreshMeshGlobalIblDescriptors();
+            }
+        }
 
     #if defined(_WIN32)
         if (m_Rhi != nullptr && m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12 && m_RenderPipeline != nullptr)
@@ -1424,4 +1469,120 @@ RHIDrawList& RenderSystem::GetFrameDrawList(uint32_t slot)
 {
     const uint32_t max_frames = std::max(1u, RenderFramePipeline::GetMaxFramesInFlight());
     return m_FrameDrawLists[slot % max_frames];
+}
+
+// ===========================================================================
+// RenderSwapData::m_LevelResourceDesc 的唯一生产者。
+//
+// 它以前**全库没有生产者**：两个 ProcessSwapData() 都读它、IsReadyToSwap() 拿它当
+// 门闩，但没有任何地方赋值 ⇒ "关卡热重载刷新全局资源"在任何平台都不通。
+//
+// 必须由**游戏线程**调用（写 logic swap data），上传本身在渲染线程的
+// ProcessSwapData() 里做。
+// ===========================================================================
+void RenderSystem::RequestGlobalResourceUpload()
+{
+    if (m_RenderResource == nullptr)
+    {
+        return;
+    }
+
+    auto* config_manager = GET_SYSTEM(ConfigManager);
+    auto* asset_manager  = GET_SYSTEM(AssetManager);
+    if (config_manager == nullptr || asset_manager == nullptr)
+    {
+        LOG_WARNING(ZRender,
+                    "RequestGlobalResourceUpload: ConfigManager/AssetManager unavailable -- "
+                    "global resources are not re-uploaded for this level");
+        return;
+    }
+
+    const eastl::string& global_rendering_url = config_manager->GetGlobalRenderingResUrl();
+    if (global_rendering_url.empty())
+    {
+        LOG_WARNING(ZRender,
+                    "RequestGlobalResourceUpload: global rendering res url is empty -- "
+                    "global resources are not re-uploaded for this level");
+        return;
+    }
+
+    GlobalRenderingRes* global_rendering_res = asset_manager->loadAsset<GlobalRenderingRes>(global_rendering_url);
+    if (global_rendering_res == nullptr)
+    {
+        LOG_WARNING(ZRender,
+                    "RequestGlobalResourceUpload: could not load '{}' -- global resources stay as-is",
+                    global_rendering_url.c_str());
+        return;
+    }
+
+    LevelResourceDesc desc;
+    desc.m_IblResourceDesc.m_SkyboxIrradianceMap         = global_rendering_res->m_SkyboxIrradianceMap;
+    desc.m_IblResourceDesc.m_SkyboxSpecularMap           = global_rendering_res->m_SkyboxSpecularMap;
+    desc.m_IblResourceDesc.m_BrdfMap                     = global_rendering_res->m_BrdfMap;
+    desc.m_ColorGradingResourceDesc.m_ColorGradingMap    = global_rendering_res->m_ColorGradingMap;
+    MemoryManager::DestroyObject(global_rendering_res);
+
+    // 去重只针对"上一次请求还没被渲染线程消费"这种情况（SetLevelResourceDesc 是
+    // 覆盖语义，本来也不会堆积）。
+    //
+    // 这里**故意不跟"上次已上传的那一份"比**：重载关卡要的不只是"资源内容变了要重
+    // 传"，更是"上传完要重绑 descriptor"（ProcessSwapData 里的
+    // RefreshMeshGlobalIblDescriptors）。若按内容去重，开场景时 desc 永远和启动时
+    // 那份相同 ⇒ 一次都不会重绑，热重载后 shader 里还是旧 IBL。
+    RenderSwapData& logic_swap_data = m_SwapContext.GetLogicSwapData();
+    if (logic_swap_data.m_LevelResourceDesc.has_value() && *logic_swap_data.m_LevelResourceDesc == desc)
+    {
+        LOG_INFO(ZRender, "RequestGlobalResourceUpload: identical request still pending -- not re-queued");
+        return;
+    }
+
+    logic_swap_data.SetLevelResourceDesc(desc);
+    LOG_INFO(ZRender,
+             "RequestGlobalResourceUpload: queued global resource upload (brdf={}, lut={})",
+             desc.m_IblResourceDesc.m_BrdfMap.c_str(),
+             desc.m_ColorGradingResourceDesc.m_ColorGradingMap.c_str());
+}
+
+// ===========================================================================
+// 关卡重载 / 开场景之后的重建：重新提交关卡里的 BaseRenderer，并排一次全局资源
+// 上传。
+//
+// 这份以前只存在于 `#else`（非 Apple）分支，Apple 上是空桩 ⇒ 编辑器在 Mac 上
+// 重载场景时"什么都不做"。
+// ===========================================================================
+void RenderSystem::ResubmitActiveLevelRenderers()
+{
+    // 全局资源（IBL 的 12 张 HDR 面 + BRDF + LUT）不挂在关卡上，但它们上传完之后
+    // 要重绑 descriptor —— 排一次上传，ProcessSwapData 里会顺带重绑。
+    RequestGlobalResourceUpload();
+
+    WorldManager* world_manager = GET_SYSTEM(WorldManager);
+    if (world_manager == nullptr)
+    {
+        return;
+    }
+
+    Level* active_level = world_manager->getCurrentActiveLevel();
+    if (active_level == nullptr)
+    {
+        return;
+    }
+
+    uint32_t resubmit_count = 0;
+    for (const auto& id_object_pair : active_level->getAllGObjects())
+    {
+        const std::shared_ptr<GameObject>& object = id_object_pair.second;
+        if (object == nullptr)
+        {
+            continue;
+        }
+
+        if (BaseRenderer* renderer = object->tryGetComponent(BaseRenderer))
+        {
+            renderer->RefreshRenderStateFromTransformDispatch();
+            ++resubmit_count;
+        }
+    }
+
+    LOG_INFO(ZRender, "ResubmitActiveLevelRenderers: {} renderer(s)", resubmit_count);
 }

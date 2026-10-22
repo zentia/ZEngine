@@ -107,7 +107,20 @@ public:
     void ClearForLevelReloading();
 
     // Re-queue every BaseRenderer in the active level (after scene open / reload).
+    // Also re-queues the global render resources (IBL + LUT) so the render thread
+    // re-uploads AND rebinds them -- see RequestGlobalResourceUpload().
     void ResubmitActiveLevelRenderers();
+
+    /// `RenderSwapData::m_LevelResourceDesc` 的**唯一生产者**。
+    ///
+    /// 从 GlobalRenderingRes 读出 IBL 的 12 张 HDR cubemap 面 + BRDF + 颜色分级
+    /// LUT，排进 logic swap data；渲染线程的 `ProcessSwapData()` 会上传它并**重绑**
+    /// descriptor（见那里的 `RefreshMeshGlobalIblDescriptors`）。
+    ///
+    /// 这个字段以前全库没有生产者 —— 两个 `ProcessSwapData()` 都读它、
+    /// `IsReadyToSwap()` 拿它当门闩，但没有任何地方赋值 ⇒ "关卡热重载刷新全局
+    /// 资源"在任何平台都不通。
+    void RequestGlobalResourceUpload();
 
     // 获取渲染管线（供 Editor 注册回调使用）
     std::shared_ptr<RenderPipelineBase> getRenderPipeline() const { return m_RenderPipeline; }
