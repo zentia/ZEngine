@@ -307,6 +307,12 @@ void NaniteRenderer::Render(RHI* rhi,
     if (config.use_gpu_culling && PrepareGPUData(camera, config))
     {
         DispatchClusterCulling(camera, config);
+
+        // 画不画、画到哪儿，取决于有没有人注入过光栅目标：
+        //   * 注入过（SetRasterRenderPass）⇒ 这个 pass 属于调用方，绘制必须发生在
+        //     它开着的时候。这里在任何 pass 之前执行，画不了 —— 由调用方在 pass 里
+        //     调 DrawClustersIndirectInPass。DrawClustersIndirect 自己也认这个约定。
+        //   * 没注入 ⇒ Nanite 用自己的离屏 target，自己开/关 pass。
         DrawClustersIndirect();
     }
 }
@@ -1136,24 +1142,25 @@ void NaniteRenderer::DrawClustersIndirect()
         return;
     }
 
-    // ---- 1. 光栅目标：注入的优先，否则用自己的离屏 target ------------------------
+    // 已经注入了目标 ⇒ 那个 pass 属于调用方，绘制要发生在它开着的时候。这里再画
+    // 一遍就是往没人读的离屏图上再画一份，白白多一次绘制。
     //
     // 以前这里只认 raster_render_pass，而它**从来没有调用者** ⇒ 光栅管线永远建不
     // 起来 ⇒ 剔除完的命令一条都没被消费。Nanite 于是"跑在 GPU 上"却什么都不画。
-    RHIRenderPass*  pass = m_GPU.external_render_pass;
-    RHIFramebuffer* framebuffer = nullptr;  // 非空 = 这个 pass 由 Nanite 自己开/关
-
-    if (pass == nullptr)
+    if (m_GPU.external_render_pass != nullptr)
     {
-        if (!EnsureRasterTarget())
-        {
-            return;
-        }
-        pass = m_GPU.target_render_pass;
-        framebuffer = m_GPU.target_framebuffer;
+        return;
     }
 
-    if (pass == nullptr)
+    // ---- 1. 光栅目标：Nanite 自己的离屏 target ----------------------------------
+    if (!EnsureRasterTarget())
+    {
+        return;
+    }
+
+    RHIRenderPass*  pass = m_GPU.target_render_pass;
+    RHIFramebuffer* framebuffer = m_GPU.target_framebuffer;
+    if (pass == nullptr || framebuffer == nullptr)
     {
         return;
     }
@@ -1183,61 +1190,116 @@ void NaniteRenderer::DrawClustersIndirect()
         return;
     }
 
-    // ---- 3. 开 pass（只在 Nanite 拥有 framebuffer 时） ---------------------------
-    const bool owns_pass = (m_GPU.raster_framebuffer != nullptr);
-    if (owns_pass)
-    {
-        const uint32_t width = m_GPU.target_width;
-        const uint32_t height = m_GPU.target_height;
+    // ---- 3. 开 pass --------------------------------------------------------------
+    //
+    // 走到这里 target 一定是 Nanite 自己的，所以 pass 的开与关都归它。
+    const uint32_t width = m_GPU.target_width;
+    const uint32_t height = m_GPU.target_height;
 
-        // 清成深灰 + 深度 1.0。离屏 target 的颜色是"有没有画出东西"的判据：
-        // 冒烟测试读回这张图，只要有像素不等于这个颜色，就说明真的有三角形落上去。
-        RHIClearValue clear_values[2] = {};
-        clear_values[0].color.float32[0] = 0.05f;
-        clear_values[0].color.float32[1] = 0.05f;
-        clear_values[0].color.float32[2] = 0.06f;
-        clear_values[0].color.float32[3] = 1.0f;
-        clear_values[1].depthStencil.depth = 1.0f;
-        clear_values[1].depthStencil.stencil = 0;
+    // 清成深灰 + 深度 1.0。离屏 target 的颜色是"有没有画出东西"的判据：
+    // 冒烟测试读回这张图，只要有像素不等于这个颜色，就说明真的有三角形落上去。
+    RHIClearValue clear_values[2] = {};
+    clear_values[0].color.float32[0] = 0.05f;
+    clear_values[0].color.float32[1] = 0.05f;
+    clear_values[0].color.float32[2] = 0.06f;
+    clear_values[0].color.float32[3] = 1.0f;
+    clear_values[1].depthStencil.depth = 1.0f;
+    clear_values[1].depthStencil.stencil = 0;
 
-        RHIRenderPassBeginInfo begin_info {};
-        begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        begin_info.pNext = nullptr;
-        begin_info.renderPass = pass;
-        begin_info.framebuffer = m_GPU.raster_framebuffer;
-        begin_info.renderArea.offset.x = 0;
-        begin_info.renderArea.offset.y = 0;
-        begin_info.renderArea.extent.width = width;
-        begin_info.renderArea.extent.height = height;
-        begin_info.clearValueCount = 2;
-        begin_info.pClearValues = clear_values;
+    RHIRenderPassBeginInfo begin_info {};
+    begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    begin_info.pNext = nullptr;
+    begin_info.renderPass = pass;
+    begin_info.framebuffer = framebuffer;
+    begin_info.renderArea.offset.x = 0;
+    begin_info.renderArea.offset.y = 0;
+    begin_info.renderArea.extent.width = width;
+    begin_info.renderArea.extent.height = height;
+    begin_info.clearValueCount = 2;
+    begin_info.pClearValues = clear_values;
 
-        m_Rhi->CmdBeginRenderPassPFN(command_buffer, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+    m_Rhi->CmdBeginRenderPassPFN(command_buffer, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
 
-        // viewport / scissor 在管线里是**动态状态**，Vulkan / DX12 不设就是未定义
-        // 行为（Vulkan 上会真的画不出来）。所以这里必须设。
-        //
-        // 已知盲区：Metal 的默认 viewport 恰好等于附件尺寸，所以"删掉这两行"这个
-        // 变异在本机跑不出来（59 项全绿）。这两行是被另外三个后端需要的，不是被
-        // 这个测试钉住的 —— 别以为它绿就等于验证了。
-        RHIViewport viewport {};
-        viewport.x = 0.0f;
-        viewport.y = 0.0f;
-        viewport.width = static_cast<float>(width);
-        viewport.height = static_cast<float>(height);
-        viewport.minDepth = 0.0f;
-        viewport.maxDepth = 1.0f;
-        m_Rhi->CmdSetViewportPFN(command_buffer, 0, 1, &viewport);
+    // viewport / scissor 在管线里是**动态状态**，Vulkan / DX12 不设就是未定义
+    // 行为（Vulkan 上会真的画不出来）。所以这里必须设。
+    //
+    // 已知盲区：Metal 的默认 viewport 恰好等于附件尺寸，所以"删掉这两行"这个
+    // 变异在本机跑不出来（59 项全绿）。这两行是被另外三个后端需要的，不是被
+    // 这个测试钉住的 —— 别以为它绿就等于验证了。
+    RHIViewport viewport {};
+    viewport.x = 0.0f;
+    viewport.y = 0.0f;
+    viewport.width = static_cast<float>(width);
+    viewport.height = static_cast<float>(height);
+    viewport.minDepth = 0.0f;
+    viewport.maxDepth = 1.0f;
+    m_Rhi->CmdSetViewportPFN(command_buffer, 0, 1, &viewport);
 
-        RHIRect2D scissor {};
-        scissor.offset.x = 0;
-        scissor.offset.y = 0;
-        scissor.extent.width = width;
-        scissor.extent.height = height;
-        m_Rhi->CmdSetScissorPFN(command_buffer, 0, 1, &scissor);
-    }
+    RHIRect2D scissor {};
+    scissor.offset.x = 0;
+    scissor.offset.y = 0;
+    scissor.extent.width = width;
+    scissor.extent.height = height;
+    m_Rhi->CmdSetScissorPFN(command_buffer, 0, 1, &scissor);
 
     // ---- 4. 唯一的一次绘制 ------------------------------------------------------
+    RecordClusterDraw(command_buffer);
+
+    m_Rhi->CmdEndRenderPassPFN(command_buffer);
+
+    if (owns_command_buffer)
+    {
+        m_Rhi->EndSingleTimeCommands(command_buffer);
+    }
+}
+
+void NaniteRenderer::DrawClustersIndirectInPass(RHICommandBuffer* command_buffer)
+{
+    if (m_Rhi == nullptr || command_buffer == nullptr)
+    {
+        // 没有命令缓冲 = 调用方并没有真的站在一个开着的 pass 里。宁可什么都不画，
+        // 也不要往一个不存在的 encoder 里塞绘制命令。
+        return;
+    }
+    if (m_GPU.external_render_pass == nullptr)
+    {
+        // 没有注入目标 ⇒ 没有人声明"我在这个 pass 里"。离屏那半边由
+        // DrawClustersIndirect() 负责，这里不替它做决定。
+        return;
+    }
+    if (m_GPU.dispatch_cluster_count == 0)
+    {
+        return;
+    }
+
+    // 注入的 pass 换了（或者第一次用）⇒ 管线照着它的附件格式重建。
+    //
+    // raster_framebuffer 在这里恒为 nullptr：那个 framebuffer 是调用方的，Nanite
+    // 既不 begin 也不 end 它。
+    if (m_GPU.raster_render_pass != m_GPU.external_render_pass)
+    {
+        m_GPU.raster_render_pass = m_GPU.external_render_pass;
+        m_GPU.raster_framebuffer = nullptr;
+        m_GPU.raster_ready = false;
+    }
+
+    if (!m_GPU.raster_ready && !EnsureRasterPipeline())
+    {
+        return;
+    }
+
+    // 只追加绘制。viewport / scissor / clear 都是调用方的：它在开 pass 之前已经
+    // 设好了自己的视口，Nanite 抢过去改会把排在后面的绘制一起改坏。
+    RecordClusterDraw(command_buffer);
+}
+
+void NaniteRenderer::RecordClusterDraw(RHICommandBuffer* command_buffer)
+{
+    if (m_Rhi == nullptr || command_buffer == nullptr)
+    {
+        return;
+    }
+
     m_Rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_GRAPHICS, m_GPU.raster_pipeline);
     m_Rhi->CmdBindDescriptorSetsPFN(command_buffer,
                                     RHI_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1256,16 +1318,6 @@ void NaniteRenderer::DrawClustersIndirect()
                                   0,
                                   m_GPU.dispatch_cluster_count,
                                   static_cast<uint32_t>(sizeof(RHIDrawIndexedIndirectCommand)));
-
-    if (owns_pass)
-    {
-        m_Rhi->CmdEndRenderPassPFN(command_buffer);
-    }
-
-    if (owns_command_buffer)
-    {
-        m_Rhi->EndSingleTimeCommands(command_buffer);
-    }
 }
 
 void NaniteRenderer::SetRasterRenderPass(RHIRenderPass* render_pass, RHIFramebuffer* framebuffer)

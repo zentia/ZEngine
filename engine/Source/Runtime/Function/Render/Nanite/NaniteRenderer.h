@@ -178,19 +178,36 @@ public:
     // 绑好索引缓冲与描述符集后发 CmdDrawIndexedIndirect。drawCount 是集群总数
     // （上界），被剔除的集群贡献的是 indexCount == 0 的空命令。
     //
-    // 光栅目标按这个顺序解析：
-    //   1. SetRasterRenderPass(pass, framebuffer) 注入过 ⇒ 往那个 pass 里追加一次
-    //      绘制（调用方已经开了 pass，Nanite 不碰 begin/end）；
-    //   2. 否则用 Nanite 自己的离屏 target，并且由 Nanite 自己开/关这个 pass。
+    // 这条是**离屏**路径：Nanite 自己的 target，pass 的开与关也归它。没有帧命令
+    // 缓冲时（headless、编辑器离屏更新）退回 BeginSingleTimeCommands：自己开、自己
+    // 提交并等它跑完 —— 冒烟测试把离屏 target 读回来靠的正是这一点。
     //
-    // 没有帧命令缓冲时（headless、编辑器离屏更新）退回 BeginSingleTimeCommands：
-    // 自己开、自己提交并等它跑完 —— 冒烟测试把离屏 target 读回来靠的正是这一点。
+    // 已经用 SetRasterRenderPass 注入过目标时这里是 no-op：那个 pass 属于调用方，
+    // 绘制要发生在它开着的时候，离屏这里再画一遍就是没人要的第二份。
     void DrawClustersIndirect();
+
+    // **注入**路径：调用方已经把 SetRasterRenderPass 给的那个 pass 开好了，把它
+    // 正在用的命令缓冲一起传进来，Nanite 只往里追加一条间接绘制。
+    //
+    // 不碰 pass 的 begin/end，也不设 viewport / scissor —— 那都是调用方的管线状态，
+    // 抢过来改会把同一个 pass 里排在后面的绘制一起改坏。
+    //
+    // 命令缓冲要显式传，是因为 Nanite 判断不了"调用方是不是真的在 pass 里"：
+    // GetCurrentCommandBuffer() 在无头、编辑器离屏、还没 PrepareBeforePass 的情况
+    // 下都是空的，拿它当判据会把"没在 pass 里"误判成"在 pass 里"。给了缓冲就等于
+    // 调用方声明了"我在里面"；传 nullptr 就什么都不画。
+    void DrawClustersIndirectInPass(RHICommandBuffer* command_buffer);
 
     // 注入外部光栅目标。render_pass 与 framebuffer **都**非空才生效，语义是
     // "调用方已经在这个 pass 里"（DX12 主相机 GBuffer 就是这么接的）；任一为空
     // 则清掉外部目标，退回 Nanite 自己的离屏 target。
+    //
+    // 注入生效期间 DrawClustersIndirect()（离屏）不再画，绘制由调用方在 pass 里
+    // 调 DrawClustersIndirectInPass 触发。
     void SetRasterRenderPass(RHIRenderPass* render_pass, RHIFramebuffer* framebuffer = nullptr);
+
+    // 当前注入的 render pass（没注入就是 nullptr）。给调用方判断"该不该由我来画"。
+    RHIRenderPass* GetInjectedRasterRenderPass() const { return m_GPU.external_render_pass; }
 
     // 离屏 target 的尺寸。改了就在下一次 DrawClustersIndirect 里重建。
     // 默认值取自 swapchain extent，取不到（headless）时是 512×512。
@@ -294,6 +311,10 @@ private:
 
     // 建光栅管线。需要 raster_render_pass。
     bool EnsureRasterPipeline();
+
+    // 绑管线 / 描述符集 / 索引缓冲，然后发那唯一的一条 CmdDrawIndexedIndirect。
+    // 离屏路径和注入路径共用这一段：它们的差别只在"谁开 pass、谁设视口"。
+    void RecordClusterDraw(RHICommandBuffer* command_buffer);
 
     // 保证离屏光栅目标（color + depth + render pass + framebuffer）存在且尺寸匹配。
     // 只有"没有外部注入目标"时才会被调用。
