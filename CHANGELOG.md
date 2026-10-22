@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-21 (Nanite: the raster half, so the culled clusters are actually drawn)
+
+The GPU cull produced indirect draw commands that **nothing ever consumed**.
+`SetRasterRenderPass` had zero callers anywhere in the tree, so
+`EnsureRasterPipeline` never succeeded and `DrawClustersIndirect` always took its
+no-op branch: the cull ran on the GPU and then no triangle was ever drawn.
+
+* **`NaniteRenderer`** — an offscreen raster target (colour + depth image, view,
+  render pass, framebuffer) that Nanite owns when nobody hands it a pass, created
+  lazily at the size `SetRasterTargetSize` asks for (or the swapchain extent, or
+  512² when there is no swapchain). `DrawClustersIndirect` now resolves the
+  target — an injected `(render pass, framebuffer)` pair wins, the offscreen one
+  is the fallback — opens and closes the pass itself when it owns the framebuffer,
+  falls back to `BeginSingleTimeCommands` when there is no frame command buffer,
+  and issues the one `CmdDrawIndexedIndirect`.
+* **The injection point is deliberately two-argument**: `SetRasterRenderPass(pass,
+  framebuffer)` with both non-null means "the caller is already inside this pass"
+  (how the DX12 main camera GBuffer will plug in); either one null drops back to
+  the offscreen target. Passing a render pass with no framebuffer is silently
+  ignored rather than guessed at.
+* **`DestroyGPUResources`** now releases the offscreen target too. Pipelines,
+  layouts and descriptor sets still leak — the RHI has no `DestroyPipeline` /
+  `DestroyPipelineLayout` / `DestroyDescriptorSetLayout` entry point at all, and
+  that gap is now written down in the source instead of being implied.
+
+### Fixed - 2026-10-21 (Metal RHI: two more defects, both found by drawing a triangle)
+
+* **`stencilAttachmentPixelFormat` was set for depth-only attachments.**
+  `D32_SFLOAT` has no stencil component, so Metal aborts at pipeline creation
+  with `MTLPixelFormatDepth32Float is not stencil renderable`. Only formats with
+  an actual stencil component get it now; the rest get `MTLPixelFormatInvalid`.
+  Never hit before because every Metal pipeline in the engine was a UI pass.
+* **The front-face winding was mapped the wrong way round.** Metal decides
+  winding in framebuffer space (origin top-left, y down) while its NDC has y up,
+  so the NDC→framebuffer transform flips the winding. DX12
+  (`FrontCounterClockwise`) and Vulkan (`VK_FRONT_FACE_COUNTER_CLOCKWISE`) are
+  both defined in NDC terms, so `RHI_FRONT_FACE_COUNTER_CLOCKWISE` has to map to
+  `MTLWindingClockwise` to mean the same thing. Empirically: a plane whose normal
+  is `+Y`, viewed from above, is CCW in NDC — it was culled entirely (0 pixels)
+  under the old mapping and draws 253 pixels under the new one. Every scene pass
+  in the engine asks for `COUNTER_CLOCKWISE` + back-face culling, so they were
+  all going to cull their front faces on Metal.
+
+### Added - 2026-10-21 (NaniteGPUCullingSmokeTest: it now proves pixels, not just counters)
+
+59 checks (was 52). The new section builds a 64×64 offscreen target on a
+headless `MetalRHI`, dispatches the cull, draws, then copies the colour target
+back with `CmdCopyImageToBuffer` and counts pixels that the clear colour cannot
+explain — plus a control run at the *same* vantage point with the camera turned
+away, which must leave the target at the clear colour. Without the control, "the
+target has pixels" could just be an uncleared target.
+
+Mutation-tested six ways: winding mapping reverted (1 failure), `drawCount = 0`
+(1), descriptor set never bound (1), colour attachment not cleared (1), stencil
+format reverted (aborts on Metal's validation). **Not covered:** dropping the
+`CmdSetViewport` / `CmdSetScissor` calls is not caught on Metal, whose default
+viewport happens to equal the attachment size; those two lines are required by
+the declared dynamic state on the other three backends and are commented as such.
+
 ### Added / Fixed - 2026-10-21 (Nanite: the cull really runs on the GPU now)
 
 Nanite had never executed a single instruction on a GPU. `NaniteGPUResources`

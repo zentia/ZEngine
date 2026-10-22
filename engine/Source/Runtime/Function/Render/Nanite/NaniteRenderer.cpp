@@ -482,6 +482,23 @@ namespace
     constexpr RHIMemoryPropertyFlags kNaniteHostMemory =
         RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT;
 
+    // 离屏光栅目标的兜底尺寸：没有 swapchain（headless）也没有显式设置时用。
+    // 它只影响"Nanite 自己那张图多大"，不影响正确性。
+    constexpr uint32_t kNaniteDefaultRasterTargetSize = 512;
+
+    // swapchain extent 的合法性上界。headless（MetalRHI 只建了 device 和 queue）时
+    // m_SwapchainExtent **根本没有初始化过**，读出来是栈/堆上的垃圾 —— 曾经拿它当
+    // 纹理宽度，Metal 直接断言 "width (4249268848) greater than the maximum
+    // allowed size of 16384"。16384 是 Metal 的纹理尺寸上限（DX12/Vulkan 的常见
+    // 上限也在这个量级），所以它是个足够保守的筛子。
+    constexpr uint32_t kNaniteMaxRasterTargetSize = 16384;
+
+    // 只有落在 (0, 上限] 里的 swapchain extent 才算数。
+    bool IsSaneTargetSize(uint32_t value)
+    {
+        return value != 0 && value <= kNaniteMaxRasterTargetSize;
+    }
+
     // 容量按 2 的幂增长。集群数随场景变化，每帧精确重建会把分配抖动变成卡顿。
     uint32_t NaniteGrowCapacity(uint32_t needed)
     {
@@ -521,7 +538,22 @@ void NaniteRenderer::DestroyGPUResources()
     m_GPU.position_capacity = 0;
     m_GPU.index_capacity = 0;
     m_GPU.compute_ready = false;
+
+    // 离屏光栅目标跟着重建（改尺寸、clear 都会走到这里）。
+    DestroyRasterTarget();
+    m_GPU.raster_render_pass = nullptr;
+    m_GPU.raster_framebuffer = nullptr;
     m_GPU.raster_ready = false;
+
+    // 已知缺口：RHI 抽象层没有 DestroyPipeline / DestroyPipelineLayout /
+    // DestroyDescriptorSetLayout 这几个入口，所以 cull_pipeline、raster_pipeline、
+    // pipeline_layout、descriptor_set_layout 只能随进程一起结束。它们每个实例只建
+    // 一次（懒建），不是每帧增长 —— 但确实是泄漏，等 RHI 补上销毁接口再收。
+    m_GPU.cull_pipeline = nullptr;
+    m_GPU.raster_pipeline = nullptr;
+    m_GPU.pipeline_layout = nullptr;
+    m_GPU.descriptor_set_layout = nullptr;
+    m_GPU.descriptor_set = nullptr;
 }
 
 bool NaniteRenderer::UploadBytes(RHIBuffer* buffer, RHIDeviceMemory* memory, const void* data, size_t bytes)
@@ -1104,19 +1136,108 @@ void NaniteRenderer::DrawClustersIndirect()
         return;
     }
 
-    // 光栅管线需要 render pass。还没拿到就只跑剔除 —— 命令已经在 GPU 上了，
-    // 只是这一帧不画。
+    // ---- 1. 光栅目标：注入的优先，否则用自己的离屏 target ------------------------
+    //
+    // 以前这里只认 raster_render_pass，而它**从来没有调用者** ⇒ 光栅管线永远建不
+    // 起来 ⇒ 剔除完的命令一条都没被消费。Nanite 于是"跑在 GPU 上"却什么都不画。
+    RHIRenderPass*  pass = m_GPU.external_render_pass;
+    RHIFramebuffer* framebuffer = nullptr;  // 非空 = 这个 pass 由 Nanite 自己开/关
+
+    if (pass == nullptr)
+    {
+        if (!EnsureRasterTarget())
+        {
+            return;
+        }
+        pass = m_GPU.target_render_pass;
+        framebuffer = m_GPU.target_framebuffer;
+    }
+
+    if (pass == nullptr)
+    {
+        return;
+    }
+
+    // 目标换了 ⇒ 管线得照着新 pass 的附件格式重建。
+    if (m_GPU.raster_render_pass != pass)
+    {
+        m_GPU.raster_render_pass = pass;
+        m_GPU.raster_framebuffer = framebuffer;
+        m_GPU.raster_ready = false;
+    }
+
     if (!m_GPU.raster_ready && !EnsureRasterPipeline())
     {
         return;
     }
 
-    RHICommandBuffer* command_buffer = m_Rhi->GetCurrentCommandBuffer();
+    // ---- 2. 命令缓冲 ------------------------------------------------------------
+    //
+    // 没有帧命令缓冲（headless、编辑器离屏更新、还没 PrepareBeforePass）就自己开
+    // 一条一次性的：自己开、自己提交并等它跑完。返回时离屏 target 的内容已经落地。
+    const bool owns_command_buffer = (m_Rhi->GetCurrentCommandBuffer() == nullptr);
+    RHICommandBuffer* command_buffer =
+        owns_command_buffer ? m_Rhi->BeginSingleTimeCommands() : m_Rhi->GetCurrentCommandBuffer();
     if (command_buffer == nullptr)
     {
         return;
     }
 
+    // ---- 3. 开 pass（只在 Nanite 拥有 framebuffer 时） ---------------------------
+    const bool owns_pass = (m_GPU.raster_framebuffer != nullptr);
+    if (owns_pass)
+    {
+        const uint32_t width = m_GPU.target_width;
+        const uint32_t height = m_GPU.target_height;
+
+        // 清成深灰 + 深度 1.0。离屏 target 的颜色是"有没有画出东西"的判据：
+        // 冒烟测试读回这张图，只要有像素不等于这个颜色，就说明真的有三角形落上去。
+        RHIClearValue clear_values[2] = {};
+        clear_values[0].color.float32[0] = 0.05f;
+        clear_values[0].color.float32[1] = 0.05f;
+        clear_values[0].color.float32[2] = 0.06f;
+        clear_values[0].color.float32[3] = 1.0f;
+        clear_values[1].depthStencil.depth = 1.0f;
+        clear_values[1].depthStencil.stencil = 0;
+
+        RHIRenderPassBeginInfo begin_info {};
+        begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        begin_info.pNext = nullptr;
+        begin_info.renderPass = pass;
+        begin_info.framebuffer = m_GPU.raster_framebuffer;
+        begin_info.renderArea.offset.x = 0;
+        begin_info.renderArea.offset.y = 0;
+        begin_info.renderArea.extent.width = width;
+        begin_info.renderArea.extent.height = height;
+        begin_info.clearValueCount = 2;
+        begin_info.pClearValues = clear_values;
+
+        m_Rhi->CmdBeginRenderPassPFN(command_buffer, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+
+        // viewport / scissor 在管线里是**动态状态**，Vulkan / DX12 不设就是未定义
+        // 行为（Vulkan 上会真的画不出来）。所以这里必须设。
+        //
+        // 已知盲区：Metal 的默认 viewport 恰好等于附件尺寸，所以"删掉这两行"这个
+        // 变异在本机跑不出来（59 项全绿）。这两行是被另外三个后端需要的，不是被
+        // 这个测试钉住的 —— 别以为它绿就等于验证了。
+        RHIViewport viewport {};
+        viewport.x = 0.0f;
+        viewport.y = 0.0f;
+        viewport.width = static_cast<float>(width);
+        viewport.height = static_cast<float>(height);
+        viewport.minDepth = 0.0f;
+        viewport.maxDepth = 1.0f;
+        m_Rhi->CmdSetViewportPFN(command_buffer, 0, 1, &viewport);
+
+        RHIRect2D scissor {};
+        scissor.offset.x = 0;
+        scissor.offset.y = 0;
+        scissor.extent.width = width;
+        scissor.extent.height = height;
+        m_Rhi->CmdSetScissorPFN(command_buffer, 0, 1, &scissor);
+    }
+
+    // ---- 4. 唯一的一次绘制 ------------------------------------------------------
     m_Rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_GRAPHICS, m_GPU.raster_pipeline);
     m_Rhi->CmdBindDescriptorSetsPFN(command_buffer,
                                     RHI_PIPELINE_BIND_POINT_GRAPHICS,
@@ -1135,16 +1256,296 @@ void NaniteRenderer::DrawClustersIndirect()
                                   0,
                                   m_GPU.dispatch_cluster_count,
                                   static_cast<uint32_t>(sizeof(RHIDrawIndexedIndirectCommand)));
+
+    if (owns_pass)
+    {
+        m_Rhi->CmdEndRenderPassPFN(command_buffer);
+    }
+
+    if (owns_command_buffer)
+    {
+        m_Rhi->EndSingleTimeCommands(command_buffer);
+    }
 }
 
-void NaniteRenderer::SetRasterRenderPass(RHIRenderPass* render_pass)
+void NaniteRenderer::SetRasterRenderPass(RHIRenderPass* render_pass, RHIFramebuffer* framebuffer)
 {
-    if (m_GPU.raster_render_pass == render_pass)
+    // 只认"两个都给了"。给了 render pass 却不给 framebuffer 的情况没法开 pass，
+    // 与其猜不如退回离屏 target —— 那条路至少是能跑通的。
+    const bool has_external = render_pass != nullptr && framebuffer != nullptr;
+
+    if (m_GPU.external_render_pass == (has_external ? render_pass : nullptr) &&
+        m_GPU.external_framebuffer == (has_external ? framebuffer : nullptr))
     {
         return;
     }
-    m_GPU.raster_render_pass = render_pass;
+
+    m_GPU.external_render_pass = has_external ? render_pass : nullptr;
+    m_GPU.external_framebuffer = has_external ? framebuffer : nullptr;
+
+    // 目标换人了 ⇒ 光栅管线得照着新 pass 的附件格式重建。
+    m_GPU.raster_render_pass = nullptr;
+    m_GPU.raster_framebuffer = nullptr;
     m_GPU.raster_ready = false;
+}
+
+void NaniteRenderer::SetRasterTargetSize(uint32_t width, uint32_t height)
+{
+    if (m_RasterTargetWidth == width && m_RasterTargetHeight == height)
+    {
+        return;
+    }
+    m_RasterTargetWidth = width;
+    m_RasterTargetHeight = height;
+
+    // 尺寸变了，离屏 target 及其上的管线都得重建。外部注入的目标不受影响。
+    m_GPU.raster_render_pass = nullptr;
+    m_GPU.raster_framebuffer = nullptr;
+    m_GPU.raster_ready = false;
+    DestroyRasterTarget();
+}
+
+uint32_t NaniteRenderer::ResolveRasterTargetWidth() const
+{
+    if (m_RasterTargetWidth != 0)
+    {
+        return m_RasterTargetWidth;
+    }
+    if (m_Rhi != nullptr)
+    {
+        const RHISwapChainDesc desc = m_Rhi->GetSwapchainInfo();
+        if (IsSaneTargetSize(desc.extent.width))
+        {
+            return desc.extent.width;
+        }
+    }
+    return kNaniteDefaultRasterTargetSize;
+}
+
+uint32_t NaniteRenderer::ResolveRasterTargetHeight() const
+{
+    if (m_RasterTargetHeight != 0)
+    {
+        return m_RasterTargetHeight;
+    }
+    if (m_Rhi != nullptr)
+    {
+        const RHISwapChainDesc desc = m_Rhi->GetSwapchainInfo();
+        if (IsSaneTargetSize(desc.extent.height))
+        {
+            return desc.extent.height;
+        }
+    }
+    return kNaniteDefaultRasterTargetSize;
+}
+
+bool NaniteRenderer::EnsureRasterTarget()
+{
+    if (m_Rhi == nullptr)
+    {
+        return false;
+    }
+
+    const uint32_t width = ResolveRasterTargetWidth();
+    const uint32_t height = ResolveRasterTargetHeight();
+    if (width == 0 || height == 0)
+    {
+        return false;
+    }
+
+    if (m_GPU.target_render_pass != nullptr && m_GPU.target_framebuffer != nullptr &&
+        m_GPU.target_width == width && m_GPU.target_height == height)
+    {
+        return true;
+    }
+
+    DestroyRasterTarget();
+
+    // ---- 颜色 + 深度两张离屏图 -------------------------------------------------
+    // color 带上 TRANSFER_SRC：冒烟测试要把这张图读回 CPU 才能断言"真的画出了东西"。
+    constexpr RHIFormat kColorFormat = RHI_FORMAT_B8G8R8A8_UNORM;
+    constexpr RHIFormat kDepthFormat = RHI_FORMAT_D32_SFLOAT;
+
+    m_Rhi->CreateImage(width,
+                       height,
+                       kColorFormat,
+                       RHI_IMAGE_TILING_OPTIMAL,
+                       RHI_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | RHI_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                       RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                       m_GPU.target_color,
+                       m_GPU.target_color_memory,
+                       0,
+                       1,
+                       1);
+    m_Rhi->CreateImageView(m_GPU.target_color,
+                           kColorFormat,
+                           RHI_IMAGE_ASPECT_COLOR_BIT,
+                           RHI_IMAGE_VIEW_TYPE_2D,
+                           1,
+                           1,
+                           m_GPU.target_color_view);
+
+    m_Rhi->CreateImage(width,
+                       height,
+                       kDepthFormat,
+                       RHI_IMAGE_TILING_OPTIMAL,
+                       RHI_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                       RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                       m_GPU.target_depth,
+                       m_GPU.target_depth_memory,
+                       0,
+                       1,
+                       1);
+    m_Rhi->CreateImageView(m_GPU.target_depth,
+                           kDepthFormat,
+                           RHI_IMAGE_ASPECT_DEPTH_BIT,
+                           RHI_IMAGE_VIEW_TYPE_2D,
+                           1,
+                           1,
+                           m_GPU.target_depth_view);
+
+    if (m_GPU.target_color_view == nullptr || m_GPU.target_depth_view == nullptr)
+    {
+        LOG_WARNING(ZRender, "nanite: offscreen raster target allocation failed");
+        DestroyRasterTarget();
+        return false;
+    }
+
+    // ---- render pass：1 color + 1 depth，都 clear --------------------------------
+    RHIAttachmentDescription attachments[2] = {};
+    attachments[0].flags = 0;
+    attachments[0].format = kColorFormat;
+    attachments[0].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[0].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[0].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+    attachments[0].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[0].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[0].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+    attachments[0].finalLayout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    attachments[1].flags = 0;
+    attachments[1].format = kDepthFormat;
+    attachments[1].samples = RHI_SAMPLE_COUNT_1_BIT;
+    attachments[1].loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[1].storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
+    attachments[1].stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[1].stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].initialLayout = RHI_IMAGE_LAYOUT_UNDEFINED;
+    attachments[1].finalLayout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    RHIAttachmentReference color_reference {};
+    color_reference.attachment = 0;
+    color_reference.layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    RHIAttachmentReference depth_reference {};
+    depth_reference.attachment = 1;
+    depth_reference.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    RHISubpassDescription subpass {};
+    subpass.flags = 0;
+    subpass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.inputAttachmentCount = 0;
+    subpass.pInputAttachments = nullptr;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color_reference;
+    subpass.pResolveAttachments = nullptr;
+    subpass.pDepthStencilAttachment = &depth_reference;
+    subpass.preserveAttachmentCount = 0;
+    subpass.pPreserveAttachments = nullptr;
+
+    RHIRenderPassCreateInfo render_pass_info {};
+    render_pass_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    render_pass_info.pNext = nullptr;
+    render_pass_info.flags = 0;
+    render_pass_info.attachmentCount = 2;
+    render_pass_info.pAttachments = attachments;
+    render_pass_info.subpassCount = 1;
+    render_pass_info.pSubpasses = &subpass;
+    render_pass_info.dependencyCount = 0;
+    render_pass_info.pDependencies = nullptr;
+
+    if (!m_Rhi->CreateRenderPass(&render_pass_info, m_GPU.target_render_pass))
+    {
+        LOG_WARNING(ZRender, "nanite: offscreen render pass creation failed");
+        DestroyRasterTarget();
+        return false;
+    }
+
+    // ---- framebuffer ------------------------------------------------------------
+    RHIImageView* views[2] = {m_GPU.target_color_view, m_GPU.target_depth_view};
+    RHIFramebufferCreateInfo framebuffer_info {};
+    framebuffer_info.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebuffer_info.pNext = nullptr;
+    framebuffer_info.flags = 0;
+    framebuffer_info.renderPass = m_GPU.target_render_pass;
+    framebuffer_info.attachmentCount = 2;
+    framebuffer_info.pAttachments = views;
+    framebuffer_info.width = width;
+    framebuffer_info.height = height;
+    framebuffer_info.layers = 1;
+
+    if (!m_Rhi->CreateFramebuffer(&framebuffer_info, m_GPU.target_framebuffer))
+    {
+        LOG_WARNING(ZRender, "nanite: offscreen framebuffer creation failed");
+        DestroyRasterTarget();
+        return false;
+    }
+
+    m_GPU.target_width = width;
+    m_GPU.target_height = height;
+    return true;
+}
+
+void NaniteRenderer::DestroyRasterTarget()
+{
+    if (m_Rhi == nullptr)
+    {
+        return;
+    }
+
+    if (m_GPU.target_framebuffer != nullptr)
+    {
+        m_Rhi->DestroyFramebuffer(m_GPU.target_framebuffer);
+        m_GPU.target_framebuffer = nullptr;
+    }
+    if (m_GPU.target_render_pass != nullptr)
+    {
+        m_Rhi->DestroyRenderPass(m_GPU.target_render_pass);
+        m_GPU.target_render_pass = nullptr;
+    }
+    if (m_GPU.target_color_view != nullptr)
+    {
+        m_Rhi->DestroyImageView(m_GPU.target_color_view);
+        m_GPU.target_color_view = nullptr;
+    }
+    if (m_GPU.target_depth_view != nullptr)
+    {
+        m_Rhi->DestroyImageView(m_GPU.target_depth_view);
+        m_GPU.target_depth_view = nullptr;
+    }
+    if (m_GPU.target_color != nullptr)
+    {
+        m_Rhi->DestroyImage(m_GPU.target_color);
+        m_GPU.target_color = nullptr;
+    }
+    if (m_GPU.target_depth != nullptr)
+    {
+        m_Rhi->DestroyImage(m_GPU.target_depth);
+        m_GPU.target_depth = nullptr;
+    }
+    if (m_GPU.target_color_memory != nullptr)
+    {
+        m_Rhi->FreeMemory(m_GPU.target_color_memory);
+        m_GPU.target_color_memory = nullptr;
+    }
+    if (m_GPU.target_depth_memory != nullptr)
+    {
+        m_Rhi->FreeMemory(m_GPU.target_depth_memory);
+        m_GPU.target_depth_memory = nullptr;
+    }
+
+    m_GPU.target_width = 0;
+    m_GPU.target_height = 0;
 }
 
 void NaniteRenderer::UpdateGPUBuffers()

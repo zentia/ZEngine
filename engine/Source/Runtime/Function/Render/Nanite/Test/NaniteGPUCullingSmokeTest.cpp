@@ -27,6 +27,12 @@
 //        * 相机转开 ⇒ 什么都不剩
 //        * 松开 LOD 容差 ⇒ 只留 LOD 0
 //
+//   4. **真的画出来**。剔除只是前半段 —— 产出的间接命令要被一次 CmdDrawIndexed
+//      Indirect 消费掉才算跑在 GPU 上。以前 SetRasterRenderPass 一个调用者都没有，
+//      光栅管线永远建不起来，那一句绘制永远走 no-op。现在 Nanite 在没有外部 render
+//      pass 时自建离屏 target 并自己开/关 pass，然后把 color target 读回 CPU 数像
+//      素：俯视相机下必须有像素，转开相机后必须一个都没有。
+//
 //  非 Apple 平台（没有 Metal）退化为 1 + 2：纯布局与打包断言。
 //
 //   cmake -B build -DZENGINE_BUILD_NANITE_GPU_CULLING_SMOKE_TEST=ON
@@ -65,6 +71,12 @@
 #if defined(__has_include)
 #if __has_include(<nanite_cluster_cull_comp.h>)
 #define ZENGINE_NANITE_TEST_HAS_CULL_SPIRV 1
+#endif
+#if __has_include(<nanite_cluster_vert.h>)
+#define ZENGINE_NANITE_TEST_HAS_VERT_SPIRV 1
+#endif
+#if __has_include(<nanite_cluster_frag.h>)
+#define ZENGINE_NANITE_TEST_HAS_FRAG_SPIRV 1
 #endif
 #endif
 
@@ -297,6 +309,91 @@ namespace
 
         result.valid = true;
         return result;
+    }
+
+    // -----------------------------------------------------------------------
+    // 把离屏 color target 读回 CPU，数一数"被写过的像素"。
+    //
+    // 光看 raster_ready 不足以证明命令被**消费**了：管线建成功但一条都没画出来
+    // 完全可能（viewport 是 0×0、描述符没绑、drawCount 传 0、pass 没开……）。只有
+    // 把图读回来才能说"真的有三角形落在上面"。
+    // -----------------------------------------------------------------------
+    uint32_t CountCoveredPixels(RHI* rhi, RHIImage* image, uint32_t width, uint32_t height)
+    {
+        if (rhi == nullptr || image == nullptr || width == 0 || height == 0)
+        {
+            return 0;
+        }
+
+        // 清屏色是 (0.05, 0.05, 0.06)，三个通道都 ≤ 15。shader 写的是 LodDebugColor，
+        // 最暗那一档也有 G = 0.75 ⇒ 191。取 60 当阈值，两者差一个数量级；而且只看
+        // "三个通道里最大的那个"，跟 BGRA / RGBA 的通道顺序无关。
+        constexpr uint8_t kCoveredThreshold = 60;
+
+        const RHIDeviceSize bytes =
+            static_cast<RHIDeviceSize>(width) * static_cast<RHIDeviceSize>(height) * 4u;
+
+        RHIBuffer*       buffer = nullptr;
+        RHIDeviceMemory* memory = nullptr;
+        rhi->CreateBuffer(bytes,
+                          RHI_BUFFER_USAGE_TRANSFER_DST_BIT,
+                          RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          buffer,
+                          memory);
+        if (buffer == nullptr || memory == nullptr)
+        {
+            return 0;
+        }
+
+        RHICommandBuffer* command_buffer = rhi->BeginSingleTimeCommands();
+        if (command_buffer != nullptr)
+        {
+            RHIBufferImageCopy region {};
+            region.bufferOffset = 0;
+            // Metal 后端把 bufferRowLength 当**字节**用（它自己的兜底值也是
+            // imageExtent.width * 4），所以这里给字节数。
+            region.bufferRowLength = width * 4u;
+            region.bufferImageHeight = height;
+            region.imageSubresource.aspectMask = RHI_IMAGE_ASPECT_COLOR_BIT;
+            region.imageSubresource.mipLevel = 0;
+            region.imageSubresource.baseArrayLayer = 0;
+            region.imageSubresource.layerCount = 1;
+            region.imageOffset.x = 0;
+            region.imageOffset.y = 0;
+            region.imageOffset.z = 0;
+            region.imageExtent.width = width;
+            region.imageExtent.height = height;
+            region.imageExtent.depth = 1;
+
+            rhi->CmdCopyImageToBuffer(command_buffer,
+                                      image,
+                                      RHI_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                      buffer,
+                                      1,
+                                      &region);
+            rhi->EndSingleTimeCommands(command_buffer);
+        }
+
+        uint32_t covered = 0;
+        void*    mapped = nullptr;
+        if (rhi->MapMemory(memory, 0, bytes, 0, &mapped) && mapped != nullptr)
+        {
+            const auto*  pixels = static_cast<const uint8_t*>(mapped);
+            const uint32_t pixel_count = width * height;
+            for (uint32_t i = 0; i < pixel_count; ++i)
+            {
+                const uint8_t* px = pixels + static_cast<size_t>(i) * 4u;
+                if (px[0] > kCoveredThreshold || px[1] > kCoveredThreshold || px[2] > kCoveredThreshold)
+                {
+                    ++covered;
+                }
+            }
+            rhi->UnmapMemory(memory);
+        }
+
+        rhi->FreeMemory(memory);
+        rhi->DestroyBuffer(buffer);
+        return covered;
     }
 }  // namespace
 
@@ -747,10 +844,62 @@ int main()
                   "re-dispatching the same frame reproduces the same visible count");
         }
 
-        // ---- 3f. 没有光栅管线时 DrawClustersIndirect 是干净的 no-op -------------
-        renderer.DrawClustersIndirect();
-        Check(!renderer.GetGPUResources().raster_ready,
-              "no raster pipeline is built before a render pass is handed over (and no crash either)");
+        // ---- 3f. 光栅阶段：真的把集群画到离屏 target 上 -------------------------
+        //
+        // SetRasterRenderPass 以前**一个调用者都没有**，于是 EnsureRasterPipeline
+        // 永远不成立、DrawClustersIndirect 永远走 no-op：剔除在 GPU 上跑完了，产出的
+        // 间接命令却一条都没被消费。这一节把它钉死 —— 把离屏 color target 读回来
+        // 数像素，证明三角形真的落到了图上。
+#if defined(ZENGINE_NANITE_TEST_HAS_VERT_SPIRV) && defined(ZENGINE_NANITE_TEST_HAS_FRAG_SPIRV)
+        {
+            // 测试网格是 y = 0 上的一张水平面，而 §3a~3e 的相机也在 y = 0 —— 正好
+            // 侧视，投影面积为零，画出来什么都没有。光栅这一节要的是**看得见**的
+            // 相机：抬高到 y = 6 俯视，同时保持"z = +40 那个实例仍在背后"的关系。
+            auto raster_camera = MakeCamera(Vector3(0.0f, 6.0f, 10.0f), Vector3(0.0f, 0.0f, 0.0f));
+
+            constexpr uint32_t kTargetSize = 64;
+            renderer.SetRasterTargetSize(kTargetSize, kTargetSize);
+
+            renderer.PrepareGPUData(raster_camera, culling_on);
+            renderer.DispatchClusterCulling(raster_camera, culling_on);
+            renderer.DrawClustersIndirect();
+
+            const NaniteGPUResources& raster = renderer.GetGPUResources();
+            Check(raster.raster_ready,
+                  "the raster pipeline was built (DrawClustersIndirect is no longer a no-op)");
+            Check(raster.target_color != nullptr && raster.target_depth != nullptr,
+                  "Nanite created its own offscreen colour and depth targets");
+            Check(raster.target_render_pass != nullptr && raster.target_framebuffer != nullptr,
+                  "and it owns the render pass that draws into them");
+            Check(raster.target_width == kTargetSize && raster.target_height == kTargetSize,
+                  "the offscreen target honours the requested size");
+            Check(raster.raster_framebuffer == raster.target_framebuffer,
+                  "Nanite opens and closes the pass itself when none was injected");
+
+            const uint32_t covered =
+                CountCoveredPixels(rhi, raster.target_color, raster.target_width, raster.target_height);
+            Check(covered > 0,
+                  "the offscreen target holds pixels the clear colour cannot explain (clusters were rasterised)");
+
+            // 对照：**同一个视点**把相机转开 ⇒ 一个集群都活不下来 ⇒ 目标只剩清屏色。
+            // 没有这一条，"读回来有东西"完全可能只是没清干净的垃圾。用同一个高度是
+            // 为了让"0 像素"只能归因于剔除，而不是归因于视角退化。
+            auto raster_away = MakeCamera(Vector3(0.0f, 6.0f, 10.0f), Vector3(1000.0f, 6.0f, 10.0f));
+            renderer.PrepareGPUData(raster_away, culling_on);
+            renderer.DispatchClusterCulling(raster_away, culling_on);
+            CullReadback raster_away_readback = ReadBackCullResult(rhi, raster, cluster_count);
+            Check(raster_away_readback.counter.visible_count == 0,
+                  "the control camera really leaves nothing visible (so 0 pixels means culling, not a dead angle)");
+
+            renderer.DrawClustersIndirect();
+
+            const NaniteGPUResources& away_gpu = renderer.GetGPUResources();
+            const uint32_t covered_away =
+                CountCoveredPixels(rhi, away_gpu.target_color, away_gpu.target_width, away_gpu.target_height);
+            Check(covered_away == 0,
+                  "with the camera turned away the target is left at the clear colour");
+        }
+#endif
 
         renderer.clear();
         Check(renderer.GetGPUResources().clusters == nullptr,
