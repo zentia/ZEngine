@@ -16,6 +16,10 @@ CPM_*.cmake
 # a directory git never descends into.
 !engine/Source/Editor/Build
 
+# 导入产物（贴图 → Texture2D .zasset）是派生数据，落在
+# <content>/_Generated/Textures/ 下，不能签进 VCS。演示工程的 content 是 asset/。
+/engine/asset/_Generated/
+
 # Visual Studio
 CMakeSettings.json
 

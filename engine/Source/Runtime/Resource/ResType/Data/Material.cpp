@@ -260,8 +260,26 @@ bool Material::AssignTextureFromAssetPath(PPtr<Texture2D>& out_texture, const ea
         return false;
     }
 
-    // Legacy migration: source image path -> sibling/imported Texture2D .zasset under Assets/.
+    // Legacy migration: a source-image path (.tga/.png/...) has to be mapped to
+    // the Texture2D .zasset the importer produced from it.
     std::filesystem::path source_path(asset_path.c_str());
+
+    // (1) 规范化位置：导入产物是派生数据，落在
+    //     <content>/_Generated/Textures/<源图相对路径>.zasset。
+    if (ProjectInfo* project_info = GET_SYSTEM(ProjectInfo))
+    {
+        const std::filesystem::path generated = project_info->GetGeneratedTexturePath(source_path);
+        if (!generated.empty())
+        {
+            if (Texture2D* texture = asset_mgr->loadAsset<Texture2D>(generated.generic_string().c_str()))
+            {
+                out_texture = texture;
+                return true;
+            }
+        }
+    }
+
+    // (2) 老布局回退：产物曾经直接写在源图旁边。已导入过的老工程靠这条继续工作。
     std::filesystem::path zasset_candidate = source_path;
     zasset_candidate.replace_extension(".zasset");
     if (Texture2D* texture = asset_mgr->loadAsset<Texture2D>(zasset_candidate.generic_string().c_str()))
@@ -270,8 +288,7 @@ bool Material::AssignTextureFromAssetPath(PPtr<Texture2D>& out_texture, const ea
         return true;
     }
 
-    ProjectInfo* project_info = GET_SYSTEM(ProjectInfo);
-    if (project_info != nullptr)
+    if (ProjectInfo* project_info = GET_SYSTEM(ProjectInfo))
     {
         const std::filesystem::path content_root = project_info->GetProjectContent();
         if (!content_root.empty())

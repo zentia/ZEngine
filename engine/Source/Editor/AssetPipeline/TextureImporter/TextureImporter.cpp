@@ -805,13 +805,23 @@ int TextureImporter::ImportProjectTextures()
                 {
                     return;
                 }
-                if (std::filesystem::exists(zasset_abs, ec) && !ec)
+                const std::filesystem::path source_path(entry.source_path);
+
+                // 产物一律落 <content>/_Generated/Textures/<rel>.zasset，不再写在
+                // 源图旁边。判据也跟着改成"规范化产物在不在"：注册表里可能还留着
+                // 指向旧位置（源图旁边）的条目，用 zasset_abs 判断会让它们每次
+                // 启动都重导一遍。
+                const std::filesystem::path output_path =
+                    project_info->GetGeneratedTexturePath(source_path);
+                if (output_path.empty())
+                {
+                    return;
+                }
+                if (std::filesystem::exists(output_path, ec) && !ec)
                 {
                     return;
                 }
 
-                std::filesystem::path output_path = zasset_abs;
-                const std::filesystem::path source_path(entry.source_path);
                 if (!std::filesystem::exists(source_path, ec) || ec)
                 {
                     LOG_WARNING(ZEditor,
@@ -829,8 +839,8 @@ int TextureImporter::ImportProjectTextures()
             });
     }
 
-    // Legacy: first-time seeding for source images under Assets/ with no
-    // .zasset sibling yet (not in source_registry until Import records them).
+    // Legacy: first-time seeding for source images under the content root with
+    // no generated product yet (not in source_registry until Import records them).
     for (const auto& dir_entry : std::filesystem::recursive_directory_iterator(content_root, ec))
     {
         if (ec)
@@ -846,8 +856,12 @@ int TextureImporter::ImportProjectTextures()
             continue;
         }
 
-        std::filesystem::path output_path = dir_entry.path();
-        output_path.replace_extension(".zasset");
+        const std::filesystem::path output_path =
+            project_info->GetGeneratedTexturePath(dir_entry.path());
+        if (output_path.empty())
+        {
+            continue;
+        }
         if (std::filesystem::exists(output_path, ec))
         {
             continue;
@@ -1067,8 +1081,8 @@ int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget ta
         }
     }
 
-    // Legacy: sibling source images whose .zasset was not returned by the registry
-    // index yet (warm-up race) or pre-index imports.
+    // Legacy: source images whose generated product was not returned by the
+    // registry index yet (warm-up race) or pre-index imports.
     for (const auto& dir_entry : std::filesystem::recursive_directory_iterator(content_root, ec))
     {
         if (ec)
@@ -1080,8 +1094,13 @@ int TextureImporter::CookProjectTextures(TextureImporterSettings::BuildTarget ta
             continue;
         }
 
-        std::filesystem::path editor_zasset = dir_entry.path();
-        editor_zasset.replace_extension(".zasset");
+        // 编辑器平台产物在 _Generated/Textures/ 下，不在源图旁边。
+        const std::filesystem::path editor_zasset =
+            project_info->GetGeneratedTexturePath(dir_entry.path());
+        if (editor_zasset.empty())
+        {
+            continue;
+        }
         if (tryCookZasset(editor_zasset))
         {
             ++cooked_count;

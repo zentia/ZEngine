@@ -144,6 +144,22 @@ int main()
                   "GetProjectContent() honours content_dir (not the 'Assets' default)");
             Check(info->GetGeneratedAssetsRoot() == scratch / "asset" / "_Generated",
                   "GetGeneratedAssetsRoot() sits under content_dir");
+
+            // 导入产物（派生数据）必须落进 _Generated/Textures/，镜像源图在
+            // content 下的相对路径 —— 绝不能写在源图旁边（那等于把派生数据混进
+            // 签进 VCS 的源树，而且 content 被整体重建时和源图一起没了）。
+            Check(info->GetGeneratedTexturesRoot() == scratch / "asset" / "_Generated" / "Textures",
+                  "GetGeneratedTexturesRoot() is <content>/_Generated/Textures");
+            Check(info->GetGeneratedTexturePath(scratch / "asset" / "objects" / "gold.tga") ==
+                      scratch / "asset" / "_Generated" / "Textures" / "objects" / "gold.zasset",
+                  "GetGeneratedTexturePath() mirrors the source path under the generated bucket");
+            Check(info->GetGeneratedTexturePath(scratch / "asset" / "a" / "b" / "c.png") ==
+                      scratch / "asset" / "_Generated" / "Textures" / "a" / "b" / "c.zasset",
+                  "GetGeneratedTexturePath() handles nested source paths");
+            // 源图不在 content 下时退化成只镜像文件名，不能返回空（调用方靠空值 bail）。
+            Check(info->GetGeneratedTexturePath(scratch / "outside" / "x.tga") ==
+                      scratch / "asset" / "_Generated" / "Textures" / "x.zasset",
+                  "a source outside content falls back to mirroring the file name");
         }
     }
 

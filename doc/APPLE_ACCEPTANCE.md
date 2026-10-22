@@ -54,15 +54,17 @@ AppleRender: frame=241 entities=31 visible=3 scene_color_view=1 blit_ready=1 swa
 编辑器 UI（ZSlate 面板 / 菜单）叠在场景之上 —— 顺序错了会是"UI 被场景盖掉"。
 
 颜色上现在能看的是两件事：明暗层次（§3.6 的 tonemap）和**真实贴图**。工程里的 9 个
-`.tga` 会在编辑器启动时被导入成 `Texture2D` 资产（见 §3.7），日志里应该是：
+`.tga` 会在编辑器启动时被导入成 `Texture2D` 资产（见 §3.7），产物落在
+`asset/_Generated/Textures/` 下并镜像源图路径，日志里首次启动应该是：
 
 ```
 TextureImporter: ImportProjectTextures seeded 19 editor-platform texture(s)
 ```
 
-并且**不该**再出现 `Material: legacy texture path ... could not be resolved`（修复前是
-1.5 万条）。判断 tonemap 有没有生效，看光源附近是不是有渐变而不是一片纯白 —— 线性
-HDR 直接写进 UNORM 的表现就是高光硬切成 255 且整体发暗（§3.6）。
+第二次启动**不该**再有这行（产物已存在，导入是幂等的）。并且全程**不该**出现
+`Material: legacy texture path ... could not be resolved`（修复前是 1.5 万条）。
+判断 tonemap 有没有生效，看光源附近是不是有渐变而不是一片纯白 —— 线性 HDR 直接写进
+UNORM 的表现就是高光硬切成 255 且整体发暗（§3.6）。
 
 ### 2.4 冒烟测试
 
@@ -236,13 +238,46 @@ FbxAnimation.h、UMGAssetIO、ContentBrowserAssetActions。
 > 判据很简单：**`CreateObject` 配 `DestroyObject`，`Produce` 配 `ObjectManager::Destroy`**。
 > 混用只在 Apple 上致命，但错的那一半在任何平台都是错的。
 
+### 3.8 导入产物从"源图旁边"挪进 `_Generated/Textures/`
+
+(a) 修好之后贴图能显示了，但产物 `.zasset` 是**写在源图旁边**的（`gold.tga` →
+`gold.zasset` 同一目录）。这是设计债：导入产物是派生数据，源图是签进 VCS 的，两者混在
+一起分不清"该留的"和"能重算的"；而且 content 被整体重建时它们和源图一起消失。
+
+改成落进仓库自己约定的派生数据桶 —— `_Generated/Data/`（CSV）、`_Generated/Shaders/`
+（.shader）已经这么做了，贴图补上第三个 `_Generated/Textures/`，镜像源图在 content 下的
+相对路径：
+
+```
+asset/objects/_textures/gold.tga
+  -> asset/_Generated/Textures/objects/_textures/gold.zasset
+```
+
+配套改动：
+- 新增 `ProjectInfo::GetGeneratedTexturesRoot()` / `GetGeneratedTexturePath(source)`（和
+  `GetGeneratedDataRoot()` 同一族）。源图不在 content 下时退化成只镜像文件名。
+- `Material::AssignTextureFromAssetPath()` 先查规范化位置，**再**回退老的两个候选
+  （源图旁边 / content 下同名）—— 老工程已导入的产物靠回退继续工作。
+- `ImportProjectTextures` 的"注册表补种"分支判据从"注册表记的那个路径在不在"改成
+  "规范化产物在不在"：注册表里还留着指向旧位置的条目，用旧路径判断会让它们每次启动
+  都重导一遍。
+- `CookProjectTextures` 的 editor 产物推导同步改用 `GetGeneratedTexturePath()`。
+- `EnsureScriptsScaffold` 写进 `.gitignore` 的规则原来是写死的 `/Assets/_Generated/`，
+  对 `content_dir: asset` 的工程根本不匹配 ⇒ 改成跟着 `content_dir` 走。
+
+验证：19 个产物全部落在 `_Generated/Textures/` 下、源图旁边一个 `.zasset` 都不剩；
+legacy 告警仍然 0（说明材质走新路径解析到了）；**第二次启动不再出现 `seeded` 行**（导入
+幂等，这是挪位之前做不到的）。`ProjectInfoPathsSmokeTest` 补 4 条路径映射断言（27 检查）。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - **点光源阴影 pass 在 Metal 上不做**：它靠 geometry shader 做 cubemap 展开，Metal 没有
   geometry shader。现在和 DX12 一样是 clear-only，不抛错。
-- **每次构建会冲掉已导入的贴图**：`bin/Debug/asset` 是构建时从 `engine/...` 拷过去的，
-  导入产物（19 个 `.zasset`）写在源图旁边，所以一构建就没了，下次启动重新导入一遍。
-  正式修法是让导入产物落进 `_Generated/`（gitignored）而不是源图边上。
+- **每次构建仍会冲掉已导入的贴图**：`CopyEngineDataToOutput` 是
+  `rm -rf <bin>/<cfg>/asset` + 整目录重拷，而 `_Generated/` 就在 content 底下，所以
+  一构建派生数据就没了、下次启动重新导入一遍（重启不会，只有构建会）。
+  想连这个一起解决就得让拷贝规则跳过 `_Generated/` —— 代价是源图被删后孤儿产物要人工
+  清理（和今天 `_Generated/Data/` 一样的行为），所以暂时没做。
 - **物理形状建不出来**：`Create JPH Shapes Failed / geometry reference did not resolve`，
   和渲染无关，是关卡里 mesh 引用没解析。
 - **帧率**：心跳日志显示 2 秒 120 帧（≈60 fps）。修复 (a) 之前只有 17–30 fps，差额几乎

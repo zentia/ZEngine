@@ -269,6 +269,24 @@ public:
     std::filesystem::path GetGeneratedDataRoot() const;
 
     /// Generated ShaderRes bucket: <project>/<content_dir>/_Generated/Shaders/.
+    /// Generated Texture2D bucket: <content>/_Generated/Textures/.
+    /// Same pattern as _Generated/Data/ and _Generated/Shaders/: placed UNDER
+    /// Assets/ so AssetRegistry picks the products up with zero extra wiring;
+    /// the whole _Generated/ subtree is gitignored. Only the extension changes,
+    /// and the source image's path under the content root is mirrored.
+    std::filesystem::path GetGeneratedTexturesRoot() const;
+
+    /// Where the editor-platform Texture2D .zasset for `source_file` lives.
+    ///
+    /// `<content>/_Generated/Textures/<source rel path>` with `.zasset` swapped
+    /// in, e.g. `asset/objects/_textures/gold.tga` ->
+    /// `asset/_Generated/Textures/objects/_textures/gold.zasset`.
+    ///
+    /// Import products are **derived data** and must not sit next to the
+    /// VCS-tracked source image. Returns an empty path when no project is
+    /// loaded, so callers can bail.
+    std::filesystem::path GetGeneratedTexturePath(const std::filesystem::path& source_file) const;
+
     /// One .zasset per input .shader (same stem, new extension). Lives
     /// UNDER Assets/ so AssetRegistry picks it up with zero extra wiring;
     /// the whole _Generated/ subtree is gitignored. Recreated on every
