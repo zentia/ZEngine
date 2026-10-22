@@ -115,6 +115,15 @@ void RenderCamera::LookAt(const Vector3& position, const Vector3& target, const 
     // inverse of the model rotation
     // maps camera space vectors to model vectors
     m_Invrotation = m_Rotation.conjugate();
+
+    // A Game camera's GetViewMatrix() returns m_ViewMatrices[MAIN] -- which only
+    // CameraComponent (i.e. play mode) ever wrote. In edit mode it stayed IDENTITY
+    // although RenderSystem had already posed the camera with LookAt(), so the Game
+    // viewport looked out of the origin along -Z, back-face culled every mesh and
+    // showed nothing but the clear colour. Keep the matrix in step with the pose;
+    // SetMainViewMatrix() still overrides it once a CameraComponent drives the camera.
+    std::lock_guard<std::mutex> lock_guard(m_ViewMatrixMutex);
+    m_ViewMatrices[MAIN_VIEW_MATRIX_INDEX] = Math::MakeLookAtMatrix(position, target, up);
 }
 
 Matrix4x4 RenderCamera::GetViewMatrix()
