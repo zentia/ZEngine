@@ -8,6 +8,7 @@
 #include "Runtime/Function/Render/RenderResource.h"
 #include "Runtime/Function/Render/RenderScene.h"
 #include "Runtime/Function/Render/RenderSystem.h"
+#include "Runtime/Function/Render/Nanite/NaniteRenderer.h"
 #include "Runtime/Utility/Utility.h"
 
 #include <array>
@@ -292,6 +293,16 @@ void MainCameraRp1Pass::Shutdown()
     m_FallbackBrdfView = nullptr;
     m_FallbackCubeView = nullptr;
     m_PerFrameSource = nullptr;
+
+    // 解掉 Nanite 的注入目标：它指向的 render pass / framebuffer 属于帧缓冲资源，
+    // 这次 Shutdown（以及窗口 resize 触发的重建）之后就是悬垂指针了。Nanite 只比较
+    // 不解引用，但留下一个指向已销毁对象的目标迟早会出事 —— 解掉之后它退回离屏。
+    if (m_NaniteRenderer != nullptr)
+    {
+        m_NaniteRenderer->SetRasterRenderPass(nullptr, nullptr);
+        m_NaniteRenderer = nullptr;
+    }
+
     m_Initialized = false;
 }
 
@@ -1842,6 +1853,18 @@ RHIPipeline* MainCameraRp1Pass::GetOrCreateMeshTransparentPipeline(const GpuPBRM
     return material_pipeline != nullptr ? material_pipeline : default_pipeline;
 }
 
+void MainCameraRp1Pass::RefreshNaniteInjection()
+{
+    if (m_NaniteRenderer == nullptr || m_FbResources == nullptr)
+    {
+        return;
+    }
+
+    RHIRenderPass* render_pass = m_FbResources->getGBufferRenderPass();
+    RHIFramebuffer* framebuffer = m_FbResources->getGBufferFramebuffer();
+    m_NaniteRenderer->SetRasterRenderPass(render_pass, framebuffer);
+}
+
 void MainCameraRp1Pass::DrawGBufferPass(const std::array<bool, 2>& skybox_visible)
 {
     // G-buffer pass: writes GBufferA, GBufferB, GBufferC, Depth.
@@ -1862,6 +1885,23 @@ void MainCameraRp1Pass::DrawGBufferPass(const std::array<bool, 2>& skybox_visibl
 
     m_Rhi->CmdBeginRenderPassPFN(m_Rhi->GetCurrentCommandBuffer(), &renderpass_begin_info, RHI_SUBPASS_CONTENTS_INLINE);
 
+    // ---- Nanite 的注入 --------------------------------------------------------
+    //
+    // Nanite 的剔除在帧里更早的位置跑（RenderNaniteCmd → UpdateNanite），那时一个
+    // pass 都还没开，它只能把间接命令写好。绘制必须发生在**某个 GBuffer pass 开着
+    // 的时候** —— 也就是这里。
+    //
+    // 注入是**跨帧保持**的，不是"这一帧画完就解掉"：下一帧 Nanite 的 Render() 会比
+    // 这个 pass 更早执行，它在那里看到"已注入"就会跳过自己的离屏 target —— 那条路
+    // 是 BeginSingleTimeCommands + 提交 + 等待，等于每帧一次全量 GPU 同步。代价是
+    // 第一帧（以及 GBuffer pass 不跑的那些帧）Nanite 可能画进没人读的离屏图，这比
+    // 每帧一次全量同步划算。只在 Shutdown 时解掉。
+    if (m_NaniteRenderer != nullptr)
+    {
+        m_NaniteRenderer->SetRasterRenderPass(renderpass_begin_info.renderPass,
+                                             renderpass_begin_info.framebuffer);
+    }
+
     constexpr ViewportType k_viewports[] = {ViewportType::game, ViewportType::scene};
     float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 
@@ -1876,6 +1916,16 @@ void MainCameraRp1Pass::DrawGBufferPass(const std::array<bool, 2>& skybox_visibl
         m_MainCameraPerFrame.show_skybox =
             skybox_visible[static_cast<size_t>(viewport_type)] ? 1U : 0U;
         DrawMeshGbuffer(viewport_type);
+
+        // Nanite 只在**游戏视口**里画：它的剔除用的就是 GetRenderCamera(game) 那台
+        // 相机，拿同一批可见集群去画编辑视口会得到按别的视锥裁过的结果。
+        //
+        // 视口 / scissor 是 DrawMeshGbuffer 刚设好的（SetViewportScissor），Nanite
+        // 不许碰 —— DrawClustersIndirectInPass 只追加绘制，不改任何 pass 状态。
+        if (viewport_type == ViewportType::game && m_NaniteRenderer != nullptr)
+        {
+            m_NaniteRenderer->DrawClustersIndirectInPass(m_Rhi->GetCurrentCommandBuffer());
+        }
     }
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 

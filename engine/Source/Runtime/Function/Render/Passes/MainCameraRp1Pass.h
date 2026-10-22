@@ -9,6 +9,7 @@
 
 class RenderResourceBase;
 class RenderResource;
+class NaniteRenderer;
 
 namespace MegaLights
 {
@@ -50,6 +51,24 @@ public:
     }
 
     void SetPerMeshLayout(RHIDescriptorSetLayout* layout) { m_ExternalPerMeshLayout = layout; }
+
+    // Nanite 的 GBuffer 注入。
+    //
+    // Nanite 的剔除跑在帧里更早的位置（RenderNaniteCmd → UpdateNanite），那时一个
+    // pass 都还没开 —— 它只能把间接命令写好。真正的绘制必须发生在**某个 GBuffer
+    // pass 开着的时候**，也就是 DrawGBufferPass 里。传进来的渲染器会在游戏视口的
+    // 网格绘制之后，把它的集群追加进同一个 pass。
+    //
+    // nullptr（默认）= 这个 pass 不画 Nanite，Nanite 继续走自己的离屏 target。
+    void SetNaniteRenderer(NaniteRenderer* renderer) { m_NaniteRenderer = renderer; }
+
+    // 把当前的 GBuffer render pass / framebuffer 重新交给 Nanite。
+    //
+    // DrawGBufferPass 每帧都会调，所以正常情况下不用手动调；这里留一个入口是为了
+    // UpdateAfterFramebufferRecreate —— resize 会销毁重建 framebuffer，而 Nanite
+    // 手里那一份是**跨帧保持**的（见 DrawGBufferPass 里的说明），不及时换掉就会
+    // 拿着一个已销毁的句柄。
+    void RefreshNaniteInjection();
 
     // Rebind mesh-global IBL + shadow textures after UploadGlobalRenderResource (level hot-reload).
     void RefreshMeshGlobalIblDescriptors();
@@ -109,6 +128,8 @@ private:
     RHIShader* LoadBuiltinShader(const char* hlsl_relative_path, ShaderStage stage);
 
     MainCameraFramebufferResources* m_FbResources {nullptr};
+    // 由 DesktopRenderPipelineModule 从 NaniteRenderPass 取来，只借不拥有。
+    NaniteRenderer* m_NaniteRenderer {nullptr};
     // Live per-viewport UBO source (PreparePassData); avoids stale copies at Sky Pass upload.
     RenderResource* m_PerFrameSource {nullptr};
     RHIDescriptorSetLayout* m_ExternalPerMeshLayout {nullptr};

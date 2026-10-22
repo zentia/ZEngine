@@ -1524,7 +1524,22 @@ int main()
                           "with the injection refused, nothing is drawn into the caller's pass");
                 }
 
+                // 交还：解掉注入之后 Nanite 必须能退回自己的离屏 target。
+                // MainCameraRp1Pass::Shutdown 走的就是这条路 —— 它解掉注入的原因是
+                // render pass / framebuffer 随后要被销毁，Nanite 手里不能留着它们；
+                // 但也不能因此就不画了。
                 renderer.SetRasterRenderPass(nullptr, nullptr);
+                Check(renderer.GetInjectedRasterRenderPass() == nullptr,
+                      "releasing the injection clears it (so no stale pass is handed to Nanite)");
+
+                renderer.PrepareGPUData(inject_camera, culling_on);
+                renderer.DispatchClusterCulling(inject_camera, culling_on);
+                renderer.DrawClustersIndirect();
+
+                const NaniteGPUResources& released = renderer.GetGPUResources();
+                Check(ProbeGBuffer(rhi, released.target_gbuffer, released.target_width, released.target_height)
+                          .covered > 0,
+                      "after the injection is released Nanite draws into its own offscreen GBuffer again");
             }
 
             DestroyCallerTarget(rhi, caller);

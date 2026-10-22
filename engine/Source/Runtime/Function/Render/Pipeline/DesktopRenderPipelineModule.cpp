@@ -172,6 +172,17 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
                 &dx12_main_camera->getRp1Pass().GetMaterialDescriptorSetLayoutPtr();
         }
 
+        // Nanite 的集群绘制必须发生在**某个 GBuffer pass 开着的时候**，而它自己的
+        // Render() 在帧里更早的位置（那时一个 pass 都没有）。所以把渲染器交给 RP1：
+        // 由 DrawGBufferPass 在游戏视口的网格绘制之后追加那一次间接绘制。
+        //
+        // 不交的话 Nanite 会退回自己的离屏 target：那条路是"自己开一次性命令缓冲 +
+        // 提交 + 等待"，等于每帧一次全量 GPU 同步，而且画进一张没人读的图。
+        if (auto* nanite_pass = dynamic_cast<NaniteRenderPass*>(m_Pipeline.m_NanitePass.get()))
+        {
+            dx12_main_camera->getRp1Pass().SetNaniteRenderer(nanite_pass->getNaniteRenderer());
+        }
+
         m_Pipeline.m_UiPass = std::make_shared<UIPass>();
         m_Pipeline.m_UiPass->SetCommonInfo(pass_common_info);
         UIPassInitInfo ui_init_info {};

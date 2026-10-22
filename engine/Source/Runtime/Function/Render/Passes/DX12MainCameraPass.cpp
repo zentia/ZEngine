@@ -684,6 +684,9 @@ void DX12MainCameraPass::UpdateAfterFramebufferRecreate()
         // G-buffer views are recreated above; deferred lighting input attachments must be
         // re-written or the lit pass binds stale/freed SRVs (RenderDoc AV on startup resize).
         m_Rp1Pass.RefreshDeferredLightingInputAttachments();
+        // Nanite hand-holds the GBuffer framebuffer across frames (so its own Render() skips
+        // the offscreen target); the handle it holds was just destroyed and rebuilt.
+        m_Rp1Pass.RefreshNaniteInjection();
     }
 }
 
