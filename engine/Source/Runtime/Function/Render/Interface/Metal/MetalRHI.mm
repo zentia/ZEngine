@@ -373,6 +373,38 @@ namespace
         }
     }
 
+    // RHIFormat -> bytes per texel.
+    //
+    // 这两个上传路径以前**硬编码 4 字节/texel**（`width * 4u`），对 R8G8B8A8 的兜底
+    // 贴图和 UI 白图是对的，但对 IBL 的 HDR（stbi_loadf -> R32G32B32A32_SFLOAT，
+    // 16 字节/texel）是错的：`replaceRegion` 会按错误的 row pitch 去读源内存，
+    // 结果是一张既错位又越界的垃圾图（越界时还可能是未定义行为）。修 IBL 之前
+    // 必须先修这个，否则"真 IBL"上传上去也是噪声。
+    //
+    // 返回 0 表示未知格式 —— 调用方拿到 0 就应该放弃上传，而不是按 4 猜。
+    uint32_t BytesPerTexel(RHIFormat format)
+    {
+        switch (format)
+        {
+            case RHI_FORMAT_R8_UNORM:            return 1u;
+            case RHI_FORMAT_R8G8_UNORM:          return 2u;
+            case RHI_FORMAT_R8G8B8A8_UNORM:      return 4u;
+            case RHI_FORMAT_R8G8B8A8_SRGB:       return 4u;
+            case RHI_FORMAT_B8G8R8A8_UNORM:      return 4u;
+            case RHI_FORMAT_B8G8R8A8_SRGB:       return 4u;
+            case RHI_FORMAT_R8G8B8A8_UINT:       return 4u;
+            case RHI_FORMAT_R16_SFLOAT:          return 2u;
+            case RHI_FORMAT_R16G16_SFLOAT:       return 4u;
+            case RHI_FORMAT_R16G16B16A16_SFLOAT: return 8u;
+            case RHI_FORMAT_R32_SFLOAT:          return 4u;
+            case RHI_FORMAT_R32_UINT:            return 4u;
+            case RHI_FORMAT_R32_SINT:            return 4u;
+            case RHI_FORMAT_R32G32_SFLOAT:       return 8u;
+            case RHI_FORMAT_R32G32B32A32_SFLOAT: return 16u;
+            default:                             return 0u;
+        }
+    }
+
     MTLVertexFormat ToMetalVertexFormat(RHIFormat format)
     {
         switch (format)
@@ -1173,11 +1205,26 @@ void MetalRHI::CreateGlobalImage(RHIImage*&      image,
 
     if (texture_image_pixels != nullptr)
     {
-        const NSUInteger bytes_per_row = static_cast<NSUInteger>(texture_image_width) * 4u;
-        [texture replaceRegion:MTLRegionMake2D(0, 0, texture_image_width, texture_image_height)
-                   mipmapLevel:0
-                     withBytes:texture_image_pixels
-                   bytesPerRow:bytes_per_row];
+        const uint32_t bytes_per_texel = BytesPerTexel(texture_image_format);
+        if (bytes_per_texel == 0u)
+        {
+            // 宁可不上传也不按错的 pitch 去读源内存：见 BytesPerTexel 的注释。
+            LOG_ERROR(ZRender,
+                      "Metal CreateGlobalImage: unknown bytes-per-texel for format {} ({}x{}) "
+                      "-- leaving the texture uninitialised",
+                      static_cast<int>(texture_image_format),
+                      texture_image_width,
+                      texture_image_height);
+        }
+        else
+        {
+            const NSUInteger bytes_per_row =
+                static_cast<NSUInteger>(texture_image_width) * static_cast<NSUInteger>(bytes_per_texel);
+            [texture replaceRegion:MTLRegionMake2D(0, 0, texture_image_width, texture_image_height)
+                       mipmapLevel:0
+                         withBytes:texture_image_pixels
+                       bytesPerRow:bytes_per_row];
+        }
     }
 
     auto* metal_image = new MetalImage();
@@ -1218,13 +1265,23 @@ void MetalRHI::CreateCubeMap(RHIImage*&           image,
         return;
     }
 
+    const uint32_t  bytes_per_texel   = BytesPerTexel(texture_image_format);
+    const NSUInteger requested_mips    = static_cast<NSUInteger>(miplevels > 0 ? miplevels : 1);
+    //
+    // 只对 mip 0 有数据，其余层级要靠 GPU 生成。`generateMipmapsForTexture:` 是
+    // blit encoder 的一步，不需要 render target，也就绕开了 DX12 那边"mipgen 全屏
+    // pass 会在首帧之前把设备搞掉"的坑。它要求纹理带 ShaderWrite 用途（不只是
+    // ShaderRead），所以按 mip 数动态加这个 bit。
+    const bool      generate_mips     = requested_mips > 1 && m_CommandQueue != nil;
+
     MTLTextureDescriptor* descriptor = [[MTLTextureDescriptor alloc] init];
     descriptor.textureType      = MTLTextureTypeCube;
     descriptor.pixelFormat      = ToMetalFormat(texture_image_format);
     descriptor.width            = static_cast<NSUInteger>(texture_image_width);
     descriptor.height           = static_cast<NSUInteger>(texture_image_height);
-    descriptor.mipmapLevelCount = static_cast<NSUInteger>(miplevels > 0 ? miplevels : 1);
-    descriptor.usage            = MTLTextureUsageShaderRead;
+    descriptor.mipmapLevelCount = generate_mips ? requested_mips : 1u;
+    descriptor.usage = generate_mips ? (MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite)
+                                     : MTLTextureUsageShaderRead;
     descriptor.storageMode      = MTLStorageModeManaged;
 
     id<MTLTexture> texture = [m_Device newTextureWithDescriptor:descriptor];
@@ -1234,19 +1291,48 @@ void MetalRHI::CreateCubeMap(RHIImage*&           image,
         return;
     }
 
-    const NSUInteger bytes_per_row = static_cast<NSUInteger>(texture_image_width) * 4u;
-    for (uint32_t face = 0; face < 6; ++face)
+    if (bytes_per_texel == 0u)
     {
-        if (texture_image_pixels[face] == nullptr)
+        LOG_ERROR(ZRender,
+                  "Metal CreateCubeMap: unknown bytes-per-texel for format {} ({}x{}) "
+                  "-- leaving the cubemap uninitialised",
+                  static_cast<int>(texture_image_format),
+                  texture_image_width,
+                  texture_image_height);
+    }
+    else
+    {
+        const NSUInteger bytes_per_row =
+            static_cast<NSUInteger>(texture_image_width) * static_cast<NSUInteger>(bytes_per_texel);
+        for (uint32_t face = 0; face < 6; ++face)
         {
-            continue;
+            if (texture_image_pixels[face] == nullptr)
+            {
+                continue;
+            }
+            [texture replaceRegion:MTLRegionMake2D(0, 0, texture_image_width, texture_image_height)
+                       mipmapLevel:0
+                             slice:face
+                         withBytes:texture_image_pixels[face]
+                       bytesPerRow:bytes_per_row
+                     bytesPerImage:bytes_per_row * texture_image_height];
         }
-        [texture replaceRegion:MTLRegionMake2D(0, 0, texture_image_width, texture_image_height)
-                   mipmapLevel:0
-                         slice:face
-                     withBytes:texture_image_pixels[face]
-                   bytesPerRow:bytes_per_row
-                 bytesPerImage:bytes_per_row * texture_image_height];
+
+        if (generate_mips)
+        {
+            id<MTLCommandBuffer>     mip_command   = [m_CommandQueue commandBuffer];
+            id<MTLBlitCommandEncoder> mip_encoder  = [mip_command blitCommandEncoder];
+            [mip_encoder generateMipmapsForTexture:texture];
+            [mip_encoder endEncoding];
+            [mip_command commit];
+            [mip_command waitUntilCompleted];
+            LOG_INFO(ZRender,
+                     "Metal CreateCubeMap: uploaded mip0 + GPU-generated {} mips ({}x{}, fmt={})",
+                     static_cast<uint32_t>(requested_mips - 1u),
+                     texture_image_width,
+                     texture_image_height,
+                     static_cast<int>(texture_image_format));
+        }
     }
 
     auto* metal_image = new MetalImage();

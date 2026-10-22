@@ -53,9 +53,11 @@ bool RenderSystem::Initialize()
     // 场景渲染的地基：RenderScene（可见物体 / 光源）和 RenderResource（GPU 资源 +
     // per-frame UBO）。以前 Apple 上一个都没有，管线只能画 UI。
     //
-    // 这里**不**去加载 GlobalRenderingRes（要 ConfigManager + AssetManager 把资源
-    // 读出来），IBL / 环境光用默认值 —— DesktopRenderPipelineModule 那边有
-    // EnsureFallbackIblTextures 兜底，descriptor 始终是合法的。
+    // GlobalRenderingRes 只在下面单独按需读一次（拿 IBL 的 12 张 HDR 和 LUT 路径），
+    // 不走 UploadGlobalRenderResource 那条路 —— 那边要顺带建 texture streaming
+    // manager / MegaLights / storage buffer，是另一件事。读不到的时候
+    // DesktopRenderPipelineModule 的 EnsureFallbackIblTextures 会兜底，descriptor
+    // 始终是合法的。
     m_RenderScene = std::make_shared<RenderScene>();
     m_RenderScene->SetUploadRhi(m_Rhi);
     m_RenderScene->SetVisibleNodesReference();
@@ -67,17 +69,23 @@ bool RenderSystem::Initialize()
     // 绑上传 ringbuffer，晚一步 descriptor 就指向空 buffer。
     render_resource->CreateAndMapStorageBuffer(m_Rhi);
 
-    // ---- 颜色分级 LUT ----
+    // ---- IBL + 颜色分级 LUT ----
     //
-    // 这条精简版 Initialize **从不调用 UploadGlobalRenderResource**，所以全局资源
-    // 里只有 LUT 需要单独补：IBL 那 6 张 HDR cubemap 由 DesktopRenderPipelineModule
-    // 的 EnsureFallbackIblTextures 兜底（日志里那条
-    // `[E] MainCameraRp1Pass::SetupDescriptorSets: IBL textures unavailable` 就是
-    // 这么来的，它是"没上传"不是"设备掉了"），而 LUT **没有任何兜底之外的出路**
-    // —— RP2 的 binding 1 绑不到真图，颜色分级等于没接。
+    // 这条精简版 Initialize **从不调用 UploadGlobalRenderResource**，所以全局资源里
+    // 的 IBL 和 LUT 必须单独补，否则：
+    //   * IBL 由 DesktopRenderPipelineModule 的 EnsureFallbackIblTextures 兜底 ——
+    //     一张 4x4 中性灰 cubemap + 1x1 BRDF。环境光恒等于一个常数，天光/反射全
+    //     没了，日志里还挂着一条
+    //     `[E] MainCameraRp1Pass::SetupDescriptorSets: IBL textures unavailable`
+    //     （它是"没上传"不是"设备掉了"）。
+    //   * LUT 除了兜底 texel 没有任何出路 —— RP2 的 binding 1 绑不到真图，颜色
+    //     分级等于没接。
     //
-    // 不把整个 UploadGlobalRenderResource 搬过来：那要顺带读 6 张 HDR 并建 cubemap，
-    // 是另一件事（而且 Apple 上 RP1 现在用兜底 IBL 跑得好好的）。
+    // 不把整个 UploadGlobalRenderResource 搬过来：那要顺带建 texture streaming
+    // manager / MegaLights / storage buffer，是另一件事。
+    //
+    // 两个调用都必须排在 m_RenderPipeline->Initialize 之前：RP1 的
+    // SetupDescriptorSets 在那儿就把 IBL descriptor 写死了。
     if (auto* config_manager = GET_SYSTEM(ConfigManager))
     {
         const eastl::string& global_rendering_url = config_manager->GetGlobalRenderingResUrl();
@@ -85,13 +93,20 @@ bool RenderSystem::Initialize()
         {
             if (auto* global_rendering_res = asset_manager->loadAsset<GlobalRenderingRes>(global_rendering_url))
             {
+                LevelIBLResourceDesc ibl_desc;
+                ibl_desc.m_SkyboxIrradianceMap = global_rendering_res->m_SkyboxIrradianceMap;
+                ibl_desc.m_SkyboxSpecularMap   = global_rendering_res->m_SkyboxSpecularMap;
+                ibl_desc.m_BrdfMap             = global_rendering_res->m_BrdfMap;
+                render_resource->UploadIblResources(m_Rhi, ibl_desc);
+
                 render_resource->UploadColorGradingLut(m_Rhi, global_rendering_res->m_ColorGradingMap);
                 MemoryManager::DestroyObject(global_rendering_res);
             }
             else
             {
                 LOG_WARNING(ZRender,
-                            "RenderSystem(Apple): could not load '{}' -- color grading falls back to a neutral texel",
+                            "RenderSystem(Apple): could not load '{}' -- IBL and color grading fall back "
+                            "to neutral textures",
                             global_rendering_url.c_str());
             }
         }

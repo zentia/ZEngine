@@ -128,38 +128,57 @@ void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc leve
 
     m_MegaLights.Initialize(rhi);
 
+    // IBL（6 张 irradiance + 6 张 specular HDR cubemap + BRDF LUT），细节见 UploadIblResources
+    UploadIblResources(rhi, level_resource_desc.m_IblResourceDesc);
+
+    // color grading（细节见 UploadColorGradingLut）
+    UploadColorGradingLut(rhi, level_resource_desc.m_ColorGradingResourceDesc.m_ColorGradingMap);
+}
+
+void RenderResource::UploadIblResources(RHI* rhi, const LevelIBLResourceDesc& ibl_desc)
+{
+    // 这一段以前只活在 `UploadGlobalRenderResource` 里，而 Apple 的
+    // `RenderSystem::Initialize` 是精简版、**从不调用**它 —— 于是 Apple 上 IBL 从来
+    // 没上过 GPU，RP1 的 `SetupDescriptorSets` 只能绑 `EnsureFallbackIblTextures`
+    // 造的那张 4x4 中性灰 cubemap + 1x1 BRDF。画面上是"环境光永远是一个常数灰"，
+    // 而且日志里还挂着一条 `[E] IBL textures unavailable (device removed?)`，看
+    // 起来像设备掉了，其实是"没上传"。
+    //
+    // 抽成独立入口后 Apple 可以只补 IBL，不用顺带把 texture streaming manager /
+    // MegaLights / storage buffer 那套也拖进来。
+    //
     // sky box irradiance
-    SkyBoxIrradianceMap skybox_irradiance_map = level_resource_desc.m_IblResourceDesc.m_SkyboxIrradianceMap;
-    LOG_INFO(ZRender, "UploadGlobalRenderResource: loading irradiance maps from {}", skybox_irradiance_map.m_PositiveXMap);
+    const SkyBoxIrradianceMap& skybox_irradiance_map = ibl_desc.m_SkyboxIrradianceMap;
+    LOG_INFO(ZRender, "UploadIblResources: loading irradiance maps from {}", skybox_irradiance_map.m_PositiveXMap);
     std::shared_ptr<TextureData> irradiace_pos_x_map = LoadTextureHDR(skybox_irradiance_map.m_PositiveXMap);
     std::shared_ptr<TextureData> irradiace_neg_x_map = LoadTextureHDR(skybox_irradiance_map.m_NegativeXMap);
     std::shared_ptr<TextureData> irradiace_pos_y_map = LoadTextureHDR(skybox_irradiance_map.m_PositiveYMap);
     std::shared_ptr<TextureData> irradiace_neg_y_map = LoadTextureHDR(skybox_irradiance_map.m_NegativeYMap);
     std::shared_ptr<TextureData> irradiace_pos_z_map = LoadTextureHDR(skybox_irradiance_map.m_PositiveZMap);
     std::shared_ptr<TextureData> irradiace_neg_z_map = LoadTextureHDR(skybox_irradiance_map.m_NegativeZMap);
-    LOG_INFO(ZRender, "UploadGlobalRenderResource: irradiance loaded: +X={}, -X={}, +Y={}, -Y={}, +Z={}, -Z={}",
+    LOG_INFO(ZRender, "UploadIblResources: irradiance loaded: +X={}, -X={}, +Y={}, -Y={}, +Z={}, -Z={}",
              irradiace_pos_x_map != nullptr, irradiace_neg_x_map != nullptr,
              irradiace_pos_y_map != nullptr, irradiace_neg_y_map != nullptr,
              irradiace_pos_z_map != nullptr, irradiace_neg_z_map != nullptr);
 
     // sky box specular
-    SkyBoxSpecularMap skybox_specular_map = level_resource_desc.m_IblResourceDesc.m_SkyboxSpecularMap;
-    LOG_INFO(ZRender, "UploadGlobalRenderResource: loading specular maps from {}", skybox_specular_map.m_PositiveXMap);
+    const SkyBoxSpecularMap& skybox_specular_map = ibl_desc.m_SkyboxSpecularMap;
+    LOG_INFO(ZRender, "UploadIblResources: loading specular maps from {}", skybox_specular_map.m_PositiveXMap);
     std::shared_ptr<TextureData> specular_pos_x_map = LoadTextureHDR(skybox_specular_map.m_PositiveXMap);
     std::shared_ptr<TextureData> specular_neg_x_map = LoadTextureHDR(skybox_specular_map.m_NegativeXMap);
     std::shared_ptr<TextureData> specular_pos_y_map = LoadTextureHDR(skybox_specular_map.m_PositiveYMap);
     std::shared_ptr<TextureData> specular_neg_y_map = LoadTextureHDR(skybox_specular_map.m_NegativeYMap);
     std::shared_ptr<TextureData> specular_pos_z_map = LoadTextureHDR(skybox_specular_map.m_PositiveZMap);
     std::shared_ptr<TextureData> specular_neg_z_map = LoadTextureHDR(skybox_specular_map.m_NegativeZMap);
-    LOG_INFO(ZRender, "UploadGlobalRenderResource: specular loaded: +X={}, -X={}, +Y={}, -Y={}, +Z={}, -Z={}",
+    LOG_INFO(ZRender, "UploadIblResources: specular loaded: +X={}, -X={}, +Y={}, -Y={}, +Z={}, -Z={}",
              specular_pos_x_map != nullptr, specular_neg_x_map != nullptr,
              specular_pos_y_map != nullptr, specular_neg_y_map != nullptr,
              specular_pos_z_map != nullptr, specular_neg_z_map != nullptr);
 
     // brdf
-    LOG_INFO(ZRender, "UploadGlobalRenderResource: loading BRDF LUT from {}", level_resource_desc.m_IblResourceDesc.m_BrdfMap);
-    std::shared_ptr<TextureData> brdf_map = LoadTextureHDR(level_resource_desc.m_IblResourceDesc.m_BrdfMap);
-    LOG_INFO(ZRender, "UploadGlobalRenderResource: BRDF LUT loaded: {}", brdf_map != nullptr);
+    LOG_INFO(ZRender, "UploadIblResources: loading BRDF LUT from {}", ibl_desc.m_BrdfMap);
+    std::shared_ptr<TextureData> brdf_map = LoadTextureHDR(ibl_desc.m_BrdfMap);
+    LOG_INFO(ZRender, "UploadIblResources: BRDF LUT loaded: {}", brdf_map != nullptr);
 
     const auto ibl_face_loaded = [](const std::shared_ptr<TextureData>& map) {
         return map != nullptr && map->m_Pixels != nullptr && map->m_Width > 0 && map->m_Height > 0;
@@ -192,10 +211,16 @@ void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc leve
                                    brdf_map->m_Height,
                                    brdf_map->m_Pixels,
                                    brdf_map->m_Format);
-            if (rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
-            {
-                LOG_INFO(ZRender, "RenderResource(DX12): IBL HDR upload complete (mip0 cubemaps + BRDF LUT)");
-            }
+            LOG_INFO(ZRender,
+                     "RenderResource: IBL HDR upload complete (irradiance {}x{}, specular {}x{}, BRDF {}x{}, "
+                     "api={})",
+                     irradiance_maps[0]->m_Width,
+                     irradiance_maps[0]->m_Height,
+                     specular_maps[0]->m_Width,
+                     specular_maps[0]->m_Height,
+                     brdf_map->m_Width,
+                     brdf_map->m_Height,
+                     static_cast<int>(rhi->getGraphicsAPI()));
         }
         catch (const std::exception& ex)
         {
@@ -206,9 +231,6 @@ void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc leve
     {
         LOG_WARNING(ZRender, "RenderResource: skipping IBL upload (HDR face or BRDF load failed)");
     }
-
-    // color grading（细节见 UploadColorGradingLut）
-    UploadColorGradingLut(rhi, level_resource_desc.m_ColorGradingResourceDesc.m_ColorGradingMap);
 }
 
 void RenderResource::UploadColorGradingLut(RHI* rhi, const eastl::string& color_grading_path)

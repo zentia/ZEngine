@@ -52,14 +52,21 @@ AppleRender: frame=241 entities=31 visible=3 scene_color_view=1 blit_ready=1 rp2
 启动时还应该看到这两行（RP2 起来了）：
 
 ```
+UploadIblResources: BRDF LUT loaded: TRUE
+Metal CreateCubeMap: uploaded mip0 + GPU-generated 8 mips (256x256, fmt=109)
+RenderResource: IBL HDR upload complete (irradiance 256x256, specular 256x256, BRDF 256x256, api=2)
 RenderResource: color grading LUT 'asset/texture/lut/color_grading_lut_01.png' uploaded (256x16, format=37)
 AppleRp2Chain: offscreen post chain (backup_odd -> backup_even) ready (lut=1)
 DesktopRenderPipelineModule(Metal): shadow passes + MainCameraRp1Pass initialized (rp2=TRUE)
+MainCameraRp1Pass::SetupDescriptorSets: IBL bound (irradiance=real, specular=real, brdf=real)
 ```
 
 `lut=1` 表示 RP2 拿到了真 LUT；`lut=0` 表示它用的是 1×1 中性兜底（画面没有分级，但不
 会黑）。`format=37` 是 `RHI_FORMAT_R8G8B8A8_UNORM` —— 若这里出现压缩格式，LUT 会被块
 压缩破坏（§4 最后一条）。
+
+`IBL bound (...=real)` 表示 RP1 绑的是上传上去的 HDR cubemap；出现 `fallback` 说明用的是
+4×4 中性灰（环境光恒定，天光和反射都没有），去查 `UploadIblResources` 那几行（§3.11）。
 
 ### 2.3 画面
 
@@ -92,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 40 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致 |
+| `AppleSceneBlitSmokeTest` | 132 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；以及 IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
@@ -391,6 +398,66 @@ rhi, path)`，Apple 那条精简版 `Initialize` 单独调它（只补 LUT，不
   也能长得一样，只有第二遍能证伪。
 - 变异检验：把切片轴从 `c.b` 改成 `c.g`，蓝通道退化成绿通道的值（206 → 191），测试立刻红。
 
+### 3.11 接上真 IBL（6 张 irradiance + 6 张 specular HDR + BRDF）
+
+§3.10 (a) 只修了 LUT，IBL 还是 `EnsureFallbackIblTextures` 造的那张 **4×4 中性灰 cubemap +
+1×1 BRDF** —— 环境光恒等于一个常数，天光和环境反射全没了，而日志里只有一条把人往"设备掉
+了"上带的 `[E]`。
+
+**坑 A：Metal 的上传路径硬编码 4 字节/texel。** `MetalRHI::CreateGlobalImage` 和
+`CreateCubeMap` 都用 `bytesPerRow = width * 4`。对 R8G8B8A8 的兜底图和 UI 白图是对的，但对
+HDR 是错的 —— `stbi_loadf` 出来的是 `R32G32B32A32_SFLOAT`，**16 字节/texel**。按错的 row
+pitch 去 `replaceRegion`，数据是既错位又越界的。这是修 IBL 的真正前置条件：不修这个，"真
+IBL"上传上去也只是噪声（实测：把这个值改回 4，cubemap 采样出来是 0/0/0）。
+
+修法：加 `BytesPerTexel(RHIFormat)`，两处上传都按格式算 row pitch；未知格式返回 0，宁可不
+上传也不按 4 猜（并打 `[E]`）。
+
+**坑 B：mip 链。** shader 里是 `lod = roughness * MAX_REFLECTION_LOD`（=8），没有 mip 链的话
+粗糙表面采到的是 mip 0 ⇒ 粗糙和镜面长得一样。Vulkan 用 `GenerateTextureMipMaps`（blit），
+DX12 因为"mipgen 全屏 pass 会在首帧之前把设备搞掉"退回 mip0-only。Metal 走 Vulkan 那条路：
+`generateMipmapsForTexture:` 是 blit encoder 的一步，不需要 render target，也就绕开了 DX12
+那个坑。它要求纹理带 `ShaderWrite` 用途（不只是 `ShaderRead`），所以 mip 数 > 1 时才加这个
+bit。真机日志：`Metal CreateCubeMap: uploaded mip0 + GPU-generated 8 mips (256x256, fmt=109)`。
+
+**接线**：把 IBL 段从 `UploadGlobalRenderResource` 拆成
+`RenderResource::UploadIblResources(rhi, const LevelIBLResourceDesc&)`，Apple 那条精简版
+`Initialize` 在 `m_RenderPipeline->Initialize` **之前**调它 —— RP1 的 `SetupDescriptorSets`
+就在那儿把 descriptor 写死了，晚一步得额外走
+`MainCameraRp1Pass::RefreshMeshGlobalIblDescriptors()` 重绑。
+
+顺带两处可观测性：
+
+- `SetupDescriptorSets` 现在每次都打
+  `IBL bound (irradiance=real, specular=real, brdf=real) -- 'real' = the uploaded HDR
+  cubemaps, 'fallback' = the 4x4 neutral stand-in`。以前"环境光其实是 4×4 中性灰"这件事在日
+  志里完全看不出来，Apple 上挂了很久没人发现。
+- 那条 `[E] ... IBL textures unavailable (device removed?)` 改成 `[W] ... no IBL textures
+  bound yet ...`。
+
+**验证**：`AppleSceneBlitSmokeTest` 新增 25 条检查，总数 **132**。新增部分里有一条是真跑
+GPU 的，其余是文本契约 —— 前者是这份测试里唯一能证伪"每 texel 字节数"的地方：编译期看不
+见 `replaceRegion` 的 row pitch，日志也不报，只有真采一次才看得出来：
+
+- 用 `R32G32B32A32_SFLOAT`（真 IBL 的格式，不是兜底图的 R8G8B8A8）建一张 4×4 cubemap，面
+  内 4 个 texel **不相等**（r 沿 x 爬、g 沿 y 爬），否则 pitch 错了也看不出来。
+- 从 +X 方向（Metal 的第 0 个 slice）正中心采一次：4×4 面内双线性落在 x=y=1.5 ⇒
+  r=g=0.45（115）、b=0.60（153）。实测 `got=115.0/115.0/153.0`。
+- 变异检验：把 `R32G32B32A32_SFLOAT` 的返回值改回 4，采出来变成 `0/0/0`，测试立刻红。
+
+真机（2560×1440，跑到 481 帧无 `[E]`）：
+
+```
+UploadIblResources: irradiance loaded: +X=TRUE, -X=TRUE, +Y=TRUE, -Y=TRUE, +Z=TRUE, -Z=TRUE
+UploadIblResources: specular loaded:   +X=TRUE, -X=TRUE, +Y=TRUE, -Y=TRUE, +Z=TRUE, -Z=TRUE
+UploadIblResources: BRDF LUT loaded: TRUE
+Metal CreateCubeMap: uploaded mip0 + GPU-generated 8 mips (256x256, fmt=109)
+RenderResource: IBL HDR upload complete (irradiance 256x256, specular 256x256, BRDF 256x256, api=2)
+RenderResource: color grading LUT 'asset/texture/lut/color_grading_lut_01.png' uploaded (256x16, format=37)
+MainCameraRp1Pass::SetupDescriptorSets: IBL bound (irradiance=real, specular=real, brdf=real)
+AppleRp2Chain: offscreen post chain (backup_odd -> backup_even) ready (lut=TRUE)
+```
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - **RP2 只有 step 0（显示变换）+ LUT**：FXAA 没做 —— 它要一个只在 `enable_fxaa=true` 时才
@@ -402,13 +469,16 @@ rhi, path)`，Apple 那条精简版 `Initialize` 单独调它（只补 LUT，不
   其余不变。
 - ~~**LUT 走压缩 `.zasset`**~~ —— 已修：`LoadTexture` 加了 `allow_cooked` 参数，LUT 显式跳过
   烤好的 BC7 产物（§3.10 (b)）。
-- **IBL 在 Apple 上仍然是兜底贴图**：`UploadGlobalRenderResource` 只被 Vulkan / DX12 两条
-  `Initialize` 调用，Apple 那条精简版不调（§3.10 (a)）。所以日志里那条
-  `MainCameraRp1Pass::SetupDescriptorSets: IBL textures unavailable` 会一直在，它的意思是
-  "Apple 上没上传过 IBL"，不是设备掉了。要真修就把 6 张 HDR cubemap 也搬过去。
-- **`RenderSwapContext::m_LevelResourceDesc` 全库没有生产者**：两条 `ProcessSwapData()` 都读
-  它，但没有任何地方给它赋值 ⇒ "关卡热重载刷新全局资源"这条路目前在任何平台都不通。LUT 的
-  热重载是靠 RP2 每帧重取 view 绕过去的，IBL 没有对应机制。
+- ~~**IBL 在 Apple 上仍然是兜底贴图**~~ —— 已修，见 §3.11。现在启动时会看到
+  `IBL bound (irradiance=real, specular=real, brdf=real)`，那条
+  `IBL textures unavailable` 已经不再出现（它顺带从 `[E]` 降级成 `[W]` 并改成了准确措辞，
+  因为它从来不是"设备掉了"，只是"还没上传"）。
+- **IBL 的热重载只有 DX12 有**：`RenderSwapContext::m_LevelResourceDesc` 全库没有生产者，
+  两条 `ProcessSwapData()` 都读它，但没有任何地方给它赋值 ⇒ "关卡热重载刷新全局资源"这条
+  路目前在任何平台都不通。DX12 靠 `OnGlobalRenderResourceUploaded()` /
+  `MainCameraRp1Pass::RefreshMeshGlobalIblDescriptors()` 走另一条路；Apple 因为把上传排在
+  `RenderPipeline::Initialize` 之前，初始化时就绑到了真图，不需要重绑 —— 但**换关卡换 IBL
+  依然不会生效**。LUT 的热重载是靠 RP2 每帧重取 view 绕过去的。
 
 - **点光源阴影 pass 在 Metal 上不做**：它靠 geometry shader 做 cubemap 展开，Metal 没有
   geometry shader。现在和 DX12 一样是 clear-only，不抛错。

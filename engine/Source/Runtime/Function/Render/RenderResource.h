@@ -143,6 +143,19 @@ public:
     virtual void UploadGlobalRenderResource(RHI* rhi,
                                             LevelResourceDesc level_resource_desc) override final;
 
+    /// 只上传 IBL（6 张 irradiance + 6 张 specular HDR cubemap + BRDF LUT）。
+    ///
+    /// Apple 的 `RenderSystem::Initialize` 是精简版，不走
+    /// `UploadGlobalRenderResource`，于是 IBL 在 Apple 上**从来没上过 GPU** ——
+    /// RP1 只能绑 `EnsureFallbackIblTextures` 造的 4x4 中性灰 cubemap，环境光恒为
+    /// 一个常数。这个入口让 Apple 只补 IBL，不用把 texture streaming manager /
+    /// MegaLights / storage buffer 那套也拖进来。
+    ///
+    /// 必须在 `RenderPipeline::Initialize` **之前**调：RP1 的 `SetupDescriptorSets`
+    /// 在那里就把 descriptor 写死了，晚一步要额外走
+    /// `MainCameraRp1Pass::RefreshMeshGlobalIblDescriptors()` 重绑。
+    void UploadIblResources(RHI* rhi, const LevelIBLResourceDesc& ibl_desc);
+
     /// 只上传颜色分级 LUT（不碰 IBL 的 6 张 HDR cubemap）。
     ///
     /// Apple 的 `RenderSystem::Initialize` 是精简版，不走

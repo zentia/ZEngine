@@ -1324,8 +1324,16 @@ void MainCameraRp1Pass::SetupDescriptorSets()
 
     const IBLResource& ibl = m_GlobalRenderResource->m_IblResource;
 
-    // Guard: if neither real IBL textures nor fallback textures are available
-    // (e.g. D3D12 device removed / TDR under RenderDoc), skip descriptor setup.
+    // Guard: if neither real IBL textures nor fallback textures are available,
+    // skip descriptor setup.
+    //
+    // 这条日志以前写的是 "(device removed?)"，把"根本没上传"和"设备掉了"混成了一
+    // 件事 —— Apple 上它每帧必现，害得每次看日志都要先怀疑一次 TDR。实际上来到
+    // 这里的绝大多数情况是 IBL 还没上传（`RenderSystem::Initialize` 没走
+    // `UploadGlobalRenderResource`），而真正的设备丢失会先在
+    // `EnsureFallbackIblTextures` 的 CreateGlobalImage / CreateCubeMap 上报出来。
+    // 措辞改成"还没上传"，并把它降级成 WARN —— descriptor 跳过是**有兜底**的降级
+    // 路径（不画环境光），不是渲染失败。
     RHIImageView* setup_brdf = ibl.m_BrdflutTextureImageView != nullptr
         ? ibl.m_BrdflutTextureImageView : m_FallbackBrdfView;
     RHIImageView* setup_irradiance = ibl.m_IrradianceTextureImageView != nullptr
@@ -1335,11 +1343,22 @@ void MainCameraRp1Pass::SetupDescriptorSets()
     if (setup_brdf == nullptr || setup_irradiance == nullptr ||
         setup_specular == nullptr)
     {
-        LOG_ERROR(ZRender,
-                  "MainCameraRp1Pass::SetupDescriptorSets: IBL textures unavailable "
-                  "(device removed?) — skipping mesh global descriptor set");
+        LOG_WARNING(ZRender,
+                    "MainCameraRp1Pass::SetupDescriptorSets: no IBL textures bound yet (neither the real "
+                    "HDR cubemaps nor the neutral fallback exist) -- skipping the mesh global descriptor "
+                    "set; indirect lighting will be flat until RenderResource uploads the IBL");
         return;
     }
+
+    // 真 IBL 还是兜底 IBL，这一行是唯一的对外交代。以前这条路径上只有"兜底为空
+    // 时报错"这一条日志，于是"环境光其实是 4x4 中性灰"这件事在日志里完全看不出
+    // 来 —— Apple 上挂了很久就是没人发现。现在每次建 descriptor 都打一次。
+    LOG_INFO(ZRender,
+             "MainCameraRp1Pass::SetupDescriptorSets: IBL bound (irradiance={}, specular={}, brdf={}) -- "
+             "'real' = the uploaded HDR cubemaps, 'fallback' = the 4x4 neutral stand-in",
+             ibl.m_IrradianceTextureImageView != nullptr ? "real" : "fallback",
+             ibl.m_SpecularTextureImageView != nullptr ? "real" : "fallback",
+             ibl.m_BrdflutTextureImageView != nullptr ? "real" : "fallback");
 
     RHIDescriptorImageInfo brdf_texture_image_info {};
     brdf_texture_image_info.sampler = ibl.m_BrdflutTextureSampler != nullptr ? ibl.m_BrdflutTextureSampler : m_FallbackSampler;

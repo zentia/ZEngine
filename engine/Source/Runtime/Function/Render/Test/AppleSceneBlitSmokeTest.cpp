@@ -470,6 +470,89 @@ namespace
               "the Apple RenderSystem::Initialize uploads the LUT itself (it never calls UploadGlobalRenderResource)");
     }
 
+    // =======================================================================
+    // IBL 的文本契约。
+    //
+    // 三件事，每一件都能单独退化成"画面看不出错、日志也不报错"：
+    //   1. MetalRHI 上传时用的是**按格式算出来**的每 texel 字节数，不是写死的 4。
+    //   2. Apple 那条精简版 Initialize 自己上传 IBL，而且排在
+    //      RenderPipeline::Initialize 之前（RP1 的 SetupDescriptorSets 在那里
+    //      就把 descriptor 写死了）。
+    //   3. SetupDescriptorSets 那条"设备掉了"的日志改成"还没上传"—— 它其实
+    //      每帧都在骗人。
+    // =======================================================================
+    void CheckIblContracts()
+    {
+        const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string metal_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Interface/Metal/MetalRHI.mm");
+        const std::string res_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderResource.cpp");
+        const std::string res_header =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderResource.h");
+        const std::string system_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+        const std::string rp1_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Passes/MainCameraRp1Pass.cpp");
+        Check(!metal_source.empty(), "MetalRHI.mm is readable as text (IBL contracts)");
+        Check(!res_source.empty(), "RenderResource.cpp is readable as text (IBL contracts)");
+        Check(!system_source.empty(), "RenderSystem.cpp is readable as text (IBL contracts)");
+        Check(!rp1_source.empty(), "MainCameraRp1Pass.cpp is readable as text (IBL contracts)");
+
+        // ---- 每 texel 字节数（HDR 是 16 字节/texel，硬编码 4 上传出来是垃圾）----
+        Check(Contains(metal_source, "uint32_t BytesPerTexel(RHIFormat format)"),
+              "MetalRHI has a bytes-per-texel helper (the upload used to hardcode 4 bytes per texel)");
+        Check(Contains(metal_source, "case RHI_FORMAT_R32G32B32A32_SFLOAT: return 16u;"),
+              "an RGBA32F texel is 16 bytes, not 4 (stbi_loadf HDR data)");
+        Check(Contains(metal_source, "case RHI_FORMAT_R8G8B8A8_UNORM:      return 4u;"),
+              "an RGBA8 texel is still 4 bytes (the fallback textures)");
+        // 两处上传都必须走 helper，而不是各自再写一遍 `* 4u`。
+        const size_t global_image_at = metal_source.find("void MetalRHI::CreateGlobalImage");
+        const size_t cube_map_at     = metal_source.find("void MetalRHI::CreateCubeMap");
+        Check(global_image_at != std::string::npos && cube_map_at != std::string::npos &&
+                  global_image_at < cube_map_at,
+              "MetalRHI::CreateGlobalImage and CreateCubeMap are both present (in that order)");
+        const std::string upload_region = metal_source.substr(global_image_at, cube_map_at - global_image_at);
+        Check(!Contains(upload_region, "* 4u"),
+              "CreateGlobalImage no longer hardcodes a 4-byte row pitch");
+        Check(Contains(upload_region, "BytesPerTexel(texture_image_format)"),
+              "CreateGlobalImage derives the row pitch from the format");
+
+        // ---- mip 链（shader 里 lod = roughness * 8，没有 mip 链粗糙反射就是镜面）----
+        Check(Contains(metal_source, "generateMipmapsForTexture:"),
+              "MetalRHI generates the cubemap mip chain (specular IBL samples lod = roughness * 8)");
+        Check(Contains(metal_source, "MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite"),
+              "the cube texture is created with ShaderWrite too (generateMipmapsForTexture needs it)");
+
+        // ---- Apple 自己上传 IBL ----
+        Check(Contains(res_header, "void UploadIblResources(RHI* rhi, const LevelIBLResourceDesc& ibl_desc);"),
+              "RenderResource exposes UploadIblResources (so Apple can upload IBL without the whole global upload)");
+        Check(Contains(res_source, "void RenderResource::UploadIblResources"),
+              "UploadIblResources is defined");
+        Check(Contains(res_source, "UploadIblResources(rhi, level_resource_desc.m_IblResourceDesc)"),
+              "the full UploadGlobalRenderResource still uploads IBL through the new entry point");
+        Check(Contains(system_source, "render_resource->UploadIblResources(m_Rhi, ibl_desc);"),
+              "the Apple RenderSystem::Initialize uploads the IBL itself");
+
+        // ---- 顺序：必须在 RenderPipeline::Initialize 之前 ----
+        const size_t ibl_at          = system_source.find("render_resource->UploadIblResources(m_Rhi, ibl_desc);");
+        const size_t pipeline_at     = system_source.find("m_RenderPipeline->Initialize(pipeline_init_info);");
+        const size_t color_grade_at  = system_source.find("render_resource->UploadColorGradingLut(m_Rhi");
+        Check(ibl_at != std::string::npos && pipeline_at != std::string::npos && ibl_at < pipeline_at,
+              "the IBL upload happens before RenderPipeline::Initialize (RP1 writes the descriptors there)");
+        Check(color_grade_at != std::string::npos && color_grade_at < pipeline_at,
+              "the LUT upload also happens before RenderPipeline::Initialize");
+
+        // ---- 那条误导性的日志 ----
+        Check(!Contains(rp1_source, "IBL textures unavailable"),
+              "MainCameraRp1Pass no longer blames a removed device for 'IBL not uploaded yet'");
+        Check(Contains(rp1_source, "no IBL textures bound yet"),
+              "MainCameraRp1Pass says the IBL simply has not been uploaded yet");
+        // "环境光其实是 4x4 中性灰"这件事以前在日志里完全看不出来。
+        Check(Contains(rp1_source, "'real' = the uploaded HDR cubemaps, 'fallback' = the 4x4 neutral stand-in"),
+              "MainCameraRp1Pass logs whether it bound the real HDR cubemaps or the neutral fallback");
+    }
+
 #if defined(__APPLE__)
     // =======================================================================
     // 2. 离屏 target：32×32 的 R8G8B8A8_UNORM，一个颜色附件。
@@ -790,6 +873,33 @@ fragment float4 ColorGradientFragmentMain(GradientVertexOut in [[stage_in]])
 {
     float t = in.position.y / 32.0;
     return float4(0.25 + 0.5 * t, 0.5, 0.75 - 0.5 * t, 1.0);
+}
+)MSL";
+
+    // =======================================================================
+    // IBL cubemap 的替身：binding 0 是一张 RGBA32F cubemap（真 IBL 的格式，
+    // stbi_loadf 出来的就是 4 通道 float），从 +X 方向采一次直接写出去。
+    //
+    // 这条 GPU 检查钉的是 MetalRHI 上传路径的**每 texel 字节数**：那两处以前
+    // 硬编码 `width * 4`，对 R8G8B8A8 的兜底图是对的，对 HDR 的 16 字节/texel
+    // 是错的 —— replaceRegion 会按错的 row pitch 去读源内存。面内 4 个 texel
+    // 特意做成不相等的（x/y 各带一个斜坡），pitch 错了采出来的中心值就变了。
+    // =======================================================================
+    const char* kIblCubeFragMsl = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct GradientVertexOut
+{
+    float4 position [[position]];
+};
+
+fragment float4 IblCubeFragmentMain(GradientVertexOut in [[stage_in]],
+                                    texturecube<float> ibl_cube [[texture(0)]],
+                                    sampler ibl_sampler [[sampler(0)]])
+{
+    float3 c = ibl_cube.sample(ibl_sampler, float3(1.0, 0.0, 0.0)).rgb;
+    return float4(c, 1.0);
 }
 )MSL";
 
@@ -1185,6 +1295,9 @@ int main()
 
     // 条带采样的数学镜像（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckStripLutMath();
+
+    // IBL 的文本契约：Metal 上传的每 texel 字节数 + Apple 自己上传 + 顺序 + 日志。
+    CheckIblContracts();
 
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();
@@ -1597,6 +1710,99 @@ int main()
 
             DestroyOffscreen(rhi, lut_identity);
             DestroyOffscreen(rhi, color_scene);
+        }
+
+        // ===================================================================
+        // IBL cubemap 上传：真跑一遍 MetalRHI::CreateCubeMap。
+        //
+        // 这是整份测试里唯一能证伪"每 texel 字节数"的地方 —— 编译期看不见
+        // replaceRegion 的 row pitch，日志也不会报，只有真采一次才看得出数据
+        // 是不是错位/越界。格式特意用 R32G32B32A32_SFLOAT（真 IBL 的格式，
+        // 16 字节/texel），而不是兜底图的 R8G8B8A8。
+        // ===================================================================
+        {
+            constexpr uint32_t kCubeSize = 4;
+            // 面内不是常数：r 沿 x 爬、g 沿 y 爬。pitch 错了（按 4 字节/texel
+            // 读一份 16 字节/texel 的数据）中心采样值立刻不一样。
+            std::array<std::vector<float>, 6> faces {};
+            for (uint32_t face = 0; face < 6; ++face)
+            {
+                faces[face].resize(static_cast<size_t>(kCubeSize) * kCubeSize * 4u);
+                for (uint32_t y = 0; y < kCubeSize; ++y)
+                {
+                    for (uint32_t x = 0; x < kCubeSize; ++x)
+                    {
+                        const size_t i = (static_cast<size_t>(y) * kCubeSize + x) * 4u;
+                        faces[face][i + 0] = 0.30f + 0.10f * static_cast<float>(x);
+                        faces[face][i + 1] = 0.30f + 0.10f * static_cast<float>(y);
+                        faces[face][i + 2] = 0.60f;
+                        faces[face][i + 3] = 1.0f;
+                    }
+                }
+            }
+            std::array<void*, 6> face_ptrs = {faces[0].data(), faces[1].data(), faces[2].data(),
+                                              faces[3].data(), faces[4].data(), faces[5].data()};
+
+            RHIImage*      cube_image = nullptr;
+            RHIImageView*  cube_view  = nullptr;
+            rhi->CreateCubeMap(cube_image,
+                               cube_view,
+                               nullptr,
+                               kCubeSize,
+                               kCubeSize,
+                               face_ptrs,
+                               RHI_FORMAT_R32G32B32A32_SFLOAT,
+                               1);
+            Check(cube_image != nullptr && cube_view != nullptr,
+                  "MetalRHI::CreateCubeMap builds an RGBA32F cubemap (the real IBL format)");
+
+            if (cube_view != nullptr)
+            {
+                Offscreen cube_target = MakeOffscreen(rhi, kSize, kSize, 0);
+                Rp2Harness cube_harness {};
+                const bool cube_ok = MakeRp2Harness(rhi,
+                                                    cube_target.render_pass,
+                                                    kGradientVertMsl,
+                                                    kIblCubeFragMsl,
+                                                    cube_harness);
+                Check(cube_ok, "the cubemap sampling pipeline builds (MSL texturecube + sampler)");
+
+                if (cube_ok && cube_target.framebuffer != nullptr)
+                {
+                    // 复用 RunRp2：它绑 binding 0 和 1，而这段 shader 只用 0，
+                    // binding 1 给一张合法但无关的图即可。
+                    RunRp2(rhi, cube_harness, cube_target, cube_view, scene.view);
+                    const std::vector<uint8_t> cube_pixels = ReadBackPixels(rhi, cube_target.image, kSize, kSize);
+
+                    // 方向 (1,0,0) 打在 +X 面（Metal 的第 0 个 slice）正中心 ⇒
+                    // 4x4 面内双线性落在 x=y=1.5：
+                    //   r = 0.30 + 0.10*1.5 = 0.45 -> 115
+                    //   g = 同上              -> 115
+                    //   b = 0.60              -> 153
+                    const float got_c[3] = {RowChannel(cube_pixels, kSize, kSize / 2, 0),
+                                            RowChannel(cube_pixels, kSize, kSize / 2, 1),
+                                            RowChannel(cube_pixels, kSize, kSize / 2, 2)};
+                    std::printf("       ibl cube expect=115.0/115.0/153.0  got=%6.1f/%6.1f/%6.1f\n",
+                                got_c[0], got_c[1], got_c[2]);
+
+                    Check(std::fabs(got_c[0] - 115.0f) < 4.0f && std::fabs(got_c[1] - 115.0f) < 4.0f &&
+                              std::fabs(got_c[2] - 153.0f) < 4.0f,
+                          "the RGBA32F cubemap round-trips through CreateCubeMap with the right row pitch");
+                    // 全 0 意味着"上传根本没发生"（格式未知 / 设备没起来）。
+                    Check(got_c[0] > 8.0f && got_c[1] > 8.0f && got_c[2] > 8.0f,
+                          "the sampled cubemap is not black (the upload really happened)");
+                }
+                DestroyOffscreen(rhi, cube_target);
+            }
+
+            if (cube_view != nullptr)
+            {
+                rhi->DestroyImageView(cube_view);
+            }
+            if (cube_image != nullptr)
+            {
+                rhi->DestroyImage(cube_image);
+            }
         }
 
         DestroyOffscreen(rhi, scene);
