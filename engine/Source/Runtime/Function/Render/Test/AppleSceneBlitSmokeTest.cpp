@@ -673,6 +673,78 @@ namespace
               "the Apple ProcessSwapData explains WHY those unused fields must still be drained");
     }
 
+    // =======================================================================
+    // 视口/裁剪矩形链路的契约。
+    //
+    // MainCameraRp1Pass::SetViewportScissor（5 处）等平台无关代码拿视口用
+    // TryGetRenderSceneViewport()（场景）或直接 `m_Rhi->GetViewport(type)`，
+    // 拿**裁剪矩形**一律退化到 `GetSwapchainInfo().scissor[type]`。
+    //
+    // Apple 上有两个洞：
+    //   1. TryGetRenderSceneViewport 是 `return false;` 的桩 —— 所有消费者走退化；
+    //   2. MetalRHI::UpdateViewport 只写 m_Viewports、不动 m_Scissors —— scissor
+    //      只有 SyncLayerMetrics（resize）会重算，永远是整窗。DX12 那边
+    //      UpdateViewport 是同时写 m_Viewports[id] 和 m_Scissors[id] 的。
+    //      真机探针证实：修复前 game_sc=(0,0) 2560x1440（编辑器场景面板挪动后
+    //      裁剪矩形不跟），修复后 game_sc=(389,104) 1524x915 跟着面板走。
+    // =======================================================================
+    void CheckSceneViewportContracts()
+    {
+        const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string sys_source  = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+        const std::string metal_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Interface/Metal/MetalRHI.mm");
+        Check(!sys_source.empty(), "RenderSystem.cpp is readable as text (scene viewport)");
+        Check(!metal_source.empty(), "MetalRHI.mm is readable as text (scene viewport)");
+
+        // ---- 桩必须已经不存在 ----
+        Check(!Contains(sys_source, "bool RenderSystem::TryGetRenderSceneViewport(RHIViewport&, RHIRect2D&) const"),
+              "the Apple TryGetRenderSceneViewport stub (unnamed params + return false) is gone");
+        const size_t apple_tgsv_at = sys_source.find("bool RenderSystem::TryGetRenderSceneViewport(");
+        const size_t else_at      = sys_source.find("\n#else", apple_tgsv_at);
+        Check(apple_tgsv_at != std::string::npos && else_at != std::string::npos,
+              "there is an Apple-side TryGetRenderSceneViewport before the #else");
+        const std::string apple_tgsv = sys_source.substr(apple_tgsv_at, else_at - apple_tgsv_at);
+        Check(!Contains(apple_tgsv, "return false;\n}"),
+              "the Apple TryGetRenderSceneViewport no longer unconditionally returns false");
+        Check(Contains(apple_tgsv, "m_Rhi->GetViewport(ViewportType::scene)"),
+              "the Apple TryGetRenderSceneViewport reads the scene viewport straight from the RHI");
+        Check(Contains(apple_tgsv, "GetSwapchainInfo().scissor[static_cast<uint32_t>(ViewportType::scene)]"),
+              "the Apple TryGetRenderSceneViewport also returns the scene SCISSOR (not just the viewport)");
+        Check(Contains(apple_tgsv, "没有渲染线程") || Contains(apple_tgsv, "没有**渲染线程"),
+              "the Apple TryGetRenderSceneViewport explains WHY it skips the swap round-trip");
+
+        // ---- 两个定义：Apple 一份、非 Apple 一份 ----
+        Check(CountOccurrences(sys_source, "bool RenderSystem::TryGetRenderSceneViewport(") == 2,
+              "RenderSystem::TryGetRenderSceneViewport has exactly two definitions (Apple + non-Apple)");
+
+        // ---- Metal 的 UpdateViewport 必须同时写 scissor（对齐 DX12）----
+        const size_t metal_uv_at = metal_source.find("void MetalRHI::UpdateViewport(");
+        Check(metal_uv_at != std::string::npos, "MetalRHI::UpdateViewport exists");
+        const size_t metal_uv_end = metal_source.find("\n}", metal_uv_at);
+        const std::string metal_uv =
+            metal_source.substr(metal_uv_at,
+                                metal_uv_end == std::string::npos ? 900 : (metal_uv_end - metal_uv_at));
+        Check(Contains(metal_uv, "m_Viewports[index] = viewport;"),
+              "MetalRHI::UpdateViewport still writes the viewport");
+        Check(Contains(metal_uv, "m_Scissors[index]"),
+              "MetalRHI::UpdateViewport also writes the SCISSOR (DX12RHI::UpdateViewport does; "
+              "without it GetSwapchainInfo().scissor[scene] stays at the full-window value)");
+        const size_t scissor_at = metal_uv.find("m_Scissors[index]");
+        Check(scissor_at != std::string::npos && scissor_at > metal_uv.find("m_Viewports[index]"),
+              "the scissor write sits after the viewport write inside the same bounds check");
+
+        // ---- Apple 的 UpdateViewport 要把面板矩形真的送进 RHI，并且可观测 ----
+        const size_t apple_uv_at = sys_source.find("void RenderSystem::UpdateViewport(");
+        Check(apple_uv_at != std::string::npos, "RenderSystem::UpdateViewport exists (Apple overload)");
+        const std::string apple_uv = sys_source.substr(apple_uv_at, 1600);
+        Check(Contains(apple_uv, "m_Rhi->UpdateViewport(viewport_id, viewport);"),
+              "the Apple UpdateViewport forwards the panel rect to the RHI");
+        Check(Contains(apple_uv, "AppleViewport["),
+              "the Apple UpdateViewport logs viewport rects when they change (otherwise the link is silent; "
+              "both game and scene are logged because the main camera uses game on Apple)");
+    }
+
 #if defined(__APPLE__)
     // =======================================================================
     // 2. 离屏 target：32×32 的 R8G8B8A8_UNORM，一个颜色附件。
@@ -1419,6 +1491,9 @@ int main()
     // IBL 的文本契约：Metal 上传的每 texel 字节数 + Apple 自己上传 + 顺序 + 日志。
     CheckIblContracts();
     CheckLevelResourceProducerContracts();
+
+    // 场景视口的文本契约：Apple 的桩已删 + Metal 的 scissor 同步。
+    CheckSceneViewportContracts();
 
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();

@@ -3086,6 +3086,22 @@ void MetalRHI::UpdateViewport(ViewportType viewport_id, const RHIViewport& viewp
     if (index >= 0 && index < m_ViewportCount)
     {
         m_Viewports[index] = viewport;
+
+        // scissor **必须一起更新** —— DX12RHI::UpdateViewport 就是这么写的
+        // （m_Viewports[id] 和 m_Scissors[id] 同时写），而引擎里一堆 pass 是
+        // `GetSwapchainInfo().scissor[viewport_type]` 取裁剪矩形的
+        // （MainCameraRp1Pass::SetViewportScissor、ParticlePass::338、
+        // DebugDrawManager::276）。
+        //
+        // 以前这里只动 m_Viewports ⇒ scissor 永远停在 SyncLayerMetrics 给它的
+        // 整窗值（那个函数只在 CreateSwapchain / RecreateSwapchain / resize 时
+        // 跑，一进来就把 m_Scissors 重置成整窗）。表现：编辑器里场景面板一挪，
+        // viewport 跟过去了、裁剪矩形没跟上。
+        RHIRect2D scissor {};
+        scissor.offset = {static_cast<int32_t>(viewport.x), static_cast<int32_t>(viewport.y)};
+        scissor.extent = {static_cast<uint32_t>(viewport.width > 0.0f ? viewport.width : 0.0f),
+                          static_cast<uint32_t>(viewport.height > 0.0f ? viewport.height : 0.0f)};
+        m_Scissors[index] = scissor;
     }
 }
 
