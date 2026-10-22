@@ -46,6 +46,13 @@ Object* ObjectManager::Produce(const Type* type, int32_t instanceID)
     return newObject;
 }
 
+void ObjectManager::Destroy(Object* object)
+{
+    // Mirrors Produce(): that one uses `new`, so this one uses `delete`.
+    // Do NOT "fix" this into MemoryManager::DestroyObject -- see the header.
+    delete object;
+}
+
 Object* ObjectManager::AllocateAndAssignInstanceID(Object* obj)
 {
     if (obj == nullptr)

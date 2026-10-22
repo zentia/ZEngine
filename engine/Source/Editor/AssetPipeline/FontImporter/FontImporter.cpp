@@ -127,7 +127,7 @@ bool FontImporter::Import(const std::filesystem::path& source_path,
     const auto asset_manager = GET_SYSTEM(AssetManager);
     if (asset_manager == nullptr)
     {
-        MemoryManager::DestroyObject(produced);
+        object_manager->Destroy(produced);
         LOG_ERROR(ZEditor, "FontImporter: AssetManager unavailable");
         return false;
     }
@@ -159,7 +159,7 @@ bool FontImporter::Import(const std::filesystem::path& source_path,
     out_metadata.dependencies.clear();
     out_metadata.custom_metadata.clear();
 
-    MemoryManager::DestroyObject(produced);
+    object_manager->Destroy(produced);
 
     if (ok)
     {

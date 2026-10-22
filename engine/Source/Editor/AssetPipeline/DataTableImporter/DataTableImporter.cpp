@@ -437,7 +437,7 @@ bool DataTableImporter::Import(const std::filesystem::path& source_path,
     if (asset_manager == nullptr)
     {
         LOG_ERROR(ZDataTable, "AssetManager unavailable; cannot write {}", output_path.generic_string());
-        MemoryManager::DestroyObject(produced);
+        object_manager->Destroy(produced);
         return false;
     }
 
@@ -467,7 +467,7 @@ bool DataTableImporter::Import(const std::filesystem::path& source_path,
 
     // The wrapper is owned by ObjectManager once Produce() returned; we
     // destroy it now that its bytes are on disk, mirroring PrefabUtility.
-    MemoryManager::DestroyObject(produced);
+    GET_SYSTEM(ObjectManager)->Destroy(produced);
 
     if (ok)
     {

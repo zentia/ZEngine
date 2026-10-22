@@ -484,6 +484,11 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp")
+# ProjectInfo path-field regression gate: owns main(), same LNK2005 carve-out.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/ProjectInfoPathsSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Serialize/Test/ProjectInfoPathsSmokeTest.cpp")
 # Derived Data Cache smoke-test main carve-out (texture cook P3)
 list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Resource/Cache/Test/DerivedDataCacheSmokeTest.cpp")

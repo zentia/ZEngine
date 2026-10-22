@@ -366,7 +366,7 @@ namespace
         texture->m_MipOffsets = cooked.mip_offsets;
 
         const bool ok = asset_mgr.WriteObjectToDiskWithGuid(out_path, *texture, source_guid);
-        MemoryManager::DestroyObject(produced);
+        object_manager->Destroy(produced);
         return ok;
     }
 
@@ -690,7 +690,7 @@ bool TextureImporter::Import(const std::filesystem::path& source_path,
     auto asset_manager = GET_SYSTEM(AssetManager);
     if (asset_manager == nullptr)
     {
-        MemoryManager::DestroyObject(produced);
+        object_manager->Destroy(produced);
         LOG_ERROR(ZEditor, "TextureImporter: AssetManager unavailable");
         return false;
     }
@@ -723,7 +723,7 @@ bool TextureImporter::Import(const std::filesystem::path& source_path,
     // --- 6. Cleanup and report ----------------------------------------------
     const size_t cooked_mip_count = texture->m_MipOffsets.size();
     const TextureCompressor::Format cooked_format = cooked.format;
-    MemoryManager::DestroyObject(produced);
+    object_manager->Destroy(produced);
 
     if (ok)
     {

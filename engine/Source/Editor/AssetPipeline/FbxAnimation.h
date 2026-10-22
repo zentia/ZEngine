@@ -69,7 +69,7 @@ namespace FbxAnimation
         }
 
         const bool write_ok = asset_manager->WriteObjectToDiskThreadSafe(in_path, *typed);
-        MemoryManager::DestroyObject(produced);
+        object_manager->Destroy(produced);
         return write_ok;
     }
 

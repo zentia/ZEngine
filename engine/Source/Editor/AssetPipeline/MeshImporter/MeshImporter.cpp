@@ -586,7 +586,7 @@ namespace
         }
 
         const bool write_ok = asset_manager->WriteObjectToDiskThreadSafe(skeleton_path, *skeleton);
-        MemoryManager::DestroyObject(produced);
+        object_manager->Destroy(produced);
 
         return write_ok ? skeleton_path : std::filesystem::path {};
     }
@@ -760,7 +760,7 @@ bool MeshImporter::Import(const std::filesystem::path& source_path,
     if (asset_manager == nullptr)
 
     {
-        MemoryManager::DestroyObject(produced);
+        object_manager->Destroy(produced);
 
         LOG_ERROR(ZEditor, "MeshImporter: AssetManager unavailable");
 
@@ -812,7 +812,7 @@ bool MeshImporter::Import(const std::filesystem::path& source_path,
 
     out_metadata.custom_metadata.clear();
 
-    MemoryManager::DestroyObject(produced);
+    object_manager->Destroy(produced);
 
     if (write_ok)
 

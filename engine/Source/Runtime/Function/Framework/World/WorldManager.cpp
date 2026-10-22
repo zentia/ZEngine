@@ -507,7 +507,7 @@ eastl::string WorldManager::MakePlayWorldUrl(const eastl::string& editor_level_u
     // PPtr 指向 asset/...）在加载时仍能按项目根解析；放到系统临时目录会
     // 让这些引用全部落空。
     const std::filesystem::path pie_dir =
-        std::filesystem::absolute(project_info->GetProjectRoot() / project_info->saved_dir / "PIE");
+        std::filesystem::absolute(project_info->GetProjectRoot() / project_info->saved_dir.c_str() / "PIE");
 
     std::error_code ec;
     std::filesystem::create_directories(pie_dir, ec);

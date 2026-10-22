@@ -71,8 +71,8 @@ std::filesystem::path PlayerSettings::GetSettingsFilePath() const
     // ProjectInfo declares config_dir but nothing read it yet; this is the first
     // consumer, and it is the right one -- a project-level, checked-in config
     // directory, as opposed to saved/ which holds per-machine state.
-    const std::string config = project->config_dir.empty() ? std::string("config") : project->config_dir;
-    return root / config / kSettingsFileName;
+    const eastl::string config = project->config_dir.empty() ? eastl::string("config") : project->config_dir;
+    return root / config.c_str() / kSettingsFileName;
 }
 
 bool PlayerSettings::LoadFromFile(const std::filesystem::path& path)

@@ -30,7 +30,7 @@ bool SaveWidgetTreeAsset(const std::shared_ptr<UWidget>& root, const std::string
 
     const bool ok = asset_manager->saveAsset(*asset, eastl::string(asset_url.c_str()));
 
-    MemoryManager::DestroyObject(produced);
+    object_manager->Destroy(produced);
     return ok;
 }
 

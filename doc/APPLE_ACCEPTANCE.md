@@ -53,9 +53,16 @@ AppleRender: frame=241 entities=31 visible=3 scene_color_view=1 blit_ready=1 swa
 场景视口里应该能看到关卡里的 31 个实体（其中 3 个在相机视锥内），而不是纯色。
 编辑器 UI（ZSlate 面板 / 菜单）叠在场景之上 —— 顺序错了会是"UI 被场景盖掉"。
 
-颜色上要注意：**纹理/材质目前是占位白图**（§4），所以能指望的只有明暗层次，不是
-"看起来对不对"。判断 tonemap 有没有生效，看光源附近是不是有渐变而不是一片纯白 ——
-线性 HDR 直接写进 UNORM 的表现就是高光硬切成 255 且整体发暗（§3.6）。
+颜色上现在能看的是两件事：明暗层次（§3.6 的 tonemap）和**真实贴图**。工程里的 9 个
+`.tga` 会在编辑器启动时被导入成 `Texture2D` 资产（见 §3.7），日志里应该是：
+
+```
+TextureImporter: ImportProjectTextures seeded 19 editor-platform texture(s)
+```
+
+并且**不该**再出现 `Material: legacy texture path ... could not be resolved`（修复前是
+1.5 万条）。判断 tonemap 有没有生效，看光源附近是不是有渐变而不是一片纯白 —— 线性
+HDR 直接写进 UNORM 的表现就是高光硬切成 255 且整体发暗（§3.6）。
 
 ### 2.4 冒烟测试
 
@@ -75,6 +82,9 @@ cd build && ctest --output-on-failure
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
 `MetalSpirvShaderSmokeTest` 一条就能把 §3.1 / §3.2 / §3.3 三个错全抓出来。
+
+另外 `-DZENGINE_BUILD_PROJECT_INFO_PATHS_SMOKE_TEST=ON` 是跨平台的，盯的是 §3.7(a) 那
+四个目录字段有没有被真的反序列化（23 检查）。
 
 ## 3. 这一路修掉的坑（按发现顺序）
 
@@ -172,14 +182,68 @@ gamma 1/2.2）**逐系数**抄进 blit 的 fragment MSL。
 > **将来 RP2 在 Apple 上启用之后，这段 tonemap 必须退化成直通（或整个删掉 blit）**：
 > 那时候进来的是已经 tonemap 过的 LDR，再 tonemap 一次画面就发灰。
 
+### 3.7 两个"完全无声"的资源管线 bug（贴图永远是占位白图）
+
+症状是 1.5 万条 `Material: legacy texture path ... could not be resolved`，材质全部采样
+占位白图，但**没有任何一条日志说"我找错目录了"**。根因有两个，都在"静默失败"这一层：
+
+**（a）`ProjectInfo` 的目录字段从来没有真的被反序列化过。**
+
+`content_dir` / `config_dir` / `saved_dir` / `source_dir` 是裸 `std::string` 且没有
+`ZPROPERTY()` ⇒ 生成的 `Transfer()` 里根本没有它们 ⇒ `.zproject` 里的
+`content_dir: asset` 被当成陌生 key 丢掉 ⇒ `GetProjectContent()` 永远返回
+`<project>/Assets`。真实资源在 `<project>/asset`（小写），macOS 文件系统区分大小写，
+所以这条链暴露得最彻底：
+
+```
+content_dir 恒为 "Assets" → 扫描/导入/cook 全走空目录
+→ 9 个 .tga 一个都没被导入成 Texture2D .zasset
+→ Material 的 legacy 贴图路径解析不到 → 采样占位白图
+```
+
+修法：四个字段加 `ZPROPERTY()` 并把类型换成 `eastl::string`（`SerializeTraits` 只对
+`eastl::string` 有特化，见 `SerializeTraits.h`）。顺带修 `TextureImporter::CanImport()`
+里的 `.tag`（`.tga` 的笔误），以及 `LoadFromFile` 里对裸文件名的 `weakly_canonical` ——
+`-p ZGameSmoke.zproject` 的 `parent_path()` 是空串，`project_path.empty()` 会让所有
+导入器静默 bail。
+
+回归门禁：`ProjectInfoPathsSmokeTest`（23 检查，
+`-DZENGINE_BUILD_PROJECT_INFO_PATHS_SMOKE_TEST=ON`）。摘掉 `ZPROPERTY()` 它会立刻红 4 条。
+
+**（b）`ObjectManager::Produce()` 出来的对象被 `MemoryManager::DestroyObject()` 释放。**
+
+修好 (a) 之后编辑器改成 2 秒内 SIGBUS。崩溃栈：
+
+```
+MemoryManager::Free -> mi_usable_size -> mi_checked_ptr_segment -> EXC_BAD_ACCESS
+MemoryManager::DestroyObject<Object>(Object*)
+TextureImporter::Import -> ImportProjectTextures -> EditorAssetManager::Initialize
+```
+
+`Produce()` 走 `ProduceHelper::Produce()` = 普通 `new`；而 `MemoryManager::DestroyObject`
+走 mimalloc。**Apple 上全局 `operator new/delete` 刻意没有接管成 mimalloc**（见
+`MemoryManager.cpp` 顶部注释），于是系统 malloc 的指针被交给 `mi_free`。Windows/Linux 上
+`new` 就是 mimalloc，所以这个错在那两边一直是隐形的 —— 贴图导入这条路径以前压根没被
+走过，一走就炸。
+
+修法：新增 `ObjectManager::Destroy(Object*)`（`delete`，instance-ID 由
+`Object::~Object()` 摘掉），把资产管线里 16 处
+`MemoryManager::DestroyObject(produced)` 全换掉：TextureImporter ×3、MeshImporter ×3、
+FontImporter ×2、DataTableImporter ×2、XlsxImporter ×2、AssetBundleBuilder、
+FbxAnimation.h、UMGAssetIO、ContentBrowserAssetActions。
+`ShaderImporter` 用的是 `MemoryManager::CreateObject`，配对本来就是对的，没动。
+
+> 判据很简单：**`CreateObject` 配 `DestroyObject`，`Produce` 配 `ObjectManager::Destroy`**。
+> 混用只在 Apple 上致命，但错的那一半在任何平台都是错的。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - **点光源阴影 pass 在 Metal 上不做**：它靠 geometry shader 做 cubemap 展开，Metal 没有
   geometry shader。现在和 DX12 一样是 clear-only，不抛错。
-- **材质贴图全是 fallback**：日志里一堆 `Material: legacy texture path ... could not be
-  resolved`，是工程里的 `.tga` 没导入成 `Texture2D` 资产，采样到的是占位白图。要看真实
-  贴图得先跑一次资源导入。
+- **每次构建会冲掉已导入的贴图**：`bin/Debug/asset` 是构建时从 `engine/...` 拷过去的，
+  导入产物（19 个 `.zasset`）写在源图旁边，所以一构建就没了，下次启动重新导入一遍。
+  正式修法是让导入产物落进 `_Generated/`（gitignored）而不是源图边上。
 - **物理形状建不出来**：`Create JPH Shapes Failed / geometry reference did not resolve`，
   和渲染无关，是关卡里 mesh 引用没解析。
-- **帧率**：心跳日志显示 120 帧约 4–7 秒（≈17–30 fps），其中一部分是日志落盘开销；
-  没有做过性能分析。
+- **帧率**：心跳日志显示 2 秒 120 帧（≈60 fps）。修复 (a) 之前只有 17–30 fps，差额几乎
+  全是 1.5 万条告警日志的落盘开销；没有做过真正的性能分析。

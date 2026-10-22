@@ -51,6 +51,22 @@ public:
     /// during in-place re-read where the caller will assign and register later).
     Object* Produce(const Type* type, int32_t instanceID);
 
+    /// Release an object obtained from `Produce()`.
+    ///
+    /// Produce() allocates through ProduceHelper with a plain `new`, so the
+    /// matching release is `delete` -- NOT MemoryManager::DestroyObject(), which
+    /// frees through mimalloc. On Apple the global operator new/delete is
+    /// deliberately NOT routed to mimalloc (see MemoryManager.cpp), so the two
+    /// disagree there and DestroyObject faults inside mi_usable_size:
+    ///
+    ///   MemoryManager::Free -> mi_usable_size -> mi_checked_ptr_segment
+    ///                       -> EXC_BAD_ACCESS / SIGBUS
+    ///
+    /// `delete` pairs correctly on every platform: off Apple `new` *is*
+    /// mimalloc, so the two spellings only diverge where it is fatal.
+    /// The instance-ID table entry is dropped by `Object::~Object()`.
+    void Destroy(Object* object);
+
     /// Assign a fresh negative instance ID to a newly-heap-allocated Object and
     /// register it in the table. Idempotent: if `obj` already has a non-zero ID,
     /// only the registration is performed (the existing ID is kept).

@@ -44,10 +44,26 @@ public:
     time_t last_opened_time;
 
     // Project directories (relative to project root)
-    std::string content_dir {"Assets"};  // asset directory (Unity-style default: "Assets")
-    std::string config_dir {"config"};   // config directory (default: "config")
-    std::string saved_dir {"saved"};     // saved directory (default: "saved")
-    std::string source_dir {"source"};   // source directory (default: "source")
+    //
+    // 这四个字段**必须**带 ZPROPERTY + eastl::string：.zproject 里写的是
+    // `content_dir: asset`，而引擎的 Transfer 只对 eastl::string 有
+    // SerializeTraits 特化（见 SerializeTraits.h）。以前它们是裸 std::string 且
+    // 没有宏 ⇒ 生成代码里根本没有它们 ⇒ .zproject 里的值被静默忽略，
+    // GetProjectContent() 永远返回 <project>/Assets。
+    //
+    // 症状链（macOS 上文件名区分大小写，所以暴露得最彻底）：
+    //   content_dir 恒为 "Assets" → 扫描/导入/cook 全走空目录
+    //   → 9 个 .tga 一个都没被导入成 Texture2D .zasset
+    //   → Material 的 legacy 贴图路径解析不到 → 采样占位白图。
+    // 而且没有任何一条日志说"我找错目录了"。
+    ZPROPERTY()
+    eastl::string content_dir {"Assets"};  // asset directory (Unity-style default: "Assets")
+    ZPROPERTY()
+    eastl::string config_dir {"config"};   // config directory (default: "config")
+    ZPROPERTY()
+    eastl::string saved_dir {"saved"};     // saved directory (default: "saved")
+    ZPROPERTY()
+    eastl::string source_dir {"source"};   // source directory (default: "source")
 
     // Scripting directories:
     //   <project>/<scripts_dir>/**.ts            -> user-authored TypeScript sources

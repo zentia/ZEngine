@@ -1007,8 +1007,8 @@ namespace
         std::filesystem::path root = project->GetProjectRoot();
         if (root.empty())
             root = std::filesystem::current_path();
-        const std::string saved = project->saved_dir.empty() ? std::string("saved") : project->saved_dir;
-        return root / saved / "config" / "floating_panels.json";
+        const eastl::string saved = project->saved_dir.empty() ? eastl::string("saved") : project->saved_dir;
+        return root / saved.c_str() / "config" / "floating_panels.json";
     }
 }  // namespace
 

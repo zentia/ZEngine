@@ -1454,9 +1454,9 @@ std::filesystem::path DefaultLayout::GetUserLayoutDirectory() const
         project_root = std::filesystem::current_path();
     }
 
-    const std::string saved_dir = GET_SYSTEM(ProjectInfo)->saved_dir.empty() ? std::string("saved")
-                                                                             : GET_SYSTEM(ProjectInfo)->saved_dir;
-    return project_root / saved_dir / "layouts";
+    const eastl::string saved_dir = GET_SYSTEM(ProjectInfo)->saved_dir.empty() ? eastl::string("saved")
+                                                                               : GET_SYSTEM(ProjectInfo)->saved_dir;
+    return project_root / saved_dir.c_str() / "layouts";
 }
 
 std::filesystem::path DefaultLayout::GetNativeSessionFilePath() const
@@ -1469,9 +1469,9 @@ std::filesystem::path DefaultLayout::GetNativeSessionFilePath() const
         project_root = std::filesystem::current_path();
     }
 
-    const std::string saved_dir = GET_SYSTEM(ProjectInfo)->saved_dir.empty() ? std::string("saved")
-                                                                             : GET_SYSTEM(ProjectInfo)->saved_dir;
-    return project_root / saved_dir / "config" / "native_dock.json";
+    const eastl::string saved_dir = GET_SYSTEM(ProjectInfo)->saved_dir.empty() ? eastl::string("saved")
+                                                                               : GET_SYSTEM(ProjectInfo)->saved_dir;
+    return project_root / saved_dir.c_str() / "config" / "native_dock.json";
 }
 
 bool DefaultLayout::LoadNativeSession()

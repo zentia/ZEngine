@@ -1167,7 +1167,7 @@ namespace ContentBrowserAssetActions
                 const int64_t graph_ids[1] = {1};
                 level_created = GET_SYSTEM(AssetManager)->WriteObjectsToYaml(new_file_path, graph_objects, graph_ids, 1) &&
                                 std::filesystem::exists(new_file_path);
-                MemoryManager::DestroyObject(header);
+                GET_SYSTEM(ObjectManager)->Destroy(header);
             }
             if (!level_created)
             {

@@ -1254,7 +1254,7 @@ bool XlsxImporter::Import(const std::filesystem::path& source_path,
     if (asset_manager == nullptr)
     {
         LOG_ERROR(ZDataTable, "AssetManager unavailable; cannot write {}", output_path.generic_string());
-        MemoryManager::DestroyObject(produced);
+        object_manager->Destroy(produced);
         return false;
     }
 
@@ -1276,7 +1276,7 @@ bool XlsxImporter::Import(const std::filesystem::path& source_path,
     out_metadata.dependencies.clear();
     out_metadata.custom_metadata.clear();
 
-    MemoryManager::DestroyObject(produced);
+    object_manager->Destroy(produced);
 
     if (ok)
     {

@@ -39,8 +39,17 @@ option(ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST
        "Build the ZHeaderTool reflection-codegen TypeTree/binary dump smoke-test executable"
        OFF)
 
+# Regression gate for the ProjectInfo directory fields. They used to be bare
+# std::string without ZPROPERTY(), so the generated Transfer never contained
+# them and a .zproject's `content_dir:` was silently dropped -- every importer
+# then walked the wrong directory with no log line at all.
+option(ZENGINE_BUILD_PROJECT_INFO_PATHS_SMOKE_TEST
+       "Build the ProjectInfo content_dir/project_path smoke-test executable"
+       OFF)
+
 if(NOT ZENGINE_BUILD_SCHEMA_EVOLUTION_SMOKE_TEST AND NOT ZENGINE_BUILD_PPTR_SMOKE_TEST AND
-   NOT ZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST AND NOT ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST)
+   NOT ZENGINE_BUILD_YAML_ROUND_TRIP_SMOKE_TEST AND NOT ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST AND
+   NOT ZENGINE_BUILD_PROJECT_INFO_PATHS_SMOKE_TEST)
     return()
 endif()
 
@@ -118,4 +127,9 @@ if(ZENGINE_BUILD_REFLECTION_CODEGEN_SMOKE_TEST)
                                      --check-script-enums --check-cast
                                      --check-behaviour-binding)
     message(STATUS "Configured reflection-codegen smoke-test target: ReflectionCodegenSmokeTest")
+endif()
+
+if(ZENGINE_BUILD_PROJECT_INFO_PATHS_SMOKE_TEST)
+    zengine_add_smoke_test(ProjectInfoPathsSmokeTest ProjectInfoPathsSmokeTest.cpp)
+    message(STATUS "Configured ProjectInfo paths smoke-test target: ProjectInfoPathsSmokeTest")
 endif()

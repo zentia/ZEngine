@@ -11,8 +11,11 @@ public:
         auto ext = file_path.extension().string();
         std::string ext_lower = ext;
         std::transform(ext_lower.begin(), ext_lower.end(), ext_lower.begin(), ::tolower);
-        return ext_lower == ".png" || ext_lower == ".jpg" || ext_lower == ".jpeg" || ext_lower == ".tag" ||
-               ext_lower == ".dds";
+        // ".tag" 是 ".tga" 的笔误 —— 它让拖拽导入 / AssetImportManager 分发
+        // 永远认不出 .tga（而 ImportProjectTextures 用的是另一份
+        // isSourceImageExtension()，那份是对的，所以只有手动导入这一路坏掉）。
+        return ext_lower == ".png" || ext_lower == ".jpg" || ext_lower == ".jpeg" || ext_lower == ".tga" ||
+               ext_lower == ".bmp" || ext_lower == ".dds";
     }
 
     std::vector<std::string> GetSupportedExtensions() const override;

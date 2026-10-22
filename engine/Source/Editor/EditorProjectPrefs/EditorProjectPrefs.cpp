@@ -38,8 +38,8 @@ namespace
             return {};
         }
 
-        const std::string saved = project->saved_dir.empty() ? std::string("saved") : project->saved_dir;
-        return root / saved / "config" / "editor_project_prefs.json";
+        const eastl::string saved = project->saved_dir.empty() ? eastl::string("saved") : project->saved_dir;
+        return root / saved.c_str() / "config" / "editor_project_prefs.json";
     }
 
     // One-time migration from the earlier last_scene.txt prototype.
@@ -56,8 +56,9 @@ namespace
             return;
         }
 
-        const std::string saved = project->saved_dir.empty() ? std::string("saved") : project->saved_dir;
-        const std::filesystem::path legacy_path = project->GetProjectRoot() / saved / "config" / "last_scene.txt";
+        const eastl::string saved = project->saved_dir.empty() ? eastl::string("saved") : project->saved_dir;
+        const std::filesystem::path legacy_path =
+            project->GetProjectRoot() / saved.c_str() / "config" / "last_scene.txt";
         if (legacy_path.empty())
         {
             return;

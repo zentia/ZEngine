@@ -251,8 +251,20 @@ bool ProjectInfo::LoadFromFile(const std::filesystem::path& project_file_path)
         return false;
     }
 
-    project_file = project_file_path;
-    project_path = project_file_path.parent_path();
+    // 必须规范化成绝对路径：`-p ZGameSmoke.zproject`（裸文件名，launcher 和
+    // scripts/run_editor_macos.sh 就是这么传的）的 parent_path() 是**空串**，
+    // 于是 project_path.empty() 让下面这些全部静默 bail：
+    //   TextureImporter::ImportProjectTextures / CookProjectTextures（0 张图被导入）
+    //   ShaderImporter::ImportProjectShaders
+    //   ShaderRegistry / ScriptRegistry（"No project loaded; ... idle"）
+    // 相对路径只是"碰巧"能用（cwd 恰好等于工程根），换一个 cwd 就全崩。
+    std::error_code canonical_ec;
+    project_file = std::filesystem::weakly_canonical(project_file_path, canonical_ec);
+    if (canonical_ec || project_file.empty())
+    {
+        project_file = project_file_path;
+    }
+    project_path = project_file.parent_path();
 
     // .zproject is authored as block YAML. Legacy JSON projects are still read:
     // a JSON document parses as YAML (JSON is a YAML subset), so the YAML path
@@ -290,8 +302,8 @@ std::filesystem::path ProjectInfo::GetProjectRoot() const
 
 std::filesystem::path ProjectInfo::GetProjectContent() const
 {
-    const std::string& asset_dir = content_dir.empty() ? std::string("Assets") : content_dir;
-    return project_path / asset_dir;
+    const eastl::string& asset_dir = content_dir.empty() ? eastl::string("Assets") : content_dir;
+    return project_path / asset_dir.c_str();
 }
 
 std::filesystem::path ProjectInfo::GetScriptsRoot() const
@@ -483,8 +495,8 @@ std::filesystem::path ProjectInfo::GetGeneratedAssetsRoot() const
     // <project>/<content_dir>/_Generated/. Lives UNDER Assets/ so the
     // AssetRegistry scan picks up generated .zasset files with zero extra
     // wiring; gitignored via the scaffold marker block.
-    const std::string& asset_dir = content_dir.empty() ? std::string("Assets") : content_dir;
-    return project_path / asset_dir / "_Generated";
+    const eastl::string& asset_dir = content_dir.empty() ? eastl::string("Assets") : content_dir;
+    return project_path / asset_dir.c_str() / "_Generated";
 }
 
 std::filesystem::path ProjectInfo::GetGeneratedDataRoot() const

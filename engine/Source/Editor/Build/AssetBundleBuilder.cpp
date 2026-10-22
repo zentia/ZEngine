@@ -691,7 +691,7 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         manifest->bundles = infos;
 
         const bool manifest_ok = GET_SYSTEM(AssetManager)->WriteObjectToDiskThreadSafe(manifest_path, *manifest);
-        MemoryManager::DestroyObject(produced);
+        object_manager->Destroy(produced);
 
         if (!manifest_ok)
         {
