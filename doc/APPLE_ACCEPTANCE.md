@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 187 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15） |
+| `AppleSceneBlitSmokeTest` | 205 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
@@ -637,6 +637,43 @@ AppleRender: frame=1921 ... game_vp=(389,104) 1524x915 game_sc=(389,104) 1524x91
 **验证**：冒烟测试新增 6 条契约（181 → 187 checks）。三次变异各自精确变红：整体回退成空桩
 ⇒ 5 条红；只漏掉 logic buffer 的清理 ⇒ 1 条红；去掉 `m_RenderScene` 空指针保护 ⇒ 1 条红。
 （契约自己也踩了坑：函数体不能按固定长度截，加注释就会把窗口撑爆 —— 改成截到 `\n}`。）
+
+### 3.16 相机：Apple 版 Initialize 用硬编码相机，完全不看 `m_CameraConfig`
+
+探针的初衷是查另一个假设（`SyncGameCameraFromMainCamera` 在 Apple 上是空桩），**结果否掉了它**：
+心跳的 `main_cam_valid=0` 说明这个工程的关卡里根本没有主相机组件
+（`level/1-1.scene` 是 YAML，全文没有 `camera` 字样），所以那份同步在两个平台上都是空转。
+
+但探针顺带挖出一个真问题：Apple 版 `RenderSystem::Initialize` 里两台相机是硬编码的
+`LookAt((0,-10,5), ZERO, UNIT_Z)` + `SetAspect(16/9)` + `0.1/1000`，从不读
+`GlobalRenderingRes::m_CameraConfig`。和 §3.15 同一类（"当初只为画 UI，硬编码没有代价"），
+场景管线打通之后成了洞：
+
+- pose 对不上：配置里是 `(-5,0,3) → (-4,0,3)`，硬编码是 `(0,-10,5) → 原点`；
+- **aspect 对不上**（最要紧）：配置 `1280x768 = 1.667`，硬编码 `16:9 = 1.778`，而编辑器
+  的 game 视口面板就是 `1524x915 = 1.666` ⇒ 画面被横向拉伸，而且**不报任何错**。
+
+**改动**：`GlobalRenderingRes` 提到建相机**之前**读一次（同一份指针顺带给 IBL / LUT 用，
+所以只 load 一次），pose / znear / zfar / aspect 全从 `m_CameraConfig` 来，硬编码降级成
+"读不到配置时的兜底"，并打一条日志说明用的是哪一份。心跳新增
+`game_cam=(x,y,z) fov=.. main_cam_valid=.. main_cam=(..) cam_sync=..`。
+
+**真机**（`cam_sync=-1` 表示没有主相机组件可比较）：
+
+```
+修复前  game_cam=(0.0000000,-10.0000000,5.0000000) fov=89.0   （aspect 16:9 = 1.778）
+修复后  RenderSystem(Apple): cameras from GlobalRenderingRes::m_CameraConfig
+        -- pos=(-5.0000000,0.0000000,3.0000000) znear=0.1 zfar=1000.0 aspect=1.6666666
+        AppleRender: ... entities=31 visible=3 blit_ready=1 rp2_tonemapped=1 game_vp=(389,104) 1524x915
+```
+
+**验证**：冒烟测试新增 18 条契约（187 → 205 checks）。三次变异各自精确变红：pose 改回硬编码
+⇒ 1 条；aspect 改回硬编码 ⇒ 1 条；把 `loadAsset<GlobalRenderingRes>` 挪到 `push_back` 之后
+⇒ 1 条。（第一次的顺序变异没打红 —— 我只挪到 `m_Cameras.clear()` 之后，而"首次 push_back 之前"
+这条约束本来就满足，是变异本身不是缺陷。）
+
+**踩坑**：心跳的格式串和实参顺序必须逐位对齐，我把相机字段插进格式串中间、实参却排在后面，
+第一次打出来是 `game_cam=(389,104,1524) fov=915`（scissor 的值跑到了相机字段上）。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

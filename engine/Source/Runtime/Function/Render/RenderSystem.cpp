@@ -8,6 +8,8 @@
 // 平台无关的 TU" 那段注释），它自己也只 include 平台无关的 pass 头。
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
+// 心跳里的相机探针要用 CameraComponent::GetPosition()（Level.h 只是前向声明）。
+#include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
@@ -45,23 +47,65 @@ bool RenderSystem::Initialize()
 
     m_Cameras.clear();
 
-    auto game_camera = std::make_shared<RenderCamera>();
-    game_camera->LookAt(Vector3(0.0f, -10.0f, 5.0f), Vector3::ZERO, Vector3::UNIT_Z);
-    game_camera->m_Znear = 0.1f;
-    game_camera->m_Zfar = 1000.0f;
-    game_camera->SetAspect(16.0f / 9.0f);
-    game_camera->setTargetTexture("game");
-    game_camera->m_CurrentCameraType = RenderCameraType::Game;
+    // ---- GlobalRenderingRes 必须在**建相机之前**读 ----
+    //
+    // 以前两台相机是硬编码的 `LookAt((0,-10,5), ZERO, UNIT_Z)` + 16:9 + 0.1/1000，
+    // 完全不看 `GlobalRenderingRes::m_CameraConfig`。这份精简版 Initialize 当初
+    // 只是为了把 UI 画出来，硬编码没有代价；场景管线打通之后就成了洞：
+    //   * pose 对不上：配置里是 (-5,0,3) → (-4,0,3)，硬编码是 (0,-10,5) → 原点；
+    //   * **aspect 对不上**：配置 1280x768 = 1.667，硬编码 16:9 = 1.778，而编辑器
+    //     的 game 视口面板就是 1524x915 = 1.666 ⇒ 画面被横向拉伸，而且**不报任何
+    //     错**（和 0x0 视口同一类）。
+    // 同一份指针顺带给下面的 IBL / LUT 用，所以只 load 一次、只在最后销毁。
+    GlobalRenderingRes* global_rendering_res = nullptr;
+    if (auto* config_manager = GET_SYSTEM(ConfigManager))
+    {
+        const eastl::string& global_rendering_url = config_manager->GetGlobalRenderingResUrl();
+        if (auto* asset_manager = GET_SYSTEM(AssetManager); !global_rendering_url.empty())
+        {
+            global_rendering_res = asset_manager->loadAsset<GlobalRenderingRes>(global_rendering_url);
+        }
+    }
+
+    const bool has_camera_config = (global_rendering_res != nullptr);
+    const float cam_znear = has_camera_config ? global_rendering_res->m_CameraConfig.m_ZNear : 0.1f;
+    const float cam_zfar  = has_camera_config ? global_rendering_res->m_CameraConfig.m_ZFar : 1000.0f;
+    const float cam_aspect =
+        (has_camera_config && global_rendering_res->m_CameraConfig.m_Aspect.y > 0.0f)
+            ? global_rendering_res->m_CameraConfig.m_Aspect.x / global_rendering_res->m_CameraConfig.m_Aspect.y
+            : (16.0f / 9.0f);
+
+    auto make_camera = [&](RenderCameraType type, const char* target_texture)
+    {
+        auto camera = std::make_shared<RenderCamera>();
+        if (has_camera_config)
+        {
+            const CameraPose& pose = global_rendering_res->m_CameraConfig.m_Pose;
+            camera->LookAt(pose.m_Position, pose.m_Target, pose.m_Up);
+        }
+        else
+        {
+            camera->LookAt(Vector3(0.0f, -10.0f, 5.0f), Vector3::ZERO, Vector3::UNIT_Z);
+        }
+        camera->m_Znear = cam_znear;
+        camera->m_Zfar  = cam_zfar;
+        camera->SetAspect(cam_aspect);
+        camera->setTargetTexture(target_texture);
+        camera->m_CurrentCameraType = type;
+        return camera;
+    };
+
+    auto game_camera = make_camera(RenderCameraType::Game, "game");
     m_Cameras.push_back(game_camera);
 
-    auto scene_camera = std::make_shared<RenderCamera>();
-    scene_camera->LookAt(Vector3(0.0f, -10.0f, 5.0f), Vector3::ZERO, Vector3::UNIT_Z);
-    scene_camera->m_Znear = 0.1f;
-    scene_camera->m_Zfar = 1000.0f;
-    scene_camera->SetAspect(16.0f / 9.0f);
-    scene_camera->setTargetTexture("scene");
-    scene_camera->m_CurrentCameraType = RenderCameraType::Editor;
+    auto scene_camera = make_camera(RenderCameraType::Editor, "scene");
     m_Cameras.push_back(scene_camera);
+
+    LOG_INFO(ZRender,
+             "RenderSystem(Apple): cameras from {} -- pos=({},{},{}) znear={} zfar={} aspect={}",
+             has_camera_config ? "GlobalRenderingRes::m_CameraConfig" : "hard-coded fallback",
+             game_camera->position().x, game_camera->position().y, game_camera->position().z,
+             cam_znear, cam_zfar, cam_aspect);
 
     // 场景渲染的地基：RenderScene（可见物体 / 光源）和 RenderResource（GPU 资源 +
     // per-frame UBO）。以前 Apple 上一个都没有，管线只能画 UI。
@@ -99,30 +143,24 @@ bool RenderSystem::Initialize()
     //
     // 两个调用都必须排在 m_RenderPipeline->Initialize 之前：RP1 的
     // SetupDescriptorSets 在那儿就把 IBL descriptor 写死了。
-    if (auto* config_manager = GET_SYSTEM(ConfigManager))
+    // 全局资源已经在建相机那一步 load 过一次了（同一份指针），这里直接用。
+    if (global_rendering_res != nullptr)
     {
-        const eastl::string& global_rendering_url = config_manager->GetGlobalRenderingResUrl();
-        if (auto* asset_manager = GET_SYSTEM(AssetManager); !global_rendering_url.empty())
-        {
-            if (auto* global_rendering_res = asset_manager->loadAsset<GlobalRenderingRes>(global_rendering_url))
-            {
-                LevelIBLResourceDesc ibl_desc;
-                ibl_desc.m_SkyboxIrradianceMap = global_rendering_res->m_SkyboxIrradianceMap;
-                ibl_desc.m_SkyboxSpecularMap   = global_rendering_res->m_SkyboxSpecularMap;
-                ibl_desc.m_BrdfMap             = global_rendering_res->m_BrdfMap;
-                render_resource->UploadIblResources(m_Rhi, ibl_desc);
+        LevelIBLResourceDesc ibl_desc;
+        ibl_desc.m_SkyboxIrradianceMap = global_rendering_res->m_SkyboxIrradianceMap;
+        ibl_desc.m_SkyboxSpecularMap   = global_rendering_res->m_SkyboxSpecularMap;
+        ibl_desc.m_BrdfMap             = global_rendering_res->m_BrdfMap;
+        render_resource->UploadIblResources(m_Rhi, ibl_desc);
 
-                render_resource->UploadColorGradingLut(m_Rhi, global_rendering_res->m_ColorGradingMap);
-                MemoryManager::DestroyObject(global_rendering_res);
-            }
-            else
-            {
-                LOG_WARNING(ZRender,
-                            "RenderSystem(Apple): could not load '{}' -- IBL and color grading fall back "
-                            "to neutral textures",
-                            global_rendering_url.c_str());
-            }
-        }
+        render_resource->UploadColorGradingLut(m_Rhi, global_rendering_res->m_ColorGradingMap);
+        MemoryManager::DestroyObject(global_rendering_res);
+        global_rendering_res = nullptr;
+    }
+    else
+    {
+        LOG_WARNING(ZRender,
+                    "RenderSystem(Apple): GlobalRenderingRes unavailable -- IBL and color grading fall back "
+                    "to neutral textures");
     }
 
     RenderPipelineInitInfo pipeline_init_info;
@@ -271,9 +309,37 @@ void RenderSystem::Tick(float)
                     sc[i] = m_Rhi->GetSwapchainInfo().scissor[i];
                 }
             }
+            // 相机探针（阶段 53）：Apple 上 `SyncGameCameraFromMainCamera` 是空体，
+            // 相机 swap data 也被直接丢弃 ⇒ game 相机可能从来没人更新过。这里把
+            // game 相机和关卡主相机组件的位置都打出来：两者对不上（cam_sync=0）
+            // 就说明这份同步确实缺了。0x0 视口那种"画不出来但不报错"的教训是：
+            // 相机错了也照样出画面，只是画面是错的 —— 所以必须进心跳。
+            Vector3   game_cam_pos {Vector3::ZERO};
+            Vector2   game_cam_fov {0.0f, 0.0f};
+            Vector3   main_cam_pos {Vector3::ZERO};
+            int       main_cam_valid = 0;
+            int       cam_sync = -1;  // -1 = 关卡里没有主相机组件，无从比较
+            if (const std::shared_ptr<RenderCamera> game_cam = GetCamera(ViewportType::game))
+            {
+                game_cam_pos = game_cam->position();
+                game_cam_fov = game_cam->getFOV();
+            }
+            if (Level* probe_level = GET_SYSTEM(WorldManager) != nullptr
+                                         ? GET_SYSTEM(WorldManager)->getCurrentActiveLevel()
+                                         : nullptr)
+            {
+                if (const CameraComponent* main_cam = probe_level->GetMainCameraComponent())
+                {
+                    main_cam_pos = main_cam->GetPosition();
+                    main_cam_valid = 1;
+                    cam_sync = ((game_cam_pos - main_cam_pos).length() < 0.01f) ? 1 : 0;
+                }
+            }
+
             LOG_INFO(ZRender,
                      "AppleRender: frame={} entities={} visible={} scene_color_view={} blit_ready={} "
                      "rp2_tonemapped={} swapchain={}x{} "
+                     "game_cam=({},{},{}) fov={} main_cam_valid={} main_cam=({},{},{}) cam_sync={} "
                      "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
@@ -283,6 +349,10 @@ void RenderSystem::Tick(float)
                      m_RenderPipeline != nullptr && m_RenderPipeline->IsSceneColorTonemapped() ? 1 : 0,
                      extent.width,
                      extent.height,
+                     // 实参顺序必须跟上面格式串里占位符的顺序一致（插在 swapchain 之后）。
+                     game_cam_pos.x, game_cam_pos.y, game_cam_pos.z,
+                     game_cam_fov.x, main_cam_valid,
+                     main_cam_pos.x, main_cam_pos.y, main_cam_pos.z, cam_sync,
                      static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
                      static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
                      sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,

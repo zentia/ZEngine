@@ -797,6 +797,77 @@ namespace
               "both game and scene are logged because the main camera uses game on Apple)");
     }
 
+    // =======================================================================
+    // Apple 版 Initialize 的相机来源契约。
+    //
+    // 以前两台相机是硬编码的 `LookAt((0,-10,5), ZERO, UNIT_Z)` + `SetAspect(16/9)`，
+    // 完全不看 GlobalRenderingRes::m_CameraConfig。那份精简版 Initialize 当初只为
+    // 了把 UI 画出来，硬编码没有代价；场景管线打通之后就成了洞：
+    //   * pose 对不上（真机探针：配置 (-5,0,3)，硬编码 (0,-10,5)）；
+    //   * **aspect 对不上**：配置 1280x768 = 1.667，硬编码 16:9 = 1.778，而编辑器
+    //     game 视口面板就是 1524x915 = 1.666 ⇒ 画面被横向拉伸且**不报任何错**
+    //     （和 0x0 视口同一类）。
+    //
+    // 顺带：探针还否掉了一个假设 —— 这个工程的关卡里根本没有主相机组件
+    // （`GetMainCameraComponent()` 返回 nullptr，`main_cam_valid=0`），所以
+    // `SyncGameCameraFromMainCamera` 的空桩今天在两个平台上都是空转，不是洞。
+    // =======================================================================
+    void CheckCameraConfigContracts()
+    {
+        const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string sys_source  = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+        Check(!sys_source.empty(), "RenderSystem.cpp is readable as text (camera config)");
+
+        // Apple 版 Initialize：从第一个 `bool RenderSystem::Initialize()` 到下一个 `#else`。
+        const size_t init_at = sys_source.find("bool RenderSystem::Initialize()");
+        Check(init_at != std::string::npos, "RenderSystem::Initialize exists");
+        const size_t init_else = sys_source.find("\n#else", init_at);
+        Check(init_else != std::string::npos, "the Apple Initialize is followed by an #else (non-Apple twin)");
+        const std::string apple_init = sys_source.substr(init_at, init_else - init_at);
+        Check(Contains(apple_init, "m_Cameras.clear();"), "the Apple Initialize builds the camera list");
+
+        // ---- 顺序契约：全局资源必须在建相机**之前**读 ----
+        const size_t load_at    = apple_init.find("loadAsset<GlobalRenderingRes>(");
+        const size_t push_at    = apple_init.find("m_Cameras.push_back");
+        const size_t camcfg_at  = apple_init.find("m_CameraConfig");
+        Check(load_at != std::string::npos, "the Apple Initialize loads GlobalRenderingRes");
+        Check(push_at != std::string::npos, "the Apple Initialize pushes cameras");
+        Check(load_at < push_at,
+              "GlobalRenderingRes is loaded BEFORE the cameras are built (otherwise there is nothing to read)");
+        Check(camcfg_at != std::string::npos && camcfg_at < push_at,
+              "the cameras are built from m_CameraConfig (before the first push_back)");
+
+        // ---- 三件配置都真的用上 ----
+        Check(Contains(apple_init, "m_CameraConfig.m_Pose"),
+              "the camera pose comes from m_CameraConfig (not a hard-coded LookAt)");
+        Check(Contains(apple_init, "m_CameraConfig.m_ZNear") && Contains(apple_init, "m_CameraConfig.m_ZFar"),
+              "znear / zfar come from m_CameraConfig");
+        Check(Contains(apple_init, "m_CameraConfig.m_Aspect"),
+              "the aspect comes from m_CameraConfig (a wrong aspect silently stretches the frame)");
+
+        // ---- 硬编码只剩兜底，不能是唯一路径 ----
+        Check(Contains(apple_init, "has_camera_config"),
+              "there is an explicit has/not-have branch, so the hard-coded pose is only a fallback");
+        Check(Contains(apple_init, "Vector3(0.0f, -10.0f, 5.0f)"),
+              "the hard-coded pose survives as the fallback (config missing must still produce a camera)");
+        Check(Contains(apple_init, "16.0f / 9.0f"),
+              "the hard-coded 16:9 survives as the fallback aspect");
+
+        // ---- 只 load 一次：同一份指针给相机和 IBL/LUT 用 ----
+        Check(CountOccurrences(apple_init, "loadAsset<GlobalRenderingRes>(") == 1,
+              "GlobalRenderingRes is loaded exactly once in the Apple Initialize "
+              "(the camera block and the IBL/LUT block share one pointer)");
+
+        // ---- 可观测：到底用了配置还是兜底，必须能看出来 ----
+        Check(Contains(apple_init, "cameras from"),
+              "the Apple Initialize logs whether the cameras came from config or from the fallback "
+              "(a silently wrong camera looks exactly like a correct one)");
+        Check(Contains(sys_source, "game_cam="),
+              "the Apple heartbeat carries the game camera position (the only way to falsify this on device)");
+        Check(Contains(sys_source, "cam_sync="),
+              "the Apple heartbeat also carries cam_sync (game camera vs. the level's main camera component)");
+    }
+
 #if defined(__APPLE__)
     // =======================================================================
     // 2. 离屏 target：32×32 的 R8G8B8A8_UNORM，一个颜色附件。
@@ -1546,6 +1617,10 @@ int main()
 
     // 场景视口的文本契约：Apple 的桩已删 + Metal 的 scissor 同步。
     CheckSceneViewportContracts();
+
+    // Apple 版 Initialize 的相机来源契约：pose / near-far / aspect 必须来自
+    // GlobalRenderingRes::m_CameraConfig，硬编码只能当兜底。
+    CheckCameraConfigContracts();
 
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();
