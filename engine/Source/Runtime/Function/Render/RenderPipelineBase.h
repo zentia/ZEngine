@@ -77,6 +77,12 @@ public:
                               std::shared_ptr<RenderCamera> camera,
                               float delta_time);
 
+    // Nanite pass 的只读入口。给心跳探针用：Nanite 以前只在"并行渲染 + DX12"那一
+    // 条 Tick 路径上被调用（其余三条路径从来不推进它），而它静默退化时**不报任何
+    // 错**，只能靠探针把"实例数 / 可见集群数"打出来才能分辨。没有 Nanite pass
+    // （或它不是 Nanite）时返回 nullptr。
+    class NaniteRenderPass* GetNanitePass() const;
+
     virtual void BuildDrawLists(std::shared_ptr<RenderResourceBase> render_resource, RHIDrawList& out_draw_list);
     virtual void SubmitDrawLists(RHI* rhi,
                                  std::shared_ptr<RenderResourceBase> render_resource,

@@ -192,19 +192,13 @@ struct RenderNaniteCmd final : IRenderCommand
 
     void Execute() override
     {
-        if (system == nullptr || system->m_RenderPipeline == nullptr)
+        // 走 RenderSystem 上那个唯一的入口，别在这里再抄一遍判空：阶段 58 之前
+        // Nanite 的推进只在"并行 + DX12"这一支里，别的 Tick 路径各抄各的（或者干脆
+        // 没抄），于是漏了也没人发现。
+        if (system != nullptr)
         {
-            return;
+            system->UpdateNaniteForFrame(delta_time);
         }
-
-        auto render_scene = system->m_RenderScene;
-        auto camera = system->GetRenderCamera(ViewportType::game);
-        if (render_scene == nullptr || camera == nullptr)
-        {
-            return;
-        }
-
-        system->m_RenderPipeline->UpdateNanite(render_scene, camera, delta_time);
     }
 
     const char* GetDebugName() const override { return "RenderNanite"; }
@@ -336,6 +330,9 @@ void BuildRenderSystemFrameCommands(RenderSystem& render_system, float delta_tim
     ENQUEUE_RENDER_COMMAND(RenderSyncGameCameraCmd, &render_system);
     ENQUEUE_RENDER_COMMAND(RenderUpdateSceneCmd, &render_system, delta_time);
     ENQUEUE_RENDER_COMMAND(RenderLumenCmd, &render_system, delta_time);
+    // 阶段 58：这一支（并行但非 DX12，也就是 Vulkan）以前也没有 Nanite，只有上面
+    // 那个 DX12 分支有 —— 和单线程两条路一样，是"漏抄"而不是有意排除。
+    ENQUEUE_RENDER_COMMAND(RenderNaniteCmd, &render_system, delta_time);
     ENQUEUE_RENDER_COMMAND(RenderPreparePassDataCmd, &render_system);
     ENQUEUE_RENDER_COMMAND(RenderBuildDrawListsCmd, &render_system, frame_draw_list_slot);
     ENQUEUE_RENDER_COMMAND(RenderDispatchRHICommandsCmd, &render_system, frame_draw_list_slot);

@@ -948,7 +948,10 @@ namespace
         Check(!sys_source.empty(), "RenderSystem.cpp is readable as text (point light sync)");
 
         // Apple 版 Tick 的切片：从函数签名到下一个顶层函数定义为止。
-        const size_t tick_at  = sys_source.find("void RenderSystem::Tick(float)");
+        // 只匹配到 `(float` 为止：形参有没有名字（Apple 那条以前是
+        // `Tick(float)`，阶段 58 为了拿 delta_time 改成 `Tick(float delta_time)`）
+        // 不影响这里的语义，钉死右括号会让一次无关的改名把整段契约打成红。
+        const size_t tick_at  = sys_source.find("void RenderSystem::Tick(float");
         const size_t tick_end = sys_source.find("\nvoid RenderSystem::", tick_at + 1);
         Check(tick_at != std::string::npos, "RenderSystem::Tick exists (point light sync)");
         Check(tick_end != std::string::npos, "RenderSystem::Tick is followed by another definition");
@@ -997,6 +1000,90 @@ namespace
         Check(Contains(probe_source, "flux:") && !Contains(probe_source, "m_Flux"),
               "light_probe.scene uses the real serialised key 'flux' (not m_Flux, which silently falls back "
               "to the default)");
+    }
+
+    // -------------------------------------------------------------------------
+    // 阶段 58：Nanite 的每帧推进必须有生产者，而且**每一条** Tick 路径都得有。
+    //
+    // 以前"推进 Nanite"这句话只有 `BuildRenderSystemFrameCommands` 的 DX12 分支里
+    // 有，另外三条路径（并行的非 DX12、单线程的 DX12 / 非 DX12 —— Apple/Metal 走
+    // 的就是最后这条）都没有 ⇒ Nanite 在真机上一次都没跑过，集群构建 / 裁剪 / 批次
+    // 组装全是死代码，而且**不报任何错**（真机日志里 Nanite 一行都没有）。
+    //
+    // 这是"历史空桩在功能打通之后变成洞"的第六例，形态是"漏抄"：修法是把四条路径
+    // 统一到 `RenderSystem::UpdateNaniteForFrame()` 这一个入口上，所以契约盯的是
+    // "每个分支都真的调了它"，而不是"某个地方出现过 Nanite 这个字"。
+    // -------------------------------------------------------------------------
+    void CheckNaniteTickContracts()
+    {
+        const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string sys_source  = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+        const std::string cmd_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystemFrameCommands.cpp");
+        Check(!sys_source.empty(), "RenderSystem.cpp is readable as text (nanite tick)");
+        Check(!cmd_source.empty(), "RenderSystemFrameCommands.cpp is readable as text (nanite tick)");
+
+        auto count_of = [](const std::string& haystack, const std::string& needle) {
+            size_t count = 0;
+            size_t at    = 0;
+            while ((at = haystack.find(needle, at)) != std::string::npos)
+            {
+                ++count;
+                at += needle.size();
+            }
+            return count;
+        };
+        // 从函数签名切到下一个顶层函数定义为止。
+        auto body_of = [](const std::string& source, const std::string& signature) {
+            const size_t at  = source.find(signature);
+            const size_t end = source.find("\nvoid ", at + 1);
+            if (at == std::string::npos)
+            {
+                return std::string {};
+            }
+            return source.substr(at, end == std::string::npos ? source.size() - at : end - at);
+        };
+
+        // 1. 唯一入口存在。
+        Check(Contains(sys_source, "void RenderSystem::UpdateNaniteForFrame(float"),
+              "RenderSystem has exactly one Nanite-per-frame entry point");
+
+        // 2. Apple 那条精简 Tick 必须调它（这是真机走的路）。
+        const std::string apple_tick = body_of(sys_source, "void RenderSystem::Tick(float");
+        Check(Contains(apple_tick, "UpdateNaniteForFrame(delta_time)"),
+              "the Apple tick advances Nanite every frame (it used to be dead code on Metal)");
+
+        // 3. 单线程路径的两条分支（DX12 / 非 DX12）也都要调。
+        const std::string tick_render_thread = body_of(sys_source, "void RenderSystem::TickRenderThread(");
+        Check(count_of(tick_render_thread, "UpdateNaniteForFrame(delta_time)") >= 2,
+              "both branches of TickRenderThread advance Nanite (DX12 and non-DX12)");
+
+        // 4. 并行路径的两条分支都要把 RenderNaniteCmd 排进队列。
+        const std::string build_cmds = body_of(cmd_source, "void BuildRenderSystemFrameCommands(");
+        Check(count_of(build_cmds, "RenderNaniteCmd, &render_system") >= 2,
+              "both branches of BuildRenderSystemFrameCommands enqueue RenderNaniteCmd");
+
+        // 5. 帧命令自己不许再抄一遍判空逻辑 —— 走共享入口，否则将来改一处漏三处。
+        const std::string nanite_cmd = body_of(cmd_source, "void Execute() override\n    {\n        // 走 RenderSystem");
+        Check(Contains(nanite_cmd, "system->UpdateNaniteForFrame(delta_time)"),
+              "RenderNaniteCmd delegates to the shared entry point instead of duplicating it");
+
+        // 6. 顺序：Apple Tick 里必须在可见性更新之后、PreparePassData 之前。
+        //    依旧要搜**调用形式**，注释里那句"可见性更新之后"会把只搜名字的写法蒙过去。
+        const size_t nanite_at = apple_tick.find("UpdateNaniteForFrame(delta_time)");
+        const size_t publish_at = apple_tick.find("PublishVisibleNodes()");
+        const size_t prepare_at = apple_tick.find("PreparePassData(m_RenderResource)");
+        Check(publish_at != std::string::npos && nanite_at != std::string::npos && publish_at < nanite_at,
+              "Nanite runs after the visibility update (it reads the scene instances)");
+        Check(prepare_at != std::string::npos && nanite_at < prepare_at,
+              "and before PreparePassData (which uploads this frame's GPU resources)");
+
+        // 7. 心跳探针：Nanite 静默退化时不报错，只能靠探针分辨。
+        Check(Contains(sys_source, "nanite=(has={} inst={} batches={} vis={})"),
+              "the Apple heartbeat carries a Nanite probe (a silent fallback prints nothing)");
+        Check(Contains(sys_source, "m_RenderPipeline->GetNanitePass()"),
+              "that probe reads the real Nanite pass (has/inst/batches/vis together tell apart "
+              "'no pass' / 'no instances' / 'all culled')");
     }
 
 #if defined(__APPLE__)
@@ -1758,6 +1845,7 @@ int main()
 
     // Apple 版 Tick 的点光源同步契约 + 探针关卡本身（阶段 55）。
     CheckPointLightSyncContracts();
+    CheckNaniteTickContracts();
 
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();

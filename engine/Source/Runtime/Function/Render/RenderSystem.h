@@ -175,6 +175,15 @@ private:
     void TickRHIThread();
     static bool ShouldUseParallelRendering();
 
+    // 每帧推进 Nanite 的唯一入口（平台无关、线程模型无关）。
+    //
+    // 以前"推进 Nanite"这句话散在帧命令里，而且只有**并行渲染 + DX12** 那一支有
+    // （`BuildRenderSystemFrameCommands` 的 DX12 分支）：单线程的两条路
+    // （`TickRenderThread` 的 DX12 / 非 DX12 分支）和并行的非 DX12 分支都没有，于是
+    // Nanite 在 Apple/Metal 上从来没跑过一次 —— 集群构建、裁剪、批次组装全是死代码，
+    // 而且**不报任何错**。把四条路径统一到这一个函数上，将来再加 Tick 路径也不会漏。
+    void UpdateNaniteForFrame(float delta_time);
+
     static constexpr uint32_t kMaxFrameDrawLists = 3;
 
     uint32_t AllocateFrameDrawListSlot();

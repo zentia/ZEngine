@@ -15,6 +15,9 @@
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
+// 心跳里的 Nanite 探针要读 NaniteRenderPass / NaniteRenderer（RenderPipelineBase.h
+// 里的 GetNanitePass 只前向声明了这个类）。
+#include "Runtime/Function/Render/Nanite/NaniteRenderer.h"
 #include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
 
 // Lightweight stub only on Metal (Apple) and WebGL2 (Emscripten). Windows
@@ -194,7 +197,7 @@ bool RenderSystem::Initialize()
     return true;
 }
 
-void RenderSystem::Tick(float)
+void RenderSystem::Tick(float delta_time)
 {
     if (m_Rhi)
     {
@@ -238,6 +241,13 @@ void RenderSystem::Tick(float)
                     m_RenderScene->UpdateVisibleObjects(render_resource, camera);
                 }
                 m_RenderScene->PublishVisibleNodes();
+
+                // 阶段 58：Apple 这条精简 Tick 以前从来不推进 Nanite —— Nanite 的
+                // 生产者只在"并行渲染 + DX12"那一支帧命令里，于是集群构建 / 裁剪 /
+                // 批次组装在真机上一次都没跑过，而且**不报任何错**（心跳里
+                // nanite=(has=1 inst=0 ...) 就是实锤）。位置跟非 Apple 一致：可见性
+                // 更新之后、PreparePassData 之前。
+                UpdateNaniteForFrame(delta_time);
 
                 m_RenderPipeline->PreparePassData(m_RenderResource);
                 m_ActiveFrameDrawListSlot = 0;
@@ -379,6 +389,26 @@ void RenderSystem::Tick(float)
             // LightComponent 的数量打出来：gos=31 lcmp=2 plights=0 才是实锤。
             size_t gobject_count = 0;
             size_t light_components = 0;
+            // Nanite 探针（阶段 58）：Nanite 以前只在"并行渲染 + DX12"那一支 Tick
+            // 路径里被推进，Apple 这条单线程非 DX12 分支从来没调过 ⇒ 集群构建、
+            // 裁剪、批次组装在真机上一次都没跑过，而且**不报任何错**。三个数一起
+            // 打才能分辨"没 pass / 有 pass 但没实例 / 有实例但没可见簇"：
+            // nhas=0 是根本没 Nanite pass，ninst=0 是场景里没认出实例，ncl=0 是
+            // 认出来了但全被裁掉（相机没对着它，那就该是 0）。
+            int    nanite_has_pass = 0;
+            size_t nanite_instances = 0;
+            size_t nanite_batches = 0;
+            int    nanite_visible = 0;
+            if (m_RenderPipeline != nullptr)
+            {
+                if (NaniteRenderPass* nanite_pass = m_RenderPipeline->GetNanitePass())
+                {
+                    nanite_has_pass = 1;
+                    nanite_instances = nanite_pass->getNaniteRenderer()->GetInstances().size();
+                    nanite_batches = nanite_pass->GetRenderBatches().size();
+                    nanite_visible = nanite_pass->hasVisibleClusters() ? 1 : 0;
+                }
+            }
             if (m_RenderScene != nullptr)
             {
                 dir_light_dir = m_RenderScene->m_DirectionalLight.m_Direction;
@@ -422,6 +452,7 @@ void RenderSystem::Tick(float)
                      "rp2_tonemapped={} swapchain={}x{} "
                      "game_cam=({},{},{}) fov={} main_cam_valid={} main_cam=({},{},{}) cam_sync={} "
                      "dir_light=({},{},{}) dir_color=({},{},{}) ambient=({},{},{}) plights={} gos={} lcmp={} "
+                     "nanite=(has={} inst={} batches={} vis={}) "
                      "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
@@ -441,6 +472,10 @@ void RenderSystem::Tick(float)
                      point_lights,
                      gobject_count,
                      light_components,
+                     nanite_has_pass,
+                     nanite_instances,
+                     nanite_batches,
+                     nanite_visible,
                      static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
                      static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
                      sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,
@@ -1190,6 +1225,9 @@ void RenderSystem::TickRenderThread(float delta_time)
                 m_RenderResource->UpdatePerFrameBuffer(m_RenderScene, camera);
                 m_RenderScene->UpdateVisibleObjects(render_resource, camera);
             }
+            // 阶段 58：单线程路径以前从来不推进 Nanite（只有"并行 + DX12"那一支
+            // 有），Nanite 在这条路上是死代码且不报错。
+            UpdateNaniteForFrame(delta_time);
             m_RenderPipeline->PreparePassData(m_RenderResource);
             m_RenderPipeline->BuildDrawLists(m_RenderResource, GetFrameDrawList(m_ActiveFrameDrawListSlot));
         }
@@ -1230,6 +1268,10 @@ void RenderSystem::TickRenderThread(float delta_time)
 
         m_RenderScene->UpdateVisibleObjects(render_resource, camera);
     }
+
+    // 阶段 58：Apple/Metal 走的就是这条非 DX12 单线程分支，而它以前从来不推进
+    // Nanite —— 集群构建 / 裁剪 / 批次组装在 Apple 上一次都没跑过，且不报任何错。
+    UpdateNaniteForFrame(delta_time);
 
     m_RenderPipeline->PreparePassData(m_RenderResource);
 
@@ -1714,6 +1756,22 @@ RHIDrawList& RenderSystem::GetFrameDrawList(uint32_t slot)
 {
     const uint32_t max_frames = std::max(1u, RenderFramePipeline::GetMaxFramesInFlight());
     return m_FrameDrawLists[slot % max_frames];
+}
+
+// 每帧推进 Nanite 的唯一入口。**必须**住在这个平台无关的尾巴上：四条 Tick 路径
+// （并行的 DX12 / 非 DX12、单线程的 DX12 / 非 DX12）都要调它，其中 Apple 那条就在
+// 上面 `#if defined(__APPLE__)` 的精简 Tick 里 —— 定义要是落在非 Apple 那个大分支
+// 里，Apple 就是 undefined symbol（静态库看不出来，只有链 ZEditor 时才炸）。
+void RenderSystem::UpdateNaniteForFrame(float delta_time)
+{
+    if (m_RenderPipeline == nullptr || m_RenderScene == nullptr)
+    {
+        return;
+    }
+    // Nanite 的场景实例是从 RenderScene 认出来的，所以必须排在可见性更新**之后**；
+    // 又要早于 PreparePassData，因为后者上传本帧的 GPU 资源。没有 Nanite pass 时
+    // RenderPipelineBase::UpdateNanite 自己就是 no-op。
+    m_RenderPipeline->UpdateNanite(m_RenderScene, GetRenderCamera(ViewportType::game), delta_time);
 }
 
 // ===========================================================================

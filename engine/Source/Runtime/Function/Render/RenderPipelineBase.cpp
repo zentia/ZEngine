@@ -100,6 +100,17 @@ void RenderPipelineBase::UpdateNanite(std::shared_ptr<RenderScene> render_scene,
     nanite_pass->Render(render_scene, camera, delta_time);
 }
 
+NaniteRenderPass* RenderPipelineBase::GetNanitePass() const
+{
+    if (m_NanitePass == nullptr)
+    {
+        return nullptr;
+    }
+    // 和 UpdateNanite 同一个约定：槽位的静态类型是 RenderPassBase，是不是 Nanite
+    // 只能靠 dynamic_cast 现场判定（基类不该知道 Nanite 的存在）。
+    return dynamic_cast<NaniteRenderPass*>(m_NanitePass.get());
+}
+
 void RenderPipelineBase::ConsumeParticleSwapData(RenderSwapData& swap_data, RenderSwapContext& swap_context)
 {
     if (swap_data.m_ParticleSubmitRequest.has_value())

@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 231 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18） |
+| `AppleSceneBlitSmokeTest` | 242 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18）；Nanite 的每帧推进必须在**四条 Tick 路径上都存在**（§3.21） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 
@@ -816,10 +816,66 @@ blob 包成一个"成功"的 shader module，但建 compute pipeline 时才失�
 2. `x < std::string::npos` **恒为真**，所以"日志存在"和"早退在它前面"两条判据各自都得
    先判 `found`，否则日志被删掉时第二条照样绿。
 
-**遗留观察（未证伪，下一个洞）**：真机 Editor 里 Nanite **一行日志都没有**（只有 6 行
-`r.Nanite.*` 的 console 变量注册）。冒烟测试是在真机 Metal 上真建管线真 dispatch 的，
-所以修复本身成立；但 ZGameSmoke 的场景里很可能**没有任何 Nanite mesh**，GPU 路径在真机
-帧循环里从未被触发。要证伪它得先造一个带 Nanite 资源的关卡（同 §3.18 的 `light_probe` 打法）。
+**遗留观察 → 已证伪并在 §3.21 修掉**：真机 Editor 里 Nanite 一行日志都没有，不是"场景里
+没有 Nanite mesh"，而是**帧循环从来没有推进过 Nanite** —— §3.21。修完真机心跳是
+`nanite=(has=1 inst=31 batches=14 vis=1)`。
+
+### 3.21 Nanite 的每帧推进：四条 Tick 路径里三条都没有（Apple 是死代码）
+
+**症状**：阶段 57 修完 Vulkan 判据之后，真机 Editor 里 Nanite **仍然一行日志都没有**
+（只有 6 行 `r.Nanite.*` 的 console 变量注册）。
+
+**根因**：不是"场景里没有 Nanite mesh"，而是**帧循环从来没有推进过 Nanite**。它有四条
+Tick 路径，而"推进 Nanite"这句话只在**其中一条**里：
+
+| 线程模型 | 后端 | 路径 | 修之前 |
+|---|---|---|---|
+| 并行 | DX12 | `BuildRenderSystemFrameCommands` DX12 分支 | ✅ 有 `RenderNaniteCmd` |
+| 并行 | 非 DX12（Vulkan） | `BuildRenderSystemFrameCommands` 通用分支 | ❌ 没有 |
+| 单线程 | DX12 | `TickRenderThread` DX12 分支 | ❌ 没有 |
+| 单线程 | 非 DX12 | `TickRenderThread` 通用分支 ← **Apple/Metal** | ❌ 没有 |
+
+于是集群构建 / 逐簇裁剪 / 批次组装在 Apple 上一次都没跑过，而且**不报任何错**。
+这是"历史空桩在功能打通之后变成洞"的第六例，形态是**漏抄**：Nanite 接进来时只往
+DX12 那条路上写了一份，后来加别的 Tick 路径时没人想起它。
+
+**改动**：抽出 `RenderSystem::UpdateNaniteForFrame(delta_time)` 作为唯一入口，四条路径
+统一调它（可见性更新之后、`PreparePassData` 之前 —— Nanite 读场景实例，所以必须在可见性
+更新之后；产出的批次要赶在上传 GPU 资源之前）。`RenderNaniteCmd::Execute` 也改成调它，
+不再自己抄一份判空。
+
+> ⚠️ 这个函数的定义必须住在 RenderSystem.cpp **平台无关的公共尾巴**上。第一次我把它放在
+> `TickRHIThread` 旁边（那是非 Apple 大分支里），结果 Apple 链接时
+> `undefined symbol: RenderSystem::UpdateNaniteForFrame(float)` —— 静态库看不出来，只有链
+> 出 `ZEditor` 时才炸。这和 `AllocateFrameDrawListSlot` 当初踩的是同一个坑。
+
+顺带给 `RenderPipelineBase` 加了 `GetNanitePass()`（心跳探针要读实例数），Apple 心跳多打
+一组 `nanite=(has={} inst={} batches={} vis={})`：`has` 区分"有没有 Nanite pass"，`inst`
+区分"认没认出实例"，`vis` 区分"认出来了但全被裁掉"。单看任何一个都分不开。
+
+**验证**：真机心跳从"Nanite 一行都没有"变成 `nanite=(has=1 inst=31 batches=14 vis=1)`
+（entities=31，14 个渲染批次，有可见集群）。`AppleSceneBlitSmokeTest` 231 → **242 checks**
+（新增 11 条契约）。四次变异各自精确变红：
+
+| 变异 | 红几条 |
+|---|---|
+| 删 Apple Tick 里的调用 | 3（存在 + 两条顺序） |
+| 删 `BuildRenderSystemFrameCommands` 通用分支的入队 | 1 |
+| 把 Apple 的调用挪到 `PublishVisibleNodes()` 之前 | 1（顺序） |
+| 删心跳的 `nanite=` 探针 | 1 |
+
+顺带修了一条被自己改坏的旧契约：它硬编码签名 `"void RenderSystem::Tick(float)"`，而我为了
+拿 `delta_time` 把形参补成了 `Tick(float delta_time)` ⇒ 整段契约假红。改成只匹配到
+`(float` 为止 —— 形参有没有名字不影响语义，钉死右括号会让一次无关改名把整段打成红。
+
+**下一个洞（已定位，未修）**：Nanite 现在在真机上**跑的是 CPU 路径**，GPU 那一半仍然没落地，
+两层都没通：
+1. `NaniteCullingSystem::CullInstancesGPU()` 是 `// TODO: 实现GPU裁剪`，函数体只有
+   `return CullInstancesCPU(...)` ⇒ `r.Nanite.GPU=1` 也只是走 CPU 实例裁剪。
+2. 真机日志里没有阶段 57 加的那条 `nanite: cluster-cull compute pipeline ready`，说明
+   `PrepareGPUData()` 早退了（`m_Rhi` 为空 / `m_SceneGPUData.empty()` / 内置 SPIR-V blob
+   在运行时没注册 —— 冒烟测试用的是测试自带的 `ZENGINE_NANITE_TEST_HAS_COMP_SPIRV`，跟运行时
+   的 `Z::Shader::NANITE_CLUSTER_CULL_COMP` 不是同一份）。要证伪得再下一轮探针。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 
