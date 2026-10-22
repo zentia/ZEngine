@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-22 (Nanite: the raster writes a real GBuffer)
+
+The raster target used to be a single colour image that the fragment shader
+filled with the LOD debug colour. That was enough to prove "triangles landed",
+but useless to the frame loop: whatever Nanite draws has to come out of the
+GBuffer pass already in the shape the deferred lighting pass reads.
+
+* **`nanite_cluster.frag` now emits the three GBuffer targets** through
+  `EncodeGBufferData` (`shader/include/gbuffer.h`): world normal,
+  metallic/specular/roughness + `SHADINGMODELID_DEFAULT_LIT`, base colour. Two
+  honest compromises, both written down in the shader: the normal is the flat
+  face normal from `cross(dFdx(in_world_position), dFdy(in_world_position))`
+  and the base colour is still the per-cluster debug tint — `NaniteMeshResource`
+  uploads positions and indices only, so real normals and material ids have to
+  come from the cluster builder first.
+* **The offscreen target is GBuffer-shaped now**: three colour attachments
+  (`R8G8B8A8_UNORM`, `R8G8B8A8_UNORM`, `R8G8B8A8_SRGB`) plus `D32_SFLOAT`, the
+  same set `MainCameraFramebufferResources::SetupAttachments` builds. The
+  pipeline's blend state covers three attachments and the framebuffer holds four
+  views. A PSO built this way can be injected into the main camera's GBuffer
+  pass; one built against a single target cannot.
+* **The clear values changed from dark grey to all zero**, matching
+  `MainCameraRp1Pass::DrawGBufferPass` field for field. Zero is also the only
+  safe "nothing here" marker: GBufferC is an SRGB attachment, so a clear of 0.05
+  gets linear→sRGB encoded into byte 62 and reads back as "something was drawn".
+  (The test found this — the offscreen probe counted every cleared pixel as
+  covered.)
+
+### Added - 2026-10-22 (NaniteGPUCullingSmokeTest: 83 checks, GBuffer content pinned)
+
+Counting pixels no longer proves anything: writing one attachment and writing
+three both "have pixels". The test now decodes what was written.
+
+* `ProbeGBuffer` reads the three targets back and checks, per covered pixel:
+  GBufferA decodes to a +Y world normal (the test mesh is a horizontal plane and
+  the camera is above it), GBufferB.a decodes to `SHADINGMODELID_DEFAULT_LIT`,
+  GBufferC is non-zero, and every pixel Nanite never touched is still the
+  caller's clear colour.
+* The caller-owned target became a GBuffer (three colour + depth) so the
+  injection path is asserted on **content** too, and a fourth criterion was
+  added: the caller's 16×16 viewport must be *partly* covered. The bounding-box
+  check alone could not see a hijacked viewport — the caller's 16×16 scissor
+  clips the enlarged geometry — but the fill count can (184 covered pixels
+  becomes 256, i.e. every pixel).
+
+Mutation-tested six ways: `cross` operands swapped, so the normal flips to −Y (2
+failures); shading model id written as 0 (3); GBufferC blanked after the encode
+(2); the offscreen clear changed back to dark grey (4); the injected draw
+grabbing the viewport (1). **Not caught, written down rather than assumed
+covered:** dropping the third blend-state entry. Metal leaves pipeline colour
+attachment descriptors the pipeline state never touches at their default
+`MTLColorWriteMaskAll`, so GBufferC is still written and the test stays green;
+this one can only be pinned on a backend that reads the write mask strictly.
+
 ### Added / Fixed - 2026-10-22 (Nanite: the raster can draw into a caller-owned pass)
 
 The offscreen target proved Nanite *can* draw, but a frame loop cannot use it:
@@ -34,6 +88,9 @@ happen while somebody else's pass is open.
   bind-index-buffer / draw sequence, shared by both paths so they cannot drift.
 
 ### Added - 2026-10-22 (NaniteGPUCullingSmokeTest: 69 checks, injection semantics pinned)
+
+(Superseded later the same day — 83 checks, and the caller target is a GBuffer;
+see the GBuffer entries above.)
 
 The test now builds its own 32×32 target (colour + depth + render pass +
 framebuffer), clears it to black, sets a **16×16 viewport** in the corner, and
