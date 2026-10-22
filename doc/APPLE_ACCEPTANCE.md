@@ -53,6 +53,10 @@ AppleRender: frame=241 entities=31 visible=3 scene_color_view=1 blit_ready=1 swa
 场景视口里应该能看到关卡里的 31 个实体（其中 3 个在相机视锥内），而不是纯色。
 编辑器 UI（ZSlate 面板 / 菜单）叠在场景之上 —— 顺序错了会是"UI 被场景盖掉"。
 
+颜色上要注意：**纹理/材质目前是占位白图**（§4），所以能指望的只有明暗层次，不是
+"看起来对不对"。判断 tonemap 有没有生效，看光源附近是不是有渐变而不是一片纯白 ——
+线性 HDR 直接写进 UNORM 的表现就是高光硬切成 255 且整体发暗（§3.6）。
+
 ### 2.4 冒烟测试
 
 ```bash
@@ -66,7 +70,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 31 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒 |
+| `AppleSceneBlitSmokeTest` | 40 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致 |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
@@ -146,6 +150,27 @@ Metal 用的是同一套 `GpuMesh` / `GpuPBRMaterial` 布局（只是 `VmaAlloca
 MainCameraFramebufferResources: swapchain 2560x1440 != framebuffers 0x0 -- rebuild needed
 MainCameraFramebufferResources: recreated FBs (2560x1440)
 ```
+
+### 3.6 blit 里没有 tonemap / gamma（颜色不对，但不会报任何错）
+
+跟前面几条不同 —— 这条**不会在日志里留下任何痕迹**，只能肉眼或靠测试发现。
+
+链路是这样：RP1 的 `backup_odd` 是 `R16G16B16A16_SFLOAT`（**线性 HDR**，可以 >1），
+而 Metal 的 swapchain 是 `BGRA8Unorm`（**非 sRGB**）。Vulkan/DX12 上 HDR→LDR 这一步
+由 RP2 的 `tone_mapping → color_grading → combine_ui` 完成，而这三个 pass 在 Apple 上全
+被 `ZENGINE_APPLE_EXCLUDED_PASSES` 排除了。于是 Apple 上唯一剩下的出口 ——
+`AppleSceneBlit` 那段手写 MSL —— 原来是**直通采样**：线性值被当成显示值直接写进
+UNORM。结果是 >1 的地方硬切成纯白，其余整体偏暗。
+
+修法：把 `engine/shader/glsl/tone_mapping.frag` 的 Uncharted2（曝光 4.5、白点 11.2、
+gamma 1/2.2）**逐系数**抄进 blit 的 fragment MSL。
+
+对拍方式：`AppleSceneBlitSmokeTest` 里放了一份同一条曲线的 C++ 镜像，要求 GPU 出来的
+像素等于镜像算出来的值（实测 156.0/192.0/210.0 vs 156.4/191.6/210.4）。三份实现
+（`tone_mapping.frag` / blit 的 MSL / 测试镜像）互相看不见，这是唯一把它们对齐的手段。
+
+> **将来 RP2 在 Apple 上启用之后，这段 tonemap 必须退化成直通（或整个删掉 blit）**：
+> 那时候进来的是已经 tonemap 过的 LDR，再 tonemap 一次画面就发灰。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

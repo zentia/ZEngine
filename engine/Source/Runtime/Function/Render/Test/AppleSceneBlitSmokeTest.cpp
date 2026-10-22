@@ -23,8 +23,15 @@
 //      了第一行的值就会接近亮端，断言立刻红。这条是纯文本检查钉不住的 ——
 //      它得真跑一遍才知道。
 //
-//  非 Apple 平台退化成第 4 部分：纯文本契约（set/binding 与 [[texture(n)]] 的
-//  手工对齐、入口点必须叫 main、顶点数必须是 3、剔除必须关掉）。
+//   4. **tonemap + gamma 真的在，而且曲线跟 RP2 一致**。源是线性 HDR
+//      （RP1 的 backup_odd，R16G16B16A16_SFLOAT），目标是 BGRA8Unorm（非 sRGB），
+//      而 RP2 那套后处理在 Apple 上被整段排除 ⇒ 这步只能由这次全屏采样代劳。
+//      测试里放了一份 Uncharted2 + 1/2.2 的 C++ 镜像，要求 GPU 出来的值等于镜像
+//      算出来的值 —— 三份实现（tone_mapping.frag / MSL / 这里）就靠这条对齐。
+//
+//  非 Apple 平台退化成文本 + 纯数学部分：文本契约（set/binding 与
+//  [[texture(n)]] 的手工对齐、入口点必须叫 main、顶点数必须是 3、剔除必须关掉、
+//  tonemap 的曝光与 gamma 字面量）和 tonemap 曲线本身的性质。
 //
 //   cmake -B build -DZENGINE_BUILD_APPLE_SCENE_BLIT_SMOKE_TEST=ON
 //   cmake --build build --target AppleSceneBlitSmokeTest
@@ -92,6 +99,56 @@ namespace
     }
 
     // =======================================================================
+    // Uncharted2 tonemap + 1/2.2 gamma 的 C++ 镜像。
+    //
+    // 同一条曲线在这个仓库里有三份实现，互相都看不见：
+    //   1. engine/shader/glsl/tone_mapping.frag —— RP2 的 tonemap pass（Vulkan/DX12）
+    //   2. AppleSceneBlit.cpp 里的 MSL        —— Apple 上 RP2 被排除时唯一的出路
+    //   3. 这里                               —— 测试用的对拍基准
+    // 下面"GPU 出来的值 == 这个公式算出来的值"那几条断言就是唯一的对齐手段：
+    // 改了 1 或 2 的任何系数（曝光 4.5、白点 11.2、gamma 2.2、A..F），差值都会
+    // 远超容差。
+    // =======================================================================
+    float Uncharted2Tonemap(float x)
+    {
+        const float A = 0.15f;
+        const float B = 0.50f;
+        const float C = 0.10f;
+        const float D = 0.20f;
+        const float E = 0.02f;
+        const float F = 0.30f;
+        return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+    }
+
+    float TonemapGamma(float linear_value)
+    {
+        const float exposed = Uncharted2Tonemap(linear_value * 4.5f);
+        const float white   = 1.0f / Uncharted2Tonemap(11.2f);
+        return std::pow(exposed * white, 1.0f / 2.2f);
+    }
+
+    // tonemap 曲线本身的性质。这部分不需要 GPU，所以非 Apple 平台也跑 —— 它钉的
+    // 是"为什么要做这一步"：线性值直接写进 UNORM 会怎样，做了之后会怎样。
+    void CheckTonemapCurve()
+    {
+        Check(TonemapGamma(0.0f) < 0.001f, "tonemap maps black to black");
+
+        // 中间调被提亮 —— 这正是原来那个 bug 的反面：线性 0.25 以前被当成显示值
+        // 直接写进 swapchain，屏幕上就是 64/255；gamma 之后必须明显高于它。
+        Check(TonemapGamma(0.25f) > 0.5f,
+              "gamma lifts mid-tones (linear 0.25 used to reach the screen as 0.25)");
+
+        // 单调：亮的输入不能变暗。
+        Check(TonemapGamma(0.25f) < TonemapGamma(0.5f) && TonemapGamma(0.5f) < TonemapGamma(1.0f),
+              "the tonemap curve is monotonically increasing on [0,1]");
+
+        // 真正的 HDR（>1）必须被压回 [0,1] 而不是硬切成纯白：这是"没有 tonemap"
+        // 和"有 tonemap"在画面上唯一的区别。
+        Check(TonemapGamma(1.0f) < 1.0f && TonemapGamma(2.0f) < 1.0f,
+              "HDR values above 1.0 are rolled off instead of clipped to pure white");
+    }
+
+    // =======================================================================
     // 1. 文本契约：MSL 与 C++ 两侧的手工对齐
     // =======================================================================
     void CheckSourceContracts()
@@ -138,6 +195,17 @@ namespace
 
         // 只写 swapchain 那一个颜色附件。
         Check(Contains(source, "blend_state.attachmentCount = 1"), "the blend state covers exactly one colour attachment");
+
+        // ---- tonemap + gamma 的字面量 ----
+        // 这段 MSL 不进构建期的任何编译器，所以曝光/白点/gamma 这三个数只能像
+        // 这样钉。真正的"曲线对不对"由 CheckTonemapCurve + GPU 对拍负责，这里只
+        // 保证它们跟 tone_mapping.frag 用的是同一组常量。
+        Check(Contains(source, "Uncharted2Tonemap(color * 4.5)"),
+              "the MSL applies the same 4.5 exposure as glsl/tone_mapping.frag");
+        Check(Contains(source, "Uncharted2Tonemap(float3(11.2))"),
+              "the MSL uses the same 11.2 white point as glsl/tone_mapping.frag");
+        Check(Contains(source, "pow(color, float3(1.0 / 2.2))"),
+              "the MSL gamma-encodes with 1/2.2 (the swapchain is BGRA8Unorm, not sRGB)");
     }
 
 #if defined(__APPLE__)
@@ -512,6 +580,9 @@ int main()
     // =======================================================================
     CheckSourceContracts();
 
+    // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
+    CheckTonemapCurve();
+
 #if defined(__APPLE__)
     // =======================================================================
     // 2. 空值守卫。没有这些，Resize 之前 / RenderPipeline 还没建好时 Record
@@ -636,19 +707,43 @@ int main()
         Check(untouched == 0, "every pixel of the swapchain stand-in was written (the triangle covers the viewport)");
 
         // 上下没颠倒：顶行必须还是暗端。翻过来这里就会读到亮端。
+        //
+        // 注意这里**不能**再断言"screen_top ≈ scene_top"了 —— blit 现在是有意
+        // 非线性的（tonemap + gamma），出来一定比源亮。
         const float screen_top    = RowValue(screen_pixels, kSize, 0);
         const float screen_middle = RowValue(screen_pixels, kSize, kSize / 2);
         const float screen_bottom = RowValue(screen_pixels, kSize, kSize - 1);
-        Check(screen_top > 32.0f && screen_top < 100.0f,
-              "the blit is not upside down: the top of the screen shows the top of the scene");
-        Check(screen_bottom > 150.0f && screen_bottom < 224.0f,
-              "the bottom of the screen shows the bottom of the scene");
         Check(screen_top < screen_middle && screen_middle < screen_bottom,
-              "the gradient runs top-to-bottom (v really is flipped, not mirrored)");
+              "the gradient still runs top-to-bottom after tonemapping (v really is flipped, not mirrored)");
+        Check(screen_bottom <= 255.0f && screen_top >= 0.0f,
+              "the tonemapped result stays inside the UNORM range");
 
-        // 采样值要跟源一致：这条钉的是"真采样了这张图"，而不是碰巧画了点别的。
-        Check(std::fabs(screen_top - scene_top) < 16.0f && std::fabs(screen_bottom - scene_bottom) < 16.0f,
-              "the blit reproduces the source values (it sampled the scene texture, not something else)");
+        // ---- tonemap + gamma 用的就是 C++ 镜像那条曲线 ----
+        //
+        // 期望值从**读回来的源值**反推，而不是从 0.25/0.75 这两个字面量反推：
+        // 场景替身是 UNORM8（真身 RGBA16Float 在这里没法读回来做逐字节比对），
+        // 源值先被量化过一道，GPU 采到的就是量化后的值。
+        const float scene_middle     = RowValue(scene_pixels, kSize, kSize / 2);
+        const float expected_top     = TonemapGamma(scene_top / 255.0f) * 255.0f;
+        const float expected_middle  = TonemapGamma(scene_middle / 255.0f) * 255.0f;
+        const float expected_bottom  = TonemapGamma(scene_bottom / 255.0f) * 255.0f;
+        std::printf("       scene   top=%6.1f mid=%6.1f bottom=%6.1f (linear/255)\n",
+                    scene_top, scene_middle, scene_bottom);
+        std::printf("       screen  top=%6.1f mid=%6.1f bottom=%6.1f (actual)\n",
+                    screen_top, screen_middle, screen_bottom);
+        std::printf("       expect  top=%6.1f mid=%6.1f bottom=%6.1f (C++ mirror)\n",
+                    expected_top, expected_middle, expected_bottom);
+        Check(std::fabs(screen_top - expected_top) < 4.0f,
+              "the blit's top row matches the C++ mirror of glsl/tone_mapping.frag");
+        Check(std::fabs(screen_middle - expected_middle) < 4.0f,
+              "the blit's middle row matches the C++ mirror of glsl/tone_mapping.frag");
+        Check(std::fabs(screen_bottom - expected_bottom) < 4.0f,
+              "the blit's bottom row matches the C++ mirror of glsl/tone_mapping.frag");
+
+        // gamma 一定把中间调提亮：这是"线性值被直接写进 UNORM"那个 bug 最直观的
+        // 反证 —— 源的暗端 ≈0.25，出来必须明显高于它，否则 tonemap 那段被删了。
+        Check(screen_top > scene_top + 40.0f,
+              "gamma lifts the dark end (a raw copy would have written linear values straight to the UNORM swapchain)");
 
         DestroyOffscreen(rhi, scene);
         DestroyOffscreen(rhi, screen);

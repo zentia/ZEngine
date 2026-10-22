@@ -61,11 +61,40 @@ struct BlitVertexOut
     float2 uv;
 };
 
+// Uncharted2 tonemap —— 和 engine/shader/glsl/tone_mapping.frag **逐系数一致**
+// （同样的 A..F、同样的 4.5 曝光、同样的 1/2.2 gamma）。
+//
+// 为什么必须写在这里：源图是 RP1 的 backup_odd（R16G16B16A16_SFLOAT，**线性
+// HDR**），目标是 swapchain（BGRA8Unorm，非 sRGB）。RP2 那套后处理
+// （tone_mapping / color_grading / combine_ui）在 Apple 上全部被
+// ZENGINE_APPLE_EXCLUDED_PASSES 排除，所以这一步只能由这次全屏采样代劳。
+// 不做的后果：>1 的地方硬切成纯白，其余整体偏暗 —— 线性值被当显示值直接写进
+// UNORM 就是这个结果，而且不报任何错。
+//
+// 等 RP2 哪天在 Apple 上启用，这个 blit 就该退化成直通（或整个删掉）：那时候
+// 进来的是已经 tonemap 过的 LDR，再 tonemap 一次画面就发灰。
+static float3 Uncharted2Tonemap(float3 x)
+{
+    const float A = 0.15;
+    const float B = 0.50;
+    const float C = 0.10;
+    const float D = 0.20;
+    const float E = 0.02;
+    const float F = 0.30;
+    return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
+}
+
 fragment float4 BlitFragmentMain(BlitVertexOut     in            [[stage_in]],
                      texture2d<float>           scene_texture [[texture(0)]],
                      sampler                    scene_sampler [[sampler(0)]])
 {
-    return scene_texture.sample(scene_sampler, in.uv);
+    float3 color = scene_texture.sample(scene_sampler, in.uv).rgb;
+
+    color = Uncharted2Tonemap(color * 4.5);
+    color = color * (1.0 / Uncharted2Tonemap(float3(11.2)));
+    color = pow(color, float3(1.0 / 2.2));
+
+    return float4(color, 1.0);
 }
 )MSL";
 }  // namespace
