@@ -521,15 +521,22 @@ namespace ZEngine.SpineGpu.Test
         // 字符串表第 4 组（槽位 setup 附件名）第 index 条的期望字节偏移。
         // **手算**一遍而不是直接信 offset —— 这样"偏移指到槽位名那组"才会被测出来
         // （指错组不报错，只是 attachment 时间轴复位到一个错名字的附件上）。
-        // 夹具全是 ASCII ⇒ C# 的 char 数与 UTF-8 字节数相同；非 ASCII 名要按字节算。
+        // ⚠️ 按 **UTF-8 字节**算不是按 char 数：容器里存的是 UTF-8，
+        //    非 ASCII 的附件名用 `s.Length` 会算少 ⇒ 将来夹具改了会假失败。
         private static uint ExpectedSetupAttachmentOffset(SpineGpuAsset a, int index)
         {
             uint off = 0;
-            foreach (string s in a.BoneNames) off += (uint)(s.Length + 1);
-            foreach (string s in a.SkinNames) off += (uint)(s.Length + 1);
-            foreach (string s in a.SlotNames) off += (uint)(s.Length + 1);
-            for (int i = 0; i < index; ++i) off += (uint)(a.SlotSetupAttachmentNames[i].Length + 1);
+            foreach (string s in a.BoneNames) off += Bytes(s);
+            foreach (string s in a.SkinNames) off += Bytes(s);
+            foreach (string s in a.SlotNames) off += Bytes(s);
+            for (int i = 0; i < index; ++i) off += Bytes(a.SlotSetupAttachmentNames[i]);
             return off;
+        }
+
+        // 一个 '\0' 结尾的字符串在容器里占多少字节
+        private static uint Bytes(string s)
+        {
+            return (uint)(System.Text.Encoding.UTF8.GetByteCount(s) + 1);
         }
 
         private static bool Near(float got, float want)
