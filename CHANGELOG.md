@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added / Fixed - 2026-10-22 (Nanite: the raster can draw into a caller-owned pass)
+
+The offscreen target proved Nanite *can* draw, but a frame loop cannot use it:
+`UpdateNanite` runs before any render pass is opened, so the only thing Nanite
+could do there was open a pass of its own on a one-shot command buffer, submit
+and wait — a full stall every frame, into a target nobody reads. Drawing has to
+happen while somebody else's pass is open.
+
+* **`NaniteRenderer::DrawClustersIndirectInPass(command_buffer)`** — the
+  injection entry point. It appends the one `CmdDrawIndexedIndirect` into the
+  render pass handed to `SetRasterRenderPass` and touches nothing else: no
+  `CmdBeginRenderPassPFN`, no `CmdEndRenderPassPFN`, no `CmdSetViewport` /
+  `CmdSetScissor`. Those belong to whoever opened the pass, and grabbing them
+  would silently change every draw queued after Nanite's in the same pass.
+* **The command buffer is an explicit argument on purpose.** Nanite cannot tell
+  whether the caller is really inside the pass: `GetCurrentCommandBuffer()` is
+  null on the headless, editor-offscreen and pre-`PrepareBeforePass` paths, so
+  using it as the predicate would read "not in a pass" as "in a pass". Passing a
+  buffer *is* the caller's declaration that the pass is open; `nullptr` draws
+  nothing.
+* **`DrawClustersIndirect()` is now the offscreen path only**, and returns
+  immediately when a pass has been injected — otherwise every frame would draw a
+  second copy into the unread offscreen target on top of the injected one.
+* `RecordClusterDraw` holds the bind-pipeline / bind-descriptor-set /
+  bind-index-buffer / draw sequence, shared by both paths so they cannot drift.
+
+### Added - 2026-10-22 (NaniteGPUCullingSmokeTest: 69 checks, injection semantics pinned)
+
+The test now builds its own 32×32 target (colour + depth + render pass +
+framebuffer), clears it to black, sets a **16×16 viewport** in the corner, and
+lets Nanite draw into it. Three assertions, each of which rules out a different
+"looks right" implementation:
+
+* covered > 0 — rules out the injection being ignored (or falling back to the
+  offscreen target, which the caller never reads);
+* every covered pixel inside the 16×16 viewport — rules out Nanite opening the
+  pass itself, which would install a full-size viewport and fill the target;
+* a control run with the injection refused (pass without a framebuffer) leaves
+  the caller's target black.
+
+Plus: while a pass is injected, `DrawClustersIndirect()` must leave the
+offscreen target untouched.
+
+Mutation-tested six ways: injected draw grabs the viewport (1 failure),
+offscreen path ignores the injection (1), render pass without a framebuffer
+accepted (2), `drawCount = 0` (2). **Not caught, and written down here rather
+than assumed covered:** (a) dropping the `external_render_pass == nullptr` guard
+in `DrawClustersIndirectInPass` — `EnsureRasterPipeline` refuses first, so the
+guard is defensive only; (b) `DrawClustersIndirectInPass` calling
+`CmdEndRenderPassPFN` and so closing the caller's pass — Metal treats a repeated
+`endEncoding` as a no-op, so the test stays green, but Vulkan and DX12 treat an
+unbalanced end as an error.
+
 ### Added / Fixed - 2026-10-21 (Nanite: the raster half, so the culled clusters are actually drawn)
 
 The GPU cull produced indirect draw commands that **nothing ever consumed**.
@@ -17,11 +70,11 @@ no-op branch: the cull ran on the GPU and then no triangle was ever drawn.
 * **`NaniteRenderer`** — an offscreen raster target (colour + depth image, view,
   render pass, framebuffer) that Nanite owns when nobody hands it a pass, created
   lazily at the size `SetRasterTargetSize` asks for (or the swapchain extent, or
-  512² when there is no swapchain). `DrawClustersIndirect` now resolves the
-  target — an injected `(render pass, framebuffer)` pair wins, the offscreen one
-  is the fallback — opens and closes the pass itself when it owns the framebuffer,
-  falls back to `BeginSingleTimeCommands` when there is no frame command buffer,
-  and issues the one `CmdDrawIndexedIndirect`.
+  512² when there is no swapchain). `DrawClustersIndirect` opens and closes that
+  pass itself, falls back to `BeginSingleTimeCommands` when there is no frame
+  command buffer, and issues the one `CmdDrawIndexedIndirect`.
+  (2026-10-22: the injected-pass case moved out into
+  `DrawClustersIndirectInPass` — see the entry above.)
 * **The injection point is deliberately two-argument**: `SetRasterRenderPass(pass,
   framebuffer)` with both non-null means "the caller is already inside this pass"
   (how the DX12 main camera GBuffer will plug in); either one null drops back to
