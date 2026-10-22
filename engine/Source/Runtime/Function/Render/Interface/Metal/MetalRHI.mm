@@ -402,6 +402,16 @@ namespace
                format == RHI_FORMAT_D24_UNORM_S8_UINT || format == RHI_FORMAT_D32_SFLOAT_S8_UINT;
     }
 
+    // 只有带 stencil 分量的深度格式才是 "stencil renderable"。D32_SFLOAT / D16_UNORM
+    // 没有 stencil —— 把它们的格式也塞进 stencilAttachmentPixelFormat，Metal 会直接
+    // 断言 "MTLPixelFormatDepth32Float is not stencil renderable"（建管线时就炸，
+    // 不是等到绘制）。以前只对 swapchain 那套带 stencil 的格式跑过，所以没暴露。
+    bool HasStencilComponent(RHIFormat format)
+    {
+        return format == RHI_FORMAT_D24_UNORM_S8_UINT || format == RHI_FORMAT_D32_SFLOAT_S8_UINT ||
+               format == RHI_FORMAT_S8_UINT;
+    }
+
     MTLTextureUsage ToMetalUsage(RHIImageUsageFlags usage)
     {
         MTLTextureUsage result = MTLTextureUsageShaderRead;
@@ -1314,8 +1324,9 @@ bool MetalRHI::CreateGraphicsPipelines(RHIPipelineCache*,
             const MTLPixelFormat format = ToMetalFormat(attachment.format);
             if (attachment.isDepthStencil || IsDepthFormat(attachment.format))
             {
-                descriptor.depthAttachmentPixelFormat   = format;
-                descriptor.stencilAttachmentPixelFormat = format;
+                descriptor.depthAttachmentPixelFormat = format;
+                descriptor.stencilAttachmentPixelFormat =
+                    HasStencilComponent(attachment.format) ? format : MTLPixelFormatInvalid;
             }
             else if (color_index < 8)
             {
@@ -1429,7 +1440,17 @@ bool MetalRHI::CreateGraphicsPipelines(RHIPipelineCache*,
             case RHI_CULL_MODE_FRONT_BIT: pipeline->cullMode = MTLCullModeFront; break;
             default:                      pipeline->cullMode = MTLCullModeNone; break;
         }
-        pipeline->winding = pCreateInfos[0].pRasterizationState->frontFace == RHI_FRONT_FACE_CLOCKWISE
+        // **绕序要反过来映射。** Metal 的 winding 是在**帧缓冲空间**里判定的，而
+        // Metal 帧缓冲的 y 轴朝下（原点在左上角），NDC 的 y 轴朝上 —— 从 NDC 到
+        // 帧缓冲这一次变换把绕序翻了个面。DX12 的 `FrontCounterClockwise` 和 Vulkan
+        // 的 VK_FRONT_FACE_COUNTER_CLOCKWISE 都是按"NDC 里逆时针 = 正面"来的，所以
+        // 想让同一个 frontFace 在三个后端上表现一致，Metal 这一侧必须取反。
+        //
+        // 这不是纸上推导出来的：Nanite 的光栅冒烟测试用一张法线朝 +Y、从上方俯视时
+        // 在 NDC 里逆时针的平面验证过 —— 按 CCW 映射它被整片剔掉（0 像素），按 CW
+        // 映射才画出来（253 像素）。此前引擎在 Metal 上只画 UI（cullMode 全是
+        // NONE），所以这条路径从来没有被走到过。
+        pipeline->winding = pCreateInfos[0].pRasterizationState->frontFace == RHI_FRONT_FACE_COUNTER_CLOCKWISE
                                 ? MTLWindingClockwise
                                 : MTLWindingCounterClockwise;
     }

@@ -61,9 +61,31 @@ struct NaniteGPUResources
     uint32_t position_capacity {0};
     uint32_t index_capacity {0};
 
-    // 光栅阶段可选：NaniteRenderPass 拿到 render pass 之后才建光栅管线。
-    // 没有它的时候只跑 GPU 剔除（仍然产出完整的间接绘制命令）。
+    // 光栅阶段：管线照着 raster_render_pass 的附件格式建。
+    //   * raster_framebuffer 非空 ⇒ 这个 pass 由 Nanite 自己开/关（离屏 target）；
+    //   * 为空 ⇒ 调用方已经在这个 pass 里，Nanite 只追加一次间接绘制。
     RHIRenderPass* raster_render_pass {nullptr};
+    RHIFramebuffer* raster_framebuffer {nullptr};
+
+    // 外部注入的目标（主相机 GBuffer 之类）。render_pass 与 framebuffer **都**非空
+    // 才生效，语义是"调用方已经在 pass 里"；任一为空就退回下面的离屏 target。
+    RHIRenderPass* external_render_pass {nullptr};
+    RHIFramebuffer* external_framebuffer {nullptr};
+
+    // Nanite 自己的离屏目标：没有外部注入时用它，Nanite 自己开/关 pass。
+    // headless、编辑器离屏更新、以及还没有场景 pass 的平台（macOS 的 Metal 就是）
+    // 全都走这一条 —— 它是唯一能在本机被冒烟测试证明的通路。
+    RHIImage* target_color {nullptr};
+    RHIDeviceMemory* target_color_memory {nullptr};
+    RHIImageView* target_color_view {nullptr};
+    RHIImage* target_depth {nullptr};
+    RHIDeviceMemory* target_depth_memory {nullptr};
+    RHIImageView* target_depth_view {nullptr};
+    RHIRenderPass* target_render_pass {nullptr};
+    RHIFramebuffer* target_framebuffer {nullptr};
+    uint32_t target_width {0};
+    uint32_t target_height {0};
+
     RHIPipeline* cull_pipeline {nullptr};
     RHIPipeline* raster_pipeline {nullptr};
     RHIPipelineLayout* pipeline_layout {nullptr};
@@ -155,12 +177,24 @@ public:
 
     // 绑好索引缓冲与描述符集后发 CmdDrawIndexedIndirect。drawCount 是集群总数
     // （上界），被剔除的集群贡献的是 indexCount == 0 的空命令。
-    // 没有光栅管线时（还没拿到 render pass）什么都不做 —— 不是错误，只是这一帧
-    // 只跑剔除。
+    //
+    // 光栅目标按这个顺序解析：
+    //   1. SetRasterRenderPass(pass, framebuffer) 注入过 ⇒ 往那个 pass 里追加一次
+    //      绘制（调用方已经开了 pass，Nanite 不碰 begin/end）；
+    //   2. 否则用 Nanite 自己的离屏 target，并且由 Nanite 自己开/关这个 pass。
+    //
+    // 没有帧命令缓冲时（headless、编辑器离屏更新）退回 BeginSingleTimeCommands：
+    // 自己开、自己提交并等它跑完 —— 冒烟测试把离屏 target 读回来靠的正是这一点。
     void DrawClustersIndirect();
 
-    // NaniteRenderPass 拿到主 render pass 之后调这个，光栅管线才能建起来。
-    void SetRasterRenderPass(RHIRenderPass* render_pass);
+    // 注入外部光栅目标。render_pass 与 framebuffer **都**非空才生效，语义是
+    // "调用方已经在这个 pass 里"（DX12 主相机 GBuffer 就是这么接的）；任一为空
+    // 则清掉外部目标，退回 Nanite 自己的离屏 target。
+    void SetRasterRenderPass(RHIRenderPass* render_pass, RHIFramebuffer* framebuffer = nullptr);
+
+    // 离屏 target 的尺寸。改了就在下一次 DrawClustersIndirect 里重建。
+    // 默认值取自 swapchain extent，取不到（headless）时是 512×512。
+    void SetRasterTargetSize(uint32_t width, uint32_t height);
 
     const NaniteGPUResources& GetGPUResources() const { return m_GPU; }
     const NaniteSceneGPUData& GetSceneGPUData() const { return m_SceneGPUData; }
@@ -206,6 +240,10 @@ private:
     // GPU 资源（真实的 RHI 句柄，不再是 void* 占位）
     NaniteGPUResources m_GPU;
     NaniteSceneGPUData m_SceneGPUData;
+
+    // SetRasterTargetSize 设过的离屏 target 尺寸（0 = 没设，走 swapchain extent）
+    uint32_t m_RasterTargetWidth {0};
+    uint32_t m_RasterTargetHeight {0};
 
     // 场景里"有哪些实例、各自用哪个网格"的指纹。变换矩阵**不**进哈希 ——
     // 它每帧都可能变，而变了不需要重建集群。
@@ -256,6 +294,16 @@ private:
 
     // 建光栅管线。需要 raster_render_pass。
     bool EnsureRasterPipeline();
+
+    // 保证离屏光栅目标（color + depth + render pass + framebuffer）存在且尺寸匹配。
+    // 只有"没有外部注入目标"时才会被调用。
+    bool EnsureRasterTarget();
+
+    void DestroyRasterTarget();
+
+    // 离屏 target 的尺寸：显式设过就用它，否则取 swapchain extent，再不行 512×512。
+    uint32_t ResolveRasterTargetWidth() const;
+    uint32_t ResolveRasterTargetHeight() const;
 
     void DestroyGPUResources();
 };
