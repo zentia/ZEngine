@@ -104,7 +104,13 @@ namespace SpineGpuConstants
     //     `kDeformTargetPathBit`）。布局一个字节都没变，但**语义**变了：v11 读端会把
     //     0x8000+k 当成附件记录下标（越界 / 读到别人），v11 容器被新读端读则"path 的
     //     deform 恒不存在"—— 两个方向都不报错，所以照规矩升版本。
-    constexpr uint32_t kFormatVersion = 12;
+    // * v13 = 绘制项的 `uv_offset` 改成 `uv_unit - vertex_base`（uint32 回绕），让规格 §3.2 的
+    //     `uv_buffer[uv_offset + index]` 在索引是**段内绝对**下标时成立。布局不变、语义变：
+    //     v12 的值只在 vertex_base == 0 时对（OSGame 112 562 / 119 737 个绘制项不是），
+    //     错 UV = 贴图采错块，不报错。读端逐索引校验 `uv_offset + index < uv_count`。
+    //     同一版本里绘制项的另外两个字段也**第一次写实**：`blend_mode`（取自槽位，以前恒
+    //     kNormal ⇒ 加色特效画成普通混合）与 `atlas_page`（取自 region，以前恒 0）。
+    constexpr uint32_t kFormatVersion = 13;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -1190,6 +1196,8 @@ struct SpineDrawItem
     uint32_t index_count;
     // ⚠️ **UV 条目的下标，不是字节偏移**（chunk 4 里一条 8 B）。
     // 顶点可以被多个绘制项共用（几何相同），但 UV 各取各的 ⇒ 必须有这一项。
+    // ⚠️ v13 起是"偏置"：第 q 个索引的 UV 是 `uv_buffer[uv_offset + index_buffer[q]]`
+    //    （uint32 回绕加法），因为索引是段内**绝对**下标、UV 按附件本地下标排。
     uint32_t uv_offset;                // @8
     SpineVertexFormat vertex_format;   // @12
     SpineBlendMode blend_mode;         // @13

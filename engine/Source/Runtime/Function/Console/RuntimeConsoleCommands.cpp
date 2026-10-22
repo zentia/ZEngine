@@ -9,12 +9,14 @@
 #endif
 #include "Runtime/Function/Render/Nanite/NaniteSettings.h"
 #include "Runtime/Function/Render/Pipeline/RenderPipelineSettings.h"
+#include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UMG/Asset/UMGAssetIO.h"
 #include "Runtime/UMG/Core/UMGViewport.h"
 #include "Runtime/UMG/Core/UUserWidget.h"
 #include "Runtime/UMG/Demo/UMGDemoWidget.h"
 
+#include <cstdlib>
 #include <memory>
 
 namespace
@@ -65,6 +67,33 @@ namespace
             message += args[i];
         }
         LOG_INFO(ZConsole, "{}", message);
+        return true;
+    }
+
+    // GPU-Spine 渲染入口（SpineGpuRenderer）：加载发生在渲染线程下一帧，结果看 spine.status
+    bool CmdSpineLoad(const std::vector<std::string>& args)
+    {
+        if (args.empty())
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.load <skeleton .skel.bytes|.skel|.json> [anim index]");
+            return false;
+        }
+        const int anim = args.size() >= 2 ? std::atoi(args[1].c_str()) : 0;
+        SpineGpuRenderer::Get().RequestLoad(args[0], anim);
+        LOG_INFO(ZConsole, "spine.load: requested '{}' anim #{}", args[0], anim);
+        return true;
+    }
+
+    bool CmdSpineClear(const std::vector<std::string>&)
+    {
+        SpineGpuRenderer::Get().RequestClear();
+        LOG_INFO(ZConsole, "spine.clear: requested");
+        return true;
+    }
+
+    bool CmdSpineStatus(const std::vector<std::string>&)
+    {
+        LOG_INFO(ZConsole, "spine.status: {}", SpineGpuRenderer::Get().Status());
         return true;
     }
 
@@ -141,6 +170,11 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("quit", "Exit the application", CmdQuit);
     console.RegisterCommand("exit", "Alias for quit", CmdQuit);
     console.RegisterCommand("echo", "Print text to the console log", CmdEcho);
+    console.RegisterCommand("spine.load",
+                            "Draw a Spine skeleton with GPU skinning. Usage: spine.load <skeleton file> [anim index]",
+                            CmdSpineLoad);
+    console.RegisterCommand("spine.clear", "Remove the GPU-Spine skeleton", CmdSpineClear);
+    console.RegisterCommand("spine.status", "Print GPU-Spine renderer status", CmdSpineStatus);
     console.RegisterCommand("umg.demo", "Toggle the UMG demo UserWidget. Usage: umg.demo [show|hide|toggle]", CmdUmgDemo);
     console.RegisterCommand("umg.save", "Serialize the UMG demo tree to a .zasset. Usage: umg.save [url]", CmdUmgSave);
     console.RegisterCommand("umg.load", "Load + show a UMG widget .zasset. Usage: umg.load [url]", CmdUmgLoad);

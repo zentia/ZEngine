@@ -792,6 +792,7 @@ bool ResolveLinkedMeshes(const SpineAtlas* atlas, const std::vector<std::string>
             return false;
         }
         ComputeMeshUvs(*reg, parent.region_uvs, att.uvs);
+        att.atlas_page = reg->page;   // 自己的 region、自己的页（不继承父附件的）
         attachments.push_back(std::move(att));
     }
     return true;
@@ -1893,6 +1894,31 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
                 out.uses_tint_black = true;
             }
             slot.attachment_name = GetString(s, "attachment", "");
+            // SkeletonJson.cpp:241-250：认不出的字符串参考实现静默当 normal；这里报错。
+            {
+                const std::string blend = GetString(s, "blend", "normal");
+                if (blend == "normal")
+                {
+                    slot.blend_mode = SpineBlendMode::kNormal;
+                }
+                else if (blend == "additive")
+                {
+                    slot.blend_mode = SpineBlendMode::kAdditive;
+                }
+                else if (blend == "multiply")
+                {
+                    slot.blend_mode = SpineBlendMode::kMultiply;
+                }
+                else if (blend == "screen")
+                {
+                    slot.blend_mode = SpineBlendMode::kScreen;
+                }
+                else
+                {
+                    return Fail("json: slot '" + slot.name + "' 的混合模式 '" + blend +
+                                "' 不认识（normal / additive / multiply / screen）");
+                }
+            }
             out.slots.push_back(slot);
         }
     }
@@ -2106,6 +2132,10 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
 
         const std::string region_name = att.path.empty() ? att.name : att.path;
         const SpineAtlasRegion* reg = atlas ? FindAtlasRegion(*atlas, region_name) : nullptr;
+        if (reg != nullptr)
+        {
+            att.atlas_page = reg->page;
+        }
 
         if (type == "region")
         {
@@ -3211,6 +3241,14 @@ private:
             {
                 return false;
             }
+            // SkeletonBinary.cpp:191 直接 static_cast<BlendMode> —— 越界在参考实现里是个
+            // 不存在的枚举值、走哪个分支看运气。这里显式报错。
+            if (blend_mode < 0 || blend_mode > static_cast<int32_t>(SpineBlendMode::kScreen))
+            {
+                return Fail("槽位 '" + slot.name + "' 的混合模式 " + std::to_string(blend_mode) +
+                            " 不在 0..3（normal / additive / multiply / screen）");
+            }
+            slot.blend_mode = static_cast<SpineBlendMode>(blend_mode);
             out_.slots.push_back(std::move(slot));
         }
         return true;
@@ -3596,6 +3634,7 @@ private:
                 {
                     return false;
                 }
+                att.atlas_page = reg->page;
 
                 float xy[8] = {0, 0, 0, 0, 0, 0, 0, 0};
                 ComputeRegionVertices(x, y, w, h, sx, sy, rotation, static_cast<float>(reg->width),
@@ -3680,6 +3719,7 @@ private:
                 {
                     return false;
                 }
+                att.atlas_page = reg->page;
                 std::vector<float> final_uvs;
                 ComputeMeshUvs(*reg, region_uvs, final_uvs);
                 att.uvs = std::move(final_uvs);
@@ -5858,10 +5898,30 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         SpineDrawItem item {};
         item.index_offset = index_offset;
         item.index_count = static_cast<uint32_t>(a.triangles.size());
-        item.uv_offset = uv_offset;
+        // v13：规格 §3.2 的公式是 `uv_buffer[uv_offset + vertexIndex]`，`vertexIndex` **直接取自
+        // 索引缓冲** —— 而索引是**段内绝对**下标（= 附件本地下标 + vertex_base）。UV 却按附件
+        // 本地下标排（uv_pool 里第 uv_unit 条起）。所以必须落 `uv_unit - vertex_base`，
+        // 按 **uint32 回绕**算：`uv_offset + index` 在 C++ / C# / GLSL 的 uint 加法下都正好
+        // 回到 `uv_unit + 本地下标`。v12 及以前落的是 `uv_unit`，只有 vertex_base == 0 时对；
+        // OSGame 实测 119 737 个绘制项里 112 562 个 vertex_base != 0（39 548 个还会读出 UV 表），
+        // 而错 UV 只是"贴图采错块"，不报错。
+        item.uv_offset = uv_offset - vertex_base;
         item.vertex_format = weighted ? SpineVertexFormat::kWeighted : SpineVertexFormat::kRigid;
-        item.blend_mode = SpineBlendMode::kNormal;
-        item.atlas_page = 0;
+        if (a.slot_index < 0 || static_cast<size_t>(a.slot_index) >= src.slots.size())
+        {
+            return Fail("bake: 附件 '" + a.name + "' 的槽位下标越界");
+        }
+        item.blend_mode = src.slots[static_cast<size_t>(a.slot_index)].blend_mode;
+        if (a.atlas_page >= src.atlas_pages.size() && !src.atlas_pages.empty())
+        {
+            return Fail("bake: 附件 '" + a.name + "' 在图集第 " + std::to_string(a.atlas_page) + " 页，但图集只有 " +
+                        std::to_string(src.atlas_pages.size()) + " 页");
+        }
+        if (a.atlas_page > 0xFFFFu)
+        {
+            return Fail("bake: 附件 '" + a.name + "' 的图集页号超出 uint16");
+        }
+        item.atlas_page = static_cast<uint16_t>(a.atlas_page);
         item.slot_index = static_cast<uint16_t>(a.slot_index);
         item.attachment_id = static_cast<uint16_t>(ai);
         item.skin_id = static_cast<uint16_t>(a.skin_index);
@@ -8004,6 +8064,29 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         {
             std::memcpy(&out.draw_items[i], data + f->offset + static_cast<size_t>(i) * sizeof(SpineDrawItem),
                         sizeof(SpineDrawItem));
+        }
+        // v13：每个绘制项的每个索引都必须能按 `uv_offset + index`（uint32 回绕）取到 UV。
+        // 这正是 shader 里的寻址式子（规格 §3.2）—— 坏了的话 GPU 上是"贴图采错块 / 越界读"，
+        // 不报错，所以在读端挡住。
+        const uint64_t uv_count = out.uv_buffer.size() / 2u;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            const SpineDrawItem& di = out.draw_items[i];
+            if (static_cast<uint64_t>(di.index_offset) + di.index_count > out.index_buffer.size())
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 个绘制项的索引区间越过索引缓冲");
+            }
+            for (uint32_t q = 0; q < di.index_count; ++q)
+            {
+                const uint32_t uv_index =
+                    di.uv_offset + static_cast<uint32_t>(out.index_buffer[static_cast<size_t>(di.index_offset) + q]);
+                if (uv_index >= uv_count)
+                {
+                    return Fail("container: 第 " + std::to_string(i) + " 个绘制项的 uv_offset + 索引 = " +
+                                std::to_string(uv_index) + "，越过 UV 表（" + std::to_string(uv_count) +
+                                " 条）—— v12 及以前的 uv_offset 没减 vertex_base");
+                }
+            }
         }
     }
 

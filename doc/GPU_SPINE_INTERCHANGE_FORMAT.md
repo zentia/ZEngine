@@ -201,6 +201,14 @@ UV 存在单独的 `uv_buffer`（chunk 4）：`float2` × `uv_count`，8 B/条�
 绘制项带 `uv_offset`（单位是**UV 条目**，不是字节）；第 k 个顶点的 UV 在
 `uv_buffer[uv_offset + vertexIndex]`，`vertexIndex` 由索引缓冲给出。
 
+> ⚠️ **v13 起 `uv_offset` = `uv_unit - vertex_base`，按 uint32 回绕**。索引缓冲里存的是
+> **段内绝对**下标（= 附件本地下标 + 该附件顶点在段里的起点 `vertex_base`），而 UV 是按
+> **附件本地**下标排的（从 `uv_unit` 起）。所以只有把 `vertex_base` 预先减掉，上面这条公式
+> 才成立：`uv_offset + index` 在 C++ / C# / GLSL 的 uint 加法下正好回到 `uv_unit + 本地下标`。
+> v12 及以前落的是 `uv_unit` —— 只在 `vertex_base == 0` 时对。OSGame 实测 119 737 个绘制项里
+> **112 562 个** `vertex_base != 0`，其中 **39 548 个**会读出 UV 表，其余"只是采错一块贴图"，
+> 都不报错（直到第一次真的画到屏幕上才暴露）。读端现在逐项校验 `uv_offset + index < uv_count`。
+
 **为什么要拆开**：让**几何相同的附件共用同一段顶点**。两类最常见的重复：
 
 - **linked mesh**（附属网格）：继承父附件的顶点 / 骨骼 / 三角形 / regionUV，
@@ -525,10 +533,10 @@ kind 越界 / order 非排列 **均为 0**。
 DrawItem                     28 B（v6 起；v5 是 24 B）
   index_offset  u32   @0
   index_count   u32   @4
-  uv_offset     u32   @8   （单位：**UV 条目**，不是字节；见 §3.2）
+  uv_offset     u32   @8   （单位：**UV 条目**，不是字节；v13 起已减去 vertex_base，见 §3.2）
   vertex_format u8    @12  (kVtxRigid / kVtxWeighted4)
-  blend_mode    u8    @13  (见 §8)
-  atlas_page    u16   @14
+  blend_mode    u8    @13  (见 §8；v13 起 = 槽位的真实混合模式，v12 及以前恒为 normal)
+  atlas_page    u16   @14  (v13 起 = 附件 region 所在的图集页，v12 及以前恒为 0)
   slot_index    u16   @16
   attachment_id u16   @18
   skin_id       u16   @20
@@ -872,6 +880,13 @@ Header (64 B)
                                     （VertexAttachment.cpp:69-70）。读端校验下标落在
                                     chunk 20 内、每帧 start+count ≤ deform 长度
                                     （rigid = 顶点 float 数；weighted = float 数 / 3 × 2）
+                               v13 = 渲染侧前置修正，**字节布局一个都没变**：
+                                    ① `DrawItem::uv_offset` 改落 `uv_unit - vertex_base`
+                                    （§3.2，v12 的公式只在 vertex_base == 0 时对）；
+                                    ② `blend_mode` 落槽位的真实值（v12 恒 normal；实测
+                                    additive 30 244 / multiply 78 / screen 50 项）；
+                                    ③ `atlas_page` 落 region 的真实页（v12 恒 0）。
+                                    读端新增逐项 `uv_offset + index < uv_count` 校验
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -1002,13 +1017,14 @@ Chunks:
 ## 11. 版本与兼容
 
 - `version` 变化 ⇒ 导入器必须拒绝旧容器并给出明确错误，不做静默兼容。
-- **v7 → v12 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
+- **v7 → v13 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
   **v8 追加骨骼树（chunk 10，§3.4）**；**v9 追加动画（chunk 11-16，§3.5）**；
   **v10 追加槽位 setup（chunk 17，§3.6）**；
   **v11 追加约束 setup / 执行顺序 / PathAttachment（chunk 18 / 19 / 20，§3.7）**；
-  **v12 让 deform 时间轴可以指向 path 附件（`target` 最高位，布局不变、语义变）**。
-  仍在推进的是**约束解算**（S4b：骨骼时间轴 + 三类约束求解 + 按 chunk 19 遍历），
-  解算器自写、仍在 CPU。
+  **v12 让 deform 时间轴可以指向 path 附件（`target` 最高位，布局不变、语义变）**；
+  **v13 修正绘制项的 `uv_offset` / `blend_mode` / `atlas_page`（布局不变、语义变，§3.2 / §4）**。
+  约束解算（S4b）已收尾：781 / 781 逐骨骼对拍通过，解算器自写、仍在 CPU。
+  渲染接入见 **§15**。
   字段设计与转录 gap 分析见 **`doc/GPU_SPINE_V7_ANIMATION.md`**。
   v7 / v8 / v9 / v10 **都不动** header（仍 64 B）、不动 chunk 1..9、不动 §5 每帧实例数据、
   不动 §6 shader 数学；新增的计数一律从 chunk 表推导（`size / stride`），不进 header
@@ -1348,6 +1364,53 @@ v7 的处理（见 `doc/GPU_SPINE_V7_ANIMATION.md`）。**边界不是拍脑袋�
   既有 `kFallback` 语义走 CPU 动态 VB，**只回退被命中的绘制项**。
 * 曲线段实测 257 万段（linear 58% / stepped 5% / bezier 37%）⇒ 编码从
   定长 20 B/段改成**紧凑**（u8 类型 + 每条 bezier 16 B），49 MB → 16.8 MB。
+
+---
+
+## 15. 渲染接入（第一版，Vulkan 编辑器）
+
+代码：`Function/Render/Spine/SpineGpuRenderer.{h,cpp}` + `engine/shader/glsl/spine_gpu.{vert,frag}`
+（构建期编译成 SPIR-V 头文件，不走运行时 glslang）。入口是控制台命令：
+
+```
+spine.load <骨架 .skel.bytes|.skel|.json> [动画下标]   # 图集取同名 .atlas.txt / .atlas
+spine.clear
+spine.status
+# 启动即加载：ZEditor ... --rhi vulkan --cvar "spine.load G:/.../K_X_Spine.skel.bytes 1"
+```
+
+**每帧 CPU 只做两件事**：`SpineGpuSamplePose`（骨骼世界变换 + 槽位状态）与"哪些绘制项可见"
+（按 `draw_order`，取槽位当前附件名在 skin 0 下对应的那一项）。**顶点一个都不在 CPU 上算**：
+
+| set 0 binding | 内容 | 更新频率 |
+|---|---|---|
+| 0 | chunk 3 顶点字节（u32 视图） | 每资产一次 |
+| 1 / 2 | chunk 21 / 22 影响流 | 每资产一次 |
+| 3 | chunk 4 UV | 每资产一次 |
+| 4 | 骨骼表（§5.1，6 float/骨） | 每帧 |
+| 5 | 可见绘制项（32 B：格式 / uv_offset / 槽位骨骼 / 骨骼基址 / 实例 / 色 / flags / weighted 段起点） | 每帧 |
+| 6 | 实例（clip_from_world + 根变换，96 B） | 每帧 |
+
+set 1 = `UIGpuResources` 的贴图布局（图集页）。没有顶点输入流：顶点着色器用
+`gl_VertexIndex`（= 索引缓冲给的段内下标）直接取 SSBO，`gl_InstanceIndex`（= `firstInstance`）
+选中绘制项 —— 一个绘制项一次 `vkCmdDrawIndexed`。混合按 §8 四条管线（输出预乘 alpha；
+OSGame 图集是直 alpha ⇒ 片元里先预乘，additive 写 alpha = 0）。
+
+**画在哪**：`MainCameraPass::DrawRp2` 的 UI subpass、`m_UiPass->Draw()` **之前**（编辑器面板
+盖在它上面，与 UI 层同一合成公式）；视口取 Scene，Scene 页签不在布局里（0×0）时取 Game。
+setup 姿势的包围盒自动居中、占视口 80%。
+
+**验收（数值，不看图）**：`VK_LAYER_LUNARG_screenshot` 抓第 150 / 160 / 250 帧，与不加载时逐像素比：
+`K_Bailishouyue_Spine` 动画 #1（5.33 s）≈ 43–46 万像素变化、包围盒落在预测框内、框外 0 变化；
+同一次运行第 150 / 250 帧之间 ≈ 18 万像素变化（在动）。动画 #0 `idle_01` 时长 **0**（单帧
+静态姿势）—— 对拍台已新增"时长与参考逐个相等"（1932 / 1932），这是参考实现的真值不是 bug。
+
+**第一版明确不做**（不是忘了）：DX12 / Metal；多实例；`kFallback` 项（deform 命中 / 裁剪作用域内）
+**照静态画**（deform 是 S6，裁剪只有 CPU 实现）；tint black；非 default 皮肤。
+可见集解析实测：OSGame 全量第 0 个动画 t=0 时挂着附件的槽位 29 785 个能找到绘制项，
+689 个找不到 —— 这 689 个槽位在 skin 0 下**一个可画项都没有**（"槽位里有别的可画项、
+却没有这个名字"的是 **0** 个），即挂的是裁剪 / point / bounding box / path 这类不画的附件。
+（`SpineGpuRefParityTest --uv-scan` 输出这三个数。）
 
 ---
 

@@ -145,6 +145,10 @@ struct SpineSourceSlot
     //    `time < frames[0]` 或 direction==Out 时把槽位复位到它 —— 没有它，
     //    "动画开始前该挂什么"就无从回答（默认成"什么都不挂"会静默少画东西）。
     std::string attachment_name;
+    // 混合模式（`SlotData::_blendMode`，BlendMode.h:35-38）。烘进该槽位每个绘制项的
+    // `SpineDrawItem::blend_mode`。以前两条解析路径都把它丢了（二进制读了不存、json 不读），
+    // 绘制项一律 kNormal ⇒ 加色特效全画成普通混合，且不报错。
+    SpineBlendMode blend_mode = SpineBlendMode::kNormal;
 };
 
 // **没有绘制项**的附件：boundingbox / path / point / clipping。
@@ -186,6 +190,9 @@ struct SpineSourceAttachment
     Type type = Type::kRegion;
     std::string name;            // 附件名（skin 里的 key）
     std::string path;            // 图集 region 名；空则退回 name
+    // 这个附件的贴图在图集第几页（= `SpineAtlasRegion::page`）。烘进 `SpineDrawItem::atlas_page`，
+    // 渲染侧按它选纹理。以前绘制项一律写 0 —— 多页图集会全部采第 0 页，且不报错。
+    uint32_t atlas_page = 0;
     int slot_index = -1;
     // 所属皮肤在 `SpineSourceSkeleton::skins` 里的下标。**不再合并皮肤**：
     // 同一个 (槽位, 附件名) 在不同皮肤下是两份几何 —— 合并会丢掉换装。

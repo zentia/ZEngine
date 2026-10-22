@@ -13,6 +13,7 @@
 #include "Runtime/Function/Render/RenderScene.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/RenderType.h"
+#include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 #include "Runtime/Utility/Utility.h"
 
 #include <algorithm>
@@ -3497,6 +3498,17 @@ void MainCameraPass::DrawRp2(uint32_t current_swapchain_image_index,
                                   clear_rects);
 
     DrawAxis();
+
+    // GPU-Spine（控制台 `spine.load` 才有东西画；没加载过时是一次加锁 + 判断）。
+    // 画在 UI 之前 ⇒ 编辑器面板盖在它上面；输出预乘 alpha，与 UI 层同一合成公式。
+    // 视口：Scene 窗口开着就画在 Scene 里，否则画在 Game 视口里（布局里不一定有 Scene 页签，
+    // 那时它的视口是 0×0）。
+    {
+        const ViewportType spine_viewport =
+            IsViewportValid(ViewportType::scene) ? ViewportType::scene : ViewportType::game;
+        SpineGpuRenderer::Get().Draw(m_Rhi, m_Framebuffer.render_pass, _main_camera_subpass_ui,
+                                     *m_Rhi->GetViewport(spine_viewport));
+    }
 
     m_UiPass->Draw();
 

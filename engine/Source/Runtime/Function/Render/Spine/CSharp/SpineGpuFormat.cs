@@ -47,7 +47,9 @@ namespace ZEngine.SpineGpu
         // v12 = deform 时间轴可以指向 **path 附件**（Target 最高位，见 DeformTargetPathBit）。
         //       布局没变、**语义**变了：v11 读端会把 0x8000+k 当附件记录下标，
         //       v11 容器被新读端读则"path 的 deform 恒不存在"—— 两个方向都不报错。
-        public const uint FormatVersion = 12;
+        // v13 = 绘制项 UvOffset 改成 uv_unit - vertex_base（uint 回绕），让 uv[UvOffset + index] 成立
+        //       （索引是段内绝对下标）。布局不变、语义变 ⇒ 升版本。
+        public const uint FormatVersion = 13;
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;

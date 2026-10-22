@@ -2900,12 +2900,17 @@ int main(int argc, char** argv)
                 // 但 UV **不同**：各自的 uv_offset 指向不同的 4 条
                 CheckEq(aj.draw_items[2].uv_offset - aj.draw_items[1].uv_offset, 4u,
                         "linked: 两个绘制项的 uv_offset 相差 4 ⇒ UV 各一份");
-                // 且与父附件的 UV 逐值不同（用**自己的**图集 region 算的）
+                // 且与父附件的 UV 逐值不同（用**自己的**图集 region 算的）。
+                // v13：UV 按 `uv_offset + 索引` 取（索引是段内绝对下标）—— 与 shader 同一个式子。
                 bool uv_differs = false;
-                for (uint32_t k = 0; k < 8u; ++k)
+                for (uint32_t k = 0; k < aj.draw_items[1].index_count; ++k)
                 {
-                    if (aj.uv_buffer[aj.draw_items[1].uv_offset * 2u + k] !=
-                        aj.uv_buffer[aj.draw_items[2].uv_offset * 2u + k])
+                    const uint32_t i1 = aj.index_buffer[aj.draw_items[1].index_offset + k];
+                    const uint32_t i2 = aj.index_buffer[aj.draw_items[2].index_offset + k];
+                    const uint32_t u1 = aj.draw_items[1].uv_offset + i1;
+                    const uint32_t u2 = aj.draw_items[2].uv_offset + i2;
+                    if (aj.uv_buffer[u1 * 2u] != aj.uv_buffer[u2 * 2u] ||
+                        aj.uv_buffer[u1 * 2u + 1u] != aj.uv_buffer[u2 * 2u + 1u])
                     {
                         uv_differs = true;
                     }

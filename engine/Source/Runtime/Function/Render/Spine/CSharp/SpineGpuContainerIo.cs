@@ -225,6 +225,25 @@ namespace ZEngine.SpineGpu
                         ClipIndex = ReadU16(data, p + SpineGpuOffsets.ItemClipIndex),
                     });
                 }
+                // v13：每个索引都要能按 UvOffset + index（uint 回绕）取到 UV —— 与 shader 同一个式子。
+                uint uvCount = (uint)asset.UvBuffer.Length / 2u;
+                for (int i = 0; i < asset.DrawItems.Count; ++i)
+                {
+                    var di = asset.DrawItems[i];
+                    if ((ulong)di.IndexOffset + di.IndexCount > (ulong)asset.IndexBuffer.Length)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 个绘制项的索引区间越过索引缓冲");
+                    }
+                    for (uint q = 0; q < di.IndexCount; ++q)
+                    {
+                        uint uvIndex = unchecked(di.UvOffset + asset.IndexBuffer[di.IndexOffset + q]);
+                        if (uvIndex >= uvCount)
+                        {
+                            throw new SpineGpuContainerException("container: 第 " + i + " 个绘制项的 uv_offset + 索引 = " +
+                                uvIndex + "，越过 UV 表（" + uvCount + " 条）");
+                        }
+                    }
+                }
             }
 
             // ---- slot_bone ----

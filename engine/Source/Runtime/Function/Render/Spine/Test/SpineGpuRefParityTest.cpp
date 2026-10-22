@@ -380,6 +380,7 @@ struct Stats
     size_t files_bad = 0;
     size_t files_bad_deform_on_path = 0;
     size_t anim_samples = 0;
+    size_t anim_duration_checks = 0;   // 动画时长与参考逐个相等
     size_t bone_checks = 0;
     size_t mismatches = 0;
     float worst_rel = 0.0f;
@@ -401,6 +402,11 @@ int main(int argc, char** argv)
     size_t flip_anim = 0;
     size_t flip_frames = 60;
     float trace_time = -1.0f;   // >= 0 = 逐步对拍模式（--trace <t>，配 --asset / --anim）
+    bool uv_scan = false;       // 统计绘制项的"索引最小值"与 UV 寻址（渲染侧前置核对）
+    size_t uv_items = 0, uv_items_base_nonzero = 0, uv_items_oob_abs = 0;
+    size_t blend_count[4] = {0, 0, 0, 0}, page_nonzero = 0, fallback_items = 0;
+    size_t vis_found = 0, vis_missing = 0, vis_examples = 0, vis_missing_with_candidates = 0;
+    size_t anim_dur_pos = 0, anim_dur_zero = 0, anim_dur_examples = 0;
     for (int i = 1; i < argc; ++i)
     {
         const std::string a = argv[i];
@@ -435,6 +441,10 @@ int main(int argc, char** argv)
         else if (a == "--trace" && i + 1 < argc)
         {
             trace_time = static_cast<float>(std::atof(argv[++i]));
+        }
+        else if (a == "--uv-scan")
+        {
+            uv_scan = true;
         }
         else if (a == "--verbose")
         {
@@ -545,6 +555,120 @@ int main(int argc, char** argv)
             continue;
         }
         ++st.files_baked;
+
+        if (uv_scan)
+        {
+            // 索引是"段内绝对下标"（= 附件本地下标 + vertex_base）。UV 只按附件本地下标排，
+            // 所以 shader 若写 uv[uv_offset + index] 只在 vertex_base == 0 时对。
+            const size_t uv_count = loaded.uv_buffer.size() / 2u;
+            for (const SpineDrawItem& di : loaded.draw_items)
+            {
+                if (di.index_count == 0)
+                {
+                    continue;
+                }
+                uint32_t mn = 0xFFFFFFFFu, mx = 0;
+                for (uint32_t q = 0; q < di.index_count; ++q)
+                {
+                    const uint32_t v = loaded.index_buffer[static_cast<size_t>(di.index_offset) + q];
+                    mn = std::min(mn, v);
+                    mx = std::max(mx, v);
+                }
+                ++uv_items;
+                ++blend_count[static_cast<size_t>(di.blend_mode) & 3u];
+                page_nonzero += di.atlas_page != 0 ? 1u : 0u;
+                fallback_items += di.kind == SpineDrawItemKind::kFallback ? 1u : 0u;
+                if (mn != 0u)
+                {
+                    ++uv_items_base_nonzero;
+                }
+                if (static_cast<size_t>(di.uv_offset) + mx >= uv_count)
+                {
+                    ++uv_items_oob_abs;
+                }
+            }
+            // 渲染侧"本帧画哪些项"的解析（与 SpineGpuRenderer::Draw 同一规则）：
+            // 绘制顺序里每个挂着附件的槽位，按"槽位 + 附件名 + skin 0"找绘制项。
+            for (size_t an_i = 0; an_i < loaded.anims.size(); ++an_i)
+            {
+                const SpineGpuAnim& an = loaded.anims[an_i];
+                if (verbose)
+                {
+                    std::printf("[uv-scan]   动画 #%zu '%s'：时长 %.4f，时间轴 %u 条\n", an_i,
+                                an_i < loaded.anim_names.size() ? loaded.anim_names[an_i].c_str() : "?", an.duration,
+                                an.timeline_count);
+                }
+                ++(an.duration > 0.0f ? anim_dur_pos : anim_dur_zero);
+                if (an.duration <= 0.0f && an.timeline_count > 0 && anim_dur_examples < 5)
+                {
+                    ++anim_dur_examples;
+                    std::printf("[uv-scan] duration = 0 但有 %u 条时间轴：%s\n", an.timeline_count,
+                                skel_path.string().c_str());
+                }
+            }
+            if (!loaded.anims.empty())
+            {
+                SpineGpuSlotSampleResult slots;
+                if (SpineGpuSampleSlots(loaded, 0, 0.0f, slots).ok)
+                {
+                    const std::vector<uint8_t> blob = BuildSpineStringBlob(loaded);
+                    for (uint32_t s : slots.draw_order)
+                    {
+                        const uint32_t off = slots.slots[s].attachment_name_offset;
+                        if (off == SpineGpuConstants::kNoAttachmentName)
+                        {
+                            continue;
+                        }
+                        const char* name = SpineGpuStringAt(blob, off);
+                        bool found = false;
+                        for (const SpineDrawItem& di : loaded.draw_items)
+                        {
+                            if (di.slot_index == s && di.skin_id == SpineGpuConstants::kDefaultSkinId &&
+                                di.attachment_id < loaded.attachment_names.size() && name != nullptr &&
+                                loaded.attachment_names[di.attachment_id] == name)
+                            {
+                                found = true;
+                                break;
+                            }
+                        }
+                        ++(found ? vis_found : vis_missing);
+                        if (!found)
+                        {
+                            // 槽位里**有**可画项、却没有这个名字的 ⇒ 真丢（该报）；
+                            // 槽位里一个可画项都没有 ⇒ 挂的是裁剪 / point / bbox / path 这类不画的附件
+                            for (const SpineDrawItem& di : loaded.draw_items)
+                            {
+                                if (di.slot_index == s && di.skin_id == SpineGpuConstants::kDefaultSkinId)
+                                {
+                                    ++vis_missing_with_candidates;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!found && vis_examples < 8)
+                        {
+                            ++vis_examples;
+                            std::string cands;
+                            for (const SpineDrawItem& di : loaded.draw_items)
+                            {
+                                if (di.slot_index == s)
+                                {
+                                    cands += " [skin " + std::to_string(di.skin_id) + " '" +
+                                             (di.attachment_id < loaded.attachment_names.size()
+                                                  ? loaded.attachment_names[di.attachment_id]
+                                                  : std::string("<id越界>")) +
+                                             "']";
+                                }
+                            }
+                            std::printf("[uv-scan] 找不到绘制项：%s 槽位 %u 要 '%s'（名字表 %zu 条），候选：%s\n",
+                                        skel_path.string().c_str(), s, name != nullptr ? name : "<偏移越界>",
+                                        loaded.attachment_names.size(), cands.c_str());
+                        }
+                    }
+                }
+            }
+            continue;
+        }
 
         // ---- 参考侧 ----
         RefAttachmentLoader ref_loader;
@@ -844,6 +968,20 @@ int main(int argc, char** argv)
         for (size_t ai = 0; ai < loaded.anims.size() && file_ok; ++ai)
         {
             const float duration = loaded.anims[ai].duration;
+            // 时长也要对拍：下面的采样点是按**我们的**时长取的 —— 我们若算成 0 而参考不是，
+            // 这个动画就只在 t=0 被比过，对拍照样"全过"（渲染侧一跑就是静止画面）。
+            {
+                const float ref_duration = ref_data->getAnimations()[ai]->getDuration();
+                ++st.anim_duration_checks;
+                if (duration != ref_duration)
+                {
+                    std::printf("[对不上] %s 动画 %zu 时长：我们 %g vs 参考 %g\n", skel_path.string().c_str(), ai,
+                                static_cast<double>(duration), static_cast<double>(ref_duration));
+                    ++st.mismatches;
+                    file_ok = false;
+                    break;
+                }
+            }
             // 5 个采样点：0 / 1/4 / 1/2 / 3/4 / 末帧
             const float times[5] = {0.0f, duration * 0.25f, duration * 0.5f, duration * 0.75f, duration};
             for (float t : times)
@@ -1062,6 +1200,18 @@ int main(int argc, char** argv)
         }
     }
 
+    if (uv_scan)
+    {
+        std::printf("[uv-scan] 绘制项 %zu，索引最小值 != 0 的 %zu，uv_offset + 段内索引 越过 UV 表的 %zu\n", uv_items,
+                    uv_items_base_nonzero, uv_items_oob_abs);
+        std::printf("[uv-scan] 混合模式 normal %zu / additive %zu / multiply %zu / screen %zu；atlas_page != 0 的 %zu；"
+                    "CPU fallback 项 %zu\n",
+                    blend_count[0], blend_count[1], blend_count[2], blend_count[3], page_nonzero, fallback_items);
+        std::printf("[uv-scan] 第 0 个动画 t=0 时挂着附件的槽位：找到绘制项 %zu，找不到 %zu（其中槽位里有别的可画项的 %zu）\n",
+                    vis_found, vis_missing, vis_missing_with_candidates);
+        std::printf("[uv-scan] 动画时长 > 0 的 %zu 个，= 0 的 %zu 个\n", anim_dur_pos, anim_dur_zero);
+        return 0;
+    }
     std::printf("\n=== 参考实现对拍（spine-cpp 3.8）===\n");
     std::printf("扫描 .skel.bytes      : %zu\n", st.files_seen);
     std::printf("成功烘焙（含往返）    : %zu\n", st.files_baked);
@@ -1070,6 +1220,7 @@ int main(int argc, char** argv)
     std::printf("逐骨骼比过的文件      : %zu\n", st.files_compared);
     std::printf("  └ 比对失败的文件    : %zu\n", st.files_bad);
     std::printf("  └ 其中 path 带 deform: %zu\n", st.files_bad_deform_on_path);
+    std::printf("动画时长对拍         : %zu\n", st.anim_duration_checks);
     std::printf("动画 × 时间点采样     : %zu\n", st.anim_samples);
     std::printf("骨骼分量比较次数      : %zu\n", st.bone_checks);
     std::printf("最大相对误差          : %.3g\n", static_cast<double>(st.worst_rel));
