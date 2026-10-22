@@ -19,8 +19,6 @@ constexpr const wchar_t* ProbeExecutableName = L"ZDllLoadProbe.exe";
 struct DllProbeOptions
 {
     std::filesystem::path probeExecutable;
-    std::filesystem::path runnerExecutable;
-    std::vector<std::wstring> runnerArguments;
     std::string exportName;
     std::uint32_t timeoutMilliseconds = 60000;
 };
@@ -29,8 +27,6 @@ struct DllProbeResult
 {
     std::string dllPath;
     std::string probeExecutable;
-    std::string runnerExecutable;
-    std::vector<std::string> runnerArguments;
     std::string exportName;
     bool attempted = false;
     bool processStarted = false;
@@ -45,9 +41,9 @@ struct DllProbeResult
     std::uint32_t exceptionCode = 0;
     std::int32_t exportResult = 0;
     std::uint64_t durationMilliseconds = 0;
-    bool runnerReportedIsaViolation = false;
-    bool runnerReportedInternalError = false;
-    std::string runnerOutput;
+    // The child's stdout/stderr. The probe itself prints nothing, but a DLL is
+    // free to write from DllMain, and that is worth keeping when it happens.
+    std::string probeOutput;
     std::string error;
 };
 

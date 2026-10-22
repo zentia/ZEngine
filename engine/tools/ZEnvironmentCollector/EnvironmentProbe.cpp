@@ -342,18 +342,6 @@ Evaluation EvaluateEnvironment(const EnvironmentSnapshot& snapshot, const Requir
             }
             continue;
         }
-        if (probe.runnerReportedIsaViolation)
-        {
-            evaluation.failures.emplace_back(
-                "CPU emulator reported an executed instruction unsupported by the selected target CPU while probing " +
-                probe.dllPath + '.');
-            if (evaluation.exitCode == 0)
-            {
-                evaluation.exitCode = 23;
-                evaluation.issueCode = "DLL_PROBE_ILLEGAL_INSTRUCTION";
-            }
-            continue;
-        }
         if (!probe.resultAvailable)
         {
             evaluation.failures.emplace_back(
@@ -409,12 +397,6 @@ Evaluation EvaluateEnvironment(const EnvironmentSnapshot& snapshot, const Requir
             evaluation.warnings.emplace_back(
                 "Compatibility export returned 0 for " + probe.dllPath +
                 "; the DLL loaded successfully but this optional capability is unavailable.");
-        }
-        if (probe.runnerReportedInternalError)
-        {
-            evaluation.warnings.emplace_back(
-                "The CPU emulator reported an internal assertion after producing a valid DLL probe result for " +
-                probe.dllPath + "; target DLL load results were retained, but emulator stability should be reviewed.");
         }
     }
 

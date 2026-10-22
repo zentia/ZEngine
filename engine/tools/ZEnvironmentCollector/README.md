@@ -80,7 +80,9 @@ GameCore_Standalone.dll
 1. 在独立进程中调用 `LoadLibraryExW`。
 2. 对 GameCore 默认查找并调用 `OSG_LocalPredictHardwareCapable()`。
 3. 捕获非法指令、访问违规、栈溢出和 DLL 初始化异常。
-4. 将 Win32 错误、异常码、导出函数返回值和 runner 输出写入报告。
+4. 将 Win32 错误、异常码、导出函数返回值和子进程输出（探针自身不打印，但被加载的 DLL 可能从 `DllMain` 里写）写入报告。
+
+`OSG_LocalPredictHardwareCapable()` 返回 `0` 只表示这个可选能力不可用（旧 CPU 上常见），**不算加载失败**——只要 DLL 加载成功且没有非法指令。报告里对应一条 warning。
 
 ## 基本使用
 
@@ -118,45 +120,6 @@ GameCore_Standalone.dll
 
 只想看机器、不想等递归 DLL 扫描和隔离加载探针时加 `--no-dll-checks`（只作用于 `-batchmode` 默认命令；GUI 上不再有对应开关）。
 
-## Intel SDE 模拟旧 CPU
-
-Intel SDE 不随本工具分发，需要从 Intel 官方网站下载并接受其许可协议：
-
-<https://www.intel.com/content/www/us/en/download/684897/intel-software-development-emulator.html>
-
-模拟 Nehalem（例如 Intel Core i5-760）：
-
-```powershell
-.\ZEnvironmentCollector.exe -batchmode `
-  --require none `
-  --probe-runner "C:\Tools\IntelSDE\sde.exe" `
-  --probe-runner-arg "-nhm" `
-  --output-dir .\SdeReport
-```
-
-当前 SDE 中 `-nhm` 已同时配置 Nehalem CPUID 和 chip-check，不要额外传递无参数的 `-chip-check`。
-
-若需要其他 CPU 模型，先查看：
-
-```powershell
-C:\Tools\IntelSDE\sde.exe -help
-```
-
-SDE 的 stdout/stderr 会写入报告中的 `runnerOutput`。关键字段：
-
-```json
-{
-  "loadSucceeded": true,
-  "exceptionCodeHex": "0x00000000",
-  "runnerReportedIsaViolation": false,
-  "runnerReportedInternalError": false,
-  "exportCalled": true,
-  "exportResult": 0
-}
-```
-
-`OSG_LocalPredictHardwareCapable()` 在旧 CPU 上返回 `0` 表示本地预测优化不可用；只要 DLL 成功加载且没有非法指令，就不视为加载失败。
-
 ## 报告
 
 工具生成：
@@ -186,7 +149,7 @@ OSGameEnvironmentReport.json
 | `20` | DLL 依赖不可分发的 Debug CRT |
 | `21` | DLL/PE 无效、架构不支持或静态检查失败 |
 | `23` | DLL 加载、隔离探针、导出调用或非法指令失败 |
-| `24` | 探针程序或 runner 基础设施不可用 |
+| `24` | 探针程序或基础设施不可用 |
 | `30` | 主工具内部错误 |
 
 常见 `issueCode`：

@@ -140,25 +140,14 @@ DllProbeResult RunDllProbe(const std::filesystem::path& dllPath, const DllProbeO
     DllProbeResult result;
     result.dllPath = PathToUtf8(dllPath);
     result.probeExecutable = PathToUtf8(options.probeExecutable);
-    result.runnerExecutable = PathToUtf8(options.runnerExecutable);
     result.exportName = options.exportName;
     result.attempted = true;
-    for (const auto& argument : options.runnerArguments)
-    {
-        result.runnerArguments.push_back(WideToUtf8(argument));
-    }
 
     if (!std::filesystem::is_regular_file(options.probeExecutable))
     {
         result.error = "DLL probe executable does not exist: " + result.probeExecutable;
         return result;
     }
-    if (!options.runnerExecutable.empty() && !std::filesystem::is_regular_file(options.runnerExecutable))
-    {
-        result.error = "Probe runner does not exist: " + result.runnerExecutable;
-        return result;
-    }
-
     const auto resultPath = TemporaryResultPath();
     if (resultPath.empty())
     {
@@ -175,17 +164,7 @@ DllProbeResult RunDllProbe(const std::filesystem::path& dllPath, const DllProbeO
         &security, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY, nullptr);
 
     std::wstring commandLine;
-    const bool useRunner = !options.runnerExecutable.empty();
-    AppendArgument(commandLine, useRunner ? options.runnerExecutable.wstring() : options.probeExecutable.wstring());
-    if (useRunner)
-    {
-        for (const auto& argument : options.runnerArguments)
-        {
-            AppendArgument(commandLine, argument);
-        }
-        AppendArgument(commandLine, L"--");
-        AppendArgument(commandLine, options.probeExecutable.wstring());
-    }
+    AppendArgument(commandLine, options.probeExecutable.wstring());
     AppendArgument(commandLine, L"--dll");
     AppendArgument(commandLine, dllPath.wstring());
     AppendArgument(commandLine, L"--result-file");
@@ -261,13 +240,7 @@ DllProbeResult RunDllProbe(const std::filesystem::path& dllPath, const DllProbeO
     result.durationMilliseconds = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - startTime).count());
-    result.runnerOutput = ReadOutputFile(outputPath);
-    result.runnerReportedIsaViolation =
-        result.runnerOutput.find("SDE-ERROR: Executed instruction not valid for specified chip") !=
-        std::string::npos;
-    result.runnerReportedInternalError =
-        result.runnerOutput.find("assertion failed:") != std::string::npos ||
-        result.runnerOutput.find("NO STACK TRACE AVAILABLE") != std::string::npos;
+    result.probeOutput = ReadOutputFile(outputPath);
 
     std::ifstream input(resultPath, std::ios::binary);
     DllProbeWireResult wire{};

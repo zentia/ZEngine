@@ -255,22 +255,6 @@ EnvironmentCheckOptions ParseEnvironmentCheckCommandLine(int argumentCount, wcha
             options.probeDllPaths.emplace_back(arguments[index]);
             options.dllPaths.emplace_back(arguments[index]);
         }
-        else if (argument == L"--probe-runner")
-        {
-            if (++index >= argumentCount)
-            {
-                throw std::invalid_argument("--probe-runner requires an executable path.");
-            }
-            options.probeRunner = arguments[index];
-        }
-        else if (argument == L"--probe-runner-arg")
-        {
-            if (++index >= argumentCount)
-            {
-                throw std::invalid_argument("--probe-runner-arg requires a value.");
-            }
-            options.probeRunnerArguments.emplace_back(arguments[index]);
-        }
         else if (argument == L"--probe-export")
         {
             if (++index >= argumentCount)
@@ -323,8 +307,6 @@ void PrintEnvironmentCheckUsage()
         << "  --check-dll <path>         Inspect PE imports and executable instructions.\n"
         << "  --probe-dll <path>         Isolated LoadLibrary probe; may be repeated.\n"
         << "  --probe-export <name>      Optional no-argument int export to invoke.\n"
-        << "  --probe-runner <path>      Optional runner, such as Intel SDE.\n"
-        << "  --probe-runner-arg <arg>   Runner argument; may be repeated.\n"
         << "  --probe-timeout-seconds N  Probe timeout. Default: 60.\n"
         << "                             All DLLs are inspected recursively; GameCore\n"
         << "                             DLLs are probed automatically.\n"
@@ -377,8 +359,6 @@ EnvironmentCheckOutcome RunEnvironmentCheck(
     {
         DllProbeOptions probeOptions;
         probeOptions.probeExecutable = ProbeHelperDirectory() / ProbeExecutableName;
-        probeOptions.runnerExecutable = options.probeRunner;
-        probeOptions.runnerArguments = options.probeRunnerArguments;
         probeOptions.timeoutMilliseconds = options.probeTimeoutMilliseconds;
         for (const auto& dllPath : ResolveProbePaths(options, dllPaths))
         {

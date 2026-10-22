@@ -27,8 +27,6 @@ struct EnvironmentCheckOptions
     std::filesystem::path outputDirectory = std::filesystem::current_path();
     std::vector<std::filesystem::path> dllPaths;
     std::vector<std::filesystem::path> probeDllPaths;
-    std::filesystem::path probeRunner;
-    std::vector<std::wstring> probeRunnerArguments;
     std::string probeExport;
     std::uint32_t probeTimeoutMilliseconds = 60000;
     Requirements requirements;

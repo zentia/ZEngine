@@ -263,10 +263,7 @@ std::string BuildTextReport(
                << ", result available: " << BoolText(probe.resultAvailable)
                << ", timed out: " << BoolText(probe.timedOut)
                << ", duration: " << probe.durationMilliseconds << " ms\n"
-               << "      Runner: " << (probe.runnerExecutable.empty() ? "native" : probe.runnerExecutable)
-               << ", process exit: " << HexId(probe.processExitCode, 8) << '\n'
-               << "      Runner ISA violation: " << BoolText(probe.runnerReportedIsaViolation)
-               << ", runner internal error: " << BoolText(probe.runnerReportedInternalError) << '\n'
+               << "      Process exit: " << HexId(probe.processExitCode, 8) << '\n'
                << "      Load succeeded: " << BoolText(probe.loadSucceeded)
                << ", Win32 error: " << probe.win32Error
                << ", exception: " << HexId(probe.exceptionCode, 8) << '\n'
@@ -274,22 +271,13 @@ std::string BuildTextReport(
                << ", found: " << BoolText(probe.exportFound)
                << ", called: " << BoolText(probe.exportCalled)
                << ", result: " << probe.exportResult << '\n';
-        if (!probe.runnerArguments.empty())
-        {
-            stream << "      Runner arguments:";
-            for (const auto& argument : probe.runnerArguments)
-            {
-                stream << ' ' << argument;
-            }
-            stream << '\n';
-        }
         if (!probe.error.empty())
         {
             stream << "      Error: " << probe.error << '\n';
         }
-        if (!probe.runnerOutput.empty())
+        if (!probe.probeOutput.empty())
         {
-            stream << "      Runner output:\n" << probe.runnerOutput << '\n';
+            stream << "      Probe output:\n" << probe.probeOutput << '\n';
         }
     }
 
@@ -525,17 +513,6 @@ std::string BuildJsonReport(
         stream << "    {\n"
                << "      \"dllPath\": \"" << EscapeJson(probe.dllPath) << "\",\n"
                << "      \"probeExecutable\": \"" << EscapeJson(probe.probeExecutable) << "\",\n"
-               << "      \"runnerExecutable\": \"" << EscapeJson(probe.runnerExecutable) << "\",\n"
-               << "      \"runnerArguments\": [";
-        for (std::size_t argumentIndex = 0; argumentIndex < probe.runnerArguments.size(); ++argumentIndex)
-        {
-            if (argumentIndex != 0)
-            {
-                stream << ", ";
-            }
-            stream << '"' << EscapeJson(probe.runnerArguments[argumentIndex]) << '"';
-        }
-        stream << "],\n"
                << "      \"exportName\": \"" << EscapeJson(probe.exportName) << "\",\n"
                << "      \"attempted\": " << BoolText(probe.attempted) << ",\n"
                << "      \"processStarted\": " << BoolText(probe.processStarted) << ",\n"
@@ -552,9 +529,7 @@ std::string BuildJsonReport(
                << "      \"exceptionCode\": " << probe.exceptionCode << ",\n"
                << "      \"exceptionCodeHex\": \"" << HexId(probe.exceptionCode, 8) << "\",\n"
                << "      \"durationMilliseconds\": " << probe.durationMilliseconds << ",\n"
-               << "      \"runnerReportedIsaViolation\": " << BoolText(probe.runnerReportedIsaViolation) << ",\n"
-               << "      \"runnerReportedInternalError\": " << BoolText(probe.runnerReportedInternalError) << ",\n"
-               << "      \"runnerOutput\": \"" << EscapeJson(probe.runnerOutput) << "\",\n"
+               << "      \"probeOutput\": \"" << EscapeJson(probe.probeOutput) << "\",\n"
                << "      \"error\": \"" << EscapeJson(probe.error) << "\"\n"
                << "    }" << (index + 1 == snapshot.dllProbeResults.size() ? "" : ",") << '\n';
     }
