@@ -73,9 +73,11 @@ namespace ZEngine.SpineGpu
         public List<SpineGpuBezier> Beziers = new List<SpineGpuBezier>();    // chunk 15
         public byte[] TimelinePayload = System.Array.Empty<byte>();          // chunk 16
 
-        // 裁剪多边形记录（chunk 9，12 B/条）。下标就是绘制项 ClipIndex 引用的行号。
+        // 裁剪多边形记录（chunk 9，20 B/条，v15）。下标就是绘制项 ClipIndex 引用的行号。
         // **顶点本身在 VertexBuffer 里**。
         public List<SpineGpuClipPolygon> ClipPolygons = new List<SpineGpuClipPolygon>();
+        // v15：一条裁剪多边形一个附件名（字符串表第 9 组，与 ClipPolygons 一一对应，不去重）。
+        public List<string> ClipNames = new List<string>();
 
         public List<SpineGpuAttachmentRecord> AttachmentRecords = new List<SpineGpuAttachmentRecord>();
 

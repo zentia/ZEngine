@@ -814,6 +814,39 @@ SpineImportResult ApplyDeform(const SpineGpuAsset& asset, const SpineGpuRuntimeD
             setup = asset.path_vertices.data() + att.vertex_offset;
         }
     }
+    else if ((tl.target & SpineGpuConstants::kDeformTargetClipBit) != 0)
+    {
+        // v15：裁剪附件的 deform（改的是裁剪多边形；`VertexAttachment::applyDeform` 对非 mesh
+        // 就是 `this == source`）
+        const uint32_t k = tl.target & SpineGpuConstants::kDeformTargetIndexMask;
+        if (k >= asset.clip_polygons.size())
+        {
+            return Fail("apply: " + TlName(tl_index) + "指向越界的裁剪多边形 " + std::to_string(k));
+        }
+        const SpineGpuClipPolygon& clip = asset.clip_polygons[k];
+        slot_index = clip.slot_index;
+        if (slot_index >= st.slots.size())
+        {
+            return Fail("apply: " + TlName(tl_index) + "的槽位越界");
+        }
+        if (st.slots[slot_index].attachment.clip != k)
+        {
+            return Ok();   // 槽位此刻挂的不是这条裁剪附件
+        }
+        deform_len = SpineGpuClipDeformLength(asset, clip);
+        rigid = clip.vertex_format == SpineVertexFormat::kRigid;
+        if (rigid)
+        {
+            const size_t byte0 = static_cast<size_t>(clip.vertex_offset) * SpineGpuConstants::kRigidVertexStride;
+            if (byte0 + static_cast<size_t>(deform_len) * 4u > asset.weighted_segment_offset)
+            {
+                return Fail("apply: 裁剪多边形 " + std::to_string(k) + " 的 rigid 顶点区间越过 rigid 段");
+            }
+            setup_buf.resize(deform_len);
+            std::memcpy(setup_buf.data(), asset.vertex_buffer.data() + byte0, static_cast<size_t>(deform_len) * 4u);
+            setup = setup_buf.data();
+        }
+    }
     else
     {
         if (tl.target >= asset.attachment_records.size())
@@ -1129,6 +1162,16 @@ SpineImportResult SpineGpuBuildRuntimeData(const SpineGpuAsset& asset, SpineGpuR
             if (asset.path_attachments[k].slot_index == slot && asset.path_attachment_names[k] == name)
             {
                 ref.path_att = static_cast<uint32_t>(k);
+                break;
+            }
+        }
+        // 裁剪附件同理（v15，chunk 9 带名字）；与可画项一样只认 default 皮肤
+        for (size_t k = 0; k < asset.clip_polygons.size() && k < asset.clip_names.size(); ++k)
+        {
+            const SpineGpuClipPolygon& c = asset.clip_polygons[k];
+            if (c.skin_id == SpineGpuConstants::kDefaultSkinId && c.slot_index == slot && asset.clip_names[k] == name)
+            {
+                ref.clip = static_cast<uint32_t>(k);
                 break;
             }
         }

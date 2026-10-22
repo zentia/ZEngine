@@ -245,6 +245,9 @@ struct SpineSourceClip
 {
     int skin_index = -1;
     int slot_index = -1;
+    // 附件名（皮肤里的键）。v15 起落盘：attachment 时间轴按**名字**换槽位附件，运行时要按
+    // "槽位 + 名字"判断槽位当前挂的是不是这条裁剪附件（与 path 附件同一个道理）。
+    std::string name;
     // 结束槽位（含）。**< 0 表示"没有结束槽位"** —— json 没写 "end" 或名字查不到时
     // `_endSlot` 是 NULL，`clipEnd(slot)` 永不成立 ⇒ 一路裁到最后一个槽位
     // （只剩整条绘制指令末尾那次无条件 `clipEnd()`，SpineMesh.h:259）。
@@ -561,9 +564,11 @@ struct SpineGpuAsset
     std::vector<std::string> attachment_names;
     std::vector<std::string> atlas_page_names;
 
-    // 裁剪多边形记录（chunk 9，12 B/条）。按 (皮肤, 槽位) 排，
+    // 裁剪多边形记录（chunk 9，20 B/条，v15）。按 (皮肤, 槽位) 稳定排序（同槽位多条时保留源顺序），
     // 下标就是绘制项 `clip_index` 引用的行号。**顶点本身在 vertex_buffer 里**。
     std::vector<SpineGpuClipPolygon> clip_polygons;
+    // 一条裁剪多边形一个附件名，**与 clip_polygons 一一对应**（不去重；字符串表第 9 组，v15）。
+    std::vector<std::string> clip_names;
 
     // 附件记录（chunk 6）。Bake 时建好；序列化 / 反序列化都走它 ——
     // 不再从 draw_items 反推（那会假设"附件与绘制项一一对应"，是个脆假设）。
@@ -640,11 +645,17 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
 // 三处共用一份实现，才不会出现"写端按 A 顺序、Bake 按 B 顺序算偏移"的静默错位。
 //
 // 顺序：骨骼 → 皮肤 → 槽位 → 槽位 setup 附件名 → 附件 → 图集页 →
-//       动画名 → path 附件名（v11）→ 动画附件名。
+//       动画名 → path 附件名（v11）→ 裁剪附件名（v15）→ 动画附件名。
 // ⚠️ 动画附件名**必须**最后：它是"剩下的全归它"，没有计数 ⇒ 排在它后面就切不出来。
 void BuildSpineStringTable(const SpineGpuAsset& a, std::vector<uint8_t>& blob,
                            std::vector<uint32_t>& slot_setup_attachment_offsets,
                            std::vector<uint32_t>& anim_name_offsets,
                            std::vector<uint32_t>& anim_attachment_offsets,
-                           std::vector<uint32_t>& path_attachment_name_offsets);
+                           std::vector<uint32_t>& path_attachment_name_offsets,
+                           std::vector<uint32_t>& clip_name_offsets);
 SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGpuAsset& out);
+
+// 裁剪多边形的 deform 数组长度（= 参考实现 `DeformTimeline::_deformLength`）：
+//   rigid 2 × 顶点数；weighted 2 × Σ影响数（`vertices.size() / 3 * 2`，不是"顶点数 × 2"）。
+// 顶点区间越过顶点缓冲 ⇒ 返回 0（读端在交叉校验里先挡住区间）。
+uint32_t SpineGpuClipDeformLength(const SpineGpuAsset& asset, const SpineGpuClipPolygon& clip);

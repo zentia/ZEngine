@@ -19,6 +19,10 @@
 //                      rigid    deform[deform_base + 2·vi]            deform_base = 段起点 − 2·vertex_base
 //                      weighted deform[deform_base + 2·(off + k)]     deform_base = 段起点 − 2·infl_base
 //                    ⇒ shader 里不需要 vertex_base / infl_base。
+//   b8 cpu_verts     本帧被 **CPU 裁剪**的项（v15，SpineGpuClipper）：每顶点 vec4 (x, y, u, v)，
+//                    骨架空间（root 之前）。flags bit3 置位时整项走这条：位置 / UV 都不从静态缓冲取，
+//                    `deform_base` 改作"这一项在 b8 里的起点"，索引来自每帧的动态索引缓冲（局部下标）。
+//                    裁剪会**产生新三角形**（SkeletonClipping::clipTriangles），VS 里做不了 ⇒ CPU 做。
 //
 // 三条硬约束（§6）：混合的是**变换后的位置**不是矩阵；按影响存储顺序累加；
 // 不许 FMA 收缩 ⇒ 全部用 `precise`（与 CPU 逐位一致的前提）。
@@ -38,9 +42,10 @@ struct SpineDraw
     uint bone_base;       // 该实例骨骼表在 b4 里的起始骨下标
     uint inst_index;      // 进 b6
     uint tint;            // RGBA8 直 alpha（槽位色 × 骨架色）
-    uint flags;           // bit0：贴图是直 alpha ⇒ 片元里预乘；bit1：输出 alpha = 0（加色）；bit2：有 deform（b7）
+    uint flags;           // bit0：贴图是直 alpha ⇒ 片元里预乘；bit1：输出 alpha = 0（加色）；bit2：有 deform（b7）；
+                          // bit3：CPU 裁剪过的顶点（b8，见文件头）
     uint weighted_base;   // weighted 段在 b0 里的起点（u32 下标）
-    uint deform_base;     // bit2 置位时有效，见 b7 的寻址式
+    uint deform_base;     // bit2：b7 的寻址偏置；bit3：b8 里的起点（顶点）
     uint reserved0;
     uint reserved1;
     uint reserved2;
@@ -55,6 +60,7 @@ struct SpineInst
 };
 layout(set = 0, binding = 6) readonly buffer Insts { SpineInst insts[]; };
 layout(set = 0, binding = 7) readonly buffer Deform { float deform[]; };
+layout(set = 0, binding = 8) readonly buffer CpuVerts { vec4 cpu_verts[]; };
 
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) flat out uint v_draw;
@@ -65,8 +71,16 @@ void main()
     const uint vi = uint(gl_VertexIndex);
     const bool has_deform = (d.flags & 4u) != 0u;
     precise vec2 p = vec2(0.0);
+    vec2 uv = vec2(0.0);
 
-    if (d.vertex_format == 0u)
+    if ((d.flags & 8u) != 0u)
+    {
+        // CPU 裁剪过的项：位置已是骨架空间（与下面两支蒙皮的输出同一个空间）
+        const vec4 cv = cpu_verts[d.deform_base + vi];
+        p = cv.xy;
+        uv = cv.zw;
+    }
+    else if (d.vertex_format == 0u)
     {
         // rigid：整块由槽位骨骼单矩阵变换（VertexAttachment.cpp:80-85）
         vec2 bp = vec2(uintBitsToFloat(vertex_words[vi * 2u]), uintBitsToFloat(vertex_words[vi * 2u + 1u]));
@@ -115,6 +129,6 @@ void main()
     precise float ry = inst.root_abcd.z * p.x + inst.root_abcd.w * p.y + inst.root_t.y;
 
     gl_Position = inst.clip_from_world * vec4(rx, ry, 0.0, 1.0);
-    v_uv = uvs[d.uv_offset + vi];
+    v_uv = (d.flags & 8u) != 0u ? uv : uvs[d.uv_offset + vi];
     v_draw = uint(gl_InstanceIndex);
 }

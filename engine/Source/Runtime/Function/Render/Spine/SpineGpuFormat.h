@@ -121,7 +121,24 @@ namespace SpineGpuConstants
     //         `this == source || (inheritDeform && parentMesh == source)` ⇒ linked mesh 要知道
     //         "继承谁的 deform"。烘焙期的 inheritDeform 传播只决定 kind，运行时**认不出**
     //         挂父附件 deform 的那条时间轴该不该作用于自己。
-    constexpr uint32_t kFormatVersion = 14;
+    // * v15 = 裁剪多边形记录 12 → **20 B**：`name_offset`（u32 @12，字符串表第 9 组）+
+    //     `end_slot`（u16 @16）；deform 时间轴的 `target` 多一个 **clip 位**（0x4000）。
+    //     三者都是"运行时按**当前**附件跑裁剪状态机"的前提，v14 及以前只在烘焙期按 setup
+    //     附件、setup 绘制顺序模拟一遍，结果折成绘制项的 `kind` / `clip_index`：
+    //       · 附件名：attachment 时间轴按**名字**换槽位附件 ⇒ 运行时要认出"槽位此刻挂的是不是
+    //         这条裁剪附件"（与 v11 path 附件名同一个道理；一个槽位挂两条裁剪附件也合法）；
+    //       · 结束槽位：`clipEnd(slot)` 只在 `slot == _endSlot` 时收尾（SkeletonClipping.cpp:72-76），
+    //         drawOrder 时间轴一改顺序，作用域就跟着变 ⇒ 烘焙期的作用域在动画里不成立；
+    //       · 绘制项 @23 的 pad 变成 `item_flags`，bit0 = region：CPU 裁剪要按参考实现的顶点顺序喂
+    //         `clipTriangles()` —— `RegionAttachment::computeWorldVertices` 出的是 BR, BL, UL, UR
+    //         （RegionAttachment.cpp:137-158），容器里烘的是 `_vertexOffset` 的 BL, UL, UR, BR；
+    //         不裁时两种对角线画出来一样，裁了之后三角形拓扑就不一样了。4 顶点 6 索引的 mesh
+    //         与 region 长得一模一样 ⇒ 只能落一个位，不能猜；
+    //       · clip 位：`ClippingAttachment` 是 VertexAttachment ⇒ deform 改的是裁剪多边形
+    //         （clipStart 里 `computeWorldVertices(slot, ...)` 读槽位的 deform 数组）。
+    //         v14 在烘焙期当"不影响姿势"跳过 —— 对骨骼成立，对**画面**不成立：
+    //         实测 OSGame 有 7 条 deform 时间轴指向裁剪附件（K_Niumo `shandian1` 等）。
+    constexpr uint32_t kFormatVersion = 15;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -172,8 +189,12 @@ namespace SpineGpuConstants
     // 附件数上限是 0xFFFF 条（烘焙期校验）⇒ 合法 id 最大 0xFFFE，0xFFFF 不会撞上。
     constexpr uint16_t kNoDeformParent = 0xFFFFu;
 
-    // 裁剪多边形记录大小（chunk 9，规格 §7.2）。
-    constexpr uint32_t kClipPolygonSize = 12;
+    // 裁剪多边形记录大小（chunk 9，规格 §7.2）。v6 起 12 B，v15 起 20 B（多了 name_offset / end_slot）。
+    constexpr uint32_t kClipPolygonSize = 20;
+
+    // 裁剪多边形 `end_slot` 的"没有"值：json 没写 "end" ⇒ `_endSlot` 是 NULL ⇒ `clipEnd(slot)`
+    // 永不成立 ⇒ 一路裁到绘制顺序末尾（SpineMesh.h:259 那次无条件 `clipEnd()` 收尾）。
+    constexpr uint16_t kNoClipEndSlot = 0xFFFFu;
 
     // clip_index 的"没有"值。绘制项里存的是 chunk 9 的行号，
     // 用 0xFFFF 而不是 0 —— 0 是一条**真实存在的**多边形，用它会静默裁错。
@@ -283,9 +304,12 @@ namespace SpineGpuConstants
     // 实测 OSGame 75 个逐骨骼对不上的资产里 62 个就是这个原因。
     //
     // 用最高位而不是新时间轴类型：类型值逐个抄参考实现 `TimelineType.h`，不许自造。
-    // 代价是附件记录与 path 附件的下标都必须 < 0x8000（烘焙期显式报错，不截断）。
+    // v15 起次高位 = "低 14 位是 chunk 9 的**裁剪多边形**行号"（裁剪附件的 deform 改的是
+    // 裁剪多边形，见 kFormatVersion 的 v15 条）。两位**互斥**（同时置位 = 坏容器）。
+    // 代价是附件记录 / path 附件 / 裁剪多边形的下标都必须 < 0x4000（烘焙期显式报错，不截断）。
     constexpr uint16_t kDeformTargetPathBit = 0x8000u;
-    constexpr uint16_t kDeformTargetIndexMask = 0x7FFFu;
+    constexpr uint16_t kDeformTargetClipBit = 0x4000u;
+    constexpr uint16_t kDeformTargetIndexMask = 0x3FFFu;
 
     // 骨骼数上限。两个约束中取严的：
     //   * `SpineGpuBone::parent` 是 int16 ⇒ 下标必须能用 int16 表示（含 -1）
@@ -442,7 +466,7 @@ enum SpineGpuChunkId : uint32_t
     kChunkDrawItems = 6,     // SpineDrawItem[]
     kChunkAttachments = 7,   // (皮肤, 槽位) → 附件 id 列表（换装用）
     kChunkAtlasPages = 8,    // 图集页路径 / 纹理引用
-    kChunkClipData = 9,      // SpineGpuClipPolygon[]（12 B/条）；**顶点本身在 chunk 3 里**
+    kChunkClipData = 9,      // SpineGpuClipPolygon[]（20 B/条，v15）；**顶点本身在 chunk 3 里**
 
     // v8：骨骼 setup（36 B/骨）。id 10 就是当初留给它的。
     kChunkBoneSetup = 10,    // SpineGpuBone[]（36 B/条）；下标 = header.bone_count 的序
@@ -1203,6 +1227,16 @@ inline bool operator==(const SpineInfluenceBone& a, const SpineInfluenceBone& b)
 inline bool operator!=(const SpineInfluenceBone& a, const SpineInfluenceBone& b) { return !(a == b); }
 
 // ---------------------------------------------------------------------
+// 绘制项标志（`SpineDrawItem::item_flags`，v15）
+namespace SpineDrawItemFlags
+{
+    // 附件是 RegionAttachment（不是 mesh）。容器里 region 的 4 个顶点按 `_vertexOffset` 的
+    // BL, UL, UR, BR 排、三角形 {0,1,2, 2,3,0}；参考实现喂给裁剪器的是 computeWorldVertices 的
+    // BR, BL, UL, UR + 同一组三角形 ⇒ CPU 裁剪时要按 {3, 0, 1, 2} 重排（SpineGpuClipper）。
+    constexpr uint8_t kRegion = 1u << 0;
+    constexpr uint8_t kKnownMask = kRegion;
+}   // namespace SpineDrawItemFlags
+
 // 绘制项表（静态，规格 §4）
 // ---------------------------------------------------------------------
 // 合批键 = (atlas_page, blend_mode, vertex_format, kind)。
@@ -1225,7 +1259,8 @@ struct SpineDrawItem
     // 光靠 slot_index + attachment_id 分不出该画哪一个。
     uint16_t skin_id;
     SpineDrawItemKind kind;            // @22
-    uint8_t pad;                       // @23
+    // @23（v15）—— SpineDrawItemFlags（v14 及以前是写 0 的 pad）。
+    uint8_t item_flags;
     // @24 —— 这一项被哪条裁剪多边形裁（chunk 9 的行号）。**不被裁时是 kNoClipIndex**。
     // 为什么要存下标而不是让运行时按 (skin_id, slot_index) 去查：一个槽位在**静态上**
     // 可能被多条裁剪覆盖过（不同皮肤 / 嵌套），绘制项要的是"当时生效的那一条"，
@@ -1257,6 +1292,7 @@ static_assert(offsetof(SpineDrawItem, slot_index) == 16, "spec 4: slot_index @16
 static_assert(offsetof(SpineDrawItem, attachment_id) == 18, "spec 4: attachment_id @18");
 static_assert(offsetof(SpineDrawItem, skin_id) == 20, "spec 4: skin_id @20");
 static_assert(offsetof(SpineDrawItem, kind) == 22, "spec 4: kind @22");
+static_assert(offsetof(SpineDrawItem, item_flags) == 23, "spec 4: item_flags @23 (v15)");
 static_assert(offsetof(SpineDrawItem, clip_index) == 24, "spec 4: clip_index @24 (v6)");
 static_assert(offsetof(SpineDrawItem, vertex_base) == 26, "spec 4: vertex_base @26 (v14)");
 static_assert(offsetof(SpineDrawItem, deform_parent) == 28, "spec 4: deform_parent @28 (v14)");
@@ -1280,15 +1316,24 @@ struct SpineGpuClipPolygon
     uint16_t vertex_count = 0;                      // @6
     // @8 —— 进入**所在顶点段**的顶点下标（不是字节偏移）；段由 vertex_format 决定。
     uint32_t vertex_offset = 0;
+    // @12（v15）—— 附件名，进字符串表第 9 组（与 chunk 9 一一对应，不去重）。
+    //   运行时按"槽位 + 名字"判断槽位**当前**挂的是不是这条裁剪附件。
+    uint32_t name_offset = 0;
+    // @16（v15）—— 结束槽位（含）；kNoClipEndSlot = 没有（裁到绘制顺序末尾）。
+    uint16_t end_slot = SpineGpuConstants::kNoClipEndSlot;
+    uint16_t pad2 = 0;                              // @18 —— 落盘必须写 0
 };
 
 static_assert(sizeof(SpineGpuClipPolygon) == SpineGpuConstants::kClipPolygonSize,
-              "spec 7.2: clip polygon record is 12 B");
+              "spec 7.2: clip polygon record is 20 B (v15)");
 static_assert(offsetof(SpineGpuClipPolygon, slot_index) == 0, "spec 7.2: clip.slot_index @0");
 static_assert(offsetof(SpineGpuClipPolygon, skin_id) == 2, "spec 7.2: clip.skin_id @2");
 static_assert(offsetof(SpineGpuClipPolygon, vertex_format) == 4, "spec 7.2: clip.vertex_format @4");
 static_assert(offsetof(SpineGpuClipPolygon, vertex_count) == 6, "spec 7.2: clip.vertex_count @6");
 static_assert(offsetof(SpineGpuClipPolygon, vertex_offset) == 8, "spec 7.2: clip.vertex_offset @8");
+static_assert(offsetof(SpineGpuClipPolygon, name_offset) == 12, "spec 7.2: clip.name_offset @12 (v15)");
+static_assert(offsetof(SpineGpuClipPolygon, end_slot) == 16, "spec 7.2: clip.end_slot @16 (v15)");
+static_assert(offsetof(SpineGpuClipPolygon, pad2) == 18, "spec 7.2: clip.pad2 @18 (v15)");
 
 // ---------------------------------------------------------------------
 // 每帧每实例数据（规格 §5）

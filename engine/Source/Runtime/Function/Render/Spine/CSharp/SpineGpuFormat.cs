@@ -52,7 +52,11 @@ namespace ZEngine.SpineGpu
         // v14 = 绘制项 28 → 32 B：VertexBase（u16 @26）+ DeformParent（u16 @28）+ VertexCount（u16 @30）。
         //       GPU 上做 mesh deform 的前提（deform 数组按附件本地下标排；linked mesh 继承父附件的
         //       deform，MeshAttachment.cpp:94-95）。
-        public const uint FormatVersion = 14;
+        // v15 = 裁剪多边形记录 12 → 20 B：NameOffset（u32 @12，字符串表第 9 组）+ EndSlot（u16 @16）；
+        //       deform 时间轴 Target 多一个 clip 位（DeformTargetClipBit）。运行时要按**当前**附件 /
+        //       **当前**绘制顺序跑裁剪状态机（v14 只在烘焙期按 setup 模拟一遍）；裁剪附件的 deform
+        //       改的是裁剪多边形（OSGame 实测 7 条）。
+        public const uint FormatVersion = 15;
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;
@@ -70,7 +74,9 @@ namespace ZEngine.SpineGpu
 
         public const uint DrawInstanceSize = 20;   // 每帧实例项
         public const uint DrawItemSize = 32;       // 静态绘制项（v14）
-        public const uint ClipPolygonSize = 12;    // 裁剪多边形记录（v6）
+        public const uint ClipPolygonSize = 20;    // 裁剪多边形记录（v6 12 B，v15 20 B）
+        // 裁剪多边形 EndSlot 的"没有"值（json 缺 "end" ⇒ 裁到绘制顺序末尾）。**不是 0**（0 是 s0）。
+        public const ushort NoClipEndSlot = 0xFFFF;
         public const uint AttachmentRecordSize = 8;
         public const uint BoneSetupSize = 36;      // 骨骼 setup 记录（v8，chunk 10）
         public const uint AnimDirSize = 20;        // 动画目录项（v9，chunk 11）
@@ -145,8 +151,10 @@ namespace ZEngine.SpineGpu
         // v12：deform 时间轴 Target 的最高位 = "低 15 位是 chunk 20 的 path 附件下标"
         // （不是附件记录下标）。path 的 deform 会改 path 约束摆出来的骨骼
         // （VertexAttachment.cpp:69-70），不能在烘焙期跳过。
+        // v15：次高位 = "低 14 位是 chunk 9 的裁剪多边形行号"。两位互斥（同时置位 = 坏容器）。
         public const ushort DeformTargetPathBit = 0x8000;
-        public const ushort DeformTargetIndexMask = 0x7FFF;
+        public const ushort DeformTargetClipBit = 0x4000;
+        public const ushort DeformTargetIndexMask = 0x3FFF;
 
         // 一条 path 附件的 deform 长度（float 个数）：weighted ? floats / 3 * 2 : floats
         // （SkeletonBinary.cpp:976-977）。与 C++ `SpineGpuPathDeformLength()` 同一公式。
@@ -373,7 +381,7 @@ namespace ZEngine.SpineGpu
         public const int ItemAttachmentId = 18;
         public const int ItemSkinId = 20;
         public const int ItemKind = 22;
-        public const int ItemPad = 23;
+        public const int ItemFlags = 23;   // v15：bit0 = region（v14 及以前是写 0 的 pad）
         public const int ItemClipIndex = 24;   // v6
         public const int ItemVertexBase = 26;    // v14
         public const int ItemDeformParent = 28;  // v14
@@ -386,6 +394,9 @@ namespace ZEngine.SpineGpu
         public const int ClipPad = 5;
         public const int ClipVertexCount = 6;
         public const int ClipVertexOffset = 8;
+        public const int ClipNameOffset = 12;   // v15
+        public const int ClipEndSlot = 16;      // v15
+        public const int ClipPad2 = 18;         // v15
 
         // weighted vertex（v7 起只是引用）
         public const int WvInfluenceOffset = 0;   // u32：影响流的**条目**下标
@@ -518,7 +529,7 @@ namespace ZEngine.SpineGpu
             Check(SpineGpuConstants.HeaderSize == 64, "header is 64 B");
             Check(SpineGpuConstants.ChunkTableEntrySize == 16, "chunk entry is 16 B");
             Check(SpineGpuConstants.DrawItemSize == 32, "draw item is 32 B (v14: +vertex_base / deform_parent)");
-            Check(SpineGpuConstants.ClipPolygonSize == 12, "clip polygon is 12 B");
+            Check(SpineGpuConstants.ClipPolygonSize == 20, "clip polygon is 20 B (v15)");
             Check(SpineGpuConstants.AttachmentRecordSize == 8, "attachment record is 8 B");
             Check(SpineGpuConstants.RigidVertexStride == 8, "rigid vertex is 8 B");
             Check(SpineGpuConstants.WeightedVertexStride == 8, "weighted vertex is 8 B (v7: reference only)");
@@ -542,6 +553,9 @@ namespace ZEngine.SpineGpu
             CheckOffset(SpineGpuOffsets.ItemSkinId, 2, SpineGpuConstants.DrawItemSize, "draw item skin_id");
             CheckOffset(SpineGpuOffsets.ItemKind, 1, SpineGpuConstants.DrawItemSize, "draw item kind");
             CheckOffset(SpineGpuOffsets.ClipVertexOffset, 4, SpineGpuConstants.ClipPolygonSize, "clip vertex_offset");
+            CheckOffset(SpineGpuOffsets.ClipNameOffset, 4, SpineGpuConstants.ClipPolygonSize, "clip name_offset");
+            CheckOffset(SpineGpuOffsets.ClipEndSlot, 2, SpineGpuConstants.ClipPolygonSize, "clip end_slot");
+            CheckOffset(SpineGpuOffsets.ClipPad2, 2, SpineGpuConstants.ClipPolygonSize, "clip pad2");
             CheckOffset(SpineGpuOffsets.AttSkinId, 2, SpineGpuConstants.AttachmentRecordSize, "attachment skin_id");
             CheckOffset(SpineGpuOffsets.WvInfluenceCount, 4, SpineGpuConstants.WeightedVertexStride,
                         "weighted influence_count");
@@ -700,6 +714,8 @@ namespace ZEngine.SpineGpu
         public ushort AttachmentId;
         public ushort SkinId;
         public SpineDrawItemKind Kind;
+        // v15：bit0 = region（CPU 裁剪按参考实现的 BR, BL, UL, UR 顺序喂顶点要用）。
+        public byte Flags;
         // chunk 9 的行号；**没被裁时是 NoClipIndex**。
         public ushort ClipIndex;
         // v14：索引 = 附件本地下标 + VertexBase（deform 数组按本地下标排）。
@@ -718,6 +734,10 @@ namespace ZEngine.SpineGpu
         public ushort VertexCount;
         // 进入**所在顶点段**的顶点下标，不是字节偏移；段由 VertexFormat 决定。
         public uint VertexOffset;
+        // v15：附件名在字符串表里的偏移（第 9 组，与 chunk 9 一一对应）。
+        public uint NameOffset;
+        // v15：结束槽位（含）；NoClipEndSlot = 没有。
+        public ushort EndSlot = SpineGpuConstants.NoClipEndSlot;
     }
 
     // 骨骼 setup（chunk 10）。逐字段抄 spine-cpp `BoneData.h:110-115`。

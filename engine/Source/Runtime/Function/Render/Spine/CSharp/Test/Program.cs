@@ -403,6 +403,9 @@ namespace ZEngine.SpineGpu.Test
                     // 逐点比对：多边形那 4 个点必须真的在顶点缓冲里
                     float[] want = { 0, 0, 10, 0, 10, 10, 0, 10 };
                     Check(PointsEqual(c, p, want), "顶点缓冲里那 4 个点与源多边形逐点相同");
+                    // v15：名字与结束槽位
+                    Check(p.EndSlot == 2, "v15: EndSlot = s2（含）");
+                    Check(c.ClipNames.Count == 1 && c.ClipNames[0] == "clip", "v15: ClipNames = { 'clip' }");
                 }
                 bool ok = true;
                 foreach (var it in c.DrawItems)
@@ -434,6 +437,11 @@ namespace ZEngine.SpineGpu.Test
                     Check(n.ClipPolygons[1].VertexOffset == 4, "clipB 从顶点下标 4 开始（**不是**字节偏移 32）");
                     float[] wantB = { 0, 0, 20, 0, 20, 20, 0, 20 };
                     Check(PointsEqual(n, n.ClipPolygons[1], wantB), "clipB 的 4 个点逐点相同");
+                    // v15：结束槽位逐条落盘（clipA → s4，clipB → s3），名字各是各的
+                    Check(n.ClipPolygons[0].EndSlot == 4 && n.ClipPolygons[1].EndSlot == 3,
+                          "v15: clipA.EndSlot = 4、clipB.EndSlot = 3");
+                    Check(n.ClipNames.Count == 2 && n.ClipNames[0] == "clip" && n.ClipNames[1] == "clipb",
+                          "v15: ClipNames = { 'clip', 'clipb' }");
                 }
                 // s3、s4 都由 clipA 裁 ⇒ 两个都是 Fallback（clipB 被忽略的判据）
                 int fb = 0;
@@ -515,9 +523,10 @@ namespace ZEngine.SpineGpu.Test
 
             // 版本改一改 ⇒ 必须明确拒绝，不做静默兼容（规格 §11）
             _prefix = "[负向] ";
-            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v14 是当前版本，
-            //    所以"未来"是 15，而 13 已经变成"旧容器"了（绘制项 28 B，没有 vertex_base / deform_parent）。
-            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 15), "版本改成 15（未来容器）⇒ 拒绝");
+            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v15 是当前版本，
+            //    所以"未来"是 16，而 14 已经变成"旧容器"了（裁剪多边形 12 B，没有名字 / 结束槽位）。
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 16), "版本改成 16（未来容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 14), "版本改成 14（v14 旧容器：裁剪多边形 12 B、裁剪 deform 被丢掉）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 13), "版本改成 13（v13 旧容器：绘制项 28 B）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 12), "版本改成 12（v12 旧容器：uv_offset 语义不同）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 11), "版本改成 11（v11 旧容器：path 的 deform 被丢掉）⇒ 拒绝");

@@ -800,14 +800,22 @@ deform 是逐帧动画数据（来自时间轴，永远不该烘焙），而裁�
 不再持有 spine 源数据"就不成立。
 
 ```
-ClipPolygon                  12 B（chunk 9，一条/裁剪附件）
-  slot_index    u16   @0   裁剪附件所在槽位（调试/校验用）
+ClipPolygon                  20 B（chunk 9，一条/裁剪附件；v6–v14 是 12 B）
+  slot_index    u16   @0   裁剪附件所在槽位
   skin_id       u16   @2   作用域是逐皮肤的
-  vertex_format u8    @4   kRigid / kWeighted4
+  vertex_format u8    @4   kRigid / kWeighted
   _pad          u8    @5
   vertex_count  u16   @6
   vertex_offset u32   @8   **段内顶点下标**，不是字节偏移（见 §3.1 的 stride）
+  name_offset   u32   @12  v15：附件名（字符串表第 9 组，与 chunk 9 一一对应）
+  end_slot      u16   @16  v15：结束槽位（含）；0xFFFF = 没有（裁到绘制顺序末尾）
+  _pad2         u16   @18
 ```
+
+> **v15 起"作用域不落盘"不再够用**：烘焙期按 setup 附件 + setup 绘制顺序模拟出的作用域，
+> 在 attachment / drawOrder 时间轴动了之后就不成立（实测 OSGame 有动画里换裁剪附件、改绘制顺序的）。
+> 运行时改为**每帧按当前状态重跑状态机**（见下面"v15：运行时裁剪"），所以 chunk 9 补上名字与结束槽位。
+> 绘制项的 `kind` / `clip_index` 仍写（setup 时的结论，诊断用），渲染器不再依赖它们。
 
 ⚠️ **多边形顶点复用主顶点缓冲**（chunk 3），不另开一块：`ClippingAttachment` 就是
 `VertexAttachment`，编码方式与 mesh 顶点**完全相同**，也走同一个 `ExactBlobPool`
@@ -1445,8 +1453,40 @@ setup 姿势的包围盒自动居中、占视口 80%。
   weighted 的误差来自**容器里权重是 u8 量化的**（与 deform 无关，两格同量级）；
   把 deform 偏移错一个顶点，这两格会变成 9724 / 402（门槛已接进 verdict）。
 
-**仍然不做**（不是忘了）：DX12 / Metal；多实例；裁剪作用域内的项**照未裁剪画**（裁剪只有 CPU
-实现）；tint black；非 default 皮肤。
+**仍然不做**（不是忘了）：DX12 / Metal；多实例；tint black；非 default 皮肤。
+
+#### v15：运行时裁剪（2026-10-23）
+
+3.8 的裁剪只有 CPU 实现（`clipTriangles` 产生新三角形，VS 做不了）。每帧：
+
+1. `SpineGpuClipFrame()` 按**当前**绘制顺序跑 `MeshGeneration/SpineMesh.h:107-259` 的状态机：
+   NULL 附件 / 不可画附件 ⇒ `clipEnd(slot)`；裁剪附件 ⇒ `clipStart` 后**直接 continue**（不收尾）；
+   可画项 ⇒ 在作用域内就裁，然后 `clipEnd(slot)`；末尾无条件 `clipEnd()`。嵌套被忽略。
+2. 作用域内的项在 CPU 上蒙皮（与 `spine_gpu.vert` 同公式、同 u8 权重），裁剪多边形同样蒙皮
+   （**含裁剪附件自己的 deform** —— v15 起进容器，target 次高位 0x4000），喂给逐行转录的
+   `SpineGpuSkeletonClipping` / `SpineGpuTriangulator`（SkeletonClipping.cpp / Triangulator.cpp）。
+3. 结果上传 b8（`vec4 x,y,u,v`，骨架空间）+ 每帧动态 u16 索引缓冲；绘制项 flags bit3，`deform_base`
+   改作 b8 起点。两块缓冲按需倍增扩容（旧的走延迟销毁，只重写本帧槽位的 set0）。作用域外照旧 GPU 蒙皮。
+
+region 喂给 `clipTriangles` 的顺序必须照参考：`computeWorldVertices` 出 **BR, BL, UL, UR** + 三角形
+`{0,1,2, 2,3,0}`；容器存的是 BL, UL, UR, BR ⇒ 绘制项 @23 的 pad 改成 `item_flags`，bit0 = region，
+CPU 裁剪时按 {3,0,1,2} 重排（不裁时两条对角线画出来一样，裁了拓扑就不一样）。
+
+对拍（`SpineGpuRefParityTest` 的 S5 段，781 资产 × 2 段随机脚本 × 150 帧）：
+
+| 项 | 结果 |
+|---|---|
+| 可画槽位"在不在作用域、被哪条裁" | 593 030 次，**0 分叉** |
+| 同输入 `clipTriangles`（喂参考的世界坐标 / UV / 三角形 / 多边形） | 333 640 次，输出 2110 万顶点，**逐位相同** |
+| 端到端，全 rigid（179 104 项） | 世界坐标最大误差 3.7e-4，UV 3.6e-7 |
+| 端到端，含 weighted | 拓扑相同 99.84%；最大误差 35.5 骨架单位 / UV 0.151 —— u8 权重的 5 单位底噪在**近乎平行的裁剪边**上被放大 |
+
+**同时修掉的两个 UV bug**（v15 之前参考侧加载器不配图集，UV 从没和参考比过）：
+
+* region：参考 `_uvs` 按**输出顺序** BR, BL, UL, UR 配对（槽位名 BLX/ULX… 只是下标），v14 按槽位名抄，
+  每个角错一位 ⇒ **贴图转 90°**。修后 13 028 次角/UV 配对全对。
+* 旋转图集上的 mesh：`textureHeight = regionWidth / (v2 - v)` 写成了 `regionHeight`（注释对、代码反），
+  宽高不等的旋转 region UV 拉伸。修前前 120 个资产 40% 的 mesh 采样对不上，修后全量 438 302 次 0 不一致。
 可见集解析实测：OSGame 全量第 0 个动画 t=0 时挂着附件的槽位 29 785 个能找到绘制项，
 689 个找不到 —— 这 689 个槽位在 skin 0 下**一个可画项都没有**（"槽位里有别的可画项、
 却没有这个名字"的是 **0** 个），即挂的是裁剪 / point / bounding box / path 这类不画的附件。

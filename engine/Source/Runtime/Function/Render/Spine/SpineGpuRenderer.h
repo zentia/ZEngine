@@ -16,8 +16,8 @@
 //     spine.empty / spine.mix / spine.speed / spine.alpha 改（语义即 spine::AnimationState）；
 //   * mesh deform（S6）在 GPU 上做：解算器给每帧生效的 deform 数组，上传到 b7，shader 里
 //     rigid 整体替换 bindPos、weighted 逐影响加偏移，共享 VB 不动；
-//   * 在裁剪作用域内的绘制项**照未裁剪画**：
-//     裁剪只有 CPU 实现（§7.2），未裁剪不是丢失；
+//   * 裁剪（v15）：每帧按当前绘制顺序跑参考实现的作用域状态机（SpineGpuClipper），作用域内的项
+//     在 CPU 上蒙皮 + `clipTriangles`，结果上传到 b8 + 每帧动态索引缓冲；作用域外照旧 GPU 蒙皮；
 //   * tint black（暗色）未接：只用槽位色。
 // =====================================================================
 

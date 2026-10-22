@@ -1,7 +1,9 @@
 # GPU-Spine v7：骨骼树 + 动画烘焙，解算自写
 
 - **结论等级**：**S0 / S0.5 / S1 / S2 / S3 / S4 / S5 / S6 已落地**（2026-10-23）。S5（多轨混合）见 §7.0.7，
-  S6（GPU mesh deform）见 GPU_SPINE_INTERCHANGE_FORMAT.md §7.1。以下为 S4a 时的原始记录，保留不改：
+  S6（GPU mesh deform）见 GPU_SPINE_INTERCHANGE_FORMAT.md §7.1。
+  **v15（2026-10-23）运行时裁剪已接渲染**（裁剪附件名 / 结束槽位 / 裁剪 deform 进容器，region/mesh UV 两个
+  bug 修掉），见 GPU_SPINE_INTERCHANGE_FORMAT.md 渲染节"v15：运行时裁剪"。以下为 S4a 时的原始记录，保留不改：
   边界由 OSGame 实测资产反推（不是拍脑袋），字段已定、出处已核对。
   已落地：影响流（v7）、骨骼树（v8）、动画（v9）、槽位 setup（v10）、
   **约束 setup / 执行顺序 / PathAttachment（v11）**，见 §7.0 / 7.0.1 / 7.0.2 / 7.0.3 /

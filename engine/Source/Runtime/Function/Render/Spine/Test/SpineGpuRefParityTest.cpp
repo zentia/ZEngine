@@ -29,6 +29,7 @@
 #include <spine/PathAttachment.h>
 #include <spine/PointAttachment.h>
 #include <spine/ClippingAttachment.h>
+#include <spine/SkeletonClipping.h>
 #include <spine/IkConstraint.h>
 #include <spine/TransformConstraint.h>
 #include <spine/PathConstraint.h>
@@ -55,6 +56,7 @@
 
 #include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
+#include "Runtime/Function/Render/Spine/SpineGpuClipper.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
 
 #include <algorithm>
@@ -118,15 +120,31 @@ const SpineRTTI& AtlasAttachmentLoader::getRTTI() const { return rtti; }
 // 但 path 约束要读 `PathAttachment` 的顶点与 lengths —— 那部分由
 // `SkeletonBinary::readVertices()` 填，跟图集无关 ⇒ 空加载器照样对。
 // ---------------------------------------------------------------------
+//
+// v15：给了图集就按 `AtlasAttachmentLoader`（AtlasAttachmentLoader.cpp:51-96）配 region / mesh 的
+// 图集参数 —— 端到端比 UV / 裁剪要用参考侧的 UV。找不到 region 时**照样建附件**（参考加载器
+// 会返回 NULL ⇒ 附件集合变了，骨骼对拍就没法比），只是不配 UV。
 class RefAttachmentLoader : public spine::AttachmentLoader
 {
 public:
+    explicit RefAttachmentLoader(const SpineAtlas* atlas = nullptr) : m_Atlas(atlas) {}
+
     spine::RegionAttachment* newRegionAttachment(spine::Skin& skin, const spine::String& name,
                                                  const spine::String& path) override
     {
         (void)skin;
         spine::RegionAttachment* a = new (__FILE__, __LINE__) spine::RegionAttachment(name);
         a->setPath(path);
+        if (const SpineAtlasRegion* r = Find(path))
+        {
+            a->setUVs(r->u, r->v, r->u2, r->v2, r->rotate);
+            a->setRegionOffsetX(static_cast<float>(r->offset_x));
+            a->setRegionOffsetY(static_cast<float>(r->offset_y));
+            a->setRegionWidth(static_cast<float>(r->width));
+            a->setRegionHeight(static_cast<float>(r->height));
+            a->setRegionOriginalWidth(static_cast<float>(r->orig_w));
+            a->setRegionOriginalHeight(static_cast<float>(r->orig_h));
+        }
         return a;
     }
     spine::MeshAttachment* newMeshAttachment(spine::Skin& skin, const spine::String& name,
@@ -135,6 +153,20 @@ public:
         (void)skin;
         spine::MeshAttachment* a = new (__FILE__, __LINE__) spine::MeshAttachment(name);
         a->setPath(path);
+        if (const SpineAtlasRegion* r = Find(path))
+        {
+            a->setRegionU(r->u);
+            a->setRegionV(r->v);
+            a->setRegionU2(r->u2);
+            a->setRegionV2(r->v2);
+            a->setRegionRotate(r->rotate);
+            a->setRegionOffsetX(static_cast<float>(r->offset_x));
+            a->setRegionOffsetY(static_cast<float>(r->offset_y));
+            a->setRegionWidth(static_cast<float>(r->width));
+            a->setRegionHeight(static_cast<float>(r->height));
+            a->setRegionOriginalWidth(static_cast<float>(r->orig_w));
+            a->setRegionOriginalHeight(static_cast<float>(r->orig_h));
+        }
         return a;
     }
     spine::BoundingBoxAttachment* newBoundingBoxAttachment(spine::Skin& skin, const spine::String& name) override
@@ -158,6 +190,14 @@ public:
         return new (__FILE__, __LINE__) spine::ClippingAttachment(name);
     }
     void configureAttachment(spine::Attachment* attachment) override { (void)attachment; }
+
+private:
+    const SpineAtlasRegion* Find(const spine::String& path) const
+    {
+        // spine::String 空串时 buffer() 是 NULL
+        return m_Atlas != nullptr && path.buffer() != nullptr ? FindAtlasRegion(*m_Atlas, path.buffer()) : nullptr;
+    }
+    const SpineAtlas* m_Atlas;
 };
 
 namespace
@@ -391,6 +431,10 @@ struct Stats
     size_t anim_duration_checks = 0;   // 动画时长与参考逐个相等
     size_t slot_attachment_checks = 0; // S6：槽位当前附件（→ 绘制项）与参考 Slot::getAttachment() 一致
     size_t deform_checks = 0;          // S6：槽位挂 mesh 时，deform 数组与参考 getAttachmentVertices() 比过
+    size_t region_uv_checks = 0;       // v15：region 每个角的 (位置, UV) 配对与参考一致
+    size_t region_uv_bad = 0;
+    size_t mesh_uv_checks = 0;
+    size_t mesh_uv_bad = 0;
     size_t deform_nonempty = 0;        //     其中参考数组非空的
     size_t deform_values = 0;          //     逐 float 比较次数
     float worst_deform_rel = 0.0f;
@@ -444,7 +488,23 @@ struct S5Stats
     size_t slot_checks = 0;
     size_t deform_values = 0;
     size_t draw_order_checks = 0;
-    size_t deform_skipped_unbaked = 0;  // 参考侧非空、但附件是 bbox / clipping / point（烘焙期就不收 deform）
+    size_t deform_skipped_unbaked = 0;  // 参考侧非空、但附件是 bbox / point（烘焙期就不收 deform）
+    size_t clip_attach_checks = 0;      // 槽位挂着裁剪附件的比较次数（v15）
+    // ---- v15 裁剪（每帧跑一遍 SpineMesh.h 的绘制循环）----
+    size_t clip_frames = 0;             // 至少开始过一次裁剪的帧
+    size_t clip_best_frames = 0;        // 裁剪帧最多的那个资产（编辑器实跑挑它）
+    std::string clip_best_asset;
+    size_t clip_scope_checks = 0;       // 可画槽位"在不在作用域里"的比较
+    size_t clip_core_calls = 0;         // 同输入 clipTriangles 的逐位比较次数
+    size_t clip_core_out_vertices = 0;  // 其中输出的顶点数
+    size_t clip_core_pieces = 0;        // clipStart 返回的凸块数
+    size_t clip_e2e_items = 0;          // 端到端：两边都裁了的项
+    size_t clip_e2e_same_topo = 0;      // 其中三角形 / 顶点数相同的
+    float clip_e2e_worst = 0.0f;        // 拓扑相同的项里世界坐标最大绝对误差
+    float clip_e2e_worst_uv = 0.0f;
+    float clip_e2e_worst_rigid = 0.0f;  // 被裁项与裁剪多边形都是 rigid（没有 u8 权重量化）的那部分
+    float clip_e2e_worst_rigid_uv = 0.0f;
+    size_t clip_e2e_rigid_items = 0;
     size_t mixing_frames = 0;       // 至少一条轨道处于 mixingFrom 中的帧（确认真的在测混合）
     size_t multi_track_frames = 0;  // 两条及以上轨道同时生效的帧
     // 覆盖面：确认各分支真的被走到（脚本是随机的，光看"全过"不知道测没测到）
@@ -641,10 +701,21 @@ std::string S5CompareFrame(const SpineGpuAsset& asset, const SpineGpuRuntimeData
             }
         }
         spine::Vector<float>& rv = r->getAttachmentVertices();
-        // 只比 mesh / path 的 deform：bbox / clipping / point 的 deform 时间轴在**烘焙期就跳过**
-        // （SpineGpuFormat.h `SpineGpuTimeline` 的注释：不影响任何姿势；裁剪只有 CPU 实现）。
+        // 只比 mesh / path / clipping（v15）的 deform：bbox / point 的 deform 时间轴在**烘焙期就跳过**
+        // （不改姿势、也不改画面）。
+        const bool is_clip = ra != nullptr && ra->getRTTI().isExactly(spine::ClippingAttachment::rtti);
+        if (is_clip)
+        {
+            // v15：槽位挂着裁剪附件 ⇒ 我们的 AttachRef 必须认出它是哪条裁剪多边形
+            ++s5.clip_attach_checks;
+            if (o.attachment.clip == SpineGpuAttachRef::kNone)
+            {
+                return "槽位 " + std::to_string(si) + " '" + r->getData().getName().buffer() + "' 挂着裁剪附件 '" +
+                       our_name + "'，我们没认出来（AttachRef.clip = kNone）";
+            }
+        }
         const bool baked_kind = ra != nullptr && (ra->getRTTI().isExactly(spine::MeshAttachment::rtti) ||
-                                                  ra->getRTTI().isExactly(spine::PathAttachment::rtti));
+                                                  ra->getRTTI().isExactly(spine::PathAttachment::rtti) || is_clip);
         if (ra != nullptr && !baked_kind)
         {
             if (!o.deform.empty())
@@ -738,6 +809,203 @@ std::string S5DescribeRefTracks(spine::AnimationState& ref)
 }
 
 // 一个资产跑 `scripts` 段脚本。返回 false = 出现分叉（细节进 s5.details）。
+// ---------------------------------------------------------------------
+// v15：裁剪对拍。参考侧照 MeshGeneration/SpineMesh.h:107-259 的绘制循环跑 spine::SkeletonClipping；
+// 同一个循环里把**参考的**世界坐标 / UV / 三角形 / 裁剪多边形同时喂给我们的转录版
+// （SpineGpuSkeletonClipping），逐位比；再拿我们完整的一帧（SpineGpuClipFrame：状态机 + u8 权重
+// 的 CPU 蒙皮）比作用域（硬判据）与端到端几何（只统计）。
+// ---------------------------------------------------------------------
+std::string S5CompareClip(const SpineGpuAsset& asset, const SpineGpuSkeletonState& st, const SpineGpuPoseResult& pose,
+                          spine::Skeleton& ref, S5Stats& s5)
+{
+    if (asset.clip_polygons.empty())
+    {
+        return std::string();
+    }
+    static spine::SkeletonClipping ref_clip;
+    static SpineGpuSkeletonClipping core;   // 喂参考输入
+    static SpineGpuSkeletonClipping ours;   // 我们完整的一帧
+    static SpineGpuClipFrameResult frame;
+    ref_clip.clipEnd();
+    core.ClipEnd();
+
+    const SpineImportResult fr = SpineGpuClipFrame(asset, st, pose, ours, frame);
+    if (!fr.ok)
+    {
+        return "裁剪帧失败：" + fr.error;
+    }
+
+    static const unsigned short kRegionTris[6] = {0, 1, 2, 2, 3, 0};
+    std::vector<float> world;
+    std::vector<int> ref_clipped(st.slots.size(), -1);   // [slot] = 生效裁剪附件所在槽位，-1 = 不在作用域
+    bool any_start = false;
+    char buf[256];
+    spine::Vector<spine::Slot*>& order = ref.getDrawOrder();
+    for (size_t oi = 0; oi < order.size(); ++oi)
+    {
+        spine::Slot* slot = order[oi];
+        spine::Attachment* att = slot->getAttachment();
+        const uint32_t si = static_cast<uint32_t>(slot->getData().getIndex());
+        if (att == nullptr)
+        {
+            ref_clip.clipEnd(*slot);
+            core.ClipEnd(si);
+            continue;
+        }
+        const float* verts = nullptr;
+        const float* uvs = nullptr;
+        const unsigned short* tris = nullptr;
+        size_t tri_len = 0;
+        if (att->getRTTI().isExactly(spine::RegionAttachment::rtti))
+        {
+            spine::RegionAttachment* ra = static_cast<spine::RegionAttachment*>(att);
+            world.assign(8, 0.0f);
+            ra->computeWorldVertices(slot->getBone(), world.data(), 0, 2);
+            verts = world.data();
+            uvs = ra->getUVs().buffer();
+            tris = kRegionTris;
+            tri_len = 6;
+        }
+        else if (att->getRTTI().isExactly(spine::MeshAttachment::rtti))
+        {
+            spine::MeshAttachment* ma = static_cast<spine::MeshAttachment*>(att);
+            const size_t wl = ma->getWorldVerticesLength();
+            world.assign(wl, 0.0f);
+            ma->computeWorldVertices(*slot, 0, wl, world.data(), 0, 2);
+            verts = world.data();
+            uvs = ma->getUVs().buffer();
+            tris = ma->getTriangles().buffer();
+            tri_len = ma->getTriangles().size();
+        }
+        else if (att->getRTTI().isExactly(spine::ClippingAttachment::rtti))
+        {
+            spine::ClippingAttachment* ca = static_cast<spine::ClippingAttachment*>(att);
+            const bool was = ref_clip.isClipping();
+            const size_t rn = ref_clip.clipStart(*slot, ca);
+            const size_t n = ca->getWorldVerticesLength();
+            world.assign(n, 0.0f);
+            ca->computeWorldVertices(*slot, 0, n, world.data(), 0, 2);
+            spine::SlotData* end = ca->getEndSlot();
+            const size_t cn = core.ClipStart(si, end != nullptr ? static_cast<uint16_t>(end->getIndex())
+                                                                : SpineGpuConstants::kNoClipEndSlot,
+                                             world);
+            (void)was;
+            if (rn != cn)
+            {
+                std::snprintf(buf, sizeof(buf), "裁剪：槽位 %u clipStart 凸块数 我们 %zu vs 参考 %zu", si, cn, rn);
+                return buf;
+            }
+            s5.clip_core_pieces += rn;
+            any_start = true;
+            continue;
+        }
+        else
+        {
+            ref_clip.clipEnd(*slot);
+            core.ClipEnd(si);
+            continue;
+        }
+
+        if (ref_clip.isClipping() != core.IsClipping())
+        {
+            std::snprintf(buf, sizeof(buf), "裁剪：槽位 %u 处 isClipping 参考 %d vs 转录 %d", si, ref_clip.isClipping() ? 1 : 0,
+                          core.IsClipping() ? 1 : 0);
+            return buf;
+        }
+        if (ref_clip.isClipping())
+        {
+            ref_clipped[si] = static_cast<int>(core.ActiveClipRow());
+            // ---- 同输入逐位 ----
+            std::vector<uint16_t> tris16(tris, tris + tri_len);
+            ref_clip.clipTriangles(const_cast<float*>(verts), const_cast<unsigned short*>(tris), tri_len,
+                                   const_cast<float*>(uvs), 2);
+            core.ClipTriangles(verts, tris16.data(), tri_len, uvs, 2);
+            ++s5.clip_core_calls;
+            spine::Vector<float>& rv = ref_clip.getClippedVertices();
+            spine::Vector<float>& ruv = ref_clip.getClippedUVs();
+            spine::Vector<unsigned short>& rt = ref_clip.getClippedTriangles();
+            const bool same =
+                rv.size() == core.ClippedVertices().size() && ruv.size() == core.ClippedUVs().size() &&
+                rt.size() == core.ClippedTriangles().size() &&
+                (rv.size() == 0 || std::memcmp(rv.buffer(), core.ClippedVertices().data(), rv.size() * 4u) == 0) &&
+                (ruv.size() == 0 || std::memcmp(ruv.buffer(), core.ClippedUVs().data(), ruv.size() * 4u) == 0) &&
+                (rt.size() == 0 || std::memcmp(rt.buffer(), core.ClippedTriangles().data(), rt.size() * 2u) == 0);
+            if (!same)
+            {
+                std::snprintf(buf, sizeof(buf),
+                              "裁剪：槽位 %u '%s' 同输入 clipTriangles 不逐位一致（顶点 %zu vs %zu，三角形索引 %zu vs %zu）", si,
+                              att->getName().buffer(), core.ClippedVertices().size(), rv.size(),
+                              core.ClippedTriangles().size(), rt.size());
+                return buf;
+            }
+            s5.clip_core_out_vertices += rv.size() / 2u;
+
+            // ---- 端到端（只统计）----
+            const uint32_t k = si < frame.slot_clipped.size() ? frame.slot_clipped[si] : SpineGpuClipFrameResult::kNotClipped;
+            if (k != SpineGpuClipFrameResult::kNotClipped)
+            {
+                const SpineGpuClippedDraw& d = frame.draws[k];
+                ++s5.clip_e2e_items;
+                if (d.vertex_count * 2u == rv.size() && d.index_count == rt.size() &&
+                    std::memcmp(frame.indices.data() + d.index_first, rt.buffer(), rt.size() * 2u) == 0)
+                {
+                    ++s5.clip_e2e_same_topo;
+                    const bool all_rigid =
+                        asset.draw_items[d.draw_item].vertex_format == SpineVertexFormat::kRigid &&
+                        asset.clip_polygons[d.clip_row].vertex_format == SpineVertexFormat::kRigid;
+                    s5.clip_e2e_rigid_items += all_rigid ? 1u : 0u;
+                    for (size_t q = 0; q < rv.size(); ++q)
+                    {
+                        if (all_rigid)
+                        {
+                            s5.clip_e2e_worst_rigid = std::max(
+                                s5.clip_e2e_worst_rigid,
+                                std::fabs(frame.xy[static_cast<size_t>(d.vertex_first) * 2u + q] - rv[q]));
+                            s5.clip_e2e_worst_rigid_uv = std::max(
+                                s5.clip_e2e_worst_rigid_uv,
+                                std::fabs(frame.uv[static_cast<size_t>(d.vertex_first) * 2u + q] - ruv[q]));
+                        }
+                        s5.clip_e2e_worst = std::max(s5.clip_e2e_worst,
+                                                     std::fabs(frame.xy[static_cast<size_t>(d.vertex_first) * 2u + q] - rv[q]));
+                        s5.clip_e2e_worst_uv = std::max(
+                            s5.clip_e2e_worst_uv, std::fabs(frame.uv[static_cast<size_t>(d.vertex_first) * 2u + q] - ruv[q]));
+                    }
+                }
+            }
+        }
+        ref_clip.clipEnd(*slot);
+        core.ClipEnd(si);
+    }
+    ref_clip.clipEnd();
+    core.ClipEnd();
+    if (any_start)
+    {
+        ++s5.clip_frames;
+    }
+
+    // ---- 作用域（硬判据）：每个可画槽位"在不在作用域里、被哪条裁" ----
+    for (uint32_t si = 0; si < st.slots.size(); ++si)
+    {
+        if (pose.slot_draw_item[si] == SpineGpuPoseResult::kNoDrawItem)
+        {
+            continue;
+        }
+        ++s5.clip_scope_checks;
+        const uint32_t k = frame.slot_clipped[si];
+        const int ours_clip_slot = k == SpineGpuClipFrameResult::kNotClipped
+                                       ? -1
+                                       : static_cast<int>(asset.clip_polygons[frame.draws[k].clip_row].slot_index);
+        if (ours_clip_slot != ref_clipped[si])
+        {
+            std::snprintf(buf, sizeof(buf), "裁剪作用域：槽位 %u 我们 %s%d vs 参考 %s%d", si,
+                          ours_clip_slot < 0 ? "不裁" : "被槽位 ", ours_clip_slot, ref_clipped[si] < 0 ? "不裁" : "被槽位 ",
+                          ref_clipped[si]);
+            return buf;
+        }
+    }
+    return std::string();
+}
+
 bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::SkeletonData* ref_data, size_t scripts,
            size_t frames, size_t max_details, S5Stats& s5)
 {
@@ -760,6 +1028,21 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
         }
     }
     ++s5.assets;
+    const size_t clip_frames0 = s5.clip_frames;
+    struct BestClip
+    {
+        S5Stats& s;
+        size_t f0;
+        std::string path;
+        ~BestClip()
+        {
+            if (s.clip_frames - f0 > s.clip_best_frames)
+            {
+                s.clip_best_frames = s.clip_frames - f0;
+                s.clip_best_asset = path;
+            }
+        }
+    } best_clip {s5, clip_frames0, skel_path.string()};
     const bool collision = RefHasPropertyIdCollision(ref_data);
     if (collision)
     {
@@ -1017,8 +1300,12 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
             s5.add_frames += add_blend ? 1u : 0u;
             s5.chain2_frames += chain2 ? 1u : 0u;
 
-            const std::string diff = r.ok ? S5CompareFrame(asset, data, st, pose, ref_skel, ref_data, s5)
-                                          : ("我们的解算失败：" + r.error);
+            std::string diff = r.ok ? S5CompareFrame(asset, data, st, pose, ref_skel, ref_data, s5)
+                                    : ("我们的解算失败：" + r.error);
+            if (diff.empty())
+            {
+                diff = S5CompareClip(asset, st, pose, ref_skel, s5);
+            }
             if (!diff.empty())
             {
                 ++(collision ? s5.assets_collision_bad : s5.assets_bad);
@@ -1384,7 +1671,7 @@ int main(int argc, char** argv)
         }
 
         // ---- 参考侧 ----
-        RefAttachmentLoader ref_loader;
+        RefAttachmentLoader ref_loader(&atlas);
         spine::SkeletonBinary ref_binary(&ref_loader);
         spine::SkeletonJson ref_json(&ref_loader);
         spine::SkeletonData* ref_data =
@@ -1852,9 +2139,89 @@ int main(int argc, char** argv)
                             }
                             continue;
                         }
+                        if (!ref_drawable)
+                        {
+                            continue;   // 两边都不画（NULL / bbox / clipping / path / point）
+                        }
                         if (!ref_mesh)
                         {
+                            // ---- region：每个角的 (位置, UV) 配对要和参考一致 ----
+                            // 在**局部空间**比（世界空间里骨骼缩放为 0 时 4 个角重合，配对无从判断）：
+                            // 我们第 j 个顶点 = 参考 `_vertexOffset` 第 j 对（BL, UL, UR, BR），
+                            // 它的 UV = 参考 `_uvs` 第 {1, 2, 3, 0}[j] 对（`_uvs` 按 BR, BL, UL, UR 配对）。
+                            spine::RegionAttachment* rr = static_cast<spine::RegionAttachment*>(ra);
+                            spine::Vector<float>& roff = rr->getOffset();
+                            spine::Vector<float>& ruv = rr->getUVs();
+                            const SpineDrawItem& rdi = loaded.draw_items[item];
+                            bool pair_ok = rdi.vertex_count == 4 && ruv.size() == 8 && roff.size() == 8;
+                            static const uint32_t kUvOfCorner[4] = {1, 2, 3, 0};
+                            for (uint32_t j = 0; j < 4 && pair_ok; ++j)
+                            {
+                                float bx = 0.0f, by = 0.0f;
+                                const size_t at = (static_cast<size_t>(rdi.vertex_base) + j) * 8u;
+                                std::memcpy(&bx, loaded.vertex_buffer.data() + at, 4);
+                                std::memcpy(&by, loaded.vertex_buffer.data() + at + 4u, 4);
+                                const size_t uv =
+                                    static_cast<size_t>(static_cast<uint32_t>(rdi.uv_offset + rdi.vertex_base + j)) * 2u;
+                                const uint32_t k = kUvOfCorner[j];
+                                pair_ok = std::fabs(bx - roff[j * 2u]) <= 1e-3f && std::fabs(by - roff[j * 2u + 1u]) <= 1e-3f &&
+                                          uv + 1u < loaded.uv_buffer.size() &&
+                                          std::fabs(loaded.uv_buffer[uv] - ruv[k * 2u]) <= 1e-6f &&
+                                          std::fabs(loaded.uv_buffer[uv + 1u] - ruv[k * 2u + 1u]) <= 1e-6f;
+                                if (!pair_ok && st.region_uv_bad < 3)
+                                {
+                                    std::printf("    角 %u：我们 pos (%g %g) uv (%g %g) | 参考 off (%g %g) uv[%u] (%g %g)\n", j, bx, by,
+                                                uv + 1u < loaded.uv_buffer.size() ? loaded.uv_buffer[uv] : -1.0f,
+                                                uv + 1u < loaded.uv_buffer.size() ? loaded.uv_buffer[uv + 1u] : -1.0f,
+                                                roff[j * 2u], roff[j * 2u + 1u], k, ruv[k * 2u], ruv[k * 2u + 1u]);
+                                }
+                            }
+                            ++st.region_uv_checks;
+                            if (!pair_ok)
+                            {
+                                ++st.region_uv_bad;
+                                ++st.mismatches;   // v15：UV 配对是硬判据（错了就是贴图转 90° / 拉伸）
+                                file_ok = false;
+                                if (st.region_uv_bad <= 3)
+                                {
+                                    std::printf("[region UV] %s 槽位 %zu '%s'：角与 UV 的配对和参考不一致\n",
+                                                skel_path.filename().string().c_str(), si, ra->getName().buffer());
+                                }
+                            }
                             continue;
+                        }
+                        {
+                            // ---- mesh：逐顶点 UV 与参考 getUVs()（updateUVs 的结果）----
+                            spine::Vector<float>& muv = static_cast<spine::MeshAttachment*>(ra)->getUVs();
+                            const SpineDrawItem& mdi = loaded.draw_items[item];
+                            bool uv_ok = muv.size() == static_cast<size_t>(mdi.vertex_count) * 2u;
+                            for (uint32_t v = 0; v < mdi.vertex_count && uv_ok; ++v)
+                            {
+                                const size_t uv =
+                                    static_cast<size_t>(static_cast<uint32_t>(mdi.uv_offset + mdi.vertex_base + v)) * 2u;
+                                uv_ok = uv + 1u < loaded.uv_buffer.size() &&
+                                        std::fabs(loaded.uv_buffer[uv] - muv[v * 2u]) <= 1e-5f &&
+                                        std::fabs(loaded.uv_buffer[uv + 1u] - muv[v * 2u + 1u]) <= 1e-5f;
+                            }
+                            ++st.mesh_uv_checks;
+                            if (!uv_ok)
+                            {
+                                ++st.mesh_uv_bad;
+                                ++st.mismatches;
+                                file_ok = false;
+                                if (st.mesh_uv_bad <= 3)
+                                {
+                                    std::printf("[mesh UV] %s 槽位 %zu '%s'：UV 与参考不一致\n",
+                                                skel_path.filename().string().c_str(), si, ra->getName().buffer());
+                                    for (uint32_t v = 0; v < 3 && v < mdi.vertex_count && muv.size() >= 6; ++v)
+                                    {
+                                        const size_t uv = static_cast<size_t>(
+                                            static_cast<uint32_t>(mdi.uv_offset + mdi.vertex_base + v)) * 2u;
+                                        std::printf("    v%u 我们 (%.6f %.6f) 参考 (%.6f %.6f)\n", v, loaded.uv_buffer[uv],
+                                                    loaded.uv_buffer[uv + 1u], muv[v * 2u], muv[v * 2u + 1u]);
+                                    }
+                                }
+                            }
                         }
                         spine::Vector<float>& rv = rs->getAttachmentVertices();
                         const SpineGpuMeshDeform* od = nullptr;
@@ -2172,6 +2539,8 @@ int main(int argc, char** argv)
     std::printf("  └ 其中 path 带 deform: %zu\n", st.files_bad_deform_on_path);
     std::printf("动画时长对拍         : %zu\n", st.anim_duration_checks);
     std::printf("槽位当前附件对拍     : %zu\n", st.slot_attachment_checks);
+    std::printf("region 角/UV 配对    : %zu 次，对不上 %zu 次\n", st.region_uv_checks, st.region_uv_bad);
+    std::printf("mesh 逐顶点 UV       : %zu 次，对不上 %zu 次\n", st.mesh_uv_checks, st.mesh_uv_bad);
     std::printf("mesh deform 对拍     : %zu 个槽位采样（参考非空 %zu），逐 float %zu，最大相对误差 %.3g\n",
                 st.deform_checks, st.deform_nonempty, st.deform_values, static_cast<double>(st.worst_deform_rel));
     std::printf("GPU deform 寻址核对  : %zu 个 weighted 顶点\n", st.gpu_addr_checks);
@@ -2226,8 +2595,19 @@ int main(int argc, char** argv)
         std::printf("骨骼分量比较         : %zu，最大相对误差 %.3g\n", s5.bone_checks, static_cast<double>(s5.worst_rel));
         std::printf("槽位比较             : %zu（附件 + 颜色 + 暗色 + deform），deform 逐 float %zu\n", s5.slot_checks,
                     s5.deform_values);
-        std::printf("  └ bbox / clipping 的 deform（烘焙期不收，跳过）: %zu 次\n", s5.deform_skipped_unbaked);
+        std::printf("  └ bbox / point 的 deform（烘焙期不收，跳过）: %zu 次；槽位挂裁剪附件 %zu 次\n",
+                    s5.deform_skipped_unbaked, s5.clip_attach_checks);
         std::printf("绘制顺序比较         : %zu\n", s5.draw_order_checks);
+        std::printf("裁剪（v15）          : %zu 帧开始过裁剪，可画槽位作用域比较 %zu 次\n", s5.clip_frames,
+                    s5.clip_scope_checks);
+        std::printf("  └ 同输入 clipTriangles 逐位: %zu 次（输出 %zu 顶点，clipStart 凸块 %zu）\n", s5.clip_core_calls,
+                    s5.clip_core_out_vertices, s5.clip_core_pieces);
+        std::printf("  └ 端到端（u8 权重蒙皮）: %zu 项，拓扑相同 %zu 项，世界坐标最大误差 %.3g，UV 最大误差 %.3g\n",
+                    s5.clip_e2e_items, s5.clip_e2e_same_topo, static_cast<double>(s5.clip_e2e_worst),
+                    static_cast<double>(s5.clip_e2e_worst_uv));
+        std::printf("     其中全 rigid（无权重量化）%zu 项：世界坐标最大误差 %.3g，UV 最大误差 %.3g\n", s5.clip_e2e_rigid_items,
+                    static_cast<double>(s5.clip_e2e_worst_rigid), static_cast<double>(s5.clip_e2e_worst_rigid_uv));
+        std::printf("  └ 裁剪帧最多的资产: %s（%zu 帧）\n", s5.clip_best_asset.c_str(), s5.clip_best_frames);
         std::printf("分叉的资产           : %zu（撞号资产上的另计 %zu）\n", s5.assets_bad, s5.assets_collision_bad);
         for (const std::string& d : s5.details)
         {

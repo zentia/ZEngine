@@ -201,7 +201,8 @@ std::vector<uint8_t> BuildSpineStringBlob(const SpineGpuAsset& asset)
     std::vector<uint32_t> anim_off;
     std::vector<uint32_t> anim_att_off;
     std::vector<uint32_t> path_att_off;
-    BuildSpineStringTable(asset, blob, slot_off, anim_off, anim_att_off, path_att_off);
+    std::vector<uint32_t> clip_off;
+    BuildSpineStringTable(asset, blob, slot_off, anim_off, anim_att_off, path_att_off, clip_off);
     return blob;
 }
 

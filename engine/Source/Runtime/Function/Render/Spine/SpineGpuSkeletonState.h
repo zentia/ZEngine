@@ -116,6 +116,9 @@ struct SpineGpuAttachRef
     uint32_t name_offset = SpineGpuConstants::kNoAttachmentName;   // chunk 1 偏移（输出用）
     uint32_t draw_item = kNone;   // default 皮肤（skin 0）下对应的绘制项；kNone = 不产生绘制项
     uint32_t path_att = SpineGpuConstants::kNoPathAttachment;   // chunk 20 下标；不是 path = kNoPathAttachment
+    // v15：default 皮肤（skin 0）下这个名字对应的**裁剪附件**（chunk 9 行号）；kNone = 不是裁剪附件。
+    // 裁剪状态机（SpineGpuClipper）按它判断"走到这个槽位时 clipStart"，deform 按它判断是否作用于本槽位。
+    uint32_t clip = kNone;
 };
 
 // 从容器派生出来、**不随帧变**的查找表。每个资产建一次，所有实例 / 所有帧共用。

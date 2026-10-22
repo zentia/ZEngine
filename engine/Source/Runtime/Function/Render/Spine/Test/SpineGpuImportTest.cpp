@@ -1183,6 +1183,20 @@ std::string BuildClip(const std::string& end_field, bool with_deform,
     return s;
 }
 
+// v15：deform 指向**裁剪附件** s1/clip（rigid 4 顶点，offset 2 起 4 个 +1）。
+std::string BuildClipDeformOnClip()
+{
+    std::string json = BuildClip("\"end\": \"s2\", ", false);
+    const size_t last = json.rfind('}');
+    if (json.empty() || last == std::string::npos)
+    {
+        return std::string();
+    }
+    json.insert(last, R"(, "animations": { "walk": { "deform": { "default": { "s1": {
+                    "clip": [ { "time": 0, "offset": 2, "vertices": [ 1,1, 1,1 ] } ] } } } } })");
+    return json;
+}
+
 // ---- 跨语言对拍的夹具落盘（SpineGpuImportTest --dump <dir>）----
 // C# 读端（CSharp/）要对拍的是"同一副骨架经两种输入产出的**同一份字节**"，
 // 光在 C++ 里自测不够 —— 两端各自对，等于没对。所以这里把夹具容器写成 .zspg 文件，
@@ -1225,6 +1239,8 @@ bool DumpContainers(const SpineAtlas& atlas, const std::string& dir)
     cases.push_back({"clip_end_self", BuildClip("\"end\": \"s1\", ", false),
                      BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, false, true, 10, true, 1, 2)});
     cases.push_back({"clip_no_end", BuildClip("", false), std::vector<uint8_t>()});
+    // v15：deform 指向裁剪附件（target 次高位）⇒ C# 读端要认得 clip 位并原样写回
+    cases.push_back({"clip_deform", BuildClipDeformOnClip(), std::vector<uint8_t>()});
     cases.push_back({"clip_nested", kSkeletonClipNested,
                      BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, false, true, 10,
                                       true, 4, 3, true, 3)});
@@ -1928,7 +1944,8 @@ int main(int argc, char** argv)
         std::vector<uint32_t> anim_off;
         std::vector<uint32_t> anim_att_off;
         std::vector<uint32_t> path_att_off;
-        BuildSpineStringTable(back, blob, slot_off, anim_off, anim_att_off, path_att_off);
+        std::vector<uint32_t> clip_off;
+        BuildSpineStringTable(back, blob, slot_off, anim_off, anim_att_off, path_att_off, clip_off);
         bool name_ok = asset.path_attachment_names.size() == 1 &&
                        back.path_attachments.size() == 1 &&
                        back.path_attachments[0].name_offset < blob.size() &&
@@ -3946,6 +3963,9 @@ int main(int argc, char** argv)
                 }
                 CheckEq(static_cast<long long>(k2), 1, "clip: 缺 end ⇒ s2 被裁");
                 CheckEq(static_cast<long long>(k3), 1, "clip: 缺 end ⇒ 一路裁到最后一个槽位 s3");
+                // v15：缺 end 落盘成 kNoClipEndSlot（**不是 0** —— 0 是 s0，一个真实存在的槽位）
+                Check(a.clip_polygons.size() == 1 && a.clip_polygons[0].end_slot == SpineGpuConstants::kNoClipEndSlot,
+                      "clip v15: 缺 end ⇒ end_slot = kNoClipEndSlot（不是 0）");
             }
             g_prefix.clear();
         }
@@ -4232,8 +4252,31 @@ int main(int argc, char** argv)
 
             std::vector<uint8_t> bytes;
             Check(WriteSpineGpuContainer(ja, bytes).ok, "clip-data: 序列化成功");
-            CheckEq(static_cast<long long>(FindChunk(bytes, SpineGpuChunkId::kChunkClipData)), 12,
-                    "clip-data: chunk 9 = 12 B × 1 条");
+            CheckEq(static_cast<long long>(FindChunk(bytes, SpineGpuChunkId::kChunkClipData)), 20,
+                    "clip-data: chunk 9 = 20 B × 1 条（v15）");
+
+            // ---- v15：名字与结束槽位落盘 ----
+            // 名字要**翻译回字符串**才算数：偏移算错（组序排歪）字节照样自洽。
+            if (ja.clip_polygons.size() == 1)
+            {
+                const SpineGpuClipPolygon& p = ja.clip_polygons[0];
+                CheckEq(static_cast<long long>(p.end_slot), 2, "clip-data v15: end_slot = s2（含）");
+                CheckEq(static_cast<long long>(p.pad2), 0, "clip-data v15: pad2 写 0");
+                const std::vector<uint8_t> blob = BuildSpineStringBlob(ja);
+                Check(ja.clip_names.size() == 1 && ja.clip_names[0] == "clip",
+                      "clip-data v15: clip_names = { 'clip' }（皮肤里的键）");
+                Check(p.name_offset < blob.size() &&
+                          std::string(reinterpret_cast<const char*>(blob.data() + p.name_offset)) == "clip",
+                      "clip-data v15: name_offset 翻译回字符串 = 'clip'");
+                // 运行时：s1 的 setup 附件就是这条裁剪附件 ⇒ AttachRef.clip = 0，且不产生绘制项
+                SpineGpuRuntimeData rd;
+                Check(SpineGpuBuildRuntimeData(ja, rd).ok, "clip-data v15: 运行时查找表建成");
+                Check(rd.slot_setup.size() == 4 && rd.slot_setup[1].clip == 0u &&
+                          rd.slot_setup[1].draw_item == SpineGpuAttachRef::kNone,
+                      "clip-data v15: s1 的 setup 附件解析成第 0 条裁剪多边形、没有绘制项");
+                Check(rd.slot_setup.size() == 4 && rd.slot_setup[2].clip == SpineGpuAttachRef::kNone,
+                      "clip-data v15: 可画槽位的 clip 是 kNone");
+            }
 
             // 容器必须可重入：读回来再写一遍要逐字节相同（多边形与 clip_index 都得保住）
             SpineGpuAsset back;
@@ -4243,6 +4286,159 @@ int main(int argc, char** argv)
             Check(WriteSpineGpuContainer(back, again).ok, "clip-data: 再序列化成功");
             Check(bytes == again, "clip-data: round-trip 逐字节相同（含裁剪多边形与 clip_index）");
 
+            g_prefix.clear();
+        }
+
+        // ---- 13d'. v15：deform 指向**裁剪附件** ⇒ 照样烘焙（target 置 clip 位）----
+        // v14 在烘焙期把它当"不影响姿势"丢掉 —— 对骨骼成立，对画面不成立（clipStart 读槽位的
+        // deform 数组算多边形）。OSGame 实测 7 条（K_Niumo `shandian1` 等）。
+        // 夹具：rigid 4 顶点的 clip，offset 2 起 4 个 +1 ⇒ deform = setup + {0,0, 1,1, 1,1, 0,0}。
+        {
+            g_prefix = "[clip-deform] ";
+            const std::string json = BuildClipDeformOnClip();
+            Check(!json.empty(), "clip-deform: 夹具替换成功");
+            if (!json.empty())
+            {
+                SpineSourceSkeleton cj;
+                SpineImportResult rj = ParseSpineSkeletonJson(json.data(), json.size(), &atlas, cj);
+                Check(rj.ok, "clip-deform: json 解析成功");
+                SpineGpuAsset ja;
+                const SpineImportResult bj = rj.ok ? BakeSpineGpuAsset(cj, ja) : rj;
+                Check(bj.ok, "clip-deform: bake 成功");
+                if (!bj.ok)
+                {
+                    std::printf("  error: %s\n", bj.error.c_str());
+                }
+                size_t n_deform = 0;
+                for (const SpineGpuTimeline& t : ja.timelines)
+                {
+                    if (t.type == static_cast<uint16_t>(SpineTimelineType::kDeform))
+                    {
+                        ++n_deform;
+                        CheckEq(static_cast<long long>(t.target),
+                                static_cast<long long>(SpineGpuConstants::kDeformTargetClipBit | 0u),
+                                "clip-deform: target = clip 位 | 裁剪多边形 0（不是附件记录 / path）");
+                    }
+                }
+                CheckEq(static_cast<long long>(n_deform), 1LL, "clip-deform: 烘出 1 条 deform 时间轴（v14 是 0 条）");
+                Check((ja.header.flags & SpineGpuFlags::kHasDeform) == 0,
+                      "clip-deform: **不点亮** kHasDeform（没有绘制项因它回退）");
+
+                // 运行时：apply 之后 s1 的 deform 数组 = setup + 偏移（rigid 是**绝对**坐标）
+                if (bj.ok && ja.anims.size() == 1)
+                {
+                    SpineGpuRuntimeData rd;
+                    SpineGpuSkeletonState st;
+                    const bool init_ok = SpineGpuBuildRuntimeData(ja, rd).ok && SpineGpuInitSkeletonState(ja, rd, st).ok;
+                    Check(init_ok, "clip-deform: 运行时初始化");
+                    if (init_ok)
+                    {
+                        const SpineImportResult ar = SpineGpuApplyAnimation(ja, rd, st, 0, 0.0f, 0.5f, false, 1.0f,
+                                                                            SpineGpuMixBlend::kFirst,
+                                                                            SpineGpuMixDirection::kIn);
+                        Check(ar.ok, "clip-deform: apply 成功（v14 的解算器会把 clip 位当附件记录下标 ⇒ 越界）");
+                        const std::vector<float> want = {0, 0, 11, 1, 11, 11, 0, 10};
+                        Check(st.slots.size() == 4 && st.slots[1].deform == want,
+                              "clip-deform: s1 的 deform = {0,0, 11,1, 11,11, 0,10}");
+                        Check(st.slots.size() == 4 && st.slots[2].deform.empty(), "clip-deform: s2（mesh）不受影响");
+                    }
+                }
+
+                // 往返 + 读端校验：clip 下标越界 / 两位同时置位 ⇒ 必须报错
+                std::vector<uint8_t> bytes;
+                Check(bj.ok && WriteSpineGpuContainer(ja, bytes).ok, "clip-deform: 写容器");
+                SpineGpuAsset back;
+                Check(!bytes.empty() && ReadSpineGpuContainer(bytes.data(), bytes.size(), back).ok &&
+                          back.timelines == ja.timelines,
+                      "clip-deform: 读回、时间轴往返一致");
+                for (int variant = 0; variant < 2 && bj.ok; ++variant)
+                {
+                    SpineGpuAsset bad = ja;
+                    for (SpineGpuTimeline& t : bad.timelines)
+                    {
+                        if (t.type == static_cast<uint16_t>(SpineTimelineType::kDeform))
+                        {
+                            t.target = variant == 0 ? static_cast<uint16_t>(SpineGpuConstants::kDeformTargetClipBit | 3u)
+                                                    : static_cast<uint16_t>(SpineGpuConstants::kDeformTargetClipBit |
+                                                                            SpineGpuConstants::kDeformTargetPathBit);
+                        }
+                    }
+                    std::vector<uint8_t> bad_bytes;
+                    Check(WriteSpineGpuContainer(bad, bad_bytes).ok, "clip-deform: 写坏容器");
+                    SpineGpuAsset bad_back;
+                    const SpineImportResult br2 = ReadSpineGpuContainer(bad_bytes.data(), bad_bytes.size(), bad_back);
+                    Check(!br2.ok, variant == 0 ? "clip-deform: 越界的裁剪多边形下标 ⇒ 读端报错"
+                                                : "clip-deform: path 位与 clip 位同时置位 ⇒ 读端报错");
+                    std::printf("  (预期报错) %s\n", br2.error.c_str());
+                }
+                // 结束槽位 / 名字偏移指歪 ⇒ 读端报错
+                for (int variant = 0; variant < 2 && bj.ok && !ja.clip_polygons.empty(); ++variant)
+                {
+                    SpineGpuAsset bad = ja;
+                    if (variant == 0)
+                    {
+                        bad.clip_polygons[0].end_slot = 4;   // 只有 4 个槽位
+                    }
+                    else
+                    {
+                        bad.clip_polygons[0].name_offset = 0;   // 指到第一个骨骼名上
+                    }
+                    std::vector<uint8_t> bad_bytes;
+                    Check(WriteSpineGpuContainer(bad, bad_bytes).ok, "clip v15: 写坏容器");
+                    SpineGpuAsset bad_back;
+                    const SpineImportResult br2 = ReadSpineGpuContainer(bad_bytes.data(), bad_bytes.size(), bad_back);
+                    Check(!br2.ok, variant == 0 ? "clip v15: end_slot 越界 ⇒ 读端报错"
+                                                : "clip v15: name_offset 不是第 9 组那条 ⇒ 读端报错");
+                    std::printf("  (预期报错) %s\n", br2.error.c_str());
+                }
+            }
+            g_prefix.clear();
+        }
+
+        // ---- 13d''. v15：region 的 (角, UV) 配对 + item_flags ----
+        // 参考 `_uvs` 按 computeWorldVertices 的 BR, BL, UL, UR 配对（槽位名 BLX/ULX… 只是下标），
+        // v14 按槽位名抄 ⇒ 每个角错一位、贴图转 90°。手算：quad 64×32 居中，图集 region (0,0) 64×32 /
+        // 256×256 ⇒ u=0 v=0 u2=0.25 v2=0.125；贴图 v 向下 ⇒ BL 角取 (u, v2)。
+        {
+            g_prefix = "[region-uv] ";
+            SpineSourceSkeleton s;
+            const SpineImportResult r = ParseSpineSkeletonJson(kSkeleton, std::strlen(kSkeleton), &atlas, s);
+            SpineGpuAsset a;
+            const bool ok = r.ok && BakeSpineGpuAsset(s, a).ok;
+            Check(ok, "region-uv: 基线夹具解析 + 烘焙");
+            const SpineDrawItem* quad = nullptr;
+            for (const SpineDrawItem& it : a.draw_items)
+            {
+                if (it.attachment_id < a.attachment_names.size() && a.attachment_names[it.attachment_id] == "quad" &&
+                    it.skin_id == 0)
+                {
+                    quad = &it;
+                }
+                if (it.attachment_id < a.attachment_names.size() && a.attachment_names[it.attachment_id] == "mesh")
+                {
+                    CheckEq(static_cast<long long>(it.item_flags), 0, "region-uv: mesh 的 item_flags = 0");
+                }
+            }
+            Check(quad != nullptr, "region-uv: 找到 quad 的绘制项");
+            if (quad != nullptr)
+            {
+                CheckEq(static_cast<long long>(quad->item_flags), static_cast<long long>(SpineDrawItemFlags::kRegion),
+                        "region-uv: quad 的 item_flags = kRegion");
+                const float kPos[8] = {-32, -16, -32, 16, 32, 16, 32, -16};          // BL, UL, UR, BR
+                const float kUv[8] = {0, 0.125f, 0, 0, 0.25f, 0, 0.25f, 0.125f};     // (u,v2) (u,v) (u2,v) (u2,v2)
+                bool pos_ok = true;
+                bool uv_ok = true;
+                for (uint32_t j = 0; j < 4; ++j)
+                {
+                    float xy[2] = {0, 0};
+                    std::memcpy(xy, a.vertex_buffer.data() + (static_cast<size_t>(quad->vertex_base) + j) * 8u, 8);
+                    pos_ok = pos_ok && std::fabs(xy[0] - kPos[j * 2]) < 1e-4f && std::fabs(xy[1] - kPos[j * 2 + 1]) < 1e-4f;
+                    const size_t uv = static_cast<size_t>(static_cast<uint32_t>(quad->uv_offset + quad->vertex_base + j)) * 2u;
+                    uv_ok = uv_ok && a.uv_buffer[uv] == kUv[j * 2] && a.uv_buffer[uv + 1u] == kUv[j * 2 + 1];
+                }
+                Check(pos_ok, "region-uv: 顶点顺序 BL, UL, UR, BR");
+                Check(uv_ok, "region-uv: BL→(u,v2) UL→(u,v) UR→(u2,v) BR→(u2,v2)（v14 错一位 ⇒ 贴图转 90°）");
+            }
             g_prefix.clear();
         }
     }

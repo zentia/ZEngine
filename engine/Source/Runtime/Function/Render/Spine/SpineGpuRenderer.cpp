@@ -1,4 +1,5 @@
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
+#include "Runtime/Function/Render/Spine/SpineGpuClipper.h"
 
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
@@ -38,7 +39,7 @@ namespace
         uint32_t tint;
         uint32_t flags;
         uint32_t weighted_base;
-        uint32_t deform_base;   // flags bit2 置位时有效（uint 回绕偏置，见 spine_gpu.vert 的 b7）
+        uint32_t deform_base;   // bit2：b7 的回绕偏置；bit3：b8（CPU 裁剪顶点）里的起点（见 spine_gpu.vert）
         uint32_t reserved[3];
     };
     static_assert(sizeof(GpuDraw) == 48, "spine_gpu.vert SpineDraw is 12 x u32 (std430)");
@@ -54,7 +55,16 @@ namespace
     constexpr uint32_t kDrawFlagStraightAlpha = 1u;
     constexpr uint32_t kDrawFlagAdditive = 2u;
     constexpr uint32_t kDrawFlagDeform = 4u;
-    constexpr uint32_t kSet0Bindings = 8;   // b0..b6 + b7 deform（S6）
+    constexpr uint32_t kDrawFlagCpuVerts = 8u;   // v15：CPU 裁剪过的项，顶点取 b8
+    constexpr uint32_t kSet0Bindings = 9;        // b0..b6 + b7 deform（S6）+ b8 CPU 裁剪顶点（v15）
+    constexpr uint32_t kCpuVertBinding = 8;
+
+    // CPU 裁剪顶点（b8）的一项：骨架空间位置 + UV，与 spine_gpu.vert 的 vec4 对齐
+    struct GpuCpuVert
+    {
+        float x, y, u, v;
+    };
+    static_assert(sizeof(GpuCpuVert) == 16, "spine_gpu.vert cpu_verts is vec4");
 
     uint32_t PackRgba8(const float c[4])
     {
@@ -133,6 +143,8 @@ struct SpineGpuRenderer::Impl
     uint32_t last_draw_count {0};
     uint32_t last_deform_draws {0};    // 上一帧带 deform 的绘制项数（S6）
     uint32_t last_deform_floats {0};   // 上一帧上传的 deform float 数
+    uint32_t last_clipped_draws {0};   // 上一帧 CPU 裁剪过的项（v15）
+    uint32_t last_clip_vertices {0};   // 上一帧裁剪输出的顶点数
     std::string track_summary;         // 上一帧的轨道概况（渲染线程写、spine.status 读，受 mutex 保护）
 
     // ---- 管线（与资产无关）----
@@ -156,6 +168,10 @@ struct SpineGpuRenderer::Impl
         Buffer draws;
         Buffer insts;
         Buffer deform;   // 本帧生效的 mesh deform（S6），容量 = 可能同时生效的上界
+        // v15：CPU 裁剪的输出。裁剪会产生新三角形，量没有静态上界 ⇒ 按需扩容（旧缓冲走延迟销毁，
+        // 只重写**本帧槽位**的 b8 —— 它上一次被 GPU 用是 frames.size() 帧之前，已经完成）。
+        Buffer cpu_verts;   // GpuCpuVert[]
+        Buffer cpu_index;   // u16[]，局部于各项的起点
         RHIDescriptorSet* set0 {nullptr};
     };
     struct Loaded
@@ -182,6 +198,9 @@ struct SpineGpuRenderer::Impl
         std::vector<void*> page_textures;   // UIGpuResources 的纹理 id
         std::vector<FrameSlot> frames;
         float bounds[4] {0, 0, 1, 1};       // setup 姿势的包围盒（x0, y0, x1, y1）
+        // v15：CPU 裁剪（SpineGpuClipper）的暂存，跨帧复用
+        SpineGpuSkeletonClipping clipper;
+        SpineGpuClipFrameResult clip;
     };
     std::unique_ptr<Loaded> loaded;
 
@@ -230,6 +249,45 @@ struct SpineGpuRenderer::Impl
         b = Buffer {};
     }
 
+    // 本帧槽位的某个缓冲容量不够 ⇒ 换一个更大的（旧的延迟销毁）。`binding` 非负时重写 set0 的那一格。
+    bool EnsureFrameBuffer(FrameSlot& f, Buffer& b, RHIDeviceSize need, RHIBufferUsageFlags usage, int binding)
+    {
+        if (need <= b.size)
+        {
+            return true;
+        }
+        Retired r;
+        r.frames_left = static_cast<uint32_t>(rhi->GetMaxFramesInFlight()) + 1u;
+        r.buffers.push_back(b);
+        retired.push_back(std::move(r));
+        b = Buffer {};
+        RHIDeviceSize cap = 256;
+        while (cap < need)
+        {
+            cap *= 2;
+        }
+        if (!CreateBuffer(b, cap, usage, nullptr))
+        {
+            return false;
+        }
+        if (binding >= 0)
+        {
+            RHIDescriptorBufferInfo info {};
+            info.buffer = b.buffer;
+            info.offset = 0;
+            info.range = b.size;
+            RHIWriteDescriptorSet w {};
+            w.sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = f.set0;
+            w.dstBinding = static_cast<uint32_t>(binding);
+            w.descriptorCount = 1;
+            w.descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            w.pBufferInfo = &info;
+            rhi->UpdateDescriptorSets(1, &w, 0, nullptr);
+        }
+        return true;
+    }
+
     void RetireLoaded()
     {
         if (!loaded)
@@ -248,6 +306,8 @@ struct SpineGpuRenderer::Impl
             r.buffers.push_back(f.draws);
             r.buffers.push_back(f.insts);
             r.buffers.push_back(f.deform);
+            r.buffers.push_back(f.cpu_verts);
+            r.buffers.push_back(f.cpu_index);
         }
         // 描述符集与纹理留在各自的池里（一次性的诊断入口，量很小），不在这里回收。
         retired.push_back(std::move(r));
@@ -741,7 +801,11 @@ struct SpineGpuRenderer::Impl
                               ssbo, nullptr) &&
                  CreateBuffer(f.insts, sizeof(GpuInst), ssbo, nullptr) &&
                  CreateBuffer(f.deform, static_cast<RHIDeviceSize>(std::max<size_t>(ld->deform_capacity, 1)) * sizeof(float),
-                              ssbo, nullptr);
+                              ssbo, nullptr) &&
+                 // 初始容量给一个小值：没有裁剪的资产永远用不到；有裁剪的第一帧按需扩
+                 CreateBuffer(f.cpu_verts, (a.clip_polygons.empty() ? 1u : 4096u) * sizeof(GpuCpuVert), ssbo, nullptr) &&
+                 CreateBuffer(f.cpu_index, (a.clip_polygons.empty() ? 2u : 8192u) * sizeof(uint16_t),
+                              RHI_BUFFER_USAGE_INDEX_BUFFER_BIT, nullptr);
             if (!ok)
             {
                 err = "创建每帧缓冲失败";
@@ -757,8 +821,8 @@ struct SpineGpuRenderer::Impl
                 err = "分配描述符集失败（共享池可能满了）";
                 return false;
             }
-            Buffer* bufs[kSet0Bindings] = {&ld->vertex_words, &ld->infl_bind, &ld->infl_bone, &ld->uvs,
-                                           &f.bones,          &f.draws,     &f.insts,     &f.deform};
+            Buffer* bufs[kSet0Bindings] = {&ld->vertex_words, &ld->infl_bind, &ld->infl_bone, &ld->uvs, &f.bones,
+                                           &f.draws,          &f.insts,     &f.deform,    &f.cpu_verts};
             RHIDescriptorBufferInfo infos[kSet0Bindings] {};
             RHIWriteDescriptorSet writes[kSet0Bindings] {};
             for (uint32_t i = 0; i < kSet0Bindings; ++i)
@@ -990,7 +1054,8 @@ std::string SpineGpuRenderer::Status() const
     return m_Impl->status + (m_Impl->track_summary.empty() ? std::string() : " [" + m_Impl->track_summary + "]") +
            " (last frame: " + std::to_string(m_Impl->last_draw_count) + " draw items, " +
            std::to_string(m_Impl->last_deform_draws) + " deformed / " + std::to_string(m_Impl->last_deform_floats) +
-           " deform floats" +
+           " deform floats, " + std::to_string(m_Impl->last_clipped_draws) + " clipped / " +
+           std::to_string(m_Impl->last_clip_vertices) + " clip vertices" +
            (m_Impl->skip_reason.empty() ? std::string() : "; skipped: " + m_Impl->skip_reason) + ")";
 }
 
@@ -1132,10 +1197,30 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         return;
     }
 
+    // ---- 2b) 裁剪（v15）：按当前绘制顺序跑 SpineMesh.h 的状态机，作用域内的项在 CPU 上蒙皮 + 裁 ----
+    {
+        const SpineImportResult cr = SpineGpuClipFrame(a, ld.state, pose, ld.clipper, ld.clip);
+        if (!cr.ok)
+        {
+            skip("clip failed: " + cr.error);
+            return;
+        }
+    }
+    const SpineGpuClipFrameResult& clip = ld.clip;
+
+    // 每个绘制命令：静态项按容器的索引区间画；裁剪过的项按动态索引缓冲画（局部下标，b8 起点放在 deform_base）
+    struct DrawCmd
+    {
+        uint32_t item;
+        bool cpu;
+        uint32_t index_first;
+        uint32_t index_count;
+    };
     std::vector<GpuDraw> draws;
-    std::vector<uint32_t> draw_items;   // 与 draws 一一对应
+    std::vector<DrawCmd> cmds_out;   // 与 draws 一一对应
     draws.reserve(a.draw_items.size());
     uint32_t deformed_draws = 0;
+    uint32_t clipped_draws = 0;
     for (uint32_t s : pose.draw_order)
     {
         if (s >= pose.slot_draw_item.size() || pose.slot_draw_item[s] == SpineGpuPoseResult::kNoDrawItem)
@@ -1145,6 +1230,25 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         const uint32_t item = pose.slot_draw_item[s];
         const SpineGpuSlotSample& slot = pose.slots[s];
         const SpineDrawItem& di = a.draw_items[item];
+        const uint32_t ck = s < clip.slot_clipped.size() ? clip.slot_clipped[s] : SpineGpuClipFrameResult::kNotClipped;
+        if (ck != SpineGpuClipFrameResult::kNotClipped)
+        {
+            const SpineGpuClippedDraw& cd = clip.draws[ck];
+            if (cd.index_count == 0)
+            {
+                continue;   // 整个被裁掉
+            }
+            GpuDraw g {};
+            g.vertex_format = static_cast<uint32_t>(di.vertex_format);
+            g.tint = PackRgba8(slot.color);
+            g.flags = kDrawFlagStraightAlpha | kDrawFlagCpuVerts |
+                      (di.blend_mode == SpineBlendMode::kAdditive ? kDrawFlagAdditive : 0u);
+            g.deform_base = cd.vertex_first;
+            draws.push_back(g);
+            cmds_out.push_back({item, true, cd.index_first, cd.index_count});
+            ++clipped_draws;
+            continue;
+        }
         GpuDraw g {};
         g.vertex_format = static_cast<uint32_t>(di.vertex_format);
         g.uv_offset = di.uv_offset;
@@ -1165,7 +1269,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
             ++deformed_draws;
         }
         draws.push_back(g);
-        draw_items.push_back(item);
+        cmds_out.push_back({item, false, di.index_offset, di.index_count});
     }
 
     // ---- 3) 上传：骨骼 / 绘制项 / 实例（本帧槽位）----
@@ -1188,6 +1292,32 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         {
             std::memcpy(dst, deform_values.data(), deform_values.size() * sizeof(float));
             rhi->UnmapMemory(fs.deform.memory);
+        }
+        if (clipped_draws > 0)
+        {
+            const size_t nv = clip.xy.size() / 2u;
+            if (!d.EnsureFrameBuffer(fs, fs.cpu_verts, static_cast<RHIDeviceSize>(nv * sizeof(GpuCpuVert)),
+                                     RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT, static_cast<int>(kCpuVertBinding)) ||
+                !d.EnsureFrameBuffer(fs, fs.cpu_index, static_cast<RHIDeviceSize>(clip.indices.size() * sizeof(uint16_t)),
+                                     RHI_BUFFER_USAGE_INDEX_BUFFER_BIT, -1))
+            {
+                skip("could not grow the clipping buffers");
+                return;
+            }
+            if (rhi->MapMemory(fs.cpu_verts.memory, 0, fs.cpu_verts.size, 0, &dst) && dst != nullptr)
+            {
+                GpuCpuVert* cv = static_cast<GpuCpuVert*>(dst);
+                for (size_t v = 0; v < nv; ++v)
+                {
+                    cv[v] = {clip.xy[v * 2u], clip.xy[v * 2u + 1u], clip.uv[v * 2u], clip.uv[v * 2u + 1u]};
+                }
+                rhi->UnmapMemory(fs.cpu_verts.memory);
+            }
+            if (rhi->MapMemory(fs.cpu_index.memory, 0, fs.cpu_index.size, 0, &dst) && dst != nullptr)
+            {
+                std::memcpy(dst, clip.indices.data(), clip.indices.size() * sizeof(uint16_t));
+                rhi->UnmapMemory(fs.cpu_index.memory);
+            }
         }
         // 骨架空间（y 向上，1 单位 = 1 像素）→ 视口：setup 包围盒居中、占视口 80%
         GpuInst inst {};
@@ -1227,13 +1357,20 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
                          {static_cast<uint32_t>(sx1 - sx0), static_cast<uint32_t>(sy1 - sy0)}};
     rhi->CmdSetViewportPFN(cmd, 0, 1, &vp);
     rhi->CmdSetScissorPFN(cmd, 0, 1, &scissor);
-    rhi->CmdBindIndexBufferPFN(cmd, ld.index.buffer, 0, RHI_INDEX_TYPE_UINT16);
+    int bound_index = -1;   // 0 = 静态索引缓冲，1 = 本帧 CPU 裁剪的动态索引缓冲
     int bound_mode = -1;
     int bound_page = -1;
     UIGpuResources* ui = UIGpuResources::Get();
     for (uint32_t i = 0; i < draws.size(); ++i)
     {
-        const SpineDrawItem& di = a.draw_items[draw_items[i]];
+        const DrawCmd& dc = cmds_out[i];
+        const SpineDrawItem& di = a.draw_items[dc.item];
+        const int want_index = dc.cpu ? 1 : 0;
+        if (want_index != bound_index)
+        {
+            rhi->CmdBindIndexBufferPFN(cmd, dc.cpu ? fs.cpu_index.buffer : ld.index.buffer, 0, RHI_INDEX_TYPE_UINT16);
+            bound_index = want_index;
+        }
         const int mode = static_cast<int>(di.blend_mode) & 3;
         if (mode != bound_mode)
         {
@@ -1257,7 +1394,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
                                           nullptr);
             bound_page = page;
         }
-        rhi->CmdDrawIndexedPFN(cmd, di.index_count, 1, di.index_offset, 0, i);
+        rhi->CmdDrawIndexedPFN(cmd, dc.index_count, 1, dc.index_first, 0, i);
     }
     rhi->PopEvent(cmd);
 
@@ -1284,6 +1421,15 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     d.track_summary = d.DescribeTracks();
     d.last_deform_draws = deformed_draws;
     d.last_deform_floats = static_cast<uint32_t>(deform_values.size());
+    if (clipped_draws > 0 && d.last_clipped_draws == 0)
+    {
+        // 裁剪从"没有"变成"有"时记一行（每个资产 / 每段动画一次，不刷屏）
+        LOG_INFO(ZRender, "SpineGpuRenderer: clipping active: {} clipped draw items, {} clip vertices, {} indices, "
+                          "{} clipStart / {} convex pieces",
+                 clipped_draws, clip.xy.size() / 2u, clip.indices.size(), clip.clip_starts, clip.clip_pieces);
+    }
+    d.last_clipped_draws = clipped_draws;
+    d.last_clip_vertices = static_cast<uint32_t>(clip.xy.size() / 2u);
 }
 
 #else  // !Z_HAS_VULKAN —— 其它后端还没接：接口保留，什么都不画

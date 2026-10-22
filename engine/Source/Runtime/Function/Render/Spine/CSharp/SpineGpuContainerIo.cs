@@ -173,14 +173,14 @@ namespace ZEngine.SpineGpu
                 }
             }
 
-            // ---- 裁剪多边形（chunk 9，12 B/条）----
+            // ---- 裁剪多边形（chunk 9，20 B/条，v15）----
             if (TryGet(byId, (uint)SpineGpuChunkId.ClipData, out uint co, out uint cs))
             {
                 if (cs % SpineGpuConstants.ClipPolygonSize != 0)
                 {
                     throw new SpineGpuContainerException(
                         "container: clip_data 大小不是 " + SpineGpuConstants.ClipPolygonSize +
-                        " B 的整数倍（v6 起一条是 12 B）");
+                        " B 的整数倍（v6 起一条是 12 B，v15 起 20 B：多了 name_offset / end_slot）");
                 }
                 uint n = cs / SpineGpuConstants.ClipPolygonSize;
                 for (uint i = 0; i < n; ++i)
@@ -193,7 +193,23 @@ namespace ZEngine.SpineGpu
                         VertexFormat = (SpineVertexFormat)data[p + SpineGpuOffsets.ClipVertexFormat],
                         VertexCount = ReadU16(data, p + SpineGpuOffsets.ClipVertexCount),
                         VertexOffset = ReadU32(data, p + SpineGpuOffsets.ClipVertexOffset),
+                        NameOffset = ReadU32(data, p + SpineGpuOffsets.ClipNameOffset),
+                        EndSlot = ReadU16(data, p + SpineGpuOffsets.ClipEndSlot),
                     });
+                    if (data[p + SpineGpuOffsets.ClipPad] != 0 || ReadU16(data, p + SpineGpuOffsets.ClipPad2) != 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条裁剪多边形的填充字节不是 0");
+                    }
+                    var cp = asset.ClipPolygons[(int)i];
+                    if (cp.EndSlot != SpineGpuConstants.NoClipEndSlot && cp.EndSlot >= h.SlotCount)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条裁剪多边形的结束槽位 " +
+                            cp.EndSlot + " 越界（槽位数 " + h.SlotCount + "）");
+                    }
+                    if (cp.SlotIndex >= h.SlotCount || cp.SkinId >= h.SkinCount || cp.VertexCount == 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条裁剪多边形的槽位 / 皮肤越界或顶点数为 0");
+                    }
                 }
             }
 
@@ -222,6 +238,7 @@ namespace ZEngine.SpineGpu
                         AttachmentId = ReadU16(data, p + SpineGpuOffsets.ItemAttachmentId),
                         SkinId = ReadU16(data, p + SpineGpuOffsets.ItemSkinId),
                         Kind = (SpineDrawItemKind)data[p + SpineGpuOffsets.ItemKind],
+                        Flags = data[p + SpineGpuOffsets.ItemFlags],
                         ClipIndex = ReadU16(data, p + SpineGpuOffsets.ItemClipIndex),
                         VertexBase = ReadU16(data, p + SpineGpuOffsets.ItemVertexBase),
                         DeformParent = ReadU16(data, p + SpineGpuOffsets.ItemDeformParent),
@@ -1102,8 +1119,30 @@ namespace ZEngine.SpineGpu
             for (int i = 0; i < asset.Timelines.Count; ++i)
             {
                 var t = asset.Timelines[i];
-                if ((SpineTimelineType)t.Type != SpineTimelineType.Deform ||
-                    (t.Target & SpineGpuConstants.DeformTargetPathBit) == 0)
+                if ((SpineTimelineType)t.Type != SpineTimelineType.Deform)
+                {
+                    continue;
+                }
+                bool pathBit = (t.Target & SpineGpuConstants.DeformTargetPathBit) != 0;
+                bool clipBit = (t.Target & SpineGpuConstants.DeformTargetClipBit) != 0;
+                if (pathBit && clipBit)
+                {
+                    throw new SpineGpuContainerException("container: 第 " + i +
+                        " 条 deform 时间轴的 target 同时置了 path 位与 clip 位");
+                }
+                if (clipBit)
+                {
+                    // v15：裁剪多边形的 deform。长度要等影响流读完才算得出（weighted = 2 × Σ影响数），
+                    // 这里先挡下标越界；帧区间由 C++ 读端校验（C# 端只做往返，不解算）。
+                    int kc = t.Target & SpineGpuConstants.DeformTargetIndexMask;
+                    if (kc >= asset.ClipPolygons.Count)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 deform 时间轴指向裁剪多边形 " +
+                            kc + "，越界（chunk 9 只有 " + asset.ClipPolygons.Count + " 条）");
+                    }
+                    continue;
+                }
+                if (!pathBit)
                 {
                     continue;
                 }
@@ -1158,6 +1197,21 @@ namespace ZEngine.SpineGpu
                     throw new SpineGpuContainerException("container: path 附件名只有 " +
                         asset.PathAttachmentNames.Count + " 条，但 chunk 20 有 " +
                         asset.PathAttachments.Count + " 条");
+                }
+                // v15 裁剪附件名：数量 = chunk 9 的条目数（一一对应，不去重）。
+                Take(all, (uint)asset.ClipPolygons.Count, asset.ClipNames, ref i);
+                if (asset.ClipNames.Count != asset.ClipPolygons.Count)
+                {
+                    throw new SpineGpuContainerException("container: 裁剪附件名只有 " +
+                        asset.ClipNames.Count + " 条，但 chunk 9 有 " + asset.ClipPolygons.Count + " 条");
+                }
+                for (int k = 0; k < asset.ClipPolygons.Count; ++k)
+                {
+                    if (asset.ClipPolygons[k].NameOffset >= sts)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + k + " 条裁剪多边形的 name_offset " +
+                            asset.ClipPolygons[k].NameOffset + " 超出字符串块（大小 " + sts + "）");
+                    }
                 }
                 // 剩下的全是"动画附件名"。**只按偏移访问**，所以不需要知道有几条 ⇒
                 // 不校验"是否刚好读完"（多出来的是合法数据，不是错误）。
@@ -1501,7 +1555,7 @@ namespace ZEngine.SpineGpu
             // **两端一起改**（改一端 = 字节立刻对不上，对拍会红，不会静默）。
             Add((uint)SpineGpuChunkId.IndexBuffer, U16Blob(asset.IndexBuffer), A4);
 
-            // 裁剪多边形 12 B/条。未用字节（clip.pad）必须写 0 —— 落盘是靠
+            // 裁剪多边形 20 B/条（v15）。未用字节（clip.pad / pad2）必须写 0 —— 落盘是靠
             // "先整块清零再逐字段填"，不是靠 struct 的内存布局。
             if (asset.ClipPolygons.Count > 0)
             {
@@ -1515,6 +1569,8 @@ namespace ZEngine.SpineGpu
                     b[o + SpineGpuOffsets.ClipVertexFormat] = (byte)p.VertexFormat;
                     WriteU16(b, o + SpineGpuOffsets.ClipVertexCount, p.VertexCount);
                     WriteU32(b, o + (int)SpineGpuOffsets.ClipVertexOffset, p.VertexOffset);
+                    WriteU32(b, o + SpineGpuOffsets.ClipNameOffset, p.NameOffset);
+                    WriteU16(b, o + SpineGpuOffsets.ClipEndSlot, p.EndSlot);
                 }
                 Add((uint)SpineGpuChunkId.ClipData, b, A4);
             }
@@ -1536,6 +1592,7 @@ namespace ZEngine.SpineGpu
                     WriteU16(b, o + SpineGpuOffsets.ItemAttachmentId, d.AttachmentId);
                     WriteU16(b, o + SpineGpuOffsets.ItemSkinId, d.SkinId);
                     b[o + SpineGpuOffsets.ItemKind] = (byte)d.Kind;
+                    b[o + SpineGpuOffsets.ItemFlags] = d.Flags;
                     WriteU16(b, o + SpineGpuOffsets.ItemClipIndex, d.ClipIndex);
                     WriteU16(b, o + SpineGpuOffsets.ItemVertexBase, d.VertexBase);
                     WriteU16(b, o + SpineGpuOffsets.ItemDeformParent, d.DeformParent);
@@ -1699,6 +1756,8 @@ namespace ZEngine.SpineGpu
             // v11：path 附件名必须排在"动画附件名"**前面** —— 后者是"剩下的全归它"，
             // 没有计数 ⇒ 排在它后面的组读端切不出来。
             Put(a.PathAttachmentNames);
+            // v15：裁剪附件名紧跟 path 附件名（同样必须在"动画附件名"前面）。
+            Put(a.ClipNames);
             Put(a.AnimAttachmentNames);
             return ms.ToArray();
         }

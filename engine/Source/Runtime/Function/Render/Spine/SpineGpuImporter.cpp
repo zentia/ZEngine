@@ -557,21 +557,27 @@ void ComputeRegionVertices(float x, float y, float width, float height, float sc
 void ComputeRegionUvs(const SpineAtlasRegion& reg, float* out_uv)
 {
     const float u = reg.u, v = reg.v, u2 = reg.u2, v2 = reg.v2;
+    // ⚠️ 参考实现的 `_uvs` 是按 **computeWorldVertices 的输出顺序** BR, BL, UL, UR 配对的
+    //    （RegionAttachment.cpp:137-158 出 br/bl/ul/ur，`getUVs()` 同下标）—— 槽位名 BLX/ULX/…
+    //    只是下标常量，**不是**那个角。我们的顶点按 `_vertexOffset` 的 BL, UL, UR, BR 排，
+    //    所以第 j 个顶点要取参考 `_uvs` 的第 {1, 2, 3, 0}[j] 对：
+    //      BL ← _uvs[ULX]，UL ← _uvs[URX]，UR ← _uvs[BRX]，BR ← _uvs[BLX]
+    //    v14 及以前直接按槽位名抄（BL ← _uvs[BLX]），每个角错一位 ⇒ 贴图转了 90°。
     if (reg.rotate)
     {
-        // UR=(u,v2) BR=(u,v) BL=(u2,v) UL=(u2,v2)
-        out_uv[0] = u2; out_uv[1] = v;    // BL
-        out_uv[2] = u2; out_uv[3] = v2;   // UL
-        out_uv[4] = u;  out_uv[5] = v2;   // UR
-        out_uv[6] = u;  out_uv[7] = v;    // BR
+        // setUVs(rotate)：_uvs[URX]=(u,v2) [BRX]=(u,v) [BLX]=(u2,v) [ULX]=(u2,v2)
+        out_uv[0] = u2; out_uv[1] = v2;   // BL ← _uvs[ULX]
+        out_uv[2] = u;  out_uv[3] = v2;   // UL ← _uvs[URX]
+        out_uv[4] = u;  out_uv[5] = v;    // UR ← _uvs[BRX]
+        out_uv[6] = u2; out_uv[7] = v;    // BR ← _uvs[BLX]
     }
     else
     {
-        // UL=(u,v2) UR=(u,v) BR=(u2,v) BL=(u2,v2)
-        out_uv[0] = u2; out_uv[1] = v2;   // BL
-        out_uv[2] = u;  out_uv[3] = v2;   // UL
-        out_uv[4] = u;  out_uv[5] = v;    // UR
-        out_uv[6] = u2; out_uv[7] = v;    // BR
+        // setUVs：_uvs[ULX]=(u,v2) [URX]=(u,v) [BRX]=(u2,v) [BLX]=(u2,v2)
+        out_uv[0] = u;  out_uv[1] = v2;   // BL ← _uvs[ULX]
+        out_uv[2] = u;  out_uv[3] = v;    // UL ← _uvs[URX]
+        out_uv[4] = u2; out_uv[5] = v;    // UR ← _uvs[BRX]
+        out_uv[6] = u2; out_uv[7] = v2;   // BR ← _uvs[BLX]
     }
 }
 
@@ -595,10 +601,13 @@ void ComputeMeshUvs(const SpineAtlasRegion& reg, const std::vector<float>& regio
 
     if (reg.rotate)
     {
-        // textureHeight = regionWidth  / (v2 - v)
-        // textureWidth  = regionHeight / (u2 - u)
-        const float texture_height = (reg.v2 - reg.v) != 0.0f ? rh / (reg.v2 - reg.v) : 0.0f;
-        const float texture_width = (reg.u2 - reg.u) != 0.0f ? rw / (reg.u2 - reg.u) : 0.0f;
+        // textureHeight = regionWidth  / (v2 - v)   （MeshAttachment.cpp:70）
+        // textureWidth  = regionHeight / (u2 - u)   （:71）
+        // ⚠️ v14 及以前这里把 rw / rh 写反了（注释是对的、代码是反的）：旋转 region 的宽高相等时
+        //    看不出来，不等时 UV 整体拉伸。参考侧以前没配图集、不比 UV，所以一直没被抓到
+        //    （v15 的对拍台给参考加载器配了图集：OSGame 前 120 个资产里 40% 的 mesh 采样对不上）。
+        const float texture_height = (reg.v2 - reg.v) != 0.0f ? rw / (reg.v2 - reg.v) : 0.0f;
+        const float texture_width = (reg.u2 - reg.u) != 0.0f ? rh / (reg.u2 - reg.u) : 0.0f;
         const float u = region_u - (orig_h - off_y - rh) / (texture_width != 0.0f ? texture_width : 1.0f);
         const float v = region_v - (orig_w - off_x - rw) / (texture_height != 0.0f ? texture_height : 1.0f);
         const float width = orig_h / (texture_width != 0.0f ? texture_width : 1.0f);
@@ -2112,6 +2121,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
             SpineSourceClip clip;
             clip.skin_index = p.skin_index;
             clip.slot_index = p.slot_index;
+            clip.name = p.name;
             const std::string end_name = GetString(a, "end", "");
             if (!end_name.empty())
             {
@@ -2151,6 +2161,15 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
             // ⚠️ weighted 的判据照抄 `readVertices`（:1218）：**数组长度 == vertexCount*2
             // 才是 rigid**。裁剪附件不贴图 ⇒ 没有 uvs 可比对，只能比这个数。
             clip.weighted = clip.vertices.size() != static_cast<size_t>(vertex_count) * 2u;
+
+            // deform 可以指向它（ClippingAttachment 也是 VertexAttachment）⇒ 与二进制侧
+            // （RecordNoDrawAttachment）对齐进"不渲染附件表"，否则指向它的 deform 时间轴
+            // 会被当成"附件不存在"报错（v14 及以前 json 路径就是这样，二进制路径没有）。
+            SpineSourceNoDrawAttachment nd;
+            nd.skin_index = p.skin_index;
+            nd.slot_index = p.slot_index;
+            nd.name = p.name;
+            out.no_draw_attachments.push_back(std::move(nd));
 
             out.clips.push_back(clip);
             out.has_clipping = true;
@@ -3798,6 +3817,7 @@ private:
                 SpineSourceClip clip;
                 clip.skin_index = current_skin_;
                 clip.slot_index = slot_index;
+                clip.name = name;
                 clip.end_slot_index = end_slot;
                 clip.vertices = std::move(clip_vertices_);
                 clip_vertices_.clear();
@@ -5071,7 +5091,8 @@ void AppendF32To(std::vector<uint8_t>& v, float x)
 // 两处共用一份实现，才不会出现"写端按 A 顺序、Bake 按 B 顺序算偏移"的静默错位。
 //
 // 顺序固定：骨骼 → 皮肤 → 槽位 → **槽位 setup 附件名** → 附件 → 图集页 →
-//            **动画名** → **path 附件名**（v11）→ **动画附件名**。
+//            **动画名** → **path 附件名**（v11）→ **裁剪附件名**（v15）→ **动画附件名**。
+// 裁剪附件名按 chunk 9 的条目数切分（一条多边形一个名字，**不去重**）。
 // 前六组按 header 里的计数切分（槽位 setup 附件名按 slot_count 切），
 // 第七组按 chunk 11 的条目数切分，第八组按 chunk 20 的条目数切分
 // （一条 path 附件一个名字，**不去重**）；
@@ -5083,9 +5104,11 @@ void BuildSpineStringTable(const SpineGpuAsset& a, std::vector<uint8_t>& blob,
                            std::vector<uint32_t>& slot_setup_attachment_offsets,
                            std::vector<uint32_t>& anim_name_offsets,
                            std::vector<uint32_t>& anim_attachment_offsets,
-                           std::vector<uint32_t>& path_attachment_name_offsets)
+                           std::vector<uint32_t>& path_attachment_name_offsets,
+                           std::vector<uint32_t>& clip_name_offsets)
 {
     blob.clear();
+    clip_name_offsets.clear();
     slot_setup_attachment_offsets.clear();
     anim_name_offsets.clear();
     anim_attachment_offsets.clear();
@@ -5113,6 +5136,7 @@ void BuildSpineStringTable(const SpineGpuAsset& a, std::vector<uint8_t>& blob,
     // ⚠️ path 附件名必须排在"动画附件名"**前面**：后者是"剩下的全归它"，
     //    没有计数 ⇒ 排在它后面的组读端切不出来。
     group(a.path_attachment_names, &path_attachment_name_offsets);   // v11：chunk 20 引用
+    group(a.clip_names, &clip_name_offsets);                         // v15：chunk 9 引用
     group(a.anim_attachment_names, &anim_attachment_offsets);
 }
 
@@ -5641,6 +5665,46 @@ SpineImportResult BakeSpineConstraints(const SpineSourceSkeleton& src, SpineGpuA
     return Ok();
 }
 
+uint32_t SpineGpuClipDeformLength(const SpineGpuAsset& asset, const SpineGpuClipPolygon& clip)
+{
+    if (clip.vertex_format == SpineVertexFormat::kRigid)
+    {
+        return 2u * clip.vertex_count;
+    }
+    const size_t w0 = static_cast<size_t>(asset.weighted_segment_offset) +
+                      static_cast<size_t>(clip.vertex_offset) * SpineGpuConstants::kRigidVertexStride;
+    if (w0 + static_cast<size_t>(clip.vertex_count) * SpineGpuConstants::kRigidVertexStride > asset.vertex_buffer.size())
+    {
+        return 0;
+    }
+    uint32_t len = 0;
+    for (uint32_t v = 0; v < clip.vertex_count; ++v)
+    {
+        uint32_t cnt = 0;
+        std::memcpy(&cnt, asset.vertex_buffer.data() + w0 + v * SpineGpuConstants::kRigidVertexStride + 4u, 4);
+        len += 2u * cnt;
+    }
+    return len;
+}
+
+namespace
+{
+    // deform 时间轴 → chunk 9 行号：按 (皮肤, 槽位, 名字) 精确命中；-1 = 不是裁剪附件。
+    int FindClipRow(const SpineGpuAsset& out, int skin, int slot, const std::string& name)
+    {
+        for (size_t k = 0; k < out.clip_polygons.size(); ++k)
+        {
+            const SpineGpuClipPolygon& c = out.clip_polygons[k];
+            if (static_cast<int>(c.skin_id) == skin && static_cast<int>(c.slot_index) == slot && k < out.clip_names.size() &&
+                out.clip_names[k] == name)
+            {
+                return static_cast<int>(k);
+            }
+        }
+        return -1;
+    }
+}   // namespace
+
 SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsset& out)
 {
     out = SpineGpuAsset {};
@@ -5742,7 +5806,9 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                     " 超过 uint16 上限（绘制项的 clip_index 存不下）");
     }
     std::vector<SpineSourceClip> clips_sorted = src.clips;
-    std::sort(clips_sorted.begin(), clips_sorted.end(),
+    // ⚠️ **稳定**排序：同一 (皮肤, 槽位) 挂两条裁剪附件是合法的（v15 起按名字区分），
+    //    std::sort 会让它们的行号随实现变 ⇒ 同一份源烘两次字节不同。
+    std::stable_sort(clips_sorted.begin(), clips_sorted.end(),
               [](const SpineSourceClip& a, const SpineSourceClip& b)
               {
                   if (a.skin_index != b.skin_index)
@@ -5779,7 +5845,16 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         rec.vertex_format = c.weighted ? SpineVertexFormat::kWeighted : SpineVertexFormat::kRigid;
         rec.vertex_count = static_cast<uint16_t>(vc);
         rec.vertex_offset = pool.Intern(blob.data(), blob.size()).second;
+        // v15：结束槽位落盘（运行时按**当前**绘制顺序跑状态机，见 kFormatVersion 的 v15 条）
+        if (c.end_slot_index >= static_cast<int>(SpineGpuConstants::kNoClipEndSlot))
+        {
+            return Fail("bake: 裁剪附件 '" + c.name + "' 的结束槽位 " + std::to_string(c.end_slot_index) +
+                        " 超出 uint16（0xFFFF 留给\"没有结束槽位\"）");
+        }
+        rec.end_slot = c.end_slot_index < 0 ? SpineGpuConstants::kNoClipEndSlot
+                                            : static_cast<uint16_t>(c.end_slot_index);
         out.clip_polygons.push_back(rec);
+        out.clip_names.push_back(c.name);   // name_offset 在字符串表建好后回填
     }
 
     // ---- 裁剪作用域：逐皮肤**模拟**参考实现的状态机 ----
@@ -5978,7 +6053,7 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         // 这与 kHasDrawOrderTimeline 那种"整个资产走 CPU"是两回事。
         const bool clipped_here = clipped[static_cast<size_t>(a.skin_index)][static_cast<size_t>(a.slot_index)] != 0u;
         item.kind = (a.deformed || clipped_here) ? SpineDrawItemKind::kFallback : SpineDrawItemKind::kStatic;
-        item.pad = 0;
+        item.item_flags = a.type == SpineSourceAttachment::Type::kRegion ? SpineDrawItemFlags::kRegion : 0u;
         // 被裁的项指到**当时生效**的那条裁剪多边形上（chunk 9 的行号）。
         // 没被裁时是 kNoClipIndex（0xFFFF）—— **不是 0**：0 是一条真实存在的多边形，
         // 填 0 会让运行时拿第一条多边形去裁根本不该裁的项，而且不报错。
@@ -6143,7 +6218,17 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         std::vector<uint32_t> anim_name_off;
         std::vector<uint32_t> anim_att_off;
         std::vector<uint32_t> path_att_off;
-        BuildSpineStringTable(out, blob, slot_setup_att_off, anim_name_off, anim_att_off, path_att_off);
+        std::vector<uint32_t> clip_name_off;
+        BuildSpineStringTable(out, blob, slot_setup_att_off, anim_name_off, anim_att_off, path_att_off,
+                              clip_name_off);
+        if (clip_name_off.size() != out.clip_polygons.size())
+        {
+            return Fail("bake: 字符串表内部错误 —— 裁剪附件名偏移数与裁剪多边形数不符");
+        }
+        for (size_t i = 0; i < out.clip_polygons.size(); ++i)
+        {
+            out.clip_polygons[i].name_offset = clip_name_off[i];
+        }
         if (anim_name_off.size() != out.anim_names.size())
         {
             return Fail("bake: 字符串表内部错误 —— 动画名偏移数与动画数不符");
@@ -6270,7 +6355,7 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                             if (path_hit > static_cast<int>(SpineGpuConstants::kDeformTargetIndexMask))
                             {
                                 return Fail("bake: deform 时间轴指向第 " + std::to_string(path_hit) +
-                                            " 条 path 附件，超出 target 低 15 位能表示的范围");
+                                            " 条 path 附件，超出 target 低 14 位能表示的范围");
                             }
                             // 每帧 start + count 必须落在 deform 数组里：参考实现是
                             // `deform.setFixedSize(deformLength)` 后直接写 `deform[v]`
@@ -6289,10 +6374,36 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                             }
                             target = static_cast<int>(SpineGpuConstants::kDeformTargetPathBit) | path_hit;
                         }
+                        else if (const int clip_hit = FindClipRow(out, tl.deform_skin, tl.deform_slot,
+                                                                  tl.deform_attachment);
+                                 clip_hit >= 0)
+                        {
+                            // ---- v15：指向 **裁剪附件** ⇒ 照样烘焙，target 置 clip 位 ----
+                            // deform 改的是裁剪多边形（clipStart 里 `computeWorldVertices(slot, ...)`
+                            // 读槽位的 deform 数组）⇒ 不改骨骼，但改**画面**。
+                            if (clip_hit > static_cast<int>(SpineGpuConstants::kDeformTargetIndexMask))
+                            {
+                                return Fail("bake: deform 时间轴指向第 " + std::to_string(clip_hit) +
+                                            " 条裁剪多边形，超出 target 低 14 位能表示的范围");
+                            }
+                            const uint32_t deform_len =
+                                SpineGpuClipDeformLength(out, out.clip_polygons[static_cast<size_t>(clip_hit)]);
+                            for (const SpineSourceDeformFrame& df : tl.deform_frames)
+                            {
+                                if (static_cast<uint64_t>(df.start) + df.values.size() > deform_len)
+                                {
+                                    return Fail("bake: 裁剪附件 '" + tl.deform_attachment + "' 的 deform 帧写到 [" +
+                                                std::to_string(df.start) + ", " +
+                                                std::to_string(df.start + df.values.size()) +
+                                                ")，超出它的 deform 长度 " + std::to_string(deform_len));
+                                }
+                            }
+                            target = static_cast<int>(SpineGpuConstants::kDeformTargetClipBit) | clip_hit;
+                        }
                         else
                         {
-                            // 指向一个**不产生绘制项、也不是 path** 的附件（boundingbox / point /
-                            // clipping）⇒ deform 不改任何姿势 ⇒ 整条时间轴不烘焙。
+                            // 指向一个**不产生绘制项、也不是 path / 裁剪**的附件（boundingbox /
+                            // point）⇒ deform 不改任何姿势、也不改画面 ⇒ 整条时间轴不烘焙。
                             // 这不是静默丢弃：渲染与骨骼结果都**完全相同**。
                             bool no_draw = false;
                             for (const SpineSourceNoDrawAttachment& s : src.no_draw_attachments)
@@ -6318,7 +6429,7 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                         if (hit > static_cast<int>(SpineGpuConstants::kDeformTargetIndexMask))
                         {
                             return Fail("bake: deform 时间轴指向第 " + std::to_string(hit) +
-                                        " 条附件记录，超出 target 低 15 位（最高位留给 path 附件）");
+                                        " 条附件记录，超出 target 低 14 位（高两位留给 path / 裁剪附件）");
                         }
                         target = hit;
                     }
@@ -6633,8 +6744,9 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         std::vector<uint32_t> anim_name_off;
         std::vector<uint32_t> anim_att_off;
         std::vector<uint32_t> path_att_off;
+        std::vector<uint32_t> clip_name_off;
         BuildSpineStringTable(asset, c.bytes, slot_setup_att_off, anim_name_off, anim_att_off,
-                              path_att_off);
+                              path_att_off, clip_name_off);
         if (!c.bytes.empty())
         {
             chunks.push_back(std::move(c));
@@ -6951,7 +7063,7 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         chunks.push_back(std::move(c));
     }
 
-    // id=9 clip_polygons —— 12 B/条。**顶点本身在 chunk 3 里**（裁剪附件是
+    // id=9 clip_polygons —— 20 B/条（v15）。**顶点本身在 chunk 3 里**（裁剪附件是
     // VertexAttachment，顶点与 mesh 顶点同构，连去重都共用同一个池子）。
     if (!asset.clip_polygons.empty())
     {
@@ -8099,7 +8211,7 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         if (f->size % sizeof(SpineGpuClipPolygon) != 0)
         {
             return Fail("container: clip_data 大小不是 " + std::to_string(sizeof(SpineGpuClipPolygon)) +
-                        " B 的整数倍（v6 起一条是 12 B）");
+                        " B 的整数倍（v6 起一条是 12 B，v15 起 20 B：多了 name_offset / end_slot）");
         }
         const uint32_t count = f->size / static_cast<uint32_t>(sizeof(SpineGpuClipPolygon));
         out.clip_polygons.resize(count);
@@ -8136,6 +8248,18 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
             if (static_cast<uint64_t>(di.index_offset) + di.index_count > out.index_buffer.size())
             {
                 return Fail("container: 第 " + std::to_string(i) + " 个绘制项的索引区间越过索引缓冲");
+            }
+            // v15：item_flags 只认已定义的位；region 必须是 rigid 4 顶点 6 索引（CPU 裁剪按
+            // {3, 0, 1, 2} 重排顶点，形状不对就是越界读）。
+            if ((di.item_flags & ~SpineDrawItemFlags::kKnownMask) != 0)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 个绘制项的 item_flags " +
+                            std::to_string(di.item_flags) + " 有未定义的位");
+            }
+            if ((di.item_flags & SpineDrawItemFlags::kRegion) != 0 &&
+                (di.vertex_format != SpineVertexFormat::kRigid || di.vertex_count != 4 || di.index_count != 6))
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 个绘制项标成 region，却不是 rigid 4 顶点 6 索引");
             }
             // v14：[vertex_base, vertex_base + vertex_count) 必须落在所属顶点段里
             const uint32_t seg_count = di.vertex_format == SpineVertexFormat::kWeighted ? out.header.weighted_vertex_count
@@ -8261,11 +8385,18 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         take(out.anims.size(), out.anim_names);
         // v11 path 附件名：数量 = chunk 20 的条目数（一一对应，不去重）。
         take(out.path_attachments.size(), out.path_attachment_names);
+        // v15 裁剪附件名：数量 = chunk 9 的条目数（一一对应，不去重）。
+        take(out.clip_polygons.size(), out.clip_names);
         // 剩下的全是"动画附件名"。**只按偏移访问**，所以不需要知道有几条 ⇒
         // 不校验"是否刚好读完"（多出来的是合法数据，不是错误）。
         while (i < all.size())
         {
             out.anim_attachment_names.push_back(all[i++]);
+        }
+        if (out.clip_names.size() != out.clip_polygons.size())
+        {
+            return Fail("container: 裁剪附件名只有 " + std::to_string(out.clip_names.size()) +
+                        " 条，但 chunk 9 有 " + std::to_string(out.clip_polygons.size()) + " 条");
         }
         if (out.path_attachment_names.size() != out.path_attachments.size())
         {
@@ -8300,6 +8431,127 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
                 return Fail("container: 第 " + std::to_string(k) + " 条 path 附件的 name_offset " +
                             std::to_string(out.path_attachments[k].name_offset) +
                             " 超出字符串块（大小 " + std::to_string(f->size) + "）");
+            }
+        }
+    }
+
+    // ---- v15：裁剪多边形的交叉校验（要等顶点缓冲 / 影响流 / 字符串都读完）----
+    // 每一条坏了都是"能画、但裁错了"：区间越界 ⇒ 多边形取到别人的顶点；结束槽位越界 ⇒
+    // 作用域一路延伸到末尾；名字偏移指歪 ⇒ 槽位挂着它时认不出来（不裁），或者认错。
+    if (!out.clip_polygons.empty())
+    {
+        if (out.clip_names.size() != out.clip_polygons.size())
+        {
+            return Fail("container: 有 " + std::to_string(out.clip_polygons.size()) +
+                        " 条裁剪多边形，却没有对应的裁剪附件名（缺字符串块？）");
+        }
+        std::vector<uint8_t> blob;
+        std::vector<uint32_t> slot_off, anim_off, anim_att_off, path_att_off, clip_off;
+        BuildSpineStringTable(out, blob, slot_off, anim_off, anim_att_off, path_att_off, clip_off);
+        const uint32_t influence_count = static_cast<uint32_t>(out.influence_bone.size());
+        for (size_t k = 0; k < out.clip_polygons.size(); ++k)
+        {
+            const SpineGpuClipPolygon& c = out.clip_polygons[k];
+            const std::string what = "container: 第 " + std::to_string(k) + " 条裁剪多边形";
+            if (c.slot_index >= out.header.slot_count)
+            {
+                return Fail(what + "的槽位 " + std::to_string(c.slot_index) + " 越界");
+            }
+            if (c.skin_id >= out.header.skin_count)
+            {
+                return Fail(what + "的皮肤 " + std::to_string(c.skin_id) + " 越界");
+            }
+            if (c.end_slot != SpineGpuConstants::kNoClipEndSlot && c.end_slot >= out.header.slot_count)
+            {
+                return Fail(what + "的结束槽位 " + std::to_string(c.end_slot) + " 越界（槽位数 " +
+                            std::to_string(out.header.slot_count) + "）");
+            }
+            if (c.pad != 0 || c.pad2 != 0)
+            {
+                return Fail(what + "的填充字节不是 0");
+            }
+            if (c.vertex_count == 0)
+            {
+                return Fail(what + "的顶点数为 0");
+            }
+            if (k >= clip_off.size() || c.name_offset != clip_off[k])
+            {
+                return Fail(what + "的 name_offset " + std::to_string(c.name_offset) +
+                            " 不是字符串表第 9 组第 " + std::to_string(k) + " 条的偏移");
+            }
+            const uint64_t end_vertex = static_cast<uint64_t>(c.vertex_offset) + c.vertex_count;
+            if (c.vertex_format == SpineVertexFormat::kRigid)
+            {
+                if (end_vertex * SpineGpuConstants::kRigidVertexStride > out.weighted_segment_offset)
+                {
+                    return Fail(what + "的 rigid 顶点区间越过 rigid 段");
+                }
+            }
+            else if (c.vertex_format == SpineVertexFormat::kWeighted)
+            {
+                const uint64_t w0 = out.weighted_segment_offset;
+                if (w0 + end_vertex * SpineGpuConstants::kRigidVertexStride > out.vertex_buffer.size())
+                {
+                    return Fail(what + "的 weighted 顶点区间越过顶点缓冲");
+                }
+                for (uint32_t v = 0; v < c.vertex_count; ++v)
+                {
+                    const size_t at = static_cast<size_t>(w0) +
+                                      (static_cast<size_t>(c.vertex_offset) + v) * SpineGpuConstants::kRigidVertexStride;
+                    const uint32_t off = GetU32(out.vertex_buffer.data() + at);
+                    const uint32_t cnt = GetU32(out.vertex_buffer.data() + at + 4u);
+                    if (cnt == 0 || static_cast<uint64_t>(off) + cnt > influence_count)
+                    {
+                        return Fail(what + "的第 " + std::to_string(v) + " 个顶点的影响区间 [" + std::to_string(off) +
+                                    ", +" + std::to_string(cnt) + ") 越过影响流（" +
+                                    std::to_string(influence_count) + " 条）");
+                    }
+                }
+            }
+            else
+            {
+                return Fail(what + "的顶点格式 " + std::to_string(static_cast<int>(c.vertex_format)) + " 不认识");
+            }
+        }
+    }
+
+    // ---- v15：指向裁剪多边形的 deform 时间轴 ----
+    // 低 14 位越界 ⇒ 改到别的裁剪多边形；帧写出 deform 数组 ⇒ 运行时越界写。都不报错，只能这里挡。
+    for (uint32_t i = 0; i < out.timelines.size(); ++i)
+    {
+        const SpineGpuTimeline& t = out.timelines[i];
+        if (static_cast<SpineTimelineType>(t.type) != SpineTimelineType::kDeform)
+        {
+            continue;
+        }
+        const bool path_bit = (t.target & SpineGpuConstants::kDeformTargetPathBit) != 0;
+        const bool clip_bit = (t.target & SpineGpuConstants::kDeformTargetClipBit) != 0;
+        if (path_bit && clip_bit)
+        {
+            return Fail("container: 第 " + std::to_string(i) + " 条 deform 时间轴的 target 同时置了 path 位与 clip 位");
+        }
+        if (!clip_bit)
+        {
+            continue;
+        }
+        const uint32_t k = t.target & SpineGpuConstants::kDeformTargetIndexMask;
+        if (k >= out.clip_polygons.size())
+        {
+            return Fail("container: 第 " + std::to_string(i) + " 条 deform 时间轴指向裁剪多边形 " + std::to_string(k) +
+                        "，越界（chunk 9 只有 " + std::to_string(out.clip_polygons.size()) + " 条）");
+        }
+        const uint32_t deform_len = SpineGpuClipDeformLength(out, out.clip_polygons[k]);
+        size_t pos = t.payload_offset;   // 载荷已在时间轴校验里走过一遍，这里不会截断
+        for (uint32_t fr = 0; fr < t.payload_count; ++fr)
+        {
+            const uint32_t start = GetU32(out.timeline_payload.data() + pos);
+            const uint32_t count = GetU32(out.timeline_payload.data() + pos + 4u);
+            pos += 8u + static_cast<size_t>(count) * 4u;
+            if (static_cast<uint64_t>(start) + count > deform_len)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 条 deform 时间轴第 " + std::to_string(fr) +
+                            " 帧写到 [" + std::to_string(start) + ", " + std::to_string(start + count) +
+                            ")，超出裁剪多边形 " + std::to_string(k) + " 的 deform 长度 " + std::to_string(deform_len));
             }
         }
     }
