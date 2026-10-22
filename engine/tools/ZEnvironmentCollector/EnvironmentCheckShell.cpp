@@ -85,6 +85,37 @@ bool IsInternalWorkerVerb(int argumentCount, wchar_t** arguments)
     }
     return false;
 }
+// One instance at a time. Two instances cannot both own the day's log file
+// (see EnvCheckLog.h): the loser gets ERROR_SHARING_VIOLATION from bqlog, keeps
+// running, and quietly logs to a console nobody is reading. Refusing to start is
+// better than pretending to work.
+//
+// Exempt: --help (it answers and exits without touching anything) and the
+// internal worker children (IsInternalWorkerVerb), which are relaunches of this
+// exe that necessarily run while their parent is still alive.
+constexpr wchar_t kSingleInstanceMutexName[] = L"ZEnvironmentCollector_SingleInstance";
+constexpr int kAlreadyRunningExitCode = 31;
+
+struct Handle
+{
+    HANDLE h = nullptr;
+    Handle() = default;
+    ~Handle() { if (h && h != INVALID_HANDLE_VALUE) CloseHandle(h); }
+    Handle(const Handle&) = delete;
+    Handle& operator=(const Handle&) = delete;
+};
+
+// False when another instance already holds it. True when this one owns the
+// mutex -- including when the mutex could not be created at all: a tool that
+// refuses to start on a locked-down machine is worse than one that starts
+// without the guard.
+bool TryAcquireSingleInstance(Handle& mutex)
+{
+    mutex.h = CreateMutexW(nullptr, FALSE, kSingleInstanceMutexName);
+    if (!mutex.h) return true;
+    return GetLastError() != ERROR_ALREADY_EXISTS;
+}
+
 bool HasGpuSelectionVerb(int argumentCount, wchar_t** arguments)
 {
     for (int index = 1; index < argumentCount; ++index)
@@ -159,12 +190,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     // the complaint and the log went nowhere. Nothing is lost: the collection
     // code makes no log calls at all, and a stage's failure reaches its parent
     // as an exit code, which is what marks the stage INCOMPLETE.
-    std::optional<zengine::envcheck::ScopedLog> logScope;
-    if (!IsInternalWorkerVerb(argumentCount, arguments))
-    {
-        logScope.emplace();
-    }
-
+    const bool worker = IsInternalWorkerVerb(argumentCount, arguments);
     bool batchMode = false;
     bool helpRequested = false;
     for (int index = 1; index < argumentCount; ++index)
@@ -173,13 +199,38 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         if (IsBatchModeToken(argument)) batchMode = true;
         if (IsHelpToken(argument)) helpRequested = true;
     }
-    if (batchMode || helpRequested || IsInternalWorkerVerb(argumentCount, arguments))
+
+    std::optional<zengine::envcheck::ScopedLog> logScope;
+    // --help prints usage and exits: it has nothing worth logging, and skipping
+    // the log keeps it from racing the running instance for the log file.
+    if (!worker && !helpRequested)
+    {
+        logScope.emplace();
+    }
+    if (batchMode || helpRequested || worker)
     {
         // A WINDOWS-subsystem process has no console of its own; this gives the
         // CLI somewhere to print. A no-op when the caller already redirected our
         // output, so a pipe or a CI capture is left alone.
         zengine::appshell::EnsureConsole();
+        Handle singleInstance;
+        if (!helpRequested && !worker && !TryAcquireSingleInstance(singleInstance))
+        {
+            std::cerr << "Another ZEnvironmentCollector is already running (usually an open collection window).\n"
+                      << "Close it and try again; this instance did nothing.\n";
+            return kAlreadyRunningExitCode;
+        }
         return RunBatchMode(argumentCount, arguments);
+    }
+    Handle singleInstance;
+    if (!TryAcquireSingleInstance(singleInstance))
+    {
+        // Plain literals, not ZSlate::Loc: the shell is also built with
+        // ENVIRONMENT_CHECK_BUILD_GUI=OFF, where ZSlate is not linked.
+        MessageBoxW(nullptr,
+            L"采集器已经在运行，本次启动没有做任何事。\n如果原来的窗口找不到了，请确认该进程已退出后重试。",
+            L"ZEnvironmentCollector", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+        return kAlreadyRunningExitCode;
     }
     // Deliberately SW_SHOW and not the show command wWinMain was handed: a
     // launcher passing something odd (SW_SHOWMINIMIZED, SW_HIDE) must not be
