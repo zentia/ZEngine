@@ -81,9 +81,10 @@ using namespace ZSlate;
 using namespace zengine::envcheck::collector;
 using namespace zengine::envcheck::diagnosis;
 
-// One tab: the collection now carries what the compatibility and GPU tabs used
-// to produce (compatibility.json, gpu-selection.json in the same package), and
-// two more tabs over the same pipeline only gave three places to look.
+// One page, and no tab strip at all: the collection now carries what the
+// compatibility and GPU tabs used to produce (compatibility.json,
+// gpu-selection.json in the same package), and a single tab header over one
+// page was only chrome.
 constexpr int TabCount = 1;
 // Long reports are cut here so a pathological machine cannot allocate tens of
 // thousands of STextBlocks; the full text is always on disk.
@@ -93,8 +94,6 @@ const UIColor PassColor(0.40f, 0.85f, 0.40f, 1.0f);
 const UIColor FailColor(0.90f, 0.35f, 0.35f, 1.0f);
 const UIColor DimColor(0.66f, 0.66f, 0.70f, 1.0f);
 const UIColor AccentColor(0.60f, 0.70f, 0.90f, 1.0f);
-const UIColor ActiveTabColor(0.16f, 0.34f, 0.55f, 1.0f);
-const UIColor IdleTabColor(0.20f, 0.20f, 0.22f, 1.0f);
 
 enum class ShellTab
 {
@@ -167,10 +166,8 @@ public:
     Job job = Job::None;
     std::shared_ptr<SVerticalBox> column;                 // column currently being built
     std::array<std::shared_ptr<SVerticalBox>, TabCount> tabs;
-    std::vector<std::shared_ptr<SButton>> tabButtons;
-    std::vector<std::shared_ptr<STextBlock>> tabLabels;
     std::shared_ptr<SScrollBox> scroll;
-    // Everything the `busy` gate greys out, across all three tabs.
+    // Everything the `busy` gate greys out on the collection page.
     std::vector<std::shared_ptr<SWidget>> interactive;
 
     std::shared_ptr<STextBlock> status, timeLabel;
@@ -247,9 +244,130 @@ public:
         suppressPointerUntilRelease = platform.down;
         router.ResetPointerState();
     }
+    // English strings run long, and ZSlate's STextBlock both paints and measures
+    // a single line: the red anchor warning and the safety line simply ran past
+    // the window edge. This subclass wraps at word boundaries against the window
+    // width, through the same measurer the layout pass uses, so the reported
+    // height (scroll extent) and the painted lines agree. Wrapping happens here,
+    // on the UI thread, inside layout and paint -- SetText callers, including the
+    // collection worker thread, keep storing the raw string exactly as before.
+    class SWrappedTextBlock : public STextBlock
+    {
+    public:
+        explicit SWrappedTextBlock(const ShellApp* owner) : m_Owner(owner) {}
+
+        Vector2 ComputeDesiredSize() const override
+        {
+            const std::string wrapped = WrappedText();
+            if (wrapped == Text) return STextBlock::ComputeDesiredSize();
+            const Vector2 measured = m_Owner->measurer.Measure(wrapped, FontSize);
+            return Vector2(measured.x, std::max(measured.y, FontSize + 4.0f));
+        }
+
+        void OnPaint(const FPaintContext& ctx, const FGeometry& geom) const override
+        {
+            if (ctx.Renderer && !Text.empty())
+                ctx.Renderer->DrawTextLabel(geom.ToRect(), WrappedText(), FontSize, Color, Alignment,
+                                            TextWrapMode::NoWrap);
+        }
+
+    private:
+        // Wrapped against the window width (column padding plus scrollbar slack).
+        // Cached by input + width + size: layout may call this every frame.
+        std::string WrappedText() const
+        {
+            const float maxWidth = m_Owner->platform.size.x - 2.0f * 22.0f - 20.0f;
+            const std::string key = Text + "@" + std::to_string(static_cast<int>(maxWidth)) +
+                                    "@" + std::to_string(static_cast<int>(FontSize));
+            if (key == m_CacheKey) return m_CacheText;
+            m_CacheText = WrapParagraphs(Text, FontSize, maxWidth);
+            m_CacheKey = key;
+            return m_CacheText;
+        }
+
+        std::string WrapParagraphs(const std::string& text, float fontSize, float maxWidth) const
+        {
+            if (maxWidth <= 0.0f || text.empty()) return text;
+            std::string out;
+            std::size_t start = 0;
+            while (true)
+            {
+                const std::size_t newline = text.find('\n', start);
+                const std::string paragraph = text.substr(
+                    start, newline == std::string::npos ? std::string::npos : newline - start);
+                if (!out.empty()) out += '\n';
+                out += WrapOneParagraph(paragraph, fontSize, maxWidth);
+                if (newline == std::string::npos) break;
+                start = newline + 1;
+            }
+            return out;
+        }
+
+        // Words first; a token longer than a whole line -- a path, or a CJK
+        // sentence that has no spaces -- breaks by UTF-8 characters instead.
+        std::string WrapOneParagraph(const std::string& text, float fontSize, float maxWidth) const
+        {
+            std::string out;
+            std::string line;
+            std::istringstream words(text);
+            std::string word;
+            while (words >> word)
+            {
+                const std::string candidate = line.empty() ? word : line + ' ' + word;
+                if (m_Owner->measurer.Measure(candidate, fontSize).x <= maxWidth)
+                {
+                    line = candidate;
+                    continue;
+                }
+                if (!line.empty())
+                {
+                    out += line;
+                    out += '\n';
+                    line.clear();
+                }
+                while (m_Owner->measurer.Measure(word, fontSize).x > maxWidth)
+                {
+                    const std::size_t cut = FirstFitBytes(word, fontSize, maxWidth);
+                    out += word.substr(0, cut);
+                    out += '\n';
+                    word.erase(0, cut);
+                }
+                line = word;
+            }
+            out += line;
+            return out;
+        }
+
+        std::size_t FirstFitBytes(const std::string& word, float fontSize, float maxWidth) const
+        {
+            std::size_t cut = 0;
+            std::size_t index = 0;
+            while (index < word.size())
+            {
+                std::size_t next = index + 1;
+                while (next < word.size() && (static_cast<unsigned char>(word[next]) & 0xC0) == 0x80) ++next;
+                if (m_Owner->measurer.Measure(word.substr(0, next), fontSize).x > maxWidth) break;
+                cut = next;
+                index = next;
+            }
+            if (cut == 0)
+            {
+                // Even the first character does not fit; emit it so the caller's
+                // loop still advances.
+                cut = 1;
+                while (cut < word.size() && (static_cast<unsigned char>(word[cut]) & 0xC0) == 0x80) ++cut;
+            }
+            return cut;
+        }
+
+        const ShellApp* m_Owner;
+        mutable std::string m_CacheKey;
+        mutable std::string m_CacheText;
+    };
+
     std::shared_ptr<STextBlock> Text(const std::string& text, float size = 17)
     {
-        auto w = std::make_shared<STextBlock>(); w->SetText(text); w->SetFontSize(size);
+        auto w = std::make_shared<SWrappedTextBlock>(this); w->SetText(text); w->SetFontSize(size);
         AddWidget(w, 7);
         return w;
     }
@@ -306,8 +424,6 @@ public:
         const bool events = details && details->IsChecked();
 
         interactive.clear();
-        tabButtons.clear();
-        tabLabels.clear();
         Build();
 
         options.incidentKind = kind;
@@ -324,23 +440,9 @@ public:
     }
     void Build()
     {
+        // One page: no tab strip. The language combo keeps the top-right corner
+        // the strip used to occupy.
         auto strip = std::make_shared<SHorizontalBox>();
-        const std::array<const char*, TabCount> names{
-            S("tab.collection", "Collection"),
-        };
-        for (int index = 0; index < TabCount; ++index)
-        {
-            auto button = std::make_shared<SButton>();
-            auto label = std::make_shared<STextBlock>();
-            label->SetText(names[static_cast<std::size_t>(index)]);
-            label->SetFontSize(18);
-            button->SetContent(label);
-            button->Padding = FMargin(16, 6);
-            button->OnClicked = [this, index] { if (!busy) SelectTab(static_cast<ShellTab>(index)); };
-            strip->AddSlot(button).AutoSize().SetPadding(FMargin(index == 0 ? 0.0f : 8.0f, 0, 0, 0));
-            tabButtons.push_back(button);
-            tabLabels.push_back(label);
-        }
         strip->AddSlot(std::make_shared<SSpacer>()).Fill(1);
         // Language, kept on the right edge of the tab strip. The combo's popup is
         // driven from Mouse()/WM_KEYDOWN like the other two combos -- a popup is
@@ -387,8 +489,6 @@ public:
         {
             const bool isActive = index == active;
             tabs[static_cast<std::size_t>(index)]->Visibility = isActive ? EVisibility::Visible : EVisibility::Collapsed;
-            tabButtons[static_cast<std::size_t>(index)]->NormalColor = isActive ? ActiveTabColor : IdleTabColor;
-            tabLabels[static_cast<std::size_t>(index)]->SetColor(isActive ? Colors::White : DimColor);
         }
         if (kindBox) kindBox->ClosePopup();
         if (captureMode) captureMode->ClosePopup();
