@@ -13,6 +13,7 @@
 // =====================================================================
 
 #include "Runtime/Function/Render/Spine/SpineGpuAnimSolver.h"
+#include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuFormat.h"
 #include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
 
@@ -2178,7 +2179,15 @@ int main(int argc, char** argv)
         if (Sample(asset, kWalk, -1.0f, s))
         {
             Check(Color4(s.slots[1].color, k80, kC0, 1.0f, k40), "S3: t<首帧 ⇒ s1 停在 **setup 色** 80c0ff40");
-            Check(Color4(s.slots[1].dark, k20, k40, k60, 1.0f), "S3: t<首帧 ⇒ s1 停在 setup 暗色");
+            // S5 起按参考实现的真实行为（逐条出处，手算）：
+            //   * 暗色初值 = `Slot::Slot()` 的 (0,0,0,0)，`Slot::setToSetupPose()` **不复位**它（Slot.cpp:42-64）；
+            //   * `TwoColorTimeline` 的 `time < 第 0 帧` + MixBlend_First 分支写的是
+            //     `dark += (dark - setupDark) * alpha`（符号反了，TwoColorTimeline.cpp:84-93），alpha = 1
+            //     ⇒ dark.rgb = 0 + (0 - setup) = **-setup**，且这一路**不夹** [0,1]；dark.a 不动（= 0）。
+            //   S3 时这里写的是"停在 setup 暗色"——那是意图，不是参考实现（S5 逐行转录 apply 时发现；
+            //   OSGame 资产没有走到这一支，782 资产对拍抓不到它，只能靠这条手算断言钉住）。
+            Check(Color4(s.slots[1].dark, -k20, -k40, -k60, 0.0f),
+                  "S3: t<首帧 ⇒ s1 暗色 = -setup（参考实现 TwoColor 的符号笔误 + setToSetupPose 不复位暗色）");
         }
         if (Sample(asset, kWalk, 0.0f, s))
         {
@@ -2255,6 +2264,124 @@ int main(int argc, char** argv)
             }
         }
         Check(same, "S3: 原始资产与**读回来**的容器解算出同一个结果（读端漂移的唯一拦网）");
+        g_prefix.clear();
+    }
+
+    // =================================================================
+    // S5：多轨混合（SpineGpuAnimationState）—— 期望值**手算**
+    // -----------------------------------------------------------------
+    // 真正钉住转录的是参考对拍（SpineGpuRefParityTest 的 S5 段，782 资产 × 随机脚本），但它依赖
+    // G 盘的参考源码、不进 ctest。这里用夹具手算几条最有代表性的公式，让 CI 也有一道拦网。
+    // 只比**局部**值：夹具的 IK 故意配成"父骨骼没有父骨骼"（测读端），跑不了世界变换。
+    //
+    // 夹具：root setup rotation 15、x 3、y -4、scale (2, 0.5)、shear (7, -9)；hip setup rotation -30。
+    //   idle：root rotate 单帧 7（时长 0）
+    //   walk：root rotate [0: 10 stepped] [0.5: 190 bezier] [1: -20]；translate [0:(1,2)] [1:(-3,4)]；
+    //         scale [0:(-2,0.5)]；shear [0.25:(5,-6)]；hip rotate [0: 30]；s0 color ff0000ff → 00ff0080
+    // =================================================================
+    {
+        g_prefix = "[S5/多轨] ";
+        const uint32_t kWalk = 0;
+        const uint32_t kIdle = 1;
+        auto Near = [](float got, float want) { return std::fabs(got - want) < 1e-5f; };
+
+        SpineGpuRuntimeData data;
+        SpineGpuSkeletonState st;
+        Check(SpineGpuBuildRuntimeData(asset, data).ok, "建查找表");
+        Check(SpineGpuInitSkeletonState(asset, data, st).ok, "初始化骨架状态（= 构造 + setToSetupPose）");
+        SpineGpuAnimationStateData asd;
+        asd.default_mix = 0.5f;
+        SpineGpuAnimationState as(asset, data, &asd);
+        const auto Step = [&](float dt) {
+            as.Update(dt);
+            const SpineImportResult r = as.Apply(st);
+            if (!r.ok)
+            {
+                std::printf("  error: %s\n", r.error.c_str());
+            }
+            Check(r.ok, "Apply 成功");
+        };
+        SpineGpuBoneState& root = st.bones[0];
+        SpineGpuBoneState& hip = st.bones[1];
+
+        // ---- 1) 轨道 0 单条：idle（alpha 1 + MixBlend_First）----
+        // RotateTimeline 末帧分支：r = 7；r += setup - bone = 7 + (15 - 15)；bone += wrap(7) = 22
+        as.SetAnimation(0, kIdle, true);
+        Step(0.0f);
+        Check(Near(root.rotation, 22.0f), "idle：root.rotation = 15 + 7");
+
+        // ---- 2) 切 walk，混合时长 = default_mix 0.5；走 0.25 ⇒ mix = 0.5 ----
+        // timelineMode：idle 的 root rotate = Hold（walk 也有），walk 的 root rotate = Subsequent，
+        //               walk 其余 = First（⇒ blend 用 Setup）。
+        //   idle（Hold，alpha = alphaHold = 1，Setup）：rotation = 15 + 7 = 22
+        //   walk root rotate（Subsequent ⇒ First，alpha = mix 0.5，走 applyRotateTimeline）：
+        //     r1 = 当前 22；t=0.25 落在 stepped 段 ⇒ r2 = wrap(10 + wrap(180)·0 + 15) = 25；
+        //     diff = 3，首帧 ⇒ total = 3；rotation = 22 + 3·0.5 = 23.5
+        //   translate（Setup，alpha 0.5）：帧值 (1 + (-4)·0.25, 2 + 2·0.25) = (0, 2.5)
+        //     ⇒ x = 3 + 0·0.5 = 3，y = -4 + 2.5·0.5 = -2.75
+        //   scale（Setup，alpha 0.5，方向 In）：帧值 = 倍率 × setup = (-2·2, 0.5·0.5) = (-4, 0.25)
+        //     bx = |2|·sign(-4) = -2 ⇒ sx = -2 + (-4 + 2)·0.5 = -3；by = |0.5|·sign(0.25) = 0.5 ⇒ sy = 0.375
+        //     （"混入取关键帧的符号"：从 setup 的 +2 直接翻到 -2 再插值，不经过 0）
+        //   shear（Setup，alpha 0.5）：t=0.25 恰在唯一一帧 ⇒ (5, -6) ⇒ (7 + 2.5, -9 - 3) = (9.5, -12)
+        //   hip rotate（First ⇒ Setup，alpha 0.5，applyRotateTimeline）：r1 = setup -30，r2 = -30 + 30 = 0，
+        //     diff = 30 ⇒ rotation = -30 + 30·0.5 = -15
+        //   s0 color（Setup，alpha 0.5）：帧值 (0.75, 0.25, 0, 1 + (128/255 - 1)·0.25)，
+        //     先复位白色再 add((v - c)·0.5) ⇒ (0.875, 0.625, 0.5, 1 + (a_v - 1)·0.5)
+        as.SetAnimation(0, kWalk, true);
+        Check(as.GetCurrent(0) != nullptr && Near(as.GetCurrent(0)->mix_duration, 0.5f),
+              "walk 的 mixDuration = AnimationStateData 的 default_mix");
+        Step(0.25f);
+        Check(as.GetCurrent(0)->mixing_from != nullptr, "混合中：walk 的 mixingFrom = idle");
+        Check(Near(root.rotation, 23.5f), "混合 50%：root.rotation = 22 + 3·0.5（最短弧）");
+        Check(Near(root.x, 3.0f) && Near(root.y, -2.75f), "混合 50%：translate 以 setup 为基");
+        Check(Near(root.scale_x, -3.0f) && Near(root.scale_y, 0.375f), "混合 50%：scale 混入取关键帧符号");
+        Check(Near(root.shear_x, 9.5f) && Near(root.shear_y, -12.0f), "混合 50%：shear");
+        Check(Near(hip.rotation, -15.0f), "混合 50%：hip.rotation = -30 + 30·0.5");
+        {
+            const float av = 1.0f + (0x80 / 255.0f - 1.0f) * 0.25f;
+            const float* c = st.slots[0].color;
+            Check(Near(c[0], 0.875f) && Near(c[1], 0.625f) && Near(c[2], 0.5f) && Near(c[3], 1.0f + (av - 1.0f) * 0.5f),
+                  "混合 50%：s0 颜色从 setup 白色混过去");
+        }
+
+        // ---- 3) 再走 0.25 ⇒ mix = 1 ⇒ walk 走"轨道 0 且 mix == 1"的直通分支 ----
+        // t=0.5：binarySearch 返回 t=1 那一帧，percent = 1 - (0.5-1)/(0.5-1) = 0 ⇒ r = 190；
+        // First：r += 15 - 22 ⇒ 183 ⇒ wrap = -177 ⇒ rotation = 22 - 177 = -155
+        Step(0.25f);
+        Check(Near(root.rotation, -155.0f), "mix = 1：root.rotation = 22 + wrap(190 + 15 - 22)");
+
+        // ---- 4) 再走 0.5：walk trackTime = 1.0 ⇒ loop 取模 = 0（stepped 段，值 10）----
+        // updateMixingFrom 返回 finished ⇒ mixingFrom 被摘掉。
+        // ⚠️ 局部角度**不归一化**：r = 10 + (15 - (-155)) = 180，wrap(180) = **-180**（截断取整），
+        //    rotation = -155 - 180 = -335（≡ 25）。写成 setup + 10 = 25 会与参考实现的局部值对不上。
+        Step(0.5f);
+        Check(as.GetCurrent(0)->mixing_from == nullptr, "混合结束：mixingFrom 被摘掉");
+        Check(Near(root.rotation, -335.0f), "loop 回到 0：root.rotation = -155 + wrap(180) = -335（≡ 25，不归一化）");
+
+        // ---- 5) 轨道 1 叠一层 MixBlend_Add（alpha 0.5）----
+        // 轨道 0：r = 10 + (15 - (-335)) = 360 ⇒ wrap = 0 ⇒ rotation 不变（-335）
+        // 轨道 1（Add 走直通分支）：末帧 r = 7 ⇒ rotation += 7·0.5
+        SpineGpuTrackEntry* e1 = as.SetAnimation(1, kIdle, true);
+        Check(e1 != nullptr, "轨道 1 setAnimation 成功");
+        if (e1 != nullptr)
+        {
+            e1->mix_blend = SpineGpuMixBlend::kAdd;
+            e1->alpha = 0.5f;
+        }
+        Step(0.0f);
+        Check(Near(root.rotation, -331.5f), "轨道 1 Add：root.rotation = -335 + 7·0.5");
+
+        // ---- 6) addAnimation 的 delay 推算（AnimationState.cpp:549-561）----
+        // 上一条 walk：loop、时长 1、trackTime 1.0 ⇒ delay = 1·(1 + (int)(1.0/1)) - mix(walk→idle) 0.5 = 1.5
+        SpineGpuTrackEntry* q = as.AddAnimation(0, kIdle, false, 0.0f);
+        Check(q != nullptr && Near(q->delay, 1.5f), "addAnimation(delay<=0)：delay = 时长·(1 + 已播圈数) - 混合时长");
+
+        // ---- 7) setEmptyAnimation：mixDuration 与 trackEnd 都 = 给定值 ----
+        SpineGpuTrackEntry* em = as.SetEmptyAnimation(2, 0.2f);
+        Check(em != nullptr && em->animation == kSpineGpuEmptyAnimation && Near(em->mix_duration, 0.2f) &&
+                  Near(em->track_end, 0.2f),
+              "setEmptyAnimation：空动画、mixDuration = trackEnd = 0.2");
+        Check(as.SetAnimation(0, 999u, true) == nullptr, "动画下标越界 ⇒ 返回 nullptr（不改状态）");
         g_prefix.clear();
     }
 

@@ -92,6 +92,11 @@ struct SpineGpuSlotSampleResult
 
 // 采样 `asset` 的第 `anim_index` 个动画在 `time` 处的**槽位状态**。
 //
+// S5 起这是 `SpineGpuSamplePose()` 的槽位那一半（实现在 SpineGpuPoseSolver.cpp）：槽位与骨骼
+// 共用同一套时间轴 apply，不再各写一份。⚠️ 与 S3 的唯一行为差异：**暗色不再复位到 setup**
+// —— 参考实现的 `Slot::setToSetupPose()` 就不复位它（Slot.cpp:54-64），初值是 (0,0,0,0)，
+// 只有 TwoColor 时间轴会写（见 SpineGpuSkeletonState.h 文件头第 2 条）。
+//
 // ⚠️ `time` 不在这里取模 —— 循环是调用方的事（参考实现也是 `Animation::apply`
 //    只在 `loop` 为真时才 `fmod`，且 `AnimationState` 自己管 trackTime）。
 //

@@ -97,6 +97,116 @@ namespace
         return true;
     }
 
+    // ---- 多轨播放（S5，语义 = spine::AnimationState）----
+    // 数字参数解析失败不猜默认值：报用法并返回 false。
+    bool ParseFloatArg(const std::string& s, float& out)
+    {
+        char* end = nullptr;
+        const float v = std::strtof(s.c_str(), &end);
+        if (end == s.c_str() || *end != '\0')
+        {
+            return false;
+        }
+        out = v;
+        return true;
+    }
+
+    bool ParseIntArg(const std::string& s, int& out)
+    {
+        char* end = nullptr;
+        const long v = std::strtol(s.c_str(), &end, 10);
+        if (end == s.c_str() || *end != '\0' || v < 0 || v > 64)
+        {
+            return false;
+        }
+        out = static_cast<int>(v);
+        return true;
+    }
+
+    bool CmdSpinePlay(const std::vector<std::string>& args)
+    {
+        int track = 0;
+        int loop = 1;
+        if (args.empty() || (args.size() >= 2 && !ParseIntArg(args[1], track)) ||
+            (args.size() >= 3 && !ParseIntArg(args[2], loop)))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.play <anim index|name> [track=0] [loop=1]");
+            return false;
+        }
+        SpineGpuRenderer::Get().RequestSetAnimation(track, args[0], loop);
+        LOG_INFO(ZConsole, "spine.play: track {} <- '{}' (loop {})", track, args[0], loop);
+        return true;
+    }
+
+    bool CmdSpineQueue(const std::vector<std::string>& args)
+    {
+        int track = 0;
+        float delay = 0.0f;
+        int loop = 1;
+        if (args.empty() || (args.size() >= 2 && !ParseIntArg(args[1], track)) ||
+            (args.size() >= 3 && !ParseFloatArg(args[2], delay)) || (args.size() >= 4 && !ParseIntArg(args[3], loop)))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.queue <anim index|name> [track=0] [delay=0 (<=0: after current, minus mix)] [loop=1]");
+            return false;
+        }
+        SpineGpuRenderer::Get().RequestAddAnimation(track, args[0], loop != 0, delay);
+        LOG_INFO(ZConsole, "spine.queue: track {} += '{}' (delay {}, loop {})", track, args[0], delay, loop);
+        return true;
+    }
+
+    bool CmdSpineEmpty(const std::vector<std::string>& args)
+    {
+        int track = 0;
+        float mix = 0.2f;
+        if ((args.size() >= 1 && !ParseIntArg(args[0], track)) || (args.size() >= 2 && !ParseFloatArg(args[1], mix)))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.empty [track=0] [mix seconds=0.2]");
+            return false;
+        }
+        SpineGpuRenderer::Get().RequestSetEmptyAnimation(track, mix);
+        LOG_INFO(ZConsole, "spine.empty: track {} fades out over {}s", track, mix);
+        return true;
+    }
+
+    bool CmdSpineMix(const std::vector<std::string>& args)
+    {
+        float mix = 0.0f;
+        if (args.size() != 1 || !ParseFloatArg(args[0], mix))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.mix <default mix seconds>");
+            return false;
+        }
+        SpineGpuRenderer::Get().RequestDefaultMix(mix);
+        return true;
+    }
+
+    bool CmdSpineSpeed(const std::vector<std::string>& args)
+    {
+        float scale = 1.0f;
+        if (args.size() != 1 || !ParseFloatArg(args[0], scale))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.speed <time scale>");
+            return false;
+        }
+        SpineGpuRenderer::Get().RequestTimeScale(scale);
+        LOG_INFO(ZConsole, "spine.speed: {}", scale);
+        return true;
+    }
+
+    bool CmdSpineAlpha(const std::vector<std::string>& args)
+    {
+        int track = 0;
+        float alpha = 1.0f;
+        if (args.size() != 2 || !ParseIntArg(args[0], track) || !ParseFloatArg(args[1], alpha))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.alpha <track> <alpha 0..1>");
+            return false;
+        }
+        SpineGpuRenderer::Get().RequestTrackAlpha(track, alpha);
+        LOG_INFO(ZConsole, "spine.alpha: track {} = {}", track, alpha);
+        return true;
+    }
+
     // P1 acceptance: toggle a C++-authored UMG UserWidget on the runtime viewport.
     // Proves the UMG object model -> ZSlate -> shared UIPass render + input loop.
     bool CmdUmgDemo(const std::vector<std::string>& args)
@@ -175,6 +285,19 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
                             CmdSpineLoad);
     console.RegisterCommand("spine.clear", "Remove the GPU-Spine skeleton", CmdSpineClear);
     console.RegisterCommand("spine.status", "Print GPU-Spine renderer status", CmdSpineStatus);
+    console.RegisterCommand("spine.play",
+                            "Set a GPU-Spine animation on a track (crossfades). Usage: spine.play <anim> [track] [loop]",
+                            CmdSpinePlay);
+    console.RegisterCommand("spine.queue",
+                            "Queue a GPU-Spine animation after the current one. Usage: spine.queue <anim> [track] [delay] [loop]",
+                            CmdSpineQueue);
+    console.RegisterCommand("spine.empty", "Fade a GPU-Spine track out. Usage: spine.empty [track] [mix seconds]",
+                            CmdSpineEmpty);
+    console.RegisterCommand("spine.mix", "Default GPU-Spine crossfade duration. Usage: spine.mix <seconds>", CmdSpineMix);
+    console.RegisterCommand("spine.speed", "GPU-Spine AnimationState time scale. Usage: spine.speed <scale>",
+                            CmdSpineSpeed);
+    console.RegisterCommand("spine.alpha", "Alpha of a GPU-Spine track's current entry. Usage: spine.alpha <track> <alpha>",
+                            CmdSpineAlpha);
     console.RegisterCommand("umg.demo", "Toggle the UMG demo UserWidget. Usage: umg.demo [show|hide|toggle]", CmdUmgDemo);
     console.RegisterCommand("umg.save", "Serialize the UMG demo tree to a .zasset. Usage: umg.save [url]", CmdUmgSave);
     console.RegisterCommand("umg.load", "Load + show a UMG widget .zasset. Usage: umg.load [url]", CmdUmgLoad);

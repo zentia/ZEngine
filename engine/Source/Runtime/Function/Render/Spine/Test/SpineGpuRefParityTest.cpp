@@ -38,6 +38,9 @@
 #include <spine/PathConstraintData.h>
 #include <spine/Animation.h>
 #include <spine/AnimationState.h>
+#include <spine/AnimationStateData.h>
+#include <spine/DeformTimeline.h>
+#include <spine/Timeline.h>
 #include <spine/AtlasAttachmentLoader.h>
 #include <spine/Bone.h>
 #include <spine/BoneData.h>
@@ -51,6 +54,7 @@
 #include <spine/Skin.h>
 
 #include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
+#include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
 
 #include <algorithm>
@@ -407,6 +411,639 @@ struct Stats
 
 }   // namespace
 
+// =====================================================================
+// S5：多轨混合对拍（SpineGpuAnimationState ↔ spine::AnimationState）
+// ---------------------------------------------------------------------
+// 每个资产跑若干段**随机脚本**：两边各持有一份**跨帧存活**的骨架（我们的 SpineGpuSkeletonState
+// / 参考的 spine::Skeleton）与一份 AnimationState，喂同一串命令（setAnimation / addAnimation /
+// setEmptyAnimation(s) / addEmptyAnimation / clearTrack / 改 alpha、timeScale、holdPrevious、
+// 阈值、mixBlend、mixDuration）与同一串 dt，每帧 update → apply → updateWorldTransform 后逐项比：
+//   * 每根骨骼 (a, b, c, d, worldX, worldY)
+//   * 每个槽位：当前附件名、颜色 rgba、暗色 rgba、deform 数组（逐 float，含 path 附件的）
+//   * 绘制顺序
+//   * 每条 path 约束的 position / spacing / rotateMix / translateMix
+// 第一处分叉就停下这段脚本，打印帧号与"到这一帧为止的命令"，可以直接照着复现。
+//
+// 参考侧的 propertyId 撞号（见 SpineGpuSkeletonState.h `property_key` 的注释）单独统计：
+// 撞号是参考实现随加载历史变的偶发行为，不是语义 ⇒ 落在撞号资产上的分叉另记一栏，不混进"不一致"。
+// =====================================================================
+
+namespace
+{
+
+struct S5Stats
+{
+    size_t assets = 0;            // 参与的资产
+    size_t assets_bad = 0;        // 出现分叉的资产（不含撞号资产）
+    size_t assets_collision = 0;  // 参考侧 propertyId 撞号的资产
+    size_t assets_collision_bad = 0;
+    size_t scripts = 0;
+    size_t frames = 0;
+    size_t commands = 0;
+    size_t bone_checks = 0;
+    size_t slot_checks = 0;
+    size_t deform_values = 0;
+    size_t draw_order_checks = 0;
+    size_t deform_skipped_unbaked = 0;  // 参考侧非空、但附件是 bbox / clipping / point（烘焙期就不收 deform）
+    size_t mixing_frames = 0;       // 至少一条轨道处于 mixingFrom 中的帧（确认真的在测混合）
+    size_t multi_track_frames = 0;  // 两条及以上轨道同时生效的帧
+    // 覆盖面：确认各分支真的被走到（脚本是随机的，光看"全过"不知道测没测到）
+    size_t hold_frames = 0;       // 被混出的那条里有 Hold 模式的时间轴
+    size_t hold_mix_frames = 0;   //                   有 HoldMix 模式的时间轴
+    size_t add_frames = 0;        // 有 MixBlend_Add 的上层轨道在生效
+    size_t chain2_frames = 0;     // mixingFrom 链长 >= 2（混合途中又被打断）
+    float worst_rel = 0.0f;
+    std::vector<std::string> details;
+};
+
+// xorshift64*：两边吃的是**同一串**命令，所以只要可复现，不需要高质量。
+struct S5Rng
+{
+    uint64_t s;
+    explicit S5Rng(uint64_t seed) : s(seed == 0 ? 0x9E3779B97F4A7C15ull : seed) {}
+    uint32_t Next()
+    {
+        s ^= s >> 12;
+        s ^= s << 25;
+        s ^= s >> 27;
+        return static_cast<uint32_t>((s * 0x2545F4914F6CDD1Dull) >> 32);
+    }
+    float Uniform(float a, float b) { return a + (b - a) * (static_cast<float>(Next() >> 8) / 16777216.0f); }
+    uint32_t Below(uint32_t n) { return n == 0 ? 0u : Next() % n; }
+    bool Chance(float p) { return Uniform(0.0f, 1.0f) < p; }
+};
+
+uint64_t HashPath(const std::string& s)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (char c : s)
+    {
+        h ^= static_cast<uint8_t>(c);
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+
+// 参考侧 propertyId 是否撞号：非 deform 的 id 是 (type << 24) + 下标，天然单射；
+// 只有 deform 的 `(Deform << 24) + attachment->_id + slotIndex` 会越界撞进别人的号段。
+bool RefHasPropertyIdCollision(spine::SkeletonData* data)
+{
+    std::map<int, std::string> seen;
+    spine::Vector<spine::Animation*>& anims = data->getAnimations();
+    for (size_t a = 0; a < anims.size(); ++a)
+    {
+        spine::Vector<spine::Timeline*>& tls = anims[a]->getTimelines();
+        for (size_t t = 0; t < tls.size(); ++t)
+        {
+            spine::Timeline* tl = tls[t];
+            const int id = tl->getPropertyId();
+            std::string key;
+            if (tl->getRTTI().isExactly(spine::DeformTimeline::rtti))
+            {
+                spine::DeformTimeline* dt = static_cast<spine::DeformTimeline*>(tl);
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "D:%d:%p", dt->getSlotIndex(), static_cast<void*>(dt->getAttachment()));
+                key = buf;
+            }
+            else
+            {
+                key = "N:" + std::to_string(id);
+            }
+            auto [it, inserted] = seen.emplace(id, key);
+            if (!inserted && it->second != key)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+const char* S5BlendName(bool add)
+{
+    return add ? "Add" : "Replace";
+}
+
+// 比一帧。返回空串 = 全部一致；否则是第一处分叉的描述。
+std::string S5CompareFrame(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data, const SpineGpuSkeletonState& st,
+                           const SpineGpuPoseResult& pose, spine::Skeleton& ref, spine::SkeletonData* ref_data,
+                           S5Stats& s5)
+{
+    char buf[768];
+    // ---- 骨骼 ----
+    spine::Vector<spine::Bone*>& rb = ref.getBones();
+    if (rb.size() != pose.bones.size())
+    {
+        return "骨骼数不同";
+    }
+    for (size_t i = 0; i < rb.size(); ++i)
+    {
+        const SpineGpuBoneSample& o = pose.bones[i];
+        const float rv[6] = {rb[i]->getA(), rb[i]->getB(), rb[i]->getC(), rb[i]->getD(), rb[i]->getWorldX(),
+                             rb[i]->getWorldY()};
+        const float ov[6] = {o.a, o.b, o.c, o.d, o.world_x, o.world_y};
+        // 世界平移按"参与求和的量级"定尺度：`wx = pa*ax + pb*ay + p.wx`。三项各几百、和却接近 0 时，
+        // 1 ulp 的旋转差就能在 0 附近放大成 1e-4 的绝对差——按 max(1, |值|) 算就是"超差"（实测：
+        // Ui_Yao bone9 局部 x=653.8、世界 x=0.066，差 1.2e-4 = 1.6 ulp × 653）。S4 的单动画对拍每个动画
+        // 只有 5 个采样点碰不到，S5 每轮 23 万帧就碰得到。
+        float xy_scale = std::fmax(std::fabs(rv[4]), std::fabs(rv[5]));
+        {
+            spine::Bone* p = rb[i]->getParent();
+            const float ax = std::fabs(rb[i]->getAX()) + std::fabs(rb[i]->getAY());
+            if (p != nullptr)
+            {
+                const float pm = std::fmax(std::fmax(std::fabs(p->getA()), std::fabs(p->getB())),
+                                           std::fmax(std::fabs(p->getC()), std::fabs(p->getD())));
+                xy_scale = std::fmax(xy_scale, std::fmax(std::fabs(p->getWorldX()), std::fabs(p->getWorldY())));
+                xy_scale = std::fmax(xy_scale, ax * pm);
+            }
+            else
+            {
+                xy_scale = std::fmax(xy_scale, ax);
+            }
+        }
+        float worst = 0.0f;
+        bool ok = true;
+        for (int k = 0; k < 6; ++k)
+        {
+            ++s5.bone_checks;
+            if (k < 4)
+            {
+                ok = CloseEnough(ov[k], rv[k], worst) && ok;
+            }
+            else
+            {
+                // 把两侧都缩到 xy_scale 的尺度上再比（与 CloseEnough 同一套相对容差）
+                const float sc = std::fmax(1.0f, xy_scale);
+                ok = CloseEnough(ov[k] / sc, rv[k] / sc, worst) && ok;
+            }
+        }
+        s5.worst_rel = std::max(s5.worst_rel, worst);
+        if (!ok)
+        {
+            const SpineGpuBoneState& b = st.bones[i];
+            spine::Bone* r = rb[i];
+            std::snprintf(buf, sizeof(buf),
+                          "骨骼 %zu '%s'：我们 (a=%g b=%g c=%g d=%g wx=%g wy=%g | 局部 x=%g y=%g r=%g sx=%g sy=%g shx=%g "
+                          "shy=%g) vs 参考 (a=%g b=%g c=%g d=%g wx=%g wy=%g | 局部 x=%g y=%g r=%g sx=%g sy=%g shx=%g shy=%g)",
+                          i, r->getData().getName().buffer(), ov[0], ov[1], ov[2], ov[3], ov[4], ov[5], b.x, b.y,
+                          b.rotation, b.scale_x, b.scale_y, b.shear_x, b.shear_y, rv[0], rv[1], rv[2], rv[3], rv[4],
+                          rv[5], r->getX(), r->getY(), r->getRotation(), r->getScaleX(), r->getScaleY(), r->getShearX(),
+                          r->getShearY());
+            return buf;
+        }
+    }
+    // ---- 槽位 ----
+    spine::Vector<spine::Slot*>& rs = ref.getSlots();
+    if (rs.size() != st.slots.size())
+    {
+        return "槽位数不同";
+    }
+    for (size_t si = 0; si < rs.size(); ++si)
+    {
+        ++s5.slot_checks;
+        spine::Slot* r = rs[si];
+        const SpineGpuSlotState& o = st.slots[si];
+        spine::Attachment* ra = r->getAttachment();
+        const std::string our_name =
+            o.attachment.name_id == SpineGpuAttachRef::kNone ? std::string() : data.names[o.attachment.name_id];
+        bool att_ok;
+        if (ra != nullptr)
+        {
+            att_ok = our_name == ra->getName().buffer();
+        }
+        else
+        {
+            // 参考是 NULL：我们要么也不挂，要么挂的名字在参考的皮肤里同样找不到（见 SpineGpuAttachRef 的注释）
+            att_ok = our_name.empty() || ref_data->getDefaultSkin() == nullptr ||
+                     ref_data->getDefaultSkin()->getAttachment(si, spine::String(our_name.c_str())) == nullptr;
+        }
+        if (!att_ok)
+        {
+            return "槽位 " + std::to_string(si) + " '" + r->getData().getName().buffer() + "' 当前附件：我们 '" +
+                   our_name + "' vs 参考 '" + (ra != nullptr ? ra->getName().buffer() : "<无>") + "'";
+        }
+        const spine::Color& rc = r->getColor();
+        const spine::Color& rd = r->getDarkColor();
+        const float rcol[8] = {rc.r, rc.g, rc.b, rc.a, rd.r, rd.g, rd.b, rd.a};
+        const float ocol[8] = {o.color[0], o.color[1], o.color[2], o.color[3],
+                               o.dark[0],  o.dark[1],  o.dark[2],  o.dark[3]};
+        for (int k = 0; k < 8; ++k)
+        {
+            float w = 0.0f;
+            if (!CloseEnough(ocol[k], rcol[k], w))
+            {
+                const int b0 = k < 4 ? 0 : 4;
+                std::snprintf(buf, sizeof(buf), "槽位 %zu '%s' %s：我们 (%g %g %g %g) vs 参考 (%g %g %g %g)", si,
+                              r->getData().getName().buffer(), k < 4 ? "颜色" : "暗色", ocol[b0], ocol[b0 + 1],
+                              ocol[b0 + 2], ocol[b0 + 3], rcol[b0], rcol[b0 + 1], rcol[b0 + 2], rcol[b0 + 3]);
+                return buf;
+            }
+        }
+        spine::Vector<float>& rv = r->getAttachmentVertices();
+        // 只比 mesh / path 的 deform：bbox / clipping / point 的 deform 时间轴在**烘焙期就跳过**
+        // （SpineGpuFormat.h `SpineGpuTimeline` 的注释：不影响任何姿势；裁剪只有 CPU 实现）。
+        const bool baked_kind = ra != nullptr && (ra->getRTTI().isExactly(spine::MeshAttachment::rtti) ||
+                                                  ra->getRTTI().isExactly(spine::PathAttachment::rtti));
+        if (ra != nullptr && !baked_kind)
+        {
+            if (!o.deform.empty())
+            {
+                return "槽位 " + std::to_string(si) + " '" + r->getData().getName().buffer() +
+                       "' 挂的是不烘焙 deform 的附件类型，我们却有 deform 数组";
+            }
+            s5.deform_skipped_unbaked += rv.size() != 0 ? 1u : 0u;
+            continue;
+        }
+        if (rv.size() != o.deform.size())
+        {
+            return "槽位 " + std::to_string(si) + " '" + r->getData().getName().buffer() + "' deform 长度：我们 " +
+                   std::to_string(o.deform.size()) + " vs 参考 " + std::to_string(rv.size()) + "（附件 '" + our_name +
+                   "'）";
+        }
+        for (size_t q = 0; q < rv.size(); ++q)
+        {
+            ++s5.deform_values;
+            float w = 0.0f;
+            if (!CloseEnough(o.deform[q], rv[q], w))
+            {
+                std::snprintf(buf, sizeof(buf), "槽位 %zu '%s' deform[%zu]：我们 %g vs 参考 %g（附件 '%s'）", si,
+                              r->getData().getName().buffer(), q, o.deform[q], rv[q], our_name.c_str());
+                return buf;
+            }
+        }
+    }
+    // ---- 绘制顺序 ----
+    spine::Vector<spine::Slot*>& rdo = ref.getDrawOrder();
+    if (rdo.size() != st.draw_order.size())
+    {
+        return "绘制顺序长度不同";
+    }
+    for (size_t i = 0; i < rdo.size(); ++i)
+    {
+        ++s5.draw_order_checks;
+        if (static_cast<uint32_t>(rdo[i]->getData().getIndex()) != st.draw_order[i])
+        {
+            return "绘制顺序第 " + std::to_string(i) + " 位：我们槽位 " + std::to_string(st.draw_order[i]) + " vs 参考 " +
+                   std::to_string(rdo[i]->getData().getIndex());
+        }
+    }
+    // ---- path 约束运行时参数 ----
+    spine::Vector<spine::PathConstraint*>& rp = ref.getPathConstraints();
+    if (rp.size() != asset.paths.size())
+    {
+        return "path 约束数不同";
+    }
+    for (size_t i = 0; i < rp.size(); ++i)
+    {
+        const float rv4[4] = {rp[i]->getPosition(), rp[i]->getSpacing(), rp[i]->getRotateMix(),
+                              rp[i]->getTranslateMix()};
+        const float ov4[4] = {st.path_position[i], st.path_spacing[i], st.path_rotate_mix[i], st.path_translate_mix[i]};
+        for (int k = 0; k < 4; ++k)
+        {
+            float w = 0.0f;
+            if (!CloseEnough(ov4[k], rv4[k], w))
+            {
+                std::snprintf(buf, sizeof(buf), "path 约束 %zu 参数 #%d：我们 %g vs 参考 %g", i, k, ov4[k], rv4[k]);
+                return buf;
+            }
+        }
+    }
+    return std::string();
+}
+
+std::string S5DescribeRefTracks(spine::AnimationState& ref)
+{
+    std::string tracks;
+    for (size_t ti = 0; ti < ref.getTracks().size(); ++ti)
+    {
+        spine::TrackEntry* e = ref.getTracks()[ti];
+        if (e == nullptr)
+        {
+            continue;
+        }
+        std::string from;
+        for (spine::TrackEntry* m = e->getMixingFrom(); m != nullptr; m = m->getMixingFrom())
+        {
+            from += std::string(" <- '") + m->getAnimation()->getName().buffer() + "'";
+        }
+        char tb[256];
+        std::snprintf(tb, sizeof(tb), "\n        轨道 %zu：'%s' t=%g mix %g/%g alpha %g delay %g", ti,
+                      e->getAnimation()->getName().buffer(), static_cast<double>(e->getTrackTime()),
+                      static_cast<double>(e->getMixTime()), static_cast<double>(e->getMixDuration()),
+                      static_cast<double>(e->getAlpha()), static_cast<double>(e->getDelay()));
+        tracks += tb + from;
+    }
+    return tracks;
+}
+
+// 一个资产跑 `scripts` 段脚本。返回 false = 出现分叉（细节进 s5.details）。
+bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::SkeletonData* ref_data, size_t scripts,
+           size_t frames, size_t max_details, S5Stats& s5)
+{
+    const std::string short_path = skel_path.parent_path().filename().string() + "/" + skel_path.filename().string();
+    const size_t anim_count = asset.anims.size();
+    if (anim_count == 0 || ref_data->getAnimations().size() != anim_count)
+    {
+        return true;
+    }
+    for (size_t a = 0; a < anim_count; ++a)
+    {
+        if (a >= asset.anim_names.size() || asset.anim_names[a] != ref_data->getAnimations()[a]->getName().buffer())
+        {
+            ++s5.assets_bad;
+            if (s5.details.size() < max_details)
+            {
+                s5.details.push_back(short_path + "：动画 " + std::to_string(a) + " 的名字与参考对不上");
+            }
+            return false;
+        }
+    }
+    ++s5.assets;
+    const bool collision = RefHasPropertyIdCollision(ref_data);
+    if (collision)
+    {
+        ++s5.assets_collision;
+    }
+
+    SpineGpuRuntimeData data;
+    SpineImportResult r = SpineGpuBuildRuntimeData(asset, data);
+    SpineGpuSkeletonState st;
+    if (r.ok)
+    {
+        r = SpineGpuInitSkeletonState(asset, data, st);
+    }
+    if (!r.ok)
+    {
+        ++s5.assets_bad;
+        if (s5.details.size() < max_details)
+        {
+            s5.details.push_back(short_path + "：建运行时状态失败：" + r.error);
+        }
+        return false;
+    }
+    spine::Skeleton ref_skel(ref_data);   // 两边都是"刚构造"的骨架，跨脚本一直活着
+
+    S5Rng rng(HashPath(skel_path.string()));
+    spine::Vector<spine::Animation*>& ref_anims = ref_data->getAnimations();
+
+    for (size_t sc = 0; sc < scripts; ++sc)
+    {
+        ++s5.scripts;
+        // ---- 混合时长表（两边同值）----
+        SpineGpuAnimationStateData our_asd;
+        spine::AnimationStateData ref_asd(ref_data);
+        const float default_mixes[4] = {0.0f, 0.1f, 0.2f, 0.35f};
+        our_asd.default_mix = default_mixes[rng.Below(4)];
+        ref_asd.setDefaultMix(our_asd.default_mix);
+        for (int k = 0; k < 4; ++k)
+        {
+            const uint32_t fa = rng.Below(static_cast<uint32_t>(anim_count));
+            const uint32_t ta = rng.Below(static_cast<uint32_t>(anim_count));
+            const float d = rng.Uniform(0.0f, 0.6f);
+            our_asd.SetMix(fa, ta, d);
+            ref_asd.setMix(ref_anims[fa], ref_anims[ta], d);
+        }
+
+        SpineGpuAnimationState ours(asset, data, &our_asd);
+        spine::AnimationState ref(&ref_asd);
+        std::vector<std::string> log;
+
+        if (rng.Chance(0.5f))
+        {
+            SpineGpuSetToSetupPose(asset, data, st);
+            ref_skel.setToSetupPose();
+            log.push_back("setToSetupPose");
+        }
+        {
+            const uint32_t a0 = rng.Below(static_cast<uint32_t>(anim_count));
+            ours.SetAnimation(0, a0, true);
+            ref.setAnimation(0, ref_anims[a0], true);
+            log.push_back("f0 set(0, #" + std::to_string(a0) + ", loop)");
+        }
+
+        for (size_t f = 0; f < frames; ++f)
+        {
+            // ---- 命令 ----
+            if (f > 0 && rng.Chance(0.07f))
+            {
+                ++s5.commands;
+                const uint32_t op = rng.Below(100);
+                const size_t track = rng.Chance(0.5f) ? 0u : (rng.Chance(0.6f) ? 1u : 2u);
+                const uint32_t an = rng.Below(static_cast<uint32_t>(anim_count));
+                const bool loop = rng.Chance(0.6f);
+                char cbuf[160];
+                SpineGpuTrackEntry* oe = nullptr;
+                spine::TrackEntry* re = nullptr;
+                if (op < 32)
+                {
+                    oe = ours.SetAnimation(track, an, loop);
+                    re = ref.setAnimation(track, ref_anims[an], loop);
+                    std::snprintf(cbuf, sizeof(cbuf), "f%zu set(%zu, #%u, %d)", f, track, an, loop ? 1 : 0);
+                }
+                else if (op < 55)
+                {
+                    const float delay = rng.Chance(0.5f) ? rng.Uniform(-0.3f, 0.0f) : rng.Uniform(0.0f, 1.0f);
+                    oe = ours.AddAnimation(track, an, loop, delay);
+                    re = ref.addAnimation(track, ref_anims[an], loop, delay);
+                    std::snprintf(cbuf, sizeof(cbuf), "f%zu add(%zu, #%u, %d, delay %g)", f, track, an, loop ? 1 : 0,
+                                  static_cast<double>(delay));
+                }
+                else if (op < 65)
+                {
+                    const float mix = rng.Uniform(0.0f, 0.5f);
+                    oe = ours.SetEmptyAnimation(track, mix);
+                    re = ref.setEmptyAnimation(track, mix);
+                    std::snprintf(cbuf, sizeof(cbuf), "f%zu setEmpty(%zu, %g)", f, track, static_cast<double>(mix));
+                }
+                else if (op < 73)
+                {
+                    const float mix = rng.Uniform(0.0f, 0.5f);
+                    const float delay = rng.Chance(0.5f) ? 0.0f : rng.Uniform(0.0f, 0.8f);
+                    oe = ours.AddEmptyAnimation(track, mix, delay);
+                    re = ref.addEmptyAnimation(track, mix, delay);
+                    std::snprintf(cbuf, sizeof(cbuf), "f%zu addEmpty(%zu, %g, delay %g)", f, track,
+                                  static_cast<double>(mix), static_cast<double>(delay));
+                }
+                else if (op < 77)
+                {
+                    const size_t ct = track == 0 ? 1u : track;   // 轨道 0 很少清（清了就只剩 setup）
+                    ours.ClearTrack(ct);
+                    ref.clearTrack(ct);
+                    std::snprintf(cbuf, sizeof(cbuf), "f%zu clear(%zu)", f, ct);
+                }
+                else if (op < 80)
+                {
+                    const float mix = rng.Uniform(0.0f, 0.4f);
+                    ours.SetEmptyAnimations(mix);
+                    ref.setEmptyAnimations(mix);
+                    std::snprintf(cbuf, sizeof(cbuf), "f%zu setEmpties(%g)", f, static_cast<double>(mix));
+                }
+                else if (op < 84)
+                {
+                    const float ts = rng.Uniform(0.25f, 2.0f);
+                    ours.time_scale = ts;
+                    ref.setTimeScale(ts);
+                    std::snprintf(cbuf, sizeof(cbuf), "f%zu stateTimeScale(%g)", f, static_cast<double>(ts));
+                }
+                else
+                {
+                    // 改轨道当前那条
+                    oe = ours.GetCurrent(track);
+                    re = ref.getCurrent(track);
+                    std::snprintf(cbuf, sizeof(cbuf), "f%zu tweak(%zu)", f, track);
+                }
+                log.push_back(cbuf);
+                if ((oe == nullptr) != (re == nullptr))
+                {
+                    ++(collision ? s5.assets_collision_bad : s5.assets_bad);
+                    if (s5.details.size() < max_details)
+                    {
+                        s5.details.push_back(short_path + " 脚本 " + std::to_string(sc) + "：命令 '" + cbuf +
+                                             "' 后一边有 TrackEntry、一边没有");
+                    }
+                    return false;
+                }
+                // 新建 / 取到的那条随机改几个属性（两边同值）
+                if (oe != nullptr && rng.Chance(0.6f))
+                {
+                    std::string tw;
+                    if (track != 0 && rng.Chance(0.5f))
+                    {
+                        const float al = rng.Uniform(0.0f, 1.0f);
+                        oe->alpha = al;
+                        re->setAlpha(al);
+                        tw += " alpha=" + std::to_string(al);
+                    }
+                    if (rng.Chance(0.25f))
+                    {
+                        const float ts = rng.Uniform(0.3f, 2.0f);
+                        oe->time_scale = ts;
+                        re->setTimeScale(ts);
+                        tw += " timeScale=" + std::to_string(ts);
+                    }
+                    if (rng.Chance(0.25f))
+                    {
+                        oe->hold_previous = true;
+                        re->setHoldPrevious(true);
+                        tw += " holdPrevious";
+                    }
+                    if (rng.Chance(0.2f))
+                    {
+                        const float th = rng.Uniform(0.0f, 1.0f);
+                        oe->attachment_threshold = th;
+                        re->setAttachmentThreshold(th);
+                        tw += " attTh=" + std::to_string(th);
+                    }
+                    if (rng.Chance(0.2f))
+                    {
+                        const float th = rng.Uniform(0.0f, 1.0f);
+                        oe->draw_order_threshold = th;
+                        re->setDrawOrderThreshold(th);
+                        tw += " doTh=" + std::to_string(th);
+                    }
+                    if (track != 0 && rng.Chance(0.3f))
+                    {
+                        const bool add = rng.Chance(0.5f);
+                        oe->mix_blend = add ? SpineGpuMixBlend::kAdd : SpineGpuMixBlend::kReplace;
+                        re->setMixBlend(add ? spine::MixBlend_Add : spine::MixBlend_Replace);
+                        tw += std::string(" blend=") + S5BlendName(add);
+                    }
+                    if (rng.Chance(0.2f))
+                    {
+                        const float md = rng.Uniform(0.0f, 0.6f);
+                        oe->mix_duration = md;
+                        re->setMixDuration(md);
+                        tw += " mixDuration=" + std::to_string(md);
+                    }
+                    if (!tw.empty())
+                    {
+                        log.back() += " {" + tw.substr(1) + "}";
+                    }
+                }
+            }
+
+            // ---- 一帧 ----
+            float dt = rng.Uniform(1.0f / 120.0f, 1.0f / 20.0f);
+            if (rng.Chance(0.03f))
+            {
+                dt = 0.0f;
+            }
+            else if (rng.Chance(0.03f))
+            {
+                dt = rng.Uniform(0.1f, 0.4f);
+            }
+            ++s5.frames;
+            ours.Update(dt);
+            ref.update(dt);
+            r = ours.Apply(st);
+            ref.apply(ref_skel);
+            SpineGpuPoseResult pose;
+            if (r.ok)
+            {
+                r = SpineGpuUpdateWorld(asset, data, st, pose);
+            }
+            ref_skel.updateWorldTransform();
+
+            size_t live_tracks = 0;
+            bool mixing = false;
+            bool hold = false;
+            bool hold_mix = false;
+            bool add_blend = false;
+            bool chain2 = false;
+            for (size_t ti = 0; ti < ours.TrackCount(); ++ti)
+            {
+                const SpineGpuTrackEntry* e = ours.GetCurrent(ti);
+                if (e != nullptr && e->delay <= 0.0f)
+                {
+                    ++live_tracks;
+                    mixing = mixing || e->mixing_from != nullptr;
+                    add_blend = add_blend || (ti != 0 && e->mix_blend == SpineGpuMixBlend::kAdd);
+                    chain2 = chain2 || (e->mixing_from != nullptr && e->mixing_from->mixing_from != nullptr);
+                    for (const SpineGpuTrackEntry* m = e->mixing_from; m != nullptr; m = m->mixing_from)
+                    {
+                        for (int32_t mode : m->timeline_mode)
+                        {
+                            hold = hold || mode == 2;
+                            hold_mix = hold_mix || mode == 3;
+                        }
+                    }
+                }
+            }
+            s5.multi_track_frames += live_tracks >= 2 ? 1u : 0u;
+            s5.mixing_frames += mixing ? 1u : 0u;
+            s5.hold_frames += hold ? 1u : 0u;
+            s5.hold_mix_frames += hold_mix ? 1u : 0u;
+            s5.add_frames += add_blend ? 1u : 0u;
+            s5.chain2_frames += chain2 ? 1u : 0u;
+
+            const std::string diff = r.ok ? S5CompareFrame(asset, data, st, pose, ref_skel, ref_data, s5)
+                                          : ("我们的解算失败：" + r.error);
+            if (!diff.empty())
+            {
+                ++(collision ? s5.assets_collision_bad : s5.assets_bad);
+                if (s5.details.size() < max_details)
+                {
+                    std::string cmds;
+                    const size_t from = log.size() > 12 ? log.size() - 12 : 0;
+                    for (size_t k = from; k < log.size(); ++k)
+                    {
+                        cmds += "\n        " + log[k];
+                    }
+                    s5.details.push_back(short_path + (collision ? "（参考侧 propertyId 撞号）" : "") + " 脚本 " +
+                                         std::to_string(sc) + " 第 " + std::to_string(f) + " 帧：" + diff +
+                                         "\n      最近的命令：" + cmds + "\n      参考侧轨道：" +
+                                         S5DescribeRefTracks(ref));
+                }
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+}   // namespace
+
 // 烘焙 / 读回失败的原因按"错误串去掉引号里的名字"归类计数，最后汇总打印。
 // 以前这里只有一个计数 —— 某次改动让失败数从 29 跳到 102 时，看不出是哪条规则在报。
 std::map<std::string, size_t> g_bake_fail_kinds;
@@ -452,6 +1089,11 @@ int main(int argc, char** argv)
     size_t vis_items = 0, vis_fb_clip = 0, vis_fb_deform_only = 0;
     size_t vis_found = 0, vis_missing = 0, vis_examples = 0, vis_missing_with_candidates = 0;
     size_t anim_dur_pos = 0, anim_dur_zero = 0, anim_dur_examples = 0;
+    bool run_s5 = true;      // S5 多轨混合对拍（--no-s5 关掉）
+    bool s5_only = false;    // 只跑 S5（跳过单动画逐时间点对拍）
+    size_t s5_scripts = 2;   // 每个资产几段随机脚本
+    size_t s5_frames = 150;  // 每段脚本几帧
+    S5Stats s5;
     for (int i = 1; i < argc; ++i)
     {
         const std::string a = argv[i];
@@ -487,6 +1129,22 @@ int main(int argc, char** argv)
         {
             trace_time = static_cast<float>(std::atof(argv[++i]));
         }
+        else if (a == "--no-s5")
+        {
+            run_s5 = false;
+        }
+        else if (a == "--s5-only")
+        {
+            s5_only = true;
+        }
+        else if (a == "--s5-scripts" && i + 1 < argc)
+        {
+            s5_scripts = static_cast<size_t>(std::atoi(argv[++i]));
+        }
+        else if (a == "--s5-frames" && i + 1 < argc)
+        {
+            s5_frames = static_cast<size_t>(std::atoi(argv[++i]));
+        }
         else if (a == "--uv-scan")
         {
             uv_scan = true;
@@ -503,7 +1161,8 @@ int main(int argc, char** argv)
     if (dir.empty())
     {
         std::printf("用法: SpineGpuRefParityTest <目录> [--limit N] [--details N] [--verbose]\n"
-                    "      [--flip-book <out.html> [--asset <名字子串>] [--anim N] [--frames N]]\n");
+                    "      [--flip-book <out.html> [--asset <名字子串>] [--anim N] [--frames N]]\n"
+                    "      [--no-s5 | --s5-only] [--s5-scripts N] [--s5-frames N]\n");
         return 2;
     }
 
@@ -1058,7 +1717,7 @@ int main(int argc, char** argv)
         }
         bool deform_on_path = false;   // 首个坏样本里，path 约束的目标槽位是否带 deform
         bool deform_scanned = false;
-        for (size_t ai = 0; ai < loaded.anims.size() && file_ok; ++ai)
+        for (size_t ai = 0; ai < loaded.anims.size() && file_ok && !s5_only; ++ai)
         {
             const float duration = loaded.anims[ai].duration;
             // 时长也要对拍：下面的采样点是按**我们的**时长取的 —— 我们若算成 0 而参考不是，
@@ -1448,6 +2107,12 @@ int main(int argc, char** argv)
             }
         }
 
+        // ---- S5：多轨混合（单动画对上了才跑，否则分叉全是单动画的问题）----
+        if (file_ok && run_s5 && (flip_asset.empty() || skel_path.string().find(flip_asset) != std::string::npos))
+        {
+            RunS5(skel_path, loaded, ref_data, s5_scripts, s5_frames, max_details, s5);
+        }
+
         if (file_ok)
         {
             ++st.files_compared;
@@ -1549,7 +2214,28 @@ int main(int argc, char** argv)
             std::printf("  %s\n", b.c_str());
         }
     }
-    std::printf("\n=== verdict: %s ===\n", st.mismatches == 0 ? "PASS" : "FAIL");
+    if (run_s5)
+    {
+        std::printf("\n=== S5 多轨混合对拍（spine::AnimationState）===\n");
+        std::printf("参与资产             : %zu（参考侧 propertyId 撞号 %zu）\n", s5.assets, s5.assets_collision);
+        std::printf("脚本 / 帧 / 命令      : %zu / %zu / %zu\n", s5.scripts, s5.frames, s5.commands);
+        std::printf("  └ 处于混合中的帧    : %zu；两条及以上轨道同时生效的帧 %zu\n", s5.mixing_frames,
+                    s5.multi_track_frames);
+        std::printf("  └ 覆盖：Hold %zu 帧 / HoldMix %zu 帧 / Add 轨道 %zu 帧 / 混合被打断（链长>=2）%zu 帧\n",
+                    s5.hold_frames, s5.hold_mix_frames, s5.add_frames, s5.chain2_frames);
+        std::printf("骨骼分量比较         : %zu，最大相对误差 %.3g\n", s5.bone_checks, static_cast<double>(s5.worst_rel));
+        std::printf("槽位比较             : %zu（附件 + 颜色 + 暗色 + deform），deform 逐 float %zu\n", s5.slot_checks,
+                    s5.deform_values);
+        std::printf("  └ bbox / clipping 的 deform（烘焙期不收，跳过）: %zu 次\n", s5.deform_skipped_unbaked);
+        std::printf("绘制顺序比较         : %zu\n", s5.draw_order_checks);
+        std::printf("分叉的资产           : %zu（撞号资产上的另计 %zu）\n", s5.assets_bad, s5.assets_collision_bad);
+        for (const std::string& d : s5.details)
+        {
+            std::printf("  - %s\n", d.c_str());
+        }
+    }
+    const bool pass = st.mismatches == 0 && s5.assets_bad == 0;
+    std::printf("\n=== verdict: %s ===\n", pass ? "PASS" : "FAIL");
 
-    return st.mismatches == 0 ? 0 : 1;
+    return pass ? 0 : 1;
 }

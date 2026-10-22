@@ -1,6 +1,7 @@
 # GPU-Spine v7：骨骼树 + 动画烘焙，解算自写
 
-- **结论等级**：**部分已落地（S0 / S0.5 / S1 / S2 / S3 / S4a），S4b 及以后仍在设计阶段**。
+- **结论等级**：**S0 / S0.5 / S1 / S2 / S3 / S4 / S5 / S6 已落地**（2026-10-23）。S5（多轨混合）见 §7.0.7，
+  S6（GPU mesh deform）见 GPU_SPINE_INTERCHANGE_FORMAT.md §7.1。以下为 S4a 时的原始记录，保留不改：
   边界由 OSGame 实测资产反推（不是拍脑袋），字段已定、出处已核对。
   已落地：影响流（v7）、骨骼树（v8）、动画（v9）、槽位 setup（v10）、
   **约束 setup / 执行顺序 / PathAttachment（v11）**，见 §7.0 / 7.0.1 / 7.0.2 / 7.0.3 /
@@ -515,7 +516,7 @@ deform 数组长度对 weighted 是 **ΣboneCount × 2**（不是 vertexCount ×
 | **S2** | 动画解析（json + 二进制）+ chunk 11-16；11 类时间轴全覆盖 | **已完成**（见 7.0.3） |
 | **S3** | 槽位 setup（chunk 17）+ color / twoColor / attachment / drawOrder 解算 | **已完成**（见 7.0.4） |
 | **S4** | 约束（chunk 18-20）+ update 顺序（前置核对**已完成**，见 §4.1：3.7/3.8 数学差 2 处，按 3.8 实现） | **已完成**：对着 spine-cpp 3.8 逐骨骼对拍 **781/781**（见 7.0.5 / 7.0.6） |
-| **S5** | 多轨混合（`AnimationState` 转录，含 `_timelinesRotation` 最短弧记忆） | 对拍：随机切轨 / 混出，逐帧比对 |
+| **S5** | 多轨混合（`AnimationState` 转录，含 `_timelinesRotation` 最短弧记忆） | **已完成**：781 资产 × 随机脚本 23 万帧逐帧对 spine-cpp 3.8，0 分叉（见 7.0.7） |
 | **S6a** | deform 求解 + per-instance deform 缓冲（方案 C：只给命中项写"deform 后局部坐标"，蒙皮仍在 GPU） | 与 `SpineSkinningParityTest` 接上；断言共享 VB **没被改写** |
 | **S6b** | 方案 B：deform 缓冲直接由 GPU 采样，shader 里 rigid 替换 / weighted 相加 | 同上，且逐实例上传量 ≤ 122 B × 命中条数 |
 
@@ -872,6 +873,130 @@ rotate **tangent 99.10%** / chainScale 0.90% ⇒ 固定值模式几乎没用到�
 
 ---
 
+### 7.0.7 S5 已落地（2026-10-23）：多轨混合（`AnimationState` 转录）+ 可变骨架状态，781 / 781 随机脚本逐帧全对
+
+**格式不变（仍是 v14）**：多轨混合是纯运行时的事，容器里没有一个字节要改。
+
+#### 为什么必须先拆出"可变状态"（不是只加一个 AnimationState）
+
+S2-S4 的解算器是**无状态**的："先复位 setup，再用 alpha = 1 / MixBlend_First 覆盖"。这只对
+"轨道 0 上唯一一条、已淡入完的动画"成立。多轨的语义依赖**上一帧留下来的值**，四条都在参考实现里：
+
+| 依赖上一帧的东西 | 出处 | 无状态写法会怎样 |
+| --- | --- | --- |
+| alpha < 1 的 First / Replace 从**当前值**出发（`bone._x += (目标 - bone._x) * alpha`） | 各 Timeline::apply | 每帧从 setup 出发 ⇒ 混合曲线完全不同 |
+| 没有任何时间轴命中的属性**保持原值** | AnimationState 不复位 | 被复位成 setup |
+| mesh deform 数组挂在**槽位**上，只在换附件时清空 | Slot.cpp:94-102 | 混出途中 deform 突然消失 |
+| absolute+local transform 约束写**局部** shearY，留到下一帧 | TransformConstraint.cpp（S4b 已照抄） | 下一帧丢失 |
+
+⇒ 拆成三层（`SpineGpuPoseSolver.h` 顶部有总览）：
+
+| 文件 | 职责 | 对应参考实现 |
+| --- | --- | --- |
+| `SpineGpuSkeletonState.{h,cpp}` | 跨帧状态 + **每类时间轴的 apply（alpha / MixBlend / MixDirection 全分支）** + `applyRotateTimeline` + setup pose | `Skeleton` / `Bone` / `Slot` / 各 `*Timeline::apply` |
+| `SpineGpuPoseSolver.{h,cpp}` | 状态 → 世界变换（复位表 + chunk 19 遍历 + 约束）+ 读出槽位 / deform | `Skeleton::updateWorldTransform` |
+| `SpineGpuAnimationState.{h,cpp}` | 多轨调度（1033 行逐函数转录） | `AnimationState` / `TrackEntry` / `AnimationStateData` |
+
+`SpineGpuSamplePose()`（无状态单动画）保留，改成"新建状态 → `Animation::apply(alpha 1, First, In)`
+→ `SpineGpuUpdateWorld`"的薄封装 —— **单动画对拍原样通过，且最大相对误差从 1.5e-5 降到 3.8e-6**
+（各时间轴改成逐字照抄 `bone._x += (data._x + x - bone._x) * alpha` 之后，与参考实现的浮点
+运算顺序一致）。`SpineGpuSampleSlots()` 也改成走同一套 apply（只应用槽位类时间轴），不再各写一份。
+
+顺带：查找表（附件名 → 绘制项 / path、drawOrder 完整排列、deform 帧位置、绘制项 deform 长度）
+前移到 `SpineGpuRuntimeData`，每个资产建一次。以前每次采样都重建字符串表、按名字线性查绘制项。
+
+#### 照抄的参考实现行为（改了与参考对不上，且不报错）
+
+1. **`setTimelineModes()` 的 HoldMix 写的是 `timelineHoldMix[i] = entry`（自己）**，不是向后找到的
+   `next`（AnimationState.cpp:1013）⇒ HoldMix 的淡出按被混出那条**自己的** mixTime / mixDuration 算。
+   改成 `next` 后 47 个资产分叉（已实测，见下面的变异测试）。
+2. **TrackEntry 走 LIFO 对象池**（Pool.h），`newTrackEntry()` 与 `reset()` 都**不复位** `_mixBlend` /
+   `_totalAlpha` ⇒ 复用的旧对象带着上次的 mixBlend。我们同样用池（`Obtain` / `Free`）。
+3. **`Slot::setToSetupPose()` 不复位暗色**（Slot.cpp:54-64），暗色初值是构造函数的 (0,0,0,0)，
+   只有 TwoColor 时间轴会写。S3 的 `SpineGpuSampleSlots` 曾把暗色复位到 setup —— 那是意图不是参考。
+4. **TwoColor 在 `time < 第 0 帧` + MixBlend_First 时写 `color += (color - setup) * alpha`**（符号反了，
+   TwoColorTimeline.cpp:84-93），且这一路**不夹** [0,1]；与第 3 条叠加，alpha = 1 时暗色 = **-setup**。
+   ⚠️ OSGame 资产**走不到**这一支（把它改"对"之后 781 资产随机脚本全过 —— 已实测），只靠
+   `SpineGpuImportTest` 里那条手算断言钉住。tint black 接到渲染时要知道有这个负值。
+5. **Color 的 set / add 夹 [0,1]**（Color.h），`MathUtil::max(0, x)` 是 `a > b ? a : b`（NaN 时返回 NaN）。
+6. **局部角度不归一化**：RotateTimeline 是 `bone._rotation += wrap(增量)`，所以局部 rotation 可以是 -335
+   （≡ 25）。手算断言里专门钉了这一条。
+
+**唯一刻意不照抄的**：参考实现的 `DeformTimeline::getPropertyId()` = `(Deform << 24) + attachment->_id
++ slotIndex`，`_id = (进程级计数器++ & 65535) << 11`（VertexAttachment.cpp:158-161）⇒ 值随**加载历史**
+变，会越界撞进别的类型的号段（计数器 = 16384、槽位 0 时恰好等于 DrawOrder 的 `8 << 24`）。我们用
+(类型, 目标) 的无碰撞编码（`SpineGpuRuntimeData::property_key`）。对拍台单独统计参考侧撞号：
+本次 781 资产 **0 个**撞号。
+
+#### 对拍台（`SpineGpuRefParityTest` 的 S5 段，默认开；`--no-s5` / `--s5-only` / `--s5-scripts N` / `--s5-frames N`）
+
+每个资产 2 段随机脚本 × 150 帧：两边各持有一份**跨帧存活**的骨架（`SpineGpuSkeletonState` /
+`spine::Skeleton`）与 AnimationState，喂同一串命令（set / add / setEmpty / addEmpty / clearTrack /
+setEmptyAnimations / timeScale，以及对新建 TrackEntry 随机改 alpha、timeScale、holdPrevious、
+attachment/drawOrder 阈值、mixBlend = Add、mixDuration）与同一串 dt（含 0 与 0.1-0.4 s 的大步），
+每帧比：骨骼 6 分量、每槽位附件名 / 颜色 / **暗色** / deform（含 path 附件）、绘制顺序、path 约束 4 个运行时参数。
+
+| 指标 | 结果 |
+| --- | --- |
+| 资产 / 脚本 / 帧 / 命令 | 781 / 1 562 / 234 300 / 16 217 |
+| 混合中的帧 / 多轨同时生效的帧 | 45 014 / 122 963 |
+| 覆盖：Hold / HoldMix / Add 轨道 / 混合被打断（链长 ≥ 2） | 25 024 / 412 / 19 165 / 5 385 帧 |
+| 骨骼分量比较 | 5 766 万次，最大相对误差 **3.6e-6** |
+| 槽位比较（附件 + 颜色 + 暗色 + deform） | 1 701 万次，deform 逐 float 2.74 亿次 |
+| 分叉的资产 | **0** |
+
+两条口径说明：
+
+* **世界平移按"参与求和的量级"定容差尺度**：`wx = pa·ax + pb·ay + p.wx`，三项各几百、和接近 0 时，
+  1 ulp 的旋转差会在 0 附近放大成 1e-4 的绝对差。首轮全量里 `Ui_Yao` 的 bone9（局部 x = 653.8、
+  世界 x = 0.066，差 1.2e-4 = 1.6 ulp × 653）因此"超差"。S4 的单动画对拍每个动画只采 5 个点碰不到，
+  S5 23 万帧就碰得到。
+* **bbox / clipping 的 deform 不比**（898 次跳过）：这三类附件的 deform 时间轴在烘焙期就不收
+  （不影响任何姿势；裁剪只有 CPU 实现）。首轮全量里 4 个资产因此"deform 长度 0 vs 36"。
+
+**变异测试**（证明对拍台真能抓到转录错误，每条单独编译、跑全量 `--s5-only`）：
+
+| 故意改错 | 结果 |
+| --- | --- |
+| HoldMix 改成 `= next`（"修"参考实现的第 1 条） | 47 个资产分叉 |
+| `applyRotateTimeline` 去掉 `dir != current` 的 ±360 修正 | 47 个资产分叉 |
+| `applyMixingFrom` 去掉"attachmentThreshold 内用 MixDirection_In" | 109 个资产分叉 |
+| TwoColor 第 0 帧前的符号改"对" | **0**（OSGame 资产走不到，见上面第 4 条）|
+
+`SpineGpuImportTest` 新增 24 条**手算**断言（1321 → 1345）：idle → walk 交叉淡入的 50% 处
+（最短弧 rotation、translate 以 setup 为基、scale 混入取关键帧符号 `-2 → -3`、shear、颜色从
+setup 白混过去）、mix = 1 的直通分支、loop 回绕后局部角度 -335、轨道 1 的 MixBlend_Add、
+addAnimation 的 delay 推算、setEmptyAnimation。它进 ctest，参考对拍不进。
+
+#### 渲染接入
+
+`SpineGpuRenderer` 每帧改成 `Update(dt) → Apply(state) → SpineGpuUpdateWorld`（dt 夹到 [0, 0.25]），
+加载时轨道 0 循环播请求的动画。控制台：
+
+```
+spine.play  <动画下标|名字> [track=0] [loop=1]      # setAnimation（按 spine.mix 交叉淡入）
+spine.queue <动画> [track=0] [delay=0] [loop=1]    # addAnimation（delay <= 0：接在当前之后、减去混合时长）
+spine.empty [track=0] [mix=0.2]                    # setEmptyAnimation（淡出到 setup）
+spine.mix   <秒>                                   # AnimationStateData::defaultMix（初值 0.2，跨资产保留）
+spine.speed <倍率>                                 # AnimationState::timeScale
+spine.alpha <track> <0..1>                         # 轨道当前那条的 alpha
+```
+
+`spine.status` 附带每条轨道的动画 / trackTime / alpha / 混合进度。实跑（Vulkan 编辑器、validation
+开）：`--cvar "spine.load …/K_Bailishouyue_Spine.skel.bytes 1" --cvar "spine.mix 0.3" --cvar
+"spine.queue 0 0 1.5 1" --cvar "spine.play 0 1 1" --cvar "spine.alpha 1 0.5"` 75 s 不崩、无 validation
+报错、无 skip 日志，首帧 65 项（61 项带 deform，1124 / 1156 float）。
+
+#### 本阶段**故意不做**的
+
+* **事件**（start / interrupt / end / dispose / complete / event 回调）：只保留它们对状态的副作用
+  （start / end 置 animationsChanged，end / dispose 把 TrackEntry 还池）。要做时在 `QueueStart` /
+  `QueueEnd` 旁边补派发即可，调度逻辑不用动。
+* **IK / transform / pathSpacing 时间轴**：仍**显式报错**（实测 0 / 782 资产用到）。
+* **换肤**：附件仍只在 default 皮肤里解析。
+
+---
+
 ## 8. 风险 / 未决
 
 1. ~~**deform 的取舍需拍板**~~ —— **已定**：稠密展开否决、OSGame 式全量 CPU 动态 VB 否决，
@@ -886,6 +1011,9 @@ rotate **tangent 99.10%** / chainScale 0.90% ⇒ 固定值模式几乎没用到�
    —— **数据侧已落地**（S3：chunk 17 的 `has_dark` flag + dark rgba，实测 96 槽位 / 5 资产，
    与 §7.0 的独立实测对上）。**剩下的只是渲染侧**：走双色分支要第二路颜色，
    目前还没有接。⇒ S4 之后、接渲染时补。
+   ⚠️ S5 查清的运行时语义（§7.0.7 第 3、4 条）：暗色**不随 setup 复位**、初值 (0,0,0,0)，且 TwoColor
+   第 0 帧之前的 First 分支会写出 **-setup**（参考实现的符号笔误，不夹 [0,1]）。接渲染时 shader 要能
+   吃负值或在上传前夹 —— 但"夹"就与参考实现分叉了，届时需要拍板。
 4. **多皮肤 = 0**：v2 的皮肤维度在本工程没用上。不删（换装是容器承诺的能力），
    但也说明皮肤相关的测试覆盖对 OSGame 没价值。
 5. **容器体量**：~~按 §3.3 的紧凑曲线 + 稀疏 deform 粗估，容器 ≈ 源 .skel 的 75%~80%~~

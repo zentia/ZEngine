@@ -1,5 +1,6 @@
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -53,18 +54,8 @@ inline float Fmod(float a, float b) { return std::fmod(a, b); }
 inline float Abs(float v) { return v < 0.0f ? -v : v; }
 inline bool IsNan(float v) { return std::isnan(v); }
 
-// `r -= (16384 - (int)(16384.499999999996 - r / 360)) * 360` —— 把角度收进 (-180, 180]。
-//
-// ⚠️ 这个式子出现在 6 个地方（RotateTimeline ×2、transform 约束的 local 变体 ×2、
-//    IK 的收尾没有用这个写法）。它**不是** `fmod`：
-//      * `(16384 - (int)(...)) * 360` 全程是 **int** 运算，最后才转 float；
-//      * `(int)` 是**向零截断**，不是 floor。
-//    改写成 fmod 会在负数侧差 360°，且不报错。
-inline float WrapDegrees(float r)
-{
-    const int k = static_cast<int>(16384.499999999996 - static_cast<double>(r / 360.0f));
-    return r - static_cast<float>((16384 - k) * 360);
-}
+// 角度归一化与 RotateTimeline / AnimationState 共用同一份（SpineGpuSkeletonState.h）。
+inline float WrapDegrees(float r) { return SpineGpuWrapDegrees(r); }
 
 SpineImportResult Fail(std::string message)
 {
@@ -81,52 +72,16 @@ SpineImportResult Ok()
     return r;
 }
 
-// spine-cpp 的 `Bone` 在解算期间的全部可变状态。
-//
-// 分三层，与参考实现**逐字段对应**，不要合并：
-//   * `x..shear_y`  = 局部值（时间轴写它）
-//   * `ax..ashear_y` = "applied" 值（约束读/写它；`updateWorldTransform` 也会同步它）
-//   * `a..world_y`  = 世界变换（最终要上传的东西）
-struct BoneState
-{
-    // 局部
-    float x = 0.0f;
-    float y = 0.0f;
-    float rotation = 0.0f;
-    float scale_x = 1.0f;
-    float scale_y = 1.0f;
-    float shear_x = 0.0f;
-    float shear_y = 0.0f;
-    // applied
-    float ax = 0.0f;
-    float ay = 0.0f;
-    float arotation = 0.0f;
-    float ascale_x = 1.0f;
-    float ascale_y = 1.0f;
-    float ashear_x = 0.0f;
-    float ashear_y = 0.0f;
-    // 世界
-    float a = 1.0f;
-    float b = 0.0f;
-    float c = 0.0f;
-    float d = 1.0f;
-    float world_x = 0.0f;
-    float world_y = 0.0f;
-
-    bool applied_valid = false;
-
-    // setup 常量
-    float length = 0.0f;
-    int32_t parent = -1;
-    uint32_t mode = 0;
-};
+// 骨骼状态就是跨帧存活的那份（SpineGpuSkeletonState::bones）—— 约束改的 applied 值、
+// absolute+local transform 约束写的局部 shearY 都要留到下一帧（参考实现的 `Bone` 就是这样）。
+using BoneState = SpineGpuBoneState;
 
 struct PoseContext
 {
     const SpineGpuAsset& asset;
-    std::vector<BoneState> bones;
+    std::vector<BoneState>& bones;
 
-    // path 约束的运行时参数（可被 pathConstraintPosition / Mix 时间轴改写）
+    // path 约束的运行时参数（本帧时间轴写完后的值，约束解算期间不变）
     std::vector<float> path_position;
     std::vector<float> path_spacing;
     std::vector<float> path_rotate_mix;
@@ -146,7 +101,7 @@ struct PoseContext
     std::vector<float> spaces;
     float segments[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
-    explicit PoseContext(const SpineGpuAsset& a) : asset(a) {}
+    PoseContext(const SpineGpuAsset& a, std::vector<BoneState>& b) : asset(a), bones(b) {}
 };
 
 // ---------------------------------------------------------------------
@@ -1853,517 +1808,65 @@ namespace
         trace->applied_after_step.push_back(std::move(ap));
         trace->applied_valid_after_step.push_back(std::move(av));
     }
+}   // namespace
 
-    // 一条 deform 时间轴在 `time` 处的整份数组（`DeformTimeline::apply`，DeformTimeline.cpp:62-...）。
-    // path（5b 步）与 mesh（8 步，S6）共用 —— 两者的时间轴是同一种东西，只是"作用于谁"不同。
-    //
-    // 口径：参考对拍是 `setToSetupPose()` 之后 `apply(alpha=1, MixBlend_First)`。
-    // `Slot::setToSetupPose()` 先把 `_attachment` 置空再挂回去（Slot.cpp:59-60）⇒
-    // deform 数组**必然被清空** ⇒ apply 里 `verticesArray.size()==0` 把 blend 改成
-    // MixBlend_Setup（DeformTimeline.cpp:82-84）。alpha==1 时各分支收敛成：
-    //   time < 第 0 帧  → 清空（:91-93）               ⇒ `cleared = true`
-    //   time >= 末帧    → 末帧整份（:139 memcpy）
-    //   其余            → prev + (next - prev) * percent（:200-204）
-    // "整份"是参考实现**读文件时**拼出来的（SkeletonBinary.cpp:986-1016）：
-    // 稀疏区间外补 0，rigid 再逐个加上 setup 顶点（rigid 存绝对坐标、weighted 存偏移）。
-    // `rigid_setup` 非空 ⇒ rigid（长度 = deform_len）。
-    SpineImportResult SampleDeformTimeline(const SpineGpuAsset& asset, uint32_t tl_index, float time,
-                                           uint32_t deform_len, const float* rigid_setup, bool& cleared,
-                                           std::vector<float>& dst)
-    {
-        const SpineGpuTimeline& tl = asset.timelines[tl_index];
-        cleared = false;
-        if (tl.frame_count == 0 || static_cast<size_t>(tl.frame_first) + tl.frame_count > asset.frames.size())
-        {
-            return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的帧区间越界或为空");
-        }
-        const float* frames = asset.frames.data() + tl.frame_first;
-        if (time < frames[0])
-        {
-            cleared = true;   // 清空 ⇒ 用 setup 顶点
-            dst.clear();
-            return Ok();
-        }
-
-        // 逐帧解出稀疏载荷 (start, count, values*)
-        struct SparseFrame
-        {
-            uint32_t start;
-            uint32_t count;
-            const uint8_t* values;
-        };
-        std::vector<SparseFrame> sparse(tl.frame_count);
-        size_t pos = tl.payload_offset;
-        for (uint32_t fr = 0; fr < tl.frame_count; ++fr)
-        {
-            if (pos + 8u > asset.timeline_payload.size())
-            {
-                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的载荷被截断");
-            }
-            SparseFrame& sf = sparse[fr];
-            std::memcpy(&sf.start, asset.timeline_payload.data() + pos, 4);
-            std::memcpy(&sf.count, asset.timeline_payload.data() + pos + 4u, 4);
-            sf.values = asset.timeline_payload.data() + pos + 8u;
-            pos += 8u + static_cast<size_t>(sf.count) * 4u;
-            if (pos > asset.timeline_payload.size())
-            {
-                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的载荷被截断");
-            }
-        }
-
-        // 拼出"整份"帧（SkeletonBinary.cpp:999-1016）
-        const auto expand = [&](uint32_t fr, std::vector<float>& full) -> bool {
-            full.assign(deform_len, 0.0f);
-            const SparseFrame& sf = sparse[fr];
-            if (static_cast<uint64_t>(sf.start) + sf.count > deform_len)
-            {
-                return false;
-            }
-            for (uint32_t q = 0; q < sf.count; ++q)
-            {
-                std::memcpy(&full[sf.start + q], sf.values + static_cast<size_t>(q) * 4u, 4);
-            }
-            if (rigid_setup != nullptr)
-            {
-                for (uint32_t q = 0; q < deform_len; ++q)
-                {
-                    full[q] += rigid_setup[q];
-                }
-            }
-            return true;
-        };
-
-        const uint32_t last = tl.frame_count - 1u;
-        if (time >= frames[last])
-        {
-            if (!expand(last, dst))
-            {
-                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的帧超出 deform 长度");
-            }
-            return Ok();
-        }
-        const uint32_t cur = SpineGpuBinarySearchFrames(frames, tl.frame_count, 1u, time);
-        float percent = 0.0f;
-        const SpineImportResult cr = SpineGpuCurvePercentAt(asset, tl, tl_index, cur, time, percent);
-        if (!cr.ok)
-        {
-            return cr;
-        }
-        std::vector<float> prev;
-        std::vector<float> next;
-        if (!expand(cur - 1u, prev) || !expand(cur, next))
-        {
-            return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的帧超出 deform 长度");
-        }
-        dst.resize(deform_len);
-        for (uint32_t q = 0; q < deform_len; ++q)
-        {
-            dst[q] = prev[q] + (next[q] - prev[q]) * percent;
-        }
-        return Ok();
-    }
-}  // namespace
-
-SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_index, float time,
-                                     SpineGpuPoseResult& out, SpineGpuPoseTrace* trace)
+SpineImportResult SpineGpuUpdateWorld(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data,
+                                      SpineGpuSkeletonState& state, SpineGpuPoseResult& out, SpineGpuPoseTrace* trace)
 {
     const uint32_t bone_count = asset.header.bone_count;
-    if (asset.bones.size() != bone_count)
+    const uint32_t slot_count = asset.header.slot_count;
+    if (asset.bones.size() != bone_count || state.bones.size() != bone_count || state.slots.size() != slot_count ||
+        state.path_position.size() != asset.paths.size() || data.item_deform_len.size() != asset.draw_items.size())
     {
-        return Fail("sample: header.bone_count 是 " + std::to_string(bone_count) + "，但 chunk 10 有 " +
-                    std::to_string(asset.bones.size()) + " 条（读端应该在读容器时就报这个）");
+        return Fail("update: 状态 / 查找表与资产的条数不一致（不是用这个资产初始化的）");
     }
 
-    PoseContext ctx(asset);
+    PoseContext ctx(asset, state.bones);
 
-    // ---- 1) 骨骼复位到 setup（`Bone::setToSetupPose()`）----
-    ctx.bones.resize(bone_count);
-    for (uint32_t i = 0; i < bone_count; ++i)
-    {
-        const SpineGpuBone& b = asset.bones[i];
-        BoneState& s = ctx.bones[i];
-        s.x = b.x;
-        s.y = b.y;
-        s.rotation = b.rotation;
-        s.scale_x = b.scale_x;
-        s.scale_y = b.scale_y;
-        s.shear_x = b.shear_x;
-        s.shear_y = b.shear_y;
-        s.length = b.length;
-        s.parent = b.parent;
-        s.mode = b.transform_mode;
-        s.applied_valid = false;
-        if (s.parent >= 0 && static_cast<uint32_t>(s.parent) >= i)
-        {
-            return Fail("sample: 第 " + std::to_string(i) + " 根骨骼的 parent 是 " + std::to_string(s.parent) +
-                        "，不是 < 自己的下标（正向遍历就不是拓扑序了）");
-        }
-    }
+    // ---- 1) path 约束的运行时参数（时间轴写完后的值）----
+    ctx.path_position = state.path_position;
+    ctx.path_spacing = state.path_spacing;
+    ctx.path_rotate_mix = state.path_rotate_mix;
+    ctx.path_translate_mix = state.path_translate_mix;
 
-    // ---- 2) 槽位侧（`SpineGpuSampleSlots`，S3）----
-    // ⚠️ 必须在骨骼**之前**：path 约束看的是槽位**当前**挂的附件
-    //    （`PathConstraint.cpp:76` `_target->getAttachment()`），而"当前"会被
-    //    attachment 时间轴改掉。先算骨骼的话 path 会用错曲线，且不报错。
-    {
-        const SpineImportResult r = SpineGpuSampleSlots(asset, anim_index, time, out);
-        if (!r.ok)
-        {
-            return r;
-        }
-    }
-
-    if (anim_index >= asset.anims.size())
-    {
-        return Fail("sample: 动画下标 " + std::to_string(anim_index) + " 越界");
-    }
-    const SpineGpuAnim& anim = asset.anims[anim_index];
-
-    // ---- 3) 时间轴 ----
-    //
-    // ⚠️ 容器里的时间轴按 **(type, target) 升序稳定排序**（为了让 .skel 与 json
-    //    两条解析路径产出同一个容器，见 §12 第 6 项），而参考实现用的是文件里的
-    //    书写顺序。对骨骼侧**没有影响**：alpha==1 的 MixBlend_First 对每一类都是
-    //    "写死局部值"（`bone._rotation = data._rotation + normalize(...)` 之类），
-    //    不同类写的是不同字段 ⇒ 顺序无关。
-    for (uint32_t ti = 0; ti < anim.timeline_count; ++ti)
-    {
-        const uint32_t tl_index = anim.timeline_first + ti;
-        if (tl_index >= asset.timelines.size())
-        {
-            return Fail("sample: 动画 " + std::to_string(anim_index) + " 引用了越界的时间轴 " +
-                        std::to_string(tl_index));
-        }
-        const SpineGpuTimeline& tl = asset.timelines[tl_index];
-        const SpineTimelineType type = static_cast<SpineTimelineType>(tl.type);
-        const uint32_t entries = SpineTimelineEntries(type);
-        if (entries == 0 || tl.frame_count == 0)
-        {
-            return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴类型/帧数不自洽");
-        }
-        const uint64_t frame_end =
-            static_cast<uint64_t>(tl.frame_first) + static_cast<uint64_t>(tl.frame_count) * entries;
-        if (frame_end > asset.frames.size())
-        {
-            return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴的帧区间越界");
-        }
-        const float* frames = asset.frames.data() + tl.frame_first;
-        const bool before_first = time < frames[0];
-
-        auto locate = [&](uint32_t& cur) -> uint32_t {
-            cur = SpineGpuBinarySearchFrames(frames, tl.frame_count, entries, time);
-            return cur;
-        };
-
-        if (type == SpineTimelineType::kRotate || type == SpineTimelineType::kTranslate ||
-            type == SpineTimelineType::kScale || type == SpineTimelineType::kShear)
-        {
-            if (tl.target >= bone_count)
-            {
-                return Fail("sample: 第 " + std::to_string(tl_index) + " 条骨骼时间轴的骨骼下标 " +
-                            std::to_string(tl.target) + " 越界（只有 " + std::to_string(bone_count) + " 根骨骼）");
-            }
-            if (before_first)
-            {
-                continue;   // Mixture: alpha==1 下 MixBlend_First 在这里是恒等变形
-            }
-            BoneState& bone = ctx.bones[tl.target];
-            const SpineGpuBone& setup = asset.bones[tl.target];
-            const uint32_t last = tl.frame_count - 1u;
-            const float last_time = frames[static_cast<size_t>(last) * entries];
-
-            if (type == SpineTimelineType::kRotate)
-            {
-                float r;
-                if (tl.frame_count == 1u || time >= last_time)
-                {
-                    r = frames[static_cast<size_t>(last) * entries + 1u];
-                }
-                else
-                {
-                    uint32_t cur = 0;
-                    locate(cur);
-                    float percent = 0.0f;
-                    const SpineImportResult cr = SpineGpuCurvePercentAt(asset, tl, tl_index, cur, time, percent);
-                    if (!cr.ok)
-                    {
-                        return cr;
-                    }
-                    const float prev_rotation = frames[static_cast<size_t>(cur) - entries + 1u];
-                    float delta = frames[cur + 1u] - prev_rotation;
-                    // ⚠️ 归一化作用在**增量**上（最短路径），再作用一次在**绝对值**上
-                    //    （RotateTimeline.cpp:93-104）。
-                    delta = WrapDegrees(delta);
-                    r = prev_rotation + delta * percent;
-                }
-                r = WrapDegrees(r);
-                bone.rotation = setup.rotation + r;
-                continue;
-            }
-
-            float xv;
-            float yv;
-            if (tl.frame_count == 1u || time >= last_time)
-            {
-                const size_t base = static_cast<size_t>(last) * entries;
-                xv = frames[base + 1u];
-                yv = frames[base + 2u];
-            }
-            else
-            {
-                uint32_t cur = 0;
-                locate(cur);
-                float percent = 0.0f;
-                const SpineImportResult cr = SpineGpuCurvePercentAt(asset, tl, tl_index, cur, time, percent);
-                if (!cr.ok)
-                {
-                    return cr;
-                }
-                const size_t prev = static_cast<size_t>(cur) - entries;
-                xv = frames[prev + 1u] + (frames[cur + 1u] - frames[prev + 1u]) * percent;
-                yv = frames[prev + 2u] + (frames[cur + 2u] - frames[prev + 2u]) * percent;
-            }
-
-            if (type == SpineTimelineType::kTranslate)
-            {
-                // `bone._x = data._x + x`（TranslateTimeline.cpp:104-105）
-                bone.x = setup.x + xv;
-                bone.y = setup.y + yv;
-            }
-            else if (type == SpineTimelineType::kScale)
-            {
-                // ⚠️ 帧里存的是**倍率**，要乘 setup 的 scale（ScaleTimeline.cpp:96,109）
-                bone.scale_x = xv * setup.scale_x;
-                bone.scale_y = yv * setup.scale_y;
-            }
-            else
-            {
-                // `bone._shearX = data._shearX + x`（ShearTimeline.cpp:99-100）
-                bone.shear_x = setup.shear_x + xv;
-                bone.shear_y = setup.shear_y + yv;
-            }
-            continue;
-        }
-
-        if (type == SpineTimelineType::kPathConstraintPosition || type == SpineTimelineType::kPathConstraintMix)
-        {
-            if (ctx.path_position.empty())
-            {
-                // 上面还没初始化（第一次遇到 path 时间轴时初始化）
-                ctx.path_position.assign(asset.paths.size(), 0.0f);
-                ctx.path_spacing.assign(asset.paths.size(), 0.0f);
-                ctx.path_rotate_mix.assign(asset.paths.size(), 0.0f);
-                ctx.path_translate_mix.assign(asset.paths.size(), 0.0f);
-                for (size_t i = 0; i < asset.paths.size(); ++i)
-                {
-                    ctx.path_position[i] = asset.paths[i].position;
-                    ctx.path_spacing[i] = asset.paths[i].spacing;
-                    ctx.path_rotate_mix[i] = asset.paths[i].rotate_mix;
-                    ctx.path_translate_mix[i] = asset.paths[i].translate_mix;
-                }
-            }
-            if (tl.target >= asset.paths.size())
-            {
-                return Fail("sample: 第 " + std::to_string(tl_index) + " 条 path 约束时间轴的下标 " +
-                            std::to_string(tl.target) + " 越界（只有 " + std::to_string(asset.paths.size()) +
-                            " 条 path 约束）");
-            }
-            if (before_first)
-            {
-                continue;
-            }
-            if (type == SpineTimelineType::kPathConstraintPosition)
-            {
-                float position;
-                if (tl.frame_count == 1u || time >= frames[static_cast<size_t>(tl.frame_count - 1u) * entries])
-                {
-                    position = frames[static_cast<size_t>(tl.frame_count - 1u) * entries + 1u];
-                }
-                else
-                {
-                    uint32_t cur = 0;
-                    locate(cur);
-                    float percent = 0.0f;
-                    const SpineImportResult cr = SpineGpuCurvePercentAt(asset, tl, tl_index, cur, time, percent);
-                    if (!cr.ok)
-                    {
-                        return cr;
-                    }
-                    const size_t prev = static_cast<size_t>(cur) - entries;
-                    position = frames[prev + 1u] + (frames[cur + 1u] - frames[prev + 1u]) * percent;
-                }
-                ctx.path_position[tl.target] = position;
-            }
-            else
-            {
-                float rot;
-                float tr;
-                if (tl.frame_count == 1u || time >= frames[static_cast<size_t>(tl.frame_count - 1u) * entries])
-                {
-                    const size_t base = static_cast<size_t>(tl.frame_count - 1u) * entries;
-                    rot = frames[base + 1u];
-                    tr = frames[base + 2u];
-                }
-                else
-                {
-                    uint32_t cur = 0;
-                    locate(cur);
-                    float percent = 0.0f;
-                    const SpineImportResult cr = SpineGpuCurvePercentAt(asset, tl, tl_index, cur, time, percent);
-                    if (!cr.ok)
-                    {
-                        return cr;
-                    }
-                    const size_t prev = static_cast<size_t>(cur) - entries;
-                    rot = frames[prev + 1u] + (frames[cur + 1u] - frames[prev + 1u]) * percent;
-                    tr = frames[prev + 2u] + (frames[cur + 2u] - frames[prev + 2u]) * percent;
-                }
-                ctx.path_rotate_mix[tl.target] = rot;
-                ctx.path_translate_mix[tl.target] = tr;
-            }
-            continue;
-        }
-
-        if (type == SpineTimelineType::kDeform || type == SpineTimelineType::kEvent)
-        {
-            // mesh 的 deform 是 S6（共享 VB 不动、只给命中项写增量），不影响骨骼；
-            // **path 的 deform 会影响骨骼**，在第 5b 步单独算（需要先知道槽位当前附件）。
-            // event 不改渲染状态。
-            continue;
-        }
-
-        if (type == SpineTimelineType::kIkConstraint || type == SpineTimelineType::kTransformConstraint ||
-            type == SpineTimelineType::kPathConstraintSpacing)
-        {
-            // 这三类**会改姿势**，本阶段不做 ⇒ 显式报错，不能静默跳过
-            // （实测 0 / 782 个资产用到，所以不会真的挡住任何资产）。
-            return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴类型 " + std::to_string(tl.type) +
-                        " 本阶段不做（会改姿势，跳过会得到静默错的姿势）");
-        }
-
-        // 其余（attachment / color / twoColor / drawOrder）是槽位侧，已在第 2 步处理。
-    }
-
-    // ---- 4) path 约束的运行时参数默认值（没有时间轴时 = setup）----
-    if (ctx.path_position.empty())
-    {
-        ctx.path_position.assign(asset.paths.size(), 0.0f);
-        ctx.path_spacing.assign(asset.paths.size(), 0.0f);
-        ctx.path_rotate_mix.assign(asset.paths.size(), 0.0f);
-        ctx.path_translate_mix.assign(asset.paths.size(), 0.0f);
-        for (size_t i = 0; i < asset.paths.size(); ++i)
-        {
-            ctx.path_position[i] = asset.paths[i].position;
-            ctx.path_spacing[i] = asset.paths[i].spacing;
-            ctx.path_rotate_mix[i] = asset.paths[i].rotate_mix;
-            ctx.path_translate_mix[i] = asset.paths[i].translate_mix;
-        }
-    }
-
-    // ---- 5) 解析每条 path 约束**当前**用的那条附件 ----
-    //
+    // ---- 2) 每条 path 约束**当前**用的那条附件 ----
     // `PathConstraint::update()` 取 `_target->getAttachment()` —— 槽位当前挂的附件。
-    // 判据是**名字**（不是"这个槽位的第一条 path"）：一个槽位挂两条 path 是合法的
-    // （实测 6 / 782），取第一条会去摆一条别人的曲线，不报错。
-    const std::vector<uint8_t> blob = BuildSpineStringBlob(asset);
-    // 槽位 → 它此刻挂着的 chunk 20 记录（没有 / 不是 path ⇒ kNoPathAttachment）。
-    // 约束（第 5 步）与 deform（第 5b 步）**必须用同一个答案**：deform 只在
-    // "槽位当前附件 == 时间轴的附件"时生效（`DeformTimeline::apply` 的 `applyDeform`，
-    // DeformTimeline.cpp:77），两处各查一遍就可能一边认这条、一边认那条。
-    std::string slot_err;
-    const auto current_path_of_slot = [&](uint32_t slot) -> uint32_t {
-        if (slot >= out.slots.size())
-        {
-            slot_err = "槽位下标 " + std::to_string(slot) + " 越界";
-            return SpineGpuConstants::kNoPathAttachment;
-        }
-        const uint32_t name_off = out.slots[slot].attachment_name_offset;
-        if (name_off == SpineGpuConstants::kNoAttachmentName)
-        {
-            return SpineGpuConstants::kNoPathAttachment;   // 这一帧不挂附件
-        }
-        const char* name = SpineGpuStringAt(blob, name_off);
-        if (name == nullptr)
-        {
-            slot_err = "槽位 " + std::to_string(slot) + " 的附件名偏移越界";
-            return SpineGpuConstants::kNoPathAttachment;
-        }
-        for (size_t k = 0; k < asset.path_attachments.size(); ++k)
-        {
-            if (asset.path_attachments[k].slot_index == slot && asset.path_attachment_names[k] == name)
-            {
-                return static_cast<uint32_t>(k);
-            }
-        }
-        return SpineGpuConstants::kNoPathAttachment;
-    };
+    // 槽位附件 → chunk 20 记录的解析在建查找表时就做完了（按"槽位 + 名字"，一个槽位挂两条
+    // path 是合法的，实测 6 / 782）。约束与 deform **必须用同一个答案**，所以都从
+    // `SpineGpuSlotState::attachment.path_att` 取。
+    ctx.path_att.assign(asset.paths.size(), SpineGpuConstants::kNoPathAttachment);
+    for (size_t i = 0; i < asset.paths.size(); ++i)
     {
-        ctx.path_att.assign(asset.paths.size(), SpineGpuConstants::kNoPathAttachment);
-        for (size_t i = 0; i < asset.paths.size(); ++i)
+        const uint32_t s = asset.paths[i].target_slot;
+        if (s >= slot_count)
         {
-            const SpineGpuPathConstraint& c = asset.paths[i];
-            ctx.path_att[i] = current_path_of_slot(c.target_slot);
-            if (!slot_err.empty())
-            {
-                return Fail("sample: path 约束 " + std::to_string(i) + ": " + slot_err);
-            }
+            return Fail("update: path 约束 " + std::to_string(i) + " 的目标槽位 " + std::to_string(s) + " 越界");
         }
+        ctx.path_att[i] = state.slots[s].attachment.path_att;
     }
 
-    // ---- 5b) path 附件的 deform（`DeformTimeline::apply`，DeformTimeline.cpp:62-...）----
-    //
-    // 只算 path 的：mesh 的 deform 只改顶点、由 GPU 那一路（S6）做，不影响骨骼。
-    // path 的 deform 改的是 path 约束的**输入曲线** ⇒ 骨骼位置跟着变，必须在 CPU 上做。
-    //
-    // 口径：参考对拍是 `setToSetupPose()` 之后 `apply(alpha=1, MixBlend_First)`。
-    // `Slot::setToSetupPose()` 先把 `_attachment` 置空再挂回去（Slot.cpp:59-60）⇒
-    // deform 数组**必然被清空** ⇒ apply 里 `verticesArray.size()==0` 把 blend 改成
-    // MixBlend_Setup（DeformTimeline.cpp:82-84）。alpha==1 时各分支收敛成：
-    //   time < 第 0 帧  → 清空（:91-93）
-    //   time >= 末帧    → 末帧整份（:139 memcpy）
-    //   其余            → prev + (next - prev) * percent（:200-204）
-    // "整份"是参考实现**读文件时**拼出来的（SkeletonBinary.cpp:986-1016）：
-    // 稀疏区间外补 0，rigid 再逐个加上 setup 顶点（rigid 存绝对坐标、weighted 存偏移）。
+    // ---- 3) path 附件的 deform = 它所在槽位的 deform 数组 ----
+    // path 的 deform 改的是 path 约束的**输入曲线** ⇒ 骨骼位置跟着变，必须在 CPU 上做
+    // （VertexAttachment.cpp:69-70 rigid 整体替换、:117-118 weighted 逐影响相加）。
     ctx.path_deform.assign(asset.path_attachments.size(), std::vector<float>());
-    for (uint32_t ti = 0; ti < anim.timeline_count; ++ti)
+    for (uint32_t s = 0; s < slot_count; ++s)
     {
-        const uint32_t tl_index = anim.timeline_first + ti;
-        const SpineGpuTimeline& tl = asset.timelines[tl_index];
-        if (static_cast<SpineTimelineType>(tl.type) != SpineTimelineType::kDeform ||
-            (tl.target & SpineGpuConstants::kDeformTargetPathBit) == 0)
+        const SpineGpuSlotState& slot = state.slots[s];
+        const uint32_t k = slot.attachment.path_att;
+        if (k == SpineGpuConstants::kNoPathAttachment || slot.deform.empty())
         {
             continue;
         }
-        const uint32_t k = tl.target & SpineGpuConstants::kDeformTargetIndexMask;
         if (k >= asset.path_attachments.size())
         {
-            return Fail("sample: 第 " + std::to_string(tl_index) + " 条 deform 时间轴指向越界的 path 附件 " +
-                        std::to_string(k));
+            return Fail("update: 槽位 " + std::to_string(s) + " 的 path 附件下标越界");
         }
-        const SpineGpuPathAttachment& att = asset.path_attachments[k];
-        // `applyDeform`：槽位此刻挂的不是这条 path ⇒ 整条时间轴不生效（:77-79）
-        if (current_path_of_slot(att.slot_index) != k)
+        if (slot.deform.size() != SpineGpuPathDeformLength(asset.path_attachments[k]))
         {
-            if (!slot_err.empty())
-            {
-                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + ": " + slot_err);
-            }
-            continue;
+            return Fail("update: 槽位 " + std::to_string(s) + " 的 deform 长度 " + std::to_string(slot.deform.size()) +
+                        " 与 path 附件 " + std::to_string(k) + " 的不一致");
         }
-        const uint32_t deform_len = SpineGpuPathDeformLength(att);
-        const bool rigid = att.bone_count == 0;
-        if (rigid && static_cast<size_t>(att.vertex_offset) + deform_len > asset.path_vertices.size())
-        {
-            return Fail("sample: path 附件 " + std::to_string(k) + " 的顶点区间越界");
-        }
-        bool cleared = false;
-        const SpineImportResult dr =
-            SampleDeformTimeline(asset, tl_index, time, deform_len,
-                                 rigid ? asset.path_vertices.data() + att.vertex_offset : nullptr, cleared,
-                                 ctx.path_deform[k]);
-        if (!dr.ok)
-        {
-            return dr;
-        }
+        ctx.path_deform[k] = slot.deform;
     }
 
     if (trace != nullptr)
@@ -2376,18 +1879,18 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
         }
     }
 
-    // ---- 6) 复位表（`Skeleton::updateWorldTransform()` 的第一段，:200-211）----
+    // ---- 4) 复位表（`Skeleton::updateWorldTransform()` 的第一段，:200-211）----
     // ⚠️ 少复位会让**上一帧**被约束改过的 applied 值残留到这一帧，表现是**动作拖影**。
     for (uint16_t reset_bone : asset.update_reset)
     {
         if (reset_bone >= bone_count)
         {
-            return Fail("sample: 复位表里有越界的骨骼下标 " + std::to_string(reset_bone));
+            return Fail("update: 复位表里有越界的骨骼下标 " + std::to_string(reset_bone));
         }
         ResetAppliedToLocal(ctx, reset_bone);
     }
 
-    // ---- 7) 按 chunk 19 遍历 ----
+    // ---- 5) 按 chunk 19 遍历 ----
     //
     // ⚠️ chunk 19 **只在有约束时落盘**（无约束时结果可证恒等于 0..bone_count-1）。
     //    读端按同一规则重建，所以没有 chunk 19 时这里退化成"正向遍历全部骨骼"
@@ -2396,7 +1899,7 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
     {
         if (!asset.iks.empty() || !asset.transforms.empty() || !asset.paths.empty())
         {
-            return Fail("sample: 有约束却没有 chunk 19（执行顺序）—— 容器坏了，读端应该已经报过");
+            return Fail("update: 有约束却没有 chunk 19（执行顺序）—— 容器坏了，读端应该已经报过");
         }
         for (uint32_t i = 0; i < bone_count; ++i)
         {
@@ -2414,7 +1917,7 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
                 {
                     if (step.index >= bone_count)
                     {
-                        return Fail("sample: 执行步骤里的骨骼下标 " + std::to_string(step.index) + " 越界");
+                        return Fail("update: 执行步骤里的骨骼下标 " + std::to_string(step.index) + " 越界");
                     }
                     BoneUpdate(ctx, step.index);
                     break;
@@ -2423,7 +1926,7 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
                 {
                     if (step.index >= asset.iks.size())
                     {
-                        return Fail("sample: 执行步骤里的 IK 下标 " + std::to_string(step.index) + " 越界");
+                        return Fail("update: 执行步骤里的 IK 下标 " + std::to_string(step.index) + " 越界");
                     }
                     const SpineGpuIkConstraint& c = asset.iks[step.index];
                     const bool compress = (c.flags & SpineGpuIkFlags::kIkFlagCompress) != 0;
@@ -2435,29 +1938,27 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
                     }
                     if (c.target >= bone_count)
                     {
-                        return Fail("sample: IK 约束 " + std::to_string(step.index) + " 的目标骨骼越界");
+                        return Fail("update: IK 约束 " + std::to_string(step.index) + " 的目标骨骼越界");
                     }
                     const BoneState& target = ctx.bones[c.target];
                     if (c.bone_count == 1)
                     {
-                        const uint32_t bi =
-                            asset.constraint_bone_pool[static_cast<size_t>(c.bone_first)];
+                        const uint32_t bi = asset.constraint_bone_pool[static_cast<size_t>(c.bone_first)];
                         if (bi >= bone_count || ctx.bones[bi].parent < 0)
                         {
-                            return Fail("sample: IK 约束 " + std::to_string(step.index) +
+                            return Fail("update: IK 约束 " + std::to_string(step.index) +
                                         " 的骨骼没有父骨骼（参考实现在这里是空指针解引用）");
                         }
                         IkApplyOneBone(ctx, bi, target.world_x, target.world_y, compress, stretch, uniform, c.mix);
                     }
                     else
                     {
-                        const uint32_t parent_i =
-                            asset.constraint_bone_pool[static_cast<size_t>(c.bone_first)];
+                        const uint32_t parent_i = asset.constraint_bone_pool[static_cast<size_t>(c.bone_first)];
                         const uint32_t child_i =
                             asset.constraint_bone_pool[static_cast<size_t>(c.bone_first) + c.bone_count - 1u];
                         if (parent_i >= bone_count || child_i >= bone_count || ctx.bones[parent_i].parent < 0)
                         {
-                            return Fail("sample: IK 约束 " + std::to_string(step.index) +
+                            return Fail("update: IK 约束 " + std::to_string(step.index) +
                                         " 的父骨骼没有父骨骼（参考实现在这里是空指针解引用）");
                         }
                         IkApplyTwoBones(ctx, parent_i, child_i, target.world_x, target.world_y, c.bend_dir, stretch,
@@ -2469,12 +1970,12 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
                 {
                     if (step.index >= asset.transforms.size())
                     {
-                        return Fail("sample: 执行步骤里的 transform 下标 " + std::to_string(step.index) + " 越界");
+                        return Fail("update: 执行步骤里的 transform 下标 " + std::to_string(step.index) + " 越界");
                     }
                     const SpineGpuTransformConstraint& c = asset.transforms[step.index];
                     if (c.target >= bone_count)
                     {
-                        return Fail("sample: transform 约束 " + std::to_string(step.index) + " 的目标骨骼越界");
+                        return Fail("update: transform 约束 " + std::to_string(step.index) + " 的目标骨骼越界");
                     }
                     const bool local = (c.flags & SpineGpuTransformFlags::kTfFlagLocal) != 0;
                     const bool relative = (c.flags & SpineGpuTransformFlags::kTfFlagRelative) != 0;
@@ -2506,22 +2007,23 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
                 {
                     if (step.index >= asset.paths.size())
                     {
-                        return Fail("sample: 执行步骤里的 path 下标 " + std::to_string(step.index) + " 越界");
+                        return Fail("update: 执行步骤里的 path 下标 " + std::to_string(step.index) + " 越界");
                     }
                     std::string err;
                     if (!PathApply(ctx, step.index, err))
                     {
-                        return Fail("sample: path 约束 " + std::to_string(step.index) + ": " + err);
+                        return Fail("update: path 约束 " + std::to_string(step.index) + ": " + err);
                     }
                     break;
                 }
                 default:
-                    return Fail("sample: 执行步骤的 kind " + std::to_string(step.kind) + " 不认识");
+                    return Fail("update: 执行步骤的 kind " + std::to_string(step.kind) + " 不认识");
             }
             TraceWorld(ctx, trace, step.kind, step.index);
         }
     }
 
+    // ---- 6) 输出：骨骼世界变换 ----
     out.bones.resize(bone_count);
     for (uint32_t i = 0; i < bone_count; ++i)
     {
@@ -2534,151 +2036,154 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
         out.bones[i].world_y = s.world_y;
     }
 
+    // ---- 7) 输出：槽位状态 / 绘制顺序 ----
+    out.slots.resize(slot_count);
+    for (uint32_t s = 0; s < slot_count; ++s)
+    {
+        const SpineGpuSlotState& src = state.slots[s];
+        SpineGpuSlotSample& dst = out.slots[s];
+        for (int k = 0; k < 4; ++k)
+        {
+            dst.color[k] = src.color[k];
+            dst.dark[k] = src.dark[k];
+        }
+        dst.attachment_name_offset = src.attachment.name_id == SpineGpuAttachRef::kNone
+                                         ? SpineGpuConstants::kNoAttachmentName
+                                         : src.attachment.name_offset;
+    }
+    out.draw_order = state.draw_order;
+
     // ---- 8) 槽位当前附件 → 绘制项；mesh deform（S6）----
+    // 当前附件按**名字**在 default 皮肤（skin 0）里找（建查找表时已解析好）。名字找不到可画项 =
+    // 挂的是裁剪 / point / bbox / path（它们不产生绘制项），不是错。
     //
-    // 骨骼与此无关（mesh 的 deform 只改顶点），所以放在最后。
-    //
-    // 当前附件按**名字**在 default 皮肤（skin 0）里找：`Skeleton::getAttachment()` 先查当前皮肤、
-    // 再查 default 皮肤；我们不支持换肤 ⇒ 只剩 default。名字找不到可画项 = 挂的是裁剪 / point /
-    // bbox / path（它们不产生绘制项），不是错。
-    const uint32_t slot_count = static_cast<uint32_t>(out.slots.size());
+    // deform 数组挂在**槽位**上（`Slot::_attachmentVertices`），只在换附件时清空 ⇒ 输出的是
+    // "槽位当前附件可画、且 deform 数组非空"的那些。没有任何时间轴再写它、但附件没换时，它
+    // **保持上一次写入的值**（参考实现就是这样，不是残留 bug）。
     out.slot_draw_item.assign(slot_count, SpineGpuPoseResult::kNoDrawItem);
     out.mesh_deforms.clear();
+    for (uint32_t s = 0; s < slot_count; ++s)
     {
-        std::vector<std::vector<uint32_t>> skin0_items(slot_count);
-        for (uint32_t i = 0; i < asset.draw_items.size(); ++i)
+        const SpineGpuSlotState& slot = state.slots[s];
+        const uint32_t item = slot.attachment.draw_item;
+        if (item == SpineGpuAttachRef::kNone)
         {
-            const SpineDrawItem& di = asset.draw_items[i];
-            if (di.skin_id == SpineGpuConstants::kDefaultSkinId && di.slot_index < slot_count)
-            {
-                skin0_items[di.slot_index].push_back(i);
-            }
+            continue;
         }
-        for (uint32_t s = 0; s < slot_count; ++s)
+        if (item >= asset.draw_items.size())
         {
-            const uint32_t name_off = out.slots[s].attachment_name_offset;
-            if (name_off == SpineGpuConstants::kNoAttachmentName || skin0_items[s].empty())
-            {
-                continue;
-            }
-            const char* name = SpineGpuStringAt(blob, name_off);
-            if (name == nullptr)
-            {
-                return Fail("sample: 槽位 " + std::to_string(s) + " 的附件名偏移越界");
-            }
-            for (uint32_t i : skin0_items[s])
-            {
-                const uint16_t att = asset.draw_items[i].attachment_id;
-                if (att < asset.attachment_names.size() && asset.attachment_names[att] == name)
-                {
-                    out.slot_draw_item[s] = i;
-                    break;
-                }
-            }
+            return Fail("update: 槽位 " + std::to_string(s) + " 的绘制项下标越界");
         }
+        out.slot_draw_item[s] = item;
+        if (slot.deform.empty())
+        {
+            continue;
+        }
+        if (slot.deform.size() != data.item_deform_len[item])
+        {
+            return Fail("update: 槽位 " + std::to_string(s) + " 的 deform 长度 " + std::to_string(slot.deform.size()) +
+                        " 与绘制项 " + std::to_string(item) + " 的 " + std::to_string(data.item_deform_len[item]) +
+                        " 不一致");
+        }
+        SpineGpuMeshDeform e;
+        e.draw_item = item;
+        e.values = slot.deform;
+        out.mesh_deforms.push_back(std::move(e));
     }
+    std::sort(out.mesh_deforms.begin(), out.mesh_deforms.end(),
+              [](const SpineGpuMeshDeform& a, const SpineGpuMeshDeform& b) { return a.draw_item < b.draw_item; });
+    return Ok();
+}
 
-    // mesh 的 deform 时间轴：作用于"该槽位此刻挂着的附件"，判据照抄
-    // `MeshAttachment::applyDeform()`（MeshAttachment.cpp:94-95）：
-    //   this == source || (inheritDeform && parentMesh == source)
-    // 同一槽位被多条时间轴命中时按时间轴顺序**后者覆盖前者**（alpha = 1 的 replace；
-    // 落在第 0 帧之前的那条则把数组清空，DeformTimeline.cpp:91-93）。
-    // 顺序问题：参考实现里 attachment 时间轴排在 deform 之前（SkeletonBinary 先读槽位时间轴），
-    // 换附件会清空 deform 数组（Slot::setAttachment）⇒ "先定当前附件、再套 deform"与之等价。
-    std::vector<float> setup;   // rigid 的 setup 顶点（从静态 VB 取出来，参考实现的 `getVertices()`）
+SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_index, float time,
+                                     SpineGpuPoseResult& out, SpineGpuPoseTrace* trace)
+{
+    if (anim_index >= asset.anims.size())
+    {
+        return Fail("sample: 动画下标 " + std::to_string(anim_index) + " 越界（只有 " +
+                    std::to_string(asset.anims.size()) + " 个动画）");
+    }
+    SpineGpuRuntimeData data;
+    SpineImportResult r = SpineGpuBuildRuntimeData(asset, data);
+    if (!r.ok)
+    {
+        return r;
+    }
+    SpineGpuSkeletonState st;
+    r = SpineGpuInitSkeletonState(asset, data, st);   // 构造 = 已经 setToSetupPose 过一次
+    if (!r.ok)
+    {
+        return r;
+    }
+    // 对拍口径：`setToSetupPose(); animation->apply(skeleton, 0, time, false, ..., 1, MixBlend_First, In)`
+    r = SpineGpuApplyAnimation(asset, data, st, anim_index, 0.0f, time, false, 1.0f, SpineGpuMixBlend::kFirst,
+                               SpineGpuMixDirection::kIn);
+    if (!r.ok)
+    {
+        return r;
+    }
+    return SpineGpuUpdateWorld(asset, data, st, out, trace);
+}
+
+// 声明在 SpineGpuAnimSolver.h（S3 的入口）。实现搬到这里：槽位侧与骨骼侧共用同一套
+// 时间轴 apply（SpineGpuSkeletonState），不再各写一份。
+//
+// 只应用**槽位类**时间轴（attachment / color / twoColor / drawOrder），不跑骨骼与约束：
+// S3 的口径就是"只看槽位"，跑约束会让一个 IK 配置不合法的夹具连槽位都采不出来。
+SpineImportResult SpineGpuSampleSlots(const SpineGpuAsset& asset, uint32_t anim_index, float time,
+                                      SpineGpuSlotSampleResult& out)
+{
+    if (anim_index >= asset.anims.size())
+    {
+        return Fail("sample: 动画下标 " + std::to_string(anim_index) + " 越界（只有 " +
+                    std::to_string(asset.anims.size()) + " 个动画）");
+    }
+    SpineGpuRuntimeData data;
+    SpineImportResult r = SpineGpuBuildRuntimeData(asset, data);
+    if (!r.ok)
+    {
+        return r;
+    }
+    SpineGpuSkeletonState st;
+    r = SpineGpuInitSkeletonState(asset, data, st);
+    if (!r.ok)
+    {
+        return r;
+    }
+    const SpineGpuAnim& anim = asset.anims[anim_index];
     for (uint32_t ti = 0; ti < anim.timeline_count; ++ti)
     {
         const uint32_t tl_index = anim.timeline_first + ti;
-        const SpineGpuTimeline& tl = asset.timelines[tl_index];
-        if (static_cast<SpineTimelineType>(tl.type) != SpineTimelineType::kDeform ||
-            (tl.target & SpineGpuConstants::kDeformTargetPathBit) != 0)
+        if (tl_index >= asset.timelines.size())
+        {
+            return Fail("sample: 动画 " + std::to_string(anim_index) + " 引用了越界的时间轴 " + std::to_string(tl_index));
+        }
+        const SpineTimelineType type = static_cast<SpineTimelineType>(asset.timelines[tl_index].type);
+        if (type != SpineTimelineType::kAttachment && type != SpineTimelineType::kColor &&
+            type != SpineTimelineType::kTwoColor && type != SpineTimelineType::kDrawOrder)
         {
             continue;
         }
-        if (tl.target >= asset.attachment_records.size())
+        r = SpineGpuApplyTimeline(asset, data, st, tl_index, 0.0f, time, 1.0f, SpineGpuMixBlend::kFirst,
+                                  SpineGpuMixDirection::kIn);
+        if (!r.ok)
         {
-            return Fail("sample: 第 " + std::to_string(tl_index) + " 条 deform 时间轴指向越界的附件记录 " +
-                        std::to_string(tl.target));
-        }
-        const SpineGpuAttachmentRecord& rec = asset.attachment_records[tl.target];
-        if (rec.slot_index >= slot_count)
-        {
-            return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的槽位越界");
-        }
-        const uint32_t item = out.slot_draw_item[rec.slot_index];
-        if (item == SpineGpuPoseResult::kNoDrawItem)
-        {
-            continue;
-        }
-        const SpineDrawItem& di = asset.draw_items[item];
-        if (di.attachment_id != rec.attachment_id && di.deform_parent != rec.attachment_id)
-        {
-            continue;   // `applyDeform` 为假：槽位挂的不是它（也不是继承它的 linked mesh）
-        }
-
-        // deform 长度（DeformTimeline::_deformLength）：rigid 每顶点 2 个，weighted 每影响 2 个
-        uint32_t deform_len = 0;
-        const float* rigid_setup = nullptr;
-        if (di.vertex_format == SpineVertexFormat::kRigid)
-        {
-            deform_len = 2u * di.vertex_count;
-            const size_t byte0 = static_cast<size_t>(di.vertex_base) * SpineGpuConstants::kRigidVertexStride;
-            if (byte0 + static_cast<size_t>(di.vertex_count) * SpineGpuConstants::kRigidVertexStride >
-                asset.weighted_segment_offset)
-            {
-                return Fail("sample: 绘制项 " + std::to_string(item) + " 的 rigid 顶点区间越过 rigid 段");
-            }
-            setup.resize(deform_len);
-            std::memcpy(setup.data(), asset.vertex_buffer.data() + byte0, static_cast<size_t>(deform_len) * 4u);
-            rigid_setup = setup.data();
-        }
-        else
-        {
-            const size_t w0 = asset.weighted_segment_offset / 4u + static_cast<size_t>(di.vertex_base) * 2u;
-            if ((w0 + static_cast<size_t>(di.vertex_count) * 2u) * 4u > asset.vertex_buffer.size())
-            {
-                return Fail("sample: 绘制项 " + std::to_string(item) + " 的 weighted 顶点区间越过顶点缓冲");
-            }
-            for (uint32_t v = 0; v < di.vertex_count; ++v)
-            {
-                uint32_t cnt = 0;
-                std::memcpy(&cnt, asset.vertex_buffer.data() + (w0 + v * 2u + 1u) * 4u, 4);
-                deform_len += 2u * cnt;
-            }
-        }
-
-        // 找 / 建这一项的条目（同一项可能被多条时间轴命中：后者覆盖）
-        SpineGpuMeshDeform* entry = nullptr;
-        for (SpineGpuMeshDeform& e : out.mesh_deforms)
-        {
-            if (e.draw_item == item)
-            {
-                entry = &e;
-                break;
-            }
-        }
-        if (entry == nullptr)
-        {
-            out.mesh_deforms.push_back(SpineGpuMeshDeform {});
-            entry = &out.mesh_deforms.back();
-            entry->draw_item = item;
-        }
-        bool cleared = false;
-        const SpineImportResult dr =
-            SampleDeformTimeline(asset, tl_index, time, deform_len, rigid_setup, cleared, entry->values);
-        if (!dr.ok)
-        {
-            return dr;
+            return r;
         }
     }
-    // 被清空的（第 0 帧之前）= 没有 deform ⇒ 不出现在结果里
-    out.mesh_deforms.erase(std::remove_if(out.mesh_deforms.begin(), out.mesh_deforms.end(),
-                                          [](const SpineGpuMeshDeform& e) { return e.values.empty(); }),
-                           out.mesh_deforms.end());
-    std::sort(out.mesh_deforms.begin(), out.mesh_deforms.end(),
-              [](const SpineGpuMeshDeform& a, const SpineGpuMeshDeform& b) { return a.draw_item < b.draw_item; });
-
-    SpineImportResult r;
-    r.ok = true;
-    return r;
+    out.slots.resize(st.slots.size());
+    for (size_t s = 0; s < st.slots.size(); ++s)
+    {
+        const SpineGpuSlotState& src = st.slots[s];
+        for (int k = 0; k < 4; ++k)
+        {
+            out.slots[s].color[k] = src.color[k];
+            out.slots[s].dark[k] = src.dark[k];
+        }
+        out.slots[s].attachment_name_offset = src.attachment.name_id == SpineGpuAttachRef::kNone
+                                                  ? SpineGpuConstants::kNoAttachmentName
+                                                  : src.attachment.name_offset;
+    }
+    out.draw_order = st.draw_order;
+    return Ok();
 }

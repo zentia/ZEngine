@@ -4,13 +4,13 @@
 // GPU-Spine 动画解算（骨骼侧）：容器 → 某一时刻的**完整姿势**
 // 规格：doc/GPU_SPINE_V7_ANIMATION.md §3.4 / §3.6 / §3.7、§4.1
 // ---------------------------------------------------------------------
-// 这个文件是 **S4b**：骨骼时间轴 + 三类约束求解 + 按 chunk 19 遍历。
-// 槽位侧（color / twoColor / attachment / drawOrder）在 `SpineGpuAnimSolver`。
+// 这个文件是 **S4b**：三类约束求解 + 按 chunk 19 遍历（"状态 → 世界变换"那一半）。
+// "时间轴 → 状态"那一半（含 alpha / MixBlend / MixDirection）S5 起在 `SpineGpuSkeletonState`，
+// 多轨调度在 `SpineGpuAnimationState`。
 //
-// 语义口径与槽位侧完全一致（照抄参考实现，不自行发挥）：
-//   `AnimationState::apply()` 对**轨道 0 上唯一一条、已淡入完的**动画用的是
-//     `animation->apply(skeleton, lastTime, time, loop, events, 1.0f, MixBlend_First, MixDirection_In)`
-//   alpha == 1 的 MixBlend_First 等价于"**先复位到 setup，再让时间轴覆盖**"。
+// 无状态的 `SpineGpuSamplePose()` 用的是对拍台的口径：
+//   `setToSetupPose(); animation->apply(skeleton, 0, time, false, events, 1.0f, MixBlend_First, MixDirection_In)`
+//   = `AnimationState::apply()` 对**轨道 0 上唯一一条、已淡入完的**动画做的事。
 //
 // ⚠️ 三条"改了不报错"的总纲（每一条都在 .cpp 里标了出处）：
 //   1. **数学按 3.8**（§4.1）：3.7 与 3.8 有 2 处真差异，两处都是 3.8 修掉的 3.7 bug。
@@ -25,7 +25,7 @@
 // 参考实现：G:/OSGame/unity-engine-source/Modules/Spine/spine-cpp（3.8）
 // =====================================================================
 
-#include "Runtime/Function/Render/Spine/SpineGpuAnimSolver.h"
+#include "Runtime/Function/Render/Spine/SpineGpuSkeletonState.h"
 
 // 一根骨骼在某一时刻的解算结果：**世界** 2x2 + 平移。
 // 这就是要上传给 GPU 的那个矩阵（`SpineBoneTransform`，§5.1）。
@@ -63,25 +63,12 @@ struct SpineGpuPoseResult : SpineGpuSlotSampleResult
     static constexpr uint32_t kNoDrawItem = 0xFFFFFFFFu;
     std::vector<uint32_t> slot_draw_item;    // [header.slot_count]
 
-    // 本帧**生效**的 mesh deform（S6）：只含"槽位当前挂着、且有 deform 时间轴作用于它"的项，
+    // 本帧**生效**的 mesh deform（S6）：只含"槽位当前挂着、且该槽位 deform 数组非空"的项，
     // 按 draw_item 升序。不在这里的项 = 用静态 VB 的 bindPos（参考实现里 deform 数组为空）。
+    // deform 数组挂在槽位上、只在换附件时清空 ⇒ 多轨播放时可能是"没有时间轴再写、但仍保留"的值。
     std::vector<SpineGpuMeshDeform> mesh_deforms;
 };
 
-// 采样 `asset` 的第 `anim_index` 个动画在 `time` 处的**完整姿势**。
-//
-// 顺序（与参考实现一致，不能调换）：
-//   1. 骨骼复位到 setup（chunk 10）
-//   2. 槽位侧采样（attachment 时间轴会改变 path 约束看到的那条曲线）
-//   3. 骨骼时间轴 + 约束时间轴改写局部值 / 约束参数
-//   4. 按 chunk 19 的复位表复位 `_updateCacheReset` 里的骨骼
-//   5. 按 chunk 19 的步骤序列跑 `update()`
-//
-// ⚠️ `time` 不在这里取模 —— 循环是调用方的事（参考实现也是 `Animation::apply`
-//    只在 `loop` 为真时才 `fmod`，且 `AnimationState` 自己管 trackTime）。
-//
-// 出错（返回 !ok）只可能是"容器不自洽"或"遇到了本阶段不做的时间轴"。
-// 后者**显式报错**而不是跳过 —— 跳过会得到"看起来合理但错"的姿势。
 // 诊断用：逐步记录解算过程（对拍台定位"第一个分叉的步骤"）。
 // 生产代码传 nullptr，零开销。
 struct SpineGpuPoseTrace
@@ -102,5 +89,27 @@ struct SpineGpuPoseTrace
     std::vector<std::vector<uint8_t>> applied_valid_after_step;
 };
 
+// 状态 → 某一帧的**完整姿势**（`Skeleton::updateWorldTransform()` + 读出槽位 / deform）。
+//
+// 顺序（与参考实现一致，不能调换）：
+//   1. path 约束看槽位**当前**附件（attachment 时间轴改过的那个）与该槽位的 deform 数组
+//   2. 按 chunk 19 的复位表复位 `_updateCacheReset` 里的骨骼 applied 值
+//   3. 按 chunk 19 的步骤序列跑 `update()`（骨骼 / IK / transform / path）
+//   4. 读出骨骼世界变换、槽位颜色 / 附件 / 绘制顺序、可画附件的 deform 数组
+// `state` 会被**改写**（applied / 世界矩阵，以及 absolute+local transform 约束写的局部 shearY）
+// —— 与参考实现一样，这些都留给下一帧。
+//
+// 出错（返回 !ok）只可能是"容器 / 状态不自洽"。越界读在 C++ 里不报错，所以全部显式查。
+SpineImportResult SpineGpuUpdateWorld(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data,
+                                      SpineGpuSkeletonState& state, SpineGpuPoseResult& out,
+                                      SpineGpuPoseTrace* trace = nullptr);
+
+// 无状态的单动画采样：采样 `asset` 的第 `anim_index` 个动画在 `time` 处的完整姿势。
+// = 新建状态（= 已 setToSetupPose）→ `Animation::apply(alpha=1, MixBlend_First, In)` → UpdateWorld。
+// 这正是对拍台给参考实现的口径；多轨 / 混合用 `SpineGpuAnimationState`。
+//
+// ⚠️ 每次调用都重建查找表（`SpineGpuBuildRuntimeData`）—— 只给测试 / 工具用，
+//    逐帧播放请持有一份 `SpineGpuRuntimeData` + `SpineGpuSkeletonState`。
+// ⚠️ `time` 不在这里取模 —— 循环是调用方的事。
 SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_index, float time,
                                      SpineGpuPoseResult& out, SpineGpuPoseTrace* trace = nullptr);

@@ -1,6 +1,7 @@
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 
 #include "Runtime/Function/Render/Interface/RHI.h"
+#include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
 #include "Runtime/UI/Render/UIGpuResources.h"
 #include "core/Log/LogSystem.h"
@@ -8,6 +9,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -104,11 +107,33 @@ struct SpineGpuRenderer::Impl
     bool pending_clear {false};
     std::string pending_path;
     int pending_anim {0};
+    // 多轨播放命令（S5）：游戏线程攒、渲染线程在下一次 Draw 的 Update 之前按顺序执行
+    struct AnimCommand
+    {
+        enum class Op
+        {
+            kSet,     // setAnimation(track, anim, loop)
+            kAdd,     // addAnimation(track, anim, loop, delay)
+            kEmpty,   // setEmptyAnimation(track, mix)
+            kMix,     // AnimationStateData::default_mix = value
+            kSpeed,   // AnimationState::time_scale = value
+            kAlpha,   // 轨道当前那条的 alpha = value
+        };
+        Op op {Op::kSet};
+        int track {0};
+        std::string anim;   // 下标或名字
+        bool loop {true};
+        float value {0.0f};
+        float delay {0.0f};
+    };
+    std::vector<AnimCommand> pending_cmds;
+    float default_mix {0.2f};   // 渲染线程独占（spine.mix 经命令队列改）；跨资产保留
     std::string status {"idle"};
     std::string skip_reason;   // 最近一次"没画"的原因（变化时才记日志）
     uint32_t last_draw_count {0};
     uint32_t last_deform_draws {0};    // 上一帧带 deform 的绘制项数（S6）
     uint32_t last_deform_floats {0};   // 上一帧上传的 deform float 数
+    std::string track_summary;         // 上一帧的轨道概况（渲染线程写、spine.status 读，受 mutex 保护）
 
     // ---- 管线（与资产无关）----
     RHI* rhi {nullptr};
@@ -136,7 +161,14 @@ struct SpineGpuRenderer::Impl
     struct Loaded
     {
         SpineGpuAsset asset;
-        uint32_t anim {0};
+        uint32_t anim {0};   // 加载时放到轨道 0 的动画
+        // S5：跨帧存活的骨架状态 + 多轨调度。`anim_state` 引用 asset / data / mix ⇒ 必须声明在它们之后
+        //     （析构逆序），且 Loaded 不可移动（unique_ptr 持有，从不拷贝）。
+        SpineGpuRuntimeData data;
+        SpineGpuSkeletonState state;
+        SpineGpuAnimationStateData mix;
+        std::unique_ptr<SpineGpuAnimationState> anim_state;
+        std::chrono::steady_clock::time_point last_tick;
         // 每个绘制项的 deform 数组长度（float 个数；rigid 2×顶点、weighted 2×影响）与
         // weighted 项的 infl_base（第 0 个顶点的 influence_offset）—— GPU 寻址偏置要用
         std::vector<uint32_t> deform_len;
@@ -150,7 +182,6 @@ struct SpineGpuRenderer::Impl
         std::vector<void*> page_textures;   // UIGpuResources 的纹理 id
         std::vector<FrameSlot> frames;
         float bounds[4] {0, 0, 1, 1};       // setup 姿势的包围盒（x0, y0, x1, y1）
-        std::chrono::steady_clock::time_point start;
     };
     std::unique_ptr<Loaded> loaded;
 
@@ -402,6 +433,142 @@ struct SpineGpuRenderer::Impl
         pipeline_render_pass = render_pass;
         pipeline_subpass = subpass;
         return true;
+    }
+
+    // ------------------------------------------------------------------
+    // 多轨命令（渲染线程）
+    // ------------------------------------------------------------------
+    // 动画按下标（纯数字）或名字解析；找不到 ⇒ 返回 false，命令丢弃并记日志（不猜）。
+    static bool ResolveAnim(const SpineGpuAsset& a, const std::string& s, uint32_t& out)
+    {
+        if (!s.empty() && s.find_first_not_of("0123456789") == std::string::npos)
+        {
+            const unsigned long v = std::strtoul(s.c_str(), nullptr, 10);
+            if (v < a.anims.size())
+            {
+                out = static_cast<uint32_t>(v);
+                return true;
+            }
+            return false;
+        }
+        for (size_t i = 0; i < a.anim_names.size(); ++i)
+        {
+            if (a.anim_names[i] == s)
+            {
+                out = static_cast<uint32_t>(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void RunCommands(std::vector<AnimCommand>& cmds)
+    {
+        for (const AnimCommand& c : cmds)
+        {
+            if (c.op == AnimCommand::Op::kMix)
+            {
+                default_mix = std::max(0.0f, c.value);
+                if (loaded)
+                {
+                    loaded->mix.default_mix = default_mix;
+                }
+                LOG_INFO(ZRender, "SpineGpuRenderer: default mix = {}s", default_mix);
+                continue;
+            }
+            if (!loaded)
+            {
+                LOG_WARNING(ZRender, "SpineGpuRenderer: no skeleton loaded, animation command dropped");
+                continue;
+            }
+            SpineGpuAnimationState& as = *loaded->anim_state;
+            const size_t track = static_cast<size_t>(std::max(0, c.track));
+            switch (c.op)
+            {
+                case AnimCommand::Op::kSet:
+                case AnimCommand::Op::kAdd:
+                {
+                    uint32_t ai = 0;
+                    if (!ResolveAnim(loaded->asset, c.anim, ai))
+                    {
+                        LOG_WARNING(ZRender, "SpineGpuRenderer: animation '{}' not found ({} animations)", c.anim,
+                                    loaded->asset.anims.size());
+                        break;
+                    }
+                    if (c.op == AnimCommand::Op::kSet)
+                    {
+                        as.SetAnimation(track, ai, c.loop);
+                    }
+                    else
+                    {
+                        as.AddAnimation(track, ai, c.loop, c.delay);
+                    }
+                    break;
+                }
+                case AnimCommand::Op::kEmpty:
+                    as.SetEmptyAnimation(track, std::max(0.0f, c.value));
+                    break;
+                case AnimCommand::Op::kSpeed:
+                    as.time_scale = c.value;
+                    break;
+                case AnimCommand::Op::kAlpha:
+                    if (SpineGpuTrackEntry* e = as.GetCurrent(track))
+                    {
+                        e->alpha = std::clamp(c.value, 0.0f, 1.0f);
+                    }
+                    break;
+                case AnimCommand::Op::kMix:
+                    break;
+            }
+        }
+        cmds.clear();
+    }
+
+    // "轨道 0：'walk' t=1.23（混出 'idle' 40%）；轨道 1：…"
+    std::string DescribeTracks() const
+    {
+        if (!loaded)
+        {
+            return std::string();
+        }
+        const SpineGpuAnimationState& as = *loaded->anim_state;
+        const auto name = [&](uint32_t ai) -> std::string {
+            if (ai == kSpineGpuEmptyAnimation)
+            {
+                return "<empty>";
+            }
+            return ai < loaded->asset.anim_names.size() ? loaded->asset.anim_names[ai] : std::string("?");
+        };
+        std::string out;
+        for (size_t i = 0; i < as.TrackCount(); ++i)
+        {
+            const SpineGpuTrackEntry* e = as.GetCurrent(i);
+            if (e == nullptr)
+            {
+                continue;
+            }
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), " t=%.2f", static_cast<double>(e->track_time));
+            out += (out.empty() ? "" : "; ") + std::string("track ") + std::to_string(i) + ": '" + name(e->animation) +
+                   "'" + buf;
+            if (e->alpha != 1.0f)
+            {
+                std::snprintf(buf, sizeof(buf), " alpha=%.2f", static_cast<double>(e->alpha));
+                out += buf;
+            }
+            if (e->mixing_from != nullptr && e->mix_duration > 0.0f)
+            {
+                std::snprintf(buf, sizeof(buf), " %d%%",
+                              static_cast<int>(100.0f * std::min(1.0f, e->mix_time / e->mix_duration)));
+                out += " (mixing from '" + name(e->mixing_from->animation) + "'" + buf + ")";
+            }
+            if (e->delay > 0.0f)
+            {
+                std::snprintf(buf, sizeof(buf), " (waiting %.2fs)", static_cast<double>(e->delay));
+                out += buf;
+            }
+        }
+        return out.empty() ? std::string("no tracks") : out;
     }
 
     // ------------------------------------------------------------------
@@ -680,7 +847,23 @@ struct SpineGpuRenderer::Impl
             ld->bounds[3] = y1;
         }
 
-        ld->start = std::chrono::steady_clock::now();
+        // ---- 运行时状态（S5）：查找表一次建好；轨道 0 循环播放请求的动画 ----
+        {
+            SpineImportResult rr = SpineGpuBuildRuntimeData(a, ld->data);
+            if (rr.ok)
+            {
+                rr = SpineGpuInitSkeletonState(a, ld->data, ld->state);
+            }
+            if (!rr.ok)
+            {
+                err = rr.error;
+                return false;
+            }
+            ld->mix.default_mix = default_mix;
+            ld->anim_state = std::make_unique<SpineGpuAnimationState>(ld->asset, ld->data, &ld->mix);
+            ld->anim_state->SetAnimation(0, ld->anim, true);
+        }
+        ld->last_tick = std::chrono::steady_clock::now();
         RetireLoaded();
         loaded = std::move(ld);
         return true;
@@ -717,6 +900,74 @@ void SpineGpuRenderer::RequestClear()
     std::lock_guard<std::mutex> lock(d.mutex);
     d.pending_clear = true;
     d.pending_load = false;
+    d.track_summary.clear();
+}
+
+void SpineGpuRenderer::RequestSetAnimation(int track, const std::string& anim, bool loop)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::AnimCommand c;
+    c.op = Impl::AnimCommand::Op::kSet;
+    c.track = track;
+    c.anim = anim;
+    c.loop = loop;
+    d.pending_cmds.push_back(std::move(c));
+}
+
+void SpineGpuRenderer::RequestAddAnimation(int track, const std::string& anim, bool loop, float delay)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::AnimCommand c;
+    c.op = Impl::AnimCommand::Op::kAdd;
+    c.track = track;
+    c.anim = anim;
+    c.loop = loop;
+    c.delay = delay;
+    d.pending_cmds.push_back(std::move(c));
+}
+
+void SpineGpuRenderer::RequestSetEmptyAnimation(int track, float mix_duration)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::AnimCommand c;
+    c.op = Impl::AnimCommand::Op::kEmpty;
+    c.track = track;
+    c.value = mix_duration;
+    d.pending_cmds.push_back(std::move(c));
+}
+
+void SpineGpuRenderer::RequestDefaultMix(float seconds)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::AnimCommand c;
+    c.op = Impl::AnimCommand::Op::kMix;
+    c.value = seconds;
+    d.pending_cmds.push_back(std::move(c));
+}
+
+void SpineGpuRenderer::RequestTimeScale(float scale)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::AnimCommand c;
+    c.op = Impl::AnimCommand::Op::kSpeed;
+    c.value = scale;
+    d.pending_cmds.push_back(std::move(c));
+}
+
+void SpineGpuRenderer::RequestTrackAlpha(int track, float alpha)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::AnimCommand c;
+    c.op = Impl::AnimCommand::Op::kAlpha;
+    c.track = track;
+    c.value = alpha;
+    d.pending_cmds.push_back(std::move(c));
 }
 
 uint32_t SpineGpuRenderer::LastDrawCount() const
@@ -736,7 +987,8 @@ std::string SpineGpuRenderer::Status() const
         return "idle";
     }
     std::lock_guard<std::mutex> lock(m_Impl->mutex);
-    return m_Impl->status + " (last frame: " + std::to_string(m_Impl->last_draw_count) + " draw items, " +
+    return m_Impl->status + (m_Impl->track_summary.empty() ? std::string() : " [" + m_Impl->track_summary + "]") +
+           " (last frame: " + std::to_string(m_Impl->last_draw_count) + " draw items, " +
            std::to_string(m_Impl->last_deform_draws) + " deformed / " + std::to_string(m_Impl->last_deform_floats) +
            " deform floats" +
            (m_Impl->skip_reason.empty() ? std::string() : "; skipped: " + m_Impl->skip_reason) + ")";
@@ -765,6 +1017,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     int anim = 0;
     bool do_load = false;
     bool do_clear = false;
+    std::vector<Impl::AnimCommand> cmds;
     {
         std::lock_guard<std::mutex> lock(d.mutex);
         do_load = d.pending_load;
@@ -773,6 +1026,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         anim = d.pending_anim;
         d.pending_load = false;
         d.pending_clear = false;
+        cmds.swap(d.pending_cmds);
     }
     if (do_clear)
     {
@@ -799,6 +1053,11 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
             d.status = "load failed: " + err;
             LOG_ERROR(ZRender, "SpineGpuRenderer: load '{}' failed: {}", path, err);
         }
+    }
+    // 命令在加载**之后**执行：同一帧里先 spine.load 再 spine.play 时，play 作用在新资产上
+    if (!cmds.empty())
+    {
+        d.RunCommands(cmds);
     }
     // 每条"这一帧没画"的原因都进 status，且**变化时**记一行日志（不刷屏、也不静默）
     const auto skip = [&d](const std::string& why) {
@@ -829,17 +1088,22 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     const SpineGpuAsset& a = ld.asset;
 
     // ---- 1) 解算（CPU 只算骨骼与槽位，不算顶点）----
-    const float duration = a.anims[ld.anim].duration;
-    float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - ld.start).count();
-    if (duration > 0.0f)
-    {
-        t = std::fmod(t, duration);
-    }
+    // S5：AnimationState 的标准三步 update(dt) → apply(skeleton) → updateWorldTransform。
+    // dt 夹到 [0, 0.25]：编辑器卡顿 / 断点之后不让动画一步跳过好几圈（参考实现没有这层，
+    // 是宿主的事；spine-unity 也是由调用方给 deltaTime）。
+    const auto now = std::chrono::steady_clock::now();
+    const float dt = std::clamp(std::chrono::duration<float>(now - ld.last_tick).count(), 0.0f, 0.25f);
+    ld.last_tick = now;
+    ld.anim_state->Update(dt);
+    SpineImportResult pr = ld.anim_state->Apply(ld.state);
     SpineGpuPoseResult pose;
-    const SpineImportResult pr = SpineGpuSamplePose(a, ld.anim, t, pose);
+    if (pr.ok)
+    {
+        pr = SpineGpuUpdateWorld(a, ld.data, ld.state, pose);
+    }
     if (!pr.ok)
     {
-        skip("sample failed: " + pr.error);
+        skip("solve failed: " + pr.error);
         return;
     }
 
@@ -1003,7 +1267,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         if (d.skip_reason != "no visible draw items")
         {
             d.skip_reason = "no visible draw items";
-            LOG_WARNING(ZRender, "SpineGpuRenderer: skipping frame: no visible draw items (t = {})", t);
+            LOG_WARNING(ZRender, "SpineGpuRenderer: skipping frame: no visible draw items ({})", d.DescribeTracks());
         }
     }
     else if (d.last_draw_count == 0)
@@ -1017,6 +1281,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         d.skip_reason.clear();
     }
     d.last_draw_count = static_cast<uint32_t>(draws.size());
+    d.track_summary = d.DescribeTracks();
     d.last_deform_draws = deformed_draws;
     d.last_deform_floats = static_cast<uint32_t>(deform_values.size());
 }
@@ -1041,6 +1306,12 @@ SpineGpuRenderer::Impl& SpineGpuRenderer::impl()
 }
 void SpineGpuRenderer::RequestLoad(const std::string&, int) {}
 void SpineGpuRenderer::RequestClear() {}
+void SpineGpuRenderer::RequestSetAnimation(int, const std::string&, bool) {}
+void SpineGpuRenderer::RequestAddAnimation(int, const std::string&, bool, float) {}
+void SpineGpuRenderer::RequestSetEmptyAnimation(int, float) {}
+void SpineGpuRenderer::RequestDefaultMix(float) {}
+void SpineGpuRenderer::RequestTimeScale(float) {}
+void SpineGpuRenderer::RequestTrackAlpha(int, float) {}
 void SpineGpuRenderer::Draw(RHI*, RHIRenderPass*, uint32_t, const RHIViewport&) {}
 uint32_t SpineGpuRenderer::LastDrawCount() const { return 0; }
 std::string SpineGpuRenderer::Status() const { return "GPU-Spine rendering is Vulkan-only for now"; }

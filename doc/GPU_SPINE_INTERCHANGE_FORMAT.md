@@ -1398,10 +1398,14 @@ v7 的处理（见 `doc/GPU_SPINE_V7_ANIMATION.md`）。**边界不是拍脑袋�
 spine.load <骨架 .skel.bytes|.skel|.json> [动画下标]   # 图集取同名 .atlas.txt / .atlas
 spine.clear
 spine.status
+# 多轨（S5，语义 = spine::AnimationState，见 GPU_SPINE_V7_ANIMATION.md §7.0.7）：
+spine.play <动画> [track] [loop] / spine.queue <动画> [track] [delay] [loop] / spine.empty [track] [mix]
+spine.mix <秒> / spine.speed <倍率> / spine.alpha <track> <alpha>
 # 启动即加载：ZEditor ... --rhi vulkan --cvar "spine.load G:/.../K_X_Spine.skel.bytes 1"
 ```
 
-**每帧 CPU 只做两件事**：`SpineGpuSamplePose`（骨骼世界变换 + 槽位状态）与"哪些绘制项可见"
+**每帧 CPU 只做两件事**：解算（S5 起是 `SpineGpuAnimationState::Update(dt)` → `Apply(state)` →
+`SpineGpuUpdateWorld`，骨骼世界变换 + 槽位状态）与"哪些绘制项可见"
 （按 `draw_order`，取槽位当前附件名在 skin 0 下对应的那一项）。**顶点一个都不在 CPU 上算**：
 
 | set 0 binding | 内容 | 更新频率 |
