@@ -7,13 +7,15 @@
 只有一个程序 `ZEnvironmentCollector.exe`，图形界面和命令行都在它里面：
 
 ```powershell
-.\ZEnvironmentCollector.exe                    # 图形界面，三个页签
+.\ZEnvironmentCollector.exe                    # 图形界面，唯一页签（兼容性与选卡验证已并入）
 .\ZEnvironmentCollector.exe -batchmode --help  # 命令行，无窗口
 ```
 
 `-batchmode` 沿用 Unity/UE 的写法：不再弹窗，结果写 stdout，退出码交给调用方。它必须成对出现——GUI 模式只认识 `--profile` / `--output-dir` / `--incident-time` / `--tab`，其它参数会直接报错提示加上 `-batchmode`。
 
 命令行在 cmd.exe 与 PowerShell 下 stdout/stderr 照常、`%ERRORLEVEL%` 与 `$LASTEXITCODE` 照常；调用方已把输出重定向到管道或文件（`>`、`|`、CI 捕获）时不会被抢走。bat 里会等它结束，`exe && next` 可用。
+
+它**刻意不是** ZEditor 的 ToolSuite（不像 LuaMemPreview）：这个工具要发到玩家机器上，所以是 /MT 静态链接、机器无需 VC redist——合进编辑器并不会让这份 exe 消失，只会多出一份要同步维护的实现。完整理由见 `engine/Source/Editor/ToolSuite/ToolSuite.h` 的“哪些东西不该做成套件”与 `engine/CMakeLists.txt` 里 `ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK` 的注释。
 
 界面只有一个“环境采集”页签，对应 `-batchmode --collect`：一次跑完并把所有结果打进同一个 ZIP——硬件、事件诊断、双显卡选卡验证（`gpu-selection.json`）、**DLL 静态检查与隔离加载探针**（`compatibility.json`），以及崩溃捕获高级区。
 
@@ -47,7 +49,7 @@
 - 双显卡自动选卡验证：离线回归用例（10 个，与 `GfxDeviceSetup.cpp` 的回退启发式逐字节一致）+ 本机 `EnumAdapterByGpuPreference` 真实探测。**每个用例断言两件事**：选中哪张卡，以及**靠什么理由选中**——是靠排除集显选出来的，还是退回"显存最大"选出来的。下标对了而理由错了也算失败，这不是形式主义：只断言下标时，把"找到非集显卡"写成 `> 0` 这种差一错误有 4 个用例下标依旧正确、看不出来，而它在一台真卡排在第一位的机器上就会选中集显。
   5 个是真实场景（集显虚报显存、极端虚报、单卡、纯集显、**真卡排在前而集显报得更多**），5 个钉住分支语义：**软件适配器必须被排除**（且是在它报的显存比真卡还多、又不像集显的前提下排除，否则删掉这条分支用例照样通过）、**"严格大于"**（两块同型号卡时第一块必须保持当选）、**软件判定是合取**（`vendor==0x1414 && deviceId==0x8c`，只认厂商会把真卡踢掉）、**Intel 厂商规则**（`0x8086` 一律算集显，所以 Arc 独显会输给显存更小的他厂卡——刻意钉住现行为，将来真改这条要让用例红一次）、**只有软件适配器时仍是答案而不是失败**。
 
-选卡验证由 `CollectEnvironment()` 采集，是环境快照的一部分，因此 `-batchmode` 报告、GUI “GPU 选卡验证”页签读的是同一份数据；`--collect` 也作为独立阶段写入 `gpu-selection.json` 并打包进 ZIP。三处共用 `BuildGpuSelectionJson()`，不会出现两套结果。
+选卡验证由 `CollectEnvironment()` 采集，是环境快照的一部分，因此 `-batchmode` 报告与 `--collect` 写的 `gpu-selection.json` 是同一份数据；后者作为独立阶段打包进 ZIP。两处共用 `BuildGpuSelectionJson()`，不会出现两套结果。
 
 ### DLL 静态检查
 
@@ -114,7 +116,7 @@ GameCore_Standalone.dll
   --output-dir .\EnvironmentReport
 ```
 
-只想看机器、不想等递归 DLL 扫描和隔离加载探针时加 `--no-dll-checks`（GUI 的“兼容性检查”页签上是同名复选框）。
+只想看机器、不想等递归 DLL 扫描和隔离加载探针时加 `--no-dll-checks`（只作用于 `-batchmode` 默认命令；GUI 上不再有对应开关）。
 
 ## Intel SDE 模拟旧 CPU
 
@@ -421,7 +423,7 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 
 ### 玩家操作
 
-解压完整工具包，运行 `ZEnvironmentCollector.exe`，顶部页签切到“环境采集”，选择问题类型、可选填写带时区的发生时间，点击“开始采集并生成 ZIP”。默认输出到桌面 `EnvironmentReports`。GUI默认勾选“同意附带事件明细”，可手动取消；CLI仍需显式传入 `--include-events` 才附带脱敏事件明细。窗口右侧提供可拖动滚动条，也可使用滚轮或点击轨道翻页；滑块与内容位置同步，尺寸随DPI缩放。完成后点击打开目录，确认内容后手动发送 ZIP；不自动上传。
+解压完整工具包，运行 `ZEnvironmentCollector.exe`，选择问题类型、可选填写带时区的发生时间，点击“开始采集并生成 ZIP”。默认输出到桌面 `EnvironmentReports`。GUI默认勾选“同意附带事件明细”，可手动取消；CLI仍需显式传入 `--include-events` 才附带脱敏事件明细。窗口右侧提供可拖动滚动条，也可使用滚轮或点击轨道翻页；滑块与内容位置同步，尺寸随DPI缩放。完成后点击打开目录，确认内容后手动发送 ZIP；不自动上传。
 
 界面只有一个“环境采集”页签：填事故三要素、可选填**游戏目录**（`--game-dir` 的同义输入框，游戏 DLL 所在处），点“开始采集并生成 ZIP”，一次拿到全部结果。原先的“兼容性检查”“GPU 选卡验证”两个页签已并入它——`compatibility.json` 与 `gpu-selection.json` 都会进同一个包，命令行 `-batchmode`（默认命令）与 `-batchmode --gpu-selection` 仍可单独看某一部分，数据是同一份。
 
@@ -454,7 +456,7 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 .\ZEnvironmentCollector.exe -batchmode --diagnose --diagnose-from-events .\Diagnosis\OSGameDiagnosisEvents.tsv --output-dir .\Replay
 .\ZEnvironmentCollector.exe -batchmode --gpu-selection
 .\ZEnvironmentCollector.exe --profile .\profiles\osgame.ini          # GUI，指定profile
-.\ZEnvironmentCollector.exe --tab gpu                                 # GUI，直接打开GPU页签
+.\ZEnvironmentCollector.exe --tab collection                          # GUI，唯一页签（gpu / check 也接受，落到同一页）
 .\ZEnvironmentCollector.exe --lang zh-CN                              # 界面语言（默认英文）
 ```
 
