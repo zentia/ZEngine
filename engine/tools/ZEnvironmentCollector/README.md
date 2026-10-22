@@ -24,14 +24,18 @@ ZEnvironmentCollector.exe -batchmode --preflight [--game-dir <游戏目录>] [--
 
 ### 读结论
 
-`OSGamePreflight.json` 里 launcher 只需四个键：`verdict` / `confidence` / `userMessage` / `actions`。诊断报告共用同一套键，`"mode":"preflight"` 用来区分。
+`OSGamePreflight.json` 里 launcher 只需四个键：`verdict` / `confidence` / `userMessage` / `actions`。诊断报告共用同一套键，`"mode":"preflight"` 用来区分；`findings` 是同一批结论的明细，每项带 `code` / `layer` / `zh` / `evidence`。
 
-| verdict | 含义 | launcher 应当 |
+**提示由工具给，不由 launcher 写**：`userMessage` 与 `actions` 的每一项都是 `{"code", "zh"}`，`zh` 就是给玩家看的那句话，`code` 是它的稳定代号——按 `code` 去重和埋点，不要比较文案。工具从不阻断启动，超时也只是 `Inconclusive`。
+
+| verdict | 含义 | 工具给出的 userMessage |
 |---|---|---|
-| `Pass` | 没发现值得说的 | 不提示 |
-| `Advise` | 可提示的环境风险（驱动版本不一致、选到集显、页面文件过小、缺 VC++ 运行库、空间不足、等重启、装在机械硬盘、路径含非 ASCII…） | 非模态提示，同一个提示只说一次 |
-| `BelowMinimum` | 缺 AVX2、内存低于最低要求、非 64 位 Windows、没有显卡能初始化 D3D11、功能级别低于 `minimumFeatureLevel` | 明确提示，但不阻断启动 |
-| `Inconclusive` | 没跑完（超时或探针失败） | 当作"没检查过" |
+| `Pass` | 没发现值得说的 | 「未发现明显的环境问题，可以正常启动游戏。」（`NO_ISSUES_FOUND`） |
+| `Advise` | 可提示的环境风险（驱动版本不一致、选到集显、页面文件过小、缺 VC++ 运行库、空间不足、等重启、装在机械硬盘、路径含非 ASCII…） | 那一项的说明；有多项时为「检测到 N 项可能影响游戏体验的环境问题：…」（`ENVIRONMENT_ADVICE`） |
+| `BelowMinimum` | 缺 AVX2、内存低于最低要求、非 64 位 Windows、没有显卡能初始化 D3D11、功能级别低于 `minimumFeatureLevel` | 那条硬要求的说明，`code` 即该 finding 的 code |
+| `Inconclusive` | 没跑完（超时或探针失败） | 「本次环境检查没有跑完，未得出结论。可以直接启动游戏。」（`PREFLIGHT_INCOMPLETE`） |
+
+`actions` 只列工具认为玩家能自己做的那几步（如 `INSTALL_VC_REDIST` 装 VC++ 运行库、`ENABLE_SYSTEM_MANAGED_PAGE_FILE` 把页面文件交回系统管理、`UPGRADE_OS` 换 64 位系统），按 code 去重，兜底是 `CONTACT_SUPPORT` 提交环境报告。原样展示 `zh` 即可。
 
 launcher 不等工具跑完，而是边跑边轮询输出目录，所以报告文件**先写临时文件、再 `MoveFileEx` 改名发布**：读者只会看到"旧的完整文件"或"新的完整文件"。
 
