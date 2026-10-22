@@ -537,10 +537,9 @@ void ZSlateEditorOverlay::EnsureGpuBuffers(RHI* rhi, size_t vertex_count, size_t
     m_IndexCapacity[slot] = index_count;
 }
 
-void ZSlateEditorOverlay::UploadBatch(RHI* rhi, float display_width, float display_height,
-                                      float display_pos_x, float display_pos_y)
+void ZSlateEditorOverlay::UploadBatch(RHI* rhi, const UIRenderBatch& batch, float display_width,
+                                      float display_height, float display_pos_x, float display_pos_y)
 {
-    const UIRenderBatch& batch = m_Renderer.getBatch();
     const std::vector<UIVertex>& src_vertices = batch.GetVertices();
     const std::vector<uint16_t>& src_indices = batch.GetIndices();
     if (src_vertices.empty() || src_indices.empty() || display_width <= 0.0f || display_height <= 0.0f)
@@ -594,7 +593,7 @@ void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
         return;
     }
 
-    const UIRenderBatch& batch = m_Renderer.getBatch();
+    const UIRenderBatch& batch = m_Renderer.getConsumedBatch();
     if (batch.Empty())
     {
         return;
@@ -628,7 +627,7 @@ void ZSlateEditorOverlay::DrawBatch(RHI* rhi)
     {
         return;
     }
-    UploadBatch(rhi, display_width, display_height, display_pos_x, display_pos_y);
+    UploadBatch(rhi, batch, display_width, display_height, display_pos_x, display_pos_y);
     const int slot = m_FrameSlot;
     if (m_VertexBuffer[slot] == nullptr || m_IndexBuffer[slot] == nullptr)
     {

@@ -401,7 +401,9 @@ void UIPass::Draw()
         return;
     }
 
-    const UIRenderBatch& batch = renderer->getBatch();
+    // Render thread: draw the batch the game thread finished recording, not the
+    // one it may still be writing into (see BatchedUIRenderer::kBatchCount).
+    const UIRenderBatch& batch = renderer->getConsumedBatch();
     if (batch.Empty())
     {
         return;

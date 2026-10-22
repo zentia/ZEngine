@@ -1,5 +1,6 @@
 #include "Runtime/UI/Render/BatchedUIRenderer.h"
 
+#include "Runtime/Function/Render/RenderingThread/RenderingThread.h"
 #include "Runtime/UI/Core/Font.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Render/Texture/Texture2D.h"
@@ -22,10 +23,23 @@ namespace
 
 bool BatchedUIRenderer::BeginFrame()
 {
-    m_Batch.Clear();
+    // Publish the batch recorded last frame to the render thread, then start a
+    // fresh one. Must happen before any Clear()/record so the render thread
+    // never sees a half-built batch.
+    m_WriteIndex = (m_WriteIndex + 1) % kBatchCount;
+    writeBatch().Clear();
     m_DisplaySize = getDisplaySize();
     m_Active = m_DisplaySize.x > 0.0f && m_DisplaySize.y > 0.0f;
     return m_Active;
+}
+
+const UIRenderBatch& BatchedUIRenderer::getConsumedBatch() const
+{
+    if (!RenderingThread::IsParallelRenderingEnabled())
+    {
+        return m_Batches[m_WriteIndex];
+    }
+    return m_Batches[(m_WriteIndex + kBatchCount - 1) % kBatchCount];
 }
 
 void BatchedUIRenderer::PushClipRect(const ZSlate::UIRect& clip_rect, bool intersect_with_current)
@@ -34,7 +48,7 @@ void BatchedUIRenderer::PushClipRect(const ZSlate::UIRect& clip_rect, bool inter
     {
         return;
     }
-    m_Batch.PushClipRect(clip_rect, intersect_with_current);
+    writeBatch().PushClipRect(clip_rect, intersect_with_current);
 }
 
 void BatchedUIRenderer::PopClipRect()
@@ -43,7 +57,7 @@ void BatchedUIRenderer::PopClipRect()
     {
         return;
     }
-    m_Batch.PopClipRect();
+    writeBatch().PopClipRect();
 }
 
 void BatchedUIRenderer::PushTransform(const UIAffine2D& transform)
@@ -52,7 +66,7 @@ void BatchedUIRenderer::PushTransform(const UIAffine2D& transform)
     {
         return;
     }
-    m_Batch.PushTransform(transform);
+    writeBatch().PushTransform(transform);
 }
 
 void BatchedUIRenderer::PopTransform()
@@ -61,7 +75,7 @@ void BatchedUIRenderer::PopTransform()
     {
         return;
     }
-    m_Batch.PopTransform();
+    writeBatch().PopTransform();
 }
 
 void BatchedUIRenderer::DrawQuad(const ZSlate::UIRect& rect, const ZSlate::UIColor& color)
@@ -70,7 +84,7 @@ void BatchedUIRenderer::DrawQuad(const ZSlate::UIRect& rect, const ZSlate::UICol
     {
         return;
     }
-    m_Batch.DrawQuad(rect, color, GetWhiteTextureId());
+    writeBatch().DrawQuad(rect, color, GetWhiteTextureId());
 }
 
 void BatchedUIRenderer::DrawRect(const ZSlate::UIRect& rect, const ZSlate::UIColor& color, float thickness)
@@ -79,7 +93,7 @@ void BatchedUIRenderer::DrawRect(const ZSlate::UIRect& rect, const ZSlate::UICol
     {
         return;
     }
-    m_Batch.DrawRect(rect, color, thickness, GetWhiteTextureId());
+    writeBatch().DrawRect(rect, color, thickness, GetWhiteTextureId());
 }
 
 void BatchedUIRenderer::DrawConvexPoly(const Vector2* points, int count, const ZSlate::UIColor& color)
@@ -88,7 +102,7 @@ void BatchedUIRenderer::DrawConvexPoly(const Vector2* points, int count, const Z
     {
         return;
     }
-    m_Batch.DrawConvexPoly(points, count, color, GetWhiteTextureId());
+    writeBatch().DrawConvexPoly(points, count, color, GetWhiteTextureId());
 }
 
 void BatchedUIRenderer::DrawTexturedQuad(const ZSlate::UIRect& rect,
@@ -101,7 +115,7 @@ void BatchedUIRenderer::DrawTexturedQuad(const ZSlate::UIRect& rect,
     {
         return;
     }
-    m_Batch.DrawTexturedQuad(rect, texture_id, color, uv0, uv1, GetWhiteTextureId());
+    writeBatch().DrawTexturedQuad(rect, texture_id, color, uv0, uv1, GetWhiteTextureId());
 }
 
 void BatchedUIRenderer::DrawText(const ZSlate::UIRect& rect,
@@ -142,7 +156,7 @@ void BatchedUIRenderer::DrawText(const ZSlate::UIRect& rect,
                 void* white = GetWhiteTextureId();
                 for (const TextGenerator::Glyph& g : generator.GetGlyphs())
                 {
-                    m_Batch.DrawTexturedQuad(g.dest, native_tex, color, g.uv0, g.uv1, white);
+                    writeBatch().DrawTexturedQuad(g.dest, native_tex, color, g.uv0, g.uv1, white);
                 }
                 return;
             }

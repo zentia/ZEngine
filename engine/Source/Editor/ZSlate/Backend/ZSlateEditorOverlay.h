@@ -157,8 +157,10 @@ public:
 private:
     void EnsureGpuBuffers(RHI* rhi, size_t vertex_count, size_t index_count);
     void DestroyGpuBuffers(RHI* rhi);
-    void UploadBatch(RHI* rhi, float display_width, float display_height, float display_pos_x,
-                     float display_pos_y);
+    // `batch` is passed in rather than re-fetched so the whole frame reads one
+    // consistent snapshot: the game thread may flip the write index in between.
+    void UploadBatch(RHI* rhi, const UIRenderBatch& batch, float display_width,
+                     float display_height, float display_pos_x, float display_pos_y);
 
     BatchedUIRenderer m_Renderer;
 

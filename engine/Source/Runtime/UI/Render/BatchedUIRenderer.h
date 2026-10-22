@@ -42,11 +42,38 @@ public:
 
     Vector2 getDisplaySize() const override;
 
-    UIRenderBatch& getBatch() { return m_Batch; }
-    const UIRenderBatch& getBatch() const { return m_Batch; }
+    // --- Batch ownership -------------------------------------------------
+    // The game thread records into the *write* batch while the render thread
+    // consumes a *different* one. Handing the render thread the batch that is
+    // still being recorded is a data race, and it is not a theoretical one:
+    // `RenderFramePipeline` lets the game thread run ahead
+    // (`GetMaxFramesInFlight()`), so `BeginFrame()` -- whose first act is
+    // `UIRenderBatch::Clear()` -- lands while the render thread is inside
+    // `UploadBatch()` walking `GetVertices()`. The observed failure was
+    //   vector subscript out of range, std::vector<UIVertex>::operator[]
+    //   <- ZSlateEditorOverlay::UploadBatch
+    // and because that assert parks the render thread in a modal dialog,
+    // `RenderFramePipeline::WaitForFrameSlot()` never gets signalled and the
+    // whole editor freezes with no further log output.
+    //
+    // `BeginFrame()` flips the write index, so what the render thread gets is
+    // always the batch recorded by the *previous* `BeginFrame()` and therefore
+    // never the live one.
+    static constexpr int kBatchCount = 3;
+
+    UIRenderBatch& getBatch() { return writeBatch(); }
+    const UIRenderBatch& getBatch() const { return m_Batches[m_WriteIndex]; }
+
+    // What the render thread must draw. With parallel rendering this is the
+    // previous frame's batch; single-threaded builds record and draw in the same
+    // frame, so there the live batch IS the right one.
+    const UIRenderBatch& getConsumedBatch() const;
 
 private:
-    UIRenderBatch m_Batch;
+    UIRenderBatch& writeBatch() { return m_Batches[m_WriteIndex]; }
+
+    UIRenderBatch m_Batches[kBatchCount];
+    int m_WriteIndex {0};
     Vector2 m_DisplaySize {0.0f, 0.0f};
     bool m_Active {false};
 };

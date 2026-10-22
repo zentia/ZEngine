@@ -972,7 +972,9 @@ void FloatingPanelManager::DrawSurfaces(RHI* rhi)
         {
             overlay.DrawExternalBatchToFloatingSurface(rhi,
                                                        panel.surface,
-                                                       panel.renderer.getBatch(),
+                                                       // Render thread: the panel's
+                                                       // last fully recorded batch.
+                                                       panel.renderer.getConsumedBatch(),
                                                        static_cast<uint32_t>(panel.width),
                                                        static_cast<uint32_t>(panel.height));
         }
