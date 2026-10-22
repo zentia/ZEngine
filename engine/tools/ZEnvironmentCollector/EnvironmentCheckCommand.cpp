@@ -382,9 +382,7 @@ EnvironmentCheckOutcome RunEnvironmentCheck(
     outcome.jsonReport = BuildJsonReport(snapshot, options.requirements, evaluation);
 
     std::filesystem::create_directories(options.outputDirectory);
-    outcome.textPath = options.outputDirectory / "OSGameEnvironmentReport.txt";
     outcome.jsonPath = options.outputDirectory / "OSGameEnvironmentReport.json";
-    WriteReportFile(outcome.textPath, outcome.textReport);
     WriteReportFile(outcome.jsonPath, outcome.jsonReport);
 
     outcome.evaluation = evaluation;
@@ -408,8 +406,7 @@ int RunEnvironmentCheckCommand(int argumentCount, wchar_t** arguments)
     {
         std::cout << outcome.textReport << '\n';
     }
-    std::cout << "Reports written to:\n  " << outcome.textPath.string()
-              << "\n  " << outcome.jsonPath.string() << '\n';
+    std::cout << "Report written to:\n  " << outcome.jsonPath.string() << '\n';
     return outcome.exitCode;
 }
 int RunGpuSelectionCommand(int argumentCount, wchar_t** arguments)

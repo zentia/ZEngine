@@ -125,9 +125,10 @@ GameCore_Standalone.dll
 工具生成：
 
 ```text
-OSGameEnvironmentReport.txt
 OSGameEnvironmentReport.json
 ```
+
+同一份内容的文本版不再落盘，只打印到 stdout（`--quiet` 可关）。要留档就自己重定向：`-batchmode > report.txt`。
 
 当前 JSON 版本：
 

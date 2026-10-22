@@ -236,7 +236,7 @@ namespace
         {"status.collect.failed", "采集或打包失败，已写出的本地文件会保留。请检查输出目录。"},
         {"status.time.invalid", "时间格式不正确，请输入带Z或+08:00的ISO时间。"},
         {"status.time.future", "发生时间不能在未来。"},
-        {"report.truncated", "… 报告过长，已截断显示；完整内容见同目录 OSGameEnvironmentReport.txt。"},
+        {"report.truncated", "… 报告过长，已截断显示；完整内容见同目录 OSGameEnvironmentReport.json。"},
 
         // Incident anchor: without an incident time, an incident kind and the
         // game exe, a package cannot say whether the game caused anything. The

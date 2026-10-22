@@ -41,9 +41,11 @@ struct EnvironmentCheckOptions
 struct EnvironmentCheckOutcome
 {
     int exitCode = 0;
+    // Printed to stdout unless --quiet. Deliberately not written to disk: the
+    // file this tool hands over is the JSON, and a text copy of the same
+    // snapshot next to it is one more thing to keep in sync.
     std::string textReport;
     std::string jsonReport;
-    std::filesystem::path textPath;
     std::filesystem::path jsonPath;
     Evaluation evaluation;
 };
