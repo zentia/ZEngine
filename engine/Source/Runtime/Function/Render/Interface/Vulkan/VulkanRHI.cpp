@@ -8,6 +8,7 @@
 #include "Runtime/Project/ProjectInfo.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <filesystem>
 #include <iostream>
@@ -1986,11 +1987,19 @@ bool VulkanRHI::CreateGraphicsPipelines(RHIPipelineCache* pipelineCache,
     }
 
     // viewport
-    int viewport_size = pCreateInfo->pViewportState->viewportCount;
+    //
+    // pViewports / pScissors are legitimately null when the pipeline declares
+    // VK_DYNAMIC_STATE_VIEWPORT / VK_DYNAMIC_STATE_SCISSOR: the counts still
+    // carry how many the shader will see, but there is no static array to copy.
+    // Reading them unconditionally was an access violation on the first such
+    // pipeline (the editor's dynamic-viewport pipelines), so copy only when the
+    // pointer exists -- data() on an empty vector forwards the null through.
+    const RHIViewport* rhi_viewports = pCreateInfo->pViewportState->pViewports;
+    int viewport_size = (rhi_viewports == nullptr) ? 0 : pCreateInfo->pViewportState->viewportCount;
     std::vector<VkViewport> vk_viewport_list(viewport_size);
     for (int i = 0; i < viewport_size; ++i)
     {
-        const auto& rhi_viewport_element = pCreateInfo->pViewportState->pViewports[i];
+        const auto& rhi_viewport_element = rhi_viewports[i];
         auto& vk_viewport_element = vk_viewport_list[i];
 
         vk_viewport_element.x = rhi_viewport_element.x;
@@ -2002,11 +2011,12 @@ bool VulkanRHI::CreateGraphicsPipelines(RHIPipelineCache* pipelineCache,
     };
 
     // rect_2d
-    int rect_2d_size = pCreateInfo->pViewportState->scissorCount;
+    const RHIRect2D* rhi_rect_2ds = pCreateInfo->pViewportState->pScissors;
+    int rect_2d_size = (rhi_rect_2ds == nullptr) ? 0 : pCreateInfo->pViewportState->scissorCount;
     std::vector<VkRect2D> vk_rect_2d_list(rect_2d_size);
     for (int i = 0; i < rect_2d_size; ++i)
     {
-        const auto& rhi_rect_2d_element = pCreateInfo->pViewportState->pScissors[i];
+        const auto& rhi_rect_2d_element = rhi_rect_2ds[i];
         auto& vk_rect_2d_element = vk_rect_2d_list[i];
 
         VkOffset2D offset2d {};
@@ -3145,14 +3155,52 @@ bool VulkanRHI::EndCommandBuffer(RHICommandBuffer* commandBuffer)
     }
 }
 
+namespace
+{
+    // UpdateDescriptorSets skips a write whose resource is null (see the comment
+    // there). Skipping is legal, but a subsystem that never binds a resource is a
+    // real bug, so the first few occurrences are logged -- capped, because a
+    // per-frame offender would otherwise bury the rest of the log.
+    constexpr int kMaxSkippedDescriptorWriteLogs = 8;
+
+    void ReportSkippedDescriptorWrite(const char* reason, uint32_t dst_binding, RHIDescriptorType descriptor_type)
+    {
+        static std::atomic<int> remaining_logs {kMaxSkippedDescriptorWriteLogs};
+        int remaining = remaining_logs.load(std::memory_order_relaxed);
+        while (remaining > 0)
+        {
+            if (remaining_logs.compare_exchange_weak(remaining, remaining - 1, std::memory_order_relaxed))
+            {
+                LOG_ERROR(ZRender,
+                          "VulkanRHI::UpdateDescriptorSets: {} at dstBinding {} (descriptorType {}); "
+                          "write skipped (later occurrences stay silent)",
+                          reason,
+                          dst_binding,
+                          static_cast<int>(descriptor_type));
+                return;
+            }
+        }
+    }
+}  // namespace
+
 void VulkanRHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
                                      const RHIWriteDescriptorSet* pDescriptorWrites,
                                      uint32_t descriptorCopyCount,
                                      const RHICopyDescriptorSet* pDescriptorCopies)
 {
     // write_descriptor_set
+    //
+    // A write whose resource is null is **skipped**, not turned into a null
+    // handle: MegaLights is off by default (r.MegaLights.Enable = 0), so its
+    // buffers and history images are never created, and MainCameraPass still
+    // hands us bindings 8..12 for them. Writing VK_NULL_HANDLE there would
+    // publish a descriptor that megalights_deferred.frag (set 0, bindings
+    // 8/11/12) may read; leaving the binding untouched is what DX12 does too
+    // (DX12RHI::UpdateDescriptorSets skips null buffers / image views), and the
+    // non-megalights shaders never declare those bindings at all.
     int write_descriptor_set_size = descriptorWriteCount;
-    std::vector<VkWriteDescriptorSet> vk_write_descriptor_set_list(write_descriptor_set_size);
+    std::vector<VkWriteDescriptorSet> vk_write_descriptor_set_list;
+    vk_write_descriptor_set_list.reserve(write_descriptor_set_size);
     int image_info_count = 0;
     int buffer_info_count = 0;
     for (int i = 0; i < write_descriptor_set_size; ++i)
@@ -3175,7 +3223,39 @@ void VulkanRHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
     for (int i = 0; i < write_descriptor_set_size; ++i)
     {
         const auto& rhi_write_descriptor_set_element = pDescriptorWrites[i];
-        auto& vk_write_descriptor_set_element = vk_write_descriptor_set_list[i];
+
+        if (rhi_write_descriptor_set_element.dstSet == nullptr)
+        {
+            ReportSkippedDescriptorWrite("null dstSet",
+                                         rhi_write_descriptor_set_element.dstBinding,
+                                         rhi_write_descriptor_set_element.descriptorType);
+            continue;
+        }
+
+        // Decided up front: a null resource means "nothing bound yet", and we
+        // drop the whole write rather than publishing an unusable descriptor.
+        const bool image_view_missing =
+            rhi_write_descriptor_set_element.pImageInfo != nullptr &&
+            rhi_write_descriptor_set_element.pImageInfo->imageView == nullptr &&
+            rhi_write_descriptor_set_element.descriptorType != RHI_DESCRIPTOR_TYPE_SAMPLER;
+        const bool buffer_missing = rhi_write_descriptor_set_element.pBufferInfo != nullptr &&
+                                    rhi_write_descriptor_set_element.pBufferInfo->buffer == nullptr;
+        if (image_view_missing)
+        {
+            ReportSkippedDescriptorWrite("null RHIImageView",
+                                         rhi_write_descriptor_set_element.dstBinding,
+                                         rhi_write_descriptor_set_element.descriptorType);
+            continue;
+        }
+        if (buffer_missing)
+        {
+            ReportSkippedDescriptorWrite("null RHIBuffer",
+                                         rhi_write_descriptor_set_element.dstBinding,
+                                         rhi_write_descriptor_set_element.descriptorType);
+            continue;
+        }
+
+        VkWriteDescriptorSet vk_write_descriptor_set_element {};
 
         const VkDescriptorImageInfo* vk_descriptor_image_info_ptr = nullptr;
         if (rhi_write_descriptor_set_element.pImageInfo != nullptr)
@@ -3190,8 +3270,16 @@ void VulkanRHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
                 vk_descriptor_image_info.sampler =
                     ((VulkanSampler*)rhi_write_descriptor_set_element.pImageInfo->sampler)->getResource();
             }
-            vk_descriptor_image_info.imageView =
-                ((VulkanImageView*)rhi_write_descriptor_set_element.pImageInfo->imageView)->getResource();
+            if (rhi_write_descriptor_set_element.pImageInfo->imageView == nullptr)
+            {
+                vk_descriptor_image_info.imageView = VK_NULL_HANDLE;
+            }
+            else
+            {
+                vk_descriptor_image_info.imageView =
+                    static_cast<VulkanImageView*>(rhi_write_descriptor_set_element.pImageInfo->imageView)
+                        ->getResource();
+            }
             vk_descriptor_image_info.imageLayout =
                 (VkImageLayout)rhi_write_descriptor_set_element.pImageInfo->imageLayout;
 
@@ -3203,8 +3291,8 @@ void VulkanRHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
         if (rhi_write_descriptor_set_element.pBufferInfo != nullptr)
         {
             auto& vk_descriptor_buffer_info = vk_descriptor_buffer_info_list[buffer_info_current];
-            vk_descriptor_buffer_info.buffer =
-                ((VulkanBuffer*)rhi_write_descriptor_set_element.pBufferInfo->buffer)->getResource();
+            RHIBuffer* rhi_buffer = rhi_write_descriptor_set_element.pBufferInfo->buffer;
+            vk_descriptor_buffer_info.buffer = static_cast<VulkanBuffer*>(rhi_buffer)->getResource();
             vk_descriptor_buffer_info.offset = (VkDeviceSize)rhi_write_descriptor_set_element.pBufferInfo->offset;
             vk_descriptor_buffer_info.range = (VkDeviceSize)rhi_write_descriptor_set_element.pBufferInfo->range;
 
@@ -3225,9 +3313,13 @@ void VulkanRHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
         vk_write_descriptor_set_element.pBufferInfo = vk_descriptor_buffer_info_ptr;
         // vk_write_descriptor_set_element.pTexelBufferView =
         // &((VulkanBufferView*)rhi_write_descriptor_set_element.pTexelBufferView)->getResource();
+
+        vk_write_descriptor_set_list.push_back(vk_write_descriptor_set_element);
     };
 
-    if (image_info_current != image_info_count || buffer_info_current != buffer_info_count)
+    // Counts may now be *lower* than the reserved totals: skipped writes never
+    // consume an info slot. Overshooting the vectors would still be a bug.
+    if (image_info_current > image_info_count || buffer_info_current > buffer_info_count)
     {
         LOG_ERROR(ZVulkan, "image_info_current != image_info_count || buffer_info_current != buffer_info_count");
         return;
@@ -3255,7 +3347,7 @@ void VulkanRHI::UpdateDescriptorSets(uint32_t descriptorWriteCount,
     };
 
     vkUpdateDescriptorSets(m_Device,
-                           descriptorWriteCount,
+                           static_cast<uint32_t>(vk_write_descriptor_set_list.size()),
                            vk_write_descriptor_set_list.data(),
                            descriptorCopyCount,
                            vk_copy_descriptor_set_list.data());

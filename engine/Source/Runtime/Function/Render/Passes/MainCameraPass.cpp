@@ -2772,10 +2772,27 @@ void MainCameraPass::SetupModelGlobalDescriptorSet()
     mesh_descriptor_writes_info[12].descriptorCount = 1;
     mesh_descriptor_writes_info[12].pImageInfo = &megalights_history_write_info;
 
-    m_Rhi->UpdateDescriptorSets(sizeof(mesh_descriptor_writes_info) / sizeof(mesh_descriptor_writes_info[0]),
-                                mesh_descriptor_writes_info,
-                                0,
-                                NULL);
+    // MegaLights is off by default (r.MegaLights.Enable = 0), and then its
+    // buffers and history images were never created. Submitting bindings 8..12
+    // with null resources is not "an empty binding": on Vulkan it was a hard
+    // access violation inside UpdateDescriptorSets, and a tolerated null handle
+    // would still be a descriptor that megalights_deferred.frag (set 0, bindings
+    // 8/11/12) reads. Only the MegaLights deferred shader declares those
+    // bindings, so leaving them unwritten is the right answer here --
+    // UpdateMegaLightsDescriptorSets fills them in as soon as the system
+    // actually owns resources.
+    uint32_t mesh_descriptor_write_count = sizeof(mesh_descriptor_writes_info) / sizeof(mesh_descriptor_writes_info[0]);
+    if (megalights_lights_buffer_info.buffer == nullptr ||
+        megalights_indices_buffer_info.buffer == nullptr ||
+        megalights_ranges_buffer_info.buffer == nullptr ||
+        megalights_history_read_info.imageView == nullptr ||
+        megalights_history_write_info.imageView == nullptr)
+    {
+        // Writes 8..12 are the last five entries, in binding order.
+        mesh_descriptor_write_count = 8;
+    }
+
+    m_Rhi->UpdateDescriptorSets(mesh_descriptor_write_count, mesh_descriptor_writes_info, 0, NULL);
 }
 
 void MainCameraPass::UpdateMegaLightsDescriptorSets(ViewportType viewport_type)
@@ -2790,6 +2807,20 @@ void MainCameraPass::UpdateMegaLightsDescriptorSets(ViewportType viewport_type)
     RHIDescriptorBufferInfo megalights_ranges_buffer_info  = m_MegaLightsSystem->GetTileRangesBufferInfo();
     RHIDescriptorImageInfo megalights_history_read_info = m_MegaLightsSystem->GetHistoryReadImageInfo(viewport_type);
     RHIDescriptorImageInfo megalights_history_write_info = m_MegaLightsSystem->GetHistoryWriteImageInfo(viewport_type);
+
+    // MegaLights allocates its buffers in Upload() and its history images in
+    // EnsureHistoryResources(), both driven by Update() -- which returns early
+    // while r.MegaLights.Enable is 0. So the system can be present and still own
+    // nothing; writing those nulls hits the same path SetupModelGlobalDescriptorSet
+    // guards against.
+    if (megalights_lights_buffer_info.buffer == nullptr ||
+        megalights_indices_buffer_info.buffer == nullptr ||
+        megalights_ranges_buffer_info.buffer == nullptr ||
+        megalights_history_read_info.imageView == nullptr ||
+        megalights_history_write_info.imageView == nullptr)
+    {
+        return;
+    }
 
     RHIWriteDescriptorSet writes[5] {};
     for (uint32_t i = 0; i < 3; ++i)
@@ -2834,6 +2865,15 @@ void MainCameraPass::UpdateMegaLightsSpatialDescriptorSets(ViewportType viewport
     RHIDescriptorImageInfo megalights_direct_sample_info =
         m_MegaLightsSystem->GetSpatialDirectSampleImageInfo(viewport_type);
     RHIDescriptorImageInfo megalights_history_write_info = m_MegaLightsSystem->GetHistoryWriteImageInfo(viewport_type);
+
+    if (megalights_lights_buffer_info.buffer == nullptr ||
+        megalights_indices_buffer_info.buffer == nullptr ||
+        megalights_ranges_buffer_info.buffer == nullptr ||
+        megalights_direct_sample_info.imageView == nullptr ||
+        megalights_history_write_info.imageView == nullptr)
+    {
+        return;
+    }
 
     RHIWriteDescriptorSet writes[5] {};
     for (uint32_t i = 0; i < 3; ++i)

@@ -1459,7 +1459,21 @@ void MainCameraRp1Pass::SetupDescriptorSets()
     mesh_descriptor_writes_info[12].descriptorCount = 1;
     mesh_descriptor_writes_info[12].pImageInfo = &megalights_history_write_info;
 
-    m_Rhi->UpdateDescriptorSets(13, mesh_descriptor_writes_info, 0, nullptr);
+    // See MainCameraPass::SetupModelGlobalDescriptorSet: while MegaLights owns no
+    // resources (r.MegaLights.Enable = 0 by default) bindings 8..12 have nothing
+    // to point at, and only the MegaLights deferred shader declares them.
+    uint32_t mesh_descriptor_write_count = 13;
+    if (megalights_lights_buffer_info.buffer == nullptr ||
+        megalights_indices_buffer_info.buffer == nullptr ||
+        megalights_ranges_buffer_info.buffer == nullptr ||
+        megalights_history_read_info.imageView == nullptr ||
+        megalights_history_write_info.imageView == nullptr)
+    {
+        // Writes 8..12 are the last five entries, in binding order.
+        mesh_descriptor_write_count = 8;
+    }
+
+    m_Rhi->UpdateDescriptorSets(mesh_descriptor_write_count, mesh_descriptor_writes_info, 0, nullptr);
 
     RHIDescriptorSetAllocateInfo gbuffer_light_global_descriptor_set_alloc_info {};
     gbuffer_light_global_descriptor_set_alloc_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -2800,6 +2814,18 @@ void MainCameraRp1Pass::UpdateMegaLightsDescriptorSets(ViewportType viewport_typ
     RHIDescriptorImageInfo megalights_history_read_info = m_MegaLightsSystem->GetHistoryReadImageInfo(viewport_type);
     RHIDescriptorImageInfo megalights_history_write_info = m_MegaLightsSystem->GetHistoryWriteImageInfo(viewport_type);
 
+    // Same guard as MainCameraPass::SetupModelGlobalDescriptorSet: MegaLights
+    // only allocates its buffers/history images once Update() runs, and Update()
+    // returns early while r.MegaLights.Enable is 0.
+    if (megalights_lights_buffer_info.buffer == nullptr ||
+        megalights_indices_buffer_info.buffer == nullptr ||
+        megalights_ranges_buffer_info.buffer == nullptr ||
+        megalights_history_read_info.imageView == nullptr ||
+        megalights_history_write_info.imageView == nullptr)
+    {
+        return;
+    }
+
     RHIWriteDescriptorSet writes[5] {};
     for (uint32_t i = 0; i < 3; ++i)
     {
@@ -2843,6 +2869,15 @@ void MainCameraRp1Pass::UpdateMegaLightsSpatialDescriptorSets(ViewportType viewp
     RHIDescriptorImageInfo megalights_direct_sample_info =
         m_MegaLightsSystem->GetSpatialDirectSampleImageInfo(viewport_type);
     RHIDescriptorImageInfo megalights_history_write_info = m_MegaLightsSystem->GetHistoryWriteImageInfo(viewport_type);
+
+    if (megalights_lights_buffer_info.buffer == nullptr ||
+        megalights_indices_buffer_info.buffer == nullptr ||
+        megalights_ranges_buffer_info.buffer == nullptr ||
+        megalights_direct_sample_info.imageView == nullptr ||
+        megalights_history_write_info.imageView == nullptr)
+    {
+        return;
+    }
 
     RHIWriteDescriptorSet writes[5] {};
     for (uint32_t i = 0; i < 3; ++i)
