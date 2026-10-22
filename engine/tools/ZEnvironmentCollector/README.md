@@ -31,7 +31,12 @@
 %USERPROFILE%\AppData\LocalLow\ZEngine\Logs\ZEnvironmentCollector_YYYYMMDD_N.log
 ```
 
-与引擎日志同目录。字体缺失、D3D 初始化失败、后台任务报错等只能在那里看到。`manifest.json` 里的 `toolLog` 字段记录该路径，日志本身不进 ZIP。
+与引擎日志同目录。字体缺失、D3D 初始化失败、后台任务报错等只能在那里看到。`manifest.json` 里的 `toolLog` 字段记录本次实际写入的那个文件，日志本身不进 ZIP。
+
+两个限制：
+
+- **同一时刻跑两个实例，只有先启动的那个拿到文件日志**。后启动的会撞上 `ERROR_SHARING_VIOLATION`，bqlog 退回控制台并在 stderr 打 `[Bq]open indexed log file failed ... error:32`；它的报告照常生成，只是那一份日志没落盘。需要日志时不要并发跑。
+- **内部 worker 子进程（`--collect-stage` / `--wer-config`）完全不记日志**。它们是本工具重新启动的自己的副本，父进程正占着当天的日志文件，子进程必然抢不到；而它们是以 `CREATE_NO_WINDOW` 且不继承句柄的方式起的，连报错都无处可打，所以干脆不初始化。stage 的失败通过退出码交给父进程（体现为 manifest 里的 `INCOMPLETE`），不靠日志。注意：往 stage 里加 `LogError()` 是写不到任何地方的。
 
 ## 检查内容
 

@@ -59,6 +59,7 @@
 #include <shellapi.h>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -135,10 +136,6 @@ int RunBatchMode(int argumentCount, wchar_t** arguments)
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
-    // 扁鹊 (bqlog) up before anything can fail, and drained on every exit path
-    // below -- including the throwing ones, which is what the scope guard is for.
-    const zengine::envcheck::ScopedLog logScope;
-
     // No argc/argv parameters with this entry point; the command line is the
     // source of truth and is already wide.
     int argumentCount = 0;
@@ -149,6 +146,24 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
         wchar_t** values;
         ~CommandLine() { LocalFree(values); }
     } commandLine{arguments};
+
+    // 扁鹊 (bqlog) up before anything can fail, and drained on every exit path
+    // below -- including the throwing ones, which is what the scope guard is for.
+    //
+    // Deliberately NOT started in the internal worker children
+    // (--collect-stage / --wer-config, see IsInternalWorkerVerb): those are
+    // short-lived relaunches of this same exe, so the process that spawned them
+    // already holds the day's log file and every child loses the open race with
+    // ERROR_SHARING_VIOLATION. bqlog then falls back to the console, and a child
+    // created with CREATE_NO_WINDOW and no inherited handles has none -- so both
+    // the complaint and the log went nowhere. Nothing is lost: the collection
+    // code makes no log calls at all, and a stage's failure reaches its parent
+    // as an exit code, which is what marks the stage INCOMPLETE.
+    std::optional<zengine::envcheck::ScopedLog> logScope;
+    if (!IsInternalWorkerVerb(argumentCount, arguments))
+    {
+        logScope.emplace();
+    }
 
     bool batchMode = false;
     bool helpRequested = false;

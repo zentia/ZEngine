@@ -86,6 +86,37 @@ std::string BuildLogDirectory()
     return directory.generic_string();
 }
 
+// bqlog is handed a prefix, not a file: the file it opens is
+// <prefix>_<date>_<index>.log and it hands only the prefix back. Resolve the
+// newest match so the report can name a file that exists -- a "logs are here"
+// pointer that opens nothing is worse than no pointer at all. Falls back to the
+// prefix when the appender has not produced a file yet.
+std::string ResolveLogFile(const std::string& prefix)
+{
+    namespace fs = std::filesystem;
+    const fs::path directory = fs::path(prefix).parent_path();
+    const std::string stem = fs::path(prefix).filename().string() + "_";
+    std::error_code ec;
+    fs::path newest;
+    fs::file_time_type newestTime{};
+    for (fs::directory_iterator it(directory, ec), end; !ec && it != end; it.increment(ec))
+    {
+        const fs::path path = it->path();
+        const std::string name = path.filename().string();
+        if (name.size() < stem.size() || name.compare(0, stem.size(), stem) != 0) continue;
+        if (path.extension() != ".log") continue;
+        std::error_code timeError;
+        const auto time = fs::last_write_time(path, timeError);
+        if (timeError) continue;
+        if (newest.empty() || time > newestTime)
+        {
+            newest = path;
+            newestTime = time;
+        }
+    }
+    return newest.empty() ? prefix : newest.generic_string();
+}
+
 std::string BuildLogConfig(const std::string& filePrefix)
 {
     return std::string(R"(
@@ -129,7 +160,7 @@ void LogInitialize()
 
     const std::string prefix = BuildLogDirectory() + "/ZEnvironmentCollector";
     logger = std::make_unique<bq::engine_log>(bq::engine_log::create_log("ZEnvironmentCollector", BuildLogConfig(prefix).c_str()));
-    LogPath() = prefix;
+    LogPath() = ResolveLogFile(prefix);
     // Keep early console output readable in -batchmode, before anything else
     // can consume it.
     bq::log::set_console_buffer_enable(true);
@@ -141,7 +172,7 @@ void LogInitialize()
     ZRuntime_LogInfo((std::string("ZEnvironmentCollector ") + ToolVersion + " log files: " + LogPath()).c_str());
 #else
     logger->info(logger->cat.ZEnvironmentCheck, "ZEnvironmentCollector {} log files: {}",
-                 ToolVersion, prefix);
+                 ToolVersion, LogPath());
 #endif
 }
 
