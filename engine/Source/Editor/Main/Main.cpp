@@ -24,6 +24,7 @@
 #include "Runtime/Platform/Encoding/EncodingUtils.h"
 #include "Runtime/RegisterRuntime.h"
 #include "Runtime/Core/Base/CrashHandler.h"
+#include "Runtime/Function/Console/ConsoleManager.h"
 
 // https://gcc.gnu.org/onlinedocs/cpp/Stringizing.html
 #define ZENGINE_XSTR(s) ZENGINE_STR(s)
@@ -198,6 +199,40 @@ namespace
     // resolveStartupModeFromCommandLine/runEditor* overloads (Win32, Unix, argv
     // based) do not all need a new parameter threaded through them.
     bool g_pie_move_test = false;
+#endif
+
+    // `--cvar name=value` (repeatable): console variables to set once every system
+    // has started, i.e. before the first frame. Same reason as g_pie_move_test for
+    // being file-static. Exists so a run can be configured without the console
+    // window -- e.g. `--cvar r.Lumen.Enable=0`, because Lumen's CPU distance-field
+    // voxelizer stalls a Debug editor for minutes on the first frames.
+    std::vector<std::string> g_startup_cvars;
+
+    void applyStartupConsoleVariables()
+    {
+        if (g_startup_cvars.empty())
+        {
+            return;
+        }
+        ConsoleManager* console = GET_SYSTEM(ConsoleManager);
+        if (console == nullptr)
+        {
+            LOG_ERROR(ZEditor, "--cvar: ConsoleManager is not running; {} startup cvar(s) ignored",
+                      g_startup_cvars.size());
+            return;
+        }
+        for (const std::string& assignment : g_startup_cvars)
+        {
+            // ExecuteString understands `name=value` (and plain console commands);
+            // it logs the outcome, including an unknown name, itself.
+            if (!console->ExecuteString(assignment))
+            {
+                LOG_ERROR(ZEditor, "--cvar: '{}' was not applied", assignment);
+            }
+        }
+    }
+
+#ifdef _WIN32
 
     StartupMode resolveStartupModeFromCommandLine(PreferredRHI& preferred_rhi, float& pie_seconds, bool& pie_stop)
     {
@@ -238,6 +273,12 @@ namespace
             g_pie_move_test = true;
             continue;
         }
+            if (arg == L"--cvar" && i + 1 < argc)
+            {
+                g_startup_cvars.push_back(ZEditor::PathToUtf8(std::filesystem::path(argv[i + 1])));
+                ++i;
+                continue;
+            }
             if (arg == L"--rhi" && i + 1 < argc)
             {
                 const std::wstring_view value(argv[i + 1]);
@@ -264,6 +305,7 @@ namespace
         RegisterRuntime(preferred_rhi);
         RegisterEditor();
         START_SYSTEM();
+        applyStartupConsoleVariables();
 
         // `--pie <seconds>`: unattended PIE smoke run. The editor has no stdin
         // console and F5 needs a focused, interactive window, so headless
@@ -399,6 +441,12 @@ namespace
                 pie_stop = true;
                 continue;
             }
+            if (arg == "--cvar" && i + 1 < argc)
+            {
+                g_startup_cvars.emplace_back(argv[i + 1]);
+                ++i;
+                continue;
+            }
         }
 
         return resolveStartupModeFromProjectPath(project_path, has_project_argument);
@@ -413,6 +461,7 @@ namespace
         RegisterRuntime(preferred_rhi);
         RegisterEditor();
         START_SYSTEM();
+        applyStartupConsoleVariables();
 
         if (pie_seconds > 0.0f)
         {
