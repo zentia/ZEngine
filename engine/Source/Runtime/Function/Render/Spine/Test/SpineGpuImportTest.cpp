@@ -75,6 +75,15 @@ const char* kAtlas = "page0.png\n"
 //    SkeletonJson.cpp:439 `new Skin(skinMap->_name)` 取的是**成员名**，
 //    而 Json.cpp:402-450 的 parseArray 里数组元素是 `new Json(NULL)` 且从不赋 _name ——
 //    数组形式在参考实现里会拿到空皮肤名。
+// ---- 动画（v9 chunk 11-16）：与 BuildSkelFixture(with_animation=true) 逐字段等价 ----
+// 覆盖 S2 的每一条边界：单帧 / 多帧 / linear / stepped / bezier / 负缩放 /
+// 超 180° 旋转 / 空附件名（隐藏）/ 非 0 的 frame_first（靠第二个动画）。
+//
+// ⚠️ rotate 的字段名是 **"angle"**（SkeletonJson.cpp:895），写 "value"/"rotation"
+//    会被 GetFloat 取默认 0 ⇒ 动不出来且不报错。
+// ⚠️ curve **只能**写在非最后一帧上：参考实现把每帧的 curve 都写进只含
+//    frameCount-1 段的数组里（Release 下是越界写）⇒ 夹具里最后一帧不写 curve。
+// ⚠️ 夹具是**真 JSON**，里面不能写 `//` 注释（解析器不开 comment 开关）。
 const char* kSkeleton = R"({
   "skeleton": { "spine": "3.8.99" },
   "bones": [
@@ -100,6 +109,44 @@ const char* kSkeleton = R"({
                       1, 1, 3,4,1,
                       1, 0, 8,2,1 ]
       } }
+    }
+  },
+  "animations": {
+    "walk": {
+      "bones": {
+        "root": {
+          "rotate": [
+            { "time": 0, "angle": 10, "curve": "stepped" },
+            { "time": 0.5, "angle": 190, "curve": [ 0.25, 0.5, 0.75, 0.8 ] },
+            { "time": 1, "angle": -20 }
+          ],
+          "translate": [
+            { "time": 0, "x": 1, "y": 2 },
+            { "time": 1, "x": -3, "y": 4 }
+          ],
+          "scale": [ { "time": 0, "x": -2, "y": 0.5 } ],
+          "shear": [ { "time": 0.25, "x": 5, "y": -6 } ]
+        },
+        "hip": { "rotate": [ { "time": 0, "angle": 30 } ] }
+      },
+      "slots": {
+        "s0": {
+          "attachment": [ { "time": 0, "name": "quad" }, { "time": 0.5, "name": null } ],
+          "color": [
+            { "time": 0, "color": "ff0000ff" },
+            { "time": 1, "color": "00ff0080" }
+          ]
+        },
+        "s1": {
+          "twoColor": [
+            { "time": 0, "light": "ffffffff", "dark": "000000" },
+            { "time": 0.5, "light": "808080ff", "dark": "102030" }
+          ]
+        }
+      }
+    },
+    "idle": {
+      "bones": { "root": { "rotate": [ { "time": 0, "angle": 7 } ] } }
     }
   }
 })";
@@ -199,6 +246,16 @@ struct SkelWriter
         U8(0xFF);
     }
 
+    // 颜色在二进制里是一个 **int**（大端 rgba）：文件顺序就是 r,g,b,a 四个字节
+    // （SkeletonBinary.cpp:748-752 按 `(color & 0xff000000) >> 24` 取 r ⇒ 第一个字节是 r）。
+    void Color(uint32_t rgba)
+    {
+        U8(static_cast<uint8_t>((rgba >> 24) & 0xFFu));
+        U8(static_cast<uint8_t>((rgba >> 16) & 0xFFu));
+        U8(static_cast<uint8_t>((rgba >> 8) & 0xFFu));
+        U8(static_cast<uint8_t>(rgba & 0xFFu));
+    }
+
     void ShortArray(const std::vector<uint16_t>& a)
     {
         Varint(static_cast<int32_t>(a.size()));
@@ -221,9 +278,9 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
                                       bool with_deform = false, bool linked_inherit_deform = true,
                                       int deform_length = 10, bool with_clipping = false,
                                       int clip_end_slot = 2, int deform_slot = 1,
-                                      bool nested_clip = false, int nested_clip_end_slot = 3,
-                                      bool clip_weighted = false, bool with_path = false,
-                                      const std::string& deform_name = "mesh")
+                      bool nested_clip = false, int nested_clip_end_slot = 3,
+                      bool clip_weighted = false, bool with_path = false,
+                      const std::string& deform_name = "mesh", bool with_animation = false)
 {
     SkelWriter w;
 
@@ -577,6 +634,138 @@ std::vector<uint8_t> BuildSkelFixture(bool with_draw_order, bool linked_mesh = f
         }
         w.Varint(0);        // 事件时间轴
     }
+    else if (with_animation)
+    {
+        // ---- 完整动画：与 json 夹具 kSkeleton 的 "animations" 段**逐字段等价** ----
+        // 覆盖 S2 要求的每一条边界：单帧 / 多帧 / linear / stepped / bezier /
+        // 负缩放 / 超 180° 旋转 / 空附件名（隐藏）/ 非 0 的 frame_first（第二个动画）。
+        //
+        // ⚠️ 顺序必须与 json 那边一致：json 是按**插入顺序**遍历对象成员的，
+        //    二进制这里是手写顺序 ⇒ 两边错开一条，烘焙出的时间轴表就分叉。
+        w.Varint(2);        // 2 个动画
+
+        // ---- "walk" ----
+        w.Str("walk");
+
+        // 槽位时间轴（:725-793）
+        w.Varint(2);        // 2 个槽位
+        w.Varint(0);        // slot 0
+        w.Varint(2);        // 2 条时间轴
+        {
+            w.U8(0);        // SLOT_ATTACHMENT
+            w.Varint(2);    // 2 帧
+            w.F(0.0f);
+            w.Str("quad");
+            w.F(0.5f);
+            w.Str("");      // 空名 = 该帧隐藏这个槽位（json 那边是 "name": null）
+        }
+        {
+            w.U8(1);        // SLOT_COLOR
+            w.Varint(2);
+            w.F(0.0f);
+            w.Color(0xFF0000FFu);   // 不透明红
+            w.U8(0);                // curve: linear
+            w.F(1.0f);
+            w.Color(0x00FF0080u);   // 半透明绿
+            // 最后一帧**没有** curve
+        }
+        w.Varint(1);        // slot 1
+        w.Varint(1);        // 1 条
+        {
+            w.U8(2);        // SLOT_TWO_COLOR
+            w.Varint(2);
+            w.F(0.0f);
+            w.Color(0xFFFFFFFFu);   // light
+            w.Color(0x00000000u);   // dark（只有 rgb 有效，最高字节不用）
+            w.U8(0);                // linear
+            w.F(0.5f);
+            w.Color(0x808080FFu);
+            w.Color(0x00102030u);
+        }
+
+        // 骨骼时间轴（:795-852）
+        w.Varint(2);        // 2 根骨骼
+        w.Varint(0);        // bone 0 = root
+        w.Varint(4);        // 4 条
+        {
+            w.U8(0);        // BONE_ROTATE
+            w.Varint(3);    // 3 帧 ⇒ 2 段
+            w.F(0.0f);
+            w.F(10.0f);
+            w.U8(1);        // 段 0 = stepped
+            w.F(0.5f);
+            w.F(190.0f);    // > 180°：最短弧那条语义的边界
+            w.U8(2);        // 段 1 = bezier
+            w.F(0.25f);
+            w.F(0.5f);
+            w.F(0.75f);
+            w.F(0.8f);
+            w.F(1.0f);
+            w.F(-20.0f);
+        }
+        {
+            w.U8(1);        // BONE_TRANSLATE
+            w.Varint(2);
+            w.F(0.0f);
+            w.F(1.0f);
+            w.F(2.0f);
+            w.U8(0);        // 段 0 = linear
+            w.F(1.0f);
+            w.F(-3.0f);
+            w.F(4.0f);
+        }
+        {
+            w.U8(2);        // BONE_SCALE：单帧（0 段曲线）
+            w.Varint(1);
+            w.F(0.0f);
+            w.F(-2.0f);     // 负缩放
+            w.F(0.5f);
+        }
+        {
+            w.U8(3);        // BONE_SHEAR：单帧，且 time 非 0
+            w.Varint(1);
+            w.F(0.25f);
+            w.F(5.0f);
+            w.F(-6.0f);
+        }
+        w.Varint(1);        // bone 1 = hip
+        w.Varint(1);
+        {
+            w.U8(0);
+            w.Varint(1);
+            w.F(0.0f);
+            w.F(30.0f);
+        }
+
+        w.Varint(0);        // IK 约束时间轴
+        w.Varint(0);        // transform 约束时间轴
+        w.Varint(0);        // path 约束时间轴
+        w.Varint(0);        // deform 时间轴
+        w.Varint(0);        // 绘制顺序时间轴
+        w.Varint(0);        // 事件时间轴
+
+        // ---- "idle"：只有一条单帧 rotate ----
+        // 存在的意义是让第二个动画的 timeline_first / frame_first / curve_first
+        // 全部**非 0** —— 偏移 0 时"帧 vs float""条 vs 字节"两种解释逐字节相同，
+        // 写错了也测不出来。
+        w.Str("idle");
+        w.Varint(0);        // 槽位时间轴
+        w.Varint(1);        // 骨骼时间轴
+        w.Varint(0);        // bone 0
+        w.Varint(1);
+        {
+            w.U8(0);
+            w.Varint(1);
+            w.F(0.0f);
+            w.F(7.0f);
+        }
+        w.Varint(0);
+        w.Varint(0);
+        w.Varint(0);
+        w.Varint(0);
+        w.Varint(0);
+        w.Varint(0);
+    }
     else
     {
         w.Varint(0);
@@ -885,7 +1074,11 @@ bool DumpContainers(const SpineAtlas& atlas, const std::string& dir)
     };
 
     std::vector<Case> cases;
-    cases.push_back({"baseline", kSkeleton, BuildSkelFixture(false)});
+    // baseline：json 带完整动画 ⇒ .skel 那一份也必须带（with_animation=true），
+    // 否则两边烘焙出的容器会在 chunk 11-16 上分叉，而"少几个 chunk"不报错。
+    cases.push_back({"baseline", kSkeleton,
+                     BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, false, true, 10, false,
+                                      2, 1, false, 3, false, false, "mesh", true)});
     cases.push_back({"linked_mesh", kSkeletonLinked, BuildSkelFixture(false, true)});
     cases.push_back({"two_skins", kSkeletonTwoSkins, BuildSkelFixture(false, false, "3.8.99", false, "mesh", true)});
     // kSkeletonDeform 带 %DEFORMFIELD% 占位符 ⇒ 只落 .skel（json 那条路径在套件里已经测过）
@@ -1116,6 +1309,91 @@ int main(int argc, char** argv)
         Check(r.pad == 0 && h.pad == 0, "chunk10: pad 落盘为 0（跨语言逐字节对拍的前提）");
     }
 
+    // ---- 3c. 动画（chunk 11-16，v9）----
+    // 夹具的 animations 段是**刻意**按"每条边界一条时间轴"排的：
+    //   单帧（scale / shear / hip.rotate）· 多帧（rotate 3 帧）· linear（translate）·
+    //   stepped（rotate 段 0）· bezier（rotate 段 1）· 负缩放（-2）· 超 180°（190）·
+    //   空附件名（隐藏）· 非 0 的 frame_first（第二个动画 idle）
+    {
+        g_prefix = "[anim] ";
+        CheckEq(static_cast<long long>(asset.anims.size()), 2LL, "anim: 2 个动画（walk / idle）");
+        if (asset.anims.size() == 2)
+        {
+            CheckEq(asset.anims[0].timeline_first, 0u, "anim: walk 从时间轴表第 0 条开始");
+            CheckEq(asset.anims[0].timeline_count, 8u, "anim: walk 有 8 条时间轴（5 骨骼 + 3 槽位）");
+            // ⚠️ 第二个动画的三个偏移**全非 0**：偏移 0 时"帧 vs float"两种解释逐字节
+            //    相同，写错单位测不出来。这条断言是全文件唯一能抓到它的地方。
+            CheckEq(asset.anims[1].timeline_first, 8u, "anim: idle 的时间轴区间非 0（否则测不出下标写错）");
+            CheckEq(asset.anims[1].timeline_count, 1u, "anim: idle 有 1 条时间轴");
+            CheckEq(asset.anims[1].pad, 0u, "anim: pad 落盘为 0");
+            Check(asset.anims[0].duration == 1.0f,
+                  "anim: walk 的 duration = 1（参考实现取各时间轴最后一帧 time 的最大值）");
+            Check(asset.anims[1].duration == 0.0f, "anim: idle 的 duration = 0（只有一帧 time=0）");
+        }
+
+        CheckEq(static_cast<long long>(asset.timelines.size()), 9LL, "anim: 时间轴表 9 条");
+        if (asset.timelines.size() == 9)
+        {
+            // (type, target, frame_count) 序列 = 烘焙时的**规范化顺序**：
+            // (type, target) 升序、稳定排序 —— 不跟着输入文件的书写顺序走。
+            // walk 里 hip(1) 的 rotate 因此紧跟 root(0) 的 rotate，而不是落在 shear 后面。
+            const uint16_t kWantType[] = {0, 0, 1, 2, 3, 4, 5, 14, 0};
+            const uint16_t kWantTarget[] = {0, 1, 0, 0, 0, 0, 0, 1, 0};
+            const uint32_t kWantFrames[] = {3, 1, 2, 1, 1, 2, 2, 2, 1};
+            // frame_first 是 **float 下标**：各类的每帧 float 数不同，
+            // 累计出来就是 rotate 6 + rotate 2 + translate 6 + scale 3 + shear 3 +
+            // attachment 2 + color 10 + twoColor 16 …，绝不是"帧号 × 某常数"。
+            const uint32_t kWantFrameFirst[] = {0, 6, 8, 14, 17, 20, 22, 32, 48};
+            for (int i = 0; i < 9; ++i)
+            {
+                CheckEq(asset.timelines[i].type, kWantType[i], "anim: 时间轴类型序列");
+                CheckEq(asset.timelines[i].target, kWantTarget[i], "anim: 时间轴 target 序列");
+                CheckEq(asset.timelines[i].frame_count, kWantFrames[i], "anim: 时间轴帧数序列");
+                CheckEq(asset.timelines[i].frame_first, kWantFrameFirst[i], "anim: frame_first 是 float 下标");
+            }
+            CheckEq(asset.timelines[8].frame_first != 0u && asset.timelines[8].curve_first != 0u, true,
+                    "anim: 最后一条时间轴的 frame_first / curve_first 都非 0");
+        }
+        CheckEq(static_cast<long long>(asset.frames.size()), 50LL, "anim: 帧数据 50 个 float");
+        // 曲线：rotate 2 段（stepped + bezier）+ translate 1 + color 1 + twoColor 1 = 5 段
+        CheckEq(static_cast<long long>(asset.curve_types.size()), 5LL, "anim: 5 段曲线");
+        if (asset.curve_types.size() == 5)
+        {
+            CheckEq(asset.curve_types[0], static_cast<uint8_t>(SpineCurveType::kStepped), "anim: 段 0 = stepped");
+            CheckEq(asset.curve_types[1], static_cast<uint8_t>(SpineCurveType::kBezier), "anim: 段 1 = bezier");
+            CheckEq(asset.curve_types[2], static_cast<uint8_t>(SpineCurveType::kLinear), "anim: 段 2 = linear");
+            CheckEq(asset.curve_types[3], static_cast<uint8_t>(SpineCurveType::kLinear), "anim: 段 3 = linear");
+            CheckEq(asset.curve_types[4], static_cast<uint8_t>(SpineCurveType::kLinear), "anim: 段 4 = linear");
+        }
+        CheckEq(static_cast<long long>(asset.beziers.size()), 1LL, "anim: 1 条 bezier");
+        if (asset.beziers.size() == 1)
+        {
+            Check(asset.beziers[0].cx1 == 0.25f && asset.beziers[0].cy1 == 0.5f &&
+                      asset.beziers[0].cx2 == 0.75f && asset.beziers[0].cy2 == 0.8f,
+                  "anim: bezier 控制点按 (cx1, cy1, cx2, cy2) 落盘（顺序错了不报错）");
+        }
+        // 变长载荷：只有 attachment 时间轴有（2 帧）
+        CheckEq(static_cast<long long>(asset.anim_attachment_names.size()), 1LL, "anim: 1 个动画附件名");
+        Check(asset.anim_attachment_names.size() == 1 && asset.anim_attachment_names[0] == "quad",
+              "anim: 动画附件名去重后只剩 quad");
+        if (asset.timelines.size() == 9 && asset.timeline_payload.size() >= 8)
+        {
+            const uint32_t* p = reinterpret_cast<const uint32_t*>(asset.timeline_payload.data());
+            Check(p[0] != SpineGpuConstants::kNoAttachmentName,
+                  "anim: attachment 第 0 帧指向真实附件名");
+            CheckEq(p[1], SpineGpuConstants::kNoAttachmentName,
+                    "anim: attachment 第 1 帧是空名 ⇒ kNoAttachmentName（**不是 0**：0 是合法偏移）");
+        }
+        // deform / drawOrder 在**别的**夹具里（deform / clip 段），这里不该出现
+        for (const SpineGpuTimeline& t : asset.timelines)
+        {
+            Check(t.type != static_cast<uint16_t>(SpineTimelineType::kDeform) &&
+                      t.type != static_cast<uint16_t>(SpineTimelineType::kDrawOrder),
+                  "anim: 基线夹具没有 deform / drawOrder 时间轴");
+        }
+        g_prefix.clear();
+    }
+
     // weighted 段起点必须 8 B 对齐（Load2 的前提，规格 §3.1）
     CheckEq(asset.weighted_segment_offset % SpineGpuConstants::kVertexSegmentAlignment, 0,
             "weighted 段起点 8 B 对齐");
@@ -1312,10 +1590,20 @@ int main(int argc, char** argv)
     };
     const long long want_payload =
         CStrBytes(asset.bone_names) + CStrBytes(asset.skin_names) + CStrBytes(asset.slot_names) +
-        CStrBytes(asset.attachment_names) + CStrBytes(asset.atlas_page_names) +      // id=1 strings
+        CStrBytes(asset.attachment_names) + CStrBytes(asset.atlas_page_names) +
+        CStrBytes(asset.anim_names) + CStrBytes(asset.anim_attachment_names) +        // id=1 strings
         static_cast<long long>(asset.slot_bone.size()) * 2LL +                       // id=2
         static_cast<long long>(asset.bones.size()) *
             static_cast<long long>(sizeof(SpineGpuBone)) +                          // id=10（36 B/骨）
+        static_cast<long long>(asset.anims.size()) *
+            static_cast<long long>(sizeof(SpineGpuAnim)) +                          // id=11（20 B/条）
+        static_cast<long long>(asset.timelines.size()) *
+            static_cast<long long>(sizeof(SpineGpuTimeline)) +                       // id=12（32 B/条）
+        static_cast<long long>(asset.frames.size()) * 4LL +                           // id=13（float）
+        static_cast<long long>(asset.curve_types.size()) +                            // id=14（u8/段）
+        static_cast<long long>(asset.beziers.size()) *
+            static_cast<long long>(sizeof(SpineGpuBezier)) +                          // id=15（16 B/段）
+        static_cast<long long>(asset.timeline_payload.size()) +                       // id=16（变长净载荷）
         static_cast<long long>(asset.vertex_buffer.size()) +                         // id=3
         static_cast<long long>(asset.influence_bind.size()) * 4LL +                  // id=21
         static_cast<long long>(asset.influence_bone.size()) *
@@ -1334,8 +1622,9 @@ int main(int argc, char** argv)
                (static_cast<uint32_t>(bytes[off + 2]) << 16) | (static_cast<uint32_t>(bytes[off + 3]) << 24);
     };
     const uint32_t nchunk = RdU32(offsetof(SpineGpuHeader, chunk_count));
-    CheckEq(static_cast<long long>(nchunk), 11,
-            "字节流里 chunk_count = 11（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10）");
+    CheckEq(static_cast<long long>(nchunk), 17,
+            "字节流里 chunk_count = 17（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10，"
+            "v9 多了动画 11-16）");
 
     long long payload_sum = 0;
     long long last_end = 0;
@@ -1349,9 +1638,9 @@ int main(int argc, char** argv)
         const uint32_t sz = RdU32(at + 8);
         // ⚠️ 顺序**不是** id 升序：影响流（21 / 22）紧跟顶点块，9（裁剪）夹在 5 与 6 之间。
         // 这是历史顺序，不是设计 —— 但 C# 必须照抄，否则跨语言对拍会红。
-        const uint32_t kExpectedIds[] = {1, 2, 10, 3, 21, 22, 4, 5, 6, 7, 8};
+        const uint32_t kExpectedIds[] = {1, 2, 10, 11, 12, 13, 14, 15, 16, 3, 21, 22, 4, 5, 6, 7, 8};
         CheckEq(static_cast<long long>(id), static_cast<long long>(kExpectedIds[i]),
-                "chunk 表: id 顺序 = 1,2,10,3,21,22,4,5,6,7,8");
+                "chunk 表: id 顺序 = 1,2,10,11,12,13,14,15,16,3,21,22,4,5,6,7,8");
         CheckEq(static_cast<long long>(off % SpineGpuConstants::kChunkAlignment), 0, "chunk 表: 起点 4 B 对齐");
         if (id == static_cast<uint32_t>(SpineGpuChunkId::kChunkVertexBuffer) ||
             id == static_cast<uint32_t>(SpineGpuChunkId::kChunkInfluenceBind) ||
@@ -1394,7 +1683,7 @@ int main(int argc, char** argv)
     }
 
     CheckEq(back.header.magic, SpineGpuConstants::kMagic, "往返: magic");
-    CheckEq(back.header.chunk_count, 11, "往返: chunk_count = 11（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10）");
+    CheckEq(back.header.chunk_count, 17, "往返: chunk_count = 17（夹具没有 clip_data；v7 多了影响流 21 / 22，v8 多了骨骼 setup 10，v9 多了动画 11-16）");
     CheckEq(back.header.bone_count, asset.header.bone_count, "往返: bone_count");
     CheckEq(back.header.slot_count, asset.header.slot_count, "往返: slot_count");
     CheckEq(back.header.draw_item_count, asset.header.draw_item_count, "往返: draw_item_count");
@@ -1440,6 +1729,19 @@ int main(int argc, char** argv)
                                    sizeof(SpineGpuAttachmentRecord)) == 0;
     }
     Check(records_same, "往返: 附件记录逐字节一致（含 skin 列）");
+
+    // ---- 动画往返（chunk 11-16）----
+    // 六块全部逐字节/逐值比一遍。它们之间只有**下标**引用，读端把下标换一个单位
+    // （帧 vs float、条 vs 字节）不会报错，只会播错 —— 所以每块都要单独对。
+    Check(back.anims == asset.anims, "往返: 动画目录逐字段一致（含 name_offset / duration）");
+    Check(back.timelines == asset.timelines, "往返: 时间轴表逐字段一致");
+    Check(back.frames == asset.frames, "往返: 帧数据逐值一致");
+    Check(back.curve_types == asset.curve_types, "往返: 曲线类型逐段一致");
+    Check(back.beziers == asset.beziers, "往返: bezier 控制点逐值一致");
+    Check(back.timeline_payload == asset.timeline_payload, "往返: 变长载荷逐字节一致");
+    Check(back.anim_names == asset.anim_names, "往返: 动画名（字符串表第 6 组）");
+    Check(back.anim_attachment_names == asset.anim_attachment_names, "往返: 动画附件名（第 7 组）");
+    CheckEq(static_cast<long long>(back.anims.size()), 2LL, "往返: 动画数 = 2");
     // 记录里的 (skin, slot) 必须与绘制项对得上 —— 换装查的就是这张表
     if (back.attachment_records.size() == asset.draw_items.size())
     {
@@ -1486,7 +1788,9 @@ int main(int argc, char** argv)
     auto RunSkelAgainstJson = [&](bool nonessential)
     {
         g_prefix = std::string("[nonessential=") + (nonessential ? "true" : "false") + "] ";
-        const std::vector<uint8_t> skel = BuildSkelFixture(false, false, "3.8.99", nonessential);
+        const std::vector<uint8_t> skel =
+            BuildSkelFixture(false, false, "3.8.99", nonessential, "mesh", false, false, true, 10, false,
+                             2, 1, false, 3, false, false, "mesh", true);
         SpineSourceSkeleton skel_src;
         SpineImportResult rsk = ParseSpineSkeletonBinary(skel.data(), skel.size(), &atlas, skel_src);
         Check(rsk.ok, "skel 解析成功");
@@ -1551,6 +1855,20 @@ int main(int argc, char** argv)
             Check(skel_asset.influence_bone == asset.influence_bone, "skel↔json: 影响流骨骼/权重逐字节相同");
             Check(skel_asset.uv_buffer == asset.uv_buffer, "skel↔json: UV 通道逐字节相同");
             Check(skel_asset.slot_bone == asset.slot_bone, "skel↔json: slot_bone 相同");
+            // ---- 动画（chunk 11-16）：两条路径各解析一遍，必须**逐字段相同** ----
+            // 这是本文件里唯一能同时验证"json 字段顺序"与"二进制字段顺序"的交叉点：
+            // rotate 在 json 里叫 "angle"、在二进制里是第 2 个 float；color 在 json 里
+            // 是 hex 串、在二进制里是大端 int —— 任何一边读错，这里就会红。
+            Check(skel_asset.anims == asset.anims, "skel↔json: 动画目录逐字段相同");
+            Check(skel_asset.timelines == asset.timelines, "skel↔json: 时间轴表逐字段相同");
+            Check(skel_asset.frames == asset.frames, "skel↔json: 帧数据逐值相同");
+            Check(skel_asset.curve_types == asset.curve_types, "skel↔json: 曲线类型逐段相同");
+            Check(skel_asset.beziers == asset.beziers, "skel↔json: bezier 控制点逐值相同");
+            Check(skel_asset.timeline_payload == asset.timeline_payload,
+                  "skel↔json: 变长载荷逐字节相同");
+            Check(skel_asset.anim_names == asset.anim_names, "skel↔json: 动画名相同");
+            Check(skel_asset.anim_attachment_names == asset.anim_attachment_names,
+                  "skel↔json: 动画附件名相同");
             Check(skel_asset.bone_names == asset.bone_names, "skel↔json: 骨骼名相同");
             Check(skel_asset.skin_names == asset.skin_names, "skel↔json: 皮肤名相同");
             Check(skel_asset.slot_names == asset.slot_names, "skel↔json: 槽位名相同");
@@ -1622,6 +1940,162 @@ int main(int argc, char** argv)
         }
         CheckEq(wrong_ok, 0, "skel: 任意真前缀都必须解析失败（截断不能假装成功，更不能越界读）");
         g_prefix.clear();
+    }
+
+    // ---- 9e. 动画的报错路径 ----
+    // 每一条都是"参考实现静默、我们报错"：静默的后果不是崩溃，而是**动错了还不报错**
+    // （动到另一条约束、曲线变成 linear、下标留在 0）—— 全都是查不出来的那类。
+    {
+        auto AnimJson = [](const std::string& anims) {
+            return std::string(R"({"skeleton":{"spine":"3.8.99"},"bones":[{"name":"root"}],)"
+                               R"("slots":[{"name":"s0","bone":"root"}],"skins":{"default":{}},)"
+                               // ⚠️ 末尾是 `)")`：第一个 `)` 与前引号组成原始串结束符 `)"`，
+                               // 第二个 `)` 才是 `std::string(` 的收口。而下面 kBads 里的 `const char*`
+                               // 条目**没有**这层括号 ⇒ 只能写成 `)"`，多写一个 `"` 就会被吞进内容。
+                               R"("animations":)") + anims + "}";
+        };
+        struct AnimBad
+        {
+            const char* name;
+            const char* anims;
+            bool parse_fails;   // false ⇒ 解析过、但 **bake** 必须失败
+        };
+        const AnimBad kBads[] = {
+            {"骨骼时间轴类型不认识", R"({"walk":{"bones":{"root":{"nope":[{"time":0}]}}}})", true},
+            {"槽位时间轴类型不认识", R"({"walk":{"slots":{"s0":{"nope":[{"time":0}]}}}})", true},
+            {"骨骼名不存在", R"({"walk":{"bones":{"nope":{"rotate":[{"time":0,"angle":1}]}}}})", true},
+            {"槽位名不存在", R"({"walk":{"slots":{"nope":{"color":[{"time":0,"color":"ffffffff"}]}}}})", true},
+            // ⚠️ 参考实现 `findIkConstraint()` 返回 NULL 后把下标**留在 0** ⇒ 动到第一条约束
+            {"ik 约束名不存在", R"({"walk":{"ik":{"noSuch":[{"time":0,"mix":1}]}}})", true},
+            {"path 约束名不存在", R"({"walk":{"paths":{"noSuch":{"position":[{"time":0,"position":0}]}}}})", true},
+            {"curve 串不认识", R"({"walk":{"bones":{"root":{"rotate":[{"time":0,"angle":1,"curve":"bogus"},)"
+                               R"({"time":1,"angle":2}]}}}})", true},
+            {"curve 数组不是 4 元", R"({"walk":{"bones":{"root":{"rotate":[{"time":0,"angle":1,"curve":[1,2,3]}]}}}})",
+             true},
+            {"drawOrder 的槽位不存在", R"({"walk":{"drawOrder":[{"time":0,"offsets":[{"slot":"nope","offset":0}]}]}})",
+             true},
+            // 0 帧：参考实现 `frames[(frameCount-1)*ENTRIES]` 是**负下标**读
+            {"0 帧时间轴", R"({"walk":{"bones":{"root":{"rotate":[]}}}})", false},
+        };
+        for (const AnimBad& b : kBads)
+        {
+            g_prefix = std::string("[anim/") + b.name + "] ";
+            const std::string json = AnimJson(b.anims);
+            SpineSourceSkeleton s;
+            SpineImportResult r = ParseSpineSkeletonJson(json.data(), json.size(), &atlas, s);
+            if (b.parse_fails)
+            {
+                Check(!r.ok, "anim: 解析必须失败");
+                if (!r.ok)
+                {
+                    std::printf("  (预期报错) [anim/%s] %s\n", b.name, r.error.c_str());
+                }
+            }
+            else
+            {
+                Check(r.ok, "anim: 这一步**能**解析（错在后面一层）");
+                if (r.ok)
+                {
+                    SpineGpuAsset a;
+                    SpineImportResult rb = BakeSpineGpuAsset(s, a);
+                    Check(!rb.ok, "anim: bake 必须失败");
+                    if (!rb.ok)
+                    {
+                        std::printf("  (预期报错) %s\n", rb.error.c_str());
+                    }
+                }
+            }
+        }
+        g_prefix.clear();
+    }
+
+    // ---- 9f. 容器侧：动画块的越界引用必须被**读端**挡住 ----
+    // 写端永远不会产出这些字节，但容器是跨语言、跨版本的产物 —— 读端不能假设
+    // "写端一定对"。而且下标越界在 C++ 与 C# 里都不崩，只会播到别人的数据。
+    {
+        auto find_chunk_in = [](const std::vector<uint8_t>& b, uint32_t id, uint32_t& off, uint32_t& sz) {
+            uint32_t n = 0;
+            std::memcpy(&n, b.data() + offsetof(SpineGpuHeader, chunk_count), sizeof(n));
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                const size_t at = static_cast<size_t>(SpineGpuConstants::kHeaderSize) +
+                                  static_cast<size_t>(i) * SpineGpuConstants::kChunkTableEntrySize;
+                uint32_t cid = 0;
+                std::memcpy(&cid, b.data() + at, sizeof(cid));
+                if (cid == id)
+                {
+                    std::memcpy(&off, b.data() + at + 4, sizeof(off));
+                    std::memcpy(&sz, b.data() + at + 8, sizeof(sz));
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        uint32_t tl_off = 0;
+        uint32_t tl_sz = 0;
+        Check(find_chunk_in(bytes, SpineGpuChunkId::kChunkTimelines, tl_off, tl_sz),
+              "anim: 容器里有 chunk 12（时间轴表）");
+        uint32_t dir_off = 0;
+        uint32_t dir_sz = 0;
+        Check(find_chunk_in(bytes, SpineGpuChunkId::kChunkAnimDir, dir_off, dir_sz),
+              "anim: 容器里有 chunk 11（动画目录）");
+        if (tl_sz != 0)
+        {
+            {
+                // 第 0 条时间轴的 frame_first 指到帧块外
+                std::vector<uint8_t> bad = bytes;
+                const uint32_t v = 0xFFFFFF00u;
+                std::memcpy(bad.data() + tl_off + 8, &v, sizeof(v));
+                SpineGpuAsset dummy;
+                SpineImportResult r = ReadSpineGpuContainer(bad.data(), bad.size(), dummy);
+                Check(!r.ok, "anim: frame_first 越界 ⇒ 读回失败（越界读不报错，只会播到别人的帧）");
+                if (!r.ok)
+                {
+                    std::printf("  (预期报错) %s\n", r.error.c_str());
+                }
+            }
+            {
+                // 时间轴类型改成 99（TimelineType 只到 14）
+                std::vector<uint8_t> bad = bytes;
+                const uint16_t t = 99;
+                std::memcpy(bad.data() + tl_off + 0, &t, sizeof(t));
+                SpineGpuAsset dummy;
+                SpineImportResult r = ReadSpineGpuContainer(bad.data(), bad.size(), dummy);
+                Check(!r.ok, "anim: 时间轴类型 99 ⇒ 读回失败（entries 无从确定）");
+                if (!r.ok)
+                {
+                    std::printf("  (预期报错) %s\n", r.error.c_str());
+                }
+            }
+        }
+        if (dir_sz != 0)
+        {
+            // 动画目录大小不是 20 的整数倍 ⇒ 条目数无从确定
+            std::vector<uint8_t> bad = bytes;
+            uint32_t n = 0;
+            std::memcpy(&n, bad.data() + offsetof(SpineGpuHeader, chunk_count), sizeof(n));
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                const size_t at = static_cast<size_t>(SpineGpuConstants::kHeaderSize) +
+                                  static_cast<size_t>(i) * SpineGpuConstants::kChunkTableEntrySize;
+                uint32_t cid = 0;
+                std::memcpy(&cid, bad.data() + at, sizeof(cid));
+                if (cid == static_cast<uint32_t>(SpineGpuChunkId::kChunkAnimDir))
+                {
+                    const uint32_t sz = dir_sz + 1u;
+                    std::memcpy(bad.data() + at + 8, &sz, sizeof(sz));
+                    break;
+                }
+            }
+            SpineGpuAsset dummy;
+            SpineImportResult r = ReadSpineGpuContainer(bad.data(), bad.size(), dummy);
+            Check(!r.ok, "anim: 动画目录大小不是 20 的整数倍 ⇒ 读回失败");
+            if (!r.ok)
+            {
+                std::printf("  (预期报错) %s\n", r.error.c_str());
+            }
+        }
     }
 
     // ---- 10. linked mesh（附属网格）----

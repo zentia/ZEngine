@@ -175,18 +175,37 @@ uint8_t  pad;                   // @35
 
 ```
 uint16_t type;            // @0   TimelineType 原值（TimelineType.h:35-49），不自造枚举
-uint16_t target;          // @2   骨骼 / 槽位 / ik / transform / path 下标
+uint16_t target;          // @2   骨骼 / 槽位 / **附件记录** / 约束 下标（见下）
 uint32_t frame_count;     // @4
-uint32_t frame_first;     // @8    进 chunk 13 的**帧**下标（不是 float 下标）
+uint32_t frame_first;     // @8    进 chunk 13 的 **float** 下标（不是"帧"下标！）
 uint32_t curve_first;     // @12   进 chunk 14 的**段**下标
-uint32_t bezier_first;    // @16   进 chunk 15 的**贝塞尔序号**下标
+uint32_t bezier_first;    // @16   进 chunk 15 的**条**下标
 uint32_t bezier_count;    // @20
 uint32_t payload_offset;  // @24   进 chunk 16 的**字节**偏移
-uint32_t payload_count;   // @28   条目数
+uint32_t payload_count;   // @28   条目数（变长三类是帧数，其余恒 0）
 ```
-`frame_first` 单位是"帧"不是"float"，与 `uv_offset` 用"条目"是同一约定
-（单位写错时 `0 × stride` 与 `0` 逐字节相同，只有**非 0** 的断言能抓到）。
-⚠️ 夹具必须造一条 `frame_first` / `curve_first` **非 0** 的时间轴。
+
+⚠️ **`frame_first` 的单位是 float 下标，不是"第几帧"** —— 原设计写的"帧下标"是错的：
+各类时间轴**每帧的 float 数不同**（rotate 2 / translate 3 / color 5 / twoColor 8 …），
+压根不存在一个全局统一的"帧"单位。用"帧"去算下标，第一条（偏移 0）看不出错，
+第二条起就读到别人的帧数据，且不报错。
+
+`target` 的含义随 `type` 变，这也是它叫 target 不叫 bone_index 的原因：
+
+| type | target |
+|---|---|
+| rotate / translate / scale / shear | **骨骼**下标 |
+| attachment / color / twoColor | **槽位**下标 |
+| deform | **附件记录**（chunk 7 行号）下标 |
+| ik / transform / path* | 对应**约束**下标 |
+| drawOrder | 恒 0（它作用于整个骨架的槽位顺序） |
+
+deform 用"附件记录下标"是有意的：一条记录 = (皮肤, 槽位, 附件) 三元组，正好是 deform
+时间轴的寻址键，不需要再给 32 B 塞三个字段。代价是"deform 指向一个不产生绘制项的附件"
+（path / boundingbox / clipping）无从表达 —— 但它们**本来就不渲染**，Bake 期直接跳过。
+
+⚠️ 夹具必须造一条 `frame_first` / `curve_first` **非 0** 的时间轴（上面的单位陷阱只有
+非 0 断言能抓到）。
 
 ### 3.3 chunk 14/15 — 曲线**（原设计的定长 20 B/段已否决）**
 
@@ -421,7 +440,7 @@ deform 数组长度对 weighted 是 **ΣboneCount × 2**（不是 vertexCount ×
 |---|---|---|
 | **S0** | 导入器放宽到 3.7 + 逐顶点变长影响（方案 C） | **已完成**，781/782（见 7.0 / 7.0.1） |
 | **S1** | chunk 10 骨骼树；C++ 写/读 + C# 读 + 字节 round-trip | **已完成**（见 7.0.2） |
-| **S2** | 动画解析（json + 二进制）+ chunk 11-16；11 类时间轴全覆盖 | 夹具：单帧 / 多帧 / linear / stepped / bezier / 负缩放 / 超 180° 旋转 / 稀疏 deform / 非 0 偏移 |
+| **S2** | 动画解析（json + 二进制）+ chunk 11-16；11 类时间轴全覆盖 | **已完成**（见 7.0.3） |
 | **S3** | 槽位颜色（chunk 17）+ color / twoColor / attachment / drawOrder 解算 | 对拍 |
 | **S4** | 约束（chunk 18-20）+ update 顺序 | 对拍：376 个有约束的资产子集，逐骨骼比世界变换 |
 | **S5** | 多轨混合（`AnimationState` 转录，含 `_timelinesRotation` 最短弧记忆） | 对拍：随机切轨 / 混出，逐帧比对 |
@@ -462,6 +481,72 @@ deform 数组长度对 weighted 是 **ΣboneCount × 2**（不是 vertexCount ×
 
 ---
 
+### 7.0.3 S2 已落地（2026-10-22）：动画进容器（chunk 11-16，格式 v8 → v9）
+
+| 项 | 落地 |
+|---|---|
+| 布局 | chunk 11 动画目录 **20 B/条** → chunk 12 时间轴表 **32 B/条** → chunk 13 帧（float）→ chunk 14 曲线类型（u8/段）→ chunk 15 bezier 控制点 **16 B/段** → chunk 16 变长载荷（字节） |
+| 来源 | 11 类时间轴逐类抄 `SkeletonBinary.cpp:719-1107` / `SkeletonJson.cpp:758-1190`；`TimelineType.h:35-49`；`CurveTimeline.cpp:42-44`；各类 ENTRIES 见 `SpineGpuFormat.h::SpineTimelineEntries()` |
+| 关键修正 | ⚠️ `frame_first` 的单位是 **float 下标不是"帧"**（§3.2）—— 各类每帧 float 数不同，压根没有统一的"帧"单位。原设计写错了，实现时改掉并同步了 §3.2 |
+| 规范化 | 时间轴按 **(type, target) 升序稳定排序**。两条输入路径的顺序本来就不一样（二进制 `SkeletonBinary.cpp:723` 起是槽位→骨骼；json `SkeletonJson.cpp:806` 同序但条目顺序取决于**文件里键的书写顺序**）⇒ 不规范化就无法对拍 |
+| 变长三类 | attachment 每帧 1 个 u32（0xFFFFFFFF = 空名）；deform 每帧 `[u32 start][u32 count][f32 × count]`，`count == 0` = 回退帧（抄 `SkeletonBinary.cpp:983-985` 的 `end == 0`）；drawOrder 每帧 `[u32 n][(u32 slot, u32 offset) × n]` |
+| 新增报错（参考实现都静默） | 认不出的时间轴类型 / 骨骼名或槽位名不存在 / ik·path 约束名不存在（参考实现把下标**留在 0** ⇒ 动到第一条约束）/ 认不出的 curve 串或数组（参考实现静默变 linear）/ drawOrder 槽位不存在 / 0 帧时间轴（参考实现 `frames[(frameCount-1)*ENTRIES]` 是**负下标**读）/ deform 长度对不上（越界写） |
+| 读端校验 | 每条时间轴的帧 / 曲线 / bezier / 载荷区间都查；`bezier_count` 必须等于段里标了 bezier 的段数；动画的 `[timeline_first, +count)` 落在时间表内；`name_offset` 落在字符串块内 |
+| 落盘顺序 | `1,2,10,**11,12,13,14,15,16**,3,21,22,4,5,9,6,7,8`（C# 照抄） |
+
+**782 个资产重跑**：**781 成功 / 1 失败**，与 v8 完全一致 ⇒ 无回归
+（唯一失败仍是那个资产自己缺图集 region 的真 bug，见 7.0.1）。
+
+**实测（`doc/scripts/measure_zspg_chunks.py`，781 个容器）**：
+
+| 项 | 值 |
+|---|---|
+| 有动画的容器 | **781 / 781** |
+| 动画总数 | **1 932**（均 **2.5** 个/资产） |
+| 时间轴总数 | **254 471** |
+| chunk 11 动画目录 | 0.04 MB |
+| chunk 12 时间轴表 | **7.77 MB**（32 B/条 —— 纯索引开销，源 .skel 里没有这一层） |
+| chunk 13 帧数据 | **19.34 MB**（5 070 796 个 float） |
+| chunk 14 曲线类型 | **2.45 MB**（2 566 213 段） |
+| chunk 15 bezier | **14.32 MB**（938 471 段） |
+| chunk 16 变长载荷 | **122.81 MB** |
+| **动画块合计** | **166.72 MB** |
+
+时间轴类型分布（15 类里 **11 类**真实出现，S2 的验收口径就是这 11 类）：
+
+| type | 名 | 条数 | 占比 |
+|---|---|---|---|
+| 6 | deform | 99 721 | **39.19%** |
+| 0 | rotate | 53 702 | 21.10% |
+| 4 | attachment | 40 007 | 15.72% |
+| 1 | translate | 27 298 | 10.73% |
+| 5 | color | 22 619 | 8.89% |
+| 2 | scale | 9 444 | 3.71% |
+| 3 | shear | 1 046 | 0.41% |
+| 8 | drawOrder | 174 | 0.07% |
+| 11 | pathConstraintPosition | 367 | 0.14% |
+| 14 | twoColor | 88 | 0.03% |
+| 13 | pathConstraintMix | 5 | 0.00% |
+| 7 / 9 / 10 / 12 | event / ik / transform / pathSpacing | **0** | — |
+
+曲线类型分布：**linear 58.26% / bezier 36.57% / stepped 5.17%**
+（与 §3.3 的 2 567 358 段实测吻合 ⇒ 紧凑写法省下那 32 MB 是真的省到了）。
+
+deform 载荷：**1 731 940 帧、28 282 880 个 float、均值 16.3 float/帧**
+⇒ 确认是**稀疏**的（稠密展开会是 GB 级），但也确认了它是容器里最大的一块。
+
+⚠️ **容器体量的实测结论要更新**（推翻 §8.5 的估算）：
+容器合计 **206.32 MB**，源 `.skel.bytes` 合计 **197.28 MB** ⇒ **1.05×**。
+动画块占容器的 **80.8%**，其中 deform 载荷独占 **59.5%**。
+之前"容器 ≈ 源 .skel 的 75%~80%"那个估算是**错的**：它假设了稀疏化能大幅压缩，
+但源 `.skel` 里的 deform **本来就是稀疏的** —— 我们没有在压缩它，只是原样搬了过来，
+还额外多了一层 chunk 12 的时间轴索引表（7.77 MB）。
+
+`SpineGpuImportTest` 977 → **1116/1116**；C# 跨语言对拍 254 → **294/294**；
+`SpineSkinningParityTest` **11/11 顶点、0.68 ulp**（未受影响）。
+
+---
+
 ## 8. 风险 / 未决
 
 1. ~~**deform 的取舍需拍板**~~ —— **已定**：稠密展开否决、OSGame 式全量 CPU 动态 VB 否决，
@@ -473,6 +558,8 @@ deform 数组长度对 weighted 是 **ΣboneCount × 2**（不是 vertexCount ×
    若嫌麻烦可先 bake 报错，但那样这 5 个资产就出不来。
 4. **多皮肤 = 0**：v2 的皮肤维度在本工程没用上。不删（换装是容器承诺的能力），
    但也说明皮肤相关的测试覆盖对 OSGame 没价值。
-5. **容器体量**：按 §3.3 的紧凑曲线 + 稀疏 deform 粗估，容器 ≈ 源 .skel 的 **75%~80%**
-   （源 197 MB）。如果这不可接受，下一个可压的点是帧数据 fp32 → 定点，
-   但那会引入精度分歧，**先不动**。
+5. **容器体量**：~~按 §3.3 的紧凑曲线 + 稀疏 deform 粗估，容器 ≈ 源 .skel 的 75%~80%~~
+   —— **估算已被实测推翻**（见 7.0.3）：容器 **206.32 MB** vs 源 **197.28 MB** = **1.05×**。
+   动画块占 80.8%，deform 载荷独占 59.5%（28.28 M 个 float）。
+   下一个真正可压的点是 **deform 载荷**（f32 → fp16 或 i16 定点，理论 −50%），
+   但它会引入精度分歧，且与 S6 的 deform 求解绑在一起 ⇒ **等 S6 落地后再动**。

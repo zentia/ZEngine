@@ -4,9 +4,10 @@
 //
 // 三条容易漏、漏了就静默错的规矩：
 //   1. **chunk 按下标找会错位**（v2 → v3 重排过号）⇒ 只能按 id 找。
-//   2. chunk 在文件里的**顺序不是 id 顺序**：写端按 1,2,10,3,21,22,4,5,9,6,7,8 追加
-//      （影响流紧跟顶点块；9 夹在 5 与 6 之间，是历史顺序），
-//      C# 必须照抄，否则字节对不上。
+//   2. chunk 在文件里的**顺序不是 id 顺序**：写端按
+//      1,2,10,11,12,13,14,15,16,3,21,22,4,5,9,6,7,8 追加
+//      （v9 的动画块 11-16 紧跟骨骼 setup；影响流紧跟顶点块；9 夹在 5 与 6 之间，
+//      是历史顺序），C# 必须照抄，否则字节对不上。
 //   3. 顶点 / UV chunk 的起点要 **8 B 对齐**（ByteAddressBuffer::Load2 的前提），
 //      其余 4 B 对齐。对齐产生的空档必须填 0 —— 不填就是"未初始化填充"，
 //      跨语言一比对就露。
@@ -292,6 +293,263 @@ namespace ZEngine.SpineGpu
                 }
             }
 
+            // ---- 动画（chunk 11-16，v9）----
+            // 校验的重点不是"能不能读出来"，而是**下标引用有没有越界**：越界在 C# 里
+            // 不抛异常（下标只是 uint），只会拿到别人的数据 —— 也就是"播 A 动画用了
+            // B 动画的帧"。所以每个区间都显式查一遍（与 C++ 读端逐条对应）。
+            {
+                bool hasDir = TryGet(byId, (uint)SpineGpuChunkId.AnimDir, out uint ado, out uint ads);
+                bool hasTl = TryGet(byId, (uint)SpineGpuChunkId.Timelines, out uint tlo, out uint tls);
+                bool hasFrames = TryGet(byId, (uint)SpineGpuChunkId.Frames, out uint fro, out uint frs);
+                bool hasCurve = TryGet(byId, (uint)SpineGpuChunkId.CurveTypes, out uint cuo, out uint cus);
+                bool hasBez = TryGet(byId, (uint)SpineGpuChunkId.Beziers, out uint bzo, out uint bzs);
+                bool hasPay = TryGet(byId, (uint)SpineGpuChunkId.TimelinePayload, out uint plo, out uint pls);
+
+                if (hasDir)
+                {
+                    if (ads % SpineGpuConstants.AnimDirSize != 0)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 动画目录大小不是 " + SpineGpuConstants.AnimDirSize +
+                            " B 的整数倍（一条是 20 B）");
+                    }
+                    uint n = ads / SpineGpuConstants.AnimDirSize;
+                    for (uint i = 0; i < n; ++i)
+                    {
+                        int p = (int)(ado + i * SpineGpuConstants.AnimDirSize);
+                        var a = new SpineGpuAnim
+                        {
+                            NameOffset = ReadU32(data, p + SpineGpuOffsets.AnimNameOffset),
+                            TimelineFirst = ReadU32(data, p + SpineGpuOffsets.AnimTimelineFirst),
+                            TimelineCount = ReadU32(data, p + SpineGpuOffsets.AnimTimelineCount),
+                            Duration = ReadF32(data, p + SpineGpuOffsets.AnimDuration),
+                            Pad = ReadU32(data, p + SpineGpuOffsets.AnimPad),
+                        };
+                        if (a.Pad != 0)
+                        {
+                            throw new SpineGpuContainerException(
+                                "container: 动画目录第 " + i + " 条的 pad 不是 0");
+                        }
+                        asset.Anims.Add(a);
+                    }
+                }
+
+                if (hasTl)
+                {
+                    if (tls % SpineGpuConstants.TimelineEntrySize != 0)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 时间轴表大小不是 " + SpineGpuConstants.TimelineEntrySize +
+                            " B 的整数倍（一条是 32 B）");
+                    }
+                    uint n = tls / SpineGpuConstants.TimelineEntrySize;
+                    for (uint i = 0; i < n; ++i)
+                    {
+                        int p = (int)(tlo + i * SpineGpuConstants.TimelineEntrySize);
+                        asset.Timelines.Add(new SpineGpuTimeline
+                        {
+                            Type = ReadU16(data, p + SpineGpuOffsets.TlType),
+                            Target = ReadU16(data, p + SpineGpuOffsets.TlTarget),
+                            FrameCount = ReadU32(data, p + SpineGpuOffsets.TlFrameCount),
+                            FrameFirst = ReadU32(data, p + SpineGpuOffsets.TlFrameFirst),
+                            CurveFirst = ReadU32(data, p + SpineGpuOffsets.TlCurveFirst),
+                            BezierFirst = ReadU32(data, p + SpineGpuOffsets.TlBezierFirst),
+                            BezierCount = ReadU32(data, p + SpineGpuOffsets.TlBezierCount),
+                            PayloadOffset = ReadU32(data, p + SpineGpuOffsets.TlPayloadOffset),
+                            PayloadCount = ReadU32(data, p + SpineGpuOffsets.TlPayloadCount),
+                        });
+                    }
+                }
+
+                uint frameFloatCount = 0;
+                if (hasFrames)
+                {
+                    if (frs % 4u != 0)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 帧数据大小不是 4 B 的整数倍（一条是 1 float）");
+                    }
+                    frameFloatCount = frs / 4u;
+                    asset.Frames = new float[frameFloatCount];
+                    for (uint i = 0; i < frameFloatCount; ++i)
+                    {
+                        asset.Frames[i] = ReadF32(data, (int)(fro + i * 4u));
+                    }
+                }
+                uint curveCount = 0;
+                if (hasCurve)
+                {
+                    curveCount = cus;
+                    asset.CurveTypes = new byte[cus];
+                    Buffer.BlockCopy(data, (int)cuo, asset.CurveTypes, 0, (int)cus);
+                }
+                uint bezierCount = 0;
+                if (hasBez)
+                {
+                    if (bzs % SpineGpuConstants.BezierSize != 0)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: bezier 块大小不是 " + SpineGpuConstants.BezierSize +
+                            " B 的整数倍（一条是 4 float）");
+                    }
+                    bezierCount = bzs / SpineGpuConstants.BezierSize;
+                    for (uint i = 0; i < bezierCount; ++i)
+                    {
+                        int p = (int)(bzo + i * SpineGpuConstants.BezierSize);
+                        asset.Beziers.Add(new SpineGpuBezier
+                        {
+                            Cx1 = ReadF32(data, p + SpineGpuOffsets.BezCx1),
+                            Cy1 = ReadF32(data, p + SpineGpuOffsets.BezCy1),
+                            Cx2 = ReadF32(data, p + SpineGpuOffsets.BezCx2),
+                            Cy2 = ReadF32(data, p + SpineGpuOffsets.BezCy2),
+                        });
+                    }
+                }
+                uint payloadSize = 0;
+                if (hasPay)
+                {
+                    payloadSize = pls;
+                    asset.TimelinePayload = new byte[pls];
+                    Buffer.BlockCopy(data, (int)plo, asset.TimelinePayload, 0, (int)pls);
+                }
+
+                // ---- 区间校验 ----
+                for (int i = 0; i < asset.Timelines.Count; ++i)
+                {
+                    var t = asset.Timelines[i];
+                    var type = (SpineTimelineType)t.Type;
+                    uint entries = SpineTimelineInfo.Entries(type);
+                    if (entries == 0)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + i + " 条时间轴的类型 " + t.Type + " 不认识（TimelineType 只到 14）");
+                    }
+                    if (t.FrameCount == 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条时间轴有 0 帧");
+                    }
+                    ulong frameEnd = (ulong)t.FrameFirst + (ulong)t.FrameCount * entries;
+                    if (frameEnd > frameFloatCount)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + i + " 条时间轴的帧区间 [ " + t.FrameFirst + ", " + frameEnd +
+                            " ) 超出帧块（" + frameFloatCount + " 个 float）");
+                    }
+                    uint segments = SpineTimelineInfo.HasCurve(type) ? (t.FrameCount - 1u) : 0u;
+                    ulong curveEnd = (ulong)t.CurveFirst + segments;
+                    if (curveEnd > curveCount)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + i + " 条时间轴的曲线区间超出曲线块（" + curveCount + " 段）");
+                    }
+                    ulong bezEnd = (ulong)t.BezierFirst + t.BezierCount;
+                    if (bezEnd > bezierCount)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + i + " 条时间轴的 bezier 区间超出块（" + bezierCount + " 条）");
+                    }
+                    // 曲线块里 bezier 段的个数必须**等于** BezierCount ——
+                    // 不等意味着"某段标了 bezier 却没有控制点"，采样时会取到上一条的。
+                    uint bezInSegments = 0;
+                    for (uint s = 0; s < segments; ++s)
+                    {
+                        byte ct = asset.CurveTypes[t.CurveFirst + s];
+                        if (ct == (byte)SpineCurveType.Bezier)
+                        {
+                            ++bezInSegments;
+                        }
+                        if (ct > (byte)SpineCurveType.Bezier)
+                        {
+                            throw new SpineGpuContainerException(
+                                "container: 第 " + i + " 条时间轴第 " + s +
+                                " 段的曲线类型越界（0 linear / 1 stepped / 2 bezier）");
+                        }
+                    }
+                    if (bezInSegments != t.BezierCount)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + i + " 条时间轴标了 " + bezInSegments + " 段 bezier，但 bezier_count 是 " +
+                            t.BezierCount);
+                    }
+                    // 变长载荷：逐帧走一遍，顺带校验帧数（走不完 = 载荷被截断）
+                    if (type == SpineTimelineType.Attachment || type == SpineTimelineType.Deform ||
+                        type == SpineTimelineType.DrawOrder)
+                    {
+                        uint walked = 0;
+                        uint pos = t.PayloadOffset;
+                        for (uint fr = 0; fr < t.PayloadCount; ++fr)
+                        {
+                            if (type == SpineTimelineType.Attachment)
+                            {
+                                if (pos + 4u > payloadSize)
+                                {
+                                    throw new SpineGpuContainerException(
+                                        "container: 第 " + i + " 条时间轴的载荷被截断");
+                                }
+                                pos += 4u;
+                            }
+                            else if (type == SpineTimelineType.Deform)
+                            {
+                                if (pos + 8u > payloadSize)
+                                {
+                                    throw new SpineGpuContainerException(
+                                        "container: 第 " + i + " 条时间轴的载荷被截断");
+                                }
+                                uint cnt = ReadU32(asset.TimelinePayload, (int)(pos + 4u));
+                                pos += 8u;
+                                if (pos + cnt * 4u > payloadSize)
+                                {
+                                    throw new SpineGpuContainerException(
+                                        "container: 第 " + i + " 条时间轴第 " + fr + " 帧的 deform 值被截断");
+                                }
+                                pos += cnt * 4u;
+                            }
+                            else
+                            {
+                                if (pos + 4u > payloadSize)
+                                {
+                                    throw new SpineGpuContainerException(
+                                        "container: 第 " + i + " 条时间轴的载荷被截断");
+                                }
+                                uint n2 = ReadU32(asset.TimelinePayload, (int)pos);
+                                pos += 4u;
+                                if (pos + n2 * 8u > payloadSize)
+                                {
+                                    throw new SpineGpuContainerException(
+                                        "container: 第 " + i + " 条时间轴第 " + fr + " 帧的 drawOrder 偏移被截断");
+                                }
+                                pos += n2 * 8u;
+                            }
+                            ++walked;
+                        }
+                        if (walked != t.FrameCount)
+                        {
+                            throw new SpineGpuContainerException(
+                                "container: 第 " + i + " 条时间轴的载荷有 " + walked + " 帧，但 frame_count 是 " +
+                                t.FrameCount);
+                        }
+                    }
+                    else if (t.PayloadCount != 0)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + i + " 条时间轴是定长类型，却带了一份变长载荷");
+                    }
+                }
+
+                // 动画的区间必须落在时间轴表里
+                for (int i = 0; i < asset.Anims.Count; ++i)
+                {
+                    var a = asset.Anims[i];
+                    ulong end = (ulong)a.TimelineFirst + a.TimelineCount;
+                    if (end > (ulong)asset.Timelines.Count)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + i + " 个动画的时间轴区间 [ " + a.TimelineFirst + ", " + end +
+                            " ) 超出时间轴表（" + asset.Timelines.Count + " 条）");
+                    }
+                }
+            }
+
             // ---- attachments：拿到附件数，才能切分字符串表 ----
             int attachmentCount = 0;
             if (TryGet(byId, (uint)SpineGpuChunkId.Attachments, out uint ao, out uint asz))
@@ -315,7 +573,7 @@ namespace ZEngine.SpineGpu
                 attachmentCount = (int)n;
             }
 
-            // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名 ----
+            // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名 → 动画名 → 动画附件名 ----
             if (TryGet(byId, (uint)SpineGpuChunkId.Strings, out uint sto, out uint sts))
             {
                 var all = SplitCStrings(data, (int)sto, (int)sts);
@@ -325,6 +583,26 @@ namespace ZEngine.SpineGpu
                 Take(all, h.SlotCount, asset.SlotNames, ref i);
                 Take(all, (uint)attachmentCount, asset.AttachmentNames, ref i);
                 Take(all, h.AtlasPageCount, asset.AtlasPageNames, ref i);
+                // 动画名：数量 = chunk 11 的条目数（header 里没有 anim_count 的位置 ——
+                // 64 B 的 header 早就排满了，而定长块的大小本身就是计数）。
+                Take(all, (uint)asset.Anims.Count, asset.AnimNames, ref i);
+                // 剩下的全是"动画附件名"。**只按偏移访问**，所以不需要知道有几条 ⇒
+                // 不校验"是否刚好读完"（多出来的是合法数据，不是错误）。
+                while (i < all.Count)
+                {
+                    asset.AnimAttachmentNames.Add(all[i++]);
+                }
+                // ⚠️ 但每个 name_offset 必须真的落在这一块里 —— 指到前面几组（比如骨骼名）
+                // 不报错，只是动画挂载了错误名字的附件。
+                for (int k = 0; k < asset.Anims.Count; ++k)
+                {
+                    if (asset.Anims[k].NameOffset >= sts)
+                    {
+                        throw new SpineGpuContainerException(
+                            "container: 第 " + k + " 个动画的 name_offset " + asset.Anims[k].NameOffset +
+                            " 超出字符串块（大小 " + sts + "）");
+                    }
+                }
             }
 
             return asset;
@@ -387,6 +665,72 @@ namespace ZEngine.SpineGpu
                     b[o + SpineGpuOffsets.BoneTransformMode] = (byte)s.TransformMode;
                 }
                 Add((uint)SpineGpuChunkId.BoneSetup, b, A4);
+            }
+
+            // ---- v9：动画（id 11..16，紧跟骨骼 setup 后面）----
+            // 五块之间全是**下标**引用，落盘顺序无所谓，但读端要按"先目录后表"的顺序校验。
+            // ⚠️ 顺序必须与 C++ 一致（1,2,10,11,12,13,14,15,16,3,21,22,4,5,9,6,7,8），
+            //    否则跨语言逐字节对拍会红。
+            if (asset.Anims.Count > 0)
+            {
+                var b = new byte[asset.Anims.Count * (int)SpineGpuConstants.AnimDirSize];
+                for (int i = 0; i < asset.Anims.Count; ++i)
+                {
+                    var a = asset.Anims[i];
+                    int o = i * (int)SpineGpuConstants.AnimDirSize;
+                    WriteU32(b, o + SpineGpuOffsets.AnimNameOffset, a.NameOffset);
+                    WriteU32(b, o + SpineGpuOffsets.AnimTimelineFirst, a.TimelineFirst);
+                    WriteU32(b, o + SpineGpuOffsets.AnimTimelineCount, a.TimelineCount);
+                    WriteF32(b, o + SpineGpuOffsets.AnimDuration, a.Duration);
+                    WriteU32(b, o + SpineGpuOffsets.AnimPad, a.Pad);
+                }
+                Add((uint)SpineGpuChunkId.AnimDir, b, A4);
+            }
+            if (asset.Timelines.Count > 0)
+            {
+                var b = new byte[asset.Timelines.Count * (int)SpineGpuConstants.TimelineEntrySize];
+                for (int i = 0; i < asset.Timelines.Count; ++i)
+                {
+                    var t = asset.Timelines[i];
+                    int o = i * (int)SpineGpuConstants.TimelineEntrySize;
+                    WriteU16(b, o + SpineGpuOffsets.TlType, t.Type);
+                    WriteU16(b, o + SpineGpuOffsets.TlTarget, t.Target);
+                    WriteU32(b, o + SpineGpuOffsets.TlFrameCount, t.FrameCount);
+                    WriteU32(b, o + SpineGpuOffsets.TlFrameFirst, t.FrameFirst);
+                    WriteU32(b, o + SpineGpuOffsets.TlCurveFirst, t.CurveFirst);
+                    WriteU32(b, o + SpineGpuOffsets.TlBezierFirst, t.BezierFirst);
+                    WriteU32(b, o + SpineGpuOffsets.TlBezierCount, t.BezierCount);
+                    WriteU32(b, o + SpineGpuOffsets.TlPayloadOffset, t.PayloadOffset);
+                    WriteU32(b, o + SpineGpuOffsets.TlPayloadCount, t.PayloadCount);
+                }
+                Add((uint)SpineGpuChunkId.Timelines, b, A4);
+            }
+            Add((uint)SpineGpuChunkId.Frames, F32Blob(asset.Frames), A4);
+            if (asset.CurveTypes.Length > 0)
+            {
+                var b = new byte[asset.CurveTypes.Length];
+                Buffer.BlockCopy(asset.CurveTypes, 0, b, 0, asset.CurveTypes.Length);
+                Add((uint)SpineGpuChunkId.CurveTypes, b, A4);
+            }
+            if (asset.Beziers.Count > 0)
+            {
+                var b = new byte[asset.Beziers.Count * (int)SpineGpuConstants.BezierSize];
+                for (int i = 0; i < asset.Beziers.Count; ++i)
+                {
+                    var z = asset.Beziers[i];
+                    int o = i * (int)SpineGpuConstants.BezierSize;
+                    WriteF32(b, o + SpineGpuOffsets.BezCx1, z.Cx1);
+                    WriteF32(b, o + SpineGpuOffsets.BezCy1, z.Cy1);
+                    WriteF32(b, o + SpineGpuOffsets.BezCx2, z.Cx2);
+                    WriteF32(b, o + SpineGpuOffsets.BezCy2, z.Cy2);
+                }
+                Add((uint)SpineGpuChunkId.Beziers, b, A4);
+            }
+            if (asset.TimelinePayload.Length > 0)
+            {
+                var b = new byte[asset.TimelinePayload.Length];
+                Buffer.BlockCopy(asset.TimelinePayload, 0, b, 0, asset.TimelinePayload.Length);
+                Add((uint)SpineGpuChunkId.TimelinePayload, b, A4);
             }
 
             Add((uint)SpineGpuChunkId.VertexBuffer, asset.VertexBuffer, A8);
@@ -584,6 +928,11 @@ namespace ZEngine.SpineGpu
             Put(a.SlotNames);
             Put(a.AttachmentNames);
             Put(a.AtlasPageNames);
+            // v9：动画名 → 动画附件名，**排在最后** —— 前五组的数量各自能从
+            // header / 附件记录数反推，这两组里只有"动画名"有计数（= 动画数），
+            // 动画附件名只按偏移访问。顺序一变，name_offset 全部错位且不报错。
+            Put(a.AnimNames);
+            Put(a.AnimAttachmentNames);
             return ms.ToArray();
         }
 

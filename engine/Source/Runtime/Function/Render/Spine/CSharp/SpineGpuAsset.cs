@@ -44,13 +44,26 @@ namespace ZEngine.SpineGpu
         public List<SpineGpuBone> Bones = new List<SpineGpuBone>();
 
         // 字符串表（chunk 1）。落盘顺序固定：
-        // 骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名，每项 '\0' 结尾。
-        // 读回时按 bone_count / skin_count / slot_count / 附件记录数切分。
+        // 骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名 → **动画名** → **动画附件名**，
+        // 每项 '\0' 结尾。读回时按 bone_count / skin_count / slot_count / 附件记录数 /
+        // 动画数切分；最后一组（动画附件名）没有计数，只按偏移访问。
         public List<string> BoneNames = new List<string>();
         public List<string> SkinNames = new List<string>();
         public List<string> SlotNames = new List<string>();
         public List<string> AttachmentNames = new List<string>();
         public List<string> AtlasPageNames = new List<string>();
+        public List<string> AnimNames = new List<string>();
+        public List<string> AnimAttachmentNames = new List<string>();
+
+        // ---- 动画（v9，chunk 11-16）----
+        // 五块之间全是**下标**引用，越界在 C# 里不抛、只取到别人的数据
+        // ⇒ 读端必须逐条查区间（见 SpineGpuContainerIo.Read）。
+        public List<SpineGpuAnim> Anims = new List<SpineGpuAnim>();          // chunk 11
+        public List<SpineGpuTimeline> Timelines = new List<SpineGpuTimeline>(); // chunk 12
+        public float[] Frames = System.Array.Empty<float>();                 // chunk 13
+        public byte[] CurveTypes = System.Array.Empty<byte>();               // chunk 14
+        public List<SpineGpuBezier> Beziers = new List<SpineGpuBezier>();    // chunk 15
+        public byte[] TimelinePayload = System.Array.Empty<byte>();          // chunk 16
 
         // 裁剪多边形记录（chunk 9，12 B/条）。下标就是绘制项 ClipIndex 引用的行号。
         // **顶点本身在 VertexBuffer 里**。

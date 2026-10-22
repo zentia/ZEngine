@@ -869,6 +869,705 @@ bool ClassifySpineVersion(const std::string& version_string, SpineSourceVersion&
                 "需要另一条导入路径（规格 §1.1）。不做静默降级 —— 猜错版本只会让形状悄悄错。");
 }
 
+// =====================================================================
+// 动画：json（SkeletonJson.cpp:758-1190）
+// ---------------------------------------------------------------------
+// 抄的时候最需要注意的不是字段，而是**三类"参考实现静默、我们报错"**：
+//   1. 约束名找不到（`findIkConstraint()` 返回 NULL 后 `if (constraint == ...)` 永不成立
+//      ⇒ 下标**留在 0**，SkeletonJson.cpp:933-940）⇒ 动到了**另一条**约束且不报错。
+//   2. `readCurve()` 认不出的曲线字节（switch 没有 default，SkeletonBinary.cpp:1112）。
+//   3. color 串长度不足 8（`toColor()` 返回 **-1**，:724-725）⇒ 颜色变成负数，
+//      而"某个槽位颜色不对"不会有任何报错。
+// =====================================================================
+
+// 逐字符抄 SkeletonJson::toColor（:719-739）："rrggbbaa" 里第 index 个字节。
+// ⚠️ 长度不足时返回 **-1** 而不是 0 —— 照抄（改了就与参考实现分叉）。
+float ToColorComponent(const std::string& value, size_t index)
+{
+    if (index >= value.size() / 2)
+    {
+        return -1.0f;
+    }
+    const char hi = value[index * 2];
+    const char lo = value[index * 2 + 1];
+    const auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9')
+        {
+            return c - '0';
+        }
+        if (c >= 'a' && c <= 'f')
+        {
+            return c - 'a' + 10;
+        }
+        if (c >= 'A' && c <= 'F')
+        {
+            return c - 'A' + 10;
+        }
+        return -1;
+    };
+    const int h = hex(hi);
+    const int l = hex(lo);
+    if (h < 0 || l < 0)
+    {
+        return -1.0f;
+    }
+    return static_cast<float>(h * 16 + l) / 255.0f;
+}
+
+// 一个动画里的一个时间轴段：帧数组 + 每帧的曲线。
+// `readCurve(valueMap, timeline, frameIndex)` 在**每一帧**都调用（含最后一帧），
+// 而 CurveTimeline 只有 frameCount-1 段 —— 参考实现靠 `assert` 挡住越界（Release 下
+// 就是越界写）。我们显式只收前 frameCount-1 段。
+bool ReadCurveJson(const JsonValue& frame, SpineSourceCurve& out, std::string& err)
+{
+    out = SpineSourceCurve {};
+    const JsonValue* curve = GetMember(frame, "curve");
+    if (curve == nullptr)
+    {
+        return true;   // 没有 "curve" ⇒ linear（:741-742）
+    }
+    if (curve->IsString())
+    {
+        if (std::string(curve->GetString()) == "stepped")
+        {
+            out.type = SpineCurveType::kStepped;
+            return true;
+        }
+        err = "曲线串 '" + std::string(curve->GetString()) + "' 不认识（只认 \"stepped\"）";
+        return false;
+    }
+    if (curve->IsArray() && curve->Size() == 4)
+    {
+        out.type = SpineCurveType::kBezier;
+        out.cx1 = static_cast<float>((*curve)[0].GetDouble());
+        out.cy1 = static_cast<float>((*curve)[1].GetDouble());
+        out.cx2 = static_cast<float>((*curve)[2].GetDouble());
+        out.cy2 = static_cast<float>((*curve)[3].GetDouble());
+        return true;
+    }
+    // ⚠️ 参考实现在这里**什么都不做**（4 个 if 之后没有 else）⇒ 静默变 linear。
+    err = "curve 既不是 \"stepped\" 也不是 4 元数组（参考实现在这里静默退回 linear）";
+    return false;
+}
+
+// 往 frames 里追加一帧，并把曲线收进去。`values` 的个数必须等于
+// SpineTimelineEntries(type) - 1（time 另算）。
+bool PushFrame(SpineSourceTimeline& tl, const JsonValue& frame, const float* values, uint32_t value_count,
+               std::string& err)
+{
+    if (value_count + 1u != SpineTimelineEntries(tl.type))
+    {
+        err = "时间轴内部错误：entries 不匹配";
+        return false;
+    }
+    tl.frames.push_back(GetFloat(frame, "time", 0.0f));
+    for (uint32_t i = 0; i < value_count; ++i)
+    {
+        tl.frames.push_back(values[i]);
+    }
+    return true;
+}
+
+// 收尾：段数 = frame_count - 1。参考实现把每帧的 curve（含最后一帧）都写进去，
+// Release 下是越界写 —— 我们只保留前 frame_count - 1 段。
+void TrimCurves(SpineSourceTimeline& tl)
+{
+    if (!SpineTimelineHasCurve(tl.type))
+    {
+        tl.curves.clear();
+        return;
+    }
+    const size_t want = tl.frames.empty() ? 0 : (tl.frames.size() / SpineTimelineEntries(tl.type)) - 1u;
+    if (tl.curves.size() > want)
+    {
+        tl.curves.resize(want);
+    }
+    while (tl.curves.size() < want)
+    {
+        tl.curves.push_back(SpineSourceCurve {});
+    }
+}
+
+SpineImportResult ParseSpineAnimationJson(const JsonValue& anim, const std::string& anim_name,
+                                          const SpineSourceSkeleton& skel, SpineSourceAnimation& out)
+{
+    const auto fail = [](const std::string& m) { return Fail("json: animations." + m); };
+
+    // ---- bones：rotate / translate / scale / shear ----
+    if (const JsonValue* bones = GetMember(anim, "bones"))
+    {
+        if (!bones->IsObject())
+        {
+            return fail(anim_name + ".bones 不是对象");
+        }
+        for (auto bone_it = bones->MemberBegin(); bone_it != bones->MemberEnd(); ++bone_it)
+        {
+            const std::string bone_name(bone_it->name.GetString());
+            int bone_index = -1;
+            for (size_t i = 0; i < skel.bones.size(); ++i)
+            {
+                if (skel.bones[i].name == bone_name)
+                {
+                    bone_index = static_cast<int>(i);
+                    break;
+                }
+            }
+            // 参考实现 `findBoneIndex()` 返回 -1 后就拿 -1 当骨骼下标用（:875-885 之间），
+            // 之后是越界读 ⇒ 报错。
+            if (bone_index < 0)
+            {
+                return fail(anim_name + ".bones 引用了不存在的骨骼 '" + bone_name + "'");
+            }
+            if (!bone_it->value.IsObject())
+            {
+                return fail(anim_name + ".bones." + bone_name + " 不是对象");
+            }
+            for (auto tl_it = bone_it->value.MemberBegin(); tl_it != bone_it->value.MemberEnd(); ++tl_it)
+            {
+                const std::string kind(tl_it->name.GetString());
+                SpineTimelineType type;
+                if (kind == "rotate")
+                {
+                    type = SpineTimelineType::kRotate;
+                }
+                else if (kind == "translate")
+                {
+                    type = SpineTimelineType::kTranslate;
+                }
+                else if (kind == "scale")
+                {
+                    type = SpineTimelineType::kScale;
+                }
+                else if (kind == "shear")
+                {
+                    type = SpineTimelineType::kShear;
+                }
+                else
+                {
+                    // 参考实现在这里报 "Invalid timeline type for a bone"（:931）。
+                    return fail(anim_name + ".bones." + bone_name + " 的时间轴类型 '" + kind +
+                                "' 不认识（参考实现报 Invalid timeline type for a bone）");
+                }
+                if (!tl_it->value.IsArray())
+                {
+                    return fail(anim_name + ".bones." + bone_name + "." + kind + " 不是数组");
+                }
+
+                SpineSourceTimeline tl;
+                tl.type = type;
+                tl.target = bone_index;
+                std::string err;
+                for (const JsonValue& frame : tl_it->value.GetArray())
+                {
+                    if (!frame.IsObject())
+                    {
+                        return fail(anim_name + ".bones." + bone_name + "." + kind + " 的帧不是对象");
+                    }
+                    if (type == SpineTimelineType::kRotate)
+                    {
+                        // ⚠️ 字段名是 **"angle"**（SkeletonJson.cpp:895），不是 "rotation"/"value"
+                        const float v[1] = { GetFloat(frame, "angle", 0.0f) };
+                        if (!PushFrame(tl, frame, v, 1u, err))
+                        {
+                            return fail(anim_name + ": " + err);
+                        }
+                    }
+                    else
+                    {
+                        // translate / scale / shear 都是 (x, y)；timelineScale = 1（_scale 恒为 1）
+                        const float v[2] = { GetFloat(frame, "x", 0.0f), GetFloat(frame, "y", 0.0f) };
+                        if (!PushFrame(tl, frame, v, 2u, err))
+                        {
+                            return fail(anim_name + ": " + err);
+                        }
+                    }
+                    SpineSourceCurve c;
+                    if (!ReadCurveJson(frame, c, err))
+                    {
+                        return fail(anim_name + ".bones." + bone_name + "." + kind + ": " + err);
+                    }
+                    tl.curves.push_back(c);
+                }
+                TrimCurves(tl);
+                out.timelines.push_back(std::move(tl));
+            }
+        }
+    }
+
+    // ---- slots：attachment / color / twoColor ----
+    if (const JsonValue* slots = GetMember(anim, "slots"))
+    {
+        if (!slots->IsObject())
+        {
+            return fail(anim_name + ".slots 不是对象");
+        }
+        for (auto slot_it = slots->MemberBegin(); slot_it != slots->MemberEnd(); ++slot_it)
+        {
+            const std::string slot_name(slot_it->name.GetString());
+            const int slot_index = FindSlotIndex(skel.slots, slot_name);
+            if (slot_index < 0)
+            {
+                return fail(anim_name + ".slots 引用了不存在的槽位 '" + slot_name +
+                            "'（参考实现报 Slot not found）");
+            }
+            if (!slot_it->value.IsObject())
+            {
+                return fail(anim_name + ".slots." + slot_name + " 不是对象");
+            }
+            for (auto tl_it = slot_it->value.MemberBegin(); tl_it != slot_it->value.MemberEnd(); ++tl_it)
+            {
+                const std::string kind(tl_it->name.GetString());
+                if (!tl_it->value.IsArray())
+                {
+                    return fail(anim_name + ".slots." + slot_name + "." + kind + " 不是数组");
+                }
+                SpineSourceTimeline tl;
+                std::string err;
+                if (kind == "attachment")
+                {
+                    tl.type = SpineTimelineType::kAttachment;
+                    tl.target = slot_index;
+                    for (const JsonValue& frame : tl_it->value.GetArray())
+                    {
+                        tl.frames.push_back(GetFloat(frame, "time", 0.0f));
+                        // `"name": null` ⇒ 空串 = 该帧**隐藏**这个槽位（:821-823）。
+                        const JsonValue* n = GetMember(frame, "name");
+                        tl.attachment_names.push_back((n != nullptr && n->IsString())
+                                                          ? std::string(n->GetString())
+                                                          : std::string());
+                    }
+                    TrimCurves(tl);
+                }
+                else if (kind == "color")
+                {
+                    tl.type = SpineTimelineType::kColor;
+                    tl.target = slot_index;
+                    for (const JsonValue& frame : tl_it->value.GetArray())
+                    {
+                        const std::string col = GetString(frame, "color", "");
+                        const float v[4] = {
+                            ToColorComponent(col, 0), ToColorComponent(col, 1),
+                            ToColorComponent(col, 2), ToColorComponent(col, 3),
+                        };
+                        if (!PushFrame(tl, frame, v, 4u, err))
+                        {
+                            return fail(anim_name + ": " + err);
+                        }
+                        SpineSourceCurve c;
+                        if (!ReadCurveJson(frame, c, err))
+                        {
+                            return fail(anim_name + ".slots." + slot_name + ".color: " + err);
+                        }
+                        tl.curves.push_back(c);
+                    }
+                    TrimCurves(tl);
+                }
+                else if (kind == "twoColor")
+                {
+                    tl.type = SpineTimelineType::kTwoColor;
+                    tl.target = slot_index;
+                    for (const JsonValue& frame : tl_it->value.GetArray())
+                    {
+                        const std::string light = GetString(frame, "light", "");
+                        const std::string dark = GetString(frame, "dark", "");
+                        // ⚠️ dark 只有 **rgb** 三个分量（:863-866）⇒ 加起来是 1 + 4 + 3 = 8
+                        const float v[7] = {
+                            ToColorComponent(light, 0), ToColorComponent(light, 1),
+                            ToColorComponent(light, 2), ToColorComponent(light, 3),
+                            ToColorComponent(dark, 0),  ToColorComponent(dark, 1),
+                            ToColorComponent(dark, 2),
+                        };
+                        if (!PushFrame(tl, frame, v, 7u, err))
+                        {
+                            return fail(anim_name + ": " + err);
+                        }
+                        SpineSourceCurve c;
+                        if (!ReadCurveJson(frame, c, err))
+                        {
+                            return fail(anim_name + ".slots." + slot_name + ".twoColor: " + err);
+                        }
+                        tl.curves.push_back(c);
+                    }
+                    TrimCurves(tl);
+                }
+                else
+                {
+                    return fail(anim_name + ".slots." + slot_name + " 的时间轴类型 '" + kind +
+                                "' 不认识（只认 attachment / color / twoColor）");
+                }
+                out.timelines.push_back(std::move(tl));
+            }
+        }
+    }
+
+    // ---- ik / transform：值是"约束名 → 帧数组"的**对象** ----
+    const auto read_mix_timeline = [&](const JsonValue& holder, const char* section,
+                                       const std::vector<std::string>& names, SpineTimelineType type,
+                                       uint32_t value_count, const char* const* keys) -> SpineImportResult {
+        if (!holder.IsObject())
+        {
+            return fail(anim_name + "." + section + " 不是对象");
+        }
+        for (auto it = holder.MemberBegin(); it != holder.MemberEnd(); ++it)
+        {
+            const std::string cname(it->name.GetString());
+            int index = -1;
+            for (size_t i = 0; i < names.size(); ++i)
+            {
+                if (names[i] == cname)
+                {
+                    index = static_cast<int>(i);
+                    break;
+                }
+            }
+            // ⚠️ 参考实现 `findIkConstraint()` 返回 NULL 后找下标的循环一次都不命中 ⇒
+            //    `_ikConstraintIndex` **留在 0**（SkeletonJson.cpp:933-940）⇒ 动到第一条
+            //    约束，而"动画动错了约束"不报错。path 那条却有检查（:990-994）。
+            if (index < 0)
+            {
+                return fail(anim_name + "." + section + " 引用了不存在的约束 '" + cname +
+                            "'（参考实现在这里把下标静默留在 0）");
+            }
+            if (!it->value.IsArray())
+            {
+                return fail(anim_name + "." + section + "." + cname + " 不是数组");
+            }
+            SpineSourceTimeline tl;
+            tl.type = type;
+            tl.target = index;
+            std::string err;
+            for (const JsonValue& frame : it->value.GetArray())
+            {
+                float v[5] = { 0, 0, 0, 0, 0 };
+                for (uint32_t k = 0; k < value_count; ++k)
+                {
+                    v[k] = GetFloat(frame, keys[k], 1.0f);
+                }
+                if (!PushFrame(tl, frame, v, value_count, err))
+                {
+                    return fail(anim_name + ": " + err);
+                }
+                SpineSourceCurve c;
+                if (!ReadCurveJson(frame, c, err))
+                {
+                    return fail(anim_name + "." + section + "." + cname + ": " + err);
+                }
+                tl.curves.push_back(c);
+            }
+            TrimCurves(tl);
+            out.timelines.push_back(std::move(tl));
+        }
+        return Ok();
+    };
+
+    if (const JsonValue* ik = GetMember(anim, "ik"))
+    {
+        // ⚠️ IK 帧里 bendPositive / compress / stretch 在 json 里是 **0/1 数字**
+        //    （`Json::getInt(valueMap, "bendPositive", 1) ? 1 : -1`，:945-947），
+        //    而容器里存的是 float ⇒ 1 / -1 / 0。
+        if (!ik->IsObject())
+        {
+            return fail(anim_name + ".ik 不是对象");
+        }
+        for (auto it = ik->MemberBegin(); it != ik->MemberEnd(); ++it)
+        {
+            const std::string cname(it->name.GetString());
+            int index = -1;
+            for (size_t i = 0; i < skel.ik_names.size(); ++i)
+            {
+                if (skel.ik_names[i] == cname)
+                {
+                    index = static_cast<int>(i);
+                    break;
+                }
+            }
+            if (index < 0)
+            {
+                return fail(anim_name + ".ik 引用了不存在的约束 '" + cname +
+                            "'（参考实现在这里把下标静默留在 0）");
+            }
+            if (!it->value.IsArray())
+            {
+                return fail(anim_name + ".ik." + cname + " 不是数组");
+            }
+            SpineSourceTimeline tl;
+            tl.type = SpineTimelineType::kIkConstraint;
+            tl.target = index;
+            std::string err;
+            for (const JsonValue& frame : it->value.GetArray())
+            {
+                const float bend = GetInt(frame, "bendPositive", 1) ? 1.0f : -1.0f;
+                const float v[4] = {
+                    GetFloat(frame, "mix", 1.0f),
+                    bend,
+                    GetInt(frame, "compress", 0) ? 1.0f : 0.0f,
+                    GetInt(frame, "stretch", 0) ? 1.0f : 0.0f,
+                };
+                if (!PushFrame(tl, frame, v, 4u, err))
+                {
+                    return fail(anim_name + ": " + err);
+                }
+                SpineSourceCurve c;
+                if (!ReadCurveJson(frame, c, err))
+                {
+                    return fail(anim_name + ".ik." + cname + ": " + err);
+                }
+                tl.curves.push_back(c);
+            }
+            TrimCurves(tl);
+            out.timelines.push_back(std::move(tl));
+        }
+    }
+
+    if (const JsonValue* tc = GetMember(anim, "transform"))
+    {
+        static const char* kTransformKeys[4] = { "rotateMix", "translateMix", "scaleMix", "shearMix" };
+        const SpineImportResult r =
+            read_mix_timeline(*tc, "transform", skel.transform_names,
+                              SpineTimelineType::kTransformConstraint, 4u, kTransformKeys);
+        if (!r.ok)
+        {
+            return r;
+        }
+    }
+
+    // ---- paths：**两**层（约束名 → 时间轴名 → 帧数组），与 ik/transform 不同 ----
+    if (const JsonValue* paths = GetMember(anim, "paths"))
+    {
+        if (!paths->IsObject())
+        {
+            return fail(anim_name + ".paths 不是对象");
+        }
+        for (auto c_it = paths->MemberBegin(); c_it != paths->MemberEnd(); ++c_it)
+        {
+            const std::string cname(c_it->name.GetString());
+            int index = -1;
+            for (size_t i = 0; i < skel.path_names.size(); ++i)
+            {
+                if (skel.path_names[i] == cname)
+                {
+                    index = static_cast<int>(i);
+                    break;
+                }
+            }
+            if (index < 0)
+            {
+                return fail(anim_name + ".paths 引用了不存在的约束 '" + cname +
+                            "'（参考实现报 Path constraint not found）");
+            }
+            if (!c_it->value.IsObject())
+            {
+                return fail(anim_name + ".paths." + cname + " 不是对象");
+            }
+            for (auto tl_it = c_it->value.MemberBegin(); tl_it != c_it->value.MemberEnd(); ++tl_it)
+            {
+                const std::string kind(tl_it->name.GetString());
+                SpineTimelineType type;
+                const char* value_key = nullptr;
+                if (kind == "position")
+                {
+                    type = SpineTimelineType::kPathConstraintPosition;
+                    value_key = "position";
+                }
+                else if (kind == "spacing")
+                {
+                    type = SpineTimelineType::kPathConstraintSpacing;
+                    value_key = "spacing";
+                }
+                else if (kind == "mix")
+                {
+                    type = SpineTimelineType::kPathConstraintMix;
+                }
+                else
+                {
+                    return fail(anim_name + ".paths." + cname + " 的时间轴类型 '" + kind +
+                                "' 不认识（只认 position / spacing / mix）");
+                }
+                if (!tl_it->value.IsArray())
+                {
+                    return fail(anim_name + ".paths." + cname + "." + kind + " 不是数组");
+                }
+                SpineSourceTimeline tl;
+                tl.type = type;
+                tl.target = index;
+                std::string err;
+                for (const JsonValue& frame : tl_it->value.GetArray())
+                {
+                    if (type == SpineTimelineType::kPathConstraintMix)
+                    {
+                        const float v[2] = { GetFloat(frame, "rotateMix", 1.0f),
+                                             GetFloat(frame, "translateMix", 1.0f) };
+                        if (!PushFrame(tl, frame, v, 2u, err))
+                        {
+                            return fail(anim_name + ": " + err);
+                        }
+                    }
+                    else
+                    {
+                        const float v[1] = { GetFloat(frame, value_key, 0.0f) };
+                        if (!PushFrame(tl, frame, v, 1u, err))
+                        {
+                            return fail(anim_name + ": " + err);
+                        }
+                    }
+                    SpineSourceCurve c;
+                    if (!ReadCurveJson(frame, c, err))
+                    {
+                        return fail(anim_name + ".paths." + cname + "." + kind + ": " + err);
+                    }
+                    tl.curves.push_back(c);
+                }
+                TrimCurves(tl);
+                out.timelines.push_back(std::move(tl));
+            }
+        }
+    }
+
+    // ---- deform：皮肤 → 槽位 → 附件 → 帧数组（**四**层）----
+    if (const JsonValue* deform = GetMember(anim, "deform"))
+    {
+        if (!deform->IsObject())
+        {
+            return fail(anim_name + ".deform 不是对象");
+        }
+        for (auto sit = deform->MemberBegin(); sit != deform->MemberEnd(); ++sit)
+        {
+            const std::string skin_name(sit->name.GetString());
+            if (!sit->value.IsObject())
+            {
+                return fail(anim_name + ".deform 里皮肤 '" + skin_name + "' 的值不是对象");
+            }
+            int skin_index = -1;
+            for (size_t i = 0; i < skel.skins.size(); ++i)
+            {
+                if (skel.skins[i] == skin_name)
+                {
+                    skin_index = static_cast<int>(i);
+                    break;
+                }
+            }
+            // 参考实现 `findSkin(...)` 返回 NULL 后紧接着 `skin->getAttachment(...)`
+            // ⇒ 皮肤名写错是**空指针**，不是报错。
+            if (skin_index < 0)
+            {
+                return fail(anim_name + ".deform 引用了不存在的皮肤 '" + skin_name +
+                            "'（参考实现在这里是空指针解引用）");
+            }
+            for (auto slot_it = sit->value.MemberBegin(); slot_it != sit->value.MemberEnd(); ++slot_it)
+            {
+                const std::string slot_name(slot_it->name.GetString());
+                if (!slot_it->value.IsObject())
+                {
+                    return fail(anim_name + ".deform 里槽位 '" + slot_name + "' 的值不是对象");
+                }
+                const int slot_index = FindSlotIndex(skel.slots, slot_name);
+                if (slot_index < 0)
+                {
+                    return fail(anim_name + ".deform 引用了不存在的槽位 '" + slot_name + "'");
+                }
+                for (auto att_it = slot_it->value.MemberBegin(); att_it != slot_it->value.MemberEnd();
+                     ++att_it)
+                {
+                    const std::string att_name(att_it->name.GetString());
+                    if (!att_it->value.IsArray())
+                    {
+                        return fail(anim_name + ".deform 里附件 '" + att_name + "' 的值不是帧数组");
+                    }
+                    SpineSourceTimeline tl;
+                    tl.type = SpineTimelineType::kDeform;
+                    tl.deform_skin = skin_index;
+                    tl.deform_slot = slot_index;
+                    tl.deform_attachment = att_name;
+                    std::string err;
+                    for (const JsonValue& frame : att_it->value.GetArray())
+                    {
+                        SpineSourceDeformFrame df;
+                        const JsonValue* verts = GetMember(frame, "vertices");
+                        if (verts != nullptr)
+                        {
+                            if (!verts->IsArray())
+                            {
+                                return fail(anim_name + ".deform." + att_name + " 的 vertices 不是数组");
+                            }
+                            const int offset = static_cast<int>(GetFloat(frame, "offset", 0.0f));
+                            if (offset < 0)
+                            {
+                                return fail(anim_name + ".deform." + att_name + " 的帧 offset " +
+                                            std::to_string(offset) + " 为负");
+                            }
+                            df.start = static_cast<uint32_t>(offset);
+                            for (const JsonValue& v : verts->GetArray())
+                            {
+                                df.values.push_back(static_cast<float>(v.GetDouble()));
+                            }
+                        }
+                        // verts == nullptr ⇒ 回退帧（df.values 空）
+                        if (!PushFrame(tl, frame, nullptr, 0u, err))
+                        {
+                            return fail(anim_name + ": " + err);
+                        }
+                        tl.deform_frames.push_back(std::move(df));
+                        SpineSourceCurve c;
+                        if (!ReadCurveJson(frame, c, err))
+                        {
+                            return fail(anim_name + ".deform." + att_name + ": " + err);
+                        }
+                        tl.curves.push_back(c);
+                    }
+                    TrimCurves(tl);
+                    out.timelines.push_back(std::move(tl));
+                }
+            }
+        }
+    }
+
+    // ---- drawOrder / draworder：整个骨架的槽位顺序 ----
+    const JsonValue* draw_order = GetMember(anim, "drawOrder");
+    if (draw_order == nullptr)
+    {
+        draw_order = GetMember(anim, "draworder");   // 参考实现两个都认（:772-774）
+    }
+    if (draw_order != nullptr)
+    {
+        if (!draw_order->IsArray())
+        {
+            return fail(anim_name + ".drawOrder 不是数组");
+        }
+        SpineSourceTimeline tl;
+        tl.type = SpineTimelineType::kDrawOrder;
+        tl.target = 0;
+        for (const JsonValue& frame : draw_order->GetArray())
+        {
+            SpineSourceDrawOrderFrame dof;
+            if (const JsonValue* offsets = GetMember(frame, "offsets"))
+            {
+                if (!offsets->IsArray())
+                {
+                    return fail(anim_name + ".drawOrder 的 offsets 不是数组");
+                }
+                for (const JsonValue& o : offsets->GetArray())
+                {
+                    const std::string sname = GetString(o, "slot", "");
+                    const int si = FindSlotIndex(skel.slots, sname);
+                    if (si < 0)
+                    {
+                        return fail(anim_name + ".drawOrder 引用了不存在的槽位 '" + sname +
+                                    "'（参考实现报 Slot not found）");
+                    }
+                    dof.slots.push_back(static_cast<uint32_t>(si));
+                    dof.offsets.push_back(GetInt(o, "offset", 0));
+                }
+            }
+            tl.frames.push_back(GetFloat(frame, "time", 0.0f));
+            tl.draw_order_frames.push_back(std::move(dof));
+        }
+        TrimCurves(tl);
+        out.timelines.push_back(std::move(tl));
+    }
+
+    return Ok();
+}
+
 SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const SpineAtlas* atlas,
                                          SpineSourceSkeleton& out)
 {
@@ -879,6 +1578,11 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
     out.has_draw_order_timeline = false;
     out.uses_tint_black = false;
     out.has_clipping = false;
+    out.has_event_timeline = false;
+    out.animations.clear();
+    out.ik_names.clear();
+    out.transform_names.clear();
+    out.path_names.clear();
 
     rapidjson::Document doc;
     const std::string text(json, len);
@@ -1322,9 +2026,31 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
         out.attachments.push_back(std::move(att));
     }
 
-    // ---- animations：只取 flags + deform 引用 ----
-    // deform 引用**不能**在这里就落到附件上：deform 可以指向 linked mesh，
-    // 而它是最后才被 ResolveLinkedMeshes 插进来的。
+    // ---- 约束名有序表：只为把动画里的**名字**换算成下标 ----
+    // 参考实现在 readAnimation 里用 findIkConstraint / findTransformConstraint /
+    // findPathConstraint 查名字，查不到时 IK 与 transform 会**静默把下标留在 0**
+    // （SkeletonJson.cpp:933-940，只有 path 那条有检查）。所以名字表必须有，
+    // 而且必须是**有序**的（下标 = 它在数组里的位置）。
+    // ⚠️ 只要名字：约束的 setup 字段（chunk 18）是 S4 的事。
+    const auto read_name_array = [&](const char* key, std::vector<std::string>& dst) {
+        dst.clear();
+        const JsonValue* arr = GetMember(doc, key);
+        if (arr == nullptr || !arr->IsArray())
+        {
+            return;
+        }
+        for (const JsonValue& c : arr->GetArray())
+        {
+            dst.push_back(GetString(c, "name", ""));
+        }
+    };
+    read_name_array("ik", out.ik_names);
+    read_name_array("transform", out.transform_names);
+    read_name_array("path", out.path_names);
+
+    // ---- animations：整段烘焙（v9 chunk 11-16）----
+    // deform **仍然**要单独收一份引用：它要落到附件上把绘制项标成 kFallback，
+    // 而这件事必须等 linked mesh 解引用完才能做（deform 可以指向 linked mesh）。
     std::vector<SpineDeformRef> deform_refs;
     const JsonValue* anims = GetMember(doc, "animations");
     if (anims && anims->IsObject())
@@ -1332,6 +2058,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
         for (auto it = anims->MemberBegin(); it != anims->MemberEnd(); ++it)
         {
             const JsonValue& anim = it->value;
+            const std::string anim_name(it->name.GetString());
             if (!anim.IsObject())
             {
                 continue;
@@ -1340,109 +2067,46 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
             {
                 out.has_draw_order_timeline = true;
             }
-            // deform: { skin: { slot: { attachment: [ {time, offset, vertices}, ... ] } } }
-            // 参考实现 SkeletonJson.cpp:1049-1115。帧数据本身是 per-frame 的，
-            // 烘不进静态 VB ⇒ 这里只收 (皮肤, 槽位, 附件名)，等 linked mesh 解引用完
-            // 再统一落到附件上（deform 可以指向 linked mesh）。
-            if (const JsonValue* deform = GetMember(anim, "deform"))
+            if (const JsonValue* ev = GetMember(anim, "events"))
             {
-                if (!deform->IsObject())
+                if (ev->IsArray() && ev->Size() > 0)
                 {
-                    return Fail("json: animations." + std::string(it->name.GetString()) + ".deform 不是对象");
-                }
-                for (auto sit = deform->MemberBegin(); sit != deform->MemberEnd(); ++sit)
-                {
-                    const std::string skin_name(sit->name.GetString());
-                    if (!sit->value.IsObject())
-                    {
-                        return Fail("json: deform 里皮肤 '" + skin_name + "' 的值不是对象");
-                    }
-                    // 参考实现 `findSkin(...)` 返回 NULL 后紧接着 `skin->getAttachment(...)`
-                    // ⇒ 皮肤名写错是**空指针**，不是报错。我们要报错。
-                    int skin_index = -1;
-                    for (size_t i = 0; i < out.skins.size(); ++i)
-                    {
-                        if (out.skins[i] == skin_name)
-                        {
-                            skin_index = static_cast<int>(i);
-                            break;
-                        }
-                    }
-                    if (skin_index < 0)
-                    {
-                        return Fail("json: deform 时间轴引用了不存在的皮肤 '" + skin_name +
-                                    "'（参考实现在这里是空指针解引用）");
-                    }
-
-                    for (auto slot_it = sit->value.MemberBegin(); slot_it != sit->value.MemberEnd(); ++slot_it)
-                    {
-                        const std::string slot_name(slot_it->name.GetString());
-                        if (!slot_it->value.IsObject())
-                        {
-                            return Fail("json: deform 里槽位 '" + slot_name + "' 的值不是对象");
-                        }
-                        // 同理：findSlotIndex 返回 -1 ⇒ getAttachment(-1, ...) 也是 UB。
-                        int slot_index = -1;
-                        for (size_t i = 0; i < out.slots.size(); ++i)
-                        {
-                            if (out.slots[i].name == slot_name)
-                            {
-                                slot_index = static_cast<int>(i);
-                                break;
-                            }
-                        }
-                        if (slot_index < 0)
-                        {
-                            return Fail("json: deform 时间轴引用了不存在的槽位 '" + slot_name +
-                                        "'（参考实现在这里是 -1 下标）");
-                        }
-
-                        for (auto att_it = slot_it->value.MemberBegin(); att_it != slot_it->value.MemberEnd();
-                             ++att_it)
-                        {
-                            const std::string att_name(att_it->name.GetString());
-                            if (!att_it->value.IsArray())
-                            {
-                                return Fail("json: deform 里附件 '" + att_name + "' 的值不是帧数组");
-                            }
-
-                            SpineDeformRef ref;
-                            ref.skin_index = skin_index;
-                            ref.slot_index = slot_index;
-                            ref.attachment = att_name;
-                            ref.skin_name = skin_name;
-                            ref.slot_name = slot_name;
-
-                            // ---- 帧校验：offset + 顶点数不能越界 ----
-                            // 参考实现 `deformed[v] = ...`（:1092-1099）**没有**边界检查：
-                            // offset 写大了就是越界写。上限要等附件解出来才知道
-                            // （deform 可以指向 linked mesh）⇒ 这里只记"需要多长"，
-                            // 到 ApplyDeformRefs() 里比对。
-                            for (const JsonValue& frame : att_it->value.GetArray())
-                            {
-                                const JsonValue* verts = GetMember(frame, "vertices");
-                                if (verts == nullptr || !verts->IsArray())
-                                {
-                                    // 没有 vertices ⇒ 该帧是"回到 setup"（:1081-1086）
-                                    continue;
-                                }
-                                const int offset = static_cast<int>(GetFloat(frame, "offset", 0.0f));
-                                if (offset < 0)
-                                {
-                                    return Fail("json: deform 附件 '" + att_name + "' 的帧 offset " +
-                                                std::to_string(offset) + " 为负");
-                                }
-                                const size_t need = static_cast<size_t>(offset) + verts->Size();
-                                if (need > ref.required_length)
-                                {
-                                    ref.required_length = need;
-                                }
-                            }
-                            deform_refs.push_back(std::move(ref));
-                        }
-                    }
+                    // 事件**不烘焙**（它不改任何渲染状态，且本工程实测 0 个资产用到）。
+                    // 但"有却不记"等于静默丢弃 ⇒ 一位 flag 说出来（kHasEventTimeline）。
+                    out.has_event_timeline = true;
                 }
             }
+
+            SpineSourceAnimation parsed;
+            parsed.name = anim_name;
+            const SpineImportResult r = ParseSpineAnimationJson(anim, anim_name, out, parsed);
+            if (!r.ok)
+            {
+                return r;
+            }
+            for (const SpineSourceTimeline& tl : parsed.timelines)
+            {
+                if (tl.type != SpineTimelineType::kDeform)
+                {
+                    continue;
+                }
+                SpineDeformRef ref;
+                ref.skin_index = tl.deform_skin;
+                ref.slot_index = tl.deform_slot;
+                ref.attachment = tl.deform_attachment;
+                ref.skin_name = out.skins[static_cast<size_t>(tl.deform_skin)];
+                ref.slot_name = out.slots[static_cast<size_t>(tl.deform_slot)].name;
+                for (const SpineSourceDeformFrame& df : tl.deform_frames)
+                {
+                    const size_t need = static_cast<size_t>(df.start) + df.values.size();
+                    if (need > ref.required_length)
+                    {
+                        ref.required_length = need;
+                    }
+                }
+                deform_refs.push_back(std::move(ref));
+            }
+            out.animations.push_back(std::move(parsed));
         }
     }
 
@@ -1945,10 +2609,13 @@ private:
             {
                 return false;
             }
-            if (!SkipAnimation())
+            SpineSourceAnimation anim;
+            anim.name = anim_name;
+            if (!ReadAnimation(anim))
             {
                 return false;
             }
+            out_.animations.push_back(std::move(anim));
         }
         return true;
     }
@@ -2792,8 +3459,10 @@ private:
         return true;
     }
 
-    // ---- animation：只为取 has_draw_order_timeline，其余精确跳过 ----
-    bool SkipAnimation()
+    // ---- animation：整段烘焙（v9 chunk 11-16）----
+    // 字段顺序照抄 SkeletonBinary::readAnimation（:719-1107）。与 json 那边产出
+    // **同一个** SpineSourceTimeline，后面的 Bake 完全不知道数据来自哪条路径。
+    bool ReadAnimation(SpineSourceAnimation& anim)
     {
         // 槽位时间轴（:725-793）
         int32_t slot_n = 0;
@@ -2828,29 +3497,70 @@ private:
                 if (t == kSlotAttachment)
                 {
                     // 每帧 (time, attachmentName)，**没有** curve
+                    SpineSourceTimeline tl;
+                    tl.type = SpineTimelineType::kAttachment;
+                    tl.target = static_cast<int>(slot_index);
                     for (int32_t f = 0; f < frames; ++f)
                     {
+                        float time = 0.0f;
                         std::string s;
-                        if (!SkipFloats(1) || !r_.String(s))
+                        if (!r_.Float(time) || !r_.String(s))
                         {
                             return false;
                         }
+                        tl.frames.push_back(time);
+                        tl.attachment_names.push_back(s);
                     }
+                    TrimCurves(tl);
+                    anim.timelines.push_back(std::move(tl));
                 }
                 else if (t == kSlotColor || t == kSlotTwoColor)
                 {
-                    const int colors = (t == kSlotTwoColor) ? 2 : 1;
+                    SpineSourceTimeline tl;
+                    tl.type = (t == kSlotTwoColor) ? SpineTimelineType::kTwoColor : SpineTimelineType::kColor;
+                    tl.target = static_cast<int>(slot_index);
                     for (int32_t f = 0; f < frames; ++f)
                     {
-                        if (!SkipFloats(1) || !r_.Skip(static_cast<size_t>(4) * colors))
+                        float time = 0.0f;
+                        if (!r_.Float(time))
                         {
                             return false;
                         }
-                        if (f < frames - 1 && !Curve())
+                        tl.frames.push_back(time);
+                        // 二进制里颜色是 **int**（大端 rgba）：主色 4 字节 + 暗色 4 字节
+                        // （暗色只有 rgb 有效，:772-775）。
+                        int32_t c0_be = 0;
+                        if (!r_.Int32Be(c0_be))
                         {
                             return false;
                         }
+                        const uint32_t c0 = static_cast<uint32_t>(c0_be);
+                        tl.frames.push_back(static_cast<float>((c0 >> 24) & 0xFFu) / 255.0f);
+                        tl.frames.push_back(static_cast<float>((c0 >> 16) & 0xFFu) / 255.0f);
+                        tl.frames.push_back(static_cast<float>((c0 >> 8) & 0xFFu) / 255.0f);
+                        tl.frames.push_back(static_cast<float>(c0 & 0xFFu) / 255.0f);
+                        if (t == kSlotTwoColor)
+                        {
+                            int32_t c1_be = 0;
+                            if (!r_.Int32Be(c1_be))
+                            {
+                                return false;
+                            }
+                            const uint32_t c1 = static_cast<uint32_t>(c1_be);
+                            // ⚠️ 暗色是 0x00rrggbb：只有 **3** 个分量（:772-775）
+                            tl.frames.push_back(static_cast<float>((c1 >> 16) & 0xFFu) / 255.0f);
+                            tl.frames.push_back(static_cast<float>((c1 >> 8) & 0xFFu) / 255.0f);
+                            tl.frames.push_back(static_cast<float>(c1 & 0xFFu) / 255.0f);
+                        }
+                        SpineSourceCurve c;
+                        if (f < frames - 1 && !Curve(&c))
+                        {
+                            return false;
+                        }
+                        tl.curves.push_back(c);
                     }
+                    TrimCurves(tl);
+                    anim.timelines.push_back(std::move(tl));
                 }
                 else
                 {
@@ -2895,17 +3605,32 @@ private:
                 {
                     return Fail("骨骼时间轴类型 " + std::to_string(static_cast<int>(t)) + " 未知（3.8 只到 3）");
                 }
+                SpineSourceTimeline tl;
+                tl.type = (t == kBoneRotate) ? SpineTimelineType::kRotate
+                          : (t == kBoneTranslate) ? SpineTimelineType::kTranslate
+                          : (t == kBoneScale) ? SpineTimelineType::kScale
+                                              : SpineTimelineType::kShear;
+                tl.target = static_cast<int>(bone_index);
                 for (int32_t f = 0; f < frames; ++f)
                 {
-                    if (!SkipFloats(1 + values))
+                    std::vector<float> v;
+                    if (!r_.FloatArray(static_cast<size_t>(1 + values), v))
                     {
                         return false;
                     }
-                    if (f < frames - 1 && !Curve())
+                    for (float x : v)
+                    {
+                        tl.frames.push_back(x);
+                    }
+                    SpineSourceCurve c;
+                    if (f < frames - 1 && !Curve(&c))
                     {
                         return false;
                     }
+                    tl.curves.push_back(c);
                 }
+                TrimCurves(tl);
+                anim.timelines.push_back(std::move(tl));
             }
         }
 
@@ -2927,17 +3652,39 @@ private:
             {
                 return Fail("IK 时间轴帧数为负 " + std::to_string(frames));
             }
+            SpineSourceTimeline tl;
+            tl.type = SpineTimelineType::kIkConstraint;
+            tl.target = static_cast<int>(index);
             for (int32_t f = 0; f < frames; ++f)
             {
-                if (!SkipFloats(2) || !r_.Skip(3))
+                std::vector<float> v;
+                if (!r_.FloatArray(2, v))
                 {
                     return false;
                 }
-                if (f < frames - 1 && !Curve())
+                uint8_t bend_byte = 0;
+                bool compress = false;
+                bool stretch = false;
+                if (!r_.Byte(bend_byte) || !r_.Boolean(compress) || !r_.Boolean(stretch))
                 {
                     return false;
                 }
+                // bendDirection 在二进制里是 **signed char**（:863）⇒ 按位型重解释。
+                const int8_t bend = static_cast<int8_t>(bend_byte);
+                tl.frames.push_back(v[0]);   // time
+                tl.frames.push_back(v[1]);   // mix
+                tl.frames.push_back(static_cast<float>(bend));
+                tl.frames.push_back(compress ? 1.0f : 0.0f);
+                tl.frames.push_back(stretch ? 1.0f : 0.0f);
+                SpineSourceCurve c;
+                if (f < frames - 1 && !Curve(&c))
+                {
+                    return false;
+                }
+                tl.curves.push_back(c);
             }
+            TrimCurves(tl);
+            anim.timelines.push_back(std::move(tl));
         }
 
         // transform 约束时间轴（:875-894）：每帧 5 个 float
@@ -2958,17 +3705,29 @@ private:
             {
                 return Fail("transform 约束时间轴帧数为负 " + std::to_string(frames));
             }
+            SpineSourceTimeline tl;
+            tl.type = SpineTimelineType::kTransformConstraint;
+            tl.target = static_cast<int>(index);
             for (int32_t f = 0; f < frames; ++f)
             {
-                if (!SkipFloats(5))
+                std::vector<float> v;
+                if (!r_.FloatArray(5, v))
                 {
                     return false;
                 }
-                if (f < frames - 1 && !Curve())
+                for (float x : v)
+                {
+                    tl.frames.push_back(x);
+                }
+                SpineSourceCurve c;
+                if (f < frames - 1 && !Curve(&c))
                 {
                     return false;
                 }
+                tl.curves.push_back(c);
             }
+            TrimCurves(tl);
+            anim.timelines.push_back(std::move(tl));
         }
 
         // path 约束时间轴（:896-955）：类型字段是 **sbyte**
@@ -3002,29 +3761,45 @@ private:
                     return Fail("path 约束时间轴帧数为负 " + std::to_string(frames));
                 }
                 int values = 0;
+                SpineTimelineType type = SpineTimelineType::kPathConstraintPosition;
                 if (t == kPathPosition || t == kPathSpacing)
                 {
                     values = 1;
+                    type = (t == kPathSpacing) ? SpineTimelineType::kPathConstraintSpacing
+                                               : SpineTimelineType::kPathConstraintPosition;
                 }
                 else if (t == kPathMix)
                 {
                     values = 2;
+                    type = SpineTimelineType::kPathConstraintMix;
                 }
                 else
                 {
                     return Fail("path 约束时间轴类型 " + std::to_string(static_cast<int>(t)) + " 未知（3.8 只到 2）");
                 }
+                SpineSourceTimeline tl;
+                tl.type = type;
+                tl.target = static_cast<int>(index);
                 for (int32_t f = 0; f < frames; ++f)
                 {
-                    if (!SkipFloats(1 + values))
+                    std::vector<float> v;
+                    if (!r_.FloatArray(static_cast<size_t>(1 + values), v))
                     {
                         return false;
                     }
-                    if (f < frames - 1 && !Curve())
+                    for (float x : v)
+                    {
+                        tl.frames.push_back(x);
+                    }
+                    SpineSourceCurve c;
+                    if (f < frames - 1 && !Curve(&c))
                     {
                         return false;
                     }
+                    tl.curves.push_back(c);
                 }
+                TrimCurves(tl);
+                anim.timelines.push_back(std::move(tl));
             }
         }
 
@@ -3100,14 +3875,22 @@ private:
                     ref.skin_name = out_.skins[static_cast<size_t>(skin_index)];
                     ref.slot_name = out_.slots[static_cast<size_t>(slot_index)].name;
 
+                    SpineSourceTimeline tl;
+                    tl.type = SpineTimelineType::kDeform;
+                    tl.deform_skin = static_cast<int>(skin_index);
+                    tl.deform_slot = static_cast<int>(slot_index);
+                    tl.deform_attachment = att_name;
+
                     for (int32_t f = 0; f < frames; ++f)
                     {
-                        // time（用不上，但要跳过）
+                        float time = 0.0f;
                         int32_t end = 0;
-                        if (!SkipFloats(1) || !r_.Varint(true, end))
+                        if (!r_.Float(time) || !r_.Varint(true, end))
                         {
                             return false;
                         }
+                        tl.frames.push_back(time);
+                        SpineSourceDeformFrame df;
                         if (end != 0)
                         {
                             int32_t start = 0;
@@ -3130,17 +3913,23 @@ private:
                             {
                                 ref.required_length = need;
                             }
-                            if (!SkipFloats(end))
+                            df.start = static_cast<uint32_t>(start);
+                            if (!r_.FloatArray(static_cast<size_t>(end), df.values))
                             {
                                 return false;
                             }
                         }
-                        if (f < frames - 1 && !Curve())
+                        tl.deform_frames.push_back(std::move(df));
+                        SpineSourceCurve c;
+                        if (f < frames - 1 && !Curve(&c))
                         {
                             return false;
                         }
+                        tl.curves.push_back(c);
                     }
+                    TrimCurves(tl);
                     deform_refs_.push_back(std::move(ref));
+                    anim.timelines.push_back(std::move(tl));
                 }
             }
         }
@@ -3158,10 +3947,14 @@ private:
         if (draw_order_count > 0)
         {
             out_.has_draw_order_timeline = true;
+            SpineSourceTimeline tl;
+            tl.type = SpineTimelineType::kDrawOrder;
+            tl.target = 0;
             for (int32_t i = 0; i < draw_order_count; ++i)
             {
+                float time = 0.0f;
                 int32_t offset_count = 0;
-                if (!SkipFloats(1) || !r_.Varint(true, offset_count))
+                if (!r_.Float(time) || !r_.Varint(true, offset_count))
                 {
                     return false;
                 }
@@ -3169,20 +3962,35 @@ private:
                 {
                     return Fail("绘制顺序帧的 offset 数为负 " + std::to_string(offset_count));
                 }
-                // 每个 offset 两个 varint（slotIndex, 位移量）
+                tl.frames.push_back(time);
+                SpineSourceDrawOrderFrame dof;
                 for (int32_t ii = 0; ii < offset_count; ++ii)
                 {
-                    int32_t a = 0;
-                    int32_t b = 0;
-                    if (!r_.Varint(true, a) || !r_.Varint(true, b))
+                    int32_t slot = 0;
+                    int32_t off = 0;
+                    if (!r_.Varint(true, slot) || !r_.Varint(true, off))
                     {
                         return false;
                     }
+                    // 参考实现 `drawOrder[index + offset] = ...`（:1059）不检查下标 ⇒
+                    // 越界写。我们要报错 —— 绘制顺序写飞了不报错，只是层级乱掉。
+                    if (slot < 0 || static_cast<size_t>(slot) >= out_.slots.size())
+                    {
+                        return Fail("绘制顺序帧引用了不存在的槽位下标 " + std::to_string(slot) +
+                                    "（槽位数是 " + std::to_string(out_.slots.size()) + "）");
+                    }
+                    dof.slots.push_back(static_cast<uint32_t>(slot));
+                    dof.offsets.push_back(off);
                 }
+                tl.draw_order_frames.push_back(std::move(dof));
             }
+            TrimCurves(tl);
+            anim.timelines.push_back(std::move(tl));
         }
 
         // 事件时间轴（:1079-1107）。⚠️ 末尾那 2 个 float 取决于对应事件有没有 audioPath。
+        // 事件**不烘焙**（不改渲染状态，实测 0 个资产用到）但要**记下来**：
+        // 静默丢弃等于"这个资产有事件"这件事从容器里消失了。
         int32_t ev_n = 0;
         if (!r_.Varint(true, ev_n))
         {
@@ -3191,6 +3999,10 @@ private:
         if (ev_n < 0)
         {
             return Fail("事件时间轴帧数为负 " + std::to_string(ev_n));
+        }
+        if (ev_n > 0)
+        {
+            out_.has_event_timeline = true;
         }
         for (int32_t i = 0; i < ev_n; ++i)
         {
@@ -3224,7 +4036,12 @@ private:
     }
 
     // readCurve（:1112-1127）：只有 bezier 带 4 个 float。
-    bool Curve()
+    // `out` 非空时把曲线**收下来**（v9 起动画要烘焙）；否则只推进游标。
+    //
+    // ⚠️ 参考实现的 switch **没有 default** ⇒ 认不出的字节**静默当成 linear**
+    //    （连 `CURVE_LINEAR` 都没写 case）。我们要报错：认不出的曲线字节意味着
+    //    "这段插值方式与 spine 里不同"，静默当 linear 会让动作悄悄变样。
+    bool Curve(SpineSourceCurve* out = nullptr)
     {
         uint8_t t = 0;
         if (!r_.Byte(t))
@@ -3233,13 +4050,32 @@ private:
         }
         if (t == kCurveBezier)
         {
+            if (out != nullptr)
+            {
+                out->type = SpineCurveType::kBezier;
+                std::vector<float> v;
+                if (!r_.FloatArray(4, v))
+                {
+                    return false;
+                }
+                out->cx1 = v[0];
+                out->cy1 = v[1];
+                out->cx2 = v[2];
+                out->cy2 = v[3];
+                return true;
+            }
             return SkipFloats(4);
         }
         if (t == kCurveLinear || t == kCurveStepped)
         {
+            if (out != nullptr)
+            {
+                out->type = (t == kCurveStepped) ? SpineCurveType::kStepped : SpineCurveType::kLinear;
+            }
             return true;
         }
-        return Fail("curve 类型 " + std::to_string(static_cast<int>(t)) + " 未知（3.8 只到 2）");
+        return Fail("curve 类型 " + std::to_string(static_cast<int>(t)) +
+                    " 未知（3.8 只到 2）—— 参考实现在这里静默当成 linear");
     }
 };
 
@@ -3564,6 +4400,76 @@ void SplitInfluenceStream(const std::vector<uint8_t>& combined, std::vector<floa
 }
 
 }   // namespace
+
+// =====================================================================
+// 动画烘焙（chunk 11-16）
+// =====================================================================
+
+void AppendU32To(std::vector<uint8_t>& v, uint32_t x)
+{
+    v.push_back(static_cast<uint8_t>(x & 0xFFu));
+    v.push_back(static_cast<uint8_t>((x >> 8) & 0xFFu));
+    v.push_back(static_cast<uint8_t>((x >> 16) & 0xFFu));
+    v.push_back(static_cast<uint8_t>((x >> 24) & 0xFFu));
+}
+
+void AppendF32To(std::vector<uint8_t>& v, float x)
+{
+    uint32_t u = 0;
+    std::memcpy(&u, &x, sizeof(u));
+    AppendU32To(v, u);
+}
+
+// 字符串表的落盘顺序与偏移计算。**只有这一处**实现 ——
+//   * Bake      拿它算 chunk 11 的 name_offset 与 chunk 16 里的附件名偏移
+//   * Write     拿它拼 chunk 1 的字节
+// 两处共用一份实现，才不会出现"写端按 A 顺序、Bake 按 B 顺序算偏移"的静默错位。
+//
+// 顺序固定：骨骼 → 皮肤 → 槽位 → 附件 → 图集页 → **动画名** → **动画附件名**。
+// 前五组按 header 里的计数切分，第六组按 chunk 11 的条目数切分；
+// 最后一组**只按偏移访问**（attachment 时间轴存的是偏移不是下标）⇒ 不需要计数。
+void BuildSpineStringTable(const SpineGpuAsset& a, std::vector<uint8_t>& blob,
+                           std::vector<uint32_t>& anim_name_offsets,
+                           std::vector<uint32_t>& anim_attachment_offsets)
+{
+    blob.clear();
+    anim_name_offsets.clear();
+    anim_attachment_offsets.clear();
+
+    const auto group = [&](const std::vector<std::string>& names, std::vector<uint32_t>* offsets) {
+        for (const std::string& s : names)
+        {
+            if (offsets != nullptr)
+            {
+                offsets->push_back(static_cast<uint32_t>(blob.size()));
+            }
+            blob.insert(blob.end(), s.begin(), s.end());
+            blob.push_back(0u);
+        }
+    };
+
+    group(a.bone_names, nullptr);
+    group(a.skin_names, nullptr);
+    group(a.slot_names, nullptr);
+    group(a.attachment_names, nullptr);
+    group(a.atlas_page_names, nullptr);
+    group(a.anim_names, &anim_name_offsets);
+    group(a.anim_attachment_names, &anim_attachment_offsets);
+}
+
+// 往 out 里追加一个字符串并返回它的**下标**（不去重时下标 = size()-1）。
+uint32_t InternString(std::vector<std::string>& pool, const std::string& s)
+{
+    for (size_t i = 0; i < pool.size(); ++i)
+    {
+        if (pool[i] == s)
+        {
+            return static_cast<uint32_t>(i);
+        }
+    }
+    pool.push_back(s);
+    return static_cast<uint32_t>(pool.size() - 1u);
+}
 
 SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsset& out)
 {
@@ -3955,6 +4861,270 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     }
     out.atlas_page_names = src.atlas_pages;
 
+    // ---- 动画（chunk 11-16）----
+    // 顺序上必须排在 attachment_names / atlas_page_names **之后**：动画名与"动画附件名"
+    // 是字符串表的最后两组，偏移依赖前面五组的总长。
+    for (const SpineSourceAnimation& sa : src.animations)
+    {
+        out.anim_names.push_back(sa.name);
+    }
+    // 第一趟：把 attachment 时间轴用到的附件名**去重**收进字符串池。
+    // 不去重的话同一个附件名被 10 个动画引用就是 10 份 —— 而它本来就在 chunk 1 的
+    // 附件名那组里有一份（只是偏移不同，不能复用，因为切分规则不一样）。
+    for (const SpineSourceAnimation& sa : src.animations)
+    {
+        for (const SpineSourceTimeline& tl : sa.timelines)
+        {
+            if (tl.type != SpineTimelineType::kAttachment)
+            {
+                continue;
+            }
+            for (const std::string& n : tl.attachment_names)
+            {
+                if (!n.empty())
+                {
+                    InternString(out.anim_attachment_names, n);
+                }
+            }
+        }
+    }
+    {
+        std::vector<uint8_t> blob;
+        std::vector<uint32_t> anim_name_off;
+        std::vector<uint32_t> anim_att_off;
+        BuildSpineStringTable(out, blob, anim_name_off, anim_att_off);
+        if (anim_name_off.size() != out.anim_names.size())
+        {
+            return Fail("bake: 字符串表内部错误 —— 动画名偏移数与动画数不符");
+        }
+
+        // 第二趟：真正建表。
+        for (size_t ai = 0; ai < src.animations.size(); ++ai)
+        {
+            const SpineSourceAnimation& sa = src.animations[ai];
+            SpineGpuAnim rec;
+            rec.name_offset = anim_name_off[ai];
+            rec.timeline_first = static_cast<uint32_t>(out.timelines.size());
+            rec.duration = 0.0f;
+            rec.pad = 0;
+
+            // ⚠️ 时间轴在容器里的顺序是**规范化**的：按 (type, target) 升序、稳定排序。
+            // 理由不是好看，是两条输入路径的顺序**本来就不一样**：
+            //   · 二进制：槽位 → 骨骼 → ik → transform → path → deform → drawOrder → event
+            //     （SkeletonBinary.cpp:723 起 "// Slot timelines."，骨骼在 :795）
+            //   · json：同一套顺序（SkeletonJson.cpp:806），但 bones / slots 各自内部的
+            //     条目顺序取决于**文件里键的书写顺序**，与骨骼下标无关。
+            // 不规范化 ⇒ 同一个动画从 json 和 .skel 进来会得到两份不同的字节，
+            // 而"skel↔json 逐字节相同"是我们抓解读漂移的主要手段 ⇒ 必须规范。
+            // 排序键 (type, target) 还顺手保住了语义上真有依赖的一对：
+            // attachment(4) < deform(6) —— deform 只有在当前附件匹配时才生效。
+            std::vector<size_t> order(sa.timelines.size());
+            for (size_t i = 0; i < order.size(); ++i)
+            {
+                order[i] = i;
+            }
+            std::stable_sort(order.begin(), order.end(), [&sa](size_t a, size_t b) {
+                const SpineSourceTimeline& ta = sa.timelines[a];
+                const SpineSourceTimeline& tb = sa.timelines[b];
+                if (ta.type != tb.type)
+                {
+                    return static_cast<uint16_t>(ta.type) < static_cast<uint16_t>(tb.type);
+                }
+                return ta.target < tb.target;
+            });
+
+            for (size_t oi = 0; oi < order.size(); ++oi)
+            {
+                const SpineSourceTimeline& tl = sa.timelines[order[oi]];
+                const uint32_t entries = SpineTimelineEntries(tl.type);
+                if (entries == 0)
+                {
+                    return Fail("bake: 动画 '" + sa.name + "' 里有一条未知类型的时间轴");
+                }
+                // 0 帧要单独判：0 是任何 entries 的整数倍，"不是整数倍"那条拦不住它，
+                // 但参考实现 `frames[(frameCount-1)*ENTRIES]` 在 frameCount == 0 时就是
+                // **负下标读**（CurveTimeline 的 assert 在 Release 下不存在）。
+                if (tl.frames.empty())
+                {
+                    return Fail("bake: 动画 '" + sa.name + "' 有一条 0 帧的时间轴"
+                                "（参考实现在这里是 frames[(frameCount-1)*ENTRIES] 的负下标读）");
+                }
+                if ((tl.frames.size() % entries) != 0u)
+                {
+                    return Fail("bake: 动画 '" + sa.name + "' 的一条时间轴有 " +
+                                std::to_string(tl.frames.size()) + " 个 float，不是每帧 " +
+                                std::to_string(entries) + " 个的整数倍");
+                }
+                const uint32_t frame_count = static_cast<uint32_t>(tl.frames.size()) / entries;
+                if (frame_count == 0u)
+                {
+                    return Fail("bake: 动画 '" + sa.name + "' 有一条 0 帧的时间轴（内部错误）");
+                }
+
+                // ---- deform 的 target 要现场换算 ----
+                int target = tl.target;
+                if (tl.type == SpineTimelineType::kDeform)
+                {
+                    int hit = -1;
+                    for (size_t k = 0; k < src.attachments.size(); ++k)
+                    {
+                        const SpineSourceAttachment& a = src.attachments[k];
+                        if (a.skin_index == tl.deform_skin && a.slot_index == tl.deform_slot &&
+                            a.name == tl.deform_attachment)
+                        {
+                            hit = static_cast<int>(k);
+                            break;
+                        }
+                    }
+                    if (hit < 0)
+                    {
+                        // 指向一个**不产生绘制项**的附件（boundingbox / path / point）⇒
+                        // deform 对它无从生效（没有顶点可改）⇒ 整条时间轴不烘焙。
+                        // 这不是静默丢弃：渲染结果**完全相同**（那些附件根本不画）。
+                        bool no_draw = false;
+                        for (const SpineSourceNoDrawAttachment& s : src.no_draw_attachments)
+                        {
+                            if (s.skin_index == tl.deform_skin && s.slot_index == tl.deform_slot &&
+                                s.name == tl.deform_attachment)
+                            {
+                                no_draw = true;
+                                break;
+                            }
+                        }
+                        if (!no_draw)
+                        {
+                            return Fail("bake: deform 时间轴指向的附件 '" + tl.deform_attachment +
+                                        "' 找不到对应的附件记录（它既不产生绘制项、也不在"
+                                        "不渲染附件表里）");
+                        }
+                        continue;
+                    }
+                    target = hit;
+                }
+
+                SpineGpuTimeline t;
+                t.type = static_cast<uint16_t>(tl.type);
+                if (target < 0 || target > 0xFFFF)
+                {
+                    return Fail("bake: 时间轴的 target " + std::to_string(target) + " 超出 uint16");
+                }
+                t.target = static_cast<uint16_t>(target);
+                t.frame_count = frame_count;
+                // ⚠️ `frame_first` 是 **float 下标**（字节 / 4），不是"第几帧"。
+                //    每类时间轴的每帧 float 数（entries）**不一样**（rotate 2、color 5…），
+                //    所以不存在一个全局统一的"帧"单位 —— 硬凑一个就会让非首条的
+                //    时间轴读到别人的帧数据，而偏移 0 那条看不出问题。
+                t.frame_first = static_cast<uint32_t>(out.frames.size());
+                t.curve_first = static_cast<uint32_t>(out.curve_types.size());
+                t.bezier_first = static_cast<uint32_t>(out.beziers.size());
+                t.bezier_count = 0;
+                t.payload_offset = static_cast<uint32_t>(out.timeline_payload.size());
+                t.payload_count = 0;
+
+                // ---- 帧（定长）----
+                for (float f : tl.frames)
+                {
+                    out.frames.push_back(f);
+                }
+
+                // ---- 曲线段 ----
+                // 段数 = frame_count - 1；attachment / drawOrder **没有**曲线。
+                const size_t want_segments = SpineTimelineHasCurve(tl.type) ? (frame_count - 1u) : 0u;
+                if (tl.curves.size() != want_segments)
+                {
+                    return Fail("bake: 动画 '" + sa.name + "' 的一条时间轴有 " +
+                                std::to_string(tl.curves.size()) + " 段曲线，但 " +
+                                std::to_string(frame_count) + " 帧应该有 " +
+                                std::to_string(want_segments) + " 段");
+                }
+                for (const SpineSourceCurve& c : tl.curves)
+                {
+                    out.curve_types.push_back(static_cast<uint8_t>(c.type));
+                    if (c.type == SpineCurveType::kBezier)
+                    {
+                        SpineGpuBezier b;
+                        b.cx1 = c.cx1;
+                        b.cy1 = c.cy1;
+                        b.cx2 = c.cx2;
+                        b.cy2 = c.cy2;
+                        out.beziers.push_back(b);
+                        ++t.bezier_count;
+                    }
+                }
+
+                // ---- 变长载荷 ----
+                if (tl.type == SpineTimelineType::kAttachment)
+                {
+                    if (tl.attachment_names.size() != frame_count)
+                    {
+                        return Fail("bake: 动画 '" + sa.name + "' 的 attachment 时间轴帧数对不上");
+                    }
+                    for (const std::string& n : tl.attachment_names)
+                    {
+                        if (n.empty())
+                        {
+                            // ⚠️ 空名 = 隐藏该槽位，哨兵是 kNoAttachmentName **不是 0**：
+                            // 0 是字符串表里第一个名字的合法偏移。
+                            AppendU32To(out.timeline_payload, SpineGpuConstants::kNoAttachmentName);
+                        }
+                        else
+                        {
+                            const uint32_t idx = InternString(out.anim_attachment_names, n);
+                            AppendU32To(out.timeline_payload, anim_att_off[idx]);
+                        }
+                    }
+                    t.payload_count = frame_count;
+                }
+                else if (tl.type == SpineTimelineType::kDeform)
+                {
+                    if (tl.deform_frames.size() != frame_count)
+                    {
+                        return Fail("bake: 动画 '" + sa.name + "' 的 deform 时间轴帧数对不上");
+                    }
+                    for (const SpineSourceDeformFrame& df : tl.deform_frames)
+                    {
+                        AppendU32To(out.timeline_payload, df.start);
+                        AppendU32To(out.timeline_payload, static_cast<uint32_t>(df.values.size()));
+                        for (float f : df.values)
+                        {
+                            AppendF32To(out.timeline_payload, f);
+                        }
+                    }
+                    t.payload_count = frame_count;
+                }
+                else if (tl.type == SpineTimelineType::kDrawOrder)
+                {
+                    if (tl.draw_order_frames.size() != frame_count)
+                    {
+                        return Fail("bake: 动画 '" + sa.name + "' 的 drawOrder 时间轴帧数对不上");
+                    }
+                    for (const SpineSourceDrawOrderFrame& dof : tl.draw_order_frames)
+                    {
+                        AppendU32To(out.timeline_payload, static_cast<uint32_t>(dof.slots.size()));
+                        for (size_t k = 0; k < dof.slots.size(); ++k)
+                        {
+                            AppendU32To(out.timeline_payload, dof.slots[k]);
+                            AppendU32To(out.timeline_payload, static_cast<uint32_t>(dof.offsets[k]));
+                        }
+                    }
+                    t.payload_count = frame_count;
+                }
+
+                // duration = max(各时间轴最后一帧的 time)，抄参考实现。
+                const float last_time = tl.frames[(frame_count - 1u) * entries];
+                if (last_time > rec.duration)
+                {
+                    rec.duration = last_time;
+                }
+
+                out.timelines.push_back(t);
+            }
+
+            rec.timeline_count = static_cast<uint32_t>(out.timelines.size()) - rec.timeline_first;
+            out.anims.push_back(rec);
+        }
+    }
+
     // ---- header ----
     SpineGpuHeader& h = out.header;
     h = SpineGpuHeader {};
@@ -3989,6 +5159,12 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
             h.flags |= SpineGpuFlags::kHasDeform;
             break;
         }
+    }
+    if (src.has_event_timeline)
+    {
+        // 事件**没进容器**（chunk 11-16 里没有 event 时间轴），但"这个资产有事件"
+        // 这件事必须留在容器里 —— 否则读端无法区分"没有事件"与"被我们丢了"。
+        h.flags |= SpineGpuFlags::kHasEventTimeline;
     }
     h.bone_count = bone_count;
     h.slot_count = slot_count;
@@ -4085,31 +5261,18 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
     // ---- 组装各 chunk ----
     std::vector<ChunkBuilder> chunks;
 
-    // id=1 strings：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名，每项 '\0' 结尾
+    // id=1 strings：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名 → 动画名 → 动画附件名
     //                        ↑ 皮肤名插在这里：读端靠 header.skin_count 切分
+    // 最后两组是 v9 加的：动画名按 chunk 11 的条目数切分，**动画附件名只按偏移访问**
+    // （attachment 时间轴的载荷里存的是偏移不是下标）。
+    // ⚠️ 组装逻辑只有 `BuildSpineStringTable()` 一份 —— Bake 算偏移用的也是它，
+    //    两边分叉会让 chunk 11 的 name_offset 指到别人的名字上，且不报错。
     {
         ChunkBuilder c;
         c.id = SpineGpuChunkId::kChunkStrings;
-        for (const std::string& s : asset.bone_names)
-        {
-            PutCString(c.bytes, s);
-        }
-        for (const std::string& s : asset.skin_names)
-        {
-            PutCString(c.bytes, s);
-        }
-        for (const std::string& s : asset.slot_names)
-        {
-            PutCString(c.bytes, s);
-        }
-        for (const std::string& s : asset.attachment_names)
-        {
-            PutCString(c.bytes, s);
-        }
-        for (const std::string& s : asset.atlas_page_names)
-        {
-            PutCString(c.bytes, s);
-        }
+        std::vector<uint32_t> anim_name_off;
+        std::vector<uint32_t> anim_att_off;
+        BuildSpineStringTable(asset, c.bytes, anim_name_off, anim_att_off);
         if (!c.bytes.empty())
         {
             chunks.push_back(std::move(c));
@@ -4148,6 +5311,78 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
             PutU8(c.bytes, b.transform_mode);
             PutU8(c.bytes, b.pad);   // 显式写 0（跟裁剪多边形同一个规矩）
         }
+        chunks.push_back(std::move(c));
+    }
+
+    // ---- v9：动画（id 11..16，紧跟骨骼 setup 后面）----
+    // 五块之间全是**下标**引用，落盘顺序无所谓，但读端要按"先目录后表"的顺序校验。
+    if (!asset.anims.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkAnimDir;
+        for (const SpineGpuAnim& a : asset.anims)
+        {
+            PutU32(c.bytes, a.name_offset);
+            PutU32(c.bytes, a.timeline_first);
+            PutU32(c.bytes, a.timeline_count);
+            PutF32(c.bytes, a.duration);
+            PutU32(c.bytes, a.pad);
+        }
+        chunks.push_back(std::move(c));
+    }
+    if (!asset.timelines.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkTimelines;
+        for (const SpineGpuTimeline& t : asset.timelines)
+        {
+            PutU16(c.bytes, t.type);
+            PutU16(c.bytes, t.target);
+            PutU32(c.bytes, t.frame_count);
+            PutU32(c.bytes, t.frame_first);
+            PutU32(c.bytes, t.curve_first);
+            PutU32(c.bytes, t.bezier_first);
+            PutU32(c.bytes, t.bezier_count);
+            PutU32(c.bytes, t.payload_offset);
+            PutU32(c.bytes, t.payload_count);
+        }
+        chunks.push_back(std::move(c));
+    }
+    if (!asset.frames.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkFrames;
+        PutBytes(c.bytes, asset.frames.data(), asset.frames.size() * sizeof(float));
+        chunks.push_back(std::move(c));
+    }
+    if (!asset.curve_types.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkCurveTypes;
+        for (uint8_t t : asset.curve_types)
+        {
+            PutU8(c.bytes, t);
+        }
+        chunks.push_back(std::move(c));
+    }
+    if (!asset.beziers.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkBeziers;
+        for (const SpineGpuBezier& b : asset.beziers)
+        {
+            PutF32(c.bytes, b.cx1);
+            PutF32(c.bytes, b.cy1);
+            PutF32(c.bytes, b.cx2);
+            PutF32(c.bytes, b.cy2);
+        }
+        chunks.push_back(std::move(c));
+    }
+    if (!asset.timeline_payload.empty())
+    {
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkTimelinePayload;
+        PutBytes(c.bytes, asset.timeline_payload.data(), asset.timeline_payload.size());
         chunks.push_back(std::move(c));
     }
 
@@ -4444,6 +5679,259 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         }
     }
 
+    // ---- 动画（chunk 11-16，v9）----
+    // 校验的重点不是"能不能读出来"，而是**下标引用有没有越界**：
+    // 每一块的条目数是定长的，越界读在 C++ 里不崩溃、在 C# 里也不抛，只会拿到别人的
+    // 数据 —— 也就是"播 A 动画用了 B 动画的帧"。所以每个区间都显式查一遍。
+    {
+        const Found* f_dir = find_chunk(SpineGpuChunkId::kChunkAnimDir);
+        const Found* f_tl = find_chunk(SpineGpuChunkId::kChunkTimelines);
+        const Found* f_frames = find_chunk(SpineGpuChunkId::kChunkFrames);
+        const Found* f_curve = find_chunk(SpineGpuChunkId::kChunkCurveTypes);
+        const Found* f_bez = find_chunk(SpineGpuChunkId::kChunkBeziers);
+        const Found* f_pay = find_chunk(SpineGpuChunkId::kChunkTimelinePayload);
+
+        uint32_t anim_count = 0;
+        if (f_dir != nullptr)
+        {
+            if (f_dir->size % SpineGpuConstants::kAnimDirSize != 0)
+            {
+                return Fail("container: 动画目录大小不是 " + std::to_string(SpineGpuConstants::kAnimDirSize) +
+                            " B 的整数倍（一条是 20 B）");
+            }
+            anim_count = f_dir->size / SpineGpuConstants::kAnimDirSize;
+            out.anims.resize(anim_count);
+            for (uint32_t i = 0; i < anim_count; ++i)
+            {
+                const uint8_t* p = data + f_dir->offset + static_cast<size_t>(i) * SpineGpuConstants::kAnimDirSize;
+                SpineGpuAnim a;
+                a.name_offset = GetU32(p + 0);
+                a.timeline_first = GetU32(p + 4);
+                a.timeline_count = GetU32(p + 8);
+                std::memcpy(&a.duration, p + 12, sizeof(float));
+                a.pad = GetU32(p + 16);
+                if (a.pad != 0)
+                {
+                    return Fail("container: 动画目录第 " + std::to_string(i) + " 条的 pad 不是 0");
+                }
+                out.anims[i] = a;
+            }
+        }
+
+        uint32_t timeline_count = 0;
+        if (f_tl != nullptr)
+        {
+            if (f_tl->size % SpineGpuConstants::kTimelineEntrySize != 0)
+            {
+                return Fail("container: 时间轴表大小不是 " +
+                            std::to_string(SpineGpuConstants::kTimelineEntrySize) +
+                            " B 的整数倍（一条是 32 B）");
+            }
+            timeline_count = f_tl->size / SpineGpuConstants::kTimelineEntrySize;
+            out.timelines.resize(timeline_count);
+            for (uint32_t i = 0; i < timeline_count; ++i)
+            {
+                const uint8_t* p =
+                    data + f_tl->offset + static_cast<size_t>(i) * SpineGpuConstants::kTimelineEntrySize;
+                SpineGpuTimeline t;
+                t.type = static_cast<uint16_t>(p[0] | (static_cast<uint16_t>(p[1]) << 8));
+                t.target = static_cast<uint16_t>(p[2] | (static_cast<uint16_t>(p[3]) << 8));
+                t.frame_count = GetU32(p + 4);
+                t.frame_first = GetU32(p + 8);
+                t.curve_first = GetU32(p + 12);
+                t.bezier_first = GetU32(p + 16);
+                t.bezier_count = GetU32(p + 20);
+                t.payload_offset = GetU32(p + 24);
+                t.payload_count = GetU32(p + 28);
+                out.timelines[i] = t;
+            }
+        }
+
+        const uint32_t frame_float_count = (f_frames != nullptr) ? (f_frames->size / 4u) : 0u;
+        if (f_frames != nullptr && (f_frames->size % 4u) != 0u)
+        {
+            return Fail("container: 帧数据大小不是 4 B 的整数倍（一条是 1 float）");
+        }
+        if (f_frames != nullptr)
+        {
+            out.frames.resize(frame_float_count);
+            std::memcpy(out.frames.data(), data + f_frames->offset, f_frames->size);
+        }
+
+        const uint32_t curve_count = (f_curve != nullptr) ? f_curve->size : 0u;
+        if (f_curve != nullptr)
+        {
+            out.curve_types.assign(data + f_curve->offset, data + f_curve->offset + f_curve->size);
+        }
+
+        uint32_t bezier_count = 0;
+        if (f_bez != nullptr)
+        {
+            if (f_bez->size % SpineGpuConstants::kBezierSize != 0)
+            {
+                return Fail("container: bezier 块大小不是 " + std::to_string(SpineGpuConstants::kBezierSize) +
+                            " B 的整数倍（一条是 4 float）");
+            }
+            bezier_count = f_bez->size / SpineGpuConstants::kBezierSize;
+            out.beziers.resize(bezier_count);
+            for (uint32_t i = 0; i < bezier_count; ++i)
+            {
+                const uint8_t* p = data + f_bez->offset + static_cast<size_t>(i) * SpineGpuConstants::kBezierSize;
+                SpineGpuBezier b;
+                std::memcpy(&b.cx1, p, 4u * sizeof(float));
+                out.beziers[i] = b;
+            }
+        }
+
+        const uint32_t payload_size = (f_pay != nullptr) ? f_pay->size : 0u;
+        if (f_pay != nullptr)
+        {
+            out.timeline_payload.assign(data + f_pay->offset, data + f_pay->offset + f_pay->size);
+        }
+
+        // ---- 区间校验：每一条时间轴的四块引用都必须落在自己的块里 ----
+        for (uint32_t i = 0; i < timeline_count; ++i)
+        {
+            const SpineGpuTimeline& t = out.timelines[i];
+            const SpineTimelineType type = static_cast<SpineTimelineType>(t.type);
+            const uint32_t entries = SpineTimelineEntries(type);
+            if (entries == 0)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 条时间轴的类型 " +
+                            std::to_string(t.type) + " 不认识（TimelineType 只到 14）");
+            }
+            if (t.frame_count == 0)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 条时间轴有 0 帧");
+            }
+            const uint64_t frame_end = static_cast<uint64_t>(t.frame_first) +
+                                       static_cast<uint64_t>(t.frame_count) * entries;
+            if (frame_end > frame_float_count)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 条时间轴的帧区间 [ " +
+                            std::to_string(t.frame_first) + ", " + std::to_string(frame_end) +
+                            " ) 超出帧块（" + std::to_string(frame_float_count) + " 个 float）");
+            }
+            const uint32_t segments = SpineTimelineHasCurve(type) ? (t.frame_count - 1u) : 0u;
+            const uint64_t curve_end = static_cast<uint64_t>(t.curve_first) + segments;
+            if (curve_end > curve_count)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 条时间轴的曲线区间超出曲线块（" +
+                            std::to_string(curve_count) + " 段）");
+            }
+            const uint64_t bez_end = static_cast<uint64_t>(t.bezier_first) + t.bezier_count;
+            if (bez_end > bezier_count)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 条时间轴的 bezier 区间超出块（" +
+                            std::to_string(bezier_count) + " 条）");
+            }
+            // 曲线块里 bezier 段的个数必须**等于** bezier_count ——
+            // 不等意味着"某段标了 bezier 却没有控制点"，采样时会取到上一条的。
+            uint32_t bez_in_segments = 0;
+            for (uint32_t s = 0; s < segments; ++s)
+            {
+                if (out.curve_types[static_cast<size_t>(t.curve_first) + s] ==
+                    static_cast<uint8_t>(SpineCurveType::kBezier))
+                {
+                    ++bez_in_segments;
+                }
+                if (out.curve_types[static_cast<size_t>(t.curve_first) + s] >
+                    static_cast<uint8_t>(SpineCurveType::kBezier))
+                {
+                    return Fail("container: 第 " + std::to_string(i) + " 条时间轴第 " + std::to_string(s) +
+                                " 段的曲线类型越界（0 linear / 1 stepped / 2 bezier）");
+                }
+            }
+            if (bez_in_segments != t.bezier_count)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 条时间轴标了 " +
+                            std::to_string(bez_in_segments) + " 段 bezier，但 bezier_count 是 " +
+                            std::to_string(t.bezier_count));
+            }
+            // 变长载荷：逐帧走一遍，顺带校验帧数（走不完 = 载荷被截断）
+            if (type == SpineTimelineType::kAttachment || type == SpineTimelineType::kDeform ||
+                type == SpineTimelineType::kDrawOrder)
+            {
+                uint32_t walked = 0;
+                size_t pos = t.payload_offset;
+                const auto need_u32 = [&](uint32_t& v) {
+                    if (pos + 4u > payload_size)
+                    {
+                        return false;
+                    }
+                    v = GetU32(out.timeline_payload.data() + pos);
+                    pos += 4u;
+                    return true;
+                };
+                for (uint32_t fr = 0; fr < t.payload_count; ++fr)
+                {
+                    if (type == SpineTimelineType::kAttachment)
+                    {
+                        uint32_t off = 0;
+                        if (!need_u32(off))
+                        {
+                            return Fail("container: 第 " + std::to_string(i) + " 条时间轴的载荷被截断");
+                        }
+                    }
+                    else if (type == SpineTimelineType::kDeform)
+                    {
+                        uint32_t start = 0;
+                        uint32_t count = 0;
+                        if (!need_u32(start) || !need_u32(count))
+                        {
+                            return Fail("container: 第 " + std::to_string(i) + " 条时间轴的载荷被截断");
+                        }
+                        if (pos + static_cast<size_t>(count) * 4u > payload_size)
+                        {
+                            return Fail("container: 第 " + std::to_string(i) + " 条时间轴第 " +
+                                        std::to_string(fr) + " 帧的 deform 值被截断");
+                        }
+                        pos += static_cast<size_t>(count) * 4u;
+                    }
+                    else
+                    {
+                        uint32_t n = 0;
+                        if (!need_u32(n))
+                        {
+                            return Fail("container: 第 " + std::to_string(i) + " 条时间轴的载荷被截断");
+                        }
+                        if (pos + static_cast<size_t>(n) * 8u > payload_size)
+                        {
+                            return Fail("container: 第 " + std::to_string(i) + " 条时间轴第 " +
+                                        std::to_string(fr) + " 帧的 drawOrder 偏移被截断");
+                        }
+                        pos += static_cast<size_t>(n) * 8u;
+                    }
+                    ++walked;
+                }
+                if (walked != t.frame_count)
+                {
+                    return Fail("container: 第 " + std::to_string(i) + " 条时间轴的载荷有 " +
+                                std::to_string(walked) + " 帧，但 frame_count 是 " +
+                                std::to_string(t.frame_count));
+                }
+            }
+            else if (t.payload_count != 0)
+            {
+                return Fail("container: 第 " + std::to_string(i) +
+                            " 条时间轴是定长类型，却带了一份变长载荷");
+            }
+        }
+
+        // 动画的区间必须落在时间轴表里
+        for (uint32_t i = 0; i < anim_count; ++i)
+        {
+            const SpineGpuAnim& a = out.anims[i];
+            const uint64_t end = static_cast<uint64_t>(a.timeline_first) + a.timeline_count;
+            if (end > timeline_count)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 个动画的时间轴区间 [ " +
+                            std::to_string(a.timeline_first) + ", " + std::to_string(end) +
+                            " ) 超出时间轴表（" + std::to_string(timeline_count) + " 条）");
+            }
+        }
+    }
+
     // ---- 影响流（chunk 21 / 22）。两条流**必须条目数相同**： ----
     // 它们共用同一个下标（权重顶点的 influence_offset）。对不上意味着两条流被
     // 配错了对 —— 不报错，只是每个影响取到别人的 bindPos / 骨骼 ⇒ 形状静默错。
@@ -4613,7 +6101,7 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         attachment_count = count;
     }
 
-    // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名 ----
+    // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名 → 动画名 → 动画附件名 ----
     if (const Found* f = find_chunk(SpineGpuChunkId::kChunkStrings))
     {
         std::vector<std::string> all;
@@ -4643,6 +6131,26 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         take(out.header.slot_count, out.slot_names);
         take(attachment_count, out.attachment_names);
         take(out.header.atlas_page_count, out.atlas_page_names);
+        // 动画名：数量 = chunk 11 的条目数（header 里没有 anim_count 的位置 ——
+        // 64 B 的 header 早就排满了，而定长块的大小本身就是计数）。
+        take(out.anims.size(), out.anim_names);
+        // 剩下的全是"动画附件名"。**只按偏移访问**，所以不需要知道有几条 ⇒
+        // 不校验"是否刚好读完"（多出来的是合法数据，不是错误）。
+        while (i < all.size())
+        {
+            out.anim_attachment_names.push_back(all[i++]);
+        }
+        // ⚠️ 但每个 name_offset 必须真的落在这一块里 —— 指到前面几组（比如骨骼名）
+        // 不报错，只是动画挂载了错误名字的附件。
+        for (size_t k = 0; k < out.anims.size(); ++k)
+        {
+            if (out.anims[k].name_offset >= f->size)
+            {
+                return Fail("container: 第 " + std::to_string(k) + " 个动画的 name_offset " +
+                            std::to_string(out.anims[k].name_offset) + " 超出字符串块（大小 " +
+                            std::to_string(f->size) + "）");
+            }
+        }
     }
 
     return Ok();

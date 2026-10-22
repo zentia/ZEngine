@@ -76,7 +76,16 @@ namespace SpineGpuConstants
     //     都是**相对 setup pose** 的增量，没有 setup 就无从解算
     //   ⇒ 不兼容：v7 容器被新读端读会得到 0 根骨骼（chunk 10 不存在），
     //     所有蒙皮索引全部越界，而"没有 chunk 10"本身不报错。
-    constexpr uint32_t kFormatVersion = 8;
+    // 版本 9（2026-10-22）：**动画进容器**（chunk 11-16）——
+    //   * header 与既有 chunk 的布局**全都没动**（动画数量由 chunk 11 的大小反推，
+    //     不需要往已经排满的 64 B header 里再塞字段）
+    //   * chunk 11 动画目录（20 B/条）→ chunk 12 时间轴表（32 B/条）→
+    //     chunk 13 帧（float）→ chunk 14 曲线类型（u8/段）→
+    //     chunk 15 bezier 控制点（16 B/段）→ chunk 16 变长载荷（字节）
+    //   * flags 多一位 kHasEventTimeline（事件时间轴**不烘焙**，但不许静默当没看见）
+    //   ⇒ 不兼容：v8 容器被新读端读会得到 0 个动画（chunk 11 不存在），
+    //     而"没有动画"本身不报错 —— 与 chunk 10 是同一类坑。
+    constexpr uint32_t kFormatVersion = 9;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -173,6 +182,22 @@ namespace SpineGpuConstants
     // 字段集合抄 `BoneData.h:110-115`，transform_mode 取值抄 `TransformMode.h:34-40`。
     constexpr uint32_t kBoneSetupSize = 36;
 
+    // 动画目录项（chunk 11）大小。
+    constexpr uint32_t kAnimDirSize = 20;
+
+    // 时间轴表项（chunk 12）大小。
+    constexpr uint32_t kTimelineEntrySize = 32;
+
+    // 一条 bezier 段的控制点（chunk 15）大小：4 个 float。
+    // ⚠️ 存**控制点**不存参考实现那 18 个 float 的展开采样表
+    //    （`CurveTimeline::BEZIER_VALUES = 10*2-2`）：实测 2 567 358 段里 bezier 占
+    //    36.6%，定长 20 B/段要 49.0 MB，紧凑写法 16.8 MB（差 65%）。
+    constexpr uint32_t kBezierSize = 16;
+
+    // attachment 时间轴里"这一帧没有附件"的哨兵。**不是 0** —— 0 是 chunk 1 里
+    // 第一个字符串的合法偏移，填 0 会让空帧变成"挂上某个真实附件"且不报错。
+    constexpr uint32_t kNoAttachmentName = 0xFFFFFFFFu;
+
     // 骨骼数上限。两个约束中取严的：
     //   * `SpineGpuBone::parent` 是 int16 ⇒ 下标必须能用 int16 表示（含 -1）
     //   * `SpineInfluenceBone::bone_idx` 是 uint16（3.8 的 _bones 是 unsigned short）
@@ -225,6 +250,80 @@ enum class SpineDrawItemKind : uint8_t
     kFallback = 1,  // CPU 路径（裁剪 / FFD 正在动 / 绘制顺序动画等）
 };
 
+// 时间轴类型：逐值抄 spine-cpp `TimelineType.h:35-49`。
+// ⚠️ **不自造枚举值**：换一套值会让"参考实现的 switch 分支"对不上号，
+//    而这只是静默地解错，不会报错。
+enum class SpineTimelineType : uint16_t
+{
+    kRotate = 0,
+    kTranslate = 1,
+    kScale = 2,
+    kShear = 3,
+    kAttachment = 4,
+    kColor = 5,
+    kDeform = 6,
+    kEvent = 7,
+    kDrawOrder = 8,
+    kIkConstraint = 9,
+    kTransformConstraint = 10,
+    kPathConstraintPosition = 11,
+    kPathConstraintSpacing = 12,
+    kPathConstraintMix = 13,
+    kTwoColor = 14,
+};
+
+// 曲线段类型：逐值抄 `CurveTimeline.cpp:42-44`（LINEAR=0 / STEPPED=1 / BEZIER=2）。
+enum class SpineCurveType : uint8_t
+{
+    kLinear = 0,
+    kStepped = 1,
+    kBezier = 2,
+};
+
+// 每帧占几个 float（进 chunk 13 的步长单位）。逐类抄各 Timeline 的 ENTRIES：
+//   Rotate 2（`RotateTimeline.h:44`）/ Translate·Scale·Shear 3（`TranslateTimeline.cpp:48`）
+//   Color 5（`ColorTimeline.cpp:48`）/ TwoColor 8（`TwoColorTimeline.cpp:48`）
+//   IkConstraint 5（`IkConstraintTimeline.cpp:50`）/ TransformConstraint 5（`:50`）
+//   PathConstraintPosition·Spacing 2（`PathConstraintPositionTimeline.cpp:50`）
+//   PathConstraintMix 3（`PathConstraintMixTimeline.cpp:50`）
+// 变长的三类（attachment / deform / drawOrder）只有 **time** 进 chunk 13（1 个），
+// 其余部分在 chunk 16 —— 这样"取第 n 帧的时间"对所有类型都是同一个公式。
+//
+// ⚠️ 单位陷阱：chunk 13 的 `frame_first` 是 **float 下标**不是"第几帧"
+//    （各类的每帧 float 数不同，没有统一的帧单位）。写错单位时偏移 0 那条
+//    逐字节相同，只有**非 0** 的断言能抓到。
+inline constexpr uint32_t SpineTimelineEntries(SpineTimelineType type)
+{
+    switch (type)
+    {
+        case SpineTimelineType::kRotate:                  return 2;
+        case SpineTimelineType::kTranslate:               return 3;
+        case SpineTimelineType::kScale:                   return 3;
+        case SpineTimelineType::kShear:                   return 3;
+        case SpineTimelineType::kAttachment:              return 1;
+        case SpineTimelineType::kColor:                   return 5;
+        case SpineTimelineType::kDeform:                  return 1;
+        case SpineTimelineType::kEvent:                   return 1;
+        case SpineTimelineType::kDrawOrder:               return 1;
+        case SpineTimelineType::kIkConstraint:            return 5;
+        case SpineTimelineType::kTransformConstraint:     return 5;
+        case SpineTimelineType::kPathConstraintPosition:  return 2;
+        case SpineTimelineType::kPathConstraintSpacing:   return 2;
+        case SpineTimelineType::kPathConstraintMix:       return 3;
+        case SpineTimelineType::kTwoColor:                return 8;
+    }
+    return 0;
+}
+
+// 这一类的帧**是否需要曲线**。attachment / drawOrder / event **不是** CurveTimeline
+// （`AttachmentTimeline` / `DrawOrderTimeline` / `EventTimeline` 直接继承 Timeline），
+// 参考实现根本不给它们读 curve —— 给它们写段会让 chunk 13/14 错位且不报错。
+inline constexpr bool SpineTimelineHasCurve(SpineTimelineType type)
+{
+    return type != SpineTimelineType::kAttachment && type != SpineTimelineType::kDrawOrder &&
+           type != SpineTimelineType::kEvent;
+}
+
 // Header.flags 位。
 enum SpineGpuFlags : uint32_t
 {
@@ -236,6 +335,9 @@ enum SpineGpuFlags : uint32_t
     // 有 deform（FFD）时间轴 ⇒ **被它命中的**绘制项走 CPU fallback（不是整个资产）。
     // per-frame 顶点数据烘不进静态 VB —— 顶点缓冲存的是**绑定姿势**（规格 §7.1）。
     kHasDeform = 1u << 4,
+    // 有事件（event）时间轴。事件**不烘焙**（它不改任何渲染状态，且本工程实测 0 个
+    // 资产用到），但"有却不记"等于静默丢弃 ⇒ 用一位显式说出来。
+    kHasEventTimeline = 1u << 5,
 };
 
 // ChunkTable 的 id。
@@ -255,6 +357,14 @@ enum SpineGpuChunkId : uint32_t
 
     // v8：骨骼 setup（36 B/骨）。id 10 就是当初留给它的。
     kChunkBoneSetup = 10,    // SpineGpuBone[]（36 B/条）；下标 = header.bone_count 的序
+
+    // v9：动画（见 §3.2 起的规格）。id 11..16 就是当初留给"v7 动画阶段"的。
+    kChunkAnimDir = 11,      // SpineGpuAnim[]（20 B/条）
+    kChunkTimelines = 12,    // SpineGpuTimeline[]（32 B/条，全局一张表，动画按区间引用）
+    kChunkFrames = 13,       // float[]（帧数据平面数组）
+    kChunkCurveTypes = 14,   // uint8[]（每段一个：0 linear / 1 stepped / 2 bezier）
+    kChunkBeziers = 15,      // SpineGpuBezier[]（16 B/条，按段序）
+    kChunkTimelinePayload = 16,  // 字节（attachment 名 / deform 稀疏帧 / drawOrder 偏移）
 
     // v7：蒙皮数据流。id 从 21 起 —— 10..20 留给 v7 动画阶段
     // （骨骼树 / 时间轴 / path 几何），别占用。
@@ -381,6 +491,128 @@ inline bool operator==(const SpineGpuBone& a, const SpineGpuBone& b)
            a.pad == b.pad;   // pad 参与比较：落盘必须是 0，放进来才能抓"写端没清零"
 }
 inline bool operator!=(const SpineGpuBone& a, const SpineGpuBone& b) { return !(a == b); }
+
+// ---------------------------------------------------------------------
+// 动画目录（chunk 11，20 B/条）
+// ---------------------------------------------------------------------
+// 一条 = 一个动画。时间轴是**全局一张表**（chunk 12），动画只持有区间
+// `[timeline_first, timeline_first + timeline_count)` ——
+// 这样"同一个时间轴被两个动画引用"（Spine 里做不到，但去重后的表不怕）也好表达，
+// 且运行时扫描一个动画不需要间接跳转。
+//
+// ⚠️ `name_offset` 是进 chunk 1 的**字节**偏移（不是"第几个字符串"）：
+//    字符串表是变长的，按下标取必须先扫一遍；按偏移取是 O(1)，
+//    而且 C# 那边没有 offsetof 之外的捷径，两边都是同一个公式。
+//
+// ⚠️ 动画**数量不进 header**：header 的 16 个 u32 已经排满，而 chunk 11 的条目
+//    是定长 20 B ⇒ 数量 = chunk 11 大小 / 20，读端照此反推并校验整除。
+struct SpineGpuAnim
+{
+    uint32_t name_offset = 0;     // @0   chunk 1 里的字节偏移
+    uint32_t timeline_first = 0;  // @4   进 chunk 12 的**条**下标
+    uint32_t timeline_count = 0;  // @8
+    float duration = 0.0f;        // @12  参考实现 = max(各时间轴最后一帧的 time)
+    uint32_t pad = 0;             // @16  落盘必须写 0
+};
+
+static_assert(sizeof(SpineGpuAnim) == SpineGpuConstants::kAnimDirSize,
+              "spec 3.2: animation directory entry is 20 B");
+static_assert(offsetof(SpineGpuAnim, name_offset) == 0, "spec 3.2: anim.name_offset @0");
+static_assert(offsetof(SpineGpuAnim, timeline_first) == 4, "spec 3.2: anim.timeline_first @4");
+static_assert(offsetof(SpineGpuAnim, timeline_count) == 8, "spec 3.2: anim.timeline_count @8");
+static_assert(offsetof(SpineGpuAnim, duration) == 12, "spec 3.2: anim.duration @12");
+static_assert(offsetof(SpineGpuAnim, pad) == 16, "spec 3.2: anim.pad @16");
+static_assert(std::is_standard_layout_v<SpineGpuAnim>, "anim dir entry must stay standard-layout");
+
+inline bool operator==(const SpineGpuAnim& a, const SpineGpuAnim& b)
+{
+    return a.name_offset == b.name_offset && a.timeline_first == b.timeline_first &&
+           a.timeline_count == b.timeline_count && a.duration == b.duration && a.pad == b.pad;
+}
+inline bool operator!=(const SpineGpuAnim& a, const SpineGpuAnim& b) { return !(a == b); }
+
+// ---------------------------------------------------------------------
+// 时间轴表（chunk 12，32 B/条，全局一张）
+// ---------------------------------------------------------------------
+// `target` 的含义随 type 变，这也是它叫 target 不叫 bone_index 的原因：
+//   * rotate / translate / scale / shear → **骨骼**下标
+//   * attachment / color / twoColor      → **槽位**下标
+//   * deform                             → **附件记录**（chunk 7 行号）下标
+//   * ik / transform / path*             → 对应**约束**下标
+//   * drawOrder                          → 恒 0（它作用于整个骨架的槽位顺序）
+//
+// deform 用"附件记录下标"是有意的：一条记录 = (皮肤, 槽位, 附件) 三元组，
+// 正好是 deform 时间轴的寻址键，不需要再给 32 B 塞三个字段。
+// 代价是"deform 指向一个不产生绘制项的附件"（path / boundingbox / clipping）
+// 无从表达 —— 但它们**本来就不渲染**，deform 对它们没有效果，烘焙期直接跳过。
+struct SpineGpuTimeline
+{
+    uint16_t type = 0;            // @0   SpineTimelineType（TimelineType.h:35-49 原值）
+    uint16_t target = 0;          // @2   见上：骨骼 / 槽位 / 附件记录 / 约束 下标
+    uint32_t frame_count = 0;     // @4
+    // ⚠️ 进 chunk 13 的 **float 下标**（字节 / 4），不是"第几帧"。
+    //    每类时间轴每帧的 float 数不同（rotate 2、translate 3、color 5、twoColor 8…），
+    //    不存在一个全局统一的"帧"单位 —— 用"帧"去算下标，第一条（偏移 0）看不出错，
+    //    第二条起就读到别人的帧数据，且不报错。
+    uint32_t frame_first = 0;     // @8
+    uint32_t curve_first = 0;     // @12  进 chunk 14 的**段**下标
+    uint32_t bezier_first = 0;    // @16  进 chunk 15 的**条**下标
+    uint32_t bezier_count = 0;    // @20  这一条时间轴里有几条 bezier
+    uint32_t payload_offset = 0;  // @24  进 chunk 16 的**字节**偏移
+    uint32_t payload_count = 0;   // @28  载荷里的**条目**数（变长三类是帧数，其余是 0）
+};
+
+static_assert(sizeof(SpineGpuTimeline) == SpineGpuConstants::kTimelineEntrySize,
+              "spec 3.3: timeline entry is 32 B");
+static_assert(offsetof(SpineGpuTimeline, type) == 0, "spec 3.3: timeline.type @0");
+static_assert(offsetof(SpineGpuTimeline, target) == 2, "spec 3.3: timeline.target @2");
+static_assert(offsetof(SpineGpuTimeline, frame_count) == 4, "spec 3.3: timeline.frame_count @4");
+static_assert(offsetof(SpineGpuTimeline, frame_first) == 8, "spec 3.3: timeline.frame_first @8");
+static_assert(offsetof(SpineGpuTimeline, curve_first) == 12, "spec 3.3: timeline.curve_first @12");
+static_assert(offsetof(SpineGpuTimeline, bezier_first) == 16, "spec 3.3: timeline.bezier_first @16");
+static_assert(offsetof(SpineGpuTimeline, bezier_count) == 20, "spec 3.3: timeline.bezier_count @20");
+static_assert(offsetof(SpineGpuTimeline, payload_offset) == 24, "spec 3.3: timeline.payload_offset @24");
+static_assert(offsetof(SpineGpuTimeline, payload_count) == 28, "spec 3.3: timeline.payload_count @28");
+static_assert(std::is_standard_layout_v<SpineGpuTimeline>, "timeline entry must stay standard-layout");
+
+inline bool operator==(const SpineGpuTimeline& a, const SpineGpuTimeline& b)
+{
+    return a.type == b.type && a.target == b.target && a.frame_count == b.frame_count &&
+           a.frame_first == b.frame_first && a.curve_first == b.curve_first &&
+           a.bezier_first == b.bezier_first && a.bezier_count == b.bezier_count &&
+           a.payload_offset == b.payload_offset && a.payload_count == b.payload_count;
+}
+inline bool operator!=(const SpineGpuTimeline& a, const SpineGpuTimeline& b) { return !(a == b); }
+
+// ---------------------------------------------------------------------
+// bezier 控制点（chunk 15，16 B/条）
+// ---------------------------------------------------------------------
+// ⚠️ 存**控制点**而不是参考实现那张展开表。`CurveTimeline::setCurve()`（:78-83）
+//    把 4 个控制点展开成 `BEZIER_VALUES = 18` 个 float 的采样表；实测 2 567 358 段中
+//    bezier 占 36.6%，定长存表要 49.0 MB，存控制点 **16.8 MB**。
+//    展开式里的 4 个常数 `0.03f / 0.006f / 0.3f / 0.16666667f`（:80-83）由**读端照抄**，
+//    ⚠️ 化简即错且不报错（那是 bezier 的前向差分系数，不是可以重排的算术式）。
+struct SpineGpuBezier
+{
+    float cx1 = 0.0f;   // @0
+    float cy1 = 0.0f;   // @4
+    float cx2 = 0.0f;   // @8
+    float cy2 = 0.0f;   // @12
+};
+
+static_assert(sizeof(SpineGpuBezier) == SpineGpuConstants::kBezierSize,
+              "spec 3.4: bezier control point record is 16 B");
+static_assert(offsetof(SpineGpuBezier, cx1) == 0, "spec 3.4: bezier.cx1 @0");
+static_assert(offsetof(SpineGpuBezier, cy1) == 4, "spec 3.4: bezier.cy1 @4");
+static_assert(offsetof(SpineGpuBezier, cx2) == 8, "spec 3.4: bezier.cx2 @8");
+static_assert(offsetof(SpineGpuBezier, cy2) == 12, "spec 3.4: bezier.cy2 @12");
+static_assert(std::is_standard_layout_v<SpineGpuBezier>, "bezier record must stay standard-layout");
+
+inline bool operator==(const SpineGpuBezier& a, const SpineGpuBezier& b)
+{
+    return a.cx1 == b.cx1 && a.cy1 == b.cy1 && a.cx2 == b.cx2 && a.cy2 == b.cy2;
+}
+inline bool operator!=(const SpineGpuBezier& a, const SpineGpuBezier& b) { return !(a == b); }
 
 // ---------------------------------------------------------------------
 // 附件记录（chunk 7，规格 §9）

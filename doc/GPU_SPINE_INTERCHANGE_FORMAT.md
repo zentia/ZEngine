@@ -271,6 +271,58 @@ onlyTranslation 0.04% / noScale 0.02% / **noScaleOrReflection 0 次**。
 `Bone.cpp:172-185` 实现，但**没有真实资产能给它的解算结果背书**
 （S4 阶段要用合成夹具对拍）。
 
+### 3.5 动画（chunk 11-16，v9）
+
+五块之间全是**下标**引用。完整设计见 `doc/GPU_SPINE_V7_ANIMATION.md` §3.2-§3.4
+与 §7.0.3；这里只记容器这一侧的布局。
+
+```
+SpineGpuAnim（chunk 11）        20 B/条
+  name_offset     u32   @0    进 chunk 1 的**字节**偏移
+  timeline_first  u32   @4    进 chunk 12 的**条**下标
+  timeline_count  u32   @8
+  duration        f32   @12   = max(各时间轴最后一帧的 time)
+  _pad            u32   @16   落盘必须写 0
+
+SpineGpuTimeline（chunk 12）    32 B/条，全局一张表，动画按区间引用
+  type            u16   @0    SpineTimelineType（TimelineType.h:35-49 原值）
+  target          u16   @2    骨骼 / 槽位 / **附件记录** / 约束 下标（随 type 变）
+  frame_count     u32   @4
+  frame_first     u32   @8    ⚠️ 进 chunk 13 的 **float** 下标，**不是**帧号
+  curve_first     u32   @12   进 chunk 14 的**段**下标
+  bezier_first    u32   @16   进 chunk 15 的**条**下标
+  bezier_count    u32   @20
+  payload_offset  u32   @24   进 chunk 16 的**字节**偏移
+  payload_count   u32   @28   条目数（变长三类是帧数，其余恒 0）
+
+chunk 13  帧        f32[]     帧数据平面数组；第 n 帧的时间 = frames[frame_first + n*ENTRIES]
+chunk 14  曲线类型  u8[]      每段一个：0 linear / 1 stepped / 2 bezier（CurveTimeline.cpp:42-44）
+chunk 15  bezier    SpineGpuBezier[]，16 B/条（cx1, cy1, cx2, cy2）
+chunk 16  变长载荷  字节       attachment 名 / deform 稀疏帧 / drawOrder 偏移
+```
+
+- ⚠️ **`frame_first` 是 float 下标**：各类每帧的 float 数不同（rotate 2 / translate 3 /
+  color 5 / twoColor 8 …）⇒ **不存在全局统一的"帧"单位**。用"帧"去算下标，第一条
+  （偏移 0）看不出错，第二条起就读到别人的帧数据，且不报错。
+- ⚠️ **动画数量不进 header**：64 B header 的 16 个 u32 已经排满，而 chunk 11 是定长
+  20 B ⇒ 数量 = chunk 11 大小 / 20，读端照此反推并校验整除。
+- **时间轴顺序是规范化的**：按 (type, target) 升序、稳定排序。两条输入路径的顺序本来
+  就不一样（二进制槽位→骨骼，json 同序但条目顺序取决于文件里键的书写顺序），
+  不规范化就无法做"skel↔json 逐字节相同"的对拍。
+- `target` 为 deform 时是**附件记录**（chunk 7 行号）下标 —— 一条记录 =
+  (皮肤, 槽位, 附件) 三元组，正好是 deform 时间轴的寻址键。
+- 变长三类（attachment / deform / drawOrder）只有 **time** 进 chunk 13，其余在 chunk 16，
+  这样"取第 n 帧的时间"对所有类型都是同一个公式。
+- attachment 帧里的"没有附件"是 **0xFFFFFFFF 不是 0** —— 0 是 chunk 1 里第一个
+  字符串的合法偏移，填 0 会让空帧变成"挂上某个真实附件"且不报错。
+- 读端必须查**每一个**区间（帧 / 曲线 / bezier / 载荷 / 动画的时间轴区间）：
+  下标越界在 C++ 与 C# 里都不崩，只会播到别人的数据。
+
+**实测（781 个 OSGame 容器）**：chunk 11-16 合计 **166.72 MB**，占容器的 **80.8%**
+（其中 deform 载荷 122.81 MB 独占 59.5%）。时间轴 **254 471** 条、动画 **1 932** 个；
+15 类时间轴里真实出现的 **11 类**；曲线 linear 58.26% / bezier 36.57% / stepped 5.17%。
+完整表格见 `doc/GPU_SPINE_V7_ANIMATION.md` §7.0.3。
+
 ---
 
 ## 4. 绘制项表（静态）
@@ -603,10 +655,15 @@ Header (64 B)
                                v8 = 骨骼树进容器（§3.4）—— 新增 chunk 10，36 B/骨；
                                     header / 绘制项 / 顶点布局都没动，但没有它
                                     动画就无从解算（时间轴是相对 setup pose 的增量）
+                               v9 = 动画进容器（§3.5）—— 新增 chunk 11-16；
+                                    header 与既有 chunk 全都没动（动画数量由 chunk 11
+                                    的大小反推）；flags 多一位 kHasEventTimeline
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
                                / kHasDeform（有绘制项因 FFD 走了 CPU fallback，见 §7.1）
+                               / kHasEventTimeline（v9：有事件时间轴。事件**不烘焙**，
+                                 但"有却不记"等于静默丢弃 ⇒ 用一位显式说出来）
   0x10  bone_count       u32
   0x14  slot_count       u32
   0x18  draw_item_count  u32
@@ -622,7 +679,10 @@ Header (64 B)
 
 ChunkTable  (chunk_count × 16 B)  { id u32, offset u32, size u32, _pad u32 }
 Chunks:
-  id=1  strings        骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名，每项 UTF-8 且 '\0' 结尾
+  id=1  strings        骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名
+                       → **动画名** → **动画附件名**（v9），每项 UTF-8 且 '\0' 结尾。
+                       最后两组只有"动画名"有计数（= chunk 11 的条目数）；
+                       "动画附件名"只按偏移访问，没有计数。
   id=2  slot_bone      每槽位的骨骼下标（u16 × slot_count）—— rigid 用
   id=10 bone_setup     SpineGpuBone[]，36 B/骨（§3.4，v8）
                        { x, y, rotation, scale_x, scale_y, shear_x, shear_y, length,
@@ -638,6 +698,12 @@ Chunks:
   id=8  atlas_pages    图集页路径，每项 '\0' 结尾
   id=9  clip_data      ClipPolygon[]，12 B/条（§7.2）；**顶点本身在 chunk 3 里**。
                        没有裁剪时这个 chunk **根本不写**（不是写个空块）
+  id=11 anim_dir        SpineGpuAnim[]，20 B/条（§3.5，v9）
+  id=12 timelines       SpineGpuTimeline[]，32 B/条（§3.5，v9）—— 全局一张表
+  id=13 frames          f32[]，帧数据平面数组（§3.5，v9）
+  id=14 curve_types     u8[]，每段一个（§3.5，v9）
+  id=15 beziers         SpineGpuBezier[]，16 B/条（§3.5，v9）
+  id=16 timeline_payload 字节：attachment 名 / deform 稀疏帧 / drawOrder 偏移（§3.5，v9）
   id=21 influence_bind bindPos f32×2 × 影响条目数，8 B/条（§3.1，v7）
   id=22 influence_bone (boneIdx u16, weight unorm8, pad u8) × 影响条目数，4 B/条（v7）
                        ⚠️ 21 与 22 **共用同一个条目下标**（= 权重顶点的
@@ -651,7 +717,8 @@ Chunks:
 > 读会拿到 `index_buffer` 当 UV，静默错位。这也正是 `kFormatVersion` 升到 3 的原因。
 >
 > ⚠️ **文件里 chunk 的顺序也不是 id 顺序**：写端按
-> `1, 2, 10, 3, 21, 22, 4, 5, 9, 6, 7, 8` 追加（骨骼 setup 紧挨 slot_bone；影响流紧跟
+> `1, 2, 10, 11, 12, 13, 14, 15, 16, 3, 21, 22, 4, 5, 9, 6, 7, 8` 追加
+> （骨骼 setup 紧挨 slot_bone；v9 的动画块 11-16 紧跟其后；影响流紧跟
 > 顶点块；9 夹在 5 与 6 之间是
 > 历史顺序）。换了顺序文件照样能读，但字节不再逐字节相同 ⇒ 跨语言对拍（§12）立刻红，
 > 所以 C# 端必须照抄这个顺序（见 `SpineGpuContainerIo.cs`）。
@@ -701,12 +768,15 @@ Chunks:
 ## 11. 版本与兼容
 
 - `version` 变化 ⇒ 导入器必须拒绝旧容器并给出明确错误，不做静默兼容。
-- **v7 → v8 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
-  **v8 追加骨骼树（chunk 10，§3.4）**。仍在推进的是动画（chunk 11-16）、
-  槽位颜色（17）、约束（18-20），解算器自写、仍在 CPU。
+- **v7 → v9 已落地**：v7 是影响流（chunk 21 / 22）+ 逐顶点变长影响数；
+  **v8 追加骨骼树（chunk 10，§3.4）**；**v9 追加动画（chunk 11-16，§3.5）**。
+  仍在推进的是槽位颜色（17）、约束（18-20），解算器自写、仍在 CPU。
   字段设计与转录 gap 分析见 **`doc/GPU_SPINE_V7_ANIMATION.md`**。
-  v7 / v8 **都不动** header（仍 64 B）、不动 chunk 1..9、不动 §5 每帧实例数据、
-  不动 §6 shader 数学；新增的计数一律从 chunk 表推导（`size / stride`），不进 header。
+  v7 / v8 / v9 **都不动** header（仍 64 B）、不动 chunk 1..9、不动 §5 每帧实例数据、
+  不动 §6 shader 数学；新增的计数一律从 chunk 表推导（`size / stride`），不进 header
+  （v9 的动画数量就是从 chunk 11 的大小反推的）。
+  ⚠️ v8 容器被 v9 读端读会得到 **0 个动画**（chunk 11 不存在），而"没有动画"本身
+  不报错 —— 与 chunk 10 那一类是同一个坑，所以仍然是不兼容升级。
 - `spine_runtime` 不匹配 ⇒ 警告但允许（布局差异只在 `_bones` 宽度，导入器已按 3.8 读；
   4.x 资产需要另一条导入路径，**不在本版本范围**）。
 - 任何"导入器静默调整数据"的行为（截断影响数、重排顶点、自动降精度）都**必须报错**，
@@ -791,7 +861,10 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
    且两根的 `transform_mode` 不同 —— 只比"条数对不对"抓不到解读漂。
 6. **两种输入必须对拍**：`.skel`（编辑器默认导出）与 json 是两条独立解析路径，
    同一副骨架经两条路径 Bake 后必须产出**逐字节相同**的容器 ——
-   v8 起这条也覆盖了骨骼 setup：二进制的字段顺序与 json 的默认值必须殊途同归。
+   v8 起这条覆盖了骨骼 setup、v9 起又覆盖动画（11 类时间轴 + 曲线）：
+   二进制的字段顺序与 json 的默认值必须殊途同归。
+   ⚠️ 为此动画时间轴在 Bake 时按 **(type, target) 升序稳定排序** —— 两条路径的
+   条目顺序本来就不一样（json 取决于文件里键的书写顺序），不规范化就对不上。
 另：对 `.skel` 夹具的**每个真前缀**都调一次解析，必须全部失败 —— 它既没魔数也没长度字段，
 截断是最容易触发越界读的场景。
 6. **换装必须验两个皮肤**：同一副骨架里两个皮肤在同一槽位放同名的附件（几何不同），
@@ -864,9 +937,10 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
 **无。** 上表全部已拍板（#2 在 2026-10-22 因实测改判为"逐顶点变长"）；
 后续若再开新议题写在这里。
 
-（v7 设计内部的两个开放项，记在 `doc/GPU_SPINE_V7_ANIMATION.md` §7：
-约束（IK / transform / path）的 setup 数据未预留 chunk，届时需要 chunk 16+ 并 bump 到 v8；
-chunk 15 变长载荷的编码未定。）
+（v7 设计内部的开放项，记在 `doc/GPU_SPINE_V7_ANIMATION.md` §7：
+约束（IK / transform / path）的 setup 数据仍未落盘，S4 需要 chunk 17+ 并 bump 到 v10；
+chunk 15/16 的曲线与变长载荷编码**已定**——紧凑曲线（u8/段 + 16 B bezier）+ 稀疏 deform，
+见 §3.5。）
 
 ---
 

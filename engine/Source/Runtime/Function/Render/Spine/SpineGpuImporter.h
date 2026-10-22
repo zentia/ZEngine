@@ -234,6 +234,82 @@ struct SpineSourceClip
     bool weighted = false;
 };
 
+// ---------------------------------------------------------------------
+// 动画（源形态，仍是 spine 自己的数据形状）
+// ---------------------------------------------------------------------
+
+// 一段曲线（帧 i → 帧 i+1）。type 与控制点逐值抄 `CurveTimeline.cpp:42-44`/`:77-95`。
+//
+// ⚠️ 二进制 `readCurve()`（SkeletonBinary.cpp:1112-1127）的 switch **没有 default**：
+//    认不出的字节会**静默当成 linear**。我们报显式错 —— 认不出的曲线字节意味着
+//    "这段插值方式和 spine 里不一样"，静默当 linear 会让动作悄悄变样。
+struct SpineSourceCurve
+{
+    SpineCurveType type = SpineCurveType::kLinear;
+    // 只有 kBezier 有意义。默认全 0（= 一条合法的、退化的 bezier，不会残留脏字节）。
+    float cx1 = 0.0f;
+    float cy1 = 0.0f;
+    float cx2 = 0.0f;
+    float cy2 = 0.0f;
+};
+
+// deform 的一帧。**必须保持稀疏**：只记 `[start, start + values.size())` 这一段。
+//
+// `values` 为空 = **回退帧**（参考实现里 `end == 0` 那一路，SkeletonBinary.cpp:990）。
+// 回退的含义对 rigid / weighted **不一样**，但不影响这里的存储：
+//   * rigid    → 参考实现填的是**绝对**局部坐标，整体替换（VertexAttachment.cpp:72-73）
+//   * weighted → 填 0，逐影响**相加**（:122-123）
+// 两者的"不动"都等于顶点缓冲里那份绑定姿势 ⇒ 读端遇到空帧就是"顶点不改"。
+struct SpineSourceDeformFrame
+{
+    uint32_t start = 0;
+    std::vector<float> values;
+};
+
+// drawOrder 的一帧：只存**被挪动**的槽位（抄 SkeletonBinary.cpp:1051-1072 的
+// offsetCount + (slotIndex, offset) 流；没列出的槽位按 setup 顺序填空）。
+struct SpineSourceDrawOrderFrame
+{
+    std::vector<uint32_t> slots;
+    // 与 slots 一一对应。**有符号**：参考实现是 `drawOrder[index + readVarint()] = ...`，
+    // 而 varint 是有符号读法（zigzag）⇒ 偏移可以是负的。
+    std::vector<int32_t> offsets;
+};
+
+struct SpineSourceTimeline
+{
+    SpineTimelineType type = SpineTimelineType::kRotate;
+    // 骨骼 / 槽位 / 约束下标（deform 在 Bake 期才由 (皮肤, 槽位, 附件名) 换算成
+    // 附件记录下标，所以这里先留 -1）。
+    int target = 0;
+
+    // 定长部分：frame_count × SpineTimelineEntries(type) 个 float，行主序。
+    // 变长的三类（attachment / deform / drawOrder / event）这里只有 time（1 个/帧）。
+    std::vector<float> frames;
+
+    // 段数 = frame_count - 1；attachment / drawOrder / event **没有**曲线（不是
+    // CurveTimeline），这里是空的。
+    std::vector<SpineSourceCurve> curves;
+
+    // ---- 变长部分（与 frames 一一对应）----
+    // type 4 attachment：每帧一个附件名；**空串 = 该帧隐藏这个槽位**。
+    std::vector<std::string> attachment_names;
+    // type 6 deform：每帧一段稀疏值。
+    std::vector<SpineSourceDeformFrame> deform_frames;
+    // type 6 的寻址键（deform 是 (皮肤, 槽位, 附件) 三级）。
+    int deform_skin = -1;
+    int deform_slot = -1;
+    std::string deform_attachment;
+    // type 8 drawOrder：每帧一组偏移。
+    std::vector<SpineSourceDrawOrderFrame> draw_order_frames;
+};
+
+struct SpineSourceAnimation
+{
+    std::string name;
+    std::vector<SpineSourceTimeline> timelines;
+};
+
 struct SpineSourceSkeleton
 {
     std::vector<SpineSourceBone> bones;
@@ -255,10 +331,24 @@ struct SpineSourceSkeleton
     // 换到没有它的皮肤时作用域也就不存在（3.8 同时只有一个皮肤生效）。
     std::vector<SpineSourceClip> clips;
 
+    // 动画（v9：烘焙进 chunk 11-16）。json 与二进制走同一个 SpineSourceTimeline。
+    std::vector<SpineSourceAnimation> animations;
+
+    // 约束**名**的有序表。只用于把 json 里 `animations.*.ik / transform / path` 的
+    // **名字**换算成下标（参考实现 `findIkConstraint()` 找不到时把下标**静默留在 0**，
+    // SkeletonJson.cpp:933-940 ⇒ 我们报显式错）。
+    //
+    // ⚠️ 只要名字和顺序 —— 约束的 setup 字段（chunk 18）是 S4 的事。
+    // ⚠️ 二进制**不需要**它：二进制的时间轴里写的就是下标本身。
+    std::vector<std::string> ik_names;
+    std::vector<std::string> transform_names;
+    std::vector<std::string> path_names;
+
     // flags 来源
     bool has_draw_order_timeline = false;   // animations.*.drawOrder 存在 ⇒ 整个资产走 CPU
     bool uses_tint_black = false;           // 任一槽位带 dark
     bool has_clipping = false;              // 存在 clipping 附件（= !clips.empty()）
+    bool has_event_timeline = false;        // 有 event 时间轴（**不烘焙**，但要说出来）
 
     // 图集页名（写进容器 chunk 7；序列化时才知道纹理引用）
     std::vector<std::string> atlas_pages;
@@ -344,6 +434,28 @@ struct SpineGpuAsset
     // 附件记录（chunk 6）。Bake 时建好；序列化 / 反序列化都走它 ——
     // 不再从 draw_items 反推（那会假设"附件与绘制项一一对应"，是个脆假设）。
     std::vector<SpineGpuAttachmentRecord> attachment_records;
+
+    // ---- 动画（chunk 11-16，v9）----
+    // 四块定长 + 一块变长，相互之间全部是**下标**引用，没有指针 / 没有偏移推导：
+    //   anims[].timeline_first  → timelines[]          （条）
+    //   timelines[].frame_first → frames[]             （帧，不是 float）
+    //   timelines[].curve_first → curve_types[]        （段）
+    //   timelines[].bezier_first→ beziers[]            （条）
+    //   timelines[].payload_offset → timeline_payload[]（字节）
+    // ⚠️ 每一条的单位都不一样，写错一个"帧 vs float"在偏移 0 处逐字节相同。
+    std::vector<SpineGpuAnim> anims;
+    std::vector<SpineGpuTimeline> timelines;
+    std::vector<float> frames;
+    std::vector<uint8_t> curve_types;
+    std::vector<SpineGpuBezier> beziers;
+    std::vector<uint8_t> timeline_payload;
+
+    // 动画名（chunk 1，排在槽位名 / 附件名 / 图集页名**之后**）。
+    // 数量 = anims.size()，读端按 chunk 11 的大小反推。
+    std::vector<std::string> anim_names;
+    // attachment 时间轴用到的附件名（chunk 1 的最末尾一组）。
+    // **只按偏移访问**，读端不需要知道它有多少条 ⇒ 不会破坏前面几组的切分。
+    std::vector<std::string> anim_attachment_names;
 };
 
 SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsset& out);

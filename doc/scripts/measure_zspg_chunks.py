@@ -19,6 +19,7 @@
     * 顶点 / 影响条目总数、均值影响数
     * chunk 3（顶点）、21（bindPos）、22（bone+weight）、4（UV）、5（索引）的字节数
     * v7 实际 vs "v6 若同样全部能烘焙（weighted 定长 48 B）" 的比值
+    * v9 动画块：chunk 11-16 的字节数、时间轴类型分布、曲线类型分布
 
 ⚠️ 两个容易踩的点
 ----------------
@@ -53,6 +54,20 @@ kOffBonePad = 35
 kTransformModeNames = ["normal", "onlyTranslation", "noRotationOrReflection",
                        "noScale", "noScaleOrReflection"]
 
+# ---- v9 动画块（chunk 11-16）----
+kAnimDirSize = 20        # SpineGpuAnim
+kTimelineEntrySize = 32  # SpineGpuTimeline
+kBezierSize = 16         # SpineGpuBezier
+
+# 逐值抄 spine-cpp TimelineType.h:35-49
+kTimelineNames = [
+    "rotate", "translate", "scale", "shear", "attachment", "color", "deform",
+    "event", "drawOrder", "ikConstraint", "transformConstraint",
+    "pathConstraintPosition", "pathConstraintSpacing", "pathConstraintMix", "twoColor",
+]
+# 逐值抄 CurveTimeline.cpp:42-44
+kCurveNames = ["linear", "stepped", "bezier"]
+
 
 def Mb(n):
     return "%.2f MB" % (n / 1048576.0)
@@ -73,6 +88,20 @@ def main():
     mode_hist = collections.Counter()
     max_depth = 0
     bad_pad = 0
+
+    # ---- v9 动画 ----
+    anim_total = 0
+    timeline_total = 0
+    frame_floats = 0
+    tl_type_hist = collections.Counter()
+    curve_hist = collections.Counter()
+    bezier_total = 0
+    files_with_anim = 0
+    bad_anim_pad = 0
+    deform_frames = 0
+    deform_floats = 0
+    attachment_frames = 0
+    draworder_frames = 0
 
     for dirpath, _, filenames in os.walk(root):
         for fn in filenames:
@@ -113,9 +142,70 @@ def main():
                 if depth:
                     max_depth = max(max_depth, max(depth))
 
+            # ---- chunk 11：动画目录（20 B/条）----
+            if 11 in offsets:
+                ao, asz = offsets[11]
+                n = asz // kAnimDirSize
+                anim_total += n
+                files_with_anim += 1
+                for k in range(n):
+                    p = ao + k * kAnimDirSize
+                    # pad @16 必须写 0，否则跨语言逐字节对拍会红
+                    if struct.unpack_from("<I", d, p + 16)[0] != 0:
+                        bad_anim_pad += 1
+
+            # ---- chunk 12：时间轴表（32 B/条）----
+            if 12 in offsets:
+                to, tsz = offsets[12]
+                n = tsz // kTimelineEntrySize
+                timeline_total += n
+                for k in range(n):
+                    p = to + k * kTimelineEntrySize
+                    tl_type_hist[struct.unpack_from("<H", d, p)[0]] += 1
+
+            # ---- chunk 14：曲线类型（u8/段）----
+            if 14 in offsets:
+                co, csz = offsets[14]
+                for k in range(csz):
+                    curve_hist[d[co + k]] += 1
+
+            # ---- chunk 16：变长载荷，按时间轴类型拆分 ----
+            # deform（type 6）是这里的大头：每帧 [u32 start][u32 count][f32 × count]。
+            # 量出"帧数 / float 数"才能回答"S6 的 deform 缓冲到底有多大"。
+            if 12 in offsets and 16 in offsets:
+                to, tsz = offsets[12]
+                po, psz = offsets[16]
+                for k in range(tsz // kTimelineEntrySize):
+                    p = to + k * kTimelineEntrySize
+                    ttype = struct.unpack_from("<H", d, p)[0]
+                    frame_count = struct.unpack_from("<I", d, p + 4)[0]
+                    payload_offset = struct.unpack_from("<I", d, p + 24)[0]
+                    payload_count = struct.unpack_from("<I", d, p + 28)[0]
+                    if ttype == 6:      # deform
+                        deform_frames += payload_count
+                        q = po + payload_offset
+                        for _ in range(payload_count):
+                            start, cnt = struct.unpack_from("<II", d, q)
+                            q += 8 + cnt * 4
+                            deform_floats += cnt
+                    elif ttype == 4:    # attachment：每帧一个 u32
+                        attachment_frames += payload_count
+                        q = po + payload_offset + payload_count * 4
+                        del q
+                    elif ttype == 8:    # drawOrder：每帧 [u32 n][(u32,u32) × n]
+                        draworder_frames += payload_count
+                        q = po + payload_offset
+                        for _ in range(payload_count):
+                            n, = struct.unpack_from("<I", d, q)
+                            q += 4 + n * 8
+
     if files == 0:
         print("目录里没有 .zspg：" + root)
         return 1
+
+    # 这两块是定长的，条目数直接从字节数反推（header 里没有它们的位置）
+    frame_floats = sizes[13] // 4
+    bezier_total = sizes[15] // kBezierSize
 
     influences = sizes[22] // 4  # chunk 22 是 4 B/条
     print("容器数        : %d" % files)
@@ -144,6 +234,37 @@ def main():
     print("  => 蒙皮合计      : %s" % Mb(sizes[3] + sizes[21] + sizes[22]))
     print("chunk 4  UV        : %s" % Mb(sizes[4]))
     print("chunk 5  索引      : %s" % Mb(sizes[5]))
+    print()
+
+    # ---- v9 动画块 ----
+    print("---- v9 动画（chunk 11-16）----")
+    print("有动画的容器  : %d / %d" % (files_with_anim, files))
+    print("动画总数      : %d  (chunk 11 / 20 B)" % anim_total)
+    print("时间轴总数    : %d  (chunk 12 / 32 B)" % timeline_total)
+    print("帧 float      : %d  (chunk 13)" % frame_floats)
+    print("曲线段        : %d  (chunk 14)" % sizes[14])
+    print("bezier 段     : %d  (chunk 15 / 16 B)" % bezier_total)
+    print("变长载荷      : %s  (chunk 16)" % Mb(sizes[16]))
+    print("  deform 帧   : %d  帧，共 %d 个 float（均值 %.1f/帧 ⇒ 稀疏，没展开成整帧）"
+          % (deform_frames, deform_floats,
+             deform_floats / float(deform_frames) if deform_frames else 0.0))
+    print("  attachment  : %d 帧" % attachment_frames)
+    print("  drawOrder   : %d 帧" % draworder_frames)
+    print("  动画块合计  : %s" % Mb(sizes[11] + sizes[12] + sizes[13] +
+                                    sizes[14] + sizes[15] + sizes[16]))
+    if files_with_anim:
+        print("均动画数/资产 : %.1f" % (anim_total / float(files_with_anim)))
+    print("动画目录 pad 非 0: %d  （必须 0）" % bad_anim_pad)
+    if timeline_total:
+        print("时间轴类型分布（TimelineType.h:35-49）：")
+        for v, c in sorted(tl_type_hist.items()):
+            name = kTimelineNames[v] if 0 <= v < len(kTimelineNames) else "<越界 %d>" % v
+            print("    %2d %-24s %7d  %5.2f%%" % (v, name, c, 100.0 * c / timeline_total))
+    if sizes[14]:
+        print("曲线类型分布（CurveTimeline.cpp:42-44）：")
+        for v, c in sorted(curve_hist.items()):
+            name = kCurveNames[v] if 0 <= v < len(kCurveNames) else "<越界 %d>" % v
+            print("    %d %-10s %7d  %5.2f%%" % (v, name, c, 100.0 * c / sizes[14]))
     print()
 
     v7_skin = sizes[3] + sizes[21] + sizes[22]

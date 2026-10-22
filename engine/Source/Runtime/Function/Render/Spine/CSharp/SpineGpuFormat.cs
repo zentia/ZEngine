@@ -28,7 +28,12 @@ namespace ZEngine.SpineGpu
         // v7 = 蒙皮数据搬出顶点（weighted 顶点 48 B → 8 B 引用；新增 chunk 21 / 22）。
         // v8 = 骨骼树进容器（新增 chunk 10，36 B/骨）。header / 绘制项 / 顶点布局都没动，
         //      但没有它动画就无从解算（时间轴是相对 setup pose 的增量）。
-        public const uint FormatVersion = 8;
+        // v9 = 动画进容器（新增 chunk 11-16）。header 与既有 chunk **全都没动**
+        //      （动画数量由 chunk 11 的大小反推：定长块的字节数本身就是计数），
+        //      flags 多一位 HasEventTimeline。
+        //      ⇒ 不兼容：v8 容器被新读端读会得到 **0 个动画**（chunk 11 不存在），
+        //        而"没有动画"本身不报错 —— 与 chunk 10 是同一类坑。
+        public const uint FormatVersion = 9;
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;
@@ -49,6 +54,17 @@ namespace ZEngine.SpineGpu
         public const uint ClipPolygonSize = 12;    // 裁剪多边形记录（v6）
         public const uint AttachmentRecordSize = 8;
         public const uint BoneSetupSize = 36;      // 骨骼 setup 记录（v8，chunk 10）
+        public const uint AnimDirSize = 20;        // 动画目录项（v9，chunk 11）
+        public const uint TimelineEntrySize = 32;  // 时间轴表项（v9，chunk 12）
+        // 一条 bezier 段的控制点（v9，chunk 15）。
+        // ⚠️ 存**控制点**不存参考实现那 18 个 float 的展开采样表
+        //    （`CurveTimeline::BEZIER_VALUES = 10*2-2`）：实测 2 567 358 段里 bezier 占
+        //    36.6%，定长 20 B/段要 49.0 MB，紧凑写法 16.8 MB（差 65%）。
+        public const uint BezierSize = 16;
+
+        // attachment 时间轴里"这一帧没有附件"的哨兵。**不是 0** —— 0 是 chunk 1 里
+        // 第一个字符串的合法偏移，填 0 会让空帧变成"挂上某个真实附件"且不报错。
+        public const uint NoAttachmentName = 0xFFFFFFFFu;
 
         // 骨骼数上限：parent 是 int16（要能表示 -1），bone_idx 是 uint16 ⇒ 取严的。
         public const uint MaxBones = 32767;
@@ -109,6 +125,85 @@ namespace ZEngine.SpineGpu
         Fallback = 1,   // CPU 路径（裁剪 / FFD 正在动 / 绘制顺序动画等）
     }
 
+    // 时间轴类型：逐值抄 spine-cpp `TimelineType.h:35-49`。
+    // ⚠️ **不自造枚举值**：换一套值会让"参考实现的 switch 分支"对不上号，
+    //    而这只是静默地解错，不会报错。
+    public enum SpineTimelineType : ushort
+    {
+        Rotate = 0,
+        Translate = 1,
+        Scale = 2,
+        Shear = 3,
+        Attachment = 4,
+        Color = 5,
+        Deform = 6,
+        Event = 7,
+        DrawOrder = 8,
+        IkConstraint = 9,
+        TransformConstraint = 10,
+        PathConstraintPosition = 11,
+        PathConstraintSpacing = 12,
+        PathConstraintMix = 13,
+        TwoColor = 14,
+    }
+
+    // 曲线段类型：逐值抄 `CurveTimeline.cpp:42-44`（LINEAR=0 / STEPPED=1 / BEZIER=2）。
+    public enum SpineCurveType : byte
+    {
+        Linear = 0,
+        Stepped = 1,
+        Bezier = 2,
+    }
+
+    // 每类时间轴的"每帧几个 float"与"要不要曲线"。与 C++ `SpineTimelineEntries()`
+    // / `SpineTimelineHasCurve()`（SpineGpuFormat.h）逐值对应 —— 这两张表错了不报错，
+    // 只会让 chunk 13 / 14 的下标整个错位。
+    public static class SpineTimelineInfo
+    {
+        // 每帧占几个 float（进 chunk 13 的步长单位）。逐类抄各 Timeline 的 ENTRIES：
+        //   Rotate 2（`RotateTimeline.h:44`）/ Translate·Scale·Shear 3（`TranslateTimeline.cpp:48`）
+        //   Color 5（`ColorTimeline.cpp:48`）/ TwoColor 8（`TwoColorTimeline.cpp:48`）
+        //   IkConstraint 5（`IkConstraintTimeline.cpp:50`）/ TransformConstraint 5（`:50`）
+        //   PathConstraintPosition·Spacing 2（`PathConstraintPositionTimeline.cpp:50`）
+        //   PathConstraintMix 3（`PathConstraintMixTimeline.cpp:50`）
+        // 变长的三类（attachment / deform / drawOrder）只有 **time** 进 chunk 13（1 个），
+        // 其余部分在 chunk 16 —— 这样"取第 n 帧的时间"对所有类型都是同一个公式。
+        //
+        // ⚠️ 单位陷阱：chunk 13 的 `frame_first` 是 **float 下标**不是"第几帧"
+        //    （各类的每帧 float 数不同，没有统一的帧单位）。
+        public static uint Entries(SpineTimelineType type)
+        {
+            switch (type)
+            {
+                case SpineTimelineType.Rotate:                  return 2;
+                case SpineTimelineType.Translate:               return 3;
+                case SpineTimelineType.Scale:                   return 3;
+                case SpineTimelineType.Shear:                   return 3;
+                case SpineTimelineType.Attachment:              return 1;
+                case SpineTimelineType.Color:                   return 5;
+                case SpineTimelineType.Deform:                  return 1;
+                case SpineTimelineType.Event:                   return 1;
+                case SpineTimelineType.DrawOrder:               return 1;
+                case SpineTimelineType.IkConstraint:            return 5;
+                case SpineTimelineType.TransformConstraint:     return 5;
+                case SpineTimelineType.PathConstraintPosition:  return 2;
+                case SpineTimelineType.PathConstraintSpacing:   return 2;
+                case SpineTimelineType.PathConstraintMix:       return 3;
+                case SpineTimelineType.TwoColor:                return 8;
+            }
+            return 0;   // 不认识 ⇒ 读端必须报错（entries 无从确定）
+        }
+
+        // 这一类的帧**是否需要曲线**。attachment / drawOrder / event **不是** CurveTimeline
+        // （`AttachmentTimeline` / `DrawOrderTimeline` / `EventTimeline` 直接继承 Timeline），
+        // 参考实现根本不给它们读 curve —— 给它们写段会让 chunk 13/14 错位且不报错。
+        public static bool HasCurve(SpineTimelineType type)
+        {
+            return type != SpineTimelineType.Attachment && type != SpineTimelineType.DrawOrder &&
+                   type != SpineTimelineType.Event;
+        }
+    }
+
     [Flags]
     public enum SpineGpuFlags : uint
     {
@@ -122,6 +217,9 @@ namespace ZEngine.SpineGpu
         // 裁剪的动态 VB 只在多边形动的时候才需要重算。合成一个位，
         // 运行时会为纯裁剪的资产每帧重算一份根本没变的顶点。
         HasDeform = 1u << 4,
+        // 有事件（event）时间轴。事件**不烘焙**（它不改任何渲染状态，且本工程实测 0 个
+        // 资产用到），但"有却不记"等于静默丢弃 ⇒ 用一位显式说出来。
+        HasEventTimeline = 1u << 5,
     }
 
     // ⚠️ v3 重新编过号（UV 缓冲插进来，后面整体 +1）。
@@ -139,6 +237,14 @@ namespace ZEngine.SpineGpu
         AtlasPages = 8,
         ClipData = 9,
         BoneSetup = 10,     // v8：骨骼 setup（36 B/骨），下标 = header.bone_count 的序
+
+        // v9：动画。id 11..16 就是当初留给"v7 动画阶段"的。
+        AnimDir = 11,          // SpineGpuAnim[]（20 B/条）
+        Timelines = 12,        // SpineGpuTimeline[]（32 B/条，全局一张表，动画按区间引用）
+        Frames = 13,           // float[]（帧数据平面数组）
+        CurveTypes = 14,       // uint8[]（每段一个：0 linear / 1 stepped / 2 bezier）
+        Beziers = 15,          // SpineGpuBezier[]（16 B/条，按段序）
+        TimelinePayload = 16,  // 字节（attachment 名 / deform 稀疏帧 / drawOrder 偏移）
 
         // v7：蒙皮数据流。id 从 21 起 —— 10..20 留给 v7 动画阶段
         // （骨骼树 / 时间轴 / path 几何），别占用。
@@ -226,6 +332,30 @@ namespace ZEngine.SpineGpu
         public const int BoneParent = 32;          // int16，-1 = 根，否则必须 < 自己的下标
         public const int BoneTransformMode = 34;   // SpineTransformMode
         public const int BonePad = 35;             // 落盘必须写 0
+
+        // 动画目录一条（chunk 11，20 B）
+        public const int AnimNameOffset = 0;
+        public const int AnimTimelineFirst = 4;
+        public const int AnimTimelineCount = 8;
+        public const int AnimDuration = 12;
+        public const int AnimPad = 16;             // 落盘必须写 0
+
+        // 时间轴表一条（chunk 12，32 B）
+        public const int TlType = 0;               // SpineTimelineType
+        public const int TlTarget = 2;             // 骨骼 / 槽位 / 附件记录 / 约束 下标
+        public const int TlFrameCount = 4;
+        public const int TlFrameFirst = 8;         // ⚠️ float 下标，不是帧号
+        public const int TlCurveFirst = 12;
+        public const int TlBezierFirst = 16;
+        public const int TlBezierCount = 20;
+        public const int TlPayloadOffset = 24;     // 字节
+        public const int TlPayloadCount = 28;      // 条目数
+
+        // bezier 控制点一条（chunk 15，16 B）
+        public const int BezCx1 = 0;
+        public const int BezCy1 = 4;
+        public const int BezCx2 = 8;
+        public const int BezCy2 = 12;
     }
 
     // C++ 用 static_assert 挡的那层"常量之间是否自洽"。C# 没有编译期 offsetof，
@@ -272,6 +402,32 @@ namespace ZEngine.SpineGpu
             Check(SpineGpuConstants.MaxBones == 32767, "MaxBones is 32767 (int16 parent)");
 
             Check(SpineGpuConstants.NoClipIndex == 0xFFFF, "NoClipIndex must be 0xFFFF, not 0");
+
+            // ---- v9 动画 ----
+            Check(SpineGpuConstants.AnimDirSize == 20, "anim dir entry is 20 B (v9)");
+            Check(SpineGpuConstants.TimelineEntrySize == 32, "timeline entry is 32 B (v9)");
+            Check(SpineGpuConstants.BezierSize == 16, "bezier record is 16 B (v9)");
+            Check(SpineGpuConstants.NoAttachmentName == 0xFFFFFFFFu,
+                  "NoAttachmentName must be 0xFFFFFFFF, not 0");
+            CheckOffset(SpineGpuOffsets.AnimDuration, 4, SpineGpuConstants.AnimDirSize, "anim duration");
+            CheckOffset(SpineGpuOffsets.AnimPad, 4, SpineGpuConstants.AnimDirSize, "anim pad");
+            CheckOffset(SpineGpuOffsets.TlFrameCount, 4, SpineGpuConstants.TimelineEntrySize, "timeline frame_count");
+            CheckOffset(SpineGpuOffsets.TlPayloadCount, 4, SpineGpuConstants.TimelineEntrySize,
+                        "timeline payload_count");
+            CheckOffset(SpineGpuOffsets.BezCy2, 4, SpineGpuConstants.BezierSize, "bezier cy2");
+
+            // 每类时间轴都必须有"每帧 float 数"，且**定长类**都不许是 0 ——
+            // 少一类不报错，只是那条时间轴的下标整个错位。
+            Check(SpineTimelineInfo.Entries(SpineTimelineType.TwoColor) == 8, "twoColor is 8 floats/frame");
+            Check(SpineTimelineInfo.Entries(SpineTimelineType.Rotate) == 2, "rotate is 2 floats/frame");
+            Check(SpineTimelineInfo.Entries(SpineTimelineType.Color) == 5, "color is 5 floats/frame");
+            Check(SpineTimelineInfo.Entries(SpineTimelineType.IkConstraint) == 5, "ik is 5 floats/frame");
+            Check(SpineTimelineInfo.Entries(SpineTimelineType.Attachment) == 1, "attachment is 1 float/frame");
+            Check(SpineTimelineInfo.Entries((SpineTimelineType)99) == 0, "unknown timeline type has no entries");
+            Check(!SpineTimelineInfo.HasCurve(SpineTimelineType.Attachment), "attachment has no curve");
+            Check(!SpineTimelineInfo.HasCurve(SpineTimelineType.DrawOrder), "drawOrder has no curve");
+            Check(!SpineTimelineInfo.HasCurve(SpineTimelineType.Event), "event has no curve");
+            Check(SpineTimelineInfo.HasCurve(SpineTimelineType.Rotate), "rotate has curve");
         }
 
         private static void Check(bool cond, string what)
@@ -361,6 +517,57 @@ namespace ZEngine.SpineGpu
         public float Length;        // IK / 编辑器挂点；不参与蒙皮
         public short Parent = -1;   // -1 = 根
         public SpineTransformMode TransformMode = SpineTransformMode.Normal;
+    }
+
+    // 动画目录一条（chunk 11，20 B）。
+    // ⚠️ 动画**数量不进 header**：64 B header 的 16 个 u32 已经排满，而 chunk 11 的条目
+    //    是定长 20 B ⇒ 数量 = chunk 11 大小 / 20，读端照此反推并校验整除。
+    public sealed class SpineGpuAnim
+    {
+        public uint NameOffset;     // chunk 1 里的**字节**偏移
+        public uint TimelineFirst;  // 进 chunk 12 的**条**下标
+        public uint TimelineCount;
+        public float Duration;      // = max(各时间轴最后一帧的 time)
+        public uint Pad;            // 落盘必须写 0
+    }
+
+    // 时间轴表一条（chunk 12，32 B，全局一张表）。
+    // `Target` 的含义随 Type 变，这也是它叫 Target 不叫 BoneIndex 的原因：
+    //   * rotate / translate / scale / shear → **骨骼**下标
+    //   * attachment / color / twoColor      → **槽位**下标
+    //   * deform                             → **附件记录**（chunk 7 行号）下标
+    //   * ik / transform / path*             → 对应**约束**下标
+    //   * drawOrder                          → 恒 0（它作用于整个骨架的槽位顺序）
+    //
+    // deform 用"附件记录下标"是有意的：一条记录 = (皮肤, 槽位, 附件) 三元组，
+    // 正好是 deform 时间轴的寻址键，不需要再给 32 B 塞三个字段。
+    public sealed class SpineGpuTimeline
+    {
+        public ushort Type;               // SpineTimelineType
+        public ushort Target;
+        public uint FrameCount;
+        // ⚠️ 进 chunk 13 的 **float 下标**（字节 / 4），不是"第几帧"。
+        //    每类时间轴每帧的 float 数不同，不存在全局统一的"帧"单位 ——
+        //    用"帧"去算下标，第一条（偏移 0）看不出错，第二条起就读到别人的帧数据，且不报错。
+        public uint FrameFirst;
+        public uint CurveFirst;           // 进 chunk 14 的**段**下标
+        public uint BezierFirst;          // 进 chunk 15 的**条**下标
+        public uint BezierCount;
+        public uint PayloadOffset;        // 进 chunk 16 的**字节**偏移
+        public uint PayloadCount;         // 载荷里的**条目**数
+    }
+
+    // bezier 控制点（chunk 15，16 B/条）。
+    // ⚠️ 存**控制点**而不是参考实现那张展开表。`CurveTimeline::setCurve()`（:78-83）
+    //    把 4 个控制点展开成 `BEZIER_VALUES = 18` 个 float 的采样表；展开式里的 4 个常数
+    //    `0.03f / 0.006f / 0.3f / 0.16666667f`（:80-83）由**读端照抄**，
+    //    ⚠️ 化简即错且不报错（那是 bezier 的前向差分系数，不是可以重排的算术式）。
+    public sealed class SpineGpuBezier
+    {
+        public float Cx1;
+        public float Cy1;
+        public float Cx2;
+        public float Cy2;
     }
 
     public class SpineGpuContainerException : Exception

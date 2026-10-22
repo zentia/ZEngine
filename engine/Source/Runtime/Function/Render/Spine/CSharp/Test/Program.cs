@@ -86,7 +86,7 @@ namespace ZEngine.SpineGpu.Test
 
                 // ---- 基本自洽 ----
                 Check(a.Header.Magic == SpineGpuConstants.Magic, "魔数是 'ZSPG'");
-                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 8");
+                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 9");
                 Check(a.DrawItems.Count == a.Header.DrawItemCount, "绘制项数与 header 一致");
                 Check(a.BoneNames.Count == a.Header.BoneCount, "骨骼名数与 header 一致");
                 // v8：骨骼 setup 必须落盘且条数与 header 一致 —— "chunk 不存在"本身不报错，
@@ -96,6 +96,8 @@ namespace ZEngine.SpineGpu.Test
                 Check(a.AttachmentNames.Count == a.AttachmentRecords.Count, "附件名数与附件记录数一致");
                 Check((uint)(a.InfluenceBind.Length / 2) == (uint)(a.InfluenceBone.Length / (int)SpineGpuConstants.InfluenceBoneStride),
                       "影响流两条 chunk 条目数相同（bind / bone 共用同一个下标）");
+                // v9：动画名的条数 = chunk 11 的条目数（header 里没有 anim_count 的位置）
+                Check((uint)a.AnimNames.Count == (uint)a.Anims.Count, "动画名数与动画目录条数一致");
 
                 // ---- chunk 按下标找会错位：这里显式验证"按 id 找"真的用上了 ----
                 // （容器里 chunk 顺序是 1,2,3,21,22,4,5,9,6,7,8 —— 顺序 ≠ id 顺序）
@@ -171,6 +173,86 @@ namespace ZEngine.SpineGpu.Test
                     Check(h.TransformMode == SpineTransformMode.NoScaleOrReflection,
                           "hip 的 transform_mode = NoScaleOrReflection(4)");
                 }
+
+                // ---- 动画（chunk 11-16，v9）----
+                // 逐字段比，不只是比条数 —— 读写两端共用同一组常量，
+                // round-trip 抓不到"解读"漂（比如把 frame_first 当成帧号）。
+                if (b.Anims.Count == 2)
+                {
+                    Check(b.Anims[0].Pad == 0 && b.Anims[1].Pad == 0, "动画目录的 pad 落盘为 0");
+                    Check(b.Anims[0].TimelineFirst == 0 && b.Anims[0].TimelineCount == 8,
+                          "walk 从时间轴表第 0 条开始、8 条");
+                    // ⚠️ 第二个动画的三个偏移**全非 0**：偏移 0 时"帧 vs float"两种解释
+                    //    逐字节相同，写错单位测不出来。这条断言是全文件唯一能抓到它的地方。
+                    Check(b.Anims[1].TimelineFirst == 8 && b.Anims[1].TimelineCount == 1,
+                          "idle 的时间轴区间非 0（否则测不出下标写错）");
+                    Check(b.Anims[0].Duration == 1.0f, "walk 的 duration = 1（各时间轴最后一帧 time 的最大值）");
+                    Check(b.Anims[1].Duration == 0.0f, "idle 的 duration = 0（只有一帧 time=0）");
+                    if (b.AnimNames.Count == 2)
+                    {
+                        Check(b.AnimNames[0] == "walk" && b.AnimNames[1] == "idle", "动画名是 walk / idle");
+                    }
+                }
+                if (b.Timelines.Count == 9)
+                {
+                    // 规范化顺序：(type, target) 升序 —— 不跟着输入文件的书写顺序走。
+                    ushort[] wantType = { 0, 0, 1, 2, 3, 4, 5, 14, 0 };
+                    ushort[] wantTarget = { 0, 1, 0, 0, 0, 0, 0, 1, 0 };
+                    uint[] wantFrames = { 3, 1, 2, 1, 1, 2, 2, 2, 1 };
+                    // frame_first 是 **float 下标**：各类的每帧 float 数不同
+                    // （rotate 6 + rotate 2 + translate 6 + scale 3 + shear 3 +
+                    //  attachment 2 + color 10 + twoColor 16 …）
+                    uint[] wantFrameFirst = { 0, 6, 8, 14, 17, 20, 22, 32, 48 };
+                    bool allOk = true;
+                    for (int i = 0; i < 9; ++i)
+                    {
+                        var t = b.Timelines[i];
+                        allOk = allOk && t.Type == wantType[i] && t.Target == wantTarget[i] &&
+                                t.FrameCount == wantFrames[i] && t.FrameFirst == wantFrameFirst[i];
+                    }
+                    Check(allOk, "9 条时间轴的 (type, target, frame_count, frame_first) 序列");
+                    Check(b.Timelines[8].FrameFirst != 0 && b.Timelines[8].CurveFirst != 0,
+                          "最后一条时间轴的 frame_first / curve_first 都非 0");
+                }
+                Check(b.Frames.Length == 50, "帧数据 50 个 float");
+                if (b.CurveTypes.Length == 5)
+                {
+                    Check(b.CurveTypes[0] == (byte)SpineCurveType.Stepped, "段 0 = stepped");
+                    Check(b.CurveTypes[1] == (byte)SpineCurveType.Bezier, "段 1 = bezier");
+                    Check(b.CurveTypes[2] == (byte)SpineCurveType.Linear &&
+                          b.CurveTypes[3] == (byte)SpineCurveType.Linear &&
+                          b.CurveTypes[4] == (byte)SpineCurveType.Linear, "段 2..4 = linear");
+                }
+                if (b.Beziers.Count == 1)
+                {
+                    var z = b.Beziers[0];
+                    Check(z.Cx1 == 0.25f && z.Cy1 == 0.5f && z.Cx2 == 0.75f && z.Cy2 == 0.8f,
+                          "bezier 控制点按 (cx1, cy1, cx2, cy2) 落盘（顺序错了不报错）");
+                }
+                // 变长载荷：只有 attachment 时间轴有（2 帧 × u32）
+                if (b.AnimAttachmentNames.Count == 1)
+                {
+                    Check(b.AnimAttachmentNames[0] == "quad", "动画附件名去重后只剩 quad");
+                }
+                if (b.TimelinePayload.Length >= 8)
+                {
+                    uint p0 = ReadU32(b.TimelinePayload, 0);
+                    uint p1 = ReadU32(b.TimelinePayload, 4);
+                    Check(p0 != SpineGpuConstants.NoAttachmentName, "attachment 第 0 帧指向真实附件名");
+                    // ⚠️ 不是 0 —— 0 是 chunk 1 里第一个字符串的合法偏移
+                    Check(p1 == SpineGpuConstants.NoAttachmentName,
+                          "attachment 第 1 帧是空名 ⇒ NoAttachmentName（**不是** 0）");
+                }
+                bool noDeformOrDrawOrder = true;
+                foreach (var t in b.Timelines)
+                {
+                    if ((SpineTimelineType)t.Type == SpineTimelineType.Deform ||
+                        (SpineTimelineType)t.Type == SpineTimelineType.DrawOrder)
+                    {
+                        noDeformOrDrawOrder = false;
+                    }
+                }
+                Check(noDeformOrDrawOrder, "基线夹具没有 deform / drawOrder 时间轴");
             }
 
             // 裁剪：被裁的项指到一条多边形上，**没被裁的必须是 NoClipIndex 而不是 0**
@@ -299,9 +381,10 @@ namespace ZEngine.SpineGpu.Test
 
             // 版本改一改 ⇒ 必须明确拒绝，不做静默兼容（规格 §11）
             _prefix = "[负向] ";
-            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v8 是当前版本，
-            //    所以"未来"是 9，而 7 已经变成"旧容器"了。
-            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 9), "版本改成 9（未来容器）⇒ 拒绝");
+            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v9 是当前版本，
+            //    所以"未来"是 10，而 8 已经变成"旧容器"了（没有 chunk 11-16）。
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 10), "版本改成 10（未来容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 8), "版本改成 8（v8 旧容器：没有 chunk 11-16）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 7), "版本改成 7（v7 旧容器：没有 chunk 10）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 6), "版本改成 6（v6 旧容器）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 5), "版本改成 5（更旧的容器）⇒ 拒绝");
@@ -343,7 +426,55 @@ namespace ZEngine.SpineGpu.Test
                 Rejects(Mutate(good, atBone, ReadU32(good, atBone) - (uint)SpineGpuConstants.BoneSetupSize),
                         "bone_setup 少一条 ⇒ 拒绝（条数必须 = header.bone_count）");
             }
+
+            // ---- v9 动画块：越界引用必须被**读端**挡住 ----
+            // 写端永远不会产出这些字节，但容器是跨语言、跨版本的产物 —— 读端不能假设
+            // "写端一定对"。而且下标越界在 C# 里不抛异常，只会播到别人的数据。
+            _prefix = "[负向/动画] ";
+            string fb = null;
+            foreach (string x in files)
+            {
+                if (Path.GetFileName(x) == "baseline.skel.zspg") { fb = x; break; }
+            }
+            if (fb != null)
+            {
+                byte[] baseBytes = File.ReadAllBytes(fb);
+                int atDir = FindChunkSizeField(baseBytes, (uint)SpineGpuChunkId.AnimDir);
+                if (atDir >= 0)
+                {
+                    Rejects(Mutate(baseBytes, atDir, ReadU32(baseBytes, atDir) + 1),
+                            "动画目录大小 +1 ⇒ 拒绝（20 B 的整数倍）");
+                }
+                int atTl = FindChunk(baseBytes, (uint)SpineGpuChunkId.Timelines);
+                if (atTl >= 0)
+                {
+                    // 第 0 条时间轴的 frame_first 挪到远处 ⇒ 帧区间越界
+                    Rejects(Mutate(baseBytes, atTl + SpineGpuOffsets.TlFrameFirst, 0xFFFFFFF0u),
+                            "frame_first 越界 ⇒ 拒绝（越界读不抛异常，只会播到别人的帧）");
+                    // 类型改成 99 ⇒ entries 无从确定
+                    var t99 = (byte[])baseBytes.Clone();
+                    WriteU16(t99, atTl + SpineGpuOffsets.TlType, 99);
+                    Rejects(t99, "时间轴类型 99 ⇒ 拒绝（TimelineType 只到 14）");
+                    // frame_count = 0 ⇒ 参考实现是负下标读
+                    Rejects(Mutate(baseBytes, atTl + SpineGpuOffsets.TlFrameCount, 0),
+                            "时间轴 0 帧 ⇒ 拒绝（参考实现在这里是负下标读）");
+                }
+            }
             _prefix = "";
+        }
+
+        private static int FindChunk(byte[] data, uint id)
+        {
+            uint n = ReadU32(data, SpineGpuOffsets.HdrChunkCount);
+            for (uint i = 0; i < n; ++i)
+            {
+                int e = (int)(SpineGpuConstants.HeaderSize + i * SpineGpuConstants.ChunkTableEntrySize);
+                if (ReadU32(data, e + SpineGpuOffsets.ChunkId) == id)
+                {
+                    return (int)ReadU32(data, e + SpineGpuOffsets.ChunkOffset);
+                }
+            }
+            return -1;
         }
 
         // ---------------------------------------------------------
@@ -422,6 +553,12 @@ namespace ZEngine.SpineGpu.Test
             uint u = ReadU32(b, at);
             return BitConverter.ToSingle(BitConverter.GetBytes(u), 0);
         }
+        private static void WriteU16(byte[] b, int at, ushort v)
+        {
+            b[at] = (byte)(v & 0xFF);
+            b[at + 1] = (byte)((v >> 8) & 0xFF);
+        }
+
         private static void WriteU32(byte[] b, int at, uint v)
         {
             b[at] = (byte)(v & 0xFF);
