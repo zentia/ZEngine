@@ -49,7 +49,10 @@ namespace ZEngine.SpineGpu
         //       v11 容器被新读端读则"path 的 deform 恒不存在"—— 两个方向都不报错。
         // v13 = 绘制项 UvOffset 改成 uv_unit - vertex_base（uint 回绕），让 uv[UvOffset + index] 成立
         //       （索引是段内绝对下标）。布局不变、语义变 ⇒ 升版本。
-        public const uint FormatVersion = 13;
+        // v14 = 绘制项 28 → 32 B：VertexBase（u16 @26）+ DeformParent（u16 @28）+ VertexCount（u16 @30）。
+        //       GPU 上做 mesh deform 的前提（deform 数组按附件本地下标排；linked mesh 继承父附件的
+        //       deform，MeshAttachment.cpp:94-95）。
+        public const uint FormatVersion = 14;
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;
@@ -66,7 +69,7 @@ namespace ZEngine.SpineGpu
         public const uint RootStrideStd140 = 32;
 
         public const uint DrawInstanceSize = 20;   // 每帧实例项
-        public const uint DrawItemSize = 28;       // 静态绘制项（v6）
+        public const uint DrawItemSize = 32;       // 静态绘制项（v14）
         public const uint ClipPolygonSize = 12;    // 裁剪多边形记录（v6）
         public const uint AttachmentRecordSize = 8;
         public const uint BoneSetupSize = 36;      // 骨骼 setup 记录（v8，chunk 10）
@@ -102,6 +105,9 @@ namespace ZEngine.SpineGpu
         // clip_index 的"没有"值。用 0xFFFF 而不是 0 —— 0 是一条**真实存在的**多边形，
         // 用它会让运行时拿第一条多边形去裁根本不该裁的项，且不报错。
         public const ushort NoClipIndex = 0xFFFF;
+
+        // DeformParent 的"没有"值（不是 linked mesh，或 inheritDeform = false）。附件数 ≤ 0xFFFF ⇒ 不会撞上合法 id。
+        public const ushort NoDeformParent = 0xFFFF;
 
         public const uint RigidVertexStride = 8;
         // v7 起 weighted 顶点**只是引用**：(influence_offset u32, influence_count u32)。
@@ -369,7 +375,9 @@ namespace ZEngine.SpineGpu
         public const int ItemKind = 22;
         public const int ItemPad = 23;
         public const int ItemClipIndex = 24;   // v6
-        public const int ItemPad2 = 26;        // v6
+        public const int ItemVertexBase = 26;    // v14
+        public const int ItemDeformParent = 28;  // v14
+        public const int ItemVertexCount = 30;   // v14
 
         // clip polygon
         public const int ClipSlotIndex = 0;
@@ -509,7 +517,7 @@ namespace ZEngine.SpineGpu
         {
             Check(SpineGpuConstants.HeaderSize == 64, "header is 64 B");
             Check(SpineGpuConstants.ChunkTableEntrySize == 16, "chunk entry is 16 B");
-            Check(SpineGpuConstants.DrawItemSize == 28, "draw item is 28 B (v6: +clip_index)");
+            Check(SpineGpuConstants.DrawItemSize == 32, "draw item is 32 B (v14: +vertex_base / deform_parent)");
             Check(SpineGpuConstants.ClipPolygonSize == 12, "clip polygon is 12 B");
             Check(SpineGpuConstants.AttachmentRecordSize == 8, "attachment record is 8 B");
             Check(SpineGpuConstants.RigidVertexStride == 8, "rigid vertex is 8 B");
@@ -528,7 +536,9 @@ namespace ZEngine.SpineGpu
             // 偏移必须单调且落在记录内 —— 这是 offsetof 断言能在运行时表达的那一半：
             // "字段没跑出结构体"。
             CheckOffset(SpineGpuOffsets.ItemClipIndex, 2, SpineGpuConstants.DrawItemSize, "draw item clip_index");
-            CheckOffset(SpineGpuOffsets.ItemPad2, 2, SpineGpuConstants.DrawItemSize, "draw item pad2");
+            CheckOffset(SpineGpuOffsets.ItemVertexBase, 2, SpineGpuConstants.DrawItemSize, "draw item vertex_base");
+            CheckOffset(SpineGpuOffsets.ItemDeformParent, 2, SpineGpuConstants.DrawItemSize, "draw item deform_parent");
+            CheckOffset(SpineGpuOffsets.ItemVertexCount, 2, SpineGpuConstants.DrawItemSize, "draw item vertex_count");
             CheckOffset(SpineGpuOffsets.ItemSkinId, 2, SpineGpuConstants.DrawItemSize, "draw item skin_id");
             CheckOffset(SpineGpuOffsets.ItemKind, 1, SpineGpuConstants.DrawItemSize, "draw item kind");
             CheckOffset(SpineGpuOffsets.ClipVertexOffset, 4, SpineGpuConstants.ClipPolygonSize, "clip vertex_offset");
@@ -545,6 +555,7 @@ namespace ZEngine.SpineGpu
             Check(SpineGpuConstants.MaxBones == 32767, "MaxBones is 32767 (int16 parent)");
 
             Check(SpineGpuConstants.NoClipIndex == 0xFFFF, "NoClipIndex must be 0xFFFF, not 0");
+            Check(SpineGpuConstants.NoDeformParent == 0xFFFF, "NoDeformParent must be 0xFFFF, not 0");
 
             // ---- v9 动画 ----
             Check(SpineGpuConstants.AnimDirSize == 20, "anim dir entry is 20 B (v9)");
@@ -691,6 +702,12 @@ namespace ZEngine.SpineGpu
         public SpineDrawItemKind Kind;
         // chunk 9 的行号；**没被裁时是 NoClipIndex**。
         public ushort ClipIndex;
+        // v14：索引 = 附件本地下标 + VertexBase（deform 数组按本地下标排）。
+        public ushort VertexBase;
+        // v14：linked mesh 且 inheritDeform 时 = 父附件 id，否则 NoDeformParent。
+        public ushort DeformParent = SpineGpuConstants.NoDeformParent;
+        // v14：附件顶点数（段内 [VertexBase, VertexBase + VertexCount)）；deform 数组长度由它定。
+        public ushort VertexCount;
     }
 
     public sealed class SpineGpuClipPolygon

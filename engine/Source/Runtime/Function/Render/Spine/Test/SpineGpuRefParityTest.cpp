@@ -59,6 +59,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -181,6 +182,9 @@ bool ReadFile(const fs::path& p, std::vector<char>& out)
 // 所以是"接近逐位"而不是逐位。用相对容差 + 绝对地板。
 // 逐步对拍（--trace）可以用 --tol 收紧，用来找"最早出现的浮点分叉"。
 float g_tolerance = 1.0e-4f;
+
+// S6 端到端蒙皮：rigid 的世界坐标绝对误差门槛（骨架单位）。
+constexpr float kRigidSkinTol = 1.0e-3f;
 
 bool CloseEnough(float a, float b, float& worst_rel)
 {
@@ -381,6 +385,18 @@ struct Stats
     size_t files_bad_deform_on_path = 0;
     size_t anim_samples = 0;
     size_t anim_duration_checks = 0;   // 动画时长与参考逐个相等
+    size_t slot_attachment_checks = 0; // S6：槽位当前附件（→ 绘制项）与参考 Slot::getAttachment() 一致
+    size_t deform_checks = 0;          // S6：槽位挂 mesh 时，deform 数组与参考 getAttachmentVertices() 比过
+    size_t deform_nonempty = 0;        //     其中参考数组非空的
+    size_t deform_values = 0;          //     逐 float 比较次数
+    float worst_deform_rel = 0.0f;
+    size_t gpu_addr_checks = 0;        // S6：weighted 影响流在附件内连续（GPU deform 寻址的前提）
+    // S6 端到端：按 spine_gpu.vert **同一套寻址 / 公式**在 CPU 上蒙皮，与参考
+    // `VertexAttachment::computeWorldVertices()` 比世界坐标。按 (rigid/weighted) × (有/无 deform) 分四格：
+    // weighted 的权重是 u8 量化的（容器格式的既定取舍），所以它的误差底噪由"无 deform"那格给出，
+    // "有 deform"那格只要与底噪同量级就说明 deform 寻址 / 加法没错（错了是成百上千单位）。
+    size_t skin_verts[2][2] = {{0, 0}, {0, 0}};
+    float skin_worst[2][2] = {{0.0f, 0.0f}, {0.0f, 0.0f}};
     size_t bone_checks = 0;
     size_t mismatches = 0;
     float worst_rel = 0.0f;
@@ -390,6 +406,34 @@ struct Stats
 };
 
 }   // namespace
+
+// 烘焙 / 读回失败的原因按"错误串去掉引号里的名字"归类计数，最后汇总打印。
+// 以前这里只有一个计数 —— 某次改动让失败数从 29 跳到 102 时，看不出是哪条规则在报。
+std::map<std::string, size_t> g_bake_fail_kinds;
+std::map<std::string, std::string> g_bake_fail_example;
+void ReportBakeFailure(const char* stage, const std::filesystem::path& file, const std::string& error)
+{
+    std::string kind = std::string(stage) + ": ";
+    bool in_quote = false;
+    for (size_t i = 0; i < error.size(); ++i)
+    {
+        const char c = error[i];
+        if (c == '\'')
+        {
+            in_quote = !in_quote;
+            kind += '\'';
+            continue;
+        }
+        if (!in_quote && (c < '0' || c > '9'))
+        {
+            kind += c;
+        }
+    }
+    if (++g_bake_fail_kinds[kind] == 1)
+    {
+        g_bake_fail_example[kind] = file.string() + " :: " + error;
+    }
+}
 
 int main(int argc, char** argv)
 {
@@ -405,6 +449,7 @@ int main(int argc, char** argv)
     bool uv_scan = false;       // 统计绘制项的"索引最小值"与 UV 寻址（渲染侧前置核对）
     size_t uv_items = 0, uv_items_base_nonzero = 0, uv_items_oob_abs = 0;
     size_t blend_count[4] = {0, 0, 0, 0}, page_nonzero = 0, fallback_items = 0;
+    size_t vis_items = 0, vis_fb_clip = 0, vis_fb_deform_only = 0;
     size_t vis_found = 0, vis_missing = 0, vis_examples = 0, vis_missing_with_candidates = 0;
     size_t anim_dur_pos = 0, anim_dur_zero = 0, anim_dur_examples = 0;
     for (int i = 1; i < argc; ++i)
@@ -538,6 +583,7 @@ int main(int argc, char** argv)
         if (!r.ok)
         {
             ++st.files_bake_failed;
+            ReportBakeFailure("bake", skel_path, r.error);
             continue;
         }
         std::vector<uint8_t> bytes;
@@ -552,6 +598,7 @@ int main(int argc, char** argv)
         if (!r.ok)
         {
             ++st.files_bake_failed;
+            ReportBakeFailure("read", skel_path, r.error);
             continue;
         }
         ++st.files_baked;
@@ -628,6 +675,13 @@ int main(int argc, char** argv)
                                 loaded.attachment_names[di.attachment_id] == name)
                             {
                                 found = true;
+                                // 屏幕上真画的项里有多少走 fallback、因为什么（deform / 裁剪 / 两者）
+                                ++vis_items;
+                                if (di.kind == SpineDrawItemKind::kFallback)
+                                {
+                                    const bool clip = di.clip_index != SpineGpuConstants::kNoClipIndex;
+                                    ++(clip ? vis_fb_clip : vis_fb_deform_only);
+                                }
                                 break;
                             }
                         }
@@ -963,6 +1017,45 @@ int main(int argc, char** argv)
         }
 
         bool file_ok = true;
+        // ---- S6：GPU deform 寻址的前提 ----
+        // shader 取 weighted deform 用 `deform[base + 2 × (influence_offset + k - infl_base)]`，
+        // 其中 infl_base = 该项第 0 个顶点的 influence_offset。成立的前提：一个附件的影响流在
+        // chunk 21/22 里**整块连续、保持原顺序**（参考实现 deform 下标 f 按"顶点序 × 影响序"
+        // 递增，VertexAttachment.cpp:110）⇒ 第 v 个顶点的 offset - infl_base = 前 v 个顶点的影响数之和。
+        // 影响流去重是按整块做的，所以这条应当恒成立；坏了 GPU 上是"取到别的顶点的偏移"，不报错。
+        {
+            const auto word = [&](size_t i) {
+                uint32_t v = 0;
+                std::memcpy(&v, loaded.vertex_buffer.data() + i * 4u, 4);
+                return v;
+            };
+            for (size_t ii = 0; ii < loaded.draw_items.size() && file_ok; ++ii)
+            {
+                const SpineDrawItem& di = loaded.draw_items[ii];
+                if (di.vertex_format != SpineVertexFormat::kWeighted || di.vertex_count == 0)
+                {
+                    continue;
+                }
+                const size_t w0 = loaded.weighted_segment_offset / 4u + static_cast<size_t>(di.vertex_base) * 2u;
+                const uint32_t infl_base = word(w0);
+                uint32_t prefix = 0;
+                for (uint32_t v = 0; v < di.vertex_count; ++v)
+                {
+                    ++st.gpu_addr_checks;
+                    const uint32_t off = word(w0 + v * 2u);
+                    if (off - infl_base != prefix)
+                    {
+                        std::printf("[对不上] %s 绘制项 %zu 顶点 %u：influence_offset - infl_base = %u，"
+                                    "但前面顶点的影响数之和是 %u（GPU deform 会取错偏移）\n",
+                                    skel_path.string().c_str(), ii, v, off - infl_base, prefix);
+                        ++st.mismatches;
+                        file_ok = false;
+                        break;
+                    }
+                    prefix += word(w0 + v * 2u + 1u);
+                }
+            }
+        }
         bool deform_on_path = false;   // 首个坏样本里，path 约束的目标槽位是否带 deform
         bool deform_scanned = false;
         for (size_t ai = 0; ai < loaded.anims.size() && file_ok; ++ai)
@@ -1055,6 +1148,191 @@ int main(int argc, char** argv)
                         }
                     }
                 }
+                // ---- S6：槽位当前附件 + mesh deform 数组，与参考 `Slot` 逐个对 ----
+                // 当前附件决定"画哪一项"，deform 数组决定"顶点怎么动"；两者都是 GPU 那一路的输入，
+                // 错了都不报错（画错附件 / 形变错），所以每个采样点都比。
+                {
+                    spine::Vector<spine::Slot*>& ref_slots = ref_skel.getSlots();
+                    if (ref_slots.size() != ours.slot_draw_item.size())
+                    {
+                        std::printf("[对不上] %s 槽位数：我们 %zu vs 参考 %zu\n", skel_path.string().c_str(),
+                                    ours.slot_draw_item.size(), ref_slots.size());
+                        ++st.mismatches;
+                        file_ok = false;
+                    }
+                    const size_t ns = std::min(ref_slots.size(), ours.slot_draw_item.size());
+                    for (size_t si = 0; si < ns; ++si)
+                    {
+                        spine::Slot* rs = ref_slots[si];
+                        spine::Attachment* ra = rs->getAttachment();
+                        const bool ref_mesh = ra != nullptr && ra->getRTTI().isExactly(spine::MeshAttachment::rtti);
+                        const bool ref_drawable =
+                            ref_mesh || (ra != nullptr && ra->getRTTI().isExactly(spine::RegionAttachment::rtti));
+                        const uint32_t item = ours.slot_draw_item[si];
+                        ++st.slot_attachment_checks;
+                        bool ok = ref_drawable == (item != SpineGpuPoseResult::kNoDrawItem);
+                        if (ok && ref_drawable)
+                        {
+                            const uint16_t aid = loaded.draw_items[item].attachment_id;
+                            ok = aid < loaded.attachment_names.size() &&
+                                 loaded.attachment_names[aid] == ra->getName().buffer();
+                        }
+                        if (!ok)
+                        {
+                            ++st.mismatches;
+                            file_ok = false;
+                            if (st.details.size() < max_details)
+                            {
+                                st.details.push_back(skel_path.filename().string() + " 动画 " + std::to_string(ai) +
+                                                     " t=" + std::to_string(t) + " 槽位 " + std::to_string(si) +
+                                                     " 当前附件：参考 '" +
+                                                     (ra != nullptr ? ra->getName().buffer() : "<无>") +
+                                                     "'，我们的绘制项 " +
+                                                     (item == SpineGpuPoseResult::kNoDrawItem ? std::string("<无>")
+                                                                                              : std::to_string(item)));
+                            }
+                            continue;
+                        }
+                        if (!ref_mesh)
+                        {
+                            continue;
+                        }
+                        spine::Vector<float>& rv = rs->getAttachmentVertices();
+                        const SpineGpuMeshDeform* od = nullptr;
+                        for (const SpineGpuMeshDeform& e : ours.mesh_deforms)
+                        {
+                            if (e.draw_item == item)
+                            {
+                                od = &e;
+                                break;
+                            }
+                        }
+                        ++st.deform_checks;
+
+                        // ---- 端到端：照 spine_gpu.vert 蒙皮 vs 参考 computeWorldVertices ----
+                        {
+                            spine::MeshAttachment* rm = static_cast<spine::MeshAttachment*>(ra);
+                            const size_t wl = rm->getWorldVerticesLength();
+                            std::vector<float> ref_world(wl);
+                            rm->computeWorldVertices(*rs, 0, wl, ref_world.data(), 0, 2);
+                            const SpineDrawItem& di = loaded.draw_items[item];
+                            const bool weighted = di.vertex_format == SpineVertexFormat::kWeighted;
+                            const auto word = [&](size_t i) {
+                                uint32_t v = 0;
+                                std::memcpy(&v, loaded.vertex_buffer.data() + i * 4u, 4);
+                                return v;
+                            };
+                            const size_t wbase = loaded.weighted_segment_offset / 4u;
+                            // 渲染器的偏置：本测试里 deform 段起点 = 0
+                            const uint32_t deform_base =
+                                od == nullptr ? 0u
+                                              : (weighted ? 0u - 2u * word(wbase + static_cast<size_t>(di.vertex_base) * 2u)
+                                                          : 0u - 2u * static_cast<uint32_t>(di.vertex_base));
+                            const auto dget = [&](uint32_t f) { return od->values[static_cast<size_t>(f)]; };
+                            float worst = 0.0f;
+                            bool shape_ok = wl == static_cast<size_t>(di.vertex_count) * 2u;
+                            for (uint32_t v = 0; v < di.vertex_count && shape_ok; ++v)
+                            {
+                                const uint32_t vi = di.vertex_base + v;
+                                float x = 0.0f, y = 0.0f;
+                                if (!weighted)
+                                {
+                                    float bx = 0.0f, by = 0.0f;
+                                    std::memcpy(&bx, loaded.vertex_buffer.data() + static_cast<size_t>(vi) * 8u, 4);
+                                    std::memcpy(&by, loaded.vertex_buffer.data() + static_cast<size_t>(vi) * 8u + 4u, 4);
+                                    if (od != nullptr)
+                                    {
+                                        const uint32_t f = deform_base + vi * 2u;
+                                        bx = dget(f);
+                                        by = dget(f + 1u);
+                                    }
+                                    const SpineGpuBoneSample& b = ours.bones[loaded.slot_bone[si]];
+                                    x = bx * b.a + by * b.b + b.world_x;
+                                    y = bx * b.c + by * b.d + b.world_y;
+                                }
+                                else
+                                {
+                                    const uint32_t off = word(wbase + static_cast<size_t>(vi) * 2u);
+                                    const uint32_t cnt = word(wbase + static_cast<size_t>(vi) * 2u + 1u);
+                                    for (uint32_t k = 0; k < cnt; ++k)
+                                    {
+                                        float bx = loaded.influence_bind[(static_cast<size_t>(off) + k) * 2u];
+                                        float by = loaded.influence_bind[(static_cast<size_t>(off) + k) * 2u + 1u];
+                                        if (od != nullptr)
+                                        {
+                                            const uint32_t f = deform_base + (off + k) * 2u;
+                                            bx += dget(f);
+                                            by += dget(f + 1u);
+                                        }
+                                        const SpineInfluenceBone& ib = loaded.influence_bone[off + k];
+                                        const SpineGpuBoneSample& b = ours.bones[ib.bone_idx];
+                                        const float w = static_cast<float>(ib.weight) / 255.0f;
+                                        x += (bx * b.a + by * b.b + b.world_x) * w;
+                                        y += (bx * b.c + by * b.d + b.world_y) * w;
+                                    }
+                                }
+                                worst = std::max(worst, std::max(std::fabs(x - ref_world[v * 2u]),
+                                                                 std::fabs(y - ref_world[v * 2u + 1u])));
+                            }
+                            float& cell = st.skin_worst[weighted ? 1 : 0][od != nullptr ? 1 : 0];
+                            st.skin_verts[weighted ? 1 : 0][od != nullptr ? 1 : 0] += di.vertex_count;
+                            if (!shape_ok || std::isnan(worst))
+                            {
+                                worst = 1.0e30f;
+                            }
+                            if (worst > cell)
+                            {
+                                cell = worst;
+                                // weighted 的误差被 u8 权重量化主导（见 skin_worst 注释），只有 rigid 超阈值才值得逐条列出
+                                if (!weighted && worst > kRigidSkinTol && st.details.size() < max_details)
+                                {
+                                    st.details.push_back(skel_path.filename().string() + " 动画 " + std::to_string(ai) +
+                                                         " t=" + std::to_string(t) + " 槽位 " + std::to_string(si) +
+                                                         " mesh '" + ra->getName().buffer() + "' 蒙皮最大误差 " +
+                                                         std::to_string(worst) + (od != nullptr ? "（有 deform）" : ""));
+                                }
+                            }
+                        }
+
+                        if (rv.size() == 0 && od == nullptr)
+                        {
+                            continue;
+                        }
+                        ++st.deform_nonempty;
+                        bool dok = od != nullptr && od->values.size() == rv.size();
+                        float dworst = 0.0f;
+                        if (dok)
+                        {
+                            for (size_t q = 0; q < rv.size(); ++q)
+                            {
+                                ++st.deform_values;
+                                if (!CloseEnough(od->values[q], rv[q], dworst))
+                                {
+                                    dok = false;
+                                }
+                            }
+                        }
+                        if (dworst > st.worst_deform_rel)
+                        {
+                            st.worst_deform_rel = dworst;
+                        }
+                        if (!dok)
+                        {
+                            ++st.mismatches;
+                            file_ok = false;
+                            if (st.details.size() < max_details)
+                            {
+                                st.details.push_back(skel_path.filename().string() + " 动画 " + std::to_string(ai) +
+                                                     " t=" + std::to_string(t) + " 槽位 " + std::to_string(si) +
+                                                     " mesh '" + ra->getName().buffer() + "' 的 deform：参考 " +
+                                                     std::to_string(rv.size()) + " 个 float，我们 " +
+                                                     (od != nullptr ? std::to_string(od->values.size()) : "<无>") +
+                                                     " 个，最大相对误差 " + std::to_string(dworst));
+                            }
+                        }
+                    }
+                }
+
                 if (!bad_bones.empty())
                 {
                     file_ok = false;
@@ -1200,6 +1478,11 @@ int main(int argc, char** argv)
         }
     }
 
+    for (const auto& kv : g_bake_fail_kinds)
+    {
+        std::printf("[烘焙失败] %zu 个：%s\n    例：%s\n", kv.second, kv.first.c_str(),
+                    g_bake_fail_example[kv.first].c_str());
+    }
     if (uv_scan)
     {
         std::printf("[uv-scan] 绘制项 %zu，索引最小值 != 0 的 %zu，uv_offset + 段内索引 越过 UV 表的 %zu\n", uv_items,
@@ -1209,6 +1492,8 @@ int main(int argc, char** argv)
                     blend_count[0], blend_count[1], blend_count[2], blend_count[3], page_nonzero, fallback_items);
         std::printf("[uv-scan] 第 0 个动画 t=0 时挂着附件的槽位：找到绘制项 %zu，找不到 %zu（其中槽位里有别的可画项的 %zu）\n",
                     vis_found, vis_missing, vis_missing_with_candidates);
+        std::printf("[uv-scan] t=0 可见绘制项 %zu：fallback 中带裁剪的 %zu，只因 deform 的 %zu\n", vis_items, vis_fb_clip,
+                    vis_fb_deform_only);
         std::printf("[uv-scan] 动画时长 > 0 的 %zu 个，= 0 的 %zu 个\n", anim_dur_pos, anim_dur_zero);
         return 0;
     }
@@ -1221,6 +1506,29 @@ int main(int argc, char** argv)
     std::printf("  └ 比对失败的文件    : %zu\n", st.files_bad);
     std::printf("  └ 其中 path 带 deform: %zu\n", st.files_bad_deform_on_path);
     std::printf("动画时长对拍         : %zu\n", st.anim_duration_checks);
+    std::printf("槽位当前附件对拍     : %zu\n", st.slot_attachment_checks);
+    std::printf("mesh deform 对拍     : %zu 个槽位采样（参考非空 %zu），逐 float %zu，最大相对误差 %.3g\n",
+                st.deform_checks, st.deform_nonempty, st.deform_values, static_cast<double>(st.worst_deform_rel));
+    std::printf("GPU deform 寻址核对  : %zu 个 weighted 顶点\n", st.gpu_addr_checks);
+    std::printf("蒙皮端到端（世界坐标最大绝对误差，单位 = 骨架单位）:\n");
+    std::printf("    rigid    无 deform %zu 顶点 %.4g | 有 deform %zu 顶点 %.4g\n", st.skin_verts[0][0],
+                static_cast<double>(st.skin_worst[0][0]), st.skin_verts[0][1], static_cast<double>(st.skin_worst[0][1]));
+    std::printf("    weighted 无 deform %zu 顶点 %.4g | 有 deform %zu 顶点 %.4g（权重 u8 量化的底噪看左边）\n",
+                st.skin_verts[1][0], static_cast<double>(st.skin_worst[1][0]), st.skin_verts[1][1],
+                static_cast<double>(st.skin_worst[1][1]));
+    // 门槛：rigid 两格都是"同一套 float 运算、只差求和顺序"⇒ 1e-3 骨架单位足够宽；
+    // weighted 有 deform 的那格不许明显超过无 deform 的底噪（寻址 / 加法错了是成百上千单位）。
+    if (st.skin_worst[0][0] > kRigidSkinTol || st.skin_worst[0][1] > kRigidSkinTol)
+    {
+        std::printf("[对不上] rigid 蒙皮误差超过 %g\n", static_cast<double>(kRigidSkinTol));
+        ++st.mismatches;
+    }
+    if (st.skin_verts[1][1] > 0 && st.skin_worst[1][1] > 1.5f * st.skin_worst[1][0] + kRigidSkinTol)
+    {
+        std::printf("[对不上] weighted 有 deform 的蒙皮误差 %g 明显超过无 deform 的底噪 %g\n",
+                    static_cast<double>(st.skin_worst[1][1]), static_cast<double>(st.skin_worst[1][0]));
+        ++st.mismatches;
+    }
     std::printf("动画 × 时间点采样     : %zu\n", st.anim_samples);
     std::printf("骨骼分量比较次数      : %zu\n", st.bone_checks);
     std::printf("最大相对误差          : %.3g\n", static_cast<double>(st.worst_rel));

@@ -197,14 +197,14 @@ namespace ZEngine.SpineGpu
                 }
             }
 
-            // ---- 绘制项（28 B/项）----
+            // ---- 绘制项（32 B/项，v14）----
             if (TryGet(byId, (uint)SpineGpuChunkId.DrawItems, out uint doff, out uint dsz))
             {
                 if (dsz % SpineGpuConstants.DrawItemSize != 0)
                 {
                     throw new SpineGpuContainerException(
                         "container: draw_items 大小不是 " + SpineGpuConstants.DrawItemSize +
-                        " B 的整数倍（v6 起一项是 28 B：多了 clip_index）");
+                        " B 的整数倍（v6 起一项是 28 B：多了 clip_index；v14 起 32 B：多了 vertex_base / deform_parent）");
                 }
                 uint n = dsz / SpineGpuConstants.DrawItemSize;
                 for (uint i = 0; i < n; ++i)
@@ -223,6 +223,9 @@ namespace ZEngine.SpineGpu
                         SkinId = ReadU16(data, p + SpineGpuOffsets.ItemSkinId),
                         Kind = (SpineDrawItemKind)data[p + SpineGpuOffsets.ItemKind],
                         ClipIndex = ReadU16(data, p + SpineGpuOffsets.ItemClipIndex),
+                        VertexBase = ReadU16(data, p + SpineGpuOffsets.ItemVertexBase),
+                        DeformParent = ReadU16(data, p + SpineGpuOffsets.ItemDeformParent),
+                        VertexCount = ReadU16(data, p + SpineGpuOffsets.ItemVertexCount),
                     });
                 }
                 // v13：每个索引都要能按 UvOffset + index（uint 回绕）取到 UV —— 与 shader 同一个式子。
@@ -234,8 +237,21 @@ namespace ZEngine.SpineGpu
                     {
                         throw new SpineGpuContainerException("container: 第 " + i + " 个绘制项的索引区间越过索引缓冲");
                     }
+                    uint segCount = di.VertexFormat == SpineVertexFormat.Weighted ? asset.Header.WeightedVertexCount
+                                                                                  : asset.Header.RigidVertexCount;
+                    if ((uint)di.VertexBase + di.VertexCount > segCount)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 个绘制项的顶点区间越过所属顶点段");
+                    }
                     for (uint q = 0; q < di.IndexCount; ++q)
                     {
+                        // v14：索引 = 本地下标 + VertexBase，必须落在 [VertexBase, VertexBase + VertexCount)
+                        uint idx = asset.IndexBuffer[di.IndexOffset + q];
+                        if (idx < di.VertexBase || idx >= (uint)di.VertexBase + di.VertexCount)
+                        {
+                            throw new SpineGpuContainerException("container: 第 " + i + " 个绘制项的索引 " + idx +
+                                " 不在它的顶点区间里");
+                        }
                         uint uvIndex = unchecked(di.UvOffset + asset.IndexBuffer[di.IndexOffset + q]);
                         if (uvIndex >= uvCount)
                         {
@@ -589,8 +605,27 @@ namespace ZEngine.SpineGpu
                         AttachmentId = ReadU16(data, p + SpineGpuOffsets.AttAttachmentId),
                         SkinId = ReadU16(data, p + SpineGpuOffsets.AttSkinId),
                     });
+                    // 规格 §9：attachment_id = 行号。deform 时间轴按记录下标、绘制项按 attachment_id 寻址，
+                    // 两者互换全靠这条恒等式。
+                    if (asset.AttachmentRecords[(int)i].AttachmentId != i)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条附件记录的 attachment_id 不等于行号");
+                    }
                 }
                 attachmentCount = (int)n;
+
+                // v14：DeformParent 要么"没有"，要么是同一槽位里另一个附件
+                for (int i = 0; i < asset.DrawItems.Count; ++i)
+                {
+                    var di = asset.DrawItems[i];
+                    if (di.DeformParent == SpineGpuConstants.NoDeformParent) continue;
+                    if (di.DeformParent >= asset.AttachmentRecords.Count || di.DeformParent == di.AttachmentId ||
+                        asset.AttachmentRecords[di.DeformParent].SlotIndex != di.SlotIndex)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 个绘制项的 deform_parent " +
+                            di.DeformParent + " 越界、指向自己或不在同一槽位");
+                    }
+                }
             }
 
             // ---- 槽位 setup（chunk 17，v10）----
@@ -1502,6 +1537,9 @@ namespace ZEngine.SpineGpu
                     WriteU16(b, o + SpineGpuOffsets.ItemSkinId, d.SkinId);
                     b[o + SpineGpuOffsets.ItemKind] = (byte)d.Kind;
                     WriteU16(b, o + SpineGpuOffsets.ItemClipIndex, d.ClipIndex);
+                    WriteU16(b, o + SpineGpuOffsets.ItemVertexBase, d.VertexBase);
+                    WriteU16(b, o + SpineGpuOffsets.ItemDeformParent, d.DeformParent);
+                    WriteU16(b, o + SpineGpuOffsets.ItemVertexCount, d.VertexCount);
                 }
                 Add((uint)SpineGpuChunkId.DrawItems, b, A4);
             }

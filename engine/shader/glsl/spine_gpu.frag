@@ -14,6 +14,10 @@ struct SpineDraw
     uint tint;
     uint flags;
     uint weighted_base;
+    uint deform_base;
+    uint reserved0;
+    uint reserved1;
+    uint reserved2;
 };
 layout(set = 0, binding = 5) readonly buffer Draws { SpineDraw draws[]; };
 

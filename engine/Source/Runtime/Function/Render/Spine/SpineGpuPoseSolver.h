@@ -39,6 +39,16 @@ struct SpineGpuBoneSample
     float world_y = 0.0f;
 };
 
+// 一个绘制项本帧的 mesh deform 数组（S6）。**附件本地**顺序，与参考实现
+// `Slot::getAttachmentVertices()` 逐元素同义：
+//   rigid    —— 2 × vertex_count 个 float，**绝对**局部坐标（整体替换 bindPos，VertexAttachment.cpp:72-73）
+//   weighted —— 2 × 影响数 个 float，按影响存储顺序的**偏移**（逐影响加在 bindPos 上，:122-123）
+struct SpineGpuMeshDeform
+{
+    uint32_t draw_item = 0;   // asset.draw_items 的下标
+    std::vector<float> values;
+};
+
 // 某一时刻的完整姿势 = 骨骼世界变换 + 槽位状态 + 绘制顺序。
 //
 // 继承而不是并列：`SpineGpuSampleSlots()` 可以直接往里写槽位侧，
@@ -46,6 +56,16 @@ struct SpineGpuBoneSample
 struct SpineGpuPoseResult : SpineGpuSlotSampleResult
 {
     std::vector<SpineGpuBoneSample> bones;   // [header.bone_count]
+
+    // 每个槽位**当前附件**在 default 皮肤（skin 0）下对应的绘制项；没有可画项
+    // （不挂附件 / 挂的是裁剪、point、bbox、path）时是 `kNoDrawItem`。
+    // 渲染侧"本帧画哪些项"与 deform"作用于哪一项"必须是同一个答案 ⇒ 只在这里算一次。
+    static constexpr uint32_t kNoDrawItem = 0xFFFFFFFFu;
+    std::vector<uint32_t> slot_draw_item;    // [header.slot_count]
+
+    // 本帧**生效**的 mesh deform（S6）：只含"槽位当前挂着、且有 deform 时间轴作用于它"的项，
+    // 按 draw_item 升序。不在这里的项 = 用静态 VB 的 bindPos（参考实现里 deform 数组为空）。
+    std::vector<SpineGpuMeshDeform> mesh_deforms;
 };
 
 // 采样 `asset` 的第 `anim_index` 个动画在 `time` 处的**完整姿势**。

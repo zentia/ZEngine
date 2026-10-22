@@ -530,7 +530,7 @@ kind 越界 / order 非排列 **均为 0**。
 再下一个皮肤；皮肤内按槽位顺序。每项：
 
 ```
-DrawItem                     28 B（v6 起；v5 是 24 B）
+DrawItem                     32 B（v14 起；v6-v13 是 28 B，v5 是 24 B）
   index_offset  u32   @0
   index_count   u32   @4
   uv_offset     u32   @8   （单位：**UV 条目**，不是字节；v13 起已减去 vertex_base，见 §3.2）
@@ -543,8 +543,16 @@ DrawItem                     28 B（v6 起；v5 是 24 B）
   kind          u8    @22  (kStatic / kFallback)
   _pad          u8    @23
   clip_index    u16   @24  chunk 9 的行号；**没被裁时是 kNoClipIndex = 0xFFFF**（见 §7.2）
-  _pad2         u16   @26
+  vertex_base   u16   @26  (v14) 顶点在所属段里的起点：索引 = 附件本地下标 + vertex_base
+  deform_parent u16   @28  (v14) linked mesh 且 inheritDeform 时 = 父附件 id，否则 kNoDeformParent = 0xFFFF
+  vertex_count  u16   @30  (v14) 附件顶点数；deform 长度 rigid = 2×它，weighted = 2×这些顶点的影响数之和
 ```
+
+v14 的三个字段都是 GPU deform（§7.1）的前提，且**都无法从别的字段反推**：
+`vertex_base` 在 v13 只被折进了 `uv_offset`；"最大索引 + 1"在尾部顶点没被三角形引用时会少算顶点数；
+inheritDeform 在烘焙期只决定 `kind`，运行时认不出"挂在父附件上的 deform 时间轴该不该作用于自己"。
+读端校验：索引落在 `[vertex_base, vertex_base + vertex_count)`、该区间落在所属段内、
+`deform_parent` 为"没有"或同一槽位里另一个附件；附件记录满足 `attachment_id == 行号`。
 
 **没有 `skin_id` 就没法换装**：同一个 (槽位, 附件名) 在不同皮肤下是两个绘制项，
 光靠 `slot_index + attachment_id` 分不出该画哪一个。
@@ -688,15 +696,23 @@ Region 的 4 个顶点**烘焙进静态 VB**（而不是用共享单位四边形
 
 ### 7.1 deform（FFD）
 
-deform 时间轴命中的附件，顶点**每帧都不一样**。静态 VB 存的是绑定姿势，
-所以这些绘制项必须走 **CPU fallback**（`SpineDrawItem::kind = kFallback`），
-并在 `flags` 置 `kHasDeform`。
+deform 时间轴命中的附件，顶点**每帧都不一样**。容器里这些绘制项标 `kind = kFallback`
+（"需要每帧数据"），并在 `flags` 置 `kHasDeform`。**只标被命中的项，不是整个资产。**
 
-技术上可以把 deform 传进纹理、在 VS 里加，但那样每帧都要传顶点数据 ——
-**"共享一份静态 VB"这个唯一收益正好被它吃掉**（§0），所以不做。
-
-**只回退被命中的绘制项，不是整个资产。** 与 `kHasDrawOrderTimeline`（那个是整体走 CPU）
-是两回事。
+> **S6（v14）起运行时不再为它们走 CPU 动态 VB**（原方案"整份世界坐标 CPU 动态 VB"已否决，
+> 见 `GPU_SPINE_V7_ANIMATION.md`）：
+> * 解算器（`SpineGpuSamplePose` 第 8 步）每帧给出**生效的** deform 数组（附件本地顺序，
+>   与参考 `Slot::getAttachmentVertices()` 逐元素同义），按"当前附件 == 时间轴附件，或
+>   inheritDeform 且父附件 == 时间轴附件"判定作用于谁；
+> * 渲染器把它们拼成一块上传（b7），绘制项带一个 uint 回绕偏置 `deform_base`：
+>   rigid `deform[deform_base + 2·vi]`（`deform_base = 段起点 − 2·vertex_base`），
+>   weighted `deform[deform_base + 2·(off + k)]`（`deform_base = 段起点 − 2·infl_base`）；
+> * shader 里 rigid **整体替换** bindPos、weighted **逐影响加**偏移，蒙皮公式不变 ——
+>   **静态 VB 仍然共享**，每帧多传的只是"这一帧真在动的那几项的 deform 数组"。
+>
+> 前提（都由测试钉住）：一个附件的影响流在 chunk 21/22 里**整块连续、保持原顺序**
+> （影响流去重按整块做），所以 `off − infl_base` = 前面顶点的影响数之和 = 参考实现的 `f/2`。
+> 绘制项因此要带 `vertex_base` / `vertex_count` / `deform_parent`（v14，§4）。
 
 #### 两种附件的 deform 语义**不一样**（照错就是静默错形状）
 
@@ -887,6 +903,11 @@ Header (64 B)
                                     additive 30 244 / multiply 78 / screen 50 项）；
                                     ③ `atlas_page` 落 region 的真实页（v12 恒 0）。
                                     读端新增逐项 `uv_offset + index < uv_count` 校验
+                               v14 = 绘制项 28 → 32 B：`vertex_base` / `deform_parent` / `vertex_count`
+                                    （§4），GPU mesh deform（S6，§7.1）的前提。同时修了一个
+                                    导入期的静默错：附件重排时 linked mesh 的 `parent_index`
+                                    没跟着改写（v13 及以前只在重排前用过它，所以没暴露；
+                                    落进 deform_parent 后 OSGame 73 个资产被读端校验抓到）
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
@@ -925,7 +946,7 @@ Chunks:
   id=3  vertex_buffer  按 vertex_format 分段，段首 8 B 对齐（**不含 UV**）
   id=4  uv_buffer      float2 × uv_count，8 B/条，段首 8 B 对齐（§3.2）
   id=5  index_buffer   uint16（或 flags 打开时 uint32）
-  id=6  draw_items     DrawItem[]，28 B/项（含 uv_offset + skin_id + clip_index）
+  id=6  draw_items     DrawItem[]，32 B/项（含 uv_offset + skin_id + clip_index；v14 + vertex_base / deform_parent / vertex_count）
   id=7  attachments    (slot_index u16, attachment_id u16, skin_id u16, _pad u16) × attachment_count
                        —— 8 B/项，换装查的就是这张表
   id=8  atlas_pages    图集页路径，每项 '\0' 结尾
@@ -1022,7 +1043,8 @@ Chunks:
   **v10 追加槽位 setup（chunk 17，§3.6）**；
   **v11 追加约束 setup / 执行顺序 / PathAttachment（chunk 18 / 19 / 20，§3.7）**；
   **v12 让 deform 时间轴可以指向 path 附件（`target` 最高位，布局不变、语义变）**；
-  **v13 修正绘制项的 `uv_offset` / `blend_mode` / `atlas_page`（布局不变、语义变，§3.2 / §4）**。
+  **v13 修正绘制项的 `uv_offset` / `blend_mode` / `atlas_page`（布局不变、语义变，§3.2 / §4）**；
+  **v14 绘制项 32 B（+ vertex_base / deform_parent / vertex_count），GPU mesh deform（S6，§7.1）**。
   约束解算（S4b）已收尾：781 / 781 逐骨骼对拍通过，解算器自写、仍在 CPU。
   渲染接入见 **§15**。
   字段设计与转录 gap 分析见 **`doc/GPU_SPINE_V7_ANIMATION.md`**。
@@ -1405,8 +1427,22 @@ setup 姿势的包围盒自动居中、占视口 80%。
 同一次运行第 150 / 250 帧之间 ≈ 18 万像素变化（在动）。动画 #0 `idle_01` 时长 **0**（单帧
 静态姿势）—— 对拍台已新增"时长与参考逐个相等"（1932 / 1932），这是参考实现的真值不是 bug。
 
-**第一版明确不做**（不是忘了）：DX12 / Metal；多实例；`kFallback` 项（deform 命中 / 裁剪作用域内）
-**照静态画**（deform 是 S6，裁剪只有 CPU 实现）；tint black；非 default 皮肤。
+**mesh deform（S6，v14）已接**：见 §7.1。set 0 多一个 b7（本帧 deform 数组），绘制项 48 B
+（+ `deform_base`，flags bit2 = 有 deform）。实测 `K_Bailishouyue` 动画 #1 首帧 95 个可见项里
+38 个带 deform（860 float，容量上界 1010）。
+
+**验收（对拍台，全量 781 资产 × 每动画 5 个时间点）**：
+* 槽位当前附件（= 画哪一项）与参考 `Slot::getAttachment()` 一致：779 515 次；
+* deform 数组与参考 `Slot::getAttachmentVertices()` 逐 float：200 536 个非空采样、
+  1 131 万个 float，**最大相对误差 0**（逐位相同）；
+* 影响流"附件内连续"：592 540 个 weighted 顶点；
+* 端到端：照 shader 同一套寻址 / 公式在 CPU 上蒙皮，与参考 `computeWorldVertices()` 比世界坐标 ——
+  rigid（无 / 有 deform）最大误差 1.2e-4 / 1.2e-4；weighted 5.21 / 5.14 骨架单位。
+  weighted 的误差来自**容器里权重是 u8 量化的**（与 deform 无关，两格同量级）；
+  把 deform 偏移错一个顶点，这两格会变成 9724 / 402（门槛已接进 verdict）。
+
+**仍然不做**（不是忘了）：DX12 / Metal；多实例；裁剪作用域内的项**照未裁剪画**（裁剪只有 CPU
+实现）；tint black；非 default 皮肤。
 可见集解析实测：OSGame 全量第 0 个动画 t=0 时挂着附件的槽位 29 785 个能找到绘制项，
 689 个找不到 —— 这 689 个槽位在 skin 0 下**一个可画项都没有**（"槽位里有别的可画项、
 却没有这个名字"的是 **0** 个），即挂的是裁剪 / point / bounding box / path 这类不画的附件。

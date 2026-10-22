@@ -3316,6 +3316,36 @@ int main(int argc, char** argv)
                               (inherit ? SpineDrawItemKind::kFallback : SpineDrawItemKind::kStatic),
                           inherit ? "deform: 绘制项 2（mesh-linked）也是 kFallback"
                                   : "deform: 绘制项 2（mesh-linked）仍是 kStatic");
+                    // v14：deform_parent 只在 linked mesh 且 inheritDeform 时指向父附件
+                    // （MeshAttachment.cpp:94-95）。父附件的 id 就是它的绘制项的 attachment_id。
+                    CheckEq(static_cast<long long>(da.draw_items[0].deform_parent),
+                            static_cast<long long>(SpineGpuConstants::kNoDeformParent),
+                            "deform: region 'quad' 没有 deform_parent");
+                    CheckEq(static_cast<long long>(da.draw_items[1].deform_parent),
+                            static_cast<long long>(SpineGpuConstants::kNoDeformParent),
+                            "deform: 父 mesh 自己没有 deform_parent");
+                    CheckEq(static_cast<long long>(da.draw_items[2].deform_parent),
+                            inherit ? static_cast<long long>(da.draw_items[1].attachment_id)
+                                    : static_cast<long long>(SpineGpuConstants::kNoDeformParent),
+                            inherit ? "deform: inheritDeform=1 ⇒ linked mesh 的 deform_parent = 父 mesh"
+                                    : "deform: inheritDeform=0 ⇒ linked mesh 没有 deform_parent");
+                    // v14：vertex_base。linked mesh 与父 mesh 几何相同 ⇒ 共用同一段 ⇒ 起点相同；
+                    // 且起点就是该项最小的索引（这两个夹具的三角形覆盖了全部顶点）。
+                    CheckEq(static_cast<long long>(da.draw_items[2].vertex_base),
+                            static_cast<long long>(da.draw_items[1].vertex_base),
+                            "deform: linked mesh 与父 mesh 共用顶点段 ⇒ vertex_base 相同");
+                    uint32_t min_index = 0xFFFFFFFFu;
+                    for (uint32_t q = 0; q < da.draw_items[1].index_count; ++q)
+                    {
+                        min_index = std::min<uint32_t>(min_index, da.index_buffer[da.draw_items[1].index_offset + q]);
+                    }
+                    CheckEq(static_cast<long long>(da.draw_items[1].vertex_base), static_cast<long long>(min_index),
+                            "deform: vertex_base = 该项最小的段内索引");
+                    CheckEq(static_cast<long long>(da.draw_items[1].vertex_count),
+                            static_cast<long long>(mesh->VertexCount()), "deform: vertex_count = 附件顶点数");
+                    CheckEq(static_cast<long long>(da.draw_items[2].vertex_count),
+                            static_cast<long long>(da.draw_items[1].vertex_count),
+                            "deform: linked mesh 的 vertex_count 与父 mesh 相同（几何继承）");
                 }
                 Check((da.header.flags & SpineGpuFlags::kHasDeform) != 0, "deform: 置上了 kHasDeform");
 

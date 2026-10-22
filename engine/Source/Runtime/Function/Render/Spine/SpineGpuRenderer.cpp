@@ -35,8 +35,10 @@ namespace
         uint32_t tint;
         uint32_t flags;
         uint32_t weighted_base;
+        uint32_t deform_base;   // flags bit2 置位时有效（uint 回绕偏置，见 spine_gpu.vert 的 b7）
+        uint32_t reserved[3];
     };
-    static_assert(sizeof(GpuDraw) == 32, "spine_gpu.vert SpineDraw is 8 x u32 (std430)");
+    static_assert(sizeof(GpuDraw) == 48, "spine_gpu.vert SpineDraw is 12 x u32 (std430)");
 
     struct GpuInst
     {
@@ -48,6 +50,8 @@ namespace
 
     constexpr uint32_t kDrawFlagStraightAlpha = 1u;
     constexpr uint32_t kDrawFlagAdditive = 2u;
+    constexpr uint32_t kDrawFlagDeform = 4u;
+    constexpr uint32_t kSet0Bindings = 8;   // b0..b6 + b7 deform（S6）
 
     uint32_t PackRgba8(const float c[4])
     {
@@ -103,6 +107,8 @@ struct SpineGpuRenderer::Impl
     std::string status {"idle"};
     std::string skip_reason;   // 最近一次"没画"的原因（变化时才记日志）
     uint32_t last_draw_count {0};
+    uint32_t last_deform_draws {0};    // 上一帧带 deform 的绘制项数（S6）
+    uint32_t last_deform_floats {0};   // 上一帧上传的 deform float 数
 
     // ---- 管线（与资产无关）----
     RHI* rhi {nullptr};
@@ -124,15 +130,18 @@ struct SpineGpuRenderer::Impl
         Buffer bones;
         Buffer draws;
         Buffer insts;
+        Buffer deform;   // 本帧生效的 mesh deform（S6），容量 = 可能同时生效的上界
         RHIDescriptorSet* set0 {nullptr};
     };
     struct Loaded
     {
         SpineGpuAsset asset;
-        std::vector<uint8_t> blob;
         uint32_t anim {0};
-        // 槽位 → (附件名, 绘制项下标) —— 只收 default 皮肤（skin 0）
-        std::vector<std::vector<std::pair<std::string, uint32_t>>> slot_items;
+        // 每个绘制项的 deform 数组长度（float 个数；rigid 2×顶点、weighted 2×影响）与
+        // weighted 项的 infl_base（第 0 个顶点的 influence_offset）—— GPU 寻址偏置要用
+        std::vector<uint32_t> deform_len;
+        std::vector<uint32_t> infl_base;
+        size_t deform_capacity {0};   // float 个数
         Buffer vertex_words;
         Buffer infl_bind;
         Buffer infl_bone;
@@ -207,6 +216,7 @@ struct SpineGpuRenderer::Impl
             r.buffers.push_back(f.bones);
             r.buffers.push_back(f.draws);
             r.buffers.push_back(f.insts);
+            r.buffers.push_back(f.deform);
         }
         // 描述符集与纹理留在各自的池里（一次性的诊断入口，量很小），不在这里回收。
         retired.push_back(std::move(r));
@@ -253,8 +263,8 @@ struct SpineGpuRenderer::Impl
         }
         if (set0_layout == nullptr)
         {
-            RHIDescriptorSetLayoutBinding bindings[7] {};
-            for (uint32_t i = 0; i < 7; ++i)
+            RHIDescriptorSetLayoutBinding bindings[kSet0Bindings] {};
+            for (uint32_t i = 0; i < kSet0Bindings; ++i)
             {
                 bindings[i].binding = i;
                 bindings[i].descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
@@ -265,7 +275,7 @@ struct SpineGpuRenderer::Impl
             bindings[5].stageFlags = RHI_SHADER_STAGE_VERTEX_BIT | RHI_SHADER_STAGE_FRAGMENT_BIT;
             RHIDescriptorSetLayoutCreateInfo info {};
             info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-            info.bindingCount = 7;
+            info.bindingCount = kSet0Bindings;
             info.pBindings = bindings;
             if (!rhi->CreateDescriptorSetLayout(&info, set0_layout) || set0_layout == nullptr)
             {
@@ -470,17 +480,38 @@ struct SpineGpuRenderer::Impl
             return false;
         }
         ld->anim = static_cast<uint32_t>(std::clamp(anim, 0, static_cast<int>(a.anims.size()) - 1));
-        ld->blob = BuildSpineStringBlob(a);
-        ld->slot_items.resize(a.header.slot_count);
+        // deform 长度 / infl_base：每个 skin 0 绘制项一份（解算器给的 deform 数组按附件本地顺序，
+        // 上传时要换算成 shader 的寻址偏置）。容量上界 = 所有 kFallback 项长度之和 ——
+        // 只有被 deform 时间轴命中过的项才是 kFallback，同一帧最多它们全部生效。
+        ld->deform_len.assign(a.draw_items.size(), 0u);
+        ld->infl_base.assign(a.draw_items.size(), 0u);
         for (uint32_t i = 0; i < a.draw_items.size(); ++i)
         {
             const SpineDrawItem& di = a.draw_items[i];
-            if (di.skin_id != SpineGpuConstants::kDefaultSkinId || di.slot_index >= ld->slot_items.size() ||
-                di.attachment_id >= a.attachment_names.size())
+            if (di.vertex_format == SpineVertexFormat::kRigid)
             {
-                continue;
+                ld->deform_len[i] = 2u * di.vertex_count;
             }
-            ld->slot_items[di.slot_index].emplace_back(a.attachment_names[di.attachment_id], i);
+            else
+            {
+                const size_t w0 = a.weighted_segment_offset / 4u + static_cast<size_t>(di.vertex_base) * 2u;
+                uint32_t n = 0;
+                for (uint32_t v = 0; v < di.vertex_count; ++v)
+                {
+                    uint32_t cnt = 0;
+                    std::memcpy(&cnt, a.vertex_buffer.data() + (w0 + v * 2u + 1u) * 4u, 4);
+                    n += cnt;
+                }
+                ld->deform_len[i] = 2u * n;
+                if (di.vertex_count > 0)
+                {
+                    std::memcpy(&ld->infl_base[i], a.vertex_buffer.data() + w0 * 4u, 4);
+                }
+            }
+            if (di.kind == SpineDrawItemKind::kFallback && di.skin_id == SpineGpuConstants::kDefaultSkinId)
+            {
+                ld->deform_capacity += ld->deform_len[i];
+            }
         }
 
         // ---- 静态缓冲：每个资产一份，所有实例共用 ----
@@ -541,7 +572,9 @@ struct SpineGpuRenderer::Impl
                               nullptr) &&
                  CreateBuffer(f.draws, static_cast<RHIDeviceSize>(std::max<size_t>(a.draw_items.size(), 1)) * sizeof(GpuDraw),
                               ssbo, nullptr) &&
-                 CreateBuffer(f.insts, sizeof(GpuInst), ssbo, nullptr);
+                 CreateBuffer(f.insts, sizeof(GpuInst), ssbo, nullptr) &&
+                 CreateBuffer(f.deform, static_cast<RHIDeviceSize>(std::max<size_t>(ld->deform_capacity, 1)) * sizeof(float),
+                              ssbo, nullptr);
             if (!ok)
             {
                 err = "创建每帧缓冲失败";
@@ -557,10 +590,11 @@ struct SpineGpuRenderer::Impl
                 err = "分配描述符集失败（共享池可能满了）";
                 return false;
             }
-            Buffer* bufs[7] = {&ld->vertex_words, &ld->infl_bind, &ld->infl_bone, &ld->uvs, &f.bones, &f.draws, &f.insts};
-            RHIDescriptorBufferInfo infos[7] {};
-            RHIWriteDescriptorSet writes[7] {};
-            for (uint32_t i = 0; i < 7; ++i)
+            Buffer* bufs[kSet0Bindings] = {&ld->vertex_words, &ld->infl_bind, &ld->infl_bone, &ld->uvs,
+                                           &f.bones,          &f.draws,     &f.insts,     &f.deform};
+            RHIDescriptorBufferInfo infos[kSet0Bindings] {};
+            RHIWriteDescriptorSet writes[kSet0Bindings] {};
+            for (uint32_t i = 0; i < kSet0Bindings; ++i)
             {
                 infos[i].buffer = bufs[i]->buffer;
                 infos[i].offset = 0;
@@ -572,7 +606,7 @@ struct SpineGpuRenderer::Impl
                 writes[i].descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 writes[i].pBufferInfo = &infos[i];
             }
-            rhi->UpdateDescriptorSets(7, writes, 0, nullptr);
+            rhi->UpdateDescriptorSets(kSet0Bindings, writes, 0, nullptr);
         }
 
         // ---- setup 姿势（第 0 帧）的包围盒：CPU 按 §6 同一公式蒙一遍，只为自动居中 ----
@@ -702,7 +736,9 @@ std::string SpineGpuRenderer::Status() const
         return "idle";
     }
     std::lock_guard<std::mutex> lock(m_Impl->mutex);
-    return m_Impl->status + " (last frame: " + std::to_string(m_Impl->last_draw_count) + " draw items" +
+    return m_Impl->status + " (last frame: " + std::to_string(m_Impl->last_draw_count) + " draw items, " +
+           std::to_string(m_Impl->last_deform_draws) + " deformed / " + std::to_string(m_Impl->last_deform_floats) +
+           " deform floats" +
            (m_Impl->skip_reason.empty() ? std::string() : "; skipped: " + m_Impl->skip_reason) + ")";
 }
 
@@ -807,46 +843,65 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         return;
     }
 
-    // ---- 2) 可见绘制项：按绘制顺序、取槽位当前附件对应的那一项 ----
+    // ---- 2) 可见绘制项：按绘制顺序、取槽位当前附件对应的那一项（解算器给的 slot_draw_item）----
+    //         + 本帧生效的 mesh deform（S6）：拼进一块连续数组，每项记下段起点
+    std::vector<float> deform_values;
+    std::vector<int64_t> deform_region(a.draw_items.size(), -1);   // 绘制项 → 段起点（float 下标）
+    for (const SpineGpuMeshDeform& md : pose.mesh_deforms)
+    {
+        if (md.draw_item >= a.draw_items.size() || md.values.size() != ld.deform_len[md.draw_item])
+        {
+            skip("deform of draw item " + std::to_string(md.draw_item) + " has " + std::to_string(md.values.size()) +
+                 " floats, expected " +
+                 (md.draw_item < a.draw_items.size() ? std::to_string(ld.deform_len[md.draw_item]) : std::string("?")));
+            return;
+        }
+        deform_region[md.draw_item] = static_cast<int64_t>(deform_values.size());
+        deform_values.insert(deform_values.end(), md.values.begin(), md.values.end());
+    }
+    if (deform_values.size() > ld.deform_capacity)
+    {
+        // 上界是"所有 kFallback 项同时生效"；超出说明有非 fallback 的项被 deform 了 —— 容器的 kind 与
+        // 解算器对不上，按静态画就是错形变，所以宁可这一帧不画、把原因报出来。
+        skip("deform needs " + std::to_string(deform_values.size()) + " floats, capacity " +
+             std::to_string(ld.deform_capacity));
+        return;
+    }
+
     std::vector<GpuDraw> draws;
     std::vector<uint32_t> draw_items;   // 与 draws 一一对应
     draws.reserve(a.draw_items.size());
+    uint32_t deformed_draws = 0;
     for (uint32_t s : pose.draw_order)
     {
-        if (s >= pose.slots.size() || s >= ld.slot_items.size())
+        if (s >= pose.slot_draw_item.size() || pose.slot_draw_item[s] == SpineGpuPoseResult::kNoDrawItem)
         {
             continue;
         }
+        const uint32_t item = pose.slot_draw_item[s];
         const SpineGpuSlotSample& slot = pose.slots[s];
-        if (slot.attachment_name_offset == SpineGpuConstants::kNoAttachmentName)
+        const SpineDrawItem& di = a.draw_items[item];
+        GpuDraw g {};
+        g.vertex_format = static_cast<uint32_t>(di.vertex_format);
+        g.uv_offset = di.uv_offset;
+        g.slot_bone = di.slot_index < a.slot_bone.size() ? a.slot_bone[di.slot_index] : 0u;
+        g.bone_base = 0;
+        g.inst_index = 0;
+        g.tint = PackRgba8(slot.color);
+        g.flags = kDrawFlagStraightAlpha | (di.blend_mode == SpineBlendMode::kAdditive ? kDrawFlagAdditive : 0u);
+        g.weighted_base = a.weighted_segment_offset / 4u;
+        if (deform_region[item] >= 0)
         {
-            continue;
+            // uint 回绕偏置：shader 用段内绝对下标（rigid）/ 全局影响下标（weighted）直接加
+            const uint32_t region = static_cast<uint32_t>(deform_region[item]);
+            g.deform_base = di.vertex_format == SpineVertexFormat::kRigid
+                                ? region - 2u * static_cast<uint32_t>(di.vertex_base)
+                                : region - 2u * ld.infl_base[item];
+            g.flags |= kDrawFlagDeform;
+            ++deformed_draws;
         }
-        const char* name = SpineGpuStringAt(ld.blob, slot.attachment_name_offset);
-        if (name == nullptr)
-        {
-            continue;
-        }
-        for (const auto& cand : ld.slot_items[s])
-        {
-            if (cand.first != name)
-            {
-                continue;
-            }
-            const SpineDrawItem& di = a.draw_items[cand.second];
-            GpuDraw g {};
-            g.vertex_format = static_cast<uint32_t>(di.vertex_format);
-            g.uv_offset = di.uv_offset;
-            g.slot_bone = di.slot_index < a.slot_bone.size() ? a.slot_bone[di.slot_index] : 0u;
-            g.bone_base = 0;
-            g.inst_index = 0;
-            g.tint = PackRgba8(slot.color);
-            g.flags = kDrawFlagStraightAlpha | (di.blend_mode == SpineBlendMode::kAdditive ? kDrawFlagAdditive : 0u);
-            g.weighted_base = a.weighted_segment_offset / 4u;
-            draws.push_back(g);
-            draw_items.push_back(cand.second);
-            break;
-        }
+        draws.push_back(g);
+        draw_items.push_back(item);
     }
 
     // ---- 3) 上传：骨骼 / 绘制项 / 实例（本帧槽位）----
@@ -864,6 +919,11 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         {
             std::memcpy(dst, draws.data(), draws.size() * sizeof(GpuDraw));
             rhi->UnmapMemory(fs.draws.memory);
+        }
+        if (!deform_values.empty() && rhi->MapMemory(fs.deform.memory, 0, fs.deform.size, 0, &dst) && dst != nullptr)
+        {
+            std::memcpy(dst, deform_values.data(), deform_values.size() * sizeof(float));
+            rhi->UnmapMemory(fs.deform.memory);
         }
         // 骨架空间（y 向上，1 单位 = 1 像素）→ 视口：setup 包围盒居中、占视口 80%
         GpuInst inst {};
@@ -949,12 +1009,16 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     else if (d.last_draw_count == 0)
     {
         // 每次加载后第一帧真正录了东西时记一行：视口 / 包围盒 / 项数，排查"画了但看不见"
-        LOG_INFO(ZRender, "SpineGpuRenderer: first frame {} draw items, viewport ({}, {}) {}x{}, bounds ({}, {})-({}, {})",
-                 draws.size(), viewport.x, viewport.y, viewport.width, viewport.height, ld.bounds[0], ld.bounds[1],
-                 ld.bounds[2], ld.bounds[3]);
+        LOG_INFO(ZRender,
+                 "SpineGpuRenderer: first frame {} draw items ({} deformed, {} deform floats, capacity {}), "
+                 "viewport ({}, {}) {}x{}, bounds ({}, {})-({}, {})",
+                 draws.size(), deformed_draws, deform_values.size(), ld.deform_capacity, viewport.x, viewport.y,
+                 viewport.width, viewport.height, ld.bounds[0], ld.bounds[1], ld.bounds[2], ld.bounds[3]);
         d.skip_reason.clear();
     }
     d.last_draw_count = static_cast<uint32_t>(draws.size());
+    d.last_deform_draws = deformed_draws;
+    d.last_deform_floats = static_cast<uint32_t>(deform_values.size());
 }
 
 #else  // !Z_HAS_VULKAN —— 其它后端还没接：接口保留，什么都不画

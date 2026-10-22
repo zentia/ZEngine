@@ -12,6 +12,13 @@
 //   b4 bones         所有实例的骨骼世界变换打包（6 float/骨，§5.1）
 //   b5 draws         每个可见绘制项一条（§5.2），由 gl_InstanceIndex（= firstInstance）选中
 //   b6 insts         每实例一条：屏幕映射 + 根变换（§5.3，蒙皮**之后**施加）
+//   b7 deform        本帧生效的 mesh deform（S6）：每个命中的绘制项一段，附件本地顺序
+//                    rigid  = 2 float/顶点，**绝对**坐标，整体替换 bindPos（VertexAttachment.cpp:72-73）
+//                    weighted = 2 float/影响，**偏移**，逐影响加在 bindPos 上（:122-123）
+//                    寻址用 uint 回绕偏置（与 uv_offset 同一招）：
+//                      rigid    deform[deform_base + 2·vi]            deform_base = 段起点 − 2·vertex_base
+//                      weighted deform[deform_base + 2·(off + k)]     deform_base = 段起点 − 2·infl_base
+//                    ⇒ shader 里不需要 vertex_base / infl_base。
 //
 // 三条硬约束（§6）：混合的是**变换后的位置**不是矩阵；按影响存储顺序累加；
 // 不许 FMA 收缩 ⇒ 全部用 `precise`（与 CPU 逐位一致的前提）。
@@ -31,8 +38,12 @@ struct SpineDraw
     uint bone_base;       // 该实例骨骼表在 b4 里的起始骨下标
     uint inst_index;      // 进 b6
     uint tint;            // RGBA8 直 alpha（槽位色 × 骨架色）
-    uint flags;           // bit0：贴图是直 alpha ⇒ 片元里预乘；bit1：输出 alpha = 0（加色）
+    uint flags;           // bit0：贴图是直 alpha ⇒ 片元里预乘；bit1：输出 alpha = 0（加色）；bit2：有 deform（b7）
     uint weighted_base;   // weighted 段在 b0 里的起点（u32 下标）
+    uint deform_base;     // bit2 置位时有效，见 b7 的寻址式
+    uint reserved0;
+    uint reserved1;
+    uint reserved2;
 };
 layout(set = 0, binding = 5) readonly buffer Draws { SpineDraw draws[]; };
 
@@ -43,6 +54,7 @@ struct SpineInst
     vec4 root_t;            // xy = (tx, ty)
 };
 layout(set = 0, binding = 6) readonly buffer Insts { SpineInst insts[]; };
+layout(set = 0, binding = 7) readonly buffer Deform { float deform[]; };
 
 layout(location = 0) out vec2 v_uv;
 layout(location = 1) flat out uint v_draw;
@@ -51,12 +63,19 @@ void main()
 {
     const SpineDraw d = draws[gl_InstanceIndex];
     const uint vi = uint(gl_VertexIndex);
+    const bool has_deform = (d.flags & 4u) != 0u;
     precise vec2 p = vec2(0.0);
 
     if (d.vertex_format == 0u)
     {
         // rigid：整块由槽位骨骼单矩阵变换（VertexAttachment.cpp:80-85）
-        const vec2 bp = vec2(uintBitsToFloat(vertex_words[vi * 2u]), uintBitsToFloat(vertex_words[vi * 2u + 1u]));
+        vec2 bp = vec2(uintBitsToFloat(vertex_words[vi * 2u]), uintBitsToFloat(vertex_words[vi * 2u + 1u]));
+        if (has_deform)
+        {
+            // rigid 的 deform 是绝对坐标：整体替换（不是加）
+            const uint f = d.deform_base + vi * 2u;
+            bp = vec2(deform[f], deform[f + 1u]);
+        }
         const uint b = (d.bone_base + d.slot_bone) * 6u;
         precise float x = bp.x * bones[b + 0u] + bp.y * bones[b + 1u] + bones[b + 4u];
         precise float y = bp.x * bones[b + 2u] + bp.y * bones[b + 3u] + bones[b + 5u];
@@ -72,7 +91,13 @@ void main()
         precise float y = 0.0;
         for (uint k = 0u; k < cnt; ++k)
         {
-            const vec2 bp = infl_bind[off + k];
+            precise vec2 bp = infl_bind[off + k];
+            if (has_deform)
+            {
+                // weighted 的 deform 是偏移：先加到 bindPos 上再变换（参考实现 vx = vertices[b] + deform[f]）
+                const uint f = d.deform_base + (off + k) * 2u;
+                bp += vec2(deform[f], deform[f + 1u]);
+            }
             const uint bw = infl_bone[off + k];
             const uint b = (d.bone_base + (bw & 0xFFFFu)) * 6u;
             const float w = float((bw >> 16u) & 0xFFu) / 255.0;

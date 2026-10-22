@@ -833,6 +833,39 @@ size_t DeformLength(const SpineSourceAttachment& a)
     return influences * 2u;
 }
 
+// 稳定重排附件，并把 linked mesh 的 `parent_index` 跟着改写到新下标。
+// ⚠️ 以前直接 `std::stable_sort(attachments)`：parent_index 是**下标**，重排后指向别人。
+//    v13 及以前它只在重排**之前**用过（inheritDeform 传播），所以没出事；v14 把它落进
+//    绘制项的 deform_parent，OSGame 73 个资产因此指到了别的槽位的附件（读端校验抓到的）。
+template <typename Less>
+void StableSortAttachmentsKeepParents(std::vector<SpineSourceAttachment>& attachments, Less less)
+{
+    std::vector<size_t> order(attachments.size());
+    for (size_t i = 0; i < order.size(); ++i)
+    {
+        order[i] = i;
+    }
+    std::stable_sort(order.begin(), order.end(),
+                     [&](size_t a, size_t b) { return less(attachments[a], attachments[b]); });
+    std::vector<int> new_index_of(attachments.size(), -1);
+    for (size_t n = 0; n < order.size(); ++n)
+    {
+        new_index_of[order[n]] = static_cast<int>(n);
+    }
+    std::vector<SpineSourceAttachment> sorted;
+    sorted.reserve(attachments.size());
+    for (size_t n = 0; n < order.size(); ++n)
+    {
+        sorted.push_back(std::move(attachments[order[n]]));
+        SpineSourceAttachment& a = sorted.back();
+        if (a.parent_index >= 0)
+        {
+            a.parent_index = new_index_of[static_cast<size_t>(a.parent_index)];
+        }
+    }
+    attachments = std::move(sorted);
+}
+
 // 把解析期收集的 deform 引用落到附件上，并按 inheritDeform 传播。
 // ⚠️ 必须在 linked mesh 解引用**之后**、attachments 重排**之前**调用：
 //     前者是因为 deform 可以指向 linked mesh（它是最后才插进来的）；
@@ -2583,7 +2616,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
     if (need_sort)
     {
         // 解出来的附件插在末尾 ⇒ 重排一次，保证 (皮肤, 槽位) 有序。
-        std::stable_sort(out.attachments.begin(), out.attachments.end(),
+        StableSortAttachmentsKeepParents(out.attachments,
                          [](const SpineSourceAttachment& a, const SpineSourceAttachment& b)
                          {
                              if (a.skin_index != b.skin_index)
@@ -2912,7 +2945,7 @@ public:
 
         if (need_resort)
         {
-            std::stable_sort(out_.attachments.begin(), out_.attachments.end(), CompareAttachmentOrder);
+            StableSortAttachmentsKeepParents(out_.attachments, CompareAttachmentOrder);
         }
         return true;
     }
@@ -5890,8 +5923,21 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         // ---- 索引：相对**所在顶点段**的局部下标 ----
         // 两种格式是两个独立的顶点段、两次独立的绘制，索引不能跨段。
         const uint32_t index_offset = static_cast<uint32_t>(out.index_buffer.size());
+        // 索引是 u16：段内绝对下标超过 0xFFFF 时 `static_cast<uint16_t>` 会**静默截断**成
+        // 别的顶点 ⇒ 显式报错（vertex_base 本身也要进 v14 绘制项的 u16 字段，同理）。
+        if (vertex_base > 0xFFFFu || vc > 0xFFFFu || (vc > 0u && vertex_base + vc - 1u > 0xFFFFu))
+        {
+            return Fail("bake: 附件 '" + a.name + "' 的顶点落在顶点段第 " + std::to_string(vertex_base) + " 起的 " +
+                        std::to_string(vc) + " 个，超出 u16 索引范围（" +
+                        std::string(weighted ? "weighted" : "rigid") + " 段总顶点数过多）");
+        }
         for (uint16_t t : a.triangles)
         {
+            if (t >= vc)
+            {
+                return Fail("bake: 附件 '" + a.name + "' 的三角形引用了第 " + std::to_string(t) + " 个顶点，但它只有 " +
+                            std::to_string(vc) + " 个");
+            }
             out.index_buffer.push_back(static_cast<uint16_t>(t + vertex_base));
         }
 
@@ -5939,7 +5985,21 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
         const int clip_of_here = clip_of[static_cast<size_t>(a.skin_index)][static_cast<size_t>(a.slot_index)];
         item.clip_index = clip_of_here >= 0 ? static_cast<uint16_t>(clip_of_here)
                                             : SpineGpuConstants::kNoClipIndex;
-        item.pad2 = 0;
+        item.vertex_base = static_cast<uint16_t>(vertex_base);
+        // linked mesh 继承父附件的 deform（MeshAttachment.cpp:94-95）：只记**直接**父，
+        // 参考实现的判据就是 `_parentMesh == sourceAttachment`，不沿链往上找。
+        item.deform_parent = SpineGpuConstants::kNoDeformParent;
+        if (a.parent_index >= 0 && a.inherit_deform)
+        {
+            if (static_cast<size_t>(a.parent_index) >= src.attachments.size() ||
+                src.attachments[static_cast<size_t>(a.parent_index)].slot_index != a.slot_index)
+            {
+                return Fail("bake: linked mesh '" + a.name + "' 的父附件下标 " + std::to_string(a.parent_index) +
+                            " 越界或不在同一槽位（参考实现按本槽位查父附件，SkeletonBinary.cpp 解析 linkedMeshes）");
+            }
+            item.deform_parent = static_cast<uint16_t>(a.parent_index);
+        }
+        item.vertex_count = static_cast<uint16_t>(vc);
         out.draw_items.push_back(item);
 
         SpineGpuAttachmentRecord rec {};
@@ -6907,7 +6967,7 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         chunks.push_back(std::move(c));
     }
 
-    // id=6 draw_items —— **28 B/项**，未用字节显式写 0（规格 §4）
+    // id=6 draw_items —— **32 B/项**（v14），未用字节显式写 0（规格 §4）
     if (!asset.draw_items.empty())
     {
         ChunkBuilder c;
@@ -8050,13 +8110,14 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         }
     }
 
-    // ---- 绘制项（28 B/项） ----
+    // ---- 绘制项（32 B/项，v14） ----
     if (const Found* f = find_chunk(SpineGpuChunkId::kChunkDrawItems))
     {
         if (f->size % sizeof(SpineDrawItem) != 0)
         {
             return Fail("container: draw_items 大小不是 " + std::to_string(sizeof(SpineDrawItem)) +
-                        " B 的整数倍（v3 起一项是 24 B：多了 uv_offset；v6 起是 28 B：多了 clip_index）");
+                        " B 的整数倍（v3 起一项是 24 B：多了 uv_offset；v6 起是 28 B：多了 clip_index；"
+                        "v14 起是 32 B：多了 vertex_base / deform_parent）");
         }
         const uint32_t count = f->size / static_cast<uint32_t>(sizeof(SpineDrawItem));
         out.draw_items.resize(count);
@@ -8076,8 +8137,26 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
             {
                 return Fail("container: 第 " + std::to_string(i) + " 个绘制项的索引区间越过索引缓冲");
             }
+            // v14：[vertex_base, vertex_base + vertex_count) 必须落在所属顶点段里
+            const uint32_t seg_count = di.vertex_format == SpineVertexFormat::kWeighted ? out.header.weighted_vertex_count
+                                                                                        : out.header.rigid_vertex_count;
+            if (static_cast<uint32_t>(di.vertex_base) + di.vertex_count > seg_count)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 个绘制项的顶点区间 [" +
+                            std::to_string(di.vertex_base) + ", +" + std::to_string(di.vertex_count) +
+                            ") 越过所属顶点段（" + std::to_string(seg_count) + " 个）");
+            }
             for (uint32_t q = 0; q < di.index_count; ++q)
             {
+                // v14：索引 = 附件本地下标 + vertex_base ⇒ 必须落在 [vertex_base, vertex_base + vertex_count)。
+                // 落在外面说明 vertex_base / vertex_count 写错了，GPU deform 会取到别的附件的 deform。
+                const uint32_t idx = out.index_buffer[static_cast<size_t>(di.index_offset) + q];
+                if (idx < di.vertex_base || idx >= static_cast<uint32_t>(di.vertex_base) + di.vertex_count)
+                {
+                    return Fail("container: 第 " + std::to_string(i) + " 个绘制项的索引 " + std::to_string(idx) +
+                                " 不在它的顶点区间 [" + std::to_string(di.vertex_base) + ", +" +
+                                std::to_string(di.vertex_count) + ") 里");
+                }
                 const uint32_t uv_index =
                     di.uv_offset + static_cast<uint32_t>(out.index_buffer[static_cast<size_t>(di.index_offset) + q]);
                 if (uv_index >= uv_count)
@@ -8118,8 +8197,32 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
             std::memcpy(&out.attachment_records[i],
                         data + f->offset + static_cast<size_t>(i) * sizeof(SpineGpuAttachmentRecord),
                         sizeof(SpineGpuAttachmentRecord));
+            // 规格 §9："attachment_id 是全局下标（= 本表的行号）"。deform 时间轴按**记录下标**
+            // 寻址、绘制项按 attachment_id 寻址，两者能互换全靠这条恒等式 ⇒ 读端钉住。
+            if (out.attachment_records[i].attachment_id != i)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 条附件记录的 attachment_id 是 " +
+                            std::to_string(out.attachment_records[i].attachment_id) + "（应等于行号）");
+            }
         }
         attachment_count = count;
+    }
+
+    // v14：deform_parent 要么是"没有"，要么是**同一槽位**里**另一个**附件的 id。
+    // 坏了的话 GPU deform 会把别的附件的 deform 数组套到自己身上（长度对得上就不报错）。
+    for (size_t i = 0; i < out.draw_items.size(); ++i)
+    {
+        const SpineDrawItem& di = out.draw_items[i];
+        if (di.deform_parent == SpineGpuConstants::kNoDeformParent)
+        {
+            continue;
+        }
+        if (di.deform_parent >= out.attachment_records.size() || di.deform_parent == di.attachment_id ||
+            out.attachment_records[di.deform_parent].slot_index != di.slot_index)
+        {
+            return Fail("container: 第 " + std::to_string(i) + " 个绘制项的 deform_parent " +
+                        std::to_string(di.deform_parent) + " 越界、指向自己或不在同一槽位");
+        }
     }
 
     // ---- 字符串：骨骼名 → 皮肤名 → 槽位名 → 附件名 → 图集页名 → 动画名 → 动画附件名 ----

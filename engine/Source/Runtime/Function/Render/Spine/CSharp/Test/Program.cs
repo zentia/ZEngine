@@ -86,7 +86,7 @@ namespace ZEngine.SpineGpu.Test
 
                 // ---- 基本自洽 ----
                 Check(a.Header.Magic == SpineGpuConstants.Magic, "魔数是 'ZSPG'");
-                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 13");
+                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 14");
                 // v10：槽位 setup 是 chunk 17，条数必须 = header.slot_count。
                 // "chunk 不存在"本身不报错，少了这等式读端会得到"所有槽位纯白"
                 // —— 而纯白与 setup 白在多数资产上完全看不出区别（坑与 chunk 10 同类）。
@@ -515,9 +515,10 @@ namespace ZEngine.SpineGpu.Test
 
             // 版本改一改 ⇒ 必须明确拒绝，不做静默兼容（规格 §11）
             _prefix = "[负向] ";
-            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v13 是当前版本，
-            //    所以"未来"是 14，而 12 已经变成"旧容器"了（uv_offset 没减 vertex_base）。
-            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 14), "版本改成 14（未来容器）⇒ 拒绝");
+            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v14 是当前版本，
+            //    所以"未来"是 15，而 13 已经变成"旧容器"了（绘制项 28 B，没有 vertex_base / deform_parent）。
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 15), "版本改成 15（未来容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 13), "版本改成 13（v13 旧容器：绘制项 28 B）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 12), "版本改成 12（v12 旧容器：uv_offset 语义不同）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 11), "版本改成 11（v11 旧容器：path 的 deform 被丢掉）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 10), "版本改成 10（v10 旧容器：没有 chunk 18-20）⇒ 拒绝");
@@ -538,7 +539,7 @@ namespace ZEngine.SpineGpu.Test
             int at = FindChunkSizeField(good, (uint)SpineGpuChunkId.DrawItems);
             if (at >= 0)
             {
-                Rejects(Mutate(good, at, ReadU32(good, at) + 1), "draw_items 大小 +1 ⇒ 拒绝（28 B 的整数倍）");
+                Rejects(Mutate(good, at, ReadU32(good, at) + 1), "draw_items 大小 +1 ⇒ 拒绝（32 B 的整数倍）");
             }
             int atc = FindChunkSizeField(good, (uint)SpineGpuChunkId.ClipData);
             if (atc >= 0)

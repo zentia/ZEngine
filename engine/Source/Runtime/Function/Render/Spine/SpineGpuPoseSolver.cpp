@@ -74,6 +74,13 @@ SpineImportResult Fail(std::string message)
     return r;
 }
 
+SpineImportResult Ok()
+{
+    SpineImportResult r;
+    r.ok = true;
+    return r;
+}
+
 // spine-cpp 的 `Bone` 在解算期间的全部可变状态。
 //
 // 分三层，与参考实现**逐字段对应**，不要合并：
@@ -1846,6 +1853,115 @@ namespace
         trace->applied_after_step.push_back(std::move(ap));
         trace->applied_valid_after_step.push_back(std::move(av));
     }
+
+    // 一条 deform 时间轴在 `time` 处的整份数组（`DeformTimeline::apply`，DeformTimeline.cpp:62-...）。
+    // path（5b 步）与 mesh（8 步，S6）共用 —— 两者的时间轴是同一种东西，只是"作用于谁"不同。
+    //
+    // 口径：参考对拍是 `setToSetupPose()` 之后 `apply(alpha=1, MixBlend_First)`。
+    // `Slot::setToSetupPose()` 先把 `_attachment` 置空再挂回去（Slot.cpp:59-60）⇒
+    // deform 数组**必然被清空** ⇒ apply 里 `verticesArray.size()==0` 把 blend 改成
+    // MixBlend_Setup（DeformTimeline.cpp:82-84）。alpha==1 时各分支收敛成：
+    //   time < 第 0 帧  → 清空（:91-93）               ⇒ `cleared = true`
+    //   time >= 末帧    → 末帧整份（:139 memcpy）
+    //   其余            → prev + (next - prev) * percent（:200-204）
+    // "整份"是参考实现**读文件时**拼出来的（SkeletonBinary.cpp:986-1016）：
+    // 稀疏区间外补 0，rigid 再逐个加上 setup 顶点（rigid 存绝对坐标、weighted 存偏移）。
+    // `rigid_setup` 非空 ⇒ rigid（长度 = deform_len）。
+    SpineImportResult SampleDeformTimeline(const SpineGpuAsset& asset, uint32_t tl_index, float time,
+                                           uint32_t deform_len, const float* rigid_setup, bool& cleared,
+                                           std::vector<float>& dst)
+    {
+        const SpineGpuTimeline& tl = asset.timelines[tl_index];
+        cleared = false;
+        if (tl.frame_count == 0 || static_cast<size_t>(tl.frame_first) + tl.frame_count > asset.frames.size())
+        {
+            return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的帧区间越界或为空");
+        }
+        const float* frames = asset.frames.data() + tl.frame_first;
+        if (time < frames[0])
+        {
+            cleared = true;   // 清空 ⇒ 用 setup 顶点
+            dst.clear();
+            return Ok();
+        }
+
+        // 逐帧解出稀疏载荷 (start, count, values*)
+        struct SparseFrame
+        {
+            uint32_t start;
+            uint32_t count;
+            const uint8_t* values;
+        };
+        std::vector<SparseFrame> sparse(tl.frame_count);
+        size_t pos = tl.payload_offset;
+        for (uint32_t fr = 0; fr < tl.frame_count; ++fr)
+        {
+            if (pos + 8u > asset.timeline_payload.size())
+            {
+                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的载荷被截断");
+            }
+            SparseFrame& sf = sparse[fr];
+            std::memcpy(&sf.start, asset.timeline_payload.data() + pos, 4);
+            std::memcpy(&sf.count, asset.timeline_payload.data() + pos + 4u, 4);
+            sf.values = asset.timeline_payload.data() + pos + 8u;
+            pos += 8u + static_cast<size_t>(sf.count) * 4u;
+            if (pos > asset.timeline_payload.size())
+            {
+                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的载荷被截断");
+            }
+        }
+
+        // 拼出"整份"帧（SkeletonBinary.cpp:999-1016）
+        const auto expand = [&](uint32_t fr, std::vector<float>& full) -> bool {
+            full.assign(deform_len, 0.0f);
+            const SparseFrame& sf = sparse[fr];
+            if (static_cast<uint64_t>(sf.start) + sf.count > deform_len)
+            {
+                return false;
+            }
+            for (uint32_t q = 0; q < sf.count; ++q)
+            {
+                std::memcpy(&full[sf.start + q], sf.values + static_cast<size_t>(q) * 4u, 4);
+            }
+            if (rigid_setup != nullptr)
+            {
+                for (uint32_t q = 0; q < deform_len; ++q)
+                {
+                    full[q] += rigid_setup[q];
+                }
+            }
+            return true;
+        };
+
+        const uint32_t last = tl.frame_count - 1u;
+        if (time >= frames[last])
+        {
+            if (!expand(last, dst))
+            {
+                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的帧超出 deform 长度");
+            }
+            return Ok();
+        }
+        const uint32_t cur = SpineGpuBinarySearchFrames(frames, tl.frame_count, 1u, time);
+        float percent = 0.0f;
+        const SpineImportResult cr = SpineGpuCurvePercentAt(asset, tl, tl_index, cur, time, percent);
+        if (!cr.ok)
+        {
+            return cr;
+        }
+        std::vector<float> prev;
+        std::vector<float> next;
+        if (!expand(cur - 1u, prev) || !expand(cur, next))
+        {
+            return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的帧超出 deform 长度");
+        }
+        dst.resize(deform_len);
+        for (uint32_t q = 0; q < deform_len; ++q)
+        {
+            dst[q] = prev[q] + (next[q] - prev[q]) * percent;
+        }
+        return Ok();
+    }
 }  // namespace
 
 SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_index, float time,
@@ -2233,94 +2349,20 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
             }
             continue;
         }
-        const float* frames = asset.frames.data() + tl.frame_first;
-        if (time < frames[0])
-        {
-            continue;   // 清空 ⇒ 用 setup 顶点
-        }
-
-        // 逐帧解出稀疏载荷 (start, count, values*)
-        struct SparseFrame
-        {
-            uint32_t start;
-            uint32_t count;
-            const uint8_t* values;
-        };
-        std::vector<SparseFrame> sparse(tl.frame_count);
-        size_t pos = tl.payload_offset;
-        for (uint32_t fr = 0; fr < tl.frame_count; ++fr)
-        {
-            if (pos + 8u > asset.timeline_payload.size())
-            {
-                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的载荷被截断");
-            }
-            SparseFrame& sf = sparse[fr];
-            std::memcpy(&sf.start, asset.timeline_payload.data() + pos, 4);
-            std::memcpy(&sf.count, asset.timeline_payload.data() + pos + 4u, 4);
-            sf.values = asset.timeline_payload.data() + pos + 8u;
-            pos += 8u + static_cast<size_t>(sf.count) * 4u;
-            if (pos > asset.timeline_payload.size())
-            {
-                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的载荷被截断");
-            }
-        }
-
         const uint32_t deform_len = SpineGpuPathDeformLength(att);
         const bool rigid = att.bone_count == 0;
-        const float* setup = asset.path_vertices.data() + att.vertex_offset;
         if (rigid && static_cast<size_t>(att.vertex_offset) + deform_len > asset.path_vertices.size())
         {
             return Fail("sample: path 附件 " + std::to_string(k) + " 的顶点区间越界");
         }
-        // 拼出"整份"帧（SkeletonBinary.cpp:999-1016）
-        const auto expand = [&](uint32_t fr, std::vector<float>& full) -> bool {
-            full.assign(deform_len, 0.0f);
-            const SparseFrame& sf = sparse[fr];
-            if (static_cast<uint64_t>(sf.start) + sf.count > deform_len)
-            {
-                return false;
-            }
-            for (uint32_t q = 0; q < sf.count; ++q)
-            {
-                std::memcpy(&full[sf.start + q], sf.values + static_cast<size_t>(q) * 4u, 4);
-            }
-            if (rigid)
-            {
-                for (uint32_t q = 0; q < deform_len; ++q)
-                {
-                    full[q] += setup[q];
-                }
-            }
-            return true;
-        };
-
-        std::vector<float>& dst = ctx.path_deform[k];
-        const uint32_t last = tl.frame_count - 1u;
-        if (time >= frames[last])
+        bool cleared = false;
+        const SpineImportResult dr =
+            SampleDeformTimeline(asset, tl_index, time, deform_len,
+                                 rigid ? asset.path_vertices.data() + att.vertex_offset : nullptr, cleared,
+                                 ctx.path_deform[k]);
+        if (!dr.ok)
         {
-            if (!expand(last, dst))
-            {
-                return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的帧超出 deform 长度");
-            }
-            continue;
-        }
-        const uint32_t cur = SpineGpuBinarySearchFrames(frames, tl.frame_count, 1u, time);
-        float percent = 0.0f;
-        const SpineImportResult cr = SpineGpuCurvePercentAt(asset, tl, tl_index, cur, time, percent);
-        if (!cr.ok)
-        {
-            return cr;
-        }
-        std::vector<float> prev;
-        std::vector<float> next;
-        if (!expand(cur - 1u, prev) || !expand(cur, next))
-        {
-            return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的帧超出 deform 长度");
-        }
-        dst.resize(deform_len);
-        for (uint32_t q = 0; q < deform_len; ++q)
-        {
-            dst[q] = prev[q] + (next[q] - prev[q]) * percent;
+            return dr;
         }
     }
 
@@ -2491,6 +2533,150 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
         out.bones[i].world_x = s.world_x;
         out.bones[i].world_y = s.world_y;
     }
+
+    // ---- 8) 槽位当前附件 → 绘制项；mesh deform（S6）----
+    //
+    // 骨骼与此无关（mesh 的 deform 只改顶点），所以放在最后。
+    //
+    // 当前附件按**名字**在 default 皮肤（skin 0）里找：`Skeleton::getAttachment()` 先查当前皮肤、
+    // 再查 default 皮肤；我们不支持换肤 ⇒ 只剩 default。名字找不到可画项 = 挂的是裁剪 / point /
+    // bbox / path（它们不产生绘制项），不是错。
+    const uint32_t slot_count = static_cast<uint32_t>(out.slots.size());
+    out.slot_draw_item.assign(slot_count, SpineGpuPoseResult::kNoDrawItem);
+    out.mesh_deforms.clear();
+    {
+        std::vector<std::vector<uint32_t>> skin0_items(slot_count);
+        for (uint32_t i = 0; i < asset.draw_items.size(); ++i)
+        {
+            const SpineDrawItem& di = asset.draw_items[i];
+            if (di.skin_id == SpineGpuConstants::kDefaultSkinId && di.slot_index < slot_count)
+            {
+                skin0_items[di.slot_index].push_back(i);
+            }
+        }
+        for (uint32_t s = 0; s < slot_count; ++s)
+        {
+            const uint32_t name_off = out.slots[s].attachment_name_offset;
+            if (name_off == SpineGpuConstants::kNoAttachmentName || skin0_items[s].empty())
+            {
+                continue;
+            }
+            const char* name = SpineGpuStringAt(blob, name_off);
+            if (name == nullptr)
+            {
+                return Fail("sample: 槽位 " + std::to_string(s) + " 的附件名偏移越界");
+            }
+            for (uint32_t i : skin0_items[s])
+            {
+                const uint16_t att = asset.draw_items[i].attachment_id;
+                if (att < asset.attachment_names.size() && asset.attachment_names[att] == name)
+                {
+                    out.slot_draw_item[s] = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    // mesh 的 deform 时间轴：作用于"该槽位此刻挂着的附件"，判据照抄
+    // `MeshAttachment::applyDeform()`（MeshAttachment.cpp:94-95）：
+    //   this == source || (inheritDeform && parentMesh == source)
+    // 同一槽位被多条时间轴命中时按时间轴顺序**后者覆盖前者**（alpha = 1 的 replace；
+    // 落在第 0 帧之前的那条则把数组清空，DeformTimeline.cpp:91-93）。
+    // 顺序问题：参考实现里 attachment 时间轴排在 deform 之前（SkeletonBinary 先读槽位时间轴），
+    // 换附件会清空 deform 数组（Slot::setAttachment）⇒ "先定当前附件、再套 deform"与之等价。
+    std::vector<float> setup;   // rigid 的 setup 顶点（从静态 VB 取出来，参考实现的 `getVertices()`）
+    for (uint32_t ti = 0; ti < anim.timeline_count; ++ti)
+    {
+        const uint32_t tl_index = anim.timeline_first + ti;
+        const SpineGpuTimeline& tl = asset.timelines[tl_index];
+        if (static_cast<SpineTimelineType>(tl.type) != SpineTimelineType::kDeform ||
+            (tl.target & SpineGpuConstants::kDeformTargetPathBit) != 0)
+        {
+            continue;
+        }
+        if (tl.target >= asset.attachment_records.size())
+        {
+            return Fail("sample: 第 " + std::to_string(tl_index) + " 条 deform 时间轴指向越界的附件记录 " +
+                        std::to_string(tl.target));
+        }
+        const SpineGpuAttachmentRecord& rec = asset.attachment_records[tl.target];
+        if (rec.slot_index >= slot_count)
+        {
+            return Fail("sample: deform 时间轴 " + std::to_string(tl_index) + " 的槽位越界");
+        }
+        const uint32_t item = out.slot_draw_item[rec.slot_index];
+        if (item == SpineGpuPoseResult::kNoDrawItem)
+        {
+            continue;
+        }
+        const SpineDrawItem& di = asset.draw_items[item];
+        if (di.attachment_id != rec.attachment_id && di.deform_parent != rec.attachment_id)
+        {
+            continue;   // `applyDeform` 为假：槽位挂的不是它（也不是继承它的 linked mesh）
+        }
+
+        // deform 长度（DeformTimeline::_deformLength）：rigid 每顶点 2 个，weighted 每影响 2 个
+        uint32_t deform_len = 0;
+        const float* rigid_setup = nullptr;
+        if (di.vertex_format == SpineVertexFormat::kRigid)
+        {
+            deform_len = 2u * di.vertex_count;
+            const size_t byte0 = static_cast<size_t>(di.vertex_base) * SpineGpuConstants::kRigidVertexStride;
+            if (byte0 + static_cast<size_t>(di.vertex_count) * SpineGpuConstants::kRigidVertexStride >
+                asset.weighted_segment_offset)
+            {
+                return Fail("sample: 绘制项 " + std::to_string(item) + " 的 rigid 顶点区间越过 rigid 段");
+            }
+            setup.resize(deform_len);
+            std::memcpy(setup.data(), asset.vertex_buffer.data() + byte0, static_cast<size_t>(deform_len) * 4u);
+            rigid_setup = setup.data();
+        }
+        else
+        {
+            const size_t w0 = asset.weighted_segment_offset / 4u + static_cast<size_t>(di.vertex_base) * 2u;
+            if ((w0 + static_cast<size_t>(di.vertex_count) * 2u) * 4u > asset.vertex_buffer.size())
+            {
+                return Fail("sample: 绘制项 " + std::to_string(item) + " 的 weighted 顶点区间越过顶点缓冲");
+            }
+            for (uint32_t v = 0; v < di.vertex_count; ++v)
+            {
+                uint32_t cnt = 0;
+                std::memcpy(&cnt, asset.vertex_buffer.data() + (w0 + v * 2u + 1u) * 4u, 4);
+                deform_len += 2u * cnt;
+            }
+        }
+
+        // 找 / 建这一项的条目（同一项可能被多条时间轴命中：后者覆盖）
+        SpineGpuMeshDeform* entry = nullptr;
+        for (SpineGpuMeshDeform& e : out.mesh_deforms)
+        {
+            if (e.draw_item == item)
+            {
+                entry = &e;
+                break;
+            }
+        }
+        if (entry == nullptr)
+        {
+            out.mesh_deforms.push_back(SpineGpuMeshDeform {});
+            entry = &out.mesh_deforms.back();
+            entry->draw_item = item;
+        }
+        bool cleared = false;
+        const SpineImportResult dr =
+            SampleDeformTimeline(asset, tl_index, time, deform_len, rigid_setup, cleared, entry->values);
+        if (!dr.ok)
+        {
+            return dr;
+        }
+    }
+    // 被清空的（第 0 帧之前）= 没有 deform ⇒ 不出现在结果里
+    out.mesh_deforms.erase(std::remove_if(out.mesh_deforms.begin(), out.mesh_deforms.end(),
+                                          [](const SpineGpuMeshDeform& e) { return e.values.empty(); }),
+                           out.mesh_deforms.end());
+    std::sort(out.mesh_deforms.begin(), out.mesh_deforms.end(),
+              [](const SpineGpuMeshDeform& a, const SpineGpuMeshDeform& b) { return a.draw_item < b.draw_item; });
 
     SpineImportResult r;
     r.ok = true;

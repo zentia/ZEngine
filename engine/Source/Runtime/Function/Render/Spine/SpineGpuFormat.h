@@ -110,7 +110,18 @@ namespace SpineGpuConstants
     //     错 UV = 贴图采错块，不报错。读端逐索引校验 `uv_offset + index < uv_count`。
     //     同一版本里绘制项的另外两个字段也**第一次写实**：`blend_mode`（取自槽位，以前恒
     //     kNormal ⇒ 加色特效画成普通混合）与 `atlas_page`（取自 region，以前恒 0）。
-    constexpr uint32_t kFormatVersion = 13;
+    // * v14 = 绘制项 28 → **32 B**：`vertex_base`（u16 @26）+ `deform_parent`（u16 @28）+
+    //     `vertex_count`（u16 @30）。三者都是 GPU 上做 mesh deform（S6）的前提，且**都无法从别的
+    //     字段反推**（vertex_count：deform 数组长度 = rigid 2×顶点数 / weighted 2×影响数，而
+    //     "最大索引 + 1"在有未被三角形引用的尾部顶点时会少算）：
+    //       · deform 数组按**附件本地**下标排（rigid 每顶点 2 float，weighted 每影响 2 float），
+    //         而 shader 拿到的是段内**绝对**下标 ⇒ 要减 vertex_base（v13 只把它折进了
+    //         uv_offset，单独取不回来）；
+    //       · `MeshAttachment::applyDeform()`（MeshAttachment.cpp:94-95）：时间轴作用于
+    //         `this == source || (inheritDeform && parentMesh == source)` ⇒ linked mesh 要知道
+    //         "继承谁的 deform"。烘焙期的 inheritDeform 传播只决定 kind，运行时**认不出**
+    //         挂父附件 deform 的那条时间轴该不该作用于自己。
+    constexpr uint32_t kFormatVersion = 14;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -152,9 +163,14 @@ namespace SpineGpuConstants
     // 每帧实例项大小（含 root_index，规格 §5.2）。
     constexpr uint32_t kDrawInstanceSize = 20;
 
-    // 静态绘制项大小（规格 §4）。v3 起是 24 B（多了 uv_offset），v6 起是 28 B（多了 clip_index）。
+    // 静态绘制项大小（规格 §4）。v3 起是 24 B（多了 uv_offset），v6 起是 28 B（多了 clip_index），
+    // v14 起是 32 B（多了 vertex_base / deform_parent）。
     // 与 kDrawInstanceSize 别互相换用 —— 一个是静态表项、一个是每帧实例项。
-    constexpr uint32_t kDrawItemSize = 28;
+    constexpr uint32_t kDrawItemSize = 32;
+
+    // deform_parent 的"没有"值（不是 linked mesh，或 linked mesh 的 inheritDeform = false）。
+    // 附件数上限是 0xFFFF 条（烘焙期校验）⇒ 合法 id 最大 0xFFFE，0xFFFF 不会撞上。
+    constexpr uint16_t kNoDeformParent = 0xFFFFu;
 
     // 裁剪多边形记录大小（chunk 9，规格 §7.2）。
     constexpr uint32_t kClipPolygonSize = 12;
@@ -1215,13 +1231,22 @@ struct SpineDrawItem
     // 可能被多条裁剪覆盖过（不同皮肤 / 嵌套），绘制项要的是"当时生效的那一条"，
     // 而这个只有导入期模拟状态机才知道。
     uint16_t clip_index;
-    uint16_t pad2;                     // @26 —— 凑 28 B，落盘必须写 0
+    // @26（v14）—— 这一项的顶点在所在顶点段里的起点（索引 = 附件本地下标 + vertex_base）。
+    // 索引是 u16 ⇒ 它必然 ≤ 0xFFFF（烘焙期校验，不截断）。GPU deform 靠它把段内绝对
+    // 下标换回附件本地下标（deform 数组按本地下标排）。
+    uint16_t vertex_base;
+    // @28（v14）—— linked mesh 且 inheritDeform 时 = 父附件的 attachment_id，
+    // 否则 `kNoDeformParent`。deform 时间轴作用于本项 ⇔ 时间轴的附件是自己或这个父附件
+    // （MeshAttachment.cpp:94-95，只看**一层**父，不沿链传播）。
+    uint16_t deform_parent;
+    // @30（v14）—— 附件的顶点数（段内 [vertex_base, vertex_base + vertex_count)）。
+    // deform 数组长度由它定：rigid = 2 × vertex_count，weighted = 2 × 这些顶点的影响数之和。
+    uint16_t vertex_count;
 };
 
-// v3 起是 **24 B**（20 B + uv_offset）。
-// 序列化时两端都必须按 **24 B** 落盘并显式把未用字节写 0，否则 C# 与 C++ 会对不上。
+// v14 起是 **32 B**。序列化时两端都必须显式把未用字节写 0，否则 C# 与 C++ 会对不上。
 static_assert(sizeof(SpineDrawItem) == SpineGpuConstants::kDrawItemSize,
-              "spec 4: draw item serializes as 24 B");
+              "spec 4: draw item serializes as 32 B (v14)");
 static_assert(offsetof(SpineDrawItem, index_offset) == 0, "spec 4: index_offset @0");
 static_assert(offsetof(SpineDrawItem, index_count) == 4, "spec 4: index_count @4");
 static_assert(offsetof(SpineDrawItem, uv_offset) == 8, "spec 4: uv_offset @8");
@@ -1233,7 +1258,9 @@ static_assert(offsetof(SpineDrawItem, attachment_id) == 18, "spec 4: attachment_
 static_assert(offsetof(SpineDrawItem, skin_id) == 20, "spec 4: skin_id @20");
 static_assert(offsetof(SpineDrawItem, kind) == 22, "spec 4: kind @22");
 static_assert(offsetof(SpineDrawItem, clip_index) == 24, "spec 4: clip_index @24 (v6)");
-static_assert(offsetof(SpineDrawItem, pad2) == 26, "spec 4: pad2 @26 (v6)");
+static_assert(offsetof(SpineDrawItem, vertex_base) == 26, "spec 4: vertex_base @26 (v14)");
+static_assert(offsetof(SpineDrawItem, deform_parent) == 28, "spec 4: deform_parent @28 (v14)");
+static_assert(offsetof(SpineDrawItem, vertex_count) == 30, "spec 4: vertex_count @30 (v14)");
 
 // ---------------------------------------------------------------------
 // 裁剪多边形记录（chunk 9，规格 §7.2）
