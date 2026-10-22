@@ -2,10 +2,22 @@
 
 #include "Runtime/Core/Math/LargeWorldCoordinates.h"
 
-#if defined(Z_HAS_VULKAN)
+// 这个 TU 是 **RenderResource 的非 DX12 实现**：Vulkan 用它，Apple（Metal）也用它。
+//
+// 以前整段包在 `#if defined(Z_HAS_VULKAN)` 里，于是 Apple 上一个 RenderResource 的
+// 虚函数都不存在 —— 只剩文件末尾那个专门补 vtable 的 clear() 桩。那样 Apple 永远
+// 不可能有场景渲染：UploadGameObjectRenderResource / GetOrCreateMaterial
+// / CreateIBLTextures 全都没有定义。
+//
+// 注意守卫**不含 Emscripten**：WebGL2 后端的覆盖面和 Metal 差得远，而本机没法验证
+// 它，所以那里继续走文件末尾的 clear() 桩。想把 Web 也拉进来，得先把 WebGL2 的
+// buffer / descriptor 路径补齐再说。
+#if defined(Z_HAS_VULKAN) || defined(__APPLE__)
     #include "Runtime/Core/Base/Macro.h"
-    #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
-    #include "Runtime/Function/Render/Interface/Vulkan/VulkanUtil.h"
+    #if defined(Z_HAS_VULKAN)
+        #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
+        #include "Runtime/Function/Render/Interface/Vulkan/VulkanUtil.h"
+    #endif
     #include "Runtime/Function/Render/Passes/MainCameraPass.h"
     #include "Runtime/Function/Render/RenderCamera.h"
     #include "Runtime/Function/Render/MegaLights/MegaLightsSettings.h"
@@ -15,6 +27,75 @@
     #include "Runtime/Profiler/Profiler.h"
 
     #include <stdexcept>
+
+namespace
+{
+    // 资产 buffer（顶点 / index / uniform）在两个世界里长得不一样：
+    //   · Vulkan 走 VMA：allocator 是 VmaAllocator，返回的句柄是 VmaAllocation；
+    //   · Metal / WebGL2 没有 VMA，RHI::CreateBufferVMA 直接返回 false（基类默认实现）。
+    //
+    // 所以统一走这两个 helper：先试 VMA，失败就退回 RHI 的通用 CreateBuffer。
+    // 退回时把 RHIDeviceMemory* 塞回同一个 void* 槽位 —— 那一栏本来就是只写不读的
+    // 账本（GpuMesh::*_allocation 在 Apple 上就是 void*），谁都不会去释放它，所以
+    // 换个句柄类型放进去没有语义损失，也没有泄漏变化。
+    //
+    // minAlignment 只有 Vulkan 用（minUniformBufferOffsetAlignment）；Metal 的
+    // CreateBuffer 没有这个参数，对齐由 Metal 自己按 usage 定。
+    void CreateAssetBuffer(RHI* rhi,
+                           const RHIBufferCreateInfo& buffer_info,
+                           RHIBuffer*& buffer,
+                           void** allocation)
+    {
+#if defined(Z_HAS_VULKAN)
+        VmaAllocationCreateInfo alloc_info = {};
+        alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+        if (rhi->CreateBufferVMA(static_cast<VulkanRHI*>(rhi)->m_AssetsAllocator,
+                                 &buffer_info,
+                                 &alloc_info,
+                                 buffer,
+                                 allocation,
+                                 nullptr))
+        {
+            return;
+        }
+#else
+        (void)rhi;
+#endif
+        RHIDeviceMemory* memory = RHI_NULL_HANDLE;
+        rhi->CreateBuffer(buffer_info.size,
+                          buffer_info.usage,
+                          RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                          buffer,
+                          memory);
+        *allocation = memory;
+    }
+
+    void CreateAssetBufferWithAlignment(RHI* rhi,
+                                        const RHIBufferCreateInfo& buffer_info,
+                                        RHIDeviceSize min_alignment,
+                                        RHIBuffer*& buffer,
+                                        void** allocation)
+    {
+#if defined(Z_HAS_VULKAN)
+        VmaAllocationCreateInfo alloc_info = {};
+        alloc_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
+        if (rhi->CreateBufferWithAlignmentVMA(static_cast<VulkanRHI*>(rhi)->m_AssetsAllocator,
+                                              &buffer_info,
+                                              &alloc_info,
+                                              min_alignment,
+                                              buffer,
+                                              allocation,
+                                              nullptr))
+        {
+            return;
+        }
+#else
+        (void)rhi;
+        (void)min_alignment;
+#endif
+        CreateAssetBuffer(rhi, buffer_info, buffer, allocation);
+    }
+}  // namespace
 
 void RenderResource::clear()
 {
@@ -335,7 +416,10 @@ RenderResource::GetOrCreateMesh(RHI* rhi, RenderEntity entity, RenderMeshData me
     }
 #endif
 
-    now_mesh.backend = RenderResourceBackend::Vulkan;
+    // Metal 上不能谎报 Vulkan：backend 是 GpuMesh 的运行时标签，后面的代码会拿它
+    // 判断这块 buffer 是谁建的、该按哪套规则去绑。
+    now_mesh.backend = rhi->getGraphicsAPI() == GraphicsAPI::Metal ? RenderResourceBackend::Metal
+                                                                   : RenderResourceBackend::Vulkan;
 
     if (mesh_data.m_SkeletonBindingBuffer)
     {
@@ -372,8 +456,6 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
                                                              RenderEntity entity,
                                                              RenderMaterialData material_data)
 {
-    VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi);
-
     size_t assetid = entity.m_MaterialAssetId;
 
     auto it = m_Materials.find(assetid);
@@ -542,17 +624,11 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
             bufferInfo.size = buffer_size;
             bufferInfo.usage = RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-            VmaAllocationCreateInfo allocInfo = {};
-            allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
-            rhi->CreateBufferWithAlignmentVMA(
-                vulkan_context->m_AssetsAllocator,
-                &bufferInfo,
-                &allocInfo,
-                m_GlobalRenderResource.m_StorageBuffer.m_MinUniformBufferOffsetAlignment,
-                now_material.material_uniform_buffer,
-                (void**)&now_material.material_uniform_buffer_allocation,
-                NULL);
+            CreateAssetBufferWithAlignment(rhi,
+                                           bufferInfo,
+                                           m_GlobalRenderResource.m_StorageBuffer.m_MinUniformBufferOffsetAlignment,
+                                           now_material.material_uniform_buffer,
+                                           (void**)&now_material.material_uniform_buffer_allocation);
 
             // use the data from staging buffer
             rhi->CopyBuffer(inefficient_staging_buffer, now_material.material_uniform_buffer, 0, 0, buffer_size);
@@ -602,7 +678,7 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
         RHIDescriptorSetAllocateInfo material_descriptor_set_alloc_info;
         material_descriptor_set_alloc_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         material_descriptor_set_alloc_info.pNext = NULL;
-        material_descriptor_set_alloc_info.descriptorPool = vulkan_context->m_DescriptorPool;
+        material_descriptor_set_alloc_info.descriptorPool = rhi->GetDescriptorPoor();
         material_descriptor_set_alloc_info.descriptorSetCount = 1;
         material_descriptor_set_alloc_info.pSetLayouts = m_MaterialDescriptorSetLayout;
 
@@ -723,8 +799,6 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
                                         uint16_t* index_buffer_data,
                                         GpuMesh& now_mesh)
 {
-    VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi);
-
     if (enable_vertex_blending)
     {
         assert(0 == (vertex_buffer_size % sizeof(MeshVertexDataDefinition)));
@@ -824,40 +898,29 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
         // use the vmaAllocator to allocate asset vertex buffer
         RHIBufferCreateInfo bufferInfo = {RHI_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
 
-        VmaAllocationCreateInfo allocInfo = {};
-        allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
         bufferInfo.usage = RHI_BUFFER_USAGE_VERTEX_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT;
         bufferInfo.size = vertex_position_buffer_size;
-        rhi->CreateBufferVMA(vulkan_context->m_AssetsAllocator,
-                             &bufferInfo,
-                             &allocInfo,
-                             now_mesh.mesh_vertex_position_buffer,
-                             (void**)&now_mesh.mesh_vertex_position_buffer_allocation,
-                             NULL);
+        CreateAssetBuffer(rhi,
+                          bufferInfo,
+                          now_mesh.mesh_vertex_position_buffer,
+                          (void**)&now_mesh.mesh_vertex_position_buffer_allocation);
         bufferInfo.size = vertex_varying_enable_blending_buffer_size;
-        rhi->CreateBufferVMA(vulkan_context->m_AssetsAllocator,
-                             &bufferInfo,
-                             &allocInfo,
-                             now_mesh.mesh_vertex_varying_enable_blending_buffer,
-                             (void**)&now_mesh.mesh_vertex_varying_enable_blending_buffer_allocation,
-                             NULL);
+        CreateAssetBuffer(rhi,
+                          bufferInfo,
+                          now_mesh.mesh_vertex_varying_enable_blending_buffer,
+                          (void**)&now_mesh.mesh_vertex_varying_enable_blending_buffer_allocation);
         bufferInfo.size = vertex_varying_buffer_size;
-        rhi->CreateBufferVMA(vulkan_context->m_AssetsAllocator,
-                             &bufferInfo,
-                             &allocInfo,
-                             now_mesh.mesh_vertex_varying_buffer,
-                             (void**)&now_mesh.mesh_vertex_varying_buffer_allocation,
-                             NULL);
+        CreateAssetBuffer(rhi,
+                          bufferInfo,
+                          now_mesh.mesh_vertex_varying_buffer,
+                          (void**)&now_mesh.mesh_vertex_varying_buffer_allocation);
 
         bufferInfo.usage = RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT;
         bufferInfo.size = vertex_joint_binding_buffer_size;
-        rhi->CreateBufferVMA(vulkan_context->m_AssetsAllocator,
-                             &bufferInfo,
-                             &allocInfo,
-                             now_mesh.mesh_vertex_joint_binding_buffer,
-                             (void**)&now_mesh.mesh_vertex_joint_binding_buffer_allocation,
-                             NULL);
+        CreateAssetBuffer(rhi,
+                          bufferInfo,
+                          now_mesh.mesh_vertex_joint_binding_buffer,
+                          (void**)&now_mesh.mesh_vertex_joint_binding_buffer_allocation);
 
         // use the data from staging buffer
         rhi->CopyBuffer(inefficient_staging_buffer,
@@ -889,7 +952,7 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
         RHIDescriptorSetAllocateInfo mesh_vertex_blending_per_mesh_descriptor_set_alloc_info;
         mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.pNext = NULL;
-        mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.descriptorPool = vulkan_context->m_DescriptorPool;
+        mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.descriptorPool = rhi->GetDescriptorPoor();
         mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.descriptorSetCount = 1;
         mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.pSetLayouts = m_MeshDescriptorSetLayout;
 
@@ -994,30 +1057,21 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
         RHIBufferCreateInfo bufferInfo = {RHI_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bufferInfo.usage = RHI_BUFFER_USAGE_VERTEX_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-        VmaAllocationCreateInfo allocInfo = {};
-        allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
         bufferInfo.size = vertex_position_buffer_size;
-        rhi->CreateBufferVMA(vulkan_context->m_AssetsAllocator,
-                             &bufferInfo,
-                             &allocInfo,
-                             now_mesh.mesh_vertex_position_buffer,
-                             (void**)&now_mesh.mesh_vertex_position_buffer_allocation,
-                             NULL);
+        CreateAssetBuffer(rhi,
+                          bufferInfo,
+                          now_mesh.mesh_vertex_position_buffer,
+                          (void**)&now_mesh.mesh_vertex_position_buffer_allocation);
         bufferInfo.size = vertex_varying_enable_blending_buffer_size;
-        rhi->CreateBufferVMA(vulkan_context->m_AssetsAllocator,
-                             &bufferInfo,
-                             &allocInfo,
-                             now_mesh.mesh_vertex_varying_enable_blending_buffer,
-                             (void**)&now_mesh.mesh_vertex_varying_enable_blending_buffer_allocation,
-                             NULL);
+        CreateAssetBuffer(rhi,
+                          bufferInfo,
+                          now_mesh.mesh_vertex_varying_enable_blending_buffer,
+                          (void**)&now_mesh.mesh_vertex_varying_enable_blending_buffer_allocation);
         bufferInfo.size = vertex_varying_buffer_size;
-        rhi->CreateBufferVMA(vulkan_context->m_AssetsAllocator,
-                             &bufferInfo,
-                             &allocInfo,
-                             now_mesh.mesh_vertex_varying_buffer,
-                             (void**)&now_mesh.mesh_vertex_varying_buffer_allocation,
-                             NULL);
+        CreateAssetBuffer(rhi,
+                          bufferInfo,
+                          now_mesh.mesh_vertex_varying_buffer,
+                          (void**)&now_mesh.mesh_vertex_varying_buffer_allocation);
 
         // use the data from staging buffer
         rhi->CopyBuffer(inefficient_staging_buffer,
@@ -1044,7 +1098,7 @@ void RenderResource::UpdateVertexBuffer(RHI* rhi,
         RHIDescriptorSetAllocateInfo mesh_vertex_blending_per_mesh_descriptor_set_alloc_info;
         mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.pNext = NULL;
-        mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.descriptorPool = vulkan_context->m_DescriptorPool;
+        mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.descriptorPool = rhi->GetDescriptorPoor();
         mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.descriptorSetCount = 1;
         mesh_vertex_blending_per_mesh_descriptor_set_alloc_info.pSetLayouts = m_MeshDescriptorSetLayout;
 
@@ -1090,8 +1144,6 @@ void RenderResource::UpdateIndexBuffer(RHI* rhi,
                                        void* index_buffer_data,
                                        GpuMesh& now_mesh)
 {
-    VulkanRHI* vulkan_context = static_cast<VulkanRHI*>(rhi);
-
     // temp staging buffer
     RHIDeviceSize buffer_size = index_buffer_size;
 
@@ -1113,15 +1165,10 @@ void RenderResource::UpdateIndexBuffer(RHI* rhi,
     bufferInfo.size = buffer_size;
     bufferInfo.usage = RHI_BUFFER_USAGE_INDEX_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT;
 
-    VmaAllocationCreateInfo allocInfo = {};
-    allocInfo.usage = VMA_MEMORY_USAGE_GPU_ONLY;
-
-    rhi->CreateBufferVMA(vulkan_context->m_AssetsAllocator,
-                         &bufferInfo,
-                         &allocInfo,
-                         now_mesh.mesh_index_buffer,
-                         (void**)&now_mesh.mesh_index_buffer_allocation,
-                         NULL);
+    CreateAssetBuffer(rhi,
+                      bufferInfo,
+                      now_mesh.mesh_index_buffer,
+                      (void**)&now_mesh.mesh_index_buffer_allocation);
 
     // use the data from staging buffer
     rhi->CopyBuffer(inefficient_staging_buffer, now_mesh.mesh_index_buffer, 0, 0, buffer_size);
@@ -1291,17 +1338,16 @@ void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
 
     static_assert(64 >= sizeof(MeshVertex::JointBinding), "");
 }
-#endif  // Z_HAS_VULKAN
+#endif  // Z_HAS_VULKAN || __APPLE__
 
-#if !defined(Z_HAS_VULKAN) && !defined(_WIN32)
-// Metal / WebGL2 builds: every out-of-line virtual of RenderResource lives inside
-// the Z_HAS_VULKAN block above, so no translation unit emits its vtable/typeinfo.
-// RenderPass::Initialize() and friends still dynamic_cast to RenderResource, so
-// define the key function here to give the class a home TU.
+#if defined(__EMSCRIPTEN__)
+// WebGL2 是唯一还走这条路的：上面的主体守卫刻意不含 Emscripten（见文件头注释），
+// 所以它一个 out-of-line 虚函数都没有，没有 TU 会 emit RenderResource 的
+// vtable/typeinfo。RenderPass::Initialize() 之类仍然要 dynamic_cast 到
+// RenderResource，所以在这里把 key function 定义出来，给这个类一个 home TU。
 //
-// Not on Windows: RenderResourceDx12.cpp is compiled there and already defines
-// clear() in its own !Z_HAS_VULKAN block (next to CreateIBLSamplers and friends),
-// so defining it here too is a duplicate symbol at link time.
+// 不含 Windows：RenderResourceDx12.cpp 在 Windows 上编，并且已经在自己的
+// !Z_HAS_VULKAN 块里定义了 clear()，这里再定义一次就是重复符号。
 void RenderResource::clear()
 {
     ClearMeshGeometryCache();
