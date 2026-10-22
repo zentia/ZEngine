@@ -10,6 +10,8 @@
 #include "Runtime/Core/Memory/MemoryManager.h"
 // 心跳里的相机探针要用 CameraComponent::GetPosition()（Level.h 只是前向声明）。
 #include "Runtime/Function/Framework/Component/Camera/CameraComponent.h"
+// 心跳里的点光源探针要数关卡里带 LightComponent 的 GameObject（同样只是前向声明）。
+#include "Runtime/Function/Framework/Component/Light/LightComponent.h"
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
@@ -212,6 +214,20 @@ void RenderSystem::Tick(float)
 
                 const auto render_resource = std::static_pointer_cast<RenderResource>(m_RenderResource);
                 m_RenderScene->SetVisibleNodesReference();
+
+                // 点光源（阶段 55）：非 Apple 有两条路会同步点光源 —— TickRenderThread
+                // 和 RenderUpdateSceneCmd::Execute —— Apple 这条精简路径从来没调过
+                // `SyncPointLightsFromLevel`，于是 `m_PointLightList` 恒为空：场景里
+                // 摆了 LightComponent 也一个都不亮，而且**不报任何错**（真机探针是
+                // plights=0 而 gos=34 lcmp=2）。必须排在 UpdatePerFrameBuffer 之前，
+                // 那一步才是把点光源写进每帧 UBO 的人。
+                Level* active_level = nullptr;
+                if (auto world_manager = GET_SYSTEM(WorldManager))
+                {
+                    active_level = world_manager->getCurrentActiveLevel();
+                }
+                m_RenderScene->SyncPointLightsFromLevel(active_level);
+
                 for (auto&& camera : m_Cameras)
                 {
                     m_RenderResource->UpdatePerFrameBuffer(m_RenderScene, camera);
@@ -348,11 +364,19 @@ void RenderSystem::Tick(float)
             Vector3 dir_light_dir {Vector3::ZERO};
             Vector3 dir_light_col {Vector3::ZERO};
             Vector3 ambient_light {Vector3::ZERO};
+            size_t  point_lights = 0;
+            // 点光源探针（阶段 55）：Apple 的 Tick 从不调 `SyncPointLightsFromLevel`
+            // ⇒ `m_PointLightList` 恒为空。只看 plights 无法区分"关卡里本来就没灯"
+            // 和"有灯但没同步"，所以同时把关卡里的 GameObject 总数和带
+            // LightComponent 的数量打出来：gos=31 lcmp=2 plights=0 才是实锤。
+            size_t gobject_count = 0;
+            size_t light_components = 0;
             if (m_RenderScene != nullptr)
             {
                 dir_light_dir = m_RenderScene->m_DirectionalLight.m_Direction;
                 dir_light_col = m_RenderScene->m_DirectionalLight.m_Color;
                 ambient_light = m_RenderScene->m_AmbientLight.m_Irradiance;
+                point_lights  = m_RenderScene->m_PointLightList.m_Lights.size();
             }
             if (const std::shared_ptr<RenderCamera> game_cam = GetCamera(ViewportType::game))
             {
@@ -369,13 +393,27 @@ void RenderSystem::Tick(float)
                     main_cam_valid = 1;
                     cam_sync = ((game_cam_pos - main_cam_pos).length() < 0.01f) ? 1 : 0;
                 }
+                gobject_count = probe_level->getAllGObjects().size();
+                for (const auto& [go_id, game_object] : probe_level->getAllGObjects())
+                {
+                    (void)go_id;
+                    if (game_object == nullptr)
+                    {
+                        continue;
+                    }
+                    if (const LightComponent* light = game_object->tryGetComponentConst(LightComponent);
+                        light != nullptr && light->isEnabled())
+                    {
+                        ++light_components;
+                    }
+                }
             }
 
             LOG_INFO(ZRender,
                      "AppleRender: frame={} entities={} visible={} scene_color_view={} blit_ready={} "
                      "rp2_tonemapped={} swapchain={}x{} "
                      "game_cam=({},{},{}) fov={} main_cam_valid={} main_cam=({},{},{}) cam_sync={} "
-                     "dir_light=({},{},{}) dir_color=({},{},{}) ambient=({},{},{}) "
+                     "dir_light=({},{},{}) dir_color=({},{},{}) ambient=({},{},{}) plights={} gos={} lcmp={} "
                      "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
@@ -392,6 +430,9 @@ void RenderSystem::Tick(float)
                      dir_light_dir.x, dir_light_dir.y, dir_light_dir.z,
                      dir_light_col.x, dir_light_col.y, dir_light_col.z,
                      ambient_light.x, ambient_light.y, ambient_light.z,
+                     point_lights,
+                     gobject_count,
+                     light_components,
                      static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
                      static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
                      sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,

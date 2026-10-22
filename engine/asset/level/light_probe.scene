@@ -1,0 +1,1276 @@
+﻿externals: []
+objects:
+  - fileID: 1
+    type: LevelRes
+    data:
+      LevelRes:
+        gravity:
+          x: 0
+          y: 0
+          z: -9.8000001907348633
+        character_name: Player
+  - fileID: 2
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Emitter
+        m_DefinitionUrl: asset/objects/environment/particle/particle.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 3
+  - fileID: 3
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.46944212913513184
+          x: 0
+          y: 0
+          z: 0.88296324014663696
+        m_LocalPositionD:
+          x: 32
+          y: 11
+          z: 3
+        m_LocalPosition:
+          x: 32
+          y: 11
+          z: 3
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 4
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Player
+        m_DefinitionUrl: asset/objects/character/player/player.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 5
+  - fileID: 5
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70710676908493042
+          x: 0
+          y: 0
+          z: 0.70710676908493042
+        m_LocalPositionD:
+          x: 3
+          y: 3
+          z: 0
+        m_LocalPosition:
+          x: 3
+          y: 3
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 6
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_1
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 7
+  - fileID: 7
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: 1.9459700584411621
+          y: -0.38554000854492188
+          z: 0
+        m_LocalPosition:
+          x: 1.9459700584411621
+          y: -0.38554000854492188
+          z: 0
+        m_LocalScale:
+          x: 0.99999302625656128
+          y: 0.99999302625656128
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 8
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_2
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 9
+  - fileID: 9
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: -7.9951000213623047
+          y: -0.38554000854492188
+          z: 0
+        m_LocalPosition:
+          x: -7.9951000213623047
+          y: -0.38554000854492188
+          z: 0
+        m_LocalScale:
+          x: 0.99991798400878906
+          y: 0.99991798400878906
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 10
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_3
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 11
+  - fileID: 11
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: -14.20419979095459
+          y: -0.38554000854492188
+          z: 0
+        m_LocalPosition:
+          x: -14.20419979095459
+          y: -0.38554000854492188
+          z: 0
+        m_LocalScale:
+          x: 0.99990200996398926
+          y: 0.99990200996398926
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 12
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_4
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 13
+  - fileID: 13
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: -23.952800750732422
+          y: 8.1511001586914062
+          z: 0
+        m_LocalPosition:
+          x: -23.952800750732422
+          y: 8.1511001586914062
+          z: 0
+        m_LocalScale:
+          x: 0.99985599517822266
+          y: 0.99985599517822266
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 14
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_5
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 15
+  - fileID: 15
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: -31.196300506591797
+          y: 8.1511001586914062
+          z: 0
+        m_LocalPosition:
+          x: -31.196300506591797
+          y: 8.1511001586914062
+          z: 0
+        m_LocalScale:
+          x: 0.9998289942741394
+          y: 0.9998289942741394
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 16
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_6
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 17
+  - fileID: 17
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: -31.1343994140625
+          y: -6.5378899574279785
+          z: 0
+        m_LocalPosition:
+          x: -31.1343994140625
+          y: -6.5378899574279785
+          z: 0
+        m_LocalScale:
+          x: 0.9998289942741394
+          y: 0.8398280143737793
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 18
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_7
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 19
+  - fileID: 19
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: -0.29427200555801392
+          y: -16.353099822998047
+          z: 0
+        m_LocalPosition:
+          x: -0.29427200555801392
+          y: -16.353099822998047
+          z: 0
+        m_LocalScale:
+          x: 0.9998289942741394
+          y: 0.9998289942741394
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 20
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_8
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 21
+  - fileID: 21
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: 6.3296298980712891
+          y: -16.353099822998047
+          z: 0
+        m_LocalPosition:
+          x: 6.3296298980712891
+          y: -16.353099822998047
+          z: 0
+        m_LocalScale:
+          x: 0.9998289942741394
+          y: 0.9998289942741394
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 22
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_9
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 23
+  - fileID: 23
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: 28.109199523925781
+          y: -9.2786998748779297
+          z: 0
+        m_LocalPosition:
+          x: 28.109199523925781
+          y: -9.2786998748779297
+          z: 0
+        m_LocalScale:
+          x: 0.9998289942741394
+          y: 0.9998289942741394
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 24
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_10
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 25
+  - fileID: 25
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: 27.54170036315918
+          y: -1.2243499755859375
+          z: 0
+        m_LocalPosition:
+          x: 27.54170036315918
+          y: -1.2243499755859375
+          z: 0
+        m_LocalScale:
+          x: 0.9998289942741394
+          y: 0.9998289942741394
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 26
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_11
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 27
+  - fileID: 27
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: 24.114500045776367
+          y: 11.760199546813965
+          z: 0
+        m_LocalPosition:
+          x: 24.114500045776367
+          y: 11.760199546813965
+          z: 0
+        m_LocalScale:
+          x: 0.9998289942741394
+          y: 0.9998289942741394
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 28
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_12
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 29
+  - fileID: 29
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: 16.929300308227539
+          y: 11.760199546813965
+          z: 0
+        m_LocalPosition:
+          x: 16.929300308227539
+          y: 11.760199546813965
+          z: 0
+        m_LocalScale:
+          x: 0.9998289942741394
+          y: 0.9998289942741394
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 30
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_13
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 31
+  - fileID: 31
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: -4.5550098419189453
+          y: 15.539400100708008
+          z: 0
+        m_LocalPosition:
+          x: -4.5550098419189453
+          y: 15.539400100708008
+          z: 0
+        m_LocalScale:
+          x: 0.9998289942741394
+          y: 0.87982797622680664
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 32
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_14
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 33
+  - fileID: 33
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: -0.22757600247859955
+          y: 19.879196166992188
+          z: 0
+        m_LocalPosition:
+          x: -0.22757600247859955
+          y: 19.879196166992188
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 0.89999997615814209
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 34
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_15
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 35
+  - fileID: 35
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: -23.912099838256836
+          y: 13.019200325012207
+          z: 0
+        m_LocalPosition:
+          x: -23.912099838256836
+          y: 13.019200325012207
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 36
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_16
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 37
+  - fileID: 37
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: -26.915500640869141
+          y: -11.413399696350098
+          z: 0
+        m_LocalPosition:
+          x: -26.915500640869141
+          y: -11.413399696350098
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 38
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Wall_17
+        m_DefinitionUrl: asset/objects/environment/wall/wall.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 39
+  - fileID: 39
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 23.177200317382812
+          y: -13.405300140380859
+          z: 0
+        m_LocalPosition:
+          x: 23.177200317382812
+          y: -13.405300140380859
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 0.86000001430511475
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 40
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: WallWithDoor_1
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 41
+  - fileID: 41
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: -19.083700180053711
+          y: 3.6104748249053955
+          z: 0
+        m_LocalPosition:
+          x: -19.083700180053711
+          y: 3.6104748249053955
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 0.87999975681304932
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 42
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: WallWithDoor_2
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 43
+  - fileID: 43
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: -23.89430046081543
+          y: 19.49220085144043
+          z: 0
+        m_LocalPosition:
+          x: -23.89430046081543
+          y: 19.49220085144043
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 0.86000001430511475
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 44
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: WallWithDoor_3
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 45
+  - fileID: 45
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: -8.8454198837280273
+          y: 19.49220085144043
+          z: 0
+        m_LocalPosition:
+          x: -8.8454198837280273
+          y: 19.49220085144043
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 0.86000001430511475
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 46
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: WallWithDoor_4
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 47
+  - fileID: 47
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 20.292800903320312
+          y: 15.658599853515625
+          z: 0
+        m_LocalPosition:
+          x: 20.292800903320312
+          y: 15.658599853515625
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 0.86000001430511475
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 48
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: WallWithDoor_5
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_door.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 49
+  - fileID: 49
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 0.70652997493743896
+          x: 0
+          y: 0
+          z: -0.7076830267906189
+        m_LocalPositionD:
+          x: 36.248100280761719
+          y: 7.6569600105285645
+          z: 0
+        m_LocalPosition:
+          x: 36.248100280761719
+          y: 7.6569600105285645
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 0.86000001430511475
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 50
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: WallWithWindow_1
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_window.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 51
+  - fileID: 51
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: -26.926799774169922
+          y: -19.361700057983398
+          z: 0
+        m_LocalPosition:
+          x: -26.926799774169922
+          y: -19.361700057983398
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 52
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: WallWithWindow_2
+        m_DefinitionUrl: asset/objects/environment/wall/wall_with_window.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 53
+  - fileID: 53
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 32.364448547363281
+          y: 3.2151899337768555
+          z: 0
+        m_LocalPosition:
+          x: 32.364448547363281
+          y: 3.2151899337768555
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 0.90999966859817505
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 54
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: WallBlock_1
+        m_DefinitionUrl: asset/objects/environment/wall/wall_block.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 55
+  - fileID: 55
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 5.7071900367736816
+          y: 13.53439998626709
+          z: 0
+        m_LocalPosition:
+          x: 5.7071900367736816
+          y: 13.53439998626709
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 56
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: WallBlock_2
+        m_DefinitionUrl: asset/objects/environment/wall/wall_block.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 57
+  - fileID: 57
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 3.8713600635528564
+          y: -1.5180200338363647
+          z: 0
+        m_LocalPosition:
+          x: 3.8713600635528564
+          y: -1.5180200338363647
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 58
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Stairs
+        m_DefinitionUrl: asset/objects/environment/stairs/stairs.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 59
+  - fileID: 59
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 5.8713598251342773
+          y: -1.5180200338363647
+          z: 0
+        m_LocalPosition:
+          x: 5.8713598251342773
+          y: -1.5180200338363647
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 60
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Ground
+        m_DefinitionUrl: asset/objects/environment/floor/floor.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 61
+  - fileID: 61
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPosition:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 62
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: Fence
+        m_DefinitionUrl: asset/objects/environment/fence/fence.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 63
+  - fileID: 63
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPosition:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 64
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: NavVolume
+        m_DefinitionUrl: asset/objects/environment/navvolume/nav_volume.prefab
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 65
+          - component:
+              m_FileID: 0
+              m_PathID: 66
+  - fileID: 65
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPosition:
+          x: 0
+          y: 0
+          z: 0
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 66
+    type: NavMeshVolumeComponent
+    data:
+      NavMeshVolumeComponent:
+        enabled: true
+        cell_size: 1
+        cells_x: 32
+        cells_y: 32
+        max_slope: 0.69999998807907104
+        agent_radius: 0.40000000596046448
+        max_step_height: 0.60000002384185791
+        build_on_load: true
+  - fileID: 101
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: ProbeLight_A
+        m_DefinitionUrl: ""
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 102
+          - component:
+              m_FileID: 0
+              m_PathID: 103
+  - fileID: 102
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 0
+          y: 0
+          z: 2
+        m_LocalPosition:
+          x: 0
+          y: 0
+          z: 2
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 103
+    type: LightComponent
+    data:
+      LightComponent:
+        enabled: true
+        flux:
+          x: 100
+          y: 100
+          z: 100
+        radius: 8
+  - fileID: 104
+    type: GameObject
+    data:
+      GameObject:
+        m_Name: ProbeLight_B
+        m_DefinitionUrl: ""
+        m_Component:
+          - component:
+              m_FileID: 0
+              m_PathID: 105
+          - component:
+              m_FileID: 0
+              m_PathID: 106
+  - fileID: 105
+    type: Transform
+    data:
+      Transform:
+        enabled: true
+        m_LocalRotation:
+          w: 1
+          x: 0
+          y: 0
+          z: 0
+        m_LocalPositionD:
+          x: 6
+          y: 4
+          z: 2
+        m_LocalPosition:
+          x: 6
+          y: 4
+          z: 2
+        m_LocalScale:
+          x: 1
+          y: 1
+          z: 1
+        m_Father:
+          m_FileID: 0
+          m_PathID: 0
+        m_Children: []
+  - fileID: 106
+    type: LightComponent
+    data:
+      LightComponent:
+        enabled: true
+        flux:
+          x: 250
+          y: 250
+          z: 250
+        radius: 12

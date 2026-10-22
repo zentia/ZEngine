@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 218 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17） |
+| `AppleSceneBlitSmokeTest` | 231 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
@@ -708,6 +708,51 @@ NaN，只是**静默地等于没有光**）。
 `ambient_light = m_RenderScene->m_AmbientLight.m_Irradiance` 蒙过去（第一次变异只红了 1 条），
 必须搜带 ` =` 的赋值形式。
 
+### 3.18 点光源：Apple 的 Tick 从来不同步 `m_PointLightList`（造关卡证伪）
+
+上一节的审计已经记下"Apple 的 `Tick` 从不调 `SyncPointLightsFromLevel`"，但一直**无法
+证伪**：这个工程的资产里根本没有任何 `LightComponent`，真机上 `plights=0` 既可能是
+"没同步"也可能是"没灯"。所以先造一个带灯的关卡：
+
+`asset/level/light_probe.scene` —— `1-1.scene` 的副本，末尾追加两个 GameObject
+（`ProbeLight_A` 在 (0,0,2)，flux 100 / radius 8；`ProbeLight_B` 在 (6,4,2)，
+flux 250 / radius 12）。生成脚本见 `.workbuddy/memory/2026-10-22.md`。
+
+**踩到的两个坑**（都不是渲染问题，但足以让探针失效）：
+
+1. **序列化键名不是成员名**。`LightComponent` 的 YAML 键是 `flux` / `radius`，不是
+   `m_Flux` / `m_Radius` —— ZHeaderTool 剥 `m_` 前缀小写化（见
+   `build/Generated/ZHT/ZRuntime/Src/LightComponent.gen.cpp`）。写错键名不报错，
+   只会静默落回默认值，探针就证伪不了任何东西。
+2. **关卡 URL 有两套解析规则，必须同时满足**。`EditorSceneManager` 的
+   `LevelUrlToAbsolutePath` 用 `GetProjectContent()` 拼 + `replace_extension(".scene")`；
+   `Level::load` 的 `ResolveLevelLoadPath` 用 `GetProjectContent()` 拼、不做扩展名替换。
+   `asset/level/x.scene` ⇒ 前者算出 `asset/asset/level/x.scene`（不存在，直接跳过）；
+   `level/x` ⇒ 后者算出 `level/x`（无扩展名，被当成不支持的格式）。只有
+   **`level/light_probe.scene`** 两条规则都指向同一个文件。
+
+**真机**（`saved/config/last_scene.txt` 写 `level/light_probe.scene`）：
+
+```
+修复前  plights=0  gos=34  lcmp=2   ← 有灯、没同步，洞实锤
+修复后  plights=2  gos=34  lcmp=2
+```
+
+单看 `plights` 区分不了"没灯"和"没同步"，所以心跳同时打 `gos`（关卡 GameObject 总数）
+和 `lcmp`（带 enabled `LightComponent` 的数量）。
+
+**改动**：Apple 版 `Tick` 在 `SetVisibleNodesReference()` 之后、
+`UpdatePerFrameBuffer` 之前调 `SyncPointLightsFromLevel(active_level)`，和非 Apple
+那两条路（`TickRenderThread` / `RenderUpdateSceneCmd::Execute`）对齐。顺序很关键：
+把点光源写进每帧 UBO 的是 `UpdatePerFrameBuffer`。
+
+**验证**：冒烟测试新增 13 条契约（218 → 231 checks）。三次变异各自精确变红：删掉
+同步调用 ⇒ 2 条红；把同步挪到 `UpdatePerFrameBuffer` 之后 ⇒ 1 条红（顺序）；把探针
+关卡的 `flux:` 改成 `m_Flux:` ⇒ 1 条红（键名）。
+契约自己踩的坑跟 §3.17 同型：只搜 `UpdatePerFrameBuffer` 会被**注释里那句**
+"必须排在 UpdatePerFrameBuffer 之前"抢先匹配到，必须搜调用形式
+`UpdatePerFrameBuffer(m_RenderScene, camera)`。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - **RP2 只有 step 0（显示变换）+ LUT**：FXAA 没做 —— 它要一个只在 `enable_fxaa=true` 时才
@@ -740,11 +785,9 @@ NaN，只是**静默地等于没有光**）。
 
 - **点光源阴影 pass 在 Metal 上不做**：它靠 geometry shader 做 cubemap 展开，Metal 没有
   geometry shader。现在和 DX12 一样是 clear-only，不抛错。
-- **Apple 的 Tick 从不调 `SyncPointLightsFromLevel`**（审计发现，**未修**）：非 Apple 那条
-  每帧用它重建 `m_PointLightList`，而 `RenderResourcePerFrame` 正是拿它填每帧 UBO 的 ⇒
-  Apple 上点光源永远是 0 盏。今天看不出来，是因为这个工程的资产里**没有任何
-  LightComponent**（`bin/Debug/asset` 全库搜不到），所以真机无法证伪 —— 等哪天场景里真有
-  点光源再修，或者先给 `ZGameSmoke` 补一个带灯的关卡。
+- ~~**Apple 的 Tick 从不调 `SyncPointLightsFromLevel`**~~ —— **已在 §3.18 修掉**：造了
+  `asset/level/light_probe.scene`（两个 `LightComponent`）证伪成
+  `plights=0 gos=34 lcmp=2`，修完是 `plights=2`。
 - **编辑器 gizmo（axis）在 Apple 上两半都缺**（审计发现，**未修**）：`CreateAxis` 在 Apple
   上是 `{}`（不注册 mesh source、不上传），而 `p_axis_node` 只有 `DX12MainCameraPass` 和
   `MainCameraPass`（Vulkan，Apple 构建里排除）会画 —— `MainCameraRp1Pass` 没有 axis 绘制

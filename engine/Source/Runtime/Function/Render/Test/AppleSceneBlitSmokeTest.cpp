@@ -927,6 +927,78 @@ namespace
               "the Apple heartbeat carries the ambient light (a zero light looks like a correct dim scene)");
     }
 
+    // -------------------------------------------------------------------------
+    // 阶段 55：点光源同步。
+    //
+    // 非 Apple 有两条路会调 `SyncPointLightsFromLevel`（TickRenderThread 和
+    // RenderUpdateSceneCmd::Execute），Apple 的精简 Tick 从来没调过 ⇒
+    // `m_PointLightList` 恒为空：场景里摆了 LightComponent 也一个都不亮，而且
+    // **不报错**（画面只是"少了几处亮"，没人会去查）。真机探针是
+    // `plights=0 gos=34 lcmp=2` —— 有灯、没同步。
+    //
+    // 这里钉两件事：调用真的在 Apple Tick 里、而且排在 UpdatePerFrameBuffer
+    // 之前（那一步才把点光源写进每帧 UBO，排后面就晚一帧且首帧为 0）。
+    // 另外把探针关卡本身也钉住，防止它退化成"没有灯的普通关卡"——那样这个
+    // 洞又会变回"今天无法证伪"。
+    // -------------------------------------------------------------------------
+    void CheckPointLightSyncContracts()
+    {
+        const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string sys_source  = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+        Check(!sys_source.empty(), "RenderSystem.cpp is readable as text (point light sync)");
+
+        // Apple 版 Tick 的切片：从函数签名到下一个顶层函数定义为止。
+        const size_t tick_at  = sys_source.find("void RenderSystem::Tick(float)");
+        const size_t tick_end = sys_source.find("\nvoid RenderSystem::", tick_at + 1);
+        Check(tick_at != std::string::npos, "RenderSystem::Tick exists (point light sync)");
+        Check(tick_end != std::string::npos, "RenderSystem::Tick is followed by another definition");
+        const std::string apple_tick = sys_source.substr(tick_at, tick_end - tick_at);
+
+        // 必须搜**调用**（带实参），不能只搜名字：上面那段中文注释里就写着
+        // `SyncPointLightsFromLevel`，只搜名字会被注释自己蒙过去。
+        const size_t sync_at = apple_tick.find("m_RenderScene->SyncPointLightsFromLevel(active_level)");
+        Check(sync_at != std::string::npos,
+              "the Apple Tick syncs point lights from the level (m_PointLightList used to stay empty forever)");
+
+        // 活跃关卡必须来自 WorldManager —— 写死 nullptr 的话函数会直接 return，
+        // 列表清空成 0，症状跟没调一模一样。
+        Check(Contains(apple_tick, "world_manager->getCurrentActiveLevel()"),
+              "the point light sync reads the ACTIVE level from WorldManager");
+
+        // 顺序：必须排在 UpdatePerFrameBuffer 之前。
+        // 同样要搜**调用**而不是名字：同步点上面那段中文注释为了说明"为什么排在
+        // 前面"也写了 UpdatePerFrameBuffer，只搜名字会被注释自己抢先匹配到。
+        const size_t ubo_at = apple_tick.find("UpdatePerFrameBuffer(m_RenderScene, camera)");
+        Check(ubo_at != std::string::npos && sync_at < ubo_at,
+              "the point lights are synced BEFORE UpdatePerFrameBuffer (that is what writes them into the UBO)");
+
+        // 可观测：plights 单独看无法区分"没灯"和"有灯没同步"，所以必须连
+        // 关卡里的 LightComponent 数量一起打。
+        Check(Contains(sys_source, "plights="), "the Apple heartbeat carries the synced point light count");
+        Check(Contains(sys_source, "lcmp="),
+              "the Apple heartbeat carries the LightComponent count (plights=0 alone cannot tell an empty "
+              "level from a missing sync)");
+        Check(Contains(sys_source, "gos="), "the Apple heartbeat carries the level's GameObject count");
+
+        // 探针关卡本身：两个 enabled 的 LightComponent，flux 不同以便区分。
+        const std::string probe_source = ReadFileText(engine_root + "/asset/level/light_probe.scene");
+        Check(!probe_source.empty(), "asset/level/light_probe.scene exists (the level that falsified this hole)");
+        size_t light_objects = 0;
+        for (size_t at = probe_source.find("type: LightComponent"); at != std::string::npos;
+             at        = probe_source.find("type: LightComponent", at + 1))
+        {
+            ++light_objects;
+        }
+        Check(light_objects == 2, "light_probe.scene carries exactly 2 LightComponents");
+        Check(Contains(probe_source, "ProbeLight_A") && Contains(probe_source, "ProbeLight_B"),
+              "light_probe.scene names both probe lights (so a heartbeat count can be attributed)");
+        // 序列化键名是 flux / radius，不是 m_Flux / m_Radius（ZHeaderTool 剥 `m_`）。
+        // 写错键名不会报错，只会静默落回默认值 —— 那样探针就证伪不了任何东西。
+        Check(Contains(probe_source, "flux:") && !Contains(probe_source, "m_Flux"),
+              "light_probe.scene uses the real serialised key 'flux' (not m_Flux, which silently falls back "
+              "to the default)");
+    }
+
 #if defined(__APPLE__)
     // =======================================================================
     // 2. 离屏 target：32×32 的 R8G8B8A8_UNORM，一个颜色附件。
@@ -1683,6 +1755,9 @@ int main()
 
     // Apple 版 Initialize 的光照契约：环境光 + 方向光必须真的设进 RenderScene。
     CheckGlobalLightingContracts();
+
+    // Apple 版 Tick 的点光源同步契约 + 探针关卡本身（阶段 55）。
+    CheckPointLightSyncContracts();
 
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();
