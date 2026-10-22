@@ -101,6 +101,7 @@ cd build && ctest --output-on-failure
 |---|---|---|
 | `AppleSceneBlitSmokeTest` | 231 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
+| `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
 `MetalSpirvShaderSmokeTest` 一条就能把 §3.1 / §3.2 / §3.3 三个错全抓出来。
@@ -772,14 +773,59 @@ Apple 侧跟着改：
 这是因为旧代码"每个相机都调一次 `SetVisibleNodesReference`、只有最后一个相机的结果
 能留下"，Apple 侧同样受影响；三槽环 + 正确的发布时机把它一并修好了。
 
+### 3.20 后端能力不许"猜是不是 Vulkan"：Nanite 的 GPU 剔除在 Metal 上一直静默退化
+
+**症状**：`NaniteGPUCullingSmokeTest` 在 Apple 上红 **21 条**。真机日志每次启动一条
+`nanite: GPU cluster culling needs SPIR-V shaders; unavailable on this RHI (graphics api 2)`
+（`2` 就是 Metal），修之前一次会话里出现 6 次。
+
+**根因**：`NaniteRenderer::EnsureComputePipeline()` 开头判的是
+"只要不是 Vulkan 后端就 `return false`"。这条判据是给 **DX12** 写的：DX12 会把 SPIR-V
+blob 包成一个"成功"的 shader module，但建 compute pipeline 时才失败 ⇒ 不挡的话会每帧
+重试、每帧刷一条日志。问题是它顺手把 **Metal 也挡掉了** —— `MetalRHI` 有 SPIRV-Cross，
+`CreateShaderModule` 把 SPIR-V 转成 MSL、`CreateComputePipelines` 也是完整实现
+（`newComputePipelineStateWithFunction`），完全能吃这份 kernel。于是 Nanite 的 GPU 剔除
+在 Apple 上一直静默退化到 CPU 路径。
+
+这是"历史空桩在功能打通之后变成洞"的第五例（前四例 §3.15 / §3.16 / §3.17 / §3.18），
+但形态不同：它不是"没人调"，而是"**用错误的代理量猜能力**"。
+
+**改动**：不猜后端，让创建结果说话。
+- 删掉那条判据（换成一段说明它为什么错的注释）。
+- shader module 建不出来 ⇒ 锁 `m_GPU.gpu_pipelines_unsupported = true`（原来这条路径
+  **没锁**，只有 pipeline 创建失败那条锁了）。能不能从这个后端建出 shader module 是
+  确定的（比如 WebGL2 根本没有 compute），每帧重试只会刷屏。
+- 成功路径补一条一次性 `LOG_INFO`（`compute_ready` 早退保证只打一次）：GPU 路径以前
+  **只有失败日志**，"Metal 上到底建没建出 compute 管线"在真机上只能证伪、不能证实。
+
+**验证**：`NaniteGPUCullingSmokeTest` 21 条红 → **0**；新增 10 条契约（85 → 95 checks）。
+五次变异各自精确变红：
+
+| 变异 | 红几条 |
+|---|---|
+| 把后端判据塞回去 | 22（21 旧 + 1 条"不许猜后端"） |
+| 删 shader 失败路径的锁存 | 1 |
+| 删 pipeline 失败路径的锁存 | 1 |
+| 删成功日志 | 2 |
+| 删 `compute_ready` 早退 | 1 |
+
+**契约自己踩的坑（两处假绿，都是变异测试抓出来的）**：
+1. 用 `rfind("gpu_pipelines_unsupported = true", 日志位置)` 找锁存 —— `rfind` 是往**前**
+   找的，第二条失败路径会一路找到第一条的 latch 上，于是"删掉第二条"照样绿。改成
+   "先定位最近的一个 `if (`，再在 `[if, 日志)` 这段里找"。
+2. `x < std::string::npos` **恒为真**，所以"日志存在"和"早退在它前面"两条判据各自都得
+   先判 `found`，否则日志被删掉时第二条照样绿。
+
+**遗留观察（未证伪，下一个洞）**：真机 Editor 里 Nanite **一行日志都没有**（只有 6 行
+`r.Nanite.*` 的 console 变量注册）。冒烟测试是在真机 Metal 上真建管线真 dispatch 的，
+所以修复本身成立；但 ZGameSmoke 的场景里很可能**没有任何 Nanite mesh**，GPU 路径在真机
+帧循环里从未被触发。要证伪它得先造一个带 Nanite 资源的关卡（同 §3.18 的 `light_probe` 打法）。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
-- **`NaniteGPUCullingSmokeTest` 在 Apple 上是红的（21 条）**，由 `6f33299` / `7e5d252`
-  带进来，与本次改动无关（已验证：把我的改动撤掉、只留编译修复，它照样红）。
-  失败起点是 `NaniteRenderer::EnsureComputePipeline()` 里
-  `if (m_Rhi->getGraphicsAPI() != GraphicsAPI::Vulkan) return false;` —— 也就是说
-  Nanite 的 GPU 剔除在 Metal 上被这个 Vulkan 判断直接挡掉了，尽管 MetalRHI 本身支持
-  SPIR-V→MSL（`Z_HAS_SPIRV_SHADERS`）。CPU 路径不受影响。修它需要改判据，单独处理。
+- ~~**`NaniteGPUCullingSmokeTest` 在 Apple 上是红的（21 条）**~~ —— **已在 §3.20 修掉**：
+  `EnsureComputePipeline()` 里那条"不是 Vulkan 就直接放弃"的后端判据删了，改成
+  "试着建、建失败就锁"。修完 21 条红 → 0，并补了 10 条契约（85 → 95 checks）。
 
 - **RP2 只有 step 0（显示变换）+ LUT**：FXAA 没做 —— 它要一个只在 `enable_fxaa=true` 时才
   存在的 framebuffer，而 Apple 上这个 flag 目前是 false，写了也是跑不到的死代码。

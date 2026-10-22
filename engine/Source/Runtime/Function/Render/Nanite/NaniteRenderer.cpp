@@ -755,22 +755,17 @@ bool NaniteRenderer::EnsureComputePipeline()
         return false;
     }
 
-    // The nanite cull shaders only ship as SPIR-V (see the ZENGINE_NANITE_*_SPIRV
-    // guards at the top of this file). CreateShaderModule() happily wraps the blob
-    // on any backend, but CreateComputePipelines() then fails with E_FAIL, so on a
-    // non-Vulkan RHI this used to be retried -- and to log "cluster-cull compute
-    // pipeline creation failed" -- once per frame, forever. Those per-frame
-    // failures are also what pushed frames past the EditorUI 500 ms RHI wait,
-    // which is what let the game thread run ahead in the first place.
-    if (m_Rhi->getGraphicsAPI() != GraphicsAPI::Vulkan)
-    {
-        m_GPU.gpu_pipelines_unsupported = true;
-        LOG_WARNING(ZRender,
-                    "nanite: GPU cluster culling needs SPIR-V shaders; unavailable on this RHI "
-                    "(graphics api {}), falling back to the CPU path",
-                    static_cast<int>(m_Rhi->getGraphicsAPI()));
-        return false;
-    }
+    // 这里以前判的是"只要不是 Vulkan 后端就直接放弃"。
+    // 那条判据是给 DX12 写的（DX12 会把 SPIR-V blob 包成一个"成功"的 shader module，
+    // 但建 compute pipeline 时失败 ⇒ 每帧重试、每帧刷一条日志），可是它顺手把
+    // **Metal 也挡掉了**：MetalRHI 有 SPIRV-Cross，`CreateShaderModule` 把 SPIR-V
+    // 转成 MSL、`CreateComputePipelines` 也是完整实现的，完全能吃这份 kernel。
+    // 结果就是 Nanite 的 GPU 剔除在 Apple 上**一直静默退化到 CPU 路径** —— 真机日志
+    // 里那条 "unavailable on this RHI (graphics api 2)" 就是它，冒烟测试则红 21 条。
+    //
+    // 不猜后端，让创建结果说话：下面建 shader / 建管线失败时会锁
+    // `gpu_pipelines_unsupported`，所以 DX12 的行为跟以前一样（第一帧试一次就锁死，
+    // 不再每帧重试、也不再每帧刷日志），而 Metal 能真正走到 GPU 路径。
 
     // descriptor set layout：一个 set 同时给 compute 和 graphics。
     if (m_GPU.descriptor_set_layout == nullptr)
@@ -830,6 +825,9 @@ bool NaniteRenderer::EnsureComputePipeline()
         RHIShader* shader = m_Rhi->CreateShaderModule(Z::Shader::NANITE_CLUSTER_CULL_COMP);
         if (shader == nullptr)
         {
+            // 同样锁住：能不能从这个后端建出 shader module 是确定的（比如 WebGL2 根本
+            // 没有 compute），每帧重试只会刷屏。
+            m_GPU.gpu_pipelines_unsupported = true;
             LOG_WARNING(ZRender, "nanite: cluster-cull compute shader unavailable -- GPU culling stays off");
             return false;
         }
@@ -859,6 +857,10 @@ bool NaniteRenderer::EnsureComputePipeline()
         }
     }
 
+    // 这条只打一次（开头 compute_ready 就 return 了）：GPU 路径以前**只有失败日志**，
+    // 于是"Metal 上到底建没建出 compute 管线"在真机上只能证伪、不能证实 ——
+    // 静默退化到 CPU 路径时日志里什么都看不出来。留一条成功日志，真机一眼就能读到。
+    LOG_INFO(ZRender, "nanite: cluster-cull compute pipeline ready -- GPU cluster culling is live");
     m_GPU.compute_ready = true;
     return true;
 }

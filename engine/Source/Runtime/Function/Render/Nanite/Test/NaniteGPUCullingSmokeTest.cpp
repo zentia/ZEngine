@@ -934,6 +934,70 @@ int main()
           "Nanite surfaces are tagged DEFAULT_LIT so the deferred pass actually lights them");
     Check(gbuffer_source.find("OutGBufferB.a = EncodeShadingModelId") != std::string::npos,
           "the shared encoder still packs the shading model id into GBufferB.a");
+
+    // ---- 后端能力不能靠"是不是 Vulkan"猜 ----
+    //
+    // EnsureComputePipeline() 以前开头就判"只要不是 Vulkan 后端就直接放弃"。
+    // 那条判据是给 DX12 写的（DX12 把 SPIR-V blob 包成一个"成功"的 shader
+    // module、建 compute pipeline 时才失败 ⇒ 每帧重试 + 每帧刷日志），但它顺手把
+    // **Metal 也挡掉了**：MetalRHI 有 SPIRV-Cross，CreateShaderModule 转 MSL、
+    // CreateComputePipelines 也是完整实现，完全能吃这份 kernel。后果是 Nanite 的
+    // GPU 剔除在 Apple 上一直静默退化到 CPU 路径（真机每次启动一条
+    // "unavailable on this RHI (graphics api 2)"），冒烟测试则红 21 条。
+    //
+    // 判据必须是"试着建、建失败就锁"，不能是"猜后端"。
+    const std::string nanite_renderer_source =
+        ReadFileText(std::string(ZENGINE_ENGINE_ROOT_DIR) + "/Source/Runtime/Function/Render/Nanite/NaniteRenderer.cpp");
+    Check(!nanite_renderer_source.empty(), "NaniteRenderer.cpp is readable as text (backend capability)");
+    Check(nanite_renderer_source.find("getGraphicsAPI() != GraphicsAPI::Vulkan") == std::string::npos,
+          "Nanite does NOT gate the GPU path on `is this RHI Vulkan` (that also excludes Metal, "
+          "which does support SPIR-V via SPIRV-Cross)");
+    Check(nanite_renderer_source.find("getGraphicsAPI() == GraphicsAPI::Vulkan") == std::string::npos,
+          "Nanite does not gate the GPU path on the RHI being Vulkan in either direction");
+    // 顺序：两条失败路径都得锁 gpu_pipelines_unsupported，否则没有 SPIR-V 的后端
+    // （DX12 / WebGL2）会每帧重试、每帧刷一条日志 —— 这正是当初那条判据想解决的问题。
+    const size_t ensure_at = nanite_renderer_source.find("bool NaniteRenderer::EnsureComputePipeline()");
+    const size_t ensure_end = nanite_renderer_source.find("\nbool NaniteRenderer::", ensure_at + 1);
+    Check(ensure_at != std::string::npos && ensure_end != std::string::npos,
+          "EnsureComputePipeline exists and is followed by another definition");
+    const std::string ensure_body = nanite_renderer_source.substr(ensure_at, ensure_end - ensure_at);
+    const size_t shader_fail_at = ensure_body.find("nanite: cluster-cull compute shader unavailable");
+    const size_t pipeline_fail_at = ensure_body.find("nanite: cluster-cull compute pipeline creation failed");
+    Check(shader_fail_at != std::string::npos, "the shader-module failure path still exists");
+    Check(pipeline_fail_at != std::string::npos, "the pipeline-creation failure path still exists");
+    // 两条日志各自所在的那个 if 块里都得有那个 latch（锁住就不再重试）。
+    //
+    // 不能写成 rfind("gpu_pipelines_unsupported = true", 日志位置)：rfind 是往
+    // **前**找的，第二条失败路径会一路找到第一条的 latch 上 —— 于是把第二条路径
+    // 的 latch 删掉，这条检查照样绿。变异测试当场抓住了这个假绿（删掉管线失败
+    // 路径的 latch，测试全绿），所以这里改成"先定位最近的一个 if (，再在
+    // [if, 日志) 这段里找 latch"。
+    auto latch_in_enclosing_if = [](const std::string& body, size_t msg_at) {
+        if (msg_at == std::string::npos)
+        {
+            return false;
+        }
+        const size_t if_at = body.rfind("if (", msg_at);
+        if (if_at == std::string::npos)
+        {
+            return false;
+        }
+        return body.find("gpu_pipelines_unsupported = true", if_at) < msg_at;
+    };
+    Check(latch_in_enclosing_if(ensure_body, shader_fail_at),
+          "a missing shader module also latches gpu_pipelines_unsupported (no per-frame retry)");
+    Check(latch_in_enclosing_if(ensure_body, pipeline_fail_at),
+          "a failed pipeline also latches gpu_pipelines_unsupported (no per-frame retry)");
+    // 成功也得有日志：以前 GPU 路径只有失败日志，"Metal 上到底建没建出 compute
+    // 管线"在真机上只能证伪、不能证实 —— 静默退化到 CPU 时日志里干干净净。
+    const size_t ready_at = ensure_body.find("nanite: cluster-cull compute pipeline ready");
+    Check(ready_at != std::string::npos, "the GPU path logs once when it actually goes live (not only on failure)");
+    // 而且只打一次：函数开头那个 compute_ready 早退必须在它前面，否则每帧刷屏。
+    const size_t early_out_at = ensure_body.find("if (m_GPU.compute_ready)");
+    // 两条都得先判 found：`x < std::string::npos` 恒为真，少判一个 found 就会在
+    // 日志被删掉时照样绿（变异测试抓到的第二个假绿）。
+    Check(ready_at != std::string::npos && early_out_at != std::string::npos && early_out_at < ready_at,
+          "that log is one-shot -- the compute_ready early-out precedes it");
 #else
     std::printf("[skip] ZENGINE_ENGINE_ROOT_DIR is not defined -- GLSL mirror checks skipped\n");
 #endif
