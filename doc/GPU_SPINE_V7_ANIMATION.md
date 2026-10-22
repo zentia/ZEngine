@@ -313,6 +313,45 @@ deform 用"附件记录下标"是有意的：一条记录 = (皮肤, 槽位, 附
 数学没变（`BEZIER_VALUES` 仍是 18，`CurveTimeline.cpp:45`），布局是我们自己定的 —— 不受影响。
 但**转录必须逐行对**，不能照记忆写。
 
+### 4.1 ⚠️ 但**约束数学 3.7 与 3.8 并不一致**（S4 前置，2026-10-22 已核对完）
+
+上一段只比了**字节布局**。S4 要解算约束，所以把**代码体**也逐行比了一遍：
+
+```
+A = /i/spine-runtimes/spine-cpp/spine-cpp/src/spine      # 3.7.83（与资产同版本）
+B = G:/OSGame/unity-engine-source/Modules/Spine/spine-cpp/src/spine   # 3.8
+```
+（比之前先 `tr -d '\r'` + 折叠空白 + 剥掉文件头的 license 注释 —— 不剥的话
+10 个文件每个都有 500+ 行的"差异"，全是版权声明换版本，真正的差异会被淹掉。）
+
+**结论：10 个文件里只有 2 处语义差异，两处都是 3.8 修掉的 3.7 bug。**
+
+| # | 位置 | 3.7 | 3.8 | 判据 |
+|---|---|---|---|---|
+| 1 | `Bone::updateWorldTransform()` **根骨骼分支**<br>`Bone.cpp:110-113` / `:109-112` | `_b = cosDeg(rotationY) * scaleY * **sy**`<br>`_c = sinDeg(rot+shearX) * scaleX * **sx**` | `_b = … * **sx**`<br>`_c = … * **sy**` | **3.8 对**：世界矩阵 = `diag(sx,sy) · L`，第 2 列（b,d）乘 `sx`、第 2 行（c,d）乘 `sy`。3.7 用反了轴 |
+| 2 | `IkConstraint::apply()` **单骨骼**分支<br>`IkConstraint.cpp:63` / `:62` | `if ((compress && dd < b) \|\| (stretch && dd > b) && b > 0.0001f)` | `if (((compress && dd < b) \|\| (stretch && dd > b)) && (b > 0.0001f))` | **3.8 对**：C++ 里 `&&` 比 `\|\|` 紧，3.7 实际解析成 `(compress && dd<b) \|\| ((stretch && dd>b) && b>0.0001f)` —— `b ≈ 0` 且开 `compress` 时会算出 `dd/b = 0/0 = NaN`，整条骨骼矩阵变 NaN |
+
+**逐文件核对结果**（除上表外全是噪声级差异）：
+
+| 文件 | 结论 |
+|---|---|
+| `TransformConstraint.cpp` | **完全一致**（只有 `RTTI_IMPL` 多一个参数） |
+| `PathConstraint.cpp` | **完全一致**（只有 `Vector::setSize` → `setFixedSize` 的 API 改名） |
+| `Skeleton.cpp` | `updateWorldTransform` / `sortBone` **完全一致**；差异只有 `setSkin` 返回 bool、`PathAttachment::_bones` 元素类型 `size_t`→`unsigned short`、`setFixedSize` |
+| `Constraint.cpp` / `*ConstraintData.cpp` / `BoneData.cpp` | **完全一致** |
+
+⇒ **S4 的决定：实现 3.8 的那两处（修好的）数学**，不是照抄 3.7。理由：
+
+1. 两处都是 bug fix，不是行为变更 —— 抄 3.7 等于主动把 NaN 搬进来。
+2. 第 1 处对我们**是休眠的**：`Skeleton::_scaleX/_scaleY` **不从资产文件里读**
+   （`SkeletonBinary.cpp:156-157` 那个 `data->_scaleX` 是 **BoneData** 的不是 Skeleton 的），
+   只有应用主动调 `setScaleX/Y` 才会变，默认 (1,1) ⇒ `sx == sy` ⇒ 两版算出来一样。
+3. 第 2 处只在 `b = bone.length * scaleX ≈ 0` 且开 `compress` 的退化输入上分叉，
+   3.7 在那里给 NaN ⇒ 美术不可能"照着 NaN 调过动画"。
+
+（⚠️ 这条推翻了 §8 第 2 项原先的措辞 —— 它写的是"是否一致尚未核对"。现在核对完了：
+**不一致，两处，都按 3.8 实现**。）
+
 ---
 
 ## 5. deform：不做稠密展开，做「deform 增量」（本节结论已改写）
@@ -464,7 +503,7 @@ deform 数组长度对 weighted 是 **ΣboneCount × 2**（不是 vertexCount ×
 | **S1** | chunk 10 骨骼树；C++ 写/读 + C# 读 + 字节 round-trip | **已完成**（见 7.0.2） |
 | **S2** | 动画解析（json + 二进制）+ chunk 11-16；11 类时间轴全覆盖 | **已完成**（见 7.0.3） |
 | **S3** | 槽位 setup（chunk 17）+ color / twoColor / attachment / drawOrder 解算 | **已完成**（见 7.0.4） |
-| **S4** | 约束（chunk 18-20）+ update 顺序 | 对拍：376 个有约束的资产子集，逐骨骼比世界变换 |
+| **S4** | 约束（chunk 18-20）+ update 顺序（前置核对**已完成**，见 §4.1：3.7/3.8 数学差 2 处，按 3.8 实现） | 对拍：376 个有约束的资产子集，逐骨骼比世界变换 |
 | **S5** | 多轨混合（`AnimationState` 转录，含 `_timelinesRotation` 最短弧记忆） | 对拍：随机切轨 / 混出，逐帧比对 |
 | **S6a** | deform 求解 + per-instance deform 缓冲（方案 C：只给命中项写"deform 后局部坐标"，蒙皮仍在 GPU） | 与 `SpineSkinningParityTest` 接上；断言共享 VB **没被改写** |
 | **S6b** | 方案 B：deform 缓冲直接由 GPU 采样，shader 里 rigid 替换 / weighted 相加 | 同上，且逐实例上传量 ≤ 122 B × 命中条数 |
@@ -660,9 +699,12 @@ alpha == 1 时它就等价于 **"先把所有槽位复位到 setup，再让时�
 
 1. ~~**deform 的取舍需拍板**~~ —— **已定**：稠密展开否决、OSGame 式全量 CPU 动态 VB 否决，
    走「共享 bind pose + deform 增量」（§5.2）。剩下的只是 B/C 谁先落地，**不改变 v7 体量**。
-2. **约束解算的参考源**：本机 3.8 C++ 有 `IkConstraint.cpp` / `TransformConstraint.cpp` /
-   `PathConstraint.cpp`，但本工程资产是 **3.7**。3.7/3.8 的约束**数学**是否一致尚未逐行核对
-   （只核对了**字节布局**）。S4 开工前必须补这一步。
+2. ~~**约束解算的参考源**：3.7/3.8 的约束**数学**是否一致尚未逐行核对（只核对了字节布局）~~
+   —— **已核对完（2026-10-22，见 §4.1）**：10 个文件里只有 **2 处**语义差异，两处都是
+   3.8 修掉的 3.7 bug（`Bone.cpp` 根骨骼分支的 sx/sy 用反；`IkConstraint.cpp` 单骨骼分支
+   的运算符优先级 ⇒ `b≈0` 时 NaN）。**S4 按 3.8 的数学实现**。
+   ⚠️ 核对方法本身有个坑：不剥掉文件头的 license 注释，10 个文件每个都有 500+ 行
+   "差异"，真正的 2 处会被完全淹掉。
 3. **双色（tint black）**：~~96 槽位 / 5 文件，规模很小，但要在渲染侧多一路颜色~~
    —— **数据侧已落地**（S3：chunk 17 的 `has_dark` flag + dark rgba，实测 96 槽位 / 5 资产，
    与 §7.0 的独立实测对上）。**剩下的只是渲染侧**：走双色分支要第二路颜色，
