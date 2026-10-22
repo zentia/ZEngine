@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - 2026-10-22 (GBuffer pass: GBufferB / GBufferC were discarded before the deferred pass read them)
+
+`MainCameraFramebufferResources::SetupGBufferPass` declared GBufferB and GBufferC
+`storeOp = DONT_CARE` while GBufferA was `STORE`. The deferred lighting pass is a
+**separate** render pass that LOADs all three, so "don't care" means the lighting
+pass reads undefined pixels.
+
+* Where the `DONT_CARE` came from: `MainCameraPass::SetupRenderPass1` (the Vulkan
+  path), where the consumer is a **second subpass of the same render pass** reading
+  through input attachments. Vulkan keeps contents across subpasses and `storeOp`
+  only governs the hand-off at the end of the render pass, so `DONT_CARE` there is
+  both correct and a bandwidth win. It is **not** correct once the passes are split,
+  and the comment now says so in both directions so nobody "restores" it.
+* Why it has never been seen: `DX12RHI` does not read `storeOp` at all (no discard
+  is ever issued), which is equivalent to always storing. Vulkan
+  (`vk_desc.storeOp = ...`) and Metal (`MTLStoreActionDontCare`) both honour it, so
+  this would have become visible the moment RP1 runs on either — the header already
+  advertises RP1 as "DX12 and future Vulkan dedup".
+* No behaviour change on DX12 today; verified by review plus a `-fsyntax-only`
+  type check of the TU (it is excluded from the Apple build).
+
+### Added - 2026-10-22 (Nanite: the main camera's GBuffer pass draws Nanite's clusters)
+
+Nanite's cull runs at `RenderNaniteCmd`, before any pass is open, so it can only
+write indirect commands; the draw has to happen while somebody's GBuffer pass is
+open. That somebody is now the DX12 main camera.
+
+* **`MainCameraRp1Pass::SetNaniteRenderer`** — fed by `DesktopRenderPipelineModule`
+  from the `NaniteRenderPass` slot (DX12 branch: it is the only path with an RP1
+  pass). `DrawGBufferPass` hands Nanite the live GBuffer render pass + framebuffer
+  and, right after the **game viewport's** mesh draws, appends
+  `DrawClustersIndirectInPass`. Game viewport only: culling uses
+  `GetRenderCamera(ViewportType::game)`, so reusing its visible set in the editor
+  viewport would draw a scene culled against the wrong frustum. Viewport and
+  scissor stay whatever `DrawMeshGbuffer` installed — Nanite only appends a draw.
+* **The injection is deliberately persistent across frames.** Nanite's own
+  `Render()` runs earlier in the frame than this pass; seeing "already injected"
+  there is what makes it skip its offscreen target, which is a
+  `BeginSingleTimeCommands` + submit + wait — a full GPU sync every frame. The
+  cost is that the first frame may draw into the unread offscreen target once.
+  It is released in `Shutdown()` (the pass and framebuffer it points at are about
+  to be destroyed) and refreshed on resize via
+  `DX12MainCameraPass::UpdateAfterFramebufferRecreate` → `RefreshNaniteInjection`.
+* **Verification caveat, stated rather than papered over:** `Passes/*.cpp` is
+  excluded from the Apple build, so the edited TU is not part of this machine's
+  build. `MainCameraRp1Pass.cpp` was instead type-checked explicitly with the
+  project's own flags (`compile_commands.json` + `-fsyntax-only`), with a
+  deliberately broken copy as a negative control. The
+  `DesktopRenderPipelineModule.cpp` change sits inside the `_WIN32` branch and is
+  unverified locally — it needs a Windows build.
+
+### Added - 2026-10-22 (NaniteGPUCullingSmokeTest: 85 checks, the release path pinned)
+
+Two more checks: releasing the injection clears it, and Nanite then draws into
+its own offscreen GBuffer again. That is exactly what `Shutdown()` relies on —
+release the stale pass *and* keep drawing. Mutation: making
+`SetRasterRenderPass(nullptr, nullptr)` a no-op → 4 failures.
+
 ### Added / Fixed - 2026-10-22 (Nanite: the raster writes a real GBuffer)
 
 The raster target used to be a single colour image that the fragment shader

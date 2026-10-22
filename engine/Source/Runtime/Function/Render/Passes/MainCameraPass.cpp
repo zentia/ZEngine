@@ -883,7 +883,14 @@ void MainCameraPass::SetupRenderPass()
 // =====================================================================
 // RP1: gbuffer + deferred lighting + forward lighting (3 subpasses).
 // Attachments: [gbuffer_a, gbuffer_b, gbuffer_c, backup_odd, depth]
-// (5 attachments). The order matches the global enum slice
+// (5 attachments).
+//
+// **一个 render pass + 多 subpass** 这件事决定了 GBuffer 的 storeOp 该怎么写：
+// GBuffer 只在 pass 内被后面的 subpass 消费（input attachment），所以 storeOp 是
+// DONT_CARE（见 GBufferB 那段）。拆成独立 pass 的 DX12 路径（MainCameraFramebuffer
+// Resources::SetupGBufferPass）必须改成 STORE —— 两边别互相照抄。
+//
+// The order matches the global enum slice
 // [_main_camera_pass_gbuffer_a .. _main_camera_pass_backup_buffer_odd]
 // + depth, so the framebuffer attachment view list can be assembled
 // directly from m_Framebuffer.attachments[] indices.
@@ -906,6 +913,9 @@ void MainCameraPass::SetupRenderPass1()
     gbuffer_normal_attachment_description.format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_a].format;
     gbuffer_normal_attachment_description.samples = RHI_SAMPLE_COUNT_1_BIT;
     gbuffer_normal_attachment_description.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    // 和 B/C 的 DONT_CARE 不一致是历史遗留，**不是** B/C 写错了：这里 STORE 只是多余
+    // （出了 RP1 没人读 GBufferA，见下面 B 那段的说明），一次多余的写回而已，无害。
+    // 别拿它当"正确写法"去改 B/C。
     gbuffer_normal_attachment_description.storeOp = RHI_ATTACHMENT_STORE_OP_STORE;
     gbuffer_normal_attachment_description.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
     gbuffer_normal_attachment_description.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -918,6 +928,16 @@ void MainCameraPass::SetupRenderPass1()
         m_Framebuffer.attachments[_main_camera_pass_gbuffer_b].format;
     gbuffer_metallic_roughness_shadingmodeid_attachment_description.samples = RHI_SAMPLE_COUNT_1_BIT;
     gbuffer_metallic_roughness_shadingmodeid_attachment_description.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    // storeOp = DONT_CARE 是**刻意的**，不是漏写：
+    //
+    // RP1 是**一个** render pass + 3 个 subpass，GBuffer 的消费者是本 pass 内的第二
+    // 个 subpass（延迟光照，走 input attachment）。Vulkan 保证 subpass 之间内容还在，
+    // storeOp 只管 render pass 结束时的交接 —— 出了这个 pass 没人再读 GBuffer，所以
+    // 不写回显存既正确又省带宽。
+    //
+    // 反过来：MainCameraFramebufferResources::SetupGBufferPass（DX12 路径）把 GBuffer
+    // 和延迟光照拆成了**两个** render pass，那边**必须** STORE（2026-10-22 修）。
+    // 别照着这里改回去。
     gbuffer_metallic_roughness_shadingmodeid_attachment_description.storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
     gbuffer_metallic_roughness_shadingmodeid_attachment_description.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
     gbuffer_metallic_roughness_shadingmodeid_attachment_description.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -929,6 +949,7 @@ void MainCameraPass::SetupRenderPass1()
     gbuffer_albedo_attachment_description.format = m_Framebuffer.attachments[_main_camera_pass_gbuffer_c].format;
     gbuffer_albedo_attachment_description.samples = RHI_SAMPLE_COUNT_1_BIT;
     gbuffer_albedo_attachment_description.loadOp = RHI_ATTACHMENT_LOAD_OP_CLEAR;
+    // 同 GBufferB：DONT_CARE 是刻意的，见上面的说明。
     gbuffer_albedo_attachment_description.storeOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
     gbuffer_albedo_attachment_description.stencilLoadOp = RHI_ATTACHMENT_LOAD_OP_DONT_CARE;
     gbuffer_albedo_attachment_description.stencilStoreOp = RHI_ATTACHMENT_STORE_OP_DONT_CARE;
