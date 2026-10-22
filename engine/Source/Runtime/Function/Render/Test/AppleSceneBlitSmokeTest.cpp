@@ -1058,10 +1058,15 @@ namespace
         Check(count_of(tick_render_thread, "UpdateNaniteForFrame(delta_time)") >= 2,
               "both branches of TickRenderThread advance Nanite (DX12 and non-DX12)");
 
-        // 4. 并行路径的两条分支都要把 RenderNaniteCmd 排进队列。
+        // 4. 并行路径：DX12 分支把 RenderNaniteCmd 排进队列；**非 DX12（= Vulkan）分支不许排** ——
+        //    Nanite 的 GPU 剔除往 GetCurrentCommandBuffer() 里录，而 Vulkan 的帧命令缓冲归 RHI
+        //    线程、要到 RHIPrepareContextCmd 才设上：第一帧是空句柄（实测 vkCmdBindPipeline AV），
+        //    之后是 RHI 线程正在录的那条。在把它挪成 RHI 命令之前，这一支保持不推进。
+        //    （Apple 不走这里：它在 `#if defined(__APPLE__)` 的 Tick 里、PrepareContext 之后调。）
         const std::string build_cmds = body_of(cmd_source, "void BuildRenderSystemFrameCommands(");
-        Check(count_of(build_cmds, "RenderNaniteCmd, &render_system") >= 2,
-              "both branches of BuildRenderSystemFrameCommands enqueue RenderNaniteCmd");
+        Check(count_of(build_cmds, "RenderNaniteCmd, &render_system") == 1,
+              "only the DX12 branch of BuildRenderSystemFrameCommands enqueues RenderNaniteCmd "
+              "(the Vulkan frame command buffer belongs to the RHI thread)");
 
         // 5. 帧命令自己不许再抄一遍判空逻辑 —— 走共享入口，否则将来改一处漏三处。
         const std::string nanite_cmd = body_of(cmd_source, "void Execute() override\n    {\n        // 走 RenderSystem");

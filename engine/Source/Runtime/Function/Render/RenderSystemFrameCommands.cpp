@@ -330,9 +330,15 @@ void BuildRenderSystemFrameCommands(RenderSystem& render_system, float delta_tim
     ENQUEUE_RENDER_COMMAND(RenderSyncGameCameraCmd, &render_system);
     ENQUEUE_RENDER_COMMAND(RenderUpdateSceneCmd, &render_system, delta_time);
     ENQUEUE_RENDER_COMMAND(RenderLumenCmd, &render_system, delta_time);
-    // 阶段 58：这一支（并行但非 DX12，也就是 Vulkan）以前也没有 Nanite，只有上面
-    // 那个 DX12 分支有 —— 和单线程两条路一样，是"漏抄"而不是有意排除。
-    ENQUEUE_RENDER_COMMAND(RenderNaniteCmd, &render_system, delta_time);
+    // ⚠️ 这一支（并行 + 非 DX12 = Vulkan）**不能**在渲染线程推进 Nanite：Nanite 的 GPU 剔除
+    // 往 `GetCurrentCommandBuffer()` 里录，而 Vulkan 的"当前命令缓冲"归 **RHI 线程**所有，
+    // 要到 RHI 线程的 RHIPrepareContextCmd 才设上 ——
+    //   * 第一帧它的 VkCommandBuffer 还是空 ⇒ vkCmdBindPipeline(NULL) 直接 AV（实测 0x28，
+    //     NaniteRenderer::DispatchClusterCulling → hooked_vkCmdBindPipeline）；
+    //   * 之后每帧拿到的是 RHI 线程正在录 / 已提交的那一条 ⇒ 两个线程同时录同一条命令缓冲。
+    // 阶段 58（3d41c982）把它补进来时 Vulkan 编辑器一启动就崩。要在 Vulkan 并行路径上跑
+    // Nanite，得把它挪成 RHI 命令（排在 PrepareContext 之后、且命令缓冲已 Begin），
+    // 那是另一件事；在那之前这里保持阶段 58 之前的样子。
     ENQUEUE_RENDER_COMMAND(RenderPreparePassDataCmd, &render_system);
     ENQUEUE_RENDER_COMMAND(RenderBuildDrawListsCmd, &render_system, frame_draw_list_slot);
     ENQUEUE_RENDER_COMMAND(RenderDispatchRHICommandsCmd, &render_system, frame_draw_list_slot);
