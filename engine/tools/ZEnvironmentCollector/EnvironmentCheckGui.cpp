@@ -1008,12 +1008,9 @@ int RunEnvironmentCheckGui(int show, int argumentCount, wchar_t** arguments)
             if (key == L"--profile") app.options.profile = LoadProfile(value());
             else if (key == L"--output-dir") app.options.outputDirectory = value();
             else if (key == L"--incident-time") { if (!TryParseUtcIso8601(WideToUtf8(value()), app.options.incidentTime)) throw std::invalid_argument("Invalid incident time"); }
-            else if (key == L"--tab")
-            {
-                const std::wstring name = value();
-                if (name == L"collection" || name == L"check" || name == L"gpu") app.tab = ShellTab::Collection;
-                else throw std::invalid_argument("Unknown tab; use collection (the compatibility and GPU tabs are part of it now)");
-            }
+            // --tab is gone with the tab strip: collection / check / gpu all
+            // landed on the one page there is. Passing it now falls through to
+            // the unrecognized-option message below.
             else if (key == L"--lang")
             {
                 // Wins over the remembered choice, so a screenshot session or a

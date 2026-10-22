@@ -7,7 +7,7 @@
 只有一个程序 `ZEnvironmentCollector.exe`，图形界面和命令行都在它里面：
 
 ```powershell
-.\ZEnvironmentCollector.exe                    # 图形界面，唯一页签（兼容性与选卡验证已并入）
+.\ZEnvironmentCollector.exe                    # 图形界面，只有一页（兼容性与选卡验证已并入）
 .\ZEnvironmentCollector.exe -batchmode --help  # 命令行，无窗口
 ```
 
@@ -17,7 +17,7 @@
 
 它**刻意不是** ZEditor 的 ToolSuite（不像 LuaMemPreview）：这个工具要发到玩家机器上，所以是 /MT 静态链接、机器无需 VC redist——合进编辑器并不会让这份 exe 消失，只会多出一份要同步维护的实现。完整理由见 `engine/Source/Editor/ToolSuite/ToolSuite.h` 的“哪些东西不该做成套件”与 `engine/CMakeLists.txt` 里 `ZENGINE_BUILD_WINDOWS_ENVIRONMENT_CHECK` 的注释。
 
-界面只有一个“环境采集”页签，对应 `-batchmode --collect`：一次跑完并把所有结果打进同一个 ZIP——硬件、事件诊断、双显卡选卡验证（`gpu-selection.json`）、**DLL 静态检查与隔离加载探针**（`compatibility.json`），以及崩溃捕获高级区。
+界面只有一页，对应 `-batchmode --collect`：一次跑完并把所有结果打进同一个 ZIP——硬件、事件诊断、双显卡选卡验证（`gpu-selection.json`）、**DLL 静态检查与隔离加载探针**（`compatibility.json`），以及崩溃捕获高级区。
 
 原先分开的“兼容性检查”和“GPU 选卡验证”页签已并入它：内容没变、也没少，只是不再需要分三个地方看。命令行上 `-batchmode`（默认命令）与 `-batchmode --gpu-selection` 仍然保留，作为只看某一部分的快捷入口，它们与采集包里的结果是同一份数据（`BuildJsonReport()` / `BuildGpuSelectionJson()` 共用），不会出现两套结论。
 
@@ -396,7 +396,7 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 
 解压完整工具包，运行 `ZEnvironmentCollector.exe`，选择问题类型、可选填写带时区的发生时间，点击“开始采集并生成 ZIP”。默认输出到桌面 `EnvironmentReports`。GUI默认勾选“同意附带事件明细”，可手动取消；CLI仍需显式传入 `--include-events` 才附带脱敏事件明细。窗口右侧提供可拖动滚动条，也可使用滚轮或点击轨道翻页；滑块与内容位置同步，尺寸随DPI缩放。完成后点击打开目录，确认内容后手动发送 ZIP；不自动上传。
 
-界面只有一个“环境采集”页签：填事故三要素、可选填**游戏目录**（`--game-dir` 的同义输入框，游戏 DLL 所在处），点“开始采集并生成 ZIP”，一次拿到全部结果。原先的“兼容性检查”“GPU 选卡验证”两个页签已并入它——`compatibility.json` 与 `gpu-selection.json` 都会进同一个包，命令行 `-batchmode`（默认命令）与 `-batchmode --gpu-selection` 仍可单独看某一部分，数据是同一份。
+界面只有一页（没有页签条）：填事故三要素、可选填**游戏目录**（`--game-dir` 的同义输入框，游戏 DLL 所在处），点“开始采集并生成 ZIP”，一次拿到全部结果。原先的“兼容性检查”“GPU 选卡验证”两个页签已并入它——`compatibility.json` 与 `gpu-selection.json` 都会进同一个包，命令行 `-batchmode`（默认命令）与 `-batchmode --gpu-selection` 仍可单独看某一部分，数据是同一份。
 
 采集CPU、内存、BIOS/整机/主板型号、SMBIOS内存配置、原始微码注册表字节、显卡/驱动、双显卡自动选卡验证（`gpu-selection.json`）、磁盘容量、事件诊断、WHEA及已有内存诊断结果、**DLL 静态检查与隔离加载探针（`compatibility.json`）**，并在项目配置了日志目录时附带最新的游戏日志副本。不读取序列号、不运行内存测试、不重启、不改BIOS。每个采集阶段在独立受Job管理的子进程执行，默认45秒超时，失败/取消保留已完成信息。系统权限不足、字段缺失、事件覆盖不完整会记录在报告中，不代表硬件健康。
 
@@ -427,7 +427,6 @@ ZEnvironmentCollector.exe -batchmode --preflight [--output-dir <path>] [--game-d
 .\ZEnvironmentCollector.exe -batchmode --diagnose --diagnose-from-events .\Diagnosis\OSGameDiagnosisEvents.tsv --output-dir .\Replay
 .\ZEnvironmentCollector.exe -batchmode --gpu-selection
 .\ZEnvironmentCollector.exe --profile .\profiles\osgame.ini          # GUI，指定profile
-.\ZEnvironmentCollector.exe --tab collection                          # GUI，唯一页签（gpu / check 也接受，落到同一页）
 .\ZEnvironmentCollector.exe --lang zh-CN                              # 界面语言（默认英文）
 ```
 
