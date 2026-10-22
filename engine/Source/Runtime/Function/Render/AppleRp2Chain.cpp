@@ -6,6 +6,7 @@
     #include "Runtime/Function/Render/Interface/RHI.h"
     #include "Runtime/Function/Render/Passes/MainCameraFramebufferResources.h"
     #include "Runtime/Function/Render/RenderPass.h"
+    #include "Runtime/Function/Render/RenderResource.h"
 
 // ---------------------------------------------------------------------
 // MSL：一个全屏三角形 + 一次采样 + 显示变换。
@@ -15,8 +16,10 @@
 // "main"，落空时退回 `library.functionNames.firstObject` —— 所以每个 library
 // 里只能有一个函数，否则兜底会取到错的那个。本文件每个字符串只有一个入口。
 //
-// 槽位：set 0 / binding 0 ⇒ [[texture(0)]] + [[sampler(0)]]，和
-// AppleSceneBlit 同一套手工约定。
+// 槽位：set 0 / binding 0 ⇒ [[texture(0)]] + [[sampler(0)]]，binding 1（LUT）
+// ⇒ [[texture(1)]] + [[sampler(1)]]，和 AppleSceneBlit 同一套手工约定
+// （MetalRHI::CmdBindDescriptorSetsPFN 里 texture_index = set*8 + binding；
+// sampler 走紧凑编号表，手写 MSL 的表是空的 ⇒ 回退成槽位本身，1 没越界）。
 //
 // uv 映射**必须和 AppleSceneBlit 完全一致**（`v = 0.5 - y*0.5`）。这样 RP2 是
 // 一次恒等变换：读 backup_odd 的哪个 texel 就往 backup_even 的哪个 texel 写，
@@ -56,6 +59,35 @@ vertex Rp2VertexOut Rp2VertexMain(uint vertex_id [[vertex_id]])
     // 源图是 RP1 的 backup_odd（R16G16B16A16_SFLOAT，线性 HDR），目标是
     // backup_even（同样 HDR 格式，但装的是 LDR 值 —— 后面 blit 直接搬，不再
     // 变换）。不做的话：>1 的地方硬切成纯白、其余整体偏暗，而且不报任何错。
+    // ---- 颜色分级 LUT 的条带采样 ----
+    //
+    // 资源是 256x16：16 个 16x16 切片横向排开，也就是一个 16x16x16 的立方体
+    // 被摊平成一条横带。轴向：
+    //
+    //     x = 切片(b) * 16 + r      y = g
+    //
+    // （用真实像素对拍验证过：固定 r=g=0.5、把切片从 0 推到 15，输出蓝通道
+    //   0.22 → 0.59 单调上升，红通道几乎不动 ⇒ 切片确实是 b；固定切片、把 y
+    //   从 0 推到 15 时跳的是绿通道。）
+    //
+    // 采样序：**tonemap → LUT → gamma**。这条序没有既有实现可抄（Vulkan 的
+    // glsl/color_grading.frag 把 texture() 那行注释掉了，DX12 的 hlsl 写明
+    // "LUT is bound but unused"），所以是自己定的，依据是 LUT 内容本身：沿灰阶
+    // 对角线看，输出大致就是输入的恒等再叠一条 S 形对比曲线（t=0.2→0.13，
+    // t=0.5→0.35，t=0.9→0.95），离"恒等"比离 "t^(1/2.2)" 近一个数量级
+    // （最大偏差 0.10~0.19 对 0.36~0.43）⇒ 它是在**线性**空间里工作的，
+    // 必须放在 gamma 之前。套反了画面会整体压暗一档，看着像"美术风格"，
+    // 没人会当 bug 报 —— 所以写在注释里，改的人知道自己在改什么。
+    //
+    // 三个容易踩的点：
+    //   * 半 texel 内缩：r ∈ [0,1] 必须落到切片内第 0..15 号 texel 的**中心**
+    //     （`r*(slice_width-1) + 0.5`）。少了那个 0.5，r=1 会采到第 15 和
+    //     第 16 号 texel 的中点，也就是跨到下一个切片里去 —— 边界处渗色。
+    //   * 跨切片混合要手工做：b 方向在纹理上是不连续的（切片并排），硬件的
+    //     线性过滤只会在切片内部插值，所以取 floor(b) 和 floor(b)+1 两片再
+    //     mix。只采一片的话蓝色会有 16 级色带。
+    //   * level(0)：LUT 是逐 texel 精确的查表，绝不能让硬件选中低一级 mip ——
+    //     mip 1 上相邻切片会被糊到一起。
     const char* kAppleRp2FragMsl = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
@@ -77,14 +109,55 @@ static float3 Uncharted2Tonemap(float3 x)
     return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
 }
 
+// 256x16 条带 ⇒ slice_count = height，slice_width = width / height。
+static float3 SampleColorGradingLut(texture2d<float> lut,
+                                    sampler          lut_sampler,
+                                    float3           color)
+{
+    const float lut_width  = float(lut.get_width());
+    const float lut_height = float(lut.get_height());
+
+    // 1x1 中性兜底图（LUT 没加载成功）：算切片会除出 0，直接采那一个 texel。
+    if (lut_width < 2.0 || lut_height < 2.0)
+    {
+        return lut.sample(lut_sampler, float2(0.5, 0.5), level(0.0)).rgb;
+    }
+
+    const float slice_count = lut_height;
+    const float slice_width = lut_width / slice_count;
+
+    const float3 c = clamp(color, float3(0.0), float3(1.0));
+
+    const float g       = c.g * (slice_count - 1.0);
+    const float slice_f = c.b * (slice_count - 1.0);
+    const float slice0  = floor(slice_f);
+    const float slice1  = min(slice0 + 1.0, slice_count - 1.0);
+    const float frac    = slice_f - slice0;
+    const float r       = c.r * (slice_width - 1.0);
+
+    const float v  = (g + 0.5) / lut_height;
+    const float u0 = (slice0 * slice_width + r + 0.5) / lut_width;
+    const float u1 = (slice1 * slice_width + r + 0.5) / lut_width;
+
+    const float3 c0 = lut.sample(lut_sampler, float2(u0, v), level(0.0)).rgb;
+    const float3 c1 = lut.sample(lut_sampler, float2(u1, v), level(0.0)).rgb;
+
+    return mix(c0, c1, frac);
+}
+
 fragment float4 Rp2FragmentMain(Rp2VertexOut     in            [[stage_in]],
                                 texture2d<float> scene_texture [[texture(0)]],
-                                sampler          scene_sampler [[sampler(0)]])
+                                sampler          scene_sampler [[sampler(0)]],
+                                texture2d<float> lut_texture   [[texture(1)]],
+                                sampler          lut_sampler   [[sampler(1)]])
 {
     float3 color = scene_texture.sample(scene_sampler, in.uv).rgb;
 
     color = Uncharted2Tonemap(color * 4.5);
     color = color * (1.0 / Uncharted2Tonemap(float3(11.2)));
+
+    color = SampleColorGradingLut(lut_texture, lut_sampler, color);
+
     color = pow(color, float3(1.0 / 2.2));
 
     return float4(color, 1.0);
@@ -92,10 +165,13 @@ fragment float4 Rp2FragmentMain(Rp2VertexOut     in            [[stage_in]],
 )MSL";
 }  // namespace
 
-bool AppleRp2Chain::Initialize(RHI* rhi, MainCameraFramebufferResources* framebuffers)
+bool AppleRp2Chain::Initialize(RHI*                            rhi,
+                               MainCameraFramebufferResources* framebuffers,
+                               RenderResource*                 render_resource)
 {
     m_Rhi = rhi;
     m_Framebuffers = framebuffers;
+    m_RenderResource = render_resource;
 
     if (rhi == nullptr || framebuffers == nullptr)
     {
@@ -114,16 +190,24 @@ bool AppleRp2Chain::Initialize(RHI* rhi, MainCameraFramebufferResources* framebu
         return false;
     }
 
-    RHIDescriptorSetLayoutBinding binding {};
-    binding.binding         = 0;
-    binding.descriptorType  = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    binding.descriptorCount = 1;
-    binding.stageFlags      = RHI_SHADER_STAGE_FRAGMENT_BIT;
+    // 两个槽位：0 = 场景（backup_odd），1 = 颜色分级 LUT。和
+    // MainCameraRp2Pass::SetupDescriptorSetLayouts 里 `_color_grading` 那份布局
+    // 是同一个形状（两个 COMBINED_IMAGE_SAMPLER），这样将来 RP2 接上真管线时
+    // 两边不用重新对齐。
+    RHIDescriptorSetLayoutBinding bindings[2] {};
+    bindings[0].binding         = 0;
+    bindings[0].descriptorType  = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags      = RHI_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].binding         = 1;
+    bindings[1].descriptorType  = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags      = RHI_SHADER_STAGE_FRAGMENT_BIT;
 
     RHIDescriptorSetLayoutCreateInfo layout_info {};
     layout_info.sType        = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layout_info.bindingCount = 1;
-    layout_info.pBindings    = &binding;
+    layout_info.bindingCount = 2;
+    layout_info.pBindings    = bindings;
     if (!rhi->CreateDescriptorSetLayout(&layout_info, m_DescriptorSetLayout) || m_DescriptorSetLayout == nullptr)
     {
         LOG_ERROR(ZRender, "AppleRp2Chain: descriptor set layout creation failed");
@@ -258,7 +342,9 @@ bool AppleRp2Chain::Initialize(RHI* rhi, MainCameraFramebufferResources* framebu
     }
 
     m_Ready = true;
-    LOG_INFO(ZRender, "AppleRp2Chain: offscreen post chain (backup_odd -> backup_even) ready");
+    LOG_INFO(ZRender,
+             "AppleRp2Chain: offscreen post chain (backup_odd -> backup_even) ready (lut={})",
+             FindLutView() != nullptr);
     return true;
 }
 
@@ -266,12 +352,28 @@ void AppleRp2Chain::Shutdown()
 {
     // 和 AppleSceneBlit 一样：RHI 层没有 DestroyPipeline / DestroyDescriptorSetLayout，
     // 只能置空，见 RenderResource::DestroyGPUResources 里的说明。
+    if (m_Rhi != nullptr)
+    {
+        if (m_FallbackLutView != nullptr)
+        {
+            m_Rhi->DestroyImageView(m_FallbackLutView);
+        }
+        if (m_FallbackLutImage != nullptr)
+        {
+            m_Rhi->DestroyImage(m_FallbackLutImage);
+        }
+    }
+
     m_Ready = false;
     m_Pipeline            = nullptr;
     m_DescriptorSet       = nullptr;
     m_PipelineLayout      = nullptr;
     m_DescriptorSetLayout = nullptr;
     m_Sampler             = nullptr;
+    m_FallbackLutImage    = nullptr;
+    m_FallbackLutView     = nullptr;
+    m_BoundLutView        = nullptr;
+    m_RenderResource      = nullptr;
     m_Framebuffers        = nullptr;
     m_Rhi                 = nullptr;
 }
@@ -325,6 +427,78 @@ void AppleRp2Chain::WriteSceneDescriptor(RHIImageView* source_view)
     m_Rhi->UpdateDescriptorSets(1, &write, 0, nullptr);
 }
 
+void AppleRp2Chain::WriteLutDescriptor(RHIImageView* lut_view)
+{
+    // 只有真的换了才写：MetalRHI::UpdateDescriptorSets 每次都会
+    // release + retain，而这张图一帧一帧根本不变（只有关卡热重载才换）。
+    if (lut_view == m_BoundLutView)
+    {
+        return;
+    }
+
+    RHIDescriptorImageInfo image_info {};
+    image_info.sampler     = m_Sampler;
+    image_info.imageView   = lut_view;
+    image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    RHIWriteDescriptorSet write {};
+    write.sType           = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = m_DescriptorSet;
+    write.dstBinding      = 1;
+    write.dstArrayElement = 0;
+    write.descriptorCount = 1;
+    write.descriptorType  = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo      = &image_info;
+    m_Rhi->UpdateDescriptorSets(1, &write, 0, nullptr);
+
+    m_BoundLutView = lut_view;
+}
+
+RHIImageView* AppleRp2Chain::FindLutView() const
+{
+    if (m_RenderResource == nullptr)
+    {
+        return nullptr;
+    }
+    return m_RenderResource->m_GlobalRenderResource.m_ColorGradingResource.m_ColorGradingLutTextureImageView;
+}
+
+RHIImageView* AppleRp2Chain::ResolveLutView()
+{
+    if (RHIImageView* lut_view = FindLutView())
+    {
+        return lut_view;
+    }
+
+    // 没配 LUT / 加载失败 / 还没上传完：用 1x1 中性 texel 顶上。少了它，
+    // [[texture(1)]] 绑的是空 ⇒ Metal 采样返回 0 ⇒ 整屏黑，而且日志里什么都没有。
+    EnsureFallbackLutTexture();
+    return m_FallbackLutView;
+}
+
+void AppleRp2Chain::EnsureFallbackLutTexture()
+{
+    if (m_FallbackLutView != nullptr || m_Rhi == nullptr)
+    {
+        return;
+    }
+
+    // 中性灰：条带采样在这个 1x1 上退化成"采那一个 texel"，出来是 0.502 的灰，
+    // 再走 1/2.2 gamma ⇒ 画面照旧，只是没有分级。和 MainCameraRp2Pass::
+    // EnsureFallbackLutTexture 用的是同一个值。
+    const uint8_t neutral_lut[] = {128, 128, 128, 255};
+    RHIImage*     image         = nullptr;
+    m_Rhi->CreateGlobalImage(image,
+                             m_FallbackLutView,
+                             nullptr,
+                             1,
+                             1,
+                             const_cast<uint8_t*>(neutral_lut),
+                             RHI_FORMAT_R8G8B8A8_UNORM,
+                             1);
+    m_FallbackLutImage = image;
+}
+
 void AppleRp2Chain::Record(RHICommandBuffer* command_buffer)
 {
     if (command_buffer == nullptr || !CanRender())
@@ -339,6 +513,7 @@ void AppleRp2Chain::Record(RHICommandBuffer* command_buffer)
     const RHIExtent2D extent = m_Rhi->GetSwapchainInfo().extent;
 
     WriteSceneDescriptor(source_view);
+    WriteLutDescriptor(ResolveLutView());
 
     RHIClearValue clear_value {};
     clear_value.color.float32[0] = 0.0f;

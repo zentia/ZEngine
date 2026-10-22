@@ -29,6 +29,15 @@
 //      测试里放了一份 Uncharted2 + 1/2.2 的 C++ 镜像，要求 GPU 出来的值等于镜像
 //      算出来的值 —— 三份实现（tone_mapping.frag / MSL / 这里）就靠这条对齐。
 //
+//   5. **颜色分级 LUT 真的被读了**。RP2 的第二个描述符槽（binding 1）绑的是
+//      256x16 的条带 LUT。这个仓库里没有任何既有实现可抄（Vulkan 的
+//      glsl/color_grading.frag 把 texture() 那行注释掉了，DX12 的 hlsl 写明
+//      "bound but unused"），所以条带的轴向、半 texel 内缩、跨切片混合全是新写的。
+//      这里钉三层：条带公式的 C++ 镜像在恒等 LUT 上必须是恒等（轴向搞反 /
+//      off-by-one 立刻红）；从 AppleRp2Chain.cpp 抽出**真实** MSL 建管线跑一遍
+//      恒等 LUT（证明 [[texture(1)]] 真的绑上了 —— 没绑上 Metal 采到的是 0）；
+//      再跑一遍常量 LUT（证明输出确实来自 LUT 而不是绕过它）。
+//
 //  非 Apple 平台退化成文本 + 纯数学部分：文本契约（set/binding 与
 //  [[texture(n)]] 的手工对齐、入口点必须叫 main、顶点数必须是 3、剔除必须关掉、
 //  tonemap 的曝光与 gamma 字面量）和 tonemap 曲线本身的性质。
@@ -47,6 +56,7 @@
 #include "Runtime/Function/Render/AppleSceneBlit.h"
 #include "Runtime/Function/Render/Interface/RHI.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -125,6 +135,111 @@ namespace
         const float exposed = Uncharted2Tonemap(linear_value * 4.5f);
         const float white   = 1.0f / Uncharted2Tonemap(11.2f);
         return std::pow(exposed * white, 1.0f / 2.2f);
+    }
+
+    // =======================================================================
+    // 256x16 条带 LUT 采样的 C++ 镜像。
+    //
+    // MSL 里那份（AppleRp2Chain.cpp 的 SampleColorGradingLut）是逐字照抄这个
+    // 公式的，两边靠下面的"恒等 LUT 必须是恒等"和 GPU 对拍对齐。
+    //
+    // 为什么要专门测：条带上 b 轴是**不连续**的（16 个切片并排），硬件的线性
+    // 过滤只会在切片内部插值。所以 r / g 靠采样器插值、b 靠手工 mix 两片 ——
+    // 三条轴的映射关系各写各的，搞反一个通道在灰度图上完全看不出来（恒等 LUT
+    // 下 (r,g,b) 任你怎么换都还是同一个值），只有拿**非灰**输入对拍才抓得到。
+    // =======================================================================
+    struct float3
+    {
+        float x, y, z;
+    };
+
+    // 恒等 LUT：格点 (i, j, k) 上存的就是 (i/15, j/15, k/15)。
+    float3 IdentityLutTexel(int i, int j)
+    {
+        const int slice = i / 16;
+        const int r_in  = i - slice * 16;
+        return {static_cast<float>(r_in) / 15.0f,
+                static_cast<float>(std::min(std::max(j, 0), 15)) / 15.0f,
+                static_cast<float>(slice) / 15.0f};
+    }
+
+    // 忠实模拟 Metal 的双线性过滤（含钳边）。
+    float3 BilinearIdentityLut(float u, float v)
+    {
+        const float x = std::min(std::max(u * 256.0f - 0.5f, 0.0f), 255.0f);
+        const float y = std::min(std::max(v * 16.0f - 0.5f, 0.0f), 15.0f);
+
+        const int i0 = static_cast<int>(std::floor(x));
+        const int j0 = static_cast<int>(std::floor(y));
+        const int i1 = std::min(i0 + 1, 255);
+        const int j1 = std::min(j0 + 1, 15);
+        const float fx = x - static_cast<float>(i0);
+        const float fy = y - static_cast<float>(j0);
+
+        const float3 c00 = IdentityLutTexel(i0, j0);
+        const float3 c10 = IdentityLutTexel(i1, j0);
+        const float3 c01 = IdentityLutTexel(i0, j1);
+        const float3 c11 = IdentityLutTexel(i1, j1);
+
+        float3 out {};
+        out.x = (c00.x * (1.0f - fx) + c10.x * fx) * (1.0f - fy) + (c01.x * (1.0f - fx) + c11.x * fx) * fy;
+        out.y = (c00.y * (1.0f - fx) + c10.y * fx) * (1.0f - fy) + (c01.y * (1.0f - fx) + c11.y * fx) * fy;
+        out.z = (c00.z * (1.0f - fx) + c10.z * fx) * (1.0f - fy) + (c01.z * (1.0f - fx) + c11.z * fx) * fy;
+        return out;
+    }
+
+    // 条带采样（MSL 那份的镜像）。
+    float3 SampleIdentityStripLut(float r, float g, float b)
+    {
+        const float lut_width   = 256.0f;
+        const float lut_height  = 16.0f;
+        const float slice_count = lut_height;
+        const float slice_width = lut_width / slice_count;
+
+        const float gg      = g * (slice_count - 1.0f);
+        const float slice_f = b * (slice_count - 1.0f);
+        const float slice0  = std::floor(slice_f);
+        const float slice1  = std::min(slice0 + 1.0f, slice_count - 1.0f);
+        const float frac    = slice_f - slice0;
+        const float rr      = r * (slice_width - 1.0f);
+
+        const float v  = (gg + 0.5f) / lut_height;
+        const float u0 = (slice0 * slice_width + rr + 0.5f) / lut_width;
+        const float u1 = (slice1 * slice_width + rr + 0.5f) / lut_width;
+
+        const float3 c0 = BilinearIdentityLut(u0, v);
+        const float3 c1 = BilinearIdentityLut(u1, v);
+
+        return {c0.x + (c1.x - c0.x) * frac, c0.y + (c1.y - c0.y) * frac, c0.z + (c1.z - c0.z) * frac};
+    }
+
+    void CheckStripLutMath()
+    {
+        // 恒等 LUT 必须是恒等变换 —— 且必须是**逐通道**恒等。用非灰输入
+        // (0.2, 0.5, 0.9)：轴向搞反（比如把 b 当成了 u 的切片内坐标）会给出
+        // (0.9, 0.5, 0.2) 之类的排列，半 texel 内缩写错（少了 +0.5）会给出
+        // 整体缩放（0.2*15/16 = 0.1875）—— 两种偏差都远超 0.01 的容差。
+        const float3 mid = SampleIdentityStripLut(0.2f, 0.5f, 0.9f);
+        Check(std::fabs(mid.x - 0.2f) < 0.01f, "the strip LUT keeps r on the within-slice axis");
+        Check(std::fabs(mid.y - 0.5f) < 0.01f, "the strip LUT keeps g on the v axis");
+        Check(std::fabs(mid.z - 0.9f) < 0.01f, "the strip LUT keeps b on the slice axis");
+
+        // 八个角必须落在角上：这是"半 texel 内缩"的反证 —— 没有内缩时
+        // (1,1,1) 会溢出到切片外，采样器钳边后给出 (0, 1, 1) 这种值。
+        const float3 black = SampleIdentityStripLut(0.0f, 0.0f, 0.0f);
+        const float3 white = SampleIdentityStripLut(1.0f, 1.0f, 1.0f);
+        Check(std::fabs(black.x) < 0.01f && std::fabs(black.y) < 0.01f && std::fabs(black.z) < 0.01f,
+              "the strip LUT maps black to the first texel of the first slice");
+        Check(std::fabs(white.x - 1.0f) < 0.01f && std::fabs(white.y - 1.0f) < 0.01f &&
+                  std::fabs(white.z - 1.0f) < 0.01f,
+              "the strip LUT maps white to the last texel of the last slice (half-texel inset, no bleed)");
+
+        // b 必须连续：只采一片（不做跨切片 mix）的话蓝通道会 quantized 成 16 级，
+        // 相邻两个 b 之间会有 1/15 ≈ 0.067 的台阶。
+        const float3 b0 = SampleIdentityStripLut(0.5f, 0.5f, 0.30f);
+        const float3 b1 = SampleIdentityStripLut(0.5f, 0.5f, 0.32f);
+        Check(std::fabs(b1.z - b0.z) < 0.02f,
+              "the cross-slice blend keeps b continuous (a single slice would band into 16 steps)");
     }
 
     // tonemap 曲线本身的性质。这部分不需要 GPU，所以非 Apple 平台也跑 —— 它钉的
@@ -265,6 +380,94 @@ namespace
               "RenderSystem asks the pipeline whether the scene colour is already tonemapped");
         Check(Contains(system_source, "!already_tonemapped"),
               "RenderSystem tonemaps in the blit exactly when RP2 did NOT (never both, never neither)");
+    }
+
+    // =======================================================================
+    // 1c. LUT（颜色分级）的文本契约（所有平台都跑）
+    //
+    // 钉的是两件编译器一个字都不会说的事：
+    //   * binding 1 在 C++ 侧声明了、也写了，MSL 侧用的是 [[texture(1)]] /
+    //     [[sampler(1)]]。这三处是手工对齐的（RHIDescriptorSetLayout 不透明），
+    //     对不上不会报错 —— Metal 只会让 [[texture(1)]] 采到空，画面变成没有
+    //     分级而已，看着就像"这个 LUT 风格比较淡"。
+    //   * 条带公式的半 texel 内缩、跨切片钳位、mip 0、以及"LUT 在 tonemap 之后
+    //     gamma 之前"这个顺序。
+    // =======================================================================
+    void CheckLutContracts()
+    {
+        const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string rp2_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/AppleRp2Chain.cpp");
+        const std::string res_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderResource.cpp");
+        Check(!rp2_source.empty(), "AppleRp2Chain.cpp is readable as text (LUT contracts)");
+        Check(!res_source.empty(), "RenderResource.cpp is readable as text (LUT contracts)");
+
+        // ---- 槽位 1 ----
+        Check(Contains(rp2_source, "[[texture(1)]]"), "the LUT is declared as [[texture(1)]] in the MSL");
+        Check(Contains(rp2_source, "[[sampler(1)]]"), "the LUT is sampled with [[sampler(1)]] in the MSL");
+        Check(Contains(rp2_source, "bindings[1].binding         = 1;"),
+              "the C++ side declares descriptor binding 1 (LUT)");
+        Check(Contains(rp2_source, "write.dstBinding      = 1;"), "the C++ side writes descriptor binding 1 (LUT)");
+        Check(Contains(rp2_source, "layout_info.bindingCount = 2;"),
+              "the RP2 descriptor set layout has exactly two bindings (scene + LUT)");
+
+        // ---- 条带公式 ----
+        Check(Contains(rp2_source, "const float slice_width = lut_width / slice_count;"),
+              "the slice width is derived from the LUT size (256x16 => 16 slices of 16)");
+        Check(Contains(rp2_source, "(slice0 * slice_width + r + 0.5) / lut_width"),
+              "the r axis gets a half-texel inset (without it r=1 bleeds into the next slice)");
+        Check(Contains(rp2_source, "(g + 0.5) / lut_height"), "the g axis gets a half-texel inset");
+        Check(Contains(rp2_source, "min(slice0 + 1.0, slice_count - 1.0)"),
+              "the cross-slice blend clamps at the last slice instead of wrapping");
+        Check(Contains(rp2_source, "level(0.0)"),
+              "the LUT is sampled at mip 0 (a lower mip would smear adjacent slices together)");
+
+        // ---- 采样序：tonemap -> LUT -> gamma ----
+        const size_t tonemap_at = rp2_source.find("Uncharted2Tonemap(float3(11.2))");
+        const size_t lut_at     = rp2_source.find("SampleColorGradingLut(lut_texture");
+        const size_t gamma_at   = rp2_source.find("pow(color, float3(1.0 / 2.2))");
+        Check(tonemap_at != std::string::npos && lut_at != std::string::npos && gamma_at != std::string::npos,
+              "the RP2 fragment still contains all three stages (tonemap, LUT, gamma)");
+        Check(tonemap_at < lut_at && lut_at < gamma_at,
+              "the LUT is applied after the tonemap and before the gamma encode (the order is a choice, see the .cpp)");
+
+        // ---- 兜底：LUT 没加载成功时不能是"采到空" ----
+        Check(Contains(rp2_source, "EnsureFallbackLutTexture"),
+              "AppleRp2Chain can build a fallback LUT when the resource is missing");
+        Check(Contains(rp2_source, "const uint8_t neutral_lut[]"),
+              "the fallback LUT is a neutral texel (a missing LUT must not turn the screen black)");
+
+        // ---- RenderResource 的守卫 ----
+        // 这份（Vulkan/Apple）以前没有 empty 检查也没有失败日志，而 DX12 那份
+        // twin 有 ⇒ Apple 上 LUT 没配上时是完全静默的。
+        Check(Contains(res_source, "no color grading map configured"),
+              "RenderResource warns when no color grading map is configured");
+        Check(Contains(res_source, "failed to load color grading LUT"),
+              "RenderResource warns when the color grading LUT fails to load (it used to dereference null)");
+
+        // ---- LUT 必须走**未压缩**的源图 ----
+        //
+        // TextureImporter 会把 `asset/texture/lut/*.png` 一起烤成 BC7 的
+        // `_Generated/Textures/.../*.zasset`（真机日志里确实有），而
+        // `LoadTexture` 默认优先返回烤好的那份。4x4 块压缩的查表 = 色带 + 错色，
+        // 而且不报任何错。这条钉的是"LUT 显式跳过 cooked 产物"。
+        Check(Contains(res_source, "UploadColorGradingLut"),
+              "the LUT upload is a separate entry point (so it can run without the whole global resource upload)");
+        Check(Contains(res_source, "LoadTexture(color_grading_path, false, false)"),
+              "the LUT is loaded uncooked -- a BC7/ASTC compressed LUT would band and miscolour");
+
+        // ---- Apple 那条精简版 RenderSystem::Initialize 必须自己上传 LUT ----
+        //
+        // 它**从不**调用 UploadGlobalRenderResource（IBL 靠 EnsureFallbackIblTextures
+        // 兜底），所以 LUT 在 Apple 上从来没上过 GPU —— 真机日志里
+        // `AppleRp2Chain ... ready (lut=FALSE)` 就是这么来的。少了这一句，"接了
+        // LUT"只是代码接了，画面上永远是那张 1x1 中性兜底。
+        const std::string system_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+        Check(!system_source.empty(), "RenderSystem.cpp is readable as text (Apple LUT upload)");
+        Check(Contains(system_source, "UploadColorGradingLut(m_Rhi"),
+              "the Apple RenderSystem::Initialize uploads the LUT itself (it never calls UploadGlobalRenderResource)");
     }
 
 #if defined(__APPLE__)
@@ -465,6 +668,23 @@ namespace
         return static_cast<float>(sum) / static_cast<float>(width * 3);
     }
 
+    // 某一行某一通道的平均值。LUT 的三条轴各走各的 ⇒ 必须逐通道对拍，
+    // 只看三通道均值的话轴向搞反根本看不出来。
+    float RowChannel(const std::vector<uint8_t>& pixels, uint32_t width, uint32_t row, uint32_t channel)
+    {
+        if (pixels.size() < static_cast<size_t>(width) * static_cast<size_t>(row + 1) * 4u)
+        {
+            return -1.0f;
+        }
+        uint32_t sum = 0;
+        for (uint32_t x = 0; x < width; ++x)
+        {
+            const size_t i = (static_cast<size_t>(row) * static_cast<size_t>(width) + x) * 4u;
+            sum += static_cast<uint32_t>(pixels[i + channel]);
+        }
+        return static_cast<float>(sum) / static_cast<float>(width);
+    }
+
     // -----------------------------------------------------------------------
     // 假"场景"：一条竖直渐变，顶行 0.25（≈64）、底行 0.75（≈191）。
     //
@@ -509,7 +729,93 @@ fragment float4 GradientFragmentMain(GradientVertexOut in [[stage_in]])
 }
 )MSL";
 
-    RHIPipeline* MakeGradientPipeline(RHI* rhi, RHIRenderPass* render_pass)
+    // =======================================================================
+    // 恒等 LUT / 常量 LUT / 彩色场景：都是"按 [[position]] 算一个值写出去"。
+    //
+    // 恒等 LUT 是这份测试里最关键的一张图：格点值等于自己的坐标，于是
+    // "LUT 采样"必须退化成恒等变换。任何轴向错误、内缩错误、跨切片错误都会
+    // 让它不再是恒等 —— 但它**只在输入非灰时才看得出来**（恒等 LUT 下把
+    // (r,g,b) 换成 (b,g,r)，灰度输入给出完全相同的值）。所以场景那张图特意
+    // 做成三条通道各走各的斜坡。
+    // =======================================================================
+    const char* kIdentityLutFragMsl = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct GradientVertexOut
+{
+    float4 position [[position]];
+};
+
+// 256x16：切片 = floor(x/16)，切片内 r = x - slice*16，g = y。
+fragment float4 IdentityLutFragmentMain(GradientVertexOut in [[stage_in]])
+{
+    float x     = floor(in.position.x);
+    float y     = floor(in.position.y);
+    float slice = floor(x / 16.0);
+    float r_in  = x - slice * 16.0;
+    return float4(r_in / 15.0, y / 15.0, slice / 15.0, 1.0);
+}
+)MSL";
+
+    const char* kConstantLutFragMsl = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct GradientVertexOut
+{
+    float4 position [[position]];
+};
+
+// 整张 LUT 一个值：只要 shader 真的去读了 binding 1，输出就一定是这个值的
+// gamma。它和"恒等"是两个独立可辨的签名 —— 绕过 LUT 的话两者会同归于 blit 值。
+fragment float4 ConstantLutFragmentMain(GradientVertexOut in [[stage_in]])
+{
+    return float4(0.25, 0.5, 0.75, 1.0);
+}
+)MSL";
+
+    // 彩色场景：R 从 0.25 爬到 0.75，G 恒 0.5，B 从 0.75 降到 0.25。
+    // 三条通道分开走 ⇒ LUT 的轴向一旦搞反，逐通道对拍立刻红。
+    const char* kColorGradientFragMsl = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+
+struct GradientVertexOut
+{
+    float4 position [[position]];
+};
+
+fragment float4 ColorGradientFragmentMain(GradientVertexOut in [[stage_in]])
+{
+    float t = in.position.y / 32.0;
+    return float4(0.25 + 0.5 * t, 0.5, 0.75 - 0.5 * t, 1.0);
+}
+)MSL";
+
+    // 从 AppleRp2Chain.cpp 里把真实的 MSL 字符串抠出来。
+    //
+    // 为什么不复制一份到测试里：复制品和真身会各自漂移，而真身只在运行时才
+    // 见编译器 —— 复制品过了不代表真身过了。这个测试里跑的就是**真身那段
+    // 字符串**，所以 MSL 的编译、槽位、公式三者一次全验。
+    std::string ExtractMslBetween(const std::string& source, const char* name)
+    {
+        const std::string begin_marker = std::string(name) + " = R\"MSL(";
+        const size_t      begin        = source.find(begin_marker);
+        if (begin == std::string::npos)
+        {
+            return std::string();
+        }
+        const size_t start = begin + begin_marker.size();
+        const size_t end   = source.find(")MSL\"", start);
+        if (end == std::string::npos)
+        {
+            return std::string();
+        }
+        return source.substr(start, end - start);
+    }
+
+    RHIPipeline* MakeGradientPipeline(RHI* rhi, RHIRenderPass* render_pass, const char* frag_msl)
     {
         if (rhi == nullptr || render_pass == nullptr)
         {
@@ -528,7 +834,7 @@ fragment float4 GradientFragmentMain(GradientVertexOut in [[stage_in]])
         }
 
         RHIShader* vert = rhi->CreateShaderModuleFromSource(kGradientVertMsl, ShaderStage::Vertex, "gradient.vert");
-        RHIShader* frag = rhi->CreateShaderModuleFromSource(kGradientFragMsl, ShaderStage::Fragment, "gradient.frag");
+        RHIShader* frag = rhi->CreateShaderModuleFromSource(frag_msl, ShaderStage::Fragment, "gradient.frag");
         if (vert == nullptr || frag == nullptr)
         {
             if (vert != nullptr)
@@ -613,19 +919,251 @@ fragment float4 GradientFragmentMain(GradientVertexOut in [[stage_in]])
         return pipeline;
     }
 
-    void SetFullViewport(RHI* rhi, RHICommandBuffer* command_buffer)
+    void SetViewport(RHI* rhi, RHICommandBuffer* command_buffer, uint32_t width, uint32_t height)
     {
         RHIViewport viewport {};
-        viewport.width    = static_cast<float>(kSize);
-        viewport.height   = static_cast<float>(kSize);
+        viewport.width    = static_cast<float>(width);
+        viewport.height   = static_cast<float>(height);
         viewport.minDepth = 0.0f;
         viewport.maxDepth = 1.0f;
         rhi->CmdSetViewportPFN(command_buffer, 0, 1, &viewport);
 
         RHIRect2D scissor {};
-        scissor.extent.width  = kSize;
-        scissor.extent.height = kSize;
+        scissor.extent.width  = width;
+        scissor.extent.height = height;
         rhi->CmdSetScissorPFN(command_buffer, 0, 1, &scissor);
+    }
+
+    void SetFullViewport(RHI* rhi, RHICommandBuffer* command_buffer)
+    {
+        SetViewport(rhi, command_buffer, kSize, kSize);
+    }
+
+    // -----------------------------------------------------------------------
+    // RP2 的替身：两个 COMBINED_IMAGE_SAMPLER（0 = 场景，1 = LUT）+ 从
+    // AppleRp2Chain.cpp 抠出来的真身 MSL。
+    //
+    // 不能直接用 AppleRp2Chain：它要 MainCameraFramebufferResources，那东西
+    // 要一整套 GBuffer / 光照附件。这里只需要它**那段 shader**和**那个槽位
+    // 布局**，于是照抄布局、复用真身 shader 文本。
+    // -----------------------------------------------------------------------
+    struct Rp2Harness
+    {
+        RHIDescriptorSetLayout* layout {nullptr};
+        RHIPipelineLayout* pipeline_layout {nullptr};
+        RHIDescriptorSet* set {nullptr};
+        RHISampler* sampler {nullptr};
+        RHIPipeline* pipeline {nullptr};
+    };
+
+    bool MakeRp2Harness(RHI* rhi, RHIRenderPass* render_pass, const std::string& vert_msl, const std::string& frag_msl,
+                        Rp2Harness& out)
+    {
+        if (rhi == nullptr || render_pass == nullptr || vert_msl.empty() || frag_msl.empty())
+        {
+            return false;
+        }
+
+        RHIDescriptorSetLayoutBinding bindings[2] {};
+        for (uint32_t i = 0; i < 2; ++i)
+        {
+            bindings[i].binding         = i;
+            bindings[i].descriptorType  = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags      = RHI_SHADER_STAGE_FRAGMENT_BIT;
+        }
+
+        RHIDescriptorSetLayoutCreateInfo layout_info {};
+        layout_info.sType        = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        layout_info.bindingCount = 2;
+        layout_info.pBindings    = bindings;
+        if (!rhi->CreateDescriptorSetLayout(&layout_info, out.layout) || out.layout == nullptr)
+        {
+            return false;
+        }
+
+        RHIPipelineLayoutCreateInfo pipeline_layout_info {};
+        pipeline_layout_info.sType          = RHI_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts    = &out.layout;
+        if (!rhi->CreatePipelineLayout(&pipeline_layout_info, out.pipeline_layout) || out.pipeline_layout == nullptr)
+        {
+            return false;
+        }
+
+        RHIDescriptorSetAllocateInfo alloc_info {};
+        alloc_info.sType              = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.descriptorPool     = rhi->GetDescriptorPoor();
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts        = &out.layout;
+        if (RHI_SUCCESS != rhi->AllocateDescriptorSets(&alloc_info, out.set) || out.set == nullptr)
+        {
+            return false;
+        }
+
+        RHISamplerCreateInfo sampler_info {};
+        sampler_info.sType        = RHI_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_info.magFilter    = RHI_FILTER_LINEAR;
+        sampler_info.minFilter    = RHI_FILTER_LINEAR;
+        sampler_info.addressModeU = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeV = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler_info.addressModeW = RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (!rhi->CreateSampler(&sampler_info, out.sampler) || out.sampler == nullptr)
+        {
+            return false;
+        }
+
+        RHIShader* vert = rhi->CreateShaderModuleFromSource(vert_msl.c_str(), ShaderStage::Vertex, "rp2.vert");
+        RHIShader* frag = rhi->CreateShaderModuleFromSource(frag_msl.c_str(), ShaderStage::Fragment, "rp2.frag");
+        if (vert == nullptr || frag == nullptr)
+        {
+            if (vert != nullptr)
+            {
+                rhi->DestroyShaderModule(vert);
+            }
+            if (frag != nullptr)
+            {
+                rhi->DestroyShaderModule(frag);
+            }
+            return false;
+        }
+
+        RHIPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0].sType  = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage  = RHI_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vert;
+        stages[0].pName  = "main";
+        stages[1].sType  = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage  = RHI_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = frag;
+        stages[1].pName  = "main";
+
+        RHIPipelineVertexInputStateCreateInfo vertex_input {};
+        vertex_input.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+        RHIPipelineInputAssemblyStateCreateInfo input_assembly {};
+        input_assembly.sType    = RHI_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        input_assembly.topology = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        RHIPipelineViewportStateCreateInfo viewport_state {};
+        viewport_state.sType         = RHI_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewport_state.viewportCount = 1;
+        viewport_state.scissorCount  = 1;
+
+        RHIPipelineRasterizationStateCreateInfo rasterization {};
+        rasterization.sType       = RHI_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterization.polygonMode = RHI_POLYGON_MODE_FILL;
+        rasterization.cullMode    = RHI_CULL_MODE_NONE;
+        rasterization.frontFace   = RHI_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterization.lineWidth   = 1.0f;
+
+        RHIPipelineMultisampleStateCreateInfo multisample {};
+        multisample.sType                = RHI_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisample.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
+
+        RHIPipelineColorBlendAttachmentState blend {};
+        blend.blendEnable    = RHI_FALSE;
+        blend.colorWriteMask = RHI_COLOR_COMPONENT_R_BIT | RHI_COLOR_COMPONENT_G_BIT |
+                               RHI_COLOR_COMPONENT_B_BIT | RHI_COLOR_COMPONENT_A_BIT;
+
+        RHIPipelineColorBlendStateCreateInfo blend_state {};
+        blend_state.sType           = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        blend_state.attachmentCount = 1;
+        blend_state.pAttachments    = &blend;
+
+        RHIDynamicState dynamic_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
+        RHIPipelineDynamicStateCreateInfo dynamic_state {};
+        dynamic_state.sType             = RHI_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamic_state.dynamicStateCount = 2;
+        dynamic_state.pDynamicStates    = dynamic_states;
+
+        RHIGraphicsPipelineCreateInfo pipeline_info {};
+        pipeline_info.sType               = RHI_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipeline_info.stageCount          = 2;
+        pipeline_info.pStages             = stages;
+        pipeline_info.pVertexInputState   = &vertex_input;
+        pipeline_info.pInputAssemblyState = &input_assembly;
+        pipeline_info.pViewportState      = &viewport_state;
+        pipeline_info.pRasterizationState = &rasterization;
+        pipeline_info.pMultisampleState   = &multisample;
+        pipeline_info.pColorBlendState    = &blend_state;
+        pipeline_info.pDynamicState       = &dynamic_state;
+        pipeline_info.layout              = out.pipeline_layout;
+        pipeline_info.renderPass          = render_pass;
+        pipeline_info.subpass             = 0;
+
+        rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &pipeline_info, out.pipeline);
+        rhi->DestroyShaderModule(vert);
+        rhi->DestroyShaderModule(frag);
+        return out.pipeline != nullptr;
+    }
+
+    // 把 scene 过一遍 RP2（tonemap -> LUT -> gamma）写进 target。
+    void RunRp2(RHI*            rhi,
+                Rp2Harness&     harness,
+                Offscreen&      target,
+                RHIImageView*   scene_view,
+                RHIImageView*   lut_view)
+    {
+        if (rhi == nullptr || harness.pipeline == nullptr || target.framebuffer == nullptr)
+        {
+            return;
+        }
+
+        RHICommandBuffer* command_buffer = rhi->BeginSingleTimeCommands();
+        if (command_buffer == nullptr)
+        {
+            return;
+        }
+
+        RHIDescriptorImageInfo image_infos[2] {};
+        for (uint32_t i = 0; i < 2; ++i)
+        {
+            image_infos[i].sampler     = harness.sampler;
+            image_infos[i].imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
+        image_infos[0].imageView = scene_view;
+        image_infos[1].imageView = lut_view;
+
+        RHIWriteDescriptorSet writes[2] {};
+        for (uint32_t i = 0; i < 2; ++i)
+        {
+            writes[i].sType           = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            writes[i].dstSet          = harness.set;
+            writes[i].dstBinding      = i;
+            writes[i].dstArrayElement = 0;
+            writes[i].descriptorCount = 1;
+            writes[i].descriptorType  = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            writes[i].pImageInfo      = &image_infos[i];
+        }
+        rhi->UpdateDescriptorSets(2, writes, 0, nullptr);
+
+        RHIClearValue clear {};
+        clear.color.float32[3] = 1.0f;
+
+        RHIRenderPassBeginInfo begin {};
+        begin.sType                  = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        begin.renderPass             = target.render_pass;
+        begin.framebuffer            = target.framebuffer;
+        begin.renderArea.extent.width  = kSize;
+        begin.renderArea.extent.height = kSize;
+        begin.clearValueCount        = 1;
+        begin.pClearValues           = &clear;
+
+        rhi->CmdBeginRenderPassPFN(command_buffer, &begin, RHI_SUBPASS_CONTENTS_INLINE);
+        SetFullViewport(rhi, command_buffer);
+        rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_GRAPHICS, harness.pipeline);
+        rhi->CmdBindDescriptorSetsPFN(command_buffer,
+                                      RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                      harness.pipeline_layout,
+                                      0,
+                                      1,
+                                      &harness.set,
+                                      0,
+                                      nullptr);
+        rhi->CmdDraw(command_buffer, 3, 1, 0, 0);
+        rhi->CmdEndRenderPassPFN(command_buffer);
+        rhi->EndSingleTimeCommands(command_buffer);
     }
 #endif  // __APPLE__
 }  // namespace
@@ -641,6 +1179,12 @@ int main()
 
     // RP2 接线的文本契约（Apple 专属的两条管线 + RenderSystem 的同源判据）。
     CheckRp2Contracts();
+
+    // LUT（颜色分级）的文本契约：槽位 1 的三处手工对齐 + 条带公式 + 采样序。
+    CheckLutContracts();
+
+    // 条带采样的数学镜像（纯数学，不需要 GPU ⇒ 所有平台都跑）。
+    CheckStripLutMath();
 
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();
@@ -680,7 +1224,7 @@ int main()
         Check(scene.framebuffer != nullptr && scene.view != nullptr, "the fake offscreen scene target was built");
         Check(screen.framebuffer != nullptr && screen.view != nullptr, "the fake swapchain target was built");
 
-        RHIPipeline* gradient = MakeGradientPipeline(rhi, scene.render_pass);
+        RHIPipeline* gradient = MakeGradientPipeline(rhi, scene.render_pass, kGradientFragMsl);
         Check(gradient != nullptr, "the test's gradient pipeline builds (MSL-from-source works end to end)");
 
         // ---- 把渐变画进"场景" ----
@@ -862,6 +1406,198 @@ int main()
                   "apply_tonemap=false really skips the tonemap (not the same numbers as the tonemap run)");
         }
         DestroyOffscreen(rhi, passthrough);
+
+        // ===================================================================
+        // 4. 颜色分级 LUT：真身 MSL + 真身槽位布局，跑两遍
+        //
+        //    这是全库第一次真的采样那张 256x16 条带（Vulkan 的
+        //    glsl/color_grading.frag 把 texture() 注释掉了，DX12 的 hlsl 写明
+        //    "bound but unused"），所以没有既有结果可对拍 —— 只能靠"恒等 LUT
+        //    必须是恒等"这条性质。
+        // ===================================================================
+        {
+            const std::string rp2_source = ReadFileText(
+                std::string(ZENGINE_ENGINE_ROOT_DIR) + "/Source/Runtime/Function/Render/AppleRp2Chain.cpp");
+            const std::string rp2_vert = ExtractMslBetween(rp2_source, "kAppleRp2VertMsl");
+            const std::string rp2_frag = ExtractMslBetween(rp2_source, "kAppleRp2FragMsl");
+            Check(!rp2_vert.empty() && !rp2_frag.empty(),
+                  "the real RP2 MSL strings were extracted from AppleRp2Chain.cpp");
+            Check(Contains(rp2_frag, "SampleColorGradingLut(lut_texture"),
+                  "the extracted RP2 fragment really calls the LUT sampler");
+
+            Offscreen lut_identity = MakeOffscreen(rhi, 256, 16, 0);
+            Check(lut_identity.framebuffer != nullptr, "the 256x16 stand-in LUT target was built");
+
+            Offscreen color_scene = MakeOffscreen(rhi, kSize, kSize, 0);
+            Check(color_scene.framebuffer != nullptr, "the coloured scene target was built");
+
+            RHIPipeline* identity_lut_pipeline =
+                MakeGradientPipeline(rhi, lut_identity.render_pass, kIdentityLutFragMsl);
+            Check(identity_lut_pipeline != nullptr, "the identity-LUT pipeline builds");
+
+            RHIPipeline* color_scene_pipeline =
+                MakeGradientPipeline(rhi, color_scene.render_pass, kColorGradientFragMsl);
+            Check(color_scene_pipeline != nullptr, "the coloured-gradient pipeline builds");
+
+            // ---- 把恒等 LUT 画进 256x16 ----
+            if (identity_lut_pipeline != nullptr)
+            {
+                RHICommandBuffer* command_buffer = rhi->BeginSingleTimeCommands();
+                RHIClearValue     clear {};
+                clear.color.float32[3] = 1.0f;
+                RHIRenderPassBeginInfo begin {};
+                begin.sType                  = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+                begin.renderPass             = lut_identity.render_pass;
+                begin.framebuffer            = lut_identity.framebuffer;
+                begin.renderArea.extent.width  = 256;
+                begin.renderArea.extent.height = 16;
+                begin.clearValueCount        = 1;
+                begin.pClearValues           = &clear;
+                rhi->CmdBeginRenderPassPFN(command_buffer, &begin, RHI_SUBPASS_CONTENTS_INLINE);
+                SetViewport(rhi, command_buffer, 256, 16);
+                rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_GRAPHICS, identity_lut_pipeline);
+                rhi->CmdDraw(command_buffer, 3, 1, 0, 0);
+                rhi->CmdEndRenderPassPFN(command_buffer);
+                rhi->EndSingleTimeCommands(command_buffer);
+            }
+
+            // ---- 把彩色场景画进 32x32 ----
+            if (color_scene_pipeline != nullptr)
+            {
+                RHICommandBuffer* command_buffer = rhi->BeginSingleTimeCommands();
+                RHIClearValue     clear {};
+                clear.color.float32[3] = 1.0f;
+                RHIRenderPassBeginInfo begin {};
+                begin.sType                  = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+                begin.renderPass             = color_scene.render_pass;
+                begin.framebuffer            = color_scene.framebuffer;
+                begin.renderArea.extent.width  = kSize;
+                begin.renderArea.extent.height = kSize;
+                begin.clearValueCount        = 1;
+                begin.pClearValues           = &clear;
+                rhi->CmdBeginRenderPassPFN(command_buffer, &begin, RHI_SUBPASS_CONTENTS_INLINE);
+                SetFullViewport(rhi, command_buffer);
+                rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_GRAPHICS, color_scene_pipeline);
+                rhi->CmdDraw(command_buffer, 3, 1, 0, 0);
+                rhi->CmdEndRenderPassPFN(command_buffer);
+                rhi->EndSingleTimeCommands(command_buffer);
+            }
+
+            const std::vector<uint8_t> color_pixels = ReadBackPixels(rhi, color_scene.image, kSize, kSize);
+            Check(!color_pixels.empty(), "the coloured scene read back");
+
+            Rp2Harness harness {};
+            const bool harness_ok =
+                MakeRp2Harness(rhi, screen.render_pass, rp2_vert, rp2_frag, harness);
+            Check(harness_ok,
+                  "the real RP2 MSL compiles and builds a two-binding pipeline (LUT slot really is wired up)");
+
+            if (harness_ok && !color_pixels.empty() && lut_identity.view != nullptr)
+            {
+                // ---- 第一遍：恒等 LUT ----
+                //
+                // 期望值 = 逐通道 TonemapGamma(场景)。恒等 LUT 不改变任何东西，
+                // 所以出来必须和"没有 LUT"完全一致；而三条通道在场景里各走各的
+                // （顶行 R≈0.25 / G=0.5 / B≈0.75）⇒ 轴向一旦搞反，某一个通道
+                // 就会拿到别人的期望值，差值 50+ 个灰阶。
+                RunRp2(rhi, harness, screen, color_scene.view, lut_identity.view);
+                const std::vector<uint8_t> graded = ReadBackPixels(rhi, screen.image, kSize, kSize);
+
+                // 不能取正中间那一行：R 的斜坡（0.25→0.75）和 B 的斜坡
+                // （0.75→0.25）在 t=0.5 处交叉，两条通道值相同 ⇒ 轴向搞反也
+                // 看不出来。取靠上的行，t≈0.125 ⇒ R≈0.31 / B≈0.69。
+                const uint32_t row = 4;
+                const float    src[3] = {RowChannel(color_pixels, kSize, row, 0),
+                                         RowChannel(color_pixels, kSize, row, 1),
+                                         RowChannel(color_pixels, kSize, row, 2)};
+                const float    expect[3] = {TonemapGamma(src[0] / 255.0f) * 255.0f,
+                                            TonemapGamma(src[1] / 255.0f) * 255.0f,
+                                            TonemapGamma(src[2] / 255.0f) * 255.0f};
+                const float    got[3] = {RowChannel(graded, kSize, row, 0),
+                                         RowChannel(graded, kSize, row, 1),
+                                         RowChannel(graded, kSize, row, 2)};
+                std::printf("       lut(identity) src=%6.1f/%6.1f/%6.1f  expect=%6.1f/%6.1f/%6.1f  got=%6.1f/%6.1f/%6.1f\n",
+                            src[0], src[1], src[2], expect[0], expect[1], expect[2], got[0], got[1], got[2]);
+
+                Check(std::fabs(got[0] - expect[0]) < 5.0f,
+                      "with an identity LUT the red channel comes back unchanged (r is the within-slice axis)");
+                Check(std::fabs(got[1] - expect[1]) < 5.0f,
+                      "with an identity LUT the green channel comes back unchanged (g is the v axis)");
+                Check(std::fabs(got[2] - expect[2]) < 5.0f,
+                      "with an identity LUT the blue channel comes back unchanged (b is the slice axis)");
+                // 三条通道必须互相不同 —— 否则上面三条是"碰巧都相等"，
+                // 轴向搞反也照样能过。
+                Check(std::fabs(expect[0] - expect[2]) > 30.0f,
+                      "the coloured scene separates r and b enough for a swapped axis to be visible");
+                // 没绑上 LUT 时 Metal 采到的是空 ⇒ 输出 0。
+                Check(got[0] > 20.0f && got[1] > 20.0f && got[2] > 20.0f,
+                      "the RP2 output is not black (binding 1 really is bound -- an unbound LUT samples as zero)");
+
+                // ---- 第二遍：常量 LUT ----
+                //
+                // 恒等那遍有可能"绕过 LUT 也长得一样"（恒等 = 什么都不做），
+                // 所以再来一张整张都是 (0.25, 0.5, 0.75) 的 LUT：只要 shader
+                // 真的读了 binding 1，输出就必然是这三个值的 gamma，和第一遍
+                // 的结果差得远。
+                Offscreen lut_constant = MakeOffscreen(rhi, 256, 16, 0);
+                RHIPipeline* constant_lut_pipeline =
+                    lut_constant.framebuffer != nullptr
+                        ? MakeGradientPipeline(rhi, lut_constant.render_pass, kConstantLutFragMsl)
+                        : nullptr;
+                if (constant_lut_pipeline != nullptr)
+                {
+                    RHICommandBuffer* command_buffer = rhi->BeginSingleTimeCommands();
+                    RHIClearValue     clear {};
+                    clear.color.float32[3] = 1.0f;
+                    RHIRenderPassBeginInfo begin {};
+                    begin.sType                  = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+                    begin.renderPass             = lut_constant.render_pass;
+                    begin.framebuffer            = lut_constant.framebuffer;
+                    begin.renderArea.extent.width  = 256;
+                    begin.renderArea.extent.height = 16;
+                    begin.clearValueCount        = 1;
+                    begin.pClearValues           = &clear;
+                    rhi->CmdBeginRenderPassPFN(command_buffer, &begin, RHI_SUBPASS_CONTENTS_INLINE);
+                    SetViewport(rhi, command_buffer, 256, 16);
+                    rhi->CmdBindPipelinePFN(command_buffer, RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                            constant_lut_pipeline);
+                    rhi->CmdDraw(command_buffer, 3, 1, 0, 0);
+                    rhi->CmdEndRenderPassPFN(command_buffer);
+                    rhi->EndSingleTimeCommands(command_buffer);
+                }
+
+                if (lut_constant.view != nullptr)
+                {
+                    RunRp2(rhi, harness, screen, color_scene.view, lut_constant.view);
+                    const std::vector<uint8_t> flat = ReadBackPixels(rhi, screen.image, kSize, kSize);
+
+                    // UNORM8 里存的是 round(0.25*255)=64 / 128 / 191，再走 1/2.2。
+                    const float unorm[3]  = {64.0f / 255.0f, 128.0f / 255.0f, 191.0f / 255.0f};
+                    const float expect2[3] = {std::pow(unorm[0], 1.0f / 2.2f) * 255.0f,
+                                              std::pow(unorm[1], 1.0f / 2.2f) * 255.0f,
+                                              std::pow(unorm[2], 1.0f / 2.2f) * 255.0f};
+                    const float got2[3] = {RowChannel(flat, kSize, row, 0),
+                                           RowChannel(flat, kSize, row, 1),
+                                           RowChannel(flat, kSize, row, 2)};
+                    std::printf("       lut(constant) expect=%6.1f/%6.1f/%6.1f  got=%6.1f/%6.1f/%6.1f\n",
+                                expect2[0], expect2[1], expect2[2], got2[0], got2[1], got2[2]);
+
+                    Check(std::fabs(got2[0] - expect2[0]) < 6.0f,
+                          "a constant LUT overrides the red channel (the shader really reads binding 1)");
+                    Check(std::fabs(got2[1] - expect2[1]) < 6.0f,
+                          "a constant LUT overrides the green channel");
+                    Check(std::fabs(got2[2] - expect2[2]) < 6.0f,
+                          "a constant LUT overrides the blue channel");
+                    // 而且必须明显不同于"恒等 LUT"那一遍 —— 两遍一样说明 LUT 被绕过了。
+                    Check(std::fabs(got2[0] - got[0]) > 20.0f || std::fabs(got2[2] - got[2]) > 20.0f,
+                          "the constant LUT and the identity LUT give visibly different results (LUT is not bypassed)");
+                }
+                DestroyOffscreen(rhi, lut_constant);
+            }
+
+            DestroyOffscreen(rhi, lut_identity);
+            DestroyOffscreen(rhi, color_scene);
+        }
 
         DestroyOffscreen(rhi, scene);
         DestroyOffscreen(rhi, screen);

@@ -143,6 +143,14 @@ public:
     virtual void UploadGlobalRenderResource(RHI* rhi,
                                             LevelResourceDesc level_resource_desc) override final;
 
+    /// 只上传颜色分级 LUT（不碰 IBL 的 6 张 HDR cubemap）。
+    ///
+    /// Apple 的 `RenderSystem::Initialize` 是精简版，不走
+    /// `UploadGlobalRenderResource`（那条路要先把整个 GlobalRenderingRes 读出来），
+    /// 于是 LUT 在 Apple 上**从来没上过 GPU** —— RP2 的第二个描述符槽只能绑到
+    /// 1x1 兜底 texel。这个入口让 Apple 只补 LUT 这一件。
+    void UploadColorGradingLut(RHI* rhi, const eastl::string& color_grading_path);
+
     virtual void UploadGameObjectRenderResource(RHI* rhi,
                                                 RenderEntity render_entity,
                                                 RenderMeshData mesh_data,

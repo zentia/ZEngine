@@ -196,8 +196,13 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
         //
         // 失败了**不要** return：RP2 只是把 tonemap 从 blit 里挪出来，缺席时
         // RenderSystem 会退回"blit 自己 tonemap"那条老路，画面照旧。
+        //
+        // render_resource 只是给 RP2 每帧取 LUT 视图用的，可以是 nullptr ——
+        // 那时 RP2 用 1x1 中性 texel 顶上，画面没有分级而已。
         m_AppleRp2 = std::make_unique<AppleRp2Chain>();
-        if (!m_AppleRp2->Initialize(m_Pipeline.m_Rhi, m_AppleMainCameraFramebuffers.get()))
+        if (!m_AppleRp2->Initialize(m_Pipeline.m_Rhi,
+                                    m_AppleMainCameraFramebuffers.get(),
+                                    dynamic_cast<RenderResource*>(init_info.render_resource.get())))
         {
             LOG_ERROR(ZRender,
                       "DesktopRenderPipelineModule(Metal): AppleRp2Chain init failed -- "

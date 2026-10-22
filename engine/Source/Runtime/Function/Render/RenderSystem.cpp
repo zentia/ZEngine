@@ -7,11 +7,15 @@
 // because AddDirtyGameObject never reached UpsertGameObject.
 #if defined(__APPLE__) || defined(__EMSCRIPTEN__)
 
+    #include "Runtime/Core/Base/Macro.h"
     #include "Runtime/Function/Render/Interface/RHI.h"
     #include "Runtime/Function/Render/RenderCamera.h"
     #include "Runtime/Function/Render/RenderPipeline.h"
     #include "Runtime/Function/Render/RenderResource.h"
     #include "Runtime/Function/Render/RenderScene.h"
+    #include "Runtime/Resource/Asset/AssetManager.h"
+    #include "Runtime/Resource/Config/ConfigManager.h"
+    #include "Runtime/Resource/ResType/Global/GlobalRendering.h"
 
 std::vector<std::type_index> RenderSystem::GetDependencies() const
 {
@@ -62,6 +66,36 @@ bool RenderSystem::Initialize()
     // 必须在 RenderPipeline::Initialize 之前：RP1 的 SetupDescriptorSets 会直接
     // 绑上传 ringbuffer，晚一步 descriptor 就指向空 buffer。
     render_resource->CreateAndMapStorageBuffer(m_Rhi);
+
+    // ---- 颜色分级 LUT ----
+    //
+    // 这条精简版 Initialize **从不调用 UploadGlobalRenderResource**，所以全局资源
+    // 里只有 LUT 需要单独补：IBL 那 6 张 HDR cubemap 由 DesktopRenderPipelineModule
+    // 的 EnsureFallbackIblTextures 兜底（日志里那条
+    // `[E] MainCameraRp1Pass::SetupDescriptorSets: IBL textures unavailable` 就是
+    // 这么来的，它是"没上传"不是"设备掉了"），而 LUT **没有任何兜底之外的出路**
+    // —— RP2 的 binding 1 绑不到真图，颜色分级等于没接。
+    //
+    // 不把整个 UploadGlobalRenderResource 搬过来：那要顺带读 6 张 HDR 并建 cubemap，
+    // 是另一件事（而且 Apple 上 RP1 现在用兜底 IBL 跑得好好的）。
+    if (auto* config_manager = GET_SYSTEM(ConfigManager))
+    {
+        const eastl::string& global_rendering_url = config_manager->GetGlobalRenderingResUrl();
+        if (auto* asset_manager = GET_SYSTEM(AssetManager); !global_rendering_url.empty())
+        {
+            if (auto* global_rendering_res = asset_manager->loadAsset<GlobalRenderingRes>(global_rendering_url))
+            {
+                render_resource->UploadColorGradingLut(m_Rhi, global_rendering_res->m_ColorGradingMap);
+                MemoryManager::DestroyObject(global_rendering_res);
+            }
+            else
+            {
+                LOG_WARNING(ZRender,
+                            "RenderSystem(Apple): could not load '{}' -- color grading falls back to a neutral texel",
+                            global_rendering_url.c_str());
+            }
+        }
+    }
 
     RenderPipelineInitInfo pipeline_init_info;
     pipeline_init_info.render_resource = m_RenderResource;

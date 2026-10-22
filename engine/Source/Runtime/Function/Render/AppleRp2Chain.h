@@ -20,6 +20,24 @@
 // 一整套都是现成的 —— MainCameraFramebufferResources 已经建好了
 // m_Rp2HdrRenderPass / m_Rp2ColorGradingFramebuffer，之前只是没人用。
 //
+// 颜色分级（LUT）：
+//
+//   set 0 / binding 1 绑的是 `RenderResource::m_GlobalRenderResource.
+//   m_ColorGradingResource.m_ColorGradingLutTextureImageView` —— 就是
+//   rendering.global.json 里 `color_grading_map` 指的那张 256x16 条带
+//   （16 个 16x16 切片横向排开：x = 切片(b) + r，y = g）。
+//
+//   这个仓库里**没有任何一处真的采样过它**：Vulkan 的 glsl/color_grading.frag
+//   算出了 `_COLORS` 然后把 `texture(...)` 那行注释掉了，DX12 的
+//   hlsl/rp2/color_grading.frag.hlsl 写明 "LUT is bound but unused"。所以采样
+//   序（LUT 在 tonemap 前还是后、在 gamma 前还是后）没有既有实现可抄，是本文件
+//   自己定的：**tonemap → LUT → gamma**，理由见 .cpp 里 SampleColorGradingLut
+//   上方的注释。
+//
+//   视图为空时用一个 1x1 中性 texel 兜底（和 MainCameraRp2Pass::
+//   EnsureFallbackLutTexture 一个思路），这样"没配 LUT"是画面没有分级，而不是
+//   采样到一张空贴图导致整屏黑。
+//
 // 和 AppleSceneBlit 一样：MSL 是写死在 .cpp 里的字符串，只在运行时编译，
 // 构建期看不到语法错，所以冒烟测试里有专门的断言盯着。
 
@@ -27,6 +45,7 @@
 
 class RHI;
 class MainCameraFramebufferResources;
+class RenderResource;
 
 class AppleRp2Chain
 {
@@ -38,7 +57,8 @@ public:
     AppleRp2Chain& operator=(const AppleRp2Chain&) = delete;
 
     /// `framebuffers` 是借用的（归 DesktopRenderPipelineModule 所有），不能为空。
-    bool Initialize(RHI* rhi, MainCameraFramebufferResources* framebuffers);
+    /// `render_resource` 只用来每帧取 LUT 视图，可以是 nullptr（那就走兜底 texel）。
+    bool Initialize(RHI* rhi, MainCameraFramebufferResources* framebuffers, RenderResource* render_resource);
     void Shutdown();
 
     bool IsReady() const { return m_Ready; }
@@ -62,15 +82,28 @@ public:
 
 private:
     void WriteSceneDescriptor(RHIImageView* source_view);
+    void WriteLutDescriptor(RHIImageView* lut_view);
+
+    /// LUT 视图**每帧重取**：关卡热重载会重新 UploadGlobalRenderResource、换掉
+    /// 这张 view，缓存下来就是"换了 LUT 但画面不变"。换掉了才重写描述符。
+    RHIImageView* FindLutView() const;
+    RHIImageView* ResolveLutView();
+    void          EnsureFallbackLutTexture();
 
     RHI* m_Rhi {nullptr};
     MainCameraFramebufferResources* m_Framebuffers {nullptr};
+    RenderResource* m_RenderResource {nullptr};
 
     RHIDescriptorSetLayout* m_DescriptorSetLayout {nullptr};
     RHIPipelineLayout* m_PipelineLayout {nullptr};
     RHIDescriptorSet* m_DescriptorSet {nullptr};
     RHISampler* m_Sampler {nullptr};
     RHIPipeline* m_Pipeline {nullptr};
+
+    // LUT 没加载成功时的 1x1 中性兜底图，以及"上一次写进描述符的是谁"。
+    RHIImage* m_FallbackLutImage {nullptr};
+    RHIImageView* m_FallbackLutView {nullptr};
+    RHIImageView* m_BoundLutView {nullptr};
 
     bool m_Ready {false};
 };

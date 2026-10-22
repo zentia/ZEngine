@@ -207,9 +207,43 @@ void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc leve
         LOG_WARNING(ZRender, "RenderResource: skipping IBL upload (HDR face or BRDF load failed)");
     }
 
-    // color grading
-    std::shared_ptr<TextureData> color_grading_map =
-        LoadTexture(level_resource_desc.m_ColorGradingResourceDesc.m_ColorGradingMap);
+    // color grading（细节见 UploadColorGradingLut）
+    UploadColorGradingLut(rhi, level_resource_desc.m_ColorGradingResourceDesc.m_ColorGradingMap);
+}
+
+void RenderResource::UploadColorGradingLut(RHI* rhi, const eastl::string& color_grading_path)
+{
+    // 这一段以前**没有任何守卫**：配置里没写 color_grading_map 时 LoadTexture
+    // 返回 nullptr，紧接着就 `color_grading_map->m_Width` —— 直接崩；加载失败
+    // （文件不存在 / 解码失败）时同样静默。RenderResourceDx12.cpp 那份 twin 有
+    // empty 检查和失败警告，这份没有 ⇒ Apple 上一旦出问题只能靠"画面颜色不对"
+    // 反推，而 LUT 恰恰是最容易被当成"美术风格"的东西。
+    //
+    // 三个出口都留了日志：没配 / 加载失败是 WARNING（画面照旧，只是没有分级），
+    // 成功是 INFO 并把尺寸打出来 —— 真机上靠这一行确认 LUT 真的到了 GPU，
+    // 以及它是 256x16（条带）还是别的尺寸（条带采样的切片数是从高度推的）。
+    if (color_grading_path.empty())
+    {
+        LOG_WARNING(ZRender,
+                    "RenderResource: no color grading map configured -- "
+                    "the RP2 LUT sample falls back to a neutral texel");
+        return;
+    }
+
+    // `allow_cooked=false`：LUT 是逐 texel 精确的查表，绝不能走 4x4 块压缩的
+    // `.zasset`（BC7 / ASTC）。工程里 `asset/_Generated/Textures/texture/lut/`
+    // 下确实有烤好的产物，不跳过的话拿到的就是一张被压缩过的表 —— 分级结果出现
+    // 色带，从日志到画面都不会报错。
+    std::shared_ptr<TextureData> color_grading_map = LoadTexture(color_grading_path, false, false);
+    if (color_grading_map == nullptr || color_grading_map->m_Pixels == nullptr ||
+        color_grading_map->m_Width == 0 || color_grading_map->m_Height == 0)
+    {
+        LOG_WARNING(ZRender,
+                    "RenderResource: failed to load color grading LUT '{}' -- "
+                    "the RP2 LUT sample falls back to a neutral texel",
+                    color_grading_path.c_str());
+        return;
+    }
 
     // create color grading texture
     rhi->CreateGlobalImage(m_GlobalRenderResource.m_ColorGradingResource.m_ColorGradingLutTextureImage,
@@ -219,6 +253,13 @@ void RenderResource::UploadGlobalRenderResource(RHI* rhi, LevelResourceDesc leve
                            color_grading_map->m_Height,
                            color_grading_map->m_Pixels,
                            color_grading_map->m_Format);
+
+    LOG_INFO(ZRender,
+             "RenderResource: color grading LUT '{}' uploaded ({}x{}, format={})",
+             color_grading_path.c_str(),
+             color_grading_map->m_Width,
+             color_grading_map->m_Height,
+             static_cast<int>(color_grading_map->m_Format));
 }
 
 void RenderResource::UploadGameObjectRenderResource(RHI* rhi,

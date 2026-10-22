@@ -68,7 +68,11 @@ public:
 
     // TODO: data caching
     std::shared_ptr<TextureData> LoadTextureHDR(eastl::string file, int desired_channels = 4);
-    std::shared_ptr<TextureData> LoadTexture(eastl::string file, bool is_srgb = false);
+    /// `allow_cooked=false` 强制走源图解码，跳过 `_Generated/Textures/` 里的压缩
+    /// `.zasset`。**颜色分级 LUT 必须传 false**：BC7/ASTC 是 4x4 块压缩，每一块
+    /// 只有两个端点 —— 查表用的数据被这么一压，分级结果会出现色带和错色，而且
+    /// 从日志到画面都不会有任何报错。
+    std::shared_ptr<TextureData> LoadTexture(eastl::string file, bool is_srgb = false, bool allow_cooked = true);
     RenderMeshData LoadMeshData(const MeshSourceDesc& source, AxisAlignedBox& bounding_box);
     RenderMaterialData LoadMaterialData(const MaterialSourceDesc& source);
     AxisAlignedBox GetCachedBoudingBox(const MeshSourceDesc& source) const;

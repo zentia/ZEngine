@@ -376,15 +376,23 @@ std::shared_ptr<TextureData> RenderResourceBase::LoadTextureHDR(eastl::string fi
     return texture;
 }
 
-std::shared_ptr<TextureData> RenderResourceBase::LoadTexture(eastl::string file, bool is_srgb)
+std::shared_ptr<TextureData> RenderResourceBase::LoadTexture(eastl::string file,
+                                                             bool         is_srgb,
+                                                             bool         allow_cooked)
 {
     // Texture cook (Phase 5): prefer the cooked Texture2D .zasset (compressed +
     // full mip chain) when one exists and the active backend can sample it.
     // Falls through to the legacy stb_image source decode otherwise, so demo
     // projects without cooked variants keep rendering unchanged.
-    if (std::shared_ptr<TextureData> cooked = TryLoadCookedTexture(file))
+    //
+    // `allow_cooked=false` 是给颜色分级 LUT 用的：那是一张逐 texel 精确的查表，
+    // 块压缩会把它毁掉（见 RenderResourceBase.h 的注释）。
+    if (allow_cooked)
     {
-        return cooked;
+        if (std::shared_ptr<TextureData> cooked = TryLoadCookedTexture(file))
+        {
+            return cooked;
+        }
     }
 
     std::shared_ptr<TextureData> texture = std::make_shared<TextureData>();
