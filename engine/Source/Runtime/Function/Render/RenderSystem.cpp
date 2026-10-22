@@ -514,7 +514,10 @@ GuidAllocator<MeshSourceDesc>& RenderSystem::GetMeshAssetIdAllocator()
     static GuidAllocator<MeshSourceDesc> allocator;
     return allocator;
 }
-void RenderSystem::ClearForLevelReloading() {}
+// ClearForLevelReloading 不再有 Apple 专属的空桩：它的实现现在是平台无关的一份
+// （文件末尾），Apple 上也会真正清空渲染场景 —— 以前 PIE 停止 / 编辑器重载场景时
+// Apple 上什么都不清（实体残留 + instance id 分配器只涨不回 + 交换数据里留着
+// 已销毁对象的 desc）。
 // ResubmitActiveLevelRenderers 不再有 Apple 专属的空桩：它的实现现在是平台无关
 // 的一份（文件末尾），Apple 上也会真正跑起来 —— 顺带把全局资源上传排上。
 void RenderSystem::SyncGameCameraFromMainCamera() {}
@@ -1346,32 +1349,8 @@ GuidAllocator<MeshSourceDesc>& RenderSystem::GetMeshAssetIdAllocator()
     return m_RenderScene->GetMeshAssetIdAllocator();
 }
 
-void RenderSystem::ClearForLevelReloading()
-{
-    m_RenderScene->ClearForLevelReloading();
-
-    // 交换数据里还压着的 GameObjectDesc 必须一起丢弃。ProcessSwapData 除了
-    // 消费 render buffer，还会直接读游戏线程的 logic buffer（见其中
-    // "apply mesh deletes/upserts from logic here" 那段），把那里的 desc 直接
-    // 拷出来做 UpsertGameObject / DeleteEntityByGObjectID。这些 desc 持有的是
-    // Play World 对象的引用，而调用方在清完之后马上就会卸载关卡 —— 于是
-    // 渲染线程拿到的就是已销毁对象（ProcessSwapData 里的 0xc0000005）。
-    // ClearForLevelReloading 只在即将丢弃关卡数据时调用（PIE 停止、编辑器
-    // 重载场景），此时两个 buffer 里的待处理项都已无意义，直接清掉。
-    // 交换数据里还压着的 GameObjectDesc 必须一起丢弃。ProcessSwapData 除了
-    // 消费 render buffer，还会直接读游戏线程的 logic buffer（见其中
-    // "apply mesh deletes/upserts from logic here" 那段），把那里的 desc 直接
-    // 拷出来做 UpsertGameObject / DeleteEntityByGObjectID。这些 desc 持有的是
-    // Play World 对象的引用，而调用方清完之后马上就会卸载关卡 —— 于是渲染
-    // 线程拿到的就是已销毁对象（ProcessSwapData 里的 0xc0000005）。
-    // ClearForLevelReloading 只在即将丢弃关卡数据时调用（PIE 停止、编辑器
-    // 重载场景），此时两个 buffer 里的待处理项都已无意义，直接清掉。
-    m_SwapContext.ResetGameObjectResourceSwapData();
-    m_SwapContext.ResetGameObjectToDelete();
-    m_SwapContext.ResetLogicGameObjectSwapData();
-}
-
-// ResubmitActiveLevelRenderers 搬到文件末尾的平台无关段了（Apple 也要跑）。
+// ResubmitActiveLevelRenderers 与 ClearForLevelReloading 都搬到文件末尾的平台无关
+// 段了（Apple 也要跑）。
 
 void RenderSystem::InitializeUIRenderBackend(WindowUI* window_ui)
 {
@@ -1649,6 +1628,45 @@ void RenderSystem::RequestGlobalResourceUpload()
              "RequestGlobalResourceUpload: queued global resource upload (brdf={}, lut={})",
              desc.m_IblResourceDesc.m_BrdfMap.c_str(),
              desc.m_ColorGradingResourceDesc.m_ColorGradingMap.c_str());
+}
+
+// ===========================================================================
+// 丢弃关卡数据**之前**的清理：清空渲染场景 + 丢掉交换数据里还压着的 desc。
+//
+// 这份以前只存在于 `#else`（非 Apple）分支，Apple 上是**空桩**。那时候 Apple 上
+// 根本没有渲染实体（Apple 的 ProcessSwapData 曾经也是空体），空桩没有代价；场景
+// 管线打通之后它就成了洞：
+//   - `m_RenderEntities` / `m_MeshObjectIdMap` 从不清空 ⇒ 旧关卡的实体残留；
+//   - `m_InstanceIdAllocator` 从不清空 ⇒ 切一次关卡就涨一截，永不回收；
+//   - 交换数据里还压着的 GameObjectDesc 不清 ⇒ 它们持有的是 Play World 对象的
+//     引用，而调用方（WorldManager::StopPIE）清完马上就卸载关卡 —— 于是之后
+//     ProcessSwapData 拿到的是已销毁的对象。
+//
+// 调用方只在"即将丢弃关卡数据"时调它（PIE 停止、编辑器重载场景），此时两个
+// buffer 里的待处理项都已无意义，直接清掉。Apple 上虽然是单线程、没有跨线程
+// 竞态，但"desc 持有已销毁对象"这一点同样成立。
+// ===========================================================================
+void RenderSystem::ClearForLevelReloading()
+{
+    // 这一条以前在 Apple 上是空桩，什么都不清也不会有任何报错 —— 所以留一条日志，
+    // 让"到底清了没有"在真机上可观测（清掉的实体数是唯一能证伪它的量）。
+    const size_t dropped_entities = (m_RenderScene != nullptr) ? m_RenderScene->m_RenderEntities.size() : 0u;
+
+    if (m_RenderScene != nullptr)
+    {
+        m_RenderScene->ClearForLevelReloading();
+    }
+
+    LOG_INFO(ZRender, "ClearForLevelReloading: dropped {} render entities and reset the GameObject swap data",
+             dropped_entities);
+
+    // ProcessSwapData 除了消费 render buffer，还会直接读游戏线程的 logic buffer
+    // （见其中 "apply mesh deletes/upserts from logic here" 那段），把那里的 desc
+    // 直接拷出来做 UpsertGameObject / DeleteEntityByGObjectID —— 所以 logic 这一侧
+    // 也必须清。
+    m_SwapContext.ResetGameObjectResourceSwapData();
+    m_SwapContext.ResetGameObjectToDelete();
+    m_SwapContext.ResetLogicGameObjectSwapData();
 }
 
 // ===========================================================================

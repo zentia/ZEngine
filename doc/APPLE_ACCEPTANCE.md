@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 181 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14） |
+| `AppleSceneBlitSmokeTest` | 187 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
@@ -599,6 +599,44 @@ AppleRender: frame=1921 ... game_vp=(389,104) 1524x915 game_sc=(389,104) 1524x91
 **验证**：冒烟测试新增 5 条契约盯"门闩必须在早退之前"（176 → 181 checks）。变异：把那批
 清理挪回早退之后 ⇒ 3 条红。（契约自己先踩了一个坑：搜早退时只匹配条件会先命中**注释里**
 引用的同一句，必须带 `if (`。）
+
+### 3.15 关卡清理在 Apple 上是空桩：历史空桩在功能打通之后变成洞
+
+`RenderSystem::ClearForLevelReloading()` 在 Apple 分支里是 `{}`，非 Apple 分支里才是真实现
+（清 `RenderScene` + 丢掉两个 swap buffer 里还压着的 `GameObjectDesc`）。
+
+这是最难发现的一类洞：**它当初是对的**。Apple 上以前根本没有渲染实体（`ProcessSwapData`
+曾经也是空体），清不清都没差别；等场景管线打通之后，它就成了：
+
+- `m_RenderEntities` / `m_MeshObjectIdMap` 从不清 ⇒ 旧关卡实体残留，重载后和新实体并存；
+- `m_InstanceIdAllocator` 从不清 ⇒ 切一次关卡涨一截，永不回收；
+- 交换数据里还压着的 `GameObjectDesc` 不清 ⇒ 它们持有 Play World 对象的引用，而调用方
+  （`WorldManager::EndPlayWorld`）清完**立刻**就 `UnloadLevelByUrl()` —— 之后 `ProcessSwapData`
+  拿到的就是已销毁对象。`WorldManager.cpp` 里那段注释写的正是这个（原先记的是 Windows 上
+  的 `0xc0000005`）。
+
+**改动**：删掉 Apple 空桩，实现搬到文件末尾的平台无关段（和 §3.12 的
+`ResubmitActiveLevelRenderers` 同一处），并补一条 `LOG_INFO` —— 这一条本来完全无声，清掉的
+实体数是唯一能证伪它的量。
+
+**真机验证**（编辑器启动会读 `saved/config/last_scene.txt` 恢复上次场景，这条路径必然经过它）：
+
+```
+19:52:20.291 [ZLevel]  loading level: asset/level/1-1.scene
+19:52:21.546 [ZRender] ClearForLevelReloading: dropped 31 render entities and reset the GameObject swap data
+19:52:21.546 [ZLevel]  unload level: asset/level/1-1.scene
+19:52:21.546 [ZLevel]  loading level: level/1-2.scene
+19:52:21.571 [ZEditor] Restored last scene: level/1-2.scene
+19:53:03.275 [ZRender] AppleRender: frame=1921 entities=30 visible=2 ... blit_ready=1 rp2_tonemapped=1
+```
+
+清掉 31 个（和心跳里的 `entities=31` 对得上），重载后重建回 30 个并继续出画面 —— 不是"清完
+就没了"。重载那一下会让物理的形状重建错误再打一遍（`[ZPhysics] Unsupported Shape`，360 条
+里一半来自启动、一半来自重载），那是既有问题，与本次改动无关。
+
+**验证**：冒烟测试新增 6 条契约（181 → 187 checks）。三次变异各自精确变红：整体回退成空桩
+⇒ 5 条红；只漏掉 logic buffer 的清理 ⇒ 1 条红；去掉 `m_RenderScene` 空指针保护 ⇒ 1 条红。
+（契约自己也踩了坑：函数体不能按固定长度截，加注释就会把窗口撑爆 —— 改成截到 `\n}`。）
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

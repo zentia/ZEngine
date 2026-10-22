@@ -695,6 +695,34 @@ namespace
         const size_t viewport_reset_at = apple_psd.find("ResetSceneViewportSwapData()");
         Check(viewport_reset_at != std::string::npos && viewport_reset_at < early_return_at,
               "the scene viewport drain happens BEFORE the early return (IsReadyToSwap gate)");
+
+        // ---- 关卡卸载的"另一半"：清理 ----
+        //
+        // 关卡重载是两步：先 ClearForLevelReloading（丢弃旧数据），再
+        // ResubmitActiveLevelRenderers（重建）。阶段 49 只补了后一半，前一半在
+        // Apple 上还是空桩 ⇒ 实体残留、instance id 分配器只涨不回、交换数据里
+        // 留着已销毁对象的 desc。这类"功能打通之后历史空桩变成洞"是最难发现的
+        // 一种：它当初是对的，是别的改动把它变成错的。
+        Check(!Contains(sys_source, "void RenderSystem::ClearForLevelReloading() {}"),
+              "RenderSystem::ClearForLevelReloading is no longer an empty Apple stub");
+        Check(CountOccurrences(sys_source, "void RenderSystem::ClearForLevelReloading(") == 1,
+              "there is exactly one ClearForLevelReloading (platform-neutral, so Apple runs it too)");
+        const size_t clear_at = sys_source.find("void RenderSystem::ClearForLevelReloading(");
+        Check(clear_at != std::string::npos, "ClearForLevelReloading is defined");
+        // 只切到函数体的收尾大括号，别写死长度 —— 加注释就会把窗口撑爆。
+        const size_t clear_end = sys_source.find("\n}", clear_at);
+        const std::string clear_body =
+            (clear_end == std::string::npos) ? sys_source.substr(clear_at, 900)
+                                             : sys_source.substr(clear_at, clear_end - clear_at);
+        Check(Contains(clear_body, "m_RenderScene->ClearForLevelReloading()"),
+              "it clears the RENDER SCENE (entities / mesh id map / the instance id allocator)");
+        Check(Contains(clear_body, "m_RenderScene != nullptr"),
+              "it guards the render scene pointer (Apple can reach here before the scene exists)");
+        Check(Contains(clear_body, "ResetGameObjectResourceSwapData()") &&
+                  Contains(clear_body, "ResetGameObjectToDelete()") &&
+                  Contains(clear_body, "ResetLogicGameObjectSwapData()"),
+              "it also drops the still-queued GameObjects from BOTH swap buffers "
+              "(those descs reference objects the caller is about to unload)");
     }
 
     // =======================================================================
