@@ -1300,6 +1300,14 @@ ZEditor -batchmode -suite=SpineCook <hero.json | hero.skel | 目录> [-o <输出
 > **已落地**，§3.5）；v10 = 槽位 setup（chunk 17，**已落地**，§3.6）；
 > v11 = 约束 setup + 执行顺序 + PathAttachment（chunk 18 / 19 / 20，**已落地**，§3.7）。
 > 剩下的**只有约束解算**（S4b）与 GPU 蒙皮上线路 —— 下面"边界怎么定的"这部分不随进度失效。
+>
+> **S4b 进度（2026-10-22）**：解算器 `SpineGpuPoseSolver` 已写出，并搭了**参考实现对拍台**
+> （`Test/SpineGpuRefParityTest`，把 spine-cpp 3.8 编进来逐骨骼比）。
+> 实测 **706 / 781** 个资产逐骨骼全对（2 267 244 次分量比较）。
+> 对拍台抓到的两个 bug：**(a) chunk 20 的 `vertex_offset` / `length_offset` 没用**（已修，
+> 症状是所有 path 约束把骨骼摆到同一个点；资产只有一条 path 时测不出来）；
+> **(b) deform 会改 path 形状从而改骨骼位置**（未修，占剩余 75 个里的 **62** 个）。
+> 详见 `doc/GPU_SPINE_V7_ANIMATION.md` §7.0.6。
 
 v6 及以前只烘焙**绑定姿态**：`SpineGpuAsset` 有 `bone_names` 但 `SpineSourceBone::parent`
 在 Bake 时被丢掉（`SpineGpuImporter.h:78`），也**没有任何动画 chunk**（chunk 只到 9）。

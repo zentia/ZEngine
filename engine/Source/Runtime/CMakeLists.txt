@@ -533,6 +533,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuImportTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuImportTest.cpp")
+# GPU-Spine reference-parity test main carve-out (same rationale). It has its own
+# main() and links the reference spine-cpp; pulling it into ZRuntime would give
+# LNK2005 (duplicate main) and drag third-party headers into the runtime.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuRefParityTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuRefParityTest.cpp")
 # Lumen global-illumination smoke-test main carve-out (same rationale). Built only
 # when ZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST=ON (see
 # Function/Render/Lumen/Test/CMakeLists.txt).

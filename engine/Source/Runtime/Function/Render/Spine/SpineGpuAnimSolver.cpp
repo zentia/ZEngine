@@ -34,18 +34,11 @@ uint32_t GetU32At(const std::vector<uint8_t>& bytes, size_t pos)
            (static_cast<uint32_t>(bytes[pos + 2]) << 16) | (static_cast<uint32_t>(bytes[pos + 3]) << 24);
 }
 
-// `Animation::binarySearch(values, target, step)`（Animation.cpp:84-106）的等价实现。
-// 返回**第一个 time > target 的帧**的 float 下标（相对本时间轴的帧数组起点）。
-//
-// ⚠️ 参考实现的实现细节必须照抄，因为它不是标准的二分：
-//   * `high` 初值是 `count - 2`（不是 count-1）；
-//   * `count == 2` 时直接返回 step（那个 `if (high == 0) return step;`）；
-//   * 返回的是 `(low + 1) * step`，也就是"**后**一帧"，不是前一帧。
-// 抄错任何一条，结果都是"取到相邻一帧"，而不报错。
-//
-// ⚠️ 调用方必须保证 `count >= 2` 且 `frames[0] <= target < frames[count-1]`
-//    （参考实现也是这个前提 —— 1 帧的时间轴走的是"末帧"分支，根本不进这里）。
-uint32_t BinarySearchFrames(const float* frames, uint32_t count, uint32_t step, float target)
+}   // namespace
+
+// ---- 从这里起是导出的（骨骼侧解算 `SpineGpuPoseSolver` 要用同一份实现）----
+// `Animation::binarySearch()` —— 见头文件上的注释。
+uint32_t SpineGpuBinarySearchFrames(const float* frames, uint32_t count, uint32_t step, float target)
 {
     int32_t low = 0;
     int32_t high = static_cast<int32_t>(count) - 2;
@@ -70,6 +63,64 @@ uint32_t BinarySearchFrames(const float* frames, uint32_t count, uint32_t step, 
         }
         current = static_cast<int32_t>(static_cast<uint32_t>(low + high) >> 1);
     }
+}
+
+SpineImportResult SpineGpuCurvePercentAt(const SpineGpuAsset& asset, const SpineGpuTimeline& tl, uint32_t tl_index,
+                                         uint32_t cur, float time, float& percent_out)
+{
+    const uint32_t entries = SpineTimelineEntries(static_cast<SpineTimelineType>(tl.type));
+    if (entries == 0 || cur < entries)
+    {
+        return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴的帧定位结果不自洽");
+    }
+    // `cur` 是**相对本时间轴帧数组起点**的下标（BinarySearchFrames 的口径）。
+    const uint64_t abs_cur = static_cast<uint64_t>(tl.frame_first) + cur;
+    const uint64_t abs_prev = static_cast<uint64_t>(tl.frame_first) + (cur - entries);
+    if (abs_cur >= asset.frames.size() || abs_prev >= asset.frames.size())
+    {
+        return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴的帧区间越界");
+    }
+    const float ft = asset.frames[static_cast<size_t>(abs_cur)];
+    const float pt = asset.frames[static_cast<size_t>(abs_prev)];
+    float percent = (time - pt) / (ft - pt);
+
+    // 段号 = 前一帧的下标（`ColorTimeline.cpp:93` `frame / ENTRIES - 1`）
+    const uint32_t segment = cur / entries - 1u;
+    if (static_cast<size_t>(tl.curve_first) + segment >= asset.curve_types.size())
+    {
+        return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴的曲线段下标越界");
+    }
+    const SpineCurveType curve =
+        static_cast<SpineCurveType>(asset.curve_types[static_cast<size_t>(tl.curve_first) + segment]);
+    const SpineGpuBezier* bez = nullptr;
+    if (curve == SpineCurveType::kBezier)
+    {
+        // bezier 是按段序**紧凑**排的 ⇒ 这一段之前标了 bezier 的段数就是下标。
+        uint32_t nth = 0;
+        for (uint32_t s = 0; s < segment; ++s)
+        {
+            if (asset.curve_types[static_cast<size_t>(tl.curve_first) + s] ==
+                static_cast<uint8_t>(SpineCurveType::kBezier))
+            {
+                ++nth;
+            }
+        }
+        if (nth >= tl.bezier_count)
+        {
+            return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴第 " + std::to_string(segment) +
+                        " 段标了 bezier 但控制点不够");
+        }
+        const size_t bi = static_cast<size_t>(tl.bezier_first) + nth;
+        if (bi >= asset.beziers.size())
+        {
+            return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴的 bezier 下标越界");
+        }
+        bez = &asset.beziers[bi];
+    }
+    percent_out = SpineGpuCurvePercent(curve, bez, percent);
+    SpineImportResult r;
+    r.ok = true;
+    return r;
 }
 
 // bezier 查找表的重建：`CurveTimeline::setCurve()`（:78-105）。
@@ -102,8 +153,6 @@ void BuildBezierTable(const SpineGpuBezier& b, float* xs, float* ys)
         y += dfy;
     }
 }
-
-}   // namespace
 
 float SpineGpuCurvePercent(SpineCurveType type, const SpineGpuBezier* bezier, float percent)
 {
@@ -285,51 +334,16 @@ SpineImportResult SpineGpuSampleSlots(const SpineGpuAsset& asset, uint32_t anim_
             }
             else
             {
-                const uint32_t cur = BinarySearchFrames(frames, tl.frame_count, entries, time);
+                const uint32_t cur = SpineGpuBinarySearchFrames(frames, tl.frame_count, entries, time);
                 const size_t prev = static_cast<size_t>(cur) - entries;
-                const float frame_time = frames[cur];
-                const float prev_time = frames[prev];
-                // ⚠️ 参考实现写的是 `1 - (time - frameTime) / (prevTime - frameTime)`
-                //    （ColorTimeline.cpp:94-95），两个负数相除再被 1 减 ——
-                //    数学上等于 (time - prevTime) / (frameTime - prevTime)，
-                //    但**浮点上不等价**（多一次减法与一次除法）。这里用标准写法，
-                //    与参考实现的差在 ulp 级，对拍按 ulp 容差比。
-                float percent = (time - prev_time) / (frame_time - prev_time);
-
-                // 段号 = 前一帧的下标（ColorTimeline.cpp:93 `frame / ENTRIES - 1`）
-                const uint32_t segment = cur / entries - 1u;
-                if (static_cast<size_t>(tl.curve_first) + segment >= asset.curve_types.size())
+                float percent = 0.0f;
                 {
-                    return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴的曲线段下标越界");
+                    const SpineImportResult cr = SpineGpuCurvePercentAt(asset, tl, tl_index, cur, time, percent);
+                    if (!cr.ok)
+                    {
+                        return cr;
+                    }
                 }
-                const SpineCurveType curve = static_cast<SpineCurveType>(
-                    asset.curve_types[static_cast<size_t>(tl.curve_first) + segment]);
-                const SpineGpuBezier* bez = nullptr;
-                if (curve == SpineCurveType::kBezier)
-                {
-                    // bezier 是按段序**紧凑**排的 ⇒ 这一段之前标了 bezier 的段数就是下标。
-                    uint32_t nth = 0;
-                    for (uint32_t s = 0; s < segment; ++s)
-                    {
-                        if (asset.curve_types[static_cast<size_t>(tl.curve_first) + s] ==
-                            static_cast<uint8_t>(SpineCurveType::kBezier))
-                        {
-                            ++nth;
-                        }
-                    }
-                    if (nth >= tl.bezier_count)
-                    {
-                        return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴第 " +
-                                    std::to_string(segment) + " 段标了 bezier 但控制点不够");
-                    }
-                    const size_t bi = static_cast<size_t>(tl.bezier_first) + nth;
-                    if (bi >= asset.beziers.size())
-                    {
-                        return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴的 bezier 下标越界");
-                    }
-                    bez = &asset.beziers[bi];
-                }
-                percent = SpineGpuCurvePercent(curve, bez, percent);
 
                 r = frames[prev + 1] + (frames[cur + 1] - frames[prev + 1]) * percent;
                 g = frames[prev + 2] + (frames[cur + 2] - frames[prev + 2]) * percent;
@@ -375,7 +389,7 @@ SpineImportResult SpineGpuSampleSlots(const SpineGpuAsset& asset, uint32_t anim_
             if (tl.frame_count != 1u && time < last_time)
             {
                 // `binarySearch(frames, time, 1) - 1`（AttachmentTimeline.cpp:74）
-                frame_index = BinarySearchFrames(frames, tl.frame_count, 1u, time) - 1u;
+                frame_index = SpineGpuBinarySearchFrames(frames, tl.frame_count, 1u, time) - 1u;
             }
             if (frame_index >= tl.payload_count)
             {
@@ -402,7 +416,7 @@ SpineImportResult SpineGpuSampleSlots(const SpineGpuAsset& asset, uint32_t anim_
             const float last_time = frames[tl.frame_count - 1u];
             if (tl.frame_count != 1u && time < last_time)
             {
-                frame_index = BinarySearchFrames(frames, tl.frame_count, 1u, time) - 1u;
+                frame_index = SpineGpuBinarySearchFrames(frames, tl.frame_count, 1u, time) - 1u;
             }
 
             // 载荷是**变长**的（每帧 n 不同）⇒ 必须从头走到第 frame_index 帧。

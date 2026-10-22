@@ -4,7 +4,8 @@
   边界由 OSGame 实测资产反推（不是拍脑袋），字段已定、出处已核对。
   已落地：影响流（v7）、骨骼树（v8）、动画（v9）、槽位 setup（v10）、
   **约束 setup / 执行顺序 / PathAttachment（v11）**，见 §7.0 / 7.0.1 / 7.0.2 / 7.0.3 /
-  7.0.4 / **7.0.5**。未落地：约束解算（S4b）、deform（S6）、多轨混合（S5）、GPU 蒙皮上线路。
+  7.0.4 / **7.0.5**。未落地：**约束解算（S4b，解算器已写出、706/781 对拍通过，见 §7.0.6）**、
+  deform（S6）、多轨混合（S5）、GPU 蒙皮上线路。
 - **决策**：A2（2026-10-22 拍板）—— *骨骼树 + 动画烘焙进容器 → v7；解算器自己写，仍在 CPU*。
   与规格 §0 一致：解算永远不上 GPU（`AnimationState::update` + `Skeleton::updateWorldTransform`
   是有序串行遍历 + 迭代求解器）。
@@ -778,6 +779,60 @@ rotate **tangent 99.10%** / chainScale 0.90% ⇒ 固定值模式几乎没用到�
 3. 按 chunk 19 遍历（含复位表），而不是自己重排。
 4. 对拍：`build/spine_ref_probe` 编出的 3.8 `SpineReference.lib` 与 `/i/spine-runtimes`
    的 3.7.83，在带约束的那 481 个资产子集上逐骨骼世界变换比。
+
+---
+
+### 7.0.6 S4b 在途（2026-10-22）：解算器已写出 + 参考实现对拍台已通
+
+**代码**：`SpineGpuPoseSolver.h/.cpp`（新增）导出 `SpineGpuSamplePose(asset, anim, time, out)`，
+一次调用给出该帧每根骨骼的 `(a,b,c,d,worldX,worldY)`。
+`SpineGpuAnimSolver` 里的 `SpineGpuBinarySearchFrames` / `SpineGpuCurvePercentAt`
+**提成了导出符号**，让槽位解算与骨骼解算共用**同一份**帧定位实现（否则"两边各写一遍
+二分查找"迟早会漂）。
+
+执行顺序（照 `Animation::apply` + `Skeleton::updateWorldTransform`）：
+骨骼复位到 setup → **先采样槽位** → 骨骼时间轴 → 复位表 → 按 chunk 19 遍历。
+⚠️ 槽位必须在骨骼**之前**：`PathConstraint::update()` 读的是
+`_target->getAttachment()`（PathConstraint.cpp:77），而 attachment 时间轴会改它。
+
+**对拍台**：`Test/SpineGpuRefParityTest.cpp` —— 把 OSGame 引擎里带的 spine-cpp **3.8**
+（`G:/OSGame/unity-engine-source/Modules/Spine/spine-cpp`）编成 `SpineReference.lib`
+（排除 `Atlas.cpp` / `AtlasAttachmentLoader.cpp`：前者吃 Unity 的 baselib 头，
+而 `BaselibPlatformSpecificEnvironment.h` 在引擎里**根本不存在**；代价是要给
+`AtlasAttachmentLoader` 补一份"永不调用"的桩，以及补 spine-cpp 留白给宿主的
+`getDefaultExtension()`），然后逐资产 × 逐动画 × 5 个时间点 × 每根骨骼比 6 个分量。
+参考路径用空 `AttachmentLoader`（只比骨骼，不需要图集）。
+
+**为什么必须有这一条**：IK / transform / path 是**迭代求解器**，期望值**手算不出来**。
+夹具里写死期望值只会把实现的行为抄回给自己 —— 正是 §12「期望值手算，不从实现里抄回去」
+要防的循环论证。唯一能真正钉住转录错误的是**把参考实现跑起来比**。
+
+**实测（810 个 .skel.bytes / .json，781 个烘焙成功）**：
+
+| 指标 | 值 |
+| --- | --- |
+| 逐骨骼比对通过的文件 | **706 / 781** |
+| 动画 × 时间点采样 | 8 957 |
+| 骨骼分量比较次数 | 2 267 244 |
+| 通过部分的最大相对误差 | ~6e-6 |
+
+**对拍台立刻抓到的两个 bug**（都是"静默"型，靠夹具永远测不出来）：
+
+1. **chunk 20 的池偏移没用**（已修）。`PathComputeWorldVertices` /
+   `PathComputeWorldPositions` 直接用 `verts[i]` / `lengths[i]`，漏掉了
+   `path_attachment.vertex_offset` / `length_offset`。chunk 20 的顶点池与 lengths 池是
+   **所有 path 附件共用**的（`SpineGpuImporter.cpp:5244/5247`），偏移单位是 **f32 下标**。
+   漏掉它 ⇒ 每条 path 都读第 0 条曲线的控制点 ⇒ 所有 path 约束把骨骼摆到**同一个点**。
+   ⚠️ 这正是"偏移为 0 的那次测不出来"的老坑：资产只有一条 path 时完全正确。
+2. **deform 会改 path 的形状，进而改骨骼位置**（**未修，占 62 / 75**）。
+   `VertexAttachment::computeWorldVertices()` 在 **rigid** 分支里会
+   **优先用槽位的 deform 数组整体替换顶点**（VertexAttachment.cpp:68-70），
+   而我们目前**跳过** deform 时间轴（理由是"它只影响顶点、在 GPU 上做"）。
+   对普通 mesh 这个理由成立；**对 path 附件不成立** —— deform 改的是约束的**输入**，
+   骨骼位置会跟着变。⇒ S4b 必须给"path 约束的目标槽位"在 CPU 上做 deform。
+
+**状态**：解算器可编译、可跑、706/781 对得上；**尚未**接到渲染侧，也**没有**注册进
+ctest（它依赖 `G:/OSGame` 的引擎源码，是加码不是门禁）。
 
 ---
 

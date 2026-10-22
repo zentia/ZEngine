@@ -41,6 +41,38 @@
 //    是 bezier 的前向差分系数，**照抄，化简即错且不报错**。
 float SpineGpuCurvePercent(SpineCurveType type, const SpineGpuBezier* bezier, float percent);
 
+// `Animation::binarySearch(values, target, step)`（Animation.cpp:84-106）的等价实现。
+// 返回**第一个 time > target 的帧**的 float 下标（相对本时间轴的帧数组起点）。
+//
+// ⚠️ 参考实现的实现细节必须照抄，因为它不是标准的二分：
+//   * `high` 初值是 `count - 2`（不是 count-1）；
+//   * `count == 2` 时直接返回 step（那个 `if (high == 0) return step;`）；
+//   * 返回的是 `(low + 1) * step`，也就是"**后**一帧"，不是前一帧。
+// 抄错任何一条，结果都是"取到相邻一帧"，而不报错。
+//
+// ⚠️ 调用方必须保证 `count >= 2` 且 `frames[0] <= target < frames[count-1]`
+//    （参考实现也是这个前提 —— 1 帧的时间轴走的是"末帧"分支，根本不进这里）。
+//
+// 导出而不是放在匿名 namespace 里：骨骼侧解算（`SpineGpuPoseSolver`）要用**同一份**
+// 实现 —— 两份实现只要有一处写反，表现只是"姿势偏一点"。
+uint32_t SpineGpuBinarySearchFrames(const float* frames, uint32_t count, uint32_t step, float target);
+
+// 求"第 `cur` 帧"那一段的插值进度（`cur` = `SpineGpuBinarySearchFrames` 的返回）。
+//
+// 一次做完三件事，因为它们必须成套：
+//   1. `percent = (time - prevTime) / (frameTime - prevTime)`
+//   2. 段号 = `cur / entries - 1`（`ColorTimeline.cpp:93` 的 `frame / ENTRIES - 1`）
+//   3. 过曲线（`SpineGpuCurvePercent`），bezier 的控制点按"本时间轴里排在第几个
+//      bezier 段"取 —— 容器存的是**紧凑**数组，不是按段号索引。
+//
+// ⚠️ 参考实现写的是 `1 - (time - frameTime) / (prevTime - frameTime)`
+//    （两个负数相除再被 1 减）。数学上等价，**浮点上不等价**（多一次减法与一次除法）。
+//    这里用标准写法，与参考实现的差在 ulp 级，对拍按 ulp 容差比。
+//
+// `tl_index` 只用来写错误信息。
+SpineImportResult SpineGpuCurvePercentAt(const SpineGpuAsset& asset, const SpineGpuTimeline& tl, uint32_t tl_index,
+                                         uint32_t cur, float time, float& percent_out);
+
 // 一个槽位在某一时刻的解算结果。
 struct SpineGpuSlotSample
 {
