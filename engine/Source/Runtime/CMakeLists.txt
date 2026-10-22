@@ -156,14 +156,33 @@ if(ANDROID OR Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
 elseif(APPLE)
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Dd][Xx]12/.*\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Vv]ulkan/.*\\.cpp$")
-    list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Pp]asses/.*\\.cpp$")
+    # Passes/ 里只有一部分是平台相关的，别整目录排除。
+    #
+    # 整目录排除的代价是：MainCameraRp1Pass（GBuffer + 延迟光照）、
+    # MainCameraFramebufferResources、ShadowPassShared 这些**完全平台无关**的 TU 在
+    # Apple 上一次都不会被编译 —— 改错一行、少包含一个头、拼错一个成员，本机永远
+    # 发现不了，只能等 Windows CI。Metal RHI 已内置 SPIR-V -> MSL（SPIRV-Cross），
+    # shader 也不是障碍：这些 pass 用的就是同一份 SPIR-V blob。
+    #
+    # 下面只排除真正拉 Vulkan / DX12 头的文件（逐个用 Apple 的真实编译参数验过）：
+    #   MainCameraPass / ColorGradingPass / CombineUIPass / FXAAPass / ParticlePass /
+    #   PickPass  -> include VulkanRHI.h
+    #   DX12MainCameraPass / MainCameraRp2Pass / BindlessTonemapPass -> d3d12 / DX12RHI.h
+    # 留下的都是干净的：MainCameraRp1Pass / MainCameraFramebufferResources /
+    # MainCameraPassShaderCommon / ShadowPassShared / DirectionalLightPass /
+    # PointLightPass / UIPass。
+    # 注意 MainCameraPass\\.cpp$ 不会误伤 MainCameraRp1Pass.cpp /
+    # MainCameraFramebufferResources.cpp / MainCameraPassShaderCommon.cpp。
+    set(ZENGINE_APPLE_EXCLUDED_PASSES
+        "(^|.*/)Function/Render/Passes/(DX12.*|MainCameraRp2Pass|BindlessTonemapPass|MainCameraPass|ColorGradingPass|CombineUIPass|FXAAPass|ParticlePass|PickPass)\\.cpp$")
+    list(FILTER SOURCE_FILES EXCLUDE REGEX "${ZENGINE_APPLE_EXCLUDED_PASSES}")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Dd]ebug[Dd]raw/DebugDrawBuffer\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Dd][Xx]12/.*\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Ii]nterface/[Vv]ulkan/.*\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabDx12.*\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/ShaderLab/ShaderLabDx12.*\\.cpp$")
-    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Passes/.*\\.cpp$")
+    list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "${ZENGINE_APPLE_EXCLUDED_PASSES}")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Dd]ebug[Dd]raw/DebugDrawBuffer\\.cpp$")
     list(REMOVE_ITEM SOURCE_FILES
