@@ -1409,6 +1409,7 @@ spine.status
 # 多轨（S5，语义 = spine::AnimationState，见 GPU_SPINE_V7_ANIMATION.md §7.0.7）：
 spine.play <动画> [track] [loop] / spine.queue <动画> [track] [delay] [loop] / spine.empty [track] [mix]
 spine.mix <秒> / spine.speed <倍率> / spine.alpha <track> <alpha>
+spine.tintblack <0|1>   # 双色（= SpineSettings::tintBlack），默认 0，跨资产保留
 # 启动即加载：ZEditor ... --rhi vulkan --cvar "spine.load G:/.../K_X_Spine.skel.bytes 1"
 ```
 
@@ -1453,7 +1454,7 @@ setup 姿势的包围盒自动居中、占视口 80%。
   weighted 的误差来自**容器里权重是 u8 量化的**（与 deform 无关，两格同量级）；
   把 deform 偏移错一个顶点，这两格会变成 9724 / 402（门槛已接进 verdict）。
 
-**仍然不做**（不是忘了）：DX12 / Metal；多实例；tint black；非 default 皮肤。
+**仍然不做**（不是忘了）：DX12 / Metal；多实例；非 default 皮肤。（tint black 已接，见下面"tint black"。）
 
 #### v15：运行时裁剪（2026-10-23）
 
@@ -1487,6 +1488,30 @@ CPU 裁剪时按 {3,0,1,2} 重排（不裁时两条对角线画出来一样，�
   每个角错一位 ⇒ **贴图转 90°**。修后 13 028 次角/UV 配对全对。
 * 旋转图集上的 mesh：`textureHeight = regionWidth / (v2 - v)` 写成了 `regionHeight`（注释对、代码反），
   宽高不等的旋转 region UV 拉伸。修前前 120 个资产 40% 的 mesh 采样对不上，修后全量 438 302 次 0 不一致。
+#### tint black（双色，2026-10-23）
+
+容器格式**不变**（暗色数据 S3 起就在 chunk 17 + TwoColor 时间轴里，S5 起逐槽位与参考对拍）。只接渲染：
+
+* 参考：网格生成 `SpineMesh.h:202-205` 在 `tintBlack` 打开时给每个顶点 `uv2 = (dark.r, dark.g)`、
+  `uv3 = (dark.b, 1)`，取槽位**当前** `getDarkColor()`（不看 `hasDarkColor`）；片元按
+  `Spine-SkeletonGraphic-TintBlack.shader`：`out = tex·vc + ((1 - tex.rgb)·(_Black + dark)·tex.a·_Color.a·vc.a, 0)`。
+* 我们：绘制项 48 B 里原来的 `reserved[3]` 改成 `float dark_r/g/b`，flags **bit4** = 带暗色项；
+  `_Color` / `_Black` 取材质默认 1 / 0。加色槽位（PMA 顶点色 alpha = 0 ⇒ 项恒 0）与暗色全 0 的槽位不置位。
+  CPU 侧规则与片元的 CPU 版都在 `SpineGpuTintBlack.h`，`SpineGpuImportTest` 有 7 条手算断言。
+* **暗色不截断**：参考走 float UV 通道；TwoColor 在首帧之前的符号 bug 会给出负暗色（S5 已记），照样传。
+  OSGame 实测这条路径 0 次（见下）。
+* **默认关**，由 `spine.tintblack 1` 打开。原因是 OSGame 线上**没有**逐槽位暗色：
+  - 工程里所有 `tintBlack` 序列化值都是 0（prefab / 场景 / asset 共 3012 处）；
+  - 这个引擎分支的 `MeshGenerator::FillVertexData()`（`SpineMesh.cpp:131-143`）只上传
+    位置 / uv0 / 颜色，**`uv2` / `uv3` 算了但从不上传**；
+  - 主力 shader `UI_SpecialCard_Spine` 只用材质常量 `_Black`，不读顶点暗色。
+
+  打开后的画面 = 标准 spine-unity 的 TintBlack 效果（即"如果 OSGame 修好 uv2/uv3 上传"）。
+
+覆盖面（S5 对拍段统计，781 资产 × 2 段随机脚本 × 150 帧）：可画槽位暗色非 0 共 **9 234** 次，负分量 **0** 次；
+最多的是 `CardHero/Spine/ZhuBaJie/ZhuBaJie_ys/K_ZhuBaJie_Spine.skel.bytes`（4 777 次，单个槽位）。
+编辑器实跑（Vulkan + 验证层）：该资产打开 tint black 后每帧 1 / ~120 项带暗色项，无验证层报错。
+
 可见集解析实测：OSGame 全量第 0 个动画 t=0 时挂着附件的槽位 29 785 个能找到绘制项，
 689 个找不到 —— 这 689 个槽位在 skin 0 下**一个可画项都没有**（"槽位里有别的可画项、
 却没有这个名字"的是 **0** 个），即挂的是裁剪 / point / bounding box / path 这类不画的附件。

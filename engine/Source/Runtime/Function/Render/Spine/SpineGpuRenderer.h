@@ -18,7 +18,9 @@
 //     rigid 整体替换 bindPos、weighted 逐影响加偏移，共享 VB 不动；
 //   * 裁剪（v15）：每帧按当前绘制顺序跑参考实现的作用域状态机（SpineGpuClipper），作用域内的项
 //     在 CPU 上蒙皮 + `clipTriangles`，结果上传到 b8 + 每帧动态索引缓冲；作用域外照旧 GPU 蒙皮；
-//   * tint black（暗色）未接：只用槽位色。
+//   * tint black（双色）：`spine.tintblack 1` 打开（= SpineSettings::tintBlack，**默认关**，与 OSGame 线上一致）；
+//     片元按 spine-unity TintBlack shader 加 `(1 - tex.rgb) · dark · tex.a · vc.a`，暗色 float 不截断
+//     （SpineGpuTintBlack.h）。
 // =====================================================================
 
 #include <cstdint>
@@ -48,6 +50,9 @@ public:
     void RequestDefaultMix(float seconds);   // AnimationStateData::defaultMix（跨资产保留，初值 0.2）
     void RequestTimeScale(float scale);      // AnimationState::timeScale
     void RequestTrackAlpha(int track, float alpha);
+    // tint black（双色）开关 = SpineSettings::tintBlack。默认关（OSGame 线上全关，见 SpineGpuTintBlack.h）。
+    // 立即生效（下一次 Draw），不走动画命令队列；跨资产保留。
+    void RequestTintBlack(bool enabled);
 
     // 渲染线程：在 `render_pass` 的 `subpass` 里、`viewport` 范围内画当前实例。
     // 调用方负责已 begin 了该 render pass、并处在该 subpass。

@@ -193,6 +193,19 @@ namespace
         return true;
     }
 
+    bool CmdSpineTintBlack(const std::vector<std::string>& args)
+    {
+        int on = 0;
+        if (args.size() != 1 || !ParseIntArg(args[0], on) || on > 1)
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.tintblack <0|1>  (SkeletonGraphic tintBlack; default 0 like OSGame)");
+            return false;
+        }
+        SpineGpuRenderer::Get().RequestTintBlack(on != 0);
+        LOG_INFO(ZConsole, "spine.tintblack: {}", on != 0 ? "on" : "off");
+        return true;
+    }
+
     bool CmdSpineAlpha(const std::vector<std::string>& args)
     {
         int track = 0;
@@ -296,6 +309,8 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("spine.mix", "Default GPU-Spine crossfade duration. Usage: spine.mix <seconds>", CmdSpineMix);
     console.RegisterCommand("spine.speed", "GPU-Spine AnimationState time scale. Usage: spine.speed <scale>",
                             CmdSpineSpeed);
+    console.RegisterCommand("spine.tintblack",
+                            "GPU-Spine tint black (two-color slots). Usage: spine.tintblack <0|1>", CmdSpineTintBlack);
     console.RegisterCommand("spine.alpha", "Alpha of a GPU-Spine track's current entry. Usage: spine.alpha <track> <alpha>",
                             CmdSpineAlpha);
     console.RegisterCommand("umg.demo", "Toggle the UMG demo UserWidget. Usage: umg.demo [show|hide|toggle]", CmdUmgDemo);

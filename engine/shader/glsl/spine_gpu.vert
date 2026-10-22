@@ -43,12 +43,12 @@ struct SpineDraw
     uint inst_index;      // 进 b6
     uint tint;            // RGBA8 直 alpha（槽位色 × 骨架色）
     uint flags;           // bit0：贴图是直 alpha ⇒ 片元里预乘；bit1：输出 alpha = 0（加色）；bit2：有 deform（b7）；
-                          // bit3：CPU 裁剪过的顶点（b8，见文件头）
+                          // bit3：CPU 裁剪过的顶点（b8，见文件头）；bit4：tint black（只有片元读）
     uint weighted_base;   // weighted 段在 b0 里的起点（u32 下标）
     uint deform_base;     // bit2：b7 的寻址偏置；bit3：b8 里的起点（顶点）
-    uint reserved0;
-    uint reserved1;
-    uint reserved2;
+    float dark_r;         // bit4：槽位暗色（float，不截断 —— 见 spine_gpu.frag）
+    float dark_g;
+    float dark_b;
 };
 layout(set = 0, binding = 5) readonly buffer Draws { SpineDraw draws[]; };
 

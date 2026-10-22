@@ -4,6 +4,7 @@
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
+#include "Runtime/Function/Render/Spine/SpineGpuTintBlack.h"
 #include "Runtime/UI/Render/UIGpuResources.h"
 #include "core/Log/LogSystem.h"
 
@@ -40,7 +41,7 @@ namespace
         uint32_t flags;
         uint32_t weighted_base;
         uint32_t deform_base;   // bit2：b7 的回绕偏置；bit3：b8（CPU 裁剪顶点）里的起点（见 spine_gpu.vert）
-        uint32_t reserved[3];
+        float dark[3];          // bit4：槽位暗色 rgb（float，不截断；见 SpineGpuTintBlack.h）
     };
     static_assert(sizeof(GpuDraw) == 48, "spine_gpu.vert SpineDraw is 12 x u32 (std430)");
 
@@ -56,6 +57,22 @@ namespace
     constexpr uint32_t kDrawFlagAdditive = 2u;
     constexpr uint32_t kDrawFlagDeform = 4u;
     constexpr uint32_t kDrawFlagCpuVerts = 8u;   // v15：CPU 裁剪过的项，顶点取 b8
+    constexpr uint32_t kDrawFlagTintBlack = 16u; // tint black：片元加暗色项（spine_gpu.frag）
+
+    void ApplyTintBlack(GpuDraw& g, const SpineGpuSlotSample& slot, bool tint_black_on, bool additive,
+                        uint32_t& counter)
+    {
+        const SpineGpuTintBlackParams tb = SpineGpuMakeTintBlackParams(slot.dark, tint_black_on, additive);
+        if (!tb.enabled)
+        {
+            return;
+        }
+        g.flags |= kDrawFlagTintBlack;
+        g.dark[0] = tb.dark[0];
+        g.dark[1] = tb.dark[1];
+        g.dark[2] = tb.dark[2];
+        ++counter;
+    }
     constexpr uint32_t kSet0Bindings = 9;        // b0..b6 + b7 deform（S6）+ b8 CPU 裁剪顶点（v15）
     constexpr uint32_t kCpuVertBinding = 8;
 
@@ -145,6 +162,11 @@ struct SpineGpuRenderer::Impl
     uint32_t last_deform_floats {0};   // 上一帧上传的 deform float 数
     uint32_t last_clipped_draws {0};   // 上一帧 CPU 裁剪过的项（v15）
     uint32_t last_clip_vertices {0};   // 上一帧裁剪输出的顶点数
+    uint32_t last_tint_black_draws {0};   // 上一帧带暗色项的绘制项数
+    // tint black 开关（= SpineSettings::tintBlack）。默认关：OSGame 线上全部是 0，且引擎分支
+    // 根本不上传 uv2/uv3（见 SpineGpuTintBlack.h）。游戏线程写、渲染线程读，受 mutex 保护。
+    bool tint_black {false};
+    bool tint_black_logged {false};   // 每次加载 / 每次拨开关后只记一行"tint black active"
     std::string track_summary;         // 上一帧的轨道概况（渲染线程写、spine.status 读，受 mutex 保护）
 
     // ---- 管线（与资产无关）----
@@ -1023,6 +1045,14 @@ void SpineGpuRenderer::RequestTimeScale(float scale)
     d.pending_cmds.push_back(std::move(c));
 }
 
+void SpineGpuRenderer::RequestTintBlack(bool enabled)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    d.tint_black = enabled;
+    d.tint_black_logged = false;
+}
+
 void SpineGpuRenderer::RequestTrackAlpha(int track, float alpha)
 {
     Impl& d = impl();
@@ -1055,7 +1085,8 @@ std::string SpineGpuRenderer::Status() const
            " (last frame: " + std::to_string(m_Impl->last_draw_count) + " draw items, " +
            std::to_string(m_Impl->last_deform_draws) + " deformed / " + std::to_string(m_Impl->last_deform_floats) +
            " deform floats, " + std::to_string(m_Impl->last_clipped_draws) + " clipped / " +
-           std::to_string(m_Impl->last_clip_vertices) + " clip vertices" +
+           std::to_string(m_Impl->last_clip_vertices) + " clip vertices, tint black " +
+           (m_Impl->tint_black ? "on: " + std::to_string(m_Impl->last_tint_black_draws) + " dark draws" : std::string("off")) +
            (m_Impl->skip_reason.empty() ? std::string() : "; skipped: " + m_Impl->skip_reason) + ")";
 }
 
@@ -1105,6 +1136,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         const bool ok = d.EnsurePipelines(render_pass, subpass) && d.Load(path, anim, err);
         std::lock_guard<std::mutex> lock(d.mutex);
         d.last_draw_count = 0;
+        d.tint_black_logged = false;
         if (ok)
         {
             const SpineGpuAsset& a = d.loaded->asset;
@@ -1221,6 +1253,12 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     draws.reserve(a.draw_items.size());
     uint32_t deformed_draws = 0;
     uint32_t clipped_draws = 0;
+    uint32_t tint_black_draws = 0;
+    bool tint_black_on = false;
+    {
+        std::lock_guard<std::mutex> lock(d.mutex);
+        tint_black_on = d.tint_black;
+    }
     for (uint32_t s : pose.draw_order)
     {
         if (s >= pose.slot_draw_item.size() || pose.slot_draw_item[s] == SpineGpuPoseResult::kNoDrawItem)
@@ -1244,6 +1282,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
             g.flags = kDrawFlagStraightAlpha | kDrawFlagCpuVerts |
                       (di.blend_mode == SpineBlendMode::kAdditive ? kDrawFlagAdditive : 0u);
             g.deform_base = cd.vertex_first;
+            ApplyTintBlack(g, slot, tint_black_on, di.blend_mode == SpineBlendMode::kAdditive, tint_black_draws);
             draws.push_back(g);
             cmds_out.push_back({item, true, cd.index_first, cd.index_count});
             ++clipped_draws;
@@ -1258,6 +1297,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         g.tint = PackRgba8(slot.color);
         g.flags = kDrawFlagStraightAlpha | (di.blend_mode == SpineBlendMode::kAdditive ? kDrawFlagAdditive : 0u);
         g.weighted_base = a.weighted_segment_offset / 4u;
+        ApplyTintBlack(g, slot, tint_black_on, di.blend_mode == SpineBlendMode::kAdditive, tint_black_draws);
         if (deform_region[item] >= 0)
         {
             // uint 回绕偏置：shader 用段内绝对下标（rigid）/ 全局影响下标（weighted）直接加
@@ -1429,6 +1469,14 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
                  clipped_draws, clip.xy.size() / 2u, clip.indices.size(), clip.clip_starts, clip.clip_pieces);
     }
     d.last_clipped_draws = clipped_draws;
+    if (tint_black_draws > 0 && !d.tint_black_logged)
+    {
+        // 每次加载 / 拨开关后第一次出现暗色项时记一行（动画循环里暗色时有时无，按"0→非 0"记会刷屏）
+        d.tint_black_logged = true;
+        LOG_INFO(ZRender, "SpineGpuRenderer: tint black active: {} of {} draw items carry a dark color",
+                 tint_black_draws, draws.size());
+    }
+    d.last_tint_black_draws = tint_black_draws;
     d.last_clip_vertices = static_cast<uint32_t>(clip.xy.size() / 2u);
 }
 
@@ -1458,6 +1506,7 @@ void SpineGpuRenderer::RequestSetEmptyAnimation(int, float) {}
 void SpineGpuRenderer::RequestDefaultMix(float) {}
 void SpineGpuRenderer::RequestTimeScale(float) {}
 void SpineGpuRenderer::RequestTrackAlpha(int, float) {}
+void SpineGpuRenderer::RequestTintBlack(bool) {}
 void SpineGpuRenderer::Draw(RHI*, RHIRenderPass*, uint32_t, const RHIViewport&) {}
 uint32_t SpineGpuRenderer::LastDrawCount() const { return 0; }
 std::string SpineGpuRenderer::Status() const { return "GPU-Spine rendering is Vulkan-only for now"; }

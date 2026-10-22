@@ -494,6 +494,12 @@ struct S5Stats
     size_t clip_frames = 0;             // 至少开始过一次裁剪的帧
     size_t clip_best_frames = 0;        // 裁剪帧最多的那个资产（编辑器实跑挑它）
     std::string clip_best_asset;
+    // tint black：槽位挂着可画附件（region / mesh）且暗色 rgb 非 0 的次数 = 打开 tintBlack 后
+    // 画面**真的会变**的次数（暗色已与参考逐槽位比过，这里只量覆盖面）。
+    size_t dark_drawn = 0;
+    size_t dark_negative = 0;           // 其中有分量 < 0（TwoColor 首帧前的符号 bug 路径）
+    size_t dark_best = 0;
+    std::string dark_best_asset;
     size_t clip_scope_checks = 0;       // 可画槽位"在不在作用域里"的比较
     size_t clip_core_calls = 0;         // 同输入 clipTriangles 的逐位比较次数
     size_t clip_core_out_vertices = 0;  // 其中输出的顶点数
@@ -699,6 +705,13 @@ std::string S5CompareFrame(const SpineGpuAsset& asset, const SpineGpuRuntimeData
                               ocol[b0 + 2], ocol[b0 + 3], rcol[b0], rcol[b0 + 1], rcol[b0 + 2], rcol[b0 + 3]);
                 return buf;
             }
+        }
+        if (ra != nullptr && (ra->getRTTI().isExactly(spine::RegionAttachment::rtti) ||
+                              ra->getRTTI().isExactly(spine::MeshAttachment::rtti)) &&
+            (rd.r != 0.0f || rd.g != 0.0f || rd.b != 0.0f))
+        {
+            ++s5.dark_drawn;
+            s5.dark_negative += (rd.r < 0.0f || rd.g < 0.0f || rd.b < 0.0f) ? 1u : 0u;
         }
         spine::Vector<float>& rv = r->getAttachmentVertices();
         // 只比 mesh / path / clipping（v15）的 deform：bbox / point 的 deform 时间轴在**烘焙期就跳过**
@@ -1034,6 +1047,7 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
         S5Stats& s;
         size_t f0;
         std::string path;
+        size_t d0;
         ~BestClip()
         {
             if (s.clip_frames - f0 > s.clip_best_frames)
@@ -1041,8 +1055,13 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
                 s.clip_best_frames = s.clip_frames - f0;
                 s.clip_best_asset = path;
             }
+            if (s.dark_drawn - d0 > s.dark_best)
+            {
+                s.dark_best = s.dark_drawn - d0;
+                s.dark_best_asset = path;
+            }
         }
-    } best_clip {s5, clip_frames0, skel_path.string()};
+    } best_clip {s5, clip_frames0, skel_path.string(), s5.dark_drawn};
     const bool collision = RefHasPropertyIdCollision(ref_data);
     if (collision)
     {
@@ -2608,6 +2627,9 @@ int main(int argc, char** argv)
         std::printf("     其中全 rigid（无权重量化）%zu 项：世界坐标最大误差 %.3g，UV 最大误差 %.3g\n", s5.clip_e2e_rigid_items,
                     static_cast<double>(s5.clip_e2e_worst_rigid), static_cast<double>(s5.clip_e2e_worst_rigid_uv));
         std::printf("  └ 裁剪帧最多的资产: %s（%zu 帧）\n", s5.clip_best_asset.c_str(), s5.clip_best_frames);
+        std::printf("tint black 覆盖面     : 可画槽位暗色非 0 共 %zu 次（其中有负分量 %zu 次）\n", s5.dark_drawn,
+                    s5.dark_negative);
+        std::printf("  └ 暗色最多的资产: %s（%zu 次）\n", s5.dark_best_asset.c_str(), s5.dark_best);
         std::printf("分叉的资产           : %zu（撞号资产上的另计 %zu）\n", s5.assets_bad, s5.assets_collision_bad);
         for (const std::string& d : s5.details)
         {

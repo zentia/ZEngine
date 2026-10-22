@@ -14,6 +14,7 @@
 
 #include "Runtime/Function/Render/Spine/SpineGpuAnimSolver.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
+#include "Runtime/Function/Render/Spine/SpineGpuTintBlack.h"
 #include "Runtime/Function/Render/Spine/SpineGpuFormat.h"
 #include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
 
@@ -2399,6 +2400,48 @@ int main(int argc, char** argv)
                   Near(em->track_end, 0.2f),
               "setEmptyAnimation：空动画、mixDuration = trackEnd = 0.2");
         Check(as.SetAnimation(0, 999u, true) == nullptr, "动画下标越界 ⇒ 返回 nullptr（不改状态）");
+        g_prefix.clear();
+    }
+
+    // =================================================================
+    // tint black（双色）的绘制参数 + 片元公式（SpineGpuTintBlack.h ↔ spine_gpu.frag）
+    // 参考：Spine-SkeletonGraphic-TintBlack.shader（_Color = 1、_Black = 0）
+    //   out = tex·vc + ((1 - tex.rgb)·dark·tex.a·vc.a, 0)，tex 预乘、vc = (rgb·a, a)
+    // 数值手算，不调被测公式自己。
+    // =================================================================
+    {
+        g_prefix = "[tint black] ";
+        auto Near = [](float got, float want) { return std::fabs(got - want) < 1e-6f; };
+        const float dark[4] = {0.25f, -0.5f, 1.5f, 0.0f};
+        const float zero[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+        SpineGpuTintBlackParams tb = SpineGpuMakeTintBlackParams(dark, false, false);
+        Check(!tb.enabled, "开关关 ⇒ 不加暗色项（OSGame 默认）");
+        tb = SpineGpuMakeTintBlackParams(dark, true, true);
+        Check(!tb.enabled, "加色槽位 ⇒ 不加暗色项（PMA 顶点色 alpha = 0 ⇒ 项恒为 0）");
+        tb = SpineGpuMakeTintBlackParams(zero, true, false);
+        Check(!tb.enabled, "暗色 rgb 全 0 ⇒ 不加（dark.a 不参与）");
+        tb = SpineGpuMakeTintBlackParams(dark, true, false);
+        Check(tb.enabled && tb.dark[0] == 0.25f && tb.dark[1] == -0.5f && tb.dark[2] == 1.5f,
+              "开 + 普通槽位 ⇒ 暗色 rgb **原样**（负数 / 大于 1 都不截断，参考走 float UV 通道）");
+
+        // tex 直 alpha (0.2, 0.6, 1.0, 0.5) ⇒ 预乘 (0.1, 0.3, 0.5, 0.5)；tint (1, 0.5, 0.25, 0.8)
+        //   基础项 rgb = tex_pm · tint.rgb · tint.a = (0.08, 0.12, 0.1)，a = 0.5·0.8 = 0.4
+        //   暗色项 = (1 - tex_pm.rgb) · dark · tex.a · tint.a = (0.9·0.25, 0.7·(-0.5), 0.5·1.5) · 0.4
+        //          = (0.09, -0.14, 0.3)
+        const float tex[4] = {0.2f, 0.6f, 1.0f, 0.5f};
+        const float tint[4] = {1.0f, 0.5f, 0.25f, 0.8f};
+        float out[4];
+        SpineGpuShadeReference(tex, tint, false, tb, out);
+        Check(Near(out[0], 0.08f + 0.09f) && Near(out[1], 0.12f - 0.14f) && Near(out[2], 0.1f + 0.3f) &&
+                  Near(out[3], 0.4f),
+              "公式：rgb = (0.17, -0.02, 0.4)、a = 0.4（负暗色把 g 压到 0 以下，与参考一致不夹）");
+        SpineGpuShadeReference(tex, tint, false, SpineGpuTintBlackParams {}, out);
+        Check(Near(out[0], 0.08f) && Near(out[1], 0.12f) && Near(out[2], 0.1f) && Near(out[3], 0.4f),
+              "公式：关掉暗色 ⇒ 退化为原来的 tex × 槽位色");
+        // 白像素（tex.rgb = 1）上暗色项为 0：tint black 只染"黑"不染"白"
+        const float white[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+        SpineGpuShadeReference(white, tint, false, tb, out);
+        Check(Near(out[0], 0.8f) && Near(out[1], 0.4f) && Near(out[2], 0.2f), "公式：白像素不受暗色影响");
         g_prefix.clear();
     }
 
