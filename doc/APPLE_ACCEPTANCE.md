@@ -753,7 +753,33 @@ flux 250 / radius 12）。生成脚本见 `.workbuddy/memory/2026-10-22.md`。
 "必须排在 UpdatePerFrameBuffer 之前"抢先匹配到，必须搜调用形式
 `UpdatePerFrameBuffer(m_RenderScene, camera)`。
 
+### 3.19 跟上三槽环：可见节点列表改成写/发布分离后 Apple 侧要换 API
+
+（跟上 `6f33299` "可见节点列表改三槽环"）`RenderScene` 的那组 `m_*PerViewport` 数组
+进了 `VisibleNodeSet` 的私有存储，对外只剩 getter；同时 `SetVisibleNodesReference()`
+被拆成 `BeginVisibleNodeUpdate()`（每帧轮转一次，在任何 `UpdateVisibleObjects` 之前）
++ `PublishVisibleNodes()`（**所有**相机更新完之后才发布）。
+
+Apple 侧跟着改：
+- 心跳的 `m_MainCameraVisibleMeshNodesPerViewport[0]` →
+  `GetMainCameraVisibleMeshNodes(ViewportType::game)`（不改就编译不过）。
+- Tick 里原来在循环**前**调一次 `SetVisibleNodesReference()`，改成循环前
+  `BeginVisibleNodeUpdate()`、循环后 `PublishVisibleNodes()`。Apple 是同线程跑，
+  本来没有那个"RHI 线程还在读旧帧"的竞态，但顺序必须跟非 Apple 一致 —— 否则这里
+  永远写槽 0，环退化成单槽，将来 Apple 一旦拆线程就会立刻踩到空材质。
+
+顺带的观测：改完之后心跳的 `visible` 从 **2 变成 15**（entities=30，相机在 (-5,0,3)）。
+这是因为旧代码"每个相机都调一次 `SetVisibleNodesReference`、只有最后一个相机的结果
+能留下"，Apple 侧同样受影响；三槽环 + 正确的发布时机把它一并修好了。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
+
+- **`NaniteGPUCullingSmokeTest` 在 Apple 上是红的（21 条）**，由 `6f33299` / `7e5d252`
+  带进来，与本次改动无关（已验证：把我的改动撤掉、只留编译修复，它照样红）。
+  失败起点是 `NaniteRenderer::EnsureComputePipeline()` 里
+  `if (m_Rhi->getGraphicsAPI() != GraphicsAPI::Vulkan) return false;` —— 也就是说
+  Nanite 的 GPU 剔除在 Metal 上被这个 Vulkan 判断直接挡掉了，尽管 MetalRHI 本身支持
+  SPIR-V→MSL（`Z_HAS_SPIRV_SHADERS`）。CPU 路径不受影响。修它需要改判据，单独处理。
 
 - **RP2 只有 step 0（显示变换）+ LUT**：FXAA 没做 —— 它要一个只在 `enable_fxaa=true` 时才
   存在的 framebuffer，而 Apple 上这个 flag 目前是 false，写了也是跑不到的死代码。

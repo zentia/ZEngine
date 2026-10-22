@@ -213,7 +213,11 @@ void RenderSystem::Tick(float)
                 ProcessSwapData();
 
                 const auto render_resource = std::static_pointer_cast<RenderResource>(m_RenderResource);
-                m_RenderScene->SetVisibleNodesReference();
+                // 可见节点列表是三槽环（RenderScene::kVisibleNodeSetCount）：先轮转到下一
+                // 槽、填完**所有**相机、最后才发布。Apple 虽然同线程跑（没有那个"RHI 线程
+                // 还在读旧帧"的竞态），但顺序必须跟非 Apple 一致 —— 否则这里永远写槽 0，
+                // 环就退化成单槽，将来 Apple 一旦拆线程就会立刻踩到空材质。
+                m_RenderScene->BeginVisibleNodeUpdate();
 
                 // 点光源（阶段 55）：非 Apple 有两条路会同步点光源 —— TickRenderThread
                 // 和 RenderUpdateSceneCmd::Execute —— Apple 这条精简路径从来没调过
@@ -233,6 +237,7 @@ void RenderSystem::Tick(float)
                     m_RenderResource->UpdatePerFrameBuffer(m_RenderScene, camera);
                     m_RenderScene->UpdateVisibleObjects(render_resource, camera);
                 }
+                m_RenderScene->PublishVisibleNodes();
 
                 m_RenderPipeline->PreparePassData(m_RenderResource);
                 m_ActiveFrameDrawListSlot = 0;
@@ -325,8 +330,11 @@ void RenderSystem::Tick(float)
         if ((s_apple_frame_tick % 120) == 1)
         {
             const size_t entity_count  = m_RenderScene != nullptr ? m_RenderScene->m_RenderEntities.size() : 0u;
+            // 可见节点列表已改三槽环（RenderScene::kVisibleNodeSetCount），那组
+            // m_*PerViewport 数组进了 VisibleNodeSet 的私有存储，只剩这个 getter。
+            // 真机探针证实主相机走的是 game 视口（type 0）。
             const size_t visible_count = m_RenderScene != nullptr
-                                             ? m_RenderScene->m_MainCameraVisibleMeshNodesPerViewport[0].size()
+                                             ? m_RenderScene->GetMainCameraVisibleMeshNodes(ViewportType::game).size()
                                              : 0u;
             const RHIExtent2D extent = m_Rhi != nullptr ? m_Rhi->GetSwapchainInfo().extent : RHIExtent2D {};
             // 视口/裁剪矩形：RP1 的 SetViewportScissor 用完 TryGetRenderSceneViewport
