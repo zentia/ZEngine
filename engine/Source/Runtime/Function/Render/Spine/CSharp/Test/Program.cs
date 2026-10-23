@@ -86,7 +86,7 @@ namespace ZEngine.SpineGpu.Test
 
                 // ---- 基本自洽 ----
                 Check(a.Header.Magic == SpineGpuConstants.Magic, "魔数是 'ZSPG'");
-                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是 14");
+                Check(a.Header.Version == SpineGpuConstants.FormatVersion, "版本是当前版本");
                 // v10：槽位 setup 是 chunk 17，条数必须 = header.slot_count。
                 // "chunk 不存在"本身不报错，少了这等式读端会得到"所有槽位纯白"
                 // —— 而纯白与 setup 白在多数资产上完全看不出区别（坑与 chunk 10 同类）。
@@ -523,9 +523,10 @@ namespace ZEngine.SpineGpu.Test
 
             // 版本改一改 ⇒ 必须明确拒绝，不做静默兼容（规格 §11）
             _prefix = "[负向] ";
-            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v15 是当前版本，
-            //    所以"未来"是 16，而 14 已经变成"旧容器"了（裁剪多边形 12 B，没有名字 / 结束槽位）。
-            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 16), "版本改成 16（未来容器）⇒ 拒绝");
+            // ⚠️ 这里的"未来版本"必须跟着 kFormatVersion 走：v16 是当前版本，
+            //    所以"未来"是 17，而 15 已经变成"旧容器"了（事件不进容器、duration 不算事件）。
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 17), "版本改成 17（未来容器）⇒ 拒绝");
+            Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 15), "版本改成 15（v15 旧容器：用户事件不进容器）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 14), "版本改成 14（v14 旧容器：裁剪多边形 12 B、裁剪 deform 被丢掉）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 13), "版本改成 13（v13 旧容器：绘制项 28 B）⇒ 拒绝");
             Rejects(Mutate(good, SpineGpuOffsets.HdrVersion, 12), "版本改成 12（v12 旧容器：uv_offset 语义不同）⇒ 拒绝");

@@ -508,6 +508,81 @@ eastl::string SpineRenderer::GetSkinName(int32_t index) const
                : eastl::string();
 }
 
+namespace
+{
+    const SpineAnimationEvent* EventAt(const std::vector<SpineAnimationEvent>& events, int32_t index)
+    {
+        return index >= 0 && static_cast<size_t>(index) < events.size() ? &events[static_cast<size_t>(index)] : nullptr;
+    }
+}  // namespace
+
+eastl::string SpineRenderer::GetEventName(int32_t index) const
+{
+    const SpineAnimationEvent* e = EventAt(m_FrameEvents, index);
+    return e != nullptr ? e->name : eastl::string();
+}
+
+int32_t SpineRenderer::GetEventInt(int32_t index) const
+{
+    const SpineAnimationEvent* e = EventAt(m_FrameEvents, index);
+    return e != nullptr ? e->int_value : 0;
+}
+
+float SpineRenderer::GetEventFloat(int32_t index) const
+{
+    const SpineAnimationEvent* e = EventAt(m_FrameEvents, index);
+    return e != nullptr ? e->float_value : 0.0f;
+}
+
+eastl::string SpineRenderer::GetEventString(int32_t index) const
+{
+    const SpineAnimationEvent* e = EventAt(m_FrameEvents, index);
+    return e != nullptr ? e->string_value : eastl::string();
+}
+
+eastl::string SpineRenderer::GetEventAudioPath(int32_t index) const
+{
+    const SpineAnimationEvent* e = EventAt(m_FrameEvents, index);
+    return e != nullptr ? e->audio_path : eastl::string();
+}
+
+float SpineRenderer::GetEventVolume(int32_t index) const
+{
+    const SpineAnimationEvent* e = EventAt(m_FrameEvents, index);
+    return e != nullptr ? e->volume : 1.0f;
+}
+
+float SpineRenderer::GetEventBalance(int32_t index) const
+{
+    const SpineAnimationEvent* e = EventAt(m_FrameEvents, index);
+    return e != nullptr ? e->balance : 0.0f;
+}
+
+float SpineRenderer::GetEventTime(int32_t index) const
+{
+    const SpineAnimationEvent* e = EventAt(m_FrameEvents, index);
+    return e != nullptr ? e->time : 0.0f;
+}
+
+void SpineRenderer::SetEventThreshold(int32_t track, float threshold)
+{
+    const int t = std::max(0, track);
+    Submit([=](uint32_t id) { SpineGpuRenderer::Get().RequestEventThresholdOn(id, t, threshold); });
+}
+
+int32_t SpineRenderer::GetUserEventCount() const
+{
+    return static_cast<int32_t>(GetAssetInfo()->event_names.size());
+}
+
+eastl::string SpineRenderer::GetUserEventName(int32_t index) const
+{
+    const std::shared_ptr<const SpineGpuAssetInfo> info = GetAssetInfo();
+    return index >= 0 && static_cast<size_t>(index) < info->event_names.size()
+               ? eastl::string(info->event_names[static_cast<size_t>(index)].c_str())
+               : eastl::string();
+}
+
 eastl::string SpineRenderer::GetEventType(int32_t index) const
 {
     return index >= 0 && static_cast<size_t>(index) < m_FrameEvents.size() ? m_FrameEvents[static_cast<size_t>(index)].type
@@ -629,6 +704,7 @@ void SpineRenderer::CollectEvents()
         return;
     }
     m_FrameEvents.reserve(scratch.size());
+    std::shared_ptr<const SpineGpuAssetInfo> info;   // 只在有用户事件时才查（按 mtime 缓存，不贵，但多数帧用不到）
     for (const SpineGpuAnimationEvent& ev : scratch)
     {
         SpineAnimationEvent out;
@@ -637,6 +713,27 @@ void SpineRenderer::CollectEvents()
         out.animation = AnimationNameOf(ev.animation);
         out.loop = ev.loop;
         out.track_time = ev.track_time;
+        if (ev.type == SpineGpuEventType::kEvent)
+        {
+            if (!info)
+            {
+                info = GetAssetInfo();
+            }
+            const SpineGpuUserEvent& u = ev.user;
+            const auto pooled = [&](uint32_t i) {
+                return i < info->event_strings.size() ? eastl::string(info->event_strings[i].c_str()) : eastl::string();
+            };
+            out.name = u.event < info->event_names.size() ? eastl::string(info->event_names[u.event].c_str())
+                                                          : eastl::string(("#" + std::to_string(u.event)).c_str());
+            out.audio_path = u.event < info->event_audio.size() ? eastl::string(info->event_audio[u.event].c_str())
+                                                                : eastl::string();
+            out.int_value = u.int_value;
+            out.float_value = u.float_value;
+            out.string_value = pooled(u.string_value);
+            out.volume = u.volume;
+            out.balance = u.balance;
+            out.time = u.time;
+        }
         m_FrameEvents.push_back(std::move(out));
     }
     if (m_EventListener)

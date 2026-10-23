@@ -138,7 +138,18 @@ namespace SpineGpuConstants
     //         （clipStart 里 `computeWorldVertices(slot, ...)` 读槽位的 deform 数组）。
     //         v14 在烘焙期当"不影响姿势"跳过 —— 对骨骼成立，对**画面**不成立：
     //         实测 OSGame 有 7 条 deform 时间轴指向裁剪附件（K_Niumo `shandian1` 等）。
-    constexpr uint32_t kFormatVersion = 15;
+    // * v16 = **用户事件进容器**（2026-10-23）：
+    //       · chunk 23（kChunkEvents）= 事件定义 `SpineGpuEventData`（28 B/条）+ 自带的字符串池；
+    //       · 事件时间轴（type 7）第一次真正进时间轴表：帧 = time（1 float/帧），载荷 = 每帧一条
+    //         `SpineGpuEventKey`（24 B）。
+    //     header / 既有 chunk 布局一个字节都没动，但**语义**变了：动画的 duration 现在把最后一个
+    //     事件的 time 算进去（`SkeletonBinary.cpp:1106` / `SkeletonJson.cpp:1197` 一直是这么算的，
+    //     v15 及以前因为不烘焙事件而少算 ⇒ 事件在动画末尾之后的资产 complete 时机错、不报错）；
+    //     且混合期的 totalAlpha / timelineMode 现在多一条事件时间轴参与（同参考实现）。
+    //     v15 读端读 v16 会把 kEvent 时间轴当"不改状态"跳过（这一半没问题），但 duration 已经变了
+    //     ⇒ 照规矩升版本。字符串池自带在 chunk 23 里（不再往 chunk 1 塞第 10 组：chunk 1 的
+    //     "最后一组靠剩余切分"已经被用掉了，再往前插一组就得再改一次切分规则）。
+    constexpr uint32_t kFormatVersion = 16;
 
     // **id 0 恒为 default 皮肤**。
     // 两个来源都保证这一点：二进制格式的 default skin 就是先读的那一个
@@ -448,8 +459,8 @@ enum SpineGpuFlags : uint32_t
     // 有 deform（FFD）时间轴 ⇒ **被它命中的**绘制项走 CPU fallback（不是整个资产）。
     // per-frame 顶点数据烘不进静态 VB —— 顶点缓冲存的是**绑定姿势**（规格 §7.1）。
     kHasDeform = 1u << 4,
-    // 有事件（event）时间轴。事件**不烘焙**（它不改任何渲染状态，且本工程实测 0 个
-    // 资产用到），但"有却不记"等于静默丢弃 ⇒ 用一位显式说出来。
+    // 有事件（event）时间轴。v16 起事件**进容器**（chunk 23 + type 7 时间轴）；这一位保留，
+    // 让"这个资产会派发用户事件"不用扫时间轴表就能知道。
     kHasEventTimeline = 1u << 5,
 };
 
@@ -494,6 +505,10 @@ enum SpineGpuChunkId : uint32_t
     // （骨骼树 / 时间轴 / 约束 / path 几何），别占用。
     kChunkInfluenceBind = 21,  // float2 × influence_count（8 B/条）；由 influence_offset 索引
     kChunkInfluenceBone = 22,  // SpineInfluenceBone[]（4 B/条）；与 21 **共用同一个条目下标**
+
+    // v16：用户事件定义 + 事件字符串池（布局见 SpineGpuEventChunkHeader）。
+    // 没有事件的资产**不写**这个 chunk（读端看到"不存在" = 0 个事件，与 chunk 18 同一约定）。
+    kChunkEvents = 23,
 };
 
 // ---------------------------------------------------------------------
@@ -738,6 +753,80 @@ inline bool operator==(const SpineGpuBezier& a, const SpineGpuBezier& b)
     return a.cx1 == b.cx1 && a.cy1 == b.cy1 && a.cx2 == b.cx2 && a.cy2 == b.cy2;
 }
 inline bool operator!=(const SpineGpuBezier& a, const SpineGpuBezier& b) { return !(a == b); }
+
+// ---------------------------------------------------------------------
+// 用户事件（chunk 23 + type 7 时间轴载荷，v16）
+// ---------------------------------------------------------------------
+// chunk 23 = SpineGpuEventChunkHeader（16 B）
+//          + event_count  × SpineGpuEventData（28 B）
+//          + string_count × u32（每条字符串在 blob 里的字节偏移）
+//          + blob_size 字节（UTF-8，每条以 '\0' 结尾），整体补齐到 4 B
+// 字符串池**第 0 条恒为空串**：事件的 string / audio 缺省都是空，引用 0 就行，不用哨兵。
+// 字符串按"下标"引用（不是 chunk 1 那种"字节偏移"）—— 池子自带在 chunk 里，读端一次切完。
+//
+// 语义照抄 spine-cpp 3.8：
+//   * EventData（`SkeletonBinary.cpp:327-347` / `SkeletonJson.cpp:673-694`）：name / int / float / string /
+//     audioPath；**只有 audioPath 非空时**才读 volume / balance，否则保持构造函数的 1 / 0；
+//   * Event（时间轴的一帧，`SkeletonBinary.cpp:1084-1103` / `SkeletonJson.cpp:1176-1194`）：int / float /
+//     string 逐帧覆盖（json 缺省取 EventData 的值；二进制 int / float 每帧必有，string 有 freeString 位）；
+//     volume / balance 同样**只在 EventData 带音频时**逐帧读，否则是 Event 构造函数的 1 / 0
+//     （⚠️ 不是 EventData 的 volume —— 参考实现在这里不继承）。
+//     audioPath 不逐帧：`Event::getData().getAudioPath()`。
+struct SpineGpuEventChunkHeader
+{
+    uint32_t event_count = 0;    // @0
+    uint32_t string_count = 0;   // @4  ≥ 1（第 0 条 = 空串）
+    uint32_t blob_size = 0;      // @8  字符串 blob 的字节数（不含补齐）
+    uint32_t reserved = 0;       // @12 写 0
+};
+static_assert(sizeof(SpineGpuEventChunkHeader) == 16, "spec v16: event chunk header is 16 B");
+
+struct SpineGpuEventData
+{
+    uint32_t name = 0;           // @0  字符串池下标（非空：参考实现拒绝空名）
+    int32_t int_value = 0;       // @4
+    float float_value = 0.0f;    // @8
+    uint32_t string_value = 0;   // @12 字符串池下标（0 = 空）
+    uint32_t audio_path = 0;     // @16 字符串池下标（0 = 无音频）
+    float volume = 1.0f;         // @20
+    float balance = 0.0f;        // @24
+};
+static_assert(sizeof(SpineGpuEventData) == 28, "spec v16: event data record is 28 B");
+static_assert(offsetof(SpineGpuEventData, name) == 0, "spec v16: event.name @0");
+static_assert(offsetof(SpineGpuEventData, int_value) == 4, "spec v16: event.int @4");
+static_assert(offsetof(SpineGpuEventData, float_value) == 8, "spec v16: event.float @8");
+static_assert(offsetof(SpineGpuEventData, string_value) == 12, "spec v16: event.string @12");
+static_assert(offsetof(SpineGpuEventData, audio_path) == 16, "spec v16: event.audio @16");
+static_assert(offsetof(SpineGpuEventData, volume) == 20, "spec v16: event.volume @20");
+static_assert(offsetof(SpineGpuEventData, balance) == 24, "spec v16: event.balance @24");
+static_assert(std::is_standard_layout_v<SpineGpuEventData>, "event data record must stay standard-layout");
+
+inline bool operator==(const SpineGpuEventData& a, const SpineGpuEventData& b)
+{
+    return a.name == b.name && a.int_value == b.int_value && a.float_value == b.float_value &&
+           a.string_value == b.string_value && a.audio_path == b.audio_path && a.volume == b.volume &&
+           a.balance == b.balance;
+}
+inline bool operator!=(const SpineGpuEventData& a, const SpineGpuEventData& b) { return !(a == b); }
+
+// 事件时间轴（type 7）的一帧载荷；time 在 chunk 13 里（1 float/帧），这里是其余字段。
+struct SpineGpuEventKey
+{
+    uint32_t event = 0;          // @0  进 chunk 23 的事件定义下标
+    int32_t int_value = 0;       // @4
+    float float_value = 0.0f;    // @8
+    uint32_t string_value = 0;   // @12 字符串池下标
+    float volume = 1.0f;         // @16
+    float balance = 0.0f;        // @20
+};
+static_assert(sizeof(SpineGpuEventKey) == 24, "spec v16: event key payload is 24 B");
+static_assert(offsetof(SpineGpuEventKey, event) == 0, "spec v16: key.event @0");
+static_assert(offsetof(SpineGpuEventKey, int_value) == 4, "spec v16: key.int @4");
+static_assert(offsetof(SpineGpuEventKey, float_value) == 8, "spec v16: key.float @8");
+static_assert(offsetof(SpineGpuEventKey, string_value) == 12, "spec v16: key.string @12");
+static_assert(offsetof(SpineGpuEventKey, volume) == 16, "spec v16: key.volume @16");
+static_assert(offsetof(SpineGpuEventKey, balance) == 20, "spec v16: key.balance @20");
+static_assert(std::is_standard_layout_v<SpineGpuEventKey>, "event key record must stay standard-layout");
 
 // ---------------------------------------------------------------------
 // 槽位 setup（chunk 17，32 B/条）

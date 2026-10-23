@@ -1716,6 +1716,53 @@ SpineImportResult ParseSpineAnimationJson(const JsonValue& anim, const std::stri
         out.timelines.push_back(std::move(tl));
     }
 
+    // ---- events（v16，SkeletonJson.cpp:1172-1198）----
+    if (const JsonValue* events = GetMember(anim, "events"))
+    {
+        if (!events->IsArray())
+        {
+            return fail(anim_name + ".events 不是数组");
+        }
+        if (events->Size() > 0)
+        {
+            SpineSourceTimeline tl;
+            tl.type = SpineTimelineType::kEvent;
+            tl.target = 0;
+            for (const JsonValue& frame : events->GetArray())
+            {
+                const std::string ename = GetString(frame, "name", "");
+                int ei = -1;
+                for (size_t k = 0; k < skel.events.size(); ++k)
+                {
+                    if (skel.events[k].name == ename)
+                    {
+                        ei = static_cast<int>(k);
+                        break;
+                    }
+                }
+                if (ei < 0)
+                {
+                    return fail(anim_name + ".events 引用了不存在的事件 '" + ename + "'（参考实现报 Event not found）");
+                }
+                const SpineSourceEventData& data = skel.events[static_cast<size_t>(ei)];
+                SpineSourceEventKey key;
+                key.event = static_cast<uint32_t>(ei);
+                key.int_value = GetInt(frame, "int", data.int_value);
+                key.float_value = GetFloat(frame, "float", data.float_value);
+                key.string_value = GetString(frame, "string", data.string_value.c_str());
+                // 只有定义带音频（非空）时逐帧读，否则是 Event 构造函数的 1 / 0（不继承定义的值）
+                if (!data.audio_path.empty())
+                {
+                    key.volume = GetFloat(frame, "volume", 1.0f);
+                    key.balance = GetFloat(frame, "balance", 0.0f);
+                }
+                tl.frames.push_back(GetFloat(frame, "time", 0.0f));
+                tl.event_keys.push_back(std::move(key));
+            }
+            out.timelines.push_back(std::move(tl));
+        }
+    }
+
     return Ok();
 }
 
@@ -2549,6 +2596,39 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
         }
     }
 
+    // ---- events（v16，SkeletonJson.cpp:673-694）：必须在 animations 之前（时间轴按名字找定义）----
+    out.events.clear();
+    if (const JsonValue* events = GetMember(doc, "events"))
+    {
+        if (!events->IsObject())
+        {
+            return Fail("json: events 不是对象");
+        }
+        for (auto it = events->MemberBegin(); it != events->MemberEnd(); ++it)
+        {
+            SpineSourceEventData e;
+            e.name = it->name.GetString();
+            if (e.name.empty())
+            {
+                return Fail("json: events 里有空名字的事件");
+            }
+            const JsonValue& v = it->value;
+            e.int_value = GetInt(v, "int", 0);
+            e.float_value = GetFloat(v, "float", 0.0f);
+            e.string_value = GetString(v, "string", "");
+            e.audio_path = GetString(v, "audio", "");
+            // ⚠️ 参考实现是 `if (audioPath)` —— 指针非空。json 里写了 `"audio": ""` 时指针非空、
+            //    串是空的，于是 volume / balance 照读；但事件派发时 `getAudioPath().isEmpty()` 为真。
+            //    这里按"键存在"读，与它一致。
+            if (GetMember(v, "audio") != nullptr)
+            {
+                e.volume = GetFloat(v, "volume", 1.0f);
+                e.balance = GetFloat(v, "balance", 0.0f);
+            }
+            out.events.push_back(std::move(e));
+        }
+    }
+
     // ---- animations：整段烘焙（v9 chunk 11-16）----
     // deform **仍然**要单独收一份引用：它要落到附件上把绘制项标成 kFallback，
     // 而这件事必须等 linked mesh 解引用完才能做（deform 可以指向 linked mesh）。
@@ -2572,9 +2652,7 @@ SpineImportResult ParseSpineSkeletonJson(const char* json, size_t len, const Spi
             {
                 if (ev->IsArray() && ev->Size() > 0)
                 {
-                    // 事件**不烘焙**（它不改任何渲染状态，且本工程实测 0 个资产用到）。
-                    // 但"有却不记"等于静默丢弃 ⇒ 一位 flag 说出来（kHasEventTimeline）。
-                    out.has_event_timeline = true;
+                    out.has_event_timeline = true;   // 时间轴本身在 ParseSpineAnimationJson 里解析（v16）
                 }
             }
 
@@ -2977,7 +3055,6 @@ private:
     SpineSourceSkeleton& out_;
     bool nonessential_ = false;
     std::vector<SpineSourceAttachment> collected_;
-    std::vector<bool> event_has_audio_;
     std::vector<SpineLinkedMeshRef> linked_;
     // deform 时间轴命中的 (皮肤, 槽位, 附件名)。**动画段在最后**，而 deform 可以指向
     // linked mesh ⇒ 只能先收着，等 Run() 里 linked mesh 解完再落。
@@ -4093,25 +4170,26 @@ private:
         {
             return Fail("事件数为负 " + std::to_string(n));
         }
-        event_has_audio_.reserve(static_cast<size_t>(n));
+        out_.events.clear();
+        out_.events.reserve(static_cast<size_t>(n));
         for (int32_t i = 0; i < n; ++i)
         {
-            std::string name;
-            int32_t int_value = 0;
-            float float_value = 0.0f;
-            std::string string_value;
-            std::string audio_path;
-            if (!r_.String(name) || !r_.Varint(false, int_value) || !r_.Float(float_value) ||
-                !r_.String(string_value) || !r_.String(audio_path))
+            SpineSourceEventData e;
+            if (!r_.String(e.name) || !r_.Varint(false, e.int_value) || !r_.Float(e.float_value) ||
+                !r_.String(e.string_value) || !r_.String(e.audio_path))
             {
                 return false;
             }
-            bool has_audio = !audio_path.empty();
-            if (has_audio && !SkipFloats(2))
+            if (e.name.empty())
             {
-                return false;   // volume, balance
+                return Fail("事件 " + std::to_string(i) + " 的名字为空（参考实现报 Event name is null or empty）");
             }
-            event_has_audio_.push_back(has_audio);
+            const bool has_audio = !e.audio_path.empty();
+            if (has_audio && (!r_.Float(e.volume) || !r_.Float(e.balance)))
+            {
+                return false;
+            }
+            out_.events.push_back(std::move(e));
         }
         return true;
     }
@@ -4646,8 +4724,7 @@ private:
         }
 
         // 事件时间轴（:1079-1107）。⚠️ 末尾那 2 个 float 取决于对应事件有没有 audioPath。
-        // 事件**不烘焙**（不改渲染状态，实测 0 个资产用到）但要**记下来**：
-        // 静默丢弃等于"这个资产有事件"这件事从容器里消失了。
+        // v16 起**烘焙**：time 进帧、其余进 SpineSourceEventKey（Bake 再落成 24 B 载荷）。
         int32_t ev_n = 0;
         if (!r_.Varint(true, ev_n))
         {
@@ -4660,34 +4737,51 @@ private:
         if (ev_n > 0)
         {
             out_.has_event_timeline = true;
-        }
-        for (int32_t i = 0; i < ev_n; ++i)
-        {
-            int32_t event_index = 0;
-            int32_t int_value = 0;
-            bool free_string = false;
-            if (!SkipFloats(1) || !r_.Varint(true, event_index) || !r_.Varint(false, int_value) ||
-                !SkipFloats(1) || !r_.Boolean(free_string))
+            SpineSourceTimeline tl;
+            tl.type = SpineTimelineType::kEvent;
+            tl.target = 0;
+            for (int32_t i = 0; i < ev_n; ++i)
             {
-                return false;
-            }
-            if (event_index < 0 || static_cast<size_t>(event_index) >= event_has_audio_.size())
-            {
-                return Fail("事件时间轴引用了不存在的事件下标 " + std::to_string(event_index) + "（事件数是 " +
-                            std::to_string(event_has_audio_.size()) + "）");
-            }
-            if (free_string)
-            {
-                std::string s;
-                if (!r_.String(s))
+                float time = 0.0f;
+                int32_t event_index = 0;
+                SpineSourceEventKey key;
+                bool free_string = false;
+                if (!r_.Float(time) || !r_.Varint(true, event_index))
                 {
                     return false;
                 }
+                if (event_index < 0 || static_cast<size_t>(event_index) >= out_.events.size())
+                {
+                    return Fail("事件时间轴引用了不存在的事件下标 " + std::to_string(event_index) + "（事件数是 " +
+                                std::to_string(out_.events.size()) + "）");
+                }
+                const SpineSourceEventData& data = out_.events[static_cast<size_t>(event_index)];
+                key.event = static_cast<uint32_t>(event_index);
+                if (!r_.Varint(false, key.int_value) || !r_.Float(key.float_value) || !r_.Boolean(free_string))
+                {
+                    return false;
+                }
+                // freeString = 这一帧自带字符串；否则用定义的字符串（:1091-1093）
+                if (free_string)
+                {
+                    if (!r_.String(key.string_value))
+                    {
+                        return false;
+                    }
+                }
+                else
+                {
+                    key.string_value = data.string_value;
+                }
+                // 只有定义带音频时才有逐帧 volume / balance；否则保持 Event 构造函数的 1 / 0
+                if (!data.audio_path.empty() && (!r_.Float(key.volume) || !r_.Float(key.balance)))
+                {
+                    return false;
+                }
+                tl.frames.push_back(time);
+                tl.event_keys.push_back(std::move(key));
             }
-            if (event_has_audio_[static_cast<size_t>(event_index)] && !SkipFloats(2))
-            {
-                return false;
-            }
+            anim.timelines.push_back(std::move(tl));
         }
         return true;
     }
@@ -6254,6 +6348,30 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                 : slot_setup_att_off[i];
         }
 
+        // 用户事件定义（v16，chunk 23）。字符串池第 0 条恒为空串；名字 / 字符串 / 音频去重进池。
+        out.events.clear();
+        out.event_strings.clear();
+        if (!src.events.empty())
+        {
+            out.event_strings.assign(1, std::string());   // 没有事件 ⇒ 池子也空（与"不写 chunk 23"读回来一致）
+        }
+        for (const SpineSourceEventData& e : src.events)
+        {
+            if (e.name.empty())
+            {
+                return Fail("bake: 有一个空名字的用户事件（参考实现拒绝）");
+            }
+            SpineGpuEventData d;
+            d.name = InternString(out.event_strings, e.name);
+            d.int_value = e.int_value;
+            d.float_value = e.float_value;
+            d.string_value = InternString(out.event_strings, e.string_value);
+            d.audio_path = InternString(out.event_strings, e.audio_path);
+            d.volume = e.volume;
+            d.balance = e.balance;
+            out.events.push_back(d);
+        }
+
         // 第二趟：真正建表。
         for (size_t ai = 0; ai < src.animations.size(); ++ai)
         {
@@ -6562,8 +6680,31 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
                     }
                     t.payload_count = frame_count;
                 }
+                else if (tl.type == SpineTimelineType::kEvent)
+                {
+                    if (tl.event_keys.size() != frame_count)
+                    {
+                        return Fail("bake: 动画 '" + sa.name + "' 的 event 时间轴帧数对不上");
+                    }
+                    for (const SpineSourceEventKey& k : tl.event_keys)
+                    {
+                        if (k.event >= out.events.size())
+                        {
+                            return Fail("bake: 动画 '" + sa.name + "' 的 event 时间轴引用了不存在的事件 " +
+                                        std::to_string(k.event));
+                        }
+                        AppendU32To(out.timeline_payload, k.event);
+                        AppendU32To(out.timeline_payload, static_cast<uint32_t>(k.int_value));
+                        AppendF32To(out.timeline_payload, k.float_value);
+                        AppendU32To(out.timeline_payload, InternString(out.event_strings, k.string_value));
+                        AppendF32To(out.timeline_payload, k.volume);
+                        AppendF32To(out.timeline_payload, k.balance);
+                    }
+                    t.payload_count = frame_count;
+                }
 
-                // duration = max(各时间轴最后一帧的 time)，抄参考实现。
+                // duration = max(各时间轴最后一帧的 time)，抄参考实现（v16 起事件时间轴也算在内，
+                // 与 SkeletonBinary.cpp:1106 / SkeletonJson.cpp:1197 一致）。
                 const float last_time = tl.frames[(frame_count - 1u) * entries];
                 if (last_time > rec.duration)
                 {
@@ -7123,6 +7264,54 @@ SpineImportResult WriteSpineGpuContainer(const SpineGpuAsset& asset, std::vector
         chunks.push_back(std::move(c));
     }
 
+    // id=23 events（v16）—— 没有事件就不写（读端"不存在" = 0 个事件）。
+    // 布局：SpineGpuEventChunkHeader + 定义 × 28 B + 字符串偏移 × u32 + blob（补齐到 4 B）。
+    if (!asset.events.empty())
+    {
+        if (asset.event_strings.empty() || !asset.event_strings[0].empty())
+        {
+            return Fail("container: 事件字符串池第 0 条必须是空串");
+        }
+        ChunkBuilder c;
+        c.id = SpineGpuChunkId::kChunkEvents;
+        std::vector<uint8_t> blob;
+        std::vector<uint32_t> string_offsets;
+        for (const std::string& s : asset.event_strings)
+        {
+            string_offsets.push_back(static_cast<uint32_t>(blob.size()));
+            PutCString(blob, s);
+        }
+        PutU32(c.bytes, static_cast<uint32_t>(asset.events.size()));
+        PutU32(c.bytes, static_cast<uint32_t>(asset.event_strings.size()));
+        PutU32(c.bytes, static_cast<uint32_t>(blob.size()));
+        PutU32(c.bytes, 0u);
+        for (const SpineGpuEventData& e : asset.events)
+        {
+            if (e.name >= asset.event_strings.size() || e.string_value >= asset.event_strings.size() ||
+                e.audio_path >= asset.event_strings.size())
+            {
+                return Fail("container: 事件定义的字符串下标越界");
+            }
+            PutU32(c.bytes, e.name);
+            PutU32(c.bytes, static_cast<uint32_t>(e.int_value));
+            PutF32(c.bytes, e.float_value);
+            PutU32(c.bytes, e.string_value);
+            PutU32(c.bytes, e.audio_path);
+            PutF32(c.bytes, e.volume);
+            PutF32(c.bytes, e.balance);
+        }
+        for (uint32_t off : string_offsets)
+        {
+            PutU32(c.bytes, off);
+        }
+        PutBytes(c.bytes, blob.data(), blob.size());
+        while ((c.bytes.size() & 3u) != 0u)
+        {
+            c.bytes.push_back(0u);
+        }
+        chunks.push_back(std::move(c));
+    }
+
     // ---- 布局：header(64) + chunk table(16×n) + payloads ----
     const uint32_t table_bytes = static_cast<uint32_t>(chunks.size()) * SpineGpuConstants::kChunkTableEntrySize;
     uint32_t cursor = SpineGpuConstants::kHeaderSize + table_bytes;
@@ -7468,7 +7657,7 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
             }
             // 变长载荷：逐帧走一遍，顺带校验帧数（走不完 = 载荷被截断）
             if (type == SpineTimelineType::kAttachment || type == SpineTimelineType::kDeform ||
-                type == SpineTimelineType::kDrawOrder)
+                type == SpineTimelineType::kDrawOrder || type == SpineTimelineType::kEvent)
             {
                 uint32_t walked = 0;
                 size_t pos = t.payload_offset;
@@ -7490,6 +7679,15 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
                         {
                             return Fail("container: 第 " + std::to_string(i) + " 条时间轴的载荷被截断");
                         }
+                    }
+                    else if (type == SpineTimelineType::kEvent)
+                    {
+                        // v16：SpineGpuEventKey 定长 24 B；下标的合法性等 chunk 23 读完再查
+                        if (pos + sizeof(SpineGpuEventKey) > payload_size)
+                        {
+                            return Fail("container: 第 " + std::to_string(i) + " 条时间轴（event）的载荷被截断");
+                        }
+                        pos += sizeof(SpineGpuEventKey);
                     }
                     else if (type == SpineTimelineType::kDeform)
                     {
@@ -8552,6 +8750,91 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
                 return Fail("container: 第 " + std::to_string(i) + " 条 deform 时间轴第 " + std::to_string(fr) +
                             " 帧写到 [" + std::to_string(start) + ", " + std::to_string(start + count) +
                             ")，超出裁剪多边形 " + std::to_string(k) + " 的 deform 长度 " + std::to_string(deform_len));
+            }
+        }
+    }
+
+    // ---- 用户事件（chunk 23，v16）----
+    if (const Found* f = find_chunk(SpineGpuChunkId::kChunkEvents))
+    {
+        constexpr uint32_t kHead = sizeof(SpineGpuEventChunkHeader);
+        if (f->size < kHead)
+        {
+            return Fail("container: events 比块头（16 B）还小");
+        }
+        const uint8_t* base = data + f->offset;
+        const uint32_t event_n = GetU32(base);
+        const uint32_t string_n = GetU32(base + 4);
+        const uint32_t blob_n = GetU32(base + 8);
+        if (GetU32(base + 12) != 0u)
+        {
+            return Fail("container: events 块头的保留字段不是 0");
+        }
+        const uint64_t want = static_cast<uint64_t>(kHead) + static_cast<uint64_t>(event_n) * sizeof(SpineGpuEventData) +
+                              static_cast<uint64_t>(string_n) * 4u + blob_n;
+        const uint64_t want_padded = (want + 3u) & ~static_cast<uint64_t>(3u);
+        if (want_padded != f->size || event_n == 0u || string_n == 0u)
+        {
+            return Fail("container: events 大小 " + std::to_string(f->size) + " B 与块头算出来的 " +
+                        std::to_string(want_padded) + " B 不一致（或事件 / 字符串数为 0）");
+        }
+        const uint8_t* rec = base + kHead;
+        const uint8_t* offs = rec + static_cast<size_t>(event_n) * sizeof(SpineGpuEventData);
+        const uint8_t* blob = offs + static_cast<size_t>(string_n) * 4u;
+        out.event_strings.resize(string_n);
+        for (uint32_t i = 0; i < string_n; ++i)
+        {
+            const uint32_t o = GetU32(offs + static_cast<size_t>(i) * 4u);
+            const void* z = o < blob_n ? std::memchr(blob + o, 0, blob_n - o) : nullptr;
+            if (z == nullptr)
+            {
+                return Fail("container: events 第 " + std::to_string(i) + " 条字符串越界或没有结尾的 '\\0'");
+            }
+            out.event_strings[i].assign(reinterpret_cast<const char*>(blob + o),
+                                        static_cast<const uint8_t*>(z) - (blob + o));
+        }
+        if (!out.event_strings[0].empty())
+        {
+            return Fail("container: events 字符串池第 0 条必须是空串");
+        }
+        out.events.resize(event_n);
+        for (uint32_t i = 0; i < event_n; ++i)
+        {
+            const uint8_t* p = rec + static_cast<size_t>(i) * sizeof(SpineGpuEventData);
+            SpineGpuEventData& e = out.events[i];
+            e.name = GetU32(p);
+            e.int_value = static_cast<int32_t>(GetU32(p + 4));
+            e.float_value = GetF32(p + 8);
+            e.string_value = GetU32(p + 12);
+            e.audio_path = GetU32(p + 16);
+            e.volume = GetF32(p + 20);
+            e.balance = GetF32(p + 24);
+            if (e.name >= string_n || e.string_value >= string_n || e.audio_path >= string_n)
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 个事件定义的字符串下标越界");
+            }
+            if (out.event_strings[e.name].empty())
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 个事件定义没有名字");
+            }
+        }
+    }
+    // 事件时间轴的逐帧下标（载荷长度在时间轴校验里已经走过一遍）
+    for (size_t i = 0; i < out.timelines.size(); ++i)
+    {
+        const SpineGpuTimeline& t = out.timelines[i];
+        if (static_cast<SpineTimelineType>(t.type) != SpineTimelineType::kEvent)
+        {
+            continue;
+        }
+        for (uint32_t fr = 0; fr < t.payload_count; ++fr)
+        {
+            const uint8_t* p = out.timeline_payload.data() + t.payload_offset + static_cast<size_t>(fr) * sizeof(SpineGpuEventKey);
+            // 没有 chunk 23 ⇒ events 为空 ⇒ 第一个条件必中（有事件时间轴却没有事件定义 = 坏容器）
+            if (GetU32(p) >= out.events.size() || GetU32(p + 12) >= out.event_strings.size())
+            {
+                return Fail("container: 第 " + std::to_string(i) + " 条 event 时间轴第 " + std::to_string(fr) +
+                            " 帧的事件 / 字符串下标越界（chunk 23 有 " + std::to_string(out.events.size()) + " 个事件）");
             }
         }
     }

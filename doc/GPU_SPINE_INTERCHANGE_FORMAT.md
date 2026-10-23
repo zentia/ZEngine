@@ -916,12 +916,28 @@ Header (64 B)
                                     导入期的静默错：附件重排时 linked mesh 的 `parent_index`
                                     没跟着改写（v13 及以前只在重排前用过它，所以没暴露；
                                     落进 deform_parent 后 OSGame 73 个资产被读端校验抓到）
+                               v15 = 运行时裁剪（§15）：绘制项 @23 的 pad 变 `item_flags`
+                                    （bit0 = region），chunk 9 补 `name_offset` /
+                                    `end_slot`，裁剪附件自己的 deform 进容器（target
+                                    次高位 0x4000）。裁剪作用域改**每帧**按当前绘制
+                                    顺序重算（烘焙期的作用域在动画里不成立）
+                               v16 = 用户事件进容器（§16）：新增 chunk 23（事件定义
+                                    `SpineGpuEventData` 28 B/条 + 自带字符串池）；
+                                    事件时间轴 type 7 第一次真正进 chunk 12，帧载荷
+                                    = `SpineGpuEventKey` 24 B/帧。header 与既有 chunk
+                                    布局**一个字节都没动**，变的是两处语义：
+                                    ① 动画 duration 现在把最后一个事件的 time 算进去
+                                      （v15 及以前不烘事件 ⇒ 少算，complete 时机错）；
+                                    ② 混合期 totalAlpha / timelineMode 多一条事件
+                                      时间轴参与
   0x08  spine_runtime    u32   产生它的 spine-cpp 版本（3.8.xx → 30800）
         ⚠️ 必须记录：3.8 的 _bones 是 u16，4.x 是 int，布局不同
   0x0C  flags            u32   kIndex32 / kHasDrawOrderTimeline / kUsesTintBlack / kHasClipping
                                / kHasDeform（有绘制项因 FFD 走了 CPU fallback，见 §7.1）
-                               / kHasEventTimeline（v9：有事件时间轴。事件**不烘焙**，
-                                 但"有却不记"等于静默丢弃 ⇒ 用一位显式说出来）
+                               / kHasEventTimeline（v9：有事件时间轴。v9~v15 事件
+                                 **不烘焙**，但"有却不记"等于静默丢弃 ⇒ 用一位显式
+                                 说出来；v16 起事件真的进 chunk 23 + 时间轴 type 7，
+                                 这一位仍在，语义不变）
   0x10  bone_count       u32
   0x14  slot_count       u32
   0x18  draw_item_count  u32
@@ -987,6 +1003,14 @@ Chunks:
                        `influence_offset`）⇒ 读端必须校验两条的条目数**相等**，
                        对不上就报错（配错了对不报错，只是每个影响取到别人的数据）。
                        id 从 21 起：10..20 留给动画阶段（骨骼树 / 时间轴 / path 几何）。
+  id=23 events        块头 16 B（event / string / blob 三个 count + reserved）
+                       + SpineGpuEventData[] 28 B/条
+                       + u32[] 每条字符串在 blob 里的字节偏移
+                       + blob（UTF-8，每条 '\0' 结尾），整体补齐到 4 B（§16，v16）
+                       **没有事件时这个 chunk 根本不写**（与 chunk 9 / 18 / 19 同规矩）
+                       ⚠️ 字符串池**第 0 条恒为空串**（string / audio 的"缺省"，
+                          引用 0 即可，不用哨兵），且是**下标**引用，不是 chunk 1
+                          那种字节偏移
 ```
 
 > ⚠️ **chunk id 在 v3 重排过**：`uv_buffer` 插在 `vertex_buffer` 与 `index_buffer` 之间，
@@ -994,7 +1018,7 @@ Chunks:
 > 读会拿到 `index_buffer` 当 UV，静默错位。这也正是 `kFormatVersion` 升到 3 的原因。
 >
 > ⚠️ **文件里 chunk 的顺序也不是 id 顺序**：写端按
-> `1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 3, 21, 22, 4, 5, 9, 6, 7, 8` 追加
+> `1, 2, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 3, 21, 22, 4, 5, 9, 6, 7, 8, 23` 追加
 > （骨骼 setup 紧挨 slot_bone；v9 的动画块 11-16 紧跟其后、v10 的槽位块 17 再跟其后、
 > v11 的约束块 18-20 又跟其后；影响流紧跟
 > 顶点块；9 夹在 5 与 6 之间是
@@ -1052,7 +1076,13 @@ Chunks:
   **v11 追加约束 setup / 执行顺序 / PathAttachment（chunk 18 / 19 / 20，§3.7）**；
   **v12 让 deform 时间轴可以指向 path 附件（`target` 最高位，布局不变、语义变）**；
   **v13 修正绘制项的 `uv_offset` / `blend_mode` / `atlas_page`（布局不变、语义变，§3.2 / §4）**；
-  **v14 绘制项 32 B（+ vertex_base / deform_parent / vertex_count），GPU mesh deform（S6，§7.1）**。
+  **v14 绘制项 32 B（+ vertex_base / deform_parent / vertex_count），GPU mesh deform（S6，§7.1）**；
+  **v15 运行时裁剪（§15）**；**v16 用户事件进容器（chunk 23 + 时间轴 type 7，§16）**。
+  ⚠️ v14 容器被 v15 读端读会得到 **"region 贴图转 90°"**（item_flags bit0 不在旧容器里，
+  按 0 解 = 非 region ⇒ 喂 `clipTriangles` 的顶点顺序不对），而"转 90°"本身不报错
+  —— 是同类的第五个坑。
+  ⚠️ v15 容器被 v16 读端读会得到 **"事件全丢"**（chunk 23 不存在），且**动画 duration
+  偏短**（末尾事件的时间没算进去）⇒ complete 时机错、不报错 —— 是同类的第六个坑。
   约束解算（S4b）已收尾：781 / 781 逐骨骼对拍通过，解算器自写、仍在 CPU。
   渲染接入见 **§15**。
   字段设计与转录 gap 分析见 **`doc/GPU_SPINE_V7_ANIMATION.md`**。
@@ -1686,6 +1716,177 @@ TS 探针拿到元数据（idle_01 = 0 s、idle_02 = 5.333 s、1 皮肤）与事
 收到首个 complete 后 TS 调 `SetTimeScale(1.5)` 生效。`exec.after 120 asset.move …/K_Bailishouyue_Spine.zspg …/Hero.zspg`
 ⇒ 进 PIE 时副本 `moved -> '_Generated/SpineTest/Hero.zspg' (by GUID …)` 并在新路径建实例；PIE 里脚本实例重新拿到同一事件序列。
 touch 源骨架 ⇒ `re-cooked` + 组件 `was re-cooked, reloading`。Inspector 区段只做了编译 / 构造验证，没有肉眼看。
+
+---
+
+## 16. 用户事件（v16，2026-10-23）
+
+Spine 的"用户事件"是动画里挂的**回调点**（脚步声、命中判定、特效触发）。v9 起容器里只有
+`kHasEventTimeline` 一位（"有事件"这件事本身要能被看见），事件**不烘焙** ⇒ 运行时一个事件也
+收不到。v16 把事件定义 + 事件时间轴真正落进容器。
+
+### 16.1 布局（chunk 23）
+
+```
+SpineGpuEventChunkHeader     16 B
+  event_count   u32 @0
+  string_count  u32 @4   ≥ 1（第 0 条恒为空串）
+  blob_size     u32 @8   字符串 blob 字节数（不含补齐）
+  reserved      u32 @12  写 0
+SpineGpuEventData[]          28 B/条 × event_count
+  name         u32 @0   字符串池下标（非空：参考实现拒空名）
+  int_value    i32 @4
+  float_value  f32 @8
+  string_value u32 @12  字符串池下标（0 = 空）
+  audio_path   u32 @16  字符串池下标（0 = 无音频）
+  volume       f32 @20
+  balance      f32 @24
+u32[]                        4 B/条 × string_count（每条在 blob 里的字节偏移）
+blob                         blob_size 字节，UTF-8，每条 '\0' 结尾；整体补齐到 4 B
+```
+
+字符串池**自带在 chunk 23 里**，不往 chunk 1 塞第 10 组 —— chunk 1 的"最后一组靠剩余切分"
+已经用掉了，再插一组就得再改一次切分规则。池子按**下标**引用（不是 chunk 1 那种字节偏移），
+**第 0 条恒为空串**：`string` / `audioPath` 的缺省就是 0，不需要哨兵。
+
+**没有事件时这个 chunk 根本不写**（与 chunk 9 / 18 / 19 同规矩，不是写个空块）。
+
+### 16.2 事件时间轴（type 7）
+
+第一次真正进 chunk 12。帧 = `time`（1 float/帧，在 chunk 13 里），载荷 = 每帧一条
+`SpineGpuEventKey`（24 B，在 chunk 16 里）：
+
+```
+event         u32 @0   → chunk 23 的事件定义下标
+int_value     i32 @4
+float_value   f32 @8
+string_value  u32 @12  → chunk 23 字符串池下标
+volume        f32 @16
+balance       f32 @20
+```
+
+读端校验 `event < event_count`、`string_value < string_count`（越界 = 读到别人的事件，
+不报错只是触发错东西）。
+
+**语义逐行照抄 spine-cpp 3.8**（转录时最容易抄错的三条）：
+
+| 规则 | 出处 |
+|---|---|
+| `EventData`：name / int / float / string / audioPath；**只有 audioPath 非空时**才读 volume / balance，否则是构造函数的 1 / 0 | `SkeletonBinary.cpp:327-347`、`SkeletonJson.cpp:673-694` |
+| `Event`（一帧）：int / float / string **逐帧覆盖**（json 缺省取 EventData 的值；二进制 int / float 每帧必有，string 有 freeString 位）；volume / balance 同样**只在 EventData 带音频时**逐帧读 | `SkeletonBinary.cpp:1084-1103`、`SkeletonJson.cpp:1176-1194` |
+| ⚠️ 逐帧缺省的 volume / balance 是 **Event 构造函数的 1 / 0，不是 EventData 的** —— 参考实现在这里**不继承** | 同上（这是最容易顺手写成"继承"的一处） |
+| `audioPath` 不逐帧：`Event::getData().getAudioPath()` | — |
+| 事件时间轴每帧末尾是否多 2 个 float，**取决于对应事件有没有 audioPath** | `SkeletonBinary.cpp:1098-1101` ⇒ events 段不能跳过 |
+| **animation duration 把最后一个事件的 time 算进去** | `SkeletonBinary.cpp:1106`、`SkeletonJson.cpp:1197` |
+
+最后一条是 v16 的"静默错"来源：v15 及以前不烘事件 ⇒ duration 少算 ⇒ 事件在动画末尾之后的
+资产 **complete 时机错、不报错**。
+
+### 16.3 派发语义（`SpineGpuAnimationState`）
+
+照抄 `AnimationState` 的排队规则（不是"扫到就发"）：
+
+1. `apply` 期间**收集**（`CollectEventTimeline`），按参考的循环回绕语义（同一 time 上有多帧时
+   回退到**第一帧**，不是最后一帧）；
+2. `queueEvents` 把队列切成"complete 之前"与"complete 之后"两段 ⇒ 一帧里先发事件、再发 complete；
+3. **mixingFrom 只在 `mix < eventThreshold` 时收集**，且**只在 `to->mixDuration > 0` 时排队**
+   ⇒ 没有混合的切动画不会把旧动画的尾巴事件再发一遍；
+4. 派发后 `m_Events.clear()`。
+
+`eventThreshold` 按 `(instance, track)` 设置：`SpineGpuRenderer::RequestEventThresholdOn()`
+（走 `kEventThreshold` op，作用在轨道**尾**那条 entry 上），组件侧 `SetEventThreshold(track, th)`。
+
+### 16.4 对外接口
+
+| 层 | 接口 |
+|---|---|
+| C++ 组件 | `SpineRenderer`：`SpineAnimationEvent` 带 `user` 字段；`SetEventListener` |
+| 脚本（TS / C#） | `GetEventName/GetEventInt/GetEventFloat/GetEventString/GetEventAudioPath/GetEventVolume/GetEventBalance/GetEventTime`、`SetEventThreshold(track, th)`、`GetUserEventCount/GetUserEventName` |
+
+### 16.5 验收
+
+| 项 | 结果 |
+|---|---|
+| OSGame 全量（783 资产）事件对拍 | **111 266 条逐条一致**（用户事件 4 458 + 调度事件 106 808）。v15 基线是 101 369 条 / 用户事件 0 ⇒ 多出的 5 439 条调度事件**全部**来自 duration 修正（complete +1 957 / start +1 043 / end +879 / dispose +893 / interrupt +667），差额可逐类对上 |
+| 手算夹具（`SpineGpuEventFixture.h`：step / sfx / blank / mute 四类事件 × walk / late / solo / burst 四条动画） | `SpineGpuImportTest` 45 条手算检查，1491 / 1491 断言通过 |
+| 变异测试 | 去掉 `mix < eventThreshold` 判据、把事件全放到 complete 之后 ⇒ 两条都被抓到 |
+| C# 往返 | `events.zspg` C++ 写 → C# 读 → C# 写，逐字节相同 |
+| 端到端 | spineboy 自动 cook + TS 探针收到用户事件（含 string / int / float / audio / volume / balance） |
+
+---
+
+## 17. 性能基准（CPU 侧，2026-10-23）
+
+**测的是"每实例每帧的 CPU 成本"，不是 GPU 时间**；参考侧是 spine-cpp 3.8 的 **CPU 蒙皮**路径
+（`AnimationState::update/apply` + `Skeleton::updateWorldTransform` + 顶点生成）。
+
+```
+cmake --build build --config Release --target SpineGpuBenchmark
+build/engine/Source/Runtime/Function/Render/Spine/Test/Release/SpineGpuBenchmark.exe \
+    G:/OSGame/Client_proj/Project/Assets --frames 360 --csv build/spine_bench.csv [--top 8] [--limit N] [--verbose]
+```
+（⚠️ **目录是第一个位置参数**，必须在 `--frames` 这些选项**前面**：写在最后会被当成没给目录，
+输出"没有可测的资产（跳过 0）"。）
+
+目标 `EXCLUDE_FROM_ALL`、**不进 ctest**（是测量，不是断言），且不链 `ZRuntime`
+（只编 Spine 核心几个 .cpp + 参考实现 ⇒ 不用把整个引擎编一遍 Release）。
+⚠️ `SpineReference` 按 config 改名（`OUTPUT_NAME SpineReference_$<CONFIG>`）：全工程的
+`CMAKE_ARCHIVE_OUTPUT_DIRECTORY` 被统一设成同一目录（根 `CMakeLists.txt:56-60`），
+不改名的话 Release 的基准会把 Debug 的 `.lib` 覆盖掉，回来编对拍就 LNK2038。
+
+**口径**：每个资产各放 1 个实例，360 帧 @60Hz，取中位数 / p90 / 合计。
+
+| 段 | 我们 | 参考 |
+|---|---|---|
+| anim | `AnimationState::Update + Apply` | `AnimationState::update + apply` |
+| pose | 约束 + `UpdateWorldTransform` | `Skeleton::updateWorldTransform` |
+| geo | 裁剪 + 攒批（写 GPU 要的那几个字节） | 顶点生成 + 裁剪（在 CPU 算顶点） |
+| upload | 每帧上传字节 | 6 × f32/顶点 × 顶点数 |
+
+我们的**静态显存**（骨骼 / 影响流 / 顶点，一次性上传、同资产实例共享）**不进每帧**；
+我们 **0 个 CPU 顶点**（蒙皮在 VS），参考侧每帧在 CPU 算顶点 —— 这是两张表差异的主轴。
+
+**结果（OSGame 781 个资产 / Ryzen 9 9950X / MSVC Release，2026-10-23，机器最闲的那一次）**：
+
+| 段 | 我们 中位 | 我们 p90 | 合计 | 参考 中位 | 参考 p90 | 合计 | 参考/我们 |
+|---|---|---|---|---|---|---|---|
+| anim | 5.12 µs | 14.17 | 5426.6 | 2.27 µs | 7.48 | 3003.0 | 0.55x |
+| pose | 0.94 µs | 2.61 | 1044.1 | 0.64 µs | 2.54 | 848.8 | 0.81x |
+| geo | 0.80 µs | 2.30 | 3509.8 | 5.12 µs | 16.07 | 7767.3 | **2.21x** |
+| **total** | **7.16 µs** | 21.57 | 9980.4 | **8.79 µs** | 26.18 | 11619.2 | **1.16x** |
+| upload | 5.53 KB | 17.80 | 6989.7 | 17.29 KB | 49.69 | 18310.1 | **2.62x** |
+| CPU 顶点 | 0 | 0 | — | 666 个 | 1873 | 711 136 | **10.2x** |
+
+⚠️ **绝对值漂得厉害，只能看比值。** 同一份二进制连跑三次（相隔几分钟、中间没有任何改动）：
+墙钟 **12.3 / 16.9 / 18.9 s**，我们 total 中位 **7.16 / 8.99 / 9.81 µs**，参考 **8.79 / 11.06 / 12.40 µs**
+—— 两边一起慢，所以比值稳得多：**total 1.16 / 1.19 / 1.22x**、**geo 2.21 / 2.27 / 2.27x**、
+**upload 恒 2.62x**（上传量是算出来的，不是测出来的，所以它不漂）。
+⇒ 拿这份数字跟以后比之前，**先连跑三次取最闲的那次**，别拿单次绝对值下结论。
+
+我们的静态显存：中位 33.7 KB / p90 97.7 KB / 合计 35.1 MB。
+折算（按最闲那次）：1 ms 单线程预算 ≈ 我们 78 个实例 / 参考 67 个；100 个实例 @60Hz 上传 ≈
+我们 52.4 MB/s / 参考 137.4 MB/s。逐资产明细在 `--csv`（含骨骼数 / 槽位数 / ik/tf/path 约束数）。
+
+**结论与已知差距**：
+
+* **geo 快 2.2x、上传少 2.6x** 是这套格式的立身之本：每帧只搬骨骼矩阵与少量动态数据，
+  顶点不动、也不重算 —— 参考侧每帧要在 CPU 生成 666 个顶点（中位）再传上去。
+* **total 我们更快（1.16x）**，但赢面比"应该有的"小：anim 段我们慢 1.8x 把它吃回去一大半。
+* ⚠️ **anim 0.55x 是已知差距，原因未定位**（不在本轮范围，未做 profiling）。两个候选
+  （**都未测量，不是结论**）：① 每条时间轴每次 apply 都要构造并返回
+  `SpineImportResult{ bool, std::string }`（MSVC 上 std::string 32 B，即使走短串也要初始化）；
+  ② 烘焙后的关键帧比原始关键帧密，采样时多出的内存访问。要动它先测，别照这两条猜。
+* pose 0.81x：本轮已经修掉一个大头 —— `PoseSolver` 里那个 `getenv` 的 debug 开关是
+  **每帧每条 path 约束调一次**（单条 ~5 µs，Diaochan_qian 的 pose 一度 52 µs），
+  改成 `static const bool` + `thread_local` scratch 后：中位 1.61 → **0.94 µs**、
+  p90 9.43 → **2.61 µs**、合计 3607 → **1044 µs**（3.5x）。剩下的是逐骨骼解算本身，
+  我们与参考做的是同一套迭代求解器。
+* 最重的资产（`Ui_LiBaiLongTouXiang`，59 骨 / 38 槽 / 12 条 transform 约束）
+  我们 872.92 µs vs 参考 965.26 µs —— 我们更快，但**不是逐个资产都赢**：同一张表里
+  `K_Zhongkui_Spine`（38 骨 / 93 槽 / 3 条 transform）我们 136.62 vs 参考 92.54 µs
+  （我们慢 1.5x）—— 它输在 pose（2.18 vs 1.13）与 geo（105.2 vs 99.2 KB）。
+  逐资产的反例在 `--csv` 里查，别只看中位数。
+  这类重资产两个实现都在 0.1~1 ms 量级，一帧放不下几个，得靠 LOD / 降帧。
 
 ---
 

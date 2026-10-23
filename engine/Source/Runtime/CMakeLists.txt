@@ -572,6 +572,12 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuRefParityTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuRefParityTest.cpp")
+# GPU-Spine CPU benchmark main carve-out (same rationale). It has its own main()
+# and deliberately does NOT link ZRuntime, so it must not be compiled into it.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuBenchmark.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuBenchmark.cpp")
 # Lumen global-illumination smoke-test main carve-out (same rationale). Built only
 # when ZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST=ON (see
 # Function/Render/Lumen/Test/CMakeLists.txt).

@@ -526,7 +526,7 @@ namespace ZEngine.SpineGpu
                     }
                     // 变长载荷：逐帧走一遍，顺带校验帧数（走不完 = 载荷被截断）
                     if (type == SpineTimelineType.Attachment || type == SpineTimelineType.Deform ||
-                        type == SpineTimelineType.DrawOrder)
+                        type == SpineTimelineType.DrawOrder || type == SpineTimelineType.Event)
                     {
                         uint walked = 0;
                         uint pos = t.PayloadOffset;
@@ -540,6 +540,16 @@ namespace ZEngine.SpineGpu
                                         "container: 第 " + i + " 条时间轴的载荷被截断");
                                 }
                                 pos += 4u;
+                            }
+                            else if (type == SpineTimelineType.Event)
+                            {
+                                // v16：定长 24 B；下标的合法性等 chunk 23 读完再查
+                                if (pos + SpineGpuConstants.EventKeySize > payloadSize)
+                                {
+                                    throw new SpineGpuContainerException(
+                                        "container: 第 " + i + " 条时间轴（event）的载荷被截断");
+                                }
+                                pos += SpineGpuConstants.EventKeySize;
                             }
                             else if (type == SpineTimelineType.Deform)
                             {
@@ -1242,7 +1252,94 @@ namespace ZEngine.SpineGpu
                 }
             }
 
+            ReadEvents(data, byId, asset);
             return asset;
+        }
+
+        // ---- 用户事件（chunk 23，v16）----  布局与校验逐条照抄 C++ ReadSpineGpuContainer
+        private static void ReadEvents(byte[] data, Dictionary<uint, ChunkSpan> byId, SpineGpuAsset asset)
+        {
+            if (TryGet(byId, (uint)SpineGpuChunkId.Events, out uint eo, out uint es))
+            {
+                uint head = SpineGpuConstants.EventChunkHeaderSize;
+                if (es < head)
+                {
+                    throw new SpineGpuContainerException("container: events 比块头（16 B）还小");
+                }
+                uint eventN = ReadU32(data, (int)eo);
+                uint stringN = ReadU32(data, (int)eo + 4);
+                uint blobN = ReadU32(data, (int)eo + 8);
+                if (ReadU32(data, (int)eo + 12) != 0u)
+                {
+                    throw new SpineGpuContainerException("container: events 块头的保留字段不是 0");
+                }
+                ulong want = head + (ulong)eventN * SpineGpuConstants.EventDataSize + (ulong)stringN * 4u + blobN;
+                ulong wantPadded = (want + 3u) & ~3ul;
+                if (wantPadded != es || eventN == 0u || stringN == 0u)
+                {
+                    throw new SpineGpuContainerException("container: events 大小 " + es + " B 与块头算出来的 " +
+                        wantPadded + " B 不一致（或事件 / 字符串数为 0）");
+                }
+                int rec = (int)(eo + head);
+                int offs = rec + (int)(eventN * SpineGpuConstants.EventDataSize);
+                int blob = offs + (int)(stringN * 4u);
+                for (uint i = 0; i < stringN; ++i)
+                {
+                    uint o = ReadU32(data, offs + (int)(i * 4u));
+                    int z = o < blobN ? Array.IndexOf(data, (byte)0, blob + (int)o, (int)(blobN - o)) : -1;
+                    if (z < 0)
+                    {
+                        throw new SpineGpuContainerException("container: events 第 " + i + " 条字符串越界或没有结尾的 '\\0'");
+                    }
+                    asset.EventStrings.Add(Encoding.UTF8.GetString(data, blob + (int)o, z - (blob + (int)o)));
+                }
+                if (asset.EventStrings[0].Length != 0)
+                {
+                    throw new SpineGpuContainerException("container: events 字符串池第 0 条必须是空串");
+                }
+                for (uint i = 0; i < eventN; ++i)
+                {
+                    int p = rec + (int)(i * SpineGpuConstants.EventDataSize);
+                    var e = new SpineGpuEventData
+                    {
+                        Name = ReadU32(data, p),
+                        IntValue = (int)ReadU32(data, p + 4),
+                        FloatValue = ReadF32(data, p + 8),
+                        StringValue = ReadU32(data, p + 12),
+                        AudioPath = ReadU32(data, p + 16),
+                        Volume = ReadF32(data, p + 20),
+                        Balance = ReadF32(data, p + 24),
+                    };
+                    if (e.Name >= stringN || e.StringValue >= stringN || e.AudioPath >= stringN)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 个事件定义的字符串下标越界");
+                    }
+                    if (asset.EventStrings[(int)e.Name].Length == 0)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 个事件定义没有名字");
+                    }
+                    asset.Events.Add(e);
+                }
+            }
+            // 事件时间轴的逐帧下标（载荷长度已在时间轴校验里走过）。没有 chunk 23 ⇒ Events 为空 ⇒ 必中。
+            for (int i = 0; i < asset.Timelines.Count; ++i)
+            {
+                var t = asset.Timelines[i];
+                if ((SpineTimelineType)t.Type != SpineTimelineType.Event)
+                {
+                    continue;
+                }
+                for (uint fr = 0; fr < t.PayloadCount; ++fr)
+                {
+                    int p = (int)(t.PayloadOffset + fr * SpineGpuConstants.EventKeySize);
+                    if (ReadU32(asset.TimelinePayload, p) >= (uint)asset.Events.Count ||
+                        ReadU32(asset.TimelinePayload, p + 12) >= (uint)asset.EventStrings.Count)
+                    {
+                        throw new SpineGpuContainerException("container: 第 " + i + " 条 event 时间轴第 " + fr +
+                            " 帧的事件 / 字符串下标越界（chunk 23 有 " + asset.Events.Count + " 个事件）");
+                    }
+                }
+            }
         }
 
         // -------------------------------------------------------------
@@ -1616,6 +1713,49 @@ namespace ZEngine.SpineGpu
             }
 
             Add((uint)SpineGpuChunkId.AtlasPages, CStringsBlob(asset.AtlasPageNames), A4);
+
+            // id=23 events（v16）—— C++ 同样排在最后
+            if (asset.Events.Count > 0)
+            {
+                if (asset.EventStrings.Count == 0 || asset.EventStrings[0].Length != 0)
+                {
+                    throw new SpineGpuContainerException("container: 事件字符串池第 0 条必须是空串");
+                }
+                byte[] strBlob = CStringsBlob(asset.EventStrings);
+                int evBytes = (int)SpineGpuConstants.EventChunkHeaderSize +
+                              asset.Events.Count * (int)SpineGpuConstants.EventDataSize + asset.EventStrings.Count * 4 +
+                              strBlob.Length;
+                var b = new byte[(int)AlignUp((uint)evBytes, 4u)];
+                WriteU32(b, 0, (uint)asset.Events.Count);
+                WriteU32(b, 4, (uint)asset.EventStrings.Count);
+                WriteU32(b, 8, (uint)strBlob.Length);
+                int o = (int)SpineGpuConstants.EventChunkHeaderSize;
+                foreach (var e in asset.Events)
+                {
+                    if (e.Name >= asset.EventStrings.Count || e.StringValue >= asset.EventStrings.Count ||
+                        e.AudioPath >= asset.EventStrings.Count)
+                    {
+                        throw new SpineGpuContainerException("container: 事件定义的字符串下标越界");
+                    }
+                    WriteU32(b, o, e.Name);
+                    WriteU32(b, o + 4, (uint)e.IntValue);
+                    WriteF32(b, o + 8, e.FloatValue);
+                    WriteU32(b, o + 12, e.StringValue);
+                    WriteU32(b, o + 16, e.AudioPath);
+                    WriteF32(b, o + 20, e.Volume);
+                    WriteF32(b, o + 24, e.Balance);
+                    o += (int)SpineGpuConstants.EventDataSize;
+                }
+                uint so = 0;
+                foreach (var str in asset.EventStrings)
+                {
+                    WriteU32(b, o, so);
+                    o += 4;
+                    so += (uint)Encoding.UTF8.GetByteCount(str ?? string.Empty) + 1u;
+                }
+                Buffer.BlockCopy(strBlob, 0, b, o, strBlob.Length);
+                Add((uint)SpineGpuChunkId.Events, b, A4);
+            }
 
             int tableBytes = ids.Count * (int)SpineGpuConstants.ChunkTableEntrySize;
             int cursor = (int)SpineGpuConstants.HeaderSize + tableBytes;

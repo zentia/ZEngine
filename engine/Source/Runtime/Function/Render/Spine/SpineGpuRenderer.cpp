@@ -168,6 +168,7 @@ struct SpineGpuRenderer::Impl
             kMixPair,          // `target` 的 AnimationStateData::setMix(anim → path, value)
             kTrackEmptyAdd,    // addEmptyAnimation(track, mix = value, delay)
             kClearTrack,       // clearTrack(track)；track < 0 ⇒ clearTracks()
+            kEventThreshold,   // 轨道上**最后一条**（队尾）的 eventThreshold = value（v16 用户事件）
         };
         Op op {Op::kSet};
         uint32_t target {0};   // 实例 id（入队时解析；0 = 当时没有选中的实例）
@@ -1294,6 +1295,20 @@ struct SpineGpuRenderer::Impl
                 case Command::Op::kTrackEmptyAdd:
                     st.AddEmptyAnimation(track, std::max(0.0f, c.value), c.delay);
                     break;
+                case Command::Op::kEventThreshold:
+                {
+                    // spine-unity 的写法是 `AddAnimation(...).EventThreshold = x`：作用在刚排进去的那条上
+                    SpineGpuTrackEntry* e = st.GetCurrent(track);
+                    while (e != nullptr && e->next != nullptr)
+                    {
+                        e = e->next;
+                    }
+                    if (e != nullptr)
+                    {
+                        e->event_threshold = c.value;
+                    }
+                    break;
+                }
                 case Command::Op::kClearTrack:
                     if (c.track < 0)
                     {
@@ -1848,6 +1863,17 @@ void SpineGpuRenderer::RequestAddEmptyAnimationOn(uint32_t id, int track, float 
     c.track = track;
     c.value = mix_duration;
     c.delay = delay;
+    d.PushTo(id, std::move(c));
+}
+
+void SpineGpuRenderer::RequestEventThresholdOn(uint32_t id, int track, float threshold)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kEventThreshold;
+    c.track = track;
+    c.value = threshold;
     d.PushTo(id, std::move(c));
 }
 
@@ -2604,6 +2630,7 @@ void SpineGpuRenderer::RequestAddAnimationOn(uint32_t, int, const std::string&, 
 void SpineGpuRenderer::RequestSetEmptyAnimationOn(uint32_t, int, float) {}
 void SpineGpuRenderer::RequestAddEmptyAnimationOn(uint32_t, int, float, float) {}
 void SpineGpuRenderer::RequestClearTrackOn(uint32_t, int) {}
+void SpineGpuRenderer::RequestEventThresholdOn(uint32_t, int, float) {}
 void SpineGpuRenderer::RequestMixOn(uint32_t, const std::string&, const std::string&, float) {}
 bool SpineGpuRenderer::DrainWorldEvents(uint32_t, std::vector<SpineGpuAnimationEvent>&,
                                         std::vector<SpineGpuTrackSnapshot>*, uint64_t*)

@@ -96,6 +96,13 @@ if(ZENGINE_BUILD_SPINE_IMPORT_TEST)
         set_target_properties(SpineReference PROPERTIES
             CXX_STANDARD 17
             FOLDER "Engine/Tests")
+        # ⚠️ 全工程的 CMAKE_ARCHIVE_OUTPUT_DIRECTORY(_<CONFIG>) 被**统一设成同一个目录**
+        # （根 CMakeLists.txt:56-60）⇒ Debug 与 Release 的 .lib 会写进同一个文件名，
+        # 谁后编谁覆盖。SpineGpuBenchmark 是 Release、对拍测试是 Debug，来回切一次
+        # 就 LNK2038（_ITERATOR_DEBUG_LEVEL / RuntimeLibrary 不匹配）。
+        # 所以这个库按 config 改名，两个配置各留一份。
+        set_target_properties(SpineReference PROPERTIES
+            OUTPUT_NAME "SpineReference_$<CONFIG>")
         # 参考实现自己的头是 `#include <spine/X.h>`，但它**内部**互相 include 时写的是
         # `Modules/Spine/spine-cpp/include/spine/X.h`（相对 Unity 引擎根）
         # ⇒ 除了 include/ 还必须把引擎根也挂上（spine_ref_probe 当初就是这么配的）。
@@ -125,6 +132,31 @@ if(ZENGINE_BUILD_SPINE_IMPORT_TEST)
             target_compile_options(SpineGpuRefParityTest PRIVATE /W4)
         endif()
         message(STATUS "Configured GPU-Spine reference parity test (ref: ${ZENGINE_SPINE_REF_ROOT})")
+
+        # ---- 性能基准（CPU 侧）：我们的每帧路径 vs spine-cpp 的 CPU 蒙皮路径 ----
+        # **不链 ZRuntime**：只编 Spine 核心那几个 .cpp（它们只依赖标准库 + rapidjson）⇒ 单独
+        # `--config Release --target SpineGpuBenchmark` 几十秒出结果，不用把整个引擎编一遍 Release。
+        # 不进 ctest（是测量，不是断言）。用法见 SpineGpuBenchmark.cpp 文件头。
+        set(_spine_core_dir "${CMAKE_CURRENT_SOURCE_DIR}/..")
+        add_executable(SpineGpuBenchmark EXCLUDE_FROM_ALL
+            SpineGpuBenchmark.cpp
+            ${_spine_core_dir}/SpineGpuImporter.cpp
+            ${_spine_core_dir}/SpineGpuAnimSolver.cpp
+            ${_spine_core_dir}/SpineGpuAnimationState.cpp
+            ${_spine_core_dir}/SpineGpuSkeletonState.cpp
+            ${_spine_core_dir}/SpineGpuPoseSolver.cpp
+            ${_spine_core_dir}/SpineGpuClipper.cpp
+            ${_spine_core_dir}/SpineGpuBatch.cpp)
+        set_target_properties(SpineGpuBenchmark PROPERTIES
+            CXX_STANDARD 23
+            FOLDER "Engine/Tests")
+        target_include_directories(SpineGpuBenchmark PRIVATE
+            "${ENGINE_ROOT_DIR}/Source"
+            "${THIRD_PARTY_DIR}/rapidjson/include")
+        target_link_libraries(SpineGpuBenchmark PRIVATE SpineReference)
+        if(MSVC)
+            target_compile_options(SpineGpuBenchmark PRIVATE /W4 /utf-8)
+        endif()
     else()
         message(STATUS "GPU-Spine: 参考 spine-cpp 不在 ${ZENGINE_SPINE_REF_ROOT} ⇒ 不注册参考对拍")
     endif()

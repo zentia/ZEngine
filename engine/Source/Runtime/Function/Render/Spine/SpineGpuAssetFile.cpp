@@ -265,6 +265,13 @@ std::shared_ptr<const SpineGpuAssetInfo> SpineGpuGetAssetInfo(const std::filesys
             info->durations.push_back(a.duration);
         }
         info->skins = asset.skin_names;
+        info->event_strings = asset.event_strings;
+        for (const SpineGpuEventData& e : asset.events)
+        {
+            info->event_names.push_back(e.name < asset.event_strings.size() ? asset.event_strings[e.name] : std::string());
+            info->event_audio.push_back(e.audio_path < asset.event_strings.size() ? asset.event_strings[e.audio_path]
+                                                                                    : std::string());
+        }
         info->bone_count = asset.header.bone_count;
         info->slot_count = asset.header.slot_count;
     }

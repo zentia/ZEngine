@@ -14,6 +14,7 @@
 
 #include "Runtime/Function/Render/Spine/SpineGpuAnimSolver.h"
 #include "Runtime/Function/Render/Spine/SpineGpuBatch.h"
+#include "SpineGpuEventFixture.h"
 #include "SpineGpuSkinFixture.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuTintBlack.h"
@@ -27,6 +28,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -1250,6 +1252,8 @@ bool DumpContainers(const SpineAtlas& atlas, const std::string& dir)
     cases.push_back({"clip_weighted", BuildClip("\"end\": \"s2\", ", false, kClipVertsWeighted),
                      BuildSkelFixture(false, false, "3.8.99", false, "mesh", false, false, true, 10,
                                       true, 2, 2, false, 3, true)});
+    // v16：用户事件（chunk 23 + type 7 时间轴载荷）⇒ C# 读端要认得 chunk 23 并原样写回同一份字节
+    cases.push_back({"events", SpineGpuEventFixture::kSkeleton, std::vector<uint8_t>()});
     // nonessential 开 / 关解析路径不同（字段数都不一样），C# 端也要各对一次
     cases.push_back({"baseline_nonessential", std::string(), BuildSkelFixture(false, false, "3.8.99", true)});
     cases.push_back({"clip_nested_nonessential", std::string(),
@@ -2447,6 +2451,218 @@ int main(int argc, char** argv)
             ev.clear();
             EStep(0.1f);
             Check(ev.empty(), "非循环：之后不再重复 complete（animationLast 已 >= animationEnd）");
+        }
+        g_prefix.clear();
+    }
+
+    // =================================================================
+    // 用户事件（v16：导入 → 烘焙 → 容器 → AnimationState 派发）。夹具见 SpineGpuEventFixture.h；
+    // 期望值按参考实现手推（SkeletonJson.cpp:673-694 / :1172-1198、EventTimeline.cpp:63-103、
+    // AnimationState.cpp:765 / :842-878）。与 spine-cpp 的随机脚本逐帧对拍在 SpineGpuRefParityTest。
+    // =================================================================
+    {
+        g_prefix = "[events] ";
+        SpineAtlas eatlas;
+        SpineSourceSkeleton esrc;
+        SpineGpuAsset baked;
+        SpineGpuAsset ea;
+        std::vector<uint8_t> ebytes;
+        SpineImportResult er = ParseSpineAtlas(SpineGpuEventFixture::kAtlas, std::strlen(SpineGpuEventFixture::kAtlas), eatlas);
+        if (er.ok)
+        {
+            er = ParseSpineSkeletonJson(SpineGpuEventFixture::kSkeleton, std::strlen(SpineGpuEventFixture::kSkeleton),
+                                        &eatlas, esrc);
+        }
+        if (er.ok)
+        {
+            er = BakeSpineGpuAsset(esrc, baked);
+        }
+        if (er.ok)
+        {
+            er = WriteSpineGpuContainer(baked, ebytes);
+        }
+        if (er.ok)
+        {
+            er = ReadSpineGpuContainer(ebytes.data(), ebytes.size(), ea);
+        }
+        if (!er.ok)
+        {
+            std::printf("  error: %s\n", er.error.c_str());
+        }
+        Check(er.ok, "夹具解析 → 烘焙 → 写 → 读");
+        if (er.ok)
+        {
+            const auto Str = [&](uint32_t i) { return i < ea.event_strings.size() ? ea.event_strings[i] : std::string("<oob>"); };
+            Check((ea.header.flags & SpineGpuFlags::kHasEventTimeline) != 0u, "flags 带 kHasEventTimeline");
+            Check(ea.events.size() == 4 && !ea.event_strings.empty() && ea.event_strings[0].empty(),
+                  "4 个事件定义；字符串池第 0 条是空串");
+            Check(ea.events == baked.events && ea.event_strings == baked.event_strings,
+                  "容器往返：事件定义与字符串池逐条相同");
+            if (ea.events.size() == 4)
+            {
+                const SpineGpuEventData& step = ea.events[0];
+                const SpineGpuEventData& sfx = ea.events[1];
+                const SpineGpuEventData& mute = ea.events[3];
+                Check(Str(step.name) == "step" && step.int_value == 7 && step.float_value == 0.5f &&
+                          Str(step.string_value) == "left" && Str(step.audio_path).empty() && step.volume == 1.0f,
+                      "step：int 7 / float 0.5 / string 'left' / 无音频");
+                Check(Str(sfx.name) == "sfx" && Str(sfx.audio_path) == "boom.wav" && sfx.volume == 0.8f &&
+                          sfx.balance == -0.25f,
+                      "sfx：audio 'boom.wav'、定义层 volume 0.8 / balance -0.25");
+                Check(Str(ea.events[2].name) == "blank" && ea.events[2].int_value == 0 && ea.events[2].float_value == 0.0f,
+                      "blank：全缺省");
+                Check(Str(mute.name) == "mute" && Str(mute.audio_path).empty() && mute.volume == 0.3f && mute.balance == 0.6f,
+                      "mute：`\"audio\": \"\"` ⇒ 定义层照读 volume 0.3 / balance 0.6（参考实现判的是指针非空）");
+            }
+            const auto Dur = [&](size_t a) { return a < ea.anims.size() ? ea.anims[a].duration : -1.0f; };
+            // json 里动画的顺序：walk, late, solo, burst
+            Check(ea.anims.size() == 4 && Dur(0) == 1.0f && Dur(1) == 0.8f && Dur(2) == 0.25f && Dur(3) == 0.6f,
+                  "duration 把末个事件算进去：walk 1.0 / late 0.8（骨骼只到 0.5）/ solo 0.25（只有事件）/ burst 0.6");
+            // 时间轴载荷：late 的两帧（sfx 带音频 ⇒ 帧层缺省 1 / 0，不继承 0.8 / -0.25；mute 无音频 ⇒ 不读帧上的值）
+            const auto KeyOf = [&](uint32_t anim, uint32_t frame, SpineGpuEventKey& k) {
+                const SpineGpuAnim& a = ea.anims[anim];
+                for (uint32_t t = 0; t < a.timeline_count; ++t)
+                {
+                    const SpineGpuTimeline& tl = ea.timelines[a.timeline_first + t];
+                    if (static_cast<SpineTimelineType>(tl.type) == SpineTimelineType::kEvent && frame < tl.payload_count)
+                    {
+                        std::memcpy(&k, ea.timeline_payload.data() + tl.payload_offset + frame * sizeof(SpineGpuEventKey),
+                                    sizeof(k));
+                        return true;
+                    }
+                }
+                return false;
+            };
+            SpineGpuEventKey k0;
+            SpineGpuEventKey k1;
+            SpineGpuEventKey w1;
+            if (ea.anims.size() == 4 && KeyOf(1, 0, k0) && KeyOf(1, 1, k1) && KeyOf(0, 1, w1))
+            {
+                Check(k0.event == 1 && k0.volume == 1.0f && k0.balance == 0.0f,
+                      "late 帧 0（sfx，帧上没写）：volume / balance = Event 构造函数的 1 / 0，不继承定义的 0.8 / -0.25");
+                Check(k1.event == 3 && k1.volume == 1.0f && k1.balance == 0.0f,
+                      "late 帧 1（mute，定义的 audio 为空）：帧上写了 0.1 / 0.2 也不读 ⇒ 1 / 0");
+                Check(w1.event == 0 && w1.int_value == -3 && w1.float_value == 0.5f && Str(w1.string_value) == "right",
+                      "walk 帧 1（step）：int 覆盖成 -3、float 继承定义 0.5、string 覆盖成 'right'");
+            }
+            else
+            {
+                Check(false, "找得到 late / walk 的事件时间轴");
+            }
+
+            // ---- 运行时派发 ----
+            SpineGpuRuntimeData edata;
+            Check(SpineGpuBuildRuntimeData(ea, edata).ok, "建查找表");
+            SpineGpuAnimationStateData easd;
+            easd.default_mix = 0.5f;
+            const uint32_t kWalkE = 0, kSoloE = 2, kBurstE = 3;
+            struct Run
+            {
+                SpineGpuSkeletonState st;
+                std::vector<SpineGpuAnimationEvent> ev;
+                std::unique_ptr<SpineGpuAnimationState> as;
+            };
+            const auto NewRun = [&](Run& r) {
+                Check(SpineGpuInitSkeletonState(ea, edata, r.st).ok, "初始化骨架状态");
+                r.as = std::make_unique<SpineGpuAnimationState>(ea, edata, &easd);
+                r.as->event_sink = &r.ev;
+            };
+            const auto Step = [&](Run& r, float dt) {
+                r.ev.clear();
+                r.as->Update(dt);
+                Check(r.as->Apply(r.st).ok, "Apply 成功");
+            };
+            // 第 i 条是名为 name 的用户事件（时刻 t），或是 type 类型的生命周期事件
+            const auto IsUser = [&](const Run& r, size_t i, const char* name, float t) {
+                return i < r.ev.size() && r.ev[i].type == SpineGpuEventType::kEvent && r.ev[i].user.event < ea.events.size() &&
+                       Str(ea.events[r.ev[i].user.event].name) == name && r.ev[i].user.time == t;
+            };
+            const auto IsType = [&](const Run& r, size_t i, SpineGpuEventType t, uint32_t anim) {
+                return i < r.ev.size() && r.ev[i].type == t && r.ev[i].animation == anim;
+            };
+
+            // 1) 循环 walk：首帧 lastTime = -1 ⇒ t=0 的事件触发；回绕时 (0.75, +∞) 的 t=1.0 排在 complete 之前、
+            //    回绕后 [0, 0.25] 的 t=0 排在 complete 之后（queueEvents 的两段循环）
+            {
+                Run r;
+                NewRun(r);
+                r.as->SetAnimation(0, kWalkE, true);
+                Step(r, 0.25f);
+                Check(r.ev.size() == 1 && IsUser(r, 0, "step", 0.0f) && r.ev[0].user.int_value == 7 &&
+                          Str(r.ev[0].user.string_value) == "left",
+                      "walk 首帧：step@0（继承定义的 int 7 / 'left'）");
+                Step(r, 0.5f);
+                Check(r.ev.size() == 2 && IsUser(r, 0, "step", 0.5f) && r.ev[0].user.int_value == -3 &&
+                          IsUser(r, 1, "sfx", 0.5f) && r.ev[1].user.volume == 0.4f && r.ev[1].user.balance == 0.75f,
+                      "walk 0.25→0.75：同时刻两个事件按文件顺序（step -3，sfx vol 0.4 / bal 0.75）");
+                Step(r, 0.5f);
+                Check(r.ev.size() == 3 && IsUser(r, 0, "blank", 1.0f) && r.ev[0].user.float_value == 2.25f &&
+                          IsType(r, 1, SpineGpuEventType::kComplete, kWalkE) && IsUser(r, 2, "step", 0.0f),
+                      "walk 回绕 0.75→1.25：blank@1.0、complete、step@0（complete 前后两段）");
+            }
+            // 2) 非循环 burst：首帧同时刻两个、中段同时刻三个、到头只有 complete
+            {
+                Run r;
+                NewRun(r);
+                r.as->SetAnimation(0, kBurstE, false);
+                Step(r, 0.1f);
+                Check(r.ev.size() == 2 && IsUser(r, 0, "blank", 0.0f) && IsUser(r, 1, "step", 0.0f) &&
+                          r.ev[1].user.int_value == 1,
+                      "burst 首帧：t=0 的两个（blank、step int 1）");
+                Step(r, 0.25f);
+                Check(r.ev.size() == 3 && IsUser(r, 0, "step", 0.3f) && r.ev[0].user.int_value == 2 && IsUser(r, 1, "sfx", 0.3f) &&
+                          IsUser(r, 2, "blank", 0.3f) && Str(r.ev[2].user.string_value) == "third",
+                      "burst 0.1→0.35：t=0.3 的三个按文件顺序");
+                Step(r, 0.5f);
+                Check(r.ev.size() == 1 && IsType(r, 0, SpineGpuEventType::kComplete, kBurstE),
+                      "burst 到头：只有 complete（lastTime 0.35 ≥ 末帧 0.3 ⇒ 不再收）");
+            }
+            // 3) 1 帧的 solo（循环，时长 0.25）：t=0.25 = animationEnd ⇒ 回绕那一帧收到，排在 complete 之前
+            {
+                Run r;
+                NewRun(r);
+                r.as->SetAnimation(0, kSoloE, true);
+                Step(r, 0.1f);
+                Step(r, 0.1f);
+                Check(r.ev.empty(), "solo 0→0.2：还没到 0.25");
+                Step(r, 0.1f);
+                Check(r.ev.size() == 2 && IsUser(r, 0, "step", 0.25f) && r.ev[0].user.float_value == -1.5f &&
+                          IsType(r, 1, SpineGpuEventType::kComplete, kSoloE),
+                      "solo 0.2→0.3（回绕）：step@0.25（float -1.5）在 complete 之前");
+            }
+            // 4) eventThreshold（applyMixingFrom :765）：walk 被 solo 打断、混合 0.5 s；混到 mix = 0.6 那一帧，
+            //    walk 回绕 0.75→1.05。threshold 0 ⇒ 不收 walk 的用户事件（complete 照样入队，因为 mixDuration > 0）；
+            //    threshold 1 ⇒ 收，且全部挂在 walk 那条 entry 上、排在 solo 自己的事件之前
+            for (int with_threshold = 0; with_threshold < 2; ++with_threshold)
+            {
+                Run r;
+                NewRun(r);
+                SpineGpuTrackEntry* walk = r.as->SetAnimation(0, kWalkE, true);
+                if (walk != nullptr && with_threshold != 0)
+                {
+                    walk->event_threshold = 1.0f;
+                }
+                Step(r, 0.25f);
+                Step(r, 0.5f);
+                r.ev.clear();
+                r.as->SetAnimation(0, kSoloE, true);
+                Check(r.ev.size() == 2 && IsType(r, 0, SpineGpuEventType::kInterrupt, kWalkE) &&
+                          IsType(r, 1, SpineGpuEventType::kStart, kSoloE),
+                      "打断：interrupt(walk) → start(solo)");
+                Step(r, 0.3f);
+                if (with_threshold == 0)
+                {
+                    Check(r.ev.size() == 1 && IsType(r, 0, SpineGpuEventType::kComplete, kWalkE),
+                          "threshold 0：混出的 walk 只有 complete，没有用户事件");
+                }
+                else
+                {
+                    Check(r.ev.size() == 3 && IsUser(r, 0, "blank", 1.0f) && r.ev[0].animation == kWalkE &&
+                              IsType(r, 1, SpineGpuEventType::kComplete, kWalkE) && IsUser(r, 2, "step", 0.0f) &&
+                              r.ev[2].animation == kWalkE,
+                          "threshold 1（mix 0.6 < 1）：blank@1.0 / complete / step@0 都挂在 walk 上");
+                }
+            }
         }
         g_prefix.clear();
     }

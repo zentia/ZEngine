@@ -76,32 +76,57 @@ SpineImportResult Ok()
 // absolute+local transform 约束写的局部 shearY 都要留到下一帧（参考实现的 `Bone` 就是这样）。
 using BoneState = SpineGpuBoneState;
 
+// 解算暂存的**容量**跨帧保留（参考实现里它们是 PathConstraint 的成员，同样跨帧活着）。
+// 每次使用前都 `assign(n, 0)` / 整体赋值 ⇒ 保留容量与每帧新建**逐位等价**，只省掉堆分配：
+// 实测（SpineGpuBenchmark，OSGame 781 资产）path 约束每步 7.2 µs 里绝大部分是这些 vector 的重新分配。
+// thread_local：渲染线程与工具线程各一份；SpineGpuUpdateWorld 不重入，同一线程上同一时刻只有一个使用者。
+struct PoseScratch
+{
+    std::vector<float> path_position;
+    std::vector<float> path_spacing;
+    std::vector<float> path_rotate_mix;
+    std::vector<float> path_translate_mix;
+    std::vector<uint32_t> path_att;
+    std::vector<std::vector<float>> path_deform;
+    std::vector<float> positions;
+    std::vector<float> world;
+    std::vector<float> curves;
+    std::vector<float> lengths;
+    std::vector<float> spaces;
+};
+
 struct PoseContext
 {
     const SpineGpuAsset& asset;
     std::vector<BoneState>& bones;
 
     // path 约束的运行时参数（本帧时间轴写完后的值，约束解算期间不变）
-    std::vector<float> path_position;
-    std::vector<float> path_spacing;
-    std::vector<float> path_rotate_mix;
-    std::vector<float> path_translate_mix;
+    std::vector<float>& path_position;
+    std::vector<float>& path_spacing;
+    std::vector<float>& path_rotate_mix;
+    std::vector<float>& path_translate_mix;
     // 每条 path 约束**当前**看到的那条 chunk 20 记录；`kNoPathAttachment` = 不生效。
-    std::vector<uint32_t> path_att;
+    std::vector<uint32_t>& path_att;
     // 每条 chunk 20 记录的 deform 数组（= 参考实现里该槽位的 `_attachmentVertices`）。
     // 空 = 没有 deform（用 setup 顶点）。rigid 是**绝对坐标**、weighted 是**偏移**，
     // 两者长度都是 `SpineGpuPathDeformLength()`。
-    std::vector<std::vector<float>> path_deform;
+    std::vector<std::vector<float>>& path_deform;
 
     // PathConstraint::computeWorldPositions 的暂存（`_positions` / `_world` / `_curves` / `_segments`）
-    std::vector<float> positions;
-    std::vector<float> world;
-    std::vector<float> curves;
-    std::vector<float> lengths;   // TransformConstraint(scale) 与 PathConstraint(scale) 各用一份
-    std::vector<float> spaces;
+    std::vector<float>& positions;
+    std::vector<float>& world;
+    std::vector<float>& curves;
+    std::vector<float>& lengths;   // TransformConstraint(scale) 与 PathConstraint(scale) 各用一份
+    std::vector<float>& spaces;
     float segments[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
-    PoseContext(const SpineGpuAsset& a, std::vector<BoneState>& b) : asset(a), bones(b) {}
+    PoseContext(const SpineGpuAsset& a, std::vector<BoneState>& b, PoseScratch& s)
+        : asset(a), bones(b), path_position(s.path_position), path_spacing(s.path_spacing),
+          path_rotate_mix(s.path_rotate_mix), path_translate_mix(s.path_translate_mix), path_att(s.path_att),
+          path_deform(s.path_deform), positions(s.positions), world(s.world), curves(s.curves), lengths(s.lengths),
+          spaces(s.spaces)
+    {
+    }
 };
 
 // ---------------------------------------------------------------------
@@ -1628,7 +1653,11 @@ bool PathApply(PoseContext& ctx, uint32_t ci, std::string& err)
     }
     const std::vector<float>& positions = ctx.positions;
 
-    if (std::getenv("ZENGINE_SPINE_POSE_DEBUG") != nullptr)
+    // ⚠️ 只读一次：Windows 的 getenv 每次都要拿 CRT 环境锁 + 线性扫环境块（实测 ~5 µs / 次），
+    //    放在每帧每条 path 约束里时，它比 path 解算本身贵 40 倍（SpineGpuBenchmark：9 条 path 的资产
+    //    pose 52 µs → 见 doc/GPU_SPINE_INTERCHANGE_FORMAT.md「性能基准」）。
+    static const bool kPoseDebug = std::getenv("ZENGINE_SPINE_POSE_DEBUG") != nullptr;
+    if (kPoseDebug)
     {
         std::printf("[path %u] att=%u vc=%u bc=%u pos=%g space=%g rot=%g/%g rm=%u sm=%u pm=%u slot=%u sb=%u(sbw=%g,%g)\n",
                     ci, att_index, att.vertex_count, bone_count, static_cast<double>(ctx.path_position[ci]),
@@ -1821,7 +1850,8 @@ SpineImportResult SpineGpuUpdateWorld(const SpineGpuAsset& asset, const SpineGpu
         return Fail("update: 状态 / 查找表与资产的条数不一致（不是用这个资产初始化的）");
     }
 
-    PoseContext ctx(asset, state.bones);
+    thread_local PoseScratch scratch;
+    PoseContext ctx(asset, state.bones, scratch);
 
     // ---- 1) path 约束的运行时参数（时间轴写完后的值）----
     ctx.path_position = state.path_position;
@@ -1848,7 +1878,12 @@ SpineImportResult SpineGpuUpdateWorld(const SpineGpuAsset& asset, const SpineGpu
     // ---- 3) path 附件的 deform = 它所在槽位的 deform 数组 ----
     // path 的 deform 改的是 path 约束的**输入曲线** ⇒ 骨骼位置跟着变，必须在 CPU 上做
     // （VertexAttachment.cpp:69-70 rigid 整体替换、:117-118 weighted 逐影响相加）。
-    ctx.path_deform.assign(asset.path_attachments.size(), std::vector<float>());
+    // 内层清空但保留容量（= 每帧新建空数组，逐位等价）
+    ctx.path_deform.resize(asset.path_attachments.size());
+    for (std::vector<float>& d : ctx.path_deform)
+    {
+        d.clear();
+    }
     for (uint32_t s = 0; s < slot_count; ++s)
     {
         const SpineGpuSlotState& slot = state.slots[s];
@@ -2061,7 +2096,9 @@ SpineImportResult SpineGpuUpdateWorld(const SpineGpuAsset& asset, const SpineGpu
     // "槽位当前附件可画、且 deform 数组非空"的那些。没有任何时间轴再写它、但附件没换时，它
     // **保持上一次写入的值**（参考实现就是这样，不是残留 bug）。
     out.slot_draw_item.assign(slot_count, SpineGpuPoseResult::kNoDrawItem);
-    out.mesh_deforms.clear();
+    // 复用上一帧的条目（及其 values 的容量）：调用方（渲染器每实例一份）跨帧持有 `out`，
+    // 每帧重新 push_back 一份 deform 拷贝 = 每个带 deform 的槽位每帧一次堆分配。
+    size_t deform_n = 0;
     for (uint32_t s = 0; s < slot_count; ++s)
     {
         const SpineGpuSlotState& slot = state.slots[s];
@@ -2085,11 +2122,15 @@ SpineImportResult SpineGpuUpdateWorld(const SpineGpuAsset& asset, const SpineGpu
                         " 与绘制项 " + std::to_string(item) + " 的 " + std::to_string(data.item_deform_len[item]) +
                         " 不一致");
         }
-        SpineGpuMeshDeform e;
+        if (deform_n == out.mesh_deforms.size())
+        {
+            out.mesh_deforms.emplace_back();
+        }
+        SpineGpuMeshDeform& e = out.mesh_deforms[deform_n++];
         e.draw_item = item;
-        e.values = slot.deform;
-        out.mesh_deforms.push_back(std::move(e));
+        e.values.assign(slot.deform.begin(), slot.deform.end());
     }
+    out.mesh_deforms.resize(deform_n);
     std::sort(out.mesh_deforms.begin(), out.mesh_deforms.end(),
               [](const SpineGpuMeshDeform& a, const SpineGpuMeshDeform& b) { return a.draw_item < b.draw_item; });
     return Ok();

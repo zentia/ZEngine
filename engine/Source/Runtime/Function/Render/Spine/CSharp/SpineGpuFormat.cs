@@ -56,7 +56,13 @@ namespace ZEngine.SpineGpu
         //       deform 时间轴 Target 多一个 clip 位（DeformTargetClipBit）。运行时要按**当前**附件 /
         //       **当前**绘制顺序跑裁剪状态机（v14 只在烘焙期按 setup 模拟一遍）；裁剪附件的 deform
         //       改的是裁剪多边形（OSGame 实测 7 条）。
-        public const uint FormatVersion = 15;
+        // v16 = 用户事件进容器：chunk 23（事件定义 28 B/条 + 自带字符串池），event 时间轴（type 7）
+        //       进时间轴表，载荷 24 B/帧（SpineGpuEventKey）。动画 duration 把末个事件的 time 算进去
+        //       （与参考实现一致；v15 不烘焙事件 ⇒ 少算）。
+        public const uint FormatVersion = 16;
+        public const uint EventChunkHeaderSize = 16;
+        public const uint EventDataSize = 28;
+        public const uint EventKeySize = 24;
 
         public const uint DefaultSkinId = 0;
         public const uint SpineRuntime38 = 30800;
@@ -332,6 +338,9 @@ namespace ZEngine.SpineGpu
         // （骨骼树 / 时间轴 / path 几何），别占用。
         InfluenceBind = 21,   // float2 × 影响条目数
         InfluenceBone = 22,   // (boneIdx u16, weight u8, pad u8) × 影响条目数
+
+        // v16：用户事件定义 + 事件字符串池（没有事件就不写）
+        Events = 23,
     }
 
     // -----------------------------------------------------------------
@@ -800,6 +809,18 @@ namespace ZEngine.SpineGpu
     //    把 4 个控制点展开成 `BEZIER_VALUES = 18` 个 float 的采样表；展开式里的 4 个常数
     //    `0.03f / 0.006f / 0.3f / 0.16666667f`（:80-83）由**读端照抄**，
     //    ⚠️ 化简即错且不报错（那是 bezier 的前向差分系数，不是可以重排的算术式）。
+    // 用户事件定义（chunk 23，28 B/条）。字符串字段都是**进事件字符串池的下标**（第 0 条恒为空串）。
+    public sealed class SpineGpuEventData
+    {
+        public uint Name;
+        public int IntValue;
+        public float FloatValue;
+        public uint StringValue;
+        public uint AudioPath;
+        public float Volume = 1.0f;
+        public float Balance;
+    }
+
     public sealed class SpineGpuBezier
     {
         public float Cx1;

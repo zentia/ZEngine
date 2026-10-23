@@ -74,6 +74,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -1392,6 +1393,16 @@ namespace
             .SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
     }
 
+    // 测试接缝：本页建出来的组件下拉框（标签 → 选项 + 选中回调）。`inspector.pick` 控制台命令照它调同一个
+    // on_select —— 与鼠标点开 popup 再点一项走的是**同一条**路径（撤销事务 + 改字段 + OnSerializedFieldsUpdated），
+    // 只是不经过 popup。每次 BuildForObject 开头清空（回调里捕获的是组件下标，页一重建就作废）。
+    struct ComboHook
+    {
+        std::vector<std::string> options;
+        std::function<void(int)> on_select;
+    };
+    std::map<std::string, ComboHook> g_combo_hooks;
+
     // 组件段落里要用到的窗口服务（下拉框要窗口的 popup；改了资产要整页重建让下拉框换选项）
     struct SectionServices
     {
@@ -1478,9 +1489,23 @@ namespace
         {
             status = std::to_string(info->animations.size()) + " animation(s), " + std::to_string(info->skins.size()) +
                      " skin(s), " + std::to_string(info->bone_count) + " bones, " + std::to_string(info->slot_count) +
-                     " slots";
+                     " slots, " + std::to_string(info->event_names.size()) + " event(s)";
         }
         AddFieldRow(column, "", MakeText(status.c_str(), 12.0f * scale, kDimColor), 1, scale);
+        // 用户事件（v16）：只读列出资产里定义的事件名（带音频的标出来），脚本按这些名字分支
+        if (info->error.empty() && !info->event_names.empty())
+        {
+            std::string events;
+            for (size_t i = 0; i < info->event_names.size(); ++i)
+            {
+                events += (i == 0 ? "" : ", ") + info->event_names[i];
+                if (i < info->event_audio.size() && !info->event_audio[i].empty())
+                {
+                    events += " (audio)";
+                }
+            }
+            AddFieldRow(column, "Events", MakeText(events.c_str(), 12.0f * scale, kDimColor), 1, scale);
+        }
         if (!spine->GetSkeletonDataGuid().empty())
         {
             AddFieldRow(column, "GUID", MakeText(spine->GetSkeletonDataGuid().c_str(), 12.0f * scale, kDimColor), 1, scale);
@@ -1488,6 +1513,14 @@ namespace
 
         const auto add_combo = [&](const char* label, const std::string& current, std::vector<std::string> options,
                                    std::function<void(int)> on_select) {
+            const std::function<void()> rebuild_after = services.request_rebuild;
+            g_combo_hooks[label] = ComboHook {options, [on_select, rebuild_after](int i) {
+                                                  on_select(i);
+                                                  if (rebuild_after)
+                                                  {
+                                                      rebuild_after();   // 同 MakeComboButton 选中后的 m_ForceRebuild
+                                                  }
+                                              }};
             if (services.make_combo)
             {
                 AddFieldRow(column, label, services.make_combo(current, std::move(options), std::move(on_select)), 1, scale);
@@ -1771,6 +1804,56 @@ void ZSlateInspectorWindow::BuildGenericAsset(const std::filesystem::path& asset
     border->VAlign = EVerticalAlignment::Fill;
     border->SetContent(scroll);
     m_Root = border;
+}
+
+bool ZSlateInspectorWindow::PickCombo(const std::string& label, const std::string& option, std::string& message)
+{
+    const auto it = g_combo_hooks.find(label);
+    if (it == g_combo_hooks.end())
+    {
+        message = "no combo '" + label + "' on the current Inspector page (" + std::to_string(g_combo_hooks.size()) +
+                  " combo(s): ";
+        for (const auto& [name, hook] : g_combo_hooks)
+        {
+            message += "'" + name + "' ";
+        }
+        message += ")";
+        return false;
+    }
+    const std::vector<std::string>& options = it->second.options;
+    for (size_t i = 0; i < options.size(); ++i)
+    {
+        if (options[i] == option)
+        {
+            // 先拷一份回调：on_select 会触发整页重建，重建会清空 g_combo_hooks
+            const std::function<void(int)> select = it->second.on_select;
+            select(static_cast<int>(i));
+            message = "'" + label + "' <- '" + option + "' (option " + std::to_string(i) + "/" +
+                      std::to_string(options.size()) + ")";
+            return true;
+        }
+    }
+    message = "'" + label + "' has no option '" + option + "'; options:";
+    for (const std::string& o : options)
+    {
+        message += " '" + o + "'";
+    }
+    return false;
+}
+
+std::vector<std::string> ZSlateInspectorWindow::ListCombos()
+{
+    std::vector<std::string> out;
+    for (const auto& [name, hook] : g_combo_hooks)
+    {
+        std::string line = name + ":";
+        for (const std::string& o : hook.options)
+        {
+            line += " '" + o + "'";
+        }
+        out.push_back(std::move(line));
+    }
+    return out;
 }
 
 std::shared_ptr<SWidget> ZSlateInspectorWindow::MakeComboButton(const std::string& current_label,
@@ -3010,6 +3093,7 @@ void ZSlateInspectorWindow::BuildShaderAsset(const std::filesystem::path& asset_
 void ZSlateInspectorWindow::BuildForObject(float scale)
 {
     m_Bindings.clear();
+    g_combo_hooks.clear();
     s_tooltips.clear();  // rows are rebuilt below; drop the stale widget refs
 
     auto make_field = [this, scale](int which, int axis) {

@@ -48,13 +48,21 @@ public:
 /// 一条动画事件（spine::AnimationState 的 listener 回调同义）。
 struct SpineAnimationEvent
 {
-    /// "start" / "interrupt" / "end" / "dispose" / "complete"（顺序与参考实现的 listener 完全一致；
-    /// "event"——event 时间轴里的用户事件——本格式暂不产生）
+    /// "start" / "interrupt" / "end" / "dispose" / "complete" / "event"（顺序与参考实现的 listener 完全一致）
     eastl::string type;
     int32_t track = 0;
     eastl::string animation;   // 动画名；空动画（setEmptyAnimation）= "<empty>"
     bool loop = false;
     float track_time = 0.0f;   // 派发那一刻 TrackEntry 的 trackTime
+    // ---- 只在 type == "event"（Spine 编辑器里打的用户事件）时有值 = spine::Event ----
+    eastl::string name;        // EventData::getName()
+    int32_t int_value = 0;
+    float float_value = 0.0f;
+    eastl::string string_value;
+    eastl::string audio_path;  // EventData::getAudioPath()；空 = 没配音频
+    float volume = 1.0f;
+    float balance = 0.0f;
+    float time = 0.0f;         // Event::getTime()：事件在动画里的时刻（秒）
 };
 
 /// 场景里的 GPU-Spine 骨架（spine-unity 的 SkeletonAnimation 同位）。
@@ -154,6 +162,33 @@ public:
     int32_t GetEventTrack(int32_t index) const;
     ZFUNCTION()
     float GetEventTrackTime(int32_t index) const;
+    // 用户事件（type == "event"）的值；其它类型的事件上读到的是缺省值（"" / 0 / 1）
+    ZFUNCTION()
+    eastl::string GetEventName(int32_t index) const;
+    ZFUNCTION()
+    int32_t GetEventInt(int32_t index) const;
+    ZFUNCTION()
+    float GetEventFloat(int32_t index) const;
+    ZFUNCTION()
+    eastl::string GetEventString(int32_t index) const;
+    ZFUNCTION()
+    eastl::string GetEventAudioPath(int32_t index) const;
+    ZFUNCTION()
+    float GetEventVolume(int32_t index) const;
+    ZFUNCTION()
+    float GetEventBalance(int32_t index) const;
+    /// 事件在动画里的时刻（Event::getTime）；生命周期事件上 = 0
+    ZFUNCTION()
+    float GetEventTime(int32_t index) const;
+    /// 该轨道**刚 set / add 进去的那条**的 eventThreshold（spine-unity `entry.EventThreshold = x`）：
+    /// 它被混出时，mix < threshold 才继续派发它的用户事件。默认 0 = 一开始混出就不派发
+    ZFUNCTION()
+    void SetEventThreshold(int32_t track, float threshold);
+    // 资产里定义的用户事件（不论哪个动画用到）
+    ZFUNCTION()
+    int32_t GetUserEventCount() const;
+    ZFUNCTION()
+    eastl::string GetUserEventName(int32_t index) const;
     const std::vector<SpineAnimationEvent>& GetFrameEvents() const { return m_FrameEvents; }
     /// C++ 回调：在本组件 Tick 里按派发顺序逐条调用（回调里可以再调播放 API）
     void SetEventListener(EventListener listener) { m_EventListener = std::move(listener); }

@@ -11,6 +11,8 @@
     #include "Editor/RenderDoc/RenderDoc.h"
     #include "RenderDocAPI.h"
 #endif
+#include "Editor/EditorUI/EditorSelection.h"
+#include "Editor/EditorWindow/ZSlateInspectorWindow/ZSlateInspectorWindow.h"
 #include "Editor/Undo/EditorUndo.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
@@ -62,13 +64,98 @@ namespace
         return true;
     }
 
+    // obj select <id | name>：与在 Hierarchy 里单击同一条路径（EditorSelection ⇒ Inspector 跟着换）。
+    // 名字重复时取 id 最小的那个（getAllGObjects 是无序表，按 id 排一下才可复现）。
+    bool CmdObjSelect(const std::vector<std::string>& args)
+    {
+        if (args.size() < 2)
+        {
+            LOG_ERROR(ZConsole, "Usage: obj select <id | name>");
+            return false;
+        }
+        auto world = GET_SYSTEM(WorldManager);
+        Level* level = world != nullptr ? world->getCurrentActiveLevel() : nullptr;
+        if (level == nullptr)
+        {
+            LOG_ERROR(ZConsole, "obj select: no active level");
+            return false;
+        }
+        const std::string& key = args[1];
+        const bool numeric = !key.empty() && std::all_of(key.begin(), key.end(), [](unsigned char c) { return std::isdigit(c) != 0; });
+        GObjectID hit = k_invalid_gobject_id;
+        for (const auto& [id, object] : level->getAllGObjects())
+        {
+            if (!object)
+            {
+                continue;
+            }
+            const bool match = numeric ? static_cast<uint64_t>(id) == std::strtoull(key.c_str(), nullptr, 10)
+                                       : std::string(object->GetName().c_str()) == key;
+            if (match && (hit == k_invalid_gobject_id || id < hit))
+            {
+                hit = id;
+            }
+        }
+        if (hit == k_invalid_gobject_id)
+        {
+            LOG_ERROR(ZConsole, "obj select: no object '{}' in the active level", key);
+            return false;
+        }
+        EditorSelection::SelectGameObject(hit);
+        LOG_INFO(ZConsole, "obj select: [{}] selected", static_cast<uint64_t>(hit));
+        return true;
+    }
+
+    // inspector.pick <label> <option...>：标签里的 '_' 当空格（"Initial_Skin"），选项是剩下的参数用空格拼回去
+    bool CmdInspectorPick(const std::vector<std::string>& args)
+    {
+        if (args.size() < 2)
+        {
+            LOG_ERROR(ZConsole, "Usage: inspector.pick <label, '_' = space> <option text>");
+            return false;
+        }
+        std::string label = args[0];
+        std::replace(label.begin(), label.end(), '_', ' ');
+        std::string option = args[1];
+        for (size_t i = 2; i < args.size(); ++i)
+        {
+            option += " " + args[i];
+        }
+        std::string message;
+        const bool ok = ZSlateInspectorWindow::PickCombo(label, option, message);
+        if (ok)
+        {
+            LOG_INFO(ZConsole, "inspector.pick: {}", message);
+        }
+        else
+        {
+            LOG_ERROR(ZConsole, "inspector.pick: {}", message);
+        }
+        return ok;
+    }
+
+    bool CmdInspectorCombos(const std::vector<std::string>&)
+    {
+        const std::vector<std::string> combos = ZSlateInspectorWindow::ListCombos();
+        LOG_INFO(ZConsole, "inspector.combos: {} on the current page", combos.size());
+        for (const std::string& c : combos)
+        {
+            LOG_INFO(ZConsole, "  {}", c);
+        }
+        return true;
+    }
+
     bool CmdObj(const std::vector<std::string>& args)
     {
         if (args.empty() || args[0] == "list")
         {
             return CmdObjList(args);
         }
-        LOG_ERROR(ZConsole, "Unknown obj subcommand '{}'. Usage: obj list", args[0]);
+        if (args[0] == "select")
+        {
+            return CmdObjSelect(args);
+        }
+        LOG_ERROR(ZConsole, "Unknown obj subcommand '{}'. Usage: obj list | obj select <id | name>", args[0]);
         return false;
     }
 
@@ -777,7 +864,13 @@ namespace
 
 void RegisterEditorConsoleCommands(ConsoleManager& console)
 {
-    console.RegisterCommand("obj", "Scene objects. Usage: obj list", CmdObj);
+    console.RegisterCommand("obj", "Scene objects. Usage: obj list | obj select <id | name>", CmdObj);
+    console.RegisterCommand("inspector.pick",
+                            "Pick an option in an Inspector combo (same path as clicking it). "
+                            "Usage: inspector.pick <label, '_' = space> <option text>",
+                            CmdInspectorPick);
+    console.RegisterCommand("inspector.combos", "List the component combos on the current Inspector page",
+                            CmdInspectorCombos);
     console.RegisterCommand("level", "Level ops. Usage: level reload | level save", CmdLevel);
     console.RegisterCommand("asset.find", "Search AssetRegistry. Usage: asset.find <filter>", CmdAssetFind);
     console.RegisterCommand("asset.reimport", "Reimport a .zasset from its source. Usage: asset.reimport <path>",

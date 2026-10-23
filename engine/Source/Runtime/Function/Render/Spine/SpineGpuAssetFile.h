@@ -54,6 +54,11 @@ struct SpineGpuAssetInfo
     std::vector<std::string> animations;
     std::vector<float> durations;   // 与 animations 一一对应（秒）
     std::vector<std::string> skins; // 容器里的全部皮肤名（含 "default"，若有）
+    // 用户事件（v16）：定义名 / 音频路径与 SpineGpuAsset::events 一一对应；`event_strings` 是字符串池
+    // 原样拷贝（SpineGpuUserEvent::string_value 按下标查它）
+    std::vector<std::string> event_names;
+    std::vector<std::string> event_audio;
+    std::vector<std::string> event_strings;
     uint32_t bone_count = 0;
     uint32_t slot_count = 0;
     std::string error;               // 非空 = 读失败（其余字段为空）

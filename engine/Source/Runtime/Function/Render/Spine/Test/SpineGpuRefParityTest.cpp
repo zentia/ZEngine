@@ -22,6 +22,8 @@
 #include <spine/Extension.h>
 #include <spine/SkeletonBinary.h>
 #include <spine/SkeletonJson.h>
+#include <spine/Event.h>
+#include <spine/EventData.h>
 #include <spine/AttachmentLoader.h>
 #include <spine/RegionAttachment.h>
 #include <spine/MeshAttachment.h>
@@ -57,6 +59,7 @@
 #include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuBatch.h"
+#include "SpineGpuEventFixture.h"
 #include "SpineGpuSkinFixture.h"
 #include "Runtime/Function/Render/Spine/SpineGpuClipper.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
@@ -74,133 +77,8 @@
 
 namespace fs = std::filesystem;
 
-// ---------------------------------------------------------------------
-// getDefaultExtension()
-//
-// spine-cpp 把"默认分配器由宿主提供"做成了一个**未定义的 extern**：
-// `Extension.cpp:49` 只调用它，实现留给了引擎各自 runtime（Unity 那边在
-// 别处给）。它不在 SpineReference.lib 里 ⇒ 宿主（本测试）必须给一个。
-// `DefaultSpineExtension` 是随库实现的（malloc/free + fopen），直接用。
-// ---------------------------------------------------------------------
-namespace spine
-{
-SpineExtension* getDefaultExtension()
-{
-    static DefaultSpineExtension g_default_extension;
-    return &g_default_extension;
-}
+#include "SpineGpuRefRuntime.h"
 
-// -------------------------------------------------------------------
-// AtlasAttachmentLoader 的"永不调用"桩
-//
-// SkeletonBinary.cpp:98 的 `SkeletonBinary(Atlas*)` 里 `new AtlasAttachmentLoader(...)`。
-// 我们只用 `SkeletonBinary(AttachmentLoader*)`，但 Debug 下 MSVC 链接器按 **.obj**
-// 粒度拉符号 ⇒ 那个构造函数还是得能解析。而 `AtlasAttachmentLoader.cpp` 依赖
-// `Atlas.cpp`，后者吃 Unity 的 baselib 头（该头文件在引擎里根本不存在）⇒ 编不过。
-// ⇒ 这里补一份空实现；它对应的构造路径我们**永远不走**。
-// -------------------------------------------------------------------
-AtlasAttachmentLoader::AtlasAttachmentLoader(Atlas*) : _atlas(nullptr) {}
-RegionAttachment* AtlasAttachmentLoader::newRegionAttachment(Skin&, const String&, const String&)
-{
-    return nullptr;
-}
-MeshAttachment* AtlasAttachmentLoader::newMeshAttachment(Skin&, const String&, const String&) { return nullptr; }
-BoundingBoxAttachment* AtlasAttachmentLoader::newBoundingBoxAttachment(Skin&, const String&) { return nullptr; }
-PathAttachment* AtlasAttachmentLoader::newPathAttachment(Skin&, const String&) { return nullptr; }
-PointAttachment* AtlasAttachmentLoader::newPointAttachment(Skin&, const String&) { return nullptr; }
-ClippingAttachment* AtlasAttachmentLoader::newClippingAttachment(Skin&, const String&) { return nullptr; }
-void AtlasAttachmentLoader::configureAttachment(Attachment*) {}
-AtlasRegion* AtlasAttachmentLoader::findRegion(const String&) { return nullptr; }
-const SpineRTTI AtlasAttachmentLoader::rtti(6);
-const SpineRTTI& AtlasAttachmentLoader::getRTTI() const { return rtti; }
-}   // namespace spine
-
-// ---------------------------------------------------------------------
-// 参考侧的"空"附件加载器
-//
-// 我们只比**骨骼**，不需要图集 ⇒ 不需要 `AtlasAttachmentLoader`。
-// 但 path 约束要读 `PathAttachment` 的顶点与 lengths —— 那部分由
-// `SkeletonBinary::readVertices()` 填，跟图集无关 ⇒ 空加载器照样对。
-// ---------------------------------------------------------------------
-//
-// v15：给了图集就按 `AtlasAttachmentLoader`（AtlasAttachmentLoader.cpp:51-96）配 region / mesh 的
-// 图集参数 —— 端到端比 UV / 裁剪要用参考侧的 UV。找不到 region 时**照样建附件**（参考加载器
-// 会返回 NULL ⇒ 附件集合变了，骨骼对拍就没法比），只是不配 UV。
-class RefAttachmentLoader : public spine::AttachmentLoader
-{
-public:
-    explicit RefAttachmentLoader(const SpineAtlas* atlas = nullptr) : m_Atlas(atlas) {}
-
-    spine::RegionAttachment* newRegionAttachment(spine::Skin& skin, const spine::String& name,
-                                                 const spine::String& path) override
-    {
-        (void)skin;
-        spine::RegionAttachment* a = new (__FILE__, __LINE__) spine::RegionAttachment(name);
-        a->setPath(path);
-        if (const SpineAtlasRegion* r = Find(path))
-        {
-            a->setUVs(r->u, r->v, r->u2, r->v2, r->rotate);
-            a->setRegionOffsetX(static_cast<float>(r->offset_x));
-            a->setRegionOffsetY(static_cast<float>(r->offset_y));
-            a->setRegionWidth(static_cast<float>(r->width));
-            a->setRegionHeight(static_cast<float>(r->height));
-            a->setRegionOriginalWidth(static_cast<float>(r->orig_w));
-            a->setRegionOriginalHeight(static_cast<float>(r->orig_h));
-        }
-        return a;
-    }
-    spine::MeshAttachment* newMeshAttachment(spine::Skin& skin, const spine::String& name,
-                                             const spine::String& path) override
-    {
-        (void)skin;
-        spine::MeshAttachment* a = new (__FILE__, __LINE__) spine::MeshAttachment(name);
-        a->setPath(path);
-        if (const SpineAtlasRegion* r = Find(path))
-        {
-            a->setRegionU(r->u);
-            a->setRegionV(r->v);
-            a->setRegionU2(r->u2);
-            a->setRegionV2(r->v2);
-            a->setRegionRotate(r->rotate);
-            a->setRegionOffsetX(static_cast<float>(r->offset_x));
-            a->setRegionOffsetY(static_cast<float>(r->offset_y));
-            a->setRegionWidth(static_cast<float>(r->width));
-            a->setRegionHeight(static_cast<float>(r->height));
-            a->setRegionOriginalWidth(static_cast<float>(r->orig_w));
-            a->setRegionOriginalHeight(static_cast<float>(r->orig_h));
-        }
-        return a;
-    }
-    spine::BoundingBoxAttachment* newBoundingBoxAttachment(spine::Skin& skin, const spine::String& name) override
-    {
-        (void)skin;
-        return new (__FILE__, __LINE__) spine::BoundingBoxAttachment(name);
-    }
-    spine::PathAttachment* newPathAttachment(spine::Skin& skin, const spine::String& name) override
-    {
-        (void)skin;
-        return new (__FILE__, __LINE__) spine::PathAttachment(name);
-    }
-    spine::PointAttachment* newPointAttachment(spine::Skin& skin, const spine::String& name) override
-    {
-        (void)skin;
-        return new (__FILE__, __LINE__) spine::PointAttachment(name);
-    }
-    spine::ClippingAttachment* newClippingAttachment(spine::Skin& skin, const spine::String& name) override
-    {
-        (void)skin;
-        return new (__FILE__, __LINE__) spine::ClippingAttachment(name);
-    }
-    void configureAttachment(spine::Attachment* attachment) override { (void)attachment; }
-
-private:
-    const SpineAtlasRegion* Find(const spine::String& path) const
-    {
-        // spine::String 空串时 buffer() 是 NULL
-        return m_Atlas != nullptr && path.buffer() != nullptr ? FindAtlasRegion(*m_Atlas, path.buffer()) : nullptr;
-    }
-    const SpineAtlas* m_Atlas;
-};
 
 namespace
 {
@@ -548,8 +426,18 @@ struct S5RefEvent
     spine::Animation* animation = nullptr;
     bool loop = false;
     float track_time = 0.0f;
+    // 用户事件（type == EventType_Event）的值拷贝：spine::Event 归 SkeletonData 所有，这里只抄值
+    bool has_user = false;
+    std::string name;
+    int int_value = 0;
+    float float_value = 0.0f;
+    std::string string_value;
+    std::string audio_path;
+    float volume = 0.0f;
+    float balance = 0.0f;
+    float time = 0.0f;
 };
-void S5RefListener(spine::AnimationState* state, spine::EventType type, spine::TrackEntry* entry, spine::Event*)
+void S5RefListener(spine::AnimationState* state, spine::EventType type, spine::TrackEntry* entry, spine::Event* event)
 {
     auto* out = static_cast<std::vector<S5RefEvent>*>(state->getRendererObject());
     if (out == nullptr || entry == nullptr)
@@ -562,13 +450,51 @@ void S5RefListener(spine::AnimationState* state, spine::EventType type, spine::T
     e.animation = entry->getAnimation();
     e.loop = entry->getLoop();
     e.track_time = entry->getTrackTime();
+    if (event != nullptr)
+    {
+        e.has_user = true;
+        e.name = event->getData().getName().buffer();
+        e.int_value = event->getIntValue();
+        e.float_value = event->getFloatValue();
+        e.string_value = event->getStringValue().buffer() != nullptr ? event->getStringValue().buffer() : "";
+        // getAudioPath() 在 3.8 里不是 const 成员（getData() 却返回 const&）⇒ 只能 const_cast
+        spine::EventData& data = const_cast<spine::EventData&>(event->getData());
+        e.audio_path = data.getAudioPath().buffer() != nullptr ? data.getAudioPath().buffer() : "";
+        e.volume = event->getVolume();
+        e.balance = event->getBalance();
+        e.time = event->getTime();
+    }
     out->push_back(e);
 }
 
 // 两边本帧（命令 + update + apply）派发的事件逐条比；空串 = 一致
-std::string S5CompareEvents(const std::vector<SpineGpuAnimationEvent>& ours, const std::vector<S5RefEvent>& ref,
-                            spine::Vector<spine::Animation*>& ref_anims, S5Stats& s5)
+std::string S5CompareEvents(const SpineGpuAsset& asset, const std::vector<SpineGpuAnimationEvent>& ours,
+                            const std::vector<S5RefEvent>& ref, spine::Vector<spine::Animation*>& ref_anims, S5Stats& s5)
 {
+    const auto pool = [&](uint32_t i) -> std::string {
+        return i < asset.event_strings.size() ? asset.event_strings[i] : std::string("<越界 #" + std::to_string(i) + ">");
+    };
+    // 用户事件的值逐字段比（float 逐位：两边都是从同一份文件读出来的原值，不经运算）
+    const auto user_diff = [&](const SpineGpuUserEvent& a, const S5RefEvent& b) -> std::string {
+        if (a.event >= asset.events.size())
+        {
+            return "我们的事件定义下标越界 " + std::to_string(a.event);
+        }
+        const SpineGpuEventData& d = asset.events[a.event];
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+                      "我们 '%s' int %d float %.9g string '%s' audio '%s' vol %.9g bal %.9g time %.9g / "
+                      "参考 '%s' int %d float %.9g string '%s' audio '%s' vol %.9g bal %.9g time %.9g",
+                      pool(d.name).c_str(), a.int_value, static_cast<double>(a.float_value), pool(a.string_value).c_str(),
+                      pool(d.audio_path).c_str(), static_cast<double>(a.volume), static_cast<double>(a.balance),
+                      static_cast<double>(a.time), b.name.c_str(), b.int_value, static_cast<double>(b.float_value),
+                      b.string_value.c_str(), b.audio_path.c_str(), static_cast<double>(b.volume),
+                      static_cast<double>(b.balance), static_cast<double>(b.time));
+        const bool same = pool(d.name) == b.name && a.int_value == b.int_value && a.float_value == b.float_value &&
+                          pool(a.string_value) == b.string_value && pool(d.audio_path) == b.audio_path &&
+                          a.volume == b.volume && a.balance == b.balance && a.time == b.time;
+        return same ? std::string() : std::string(buf);
+    };
     const auto ref_anim_index = [&](spine::Animation* a) -> uint32_t {
         for (size_t i = 0; i < ref_anims.size(); ++i)
         {
@@ -611,6 +537,18 @@ std::string S5CompareEvents(const std::vector<SpineGpuAnimationEvent>& ours, con
             return "第 " + std::to_string(i) + " 条事件不同：我们 " +
                    describe(static_cast<int>(a.type), static_cast<int>(a.track), a.animation, a.loop, a.track_time) +
                    " / 参考 " + describe(b.type, b.track, b_anim, b.loop, b.track_time);
+        }
+        if (a.type == SpineGpuEventType::kEvent)
+        {
+            if (!b.has_user)
+            {
+                return "第 " + std::to_string(i) + " 条是用户事件，但参考那边没有 spine::Event";
+            }
+            const std::string d = user_diff(a.user, b);
+            if (!d.empty())
+            {
+                return "第 " + std::to_string(i) + " 条用户事件的值不同：" + d;
+            }
         }
         ++s5.events;
         if (b.type >= 0 && b.type < 6)
@@ -1373,6 +1311,8 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
     s5.skin_assets += has_named_skins ? 1u : 0u;
     // 独立的随机数流：没有具名皮肤的资产一个数都不抽 ⇒ 原有脚本逐帧不变
     S5Rng skin_rng(HashPath(skel_path.string()) ^ 0x5EED5EEDull);
+    // eventThreshold 用独立随机数流（v16 加的）：不扰动主流 ⇒ 既有资产的脚本与之前逐条相同
+    S5Rng event_rng(HashPath(skel_path.string()) ^ 0xE7E47E47ull);
     const auto set_skin = [&](uint32_t k, std::vector<std::string>& log, const char* when) {
         ++s5.skin_switches;
         const SpineImportResult sr = SpineGpuSetSkin(asset, data, st, k);
@@ -1592,6 +1532,13 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
                         re->setDrawOrderThreshold(th);
                         tw += " doTh=" + std::to_string(th);
                     }
+                    if (event_rng.Chance(0.3f))
+                    {
+                        const float th = event_rng.Uniform(0.0f, 1.0f);
+                        oe->event_threshold = th;
+                        re->setEventThreshold(th);
+                        tw += " evTh=" + std::to_string(th);
+                    }
                     if (track != 0 && rng.Chance(0.3f))
                     {
                         const bool add = rng.Chance(0.5f);
@@ -1672,7 +1619,7 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
             if (diff.empty())
             {
                 // 本帧（命令 + update + apply）两边派发的事件流必须逐条一致
-                diff = S5CompareEvents(our_events, ref_events, ref_anims, s5);
+                diff = S5CompareEvents(asset, our_events, ref_events, ref_anims, s5);
             }
             our_events.clear();
             ref_events.clear();
@@ -1742,15 +1689,17 @@ void ReportBakeFailure(const char* stage, const std::filesystem::path& file, con
 // 换肤夹具（SpineGpuSkinFixture.h）：OSGame 没有带具名皮肤的资产 ⇒ 用手写的 3.8 json 跑同一套 S5
 // 随机脚本（换肤用独立随机数流），每条脚本都换。返回 false = 夹具本身两边加载不成。
 // ---------------------------------------------------------------------
-bool RunSkinFixture(size_t scripts, size_t frames, size_t max_details, S5Stats& s5)
+bool RunJsonFixture(const char* name, const char* atlas_src, const char* json_src, size_t scripts, size_t frames,
+                    size_t max_details, S5Stats& s5)
 {
-    const std::string atlas_text = SpineGpuSkinFixture::kAtlas;
-    const std::string json = SpineGpuSkinFixture::kSkeleton;
+    const std::string atlas_text = atlas_src;
+    const std::string json = json_src;
+    const std::string label = std::string("fixture/") + name;
     const auto fail = [&](const std::string& why) {
         ++s5.assets_bad;
         if (s5.details.size() < max_details)
         {
-            s5.details.push_back("fixture/skins.json：" + why);
+            s5.details.push_back(label + "：" + why);
         }
         return false;
     };
@@ -1787,9 +1736,15 @@ bool RunSkinFixture(size_t scripts, size_t frames, size_t max_details, S5Stats& 
     {
         return fail(std::string("参考实现解析失败：") + ref_json.getError().buffer());
     }
-    const bool ok = RunS5(fs::path("fixture/skins.json"), loaded, ref_data, scripts, frames, max_details, s5);
+    const bool ok = RunS5(fs::path(label), loaded, ref_data, scripts, frames, max_details, s5);
     delete ref_data;
     return ok;
+}
+
+bool RunSkinFixture(size_t scripts, size_t frames, size_t max_details, S5Stats& s5)
+{
+    return RunJsonFixture("skins.json", SpineGpuSkinFixture::kAtlas, SpineGpuSkinFixture::kSkeleton, scripts, frames,
+                          max_details, s5);
 }
 
 int main(int argc, char** argv)
@@ -1910,6 +1865,9 @@ int main(int argc, char** argv)
     {
         // 换肤夹具先跑（不依赖资产目录）：OSGame 没有具名皮肤，这是换肤唯一的参考对拍
         RunSkinFixture(64, 300, max_details, s5);
+        // 用户事件夹具（v16）：OSGame 没有用户事件 ⇒ 这里 + spine-runtimes 官方示例是事件的参考对拍
+        RunJsonFixture("events.json", SpineGpuEventFixture::kAtlas, SpineGpuEventFixture::kSkeleton, 64, 300,
+                       max_details, s5);
     }
     for (const fs::path& skel_path : files)
     {

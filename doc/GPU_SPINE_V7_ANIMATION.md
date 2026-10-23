@@ -1002,6 +1002,31 @@ spine.alpha <track> <0..1>                         # 轨道当前那条的 alpha
 * **IK / transform / pathSpacing 时间轴**：仍**显式报错**（实测 0 / 782 资产用到）。
 * **换肤**：附件仍只在 default 皮肤里解析。
 
+### 7.0.8 用户事件已落地（2026-10-23）：chunk 23 + 时间轴 type 7（格式 v15 → v16）
+
+上面那条"用户事件类型保留、工程里 0 / 782 资产有、未接时间轴"已被**推翻**：v16 把事件定义与事件时间轴
+真正烘焙进容器（规格 `doc/GPU_SPINE_INTERCHANGE_FORMAT.md` §16）。要点：
+
+* **chunk 23** = `SpineGpuEventChunkHeader`(16 B) + `SpineGpuEventData`(28 B/条) + 自带字符串池
+  （按**下标**引用，第 0 条恒空串）。**没有事件时不写这个 chunk**。
+* **时间轴 type 7** 第一次进 chunk 12：帧 = `time`（chunk 13，1 float/帧），载荷 = `SpineGpuEventKey`(24 B/帧)。
+* **两条最容易抄错的参考语义**：逐帧缺省的 volume / balance 是 **Event 构造函数的 1 / 0，不是 EventData 的**
+  （参考实现不继承）；**只有 EventData 带 audioPath 时**才逐帧读 volume / balance。
+* ⚠️ **animation duration 现在把最后一个事件的 time 算进去**（`SkeletonBinary.cpp:1106` /
+  `SkeletonJson.cpp:1197` 一直如此）—— v15 及以前不烘事件 ⇒ 少算 ⇒ 事件在末尾之后的资产
+  **complete 时机错、不报错**。这是本次升版本的真正理由（布局一个字节没动，变的是语义）。
+* 派发（照抄参考）：同 time 多帧取**第一帧**（`EventTimeline::apply` 的回绕递归）；`queueEvents`
+  按 complete 切成两段；**mixingFrom 只在 `mix < eventThreshold` 时收集，且只在 `to->mixDuration > 0`
+  时排队**。`eventThreshold` 按 (instance, track) 下发（`kEventThreshold` op，作用在轨道**尾** entry）。
+* 对外：组件 `SpineAnimationEvent.user` + ZFUNCTION `GetEventName / Int / Float / String / AudioPath /
+  Volume / Balance / Time`、`SetEventThreshold(track, th)`、`GetUserEventCount / GetUserEventName`。
+* **验收**（OSGame 全量，`build/parity_osgame_final.log`）：事件总数 **101,369 → 111,266**
+  —— 用户事件 0 → **4,458**，其余 **+5,439** 全是 duration 修正的产物（complete +1,957 /
+  start +1,043 / end +879 / dispose +893 / interrupt +667）。差额刚好对得上，说明新增的
+  调度事件**只**来自"动画变长了"，不是调度逻辑被改坏。手算夹具 `SpineGpuEventFixture.h`（step / sfx / blank / mute 四类事件 ×
+  walk / late / solo / burst 四条动画）45 条检查、1491 断言；变异（去掉 `mix < eventThreshold` 判据、
+  事件全放 complete 之后）都被抓到；C# 往返逐字节相同；spineboy 自动 cook + TS 探针收到用户事件。
+
 ---
 
 ## 8. 风险 / 未决

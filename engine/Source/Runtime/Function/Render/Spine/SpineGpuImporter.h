@@ -396,6 +396,29 @@ struct SpineSourceDrawOrderFrame
     std::vector<int32_t> offsets;
 };
 
+// 用户事件定义（v16，chunk 23）。语义见 SpineGpuFormat.h 的 SpineGpuEventData 注释。
+struct SpineSourceEventData
+{
+    std::string name;
+    int32_t int_value = 0;
+    float float_value = 0.0f;
+    std::string string_value;
+    std::string audio_path;   // 空 = 无音频（此时 volume / balance 保持 1 / 0）
+    float volume = 1.0f;
+    float balance = 0.0f;
+};
+
+// 事件时间轴的一帧（time 在 SpineSourceTimeline::frames 里）。
+struct SpineSourceEventKey
+{
+    uint32_t event = 0;   // 进 SpineSourceSkeleton::events 的下标
+    int32_t int_value = 0;
+    float float_value = 0.0f;
+    std::string string_value;
+    float volume = 1.0f;
+    float balance = 0.0f;
+};
+
 struct SpineSourceTimeline
 {
     SpineTimelineType type = SpineTimelineType::kRotate;
@@ -422,6 +445,8 @@ struct SpineSourceTimeline
     std::string deform_attachment;
     // type 8 drawOrder：每帧一组偏移。
     std::vector<SpineSourceDrawOrderFrame> draw_order_frames;
+    // type 7 event：每帧一条（v16）。
+    std::vector<SpineSourceEventKey> event_keys;
 };
 
 struct SpineSourceAnimation
@@ -454,6 +479,9 @@ struct SpineSourceSkeleton
     // 动画（v9：烘焙进 chunk 11-16）。json 与二进制走同一个 SpineSourceTimeline。
     std::vector<SpineSourceAnimation> animations;
 
+    // 用户事件定义（v16）。下标 = 文件里的顺序（二进制 / json 都是），时间轴按下标引用。
+    std::vector<SpineSourceEventData> events;
+
     // 约束**名**的有序表。只用于把 json 里 `animations.*.ik / transform / path` 的
     // **名字**换算成下标（参考实现 `findIkConstraint()` 找不到时把下标**静默留在 0**，
     // SkeletonJson.cpp:933-940 ⇒ 我们报显式错）。
@@ -479,7 +507,7 @@ struct SpineSourceSkeleton
     bool has_draw_order_timeline = false;   // animations.*.drawOrder 存在 ⇒ 整个资产走 CPU
     bool uses_tint_black = false;           // 任一槽位带 dark
     bool has_clipping = false;              // 存在 clipping 附件（= !clips.empty()）
-    bool has_event_timeline = false;        // 有 event 时间轴（**不烘焙**，但要说出来）
+    bool has_event_timeline = false;        // 有 event 时间轴（v16 起烘焙进容器）
 
     // 图集页名（写进容器 chunk 7；序列化时才知道纹理引用）
     std::vector<std::string> atlas_pages;
@@ -628,6 +656,12 @@ struct SpineGpuAsset
     // 一条 path 附件一个名字，**与 path_attachments 一一对应**（不去重）。
     // 运行时在 attachment 时间轴改掉槽位挂的附件后，要按名字重新查是哪条曲线。
     std::vector<std::string> path_attachment_names;
+
+    // ---- 用户事件（chunk 23，v16）----
+    // 定义按源文件顺序；字符串池第 0 条恒为空串（见 SpineGpuEventChunkHeader）。
+    // 事件时间轴的逐帧数据是 timeline_payload 里的 SpineGpuEventKey。
+    std::vector<SpineGpuEventData> events;
+    std::vector<std::string> event_strings;
 };
 
 SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsset& out);

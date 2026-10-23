@@ -95,6 +95,11 @@ class ZSlateInspectorWindow : public EditorWindow
 public:
     explicit ZSlateInspectorWindow(EditorUI* editor_ui);
     void OnGUI() override;
+
+    // 测试接缝（`inspector.pick` / `inspector.combos` 控制台命令）：按标签找当前页上的组件下拉框，
+    // 按选项文本调它的 on_select（= 鼠标选中那一项走的同一条路径，只是不弹 popup）。
+    static bool PickCombo(const std::string& label, const std::string& option, std::string& message);
+    static std::vector<std::string> ListCombos();
     bool SupportsNativeHosting() const override { return true; }
 
     // Which native asset inspector (if any) the current selection maps to. All

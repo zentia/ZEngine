@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <string>
 
@@ -142,7 +143,7 @@ const char* SpineGpuEventTypeName(SpineGpuEventType type)
     return "?";
 }
 
-void SpineGpuAnimationState::Emit(SpineGpuEventType type, const SpineGpuTrackEntry& e)
+void SpineGpuAnimationState::Emit(SpineGpuEventType type, const SpineGpuTrackEntry& e, const SpineGpuUserEvent* user)
 {
     if (event_sink == nullptr)
     {
@@ -154,6 +155,10 @@ void SpineGpuAnimationState::Emit(SpineGpuEventType type, const SpineGpuTrackEnt
     ev.animation = e.animation;
     ev.loop = e.loop;
     ev.track_time = e.track_time;
+    if (user != nullptr)
+    {
+        ev.user = *user;
+    }
     event_sink->push_back(ev);
 }
 
@@ -168,8 +173,8 @@ void SpineGpuAnimationState::Drain()
     m_DrainDisabled = true;
     for (size_t i = 0; i < m_Queue.size(); ++i)
     {
-        const SpineGpuEventType type = m_Queue[i].first;
-        SpineGpuTrackEntry* e = m_Queue[i].second;
+        const SpineGpuEventType type = m_Queue[i].type;
+        SpineGpuTrackEntry* e = m_Queue[i].entry;
         switch (type)
         {
             case SpineGpuEventType::kEnd:
@@ -180,6 +185,12 @@ void SpineGpuAnimationState::Drain()
                 ResetEntry(*e);
                 Free(e);
                 break;
+            case SpineGpuEventType::kEvent:
+            {
+                const SpineGpuUserEvent user = m_Queue[i].user;   // 拷一份：Emit 不会改队列，但别依赖这一点
+                Emit(type, *e, &user);
+                break;
+            }
             default:
                 Emit(type, *e);
                 break;
@@ -189,12 +200,89 @@ void SpineGpuAnimationState::Drain()
     m_DrainDisabled = false;
 }
 
-// queueEvents（:842-878）。`_events` 恒空（event 时间轴不进容器），两段事件循环都是空转 ⇒ 只剩 complete。
+// EventTimeline::apply（EventTimeline.cpp:63-103）。参考实现把 `Event*` 收进 `_events`；这里收值拷贝。
+//   * lastTime > time（循环回绕）⇒ 先递归收 (lastTime, +∞)，再从 -1 收到 time；
+//   * lastTime ≥ 末帧 ⇒ 什么也不收（注意：回绕分支**不**走这条 else，递归里才走）；
+//   * 同一时刻多个事件：binarySearch 找到的是"第一个 > lastTime 的帧"，再往前退到同时刻的第一帧。
+void SpineGpuAnimationState::CollectEventTimeline(uint32_t tl_index, float last_time, float time,
+                                                  std::vector<SpineGpuUserEvent>& out) const
+{
+    const SpineGpuTimeline& tl = m_Asset.timelines[tl_index];
+    const uint32_t n = tl.frame_count;
+    if (n == 0u)
+    {
+        return;   // 读端保证 ≥ 1 帧；参考实现在这里是 `_frames[-1]`
+    }
+    const float* frames = m_Asset.frames.data() + tl.frame_first;
+    if (last_time > time)
+    {
+        CollectEventTimeline(tl_index, last_time, std::numeric_limits<float>::max(), out);
+        last_time = -1.0f;
+    }
+    else if (last_time >= frames[n - 1u])
+    {
+        return;
+    }
+    if (time < frames[0])
+    {
+        return;
+    }
+    uint32_t frame = 0;
+    if (!(last_time < frames[0]))
+    {
+        frame = SpineGpuBinarySearchFrames(frames, n, 1u, last_time);
+        const float frame_time = frames[frame];
+        while (frame > 0u)
+        {
+            if (frames[frame - 1u] != frame_time)
+            {
+                break;
+            }
+            --frame;
+        }
+    }
+    const uint8_t* payload = m_Asset.timeline_payload.data() + tl.payload_offset;
+    for (; frame < n && time >= frames[frame]; ++frame)
+    {
+        const uint8_t* p = payload + static_cast<size_t>(frame) * sizeof(SpineGpuEventKey);
+        SpineGpuEventKey key;
+        std::memcpy(&key, p, sizeof(key));
+        SpineGpuUserEvent ev;
+        ev.event = key.event;
+        ev.int_value = key.int_value;
+        ev.float_value = key.float_value;
+        ev.string_value = key.string_value;
+        ev.volume = key.volume;
+        ev.balance = key.balance;
+        ev.time = frames[frame];
+        out.push_back(ev);
+    }
+}
+
+// queueEvents（:842-878）
 void SpineGpuAnimationState::QueueEvents(SpineGpuTrackEntry* entry, float animation_time)
 {
     const float animation_start = entry->animation_start, animation_end = entry->animation_end;
     const float duration = animation_end - animation_start;
     const float track_last_wrapped = static_cast<float>(std::fmod(entry->track_last, duration));
+
+    // complete 之前的事件：遇到早于 trackLastWrapped 的（= 回绕之后那一段）就停；晚于 animationEnd 的丢掉
+    size_t i = 0;
+    const size_t n = m_Events.size();
+    for (; i < n; ++i)
+    {
+        const SpineGpuUserEvent& e = m_Events[i];
+        if (e.time < track_last_wrapped)
+        {
+            break;
+        }
+        if (e.time > animation_end)
+        {
+            continue;
+        }
+        QueueUserEvent(entry, e);
+    }
+
     bool complete = false;
     if (entry->loop)
     {
@@ -207,6 +295,17 @@ void SpineGpuAnimationState::QueueEvents(SpineGpuTrackEntry* entry, float animat
     if (complete)
     {
         QueueComplete(entry);
+    }
+
+    // complete 之后的事件（回绕后那一段）：早于 animationStart 的丢掉
+    for (; i < n; ++i)
+    {
+        const SpineGpuUserEvent& e = m_Events[i];
+        if (e.time < animation_start)
+        {
+            continue;
+        }
+        QueueUserEvent(entry, e);
     }
 }
 
@@ -379,6 +478,7 @@ SpineImportResult SpineGpuAnimationState::Apply(SpineGpuSkeletonState& skeleton,
         {
             for (uint32_t ii = 0; ii < tl_count; ++ii)
             {
+                CollectIfEvent(tl_first + ii, animation_last, animation_time, &m_Events);
                 const SpineImportResult r = SpineGpuApplyTimeline(m_Asset, m_Data, skeleton, tl_first + ii,
                                                                   animation_last, animation_time, mix, blend,
                                                                   SpineGpuMixDirection::kIn);
@@ -406,6 +506,7 @@ SpineImportResult SpineGpuAnimationState::Apply(SpineGpuSkeletonState& skeleton,
                 const uint32_t tl_index = tl_first + ii;
                 const SpineGpuMixBlend timeline_blend =
                     current.timeline_mode[ii] == kSubsequent ? blend : SpineGpuMixBlend::kSetup;
+                CollectIfEvent(tl_index, animation_last, animation_time, &m_Events);
                 SpineImportResult r;
                 if (static_cast<SpineTimelineType>(m_Asset.timelines[tl_index].type) == SpineTimelineType::kRotate)
                 {
@@ -427,6 +528,7 @@ SpineImportResult SpineGpuAnimationState::Apply(SpineGpuSkeletonState& skeleton,
         }
 
         QueueEvents(current_p, animation_time);
+        m_Events.clear();
         current.next_animation_last = animation_time;
         current.next_track_last = current.track_time;
     }
@@ -477,6 +579,7 @@ SpineImportResult SpineGpuAnimationState::ApplyMixingFrom(SpineGpuTrackEntry* to
         }
     }
 
+    std::vector<SpineGpuUserEvent>* const event_buffer = mix < from->event_threshold ? &m_Events : nullptr;
     const bool attachments = mix < from->attachment_threshold;
     const bool draw_order = mix < from->draw_order_threshold;
     const float animation_last = from->animation_last;
@@ -491,6 +594,7 @@ SpineImportResult SpineGpuAnimationState::ApplyMixingFrom(SpineGpuTrackEntry* to
     {
         for (uint32_t i = 0; i < tl_count; ++i)
         {
+            CollectIfEvent(tl_first + i, animation_last, animation_time, event_buffer);
             const SpineImportResult r = SpineGpuApplyTimeline(m_Asset, m_Data, skeleton, tl_first + i, animation_last,
                                                               animation_time, alpha_mix, blend,
                                                               SpineGpuMixDirection::kOut);
@@ -581,6 +685,7 @@ SpineImportResult SpineGpuAnimationState::ApplyMixingFrom(SpineGpuTrackEntry* to
                         }
                     }
                 }
+                CollectIfEvent(tl_index, animation_last, animation_time, event_buffer);
                 r = SpineGpuApplyTimeline(m_Asset, m_Data, skeleton, tl_index, animation_last, animation_time, alpha,
                                           timeline_blend, direction);
             }
@@ -595,6 +700,7 @@ SpineImportResult SpineGpuAnimationState::ApplyMixingFrom(SpineGpuTrackEntry* to
     {
         QueueEvents(from, animation_time);
     }
+    m_Events.clear();
     from->next_animation_last = animation_time;
     from->next_track_last = from->track_time;
     mix_out = mix;

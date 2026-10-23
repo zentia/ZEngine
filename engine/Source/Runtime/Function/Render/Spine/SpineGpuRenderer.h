@@ -148,9 +148,11 @@ public:
     void RequestSetEmptyAnimationOn(uint32_t id, int track, float mix_duration);
     void RequestAddEmptyAnimationOn(uint32_t id, int track, float mix_duration, float delay);
     void RequestClearTrackOn(uint32_t id, int track);   // track < 0 ⇒ clearTracks()
+    // 轨道上队尾那条（刚 set / add 进去的）的 eventThreshold：混出时 mix < threshold 才派发它的用户事件
+    void RequestEventThresholdOn(uint32_t id, int track, float threshold);
     // AnimationStateData::setMix(from, to, duration)，只作用在这个实例上（动画名或下标）
     void RequestMixOn(uint32_t id, const std::string& from, const std::string& to, float duration);
-    // 游戏线程取走该实例自上次以来派发的事件（start / interrupt / end / dispose / complete，顺序同
+    // 游戏线程取走该实例自上次以来派发的事件（start / interrupt / end / dispose / complete / event，顺序同
     // spine::AnimationState 的 listener），并拿到上一次解算后的轨道快照。事件在渲染线程的解算里产生 ⇒
     // 相对命令有 1~N 帧延迟（N = 渲染领先逻辑的帧数）。id 不认识 ⇒ false。`dropped` = 累计因积压丢掉的条数。
     bool DrainWorldEvents(uint32_t id, std::vector<SpineGpuAnimationEvent>& out,

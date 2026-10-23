@@ -104,5 +104,9 @@ namespace ZEngine.SpineGpu
         public float[] PathLengths = System.Array.Empty<float>();
         // 一条 path 附件一个名字，**与 PathAttachments 一一对应**（不去重）。
         public List<string> PathAttachmentNames = new List<string>();
+
+        // 用户事件（chunk 23，v16）。逐帧的值在 TimelinePayload 里（SpineGpuEventKey，24 B/帧）。
+        public List<SpineGpuEventData> Events = new List<SpineGpuEventData>();
+        public List<string> EventStrings = new List<string>();
     }
 }

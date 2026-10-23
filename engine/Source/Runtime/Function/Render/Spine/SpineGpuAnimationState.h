@@ -13,8 +13,10 @@
 // 事件（EventQueue，AnimationState.cpp:203-271 / queueEvents :842-878）：start / interrupt / end / dispose /
 // complete 照参考实现的入队点与顺序转录，`Drain()` 时按入队顺序写进 `event_sink`（为空 ⇒ 不记，行为不变）。
 // end 之后紧跟一条 dispose（参考实现 drain 的 case 贯穿），二者都把 TrackEntry 还回对象池。
-// 用户事件（EventType_Event，来自 event 时间轴）**没有**：event 时间轴不进容器（实测 0 / 782 资产），
-// `_events` 恒空 ⇒ queueEvents 只剩 complete 判定；`eventThreshold` 因此也不影响任何输出。
+// 用户事件（EventType_Event，v16）：event 时间轴（type 7）在 apply 时按 `EventTimeline::apply`
+// （EventTimeline.cpp:63-103，含循环回绕的递归与同一时刻多事件的回退）收进 `_events`（m_Events），
+// `queueEvents` 再按 complete 前 / 后两段、animationStart / End 裁剪入队；被混出的那条只在
+// `mix < eventThreshold` 时收（applyMixingFrom :765），且只在 `to->mixDuration > 0` 时入队。
 //
 // ⚠️ 照抄的参考实现行为（改了与参考对不上，且不报错）：
 //   1. `setTimelineModes()` 的 HoldMix 分支写的是 `timelineHoldMix[i] = entry`（**自己**），
@@ -49,7 +51,20 @@ enum class SpineGpuEventType : uint8_t
     kEnd = 2,
     kComplete = 3,
     kDispose = 4,
-    kEvent = 5,   // 用户事件：本格式暂不产生（见文件头）
+    kEvent = 5,   // 用户事件（event 时间轴，v16）
+};
+
+// 一次触发的用户事件 = `spine::Event` 的值拷贝（时间轴载荷 SpineGpuEventKey + 帧时刻）。
+// 字符串 / 名字是进 SpineGpuAsset::event_strings 的下标；定义（名字 / 音频）走 `event`。
+struct SpineGpuUserEvent
+{
+    uint32_t event = 0;          // 进 SpineGpuAsset::events 的下标
+    int32_t int_value = 0;
+    float float_value = 0.0f;
+    uint32_t string_value = 0;   // 进 SpineGpuAsset::event_strings 的下标
+    float volume = 1.0f;
+    float balance = 0.0f;
+    float time = 0.0f;           // Event::getTime()（动画时间，不是 trackTime）
 };
 
 // 一条已派发的事件（Drain 时从 TrackEntry 抄出来：派发之后那条 entry 可能已回到池里）。
@@ -60,6 +75,7 @@ struct SpineGpuAnimationEvent
     uint32_t animation = kSpineGpuEmptyAnimation;
     bool loop = false;
     float track_time = 0.0f;
+    SpineGpuUserEvent user;      // 只在 type == kEvent 时有意义
 };
 
 const char* SpineGpuEventTypeName(SpineGpuEventType type);
@@ -188,10 +204,25 @@ private:
     }
     void QueueDispose(SpineGpuTrackEntry* e) { m_Queue.push_back({SpineGpuEventType::kDispose, e}); }
     void QueueComplete(SpineGpuTrackEntry* e) { m_Queue.push_back({SpineGpuEventType::kComplete, e}); }
-    // queueEvents（:842-878）：`_events` 恒空 ⇒ 只有 complete 判定
+    void QueueUserEvent(SpineGpuTrackEntry* e, const SpineGpuUserEvent& ev)
+    {
+        m_Queue.push_back({SpineGpuEventType::kEvent, e, ev});
+    }
+    // queueEvents（:842-878）
     void QueueEvents(SpineGpuTrackEntry* entry, float animation_time);
+    // EventTimeline::apply（EventTimeline.cpp:63-103）：把 (last_time, time] 里的事件追加到 out
+    void CollectEventTimeline(uint32_t tl_index, float last_time, float time, std::vector<SpineGpuUserEvent>& out) const;
+    // `timeline->apply(skeleton, lastTime, time, eventBuffer, ...)` 里事件时间轴那一半：buffer 为空 ⇒ 不收
+    void CollectIfEvent(uint32_t tl_index, float last_time, float time, std::vector<SpineGpuUserEvent>* buffer) const
+    {
+        if (buffer != nullptr &&
+            static_cast<SpineTimelineType>(m_Asset.timelines[tl_index].type) == SpineTimelineType::kEvent)
+        {
+            CollectEventTimeline(tl_index, last_time, time, *buffer);
+        }
+    }
     void Drain();
-    void Emit(SpineGpuEventType type, const SpineGpuTrackEntry& e);
+    void Emit(SpineGpuEventType type, const SpineGpuTrackEntry& e, const SpineGpuUserEvent* user = nullptr);
 
     // 对象池（Pool.h）
     SpineGpuTrackEntry* Obtain();
@@ -205,7 +236,14 @@ private:
     std::unordered_set<uint64_t> m_PropertyIds;   // 参考实现是 Vector<int> + 线性 contains：只问"在不在"，与顺序无关
     bool m_AnimationsChanged = false;
 
-    std::vector<std::pair<SpineGpuEventType, SpineGpuTrackEntry*>> m_Queue;
+    struct QueuedEvent
+    {
+        SpineGpuEventType type;
+        SpineGpuTrackEntry* entry;
+        SpineGpuUserEvent user {};   // 只有 kEvent 用
+    };
+    std::vector<QueuedEvent> m_Queue;
+    std::vector<SpineGpuUserEvent> m_Events;   // 参考实现的 `_events`：一条轨道 apply 期间收集，queueEvents 后清空
     bool m_DrainDisabled = false;
 
     std::vector<std::unique_ptr<SpineGpuTrackEntry>> m_AllEntries;   // 所有权

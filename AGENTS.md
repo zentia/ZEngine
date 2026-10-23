@@ -2311,19 +2311,42 @@ downstream reads it.
   所以 **`AssetRegistry::RefreshAsset` / 启动重扫必须保留已有条目的 GUID**（改名时 registry 把 GUID 挪到新路径，
   重新派生就丢了）。建实例时路径失效 ⇒ `TryGetPathForGuid` 重定向并改写路径字段。设路径一律走
   `SetSkeletonDataAsset()`（它顺带记 GUID），别直接写字段。
-- **Inspector**：`ZSlateInspectorWindow::BuildSpineRendererSection` —— `.zspg` 拖放槽 + 状态行 + GUID 行 + Animation /
-  Initial Skin / Face Camera 下拉（选项来自 `GetAssetInfo()`），其余字段仍走通用 `BuildFieldNode`。
+- **Inspector**：`ZSlateInspectorWindow::BuildSpineRendererSection` —— `.zspg` 拖放槽 + 状态行（含 `N event(s)`）+
+  GUID 行 + Animation / Initial Skin / Face Camera 下拉（选项来自 `GetAssetInfo()`）+ Events 行（列出该动画的
+  用户事件名），其余字段仍走通用 `BuildFieldNode`。下拉在无头 e2e 里没法点 ⇒ `g_combo_hooks` 登记 label，
+  控制台 `inspector.pick <Label> <option>`（label 里的空格写成 `_`）/ `inspector.combos` 列出全部；
+  每次 pick 各自成一步撤销。`obj select <id|name>` 选中对象（配合上面两条做无头 e2e）。
 - **运行时 API（TS 可调，ZFUNCTION）**：`SpineRenderer.Of(go)`（TS 里 `GetComponent` 静态类型是 `Component`，用它）、
   `SetAnimation / AddAnimation / SetEmptyAnimation / AddEmptyAnimation / ClearTrack(s) / SetMix / SetSkin / SetTimeScale`、
   `GetCurrentAnimation / GetCurrentTrackTime`、`GetAnimation*/GetSkin*` 元数据、本帧事件 `GetEventCount / Type / Animation /
-  Track / TrackTime`。实例没建好之前的调用**进队**（`Submit`，上限 64），建实例后按序补发 ⇒ TS 在 OnStart 里调是安全的。
+  Track / TrackTime`、**用户事件字段** `GetEventName / GetEventInt / GetEventFloat / GetEventString /
+  GetEventAudioPath / GetEventVolume / GetEventBalance / GetEventTime`（只在 `Type == event` 时有意义）、
+  `SetEventThreshold(track, th)`（混合期是否派发旧动画事件）、`GetUserEventCount / GetUserEventName`（资产级事件表）。
+  实例没建好之前的调用**进队**（`Submit`，上限 64），建实例后按序补发 ⇒ TS 在 OnStart 里调是安全的。
   C++ 侧用 `SetEventListener`。
 - **事件**：`SpineGpuAnimationState` 的 `m_Queue` + `Drain()` 逐条复刻 spine-cpp 3.8 EventQueue（start / interrupt / end /
-  complete / dispose；`event` 类型保留但本工程 0/782 资产有用户事件）。世界实例在渲染线程解算 ⇒ 事件在
-  `WorldEntry::events` 里攒（上限 1024，溢出计数），组件 tick 时 `DrainWorldEvents` 取走 ⇒ **比解算晚 1~N 帧**。
-  对拍：`SpineGpuRefParityTest` S5 逐帧比事件序列（全量 101,369 条一致）；改调度逻辑后必须重跑。
+  complete / dispose / **event**）。世界实例在渲染线程解算 ⇒ 事件在 `WorldEntry::events` 里攒（上限 1024，溢出计数），
+  组件 tick 时 `DrainWorldEvents` 取走 ⇒ **比解算晚 1~N 帧**。
+  **v16 起用户事件真的进容器**（规格 §16）：chunk 23 = `SpineGpuEventData`(28 B) + 自带字符串池（第 0 条恒空串），
+  事件时间轴 type 7 的帧载荷 = `SpineGpuEventKey`(24 B)；**动画 duration 现在把最后一个事件的 time 算进去**
+  （v15 及以前不烘事件 ⇒ 少算，complete 时机错）。派发规则照抄参考：同 time 多帧取**第一帧**、
+  `queueEvents` 按 complete 切成两段、**mixingFrom 只在 `mix < eventThreshold` 时收集且只在 `to->mixDuration > 0`
+  时排队**。`eventThreshold` 按 (instance, track) 走 `SpineGpuRenderer::RequestEventThresholdOn()`（作用在轨道尾 entry）。
+  对拍：`SpineGpuRefParityTest` S5 逐帧比事件序列 + 用户事件字段（OSGame 全量 111,266 条一致，
+  其中用户事件 4,458 条；v15 基线是 101,369 条 / 用户事件 0 —— 多出来的 5,439 条调度事件
+  正是 duration 修正的产物：complete +1,957、start +1,043、end +879、dispose +893、interrupt +667）；
+  `SpineGpuImportTest` 另有手算夹具 `SpineGpuEventFixture.h`（45 条检查）；改调度逻辑后必须重跑。
+  改格式要连带升 `kFormatVersion`（§11 的"静默错"六连坑）。
 - **控制台**：`spine.spawn … script=Scripts/X.ts`（顺手挂 TypeScriptComponent）、`exec.after <frames> <cmd>`（延迟执行，
-  配合 `--cvar` 写无人值守 e2e）、`asset.move <old> <new>`（content 根相对，测 GUID 重定向）。
+  配合 `--cvar` 写无人值守 e2e）、`asset.move <old> <new>`（content 根相对，测 GUID 重定向）、
+  `obj select <id|name>`、`inspector.pick <Label> <option>` / `inspector.combos`。
+- **性能基准**：`SpineGpuBenchmark`（`Render/Spine/Test/`，`EXCLUDE_FROM_ALL`、**不进 ctest**、不链 `ZRuntime`）：
+  `--config Release`，`--frames 360 --csv <文件> [--top N] [--limit N] [--verbose] <Assets 目录>`，
+  与参考 spine-cpp 的 CPU 蒙皮路径逐段比（anim / pose / geo / upload / CPU 顶点）。最新版本数字见
+  规格 `doc/GPU_SPINE_INTERCHANGE_FORMAT.md` §17。
+  ⚠️ `SpineReference` 按 config 改名（`OUTPUT_NAME SpineReference_$<CONFIG>`）：全工程
+  `CMAKE_ARCHIVE_OUTPUT_DIRECTORY` 被统一设成同一目录（根 `CMakeLists.txt:56-60`），不改名的话
+  Release 的基准会把 Debug 的 `.lib` 覆盖掉，回来编对拍就 **LNK2038**（`_ITERATOR_DEBUG_LEVEL` 不匹配）。
 - **ZFUNCTION 静态函数**：pesapi 的实例方法与静态函数是**两张表**（`set_property_info_size(method_count, function_count, …)`
   各自从 0 编号）；混一起编号 ⇒ 第一个静态函数越界写 `Functions[]`，编辑器启动即崩。见 `ScriptBinding.cpp`。
 - **`Component::m_ParentObject` 必须有初值 `{nullptr}`**（曾经没有）：组件 New 出来到 `PostLoadResource` 之间，
