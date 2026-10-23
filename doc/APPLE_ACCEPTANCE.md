@@ -103,6 +103,7 @@ cd build && ctest --output-on-failure
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 | `MemoryPairingSmokeTest` | 23 | 分配器配对（§3.26）：Apple 上 `Produce` 出来的块**不在 mimalloc 堆区**（所以喂给 mi_free 必坏）；错配会被守卫拦下而不是崩；正确配对不触发守卫；全库扫描 0 处错配 + **扫描器自检**（含已知错配/已知正确的双向对照） |
+| `DirectionalLightShadowSmokeTest` | 37 | **方向光阴影（§3.31）**：Metal 真的有方向光专用阴影开关且 return **true**（钉的是函数体里第一条 return 行，不是"有 override"）；点光维持 `false`；方向光判据问的是新开关**且不再问**那个历史遗留的共用开关、只有一处；Apple 的 Tick 每帧复位 storage ring buffer，且复位排在粒子推进之前、draw list 执行之前；心跳 `shadow=` 段及其三个字段还在。**扫描器双向自检**（含"旧开关的名字在注释里存在、跳注释后报 0 处"，以及取 return 行时必须跳过注释） | 
 | `ZEditorLauncherWiringSmokeTest` | 73 | **编辑器运行中双击 .zproject（§3.30）**：平台层暴露接入点、有 delegate、真的挂到 NSApp 上、openFile 真的存路径、**消费点在 `PollEvents()` 里**；Editor 侧注册了 handler、双击当前项目时不重启（钉的是判定式不是函数）。**双击 .zproject（§3.29）**：bundle 声明 `CFBundleDocumentTypes` + 导出 UTI、两处 UTI 字符串必须一致、挂 `zproject` 扩展名、构建后刷 `lsregister`；Launcher 是 `NSApplicationDelegate` 且实现了 `-application:openFile:`、delegate 挂在 `finishLaunching` **之前**、openFile 里认扩展名**且真的提交**；重启走 bundle 入口、exec 前刷日志。Launcher 接线（§3.27）：两个平台的 `OpenLauncher` 分支都接到 Launcher、Unix 那条不许退回 `reportMissingProject()`（双击闪退的那一行）；重启用 `POSIX_SPAWN_SETEXEC` 且全文件不许有 `fork()`；`runEditorUnix` 要回写最近项目；三份实现（Win32 / Apple / POSIX 桩）不能同时编；Apple 侧确实是窗口不是空桩。**应用图标（§3.28）**：Apple 分支必须解链 exe 路径再拼 ini、且解链排在拼 ini 之前；ini 打不开要刷日志；bundle 脚本要生成 icns / 写 `CFBundleIconFile` / 用**相对** symlink；Launcher 的 bundle 让位分支排在 PNG 兜底之前**且真的 return**。**扫描器双向自检**（含"位置版扫描器也跳过整行注释"） |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
@@ -1447,6 +1448,66 @@ Editor 的决策（只有它知道当前开的是哪个项目）。而新开一�
 **一条教训**：契约要钉**判定式**，不是"用了某个函数"。第一版钉的是
 `std::filesystem::weakly_canonical(document`，而把守卫改成 `if (false)` 之后那条照样命中 ——
 真正会丢改动的那次改动反而没人管。改成钉 `!opened.empty() && opened == active` 才对。
+
+### 3.31 方向光阴影在 Metal 上"全接好却不出阴影"（以及打开之后 2641 帧 SIGABRT）
+
+打开方向光阴影时发现**两个独立的静默缺陷**，都属于"代码全在、全接好了，却因为一条判据 /
+一次漏调而完全不生效，而且不报任何错"：
+
+**(1) 方向光 shadow map 被一条历史遗留判据挡死。**
+`DirectionalLightShadowPass::DrawModel()` 里控制"到底画不画 mesh"的判据问的是
+`m_Rhi->IsPointLightShadowEnabled()` —— 那是历史遗留名，它在**所有**后端上实际挡的是
+"mesh shadow map 绘制"整体（方向光 + 点光），见 `DX12RHI.cpp` override 上的注释。Metal
+只能共用这一个开关并答 `false`，于是方向光 shadow map **每帧只 clear、一个物体都不画**：
+pass 建了、4096² 的 attachment 建了、draw list 里每帧排了 `DirectionalShadow`、主相机也
+通过 `SetShadowImageViews()` 拿到了 view。画面上只是"没有阴影"。
+
+新增 `RHI::IsDirectionalLightShadowEnabled()` —— 默认实现转调旧的共用开关，所以其余后端
+行为一字不变；只有 Metal override 返回 `true`，方向光判据改问它。**点光维持 `false`**：它
+走的是 geometry shader + 2D array（`mesh_point_light_shadow.geom`），Metal 上没有
+geometry shader，从未验证过，不能顺手一起放出来。
+
+**(2) storage ring buffer 在 Apple 上从不复位。**
+`RenderResource::ResetRingBufferOffset()` 只有两个调用点，分别在 `SubmitDrawLists()` 的
+DX12 分支和 Vulkan 分支里（`DesktopRenderPipelineModule.cpp:693` / `:714`）。而 Apple 那条
+精简 Tick **从不走 `SubmitDrawLists`**（那个函数的 Apple 分支压根没有调用者，注释里就写着）。
+ring buffer 的 `End` 是只增的，于是每帧累积，直到撞上 pass 里那个
+`End <= Begin + Size` 的 assert。以前只有主相机在用、每帧用量小，能撑几千帧；打开方向光
+阴影之后用量变大，**frame=2641 就 SIGABRT**（ips 里是
+`__assert_rtn` ← `DirectionalLightShadowPass::DrawModel`）。
+
+在 Apple 的 Tick 里、`PrepareParticlesForDraw()` **之前**补上复位（粒子那一步也要往同一个
+buffer 里写，排在它之后就会把粒子的数据清掉）。
+
+| 文件 | 改动 |
+|---|---|
+| `Interface/RHI.h` | 新增 `IsDirectionalLightShadowEnabled()`（默认转调旧的共用开关，其余后端行为不变） |
+| `Interface/Metal/MetalRHI.h/.mm` | override 返回 `true`；点光维持 `false` |
+| `Passes/DirectionalLightPass.cpp` | shadow draw 的判据改问方向光专用开关 |
+| `RenderSystem.cpp` | Apple Tick 补 `ResetRingBufferOffset()`（排在粒子推进之前）；心跳加 `shadow=` 段 |
+| `RenderScene.h/.cpp` | 新增 `GetDirectionalLightVisibleMeshNodes()`（心跳探针取物体数） |
+| `Render/Test/DirectionalLightShadowSmokeTest.cpp` | 新增，37 项文本契约 |
+
+**心跳新增字段**：`shadow=(dir_en=1 dir_nodes=30 point_en=0)`。`dir_en` 是开关，
+`dir_nodes` 是这一帧真往 shadow map 里画的物体数 —— **只报开关不够**：可见节点是空的时候
+`dir_en=1` 照样是假绿，两个一起看才分辨得出"门没开 / 开了但没东西喂进来 / 真画了"。
+
+**验证**：
+
+- 真机：`open ZGameSmoke.zproject` → 心跳 `shadow=(dir_en=1 dir_nodes=30 point_en=0)`，
+  跑到 **frame=8641 无崩溃**（修复前 frame=2641 崩，`~/Library/Logs/DiagnosticReports/` 里
+  有 `ZEditor-2026-10-23-170210.ips` 为证）。
+- **静态**：新增 `DirectionalLightShadowSmokeTest` **37** checks。
+- **变异**（各精确变红、还原后 37/0）：Metal 方向光开关改回 `false` → 2 条；判据改回旧的
+  共用开关 → 4 条；删掉 ring buffer 复位 → 1 条；把复位挪到粒子推进之后 → 1 条；删掉可见
+  节点 getter → 1 条；Metal 点光开关改成 `true` → 1 条。
+
+**两条教训**：
+
+1. **判定"某个函数 return 什么"不能全文搜 `return true`** —— 解释历史的注释里就有"以前答
+   false"这类话。测试里改成"定位函数签名 → 从那里逐行扫（跳过整行注释）取第一条 return 行"。
+2. **"只钉机制存在"会假绿**：把 Metal 的 override 从 `true` 改回 `false`，机制一个不少
+   （有声明、有 override、有实现），照样全绿。必须钉"生效那一步"到底答了什么。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

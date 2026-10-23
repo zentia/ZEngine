@@ -186,6 +186,13 @@ public:
     virtual GraphicsAPI getGraphicsAPI() const = 0;
 
     virtual bool IsPointLightShadowEnabled() = 0;
+
+    // 上面那个是历史遗留名：它在**所有**后端上实际挡的是"mesh shadow map 绘制"
+    // 整体（方向光 + 点光），见 DX12 override 上的注释。Metal 以前只能共用这一个
+    // 开关并答 false，于是方向光 shadow map 虽然 pass / attachment / draw list 全
+    // 都接好了，却一个物体都不画、也不报任何错。方向光改问这个独立的谓词，后端
+    // 就能按技术单独表态；默认实现让其余后端的行为跟以前完全一致。
+    virtual bool IsDirectionalLightShadowEnabled() { return IsPointLightShadowEnabled(); }
     // allocate and create
     virtual bool AllocateCommandBuffers(const RHICommandBufferAllocateInfo* pAllocateInfo,
                                         RHICommandBuffer*& pCommandBuffers) = 0;

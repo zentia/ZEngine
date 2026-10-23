@@ -254,6 +254,20 @@ void RenderSystem::Tick(float delta_time)
                 m_ActiveFrameDrawListSlot = 0;
                 RHIDrawList& draw_list = GetFrameDrawList(m_ActiveFrameDrawListSlot);
 
+                // storage ring buffer 复位（阶段 69）：这个 buffer 的 `End` 是**只
+                // 增**的，必须每帧拨回 `Begin`，否则所有 pass 往里写的数据会一帧一
+                // 帧累积，直到撞上 `_GlobalUploadRingbuffersSize` 的上限 assert。
+                // DX12 / Vulkan 两支都是在 `SubmitDrawLists()` 里、
+                // `draw_list.ExecuteAll()` 之前复位的，而 Apple 这条精简 Tick **从不
+                // 走 `SubmitDrawLists`**（那个函数的 Apple 分支压根没有调用者）⇒
+                // 这个复位在 Apple 上一次都没发生过。以前只有主相机在往里写、每帧
+                // 用量小，能撑几千帧不撞线；打开方向光 shadow 之后每帧用量变大，
+                // frame=2641 就 assert 崩了（ips 里是
+                // `__assert_rtn` ← `DirectionalLightShadowPass::DrawModel`）。
+                // 必须排在 PrepareParticlesForDraw **之前** —— 粒子那一步也要往
+                // 同一个 ring buffer 里写数据。
+                render_resource->ResetRingBufferOffset(m_Rhi->GetCurrentFrameIndex());
+
                 // 粒子的两步每帧推进必须夹在 draw list 录制的两头（顺序和
                 // SubmitDrawLists 里那两条一模一样）。Apple 这条精简 Tick **不走
                 // SubmitDrawLists**，所以这里必须自己叫一遍 —— 漏了的话粒子永远
@@ -427,6 +441,16 @@ void RenderSystem::Tick(float delta_time)
             int      particle_drawn_emitters = 0;
             uint32_t particle_drawn_particles = 0;
             int      particle_drawn_viewport = -1;
+            // 阴影探针（阶段 69）：方向光 shadow map 以前在 Metal 上是"全接好但一个
+            // 物体都不画"，而且不报任何错 —— pass 建了、4096² 的 attachment 建了、
+            // draw list 里每帧排了 `DirectionalShadow`、主相机也拿到了 view，唯独
+            // `IsPointLightShadowEnabled()`（历史遗留名，实际是总开关）答了 false。
+            // 三个数分开打才能分辨："开关没开" / "开了但可见节点是空的" / "真画了"：
+            // ds_en=0 是门还关着，ds_en=1 而 ds_nodes=0 是可见性没喂东西，
+            // ds_en=1 且 ds_nodes>0 才是真的往 shadow map 里画了。
+            int    dir_shadow_enabled = 0;
+            size_t dir_shadow_nodes = 0;
+            int    point_shadow_enabled = 0;
             if (m_RenderPipeline != nullptr)
             {
                 if (NaniteRenderPass* nanite_pass = m_RenderPipeline->GetNanitePass())
@@ -456,6 +480,13 @@ void RenderSystem::Tick(float delta_time)
                 dir_light_col = m_RenderScene->m_DirectionalLight.m_Color;
                 ambient_light = m_RenderScene->m_AmbientLight.m_Irradiance;
                 point_lights  = m_RenderScene->m_PointLightList.m_Lights.size();
+                // 方向光 shadow map 画的就是这一份可见节点列表。
+                dir_shadow_nodes = m_RenderScene->GetDirectionalLightVisibleMeshNodes().size();
+            }
+            if (m_Rhi != nullptr)
+            {
+                dir_shadow_enabled   = m_Rhi->IsDirectionalLightShadowEnabled() ? 1 : 0;
+                point_shadow_enabled = m_Rhi->IsPointLightShadowEnabled() ? 1 : 0;
             }
             if (const std::shared_ptr<RenderCamera> game_cam = GetCamera(ViewportType::game))
             {
@@ -495,6 +526,7 @@ void RenderSystem::Tick(float delta_time)
                      "dir_light=({},{},{}) dir_color=({},{},{}) ambient=({},{},{}) plights={} gos={} lcmp={} "
                      "nanite=(has={} inst={} batches={} vis={} ngpu={}) "
                      "particle=(has={} emit={} draw={} parts={} vp={}) "
+                     "shadow=(dir_en={} dir_nodes={} point_en={}) "
                      "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
@@ -524,6 +556,10 @@ void RenderSystem::Tick(float delta_time)
                      particle_drawn_emitters,
                      particle_drawn_particles,
                      particle_drawn_viewport,
+                     // 实参顺序必须跟上面格式串里占位符的顺序一致（插在 particle 之后）。
+                     dir_shadow_enabled,
+                     dir_shadow_nodes,
+                     point_shadow_enabled,
                      static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
                      static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
                      sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,

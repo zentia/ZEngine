@@ -648,6 +648,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/MetalSpirvShaderSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/MetalSpirvShaderSmokeTest.cpp")
+# 方向光阴影接线冒烟测试的 main carve-out（同理由）。它钉的是"Metal 上方向光阴影
+# 被一条历史遗留判据挡死"和"Apple 的 Tick 从不复位 storage ring buffer"这两条静默
+# 失效（见 Function/Render/Test/CMakeLists.txt）。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/DirectionalLightShadowSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/DirectionalLightShadowSmokeTest.cpp")
 # 分配器配对冒烟测试的 main carve-out（同理由）。Only built when
 # ZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
 list(REMOVE_ITEM SOURCE_FILES

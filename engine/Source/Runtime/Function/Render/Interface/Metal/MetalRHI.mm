@@ -186,6 +186,19 @@ void MetalRHI::PrepareContext()
 #endif
 }
 bool MetalRHI::IsPointLightShadowEnabled() { return false; }
+
+bool MetalRHI::IsDirectionalLightShadowEnabled()
+{
+    // 方向光 shadow map 在 Metal 上是完整可用的：pass 建了、4096² 的 attachment 建了、
+    // draw list 里每帧都排了 `DirectionalShadow`，主相机也通过 SetShadowImageViews()
+    // 拿到了那张图的 view。以前它只是被上面那个共用开关一并答 false 挡住了 ——
+    // 每帧只 clear 不画任何东西，而且不报任何错。这里单独开方向光。
+    //
+    // 点光阴影仍然关着：它走的是 geometry shader + 2D array 那条路（见
+    // `mesh_point_light_shadow.geom`），Metal 上没有 geometry shader，需要单独的实现，
+    // 不属于这次改动范围。
+    return true;
+}
 void MetalRHI::NotifyWindowFocusGained() {}
 void MetalRHI::DestroyRenderPass(RHIRenderPass* /*renderPass*/) {}
 

@@ -199,6 +199,11 @@ const std::vector<RenderMeshNode>& RenderScene::GetMainCameraSkyMeshNodes(Viewpo
     return publishedNodeSet().sky_per_viewport[static_cast<size_t>(viewport)];
 }
 
+const std::vector<RenderMeshNode>& RenderScene::GetDirectionalLightVisibleMeshNodes() const
+{
+    return publishedNodeSet().directional_light;
+}
+
 void RenderScene::SetVisibleNodesReference()
 
 {

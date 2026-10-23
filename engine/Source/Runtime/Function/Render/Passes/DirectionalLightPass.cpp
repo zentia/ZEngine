@@ -953,7 +953,15 @@ void DirectionalLightShadowPass::DrawModel()
 
     // Mesh (DX12: shadow PSO exists but per-draw descriptor/bind path is still fragile;
     // clear-only until validated -- mirrors PointLightShadowPass DX12 policy.)
-    if (m_Rhi->getGraphicsAPI() != GraphicsAPI::DirectX12 && m_Rhi->IsPointLightShadowEnabled() &&
+    //
+    // 阶段 69：这里以前问的是 `IsPointLightShadowEnabled()`。那是历史遗留名 —— 它
+    // 在**所有**后端上实际挡的是"mesh shadow map 绘制"整体（方向光 + 点光），见
+    // DX12 override 上的注释。Metal 只能共用这一个开关并答 false，于是方向光
+    // shadow map 每帧只 clear、一个物体都不画，**且不报任何错**：pass 建了、4096²
+    // 的 attachment 建了、draw list 里每帧都排了 `DirectionalShadow`、主相机也通过
+    // SetShadowImageViews() 拿到了 view，整条路只差这一条判据。方向光改问独立的
+    // `IsDirectionalLightShadowEnabled()`，点光维持旧行为不动。
+    if (m_Rhi->getGraphicsAPI() != GraphicsAPI::DirectX12 && m_Rhi->IsDirectionalLightShadowEnabled() &&
         EnsureGlobalRenderResourceReady())
     {
         float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};

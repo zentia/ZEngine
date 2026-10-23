@@ -86,6 +86,12 @@ public:
     const std::vector<RenderMeshNode>& GetMainCameraTransparentMeshNodes(ViewportType viewport) const;
     const std::vector<RenderMeshNode>& GetMainCameraSkyMeshNodes(ViewportType viewport) const;
 
+    // 阶段 69：方向光 shadow map 画的就是这个列表（见
+    // `DirectionalLightShadowPass::DrawModel`），所以它的长度就是"这一帧到底往
+    // shadow map 里画了几个物体"。心跳探针用它来分辨"阴影开关开了"和"真的有东西
+    // 被画进去" —— 只报开关的话，可见节点是空的时候照样是假绿。
+    const std::vector<RenderMeshNode>& GetDirectionalLightVisibleMeshNodes() const;
+
     // set visible nodes ptr in render pass
 
     void SetVisibleNodesReference();

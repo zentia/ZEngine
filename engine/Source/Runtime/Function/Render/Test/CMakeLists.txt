@@ -125,3 +125,56 @@ if(ZENGINE_BUILD_METAL_SPIRV_SHADER_SMOKE_TEST)
 
     message(STATUS "Configured Metal SPIR-V shader smoke test: MetalSpirvShaderSmokeTest")
 endif()
+
+# =====================================================================
+# Directional-light shadow (Apple/Metal) wiring smoke test.
+# ---------------------------------------------------------------------
+# Text-only contract over RHI.h / MetalRHI.{h,mm} / DirectionalLightPass.cpp /
+# RenderSystem.cpp / RenderScene.{h,cpp}. It pins the two "everything is wired
+# up, yet nothing happens and nothing complains" defects that surfaced the first
+# time directional shadows were switched on for Metal:
+#
+#   1. the shadow-map draw gate asked the legacy shared switch
+#      (IsPointLightShadowEnabled), which Metal answers false -> the pass cleared
+#      its 4096^2 attachment every frame and drew nothing at all;
+#   2. RenderResource::ResetRingBufferOffset() was only ever called from the DX12
+#      and Vulkan branches of SubmitDrawLists(), which Apple's Tick never goes
+#      through -> the storage ring buffer's End grew every frame until a pass hit
+#      its upper-bound assert (SIGABRT at frame 2641).
+#
+# Pure text: no engine dependency, so unlike the two tests above it needs neither
+# ObjC++ nor the Apple link stubs.
+#
+# Default OFF; opt in with:
+#
+#   cmake -B build -DZENGINE_BUILD_DIRECTIONAL_SHADOW_SMOKE_TEST=ON
+# =====================================================================
+
+option(ZENGINE_BUILD_DIRECTIONAL_SHADOW_SMOKE_TEST
+       "Build the directional-light shadow wiring smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_DIRECTIONAL_SHADOW_SMOKE_TEST)
+    add_executable(DirectionalLightShadowSmokeTest DirectionalLightShadowSmokeTest.cpp)
+
+    set_target_properties(DirectionalLightShadowSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    # 被测源码的路径在 configure 期就钉死：CTest 的工作目录是 build 树里的某个子
+    # 目录，跟源码树没有任何稳定关系，运行期猜相对路径只会时灵时不灵。
+    target_compile_definitions(DirectionalLightShadowSmokeTest PRIVATE
+        ZENGINE_RHI_H="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/Interface/RHI.h"
+        ZENGINE_METAL_RHI_H="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/Interface/Metal/MetalRHI.h"
+        ZENGINE_METAL_RHI_MM="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/Interface/Metal/MetalRHI.mm"
+        ZENGINE_DIRECTIONAL_LIGHT_PASS_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/Passes/DirectionalLightPass.cpp"
+        ZENGINE_RENDER_SYSTEM_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderSystem.cpp"
+        ZENGINE_RENDER_SCENE_H="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderScene.h"
+        ZENGINE_RENDER_SCENE_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderScene.cpp"
+    )
+
+    add_test(NAME DirectionalLightShadowSmokeTest COMMAND DirectionalLightShadowSmokeTest)
+
+    message(STATUS "Configured directional-light shadow smoke test: DirectionalLightShadowSmokeTest")
+endif()
