@@ -513,6 +513,14 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
             "MainCamera",
             [this, show_skybox]() {
                 auto* rp1 = static_cast<MainCameraRp1Pass*>(m_Pipeline.m_MainCameraPass.get());
+                // 编辑器 gizmo 的开关和选中轴**每帧**从 pipeline 上取过来。以前这两
+                // 个数从来没传进 RP1（对比 DX12 分支：那里每次都赋），于是 axis 就算
+                // 有绘制路径也会因为 `m_IsShowAxis` 恒为 false 而什么都不画。
+                // 编辑器 gizmo 的开关和选中轴**每帧**从 pipeline 上取过来。以前这两
+                // 个数从来没传进 RP1（对比 DX12 分支：那里每次都赋），于是 axis 就算
+                // 有绘制路径也会因为 `m_IsShowAxis` 恒为 false 而什么都不画。
+                rp1->m_IsShowAxis   = m_Pipeline.m_IsShowAxis;
+                rp1->m_SelectedAxis = m_Pipeline.m_SelectedAxis;
                 rp1->DrawGBufferPass(show_skybox);
                 rp1->DrawDeferredLightingPass(show_skybox);
                 rp1->DrawForwardLightingPass(show_skybox);

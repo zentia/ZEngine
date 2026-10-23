@@ -2088,8 +2088,20 @@ void MetalRHI::CmdBindDescriptorSetsPFN(RHICommandBuffer*           commandBuffe
         return;
     }
     (void)layout;
-    (void)dynamicOffsetCount;
-    (void)pDynamicOffsets;
+
+    // dynamic descriptor offset（RHI 地基）
+    //
+    // Metal 没有 "dynamic descriptor" 这个概念，`setVertexBuffer:offset:` 的
+    // offset 必须在绑定这一刻就算好。以前的写法是把调用方给的动态偏移整个丢掉，
+    // 于是**所有 `*_DYNAMIC` 绑定在 Apple 上读的都是
+    // descriptor 写入时的静态 offset**（RP1 那里写的是 0）—— 也就是 ring buffer
+    // 里第一帧的 per-frame 数据。CPU 侧每帧照样往 `m_GlobalUploadRingbuffersEnd`
+    // 递增出来的当前 offset 写 `MainCameraPerFrame`，两边完全脱节：相机矩阵、
+    // 光照、IBL 参数在 GPU 上永远是第一帧的。相机不动时看不出来，一动就露馅。
+    //
+    // Vulkan 语义：`pDynamicOffsets` 是按「set 顺序 → set 内 binding 号升序」
+    // 展开的、只数 dynamic 类型 binding 的一维数组。这里照同一套编号取用。
+    uint32_t dynamic_cursor = 0;
 
     const bool compute = pipelineBindPoint == RHI_PIPELINE_BIND_POINT_COMPUTE;
     // Sampler 的 MSL 索引要在"当前绑定的管线"里查（见 MetalShader::samplerIndexBySlot）：
@@ -2107,8 +2119,28 @@ void MetalRHI::CmdBindDescriptorSetsPFN(RHICommandBuffer*           commandBuffe
         // Metal indices are flat; Vulkan descriptors are (set, binding). Must match
         // the slice assignment in CreateShaderModule().
         const uint32_t set_index = firstSet + s;
-        for (const MetalDescriptorBinding& binding : set->bindings)
+
+        // dynamic offset 的编号规则（见上面 `dynamic_cursor` 的注释）要求按
+        // binding 号升序遍历；`set->bindings` 的顺序取决于调用方写 descriptor
+        // 的顺序，不能假设有序。
+        static thread_local std::vector<const MetalDescriptorBinding*> s_ordered_bindings;
+        s_ordered_bindings.clear();
+        for (const MetalDescriptorBinding& b : set->bindings)
         {
+            s_ordered_bindings.push_back(&b);
+        }
+        if (pDynamicOffsets != nullptr && dynamicOffsetCount > 0)
+        {
+            std::sort(s_ordered_bindings.begin(),
+                      s_ordered_bindings.end(),
+                      [](const MetalDescriptorBinding* a, const MetalDescriptorBinding* b) {
+                          return a->binding < b->binding;
+                      });
+        }
+
+        for (const MetalDescriptorBinding* binding_ptr : s_ordered_bindings)
+        {
+            const MetalDescriptorBinding& binding = *binding_ptr;
             const bool vertex_stage = (binding.stageFlags & RHI_SHADER_STAGE_VERTEX_BIT) != 0;
             const bool fragment_stage = (binding.stageFlags & RHI_SHADER_STAGE_FRAGMENT_BIT) != 0;
             // Metal keeps vertex buffers and argument buffers in the same index
@@ -2116,6 +2148,20 @@ void MetalRHI::CmdBindDescriptorSetsPFN(RHICommandBuffer*           commandBuffe
             const NSUInteger slot          = set_index * k_msl_descriptor_set_stride + binding.binding;
             const NSUInteger buffer_index  = slot + k_msl_descriptor_buffer_offset;
             const NSUInteger texture_index = slot;
+
+            // dynamic binding 的实际偏移 = descriptor 里的静态偏移 + 本次绑定给的
+            // 动态偏移。非 dynamic 的照旧只用静态偏移。
+            RHIDeviceSize bind_offset = binding.offset;
+            const bool is_dynamic_binding = binding.type == RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC ||
+                                            binding.type == RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+            if (is_dynamic_binding)
+            {
+                if (pDynamicOffsets != nullptr && dynamic_cursor < dynamicOffsetCount)
+                {
+                    bind_offset += pDynamicOffsets[dynamic_cursor];
+                }
+                ++dynamic_cursor;
+            }
 
             if (binding.buffer != nil)
             {
@@ -2134,7 +2180,7 @@ void MetalRHI::CmdBindDescriptorSetsPFN(RHICommandBuffer*           commandBuffe
                     // kernel 读到的不是集群数据，而是别的槽位（通常是空/未定义），
                     // 剔除结果恒为垃圾。
                     [metal_buffer->computeEncoder setBuffer:binding.buffer
-                                                     offset:static_cast<NSUInteger>(binding.offset)
+                                                     offset:static_cast<NSUInteger>(bind_offset)
                                                     atIndex:buffer_index];
                 }
                 else if (metal_buffer->renderEncoder != nil)
@@ -2142,13 +2188,13 @@ void MetalRHI::CmdBindDescriptorSetsPFN(RHICommandBuffer*           commandBuffe
                     if (vertex_stage || (!fragment_stage))
                     {
                         [metal_buffer->renderEncoder setVertexBuffer:binding.buffer
-                                                              offset:static_cast<NSUInteger>(binding.offset)
+                                                              offset:static_cast<NSUInteger>(bind_offset)
                                                              atIndex:buffer_index];
                     }
                     if (fragment_stage)
                     {
                         [metal_buffer->renderEncoder setFragmentBuffer:binding.buffer
-                                                                offset:static_cast<NSUInteger>(binding.offset)
+                                                                offset:static_cast<NSUInteger>(bind_offset)
                                                                atIndex:buffer_index];
                     }
                 }

@@ -1003,6 +1003,144 @@ namespace
     }
 
     // -------------------------------------------------------------------------
+    // 阶段 60：编辑器 gizmo（axis）。
+    //
+    // "历史空桩在功能打通之后变成洞"的第七例，这次是**两半一起缺**：Apple 上
+    // `RenderSystem::CreateAxis` 是空体（不上传 mesh），而 RP1 里**根本没有**
+    // axis 的绘制路径（DX12 走 DX12MainCameraPass::DrawAxis、Vulkan 走
+    // MainCameraPass::DrawAxis，Metal 两头都不沾）；就连"每帧把 show_axis /
+    // selected_axis 传进 pass"这一步也没有。只补上传会得到一堆没人画的 mesh，
+    // 只补绘制会因为没有资源而每帧提前返回 —— 两半必须一起有。
+    //
+    // 顺带的地基修复：Metal 的 CmdBindDescriptorSets 曾把 dynamic offset 直接
+    // (void) 掉 ⇒ 所有 *_DYNAMIC 绑定读的都是第一帧的 per-frame 数据。
+    // -------------------------------------------------------------------------
+    void CheckAxisContracts()
+    {
+        const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string rp1_header =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Passes/MainCameraRp1Pass.h");
+        const std::string rp1_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Passes/MainCameraRp1Pass.cpp");
+        const std::string module_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Pipeline/DesktopRenderPipelineModule.cpp");
+        const std::string metal_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Interface/Metal/MetalRHI.mm");
+        const std::string sys_source  = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+        Check(!rp1_header.empty(), "MainCameraRp1Pass.h is readable as text (axis)");
+        Check(!rp1_source.empty(), "MainCameraRp1Pass.cpp is readable as text (axis)");
+        Check(!module_source.empty(), "DesktopRenderPipelineModule.cpp is readable as text (axis)");
+        Check(!metal_source.empty(), "MetalRHI.mm is readable as text (axis dynamic offset)");
+        Check(!sys_source.empty(), "RenderSystem.cpp is readable as text (axis upload)");
+
+        auto count_of = [](const std::string& haystack, const std::string& needle) {
+            size_t count = 0;
+            size_t at    = 0;
+            while ((at = haystack.find(needle, at)) != std::string::npos)
+            {
+                ++count;
+                at += needle.size();
+            }
+            return count;
+        };
+        auto body_of = [](const std::string& source, const std::string& signature) {
+            const size_t at = source.find(signature);
+            if (at == std::string::npos)
+            {
+                return std::string {};
+            }
+            const size_t end = source.find("\nvoid ", at + 1);
+            return source.substr(at, end == std::string::npos ? source.size() - at : end - at);
+        };
+
+        // ---- 上传那一半（RenderSystem 平台无关尾巴）----
+        // CreateAxis 的空桩形态是 `void RenderSystem::CreateAxis(std::array<RenderEntity, 3>,
+        // std::array<RenderMeshData, 3>) {}` —— 现在必须是真实现，而且成功也要有日志
+        // （"根本没被调"和"调了但全失败"以前在日志里长得一模一样）。
+        const std::string create_axis = body_of(sys_source, "void RenderSystem::CreateAxis(");
+        Check(!create_axis.empty() && create_axis.size() > 200,
+              "RenderSystem::CreateAxis is a real implementation, not an empty stub");
+        Check(Contains(create_axis, "UploadGameObjectRenderResource"),
+              "CreateAxis uploads the axis meshes to the GPU");
+        Check(Contains(create_axis, "axis meshes uploaded"),
+              "CreateAxis logs success too -- silence used to make 'never called' and "
+              "'called but failed' indistinguishable");
+        const std::string set_visible_axis = body_of(sys_source, "void RenderSystem::SetVisibleAxis(");
+        Check(Contains(set_visible_axis, "m_VisibleAxisUpdatePending = true"),
+              "SetVisibleAxis writes the swap data (the Apple stub only flipped the pipeline flag, so "
+              "m_RenderAxis never received a value)");
+
+        // ---- 绘制那一半（RP1）----
+        Check(Contains(rp1_header, "_render_pipeline_type_axis") && Contains(rp1_header, "_axis,"),
+              "MainCameraRp1Pass has the axis layout / pipeline slots");
+        Check(Contains(rp1_header, "void DrawAxis(ViewportType"),
+              "MainCameraRp1Pass declares the axis draw entry");
+
+        const std::string setup_axis_pipeline = body_of(rp1_source, "void MainCameraRp1Pass::SetupAxisPipeline()");
+        Check(!setup_axis_pipeline.empty() && Contains(setup_axis_pipeline, "CreateShaderModule(AXIS_VERT)") &&
+                  Contains(setup_axis_pipeline, "CreateShaderModule(AXIS_FRAG)"),
+              "SetupAxisPipeline builds the axis pipeline from the generated SPIR-V (Metal cross-compiles it to MSL)");
+        Check(Contains(setup_axis_pipeline, "-- editor gizmo stays hidden"),
+              "axis pipeline failures degrade with a log instead of throwing -- a missing gizmo must "
+              "not take the whole scene down");
+        Check(Contains(setup_axis_pipeline, "getForwardLightingRenderPass()"),
+              "the axis pipeline targets the forward-lighting render pass (the last pass RP1 opens)");
+
+        const std::string setup_axis_ds = body_of(rp1_source, "void MainCameraRp1Pass::SetupAxisDescriptorSet()");
+        Check(Contains(setup_axis_ds, "m_AxisInefficientStorageBuffer"),
+              "SetupAxisDescriptorSet binds the axis storage buffer that RenderResource already creates "
+              "(the guard is 'Z_HAS_VULKAN || __APPLE__', so it exists on Metal)");
+        Check(Contains(setup_axis_ds, "RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC"),
+              "the axis per-frame binding is dynamic, matching the other backends");
+
+        const std::string draw_axis = body_of(rp1_source, "void MainCameraRp1Pass::DrawAxis(ViewportType");
+        Check(Contains(draw_axis, "if (!m_IsShowAxis)"),
+              "DrawAxis is gated on the show flag");
+        Check(Contains(draw_axis, "p_axis_node == nullptr"),
+              "DrawAxis distinguishes 'nothing selected' (no axis node) from other skips");
+        Check(Contains(draw_axis, "TryGetRenderSceneViewport"),
+              "DrawAxis draws into the editor scene viewport (and can say so when it is 0x0)");
+        Check(Contains(draw_axis, "m_RenderAxis.has_value()"),
+              "DrawAxis requires an axis entity submitted through SetVisibleAxis");
+        Check(Contains(draw_axis, "getMeshDrawData(m_VisiableNodes.p_axis_node->ref_mesh)"),
+              "DrawAxis draws the uploaded axis mesh (search the call form -- comments mentioning "
+              "the name would fool a name-only check)");
+        Check(Contains(draw_axis, "CmdDrawIndexedPFN"),
+              "DrawAxis actually issues the indexed draw");
+
+        // axis 挂在 forward pass 里（pass 开着的时候才允许录命令）。
+        const std::string forward_pass = body_of(rp1_source, "void MainCameraRp1Pass::DrawForwardLightingPass(");
+        Check(Contains(forward_pass, "DrawAxis(viewport_type)"),
+              "the forward-lighting pass draws the axis (recording outside a render pass is illegal)");
+
+        // 状态必须每帧从 pipeline 传进 pass —— Apple 的 draw list lambda 以前不传，
+        // m_IsShowAxis 恒为 false，就算有绘制路径也什么都不画。
+        const std::string apple_draw_list = body_of(module_source, "void DesktopRenderPipelineModule::BuildDrawLists(");
+        Check(Contains(apple_draw_list, "rp1->m_IsShowAxis   = m_Pipeline.m_IsShowAxis;") &&
+                  Contains(apple_draw_list, "rp1->m_SelectedAxis = m_Pipeline.m_SelectedAxis;"),
+              "the Apple draw list forwards show_axis / selected_axis into RP1 every frame "
+              "(the DX12 branch always did; the Apple branch never did)");
+
+        // ---- 地基：Metal 的 dynamic offset ----
+        // 以前这里是 (void)pDynamicOffsets —— 所有 *_DYNAMIC 绑定读的是第一帧的
+        // per-frame 数据。契约不许那个 (void) 回来。
+        const std::string bind_desc_sets =
+            body_of(metal_source, "void MetalRHI::CmdBindDescriptorSetsPFN(");
+        Check(!bind_desc_sets.empty() && !Contains(bind_desc_sets, "(void)pDynamicOffsets"),
+              "MetalRHI::CmdBindDescriptorSets no longer discards the dynamic offsets");
+        Check(Contains(bind_desc_sets, "RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC"),
+              "MetalRHI recognises dynamic buffer bindings (static offsets alone meant "
+              "every per-frame read was stuck on frame 0)");
+        Check(Contains(bind_desc_sets, "dynamic_cursor"),
+              "MetalRHI numbers the dynamic bindings in Vulkan order (set order, then binding index)");
+        // 上面三条只看"有没有这套机制"，删掉真正生效的那一行它们照样绿 ⇒ 必须再盯
+        // **把偏移加进 bind_offset** 这一步（变异测出来过）。
+        Check(Contains(bind_desc_sets, "bind_offset += pDynamicOffsets[dynamic_cursor]"),
+              "MetalRHI actually adds the dynamic offset to the bound buffer offset -- knowing which "
+              "binding is dynamic is worthless if the offset never reaches setVertexBuffer");
+    }
+
+    // -------------------------------------------------------------------------
     // 阶段 58：Nanite 的每帧推进必须有生产者，而且**每一条** Tick 路径都得有。
     //
     // 以前"推进 Nanite"这句话只有 `BuildRenderSystemFrameCommands` 的 DX12 分支里
@@ -1879,6 +2017,9 @@ int main()
     // Apple 版 Tick 的点光源同步契约 + 探针关卡本身（阶段 55）。
     CheckPointLightSyncContracts();
     CheckNaniteTickContracts();
+
+    // 编辑器 gizmo（axis）：上传 + 绘制两半 + Metal dynamic offset（阶段 60）。
+    CheckAxisContracts();
 
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();

@@ -665,15 +665,14 @@ bool RenderSystem::TryGetRenderSceneViewport(RHIViewport& out_viewport, RHIRect2
     out_scissor  = m_Rhi->GetSwapchainInfo().scissor[static_cast<uint32_t>(ViewportType::scene)];
     return true;
 }
-void RenderSystem::CreateAxis(std::array<RenderEntity, 3>, std::array<RenderMeshData, 3>) {}
-void RenderSystem::SetVisibleAxis(std::optional<RenderEntity> axis)
-{
-    if (!m_RenderPipeline)
-    {
-        return;
-    }
-    m_RenderPipeline->SetAxisVisibleState(axis.has_value());
-}
+// CreateAxis / SetVisibleAxis 以前在这里是**空桩 / 半桩**：CreateAxis 什么都不做
+// （不注册 mesh source、不上传），SetVisibleAxis 只翻 pipeline 上的开关、不写 swap
+// data（⇒ `m_VisibleAxisUpdatePending` 永远是 false，`m_RenderScene->m_RenderAxis`
+// 永远没有值）。结果就是 Apple 上编辑器 gizmo 既没资源也没数据。
+//
+// 两份实现现在都搬到了文件末尾那段**平台无关**的公共尾巴上（和
+// UpdateNaniteForFrame 同一个道理）：编辑器侧（EditorSceneManager::UploadAxisResource）
+// 是平台无关的，它调进来拿到的却是空实现，这种不对称没有任何好处。
 void RenderSystem::SetSkyboxVisible(ViewportType viewport_type, bool visible)
 {
     if (!m_RenderPipeline)
@@ -1463,46 +1462,7 @@ GObjectID RenderSystem::GetGObjectIDByMeshID(uint32_t mesh_id) const
     return m_RenderScene->GetGObjectIDByMeshID(mesh_id);
 }
 
-void RenderSystem::CreateAxis(std::array<RenderEntity, 3> axis_entities,
-                              std::array<RenderMeshData, 3> mesh_datas)
-{
-    if (!m_RenderResource || !m_RenderScene)
-    {
-        return;
-    }
-
-    std::array<size_t, 3> mesh_asset_ids = {axis_entities[0].m_MeshAssetId,
-                                            axis_entities[1].m_MeshAssetId,
-                                            axis_entities[2].m_MeshAssetId};
-    m_RenderScene->RegisterAxisMeshSources(mesh_asset_ids, mesh_datas);
-
-    auto* render_resource = static_cast<RenderResource*>(m_RenderResource.get());
-    for (size_t i = 0; i < axis_entities.size(); ++i)
-    {
-        render_resource->UploadGameObjectRenderResource(m_Rhi, axis_entities[i], mesh_datas[i]);
-        if (!render_resource->HasValidMesh(axis_entities[i].m_MeshAssetId))
-        {
-            LOG_ERROR(ZRender,
-                      "CreateAxis: failed to upload axis mesh {} (asset id {})",
-                      i,
-                      axis_entities[i].m_MeshAssetId);
-        }
-    }
-}
-
-void RenderSystem::SetVisibleAxis(std::optional<RenderEntity> axis)
-{
-    RenderSwapData& logic_swap = m_SwapContext.GetLogicSwapData();
-    logic_swap.m_VisibleAxis = axis;
-    logic_swap.m_VisibleAxisUpdatePending = true;
-
-    if (!m_RenderPipeline)
-    {
-        return;
-    }
-
-    m_RenderPipeline->SetAxisVisibleState(axis.has_value());
-}
+// CreateAxis / SetVisibleAxis 的实现在文件末尾的平台无关尾巴上（见那里）。
 
 void RenderSystem::SetSkyboxVisible(ViewportType viewport_type, bool visible)
 {
@@ -1773,6 +1733,74 @@ RHIDrawList& RenderSystem::GetFrameDrawList(uint32_t slot)
 // （并行的 DX12 / 非 DX12、单线程的 DX12 / 非 DX12）都要调它，其中 Apple 那条就在
 // 上面 `#if defined(__APPLE__)` 的精简 Tick 里 —— 定义要是落在非 Apple 那个大分支
 // 里，Apple 就是 undefined symbol（静态库看不出来，只有链 ZEditor 时才炸）。
+// ===========================================================================
+// 编辑器 gizmo（axis）的上传 + 数据通路。
+//
+// 这两个以前在 Apple 上是空桩 / 半桩（CreateAxis 什么都不做，SetVisibleAxis 只翻
+// pipeline 的开关、不写 swap data），于是 Apple 编辑器里选中物体**没有坐标轴**，
+// 而且不报任何错 —— 编辑器侧 `EditorSceneManager::UploadAxisResource()` 是平台无关
+// 的，它每次启动都老老实实调进来，拿到的是一份什么都不做的实现。
+//
+// 和 UpdateNaniteForFrame 一样，**必须**住在这个平台无关的尾巴上。
+// ===========================================================================
+void RenderSystem::CreateAxis(std::array<RenderEntity, 3> axis_entities,
+                              std::array<RenderMeshData, 3> mesh_datas)
+{
+    if (!m_RenderResource || !m_RenderScene)
+    {
+        return;
+    }
+
+    std::array<size_t, 3> mesh_asset_ids = {axis_entities[0].m_MeshAssetId,
+                                            axis_entities[1].m_MeshAssetId,
+                                            axis_entities[2].m_MeshAssetId};
+    m_RenderScene->RegisterAxisMeshSources(mesh_asset_ids, mesh_datas);
+
+    auto* render_resource = static_cast<RenderResource*>(m_RenderResource.get());
+    size_t uploaded = 0;
+    for (size_t i = 0; i < axis_entities.size(); ++i)
+    {
+        render_resource->UploadGameObjectRenderResource(m_Rhi, axis_entities[i], mesh_datas[i]);
+        if (!render_resource->HasValidMesh(axis_entities[i].m_MeshAssetId))
+        {
+            LOG_ERROR(ZRender,
+                      "CreateAxis: failed to upload axis mesh {} (asset id {})",
+                      i,
+                      axis_entities[i].m_MeshAssetId);
+        }
+        else
+        {
+            ++uploaded;
+        }
+    }
+
+    // 成功也打一条：以前失败才有日志，而"根本没被调用"和"调了但都失败"在日志里
+    // 长得一模一样（都是一片安静）。真机上靠这一行确认 gizmo 资源真的到了 GPU。
+    LOG_INFO(ZRender,
+             "CreateAxis: {}/3 axis meshes uploaded (asset ids {} / {} / {})",
+             uploaded,
+             mesh_asset_ids[0],
+             mesh_asset_ids[1],
+             mesh_asset_ids[2]);
+}
+
+void RenderSystem::SetVisibleAxis(std::optional<RenderEntity> axis)
+{
+    // swap data 这一半**不能省**：Apple 上以前只翻了 pipeline 的开关，于是
+    // `m_VisibleAxisUpdatePending` 永远是 false ⇒ `m_RenderScene->m_RenderAxis`
+    // 永远没有值 ⇒ 就算画的地方有了也没东西可画。
+    RenderSwapData& logic_swap = m_SwapContext.GetLogicSwapData();
+    logic_swap.m_VisibleAxis = axis;
+    logic_swap.m_VisibleAxisUpdatePending = true;
+
+    if (!m_RenderPipeline)
+    {
+        return;
+    }
+
+    m_RenderPipeline->SetAxisVisibleState(axis.has_value());
+}
+
 void RenderSystem::UpdateNaniteForFrame(float delta_time)
 {
     if (m_RenderPipeline == nullptr || m_RenderScene == nullptr)

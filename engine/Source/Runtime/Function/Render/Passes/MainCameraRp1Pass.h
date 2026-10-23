@@ -26,6 +26,9 @@ public:
         _mesh_global,
         _mesh_per_material,
         _deferred_lighting,
+        // 编辑器 gizmo（axis）：binding 0 = per-frame（dynamic），binding 1 = 那一个
+        // axis 的 model 矩阵 + 选中轴。和 Vulkan 的 MainCameraPass 同一套布局。
+        _axis,
         _layout_type_count
     };
 
@@ -39,6 +42,7 @@ public:
         _render_pipeline_type_megalights_spatial,
         _render_pipeline_type_sky_procedural,
         _render_pipeline_type_sky_mesh,
+        _render_pipeline_type_axis,
         _render_pipeline_type_count
     };
 
@@ -104,10 +108,21 @@ public:
     MainCameraPerFrame m_MainCameraPerFrame;
     MegaLights::MegaLightsSystem* m_MegaLightsSystem {nullptr};
 
+    // 编辑器 gizmo（axis）的开关与当前选中轴。
+    //
+    // 以前这两个数**根本传不进 RP1**：Apple 分支的 draw list lambda 只调了三个
+    // Draw*Pass，从来没把 pipeline 上的 `m_IsShowAxis` / `m_SelectedAxis` 交给 pass
+    // （对比 DX12 分支：那里每次都 `main_camera_pass->m_IsShowAxis = ...`）。于是
+    // 就算 pass 里有 axis 绘制路径，它也会因为 `m_IsShowAxis` 恒为 false 而什么都不画。
+    bool   m_IsShowAxis {false};
+    size_t m_SelectedAxis {3};
+
 private:
     void SetupDescriptorSetLayouts();
     void SetupPipelines();
+    void SetupAxisPipeline();
     void SetupDescriptorSets();
+    void SetupAxisDescriptorSet();
     void EnsureFallbackIblTextures();
 
     void SetPerViewportData(ViewportType viewport_type);
@@ -115,6 +130,7 @@ private:
     void SetViewportScissor(ViewportType viewport_type);
 
     void DrawMeshGbuffer(ViewportType viewport_type);
+    void DrawAxis(ViewportType viewport_type);
     void DrawSkyMeshPass(ViewportType viewport_type, bool skybox_visible);
     void DrawDeferredLighting(ViewportType viewport_type);
     void UpdateMegaLightsDescriptorSets(ViewportType viewport_type);
@@ -149,4 +165,9 @@ private:
 
     std::map<MainCameraPassShaderCommon::MeshPipelineKey, RHIPipeline*> m_MeshGbufferMaterialPipelines;
     std::map<MainCameraPassShaderCommon::MeshPipelineKey, RHIPipeline*> m_MeshTransparentMaterialPipelines;
+
+    AxisDrawStorage m_AxisDrawStorage;
+    // "axis 一次都没画成功" 只打一次，别每帧刷屏。
+    bool m_AxisSkippedLogged {false};
+    bool m_AxisDrawnLogged {false};
 };

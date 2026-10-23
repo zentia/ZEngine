@@ -23,6 +23,8 @@
 // Z_HAS_VULKAN left Apple with no mesh shaders at all -- the pass threw on startup
 // and the scene was never drawn.
 #if defined(Z_HAS_SPIRV_SHADERS)
+    #include <axis_frag.h>
+    #include <axis_vert.h>
     #include <deferred_lighting_frag.h>
     #include <deferred_lighting_vert.h>
     #include <mesh_frag.h>
@@ -571,6 +573,33 @@ void MainCameraRp1Pass::SetupDescriptorSetLayouts()
                                              m_DescriptorInfos[_deferred_lighting].layout) != RHI_SUCCESS)
         {
             throw std::runtime_error("MainCameraRp1Pass: create deferred lighting layout");
+        }
+    }
+
+    // 编辑器 gizmo（axis）。和 Vulkan 的 MainCameraPass 同一套布局：
+    //   binding 0 = per-frame（proj_view_matrix 等），dynamic —— 每帧在 ring buffer
+    //               上的偏移不同，靠 CmdBindDescriptorSets 的 dynamic offset 传进来。
+    //   binding 1 = 一个 axis 的 AxisDrawStorage（model 矩阵 + 选中哪根轴）。
+    {
+        RHIDescriptorSetLayoutBinding axis_layout_bindings[2] {};
+        axis_layout_bindings[0].binding         = 0;
+        axis_layout_bindings[0].descriptorType  = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+        axis_layout_bindings[0].descriptorCount = 1;
+        axis_layout_bindings[0].stageFlags      = RHI_SHADER_STAGE_VERTEX_BIT;
+
+        axis_layout_bindings[1].binding         = 1;
+        axis_layout_bindings[1].descriptorType  = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        axis_layout_bindings[1].descriptorCount = 1;
+        axis_layout_bindings[1].stageFlags      = RHI_SHADER_STAGE_VERTEX_BIT;
+
+        RHIDescriptorSetLayoutCreateInfo axis_layout_create_info {};
+        axis_layout_create_info.sType        = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        axis_layout_create_info.bindingCount = 2;
+        axis_layout_create_info.pBindings    = axis_layout_bindings;
+
+        if (m_Rhi->CreateDescriptorSetLayout(&axis_layout_create_info, m_DescriptorInfos[_axis].layout) != RHI_SUCCESS)
+        {
+            throw std::runtime_error("MainCameraRp1Pass: create axis layout");
         }
     }
 }
@@ -1279,6 +1308,152 @@ void MainCameraRp1Pass::SetupPipelines()
         m_Rhi->DestroyShaderModule(vert_shader_module);
         m_Rhi->DestroyShaderModule(frag_shader_module);
     }
+
+    SetupAxisPipeline();
+}
+
+void MainCameraRp1Pass::SetupAxisPipeline()
+{
+    // 编辑器 gizmo（axis）的管线。
+    //
+    // 只给非 DX12 建：DX12 走 `DX12MainCameraPass::DrawAxis`（HLSL + root constant），
+    // Vulkan 走 `MainCameraPass::DrawAxis`。RP1 这一份是给 Apple / Metal 补的 ——
+    // 那里既没有 Vulkan 的 MainCameraPass，也没有 DX12 那份，于是 axis 一个都没人画。
+    //
+    // 失败**不抛**：gizmo 缺席不该让整个编辑器起不来。以前这里整条 SetupPipelines
+    // 是一串 throw，加一个"可选"的管线进去必须自己兜住，否则 SPIR-V 转 MSL 出一点
+    // 问题就把场景一起拖死。
+    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+    {
+        return;
+    }
+
+    RHIDescriptorSetLayout* descriptorset_layouts[1] = {m_DescriptorInfos[_axis].layout};
+    RHIPipelineLayoutCreateInfo pipeline_layout_create_info {};
+    pipeline_layout_create_info.sType        = RHI_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_create_info.setLayoutCount = 1;
+    pipeline_layout_create_info.pSetLayouts  = descriptorset_layouts;
+
+    if (m_Rhi->CreatePipelineLayout(&pipeline_layout_create_info,
+                                    m_RenderPipelines[_render_pipeline_type_axis].layout) != RHI_SUCCESS)
+    {
+        LOG_ERROR(ZRender, "MainCameraRp1Pass: create axis pipeline layout failed -- editor gizmo stays hidden");
+        return;
+    }
+
+#if !defined(Z_HAS_SPIRV_SHADERS)
+    LOG_WARNING(ZRender,
+                "MainCameraRp1Pass: axis shaders unavailable (SPIR-V builtins not compiled in) -- "
+                "editor gizmo stays hidden");
+    return;
+#else
+    RHIShader* vert_shader_module = m_Rhi->CreateShaderModule(AXIS_VERT);
+    RHIShader* frag_shader_module = m_Rhi->CreateShaderModule(AXIS_FRAG);
+    if (vert_shader_module == nullptr || frag_shader_module == nullptr)
+    {
+        LOG_ERROR(ZRender,
+                  "MainCameraRp1Pass: axis shader module failed (vert={} frag={}) -- editor gizmo stays hidden",
+                  vert_shader_module != nullptr,
+                  frag_shader_module != nullptr);
+        return;
+    }
+
+    RHIPipelineShaderStageCreateInfo shader_stages[2] {};
+    shader_stages[0].sType  = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shader_stages[0].stage  = RHI_SHADER_STAGE_VERTEX_BIT;
+    shader_stages[0].module = vert_shader_module;
+    shader_stages[0].pName  = "main";
+    shader_stages[1].sType  = RHI_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shader_stages[1].stage  = RHI_SHADER_STAGE_FRAGMENT_BIT;
+    shader_stages[1].module = frag_shader_module;
+    shader_stages[1].pName  = "main";
+
+    auto vertex_binding_descriptions   = MeshVertex::GetBindingDescriptions();
+    auto vertex_attribute_descriptions = MeshVertex::GetAttributeDescriptions();
+    RHIPipelineVertexInputStateCreateInfo vertex_input_state_create_info {};
+    vertex_input_state_create_info.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input_state_create_info.vertexBindingDescriptionCount =
+        static_cast<uint32_t>(vertex_binding_descriptions.size());
+    vertex_input_state_create_info.pVertexBindingDescriptions = vertex_binding_descriptions.data();
+    vertex_input_state_create_info.vertexAttributeDescriptionCount =
+        static_cast<uint32_t>(vertex_attribute_descriptions.size());
+    vertex_input_state_create_info.pVertexAttributeDescriptions = vertex_attribute_descriptions.data();
+
+    RHIPipelineInputAssemblyStateCreateInfo input_assembly_create_info {};
+    input_assembly_create_info.sType     = RHI_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assembly_create_info.topology  = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    RHIPipelineViewportStateCreateInfo viewport_state_create_info {};
+    viewport_state_create_info.sType        = RHI_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_state_create_info.viewportCount = 1;
+    viewport_state_create_info.pViewports   = m_Rhi->GetSwapchainInfo().viewport;
+    viewport_state_create_info.scissorCount = 1;
+    viewport_state_create_info.pScissors    = m_Rhi->GetSwapchainInfo().scissor;
+
+    RHIPipelineRasterizationStateCreateInfo rasterization_state_create_info {};
+    rasterization_state_create_info.sType      = RHI_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterization_state_create_info.polygonMode = RHI_POLYGON_MODE_FILL;
+    // gizmo 是一组细长的锥/柱，双面都要看得见。
+    rasterization_state_create_info.cullMode   = RHI_CULL_MODE_NONE;
+    rasterization_state_create_info.frontFace  = RHI_FRONT_FACE_COUNTER_CLOCKWISE;
+
+    RHIPipelineMultisampleStateCreateInfo multisample_state_create_info {};
+    multisample_state_create_info.sType               = RHI_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample_state_create_info.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
+
+    RHIPipelineColorBlendAttachmentState color_blend_attachment {};
+    color_blend_attachment.colorWriteMask = RHI_COLOR_COMPONENT_R_BIT | RHI_COLOR_COMPONENT_G_BIT |
+                                            RHI_COLOR_COMPONENT_B_BIT | RHI_COLOR_COMPONENT_A_BIT;
+    color_blend_attachment.blendEnable    = RHI_FALSE;
+
+    RHIPipelineColorBlendStateCreateInfo color_blend_state_create_info {};
+    color_blend_state_create_info.sType           = RHI_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blend_state_create_info.attachmentCount = 1;
+    color_blend_state_create_info.pAttachments    = &color_blend_attachment;
+
+    // 深度全关：axis.vert 已经把 clip z 压到 0.0001（贴到最近平面），gizmo 必须永远
+    // 盖在场景之上，不能被自己的几何或场景深度吃掉。
+    RHIPipelineDepthStencilStateCreateInfo depth_stencil_create_info {};
+    depth_stencil_create_info.sType            = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil_create_info.depthTestEnable  = RHI_FALSE;
+    depth_stencil_create_info.depthWriteEnable = RHI_FALSE;
+
+    RHIDynamicState dynamic_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
+    RHIPipelineDynamicStateCreateInfo dynamic_state_create_info {};
+    dynamic_state_create_info.sType            = RHI_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state_create_info.dynamicStateCount = 2;
+    dynamic_state_create_info.pDynamicStates   = dynamic_states;
+
+    RHIGraphicsPipelineCreateInfo pipeline_info {};
+    pipeline_info.sType               = RHI_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipeline_info.stageCount          = 2;
+    pipeline_info.pStages             = shader_stages;
+    pipeline_info.pVertexInputState   = &vertex_input_state_create_info;
+    pipeline_info.pInputAssemblyState = &input_assembly_create_info;
+    pipeline_info.pViewportState      = &viewport_state_create_info;
+    pipeline_info.pRasterizationState = &rasterization_state_create_info;
+    pipeline_info.pMultisampleState   = &multisample_state_create_info;
+    pipeline_info.pColorBlendState    = &color_blend_state_create_info;
+    pipeline_info.pDepthStencilState  = &depth_stencil_create_info;
+    pipeline_info.layout              = m_RenderPipelines[_render_pipeline_type_axis].layout;
+    pipeline_info.renderPass          = m_FbResources->getForwardLightingRenderPass();
+    pipeline_info.subpass             = 0;
+    pipeline_info.pDynamicState       = &dynamic_state_create_info;
+
+    if (m_Rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE,
+                                       1,
+                                       &pipeline_info,
+                                       m_RenderPipelines[_render_pipeline_type_axis].pipeline) != RHI_SUCCESS)
+    {
+        LOG_ERROR(ZRender, "MainCameraRp1Pass: create axis graphics pipeline failed -- editor gizmo stays hidden");
+        return;
+    }
+
+    m_Rhi->DestroyShaderModule(vert_shader_module);
+    m_Rhi->DestroyShaderModule(frag_shader_module);
+
+    LOG_INFO(ZRender, "MainCameraRp1Pass: axis pipeline ready (editor gizmo can be drawn)");
+#endif
 }
 
 void MainCameraRp1Pass::SetupDescriptorSets()
@@ -1517,6 +1692,60 @@ void MainCameraRp1Pass::SetupDescriptorSets()
             // will overwrite this set with real descriptors.
         }
     }
+
+    SetupAxisDescriptorSet();
+}
+
+void MainCameraRp1Pass::SetupAxisDescriptorSet()
+{
+    // 编辑器 gizmo（axis）的 descriptor set：binding 0 指 per-frame 的 ring buffer
+    // （static offset 写 0，真正的偏移每帧由 CmdBindDescriptorSets 的 dynamic offset
+    // 带进来），binding 1 指那一个 axis 的 AxisDrawStorage。
+    if (m_DescriptorInfos[_axis].layout == nullptr)
+    {
+        return;
+    }
+
+    RHIDescriptorSetAllocateInfo axis_descriptor_set_alloc_info {};
+    axis_descriptor_set_alloc_info.sType            = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    axis_descriptor_set_alloc_info.descriptorPool   = m_Rhi->GetDescriptorPoor();
+    axis_descriptor_set_alloc_info.descriptorSetCount = 1;
+    axis_descriptor_set_alloc_info.pSetLayouts      = &m_DescriptorInfos[_axis].layout;
+
+    if (m_Rhi->AllocateDescriptorSets(&axis_descriptor_set_alloc_info, m_DescriptorInfos[_axis].descriptor_set) !=
+        RHI_SUCCESS)
+    {
+        LOG_ERROR(ZRender, "MainCameraRp1Pass: allocate axis descriptor set failed -- editor gizmo stays hidden");
+        return;
+    }
+
+    RHIDescriptorBufferInfo axis_perframe_storage_buffer_info {};
+    axis_perframe_storage_buffer_info.offset = 0;
+    axis_perframe_storage_buffer_info.range  = sizeof(MainCameraPerFrame);
+    axis_perframe_storage_buffer_info.buffer =
+        m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
+
+    RHIDescriptorBufferInfo axis_storage_buffer_info {};
+    axis_storage_buffer_info.offset = 0;
+    axis_storage_buffer_info.range  = sizeof(AxisDrawStorage);
+    axis_storage_buffer_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_AxisInefficientStorageBuffer;
+
+    RHIWriteDescriptorSet axis_descriptor_writes_info[2] {};
+    axis_descriptor_writes_info[0].sType           = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    axis_descriptor_writes_info[0].dstSet          = m_DescriptorInfos[_axis].descriptor_set;
+    axis_descriptor_writes_info[0].dstBinding      = 0;
+    axis_descriptor_writes_info[0].descriptorType  = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC;
+    axis_descriptor_writes_info[0].descriptorCount = 1;
+    axis_descriptor_writes_info[0].pBufferInfo     = &axis_perframe_storage_buffer_info;
+
+    axis_descriptor_writes_info[1].sType           = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    axis_descriptor_writes_info[1].dstSet          = m_DescriptorInfos[_axis].descriptor_set;
+    axis_descriptor_writes_info[1].dstBinding      = 1;
+    axis_descriptor_writes_info[1].descriptorType  = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    axis_descriptor_writes_info[1].descriptorCount = 1;
+    axis_descriptor_writes_info[1].pBufferInfo     = &axis_storage_buffer_info;
+
+    m_Rhi->UpdateDescriptorSets(2, axis_descriptor_writes_info, 0, nullptr);
 }
 
 void MainCameraRp1Pass::RefreshDeferredLightingInputAttachments()
@@ -2068,10 +2297,156 @@ void MainCameraRp1Pass::DrawForwardLightingPass(const std::array<bool, 2>& skybo
         m_MainCameraPerFrame.show_skybox =
             skybox_visible[static_cast<size_t>(viewport_type)] ? 1U : 0U;
         DrawMeshTransparent(viewport_type);
+        // axis 挂在 forward 这一站：它是最后开的那个 pass，深度测试关掉、写进
+        // BackupOdd，gizmo 因此永远盖在场景之上。
+        DrawAxis(viewport_type);
     }
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
     m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
+}
+
+void MainCameraRp1Pass::DrawAxis(ViewportType viewport_type)
+{
+    // 编辑器 gizmo（axis）的绘制。
+    //
+    // 两半必须都在：上传（`RenderSystem::CreateAxis`，已经补成平台无关实现）+ 这里的
+    // 绘制。以前 Apple 上两半都没有 —— 编辑器里选中物体拿不到坐标轴，而且不报任何错。
+    //
+    // 每一次提前返回都记一条**一次性**日志：gizmo 不出现的可能原因有五六个（没开、
+    // 管线没建起来、没选中物体、视口是 0、mesh 没上传），不分开打就永远只能靠猜。
+    if (!m_IsShowAxis)
+    {
+        return;
+    }
+
+    auto skip = [this](const char* reason) {
+        if (!m_AxisSkippedLogged)
+        {
+            m_AxisSkippedLogged = true;
+            LOG_WARNING(ZRender, "DrawAxis: skipped ({})", reason);
+        }
+    };
+
+    if (m_RenderPipelines[_render_pipeline_type_axis].pipeline == nullptr ||
+        m_DescriptorInfos[_axis].descriptor_set == nullptr)
+    {
+        skip("axis pipeline / descriptor set unavailable");
+        return;
+    }
+    if (m_VisiableNodes.p_axis_node == nullptr)
+    {
+        skip("no axis node (nothing selected)");
+        return;
+    }
+
+    RenderSystem* render_system = GET_SYSTEM(RenderSystem);
+    if (render_system == nullptr)
+    {
+        skip("RenderSystem unavailable");
+        return;
+    }
+    const std::shared_ptr<RenderScene>& render_scene = render_system->getRenderScene();
+    if (render_scene == nullptr || !render_scene->m_RenderAxis.has_value())
+    {
+        skip("no axis entity was ever submitted through RenderSystem::SetVisibleAxis");
+        return;
+    }
+
+    // axis 只画在编辑器场景视口上。这个视口是 0x0 是**正常**的：Scene 和 Game 是
+    // 同一个 tab 组的两个 tab，只有当前激活的那个才有 rect。激活的是 Game 时这里
+    // 就该跳过 —— 但要说出来，否则"gizmo 不显示"和"gizmo 代码没跑"在日志里一样安静。
+    RHIViewport scene_viewport {};
+    RHIRect2D   scene_scissor {};
+    if (!render_system->TryGetRenderSceneViewport(scene_viewport, scene_scissor) ||
+        scene_viewport.width <= 0.0f || scene_viewport.height <= 0.0f)
+    {
+        if (!m_AxisSkippedLogged)
+        {
+            m_AxisSkippedLogged = true;
+            LOG_WARNING(ZRender,
+                        "DrawAxis: skipped (scene viewport is {:.0f}x{:.0f} -- the Scene panel is not the active tab, "
+                        "so there is nowhere to draw the gizmo)",
+                        scene_viewport.width,
+                        scene_viewport.height);
+        }
+        return;
+    }
+
+    const MeshDrawData axis_mesh = getMeshDrawData(m_VisiableNodes.p_axis_node->ref_mesh);
+    if (!axis_mesh)
+    {
+        skip("axis mesh was never uploaded to the GPU (RenderSystem::CreateAxis)");
+        return;
+    }
+
+    SetPerViewportData(viewport_type);
+    if (viewport_type == ViewportType::scene)
+    {
+        m_MainCameraPerFrame.viewport_rect =
+            Vector4(scene_viewport.x, scene_viewport.y, scene_viewport.width, scene_viewport.height);
+    }
+
+    const uint32_t perframe_dynamic_offset = AlignPerFrameRingOffset(
+        m_Rhi,
+        m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+        m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+    m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
+        perframe_dynamic_offset + PerFrameUploadRingStrideBytes(m_Rhi, perframe_dynamic_offset);
+
+    (*reinterpret_cast<MainCameraPerFrame*>(
+        reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
+        perframe_dynamic_offset)) = m_MainCameraPerFrame;
+
+    m_AxisDrawStorage.selected_axis = m_SelectedAxis;
+    m_AxisDrawStorage.model_matrix  = m_VisiableNodes.p_axis_node->model_matrix;
+    (*reinterpret_cast<AxisDrawStorage*>(
+        reinterpret_cast<uintptr_t>(
+            m_GlobalRenderResource->m_StorageBuffer.m_AxisInefficientStorageBufferMemoryPointer))) =
+        m_AxisDrawStorage;
+
+    float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+    m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Axis", color);
+
+    m_Rhi->CmdBindPipelinePFN(
+        m_Rhi->GetCurrentCommandBuffer(), RHI_PIPELINE_BIND_POINT_GRAPHICS,
+        m_RenderPipelines[_render_pipeline_type_axis].pipeline);
+    SetViewportScissor(viewport_type);
+    m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                    RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                    m_RenderPipelines[_render_pipeline_type_axis].layout,
+                                    0,
+                                    1,
+                                    &m_DescriptorInfos[_axis].descriptor_set,
+                                    1,
+                                    &perframe_dynamic_offset);
+
+    RHIBuffer* vertex_buffers[3] = {axis_mesh.position_buffer,
+                                    axis_mesh.varying_blending_buffer,
+                                    axis_mesh.varying_buffer};
+    RHIDeviceSize offsets[3]     = {0, 0, 0};
+    m_Rhi->CmdBindVertexBuffersPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                   0,
+                                   static_cast<uint32_t>(sizeof(vertex_buffers) / sizeof(vertex_buffers[0])),
+                                   vertex_buffers,
+                                   offsets);
+    m_Rhi->CmdBindIndexBufferPFN(
+        m_Rhi->GetCurrentCommandBuffer(), axis_mesh.index_buffer, 0, RHI_INDEX_TYPE_UINT16);
+
+    m_Rhi->CmdDrawIndexedPFN(m_Rhi->GetCurrentCommandBuffer(), axis_mesh.index_count, 1, 0, 0, 0);
+
+    m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
+
+    if (!m_AxisDrawnLogged)
+    {
+        m_AxisDrawnLogged = true;
+        LOG_INFO(ZRender,
+                 "DrawAxis: editor gizmo drawn (indices={} selected={} viewport={:.0f}x{:.0f})",
+                 axis_mesh.index_count,
+                 m_SelectedAxis,
+                 scene_viewport.width,
+                 scene_viewport.height);
+    }
 }
 
 void MainCameraRp1Pass::DrawSkyMeshPass(ViewportType viewport_type, bool skybox_visible)

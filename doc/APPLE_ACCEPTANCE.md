@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 248 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18）；Nanite 的每帧推进必须在**四条 Tick 路径上都存在**（§3.21）；GPU 路径的每一步都要能被证伪，心跳带 `ngpu=`（§3.22） |
+| `AppleSceneBlitSmokeTest` | 276 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18）；Nanite 的每帧推进必须在**四条 Tick 路径上都存在**（§3.21）；GPU 路径的每一步都要能被证伪，心跳带 `ngpu=`（§3.22）；编辑器 gizmo（axis）的**上传 + 绘制两半**都在，且 RHI 真的把 dynamic offset 用上（§3.23） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 
@@ -906,6 +906,77 @@ nanite: dispatched cluster culling (clusters=871 groups=14 owned_command_buffer=
 `m_RenderBatches`"—— 逐集群的裁决本来就在 kernel 里（`DispatchClusterCulling`），而 GPU 的
 结果按设计留在 GPU 上不读回。真正该改的是那条没写清的 TODO 注释。
 
+### 3.23 编辑器 gizmo（axis）：两半一起补，顺带把 RHI 的 dynamic offset 补上
+
+**症状**：Apple 编辑器里选中任何物体都**没有坐标轴**，而且不报任何错、不崩、画面照常。
+这是本文件 §4 里挂了很久的一条"已知限制"，本次两半一起补掉。
+
+**根因（两半 + 一条地基，缺一不可）**：
+
+| # | 缺的那一半 | 位置 | 后果 |
+|---|---|---|---|
+| a | **上传**：`RenderSystem::CreateAxis` 在 Apple 分支下是 `{}` | `RenderSystem.cpp` | 不注册 mesh source、不上传 ⇒ 就算画的地方有，也没 mesh 可画 |
+| b | **数据通路**：`SetVisibleAxis` 只翻 pipeline 开关、不写 swap data | `RenderSystem.cpp` | `m_VisibleAxisUpdatePending` 恒为 false ⇒ `m_RenderScene->m_RenderAxis` 永远没值 |
+| c | **绘制**：`p_axis_node` 只有 `DX12MainCameraPass` 和 `MainCameraPass`（Vulkan，Apple 构建里排除）会画 | `MainCameraRp1Pass.cpp` | Apple 的 RP1 根本没有 axis 绘制路径 |
+| d | **每帧状态**：Apple 的 `BuildDrawLists` 不把 `m_IsShowAxis` / `m_SelectedAxis` 交给 pass（DX12 分支每次都交） | `DesktopRenderPipelineModule.cpp` | 就算 c 补了，也因为恒为 false 而什么都不画 |
+| e | **地基**：`MetalRHI::CmdBindDescriptorSetsPFN` 把调用方给的 `pDynamicOffsets` 整个丢掉 | `MetalRHI.mm` | 所有 `*_DYNAMIC` 绑定都读第一帧的数据；axis 的 per-frame storage buffer 直接命中 |
+
+(e) 是这一节真正的收获：Metal 没有 dynamic descriptor，`setVertexBuffer:offset:` 的 offset
+必须在**绑定时**就算好。RHI 里那两行 `(void)dynamicOffsetCount; (void)pDynamicOffsets;`
+让"Vulkan 语义的动态偏移"在 Metal 上静默变成"永远偏移 0"—— 不崩、不报错，只是画错。
+
+**修复**：
+
+- (a)(b) 从 Apple 分支搬进 `RenderSystem.cpp` 的**平台无关尾巴**（和 `UpdateNaniteForFrame`
+  同一个理由：静态库看不出缺符号，只有链 `ZEditor` 时才炸）。`CreateAxis` 成功**也**打一条日志
+  —— 以前失败才有日志，而"根本没被调用"和"调了但都失败"在日志里长得一模一样（都是一片安静）。
+- (c) RP1 新增 axis 的 descriptor layout / pipeline / descriptor set / `DrawAxis()`，挂在
+  forward-lighting pass 的末尾（它是最后开的那个 pass，深度测试关掉 ⇒ gizmo 永远盖在场景之上）。
+  管线建失败**不抛**：gizmo 只是编辑器的辅助显示，不该把整个渲染管线拖崩。
+- (d) Apple 的 `BuildDrawLists` lambda 补上每帧两行状态传递。
+- (e) `CmdBindDescriptorSetsPFN` 按 Vulkan 语义取用动态偏移：set 顺序 → set 内 binding 号
+  **升序**，只数 dynamic 类型的 binding（`dynamic_cursor`），偏移量加到 `bind_offset` 上。
+
+**验证**：真机（2026-10-23）：
+
+```
+MainCameraRp1Pass: axis pipeline ready (editor gizmo can be drawn)
+CreateAxis: 3/3 axis meshes uploaded (asset ids 1 / 2 / 3)
+DrawAxis: editor gizmo drawn (indices=432 selected=3 viewport=2560x1440)
+```
+
+冒烟测试新增 28 条契约（248 → 276 checks）。四次变异各自精确变红：
+
+| 变异 | 红几条 |
+|---|---|
+| 删 forward pass 里的 `DrawAxis(viewport_type);` | 1 |
+| 删 Apple draw list 的两行状态传递 | 1 |
+| `bind_offset += 0`（保留 `dynamic_cursor` 和类型判断，只废掉生效那一步） | 1 |
+| 改 `CreateAxis` 成功日志的措辞 | 1 |
+
+**三条教训**（都是踩出来的，不是推出来的）：
+
+1. **契约不能只钉"机制存在"**：`dynamic_cursor` 和 `STORAGE_BUFFER_DYNAMIC` 都在的时候，
+   只删真正 `bind_offset += pDynamicOffsets[...]` 那一行照样全绿 ⇒ 必须额外盯**生效那一步**。
+2. **文本契约会被自己的注释蒙过去（第四次）**：我在 `MetalRHI.mm` 的注释里逐字写了
+   `(void)pDynamicOffsets`，于是"不许再出现这句"的判据被注释喂饱、假红。纪律：搜**调用形式**，
+   绝不在注释里逐字引用被禁的字面量。
+3. **`DrawAxis` 的 `!m_IsShowAxis` 出口刻意不打日志**：没选中物体时它是 99% 的常态，
+   打一条 warning 每个会话都会污染日志；而一旦真出问题，其余五个出口的一次性日志
+   （管线没建 / 没有 axis 节点 / RenderSystem 没有 / 从来没人 submit / scene 视口 0x0 / mesh 没上传）
+   会把原因说清楚。
+
+**顺带查清的一件事（不是 bug）**：`DrawAxis` 里的 `scene` 视口是 0x0 是**设计行为**。
+`QueryNativeDockPanel` 的 `out_is_active = (leaf->Tabs[leaf->ActiveTab].PanelId == title)`，
+而 Scene 与 Game 是**同一个 tab 组的两个 tab**，只有当前激活的那个才有 rect。会话状态在
+`bin/Debug/saved/config/native_dock.json` 的 `active` 字段（0 = Scene 激活）。
+为查这件事在 `PlayModeView` 里留了一个**长期保留**的视口发布探针（只在值变化时打）：
+
+```
+PlayModeView probe: constructed 'Scene' viewport_id=1
+PlayModeView probe: published 'Scene' viewport_id=1 rect=(389,156) 1524x863
+```
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - ~~**`NaniteGPUCullingSmokeTest` 在 Apple 上是红的（21 条）**~~ —— **已在 §3.20 修掉**：
@@ -931,9 +1002,10 @@ nanite: dispatched cluster culling (clusters=871 groups=14 owned_command_buffer=
   通道的死锁（任何关卡切换的数据以前都送不到渲染线程）。
 - ~~**Metal 的 `UpdateViewport` 不更新 scissor**~~ —— 已修，见 §3.13。修复前裁剪矩形永远停在
   `SyncLayerMetrics` 给的整窗值，任何只靠 scissor 钳制的路径都能把像素画到编辑器其它面板上。
-- **`scene`（type 1）视口在 macOS 上没有发布者**：只有 `PlayModeView` 关窗时清成 0x0，
-  主相机走的是 `game`（type 0）视口。哪天有人真的需要 scene 视口（比如场景相机预览），
-  得先给 macOS 补发布者，不然它永远是 0x0 —— 心跳里的 `scene_vp=0x0` 是预期值。
+- ~~**`scene`（type 1）视口在 macOS 上没有发布者**~~ —— **说法已纠正**（§3.23）：发布者是
+  有的（`PlayModeView::UpdateViewport`），但 Scene 与 Game 是同一个 tab 组的两个 tab，**只有
+  当前激活的那个有 rect**。激活的是 Scene 时心跳是 `game_vp=0x0 scene_vp=(389,156) 1524x863`，
+  激活的是 Game 时反过来 —— 两个都是预期值，取决于 `saved/config/native_dock.json`。
 - **粒子在 Vulkan 之外的所有后端都不冒（不是 Apple 独有的）**：`ParticlePass.cpp` 经传递
   include 拉 `vulkan/vulkan.h`，被 `ZENGINE_APPLE_EXCLUDED_PASSES` 排除在 Apple 构建之外；
   `ConsumeParticleSwapData` 的消费代码被 `#if defined(Z_HAS_VULKAN)` 门住 ⇒ **Metal 和 DX12
@@ -945,10 +1017,12 @@ nanite: dispatched cluster culling (clusters=871 groups=14 owned_command_buffer=
 - ~~**Apple 的 Tick 从不调 `SyncPointLightsFromLevel`**~~ —— **已在 §3.18 修掉**：造了
   `asset/level/light_probe.scene`（两个 `LightComponent`）证伪成
   `plights=0 gos=34 lcmp=2`，修完是 `plights=2`。
-- **编辑器 gizmo（axis）在 Apple 上两半都缺**（审计发现，**未修**）：`CreateAxis` 在 Apple
-  上是 `{}`（不注册 mesh source、不上传），而 `p_axis_node` 只有 `DX12MainCameraPass` 和
-  `MainCameraPass`（Vulkan，Apple 构建里排除）会画 —— `MainCameraRp1Pass` 没有 axis 绘制
-  路径。只补 `CreateAxis` 会上传一堆没人画的 mesh，所以要补就得两半一起补。
+- ~~**编辑器 gizmo（axis）在 Apple 上两半都缺**~~ —— **已在 §3.23 修掉**：上传（a）、
+  swap data（b）、RP1 的绘制路径（c）、每帧状态传递（d）、以及 RHI 的 dynamic offset（e）
+  五处一起补。现在启动会看到 `axis pipeline ready` + `CreateAxis: 3/3 axis meshes uploaded`，
+  选中物体后会看到 `DrawAxis: editor gizmo drawn (indices=432 ...)`。
+  **唯一没能自动验收的一步是"在 Scene 面板里点选物体"**：macOS 的无障碍权限被拒
+  （`osascript` 的 `System Events` / `activate` 报 `-10004` / `-1728`），只能靠手动点一下确认。
 - **每次构建仍会冲掉已导入的贴图**：`CopyEngineDataToOutput` 是
   `rm -rf <bin>/<cfg>/asset` + 整目录重拷，而 `_Generated/` 就在 content 底下，所以
   一构建派生数据就没了、下次启动重新导入一遍（重启不会，只有构建会）。
