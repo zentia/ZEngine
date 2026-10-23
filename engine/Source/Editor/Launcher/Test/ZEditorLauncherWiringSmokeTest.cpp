@@ -309,6 +309,61 @@ int main()
               "bundle 让位分支真的 return（不然流程照样掉到 PNG 覆盖上）");
     }
 
+    // ---- 10. 双击 .zproject 的文件关联 ----
+    //
+    // Windows 那边把 open 命令写成 `"<exe>" -p "%1"`，路径从 argv 进来，什么都不用
+    // 改。**macOS 没有这条路**：LaunchServices 启动时 argv 里只有 -psn_0_xxxxx，
+    // 文件路径是之后以 kAEOpenDocuments（odoc）Apple Event 送过来的，NSApplication
+    // 再转给 delegate 的 -application:openFile:。缺任何一环，症状都是"双击没反应"
+    // —— 不报错、不弹窗。
+    Check(CodeLineFind(bundle_cmake, "CFBundleDocumentTypes"), "bundle 声明了文档类型");
+    Check(CodeLineFind(bundle_cmake, "UTExportedTypeDeclarations"), "bundle 导出了 .zproject 的 UTI");
+    Check(CountOccurrences(bundle_cmake, "com.zengine.zproject") == 2,
+          "LSItemContentTypes 和 UTTypeIdentifier 用的是同一个 UTI（改了一处、漏了另一处就关联不上）");
+    Check(CodeLineFind(bundle_cmake, "public.filename-extension") &&
+              CodeLineFind(bundle_cmake, "<string>zproject</string>"),
+          "UTI 上挂了 zproject 扩展名");
+    Check(CodeLineFind(bundle_cmake, "lsregister"),
+          "构建后刷了 LaunchServices（不刷的话系统缓存里还是「这个 bundle 不处理文档」，双击静默失效）");
+
+    Check(CodeLineFind(launcher_mac, "NSApplicationDelegate"), "Launcher 控制器是 NSApplicationDelegate");
+    Check(CodeLineFind(launcher_mac, "openFile:(NSString*)filename"), "实现了 -application:openFile:");
+    Check(CodeLineFind(launcher_mac, "setDelegate:self"), "delegate 真的挂到了 NSApp 上");
+
+    {
+        // 顺序：delegate 必须装在 finishLaunching 之前。odoc 是 App "就绪"那一刻
+        // 发出来的，装晚了事件已经过去了 —— 而这类漏接是**静默**的。
+        const size_t delegate = CodeLineFindPosition(launcher_mac, "setDelegate:self");
+        const size_t finish   = CodeLineFindPosition(launcher_mac, "finishLaunching");
+        Check(delegate != std::string::npos && finish != std::string::npos, "能定位到挂 delegate 和 finishLaunching");
+        Check(delegate != std::string::npos && finish != std::string::npos && delegate < finish,
+              "挂 delegate 排在 finishLaunching 之前（odoc 在那一刻就发出来了）");
+    }
+
+    // openFile 里的两件实事：认扩展名（.zproject 没有 magic，喂别的文件进去不会
+    // 报错，只会加载出一篇空白）+ 真的提交（只记日志的话 Launcher 会继续等在那儿，
+    // 用户看到的就是"双击了 zproject，然后弹了个选项目的窗口"）。
+    //
+    // 锚点用日志那行而不是方法签名：签名在实现和 @interface 声明里各有一份，
+    // find() 只会命中前面那份声明。
+    Check(CodeLineFind(launcher_mac, "if (!ZL::IsZProjectFile(path))"),
+          "openFile 里先认 .zproject 扩展名（不能什么文件都当项目）");
+    Check(FoundAfter(launcher_mac, "Launcher: opening document", "finishWithChoice:", 400),
+          "openFile 拿到路径后真的提交了（只打日志的话 Launcher 会一直等在那儿）");
+
+    Check(CodeLineFind(launcher_mac, "std::filesystem::exists(path, ec)"),
+          "IsZProjectFile 除了扩展名还判文件真的在盘上");
+
+    // 重启要保住 bundle 身份：_NSGetExecutablePath() 给的是 symlink 解链后的真身，
+    // 直接 exec 真身的话重启后的进程就不在 bundle 里了（Dock 图标退回 PNG 兜底，
+    // LaunchServices 也不再认它是同一个 App）。
+    Check(CodeLineFind(main_cpp, "const std::filesystem::path exe = PickRelaunchExecutable(real_exe);"),
+          "重启用的是 bundle 入口（真身旁边有 .app 时）");
+    // 从 SETEXEC 那一行往后找，不能全文找 —— Main.cpp 里 reportMissingProject()
+    // 那几处 ForceFlush 排得更靠前，全文 find 会先命中它们，判据就恒绿了。
+    Check(FoundAfter(main_cpp, "POSIX_SPAWN_SETEXEC)", "LogSystem::ForceFlush()", 600),
+          "exec 之前刷了日志（SETEXEC 成功后缓冲区里没落盘的全没了）");
+
     // -------------------------------------------------------------------------
     // 扫描器自检
     //

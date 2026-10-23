@@ -103,7 +103,7 @@ cd build && ctest --output-on-failure
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 | `MemoryPairingSmokeTest` | 23 | 分配器配对（§3.26）：Apple 上 `Produce` 出来的块**不在 mimalloc 堆区**（所以喂给 mi_free 必坏）；错配会被守卫拦下而不是崩；正确配对不触发守卫；全库扫描 0 处错配 + **扫描器自检**（含已知错配/已知正确的双向对照） |
-| `ZEditorLauncherWiringSmokeTest` | 48 | Launcher 接线（§3.27）：两个平台的 `OpenLauncher` 分支都接到 Launcher、Unix 那条不许退回 `reportMissingProject()`（双击闪退的那一行）；重启用 `POSIX_SPAWN_SETEXEC` 且全文件不许有 `fork()`；`runEditorUnix` 要回写最近项目；三份实现（Win32 / Apple / POSIX 桩）不能同时编；Apple 侧确实是窗口不是空桩。**应用图标（§3.28）**：Apple 分支必须解链 exe 路径再拼 ini、且解链排在拼 ini 之前；ini 打不开要刷日志；bundle 脚本要生成 icns / 写 `CFBundleIconFile` / 用**相对** symlink；Launcher 的 bundle 让位分支排在 PNG 兜底之前**且真的 return**。**扫描器双向自检**（含"位置版扫描器也跳过整行注释"） |
+| `ZEditorLauncherWiringSmokeTest` | 63 | **双击 .zproject（§3.29）**：bundle 声明 `CFBundleDocumentTypes` + 导出 UTI、两处 UTI 字符串必须一致、挂 `zproject` 扩展名、构建后刷 `lsregister`；Launcher 是 `NSApplicationDelegate` 且实现了 `-application:openFile:`、delegate 挂在 `finishLaunching` **之前**、openFile 里认扩展名**且真的提交**；重启走 bundle 入口、exec 前刷日志。Launcher 接线（§3.27）：两个平台的 `OpenLauncher` 分支都接到 Launcher、Unix 那条不许退回 `reportMissingProject()`（双击闪退的那一行）；重启用 `POSIX_SPAWN_SETEXEC` 且全文件不许有 `fork()`；`runEditorUnix` 要回写最近项目；三份实现（Win32 / Apple / POSIX 桩）不能同时编；Apple 侧确实是窗口不是空桩。**应用图标（§3.28）**：Apple 分支必须解链 exe 路径再拼 ini、且解链排在拼 ini 之前；ini 打不开要刷日志；bundle 脚本要生成 icns / 写 `CFBundleIconFile` / 用**相对** symlink；Launcher 的 bundle 让位分支排在 PNG 兜底之前**且真的 return**。**扫描器双向自检**（含"位置版扫描器也跳过整行注释"） |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
 `MetalSpirvShaderSmokeTest` 一条就能把 §3.1 / §3.2 / §3.3 三个错全抓出来。
@@ -1337,6 +1337,76 @@ Linux 分支读 `/proc/self/exe`（内核给的就是解链后的真身），所
    资源位置"的代码，都得先解链。
 2. **CWD 是最容易掩盖缺陷的环境变量**：`cd bin/Debug && ./ZEditor` 之所以一直正常，
    只是因为 CWD 碰巧等于 exe 所在目录。验证启动路径时，**故意从 `/` 跑一遍**。
+
+### 3.29 双击 .zproject 直接打开项目（文件关联）
+
+**症状**：`.zproject` 在访达里没有图标也没有默认打开方式，双击没反应。Windows 那边是
+有的：`ZEditorLauncher.cpp` 的 `RegisterFileAssociation()` 把 open 命令写成
+`"<exe>" -p "%1"`，路径从 argv 进来，什么都不用改就能用。
+
+**根因 —— macOS 根本没有"argv 传路径"这条路**：
+
+LaunchServices 启动 App 时 **argv 里只有 `-psn_0_xxxxx`**（那个参数会被
+`CommandParser::FindOrAddOption` 自动注册成 Flag 后忽略，不会让进程退出 —— 但也不会
+带来任何信息）。文件路径是**之后**以 `kAEOpenDocuments`（odoc）Apple Event 送过来的，
+`NSApplication` 再转给 delegate 的 `-application:openFile:`。
+
+调研确认：全库检索 `NSApplicationDelegate` / `NSAppleEventManager` / `kAEOpenDocuments` /
+`openFile:` / `setDelegate` —— **零命中**。也就是说光写 Info.plist 是不够的，代码里必须
+有人接，否则那个事件被静默丢掉：不报错、不弹窗，症状就是"双击没反应"。
+
+**修复**：
+
+| 文件 | 改动 |
+|---|---|
+| `Editor/cmake/MakeMacOSAppBundle.cmake` | `Info.plist` 加 `CFBundleDocumentTypes`（`CFBundleTypeRole: Editor`、`LSHandlerRank: Owner`）+ `UTExportedTypeDeclarations`（UTI `com.zengine.zproject`，`UTTypeConformsTo: public.data`，`public.filename-extension: zproject`）；构建后跑 `lsregister -f -R`（找不到 / 失败只 WARNING） |
+| `Editor/Launcher/ZEditorLauncher.mm` | `ZLauncherController` 加 `NSApplicationDelegate` 并实现 `-application:openFile:`；`runLauncher` 里 `setDelegate:self`（**必须排在 finishLaunching 之前**）；新增 `IsZProjectFile()` |
+| `Editor/Main/Main.cpp` | 新增 `PickRelaunchExecutable()`：重启优先走 bundle 入口；`posix_spawn` 之前 `LogSystem::ForceFlush()` |
+
+**三个不那么显然的决定**：
+
+1. **`UTTypeConformsTo` 选 `public.data` 而不是 `public.text`**：`.zproject` 是 block YAML
+   （旧项目是 JSON），**没有 magic 字节**（`ProjectInfo::LoadFromFile` 只判 `exists()` 就丢给
+   解析器），只能靠扩展名 / 声明认。conform 到 text 的话 TextEdit 一类的通用编辑器也会来
+   抢默认打开权，我们要的是 ZEditor 独占（`Owner`）。
+2. **先 finishLaunching + 手动泵 0.5 秒再决定要不要显示 Launcher 窗口**：LaunchServices 要
+   等 App "就绪"才发 odoc，而"就绪"就是 `finishLaunching`。所以先 `finishLaunching` 再泵一小
+   段，odoc 到了就直接提交、窗口一次都不显示 —— 否则用户看到的是"双击了 zproject，然后闪
+   一个选项目的窗口，再进编辑器"。代价：普通启动（双击 ZEditor.app）时窗口晚 0.5 秒出现。
+3. **重启要走 bundle 入口**：`_NSGetExecutablePath()` 给的是 symlink 解链后的**真身**
+   （`bin/<Config>/ZEditor`）。直接 exec 真身的话，重启后的进程就不在 bundle 里了 —— Dock
+   图标从 icns 退回 PNG 兜底，LaunchServices 也不再把它认成同一个 App（下次双击 .zproject 会
+   另起一个实例）。`PickRelaunchExecutable()` 在真身旁边找 `.app`，确认它的
+   `Contents/MacOS/<name>` 确实指向自己，就用那个路径 exec。
+
+**顺带修的**：`posix_spawn` + `SETEXEC` 成功后进程映像立刻被换掉，BqLog 缓冲区里没落盘的
+东西（包括"是用 bundle 入口重启的"这条）会一起消失 —— 而那正是判断重启走没走 bundle 的唯一
+证据。exec 之前必须 `ForceFlush()`。
+
+**验证**：
+
+- **真机（关键）**：`open ./bin/Debug/ZGameSmoke.zproject` → 进程命令行
+  `ZEditor.app/Contents/MacOS/ZEditor -p /Users/.../bin/Debug/ZGameSmoke.zproject`，
+  心跳 `AppleRender: frame=601`。日志三段证据齐全：
+  ```
+  16:12:34.805  Launcher: opening document '/Users/.../ZGameSmoke.zproject' (from LaunchServices).
+  16:12:34.815  Relaunching with project '...' via '/Users/.../ZEditor.app/Contents/MacOS/ZEditor'.
+  16:12:49.611  AppleRender: frame=1 entities=30 ...
+  ```
+  odoc 在启动后 **96ms** 就到了 —— 0.5 秒那个窗口够用，Launcher 窗口确实没出现过。
+- **关联真的注册了**：`lsregister -dump` 里能看到
+  `type id: com.zengine.zproject / bundle: ZEditor / conforms to: public.data / tags: .zproject`。
+- **回归**：双击 `ZEditor.app` 本身（不带文档）仍然停在 Launcher（进程存活、无崩溃、
+  没出现那条 odoc 日志）。
+- `open -a <app> <非 zproject 文件>` 会被 LaunchServices 自己拒（-10820），
+  `IsZProjectFile()` 是给"右键 → 打开方式"这条路的兜底。
+- **静态**：`ZEditorLauncherWiringSmokeTest` 48 → **63** checks。
+- **变异**（各精确变红）：不挂 delegate → 3 条；openFile 不提交 → 1 条；去掉扩展名守卫 →
+  1 条；UTI 只改一处 → 1 条；重启改用真身 → 1 条；exec 前不刷日志 → 1 条。
+
+**一条教训**：跨平台时最容易漏的不是"这段逻辑怎么写"，而是**操作系统把信息递给进程的通道
+都不一样**。Windows 是 argv（`%1`），macOS 是 Apple Event。两边都用"文件关联"这四个字，
+实现上没有任何一行是共用的 —— 连"参数没传过来"这件事在 macOS 上都是静默的。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

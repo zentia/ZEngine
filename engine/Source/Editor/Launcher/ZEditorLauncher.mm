@@ -37,6 +37,7 @@
 #include <mach-o/dyld.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -458,13 +459,45 @@ FLauncherState& State()
     return state;
 }
 
+// -----------------------------------------------------------------------------
+// 双击 .zproject 送进来的那个文件，到底是不是项目文件
+//
+// 系统那边已经按 Info.plist 的 UTI 筛过一遍了，但 LaunchServices 也允许"用这个
+// App 打开"任意文件（右键 → 打开方式），那时候什么扩展名都可能送到
+// -application:openFile:。而 .zproject **没有 magic 字节**（ProjectInfo::
+// LoadFromFile 只判 exists，然后直接丢给 YAML/JSON 解析器），喂一个别的文件进去
+// 不会报错，只会加载出一篇空白 —— 所以这里必须自己认扩展名。
+//
+// 扩展名比大小写：macOS 默认文件系统不区分大小写，但用户手改的后缀未必是小写。
+// -----------------------------------------------------------------------------
+bool IsZProjectFile(const std::filesystem::path& path)
+{
+    std::string extension = path.extension().string();
+    for (char& c : extension)
+    {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (extension != ".zproject")
+    {
+        return false;
+    }
+
+    std::error_code ec;
+    return std::filesystem::exists(path, ec);
+}
+
 }  // namespace
 }  // namespace ZEditorLauncher
 
 // -----------------------------------------------------------------------------
 // AppKit 窗口
 // -----------------------------------------------------------------------------
-@interface ZLauncherController : NSObject <NSWindowDelegate, NSTableViewDataSource>
+// NSApplicationDelegate 是**双击 .zproject 那条路唯一的入口**：LaunchServices 不把
+// 文件路径放进 argv（argv 里只有 -psn_0_xxxxx），而是等 App 就绪之后发一个
+// kAEOpenDocuments（odoc）Apple Event，NSApplication 再转给 delegate 的
+// -application:openFile:。没有 delegate，那个事件就被静默丢掉 —— 症状是"双击
+// .zproject 没反应"，既不报错也不弹窗。
+@interface ZLauncherController : NSObject <NSApplicationDelegate, NSWindowDelegate, NSTableViewDataSource>
 {
 @public
     NSWindow*      _window;
@@ -482,6 +515,7 @@ FLauncherState& State()
 - (void)browseForProject:(id)sender;
 - (void)createAndOpen:(id)sender;
 - (void)quit:(id)sender;
+- (BOOL)application:(NSApplication*)sender openFile:(NSString*)filename;
 @end
 
 @implementation ZLauncherController
@@ -625,6 +659,36 @@ FLauncherState& State()
     [NSApp terminate:nil];
 }
 
+// -----------------------------------------------------------------------------
+// 双击 .zproject（LaunchServices 的 kAEOpenDocuments）
+//
+// 系统不会把路径放进 argv —— 双击启动时 argv 里只有 `-psn_0_xxxxx`（那个参数会被
+// CommandParser 自动注册成 Flag 后忽略，不会让进程退出）。路径是等 App 就绪之后
+// 以 Apple Event 送过来的，NSApplication 转给 delegate 的这个方法。
+//
+// 不能只记日志：拿到路径必须真的 `finishWithChoice:` 提交，否则 Launcher 会继续
+// 等在那里，用户看到的是"双击了 zproject，然后弹了个选项目的窗口"—— 等于没做。
+// -----------------------------------------------------------------------------
+- (BOOL)application:(NSApplication*)sender openFile:(NSString*)filename
+{
+    namespace ZL = ZEditorLauncher;
+    if (filename == nil)
+    {
+        return NO;
+    }
+
+    const std::filesystem::path path(filename.fileSystemRepresentation);
+    if (!ZL::IsZProjectFile(path))
+    {
+        LOG_WARNING(ZEditor, "Launcher: ignored '{}' -- not a .zproject on disk.", path.string());
+        return NO;
+    }
+
+    LOG_INFO(ZEditor, "Launcher: opening document '{}' (from LaunchServices).", path.string());
+    [self finishWithChoice:path];
+    return YES;
+}
+
 - (void)windowWillClose:(NSNotification*)notification
 {
     // 关窗口 == 取消。不打日志、不报错：这是人主动放弃，不是故障。
@@ -680,7 +744,12 @@ FLauncherState& State()
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         ZL::InstallDockIcon();
 
-        [self installMainMenu];
+        // 必须装在 finishLaunching 之前：LaunchServices 是在 App "就绪"那一刻才把
+        // odoc（kAEOpenDocuments）发过来的，而派发对象是 delegate。装晚了事件就
+        // 已经过去了。
+
+        [app setDelegate:self];
+
 
         const NSRect frame = NSMakeRect(0, 0, 780.0, 660.0);
         NSWindow*    window =
@@ -814,6 +883,41 @@ FLauncherState& State()
 
         // 初始套件描述
         [self suiteChanged:_suitePopup];
+
+        // -------------------------------------------------------------------
+        // 双击 .zproject 时别把 Launcher 窗口闪出来
+        //
+        // LaunchServices 要等 App "就绪"才发 odoc，而"就绪"就是 finishLaunching。
+        // 所以这里先 finishLaunching 再手动泵一小段：odoc 到了就
+        // -application:openFile: → finishWithChoice: → state.committed，直接返回，
+        // 窗口一次都不用显示。收不到（正常双击 ZEditor.app 的情况）就退回老路：
+        // 显示窗口 + [app run]。
+        //
+        // 代价：这种情况下窗口晚 0.5 秒出现。换来的是"双击 .zproject → 直接进
+        // 编辑器"，而不是"双击 .zproject → 闪一个选项目的窗口 → 再进编辑器"。
+        // -------------------------------------------------------------------
+        [app finishLaunching];
+        NSDate* const open_deadline = [NSDate dateWithTimeIntervalSinceNow:0.5];
+        while (!state.committed && [open_deadline timeIntervalSinceNow] > 0.0)
+        {
+            @autoreleasepool
+            {
+                NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                                    untilDate:open_deadline
+                                                       inMode:NSDefaultRunLoopMode
+                                                      dequeue:YES];
+                if (event == nil)
+                {
+                    break;
+                }
+                [NSApp sendEvent:event];
+            }
+        }
+
+        if (state.committed)
+        {
+            return YES;
+        }
 
         [window center];
         [window makeKeyAndOrderFront:nil];

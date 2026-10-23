@@ -508,6 +508,39 @@ namespace
     // fork 之后的子进程带着一份半初始化的 AppKit（Mach port、CoreFoundation run loop
     // 状态全都是脏的），是 macOS 上经典的"fork after Cocoa"崩溃源。SETEXEC 不走 fork，
     // 直接把当前进程映像换成新的 —— 干净，而且 PID 不变，Dock 里不会出现两个图标。
+    // 重启时优先走 bundle 那个入口（如果有的话）。
+    //
+    // `_NSGetExecutablePath()` 给的是 symlink 解链后的真身 —— 也就是
+    // bin/<Config>/ZEditor，`ZEditor.app/Contents/MacOS/ZEditor` 只是指向它的链接。
+    // 直接 exec 真身的话，重启后的进程就不在 bundle 里了：Dock 图标从 icns 退回
+    // PNG 兜底，LaunchServices 也不再把它认成同一个 App（下一次双击 .zproject 会
+    // 另起一个实例而不是复用）。所以真身旁边有 bundle、且它的入口确实指向自己时，
+    // 从 bundle 那个路径 exec —— 进程映像、PID 都不变，只是"身份"保住了。
+    std::filesystem::path PickRelaunchExecutable(const std::filesystem::path& real_exe)
+    {
+        std::error_code ec;
+        const std::filesystem::path exe_dir = real_exe.parent_path();
+        const std::filesystem::path exe_name = real_exe.filename();
+
+        for (std::filesystem::directory_iterator it(exe_dir, ec), end; !ec && it != end; it.increment(ec))
+        {
+            if (!it->is_directory() || it->path().extension() != ".app")
+            {
+                continue;
+            }
+
+            const std::filesystem::path bundle_exe = it->path() / "Contents" / "MacOS" / exe_name;
+            std::error_code             link_ec;
+            const std::filesystem::path target = std::filesystem::canonical(bundle_exe, link_ec);
+            if (!link_ec && target == real_exe)
+            {
+                return bundle_exe;
+            }
+        }
+
+        return real_exe;
+    }
+
     int relaunchWithProject(const std::filesystem::path& project_file)
     {
         char     raw_path[4096] = {};
@@ -520,13 +553,16 @@ namespace
         }
 
         std::error_code ec;
-        const std::filesystem::path exe = std::filesystem::absolute(std::filesystem::path(raw_path), ec);
+        const std::filesystem::path real_exe = std::filesystem::absolute(std::filesystem::path(raw_path), ec);
         if (ec)
         {
             LOG_ERROR(ZEditor, "Cannot make '{}' absolute: {}", raw_path, ec.message());
             LogSystem::ForceFlush();
             return 1;
         }
+
+        const std::filesystem::path exe = PickRelaunchExecutable(real_exe);
+        LOG_INFO(ZEditor, "Relaunching with project '{}' via '{}'.", project_file.string(), exe.string());
 
         std::string exe_str = exe.string();
         std::string arg_str = project_file.string();
@@ -547,6 +583,11 @@ namespace
             return 1;
         }
         posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETEXEC);
+
+        // SETEXEC 成功的话下面那一行之后进程映像就被换掉了，BqLog 缓冲区里还没落
+        // 盘的东西（包括"是用 bundle 入口重启的"这条）会一起消失 —— 而这条日志正是
+        // 判断重启走没走 bundle 的唯一证据。exec 之前必须刷。
+        LogSystem::ForceFlush();
 
         char** const environ_ptr = *_NSGetEnviron();
         const int    rc = posix_spawn(nullptr, exe_buf.data(), nullptr, &attr, child_argv, environ_ptr);

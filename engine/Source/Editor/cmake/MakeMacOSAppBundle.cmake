@@ -141,6 +141,58 @@ if(HAVE_ICNS)
 ")
 endif()
 
+# -----------------------------------------------------------------------------
+# 3b. .zproject 文件关联
+#
+# 双击 .zproject 要能直接打开项目。Windows 那边靠注册表把 open 命令写成
+# `"<exe>" -p "%1"`（ZEditorLauncher.cpp 的 RegisterFileAssociation），路径从 argv
+# 进来，什么都不用改就能用。**macOS 没有这条路**：LaunchServices 启动 App 时 argv
+# 里只有 `-psn_0_xxxxx`，文件路径是之后以 `kAEOpenDocuments`（odoc）Apple Event
+# 送过来的 —— 所以光写 Info.plist 不够，代码里必须有人接（见 ZEditorLauncher.mm
+# 的 -application:openFile:）。
+#
+# 手工声明 UTI 而不是用系统现有的：.zproject 是 block YAML（旧项目是 JSON），
+# 没有 magic 字节，只能靠扩展名 / 声明认。UTTypeConformsTo 选 public.data 而不是
+# public.text —— conform 到 text 的话 TextEdit 一类的通用编辑器也会来抢默认打开
+# 权，我们要的是 ZEditor 独占（LSHandlerRank = Owner）。
+# -----------------------------------------------------------------------------
+set(DOC_KEYS "    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>ZEngine Project</string>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.zengine.zproject</string>
+            </array>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.zengine.zproject</string>
+            <key>UTTypeDescription</key>
+            <string>ZEngine Project</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>zproject</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+")
+
 file(WRITE "${CONTENTS}/Info.plist"
 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
@@ -160,7 +212,7 @@ file(WRITE "${CONTENTS}/Info.plist"
     <string>${BUNDLE_VERSION}</string>
     <key>CFBundleVersion</key>
     <string>${BUNDLE_VERSION}</string>
-${ICON_KEYS}    <key>NSHighResolutionCapable</key>
+${ICON_KEYS}${DOC_KEYS}    <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticTermination</key>
     <false/>
@@ -168,4 +220,35 @@ ${ICON_KEYS}    <key>NSHighResolutionCapable</key>
 </plist>
 ")
 
-message(STATUS "MakeMacOSAppBundle: ${BUNDLE_DIR} (icon: ${HAVE_ICNS})")
+# -----------------------------------------------------------------------------
+# 4. 让 LaunchServices 立刻认识这个 bundle
+#
+# 不刷这一步，改完 Info.plist 之后系统里的旧记录（尤其是"这个 bundle 根本不处理
+# 任何文档类型"）还在缓存里，双击 .zproject 会没有反应 —— 而这类失败是静默的：
+# 不报错、不弹窗，只是"双击没用"。
+#
+# lsregister 是 LaunchServices 的私有工具，路径不保证永远存在，所以找不到 / 失败
+# 都只 WARNING：bundle 本身已经是对的，手动 `open -a` 一次也能让系统刷新。
+# -----------------------------------------------------------------------------
+find_program(LSREGISTER_EXECUTABLE lsregister
+             PATHS "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support"
+             NO_DEFAULT_PATH)
+
+set(HAVE_ASSOCIATION FALSE)
+if(LSREGISTER_EXECUTABLE)
+    execute_process(COMMAND "${LSREGISTER_EXECUTABLE}" -f -R "${BUNDLE_DIR}"
+                    RESULT_VARIABLE RC
+                    OUTPUT_QUIET
+                    ERROR_QUIET)
+    if(RC EQUAL 0)
+        set(HAVE_ASSOCIATION TRUE)
+    else()
+        message(WARNING "MakeMacOSAppBundle: lsregister failed (${RC}); "
+                        "double clicking a .zproject may not work until LaunchServices refreshes.")
+    endif()
+else()
+    message(WARNING "MakeMacOSAppBundle: lsregister not found; "
+                    "the .zproject association will only take effect once LaunchServices rescans.")
+endif()
+
+message(STATUS "MakeMacOSAppBundle: ${BUNDLE_DIR} (icon: ${HAVE_ICNS}, association: ${HAVE_ASSOCIATION})")
