@@ -78,6 +78,8 @@ bool Editor::Initialize()
 
     registerEdtorTickComponent("MeshRenderer");
     registerEdtorTickComponent("SkinMeshRenderer");
+    // GPU-Spine：编辑模式也 tick ⇒ 推变换（拖 gizmo 时跟着动）+ 动画预览（spine-unity 编辑模式同样在动）
+    registerEdtorTickComponent("SpineRenderer");
 
     // P5 TypeScript scripting: tick TypeScriptComponent in edit mode so
     // OnUpdate fires without needing a Play button (Unity [ExecuteAlways]

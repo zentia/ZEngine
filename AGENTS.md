@@ -2268,6 +2268,32 @@ downstream reads it.
   是 TODO，`NaniteHierarchicalZBuffer` 全是 TODO（所以遮挡剔除恒 false，是有意的），
   **没有 Nanite shader、也没有间接绘制**，批次产出来还没有人消费。
 
+### 2.42 GPU-Spine 进场景：`SpineRenderer` 组件 + `.zspg` 资产
+
+- **资产**：`.zspg`（SpineCook 产物，`ZEditor -batchmode -suite=SpineCook <骨架> -o <Assets 下路径>`，
+  会把图集页拷到 .zspg 旁边）由 `AssetManager::SpineSkeletonAssetExtension()` 登记进
+  `RegistryIndexedAssetExtensions()` ⇒ 注册表扫描 / 文件监视 / Content Browser 自动认。它**没有 ZASS 头**：
+  类型名 `SpineSkeletonData` 只看魔数 'ZSPG'，GUID 按路径派生（与 YAML 资产同一分支）。
+  **绝不能走 SerializedFile / ReadObject**；不显示 Reimport（不是导入器产物）。
+- **组件**：`Runtime/Function/Framework/Component/Spine/SpineRenderer.{h,cpp}`，字段存**路径**（同 MeshRenderer）。
+  拖 `.zspg` 进 Scene ⇒ `EditorScenePlacement` 按扩展名分派 ⇒ `SpineRenderer::SpawnInLevel`（控制台
+  `spine.spawn <zspg> [x y z | camera <dist>] [scale] [anim]` 共用；不给坐标 = 场景相机前方并正对相机）。
+  编辑模式 tick 已注册（`registerEdtorTickComponent`）。
+- **朝向**：本引擎 Z 向上 ⇒ 骨架立在 GameObject 局部 **XZ 平面**（骨架 x → +X、y → +Z，同 UE Paper2D），
+  组件里乘 `Rx(+90°)·diag(m_Scale)`。没有 billboard：相机绕到侧面就是一条线（PIE 换成游戏相机时常见）。
+- **渲染**：组件只持有 `SpineGpuRenderer` 的"世界实例" id，每 tick 推 local-to-world × `m_Scale` 与 dt；
+  渲染线程用 `RenderSystem::GetCamera(viewport_type)` 的 proj·view 拼 `clip_from_world`（DX12/Metal 多翻一次 y，
+  见 `WorldInstance()` 注释）。**三条生命期规则，改的时候别破**：
+  1. 实例**只在 Tick 里建**，不在 PostLoadResource：放置流程的模板 GameObject 上的组件永不 tick，在那建会留孤儿；
+  2. 存活判据 = **逻辑帧序号**（`WorldManager::Tick` 开头 `AdvanceWorldTick()`）：本帧 / 上一帧没被推过变换的不画
+     ⇒ disabled / 非激活 / 已不在关卡里自动隐藏，暂停时逻辑帧不走 ⇒ 定格。**不要靠组件析构**：删 GameObject
+     时组件对象不析构（撤销要留着它，`GameObject::~GameObject` 也不删组件）；
+  3. `RenderScene::DeleteEntityByGObjectID` 顺带 `RemoveWorldInstancesOfOwner`；组件下一次 tick 若
+     `RequestSetWorldTransform` 返回 false（id 不认识）就重建 ⇒ 撤销删除自动复活。
+- `spine.load` / `spine.clear` 只动控制台实例，不清世界实例。
+- ⚠️ 第一版**没有深度**（画在 RP2 UI subpass / DX12 Combine overlay，场景之上、不被网格挡）；GUID 引用、Inspector
+  资产选择器、源骨架自动 cook 都还没做。
+
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 
 `engine/Source/Editor/Undo/` (`doc/UNDO_SYSTEM.md`).

@@ -9,6 +9,7 @@
 #endif
 #include "Runtime/Function/Render/Nanite/NaniteSettings.h"
 #include "Runtime/Function/Render/Pipeline/RenderPipelineSettings.h"
+#include "Runtime/Function/Framework/Component/Spine/SpineRenderer.h"
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 #include "Runtime/Function/Render/WindowSystem.h"
 #include "Runtime/UMG/Asset/UMGAssetIO.h"
@@ -88,6 +89,40 @@ namespace
     {
         SpineGpuRenderer::Get().RequestClear();
         LOG_INFO(ZConsole, "spine.clear: requested");
+        return true;
+    }
+
+    // 场景对象：在当前关卡里建 GameObject（Transform + SpineRenderer 组件），走世界实例那条路
+    // （与编辑器里把 .zspg 拖进 Scene 是同一个 SpineRenderer::SpawnInLevel）。关卡还没加载时排队。
+    bool CmdSpineSpawn(const std::vector<std::string>& args)
+    {
+        if (args.empty())
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.spawn <.zspg|skeleton> [x y z | camera <distance>] [scale=0.01] [animation]");
+            return false;
+        }
+        // 只给资产 / 第二个参数是 camera ⇒ 放在场景相机前方（默认 8 个世界单位）
+        if (args.size() == 1 || args[1] == "camera")
+        {
+            const float distance = args.size() >= 3 ? std::strtof(args[2].c_str(), nullptr) : 8.0f;
+            const float scale = args.size() >= 4 ? std::strtof(args[3].c_str(), nullptr) : 0.01f;
+            const std::string anim = args.size() >= 5 ? args[4] : std::string();
+            SpineRenderer::RequestSpawnInFrontOfCamera(args[0], anim, distance, scale);
+            LOG_INFO(ZConsole, "spine.spawn: queued '{}' {} units in front of the scene camera, scale {}", args[0],
+                     distance, scale);
+            return true;
+        }
+        if (args.size() < 4)
+        {
+            LOG_ERROR(ZConsole, "spine.spawn: need x y z (or 'camera [distance]')");
+            return false;
+        }
+        const Vector3 pos(std::strtof(args[1].c_str(), nullptr), std::strtof(args[2].c_str(), nullptr),
+                          std::strtof(args[3].c_str(), nullptr));
+        const float scale = args.size() >= 5 ? std::strtof(args[4].c_str(), nullptr) : 0.01f;
+        const std::string anim = args.size() >= 6 ? args[5] : std::string();
+        SpineRenderer::RequestSpawn(args[0], anim, pos, scale);
+        LOG_INFO(ZConsole, "spine.spawn: queued '{}' at ({}, {}, {}) scale {}", args[0], pos.x, pos.y, pos.z, scale);
         return true;
     }
 
@@ -423,6 +458,10 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
                             "Place the selected GPU-Spine instance. Usage: spine.place <x> <y> [scale] | spine.place auto",
                             CmdSpinePlace);
     console.RegisterCommand("spine.status", "Print GPU-Spine renderer status", CmdSpineStatus);
+    console.RegisterCommand("spine.spawn",
+                            "Create a GameObject with a SpineRenderer in the current level. "
+                            "Usage: spine.spawn <.zspg|skeleton> [x y z | camera <distance>] [scale=0.01] [animation]",
+                            CmdSpineSpawn);
     console.RegisterCommand("spine.play",
                             "Set a GPU-Spine animation on a track (crossfades). Usage: spine.play <anim> [track] [loop]",
                             CmdSpinePlay);

@@ -1619,6 +1619,34 @@ CPU 裁剪时按 {3,0,1,2} 重排（不裁时两条对角线画出来一样，�
 却没有这个名字"的是 **0** 个），即挂的是裁剪 / point / bounding box / path 这类不画的附件。
 （`SpineGpuRefParityTest --uv-scan` 输出这三个数。）
 
+#### 进场景：`SpineRenderer` 组件 + `.zspg` 资产（2026-10-23）
+
+到这一步之前 GPU-Spine 只能用控制台驱动、画在视口像素空间。现在：
+
+| 环节 | 做法 | 代码 |
+|---|---|---|
+| 产出 | `SpineCook` 把骨架 + 图集烘成 `.zspg`，**并把图集页拷到 .zspg 旁边**（运行时按页名相对容器目录找） | `Editor/ToolSuite/SpineCook/SpineCookSuite.cpp` |
+| 登记 | `.zspg` 进 `AssetManager::RegistryIndexedAssetExtensions()`；类型名 `SpineSkeletonData`（只看魔数）；GUID 按路径派生（容器里没有 GUID 字段，不为它改格式） | `Runtime/Resource/Asset/AssetManager.cpp`、`Editor/AssetRegistry/AssetRegistry.cpp` |
+| 浏览 / 放置 | Content Browser 可拖、无 Reimport；拖进 Scene ⇒ GameObject（Transform + `SpineRenderer`），一个撤销步骤 | `EditorScenePlacement.cpp`、`ContentBrowserHelpers.cpp` |
+| 组件 | 字段：资产路径 / 动画 / loop / 初始皮肤 / time scale / `m_Scale`（骨架单位 → 世界单位，默认 0.01 = spine-unity）；全反射序列化 | `Runtime/Function/Framework/Component/Spine/SpineRenderer.{h,cpp}` |
+| 朝向 | Z 向上 ⇒ 骨架立在局部 XZ 平面（x → +X、y → +Z，同 UE Paper2D），model = L2W · Rx(+90°) · diag(s)；不做 billboard | `SpineRenderer::PushTransform` |
+| 渲染 | 组件持有一个**世界实例**：每 tick 推 local-to-world·diag(s) 与 dt；渲染线程 `clip_from_world = F · proj · view · model`，F 在 DX12 / Metal 上翻 y（相机投影自带 Vulkan 的 y 翻转） | `SpineGpuRenderer.cpp` 的 `WorldInstance()` |
+| 加载 | `.zspg` 直接 `ReadSpineGpuContainer`；源骨架仍走"烘焙 → 写 → 读"往返 —— 两路落到同一个读端 | `SpineGpuRenderer::Impl::LoadAsset` |
+
+生命期（踩过才定的，见 AGENTS.md §2.42）：实例只在 Tick 里建；存活判据是逻辑帧序号（不 tick 的不画、暂停定格）；
+GameObject 删除走 `RenderScene::DeleteEntityByGObjectID` ⇒ `RemoveWorldInstancesOfOwner`，撤销复活由组件发现 id 失效后重建。
+
+**实跑验收（ZGameSmoke，Vulkan + 验证层 / DX12，`--pie N --pie-stop`）**：
+`spine.spawn _Generated/SpineTest/K_Bailishouyue_Spine.zspg camera 8` ⇒ GameObject #32 落在相机前 8 单位、yaw -90°；
+注册表缓存里该 .zspg 的类型 = `SpineSkeletonData`、GUID 路径派生；首帧 setup 包围盒投到 NDC x [0.61, 4.14] /
+y [-7.53, 0.59]、w ≈ 8（= 距离，原点在屏幕中心、人物向右上，Vulkan NDC y 向下 ⇒ 负 = 向上）；
+进 PIE：编辑世界的实例 "hidden (not ticked)"、PIE 副本新建实例 #3；退出 PIE：#3 "removed"、编辑世界的 #2 "shown"。
+同一次运行里 `spine.load <源骨架>` 的控制台实例照常画（38 项带 deform），两种实例共存。无验证层 / D3D12 报错。
+没做肉眼确认（截图工具在本机不可用，同前）；撤销删除后的重建路径没有实跑。
+
+**第一版不做**：深度（仍画在场景之上）、GUID 引用（字段存路径，同 MeshRenderer）、Inspector 里的资产选择器、
+Assets 下源骨架自动 cook、billboard。
+
 ---
 
 ## 附：事实来源（已核对）

@@ -188,7 +188,12 @@ public:
     // dot). Editor scanners / watchers / filters must use these instead of
     // hard-coding their own lists.
     //   YAML authoring assets: .mat / .prefab / .scene / .timeline
-    //   Registry-indexed:      .zasset + the YAML authoring assets
+    //   Registry-indexed:      .zasset + the YAML authoring assets + .zspg
+    //   .zspg = GPU-Spine skeleton container (SpineCook output). Its own binary
+    //   format (magic 'ZSPG', doc/GPU_SPINE_INTERCHANGE_FORMAT.md), no ZASS header
+    //   ⇒ path-derived GUID like the YAML assets, and never loaded through
+    //   SerializedFile / ReadObject -- SpineRenderer hands the path to
+    //   SpineGpuRenderer, which reads the container itself.
     static const std::vector<std::string>& YamlAuthoringAssetExtensions();
     static const std::vector<std::string>& RegistryIndexedAssetExtensions();
     static bool IsYamlAuthoringAssetExtension(const std::string& lowercase_extension);
@@ -205,6 +210,11 @@ public:
     // must go through TimelineAssetIO, never the single-object load paths.
     static const char* TimelineAssetExtension();
     static bool IsTimelineAssetPath(const std::filesystem::path& path);
+
+    // GPU-Spine skeleton container (".zspg"); reported type name "SpineSkeletonData".
+    static const char* SpineSkeletonAssetExtension();
+    static const char* SpineSkeletonAssetTypeName();
+    static bool IsSpineSkeletonAssetPath(const std::filesystem::path& path);
 
     // Path-derived GUID for binary .zasset headers and YAML authoring assets
     // (which carry no embedded GUID). Same FNV-1a scheme as ScriptRegistry.

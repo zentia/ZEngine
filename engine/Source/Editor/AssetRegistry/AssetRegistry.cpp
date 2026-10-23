@@ -1512,7 +1512,9 @@ AssetIndexEntry AssetRegistry::ScanSingleAsset(const std::filesystem::path& asse
         // Try to read the asset file header directly
         std::string ext_lower = asset_path.extension().string();
         std::transform(ext_lower.begin(), ext_lower.end(), ext_lower.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (AssetManager::IsYamlAuthoringAssetExtension(ext_lower))
+        // YAML 编写资产与 GPU-Spine 容器（.zspg）都没有 ZASS 头 ⇒ 类型由 AssetManager 认、GUID 由路径派生
+        // （与 ScriptRegistry 同一套 FNV-1a；同一路径重扫得到同一个 GUID）
+        if (AssetManager::IsYamlAuthoringAssetExtension(ext_lower) || AssetManager::IsSpineSkeletonAssetPath(asset_path))
         {
             entry.asset_type = GET_SYSTEM(AssetManager)->GetAssetTypeName(asset_path);
             if (!entry.asset_type.empty())

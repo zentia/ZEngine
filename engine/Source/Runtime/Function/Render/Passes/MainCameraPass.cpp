@@ -3507,7 +3507,7 @@ void MainCameraPass::DrawRp2(uint32_t current_swapchain_image_index,
         const ViewportType spine_viewport =
             IsViewportValid(ViewportType::scene) ? ViewportType::scene : ViewportType::game;
         SpineGpuRenderer::Get().Draw(m_Rhi, m_Framebuffer.render_pass, _main_camera_subpass_ui,
-                                     *m_Rhi->GetViewport(spine_viewport));
+                                     *m_Rhi->GetViewport(spine_viewport), spine_viewport);
     }
 
     m_UiPass->Draw();

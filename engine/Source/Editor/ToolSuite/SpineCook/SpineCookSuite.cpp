@@ -239,7 +239,32 @@ namespace
             return false;
         }
 
-        return WriteWholeFile(out_path, container, error);
+        if (!WriteWholeFile(out_path, container, error)) return false;
+
+        // 图集页：运行时按页名相对 .zspg 所在目录找（SpineGpuRenderer）。输出不在图集旁边时把页拷过去，
+        // 否则 cook 到 Assets/ 下的容器一加载就"读不到图集页"。同一个文件（没给 -o）不拷。
+        const std::filesystem::path src_dir = atlas_path.parent_path();
+        const std::filesystem::path dst_dir = out_path.parent_path();
+        for (const std::string& page : asset.atlas_page_names)
+        {
+            const std::filesystem::path page_src = src_dir / PathFromUtf8(page);
+            const std::filesystem::path page_dst = dst_dir / PathFromUtf8(page);
+            std::error_code ec;
+            if (std::filesystem::exists(page_dst, ec) && std::filesystem::equivalent(page_src, page_dst, ec))
+            {
+                continue;
+            }
+            ec.clear();
+            std::filesystem::create_directories(page_dst.parent_path(), ec);
+            ec.clear();
+            std::filesystem::copy_file(page_src, page_dst, std::filesystem::copy_options::overwrite_existing, ec);
+            if (ec)
+            {
+                error = "拷图集页 " + PathToUtf8(page_src) + " → " + PathToUtf8(page_dst) + " 失败：" + ec.message();
+                return false;
+            }
+        }
+        return true;
     }
 
     // 没给 -atlas 时找同名图集。找不到就报错，不"尽力而为" ——

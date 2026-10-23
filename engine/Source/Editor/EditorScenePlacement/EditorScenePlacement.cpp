@@ -10,6 +10,7 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
+#include "Runtime/Function/Framework/Component/Spine/SpineRenderer.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
@@ -405,12 +406,45 @@ namespace EditorScenePlacement
         return finalizeCreatedObjectSelection(new_id);
     }
 
+    bool InstantiateSpineAssetInCurrentLevel(const std::filesystem::path& absolute_zspg_path,
+                                             GObjectID parent_gobject_id)
+    {
+        Level* current_active_level = GET_SYSTEM(WorldManager)->getCurrentActiveLevel();
+        if (current_active_level == nullptr || absolute_zspg_path.empty())
+        {
+            return false;
+        }
+        const std::string asset_path = MakeContentRelativeAssetPath(absolute_zspg_path);
+        const std::u8string stem_u8 = absolute_zspg_path.stem().u8string();
+        const std::string object_name(stem_u8.begin(), stem_u8.end());
+
+        // 一个撤销步骤：生成 + 挂父 + 选中（与网格放置同一套）
+        EditorUndo::ScopedTransaction transaction("Place " + object_name);
+        const GObjectID new_id = SpineRenderer::SpawnInLevel(current_active_level, object_name, asset_path.c_str(),
+                                                             /*animation=*/"", Vector3(0.0f, 0.0f, 0.0f),
+                                                             /*scale=*/0.01f);
+        if (new_id == k_invalid_gobject_id)
+        {
+            return false;
+        }
+        EditorUndo::RegisterCreatedGameObject(new_id);
+        (void)parentSpawnedRoot(current_active_level, new_id, parent_gobject_id);
+        LOG_INFO(ZEditor, "Scene placement: spawned '{}' with spine skeleton '{}'", object_name, asset_path);
+        return finalizeCreatedObjectSelection(new_id);
+    }
+
     bool InstantiateDroppedContentBrowserAsset(const std::filesystem::path& absolute_zasset_path,
                                         GObjectID parent_gobject_id)
     {
         if (absolute_zasset_path.empty())
         {
             return false;
+        }
+
+        // GPU-Spine 容器：GameObject + SpineRenderer（它没有 ZASS 头，下面的 MeshData 探测不适用）
+        if (AssetManager::IsSpineSkeletonAssetPath(absolute_zasset_path))
+        {
+            return InstantiateSpineAssetInCurrentLevel(absolute_zasset_path, parent_gobject_id);
         }
 
         // Text .prefab YAML graph: route straight to the prefab instantiate path

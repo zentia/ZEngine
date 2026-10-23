@@ -2,6 +2,10 @@
 #include "Runtime/Function/Render/Spine/SpineGpuClipper.h"
 
 #include "Runtime/Function/Render/Interface/RHI.h"
+#include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Function/Render/RenderCamera.h"
+#include "Runtime/Function/Render/RenderSystem.h"
+#include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuBatch.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
@@ -10,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -19,6 +24,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 // 着色器来源（按后端，见 EnsurePipelines）：
@@ -91,6 +97,57 @@ namespace
     {
         return std::filesystem::path(std::u8string(s.begin(), s.end()));
     }
+
+    bool EndsWithLower(const std::string& s, const char* suffix)
+    {
+        const size_t n = std::strlen(suffix);
+        if (s.size() < n)
+        {
+            return false;
+        }
+        for (size_t i = 0; i < n; ++i)
+        {
+            const char c = s[s.size() - n + i];
+            if (static_cast<char>(std::tolower(static_cast<unsigned char>(c))) != suffix[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // 世界实例的 b6：clip_from_world = F · proj_view · local_to_world，root = 单位阵。
+    // 两个输入都是 Matrix4x4 的 m_Mat（行主序、列向量约定：v' = M · v）；着色器的 mat4 是列主序
+    // ⇒ 写出时转置。F = diag(1, -y_sign, 1, 1)：RenderCamera 的投影自带 Vulkan 的 y 翻转
+    // （RenderCamera.cpp 的 fix_mat），而本渲染器的约定是"NDC y 向上 × y_sign"（见 ClipSpaceYSign）
+    // ⇒ Vulkan（y_sign = -1）原样用，DX12 / Metal（+1）再翻一次。
+    GpuInst WorldInstance(const float proj_view[16], const float local_to_world[16], float y_sign)
+    {
+        float pvm[16];
+        for (int r = 0; r < 4; ++r)
+        {
+            for (int c = 0; c < 4; ++c)
+            {
+                float s = 0.0f;
+                for (int k = 0; k < 4; ++k)
+                {
+                    s += proj_view[r * 4 + k] * local_to_world[k * 4 + c];
+                }
+                pvm[r * 4 + c] = (r == 1) ? -y_sign * s : s;
+            }
+        }
+        GpuInst inst {};
+        for (int r = 0; r < 4; ++r)
+        {
+            for (int c = 0; c < 4; ++c)
+            {
+                inst.clip_from_world[c * 4 + r] = pvm[r * 4 + c];
+            }
+        }
+        inst.root_abcd[0] = 1.0f;
+        inst.root_abcd[3] = 1.0f;
+        return inst;
+    }
 }  // namespace
 
 #if !defined(__EMSCRIPTEN__)
@@ -128,6 +185,7 @@ struct SpineGpuRenderer::Impl
         float value {0.0f};
         float delay {0.0f};
         float scale {1.0f};
+        bool world {false};    // kAddInstance：世界实例（SpineRenderer 组件）
     };
     std::vector<Command> pending_cmds;
     // 游戏线程视角的实例 id：入队即生效（加载失败时渲染线程会把它摘掉）
@@ -139,6 +197,29 @@ struct SpineGpuRenderer::Impl
     void PushTargeted(Command c)
     {
         c.target = selected;
+        pending_cmds.push_back(std::move(c));
+    }
+
+    // 世界实例的游戏线程侧状态（受 mutex 保护）。变换 / dt 不走命令队列："最新的赢"，每帧一份，
+    // 组件每帧都推也不会把队列撑大。dt 累加到下一次 Draw 才消费（渲染跟不上逻辑时不丢时间）。
+    struct WorldEntry
+    {
+        uint64_t owner {0};
+        float model[16] {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        float pending_dt {0.0f};
+        bool visible {true};
+        bool failed {false};   // 加载失败：仍然"认识"这个 id（组件不重建），原因在 status
+        uint64_t stamp {0};    // 最近一次推变换时的 world_serial
+    };
+    std::unordered_map<uint32_t, WorldEntry> world;
+    // 逻辑帧序号（WorldManager::Tick 每帧 +1）。世界实例只有在"上一个或这一个逻辑帧里被组件推过"时才画：
+    // 组件 disabled / GameObject 非激活 / 对象已不在任何关卡里 ⇒ 不 tick ⇒ 自动隐藏；暂停时逻辑帧不前进
+    // ⇒ 照常显示（定格）。这比靠析构可靠：本引擎删 GameObject 时组件对象不一定析构（撤销要留着它）。
+    uint64_t world_serial {0};
+
+    void PushTo(uint32_t id, Command c)
+    {
+        c.target = id;
         pending_cmds.push_back(std::move(c));
     }
 
@@ -232,6 +313,13 @@ struct SpineGpuRenderer::Impl
         std::chrono::steady_clock::time_point last_tick;
         float bounds[4] {0, 0, 1, 1};
         uint32_t skin {kSpineGpuNoSkin};   // 只给 status / 包围盒用；真正的当前皮肤在 state.skin
+        // 世界实例（SpineRenderer 组件）：摆放 = 相机 · model；dt 由组件喂（见 WorldEntry）
+        bool world {false};
+        bool world_visible {true};
+        float world_model[16] {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
+        float world_dt {0.0f};
+        bool world_logged {false};
+        int world_shown_logged {-1};   // 上次记日志时的可见性（-1 = 还没记过）：变化时记一行   // 第一次画出来时记一行包围盒在 NDC 里的位置（排查"画了但看不见"）
         // 摆放：自动 = 视口网格里按实例顺序占一格；手动 = 视口中心偏 (x, y) 像素、scale 像素 / 单位
         bool manual {false};
         float place_x {0.0f};
@@ -815,6 +903,11 @@ struct SpineGpuRenderer::Impl
     void ForgetId(uint32_t id)
     {
         std::lock_guard<std::mutex> lock(mutex);
+        const auto w = world.find(id);
+        if (w != world.end())
+        {
+            w->second.failed = true;
+        }
         live_ids.erase(std::remove(live_ids.begin(), live_ids.end(), id), live_ids.end());
         if (selected == id)
         {
@@ -933,7 +1026,8 @@ struct SpineGpuRenderer::Impl
         return as;
     }
 
-    bool CreateInstance(uint32_t id, const std::string& path, const std::string& anim_s, std::string& err)
+    bool CreateInstance(uint32_t id, const std::string& path, const std::string& anim_s, bool loop, bool world_inst,
+                        std::string& err)
     {
         std::shared_ptr<Asset> as = GetOrLoadAsset(path, err);
         if (!as)
@@ -950,7 +1044,13 @@ struct SpineGpuRenderer::Impl
             // 加载用的下标越界时与多实例之前一致：夹到最后一个（spine.load 的老语义）
             const long v = std::strtol(anim_s.c_str(), nullptr, 10);
             ai = static_cast<uint32_t>(std::clamp<long>(v, 0, static_cast<long>(a.anims.size()) - 1));
+            if (world_inst)
+            {
+                LOG_WARNING(ZRender, "SpineGpuRenderer: instance #{}: animation '{}' not found in '{}', playing #{} '{}'",
+                            id, anim_s, path, ai, a.anim_names[ai]);
+            }
         }
+        in->world = world_inst;
         in->anim = ai;
         if (!AssetBounds(*as, ai, kSpineGpuNoSkin, in->bounds, err))
         {
@@ -964,7 +1064,7 @@ struct SpineGpuRenderer::Impl
         }
         in->mix.default_mix = default_mix;
         in->anim_state = std::make_unique<SpineGpuAnimationState>(as->asset, as->data, &in->mix);
-        in->anim_state->SetAnimation(0, ai, true);
+        in->anim_state->SetAnimation(0, ai, loop);
         in->last_tick = std::chrono::steady_clock::now();
         instances.push_back(std::move(in));
         return true;
@@ -979,7 +1079,8 @@ struct SpineGpuRenderer::Impl
                 case Command::Op::kAddInstance:
                 {
                     std::string err;
-                    const bool ok = EnsurePipelines(render_pass, subpass) && CreateInstance(c.target, c.path, c.anim, err);
+                    const bool ok = EnsurePipelines(render_pass, subpass) &&
+                                    CreateInstance(c.target, c.path, c.anim, c.loop, c.world, err);
                     if (ok)
                     {
                         const Instance& in = *instances.back();
@@ -1015,11 +1116,18 @@ struct SpineGpuRenderer::Impl
                     {
                         LOG_WARNING(ZRender, "SpineGpuRenderer: no instance #{} to remove", c.target);
                     }
+                    else
+                    {
+                        LOG_INFO(ZRender, "SpineGpuRenderer: instance #{} removed ({} left)", c.target, instances.size());
+                    }
                     ForgetId(c.target);
                     continue;
                 }
                 case Command::Op::kClearInstances:
-                    instances.clear();
+                    // 只清控制台实例：世界实例归场景里的组件管（spine.load / spine.clear 不该把场景清空）
+                    instances.erase(std::remove_if(instances.begin(), instances.end(),
+                                                   [](const std::unique_ptr<Instance>& in) { return !in->world; }),
+                                    instances.end());
                     continue;
                 case Command::Op::kMix:
                     default_mix = std::max(0.0f, c.value);
@@ -1203,6 +1311,41 @@ struct SpineGpuRenderer::Impl
             return nullptr;
         }
         const std::string fname = ToUtf8(skel_path.filename());
+        auto as = std::make_shared<Asset>();
+        as->path = path;
+        // 图集页按页名相对这个目录找：源骨架 = 图集所在目录；.zspg = 容器所在目录（SpineCook 会把页拷过去）
+        fs::path page_dir;
+        SpineImportResult r;
+        if (EndsWithLower(fname, ".zspg"))
+        {
+            // 已烘焙的容器：直接读（与下面"烘焙 → 写 → 读"的往返落到同一个读端）
+            r = ReadSpineGpuContainer(skel_bytes.data(), skel_bytes.size(), as->asset);
+            if (!r.ok)
+            {
+                err = "容器 " + fname + "：" + r.error;
+                return nullptr;
+            }
+            page_dir = skel_path.parent_path();
+        }
+        else if (!BakeFromSource(skel_path, fname, skel_bytes, as->asset, page_dir, err))
+        {
+            return nullptr;
+        }
+        r = SpineGpuBuildRuntimeData(as->asset, as->data);
+        if (!r.ok)
+        {
+            err = r.error;
+            return nullptr;
+        }
+        return UploadAsset(as, page_dir, err);
+    }
+
+    // 骨架源文件 + 同名图集 → 烘焙 → **容器往返**（与运行时读 .zspg 的是同一份字节）
+    bool BakeFromSource(const std::filesystem::path& skel_path, const std::string& fname,
+                        const std::vector<uint8_t>& skel_bytes, SpineGpuAsset& out, std::filesystem::path& page_dir,
+                        std::string& err)
+    {
+        namespace fs = std::filesystem;
         const auto ends_with = [&](const std::string& suffix) {
             return fname.size() >= suffix.size() && fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0;
         };
@@ -1226,7 +1369,7 @@ struct SpineGpuRenderer::Impl
         if (!ReadWholeFile(atlas_path, atlas_bytes))
         {
             err = "找不到图集 " + ToUtf8(atlas_path);
-            return nullptr;
+            return false;
         }
 
         SpineAtlas atlas;
@@ -1248,21 +1391,24 @@ struct SpineGpuRenderer::Impl
         {
             r = WriteSpineGpuContainer(baked, container);
         }
-        auto as = std::make_shared<Asset>();
-        as->path = path;
         if (r.ok)
         {
-            r = ReadSpineGpuContainer(container.data(), container.size(), as->asset);
-        }
-        if (r.ok)
-        {
-            r = SpineGpuBuildRuntimeData(as->asset, as->data);
+            r = ReadSpineGpuContainer(container.data(), container.size(), out);
         }
         if (!r.ok)
         {
             err = r.error;
-            return nullptr;
+            return false;
         }
+        page_dir = atlas_path.parent_path();
+        return true;
+    }
+
+    // 运行时数据已就绪的资产 → GPU（静态缓冲 / 图集页 / 每帧缓冲 + 描述符集）
+    std::shared_ptr<Asset> UploadAsset(const std::shared_ptr<Asset>& as, const std::filesystem::path& page_dir,
+                                       std::string& err)
+    {
+        namespace fs = std::filesystem;
         SpineGpuAsset& a = as->asset;
         if (a.anims.empty())
         {
@@ -1304,7 +1450,7 @@ struct SpineGpuRenderer::Impl
         // ---- 图集页 ----
         for (const std::string& page : a.atlas_page_names)
         {
-            const fs::path png = atlas_path.parent_path() / FromUtf8(page);
+            const fs::path png = page_dir / FromUtf8(page);
             // 自己读字节再解码：stbi_load 吃的是 ANSI 路径，中文目录会打不开
             std::vector<uint8_t> png_bytes;
             int w = 0, h = 0, ch = 0;
@@ -1581,6 +1727,119 @@ void SpineGpuRenderer::RequestTrackAlpha(int track, float alpha)
     d.PushTargeted(std::move(c));
 }
 
+uint32_t SpineGpuRenderer::RequestAddWorldInstance(const std::string& path, const std::string& anim, bool loop,
+                                                   uint64_t owner)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kAddInstance;
+    c.target = d.next_id++;
+    c.path = path;
+    c.anim = anim;
+    c.loop = loop;
+    c.world = true;
+    d.pending_cmds.push_back(c);
+    Impl::WorldEntry& e = d.world[c.target];
+    e.owner = owner;
+    return c.target;
+}
+
+bool SpineGpuRenderer::RequestSetWorldTransform(uint32_t id, const float local_to_world[16], float dt, bool visible)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    const auto w = d.world.find(id);
+    if (w == d.world.end())
+    {
+        return false;
+    }
+    std::memcpy(w->second.model, local_to_world, sizeof(w->second.model));
+    // 渲染长时间没跑（最小化 / 视口 0×0）时别无限累加：Draw 反正会夹到 0.25 s
+    w->second.pending_dt = std::min(w->second.pending_dt + std::max(0.0f, dt), 1.0f);
+    w->second.visible = visible;
+    w->second.stamp = d.world_serial;
+    return true;
+}
+
+void SpineGpuRenderer::AdvanceWorldTick()
+{
+    if (m_Impl == nullptr)
+    {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_Impl->mutex);
+    ++m_Impl->world_serial;
+}
+
+void SpineGpuRenderer::RequestRemoveWorldInstance(uint32_t id)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    if (d.world.erase(id) == 0)
+    {
+        return;
+    }
+    Impl::Command c;
+    c.op = Impl::Command::Op::kRemoveInstance;
+    d.PushTo(id, std::move(c));
+}
+
+void SpineGpuRenderer::RemoveWorldInstancesOfOwner(uint64_t owner)
+{
+    if (m_Impl == nullptr)
+    {
+        return;
+    }
+    Impl& d = *m_Impl;
+    std::lock_guard<std::mutex> lock(d.mutex);
+    for (auto it = d.world.begin(); it != d.world.end();)
+    {
+        if (it->second.owner != owner)
+        {
+            ++it;
+            continue;
+        }
+        Impl::Command c;
+        c.op = Impl::Command::Op::kRemoveInstance;
+        d.PushTo(it->first, std::move(c));
+        it = d.world.erase(it);
+    }
+}
+
+void SpineGpuRenderer::RequestSetAnimationOn(uint32_t id, int track, const std::string& anim, bool loop)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kSet;
+    c.track = track;
+    c.anim = anim;
+    c.loop = loop;
+    d.PushTo(id, std::move(c));
+}
+
+void SpineGpuRenderer::RequestTimeScaleOn(uint32_t id, float scale)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kSpeed;
+    c.value = scale;
+    d.PushTo(id, std::move(c));
+}
+
+void SpineGpuRenderer::RequestSkinOn(uint32_t id, const std::string& skin, bool setup_slots)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kSkin;
+    c.anim = skin;
+    c.loop = setup_slots;
+    d.PushTo(id, std::move(c));
+}
+
 uint32_t SpineGpuRenderer::LastDrawCount() const
 {
     if (m_Impl == nullptr)
@@ -1607,7 +1866,8 @@ std::string SpineGpuRenderer::Status() const
            (d.skip_reason.empty() ? std::string() : "; skipped: " + d.skip_reason) + ")" + d.instance_summary;
 }
 
-void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport)
+void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport,
+                            ViewportType viewport_type)
 {
     if (rhi == nullptr || render_pass == nullptr)
     {
@@ -1636,6 +1896,38 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     if (!cmds.empty())
     {
         d.RunCommands(cmds, render_pass, subpass);
+    }
+    // 世界实例：取组件最新推来的变换 / 可见性，消费累加的 dt（"最新的赢"，不走命令队列）
+    bool any_world = false;
+    {
+        std::lock_guard<std::mutex> lock(d.mutex);
+        for (std::unique_ptr<Impl::Instance>& ip : d.instances)
+        {
+            if (!ip->world)
+            {
+                continue;
+            }
+            any_world = true;
+            const auto w = d.world.find(ip->id);
+            if (w == d.world.end())
+            {
+                ip->world_visible = false;   // 已被删（kRemoveInstance 还在路上）
+                ip->world_dt = 0.0f;
+                continue;
+            }
+            std::memcpy(ip->world_model, w->second.model, sizeof(ip->world_model));
+            ip->world_visible = w->second.visible && w->second.stamp + 1u >= d.world_serial;
+            if (ip->world_shown_logged != static_cast<int>(ip->world_visible))
+            {
+                ip->world_shown_logged = static_cast<int>(ip->world_visible);
+                LOG_INFO(ZRender, "SpineGpuRenderer: world instance #{} {} (owner #{}{})", ip->id,
+                         ip->world_visible ? "shown" : "hidden", w->second.owner,
+                         w->second.visible ? (ip->world_visible ? "" : ", not ticked this frame")
+                                           : ", component / object disabled");
+            }
+            ip->world_dt = w->second.pending_dt;
+            w->second.pending_dt = 0.0f;
+        }
     }
     d.PurgeUnusedAssets();
     // 每条"整帧没画"的原因都进 status，且**变化时**记一行日志（不刷屏、也不静默）
@@ -1687,8 +1979,18 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     for (std::unique_ptr<Impl::Instance>& ip : d.instances)
     {
         Impl::Instance& in = *ip;
+        if (in.world && !in.world_visible)
+        {
+            // 组件 / GameObject 关掉了：不解算、不画（动画停在原处，与 disabled 的组件不 tick 一致）
+            in.solved = false;
+            in.range = SpineGpuBatchRange {};
+            in.last_tick = now;
+            continue;
+        }
         const SpineGpuAsset& a = in.asset->asset;
-        const float dt = std::clamp(std::chrono::duration<float>(now - in.last_tick).count(), 0.0f, 0.25f);
+        // 控制台实例走墙钟；世界实例用组件喂的 dt（暂停时组件不 tick ⇒ 0 ⇒ 动画停）
+        const float wall_dt = std::chrono::duration<float>(now - in.last_tick).count();
+        const float dt = std::clamp(in.world ? in.world_dt : wall_dt, 0.0f, 0.25f);
         in.last_tick = now;
         in.anim_state->Update(dt);
         SpineImportResult pr = in.anim_state->Apply(in.state);
@@ -1725,20 +2027,76 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     uint32_t auto_count = 0;
     for (const std::unique_ptr<Impl::Instance>& ip : d.instances)
     {
-        auto_count += ip->manual ? 0u : 1u;   // 失败的也占格子：别的实例不因它跳来跳去
+        auto_count += (ip->manual || ip->world) ? 0u : 1u;   // 失败的也占格子：别的实例不因它跳来跳去
     }
     for (std::shared_ptr<Impl::Asset>& as : d.assets)
     {
         as->batch.Clear();
     }
     const float y_sign = ClipSpaceYSign(rhi);
+    // 世界实例的相机：与网格同一个 proj(aspect) · view（RenderResourcePerFrame.cpp 的口径）
+    float proj_view[16];
+    bool have_camera = false;
+    if (any_world)
+    {
+        RenderSystem* render_system = GET_SYSTEM(RenderSystem);
+        const std::shared_ptr<RenderCamera> camera =
+            render_system != nullptr ? render_system->GetCamera(viewport_type) : nullptr;
+        if (camera != nullptr)
+        {
+            const Matrix4x4 pv = camera->GetProjectionMatrixForAspect(viewport.width / viewport.height) *
+                                 camera->GetViewMatrix();
+            std::memcpy(proj_view, &pv.m_Mat[0][0], sizeof(proj_view));
+            have_camera = true;
+        }
+    }
     uint32_t auto_index = 0;
     for (std::unique_ptr<Impl::Instance>& ip : d.instances)
     {
         Impl::Instance& in = *ip;
         in.range = SpineGpuBatchRange {};
         GpuInst inst;
-        if (in.manual)
+        if (in.world)
+        {
+            if (!in.solved)
+            {
+                continue;
+            }
+            if (!have_camera)
+            {
+                fail_instance(in, "no render camera for this viewport");
+                continue;
+            }
+            inst = WorldInstance(proj_view, in.world_model, y_sign);
+            if (!in.world_logged)
+            {
+                // setup 包围盒四角 → NDC（与 spine_gpu.vert 同一乘法：clip = M · (x, y, 0, 1)，列主序）
+                in.world_logged = true;
+                float nx0 = 1e30f, ny0 = 1e30f, nx1 = -1e30f, ny1 = -1e30f, wmin = 1e30f;
+                for (int k = 0; k < 4; ++k)
+                {
+                    const float bx = in.bounds[(k & 1) ? 2 : 0];
+                    const float by = in.bounds[(k & 2) ? 3 : 1];
+                    const float* m = inst.clip_from_world;
+                    const float cx = m[0] * bx + m[4] * by + m[12];
+                    const float cy = m[1] * bx + m[5] * by + m[13];
+                    const float cw = m[3] * bx + m[7] * by + m[15];
+                    wmin = std::min(wmin, cw);
+                    if (cw > 1e-6f)
+                    {
+                        nx0 = std::min(nx0, cx / cw);
+                        nx1 = std::max(nx1, cx / cw);
+                        ny0 = std::min(ny0, cy / cw);
+                        ny1 = std::max(ny1, cy / cw);
+                    }
+                }
+                LOG_INFO(ZRender,
+                         "SpineGpuRenderer: world instance #{} setup bounds -> NDC x [{:.3f}, {:.3f}] y [{:.3f}, {:.3f}] "
+                         "(min w {:.3f}; on screen iff it overlaps [-1, 1] and w > 0)",
+                         in.id, nx0, nx1, ny0, ny1, wmin);
+            }
+        }
+        else if (in.manual)
         {
             inst = SpineGpuPlaceInstance(in.place_x, in.place_y, in.place_scale, viewport.width, viewport.height, y_sign);
         }
@@ -1836,7 +2194,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
                    (in.skin != kSpineGpuNoSkin && in.skin < in.asset->asset.skin_names.size()
                         ? " skin '" + in.asset->asset.skin_names[in.skin] + "'"
                         : std::string()) +
-                   (in.manual ? " placed" : "") + ": " +
+                   (in.world ? (in.world_visible ? " world" : " world(hidden)") : (in.manual ? " placed" : "")) + ": " +
                    (in.error.empty() ? std::to_string(in.range.draw_count) + " draws [" + d.DescribeTracks(in) + "]"
                                      : "skipped: " + in.error);
         if (in.range.draw_count == 0)
@@ -1948,13 +2306,13 @@ void SpineGpuRenderer::DrawInEditorViewport(RHI* rhi, RHIRenderPass* render_pass
         return;
     }
     const RHIViewport* scene = rhi->GetViewport(ViewportType::scene);
-    const RHIViewport* vp =
-        (scene != nullptr && scene->width > 0.0f && scene->height > 0.0f) ? scene : rhi->GetViewport(ViewportType::game);
+    const bool use_scene = scene != nullptr && scene->width > 0.0f && scene->height > 0.0f;
+    const RHIViewport* vp = use_scene ? scene : rhi->GetViewport(ViewportType::game);
     if (vp == nullptr)
     {
         return;
     }
-    Draw(rhi, render_pass, subpass, *vp);
+    Draw(rhi, render_pass, subpass, *vp, use_scene ? ViewportType::scene : ViewportType::game);
 }
 
 #else  // __EMSCRIPTEN__ —— WebGL2 没有 SSBO / gl_InstanceIndex 偏移：接口保留，什么都不画
@@ -1991,7 +2349,16 @@ void SpineGpuRenderer::RequestTimeScale(float) {}
 void SpineGpuRenderer::RequestTrackAlpha(int, float) {}
 void SpineGpuRenderer::RequestTintBlack(bool) {}
 void SpineGpuRenderer::RequestSkin(const std::string&, bool) {}
-void SpineGpuRenderer::Draw(RHI*, RHIRenderPass*, uint32_t, const RHIViewport&) {}
+uint32_t SpineGpuRenderer::RequestAddWorldInstance(const std::string&, const std::string&, bool, uint64_t) { return 1; }
+// true：别让组件以为 id 丢了而每帧重建
+bool SpineGpuRenderer::RequestSetWorldTransform(uint32_t, const float*, float, bool) { return true; }
+void SpineGpuRenderer::RequestRemoveWorldInstance(uint32_t) {}
+void SpineGpuRenderer::RemoveWorldInstancesOfOwner(uint64_t) {}
+void SpineGpuRenderer::AdvanceWorldTick() {}
+void SpineGpuRenderer::RequestSetAnimationOn(uint32_t, int, const std::string&, bool) {}
+void SpineGpuRenderer::RequestTimeScaleOn(uint32_t, float) {}
+void SpineGpuRenderer::RequestSkinOn(uint32_t, const std::string&, bool) {}
+void SpineGpuRenderer::Draw(RHI*, RHIRenderPass*, uint32_t, const RHIViewport&, ViewportType) {}
 void SpineGpuRenderer::DrawInEditorViewport(RHI*, RHIRenderPass*, uint32_t) {}
 uint32_t SpineGpuRenderer::LastDrawCount() const { return 0; }
 std::string SpineGpuRenderer::Status() const { return "GPU-Spine rendering is not available on WebGL2"; }

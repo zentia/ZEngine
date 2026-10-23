@@ -117,6 +117,11 @@ namespace ContentBrowserHelpers
         }
         std::string extension = std::filesystem::path(node->m_FilePath.c_str()).extension().generic_string();
         std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        // .zspg 也进注册表，但它不是导入器产物：没有"源文件 → 重新导入"这回事（重烘焙走 SpineCook）
+        if (extension == AssetManager::SpineSkeletonAssetExtension())
+        {
+            return false;
+        }
         return AssetManager::IsRegistryIndexedAssetExtension(extension);
     }
 

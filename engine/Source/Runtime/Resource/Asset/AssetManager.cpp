@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iterator>
 #include <string>
 #if defined(_MSC_VER)
@@ -253,7 +254,7 @@ const std::vector<std::string>& AssetManager::YamlAuthoringAssetExtensions()
 const std::vector<std::string>& AssetManager::RegistryIndexedAssetExtensions()
 {
     static const std::vector<std::string> kExtensions = [] {
-        std::vector<std::string> extensions = {".zasset"};
+        std::vector<std::string> extensions = {".zasset", SpineSkeletonAssetExtension()};
         const std::vector<std::string>& yaml = YamlAuthoringAssetExtensions();
         extensions.insert(extensions.end(), yaml.begin(), yaml.end());
         return extensions;
@@ -269,7 +270,8 @@ bool AssetManager::IsYamlAuthoringAssetExtension(const std::string& lowercase_ex
 
 bool AssetManager::IsRegistryIndexedAssetExtension(const std::string& lowercase_extension)
 {
-    return lowercase_extension == ".zasset" || IsYamlAuthoringAssetExtension(lowercase_extension);
+    return lowercase_extension == ".zasset" || lowercase_extension == SpineSkeletonAssetExtension() ||
+           IsYamlAuthoringAssetExtension(lowercase_extension);
 }
 
 bool AssetManager::IsYamlAuthoringAssetPath(const std::filesystem::path& path)
@@ -290,6 +292,21 @@ const char* AssetManager::TimelineAssetExtension()
 bool AssetManager::IsTimelineAssetPath(const std::filesystem::path& path)
 {
     return LowerExtension(path) == TimelineAssetExtension();
+}
+
+const char* AssetManager::SpineSkeletonAssetExtension()
+{
+    return ".zspg";
+}
+
+const char* AssetManager::SpineSkeletonAssetTypeName()
+{
+    return "SpineSkeletonData";
+}
+
+bool AssetManager::IsSpineSkeletonAssetPath(const std::filesystem::path& path)
+{
+    return LowerExtension(path) == SpineSkeletonAssetExtension();
 }
 
 std::string AssetManager::DeriveDeterministicAssetGuid(const std::filesystem::path& absolute_path)
@@ -411,6 +428,18 @@ std::string AssetManager::GetAssetTypeName(const std::filesystem::path& asset_pa
     if (!std::filesystem::exists(asset_path))
     {
         return {};
+    }
+
+    if (IsSpineSkeletonAssetPath(asset_path))
+    {
+        // 只认魔数（'ZSPG'，SpineGpuConstants::kMagic）：版本 / 结构由 SpineGpuRenderer 加载时校验。
+        // 绝不能落到下面的 SerializedFile：它不是 ZASS 文件。
+        std::ifstream file(asset_path, std::ios::binary);
+        uint32_t magic = 0;
+        file.read(reinterpret_cast<char*>(&magic), sizeof(magic));
+        constexpr uint32_t kSpineGpuMagic = 0x5A535047u;
+        return (file.gcount() == sizeof(magic) && magic == kSpineGpuMagic) ? SpineSkeletonAssetTypeName()
+                                                                           : std::string();
     }
 
     if (IsYamlAuthoringAssetPath(asset_path))

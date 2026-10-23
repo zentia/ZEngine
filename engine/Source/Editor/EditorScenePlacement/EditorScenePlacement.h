@@ -21,7 +21,11 @@ namespace EditorScenePlacement
     bool InstantiateMeshAssetInCurrentLevel(const std::filesystem::path& absolute_zasset_path,
                                             GObjectID parent_gobject_id = k_invalid_gobject_id);
 
-    // Dispatches by .zasset header type (MeshData vs Prefab only). Returns true when spawned.
+    // Create a GameObject + SpineRenderer referencing the GPU-Spine .zspg container. Selects it.
+    bool InstantiateSpineAssetInCurrentLevel(const std::filesystem::path& absolute_zspg_path,
+                                             GObjectID parent_gobject_id = k_invalid_gobject_id);
+
+    // Dispatches by extension (.prefab / .zspg) then .zasset header type (MeshData vs Prefab). True when spawned.
     bool InstantiateDroppedContentBrowserAsset(const std::filesystem::path& absolute_zasset_path,
                                        GObjectID parent_gobject_id = k_invalid_gobject_id);
 

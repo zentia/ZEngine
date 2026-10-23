@@ -307,6 +307,11 @@ std::string computeAssetTypeLabel(const std::filesystem::path& file_path,
         return asset_type;
     }
 
+    if (file_extension == "zspg")
+    {
+        return "spine";   // GPU-Spine 容器（AssetManager::SpineSkeletonAssetTypeName）
+    }
+
     const auto& extensions = Path::GetFileExtensions(file_path);
     if (file_extension == "json")
     {

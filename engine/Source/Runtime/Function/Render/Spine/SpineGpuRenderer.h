@@ -30,6 +30,11 @@
 //   * tint black（双色）：`spine.tintblack 1` 打开（= SpineSettings::tintBlack，**默认关**，与 OSGame 线上一致）；
 //     片元按 spine-unity TintBlack shader 加 `(1 - tex.rgb) · dark · tex.a · vc.a`，暗色 float 不截断
 //     （SpineGpuTintBlack.h）。
+//   * 两种实例来源：
+//       控制台实例 —— spine.load / spine.add，摆在视口像素空间（自动网格 / spine.place），动画走墙钟；
+//       世界实例   —— SpineRenderer 组件（场景里的 GameObject），见下面 RequestAddWorldInstance。
+//   * 资产来源：骨架源文件（.skel.bytes / .skel / .json + 同名图集，加载时现烘焙）**或** 已烘焙的
+//     `.zspg` 容器（直接读，图集页按页名相对 .zspg 所在目录找）。两者进同一份运行时数据。
 // =====================================================================
 
 #include <cstdint>
@@ -38,6 +43,7 @@
 class RHI;
 class RHIRenderPass;
 struct RHIViewport;
+enum class ViewportType : uint8_t;   // RenderType.h
 
 class SpineGpuRenderer
 {
@@ -79,9 +85,36 @@ public:
     // 立即生效（下一次 Draw），不走动画命令队列；跨资产保留。
     void RequestTintBlack(bool enabled);
 
+    // ---- 世界实例（SpineRenderer 组件用；游戏线程）----
+    // 与控制台实例的区别：
+    //   * 摆放 = 所属 GameObject 的 local-to-world × 相机 proj·view（`viewport_type` 那台相机），
+    //     骨架平面是模型空间的 z = 0；不进自动网格、不吃 spine.place；
+    //   * 动画时间由组件喂（RequestSetWorldTransform 的 dt，累加到下一次 Draw）—— 暂停时组件不 tick ⇒
+    //     动画跟着停，不走墙钟；
+    //   * 不进"选中"，spine.load / spine.clear 不清它们（只清控制台实例）；
+    //   * 所属 GameObject 被删（RenderScene::DeleteEntityByGObjectID ⇒ RemoveWorldInstancesOfOwner）时
+    //     实例跟着删；组件下一次 tick 发现 id 已不认识就重建（撤销删除时就这样复活）。
+    // ⚠️ 第一版没有深度：画在场景之上（与控制台实例同一层），不被网格遮挡。
+    // `anim` 为动画名或下标（空 = 第 0 个）。返回 id（≥ 1）。加载失败时 id 仍然"认识"（不会被组件
+    // 每帧重建刷日志），原因见 spine.status。
+    uint32_t RequestAddWorldInstance(const std::string& path, const std::string& anim, bool loop, uint64_t owner);
+    // `local_to_world` = Matrix4x4 的 m_Mat（行主序、列向量约定），已含组件的骨架单位缩放。
+    // 返回 false ⇒ 渲染器已不认识这个 id（所属对象被删过），调用方应重建。
+    bool RequestSetWorldTransform(uint32_t id, const float local_to_world[16], float dt, bool visible);
+    void RequestRemoveWorldInstance(uint32_t id);
+    void RemoveWorldInstancesOfOwner(uint64_t owner);
+    // 逻辑帧 +1（WorldManager::Tick 开头调）。世界实例只在"上一个或这一个逻辑帧里被推过变换"时才画 ⇒
+    // 组件 disabled / GameObject 非激活 / 对象不在关卡里（不 tick）时自动不画；暂停时逻辑帧不前进 ⇒ 定格。
+    void AdvanceWorldTick();
+    // 定向版播放命令：作用在 `id` 上（不看选中），语义同上面的同名命令
+    void RequestSetAnimationOn(uint32_t id, int track, const std::string& anim, bool loop);
+    void RequestTimeScaleOn(uint32_t id, float scale);
+    void RequestSkinOn(uint32_t id, const std::string& skin, bool setup_slots);
+
     // 渲染线程：在 `render_pass` 的 `subpass` 里、`viewport` 范围内画全部实例。
-    // 调用方负责已 begin 了该 render pass、并处在该 subpass。
-    void Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport);
+    // 调用方负责已 begin 了该 render pass、并处在该 subpass。`viewport_type` 选世界实例用哪台相机。
+    void Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport,
+              ViewportType viewport_type);
 
     // 同上，视口按编辑器规则自己挑：Scene 窗口开着（宽高 > 0）就画在 Scene 里，否则画在 Game 视口里。
     // DX12 / Metal 的接入点用它（Vulkan 的 MainCameraPass 自己挑，规则相同）。

@@ -74,7 +74,7 @@ ZSlate::UIColor ThumbColorForNode(const EditorFileNode* node)
         return kThumbFolderColor;
     if (node->m_FileExtension == "scene")
         return kThumbSceneColor;
-    if (node->m_FileExtension == "zasset")
+    if (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg")
         return kThumbAssetColor;
     return kThumbDefaultColor;
 }
@@ -579,7 +579,8 @@ void ZSlateContentBrowserWindow::AddItemRow(EditorFileNode* node,
             m_ForceRebuild = true;
         };
 
-        if (!is_folder && node->m_FileExtension == "zasset")
+        // .zspg（GPU-Spine 容器）同样能拖进 Scene：EditorScenePlacement 按扩展名分派成 SpineRenderer
+        if (!is_folder && (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg"))
         {
             const std::string asset_path = std::string(node->m_FilePath.c_str());
             const std::string label = std::string(ContentBrowserHelpers::GetContentBrowserDisplayName(node).c_str());
@@ -759,7 +760,8 @@ std::shared_ptr<SWidget> ZSlateContentBrowserWindow::BuildAssetTile(EditorFileNo
             m_ForceRebuild = true;
         };
 
-        if (!is_folder && node->m_FileExtension == "zasset")
+        // .zspg（GPU-Spine 容器）同样能拖进 Scene：EditorScenePlacement 按扩展名分派成 SpineRenderer
+        if (!is_folder && (node->m_FileExtension == "zasset" || node->m_FileExtension == "zspg"))
         {
             const std::string asset_path = std::string(node->m_FilePath.c_str());
             const std::string label = std::string(ContentBrowserHelpers::GetContentBrowserDisplayName(node).c_str());
