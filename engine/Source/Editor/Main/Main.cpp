@@ -20,6 +20,8 @@
     #include <crt_externs.h>  // _NSGetEnviron()
     #include <mach-o/dyld.h>  // _NSGetExecutablePath()
     #include <spawn.h>        // posix_spawn / POSIX_SPAWN_SETEXEC
+
+    #include "Runtime/Function/Render/Platform/MacOS/MacOSApplication.h"
 #endif
 
 #include "Editor/EditorApplication/EditorApplication.h"
@@ -31,6 +33,11 @@
 #include "Runtime/RegisterRuntime.h"
 #include "Runtime/Core/Base/CrashHandler.h"
 #include "Runtime/Function/Console/ConsoleManager.h"
+
+#include <cctype>
+#include <filesystem>
+#include <string>
+#include <vector>
 
 // https://gcc.gnu.org/onlinedocs/cpp/Stringizing.html
 #define ZENGINE_XSTR(s) ZENGINE_STR(s)
@@ -458,6 +465,12 @@ namespace
         return resolveStartupModeFromProjectPath(project_path, has_project_argument);
     }
 
+    // 定义在本文件后面（relaunchWithProject() 之后）：runEditorUnix() 要调它，而它
+    // 又要调 relaunchWithProject()。
+#ifdef __APPLE__
+    void installRuntimeOpenDocumentHandler(const std::filesystem::path& current_project);
+#endif
+
     int runEditorUnix(const std::filesystem::path& project_path, PreferredRHI preferred_rhi, float pie_seconds,
                       bool pie_stop)
     {
@@ -468,6 +481,12 @@ namespace
         RegisterEditor();
         START_SYSTEM();
         applyStartupConsoleVariables();
+
+        // 编辑器已经在跑的时候，双击 .zproject 由平台层接住再转到这里（Launcher
+        // 只在没有 -p 时跑一次，此刻它早就不在了）。
+#ifdef __APPLE__
+        installRuntimeOpenDocumentHandler(project_path);
+#endif
 
         if (pie_seconds > 0.0f)
         {
@@ -606,6 +625,51 @@ namespace
                      rc,
                      arg_str.c_str());
         return 1;
+    }
+
+    // 编辑器已经在跑的时候，双击 .zproject 走这里。
+    //
+    // 平台层（MacOSApplication）把 LaunchServices 的 odoc 收下来，每帧的
+    // PollEvents() 再转给这个 handler。平台层不做内容判断 —— 只有 Editor 才知道
+    // .zproject 长什么样、当前开的是哪个项目。
+    void installRuntimeOpenDocumentHandler(const std::filesystem::path& current_project)
+    {
+        MacOSApplication::SetOpenDocumentHandler([current_project](const std::filesystem::path& document) {
+            std::string extension = document.extension().string();
+            for (char& c : extension)
+            {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            if (extension != ".zproject")
+            {
+                LOG_WARNING(ZEditor, "Open document: ignored '{}' -- not a .zproject.", document.string());
+                return;
+            }
+
+            std::error_code ec;
+            if (!std::filesystem::exists(document, ec))
+            {
+                LOG_WARNING(ZEditor, "Open document: '{}' does not exist.", document.string());
+                return;
+            }
+
+            // 双击已经在编辑的那个项目：什么都不做。重启会把没保存的改动一起丢掉，
+            // 而"我双击了当前项目"这件事没有任何需要执行的副作用。
+            if (!current_project.empty())
+            {
+                std::error_code canonical_ec;
+                const std::filesystem::path opened = std::filesystem::weakly_canonical(document, canonical_ec);
+                const std::filesystem::path active = std::filesystem::weakly_canonical(current_project, canonical_ec);
+                if (!opened.empty() && opened == active)
+                {
+                    LOG_INFO(ZEditor, "Open document: '{}' is already open.", document.string());
+                    return;
+                }
+            }
+
+            LOG_INFO(ZEditor, "Open document: switching to '{}'.", document.string());
+            relaunchWithProject(document);
+        });
     }
 #endif
 

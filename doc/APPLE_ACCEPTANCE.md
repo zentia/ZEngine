@@ -103,7 +103,7 @@ cd build && ctest --output-on-failure
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 | `MemoryPairingSmokeTest` | 23 | 分配器配对（§3.26）：Apple 上 `Produce` 出来的块**不在 mimalloc 堆区**（所以喂给 mi_free 必坏）；错配会被守卫拦下而不是崩；正确配对不触发守卫；全库扫描 0 处错配 + **扫描器自检**（含已知错配/已知正确的双向对照） |
-| `ZEditorLauncherWiringSmokeTest` | 63 | **双击 .zproject（§3.29）**：bundle 声明 `CFBundleDocumentTypes` + 导出 UTI、两处 UTI 字符串必须一致、挂 `zproject` 扩展名、构建后刷 `lsregister`；Launcher 是 `NSApplicationDelegate` 且实现了 `-application:openFile:`、delegate 挂在 `finishLaunching` **之前**、openFile 里认扩展名**且真的提交**；重启走 bundle 入口、exec 前刷日志。Launcher 接线（§3.27）：两个平台的 `OpenLauncher` 分支都接到 Launcher、Unix 那条不许退回 `reportMissingProject()`（双击闪退的那一行）；重启用 `POSIX_SPAWN_SETEXEC` 且全文件不许有 `fork()`；`runEditorUnix` 要回写最近项目；三份实现（Win32 / Apple / POSIX 桩）不能同时编；Apple 侧确实是窗口不是空桩。**应用图标（§3.28）**：Apple 分支必须解链 exe 路径再拼 ini、且解链排在拼 ini 之前；ini 打不开要刷日志；bundle 脚本要生成 icns / 写 `CFBundleIconFile` / 用**相对** symlink；Launcher 的 bundle 让位分支排在 PNG 兜底之前**且真的 return**。**扫描器双向自检**（含"位置版扫描器也跳过整行注释"） |
+| `ZEditorLauncherWiringSmokeTest` | 73 | **编辑器运行中双击 .zproject（§3.30）**：平台层暴露接入点、有 delegate、真的挂到 NSApp 上、openFile 真的存路径、**消费点在 `PollEvents()` 里**；Editor 侧注册了 handler、双击当前项目时不重启（钉的是判定式不是函数）。**双击 .zproject（§3.29）**：bundle 声明 `CFBundleDocumentTypes` + 导出 UTI、两处 UTI 字符串必须一致、挂 `zproject` 扩展名、构建后刷 `lsregister`；Launcher 是 `NSApplicationDelegate` 且实现了 `-application:openFile:`、delegate 挂在 `finishLaunching` **之前**、openFile 里认扩展名**且真的提交**；重启走 bundle 入口、exec 前刷日志。Launcher 接线（§3.27）：两个平台的 `OpenLauncher` 分支都接到 Launcher、Unix 那条不许退回 `reportMissingProject()`（双击闪退的那一行）；重启用 `POSIX_SPAWN_SETEXEC` 且全文件不许有 `fork()`；`runEditorUnix` 要回写最近项目；三份实现（Win32 / Apple / POSIX 桩）不能同时编；Apple 侧确实是窗口不是空桩。**应用图标（§3.28）**：Apple 分支必须解链 exe 路径再拼 ini、且解链排在拼 ini 之前；ini 打不开要刷日志；bundle 脚本要生成 icns / 写 `CFBundleIconFile` / 用**相对** symlink；Launcher 的 bundle 让位分支排在 PNG 兜底之前**且真的 return**。**扫描器双向自检**（含"位置版扫描器也跳过整行注释"） |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
 `MetalSpirvShaderSmokeTest` 一条就能把 §3.1 / §3.2 / §3.3 三个错全抓出来。
@@ -1407,6 +1407,46 @@ LaunchServices 启动 App 时 **argv 里只有 `-psn_0_xxxxx`**（那个参数�
 **一条教训**：跨平台时最容易漏的不是"这段逻辑怎么写"，而是**操作系统把信息递给进程的通道
 都不一样**。Windows 是 argv（`%1`），macOS 是 Apple Event。两边都用"文件关联"这四个字，
 实现上没有任何一行是共用的 —— 连"参数没传过来"这件事在 macOS 上都是静默的。
+
+### 3.30 编辑器**已经在跑**的时候双击 .zproject
+
+§3.29 那条路靠 Launcher，而 **Launcher 只在没有 `-p` 时跑一次**。编辑器一旦起来，系统再
+发 odoc 过来就没人接了 —— 症状同样是"双击没反应"：不报错、不弹窗。
+
+**难点不在"接住"，在"谁来消费"**：平台层能收下路径，但"要不要重启、重启带哪个项目"是
+Editor 的决策（只有它知道当前开的是哪个项目）。而新开一条每帧通道正是本项目踩过的坑 ——
+装好了没人调，从外面看不出来（Apple 的 `RenderSystem::Tick` 直接 `ExecuteAll()` 那次）。
+
+**所以消费点放在 `MacOSApplication::PollEvents()` 里**：它是 `Application.cpp:141` 主循环
+每帧必调的那一步，不需要新增任何通道。
+
+| 文件 | 改动 |
+|---|---|
+| `MacOSApplication.h/.mm` | 新增 `SetOpenDocumentHandler()` 接入点 + `ZMacOpenDocumentDelegate`（`-application:openFile:` 把路径存进 `g_pending_open_documents`）；`SetupCocoaOnce()` 里 `[NSApp setDelegate:]`；`PollEvents()` 末尾消费 |
+| `Main.cpp` | 新增 `installRuntimeOpenDocumentHandler()`：`runEditorUnix()` 在 `START_SYSTEM()` 之后注册，拿到路径后 `relaunchWithProject()` |
+
+**两个决定**：
+
+1. **平台层不做"这是不是项目文件"的判断** —— 它不知道 `.zproject` 长什么样、也不知道当前
+   开的是哪个项目。判断放在 Editor 注册的 handler 里。
+2. **双击已经在编辑的那个项目就什么都不做**。重启（SETEXEC 换映像）会把没保存的改动一起
+   丢掉，而"我双击了当前项目"这件事没有任何需要执行的副作用 —— 只在日志里留一句。
+
+**验证**：
+
+- `open ZGameSmoke.zproject` → 编辑器起来（PID 22752）；再 `open ZSecond.zproject` →
+  **PID 不变**，`-p` 变成
+  `ZEditor.app/Contents/MacOS/ZEditor -p /Users/.../bin/Debug/ZSecond.zproject`。
+  PID 不变正是 SETEXEC 换映像的硬证据 —— 不是另起了一个实例。
+- 再双击一次同一个 `ZSecond.zproject` → PID 不变、心跳继续（`frame=3001`），日志
+  `Open document: '.../ZSecond.zproject' is already open.`，**没有重启**。
+- **静态**：`ZEditorLauncherWiringSmokeTest` 63 → **73** checks。
+- **变异**（各精确变红）：不挂 delegate → 1 条；`PollEvents` 不消费 → 1 条；openFile 不存 →
+  1 条；不注册 handler → 1 条；相同项目也重启 → 1 条。
+
+**一条教训**：契约要钉**判定式**，不是"用了某个函数"。第一版钉的是
+`std::filesystem::weakly_canonical(document`，而把守卫改成 `if (false)` 之后那条照样命中 ——
+真正会丢改动的那次改动反而没人管。改成钉 `!opened.empty() && opened == active` 才对。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

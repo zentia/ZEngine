@@ -3,6 +3,8 @@
 #include "../Generic/GenericApplication.h"
 #include "MacOSWindow.h"
 
+#include <filesystem>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -47,6 +49,19 @@ public:
 
     GenericWindow*     GetMainWindow() const override;
     std::array<int, 2> GetFramebufferSize() const override;
+
+    // 双击 .zproject，而编辑器**已经在跑**的那条路。
+    //
+    // 启动时那条路是 Launcher 接的（ZEditorLauncher.mm 的 -application:openFile:），
+    // 但 Launcher 只在没有 -p 时跑一次；一旦编辑器起来了，系统再发
+    // kAEOpenDocuments 过来就没有 Launcher 可接了。所以平台层把它接住、缓起来，
+    // 交给 Application 主循环里每帧必调的 PollEvents() 去消费 —— 不用新开一条
+    // 每帧通道，也不会漏。
+    //
+    // 平台层不做"这是不是项目文件"的判断，那是 Editor 的事（它才知道 .zproject
+    // 长什么样、当前开的是哪个项目）。
+    using OpenDocumentHandler = std::function<void(const std::filesystem::path&)>;
+    static void SetOpenDocumentHandler(OpenDocumentHandler handler);
 
     // 显示器信息
     int         GetMonitorCount() const override;

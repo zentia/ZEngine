@@ -12,10 +12,49 @@
     #include "Runtime/Resource/Config/ConfigManager.h"
 
     #include <chrono>
+    #include <filesystem>
     #include <string>
+    #include <vector>
+
+@class ZMacOpenDocumentDelegate;
 
 namespace
 {
+std::vector<std::filesystem::path>            g_pending_open_documents;
+MacOSApplication::OpenDocumentHandler         g_open_document_handler;
+ZMacOpenDocumentDelegate*                     g_open_document_delegate = nil;
+}  // namespace
+
+// -----------------------------------------------------------------------------
+// 待打开的文档（双击 .zproject）
+//
+// 编辑器已经在跑的时候没有 Launcher 了，而 LaunchServices 只会把
+// kAEOpenDocuments 发给 delegate 的 -application:openFile: —— 没有 delegate，
+// 双击就是"什么都没发生"，既不报错也不弹窗。
+// -----------------------------------------------------------------------------
+@interface ZMacOpenDocumentDelegate : NSObject <NSApplicationDelegate>
+@end
+
+@implementation ZMacOpenDocumentDelegate
+
+- (BOOL)application:(NSApplication*)sender openFile:(NSString*)filename
+{
+    if (filename == nil)
+    {
+        return NO;
+    }
+
+    // 这里不看扩展名：平台层不该知道 .zproject 长什么样，判断交给 Editor 注册的
+    // handler（它才知道当前开的是哪个项目、要不要重启）。
+    g_pending_open_documents.emplace_back(filename.fileSystemRepresentation);
+    return YES;
+}
+
+@end
+
+namespace
+{
+
     // Dock / Cmd-Tab 图标。我们发布的是裸 Mach-O 而不是 .app bundle（z_embed_app_icon()
     // 只做 Windows 的 .rc），没有 .icns 会被系统自动拾取，Dock 里就会显示通用图标，
     // 所以必须显式把图标交给 NSApp。图标文件来自配置的 BigIconFile（ZEditor.ini），
@@ -50,6 +89,12 @@ namespace
         [NSApplication sharedApplication];
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
         InstallApplicationIcon();
+
+        // 编辑器已经在跑时，双击 .zproject 只能靠这个 delegate 接住（Launcher 那个
+        // 只在启动、且没有 -p 时才存在）。NSApp 只有一个 delegate，而这两条路不会
+        // 同时活跃 —— 走 Launcher 的那次进程在选完项目后就已经 SETEXEC 换掉了。
+        g_open_document_delegate = [[ZMacOpenDocumentDelegate alloc] init];
+        [NSApp setDelegate:g_open_document_delegate];
 
         // 最小主菜单：没有它 Cmd+Q / Cmd+C / Cmd+V / Cmd+A 全是死键。
         NSMenu*      menubar     = [[NSMenu alloc] init];
@@ -166,6 +211,23 @@ void MacOSApplication::PollEvents()
             [NSApp updateWindows];
         }
     }
+
+    // 上面 sendEvent 时 delegate 可能已经把 odoc 收进了 g_pending_open_documents。
+    // 消费放在这里是因为 PollEvents() 是 Application 主循环里每帧必调的一步
+    // （Application.cpp），不用另外开一条每帧通道 —— 那种通道最容易"装好了没人
+    // 调"，而且看不出来。
+    if (!g_pending_open_documents.empty() && g_open_document_handler)
+    {
+        const std::filesystem::path document = g_pending_open_documents.front();
+        g_pending_open_documents.clear();
+        // handler 里可能直接把进程映像换掉（重启带 -p），所以一次只处理一个。
+        g_open_document_handler(document);
+    }
+}
+
+void MacOSApplication::SetOpenDocumentHandler(OpenDocumentHandler handler)
+{
+    g_open_document_handler = std::move(handler);
 }
 
 bool MacOSApplication::ShouldClose() const

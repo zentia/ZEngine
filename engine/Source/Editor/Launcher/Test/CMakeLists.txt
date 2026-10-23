@@ -38,6 +38,8 @@ target_compile_definitions(ZEditorLauncherWiringSmokeTest PRIVATE
     ZEDITOR_COMMANDSYSTEM_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Runtime/Function/Command/CommandSystem.cpp"
     ZEDITOR_CONFIGMANAGER_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Runtime/Resource/Config/ConfigManager.cpp"
     ZEDITOR_BUNDLE_CMAKE="${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/MakeMacOSAppBundle.cmake"
+    ZEDITOR_MACOS_APP_H="${CMAKE_CURRENT_SOURCE_DIR}/../../../Runtime/Function/Render/Platform/MacOS/MacOSApplication.h"
+    ZEDITOR_MACOS_APP_MM="${CMAKE_CURRENT_SOURCE_DIR}/../../../Runtime/Function/Render/Platform/MacOS/MacOSApplication.mm"
 )
 
 add_test(NAME ZEditorLauncherWiringSmokeTest COMMAND ZEditorLauncherWiringSmokeTest)

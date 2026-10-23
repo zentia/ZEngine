@@ -165,6 +165,8 @@ int main()
     const std::string command_cpp = ReadFile(ZEDITOR_COMMANDSYSTEM_CPP);
     const std::string config_cpp = ReadFile(ZEDITOR_CONFIGMANAGER_CPP);
     const std::string bundle_cmake = ReadFile(ZEDITOR_BUNDLE_CMAKE);
+    const std::string mac_app_h = ReadFile(ZEDITOR_MACOS_APP_H);
+    const std::string mac_app_mm = ReadFile(ZEDITOR_MACOS_APP_MM);
 
     Check(!main_cpp.empty(), "Main.cpp 可读");
     Check(!launcher_h.empty(), "ZEditorLauncher.h 可读");
@@ -173,6 +175,8 @@ int main()
     Check(!command_cpp.empty(), "CommandSystem.cpp 可读");
     Check(!config_cpp.empty(), "ConfigManager.cpp 可读");
     Check(!bundle_cmake.empty(), "MakeMacOSAppBundle.cmake 可读");
+    Check(!mac_app_h.empty(), "MacOSApplication.h 可读");
+    Check(!mac_app_mm.empty(), "MacOSApplication.mm 可读");
 
     // ---- 1. 两个平台的 OpenLauncher 分支都必须接到 Launcher 上 ----
     //
@@ -363,6 +367,33 @@ int main()
     // 那几处 ForceFlush 排得更靠前，全文 find 会先命中它们，判据就恒绿了。
     Check(FoundAfter(main_cpp, "POSIX_SPAWN_SETEXEC)", "LogSystem::ForceFlush()", 600),
           "exec 之前刷了日志（SETEXEC 成功后缓冲区里没落盘的全没了）");
+
+    // ---- 11. 编辑器**已经在跑**的时候双击 .zproject ----
+    //
+    // 上面第 10 节那条路靠 Launcher，而 Launcher 只在没有 -p 时跑一次 —— 编辑器一旦
+    // 起来，系统再发 odoc 过来就没人接了（症状同样是"双击没反应"）。所以平台层
+    // 要自己接住，再通过 Application 主循环里每帧必调的 PollEvents() 转给 Editor。
+    Check(CodeLineFind(mac_app_h, "static void SetOpenDocumentHandler(OpenDocumentHandler handler);"),
+          "平台层暴露了待打开文档的接入点");
+    Check(CodeLineFind(mac_app_mm, "void MacOSApplication::SetOpenDocumentHandler("),
+          "SetOpenDocumentHandler() 有实现（不是只声明）");
+    Check(CodeLineFind(mac_app_mm, "NSApplicationDelegate"), "平台层有 NSApplicationDelegate");
+    Check(CodeLineFind(mac_app_mm, "setDelegate:g_open_document_delegate"),
+          "delegate 真的挂到了 NSApp 上（编辑器运行时那条路）");
+    Check(CodeLineFind(mac_app_mm, "g_pending_open_documents.emplace_back("),
+          "openFile 把路径真的存下来了（不是只返回 YES）");
+
+    // 消费点必须在 PollEvents() 里 —— 它是 Application 主循环每帧必调的那一步。
+    // 另开一条每帧通道最容易"装好了没人调"，而且从外面看不出来。
+    Check(FoundAfter(mac_app_mm, "void MacOSApplication::PollEvents()", "g_open_document_handler(document);", 1600),
+          "待打开文档在 PollEvents() 里被消费（每帧必调，不会漏）");
+
+    Check(CodeLineFind(main_cpp, "installRuntimeOpenDocumentHandler(project_path);"),
+          "runEditorUnix() 注册了待打开文档的处理函数");
+    // 钉守卫的**判定式**而不是"用了 weakly_canonical"：后者只证明函数被调了，
+    // 判定式改成 if (false) 它照样命中 —— 那才是真正会丢改动的那次改动。
+    Check(CodeLineFind(main_cpp, "!opened.empty() && opened == active"),
+          "双击当前项目时不重启（重启会把没保存的改动一起丢掉）");
 
     // -------------------------------------------------------------------------
     // 扫描器自检
