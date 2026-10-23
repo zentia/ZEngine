@@ -1084,11 +1084,39 @@ namespace
               "and before PreparePassData (which uploads this frame's GPU resources)");
 
         // 7. 心跳探针：Nanite 静默退化时不报错，只能靠探针分辨。
-        Check(Contains(sys_source, "nanite=(has={} inst={} batches={} vis={})"),
+        Check(Contains(sys_source, "nanite=(has={} inst={} batches={} vis={} ngpu={})"),
               "the Apple heartbeat carries a Nanite probe (a silent fallback prints nothing)");
         Check(Contains(sys_source, "m_RenderPipeline->GetNanitePass()"),
               "that probe reads the real Nanite pass (has/inst/batches/vis together tell apart "
               "'no pass' / 'no instances' / 'all culled')");
+        // ngpu：Nanite 的 GPU 路径是**静默**退化到 CPU 的（inst/batches 照常产出），
+        // 所以"这一帧的集群裁决在 kernel 里还是 CPU 上"只能靠这一个数分辨。
+        Check(Contains(sys_source, "IsGPUComputeReady()"),
+              "the heartbeat also reports whether the GPU path is live (ngpu) -- Nanite falls back "
+              "to CPU without any log, so this number is the only way to tell");
+
+        // ---- 阶段 59：GPU 路径的每一步都要能被证伪 ----
+        //
+        // 真机上曾经出现过一次**误判**：我 grep 日志找那条一次性成功日志，两个错误
+        // 叠加（bash grep -i "a\|b" 假阴性 + BqLog 按天 rotate 后查错了文件）⇒ 明明
+        // 跑着的东西被我当成没跑。结论是：能自动验的就别靠人肉 grep。
+        const std::string nanite_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Nanite/NaniteRenderer.cpp");
+        Check(!nanite_source.empty(), "NaniteRenderer.cpp is readable as text (nanite gpu diag)");
+
+        // 五个出口 + r.Nanite.GPU=0 那一个，每个都得有诊断，否则"卡在哪一步"不可知。
+        const std::string prepare_body = body_of(nanite_source, "bool NaniteRenderer::PrepareGPUData(");
+        Check(count_of(prepare_body, "diag(") >= 4,
+              "every exit of PrepareGPUData carries a one-shot diagnostic (a silent fallback is "
+              "otherwise unfalsifiable)");
+        Check(Contains(nanite_source, "use_gpu_culling is off"),
+              "the 'r.Nanite.GPU=0' exit is diagnosed too (it is the quietest one -- PrepareGPUData "
+              "is never even called)");
+        // "管线建成了" ≠ "真的发了 dispatch"，两边都得有日志。
+        Check(Contains(nanite_source, "nanite: dispatched cluster culling"),
+              "DispatchClusterCulling logs once too -- a built pipeline does not prove a dispatch");
+        Check(Contains(nanite_source, "m_DispatchDiagLogged"),
+              "that dispatch log is one-shot (it would otherwise spam every frame)");
     }
 
 #if defined(__APPLE__)

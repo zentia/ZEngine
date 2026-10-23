@@ -304,6 +304,15 @@ void NaniteRenderer::Render(RHI* rhi,
     //
     // 失败（没有 RHI、shader 没编译出来、缓冲建不起来）时静默退回 CPU 结果：
     // m_RenderBatches 还在，编辑器和统计不会因此变成空的。
+    // 开关本身就是第一个出口：关掉的话 PrepareGPUData 根本不会被调用，上面的诊断
+    // 一条都不会打 —— 所以在这里补一条，否则"r.Nanite.GPU=0"这种最简单的情况反而是
+    // 最安静的。
+    if (!config.use_gpu_culling && !m_GpuDiagLogged)
+    {
+        m_GpuDiagLogged = true;
+        LOG_WARNING(ZRender, "nanite: GPU path not taken -- use_gpu_culling is off (r.Nanite.GPU=0)");
+    }
+
     if (config.use_gpu_culling && PrepareGPUData(camera, config))
     {
         DispatchClusterCulling(camera, config);
@@ -1034,14 +1043,36 @@ NaniteCullConstants NaniteRenderer::BuildCullConstants(const std::shared_ptr<Ren
 
 bool NaniteRenderer::PrepareGPUData(const std::shared_ptr<RenderCamera>& camera, const NaniteConfig& config)
 {
+    // 一次性诊断（阶段 59）：GPU 路径有五个出口，而它**不报任何错**地退化到 CPU ——
+    // 真机上"cluster-cull compute pipeline ready" 从来没出现过，但我们不知道它卡在
+    // 哪一步。每个出口各打一条、只打一次，把 use_gpu / rhi / 实例数 / 集群数 /
+    // SPIR-V 字节数一起带出来。
+    auto diag = [this, &config](const char* reason) {
+        if (m_GpuDiagLogged)
+        {
+            return;
+        }
+        m_GpuDiagLogged = true;
+        LOG_WARNING(ZRender,
+                    "nanite: GPU path not taken -- {} (use_gpu={} rhi={} instances={} clusters={} spirv_bytes={})",
+                    reason,
+                    config.use_gpu_culling ? 1 : 0,
+                    m_Rhi != nullptr ? 1 : 0,
+                    m_Instances.size(),
+                    m_SceneGPUData.clusters.size(),
+                    Z::Shader::NANITE_CLUSTER_CULL_COMP.size());
+    };
+
     if (m_Rhi == nullptr)
     {
+        diag("rhi is null");
         return false;
     }
 
     NaniteBuildSceneGPUData(m_Instances, m_ClusterManager, m_SceneGPUData);
     if (m_SceneGPUData.empty())
     {
+        diag("scene GPU data is empty (no clusters were built)");
         return false;
     }
 
@@ -1053,6 +1084,7 @@ bool NaniteRenderer::PrepareGPUData(const std::shared_ptr<RenderCamera>& camera,
     const uint32_t old_cluster_capacity = m_GPU.cluster_capacity;
     if (!EnsureGPUResources(cluster_count, instance_count, position_count, index_count))
     {
+        diag("GPU buffers could not be allocated");
         return false;
     }
 
@@ -1075,6 +1107,9 @@ bool NaniteRenderer::PrepareGPUData(const std::shared_ptr<RenderCamera>& camera,
 
     if (!EnsureComputePipeline())
     {
+        // EnsureComputePipeline 自己已经打了原因（shader 建不出 / 管线建不出），
+        // 这里只补一句"到这一步才失败"，把前面三种可能排除掉。
+        diag("compute pipeline unavailable (see the log line right above)");
         return false;
     }
 
@@ -1158,6 +1193,16 @@ void NaniteRenderer::DispatchClusterCulling(const std::shared_ptr<RenderCamera>&
     // local_size_x = 64，group 数向上取整。
     const uint32_t group_count = (cluster_count + 63u) / 64u;
     m_Rhi->CmdDispatch(command_buffer, group_count, 1, 1);
+
+    if (!m_DispatchDiagLogged)
+    {
+        m_DispatchDiagLogged = true;
+        LOG_INFO(ZRender,
+                 "nanite: dispatched cluster culling (clusters={} groups={} owned_command_buffer={})",
+                 cluster_count,
+                 group_count,
+                 owns_command_buffer ? 1 : 0);
+    }
 
     // 自己开的缓冲就得自己收尾：EndSingleTimeCommands 的契约是"提交并等它跑完"
     // （Vulkan 是 vkQueueWaitIdle，DX12 是 Signal + WaitForFences，Metal 之前漏了

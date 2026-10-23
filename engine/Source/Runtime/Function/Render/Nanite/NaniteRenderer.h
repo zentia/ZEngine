@@ -233,6 +233,10 @@ public:
     const NaniteGPUResources& GetGPUResources() const { return m_GPU; }
     const NaniteSceneGPUData& GetSceneGPUData() const { return m_SceneGPUData; }
 
+    // GPU 路径到底成没成（心跳探针用）。它**不报任何错**地退化到 CPU，所以必须能
+    // 被读出来，否则"GPU 剔除上线了没有"在真机上无法证伪。
+    bool IsGPUComputeReady() const { return m_GPU.compute_ready; }
+
     // 把当前打包好的数据按给定的相机参数填一份 NaniteCullConstants。
     // 非 const：视锥平面要问 NaniteCullingSystem（它的方法不是 const 的）。
     NaniteCullConstants BuildCullConstants(const std::shared_ptr<RenderCamera>& camera,
@@ -274,6 +278,13 @@ private:
     // GPU 资源（真实的 RHI 句柄，不再是 void* 占位）
     NaniteGPUResources m_GPU;
     NaniteSceneGPUData m_SceneGPUData;
+
+    // GPU 路径的一次性诊断（阶段 59）：它静默退化、不报任何错，所以"卡在哪一步"
+    // 只能靠这个 flag + 一条日志说清楚。只打一次，否则每帧刷屏。
+    bool m_GpuDiagLogged {false};
+    // "管线建成了"不等于"真的发了 dispatch" —— 这是"历史空桩"最爱藏的地方，所以
+    // dispatch 自己也要有一条一次性确认。
+    bool m_DispatchDiagLogged {false};
 
     // SetRasterTargetSize 设过的离屏 target 尺寸（0 = 没设，走 swapchain extent）
     uint32_t m_RasterTargetWidth {0};

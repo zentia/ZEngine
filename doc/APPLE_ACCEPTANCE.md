@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 242 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18）；Nanite 的每帧推进必须在**四条 Tick 路径上都存在**（§3.21） |
+| `AppleSceneBlitSmokeTest` | 248 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18）；Nanite 的每帧推进必须在**四条 Tick 路径上都存在**（§3.21）；GPU 路径的每一步都要能被证伪，心跳带 `ngpu=`（§3.22） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 
@@ -868,14 +868,43 @@ DX12 那条路上写了一份，后来加别的 Tick 路径时没人想起它。
 拿 `delta_time` 把形参补成了 `Tick(float delta_time)` ⇒ 整段契约假红。改成只匹配到
 `(float` 为止 —— 形参有没有名字不影响语义，钉死右括号会让一次无关改名把整段打成红。
 
-**下一个洞（已定位，未修）**：Nanite 现在在真机上**跑的是 CPU 路径**，GPU 那一半仍然没落地，
-两层都没通：
-1. `NaniteCullingSystem::CullInstancesGPU()` 是 `// TODO: 实现GPU裁剪`，函数体只有
-   `return CullInstancesCPU(...)` ⇒ `r.Nanite.GPU=1` 也只是走 CPU 实例裁剪。
-2. 真机日志里没有阶段 57 加的那条 `nanite: cluster-cull compute pipeline ready`，说明
-   `PrepareGPUData()` 早退了（`m_Rhi` 为空 / `m_SceneGPUData.empty()` / 内置 SPIR-V blob
-   在运行时没注册 —— 冒烟测试用的是测试自带的 `ZENGINE_NANITE_TEST_HAS_COMP_SPIRV`，跟运行时
-   的 `Z::Shader::NANITE_CLUSTER_CULL_COMP` 不是同一份）。要证伪得再下一轮探针。
+### 3.22 GPU 那一半也已落地（并纠正一次自己的误判）
+
+§3.21 结尾我写过"GPU 那一半仍然没落地，两层都没通"。**那条结论是错的**，已在下面纠正 ——
+把错误结论连同它怎么来的都留着，因为"我是怎么误判的"本身就是这一节的价值。
+
+**真实情况**：阶段 58 一修完帧循环，GPU 路径当场就通了。真机日志（2026-10-23 09:42:16）：
+
+```
+nanite: cluster-cull compute pipeline ready -- GPU cluster culling is live
+nanite: dispatched cluster culling (clusters=871 groups=14 owned_command_buffer=0)
+```
+
+`owned_command_buffer=0` 是关键：它用的是**帧命令缓冲**，不是 `BeginSingleTimeCommands`
+那条"自己开、自己提交并等待"的兜底路 —— 也就是说真机帧循环里 Nanite 的 GPU 剔除
+真的在跑，而不是只在冒烟测试的 headless 环境里跑。心跳则是
+`nanite=(has=1 inst=31 batches=14 vis=1 ngpu=1)`。
+
+**误判是怎么来的（两条，都值得记住）**：
+1. **bash `grep -i "a\|b"` 在这台机器上是假阴性**（本文件 §构建/验证 已经记过一次，这次又踩）：
+   我 grep 昨天的日志找 `cluster-cull`，什么都没匹配到，就当它不存在。
+2. **BqLog 按天 rotate**：那次真机跑在 21:38（10-22），而我在第二天 09:37 去查 ——
+   新日志已经切到 `engine_20261023_1.log`，我 grep 的仍是 `engine_20261022_2.log`。
+   两个错误叠加 ⇒ "明明有，却查出来没有"。
+
+**顺带加的三件东西**（都是为了让下一次退化不再静默）：
+- `NaniteRenderer::IsGPUComputeReady()` —— 心跳的 `ngpu=`。Nanite 的 GPU 路径是**静默**
+  退化到 CPU 的：`inst` / `batches` 照常产出，画面看不出差别，只有这一个数能分辨这一帧的
+  集群裁决发生在 compute kernel 里还是 CPU 上。
+- `PrepareGPUData()` 五个出口各一条一次性诊断（`m_GpuDiagLogged`），外加
+  `r.Nanite.GPU=0` 那一条 —— 那个出口最安静，因为开关关掉时 `PrepareGPUData` 根本不会被调用。
+- `DispatchClusterCulling()` 的一条一次性确认。"管线建成了"不等于"真的发了 dispatch"，
+  这是"历史空桩"最爱藏的地方，所以两边都要有日志。
+
+**关于 `CullInstancesGPU()` 那个 TODO**：它不是 bug。`NaniteCullingSystem::CullInstancesGPU()`
+的函数体确实只有 `return CullInstancesCPU(...)`，但它的契约是"返回**实例级**结果给 CPU 组装
+`m_RenderBatches`"—— 逐集群的裁决本来就在 kernel 里（`DispatchClusterCulling`），而 GPU 的
+结果按设计留在 GPU 上不读回。真正该改的是那条没写清的 TODO 注释。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

@@ -404,6 +404,7 @@ void RenderSystem::Tick(float delta_time)
             size_t nanite_instances = 0;
             size_t nanite_batches = 0;
             int    nanite_visible = 0;
+            int    nanite_gpu = 0;
             if (m_RenderPipeline != nullptr)
             {
                 if (NaniteRenderPass* nanite_pass = m_RenderPipeline->GetNanitePass())
@@ -412,6 +413,10 @@ void RenderSystem::Tick(float delta_time)
                     nanite_instances = nanite_pass->getNaniteRenderer()->GetInstances().size();
                     nanite_batches = nanite_pass->GetRenderBatches().size();
                     nanite_visible = nanite_pass->hasVisibleClusters() ? 1 : 0;
+                    // ngpu（阶段 59）：Nanite 的 GPU 路径是**静默**退化到 CPU 的，
+                    // inst/batches 全都照常产出 —— 只有这一个数能分辨这一帧的集群
+                    // 裁决到底发生在 compute kernel 里还是 CPU 上。
+                    nanite_gpu = nanite_pass->getNaniteRenderer()->IsGPUComputeReady() ? 1 : 0;
                 }
             }
             if (m_RenderScene != nullptr)
@@ -457,7 +462,7 @@ void RenderSystem::Tick(float delta_time)
                      "rp2_tonemapped={} swapchain={}x{} "
                      "game_cam=({},{},{}) fov={} main_cam_valid={} main_cam=({},{},{}) cam_sync={} "
                      "dir_light=({},{},{}) dir_color=({},{},{}) ambient=({},{},{}) plights={} gos={} lcmp={} "
-                     "nanite=(has={} inst={} batches={} vis={}) "
+                     "nanite=(has={} inst={} batches={} vis={} ngpu={}) "
                      "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
@@ -481,6 +486,7 @@ void RenderSystem::Tick(float delta_time)
                      nanite_instances,
                      nanite_batches,
                      nanite_visible,
+                     nanite_gpu,
                      static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
                      static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
                      sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,
