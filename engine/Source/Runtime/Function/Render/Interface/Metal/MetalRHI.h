@@ -43,6 +43,7 @@ public:
     // RHI interface implementation
     virtual bool IsPointLightShadowEnabled() override;
     virtual bool IsDirectionalLightShadowEnabled() override;
+    virtual bool IsDirectionalLightCsmSupported() override;
     virtual void NotifyWindowFocusGained() override;
 
     // Allocate and create

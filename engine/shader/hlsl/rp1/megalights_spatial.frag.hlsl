@@ -14,7 +14,7 @@ TextureCube irradiance_map : register(t4);
 SamplerState irradiance_sampler : register(s4);
 TextureCube specular_map : register(t5);
 SamplerState specular_sampler : register(s5);
-Texture2D directional_light_shadow : register(t7);
+Texture2DArray directional_light_shadow : register(t7);
 SamplerState directional_shadow_sampler : register(s7);
 Texture2D ml_direct : register(t11);
 SamplerState ml_direct_sampler : register(s11);

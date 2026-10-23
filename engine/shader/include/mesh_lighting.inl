@@ -105,12 +105,16 @@ highp vec3 Libl = (kD * diffuse + specular);
     {
         highp float shadow;
         {
-            highp vec4 position_clip = directional_light_proj_view * vec4(in_world_position, 1.0);
+            // CSM：先按视图深度选级，再用**那一级**的 light proj-view 投影。
+            // 只有一级时（count == 1）索引恒为 0，结果与改之前逐字节一致。
+            highp int cascade = z_select_shadow_cascade(in_world_position);
+
+            highp vec4 position_clip = directional_light_proj_view_cascades[cascade] * vec4(in_world_position, 1.0);
             highp vec3 position_ndc  = position_clip.xyz / position_clip.w;
 
             highp vec2 uv = ndcxy_to_uv(position_ndc.xy);
 
-            highp float closest_depth = texture(directional_light_shadow, uv).r + 0.000075;
+            highp float closest_depth = texture(directional_light_shadow, vec3(uv, float(cascade))).r + 0.000075;
             highp float current_depth = position_ndc.z;
 
             shadow = (closest_depth >= current_depth) ? 1.0f : -1.0f;

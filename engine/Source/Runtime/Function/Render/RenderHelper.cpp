@@ -1,7 +1,12 @@
 #include "Runtime/Function/Render/RenderHelper.h"
 
 #include "Runtime/Function/Render/RenderCamera.h"
+#include "Runtime/Function/Render/RenderCommon.h"
 #include "Runtime/Function/Render/RenderScene.h"
+
+#include <cfloat>
+#include <cmath>
+#include <limits>
 
 ClusterFrustum CreateClusterFrustumFromMatrix(Matrix4x4 mat,
                                               float x_left,
@@ -258,6 +263,185 @@ bool BoxIntersectsWithSphere(BoundingBox const& b, BoundingSphere const& s)
     return true;
 }
 
+// 全场景包围盒（世界空间）。CSM 一条路径要建 4 次光空间，如果每次都扫一遍全部
+// 实体就是 4N —— 提出来只算一次。
+static BoundingBox ComputeSceneBoundingBox(RenderScene& scene)
+{
+    BoundingBox scene_bounding_box;
+    scene_bounding_box.min_bound = Vector3(FLT_MAX, FLT_MAX, FLT_MAX);
+    scene_bounding_box.max_bound = Vector3(FLT_MIN, FLT_MIN, FLT_MIN);
+
+    for (const RenderEntity& entity : scene.m_RenderEntities)
+    {
+        BoundingBox mesh_asset_bounding_box {entity.m_BoundingBox.getMinCorner(),
+                                             entity.m_BoundingBox.getMaxCorner()};
+
+        BoundingBox mesh_bounding_box_world = BoundingBoxTransform(mesh_asset_bounding_box, entity.m_ModelMatrix);
+        scene_bounding_box.Merge(mesh_bounding_box_world);
+    }
+
+    return scene_bounding_box;
+}
+
+// 把"相机视锥（或其中一段）在世界空间的包围盒"变成方向光的 正交投影 * 视图。
+//
+// CSM 和原来那张单张 shadow map 共用这一半：区别只在于传进来的包围盒是整个视锥，
+// 还是被切出来的**某一段**。抽出来就是为了让两条路走**同一份**光空间构建逻辑 ——
+// 手抄两份迟早会漂，本仓库已经为这种事付出过很多次代价。
+static Matrix4x4 BuildDirectionalLightProjViewFromFrustum(RenderScene&       scene,
+                                                          const BoundingBox& frustum_bounding_box,
+                                                          const BoundingBox& scene_bounding_box)
+{
+    // CascadedShadowMaps11 / ComputeNearAndFar
+    Matrix4x4 light_view;
+    Matrix4x4 light_proj;
+    {
+        Vector3 box_center((frustum_bounding_box.max_bound.x + frustum_bounding_box.min_bound.x) * 0.5,
+                           (frustum_bounding_box.max_bound.y + frustum_bounding_box.min_bound.y) * 0.5,
+                           (frustum_bounding_box.max_bound.z + frustum_bounding_box.min_bound.z));
+        Vector3 box_extents((frustum_bounding_box.max_bound.x - frustum_bounding_box.min_bound.x) * 0.5,
+                            (frustum_bounding_box.max_bound.y - frustum_bounding_box.min_bound.y) * 0.5,
+                            (frustum_bounding_box.max_bound.z - frustum_bounding_box.min_bound.z) * 0.5);
+
+        Vector3 eye = box_center + scene.m_DirectionalLight.m_Direction * box_extents.length();
+        Vector3 center = box_center;
+        light_view = Math::MakeLookAtMatrix(eye, center, Vector3(0.0, 0.0, 1.0));
+
+        BoundingBox frustum_bounding_box_light_view = BoundingBoxTransform(frustum_bounding_box, light_view);
+        BoundingBox scene_bounding_box_light_view = BoundingBoxTransform(scene_bounding_box, light_view);
+        light_proj = Math::MakeOrthographicProjectionMatrix01(
+            std::max(frustum_bounding_box_light_view.min_bound.x, scene_bounding_box_light_view.min_bound.x),
+            std::min(frustum_bounding_box_light_view.max_bound.x, scene_bounding_box_light_view.max_bound.x),
+            std::max(frustum_bounding_box_light_view.min_bound.y, scene_bounding_box_light_view.min_bound.y),
+            std::min(frustum_bounding_box_light_view.max_bound.y, scene_bounding_box_light_view.max_bound.y),
+            -scene_bounding_box_light_view.max_bound
+                 .z,  // the objects which are nearer than the frustum bounding box may caster shadow as well
+            -std::max(frustum_bounding_box_light_view.min_bound.z, scene_bounding_box_light_view.min_bound.z));
+    }
+
+    return (light_proj * light_view);
+}
+
+uint32_t CalculateDirectionalLightCascadeCameras(RenderScene& scene,
+                                                 RenderCamera& camera,
+                                                 float         split_lambda,
+                                                 Matrix4x4*    out_light_proj_view,
+                                                 float*        out_split_view_depth,
+                                                 uint32_t      max_cascade_count)
+{
+    if (out_light_proj_view == nullptr || max_cascade_count == 0)
+    {
+        return 0;
+    }
+
+    auto clampf = [](float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); };
+    auto lerp3 = [](const Vector3& a, const Vector3& b, float t)
+    {
+        return Vector3(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t);
+    };
+
+    const Matrix4x4 inverse_proj_view = (camera.GetPersProjMatrix() * camera.GetViewMatrix()).inverse();
+    const Vector3   eye_position      = camera.position();
+    const Vector3   eye_forward       = camera.forward();
+    const BoundingBox scene_bounding_box = ComputeSceneBoundingBox(scene);
+
+    // 本工程的投影矩阵是 01 深度：NDC z=0 是近平面、z=1 是远平面。
+    const Vector3 k_ndc_near[4] = {Vector3(-1.0f, -1.0f, 0.0f),
+                                   Vector3(1.0f, -1.0f, 0.0f),
+                                   Vector3(1.0f, 1.0f, 0.0f),
+                                   Vector3(-1.0f, 1.0f, 0.0f)};
+    const Vector3 k_ndc_far[4] = {Vector3(-1.0f, -1.0f, 1.0f),
+                                  Vector3(1.0f, -1.0f, 1.0f),
+                                  Vector3(1.0f, 1.0f, 1.0f),
+                                  Vector3(-1.0f, 1.0f, 1.0f)};
+
+    auto unproject = [&inverse_proj_view](const Vector3& ndc)
+    {
+        const Vector4 p = inverse_proj_view * Vector4(ndc.x, ndc.y, ndc.z, 1.0);
+        return Vector3(p.x / p.w, p.y / p.w, p.z / p.w);
+    };
+    auto view_depth = [&eye_position, &eye_forward](const Vector3& p)
+    {
+        const Vector3 d = p - eye_position;
+        return d.x * eye_forward.x + d.y * eye_forward.y + d.z * eye_forward.z;
+    };
+
+    Vector3 near_world[4];
+    Vector3 far_world[4];
+    float   depth_near = FLT_MAX;
+    float   depth_far  = -FLT_MAX;
+    for (int i = 0; i < 4; ++i)
+    {
+        near_world[i] = unproject(k_ndc_near[i]);
+        far_world[i]  = unproject(k_ndc_far[i]);
+        depth_near    = std::min(depth_near, view_depth(near_world[i]));
+        depth_far     = std::max(depth_far, view_depth(far_world[i]));
+    }
+
+    // 近平面可能就在相机上（正交相机 / near=0），log 分布会因为除零炸掉。
+    depth_near = std::max(depth_near, 0.05f);
+    if (!(depth_far > depth_near))
+    {
+        // 退化：拿不到有效深度范围就退回单张 —— 一级 = 整个视锥，跟老行为一致。
+        out_light_proj_view[0] = CalculateDirectionalLightCamera(scene, camera);
+        if (out_split_view_depth != nullptr)
+        {
+            // 全填 +inf：只有一级时不管片元多远，"越过的远平面数"都必须是 0。
+            // 留一个真实值给 [0] 反而会出现"深度超过它 -> 选到第 1 级"这种越界。
+            for (uint32_t i = 0; i < max_cascade_count; ++i)
+            {
+                out_split_view_depth[i] = std::numeric_limits<float>::infinity();
+            }
+        }
+        return 1;
+    }
+
+    const uint32_t count  = std::min(max_cascade_count, static_cast<uint32_t>(s_MaxCascadeCount));
+    const float    lambda = clampf(split_lambda, 0.0f, 1.0f);
+
+    // 每一级占 [prev_t, t] 这一段视锥。t 是在**视图空间深度**上取的比例：透视投影
+    // 下视锥的四条棱在世界空间里是直线，所以沿棱做线性插值得到的点与"视图深度线性
+    // 增长"是同一件事 —— 这也是为什么 split 距离可以直接拿去跟片元视图深度比。
+    float prev_t = 0.0f;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const float fraction  = static_cast<float>(i + 1) / static_cast<float>(count);
+        const float log_split = depth_near * std::pow(depth_far / depth_near, fraction);
+        const float lin_split = depth_near + (depth_far - depth_near) * fraction;
+        const float split_depth = lambda * log_split + (1.0f - lambda) * lin_split;
+
+        const float t = clampf((split_depth - depth_near) / (depth_far - depth_near), prev_t, 1.0f);
+
+        BoundingBox cascade_box;
+        cascade_box.min_bound = Vector3(FLT_MAX, FLT_MAX, FLT_MAX);
+        cascade_box.max_bound = Vector3(FLT_MIN, FLT_MIN, FLT_MIN);
+        for (int c = 0; c < 4; ++c)
+        {
+            cascade_box.Merge(lerp3(near_world[c], far_world[c], prev_t));
+            cascade_box.Merge(lerp3(near_world[c], far_world[c], t));
+        }
+
+        out_light_proj_view[i] = BuildDirectionalLightProjViewFromFrustum(scene, cascade_box, scene_bounding_box);
+        if (out_split_view_depth != nullptr)
+        {
+            out_split_view_depth[i] = split_depth;
+        }
+        prev_t = t;
+    }
+
+    // 高位补 +inf：级数不足上限时，多出来的槽不能留 0 —— 0 会让"越过的远平面数"
+    // 虚高，片元被选到一个根本没画的级上去。
+    if (out_split_view_depth != nullptr)
+    {
+        for (uint32_t i = count; i < max_cascade_count; ++i)
+        {
+            out_split_view_depth[i] = std::numeric_limits<float>::infinity();
+        }
+    }
+
+    return count;
+}
+
 Matrix4x4 CalculateDirectionalLightCamera(RenderScene& scene, RenderCamera& camera)
 {
     Matrix4x4 proj_view_matrix;
@@ -299,48 +483,7 @@ Matrix4x4 CalculateDirectionalLightCamera(RenderScene& scene, RenderCamera& came
         }
     }
 
-    BoundingBox scene_bounding_box;
-    {
-        scene_bounding_box.min_bound = Vector3(FLT_MAX, FLT_MAX, FLT_MAX);
-        scene_bounding_box.max_bound = Vector3(FLT_MIN, FLT_MIN, FLT_MIN);
-
-        for (const RenderEntity& entity : scene.m_RenderEntities)
-        {
-            BoundingBox mesh_asset_bounding_box {entity.m_BoundingBox.getMinCorner(),
-                                                 entity.m_BoundingBox.getMaxCorner()};
-
-            BoundingBox mesh_bounding_box_world = BoundingBoxTransform(mesh_asset_bounding_box, entity.m_ModelMatrix);
-            scene_bounding_box.Merge(mesh_bounding_box_world);
-        }
-    }
-
-    // CascadedShadowMaps11 / ComputeNearAndFar
-    Matrix4x4 light_view;
-    Matrix4x4 light_proj;
-    {
-        Vector3 box_center((frustum_bounding_box.max_bound.x + frustum_bounding_box.min_bound.x) * 0.5,
-                           (frustum_bounding_box.max_bound.y + frustum_bounding_box.min_bound.y) * 0.5,
-                           (frustum_bounding_box.max_bound.z + frustum_bounding_box.min_bound.z));
-        Vector3 box_extents((frustum_bounding_box.max_bound.x - frustum_bounding_box.min_bound.x) * 0.5,
-                            (frustum_bounding_box.max_bound.y - frustum_bounding_box.min_bound.y) * 0.5,
-                            (frustum_bounding_box.max_bound.z - frustum_bounding_box.min_bound.z) * 0.5);
-
-        Vector3 eye = box_center + scene.m_DirectionalLight.m_Direction * box_extents.length();
-        Vector3 center = box_center;
-        light_view = Math::MakeLookAtMatrix(eye, center, Vector3(0.0, 0.0, 1.0));
-
-        BoundingBox frustum_bounding_box_light_view = BoundingBoxTransform(frustum_bounding_box, light_view);
-        BoundingBox scene_bounding_box_light_view = BoundingBoxTransform(scene_bounding_box, light_view);
-        light_proj = Math::MakeOrthographicProjectionMatrix01(
-            std::max(frustum_bounding_box_light_view.min_bound.x, scene_bounding_box_light_view.min_bound.x),
-            std::min(frustum_bounding_box_light_view.max_bound.x, scene_bounding_box_light_view.max_bound.x),
-            std::max(frustum_bounding_box_light_view.min_bound.y, scene_bounding_box_light_view.min_bound.y),
-            std::min(frustum_bounding_box_light_view.max_bound.y, scene_bounding_box_light_view.max_bound.y),
-            -scene_bounding_box_light_view.max_bound
-                 .z,  // the objects which are nearer than the frustum bounding box may caster shadow as well
-            -std::max(frustum_bounding_box_light_view.min_bound.z, scene_bounding_box_light_view.min_bound.z));
-    }
-
-    Matrix4x4 light_proj_view = (light_proj * light_view);
-    return light_proj_view;
+    // CascadedShadowMaps11 / ComputeNearAndFar —— 光空间构建逻辑收敛到
+    // BuildDirectionalLightProjViewFromFrustum()，CSM 的每一级也走同一个函数。
+    return BuildDirectionalLightProjViewFromFrustum(scene, frustum_bounding_box, ComputeSceneBoundingBox(scene));
 }

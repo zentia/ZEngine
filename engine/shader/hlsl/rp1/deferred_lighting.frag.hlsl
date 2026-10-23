@@ -21,7 +21,7 @@ TextureCube specular_map : register(t5);
 SamplerState specular_sampler : register(s5);
 Texture2DArray point_light_shadow : register(t6);
 SamplerState point_shadow_sampler : register(s6);
-Texture2D directional_light_shadow : register(t7);
+Texture2DArray directional_light_shadow : register(t7);
 SamplerState directional_shadow_sampler : register(s7);
 
 Texture2D in_gbuffer_a : register(t0, space1);

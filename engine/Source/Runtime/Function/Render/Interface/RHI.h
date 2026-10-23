@@ -193,6 +193,16 @@ public:
     // 都接好了，却一个物体都不画、也不报任何错。方向光改问这个独立的谓词，后端
     // 就能按技术单独表态；默认实现让其余后端的行为跟以前完全一致。
     virtual bool IsDirectionalLightShadowEnabled() { return IsPointLightShadowEnabled(); }
+
+    // CSM（级联）要求"把一个 render pass 渲染到 array texture 的**指定层**"。
+    // Metal 走 RHIFramebufferCreateInfo::array_slice（RenderPassAttachmentDescriptor
+    // 的 slice）；Vulkan 得靠 geometry shader 写 gl_Layer，本工程没有 GS，所以默认
+    // 答 false。
+    //
+    // 答 false 的后端退回单级（count = 1），与加 CSM 之前逐字节一致。这不是"少个
+    // 特性"，而是避免"4 级全画到第 0 层"这种**静默错图** —— 那种情况下不报错、
+    // 不崩、只是阴影看起来是最后一级的。
+    virtual bool IsDirectionalLightCsmSupported() { return false; }
     // allocate and create
     virtual bool AllocateCommandBuffers(const RHICommandBufferAllocateInfo* pAllocateInfo,
                                         RHICommandBuffer*& pCommandBuffers) = 0;

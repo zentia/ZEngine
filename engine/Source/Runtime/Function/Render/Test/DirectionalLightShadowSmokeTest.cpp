@@ -32,6 +32,8 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -139,6 +141,45 @@ int CountCodeLines(const std::string& src, const std::string& needle)
     }
     return count;
 }
+
+/// 取出"声明了 `decl` 的那一行"里最后一段连续数字。
+///
+/// 用来钉 C++ 与 shader 侧的级联数上限必须相等：两边是两份手抄的常量，任何一边
+/// 改了另一边没改，per-frame 结构里那个数组的长度就和 shader 里声明的不一致 ——
+/// GPU 读到乱数据，而且不报任何错。
+int TrailingIntOfDeclaration(const std::string& src, const std::string& decl)
+{
+    const size_t at = CodeLineFind(src, decl);
+    if (at == std::string::npos)
+    {
+        return -1;
+    }
+    size_t eol = src.find('\n', at);
+    if (eol == std::string::npos)
+    {
+        eol = src.size();
+    }
+    const std::string line = src.substr(at, eol - at);
+
+    int    value = -1;
+    size_t i     = 0;
+    while (i < line.size())
+    {
+        if (line[i] < '0' || line[i] > '9')
+        {
+            ++i;
+            continue;
+        }
+        size_t j = i;
+        while (j < line.size() && line[j] >= '0' && line[j] <= '9')
+        {
+            ++j;
+        }
+        value = std::stoi(line.substr(i, j - i));
+        i     = j;
+    }
+    return value;
+}
 }  // namespace
 
 int main()
@@ -151,6 +192,31 @@ int main()
     const std::string scene_h      = ReadFile(ZENGINE_RENDER_SCENE_H);
     const std::string scene_cpp    = ReadFile(ZENGINE_RENDER_SCENE_CPP);
 
+    const std::string common_h  = ReadFile(ZENGINE_RENDER_COMMON_H);
+    const std::string helper_cp = ReadFile(ZENGINE_RENDER_HELPER_CPP);
+    const std::string res_h     = ReadFile(ZENGINE_RENDER_RESOURCE_H);
+    const std::string perfrm_cp = ReadFile(ZENGINE_RENDER_PERFRAME_CPP);
+
+    const std::string constants_h = ReadFile(ZENGINE_SHADER_CONSTANTS_H);
+    const std::string struct_h    = ReadFile(ZENGINE_SHADER_STRUCTURES_H);
+    const std::string lit_h       = ReadFile(ZENGINE_SHADER_MESH_LIGHTING_H);
+    const std::string lit_inl     = ReadFile(ZENGINE_SHADER_MESH_LIGHTING_INL);
+    const std::string compose_inl = ReadFile(ZENGINE_SHADER_MEGALIGHTS_COMPOSE_INL);
+    const std::string hlsli       = ReadFile(ZENGINE_SHADER_SCENE_LIGHTING_STRUCTS_HLSLI);
+
+    const std::vector<std::string> frag_files = {
+        ReadFile(ZENGINE_SHADER_MESH_FRAG),
+        ReadFile(ZENGINE_SHADER_DEFERRED_LIGHTING_FRAG),
+        ReadFile(ZENGINE_SHADER_MEGALIGHTS_DEFERRED_FRAG),
+        ReadFile(ZENGINE_SHADER_MEGALIGHTS_SPATIAL_FRAG),
+    };
+    const std::vector<std::string> frag_names = {
+        "mesh.frag",
+        "deferred_lighting.frag",
+        "megalights_deferred.frag",
+        "megalights_spatial.frag",
+    };
+
     Check(!rhi_h.empty(), "RHI.h 读得到");
     Check(!metal_h.empty(), "MetalRHI.h 读得到");
     Check(!metal_mm.empty(), "MetalRHI.mm 读得到");
@@ -158,6 +224,20 @@ int main()
     Check(!render_cpp.empty(), "RenderSystem.cpp 读得到");
     Check(!scene_h.empty(), "RenderScene.h 读得到");
     Check(!scene_cpp.empty(), "RenderScene.cpp 读得到");
+    Check(!common_h.empty(), "RenderCommon.h 读得到");
+    Check(!helper_cp.empty(), "RenderHelper.cpp 读得到");
+    Check(!res_h.empty(), "RenderResource.h 读得到");
+    Check(!perfrm_cp.empty(), "RenderResourcePerFrame.cpp 读得到");
+    Check(!constants_h.empty(), "shader/include/constants.h 读得到");
+    Check(!struct_h.empty(), "shader/include/structures.h 读得到");
+    Check(!lit_h.empty(), "shader/include/mesh_lighting.h 读得到");
+    Check(!lit_inl.empty(), "shader/include/mesh_lighting.inl 读得到");
+    Check(!compose_inl.empty(), "shader/include/megalights_compose.inl 读得到");
+    Check(!hlsli.empty(), "scene_lighting_structs.hlsli 读得到");
+    for (size_t i = 0; i < frag_files.size(); ++i)
+    {
+        Check(!frag_files[i].empty(), "shader/glsl/" + frag_names[i] + " 读得到");
+    }
 
     // ---- 1. 方向光有自己独立的阴影开关 -------------------------------------
     //
@@ -246,6 +326,156 @@ int main()
           "RenderScene 声明了方向光可见节点 getter");
     Check(CodeLineMentions(scene_cpp, "RenderScene::GetDirectionalLightVisibleMeshNodes"),
           "RenderScene 实现了方向光可见节点 getter");
+
+    // ---- 7. CSM：三份 per-frame 镜像都要有级联字段 ---------------------------
+    //
+    // 这个 struct 是**手抄三份**的（C++ / GLSL / HLSL），字段长度或顺序差一个字节
+    // 就是 GPU 读到偏移量错位的乱数据，而且不报任何错。四个字段各钉三份 —— 少一份
+    // 就说明有人只改了一边。
+    const std::vector<std::pair<const std::string*, std::string>> mirrors = {
+        {&common_h, "RenderCommon.h"},
+        {&struct_h, "structures.h"},
+        {&hlsli, "scene_lighting_structs.hlsli"},
+    };
+    const std::vector<std::string> csm_fields = {
+        "camera_forward",
+        "directional_light_proj_view_cascades",
+        "directional_light_cascade_split_depth",
+        "directional_light_cascade_count",
+    };
+    for (const auto& [src, name] : mirrors)
+    {
+        for (const std::string& field : csm_fields)
+        {
+            Check(CodeLineMentions(*src, field), name + " 声明了 CSM 字段 " + field);
+        }
+    }
+
+    // 两边的级联数上限必须相等：C++ 数组长度 vs GLSL 数组长度。
+    {
+        const int cpp_max   = TrailingIntOfDeclaration(common_h, "s_MaxCascadeCount =");
+        const int glsl_max  = TrailingIntOfDeclaration(constants_h, "m_max_cascade_count");
+        Check(cpp_max > 0, "RenderCommon.h 里有正的 s_MaxCascadeCount");
+        Check(glsl_max > 0, "constants.h 里有正的 m_max_cascade_count");
+        Check(cpp_max == glsl_max, "C++ 与 GLSL 的级联数上限相等（不一致 = GPU 读到乱数据且不报错）");
+    }
+
+    // ---- 8. 采样侧按级取矩阵、按层取样 --------------------------------------
+    //
+    // 钉"生效那一步"：真的用了 cascades[cascade]，而不是还在用单张那份
+    // directional_light_proj_view（后者是前缀关系，全文 find 会互相污染，所以判据
+    // 必须带上下文 —— `directional_light_proj_view *` 只可能匹配旧的那一写法）。
+    Check(CodeLineMentions(lit_h, "z_select_shadow_cascade"),
+          "mesh_lighting.h 里定义了级联选级函数");
+    for (const auto& [src, name] : std::vector<std::pair<const std::string*, std::string>> {
+             {&lit_inl, "mesh_lighting.inl"},
+             {&compose_inl, "megalights_compose.inl"},
+             {&frag_files[2], "megalights_deferred.frag"}})
+    {
+        Check(CodeLineMentions(*src, "z_select_shadow_cascade("), name + " 采样前先选了级");
+        Check(CodeLineMentions(*src, "directional_light_proj_view_cascades["),
+              name + " 用的是选中那一级的 light proj-view");
+        Check(!CodeLineMentions(*src, "directional_light_proj_view *"),
+              name + " 不再用单张那份 light proj-view 做投影");
+        Check(CodeLineMentions(*src, "vec3(uv, float(cascade))"), name + " 按级取 array 的层");
+    }
+
+    // 四个声明了 binding 7 的 frag 必须全部改成 array。只改一部分的话，没改的那个
+    // 会拿 sampler2D 去绑一张 array 视图 —— 运行时才炸，构建期一片绿。
+    for (size_t i = 0; i < frag_files.size(); ++i)
+    {
+        Check(CodeLineMentions(frag_files[i], "sampler2DArray directional_light_shadow"),
+              "shader/glsl/" + frag_names[i] + " 的 binding 7 声明成 sampler2DArray");
+        Check(!CodeLineMentions(frag_files[i], "sampler2D directional_light_shadow"),
+              "shader/glsl/" + frag_names[i] + " 不再把 binding 7 声明成 sampler2D");
+    }
+
+    // ---- 9. 生成侧：array RT + 每级自己的 framebuffer ------------------------
+    //
+    // Metal 没有 geometry shader，写不了 gl_Layer，"画到哪一层"只能靠 framebuffer
+    // 上的 array_slice。所以这一段里每一个环节都是必需的：attachment 得是 array、
+    // 每一级得有自己的 framebuffer、begin pass 得用那一级的 framebuffer、per-frame
+    // 上传得是那一级的矩阵。缺任何一个，结果都是"4 级画到同一层" —— 不崩、不报错，
+    // 只是远处的阴影糊成一片。
+    Check(CountCodeLines(dir_pass_cpp, "RHI_IMAGE_VIEW_TYPE_2D_ARRAY") == 2,
+          "shadow map 的 color 与 depth 都是 2D array 视图（少一个就是 4 级挤一层）");
+    Check(CodeLineMentions(dir_pass_cpp, "framebuffer_create_info.array_slice = cascade;"),
+          "每一级建 framebuffer 时带上了 array_slice");
+    Check(CodeLineMentions(dir_pass_cpp, "renderpass_begin_info.framebuffer = m_CascadeFramebuffers[cascade_index]"),
+          "begin pass 用的是当前级自己的 framebuffer");
+    Check(!CodeLineMentions(dir_pass_cpp, "renderpass_begin_info.framebuffer = m_Framebuffer.framebuffer"),
+          "begin pass 不再固定用单一 framebuffer（那就是 4 级挤一层）");
+    Check(CodeLineMentions(dir_pass_cpp, "perframe_storage_buffer_object = m_CascadeShadowPerFrame[cascade_index]"),
+          "每一级上传的是自己那份 light proj-view");
+    Check(!CodeLineMentions(dir_pass_cpp, "perframe_storage_buffer_object = m_DirectionalLightShadowPerFrame;"),
+          "per-frame 上传不再固定用单张那份");
+    Check(CodeLineMentions(dir_pass_cpp, "for (uint32_t cascade_index = 0; cascade_index < cascade_count"),
+          "shadow pass 按级循环");
+
+    // per-drawcall 数据（模型矩阵 / joint 矩阵）必须**在级联循环之外**只上传一次：
+    // 各级画的是同一批物体的同样矩阵，放进循环里会把 ring buffer 用量直接 ×4，
+    // 一个带蒙皮的 drawcall 就是 4MB，几个就能吃光一帧配额并且只在 debug 下 assert。
+    {
+        const size_t push_at  = CodeLineFind(dir_pass_cpp, "draw_entries.push_back(entry)");
+        const size_t loop_at  = CodeLineFind(dir_pass_cpp, "for (uint32_t cascade_index = 0");
+        const size_t entry_at = CodeLineFind(dir_pass_cpp, "for (DrawEntry& entry : draw_entries)");
+        Check(push_at != std::string::npos, "per-drawcall 数据被收集进 draw_entries");
+        Check(loop_at != std::string::npos, "级联循环存在");
+        Check(push_at != std::string::npos && loop_at != std::string::npos && push_at < loop_at,
+              "per-drawcall 上传排在级联循环之前（否则 ring buffer 用量 ×4）");
+        Check(entry_at != std::string::npos && entry_at > loop_at, "级联循环里复用的是同一份 draw_entries");
+    }
+
+    // ---- 10. 后端能力查询 + 明确的降级 ---------------------------------------
+    //
+    // 不支持"渲染到 array 指定层"的后端（Vulkan 没有 geometry shader）必须退回单级，
+    // 而不是"4 级全画到第 0 层"。前者是老行为，后者是静默错图。
+    Check(CodeLineMentions(rhi_h, "IsDirectionalLightCsmSupported"), "RHI 基类声明了 CSM 能力查询");
+    Check(CodeLineMentions(metal_h, "IsDirectionalLightCsmSupported"), "MetalRHI 覆盖了 CSM 能力查询");
+    {
+        const size_t impl_at = CodeLineFind(metal_mm, "MetalRHI::IsDirectionalLightCsmSupported");
+        Check(impl_at != std::string::npos, "MetalRHI 有 CSM 能力查询的实现");
+        const std::string ret = FirstReturnLineFrom(metal_mm, impl_at);
+        Check(ret.find("true") != std::string::npos, "Metal 的 CSM 能力查询 return true");
+
+        // 基类默认必须答 false：否则一个没表态的后端会宣称自己支持选层。
+        const size_t base_at = CodeLineFind(rhi_h, "virtual bool IsDirectionalLightCsmSupported()");
+        Check(base_at != std::string::npos, "能定位到基类 CSM 能力查询的声明");
+        const std::string base_line = rhi_h.substr(base_at, rhi_h.find('\n', base_at) - base_at);
+        Check(base_line.find("false") != std::string::npos, "基类 CSM 能力查询默认答 false（未表态的后端不许自称支持）");
+    }
+    Check(CodeLineMentions(scene_cpp, "IsDirectionalLightCsmSupported()"),
+          "RenderScene 按后端能力决定级联数上限");
+    Check(CodeLineMentions(scene_cpp, "requested_cascade_count = 1"),
+          "不支持的后端退回单级（而不是 4 级挤一层）");
+
+    // ---- 11. split 距离的高位不许留 0 -----------------------------------------
+    //
+    // 级数不足上限时多出来的槽如果留 0，"越过的远平面数"会虚高，片元被选到一个根本
+    // 没画过的级上去 —— 那层的初值是清出来的 1.0（= 没有遮挡物），表现是阴影整片消失。
+    Check(CodeLineMentions(helper_cp, "CalculateDirectionalLightCascadeCameras"),
+          "RenderHelper 提供了级联相机计算");
+    Check(CountCodeLines(helper_cp, "std::numeric_limits<float>::infinity()") >= 2,
+          "级联不足时高位 split 距离填 +inf（退化路径 + 正常路径各一处）");
+
+    // ---- 12. camera_forward 真的被发布 ---------------------------------------
+    //
+    // 采样侧靠它把片元位置换算成视图深度。不发布的话默认是 (0,0,-1)，所有片元的
+    // 视图深度都算错，选级全乱 —— 而画面上只是"阴影分界线的位置不对"。
+    Check(CodeLineMentions(perfrm_cp, "camera_forward = camera->forward()"),
+          "per-frame 里发布了相机朝向");
+    Check(CodeLineMentions(res_h, "m_DirectionalLightCascadeProjView"),
+          "RenderResource 上挂了生成侧的级联矩阵");
+    Check(CodeLineMentions(scene_cpp, "m_DirectionalLightCascadeCount = cascade_count"),
+          "RenderScene 发布了生效级数");
+
+    // ---- 13. 心跳里有级数 -----------------------------------------------------
+    //
+    // 上面那几条只能证明"代码长这样"。真机上分辨"4 级真的分了层"和"4 级全画到第 0
+    // 层"的唯一证据是这个数：0 = CPU 侧没跑，1 = 退回了单张，4 = 级联生效。
+    Check(CodeLineMentions(render_cpp, "cascades={}"), "心跳格式串里有 cascades 段");
+    Check(CodeLineMentions(render_cpp, "dir_shadow_cascades"), "心跳实参里有级联数");
+    Check(CodeLineMentions(render_cpp, "m_DirectionalLightCascadeCount"), "心跳的级联数取自发布出来的那份");
 
     // ---- 双向自检 ----------------------------------------------------------
     //

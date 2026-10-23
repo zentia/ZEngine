@@ -429,6 +429,20 @@ void DirectionalLightShadowPass::PreparePassData(std::shared_ptr<RenderResourceB
     {
         m_DirectionalLightShadowPerFrame =
             vulkan_resource->m_DirectionalLightShadowPerFrame;
+
+        // CSM：每一级一份 per-frame（只有 light_proj_view 不同）。先全部拷成
+        // 单张那份当底，再按级覆盖矩阵 —— 级数不足上限时高位那份内容无所谓，
+        // 因为采样侧会 clamp 到 count-1，那些层根本不会被读到。
+        m_CascadeCount = std::min<uint32_t>(
+            std::max<uint32_t>(vulkan_resource->m_DirectionalLightCascadeCount, 1u), s_MaxCascadeCount);
+        for (uint32_t i = 0; i < s_MaxCascadeCount; ++i)
+        {
+            m_CascadeShadowPerFrame[i] = m_DirectionalLightShadowPerFrame;
+        }
+        for (uint32_t i = 0; i < m_CascadeCount; ++i)
+        {
+            m_CascadeShadowPerFrame[i].light_proj_view = vulkan_resource->m_DirectionalLightCascadeProjView[i];
+        }
     }
 }
 void DirectionalLightShadowPass::Draw()
@@ -441,6 +455,10 @@ void DirectionalLightShadowPass::SetupAttachments()
     m_Framebuffer.attachments.resize(2);
 
     // color
+    //
+    // CSM：一层一级。采样侧已经改成 sampler2DArray（见 mesh_lighting.h 里的
+    // z_select_shadow_cascade），所以这里从 2D 改成 2D_ARRAY 是必须的 —— 层数和
+    // s_MaxCascadeCount 必须一致，否则采样会越界到没画的层。
     m_Framebuffer.attachments[0].format = RHI_FORMAT_R32_SFLOAT;
     m_Rhi->CreateImage(s_DirectionalLightShadowMapDimension,
                        s_DirectionalLightShadowMapDimension,
@@ -451,17 +469,20 @@ void DirectionalLightShadowPass::SetupAttachments()
                        m_Framebuffer.attachments[0].image,
                        m_Framebuffer.attachments[0].mem,
                        0,
-                       1,
+                       s_MaxCascadeCount,
                        1);
     m_Rhi->CreateImageView(m_Framebuffer.attachments[0].image,
                            m_Framebuffer.attachments[0].format,
                            RHI_IMAGE_ASPECT_COLOR_BIT,
-                           RHI_IMAGE_VIEW_TYPE_2D,
-                           1,
+                           RHI_IMAGE_VIEW_TYPE_2D_ARRAY,
+                           s_MaxCascadeCount,
                            1,
                            m_Framebuffer.attachments[0].view);
 
     // depth
+    //
+    // 深度也必须成 array：每一级各自 begin/end 一个 render pass，深度 attachment
+    // 的 slice 跟着 framebuffer 走，2D 纹理配 slice>0 在 Metal 上是无效组合。
     m_Framebuffer.attachments[1].format = m_Rhi->GetDepthImageInfo().depth_image_format;
     m_Rhi->CreateImage(s_DirectionalLightShadowMapDimension,
                        s_DirectionalLightShadowMapDimension,
@@ -472,13 +493,13 @@ void DirectionalLightShadowPass::SetupAttachments()
                        m_Framebuffer.attachments[1].image,
                        m_Framebuffer.attachments[1].mem,
                        0,
-                       1,
+                       s_MaxCascadeCount,
                        1);
     m_Rhi->CreateImageView(m_Framebuffer.attachments[1].image,
                            m_Framebuffer.attachments[1].format,
                            RHI_IMAGE_ASPECT_DEPTH_BIT,
-                           RHI_IMAGE_VIEW_TYPE_2D,
-                           1,
+                           RHI_IMAGE_VIEW_TYPE_2D_ARRAY,
+                           s_MaxCascadeCount,
                            1,
                            m_Framebuffer.attachments[1].view);
 }
@@ -552,20 +573,30 @@ void DirectionalLightShadowPass::SetupFramebuffer()
 {
     RHIImageView* attachments[2] = {m_Framebuffer.attachments[0].view, m_Framebuffer.attachments[1].view};
 
-    RHIFramebufferCreateInfo framebuffer_create_info {};
-    framebuffer_create_info.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    framebuffer_create_info.flags = 0U;
-    framebuffer_create_info.renderPass = m_Framebuffer.render_pass;
-    framebuffer_create_info.attachmentCount = (sizeof(attachments) / sizeof(attachments[0]));
-    framebuffer_create_info.pAttachments = attachments;
-    framebuffer_create_info.width = s_DirectionalLightShadowMapDimension;
-    framebuffer_create_info.height = s_DirectionalLightShadowMapDimension;
-    framebuffer_create_info.layers = 1;
-
-    if (RHI_SUCCESS != m_Rhi->CreateFramebuffer(&framebuffer_create_info, m_Framebuffer.framebuffer))
+    // CSM：一级一个 framebuffer，差别只在 array_slice（画到 array 的第几层）。
+    // `layers` 保持 1 —— 那是 Vulkan 语义下"这个 framebuffer 覆盖几层"，不是
+    // "画到第几层"；选层在 Metal 上只能靠 array_slice（没有 geometry shader 写
+    // gl_Layer），所以两个字段各管一件事，别混。
+    for (uint32_t cascade = 0; cascade < s_MaxCascadeCount; ++cascade)
     {
-        throw std::runtime_error("create directional light shadow framebuffer");
+        RHIFramebufferCreateInfo framebuffer_create_info {};
+        framebuffer_create_info.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebuffer_create_info.flags = 0U;
+        framebuffer_create_info.renderPass = m_Framebuffer.render_pass;
+        framebuffer_create_info.attachmentCount = (sizeof(attachments) / sizeof(attachments[0]));
+        framebuffer_create_info.pAttachments = attachments;
+        framebuffer_create_info.width = s_DirectionalLightShadowMapDimension;
+        framebuffer_create_info.height = s_DirectionalLightShadowMapDimension;
+        framebuffer_create_info.layers = 1;
+        framebuffer_create_info.array_slice = cascade;
+
+        if (RHI_SUCCESS != m_Rhi->CreateFramebuffer(&framebuffer_create_info, m_CascadeFramebuffers[cascade]))
+        {
+            throw std::runtime_error("create directional light shadow framebuffer");
+        }
     }
+
+    m_Framebuffer.framebuffer = m_CascadeFramebuffers[0];
 }
 void DirectionalLightShadowPass::SetupDescriptorSetLayout()
 {
@@ -928,132 +959,137 @@ void DirectionalLightShadowPass::DrawModel()
         }
     }
 
-    // Directional Light Shadow begin pass
-    {
-        RHIRenderPassBeginInfo renderpass_begin_info {};
-        renderpass_begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderpass_begin_info.renderPass = m_Framebuffer.render_pass;
-        renderpass_begin_info.framebuffer = m_Framebuffer.framebuffer;
-        renderpass_begin_info.renderArea.offset = {0, 0};
-        renderpass_begin_info.renderArea.extent = {s_DirectionalLightShadowMapDimension,
-                                                   s_DirectionalLightShadowMapDimension};
-
-        RHIClearValue clear_values[2];
-        clear_values[0].color = {1.0f};
-        clear_values[1].depthStencil = {1.0f, 0};
-        renderpass_begin_info.clearValueCount = (sizeof(clear_values) / sizeof(clear_values[0]));
-        renderpass_begin_info.pClearValues = clear_values;
-
-        m_Rhi->CmdBeginRenderPassPFN(
-            m_Rhi->GetCurrentCommandBuffer(), &renderpass_begin_info, RHI_SUBPASS_CONTENTS_INLINE);
-
-        float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-        m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Directional Light Shadow", color);
-    }
+    // CSM：一级一段 render pass。每级都单独 begin/end 一次，是因为 Metal 上"画到
+    // array 的第几层"只能靠 framebuffer 的 array_slice 指定 —— 没有 geometry
+    // shader，写不了 gl_Layer。所以级数 = render pass 次数 = 绘制遍数。
+    const uint32_t cascade_count = std::min<uint32_t>(std::max<uint32_t>(m_CascadeCount, 1u),
+                                                      static_cast<uint32_t>(s_MaxCascadeCount));
 
     // Mesh (DX12: shadow PSO exists but per-draw descriptor/bind path is still fragile;
     // clear-only until validated -- mirrors PointLightShadowPass DX12 policy.)
     //
-    // 阶段 69：这里以前问的是 `IsPointLightShadowEnabled()`。那是历史遗留名 —— 它
-    // 在**所有**后端上实际挡的是"mesh shadow map 绘制"整体（方向光 + 点光），见
-    // DX12 override 上的注释。Metal 只能共用这一个开关并答 false，于是方向光
-    // shadow map 每帧只 clear、一个物体都不画，**且不报任何错**：pass 建了、4096²
-    // 的 attachment 建了、draw list 里每帧都排了 `DirectionalShadow`、主相机也通过
+    // 阶段 69：这里以前问的是 IsPointLightShadowEnabled()。那是历史遗留名 —— 它在
+    // **所有**后端上实际挡的是"mesh shadow map 绘制"整体（方向光 + 点光），见 DX12
+    // override 上的注释。Metal 只能共用这一个开关并答 false，于是方向光 shadow map
+    // 每帧只 clear、一个物体都不画，**且不报任何错**：pass 建了、4096 的 attachment
+    // 建了、draw list 里每帧都排了 DirectionalShadow、主相机也通过
     // SetShadowImageViews() 拿到了 view，整条路只差这一条判据。方向光改问独立的
-    // `IsDirectionalLightShadowEnabled()`，点光维持旧行为不动。
-    if (m_Rhi->getGraphicsAPI() != GraphicsAPI::DirectX12 && m_Rhi->IsDirectionalLightShadowEnabled() &&
-        EnsureGlobalRenderResourceReady())
+    // IsDirectionalLightShadowEnabled()，点光维持旧行为不动。
+    const bool draw_mesh = m_Rhi->getGraphicsAPI() != GraphicsAPI::DirectX12 &&
+                           m_Rhi->IsDirectionalLightShadowEnabled() && EnsureGlobalRenderResourceReady();
+
+    // -------------------------------------------------------------------------
+    // per-drawcall 数据（模型矩阵 / joint 矩阵）只上传**一次**，各级共用同一份
+    // ring buffer 偏移 —— 同一批物体在每一级里画的是同样的矩阵，跟级号无关。
+    //
+    // 放进级联循环里上传会把 ring buffer 用量直接 ×4：一个带蒙皮的 drawcall 光
+    // joint 矩阵就是 4MB（s_MeshVertexBlendingMaxJointCount × 实例数），几个就能
+    // 吃光一帧的配额（128MB / frames_in_flight），而且没有任何报错，只在 debug 下
+    // assert 崩、release 下静默写坏别的 pass 的数据。
+    // -------------------------------------------------------------------------
+    struct DrawEntry
     {
-        float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-        m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Mesh", color);
+        RHIPipeline*      pipeline {nullptr};
+        GpuMesh*          mesh {nullptr};
+        RHIDescriptorSet* vertex_blending_set {nullptr};
+        uint32_t          index_count {0};
+        uint32_t          instance_count {0};
+        uint32_t          perdrawcall_offset {0};
+        uint32_t          vertex_blending_offset {0};
+    };
+    std::vector<DrawEntry> draw_entries;
 
-        RHIPipeline* bound_pipeline = nullptr;
-
-        // perframe storage buffer
-
-        uint32_t perframe_dynamic_offset = RoundUp(
-            m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
-            m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
-        m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-            perframe_dynamic_offset + sizeof(DirectionalLightShadowPerFrame);
-        assert(
-            m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
-            (m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersBegin[m_Rhi->GetCurrentFrameIndex()] +
-             m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
-
-        DirectionalLightShadowPerFrame& perframe_storage_buffer_object =
-            (*reinterpret_cast<DirectionalLightShadowPerFrame*>(
-                reinterpret_cast<uintptr_t>(
-                    m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
-                perframe_dynamic_offset));
-        perframe_storage_buffer_object = m_DirectionalLightShadowPerFrame;
-
+    if (draw_mesh)
+    {
         for (auto& [material, mesh_instanced] : directional_light_mesh_drawcall_batch)
         {
             RHIPipeline* const material_pipeline = GetOrCreateShadowPipeline(*material);
-            if (material_pipeline != bound_pipeline)
-            {
-                m_Rhi->CmdBindPipelinePFN(
-                    m_Rhi->GetCurrentCommandBuffer(), RHI_PIPELINE_BIND_POINT_GRAPHICS, material_pipeline);
-                bound_pipeline = material_pipeline;
-            }
 
             // TODO: render from near to far
 
             for (auto& [mesh, mesh_nodes] : mesh_instanced)
-
             {
-                uint32_t total_instance_count = static_cast<uint32_t>(mesh_nodes.size());
-                if (total_instance_count > 0)
+                const uint32_t total_instance_count = static_cast<uint32_t>(mesh_nodes.size());
+                if (total_instance_count == 0)
                 {
-                    // bind per mesh
-                    if (mesh->mesh_vertex_blending_descriptor_set != nullptr)
+                    continue;
+                }
+
+                const MeshDrawData mesh_draw = getMeshDrawData(mesh);
+                if (!mesh_draw)
+                {
+                    continue;
+                }
+
+                const uint32_t drawcall_max_instance_count =
+                    (sizeof(MeshShadowPerDrawcall::mesh_instances) /
+                     sizeof(MeshShadowPerDrawcall::mesh_instances[0]));
+                const uint32_t drawcall_count =
+                    RoundUp(total_instance_count, drawcall_max_instance_count) / drawcall_max_instance_count;
+
+                for (uint32_t drawcall_index = 0; drawcall_index < drawcall_count; ++drawcall_index)
+                {
+                    const uint32_t current_instance_count =
+                        ((total_instance_count - drawcall_max_instance_count * drawcall_index) <
+                         drawcall_max_instance_count)
+                            ? (total_instance_count - drawcall_max_instance_count * drawcall_index)
+                            : drawcall_max_instance_count;
+
+                    DrawEntry entry;
+                    entry.pipeline            = material_pipeline;
+                    entry.mesh                = mesh;
+                    entry.vertex_blending_set = mesh->mesh_vertex_blending_descriptor_set;
+                    entry.index_count         = mesh_draw.index_count;
+                    entry.instance_count      = current_instance_count;
+
+                    // perdrawcall storage buffer
+                    entry.perdrawcall_offset =
+                        RoundUp(m_GlobalRenderResource->m_StorageBuffer
+                                    .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+                                m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+                    m_GlobalRenderResource->m_StorageBuffer
+                        .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
+                        entry.perdrawcall_offset + sizeof(MeshShadowPerDrawcall);
+                    assert(m_GlobalRenderResource->m_StorageBuffer
+                               .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
+                           (m_GlobalRenderResource->m_StorageBuffer
+                                .m_GlobalUploadRingbuffersBegin[m_Rhi->GetCurrentFrameIndex()] +
+                            m_GlobalRenderResource->m_StorageBuffer
+                                .m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
+
+                    MeshShadowPerDrawcall& perdrawcall_storage_buffer_object =
+                        (*reinterpret_cast<MeshShadowPerDrawcall*>(
+                            reinterpret_cast<uintptr_t>(
+                                m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
+                            entry.perdrawcall_offset));
+                    for (uint32_t i = 0; i < current_instance_count; ++i)
                     {
-                        m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
-                                                        RHI_PIPELINE_BIND_POINT_GRAPHICS,
-                                                        m_RenderPipelines[0].layout,
-                                                        1,
-                                                        1,
-                                                        &mesh->mesh_vertex_blending_descriptor_set,
-                                                        0,
-                                                        NULL);
+                        perdrawcall_storage_buffer_object.mesh_instances[i].model_matrix =
+                            *mesh_nodes[drawcall_max_instance_count * drawcall_index + i].model_matrix;
+                        perdrawcall_storage_buffer_object.mesh_instances[i].enable_vertex_blending =
+                            mesh_nodes[drawcall_max_instance_count * drawcall_index + i].joint_matrices ? 1.0
+                                                                                                        : -1.0;
                     }
 
-                    const MeshDrawData mesh_draw = getMeshDrawData(mesh);
-                    if (!mesh_draw)
+                    // per drawcall vertex blending storage buffer
+                    bool least_one_enable_vertex_blending = true;
+                    for (uint32_t i = 0; i < current_instance_count; ++i)
                     {
-                        continue;
+                        if (!mesh_nodes[drawcall_max_instance_count * drawcall_index + i].joint_matrices)
+                        {
+                            least_one_enable_vertex_blending = false;
+                            break;
+                        }
                     }
-
-                    RHIBuffer* vertex_buffers[] = {mesh_draw.position_buffer};
-                    RHIDeviceSize offsets[] = {0};
-                    m_Rhi->CmdBindVertexBuffersPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, vertex_buffers, offsets);
-                    m_Rhi->CmdBindIndexBufferPFN(
-                        m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_buffer, 0, RHI_INDEX_TYPE_UINT16);
-
-                    uint32_t drawcall_max_instance_count =
-                        (sizeof(MeshShadowPerDrawcall::mesh_instances) /
-                         sizeof(MeshShadowPerDrawcall::mesh_instances[0]));
-                    uint32_t drawcall_count =
-                        RoundUp(total_instance_count, drawcall_max_instance_count) / drawcall_max_instance_count;
-
-                    for (uint32_t drawcall_index = 0; drawcall_index < drawcall_count; ++drawcall_index)
+                    if (least_one_enable_vertex_blending)
                     {
-                        uint32_t current_instance_count =
-                            ((total_instance_count - drawcall_max_instance_count * drawcall_index) <
-                             drawcall_max_instance_count)
-                                ? (total_instance_count - drawcall_max_instance_count * drawcall_index)
-                                : drawcall_max_instance_count;
-
-                        // perdrawcall storage buffer
-                        uint32_t perdrawcall_dynamic_offset =
+                        entry.vertex_blending_offset =
                             RoundUp(m_GlobalRenderResource->m_StorageBuffer
                                         .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
                                     m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
                         m_GlobalRenderResource->m_StorageBuffer
                             .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-                            perdrawcall_dynamic_offset +
-                            sizeof(MeshShadowPerDrawcall);
+                            entry.vertex_blending_offset + sizeof(MeshShadowPerDrawcallVertexBlending);
                         assert(m_GlobalRenderResource->m_StorageBuffer
                                    .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
                                (m_GlobalRenderResource->m_StorageBuffer
@@ -1061,144 +1097,191 @@ void DirectionalLightShadowPass::DrawModel()
                                 m_GlobalRenderResource->m_StorageBuffer
                                     .m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
 
-                        MeshShadowPerDrawcall& perdrawcall_storage_buffer_object =
-                            (*reinterpret_cast<MeshShadowPerDrawcall*>(
+                        MeshShadowPerDrawcallVertexBlending& per_drawcall_vertex_blending_storage_buffer_object =
+                            (*reinterpret_cast<MeshShadowPerDrawcallVertexBlending*>(
                                 reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer
                                                                 .m_GlobalUploadRingbufferMemoryPointer) +
-                                perdrawcall_dynamic_offset));
+                                entry.vertex_blending_offset));
                         for (uint32_t i = 0; i < current_instance_count; ++i)
                         {
-                            perdrawcall_storage_buffer_object.mesh_instances[i].model_matrix =
-                                *mesh_nodes[drawcall_max_instance_count * drawcall_index + i].model_matrix;
-                            perdrawcall_storage_buffer_object.mesh_instances[i].enable_vertex_blending =
-                                mesh_nodes[drawcall_max_instance_count * drawcall_index + i].joint_matrices ? 1.0
-                                                                                                            : -1.0;
-                        }
-
-                        // per drawcall vertex blending storage buffer
-                        uint32_t per_drawcall_vertex_blending_dynamic_offset;
-                        bool least_one_enable_vertex_blending = true;
-                        for (uint32_t i = 0; i < current_instance_count; ++i)
-                        {
-                            if (!mesh_nodes[drawcall_max_instance_count * drawcall_index + i].joint_matrices)
+                            if (mesh_nodes[drawcall_max_instance_count * drawcall_index + i].joint_matrices)
                             {
-                                least_one_enable_vertex_blending = false;
-                                break;
-                            }
-                        }
-                        if (least_one_enable_vertex_blending)
-                        {
-                            per_drawcall_vertex_blending_dynamic_offset =
-                                RoundUp(m_GlobalRenderResource->m_StorageBuffer
-                                            .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
-                                        m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
-                            m_GlobalRenderResource->m_StorageBuffer
-                                .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
-                                per_drawcall_vertex_blending_dynamic_offset +
-                                sizeof(MeshShadowPerDrawcallVertexBlending);
-                            assert(m_GlobalRenderResource->m_StorageBuffer
-                                       .m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
-                                   (m_GlobalRenderResource->m_StorageBuffer
-                                        .m_GlobalUploadRingbuffersBegin[m_Rhi->GetCurrentFrameIndex()] +
-                                    m_GlobalRenderResource->m_StorageBuffer
-                                        .m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
-
-                            MeshShadowPerDrawcallVertexBlending&
-                                per_drawcall_vertex_blending_storage_buffer_object =
-                                    (*reinterpret_cast<
-                                        MeshShadowPerDrawcallVertexBlending*>(
-                                        reinterpret_cast<uintptr_t>(m_GlobalRenderResource->m_StorageBuffer
-                                                                        .m_GlobalUploadRingbufferMemoryPointer) +
-                                        per_drawcall_vertex_blending_dynamic_offset));
-                            for (uint32_t i = 0; i < current_instance_count; ++i)
-                            {
-                                if (mesh_nodes[drawcall_max_instance_count * drawcall_index + i].joint_matrices)
+                                for (uint32_t j = 0;
+                                     j < mesh_nodes[drawcall_max_instance_count * drawcall_index + i].joint_count;
+                                     ++j)
                                 {
-                                    for (uint32_t j = 0;
-                                         j < mesh_nodes[drawcall_max_instance_count * drawcall_index + i].joint_count;
-                                         ++j)
-                                    {
-                                        per_drawcall_vertex_blending_storage_buffer_object
-                                            .joint_matrices[s_MeshVertexBlendingMaxJointCount * i + j] =
-                                            mesh_nodes[drawcall_max_instance_count * drawcall_index + i]
-                                                .joint_matrices[j];
-                                    }
+                                    per_drawcall_vertex_blending_storage_buffer_object
+                                        .joint_matrices[s_MeshVertexBlendingMaxJointCount * i + j] =
+                                        mesh_nodes[drawcall_max_instance_count * drawcall_index + i]
+                                            .joint_matrices[j];
                                 }
                             }
                         }
-                        else
-                        {
-                            per_drawcall_vertex_blending_dynamic_offset = 0;
-                        }
-
-                        // bind perdrawcall
-                        if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
-                        {
-                            RHIDescriptorBufferInfo perframe_info = {};
-                            perframe_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
-                            perframe_info.offset = perframe_dynamic_offset;
-                            perframe_info.range =
-                                sizeof(DirectionalLightShadowPerFrame);
-
-                            RHIDescriptorBufferInfo perdrawcall_info = {};
-                            perdrawcall_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
-                            perdrawcall_info.offset = perdrawcall_dynamic_offset;
-                            perdrawcall_info.range =
-                                sizeof(MeshShadowPerDrawcall);
-
-                            RHIWriteDescriptorSet dx12_writes[2] = {};
-                            dx12_writes[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                            dx12_writes[0].dstSet = m_DescriptorInfos[0].descriptor_set;
-                            dx12_writes[0].dstBinding = 0;
-                            dx12_writes[0].descriptorType = RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
-                            dx12_writes[0].descriptorCount = 1;
-                            dx12_writes[0].pBufferInfo = &perframe_info;
-
-                            dx12_writes[1].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                            dx12_writes[1].dstSet = m_DescriptorInfos[0].descriptor_set;
-                            dx12_writes[1].dstBinding = 1;
-                            dx12_writes[1].descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                            dx12_writes[1].descriptorCount = 1;
-                            dx12_writes[1].pBufferInfo = &perdrawcall_info;
-
-                            m_Rhi->UpdateDescriptorSets(2, dx12_writes, 0, nullptr);
-                            m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
-                                                            RHI_PIPELINE_BIND_POINT_GRAPHICS,
-                                                            m_RenderPipelines[0].layout,
-                                                            0,
-                                                            1,
-                                                            &m_DescriptorInfos[0].descriptor_set,
-                                                            0,
-                                                            nullptr);
-                        }
-                        else
-                        {
-                            uint32_t dynamic_offsets[3] = {perframe_dynamic_offset,
-                                                           perdrawcall_dynamic_offset,
-                                                           per_drawcall_vertex_blending_dynamic_offset};
-                            m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
-                                                            RHI_PIPELINE_BIND_POINT_GRAPHICS,
-                                                            m_RenderPipelines[0].layout,
-                                                            0,
-                                                            1,
-                                                            &m_DescriptorInfos[0].descriptor_set,
-                                                            (sizeof(dynamic_offsets) / sizeof(dynamic_offsets[0])),
-                                                            dynamic_offsets);
-                        }
-                        m_Rhi->CmdDrawIndexedPFN(
-                            m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_count, current_instance_count, 0, 0, 0);
                     }
+                    else
+                    {
+                        entry.vertex_blending_offset = 0;
+                    }
+
+                    draw_entries.push_back(entry);
                 }
             }
         }
-
-        m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
     }
 
-    // Directional Light Shadow end pass
+    for (uint32_t cascade_index = 0; cascade_index < cascade_count; ++cascade_index)
     {
-        m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
+        // Directional Light Shadow begin pass
+        {
+            RHIRenderPassBeginInfo renderpass_begin_info {};
+            renderpass_begin_info.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+            renderpass_begin_info.renderPass = m_Framebuffer.render_pass;
+            renderpass_begin_info.framebuffer = m_CascadeFramebuffers[cascade_index];
+            renderpass_begin_info.renderArea.offset = {0, 0};
+            renderpass_begin_info.renderArea.extent = {s_DirectionalLightShadowMapDimension,
+                                                       s_DirectionalLightShadowMapDimension};
 
-        m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
+            RHIClearValue clear_values[2];
+            clear_values[0].color = {1.0f};
+            clear_values[1].depthStencil = {1.0f, 0};
+            renderpass_begin_info.clearValueCount = (sizeof(clear_values) / sizeof(clear_values[0]));
+            renderpass_begin_info.pClearValues = clear_values;
+
+            m_Rhi->CmdBeginRenderPassPFN(
+                m_Rhi->GetCurrentCommandBuffer(), &renderpass_begin_info, RHI_SUBPASS_CONTENTS_INLINE);
+
+            // 带上级号：Xcode GPU capture 里能直接看出是第几级，否则 4 段长得一模一样。
+            static const char* const k_cascade_labels[s_MaxCascadeCount] = {"DirShadow C0",
+                                                                            "DirShadow C1",
+                                                                            "DirShadow C2",
+                                                                            "DirShadow C3"};
+            float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+            m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), k_cascade_labels[cascade_index], color);
+        }
+
+        if (draw_mesh)
+        {
+            float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+            m_Rhi->PushEvent(m_Rhi->GetCurrentCommandBuffer(), "Mesh", color);
+
+            RHIPipeline* bound_pipeline = nullptr;
+
+            // perframe storage buffer —— 每一级一份，各自的 light proj-view
+            uint32_t perframe_dynamic_offset = RoundUp(
+                m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()],
+                m_GlobalRenderResource->m_StorageBuffer.m_MinStorageBufferOffsetAlignment);
+            m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] =
+                perframe_dynamic_offset + sizeof(DirectionalLightShadowPerFrame);
+            assert(
+                m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersEnd[m_Rhi->GetCurrentFrameIndex()] <=
+                (m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersBegin[m_Rhi->GetCurrentFrameIndex()] +
+                 m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffersSize[m_Rhi->GetCurrentFrameIndex()]));
+
+            DirectionalLightShadowPerFrame& perframe_storage_buffer_object =
+                (*reinterpret_cast<DirectionalLightShadowPerFrame*>(
+                    reinterpret_cast<uintptr_t>(
+                        m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbufferMemoryPointer) +
+                    perframe_dynamic_offset));
+            perframe_storage_buffer_object = m_CascadeShadowPerFrame[cascade_index];
+
+            for (DrawEntry& entry : draw_entries)
+            {
+                if (entry.pipeline != bound_pipeline)
+                {
+                    m_Rhi->CmdBindPipelinePFN(
+                        m_Rhi->GetCurrentCommandBuffer(), RHI_PIPELINE_BIND_POINT_GRAPHICS, entry.pipeline);
+                    bound_pipeline = entry.pipeline;
+                }
+
+                // bind per mesh
+                if (entry.vertex_blending_set != nullptr)
+                {
+                    m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                                    RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                                    m_RenderPipelines[0].layout,
+                                                    1,
+                                                    1,
+                                                    &entry.vertex_blending_set,
+                                                    0,
+                                                    NULL);
+                }
+
+                const MeshDrawData mesh_draw = getMeshDrawData(entry.mesh);
+                if (!mesh_draw)
+                {
+                    continue;
+                }
+
+                RHIBuffer* vertex_buffers[] = {mesh_draw.position_buffer};
+                RHIDeviceSize offsets[] = {0};
+                m_Rhi->CmdBindVertexBuffersPFN(m_Rhi->GetCurrentCommandBuffer(), 0, 1, vertex_buffers, offsets);
+                m_Rhi->CmdBindIndexBufferPFN(
+                    m_Rhi->GetCurrentCommandBuffer(), mesh_draw.index_buffer, 0, RHI_INDEX_TYPE_UINT16);
+
+                // bind perdrawcall
+                if (m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12)
+                {
+                    RHIDescriptorBufferInfo perframe_info = {};
+                    perframe_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
+                    perframe_info.offset = perframe_dynamic_offset;
+                    perframe_info.range = sizeof(DirectionalLightShadowPerFrame);
+
+                    RHIDescriptorBufferInfo perdrawcall_info = {};
+                    perdrawcall_info.buffer = m_GlobalRenderResource->m_StorageBuffer.m_GlobalUploadRingbuffer;
+                    perdrawcall_info.offset = entry.perdrawcall_offset;
+                    perdrawcall_info.range = sizeof(MeshShadowPerDrawcall);
+
+                    RHIWriteDescriptorSet dx12_writes[2] = {};
+                    dx12_writes[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    dx12_writes[0].dstSet = m_DescriptorInfos[0].descriptor_set;
+                    dx12_writes[0].dstBinding = 0;
+                    dx12_writes[0].descriptorType = RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC;
+                    dx12_writes[0].descriptorCount = 1;
+                    dx12_writes[0].pBufferInfo = &perframe_info;
+
+                    dx12_writes[1].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    dx12_writes[1].dstSet = m_DescriptorInfos[0].descriptor_set;
+                    dx12_writes[1].dstBinding = 1;
+                    dx12_writes[1].descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                    dx12_writes[1].descriptorCount = 1;
+                    dx12_writes[1].pBufferInfo = &perdrawcall_info;
+
+                    m_Rhi->UpdateDescriptorSets(2, dx12_writes, 0, nullptr);
+                    m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                                    RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                                    m_RenderPipelines[0].layout,
+                                                    0,
+                                                    1,
+                                                    &m_DescriptorInfos[0].descriptor_set,
+                                                    0,
+                                                    nullptr);
+                }
+                else
+                {
+                    uint32_t dynamic_offsets[3] = {perframe_dynamic_offset,
+                                                   entry.perdrawcall_offset,
+                                                   entry.vertex_blending_offset};
+                    m_Rhi->CmdBindDescriptorSetsPFN(m_Rhi->GetCurrentCommandBuffer(),
+                                                    RHI_PIPELINE_BIND_POINT_GRAPHICS,
+                                                    m_RenderPipelines[0].layout,
+                                                    0,
+                                                    1,
+                                                    &m_DescriptorInfos[0].descriptor_set,
+                                                    (sizeof(dynamic_offsets) / sizeof(dynamic_offsets[0])),
+                                                    dynamic_offsets);
+                }
+                m_Rhi->CmdDrawIndexedPFN(
+                    m_Rhi->GetCurrentCommandBuffer(), entry.index_count, entry.instance_count, 0, 0, 0);
+            }
+
+            m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
+        }
+
+        // Directional Light Shadow end pass
+        {
+            m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
+
+            m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
+        }
     }
 }

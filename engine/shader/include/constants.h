@@ -1,4 +1,6 @@
 #define m_max_point_light_count 15
+// CSM 级联数上限。C++ 侧是 `s_MaxCascadeCount`（RenderCommon.h），两边必须一致。
+#define m_max_cascade_count 4
 #define m_max_point_light_geom_vertices 90 // 90 = 2 * 3 * m_max_point_light_count
 #define m_mesh_per_drawcall_max_instance_count 64
 #define m_mesh_vertex_blending_max_joint_count 1024

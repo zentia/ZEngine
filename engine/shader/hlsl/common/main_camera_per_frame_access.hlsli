@@ -13,3 +13,7 @@
 #define viewport_rect per_frame.viewport_rect
 #define lumen_indirect per_frame.lumen_indirect
 #define lumen_reflection per_frame.lumen_reflection
+#define camera_forward per_frame.camera_forward
+#define directional_light_proj_view_cascades per_frame.directional_light_proj_view_cascades
+#define directional_light_cascade_split_depth per_frame.directional_light_cascade_split_depth
+#define directional_light_cascade_count per_frame.directional_light_cascade_count

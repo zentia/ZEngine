@@ -37,7 +37,7 @@ layout(set = 0, binding = 8) readonly buffer _ml_header
 layout(set = 0, binding = 3) uniform sampler2D brdfLUT_sampler;
 layout(set = 0, binding = 4) uniform samplerCube irradiance_sampler;
 layout(set = 0, binding = 5) uniform samplerCube specular_sampler;
-layout(set = 0, binding = 7) uniform highp sampler2D directional_light_shadow;
+layout(set = 0, binding = 7) uniform highp sampler2DArray directional_light_shadow;
 layout(set = 0, binding = 11) uniform highp sampler2D ml_direct;
 layout(set = 0, binding = 12, rgba16f) uniform highp writeonly image2D ml_history_out;
 

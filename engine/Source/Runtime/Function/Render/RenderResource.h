@@ -206,6 +206,15 @@ public:
     PointLightShadowPerFrame m_PointLightShadowPerFrame;
     DirectionalLightShadowPerFrame
         m_DirectionalLightShadowPerFrame;
+    // CSM：方向光阴影每一级的 light proj-view + 生效级数。shadow pass 靠它做
+    // N 次 draw（一次一级，各画到 array 的一层）。
+    //
+    // 之所以单独放一份而不是让 pass 去读 m_MainCameraPerFrame 里的级联矩阵：
+    // 那份是"采样侧"的数据（按 viewport 分、给主相机 shader 用），而这里是
+    // "生成侧"的数据（给 shadow pass 上传 per-frame SSBO 用）。混用会在
+    // 多个 viewport 各自更新时互相踩。
+    Matrix4x4 m_DirectionalLightCascadeProjView[s_MaxCascadeCount];
+    uint32_t m_DirectionalLightCascadeCount {1};
     AxisDrawStorage m_AxisDrawStorage;
     PickPassPerFrame m_PickPassPerFrame;
     std::array<ParticleBillboardPerFrame, 2>

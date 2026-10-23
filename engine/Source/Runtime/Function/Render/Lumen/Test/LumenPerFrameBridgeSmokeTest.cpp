@@ -62,9 +62,24 @@ static_assert(offsetof(MainCameraPerFrame, lumen_indirect) ==
 static_assert(offsetof(MainCameraPerFrame, lumen_reflection) ==
                   offsetof(MainCameraPerFrame, lumen_indirect) + sizeof(Vector4),
               "lumen_reflection must directly follow lumen_indirect");
-static_assert(offsetof(MainCameraPerFrame, lumen_reflection) + sizeof(Vector4) ==
+// CSM 的字段接在 lumen_* 之后（阶段 71）。这条链是"三份镜像逐字节一致"的 C++
+// 半边：任何人往中间插字段、或者改了字段顺序而没同步 shader 侧，这里会先炸。
+static_assert(offsetof(MainCameraPerFrame, camera_forward) ==
+                  offsetof(MainCameraPerFrame, lumen_reflection) + sizeof(Vector4),
+              "camera_forward must directly follow lumen_reflection");
+static_assert(offsetof(MainCameraPerFrame, directional_light_proj_view_cascades) ==
+                  offsetof(MainCameraPerFrame, camera_forward) + sizeof(Vector4),
+              "the cascade matrices must directly follow camera_forward (+ its padding)");
+static_assert(offsetof(MainCameraPerFrame, directional_light_cascade_split_depth) ==
+                  offsetof(MainCameraPerFrame, directional_light_proj_view_cascades) +
+                      s_MaxCascadeCount * sizeof(Matrix4x4),
+              "the split depths must directly follow the cascade matrices");
+static_assert(offsetof(MainCameraPerFrame, directional_light_cascade_count) ==
+                  offsetof(MainCameraPerFrame, directional_light_cascade_split_depth) + sizeof(Vector4),
+              "the cascade count must directly follow the split depths");
+static_assert(offsetof(MainCameraPerFrame, directional_light_cascade_count) + 4 * sizeof(float) ==
                   sizeof(MainCameraPerFrame),
-              "lumen_reflection must be the last field of MainCameraPerFrame");
+              "the cascade count block must be the last field of MainCameraPerFrame");
 static_assert(sizeof(MainCameraPerFrame) % 16 == 0,
               "MainCameraPerFrame must stay 16-byte aligned (it is a uniform/storage buffer)");
 
@@ -317,8 +332,10 @@ int main()
     Check(offsetof(MainCameraPerFrame, lumen_reflection) ==
               offsetof(MainCameraPerFrame, lumen_indirect) + sizeof(Vector4),
           "lumen_reflection directly follows lumen_indirect in C++");
-    Check(offsetof(MainCameraPerFrame, lumen_reflection) + sizeof(Vector4) == sizeof(MainCameraPerFrame),
-          "lumen_reflection is the last field of MainCameraPerFrame");
+    Check(offsetof(MainCameraPerFrame, directional_light_cascade_count) + 4 * sizeof(float) ==
+              sizeof(MainCameraPerFrame),
+          "the cascade count block is the last field of MainCameraPerFrame (CSM fields are appended "
+          "after lumen_reflection)");
     Check(sizeof(MainCameraPerFrame) % 16 == 0, "MainCameraPerFrame stays 16-byte aligned");
 
     // -------------------------------------------------------------------------

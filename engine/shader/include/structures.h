@@ -93,6 +93,19 @@ struct MainCameraPerFrame
     highp vec4 lumen_indirect;
     // Lumen 的反射（rgb = 场景级反射辐射, a = 混合权重）。0 = 沿用 baked specular cubemap。
     highp vec4 lumen_reflection;
+    // ---- CSM（级联阴影）----
+    // 主相机朝向。采样侧要靠它算片元的视图深度。
+    highp vec3 camera_forward;
+    highp float _padding_camera_forward;
+    // 每一级 cascade 自己的 light proj-view。
+    highp mat4 directional_light_proj_view_cascades[m_max_cascade_count];
+    // 每一级的远平面（视图深度，递增）。级数不足时高位填 +inf。
+    highp vec4 directional_light_cascade_split_depth;
+    // 实际生效的级数。1 = 退化成单张。
+    highp uint directional_light_cascade_count;
+    highp float _padding_cascade_count_1;
+    highp float _padding_cascade_count_2;
+    highp float _padding_cascade_count_3;
 };
 
 struct AxisDrawStorage

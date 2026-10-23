@@ -56,6 +56,18 @@ struct MainCameraPerFrame
     /// Lumen reflection: rgb = scene-level radiance, a = blend weight (0 = keep the baked
     /// specular cubemap). No consumer in the deferred pass yet: it has no specular IBL term.
     float4 lumen_reflection;
+    // ---- CSM (cascaded shadow maps) ----
+    /// Main camera forward; the sampling side needs it to turn a fragment position into
+    /// view depth before comparing against the split distances.
+    float3 camera_forward;
+    float _pad_camera_forward;
+    float4x4 directional_light_proj_view_cascades[4];
+    /// Per-cascade far plane in view depth (ascending). +inf in the unused slots.
+    float4 directional_light_cascade_split_depth;
+    uint directional_light_cascade_count;
+    float _pad_cascade_count_1;
+    float _pad_cascade_count_2;
+    float _pad_cascade_count_3;
 };
 
 #include "LargeWorldCoordinates.hlsl"
@@ -68,6 +80,22 @@ ZLwcFrame ZLwcFromPerFrame(MainCameraPerFrame pf)
     lwc.render_tile = pf.render_tile;
     lwc._pad_render_tile = pf._pad_render_tile;
     return lwc;
+}
+
+// CSM: which cascade a fragment belongs to, by view depth (the same quantity the CPU
+// side uses when it computes the split distances -- a projection onto the camera
+// forward, not a radial distance).
+int ZSelectShadowCascade(MainCameraPerFrame pf, float3 world_position)
+{
+    float view_depth = dot(world_position - pf.camera_position, pf.camera_forward);
+
+    // 1 where split[i] < view_depth; their count *is* the cascade index.
+    float4 behind = 1.0f - step(float4(view_depth, view_depth, view_depth, view_depth),
+                                pf.directional_light_cascade_split_depth);
+    float index = behind.x + behind.y + behind.z + behind.w;
+
+    uint last = max(pf.directional_light_cascade_count, 1u) - 1u;
+    return int(min(index, float(last)));
 }
 
 #endif  // Z_SCENE_LIGHTING_STRUCTS_HLSLI

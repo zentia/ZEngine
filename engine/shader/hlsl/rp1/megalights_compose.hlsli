@@ -19,10 +19,13 @@ float3 MegaLightsStableContrib(float3 world_pos,
     float noL = saturate(dot(N, L));
     if (noL > 0.0f)
     {
-        float4 position_clip = mul(directional_light_proj_view, float4(world_pos, 1.0f));
+        // CSM: pick the cascade by view depth first, then project with that cascade's matrix.
+        int cascade = ZSelectShadowCascade(per_frame, world_pos);
+        float4 position_clip = mul(directional_light_proj_view_cascades[cascade], float4(world_pos, 1.0f));
         float3 position_ndc = position_clip.xyz / position_clip.w;
         float2 uv = NdcxyToUv(position_ndc.xy);
-        float closest_depth = directional_light_shadow.Sample(directional_shadow_sampler, uv).r + 0.000075f;
+        float closest_depth =
+            directional_light_shadow.Sample(directional_shadow_sampler, float3(uv, cascade)).r + 0.000075f;
         float current_depth = position_ndc.z;
         if (closest_depth >= current_depth)
         {

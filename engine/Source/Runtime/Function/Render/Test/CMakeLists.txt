@@ -164,6 +164,11 @@ if(ZENGINE_BUILD_DIRECTIONAL_SHADOW_SMOKE_TEST)
 
     # 被测源码的路径在 configure 期就钉死：CTest 的工作目录是 build 树里的某个子
     # 目录，跟源码树没有任何稳定关系，运行期猜相对路径只会时灵时不灵。
+    #
+    # CSM 那些判据要读 shader（三份 per-frame 镜像 + 采样点），所以这里额外给一份
+    # engine 根：shader 树跟 C++ 树不在同一个前缀下。
+    set(ZENGINE_DIR_TEST_ENGINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../..")
+
     target_compile_definitions(DirectionalLightShadowSmokeTest PRIVATE
         ZENGINE_RHI_H="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/Interface/RHI.h"
         ZENGINE_METAL_RHI_H="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/Interface/Metal/MetalRHI.h"
@@ -172,6 +177,20 @@ if(ZENGINE_BUILD_DIRECTIONAL_SHADOW_SMOKE_TEST)
         ZENGINE_RENDER_SYSTEM_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderSystem.cpp"
         ZENGINE_RENDER_SCENE_H="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderScene.h"
         ZENGINE_RENDER_SCENE_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderScene.cpp"
+        ZENGINE_RENDER_COMMON_H="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderCommon.h"
+        ZENGINE_RENDER_HELPER_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderHelper.cpp"
+        ZENGINE_RENDER_RESOURCE_H="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderResource.h"
+        ZENGINE_RENDER_PERFRAME_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderResourcePerFrame.cpp"
+        ZENGINE_SHADER_CONSTANTS_H="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/include/constants.h"
+        ZENGINE_SHADER_STRUCTURES_H="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/include/structures.h"
+        ZENGINE_SHADER_MESH_LIGHTING_H="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/include/mesh_lighting.h"
+        ZENGINE_SHADER_MESH_LIGHTING_INL="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/include/mesh_lighting.inl"
+        ZENGINE_SHADER_MEGALIGHTS_COMPOSE_INL="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/include/megalights_compose.inl"
+        ZENGINE_SHADER_MESH_FRAG="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/glsl/mesh.frag"
+        ZENGINE_SHADER_DEFERRED_LIGHTING_FRAG="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/glsl/deferred_lighting.frag"
+        ZENGINE_SHADER_MEGALIGHTS_DEFERRED_FRAG="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/glsl/megalights_deferred.frag"
+        ZENGINE_SHADER_MEGALIGHTS_SPATIAL_FRAG="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/glsl/megalights_spatial.frag"
+        ZENGINE_SHADER_SCENE_LIGHTING_STRUCTS_HLSLI="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/hlsl/common/scene_lighting_structs.hlsli"
     )
 
     add_test(NAME DirectionalLightShadowSmokeTest COMMAND DirectionalLightShadowSmokeTest)

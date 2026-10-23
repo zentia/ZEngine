@@ -51,7 +51,7 @@ layout(set = 0, binding = 10) readonly buffer _ml_tile_ranges
 layout(set = 0, binding = 3) uniform sampler2D brdfLUT_sampler;
 layout(set = 0, binding = 4) uniform samplerCube irradiance_sampler;
 layout(set = 0, binding = 5) uniform samplerCube specular_sampler;
-layout(set = 0, binding = 7) uniform highp sampler2D directional_light_shadow;
+layout(set = 0, binding = 7) uniform highp sampler2DArray directional_light_shadow;
 
 layout(input_attachment_index = 0, set = 1, binding = 0) uniform highp subpassInput in_gbuffer_a;
 layout(input_attachment_index = 1, set = 1, binding = 1) uniform highp subpassInput in_gbuffer_b;
@@ -141,10 +141,15 @@ void main()
                 {
                     highp float shadow;
                     {
-                        highp vec4 position_clip = directional_light_proj_view * vec4(in_world_position, 1.0);
+                        // CSM：按视图深度选级（见 mesh_lighting.h 里的 z_select_shadow_cascade）。
+                        highp int cascade = z_select_shadow_cascade(in_world_position);
+
+                        highp vec4 position_clip =
+                            directional_light_proj_view_cascades[cascade] * vec4(in_world_position, 1.0);
                         highp vec3 position_ndc  = position_clip.xyz / position_clip.w;
                         highp vec2 uv            = ndcxy_to_uv(position_ndc.xy);
-                        highp float closest_depth = texture(directional_light_shadow, uv).r + 0.000075;
+                        highp float closest_depth =
+                            texture(directional_light_shadow, vec3(uv, float(cascade))).r + 0.000075;
                         highp float current_depth = position_ndc.z;
                         shadow = (closest_depth >= current_depth) ? 1.0 : 0.0;
                     }

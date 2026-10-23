@@ -14,6 +14,14 @@ static const uint32_t s_DirectionalLightShadowMapDimension = 4096;
 static uint32_t const s_MeshPerDrawcallMaxInstanceCount = 64;
 static uint32_t const s_MeshVertexBlendingMaxJointCount = 1024;
 static uint32_t const s_MaxPointLightCount = 15;
+// CSM（级联阴影）的级联数上限。shader 侧是 `m_max_cascade_count`
+// （engine/shader/include/constants.h），两边必须一致 —— per-frame 结构里那个
+// 数组的长度就靠它，对不上就是 GPU 读到乱数据而且不报错。
+static uint32_t const s_MaxCascadeCount = 4;
+// CSM 的 split 距离在"对数分布"和"线性分布"之间插值：0 = 全线性，1 = 全对数。
+// 0.5 是 UE/Unity 都用的折中值 —— 近处密一点（阴影分辨率给近处），远处不至于
+// 密到浪费级数。TODO: 接 CVar，现在先当常量，改一处就能全局生效。
+static float const s_CascadeSplitLambda = 0.5f;
 // should sync the macros in "shader_include/constants.h"
 
 struct SceneDirectionalLight
@@ -107,6 +115,30 @@ struct MainCameraPerFrame
     ///
     /// 与 lumen_indirect 分开是两个独立权重：GI 和反射由两个 CVar 各自开关。
     Vector4 lumen_reflection {0.0f, 0.0f, 0.0f, 0.0f};
+
+    // ---- CSM（级联阴影）----
+    //
+    // 三份镜像必须逐字节一致：C++ 在这里，GLSL 在
+    // engine/shader/include/structures.h，HLSL 在
+    // engine/shader/hlsl/common/scene_lighting_structs.hlsli。
+
+    /// 主相机朝向（世界空间单位向量）。采样侧要靠它把片元位置换算成"视图深度"
+    /// 再去跟 split 距离比 —— per-frame 里原来只有 camera_position，光有位置
+    /// 算不出沿视线的深度（径向距离 ≠ 视图深度，边缘会选错级）。
+    Vector3 camera_forward {0.0f, 0.0f, -1.0f};
+    float _padding_camera_forward {0.0f};
+    /// 每一级 cascade 自己的 light proj-view。生成侧按级各画一次到 array 的对应
+    /// slice，采样侧按深度挑一个出来用。
+    Matrix4x4 directional_light_proj_view_cascades[s_MaxCascadeCount];
+    /// 每一级的远平面，单位是**视图深度**（沿 camera_forward 的投影距离，正值、
+    /// 递增）。x/y/z/w = 第 0/1/2/3 级。级数不足 4 时高位填 +inf，配合下面的
+    /// count 做 clamp。
+    Vector4 directional_light_cascade_split_depth {0.0f, 0.0f, 0.0f, 0.0f};
+    /// 实际生效的级数。1 = 退化成单张（拿不到有效深度范围时的行为，与 CSM 之前一致）。
+    uint32_t directional_light_cascade_count {1};
+    float _padding_cascade_count_1 {0.0f};
+    float _padding_cascade_count_2 {0.0f};
+    float _padding_cascade_count_3 {0.0f};
 };
 
 struct RenderMeshInstance

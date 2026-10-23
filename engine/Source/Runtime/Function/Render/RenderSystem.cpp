@@ -451,6 +451,11 @@ void RenderSystem::Tick(float delta_time)
             int    dir_shadow_enabled = 0;
             size_t dir_shadow_nodes = 0;
             int    point_shadow_enabled = 0;
+            // CSM（阶段 71）：级数。0 = 这一帧根本没发布过级联数据（CPU 侧没跑），
+            // 1 = 退回了单张（后端不支持选层 / 深度范围无效），4 = 级联真的生效。
+            // 只有这个数能分辨"4 级全画到第 0 层"和"真的分了 4 层" —— 两者画面
+            // 都可能看着像有阴影，但前者远处一定糊。
+            uint32_t dir_shadow_cascades = 0;
             if (m_RenderPipeline != nullptr)
             {
                 if (NaniteRenderPass* nanite_pass = m_RenderPipeline->GetNanitePass())
@@ -487,6 +492,13 @@ void RenderSystem::Tick(float delta_time)
             {
                 dir_shadow_enabled   = m_Rhi->IsDirectionalLightShadowEnabled() ? 1 : 0;
                 point_shadow_enabled = m_Rhi->IsPointLightShadowEnabled() ? 1 : 0;
+            }
+            if (m_RenderResource != nullptr)
+            {
+                if (const auto* typed_resource = dynamic_cast<const RenderResource*>(m_RenderResource.get()))
+                {
+                    dir_shadow_cascades = typed_resource->m_DirectionalLightCascadeCount;
+                }
             }
             if (const std::shared_ptr<RenderCamera> game_cam = GetCamera(ViewportType::game))
             {
@@ -526,7 +538,7 @@ void RenderSystem::Tick(float delta_time)
                      "dir_light=({},{},{}) dir_color=({},{},{}) ambient=({},{},{}) plights={} gos={} lcmp={} "
                      "nanite=(has={} inst={} batches={} vis={} ngpu={}) "
                      "particle=(has={} emit={} draw={} parts={} vp={}) "
-                     "shadow=(dir_en={} dir_nodes={} point_en={}) "
+                     "shadow=(dir_en={} dir_nodes={} point_en={} cascades={}) "
                      "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
@@ -560,6 +572,7 @@ void RenderSystem::Tick(float delta_time)
                      dir_shadow_enabled,
                      dir_shadow_nodes,
                      point_shadow_enabled,
+                     dir_shadow_cascades,
                      static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
                      static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
                      sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,

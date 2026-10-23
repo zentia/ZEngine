@@ -199,6 +199,12 @@ bool MetalRHI::IsDirectionalLightShadowEnabled()
     // 不属于这次改动范围。
     return true;
 }
+bool MetalRHI::IsDirectionalLightCsmSupported()
+{
+    // Metal 用 framebuffer 上的 array_slice 选层（CmdBeginRenderPassPFN 会把它写进
+    // 每个 attachment descriptor 的 slice），不需要 geometry shader，所以级联可用。
+    return true;
+}
 void MetalRHI::NotifyWindowFocusGained() {}
 void MetalRHI::DestroyRenderPass(RHIRenderPass* /*renderPass*/) {}
 

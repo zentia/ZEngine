@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <unordered_set>
 
 namespace
@@ -506,11 +507,58 @@ void RenderScene::UpdateVisibleObjectsDirectionalLight(VisibleNodeSet& nodes,
     ViewportType viewport_type =
         (camera->m_CurrentCameraType == RenderCameraType::Game) ? ViewportType::game : ViewportType::scene;
 
+    // ---- CSM：把视锥切成 N 段，每段一个光空间 ----
+    //
+    // 单张的 directional_light_proj_view 继续算、继续发布：它是"只有一级"时的
+    // 行为，退化路径（拿不到有效深度范围）用的就是它，也方便对照。
+    Matrix4x4 cascade_proj_views[s_MaxCascadeCount];
+    float     cascade_split_depth[s_MaxCascadeCount];
+    for (uint32_t i = 0; i < s_MaxCascadeCount; ++i)
+    {
+        cascade_split_depth[i] = std::numeric_limits<float>::infinity();
+    }
+    // 后端能不能真的把每一级画到各自的层上，决定了级数上限：不能的后端退回单级
+    // （= 加 CSM 之前的行为），而不是"4 级全挤到第 0 层"那种静默错图。
+    uint32_t requested_cascade_count = s_MaxCascadeCount;
+    if (RHI* rhi = GET_SYSTEM(RHI))
+    {
+        if (!rhi->IsDirectionalLightCsmSupported())
+        {
+            requested_cascade_count = 1;
+        }
+    }
+    const uint32_t cascade_count = CalculateDirectionalLightCascadeCameras(*this,
+                                                                          *camera,
+                                                                          s_CascadeSplitLambda,
+                                                                          cascade_proj_views,
+                                                                          cascade_split_depth,
+                                                                          requested_cascade_count);
+
+    auto publish_cascades = [cascade_count, &cascade_proj_views, &cascade_split_depth](MainCameraPerFrame& per_frame)
+    {
+        per_frame.directional_light_cascade_count = cascade_count;
+        per_frame.directional_light_cascade_split_depth = Vector4(
+            cascade_split_depth[0], cascade_split_depth[1], cascade_split_depth[2], cascade_split_depth[3]);
+        for (uint32_t i = 0; i < s_MaxCascadeCount; ++i)
+        {
+            per_frame.directional_light_proj_view_cascades[i] = cascade_proj_views[i];
+        }
+    };
+    publish_cascades(render_resource->m_MainCameraPerFrameByViewport[static_cast<size_t>(viewport_type)]);
+    publish_cascades(render_resource->m_MainCameraPerFrame);
+
     render_resource->m_MainCameraPerFrameByViewport[static_cast<size_t>(viewport_type)].directional_light_proj_view =
         directional_light_proj_view;
     render_resource->m_MainCameraPerFrame.directional_light_proj_view = directional_light_proj_view;
     render_resource->m_DirectionalLightShadowPerFrame.light_proj_view =
         directional_light_proj_view;
+
+    // 生成侧：shadow pass 每级各上传一份 per-frame（各带自己的 light proj-view）。
+    render_resource->m_DirectionalLightCascadeCount = cascade_count;
+    for (uint32_t i = 0; i < s_MaxCascadeCount; ++i)
+    {
+        render_resource->m_DirectionalLightCascadeProjView[i] = cascade_proj_views[i];
+    }
 
     nodes.directional_light.clear();
 

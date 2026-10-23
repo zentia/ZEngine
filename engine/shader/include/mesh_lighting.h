@@ -80,3 +80,28 @@ highp vec3 BRDF(highp vec3  L,
 highp vec2 ndcxy_to_uv(highp vec2 ndcxy) { return ndcxy * vec2(0.5, 0.5) + vec2(0.5, 0.5); }
 
 highp vec2 uv_to_ndcxy(highp vec2 uv) { return uv * vec2(2.0, 2.0) + vec2(-1.0, -1.0); }
+
+// ---- CSM（级联阴影）选级 ----
+//
+// 方向光 shadow map 是 4 层 texture2DArray，一层一级。片元该用哪一级由它的
+// **视图深度**决定 —— 跟 CPU 侧 `CalculateDirectionalLightCascadeCameras()` 算
+// split 距离用的是同一个量（沿相机 forward 的投影距离），所以可以直接比；换成
+// 径向距离（`length(world - camera_position)`）就会在画面边缘选错级。
+//
+// 本函数依赖 `main_camera_per_frame_access.inl` 把 per-frame 字段铺成裸名，所以
+// 只能在那之后被包含（四个 frag 都是这个顺序）。
+highp int z_select_shadow_cascade(highp vec3 world_position)
+{
+    highp float view_depth = dot(world_position - camera_position, camera_forward);
+
+    // split_distance[i] < view_depth 的个数**就是**级号：split 是递增的远平面，
+    // 前面有 n 个远平面被越过就落在第 n 级。用 vec4 一次性比较是为了躲开
+    // 动态下标 —— SPIRV-Cross 转 MSL 时对 vec4 做动态分量下标会生成很难看的
+    // 代码，而且老驱动上有踩过坑的历史。
+    highp vec4  behind = vec4(lessThan(directional_light_cascade_split_depth, vec4(view_depth)));
+    highp float index  = behind.x + behind.y + behind.z + behind.w;
+
+    // 级数不足 4（退化成单张）或深度超出最后一级时，靠 clamp 收敛到最后一级。
+    highp float last = float(max(directional_light_cascade_count, 1u) - 1u);
+    return int(min(index, last));
+}

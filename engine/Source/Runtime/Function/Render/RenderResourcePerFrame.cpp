@@ -87,6 +87,9 @@ void RenderResource::UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_sc
 
     mesh_perframe_storage_buffer_object.proj_view_matrix = proj_view_matrix;
     mesh_perframe_storage_buffer_object.camera_position = camera_position;
+    // CSM：采样侧要靠朝向把片元位置换算成视图深度再去跟 split 距离比。per-frame
+    // 里原来只有位置，径向距离 ≠ 视图深度，画面边缘会选错级。
+    mesh_perframe_storage_buffer_object.camera_forward = camera->forward();
     bool viewport_rect_set = false;
     if (viewport_type == ViewportType::scene)
     {

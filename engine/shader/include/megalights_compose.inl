@@ -25,10 +25,13 @@ highp vec3 megalights_stable_contrib(highp vec3 world_pos,
         {
             highp float shadow;
             {
-                highp vec4 position_clip = directional_light_proj_view * vec4(world_pos, 1.0);
+                // CSM：按视图深度选级（见 mesh_lighting.h 里的 z_select_shadow_cascade）。
+                highp int cascade = z_select_shadow_cascade(world_pos);
+
+                highp vec4 position_clip = directional_light_proj_view_cascades[cascade] * vec4(world_pos, 1.0);
                 highp vec3 position_ndc  = position_clip.xyz / position_clip.w;
                 highp vec2 uv            = ndcxy_to_uv(position_ndc.xy);
-                highp float closest_depth = texture(directional_light_shadow, uv).r + 0.000075;
+                highp float closest_depth = texture(directional_light_shadow, vec3(uv, float(cascade))).r + 0.000075;
                 highp float current_depth = position_ndc.z;
                 shadow = (closest_depth >= current_depth) ? 1.0 : 0.0;
             }

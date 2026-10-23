@@ -15,7 +15,7 @@ layout(set = 0, binding = 3) uniform sampler2D brdfLUT_sampler;
 layout(set = 0, binding = 4) uniform samplerCube irradiance_sampler;
 layout(set = 0, binding = 5) uniform samplerCube specular_sampler;
 layout(set = 0, binding = 6) uniform highp sampler2DArray point_lights_shadow;
-layout(set = 0, binding = 7) uniform highp sampler2D directional_light_shadow;
+layout(set = 0, binding = 7) uniform highp sampler2DArray directional_light_shadow;
 
 layout(set = 2, binding = 0) uniform _unused_name_permaterial
 {
