@@ -38,6 +38,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <new>
 #include <string>
@@ -256,6 +257,7 @@ int main()
     }
 
     SpineGpuAsset asset;
+    SpineGpuAsset quad;   // 四边形裁剪夹具（下面 section 3 也要用，所以提到外层）
     SpineImportResult rb = BakeSpineGpuAsset(src, asset);
     Check(rb.ok, "bake 成功");
     if (!rb.ok)
@@ -386,7 +388,6 @@ int main()
         // 下一帧再 `emplace_back()` 补回来）⇒ 稳态还剩一点点残余（实测 3 次 / 30 帧）。
         // 留个预算只是为了挡住"退回每帧几十次"那种回归 —— 修复前实测是 25 次/帧。
         SpineSourceSkeleton src_q;
-        SpineGpuAsset quad;
         const bool quad_ok = ParseSpineSkeletonJson(skel_quad.data(), skel_quad.size(), &atlas, src_q).ok &&
                              BakeSpineGpuAsset(src_q, quad).ok;
         Check(quad_ok, "0 分配: 四边形裁剪夹具 bake 成功");
@@ -406,6 +407,80 @@ int main()
                 std::printf("  error: %s\n", error.c_str());
             }
         }
+    }
+
+    // ---- 3. rigid 的 setup 顶点：容器里连续且 4 B 对齐 ⇒ 可以直接当 `const float*` 读 ----
+    // 2026-10-23 之前 `ApplyDeform` 每帧把这批顶点 memcpy 进 scratch 再读（实测只有 ~0.1 µs/帧，
+    // 见规格 §17.2 —— 低于基准的分辨力，但代码更少、也不再需要一个 scratch 缓冲）。
+    // 直接指进 `asset.vertex_buffer` 的前提有三条，这里逐条钉住：
+    //   a) 字节偏移是 4 的倍数，且**加上缓冲基址后真的 4 对齐** ⇒ 否则 reinterpret_cast 是 UB
+    //      （对齐不靠猜：这条断言在别的平台上会真的红）；
+    //   b) 整个区间落在 rigid 段内 ⇒ 越过就是读到 weighted 段的数据，而且不报错；
+    //   c) 逐 float 读出来与"逐字节 memcpy 出来"完全一致 ⇒ 布局必须是 `[x0, y0, x1, y1, …]`。
+    // 三条里任何一条被以后的改动破坏，`ApplyDeform` 都会**静默**读错数（只有对拍会红）。
+    {
+        const auto byte_read = [](const std::vector<uint8_t>& buf, size_t off) {
+            float v = 0.0f;
+            std::memcpy(&v, buf.data() + off, 4);
+            return v;
+        };
+        long long n_rigid = 0;
+        long long n_floats = 0;
+        for (const SpineGpuAsset* a : {&asset, &quad})
+        {
+            if (a->vertex_buffer.empty())
+            {
+                continue;
+            }
+            const auto check_range = [&](const char* what, uint64_t byte0, uint32_t len) {
+                ++n_rigid;
+                const std::string tag = std::string("setup 直读: ") + what;
+                Check(byte0 % 4u == 0, (tag + " 的字节偏移 4 对齐").c_str());
+                if (static_cast<size_t>(byte0) + static_cast<size_t>(len) * 4u > a->weighted_segment_offset)
+                {
+                    Check(false, (tag + " 的区间整个落在 rigid 段内").c_str());
+                    return;
+                }
+                const float* p = reinterpret_cast<const float*>(a->vertex_buffer.data() + byte0);
+                Check(reinterpret_cast<std::uintptr_t>(p) % 4u == 0, (tag + " 的指针真的 4 对齐").c_str());
+                bool same = true;
+                for (uint32_t i = 0; i < len; ++i)
+                {
+                    n_floats += 1;
+                    if (p[i] != byte_read(a->vertex_buffer, static_cast<size_t>(byte0) + 4u * i))
+                    {
+                        same = false;
+                        break;
+                    }
+                }
+                Check(same, (tag + " 逐 float 与逐字节读一致（布局是 [x0,y0,x1,y1,…]）").c_str());
+            };
+            for (uint32_t i = 0; i < a->draw_items.size(); ++i)
+            {
+                const SpineDrawItem& di = a->draw_items[i];
+                // 与 `ApplyDeform` 同一条判据：只有 rigid 才会去读 setup
+                if (di.vertex_format != SpineVertexFormat::kRigid)
+                {
+                    continue;
+                }
+                const uint32_t len = 2u * di.vertex_count;
+                check_range(("绘制项 " + std::to_string(i)).c_str(),
+                            static_cast<uint64_t>(di.vertex_base) * SpineGpuConstants::kRigidVertexStride, len);
+            }
+            for (uint32_t k = 0; k < a->clip_polygons.size(); ++k)
+            {
+                const SpineGpuClipPolygon& clip = a->clip_polygons[k];
+                if (clip.vertex_format != SpineVertexFormat::kRigid)
+                {
+                    continue;
+                }
+                const uint32_t len = SpineGpuClipDeformLength(*a, clip);
+                check_range(("裁剪多边形 " + std::to_string(k)).c_str(),
+                            static_cast<uint64_t>(clip.vertex_offset) * SpineGpuConstants::kRigidVertexStride, len);
+            }
+        }
+        std::printf("  rigid setup 顶点直读：校验 %lld 段 / %lld 个 float\n", n_rigid, n_floats);
+        Check(n_rigid >= 1, "setup 直读: 夹具里至少有 1 段 rigid 顶点（否则上面全是空跑）");
     }
 
     std::printf("=== verdict: %s (%d/%d checks) ===\n", g_failed == 0 ? "PASS" : "FAIL", g_checks - g_failed,

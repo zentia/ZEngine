@@ -2347,6 +2347,10 @@ downstream reads it.
   逐类型分解见规格 `doc/GPU_SPINE_INTERCHANGE_FORMAT.md` §17 / §17.2。
   ⚠️ anim 至今比参考慢 ~1.4x：**不是一处加多了，是摊在每条时间轴上的 ~11 ns**，其中 deform 占 40%
   （容器只存增量 ⇒ 展开落在运行时，参考是加载期摊稠密的）。想动它先看 §17.2 那张实测表。
+  ⚠️ **低于 ~2% 的效果只有"同一份二进制 + 环境变量开关 + 交错跑"才量得出来**：绝对值漂 50%，
+  两边一起漂；跨会话拿数字对比（甚至改前改后各跑 3 次）都是噪声。消融估的值偏大 ~2 倍
+  （rigid setup memcpy 估 0.20 µs/帧、交错 A/B 实测 ~1%）⇒ 消融只用来找"有没有"，定收益要交错跑。
+  见规格 §17.3。
   ⚠️ `SpineReference` 按 config 改名（`OUTPUT_NAME SpineReference_$<CONFIG>`）：全工程
   `CMAKE_ARCHIVE_OUTPUT_DIRECTORY` 被统一设成同一目录（根 `CMakeLists.txt:56-60`），不改名的话
   Release 的基准会把 Debug 的 `.lib` 覆盖掉，回来编对拍就 **LNK2038**（`_ITERATOR_DEBUG_LEVEL` 不匹配）。
@@ -2358,6 +2362,10 @@ downstream reads it.
   ③ 状态对象的成员 scratch 跨帧复用（`SpineGpuTriangulator`，配合裸指针避免每帧拷贝）。
   ⚠️ **复用 scratch 的入口第一行必须 `clear()`** —— 漏了就是上一帧的残留漏进这一帧（对拍报
   `clipStart 凸块数 我们 2 vs 参考 1`）。
+- **容器里的东西能直接读就别拷**：rigid 的 setup 顶点在 `asset.vertex_buffer` 的 rigid 段里本来就是
+  连续的 `[x0,y0,x1,y1,…]`（8 B/顶点）⇒ `ApplyDeform` 用 `RigidSetupAt()` **直接把 `setup` 指进去**，
+  不 `memcpy` 到 scratch。前提是三条（字节偏移 4 对齐 / 指针真的 4 对齐 / 区间整个在 rigid 段内），
+  由 `SpineGpuHotLoopTest` section 3 钉住；坏了会**静默**读错数，只有对拍会红。区间校验留在热路径。
   ⚠️ 该目标整目标以 `_ITERATOR_DEBUG_LEVEL=0` 编译：MSVC 的 Debug 迭代器调试给每个容器构造发一个
   16 字节 `_Container_proxy`（8 次/帧），不是数据缓冲，但会把这条断言打成假阳性。
   基准新加的分配计数同理 —— **只有 Release 的数字能读**。

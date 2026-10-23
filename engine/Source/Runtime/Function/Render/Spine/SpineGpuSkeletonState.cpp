@@ -784,13 +784,29 @@ inline void SetFixedSize(std::vector<float>& v, size_t n)
 //    **稠密**数组了，运行时一次都不分配（DeformTimeline.cpp:182-257 直接读 `_frames`）。
 //    我们不落稠密帧（规格 §5.2：只存增量，省 59.5% 的载荷），所以展开是运行时的事，
 //    但"展开用的缓冲区"必须复用。
+//
+// ⚠️ 2026-10-23 之二：`setup` 已从本结构里去掉。它装的其实是 rigid 的 setup 顶点，而那批顶点
+//    在容器里本来就是**连续**的（`kRigidVertexStride = 8` B/顶点、每个顶点就是两个 float），
+//    每帧把它 memcpy 到 scratch 再读纯属白干 —— 实测 0.20 µs/帧（规格 §17.2）。现在直接把
+//    `setup` 指进 `asset.vertex_buffer`（见 `RigidSetupAt`），一次指针运算就够，
+//    既省了拷贝，也不用为缓存再付一份常驻内存。
 struct DeformScratch
 {
-    std::vector<float> setup;   // rigid 的 setup 顶点（从容器 memcpy 过来）
     std::vector<float> prev;    // 前一帧展开结果（**也**兼作"末帧"分支的 `last`）
     std::vector<float> next;    // 后一帧展开结果
 };
 thread_local DeformScratch t_deform_scratch;
+
+// rigid 段里第 `byte_offset` 字节处的 setup 顶点（`byte_offset` 必须是 `kRigidVertexStride` 的整数倍）。
+//
+// rigid 段从 `vertex_buffer` 的第 0 字节起、`weighted_segment_offset` 处结束，段内 8 B/顶点
+// （x, y 两个 float）—— 所以字节偏移天然 4 B 对齐，可以直接当 `const float*` 读。
+// 与 `SpineGpuClipper` 的 `F32At(asset.vertex_buffer, at)` 逐字节读等价，只是省掉每帧的 memcpy。
+// ⚠️ 调用方**必须**先做完区间校验（`byte0 + len * 4 <= weighted_segment_offset`）。
+inline const float* RigidSetupAt(const SpineGpuAsset& asset, size_t byte_offset)
+{
+    return reinterpret_cast<const float*>(asset.vertex_buffer.data() + byte_offset);
+}
 
 // DeformTimeline.cpp:62-258
 SpineImportResult ApplyDeform(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data,
@@ -803,7 +819,6 @@ SpineImportResult ApplyDeform(const SpineGpuAsset& asset, const SpineGpuRuntimeD
     uint32_t slot_index = 0;
     uint32_t deform_len = 0;
     bool rigid = false;
-    std::vector<float>& setup_buf = t_deform_scratch.setup;   // 复用，不每帧分配
     const float* setup = nullptr;   // rigid 的 setup 顶点（参考实现的 `attachment->getVertices()`）
     if ((tl.target & SpineGpuConstants::kDeformTargetPathBit) != 0)
     {
@@ -862,9 +877,8 @@ SpineImportResult ApplyDeform(const SpineGpuAsset& asset, const SpineGpuRuntimeD
             {
                 return Fail("apply: 裁剪多边形 " + std::to_string(k) + " 的 rigid 顶点区间越过 rigid 段");
             }
-            setup_buf.resize(deform_len);
-            std::memcpy(setup_buf.data(), asset.vertex_buffer.data() + byte0, static_cast<size_t>(deform_len) * 4u);
-            setup = setup_buf.data();
+            // 不拷贝：rigid 段的顶点布局就是 `[x0, y0, x1, y1, ...]`，直接指进去读。
+            setup = RigidSetupAt(asset, byte0);
         }
     }
     else
@@ -899,9 +913,8 @@ SpineImportResult ApplyDeform(const SpineGpuAsset& asset, const SpineGpuRuntimeD
             {
                 return Fail("apply: 绘制项 " + std::to_string(item) + " 的 rigid 顶点区间越过 rigid 段");
             }
-            setup_buf.resize(deform_len);
-            std::memcpy(setup_buf.data(), asset.vertex_buffer.data() + byte0, static_cast<size_t>(deform_len) * 4u);
-            setup = setup_buf.data();
+            // 同上：rigid 段内直接指进去读，不每帧 memcpy。
+            setup = RigidSetupAt(asset, byte0);
         }
     }
 
