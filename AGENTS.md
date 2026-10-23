@@ -2347,6 +2347,17 @@ downstream reads it.
   ⚠️ `SpineReference` 按 config 改名（`OUTPUT_NAME SpineReference_$<CONFIG>`）：全工程
   `CMAKE_ARCHIVE_OUTPUT_DIRECTORY` 被统一设成同一目录（根 `CMakeLists.txt:56-60`），不改名的话
   Release 的基准会把 Debug 的 `.lib` 覆盖掉，回来编对拍就 **LNK2038**（`_ITERATOR_DEBUG_LEVEL` 不匹配）。
+- **热路径 0 分配**：`SpineGpuHotLoopTest`（`Render/Spine/Test/`，**进 ctest**，同样不链 `ZRuntime`）——
+  断言"稳态每帧 0 次堆分配"：动画+骨架、动画+骨架+裁剪（三角形）都必须是 0，四边形裁剪每帧 ≤ 2 次。
+  谁在热路径里加回一个局部 `std::vector` / 每帧拼串，这条就红。三种修法固定为：
+  ① 烘焙期展开派生缓存（曲线表 `SpineGpuBuildCurveCache`，缓存缺失**报错**不许悄悄退化）；
+  ② `thread_local` scratch（deform 展开、裁剪几何）；
+  ③ 状态对象的成员 scratch 跨帧复用（`SpineGpuTriangulator`，配合裸指针避免每帧拷贝）。
+  ⚠️ **复用 scratch 的入口第一行必须 `clear()`** —— 漏了就是上一帧的残留漏进这一帧（对拍报
+  `clipStart 凸块数 我们 2 vs 参考 1`）。
+  ⚠️ 该目标整目标以 `_ITERATOR_DEBUG_LEVEL=0` 编译：MSVC 的 Debug 迭代器调试给每个容器构造发一个
+  16 字节 `_Container_proxy`（8 次/帧），不是数据缓冲，但会把这条断言打成假阳性。
+  基准新加的分配计数同理 —— **只有 Release 的数字能读**。
 - **ZFUNCTION 静态函数**：pesapi 的实例方法与静态函数是**两张表**（`set_property_info_size(method_count, function_count, …)`
   各自从 0 编号）；混一起编号 ⇒ 第一个静态函数越界写 `Functions[]`，编辑器启动即崩。见 `ScriptBinding.cpp`。
 - **`Component::m_ParentObject` 必须有初值 `{nullptr}`**（曾经没有）：组件 New 出来到 `PostLoadResource` 之间，

@@ -776,6 +776,22 @@ inline void SetFixedSize(std::vector<float>& v, size_t n)
     v.resize(n, 0.0f);
 }
 
+// deform 的临时数组（**跨帧复用**，与 `PoseSolver` 的 `thread_local PoseScratch` 同一招）。
+//
+// ⚠️ 2026-10-23 之前这里是 4 个**局部** `std::vector`（setup_buf / last / prev_v / next_v）
+//    ⇒ 每条 deform 时间轴**每帧** 2~4 次堆分配（malloc + 整块清零 + free）。deform 占 anim 段
+//    ~40%（按类型消融实测），而其中很大一块就是这几次分配 —— 参考实现读文件时就把每帧拼成
+//    **稠密**数组了，运行时一次都不分配（DeformTimeline.cpp:182-257 直接读 `_frames`）。
+//    我们不落稠密帧（规格 §5.2：只存增量，省 59.5% 的载荷），所以展开是运行时的事，
+//    但"展开用的缓冲区"必须复用。
+struct DeformScratch
+{
+    std::vector<float> setup;   // rigid 的 setup 顶点（从容器 memcpy 过来）
+    std::vector<float> prev;    // 前一帧展开结果（**也**兼作"末帧"分支的 `last`）
+    std::vector<float> next;    // 后一帧展开结果
+};
+thread_local DeformScratch t_deform_scratch;
+
 // DeformTimeline.cpp:62-258
 SpineImportResult ApplyDeform(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data,
                               SpineGpuSkeletonState& st, uint32_t tl_index, const FrameView& fv, float time,
@@ -787,7 +803,7 @@ SpineImportResult ApplyDeform(const SpineGpuAsset& asset, const SpineGpuRuntimeD
     uint32_t slot_index = 0;
     uint32_t deform_len = 0;
     bool rigid = false;
-    std::vector<float> setup_buf;
+    std::vector<float>& setup_buf = t_deform_scratch.setup;   // 复用，不每帧分配
     const float* setup = nullptr;   // rigid 的 setup 顶点（参考实现的 `attachment->getVertices()`）
     if ((tl.target & SpineGpuConstants::kDeformTargetPathBit) != 0)
     {
@@ -937,7 +953,7 @@ SpineImportResult ApplyDeform(const SpineGpuAsset& asset, const SpineGpuRuntimeD
 
     if (time >= fv.LastTime())
     {
-        std::vector<float> last;
+        std::vector<float>& last = t_deform_scratch.prev;   // 复用（这条分支不会同时用 prev）
         if (!ExpandDeformFrame(asset, data, tl_index, fv.frame_count - 1u, deform_len, rigid ? setup : nullptr, last))
         {
             return Fail("apply: " + TlName(tl_index) + "（deform）的帧超出 deform 长度");
@@ -1021,8 +1037,8 @@ SpineImportResult ApplyDeform(const SpineGpuAsset& asset, const SpineGpuRuntimeD
     {
         return cr;
     }
-    std::vector<float> prev_v;
-    std::vector<float> next_v;
+    std::vector<float>& prev_v = t_deform_scratch.prev;   // 复用，不每帧分配
+    std::vector<float>& next_v = t_deform_scratch.next;
     if (!ExpandDeformFrame(asset, data, tl_index, cur - 1u, deform_len, rigid ? setup : nullptr, prev_v) ||
         !ExpandDeformFrame(asset, data, tl_index, cur, deform_len, rigid ? setup : nullptr, next_v))
     {

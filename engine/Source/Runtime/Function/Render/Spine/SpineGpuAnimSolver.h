@@ -36,10 +36,27 @@
 //
 // ⚠️ 容器里存的是 **4 个控制点**（16 B），不是那张表
 //    （定长存表要 49.0 MB，存控制点 16.8 MB，实测差 65%）。
-//    ⇒ 这张表每次求值都要**重建**（18 个 float，纯前向差分，见下）。
+//    ⇒ 表在**加载后展开一次**（`SpineGpuBuildCurveCache()`），求值时只读。
+//    （2026-10-23 之前是"每次求值重建"：18 个 float 的前向差分 + 一次 O(段数) 的
+//     bezier 段计数扫描，两者合起来让 anim 段比参考实现慢 1.8x，见规格 §17。）
 //    重建的系数 `0.03f / 0.006f / 0.3f / 0.16666667f`（CurveTimeline.cpp:78-81）
 //    是 bezier 的前向差分系数，**照抄，化简即错且不报错**。
-float SpineGpuCurvePercent(SpineCurveType type, const SpineGpuBezier* bezier, float percent);
+//
+// `bezier_table` = 18 个 float（9 个采样点的 x,y 交错），只在 type == kBezier 时被读
+// （其它类型传 nullptr 也安全）。
+constexpr uint32_t kSpineBezierTableStride = 18;      // 9 点 × (x, y)
+constexpr uint32_t kSpineNoBezierIndex = 0xFFFFFFFFu; // `curve_bezier_index[]` 的"这段不是 bezier"
+
+float SpineGpuCurvePercent(SpineCurveType type, const float* bezier_table, float percent);
+
+// 把 `asset.beziers[]` 展开成 `bezier_tables[]`，并建好 `curve_bezier_index[]`。
+//
+// 必须在 **烘焙完 / 读完容器之后**各调一次（`BakeSpineGpuAsset` / `ReadSpineGpuContainer`
+// 末尾已经调了）。幂等：可以重复调，结果一样。
+//
+// 为什么不在求值里现算：那是每次求值 O(段数) 的扫描 + 18 个 float 的前向差分，
+// 等于把参考实现"加载时做一次"的工作搬到每帧 × 每条时间轴上做。
+SpineImportResult SpineGpuBuildCurveCache(SpineGpuAsset& asset);
 
 // `Animation::binarySearch(values, target, step)`（Animation.cpp:84-106）的等价实现。
 // 返回**第一个 time > target 的帧**的 float 下标（相对本时间轴的帧数组起点）。
@@ -62,8 +79,8 @@ uint32_t SpineGpuBinarySearchFrames(const float* frames, uint32_t count, uint32_
 // 一次做完三件事，因为它们必须成套：
 //   1. `percent = (time - prevTime) / (frameTime - prevTime)`
 //   2. 段号 = `cur / entries - 1`（`ColorTimeline.cpp:93` 的 `frame / ENTRIES - 1`）
-//   3. 过曲线（`SpineGpuCurvePercent`），bezier 的控制点按"本时间轴里排在第几个
-//      bezier 段"取 —— 容器存的是**紧凑**数组，不是按段号索引。
+//   3. 过曲线（`SpineGpuCurvePercent`），bezier 的表按 `curve_bezier_index[curve_first + 段号]`
+//      取（O(1)，由 `SpineGpuBuildCurveCache()` 备好；没备好就**报错**）。
 //
 // ⚠️ 参考实现写的是 `1 - (time - frameTime) / (prevTime - frameTime)`
 //    （两个负数相除再被 1 减）。数学上等价，**浮点上不等价**（多一次减法与一次除法）。

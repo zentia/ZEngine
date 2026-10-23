@@ -19,6 +19,9 @@ option(ZENGINE_BUILD_SPINE_IMPORT_TEST
 
 if(ZENGINE_BUILD_SPINE_IMPORT_TEST)
     set(_import_target SpineGpuImportTest)
+    # Spine 核心那几个 .cpp 只依赖标准库 + rapidjson ⇒ 可以编进不链 ZRuntime 的小 exe
+    # （基准与"热路径 0 分配"测试都走这条路：不链 ZRuntime 才能替换全局 operator new）。
+    set(_spine_core_dir "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
     add_executable(${_import_target}
         SpineGpuImportTest.cpp
@@ -46,6 +49,38 @@ if(ZENGINE_BUILD_SPINE_IMPORT_TEST)
     add_test(NAME ${_import_target} COMMAND ${_import_target})
 
     message(STATUS "Configured GPU-Spine importer test target: ${_import_target}")
+
+    # ---- 热路径测试：稳态每帧 0 堆分配 + 曲线缓存（规格 §17）----
+    # **不链 ZRuntime**（同上）：ZRuntime 的 MemoryManager 已经把全局 operator new/delete
+    # 接管到 mimalloc，这个 exe 再定义一份就是 LNK2005；不链它才能数得准。
+    # 夹具是内置的，不依赖 OSGame 资产 ⇒ 可以直接进 ctest。
+    set(_hot_target SpineGpuHotLoopTest)
+    add_executable(${_hot_target}
+        SpineGpuHotLoopTest.cpp
+        ${_spine_core_dir}/SpineGpuImporter.cpp
+        ${_spine_core_dir}/SpineGpuAnimSolver.cpp
+        ${_spine_core_dir}/SpineGpuAnimationState.cpp
+        ${_spine_core_dir}/SpineGpuSkeletonState.cpp
+        ${_spine_core_dir}/SpineGpuPoseSolver.cpp
+        ${_spine_core_dir}/SpineGpuClipper.cpp
+        ${_spine_core_dir}/SpineGpuBatch.cpp)
+    set_target_properties(${_hot_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests")
+    target_include_directories(${_hot_target} PRIVATE
+        "${ENGINE_ROOT_DIR}/Source"
+        "${THIRD_PARTY_DIR}/rapidjson/include")
+    # MSVC 的 Debug 迭代器调试（_ITERATOR_DEBUG_LEVEL=2）会给**每个**容器的构造
+    # 单独 malloc 一个 16 字节的 _Container_proxy —— 于是"稳态 0 分配"这条断言在
+    # Debug 下会被纯粹的调试开销打爆（实测 8 次/帧），而 Release 是干净的 0。
+    # 这个 exe 就是为了数分配而存在的，所以整目标（含它自己编译的那几份 Spine 源）
+    # 统一关掉迭代调试；它不链任何预编译库，不存在 _IDL 级别混用的 ABI 问题。
+    if(MSVC)
+        target_compile_options(${_hot_target} PRIVATE /W4 /utf-8)
+        target_compile_definitions(${_hot_target} PRIVATE _ITERATOR_DEBUG_LEVEL=0)
+    endif()
+    add_test(NAME ${_hot_target} COMMAND ${_hot_target})
+    message(STATUS "Configured GPU-Spine hot-loop test target: ${_hot_target}")
 
     # ---- 跨语言对拍（C++ 写 → C# 读 → C# 写，必须逐字节相同）----
     # 两端各自自测等于各自对上了自己的想象；字节是全格式唯一的公共事实。
@@ -137,7 +172,6 @@ if(ZENGINE_BUILD_SPINE_IMPORT_TEST)
         # **不链 ZRuntime**：只编 Spine 核心那几个 .cpp（它们只依赖标准库 + rapidjson）⇒ 单独
         # `--config Release --target SpineGpuBenchmark` 几十秒出结果，不用把整个引擎编一遍 Release。
         # 不进 ctest（是测量，不是断言）。用法见 SpineGpuBenchmark.cpp 文件头。
-        set(_spine_core_dir "${CMAKE_CURRENT_SOURCE_DIR}/..")
         add_executable(SpineGpuBenchmark EXCLUDE_FROM_ALL
             SpineGpuBenchmark.cpp
             ${_spine_core_dir}/SpineGpuImporter.cpp

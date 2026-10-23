@@ -1,5 +1,7 @@
 #include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
 
+#include "Runtime/Function/Render/Spine/SpineGpuAnimSolver.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -6756,8 +6758,8 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     }
     if (src.has_event_timeline)
     {
-        // 事件**没进容器**（chunk 11-16 里没有 event 时间轴），但"这个资产有事件"
-        // 这件事必须留在容器里 —— 否则读端无法区分"没有事件"与"被我们丢了"。
+        // 事件**定义**落 chunk 23、事件时间轴落 chunk 12（v16），但"这个资产有没有事件"
+        // 仍要在 header 里说一句 —— 否则读端无法区分"没有事件"与"被我们丢了"。
         h.flags |= SpineGpuFlags::kHasEventTimeline;
     }
     h.bone_count = bone_count;
@@ -6770,7 +6772,9 @@ SpineImportResult BakeSpineGpuAsset(const SpineSourceSkeleton& src, SpineGpuAsse
     h.bone_stride = SpineGpuConstants::kBoneStrideCompact;
     h.chunk_count = 0;   // WriteSpineGpuContainer() 填
 
-    return Ok();
+    // 曲线的派生数据（bezier 查找表 + 段→表下标）。**不落盘**，烘焙后现建一次；
+    // 缺了它采样会报错（不会退化成慢路径，见 SpineGpuAnimSolver.h）。
+    return SpineGpuBuildCurveCache(out);
 }
 
 // =====================================================================
@@ -8839,5 +8843,7 @@ SpineImportResult ReadSpineGpuContainer(const uint8_t* data, size_t len, SpineGp
         }
     }
 
-    return Ok();
+    // 曲线的派生数据（bezier 查找表 + 段→表下标）。**不落盘**，读完现建一次；
+    // 缺了它采样会报错（不会退化成慢路径，见 SpineGpuAnimSolver.h）。
+    return SpineGpuBuildCurveCache(out);
 }

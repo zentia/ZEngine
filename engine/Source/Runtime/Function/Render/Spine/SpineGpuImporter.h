@@ -617,6 +617,20 @@ struct SpineGpuAsset
     std::vector<SpineGpuBezier> beziers;
     std::vector<uint8_t> timeline_payload;
 
+    // ---- 曲线的**派生**数据（不落盘；烘焙 / 读容器后由 `SpineGpuBuildCurveCache()` 生成）----
+    // 为什么必须有：容器里 `beziers[]` 是"紧凑"排的（只有标了 bezier 的段才占一条），
+    // 求值时要知道"本时间轴里排在第几个 bezier 段" ⇒ 朴素做法是**从段 0 扫到当前段**数
+    // 一遍，那是 O(段数)/次求值；参考实现在 `CurveTimeline::setCurve()` 里就把表和下标
+    // 都备好了，求值是 O(1)。这两张表就是补上那一半：
+    //   * `curve_bezier_index`：与 `curve_types` **一一对应**的并行数组，值是该段 bezier
+    //     在 `bezier_tables` 里的条号；`kSpineNoBezierIndex` = 这段不是 bezier。
+    //   * `bezier_tables`：每条 bezier 一**次**展开的 18 个采样点（x,y 交错，与参考实现
+    //     `CurveTimeline::_curves` 同一布局），求值只读不写。
+    // ⚠️ 没建就被采样 ⇒ 采样**报错**（`SpineGpuCurvePercentAt`），绝不退化成"每次重建表"
+    //     —— 那样只是慢，而"慢"不会报错，正是这类 bug 的全部症状。
+    std::vector<uint32_t> curve_bezier_index;
+    std::vector<float> bezier_tables;
+
     // 槽位的 setup 附件名（chunk 1，紧跟槽位名之后；条数 = header.slot_count）。
     // 空串 = 这个槽位默认不挂附件 ⇒ chunk 17 里写 `kNoAttachmentName`。
     // 这是 attachment 时间轴的**复位基线**（`AttachmentTimeline.cpp:65-68`）。

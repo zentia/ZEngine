@@ -578,6 +578,12 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuBenchmark.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuBenchmark.cpp")
+# GPU-Spine hot-loop test main carve-out (same rationale): own main(), and it
+# replaces the global operator new, so it must not be compiled into ZRuntime.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuHotLoopTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Spine/Test/SpineGpuHotLoopTest.cpp")
 # Lumen global-illumination smoke-test main carve-out (same rationale). Built only
 # when ZENGINE_BUILD_LUMEN_GLOBAL_ILLUMINATION_SMOKE_TEST=ON (see
 # Function/Render/Lumen/Test/CMakeLists.txt).

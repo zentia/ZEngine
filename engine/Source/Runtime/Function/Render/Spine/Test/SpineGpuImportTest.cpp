@@ -35,6 +35,9 @@
 namespace
 {
 
+// ⚠️ 本测试**不做**"热路径每帧 0 分配"的断言 —— 那条断言要替换全局 `operator new`，
+// 而 ZRuntime 的 MemoryManager 已经把全局 new/delete 接管到 mimalloc（重复定义 ⇒ LNK2005）。
+// 那条断言在 `SpineGpuHotLoopTest`（它像基准一样只编 Spine 核心那几个 .cpp，不链 ZRuntime）。
 int g_checks = 0;
 int g_failed = 0;
 // 同一批检查跑两遍时（如 .skel 的 nonessential 开/关）用来区分是哪一轮失败，
@@ -5128,6 +5131,128 @@ int main(int argc, char** argv)
             Check(!r.ok, "clip-weighted: json 缺 vertexCount ⇒ 报错（参考实现会误判成 weighted）");
             std::printf("  (预期报错) %s\n", r.error.c_str());
         }
+    }
+
+    // ---- 14. 曲线缓存（规格 §17）：加载时展开一次，求值时只读 ----
+    // 2026-10-23 之前求值路径每次都做两件事：从段 0 数到当前段（O(段数)）+ 重建 18 个 float
+    // 的前向差分表。两者合起来让 anim 段比参考实现慢 1.8x。现在这两件事只在加载时做一次。
+    // 这里钉的正是"缓存建了 / 用上了 / 没建就报错（**绝不**静默退回慢路径）"。
+    {
+        g_prefix = "[曲线缓存] ";
+        CheckEq(static_cast<long long>(asset.bezier_tables.size()),
+                static_cast<long long>(asset.beziers.size()) *
+                    static_cast<long long>(kSpineBezierTableStride),
+                "缓存: bezier_tables = beziers × 18");
+        CheckEq(static_cast<long long>(asset.curve_bezier_index.size()),
+                static_cast<long long>(asset.curve_types.size()),
+                "缓存: curve_bezier_index 与 curve_types 一一对应");
+        if (asset.curve_bezier_index.size() == asset.curve_types.size() && asset.curve_bezier_index.size() >= 5)
+        {
+            CheckEq(static_cast<long long>(asset.curve_bezier_index[0]),
+                    static_cast<long long>(kSpineNoBezierIndex), "缓存: 段 0（stepped）没有表");
+            CheckEq(static_cast<long long>(asset.curve_bezier_index[1]), 0LL,
+                    "缓存: 段 1（bezier）指向第 0 张表");
+            CheckEq(static_cast<long long>(asset.curve_bezier_index[2]),
+                    static_cast<long long>(kSpineNoBezierIndex), "缓存: 段 2（linear）没有表");
+            CheckEq(static_cast<long long>(asset.curve_bezier_index[3]),
+                    static_cast<long long>(kSpineNoBezierIndex), "缓存: 段 3（linear）没有表");
+            CheckEq(static_cast<long long>(asset.curve_bezier_index[4]),
+                    static_cast<long long>(kSpineNoBezierIndex), "缓存: 段 4（linear）没有表");
+        }
+
+        // 表本身：手算 9 个采样点的第 1 个（t = 0.1）。
+        // x(0.1) = 3·(1-t)²t·cx1 + 3·(1-t)t²·cx2 + t³，控制点 (0.25, 0.5) / (0.75, 0.8)
+        //   = 3·0.81·0.1·0.25 + 3·0.9·0.01·0.75 + 0.001 = 0.06075 + 0.02025 + 0.001 = 0.082
+        // y(0.1) = 3·0.81·0.1·0.5 + 3·0.9·0.01·0.8 + 0.001 = 0.1215 + 0.0216 + 0.001 = 0.1441
+        if (asset.bezier_tables.size() >= kSpineBezierTableStride)
+        {
+            Check(std::fabs(asset.bezier_tables[0] - 0.082f) < 1e-6f, "缓存: 表[0] = x(0.1) = 0.082");
+            Check(std::fabs(asset.bezier_tables[1] - 0.1441f) < 1e-6f, "缓存: 表[1] = y(0.1) = 0.1441");
+            Check(asset.bezier_tables[0] < asset.bezier_tables[2] &&
+                      asset.bezier_tables[2] < asset.bezier_tables[16],
+                  "缓存: 表的 x 单调递增（前向差分展开错了就不单调，且不报错）");
+        }
+
+        // 求值时真的用上了表：rotate 第 2 段（time ∈ (0.5, 1)）标的是 bezier。
+        // 取 time = 0.75 ⇒ percent = 1 - (0.75 - 1)/(0.5 - 1) = 0.5；
+        // bezier(0.25, 0.5, 0.75, 0.8) 在 t = 0.5 处 y = 3·0.25·0.5·0.5 + 3·0.5·0.25·0.8 + 0.125
+        //                                          = 0.1875 + 0.3 + 0.125 = 0.6125
+        {
+            uint32_t tli = 0xFFFFFFFFu;
+            for (uint32_t i = 0; i < asset.timelines.size(); ++i)
+            {
+                const SpineGpuTimeline& t = asset.timelines[i];
+                if (t.type == static_cast<uint16_t>(SpineTimelineType::kRotate) && t.frame_count >= 3u &&
+                    t.bezier_count >= 1u)
+                {
+                    tli = i;
+                    break;
+                }
+            }
+            Check(tli != 0xFFFFFFFFu, "缓存: 找到带 bezier 的 rotate 时间轴");
+            if (tli != 0xFFFFFFFFu)
+            {
+                const SpineGpuTimeline& tl = asset.timelines[tli];
+                const uint32_t entries = SpineTimelineEntries(SpineTimelineType::kRotate);
+                const float* frames = asset.frames.data() + tl.frame_first;
+                const uint32_t cur = SpineGpuBinarySearchFrames(frames, tl.frame_count, entries, 0.75f);
+                CheckEq(static_cast<long long>(cur / entries), 2LL, "缓存: 0.75 落在第 1 段（帧 1 → 帧 2）");
+                float got = -1.0f;
+                const SpineImportResult cpr = SpineGpuCurvePercentAt(asset, tl, tli, cur, 0.75f, got);
+                Check(cpr.ok, "缓存: bezier 段求值成功");
+                if (!cpr.ok)
+                {
+                    std::printf("  error: %s\n", cpr.error.c_str());
+                }
+                Check(std::fabs(got - 0.6125f) < 2e-3f,
+                      "缓存: percent 0.5 处 = 0.6125（手算；不是 0.5 ⇒ 曲线真的生效了）");
+            }
+        }
+
+        // 缓存没建 ⇒ **必须报错**。静默退回"从段 0 扫一遍"只是慢，而"慢"正是这类 bug 的
+        // 唯一表现 —— 让它变成一条错误信息。
+        {
+            SpineGpuAsset nocache = asset;
+            nocache.curve_bezier_index.clear();
+            uint32_t tli = 0xFFFFFFFFu;
+            for (uint32_t i = 0; i < nocache.timelines.size(); ++i)
+            {
+                const SpineGpuTimeline& t = nocache.timelines[i];
+                if (t.type == static_cast<uint16_t>(SpineTimelineType::kRotate) && t.frame_count >= 3u &&
+                    t.bezier_count >= 1u)
+                {
+                    tli = i;
+                    break;
+                }
+            }
+            if (tli != 0xFFFFFFFFu)
+            {
+                const SpineGpuTimeline& tl = nocache.timelines[tli];
+                const uint32_t entries = SpineTimelineEntries(SpineTimelineType::kRotate);
+                const uint32_t cur =
+                    SpineGpuBinarySearchFrames(nocache.frames.data() + tl.frame_first, tl.frame_count, entries, 0.75f);
+                float got = -1.0f;
+                const SpineImportResult r = SpineGpuCurvePercentAt(nocache, tl, tli, cur, 0.75f, got);
+                Check(!r.ok, "缓存: 没建缓存 ⇒ 报错（不静默退回 O(段数) 的慢路径）");
+                std::printf("  (预期报错) %s\n", r.error.c_str());
+            }
+        }
+
+        // 往返：容器里**只有** 4 个控制点（表是派生的、不落盘），读回来必须重建出一模一样的表
+        {
+            std::vector<uint8_t> bytes;
+            Check(WriteSpineGpuContainer(asset, bytes).ok, "缓存: 写容器");
+            SpineGpuAsset back;
+            Check(!bytes.empty() && ReadSpineGpuContainer(bytes.data(), bytes.size(), back).ok, "缓存: 读回容器");
+            Check(back.bezier_tables == asset.bezier_tables, "缓存: 读回来重建的表逐值相同");
+            Check(back.curve_bezier_index == asset.curve_bezier_index, "缓存: 读回来重建的段→表下标相同");
+            // 幂等：再建一次还是同一份
+            SpineGpuAsset twice = asset;
+            Check(SpineGpuBuildCurveCache(twice).ok, "缓存: 重复建缓存成功");
+            Check(twice.bezier_tables == asset.bezier_tables && twice.curve_bezier_index == asset.curve_bezier_index,
+                  "缓存: 幂等（重复建结果一样）");
+        }
+        g_prefix.clear();
     }
 
     std::printf("=== verdict: %s (%d/%d checks) ===\n", g_failed == 0 ? "PASS" : "FAIL",

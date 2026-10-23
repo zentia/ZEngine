@@ -46,7 +46,10 @@ public:
     const std::vector<int>& Triangulate(const std::vector<float>& vertices);
 
     // 把三角形合并成凸多边形（扇形合并 + 补三角形）。返回的每块是 [x, y, ...]。
-    const std::vector<std::vector<float>>& Decompose(const std::vector<float>& vertices, const std::vector<int>& triangles);
+    //
+    // 返回**非 const** 引用：`ClipStart()` 要 `swap` 走结果（每帧拷贝 = 每块一次分配 +
+    // 一次释放）。三角形与其凸分解都只在三角化器里活一轮，换出去的旧缓冲下一帧继续用。
+    std::vector<std::vector<float>>& Decompose(const std::vector<float>& vertices, const std::vector<int>& triangles);
 
     static bool PositiveArea(float p1x, float p1y, float p2x, float p2y, float p3x, float p3y);
     static int Winding(float p1x, float p1y, float p2x, float p2y, float p3x, float p3y);
@@ -59,6 +62,10 @@ private:
     std::vector<int> m_Indices;
     std::vector<uint8_t> m_IsConcave;
     std::vector<int> m_Triangles;
+    // `Decompose()` 里"正在攒的那一块"。原来是函数内的局部 `std::vector` ⇒ 每帧每条裁剪
+    // 多边形 2 次分配（还要随扇形合并反复扩容）。跨帧留着就只在第一次分配。
+    std::vector<int> m_PolygonIndices;
+    std::vector<float> m_Polygon;
 };
 
 // `spine::SkeletonClipping` 的转录（SkeletonClipping.cpp:43-335）。
@@ -81,7 +88,13 @@ public:
     const std::vector<float>& ClippedVertices() const { return m_ClippedVertices; }
     const std::vector<uint16_t>& ClippedTriangles() const { return m_ClippedTriangles; }
     const std::vector<float>& ClippedUVs() const { return m_ClippedUVs; }
-    const std::vector<std::vector<float>>& ClippingPolygons() const { return m_ClippingPolygons; }
+    // 凸分解的结果**不拷贝**：直接指向三角化器里那一份（拷贝 = 每帧每块一次分配 + 一次释放，
+    // 而 `ClipEnd()` 每帧都会把它清掉 ⇒ 拷贝出来的一定活不过一帧）。
+    const std::vector<std::vector<float>>& ClippingPolygons() const
+    {
+        static const std::vector<std::vector<float>> kEmpty;
+        return m_ClippingPolygons != nullptr ? *m_ClippingPolygons : kEmpty;
+    }
 
     size_t degenerate_pieces = 0;   // 被丢弃的"只有 1 个点"的裁剪输出（见文件头）
 
@@ -98,7 +111,9 @@ private:
     std::vector<uint16_t> m_ClippedTriangles;
     std::vector<float> m_ClippedUVs;
     std::vector<float> m_Scratch;
-    std::vector<std::vector<float>> m_ClippingPolygons;
+    // == nullptr ⇔ 现在不在裁。非空时指向 `m_Triangulator` 里那一份结果（见 `ClippingPolygons()`）。
+    // 非 const：`ClipStart()` 要给每块补上闭合点（push_back 首点）。
+    std::vector<std::vector<float>>* m_ClippingPolygons = nullptr;
     bool m_Active = false;
     uint32_t m_ClipRow = 0;
     uint16_t m_EndSlot = SpineGpuConstants::kNoClipEndSlot;

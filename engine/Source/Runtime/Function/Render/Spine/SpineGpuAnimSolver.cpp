@@ -24,6 +24,13 @@ SpineImportResult Fail(std::string message)
     return r;
 }
 
+SpineImportResult Ok()
+{
+    SpineImportResult r;
+    r.ok = true;
+    return r;
+}
+
 }   // namespace
 
 // ---- 从这里起是导出的（骨骼侧解算 `SpineGpuPoseSolver` 要用同一份实现）----
@@ -81,50 +88,114 @@ SpineImportResult SpineGpuCurvePercentAt(const SpineGpuAsset& asset, const Spine
 
     // 段号 = 前一帧的下标（`ColorTimeline.cpp:93` `frame / ENTRIES - 1`）
     const uint32_t segment = cur / entries - 1u;
-    if (static_cast<size_t>(tl.curve_first) + segment >= asset.curve_types.size())
+    const size_t ci = static_cast<size_t>(tl.curve_first) + segment;
+    if (ci >= asset.curve_types.size())
     {
         return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴的曲线段下标越界");
     }
-    const SpineCurveType curve =
-        static_cast<SpineCurveType>(asset.curve_types[static_cast<size_t>(tl.curve_first) + segment]);
-    const SpineGpuBezier* bez = nullptr;
+    const SpineCurveType curve = static_cast<SpineCurveType>(asset.curve_types[ci]);
+    const float* bez_table = nullptr;
     if (curve == SpineCurveType::kBezier)
     {
-        // bezier 是按段序**紧凑**排的 ⇒ 这一段之前标了 bezier 的段数就是下标。
-        uint32_t nth = 0;
-        for (uint32_t s = 0; s < segment; ++s)
+        // ⚠️ `curve_bezier_index` 是**派生**数据（加载后由 `SpineGpuBuildCurveCache()` 建）。
+        //    没建就在这里报错，绝不退回"从段 0 扫一遍数 bezier"—— 那只慢不报错，
+        //    而"慢"正是这类 bug 唯一的表现。
+        if (asset.curve_bezier_index.size() != asset.curve_types.size())
         {
-            if (asset.curve_types[static_cast<size_t>(tl.curve_first) + s] ==
-                static_cast<uint8_t>(SpineCurveType::kBezier))
-            {
-                ++nth;
-            }
+            return Fail("sample: 第 " + std::to_string(tl_index) +
+                        " 条时间轴要读 bezier，但曲线缓存没建（烘焙 / 读容器后必须调 "
+                        "SpineGpuBuildCurveCache）—— 不在这里悄悄退化成 O(段数) 的慢路径");
         }
-        if (nth >= tl.bezier_count)
+        const uint32_t bi = asset.curve_bezier_index[ci];
+        if (bi == kSpineNoBezierIndex)
         {
             return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴第 " + std::to_string(segment) +
-                        " 段标了 bezier 但控制点不够");
+                        " 段标了 bezier 但缓存里没有控制点");
         }
-        const size_t bi = static_cast<size_t>(tl.bezier_first) + nth;
-        if (bi >= asset.beziers.size())
+        if (static_cast<size_t>(bi) * kSpineBezierTableStride + kSpineBezierTableStride >
+            asset.bezier_tables.size())
         {
-            return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴的 bezier 下标越界");
+            return Fail("sample: 第 " + std::to_string(tl_index) + " 条时间轴的 bezier 表下标越界");
         }
-        bez = &asset.beziers[bi];
+        bez_table = &asset.bezier_tables[static_cast<size_t>(bi) * kSpineBezierTableStride];
     }
-    percent_out = SpineGpuCurvePercent(curve, bez, percent);
-    SpineImportResult r;
-    r.ok = true;
-    return r;
+    percent_out = SpineGpuCurvePercent(curve, bez_table, percent);
+    return Ok();
 }
 
-// bezier 查找表的重建：`CurveTimeline::setCurve()`（:78-105）。
-// 输出 9 个采样点（t = 0.1 .. 0.9），对应参考实现的 `BEZIER_VALUES = 10*2-2 = 18` 个 float。
+// 定义在下面（`SpineGpuCurvePercent` 旁边）：把 4 个控制点展开成 18 个采样点。
+void BuildBezierTable(const SpineGpuBezier& b, float* out);
+
+SpineImportResult SpineGpuBuildCurveCache(SpineGpuAsset& asset)
+{
+    asset.curve_bezier_index.assign(asset.curve_types.size(), kSpineNoBezierIndex);
+    asset.bezier_tables.assign(static_cast<size_t>(asset.beziers.size()) * kSpineBezierTableStride, 0.0f);
+
+    // 每条 bezier 展开一次（18 float：9 个采样点的 x,y 交错，与参考 `_curves` 同布局）。
+    for (size_t i = 0; i < asset.beziers.size(); ++i)
+    {
+        BuildBezierTable(asset.beziers[i], &asset.bezier_tables[i * kSpineBezierTableStride]);
+    }
+
+    // 每段 bezier 的表条号：时间轴 × 段序扫一遍（**只在加载时**），之后求值 O(1)。
+    for (uint32_t tli = 0; tli < asset.timelines.size(); ++tli)
+    {
+        const SpineGpuTimeline& tl = asset.timelines[tli];
+        if (!SpineTimelineHasCurve(static_cast<SpineTimelineType>(tl.type)))
+        {
+            continue;   // attachment / drawOrder 没有曲线
+        }
+        if (tl.frame_count < 2u)
+        {
+            continue;   // 段数 = 帧数 - 1 ⇒ 0 段
+        }
+        const uint32_t segments = tl.frame_count - 1u;
+        if (static_cast<size_t>(tl.curve_first) + segments > asset.curve_types.size())
+        {
+            return Fail("curve cache: 第 " + std::to_string(tli) + " 条时间轴的曲线段区间越界");
+        }
+        uint32_t nth = 0;
+        for (uint32_t s = 0; s < segments; ++s)
+        {
+            const size_t ci = static_cast<size_t>(tl.curve_first) + s;
+            if (asset.curve_types[ci] != static_cast<uint8_t>(SpineCurveType::kBezier))
+            {
+                continue;
+            }
+            if (nth >= tl.bezier_count)
+            {
+                return Fail("curve cache: 第 " + std::to_string(tli) + " 条时间轴有 " +
+                            std::to_string(tl.bezier_count) + " 条 bezier，但第 " + std::to_string(s) +
+                            " 段又标了一条");
+            }
+            const uint32_t bi = tl.bezier_first + nth;
+            if (bi >= asset.beziers.size())
+            {
+                return Fail("curve cache: 第 " + std::to_string(tli) + " 条时间轴的 bezier 下标越界");
+            }
+            asset.curve_bezier_index[ci] = bi;
+            ++nth;
+        }
+        if (nth != tl.bezier_count)
+        {
+            return Fail("curve cache: 第 " + std::to_string(tli) + " 条时间轴标了 " +
+                        std::to_string(tl.bezier_count) + " 条 bezier，但只有 " + std::to_string(nth) +
+                        " 段曲线是 bezier（容器不自洽）");
+        }
+    }
+    return Ok();
+}
+
+// bezier 查找表的展开：`CurveTimeline::setCurve()`（:78-105）。
+// 输出 9 个采样点（t = 0.1 .. 0.9），写成 **x,y 交错**的 18 个 float —— 与参考实现的
+// `_curves` 同一布局（`BEZIER_VALUES = 10*2-2 = 18`，`_curves[i] = x, _curves[i+1] = y`）。
 //
 // ⚠️ 4 个常数 `0.03f / 0.006f / 0.3f / 0.16666667f` **照抄**：
 //    它们是"步长 0.1 的三次 bezier 前向差分"的系数，不是可以重排的算术式，
 //    化简即错且不报错（曲线会悄悄变成另一条）。
-void BuildBezierTable(const SpineGpuBezier& b, float* xs, float* ys)
+//
+// `out` 至少 18 个 float（= `kSpineBezierTableStride`）。
+void BuildBezierTable(const SpineGpuBezier& b, float* out)
 {
     const float tmpx = (-b.cx1 * 2.0f + b.cx2) * 0.03f;
     const float tmpy = (-b.cy1 * 2.0f + b.cy2) * 0.03f;
@@ -138,8 +209,8 @@ void BuildBezierTable(const SpineGpuBezier& b, float* xs, float* ys)
     float y = dfy;
     for (int n = 0; n < 9; ++n)
     {
-        xs[n] = x;
-        ys[n] = y;
+        out[n * 2] = x;
+        out[n * 2 + 1] = y;
         dfx += ddfx;
         dfy += ddfy;
         ddfx += dddfx;
@@ -149,7 +220,7 @@ void BuildBezierTable(const SpineGpuBezier& b, float* xs, float* ys)
     }
 }
 
-float SpineGpuCurvePercent(SpineCurveType type, const SpineGpuBezier* bezier, float percent)
+float SpineGpuCurvePercent(SpineCurveType type, const float* bezier_table, float percent)
 {
     // `MathUtil::clamp(percent, 0, 1)`（CurveTimeline.cpp:112）—— 参考实现先夹一遍。
     if (percent < 0.0f)
@@ -169,29 +240,27 @@ float SpineGpuCurvePercent(SpineCurveType type, const SpineGpuBezier* bezier, fl
     {
         return percent;   // kLinear
     }
-    if (bezier == nullptr)
+    if (bezier_table == nullptr)
     {
-        return percent;   // 容器不自洽（标了 bezier 却没有控制点）—— 读端已经报过了
+        return percent;   // 容器不自洽（标了 bezier 却没有表）—— 读端 / 采样已经报过了
     }
 
-    float xs[9];
-    float ys[9];
-    BuildBezierTable(*bezier, xs, ys);
-
     // `getCurvePercent()`（:118-141）：找第一个 x >= percent 的点，与前一点线性插值。
+    // 表是 x,y 交错的 18 个 float（与参考的 `_curves` 同布局）。
     float x = 0.0f;
     for (int n = 0; n < 9; ++n)
     {
-        x = xs[n];
+        x = bezier_table[n * 2];
         if (x >= percent)
         {
-            const float prev_x = (n == 0) ? 0.0f : xs[n - 1];
-            const float prev_y = (n == 0) ? 0.0f : ys[n - 1];
-            return prev_y + (ys[n] - prev_y) * (percent - prev_x) / (x - prev_x);
+            const float prev_x = (n == 0) ? 0.0f : bezier_table[(n - 1) * 2];
+            const float prev_y = (n == 0) ? 0.0f : bezier_table[(n - 1) * 2 + 1];
+            return prev_y + (bezier_table[n * 2 + 1] - prev_y) * (percent - prev_x) / (x - prev_x);
         }
     }
     // 落在最后一个采样点之后：与 (1,1) 连线。
-    return ys[8] + (1.0f - ys[8]) * (percent - x) / (1.0f - x);
+    const float last_y = bezier_table[8 * 2 + 1];
+    return last_y + (1.0f - last_y) * (percent - x) / (1.0f - x);
 }
 
 std::vector<uint8_t> BuildSpineStringBlob(const SpineGpuAsset& asset)

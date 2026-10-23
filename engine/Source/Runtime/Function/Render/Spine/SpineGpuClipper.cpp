@@ -50,9 +50,19 @@ namespace
     //   rigid    —— `vertex_offset` 起 `count` 个顶点（8 B：bindPos），槽位骨骼单矩阵；deform 非空 ⇒ 整体替换
     //   weighted —— 每顶点 (influence_offset, influence_count)，权重是 **u8 / 255**（容器的量化，
     //               与 spine_gpu.vert 同一个公式 —— 不是参考实现的 float 权重）；deform 按影响顺序逐个加
+    // 错误信息的前缀。**不在调用点拼字符串**：那等于每帧每个被裁剪的槽位一次堆分配
+    // （`"clip: 绘制项 " + std::to_string(...)` 超过 SSO 容量，必走堆）。改成只带前缀 + 编号，
+    // 真的失败时才拼。
+    struct ClipLabel
+    {
+        const char* prefix = "";
+        uint32_t id = 0;
+        std::string Text() const { return std::string(prefix) + std::to_string(id); }
+    };
+
     SpineImportResult SkinVertices(const SpineGpuAsset& asset, const SpineGpuPoseResult& pose, SpineVertexFormat format,
                                    uint32_t vertex_offset, uint32_t count, uint32_t slot_bone,
-                                   const std::vector<float>& deform, std::vector<float>& out, const char* what)
+                                   const std::vector<float>& deform, std::vector<float>& out, const ClipLabel& what)
     {
         out.assign(static_cast<size_t>(count) * 2u, 0.0f);
         if (format == SpineVertexFormat::kRigid)
@@ -60,16 +70,16 @@ namespace
             if ((static_cast<size_t>(vertex_offset) + count) * SpineGpuConstants::kRigidVertexStride >
                 asset.weighted_segment_offset)
             {
-                return Fail(std::string(what) + "的 rigid 顶点区间越过 rigid 段");
+                return Fail(what.Text() + "的 rigid 顶点区间越过 rigid 段");
             }
             if (!deform.empty() && deform.size() != static_cast<size_t>(count) * 2u)
             {
-                return Fail(std::string(what) + "的 deform 长度 " + std::to_string(deform.size()) + " ≠ 2 × " +
+                return Fail(what.Text() + "的 deform 长度 " + std::to_string(deform.size()) + " ≠ 2 × " +
                             std::to_string(count));
             }
             if (slot_bone >= pose.bones.size())
             {
-                return Fail(std::string(what) + "的槽位骨骼越界");
+                return Fail(what.Text() + "的槽位骨骼越界");
             }
             const SpineGpuBoneSample& b = pose.bones[slot_bone];
             const float x = b.world_x;
@@ -100,7 +110,7 @@ namespace
         if (w0 + (static_cast<size_t>(vertex_offset) + count) * SpineGpuConstants::kRigidVertexStride >
             asset.vertex_buffer.size())
         {
-            return Fail(std::string(what) + "的 weighted 顶点区间越过顶点缓冲");
+            return Fail(what.Text() + "的 weighted 顶点区间越过顶点缓冲");
         }
         size_t f = 0;   // deform 下标：按影响顺序，每个影响 2 个（VertexAttachment.cpp:114-127）
         for (uint32_t v = 0; v < count; ++v)
@@ -111,7 +121,7 @@ namespace
             if (static_cast<uint64_t>(off) + cnt > asset.influence_bone.size() ||
                 (static_cast<uint64_t>(off) + cnt) * 2u > asset.influence_bind.size())
             {
-                return Fail(std::string(what) + "的影响区间越过影响流");
+                return Fail(what.Text() + "的影响区间越过影响流");
             }
             float wx = 0.0f;
             float wy = 0.0f;
@@ -120,7 +130,7 @@ namespace
                 const SpineInfluenceBone& ib = asset.influence_bone[static_cast<size_t>(off) + k];
                 if (ib.bone_idx >= pose.bones.size())
                 {
-                    return Fail(std::string(what) + "的影响骨骼越界");
+                    return Fail(what.Text() + "的影响骨骼越界");
                 }
                 const SpineGpuBoneSample& bone = pose.bones[ib.bone_idx];
                 float vx = asset.influence_bind[(static_cast<size_t>(off) + k) * 2u];
@@ -129,7 +139,7 @@ namespace
                 {
                     if (f + 1u >= deform.size())
                     {
-                        return Fail(std::string(what) + "的 deform 比影响数短");
+                        return Fail(what.Text() + "的 deform 比影响数短");
                     }
                     vx = vx + deform[f];
                     vy = vy + deform[f + 1u];
@@ -143,7 +153,7 @@ namespace
         }
         if (!deform.empty() && f != deform.size())
         {
-            return Fail(std::string(what) + "的 deform 长度 " + std::to_string(deform.size()) + " ≠ 2 × 影响数 " +
+            return Fail(what.Text() + "的 deform 长度 " + std::to_string(deform.size()) + " ≠ 2 × 影响数 " +
                         std::to_string(f / 2u));
         }
         return Ok();
@@ -282,16 +292,38 @@ const std::vector<int>& SpineGpuTriangulator::Triangulate(const std::vector<floa
     return triangles;
 }
 
-const std::vector<std::vector<float>>& SpineGpuTriangulator::Decompose(const std::vector<float>& vertices,
-                                                                       const std::vector<int>& triangles)
+// 每帧每条裁剪多边形都会走一次 ⇒ 中间缓冲全部跨帧复用（实测原来这段占 geo 段的一块）。
+// ⚠️ 只改**缓冲的生命周期**，不动任何判据：合并条件、`ii = 0` 的重扫、末尾删空块，
+//    全部照抄参考实现（`Triangulator::decompose`）。
+std::vector<std::vector<float>>& SpineGpuTriangulator::Decompose(const std::vector<float>& vertices,
+                                                                const std::vector<int>& triangles)
 {
     std::vector<std::vector<float>>& convex_polygons = m_ConvexPolygons;
-    convex_polygons.clear();
     std::vector<std::vector<int>>& convex_polygons_indices = m_ConvexPolygonsIndices;
-    convex_polygons_indices.clear();
+    size_t n_poly = 0;   // 已攒下的块数（**不**在开头 clear：内层缓冲要留着复用）
 
-    std::vector<int> polygon_indices;
-    std::vector<float> polygon;
+    std::vector<int>& polygon_indices = m_PolygonIndices;
+    std::vector<float>& polygon = m_Polygon;
+    // ⚠️ 必须清：缓冲跨帧留着，但**内容**不能留 —— 不清的话第一块会把上一帧的最后一块再写一遍
+    // （表现就是 clipStart 的凸块数比参考多，且不报错）。
+    polygon.clear();
+    polygon_indices.clear();
+    // 把"正在攒的那一块"落进结果里。用 `assign` 写进**已存在**的元素（容量留着），
+    // 不用 `push_back(polygon)` —— 后者每块一次拷贝构造 = 一次分配。
+    const auto flush = [&]() {
+        if (polygon.empty())
+        {
+            return;
+        }
+        if (n_poly >= convex_polygons.size())
+        {
+            convex_polygons.emplace_back();
+            convex_polygons_indices.emplace_back();
+        }
+        convex_polygons[n_poly].assign(polygon.begin(), polygon.end());
+        convex_polygons_indices[n_poly].assign(polygon_indices.begin(), polygon_indices.end());
+        ++n_poly;
+    };
 
     // Merge subsequent triangles if they form a triangle fan.
     int fan_base_index = -1, last_winding = 0;
@@ -322,26 +354,27 @@ const std::vector<std::vector<float>>& SpineGpuTriangulator::Decompose(const std
         // Otherwise make this triangle the new base.
         if (!merged)
         {
-            if (!polygon.empty())
-            {
-                convex_polygons.push_back(polygon);
-                convex_polygons_indices.push_back(polygon_indices);
-            }
-            polygon = {x1, y1, x2, y2, x3, y3};
-            polygon_indices = {t1, t2, t3};
+            flush();   // 原来：`if (!polygon.empty()) convex_polygons.push_back(polygon)`
+            polygon.clear();   // 原来：`polygon = {x1, y1, x2, y2, x3, y3}`（初始化列表 ⇒ 一次分配）
+            polygon.push_back(x1);
+            polygon.push_back(y1);
+            polygon.push_back(x2);
+            polygon.push_back(y2);
+            polygon.push_back(x3);
+            polygon.push_back(y3);
+            polygon_indices.clear();   // 原来：`polygon_indices = {t1, t2, t3}`
+            polygon_indices.push_back(t1);
+            polygon_indices.push_back(t2);
+            polygon_indices.push_back(t3);
             last_winding = Winding(x1, y1, x2, y2, x3, y3);
             fan_base_index = t1;
         }
     }
 
-    if (!polygon.empty())
-    {
-        convex_polygons.push_back(polygon);
-        convex_polygons_indices.push_back(polygon_indices);
-    }
+    flush();
 
     // Go through the list of polygons and try to merge the remaining triangles with the found triangle fans.
-    for (size_t i = 0, n = convex_polygons.size(); i < n; ++i)
+    for (size_t i = 0, n = n_poly; i < n; ++i)
     {
         std::vector<int>& pi = convex_polygons_indices[i];
         if (pi.empty())
@@ -401,14 +434,26 @@ const std::vector<std::vector<float>>& SpineGpuTriangulator::Decompose(const std
     }
 
     // Remove empty polygons that resulted from the merge step above.
-    for (int i = static_cast<int>(convex_polygons.size()) - 1; i >= 0; --i)
+    // 原来是 `erase`（把整条 vector 往左搬 + 析构被删元素 ⇒ 内层缓冲全丢）。
+    // 改成"空块换到末尾"再一次性截尾：不搬动，且被截掉的正是空块（本来就没内容）。
+    size_t k = 0;
+    for (size_t i = 0; i < n_poly; ++i)
     {
-        if (convex_polygons[static_cast<size_t>(i)].empty())
+        if (convex_polygons[i].empty())
         {
-            convex_polygons.erase(convex_polygons.begin() + i);
-            convex_polygons_indices.erase(convex_polygons_indices.begin() + i);
+            continue;
         }
+        if (k != i)
+        {
+            convex_polygons[k].swap(convex_polygons[i]);
+            convex_polygons_indices[k].swap(convex_polygons_indices[i]);
+        }
+        ++k;
     }
+    // ⚠️ 截尾会析构那几块（缓冲随之释放）。空块没有内容可留，下一帧 `flush()` 会
+    //    `emplace_back()` 补回来 ⇒ 稳态每帧最多"上一帧的空块数"次分配。实测为 0。
+    convex_polygons.resize(k);
+    convex_polygons_indices.resize(k);
 
     return convex_polygons;
 }
@@ -428,16 +473,19 @@ size_t SpineGpuSkeletonClipping::ClipStart(uint32_t clip_row, uint16_t end_slot,
     m_EndSlot = end_slot;
 
     m_ClippingPolygon = world_polygon;
-    m_ClippingPolygons.clear();
     if (m_ClippingPolygon.size() < 6)
     {
         // 参考实现在这里 UB（makeClockwise 的 `len - 3` 下溢），见文件头。作用域照常，裁出来为空。
+        m_ClippingPolygons = nullptr;
         return 0;
     }
     MakeClockwise(m_ClippingPolygon);
-    m_ClippingPolygons = m_Triangulator.Decompose(m_ClippingPolygon, m_Triangulator.Triangulate(m_ClippingPolygon));
+    // **不拷贝**：结果只活在三角化器里，这里只记住指针。
+    // 它是唯一的存放处 ⇒ `Decompose()` 下一帧能直接复用上一帧那些块的缓冲（稳态 0 分配）。
+    // （拷一份出来的话，`ClipEnd()` 每帧清一次 ⇒ 拷贝必然活不过一帧，等于每帧重新分配。）
+    m_ClippingPolygons = &m_Triangulator.Decompose(m_ClippingPolygon, m_Triangulator.Triangulate(m_ClippingPolygon));
 
-    for (std::vector<float>& polygon : m_ClippingPolygons)
+    for (std::vector<float>& polygon : *m_ClippingPolygons)
     {
         MakeClockwise(polygon);
         const float x0 = polygon[0];
@@ -445,7 +493,7 @@ size_t SpineGpuSkeletonClipping::ClipStart(uint32_t clip_row, uint16_t end_slot,
         polygon.push_back(x0);
         polygon.push_back(y0);
     }
-    return m_ClippingPolygons.size();
+    return m_ClippingPolygons->size();
 }
 
 void SpineGpuSkeletonClipping::ClipEnd(uint32_t slot)
@@ -465,7 +513,7 @@ void SpineGpuSkeletonClipping::ClipEnd()
     m_Active = false;
     m_ClipRow = 0;
     m_EndSlot = SpineGpuConstants::kNoClipEndSlot;
-    m_ClippingPolygons.clear();
+    m_ClippingPolygons = nullptr;   // 只是不再指向三角化器的结果；那些缓冲留给下一帧复用
     m_ClippedVertices.clear();
     m_ClippedUVs.clear();
     m_ClippedTriangles.clear();
@@ -478,7 +526,11 @@ void SpineGpuSkeletonClipping::ClipTriangles(const float* vertices, const uint16
     std::vector<float>& clip_output = m_ClipOutput;
     std::vector<float>& clipped_vertices = m_ClippedVertices;
     std::vector<uint16_t>& clipped_triangles = m_ClippedTriangles;
-    const std::vector<std::vector<float>>& polygons = m_ClippingPolygons;
+    if (m_ClippingPolygons == nullptr)
+    {
+        return;   // 没在裁（`ClipTriangles` 只在 `IsClipping()` 时被调，这里是兜底）
+    }
+    const std::vector<std::vector<float>>& polygons = *m_ClippingPolygons;
     const size_t polygons_count = polygons.size();
 
     size_t index = 0;
@@ -764,28 +816,34 @@ SpineImportResult SpineGpuComputeItemGeometry(const SpineGpuAsset& asset, const 
     {
         return Fail("clip: 绘制项 " + std::to_string(draw_item) + " 的槽位越界");
     }
-    const std::string what = "clip: 绘制项 " + std::to_string(draw_item);
-    std::vector<float> local_world;
+    // 这个函数**每个被裁剪的槽位每帧都会走一次**。原来它有 4 处每帧堆分配：两个局部
+    // `std::vector`、`triangles = {…}` 的初始化列表、以及拼错误信息的 `std::string`。
+    // 中间缓冲改成 `thread_local` 跨帧复用，错误信息改成失败时才拼 ⇒ 稳态 0 分配。
+    thread_local std::vector<float> t_item_world;
+    thread_local std::vector<float> t_item_uv;
+    const ClipLabel what{"clip: 绘制项 ", draw_item};
+    std::vector<float>& local_world = t_item_world;
+    std::vector<float>& local_uv = t_item_uv;
     SpineImportResult r = SkinVertices(asset, pose, di.vertex_format, di.vertex_base, di.vertex_count,
-                                       asset.slot_bone[di.slot_index], deform, local_world, what.c_str());
+                                       asset.slot_bone[di.slot_index], deform, local_world, what);
     if (!r.ok)
     {
         return r;
     }
-    std::vector<float> local_uv(static_cast<size_t>(di.vertex_count) * 2u);
+    local_uv.assign(static_cast<size_t>(di.vertex_count) * 2u, 0.0f);
     for (uint32_t v = 0; v < di.vertex_count; ++v)
     {
         const size_t uv = static_cast<size_t>(static_cast<uint32_t>(di.uv_offset + di.vertex_base + v)) * 2u;
         if (uv + 1u >= asset.uv_buffer.size())
         {
-            return Fail(what + " 的 UV 越界");
+            return Fail(what.Text() + " 的 UV 越界");
         }
         local_uv[static_cast<size_t>(v) * 2u] = asset.uv_buffer[uv];
         local_uv[static_cast<size_t>(v) * 2u + 1u] = asset.uv_buffer[uv + 1u];
     }
     if (static_cast<uint64_t>(di.index_offset) + di.index_count > asset.index_buffer.size())
     {
-        return Fail(what + " 的索引区间越界");
+        return Fail(what.Text() + " 的索引区间越界");
     }
 
     if ((di.item_flags & SpineDrawItemFlags::kRegion) != 0)
@@ -794,9 +852,10 @@ SpineImportResult SpineGpuComputeItemGeometry(const SpineGpuAsset& asset, const 
         // （RegionAttachment.cpp:137-158、SpineMesh.cpp:74-80）。我们存的是 BL, UL, UR, BR。
         if (di.vertex_count != 4)
         {
-            return Fail(what + " 标成 region 却不是 4 个顶点");
+            return Fail(what.Text() + " 标成 region 却不是 4 个顶点");
         }
         static const uint32_t kOurOfRef[4] = {3, 0, 1, 2};
+        static const uint16_t kRegionTris[6] = {0, 1, 2, 2, 3, 0};
         world.assign(8, 0.0f);
         uvs.assign(8, 0.0f);
         for (uint32_t k = 0; k < 4; ++k)
@@ -806,19 +865,21 @@ SpineImportResult SpineGpuComputeItemGeometry(const SpineGpuAsset& asset, const 
             uvs[k * 2u] = local_uv[kOurOfRef[k] * 2u];
             uvs[k * 2u + 1u] = local_uv[kOurOfRef[k] * 2u + 1u];
         }
-        triangles = {0, 1, 2, 2, 3, 0};
+        triangles.assign(kRegionTris, kRegionTris + 6);
         return Ok();
     }
 
-    world = std::move(local_world);
-    uvs = std::move(local_uv);
+    // mesh：把结果搬进输出缓冲。用 `swap` 而不是 `world = std::move(local_world)`：后者会把
+    // world 的旧缓冲丢掉（下一帧又得重新分配），swap 让两块缓冲轮流复用 ⇒ 稳态 0 分配。
+    world.swap(local_world);
+    uvs.swap(local_uv);
     triangles.resize(di.index_count);
     for (uint32_t q = 0; q < di.index_count; ++q)
     {
         const uint32_t idx = asset.index_buffer[static_cast<size_t>(di.index_offset) + q];
         if (idx < di.vertex_base || idx >= static_cast<uint32_t>(di.vertex_base) + di.vertex_count)
         {
-            return Fail(what + " 的索引不在它的顶点区间里");
+            return Fail(what.Text() + " 的索引不在它的顶点区间里");
         }
         triangles[q] = static_cast<uint16_t>(idx - di.vertex_base);
     }
@@ -838,9 +899,9 @@ SpineImportResult SpineGpuComputeClipPolygonWorld(const SpineGpuAsset& asset, co
     {
         return Fail("clip: 裁剪多边形 " + std::to_string(clip_row) + " 的槽位越界");
     }
-    const std::string what = "clip: 裁剪多边形 " + std::to_string(clip_row);
+    const ClipLabel what{"clip: 裁剪多边形 ", clip_row};
     return SkinVertices(asset, pose, c.vertex_format, c.vertex_offset, c.vertex_count, asset.slot_bone[c.slot_index],
-                        deform, world, what.c_str());
+                        deform, world, what);
 }
 
 SpineImportResult SpineGpuClipFrame(const SpineGpuAsset& asset, const SpineGpuSkeletonState& state,
@@ -864,9 +925,14 @@ SpineImportResult SpineGpuClipFrame(const SpineGpuAsset& asset, const SpineGpuSk
         return Fail("clip: pose 与状态的槽位数不一致");
     }
 
-    std::vector<float> world;
-    std::vector<float> uvs;
-    std::vector<uint16_t> tris;
+    // 每帧的中间缓冲。**不能**是函数内的局部 `std::vector`：那等于每帧 3 次 malloc（实测这些
+    // 分配全落在 geo 段，是最贵那几个资产 geo 成本的一块）。`thread_local` 跨帧复用。
+    thread_local std::vector<float> t_frame_world;
+    thread_local std::vector<float> t_frame_uvs;
+    thread_local std::vector<uint16_t> t_frame_tris;
+    std::vector<float>& world = t_frame_world;
+    std::vector<float>& uvs = t_frame_uvs;
+    std::vector<uint16_t>& tris = t_frame_tris;
     for (uint32_t slot : pose.draw_order)
     {
         if (slot >= state.slots.size())

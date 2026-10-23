@@ -23,6 +23,9 @@
 //
 // 输出的是**每实例**的成本：单线程、单实例。N 个实例 ≈ N 倍（两边都没有跨实例共享的每帧工作）。
 // 编出来必须是 Release / RelWithDebInfo（Debug 的数字没有意义，main() 里会警告）。
+// ⚠️ 分配计数同理：MSVC 的 Debug 迭代器调试给每个容器构造发一个 16 字节的
+//    `_Container_proxy`（稳态约 8 次/帧，apply 7 + pose 1），那不是数据缓冲
+//    ⇒ Debug 下"每帧分配次数"恒为非 0，只有 Release 的数字能读。
 // stdout 不缓冲：经 MSYS 管道重定向时，缓冲的输出在进程退出时会丢（实测）。
 // ⚠️ 绝对值受机器负载影响很大（同一份二进制连跑三次能漂 50%），**只能看比值**；
 //    最新数字与结论记在 `doc/GPU_SPINE_INTERCHANGE_FORMAT.md` §17（改口径要同步改那一节）。
@@ -58,10 +61,64 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
 namespace fs = std::filesystem;
+
+// =====================================================================
+// 每帧堆分配计数
+// ---------------------------------------------------------------------
+// 热路径里每帧 malloc/free 是这套代码犯过的最贵的一个错（deform 展开：每条时间轴
+// 每帧 2~4 次 `std::vector` 分配，占 anim 段的 ~29%），而它**不报错、不画错**，
+// 只会让 anim 段悄悄贵一倍 ⇒ 把它变成能看见的数字（两边各数一遍）。
+// 做法：替换全局 `operator new/delete`，只在开关打开时累加。
+// =====================================================================
+namespace
+{
+bool g_alloc_counting = false;
+long long g_alloc_calls = 0;
+long long g_alloc_bytes = 0;
+}   // namespace
+
+void* operator new(std::size_t n)
+{
+    void* p = std::malloc(n != 0u ? n : 1u);
+    if (p == nullptr)
+    {
+        throw std::bad_alloc();
+    }
+    if (g_alloc_counting)
+    {
+        ++g_alloc_calls;
+        g_alloc_bytes += static_cast<long long>(n);
+    }
+    return p;
+}
+void* operator new[](std::size_t n) { return operator new(n); }
+void operator delete(void* p) noexcept { std::free(p); }
+void operator delete[](void* p) noexcept { std::free(p); }
+void operator delete(void* p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+void operator delete(void* p, std::align_val_t) noexcept { std::free(p); }
+void operator delete[](void* p, std::align_val_t) noexcept { std::free(p); }
+
+namespace
+{
+void AllocCountStart()
+{
+    g_alloc_calls = 0;
+    g_alloc_bytes = 0;
+    g_alloc_counting = true;
+}
+void AllocCountStop(long long& calls, long long& bytes)
+{
+    g_alloc_counting = false;
+    calls = g_alloc_calls;
+    bytes = g_alloc_bytes;
+}
+}   // namespace
 
 namespace
 {
@@ -91,6 +148,8 @@ struct SideResult
     double total_us = 0.0;
     double upload_bytes = 0.0;
     double vertices = 0.0;   // 参考：每帧生成的顶点数；我们：CPU 裁剪顶点数
+    double allocs_per_frame = 0.0;   // 稳态每帧的堆分配次数（>0 = 热路径里有多余的活）
+    double alloc_bytes_per_frame = 0.0;
 };
 
 struct AssetResult
@@ -111,7 +170,10 @@ constexpr float kDt = 1.0f / 60.0f;
 constexpr uint32_t kSwitchEvery = 60;
 
 // ---- 我们 ----
-bool RunOurs(const SpineGpuAsset& asset, uint32_t frames, SideResult& out, std::string& error)
+// `alloc_probe` > 0：在**最后 `alloc_probe` 帧**打开堆分配计数（前面的帧留给"首次分配扩容"，
+// 所以数出来的就是稳态每帧的分配次数）。计时不受影响地跑在同一趟里 —— 计数只是每分配多一个
+// 分支，且只落在末尾这几帧。
+bool RunOurs(const SpineGpuAsset& asset, uint32_t frames, SideResult& out, std::string& error, uint32_t alloc_probe = 0)
 {
     SpineGpuRuntimeData data;
     SpineImportResult r = SpineGpuBuildRuntimeData(asset, data);
@@ -146,8 +208,13 @@ bool RunOurs(const SpineGpuAsset& asset, uint32_t frames, SideResult& out, std::
     inst.root_abcd[0] = inst.root_abcd[3] = 1.0f;
     const bool tint_black = (asset.header.flags & SpineGpuFlags::kUsesTintBlack) != 0u;
     double anim_us = 0, pose_us = 0, geo_us = 0, bytes = 0, verts = 0;
+    const uint32_t probe_begin = (alloc_probe != 0u && frames > alloc_probe) ? (frames - alloc_probe) : 0u;
     for (uint32_t f = 0; f < frames; ++f)
     {
+        if (alloc_probe != 0u && f == probe_begin)
+        {
+            AllocCountStart();
+        }
         if (f > 0 && f % kSwitchEvery == 0 && anim_count > 1)
         {
             anim.SetAnimation(0, (f / kSwitchEvery) % anim_count, true);
@@ -189,6 +256,13 @@ bool RunOurs(const SpineGpuAsset& asset, uint32_t frames, SideResult& out, std::
                                      batch.cpu_verts.size() * sizeof(SpineGpuCpuVert) +
                                      batch.cpu_index.size() * sizeof(uint16_t));
         verts += static_cast<double>(batch.cpu_verts.size());
+        if (alloc_probe != 0u && f + 1u == frames)
+        {
+            long long calls = 0, nbytes = 0;
+            AllocCountStop(calls, nbytes);
+            out.allocs_per_frame = static_cast<double>(calls) / static_cast<double>(alloc_probe);
+            out.alloc_bytes_per_frame = static_cast<double>(nbytes) / static_cast<double>(alloc_probe);
+        }
     }
     const double n = frames;
     out.anim_us = anim_us / n;
@@ -212,7 +286,7 @@ inline uint32_t PackColor(float r, float g, float b, float a)
     return c(r) | (c(g) << 8) | (c(b) << 16) | (c(a) << 24);
 }
 
-bool RunRef(spine::SkeletonData* data, uint32_t frames, SideResult& out, std::string& error)
+bool RunRef(spine::SkeletonData* data, uint32_t frames, SideResult& out, std::string& error, uint32_t alloc_probe = 0)
 {
     spine::Skeleton skeleton(data);
     spine::AnimationStateData state_data(data);
@@ -233,8 +307,13 @@ bool RunRef(spine::SkeletonData* data, uint32_t frames, SideResult& out, std::st
     static unsigned short kQuad[6] = {0, 1, 2, 2, 3, 0};
     const uint32_t anim_count = static_cast<uint32_t>(anims.size());
     double anim_us = 0, pose_us = 0, geo_us = 0, bytes = 0, verts = 0;
+    const uint32_t probe_begin = (alloc_probe != 0u && frames > alloc_probe) ? (frames - alloc_probe) : 0u;
     for (uint32_t f = 0; f < frames; ++f)
     {
+        if (alloc_probe != 0u && f == probe_begin)
+        {
+            AllocCountStart();
+        }
         if (f > 0 && f % kSwitchEvery == 0 && anim_count > 1)
         {
             state.setAnimation(0, anims[(f / kSwitchEvery) % anim_count], true);
@@ -341,6 +420,13 @@ bool RunRef(spine::SkeletonData* data, uint32_t frames, SideResult& out, std::st
         bytes += static_cast<double>(vb.size() * sizeof(RefVertex) + dark.size() * sizeof(uint32_t) +
                                      ib.size() * sizeof(uint16_t));
         verts += static_cast<double>(vb.size());
+        if (alloc_probe != 0u && f + 1u == frames)
+        {
+            long long calls = 0, nbytes = 0;
+            AllocCountStop(calls, nbytes);
+            out.allocs_per_frame = static_cast<double>(calls) / static_cast<double>(alloc_probe);
+            out.alloc_bytes_per_frame = static_cast<double>(nbytes) / static_cast<double>(alloc_probe);
+        }
     }
     const double n = frames;
     out.anim_us = anim_us / n;
@@ -516,11 +602,16 @@ int main(int argc, char** argv)
                               asset.uv_buffer.size() * sizeof(float) + asset.index_buffer.size() * sizeof(uint16_t) +
                               asset.draw_items.size() * sizeof(SpineDrawItem);
         std::string err;
-        // 先各跑一遍热身（指令 / 数据缓存、分配器），再正式计时
-        SideResult warm;
-        const bool ok_ours = RunOurs(asset, 30, warm, err) && RunOurs(asset, frames, ar.ours, err);
+        // 先各跑一遍热身（指令 / 数据缓存、分配器），再正式计时；热身那趟顺带在末尾 15 帧
+        // 数一遍堆分配（这时 vector 都已扩到稳态容量，数出来就是稳态每帧的分配次数）
+        SideResult warm_ours, warm_ref;
+        const bool ok_ours = RunOurs(asset, 30, warm_ours, err, 15) && RunOurs(asset, frames, ar.ours, err);
+        ar.ours.allocs_per_frame = warm_ours.allocs_per_frame;
+        ar.ours.alloc_bytes_per_frame = warm_ours.alloc_bytes_per_frame;
         std::string err_ref;
-        const bool ok_ref = ok_ours && RunRef(ref, 30, warm, err_ref) && RunRef(ref, frames, ar.ref, err_ref);
+        const bool ok_ref = ok_ours && RunRef(ref, 30, warm_ref, err_ref, 15) && RunRef(ref, frames, ar.ref, err_ref);
+        ar.ref.allocs_per_frame = warm_ref.allocs_per_frame;
+        ar.ref.alloc_bytes_per_frame = warm_ref.alloc_bytes_per_frame;
         delete ref;
         if (!ok_ours || !ok_ref)
         {
@@ -588,6 +679,21 @@ int main(int argc, char** argv)
     row("CPU 顶点", [](const AssetResult& a) { return a.ours.vertices; }, [](const AssetResult& a) { return a.ref.vertices; },
         "个", 1.0);
     {
+        // 稳态每帧堆分配：这行不是"谁快谁慢"，而是**谁在热路径里还有多余的活**。
+        // 两边都应该是 0（或极小的常数）；我们这边只要它不是 0，就等于每帧在 malloc/free 上白烧钱。
+        const std::vector<double> o = collect([](const AssetResult& a) { return a.ours.allocs_per_frame; });
+        const std::vector<double> rf = collect([](const AssetResult& a) { return a.ref.allocs_per_frame; });
+        const std::vector<double> ob = collect([](const AssetResult& a) { return a.ours.alloc_bytes_per_frame; });
+        const std::vector<double> rfb = collect([](const AssetResult& a) { return a.ref.alloc_bytes_per_frame; });
+        std::printf("稳态每帧堆分配（理想：两边都是 0）：\n");
+        std::printf("  %-14s  我们 中位 %9.1f  p90 %9.1f  合计 %11.0f | spine-cpp 中位 %9.1f  p90 %9.1f  合计 %11.0f 次\n",
+                    "分配次数", Percentile(o, 0.5), Percentile(o, 0.9), sum(o), Percentile(rf, 0.5), Percentile(rf, 0.9),
+                    sum(rf));
+        std::printf("  %-14s  我们 中位 %9.1f  p90 %9.1f  合计 %11.0f | spine-cpp 中位 %9.1f  p90 %9.1f  合计 %11.0f B\n",
+                    "分配字节", Percentile(ob, 0.5), Percentile(ob, 0.9), sum(ob), Percentile(rfb, 0.5), Percentile(rfb, 0.9),
+                    sum(rfb));
+    }
+    {
         const std::vector<double> st = collect([](const AssetResult& a) { return static_cast<double>(a.static_gpu_bytes); });
         std::printf("我们的静态显存（一次性上传，同资产实例共享）：中位 %.1f KB  p90 %.1f KB  合计 %.1f MB\n",
                     Percentile(st, 0.5) / 1024.0, Percentile(st, 0.9) / 1024.0, sum(st) / (1024.0 * 1024.0));
@@ -624,14 +730,17 @@ int main(int argc, char** argv)
     {
         std::ofstream csv(csv_path, std::ios::trunc);
         csv << "asset,bones,slots,anims,iks,transforms,paths,static_gpu_bytes,ours_anim_us,ours_pose_us,ours_geo_us,ours_total_us,ours_upload_bytes,"
-               "ours_cpu_verts,ref_anim_us,ref_pose_us,ref_geo_us,ref_total_us,ref_upload_bytes,ref_verts\n";
+               "ours_cpu_verts,ours_allocs,ours_alloc_bytes,ref_anim_us,ref_pose_us,ref_geo_us,ref_total_us,ref_upload_bytes,ref_verts,ref_allocs,"
+               "ref_alloc_bytes\n";
         for (const AssetResult& a : results)
         {
             csv << a.name << ',' << a.bones << ',' << a.slots << ',' << a.anims << ',' << a.iks << ',' << a.transforms
                 << ',' << a.paths << ',' << a.static_gpu_bytes << ','
                 << a.ours.anim_us << ',' << a.ours.pose_us << ',' << a.ours.geo_us << ',' << a.ours.total_us << ','
-                << a.ours.upload_bytes << ',' << a.ours.vertices << ',' << a.ref.anim_us << ',' << a.ref.pose_us << ','
-                << a.ref.geo_us << ',' << a.ref.total_us << ',' << a.ref.upload_bytes << ',' << a.ref.vertices << '\n';
+                << a.ours.upload_bytes << ',' << a.ours.vertices << ',' << a.ours.allocs_per_frame << ','
+                << a.ours.alloc_bytes_per_frame << ',' << a.ref.anim_us << ',' << a.ref.pose_us << ','
+                << a.ref.geo_us << ',' << a.ref.total_us << ',' << a.ref.upload_bytes << ',' << a.ref.vertices << ','
+                << a.ref.allocs_per_frame << ',' << a.ref.alloc_bytes_per_frame << '\n';
         }
         std::printf("逐资产明细：%s\n", csv_path.c_str());
     }
