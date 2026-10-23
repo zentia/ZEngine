@@ -24,6 +24,8 @@
 // 输出的是**每实例**的成本：单线程、单实例。N 个实例 ≈ N 倍（两边都没有跨实例共享的每帧工作）。
 // 编出来必须是 Release / RelWithDebInfo（Debug 的数字没有意义，main() 里会警告）。
 // stdout 不缓冲：经 MSYS 管道重定向时，缓冲的输出在进程退出时会丢（实测）。
+// ⚠️ 绝对值受机器负载影响很大（同一份二进制连跑三次能漂 50%），**只能看比值**；
+//    最新数字与结论记在 `doc/GPU_SPINE_INTERCHANGE_FORMAT.md` §17（改口径要同步改那一节）。
 // =====================================================================
 
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
