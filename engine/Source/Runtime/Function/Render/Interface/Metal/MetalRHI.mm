@@ -1425,6 +1425,8 @@ bool MetalRHI::CreateFramebuffer(const RHIFramebufferCreateInfo* pCreateInfo, RH
     auto* framebuffer = new MetalFramebuffer();
     framebuffer->width  = pCreateInfo->width;
     framebuffer->height = pCreateInfo->height;
+    // CSM：每一级一个 framebuffer，各自指向 shadow map array 的对应层。
+    framebuffer->slice  = pCreateInfo->array_slice;
     for (uint32_t i = 0; i < pCreateInfo->attachmentCount; ++i)
     {
         RHIImageView* view = pCreateInfo->pAttachments[i];
@@ -1894,6 +1896,8 @@ void MetalRHI::CmdBeginRenderPassPFN(RHICommandBuffer*              commandBuffe
         if (is_depth)
         {
             descriptor.depthAttachment.texture     = texture;
+            // CSM：渲到 array 的指定层（非 array 时 slice 恒为 0，行为不变）。
+            descriptor.depthAttachment.slice       = framebuffer->slice;
             descriptor.depthAttachment.loadAction  = load_op == RHI_ATTACHMENT_LOAD_OP_CLEAR ? MTLLoadActionClear
                                                                                              : MTLLoadActionLoad;
             descriptor.depthAttachment.storeAction = store_op == RHI_ATTACHMENT_STORE_OP_STORE ? MTLStoreActionStore
@@ -1907,6 +1911,8 @@ void MetalRHI::CmdBeginRenderPassPFN(RHICommandBuffer*              commandBuffe
         else if (color_index < 8)
         {
             descriptor.colorAttachments[color_index].texture     = texture;
+            // CSM：同上，color（shadow map 存的是 R32F 深度）也要落到对应层。
+            descriptor.colorAttachments[color_index].slice       = framebuffer->slice;
             descriptor.colorAttachments[color_index].loadAction  = load_op == RHI_ATTACHMENT_LOAD_OP_CLEAR
                                                                        ? MTLLoadActionClear
                                                                        : MTLLoadActionLoad;

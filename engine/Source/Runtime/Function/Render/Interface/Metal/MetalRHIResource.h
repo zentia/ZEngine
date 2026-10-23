@@ -283,6 +283,10 @@ public:
     std::vector<id<MTLTexture>> textures;
     uint32_t                    width {0};
     uint32_t                    height {0};
+    // 渲染到 array texture 的哪一层（CSM 每一级一层）。见
+    // `RHIFramebufferCreateInfo::array_slice`：Metal 没有 geometry shader，写不出
+    // `gl_Layer`，目标层只能由 CPU 指定。
+    uint32_t slice {0};
     // true when attachment i is the swapchain drawable (resolved at begin-pass).
     std::vector<bool>           isSwapchain;
 };

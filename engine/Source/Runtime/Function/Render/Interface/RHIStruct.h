@@ -519,6 +519,13 @@ struct RHIFramebufferCreateInfo
     uint32_t width;
     uint32_t height;
     uint32_t layers;
+    // 渲染到 array texture 的**哪一层**（CSM 每一级一层）。
+    //
+    // `layers` 是 Vulkan 的语义 —— framebuffer 一共有几层，选哪层由 shader 的
+    // `gl_Layer` 决定。Metal 上没有 geometry shader，写不出 `gl_Layer`，所以目标
+    // 层必须由 CPU 显式指定：`MTLRenderPassAttachmentDescriptor.slice`。
+    // 默认 0 ⇒ 所有既有的调用点行为一字不变。
+    uint32_t array_slice {0};
 };
 
 struct RHIGraphicsPipelineCreateInfo
