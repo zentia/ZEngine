@@ -1509,6 +1509,92 @@ buffer 里写，排在它之后就会把粒子的数据清掉）。
 2. **"只钉机制存在"会假绿**：把 Metal 的 override 从 `true` 改回 `false`，机制一个不少
    （有声明、有 override、有实现），照样全绿。必须钉"生效那一步"到底答了什么。
 
+### 3.32 RHI 地基：framebuffer 渲染到 array texture 的指定层
+
+CSM 要把 4 个级联画进同一张 2D array 的不同层，第一件事是 RHI 得能表达"画第几层"。
+
+**`layers` 和 `array_slice` 是两个不同的量，很容易混**：`RHIFramebufferCreateInfo::layers`
+是 Vulkan 语义（"这个 framebuffer 有几层"），而层的**选择**在 Vulkan 里是 `gl_Layer` ——
+由 geometry shader 写。Metal 根本没有 geometry shader，所以目标层只能在 CPU 侧显式给：
+新增 `array_slice` → `MTLRenderPassAttachmentDescriptor.slice`（默认 0，其余后端行为一字不变）。
+
+**深度附件也必须跟着改成 2D_ARRAY**：深度附件的 slice 是跟随 framebuffer 的，而"2D 纹理 +
+slice > 0"在 Metal 上是非法组合。
+
+### 3.33 方向光阴影上 CSM（4 级级联）
+
+**生成侧**（`DirectionalLightPass`）：颜色与深度附件都改成 2D_ARRAY × `s_MaxCascadeCount`
+层；`SetupFramebuffer()` 建 4 个 framebuffer（`array_slice = cascade`），
+`m_Framebuffer.framebuffer` 仍指向第 0 个给不需要分级的地方用；`DrawModel()` 重构成
+"**先遍历一次**收集 `DrawEntry`（pipeline / mesh / blending set / index count /
+instance count / perdrawcall offset / vertex_blending offset），**再** for cascade 循环：
+begin pass → 上传本级的 `m_CascadeShadowPerFrame[i]` → 重放 entries → end pass"。
+
+> ⚠️ **per-drawcall 数据必须在循环外只上传一次**。模型矩阵 / 骨骼矩阵和级联无关，放进循环
+> 会 ×4 吃 storage ring buffer（一个蒙皮 drawcall 就是
+> `s_MeshVertexBlendingMaxJointCount` × 实例数，量级 MB），**悄悄吃满一帧配额**
+> （128MB / frames_in_flight），只在 debug 下才 assert —— 又是一个"机制一个不少、只是量
+> 翻了 4 倍"的假绿区。
+
+**采样侧**：`MainCameraPerFrame` 追加 `camera_forward` /
+`directional_light_proj_view_cascades[4]` / `directional_light_cascade_split_depth` /
+`directional_light_cascade_count`（**三份镜像**：C++ `RenderCommon.h`、GLSL
+`structures.h`、HLSL `scene_lighting_structs.hlsli`，由 `LumenPerFrameBridgeSmokeTest`
+的 `static_assert` 链钉住字段顺序）；`mesh_lighting.h` 新增
+`z_select_shadow_cascade(world_pos)`；4 个 frag 的 binding 7 从 `sampler2D` 改成
+`sampler2DArray`，采样成 `texture(directional_light_shadow, vec3(uv, float(cascade)))`。
+
+两个不那么显然的点：
+
+- **split 距离是 view depth**（`dot(world_pos - camera_position, camera_forward)`），不是
+  径向距离。透视视锥的边在世界空间是直线 ⇒ 沿边线性插值 == 视深线性增长，所以可以直接
+  和片元视深比较。
+- **未使用的 split 槽位必须填 `+inf`，不能填 0**。填 0 会让"跨过的远平面数"虚高，选到一
+  个根本没画过的级联（它被 clear 成 1.0 = 无遮挡）⇒ **阴影整片消失**，不报错。
+
+**降级路径**：新增 `RHI::IsDirectionalLightCsmSupported()`（默认 `false` ⇒ 1 级，Metal
+override `true` ⇒ 4 级）。**后端不能渲染到指定层时必须降到 1 级**，绝不能"4 级全画进
+layer 0" —— 后者不崩、不报错，只是画错，是最坏的一种失败形态。
+
+**顺带的小改**：`ComputeSceneBoundingBox(scene)` 从 `CalculateDirectionalLightCamera()`
+里提出来，避免 4 个级联各把全场景实体扫一遍。
+
+| 文件 | 改动 |
+|---|---|
+| `Interface/RHI.h`、`Interface/Metal/MetalRHI.*` | `IsDirectionalLightCsmSupported()`（Metal true） |
+| `RenderCommon.h` / `shader/include/structures.h` / `hlsl/common/scene_lighting_structs.hlsli` | 三份 per-frame 镜像加 CSM 字段 |
+| `shader/include/mesh_lighting.h`（+ `.inl`）、`megalights_compose.inl`、4 个 frag | 级联选择 + `sampler2DArray` 采样 |
+| `RenderHelper.cpp` | `ComputeSceneBoundingBox()` 提出；未用 split 填 `+inf` |
+| `RenderScene.cpp` | 每帧算 4 个级联相机并发布到 per-frame 与 `RenderResource` |
+| `Passes/DirectionalLightPass.*` | 2D_ARRAY 附件 + 4 framebuffer + 收集/重放式 `DrawModel` |
+| `RenderSystem.cpp` | 心跳加 `cascades=` |
+| `Render/Test/DirectionalLightShadowSmokeTest.cpp` | 37 → **114** checks |
+
+**心跳新增字段**：`shadow=(dir_en=1 dir_nodes=30 point_en=0 cascades=4)`。
+
+**验证**：
+
+- 真机：`open /abs/bin/Debug/ZGameSmoke.zproject` → 心跳
+  `shadow=(dir_en=1 dir_nodes=30 point_en=0 cascades=4)`；本次启动新增的日志段
+  **0 条 `[E]`、0 条 `[W]`**，且 `~/Library/Logs/DiagnosticReports/` 没有新增
+  `ZEditor-*.ips`。
+- **静态**：ctest **28/28**；`DirectionalLightShadowSmokeTest` 37 → **114** checks（新增
+  §7 三镜像字段 + 常量一致、§8 采样侧调用形式、§9 生成侧 2D_ARRAY / `array_slice` /
+  per-cascade framebuffer、§10 `CsmSupported` 三个点、§11 两个 `+inf`、§12 per-frame
+  赋值、§13 心跳字段）。
+- **变异** 12 个，各精确变红、还原后 114/0。
+
+**两条真机验收的硬规矩**（这次两条都踩了）：
+
+1. `cmake --build build` **不会刷新** `bin/Debug/ZEditor` —— .app 里的可执行文件是指向
+   `../../../ZEditor` 的相对 symlink，所以裸 cmake 构建完跑的还是旧二进制，新加的探针字段
+   在日志里怎么都搜不到。必须 `python3 ./zbuild.py build`；可用
+   `strings bin/Debug/ZEditor | grep -c "cascades="` 佐证。
+2. **启动编辑器必须走文件关联**（`open /abs/xxx.zproject`）。用
+   `open ZEditor.app --args -project ...` 不触发 odoc，日志里没有
+   `opening document ...(from LaunchServices)`，编辑器起来后停在 dock icon 那行、什么都不
+   干 —— 看着像挂了，其实是"没接到项目"。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - ~~**`NaniteGPUCullingSmokeTest` 在 Apple 上是红的（21 条）**~~ —— **已在 §3.20 修掉**：
