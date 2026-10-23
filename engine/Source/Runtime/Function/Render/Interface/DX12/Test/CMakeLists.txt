@@ -57,6 +57,24 @@ if(ZENGINE_BUILD_SPINE_SKINNING_PARITY_TEST AND WIN32)
     add_test(NAME ${_parity_target} COMMAND ${_parity_target})
 
     message(STATUS "Configured GPU-Spine skinning parity test target: ${_parity_target}")
+
+    # GPU-Spine DX12 光栅对拍：拿引擎真正加载的 shader/hlsl/rp2/spine_gpu.*.hlsl 画进离屏目标、回读
+    # 像素（绘制项下标 / SRV stride / 寄存器映射 / y 方向 / tint black / b8）。同一开关、同一套路。
+    set(_raster_target SpineGpuDx12RasterTest)
+    add_executable(${_raster_target} SpineGpuDx12RasterTest.cpp)
+    set_target_properties(${_raster_target} PROPERTIES CXX_STANDARD 23 FOLDER "Engine/Tests")
+    target_link_libraries(${_raster_target} PRIVATE ZRuntime d3d12 dxgi)
+    target_compile_definitions(${_raster_target} PRIVATE
+        ZENGINE_SPINE_HLSL_DIR="${ENGINE_ROOT_DIR}/shader/hlsl/rp2")
+    if(TARGET ZEnginePCH)
+        target_link_libraries(${_raster_target} PRIVATE ZEnginePCH)
+        target_include_directories(${_raster_target} PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(${_raster_target} ZEnginePCH)
+    endif()
+    if(MSVC)
+        target_compile_options(${_raster_target} PRIVATE /W4)
+    endif()
+    add_test(NAME ${_raster_target} COMMAND ${_raster_target})
 elseif(ZENGINE_BUILD_SPINE_SKINNING_PARITY_TEST)
     message(WARNING
         "ZENGINE_BUILD_SPINE_SKINNING_PARITY_TEST is ON but the host platform is "

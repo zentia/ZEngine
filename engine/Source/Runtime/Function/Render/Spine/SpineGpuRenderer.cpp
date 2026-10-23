@@ -5,7 +5,6 @@
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
 #include "Runtime/Function/Render/Spine/SpineGpuTintBlack.h"
-#include "Runtime/UI/Render/UIGpuResources.h"
 #include "core/Log/LogSystem.h"
 
 #include <algorithm>
@@ -20,9 +19,14 @@
 #include <mutex>
 #include <vector>
 
-#if defined(Z_HAS_VULKAN)
+// 着色器来源（按后端，见 EnsurePipelines）：
+//   Vulkan / Metal —— 构建期 SPIR-V（Metal 由 MetalRHI 经 SPIRV-Cross 转 MSL）；
+//   DX12          —— 运行时编 HLSL（shader/hlsl/rp2/spine_gpu.*.hlsl，与 RP2 的其它 pass 同一做法）。
+#if defined(Z_HAS_SPIRV_SHADERS)
     #include <spine_gpu_frag.h>
     #include <spine_gpu_vert.h>
+#endif
+#if !defined(__EMSCRIPTEN__)
     #include <stb_image.h>
 #endif
 
@@ -75,6 +79,22 @@ namespace
     }
     constexpr uint32_t kSet0Bindings = 9;        // b0..b6 + b7 deform（S6）+ b8 CPU 裁剪顶点（v15）
     constexpr uint32_t kCpuVertBinding = 8;
+    // 各 SSBO 的元素大小（字节）。Vulkan / Metal 不看；**DX12 必须给**：它把 SSBO 建成结构化 SRV，
+    // 没给 stride 时按 range 猜（80 B 或 4 B），b1 / b3（float2）、b5（48 B）、b6（96 B）、b8（16 B）
+    // 全会猜错 ⇒ 读到错位的数据且不报错。顺序 = binding 号，与 spine_gpu.vert(.hlsl) 一一对应。
+    constexpr uint32_t kSet0Strides[kSet0Bindings] = {4u, 8u, 4u, 8u, 4u, 48u, 96u, 4u, 16u};
+
+    // 骨架空间 y 向上；裁剪空间 y 的方向按后端：Vulkan 向下（不翻视口），DX12 / Metal 向上。
+    float ClipSpaceYSign(RHI* rhi) { return rhi->getGraphicsAPI() == GraphicsAPI::Vulkan ? -1.0f : 1.0f; }
+
+    std::string ShaderRoot()
+    {
+#ifdef ZENGINE_SHADER_ROOT
+        return ZENGINE_SHADER_ROOT;
+#else
+        return "e:/Engine/ZEngine/engine/shader";
+#endif
+    }
 
     // CPU 裁剪顶点（b8）的一项：骨架空间位置 + UV，与 spine_gpu.vert 的 vec4 对齐
     struct GpuCpuVert
@@ -124,7 +144,7 @@ namespace
     }
 }  // namespace
 
-#if defined(Z_HAS_VULKAN)
+#if !defined(__EMSCRIPTEN__)
 
 struct SpineGpuRenderer::Impl
 {
@@ -174,6 +194,7 @@ struct SpineGpuRenderer::Impl
     RHIRenderPass* pipeline_render_pass {nullptr};
     uint32_t pipeline_subpass {0};
     RHIDescriptorSetLayout* set0_layout {nullptr};
+    RHIDescriptorSetLayout* set1_layout {nullptr};   // 图集页：binding 0 = combined image sampler（片元）
     RHIPipelineLayout* pipeline_layout {nullptr};
     RHIPipeline* pipelines[4] {nullptr, nullptr, nullptr, nullptr};   // 按 SpineBlendMode
 
@@ -195,6 +216,15 @@ struct SpineGpuRenderer::Impl
         Buffer cpu_verts;   // GpuCpuVert[]
         Buffer cpu_index;   // u16[]，局部于各项的起点
         RHIDescriptorSet* set0 {nullptr};
+        std::vector<RHIDescriptorSet*> set1;   // 每个图集页一个（每帧槽位一份：DX12 每帧重写，见 RefreshDescriptors）
+    };
+    // 图集页贴图：自己建、自己销毁（不经 UIGpuResources —— 它的描述符集只写一次，
+    // 而 DX12 的 SRV 落在每帧回收的堆分区里，第二轮就成了野句柄）
+    struct Page
+    {
+        RHIImage* image {nullptr};
+        RHIImageView* view {nullptr};
+        RHISampler* sampler {nullptr};   // 默认线性采样器，归 RHI 所有
     };
     struct Loaded
     {
@@ -217,7 +247,10 @@ struct SpineGpuRenderer::Impl
         Buffer infl_bone;
         Buffer uvs;
         Buffer index;
-        std::vector<void*> page_textures;   // UIGpuResources 的纹理 id
+        // DX12 专用：u32 0,1,2,…（per-instance 顶点属性 = 绘制项下标；D3D12 的 SV_InstanceID 不含
+        // StartInstanceLocation，见 spine_gpu.vert.hlsl 文件头）。其它后端为空。
+        Buffer draw_ids;
+        std::vector<Page> pages;
         std::vector<FrameSlot> frames;
         float bounds[4] {0, 0, 1, 1};       // setup 姿势的包围盒（x0, y0, x1, y1）
         // v15：CPU 裁剪（SpineGpuClipper）的暂存，跨帧复用
@@ -230,6 +263,7 @@ struct SpineGpuRenderer::Impl
     struct Retired
     {
         std::vector<Buffer> buffers;
+        std::vector<Page> pages;
         uint32_t frames_left {0};
     };
     std::vector<Retired> retired;
@@ -271,6 +305,69 @@ struct SpineGpuRenderer::Impl
         b = Buffer {};
     }
 
+    bool IsDx12() const { return rhi != nullptr && rhi->getGraphicsAPI() == GraphicsAPI::DirectX12; }
+
+    // set 0 的一格 / 全部。stride 一律给（DX12 要，其它后端忽略）。
+    void WriteSet0Binding(RHIDescriptorSet* set, uint32_t binding, const Buffer& b)
+    {
+        RHIDescriptorBufferInfo info {};
+        info.buffer = b.buffer;
+        info.offset = 0;
+        info.range = b.size;
+        info.stride = kSet0Strides[binding];
+        RHIWriteDescriptorSet w {};
+        w.sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = set;
+        w.dstBinding = binding;
+        w.descriptorCount = 1;
+        w.descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        w.pBufferInfo = &info;
+        rhi->UpdateDescriptorSets(1, &w, 0, nullptr);
+    }
+
+    void WriteSet0(Loaded& ld, FrameSlot& f)
+    {
+        const Buffer* bufs[kSet0Bindings] = {&ld.vertex_words, &ld.infl_bind, &ld.infl_bone, &ld.uvs, &f.bones,
+                                             &f.draws,         &f.insts,     &f.deform,    &f.cpu_verts};
+        for (uint32_t i = 0; i < kSet0Bindings; ++i)
+        {
+            WriteSet0Binding(f.set0, i, *bufs[i]);
+        }
+    }
+
+    void WriteSet1(Loaded& ld, FrameSlot& f)
+    {
+        for (size_t i = 0; i < ld.pages.size() && i < f.set1.size(); ++i)
+        {
+            RHIDescriptorImageInfo image {};
+            image.sampler = ld.pages[i].sampler;
+            image.imageView = ld.pages[i].view;
+            image.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            RHIWriteDescriptorSet w {};
+            w.sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = f.set1[i];
+            w.dstBinding = 0;
+            w.descriptorCount = 1;
+            w.descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            w.pImageInfo = &image;
+            rhi->UpdateDescriptorSets(1, &w, 0, nullptr);
+        }
+    }
+
+    // DX12：UpdateDescriptorSets 建的 SRV 落在**当前帧**的 CBV/SRV/UAV 堆分区里，那个分区在同一帧号
+    // 下一轮开始时整体回收（DX12RHI::AllocateCbvSrvUavDescriptor）⇒ 只写一次的描述符集第二轮就指向
+    // 别人的 SRV（读到 0 / 别的缓冲，不报错）。所以 DX12 每帧录制前把本帧槽位的 set0 / set1 全部重写
+    // （与 MainCameraRp2Pass::DrawRP2 开头的 UpdateDescriptorBindings 同一个处理）。其它后端写一次即可。
+    void RefreshDescriptors(Loaded& ld, FrameSlot& f)
+    {
+        if (!IsDx12())
+        {
+            return;
+        }
+        WriteSet0(ld, f);
+        WriteSet1(ld, f);
+    }
+
     // 本帧槽位的某个缓冲容量不够 ⇒ 换一个更大的（旧的延迟销毁）。`binding` 非负时重写 set0 的那一格。
     bool EnsureFrameBuffer(FrameSlot& f, Buffer& b, RHIDeviceSize need, RHIBufferUsageFlags usage, int binding)
     {
@@ -294,18 +391,7 @@ struct SpineGpuRenderer::Impl
         }
         if (binding >= 0)
         {
-            RHIDescriptorBufferInfo info {};
-            info.buffer = b.buffer;
-            info.offset = 0;
-            info.range = b.size;
-            RHIWriteDescriptorSet w {};
-            w.sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            w.dstSet = f.set0;
-            w.dstBinding = static_cast<uint32_t>(binding);
-            w.descriptorCount = 1;
-            w.descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-            w.pBufferInfo = &info;
-            rhi->UpdateDescriptorSets(1, &w, 0, nullptr);
+            WriteSet0Binding(f.set0, static_cast<uint32_t>(binding), b);
         }
         return true;
     }
@@ -318,10 +404,12 @@ struct SpineGpuRenderer::Impl
         }
         Retired r;
         r.frames_left = static_cast<uint32_t>(rhi->GetMaxFramesInFlight()) + 1u;
-        for (Buffer* b : {&loaded->vertex_words, &loaded->infl_bind, &loaded->infl_bone, &loaded->uvs, &loaded->index})
+        for (Buffer* b : {&loaded->vertex_words, &loaded->infl_bind, &loaded->infl_bone, &loaded->uvs, &loaded->index,
+                          &loaded->draw_ids})
         {
             r.buffers.push_back(*b);
         }
+        r.pages = loaded->pages;
         for (FrameSlot& f : loaded->frames)
         {
             r.buffers.push_back(f.bones);
@@ -331,7 +419,7 @@ struct SpineGpuRenderer::Impl
             r.buffers.push_back(f.cpu_verts);
             r.buffers.push_back(f.cpu_index);
         }
-        // 描述符集与纹理留在各自的池里（一次性的诊断入口，量很小），不在这里回收。
+        // 描述符集留在共享池里（一次性的诊断入口，量很小），不在这里回收；图集贴图随缓冲延迟销毁。
         retired.push_back(std::move(r));
         loaded.reset();
     }
@@ -354,25 +442,33 @@ struct SpineGpuRenderer::Impl
                     DestroyBufferNow(b);
                 }
                 r.buffers.clear();
+                for (Page& pg : r.pages)
+                {
+                    if (pg.view != nullptr)
+                    {
+                        rhi->DestroyImageView(pg.view);
+                    }
+                    if (pg.image != nullptr)
+                    {
+                        rhi->DestroyImage(pg.image);
+                    }
+                }
+                r.pages.clear();
             }
         }
-        retired.erase(std::remove_if(retired.begin(), retired.end(), [](const Retired& r) { return r.buffers.empty(); }),
+        retired.erase(std::remove_if(retired.begin(), retired.end(),
+                                     [](const Retired& r) { return r.buffers.empty() && r.pages.empty(); }),
                       retired.end());
     }
 
     // ------------------------------------------------------------------
-    // 管线：set 0 = 7 个 SSBO，set 1 = UIGpuResources 的贴图布局；4 种混合各一条
+    // 管线：set 0 = 9 个 SSBO，set 1 = 图集页（combined image sampler）；4 种混合各一条
     // ------------------------------------------------------------------
     bool EnsurePipelines(RHIRenderPass* render_pass, uint32_t subpass)
     {
         if (pipelines[0] != nullptr && pipeline_render_pass == render_pass && pipeline_subpass == subpass)
         {
             return true;
-        }
-        UIGpuResources* ui = UIGpuResources::EnsureInstance(rhi);
-        if (ui == nullptr || ui->GetTextureLayout() == nullptr)
-        {
-            return false;
         }
         if (set0_layout == nullptr)
         {
@@ -396,9 +492,26 @@ struct SpineGpuRenderer::Impl
                 return false;
             }
         }
+        if (set1_layout == nullptr)
+        {
+            RHIDescriptorSetLayoutBinding binding {};
+            binding.binding = 0;
+            binding.descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            binding.descriptorCount = 1;
+            binding.stageFlags = RHI_SHADER_STAGE_FRAGMENT_BIT;
+            RHIDescriptorSetLayoutCreateInfo info {};
+            info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+            info.bindingCount = 1;
+            info.pBindings = &binding;
+            if (!rhi->CreateDescriptorSetLayout(&info, set1_layout) || set1_layout == nullptr)
+            {
+                LOG_ERROR(ZRender, "SpineGpuRenderer: CreateDescriptorSetLayout (atlas page) failed");
+                return false;
+            }
+        }
         if (pipeline_layout == nullptr)
         {
-            RHIDescriptorSetLayout* layouts[2] = {set0_layout, ui->GetTextureLayout()};
+            RHIDescriptorSetLayout* layouts[2] = {set0_layout, set1_layout};
             RHIPipelineLayoutCreateInfo info {};
             info.sType = RHI_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
             info.setLayoutCount = 2;
@@ -410,11 +523,37 @@ struct SpineGpuRenderer::Impl
             }
         }
 
-        RHIShader* vs = rhi->CreateShaderModule(Z::Shader::SPINE_GPU_VERT);
-        RHIShader* fs = rhi->CreateShaderModule(Z::Shader::SPINE_GPU_FRAG);
+        RHIShader* vs = nullptr;
+        RHIShader* fs = nullptr;
+        const bool dx12 = IsDx12();
+        if (dx12)
+        {
+            std::vector<uint8_t> binary;
+            vs = rhi->CreateShaderModuleFromFile(ShaderRoot() + "/hlsl/rp2/spine_gpu.vert.hlsl", ShaderStage::Vertex, {},
+                                                 {}, binary);
+            binary.clear();
+            fs = rhi->CreateShaderModuleFromFile(ShaderRoot() + "/hlsl/rp2/spine_gpu.frag.hlsl", ShaderStage::Fragment,
+                                                 {}, {}, binary);
+        }
+        else
+        {
+#if defined(Z_HAS_SPIRV_SHADERS)
+            vs = rhi->CreateShaderModule(Z::Shader::SPINE_GPU_VERT);
+            fs = rhi->CreateShaderModule(Z::Shader::SPINE_GPU_FRAG);
+#endif
+        }
         if (vs == nullptr || fs == nullptr)
         {
-            LOG_ERROR(ZRender, "SpineGpuRenderer: CreateShaderModule failed (build-time SPIR-V)");
+            LOG_ERROR(ZRender, "SpineGpuRenderer: CreateShaderModule failed ({})",
+                      dx12 ? "runtime HLSL: shader/hlsl/rp2/spine_gpu.*.hlsl" : "build-time SPIR-V");
+            if (vs != nullptr)
+            {
+                rhi->DestroyShaderModule(vs);
+            }
+            if (fs != nullptr)
+            {
+                rhi->DestroyShaderModule(fs);
+            }
             return false;
         }
         RHIPipelineShaderStageCreateInfo stages[2] {};
@@ -427,8 +566,27 @@ struct SpineGpuRenderer::Impl
         stages[1].module = fs;
         stages[1].pName = "main";
 
-        RHIPipelineVertexInputStateCreateInfo vertex_input {};   // 无顶点流：全部从 SSBO 取
+        // Vulkan / Metal：无顶点流，全部从 SSBO 取，绘制项下标 = gl_InstanceIndex（含 firstInstance；
+        // Metal 的 [[instance_id]] 同样含 baseInstance）。
+        // DX12：一条 per-instance 的 u32 属性（location 3 ⇒ TEXCOORD0，DX12RHI 的语义映射）。
+        RHIPipelineVertexInputStateCreateInfo vertex_input {};
         vertex_input.sType = RHI_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        RHIVertexInputBindingDescription id_binding {};
+        id_binding.binding = 0;
+        id_binding.stride = sizeof(uint32_t);
+        id_binding.inputRate = RHI_VERTEX_INPUT_RATE_INSTANCE;
+        RHIVertexInputAttributeDescription id_attr {};
+        id_attr.location = 3;
+        id_attr.binding = 0;
+        id_attr.format = RHI_FORMAT_R32_UINT;
+        id_attr.offset = 0;
+        if (dx12)
+        {
+            vertex_input.vertexBindingDescriptionCount = 1;
+            vertex_input.pVertexBindingDescriptions = &id_binding;
+            vertex_input.vertexAttributeDescriptionCount = 1;
+            vertex_input.pVertexAttributeDescriptions = &id_attr;
+        }
         RHIPipelineInputAssemblyStateCreateInfo input_assembly {};
         input_assembly.sType = RHI_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
         input_assembly.topology = RHI_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -779,7 +937,24 @@ struct SpineGpuRenderer::Impl
         }
 
         // ---- 图集页 ----
-        UIGpuResources* ui = UIGpuResources::EnsureInstance(rhi);
+        // 失败时把已建的页交给延迟销毁（`ld` 还没发布，GPU 没用过它们，下一帧就会销毁）
+        struct PageGuard
+        {
+            Impl& impl;
+            Loaded& l;
+            bool released {false};
+            ~PageGuard()
+            {
+                if (!released && !l.pages.empty())
+                {
+                    Retired r;
+                    r.pages = l.pages;
+                    r.frames_left = 1;
+                    impl.retired.push_back(std::move(r));
+                    l.pages.clear();
+                }
+            }
+        } page_guard {*this, *ld};
         for (const std::string& page : a.atlas_page_names)
         {
             const fs::path png = atlas_path.parent_path() / FromUtf8(page);
@@ -795,18 +970,20 @@ struct SpineGpuRenderer::Impl
                 err = "读不到图集页 " + ToUtf8(png);
                 return false;
             }
-            void* tex = ui != nullptr ? ui->UpdateDynamicTexture(nullptr, pixels, static_cast<uint32_t>(w),
-                                                                 static_cast<uint32_t>(h))
-                                      : nullptr;
+            Page pg;
+            rhi->CreateGlobalImage(pg.image, pg.view, nullptr, static_cast<uint32_t>(w), static_cast<uint32_t>(h), pixels,
+                                   RHI_FORMAT_R8G8B8A8_UNORM, 1);
             stbi_image_free(pixels);
-            if (tex == nullptr)
+            pg.sampler = rhi->GetOrCreateDefaultSampler(RHIDefaultSamplerType::Default_Sampler_Linear);
+            if (pg.image == nullptr || pg.view == nullptr || pg.sampler == nullptr)
             {
+                ld->pages.push_back(pg);   // 已建的部分交给 PageGuard
                 err = "上传图集页失败 " + ToUtf8(png);
                 return false;
             }
-            ld->page_textures.push_back(tex);
+            ld->pages.push_back(pg);
         }
-        if (ld->page_textures.empty())
+        if (ld->pages.empty())
         {
             err = "图集没有页";
             return false;
@@ -843,23 +1020,33 @@ struct SpineGpuRenderer::Impl
                 err = "分配描述符集失败（共享池可能满了）";
                 return false;
             }
-            Buffer* bufs[kSet0Bindings] = {&ld->vertex_words, &ld->infl_bind, &ld->infl_bone, &ld->uvs, &f.bones,
-                                           &f.draws,          &f.insts,     &f.deform,    &f.cpu_verts};
-            RHIDescriptorBufferInfo infos[kSet0Bindings] {};
-            RHIWriteDescriptorSet writes[kSet0Bindings] {};
-            for (uint32_t i = 0; i < kSet0Bindings; ++i)
+            f.set1.assign(ld->pages.size(), nullptr);
+            for (RHIDescriptorSet*& s1 : f.set1)
             {
-                infos[i].buffer = bufs[i]->buffer;
-                infos[i].offset = 0;
-                infos[i].range = bufs[i]->size;
-                writes[i].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                writes[i].dstSet = f.set0;
-                writes[i].dstBinding = i;
-                writes[i].descriptorCount = 1;
-                writes[i].descriptorType = RHI_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-                writes[i].pBufferInfo = &infos[i];
+                RHIDescriptorSetAllocateInfo a1 = alloc;
+                a1.pSetLayouts = &set1_layout;
+                if (!rhi->AllocateDescriptorSets(&a1, s1) || s1 == nullptr)
+                {
+                    err = "分配图集页描述符集失败（共享池可能满了）";
+                    return false;
+                }
             }
-            rhi->UpdateDescriptorSets(kSet0Bindings, writes, 0, nullptr);
+            WriteSet0(*ld, f);
+            WriteSet1(*ld, f);
+        }
+        if (IsDx12())
+        {
+            std::vector<uint32_t> ids(std::max<size_t>(a.draw_items.size(), 1));
+            for (uint32_t i = 0; i < ids.size(); ++i)
+            {
+                ids[i] = i;
+            }
+            if (!CreateBuffer(ld->draw_ids, ids.size() * sizeof(uint32_t), RHI_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                              ids.data()))
+            {
+                err = "创建绘制项下标顶点缓冲失败";
+                return false;
+            }
         }
 
         // ---- setup 姿势（第 0 帧）的包围盒：CPU 按 §6 同一公式蒙一遍，只为自动居中 ----
@@ -950,6 +1137,7 @@ struct SpineGpuRenderer::Impl
             ld->anim_state->SetAnimation(0, ld->anim, true);
         }
         ld->last_tick = std::chrono::steady_clock::now();
+        page_guard.released = true;
         RetireLoaded();
         loaded = std::move(ld);
         return true;
@@ -1365,7 +1553,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         const float bh = std::max(ld.bounds[3] - ld.bounds[1], 1.0f);
         const float fit = 0.8f * std::min(viewport.width / bw, viewport.height / bh);   // 像素 / 单位
         const float sx = 2.0f * fit / viewport.width;
-        const float sy = -2.0f * fit / viewport.height;   // Vulkan NDC y 向下
+        const float sy = ClipSpaceYSign(rhi) * 2.0f * fit / viewport.height;   // Vulkan NDC y 向下，DX12 / Metal 向上
         const float cx = 0.5f * (ld.bounds[0] + ld.bounds[2]);
         const float cy = 0.5f * (ld.bounds[1] + ld.bounds[3]);
         inst.clip_from_world[0] = sx;
@@ -1384,6 +1572,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     }
 
     // ---- 4) 录制：一项一次 DrawIndexed，firstInstance = 绘制项在 b5 里的下标 ----
+    d.RefreshDescriptors(ld, fs);
     RHICommandBuffer* cmd = rhi->GetCurrentCommandBuffer();
     float color[4] = {0.9f, 0.6f, 1.0f, 1.0f};
     rhi->PushEvent(cmd, "SpineGpu", color);
@@ -1400,7 +1589,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     int bound_index = -1;   // 0 = 静态索引缓冲，1 = 本帧 CPU 裁剪的动态索引缓冲
     int bound_mode = -1;
     int bound_page = -1;
-    UIGpuResources* ui = UIGpuResources::Get();
+    const bool dx12 = d.IsDx12();
     for (uint32_t i = 0; i < draws.size(); ++i)
     {
         const DrawCmd& dc = cmds_out[i];
@@ -1415,22 +1604,23 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         if (mode != bound_mode)
         {
             rhi->CmdBindPipelinePFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, d.pipelines[mode]);
-            // 换管线后两个 set 都重绑（布局相同，绑定其实保留；显式重绑更不依赖驱动细节）
-            const RHIDescriptorSet* set0 = fs.set0;
-            rhi->CmdBindDescriptorSetsPFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, d.pipeline_layout, 0, 1, &set0, 0,
-                                          nullptr);
+            if (dx12)
+            {
+                // DX12RHI 的顶点缓冲 stride 取自**当前**管线 ⇒ 必须在绑管线之后绑
+                RHIBuffer* id_buf = ld.draw_ids.buffer;
+                const RHIDeviceSize zero = 0;
+                rhi->CmdBindVertexBuffersPFN(cmd, 0, 1, &id_buf, &zero);
+            }
             bound_mode = mode;
             bound_page = -1;
         }
-        const int page = di.atlas_page < ld.page_textures.size() ? static_cast<int>(di.atlas_page) : 0;
-        if (page != bound_page && ui != nullptr)
+        const int page = di.atlas_page < ld.pages.size() ? static_cast<int>(di.atlas_page) : 0;
+        if (page != bound_page)
         {
-            const RHIDescriptorSet* set1 = ui->GetDescriptorSet(ld.page_textures[static_cast<size_t>(page)]);
-            if (set1 == nullptr)
-            {
-                continue;
-            }
-            rhi->CmdBindDescriptorSetsPFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, d.pipeline_layout, 1, 1, &set1, 0,
+            // set 0 + set 1 **一次**绑：DX12RHI 每次 CmdBindDescriptorSets 都会重设根签名，分两次绑时
+            // 只靠"同一根签名不清绑定"这条驱动行为保住 set 0 —— 一起绑就不依赖它。
+            const RHIDescriptorSet* sets[2] = {fs.set0, fs.set1[static_cast<size_t>(page)]};
+            rhi->CmdBindDescriptorSetsPFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, d.pipeline_layout, 0, 2, sets, 0,
                                           nullptr);
             bound_page = page;
         }
@@ -1480,7 +1670,23 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     d.last_clip_vertices = static_cast<uint32_t>(clip.xy.size() / 2u);
 }
 
-#else  // !Z_HAS_VULKAN —— 其它后端还没接：接口保留，什么都不画
+void SpineGpuRenderer::DrawInEditorViewport(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass)
+{
+    if (rhi == nullptr)
+    {
+        return;
+    }
+    const RHIViewport* scene = rhi->GetViewport(ViewportType::scene);
+    const RHIViewport* vp =
+        (scene != nullptr && scene->width > 0.0f && scene->height > 0.0f) ? scene : rhi->GetViewport(ViewportType::game);
+    if (vp == nullptr)
+    {
+        return;
+    }
+    Draw(rhi, render_pass, subpass, *vp);
+}
+
+#else  // __EMSCRIPTEN__ —— WebGL2 没有 SSBO / gl_InstanceIndex 偏移：接口保留，什么都不画
 
 struct SpineGpuRenderer::Impl
 {
@@ -1508,7 +1714,8 @@ void SpineGpuRenderer::RequestTimeScale(float) {}
 void SpineGpuRenderer::RequestTrackAlpha(int, float) {}
 void SpineGpuRenderer::RequestTintBlack(bool) {}
 void SpineGpuRenderer::Draw(RHI*, RHIRenderPass*, uint32_t, const RHIViewport&) {}
+void SpineGpuRenderer::DrawInEditorViewport(RHI*, RHIRenderPass*, uint32_t) {}
 uint32_t SpineGpuRenderer::LastDrawCount() const { return 0; }
-std::string SpineGpuRenderer::Status() const { return "GPU-Spine rendering is Vulkan-only for now"; }
+std::string SpineGpuRenderer::Status() const { return "GPU-Spine rendering is not available on WebGL2"; }
 
 #endif

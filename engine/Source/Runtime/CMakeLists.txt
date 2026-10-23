@@ -379,6 +379,11 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/Test/SpineSkinningParityTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/Test/SpineSkinningParityTest.cpp")
+# GPU-Spine DX12 光栅对拍的 main（同上，独立 exe，同一开关）。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/Test/SpineGpuDx12RasterTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Interface/DX12/Test/SpineGpuDx12RasterTest.cpp")
 # ShaderLab Unity-compat smoke-test main. Same exclusion rationale. Built only
 # when ZENGINE_BUILD_SHADERLAB_UNITY_COMPAT_TEST=ON (see
 # Function/ShaderLab/Test/CMakeLists.txt).

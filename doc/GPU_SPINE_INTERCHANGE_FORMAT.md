@@ -1397,10 +1397,12 @@ v7 的处理（见 `doc/GPU_SPINE_V7_ANIMATION.md`）。**边界不是拍脑袋�
 
 ---
 
-## 15. 渲染接入（第一版，Vulkan 编辑器）
+## 15. 渲染接入（编辑器：Vulkan / DX12 / Metal）
 
 代码：`Function/Render/Spine/SpineGpuRenderer.{h,cpp}` + `engine/shader/glsl/spine_gpu.{vert,frag}`
-（构建期编译成 SPIR-V 头文件，不走运行时 glslang）。入口是控制台命令：
+（构建期编译成 SPIR-V 头文件，不走运行时 glslang；Metal 由 MetalRHI 经 SPIRV-Cross 转 MSL）+
+`engine/shader/hlsl/rp2/spine_gpu.{vert,frag}.hlsl`（DX12，运行时 DXC 编，与 RP2 其它 pass 同一做法）。
+三个后端接入点与差异见本节末"DX12 / Metal"。入口是控制台命令：
 
 ```
 spine.load <骨架 .skel.bytes|.skel|.json> [动画下标]   # 图集取同名 .atlas.txt / .atlas
@@ -1454,7 +1456,7 @@ setup 姿势的包围盒自动居中、占视口 80%。
   weighted 的误差来自**容器里权重是 u8 量化的**（与 deform 无关，两格同量级）；
   把 deform 偏移错一个顶点，这两格会变成 9724 / 402（门槛已接进 verdict）。
 
-**仍然不做**（不是忘了）：DX12 / Metal；多实例；非 default 皮肤。（tint black 已接，见下面"tint black"。）
+**仍然不做**（不是忘了）：多实例；非 default 皮肤；WebGL2（没有 SSBO）。（tint black、DX12 / Metal 已接，见下面。）
 
 #### v15：运行时裁剪（2026-10-23）
 
@@ -1511,6 +1513,36 @@ CPU 裁剪时按 {3,0,1,2} 重排（不裁时两条对角线画出来一样，�
 覆盖面（S5 对拍段统计，781 资产 × 2 段随机脚本 × 150 帧）：可画槽位暗色非 0 共 **9 234** 次，负分量 **0** 次；
 最多的是 `CardHero/Spine/ZhuBaJie/ZhuBaJie_ys/K_ZhuBaJie_Spine.skel.bytes`（4 777 次，单个槽位）。
 编辑器实跑（Vulkan + 验证层）：该资产打开 tint black 后每帧 1 / ~120 项带暗色项，无验证层报错。
+
+#### DX12 / Metal（2026-10-23）
+
+渲染器原本就只用通用 RHI 接口，去掉 Vulkan 门槛后要处理的是各后端的**语义差异**（都是"能跑、不报错、画错"类）：
+
+| 差异 | 处理 |
+|---|---|
+| **接入点** | Vulkan：MainCameraPass 的 RP2 UI subpass（不变）。DX12：编辑器没有 UI 层可画（RP2 的 UI 层是透明兜底图，ZSlate / ImGui 在 RP2 之后直接画 swapchain）⇒ `MainCameraRp2Pass::SetCombineOverlay`，在 Combine UI 之后、同一个 swapchain pass 里画（手写路径与 render graph 路径都接了）。Metal：`RenderSystem::Tick` 的 swapchain pass 里，scene blit 之后、post-UI 回调之前。三处都是"场景之上、编辑器面板之下"。视口统一走 `DrawInEditorViewport`（Scene 窗口开着画 Scene，否则 Game）。 |
+| **绘制项下标** | Vulkan `gl_InstanceIndex` 含 firstInstance；Metal `[[instance_id]]` 含 baseInstance（spirv-cross 实测映射成 `gl_InstanceIndex [[instance_id]]`）。**D3D12 的 SV_InstanceID 不含 StartInstanceLocation** ⇒ DX12 管线多一条 per-instance u32 顶点属性（location 3 ⇒ TEXCOORD0），绑一块 0,1,2,… 的顶点缓冲：per-instance 属性取址会加 StartInstanceLocation。 |
+| **结构化 SRV 的 stride** | DX12 把 SSBO 建成结构化 SRV，没给 stride 时按 range 猜（80 B 或 4 B）⇒ float2 / 48 B / 96 B / vec4 全错。`kSet0Strides = {4,8,4,8,4,48,96,4,16}` 写进每个 `RHIDescriptorBufferInfo.stride`。 |
+| **描述符生命期** | DX12 的 `UpdateDescriptorSets` 把 SRV 建在**当前帧**的堆分区里，该分区同一帧号下一轮整体回收 ⇒ 只写一次的集合第二轮成了野句柄。DX12 每帧录制前重写本帧槽位的 set0 / set1（`RefreshDescriptors`，同 `MainCameraRp2Pass::DrawRP2` 的做法）。也因此图集页不再借 `UIGpuResources`（它的描述符集只写一次），渲染器自己 `CreateGlobalImage`、自己建 set1 布局、随资产延迟销毁。 |
+| **根签名重设** | DX12RHI 每次 `CmdBindDescriptorSets` 都 `SetGraphicsRootSignature` ⇒ set0 / set1 改成**一次**一起绑，不依赖"同一根签名不清绑定"。 |
+| **裁剪空间 y** | Vulkan NDC y 向下（不翻视口）⇒ sy 取负；DX12 / Metal NDC y 向上，两边 RHI 都不翻视口 ⇒ sy 取正（`ClipSpaceYSign`）。 |
+| **Metal 槽位** | MetalRHI 每个 set 一段 8 个槽（`k_msl_descriptor_set_stride`），set0 的 b8 落到 set1 的第 0 槽 —— 但 b8 是 buffer（`[[buffer(16)]]`）、set1 只有 texture（`[[texture(8)]]`），两种资源各自编号，**不冲突**。以后 set1 若加 buffer 就会撞。 |
+
+验证：
+
+* `SpineGpuDx12RasterTest`（新，ctest）：拿引擎**真正加载的那两份 HLSL** 画进 64×64 离屏目标、回读像素，
+  根签名按 DX12RHI 同一映射手搭、SRV 用同一张 stride 表。6 条断言覆盖：y 方向、绘制项下标含 StartInstanceLocation
+  （第 0 项故意放右上角且从不以 firstInstance = 0 画）、weighted 权重（换位会让边界列空掉）、tint black 公式、
+  b8、tint 字节序。变异：VS 改成 `draws[0]` / y 取反都是 1/6。
+* 编辑器实跑 DX12：K_Bianque（裁剪 55 项）、K_ZhuBaJie（tint black）各 60 s，不崩、无 device removed；
+  PSO 创建成功（DXC 编 HLSL + 根签名 / 输入布局与 shader 匹配是在建 PSO 时校验的）。
+  ⚠️ DX12RHI 只在建设备和 device removed 时抽调试层消息；临时每帧抽取 + 故意传负宽视口也抽不到消息
+  ⇒ **这台机器上调试层的逐帧校验不可观测**，"无调试层报错"不能当证据。
+* Vulkan 回归：同两份资产实跑，validation 层无报错（图集页改为自建、set 改为一次绑之后）。
+* Metal：**没编译、没跑过**（这台机器没有 Apple 工具链）。只做了静态核对：SPIR-V 用 `spirv-cross --msl
+  --msl-version 20100 --msl-decoration-binding` 按 MetalRHI 的选项能生成 MSL，`gl_InstanceIndex → [[instance_id]]`，
+  9 个 buffer 在 `[[buffer(0..8)]]`（运行时 MetalRHI 再加 8 的偏移）。
+* 画面没有人眼看过：屏幕截图（GDI BitBlt）在这台机器上得到全黑（桌面不可见）。
 
 可见集解析实测：OSGame 全量第 0 个动画 t=0 时挂着附件的槽位 29 785 个能找到绘制项，
 689 个找不到 —— 这 689 个槽位在 skin 0 下**一个可画项都没有**（"槽位里有别的可画项、

@@ -11,6 +11,7 @@
 #include "Runtime/Function/Render/RenderScene.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/RenderType.h"
+#include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -595,6 +596,12 @@ void DX12MainCameraPass::Initialize(const RenderPassInitInfo* init_info)
         rp2_common.render_resource = m_RenderResource;
         m_Rp2Pass.SetCommonInfo(rp2_common);
         m_Rp2Pass.SetFramebufferResources(&m_FramebufferResources);
+        // GPU-Spine（控制台 `spine.load` 才有东西画）：DX12 编辑器没有 UI 层可画（RP2 的 UI 层是一张
+        // 透明兜底图，ZSlate / ImGui 在 RP2 之后直接画 swapchain），所以画在 Combine UI 之后、同一个
+        // swapchain pass 里 —— 预乘 alpha 叠在合成好的场景上，面板随后盖在它上面（与 Vulkan 的层次一致）。
+        m_Rp2Pass.SetCombineOverlay([this](RHIRenderPass* ldr_render_pass) {
+            SpineGpuRenderer::Get().DrawInEditorViewport(m_Rhi, ldr_render_pass, 0);
+        });
         try
         {
             m_Rp2Ready = m_Rp2Pass.Initialize(m_EnableFxaa);

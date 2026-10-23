@@ -864,6 +864,10 @@ void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
         m_Rhi->PushEvent(cmd, "Combine UI", debug_color);
         DrawCombineUi(cmd);
         m_Rhi->PopEvent(cmd);
+        if (m_CombineOverlay)
+        {
+            m_CombineOverlay(m_FbResources->getRp2LdrRenderPass());
+        }
         m_Rhi->CmdEndRenderPassPFN(cmd);
     }
 }
@@ -1063,6 +1067,10 @@ bool MainCameraRp2Pass::DrawRP2WithGraph(uint32_t swapchain_image_index,
             UpdateDescriptorBindings();
             begin_pass(swapchain_framebuffers[swapchain_image_index], m_FbResources->getRp2LdrRenderPass());
             DrawCombineUi(cmd);
+            if (m_CombineOverlay)
+            {
+                m_CombineOverlay(m_FbResources->getRp2LdrRenderPass());
+            }
             m_Rhi->CmdEndRenderPassPFN(cmd);
         });
 

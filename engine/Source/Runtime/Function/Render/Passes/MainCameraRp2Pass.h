@@ -16,6 +16,12 @@ public:
 
     void SetUiPass(RenderPass* ui_pass) { m_UiPass = ui_pass; }
 
+    /// Recorded inside the Combine UI render pass, right after the scene/UI composite, i.e.
+    /// straight onto the swapchain and before anything the post-RP2 overlay (ZSlate / ImGui)
+    /// paints. The argument is that render pass (subpass 0), for pipeline creation. Used by
+    /// DX12 for GPU-Spine, which has no UI layer to draw into there. Empty = nothing.
+    void SetCombineOverlay(std::function<void(RHIRenderPass*)> overlay) { m_CombineOverlay = std::move(overlay); }
+
     bool Initialize(bool enable_fxaa);
     void Shutdown();
 
@@ -78,6 +84,8 @@ private:
                           const std::vector<std::function<void()>>& post_ui_callbacks);
 
     RHIShader* LoadShader(const char* hlsl_relative_path, ShaderStage stage);
+
+    std::function<void(RHIRenderPass*)> m_CombineOverlay;
 
     MainCameraFramebufferResources* m_FbResources {nullptr};
     RenderPass* m_UiPass {nullptr};

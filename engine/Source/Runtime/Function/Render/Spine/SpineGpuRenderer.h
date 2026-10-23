@@ -10,7 +10,11 @@
 // 影响流 / UV / 索引每个资产只上传一次、所有实例共用。
 //
 // 第一版的边界（明确不做，不是忘了）：
-//   * 只在 Vulkan 编辑器里画（MainCameraPass 的 RP2 UI subpass，DX12 / Metal 另接）；
+//   * 三个桌面后端都画（WebGL2 不画）：
+//       Vulkan —— MainCameraPass 的 RP2 UI subpass（画在 UI 之前，与 UI 层同一合成）；
+//       DX12   —— MainCameraRp2Pass 的 Combine UI pass 里、合成之后直接画进 swapchain（DX12 编辑器不用
+//                 UI 层，ZSlate / ImGui 在 RP2 之后画 ⇒ 面板照样盖在上面）；HLSL 版着色器运行时编；
+//       Metal  —— RenderSystem 的 swapchain pass 里、scene blit 之后 post-UI 之前；SPIR-V 经 SPIRV-Cross。
 //   * 只有一个实例，由控制台 `spine.load <骨架文件> [动画下标]` 指定，画在视口里自动居中；
 //   * 多轨混合（S5）：加载时轨道 0 循环播请求的动画，之后用 spine.play / spine.queue /
 //     spine.empty / spine.mix / spine.speed / spine.alpha 改（语义即 spine::AnimationState）；
@@ -57,6 +61,10 @@ public:
     // 渲染线程：在 `render_pass` 的 `subpass` 里、`viewport` 范围内画当前实例。
     // 调用方负责已 begin 了该 render pass、并处在该 subpass。
     void Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport);
+
+    // 同上，视口按编辑器规则自己挑：Scene 窗口开着（宽高 > 0）就画在 Scene 里，否则画在 Game 视口里。
+    // DX12 / Metal 的接入点用它（Vulkan 的 MainCameraPass 自己挑，规则相同）。
+    void DrawInEditorViewport(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass);
 
     // 诊断：上一帧画了几个绘制项（`spine.status` 用）。
     uint32_t LastDrawCount() const;

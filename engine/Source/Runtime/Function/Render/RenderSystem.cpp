@@ -19,6 +19,7 @@
 // 里的 GetNanitePass 只前向声明了这个类）。
 #include "Runtime/Function/Render/Nanite/NaniteRenderer.h"
 #include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
+#include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 
 // Lightweight stub only on Metal (Apple) and WebGL2 (Emscripten). Windows
 // DX12-only builds (ZENGINE_USE_VULKAN=OFF) must use the full implementation
@@ -302,6 +303,10 @@ void RenderSystem::Tick(float delta_time)
                                        m_RenderPipeline ? m_RenderPipeline->GetSceneColorView() : nullptr,
                                        !already_tonemapped);
                 }
+
+                // GPU-Spine（控制台 `spine.load` 才有东西画）：场景之后、编辑器 UI 之前 ⇒ 面板盖在它上面，
+                // 与 Vulkan（RP2 UI subpass 里画在 UI 之前）同一层次。swapchain pass 是 Apple 上唯一开着的 pass。
+                SpineGpuRenderer::Get().DrawInEditorViewport(m_Rhi, render_pass, 0);
 
                 if (m_RenderPipeline)
                 {
