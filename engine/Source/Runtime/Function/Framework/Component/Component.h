@@ -11,7 +11,10 @@ class Component : public Object
     ZGENERATED_BODY(Component)
 
 protected:
-    GameObject* m_ParentObject;
+    // 必须初始化：组件 New 出来到 PostLoadResource 挂上父对象之间，SetScriptGuid 之类的 setter 用
+    // `GetParentObject() != nullptr` 判断"是否已挂上"；未初始化时那是堆上的垃圾（spine.spawn 带 script=
+    // 时在 TypeScriptComponent::BindAndAwake → GetTransform 里崩过，取决于堆布局，时有时无）
+    GameObject* m_ParentObject {nullptr};
     bool m_IsDirty {false};
     bool m_IsScaleDirty {false};
 

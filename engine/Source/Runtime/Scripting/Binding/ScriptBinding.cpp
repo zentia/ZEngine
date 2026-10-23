@@ -178,15 +178,29 @@ namespace ScriptBindingRegistry
         for (const ZClassScriptBinding* cls : classes)
         {
             apis->define_class(registry, cls->typeId, cls->superTypeId, nullptr, cls->scriptName, nullptr, nullptr, nullptr, 1);
-            apis->set_property_info_size(registry, cls->typeId, static_cast<int>(cls->methodCount), 0,
+            // pesapi 把实例方法与静态方法放在**两张**表里（ScriptClassDefinition::Methods / Functions，各按
+            // set_property_info_size 给的个数 malloc，名字为空的那一项当结束符）⇒ 两种要分开计数、各自从 0 编号。
+            // 以前静态方法个数传 0、下标用合表里的位置：第一个静态 ZFUNCTION（SpineRenderer::Of）一注册就写穿
+            // Functions[] 的堆块（启动即崩），而且 Methods[] 在它的位置留下一个空洞 ⇒ 排在后面的实例方法全部"消失"。
+            int instance_count = 0;
+            int static_count = 0;
+            for (std::size_t i = 0; i < cls->methodCount; ++i)
+            {
+                if (cls->methods[i].callback != nullptr)
+                    ++(cls->methods[i].isStatic ? static_count : instance_count);
+            }
+            apis->set_property_info_size(registry, cls->typeId, instance_count, static_count,
                                          static_cast<int>(cls->propertyCount), 0);
+            int instance_index = 0;
+            int static_index = 0;
             for (std::size_t i = 0; i < cls->methodCount; ++i)
             {
                 const ZScriptMethodEntry& method = cls->methods[i];
                 if (method.callback == nullptr)
                     continue;
-                apis->set_method_info(registry, cls->typeId, static_cast<int>(i), method.name,
-                                      method.isStatic ? 1 : 0, method.callback, nullptr, 1);
+                const int index = method.isStatic ? static_index++ : instance_index++;
+                apis->set_method_info(registry, cls->typeId, index, method.name, method.isStatic ? 1 : 0, method.callback,
+                                      nullptr, 1);
             }
             // Instance (not static) accessor properties. is_static must be 0 or
             // pesapi files them under `Variables` (class-level) instead of
@@ -347,7 +361,7 @@ namespace ScriptBindingRegistry
                 const ZScriptMethodEntry& method = cls->methods[i];
                 if (method.tsSignature == nullptr || method.tsSignature[0] == '\0')
                     continue;
-                out += "    ";
+                out += method.isStatic ? "    static " : "    ";
                 out += method.tsSignature;
                 out += ";\n";
             }
