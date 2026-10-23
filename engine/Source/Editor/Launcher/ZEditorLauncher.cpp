@@ -592,3 +592,23 @@ void RememberProject(const std::filesystem::path& project_file)
 }  // namespace ZEditorLauncher
 
 #endif  // _WIN32
+
+// -----------------------------------------------------------------------------
+// 非 Windows、非 macOS（Linux / Web / ...）：没有原生的项目选择窗口。
+//
+// 这两个符号必须存在，否则 ZEditor 在这些平台上链接不过 —— Main.cpp 的 Unix 分支
+// 无条件引用它们。行为跟加 Launcher 之前完全一致：Run() 返回 false，由调用方
+// 打印用法并退出 1。这些平台上的"双击没反应"是现状，但那不能靠一个假窗口假装
+// 修好了，所以这里刻意不做"假装有 UI"。
+// -----------------------------------------------------------------------------
+#if !defined(_WIN32) && !defined(__APPLE__)
+namespace ZEditorLauncher
+{
+bool Run(LaunchChoice& /*out_choice*/)
+{
+    return false;
+}
+
+void RememberProject(const std::filesystem::path& /*project_file*/) {}
+}  // namespace ZEditorLauncher
+#endif

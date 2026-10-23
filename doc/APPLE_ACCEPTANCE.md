@@ -103,6 +103,7 @@ cd build && ctest --output-on-failure
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 | `MemoryPairingSmokeTest` | 23 | 分配器配对（§3.26）：Apple 上 `Produce` 出来的块**不在 mimalloc 堆区**（所以喂给 mi_free 必坏）；错配会被守卫拦下而不是崩；正确配对不触发守卫；全库扫描 0 处错配 + **扫描器自检**（含已知错配/已知正确的双向对照） |
+| `ZEditorLauncherWiringSmokeTest` | 29 | Launcher 接线（§3.27）：两个平台的 `OpenLauncher` 分支都接到 Launcher、Unix 那条不许退回 `reportMissingProject()`（双击闪退的那一行）；重启用 `POSIX_SPAWN_SETEXEC` 且全文件不许有 `fork()`；`runEditorUnix` 要回写最近项目；三份实现（Win32 / Apple / POSIX 桩）不能同时编；Apple 侧确实是窗口不是空桩；**扫描器双向自检** |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
 `MetalSpirvShaderSmokeTest` 一条就能把 §3.1 / §3.2 / §3.3 三个错全抓出来。
@@ -1193,6 +1194,71 @@ EXC_BAD_ACCESS / SIGBUS（栈里只有 mimalloc，看不出是谁配错的），
 3. **跨函数的分配/释放最容易看漏**。`AssetManager::ReadObject` 返回的是 `Produce` 出来
    的对象，调用方毫无察觉就用了 mimalloc 释放。审计必须沿"返回值是谁分配的"追，
    不能只看同一个函数里的字面量。
+
+### 3.27 macOS 上没有 Launcher：双击 ZEditor 就是"闪一下就没了"
+
+**症状**：双击 `ZEditor`，什么都没出现，进程静默退出 1。从终端跑能看到一行
+`ZEditor: no project specified.` —— 那行字就是全部线索。
+
+**根因（两处，缺一不可）**：
+
+1. `Main.cpp` 的 Unix 分支里 `case StartupMode::OpenLauncher:` 直接
+   `return reportMissingProject();`，而 `reportMissingProject()` 是**往 stderr 打一行字
+   再 return 1**。双击（Finder/Launchpad）启动的进程没有终端，那行字谁也看不见 ⇒
+   用户看到的就是"崩溃"。
+2. `ZEditorLauncher.cpp` **整个文件**包在 `#ifdef _WIN32` 里（1 行 include、594 行
+   `#endif`），macOS 上这两个符号根本不存在。就算把 1 接上也是链接错误。
+
+**第二个坑（调查时才发现的）**：Win32 版 Launcher 的 UI 用 `ZSlate::FSlateStandaloneApp`，
+而 `engine/Libraries/ZSlate/include/ZSlate/App/SlateStandaloneApp.h` **整个头**是
+`#if defined(_WIN32)`（Win32 + D3D11 宿主），ZSlate 的 CMake 在非 Windows 上把
+`App/SlateStandaloneApp` 整个从源文件列表里滤掉 —— **macOS 上没有任何可复用的独立
+Slate 窗口宿主**。所以不能"照搬 Win32 那套换个平台宏"，得手搭一个 AppKit 窗口
+（`ZEditorLauncher.mm`）。
+
+**修复**：
+
+| 文件 | 改动 |
+|---|---|
+| `Launcher/ZEditorLauncher.mm`（新） | AppKit 版 Launcher：套件下拉 + 最近项目表格（`项目`/`路径` 两列）+ 打开/浏览（`NSOpenPanel`）/新建项目 + 退出。最近列表落 `~/Library/Application Support/ZEngine/ZEditor/recent_projects.txt`，默认项目目录 `~/Documents/ZEngine`。最近列表为空时**补上可执行文件同目录的 `.zproject`**（构建树里 `ZEditor` 和 `ZGameSmoke.zproject` 就是挨着的，第一次启动也能一键进编辑器） |
+| `Launcher/ZEditorLauncher.cpp` | 末尾补 `#if !defined(_WIN32) && !defined(__APPLE__)` 兜底桩 —— 这两个符号在 Linux 上必须存在，否则 ZEditor 链接不过 |
+| `Main.cpp` | Unix 分支的 `OpenLauncher` 接到 `runLauncherAndDispatchUnix()`；新增 `relaunchWithProject()`；`runEditorUnix()` 补 `RememberProject()`（命令行 `-p` 打开的项目下次也要出现在 Launcher 里） |
+
+**为什么必须重启自己**：`CommandSystem::Initialize()` 是从 `_NSGetArgv()` 里解析 `-p`
+的，进程内改 argv 既不干净也不安全（那块内存是 exec 时内核铺好的定长区域）。Win32
+用 `ShellExecuteW` 干的是同一件事；macOS 用 **`posix_spawn` + `POSIX_SPAWN_SETEXEC`** ——
+**不能 fork**：Launcher 已经把 Cocoa / `NSApplication` 拉起来了，fork 之后的子进程带着
+一份半初始化的 AppKit（Mach port、CF run loop 状态全是脏的），是 macOS 上经典的
+"fork after Cocoa" 崩溃源。SETEXEC 不走 fork，直接换映像，而且 PID 不变、Dock 里不会
+出现两个图标。
+
+**顺带修的**：裸可执行文件默认 `NSApplicationActivationPolicyProhibited` —— 窗口能显示
+但拿不到键盘焦点、不进 Dock、没有菜单栏（于是文本框里 Cmd-V 也没用）。Launcher 里显式
+设成 `Regular`，并装一个最小主菜单（退出 + 编辑），否则新建项目的名称输入框没法粘贴。
+
+**验证**：
+
+- **构建**：`.mm` 被 CMake 按 `OBJCXX` 编译并链进 ZEditor（`build.ninja` 里可见
+  `OBJCXX_COMPILER__ZEditor`）。Editor/CMakeLists.txt 本来就有 `*.mm` 的 glob 和 Cocoa
+  framework，不需要改构建配置。
+- **真机（关键）**：无障碍权限被拒（`osascript` 报 `-10004`），点不了按钮，所以临时
+  插了一行 `performSelector:afterDelay:` 自动触发"打开"按钮，走的是**同一条提交链** ——
+  结果：`recent_projects.txt` 被正确写出，`posix_spawn` 重启成功，重启后的编辑器日志里
+  `Project path: /Users/.../bin/Debug/ZGameSmoke.zproject`（**绝对路径**，跟手动 `-p
+  ZGameSmoke.zproject` 那几次的相对路径不同 —— 这就是重启真的发生了的硬证据），心跳
+  一路到 `frame=2761`、`particle=(has=1 emit=1 draw=1 parts=300000 vp=1)`，与直接 `-p`
+  启动完全一致。探针已撤回。
+- **静态**：新增 `ZEditorLauncherWiringSmokeTest`（29 checks，默认 OFF，
+  `-DZENGINE_BUILD_LAUNCHER_WIRING_SMOKE_TEST=ON`）。它只能读源码当文本 —— 启动分支在
+  `START_SYSTEM()` **之前**，任何测试进程都跑不到它。
+- **变异**（各精确变红）：Unix 分支改回 `reportMissingProject()` → 3 条；
+  `POSIX_SPAWN_SETEXEC` 改成 `0` → 1 条；`runEditorUnix` 里删掉 `RememberProject` → 1 条；
+  把 `return runLauncherAndDispatchUnix();` **整行注释掉** → 2 条（这条专门验证扫描器
+  会跳过整行注释 —— 全文 `find` 是抓不到的）。
+
+**一条教训**：macOS 上"没有终端"是 GUI 进程和 CLI 进程最本质的区别。任何"打一行日志
+然后退出"的失败路径，在双击启动的场景下都等价于崩溃。`reportMissingProject()` 作为
+兜底（Launcher 也起不来时）可以留，但它绝不能是**唯一**出口。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

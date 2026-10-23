@@ -50,6 +50,8 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/AssetPipeline/.*/[Tt]est/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Undo/[Tt]est/.*")
 # Editor/Build/Test/ carries BuildCacheSmokeTest.cpp, which has its own main().
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Build/[Tt]est/.*")
+# Editor/Launcher/Test/ carries ZEditorLauncherWiringSmokeTest.cpp (own main()).
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Launcher/[Tt]est/.*")
 # LuaMemPreview is Windows-only: it pulls <windows.h> / <commdlg.h> / <shellapi.h>
 # for the open-file dialog and console attachment. The directory is self-contained
 # (nothing outside it calls in), so dropping it whole costs nothing elsewhere.
@@ -362,6 +364,7 @@ message(STATUS "Z_ROOT_DIR:${Z_ROOT_DIR}")
 add_subdirectory(AssetPipeline/TextureImporter/Test)
 add_subdirectory(Undo/Test)
 add_subdirectory(Build/Test)
+add_subdirectory(Launcher/Test)
 
 set(_EDITOR_CONFIG_BIN "${BINARY_ROOT_DIR}/$<CONFIG>")
 set(POST_BUILD_COMMANDS

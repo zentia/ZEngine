@@ -16,6 +16,12 @@
     #include <windows.h>
 #endif
 
+#ifdef __APPLE__
+    #include <crt_externs.h>  // _NSGetEnviron()
+    #include <mach-o/dyld.h>  // _NSGetExecutablePath()
+    #include <spawn.h>        // posix_spawn / POSIX_SPAWN_SETEXEC
+#endif
+
 #include "Editor/EditorApplication/EditorApplication.h"
 #include "Editor/Launcher/ZEditorLauncher.h"
 #include "Editor/RegisterEditor.h"
@@ -476,10 +482,123 @@ namespace
         }
 
         GET_SYSTEM(Editor)->Run(pie_seconds);
+
+        // 记进 Launcher 的最近列表：项目完全可能没经过 Launcher 就打开了 ——
+        // 命令行 -p，或者以后做了文件关联之后双击 .zproject。只在真的加载成功
+        // 之后记（跟 Win32 分支同一条规则）。
+        if (ProjectInfo* project = GET_SYSTEM(ProjectInfo); project != nullptr && project->IsValid())
+        {
+            ZEditorLauncher::RememberProject(project->project_file);
+        }
+
         SHUTDOWN_SYSTEM();
         // Final safety: BqLog is asynchronous, drain any remaining records.
         LogSystem::ForceFlush();
         return 0;
+    }
+
+#ifdef __APPLE__
+    // 重启自己并带上 -p <project>。
+    //
+    // 为什么必须重启：CommandSystem::Initialize() 是从 `_NSGetArgv()` 里解析 -p 的，
+    // 进程内没有干净的途径改它（argv 那块内存是内核在 exec 时铺好的定长区域，
+    // 往里塞东西是 UB）。Win32 那边用 ShellExecuteW 干的是同一件事。
+    //
+    // 为什么用 SETEXEC 而不是 fork+exec：Launcher 已经把 Cocoa/NSApplication 拉起来了，
+    // fork 之后的子进程带着一份半初始化的 AppKit（Mach port、CoreFoundation run loop
+    // 状态全都是脏的），是 macOS 上经典的"fork after Cocoa"崩溃源。SETEXEC 不走 fork，
+    // 直接把当前进程映像换成新的 —— 干净，而且 PID 不变，Dock 里不会出现两个图标。
+    int relaunchWithProject(const std::filesystem::path& project_file)
+    {
+        char     raw_path[4096] = {};
+        uint32_t size           = static_cast<uint32_t>(sizeof(raw_path));
+        if (_NSGetExecutablePath(raw_path, &size) != 0)
+        {
+            LOG_ERROR(ZEditor, "Cannot resolve the executable path; relaunch aborted.");
+            LogSystem::ForceFlush();
+            return 1;
+        }
+
+        std::error_code ec;
+        const std::filesystem::path exe = std::filesystem::absolute(std::filesystem::path(raw_path), ec);
+        if (ec)
+        {
+            LOG_ERROR(ZEditor, "Cannot make '{}' absolute: {}", raw_path, ec.message());
+            LogSystem::ForceFlush();
+            return 1;
+        }
+
+        std::string exe_str = exe.string();
+        std::string arg_str = project_file.string();
+        std::string flag_str = "-p";
+
+        // posix_spawn 的 argv/envp 要 char* 且必须活到调用结束：用 vector<char>
+        // 持有可写缓冲，别把 std::string::c_str() 直接塞进去再改它。
+        std::vector<char> exe_buf(exe_str.c_str(), exe_str.c_str() + exe_str.size() + 1);
+        std::vector<char> arg_buf(arg_str.c_str(), arg_str.c_str() + arg_str.size() + 1);
+
+        char* child_argv[] = { exe_buf.data(), flag_str.data(), arg_buf.data(), nullptr };
+
+        posix_spawnattr_t attr;
+        if (posix_spawnattr_init(&attr) != 0)
+        {
+            LOG_ERROR(ZEditor, "posix_spawnattr_init failed; relaunch aborted.");
+            LogSystem::ForceFlush();
+            return 1;
+        }
+        posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETEXEC);
+
+        char** const environ_ptr = *_NSGetEnviron();
+        const int    rc = posix_spawn(nullptr, exe_buf.data(), nullptr, &attr, child_argv, environ_ptr);
+
+        // 走到这儿说明 exec 失败了（成功的话映像已经换掉，本行不会执行）。
+        posix_spawnattr_destroy(&attr);
+        LOG_ERROR(ZEditor,
+                  "Failed to relaunch ZEditor with project '{}': posix_spawn error {}",
+                  arg_str,
+                  rc);
+        LogSystem::ForceFlush();
+        std::fprintf(stderr,
+                     "ZEditor: 无法用项目 \"%s\" 重启（posix_spawn 错误 %d）。\n"
+                     "请手动启动：ZEditor -p \"%s\"\n",
+                     arg_str.c_str(),
+                     rc,
+                     arg_str.c_str());
+        return 1;
+    }
+#endif
+
+    // 弹 Launcher，然后分流。
+    //
+    // 没有 -p 时的唯一出口。之前这里是 `reportMissingProject()`：往 stderr 打一行
+    // 字再 return 1 —— 双击启动时 stderr 没有终端可去，进程静默退出 1，看上去就是
+    // "闪退/崩溃"。有窗口才能把"ZEditor 需要一个项目"真正送到人眼前。
+    int runLauncherAndDispatchUnix()
+    {
+        ZEditorLauncher::LaunchChoice choice;
+        if (!ZEditorLauncher::Run(choice))
+        {
+            return reportMissingProject();
+        }
+
+        if (choice.suite_id != ZEditor::LevelEditorSuiteDesc().id)
+        {
+            if (ZEditor::IToolSuite* suite = ZEditor::FindToolSuite(choice.suite_id))
+            {
+                return suite->RunInteractive(choice.project_file, std::vector<std::string>());
+            }
+            std::cerr << "ZEditor: 没有这个工具套件：" << choice.suite_id << "\n";
+            PrintAvailableSuites(stderr);
+            return 1;
+        }
+
+#if defined(__APPLE__)
+        return relaunchWithProject(choice.project_file);
+#else
+        // 这些平台上 Run() 只是个返回 false 的桩（见 ZEditorLauncher.cpp 末尾），
+        // 所以这里到不了；留着是为了将来真做了原生 Launcher 时不用改 Main.cpp。
+        return reportMissingProject();
+#endif
     }
 #endif
 }  // namespace
@@ -570,7 +689,7 @@ int main(int argc, char** argv)
     switch (resolveStartupModeFromCommandLine(argc, argv, project_path, preferred_rhi, pie_seconds, pie_stop))
     {
         case StartupMode::OpenLauncher:
-            return reportMissingProject();
+            return runLauncherAndDispatchUnix();
         case StartupMode::Abort:
             return 1;
         case StartupMode::OpenProject:
