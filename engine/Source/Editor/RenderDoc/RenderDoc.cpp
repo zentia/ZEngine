@@ -42,6 +42,8 @@ namespace Runtime
         };
 
         CaptureState g_capture_state = CaptureState::Idle;
+        uint32_t g_capture_delay_frames = 0;
+        bool g_capture_launch_ui = true;
         bool g_capture_path_template_set = false;
 
         std::filesystem::path ResolveRepoRootForCaptures()
@@ -134,6 +136,13 @@ namespace Runtime
             return dx12_rhi->getDevice();
         }
 
+        bool IsVulkanBackend()
+        {
+            auto* render_system = GET_SYSTEM(RenderSystem);
+            RHI* rhi = render_system != nullptr ? render_system->GetRHI() : nullptr;
+            return rhi != nullptr && rhi->getGraphicsAPI() == GraphicsAPI::Vulkan;
+        }
+
         void* ResolveNativeWindowHandle()
         {
             auto* window_system = GET_SYSTEM(WindowSystem);
@@ -216,13 +225,20 @@ namespace Runtime
             return false;
         }
 
-        return ResolveNativeDevicePointer() != nullptr;
+        // Vulkan：in-app API 的 (NULL, NULL) 通配 = "当前活动的设备 / 窗口"（renderdoc.dll 由 RenderDocLoader 在
+        // PreInit 里先于 vkCreateInstance 加载，Vulkan 层因此挂得上）
+        return ResolveNativeDevicePointer() != nullptr || IsVulkanBackend();
     #else
         return false;
     #endif
     }
 
     void RenderDoc::RequestCapture()
+    {
+        RequestCapture(0, true);
+    }
+
+    void RenderDoc::RequestCapture(uint32_t delay_frames, bool launch_ui)
     {
     #if defined(_WIN32)
         if (!IsLoaded())
@@ -237,11 +253,14 @@ namespace Runtime
         }
 
         g_capture_state = CaptureState::BeginNextFrame;
+        g_capture_delay_frames = delay_frames;
+        g_capture_launch_ui = launch_ui;
         if (auto* api = Z::RenderDocAPI::Get())
         {
             EnsureCapturePathTemplate(api);
         }
-        LOG_INFO(ZEditor, "RenderDoc: frame capture scheduled for next frame");
+        LOG_INFO(ZEditor, "RenderDoc: frame capture scheduled in {} frame(s){}", delay_frames + 1,
+                 launch_ui ? "" : " (no replay UI)");
     #endif
     }
 
@@ -256,7 +275,12 @@ namespace Runtime
 
         void* device = ResolveNativeDevicePointer();
         void* window = ResolveNativeWindowHandle();
-        if (device == nullptr || window == nullptr)
+        if (IsVulkanBackend())
+        {
+            device = nullptr;   // 通配
+            window = nullptr;
+        }
+        else if (device == nullptr || window == nullptr)
         {
             LOG_WARNING(ZEditor, "RenderDoc: BeginFrameCapture skipped (missing DX12 device or window handle)");
             return;
@@ -277,7 +301,12 @@ namespace Runtime
 
         void* device = ResolveNativeDevicePointer();
         void* window = ResolveNativeWindowHandle();
-        if (device == nullptr || window == nullptr)
+        if (IsVulkanBackend())
+        {
+            device = nullptr;   // 通配，与 BeginFrameCapture 配对
+            window = nullptr;
+        }
+        else if (device == nullptr || window == nullptr)
         {
             return;
         }
@@ -293,7 +322,7 @@ namespace Runtime
 
         LogLatestCapturePath(api);
 
-        if (!api->IsRemoteAccessConnected())
+        if (g_capture_launch_ui && !api->IsRemoteAccessConnected())
         {
             api->LaunchReplayUI(true, "");
         }
@@ -305,6 +334,11 @@ namespace Runtime
     #if defined(_WIN32)
         if (g_capture_state != CaptureState::BeginNextFrame)
         {
+            return;
+        }
+        if (g_capture_delay_frames > 0)
+        {
+            --g_capture_delay_frames;
             return;
         }
 
@@ -347,6 +381,7 @@ namespace Runtime
     bool RenderDoc::IsLoaded() { return false; }
     bool RenderDoc::IsSupported() { return false; }
     void RenderDoc::RequestCapture() {}
+    void RenderDoc::RequestCapture(uint32_t, bool) {}
     void RenderDoc::OnPreFrame() {}
     void RenderDoc::OnPostFrame() {}
     void RenderDoc::BeginFrameCapture() {}

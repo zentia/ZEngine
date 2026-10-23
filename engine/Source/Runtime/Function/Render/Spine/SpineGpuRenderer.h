@@ -30,9 +30,13 @@
 //   * tint black（双色）：`spine.tintblack 1` 打开（= SpineSettings::tintBlack，**默认关**，与 OSGame 线上一致）；
 //     片元按 spine-unity TintBlack shader 加 `(1 - tex.rgb) · dark · tex.a · vc.a`，暗色 float 不截断
 //     （SpineGpuTintBlack.h）。
-//   * 两种实例来源：
+//   * 两种实例来源、两层：
 //       控制台实例 —— spine.load / spine.add，摆在视口像素空间（自动网格 / spine.place），动画走墙钟；
-//       世界实例   —— SpineRenderer 组件（场景里的 GameObject），见下面 RequestAddWorldInstance。
+//                     画在 **UI 层**（上面三个接入点，Draw / DrawInEditorViewport），无深度、不经 tonemap；
+//       世界实例   —— SpineRenderer 组件（场景里的 GameObject），见下面 RequestAddWorldInstance；
+//                     画在 **RP1 的 forward / 透明 subpass**（DrawWorld），测场景深度、不写深度、远→近排序，
+//                     输出转线性后与透明网格 / 粒子一起经 tonemap。
+//     两层每帧缓冲 / 合包 / 管线各一份（同一帧两个时刻录制，共用会互相覆盖）。
 //   * 资产来源：骨架源文件（.skel.bytes / .skel / .json + 同名图集，加载时现烘焙）**或** 已烘焙的
 //     `.zspg` 容器（直接读，图集页按页名相对 .zspg 所在目录找）。两者进同一份运行时数据。
 // =====================================================================
@@ -44,6 +48,22 @@ class RHI;
 class RHIRenderPass;
 struct RHIViewport;
 enum class ViewportType : uint8_t;   // RenderType.h
+
+// 世界实例的公告板（"面向相机"）。渲染线程按**当帧画它的那台相机**算旋转（编辑器 Scene 相机 / PIE 游戏相机
+// 各自对），所以组件只给枢轴点和缩放、不给旋转。
+enum class SpineGpuBillboardMode : uint8_t
+{
+    kNone,       // 用 GameObject 的旋转（骨架立在局部 XZ 平面）
+    kFull,       // 骨架平面 = 相机平面（屏幕对齐，俯视时人物跟着仰）
+    kVertical,   // 只绕世界 Z 转：人物始终直立、正对相机水平方向（2.5D 角色常用）
+};
+struct SpineGpuBillboard
+{
+    SpineGpuBillboardMode mode {SpineGpuBillboardMode::kNone};
+    float position[3] {0.0f, 0.0f, 0.0f};   // 枢轴点（骨架原点）的世界坐标
+    float scale_x {1.0f};                    // 每骨架单位多少世界单位，沿相机右；带符号（负 = 水平镜像）
+    float scale_y {1.0f};                    // 同上，沿相机上 / 世界 Z
+};
 
 class SpineGpuRenderer
 {
@@ -91,16 +111,18 @@ public:
     //     骨架平面是模型空间的 z = 0；不进自动网格、不吃 spine.place；
     //   * 动画时间由组件喂（RequestSetWorldTransform 的 dt，累加到下一次 Draw）—— 暂停时组件不 tick ⇒
     //     动画跟着停，不走墙钟；
+    //   * 画在 RP1 透明 subpass（DrawWorld）：测场景深度、不写深度、实例间按观察空间深度远→近画；
     //   * 不进"选中"，spine.load / spine.clear 不清它们（只清控制台实例）；
     //   * 所属 GameObject 被删（RenderScene::DeleteEntityByGObjectID ⇒ RemoveWorldInstancesOfOwner）时
     //     实例跟着删；组件下一次 tick 发现 id 已不认识就重建（撤销删除时就这样复活）。
-    // ⚠️ 第一版没有深度：画在场景之上（与控制台实例同一层），不被网格遮挡。
     // `anim` 为动画名或下标（空 = 第 0 个）。返回 id（≥ 1）。加载失败时 id 仍然"认识"（不会被组件
     // 每帧重建刷日志），原因见 spine.status。
     uint32_t RequestAddWorldInstance(const std::string& path, const std::string& anim, bool loop, uint64_t owner);
-    // `local_to_world` = Matrix4x4 的 m_Mat（行主序、列向量约定），已含组件的骨架单位缩放。
+    // `local_to_world` = Matrix4x4 的 m_Mat（行主序、列向量约定），已含组件的骨架单位缩放与朝向；
+    // `billboard.mode != kNone` 时渲染线程改用 billboard 的枢轴 / 缩放 + 相机朝向，忽略它的旋转。
     // 返回 false ⇒ 渲染器已不认识这个 id（所属对象被删过），调用方应重建。
-    bool RequestSetWorldTransform(uint32_t id, const float local_to_world[16], float dt, bool visible);
+    bool RequestSetWorldTransform(uint32_t id, const float local_to_world[16], float dt, bool visible,
+                                  const SpineGpuBillboard& billboard);
     void RequestRemoveWorldInstance(uint32_t id);
     void RemoveWorldInstancesOfOwner(uint64_t owner);
     // 逻辑帧 +1（WorldManager::Tick 开头调）。世界实例只在"上一个或这一个逻辑帧里被推过变换"时才画 ⇒
@@ -111,10 +133,15 @@ public:
     void RequestTimeScaleOn(uint32_t id, float scale);
     void RequestSkinOn(uint32_t id, const std::string& skin, bool setup_slots);
 
-    // 渲染线程：在 `render_pass` 的 `subpass` 里、`viewport` 范围内画全部实例。
-    // 调用方负责已 begin 了该 render pass、并处在该 subpass。`viewport_type` 选世界实例用哪台相机。
+    // 渲染线程：在 `render_pass` 的 `subpass` 里、`viewport` 范围内画**控制台实例**（UI 层）。
+    // 调用方负责已 begin 了该 render pass、并处在该 subpass。每帧必须调一次（延迟销毁的倒计时挂在这里）。
     void Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport,
               ViewportType viewport_type);
+    // 渲染线程：画**世界实例**。`render_pass` / `subpass` 必须是带场景深度附件的透明 / forward subpass，
+    // `viewport` 必须与网格用的同一个（深度才对得上），`viewport_type` 选相机。每帧至多调一次（同一层的
+    // 每帧缓冲只有一份；编辑器只画一个视口：Scene 开着画 Scene，否则 Game）。在 UI 层的 Draw 之前调。
+    void DrawWorld(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport,
+                   ViewportType viewport_type);
 
     // 同上，视口按编辑器规则自己挑：Scene 窗口开着（宽高 > 0）就画在 Scene 里，否则画在 Game 视口里。
     // DX12 / Metal 的接入点用它（Vulkan 的 MainCameraPass 自己挑，规则相同）。
@@ -125,6 +152,8 @@ public:
     std::string Status() const;
 
 private:
+    void DrawLayer(int layer, RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport,
+                   ViewportType viewport_type);
     SpineGpuRenderer();   // Impl 在构造时就建好：游戏线程与渲染线程都只读这根指针
     struct Impl;
     Impl* m_Impl {nullptr};

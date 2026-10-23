@@ -7,6 +7,9 @@
 // 混合态（pipeline 侧）：normal / additive 都是 One, OneMinusSrcAlpha —— additive 靠
 // 片元把 alpha 写 0（spine-unity 的 PMA 加色同一做法），这样它落进 UI 层后
 // combine_ui 的 `ui.rgb + scene * (1 - ui.a)` 正好是"加到场景上"。
+// flags bit5 = 世界层（RP1 透明 subpass，线性 HDR，随后 tonemap + pow(1/2.2)）：图集是 sRGB 值 ⇒
+//   先去预乘、pow 2.2 转线性、再预乘回去（与 tone_mapping.frag 的 gamma 互逆；透明网格的 SRGB 贴图由硬件做同一件事）。
+//   必须在 additive 把 alpha 清 0 之前做（去预乘要用 alpha）。改这里必须同步 hlsl/rp2/spine_gpu.frag.hlsl。
 
 struct SpineDraw
 {
@@ -46,6 +49,10 @@ void main()
     if ((d.flags & 16u) != 0u)
     {
         c.rgb += (vec3(1.0) - tex.rgb) * vec3(d.dark_r, d.dark_g, d.dark_b) * (tex.a * tint.a);
+    }
+    if ((d.flags & 32u) != 0u && c.a > 0.0)
+    {
+        c.rgb = pow(max(c.rgb / c.a, vec3(0.0)), vec3(2.2)) * c.a;
     }
     if ((d.flags & 2u) != 0u)
     {

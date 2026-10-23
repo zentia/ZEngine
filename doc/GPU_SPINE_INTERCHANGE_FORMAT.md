@@ -1644,8 +1644,28 @@ y [-7.53, 0.59]、w ≈ 8（= 距离，原点在屏幕中心、人物向右上�
 同一次运行里 `spine.load <源骨架>` 的控制台实例照常画（38 项带 deform），两种实例共存。无验证层 / D3D12 报错。
 没做肉眼确认（截图工具在本机不可用，同前）；撤销删除后的重建路径没有实跑。
 
-**第一版不做**：深度（仍画在场景之上）、GUID 引用（字段存路径，同 MeshRenderer）、Inspector 里的资产选择器、
-Assets 下源骨架自动 cook、billboard。
+**第一版不做**：GUID 引用（字段存路径，同 MeshRenderer）、Inspector 里的资产选择器、Assets 下源骨架自动 cook。
+
+#### 深度 + 面向相机（2026-10-23）
+
+| 项 | 做法 |
+|---|---|
+| 画在哪 | 世界实例从 UI 层挪到 **RP1 forward / 透明 subpass**（Vulkan：`MainCameraPass::DrawRp1` 粒子之后；DX12 / Apple：`MainCameraRp1Pass::DrawForwardLightingPass` 之末）。控制台实例仍在 UI 层 |
+| 深度 | 管线 depthTest LEQUAL、depthWrite 关（透明物体惯例）；`clip_from_world = proj·view·model`，与 `mesh.vert` 同一乘法、同一视口（Scene 视口 = `TryGetRenderSceneViewport`，与 `SetViewportScissor` 同口径） |
+| 实例间顺序 | 按枢轴点观察空间 z 远 → 近（不写深度 ⇒ 靠绘制顺序叠） |
+| 颜色空间 | 场景线性 HDR ⇒ 片元 bit5：去预乘 → pow 2.2 → 再预乘（GLSL / HLSL 同公式），随后与透明网格一样经 tonemap |
+| 两层隔离 | 每帧缓冲 / 合包 / 描述符集 / 管线按层各一份（`frames[2]` / `batch[2]` / `pipelines[2][4]`）；同一帧 RP1 先录世界层、RP2 后录 UI 层，共用一份会让后者覆盖前者已引用的数据 |
+| 公告板 | `SpineRenderer::m_Billboard`：`none`（GameObject 旋转）/ `full`（平行相机平面，默认）/ `vertical`（绕世界 Z，人物直立）。渲染线程用当帧相机 view 矩阵第 0 / 1 行当右 / 上；组件只推枢轴与带符号缩放（lossy x / z ⇒ 负缩放 = 镜像保留） |
+
+**验收（RenderDoc 抓帧 + qrenderdoc python 回放）**：
+* Vulkan：68 个世界层绘制在 "Forward Lighting" 里，深度附件 D32 绑定，管线 LEQUAL / 不写；post-VS z/w = 0.9876（w = 8 = 距相机），
+  与按投影手算一致；场景前景物体（玩家假人，深度 ≈ 0.88）所在像素上 Spine 的片元 **depthTestFailed = True**，空处 = 通过并写色。
+  回放 RT：卡面在场景里、假人挡在卡面前；最终帧里卡面朝向与天空 / 地面一致（缩略图整体上下翻是 swapchain 呈现约定，
+  天空 / 地面一起翻）。验证层 0 报错。
+* DX12：68 个绘制在 "Colour Pass #2 (1 Targets + Depth)"，管线 LEQUAL / 不写，post-VS 与 Vulkan 逐值相同；但该后端此刻
+  GBuffer 根本没写深度（整张 1.0，抓帧在 Colour Pass #1 就是 1.0）⇒ 遮挡在 DX12 上目前**看不到**，这是 DX12 延迟管线的既有状态，
+  与 Spine 无关。Metal 未编译验证（同前）。
+* 公告板：编辑器相机无俯仰时 full ≡ vertical，`vertical` 的分支没有被画面覆盖到（代码路径简单，见 `BillboardModel`）。
 
 ---
 

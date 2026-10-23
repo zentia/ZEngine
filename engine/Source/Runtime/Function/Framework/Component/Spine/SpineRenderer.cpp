@@ -19,6 +19,11 @@
 #include <string>
 #include <vector>
 
+static_assert(static_cast<int>(SpineBillboardMode::none) == static_cast<int>(SpineGpuBillboardMode::kNone) &&
+                  static_cast<int>(SpineBillboardMode::full) == static_cast<int>(SpineGpuBillboardMode::kFull) &&
+                  static_cast<int>(SpineBillboardMode::vertical) == static_cast<int>(SpineGpuBillboardMode::kVertical),
+              "SpineBillboardMode must mirror SpineGpuBillboardMode");
+
 namespace
 {
     std::string ResolveSkeletonPath(const eastl::string& asset_path)
@@ -302,10 +307,22 @@ void SpineRenderer::PushTransform(float delta_time)
     }
     Matrix4x4 model = Matrix4x4::IDENTITY;
     bool active = true;
+    SpineGpuBillboard billboard;
+    billboard.mode = static_cast<SpineGpuBillboardMode>(m_Billboard);
+    billboard.scale_x = m_Scale;
+    billboard.scale_y = m_Scale;
     if (Transform* transform = m_ParentObject->tryGetComponent(Transform))
     {
         model = transform->GetLocalToWorldMatrix();
         active = transform->isEnabled();   // Transform::m_Enabled = GameObject 激活标志
+        const Vector3 position = transform->GetPosition();
+        const Vector3 lossy = transform->GetLossyScale();
+        billboard.position[0] = position.x;
+        billboard.position[1] = position.y;
+        billboard.position[2] = position.z;
+        // 骨架 x ↔ 局部 X、骨架 y ↔ 局部 Z（与非公告板的朝向一致），带符号 ⇒ scale.x = -1 照样水平镜像
+        billboard.scale_x = m_Scale * lossy.x;
+        billboard.scale_y = m_Scale * lossy.z;
     }
     // 骨架空间 → GameObject 局部空间：L2W · Rx(+90°) · diag(s, s, s)。
     // 本引擎 Z 向上（RenderCamera::m_UpAxis = Z），同 UE Paper2D：骨架 x → 局部 +X、骨架 y → 局部 +Z，
@@ -323,7 +340,7 @@ void SpineRenderer::PushTransform(float delta_time)
     }
     const bool visible = active && isEnabled();
     SpineGpuRenderer& renderer = SpineGpuRenderer::Get();
-    if (!renderer.RequestSetWorldTransform(m_InstanceId, &model.m_Mat[0][0], delta_time, visible))
+    if (!renderer.RequestSetWorldTransform(m_InstanceId, &model.m_Mat[0][0], delta_time, visible, billboard))
     {
         // 渲染器已不认识这个 id：所属对象被删过（RenderScene::DeleteEntityByGObjectID），现在又在 tick ⇒
         // 撤销复活了。丢掉旧 id 重建（不发 remove：渲染器那边已经删了）。
@@ -332,7 +349,7 @@ void SpineRenderer::PushTransform(float delta_time)
         SyncInstance(/*allow_create=*/true);
         if (m_InstanceId != 0)
         {
-            renderer.RequestSetWorldTransform(m_InstanceId, &model.m_Mat[0][0], delta_time, visible);
+            renderer.RequestSetWorldTransform(m_InstanceId, &model.m_Mat[0][0], delta_time, visible, billboard);
         }
     }
 }

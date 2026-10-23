@@ -49,6 +49,11 @@ float4 main(PSInput input) : SV_TARGET
     {
         c.rgb += (float3(1.0, 1.0, 1.0) - tex.rgb) * float3(d.dark_r, d.dark_g, d.dark_b) * (tex.a * tint.a);
     }
+    // bit5 = 世界层（线性 HDR 场景）：去预乘 → pow 2.2 → 再预乘；与 spine_gpu.frag 逐行同公式
+    if ((d.flags & 32u) != 0u && c.a > 0.0)
+    {
+        c.rgb = pow(max(c.rgb / c.a, float3(0.0, 0.0, 0.0)), float3(2.2, 2.2, 2.2)) * c.a;
+    }
     if ((d.flags & 2u) != 0u)
     {
         c.a = 0.0;

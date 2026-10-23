@@ -21,6 +21,7 @@
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 
+#include <cstdlib>
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
@@ -481,10 +482,24 @@ namespace
 #endif
     }
 
-    bool CmdRenderDocCapture(const std::vector<std::string>&)
+    // renderdoc.capture [delay_frames] [noui]
+    bool CmdRenderDocCapture(const std::vector<std::string>& args)
     {
 #if defined(_WIN32)
-        Runtime::RenderDoc::RequestCapture();
+        uint32_t delay = 0;
+        bool launch_ui = true;
+        for (const std::string& a : args)
+        {
+            if (a == "noui")
+            {
+                launch_ui = false;
+            }
+            else
+            {
+                delay = static_cast<uint32_t>(std::strtoul(a.c_str(), nullptr, 10));
+            }
+        }
+        Runtime::RenderDoc::RequestCapture(delay, launch_ui);
         return Runtime::RenderDoc::IsSupported();
 #else
         LOG_WARNING(ZConsole, "RenderDoc is only supported on Windows desktop builds");
@@ -760,7 +775,7 @@ void RegisterEditorConsoleCommands(ConsoleManager& console)
                             "Save current Insights capture to <cwd>/Insights/*.ztrace. Usage: insights.dump [view]",
                             CmdInsightsDump);
     console.RegisterCommand("renderdoc.load", "Load RenderDoc in-app API", CmdRenderDocLoad);
-    console.RegisterCommand("renderdoc.capture", "Capture the next rendered frame with RenderDoc", CmdRenderDocCapture);
+    console.RegisterCommand("renderdoc.capture", "Capture a frame with RenderDoc. Usage: renderdoc.capture [delay_frames=0] [noui]", CmdRenderDocCapture);
     console.RegisterCommand("renderdoc.status", "Print RenderDoc integration status", CmdRenderDocStatus);
     console.RegisterCommand("bundle.build",
                             "Package the project into .zbundle files (incremental; --force rebuilds "

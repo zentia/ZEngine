@@ -3411,6 +3411,17 @@ void MainCameraPass::DrawRp1()
         DrawMeshTransparent(viewport_type);
     }
     m_ParticlePass->Draw();
+    // GPU-Spine 世界实例（SpineRenderer 组件）：透明物体同一站 —— 测深度、不写深度。只画一个视口
+    // （与 UI 层同一规则：Scene 开着画 Scene，否则 Game），视口与上面网格用的同一个（SetViewportScissor 口径）。
+    {
+        const ViewportType spine_viewport =
+            IsViewportValid(ViewportType::scene) ? ViewportType::scene : ViewportType::game;
+        if (IsViewportValid(spine_viewport))
+        {
+            SpineGpuRenderer::Get().DrawWorld(m_Rhi, m_Framebuffer1.render_pass, _main_camera_subpass_forward_lighting,
+                                              *m_Rhi->GetViewport(spine_viewport), spine_viewport);
+        }
+    }
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
     m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());

@@ -2279,11 +2279,17 @@ downstream reads it.
   拖 `.zspg` 进 Scene ⇒ `EditorScenePlacement` 按扩展名分派 ⇒ `SpineRenderer::SpawnInLevel`（控制台
   `spine.spawn <zspg> [x y z | camera <dist>] [scale] [anim]` 共用；不给坐标 = 场景相机前方并正对相机）。
   编辑模式 tick 已注册（`registerEdtorTickComponent`）。
-- **朝向**：本引擎 Z 向上 ⇒ 骨架立在 GameObject 局部 **XZ 平面**（骨架 x → +X、y → +Z，同 UE Paper2D），
-  组件里乘 `Rx(+90°)·diag(m_Scale)`。没有 billboard：相机绕到侧面就是一条线（PIE 换成游戏相机时常见）。
-- **渲染**：组件只持有 `SpineGpuRenderer` 的"世界实例" id，每 tick 推 local-to-world × `m_Scale` 与 dt；
-  渲染线程用 `RenderSystem::GetCamera(viewport_type)` 的 proj·view 拼 `clip_from_world`（DX12/Metal 多翻一次 y，
-  见 `WorldInstance()` 注释）。**三条生命期规则，改的时候别破**：
+- **朝向**：`m_Billboard`（`SpineBillboardMode`，默认 `full`）。`none` = 骨架立在 GameObject 局部 **XZ 平面**
+  （Z 向上，骨架 x → +X、y → +Z，同 UE Paper2D；组件乘 `Rx(+90°)·diag(m_Scale)`）；`full` = 平行相机平面；
+  `vertical` = 只绕世界 Z 转（人物直立）。公告板在**渲染线程**按当帧那台相机算（view 矩阵第 0/1 行 = 右/上，
+  编辑器相机和游戏相机通吃；`RenderCamera::right()` 对游戏相机不准）。组件只给枢轴 + 带符号缩放（lossy x / z）。
+- **渲染（两层）**：控制台实例 = UI 层（`Draw`，无深度、不经 tonemap）；世界实例 = **RP1 forward / 透明 subpass**
+  （`DrawWorld`：Vulkan 在 `MainCameraPass::DrawRp1` 粒子之后，DX12 / Apple 在 `MainCameraRp1Pass::DrawForwardLightingPass`
+  axis 之后）—— 深度测试 LEQUAL、不写深度、实例按观察空间 z 远→近排；`clip_from_world = proj·view·model` 与
+  `mesh.vert` **同一个乘法、同一个视口**（不另翻 y，否则深度对不上）；片元 bit5 把 sRGB 转线性（场景线性 HDR，
+  随后 tonemap + gamma）。**两层的每帧缓冲 / 合包 / 管线各一份**（同帧两时刻录制，共用会互相覆盖）；
+  延迟销毁倒计时与资产回收只在 UI 层跑（每帧一次、且在世界层之后）。`DrawWorld` 每帧至多一次（只画一个视口）。
+  组件只持有世界实例 id，每 tick 推 local-to-world × `m_Scale`、公告板参数与 dt。**三条生命期规则，改的时候别破**：
   1. 实例**只在 Tick 里建**，不在 PostLoadResource：放置流程的模板 GameObject 上的组件永不 tick，在那建会留孤儿；
   2. 存活判据 = **逻辑帧序号**（`WorldManager::Tick` 开头 `AdvanceWorldTick()`）：本帧 / 上一帧没被推过变换的不画
      ⇒ disabled / 非激活 / 已不在关卡里自动隐藏，暂停时逻辑帧不走 ⇒ 定格。**不要靠组件析构**：删 GameObject
@@ -2291,8 +2297,11 @@ downstream reads it.
   3. `RenderScene::DeleteEntityByGObjectID` 顺带 `RemoveWorldInstancesOfOwner`；组件下一次 tick 若
      `RequestSetWorldTransform` 返回 false（id 不认识）就重建 ⇒ 撤销删除自动复活。
 - `spine.load` / `spine.clear` 只动控制台实例，不清世界实例。
-- ⚠️ 第一版**没有深度**（画在 RP2 UI subpass / DX12 Combine overlay，场景之上、不被网格挡）；GUID 引用、Inspector
-  资产选择器、源骨架自动 cook 都还没做。
+- 颜色：世界层经 tonemap（Vulkan Uncharted2 ×4.5 / DX12 ACES），与透明网格一致，**不再等于** spine 编辑器里的颜色；
+  要"不受后处理"的话用控制台实例那层或以后加开关。GUID 引用、Inspector 资产选择器、源骨架自动 cook 都还没做。
+- 抓帧验证：`renderdoc.capture [delay_frames] [noui]`（Vulkan 现在也能抓：in-app API 传 (NULL, NULL) 通配），
+  `renderdoccmd thumb` 出缩略图；要看中间 RT / 逐像素深度测试结果用 `qrenderdoc.exe --python <脚本>`（自带 python36，
+  `pyrenderdoc.LoadCapture` + `Replay().BlockInvoke`）。DX12 的 PushEvent 在抓帧里没有名字，按 eid 区间找。
 
 ### 2.32 Undo/Redo: two layers, and you record BEFORE you edit
 

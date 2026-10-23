@@ -66,6 +66,7 @@ namespace SpineGpuDrawFlags
     constexpr uint32_t kDeform = 4u;
     constexpr uint32_t kCpuVerts = 8u;     // v15：CPU 裁剪过的项，顶点取 b8
     constexpr uint32_t kTintBlack = 16u;   // tint black：片元加暗色项（spine_gpu.frag）
+    constexpr uint32_t kSceneLinear = 32u;  // 世界层：片元把 sRGB 输出转成线性（场景是线性 HDR，随后 tonemap + gamma）
 }
 
 // unpackUnorm4x8：x 在最低字节；分量先夹到 [0, 1]

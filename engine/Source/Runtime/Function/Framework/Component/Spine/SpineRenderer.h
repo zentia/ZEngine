@@ -6,10 +6,38 @@
 
 #include <cstdint>
 #include <string>
+#include <type_traits>
 
 #include "SpineRenderer.generated.h"
 
 class Level;
+
+/// 面向相机（SpineGpuBillboardMode 的反射版；值一一对应，SpineRenderer.cpp 里有 static_assert）。
+ZENUM()
+enum class SpineBillboardMode : unsigned char
+{
+    none,       // 用 GameObject 的旋转：骨架立在局部 XZ 平面
+    full,       // 骨架平面 = 相机平面（屏幕对齐）
+    vertical,   // 只绕世界 Z 转：人物直立、正对相机水平方向（2.5D 角色常用）
+};
+
+// 序列化按底层整数（同 CameraMode）：场景 YAML 里存 0 / 1 / 2
+template<>
+class SerializeTraits<SpineBillboardMode> : public SerializeTraitsBase<SpineBillboardMode>
+{
+public:
+    using value_type = SpineBillboardMode;
+
+    inline static const char* GetTypeString(void* /*p*/ = nullptr) { return "SpineBillboardMode"; }
+    inline static bool AllowTransferOptimization() { return true; }
+
+    template<typename TransferFunction>
+    inline static void Transfer(value_type& data, TransferFunction& transfer)
+    {
+        using UnderlyingType = std::underlying_type_t<value_type>;
+        transfer.TransferBasicData(reinterpret_cast<UnderlyingType&>(data));
+    }
+};
 
 /// 场景里的 GPU-Spine 骨架（spine-unity 的 SkeletonAnimation / UE 的 Component 同位）。
 ///
@@ -24,9 +52,10 @@ class Level;
 ///   * 组件 disabled / GameObject 非激活 ⇒ 不 tick ⇒ 渲染器按逻辑帧序号自动不画；
 ///   * 所属 GameObject 被删 ⇒ 渲染器删实例；撤销复活后下一次 Tick 发现 id 不认识就重建。
 ///
-/// 朝向：本引擎 Z 向上 ⇒ 骨架立在 GameObject 局部 XZ 平面（骨架 x → +X、y → +Z，同 UE Paper2D），
-/// 1 骨架单位 = m_Scale 世界单位。
-/// ⚠️ 第一版没有深度：画在场景之上，不被网格遮挡（与控制台 spine.load 同一层）。
+/// 朝向：m_Billboard = none 时骨架立在 GameObject 局部 XZ 平面（Z 向上；骨架 x → +X、y → +Z，同 UE
+/// Paper2D）；full / vertical 时由渲染线程按当帧相机转（枢轴 = GameObject 位置，GameObject 的旋转不用）。
+/// 1 骨架单位 = m_Scale 世界单位（再乘 GameObject 的 lossy scale，x 用 X 轴、y 用 Z 轴，负值 = 镜像）。
+/// 深度：画在 RP1 透明 subpass，被场景网格遮挡、不写深度（实例之间远→近排序）；颜色与透明网格一样经 tonemap。
 ZCLASS()
 class SpineRenderer : public Component
 {
@@ -87,6 +116,8 @@ private:
     float m_TimeScale {1.0f};
     ZPROPERTY(meta=(Tooltip="World units per skeleton unit. spine-unity default is 0.01, i.e. 100 skeleton px per unit.", ClampMin=0))
     float m_Scale {0.01f};
+    ZPROPERTY(meta=(DisplayName="Face Camera", Tooltip="none = use the GameObject rotation; full = parallel to the camera plane; vertical = upright, turning around world Z only."))
+    SpineBillboardMode m_Billboard {SpineBillboardMode::full};
 
     // ---- 不序列化：只对本进程有意义 ----
     uint32_t m_InstanceId {0};

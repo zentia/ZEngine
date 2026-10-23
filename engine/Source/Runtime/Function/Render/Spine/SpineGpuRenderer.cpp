@@ -116,12 +116,18 @@ namespace
         return true;
     }
 
-    // 世界实例的 b6：clip_from_world = F · proj_view · local_to_world，root = 单位阵。
-    // 两个输入都是 Matrix4x4 的 m_Mat（行主序、列向量约定：v' = M · v）；着色器的 mat4 是列主序
-    // ⇒ 写出时转置。F = diag(1, -y_sign, 1, 1)：RenderCamera 的投影自带 Vulkan 的 y 翻转
-    // （RenderCamera.cpp 的 fix_mat），而本渲染器的约定是"NDC y 向上 × y_sign"（见 ClipSpaceYSign）
-    // ⇒ Vulkan（y_sign = -1）原样用，DX12 / Metal（+1）再翻一次。
-    GpuInst WorldInstance(const float proj_view[16], const float local_to_world[16], float y_sign)
+    // 两层：控制台实例画在 UI 层（视口像素空间、无深度）；世界实例（SpineRenderer）画在 RP1 的
+    // forward / 透明 subpass（深度测试、不写深度，与透明网格 / 粒子同一站）。两层在同一帧的不同时刻录制
+    // ⇒ 每帧缓冲 / 合包 / 管线**按层各一份**：共用的话后录的那层会覆盖先录那层已经引用的数据。
+    constexpr int kLayerOverlay = 0;
+    constexpr int kLayerWorld = 1;
+    constexpr int kLayerCount = 2;
+
+    // 世界实例的 b6：clip_from_world = proj_view · model，root = 单位阵 —— 与 mesh.vert 的
+    // `proj_view_matrix * model` 完全同一个乘法，深度才能和场景对上（同一次 CmdSetViewport、同一个投影，
+    // RenderCamera 的投影自带 Vulkan 的 y 翻转，各后端网格都是这么画的，这里不再另翻）。
+    // 两个输入都是 Matrix4x4 的 m_Mat（行主序、列向量约定：v' = M · v）；着色器的 mat4 是列主序 ⇒ 写出时转置。
+    GpuInst WorldInstance(const float proj_view[16], const float local_to_world[16])
     {
         float pvm[16];
         for (int r = 0; r < 4; ++r)
@@ -133,7 +139,7 @@ namespace
                 {
                     s += proj_view[r * 4 + k] * local_to_world[k * 4 + c];
                 }
-                pvm[r * 4 + c] = (r == 1) ? -y_sign * s : s;
+                pvm[r * 4 + c] = s;
             }
         }
         GpuInst inst {};
@@ -210,6 +216,7 @@ struct SpineGpuRenderer::Impl
         bool visible {true};
         bool failed {false};   // 加载失败：仍然"认识"这个 id（组件不重建），原因在 status
         uint64_t stamp {0};    // 最近一次推变换时的 world_serial
+        SpineGpuBillboard billboard;
     };
     std::unordered_map<uint32_t, WorldEntry> world;
     // 逻辑帧序号（WorldManager::Tick 每帧 +1）。世界实例只有在"上一个或这一个逻辑帧里被组件推过"时才画：
@@ -225,27 +232,32 @@ struct SpineGpuRenderer::Impl
 
     float default_mix {0.2f};   // 渲染线程独占（spine.mix 经命令队列改）；跨资产保留
     std::string status {"idle"};
-    std::string skip_reason;   // 最近一次"整帧没画"的原因（变化时才记日志）
-    uint32_t last_draw_count {0};
-    uint32_t last_deform_draws {0};    // 上一帧带 deform 的绘制项数（S6）
-    uint32_t last_deform_floats {0};   // 上一帧上传的 deform float 数
-    uint32_t last_clipped_draws {0};   // 上一帧 CPU 裁剪过的项（v15）
-    uint32_t last_clip_vertices {0};   // 上一帧裁剪输出的顶点数
-    uint32_t last_tint_black_draws {0};   // 上一帧带暗色项的绘制项数
+    // 上一帧每层的统计（渲染线程写、spine.status 读，受 mutex 保护）
+    struct LayerStats
+    {
+        std::string skip_reason;   // 最近一次"整帧没画"的原因（变化时才记日志）
+        uint32_t draw_count {0};
+        uint32_t deform_draws {0};    // 带 deform 的绘制项数（S6）
+        uint32_t deform_floats {0};   // 上传的 deform float 数
+        uint32_t clipped_draws {0};   // CPU 裁剪过的项（v15）
+        uint32_t clip_vertices {0};   // 裁剪输出的顶点数
+        uint32_t tint_black_draws {0};   // 带暗色项的绘制项数
+        std::string summary;          // 每个实例的概况
+    };
+    LayerStats stats[kLayerCount];
     // tint black 开关（= SpineSettings::tintBlack）。默认关：OSGame 线上全部是 0，且引擎分支
     // 根本不上传 uv2/uv3（见 SpineGpuTintBlack.h）。游戏线程写、渲染线程读，受 mutex 保护。
     bool tint_black {false};
     bool tint_black_logged {false};   // 每次加实例 / 每次拨开关后只记一行"tint black active"
-    std::string instance_summary;     // 上一帧每个实例的概况（渲染线程写、spine.status 读，受 mutex 保护）
 
     // ---- 管线（与资产无关）----
     RHI* rhi {nullptr};
-    RHIRenderPass* pipeline_render_pass {nullptr};
-    uint32_t pipeline_subpass {0};
+    RHIRenderPass* pipeline_render_pass[kLayerCount] {nullptr, nullptr};
+    uint32_t pipeline_subpass[kLayerCount] {0, 0};
     RHIDescriptorSetLayout* set0_layout {nullptr};
     RHIDescriptorSetLayout* set1_layout {nullptr};   // 图集页：binding 0 = combined image sampler（片元）
     RHIPipelineLayout* pipeline_layout {nullptr};
-    RHIPipeline* pipelines[4] {nullptr, nullptr, nullptr, nullptr};   // 按 SpineBlendMode
+    RHIPipeline* pipelines[kLayerCount][4] {};   // [层][SpineBlendMode]；世界层开深度测试
 
     // ---- 资产（同一路径的所有实例共用一份）----
     struct Buffer
@@ -291,12 +303,12 @@ struct SpineGpuRenderer::Impl
         Buffer draw_ids;
         uint32_t draw_ids_count {0};
         std::vector<Page> pages;
-        std::vector<FrameSlot> frames;
+        std::vector<FrameSlot> frames[kLayerCount];   // [层][帧槽位]
         // 每个 (动画, 皮肤) t=0 的包围盒（x0, y0, x1, y1），自动排布用；第一次用到时算。
         // 下标 = anim · (皮肤数 + 1) + 皮肤（无皮肤 = 皮肤数）
         std::vector<std::array<float, 4>> bounds;
         std::vector<uint8_t> bounds_valid;
-        SpineGpuBatch batch;   // 本帧拼包（渲染线程暂存，跨帧复用）
+        SpineGpuBatch batch[kLayerCount];   // 本帧拼包（按层；渲染线程暂存，跨帧复用）
     };
     std::vector<std::shared_ptr<Asset>> assets;
 
@@ -318,6 +330,9 @@ struct SpineGpuRenderer::Impl
         bool world_visible {true};
         float world_model[16] {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
         float world_dt {0.0f};
+        SpineGpuBillboard world_billboard;
+        float world_model_used[16] {};   // 本帧实际用的 model（公告板时已换掉旋转）
+        float world_view_z {0.0f};   // 本帧枢轴点的观察空间 z（排序用：越负越远）
         bool world_logged {false};
         int world_shown_logged {-1};   // 上次记日志时的可见性（-1 = 还没记过）：变化时记一行   // 第一次画出来时记一行包围盒在 NDC 里的位置（排查"画了但看不见"）
         // 摆放：自动 = 视口网格里按实例顺序占一格；手动 = 视口中心偏 (x, y) 像素、scale 像素 / 单位
@@ -564,7 +579,8 @@ struct SpineGpuRenderer::Impl
         }
         r.pages = as.pages;
         as.pages.clear();
-        for (FrameSlot& f : as.frames)
+        for (std::vector<FrameSlot>& layer_frames : as.frames)
+        for (FrameSlot& f : layer_frames)
         {
             for (Buffer* b : {&f.bones, &f.draws, &f.insts, &f.deform, &f.cpu_verts, &f.cpu_index})
             {
@@ -649,12 +665,9 @@ struct SpineGpuRenderer::Impl
     // ------------------------------------------------------------------
     // 管线：set 0 = 9 个 SSBO，set 1 = 图集页（combined image sampler）；4 种混合各一条
     // ------------------------------------------------------------------
-    bool EnsurePipelines(RHIRenderPass* render_pass, uint32_t subpass)
+    // 描述符布局 + 管线布局（与层 / render pass 无关；加载资产要它们来分配描述符集）
+    bool EnsureLayouts()
     {
-        if (pipelines[0] != nullptr && pipeline_render_pass == render_pass && pipeline_subpass == subpass)
-        {
-            return true;
-        }
         if (set0_layout == nullptr)
         {
             RHIDescriptorSetLayoutBinding bindings[kSet0Bindings] {};
@@ -706,6 +719,20 @@ struct SpineGpuRenderer::Impl
                 LOG_ERROR(ZRender, "SpineGpuRenderer: CreatePipelineLayout failed");
                 return false;
             }
+        }
+        return true;
+    }
+
+    bool EnsurePipelines(int layer, RHIRenderPass* render_pass, uint32_t subpass)
+    {
+        if (pipelines[layer][0] != nullptr && pipeline_render_pass[layer] == render_pass &&
+            pipeline_subpass[layer] == subpass)
+        {
+            return true;
+        }
+        if (!EnsureLayouts())
+        {
+            return false;
         }
 
         RHIShader* vs = nullptr;
@@ -790,6 +817,13 @@ struct SpineGpuRenderer::Impl
         multisample.rasterizationSamples = RHI_SAMPLE_COUNT_1_BIT;
         RHIPipelineDepthStencilStateCreateInfo depth {};
         depth.sType = RHI_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        if (layer == kLayerWorld)
+        {
+            // 透明物体的标准做法：测深度（被场景挡住）、不写深度（自身各项按绘制顺序叠，不互相挡）
+            depth.depthTestEnable = RHI_TRUE;
+            depth.depthWriteEnable = RHI_FALSE;
+            depth.depthCompareOp = RHI_COMPARE_OP_LESS_OR_EQUAL;
+        }
         RHIDynamicState dynamic_states[] = {RHI_DYNAMIC_STATE_VIEWPORT, RHI_DYNAMIC_STATE_SCISSOR};
         RHIPipelineDynamicStateCreateInfo dynamic_state {};
         dynamic_state.sType = RHI_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
@@ -845,18 +879,20 @@ struct SpineGpuRenderer::Impl
             pi.renderPass = render_pass;
             pi.subpass = subpass;
             pi.basePipelineHandle = RHI_NULL_HANDLE;
-            pipelines[mode] = nullptr;
-            ok = rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &pi, pipelines[mode]) && pipelines[mode] != nullptr;
+            pipelines[layer][mode] = nullptr;
+            ok = rhi->CreateGraphicsPipelines(RHI_NULL_HANDLE, 1, &pi, pipelines[layer][mode]) &&
+                 pipelines[layer][mode] != nullptr;
         }
         rhi->DestroyShaderModule(vs);
         rhi->DestroyShaderModule(fs);
         if (!ok)
         {
-            LOG_ERROR(ZRender, "SpineGpuRenderer: CreateGraphicsPipelines failed");
+            LOG_ERROR(ZRender, "SpineGpuRenderer: CreateGraphicsPipelines failed ({} layer)",
+                      layer == kLayerWorld ? "world" : "overlay");
             return false;
         }
-        pipeline_render_pass = render_pass;
-        pipeline_subpass = subpass;
+        pipeline_render_pass[layer] = render_pass;
+        pipeline_subpass[layer] = subpass;
         return true;
     }
 
@@ -1070,7 +1106,7 @@ struct SpineGpuRenderer::Impl
         return true;
     }
 
-    void RunCommands(std::vector<Command>& cmds, RHIRenderPass* render_pass, uint32_t subpass)
+    void RunCommands(std::vector<Command>& cmds)
     {
         for (const Command& c : cmds)
         {
@@ -1079,8 +1115,7 @@ struct SpineGpuRenderer::Impl
                 case Command::Op::kAddInstance:
                 {
                     std::string err;
-                    const bool ok = EnsurePipelines(render_pass, subpass) &&
-                                    CreateInstance(c.target, c.path, c.anim, c.loop, c.world, err);
+                    const bool ok = EnsureLayouts() && CreateInstance(c.target, c.path, c.anim, c.loop, c.world, err);
                     if (ok)
                     {
                         const Instance& in = *instances.back();
@@ -1097,7 +1132,7 @@ struct SpineGpuRenderer::Impl
                     {
                         if (err.empty())
                         {
-                            err = "pipelines are not ready";
+                            err = "descriptor layouts are not ready";
                         }
                         LOG_ERROR(ZRender, "SpineGpuRenderer: instance #{} load '{}' failed: {}", c.target, c.path, err);
                         ForgetId(c.target);
@@ -1483,8 +1518,10 @@ struct SpineGpuRenderer::Impl
 
         // ---- 每帧缓冲 + 描述符集：初始容量按单实例给，多实例时 Draw 里按需倍增 ----
         const uint32_t frames = std::max<uint32_t>(1u, rhi->GetMaxFramesInFlight());
-        as->frames.resize(frames);
-        for (FrameSlot& f : as->frames)
+        for (std::vector<FrameSlot>& layer_frames : as->frames)
+        layer_frames.resize(frames);
+        for (std::vector<FrameSlot>& layer_frames : as->frames)
+        for (FrameSlot& f : layer_frames)
         {
             ok = CreateBuffer(f.bones, static_cast<RHIDeviceSize>(a.header.bone_count) * sizeof(SpineGpuBoneSample), ssbo,
                               nullptr) &&
@@ -1599,7 +1636,7 @@ void SpineGpuRenderer::RequestClear()
     d.pending_cmds.push_back(c);
     d.live_ids.clear();
     d.selected = 0;
-    d.instance_summary.clear();
+    d.stats[kLayerOverlay].summary.clear();
 }
 
 bool SpineGpuRenderer::RequestSelect(uint32_t id)
@@ -1745,7 +1782,8 @@ uint32_t SpineGpuRenderer::RequestAddWorldInstance(const std::string& path, cons
     return c.target;
 }
 
-bool SpineGpuRenderer::RequestSetWorldTransform(uint32_t id, const float local_to_world[16], float dt, bool visible)
+bool SpineGpuRenderer::RequestSetWorldTransform(uint32_t id, const float local_to_world[16], float dt, bool visible,
+                                                const SpineGpuBillboard& billboard)
 {
     Impl& d = impl();
     std::lock_guard<std::mutex> lock(d.mutex);
@@ -1758,6 +1796,7 @@ bool SpineGpuRenderer::RequestSetWorldTransform(uint32_t id, const float local_t
     // 渲染长时间没跑（最小化 / 视口 0×0）时别无限累加：Draw 反正会夹到 0.25 s
     w->second.pending_dt = std::min(w->second.pending_dt + std::max(0.0f, dt), 1.0f);
     w->second.visible = visible;
+    w->second.billboard = billboard;
     w->second.stamp = d.world_serial;
     return true;
 }
@@ -1847,7 +1886,7 @@ uint32_t SpineGpuRenderer::LastDrawCount() const
         return 0;
     }
     std::lock_guard<std::mutex> lock(m_Impl->mutex);
-    return m_Impl->last_draw_count;
+    return m_Impl->stats[kLayerOverlay].draw_count + m_Impl->stats[kLayerWorld].draw_count;
 }
 
 std::string SpineGpuRenderer::Status() const
@@ -1858,16 +1897,77 @@ std::string SpineGpuRenderer::Status() const
     }
     const Impl& d = *m_Impl;
     std::lock_guard<std::mutex> lock(d.mutex);
-    return d.status + " (selected #" + std::to_string(d.selected) + "; last frame: " +
-           std::to_string(d.last_draw_count) + " draw items, " + std::to_string(d.last_deform_draws) + " deformed / " +
-           std::to_string(d.last_deform_floats) + " deform floats, " + std::to_string(d.last_clipped_draws) +
-           " clipped / " + std::to_string(d.last_clip_vertices) + " clip vertices, tint black " +
-           (d.tint_black ? "on: " + std::to_string(d.last_tint_black_draws) + " dark draws" : std::string("off")) +
-           (d.skip_reason.empty() ? std::string() : "; skipped: " + d.skip_reason) + ")" + d.instance_summary;
+    std::string out = d.status + " (selected #" + std::to_string(d.selected) + "; tint black " +
+                      (d.tint_black ? std::string("on") : std::string("off")) + ")";
+    const char* const names[kLayerCount] = {"overlay", "world"};
+    for (int layer = 0; layer < kLayerCount; ++layer)
+    {
+        const Impl::LayerStats& st = d.stats[layer];
+        out += std::string("\n  ") + names[layer] + " layer, last frame: " + std::to_string(st.draw_count) +
+               " draw items, " + std::to_string(st.deform_draws) + " deformed / " + std::to_string(st.deform_floats) +
+               " deform floats, " + std::to_string(st.clipped_draws) + " clipped / " +
+               std::to_string(st.clip_vertices) + " clip vertices" +
+               (d.tint_black ? ", " + std::to_string(st.tint_black_draws) + " dark draws" : std::string()) +
+               (st.skip_reason.empty() ? std::string() : "; skipped: " + st.skip_reason) + st.summary;
+    }
+    return out;
 }
+
+namespace
+{
+    // 公告板：把 model 的旋转换成"朝相机"，平移 = 枢轴点世界坐标，骨架 x / y 各乘带符号的缩放。
+    // `view` 是 Matrix4x4 的 m_Mat（行主序）；MakeLookAtMatrix 的第 0 / 1 / 2 行 = 相机右 / 上 / 后（世界空间），
+    // 游戏相机的 view 矩阵同一形状 ⇒ 从 view 取轴，两种相机通吃（RenderCamera::right() 对游戏相机不准）。
+    // full：骨架平面 = 相机平面；vertical：只绕世界 Z 转（Z 向上），人物保持直立（2.5D 角色常用）。
+    // 退化（vertical 时相机正对天 / 地、右向量水平分量为 0）⇒ 退回 full。
+    void BillboardModel(const float view[16], const SpineGpuBillboard& bb, float out[16])
+    {
+        float right[3] = {view[0], view[1], view[2]};
+        float up[3] = {view[4], view[5], view[6]};
+        if (bb.mode == SpineGpuBillboardMode::kVertical)
+        {
+            const float len = std::sqrt(right[0] * right[0] + right[1] * right[1]);
+            if (len > 1e-4f)
+            {
+                right[0] /= len;
+                right[1] /= len;
+                right[2] = 0.0f;
+                up[0] = 0.0f;
+                up[1] = 0.0f;
+                up[2] = 1.0f;
+            }
+        }
+        const float normal[3] = {right[1] * up[2] - right[2] * up[1], right[2] * up[0] - right[0] * up[2],
+                                 right[0] * up[1] - right[1] * up[0]};
+        const float sz = 0.5f * (std::fabs(bb.scale_x) + std::fabs(bb.scale_y));
+        for (int r = 0; r < 3; ++r)
+        {
+            out[r * 4 + 0] = right[r] * bb.scale_x;
+            out[r * 4 + 1] = up[r] * bb.scale_y;
+            out[r * 4 + 2] = normal[r] * sz;
+            out[r * 4 + 3] = bb.position[r];
+        }
+        out[12] = 0.0f;
+        out[13] = 0.0f;
+        out[14] = 0.0f;
+        out[15] = 1.0f;
+    }
+}  // namespace
 
 void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport,
                             ViewportType viewport_type)
+{
+    DrawLayer(kLayerOverlay, rhi, render_pass, subpass, viewport, viewport_type);
+}
+
+void SpineGpuRenderer::DrawWorld(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport,
+                                 ViewportType viewport_type)
+{
+    DrawLayer(kLayerWorld, rhi, render_pass, subpass, viewport, viewport_type);
+}
+
+void SpineGpuRenderer::DrawLayer(int layer, RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass,
+                                 const RHIViewport& viewport, ViewportType viewport_type)
 {
     if (rhi == nullptr || render_pass == nullptr)
     {
@@ -1883,9 +1983,15 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         }
     }
     d.rhi = rhi;
-    d.TickRetired();
+    const bool world_layer = layer == kLayerWorld;
+    // 每帧只做一次的家务（延迟销毁倒计时 / 回收没人用的资产）挂在 UI 层：三个后端每帧都会录它，
+    // 而且它在世界层（RP1）之后 ⇒ 回收不会抢在本帧世界层的录制之前。
+    if (!world_layer)
+    {
+        d.TickRetired();
+    }
 
-    // ---- 处理游戏线程的命令（按提交顺序）----
+    // ---- 处理游戏线程的命令（按提交顺序；哪层先到哪层跑，加载只要描述符布局、与层无关）----
     std::vector<Impl::Command> cmds;
     bool tint_black_on = false;
     {
@@ -1895,10 +2001,10 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     }
     if (!cmds.empty())
     {
-        d.RunCommands(cmds, render_pass, subpass);
+        d.RunCommands(cmds);
     }
-    // 世界实例：取组件最新推来的变换 / 可见性，消费累加的 dt（"最新的赢"，不走命令队列）
-    bool any_world = false;
+    // 世界实例：取组件最新推来的变换 / 公告板 / 可见性，消费累加的 dt（"最新的赢"，不走命令队列）
+    if (world_layer)
     {
         std::lock_guard<std::mutex> lock(d.mutex);
         for (std::unique_ptr<Impl::Instance>& ip : d.instances)
@@ -1907,7 +2013,6 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
             {
                 continue;
             }
-            any_world = true;
             const auto w = d.world.find(ip->id);
             if (w == d.world.end())
             {
@@ -1916,6 +2021,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
                 continue;
             }
             std::memcpy(ip->world_model, w->second.model, sizeof(ip->world_model));
+            ip->world_billboard = w->second.billboard;
             ip->world_visible = w->second.visible && w->second.stamp + 1u >= d.world_serial;
             if (ip->world_shown_logged != static_cast<int>(ip->world_visible))
             {
@@ -1929,34 +2035,48 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
             w->second.pending_dt = 0.0f;
         }
     }
-    d.PurgeUnusedAssets();
-    // 每条"整帧没画"的原因都进 status，且**变化时**记一行日志（不刷屏、也不静默）
-    const auto skip = [&d](const std::string& why) {
-        std::lock_guard<std::mutex> lock(d.mutex);
-        if (d.skip_reason != why)
+    else
+    {
+        d.PurgeUnusedAssets();
+    }
+
+    // 本层的实例（世界层随后按远→近重排）
+    std::vector<Impl::Instance*> order;
+    for (std::unique_ptr<Impl::Instance>& ip : d.instances)
+    {
+        if (ip->world == world_layer)
         {
-            d.skip_reason = why;
-            LOG_WARNING(ZRender, "SpineGpuRenderer: skipping frame: {}", why);
+            order.push_back(ip.get());
         }
-        d.last_draw_count = 0;
+    }
+    // 每条"整帧没画"的原因都进 status，且**变化时**记一行日志（不刷屏、也不静默）
+    const char* const layer_name = world_layer ? "world" : "overlay";
+    const auto skip = [&d, layer, layer_name](const std::string& why) {
+        std::lock_guard<std::mutex> lock(d.mutex);
+        Impl::LayerStats& st = d.stats[layer];
+        if (st.skip_reason != why)
+        {
+            st.skip_reason = why;
+            LOG_WARNING(ZRender, "SpineGpuRenderer: skipping {} layer: {}", layer_name, why);
+        }
+        st.draw_count = 0;
     };
-    if (d.instances.empty())
+    if (order.empty())
     {
         std::lock_guard<std::mutex> lock(d.mutex);
-        if (d.status.rfind("load failed", 0) != 0)
+        if (d.instances.empty() && d.status.rfind("load failed", 0) != 0)
         {
             d.status = "idle";
         }
-        d.instance_summary.clear();
-        d.last_draw_count = 0;
+        d.stats[layer] = Impl::LayerStats {};
         return;
     }
     if (viewport.width <= 0.0f || viewport.height <= 0.0f)
     {
-        skip("scene viewport is empty (" + std::to_string(viewport.width) + "x" + std::to_string(viewport.height) + ")");
+        skip("viewport is empty (" + std::to_string(viewport.width) + "x" + std::to_string(viewport.height) + ")");
         return;
     }
-    if (!d.EnsurePipelines(render_pass, subpass))
+    if (!d.EnsurePipelines(layer, render_pass, subpass))
     {
         skip("pipelines are not ready");
         return;
@@ -1976,7 +2096,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
             LOG_WARNING(ZRender, "SpineGpuRenderer: instance #{} skipped: {}", in.id, why);
         }
     };
-    for (std::unique_ptr<Impl::Instance>& ip : d.instances)
+    for (Impl::Instance* ip : order)
     {
         Impl::Instance& in = *ip;
         if (in.world && !in.world_visible)
@@ -2023,61 +2143,69 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         in.solved = true;
     }
 
-    // ---- 2) 拼包：同一资产的实例首尾相接（SpineGpuBatch），变换按摆放规则算 ----
-    uint32_t auto_count = 0;
-    for (const std::unique_ptr<Impl::Instance>& ip : d.instances)
-    {
-        auto_count += (ip->manual || ip->world) ? 0u : 1u;   // 失败的也占格子：别的实例不因它跳来跳去
-    }
+    // ---- 2) 摆放 + 拼包：同一资产的实例首尾相接（SpineGpuBatch）----
     for (std::shared_ptr<Impl::Asset>& as : d.assets)
     {
-        as->batch.Clear();
+        as->batch[layer].Clear();
     }
     const float y_sign = ClipSpaceYSign(rhi);
-    // 世界实例的相机：与网格同一个 proj(aspect) · view（RenderResourcePerFrame.cpp 的口径）
-    float proj_view[16];
-    bool have_camera = false;
-    if (any_world)
+    std::vector<GpuInst> insts(order.size());
+    if (world_layer)
     {
+        // 与网格同一个 proj(aspect) · view：aspect 取 RHI 视口（RenderResourcePerFrame.cpp 的口径；
+        // 编辑器 Scene 视口的 render rect 与它同比例，取哪个都行，但跟网格取同一个最稳）
         RenderSystem* render_system = GET_SYSTEM(RenderSystem);
         const std::shared_ptr<RenderCamera> camera =
             render_system != nullptr ? render_system->GetCamera(viewport_type) : nullptr;
-        if (camera != nullptr)
+        if (camera == nullptr)
         {
-            const Matrix4x4 pv = camera->GetProjectionMatrixForAspect(viewport.width / viewport.height) *
-                                 camera->GetViewMatrix();
-            std::memcpy(proj_view, &pv.m_Mat[0][0], sizeof(proj_view));
-            have_camera = true;
+            skip("no render camera for this viewport");
+            return;
         }
-    }
-    uint32_t auto_index = 0;
-    for (std::unique_ptr<Impl::Instance>& ip : d.instances)
-    {
-        Impl::Instance& in = *ip;
-        in.range = SpineGpuBatchRange {};
-        GpuInst inst;
-        if (in.world)
+        float aspect = viewport.width / viewport.height;
+        if (const RHIViewport* rv = rhi->GetViewport(viewport_type); rv != nullptr && rv->width > 0.0f && rv->height > 0.0f)
         {
-            if (!in.solved)
+            aspect = rv->width / rv->height;
+        }
+        const Matrix4x4 view_m = camera->GetViewMatrix();
+        const Matrix4x4 pv_m = camera->GetProjectionMatrixForAspect(aspect) * view_m;
+        float view[16];
+        float proj_view[16];
+        std::memcpy(view, &view_m.m_Mat[0][0], sizeof(view));
+        std::memcpy(proj_view, &pv_m.m_Mat[0][0], sizeof(proj_view));
+        for (Impl::Instance* ip : order)
+        {
+            Impl::Instance& in = *ip;
+            float model[16];
+            if (in.world_billboard.mode != SpineGpuBillboardMode::kNone)
             {
-                continue;
+                BillboardModel(view, in.world_billboard, model);
             }
-            if (!have_camera)
+            else
             {
-                fail_instance(in, "no render camera for this viewport");
-                continue;
+                std::memcpy(model, in.world_model, sizeof(model));
             }
-            inst = WorldInstance(proj_view, in.world_model, y_sign);
-            if (!in.world_logged)
+            std::memcpy(in.world_model_used, model, sizeof(model));
+            // 枢轴点（model 的平移列）的观察空间 z：越负越远
+            in.world_view_z = view[8] * model[3] + view[9] * model[7] + view[10] * model[11] + view[11];
+        }
+        // 透明物体按远 → 近画（不写深度 ⇒ 实例之间靠绘制顺序叠）。同距离保持加入顺序。
+        std::stable_sort(order.begin(), order.end(),
+                         [](const Impl::Instance* a, const Impl::Instance* b) { return a->world_view_z < b->world_view_z; });
+        for (size_t k = 0; k < order.size(); ++k)
+        {
+            Impl::Instance& in = *order[k];
+            insts[k] = WorldInstance(proj_view, in.world_model_used);
+            if (!in.world_logged && in.solved)
             {
                 // setup 包围盒四角 → NDC（与 spine_gpu.vert 同一乘法：clip = M · (x, y, 0, 1)，列主序）
                 in.world_logged = true;
                 float nx0 = 1e30f, ny0 = 1e30f, nx1 = -1e30f, ny1 = -1e30f, wmin = 1e30f;
-                for (int k = 0; k < 4; ++k)
+                for (int c = 0; c < 4; ++c)
                 {
-                    const float bx = in.bounds[(k & 1) ? 2 : 0];
-                    const float by = in.bounds[(k & 2) ? 3 : 1];
-                    const float* m = inst.clip_from_world;
+                    const float bx = in.bounds[(c & 1) ? 2 : 0];
+                    const float by = in.bounds[(c & 2) ? 3 : 1];
+                    const float* m = insts[k].clip_from_world;
                     const float cx = m[0] * bx + m[4] * by + m[12];
                     const float cy = m[1] * bx + m[5] * by + m[13];
                     const float cw = m[3] * bx + m[7] * by + m[15];
@@ -2090,46 +2218,81 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
                         ny1 = std::max(ny1, cy / cw);
                     }
                 }
+                static const char* const kModes[] = {"none", "full", "vertical"};
                 LOG_INFO(ZRender,
-                         "SpineGpuRenderer: world instance #{} setup bounds -> NDC x [{:.3f}, {:.3f}] y [{:.3f}, {:.3f}] "
-                         "(min w {:.3f}; on screen iff it overlaps [-1, 1] and w > 0)",
-                         in.id, nx0, nx1, ny0, ny1, wmin);
+                         "SpineGpuRenderer: world instance #{} (billboard {}) setup bounds -> NDC x [{:.3f}, {:.3f}] "
+                         "y [{:.3f}, {:.3f}] (min w {:.3f}; on screen iff it overlaps [-1, 1] and w > 0), view z {:.3f}; "
+                         "pivot ({:.3f}, {:.3f}, {:.3f}) scale ({:.4f}, {:.4f}), camera right ({:.3f}, {:.3f}, {:.3f}) "
+                         "up ({:.3f}, {:.3f}, {:.3f})",
+                         in.id, kModes[static_cast<int>(in.world_billboard.mode) % 3], nx0, nx1, ny0, ny1, wmin,
+                         in.world_view_z, in.world_model_used[3], in.world_model_used[7], in.world_model_used[11],
+                         in.world_billboard.scale_x, in.world_billboard.scale_y, view[0], view[1], view[2], view[4],
+                         view[5], view[6]);
             }
         }
-        else if (in.manual)
+    }
+    else
+    {
+        uint32_t auto_count = 0;
+        for (const Impl::Instance* ip : order)
         {
-            inst = SpineGpuPlaceInstance(in.place_x, in.place_y, in.place_scale, viewport.width, viewport.height, y_sign);
+            auto_count += ip->manual ? 0u : 1u;   // 失败的也占格子：别的实例不因它跳来跳去
         }
-        else
+        uint32_t auto_index = 0;
+        for (size_t k = 0; k < order.size(); ++k)
         {
-            const SpineGpuRect cell = SpineGpuGridCell(auto_count, auto_index++, viewport.width, viewport.height);
-            inst = SpineGpuFitInstance(in.bounds, cell, viewport.width, viewport.height, y_sign);
+            const Impl::Instance& in = *order[k];
+            if (in.manual)
+            {
+                insts[k] = SpineGpuPlaceInstance(in.place_x, in.place_y, in.place_scale, viewport.width, viewport.height,
+                                                 y_sign);
+            }
+            else
+            {
+                const SpineGpuRect cell = SpineGpuGridCell(auto_count, auto_index++, viewport.width, viewport.height);
+                insts[k] = SpineGpuFitInstance(in.bounds, cell, viewport.width, viewport.height, y_sign);
+            }
         }
+    }
+    for (size_t k = 0; k < order.size(); ++k)
+    {
+        Impl::Instance& in = *order[k];
+        in.range = SpineGpuBatchRange {};
         if (!in.solved)
         {
             continue;
         }
-        const SpineImportResult br = SpineGpuAppendBatchInstance(in.asset->asset, in.asset->info, in.pose, &in.clip, inst,
-                                                                 tint_black_on, in.asset->batch, in.range);
+        SpineGpuBatch& batch = in.asset->batch[layer];
+        const SpineImportResult br = SpineGpuAppendBatchInstance(in.asset->asset, in.asset->info, in.pose, &in.clip,
+                                                                 insts[k], tint_black_on, batch, in.range);
         if (!br.ok)
         {
             fail_instance(in, br.error);
             continue;
         }
+        if (world_layer)
+        {
+            // 场景是线性 HDR（随后 tonemap + gamma）：片元把图集的 sRGB 值转成线性再输出（spine_gpu.frag bit5）
+            for (uint32_t i = in.range.draw_first; i < in.range.draw_first + in.range.draw_count; ++i)
+            {
+                batch.draws[i].flags |= SpineGpuDrawFlags::kSceneLinear;
+            }
+        }
         in.error.clear();
     }
 
-    // ---- 3) 上传：每个资产本帧槽位的骨骼 / 绘制项 / 实例 / deform / 裁剪顶点 + 索引 ----
+    // ---- 3) 上传：每个资产本层本帧槽位的骨骼 / 绘制项 / 实例 / deform / 裁剪顶点 + 索引 ----
     const uint32_t frame_index = static_cast<uint32_t>(rhi->GetCurrentFrameIndex());
     for (std::shared_ptr<Impl::Asset>& asp : d.assets)
     {
         Impl::Asset& as = *asp;
-        const SpineGpuBatch& b = as.batch;
+        const SpineGpuBatch& b = as.batch[layer];
         if (b.draws.empty())
         {
             continue;
         }
-        Impl::FrameSlot& fs = as.frames[frame_index % as.frames.size()];
+        std::vector<Impl::FrameSlot>& slots = as.frames[layer];
+        Impl::FrameSlot& fs = slots[frame_index % slots.size()];
         const RHIBufferUsageFlags ssbo = RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         const auto bytes = [](const auto& v) { return static_cast<RHIDeviceSize>(v.size() * sizeof(v[0])); };
         bool ok = d.EnsureFrameBuffer(fs, fs.bones, bytes(b.bones), ssbo, static_cast<int>(kBonesBinding)) &&
@@ -2152,8 +2315,8 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         if (!ok)
         {
             // 这个资产的实例这一帧都不画（缓冲扩不动 / 映射失败），别的资产照画
-            as.batch.Clear();
-            for (std::unique_ptr<Impl::Instance>& ip : d.instances)
+            as.batch[layer].Clear();
+            for (Impl::Instance* ip : order)
             {
                 if (ip->asset.get() == &as && ip->solved)
                 {
@@ -2165,11 +2328,11 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         d.RefreshDescriptors(as, fs);
     }
 
-    // ---- 4) 录制：按**实例顺序**（先加的在下面）；一项一次 DrawIndexed，firstInstance = 绘制项在本资产
-    //         合包 b5 里的全局下标。换资产时整套状态重绑（set0 / 索引缓冲 / DX12 的 draw_ids 都是资产的）。
+    // ---- 4) 录制：按 `order`（UI 层 = 加入顺序，先加的在下面；世界层 = 远 → 近）；一项一次 DrawIndexed，
+    //         firstInstance = 绘制项在本资产合包 b5 里的全局下标。换资产时整套状态重绑。
     RHICommandBuffer* cmd = rhi->GetCurrentCommandBuffer();
     float color[4] = {0.9f, 0.6f, 1.0f, 1.0f};
-    rhi->PushEvent(cmd, "SpineGpu", color);
+    rhi->PushEvent(cmd, world_layer ? "SpineGpu.World" : "SpineGpu", color);
     RHIViewport vp = viewport;
     // Vulkan 要求 scissor offset ≥ 0（视口可能部分移出窗口）
     const float sx0 = std::max(viewport.x, 0.0f);
@@ -2187,14 +2350,14 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     int bound_page = -1;
     uint32_t total_draws = 0, deformed = 0, deform_floats = 0, clipped = 0, clip_vertices = 0, dark = 0;
     std::string summary;
-    for (const std::unique_ptr<Impl::Instance>& ip : d.instances)
+    for (const Impl::Instance* ip : order)
     {
         const Impl::Instance& in = *ip;
         summary += " | #" + std::to_string(in.id) + " '" + ToUtf8(FromUtf8(in.asset->path).filename()) + "'" +
                    (in.skin != kSpineGpuNoSkin && in.skin < in.asset->asset.skin_names.size()
                         ? " skin '" + in.asset->asset.skin_names[in.skin] + "'"
                         : std::string()) +
-                   (in.world ? (in.world_visible ? " world" : " world(hidden)") : (in.manual ? " placed" : "")) + ": " +
+                   (in.world ? (in.world_visible ? "" : " (hidden)") : (in.manual ? " placed" : "")) + ": " +
                    (in.error.empty() ? std::to_string(in.range.draw_count) + " draws [" + d.DescribeTracks(in) + "]"
                                      : "skipped: " + in.error);
         if (in.range.draw_count == 0)
@@ -2202,7 +2365,9 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
             continue;
         }
         Impl::Asset& as = *in.asset;
-        Impl::FrameSlot& fs = as.frames[frame_index % as.frames.size()];
+        std::vector<Impl::FrameSlot>& slots = as.frames[layer];
+        Impl::FrameSlot& fs = slots[frame_index % slots.size()];
+        const SpineGpuBatch& batch = as.batch[layer];
         if (&as != bound_asset)
         {
             bound_asset = &as;
@@ -2213,7 +2378,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         const SpineGpuAsset& a = as.asset;
         for (uint32_t i = in.range.draw_first; i < in.range.draw_first + in.range.draw_count; ++i)
         {
-            const SpineGpuBatchCmd& dc = as.batch.cmds[i];
+            const SpineGpuBatchCmd& dc = batch.cmds[i];
             const SpineDrawItem& di = a.draw_items[dc.item];
             const int want_index = dc.cpu ? 1 : 0;
             if (want_index != bound_index)
@@ -2224,7 +2389,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
             const int mode = static_cast<int>(di.blend_mode) & 3;
             if (mode != bound_mode)
             {
-                rhi->CmdBindPipelinePFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, d.pipelines[mode]);
+                rhi->CmdBindPipelinePFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, d.pipelines[layer][mode]);
                 if (dx12)
                 {
                     // DX12RHI 的顶点缓冲 stride 取自**当前**管线 ⇒ 必须在绑管线之后绑
@@ -2257,38 +2422,44 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     rhi->PopEvent(cmd);
 
     std::lock_guard<std::mutex> lock(d.mutex);
-    d.status = "playing " + std::to_string(d.instances.size()) + " instance(s) of " + std::to_string(d.assets.size()) +
-               " asset(s)";
+    Impl::LayerStats& st = d.stats[layer];
+    size_t world_count = 0;
+    for (const std::unique_ptr<Impl::Instance>& ip : d.instances)
+    {
+        world_count += ip->world ? 1u : 0u;
+    }
+    d.status = "playing " + std::to_string(d.instances.size() - world_count) + " overlay + " +
+               std::to_string(world_count) + " world instance(s) of " + std::to_string(d.assets.size()) + " asset(s)";
     if (total_draws == 0)
     {
-        if (d.skip_reason != "no visible draw items")
+        if (st.skip_reason != "no visible draw items")
         {
-            d.skip_reason = "no visible draw items";
-            LOG_WARNING(ZRender, "SpineGpuRenderer: skipping frame: no visible draw items ({})", summary);
+            st.skip_reason = "no visible draw items";
+            LOG_WARNING(ZRender, "SpineGpuRenderer: {} layer: no visible draw items ({})", layer_name, summary);
         }
     }
-    else if (d.last_draw_count == 0)
+    else if (st.draw_count == 0)
     {
         // 第一帧真正录了东西时记一行：视口 / 实例 / 项数，排查"画了但看不见"
         LOG_INFO(ZRender,
-                 "SpineGpuRenderer: first frame {} draw items from {} instance(s) / {} asset(s) ({} deformed, {} deform "
+                 "SpineGpuRenderer: {} layer first frame {} draw items from {} instance(s) ({} deformed, {} deform "
                  "floats), viewport ({}, {}) {}x{}",
-                 total_draws, d.instances.size(), d.assets.size(), deformed, deform_floats, viewport.x, viewport.y,
-                 viewport.width, viewport.height);
-        d.skip_reason.clear();
+                 layer_name, total_draws, order.size(), deformed, deform_floats, viewport.x, viewport.y, viewport.width,
+                 viewport.height);
+        st.skip_reason.clear();
     }
-    d.last_draw_count = total_draws;
-    d.instance_summary = summary;
-    d.last_deform_draws = deformed;
-    d.last_deform_floats = deform_floats;
-    if (clipped > 0 && d.last_clipped_draws == 0)
+    st.draw_count = total_draws;
+    st.summary = summary;
+    st.deform_draws = deformed;
+    st.deform_floats = deform_floats;
+    if (clipped > 0 && st.clipped_draws == 0)
     {
         // 裁剪从"没有"变成"有"时记一行（不刷屏）
-        LOG_INFO(ZRender, "SpineGpuRenderer: clipping active: {} clipped draw items, {} clip vertices", clipped,
-                 clip_vertices);
+        LOG_INFO(ZRender, "SpineGpuRenderer: {} layer clipping active: {} clipped draw items, {} clip vertices",
+                 layer_name, clipped, clip_vertices);
     }
-    d.last_clipped_draws = clipped;
-    d.last_clip_vertices = clip_vertices;
+    st.clipped_draws = clipped;
+    st.clip_vertices = clip_vertices;
     if (dark > 0 && !d.tint_black_logged)
     {
         // 每次加实例 / 拨开关后第一次出现暗色项时记一行（动画循环里暗色时有时无，按"0→非 0"记会刷屏）
@@ -2296,7 +2467,7 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         LOG_INFO(ZRender, "SpineGpuRenderer: tint black active: {} of {} draw items carry a dark color", dark,
                  total_draws);
     }
-    d.last_tint_black_draws = dark;
+    st.tint_black_draws = dark;
 }
 
 void SpineGpuRenderer::DrawInEditorViewport(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass)
@@ -2351,7 +2522,10 @@ void SpineGpuRenderer::RequestTintBlack(bool) {}
 void SpineGpuRenderer::RequestSkin(const std::string&, bool) {}
 uint32_t SpineGpuRenderer::RequestAddWorldInstance(const std::string&, const std::string&, bool, uint64_t) { return 1; }
 // true：别让组件以为 id 丢了而每帧重建
-bool SpineGpuRenderer::RequestSetWorldTransform(uint32_t, const float*, float, bool) { return true; }
+bool SpineGpuRenderer::RequestSetWorldTransform(uint32_t, const float*, float, bool, const SpineGpuBillboard&)
+{
+    return true;
+}
 void SpineGpuRenderer::RequestRemoveWorldInstance(uint32_t) {}
 void SpineGpuRenderer::RemoveWorldInstancesOfOwner(uint64_t) {}
 void SpineGpuRenderer::AdvanceWorldTick() {}
@@ -2359,6 +2533,8 @@ void SpineGpuRenderer::RequestSetAnimationOn(uint32_t, int, const std::string&, 
 void SpineGpuRenderer::RequestTimeScaleOn(uint32_t, float) {}
 void SpineGpuRenderer::RequestSkinOn(uint32_t, const std::string&, bool) {}
 void SpineGpuRenderer::Draw(RHI*, RHIRenderPass*, uint32_t, const RHIViewport&, ViewportType) {}
+void SpineGpuRenderer::DrawWorld(RHI*, RHIRenderPass*, uint32_t, const RHIViewport&, ViewportType) {}
+void SpineGpuRenderer::DrawLayer(int, RHI*, RHIRenderPass*, uint32_t, const RHIViewport&, ViewportType) {}
 void SpineGpuRenderer::DrawInEditorViewport(RHI*, RHIRenderPass*, uint32_t) {}
 uint32_t SpineGpuRenderer::LastDrawCount() const { return 0; }
 std::string SpineGpuRenderer::Status() const { return "GPU-Spine rendering is not available on WebGL2"; }
