@@ -1,7 +1,7 @@
 // =====================================================================
 // GPU-Spine 性能基准（CPU 侧，单线程）：我们的每帧路径 vs spine-cpp 3.8 的 CPU 蒙皮路径
 // ---------------------------------------------------------------------
-// 用法：SpineGpuBenchmark <资产目录> [--frames N] [--limit N] [--csv out.csv] [--top N] [--verbose]
+// 用法：SpineGpuBenchmark <资产目录> [--frames N] [--limit N] [--csv out.csv] [--top N] [--verbose] [--split]
 //   目录里找 `*.skel.bytes` / `*.json` + 同名 `.atlas.txt` / `.atlas`（与 SpineGpuRefParityTest 同口径）。
 //
 // 每个资产两边吃**同一份**脚本：dt = 1/60，default mix 0.2，轨道 0 循环播第 0 个动画，每 60 帧
@@ -127,6 +127,10 @@ inline double UsSince(Clock::time_point t0)
 {
     return std::chrono::duration<double, std::micro>(Clock::now() - t0).count();
 }
+inline double UsBetween(Clock::time_point t0, Clock::time_point t1)
+{
+    return std::chrono::duration<double, std::micro>(t1 - t0).count();
+}
 
 bool ReadAll(const fs::path& p, std::vector<char>& out)
 {
@@ -148,8 +152,13 @@ struct SideResult
     double total_us = 0.0;
     double upload_bytes = 0.0;
     double vertices = 0.0;   // 参考：每帧生成的顶点数；我们：CPU 裁剪顶点数
-    double allocs_per_frame = 0.0;   // 稳态每帧的堆分配次数（>0 = 热路径里有多余的活）
+    double allocs_per_frame = 0.0;   // 稳态每帧的堆分配次数（>0 = 热路径里还有多余的活）
     double alloc_bytes_per_frame = 0.0;
+    // `--split`：anim 段细拆成 Update（推进轨道 / 排队事件）与 Apply（逐时间轴写状态）。
+    // 两边同一个切法（参考侧也是 AnimationState::update + apply）⇒ 可以直接对拍。
+    double anim_update_us = 0.0;
+    double anim_apply_us = 0.0;
+    double anim_timelines = 0.0;     // 每帧实际 apply 的时间轴条数（脚本里会切动画 ⇒ 取平均）
 };
 
 struct AssetResult
@@ -208,6 +217,8 @@ bool RunOurs(const SpineGpuAsset& asset, uint32_t frames, SideResult& out, std::
     inst.root_abcd[0] = inst.root_abcd[3] = 1.0f;
     const bool tint_black = (asset.header.flags & SpineGpuFlags::kUsesTintBlack) != 0u;
     double anim_us = 0, pose_us = 0, geo_us = 0, bytes = 0, verts = 0;
+    double anim_update_us = 0, anim_apply_us = 0, tl_total = 0;
+    uint32_t cur_anim = 0;
     const uint32_t probe_begin = (alloc_probe != 0u && frames > alloc_probe) ? (frames - alloc_probe) : 0u;
     for (uint32_t f = 0; f < frames; ++f)
     {
@@ -217,12 +228,17 @@ bool RunOurs(const SpineGpuAsset& asset, uint32_t frames, SideResult& out, std::
         }
         if (f > 0 && f % kSwitchEvery == 0 && anim_count > 1)
         {
-            anim.SetAnimation(0, (f / kSwitchEvery) % anim_count, true);
+            cur_anim = (f / kSwitchEvery) % anim_count;
+            anim.SetAnimation(0, cur_anim, true);
         }
         auto t0 = Clock::now();
         anim.Update(kDt);
+        auto t1 = Clock::now();
         r = anim.Apply(state);
-        anim_us += UsSince(t0);
+        auto t2 = Clock::now();
+        anim_us += UsBetween(t0, t2);
+        anim_update_us += UsBetween(t0, t1);
+        anim_apply_us += UsBetween(t1, t2);
         if (!r.ok)
         {
             error = "apply: " + r.error;
@@ -250,6 +266,7 @@ bool RunOurs(const SpineGpuAsset& asset, uint32_t frames, SideResult& out, std::
             error = "clip/batch: " + r.error;
             return false;
         }
+        tl_total += static_cast<double>(anim_count > 0 ? asset.anims[cur_anim].timeline_count : 0u);
         bytes += static_cast<double>(batch.bones.size() * sizeof(SpineGpuBoneSample) +
                                      batch.draws.size() * sizeof(SpineGpuGpuDraw) +
                                      batch.insts.size() * sizeof(SpineGpuGpuInst) + batch.deform.size() * sizeof(float) +
@@ -271,6 +288,9 @@ bool RunOurs(const SpineGpuAsset& asset, uint32_t frames, SideResult& out, std::
     out.total_us = out.anim_us + out.pose_us + out.geo_us;
     out.upload_bytes = bytes / n;
     out.vertices = verts / n;
+    out.anim_update_us = anim_update_us / n;
+    out.anim_apply_us = anim_apply_us / n;
+    out.anim_timelines = tl_total / n;
     return true;
 }
 
@@ -307,6 +327,8 @@ bool RunRef(spine::SkeletonData* data, uint32_t frames, SideResult& out, std::st
     static unsigned short kQuad[6] = {0, 1, 2, 2, 3, 0};
     const uint32_t anim_count = static_cast<uint32_t>(anims.size());
     double anim_us = 0, pose_us = 0, geo_us = 0, bytes = 0, verts = 0;
+    double anim_update_us = 0, anim_apply_us = 0, tl_total = 0;
+    uint32_t cur_anim = 0;
     const uint32_t probe_begin = (alloc_probe != 0u && frames > alloc_probe) ? (frames - alloc_probe) : 0u;
     for (uint32_t f = 0; f < frames; ++f)
     {
@@ -316,12 +338,17 @@ bool RunRef(spine::SkeletonData* data, uint32_t frames, SideResult& out, std::st
         }
         if (f > 0 && f % kSwitchEvery == 0 && anim_count > 1)
         {
-            state.setAnimation(0, anims[(f / kSwitchEvery) % anim_count], true);
+            cur_anim = (f / kSwitchEvery) % anim_count;
+            state.setAnimation(0, anims[cur_anim], true);
         }
         auto t0 = Clock::now();
         state.update(kDt);
+        auto t1 = Clock::now();
         state.apply(skeleton);
-        anim_us += UsSince(t0);
+        auto t2 = Clock::now();
+        anim_us += UsBetween(t0, t2);
+        anim_update_us += UsBetween(t0, t1);
+        anim_apply_us += UsBetween(t1, t2);
         t0 = Clock::now();
         skeleton.updateWorldTransform();
         pose_us += UsSince(t0);
@@ -417,6 +444,7 @@ bool RunRef(spine::SkeletonData* data, uint32_t frames, SideResult& out, std::st
         }
         clipper.clipEnd();
         geo_us += UsSince(t0);
+        tl_total += static_cast<double>(anim_count > 0 ? anims[cur_anim]->getTimelines().size() : 0u);
         bytes += static_cast<double>(vb.size() * sizeof(RefVertex) + dark.size() * sizeof(uint32_t) +
                                      ib.size() * sizeof(uint16_t));
         verts += static_cast<double>(vb.size());
@@ -435,6 +463,9 @@ bool RunRef(spine::SkeletonData* data, uint32_t frames, SideResult& out, std::st
     out.total_us = out.anim_us + out.pose_us + out.geo_us;
     out.upload_bytes = bytes / n;
     out.vertices = verts / n;
+    out.anim_update_us = anim_update_us / n;
+    out.anim_apply_us = anim_apply_us / n;
+    out.anim_timelines = tl_total / n;
     return true;
 }
 
@@ -459,7 +490,7 @@ int main(int argc, char** argv)
 #endif
     if (argc < 2)
     {
-        std::printf("usage: SpineGpuBenchmark <asset dir> [--frames N] [--limit N] [--csv out.csv] [--top N] [--verbose]\n");
+        std::printf("usage: SpineGpuBenchmark <asset dir> [--frames N] [--limit N] [--csv out.csv] [--top N] [--verbose] [--split]\n");
         return 2;
     }
     const fs::path dir = argv[1];
@@ -468,6 +499,7 @@ int main(int argc, char** argv)
     size_t top = 10;
     std::string csv_path;
     bool verbose = false;
+    bool split = false;
     for (int i = 2; i < argc; ++i)
     {
         const std::string a = argv[i];
@@ -486,6 +518,10 @@ int main(int argc, char** argv)
         else if (a == "--verbose")
         {
             verbose = true;
+        }
+        else if (a == "--split")
+        {
+            split = true;
         }
         else if (a == "--top" && i + 1 < argc)
         {
@@ -667,6 +703,17 @@ int main(int argc, char** argv)
     std::printf("每实例每帧（µs；合计 = 每个资产各放 1 个实例时一帧的总成本）：\n");
     row("动画 anim", [](const AssetResult& a) { return a.ours.anim_us; }, [](const AssetResult& a) { return a.ref.anim_us; },
         "µs", 1.0);
+    if (split)
+    {
+        // Update = 推进轨道 / 排队事件（与资产规模无关的固定活）；Apply = 逐时间轴写状态（随动画条数长）。
+        // 两边都是同一对入口，所以这两行能直接告诉我们"慢在哪半边"，不用猜。
+        row("  · update", [](const AssetResult& a) { return a.ours.anim_update_us; },
+            [](const AssetResult& a) { return a.ref.anim_update_us; }, "µs", 1.0);
+        row("  · apply", [](const AssetResult& a) { return a.ours.anim_apply_us; },
+            [](const AssetResult& a) { return a.ref.anim_apply_us; }, "µs", 1.0);
+        row("  · 时间轴/帧", [](const AssetResult& a) { return a.ours.anim_timelines; },
+            [](const AssetResult& a) { return a.ref.anim_timelines; }, "条", 1.0);
+    }
     row("骨骼 pose", [](const AssetResult& a) { return a.ours.pose_us; }, [](const AssetResult& a) { return a.ref.pose_us; },
         "µs", 1.0);
     row("几何 geo", [](const AssetResult& a) { return a.ours.geo_us; }, [](const AssetResult& a) { return a.ref.geo_us; },
@@ -730,17 +777,19 @@ int main(int argc, char** argv)
     {
         std::ofstream csv(csv_path, std::ios::trunc);
         csv << "asset,bones,slots,anims,iks,transforms,paths,static_gpu_bytes,ours_anim_us,ours_pose_us,ours_geo_us,ours_total_us,ours_upload_bytes,"
-               "ours_cpu_verts,ours_allocs,ours_alloc_bytes,ref_anim_us,ref_pose_us,ref_geo_us,ref_total_us,ref_upload_bytes,ref_verts,ref_allocs,"
-               "ref_alloc_bytes\n";
+               "ours_cpu_verts,ours_allocs,ours_alloc_bytes,ours_anim_update_us,ours_anim_apply_us,ours_timelines,ref_anim_us,ref_pose_us,ref_geo_us,"
+               "ref_total_us,ref_upload_bytes,ref_verts,ref_allocs,ref_alloc_bytes,ref_anim_update_us,ref_anim_apply_us,ref_timelines\n";
         for (const AssetResult& a : results)
         {
             csv << a.name << ',' << a.bones << ',' << a.slots << ',' << a.anims << ',' << a.iks << ',' << a.transforms
                 << ',' << a.paths << ',' << a.static_gpu_bytes << ','
                 << a.ours.anim_us << ',' << a.ours.pose_us << ',' << a.ours.geo_us << ',' << a.ours.total_us << ','
                 << a.ours.upload_bytes << ',' << a.ours.vertices << ',' << a.ours.allocs_per_frame << ','
-                << a.ours.alloc_bytes_per_frame << ',' << a.ref.anim_us << ',' << a.ref.pose_us << ','
+                << a.ours.alloc_bytes_per_frame << ',' << a.ours.anim_update_us << ',' << a.ours.anim_apply_us << ','
+                << a.ours.anim_timelines << ',' << a.ref.anim_us << ',' << a.ref.pose_us << ','
                 << a.ref.geo_us << ',' << a.ref.total_us << ',' << a.ref.upload_bytes << ',' << a.ref.vertices << ','
-                << a.ref.allocs_per_frame << ',' << a.ref.alloc_bytes_per_frame << '\n';
+                << a.ref.allocs_per_frame << ',' << a.ref.alloc_bytes_per_frame << ',' << a.ref.anim_update_us << ','
+                << a.ref.anim_apply_us << ',' << a.ref.anim_timelines << '\n';
         }
         std::printf("逐资产明细：%s\n", csv_path.c_str());
     }

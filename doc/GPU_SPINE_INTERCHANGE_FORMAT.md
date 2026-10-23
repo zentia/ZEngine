@@ -1823,7 +1823,7 @@ balance       f32 @20
 ```
 cmake --build build --config Release --target SpineGpuBenchmark
 build/engine/Source/Runtime/Function/Render/Spine/Test/Release/SpineGpuBenchmark.exe \
-    G:/OSGame/Client_proj/Project/Assets --frames 360 --csv build/spine_bench.csv [--top 8] [--limit N] [--verbose]
+    G:/OSGame/Client_proj/Project/Assets --frames 360 --csv build/spine_bench.csv [--top 8] [--limit N] [--verbose] [--split]
 ```
 （⚠️ **目录是第一个位置参数**，必须在 `--frames` 这些选项**前面**：写在最后会被当成没给目录，
 输出"没有可测的资产（跳过 0）"。）
@@ -1877,10 +1877,8 @@ total **1.16x → 1.35x**；pose 与 geo 在噪声内没动（0.81→0.82、2.21
   顶点不动、也不重算 —— 参考侧每帧要在 CPU 生成 666 个顶点（中位）再传上去。
 * **total 我们更快（1.35x）**，但赢面比"应该有的"小：anim 段我们慢 1.43x 把它吃回去一大半。
 * ⚠️ **anim 0.70x 仍是已知差距**（比本轮之前的 0.55x 好了一大截，但没追平）。已定位并修掉的
-  三处每帧分配见下节；**剩下的未测量**，两个候选（**不是结论**）：① `ApplyRotate` 的
-  `SpineGpuWrapDegrees`（double 数学 + int 截断，每条 rotate 时间轴每帧一次）；
-  ② 每条时间轴每次 apply 都要构造并返回 `SpineImportResult{ bool, std::string }`
-  （MSVC 上 std::string 32 B，即使走短串也要初始化）。要动它先测，别照这两条猜。
+  三处每帧分配见下节；**剩下的已经按时间轴类型逐项测过**，见 §17.2 —— 结论是"摊在每条时间轴
+  上的 ~11 ns"，其中最大的一块（deform）是本格式的**设计取舍**，不是加多了的代码。
 * pose 0.82x：更早一轮已经修掉一个大头 —— `PoseSolver` 里那个 `getenv` 的 debug 开关是
   **每帧每条 path 约束调一次**（单条 ~5 µs，Diaochan_qian 的 pose 一度 52 µs），
   改成 `static const bool` + `thread_local` scratch 后：中位 1.61 → **0.94 µs**、
@@ -1923,6 +1921,49 @@ scratch"，**入口第一行必须是 `clear()` / `resize(0)`**。
 Debug 迭代器调试会给**每个**容器的构造单独 malloc 一个 16 字节的 `_Container_proxy`，
 不关掉的话"稳态 0 分配"在 Debug 下稳定红（实测 8 次/帧：apply 7 + pose 1），而那不是数据缓冲、
 Release 下根本不存在。基准的分配计数同理 —— **只有 Release 的数字能读**。
+
+### 17.2 anim 段差距在哪（2026-10-23 实测）
+
+`--split` 把 anim 拆成 Update / Apply（两边同一个切法，参考侧也是 `update` + `apply`）：
+
+| 段 | 我们 中位 | 参考 中位 | 参考/我们 |
+|---|---|---|---|
+| update | 0.02 µs | 0.02 µs | 0.98x |
+| apply | 3.5 µs | 2.1 µs | **0.70x** |
+| 每帧 apply 的时间轴条数 | 82（p90 231） | 82（p90 231） | 1.00x |
+
+⇒ **差距 100% 在 Apply**，且两边条数完全相同（同一份脚本、同一套动画），所以可以直接按条数摊：
+我们 (3.5 − 0.38) / 82 ≈ **37.7 ns/条**，参考 2.1 / 82 ≈ **26.8 ns/条**
+（0.38 = 消融掉全部时间轴 apply 之后剩下的固定成本）。
+
+按类型消融（临时宏，只给基准目标开，测完即删；基线 3.34 µs，同一份二进制）：
+
+| 跳过的类型 | apply 中位 | 该类型成本 |
+|---|---|---|
+| deform (6) | 2.00 | **1.34 µs（40%）** |
+| rotate (0) | 2.55 | 0.79 µs（24%） |
+| attachment (4) | 2.96 | 0.38 µs |
+| translate (1) | 2.97 | 0.37 µs |
+| color (5) | 3.24 | 0.10 µs |
+
+单个候选的实测（都是"消融掉这一项，看 apply 掉多少"）：
+
+| 候选 | 成本 |
+|---|---|
+| `SpineGpuWrapDegrees`（rotate 的角度归一，int 截断） | 0.11 µs/帧 |
+| rigid deform 每帧 `memcpy` 一份 setup 顶点（永不变化） | 0.20 µs/帧 |
+| `GetFrames` 的调用 + 边界校验 + 一次 `SpineImportResult` 返回 | 3.2 ns/条 ≈ 0.26 µs/帧 |
+| 一次 `SpineImportResult`（`bool + std::string` = 40 B，非平凡 ⇒ 走 sret 内存返回）比返回 `bool` 贵 | **1.32 ns**（微基准 2000 万次：1.50 vs 0.18 ns/次）；每条时间轴 3 次（GetFrames / ApplyX / ApplyTimeline）≈ 4 ns/条 |
+| 把展开出来的 deform 关键帧按 (时间轴, 帧号) 缓存、帧号没变就不重展 | 只值 0.23 µs/帧（anim 慢 1.68x → 1.55x），命中率低 ⇒ 不值得常驻 2×deform_len 的缓存 |
+
+**为什么 deform 是大头**：容器只存 deform 的**增量**（规格 §5.2，省 59.5% 载荷），展开就落到
+运行时 —— 每帧要展开两帧再插值；spine-cpp 是**加载期**就摊成稠密帧（`DeformTimeline.cpp:182-257`
+直接读 `_frames`），运行时一次都不展开。这是拿"每帧 CPU"换"体积"，不是写错了。
+
+**结论**：anim 的 1.4 µs 差距不是一处"加多了"，是摊在每条时间轴上的 ~11 ns。要再往下压只有三条路，
+都不是顺手能改的：① deform 帧改成加载期摊稠密（放弃省下的 59.5% 载荷，换回 ~1 µs/帧）；
+② 不变量只在加载期校验一次，热路径不再返回 `SpineImportResult`（~0.26~0.4 µs/帧）；
+③ 缓存 rigid 的 setup 顶点（0.20 µs/帧，纯赚，但要占一点常驻内存）。要动就先量，别照这三条猜。
 
 ---
 

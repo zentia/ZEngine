@@ -2341,9 +2341,12 @@ downstream reads it.
   配合 `--cvar` 写无人值守 e2e）、`asset.move <old> <new>`（content 根相对，测 GUID 重定向）、
   `obj select <id|name>`、`inspector.pick <Label> <option>` / `inspector.combos`。
 - **性能基准**：`SpineGpuBenchmark`（`Render/Spine/Test/`，`EXCLUDE_FROM_ALL`、**不进 ctest**、不链 `ZRuntime`）：
-  `--config Release`，`--frames 360 --csv <文件> [--top N] [--limit N] [--verbose] <Assets 目录>`，
-  与参考 spine-cpp 的 CPU 蒙皮路径逐段比（anim / pose / geo / upload / CPU 顶点）。最新版本数字见
-  规格 `doc/GPU_SPINE_INTERCHANGE_FORMAT.md` §17。
+  `--config Release`，`--frames 360 --csv <文件> [--top N] [--limit N] [--verbose] [--split] <Assets 目录>`，
+  与参考 spine-cpp 的 CPU 蒙皮路径逐段比（anim / pose / geo / upload / CPU 顶点）。`--split` 把 anim
+  再拆成 Update / Apply 并报每帧时间轴条数（两边同一切法）⇒ 定位"慢在哪半边"先加它。最新版本数字与
+  逐类型分解见规格 `doc/GPU_SPINE_INTERCHANGE_FORMAT.md` §17 / §17.2。
+  ⚠️ anim 至今比参考慢 ~1.4x：**不是一处加多了，是摊在每条时间轴上的 ~11 ns**，其中 deform 占 40%
+  （容器只存增量 ⇒ 展开落在运行时，参考是加载期摊稠密的）。想动它先看 §17.2 那张实测表。
   ⚠️ `SpineReference` 按 config 改名（`OUTPUT_NAME SpineReference_$<CONFIG>`）：全工程
   `CMAKE_ARCHIVE_OUTPUT_DIRECTORY` 被统一设成同一目录（根 `CMakeLists.txt:56-60`），不改名的话
   Release 的基准会把 Debug 的 `.lib` 覆盖掉，回来编对拍就 **LNK2038**（`_ITERATOR_DEBUG_LEVEL` 不匹配）。
