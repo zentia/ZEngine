@@ -596,7 +596,14 @@ bool PrefabUtility::SaveAsPrefabAsset(GameObject* root, const std::filesystem::p
 
     // 4) Tear down our transient PrefabAsset header. The live `root` GameObject and
     //    its Components belong to the caller's Level — we MUST NOT destroy them.
-    MemoryManager::DestroyObject(prefab);
+    //
+    //    ⚠️ 必须走 ObjectManager::Destroy（= delete），不能用 MemoryManager::DestroyObject：
+    //    Produce() 内部是 `new T()`（见 ObjectDefines.h 的 ProduceHelper），而 Apple 上
+    //    全局 operator new/delete **故意不接管** mimalloc（MemoryManager.cpp 的
+    //    `#if !defined(__APPLE__)` 分支），把 new 出来的指针喂给 mi_free 会在
+    //    mi_usable_size → mi_checked_ptr_segment 里 EXC_BAD_ACCESS / SIGBUS。
+    //    非 Apple 上 new 就是 mimalloc，所以这条错配在 Windows/Linux 上一直是隐形的。
+    GET_SYSTEM(ObjectManager)->Destroy(prefab);
 
     if (!ok)
     {

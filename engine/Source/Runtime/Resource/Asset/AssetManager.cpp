@@ -929,7 +929,9 @@ Object* AssetManager::ReadObject(std::filesystem::path& path, const Type* type)
         const std::string text = ReadTextFile(path);
         if (text.empty() || !ZYaml::ReadSingleObjectFromGraph(text.c_str(), 1, obj, MakeYamlReaderHook(this)))
         {
-            MemoryManager::DestroyObject(obj);
+            // Produce() 是 `new T()` ⇒ 必须 ObjectManager::Destroy（= delete）。
+            // MemoryManager::DestroyObject 走 mi_free，Apple 上会在 mi_usable_size 里崩。
+            GET_SYSTEM(ObjectManager)->Destroy(obj);
             return nullptr;
         }
         return obj;
@@ -1017,7 +1019,10 @@ Object* AssetManager::ReadObject(std::filesystem::path& path, const Type* type)
 
     if (!readOk)
     {
-        MemoryManager::DestroyObject(obj);
+        // obj 来自 Produce()（`new T()`）⇒ ObjectManager::Destroy；
+        // tempSerialize 来自 MemoryManager::CreateObject（mi_malloc）⇒ DestroyObject。
+        // 两条路径的分配器不同，混用会在 Apple 上崩（全局 new/delete 不走 mimalloc）。
+        GET_SYSTEM(ObjectManager)->Destroy(obj);
         MemoryManager::DestroyObject(tempSerialize);
         return nullptr;
     }

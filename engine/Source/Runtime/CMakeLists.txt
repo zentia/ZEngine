@@ -642,6 +642,12 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/MetalSpirvShaderSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/MetalSpirvShaderSmokeTest.cpp")
+# 分配器配对冒烟测试的 main carve-out（同理由）。Only built when
+# ZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/MemoryPairingSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Core/Memory/Test/MemoryPairingSmokeTest.cpp")
 # Addressables async-loading smoke-test main carve-out. Same rationale: it owns
 # main() and must not be whole-archived into ZRuntime, or every consumer exe
 # gets LNK2005 "main already defined". Built only when
@@ -1499,6 +1505,11 @@ add_subdirectory(Function/Render/Interface/Test)
 # everywhere ZRuntime does, so the smoke-test can link on every supported host.
 # ---------------------------------------------------------------------------
 add_subdirectory(Core/Serialize/Test)
+
+# 分配器配对冒烟测试（§3.26）。Own main()；只在
+# ZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON 时构建。盯的是"Produce（new）出来的
+# 对象被 mimalloc 释放"这类只在 Apple 上致命、其余平台全程隐形的错配。
+add_subdirectory(Core/Memory/Test)
 
 # Derived Data Cache smoke test (texture cook P3). Own main(); carved out of
 # the ZRuntime glob above and built only when ZENGINE_BUILD_DDC_SMOKE_TEST=ON.

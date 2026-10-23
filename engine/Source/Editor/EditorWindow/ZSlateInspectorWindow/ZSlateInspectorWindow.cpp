@@ -2813,7 +2813,11 @@ void ZSlateInspectorWindow::BuildDataTableAsset(const std::filesystem::path& ass
         column->AddSlot(grid).AutoSize().SetPadding(ZSlate::FMargin(0.0f, 6.0f * scale, 0.0f, 0.0f));
     }
 
-    MemoryManager::DestroyObject(produced);
+    // `produced` 来自 AssetManager::ReadObject，底层是 ObjectManager::Produce（`new T()`），
+    // 所以这里必须走 ObjectManager::Destroy（= delete），不能用 MemoryManager::DestroyObject
+    // （mi_free）：Apple 上全局 new/delete 不走 mimalloc，喂给 mi_free 会在
+    // mi_usable_size → mi_checked_ptr_segment 里 EXC_BAD_ACCESS / SIGBUS。
+    object_manager->Destroy(produced);
     wrap(column);
 }
 

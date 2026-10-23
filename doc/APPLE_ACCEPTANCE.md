@@ -102,6 +102,7 @@ cd build && ctest --output-on-failure
 | `AppleSceneBlitSmokeTest` | 332 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18）；Nanite 的每帧推进必须在**四条 Tick 路径上都存在**（§3.21）；GPU 路径的每一步都要能被证伪，心跳带 `ngpu=`（§3.22）；编辑器 gizmo（axis）的**上传 + 绘制两半**都在，且 RHI 真的把 dynamic offset 用上（§3.23）；粒子的解耦 + Apple 名单 + 运行时接线 + **每帧推进**（§3.24）；prefab 定义树不许跑 post-load，且 flag 要真的传下去（§3.25） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
+| `MemoryPairingSmokeTest` | 23 | 分配器配对（§3.26）：Apple 上 `Produce` 出来的块**不在 mimalloc 堆区**（所以喂给 mi_free 必坏）；错配会被守卫拦下而不是崩；正确配对不触发守卫；全库扫描 0 处错配 + **扫描器自检**（含已知错配/已知正确的双向对照） |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
 `MetalSpirvShaderSmokeTest` 一条就能把 §3.1 / §3.2 / §3.3 三个错全抓出来。
@@ -1119,6 +1120,79 @@ particle=(has=1 emit=1 draw=1 parts=300000 vp=1)     ← emit/draw 2 → 1
 2. **越界的 `substr` 会带崩整个测试**。变异把调用点整行注释掉后 `find` 返回 npos，
    `substr(npos, 80)` 抛 `out_of_range` ⇒ 测试进程 abort，看起来像"变红了"其实是被崩掉
    的。取子串前必须先判 npos，且取到**行尾**再搜。
+
+### 3.26 分配器配对：`Produce`（new）出来的对象被喂给了 mi_free
+
+**症状**：不崩在出错的地方。要么在 `mi_usable_size → mi_checked_ptr_segment` 里
+EXC_BAD_ACCESS / SIGBUS（栈里只有 mimalloc，看不出是谁配错的），要么**根本不崩** ——
+`mi_free` 拿到一块系统 malloc 的内存，破坏的是 mimalloc 自己的延迟释放链表，崩在
+几秒之后、完全不相干的栈里。Windows / Linux 上一次都没复现过。
+
+**根因**：引擎有两条分配路径，配对错了在非 Apple 上**完全等价**，所以从来没人发现：
+
+| 分配 | 底层 | 必须配的释放 |
+|---|---|---|
+| `ObjectManager::Produce()` | `ProduceHelper<T,false>::Produce()` = `new T()` | `ObjectManager::Destroy()`（= `delete`） |
+| `MemoryManager::CreateObject<T>()` | `mi_malloc` + placement new | `MemoryManager::DestroyObject()` |
+| `ObjectManager::NewObject<T>()` | 内部走 `CreateObject` | `MemoryManager::DestroyObject()` |
+
+第三行最容易搞混：名字像 `Produce`，底层却是 mimalloc。
+
+而 `MemoryManager.cpp` 里是 `#if !defined(__APPLE__) #include <mimalloc-new-delete.h>` ——
+**Apple 上全局 `operator new/delete` 故意不接管 mimalloc**（否则 dylib 与 host 进程会
+交叉释放 `std::string` 的 buffer）。于是只有 Apple 上"new 出来的块"和"mimalloc 的块"
+是两种完全不同的内存，喂错了就坏。
+
+**审计结果（6 处真错配，全库扫描 + 人工确认）**：
+
+| # | 位置 | 触发路径 |
+|---|---|---|
+| 1 | `Level.cpp:358` | `Level::Save` —— 编辑器存关卡 |
+| 2 | `AssetManager.cpp:932` | YAML 资产读失败分支 |
+| 3 | `AssetManager.cpp:956→1020` | 二进制资产读失败分支 |
+| 4 | `PrefabUtility.cpp:599` | `SaveAsPrefabAsset` |
+| 5 | `ZSlateInspectorWindow.cpp:2816` | **跨函数**：`AssetManager::ReadObject` 的结果（Inspector 里打开 DataTable） |
+| 6 | `AnimatorSmokeTest.cpp:367` | 测试 |
+
+第 5 条是脚本抓不到的：`ReadObject` 底层就是 `Produce`，返回的对象被跨函数
+`DestroyObject` 掉了。反过来看，`LuaMemZasset.cpp` 和 `ContentBrowserAssetActions.cpp:484`
+之前在记忆里标着"来源未确认"，这次逐条确认下来是**正确**的（都是 `CreateObject` 配
+`DestroyObject`）。编辑器各 importer 里的 `object_manager->Destroy(produced)` 也全是对的 ——
+那才是既定写法，错的是上面这 6 处。
+
+**修复**：6 处全部改成 `ObjectManager::Destroy`，并各写清"为什么不能用另一个"。
+
+**外加一道运行时护栏**（这才是这次真正值钱的部分）：`MemoryManager::DestroyObject()`
+先用 `mi_is_in_heap_region()` 判一次"这块内存是不是 mimalloc 管的"，不是就
+`LOG_ERROR` + **跳过 `mi_free`**（宁可泄漏这一块，也不要崩在一个看不出根因的地方）。
+`MemoryManager::GetForeignFreeCount()` 记次数，冒烟测试读它。
+
+**验证**：
+
+- **静态**：`MemoryPairingSmokeTest` 23 checks。其中一条是实锤 ——
+  `IsMimallocOwned(Produce(...)) == false`（Apple），直接证明两条路径在这台机器上
+  确实不是同一种内存。非 Apple 上这条是 `true`，所以那里检测不出来，这也是这类
+  bug 只有在 Apple 上才暴露的原因。
+- **变异**（各精确变红）：`PrefabUtility` 改回错配 → 3 条；`Level::Save` 改回 → 3 条；
+  Inspector 改回 → 3 条；守卫改成 `if (false)` → 1 条。
+- **真机**：ZEditor 跑 25 秒，`allocator mismatch` **0 次**、无崩溃报告、粒子心跳
+  `particle=(has=1 emit=1 draw=1 parts=300000 vp=1)` 不变 ⇒ 守卫没有误报。
+- **没能自动验收**：`Level::Save` / `SaveAsPrefabAsset` / Inspector 打开 DataTable 这
+  三条路径要 UI 操作才走得到（macOS 无障碍权限被拒，`osascript` 报 `-10004`），只能
+  手动点。这次跑的 25 秒里编辑器没写关卡文件，所以第 1 条路径实际上没被触发到。
+
+**三条教训**：
+
+1. **"0 处错配"这个结果本身必须能证伪**。第一版扫描器因为没跳过 `=` 左边的尾随空格，
+   变量名永远取成空串 ⇒ 整张来源表是空的 ⇒ 恒绿；变异"改回错配"只红了钉点那 2 条，
+   全库扫描那条纹丝不动 —— 当场暴露。现在扫描器自带**双向自检**（已知错配样本必须
+   检出 2 条、已知正确样本必须 0 条）。
+2. **`mi_free` 喂错指针不保证当场崩**。变异 4 把守卫关掉后，测试**跑完了**才报 1 条
+   失败，没崩。也就是说这类错配的后果是"有时立刻 SIGBUS，有时静默堆破坏、崩在别处"。
+   后者更糟，也更能解释为什么它一直没被定位。
+3. **跨函数的分配/释放最容易看漏**。`AssetManager::ReadObject` 返回的是 `Produce` 出来
+   的对象，调用方毫无察觉就用了 mimalloc 释放。审计必须沿"返回值是谁分配的"追，
+   不能只看同一个函数里的字面量。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

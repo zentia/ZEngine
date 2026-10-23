@@ -364,7 +364,9 @@ int main()
         }
     }
 
-    MemoryManager::DestroyObject(produced);
+    // Produce() 是 `new T()` ⇒ ObjectManager::Destroy（= delete），不是
+    // MemoryManager::DestroyObject（mi_free）。Apple 上全局 new/delete 不走 mimalloc。
+    object_manager->Destroy(produced);
 
     std::printf("\nAnimator smoke test: %d check(s), %d failure(s)\n", g_Checks, g_Failures);
     return g_Failures == 0 ? 0 : 1;

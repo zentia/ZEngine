@@ -39,10 +39,47 @@ public:
     {
         if (ptr)
         {
+            // ── 分配器配对守卫（§3.26）────────────────────────────────────────
+            // 本函数只能用来释放 mi_malloc 出来的对象（MemoryManager::CreateObject
+            // / ObjectManager::NewObject）。ObjectManager::Produce() 走的是普通
+            // `new`，必须配 ObjectManager::Destroy()。
+            //
+            // Apple 上全局 operator new/delete **故意不接管** mimalloc（见
+            // MemoryManager.cpp 的 `#if !defined(__APPLE__)`），所以把 Produce 出来的
+            // 指针喂进来会在 mi_usable_size → mi_checked_ptr_segment 里
+            // EXC_BAD_ACCESS / SIGBUS —— 而且崩在释放路径上，栈里完全看不出是谁
+            // 配错的。非 Apple 上 new 就是 mimalloc，同样的错配一直是隐形的。
+            //
+            // 所以这里先判一次"这块内存是不是 mimalloc 管的"：不是就明确报错并且
+            // **不**交给 mi_free（宁可泄漏这一块，也不要崩在一个看不出根因的地方）。
+            if (!IsMimallocOwned(ptr))
+            {
+                ReportForeignFree(ptr);
+                ptr->~T();
+                return;
+            }
             ptr->~T();
             Free(ptr);
         }
     }
+
+    /// `p` 是不是由 mimalloc 分配的。这是上面那条守卫的判据，也是冒烟测试用来
+    /// 证明"两条分配路径在 Apple 上确实不同"的探针 —— 返回 false 就说明这块内存
+    /// 来自系统 malloc（也就是 Produce/new），喂给 mi_free 必崩。
+    ///
+    /// 注意：非 Apple 上全局 new 就是 mimalloc，所以这里对 `new` 出来的指针也返回
+    /// true —— 那条错配在那里既不崩、也检测不出来。这也是为什么这类 bug 只在
+    /// Apple 上才暴露。
+    static bool IsMimallocOwned(const void* p)
+    {
+        return p != nullptr && mi_is_in_heap_region(p);
+    }
+
+    /// 被守卫拦下的"用 mimalloc 释放非 mimalloc 内存"的次数。冒烟测试读它来确认
+    /// 错配真的被检出（而不是静悄悄放过去了）。
+    /// （下面两个都定义在 MemoryManager.cpp —— 避免在 header 里拉进日志头。）
+    static uint32_t GetForeignFreeCount();
+    static void     ReportForeignFree(const void* p);
 
     // NOTE: this runs on every deallocation, including frees issued by background
     // threads (asset scanning, streaming). Resolving LLMTracker through GET_SYSTEM on

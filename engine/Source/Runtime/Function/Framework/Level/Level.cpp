@@ -355,7 +355,11 @@ bool Level::save()
                   : asset_manager->WriteObjectsToYaml(level_path, graph_objects.data(), graph_ids.data(),
                                                       graph_objects.size());
 
-    MemoryManager::DestroyObject(header);
+    // ⚠️ ObjectManager::Destroy（= delete），不是 MemoryManager::DestroyObject：header 是
+    // Produce() 出来的（ProduceHelper 内部 `new T()`），而 Apple 上全局 new/delete 不走
+    // mimalloc ⇒ 用 mi_free 释放会在 mi_usable_size 里 EXC_BAD_ACCESS。见
+    // ObjectManager.h 的 Destroy() 注释。存关卡是编辑器的高频路径，这条必崩。
+    GET_SYSTEM(ObjectManager)->Destroy(header);
 
     if (!is_save_success)
     {

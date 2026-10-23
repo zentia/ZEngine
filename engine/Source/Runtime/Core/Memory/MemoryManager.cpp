@@ -133,3 +133,37 @@ bool MemoryManager::Initialize()
 }
 
 void MemoryManager::Shutdown() {}
+
+// =============================================================================
+// 分配器配对守卫（§3.26）
+// -----------------------------------------------------------------------------
+// 见 MemoryManager.h 里 DestroyObject() 的注释：Produce()（`new`）出来的对象被
+// 喂给 mi_free 时，Apple 上会在 mi_usable_size 里 EXC_BAD_ACCESS。以前是静默崩，
+// 现在先检出、明确报错、并且不交给 mi_free —— 宁可泄漏这一块，也不要崩在一个
+// 栈里看不出根因的地方。冒烟测试读 GetForeignFreeCount() 来确认这条守卫生效。
+// =============================================================================
+namespace
+{
+uint32_t& ForeignFreeCountRef()
+{
+    // function-local static：header 里那对方法是 header-only 的，若用类静态成员会在
+    // 每个 TU 各存一份，计数就散了。
+    static uint32_t counter = 0;
+    return counter;
+}
+}  // namespace
+
+uint32_t MemoryManager::GetForeignFreeCount() { return ForeignFreeCountRef(); }
+
+void MemoryManager::ReportForeignFree(const void* p)
+{
+    ++ForeignFreeCountRef();
+    // 只报一次类型判据，不打印指针值 —— 这个日志类别的格式串不做 {:p} 展开。
+    // 命中它就说明调用点配错了分配器，配合下面的 LOG 类别足够定位。
+    (void)p;
+    LOG_ERROR(ZEngine,
+              "allocator mismatch: MemoryManager::DestroyObject() got a block that is NOT "
+              "mimalloc-owned. It almost certainly came from ObjectManager::Produce() (plain "
+              "`new`) and must be released with ObjectManager::Destroy() instead. mi_free is "
+              "skipped to avoid the mi_usable_size fault -- this block leaks instead.");
+}
