@@ -451,6 +451,17 @@ void AssetRegistry::ScanAssetsAsync(const std::filesystem::path& asset_folder)
                     auto lock = AcquireWriteLock();
                     if (needs_rescan)
                     {
+                        // 同 RefreshAsset：路径派生 GUID 的资产沿用缓存里已有的 GUID（编辑器内改名搬过去的那个）
+                        if (had_indexed_entry && !entry.guid.empty() &&
+                            (AssetManager::IsYamlAuthoringAssetPath(asset_path) ||
+                             AssetManager::IsSpineSkeletonAssetPath(asset_path)))
+                        {
+                            const auto cached = m_AssetMap.find(relative_path);
+                            if (cached != m_AssetMap.end() && !cached->second.guid.empty())
+                            {
+                                entry.guid = cached->second.guid;
+                            }
+                        }
                         upsertEntryLocked(relative_path, entry, m_AssetMap, m_GuidToPath, m_TypeToPaths);
                         if (!entry.guid.empty())
                         {
@@ -1286,6 +1297,17 @@ void AssetRegistry::RefreshAsset(const std::string& asset_path)
         if (it != m_AssetMap.end() && !it->second.guid.empty())
         {
             had_indexed_entry = true;
+            // 没有 ZASS 头的资产（YAML 编写资产 / GPU-Spine .zspg）GUID 是按路径派生的：同一路径重扫得到同一个值，
+            // 但编辑器内改名（RenameAsset）会把旧 GUID 搬到新路径上 —— 随后 watcher 报的"新文件"重扫会按**新**路径
+            // 重新派生、把它冲掉，按 GUID 引用的东西就找不回来了。已经有 GUID 的条目沿用它（等价于 UE 的重定向器）。
+            const std::filesystem::path ext_path(key);
+            std::string ext = ext_path.extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (!entry.guid.empty() &&
+                (AssetManager::IsYamlAuthoringAssetExtension(ext) || AssetManager::IsSpineSkeletonAssetPath(ext_path)))
+            {
+                entry.guid = it->second.guid;
+            }
         }
         upsertEntryLocked(key, entry, m_AssetMap, m_GuidToPath, m_TypeToPaths);
         if (!entry.guid.empty())

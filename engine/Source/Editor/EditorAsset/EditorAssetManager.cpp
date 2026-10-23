@@ -6,6 +6,7 @@
 #include "Editor/AssetPipeline/FontImporter/FontImporter.h"
 #include "Editor/AssetPipeline/ShaderImporter/ShaderImporter.h"
 #include "Editor/AssetPipeline/TextureImporter/TextureImporter.h"
+#include "Editor/AssetPipeline/SpineImporter/SpineAutoCook.h"
 #include "Editor/AssetPipeline/TextureImporter/TextureImporterSettings.h"
 #include "Editor/EditorWindow/PreviewWindow/MeshDataPreview.h"
 #include "Runtime/AssetBundle/AssetBundle.h"
@@ -218,6 +219,18 @@ bool EditorAssetManager::Initialize()
     // (skips existing .zasset), so warm restarts only stat. Materials then
     // resolve the cooked variant through RenderResourceBase::LoadTexture.
     TextureImporter::ImportProjectTextures();
+
+    // GPU-Spine：content 根下的骨架源 → 同名 .zspg（缺失或过期才 cook，暖启动只 stat），之后靠 watcher 增量。
+    // 主 watcher 已经在看 content 根的 .zspg ⇒ 这里写出的容器会自己进 AssetRegistry。
+    {
+        const std::filesystem::path content_root = projectInfo->GetProjectContent();
+        SpineAutoCook::CookProject(content_root);
+        m_SpineSourceWatcher.SetExtensionFilter({".bytes", ".skel", ".json", ".atlas", ".txt"});
+        auto on_spine_source = [](const std::filesystem::path& p) { SpineAutoCook::Queue(p); };
+        m_SpineSourceWatcher.SetOnFileCreated(on_spine_source);
+        m_SpineSourceWatcher.SetOnFileChanged(on_spine_source);
+        m_SpineSourceWatcher.WatchDirectory(content_root);
+    }
 
     if (auto shader_registry = GET_SYSTEM(ShaderRegistry))
     {
@@ -696,6 +709,7 @@ void EditorAssetManager::Shutdown()
     // the window, which is the correct behaviour at shutdown.
     m_ShadersWatcher.StopWatching();
     FlushPendingShaderInvalidations();
+    m_SpineSourceWatcher.StopWatching();
 
     // PR-AI3: persist any in-flight registry edits and clear in-memory
     // state. Edits during the session already saved on every record /
@@ -750,6 +764,10 @@ void EditorAssetManager::TickWatcher()
     // collapse into a single invalidation per source file.
     m_ShadersWatcher.Update();
     FlushPendingShaderInvalidations();
+
+    // GPU-Spine 骨架源：去抖后 cook（写出的 .zspg 下一帧由 m_FileWatcher 收进 AssetRegistry）
+    m_SpineSourceWatcher.Update();
+    SpineAutoCook::Flush(std::chrono::steady_clock::now());
 
     // PR-AI3: drain up to kReimportsPerFrame entries from the AutoReimport
     // queue. Each drain may write new bytes into a `.zasset` under

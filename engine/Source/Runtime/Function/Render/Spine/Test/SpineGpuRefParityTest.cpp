@@ -534,8 +534,92 @@ struct S5Stats
     size_t add_frames = 0;        // 有 MixBlend_Add 的上层轨道在生效
     size_t chain2_frames = 0;     // mixingFrom 链长 >= 2（混合途中又被打断）
     float worst_rel = 0.0f;
+    // 事件（EventQueue）：两边逐条比 (类型, 轨道, 动画, loop, trackTime)；按 spine::EventType 分类计数
+    size_t events = 0;
+    size_t event_counts[6] = {0, 0, 0, 0, 0, 0};
     std::vector<std::string> details;
 };
+
+// 参考侧事件监听：AnimationState::setRendererObject 挂一个 vector，函数指针监听往里写
+struct S5RefEvent
+{
+    int type = 0;
+    int track = 0;
+    spine::Animation* animation = nullptr;
+    bool loop = false;
+    float track_time = 0.0f;
+};
+void S5RefListener(spine::AnimationState* state, spine::EventType type, spine::TrackEntry* entry, spine::Event*)
+{
+    auto* out = static_cast<std::vector<S5RefEvent>*>(state->getRendererObject());
+    if (out == nullptr || entry == nullptr)
+    {
+        return;
+    }
+    S5RefEvent e;
+    e.type = static_cast<int>(type);
+    e.track = entry->getTrackIndex();
+    e.animation = entry->getAnimation();
+    e.loop = entry->getLoop();
+    e.track_time = entry->getTrackTime();
+    out->push_back(e);
+}
+
+// 两边本帧（命令 + update + apply）派发的事件逐条比；空串 = 一致
+std::string S5CompareEvents(const std::vector<SpineGpuAnimationEvent>& ours, const std::vector<S5RefEvent>& ref,
+                            spine::Vector<spine::Animation*>& ref_anims, S5Stats& s5)
+{
+    const auto ref_anim_index = [&](spine::Animation* a) -> uint32_t {
+        for (size_t i = 0; i < ref_anims.size(); ++i)
+        {
+            if (ref_anims[i] == a)
+            {
+                return static_cast<uint32_t>(i);
+            }
+        }
+        return kSpineGpuEmptyAnimation;   // getEmptyAnimation()
+    };
+    const auto describe = [](int type, int track, uint32_t anim, bool loop, float t) {
+        char buf[160];
+        std::snprintf(buf, sizeof(buf), "%s(track %d, anim %s, loop %d, t=%.6g)",
+                      SpineGpuEventTypeName(static_cast<SpineGpuEventType>(type)), track,
+                      anim == kSpineGpuEmptyAnimation ? "<empty>" : std::to_string(anim).c_str(), loop ? 1 : 0,
+                      static_cast<double>(t));
+        return std::string(buf);
+    };
+    const size_t n = std::max(ours.size(), ref.size());
+    for (size_t i = 0; i < n; ++i)
+    {
+        if (i >= ours.size() || i >= ref.size())
+        {
+            const bool ours_longer = i < ours.size();
+            const std::string extra =
+                ours_longer ? describe(static_cast<int>(ours[i].type), static_cast<int>(ours[i].track), ours[i].animation,
+                                       ours[i].loop, ours[i].track_time)
+                            : describe(ref[i].type, ref[i].track, ref_anim_index(ref[i].animation), ref[i].loop,
+                                       ref[i].track_time);
+            return "事件条数不同（我们 " + std::to_string(ours.size()) + " / 参考 " + std::to_string(ref.size()) +
+                   "），第 " + std::to_string(i) + " 条只在" + (ours_longer ? "我们" : "参考") + "这边：" + extra;
+        }
+        const SpineGpuAnimationEvent& a = ours[i];
+        const S5RefEvent& b = ref[i];
+        const uint32_t b_anim = ref_anim_index(b.animation);
+        const float tol = 1e-5f * std::max(1.0f, std::fabs(b.track_time));
+        if (static_cast<int>(a.type) != b.type || static_cast<int>(a.track) != b.track || a.animation != b_anim ||
+            a.loop != b.loop || !(std::fabs(a.track_time - b.track_time) <= tol))
+        {
+            return "第 " + std::to_string(i) + " 条事件不同：我们 " +
+                   describe(static_cast<int>(a.type), static_cast<int>(a.track), a.animation, a.loop, a.track_time) +
+                   " / 参考 " + describe(b.type, b.track, b_anim, b.loop, b.track_time);
+        }
+        ++s5.events;
+        if (b.type >= 0 && b.type < 6)
+        {
+            ++s5.event_counts[b.type];
+        }
+    }
+    return std::string();
+}
 
 // xorshift64*：两边吃的是**同一串**命令，所以只要可复现，不需要高质量。
 struct S5Rng
@@ -1342,8 +1426,14 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
             ref_asd.setMix(ref_anims[fa], ref_anims[ta], d);
         }
 
+        // 事件缓冲先声明 ⇒ 后析构：两边的状态机析构时若还派发事件，不会写到已销毁的 vector 上
+        std::vector<SpineGpuAnimationEvent> our_events;
+        std::vector<S5RefEvent> ref_events;
         SpineGpuAnimationState ours(asset, data, &our_asd);
         spine::AnimationState ref(&ref_asd);
+        ours.event_sink = &our_events;
+        ref.setRendererObject(&ref_events);
+        ref.setListener(S5RefListener);
         std::vector<std::string> log;
 
         if (has_named_skins && skin_rng.Chance(0.75f))
@@ -1579,6 +1669,13 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
 
             std::string diff = r.ok ? S5CompareFrame(asset, data, st, pose, ref_skel, ref_data, s5)
                                     : ("我们的解算失败：" + r.error);
+            if (diff.empty())
+            {
+                // 本帧（命令 + update + apply）两边派发的事件流必须逐条一致
+                diff = S5CompareEvents(our_events, ref_events, ref_anims, s5);
+            }
+            our_events.clear();
+            ref_events.clear();
             if (diff.empty())
             {
                 diff = S5CompareClip(asset, st, pose, ref_skel, s5);
@@ -2958,6 +3055,10 @@ int main(int argc, char** argv)
                     s5.skin_named_attach);
         std::printf("多实例拼包           : %zu 帧，顶点 %zu 个逐位一致（裁剪项 %zu、带 deform %zu）\n", s5.batch_frames,
                     s5.batch_vertices, s5.batch_cpu_vertices, s5.batch_deform_vertices);
+        std::printf("事件（EventQueue）    : %zu 条逐条一致 —— start %zu / interrupt %zu / end %zu / complete %zu / "
+                    "dispose %zu / event %zu\n",
+                    s5.events, s5.event_counts[0], s5.event_counts[1], s5.event_counts[2], s5.event_counts[3],
+                    s5.event_counts[4], s5.event_counts[5]);
         std::printf("分叉的资产           : %zu（撞号资产上的另计 %zu）\n", s5.assets_bad, s5.assets_collision_bad);
         for (const std::string& d : s5.details)
         {

@@ -991,9 +991,14 @@ spine.alpha <track> <0..1>                         # 轨道当前那条的 alpha
 
 #### 本阶段**故意不做**的
 
-* **事件**（start / interrupt / end / dispose / complete / event 回调）：只保留它们对状态的副作用
-  （start / end 置 animationsChanged，end / dispose 把 TrackEntry 还池）。要做时在 `QueueStart` /
-  `QueueEnd` 旁边补派发即可，调度逻辑不用动。
+* ~~**事件**~~ —— **已做（2026-10-23）**：`m_Queue` + `Drain()` 复刻 spine-cpp 3.8 `EventQueue`
+  （start / interrupt / end / complete / dispose；`End` 在 drain 时落到 `Dispose` 再还池）。补的调用点：
+  当前轨 apply 后 `QueueEvents`（只有 complete：loop 看 `fmod(last) > fmod(time)` 或 dur == 0，非 loop 看
+  首次越过 animationEnd）；`ApplyMixingFrom` 里 `to->mix_duration > 0` 才给 from 排；`SetAnimation` 替换从未 apply
+  的 current 补 interrupt + end；`SetCurrent(interrupt)` 给 from 排 interrupt。用户事件（EventType_Event）类型保留，
+  工程里 0 / 782 资产有，未接时间轴。对拍：`SpineGpuRefParityTest` S5 用 `AnimationStateListener` 收参考事件逐帧比，
+  全量 **101,369 条事件逐条一致**（start 13969 / interrupt 7696 / end 10369 / complete 58121 / dispose 11214）；
+  变异（去掉 SetCurrent 的 interrupt）⇒ 425 个资产报不一致，证明比较是有牙的。`SpineGpuImportTest` §8 有手算用例。
 * **IK / transform / pathSpacing 时间轴**：仍**显式报错**（实测 0 / 782 资产用到）。
 * **换肤**：附件仍只在 default 皮肤里解析。
 

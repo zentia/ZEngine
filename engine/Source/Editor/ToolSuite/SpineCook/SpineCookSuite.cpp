@@ -1,5 +1,6 @@
 #include "Editor/ToolSuite/SpineCook/SpineCookSuite.h"
 
+#include "Runtime/Function/Render/Spine/SpineGpuAssetFile.h"
 #include "Runtime/Function/Render/Spine/SpineGpuFormat.h"
 #include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
 
@@ -180,62 +181,13 @@ namespace
                  const std::filesystem::path& out_path,
                  std::string&                 error)
     {
-        std::vector<uint8_t> atlas_bytes;
-        if (!ReadWholeFile(atlas_path, atlas_bytes, error)) return false;
-
-        SpineAtlas atlas;
-        // 两个解析器要的类型不一样（图集/骨架 json 是 const char*，二进制是
-        // const uint8_t*），字节容器统一是 uint8_t —— 显式转换，别靠隐式。
-        SpineImportResult r =
-            ParseSpineAtlas(reinterpret_cast<const char*>(atlas_bytes.data()), atlas_bytes.size(), atlas);
-        if (!r.ok)
-        {
-            error = "图集 " + atlas_path.filename().string() + "：" + r.error;
-            return false;
-        }
-
-        std::vector<uint8_t> skeleton_bytes;
-        if (!ReadWholeFile(skeleton_path, skeleton_bytes, error)) return false;
-
-    // ⚠️ 按**扩展名**选解析器，不是"看内容像不像 json"。
-    // .skel 既没魔数也没长度字段（SpineGpuImportTest 对每个真前缀都调一次
-    // 解析就是钉这点），猜错就是越界读。
-    SpineSourceSkeleton src;
-    const std::string   ext = skeleton_path.extension().string();
-    if (KindOfSkeleton(skeleton_path) == SkeletonKind::kJson)
-    {
-        r = ParseSpineSkeletonJson(
-            reinterpret_cast<const char*>(skeleton_bytes.data()), skeleton_bytes.size(), &atlas, src);
-    }
-    else if (KindOfSkeleton(skeleton_path) == SkeletonKind::kBinary)
-    {
-        r = ParseSpineSkeletonBinary(skeleton_bytes.data(), skeleton_bytes.size(), &atlas, src);
-    }
-    else
-    {
-        error = "认不出骨架类型（'" + ext + "'，只认 .json / .skel / <名>.skel.bytes）："
-                + PathToUtf8(skeleton_path);
-        return false;
-    }
-        if (!r.ok)
-        {
-            error = "骨架 " + skeleton_path.filename().string() + "：" + r.error;
-            return false;
-        }
-
-        SpineGpuAsset asset;
-        r = BakeSpineGpuAsset(src, asset);
-        if (!r.ok)
-        {
-            error = "烘焙 " + skeleton_path.filename().string() + "：" + r.error;
-            return false;
-        }
-
+        // 解析 → 烘焙 → 序列化与渲染器 / 编辑器自动 cook 是同一个函数（SpineGpuAssetFile.h）
         std::vector<uint8_t> container;
-        r = WriteSpineGpuContainer(asset, container);
+        SpineGpuAsset        asset;
+        const SpineImportResult r = SpineGpuCookSkeleton(skeleton_path, atlas_path, container, &asset);
         if (!r.ok)
         {
-            error = "序列化 " + skeleton_path.filename().string() + "：" + r.error;
+            error = r.error;
             return false;
         }
 
@@ -585,8 +537,9 @@ int SpineCookSuite::RunInteractive(const std::filesystem::path& /*project_file*/
                                   }
                                   const std::filesystem::path in = PathFromUtf8(in_text);
                                   const std::string           out_text = out_box->GetText();
-                                  std::filesystem::path       out = PathFromUtf8(out_text.empty() ? PathToUtf8(in) : out_text);
-                                  out.replace_extension(".zspg");
+                                  // `X.skel.bytes` → `X.zspg`（replace_extension 会得到 `X.skel.zspg`）
+                                  std::filesystem::path out =
+                                      out_text.empty() ? SpineGpuCookedPathFor(in) : PathFromUtf8(out_text);
 
                                   std::filesystem::path atlas;
                                   std::string           error;

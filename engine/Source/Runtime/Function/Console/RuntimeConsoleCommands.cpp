@@ -19,9 +19,42 @@
 
 #include <cstdlib>
 #include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
 
 namespace
 {
+    struct DeferredCommand
+    {
+        uint64_t due_frame = 0;
+        std::string command;
+    };
+    std::mutex g_deferred_mutex;
+    std::vector<DeferredCommand> g_deferred;
+    uint64_t g_console_frame = 0;
+
+    bool CmdExecAfter(const std::vector<std::string>& args)
+    {
+        if (args.size() < 2)
+        {
+            LOG_ERROR(ZConsole, "Usage: exec.after <frames> <command line>");
+            return false;
+        }
+        const uint64_t frames = std::strtoull(args[0].c_str(), nullptr, 10);
+        std::string command;
+        for (size_t i = 1; i < args.size(); ++i)
+        {
+            // 含空格的参数原样加引号（ExecuteString 按引号切分）
+            const bool quote = args[i].find(' ') != std::string::npos;
+            command += (i > 1 ? " " : "") + (quote ? "\"" + args[i] + "\"" : args[i]);
+        }
+        std::lock_guard<std::mutex> lock(g_deferred_mutex);
+        g_deferred.push_back(DeferredCommand {g_console_frame + frames, command});
+        LOG_INFO(ZConsole, "exec.after: '{}' in {} frame(s)", command, frames);
+        return true;
+    }
+
     bool CmdStat(const std::vector<std::string>& args)
     {
         auto app = GET_SYSTEM(Application);
@@ -94,8 +127,22 @@ namespace
 
     // 场景对象：在当前关卡里建 GameObject（Transform + SpineRenderer 组件），走世界实例那条路
     // （与编辑器里把 .zspg 拖进 Scene 是同一个 SpineRenderer::SpawnInLevel）。关卡还没加载时排队。
-    bool CmdSpineSpawn(const std::vector<std::string>& args)
+    bool CmdSpineSpawn(const std::vector<std::string>& raw_args)
     {
+        // `script=Scripts/X.ts` 可以出现在任意位置：先摘出来，其余按位置参数解析
+        std::string script;
+        std::vector<std::string> args;
+        for (const std::string& a : raw_args)
+        {
+            if (a.rfind("script=", 0) == 0)
+            {
+                script = a.substr(7);
+            }
+            else
+            {
+                args.push_back(a);
+            }
+        }
         if (args.empty())
         {
             LOG_ERROR(ZConsole, "Usage: spine.spawn <.zspg|skeleton> [x y z | camera <distance>] [scale=0.01] [animation]");
@@ -107,7 +154,7 @@ namespace
             const float distance = args.size() >= 3 ? std::strtof(args[2].c_str(), nullptr) : 8.0f;
             const float scale = args.size() >= 4 ? std::strtof(args[3].c_str(), nullptr) : 0.01f;
             const std::string anim = args.size() >= 5 ? args[4] : std::string();
-            SpineRenderer::RequestSpawnInFrontOfCamera(args[0], anim, distance, scale);
+            SpineRenderer::RequestSpawnInFrontOfCamera(args[0], anim, distance, scale, script);
             LOG_INFO(ZConsole, "spine.spawn: queued '{}' {} units in front of the scene camera, scale {}", args[0],
                      distance, scale);
             return true;
@@ -121,7 +168,7 @@ namespace
                           std::strtof(args[3].c_str(), nullptr));
         const float scale = args.size() >= 5 ? std::strtof(args[4].c_str(), nullptr) : 0.01f;
         const std::string anim = args.size() >= 6 ? args[5] : std::string();
-        SpineRenderer::RequestSpawn(args[0], anim, pos, scale);
+        SpineRenderer::RequestSpawn(args[0], anim, pos, scale, script);
         LOG_INFO(ZConsole, "spine.spawn: queued '{}' at ({}, {}, {}) scale {}", args[0], pos.x, pos.y, pos.z, scale);
         return true;
     }
@@ -440,6 +487,8 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("quit", "Exit the application", CmdQuit);
     console.RegisterCommand("exit", "Alias for quit", CmdQuit);
     console.RegisterCommand("echo", "Print text to the console log", CmdEcho);
+    console.RegisterCommand("exec.after", "Run a console command N frames later. Usage: exec.after <frames> <command line>",
+                            CmdExecAfter);
     console.RegisterCommand("spine.load",
                             "Draw a Spine skeleton with GPU skinning. Usage: spine.load <skeleton file> [anim index]",
                             CmdSpineLoad);
@@ -460,7 +509,7 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("spine.status", "Print GPU-Spine renderer status", CmdSpineStatus);
     console.RegisterCommand("spine.spawn",
                             "Create a GameObject with a SpineRenderer in the current level. "
-                            "Usage: spine.spawn <.zspg|skeleton> [x y z | camera <distance>] [scale=0.01] [animation]",
+                            "Usage: spine.spawn <.zspg|skeleton> [x y z | camera <distance>] [scale=0.01] [animation] [script=Scripts/X.ts]",
                             CmdSpineSpawn);
     console.RegisterCommand("spine.play",
                             "Set a GPU-Spine animation on a track (crossfades). Usage: spine.play <anim> [track] [loop]",
@@ -499,4 +548,33 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
 #endif
     // Nanite (CPU cluster build + culling): every knob is live (re-applied each frame).
     NaniteSettings::RegisterConsoleVariables(console);
+}
+
+void TickDeferredConsoleCommands()
+{
+    std::vector<std::string> due;
+    {
+        std::lock_guard<std::mutex> lock(g_deferred_mutex);
+        ++g_console_frame;
+        for (auto it = g_deferred.begin(); it != g_deferred.end();)
+        {
+            if (it->due_frame <= g_console_frame)
+            {
+                due.push_back(it->command);
+                it = g_deferred.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+    }
+    ConsoleManager* console = due.empty() ? nullptr : GET_SYSTEM(ConsoleManager);
+    for (const std::string& command : due)
+    {
+        if (console == nullptr || !console->ExecuteString(command))
+        {
+            LOG_ERROR(ZConsole, "exec.after: '{}' failed", command);
+        }
+    }
 }

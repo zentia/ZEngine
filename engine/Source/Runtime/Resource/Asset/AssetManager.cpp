@@ -667,7 +667,8 @@ void AssetManager::GetAssetGuidAndType(const std::filesystem::path& asset_path,
     if (asset_path.empty() || !std::filesystem::exists(asset_path))
         return;
 
-    if (IsYamlAuthoringAssetPath(asset_path))
+    // YAML 编写资产与 GPU-Spine 容器都没有 ZASS 头 ⇒ GUID 由路径派生（与 AssetRegistry 扫描同一规则）
+    if (IsYamlAuthoringAssetPath(asset_path) || IsSpineSkeletonAssetPath(asset_path))
     {
         outGuid = DeriveDeterministicAssetGuid(asset_path);
         outAssetType = GetAssetTypeName(asset_path);

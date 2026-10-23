@@ -2298,7 +2298,38 @@ downstream reads it.
      `RequestSetWorldTransform` 返回 false（id 不认识）就重建 ⇒ 撤销删除自动复活。
 - `spine.load` / `spine.clear` 只动控制台实例，不清世界实例。
 - 颜色：世界层经 tonemap（Vulkan Uncharted2 ×4.5 / DX12 ACES），与透明网格一致，**不再等于** spine 编辑器里的颜色；
-  要"不受后处理"的话用控制台实例那层或以后加开关。GUID 引用、Inspector 资产选择器、源骨架自动 cook 都还没做。
+  要"不受后处理"的话用控制台实例那层或以后加开关。
+- **加载只有一条路**：`Render/Spine/SpineGpuAssetFile.{h,cpp}`（`SpineGpuLoadAssetFile` / `SpineGpuCookSkeleton` /
+  `SpineGpuGetAssetInfo`）。渲染器、SpineCook 套件、自动 cook、组件的元数据查询都调它；**别再在别处手写"烘焙 → 读"**。
+  `SpineGpuCookedPathFor("X.skel.bytes") = X.zspg`（不是 `X.skel.zspg`）。渲染器的资产缓存按 (路径, mtime) 认，
+  `SpineGpuGetAssetInfo` 按 (路径, mtime, size) 缓存。
+- **自动 cook**（`Editor/AssetPipeline/SpineImporter/SpineAutoCook`）：启动时扫 content 根（`TextureImporter` 之后），
+  `.skel.bytes / .skel / .json`（有同名图集）比 mtime 过期就 cook 到同目录 `.zspg`；`EditorAssetManager` 另起一个
+  `m_SpineSourceWatcher` 监视源 + 图集（300 ms 去抖），写盘走 `.zspg.tmp` → rename。写完调
+  `SpineRenderer::NotifyAssetChanged(abs)`（只能在游戏线程调：`g_asset_generation` 无锁）⇒ 用它的组件下一 tick 重建实例。
+- **GUID 引用**：组件同时存 `m_SkeletonDataAsset`（路径）和 `m_SkeletonDataGuid`；`.zspg` 的 GUID 是路径派生的，
+  所以 **`AssetRegistry::RefreshAsset` / 启动重扫必须保留已有条目的 GUID**（改名时 registry 把 GUID 挪到新路径，
+  重新派生就丢了）。建实例时路径失效 ⇒ `TryGetPathForGuid` 重定向并改写路径字段。设路径一律走
+  `SetSkeletonDataAsset()`（它顺带记 GUID），别直接写字段。
+- **Inspector**：`ZSlateInspectorWindow::BuildSpineRendererSection` —— `.zspg` 拖放槽 + 状态行 + GUID 行 + Animation /
+  Initial Skin / Face Camera 下拉（选项来自 `GetAssetInfo()`），其余字段仍走通用 `BuildFieldNode`。
+- **运行时 API（TS 可调，ZFUNCTION）**：`SpineRenderer.Of(go)`（TS 里 `GetComponent` 静态类型是 `Component`，用它）、
+  `SetAnimation / AddAnimation / SetEmptyAnimation / AddEmptyAnimation / ClearTrack(s) / SetMix / SetSkin / SetTimeScale`、
+  `GetCurrentAnimation / GetCurrentTrackTime`、`GetAnimation*/GetSkin*` 元数据、本帧事件 `GetEventCount / Type / Animation /
+  Track / TrackTime`。实例没建好之前的调用**进队**（`Submit`，上限 64），建实例后按序补发 ⇒ TS 在 OnStart 里调是安全的。
+  C++ 侧用 `SetEventListener`。
+- **事件**：`SpineGpuAnimationState` 的 `m_Queue` + `Drain()` 逐条复刻 spine-cpp 3.8 EventQueue（start / interrupt / end /
+  complete / dispose；`event` 类型保留但本工程 0/782 资产有用户事件）。世界实例在渲染线程解算 ⇒ 事件在
+  `WorldEntry::events` 里攒（上限 1024，溢出计数），组件 tick 时 `DrainWorldEvents` 取走 ⇒ **比解算晚 1~N 帧**。
+  对拍：`SpineGpuRefParityTest` S5 逐帧比事件序列（全量 101,369 条一致）；改调度逻辑后必须重跑。
+- **控制台**：`spine.spawn … script=Scripts/X.ts`（顺手挂 TypeScriptComponent）、`exec.after <frames> <cmd>`（延迟执行，
+  配合 `--cvar` 写无人值守 e2e）、`asset.move <old> <new>`（content 根相对，测 GUID 重定向）。
+- **ZFUNCTION 静态函数**：pesapi 的实例方法与静态函数是**两张表**（`set_property_info_size(method_count, function_count, …)`
+  各自从 0 编号）；混一起编号 ⇒ 第一个静态函数越界写 `Functions[]`，编辑器启动即崩。见 `ScriptBinding.cpp`。
+- **`Component::m_ParentObject` 必须有初值 `{nullptr}`**（曾经没有）：组件 New 出来到 `PostLoadResource` 之间，
+  `TypeScriptComponent::SetScriptGuid` 之类的 setter 用 `GetParentObject() != nullptr` 判断"已挂上"，读到堆垃圾就去
+  `BindAndAwake → GetTransform` 崩，**是否复现取决于堆布局**（spine.spawn 带 script= 只在启动时 cook 过才崩）。
+  崩溃栈在 `bin/<Config>/crash_stack.txt`（`InstallCrashHandler`，已符号化）—— 先看它，别二分。
 - 抓帧验证：`renderdoc.capture [delay_frames] [noui]`（Vulkan 现在也能抓：in-app API 传 (NULL, NULL) 通配），
   `renderdoccmd thumb` 出缩略图；要看中间 RT / 逐像素深度测试结果用 `qrenderdoc.exe --python <脚本>`（自带 python36，
   `pyrenderdoc.LoadCapture` + `Replay().BlockInvoke`）。DX12 的 PushEvent 在抓帧里没有名字，按 eid 区间找。

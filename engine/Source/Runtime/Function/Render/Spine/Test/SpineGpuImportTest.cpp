@@ -2402,6 +2402,52 @@ int main(int argc, char** argv)
                   Near(em->track_end, 0.2f),
               "setEmptyAnimation：空动画、mixDuration = trackEnd = 0.2");
         Check(as.SetAnimation(0, 999u, true) == nullptr, "动画下标越界 ⇒ 返回 nullptr（不改状态）");
+
+        // ---- 8) 事件（EventQueue）：入队点与派发顺序（AnimationState.cpp:203-271 / :842-902）----
+        // 新建一份状态机，事件写进 sink。walk 时长 1、idle 时长 0。
+        {
+            std::vector<SpineGpuAnimationEvent> ev;
+            SpineGpuSkeletonState st2;
+            Check(SpineGpuInitSkeletonState(asset, data, st2).ok, "事件：初始化骨架状态");
+            SpineGpuAnimationState es(asset, data, &asd);
+            es.event_sink = &ev;
+            const auto Is = [&](size_t i, SpineGpuEventType t, uint32_t anim) {
+                return i < ev.size() && ev[i].type == t && ev[i].animation == anim && ev[i].track == 0u;
+            };
+            const auto EStep = [&](float dt) {
+                es.Update(dt);
+                Check(es.Apply(st2).ok, "事件：Apply 成功");
+            };
+            es.SetAnimation(0, kWalk, true);
+            Check(ev.size() == 1 && Is(0, SpineGpuEventType::kStart, kWalk),
+                  "setAnimation 立刻派发 start（setCurrent → queue.start → setAnimation 末尾 drain）");
+            ev.clear();
+            EStep(0.4f);
+            Check(ev.empty(), "循环 walk 走到 0.4：没有 complete（fmod(0, 1) = 0 不大于 fmod(0.4, 1)）");
+            EStep(0.7f);
+            // update：trackLast = 0.4、trackTime = 1.1 ⇒ fmod(0.4, 1) = 0.4 > fmod(1.1, 1) = 0.1 ⇒ complete
+            Check(ev.size() == 1 && Is(0, SpineGpuEventType::kComplete, kWalk), "循环跨过一圈 ⇒ 一条 complete");
+            ev.clear();
+            es.SetAnimation(0, kIdle, false);
+            // walk 已应用过（nextTrackLast != -1）⇒ setCurrent(interrupt = true)：先 interrupt(from) 再 start(新)
+            Check(ev.size() == 2 && Is(0, SpineGpuEventType::kInterrupt, kWalk) && Is(1, SpineGpuEventType::kStart, kIdle),
+                  "打断：interrupt(walk) 在 start(idle) 之前");
+            ev.clear();
+            es.ClearTrack(0);
+            // clearTrack：end(current) → 顺着 mixingFrom 链 end(from)；drain 时每条 end 贯穿成 end + dispose
+            Check(ev.size() == 4 && Is(0, SpineGpuEventType::kEnd, kIdle) && Is(1, SpineGpuEventType::kDispose, kIdle) &&
+                      Is(2, SpineGpuEventType::kEnd, kWalk) && Is(3, SpineGpuEventType::kDispose, kWalk),
+                  "clearTrack：end(idle), dispose(idle), end(walk), dispose(walk)");
+            ev.clear();
+            es.SetAnimation(0, kIdle, false);
+            ev.clear();
+            EStep(0.1f);
+            // 非循环、时长 0：animationTime 0 >= animationEnd 0 且 animationLast -1 < 0 ⇒ 第一次 apply 即 complete
+            Check(ev.size() == 1 && Is(0, SpineGpuEventType::kComplete, kIdle), "非循环：到头时 complete 一次");
+            ev.clear();
+            EStep(0.1f);
+            Check(ev.empty(), "非循环：之后不再重复 complete（animationLast 已 >= animationEnd）");
+        }
         g_prefix.clear();
     }
 

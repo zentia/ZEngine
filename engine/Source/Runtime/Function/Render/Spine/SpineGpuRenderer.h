@@ -43,6 +43,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 class RHI;
 class RHIRenderPass;
@@ -57,6 +58,17 @@ enum class SpineGpuBillboardMode : uint8_t
     kFull,       // 骨架平面 = 相机平面（屏幕对齐，俯视时人物跟着仰）
     kVertical,   // 只绕世界 Z 转：人物始终直立、正对相机水平方向（2.5D 角色常用）
 };
+struct SpineGpuAnimationEvent;   // SpineGpuAnimationState.h
+
+// 世界实例某条轨道在上一次解算后的状态（游戏线程查"现在在播什么"用；有一帧以上的延迟）
+struct SpineGpuTrackSnapshot
+{
+    uint32_t animation = 0xFFFFFFFFu;   // kSpineGpuEmptyAnimation = 空动画
+    float track_time = 0.0f;
+    bool loop = false;
+    bool valid = false;                 // false = 这条轨道上没有 TrackEntry
+};
+
 struct SpineGpuBillboard
 {
     SpineGpuBillboardMode mode {SpineGpuBillboardMode::kNone};
@@ -132,6 +144,17 @@ public:
     void RequestSetAnimationOn(uint32_t id, int track, const std::string& anim, bool loop);
     void RequestTimeScaleOn(uint32_t id, float scale);
     void RequestSkinOn(uint32_t id, const std::string& skin, bool setup_slots);
+    void RequestAddAnimationOn(uint32_t id, int track, const std::string& anim, bool loop, float delay);
+    void RequestSetEmptyAnimationOn(uint32_t id, int track, float mix_duration);
+    void RequestAddEmptyAnimationOn(uint32_t id, int track, float mix_duration, float delay);
+    void RequestClearTrackOn(uint32_t id, int track);   // track < 0 ⇒ clearTracks()
+    // AnimationStateData::setMix(from, to, duration)，只作用在这个实例上（动画名或下标）
+    void RequestMixOn(uint32_t id, const std::string& from, const std::string& to, float duration);
+    // 游戏线程取走该实例自上次以来派发的事件（start / interrupt / end / dispose / complete，顺序同
+    // spine::AnimationState 的 listener），并拿到上一次解算后的轨道快照。事件在渲染线程的解算里产生 ⇒
+    // 相对命令有 1~N 帧延迟（N = 渲染领先逻辑的帧数）。id 不认识 ⇒ false。`dropped` = 累计因积压丢掉的条数。
+    bool DrainWorldEvents(uint32_t id, std::vector<SpineGpuAnimationEvent>& out,
+                          std::vector<SpineGpuTrackSnapshot>* tracks, uint64_t* dropped);
 
     // 渲染线程：在 `render_pass` 的 `subpass` 里、`viewport` 范围内画**控制台实例**（UI 层）。
     // 调用方负责已 begin 了该 render pass、并处在该 subpass。每帧必须调一次（延迟销毁的倒计时挂在这里）。

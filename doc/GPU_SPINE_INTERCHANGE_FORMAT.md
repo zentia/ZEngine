@@ -1645,6 +1645,7 @@ y [-7.53, 0.59]、w ≈ 8（= 距离，原点在屏幕中心、人物向右上�
 没做肉眼确认（截图工具在本机不可用，同前）；撤销删除后的重建路径没有实跑。
 
 **第一版不做**：GUID 引用（字段存路径，同 MeshRenderer）、Inspector 里的资产选择器、Assets 下源骨架自动 cook。
+（三项都已在下文「美术可用 + 玩法可控」补上。）
 
 #### 深度 + 面向相机（2026-10-23）
 
@@ -1666,6 +1667,25 @@ y [-7.53, 0.59]、w ≈ 8（= 距离，原点在屏幕中心、人物向右上�
   GBuffer 根本没写深度（整张 1.0，抓帧在 Colour Pass #1 就是 1.0）⇒ 遮挡在 DX12 上目前**看不到**，这是 DX12 延迟管线的既有状态，
   与 Spine 无关。Metal 未编译验证（同前）。
 * 公告板：编辑器相机无俯仰时 full ≡ vertical，`vertical` 的分支没有被画面覆盖到（代码路径简单，见 `BillboardModel`）。
+
+#### 美术可用 + 玩法可控（2026-10-23）
+
+| 项 | 做法 | 代码 |
+|---|---|---|
+| 单一加载路径 | 源骨架 / `.zspg` 的识别、cook、读、元数据（动画名 + 时长、皮肤、骨骼 / 槽位数）全在一处；渲染器、SpineCook、自动 cook、组件共用 | `Render/Spine/SpineGpuAssetFile.{h,cpp}` |
+| 自动 cook | 启动扫 content 根，过期（源或图集比 `.zspg` 新）就 cook 到同目录 `X.zspg`；运行中文件监视 + 300 ms 去抖；`.tmp` → rename 原子替换；cook 完通知组件重建实例 | `Editor/AssetPipeline/SpineImporter/SpineAutoCook.{h,cpp}`、`EditorAssetManager` |
+| GUID 引用 | 组件存路径 + GUID；路径失效按 GUID 在 registry 里找回并改写路径；registry 刷新 / 重扫保留已有 GUID（`.zspg` 的 GUID 是路径派生的，重派生 = 改名后丢） | `SpineRenderer::ResolveSkeletonPath`、`AssetRegistry.cpp` |
+| Inspector | `.zspg` 拖放槽、加载状态、GUID、Animation / Initial Skin / Face Camera 下拉 | `ZSlateInspectorWindow::BuildSpineRendererSection` |
+| 播放 API | set / add / setEmpty / addEmpty / clearTrack(s) / setMix / setSkin / timeScale + 当前动画 / trackTime + 元数据，全部 ZFUNCTION ⇒ TS 可调；实例未建时进队补发 | `SpineRenderer.{h,cpp}`、`SpineGpuRenderer::Request*On` |
+| 事件 | start / interrupt / end / complete / dispose（spine-cpp 3.8 语义，逐条对拍），渲染线程攒、组件 tick 取走（晚 1~N 帧）；TS 轮询 `GetEvent*`，C++ `SetEventListener` | `SpineGpuAnimationState`、`SpineGpuRenderer::DrainWorldEvents` |
+
+**验收（ZGameSmoke，Vulkan，`--cvar` 无人值守）**：删掉 `.zspg` 后启动 ⇒ `SpineAutoCook: 1 cooked (17.7 ms)`；
+`spine.spawn <cook 产物> camera 8 0.003 script=Scripts/SpineEventProbe.ts` + 另一个 `.zspg` 的 spawn；
+TS 探针拿到元数据（idle_01 = 0 s、idle_02 = 5.333 s、1 皮肤）与事件序列：f3 `start/interrupt/end/dispose idle_01`
+（从未 apply 就被替换）→ `start idle_02`，idle_01（0 s）每帧 complete，idle_02 混出时 complete、混完 end；
+收到首个 complete 后 TS 调 `SetTimeScale(1.5)` 生效。`exec.after 120 asset.move …/K_Bailishouyue_Spine.zspg …/Hero.zspg`
+⇒ 进 PIE 时副本 `moved -> '_Generated/SpineTest/Hero.zspg' (by GUID …)` 并在新路径建实例；PIE 里脚本实例重新拿到同一事件序列。
+touch 源骨架 ⇒ `re-cooked` + 组件 `was re-cooked, reloading`。Inspector 区段只做了编译 / 构造验证，没有肉眼看。
 
 ---
 

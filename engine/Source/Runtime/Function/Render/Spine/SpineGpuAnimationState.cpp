@@ -122,22 +122,92 @@ void SpineGpuAnimationState::Free(SpineGpuTrackEntry* e)
     }
 }
 
+const char* SpineGpuEventTypeName(SpineGpuEventType type)
+{
+    switch (type)
+    {
+        case SpineGpuEventType::kStart:
+            return "start";
+        case SpineGpuEventType::kInterrupt:
+            return "interrupt";
+        case SpineGpuEventType::kEnd:
+            return "end";
+        case SpineGpuEventType::kComplete:
+            return "complete";
+        case SpineGpuEventType::kDispose:
+            return "dispose";
+        case SpineGpuEventType::kEvent:
+            return "event";
+    }
+    return "?";
+}
+
+void SpineGpuAnimationState::Emit(SpineGpuEventType type, const SpineGpuTrackEntry& e)
+{
+    if (event_sink == nullptr)
+    {
+        return;
+    }
+    SpineGpuAnimationEvent ev;
+    ev.type = type;
+    ev.track = e.track_index;
+    ev.animation = e.animation;
+    ev.loop = e.loop;
+    ev.track_time = e.track_time;
+    event_sink->push_back(ev);
+}
+
 void SpineGpuAnimationState::Drain()
 {
-    // EventQueue::drain()（:231-271）：end / dispose ⇒ reset + 还回池；其余事件只有回调，不做。
+    // EventQueue::drain()（:231-271）：按入队顺序派发；end 贯穿到 dispose，二者都 reset + 还回池。
+    // 不缓存 size()：参考实现允许回调里再入队（我们没有回调，但保持同一写法）。
     if (m_DrainDisabled)
     {
         return;
     }
     m_DrainDisabled = true;
-    for (size_t i = 0; i < m_PendingFree.size(); ++i)
+    for (size_t i = 0; i < m_Queue.size(); ++i)
     {
-        SpineGpuTrackEntry* e = m_PendingFree[i];
-        ResetEntry(*e);
-        Free(e);
+        const SpineGpuEventType type = m_Queue[i].first;
+        SpineGpuTrackEntry* e = m_Queue[i].second;
+        switch (type)
+        {
+            case SpineGpuEventType::kEnd:
+                Emit(SpineGpuEventType::kEnd, *e);
+                [[fallthrough]];
+            case SpineGpuEventType::kDispose:
+                Emit(SpineGpuEventType::kDispose, *e);
+                ResetEntry(*e);
+                Free(e);
+                break;
+            default:
+                Emit(type, *e);
+                break;
+        }
     }
-    m_PendingFree.clear();
+    m_Queue.clear();
     m_DrainDisabled = false;
+}
+
+// queueEvents（:842-878）。`_events` 恒空（event 时间轴不进容器），两段事件循环都是空转 ⇒ 只剩 complete。
+void SpineGpuAnimationState::QueueEvents(SpineGpuTrackEntry* entry, float animation_time)
+{
+    const float animation_start = entry->animation_start, animation_end = entry->animation_end;
+    const float duration = animation_end - animation_start;
+    const float track_last_wrapped = static_cast<float>(std::fmod(entry->track_last, duration));
+    bool complete = false;
+    if (entry->loop)
+    {
+        complete = duration == 0 || (track_last_wrapped > static_cast<float>(std::fmod(entry->track_time, duration)));
+    }
+    else
+    {
+        complete = animation_time >= animation_end && entry->animation_last < animation_end;
+    }
+    if (complete)
+    {
+        QueueComplete(entry);
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -356,6 +426,7 @@ SpineImportResult SpineGpuAnimationState::Apply(SpineGpuSkeletonState& skeleton,
             }
         }
 
+        QueueEvents(current_p, animation_time);
         current.next_animation_last = animation_time;
         current.next_track_last = current.track_time;
     }
@@ -520,6 +591,10 @@ SpineImportResult SpineGpuAnimationState::ApplyMixingFrom(SpineGpuTrackEntry* to
         }
     }
 
+    if (to->mix_duration > 0.0f)
+    {
+        QueueEvents(from, animation_time);
+    }
     from->next_animation_last = animation_time;
     from->next_track_last = from->track_time;
     mix_out = mix;
@@ -593,6 +668,7 @@ SpineGpuTrackEntry* SpineGpuAnimationState::SetAnimation(size_t track_index, uin
         {
             // 从没被应用过的那条不参与混合
             m_Tracks[track_index] = current->mixing_from;
+            QueueInterrupt(current);
             QueueEnd(current);
             DisposeNext(current);
             current = current->mixing_from;
@@ -708,12 +784,15 @@ SpineGpuTrackEntry* SpineGpuAnimationState::GetCurrent(size_t track_index) const
 // setCurrent（:880-902）
 void SpineGpuAnimationState::SetCurrent(size_t index, SpineGpuTrackEntry* current, bool interrupt)
 {
-    (void)interrupt;   // 只决定发不发 interrupt 事件
     SpineGpuTrackEntry* from = ExpandToIndex(index);
     m_Tracks[index] = current;
 
     if (from != nullptr)
     {
+        if (interrupt)
+        {
+            QueueInterrupt(from);
+        }
         current->mixing_from = from;
         from->mixing_to = current;
         current->mix_time = 0.0f;

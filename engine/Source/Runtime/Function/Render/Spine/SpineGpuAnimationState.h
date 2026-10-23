@@ -10,10 +10,11 @@
 //   clearTrack(s) / setCurrent / animationsChanged / setTimelineModes / hasTimeline
 // 每个函数旁标了参考实现的行号；分支、浮点运算顺序、MathUtil::min/max 的写法都照抄。
 //
-// 刻意**不做**的（与姿势无关，不影响任何一个输出值）：
-//   * 事件（start / interrupt / end / dispose / complete / event 回调）—— 只保留它们对状态的
-//     副作用：start / end 置 `animationsChanged`，end / dispose 把 TrackEntry 还回对象池；
-//   * `eventThreshold`（只决定事件收不收）。
+// 事件（EventQueue，AnimationState.cpp:203-271 / queueEvents :842-878）：start / interrupt / end / dispose /
+// complete 照参考实现的入队点与顺序转录，`Drain()` 时按入队顺序写进 `event_sink`（为空 ⇒ 不记，行为不变）。
+// end 之后紧跟一条 dispose（参考实现 drain 的 case 贯穿），二者都把 TrackEntry 还回对象池。
+// 用户事件（EventType_Event，来自 event 时间轴）**没有**：event 时间轴不进容器（实测 0 / 782 资产），
+// `_events` 恒空 ⇒ queueEvents 只剩 complete 判定；`eventThreshold` 因此也不影响任何输出。
 //
 // ⚠️ 照抄的参考实现行为（改了与参考对不上，且不报错）：
 //   1. `setTimelineModes()` 的 HoldMix 分支写的是 `timelineHoldMix[i] = entry`（**自己**），
@@ -39,6 +40,29 @@
 
 // 空动画（`AnimationState::getEmptyAnimation()`，时长 0、没有时间轴）的"动画下标"。
 constexpr uint32_t kSpineGpuEmptyAnimation = 0xFFFFFFFFu;
+
+// spine::EventType（AnimationState.h），值与参考实现的枚举顺序一致。
+enum class SpineGpuEventType : uint8_t
+{
+    kStart = 0,
+    kInterrupt = 1,
+    kEnd = 2,
+    kComplete = 3,
+    kDispose = 4,
+    kEvent = 5,   // 用户事件：本格式暂不产生（见文件头）
+};
+
+// 一条已派发的事件（Drain 时从 TrackEntry 抄出来：派发之后那条 entry 可能已回到池里）。
+struct SpineGpuAnimationEvent
+{
+    SpineGpuEventType type = SpineGpuEventType::kStart;
+    uint32_t track = 0;
+    uint32_t animation = kSpineGpuEmptyAnimation;
+    bool loop = false;
+    float track_time = 0.0f;
+};
+
+const char* SpineGpuEventTypeName(SpineGpuEventType type);
 
 // `AnimationStateData`：两两动画之间的混合时长。
 struct SpineGpuAnimationStateData
@@ -132,6 +156,8 @@ public:
     SpineImportResult Apply(SpineGpuSkeletonState& skeleton, bool* applied = nullptr);
 
     float time_scale = 1.0f;
+    // 非空 ⇒ 每次 Drain 把派发的事件**追加**进来（调用方负责清空 / 取走）。
+    std::vector<SpineGpuAnimationEvent>* event_sink = nullptr;
 
 private:
     float GetDuration(uint32_t animation) const;
@@ -148,15 +174,24 @@ private:
     void SetTimelineModes(SpineGpuTrackEntry* entry);
     bool HasTimeline(const SpineGpuTrackEntry* entry, uint64_t id) const;
 
-    // 事件队列只保留对状态的副作用（见文件头）。
-    void QueueStart(SpineGpuTrackEntry*) { m_AnimationsChanged = true; }
-    void QueueEnd(SpineGpuTrackEntry* e)
+    // EventQueue（AnimationState.cpp:203-228）
+    void QueueStart(SpineGpuTrackEntry* e)
     {
-        m_PendingFree.push_back(e);
+        m_Queue.push_back({SpineGpuEventType::kStart, e});
         m_AnimationsChanged = true;
     }
-    void QueueDispose(SpineGpuTrackEntry* e) { m_PendingFree.push_back(e); }
+    void QueueInterrupt(SpineGpuTrackEntry* e) { m_Queue.push_back({SpineGpuEventType::kInterrupt, e}); }
+    void QueueEnd(SpineGpuTrackEntry* e)
+    {
+        m_Queue.push_back({SpineGpuEventType::kEnd, e});
+        m_AnimationsChanged = true;
+    }
+    void QueueDispose(SpineGpuTrackEntry* e) { m_Queue.push_back({SpineGpuEventType::kDispose, e}); }
+    void QueueComplete(SpineGpuTrackEntry* e) { m_Queue.push_back({SpineGpuEventType::kComplete, e}); }
+    // queueEvents（:842-878）：`_events` 恒空 ⇒ 只有 complete 判定
+    void QueueEvents(SpineGpuTrackEntry* entry, float animation_time);
     void Drain();
+    void Emit(SpineGpuEventType type, const SpineGpuTrackEntry& e);
 
     // 对象池（Pool.h）
     SpineGpuTrackEntry* Obtain();
@@ -170,7 +205,7 @@ private:
     std::unordered_set<uint64_t> m_PropertyIds;   // 参考实现是 Vector<int> + 线性 contains：只问"在不在"，与顺序无关
     bool m_AnimationsChanged = false;
 
-    std::vector<SpineGpuTrackEntry*> m_PendingFree;
+    std::vector<std::pair<SpineGpuEventType, SpineGpuTrackEntry*>> m_Queue;
     bool m_DrainDisabled = false;
 
     std::vector<std::unique_ptr<SpineGpuTrackEntry>> m_AllEntries;   // 所有权

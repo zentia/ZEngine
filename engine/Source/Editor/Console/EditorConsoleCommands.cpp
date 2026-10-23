@@ -145,6 +145,32 @@ namespace
         return true;
     }
 
+    // asset.move <old> <new>：编辑器内改名 / 移动（= Content Browser 的重命名；registry 条目连同 GUID 一起搬）。
+    // 相对路径按项目 content 根解析。
+    bool CmdAssetMove(const std::vector<std::string>& args)
+    {
+        EditorAssetManager* asset_mgr = GetEditorAssetManager();
+        if (!asset_mgr || args.size() < 2)
+        {
+            LOG_ERROR(ZConsole, "Usage: asset.move <old path> <new path> (relative to the content root, or absolute)");
+            return false;
+        }
+        const auto resolve = [](const std::string& p) {
+            std::filesystem::path path = std::filesystem::path(std::u8string(p.begin(), p.end()));
+            if (!path.is_absolute())
+            {
+                if (auto project = GET_SYSTEM(ProjectInfo))
+                {
+                    path = project->GetProjectContent() / path;
+                }
+            }
+            return path.lexically_normal().generic_string();
+        };
+        const bool ok = asset_mgr->MoveAsset(resolve(args[0]), resolve(args[1]));
+        LOG_INFO(ZConsole, "asset.move: {} -> {}: {}", args[0], args[1], ok ? "ok" : "FAILED");
+        return ok;
+    }
+
     bool CmdAssetReimport(const std::vector<std::string>& args)
     {
         EditorAssetManager* asset_mgr = GetEditorAssetManager();
@@ -757,6 +783,8 @@ void RegisterEditorConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("asset.reimport", "Reimport a .zasset from its source. Usage: asset.reimport <path>",
                             CmdAssetReimport);
     console.RegisterCommand("asset.count", "Print AssetRegistry asset count", CmdAssetCount);
+    console.RegisterCommand("asset.move", "Rename / move a registry asset (keeps its GUID). Usage: asset.move <old> <new>",
+                            CmdAssetMove);
     console.RegisterCommand("asset.cook",
                             "Cook project textures for a platform. Usage: asset.cook <standalone|android|ios|ohos|webgl>",
                             CmdAssetCook);

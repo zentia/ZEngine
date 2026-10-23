@@ -2,6 +2,7 @@
 
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
+#include "Runtime/Function/Console/RuntimeConsoleCommands.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
 #include "Runtime/Function/Input/InputSystem.h"
 #include "Runtime/Function/Particle/ParticleManager.h"
@@ -110,6 +111,7 @@ bool Application::TickOneFrame(float delta_time)
 
 bool Application::TickOneFrame(float simulation_delta_time, float frame_delta_time, bool should_update_logic)
 {
+    TickDeferredConsoleCommands();   // exec.after（暂停时也走：它数的是帧，不是逻辑帧）
     if (should_update_logic)
     {
         LogicalTick(simulation_delta_time);

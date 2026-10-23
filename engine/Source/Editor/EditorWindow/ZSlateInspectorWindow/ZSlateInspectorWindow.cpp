@@ -54,6 +54,8 @@
 #include "Runtime/Function/Framework/Component/Animation/AnimationComponent.h"
 #include "Runtime/Function/Framework/Component/Component.h"
 #include "Runtime/Function/Framework/Component/Mesh/BaseRenderer.h"
+#include "Runtime/Function/Framework/Component/Spine/SpineRenderer.h"
+#include "Runtime/Function/Render/Spine/SpineGpuAssetFile.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Components/Mesh.h"  // SubMeshRes
@@ -1390,12 +1392,180 @@ namespace
             .SetPadding(ZSlate::FMargin(0.0f, 4.0f * scale, 0.0f, 0.0f));
     }
 
+    // 组件段落里要用到的窗口服务（下拉框要窗口的 popup；改了资产要整页重建让下拉框换选项）
+    struct SectionServices
+    {
+        std::function<std::shared_ptr<SWidget>(const std::string& current, std::vector<std::string> options,
+                                               std::function<void(int)> on_select)>
+            make_combo;
+        std::function<void()> request_rebuild;
+    };
+
+    SpineRenderer* ResolveSelectedSpineRenderer(size_t index)
+    {
+        return Cast<SpineRenderer>(ResolveSelectedComponent(index));
+    }
+
+    // SpineRenderer：资产槽（接 Content Browser 拖来的 .zspg）+ 动画 / 皮肤 / 朝向下拉（选项读自资产本身，
+    // SpineGpuGetAssetInfo 按文件修改时间缓存）+ 其余字段走通用 TypeTree 绘制。
+    // 下拉选中 = 撤销事务 + 改序列化字段 + OnSerializedFieldsUpdated（组件按差异补发给渲染器）。
+    void BuildSpineRendererSection(const std::shared_ptr<SVerticalBox>& column,
+                                   SpineRenderer* spine,
+                                   size_t comp_index,
+                                   std::vector<FieldBinding>& bindings,
+                                   float scale,
+                                   const SectionServices& services)
+    {
+        const auto edit = [comp_index](const char* title, const std::function<void(SpineRenderer*)>& apply) {
+            SpineRenderer* sr = ResolveSelectedSpineRenderer(comp_index);
+            if (sr == nullptr)
+            {
+                return;
+            }
+            EditorUndo::ScopedTransaction undo_scope(title);
+            EditorUndo::RecordComponent(sr);
+            apply(sr);
+            sr->OnSerializedFieldsUpdated();
+        };
+
+        // ---- Skeleton Data：路径框 + .zspg 拖放 ----
+        auto box = MakeAssetBox(scale);
+        box->Text = spine->GetSkeletonDataAsset().c_str();
+        const std::function<void()> rebuild = services.request_rebuild;
+        box->OnTextCommitted = [edit, rebuild](const std::string& text) {
+            edit("Set Skeleton Data", [&text](SpineRenderer* sr) { sr->SetSkeletonDataAsset(text.c_str()); });
+            if (rebuild)
+            {
+                rebuild();   // 动画 / 皮肤下拉要换成新资产的选项
+            }
+        };
+        auto target = std::make_shared<SDropTarget>();
+        target->SetContent(box);
+        target->CanAcceptDrop = [](const std::shared_ptr<FDragDropOperation>& op) -> bool {
+            const FAssetDragDropOp* asset_op = EditorDragDrop::AsAssetDrop(op);
+            return asset_op != nullptr && AssetManager::IsSpineSkeletonAssetPath(std::filesystem::path(asset_op->AssetPath));
+        };
+        target->OnDropHandler = [box](const std::shared_ptr<FDragDropOperation>& op) {
+            const FAssetDragDropOp* asset_op = EditorDragDrop::AsAssetDrop(op);
+            if (asset_op == nullptr)
+            {
+                return;
+            }
+            const std::string stored_path = EditorDragDrop::MakeDroppedAssetStoredPath(asset_op->AssetPath);
+            box->Text = stored_path;
+            if (box->OnTextCommitted)
+            {
+                box->OnTextCommitted(stored_path);
+            }
+        };
+        AddFieldRow(column, "Skeleton Data",
+                    EditorDragDrop::MakeAssetPathDragSource(std::static_pointer_cast<SWidget>(target),
+                                                            [box]() -> std::string { return box != nullptr ? box->Text : std::string(); }),
+                    1, scale);
+
+        // ---- 资产元数据：状态行 + 下拉选项 ----
+        const std::shared_ptr<const SpineGpuAssetInfo> info = spine->GetAssetInfo();
+        std::string status;
+        if (spine->GetSkeletonDataAsset().empty())
+        {
+            status = "No skeleton data. Drag a .zspg from the Content Browser.";
+        }
+        else if (!info->error.empty())
+        {
+            status = "Could not load: " + info->error;
+        }
+        else
+        {
+            status = std::to_string(info->animations.size()) + " animation(s), " + std::to_string(info->skins.size()) +
+                     " skin(s), " + std::to_string(info->bone_count) + " bones, " + std::to_string(info->slot_count) +
+                     " slots";
+        }
+        AddFieldRow(column, "", MakeText(status.c_str(), 12.0f * scale, kDimColor), 1, scale);
+        if (!spine->GetSkeletonDataGuid().empty())
+        {
+            AddFieldRow(column, "GUID", MakeText(spine->GetSkeletonDataGuid().c_str(), 12.0f * scale, kDimColor), 1, scale);
+        }
+
+        const auto add_combo = [&](const char* label, const std::string& current, std::vector<std::string> options,
+                                   std::function<void(int)> on_select) {
+            if (services.make_combo)
+            {
+                AddFieldRow(column, label, services.make_combo(current, std::move(options), std::move(on_select)), 1, scale);
+            }
+        };
+
+        // Animation：选项 = 资产里的动画名；空 = 第 0 个
+        {
+            std::vector<std::string> options = info->animations;
+            const std::string current = spine->GetAnimationNameField().empty()
+                                            ? (options.empty() ? std::string("<none>") : options.front() + " (default)")
+                                            : std::string(spine->GetAnimationNameField().c_str());
+            if (!options.empty())
+            {
+                add_combo("Animation", current, options, [edit, options](int i) {
+                    const std::string name = options[static_cast<size_t>(i)];
+                    edit("Set Spine Animation", [&name](SpineRenderer* sr) { sr->SetAnimationNameField(name.c_str()); });
+                });
+            }
+            else
+            {
+                AddFieldRow(column, "Animation", MakeText(current.c_str(), 14.0f * scale, kDimColor), 1, scale);
+            }
+        }
+
+        // Initial Skin：<default only> + 资产里的皮肤名
+        {
+            std::vector<std::string> options;
+            options.push_back("<default only>");
+            options.insert(options.end(), info->skins.begin(), info->skins.end());
+            const std::string current = spine->GetInitialSkinName().empty() ? std::string("<default only>")
+                                                                            : std::string(spine->GetInitialSkinName().c_str());
+            add_combo("Initial Skin", current, options, [edit, options](int i) {
+                const std::string name = i == 0 ? std::string() : options[static_cast<size_t>(i)];
+                edit("Set Spine Skin", [&name](SpineRenderer* sr) { sr->SetInitialSkinName(name.c_str()); });
+            });
+        }
+
+        // Face Camera（通用绘制不支持枚举）
+        {
+            static const char* const kModes[] = {"none", "full", "vertical"};
+            const int mode = std::clamp(static_cast<int>(spine->GetBillboard()), 0, 2);
+            add_combo("Face Camera", kModes[mode], std::vector<std::string>(std::begin(kModes), std::end(kModes)),
+                      [edit](int i) {
+                          edit("Set Spine Face Camera",
+                               [i](SpineRenderer* sr) { sr->SetBillboard(static_cast<SpineBillboardMode>(i)); });
+                      });
+        }
+
+        // 其余字段（Loop / Time Scale / Scale）走通用绘制：上面画过的跳过
+        TypeTree type_tree;
+        if (!GET_SYSTEM(TypeTreeCache)->GetTypeTree(spine, kDontRequireAllMetaFlags, type_tree))
+        {
+            return;
+        }
+        FieldBuildContext ctx;
+        ctx.type = spine->GetType();
+        ctx.root = type_tree.Root();
+        static const char* const kCustom[] = {"skeleton_data_asset", "skeleton_data_guid", "animation_name",
+                                              "initial_skin_name", "billboard"};
+        for (TypeTreeIterator child = ctx.root.Children(); !child.IsNull(); child = child.Next())
+        {
+            const std::string name = child.Name().c_str();
+            if (std::find(std::begin(kCustom), std::end(kCustom), name) != std::end(kCustom))
+            {
+                continue;
+            }
+            BuildFieldNode(column, child, bindings, comp_index, scale, 1, ctx);
+        }
+    }
+
     void BuildComponentSection(const std::shared_ptr<SVerticalBox>& column,
                                Component* component,
                                size_t comp_index,
                                std::vector<FieldBinding>& bindings,
                                std::vector<ComponentEnableBinding>& enable_bindings,
-                               float scale)
+                               float scale,
+                               const SectionServices& services)
     {
         const std::string header = EditorPropertyDrawer::MakeTypeHeaderLabel(component->GetTypeName());
 
@@ -1441,6 +1611,11 @@ namespace
         if (AnimationComponent* anim = Cast<AnimationComponent>(component))
         {
             BuildAnimationComponentSection(column, anim, comp_index, bindings, scale);
+            return;
+        }
+        if (SpineRenderer* spine = Cast<SpineRenderer>(component))
+        {
+            BuildSpineRendererSection(column, spine, comp_index, bindings, scale, services);
             return;
         }
 
@@ -2944,7 +3119,13 @@ void ZSlateInspectorWindow::BuildForObject(float scale)
             Component* c = comps[i];
             if (c == nullptr || c == xf)
                 continue;
-            BuildComponentSection(column, c, i, m_Bindings, m_ComponentEnableBindings, scale);
+            SectionServices services;
+            services.make_combo = [this, scale](const std::string& current, std::vector<std::string> options,
+                                                std::function<void(int)> on_select) {
+                return MakeComboButton(current, std::move(options), std::move(on_select), scale);
+            };
+            services.request_rebuild = [this]() { m_ForceRebuild = true; };
+            BuildComponentSection(column, c, i, m_Bindings, m_ComponentEnableBindings, scale, services);
         }
     }
 

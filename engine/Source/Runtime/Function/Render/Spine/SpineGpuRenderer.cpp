@@ -7,6 +7,7 @@
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "Runtime/Function/Render/RenderType.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
+#include "Runtime/Function/Render/Spine/SpineGpuAssetFile.h"
 #include "Runtime/Function/Render/Spine/SpineGpuBatch.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
 #include "Runtime/Function/Render/Spine/SpineGpuTintBlack.h"
@@ -98,27 +99,10 @@ namespace
         return std::filesystem::path(std::u8string(s.begin(), s.end()));
     }
 
-    bool EndsWithLower(const std::string& s, const char* suffix)
-    {
-        const size_t n = std::strlen(suffix);
-        if (s.size() < n)
-        {
-            return false;
-        }
-        for (size_t i = 0; i < n; ++i)
-        {
-            const char c = s[s.size() - n + i];
-            if (static_cast<char>(std::tolower(static_cast<unsigned char>(c))) != suffix[i])
-            {
-                return false;
-            }
-        }
-        return true;
-    }
-
     // 两层：控制台实例画在 UI 层（视口像素空间、无深度）；世界实例（SpineRenderer）画在 RP1 的
     // forward / 透明 subpass（深度测试、不写深度，与透明网格 / 粒子同一站）。两层在同一帧的不同时刻录制
     // ⇒ 每帧缓冲 / 合包 / 管线**按层各一份**：共用的话后录的那层会覆盖先录那层已经引用的数据。
+    constexpr size_t kMaxPendingEvents = 1024;   // 每个世界实例最多攒多少条没取走的事件
     constexpr int kLayerOverlay = 0;
     constexpr int kLayerWorld = 1;
     constexpr int kLayerCount = 2;
@@ -181,6 +165,9 @@ struct SpineGpuRenderer::Impl
             kSpeed,            // `target` 的 AnimationState::time_scale = value
             kAlpha,            // `target` 轨道当前那条的 alpha = value
             kSkin,             // `target` 换肤：anim = 皮肤名 / 下标 / "none"；loop = 之后 setSlotsToSetupPose
+            kMixPair,          // `target` 的 AnimationStateData::setMix(anim → path, value)
+            kTrackEmptyAdd,    // addEmptyAnimation(track, mix = value, delay)
+            kClearTrack,       // clearTrack(track)；track < 0 ⇒ clearTracks()
         };
         Op op {Op::kSet};
         uint32_t target {0};   // 实例 id（入队时解析；0 = 当时没有选中的实例）
@@ -217,6 +204,11 @@ struct SpineGpuRenderer::Impl
         bool failed {false};   // 加载失败：仍然"认识"这个 id（组件不重建），原因在 status
         uint64_t stamp {0};    // 最近一次推变换时的 world_serial
         SpineGpuBillboard billboard;
+        // 渲染线程 → 游戏线程：本实例派发过、还没被组件取走的事件（上限见 kMaxPendingEvents），
+        // 与上一次解算后的轨道快照（每轨当前动画下标 + trackTime；空动画 = kSpineGpuEmptyAnimation）
+        std::vector<SpineGpuAnimationEvent> events;
+        uint64_t events_dropped {0};
+        std::vector<SpineGpuTrackSnapshot> tracks;
     };
     std::unordered_map<uint32_t, WorldEntry> world;
     // 逻辑帧序号（WorldManager::Tick 每帧 +1）。世界实例只有在"上一个或这一个逻辑帧里被组件推过"时才画：
@@ -290,6 +282,7 @@ struct SpineGpuRenderer::Impl
     struct Asset
     {
         std::string path;
+        std::filesystem::file_time_type mtime {};   // 加载时的文件修改时间：文件变了 ⇒ 新实例用新的一份
         SpineGpuAsset asset;
         SpineGpuRuntimeData data;          // 查找表：只读，所有实例共用
         SpineGpuBatchAssetInfo info;       // deform 长度 / infl_base / 单实例 deform 上界
@@ -331,6 +324,7 @@ struct SpineGpuRenderer::Impl
         float world_model[16] {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
         float world_dt {0.0f};
         SpineGpuBillboard world_billboard;
+        std::vector<SpineGpuAnimationEvent> world_events;   // 渲染线程暂存，每次世界层发布时搬进 WorldEntry
         float world_model_used[16] {};   // 本帧实际用的 model（公告板时已换掉旋转）
         float world_view_z {0.0f};   // 本帧枢轴点的观察空间 z（排序用：越负越远）
         bool world_logged {false};
@@ -1045,11 +1039,15 @@ struct SpineGpuRenderer::Impl
     }
 
     // 同一路径的资产只加载一次（文件改了要 spine.clear 再加：缓存按路径、不看时间戳）
+    // 同一路径、同一修改时间的资产只加载一次。文件被重新 cook 过（mtime 变了）⇒ 新实例加载新的一份，
+    // 旧实例继续用旧的，直到它们被删（PurgeUnusedAssets 回收没人用的那份）。
     std::shared_ptr<Asset> GetOrLoadAsset(const std::string& path, std::string& err)
     {
+        std::error_code ec;
+        const std::filesystem::file_time_type mtime = std::filesystem::last_write_time(FromUtf8(path), ec);
         for (const std::shared_ptr<Asset>& as : assets)
         {
-            if (as->path == path)
+            if (as->path == path && (ec || as->mtime == mtime))
             {
                 return as;
             }
@@ -1057,6 +1055,7 @@ struct SpineGpuRenderer::Impl
         std::shared_ptr<Asset> as = LoadAsset(path, err);
         if (as)
         {
+            as->mtime = mtime;
             assets.push_back(as);
         }
         return as;
@@ -1100,6 +1099,10 @@ struct SpineGpuRenderer::Impl
         }
         in->mix.default_mix = default_mix;
         in->anim_state = std::make_unique<SpineGpuAnimationState>(as->asset, as->data, &in->mix);
+        if (world_inst)
+        {
+            in->anim_state->event_sink = &in->world_events;   // 组件按帧取走（RequestDrainWorldEvents）
+        }
         in->anim_state->SetAnimation(0, ai, loop);
         in->last_tick = std::chrono::steady_clock::now();
         instances.push_back(std::move(in));
@@ -1275,6 +1278,32 @@ struct SpineGpuRenderer::Impl
                 case Command::Op::kPlaceAuto:
                     in->manual = false;
                     break;
+                case Command::Op::kMixPair:
+                {
+                    uint32_t from = 0, to = 0;
+                    const SpineGpuAsset& a = in->asset->asset;
+                    if (!ResolveAnim(a, c.anim, from) || !ResolveAnim(a, c.path, to))
+                    {
+                        LOG_WARNING(ZRender, "SpineGpuRenderer: instance #{}: setMix('{}' -> '{}'): animation not found",
+                                    in->id, c.anim, c.path);
+                        break;
+                    }
+                    in->mix.SetMix(from, to, std::max(0.0f, c.value));
+                    break;
+                }
+                case Command::Op::kTrackEmptyAdd:
+                    st.AddEmptyAnimation(track, std::max(0.0f, c.value), c.delay);
+                    break;
+                case Command::Op::kClearTrack:
+                    if (c.track < 0)
+                    {
+                        st.ClearTracks();
+                    }
+                    else
+                    {
+                        st.ClearTrack(track);
+                    }
+                    break;
                 default:
                     break;
             }
@@ -1337,33 +1366,15 @@ struct SpineGpuRenderer::Impl
     // ------------------------------------------------------------------
     std::shared_ptr<Asset> LoadAsset(const std::string& path, std::string& err)
     {
-        namespace fs = std::filesystem;
-        const fs::path skel_path = FromUtf8(path);
-        std::vector<uint8_t> skel_bytes;
-        if (!ReadWholeFile(skel_path, skel_bytes))
-        {
-            err = "读不到骨架文件 " + path;
-            return nullptr;
-        }
-        const std::string fname = ToUtf8(skel_path.filename());
         auto as = std::make_shared<Asset>();
         as->path = path;
-        // 图集页按页名相对这个目录找：源骨架 = 图集所在目录；.zspg = 容器所在目录（SpineCook 会把页拷过去）
-        fs::path page_dir;
-        SpineImportResult r;
-        if (EndsWithLower(fname, ".zspg"))
+        // 唯一的加载路径（SpineGpuAssetFile.h）：.zspg 直接读；骨架源现烘焙并"写 → 读"往返。
+        // 图集页按页名相对 page_dir 找：.zspg = 容器所在目录；骨架源 = 图集所在目录。
+        std::filesystem::path page_dir;
+        SpineImportResult r = SpineGpuLoadAssetFile(FromUtf8(path), as->asset, page_dir);
+        if (!r.ok)
         {
-            // 已烘焙的容器：直接读（与下面"烘焙 → 写 → 读"的往返落到同一个读端）
-            r = ReadSpineGpuContainer(skel_bytes.data(), skel_bytes.size(), as->asset);
-            if (!r.ok)
-            {
-                err = "容器 " + fname + "：" + r.error;
-                return nullptr;
-            }
-            page_dir = skel_path.parent_path();
-        }
-        else if (!BakeFromSource(skel_path, fname, skel_bytes, as->asset, page_dir, err))
-        {
+            err = r.error;
             return nullptr;
         }
         r = SpineGpuBuildRuntimeData(as->asset, as->data);
@@ -1373,70 +1384,6 @@ struct SpineGpuRenderer::Impl
             return nullptr;
         }
         return UploadAsset(as, page_dir, err);
-    }
-
-    // 骨架源文件 + 同名图集 → 烘焙 → **容器往返**（与运行时读 .zspg 的是同一份字节）
-    bool BakeFromSource(const std::filesystem::path& skel_path, const std::string& fname,
-                        const std::vector<uint8_t>& skel_bytes, SpineGpuAsset& out, std::filesystem::path& page_dir,
-                        std::string& err)
-    {
-        namespace fs = std::filesystem;
-        const auto ends_with = [&](const std::string& suffix) {
-            return fname.size() >= suffix.size() && fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0;
-        };
-        const bool is_json = ends_with(".json");
-        std::string stem = fname;
-        for (const char* suf : {".skel.bytes", ".skel", ".json"})
-        {
-            const std::string s(suf);
-            if (ends_with(s))
-            {
-                stem = fname.substr(0, fname.size() - s.size());
-                break;
-            }
-        }
-        fs::path atlas_path = skel_path.parent_path() / FromUtf8(stem + ".atlas.txt");
-        if (!fs::exists(atlas_path))
-        {
-            atlas_path = skel_path.parent_path() / FromUtf8(stem + ".atlas");
-        }
-        std::vector<uint8_t> atlas_bytes;
-        if (!ReadWholeFile(atlas_path, atlas_bytes))
-        {
-            err = "找不到图集 " + ToUtf8(atlas_path);
-            return false;
-        }
-
-        SpineAtlas atlas;
-        SpineImportResult r = ParseSpineAtlas(reinterpret_cast<const char*>(atlas_bytes.data()), atlas_bytes.size(), atlas);
-        SpineSourceSkeleton src;
-        if (r.ok)
-        {
-            r = is_json ? ParseSpineSkeletonJson(reinterpret_cast<const char*>(skel_bytes.data()), skel_bytes.size(),
-                                                 &atlas, src)
-                        : ParseSpineSkeletonBinary(skel_bytes.data(), skel_bytes.size(), &atlas, src);
-        }
-        SpineGpuAsset baked;
-        if (r.ok)
-        {
-            r = BakeSpineGpuAsset(src, baked);
-        }
-        std::vector<uint8_t> container;
-        if (r.ok)
-        {
-            r = WriteSpineGpuContainer(baked, container);
-        }
-        if (r.ok)
-        {
-            r = ReadSpineGpuContainer(container.data(), container.size(), out);
-        }
-        if (!r.ok)
-        {
-            err = r.error;
-            return false;
-        }
-        page_dir = atlas_path.parent_path();
-        return true;
     }
 
     // 运行时数据已就绪的资产 → GPU（静态缓冲 / 图集页 / 每帧缓冲 + 描述符集）
@@ -1868,6 +1815,91 @@ void SpineGpuRenderer::RequestTimeScaleOn(uint32_t id, float scale)
     d.PushTo(id, std::move(c));
 }
 
+void SpineGpuRenderer::RequestAddAnimationOn(uint32_t id, int track, const std::string& anim, bool loop, float delay)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kAdd;
+    c.track = track;
+    c.anim = anim;
+    c.loop = loop;
+    c.delay = delay;
+    d.PushTo(id, std::move(c));
+}
+
+void SpineGpuRenderer::RequestSetEmptyAnimationOn(uint32_t id, int track, float mix_duration)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kEmpty;
+    c.track = track;
+    c.value = mix_duration;
+    d.PushTo(id, std::move(c));
+}
+
+void SpineGpuRenderer::RequestAddEmptyAnimationOn(uint32_t id, int track, float mix_duration, float delay)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kTrackEmptyAdd;
+    c.track = track;
+    c.value = mix_duration;
+    c.delay = delay;
+    d.PushTo(id, std::move(c));
+}
+
+void SpineGpuRenderer::RequestClearTrackOn(uint32_t id, int track)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kClearTrack;
+    c.track = track;
+    d.PushTo(id, std::move(c));
+}
+
+void SpineGpuRenderer::RequestMixOn(uint32_t id, const std::string& from, const std::string& to, float duration)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kMixPair;
+    c.anim = from;
+    c.path = to;
+    c.value = duration;
+    d.PushTo(id, std::move(c));
+}
+
+bool SpineGpuRenderer::DrainWorldEvents(uint32_t id, std::vector<SpineGpuAnimationEvent>& out,
+                                        std::vector<SpineGpuTrackSnapshot>* tracks, uint64_t* dropped)
+{
+    if (m_Impl == nullptr)
+    {
+        return false;
+    }
+    Impl& d = *m_Impl;
+    std::lock_guard<std::mutex> lock(d.mutex);
+    const auto w = d.world.find(id);
+    if (w == d.world.end())
+    {
+        return false;
+    }
+    out.insert(out.end(), w->second.events.begin(), w->second.events.end());
+    w->second.events.clear();
+    if (tracks != nullptr)
+    {
+        *tracks = w->second.tracks;
+    }
+    if (dropped != nullptr)
+    {
+        *dropped = w->second.events_dropped;
+    }
+    return true;
+}
+
 void SpineGpuRenderer::RequestSkinOn(uint32_t id, const std::string& skin, bool setup_slots)
 {
     Impl& d = impl();
@@ -2141,6 +2173,42 @@ void SpineGpuRenderer::DrawLayer(int layer, RHI* rhi, RHIRenderPass* render_pass
             continue;
         }
         in.solved = true;
+    }
+
+    // ---- 1b) 世界层：把本帧（命令 + update + apply）派发的事件与轨道快照交给游戏线程 ----
+    if (world_layer)
+    {
+        std::lock_guard<std::mutex> lock(d.mutex);
+        for (Impl::Instance* ip : order)
+        {
+            Impl::Instance& in = *ip;
+            const auto w = d.world.find(in.id);
+            if (w == d.world.end())
+            {
+                in.world_events.clear();
+                continue;
+            }
+            Impl::WorldEntry& we = w->second;
+            for (const SpineGpuAnimationEvent& ev : in.world_events)
+            {
+                // 组件长时间不取（被禁用 / 对象不在关卡里）时别无限涨：丢最旧的
+                if (we.events.size() >= kMaxPendingEvents)
+                {
+                    we.events.erase(we.events.begin());
+                    ++we.events_dropped;
+                }
+                we.events.push_back(ev);
+            }
+            in.world_events.clear();
+            const SpineGpuAnimationState& st = *in.anim_state;
+            we.tracks.resize(st.TrackCount());
+            for (size_t ti = 0; ti < st.TrackCount(); ++ti)
+            {
+                const SpineGpuTrackEntry* e = st.GetCurrent(ti);
+                we.tracks[ti] = e == nullptr ? SpineGpuTrackSnapshot {}
+                                             : SpineGpuTrackSnapshot {e->animation, e->track_time, e->loop, true};
+            }
+        }
     }
 
     // ---- 2) 摆放 + 拼包：同一资产的实例首尾相接（SpineGpuBatch）----
@@ -2532,6 +2600,16 @@ void SpineGpuRenderer::AdvanceWorldTick() {}
 void SpineGpuRenderer::RequestSetAnimationOn(uint32_t, int, const std::string&, bool) {}
 void SpineGpuRenderer::RequestTimeScaleOn(uint32_t, float) {}
 void SpineGpuRenderer::RequestSkinOn(uint32_t, const std::string&, bool) {}
+void SpineGpuRenderer::RequestAddAnimationOn(uint32_t, int, const std::string&, bool, float) {}
+void SpineGpuRenderer::RequestSetEmptyAnimationOn(uint32_t, int, float) {}
+void SpineGpuRenderer::RequestAddEmptyAnimationOn(uint32_t, int, float, float) {}
+void SpineGpuRenderer::RequestClearTrackOn(uint32_t, int) {}
+void SpineGpuRenderer::RequestMixOn(uint32_t, const std::string&, const std::string&, float) {}
+bool SpineGpuRenderer::DrainWorldEvents(uint32_t, std::vector<SpineGpuAnimationEvent>&,
+                                        std::vector<SpineGpuTrackSnapshot>*, uint64_t*)
+{
+    return true;
+}
 void SpineGpuRenderer::Draw(RHI*, RHIRenderPass*, uint32_t, const RHIViewport&, ViewportType) {}
 void SpineGpuRenderer::DrawWorld(RHI*, RHIRenderPass*, uint32_t, const RHIViewport&, ViewportType) {}
 void SpineGpuRenderer::DrawLayer(int, RHI*, RHIRenderPass*, uint32_t, const RHIViewport&, ViewportType) {}

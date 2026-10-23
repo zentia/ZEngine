@@ -172,6 +172,11 @@ private:
     // to settle on every machine we've tested.
     FileSystemWatcher m_ShadersWatcher;
 
+    // GPU-Spine 骨架源 watcher：content 根下的 `.skel.bytes` / `.skel` / `.json` / `.atlas` / `.atlas.txt`
+    // （watcher 只看最后一个扩展名 ⇒ 过滤 {.bytes, .skel, .json, .atlas, .txt}，真正的判定在
+    // SpineAutoCook::Queue 里）。改动 → 300 ms 去抖 → cook 成同名 .zspg（SpineAutoCook.h）。
+    FileSystemWatcher m_SpineSourceWatcher;
+
     using ShaderInvalidationDeadline = std::chrono::steady_clock::time_point;
     std::unordered_map<std::string, ShaderInvalidationDeadline> m_PendingShaderInvalidations;
     std::mutex m_ShaderDebounceMutex;
