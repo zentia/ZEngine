@@ -1,6 +1,7 @@
 #include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
 
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Function/Render/AppleSsaoPass.h"
 #include "Runtime/Function/Render/RenderGpuResources.h"
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderMesh.h"
@@ -8,6 +9,7 @@
 #include "Runtime/Function/Render/RenderResource.h"
 #include "Runtime/Function/Render/RenderScene.h"
 #include "Runtime/Function/Render/RenderSystem.h"
+#include "Runtime/Function/Render/SsaoSettings.h"
 #include "Runtime/Function/Render/Nanite/NaniteRenderer.h"
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
 #include "Runtime/Utility/Utility.h"
@@ -27,6 +29,7 @@
     #include <axis_frag.h>
     #include <axis_vert.h>
     #include <deferred_lighting_frag.h>
+    #include <deferred_lighting_ssao_frag.h>
     #include <deferred_lighting_vert.h>
     #include <mesh_frag.h>
     #include <mesh_gbuffer_frag.h>
@@ -301,6 +304,20 @@ void MainCameraRp1Pass::Shutdown()
     m_FallbackCubeView = nullptr;
     m_PerFrameSource = nullptr;
 
+    // SSAO：pass 本身归管线模块，这里只解借用；1x1 兜底图是自己建的。
+    if (m_AmbientOcclusionFallbackView != nullptr)
+    {
+        m_Rhi->DestroyImageView(m_AmbientOcclusionFallbackView);
+    }
+    if (m_AmbientOcclusionFallbackImage != nullptr)
+    {
+        m_Rhi->DestroyImage(m_AmbientOcclusionFallbackImage);
+    }
+    m_AmbientOcclusionFallbackView = nullptr;
+    m_AmbientOcclusionFallbackImage = nullptr;
+    m_AmbientOcclusionPass = nullptr;
+    m_AmbientOcclusionBound = false;
+
     // 解掉 Nanite 的注入目标：它指向的 render pass / framebuffer 属于帧缓冲资源，
     // 这次 Shutdown（以及窗口 resize 触发的重建）之后就是悬垂指针了。Nanite 只比较
     // 不解引用，但留下一个指向已销毁对象的目标迟早会出事 —— 解掉之后它退回离屏。
@@ -556,7 +573,7 @@ void MainCameraRp1Pass::SetupDescriptorSetLayouts()
     }
 
     {
-        RHIDescriptorSetLayoutBinding gbuffer_lighting_global_layout_bindings[4] {};
+        RHIDescriptorSetLayoutBinding gbuffer_lighting_global_layout_bindings[5] {};
         for (uint32_t binding_index = 0; binding_index < 4; ++binding_index)
         {
             gbuffer_lighting_global_layout_bindings[binding_index].binding = binding_index;
@@ -565,9 +582,24 @@ void MainCameraRp1Pass::SetupDescriptorSetLayouts()
             gbuffer_lighting_global_layout_bindings[binding_index].stageFlags = RHI_SHADER_STAGE_FRAGMENT_BIT;
         }
 
+        // Metal：多一个 binding 4 = SSAO 结果（deferred_lighting_ssao.frag 的
+        // in_screen_space_ao）。⚠️ 这一条是**生效那一步**：MetalRHI::UpdateDescriptorSets
+        // 只更新布局里存在的 binding，布局里没有 4 的话 RefreshDeferredLightingInputAttachments
+        // 写 AO 图会被静默丢掉 ⇒ shader 采到 nil 纹理 = 0 ⇒ 整个间接光变黑，且不报错。
+        // 其余后端仍是 4 个 binding，行为一字不变。
+        uint32_t gbuffer_lighting_binding_count = 4;
+        if (m_Rhi->getGraphicsAPI() == GraphicsAPI::Metal)
+        {
+            gbuffer_lighting_global_layout_bindings[4].binding = 4;
+            gbuffer_lighting_global_layout_bindings[4].descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            gbuffer_lighting_global_layout_bindings[4].descriptorCount = 1;
+            gbuffer_lighting_global_layout_bindings[4].stageFlags = RHI_SHADER_STAGE_FRAGMENT_BIT;
+            gbuffer_lighting_binding_count = 5;
+        }
+
         RHIDescriptorSetLayoutCreateInfo gbuffer_lighting_global_layout_create_info {};
         gbuffer_lighting_global_layout_create_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        gbuffer_lighting_global_layout_create_info.bindingCount = 4;
+        gbuffer_lighting_global_layout_create_info.bindingCount = gbuffer_lighting_binding_count;
         gbuffer_lighting_global_layout_create_info.pBindings = gbuffer_lighting_global_layout_bindings;
 
         if (m_Rhi->CreateDescriptorSetLayout(&gbuffer_lighting_global_layout_create_info,
@@ -652,6 +684,13 @@ namespace
         }
         if (std::strcmp(dx12_hlsl_path, "deferred_lighting.frag.hlsl") == 0)
         {
+            // Metal 用带 SSAO 的那一份（同一份 GLSL 主体，多定义一个宏 ⇒ 多一个
+            // set 1 / binding 4 的 AO 采样，见 deferred_lighting_ssao.frag）。其余
+            // 后端仍是原版：它们的 set 1 布局里没有 binding 4。
+            if (rhi->getGraphicsAPI() == GraphicsAPI::Metal)
+            {
+                return rhi->CreateShaderModule(DEFERRED_LIGHTING_SSAO_FRAG);
+            }
             return rhi->CreateShaderModule(DEFERRED_LIGHTING_FRAG);
         }
 #endif
@@ -1809,6 +1848,112 @@ void MainCameraRp1Pass::RefreshDeferredLightingInputAttachments()
     deferred_lighting_descriptor_writes_info[3].pImageInfo = &depth_input_attachment_info;
 
     m_Rhi->UpdateDescriptorSets(4, deferred_lighting_descriptor_writes_info, 0, nullptr);
+
+    // Metal：binding 4 = SSAO（真 AO 图或 1x1 白图兜底）。每帧都写 —— 这一帧 AO 跑没
+    // 跑、resize 之后目标换没换，都只有这一刻知道。
+    if (m_Rhi->getGraphicsAPI() == GraphicsAPI::Metal)
+    {
+        RHIDescriptorImageInfo ambient_occlusion_info {};
+        ambient_occlusion_info.sampler = m_Rhi->GetOrCreateDefaultSampler(Default_Sampler_Nearest);
+        ambient_occlusion_info.imageView = ResolveAmbientOcclusionView();
+        ambient_occlusion_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        RHIWriteDescriptorSet ambient_occlusion_write {};
+        ambient_occlusion_write.sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        ambient_occlusion_write.dstSet = m_DescriptorInfos[_deferred_lighting].descriptor_set;
+        ambient_occlusion_write.dstBinding = 4;
+        ambient_occlusion_write.descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ambient_occlusion_write.descriptorCount = 1;
+        ambient_occlusion_write.pImageInfo = &ambient_occlusion_info;
+        m_Rhi->UpdateDescriptorSets(1, &ambient_occlusion_write, 0, nullptr);
+    }
+}
+
+RHIImageView* MainCameraRp1Pass::ResolveAmbientOcclusionView()
+{
+#if defined(__APPLE__)
+    // 判据只有一个：AppleSsaoPass::GetOutputView()。它在 Record() 开头就被清掉，所以
+    // "这一帧没跑"（关掉 / 视口无效 / 输入缺失）一定拿到 nullptr，不会读到上一帧
+    // 或 resize 之前的旧图。
+    if (m_AmbientOcclusionPass != nullptr)
+    {
+        if (RHIImageView* ao_view = m_AmbientOcclusionPass->GetOutputView())
+        {
+            m_AmbientOcclusionBound = true;
+            return ao_view;
+        }
+    }
+#endif
+    m_AmbientOcclusionBound = false;
+
+    // 兜底：1x1 白图（r = 间接光可见度 = 1，g = 直接光乘子 = 1）。少了它 binding 4 是
+    // 空的，Metal 采样返回 0 ⇒ 环境光 / IBL 整片消失，而且日志里什么都没有。
+    if (m_AmbientOcclusionFallbackView == nullptr && m_Rhi != nullptr)
+    {
+        const uint8_t white[] = {255, 255, 255, 255};
+        RHIImage* image = nullptr;
+        m_Rhi->CreateGlobalImage(image,
+                                 m_AmbientOcclusionFallbackView,
+                                 nullptr,
+                                 1,
+                                 1,
+                                 const_cast<uint8_t*>(white),
+                                 RHI_FORMAT_R8G8B8A8_UNORM,
+                                 1);
+        m_AmbientOcclusionFallbackImage = image;
+        if (m_AmbientOcclusionFallbackView == nullptr)
+        {
+            LOG_ERROR(ZRender, "MainCameraRp1Pass: SSAO 1x1 fallback texture creation failed");
+        }
+    }
+    return m_AmbientOcclusionFallbackView;
+}
+
+void MainCameraRp1Pass::DrawAmbientOcclusionPass()
+{
+#if defined(__APPLE__)
+    if (m_AmbientOcclusionPass == nullptr || m_Rhi == nullptr || m_FbResources == nullptr ||
+        m_Rhi->getGraphicsAPI() != GraphicsAPI::Metal)
+    {
+        return;
+    }
+
+    AppleSsaoSettings settings {};
+    settings.radius                   = SsaoSettings::GetRadius();
+    settings.intensity                = SsaoSettings::GetIntensity();
+    settings.direct_lighting_strength = SsaoSettings::GetDirectLightingStrength();
+    settings.sample_count             = SsaoSettings::GetSampleCount();
+    settings.blur                     = SsaoSettings::IsBlurEnabled();
+
+    // 视口 / 相机：和延迟光照同一套（ResolveViewportScissor + SetPerViewportData），
+    // 否则 AO 和光照落在不同的像素上 —— 编辑器里 Scene 视口是窗口的一个子矩形。
+    AppleSsaoViewport viewports[AppleSsaoPass::kMaxViewports] {};
+    uint32_t          viewport_count = 0;
+    constexpr ViewportType k_viewports[] = {ViewportType::game, ViewportType::scene};
+    for (ViewportType viewport_type : k_viewports)
+    {
+        if (!IsViewportValid(viewport_type) || viewport_count >= AppleSsaoPass::kMaxViewports)
+        {
+            continue;
+        }
+        SetPerViewportData(viewport_type);
+        AppleSsaoViewport& out = viewports[viewport_count++];
+        ResolveViewportScissor(viewport_type, out.viewport, out.scissor);
+        out.proj_view       = m_MainCameraPerFrame.proj_view_matrix;
+        out.camera_position = m_MainCameraPerFrame.camera_position;
+    }
+
+    // 关掉时也要调 Record（传 0 个视口）：它负责把"这一帧有没有 AO"清零，
+    // GetOutputView() 才会如实返回 nullptr。
+    const bool enabled = SsaoSettings::IsEnabled();
+    m_AmbientOcclusionPass->Record(m_Rhi->GetCurrentCommandBuffer(),
+                                   m_Rhi->GetDepthImageInfo().depth_image_view,
+                                   m_FbResources->getAttachmentView(_main_camera_pass_gbuffer_a),
+                                   m_Rhi->GetSwapchainInfo().extent,
+                                   viewports,
+                                   enabled ? viewport_count : 0u,
+                                   settings);
+#endif
 }
 
 void MainCameraRp1Pass::RefreshMeshGlobalIblDescriptors()
@@ -1900,10 +2045,24 @@ bool MainCameraRp1Pass::IsViewportValid(ViewportType viewport_type) const
 
 void MainCameraRp1Pass::SetViewportScissor(ViewportType viewport_type)
 {
+    RHIViewport viewport {};
+    RHIRect2D scissor {};
+    ResolveViewportScissor(viewport_type, viewport, scissor);
+
     RHICommandBuffer* current_command_buffer = m_Rhi->GetCurrentCommandBuffer();
-    RHIViewport stack_viewport {};
-    RHIViewport* viewport = m_Rhi->GetViewport(viewport_type);
-    RHIRect2D scissor = m_Rhi->GetSwapchainInfo().scissor[static_cast<uint32_t>(viewport_type)];
+    m_Rhi->CmdSetViewportPFN(current_command_buffer, 0, 1, &viewport);
+    m_Rhi->CmdSetScissorPFN(current_command_buffer, 0, 1, &scissor);
+}
+
+void MainCameraRp1Pass::ResolveViewportScissor(ViewportType viewport_type,
+                                               RHIViewport& out_viewport,
+                                               RHIRect2D& out_scissor)
+{
+    if (const RHIViewport* viewport = m_Rhi->GetViewport(viewport_type))
+    {
+        out_viewport = *viewport;
+    }
+    out_scissor = m_Rhi->GetSwapchainInfo().scissor[static_cast<uint32_t>(viewport_type)];
 
     if (viewport_type == ViewportType::scene)
     {
@@ -1914,15 +2073,11 @@ void MainCameraRp1Pass::SetViewportScissor(ViewportType viewport_type)
             if (render_system->TryGetRenderSceneViewport(scene_viewport, scene_scissor) &&
                 scene_viewport.width > 0.0f && scene_viewport.height > 0.0f)
             {
-                stack_viewport = scene_viewport;
-                viewport = &stack_viewport;
-                scissor = scene_scissor;
+                out_viewport = scene_viewport;
+                out_scissor = scene_scissor;
             }
         }
     }
-
-    m_Rhi->CmdSetViewportPFN(current_command_buffer, 0, 1, viewport);
-    m_Rhi->CmdSetScissorPFN(current_command_buffer, 0, 1, &scissor);
 }
 
 void MainCameraRp1Pass::SetPerViewportData(ViewportType viewport_type)

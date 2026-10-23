@@ -128,5 +128,31 @@ highp vec3 Libl = (kD * diffuse + specular);
     }
 }
 
+// screen-space ambient occlusion（只有 deferred_lighting_ssao.frag 定义这个宏）
+//
+// 三处各乘各的（不是把整个结果一把乘上去）：
+//   * 环境光 La 与 IBL 漫反射 × r（间接光可见度）——遮蔽本来就是"这一点看得见多少天空"；
+//   * IBL 镜面 × specular occlusion：Lagarde 2014（"Moving Frostbite to PBR"），也就是
+//     UE 的 GetSpecularOcclusion；粗糙度越低越不受漫反射 AO 影响；
+//   * 直接光 Lo × g（= lerp(1, r, DirectLightingStrength)，在 AppleSsaoPass 里算好）。
+//     物理上直接光不该被 AO 压（UE 的做法），但完全不压的话被阳光照到的墙角毫无
+//     接触感 —— URP 折中给 0.25，r.SSAO.DirectLightingStrength 可调。
+// AO 关掉时绑的是 1x1 白图（r = g = 1）：spec_occlusion = clamp(pow(NoV + 1, e) - 1 + 1) = 1，
+// 三个乘子全是 1 ⇒ 结果与没有这一段时逐位一致。
+#ifdef Z_DEFERRED_SCREEN_SPACE_AO
+{
+    highp vec2  screen_space_ao = z_load_screen_space_ao();
+    highp float indirect_ao     = screen_space_ao.r;
+    highp float direct_ao       = screen_space_ao.g;
+    highp float ao_NoV          = clamp(dot(N, V), 0.0, 1.0);
+    highp float specular_ao =
+        clamp(pow(ao_NoV + indirect_ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + indirect_ao, 0.0, 1.0);
+
+    La   = La * indirect_ao;
+    Libl = kD * diffuse * indirect_ao + specular * specular_ao;
+    Lo   = Lo * direct_ao;
+}
+#endif
+
 // result
 result_color = Lo + La + Libl;

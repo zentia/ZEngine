@@ -212,7 +212,9 @@ int main()
     };
     const std::vector<std::string> frag_names = {
         "mesh.frag",
-        "deferred_lighting.frag",
+        // 延迟光照的主体（deferred_lighting.frag / deferred_lighting_ssao.frag 两个变体
+        // 共用，binding 7 的声明就在这里，见 SSAO 阶段的拆分）。
+        "deferred_lighting_main.inl",
         "megalights_deferred.frag",
         "megalights_spatial.frag",
     };

@@ -93,6 +93,9 @@ public:
     // 其它平台恒 false（RP2 自己把结果写进 swapchain，不走这条路径）。
     virtual bool IsSceneColorTonemapped() const { return false; }
 
+    // SSAO 的每帧统计（心跳探针）。只有 Desktop 模块在 Apple 上有实现。
+    virtual SsaoFrameStats GetAmbientOcclusionStats() const { return {}; }
+
     virtual void FinishDx12ShadowPassDescriptorSetup() {}
 
     // Default mirrors RenderPipelineBase::ConsumeParticleSwapData (just clears

@@ -122,6 +122,11 @@ bool RenderPipeline::IsSceneColorTonemapped() const
     return m_ActiveModule != nullptr && m_ActiveModule->IsSceneColorTonemapped();
 }
 
+SsaoFrameStats RenderPipeline::GetAmbientOcclusionStats() const
+{
+    return m_ActiveModule != nullptr ? m_ActiveModule->GetAmbientOcclusionStats() : SsaoFrameStats {};
+}
+
 void RenderPipeline::FinishDx12ShadowPassDescriptorSetup()
 {
     if (m_ActiveModule)

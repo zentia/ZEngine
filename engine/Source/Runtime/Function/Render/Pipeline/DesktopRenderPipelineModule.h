@@ -3,6 +3,7 @@
 #include "Runtime/Function/Render/Pipeline/RenderPipelineModule.h"
 
 #include "Runtime/Function/Render/AppleRp2Chain.h"
+#include "Runtime/Function/Render/AppleSsaoPass.h"
 #include "Runtime/Function/Render/Passes/MainCameraFramebufferResources.h"
 
 #include <memory>
@@ -33,6 +34,7 @@ public:
     RHIImageView* GetUiLayerColorView() const override;
     RHIImageView* GetSceneColorView() const override;
     bool IsSceneColorTonemapped() const override;
+    SsaoFrameStats GetAmbientOcclusionStats() const override;
     void FinishDx12ShadowPassDescriptorSetup() override;
     void ConsumeParticleSwapData(RenderSwapData& swap_data, RenderSwapContext& swap_context) override;
 
@@ -49,5 +51,9 @@ public:
     // Apple 上的 RP2（离屏后处理链）。和上面那一套 attachment 配套：它只借用，
     // 不拥有。见 AppleRp2Chain.h 里"为什么不是复用 MainCameraRp2Pass"。
     std::unique_ptr<AppleRp2Chain> m_AppleRp2;
+
+    // Apple 上的 SSAO（GBuffer 之后、延迟光照之前）。模块拥有，RP1 只借用
+    // （SetAmbientOcclusionPass）。见 AppleSsaoPass.h。
+    std::unique_ptr<AppleSsaoPass> m_AppleSsao;
 #endif
 };

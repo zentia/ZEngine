@@ -42,6 +42,7 @@
 // 这些头在 pass 里是被 `#if defined(Z_HAS_SPIRV_SHADERS)` 包着的，但测试要**无条件**
 // 拿得到 —— 否则"宏关错了"这个错自己就把证据吃掉了。
 #include <deferred_lighting_frag.h>
+#include <deferred_lighting_ssao_frag.h>
 #include <deferred_lighting_vert.h>
 #include <mesh_directional_light_shadow_frag.h>
 #include <mesh_directional_light_shadow_vert.h>
@@ -91,6 +92,8 @@ namespace
         {"mesh_frag", &MESH_FRAG},
         {"deferred_lighting_vert", &DEFERRED_LIGHTING_VERT},
         {"deferred_lighting_frag", &DEFERRED_LIGHTING_FRAG},
+        // Metal 真正用的延迟光照（多一个 set1/binding4 的 SSAO 采样，sampler 7 个，必须 <= 15）。
+        {"deferred_lighting_ssao_frag", &DEFERRED_LIGHTING_SSAO_FRAG},
         {"mesh_directional_light_shadow_vert", &MESH_DIRECTIONAL_LIGHT_SHADOW_VERT},
         {"mesh_directional_light_shadow_frag", &MESH_DIRECTIONAL_LIGHT_SHADOW_FRAG},
         {"ui_batched_vert", &UI_BATCHED_VERT},

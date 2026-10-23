@@ -187,7 +187,7 @@ if(ZENGINE_BUILD_DIRECTIONAL_SHADOW_SMOKE_TEST)
         ZENGINE_SHADER_MESH_LIGHTING_INL="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/include/mesh_lighting.inl"
         ZENGINE_SHADER_MEGALIGHTS_COMPOSE_INL="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/include/megalights_compose.inl"
         ZENGINE_SHADER_MESH_FRAG="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/glsl/mesh.frag"
-        ZENGINE_SHADER_DEFERRED_LIGHTING_FRAG="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/glsl/deferred_lighting.frag"
+        ZENGINE_SHADER_DEFERRED_LIGHTING_FRAG="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/include/deferred_lighting_main.inl"
         ZENGINE_SHADER_MEGALIGHTS_DEFERRED_FRAG="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/glsl/megalights_deferred.frag"
         ZENGINE_SHADER_MEGALIGHTS_SPATIAL_FRAG="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/glsl/megalights_spatial.frag"
         ZENGINE_SHADER_SCENE_LIGHTING_STRUCTS_HLSLI="${ZENGINE_DIR_TEST_ENGINE_ROOT}/shader/hlsl/common/scene_lighting_structs.hlsli"
@@ -233,4 +233,63 @@ if(ZENGINE_BUILD_METAL_SCENE_DEPTH_SMOKE_TEST)
     add_test(NAME MetalSceneDepthSmokeTest COMMAND MetalSceneDepthSmokeTest)
 
     message(STATUS "Configured Metal scene-depth smoke test: MetalSceneDepthSmokeTest")
+endif()
+
+# =====================================================================
+# AppleSsaoSmokeTest -- SSAO（AppleSsaoPass + 延迟光照的 AO 槽）。
+#
+#   1. Apple 上无头建 MetalRHI，真编三段 MSL（AO / 横向模糊 / 纵向模糊）并建管线；
+#   2. 用测试自己画的合成场景（台阶 / 斜坡，深度写进 R32F、法线写进 RGBA8）真跑
+#      一遍 Record，读回 RG8：台阶边上必须被遮蔽、平面必须不被遮蔽、天空恒 1、
+#      g 通道 = lerp(1, r, DirectLightingStrength)；
+#   3. 斜坡 + 两个半屏视口：NDC→像素映射的 y 方向一旦翻反、或者样本跨进另一个视口，
+#      平面上就会冒出假遮蔽 —— 这两条只有真跑才看得见；
+#   4. 文本契约：延迟光照 set1/binding4 的布局（MetalRHI 只更新布局里存在的
+#      binding，少了它 AO 图静默丢失）、shader 变体、帧内顺序、心跳探针。
+#
+# Default OFF; opt in with:
+#   cmake -B build -DZENGINE_BUILD_APPLE_SSAO_SMOKE_TEST=ON
+# =====================================================================
+
+option(ZENGINE_BUILD_APPLE_SSAO_SMOKE_TEST
+       "Build the Apple/Metal SSAO smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_APPLE_SSAO_SMOKE_TEST)
+    add_executable(AppleSsaoSmokeTest AppleSsaoSmokeTest.cpp)
+
+    set_target_properties(AppleSsaoSmokeTest PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # 和 AppleSceneBlitSmokeTest 同样的处理：要 include MetalRHI.h（ObjC 头）。
+    if(APPLE)
+        set_source_files_properties(
+            "${CMAKE_CURRENT_SOURCE_DIR}/AppleSsaoSmokeTest.cpp"
+            PROPERTIES LANGUAGE OBJCXX SKIP_PRECOMPILE_HEADERS ON)
+    endif()
+
+    target_link_libraries(AppleSsaoSmokeTest PRIVATE ZRuntime)
+
+    if(TARGET ZEnginePCH)
+        target_link_libraries(AppleSsaoSmokeTest PRIVATE ZEnginePCH)
+        target_include_directories(AppleSsaoSmokeTest PRIVATE ${ENGINE_ROOT_DIR}/Source/CommonPCH)
+        add_dependencies(AppleSsaoSmokeTest ZEnginePCH)
+        target_precompile_headers(AppleSsaoSmokeTest REUSE_FROM ZEnginePCH)
+    endif()
+
+    if(DEFINED ENGINE_ROOT_DIR)
+        target_compile_definitions(AppleSsaoSmokeTest PRIVATE
+            "ZENGINE_ENGINE_ROOT_DIR=\"${ENGINE_ROOT_DIR}\"")
+    endif()
+
+    if(APPLE)
+        target_sources(AppleSsaoSmokeTest PRIVATE
+            ${ENGINE_ROOT_DIR}/Source/Runtime/Core/Serialize/Test/SmokeTestAppleLinkStubs.cpp)
+    endif()
+
+    add_test(NAME AppleSsaoSmokeTest COMMAND AppleSsaoSmokeTest)
+
+    message(STATUS "Configured Apple SSAO smoke test: AppleSsaoSmokeTest")
 endif()

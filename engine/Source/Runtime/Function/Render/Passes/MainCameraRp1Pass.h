@@ -11,6 +11,7 @@
 class RenderResourceBase;
 class RenderResource;
 class NaniteRenderer;
+class AppleSsaoPass;
 
 namespace MegaLights
 {
@@ -104,6 +105,20 @@ public:
     void DrawDeferredLightingPass(const std::array<bool, 2>& skybox_visible);
     void DrawForwardLightingPass(const std::array<bool, 2>& skybox_visible);
 
+    // ---- SSAO（只有 Metal 接了）----
+    //
+    // AppleSsaoPass 归 DesktopRenderPipelineModule 所有，RP1 只借用（和 Nanite 一样）。
+    // nullptr = 不跑 SSAO，延迟光照的 AO 槽绑 1x1 白图 ⇒ 光照与没有 SSAO 时逐位一致。
+    void SetAmbientOcclusionPass(AppleSsaoPass* pass) { m_AmbientOcclusionPass = pass; }
+
+    // GBuffer 之后、延迟光照之前调：用和 DrawDeferredLighting **同一套**视口 / 裁剪
+    // 矩形与 per-viewport 相机数据录 AO。非 Metal 后端是空操作。
+    void DrawAmbientOcclusionPass();
+
+    // 这一帧延迟光照的 AO 槽绑的是不是真 AO 图（心跳探针：开关=1 但绑的是兜底图时，
+    // 画面和"没有 SSAO"完全一样，只有这个数能分辨）。
+    bool IsAmbientOcclusionBound() const { return m_AmbientOcclusionBound; }
+
     RHIDescriptorSetLayout* GetPerMeshDescriptorSetLayout() const
     {
         return m_DescriptorInfos[_per_mesh].layout;
@@ -141,6 +156,11 @@ private:
     void SetPerViewportData(ViewportType viewport_type);
     bool IsViewportValid(ViewportType viewport_type) const;
     void SetViewportScissor(ViewportType viewport_type);
+    // SetViewportScissor 用的视口 / 裁剪矩形（Scene 视口走 RenderSystem 的 render rect）。
+    // 拆出来是为了让 SSAO 和延迟光照用**同一个**判据，不写第二份近似。
+    void ResolveViewportScissor(ViewportType viewport_type, RHIViewport& out_viewport, RHIRect2D& out_scissor);
+    // Metal：延迟光照 set 1 / binding 4 的 AO 图（真 AO 或 1x1 白图兜底）。
+    RHIImageView* ResolveAmbientOcclusionView();
 
     void DrawMeshGbuffer(ViewportType viewport_type);
     void DrawAxis(ViewportType viewport_type);
@@ -159,6 +179,12 @@ private:
     MainCameraFramebufferResources* m_FbResources {nullptr};
     // 由 DesktopRenderPipelineModule 从 NaniteRenderPass 取来，只借不拥有。
     NaniteRenderer* m_NaniteRenderer {nullptr};
+    // SSAO（Metal）。只借不拥有，见 SetAmbientOcclusionPass。
+    AppleSsaoPass* m_AmbientOcclusionPass {nullptr};
+    // AO 关掉 / 没跑时延迟光照采样的 1x1 白图（r=g=1 ⇒ 不遮蔽）。
+    RHIImage*     m_AmbientOcclusionFallbackImage {nullptr};
+    RHIImageView* m_AmbientOcclusionFallbackView {nullptr};
+    bool          m_AmbientOcclusionBound {false};
     // 粒子。桌面管线模块创建并拥有它，RP1 持一份 shared_ptr（因为 `Draw()` 要在
     // forward pass 开着的时候被调用，只有 RP1 知道那一站是什么时候）。
     // nullptr = 这个 pass 不画粒子（老行为）。

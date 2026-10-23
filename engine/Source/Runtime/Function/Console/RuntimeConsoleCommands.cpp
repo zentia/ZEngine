@@ -8,6 +8,7 @@
     #include "Runtime/Function/Render/Lumen/LumenSettings.h"
 #endif
 #include "Runtime/Function/Render/Nanite/NaniteSettings.h"
+#include "Runtime/Function/Render/SsaoSettings.h"
 #include "Runtime/Function/Render/Pipeline/RenderPipelineSettings.h"
 #include "Runtime/Function/Framework/Component/Spine/SpineRenderer.h"
 #include "Runtime/Function/Render/Spine/SpineGpuRenderer.h"
@@ -548,6 +549,8 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
 #endif
     // Nanite (CPU cluster build + culling): every knob is live (re-applied each frame).
     NaniteSettings::RegisterConsoleVariables(console);
+    // SSAO (Apple/Metal deferred path today): every knob is live (read each frame).
+    SsaoSettings::RegisterConsoleVariables(console);
 }
 
 void TickDeferredConsoleCommands()

@@ -669,6 +669,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/MetalSceneDepthSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/MetalSceneDepthSmokeTest.cpp")
+# SSAO 冒烟测试的 main carve-out（同理由）。它钉的是 AppleSsaoPass 的 MSL（只在运行时
+# 编译）、NDC→像素映射、视口越界、以及"延迟光照真的绑上了 AO 图"这条生效链
+# （见 Function/Render/Test/CMakeLists.txt）。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/AppleSsaoSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/AppleSsaoSmokeTest.cpp")
 # 分配器配对冒烟测试的 main carve-out（同理由）。Only built when
 # ZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
 list(REMOVE_ITEM SOURCE_FILES

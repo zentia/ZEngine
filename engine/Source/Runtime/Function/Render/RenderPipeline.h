@@ -40,6 +40,7 @@ public:
 
     virtual RHIImageView* GetSceneColorView() const override final;
     virtual bool IsSceneColorTonemapped() const override final;
+    virtual SsaoFrameStats GetAmbientOcclusionStats() const override final;
 
     // Swap the active render path at runtime. MUST be called with the GPU idle and
     // no in-flight frame referencing the current module (the RenderSystem drives this

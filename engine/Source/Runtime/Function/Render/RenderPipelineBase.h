@@ -3,6 +3,7 @@
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Function/Render/RenderPassBase.h"
 #include "Runtime/Function/Render/RenderingThread/RHIDrawList.h"
+#include "Runtime/Function/Render/SsaoSettings.h"
 
 #include <array>
 #include <functional>
@@ -161,6 +162,9 @@ public:
     //
     // 其它平台恒 false —— 那边 RP2 自己把结果写进 swapchain，压根不走这条路径。
     virtual bool IsSceneColorTonemapped() const { return false; }
+
+    // SSAO 的每帧统计（心跳探针）。目前只有 Apple/Metal 有实现，其它平台全 0。
+    virtual SsaoFrameStats GetAmbientOcclusionStats() const { return {}; }
 
     void registerFramebufferRecreateCallback(RenderCallback callback)
     {

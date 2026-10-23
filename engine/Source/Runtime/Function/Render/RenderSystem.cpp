@@ -531,6 +531,9 @@ void RenderSystem::Tick(float delta_time)
                 }
             }
 
+            const SsaoFrameStats ssao_stats =
+                m_RenderPipeline != nullptr ? m_RenderPipeline->GetAmbientOcclusionStats() : SsaoFrameStats {};
+
             LOG_INFO(ZRender,
                      "AppleRender: frame={} entities={} visible={} scene_color_view={} blit_ready={} "
                      "rp2_tonemapped={} swapchain={}x{} "
@@ -540,6 +543,7 @@ void RenderSystem::Tick(float delta_time)
                      "particle=(has={} emit={} draw={} parts={} vp={}) "
                      "shadow=(dir_en={} dir_nodes={} point_en={} cascades={}) "
                      "depth=(view={} fmt={}) "
+                     "ssao=(en={} ready={} ran={} vp={} bound={}) "
                      "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
@@ -580,6 +584,13 @@ void RenderSystem::Tick(float delta_time)
                      (m_Rhi != nullptr && m_Rhi->GetDepthImageInfo().depth_image_view != nullptr) ? 1 : 0,
                      static_cast<int>(m_Rhi != nullptr ? m_Rhi->GetDepthImageInfo().depth_image_format
                                                        : RHI_FORMAT_UNDEFINED),
+                     // SSAO 探针（实参顺序跟格式串一致，插在 depth 之后）。bound=1 才是
+                     // "延迟光照这一帧真的采样了 AO 图"；en=1 ran=1 bound=0 等于没生效。
+                     ssao_stats.enabled,
+                     ssao_stats.ready,
+                     ssao_stats.ran,
+                     ssao_stats.viewports,
+                     ssao_stats.bound,
                      static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
                      static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
                      sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,

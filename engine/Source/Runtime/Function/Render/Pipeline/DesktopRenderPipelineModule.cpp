@@ -243,9 +243,25 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
             m_AppleRp2.reset();
         }
 
+        // SSAO：GBuffer 之后、延迟光照之前（RP1 的 DrawAmbientOcclusionPass 代调）。
+        //
+        // 失败了**不要** return：SSAO 是可选特性，RP1 没拿到它时延迟光照的 AO 槽
+        // 绑 1x1 白图，光照与没有 SSAO 时逐位一致。MSL 只在运行时编译，构建期
+        // 看不到错误 ⇒ 这里是它唯一可能失败的地方，必须降级而不是把编辑器拖崩。
+        m_AppleSsao = std::make_unique<AppleSsaoPass>();
+        if (!m_AppleSsao->Initialize(m_Pipeline.m_Rhi))
+        {
+            LOG_ERROR(ZRender,
+                      "DesktopRenderPipelineModule(Metal): AppleSsaoPass init failed -- "
+                      "deferred lighting falls back to the 1x1 white AO texture");
+            m_AppleSsao.reset();
+        }
+        rp1->SetAmbientOcclusionPass(m_AppleSsao.get());
+
         LOG_INFO(ZRender,
-                 "DesktopRenderPipelineModule(Metal): shadow passes + MainCameraRp1Pass initialized (rp2={})",
-                 m_AppleRp2 != nullptr);
+                 "DesktopRenderPipelineModule(Metal): shadow passes + MainCameraRp1Pass initialized (rp2={} ssao={})",
+                 m_AppleRp2 != nullptr,
+                 m_AppleSsao != nullptr);
         return;
     }
 #else
@@ -497,9 +513,11 @@ void DesktopRenderPipelineModule::Shutdown()
     {
         rp1->SetNaniteRenderer(nullptr);
         rp1->SetFramebufferResources(nullptr);
+        rp1->SetAmbientOcclusionPass(nullptr);
     }
     // RP2 只是借用 attachment，先销毁再销毁提供者。
     m_AppleRp2.reset();
+    m_AppleSsao.reset();
     if (m_AppleMainCameraFramebuffers)
     {
         m_AppleMainCameraFramebuffers->Shutdown();
@@ -552,6 +570,9 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
                 rp1->m_IsShowAxis   = m_Pipeline.m_IsShowAxis;
                 rp1->m_SelectedAxis = m_Pipeline.m_SelectedAxis;
                 rp1->DrawGBufferPass(show_skybox);
+                // SSAO 读 GBuffer 的深度 + 法线、写自己的离屏 RG8；延迟光照紧接着
+                // 采样它。顺序不能换：放到延迟光照之后，这一帧采到的就是兜底白图。
+                rp1->DrawAmbientOcclusionPass();
                 rp1->DrawDeferredLightingPass(show_skybox);
                 rp1->DrawForwardLightingPass(show_skybox);
             });
@@ -923,6 +944,26 @@ bool DesktopRenderPipelineModule::IsSceneColorTonemapped() const
 #else
     return false;
 #endif
+}
+
+SsaoFrameStats DesktopRenderPipelineModule::GetAmbientOcclusionStats() const
+{
+    SsaoFrameStats stats {};
+    stats.enabled = SsaoSettings::IsEnabled() ? 1u : 0u;
+#if defined(__APPLE__)
+    if (m_AppleSsao != nullptr)
+    {
+        stats.ready     = m_AppleSsao->IsReady() ? 1u : 0u;
+        stats.ran       = m_AppleSsao->GetOutputView() != nullptr ? 1u : 0u;
+        stats.viewports = m_AppleSsao->GetLastViewportCount();
+    }
+    // 生效那一步：延迟光照这一帧真的绑上了 AO 图（不是 1x1 兜底）。
+    if (const auto* rp1 = dynamic_cast<const MainCameraRp1Pass*>(m_Pipeline.m_MainCameraPass.get()))
+    {
+        stats.bound = rp1->IsAmbientOcclusionBound() ? 1u : 0u;
+    }
+#endif
+    return stats;
 }
 
 void DesktopRenderPipelineModule::FinishDx12ShadowPassDescriptorSetup()

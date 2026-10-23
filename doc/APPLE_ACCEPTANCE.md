@@ -1666,6 +1666,61 @@ index 1/2`、`Fragment Function(main0) argument ... 52 vs 64`、
 vs RGBA16Float` 各 1347 条、`Sampler state did not have supportArgumentBuffers`、两条
 `instanceCount(0)` —— 后续单独处理。
 
+### 3.35 SSAO（屏幕空间环境光遮蔽）
+
+**帧内位置**：RP1 内部，`GBuffer → AppleSsaoPass（AO → 横向模糊 → 纵向模糊）→ 延迟光照 → forward`。
+结果是一张 RG8：`r` = 间接光可见度，`g` = 直接光乘子 `lerp(1, r, DirectLightingStrength)`。
+
+**算法**：Alchemy AO，逐项对齐 Unity URP `SSAO.hlsl`（采样点生成、Interleaved Gradient Noise、
+`kBeta=0.002`、`kContrast=0.6`、半径归一化、`isInsideRadius`、法线几何权重 0.8 的双边模糊）。
+和 URP 的差别：**全程在世界空间**算（per-frame 数据只有 `proj_view`，世界空间版只要它和它的逆，
+与 `deferred_lighting.frag` 反推世界坐标是同一条路）。
+
+**怎么作用到光照**（`mesh_lighting.inl` 的 `Z_DEFERRED_SCREEN_SPACE_AO` 块）：
+环境光 / IBL 漫反射 × `r`；IBL 镜面 × Lagarde specular occlusion（UE 的 `GetSpecularOcclusion`）；
+直接光 × `g`（URP 的 DirectLightingStrength，默认 0.25）。
+
+**接线要点（每一条都是"全接好却不生效"的候选）**：
+1. 延迟光照的 shader 拆成 `include/deferred_lighting_main.inl` + 两个变体：`deferred_lighting.frag`
+   （原版，**SPIR-V 与拆分前逐字节一致**，用 glslang 编译前后 `cmp` 验证过）和
+   `deferred_lighting_ssao.frag`（多定义 `Z_DEFERRED_SCREEN_SPACE_AO`）。只有 Metal 用后者。
+2. ⚠️ **布局里必须真有 set 1 / binding 4**：`MetalRHI::UpdateDescriptorSets` 只更新布局里存在的
+   binding，布局漏了它，AO 图的写入被**静默丢弃** ⇒ shader 采到 nil 纹理 = 0 ⇒ 间接光整片变黑。
+   布局改动只在 Metal 上做，其它后端仍是 4 个 binding。
+3. AO 关掉 / 没跑：binding 4 绑 1x1 **白**图（`r=g=1`），三个乘子全为 1 ⇒ 与没有 SSAO 逐位一致。
+   判据只有一个：`AppleSsaoPass::GetOutputView()`，它在 `Record()` 开头就被清掉，不会读到上一帧
+   或 resize 之前的旧图。
+4. 视口 / 相机与延迟光照**同源**：`SetViewportScissor` 抽出 `ResolveViewportScissor`，SSAO 与
+   延迟光照共用；相机数据走同一个 `SetPerViewportData`。
+5. ⚠️ **NDC→像素不靠猜 y 轴**：样本点投影回屏幕时用 `dfdx(ndc.x) / dfdy(ndc.y)` 现场求映射（带
+   符号）。遮挡物 Q **必须用"实际读到的那个整像素中心"的 NDC 重建**，不能用样本点的亚像素 NDC ——
+   否则斜面上 Q 偏离真实表面最多一个像素的深度斜率，平面自己遮蔽自己（冒烟测试的斜坡场景实测
+   min r 0.953 → 修后 1.000）。
+6. 每个视口一份参数（256 字节对齐的 UNIFORM_BUFFER_DYNAMIC 槽，`frames_in_flight × 2` 个）；
+   样本越出当前视口直接丢弃（否则读到另一个视口、另一台相机的深度）；AO 目标清成 `(1,1)`
+   （视口之外 = 不遮蔽）。
+
+**CVar**：`r.SSAO.Enable / Radius(0.5m) / Intensity(1.0) / DirectLightingStrength(0.25) / SampleCount(12) / Blur(1)`，全部每帧生效。
+
+**心跳**：`ssao=(en ready ran vp bound)`；**`bound=1` 才算生效**（延迟光照这一帧采样的是真 AO 图）。
+真机：`ssao=(en=1 ready=1 ran=1 vp=1 bound=1)`，启动日志 `AppleSsaoPass: ready ...` +
+`targets (re)built at 3456x1924` + `initialized (rp2=TRUE ssao=TRUE)`；新增日志段 0 条 [E]。
+Metal 校验层（`MTL_DEBUG_LAYER=1 MTL_DEBUG_LAYER_ERROR_MODE=nslog`，直接跑 `./ZEditor -p` 时
+NSLog 走 stderr）45 秒内**没有任何一条来自 SSAO 的三个函数**；其余类别全部预存在。
+
+**冒烟测试** `AppleSsaoSmokeTest`（`-DZENGINE_BUILD_APPLE_SSAO_SMOKE_TEST=ON`，99 checks）：
+无头 MetalRHI 真编三段 MSL；合成场景（proj_view = 单位阵，深度写 R32F、法线写 RGBA8）：
+台阶（台阶边地面 mean r≈0.54，远离边的地面 / 凸台顶 / 天空 = 1.000，`g` 误差 ≤ 0.002）、
+斜坡单视口 / 双半屏视口（min r = 1.000）、只给左半视口时右半保持清屏值、`Enable=0` 时无旧图。
+15 个变异全部 KILL。`MetalSpirvShaderSmokeTest` 47 → 52（新增 SSAO 版延迟光照 blob：
+SPIR-V→MSL 成功、sampler 7 个 ≤ 15）。
+
+**顺带发现（未修，预存在）**：`MetalRHI::CmdBeginRenderPassPFN` 对
+`renderCommandEncoderWithDescriptor:`（autoreleased、不归调用方所有）做了 `retain` + `release`，
+`CmdEndRenderPassPFN` 再 `release` 一次 ⇒ 净多一次 release。没有 autorelease pool 时那条
+autorelease 永远不执行所以看不出来；冒烟测试一包 `@autoreleasepool`，pop 时 `objc_release` 野指针
+SIGSEGV（实测）。将来谁给帧循环加 pool，就会在这里崩。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - ~~**`NaniteGPUCullingSmokeTest` 在 Apple 上是红的（21 条）**~~ —— **已在 §3.20 修掉**：
