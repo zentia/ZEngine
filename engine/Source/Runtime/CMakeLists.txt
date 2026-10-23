@@ -165,9 +165,14 @@ elseif(APPLE)
     # shader 也不是障碍：这些 pass 用的就是同一份 SPIR-V blob。
     #
     # 下面只排除真正拉 Vulkan / DX12 头的文件（逐个用 Apple 的真实编译参数验过）：
-    #   MainCameraPass / ColorGradingPass / CombineUIPass / FXAAPass / ParticlePass /
-    #   PickPass  -> include VulkanRHI.h
+    #   MainCameraPass / ColorGradingPass / CombineUIPass / FXAAPass / PickPass
+    #                                                     -> include VulkanRHI.h
     #   DX12MainCameraPass / BindlessTonemapPass -> d3d12 / DX12RHI.h
+    #
+    # ParticlePass 原来也在这个名单里，现已解耦放出：它 include VulkanRHI.h 只为
+    # vulkan.h 的 typedef（VkDeviceSize / VkSpecialization* / VkPipelineStageFlags）
+    # 和 VK_TRUE，RHI 层全有对应物；唯一真调 Vulkan API 的 vkCreatePipelineCache
+    # 还是在一段注释里。见 ParticlePass.cpp 的头注释。
     #
     # MainCameraRp2Pass 已经不在名单里了：它 include DX12RHI.h 只为 <d3d12.h>，
     # 而整个 TU 一个 d3d12 符号都不用（全程走 RHI 抽象，连 input attachment 都没
@@ -184,7 +189,7 @@ elseif(APPLE)
     # 注意 MainCameraPass\\.cpp$ 不会误伤 MainCameraRp1Pass.cpp /
     # MainCameraFramebufferResources.cpp / MainCameraPassShaderCommon.cpp。
     set(ZENGINE_APPLE_EXCLUDED_PASSES
-        "(^|.*/)Function/Render/Passes/(DX12.*|BindlessTonemapPass|MainCameraPass|ColorGradingPass|CombineUIPass|FXAAPass|ParticlePass|PickPass)\\.cpp$")
+        "(^|.*/)Function/Render/Passes/(DX12.*|BindlessTonemapPass|MainCameraPass|ColorGradingPass|CombineUIPass|FXAAPass|PickPass)\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "${ZENGINE_APPLE_EXCLUDED_PASSES}")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Texture/VirtualTexture.*\\.cpp$")
     list(FILTER SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/[Dd]ebug[Dd]raw/DebugDrawBuffer\\.cpp$")

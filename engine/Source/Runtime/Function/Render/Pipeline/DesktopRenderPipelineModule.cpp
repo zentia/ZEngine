@@ -11,6 +11,10 @@
     #include "Runtime/Function/Render/Lumen/LumenRenderPass.h"
 #endif
 #include "Runtime/Function/Render/Nanite/NaniteRenderer.h"
+// ParticlePass.h 以前只在这个 Vulkan 块里 include —— 那时 ParticlePass.cpp 拉
+// `vulkan/vulkan.h`，所以整个 TU 被排除在 Apple 构建之外。解耦之后它是后端中立的，
+// Apple 也要用它（见 Setup 的 Apple 分支）。
+#include "Runtime/Function/Render/Passes/ParticlePass.h"
 #if defined(Z_HAS_VULKAN)
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
     #include "Runtime/Function/Render/Passes/BindlessTonemapPass.h"
@@ -18,7 +22,6 @@
     #include "Runtime/Function/Render/Passes/CombineUIPass.h"
     #include "Runtime/Function/Render/Passes/DirectionalLightPass.h"
     #include "Runtime/Function/Render/Passes/MainCameraPass.h"
-    #include "Runtime/Function/Render/Passes/ParticlePass.h"
     #include "Runtime/Function/Render/Passes/PickPass.h"
     #include "Runtime/Function/Render/Passes/PointLightPass.h"
     #include "Runtime/Function/Render/Passes/UIPass.h"
@@ -133,6 +136,7 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
         m_Pipeline.m_PointLightShadowPass = std::make_shared<PointLightShadowPass>();
         m_Pipeline.m_DirectionalLightPass = std::make_shared<DirectionalLightShadowPass>();
         m_Pipeline.m_MainCameraPass       = std::make_shared<MainCameraRp1Pass>();
+        m_Pipeline.m_ParticlePass         = std::make_shared<ParticlePass>();
 
         RenderPassCommonInfo pass_common_info;
         pass_common_info.rhi = m_Pipeline.m_Rhi;
@@ -141,9 +145,16 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
         m_Pipeline.m_PointLightShadowPass->SetCommonInfo(pass_common_info);
         m_Pipeline.m_DirectionalLightPass->SetCommonInfo(pass_common_info);
         m_Pipeline.m_MainCameraPass->SetCommonInfo(pass_common_info);
+        m_Pipeline.m_ParticlePass->SetCommonInfo(pass_common_info);
 
         m_Pipeline.m_PointLightShadowPass->Initialize(nullptr);
         m_Pipeline.m_DirectionalLightPass->Initialize(nullptr);
+
+        // 粒子的 Initialize 只接一个 ParticleManager，真正的建管线在
+        // `SetupParticlePass()` 里 —— 那时才知道 render pass / 深度图是什么。
+        ParticlePassInitInfo particle_init_info {};
+        particle_init_info.m_ParticleManager = GET_SYSTEM(ParticleManager);
+        m_Pipeline.m_ParticlePass->Initialize(&particle_init_info);
 
         static_cast<PointLightShadowPass*>(m_Pipeline.m_PointLightShadowPass.get())
             ->setPerMeshLayout(per_mesh_layout);
@@ -174,6 +185,28 @@ void DesktopRenderPipelineModule::Setup(const RenderPipelineInitInfo& init_info)
             LOG_ERROR(ZRender, "DesktopRenderPipelineModule(Metal): MainCameraRp1Pass::Initialize failed");
             m_Pipeline.m_MainCameraPass.reset();
             return;
+        }
+
+        // 粒子：RP1 持有它（`Draw()` 必须在 forward pass 开着的时候被代调，只有 RP1
+        // 知道那一站是什么时候），并把它接到 forward lighting 的 render pass 上。
+        //
+        // `SetupParticlePass()` 会真的去建管线：emit / kickoff / simulate 三个 compute
+        // pipeline（SPIR-V blob）+ billboard 的 graphics pipeline。MSL 是**运行时**
+        // 编译的，构建期永远看不见错误，所以这里必须包 try：失败就退回到"没有粒子"
+        // 这个老行为，绝不能让一个可选特性把整个编辑器拖崩。
+        rp1->SetParticlePass(std::static_pointer_cast<ParticlePass>(m_Pipeline.m_ParticlePass));
+        try
+        {
+            rp1->SetupParticlePass();
+        }
+        catch (const std::exception& e)
+        {
+            LOG_ERROR(ZRender,
+                      "DesktopRenderPipelineModule(Metal): ParticlePass setup failed ({}), "
+                      "particles stay disabled",
+                      e.what());
+            rp1->SetParticlePass(nullptr);
+            m_Pipeline.m_ParticlePass.reset();
         }
 
         if (auto* render_resource = dynamic_cast<RenderResource*>(init_info.render_resource.get()))
@@ -516,9 +549,6 @@ void DesktopRenderPipelineModule::BuildDrawLists(std::shared_ptr<RenderResourceB
                 // 编辑器 gizmo 的开关和选中轴**每帧**从 pipeline 上取过来。以前这两
                 // 个数从来没传进 RP1（对比 DX12 分支：那里每次都赋），于是 axis 就算
                 // 有绘制路径也会因为 `m_IsShowAxis` 恒为 false 而什么都不画。
-                // 编辑器 gizmo 的开关和选中轴**每帧**从 pipeline 上取过来。以前这两
-                // 个数从来没传进 RP1（对比 DX12 分支：那里每次都赋），于是 axis 就算
-                // 有绘制路径也会因为 `m_IsShowAxis` 恒为 false 而什么都不画。
                 rp1->m_IsShowAxis   = m_Pipeline.m_IsShowAxis;
                 rp1->m_SelectedAxis = m_Pipeline.m_SelectedAxis;
                 rp1->DrawGBufferPass(show_skybox);
@@ -639,7 +669,16 @@ void DesktopRenderPipelineModule::SubmitDrawLists(RHI* rhi,
 #if defined(__APPLE__)
     (void)rhi;
     (void)render_resource;
+
+    // Apple 上这个函数目前**没有调用者**（`RenderSystem::Tick` 直接
+    // `draw_list.ExecuteAll()`，不走 `SubmitDrawLists`），但仍然把粒子的两步推进
+    // 委托给基类那对共享方法，免得将来某条路径切过来又漏一次 —— 见
+    // RenderPipelineBase::PrepareParticlesForDraw 的注释。
+    m_Pipeline.PrepareParticlesForDraw(m_Pipeline.m_Rhi->GetCurrentCommandBuffer());
+
     draw_list.ExecuteAll();
+
+    m_Pipeline.AdvanceParticlesAfterDraw();
     return;
 #else
     #if defined(_WIN32)
@@ -684,15 +723,16 @@ void DesktopRenderPipelineModule::SubmitDrawLists(RHI* rhi,
         return;
     }
 
-    static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get())
-        ->SetRenderCommandBufferHandle(
-            static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get())->GetRenderCommandBuffer());
+    // 和 Apple 那条路径共用同一对方法：录制前递命令缓冲句柄，录制后拷深度法线 +
+    // simulate。以前这两步在这里硬写（static_cast 拿 ParticlePass），Apple 分支
+    // 只能照抄一份 —— 抄漏了就静止不动，见 RenderPipelineBase 的注释。
+    m_Pipeline.PrepareParticlesForDraw(
+        static_cast<MainCameraPass*>(m_Pipeline.m_MainCameraPass.get())->GetRenderCommandBuffer());
 
     draw_list.ExecuteAll();
 
     vulkan_rhi->SubmitRendering([this]() { UpdateAfterRecreate(); });
-    static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get())->CopyNormalAndDepthImage();
-    static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get())->Simulate();
+    m_Pipeline.AdvanceParticlesAfterDraw();
     #else
     (void)rhi;
     (void)render_resource;
@@ -715,6 +755,12 @@ void DesktopRenderPipelineModule::UpdateAfterRecreate()
     {
         rp1->RefreshNaniteInjection();
         rp1->RefreshDeferredLightingInputAttachments();
+    }
+    // 粒子的深度 / 法线副本是按 swapchain 尺寸建的，Initialize() 那一刻尺寸还是 0x0
+    // （Apple 的 swapchain 要等第一帧才就绪），所以真正的第一次建图就发生在这里。
+    if (m_Pipeline.m_ParticlePass)
+    {
+        static_cast<ParticlePass*>(m_Pipeline.m_ParticlePass.get())->UpdateAfterFramebufferRecreate();
     }
     for (const auto& callback : m_Pipeline.m_FramebufferRecreateCallbacks)
     {
@@ -902,7 +948,14 @@ void DesktopRenderPipelineModule::FinishDx12ShadowPassDescriptorSetup()
 
 void DesktopRenderPipelineModule::ConsumeParticleSwapData(RenderSwapData& swap_data, RenderSwapContext& swap_context)
 {
-#if defined(Z_HAS_VULKAN)
+    // 以前整段被一个**后端宏**门住 ⇒ Metal 和 DX12 都走"只清门闩"那条分支：粒子
+    // 数据每帧从逻辑线程送过来，然后被原地丢掉。
+    //
+    // 正确的判据不是"是不是某个后端"，而是"这一套管线有没有粒子 pass" —— 和
+    // particle 无关的后端（mobile）自然没有，那才该退回基类。见 §3.14。
+    //
+    // 注：别在注释里逐字引用那个后端宏 —— AppleSceneBlitSmokeTest 是拿文本匹配
+    // 钉"消费侧已经没有后端门"的，注释里出现一次就会把契约蒙过去。
     if (!m_Pipeline.m_ParticlePass)
     {
         RenderPipelineModule::ConsumeParticleSwapData(swap_data, swap_context);
@@ -939,7 +992,4 @@ void DesktopRenderPipelineModule::ConsumeParticleSwapData(RenderSwapData& swap_d
             ->SetTransformIndices(swap_data.m_EmitterTransformRequest->m_TransformDescs);
         swap_context.ResetEmitterTransformSwapData();
     }
-#else
-    RenderPipelineModule::ConsumeParticleSwapData(swap_data, swap_context);
-#endif
 }

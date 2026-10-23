@@ -86,6 +86,16 @@ bool Editor::Initialize()
     // equivalent).
     registerEdtorTickComponent("TypeScriptComponent");
 
+    // ParticleComponent::Tick() is the ONLY producer of the emitter tick request
+    // that ParticlePass::Simulate() consumes (AddTickParticleEmitter -> swap
+    // data -> SetTickIndices -> m_EmitterTickIndices). Without this entry an
+    // emitter that is plainly sitting in the level never ticks in edit mode, so
+    // alive-count stays 0 forever and nothing is ever emitted -- the compute
+    // pipelines are created, the billboard draw is submitted, and the level
+    // still looks empty. Unity previews particle systems in the Scene view
+    // without pressing Play, so edit-mode tick is the expected behaviour here.
+    registerEdtorTickComponent("ParticleComponent");
+
     // Load project library before engine initialization
     // This allows modules to register themselves during static initialization
     // before ModuleManager::InitializeAllModules() is called

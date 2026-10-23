@@ -93,6 +93,28 @@ public:
     // implementation only clears pending flags (DX12 / backends without ParticlePass).
     virtual void ConsumeParticleSwapData(RenderSwapData& swap_data, RenderSwapContext& swap_context);
 
+    // 粒子的每帧推进必须夹在"本帧 draw list 录制"的两头，缺一半就**静止不动**：
+    //   · PrepareParticlesForDraw()   —— 录制**之前**：ParticlePass::Draw() 要把
+    //     命令录进当前帧的命令缓冲，句柄必须先递过去；
+    //   · AdvanceParticlesAfterDraw() —— 录制**之后**：拷贝本帧刚画完的深度 / 法线，
+    //     再跑 simulate（算出的存活数是下一帧 Draw 的 instanceCount）。
+    //
+    // 这两步以前只写在 `DesktopRenderPipelineModule::SubmitDrawLists` 里，而
+    // Apple(Metal) 那条精简 Tick **根本不走 SubmitDrawLists** —— `RenderSystem::Tick`
+    // 直接 `draw_list.ExecuteAll()`。于是 Metal 上粒子永远静止：compute 管线建好了、
+    // billboard 也每帧在画、swap 数据也送到了，但 `Simulate()` 一次都没跑 ⇒ 存活数
+    // 恒为 0，而且**不报任何错**。
+    //
+    // 抽成基类上的两个普通方法（不是虚函数）：两条 Tick 路径各调各的，谁都不会再漏。
+    // 没有粒子 pass 时两个都是 no-op。
+    void PrepareParticlesForDraw(RHICommandBuffer* command_buffer);
+    void AdvanceParticlesAfterDraw();
+
+    // 心跳用：这一套管线有没有粒子 pass。nullptr = 没有（老行为 / 建管线失败）。
+    // 和 Nanite 那个 `GetNanitePass()` 一个道理 —— "没有 pass" 和 "有 pass 但没东西
+    // 可画" 在画面上长得一模一样，只能靠这个分清。
+    RenderPassBase* GetParticlePass() const { return m_ParticlePass.get(); }
+
     void InitializeUIRenderBackend(WindowUI* window_ui);
     virtual uint32_t GetGuidOfPickedMesh(const Vector2& picked_uv) = 0;
 

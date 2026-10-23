@@ -1,7 +1,16 @@
 #include "Runtime/Function/Render/Passes/ParticlePass.h"
 
-#include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
-#include "Runtime/Function/Render/Interface/Vulkan/VulkanUtil.h"
+// 这个 TU 以前经传递 include 拉进了**某一个后端自己的平台头**，于是被
+// `ZENGINE_APPLE_EXCLUDED_PASSES` 整个排除在 Apple 构建之外 ⇒ Metal 上粒子根本
+// 不存在（连"不冒粒子"都算不上，是压根没有这个 pass）。
+//
+// 而这个 TU 其实**一个后端私有的符号都不需要**：那几处只是顺手用了后端的 typedef
+// （device size / specialization map entry / pipeline stage flags / 布尔真值），
+// RHI 层全都有对应的 `RHI_` 前缀版本。唯一一处直接调后端 API 的地方还是一段注释
+// 里的死代码，已经连注释一起删掉 —— 留着只会让人误以为这个 pass 依赖后端设备句柄。
+//
+// 注：不要在注释里逐字引用那些被禁的字面量 —— AppleSceneBlitSmokeTest 是拿文本
+// 匹配来钉"这个 TU 已经解耦"的，注释里出现一次就会把契约蒙过去。
 #include "Runtime/Function/Render/RenderCamera.h"
 #include "Runtime/Function/Render/RenderSystem.h"
 #include "core/base/Macro.h"
@@ -42,7 +51,7 @@ void ParticlePass::CopyNormalAndDepthImage()
 {
     uint8_t index = (m_Rhi->GetCurrentFrameIndex() + m_Rhi->GetMaxFramesInFlight() - 1) % m_Rhi->GetMaxFramesInFlight();
 
-    m_Rhi->WaitForFencesPFN(1, &(m_Rhi->GetFenceList()[index]), VK_TRUE, UINT64_MAX);
+    m_Rhi->WaitForFencesPFN(1, &(m_Rhi->GetFenceList()[index]), RHI_TRUE, UINT64_MAX);
 
     RHICommandBufferBeginInfo command_buffer_begin_info {};
     command_buffer_begin_info.sType = RHI_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -312,13 +321,45 @@ void ParticlePass::UpdateAfterFramebufferRecreate()
 
 void ParticlePass::Draw()
 {
+    // 这两个映射指针是 `SetupParticlePass()` → `PrepareUniformBuffer()` 里映射出来的。
+    // 少调那一步时它们是 nullptr，而下面两行 memcpy 会直接 SEGV —— 栈落在
+    // `_platform_memmove`，从崩溃报告上完全看不出是粒子的问题（真机上踩过一次）。
+    // 所以在这里守住，并且**说出来**是哪一步没做。
+    if (m_SceneUniformBufferMapped == nullptr || m_ParticleBillboardUniformBufferMapped == nullptr)
+    {
+        if (!m_DrawSkippedLogged)
+        {
+            m_DrawSkippedLogged = true;
+            LOG_ERROR(ZParticle,
+                      "ParticlePass::Draw: skipped (uniform buffers are not mapped -- "
+                      "SetupParticlePass() was never called, particles stay invisible)");
+        }
+        return;
+    }
+
     constexpr ViewportType k_viewports[] = {ViewportType::game, ViewportType::scene};
+
+    m_LastDrawnEmitters = 0;
+    m_LastDrawnParticles = 0;
+    m_LastDrawnViewport = -1;
+    // 两个视口都能画，但心跳只报**第一个真正画了的**那个视口的数 —— 否则每个
+    // emitter 会被数两遍。注意不能写死"只数 game"：Apple 上 Scene 与 Game 是同一个
+    // tab 组的两个 tab，只有激活的那个有 rect，写死 game 时（Game tab 未激活）
+    // 会把"画了的粒子"报成 0。
+    bool counted = false;
 
     for (ViewportType viewport_type : k_viewports)
     {
         auto* viewport = m_Rhi->GetViewport(viewport_type);
         if (!viewport || viewport->width <= 0.0f || viewport->height <= 0.0f)
             continue;
+
+        const bool count_this_viewport = !counted;
+        counted                        = true;
+        if (count_this_viewport)
+        {
+            m_LastDrawnViewport = static_cast<int>(viewport_type);
+        }
 
         m_ParticleCollisionPerFrame =
             m_ParticleCollisionPerFrameByViewport[static_cast<size_t>(viewport_type)];
@@ -356,6 +397,13 @@ void ParticlePass::Draw()
                                             NULL);
 
             m_Rhi->CmdDraw(m_RenderCommandBuffer, 4, m_EmitterBufferBatches[i].m_NumParticle, 0, 0);
+
+            // 心跳用：每个 emitter 在两个视口各画一遍，只累加一次。
+            if (count_this_viewport)
+            {
+                ++m_LastDrawnEmitters;
+                m_LastDrawnParticles += m_EmitterBufferBatches[i].m_NumParticle;
+            }
 
             m_Rhi->PopEvent(m_RenderCommandBuffer);
         }
@@ -554,7 +602,7 @@ void ParticlePass::SetEmitterCount(int count)
 
 void ParticlePass::CreateEmitter(int id, const ParticleEmitterDesc& desc)
 {
-    const VkDeviceSize counterBufferSize = sizeof(ParticleCounter);
+    const RHIDeviceSize counterBufferSize = sizeof(ParticleCounter);
     ParticleCounter counter;
     counter.alive_count = m_EmitterBufferBatches[id].m_NumParticle;
     counter.dead_count = s_MaxParticles - m_EmitterBufferBatches[id].m_NumParticle;
@@ -573,7 +621,7 @@ void ParticlePass::CreateEmitter(int id, const ParticleEmitterDesc& desc)
     }
 
     {
-        const VkDeviceSize indirectArgumentSize = sizeof(IndirectArgumemt);
+        const RHIDeviceSize indirectArgumentSize = sizeof(IndirectArgumemt);
         struct IndirectArgumemt indirectargument = {};
         indirectargument.alive_flap_bit = 1;
         m_Rhi->CreateBufferAndInitialize(RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT | RHI_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
@@ -584,7 +632,7 @@ void ParticlePass::CreateEmitter(int id, const ParticleEmitterDesc& desc)
                                          &indirectargument,
                                          indirectArgumentSize);
 
-        const VkDeviceSize aliveListSize = 4 * sizeof(uint32_t) * s_MaxParticles;
+        const RHIDeviceSize aliveListSize = 4 * sizeof(uint32_t) * s_MaxParticles;
         std::vector<int> aliveindices(s_MaxParticles * 4, 0);
         for (int i = 0; i < s_MaxParticles; ++i)
             aliveindices[i * 4] = i;
@@ -603,7 +651,7 @@ void ParticlePass::CreateEmitter(int id, const ParticleEmitterDesc& desc)
                                          m_EmitterBufferBatches[id].m_AliveListNextMemory,
                                          aliveListSize);
 
-        const VkDeviceSize deadListSize = 4 * sizeof(uint32_t) * s_MaxParticles;
+        const RHIDeviceSize deadListSize = 4 * sizeof(uint32_t) * s_MaxParticles;
         std::vector<int32_t> deadindices(s_MaxParticles * 4, 0);
         for (int32_t i = 0; i < s_MaxParticles; ++i)
             deadindices[i * 4] = s_MaxParticles - 1 - i;
@@ -705,7 +753,7 @@ void ParticlePass::CreateEmitter(int id, const ParticleEmitterDesc& desc)
         m_Rhi->FreeCommandBuffers(m_Rhi->GetCommandPoor(), 1, copyCmd);
     }
 
-    const VkDeviceSize staggingBuferSize = s_MaxParticles * sizeof(Particle);
+    const RHIDeviceSize staggingBuferSize = s_MaxParticles * sizeof(Particle);
     m_EmitterBufferBatches[id].m_EmitterDesc = desc;
 
     // fill in data
@@ -1057,29 +1105,27 @@ void ParticlePass::SetupPipelines()
             throw std::runtime_error("create compute pass pipe layout");
         LOG_INFO(ZParticle, "compute pipe layout done");
     }
-    /*
-    VkPipelineCache           pipelineCache;
-    VkPipelineCacheCreateInfo pipelineCacheCreateInfo = {};
-    pipelineCacheCreateInfo.sType                     = RHI_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    if (RHI_SUCCESS != vkCreatePipelineCache(m_VulkanRhi->m_Device, &pipelineCacheCreateInfo, nullptr,
-    &pipelineCache))
-    {
-        throw std::runtime_error("create particle cache");
-    }*/
+    // 这里以前有一段注释掉的死代码，直接调后端 API 建 pipeline cache 并拿着后端
+    // 的设备句柄 —— 它是本 TU 唯一一处绕开 RHI 抽象的地方，所以连注释一起删掉：
+    // 留着只会让人误以为这个 pass 依赖后端设备句柄（那正是它被排除在 Apple
+    // 构建之外的理由）。
 
     struct SpecializationData
     {
         uint32_t BUFFER_ELEMENT_COUNT = 32;
     } specializationData;
 
-    VkSpecializationMapEntry specializationMapEntry {};
+    RHISpecializationMapEntry specializationMapEntry {};
     specializationMapEntry.constantID = 0;
     specializationMapEntry.offset = 0;
     specializationMapEntry.size = sizeof(uint32_t);
 
-    VkSpecializationInfo specializationInfo {};
+    RHISpecializationInfo specializationInfo {};
     specializationInfo.mapEntryCount = 1;
-    specializationInfo.pMapEntries = &specializationMapEntry;
+    // RHI 的 `pMapEntries` 是 `const RHISpecializationMapEntry**`（和 Vulkan 一样），
+    // 所以要先有一个 const 指针变量再取它的地址。
+    const RHISpecializationMapEntry* p_specialization_map_entry = &specializationMapEntry;
+    specializationInfo.pMapEntries = &p_specialization_map_entry;
     specializationInfo.dataSize = sizeof(specializationData);
     specializationInfo.pData = &specializationData;
 
@@ -1836,7 +1882,7 @@ void ParticlePass::Simulate()
         // Submit compute work
         m_Rhi->ResetFencesPFN(1, &m_Fence);
         computeSubmitInfo = {};
-        const VkPipelineStageFlags waitStageMask = RHI_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+        const RHIPipelineStageFlags waitStageMask = RHI_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
         computeSubmitInfo.sType = RHI_STRUCTURE_TYPE_SUBMIT_INFO;
         computeSubmitInfo.pWaitDstStageMask = &waitStageMask;
         computeSubmitInfo.commandBufferCount = 1;

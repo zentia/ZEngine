@@ -70,6 +70,18 @@ public:
 
     void SetEmitterCount(int count);
 
+    // 心跳用的三个数（见 RenderSystem 的 `particle=` 字段）。
+    //
+    // 分开打是因为它们指向三种**完全不同**的故障，混在一起就只能靠猜：
+    //   has=0      → 根本没有粒子 pass（老行为：TU 被排除 / 建管线失败）
+    //   emit=0     → 有 pass 但从来没人提交过 emitter（swap data 没送过来）
+    //   draw=0     → 有 emitter 但这一帧一条 billboard 都没画（视口是 0x0？）
+    int      GetEmitterCount() const { return m_EmitterCount; }
+    int      GetLastDrawnEmitters() const { return m_LastDrawnEmitters; }
+    uint32_t GetLastDrawnParticles() const { return m_LastDrawnParticles; }
+    // 心跳数的是哪个视口（-1 = 两个视口都是 0x0，一次都没画）。
+    int      GetLastDrawnViewport() const { return m_LastDrawnViewport; }
+
     void CreateEmitter(int id, const ParticleEmitterDesc& desc);
 
     void InitializeEmitters();
@@ -215,4 +227,13 @@ private:
     // Track if attachments (textures) have been initialized
     // This allows lazy initialization when ParticleManager becomes available
     bool m_AttachmentsInitialized = false;
+
+    // Draw() 早退的一次性日志（见 Draw() 里的注释：uniform buffer 没映射时
+    // 直接 memcpy 会 SEGV，必须守住而不是崩）。
+    bool m_DrawSkippedLogged = false;
+
+    // 上一帧 Draw() 实际发出的 emitter / 粒子数（心跳 `particle=` 用）。
+    int      m_LastDrawnEmitters {0};
+    uint32_t m_LastDrawnParticles {0};
+    int      m_LastDrawnViewport {-1};
 };

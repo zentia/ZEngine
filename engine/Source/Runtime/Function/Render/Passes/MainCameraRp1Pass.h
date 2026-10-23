@@ -2,6 +2,7 @@
 
 #include "Runtime/Function/Render/Passes/MainCameraFramebufferResources.h"
 #include "Runtime/Function/Render/Passes/MainCameraPassShaderCommon.h"
+#include "Runtime/Function/Render/Passes/ParticlePass.h"
 #include "Runtime/Function/Render/RenderPass.h"
 
 #include <array>
@@ -65,6 +66,18 @@ public:
     //
     // nullptr（默认）= 这个 pass 不画 Nanite，Nanite 继续走自己的离屏 target。
     void SetNaniteRenderer(NaniteRenderer* renderer) { m_NaniteRenderer = renderer; }
+
+    // 粒子的兄弟 pass（和 Vulkan 的 `MainCameraPass::SetParticlePass` 同一套契约）。
+    //
+    // 粒子是**两个** pass 拼起来的：`Simulate()` 是 compute（在帧末自己提交），
+    // `Draw()` 画的是 billboard，必须发生在某个 graphics render pass 开着的时候 ——
+    // 所以只能由持有 render pass 的人（RP1）在 forward 那一站里代调。这也是为什么
+    // 它不能像 Nanite 那样只传一个裸指针：生命周期得跟 RP1 绑在一起。
+    void SetParticlePass(std::shared_ptr<ParticlePass> pass) { m_ParticlePass = std::move(pass); }
+
+    // 把 RP1 的深度图 / GBufferA（法线）/ forward render pass 交给粒子。
+    // 必须在 `Initialize()` **之后**调：那时 framebuffer 资源才存在。
+    void SetupParticlePass();
 
     // 把当前的 GBuffer render pass / framebuffer 重新交给 Nanite。
     //
@@ -146,6 +159,10 @@ private:
     MainCameraFramebufferResources* m_FbResources {nullptr};
     // 由 DesktopRenderPipelineModule 从 NaniteRenderPass 取来，只借不拥有。
     NaniteRenderer* m_NaniteRenderer {nullptr};
+    // 粒子。桌面管线模块创建并拥有它，RP1 持一份 shared_ptr（因为 `Draw()` 要在
+    // forward pass 开着的时候被调用，只有 RP1 知道那一站是什么时候）。
+    // nullptr = 这个 pass 不画粒子（老行为）。
+    std::shared_ptr<ParticlePass> m_ParticlePass;
     // Live per-viewport UBO source (PreparePassData); avoids stale copies at Sky Pass upload.
     RenderResource* m_PerFrameSource {nullptr};
     RHIDescriptorSetLayout* m_ExternalPerMeshLayout {nullptr};

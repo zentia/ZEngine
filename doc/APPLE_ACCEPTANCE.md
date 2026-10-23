@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 276 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18）；Nanite 的每帧推进必须在**四条 Tick 路径上都存在**（§3.21）；GPU 路径的每一步都要能被证伪，心跳带 `ngpu=`（§3.22）；编辑器 gizmo（axis）的**上传 + 绘制两半**都在，且 RHI 真的把 dynamic offset 用上（§3.23） |
+| `AppleSceneBlitSmokeTest` | 319 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18）；Nanite 的每帧推进必须在**四条 Tick 路径上都存在**（§3.21）；GPU 路径的每一步都要能被证伪，心跳带 `ngpu=`（§3.22）；编辑器 gizmo（axis）的**上传 + 绘制两半**都在，且 RHI 真的把 dynamic offset 用上（§3.23）；粒子的解耦 + Apple 名单 + 运行时接线 + **每帧推进**（§3.24） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 
@@ -592,10 +592,14 @@ AppleRender: frame=1921 ... game_vp=(389,104) 1524x915 game_sc=(389,104) 1524x91
   `#if defined(Z_HAS_VULKAN)` 门住，**Metal 和 DX12 都落到"只清"分支**；
 - 也就是说 **DX12 同样不冒粒子**，这不是 Apple 独有的洞。
 
-试过把 `ParticlePass` 从排除名单里放出来，编译直接 `fatal error: 'vulkan/vulkan.h' file not found`
-（经 `VulkanRHI.h` → `VulkanBindlessTextureManager.h` 传进来）⇒ 排除名单是对的。要让粒子真跑
-起来，第一步是把那个 TU 从 Vulkan 头里解耦出来，之后才能谈在 Metal 上创建 pass（它还挂在
-`MainCameraPass` 上，而 Apple 用的是 `MainCameraRp1Pass`，没有粒子挂载点）。
+试过把 `ParticlePass` 从排除名单里放出来，编译直接
+`fatal error: 'vulkan/vulkan.h' file not found`（经 `VulkanRHI.h` →
+`VulkanBindlessTextureManager.h` 传进来）⇒ 排除名单是对的。要让粒子真跑起来，第一步是把
+那个 TU 从后端头里解耦出来，之后才能谈在 Metal 上创建 pass（它还挂在 `MainCameraPass`
+上，而 Apple 用的是 `MainCameraRp1Pass`，没有粒子挂载点）。
+
+> **后续：这条已在 §3.24 补完** —— 解耦、放出名单、挂到 RP1、每帧推进、编辑态 tick
+> 五步一起做完，真机心跳 `particle=(has=1 emit=2 draw=2 parts=300000 vp=1)`。
 
 **验证**：冒烟测试新增 5 条契约盯"门闩必须在早退之前"（176 → 181 checks）。变异：把那批
 清理挪回早退之后 ⇒ 3 条红。（契约自己先踩了一个坑：搜早退时只匹配条件会先命中**注释里**
@@ -977,6 +981,80 @@ PlayModeView probe: constructed 'Scene' viewport_id=1
 PlayModeView probe: published 'Scene' viewport_id=1 rect=(389,156) 1524x863
 ```
 
+### 3.24 粒子：`ParticlePass` 解耦之后还有两层洞（每帧推进 + 编辑态 tick）
+
+**症状**：Metal 上场景里一个粒子都不冒，且不崩、不报错、心跳什么都不说。
+
+**根因（三层，一层套一层）**：
+
+| # | 缺的那一层 | 位置 | 后果 |
+|---|---|---|---|
+| a | **编译期**：`ParticlePass.cpp` 经传递 include 拉进某个后端自己的平台头 | `ParticlePass.cpp` | 被 `ZENGINE_APPLE_EXCLUDED_PASSES` 整 TU 排除 ⇒ Metal 上**根本没有这个 pass** |
+| b | **消费期**：`ConsumeParticleSwapData` 的消费代码被一个后端宏门住 | `DesktopRenderPipelineModule.cpp` | Metal / DX12 都落进"只清门闩"分支，粒子数据每帧送到然后原地丢掉 |
+| c | **每帧推进**：两步推进只写在 `SubmitDrawLists` 里 | `DesktopRenderPipelineModule.cpp` / `RenderSystem.cpp` | **Apple 那条精简 Tick 根本不走 `SubmitDrawLists`** —— 它直接 `draw_list.ExecuteAll()` ⇒ `Simulate()` 一次都没跑 |
+| d | **编辑态 tick**：`ParticleComponent` 不在 `g_editorTickComponentTypes` 白名单里 | `EditorApplication.cpp` | `ParticleComponent::Tick()` 是 tick 请求的**唯一**生产者 ⇒ 编辑器里（非 Play）`Simulate()` 遍历的是空表 |
+
+(a)(b) 是 §3.14 就记下的老账，本次把它们补完。(c) 是这一节真正的新洞，(d) 是顺带挖出来的。
+
+**修复**：
+
+- (a) 删掉那两个后端头，9 处后端 typedef 换成 RHI 的 `RHIDeviceSize` /
+  `RHISpecializationMapEntry` / `RHISpecializationInfo` / `RHIPipelineStageFlags` / `RHI_TRUE`；
+  顺带删掉注释里那段直接调后端 API 建 pipeline cache 的死代码（本 TU 唯一一处绕开
+  RHI 抽象的地方）。`RHISpecializationInfo::pMapEntries` 是 `const**`，得先有一个 const
+  指针变量再取它的地址。
+- (b) 判据从"是不是某个后端"改成"这一套管线有没有粒子 pass"。
+- (c) 抽成 `RenderPipelineBase::PrepareParticlesForDraw()` / `AdvanceParticlesAfterDraw()`
+  一对**普通方法**（不是虚函数，基类就认得 `m_ParticlePass`），两条 Tick 路径各调各的。
+  Vulkan 那支原本硬写在 `SubmitDrawLists` 里的两行也换成同一对，免得将来再抄漏。
+- (d) `EditorApplication::Initialize` 加 `registerEdtorTickComponent("ParticleComponent")`。
+  Unity 的粒子在 Scene 视图里本来就不用按 Play 才动，所以这是对齐而不是加戏。
+
+**验证**：真机（2026-10-23），心跳：
+
+```
+particle=(has=1 emit=2 draw=2 parts=300000 vp=1)
+```
+
+`parts` 是**画出去的 instanceCount**，等于 `Simulate()` 回读的 `alive_count_after_sim`。
+修 (c) 之前它是 `parts=0`（建管线、接深度法线、送 swap 数据全都做了，唯独 simulate 没跑）。
+`frame=1201` 无 Metal 错误、无崩溃报告。
+
+冒烟测试新增 43 条契约（276 → 319 checks）。五次变异各自精确变红：
+
+| 变异 | 红几条 |
+|---|---|
+| 删 Apple Tick 里的 `AdvanceParticlesAfterDraw()` | 1 |
+| 把 `ParticlePass` 放回 `ZENGINE_APPLE_EXCLUDED_PASSES` | 1 |
+| 注释掉 `registerEdtorTickComponent("ParticleComponent")` | 1 |
+| 注释掉 RP1 里 `m_ParticlePass->SetupParticlePass()` | 1 |
+| 注释掉消费侧的 `SetTickIndices(...)` | 1 |
+| 把后端头 include 回 `ParticlePass.cpp` | 1 |
+
+**三条教训**：
+
+1. **"每帧推进"挂在哪个帧钩子上，比它写没写更重要**。我把两步推进照抄进了
+   `DesktopRenderPipelineModule::SubmitDrawLists` 的 Apple 分支，而 Apple 的
+   `RenderSystem::Tick` 从未调用它 —— 抄对了地方也照样是死代码。判定办法只有一个：
+   探针。`ParticlePass::Simulate()` 顶上那行计数探针一次都没打出来，就是铁证。
+2. **文本契约会被自己的注释蒙过去（第五次）**：变异把
+   `registerEdtorTickComponent("ParticleComponent")` **注释掉**，全文 `find` 依然命中
+   那个串 ⇒ 319 条全绿。修法：钉"调用点"的断言一律走 `code_line_find()`（逐行扫、
+   跳过整行 `//`），不走全文 `Contains`。另外正文注释里**不许**逐字引用被禁的字面量
+   （`ParticlePass.cpp` / `DesktopRenderPipelineModule.cpp` 的注释都为此改写过）。
+3. **两个同名函数极易漏一个**：`MainCameraRp1Pass::SetupParticlePass()` 和
+   `ParticlePass::SetupParticlePass()` 干的是两件事（接线 vs 映射 uniform buffer）。
+   只调前者时 `Draw()` 会往两个 nullptr 里 memcpy —— SIGSEGV
+   （`KERN_INVALID_ADDRESS at 0x0`，栈在 `_platform_memmove`）。这个崩溃实打实踩过一次，
+   所以现在两个都在同一个函数里、外面只调一次，并且 `Draw()` 自己也守了 nullptr
+   + 一次性 ERROR 日志。
+
+**顺带查清的一件事（是真 bug，但平台无关，本次没修）**：同一个 `ParticleComponent`
+（`this` 指针相同）会被 `PostLoadResource` 调**两次** —— 先是 prefab 模板对象
+`particle.object`（原点），再是场景实例 `Emitter`（32,11,3）。于是场景里 1 个发射器
+会开出 2 份 GPU 资源（`emit=2`），模板那一份永远没人 tick、永远 0 个粒子，但每帧照样
+被 Draw 遍历。修它要动 prefab 模板的加载路径，影响面比 Apple 大，先记在这里。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - ~~**`NaniteGPUCullingSmokeTest` 在 Apple 上是红的（21 条）**~~ —— **已在 §3.20 修掉**：
@@ -1006,11 +1084,11 @@ PlayModeView probe: published 'Scene' viewport_id=1 rect=(389,156) 1524x863
   有的（`PlayModeView::UpdateViewport`），但 Scene 与 Game 是同一个 tab 组的两个 tab，**只有
   当前激活的那个有 rect**。激活的是 Scene 时心跳是 `game_vp=0x0 scene_vp=(389,156) 1524x863`，
   激活的是 Game 时反过来 —— 两个都是预期值，取决于 `saved/config/native_dock.json`。
-- **粒子在 Vulkan 之外的所有后端都不冒（不是 Apple 独有的）**：`ParticlePass.cpp` 经传递
-  include 拉 `vulkan/vulkan.h`，被 `ZENGINE_APPLE_EXCLUDED_PASSES` 排除在 Apple 构建之外；
-  `ConsumeParticleSwapData` 的消费代码被 `#if defined(Z_HAS_VULKAN)` 门住 ⇒ **Metal 和 DX12
-  都走"只清"分支**。详见 §3.14。`ProcessSwapData` 现在走共享的
-  `RenderPipeline::ConsumeParticleSwapData()`（门闩照清），将来 Metal 上真有 pass 就自动接上。
+- ~~**粒子在 Vulkan 之外的所有后端都不冒（不是 Apple 独有的）**~~ —— **已在 §3.24 修掉**：
+  `ParticlePass.cpp` 解耦掉了后端头（放出 Apple 名单）、消费侧改成"有没有粒子 pass"判据、
+  每帧推进抽成 `RenderPipelineBase` 那一对方法（Apple 的精简 Tick 原本不走 `SubmitDrawLists`）、
+  编辑态 tick 白名单补上 `ParticleComponent`。真机心跳现在是
+  `particle=(has=1 emit=2 draw=2 parts=300000 vp=1)`。
 
 - **点光源阴影 pass 在 Metal 上不做**：它靠 geometry shader 做 cubemap 展开，Metal 没有
   geometry shader。现在和 DX12 一样是 clear-only，不抛错。

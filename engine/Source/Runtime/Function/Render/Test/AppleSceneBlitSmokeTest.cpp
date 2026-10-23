@@ -1152,6 +1152,224 @@ namespace
     // 统一到 `RenderSystem::UpdateNaniteForFrame()` 这一个入口上，所以契约盯的是
     // "每个分支都真的调了它"，而不是"某个地方出现过 Nanite 这个字"。
     // -------------------------------------------------------------------------
+    // =======================================================================
+    // 1i. 粒子（所有平台都跑）
+    //
+    // Metal 上以前**根本没有粒子 pass**：`ParticlePass.cpp` 经传递 include 拉进某个
+    // 后端自己的平台头，于是被 `ZENGINE_APPLE_EXCLUDED_PASSES` 整 TU 排除。画面上
+    // 的表现是"场景里没有粒子"，和"有 pass 但没 emitter"、"有 emitter 但没画"长得
+    // 一模一样 —— 只能靠探针分辨，所以心跳里 has / emit / draw / parts 分开打。
+    //
+    // 这一节钉四层：解耦本身、Apple 名单、运行时接线、**每帧推进**。最后一层是
+    // 阶段 61 真正踩到的洞：粒子的两步推进原本只写在 `SubmitDrawLists` 里，而
+    // Apple 那条精简 Tick **根本不走 SubmitDrawLists**（直接 `draw_list.ExecuteAll()`）
+    // ⇒ 建管线、接深度法线、送 swap 数据全都做了，唯独 `Simulate()` 一次没跑，
+    // 存活数恒为 0，且不报任何错。
+    // =======================================================================
+    void CheckParticleContracts()
+    {
+        const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string particle_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Passes/ParticlePass.cpp");
+        const std::string particle_header =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Passes/ParticlePass.h");
+        const std::string rp1_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Passes/MainCameraRp1Pass.cpp");
+        const std::string rp1_header =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Passes/MainCameraRp1Pass.h");
+        const std::string module_source =
+            ReadFileText(engine_root + "/Source/Runtime/Function/Render/Pipeline/DesktopRenderPipelineModule.cpp");
+        const std::string base_source = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderPipelineBase.cpp");
+        const std::string base_header = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderPipelineBase.h");
+        const std::string sys_source   = ReadFileText(engine_root + "/Source/Runtime/Function/Render/RenderSystem.cpp");
+        const std::string cmake_source = ReadFileText(engine_root + "/Source/Runtime/CMakeLists.txt");
+        const std::string editor_source =
+            ReadFileText(engine_root + "/Source/Editor/EditorApplication/EditorApplication.cpp");
+        const std::string game_object_source = ReadFileText(engine_root + "/Source/Runtime/BaseClasses/GameObject.cpp");
+
+        Check(!particle_source.empty(), "ParticlePass.cpp is readable as text (particle decoupling)");
+        Check(!particle_header.empty(), "ParticlePass.h is readable as text (particle decoupling)");
+        Check(!rp1_source.empty(), "MainCameraRp1Pass.cpp is readable as text (particle wiring)");
+        Check(!module_source.empty(), "DesktopRenderPipelineModule.cpp is readable as text (particle wiring)");
+        Check(!base_source.empty(), "RenderPipelineBase.cpp is readable as text (particle per-frame advance)");
+        Check(!sys_source.empty(), "RenderSystem.cpp is readable as text (particle per-frame advance)");
+        Check(!cmake_source.empty(), "Runtime/CMakeLists.txt is readable as text (Apple exclusion list)");
+        Check(!editor_source.empty(), "EditorApplication.cpp is readable as text (edit-mode tick whitelist)");
+        Check(!game_object_source.empty(), "GameObject.cpp is readable as text (edit-mode tick dispatch)");
+
+        // ---- 1. 解耦：这个 TU 不再拖任何后端私有的头 ----
+        //
+        // 只看 `#include` 那一行本身：正文注释里讲这段历史时**不许**逐字引用被禁的
+        // 字面量（否则注释自己就把契约蒙过去了），所以逐行扫比全文 find 更靠得住。
+        auto include_line_mentions = [](const std::string& src, const std::string& needle) {
+            size_t at = 0;
+            while ((at = src.find("#include", at)) != std::string::npos)
+            {
+                const size_t eol  = src.find('\n', at);
+                const std::string line =
+                    src.substr(at, (eol == std::string::npos ? src.size() : eol) - at);
+                if (line.find(needle) != std::string::npos)
+                {
+                    return true;
+                }
+                at += 8;
+            }
+            return false;
+        };
+        // ⚠️ 逐行扫**代码行**（跳过整行注释）。
+        //
+        // 没有它，"把一行代码注释掉"这种最普通的回归会**照样命中**契约：变异测试
+        // 里把 `registerEdtorTickComponent("ParticleComponent")` 注释掉，全文 find
+        // 依然找得到那个串，319 条检查全绿 —— 这是"文本契约被自己的注释蒙过去"
+        // 的第 5 次。凡是钉"调用点"的断言都必须走这个，不能走全文 Contains。
+        auto code_line_find = [](const std::string& src, const std::string& needle) {
+            size_t at = 0;
+            while (at < src.size())
+            {
+                size_t eol = src.find('\n', at);
+                if (eol == std::string::npos)
+                {
+                    eol = src.size();
+                }
+                const std::string line  = src.substr(at, eol - at);
+                const size_t      first = line.find_first_not_of(" \t");
+                const bool        commented =
+                    first != std::string::npos && line.compare(first, 2, "//") == 0;
+                const size_t hit = line.find(needle);
+                if (!commented && hit != std::string::npos)
+                {
+                    return at + hit;
+                }
+                at = eol + 1;
+            }
+            return std::string::npos;
+        };
+        auto code_line_mentions = [&code_line_find](const std::string& src, const std::string& needle) {
+            return code_line_find(src, needle) != std::string::npos;
+        };
+
+        Check(!include_line_mentions(particle_source, "ulkan"),
+              "ParticlePass.cpp includes no backend-private header (that is what excluded it on Apple)");
+        Check(!include_line_mentions(particle_header, "ulkan"),
+              "ParticlePass.h includes no backend-private header either");
+        Check(CountOccurrences(particle_source, "VkDeviceSize") == 0,
+              "ParticlePass.cpp uses the RHI device-size typedef, not the backend one");
+        Check(CountOccurrences(particle_source, "VkSpecializationMapEntry") == 0,
+              "ParticlePass.cpp uses the RHI specialization-map typedef, not the backend one");
+        Check(CountOccurrences(particle_source, "VkPipelineStageFlags") == 0,
+              "ParticlePass.cpp uses the RHI pipeline-stage typedef, not the backend one");
+        Check(CountOccurrences(particle_source, "VK_TRUE") == 0,
+              "ParticlePass.cpp uses RHI_TRUE, not the backend boolean constant");
+        Check(CountOccurrences(particle_source, "vkCreatePipelineCache") == 0,
+              "the dead direct backend-API call is gone (it was the only one in this TU)");
+
+        // ---- 2. Apple 的排除名单里不再有 ParticlePass ----
+        const size_t excl_at  = cmake_source.find("set(ZENGINE_APPLE_EXCLUDED_PASSES");
+        const size_t excl_end = cmake_source.find("list(FILTER", excl_at == std::string::npos ? 0 : excl_at);
+        Check(excl_at != std::string::npos && excl_end != std::string::npos && excl_at < excl_end,
+              "the Apple exclusion list is one set() immediately followed by a list(FILTER)");
+        const std::string excl_block =
+            (excl_at == std::string::npos || excl_end == std::string::npos)
+                ? std::string()
+                : cmake_source.substr(excl_at, excl_end - excl_at);
+        Check(!excl_block.empty() && !Contains(excl_block, "ParticlePass"),
+              "ParticlePass is no longer in the Apple-excluded passes (Metal really builds it)");
+
+        // ---- 3. 运行时接线：建 pass、递给 RP1、在 forward 那一站画 ----
+        Check(code_line_mentions(module_source, "m_Pipeline.m_ParticlePass = std::make_shared<ParticlePass>()"),
+              "the desktop pipeline creates the particle pass");
+        Check(code_line_mentions(rp1_header, "SetParticlePass("), "MainCameraRp1Pass exposes SetParticlePass()");
+        Check(code_line_mentions(module_source, "rp1->SetParticlePass("),
+              "the particle pass is handed to the RP1 pass (Apple draws billboards in the forward station)");
+        Check(code_line_mentions(rp1_source, "m_ParticlePass->Draw()"),
+              "RP1 draws the particle billboards (once per pass, inside the forward lighting station)");
+
+        // ⚠️ 两个同名函数都要调。只调 RP1 这个（递深度图 / 法线 / render pass）是
+        // **不够的**：pass 自己的那个才负责映射 uniform buffer，漏掉它 `Draw()` 会
+        // 往两个 nullptr 里 memcpy（KERN_INVALID_ADDRESS at 0x0，栈在
+        // `_platform_memmove`）。这个崩溃实打实踩过一次。
+        const size_t rp1_setup_at  = rp1_source.find("void MainCameraRp1Pass::SetupParticlePass()");
+        const size_t rp1_setup_end = rp1_source.find("\n}", rp1_setup_at == std::string::npos ? 0 : rp1_setup_at);
+        Check(rp1_setup_at != std::string::npos && rp1_setup_end != std::string::npos,
+              "MainCameraRp1Pass::SetupParticlePass is defined (sliced to its closing brace)");
+        const std::string rp1_setup_body =
+            (rp1_setup_at == std::string::npos || rp1_setup_end == std::string::npos)
+                ? std::string()
+                : rp1_source.substr(rp1_setup_at, rp1_setup_end - rp1_setup_at);
+        // 必须带 `m_ParticlePass->`：正文注释里引用的是 `ParticlePass::SetupParticlePass()`，
+        // 光搜函数名会先命中注释 —— 那正是"注释把契约蒙过去"的老毛病。
+        Check(!rp1_setup_body.empty() && code_line_mentions(rp1_setup_body, "m_ParticlePass->SetupParticlePass()"),
+              "it also calls the pass's OWN SetupParticlePass (uniform buffers are mapped there)");
+        Check(code_line_mentions(rp1_setup_body, "SetDepthAndNormalImage("),
+              "it hands the depth + normal images to the particle pass (collision reads them)");
+        Check(code_line_mentions(rp1_setup_body, "SetRenderPassHandle("),
+              "it hands the forward lighting render pass to the particle pass (billboards draw there)");
+
+        // ---- 4. 消费侧的判据是"有没有粒子 pass"，不是"是不是某个后端" ----
+        const size_t consume_at  = module_source.find("void DesktopRenderPipelineModule::ConsumeParticleSwapData(");
+        const size_t consume_end = module_source.find("\n}", consume_at == std::string::npos ? 0 : consume_at);
+        Check(consume_at != std::string::npos && consume_end != std::string::npos,
+              "DesktopRenderPipelineModule::ConsumeParticleSwapData is defined (sliced to its closing brace)");
+        const std::string consume_body =
+            (consume_at == std::string::npos || consume_end == std::string::npos)
+                ? std::string()
+                : module_source.substr(consume_at, consume_end - consume_at);
+        Check(!consume_body.empty() && !Contains(consume_body, "Z_HAS_VULKAN"),
+              "the particle swap drain is not gated on a backend macro any more (Metal used to drop it)");
+        Check(code_line_mentions(consume_body, "if (!m_Pipeline.m_ParticlePass)"),
+              "the real gate is 'does this pipeline have a particle pass'");
+        Check(code_line_mentions(consume_body, "SetTickIndices("),
+              "the emitter tick request reaches the pass (without it Simulate() loops over nothing)");
+
+        // ---- 5. 每帧推进：夹在 draw list 录制的两头，且两条 Tick 路径都要有 ----
+        Check(code_line_mentions(base_header, "void PrepareParticlesForDraw(RHICommandBuffer* command_buffer);"),
+              "RenderPipelineBase exposes PrepareParticlesForDraw (called before the draw list is recorded)");
+        Check(code_line_mentions(base_header, "void AdvanceParticlesAfterDraw();"),
+              "RenderPipelineBase exposes AdvanceParticlesAfterDraw (called after the draw list is recorded)");
+        const size_t advance_at  = base_source.find("void RenderPipelineBase::AdvanceParticlesAfterDraw()");
+        const size_t advance_end = base_source.find("\n}", advance_at == std::string::npos ? 0 : advance_at);
+        Check(advance_at != std::string::npos && advance_end != std::string::npos,
+              "RenderPipelineBase::AdvanceParticlesAfterDraw is defined (sliced to its closing brace)");
+        const std::string advance_body =
+            (advance_at == std::string::npos || advance_end == std::string::npos)
+                ? std::string()
+                : base_source.substr(advance_at, advance_end - advance_at);
+        Check(!advance_body.empty() && code_line_mentions(advance_body, "CopyNormalAndDepthImage()"),
+              "the advance step copies this frame's depth + normal images");
+        Check(code_line_mentions(advance_body, "Simulate()"),
+              "the advance step runs the particle simulation (this is what used to never run on Metal)");
+
+        // Apple 那条精简 Tick：不走 SubmitDrawLists，必须自己叫一遍。
+        const size_t apple_tick_at  = sys_source.find("void RenderSystem::Tick(float");
+        const size_t apple_tick_end = sys_source.find("\nvoid ", apple_tick_at + 1);
+        Check(apple_tick_at != std::string::npos && apple_tick_end != std::string::npos,
+              "RenderSystem::Tick is the Apple tick (sliced to the next top-level function)");
+        const std::string apple_tick =
+            (apple_tick_at == std::string::npos || apple_tick_end == std::string::npos)
+                ? std::string()
+                : sys_source.substr(apple_tick_at, apple_tick_end - apple_tick_at);
+        const size_t exec_at = code_line_find(apple_tick, "draw_list.ExecuteAll()");
+        const size_t prep_at = code_line_find(apple_tick, "PrepareParticlesForDraw(");
+        const size_t adv_at  = code_line_find(apple_tick, "AdvanceParticlesAfterDraw(");
+        Check(exec_at != std::string::npos, "the Apple tick records its draw list with ExecuteAll()");
+        Check(prep_at != std::string::npos && exec_at != std::string::npos && prep_at < exec_at,
+              "the Apple tick hands the command buffer to the particle pass BEFORE ExecuteAll()");
+        Check(adv_at != std::string::npos && exec_at != std::string::npos && adv_at > exec_at,
+              "the Apple tick advances the particles AFTER ExecuteAll() (Apple never calls SubmitDrawLists)");
+
+        // ---- 6. 编辑态 tick：ParticleComponent::Tick 是 tick 请求的唯一生产者 ----
+        Check(code_line_mentions(editor_source, "registerEdtorTickComponent(\"ParticleComponent\")"),
+              "ParticleComponent is in the edit-mode tick whitelist (its Tick is the only tick producer)");
+        Check(code_line_mentions(game_object_source, "g_editorTickComponentTypes"),
+              "GameObject::Tick really gates on that whitelist when not playing (context for the check above)");
+
+        // ---- 7. 心跳：三个数分开打，才能分辨"没 pass / 没 emitter / 没画" ----
+        Check(code_line_mentions(sys_source, "particle=(has="),
+              "the Apple heartbeat reports the particle state (has/emit/draw/parts/vp separately)");
+        Check(code_line_mentions(particle_header, "GetLastDrawnParticles()"),
+              "the pass exposes the drawn particle count (0 = alive count never advanced)");
+    }
+
     void CheckNaniteTickContracts()
     {
         const std::string engine_root = ZENGINE_ENGINE_ROOT_DIR;
@@ -2020,6 +2238,9 @@ int main()
 
     // 编辑器 gizmo（axis）：上传 + 绘制两半 + Metal dynamic offset（阶段 60）。
     CheckAxisContracts();
+
+    // 粒子：解耦 + Apple 名单 + 运行时接线 + **每帧推进**（阶段 61）。
+    CheckParticleContracts();
 
     // tonemap 曲线的性质（纯数学，不需要 GPU ⇒ 所有平台都跑）。
     CheckTonemapCurve();

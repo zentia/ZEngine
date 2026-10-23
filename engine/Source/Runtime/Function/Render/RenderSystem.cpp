@@ -253,8 +253,16 @@ void RenderSystem::Tick(float delta_time)
                 m_RenderPipeline->PreparePassData(m_RenderResource);
                 m_ActiveFrameDrawListSlot = 0;
                 RHIDrawList& draw_list = GetFrameDrawList(m_ActiveFrameDrawListSlot);
+
+                // 粒子的两步每帧推进必须夹在 draw list 录制的两头（顺序和
+                // SubmitDrawLists 里那两条一模一样）。Apple 这条精简 Tick **不走
+                // SubmitDrawLists**，所以这里必须自己叫一遍 —— 漏了的话粒子永远
+                // 静止：compute 管线建好了、billboard 每帧在画、swap 数据也送到了，
+                // 唯独 `Simulate()` 一次都不跑 ⇒ 存活数恒为 0，且不报任何错。
+                m_RenderPipeline->PrepareParticlesForDraw(m_Rhi->GetCurrentCommandBuffer());
                 m_RenderPipeline->BuildDrawLists(m_RenderResource, draw_list);
                 draw_list.ExecuteAll();
+                m_RenderPipeline->AdvanceParticlesAfterDraw();
 
             }
 
@@ -334,6 +342,12 @@ void RenderSystem::Tick(float delta_time)
     // PreparePassData → BuildDrawLists → ExecuteAll）已经上移到 swapchain pass
     // 之前，见上面。
 #if defined(__APPLE__)
+    // 只给 Apple 心跳里的 `particle=` 字段用。以前不能在这儿 include 是因为
+    // ParticlePass.cpp 拉 `vulkan/vulkan.h`；解耦之后它是后端中立的。仍然放在
+    // Apple 守卫里：Windows 非 Vulkan 分支不编 ParticlePass.cpp，无条件 include
+    // 会让那里的链接去找不存在的符号。
+    #include "Runtime/Function/Render/Passes/ParticlePass.h"
+
     // ---- Apple 真机验收的可观测性 ------------------------------------------
     // MSL 只在运行时编译、shader 创建失败往往是静默 nullptr，"窗口是黑的"根本
     // 定位不到是哪一段断了。这里每 ~120 帧打一条，把链路上的四个关键状态全说清：
@@ -405,6 +419,14 @@ void RenderSystem::Tick(float delta_time)
             size_t nanite_batches = 0;
             int    nanite_visible = 0;
             int    nanite_gpu = 0;
+            // 粒子：has / emit / draw 分开打（见 ParticlePass::GetEmitterCount 的注释）。
+            // Metal 上以前是**完全没有粒子 pass**（TU 被排除在 Apple 构建之外），
+            // 画面上和"有 pass 但没 emitter"、"有 emitter 但没画"完全一样 —— 一片安静。
+            int      particle_has_pass = 0;
+            int      particle_emitters = 0;
+            int      particle_drawn_emitters = 0;
+            uint32_t particle_drawn_particles = 0;
+            int      particle_drawn_viewport = -1;
             if (m_RenderPipeline != nullptr)
             {
                 if (NaniteRenderPass* nanite_pass = m_RenderPipeline->GetNanitePass())
@@ -417,6 +439,15 @@ void RenderSystem::Tick(float delta_time)
                     // inst/batches 全都照常产出 —— 只有这一个数能分辨这一帧的集群
                     // 裁决到底发生在 compute kernel 里还是 CPU 上。
                     nanite_gpu = nanite_pass->getNaniteRenderer()->IsGPUComputeReady() ? 1 : 0;
+                }
+                if (const ParticlePass* particle_pass =
+                        dynamic_cast<const ParticlePass*>(m_RenderPipeline->GetParticlePass()))
+                {
+                    particle_has_pass       = 1;
+                    particle_emitters       = particle_pass->GetEmitterCount();
+                    particle_drawn_emitters = particle_pass->GetLastDrawnEmitters();
+                    particle_drawn_particles = particle_pass->GetLastDrawnParticles();
+                    particle_drawn_viewport  = particle_pass->GetLastDrawnViewport();
                 }
             }
             if (m_RenderScene != nullptr)
@@ -463,6 +494,7 @@ void RenderSystem::Tick(float delta_time)
                      "game_cam=({},{},{}) fov={} main_cam_valid={} main_cam=({},{},{}) cam_sync={} "
                      "dir_light=({},{},{}) dir_color=({},{},{}) ambient=({},{},{}) plights={} gos={} lcmp={} "
                      "nanite=(has={} inst={} batches={} vis={} ngpu={}) "
+                     "particle=(has={} emit={} draw={} parts={} vp={}) "
                      "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
@@ -487,6 +519,11 @@ void RenderSystem::Tick(float delta_time)
                      nanite_batches,
                      nanite_visible,
                      nanite_gpu,
+                     particle_has_pass,
+                     particle_emitters,
+                     particle_drawn_emitters,
+                     particle_drawn_particles,
+                     particle_drawn_viewport,
                      static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
                      static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
                      sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,
@@ -743,15 +780,14 @@ void RenderSystem::ProcessSwapData()
     // 只要那个早退被触发一次（比如关卡切换的瞬间），粒子的门闩就永远没人清。
     //
     // 走 `RenderPipeline::ConsumeParticleSwapData()` 而不是在这里手写三个 Reset：
-    // 和非 Apple 那条走的是同一段代码，Metal 上哪天真有了 ParticlePass 就自动接上。
+    // 平台无关，有没有粒子 pass 由那一层自己判断。
     //
-    // 现在 Metal 上拿不到 ParticlePass，原因是**编译期**的，不是运行期的：
-    // `ParticlePass.cpp` 经传递 include 拉到 `vulkan/vulkan.h`，所以
-    // `ZENGINE_APPLE_EXCLUDED_PASSES`（Runtime/CMakeLists.txt）把它整个排除在
-    // Apple 构建之外 ⇒ `DesktopRenderPipelineModule::ConsumeParticleSwapData` 里
-    // 那段消费代码被 `#if defined(Z_HAS_VULKAN)` 门住，Metal 落到"只清"分支。
-    // 也就是说：**DX12 同样不冒粒子** —— 这不是 Apple 独有的洞。要让粒子真跑起来，
-    // 第一步是把 ParticlePass 那个 TU 从 Vulkan 头里解耦出来。
+    // 以前 Metal 上拿不到 ParticlePass，原因是**编译期**的：`ParticlePass.cpp` 经
+    // 传递 include 拉到 `vulkan/vulkan.h`，被 `ZENGINE_APPLE_EXCLUDED_PASSES` 整个
+    // 排除在 Apple 构建之外；而 `ConsumeParticleSwapData` 的消费代码又被
+    // `#if defined(Z_HAS_VULKAN)` 门住 ⇒ Metal **和 DX12** 都落到"只清"分支。
+    // 现已解耦：ParticlePass 那个 TU 不再碰 Vulkan 头，消费侧的 Vulkan 门也改成了
+    // "有没有粒子 pass"这个真正的判据。
     if (m_RenderPipeline != nullptr)
     {
         m_RenderPipeline->ConsumeParticleSwapData(swap_data, m_SwapContext);

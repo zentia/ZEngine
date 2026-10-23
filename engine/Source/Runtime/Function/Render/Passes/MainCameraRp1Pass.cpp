@@ -2301,9 +2301,51 @@ void MainCameraRp1Pass::DrawForwardLightingPass(const std::array<bool, 2>& skybo
         // BackupOdd，gizmo 因此永远盖在场景之上。
         DrawAxis(viewport_type);
     }
+    // 粒子的 billboard 也画在 forward 这一站（和 Vulkan 的 MainCameraPass 一致：
+    // 那里也是 forward lighting 的 viewport 循环之后调 `m_ParticlePass->Draw()`）。
+    // 它自己内部会按 game / scene 两个视口各画一遍，所以这里只在 pass 级调一次。
+    if (m_ParticlePass != nullptr)
+    {
+        m_ParticlePass->Draw();
+    }
     m_Rhi->PopEvent(m_Rhi->GetCurrentCommandBuffer());
 
     m_Rhi->CmdEndRenderPassPFN(m_Rhi->GetCurrentCommandBuffer());
+}
+
+void MainCameraRp1Pass::SetupParticlePass()
+{
+    // 和 Vulkan 的 `MainCameraPass::SetupParticlePass()` 一一对应：
+    //   · 深度图 → 粒子碰撞用的深度
+    //   · GBufferA → 法线（Vulkan 那边传的是 main_camera 自己 framebuffer 的
+    //     `_main_camera_pass_gbuffer_a`，这里就是同一张图，只是从 RP1 的
+    //     framebuffer 资源里取）
+    //   · forward lighting 的 render pass → billboard 画在这一站里
+    if (m_ParticlePass == nullptr || m_FbResources == nullptr)
+    {
+        LOG_WARNING(ZRender,
+                    "MainCameraRp1Pass::SetupParticlePass: skipped (particle pass or framebuffer resources "
+                    "missing) -- particles stay disabled");
+        return;
+    }
+
+    // ⚠️ 这里有两个同名函数，极易漏掉其中一个：
+    //   · `ParticlePass::SetupParticlePass()` —— pass 自己的重活：建 uniform buffer
+    //     （`m_SceneUniformBufferMapped` / `m_ParticleBillboardUniformBufferMapped`
+    //     就是在这里映射出来的）、descriptor layout、三条 compute pipeline、深度/法线
+    //     副本图、命令缓冲、fence。
+    //   · 本函数 —— 只是把 RP1 的深度图 / GBufferA / forward render pass 递过去。
+    //
+    // 只做第二件是**不够的**：漏掉第一件时 `Draw()` 会往两个 nullptr 里 memcpy
+    // （SIGSEGV / KERN_INVALID_ADDRESS at 0x0，栈落在 `_platform_memmove`）。这个
+    // 崩溃我实打实踩过一次，所以两件都放在这里，外面只调一次。
+    m_ParticlePass->SetupParticlePass();
+
+    m_ParticlePass->SetDepthAndNormalImage(m_Rhi->GetDepthImageInfo().depth_image,
+                                           m_FbResources->getAttachmentImage(_main_camera_pass_gbuffer_a));
+    m_ParticlePass->SetRenderPassHandle(m_FbResources->getForwardLightingRenderPass());
+
+    LOG_INFO(ZRender, "MainCameraRp1Pass: particle pass wired into the forward lighting render pass");
 }
 
 void MainCameraRp1Pass::DrawAxis(ViewportType viewport_type)

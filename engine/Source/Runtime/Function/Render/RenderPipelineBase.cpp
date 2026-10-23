@@ -12,6 +12,10 @@
 // Nanite 不像 Lumen 那样会被剥离：Runtime/CMakeLists.txt 从不把
 // Function/Render/Nanite/*.cpp 过滤掉，所以这个通道在任何配置上都存在。
 #include "Runtime/Function/Render/Nanite/NaniteRenderer.h"
+// ParticlePass 以前经传递 include 拉进某个后端自己的平台头，被
+// ZENGINE_APPLE_EXCLUDED_PASSES 整 TU 排除在 Apple 构建之外 —— 现在已经解耦（见
+// ParticlePass.cpp 的头注释），所以基类这两步每帧推进可以在**任何**后端上编出来。
+#include "Runtime/Function/Render/Passes/ParticlePass.h"
 #if defined(Z_HAS_VULKAN)
     #include "Runtime/Function/Render/DebugDraw/DebugDrawManager.h"
 #endif
@@ -124,6 +128,25 @@ void RenderPipelineBase::ConsumeParticleSwapData(RenderSwapData& swap_data, Rend
     if (swap_data.m_EmitterTransformRequest.has_value())
     {
         swap_context.ResetEmitterTransformSwapData();
+    }
+}
+
+void RenderPipelineBase::PrepareParticlesForDraw(RHICommandBuffer* command_buffer)
+{
+    // 槽位的静态类型是 RenderPassBase，是不是粒子只能现场判定（和上面
+    // GetNanitePass() 一个道理：基类不该知道具体 pass 的存在）。
+    if (ParticlePass* particle_pass = dynamic_cast<ParticlePass*>(m_ParticlePass.get()))
+    {
+        particle_pass->SetRenderCommandBufferHandle(command_buffer);
+    }
+}
+
+void RenderPipelineBase::AdvanceParticlesAfterDraw()
+{
+    if (ParticlePass* particle_pass = dynamic_cast<ParticlePass*>(m_ParticlePass.get()))
+    {
+        particle_pass->CopyNormalAndDepthImage();
+        particle_pass->Simulate();
     }
 }
 
