@@ -99,7 +99,7 @@ cd build && ctest --output-on-failure
 
 | 测试 | 检查数 | 盯什么 |
 |---|---|---|
-| `AppleSceneBlitSmokeTest` | 319 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18）；Nanite 的每帧推进必须在**四条 Tick 路径上都存在**（§3.21）；GPU 路径的每一步都要能被证伪，心跳带 `ngpu=`（§3.22）；编辑器 gizmo（axis）的**上传 + 绘制两半**都在，且 RHI 真的把 dynamic offset 用上（§3.23）；粒子的解耦 + Apple 名单 + 运行时接线 + **每帧推进**（§3.24） |
+| `AppleSceneBlitSmokeTest` | 332 | 离屏场景 → swapchain 的那段**手写** MSL：能编译、铺满全屏、上下没颠倒、tonemap+gamma 的曲线和 `glsl/tone_mapping.frag` 一致；RP2 的 LUT 条带采样；IBL 的 RGBA32F cubemap 真跑一遍（`CreateCubeMap` 的 row pitch）；`m_LevelResourceDesc` 的生产者 + swap 门闩（§3.12）；视口/裁剪矩形链路（§3.13）；门闩必须清在早退之前（§3.14）；关卡清理不是空桩（§3.15）；相机必须来自 `m_CameraConfig`（§3.16）；环境光 + 方向光必须真的设进 `RenderScene`（§3.17）；Apple Tick 必须同步点光源 + 探针关卡本身（§3.18）；Nanite 的每帧推进必须在**四条 Tick 路径上都存在**（§3.21）；GPU 路径的每一步都要能被证伪，心跳带 `ngpu=`（§3.22）；编辑器 gizmo（axis）的**上传 + 绘制两半**都在，且 RHI 真的把 dynamic offset 用上（§3.23）；粒子的解耦 + Apple 名单 + 运行时接线 + **每帧推进**（§3.24）；prefab 定义树不许跑 post-load，且 flag 要真的传下去（§3.25） |
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 
@@ -1054,6 +1054,71 @@ particle=(has=1 emit=2 draw=2 parts=300000 vp=1)
 `particle.object`（原点），再是场景实例 `Emitter`（32,11,3）。于是场景里 1 个发射器
 会开出 2 份 GPU 资源（`emit=2`），模板那一份永远没人 tick、永远 0 个粒子，但每帧照样
 被 Draw 遍历。修它要动 prefab 模板的加载路径，影响面比 Apple 大，先记在这里。
+**→ 已在 §3.25 修掉**（`emit=2` → `emit=1`）。
+
+### 3.25 prefab 定义树不该跑 post-load：一个发射器开出两份 GPU 资源
+
+**症状**：§3.24 修完之后心跳是 `particle=(has=1 emit=2 draw=2 parts=300000 vp=1)` ——
+场景里**只有 1 个** `Emitter`，`emit` 却是 2。粒子数照常 300000，画面看不出任何毛病，
+不崩不报错。
+
+**根因**：`GameObject::ExpandDefinition()` 要的只是 prefab 的**组件对象**，好把它们并进
+本对象（下面的 merge）。它调 `PrefabUtility::InstantiateFromPath()` 把整棵 definition 树
+实例化出来，用完就丢 —— 那棵树不在任何 Level 里、永不 tick、也不会有人析构。但
+`PrefabPostLoadDriver` 在 DFS 里对**每个** GameObject 的**每个** Component 都调了一次
+`PostLoadResource`，于是模板对象上的 `ParticleComponent` 先按模板自己的变换（原点）
+初始化一遍，在 `ParticlePass` 里占掉一个 emitter id、开出一份 GPU 资源；然后
+`GameObject::load()` 再按场景实例的正确变换（32,11,3）初始化一遍 —— **同一个组件
+（`this` 相同）被 post-load 了两次**。
+
+模板那一份：永远没人 tick（`ParticleComponent::Tick()` 是 tick 请求的生产者，而模板
+对象不在任何 Level 里，压根不会被 tick 到）⇒ 永远 0 个粒子；但每帧 `Draw()` 照样遍历
+它 ⇒ 白白占一个 emitter slot + 一份 GPU buffer。场景里每多放一个引用该 prefab 的对象，
+就多泄漏一份。
+
+**修复**：给 `PrefabUtility::Instantiate` / `InstantiateFromPath` 加
+`invoke_post_load`（**默认 `true` = 老行为**，只有 definition 那一支显式 `false`）：
+
+```
+PrefabUtility.h     Instantiate(asset, invoke_post_load = true)
+                    InstantiateFromPath(path, invoke_post_load = true)
+PrefabUtility.cpp   PrefabPostLoadDriver::m_InvokePostLoad 守卫唯一那个调用点
+GameObject.cpp      ExpandDefinition() → InstantiateFromPath(prefab_path, false)
+```
+
+关掉的**只是** step 2a 那一次 `PostLoadResource`；DFS、嵌套 prefab 展开、Transform 的
+owner 解析全都照跑。合并后的组件由 `GameObject::load()` 用**正确的父对象**再 post-load
+一遍 —— 那才是真正该跑的那一次。
+
+**验证**：真机（2026-10-23），心跳：
+
+```
+particle=(has=1 emit=1 draw=1 parts=300000 vp=1)     ← emit/draw 2 → 1
+```
+
+`emit` 和 `draw` 都从 2 降到 1，`parts` 仍是 300000 ⇒ 泄漏的那一份没了，**真正那一份
+没受影响**（粒子数一点没少，这就是"没误伤"的判据）。`frame=1321` 无崩溃报告。
+`ExpandDefinition` 没被改坏：`Ground` / `Fence` / `NavVolume` 的 `expanded definition`
+日志照常出现。
+
+冒烟测试新增 13 条契约（319 → 332 checks）。四次变异各自精确变红 1 条：
+
+| 变异 | 红几条 |
+|---|---|
+| `ExpandDefinition` 改回默认（不传 `false`） | 1 |
+| 守卫改成 `if (true)` | 1 |
+| 场景放置路径也关掉 post-load | 1 |
+| 二进制路径不把 flag 转发给 `Instantiate` | 1 |
+
+**两条教训**：
+
+1. **契约不能只钉"机制存在"（第二次）**。第一版契约钉了"flag 存在 + 守卫存在 + 调用点
+   唯一"，变异"二进制路径不转发 flag"时照样全绿 —— 三个机制一个没少，只是 flag 没传到。
+   补了两条"flag 要**真的传下去**"（YAML / 二进制两个转发点）才变红。判据要落在
+   **生效的那一步**上。
+2. **越界的 `substr` 会带崩整个测试**。变异把调用点整行注释掉后 `find` 返回 npos，
+   `substr(npos, 80)` 抛 `out_of_range` ⇒ 测试进程 abort，看起来像"变红了"其实是被崩掉
+   的。取子串前必须先判 npos，且取到**行尾**再搜。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

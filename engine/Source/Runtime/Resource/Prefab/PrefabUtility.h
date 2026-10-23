@@ -40,10 +40,21 @@ public:
     /// Instantiate the prefab and return its new root GameObject.
     /// The returned GO is freshly allocated and not yet attached to any Level — call
     /// `Level::adoptInstantiatedRoot()` (or equivalent) to register it.
-    static GameObject* Instantiate(PrefabAsset* asset);
+    ///
+    /// `invoke_post_load = false` is for the **definition-expansion** path only
+    /// (`GameObject::ExpandDefinition`): there the returned GO is used purely as a
+    /// bag of Components to merge into another GameObject, and it is then dropped
+    /// on the floor. Running PostLoadResource on it would allocate GPU / id
+    /// resources for an object that is never registered anywhere and never ticks —
+    /// a particle emitter in the prefab leaks a whole emitter slot per scene object
+    /// that references it. The caller must post-load the merged components itself
+    /// with the correct parent (which `GameObject::load()` does).
+    /// Nested-prefab expansion and the child DFS still run in both modes.
+    static GameObject* Instantiate(PrefabAsset* asset, bool invoke_post_load = true);
 
     /// Convenience wrapper: load the prefab from disk, then Instantiate once.
-    static GameObject* InstantiateFromPath(const std::filesystem::path& prefab_path);
+    static GameObject* InstantiateFromPath(const std::filesystem::path& prefab_path,
+                                           bool                        invoke_post_load = true);
 
     /// Re-parent the freshly instantiated root under `parent` (Transform-based).
     /// `worldPositionStays` follows Unity semantics (see Transform::SetParent).

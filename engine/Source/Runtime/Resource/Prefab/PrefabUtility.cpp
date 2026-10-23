@@ -36,7 +36,13 @@ namespace
         /// resolve every child Transform's owner, lifting the single-level restriction.
         /// When empty (legacy binary path, which has no flat list), the driver falls back
         /// to root-only discovery and the old Phase-1 multi-level limitation applies.
-        void Run(GameObject* root, const std::vector<GameObject*>& known_gameobjects = {})
+        /// `invoke_post_load = false` skips only step 2a (the PostLoadResource call);
+        /// the DFS and nested-prefab expansion still run. Used when the tree is being
+        /// instantiated as a *definition* whose components will be merged into another
+        /// GameObject and post-loaded there — see PrefabUtility::Instantiate.
+        void Run(GameObject*                     root,
+                 const std::vector<GameObject*>& known_gameobjects = {},
+                 bool                            invoke_post_load   = true)
         {
             if (root == nullptr)
             {
@@ -48,6 +54,7 @@ namespace
             BuildOwnerMap(root, known_gameobjects);
 
             // 2) DFS, invoking postLoadResource as we go.
+            m_InvokePostLoad = invoke_post_load;
             VisitGameObject(root);
         }
 
@@ -111,12 +118,20 @@ namespace
             // 2a) Initialise every Component before descending. Transform uses
             //     this to seed its double-buffered transform; other Components capture the
             //     parent GameObject pointer here (Component::m_ParentObject).
-            for (ImmediatePtr<Component>& component_ptr : go->getComponents())
+            //
+            //     Skipped when the caller asked for no post-load (definition
+            //     expansion): those components belong to a throw-away GameObject and
+            //     post-loading them allocates resources nobody will ever use or free
+            //     (see PrefabUtility::Instantiate's `invoke_post_load`).
+            if (m_InvokePostLoad)
             {
-                Component* component = component_ptr;
-                if (component != nullptr)
+                for (ImmediatePtr<Component>& component_ptr : go->getComponents())
                 {
-                    component->PostLoadResource(go);
+                    Component* component = component_ptr;
+                    if (component != nullptr)
+                    {
+                        component->PostLoadResource(go);
+                    }
                 }
             }
 
@@ -181,6 +196,7 @@ namespace
         std::unordered_set<GameObject*> m_Visited;
         std::unordered_set<GameObject*> m_KnownGameobjects;
         std::unordered_map<Transform*, GameObject*> m_TransformToOwner;
+        bool m_InvokePostLoad {true};
 
         /// Phase 3a — expand every PrefabRefComponent on `go` exactly once. We
         /// loop over the components looking for one whose IsExpanded() is false;
@@ -255,7 +271,7 @@ namespace
     };
 }  // namespace
 
-GameObject* PrefabUtility::Instantiate(PrefabAsset* asset)
+GameObject* PrefabUtility::Instantiate(PrefabAsset* asset, bool invoke_post_load)
 {
     if (asset == nullptr)
     {
@@ -281,11 +297,11 @@ GameObject* PrefabUtility::Instantiate(PrefabAsset* asset)
     // doc/PrefabSystem_Design.md §3.1 for the design.
 
     PrefabPostLoadDriver driver;
-    driver.Run(root);
+    driver.Run(root, {}, invoke_post_load);
     return root;
 }
 
-GameObject* PrefabUtility::InstantiateFromPath(const std::filesystem::path& prefab_path)
+GameObject* PrefabUtility::InstantiateFromPath(const std::filesystem::path& prefab_path, bool invoke_post_load)
 {
     auto&& asset_manager = GET_SYSTEM(AssetManager);
 
@@ -341,7 +357,7 @@ GameObject* PrefabUtility::InstantiateFromPath(const std::filesystem::path& pref
         // child Transforms resolve their owners (lifts the binary path's single-level
         // Phase-1 restriction for text prefabs).
         PrefabPostLoadDriver driver;
-        driver.Run(root, graph_gameobjects);
+        driver.Run(root, graph_gameobjects, invoke_post_load);
         return root;
     }
 
@@ -352,7 +368,7 @@ GameObject* PrefabUtility::InstantiateFromPath(const std::filesystem::path& pref
         LOG_ERROR(ZPrefab, "Failed to load prefab from {}", prefab_path.generic_string());
         return nullptr;
     }
-    return Instantiate(asset);
+    return Instantiate(asset, invoke_post_load);
 }
 
 void PrefabUtility::SetInstantiatedRootParent(GameObject* instantiated_root, Transform* parent, bool worldPositionStays)

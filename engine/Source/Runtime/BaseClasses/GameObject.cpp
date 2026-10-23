@@ -146,7 +146,15 @@ void GameObject::ExpandDefinition()
     }
 
     const std::filesystem::path prefab_path = asset_manager->GetFullPath(m_DefinitionUrl);
-    GameObject* definition_root = PrefabUtility::InstantiateFromPath(prefab_path);
+    // ⚠️ `invoke_post_load = false`，原因见 PrefabUtility::Instantiate 的注释。
+    //
+    // 这里要的只是 prefab 的**组件对象**，好把它们并进本对象（下面的 merge）。整棵
+    // definition 树随后就被丢掉 —— 它不在任何 Level 里、永不 tick、也不会有人析构。
+    // 以前这一步照常跑 PostLoadResource，于是模板对象上的组件**先**按模板自己的
+    // 变换初始化一遍（粒子发射器在原点开出一份 GPU 资源、拿到一个 emitter id），
+    // 然后 load() 再按场景实例的正确变换初始化一遍 ⇒ 场景里 1 个发射器开出 2 份
+    // 资源，而模板那一份永远 0 个粒子、每帧照样被 Draw 遍历。
+    GameObject* definition_root = PrefabUtility::InstantiateFromPath(prefab_path, /*invoke_post_load=*/false);
     if (definition_root == nullptr)
     {
         LOG_ERROR(ZObject, "GameObject '{}': failed to instantiate definition '{}'",

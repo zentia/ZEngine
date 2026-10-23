@@ -1363,7 +1363,71 @@ namespace
         Check(code_line_mentions(game_object_source, "g_editorTickComponentTypes"),
               "GameObject::Tick really gates on that whitelist when not playing (context for the check above)");
 
-        // ---- 7. 心跳：三个数分开打，才能分辨"没 pass / 没 emitter / 没画" ----
+        // ---- 7. prefab 定义树不许跑 post-load（1 个发射器只能开 1 份 GPU 资源）----
+        //
+        // `GameObject::ExpandDefinition` 把 prefab 的组件并进场景对象，随后整棵定义
+        // 树就被丢掉 —— 它不在任何 Level 里、永不 tick、也没人析构。以前这一步照常
+        // 跑 PostLoadResource ⇒ 模板对象上的组件**先**按模板自己的变换初始化一遍
+        // （粒子发射器在原点开一份 GPU 资源 + 拿一个 emitter id），场景实例再初始
+        // 化一遍 ⇒ 场景里 1 个发射器开出 2 份资源、心跳 `emit=2` 而 tick 只有 1 份。
+        const std::string prefab_source =
+            ReadFileText(engine_root + "/Source/Runtime/Resource/Prefab/PrefabUtility.cpp");
+        const std::string prefab_header =
+            ReadFileText(engine_root + "/Source/Runtime/Resource/Prefab/PrefabUtility.h");
+        const std::string placement_source =
+            ReadFileText(engine_root + "/Source/Editor/EditorScenePlacement/EditorScenePlacement.cpp");
+        Check(!prefab_source.empty(), "PrefabUtility.cpp is readable as text (definition post-load)");
+        Check(!prefab_header.empty(), "PrefabUtility.h is readable as text (definition post-load)");
+        Check(!placement_source.empty(), "EditorScenePlacement.cpp is readable as text (definition post-load)");
+
+        Check(code_line_mentions(prefab_header, "static GameObject* Instantiate(PrefabAsset* asset, bool invoke_post_load = true);"),
+              "PrefabUtility::Instantiate takes an invoke_post_load flag (defaults to the old behaviour)");
+        Check(code_line_mentions(prefab_header, "static GameObject* InstantiateFromPath(const std::filesystem::path& prefab_path,"),
+              "PrefabUtility::InstantiateFromPath forwards it");
+        // 生效那一步：那个 flag 必须真的挡住 PostLoadResource，而不只是传进来。
+        const size_t guard_at = code_line_find(prefab_source, "if (m_InvokePostLoad)");
+        const size_t plr_at   = code_line_find(prefab_source, "component->PostLoadResource(go)");
+        Check(guard_at != std::string::npos && plr_at != std::string::npos && guard_at < plr_at,
+              "the flag actually gates the single PostLoadResource call site in the prefab driver");
+        Check(CountOccurrences(prefab_source, "component->PostLoadResource(go)") == 1,
+              "there is exactly one PostLoadResource call site to gate (a second one would leak again)");
+        // flag 必须**真的传下去**（两条路各一个转发点），否则签名改了等于没改。
+        Check(code_line_mentions(prefab_source, "driver.Run(root, graph_gameobjects, invoke_post_load)"),
+              "the .prefab (yaml) path forwards the flag to the driver");
+        Check(code_line_mentions(prefab_source, "return Instantiate(asset, invoke_post_load);"),
+              "the binary .zasset path forwards the flag too");
+
+        // definition 那一支必须显式关掉；真正的实例化（拖 prefab 进场景）必须照旧开。
+        const size_t expand_at  = game_object_source.find("void GameObject::ExpandDefinition()");
+        const size_t expand_end = game_object_source.find("\n}", expand_at == std::string::npos ? 0 : expand_at);
+        Check(expand_at != std::string::npos && expand_end != std::string::npos,
+              "GameObject::ExpandDefinition is defined (sliced to its closing brace)");
+        const std::string expand_body =
+            (expand_at == std::string::npos || expand_end == std::string::npos)
+                ? std::string()
+                : game_object_source.substr(expand_at, expand_end - expand_at);
+        // 搜的是**调用形式**（带 `/*invoke_post_load=*/false`），正文注释里那句
+        // `invoke_post_load = false` 是带空格的另一种写法，不会命中 —— 但保险起见
+        // 仍然走逐行扫代码。
+        Check(!expand_body.empty() &&
+                  code_line_mentions(expand_body, "InstantiateFromPath(prefab_path, /*invoke_post_load=*/false)"),
+              "definition expansion turns post-load OFF (its components get post-loaded by load() instead)");
+        const size_t placement_call = code_line_find(placement_source, "PrefabUtility::InstantiateFromPath(prefab_path)");
+        Check(placement_call != std::string::npos,
+              "the scene-placement path still instantiates with post-load ON (dropping a prefab is a real object)");
+        // 取到行尾，别写死长度；`placement_call` 为 npos 时**不能** substr（会抛
+        // out_of_range 把整个测试带崩，变异就报不成"几条红"了）。
+        std::string placement_line;
+        if (placement_call != std::string::npos)
+        {
+            const size_t eol = placement_source.find('\n', placement_call);
+            placement_line   = placement_source.substr(
+                placement_call, (eol == std::string::npos ? placement_source.size() : eol) - placement_call);
+        }
+        Check(placement_call == std::string::npos || !Contains(placement_line, "invoke_post_load"),
+              "the scene-placement call passes no flag (it must keep the default = post-load)");
+
+        // ---- 8. 心跳：三个数分开打，才能分辨"没 pass / 没 emitter / 没画" ----
         Check(code_line_mentions(sys_source, "particle=(has="),
               "the Apple heartbeat reports the particle state (has/emit/draw/parts/vp separately)");
         Check(code_line_mentions(particle_header, "GetLastDrawnParticles()"),
