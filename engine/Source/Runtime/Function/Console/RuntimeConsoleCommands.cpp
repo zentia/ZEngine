@@ -193,6 +193,104 @@ namespace
         return true;
     }
 
+    // ---- 多实例 ----
+    bool ParseUintArg(const std::string& s, uint32_t& out, uint32_t max_value)
+    {
+        char* end = nullptr;
+        const unsigned long v = std::strtoul(s.c_str(), &end, 10);
+        if (s.empty() || s[0] == '-' || end == s.c_str() || *end != '\0' || v > max_value)
+        {
+            return false;
+        }
+        out = static_cast<uint32_t>(v);
+        return true;
+    }
+
+    bool CmdSpineAdd(const std::vector<std::string>& args)
+    {
+        uint32_t anim = 0;
+        uint32_t count = 1;
+        if (args.empty() || (args.size() >= 2 && !ParseUintArg(args[1], anim, 100000u)) ||
+            (args.size() >= 3 && (!ParseUintArg(args[2], count, 1024u) || count == 0)))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.add <skeleton .skel.bytes|.skel|.json> [anim index=0] [count=1..1024]");
+            return false;
+        }
+        uint32_t first = 0;
+        uint32_t last = 0;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            last = SpineGpuRenderer::Get().RequestAddInstance(args[0], static_cast<int>(anim));
+            first = i == 0 ? last : first;
+        }
+        if (count == 1)
+        {
+            LOG_INFO(ZConsole, "spine.add: instance #{} <- '{}' anim #{} (selected)", last, args[0], anim);
+        }
+        else
+        {
+            LOG_INFO(ZConsole, "spine.add: instances #{}..#{} <- '{}' anim #{} (#{} selected)", first, last, args[0], anim,
+                     last);
+        }
+        return true;
+    }
+
+    bool CmdSpineRemove(const std::vector<std::string>& args)
+    {
+        uint32_t id = 0;
+        if (args.size() > 1 || (args.size() == 1 && !ParseUintArg(args[0], id, 0xFFFFFFFFu)))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.remove [instance id=selected]");
+            return false;
+        }
+        if (!SpineGpuRenderer::Get().RequestRemoveInstance(id))
+        {
+            LOG_ERROR(ZConsole, "spine.remove: no instance #{}", id == 0 ? std::string("(none selected)") : std::to_string(id));
+            return false;
+        }
+        LOG_INFO(ZConsole, "spine.remove: requested; selected is now #{}", SpineGpuRenderer::Get().Selected());
+        return true;
+    }
+
+    bool CmdSpineSelect(const std::vector<std::string>& args)
+    {
+        uint32_t id = 0;
+        if (args.size() != 1 || !ParseUintArg(args[0], id, 0xFFFFFFFFu))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.select <instance id>");
+            return false;
+        }
+        if (!SpineGpuRenderer::Get().RequestSelect(id))
+        {
+            LOG_ERROR(ZConsole, "spine.select: no instance #{}", id);
+            return false;
+        }
+        LOG_INFO(ZConsole, "spine.select: #{}", id);
+        return true;
+    }
+
+    bool CmdSpinePlace(const std::vector<std::string>& args)
+    {
+        if (args.size() == 1 && args[0] == "auto")
+        {
+            SpineGpuRenderer::Get().RequestPlaceAuto();
+            LOG_INFO(ZConsole, "spine.place: #{} back to the auto grid", SpineGpuRenderer::Get().Selected());
+            return true;
+        }
+        float x = 0.0f;
+        float y = 0.0f;
+        float scale = 1.0f;
+        if (args.size() < 2 || args.size() > 3 || !ParseFloatArg(args[0], x) || !ParseFloatArg(args[1], y) ||
+            (args.size() == 3 && !ParseFloatArg(args[2], scale)))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.place <x px> <y px, up> [scale px/unit=1] | spine.place auto");
+            return false;
+        }
+        SpineGpuRenderer::Get().RequestPlace(x, y, scale);
+        LOG_INFO(ZConsole, "spine.place: #{} at ({}, {}) x{}", SpineGpuRenderer::Get().Selected(), x, y, scale);
+        return true;
+    }
+
     bool CmdSpineTintBlack(const std::vector<std::string>& args)
     {
         int on = 0;
@@ -296,7 +394,20 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("spine.load",
                             "Draw a Spine skeleton with GPU skinning. Usage: spine.load <skeleton file> [anim index]",
                             CmdSpineLoad);
-    console.RegisterCommand("spine.clear", "Remove the GPU-Spine skeleton", CmdSpineClear);
+    console.RegisterCommand("spine.clear", "Remove all GPU-Spine instances", CmdSpineClear);
+    console.RegisterCommand("spine.add",
+                            "Add GPU-Spine instance(s) (shares the asset by path; selects the last). Usage: spine.add "
+                            "<skeleton file> [anim index] [count]",
+                            CmdSpineAdd);
+    console.RegisterCommand("spine.remove", "Remove a GPU-Spine instance. Usage: spine.remove [id=selected]",
+                            CmdSpineRemove);
+    console.RegisterCommand("spine.select",
+                            "Select the GPU-Spine instance that play/queue/empty/speed/alpha/place act on. Usage: "
+                            "spine.select <id>",
+                            CmdSpineSelect);
+    console.RegisterCommand("spine.place",
+                            "Place the selected GPU-Spine instance. Usage: spine.place <x> <y> [scale] | spine.place auto",
+                            CmdSpinePlace);
     console.RegisterCommand("spine.status", "Print GPU-Spine renderer status", CmdSpineStatus);
     console.RegisterCommand("spine.play",
                             "Set a GPU-Spine animation on a track (crossfades). Usage: spine.play <anim> [track] [loop]",

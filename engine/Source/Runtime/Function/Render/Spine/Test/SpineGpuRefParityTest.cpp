@@ -56,6 +56,7 @@
 
 #include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
+#include "Runtime/Function/Render/Spine/SpineGpuBatch.h"
 #include "Runtime/Function/Render/Spine/SpineGpuClipper.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
 
@@ -497,6 +498,12 @@ struct S5Stats
     // tint black：槽位挂着可画附件（region / mesh）且暗色 rgb 非 0 的次数 = 打开 tintBlack 后
     // 画面**真的会变**的次数（暗色已与参考逐槽位比过，这里只量覆盖面）。
     size_t dark_drawn = 0;
+    // 多实例拼包（SpineGpuBatch）：每 4 帧把"上一帧的姿势"当另一个实例排在前面，当前帧排在后面，
+    // 当前帧的每个顶点（CPU 仿真 spine_gpu.vert）必须与它单独成包时**逐位**相同。
+    size_t batch_frames = 0;
+    size_t batch_vertices = 0;
+    size_t batch_cpu_vertices = 0;      // 其中裁剪项（走 b8 + 动态索引）的顶点
+    size_t batch_deform_vertices = 0;   // 其中带 deform 的顶点
     size_t dark_negative = 0;           // 其中有分量 < 0（TwoColor 首帧前的符号 bug 路径）
     size_t dark_best = 0;
     std::string dark_best_asset;
@@ -822,6 +829,114 @@ std::string S5DescribeRefTracks(spine::AnimationState& ref)
 }
 
 // 一个资产跑 `scripts` 段脚本。返回 false = 出现分叉（细节进 s5.details）。
+// ---------------------------------------------------------------------
+// 多实例拼包一致性（不涉及参考实现：比的是"同一个实例单独成包 vs 排在别的实例后面"）
+// ---------------------------------------------------------------------
+std::string S5CheckBatch(const SpineGpuAsset& asset, const SpineGpuSkeletonState& st, const SpineGpuPoseResult& pose,
+                         S5Stats& s5)
+{
+    static const SpineGpuAsset* last_asset = nullptr;
+    static SpineGpuBatchAssetInfo info;
+    static SpineGpuPoseResult prev_pose;
+    static SpineGpuClipFrameResult prev_clip;
+    static SpineGpuSkeletonClipping clipper;
+    static SpineGpuClipFrameResult clip;
+    static SpineGpuBatch single, combined;
+    const SpineImportResult cr = SpineGpuClipFrame(asset, st, pose, clipper, clip);
+    if (!cr.ok)
+    {
+        return "拼包：裁剪帧失败：" + cr.error;
+    }
+    // 资产对象在对拍台里是同一个局部变量反复装不同的文件 ⇒ 地址相同不代表同一资产，按"第几个资产"认
+    static size_t last_asset_ordinal = 0;
+    if (last_asset != &asset || last_asset_ordinal != s5.assets)
+    {
+        last_asset = &asset;
+        last_asset_ordinal = s5.assets;
+        SpineGpuBuildBatchAssetInfo(asset, info);
+        prev_pose = pose;
+        prev_clip = clip;
+        return std::string();
+    }
+    // 两个实例的变换必须不同：inst_index 错了才看得出来；骨骼取不同帧：bone_base 错了才看得出来
+    const SpineGpuGpuInst inst_a = SpineGpuPlaceInstance(10.0f, -20.0f, 0.5f, 800.0f, 600.0f, -1.0f);
+    const SpineGpuGpuInst inst_b = SpineGpuPlaceInstance(-100.0f, 40.0f, 1.25f, 800.0f, 600.0f, -1.0f);
+    single.Clear();
+    combined.Clear();
+    SpineGpuBatchRange ra, rb, ra2;
+    SpineImportResult r = SpineGpuAppendBatchInstance(asset, info, pose, &clip, inst_a, true, single, ra);
+    if (r.ok)
+    {
+        r = SpineGpuAppendBatchInstance(asset, info, prev_pose, &prev_clip, inst_b, true, combined, rb);
+    }
+    if (r.ok)
+    {
+        r = SpineGpuAppendBatchInstance(asset, info, pose, &clip, inst_a, true, combined, ra2);
+    }
+    prev_pose = pose;
+    prev_clip = clip;
+    if (!r.ok)
+    {
+        return "拼包失败：" + r.error;
+    }
+    ++s5.batch_frames;
+    if (ra.draw_count != ra2.draw_count || ra2.draw_first != rb.draw_count || ra.deformed != ra2.deformed ||
+        ra.clipped != ra2.clipped || ra.tint_black != ra2.tint_black)
+    {
+        return "拼包：实例区间 / 统计与单独成包不一致";
+    }
+    for (uint32_t k = 0; k < ra.draw_count; ++k)
+    {
+        const uint32_t i1 = ra.draw_first + k;
+        const uint32_t i2 = ra2.draw_first + k;
+        const SpineGpuGpuDraw& d1 = single.draws[i1];
+        const SpineGpuGpuDraw& d2 = combined.draws[i2];
+        const SpineGpuBatchCmd& c1 = single.cmds[i1];
+        const SpineGpuBatchCmd& c2 = combined.cmds[i2];
+        if (d1.vertex_format != d2.vertex_format || d1.uv_offset != d2.uv_offset || d1.slot_bone != d2.slot_bone ||
+            d1.tint != d2.tint || d1.flags != d2.flags || d1.weighted_base != d2.weighted_base ||
+            std::memcmp(d1.dark, d2.dark, sizeof(d1.dark)) != 0 || c1.item != c2.item || c1.cpu != c2.cpu ||
+            c1.index_count != c2.index_count)
+        {
+            return "拼包：第 " + std::to_string(k) + " 个绘制项的非偏置字段与单独成包不一致";
+        }
+        for (uint32_t q = 0; q < c1.index_count; ++q)
+        {
+            uint32_t v1 = 0, v2 = 0;
+            if (c1.cpu)
+            {
+                if (c1.index_first + q >= single.cpu_index.size() || c2.index_first + q >= combined.cpu_index.size())
+                {
+                    return "拼包：裁剪项的动态索引越界";
+                }
+                v1 = single.cpu_index[c1.index_first + q];
+                v2 = combined.cpu_index[c2.index_first + q];
+            }
+            else
+            {
+                v1 = asset.index_buffer[c1.index_first + q];
+                v2 = asset.index_buffer[c2.index_first + q];
+            }
+            SpineGpuEmulatedVertex e1, e2;
+            if (v1 != v2 || !SpineGpuEmulateVertex(asset, single, i1, v1, e1) ||
+                !SpineGpuEmulateVertex(asset, combined, i2, v2, e2))
+            {
+                return "拼包：第 " + std::to_string(k) + " 个绘制项（附件 #" + std::to_string(c1.item) +
+                       "）的顶点寻址越界 / 下标不同";
+            }
+            if (std::memcmp(&e1, &e2, sizeof(e1)) != 0)
+            {
+                return "拼包：第 " + std::to_string(k) + " 个绘制项（附件 #" + std::to_string(c1.item) + "）顶点 " +
+                       std::to_string(v1) + " 排在别的实例后面时与单独成包不同";
+            }
+            ++s5.batch_vertices;
+            s5.batch_cpu_vertices += c1.cpu ? 1u : 0u;
+            s5.batch_deform_vertices += (d1.flags & SpineGpuDrawFlags::kDeform) != 0u ? 1u : 0u;
+        }
+    }
+    return std::string();
+}
+
 // ---------------------------------------------------------------------
 // v15：裁剪对拍。参考侧照 MeshGeneration/SpineMesh.h:107-259 的绘制循环跑 spine::SkeletonClipping；
 // 同一个循环里把**参考的**世界坐标 / UV / 三角形 / 裁剪多边形同时喂给我们的转录版
@@ -1324,6 +1439,10 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
             if (diff.empty())
             {
                 diff = S5CompareClip(asset, st, pose, ref_skel, s5);
+            }
+            if (diff.empty() && r.ok && (s5.frames % 4u) == 0u)
+            {
+                diff = S5CheckBatch(asset, st, pose, s5);
             }
             if (!diff.empty())
             {
@@ -2630,6 +2749,8 @@ int main(int argc, char** argv)
         std::printf("tint black 覆盖面     : 可画槽位暗色非 0 共 %zu 次（其中有负分量 %zu 次）\n", s5.dark_drawn,
                     s5.dark_negative);
         std::printf("  └ 暗色最多的资产: %s（%zu 次）\n", s5.dark_best_asset.c_str(), s5.dark_best);
+        std::printf("多实例拼包           : %zu 帧，顶点 %zu 个逐位一致（裁剪项 %zu、带 deform %zu）\n", s5.batch_frames,
+                    s5.batch_vertices, s5.batch_cpu_vertices, s5.batch_deform_vertices);
         std::printf("分叉的资产           : %zu（撞号资产上的另计 %zu）\n", s5.assets_bad, s5.assets_collision_bad);
         for (const std::string& d : s5.details)
         {

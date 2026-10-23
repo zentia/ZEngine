@@ -230,8 +230,11 @@ int main()
     ID3D12Device* device = bundle.device.Get();
 
     // ---- 夹具数据 ----
-    // 骨骼：6 float/骨（a b c d wx wy）
-    const float bones[18] = {1, 0, 0, 1, 0, 0,  1, 0, 0, 1, 10, -10,  1, 0, 0, 1, 32, 0};
+    // 骨骼：6 float/骨（a b c d wx wy）。前 3 根是**别的实例**的（平移到画面外很远），本实例的骨骼表
+    // 从 bone_base = 3 开始 —— 着色器没加 bone_base 就会读到它们、什么都画不出来（多实例拼包）。
+    constexpr uint32_t kBoneBase = 3u;
+    const float bones[36] = {1, 0, 0, 1, 1000, 1000,  1, 0, 0, 1, 1000, 1000,  1, 0, 0, 1, 1000, 1000,
+                             1, 0, 0, 1, 0, 0,  1, 0, 0, 1, 10, -10,  1, 0, 0, 1, 32, 0};
     // vertex_words：rigid 段 4 顶点（左上象限的方块，骨架坐标）；weighted 段从 word 8 起 (off, cnt)
     std::vector<uint32_t> words;
     const float rigid[8] = {-28, 4, -4, 4, -4, 28, -28, 28};
@@ -273,11 +276,14 @@ int main()
     // CPU 顶点（b8）：左下象限，绿
     const float cpu[16] = {-28, -28, 0.25f, 0.75f,  -4, -28, 0.25f, 0.75f,  -4, -4, 0.25f, 0.75f,  -28, -4, 0.25f, 0.75f};
     GpuDraw draws[4] {};
-    draws[0] = {0u, 8u, 2u, 0u, 0u, 0xFFFFFFFFu, 1u, 8u, 0u, {0, 0, 0}};
-    draws[1] = {0u, 0u, 0u, 0u, 0u, 0xFFFFFFFFu, 1u, 8u, 0u, {0, 0, 0}};
-    draws[2] = {1u, 4u, 0u, 0u, 0u, 0xFFFFFFFFu, 1u | 16u, 8u, 0u, {0.5f, 0, 0}};
-    draws[3] = {0u, 0u, 0u, 0u, 0u, 0x80FFFFFFu, 1u | 8u, 8u, 0u, {0, 0, 0}};
-    GpuInst inst {};
+    // 本实例在 b6 里是第 1 个（第 0 个是别的实例：全 0 变换 ⇒ 所有顶点退化，画不出东西）
+    constexpr uint32_t kInstIndex = 1u;
+    draws[0] = {0u, 8u, 2u, kBoneBase, kInstIndex, 0xFFFFFFFFu, 1u, 8u, 0u, {0, 0, 0}};
+    draws[1] = {0u, 0u, 0u, kBoneBase, kInstIndex, 0xFFFFFFFFu, 1u, 8u, 0u, {0, 0, 0}};
+    draws[2] = {1u, 4u, 0u, kBoneBase, kInstIndex, 0xFFFFFFFFu, 1u | 16u, 8u, 0u, {0.5f, 0, 0}};
+    draws[3] = {0u, 0u, 0u, kBoneBase, kInstIndex, 0x80FFFFFFu, 1u | 8u, 8u, 0u, {0, 0, 0}};
+    GpuInst insts[2] {};
+    GpuInst& inst = insts[kInstIndex];
     inst.clip_col[0] = 1.0f / 32.0f;
     inst.clip_col[5] = +1.0f / 32.0f;   // DX12：NDC y 向上 ⇒ 正（= 渲染器 ClipSpaceYSign）
     inst.clip_col[10] = 1.0f;
@@ -296,7 +302,7 @@ int main()
     const Src srcs[9] = {{words.data(), words.size() * 4},          {infl_bind.data(), infl_bind.size() * 4},
                          {infl_bone.data(), infl_bone.size() * 4},  {uvs.data(), uvs.size() * 4},
                          {bones, sizeof(bones)},                    {draws, sizeof(draws)},
-                         {&inst, sizeof(inst)},                     {deform, sizeof(deform)},
+                         {insts, sizeof(insts)},                     {deform, sizeof(deform)},
                          {cpu, sizeof(cpu)}};
     ComPtr<ID3D12Resource> sb[9];
     for (int i = 0; i < 9; ++i)
@@ -549,7 +555,8 @@ int main()
         }
         return ok;
     };
-    Check(is(16, 16, 255, 0, 0, 255), "item1 rigid：骨架左上象限 ⇒ 图像左上、红（y 方向 + rigid 蒙皮 + uv_offset）");
+    Check(is(16, 16, 255, 0, 0, 255),
+          "item1 rigid：骨架左上象限 ⇒ 图像左上、红（y 方向 + rigid 蒙皮 + uv_offset + bone_base / inst_index 偏置）");
     Check(is(48, 16, 0, 0, 0, 0), "右上象限为空：item0 没画 ⇒ 绘制项下标含 StartInstanceLocation（不是 SV_InstanceID）");
     Check(is(48, 48, 128, 0, 255, 255),
           "item2 weighted：右下、蓝 + 暗色 (0.5,0,0) ⇒ (0.5,0,1)（tint black 公式 + b1/b2 stride）");

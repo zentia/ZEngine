@@ -15,7 +15,10 @@
 //       DX12   —— MainCameraRp2Pass 的 Combine UI pass 里、合成之后直接画进 swapchain（DX12 编辑器不用
 //                 UI 层，ZSlate / ImGui 在 RP2 之后画 ⇒ 面板照样盖在上面）；HLSL 版着色器运行时编；
 //       Metal  —— RenderSystem 的 swapchain pass 里、scene blit 之后 post-UI 之前；SPIR-V 经 SPIRV-Cross。
-//   * 只有一个实例，由控制台 `spine.load <骨架文件> [动画下标]` 指定，画在视口里自动居中；
+//   * 多实例：每个实例有自己的骨架状态 / AnimationState / 摆放；同一路径的实例**共用**一份资产
+//     （静态缓冲 + 图集页），每帧按资产把各实例拼成一包（SpineGpuBatch：bone_base / inst_index /
+//     deform、裁剪顶点的偏移）、按实例顺序画（先加的在下面）。自动摆放 = 视口网格里按顺序占一格、
+//     setup 包围盒居中占 80%；`spine.place` 改成手动。`spine.load` = 清空后加一个（老语义）；
 //   * 多轨混合（S5）：加载时轨道 0 循环播请求的动画，之后用 spine.play / spine.queue /
 //     spine.empty / spine.mix / spine.speed / spine.alpha 改（语义即 spine::AnimationState）；
 //   * mesh deform（S6）在 GPU 上做：解算器给每帧生效的 deform 数组，上传到 b7，shader 里
@@ -42,23 +45,36 @@ public:
     // 游戏线程：请求加载（实际加载在渲染线程下一次 Draw 时做）。
     // `skeleton_path` 是 .skel.bytes / .skel / .json；图集取同名 .atlas.txt / .atlas，
     // 贴图取图集里写的页名（相对图集所在目录）。
+    // RequestLoad = RequestClear + RequestAddInstance（多实例之前的语义：替换掉全部实例）。
     void RequestLoad(const std::string& skeleton_path, int anim_index);
-    void RequestClear();
+    // 加一个实例（排在绘制顺序最后 = 画在最上面）并选中它；返回实例 id（≥ 1）。同一路径的资产只加载一次。
+    // 加载失败时渲染线程会把这个 id 摘掉（日志里有原因），之后发给它的命令丢弃。
+    uint32_t RequestAddInstance(const std::string& skeleton_path, int anim_index);
+    // 删实例；id 0 = 当前选中。id 不在（游戏线程视角）⇒ false。
+    bool RequestRemoveInstance(uint32_t id);
+    void RequestClear();   // 删全部实例
+    // 选中：之后的播放 / 摆放命令作用在它上面（入队时解析）。id 不在 ⇒ false。
+    bool RequestSelect(uint32_t id);
+    uint32_t Selected() const;
+    // 选中实例手动摆放：骨架原点在视口中心偏 (x, y) 像素（y 向上），1 骨架单位 = scale 像素；
+    // RequestPlaceAuto 回到自动网格。
+    void RequestPlace(float x, float y, float scale);
+    void RequestPlaceAuto();
 
-    // 游戏线程：多轨播放命令（S5）。语义与 spine::AnimationState 同名方法一致；在渲染线程
-    // 下一次 Draw 的 Update 之前按提交顺序执行（同一帧里的 RequestLoad 先生效）。
+    // 游戏线程：多轨播放命令（S5），作用在**当前选中**的实例上（defaultMix 除外：全局）。语义与
+    // spine::AnimationState 同名方法一致；在渲染线程下一次 Draw 的 Update 之前按提交顺序执行。
     // `anim` 是动画下标（纯数字）或动画名；找不到 ⇒ 命令丢弃并记一行日志。
     void RequestSetAnimation(int track, const std::string& anim, bool loop);
     void RequestAddAnimation(int track, const std::string& anim, bool loop, float delay);
     void RequestSetEmptyAnimation(int track, float mix_duration);
     void RequestDefaultMix(float seconds);   // AnimationStateData::defaultMix（跨资产保留，初值 0.2）
-    void RequestTimeScale(float scale);      // AnimationState::timeScale
+    void RequestTimeScale(float scale);      // 选中实例的 AnimationState::timeScale
     void RequestTrackAlpha(int track, float alpha);
     // tint black（双色）开关 = SpineSettings::tintBlack。默认关（OSGame 线上全关，见 SpineGpuTintBlack.h）。
     // 立即生效（下一次 Draw），不走动画命令队列；跨资产保留。
     void RequestTintBlack(bool enabled);
 
-    // 渲染线程：在 `render_pass` 的 `subpass` 里、`viewport` 范围内画当前实例。
+    // 渲染线程：在 `render_pass` 的 `subpass` 里、`viewport` 范围内画全部实例。
     // 调用方负责已 begin 了该 render pass、并处在该 subpass。
     void Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport);
 
@@ -66,7 +82,7 @@ public:
     // DX12 / Metal 的接入点用它（Vulkan 的 MainCameraPass 自己挑，规则相同）。
     void DrawInEditorViewport(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass);
 
-    // 诊断：上一帧画了几个绘制项（`spine.status` 用）。
+    // 诊断：上一帧画了几个绘制项（全部实例之和；`spine.status` 用）。
     uint32_t LastDrawCount() const;
     std::string Status() const;
 

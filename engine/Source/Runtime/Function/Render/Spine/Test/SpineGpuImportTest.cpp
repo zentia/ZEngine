@@ -13,6 +13,7 @@
 // =====================================================================
 
 #include "Runtime/Function/Render/Spine/SpineGpuAnimSolver.h"
+#include "Runtime/Function/Render/Spine/SpineGpuBatch.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuTintBlack.h"
 #include "Runtime/Function/Render/Spine/SpineGpuFormat.h"
@@ -2400,6 +2401,148 @@ int main(int argc, char** argv)
                   Near(em->track_end, 0.2f),
               "setEmptyAnimation：空动画、mixDuration = trackEnd = 0.2");
         Check(as.SetAnimation(0, 999u, true) == nullptr, "动画下标越界 ⇒ 返回 nullptr（不改状态）");
+        g_prefix.clear();
+    }
+
+    // =================================================================
+    // 多实例拼包（SpineGpuBatch）+ 摆放。布局数值手算；拼包按"排在别的实例后面 == 单独成包"逐位比
+    // （SpineGpuEmulateVertex = spine_gpu.vert 的 CPU 版）。全量 781 资产版本在 SpineGpuRefParityTest。
+    // =================================================================
+    {
+        g_prefix = "[multi-instance] ";
+        auto Near = [](float got, float want) { return std::fabs(got - want) < 1e-6f; };
+        // ---- 网格：列数 = round(sqrt(n · 宽高比))，行从上往下 ----
+        SpineGpuRect c = SpineGpuGridCell(1, 0, 800.0f, 600.0f);
+        Check(c.x == 0.0f && c.y == 0.0f && c.w == 800.0f && c.h == 600.0f, "1 个实例 ⇒ 整个视口");
+        c = SpineGpuGridCell(2, 1, 800.0f, 600.0f);   // sqrt(2.67) = 1.63 → 2 列 1 行
+        Check(c.x == 400.0f && c.y == 0.0f && c.w == 400.0f && c.h == 600.0f, "2 个 / 4:3 ⇒ 左右两格，第 1 个在右");
+        c = SpineGpuGridCell(4, 3, 800.0f, 600.0f);   // sqrt(5.33) = 2.31 → 2 列 2 行
+        Check(c.x == 400.0f && c.y == 300.0f && c.w == 400.0f && c.h == 300.0f, "4 个 ⇒ 2×2，第 3 个在右下");
+        // ---- 自动摆放：bounds (-10,-20)-(30,20)，视口 800×600，Vulkan y 取负 ----
+        //   fit = 0.8·min(800/40, 600/40) = 12；sx = 24/800 = 0.03；sy = -24/600 = -0.04；
+        //   中心 (10, 0) ⇒ tx = -0.3、ty = 0
+        const float bounds[4] = {-10.0f, -20.0f, 30.0f, 20.0f};
+        SpineGpuGpuInst gi = SpineGpuFitInstance(bounds, SpineGpuGridCell(1, 0, 800.0f, 600.0f), 800.0f, 600.0f, -1.0f);
+        Check(Near(gi.clip_from_world[0], 0.03f) && Near(gi.clip_from_world[5], -0.04f) &&
+                  Near(gi.clip_from_world[12], -0.3f) && gi.clip_from_world[13] == 0.0f &&
+                  gi.clip_from_world[15] == 1.0f && gi.root_abcd[0] == 1.0f && gi.root_abcd[3] == 1.0f,
+              "单实例自动摆放 = 多实例之前的居中 80%");
+        //   右半格（中心 x = 600 ⇒ 偏 +200 像素）：fit = 0.8·min(400/40, 600/40) = 8；sx = 0.02；
+        //   tx = -10·0.02 + 2·200/800 = 0.3；y 不偏
+        gi = SpineGpuFitInstance(bounds, SpineGpuGridCell(2, 1, 800.0f, 600.0f), 800.0f, 600.0f, -1.0f);
+        Check(Near(gi.clip_from_world[0], 0.02f) && Near(gi.clip_from_world[12], 0.3f) &&
+                  Near(gi.clip_from_world[13], 0.0f),
+              "第 2 格：缩放按格子、平移到格子中心");
+        // ---- 手动摆放：(100, 50) 像素、2 像素 / 单位，DX12（y 向上）----
+        gi = SpineGpuPlaceInstance(100.0f, 50.0f, 2.0f, 800.0f, 600.0f, 1.0f);
+        Check(Near(gi.clip_from_world[0], 0.005f) && Near(gi.clip_from_world[5], 4.0f / 600.0f) &&
+                  Near(gi.clip_from_world[12], 0.25f) && Near(gi.clip_from_world[13], 100.0f / 600.0f),
+              "手动摆放：原点在视口中心偏 (100, 50) 像素");
+
+        // ---- 拼包：裁剪夹具（rigid region + weighted mesh，有动画）的一个姿势；第二个实例的骨骼整体平移，
+        //      保证两个实例的骨骼表不同（bone_base 错了才看得出来）。裁剪交给全量对拍（这里 clip = 空）。
+        SpineSourceSkeleton msrc;
+        SpineGpuAsset ma;
+        const std::string mjson = BuildClipDeformOnClip();
+        SpineImportResult mr = ParseSpineSkeletonJson(mjson.data(), mjson.size(), &atlas, msrc);
+        if (mr.ok)
+        {
+            mr = BakeSpineGpuAsset(msrc, ma);
+        }
+        SpineGpuPoseResult p1, p2;
+        if (mr.ok)
+        {
+            mr = SpineGpuSamplePose(ma, 0, 0.1f, p1);
+        }
+        if (mr.ok)
+        {
+            p2 = p1;
+            for (SpineGpuBoneSample& b : p2.bones)
+            {
+                b.world_x += 7.0f;
+                b.world_y -= 3.0f;
+            }
+        }
+        Check(mr.ok, "夹具烘焙 + 两个姿势采样成功");
+        if (!mr.ok)
+        {
+            std::printf("  error: %s\n", mr.error.c_str());
+        }
+        if (mr.ok)
+        {
+            SpineGpuBatchAssetInfo info;
+            SpineGpuBuildBatchAssetInfo(ma, info);
+            const SpineGpuGpuInst ia = SpineGpuPlaceInstance(10.0f, -20.0f, 0.5f, 800.0f, 600.0f, -1.0f);
+            const SpineGpuGpuInst ib = SpineGpuPlaceInstance(-100.0f, 40.0f, 1.25f, 800.0f, 600.0f, -1.0f);
+            SpineGpuBatch single, combined;
+            SpineGpuBatchRange ra, rb, ra2;
+            const bool ok1 = SpineGpuAppendBatchInstance(ma, info, p1, nullptr, ia, false, single, ra).ok;
+            const bool ok2 = SpineGpuAppendBatchInstance(ma, info, p2, nullptr, ib, false, combined, rb).ok &&
+                             SpineGpuAppendBatchInstance(ma, info, p1, nullptr, ia, false, combined, ra2).ok;
+            Check(ok1 && ok2 && ra.draw_count > 0, "两个实例都追加成功、有可画项");
+            Check(ra2.draw_first == rb.draw_count && ra2.draw_count == ra.draw_count, "第 2 个实例的区间紧接第 1 个");
+            Check(combined.bones.size() == 2u * ma.header.bone_count && combined.insts.size() == 2u,
+                  "骨骼表 / 实例变换首尾相接");
+            bool offs = ra2.draw_count > 0;
+            for (uint32_t k = 0; k < ra2.draw_count && offs; ++k)
+            {
+                const SpineGpuGpuDraw& d = combined.draws[ra2.draw_first + k];
+                offs = d.bone_base == ma.header.bone_count && d.inst_index == 1u;
+            }
+            Check(offs, "第 2 个实例的 bone_base = 骨骼数、inst_index = 1");
+            bool same = ok1 && ok2;
+            size_t verts = 0;
+            for (uint32_t k = 0; k < ra.draw_count && same; ++k)
+            {
+                const SpineGpuBatchCmd& cmd = single.cmds[ra.draw_first + k];
+                for (uint32_t q = 0; q < cmd.index_count && same; ++q)
+                {
+                    const uint32_t vi = ma.index_buffer[cmd.index_first + q];
+                    SpineGpuEmulatedVertex e1, e2;
+                    same = SpineGpuEmulateVertex(ma, single, ra.draw_first + k, vi, e1) &&
+                           SpineGpuEmulateVertex(ma, combined, ra2.draw_first + k, vi, e2) &&
+                           std::memcmp(&e1, &e2, sizeof(e1)) == 0;
+                    ++verts;
+                }
+            }
+            Check(same && verts > 0, "排在别的实例后面的每个顶点与单独成包逐位相同");
+            // 换掉第 2 个实例的骨骼（= 着色器忘了加 bone_base 时读到的东西）⇒ 必须不同：检查本身有判别力
+            SpineGpuBatch wrong = combined;
+            for (SpineGpuGpuDraw& d : wrong.draws)
+            {
+                d.bone_base = 0;
+            }
+            bool differs = false;
+            for (uint32_t k = 0; k < ra2.draw_count && !differs; ++k)
+            {
+                const SpineGpuBatchCmd& cmd = combined.cmds[ra2.draw_first + k];
+                for (uint32_t q = 0; q < cmd.index_count && !differs; ++q)
+                {
+                    const uint32_t vi = ma.index_buffer[cmd.index_first + q];
+                    SpineGpuEmulatedVertex e1, e2;
+                    differs = SpineGpuEmulateVertex(ma, combined, ra2.draw_first + k, vi, e1) &&
+                              SpineGpuEmulateVertex(ma, wrong, ra2.draw_first + k, vi, e2) &&
+                              std::memcmp(&e1, &e2, sizeof(e1)) != 0;
+                }
+            }
+            Check(differs, "反例：bone_base 置 0 ⇒ 顶点变了（两个姿势不同，检查有判别力）");
+            // ---- 失败回滚：骨骼数不对的姿势 ⇒ 报错且合包原样 ----
+            SpineGpuPoseResult bad = p1;
+            bad.bones.pop_back();
+            const size_t nb = combined.bones.size(), nd = combined.draws.size(), ni = combined.insts.size();
+            SpineGpuBatchRange rbad;
+            const SpineImportResult br = SpineGpuAppendBatchInstance(ma, info, bad, nullptr, ia, false, combined, rbad);
+            Check(!br.ok && combined.bones.size() == nb && combined.draws.size() == nd && combined.insts.size() == ni &&
+                      rbad.draw_count == 0,
+                  "坏姿势 ⇒ 报错、合包不变（别的实例照画）");
+            // ---- 越界寻址 ⇒ 仿真报 false（GPU 上是静默读错）----
+            SpineGpuBatch oob = single;
+            oob.draws[ra.draw_first].inst_index = 7;
+            SpineGpuEmulatedVertex eo;
+            const SpineGpuBatchCmd& c0 = single.cmds[ra.draw_first];
+            Check(!SpineGpuEmulateVertex(ma, oob, ra.draw_first, ma.index_buffer[c0.index_first], eo),
+                  "inst_index 越界 ⇒ 仿真返回 false");
+        }
         g_prefix.clear();
     }
 

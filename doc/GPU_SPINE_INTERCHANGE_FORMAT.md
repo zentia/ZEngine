@@ -1405,10 +1405,12 @@ v7 的处理（见 `doc/GPU_SPINE_V7_ANIMATION.md`）。**边界不是拍脑袋�
 三个后端接入点与差异见本节末"DX12 / Metal"。入口是控制台命令：
 
 ```
-spine.load <骨架 .skel.bytes|.skel|.json> [动画下标]   # 图集取同名 .atlas.txt / .atlas
-spine.clear
-spine.status
-# 多轨（S5，语义 = spine::AnimationState，见 GPU_SPINE_V7_ANIMATION.md §7.0.7）：
+spine.load <骨架 .skel.bytes|.skel|.json> [动画下标]   # 图集取同名 .atlas.txt / .atlas；= clear + add
+spine.add <骨架> [动画下标] [个数]   # 多实例：加到最上面并选中最后一个；同一路径共用一份资产
+spine.remove [id=选中] / spine.select <id> / spine.place <x> <y> [scale] | spine.place auto
+spine.clear                          # 删全部实例
+spine.status                         # 每个实例一段：id / 文件 / 项数 / 轨道
+# 多轨（S5，语义 = spine::AnimationState，见 GPU_SPINE_V7_ANIMATION.md §7.0.7），作用在**选中**实例上（mix 是全局）：
 spine.play <动画> [track] [loop] / spine.queue <动画> [track] [delay] [loop] / spine.empty [track] [mix]
 spine.mix <秒> / spine.speed <倍率> / spine.alpha <track> <alpha>
 spine.tintblack <0|1>   # 双色（= SpineSettings::tintBlack），默认 0，跨资产保留
@@ -1456,7 +1458,7 @@ setup 姿势的包围盒自动居中、占视口 80%。
   weighted 的误差来自**容器里权重是 u8 量化的**（与 deform 无关，两格同量级）；
   把 deform 偏移错一个顶点，这两格会变成 9724 / 402（门槛已接进 verdict）。
 
-**仍然不做**（不是忘了）：多实例；非 default 皮肤；WebGL2（没有 SSBO）。（tint black、DX12 / Metal 已接，见下面。）
+**仍然不做**（不是忘了）：非 default 皮肤；WebGL2（没有 SSBO）。（tint black、DX12 / Metal、多实例已接，见下面。）
 
 #### v15：运行时裁剪（2026-10-23）
 
@@ -1543,6 +1545,41 @@ CPU 裁剪时按 {3,0,1,2} 重排（不裁时两条对角线画出来一样，�
   --msl-version 20100 --msl-decoration-binding` 按 MetalRHI 的选项能生成 MSL，`gl_InstanceIndex → [[instance_id]]`，
   9 个 buffer 在 `[[buffer(0..8)]]`（运行时 MetalRHI 再加 8 的偏移）。
 * 画面没有人眼看过：屏幕截图（GDI BitBlt）在这台机器上得到全黑（桌面不可见）。
+
+#### 多实例（2026-10-23）
+
+* **资产 / 实例分离**：`Asset` = 容器 + 查找表（`SpineGpuRuntimeData`，只读）+ 静态缓冲 + 图集页 + 每帧缓冲 +
+  描述符集，按**路径**缓存、`shared_ptr` 共享；`Instance` = 骨架状态 + `SpineGpuAnimationState` + 摆放 + 本帧
+  姿势 / 裁剪结果。最后一个实例删掉时资产延迟销毁。文件改了要 `spine.clear` 再加（缓存不看时间戳）。
+* **拼包**（`SpineGpuBatch.{h,cpp}`，纯 CPU，单测 / 对拍直接用）：同一资产的实例首尾相接拼进同一组每帧
+  缓冲 —— 着色器早就按 `SpineDraw.bone_base` / `inst_index` 寻址（第一版恒为 0，**从没测过**），这次才真用上：
+  | 缓冲 | 实例 k 的偏移落在哪 |
+  |---|---|
+  | b4 bones | `bone_base` = 前面实例的骨骼数之和 |
+  | b5 draws | 实例 k 的绘制项是一段连续区间；firstInstance = **合包里的全局下标**（DX12 的 draw_ids 按需倍增） |
+  | b6 insts | `inst_index` = k |
+  | b7 deform | `deform_base` 的回绕偏置里已含前面实例的 deform 长度 |
+  | b8 cpu_verts / 动态索引 | `deform_base`（bit3）与命令的 `index_first` 已含前面实例的裁剪顶点 / 索引数 |
+  每帧容量按需倍增（旧缓冲延迟销毁，只重写本帧槽位那一格）。一个实例解算 / 拼包失败只跳过它自己（合包原样回滚）。
+* **录制**：按实例顺序（先加的在下面）；换资产时整套状态重绑。
+* **摆放**：自动 = 视口网格（列数 ≈ √(n·宽高比)，行从上往下），每格里 setup 包围盒居中占 80%（1 个实例时与
+  多实例之前**逐位相同**）；`spine.place x y [scale]` = 骨架原点在视口中心偏 (x, y) 像素（y 向上）、scale
+  像素 / 单位。失败的实例也占格子（别的不跳动）。
+* **命令**：实例增删 / 摆放 / 播放进**同一条**有序队列；目标在入队时解析成 id（游戏线程的"选中"）⇒
+  `spine.add` 之后紧跟的 `spine.play` 作用在新实例上。加载失败时渲染线程把 id 摘掉、选中退回最后一个。
+* **描述符集复用**：RHI 没有 FreeDescriptorSets；资产销毁时它的 set0 / set1 到期后进空闲表，下一个资产先拿
+  空闲的（以前每 `spine.load` 一次就从共享池漏一组）。
+* **验证**：
+  * `SpineGpuRefParityTest` S5：每 4 帧把**上一帧的姿势**当另一个实例排在前面、当前帧排在后面，当前帧每个
+    顶点（`SpineGpuEmulateVertex` = spine_gpu.vert 的 CPU 版，越界即报错）与它单独成包时**逐位相同**：
+    781 资产 57 794 帧、1.70 亿个顶点（裁剪项 561 万、带 deform 6 350 万），0 分叉。
+    变异 5 处（bone_base / inst_index / 裁剪顶点基址 / 动态索引基址 / deform 段相对化）**全部**抓到。
+  * `SpineGpuImportTest`（ctest）+15 条：网格 / 自动 / 手动摆放手算，两实例偏置、逐位一致、反例有判别力、
+    坏姿势回滚、越界仿真报 false（1393 → 1408）。
+  * `SpineGpuDx12RasterTest`：本实例的骨骼从 bone_base = 3、变换从 inst_index = 1 取（前面放别的实例的诱饵）；
+    HLSL 去掉 bone_base ⇒ 3/6、取 insts[0] ⇒ 2/6。GLSL 与 HLSL 同公式，GLSL 侧没有 GPU 级测试。
+  * 编辑器实跑（Vulkan 开验证层 / DX12）：K_Bianque ×2 + K_ZhuBaJie ×3、删一个、手动摆一个、加一个不存在的
+    文件 ⇒ 4 实例 / 2 资产、首帧 224 项、裁剪 110 项（两个 K_Bianque 各 55），无验证层报错、无 device removed；坏文件只报一行错。
 
 可见集解析实测：OSGame 全量第 0 个动画 t=0 时挂着附件的槽位 29 785 个能找到绘制项，
 689 个找不到 —— 这 689 个槽位在 skin 0 下**一个可画项都没有**（"槽位里有别的可画项、

@@ -3,11 +3,13 @@
 
 #include "Runtime/Function/Render/Interface/RHI.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
+#include "Runtime/Function/Render/Spine/SpineGpuBatch.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
 #include "Runtime/Function/Render/Spine/SpineGpuTintBlack.h"
 #include "core/Log/LogSystem.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -32,52 +34,16 @@
 
 namespace
 {
-    // 着色器里的两个 std430 结构，**逐字段**与 spine_gpu.vert / .frag 对齐。
-    // 尺寸钉成 static_assert：改了一边没改另一边时是"能跑、读到别人的字段"，不报错。
-    struct GpuDraw
-    {
-        uint32_t vertex_format;
-        uint32_t uv_offset;
-        uint32_t slot_bone;
-        uint32_t bone_base;
-        uint32_t inst_index;
-        uint32_t tint;
-        uint32_t flags;
-        uint32_t weighted_base;
-        uint32_t deform_base;   // bit2：b7 的回绕偏置；bit3：b8（CPU 裁剪顶点）里的起点（见 spine_gpu.vert）
-        float dark[3];          // bit4：槽位暗色 rgb（float，不截断；见 SpineGpuTintBlack.h）
-    };
-    static_assert(sizeof(GpuDraw) == 48, "spine_gpu.vert SpineDraw is 12 x u32 (std430)");
+    // GpuDraw / GpuInst / GpuCpuVert 与绘制项标志位在 SpineGpuBatch.h（多实例拼包与单测共用）
+    using GpuDraw = SpineGpuGpuDraw;
+    using GpuInst = SpineGpuGpuInst;
+    using GpuCpuVert = SpineGpuCpuVert;
 
-    struct GpuInst
-    {
-        float clip_from_world[16];   // 列主序（GLSL mat4 默认）
-        float root_abcd[4];
-        float root_t[4];
-    };
-    static_assert(sizeof(GpuInst) == 96, "spine_gpu.vert SpineInst is mat4 + vec4 + vec4 (std430)");
-
-    constexpr uint32_t kDrawFlagStraightAlpha = 1u;
-    constexpr uint32_t kDrawFlagAdditive = 2u;
-    constexpr uint32_t kDrawFlagDeform = 4u;
-    constexpr uint32_t kDrawFlagCpuVerts = 8u;   // v15：CPU 裁剪过的项，顶点取 b8
-    constexpr uint32_t kDrawFlagTintBlack = 16u; // tint black：片元加暗色项（spine_gpu.frag）
-
-    void ApplyTintBlack(GpuDraw& g, const SpineGpuSlotSample& slot, bool tint_black_on, bool additive,
-                        uint32_t& counter)
-    {
-        const SpineGpuTintBlackParams tb = SpineGpuMakeTintBlackParams(slot.dark, tint_black_on, additive);
-        if (!tb.enabled)
-        {
-            return;
-        }
-        g.flags |= kDrawFlagTintBlack;
-        g.dark[0] = tb.dark[0];
-        g.dark[1] = tb.dark[1];
-        g.dark[2] = tb.dark[2];
-        ++counter;
-    }
     constexpr uint32_t kSet0Bindings = 9;        // b0..b6 + b7 deform（S6）+ b8 CPU 裁剪顶点（v15）
+    constexpr uint32_t kBonesBinding = 4;
+    constexpr uint32_t kDrawsBinding = 5;
+    constexpr uint32_t kInstsBinding = 6;
+    constexpr uint32_t kDeformBinding = 7;
     constexpr uint32_t kCpuVertBinding = 8;
     // 各 SSBO 的元素大小（字节）。Vulkan / Metal 不看；**DX12 必须给**：它把 SSBO 建成结构化 SRV，
     // 没给 stride 时按 range 猜（80 B 或 4 B），b1 / b3（float2）、b5（48 B）、b6（96 B）、b8（16 B）
@@ -94,23 +60,6 @@ namespace
 #else
         return "e:/Engine/ZEngine/engine/shader";
 #endif
-    }
-
-    // CPU 裁剪顶点（b8）的一项：骨架空间位置 + UV，与 spine_gpu.vert 的 vec4 对齐
-    struct GpuCpuVert
-    {
-        float x, y, u, v;
-    };
-    static_assert(sizeof(GpuCpuVert) == 16, "spine_gpu.vert cpu_verts is vec4");
-
-    uint32_t PackRgba8(const float c[4])
-    {
-        const auto q = [](float v) {
-            v = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
-            return static_cast<uint32_t>(std::lround(v * 255.0f));
-        };
-        // unpackUnorm4x8：x 在最低字节
-        return q(c[0]) | (q(c[1]) << 8u) | (q(c[2]) << 16u) | (q(c[3]) << 24u);
     }
 
     bool ReadWholeFile(const std::filesystem::path& p, std::vector<uint8_t>& out)
@@ -148,35 +97,53 @@ namespace
 
 struct SpineGpuRenderer::Impl
 {
-    // ---- 游戏线程 → 渲染线程 ----
+    // ---- 游戏线程 → 渲染线程：**一条**有序命令队列 ----
+    // 实例的增删 / 摆放与多轨播放命令（S5）都进同一个队列，渲染线程在下一次 Draw 里按提交顺序执行
+    // ⇒ "spine.add 之后立刻 spine.play" 作用在刚加的那个实例上。目标实例在**入队时**解析成 id
+    // （游戏线程的"当前选中"），渲染线程不看选中状态。
     mutable std::mutex mutex;
-    bool pending_load {false};
-    bool pending_clear {false};
-    std::string pending_path;
-    int pending_anim {0};
-    // 多轨播放命令（S5）：游戏线程攒、渲染线程在下一次 Draw 的 Update 之前按顺序执行
-    struct AnimCommand
+    struct Command
     {
         enum class Op
         {
-            kSet,     // setAnimation(track, anim, loop)
-            kAdd,     // addAnimation(track, anim, loop, delay)
-            kEmpty,   // setEmptyAnimation(track, mix)
-            kMix,     // AnimationStateData::default_mix = value
-            kSpeed,   // AnimationState::time_scale = value
-            kAlpha,   // 轨道当前那条的 alpha = value
+            kAddInstance,      // path + anim → 新实例 `target`
+            kRemoveInstance,   // 删 `target`
+            kClearInstances,   // 删全部
+            kPlace,            // `target` 手动摆放：(value, delay) = 像素偏移，scale
+            kPlaceAuto,        // `target` 回到自动网格
+            kSet,              // setAnimation(track, anim, loop)
+            kAdd,              // addAnimation(track, anim, loop, delay)
+            kEmpty,            // setEmptyAnimation(track, mix)
+            kMix,              // 所有实例的 AnimationStateData::default_mix = value（全局，跨实例 / 资产保留）
+            kSpeed,            // `target` 的 AnimationState::time_scale = value
+            kAlpha,            // `target` 轨道当前那条的 alpha = value
         };
         Op op {Op::kSet};
+        uint32_t target {0};   // 实例 id（入队时解析；0 = 当时没有选中的实例）
         int track {0};
-        std::string anim;   // 下标或名字
+        std::string anim;      // 下标或名字（kAddInstance：放到轨道 0 的动画下标）
+        std::string path;      // kAddInstance
         bool loop {true};
         float value {0.0f};
         float delay {0.0f};
+        float scale {1.0f};
     };
-    std::vector<AnimCommand> pending_cmds;
+    std::vector<Command> pending_cmds;
+    // 游戏线程视角的实例 id：入队即生效（加载失败时渲染线程会把它摘掉）
+    uint32_t next_id {1};
+    uint32_t selected {0};
+    std::vector<uint32_t> live_ids;
+
+    // 游戏线程入队一条"作用在当前选中实例上"的命令（调用方已持锁）。0 ⇒ 渲染线程找不到实例，丢弃并记日志
+    void PushTargeted(Command c)
+    {
+        c.target = selected;
+        pending_cmds.push_back(std::move(c));
+    }
+
     float default_mix {0.2f};   // 渲染线程独占（spine.mix 经命令队列改）；跨资产保留
     std::string status {"idle"};
-    std::string skip_reason;   // 最近一次"没画"的原因（变化时才记日志）
+    std::string skip_reason;   // 最近一次"整帧没画"的原因（变化时才记日志）
     uint32_t last_draw_count {0};
     uint32_t last_deform_draws {0};    // 上一帧带 deform 的绘制项数（S6）
     uint32_t last_deform_floats {0};   // 上一帧上传的 deform float 数
@@ -186,8 +153,8 @@ struct SpineGpuRenderer::Impl
     // tint black 开关（= SpineSettings::tintBlack）。默认关：OSGame 线上全部是 0，且引擎分支
     // 根本不上传 uv2/uv3（见 SpineGpuTintBlack.h）。游戏线程写、渲染线程读，受 mutex 保护。
     bool tint_black {false};
-    bool tint_black_logged {false};   // 每次加载 / 每次拨开关后只记一行"tint black active"
-    std::string track_summary;         // 上一帧的轨道概况（渲染线程写、spine.status 读，受 mutex 保护）
+    bool tint_black_logged {false};   // 每次加实例 / 每次拨开关后只记一行"tint black active"
+    std::string instance_summary;     // 上一帧每个实例的概况（渲染线程写、spine.status 读，受 mutex 保护）
 
     // ---- 管线（与资产无关）----
     RHI* rhi {nullptr};
@@ -198,7 +165,7 @@ struct SpineGpuRenderer::Impl
     RHIPipelineLayout* pipeline_layout {nullptr};
     RHIPipeline* pipelines[4] {nullptr, nullptr, nullptr, nullptr};   // 按 SpineBlendMode
 
-    // ---- 资产 ----
+    // ---- 资产（同一路径的所有实例共用一份）----
     struct Buffer
     {
         RHIBuffer* buffer {nullptr};
@@ -207,13 +174,13 @@ struct SpineGpuRenderer::Impl
     };
     struct FrameSlot
     {
+        // 该资产**所有实例**本帧的拼包（SpineGpuBatch）。容量按需倍增（旧缓冲延迟销毁，只重写**本帧
+        // 槽位**的那一格 —— 它上一次被 GPU 用是 frames.size() 帧之前，已经完成）。
         Buffer bones;
         Buffer draws;
         Buffer insts;
-        Buffer deform;   // 本帧生效的 mesh deform（S6），容量 = 可能同时生效的上界
-        // v15：CPU 裁剪的输出。裁剪会产生新三角形，量没有静态上界 ⇒ 按需扩容（旧缓冲走延迟销毁，
-        // 只重写**本帧槽位**的 b8 —— 它上一次被 GPU 用是 frames.size() 帧之前，已经完成）。
-        Buffer cpu_verts;   // GpuCpuVert[]
+        Buffer deform;      // 本帧生效的 mesh deform（S6）
+        Buffer cpu_verts;   // v15 CPU 裁剪的输出：GpuCpuVert[]
         Buffer cpu_index;   // u16[]，局部于各项的起点
         RHIDescriptorSet* set0 {nullptr};
         std::vector<RHIDescriptorSet*> set1;   // 每个图集页一个（每帧槽位一份：DX12 每帧重写，见 RefreshDescriptors）
@@ -226,47 +193,70 @@ struct SpineGpuRenderer::Impl
         RHIImageView* view {nullptr};
         RHISampler* sampler {nullptr};   // 默认线性采样器，归 RHI 所有
     };
-    struct Loaded
+    struct Asset
     {
+        std::string path;
         SpineGpuAsset asset;
-        uint32_t anim {0};   // 加载时放到轨道 0 的动画
-        // S5：跨帧存活的骨架状态 + 多轨调度。`anim_state` 引用 asset / data / mix ⇒ 必须声明在它们之后
-        //     （析构逆序），且 Loaded 不可移动（unique_ptr 持有，从不拷贝）。
-        SpineGpuRuntimeData data;
-        SpineGpuSkeletonState state;
-        SpineGpuAnimationStateData mix;
-        std::unique_ptr<SpineGpuAnimationState> anim_state;
-        std::chrono::steady_clock::time_point last_tick;
-        // 每个绘制项的 deform 数组长度（float 个数；rigid 2×顶点、weighted 2×影响）与
-        // weighted 项的 infl_base（第 0 个顶点的 influence_offset）—— GPU 寻址偏置要用
-        std::vector<uint32_t> deform_len;
-        std::vector<uint32_t> infl_base;
-        size_t deform_capacity {0};   // float 个数
+        SpineGpuRuntimeData data;          // 查找表：只读，所有实例共用
+        SpineGpuBatchAssetInfo info;       // deform 长度 / infl_base / 单实例 deform 上界
         Buffer vertex_words;
         Buffer infl_bind;
         Buffer infl_bone;
         Buffer uvs;
         Buffer index;
-        // DX12 专用：u32 0,1,2,…（per-instance 顶点属性 = 绘制项下标；D3D12 的 SV_InstanceID 不含
-        // StartInstanceLocation，见 spine_gpu.vert.hlsl 文件头）。其它后端为空。
+        // DX12 专用：u32 0,1,2,…（per-instance 顶点属性 = 绘制项在 b5 里的下标；D3D12 的 SV_InstanceID 不含
+        // StartInstanceLocation，见 spine_gpu.vert.hlsl 文件头）。多实例时按合包的项数倍增。其它后端为空。
         Buffer draw_ids;
+        uint32_t draw_ids_count {0};
         std::vector<Page> pages;
         std::vector<FrameSlot> frames;
-        float bounds[4] {0, 0, 1, 1};       // setup 姿势的包围盒（x0, y0, x1, y1）
-        // v15：CPU 裁剪（SpineGpuClipper）的暂存，跨帧复用
+        // 每个动画 t=0 的包围盒（x0, y0, x1, y1），自动排布用；第一次用到时算
+        std::vector<std::array<float, 4>> bounds;
+        std::vector<uint8_t> bounds_valid;
+        SpineGpuBatch batch;   // 本帧拼包（渲染线程暂存，跨帧复用）
+    };
+    std::vector<std::shared_ptr<Asset>> assets;
+
+    // ---- 实例 ----
+    struct Instance
+    {
+        uint32_t id {0};
+        std::shared_ptr<Asset> asset;   // 先声明 ⇒ 后析构：anim_state 引用 asset->asset / asset->data
+        uint32_t anim {0};              // 加载时放到轨道 0 的动画
+        // S5：跨帧存活的骨架状态 + 多轨调度。`anim_state` 引用 asset / data / mix ⇒ 必须声明在它们之后。
+        SpineGpuSkeletonState state;
+        SpineGpuAnimationStateData mix;
+        std::unique_ptr<SpineGpuAnimationState> anim_state;
+        std::chrono::steady_clock::time_point last_tick;
+        float bounds[4] {0, 0, 1, 1};
+        // 摆放：自动 = 视口网格里按实例顺序占一格；手动 = 视口中心偏 (x, y) 像素、scale 像素 / 单位
+        bool manual {false};
+        float place_x {0.0f};
+        float place_y {0.0f};
+        float place_scale {1.0f};
+        // 本帧解算结果（跨帧复用内存）
+        SpineGpuPoseResult pose;
         SpineGpuSkeletonClipping clipper;
         SpineGpuClipFrameResult clip;
+        bool solved {false};
+        SpineGpuBatchRange range;
+        std::string error;   // 最近一次"这个实例没画"的原因（变化时记日志）
     };
-    std::unique_ptr<Loaded> loaded;
+    std::vector<std::unique_ptr<Instance>> instances;   // 也是**绘制顺序**（先加的先画、在下面）
 
-    // 延迟销毁：GPU 可能还在用上一份资产的缓冲（最多领先 MaxFramesInFlight 帧）
+    // 延迟销毁：GPU 可能还在用（最多领先 MaxFramesInFlight 帧）。描述符集到期后进空闲表复用
+    // （RHI 没有 FreeDescriptorSets；不复用的话每加 / 删一次资产就漏一组）。
     struct Retired
     {
         std::vector<Buffer> buffers;
         std::vector<Page> pages;
+        std::vector<RHIDescriptorSet*> set0s;
+        std::vector<RHIDescriptorSet*> set1s;
         uint32_t frames_left {0};
     };
     std::vector<Retired> retired;
+    std::vector<RHIDescriptorSet*> free_set0;
+    std::vector<RHIDescriptorSet*> free_set1;
 
     // ------------------------------------------------------------------
 
@@ -292,6 +282,26 @@ struct SpineGpuRenderer::Impl
         return true;
     }
 
+    bool Upload(const Buffer& b, const void* src, size_t bytes)
+    {
+        if (bytes == 0)
+        {
+            return true;
+        }
+        if (bytes > b.size)
+        {
+            return false;
+        }
+        void* dst = nullptr;
+        if (!rhi->MapMemory(b.memory, 0, b.size, 0, &dst) || dst == nullptr)
+        {
+            return false;
+        }
+        std::memcpy(dst, src, bytes);
+        rhi->UnmapMemory(b.memory);
+        return true;
+    }
+
     void DestroyBufferNow(Buffer& b)
     {
         if (b.buffer != nullptr)
@@ -306,6 +316,39 @@ struct SpineGpuRenderer::Impl
     }
 
     bool IsDx12() const { return rhi != nullptr && rhi->getGraphicsAPI() == GraphicsAPI::DirectX12; }
+
+    uint32_t RetireFrames() const { return static_cast<uint32_t>(rhi->GetMaxFramesInFlight()) + 1u; }
+
+    void RetireBuffer(Buffer& b)
+    {
+        if (b.buffer == nullptr && b.memory == nullptr)
+        {
+            return;
+        }
+        Retired r;
+        r.frames_left = RetireFrames();
+        r.buffers.push_back(b);
+        retired.push_back(std::move(r));
+        b = Buffer {};
+    }
+
+    // 先从空闲表拿（到期的旧描述符集），没有再向共享池要
+    bool AllocSet(RHIDescriptorSetLayout* layout, std::vector<RHIDescriptorSet*>& free_list, RHIDescriptorSet*& out)
+    {
+        if (!free_list.empty())
+        {
+            out = free_list.back();
+            free_list.pop_back();
+            return true;
+        }
+        RHIDescriptorSetAllocateInfo alloc {};
+        alloc.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc.descriptorPool = rhi->GetDescriptorPoor();
+        alloc.descriptorSetCount = 1;
+        alloc.pSetLayouts = &layout;
+        out = nullptr;
+        return rhi->AllocateDescriptorSets(&alloc, out) && out != nullptr;
+    }
 
     // set 0 的一格 / 全部。stride 一律给（DX12 要，其它后端忽略）。
     void WriteSet0Binding(RHIDescriptorSet* set, uint32_t binding, const Buffer& b)
@@ -325,9 +368,9 @@ struct SpineGpuRenderer::Impl
         rhi->UpdateDescriptorSets(1, &w, 0, nullptr);
     }
 
-    void WriteSet0(Loaded& ld, FrameSlot& f)
+    void WriteSet0(Asset& as, FrameSlot& f)
     {
-        const Buffer* bufs[kSet0Bindings] = {&ld.vertex_words, &ld.infl_bind, &ld.infl_bone, &ld.uvs, &f.bones,
+        const Buffer* bufs[kSet0Bindings] = {&as.vertex_words, &as.infl_bind, &as.infl_bone, &as.uvs, &f.bones,
                                              &f.draws,         &f.insts,     &f.deform,    &f.cpu_verts};
         for (uint32_t i = 0; i < kSet0Bindings; ++i)
         {
@@ -335,13 +378,13 @@ struct SpineGpuRenderer::Impl
         }
     }
 
-    void WriteSet1(Loaded& ld, FrameSlot& f)
+    void WriteSet1(Asset& as, FrameSlot& f)
     {
-        for (size_t i = 0; i < ld.pages.size() && i < f.set1.size(); ++i)
+        for (size_t i = 0; i < as.pages.size() && i < f.set1.size(); ++i)
         {
             RHIDescriptorImageInfo image {};
-            image.sampler = ld.pages[i].sampler;
-            image.imageView = ld.pages[i].view;
+            image.sampler = as.pages[i].sampler;
+            image.imageView = as.pages[i].view;
             image.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             RHIWriteDescriptorSet w {};
             w.sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -358,14 +401,14 @@ struct SpineGpuRenderer::Impl
     // 下一轮开始时整体回收（DX12RHI::AllocateCbvSrvUavDescriptor）⇒ 只写一次的描述符集第二轮就指向
     // 别人的 SRV（读到 0 / 别的缓冲，不报错）。所以 DX12 每帧录制前把本帧槽位的 set0 / set1 全部重写
     // （与 MainCameraRp2Pass::DrawRP2 开头的 UpdateDescriptorBindings 同一个处理）。其它后端写一次即可。
-    void RefreshDescriptors(Loaded& ld, FrameSlot& f)
+    void RefreshDescriptors(Asset& as, FrameSlot& f)
     {
         if (!IsDx12())
         {
             return;
         }
-        WriteSet0(ld, f);
-        WriteSet1(ld, f);
+        WriteSet0(as, f);
+        WriteSet1(as, f);
     }
 
     // 本帧槽位的某个缓冲容量不够 ⇒ 换一个更大的（旧的延迟销毁）。`binding` 非负时重写 set0 的那一格。
@@ -375,11 +418,7 @@ struct SpineGpuRenderer::Impl
         {
             return true;
         }
-        Retired r;
-        r.frames_left = static_cast<uint32_t>(rhi->GetMaxFramesInFlight()) + 1u;
-        r.buffers.push_back(b);
-        retired.push_back(std::move(r));
-        b = Buffer {};
+        RetireBuffer(b);
         RHIDeviceSize cap = 256;
         while (cap < need)
         {
@@ -396,32 +435,80 @@ struct SpineGpuRenderer::Impl
         return true;
     }
 
-    void RetireLoaded()
+    // DX12：draw_ids 至少要有 `need` 项（firstInstance 是合包里的全局下标）
+    bool EnsureDrawIds(Asset& as, uint32_t need)
     {
-        if (!loaded)
+        if (!IsDx12() || need <= as.draw_ids_count)
         {
-            return;
+            return true;
         }
+        RetireBuffer(as.draw_ids);
+        uint32_t cap = 64;
+        while (cap < need)
+        {
+            cap *= 2;
+        }
+        std::vector<uint32_t> ids(cap);
+        for (uint32_t i = 0; i < cap; ++i)
+        {
+            ids[i] = i;
+        }
+        as.draw_ids_count = 0;
+        if (!CreateBuffer(as.draw_ids, ids.size() * sizeof(uint32_t), RHI_BUFFER_USAGE_VERTEX_BUFFER_BIT, ids.data()))
+        {
+            return false;
+        }
+        as.draw_ids_count = cap;
+        return true;
+    }
+
+    void RetireAsset(Asset& as)
+    {
         Retired r;
-        r.frames_left = static_cast<uint32_t>(rhi->GetMaxFramesInFlight()) + 1u;
-        for (Buffer* b : {&loaded->vertex_words, &loaded->infl_bind, &loaded->infl_bone, &loaded->uvs, &loaded->index,
-                          &loaded->draw_ids})
+        r.frames_left = RetireFrames();
+        for (Buffer* b : {&as.vertex_words, &as.infl_bind, &as.infl_bone, &as.uvs, &as.index, &as.draw_ids})
         {
             r.buffers.push_back(*b);
+            *b = Buffer {};
         }
-        r.pages = loaded->pages;
-        for (FrameSlot& f : loaded->frames)
+        r.pages = as.pages;
+        as.pages.clear();
+        for (FrameSlot& f : as.frames)
         {
-            r.buffers.push_back(f.bones);
-            r.buffers.push_back(f.draws);
-            r.buffers.push_back(f.insts);
-            r.buffers.push_back(f.deform);
-            r.buffers.push_back(f.cpu_verts);
-            r.buffers.push_back(f.cpu_index);
+            for (Buffer* b : {&f.bones, &f.draws, &f.insts, &f.deform, &f.cpu_verts, &f.cpu_index})
+            {
+                r.buffers.push_back(*b);
+                *b = Buffer {};
+            }
+            if (f.set0 != nullptr)
+            {
+                r.set0s.push_back(f.set0);
+            }
+            for (RHIDescriptorSet* s1 : f.set1)
+            {
+                if (s1 != nullptr)
+                {
+                    r.set1s.push_back(s1);
+                }
+            }
+            f.set0 = nullptr;
+            f.set1.clear();
         }
-        // 描述符集留在共享池里（一次性的诊断入口，量很小），不在这里回收；图集贴图随缓冲延迟销毁。
         retired.push_back(std::move(r));
-        loaded.reset();
+    }
+
+    // 没有实例再引用的资产 ⇒ 延迟销毁
+    void PurgeUnusedAssets()
+    {
+        for (std::shared_ptr<Asset>& as : assets)
+        {
+            if (as.use_count() == 1)
+            {
+                RetireAsset(*as);
+                as.reset();
+            }
+        }
+        assets.erase(std::remove(assets.begin(), assets.end(), nullptr), assets.end());
     }
 
     void TickRetired()
@@ -454,10 +541,17 @@ struct SpineGpuRenderer::Impl
                     }
                 }
                 r.pages.clear();
+                free_set0.insert(free_set0.end(), r.set0s.begin(), r.set0s.end());
+                free_set1.insert(free_set1.end(), r.set1s.begin(), r.set1s.end());
+                r.set0s.clear();
+                r.set1s.clear();
             }
         }
         retired.erase(std::remove_if(retired.begin(), retired.end(),
-                                     [](const Retired& r) { return r.buffers.empty() && r.pages.empty(); }),
+                                     [](const Retired& r) {
+                                         return r.buffers.empty() && r.pages.empty() && r.set0s.empty() &&
+                                                r.set1s.empty();
+                                     }),
                       retired.end());
     }
 
@@ -676,7 +770,7 @@ struct SpineGpuRenderer::Impl
     }
 
     // ------------------------------------------------------------------
-    // 多轨命令（渲染线程）
+    // 命令（渲染线程）
     // ------------------------------------------------------------------
     // 动画按下标（纯数字）或名字解析；找不到 ⇒ 返回 false，命令丢弃并记日志（不猜）。
     static bool ResolveAnim(const SpineGpuAsset& a, const std::string& s, uint32_t& out)
@@ -702,87 +796,303 @@ struct SpineGpuRenderer::Impl
         return false;
     }
 
-    void RunCommands(std::vector<AnimCommand>& cmds)
+    Instance* FindInstance(uint32_t id)
     {
-        for (const AnimCommand& c : cmds)
+        for (std::unique_ptr<Instance>& in : instances)
         {
-            if (c.op == AnimCommand::Op::kMix)
+            if (in->id == id)
             {
-                default_mix = std::max(0.0f, c.value);
-                if (loaded)
+                return in.get();
+            }
+        }
+        return nullptr;
+    }
+
+    // 渲染线程删掉 / 没能建出来的实例：同步给游戏线程视角（选中的话改选最后一个）
+    void ForgetId(uint32_t id)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        live_ids.erase(std::remove(live_ids.begin(), live_ids.end(), id), live_ids.end());
+        if (selected == id)
+        {
+            selected = live_ids.empty() ? 0u : live_ids.back();
+        }
+    }
+
+    // 资产 t=0 的包围盒（每个动画算一次）：CPU 按 §6 同一公式蒙一遍，只为自动排布
+    bool AssetBounds(Asset& as, uint32_t anim, float out[4], std::string& err)
+    {
+        const SpineGpuAsset& a = as.asset;
+        if (as.bounds.size() != a.anims.size())
+        {
+            as.bounds.assign(a.anims.size(), {0, 0, 1, 1});
+            as.bounds_valid.assign(a.anims.size(), 0u);
+        }
+        if (as.bounds_valid[anim] != 0u)
+        {
+            std::memcpy(out, as.bounds[anim].data(), sizeof(float) * 4u);
+            return true;
+        }
+        SpineGpuPoseResult pose;
+        const SpineImportResult pr = SpineGpuSamplePose(a, anim, 0.0f, pose);
+        if (!pr.ok)
+        {
+            err = pr.error;
+            return false;
+        }
+        float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+        const auto grow = [&](float x, float y) {
+            x0 = std::min(x0, x);
+            y0 = std::min(y0, y);
+            x1 = std::max(x1, x);
+            y1 = std::max(y1, y);
+        };
+        const auto word = [&](size_t i) {
+            uint32_t v = 0;
+            std::memcpy(&v, a.vertex_buffer.data() + i * 4u, 4);
+            return v;
+        };
+        for (const SpineDrawItem& di : a.draw_items)
+        {
+            if (di.skin_id != SpineGpuConstants::kDefaultSkinId)
+            {
+                continue;
+            }
+            for (uint32_t q = 0; q < di.index_count; ++q)
+            {
+                const uint32_t vi = a.index_buffer[di.index_offset + q];
+                if (di.vertex_format == SpineVertexFormat::kRigid)
                 {
-                    loaded->mix.default_mix = default_mix;
+                    float bx = 0.0f, by = 0.0f;
+                    std::memcpy(&bx, a.vertex_buffer.data() + vi * 8u, 4);
+                    std::memcpy(&by, a.vertex_buffer.data() + vi * 8u + 4u, 4);
+                    const SpineGpuBoneSample& b = pose.bones[a.slot_bone[di.slot_index]];
+                    grow(bx * b.a + by * b.b + b.world_x, bx * b.c + by * b.d + b.world_y);
                 }
-                LOG_INFO(ZRender, "SpineGpuRenderer: default mix = {}s", default_mix);
-                continue;
+                else
+                {
+                    const size_t w0 = a.weighted_segment_offset / 4u + vi * 2u;
+                    const uint32_t off = word(w0);
+                    const uint32_t cnt = word(w0 + 1u);
+                    float x = 0.0f, y = 0.0f;
+                    for (uint32_t k = 0; k < cnt; ++k)
+                    {
+                        const float bx = a.influence_bind[(off + k) * 2u];
+                        const float by = a.influence_bind[(off + k) * 2u + 1u];
+                        const SpineInfluenceBone& ib = a.influence_bone[off + k];
+                        const SpineGpuBoneSample& b = pose.bones[ib.bone_idx];
+                        const float wgt = static_cast<float>(ib.weight) / 255.0f;
+                        x += (bx * b.a + by * b.b + b.world_x) * wgt;
+                        y += (bx * b.c + by * b.d + b.world_y) * wgt;
+                    }
+                    grow(x, y);
+                }
             }
-            if (!loaded)
+        }
+        if (x0 > x1)
+        {
+            x0 = -100.0f;
+            y0 = -100.0f;
+            x1 = 100.0f;
+            y1 = 100.0f;
+        }
+        as.bounds[anim] = {x0, y0, x1, y1};
+        as.bounds_valid[anim] = 1u;
+        std::memcpy(out, as.bounds[anim].data(), sizeof(float) * 4u);
+        return true;
+    }
+
+    // 同一路径的资产只加载一次（文件改了要 spine.clear 再加：缓存按路径、不看时间戳）
+    std::shared_ptr<Asset> GetOrLoadAsset(const std::string& path, std::string& err)
+    {
+        for (const std::shared_ptr<Asset>& as : assets)
+        {
+            if (as->path == path)
             {
-                LOG_WARNING(ZRender, "SpineGpuRenderer: no skeleton loaded, animation command dropped");
-                continue;
+                return as;
             }
-            SpineGpuAnimationState& as = *loaded->anim_state;
-            const size_t track = static_cast<size_t>(std::max(0, c.track));
+        }
+        std::shared_ptr<Asset> as = LoadAsset(path, err);
+        if (as)
+        {
+            assets.push_back(as);
+        }
+        return as;
+    }
+
+    bool CreateInstance(uint32_t id, const std::string& path, const std::string& anim_s, std::string& err)
+    {
+        std::shared_ptr<Asset> as = GetOrLoadAsset(path, err);
+        if (!as)
+        {
+            return false;
+        }
+        const SpineGpuAsset& a = as->asset;
+        auto in = std::make_unique<Instance>();
+        in->id = id;
+        in->asset = as;
+        uint32_t ai = 0;
+        if (!anim_s.empty() && !ResolveAnim(a, anim_s, ai))
+        {
+            // 加载用的下标越界时与多实例之前一致：夹到最后一个（spine.load 的老语义）
+            const long v = std::strtol(anim_s.c_str(), nullptr, 10);
+            ai = static_cast<uint32_t>(std::clamp<long>(v, 0, static_cast<long>(a.anims.size()) - 1));
+        }
+        in->anim = ai;
+        if (!AssetBounds(*as, ai, in->bounds, err))
+        {
+            return false;
+        }
+        const SpineImportResult rr = SpineGpuInitSkeletonState(a, as->data, in->state);
+        if (!rr.ok)
+        {
+            err = rr.error;
+            return false;
+        }
+        in->mix.default_mix = default_mix;
+        in->anim_state = std::make_unique<SpineGpuAnimationState>(as->asset, as->data, &in->mix);
+        in->anim_state->SetAnimation(0, ai, true);
+        in->last_tick = std::chrono::steady_clock::now();
+        instances.push_back(std::move(in));
+        return true;
+    }
+
+    void RunCommands(std::vector<Command>& cmds, RHIRenderPass* render_pass, uint32_t subpass)
+    {
+        for (const Command& c : cmds)
+        {
             switch (c.op)
             {
-                case AnimCommand::Op::kSet:
-                case AnimCommand::Op::kAdd:
+                case Command::Op::kAddInstance:
                 {
-                    uint32_t ai = 0;
-                    if (!ResolveAnim(loaded->asset, c.anim, ai))
+                    std::string err;
+                    const bool ok = EnsurePipelines(render_pass, subpass) && CreateInstance(c.target, c.path, c.anim, err);
+                    if (ok)
                     {
-                        LOG_WARNING(ZRender, "SpineGpuRenderer: animation '{}' not found ({} animations)", c.anim,
-                                    loaded->asset.anims.size());
-                        break;
-                    }
-                    if (c.op == AnimCommand::Op::kSet)
-                    {
-                        as.SetAnimation(track, ai, c.loop);
+                        const Instance& in = *instances.back();
+                        LOG_INFO(ZRender,
+                                 "SpineGpuRenderer: instance #{} '{}' anim #{} '{}' ({} bones, {} draw items; {} "
+                                 "instances / {} assets)",
+                                 in.id, c.path, in.anim, in.asset->asset.anim_names[in.anim],
+                                 in.asset->asset.header.bone_count, in.asset->asset.draw_items.size(), instances.size(),
+                                 assets.size());
+                        std::lock_guard<std::mutex> lock(mutex);
+                        tint_black_logged = false;
                     }
                     else
                     {
-                        as.AddAnimation(track, ai, c.loop, c.delay);
+                        if (err.empty())
+                        {
+                            err = "pipelines are not ready";
+                        }
+                        LOG_ERROR(ZRender, "SpineGpuRenderer: instance #{} load '{}' failed: {}", c.target, c.path, err);
+                        ForgetId(c.target);
+                        std::lock_guard<std::mutex> lock(mutex);
+                        status = "load failed: " + err;
+                    }
+                    continue;
+                }
+                case Command::Op::kRemoveInstance:
+                {
+                    const size_t before = instances.size();
+                    instances.erase(std::remove_if(instances.begin(), instances.end(),
+                                                   [&](const std::unique_ptr<Instance>& in) { return in->id == c.target; }),
+                                    instances.end());
+                    if (instances.size() == before)
+                    {
+                        LOG_WARNING(ZRender, "SpineGpuRenderer: no instance #{} to remove", c.target);
+                    }
+                    ForgetId(c.target);
+                    continue;
+                }
+                case Command::Op::kClearInstances:
+                    instances.clear();
+                    continue;
+                case Command::Op::kMix:
+                    default_mix = std::max(0.0f, c.value);
+                    for (std::unique_ptr<Instance>& in : instances)
+                    {
+                        in->mix.default_mix = default_mix;
+                    }
+                    LOG_INFO(ZRender, "SpineGpuRenderer: default mix = {}s", default_mix);
+                    continue;
+                default:
+                    break;
+            }
+            Instance* in = FindInstance(c.target);
+            if (in == nullptr)
+            {
+                LOG_WARNING(ZRender, "SpineGpuRenderer: no instance #{} (selected), command dropped", c.target);
+                continue;
+            }
+            SpineGpuAnimationState& st = *in->anim_state;
+            const size_t track = static_cast<size_t>(std::max(0, c.track));
+            switch (c.op)
+            {
+                case Command::Op::kSet:
+                case Command::Op::kAdd:
+                {
+                    uint32_t ai = 0;
+                    if (!ResolveAnim(in->asset->asset, c.anim, ai))
+                    {
+                        LOG_WARNING(ZRender, "SpineGpuRenderer: instance #{}: animation '{}' not found ({} animations)",
+                                    in->id, c.anim, in->asset->asset.anims.size());
+                        break;
+                    }
+                    if (c.op == Command::Op::kSet)
+                    {
+                        st.SetAnimation(track, ai, c.loop);
+                    }
+                    else
+                    {
+                        st.AddAnimation(track, ai, c.loop, c.delay);
                     }
                     break;
                 }
-                case AnimCommand::Op::kEmpty:
-                    as.SetEmptyAnimation(track, std::max(0.0f, c.value));
+                case Command::Op::kEmpty:
+                    st.SetEmptyAnimation(track, std::max(0.0f, c.value));
                     break;
-                case AnimCommand::Op::kSpeed:
-                    as.time_scale = c.value;
+                case Command::Op::kSpeed:
+                    st.time_scale = c.value;
                     break;
-                case AnimCommand::Op::kAlpha:
-                    if (SpineGpuTrackEntry* e = as.GetCurrent(track))
+                case Command::Op::kAlpha:
+                    if (SpineGpuTrackEntry* e = st.GetCurrent(track))
                     {
                         e->alpha = std::clamp(c.value, 0.0f, 1.0f);
                     }
                     break;
-                case AnimCommand::Op::kMix:
+                case Command::Op::kPlace:
+                    in->manual = true;
+                    in->place_x = c.value;
+                    in->place_y = c.delay;
+                    in->place_scale = c.scale;
+                    break;
+                case Command::Op::kPlaceAuto:
+                    in->manual = false;
+                    break;
+                default:
                     break;
             }
         }
         cmds.clear();
     }
 
-    // "轨道 0：'walk' t=1.23（混出 'idle' 40%）；轨道 1：…"
-    std::string DescribeTracks() const
+    // "track 0: 'walk' t=1.23 (mixing from 'idle' 40%); track 1: …"
+    std::string DescribeTracks(const Instance& in) const
     {
-        if (!loaded)
-        {
-            return std::string();
-        }
-        const SpineGpuAnimationState& as = *loaded->anim_state;
+        const SpineGpuAnimationState& st = *in.anim_state;
+        const SpineGpuAsset& a = in.asset->asset;
         const auto name = [&](uint32_t ai) -> std::string {
             if (ai == kSpineGpuEmptyAnimation)
             {
                 return "<empty>";
             }
-            return ai < loaded->asset.anim_names.size() ? loaded->asset.anim_names[ai] : std::string("?");
+            return ai < a.anim_names.size() ? a.anim_names[ai] : std::string("?");
         };
         std::string out;
-        for (size_t i = 0; i < as.TrackCount(); ++i)
+        for (size_t i = 0; i < st.TrackCount(); ++i)
         {
-            const SpineGpuTrackEntry* e = as.GetCurrent(i);
+            const SpineGpuTrackEntry* e = st.GetCurrent(i);
             if (e == nullptr)
             {
                 continue;
@@ -808,13 +1118,19 @@ struct SpineGpuRenderer::Impl
                 out += buf;
             }
         }
+        if (st.time_scale != 1.0f)
+        {
+            char buf[48];
+            std::snprintf(buf, sizeof(buf), "%sspeed %.2f", out.empty() ? "" : "; ", static_cast<double>(st.time_scale));
+            out += buf;
+        }
         return out.empty() ? std::string("no tracks") : out;
     }
 
     // ------------------------------------------------------------------
-    // 加载：骨架 + 图集 → 烘焙 → **容器往返**（与运行时读的是同一份字节）→ GPU
+    // 加载资产：骨架 + 图集 → 烘焙 → **容器往返**（与运行时读的是同一份字节）→ GPU
     // ------------------------------------------------------------------
-    bool Load(const std::string& path, int anim, std::string& err)
+    std::shared_ptr<Asset> LoadAsset(const std::string& path, std::string& err)
     {
         namespace fs = std::filesystem;
         const fs::path skel_path = FromUtf8(path);
@@ -822,7 +1138,7 @@ struct SpineGpuRenderer::Impl
         if (!ReadWholeFile(skel_path, skel_bytes))
         {
             err = "读不到骨架文件 " + path;
-            return false;
+            return nullptr;
         }
         const std::string fname = ToUtf8(skel_path.filename());
         const auto ends_with = [&](const std::string& suffix) {
@@ -848,7 +1164,7 @@ struct SpineGpuRenderer::Impl
         if (!ReadWholeFile(atlas_path, atlas_bytes))
         {
             err = "找不到图集 " + ToUtf8(atlas_path);
-            return false;
+            return nullptr;
         }
 
         SpineAtlas atlas;
@@ -870,91 +1186,60 @@ struct SpineGpuRenderer::Impl
         {
             r = WriteSpineGpuContainer(baked, container);
         }
-        auto ld = std::make_unique<Loaded>();
+        auto as = std::make_shared<Asset>();
+        as->path = path;
         if (r.ok)
         {
-            r = ReadSpineGpuContainer(container.data(), container.size(), ld->asset);
+            r = ReadSpineGpuContainer(container.data(), container.size(), as->asset);
+        }
+        if (r.ok)
+        {
+            r = SpineGpuBuildRuntimeData(as->asset, as->data);
         }
         if (!r.ok)
         {
             err = r.error;
-            return false;
+            return nullptr;
         }
-        SpineGpuAsset& a = ld->asset;
+        SpineGpuAsset& a = as->asset;
         if (a.anims.empty())
         {
             err = "骨架没有动画";
-            return false;
+            return nullptr;
         }
-        ld->anim = static_cast<uint32_t>(std::clamp(anim, 0, static_cast<int>(a.anims.size()) - 1));
-        // deform 长度 / infl_base：每个 skin 0 绘制项一份（解算器给的 deform 数组按附件本地顺序，
-        // 上传时要换算成 shader 的寻址偏置）。容量上界 = 所有 kFallback 项长度之和 ——
-        // 只有被 deform 时间轴命中过的项才是 kFallback，同一帧最多它们全部生效。
-        ld->deform_len.assign(a.draw_items.size(), 0u);
-        ld->infl_base.assign(a.draw_items.size(), 0u);
-        for (uint32_t i = 0; i < a.draw_items.size(); ++i)
+        SpineGpuBuildBatchAssetInfo(a, as->info);
+
+        // 失败时把已建的 GPU 资源交给延迟销毁（`as` 还没发布，GPU 没用过它们）
+        struct Guard
         {
-            const SpineDrawItem& di = a.draw_items[i];
-            if (di.vertex_format == SpineVertexFormat::kRigid)
+            Impl& impl;
+            Asset& as;
+            bool released {false};
+            ~Guard()
             {
-                ld->deform_len[i] = 2u * di.vertex_count;
-            }
-            else
-            {
-                const size_t w0 = a.weighted_segment_offset / 4u + static_cast<size_t>(di.vertex_base) * 2u;
-                uint32_t n = 0;
-                for (uint32_t v = 0; v < di.vertex_count; ++v)
+                if (!released)
                 {
-                    uint32_t cnt = 0;
-                    std::memcpy(&cnt, a.vertex_buffer.data() + (w0 + v * 2u + 1u) * 4u, 4);
-                    n += cnt;
-                }
-                ld->deform_len[i] = 2u * n;
-                if (di.vertex_count > 0)
-                {
-                    std::memcpy(&ld->infl_base[i], a.vertex_buffer.data() + w0 * 4u, 4);
+                    impl.RetireAsset(as);
                 }
             }
-            if (di.kind == SpineDrawItemKind::kFallback && di.skin_id == SpineGpuConstants::kDefaultSkinId)
-            {
-                ld->deform_capacity += ld->deform_len[i];
-            }
-        }
+        } guard {*this, *as};
 
         // ---- 静态缓冲：每个资产一份，所有实例共用 ----
         const RHIBufferUsageFlags ssbo = RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-        bool ok = CreateBuffer(ld->vertex_words, a.vertex_buffer.size(), ssbo, a.vertex_buffer.data()) &&
-                  CreateBuffer(ld->infl_bind, a.influence_bind.size() * sizeof(float), ssbo, a.influence_bind.data()) &&
-                  CreateBuffer(ld->infl_bone, a.influence_bone.size() * sizeof(SpineInfluenceBone), ssbo,
+        bool ok = CreateBuffer(as->vertex_words, a.vertex_buffer.size(), ssbo, a.vertex_buffer.data()) &&
+                  CreateBuffer(as->infl_bind, a.influence_bind.size() * sizeof(float), ssbo, a.influence_bind.data()) &&
+                  CreateBuffer(as->infl_bone, a.influence_bone.size() * sizeof(SpineInfluenceBone), ssbo,
                                a.influence_bone.data()) &&
-                  CreateBuffer(ld->uvs, a.uv_buffer.size() * sizeof(float), ssbo, a.uv_buffer.data()) &&
-                  CreateBuffer(ld->index, a.index_buffer.size() * sizeof(uint16_t), RHI_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                  CreateBuffer(as->uvs, a.uv_buffer.size() * sizeof(float), ssbo, a.uv_buffer.data()) &&
+                  CreateBuffer(as->index, a.index_buffer.size() * sizeof(uint16_t), RHI_BUFFER_USAGE_INDEX_BUFFER_BIT,
                                a.index_buffer.data());
         if (!ok)
         {
             err = "创建静态缓冲失败";
-            return false;
+            return nullptr;
         }
 
         // ---- 图集页 ----
-        // 失败时把已建的页交给延迟销毁（`ld` 还没发布，GPU 没用过它们，下一帧就会销毁）
-        struct PageGuard
-        {
-            Impl& impl;
-            Loaded& l;
-            bool released {false};
-            ~PageGuard()
-            {
-                if (!released && !l.pages.empty())
-                {
-                    Retired r;
-                    r.pages = l.pages;
-                    r.frames_left = 1;
-                    impl.retired.push_back(std::move(r));
-                    l.pages.clear();
-                }
-            }
-        } page_guard {*this, *ld};
         for (const std::string& page : a.atlas_page_names)
         {
             const fs::path png = atlas_path.parent_path() / FromUtf8(page);
@@ -968,179 +1253,72 @@ struct SpineGpuRenderer::Impl
             if (pixels == nullptr)
             {
                 err = "读不到图集页 " + ToUtf8(png);
-                return false;
+                return nullptr;
             }
             Page pg;
             rhi->CreateGlobalImage(pg.image, pg.view, nullptr, static_cast<uint32_t>(w), static_cast<uint32_t>(h), pixels,
                                    RHI_FORMAT_R8G8B8A8_UNORM, 1);
             stbi_image_free(pixels);
             pg.sampler = rhi->GetOrCreateDefaultSampler(RHIDefaultSamplerType::Default_Sampler_Linear);
+            as->pages.push_back(pg);   // 失败时已建的部分也交给 Guard
             if (pg.image == nullptr || pg.view == nullptr || pg.sampler == nullptr)
             {
-                ld->pages.push_back(pg);   // 已建的部分交给 PageGuard
                 err = "上传图集页失败 " + ToUtf8(png);
-                return false;
+                return nullptr;
             }
-            ld->pages.push_back(pg);
         }
-        if (ld->pages.empty())
+        if (as->pages.empty())
         {
             err = "图集没有页";
-            return false;
+            return nullptr;
         }
 
-        // ---- 每帧缓冲 + set 0 ----
+        // ---- 每帧缓冲 + 描述符集：初始容量按单实例给，多实例时 Draw 里按需倍增 ----
         const uint32_t frames = std::max<uint32_t>(1u, rhi->GetMaxFramesInFlight());
-        ld->frames.resize(frames);
-        for (FrameSlot& f : ld->frames)
+        as->frames.resize(frames);
+        for (FrameSlot& f : as->frames)
         {
-            ok = CreateBuffer(f.bones, static_cast<RHIDeviceSize>(a.header.bone_count) * sizeof(SpineBoneTransform), ssbo,
+            ok = CreateBuffer(f.bones, static_cast<RHIDeviceSize>(a.header.bone_count) * sizeof(SpineGpuBoneSample), ssbo,
                               nullptr) &&
                  CreateBuffer(f.draws, static_cast<RHIDeviceSize>(std::max<size_t>(a.draw_items.size(), 1)) * sizeof(GpuDraw),
                               ssbo, nullptr) &&
                  CreateBuffer(f.insts, sizeof(GpuInst), ssbo, nullptr) &&
-                 CreateBuffer(f.deform, static_cast<RHIDeviceSize>(std::max<size_t>(ld->deform_capacity, 1)) * sizeof(float),
+                 CreateBuffer(f.deform,
+                              static_cast<RHIDeviceSize>(std::max<size_t>(as->info.deform_capacity, 1)) * sizeof(float),
                               ssbo, nullptr) &&
-                 // 初始容量给一个小值：没有裁剪的资产永远用不到；有裁剪的第一帧按需扩
+                 // 没有裁剪的资产永远用不到；有裁剪的第一帧按需扩
                  CreateBuffer(f.cpu_verts, (a.clip_polygons.empty() ? 1u : 4096u) * sizeof(GpuCpuVert), ssbo, nullptr) &&
                  CreateBuffer(f.cpu_index, (a.clip_polygons.empty() ? 2u : 8192u) * sizeof(uint16_t),
                               RHI_BUFFER_USAGE_INDEX_BUFFER_BIT, nullptr);
             if (!ok)
             {
                 err = "创建每帧缓冲失败";
-                return false;
+                return nullptr;
             }
-            RHIDescriptorSetAllocateInfo alloc {};
-            alloc.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-            alloc.descriptorPool = rhi->GetDescriptorPoor();
-            alloc.descriptorSetCount = 1;
-            alloc.pSetLayouts = &set0_layout;
-            if (!rhi->AllocateDescriptorSets(&alloc, f.set0) || f.set0 == nullptr)
+            if (!AllocSet(set0_layout, free_set0, f.set0))
             {
                 err = "分配描述符集失败（共享池可能满了）";
-                return false;
+                return nullptr;
             }
-            f.set1.assign(ld->pages.size(), nullptr);
+            f.set1.assign(as->pages.size(), nullptr);
             for (RHIDescriptorSet*& s1 : f.set1)
             {
-                RHIDescriptorSetAllocateInfo a1 = alloc;
-                a1.pSetLayouts = &set1_layout;
-                if (!rhi->AllocateDescriptorSets(&a1, s1) || s1 == nullptr)
+                if (!AllocSet(set1_layout, free_set1, s1))
                 {
                     err = "分配图集页描述符集失败（共享池可能满了）";
-                    return false;
+                    return nullptr;
                 }
             }
-            WriteSet0(*ld, f);
-            WriteSet1(*ld, f);
+            WriteSet0(*as, f);
+            WriteSet1(*as, f);
         }
-        if (IsDx12())
+        if (!EnsureDrawIds(*as, static_cast<uint32_t>(std::max<size_t>(a.draw_items.size(), 1))))
         {
-            std::vector<uint32_t> ids(std::max<size_t>(a.draw_items.size(), 1));
-            for (uint32_t i = 0; i < ids.size(); ++i)
-            {
-                ids[i] = i;
-            }
-            if (!CreateBuffer(ld->draw_ids, ids.size() * sizeof(uint32_t), RHI_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                              ids.data()))
-            {
-                err = "创建绘制项下标顶点缓冲失败";
-                return false;
-            }
+            err = "创建绘制项下标顶点缓冲失败";
+            return nullptr;
         }
-
-        // ---- setup 姿势（第 0 帧）的包围盒：CPU 按 §6 同一公式蒙一遍，只为自动居中 ----
-        {
-            SpineGpuPoseResult pose;
-            const SpineImportResult pr = SpineGpuSamplePose(a, ld->anim, 0.0f, pose);
-            if (!pr.ok)
-            {
-                err = pr.error;
-                return false;
-            }
-            float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
-            const auto grow = [&](float x, float y) {
-                x0 = std::min(x0, x);
-                y0 = std::min(y0, y);
-                x1 = std::max(x1, x);
-                y1 = std::max(y1, y);
-            };
-            const auto word = [&](size_t i) {
-                uint32_t v = 0;
-                std::memcpy(&v, a.vertex_buffer.data() + i * 4u, 4);
-                return v;
-            };
-            for (const SpineDrawItem& di : a.draw_items)
-            {
-                if (di.skin_id != SpineGpuConstants::kDefaultSkinId)
-                {
-                    continue;
-                }
-                for (uint32_t q = 0; q < di.index_count; ++q)
-                {
-                    const uint32_t vi = a.index_buffer[di.index_offset + q];
-                    if (di.vertex_format == SpineVertexFormat::kRigid)
-                    {
-                        float bx = 0.0f, by = 0.0f;
-                        std::memcpy(&bx, a.vertex_buffer.data() + vi * 8u, 4);
-                        std::memcpy(&by, a.vertex_buffer.data() + vi * 8u + 4u, 4);
-                        const SpineGpuBoneSample& b = pose.bones[a.slot_bone[di.slot_index]];
-                        grow(bx * b.a + by * b.b + b.world_x, bx * b.c + by * b.d + b.world_y);
-                    }
-                    else
-                    {
-                        const size_t w0 = a.weighted_segment_offset / 4u + vi * 2u;
-                        const uint32_t off = word(w0);
-                        const uint32_t cnt = word(w0 + 1u);
-                        float x = 0.0f, y = 0.0f;
-                        for (uint32_t k = 0; k < cnt; ++k)
-                        {
-                            const float bx = a.influence_bind[(off + k) * 2u];
-                            const float by = a.influence_bind[(off + k) * 2u + 1u];
-                            const SpineInfluenceBone& ib = a.influence_bone[off + k];
-                            const SpineGpuBoneSample& b = pose.bones[ib.bone_idx];
-                            const float wgt = static_cast<float>(ib.weight) / 255.0f;
-                            x += (bx * b.a + by * b.b + b.world_x) * wgt;
-                            y += (bx * b.c + by * b.d + b.world_y) * wgt;
-                        }
-                        grow(x, y);
-                    }
-                }
-            }
-            if (x0 > x1)
-            {
-                x0 = -100.0f;
-                y0 = -100.0f;
-                x1 = 100.0f;
-                y1 = 100.0f;
-            }
-            ld->bounds[0] = x0;
-            ld->bounds[1] = y0;
-            ld->bounds[2] = x1;
-            ld->bounds[3] = y1;
-        }
-
-        // ---- 运行时状态（S5）：查找表一次建好；轨道 0 循环播放请求的动画 ----
-        {
-            SpineImportResult rr = SpineGpuBuildRuntimeData(a, ld->data);
-            if (rr.ok)
-            {
-                rr = SpineGpuInitSkeletonState(a, ld->data, ld->state);
-            }
-            if (!rr.ok)
-            {
-                err = rr.error;
-                return false;
-            }
-            ld->mix.default_mix = default_mix;
-            ld->anim_state = std::make_unique<SpineGpuAnimationState>(ld->asset, ld->data, &ld->mix);
-            ld->anim_state->SetAnimation(0, ld->anim, true);
-        }
-        ld->last_tick = std::chrono::steady_clock::now();
-        page_guard.released = true;
-        RetireLoaded();
-        loaded = std::move(ld);
-        return true;
+        guard.released = true;
+        return as;
     }
 };
 
@@ -1159,66 +1337,144 @@ SpineGpuRenderer::Impl& SpineGpuRenderer::impl()
 
 void SpineGpuRenderer::RequestLoad(const std::string& skeleton_path, int anim_index)
 {
+    // 多实例之前的语义：替换掉全部实例
+    RequestClear();
+    RequestAddInstance(skeleton_path, anim_index);
+}
+
+uint32_t SpineGpuRenderer::RequestAddInstance(const std::string& skeleton_path, int anim_index)
+{
     Impl& d = impl();
     std::lock_guard<std::mutex> lock(d.mutex);
-    d.pending_load = true;
-    d.pending_clear = false;
-    d.pending_path = skeleton_path;
-    d.pending_anim = anim_index;
+    Impl::Command c;
+    c.op = Impl::Command::Op::kAddInstance;
+    c.target = d.next_id++;
+    c.path = skeleton_path;
+    c.anim = std::to_string(std::max(0, anim_index));
+    d.pending_cmds.push_back(c);
+    d.live_ids.push_back(c.target);
+    d.selected = c.target;
     d.status = "loading " + skeleton_path;
+    return c.target;
+}
+
+bool SpineGpuRenderer::RequestRemoveInstance(uint32_t id)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    if (id == 0)
+    {
+        id = d.selected;
+    }
+    if (std::find(d.live_ids.begin(), d.live_ids.end(), id) == d.live_ids.end())
+    {
+        return false;
+    }
+    Impl::Command c;
+    c.op = Impl::Command::Op::kRemoveInstance;
+    c.target = id;
+    d.pending_cmds.push_back(c);
+    d.live_ids.erase(std::remove(d.live_ids.begin(), d.live_ids.end(), id), d.live_ids.end());
+    if (d.selected == id)
+    {
+        d.selected = d.live_ids.empty() ? 0u : d.live_ids.back();
+    }
+    return true;
 }
 
 void SpineGpuRenderer::RequestClear()
 {
     Impl& d = impl();
     std::lock_guard<std::mutex> lock(d.mutex);
-    d.pending_clear = true;
-    d.pending_load = false;
-    d.track_summary.clear();
+    Impl::Command c;
+    c.op = Impl::Command::Op::kClearInstances;
+    d.pending_cmds.push_back(c);
+    d.live_ids.clear();
+    d.selected = 0;
+    d.instance_summary.clear();
+}
+
+bool SpineGpuRenderer::RequestSelect(uint32_t id)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    if (std::find(d.live_ids.begin(), d.live_ids.end(), id) == d.live_ids.end())
+    {
+        return false;
+    }
+    d.selected = id;
+    return true;
+}
+
+uint32_t SpineGpuRenderer::Selected() const
+{
+    std::lock_guard<std::mutex> lock(m_Impl->mutex);
+    return m_Impl->selected;
+}
+
+void SpineGpuRenderer::RequestPlace(float x, float y, float scale)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kPlace;
+    c.value = x;
+    c.delay = y;
+    c.scale = scale;
+    d.PushTargeted(std::move(c));
+}
+
+void SpineGpuRenderer::RequestPlaceAuto()
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kPlaceAuto;
+    d.PushTargeted(std::move(c));
 }
 
 void SpineGpuRenderer::RequestSetAnimation(int track, const std::string& anim, bool loop)
 {
     Impl& d = impl();
     std::lock_guard<std::mutex> lock(d.mutex);
-    Impl::AnimCommand c;
-    c.op = Impl::AnimCommand::Op::kSet;
+    Impl::Command c;
+    c.op = Impl::Command::Op::kSet;
     c.track = track;
     c.anim = anim;
     c.loop = loop;
-    d.pending_cmds.push_back(std::move(c));
+    d.PushTargeted(std::move(c));
 }
 
 void SpineGpuRenderer::RequestAddAnimation(int track, const std::string& anim, bool loop, float delay)
 {
     Impl& d = impl();
     std::lock_guard<std::mutex> lock(d.mutex);
-    Impl::AnimCommand c;
-    c.op = Impl::AnimCommand::Op::kAdd;
+    Impl::Command c;
+    c.op = Impl::Command::Op::kAdd;
     c.track = track;
     c.anim = anim;
     c.loop = loop;
     c.delay = delay;
-    d.pending_cmds.push_back(std::move(c));
+    d.PushTargeted(std::move(c));
 }
 
 void SpineGpuRenderer::RequestSetEmptyAnimation(int track, float mix_duration)
 {
     Impl& d = impl();
     std::lock_guard<std::mutex> lock(d.mutex);
-    Impl::AnimCommand c;
-    c.op = Impl::AnimCommand::Op::kEmpty;
+    Impl::Command c;
+    c.op = Impl::Command::Op::kEmpty;
     c.track = track;
     c.value = mix_duration;
-    d.pending_cmds.push_back(std::move(c));
+    d.PushTargeted(std::move(c));
 }
 
 void SpineGpuRenderer::RequestDefaultMix(float seconds)
 {
     Impl& d = impl();
     std::lock_guard<std::mutex> lock(d.mutex);
-    Impl::AnimCommand c;
-    c.op = Impl::AnimCommand::Op::kMix;
+    Impl::Command c;
+    c.op = Impl::Command::Op::kMix;
     c.value = seconds;
     d.pending_cmds.push_back(std::move(c));
 }
@@ -1227,10 +1483,10 @@ void SpineGpuRenderer::RequestTimeScale(float scale)
 {
     Impl& d = impl();
     std::lock_guard<std::mutex> lock(d.mutex);
-    Impl::AnimCommand c;
-    c.op = Impl::AnimCommand::Op::kSpeed;
+    Impl::Command c;
+    c.op = Impl::Command::Op::kSpeed;
     c.value = scale;
-    d.pending_cmds.push_back(std::move(c));
+    d.PushTargeted(std::move(c));
 }
 
 void SpineGpuRenderer::RequestTintBlack(bool enabled)
@@ -1245,11 +1501,11 @@ void SpineGpuRenderer::RequestTrackAlpha(int track, float alpha)
 {
     Impl& d = impl();
     std::lock_guard<std::mutex> lock(d.mutex);
-    Impl::AnimCommand c;
-    c.op = Impl::AnimCommand::Op::kAlpha;
+    Impl::Command c;
+    c.op = Impl::Command::Op::kAlpha;
     c.track = track;
     c.value = alpha;
-    d.pending_cmds.push_back(std::move(c));
+    d.PushTargeted(std::move(c));
 }
 
 uint32_t SpineGpuRenderer::LastDrawCount() const
@@ -1268,14 +1524,14 @@ std::string SpineGpuRenderer::Status() const
     {
         return "idle";
     }
-    std::lock_guard<std::mutex> lock(m_Impl->mutex);
-    return m_Impl->status + (m_Impl->track_summary.empty() ? std::string() : " [" + m_Impl->track_summary + "]") +
-           " (last frame: " + std::to_string(m_Impl->last_draw_count) + " draw items, " +
-           std::to_string(m_Impl->last_deform_draws) + " deformed / " + std::to_string(m_Impl->last_deform_floats) +
-           " deform floats, " + std::to_string(m_Impl->last_clipped_draws) + " clipped / " +
-           std::to_string(m_Impl->last_clip_vertices) + " clip vertices, tint black " +
-           (m_Impl->tint_black ? "on: " + std::to_string(m_Impl->last_tint_black_draws) + " dark draws" : std::string("off")) +
-           (m_Impl->skip_reason.empty() ? std::string() : "; skipped: " + m_Impl->skip_reason) + ")";
+    const Impl& d = *m_Impl;
+    std::lock_guard<std::mutex> lock(d.mutex);
+    return d.status + " (selected #" + std::to_string(d.selected) + "; last frame: " +
+           std::to_string(d.last_draw_count) + " draw items, " + std::to_string(d.last_deform_draws) + " deformed / " +
+           std::to_string(d.last_deform_floats) + " deform floats, " + std::to_string(d.last_clipped_draws) +
+           " clipped / " + std::to_string(d.last_clip_vertices) + " clip vertices, tint black " +
+           (d.tint_black ? "on: " + std::to_string(d.last_tint_black_draws) + " dark draws" : std::string("off")) +
+           (d.skip_reason.empty() ? std::string() : "; skipped: " + d.skip_reason) + ")" + d.instance_summary;
 }
 
 void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass, const RHIViewport& viewport)
@@ -1286,9 +1542,9 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     }
     Impl& d = *m_Impl;
     {
-        // 从没人 RequestLoad 过：一次加锁 + 两个判断，不碰 GPU
+        // 从没人加过实例：一次加锁 + 几个判断，不碰 GPU（instances / assets / retired 只有渲染线程碰）
         std::lock_guard<std::mutex> lock(d.mutex);
-        if (!d.pending_load && !d.pending_clear && !d.loaded && d.retired.empty())
+        if (d.pending_cmds.empty() && d.instances.empty() && d.assets.empty() && d.retired.empty())
         {
             return;
         }
@@ -1296,55 +1552,20 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     d.rhi = rhi;
     d.TickRetired();
 
-    // ---- 处理游戏线程的请求 ----
-    std::string path;
-    int anim = 0;
-    bool do_load = false;
-    bool do_clear = false;
-    std::vector<Impl::AnimCommand> cmds;
+    // ---- 处理游戏线程的命令（按提交顺序）----
+    std::vector<Impl::Command> cmds;
+    bool tint_black_on = false;
     {
         std::lock_guard<std::mutex> lock(d.mutex);
-        do_load = d.pending_load;
-        do_clear = d.pending_clear;
-        path = d.pending_path;
-        anim = d.pending_anim;
-        d.pending_load = false;
-        d.pending_clear = false;
         cmds.swap(d.pending_cmds);
+        tint_black_on = d.tint_black;
     }
-    if (do_clear)
-    {
-        d.RetireLoaded();
-        std::lock_guard<std::mutex> lock(d.mutex);
-        d.status = "idle";
-    }
-    if (do_load)
-    {
-        std::string err;
-        const bool ok = d.EnsurePipelines(render_pass, subpass) && d.Load(path, anim, err);
-        std::lock_guard<std::mutex> lock(d.mutex);
-        d.last_draw_count = 0;
-        d.tint_black_logged = false;
-        if (ok)
-        {
-            const SpineGpuAsset& a = d.loaded->asset;
-            d.status = "playing '" + path + "' anim #" + std::to_string(d.loaded->anim) + " '" +
-                       a.anim_names[d.loaded->anim] + "' (" + std::to_string(a.header.bone_count) + " bones, " +
-                       std::to_string(a.draw_items.size()) + " draw items)";
-            LOG_INFO(ZRender, "SpineGpuRenderer: {}", d.status);
-        }
-        else
-        {
-            d.status = "load failed: " + err;
-            LOG_ERROR(ZRender, "SpineGpuRenderer: load '{}' failed: {}", path, err);
-        }
-    }
-    // 命令在加载**之后**执行：同一帧里先 spine.load 再 spine.play 时，play 作用在新资产上
     if (!cmds.empty())
     {
-        d.RunCommands(cmds);
+        d.RunCommands(cmds, render_pass, subpass);
     }
-    // 每条"这一帧没画"的原因都进 status，且**变化时**记一行日志（不刷屏、也不静默）
+    d.PurgeUnusedAssets();
+    // 每条"整帧没画"的原因都进 status，且**变化时**记一行日志（不刷屏、也不静默）
     const auto skip = [&d](const std::string& why) {
         std::lock_guard<std::mutex> lock(d.mutex);
         if (d.skip_reason != why)
@@ -1354,8 +1575,15 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         }
         d.last_draw_count = 0;
     };
-    if (!d.loaded)
+    if (d.instances.empty())
     {
+        std::lock_guard<std::mutex> lock(d.mutex);
+        if (d.status.rfind("load failed", 0) != 0)
+        {
+            d.status = "idle";
+        }
+        d.instance_summary.clear();
+        d.last_draw_count = 0;
         return;
     }
     if (viewport.width <= 0.0f || viewport.height <= 0.0f)
@@ -1369,210 +1597,145 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
         return;
     }
 
-    Impl::Loaded& ld = *d.loaded;
-    const SpineGpuAsset& a = ld.asset;
-
-    // ---- 1) 解算（CPU 只算骨骼与槽位，不算顶点）----
+    // ---- 1) 逐实例解算（CPU 只算骨骼与槽位，不算顶点）+ 裁剪 ----
     // S5：AnimationState 的标准三步 update(dt) → apply(skeleton) → updateWorldTransform。
-    // dt 夹到 [0, 0.25]：编辑器卡顿 / 断点之后不让动画一步跳过好几圈（参考实现没有这层，
-    // 是宿主的事；spine-unity 也是由调用方给 deltaTime）。
+    // dt 夹到 [0, 0.25]：编辑器卡顿 / 断点之后不让动画一步跳过好几圈。
+    // 一个实例失败只跳过它自己（原因进 status、变化时记日志），别的照画。
     const auto now = std::chrono::steady_clock::now();
-    const float dt = std::clamp(std::chrono::duration<float>(now - ld.last_tick).count(), 0.0f, 0.25f);
-    ld.last_tick = now;
-    ld.anim_state->Update(dt);
-    SpineImportResult pr = ld.anim_state->Apply(ld.state);
-    SpineGpuPoseResult pose;
-    if (pr.ok)
-    {
-        pr = SpineGpuUpdateWorld(a, ld.data, ld.state, pose);
-    }
-    if (!pr.ok)
-    {
-        skip("solve failed: " + pr.error);
-        return;
-    }
-
-    // ---- 2) 可见绘制项：按绘制顺序、取槽位当前附件对应的那一项（解算器给的 slot_draw_item）----
-    //         + 本帧生效的 mesh deform（S6）：拼进一块连续数组，每项记下段起点
-    std::vector<float> deform_values;
-    std::vector<int64_t> deform_region(a.draw_items.size(), -1);   // 绘制项 → 段起点（float 下标）
-    for (const SpineGpuMeshDeform& md : pose.mesh_deforms)
-    {
-        if (md.draw_item >= a.draw_items.size() || md.values.size() != ld.deform_len[md.draw_item])
+    const auto fail_instance = [](Impl::Instance& in, const std::string& why) {
+        in.solved = false;
+        in.range = SpineGpuBatchRange {};
+        if (in.error != why)
         {
-            skip("deform of draw item " + std::to_string(md.draw_item) + " has " + std::to_string(md.values.size()) +
-                 " floats, expected " +
-                 (md.draw_item < a.draw_items.size() ? std::to_string(ld.deform_len[md.draw_item]) : std::string("?")));
-            return;
+            in.error = why;
+            LOG_WARNING(ZRender, "SpineGpuRenderer: instance #{} skipped: {}", in.id, why);
         }
-        deform_region[md.draw_item] = static_cast<int64_t>(deform_values.size());
-        deform_values.insert(deform_values.end(), md.values.begin(), md.values.end());
-    }
-    if (deform_values.size() > ld.deform_capacity)
-    {
-        // 上界是"所有 kFallback 项同时生效"；超出说明有非 fallback 的项被 deform 了 —— 容器的 kind 与
-        // 解算器对不上，按静态画就是错形变，所以宁可这一帧不画、把原因报出来。
-        skip("deform needs " + std::to_string(deform_values.size()) + " floats, capacity " +
-             std::to_string(ld.deform_capacity));
-        return;
-    }
-
-    // ---- 2b) 裁剪（v15）：按当前绘制顺序跑 SpineMesh.h 的状态机，作用域内的项在 CPU 上蒙皮 + 裁 ----
-    {
-        const SpineImportResult cr = SpineGpuClipFrame(a, ld.state, pose, ld.clipper, ld.clip);
-        if (!cr.ok)
-        {
-            skip("clip failed: " + cr.error);
-            return;
-        }
-    }
-    const SpineGpuClipFrameResult& clip = ld.clip;
-
-    // 每个绘制命令：静态项按容器的索引区间画；裁剪过的项按动态索引缓冲画（局部下标，b8 起点放在 deform_base）
-    struct DrawCmd
-    {
-        uint32_t item;
-        bool cpu;
-        uint32_t index_first;
-        uint32_t index_count;
     };
-    std::vector<GpuDraw> draws;
-    std::vector<DrawCmd> cmds_out;   // 与 draws 一一对应
-    draws.reserve(a.draw_items.size());
-    uint32_t deformed_draws = 0;
-    uint32_t clipped_draws = 0;
-    uint32_t tint_black_draws = 0;
-    bool tint_black_on = false;
+    for (std::unique_ptr<Impl::Instance>& ip : d.instances)
     {
-        std::lock_guard<std::mutex> lock(d.mutex);
-        tint_black_on = d.tint_black;
-    }
-    for (uint32_t s : pose.draw_order)
-    {
-        if (s >= pose.slot_draw_item.size() || pose.slot_draw_item[s] == SpineGpuPoseResult::kNoDrawItem)
+        Impl::Instance& in = *ip;
+        const SpineGpuAsset& a = in.asset->asset;
+        const float dt = std::clamp(std::chrono::duration<float>(now - in.last_tick).count(), 0.0f, 0.25f);
+        in.last_tick = now;
+        in.anim_state->Update(dt);
+        SpineImportResult pr = in.anim_state->Apply(in.state);
+        if (pr.ok)
         {
-            continue;
-        }
-        const uint32_t item = pose.slot_draw_item[s];
-        const SpineGpuSlotSample& slot = pose.slots[s];
-        const SpineDrawItem& di = a.draw_items[item];
-        const uint32_t ck = s < clip.slot_clipped.size() ? clip.slot_clipped[s] : SpineGpuClipFrameResult::kNotClipped;
-        if (ck != SpineGpuClipFrameResult::kNotClipped)
-        {
-            const SpineGpuClippedDraw& cd = clip.draws[ck];
-            if (cd.index_count == 0)
+            pr = SpineGpuUpdateWorld(a, in.asset->data, in.state, in.pose);
+            if (pr.ok)
             {
-                continue;   // 整个被裁掉
+                // v15：按当前绘制顺序跑 SpineMesh.h 的状态机，作用域内的项在 CPU 上蒙皮 + 裁
+                pr = SpineGpuClipFrame(a, in.state, in.pose, in.clipper, in.clip);
+                if (!pr.ok)
+                {
+                    pr.error = "clip failed: " + pr.error;
+                }
             }
-            GpuDraw g {};
-            g.vertex_format = static_cast<uint32_t>(di.vertex_format);
-            g.tint = PackRgba8(slot.color);
-            g.flags = kDrawFlagStraightAlpha | kDrawFlagCpuVerts |
-                      (di.blend_mode == SpineBlendMode::kAdditive ? kDrawFlagAdditive : 0u);
-            g.deform_base = cd.vertex_first;
-            ApplyTintBlack(g, slot, tint_black_on, di.blend_mode == SpineBlendMode::kAdditive, tint_black_draws);
-            draws.push_back(g);
-            cmds_out.push_back({item, true, cd.index_first, cd.index_count});
-            ++clipped_draws;
+            else
+            {
+                pr.error = "solve failed: " + pr.error;
+            }
+        }
+        else
+        {
+            pr.error = "solve failed: " + pr.error;
+        }
+        if (!pr.ok)
+        {
+            fail_instance(in, pr.error);
             continue;
         }
-        GpuDraw g {};
-        g.vertex_format = static_cast<uint32_t>(di.vertex_format);
-        g.uv_offset = di.uv_offset;
-        g.slot_bone = di.slot_index < a.slot_bone.size() ? a.slot_bone[di.slot_index] : 0u;
-        g.bone_base = 0;
-        g.inst_index = 0;
-        g.tint = PackRgba8(slot.color);
-        g.flags = kDrawFlagStraightAlpha | (di.blend_mode == SpineBlendMode::kAdditive ? kDrawFlagAdditive : 0u);
-        g.weighted_base = a.weighted_segment_offset / 4u;
-        ApplyTintBlack(g, slot, tint_black_on, di.blend_mode == SpineBlendMode::kAdditive, tint_black_draws);
-        if (deform_region[item] >= 0)
-        {
-            // uint 回绕偏置：shader 用段内绝对下标（rigid）/ 全局影响下标（weighted）直接加
-            const uint32_t region = static_cast<uint32_t>(deform_region[item]);
-            g.deform_base = di.vertex_format == SpineVertexFormat::kRigid
-                                ? region - 2u * static_cast<uint32_t>(di.vertex_base)
-                                : region - 2u * ld.infl_base[item];
-            g.flags |= kDrawFlagDeform;
-            ++deformed_draws;
-        }
-        draws.push_back(g);
-        cmds_out.push_back({item, false, di.index_offset, di.index_count});
+        in.solved = true;
     }
 
-    // ---- 3) 上传：骨骼 / 绘制项 / 实例（本帧槽位）----
-    const uint32_t slot_index = static_cast<uint32_t>(rhi->GetCurrentFrameIndex()) % static_cast<uint32_t>(ld.frames.size());
-    Impl::FrameSlot& fs = ld.frames[slot_index];
+    // ---- 2) 拼包：同一资产的实例首尾相接（SpineGpuBatch），变换按摆放规则算 ----
+    uint32_t auto_count = 0;
+    for (const std::unique_ptr<Impl::Instance>& ip : d.instances)
     {
-        void* dst = nullptr;
-        if (rhi->MapMemory(fs.bones.memory, 0, fs.bones.size, 0, &dst) && dst != nullptr)
+        auto_count += ip->manual ? 0u : 1u;   // 失败的也占格子：别的实例不因它跳来跳去
+    }
+    for (std::shared_ptr<Impl::Asset>& as : d.assets)
+    {
+        as->batch.Clear();
+    }
+    const float y_sign = ClipSpaceYSign(rhi);
+    uint32_t auto_index = 0;
+    for (std::unique_ptr<Impl::Instance>& ip : d.instances)
+    {
+        Impl::Instance& in = *ip;
+        in.range = SpineGpuBatchRange {};
+        GpuInst inst;
+        if (in.manual)
+        {
+            inst = SpineGpuPlaceInstance(in.place_x, in.place_y, in.place_scale, viewport.width, viewport.height, y_sign);
+        }
+        else
+        {
+            const SpineGpuRect cell = SpineGpuGridCell(auto_count, auto_index++, viewport.width, viewport.height);
+            inst = SpineGpuFitInstance(in.bounds, cell, viewport.width, viewport.height, y_sign);
+        }
+        if (!in.solved)
+        {
+            continue;
+        }
+        const SpineImportResult br = SpineGpuAppendBatchInstance(in.asset->asset, in.asset->info, in.pose, &in.clip, inst,
+                                                                 tint_black_on, in.asset->batch, in.range);
+        if (!br.ok)
+        {
+            fail_instance(in, br.error);
+            continue;
+        }
+        in.error.clear();
+    }
+
+    // ---- 3) 上传：每个资产本帧槽位的骨骼 / 绘制项 / 实例 / deform / 裁剪顶点 + 索引 ----
+    const uint32_t frame_index = static_cast<uint32_t>(rhi->GetCurrentFrameIndex());
+    for (std::shared_ptr<Impl::Asset>& asp : d.assets)
+    {
+        Impl::Asset& as = *asp;
+        const SpineGpuBatch& b = as.batch;
+        if (b.draws.empty())
+        {
+            continue;
+        }
+        Impl::FrameSlot& fs = as.frames[frame_index % as.frames.size()];
+        const RHIBufferUsageFlags ssbo = RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        const auto bytes = [](const auto& v) { return static_cast<RHIDeviceSize>(v.size() * sizeof(v[0])); };
+        bool ok = d.EnsureFrameBuffer(fs, fs.bones, bytes(b.bones), ssbo, static_cast<int>(kBonesBinding)) &&
+                  d.EnsureFrameBuffer(fs, fs.draws, bytes(b.draws), ssbo, static_cast<int>(kDrawsBinding)) &&
+                  d.EnsureFrameBuffer(fs, fs.insts, bytes(b.insts), ssbo, static_cast<int>(kInstsBinding)) &&
+                  d.EnsureFrameBuffer(fs, fs.deform, bytes(b.deform), ssbo, static_cast<int>(kDeformBinding)) &&
+                  d.EnsureFrameBuffer(fs, fs.cpu_verts, bytes(b.cpu_verts), ssbo, static_cast<int>(kCpuVertBinding)) &&
+                  d.EnsureFrameBuffer(fs, fs.cpu_index, bytes(b.cpu_index), RHI_BUFFER_USAGE_INDEX_BUFFER_BIT, -1) &&
+                  d.EnsureDrawIds(as, static_cast<uint32_t>(b.draws.size()));
+        if (ok)
         {
             static_assert(sizeof(SpineGpuBoneSample) == sizeof(SpineBoneTransform), "bone sample is the GPU bone");
-            std::memcpy(dst, pose.bones.data(), pose.bones.size() * sizeof(SpineGpuBoneSample));
-            rhi->UnmapMemory(fs.bones.memory);
+            ok = d.Upload(fs.bones, b.bones.data(), b.bones.size() * sizeof(b.bones[0])) &&
+                 d.Upload(fs.draws, b.draws.data(), b.draws.size() * sizeof(b.draws[0])) &&
+                 d.Upload(fs.insts, b.insts.data(), b.insts.size() * sizeof(b.insts[0])) &&
+                 d.Upload(fs.deform, b.deform.data(), b.deform.size() * sizeof(float)) &&
+                 d.Upload(fs.cpu_verts, b.cpu_verts.data(), b.cpu_verts.size() * sizeof(b.cpu_verts[0])) &&
+                 d.Upload(fs.cpu_index, b.cpu_index.data(), b.cpu_index.size() * sizeof(uint16_t));
         }
-        if (!draws.empty() && rhi->MapMemory(fs.draws.memory, 0, fs.draws.size, 0, &dst) && dst != nullptr)
+        if (!ok)
         {
-            std::memcpy(dst, draws.data(), draws.size() * sizeof(GpuDraw));
-            rhi->UnmapMemory(fs.draws.memory);
-        }
-        if (!deform_values.empty() && rhi->MapMemory(fs.deform.memory, 0, fs.deform.size, 0, &dst) && dst != nullptr)
-        {
-            std::memcpy(dst, deform_values.data(), deform_values.size() * sizeof(float));
-            rhi->UnmapMemory(fs.deform.memory);
-        }
-        if (clipped_draws > 0)
-        {
-            const size_t nv = clip.xy.size() / 2u;
-            if (!d.EnsureFrameBuffer(fs, fs.cpu_verts, static_cast<RHIDeviceSize>(nv * sizeof(GpuCpuVert)),
-                                     RHI_BUFFER_USAGE_STORAGE_BUFFER_BIT, static_cast<int>(kCpuVertBinding)) ||
-                !d.EnsureFrameBuffer(fs, fs.cpu_index, static_cast<RHIDeviceSize>(clip.indices.size() * sizeof(uint16_t)),
-                                     RHI_BUFFER_USAGE_INDEX_BUFFER_BIT, -1))
+            // 这个资产的实例这一帧都不画（缓冲扩不动 / 映射失败），别的资产照画
+            as.batch.Clear();
+            for (std::unique_ptr<Impl::Instance>& ip : d.instances)
             {
-                skip("could not grow the clipping buffers");
-                return;
-            }
-            if (rhi->MapMemory(fs.cpu_verts.memory, 0, fs.cpu_verts.size, 0, &dst) && dst != nullptr)
-            {
-                GpuCpuVert* cv = static_cast<GpuCpuVert*>(dst);
-                for (size_t v = 0; v < nv; ++v)
+                if (ip->asset.get() == &as && ip->solved)
                 {
-                    cv[v] = {clip.xy[v * 2u], clip.xy[v * 2u + 1u], clip.uv[v * 2u], clip.uv[v * 2u + 1u]};
+                    fail_instance(*ip, "could not grow / map the per-frame buffers");
                 }
-                rhi->UnmapMemory(fs.cpu_verts.memory);
             }
-            if (rhi->MapMemory(fs.cpu_index.memory, 0, fs.cpu_index.size, 0, &dst) && dst != nullptr)
-            {
-                std::memcpy(dst, clip.indices.data(), clip.indices.size() * sizeof(uint16_t));
-                rhi->UnmapMemory(fs.cpu_index.memory);
-            }
+            continue;
         }
-        // 骨架空间（y 向上，1 单位 = 1 像素）→ 视口：setup 包围盒居中、占视口 80%
-        GpuInst inst {};
-        const float bw = std::max(ld.bounds[2] - ld.bounds[0], 1.0f);
-        const float bh = std::max(ld.bounds[3] - ld.bounds[1], 1.0f);
-        const float fit = 0.8f * std::min(viewport.width / bw, viewport.height / bh);   // 像素 / 单位
-        const float sx = 2.0f * fit / viewport.width;
-        const float sy = ClipSpaceYSign(rhi) * 2.0f * fit / viewport.height;   // Vulkan NDC y 向下，DX12 / Metal 向上
-        const float cx = 0.5f * (ld.bounds[0] + ld.bounds[2]);
-        const float cy = 0.5f * (ld.bounds[1] + ld.bounds[3]);
-        inst.clip_from_world[0] = sx;
-        inst.clip_from_world[5] = sy;
-        inst.clip_from_world[10] = 1.0f;
-        inst.clip_from_world[12] = -cx * sx;
-        inst.clip_from_world[13] = -cy * sy;
-        inst.clip_from_world[15] = 1.0f;
-        inst.root_abcd[0] = 1.0f;   // 根变换：单位阵（UI 摆放位置交给 clip_from_world）
-        inst.root_abcd[3] = 1.0f;
-        if (rhi->MapMemory(fs.insts.memory, 0, fs.insts.size, 0, &dst) && dst != nullptr)
-        {
-            std::memcpy(dst, &inst, sizeof(inst));
-            rhi->UnmapMemory(fs.insts.memory);
-        }
+        d.RefreshDescriptors(as, fs);
     }
 
-    // ---- 4) 录制：一项一次 DrawIndexed，firstInstance = 绘制项在 b5 里的下标 ----
-    d.RefreshDescriptors(ld, fs);
+    // ---- 4) 录制：按**实例顺序**（先加的在下面）；一项一次 DrawIndexed，firstInstance = 绘制项在本资产
+    //         合包 b5 里的全局下标。换资产时整套状态重绑（set0 / 索引缓冲 / DX12 的 draw_ids 都是资产的）。
     RHICommandBuffer* cmd = rhi->GetCurrentCommandBuffer();
     float color[4] = {0.9f, 0.6f, 1.0f, 1.0f};
     rhi->PushEvent(cmd, "SpineGpu", color);
@@ -1586,88 +1749,120 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
                          {static_cast<uint32_t>(sx1 - sx0), static_cast<uint32_t>(sy1 - sy0)}};
     rhi->CmdSetViewportPFN(cmd, 0, 1, &vp);
     rhi->CmdSetScissorPFN(cmd, 0, 1, &scissor);
+    const bool dx12 = d.IsDx12();
+    const Impl::Asset* bound_asset = nullptr;
     int bound_index = -1;   // 0 = 静态索引缓冲，1 = 本帧 CPU 裁剪的动态索引缓冲
     int bound_mode = -1;
     int bound_page = -1;
-    const bool dx12 = d.IsDx12();
-    for (uint32_t i = 0; i < draws.size(); ++i)
+    uint32_t total_draws = 0, deformed = 0, deform_floats = 0, clipped = 0, clip_vertices = 0, dark = 0;
+    std::string summary;
+    for (const std::unique_ptr<Impl::Instance>& ip : d.instances)
     {
-        const DrawCmd& dc = cmds_out[i];
-        const SpineDrawItem& di = a.draw_items[dc.item];
-        const int want_index = dc.cpu ? 1 : 0;
-        if (want_index != bound_index)
+        const Impl::Instance& in = *ip;
+        summary += " | #" + std::to_string(in.id) + " '" + ToUtf8(FromUtf8(in.asset->path).filename()) + "'" +
+                   (in.manual ? " placed" : "") + ": " +
+                   (in.error.empty() ? std::to_string(in.range.draw_count) + " draws [" + d.DescribeTracks(in) + "]"
+                                     : "skipped: " + in.error);
+        if (in.range.draw_count == 0)
         {
-            rhi->CmdBindIndexBufferPFN(cmd, dc.cpu ? fs.cpu_index.buffer : ld.index.buffer, 0, RHI_INDEX_TYPE_UINT16);
-            bound_index = want_index;
+            continue;
         }
-        const int mode = static_cast<int>(di.blend_mode) & 3;
-        if (mode != bound_mode)
+        Impl::Asset& as = *in.asset;
+        Impl::FrameSlot& fs = as.frames[frame_index % as.frames.size()];
+        if (&as != bound_asset)
         {
-            rhi->CmdBindPipelinePFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, d.pipelines[mode]);
-            if (dx12)
-            {
-                // DX12RHI 的顶点缓冲 stride 取自**当前**管线 ⇒ 必须在绑管线之后绑
-                RHIBuffer* id_buf = ld.draw_ids.buffer;
-                const RHIDeviceSize zero = 0;
-                rhi->CmdBindVertexBuffersPFN(cmd, 0, 1, &id_buf, &zero);
-            }
-            bound_mode = mode;
+            bound_asset = &as;
+            bound_index = -1;
+            bound_mode = -1;
             bound_page = -1;
         }
-        const int page = di.atlas_page < ld.pages.size() ? static_cast<int>(di.atlas_page) : 0;
-        if (page != bound_page)
+        const SpineGpuAsset& a = as.asset;
+        for (uint32_t i = in.range.draw_first; i < in.range.draw_first + in.range.draw_count; ++i)
         {
-            // set 0 + set 1 **一次**绑：DX12RHI 每次 CmdBindDescriptorSets 都会重设根签名，分两次绑时
-            // 只靠"同一根签名不清绑定"这条驱动行为保住 set 0 —— 一起绑就不依赖它。
-            const RHIDescriptorSet* sets[2] = {fs.set0, fs.set1[static_cast<size_t>(page)]};
-            rhi->CmdBindDescriptorSetsPFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, d.pipeline_layout, 0, 2, sets, 0,
-                                          nullptr);
-            bound_page = page;
+            const SpineGpuBatchCmd& dc = as.batch.cmds[i];
+            const SpineDrawItem& di = a.draw_items[dc.item];
+            const int want_index = dc.cpu ? 1 : 0;
+            if (want_index != bound_index)
+            {
+                rhi->CmdBindIndexBufferPFN(cmd, dc.cpu ? fs.cpu_index.buffer : as.index.buffer, 0, RHI_INDEX_TYPE_UINT16);
+                bound_index = want_index;
+            }
+            const int mode = static_cast<int>(di.blend_mode) & 3;
+            if (mode != bound_mode)
+            {
+                rhi->CmdBindPipelinePFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, d.pipelines[mode]);
+                if (dx12)
+                {
+                    // DX12RHI 的顶点缓冲 stride 取自**当前**管线 ⇒ 必须在绑管线之后绑
+                    RHIBuffer* id_buf = as.draw_ids.buffer;
+                    const RHIDeviceSize zero = 0;
+                    rhi->CmdBindVertexBuffersPFN(cmd, 0, 1, &id_buf, &zero);
+                }
+                bound_mode = mode;
+                bound_page = -1;
+            }
+            const int page = di.atlas_page < as.pages.size() ? static_cast<int>(di.atlas_page) : 0;
+            if (page != bound_page)
+            {
+                // set 0 + set 1 **一次**绑：DX12RHI 每次 CmdBindDescriptorSets 都会重设根签名，分两次绑时
+                // 只靠"同一根签名不清绑定"这条驱动行为保住 set 0 —— 一起绑就不依赖它。
+                const RHIDescriptorSet* sets[2] = {fs.set0, fs.set1[static_cast<size_t>(page)]};
+                rhi->CmdBindDescriptorSetsPFN(cmd, RHI_PIPELINE_BIND_POINT_GRAPHICS, d.pipeline_layout, 0, 2, sets, 0,
+                                              nullptr);
+                bound_page = page;
+            }
+            rhi->CmdDrawIndexedPFN(cmd, dc.index_count, 1, dc.index_first, 0, i);
         }
-        rhi->CmdDrawIndexedPFN(cmd, dc.index_count, 1, dc.index_first, 0, i);
+        total_draws += in.range.draw_count;
+        deformed += in.range.deformed;
+        deform_floats += in.range.deform_floats;
+        clipped += in.range.clipped;
+        clip_vertices += in.range.clip_vertices;
+        dark += in.range.tint_black;
     }
     rhi->PopEvent(cmd);
 
     std::lock_guard<std::mutex> lock(d.mutex);
-    if (draws.empty())
+    d.status = "playing " + std::to_string(d.instances.size()) + " instance(s) of " + std::to_string(d.assets.size()) +
+               " asset(s)";
+    if (total_draws == 0)
     {
         if (d.skip_reason != "no visible draw items")
         {
             d.skip_reason = "no visible draw items";
-            LOG_WARNING(ZRender, "SpineGpuRenderer: skipping frame: no visible draw items ({})", d.DescribeTracks());
+            LOG_WARNING(ZRender, "SpineGpuRenderer: skipping frame: no visible draw items ({})", summary);
         }
     }
     else if (d.last_draw_count == 0)
     {
-        // 每次加载后第一帧真正录了东西时记一行：视口 / 包围盒 / 项数，排查"画了但看不见"
+        // 第一帧真正录了东西时记一行：视口 / 实例 / 项数，排查"画了但看不见"
         LOG_INFO(ZRender,
-                 "SpineGpuRenderer: first frame {} draw items ({} deformed, {} deform floats, capacity {}), "
-                 "viewport ({}, {}) {}x{}, bounds ({}, {})-({}, {})",
-                 draws.size(), deformed_draws, deform_values.size(), ld.deform_capacity, viewport.x, viewport.y,
-                 viewport.width, viewport.height, ld.bounds[0], ld.bounds[1], ld.bounds[2], ld.bounds[3]);
+                 "SpineGpuRenderer: first frame {} draw items from {} instance(s) / {} asset(s) ({} deformed, {} deform "
+                 "floats), viewport ({}, {}) {}x{}",
+                 total_draws, d.instances.size(), d.assets.size(), deformed, deform_floats, viewport.x, viewport.y,
+                 viewport.width, viewport.height);
         d.skip_reason.clear();
     }
-    d.last_draw_count = static_cast<uint32_t>(draws.size());
-    d.track_summary = d.DescribeTracks();
-    d.last_deform_draws = deformed_draws;
-    d.last_deform_floats = static_cast<uint32_t>(deform_values.size());
-    if (clipped_draws > 0 && d.last_clipped_draws == 0)
+    d.last_draw_count = total_draws;
+    d.instance_summary = summary;
+    d.last_deform_draws = deformed;
+    d.last_deform_floats = deform_floats;
+    if (clipped > 0 && d.last_clipped_draws == 0)
     {
-        // 裁剪从"没有"变成"有"时记一行（每个资产 / 每段动画一次，不刷屏）
-        LOG_INFO(ZRender, "SpineGpuRenderer: clipping active: {} clipped draw items, {} clip vertices, {} indices, "
-                          "{} clipStart / {} convex pieces",
-                 clipped_draws, clip.xy.size() / 2u, clip.indices.size(), clip.clip_starts, clip.clip_pieces);
+        // 裁剪从"没有"变成"有"时记一行（不刷屏）
+        LOG_INFO(ZRender, "SpineGpuRenderer: clipping active: {} clipped draw items, {} clip vertices", clipped,
+                 clip_vertices);
     }
-    d.last_clipped_draws = clipped_draws;
-    if (tint_black_draws > 0 && !d.tint_black_logged)
+    d.last_clipped_draws = clipped;
+    d.last_clip_vertices = clip_vertices;
+    if (dark > 0 && !d.tint_black_logged)
     {
-        // 每次加载 / 拨开关后第一次出现暗色项时记一行（动画循环里暗色时有时无，按"0→非 0"记会刷屏）
+        // 每次加实例 / 拨开关后第一次出现暗色项时记一行（动画循环里暗色时有时无，按"0→非 0"记会刷屏）
         d.tint_black_logged = true;
-        LOG_INFO(ZRender, "SpineGpuRenderer: tint black active: {} of {} draw items carry a dark color",
-                 tint_black_draws, draws.size());
+        LOG_INFO(ZRender, "SpineGpuRenderer: tint black active: {} of {} draw items carry a dark color", dark,
+                 total_draws);
     }
-    d.last_tint_black_draws = tint_black_draws;
-    d.last_clip_vertices = static_cast<uint32_t>(clip.xy.size() / 2u);
+    d.last_tint_black_draws = dark;
 }
 
 void SpineGpuRenderer::DrawInEditorViewport(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpass)
@@ -1705,6 +1900,12 @@ SpineGpuRenderer::Impl& SpineGpuRenderer::impl()
     return *m_Impl;
 }
 void SpineGpuRenderer::RequestLoad(const std::string&, int) {}
+uint32_t SpineGpuRenderer::RequestAddInstance(const std::string&, int) { return 0; }
+bool SpineGpuRenderer::RequestRemoveInstance(uint32_t) { return false; }
+bool SpineGpuRenderer::RequestSelect(uint32_t) { return false; }
+uint32_t SpineGpuRenderer::Selected() const { return 0; }
+void SpineGpuRenderer::RequestPlace(float, float, float) {}
+void SpineGpuRenderer::RequestPlaceAuto() {}
 void SpineGpuRenderer::RequestClear() {}
 void SpineGpuRenderer::RequestSetAnimation(int, const std::string&, bool) {}
 void SpineGpuRenderer::RequestAddAnimation(int, const std::string&, bool, float) {}
