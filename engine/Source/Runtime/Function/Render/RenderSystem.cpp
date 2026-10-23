@@ -539,6 +539,7 @@ void RenderSystem::Tick(float delta_time)
                      "nanite=(has={} inst={} batches={} vis={} ngpu={}) "
                      "particle=(has={} emit={} draw={} parts={} vp={}) "
                      "shadow=(dir_en={} dir_nodes={} point_en={} cascades={}) "
+                     "depth=(view={} fmt={}) "
                      "game_vp=({},{}) {}x{} game_sc=({},{}) {}x{} scene_vp=({},{}) {}x{} scene_sc=({},{}) {}x{}",
                      s_apple_frame_tick,
                      entity_count,
@@ -573,6 +574,12 @@ void RenderSystem::Tick(float delta_time)
                      dir_shadow_nodes,
                      point_shadow_enabled,
                      dir_shadow_cascades,
+                     // 场景深度探针：以前 Metal 从不建深度图，view 恒 nullptr ⇒ 深度测试
+                     // 与延迟光照反推世界坐标全是空的（洞 #16）。view=1 且 fmt 非 0 才是
+                     // 真建出来了（建图时机在 swapchain 尺寸就绪之后，首帧可能是 0/0）。
+                     (m_Rhi != nullptr && m_Rhi->GetDepthImageInfo().depth_image_view != nullptr) ? 1 : 0,
+                     static_cast<int>(m_Rhi != nullptr ? m_Rhi->GetDepthImageInfo().depth_image_format
+                                                       : RHI_FORMAT_UNDEFINED),
                      static_cast<int>(vp[0].x), static_cast<int>(vp[0].y),
                      static_cast<int>(vp[0].width), static_cast<int>(vp[0].height),
                      sc[0].offset.x, sc[0].offset.y, sc[0].extent.width, sc[0].extent.height,

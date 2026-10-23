@@ -661,6 +661,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/DirectionalLightShadowSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/DirectionalLightShadowSmokeTest.cpp")
+# Metal 场景深度冒烟测试的 main carve-out（同理由）。它钉的是"Metal 从不建场景深度
+# 图 ⇒ GetDepthImageInfo() 恒 {UNDEFINED, nullptr}"（洞 #16）与"Metal 把 input
+# attachment 当 color attachment 编号 ⇒ 延迟光照写错附件"（洞 #17）这两条静默失效
+# （见 Function/Render/Test/CMakeLists.txt）。
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/MetalSceneDepthSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Test/MetalSceneDepthSmokeTest.cpp")
 # 分配器配对冒烟测试的 main carve-out（同理由）。Only built when
 # ZENGINE_BUILD_MEMORY_PAIRING_SMOKE_TEST=ON (see Core/Memory/Test/CMakeLists.txt).
 list(REMOVE_ITEM SOURCE_FILES

@@ -2219,14 +2219,30 @@ void MainCameraRp1Pass::DrawDeferredLightingPass(const std::array<bool, 2>& skyb
     constexpr float k_scene_clear_g = 0.345f;
     constexpr float k_scene_clear_b = 0.435f;
 
+    // ⚠️ clear 值按 framebuffer 附件**下标**取（CmdBeginRenderPass 用 pClearValues[i]，
+    // i 是 framebuffer 附件下标，不是颜色槽下标）。Metal 的 deferred framebuffer 只有两个
+    // 附件：[0]=BackupOdd、[1]=Depth（见 MainCameraFramebufferResources::SetupFramebuffers
+    // 的 Metal 分支），所以场景清屏色必须在 [0]。
+    const bool is_metal = (m_Rhi != nullptr && m_Rhi->getGraphicsAPI() == GraphicsAPI::Metal);
+    RHIClearValue clear_values_metal[2];
     RHIClearValue clear_values[5];
-    clear_values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferA (load)
-    clear_values[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferB (load)
-    clear_values[2].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferC (load)
-    clear_values[3].depthStencil = {1.0f, 0};                 // Depth (load)
-    clear_values[4].color = {{k_scene_clear_r, k_scene_clear_g, k_scene_clear_b, 1.0f}};  // BackupOdd (clear)
-    renderpass_begin_info.clearValueCount = 5;
-    renderpass_begin_info.pClearValues = clear_values;
+    if (is_metal)
+    {
+        clear_values_metal[0].color = {{k_scene_clear_r, k_scene_clear_g, k_scene_clear_b, 1.0f}};  // BackupOdd (clear)
+        clear_values_metal[1].depthStencil = {1.0f, 0};                                            // Depth (load)
+        renderpass_begin_info.clearValueCount = 2;
+        renderpass_begin_info.pClearValues = clear_values_metal;
+    }
+    else
+    {
+        clear_values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferA (load)
+        clear_values[1].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferB (load)
+        clear_values[2].color = {{0.0f, 0.0f, 0.0f, 0.0f}};  // GBufferC (load)
+        clear_values[3].depthStencil = {1.0f, 0};                 // Depth (load)
+        clear_values[4].color = {{k_scene_clear_r, k_scene_clear_g, k_scene_clear_b, 1.0f}};  // BackupOdd (clear)
+        renderpass_begin_info.clearValueCount = 5;
+        renderpass_begin_info.pClearValues = clear_values;
+    }
 
     m_Rhi->CmdBeginRenderPassPFN(m_Rhi->GetCurrentCommandBuffer(), &renderpass_begin_info, RHI_SUBPASS_CONTENTS_INLINE);
 

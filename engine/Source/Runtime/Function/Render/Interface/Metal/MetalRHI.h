@@ -316,6 +316,13 @@ public:
     virtual void PushEvent(RHICommandBuffer* commond_buffer, const char* name, const float* color) override;
     virtual void PopEvent(RHICommandBuffer* commond_buffer) override;
 
+    // Scene depth target (Apple has no "swapchain depth" -- we own this texture).
+    // Must run **before** the recreate callback: MainCameraFramebufferResources
+    // reads GetDepthImageInfo() when it rebuilds its framebuffers, and the
+    // render passes bake the depth format at Initialize() time.
+    void EnsureSceneDepthImage();
+    void DestroySceneDepthImage();
+
     // Destroy operations
     virtual void clear() override;
     virtual void ClearSwapchain() override;
@@ -400,8 +407,18 @@ private:
 
     std::string m_ActiveViewportId {"default"};
     std::map<std::string, ViewportRenderTexture> m_ViewportRenderTextures;
-    RHIFormat m_DepthImageFormat {RHI_FORMAT_UNDEFINED};
+    // 场景深度图。以前 Metal **从不建深度图**，GetDepthImageInfo() 恒返回
+    // {UNDEFINED, nullptr}：主相机 RP1、方向光/点光 shadow、PickPass、DebugDraw
+    // 全都拿它当深度附件格式用 ⇒ 那一槽被当成"第 N 张颜色附件"（nullptr 在
+    // CreateFramebuffer 里表示 swapchain drawable），深度测试形同不存在。Metal
+    // 校验层的原话是 "MTLDepthStencilDescriptor sets depth test but
+    // MTLRenderPassDescriptor has a nil depthAttachment texture"。
+    // 尺寸跟随 swapchain：extent 有效时建，extent 变了就重建。
+    RHIFormat m_DepthImageFormat {RHI_FORMAT_D32_SFLOAT};
     RHIImageView* m_DepthImageView {nullptr};
+    RHIImage* m_DepthImage {nullptr};
+    RHIDeviceMemory* m_DepthImageMemory {nullptr};
+    RHIExtent2D m_DepthImageExtent {0, 0};
     RHIFence* m_RhiIsFrameInFlightFences[k_max_frames_in_flight];
     RHIDescriptorPool* m_DescriptorPool {nullptr};
     RHICommandPool* m_RhiCommandPool {nullptr};

@@ -501,7 +501,20 @@ void MainCameraFramebufferResources::SetupDeferredLightingPass()
     // at the same time. The deferred lighting shader reads depth via SRV bound by
     // RefreshDeferredLightingInputAttachments (separate descriptor), not via
     // input attachments. Depth is only the depth stencil attachment here.
-    const bool is_dx12 = (m_Rhi != nullptr && m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12);
+    const bool is_dx12  = (m_Rhi != nullptr && m_Rhi->getGraphicsAPI() == GraphicsAPI::DirectX12);
+    const bool is_metal = (m_Rhi != nullptr && m_Rhi->getGraphicsAPI() == GraphicsAPI::Metal);
+
+    // ⚠️ Metal 分支（洞 #17）：Metal 没有 subpass，"input attachment" 经 SPIRV-Cross
+    // 编译后就是普通采样纹理（deferred_lighting.frag 的 subpassLoad → [[texture(n)]]），
+    // 完全不需要挂进 framebuffer。而 Metal 的 CmdBeginRenderPass 是按"第几个非深度
+    // 附件"给颜色槽编号的：把 GBufferA/B/C 一并挂上，它们会占走 color 0/1/2，于是
+    // 延迟光照的 out_color（location 0）写进了 GBufferA，真正的场景色 backup_odd
+    // 每帧只剩 CLEAR 的清屏色（真机截图为证：视口一片 0.29/0.345/0.435 纯色，Mall
+    // 的 15 个可见实体全部不可见）。所以 Metal 的 deferred 附件只有两个：
+    //   [0] = BackupOdd（唯一的颜色输出）
+    //   [1] = Depth（sky 的深度测试仍需要真附件）
+    // GBuffer 三张图只作为描述符里的采样纹理（RefreshDeferredLightingInputAttachments）。
+    RHIAttachmentDescription metal_attachments[2] = {};
 
     RHIAttachmentReference input_refs[4] = {};
     input_refs[0].attachment = kAttachment_GBufferA;
@@ -512,7 +525,11 @@ void MainCameraFramebufferResources::SetupDeferredLightingPass()
     input_refs[2].layout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     uint32_t input_attachment_count = 3;
-    if (!is_dx12)
+    if (is_metal)
+    {
+        input_attachment_count = 0;
+    }
+    else if (!is_dx12)
     {
         // Vulkan: depth as input attachment is allowed and required by the render pass.
         input_refs[3].attachment = kAttachment_Depth;
@@ -521,17 +538,34 @@ void MainCameraFramebufferResources::SetupDeferredLightingPass()
     }
 
     RHIAttachmentReference color_refs[1] = {};
-    color_refs[0].attachment = kAttachment_BackupOdd;
-    color_refs[0].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-
     RHIAttachmentReference depth_ref {};
-    depth_ref.attachment = kAttachment_Depth;
-    depth_ref.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    const RHIAttachmentDescription* pass_attachments  = attachments;
+    uint32_t                       pass_attachment_count = kAttachmentCount;
+    if (is_metal)
+    {
+        metal_attachments[0]  = attachments[kAttachment_BackupOdd];
+        metal_attachments[1]  = attachments[kAttachment_Depth];
+        pass_attachments      = metal_attachments;
+        pass_attachment_count = 2;
+
+        color_refs[0].attachment = 0;
+        color_refs[0].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        depth_ref.attachment = 1;
+        depth_ref.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
+    else
+    {
+        color_refs[0].attachment = kAttachment_BackupOdd;
+        color_refs[0].layout = RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        depth_ref.attachment = kAttachment_Depth;
+        depth_ref.layout = RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    }
 
     RHISubpassDescription subpass {};
     subpass.pipelineBindPoint = RHI_PIPELINE_BIND_POINT_GRAPHICS;
     subpass.inputAttachmentCount = input_attachment_count;
-    subpass.pInputAttachments = input_refs;
+    subpass.pInputAttachments = input_attachment_count > 0 ? input_refs : nullptr;
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = color_refs;
     subpass.pDepthStencilAttachment = &depth_ref;
@@ -549,8 +583,8 @@ void MainCameraFramebufferResources::SetupDeferredLightingPass()
 
     RHIRenderPassCreateInfo ci {};
     ci.sType = RHI_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    ci.attachmentCount = kAttachmentCount;
-    ci.pAttachments = attachments;
+    ci.attachmentCount = pass_attachment_count;
+    ci.pAttachments = pass_attachments;
     ci.subpassCount = 1;
     ci.pSubpasses = subpasses;
     ci.dependencyCount = 1;
@@ -759,7 +793,14 @@ void MainCameraFramebufferResources::SetupFramebuffers()
 
     // DeferredLightingPass framebuffer (reads GBufferA/B/C + Depth, writes BackupOdd)
     {
-        RHIImageView* attachments[5] = {
+        // Metal（洞 #17）：附件只有 [BackupOdd, Depth]，和 SetupDeferredLightingPass
+        // 的 Metal 分支一一对应；GBuffer 三张图不进 framebuffer（它们只被采样）。
+        const bool is_metal = (m_Rhi != nullptr && m_Rhi->getGraphicsAPI() == GraphicsAPI::Metal);
+        RHIImageView* metal_attachments[2] = {
+            m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view,  // output
+            m_Rhi->GetDepthImageInfo().depth_image_view,                          // depth (sky 深度测试)
+        };
+        RHIImageView* default_attachments[5] = {
             m_Framebuffer.attachments[_main_camera_pass_gbuffer_a].view,   // input
             m_Framebuffer.attachments[_main_camera_pass_gbuffer_b].view,   // input
             m_Framebuffer.attachments[_main_camera_pass_gbuffer_c].view,   // input
@@ -767,10 +808,13 @@ void MainCameraFramebufferResources::SetupFramebuffers()
             m_Framebuffer.attachments[_main_camera_pass_backup_buffer_odd].view,  // output
         };
 
+        RHIImageView* const* attachments = is_metal ? metal_attachments : default_attachments;
+        const uint32_t attachment_count = is_metal ? 2u : 5u;
+
         RHIFramebufferCreateInfo ci {};
         ci.sType = RHI_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
         ci.renderPass = m_DeferredLightingRenderPass;
-        ci.attachmentCount = 5;
+        ci.attachmentCount = attachment_count;
         ci.pAttachments = attachments;
         ci.width = m_Rhi->GetSwapchainInfo().extent.width;
         ci.height = m_Rhi->GetSwapchainInfo().extent.height;

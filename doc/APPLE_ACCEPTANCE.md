@@ -1595,6 +1595,77 @@ layer 0" —— 后者不崩、不报错，只是画错，是最坏的一种失�
    `opening document ...(from LaunchServices)`，编辑器起来后停在 dock icon 那行、什么都不
    干 —— 看着像挂了，其实是"没接到项目"。
 
+### 3.34 Metal 场景深度图不存在 + 延迟光照输出写错附件（SSAO 前置）
+
+SSAO 调研挖出来的两个"通道全接好、却在 Metal 上完全没生效"的洞。**之前 §里"深度 ✅"的
+说法是错的** —— 深度图从来就没建出来过。
+
+**洞 #16：Metal 从不建场景深度图。** `MetalRHI.h` 声明了
+`m_DepthImageFormat{RHI_FORMAT_UNDEFINED}` / `m_DepthImageView{nullptr}`，全仓库没有任何
+赋值点；`CreateImage / CreateGlobalImage / CreateCubeMap` 三处 `newTextureWithDescriptor`
+都不建深度纹理。⇒ `GetDepthImageInfo()` 恒返回 `{UNDEFINED, nullptr}`，而
+`MainCameraFramebufferResources` 把 nullptr 的 view 当成"这一槽是 swapchain drawable"，
+深度槽变成第 N 张颜色附件；建管线时 `IsDepthFormat(UNDEFINED)==false` ⇒
+`depthAttachmentPixelFormat` 保持 Invalid。**Metal 校验层原话**：
+`MTLDepthStencilDescriptor sets depth test but MTLRenderPassDescriptor has a nil depth
+attachment texture` —— 修之前每帧刷 **8 万+** 条。受害面：主相机深度测试/写入、
+`deferred_lighting.frag` / `megalights_deferred.frag` 的 `subpassLoad(in_scene_depth)` +
+`inverse(proj_view)` 反推世界坐标（SSAO/雾/软粒子全靠它）、方向光/点光 shadow 与 Pick、
+DebugDraw 的深度格式。
+
+**修法**：新增 `MetalRHI::EnsureSceneDepthImage() / DestroySceneDepthImage()`，建
+`DEPTH_STENCIL_ATTACHMENT | SAMPLED` 的 D32_SFLOAT 全屏图（SAMPLED 是生效位：没有它延迟
+光照采样不了）；`CreateSwapchain / RecreateSwapchain` 末尾与 `PrepareBeforePass`（recreate
+回调**之前** —— 回调里重建 framebuffer 那一刻 view 必须已经是新尺寸的）各调一次，
+`ClearSwapchain` 里销毁；带尺寸守卫（同尺寸复用），销毁手动 `delete` wrapper
+（`DestroyImage/DestroyImageView` 是空实现）。
+
+**洞 #17：Metal 把 input attachment 当 color attachment 编号。** Metal 没有 subpass，
+"input attachment" 经 SPIRV-Cross 编译后就是普通采样纹理（`subpassLoad` → `[[texture(n)]]`），
+不需要挂进 framebuffer；而 Metal 的 `CmdBeginRenderPass` 按"第几个非深度附件"给颜色槽
+编号 —— 把 GBufferA/B/C 一并挂上后它们占走 color 0/1/2，延迟光照的 `out_color`
+（location 0）写进了 GBufferA，真正的场景色 `backup_odd` 每帧只剩 CLEAR 的清屏色
+**0.29/0.345/0.435 纯色**，15 个可见实体全部不可见，**不报任何错**（截图实锤）。
+
+**修法**：`SetupDeferredLightingPass` / `SetupFramebuffers` 给 Metal 单独分支 —— 附件表
+只有 `[BackupOdd, Depth]`、`pass_attachment_count=2`、`input_attachment_count=0`、framebuffer
+只挂 2 张（GBuffer 三张图只作为描述符里的采样纹理）；`MainCameraRp1Pass` 的 clear 值按
+附件**下标**给（`CmdBeginRenderPass` 用 `pClearValues[i]`，i 是附件下标不是颜色槽下标）：
+`[0]=场景清屏色、[1]=深度 1.0`。
+
+**深度方向对照实验**：临时把 `depthCompareFunction` 改 `GreaterEqual` ⇒ 整屏清空
+（clear=1.0、片元深度 < 1 全被拒）⇒ 确认是标准 `LessEqual` 而非 reverse-Z。这条实验同时
+是"深度真正生效"的实锤 —— 深度附件若还是 nil，改比较函数不会有任何视觉变化。注意
+`RenderCamera` 是 `m_Znear{1000}>m_Zfar{0.1}` 的历史写法，但投影是 D3D 风格，实测深度
+方向标准。
+
+| 文件 | 改动 |
+|---|---|
+| `Interface/Metal/MetalRHI.{h,mm}` | `EnsureSceneDepthImage/DestroySceneDepthImage` + 三处调用点 + 销毁；`m_DepthImageFormat` 默认 D32_SFLOAT |
+| `Passes/MainCameraFramebufferResources.cpp` | Metal deferred 附件表 `[BackupOdd, Depth]` ×2（render pass 与 framebuffer 两处） |
+| `Passes/MainCameraRp1Pass.cpp` | Metal 的 clear 值按 2 附件下标给 |
+| `RenderSystem.cpp` | 心跳加 `depth=(view={} fmt={})` |
+| `Render/Test/MetalSceneDepthSmokeTest.cpp`（新） | 文本契约 **34** checks |
+
+**验证**：
+
+- 校验层对比：`nil depthAttachment` 类错误 **80926+63187 → 0**，`color attachment 3` 错配
+  3942 → 0。
+- 真机心跳：`depth=(view=1 fmt=126)`（126 = `RHI_FORMAT_D32_SFLOAT`）+ `cascades=4`；截图
+  从一片纯色变成真实场景（反射地面、天空、建筑、粒子）。本次启动新增日志段 **0 条 `[E]`、
+  3 条 `[W]`（全是预存在：Lumen 距离场 clamp / 项目 library / node-tsc）**，无新增
+  `ZEditor-*.ips`。
+- 静态：ctest **29/29**（新测试 +1）。
+- **变异 17 个，各精确变红、还原后 34/0**。变异期间又发现契约自身的一个假绿：
+  `clearValueCount = 2` 在 Rp1Pass 里有两处（Metal 那趟 + 后处理那一趟），全文 `find` 在
+  "Metal 这趟被改成 5"后照样命中 ⇒ 改成钉在 `clear_values_metal` 自己的块里（`BlockBetween`）。
+
+**剩余校验层告警均为预存在、非本次引入**：`missing vertexDescriptor Buffer binding at
+index 1/2`、`Fragment Function(main0) argument ... 52 vs 64`、
+`For depth attachment ... Invalid vs Depth32Float` + `For color attachment 0 ... RGBA8Unorm
+vs RGBA16Float` 各 1347 条、`Sampler state did not have supportArgumentBuffers`、两条
+`instanceCount(0)` —— 后续单独处理。
+
 ## 4. 已知限制（不是 bug，但先说清楚）
 
 - ~~**`NaniteGPUCullingSmokeTest` 在 Apple 上是红的（21 条）**~~ —— **已在 §3.20 修掉**：

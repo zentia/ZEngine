@@ -301,6 +301,101 @@ namespace
     }
 }  // namespace
 
+// 场景深度图：swapchain 尺寸有效就建（尺寸变了就重建）。
+//
+// 为什么非有不可：Metal 上没有"swapchain 自带深度图"这回事，而引擎里所有深度附件
+// 的格式都取自 GetDepthImageInfo().depth_image_format、句柄取自它的 view。以前这两
+// 个成员从来没被赋过值 ⇒ nullptr 的 view 在 CreateFramebuffer 里表示"这一槽是
+// drawable"，深度槽于是变成一张颜色附件，深度测试/深度写入全部失效（Metal 校验层
+// 每秒刷几千条 "MTLDepthStencilDescriptor sets depth test but MTLRenderPassDescriptor
+// has a nil depthAttachment texture"）。
+//
+// 带 SAMPLED 是因为延迟光照要采样它反推世界坐标（deferred_lighting.frag 的
+// subpassLoad(in_scene_depth)，SPIRV-Cross 把它编成普通 texture）。
+void MetalRHI::EnsureSceneDepthImage()
+{
+    const bool extent_valid = m_SwapchainExtent.width > 0 && m_SwapchainExtent.width <= 16384 &&
+                              m_SwapchainExtent.height > 0 && m_SwapchainExtent.height <= 16384;
+    if (!extent_valid)
+    {
+        return;
+    }
+    if (m_DepthImageView != nullptr && m_DepthImageExtent.width == m_SwapchainExtent.width &&
+        m_DepthImageExtent.height == m_SwapchainExtent.height)
+    {
+        return;
+    }
+
+    DestroySceneDepthImage();
+
+    RHIImage*        image  = nullptr;
+    RHIDeviceMemory* memory = nullptr;
+    CreateImage(m_SwapchainExtent.width,
+                m_SwapchainExtent.height,
+                m_DepthImageFormat,
+                RHI_IMAGE_TILING_OPTIMAL,
+                RHI_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | RHI_IMAGE_USAGE_SAMPLED_BIT,
+                RHI_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                image,
+                memory,
+                0,
+                1,
+                1);
+    if (image == nullptr)
+    {
+        LOG_ERROR(ZRender,
+                  "MetalRHI: scene depth image creation failed ({}x{}, format={})",
+                  m_SwapchainExtent.width,
+                  m_SwapchainExtent.height,
+                  static_cast<int>(m_DepthImageFormat));
+        return;
+    }
+
+    RHIImageView* view = nullptr;
+    CreateImageView(image, m_DepthImageFormat, RHI_IMAGE_ASPECT_DEPTH_BIT, RHI_IMAGE_VIEW_TYPE_2D, 0, 1, view);
+    if (view == nullptr)
+    {
+        DestroyImage(image);
+        delete (MetalImage*)image;
+        FreeMemory(memory);
+        LOG_ERROR(ZRender, "MetalRHI: scene depth image view creation failed");
+        return;
+    }
+
+    m_DepthImage        = image;
+    m_DepthImageMemory  = memory;
+    m_DepthImageView    = view;
+    m_DepthImageExtent  = m_SwapchainExtent;
+    LOG_INFO(ZRender,
+             "MetalRHI: scene depth image ready {}x{} (format={}, sampled=1)",
+             m_DepthImageExtent.width,
+             m_DepthImageExtent.height,
+             static_cast<int>(m_DepthImageFormat));
+}
+
+void MetalRHI::DestroySceneDepthImage()
+{
+    if (m_DepthImageView != nullptr)
+    {
+        DestroyImageView(m_DepthImageView);
+        // MetalRHI::DestroyImageView 是空实现（Vulkan/DX12 那边才真删），这里手动
+        // delete 才能释放 MTLTexture —— 否则每次 resize 都漏一张全屏深度图。
+        delete (MetalImageView*)m_DepthImageView;
+        m_DepthImageView = nullptr;
+    }
+    if (m_DepthImage != nullptr)
+    {
+        DestroyImage(m_DepthImage);
+        delete (MetalImage*)m_DepthImage;
+        m_DepthImage = nullptr;
+    }
+    if (m_DepthImageMemory != nullptr)
+    {
+        FreeMemory(m_DepthImageMemory);
+    }
+    m_DepthImageExtent = {0, 0};
+}
+
 void MetalRHI::CreateSwapchain()
 {
 #ifdef __APPLE__
@@ -332,6 +427,7 @@ void MetalRHI::CreateSwapchain()
                  m_SwapchainExtent.width,
                  m_SwapchainExtent.height);
     }
+    EnsureSceneDepthImage();
 #endif
 }
 
@@ -345,6 +441,7 @@ void MetalRHI::RecreateSwapchain()
         return;
     }
     SyncLayerMetrics(m_MetalLayer, view, m_SwapchainExtent, m_Viewports, m_Scissors);
+    EnsureSceneDepthImage();
 #endif
 }
 
@@ -1603,6 +1700,8 @@ bool MetalRHI::CreateGraphicsPipelines(RHIPipelineCache*,
     if (pCreateInfos[0].pDepthStencilState != nullptr &&
         pCreateInfos[0].pDepthStencilState->depthTestEnable)
     {
+        // 深度方向是标准的：clear 1.0、片元深度 < 1（用 GreaterEqual 做过对照实验，
+        // 整屏被拒 ⇒ 不存在 reverse-Z）。Metal 没有 RHI 的 compare op 抽象，这里写死。
         depth_descriptor.depthCompareFunction = MTLCompareFunctionLessEqual;
         depth_descriptor.depthWriteEnabled    = pCreateInfos[0].pDepthStencilState->depthWriteEnable ? YES : NO;
     }
@@ -2914,6 +3013,10 @@ bool MetalRHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSw
             {
                 return true;  // minimised / zero-sized window
             }
+            // 必须排在 recreate 回调**之前**：回调里 MainCameraFramebufferResources
+            // 会重建 framebuffer，那一刻 GetDepthImageInfo() 必须已经给出新尺寸的
+            // 深度 view，否则这一帧（以及之后每一帧）的深度槽还是 nullptr。
+            EnsureSceneDepthImage();
             if (passUpdateAfterRecreateSwapchain)
             {
                 passUpdateAfterRecreateSwapchain();
@@ -3077,6 +3180,7 @@ void MetalRHI::ClearSwapchain()
     }
     m_SwapchainView  = nullptr;
     m_SwapchainExtent = {0, 0};
+    DestroySceneDepthImage();
 #endif
 }
 void MetalRHI::DestroyDefaultSampler(RHIDefaultSamplerType) {}

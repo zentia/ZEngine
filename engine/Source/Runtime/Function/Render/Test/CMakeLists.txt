@@ -197,3 +197,40 @@ if(ZENGINE_BUILD_DIRECTIONAL_SHADOW_SMOKE_TEST)
 
     message(STATUS "Configured directional-light shadow smoke test: DirectionalLightShadowSmokeTest")
 endif()
+
+# =====================================================================
+# MetalSceneDepthSmokeTest -- 钉"Metal 场景深度图"与"延迟光照输出附件"两洞：
+#   1. MetalRHI 从不建深度图（GetDepthImageInfo 恒 {UNDEFINED, nullptr}）⇒ 全引擎
+#      的深度附件都是空的，深度测试不存在；
+#   2. Metal 把 input attachment 也当 color attachment 编号 ⇒ 延迟光照的 out_color
+#      写进 GBufferA，backup_odd 每帧只剩清屏色（视口一片纯色）。
+# 纯文本契约，无引擎依赖。
+#
+# Default OFF; opt in with:
+#   cmake -B build -DZENGINE_BUILD_METAL_SCENE_DEPTH_SMOKE_TEST=ON
+# =====================================================================
+
+option(ZENGINE_BUILD_METAL_SCENE_DEPTH_SMOKE_TEST
+       "Build the Metal scene-depth / deferred-output smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_METAL_SCENE_DEPTH_SMOKE_TEST)
+    add_executable(MetalSceneDepthSmokeTest MetalSceneDepthSmokeTest.cpp)
+
+    set_target_properties(MetalSceneDepthSmokeTest PROPERTIES
+        CXX_STANDARD 20
+        FOLDER "Engine/Tests"
+    )
+
+    target_compile_definitions(MetalSceneDepthSmokeTest PRIVATE
+        ZENGINE_METAL_RHI_H="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/Interface/Metal/MetalRHI.h"
+        ZENGINE_METAL_RHI_MM="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/Interface/Metal/MetalRHI.mm"
+        ZENGINE_FRAMEBUFFER_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/Passes/MainCameraFramebufferResources.cpp"
+        ZENGINE_RP1_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/Passes/MainCameraRp1Pass.cpp"
+        ZENGINE_RENDER_SYSTEM_CPP="${CMAKE_CURRENT_SOURCE_DIR}/../../../Function/Render/RenderSystem.cpp"
+    )
+
+    add_test(NAME MetalSceneDepthSmokeTest COMMAND MetalSceneDepthSmokeTest)
+
+    message(STATUS "Configured Metal scene-depth smoke test: MetalSceneDepthSmokeTest")
+endif()
