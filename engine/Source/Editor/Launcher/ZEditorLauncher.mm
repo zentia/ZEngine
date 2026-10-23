@@ -22,6 +22,13 @@
 
 #include "Editor/Launcher/ZEditorLauncher.h"
 #include "Editor/ToolSuite/ToolSuite.h"
+// ⚠️ 这个 .mm 被 CMake 设了 SKIP_PRECOMPILE_HEADERS（Editor/CMakeLists.txt），所以
+// PCH 不会把 LOG_* 带进来 —— 必须显式包含 Macro.h，否则 `LOG_WARNING(ZEditor, ...)`
+// 不会被展开成宏，而是被当成一次函数调用，`ZEditor` 就被解析成命名空间，
+// 报 "unexpected namespace name"。
+#include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Log/LogSystem.h"
+#include "Runtime/Resource/Config/ConfigManager.h"
 
 #if defined(__APPLE__)
 
@@ -231,6 +238,96 @@ std::vector<std::filesystem::path> ProjectsBesideExecutable()
     }
     std::sort(out.begin(), out.end());
     return out;
+}
+
+// -----------------------------------------------------------------------------
+// Dock 图标
+//
+// `MacOSApplication::SetupCocoaOnce()` 里也装一次图标，但那要等 START_SYSTEM()
+// 之后才跑。而 Launcher 是**在此之前**就把 NSApp 拉起来并设成
+// ActivationPolicyRegular 的 —— Dock 磁贴那一刻就出现了，装图标的代码还没跑，
+// 于是选项目的这几十秒里 Dock 上是一个通用图标。ZEditor 是裸 Mach-O 而不是
+// .app，系统没有任何东西可以自动补上它（Windows 那边是 `z_embed_app_icon()`
+// 把 .ico 嵌进 exe）。
+//
+// 路径首选 ini 里的 BigIconFile（跟 ConfigManager 同一条规则，见
+// ResolveEditorBigIconPath）；ini 不在就退回几个布局候选，其中
+// `../Resources/` 是 .app bundle 的布局（Contents/MacOS → Contents/Resources）。
+// -----------------------------------------------------------------------------
+std::filesystem::path FindAppIconFile()
+{
+    const std::filesystem::path exe = ExecutablePath();
+    if (exe.empty())
+    {
+        return {};
+    }
+    const std::filesystem::path exe_dir = exe.parent_path();
+
+    std::vector<std::filesystem::path> candidates;
+
+    const std::filesystem::path from_ini = ResolveEditorBigIconPath(exe_dir / "ZEditor.ini");
+    if (!from_ini.empty())
+    {
+        candidates.push_back(from_ini);
+    }
+    candidates.push_back(exe_dir / "resource" / "ZEngineEditorBigIcon.png");
+    candidates.push_back(exe_dir / ".." / "Resources" / "ZEngineEditorBigIcon.png");
+    candidates.push_back(exe_dir / "ZEngineEditorBigIcon.png");
+
+    std::error_code ec;
+    for (const std::filesystem::path& candidate : candidates)
+    {
+        if (std::filesystem::exists(candidate, ec))
+        {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+void InstallDockIcon()
+{
+    // 从 .app 里启动时图标由 AppKit 按 Info.plist 的 CFBundleIconFile 自己装上，
+    // 就是 MakeMacOSAppBundle.cmake 生成的那份 ZEditor.icns。这时候再手动
+    // setApplicationIconImage: 只会拿同一张 PNG 盖掉它 —— 视觉上没区别，但那样
+    // icns 到底有没有生效就永远不可证伪了（Dock 上看不出图标来自哪边）。所以
+    // bundle 自己有图标时这里让位，只留一条日志当证据。
+    @autoreleasepool
+    {
+        NSBundle* main_bundle = [NSBundle mainBundle];
+        NSString* bundle_id   = [main_bundle bundleIdentifier];
+        NSString* icon_name   = [main_bundle objectForInfoDictionaryKey:@"CFBundleIconFile"];
+        if (bundle_id.length > 0 && icon_name.length > 0)
+        {
+            LOG_INFO(ZEditor,
+                     "Launcher: dock icon comes from the app bundle '{}' (Info.plist CFBundleIconFile = {}).",
+                     [bundle_id UTF8String],
+                     [icon_name UTF8String]);
+            return;
+        }
+    }
+
+    const std::filesystem::path icon = FindAppIconFile();
+    if (icon.empty())
+    {
+        // 不打日志会更好吗？不会 —— 这条只会落在日志文件里，而"Dock 上是通用
+        // 图标"这种缺陷，靠人眼是看不出原因的。
+        LOG_WARNING(ZEditor, "Launcher: no app icon found next to the executable; the Dock tile will be generic.");
+        return;
+    }
+
+    @autoreleasepool
+    {
+        NSImage* image = [[NSImage alloc] initWithContentsOfFile:[NSString stringWithUTF8String:icon.c_str()]];
+        if (image == nil)
+        {
+            LOG_WARNING(ZEditor, "Launcher: app icon cannot be decoded: '{}'", icon.string());
+            return;
+        }
+        [NSApp setApplicationIconImage:image];
+        [image release];
+        LOG_INFO(ZEditor, "Launcher: dock icon installed from '{}'", icon.string());
+    }
 }
 
 // -----------------------------------------------------------------------------
@@ -577,7 +674,11 @@ FLauncherState& State()
         // 裸可执行文件默认是 ActivationPolicyProhibited：窗口能显示但拿不到键盘
         // 焦点、不进 Dock、没有菜单栏（于是文本框里 Cmd-V 也没用）。Regular 才
         // 是"一个正经 App"。
+        //
+        // ⚠️ 一设 Regular，Dock 磁贴立刻出现 —— 图标必须**在这一行之后、
+        // [app run] 之前**装上，否则选项目的这几十秒里 Dock 上是个通用图标。
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
+        ZL::InstallDockIcon();
 
         [self installMainMenu];
 

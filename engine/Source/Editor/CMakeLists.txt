@@ -389,6 +389,33 @@ if(WIN32)
 endif()
 add_custom_command(TARGET ${TARGET_NAME} POST_BUILD ${POST_BUILD_COMMANDS})
 
+# ---- macOS: ZEditor.app ----
+#
+# `z_embed_app_icon()`（上面第 242 行）只做 Windows 的 .rc —— 它把 .ico 嵌进 exe，
+# Explorer / 任务栏 / Alt-Tab 就都有图标。macOS 侧**没有对等物**：ZEditor 是裸
+# Mach-O，Finder / Dock / Launchpad 里一律是通用图标。运行时那两个
+# `setApplicationIconImage:`（MacOSApplication + Launcher）只能管住"进程活着的时候"。
+#
+# 所以这里补一个 .app bundle。真身**仍然留在 bin/<Config>/ZEditor**，bundle 里的
+# Contents/MacOS/ZEditor 只是一个相对 symlink —— 资产和资源全在 bin/<Config>/ 下，
+# 而且 ZEditor 只链系统框架（没有 @executable_path 依赖），通过 symlink 启动不会
+# 破坏 dyld 查找。
+#
+# 放在上面那个 POST_BUILD 之后：它会 `copy_directory` 整个可执行目录，先建 bundle
+# 的话下次构建就可能把 .app 拷到自己身上；后建则每次都重建 symlink 和 icns，天然
+# 幂等。
+if(APPLE)
+    add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -DICON_SOURCE=${ENGINE_ROOT_DIR}/resource/ZEngineEditorBigIcon.png
+            -DEXE_PATH=$<TARGET_FILE:${TARGET_NAME}>
+            -DBUNDLE_NAME=ZEditor
+            -DBUNDLE_VERSION=${CMAKE_PROJECT_VERSION}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/MakeMacOSAppBundle.cmake
+        COMMENT "Creating ZEditor.app bundle (macOS icon / Dock identity)..."
+    )
+endif()
+
 # Conditionally copy resource directory if it exists
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resource")
     add_custom_command(TARGET ${TARGET_NAME} POST_BUILD

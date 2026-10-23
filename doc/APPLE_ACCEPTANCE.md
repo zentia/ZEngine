@@ -103,7 +103,7 @@ cd build && ctest --output-on-failure
 | `MetalSpirvShaderSmokeTest` | 47 | 9 个**内置** SPIR-V blob 能不能过 SPIR-V→MSL：sampler 紧凑编号 ≤ 15、`Z_HAS_SPIRV_SHADERS` 是开的、非 SPIR-V 要被拒 |
 | `NaniteGPUCullingSmokeTest` | 95 | 全平台，但在 Apple 上是**真 Metal 真 dispatch**（`MTLDevice` 不需要窗口）：GLSL 与 C++ 的字节契约、打包结果、剔除计数器读回、间接绘制真的落进 pass；外加"后端能力不许靠猜是不是 Vulkan"（§3.20） |
 | `MemoryPairingSmokeTest` | 23 | 分配器配对（§3.26）：Apple 上 `Produce` 出来的块**不在 mimalloc 堆区**（所以喂给 mi_free 必坏）；错配会被守卫拦下而不是崩；正确配对不触发守卫；全库扫描 0 处错配 + **扫描器自检**（含已知错配/已知正确的双向对照） |
-| `ZEditorLauncherWiringSmokeTest` | 29 | Launcher 接线（§3.27）：两个平台的 `OpenLauncher` 分支都接到 Launcher、Unix 那条不许退回 `reportMissingProject()`（双击闪退的那一行）；重启用 `POSIX_SPAWN_SETEXEC` 且全文件不许有 `fork()`；`runEditorUnix` 要回写最近项目；三份实现（Win32 / Apple / POSIX 桩）不能同时编；Apple 侧确实是窗口不是空桩；**扫描器双向自检** |
+| `ZEditorLauncherWiringSmokeTest` | 48 | Launcher 接线（§3.27）：两个平台的 `OpenLauncher` 分支都接到 Launcher、Unix 那条不许退回 `reportMissingProject()`（双击闪退的那一行）；重启用 `POSIX_SPAWN_SETEXEC` 且全文件不许有 `fork()`；`runEditorUnix` 要回写最近项目；三份实现（Win32 / Apple / POSIX 桩）不能同时编；Apple 侧确实是窗口不是空桩。**应用图标（§3.28）**：Apple 分支必须解链 exe 路径再拼 ini、且解链排在拼 ini 之前；ini 打不开要刷日志；bundle 脚本要生成 icns / 写 `CFBundleIconFile` / 用**相对** symlink；Launcher 的 bundle 让位分支排在 PNG 兜底之前**且真的 return**。**扫描器双向自检**（含"位置版扫描器也跳过整行注释"） |
 
 MSL 只在运行时编译，构建期永远看不见错误，这两个测试是唯一的自动防线。
 `MetalSpirvShaderSmokeTest` 一条就能把 §3.1 / §3.2 / §3.3 三个错全抓出来。
@@ -1259,6 +1259,84 @@ Slate 窗口宿主**。所以不能"照搬 Win32 那套换个平台宏"，得手
 **一条教训**：macOS 上"没有终端"是 GUI 进程和 CLI 进程最本质的区别。任何"打一行日志
 然后退出"的失败路径，在双击启动的场景下都等价于崩溃。`reportMissingProject()` 作为
 兜底（Launcher 也起不来时）可以留，但它绝不能是**唯一**出口。
+
+### 3.28 ZEditor 没有应用图标（以及做成 .app 之后双击崩溃）
+
+**症状**：`zeditor没有应用图标` —— Finder 里是通用可执行图标，Dock / Launchpad 里也没有。
+Windows 那边是有的：图标由 `z_embed_app_icon()`（`engine/cmake/AppIcon.cmake`）把
+`resource/ZEditor.ico` 嵌进 exe。
+
+**根因 1 —— macOS 侧根本不存在这个机制**：`z_embed_app_icon()` 里只有 Windows 分支
+（写 `.rc`），没有对等物。macOS 不给裸 Mach-O 任何图标：`[NSApp setApplicationIconImage:]`
+只能管住"进程活着的时候"，访达 / Launchpad 里看到的仍然是通用图标（§3.27 那次已经给
+Launcher 补了运行时图标，但那只是半边）。
+
+**根因 2 —— 做成 bundle 之后暴露的洞（真正的阻塞点）**：
+
+`CommandSystem::Initialize()` 用 **argv[0] 的父目录**去拼 `ZEditor.ini`：
+
+```cpp
+config_file_path = executable_path.parent_path() / "ZEditor.ini";
+```
+
+bundle 里 `Contents/MacOS/ZEditor` 只是指向真身 `bin/<Config>/ZEditor` 的**相对 symlink**，
+而 `ZEditor.ini` / `asset` / `resource` 全在真身旁边。于是配置去 `Contents/MacOS` 底下找，
+必然落空：
+
+```
+cd / && .../ZEditor.app/Contents/MacOS/ZEditor -p <project>
+[Bq]base dir type 1: /
+libc++abi: terminating due to uncaught exception of type std::runtime_error:
+    Failed to initialize system 'ConfigManager', rolling back
+EXITCODE=134
+```
+
+双击时还多一层：CWD 是 `/`，连"相对路径碰巧能命中"都没有。`cd bin/Debug && ./ZEditor`
+一直正常，正是因为它把 CWD 恰好放在了 ini 旁边 —— **这个洞被工作目录掩盖了很多次**。
+Linux 分支读 `/proc/self/exe`（内核给的就是解链后的真身），所以只有 macOS 中招。
+
+**修复**：
+
+| 文件 | 改动 |
+|---|---|
+| `Runtime/Function/Command/CommandSystem.cpp` | Apple 分支取 `executable_path` 时先过 `DereferenceExecutablePath()`（`std::filesystem::canonical` + `error_code`，失败退回原路径 —— 另一份重载会抛异常，启动期抛了就是崩） |
+| `Runtime/Resource/Config/ConfigManager.cpp` | ini 打不开时先 `ZEngineForceFlushLogs()` 再 `return false`（见下） |
+| `Editor/Launcher/ZEditorLauncher.mm` | `InstallDockIcon()` 开头加"让位分支"：从 bundle 启动时（`mainBundle.bundleIdentifier` + `CFBundleIconFile` 都在）直接 `return`，让 AppKit 用 icns，只留一条日志当证据 |
+| `Editor/cmake/MakeMacOSAppBundle.cmake`（新） | `sips` 生成 10 档 iconset → `iconutil -c icns`；`Contents/MacOS/ZEditor -> ../../../ZEditor` **相对** symlink；写 `Info.plist`（`CFBundleIconFile` 只在 icns 真生成了才写 —— 指向不存在的文件系统不报错，只是静默退回通用图标，那正是最想避免的） |
+| `Editor/CMakeLists.txt` | `if(APPLE)` 追加 POST_BUILD 调上面的脚本 |
+
+**为什么真身不动（bundle 只是壳）**：① `cd bin/Debug && ./ZEditor` 是本仓库所有真机验证的
+入口，不能断；② 资产不进 bundle —— ZEditor 只链系统框架（`otool -L` 里没有
+`@executable_path` / `@rpath`），所以经 symlink 启动时 dyld 不会因为 `@executable_path`
+指向 bundle 内部而找不到东西；③ 相对 symlink 让整个 `bin/` 被拷走 / 换机器都不失效。
+
+**顺带修的**：`ConfigManager::Initialize()` 返回 false 之后引擎是**抛异常终止**的，而 BqLog
+是异步的 —— 不刷那一下，唯一说清楚"到底去哪儿找过 ini"的那行日志会随缓冲区一起消失，
+双击时又没有终端可看，于是现场只剩一句 `Failed to initialize system 'ConfigManager'`。
+
+**验证**：
+
+- **真机**：`cd / && .../ZEditor.app/Contents/MacOS/ZEditor -p <project>` → 进程存活，
+  心跳 `AppleRender: frame=961 entities=30 visible=15 blit_ready=1 rp2_tonemapped=1`；
+  日志 `Configuration file: /Users/.../bin/Debug/ZEditor.ini`（解链后的真身，不是
+  `Contents/MacOS`）。
+- **真机（图标两条路径）**：从 bundle 起（无 `-p`）→
+  `Launcher: dock icon comes from the app bundle 'com.zengine.ZEditor' (Info.plist CFBundleIconFile = ZEditor)`；
+  从裸可执行文件起 → 退回
+  `Launcher: dock icon installed from '.../bin/Debug/resource/ZEngineEditorBigIcon.png'`。
+  两条都实测到过，说明"让位"和"兜底"都真的在跑。
+- **静态**：`ZEditorLauncherWiringSmokeTest` 29 → **48** checks。
+- **变异**（各精确变红）：去掉解链调用 → 3 条；删 `ZEngineForceFlushLogs()` → 1 条；
+  symlink 改绝对路径 → 1 条；让位分支挪到 PNG 覆盖之后 → 1 条；让位分支漏 `return` → 1 条。
+
+**两条教训**：
+
+1. **"历史空桩 / 历史假设"在功能打通之后变成洞 —— 第十二例**：`CommandSystem` 当年写
+   "ini 就在可执行文件旁边"时，可执行文件确实只有一个位置。bundle 一出现，同一个
+   可执行文件就有了两个路径（symlink 和真身），假设失效。凡是"从可执行文件位置推
+   资源位置"的代码，都得先解链。
+2. **CWD 是最容易掩盖缺陷的环境变量**：`cd bin/Debug && ./ZEditor` 之所以一直正常，
+   只是因为 CWD 碰巧等于 exe 所在目录。验证启动路径时，**故意从 `/` 跑一遍**。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

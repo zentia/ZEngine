@@ -1,6 +1,7 @@
 #include "Runtime/Resource/Config/ConfigManager.h"
 
 #include "Runtime/Application/Application.h"
+#include "Runtime/Core/Base/CrashHandler.h"
 #include "Runtime/Core/Base/ZFileStream.h"
 #include "Runtime/Function/Command/CommandSystem.h"
 
@@ -22,6 +23,10 @@ bool ConfigManager::Initialize()
         // Without this the failure surfaces as a generic "failed to initialize
         // system 'ConfigManager'" with no hint about which path was tried.
         LOG_ERROR(ZEditor, "ConfigManager: cannot open config file '{}'", config_file_path.string());
+        // BqLog 是异步的，而 Initialize() 返回 false 之后引擎是抛异常终止的：
+        // 不刷这一下，上面那行（唯一说清楚"到底去哪儿找了 ini"的证据）就随缓冲区
+        // 一起没了。双击 .app 启动时没有终端，日志是唯一的线索。
+        ZEngineForceFlushLogs();
         return false;
     }
     char line_buf[4096];
@@ -85,6 +90,75 @@ bool ConfigManager::Initialize()
         }
     }
     return true;
+}
+
+namespace
+{
+    // 一次遍历收集需要的几个 key。`BinaryRootFolder` 必须和 value 一起读出来：
+    // 它是 `BigIconFile` 的基准目录，而它自己是**相对 ini 所在目录**的
+    // （部署时是 `.`）。只扫一遍文件，避免"读两遍、其中一遍读到的是旧值"。
+    std::filesystem::path ResolveConfigRelativePath(const std::filesystem::path& config_file_path,
+                                                    const std::string&          value_key)
+    {
+        zcore::ZFileReader config_file(config_file_path.string());
+        if (!config_file.isOpen())
+        {
+            return {};
+        }
+
+        std::filesystem::path root_folder = config_file_path.parent_path();
+        std::filesystem::path value;
+        bool                  have_root = false;
+        bool                  have_value = false;
+
+        char line_buf[4096];
+        while (config_file.getline(line_buf, sizeof(line_buf)))
+        {
+            std::string config_line(line_buf);
+            while (!config_line.empty() && (config_line.back() == '\n' || config_line.back() == '\r'))
+            {
+                config_line.pop_back();
+            }
+            const size_t separate_pos = config_line.find_first_of('=');
+            if (separate_pos == std::string::npos || separate_pos == 0 || separate_pos == config_line.length() - 1)
+            {
+                continue;
+            }
+
+            const std::string name  = config_line.substr(0, separate_pos);
+            const std::string raw   = config_line.substr(separate_pos + 1);
+            if (name == "BinaryRootFolder")
+            {
+                root_folder = config_file_path.parent_path() / raw;
+                have_root   = true;
+            }
+            else if (name == value_key)
+            {
+                value      = raw;
+                have_value = true;
+            }
+            if (have_root && have_value)
+            {
+                break;
+            }
+        }
+
+        if (!have_value)
+        {
+            return {};
+        }
+        return root_folder / value;
+    }
+}  // namespace
+
+std::filesystem::path ResolveEditorBigIconPath(const std::filesystem::path& config_file_path)
+{
+    return ResolveConfigRelativePath(config_file_path, "BigIconFile");
+}
+
+std::filesystem::path ResolveEditorSmallIconPath(const std::filesystem::path& config_file_path)
+{
+    return ResolveConfigRelativePath(config_file_path, "SmallIconFile");
 }
 
 const std::filesystem::path& ConfigManager::GetRootFolder() const

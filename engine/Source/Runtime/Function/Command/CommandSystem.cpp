@@ -55,6 +55,28 @@ namespace
         return arguments;
     }
 #endif
+
+#if defined(__APPLE__)
+    // ZEditor.app 里 Contents/MacOS/ZEditor 只是指向真身（bin/<Config>/ZEditor）的
+    // 相对 symlink，而 ZEditor.ini / asset / resource 全在真身旁边。argv[0] 落在
+    // bundle 内部，不解链的话配置会去 Contents/MacOS 底下找 —— 找不到，
+    // ConfigManager 初始化失败，进程抛异常退出。双击 .app 时还多一层：CWD 是 /，
+    // 连"碰巧相对路径能命中"这回事都没有。
+    //
+    // Linux 分支读 /proc/self/exe，内核给的就是解链后的真身；这里是 macOS 的对等物。
+    std::filesystem::path DereferenceExecutablePath(const std::filesystem::path& path)
+    {
+        // 用带 error_code 的重载：canonical() 的另一份重载在路径不存在时抛异常，
+        // 而启动早期抛异常等于直接崩（没有终端可看）。
+        std::error_code ec;
+        std::filesystem::path resolved = std::filesystem::canonical(path, ec);
+        if (ec)
+        {
+            return path;
+        }
+        return resolved;
+    }
+#endif
 }  // namespace
 
 bool CommandSystem::Initialize()
@@ -111,7 +133,9 @@ bool CommandSystem::Initialize()
         argc = 1;
     }
 
-    executable_path = std::filesystem::path(argv_strings.front());
+    // 先解链再取父目录：bundle 里 argv[0] 是 Contents/MacOS/ZEditor 这个 symlink，
+    // 直接用它的父目录拼 ZEditor.ini 必然落空。
+    executable_path = DereferenceExecutablePath(std::filesystem::path(argv_strings.front()));
     if (executable_path.is_relative())
     {
         executable_path = std::filesystem::absolute(executable_path);
