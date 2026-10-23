@@ -291,6 +291,20 @@ namespace
         return true;
     }
 
+    bool CmdSpineSkin(const std::vector<std::string>& args)
+    {
+        int setup = 1;
+        if (args.empty() || args.size() > 2 || (args.size() == 2 && (!ParseIntArg(args[1], setup) || setup > 1)))
+        {
+            LOG_ERROR(ZConsole, "Usage: spine.skin <skin name|index|none> [setSlotsToSetupPose 0|1=1]");
+            return false;
+        }
+        SpineGpuRenderer::Get().RequestSkin(args[0], setup != 0);
+        LOG_INFO(ZConsole, "spine.skin: #{} <- '{}'{}", SpineGpuRenderer::Get().Selected(), args[0],
+                 setup != 0 ? " (+ setSlotsToSetupPose)" : "");
+        return true;
+    }
+
     bool CmdSpineTintBlack(const std::vector<std::string>& args)
     {
         int on = 0;
@@ -420,6 +434,10 @@ void RegisterRuntimeConsoleCommands(ConsoleManager& console)
     console.RegisterCommand("spine.mix", "Default GPU-Spine crossfade duration. Usage: spine.mix <seconds>", CmdSpineMix);
     console.RegisterCommand("spine.speed", "GPU-Spine AnimationState time scale. Usage: spine.speed <scale>",
                             CmdSpineSpeed);
+    console.RegisterCommand("spine.skin",
+                            "Set the selected GPU-Spine instance's skin (Skeleton::setSkin). Usage: spine.skin "
+                            "<name|index|none> [setup slots 0|1]",
+                            CmdSpineSkin);
     console.RegisterCommand("spine.tintblack",
                             "GPU-Spine tint black (two-color slots). Usage: spine.tintblack <0|1>", CmdSpineTintBlack);
     console.RegisterCommand("spine.alpha", "Alpha of a GPU-Spine track's current entry. Usage: spine.alpha <track> <alpha>",

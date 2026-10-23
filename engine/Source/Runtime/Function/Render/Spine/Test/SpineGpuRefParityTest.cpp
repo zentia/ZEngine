@@ -57,6 +57,7 @@
 #include "Runtime/Function/Render/Spine/SpineGpuImporter.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuBatch.h"
+#include "SpineGpuSkinFixture.h"
 #include "Runtime/Function/Render/Spine/SpineGpuClipper.h"
 #include "Runtime/Function/Render/Spine/SpineGpuPoseSolver.h"
 
@@ -501,6 +502,13 @@ struct S5Stats
     // 多实例拼包（SpineGpuBatch）：每 4 帧把"上一帧的姿势"当另一个实例排在前面，当前帧排在后面，
     // 当前帧的每个顶点（CPU 仿真 spine_gpu.vert）必须与它单独成包时**逐位**相同。
     size_t batch_frames = 0;
+    // 换肤（setSkin）：独立的随机数流，不扰动原有脚本
+    size_t skin_assets = 0;          // 有具名皮肤的资产（参与换肤脚本）
+    size_t skin_no_default = 0;      // 没有 default 皮肤的资产（皮肤 0 是具名皮肤）
+    size_t skin_switches = 0;        // setSkin 次数（含 NULL / default）
+    size_t skin_frames = 0;          // 当前皮肤是具名皮肤的帧
+    size_t skin_slot_checks = 0;     // 槽位附件"来自哪个皮肤"比过的次数
+    size_t skin_named_attach = 0;    // 其中附件来自具名皮肤的次数
     size_t batch_vertices = 0;
     size_t batch_cpu_vertices = 0;      // 其中裁剪项（走 b8 + 动态索引）的顶点
     size_t batch_deform_vertices = 0;   // 其中带 deform 的顶点
@@ -684,12 +692,51 @@ std::string S5CompareFrame(const SpineGpuAsset& asset, const SpineGpuRuntimeData
         if (ra != nullptr)
         {
             att_ok = our_name == ra->getName().buffer();
+            // 换肤：同名附件可能来自不同皮肤（= 不同对象）⇒ 再比"来自哪个皮肤"。参考侧按指针在全部皮肤里找。
+            if (att_ok)
+            {
+                uint32_t ref_skin = SpineGpuAttachRef::kNone;
+                spine::Vector<spine::Skin*>& skins = ref_data->getSkins();
+                for (size_t k = 0; k < skins.size(); ++k)
+                {
+                    if (skins[k] != nullptr && skins[k]->getAttachment(si, ra->getName()) == ra)
+                    {
+                        ref_skin = static_cast<uint32_t>(k);
+                        break;
+                    }
+                }
+                const bool baked = ra->getRTTI().isExactly(spine::RegionAttachment::rtti) ||
+                                   ra->getRTTI().isExactly(spine::MeshAttachment::rtti) ||
+                                   ra->getRTTI().isExactly(spine::PathAttachment::rtti) ||
+                                   ra->getRTTI().isExactly(spine::ClippingAttachment::rtti);
+                ++s5.skin_slot_checks;
+                if (baked)
+                {
+                    s5.skin_named_attach += ref_skin != SpineGpuAttachRef::kNone && ref_skin != 0u ? 1u : 0u;
+                    if (ref_skin != o.attachment.skin)
+                    {
+                        return "槽位 " + std::to_string(si) + " '" + r->getData().getName().buffer() + "' 附件 '" +
+                               our_name + "' 来自皮肤：我们 " +
+                               (o.attachment.skin == SpineGpuAttachRef::kNone ? std::string("<无>")
+                                                                             : std::to_string(o.attachment.skin)) +
+                               " vs 参考 " +
+                               (ref_skin == SpineGpuAttachRef::kNone ? std::string("<无>") : std::to_string(ref_skin));
+                    }
+                }
+                else if (o.attachment.draw_item != SpineGpuAttachRef::kNone ||
+                         o.attachment.clip != SpineGpuAttachRef::kNone ||
+                         o.attachment.path_att != SpineGpuConstants::kNoPathAttachment)
+                {
+                    // bbox / point 不进容器：它在具名皮肤里遮住了 default 的同名可画附件 ⇒ 我们画错（已知限制）
+                    return "槽位 " + std::to_string(si) + " '" + r->getData().getName().buffer() + "'：参考挂的是 bbox / "
+                           "point '" + our_name + "'，我们解析到了别的皮肤里的同名附件（具名皮肤遮挡，已知限制）";
+                }
+            }
         }
         else
         {
-            // 参考是 NULL：我们要么也不挂，要么挂的名字在参考的皮肤里同样找不到（见 SpineGpuAttachRef 的注释）
-            att_ok = our_name.empty() || ref_data->getDefaultSkin() == nullptr ||
-                     ref_data->getDefaultSkin()->getAttachment(si, spine::String(our_name.c_str())) == nullptr;
+            // 参考是 NULL：我们要么也不挂，要么挂的名字在当前皮肤和 default 皮肤里都找不到
+            att_ok = our_name.empty() || o.attachment.skin == SpineGpuAttachRef::kNone;
         }
         if (!att_ok)
         {
@@ -1202,6 +1249,79 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
     spine::Skeleton ref_skel(ref_data);   // 两边都是"刚构造"的骨架，跨脚本一直活着
 
     S5Rng rng(HashPath(skel_path.string()));
+    // ---- 换肤：皮肤表两边要一一对应（下标 = 参考 getSkins() 的下标）----
+    spine::Vector<spine::Skin*>& ref_skins = ref_data->getSkins();
+    if (ref_skins.size() != asset.skin_names.size())
+    {
+        ++s5.assets_bad;
+        if (s5.details.size() < max_details)
+        {
+            s5.details.push_back(short_path + "：皮肤数 " + std::to_string(asset.skin_names.size()) + " vs 参考 " +
+                                 std::to_string(ref_skins.size()));
+        }
+        return false;
+    }
+    for (size_t k = 0; k < ref_skins.size(); ++k)
+    {
+        // 二进制里空的具名皮肤在参考侧是 NULL（占位不建对象），名字比不了
+        if (ref_skins[k] != nullptr && asset.skin_names[k] != ref_skins[k]->getName().buffer())
+        {
+            ++s5.assets_bad;
+            if (s5.details.size() < max_details)
+            {
+                s5.details.push_back(short_path + "：皮肤 " + std::to_string(k) + " 的名字与参考对不上");
+            }
+            return false;
+        }
+    }
+    if (data.has_default_skin != (ref_data->getDefaultSkin() != nullptr))
+    {
+        ++s5.assets_bad;
+        if (s5.details.size() < max_details)
+        {
+            s5.details.push_back(short_path + "：有没有 default 皮肤与参考不一致");
+        }
+        return false;
+    }
+    s5.skin_no_default += data.has_default_skin ? 0u : 1u;
+    const uint32_t skin_count = static_cast<uint32_t>(asset.skin_names.size());
+    const bool has_named_skins = skin_count > (data.has_default_skin ? 1u : 0u);
+    s5.skin_assets += has_named_skins ? 1u : 0u;
+    // 独立的随机数流：没有具名皮肤的资产一个数都不抽 ⇒ 原有脚本逐帧不变
+    S5Rng skin_rng(HashPath(skel_path.string()) ^ 0x5EED5EEDull);
+    const auto set_skin = [&](uint32_t k, std::vector<std::string>& log, const char* when) {
+        ++s5.skin_switches;
+        const SpineImportResult sr = SpineGpuSetSkin(asset, data, st, k);
+        if (k == kSpineGpuNoSkin)
+        {
+            ref_skel.setSkin(static_cast<spine::Skin*>(nullptr));
+        }
+        else
+        {
+            ref_skel.setSkin(ref_skins[k]);
+        }
+        log.push_back(std::string(when) + " setSkin(" +
+                      (k == kSpineGpuNoSkin ? std::string("NULL") : "#" + std::to_string(k) + " '" + asset.skin_names[k] + "'") +
+                      ")");
+        return sr;
+    };
+    // 参考侧 NULL 的皮肤（空的具名皮肤）不选：setSkin(NULL) 与"换成一个空皮肤"在参考里是两回事，
+    // 容器里分不出来（已知限制，文档里写了）
+    const auto pick_skin = [&]() {
+        for (int tries = 0; tries < 8; ++tries)
+        {
+            const uint32_t v = skin_rng.Below(skin_count + 1u);
+            if (v == skin_count)
+            {
+                return kSpineGpuNoSkin;
+            }
+            if (ref_skins[v] != nullptr)
+            {
+                return v;
+            }
+        }
+        return kSpineGpuNoSkin;
+    };
     spine::Vector<spine::Animation*>& ref_anims = ref_data->getAnimations();
 
     for (size_t sc = 0; sc < scripts; ++sc)
@@ -1226,6 +1346,10 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
         spine::AnimationState ref(&ref_asd);
         std::vector<std::string> log;
 
+        if (has_named_skins && skin_rng.Chance(0.75f))
+        {
+            r = set_skin(pick_skin(), log, "f0");
+        }
         if (rng.Chance(0.5f))
         {
             SpineGpuSetToSetupPose(asset, data, st);
@@ -1241,6 +1365,25 @@ bool RunS5(const fs::path& skel_path, const SpineGpuAsset& asset, spine::Skeleto
 
         for (size_t f = 0; f < frames; ++f)
         {
+            // ---- 换肤（独立随机数流）----
+            if (has_named_skins && f > 0 && skin_rng.Chance(0.03f))
+            {
+                char wbuf[24];
+                std::snprintf(wbuf, sizeof(wbuf), "f%zu", f);
+                const SpineImportResult sr = set_skin(pick_skin(), log, wbuf);
+                if (!sr.ok)
+                {
+                    r = sr;
+                }
+                if (skin_rng.Chance(0.3f))
+                {
+                    // spine-unity 换肤后常跟一次 setSlotsToSetupPose
+                    SpineGpuSetSlotsToSetupPose(asset, data, st);
+                    ref_skel.setSlotsToSetupPose();
+                    log.push_back(std::string(wbuf) + " setSlotsToSetupPose");
+                }
+            }
+            s5.skin_frames += st.skin != kSpineGpuNoSkin && !(data.has_default_skin && st.skin == 0u) ? 1u : 0u;
             // ---- 命令 ----
             if (f > 0 && rng.Chance(0.07f))
             {
@@ -1497,6 +1640,61 @@ void ReportBakeFailure(const char* stage, const std::filesystem::path& file, con
     }
 }
 
+
+// ---------------------------------------------------------------------
+// 换肤夹具（SpineGpuSkinFixture.h）：OSGame 没有带具名皮肤的资产 ⇒ 用手写的 3.8 json 跑同一套 S5
+// 随机脚本（换肤用独立随机数流），每条脚本都换。返回 false = 夹具本身两边加载不成。
+// ---------------------------------------------------------------------
+bool RunSkinFixture(size_t scripts, size_t frames, size_t max_details, S5Stats& s5)
+{
+    const std::string atlas_text = SpineGpuSkinFixture::kAtlas;
+    const std::string json = SpineGpuSkinFixture::kSkeleton;
+    const auto fail = [&](const std::string& why) {
+        ++s5.assets_bad;
+        if (s5.details.size() < max_details)
+        {
+            s5.details.push_back("fixture/skins.json：" + why);
+        }
+        return false;
+    };
+    SpineAtlas atlas;
+    SpineImportResult r = ParseSpineAtlas(atlas_text.data(), atlas_text.size(), atlas);
+    SpineSourceSkeleton src;
+    if (r.ok)
+    {
+        r = ParseSpineSkeletonJson(json.data(), json.size(), &atlas, src);
+    }
+    SpineGpuAsset baked;
+    if (r.ok)
+    {
+        r = BakeSpineGpuAsset(src, baked);
+    }
+    std::vector<uint8_t> bytes;
+    if (r.ok)
+    {
+        r = WriteSpineGpuContainer(baked, bytes);
+    }
+    SpineGpuAsset loaded;
+    if (r.ok)
+    {
+        r = ReadSpineGpuContainer(bytes.data(), bytes.size(), loaded);
+    }
+    if (!r.ok)
+    {
+        return fail("我们这边加载失败：" + r.error);
+    }
+    RefAttachmentLoader ref_loader(&atlas);
+    spine::SkeletonJson ref_json(&ref_loader);
+    spine::SkeletonData* ref_data = ref_json.readSkeletonData(json.c_str());
+    if (ref_data == nullptr)
+    {
+        return fail(std::string("参考实现解析失败：") + ref_json.getError().buffer());
+    }
+    const bool ok = RunS5(fs::path("fixture/skins.json"), loaded, ref_data, scripts, frames, max_details, s5);
+    delete ref_data;
+    return ok;
+}
+
 int main(int argc, char** argv)
 {
     std::string dir;
@@ -1611,6 +1809,11 @@ int main(int argc, char** argv)
     std::sort(files.begin(), files.end());
 
     Stats st;
+    if (run_s5)
+    {
+        // 换肤夹具先跑（不依赖资产目录）：OSGame 没有具名皮肤，这是换肤唯一的参考对拍
+        RunSkinFixture(64, 300, max_details, s5);
+    }
     for (const fs::path& skel_path : files)
     {
         if (limit != 0 && st.files_seen >= limit)
@@ -2749,6 +2952,10 @@ int main(int argc, char** argv)
         std::printf("tint black 覆盖面     : 可画槽位暗色非 0 共 %zu 次（其中有负分量 %zu 次）\n", s5.dark_drawn,
                     s5.dark_negative);
         std::printf("  └ 暗色最多的资产: %s（%zu 次）\n", s5.dark_best_asset.c_str(), s5.dark_best);
+        std::printf("换肤                 : %zu 个资产（无 default 皮肤 %zu）、setSkin %zu 次、具名皮肤帧 %zu、"
+                    "附件皮肤比较 %zu（来自具名皮肤 %zu）\n",
+                    s5.skin_assets, s5.skin_no_default, s5.skin_switches, s5.skin_frames, s5.skin_slot_checks,
+                    s5.skin_named_attach);
         std::printf("多实例拼包           : %zu 帧，顶点 %zu 个逐位一致（裁剪项 %zu、带 deform %zu）\n", s5.batch_frames,
                     s5.batch_vertices, s5.batch_cpu_vertices, s5.batch_deform_vertices);
         std::printf("分叉的资产           : %zu（撞号资产上的另计 %zu）\n", s5.assets_bad, s5.assets_collision_bad);

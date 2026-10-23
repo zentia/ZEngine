@@ -541,16 +541,20 @@ SpineImportResult ApplyAttachment(const SpineGpuAsset& asset, const SpineGpuRunt
         return Fail("apply: " + TlName(tl_index) + "（attachment）的槽位下标越界");
     }
     SpineGpuSlotState& slot = st.slots[tl.target];
+    // `skeleton.getAttachment(slotIndex, name)`：按骨架**当前**皮肤解析
+    const auto attach = [&](const SpineGpuAttachRef& ref) {
+        SpineGpuSetSlotAttachment(slot, SpineGpuResolveAttachment(data, st.skin, tl.target, ref));
+    };
     if (direction == SpineGpuMixDirection::kOut && blend == SpineGpuMixBlend::kSetup)
     {
-        SpineGpuSetSlotAttachment(slot, data.slot_setup[tl.target]);
+        attach(data.slot_setup[tl.target]);
         return Ok();
     }
     if (time < fv.FirstTime())
     {
         if (blend == SpineGpuMixBlend::kSetup || blend == SpineGpuMixBlend::kFirst)
         {
-            SpineGpuSetSlotAttachment(slot, data.slot_setup[tl.target]);
+            attach(data.slot_setup[tl.target]);
         }
         return Ok();
     }
@@ -564,7 +568,7 @@ SpineImportResult ApplyAttachment(const SpineGpuAsset& asset, const SpineGpuRunt
     {
         return Fail("apply: " + TlName(tl_index) + "（attachment）的帧查找表越界");
     }
-    SpineGpuSetSlotAttachment(slot, data.attach_refs[ri]);
+    attach(data.attach_refs[ri]);
     return Ok();
 }
 
@@ -1111,15 +1115,6 @@ SpineImportResult SpineGpuBuildRuntimeData(const SpineGpuAsset& asset, SpineGpuR
     // 名字规范化：同一个字符串在 chunk 1 里可能出现在多组（setup 附件名 / 动画附件名），
     // 偏移不同、身份相同（`Slot::setAttachment` 判的是附件对象，而对象由"槽位 + 名字"唯一确定）。
     std::unordered_map<std::string, uint32_t> name_ids;
-    std::vector<std::vector<uint32_t>> skin0_items(slot_count);
-    for (uint32_t i = 0; i < asset.draw_items.size(); ++i)
-    {
-        const SpineDrawItem& di = asset.draw_items[i];
-        if (di.skin_id == SpineGpuConstants::kDefaultSkinId && di.slot_index < slot_count)
-        {
-            skin0_items[di.slot_index].push_back(i);
-        }
-    }
 
     std::string err;
     const auto resolve = [&](uint32_t slot, uint32_t offset, SpineGpuAttachRef& ref) -> bool {
@@ -1145,36 +1140,9 @@ SpineImportResult SpineGpuBuildRuntimeData(const SpineGpuAsset& asset, SpineGpuR
         }
         ref.name_id = it->second;
         ref.name_offset = offset;
-        // `Skeleton::getAttachment()`：先当前皮肤、再 default 皮肤；不支持换肤 ⇒ 只剩 default。
-        // 名字找不到可画项 = 挂的是裁剪 / point / bbox / path（它们不产生绘制项），不是错。
-        for (uint32_t i : skin0_items[slot])
-        {
-            const uint16_t att = asset.draw_items[i].attachment_id;
-            if (att < asset.attachment_names.size() && asset.attachment_names[att] == name)
-            {
-                ref.draw_item = i;
-                break;
-            }
-        }
-        // path 按"槽位 + 名字"找（一个槽位挂两条 path 是合法的，实测 6 / 782）
-        for (size_t k = 0; k < asset.path_attachments.size(); ++k)
-        {
-            if (asset.path_attachments[k].slot_index == slot && asset.path_attachment_names[k] == name)
-            {
-                ref.path_att = static_cast<uint32_t>(k);
-                break;
-            }
-        }
-        // 裁剪附件同理（v15，chunk 9 带名字）；与可画项一样只认 default 皮肤
-        for (size_t k = 0; k < asset.clip_polygons.size() && k < asset.clip_names.size(); ++k)
-        {
-            const SpineGpuClipPolygon& c = asset.clip_polygons[k];
-            if (c.skin_id == SpineGpuConstants::kDefaultSkinId && c.slot_index == slot && asset.clip_names[k] == name)
-            {
-                ref.clip = static_cast<uint32_t>(k);
-                break;
-            }
-        }
+        (void)slot;
+        // 这里只收名字；"这个名字在哪个皮肤里是哪条附件"等全部名字收齐、建好每个皮肤的表之后再解析
+        // （见函数末尾）。名字找不到可画项 = 挂的是裁剪 / point / bbox / path，不是错。
         return true;
     };
 
@@ -1387,6 +1355,188 @@ SpineImportResult SpineGpuBuildRuntimeData(const SpineGpuAsset& asset, SpineGpuR
             }
         }
     }
+
+    // ---- 每个皮肤的 (槽位, 名字) → 附件表（`Skin::getAttachment`）----
+    const uint32_t skin_count = static_cast<uint32_t>(asset.skin_names.size());
+    out.has_default_skin = skin_count > 0 && asset.skin_names[SpineGpuConstants::kDefaultSkinId] == "default";
+    out.skin_hits.assign(skin_count, {});
+    const auto key = [](uint32_t slot, uint32_t name_id) { return (static_cast<uint64_t>(slot) << 32) | name_id; };
+    const auto name_id_of = [&](const std::string& n, uint32_t& id) {
+        const auto it = name_ids.find(n);
+        if (it == name_ids.end())
+        {
+            return false;   // 没有任何 setup / 时间轴引用这个名字 ⇒ 槽位不可能挂它
+        }
+        id = it->second;
+        return true;
+    };
+    for (uint32_t i = 0; i < asset.draw_items.size(); ++i)
+    {
+        const SpineDrawItem& di = asset.draw_items[i];
+        uint32_t id = 0;
+        if (di.skin_id >= skin_count || di.slot_index >= slot_count || di.attachment_id >= asset.attachment_names.size())
+        {
+            return Fail("runtime: 绘制项 " + std::to_string(i) + " 的皮肤 / 槽位 / 附件下标越界");
+        }
+        if (name_id_of(asset.attachment_names[di.attachment_id], id))
+        {
+            SpineGpuRuntimeData::SkinHit& h = out.skin_hits[di.skin_id][key(di.slot_index, id)];
+            if (h.draw_item == SpineGpuAttachRef::kNone)
+            {
+                h.draw_item = i;   // 同一 (皮肤, 槽位, 名字) 只有一条附件；保险起见取第一个
+            }
+        }
+    }
+    // path 按 (皮肤, 槽位, 名字) 找（一个槽位挂两条 path 是合法的，实测 6 / 782）
+    for (uint32_t k = 0; k < asset.path_attachments.size() && k < asset.path_attachment_names.size(); ++k)
+    {
+        const SpineGpuPathAttachment& pa = asset.path_attachments[k];
+        uint32_t id = 0;
+        if (pa.skin_index < skin_count && name_id_of(asset.path_attachment_names[k], id))
+        {
+            SpineGpuRuntimeData::SkinHit& h = out.skin_hits[pa.skin_index][key(pa.slot_index, id)];
+            if (h.path_att == SpineGpuConstants::kNoPathAttachment)
+            {
+                h.path_att = k;
+            }
+        }
+    }
+    // 裁剪附件同理（v15，chunk 9 带名字）
+    for (uint32_t k = 0; k < asset.clip_polygons.size() && k < asset.clip_names.size(); ++k)
+    {
+        const SpineGpuClipPolygon& c = asset.clip_polygons[k];
+        uint32_t id = 0;
+        if (c.skin_id < skin_count && name_id_of(asset.clip_names[k], id))
+        {
+            SpineGpuRuntimeData::SkinHit& h = out.skin_hits[c.skin_id][key(c.slot_index, id)];
+            if (h.clip == SpineGpuAttachRef::kNone)
+            {
+                h.clip = k;
+            }
+        }
+    }
+
+    // ---- 查找表里的引用按"没有当前皮肤"解析（= 只看 default 皮肤）----
+    for (uint32_t sl = 0; sl < slot_count; ++sl)
+    {
+        out.slot_setup[sl] = SpineGpuResolveAttachment(out, kSpineGpuNoSkin, sl, out.slot_setup[sl]);
+    }
+    for (uint32_t ti = 0; ti < tl_count; ++ti)
+    {
+        const SpineGpuTimeline& tl = asset.timelines[ti];
+        if (static_cast<SpineTimelineType>(tl.type) != SpineTimelineType::kAttachment)
+        {
+            continue;
+        }
+        for (uint32_t f = 0; f < tl.frame_count; ++f)
+        {
+            SpineGpuAttachRef& r = out.attach_refs[static_cast<size_t>(out.timeline_ref_first[ti]) + f];
+            r = SpineGpuResolveAttachment(out, kSpineGpuNoSkin, tl.target, r);
+        }
+    }
+    return Ok();
+}
+
+SpineGpuAttachRef SpineGpuResolveAttachment(const SpineGpuRuntimeData& data, uint32_t skin, uint32_t slot,
+                                            const SpineGpuAttachRef& ref)
+{
+    SpineGpuAttachRef out;
+    out.name_id = ref.name_id;
+    out.name_offset = ref.name_offset;
+    if (ref.name_id == SpineGpuAttachRef::kNone)
+    {
+        return out;
+    }
+    const uint64_t k = (static_cast<uint64_t>(slot) << 32) | ref.name_id;
+    const auto take = [&](uint32_t s) {
+        if (s >= data.skin_hits.size())
+        {
+            return false;
+        }
+        const auto it = data.skin_hits[s].find(k);
+        if (it == data.skin_hits[s].end())
+        {
+            return false;
+        }
+        out.skin = s;
+        out.draw_item = it->second.draw_item;
+        out.path_att = it->second.path_att;
+        out.clip = it->second.clip;
+        return true;
+    };
+    // 先当前皮肤、再 default 皮肤（Skeleton.cpp:338-345）
+    if (skin != kSpineGpuNoSkin && take(skin))
+    {
+        return out;
+    }
+    if (data.has_default_skin)
+    {
+        take(SpineGpuConstants::kDefaultSkinId);
+    }
+    return out;
+}
+
+bool SpineGpuFindSkin(const SpineGpuAsset& asset, const std::string& name, uint32_t& out)
+{
+    for (uint32_t i = 0; i < asset.skin_names.size(); ++i)
+    {
+        if (asset.skin_names[i] == name)
+        {
+            out = i;
+            return true;
+        }
+    }
+    return false;
+}
+
+SpineImportResult SpineGpuSetSkin(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data,
+                                  SpineGpuSkeletonState& state, uint32_t skin)
+{
+    if (skin != kSpineGpuNoSkin && skin >= data.skin_hits.size())
+    {
+        return Fail("setSkin: 皮肤下标 " + std::to_string(skin) + " 越界（只有 " +
+                    std::to_string(data.skin_hits.size()) + " 个皮肤）");
+    }
+    if (state.slots.size() != data.slot_setup.size())
+    {
+        return Fail("setSkin: 状态与查找表的槽位数不一致");
+    }
+    (void)asset;
+    if (skin != kSpineGpuNoSkin)
+    {
+        const auto& table = data.skin_hits[skin];
+        for (uint32_t sl = 0; sl < state.slots.size(); ++sl)
+        {
+            SpineGpuSlotState& slot = state.slots[sl];
+            uint32_t name_id = SpineGpuAttachRef::kNone;
+            if (state.skin != kSpineGpuNoSkin)
+            {
+                // attachAll（Skin.cpp:134-149）：只换"当前挂的正是旧皮肤里那一条"的槽位
+                if (slot.attachment.skin != state.skin)
+                {
+                    continue;
+                }
+                name_id = slot.attachment.name_id;
+            }
+            else
+            {
+                // 旧皮肤为空：按 setup 附件名（Skeleton.cpp:310-324）
+                name_id = data.slot_setup[sl].name_id;
+            }
+            if (name_id == SpineGpuAttachRef::kNone ||
+                table.find((static_cast<uint64_t>(sl) << 32) | name_id) == table.end())
+            {
+                continue;   // 新皮肤里没有这个名字 ⇒ 不动（**不**回落 default）
+            }
+            SpineGpuAttachRef want;
+            want.name_id = name_id;
+            want.name_offset = state.skin != kSpineGpuNoSkin ? slot.attachment.name_offset
+                                                            : data.slot_setup[sl].name_offset;
+            // 新皮肤里一定命中 ⇒ Resolve 给的就是新皮肤那条
+            SpineGpuSetSlotAttachment(slot, SpineGpuResolveAttachment(data, skin, sl, want));
+        }
+    }
+    state.skin = skin;
     return Ok();
 }
 
@@ -1396,7 +1546,7 @@ SpineImportResult SpineGpuBuildRuntimeData(const SpineGpuAsset& asset, SpineGpuR
 
 void SpineGpuSetSlotAttachment(SpineGpuSlotState& slot, const SpineGpuAttachRef& ref)
 {
-    if (slot.attachment.name_id == ref.name_id)
+    if (slot.attachment.name_id == ref.name_id && slot.attachment.skin == ref.skin)
     {
         return;
     }
@@ -1439,7 +1589,8 @@ void SlotToSetupPose(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data
     SpineGpuSlotState& slot = state.slots[s];
     ColorSet(slot.color, d.color_r, d.color_g, d.color_b, d.color_a);
     // 暗色**不复位**（参考实现就是这样，见头文件第 2 条）
-    const SpineGpuAttachRef& setup = data.slot_setup[s];
+    // `_skeleton.getAttachment(index, name)` ⇒ 按当前皮肤解析
+    const SpineGpuAttachRef setup = SpineGpuResolveAttachment(data, state.skin, s, data.slot_setup[s]);
     if (setup.name_id != SpineGpuAttachRef::kNone)
     {
         // `_attachment = NULL; setAttachment(...)` —— 先置空再挂 ⇒ 判据必不等 ⇒ deform **必清**

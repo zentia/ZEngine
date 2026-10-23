@@ -14,6 +14,7 @@
 
 #include "Runtime/Function/Render/Spine/SpineGpuAnimSolver.h"
 #include "Runtime/Function/Render/Spine/SpineGpuBatch.h"
+#include "SpineGpuSkinFixture.h"
 #include "Runtime/Function/Render/Spine/SpineGpuAnimationState.h"
 #include "Runtime/Function/Render/Spine/SpineGpuTintBlack.h"
 #include "Runtime/Function/Render/Spine/SpineGpuFormat.h"
@@ -2401,6 +2402,131 @@ int main(int argc, char** argv)
                   Near(em->track_end, 0.2f),
               "setEmptyAnimation：空动画、mixDuration = trackEnd = 0.2");
         Check(as.SetAnimation(0, 999u, true) == nullptr, "动画下标越界 ⇒ 返回 nullptr（不改状态）");
+        g_prefix.clear();
+    }
+
+    // =================================================================
+    // 换肤（Skeleton::setSkin / getAttachment / Skin::attachAll，OSGame 3.8 分支）。
+    // 夹具见 SpineGpuSkinFixture.h；期望值按参考实现的三条规则手推，不调被测函数自己算。
+    // 与 spine-cpp 的随机脚本逐帧对拍在 SpineGpuRefParityTest（同一个夹具）。
+    // =================================================================
+    {
+        g_prefix = "[skin] ";
+        SpineAtlas katlas;
+        SpineSourceSkeleton ksrc;
+        SpineGpuAsset ka;
+        SpineImportResult kr = ParseSpineAtlas(SpineGpuSkinFixture::kAtlas, std::strlen(SpineGpuSkinFixture::kAtlas), katlas);
+        if (kr.ok)
+        {
+            kr = ParseSpineSkeletonJson(SpineGpuSkinFixture::kSkeleton, std::strlen(SpineGpuSkinFixture::kSkeleton), &katlas,
+                                        ksrc);
+        }
+        if (kr.ok)
+        {
+            kr = BakeSpineGpuAsset(ksrc, ka);
+        }
+        SpineGpuRuntimeData kd;
+        SpineGpuSkeletonState ks;
+        if (kr.ok)
+        {
+            kr = SpineGpuBuildRuntimeData(ka, kd);
+        }
+        if (kr.ok)
+        {
+            kr = SpineGpuInitSkeletonState(ka, kd, ks);
+        }
+        Check(kr.ok, "夹具烘焙 + 查找表 + 初始状态");
+        if (!kr.ok)
+        {
+            std::printf("  error: %s\n", kr.error.c_str());
+        }
+        uint32_t red = 0, blue = 0, nope = 0;
+        const bool found = SpineGpuFindSkin(ka, "red", red) && SpineGpuFindSkin(ka, "blue", blue);
+        Check(found && red == 1u && blue == 2u && !SpineGpuFindSkin(ka, "nope", nope), "findSkin：default=0 red=1 blue=2");
+        if (kr.ok && found && ks.slots.size() == 6)
+        {
+            const auto item_skin = [&](uint32_t sl) -> long long {
+                const uint32_t it = ks.slots[sl].attachment.draw_item;
+                return it == SpineGpuAttachRef::kNone ? -1 : static_cast<long long>(ka.draw_items[it].skin_id);
+            };
+            Check(kd.has_default_skin, "有 default 皮肤（皮肤 0 名为 default）");
+            // ---- 构造后：没有当前皮肤 ⇒ 只看 default ----
+            Check(ks.skin == kSpineGpuNoSkin, "构造后当前皮肤为空");
+            Check(ks.slots[0].attachment.skin == 0u && item_skin(0) == 0, "s0 body ← default 的 region");
+            Check(ks.slots[2].attachment.name_id != SpineGpuAttachRef::kNone &&
+                      ks.slots[2].attachment.skin == SpineGpuAttachRef::kNone &&
+                      ks.slots[2].attachment.draw_item == SpineGpuAttachRef::kNone,
+                  "s2 hat 只在 red / blue 里 ⇒ 无皮肤时解析不到（参考 = NULL），不画");
+            // ---- setSkin(red)，旧皮肤为空 ⇒ 按 setup 名在 red 里找，找到才挂 ----
+            Check(SpineGpuSetSkin(ka, kd, ks, red).ok && ks.skin == red, "setSkin(red)");
+            Check(ks.slots[0].attachment.skin == red && item_skin(0) == static_cast<long long>(red),
+                  "s0 body → red 的 mesh（同名不同类型）");
+            Check(ks.slots[2].attachment.skin == red && item_skin(2) == static_cast<long long>(red), "s2 hat → red（从 NULL 挂上）");
+            Check(ks.slots[1].attachment.skin == 0u, "s1 eye：red 没有 ⇒ 不动，仍是 default 的");
+            Check(ks.slots[3].attachment.clip != SpineGpuAttachRef::kNone &&
+                      ka.clip_polygons[ks.slots[3].attachment.clip].skin_id == red,
+                  "s3 clip → red 的裁剪附件");
+            // ---- setSkin(blue)，旧皮肤 red ⇒ attachAll：只换"当前挂的正是 red 那条"、且 blue 有同名的槽位 ----
+            ks.slots[0].deform.assign(8, 1.0f);   // 换肤不动的槽位 deform 要留着
+            ks.slots[1].deform.assign(8, 2.0f);
+            Check(SpineGpuSetSkin(ka, kd, ks, blue).ok && ks.skin == blue, "setSkin(blue)");
+            Check(ks.slots[0].attachment.skin == red && ks.slots[0].deform.size() == 8u,
+                  "s0 body：blue 没有 ⇒ 仍挂 red 的（**不**回落 default），deform 保留");
+            Check(ks.slots[2].attachment.skin == blue && item_skin(2) == static_cast<long long>(blue), "s2 hat：red → blue");
+            Check(ks.slots[3].attachment.skin == red, "s3 clip：blue 没有 ⇒ 仍是 red 的");
+            Check(ks.slots[1].attachment.skin == 0u && ks.slots[1].deform.size() == 8u,
+                  "s1 eye：当前挂的是 default 的（不在 red 的条目里）⇒ blue 有也不换");
+            // ---- setSlotsToSetupPose（当前 blue）：getAttachment 先 blue 再 default ----
+            SpineGpuSetSlotsToSetupPose(ka, kd, ks);
+            Check(ks.slots[1].attachment.skin == blue && item_skin(1) == static_cast<long long>(blue) &&
+                      ks.slots[1].deform.empty(),
+                  "s1 eye → blue 的 linked mesh，deform 清");
+            Check(ks.slots[0].attachment.skin == 0u && item_skin(0) == 0 && ks.slots[0].deform.empty(),
+                  "s0 body：blue 没有 ⇒ 回落 default（换了对象 ⇒ deform 清）");
+            Check(ks.slots[3].attachment.skin == 0u, "s3 clip → default 的");
+            // ---- setSkin(NULL)：附件一个都不动 ----
+            Check(SpineGpuSetSkin(ka, kd, ks, kSpineGpuNoSkin).ok && ks.skin == kSpineGpuNoSkin &&
+                      ks.slots[1].attachment.skin == blue && ks.slots[2].attachment.skin == blue,
+                  "setSkin(NULL)：当前皮肤置空，槽位附件不动");
+            Check(!SpineGpuSetSkin(ka, kd, ks, 99u).ok && ks.skin == kSpineGpuNoSkin, "越界皮肤 ⇒ 报错，状态不动");
+            // ---- attachment 时间轴按当前皮肤解析：blink t=0.35 ⇒ s1 = eye_closed ----
+            uint32_t blink = 0;
+            for (uint32_t i = 0; i < ka.anim_names.size(); ++i)
+            {
+                blink = ka.anim_names[i] == "blink" ? i : blink;
+            }
+            SpineGpuSkeletonState k2;
+            bool tl_ok = SpineGpuInitSkeletonState(ka, kd, k2).ok && SpineGpuSetSkin(ka, kd, k2, red).ok &&
+                         SpineGpuApplyAnimation(ka, kd, k2, blink, 0.0f, 0.35f, false, 1.0f, SpineGpuMixBlend::kFirst,
+                                                SpineGpuMixDirection::kIn)
+                             .ok;
+            Check(tl_ok && k2.slots[1].attachment.skin == red && item_skin(1) != -1,
+                  "red 下 attachment 时间轴的 eye_closed → red 的那条");
+            SpineGpuSkeletonState k3;
+            tl_ok = SpineGpuInitSkeletonState(ka, kd, k3).ok &&
+                    SpineGpuApplyAnimation(ka, kd, k3, blink, 0.0f, 0.35f, false, 1.0f, SpineGpuMixBlend::kFirst,
+                                           SpineGpuMixDirection::kIn)
+                        .ok;
+            Check(tl_ok && k3.slots[1].attachment.skin == 0u, "无皮肤时同一帧 → default 的 eye_closed");
+            // ---- 姿势：blue 的 path 曲线不同 ⇒ p1 摆出来的 b3 不同（换肤改骨骼）----
+            SpineGpuPoseResult pn, pb;
+            const bool pose_ok = SpineGpuSamplePose(ka, blink, 0.0f, pn).ok &&
+                                 SpineGpuSamplePoseSkinned(ka, blue, blink, 0.0f, pb).ok;
+            Check(pose_ok && pn.bones.size() == 4 && pb.bones.size() == 4 &&
+                      (pn.bones[3].world_x != pb.bones[3].world_x || pn.bones[3].world_y != pb.bones[3].world_y),
+                  "blue 的 path 附件 ⇒ b3 的世界位置变了");
+            Check(pose_ok && pn.slot_draw_item[2] == SpineGpuPoseResult::kNoDrawItem &&
+                      pb.slot_draw_item[2] != SpineGpuPoseResult::kNoDrawItem,
+                  "s2 hat：无皮肤不画、blue 下画");
+            // ---- deform 上界：每个槽位取所有皮肤里最长的 kFallback 项 ----
+            SpineGpuBatchAssetInfo kinfo;
+            SpineGpuBuildBatchAssetInfo(ka, kinfo);
+            Check(kinfo.deform_capacity == 26u, "deform 上界 = s0 8 + s1 8 + s4 10（weighted arm 5 个影响）");
+            if (kinfo.deform_capacity != 26u)
+            {
+                std::printf("  deform_capacity = %zu\n", kinfo.deform_capacity);
+            }
+        }
         g_prefix.clear();
     }
 

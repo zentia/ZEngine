@@ -25,6 +25,8 @@
 //     rigid 整体替换 bindPos、weighted 逐影响加偏移，共享 VB 不动；
 //   * 裁剪（v15）：每帧按当前绘制顺序跑参考实现的作用域状态机（SpineGpuClipper），作用域内的项
 //     在 CPU 上蒙皮 + `clipTriangles`，结果上传到 b8 + 每帧动态索引缓冲；作用域外照旧 GPU 蒙皮；
+//   * 换肤：`spine.skin <名字|下标|none> [setup]` = Skeleton::setSkin（+ setSlotsToSetupPose），每个实例各自的
+//     当前皮肤；附件按"先当前皮肤、再 default"解析（SpineGpuSkeletonState：SpineGpuResolveAttachment / SetSkin）；
 //   * tint black（双色）：`spine.tintblack 1` 打开（= SpineSettings::tintBlack，**默认关**，与 OSGame 线上一致）；
 //     片元按 spine-unity TintBlack shader 加 `(1 - tex.rgb) · dark · tex.a · vc.a`，暗色 float 不截断
 //     （SpineGpuTintBlack.h）。
@@ -70,6 +72,9 @@ public:
     void RequestDefaultMix(float seconds);   // AnimationStateData::defaultMix（跨资产保留，初值 0.2）
     void RequestTimeScale(float scale);      // 选中实例的 AnimationState::timeScale
     void RequestTrackAlpha(int track, float alpha);
+    // 选中实例换肤（= Skeleton::setSkin）：皮肤名 / 下标 / "none"（= setSkin(NULL)）。`setup_slots` 为真时
+    // 之后再 setSlotsToSetupPose（spine-unity 的惯用法：让 setup 附件按新皮肤重挂）。找不到 ⇒ 丢弃并记日志。
+    void RequestSkin(const std::string& skin, bool setup_slots);
     // tint black（双色）开关 = SpineSettings::tintBlack。默认关（OSGame 线上全关，见 SpineGpuTintBlack.h）。
     // 立即生效（下一次 Draw），不走动画命令队列；跨资产保留。
     void RequestTintBlack(bool enabled);

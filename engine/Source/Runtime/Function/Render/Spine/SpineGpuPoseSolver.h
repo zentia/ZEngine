@@ -113,3 +113,7 @@ SpineImportResult SpineGpuUpdateWorld(const SpineGpuAsset& asset, const SpineGpu
 // ⚠️ `time` 不在这里取模 —— 循环是调用方的事。
 SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_index, float time,
                                      SpineGpuPoseResult& out, SpineGpuPoseTrace* trace = nullptr);
+// 同上，先换肤：新建状态 → setSkin(skin) → apply → UpdateWorld（= SkeletonGraphic 的初始化顺序）。
+// skin = kSpineGpuNoSkin 时与 SpineGpuSamplePose 完全相同。
+SpineImportResult SpineGpuSamplePoseSkinned(const SpineGpuAsset& asset, uint32_t skin, uint32_t anim_index, float time,
+                                            SpineGpuPoseResult& out, SpineGpuPoseTrace* trace = nullptr);

@@ -2098,6 +2098,12 @@ SpineImportResult SpineGpuUpdateWorld(const SpineGpuAsset& asset, const SpineGpu
 SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_index, float time,
                                      SpineGpuPoseResult& out, SpineGpuPoseTrace* trace)
 {
+    return SpineGpuSamplePoseSkinned(asset, kSpineGpuNoSkin, anim_index, time, out, trace);
+}
+
+SpineImportResult SpineGpuSamplePoseSkinned(const SpineGpuAsset& asset, uint32_t skin, uint32_t anim_index, float time,
+                                            SpineGpuPoseResult& out, SpineGpuPoseTrace* trace)
+{
     if (anim_index >= asset.anims.size())
     {
         return Fail("sample: 动画下标 " + std::to_string(anim_index) + " 越界（只有 " +
@@ -2111,6 +2117,11 @@ SpineImportResult SpineGpuSamplePose(const SpineGpuAsset& asset, uint32_t anim_i
     }
     SpineGpuSkeletonState st;
     r = SpineGpuInitSkeletonState(asset, data, st);   // 构造 = 已经 setToSetupPose 过一次
+    if (r.ok && skin != kSpineGpuNoSkin)
+    {
+        // spine-unity 的初始化（SkeletonGraphic.Initialize）：new Skeleton → SetSkin(initialSkinName)
+        r = SpineGpuSetSkin(asset, data, st, skin);
+    }
     if (!r.ok)
     {
         return r;

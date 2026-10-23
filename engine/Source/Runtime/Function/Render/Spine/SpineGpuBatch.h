@@ -73,7 +73,7 @@ uint32_t SpineGpuPackRgba8(const float c[4]);
 
 // 每个资产算一次：每个绘制项的 deform 数组长度（float 个数；rigid 2×顶点、weighted 2×影响）、
 // weighted 项的 infl_base（第 0 个顶点的 influence_offset）—— GPU 寻址偏置要用；以及单实例
-// 一帧内 deform 的上界（所有 default 皮肤 kFallback 项同时生效）。
+// 一帧内 deform 的上界（每个槽位取它所有皮肤里最长的 kFallback 项，求和）。
 struct SpineGpuBatchAssetInfo
 {
     std::vector<uint32_t> deform_len;

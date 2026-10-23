@@ -1414,12 +1414,13 @@ spine.status                         # 每个实例一段：id / 文件 / 项数
 spine.play <动画> [track] [loop] / spine.queue <动画> [track] [delay] [loop] / spine.empty [track] [mix]
 spine.mix <秒> / spine.speed <倍率> / spine.alpha <track> <alpha>
 spine.tintblack <0|1>   # 双色（= SpineSettings::tintBlack），默认 0，跨资产保留
+spine.skin <名字|下标|none> [setup=1]   # 选中实例换肤（= Skeleton::setSkin，setup=1 时再 setSlotsToSetupPose）
 # 启动即加载：ZEditor ... --rhi vulkan --cvar "spine.load G:/.../K_X_Spine.skel.bytes 1"
 ```
 
 **每帧 CPU 只做两件事**：解算（S5 起是 `SpineGpuAnimationState::Update(dt)` → `Apply(state)` →
 `SpineGpuUpdateWorld`，骨骼世界变换 + 槽位状态）与"哪些绘制项可见"
-（按 `draw_order`，取槽位当前附件名在 skin 0 下对应的那一项）。**顶点一个都不在 CPU 上算**：
+（按 `draw_order`，取槽位当前附件——按"先当前皮肤、再 default 皮肤"解析出的那一项）。**顶点一个都不在 CPU 上算**：
 
 | set 0 binding | 内容 | 更新频率 |
 |---|---|---|
@@ -1458,7 +1459,7 @@ setup 姿势的包围盒自动居中、占视口 80%。
   weighted 的误差来自**容器里权重是 u8 量化的**（与 deform 无关，两格同量级）；
   把 deform 偏移错一个顶点，这两格会变成 9724 / 402（门槛已接进 verdict）。
 
-**仍然不做**（不是忘了）：非 default 皮肤；WebGL2（没有 SSBO）。（tint black、DX12 / Metal、多实例已接，见下面。）
+**仍然不做**（不是忘了）：WebGL2（没有 SSBO）。（tint black、DX12 / Metal、多实例、换肤已接，见下面。）
 
 #### v15：运行时裁剪（2026-10-23）
 
@@ -1580,6 +1581,38 @@ CPU 裁剪时按 {3,0,1,2} 重排（不裁时两条对角线画出来一样，�
     HLSL 去掉 bone_base ⇒ 3/6、取 insts[0] ⇒ 2/6。GLSL 与 HLSL 同公式，GLSL 侧没有 GPU 级测试。
   * 编辑器实跑（Vulkan 开验证层 / DX12）：K_Bianque ×2 + K_ZhuBaJie ×3、删一个、手动摆一个、加一个不存在的
     文件 ⇒ 4 实例 / 2 资产、首帧 224 项、裁剪 110 项（两个 K_Bianque 各 55），无验证层报错、无 device removed；坏文件只报一行错。
+
+#### 换肤（非 default 皮肤，2026-10-23）
+
+容器**不改**（v15）：绘制项 / path 附件 / 裁剪多边形 / 附件记录早就带 skin 列，deform 时间轴的目标是
+**按皮肤区分**的附件记录，缺的只是运行时"槽位当前挂的是哪个皮肤里的那一条"。
+
+* **附件身份 = (名字, 来自哪个皮肤)**（`SpineGpuAttachRef::skin`）。参考实现按 `Attachment*` 判同一附件；
+  同名附件在不同皮肤里是不同对象 ⇒ 换肤后 deform 要清。以前只按名字判。
+* **解析**（`SpineGpuResolveAttachment` = `Skeleton::getAttachment`）：先当前皮肤、再 default 皮肤。查找表
+  `SpineGpuRuntimeData::skin_hits[皮肤][(槽位, 名字)] → {绘制项, path, 裁剪}`；setup 附件、attachment 时间轴、
+  setToSetupPose 挂附件时都按骨架**当前**皮肤重解析。顺带修了两个潜在错误：path 附件以前按"槽位 + 名字"取
+  **任意皮肤**的第一条；二进制里 default 皮肤为空时皮肤 0 是第一个具名皮肤，以前会被当成 default。
+* **setSkin**（`SpineGpuSetSkin`，照 OSGame 3.8 分支 `Skeleton::setSkin` / `Skin::attachAll`）：
+  旧皮肤非空 ⇒ 只换"当前挂的正是旧皮肤那条"的槽位，新皮肤里没有同名的**不动、不回落 default**；
+  旧皮肤为空 ⇒ 按 setup 名在新皮肤里找；setSkin(NULL) ⇒ 附件一个都不动。这个分支**没有** skin bones /
+  constraints，`updateCache` 的结果与皮肤无关（path 约束排序本来就遍历全部皮肤）⇒ chunk 19 不重排。
+* **deform 上界**改为"每个槽位取所有皮肤里最长的 kFallback 项，求和"（以前只算 default 皮肤）。
+* **渲染器**：每个实例自己的当前皮肤；`spine.skin` 换肤后按 (动画, 皮肤) 重算自动排布的包围盒
+  （default + 当前皮肤的全部可画项）。`SpineGpuSamplePoseSkinned()` 是带皮肤的无状态采样。
+* **已知限制**（都不进容器、OSGame 里不存在）：① 具名皮肤里的 bbox / point 遮住 default 同名可画附件时，
+  我们画 default 那条（对拍台把这种情况单列报错）；② 二进制里**空**的具名皮肤在参考侧是 NULL，
+  "换成它"在参考里等于 setSkin(NULL)，容器分不出空皮肤与 NULL。
+* **验证**（OSGame 781 个资产**没有一个**带具名皮肤，prefab 的 `m_InitialSkinName` 1310 个空、25 个
+  "default"）⇒ 手写夹具 `Test/SpineGpuSkinFixture.h`（default / red / blue：同名不同类型、跨皮肤 linked
+  mesh + 继承 deform、只在具名皮肤里的 setup 附件、具名皮肤的裁剪 / path / deform）：
+  * `SpineGpuRefParityTest`：夹具进 S5 随机脚本，换肤用独立随机数流（不扰动原资产的脚本），与 spine-cpp
+    逐帧比骨骼 / 槽位 / **附件来自哪个皮肤** / deform / 裁剪：64 条脚本、setSkin 593 次（含 NULL / default /
+    之后 setSlotsToSetupPose）、具名皮肤帧 9 381、附件来自具名皮肤 35 681 次，0 分叉。变异 5 处
+    （attachAll 不看旧皮肤 / 不查当前皮肤 / 身份不含皮肤 / 缺名字时回落 default / setup 不按当前皮肤）全部抓到。
+  * `SpineGpuImportTest` +26 条手推断言（1408 → 1434）。781 资产单动画 / S5 / 多实例对拍与之前一致。
+  * 编辑器（Vulkan 验证层 / DX12）：夹具 3 个实例分别 red（+setup）/ blue / blue（+setup），找不到的皮肤名
+    只记一行警告，无验证层报错。
 
 可见集解析实测：OSGame 全量第 0 个动画 t=0 时挂着附件的槽位 29 785 个能找到绘制项，
 689 个找不到 —— 这 689 个槽位在 skin 0 下**一个可画项都没有**（"槽位里有别的可画项、

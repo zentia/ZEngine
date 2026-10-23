@@ -117,6 +117,7 @@ struct SpineGpuRenderer::Impl
             kMix,              // 所有实例的 AnimationStateData::default_mix = value（全局，跨实例 / 资产保留）
             kSpeed,            // `target` 的 AnimationState::time_scale = value
             kAlpha,            // `target` 轨道当前那条的 alpha = value
+            kSkin,             // `target` 换肤：anim = 皮肤名 / 下标 / "none"；loop = 之后 setSlotsToSetupPose
         };
         Op op {Op::kSet};
         uint32_t target {0};   // 实例 id（入队时解析；0 = 当时没有选中的实例）
@@ -210,7 +211,8 @@ struct SpineGpuRenderer::Impl
         uint32_t draw_ids_count {0};
         std::vector<Page> pages;
         std::vector<FrameSlot> frames;
-        // 每个动画 t=0 的包围盒（x0, y0, x1, y1），自动排布用；第一次用到时算
+        // 每个 (动画, 皮肤) t=0 的包围盒（x0, y0, x1, y1），自动排布用；第一次用到时算。
+        // 下标 = anim · (皮肤数 + 1) + 皮肤（无皮肤 = 皮肤数）
         std::vector<std::array<float, 4>> bounds;
         std::vector<uint8_t> bounds_valid;
         SpineGpuBatch batch;   // 本帧拼包（渲染线程暂存，跨帧复用）
@@ -229,6 +231,7 @@ struct SpineGpuRenderer::Impl
         std::unique_ptr<SpineGpuAnimationState> anim_state;
         std::chrono::steady_clock::time_point last_tick;
         float bounds[4] {0, 0, 1, 1};
+        uint32_t skin {kSpineGpuNoSkin};   // 只给 status / 包围盒用；真正的当前皮肤在 state.skin
         // 摆放：自动 = 视口网格里按实例顺序占一格；手动 = 视口中心偏 (x, y) 像素、scale 像素 / 单位
         bool manual {false};
         float place_x {0.0f};
@@ -819,22 +822,31 @@ struct SpineGpuRenderer::Impl
         }
     }
 
-    // 资产 t=0 的包围盒（每个动画算一次）：CPU 按 §6 同一公式蒙一遍，只为自动排布
-    bool AssetBounds(Asset& as, uint32_t anim, float out[4], std::string& err)
+    // 资产 t=0 的包围盒（每个 (动画, 皮肤) 算一次）：CPU 按 §6 同一公式蒙一遍，只为自动排布。
+    // 收 default 皮肤 + 当前皮肤的全部可画项（不只是 t=0 可见的：动画里会显隐，框按"可能出现的"取）。
+    bool AssetBounds(Asset& as, uint32_t anim, uint32_t skin, float out[4], std::string& err)
     {
         const SpineGpuAsset& a = as.asset;
-        if (as.bounds.size() != a.anims.size())
+        const size_t skins = a.skin_names.size();
+        const size_t stride = skins + 1u;
+        if (as.bounds.size() != a.anims.size() * stride)
         {
-            as.bounds.assign(a.anims.size(), {0, 0, 1, 1});
-            as.bounds_valid.assign(a.anims.size(), 0u);
+            as.bounds.assign(a.anims.size() * stride, {0, 0, 1, 1});
+            as.bounds_valid.assign(a.anims.size() * stride, 0u);
         }
-        if (as.bounds_valid[anim] != 0u)
+        const size_t bi = static_cast<size_t>(anim) * stride + (skin == kSpineGpuNoSkin ? skins : skin);
+        if (bi >= as.bounds.size())
         {
-            std::memcpy(out, as.bounds[anim].data(), sizeof(float) * 4u);
+            err = "包围盒下标越界（皮肤 / 动画下标不对）";
+            return false;
+        }
+        if (as.bounds_valid[bi] != 0u)
+        {
+            std::memcpy(out, as.bounds[bi].data(), sizeof(float) * 4u);
             return true;
         }
         SpineGpuPoseResult pose;
-        const SpineImportResult pr = SpineGpuSamplePose(a, anim, 0.0f, pose);
+        const SpineImportResult pr = SpineGpuSamplePoseSkinned(a, skin, anim, 0.0f, pose);
         if (!pr.ok)
         {
             err = pr.error;
@@ -854,7 +866,8 @@ struct SpineGpuRenderer::Impl
         };
         for (const SpineDrawItem& di : a.draw_items)
         {
-            if (di.skin_id != SpineGpuConstants::kDefaultSkinId)
+            if (!((as.data.has_default_skin && di.skin_id == SpineGpuConstants::kDefaultSkinId) ||
+                  (skin != kSpineGpuNoSkin && di.skin_id == skin)))
             {
                 continue;
             }
@@ -896,9 +909,9 @@ struct SpineGpuRenderer::Impl
             x1 = 100.0f;
             y1 = 100.0f;
         }
-        as.bounds[anim] = {x0, y0, x1, y1};
-        as.bounds_valid[anim] = 1u;
-        std::memcpy(out, as.bounds[anim].data(), sizeof(float) * 4u);
+        as.bounds[bi] = {x0, y0, x1, y1};
+        as.bounds_valid[bi] = 1u;
+        std::memcpy(out, as.bounds[bi].data(), sizeof(float) * 4u);
         return true;
     }
 
@@ -939,7 +952,7 @@ struct SpineGpuRenderer::Impl
             ai = static_cast<uint32_t>(std::clamp<long>(v, 0, static_cast<long>(a.anims.size()) - 1));
         }
         in->anim = ai;
-        if (!AssetBounds(*as, ai, in->bounds, err))
+        if (!AssetBounds(*as, ai, kSpineGpuNoSkin, in->bounds, err))
         {
             return false;
         }
@@ -1067,6 +1080,55 @@ struct SpineGpuRenderer::Impl
                     in->place_y = c.delay;
                     in->place_scale = c.scale;
                     break;
+                case Command::Op::kSkin:
+                {
+                    // "none" / 空 ⇒ setSkin(NULL)；纯数字 ⇒ 皮肤下标；否则按名字（findSkin）
+                    const SpineGpuAsset& a = in->asset->asset;
+                    uint32_t sk = kSpineGpuNoSkin;
+                    bool known = c.anim.empty() || c.anim == "none";
+                    if (!known && c.anim.find_first_not_of("0123456789") == std::string::npos)
+                    {
+                        const unsigned long v = std::strtoul(c.anim.c_str(), nullptr, 10);
+                        known = v < a.skin_names.size();
+                        sk = known ? static_cast<uint32_t>(v) : kSpineGpuNoSkin;
+                    }
+                    else if (!known)
+                    {
+                        known = SpineGpuFindSkin(a, c.anim, sk);
+                    }
+                    if (!known)
+                    {
+                        std::string names;
+                        for (const std::string& n : a.skin_names)
+                        {
+                            names += (names.empty() ? "" : ", ") + n;
+                        }
+                        LOG_WARNING(ZRender, "SpineGpuRenderer: instance #{}: skin '{}' not found (skins: {})", in->id,
+                                    c.anim, names.empty() ? std::string("<none>") : names);
+                        break;
+                    }
+                    const SpineImportResult sr = SpineGpuSetSkin(a, in->asset->data, in->state, sk);
+                    if (!sr.ok)
+                    {
+                        LOG_WARNING(ZRender, "SpineGpuRenderer: instance #{}: setSkin failed: {}", in->id, sr.error);
+                        break;
+                    }
+                    if (c.loop)
+                    {
+                        // spine-unity 的惯用法：SetSkin 之后 SetSlotsToSetupPose，让 setup 附件按新皮肤重挂
+                        SpineGpuSetSlotsToSetupPose(a, in->asset->data, in->state);
+                    }
+                    in->skin = sk;
+                    std::string berr;
+                    if (!AssetBounds(*in->asset, in->anim, sk, in->bounds, berr))
+                    {
+                        LOG_WARNING(ZRender, "SpineGpuRenderer: instance #{}: bounds for skin failed: {}", in->id, berr);
+                    }
+                    LOG_INFO(ZRender, "SpineGpuRenderer: instance #{} skin = {}{}", in->id,
+                             sk == kSpineGpuNoSkin ? std::string("<none>") : "'" + a.skin_names[sk] + "'",
+                             c.loop ? " (+ setSlotsToSetupPose)" : "");
+                    break;
+                }
                 case Command::Op::kPlaceAuto:
                     in->manual = false;
                     break;
@@ -1489,6 +1551,17 @@ void SpineGpuRenderer::RequestTimeScale(float scale)
     d.PushTargeted(std::move(c));
 }
 
+void SpineGpuRenderer::RequestSkin(const std::string& skin, bool setup_slots)
+{
+    Impl& d = impl();
+    std::lock_guard<std::mutex> lock(d.mutex);
+    Impl::Command c;
+    c.op = Impl::Command::Op::kSkin;
+    c.anim = skin;
+    c.loop = setup_slots;
+    d.PushTargeted(std::move(c));
+}
+
 void SpineGpuRenderer::RequestTintBlack(bool enabled)
 {
     Impl& d = impl();
@@ -1760,6 +1833,9 @@ void SpineGpuRenderer::Draw(RHI* rhi, RHIRenderPass* render_pass, uint32_t subpa
     {
         const Impl::Instance& in = *ip;
         summary += " | #" + std::to_string(in.id) + " '" + ToUtf8(FromUtf8(in.asset->path).filename()) + "'" +
+                   (in.skin != kSpineGpuNoSkin && in.skin < in.asset->asset.skin_names.size()
+                        ? " skin '" + in.asset->asset.skin_names[in.skin] + "'"
+                        : std::string()) +
                    (in.manual ? " placed" : "") + ": " +
                    (in.error.empty() ? std::to_string(in.range.draw_count) + " draws [" + d.DescribeTracks(in) + "]"
                                      : "skipped: " + in.error);
@@ -1914,6 +1990,7 @@ void SpineGpuRenderer::RequestDefaultMix(float) {}
 void SpineGpuRenderer::RequestTimeScale(float) {}
 void SpineGpuRenderer::RequestTrackAlpha(int, float) {}
 void SpineGpuRenderer::RequestTintBlack(bool) {}
+void SpineGpuRenderer::RequestSkin(const std::string&, bool) {}
 void SpineGpuRenderer::Draw(RHI*, RHIRenderPass*, uint32_t, const RHIViewport&) {}
 void SpineGpuRenderer::DrawInEditorViewport(RHI*, RHIRenderPass*, uint32_t) {}
 uint32_t SpineGpuRenderer::LastDrawCount() const { return 0; }

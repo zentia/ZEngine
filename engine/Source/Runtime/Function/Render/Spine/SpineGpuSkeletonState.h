@@ -33,7 +33,12 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+// `Skeleton::_skin == NULL`（构造后、或 setSkin(NULL) 之后）。皮肤下标 = chunk 1 皮肤名的序号
+// （= 参考实现 `SkeletonData::getSkins()` 的下标；有 default 皮肤时它是 0）。
+constexpr uint32_t kSpineGpuNoSkin = 0xFFFFFFFFu;
 
 // `MixBlend.h` 原值（不自造：AnimationState 里 `i == 0 ? MixBlend_First : ...` 这类比较照搬）
 enum class SpineGpuMixBlend : uint8_t
@@ -102,9 +107,10 @@ struct SpineGpuBoneState
     uint32_t mode = 0;
 };
 
-// 槽位当前挂的附件。参考实现里是一根 `Attachment*`，我们没有附件对象 ⇒ 用"名字"做身份：
-// `Skeleton::getAttachment(slot, name)` 在同一槽位、同一皮肤下按名字唯一确定一个附件，
-// 所以"同名 ⇔ 同一附件"（`Slot::setAttachment` 的 `_attachment == inValue` 判据）。
+// 槽位当前挂的附件。参考实现里是一根 `Attachment*`，我们没有附件对象 ⇒ 用"(名字, 来自哪个皮肤)"做身份：
+// `Skeleton::getAttachment(slot, name)` 先查当前皮肤、再查 default 皮肤，命中的那个 (皮肤, 槽位, 名字)
+// 唯一确定一个附件对象，所以"同名且同皮肤 ⇔ 同一附件"（`Slot::setAttachment` 的 `_attachment == inValue`
+// 判据）。换肤后同名附件来自另一个皮肤 = 另一个对象 ⇒ deform 要清（参考实现就是这样）。
 //
 // ⚠️ 唯一的差异：名字在皮肤里**找不到**时参考实现得到 NULL，两个都找不到的名字在参考里
 //    是"同一个 NULL"，在这里是两个不同的名字 ⇒ 切换时多清一次 deform 数组。这在 NULL
@@ -114,9 +120,13 @@ struct SpineGpuAttachRef
     static constexpr uint32_t kNone = 0xFFFFFFFFu;
     uint32_t name_id = kNone;   // 规范化后的名字 id（`SpineGpuRuntimeData::names` 的下标）；kNone = 不挂
     uint32_t name_offset = SpineGpuConstants::kNoAttachmentName;   // chunk 1 偏移（输出用）
-    uint32_t draw_item = kNone;   // default 皮肤（skin 0）下对应的绘制项；kNone = 不产生绘制项
+    // 附件来自哪个皮肤（身份的一半）；kNone = 当前皮肤和 default 皮肤里都没有这个名字（参考里是 NULL）。
+    // 下面三个字段都是**这个皮肤**里的那一条。查找表里存的是"没有当前皮肤"时的解析（= default 皮肤），
+    // 挂到槽位上时按骨架的当前皮肤重解析（SpineGpuResolveAttachment）。
+    uint32_t skin = kNone;
+    uint32_t draw_item = kNone;   // 对应的绘制项；kNone = 不产生绘制项
     uint32_t path_att = SpineGpuConstants::kNoPathAttachment;   // chunk 20 下标；不是 path = kNoPathAttachment
-    // v15：default 皮肤（skin 0）下这个名字对应的**裁剪附件**（chunk 9 行号）；kNone = 不是裁剪附件。
+    // v15：这个名字对应的**裁剪附件**（chunk 9 行号）；kNone = 不是裁剪附件。
     // 裁剪状态机（SpineGpuClipper）按它判断"走到这个槽位时 clipStart"，deform 按它判断是否作用于本槽位。
     uint32_t clip = kNone;
 };
@@ -130,7 +140,23 @@ struct SpineGpuRuntimeData
     std::vector<uint8_t> blob;                // chunk 1 的字节镜像
     std::vector<std::string> names;           // 规范化后的附件名（name_id 的下标空间）
 
-    std::vector<SpineGpuAttachRef> slot_setup;   // [slot] setup 附件
+    std::vector<SpineGpuAttachRef> slot_setup;   // [slot] setup 附件（按"没有当前皮肤"解析）
+
+    // ---- 换肤（`Skin::getAttachment(slot, name)`）----
+    // [皮肤] 的 (slot << 32 | name_id) → 该皮肤在该槽位下这个名字的可画项 / path / 裁剪附件。
+    // 只收 name_id 空间里有的名字（setup 与 attachment 时间轴里出现过的）—— 槽位只可能挂这些名字。
+    // ⚠️ 只认得我们烘焙的三类附件；bbox / point 不进容器，所以"具名皮肤里的 bbox / point 遮住
+    //    default 皮肤同名可画附件"这种情况我们会画出 default 的那个（对拍台单独统计，OSGame 为 0）。
+    struct SkinHit
+    {
+        uint32_t draw_item = SpineGpuAttachRef::kNone;
+        uint32_t path_att = SpineGpuConstants::kNoPathAttachment;
+        uint32_t clip = SpineGpuAttachRef::kNone;
+    };
+    std::vector<std::unordered_map<uint64_t, SkinHit>> skin_hits;   // [skin]
+    // 皮肤 0 是不是 default 皮肤：二进制里 default 皮肤空时**不占位**（SkeletonBinary.cpp:279-281），
+    // 那时皮肤 0 是第一个具名皮肤、`getDefaultSkin()` 是 NULL。
+    bool has_default_skin = false;
 
     // attachment 时间轴：第 tl 条的第 f 帧 = attach_refs[timeline_ref_first[tl] + f]
     std::vector<uint32_t> timeline_ref_first;   // [timeline]，非 attachment 时间轴 = 0（不读）
@@ -178,6 +204,7 @@ struct SpineGpuSlotState
 // 而这两类时间轴本阶段**显式报错**（实测 0 / 782 个资产用到）⇒ 恒等于 setup。
 struct SpineGpuSkeletonState
 {
+    uint32_t skin = kSpineGpuNoSkin;             // `Skeleton::_skin`
     std::vector<SpineGpuBoneState> bones;        // [bone]
     std::vector<SpineGpuSlotState> slots;        // [slot]
     std::vector<uint32_t> draw_order;            // 槽位下标的排列
@@ -204,7 +231,26 @@ void SpineGpuSetSlotsToSetupPose(const SpineGpuAsset& asset, const SpineGpuRunti
 void SpineGpuSetToSetupPose(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data, SpineGpuSkeletonState& state);
 
 // `Slot::setAttachment()`（Slot.cpp:94-102）：同一附件 ⇒ 什么都不做；否则换上并清 deform。
+// `ref` 必须是已按当前皮肤解析过的（SpineGpuResolveAttachment）。
 void SpineGpuSetSlotAttachment(SpineGpuSlotState& slot, const SpineGpuAttachRef& ref);
+
+// `Skeleton::getAttachment(slot, name)`（Skeleton.cpp:335-346）：先查当前皮肤 `skin`、再查 default 皮肤。
+// 只看 `ref.name_id`，返回填好 skin / draw_item / path_att / clip 的引用。
+SpineGpuAttachRef SpineGpuResolveAttachment(const SpineGpuRuntimeData& data, uint32_t skin, uint32_t slot,
+                                            const SpineGpuAttachRef& ref);
+
+// `Skeleton::setSkin(Skin*)`（Skeleton.cpp:297-329，OSGame 的 3.8 分支）：
+//   * 新皮肤非空、旧皮肤非空 ⇒ `newSkin->attachAll(skeleton, oldSkin)`：槽位当前挂的正是旧皮肤里的
+//     (槽位, 名字) 那条 ⇒ 换成新皮肤里同名的那条（新皮肤里没有就不动；**不**回落 default）；
+//   * 新皮肤非空、旧皮肤为空 ⇒ 每个有 setup 附件名的槽位，新皮肤里有同名的就挂上；
+//   * 新皮肤为空 ⇒ 附件一个都不动，只把当前皮肤置空。
+// 这个分支没有 skin bones / constraints（3.8 后期才有），`updateCache()` 的结果与皮肤无关（path 约束
+// 的排序本来就遍历全部皮肤），所以不重排 chunk 19。`skin` 越界 ⇒ 报错、状态不动。
+SpineImportResult SpineGpuSetSkin(const SpineGpuAsset& asset, const SpineGpuRuntimeData& data,
+                                  SpineGpuSkeletonState& state, uint32_t skin);
+
+// `SkeletonData::findSkin(name)`：找不到 ⇒ false。
+bool SpineGpuFindSkin(const SpineGpuAsset& asset, const std::string& name, uint32_t& out);
 
 // `Timeline::apply(skeleton, lastTime, time, events, alpha, blend, direction)`。
 // event 时间轴不改状态（这里不收集事件）；IK / transform / pathSpacing 时间轴**显式报错**。

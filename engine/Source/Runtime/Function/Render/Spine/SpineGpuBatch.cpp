@@ -76,6 +76,9 @@ void SpineGpuBuildBatchAssetInfo(const SpineGpuAsset& a, SpineGpuBatchAssetInfo&
     out.deform_len.assign(a.draw_items.size(), 0u);
     out.infl_base.assign(a.draw_items.size(), 0u);
     out.deform_capacity = 0;
+    // 单实例一帧的 deform 上界：每个槽位同一时刻只挂一条附件 ⇒ Σ槽位 max(该槽位所有皮肤的 kFallback 项)
+    // （只有被 deform 时间轴命中过的项才是 kFallback）。换肤之前只看 default 皮肤、按项求和。
+    std::vector<uint32_t> slot_max(a.slots.size(), 0u);
     for (uint32_t i = 0; i < a.draw_items.size(); ++i)
     {
         const SpineDrawItem& di = a.draw_items[i];
@@ -97,11 +100,14 @@ void SpineGpuBuildBatchAssetInfo(const SpineGpuAsset& a, SpineGpuBatchAssetInfo&
                 out.infl_base[i] = WordAt(a, w0);
             }
         }
-        // 只有被 deform 时间轴命中过的项才是 kFallback，同一帧最多它们全部生效
-        if (di.kind == SpineDrawItemKind::kFallback && di.skin_id == SpineGpuConstants::kDefaultSkinId)
+        if (di.kind == SpineDrawItemKind::kFallback && di.slot_index < slot_max.size())
         {
-            out.deform_capacity += out.deform_len[i];
+            slot_max[di.slot_index] = std::max(slot_max[di.slot_index], out.deform_len[i]);
         }
+    }
+    for (uint32_t m : slot_max)
+    {
+        out.deform_capacity += m;
     }
 }
 
