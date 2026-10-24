@@ -37,7 +37,7 @@
 | 6 | 🟡 Medium | `PPtr` 把"对象已销毁"静默升级为"从磁盘加载同 ID 对象"（`PPtr.h:79`），比返回 null 更危险 | `Runtime/BaseClasses/PPtr.h:73-81` | **已修复（第三落点，见 3.8）** |
 | 7 | 🟡 Medium | 引用计数基础设施 95% 闲置（`AtomicRefCounter` 仅 1 个消费者），无弱引用 | `Runtime/Core/Thread/AtomicRefCounter.h:5` | **已修复（第七落点，见 3.12）** |
 | 8 | 🟡 Medium | `ObjectFlags`（`OF_BeginDestroyed`/`OF_FinishDestroyed`）是死代码；两阶段销毁 `BeginDestroy`/`FinishDestroy` 是空桩 | `ObjectDefines.h:82-87`；`Object.cpp:19-20` | **已修复（第二落点）** |
-| 9 | 🟡 Medium | `RHI.h` 抽象头泄漏 Vulkan VMA 头；124 个纯虚函数的胖接口 | `Function/Render/Interface/RHI.h:15-17, :179-682` | 待办 |
+| 9 | 🟡 Medium | `RHI.h` 抽象头泄漏 Vulkan VMA 头；124 个纯虚函数的胖接口 | `Function/Render/Interface/RHI.h:15-17, :179-682` | **VMA 头泄漏已修复（第八落点，见 3.13）；胖接口拆分后置** |
 | 10 | 🟡 Medium | 崩溃快照 `platform` 硬编码为 `"windows"`；agentkit 无法解析非 Windows 快照 | `CrashHandler.h:508`；`agentkit/zagent/zengine_snapshot.py:112` | **已修复（随 #2，platform 运行时派生，见 3.10）** |
 | 11 | 🟢 Low | `log.reliable_level=normal`；无崩溃安全环形缓冲，`force_flush` 失败则日志尾丢失 | `Runtime/Core/Log/LogSystem.cpp:165` | **已修复（第四落点）** |
 | 12 | 🟢 Low | DX12 有 15 处 `// TODO: Implement`；WebGL2 仅骨架（`WEBGL2_TODO` 宏吞掉所有调用） | `DX12RHI.cpp:2399,3675,...`；`WebGL2RHI.cpp:30,388-482` | 待办 |
@@ -61,7 +61,7 @@
 | 5 | 2 | POSIX 崩溃捕获（sigaction + backtrace）✅ 已实现·待 POSIX 编译验证（§3.10） | 价值高但 POSIX 代码 Windows 编不过，需 Linux/macOS 验证，排到本地能测的项之后 |
 | 6 | 1 + 4 | RHI：Linux 注册 + 后端注册表重构 ✅ 已完成（§3.11） | 需 Vulkan SDK 实际启动验证，环境成本最高 |
 | 7 | 7 | 引用计数强化 + 弱引用 ✅ 已完成（§3.12） | 纯 C++、跨平台、Windows 双配置可验证；补齐句柄家族弱引用成员 |
-| 8 | 9,12 | 其余 Low（#9 RHI.h 胖接口+VMA 头泄漏；#12 DX12 TODO/WebGL2 骨架） | 收益相对低或改动面大，后置 |
+| 8 | 9,12 | 其余 Low（#9 RHI.h VMA 头泄漏 ✅ 已修复见 §3.13，胖接口拆分后置；#12 DX12 TODO/WebGL2 骨架） | VMA 头泄漏单文件可安全修；胖接口拆分改动面大、后置 |
 
 ---
 
@@ -621,6 +621,58 @@ Linux 运行期确认待补（与 #2 一并）。
 
 ---
 
+## 3.13 第八落点：RHI.h VMA 头泄漏修复（#9 前半）
+
+### 审计结论（动手前读全代码）
+- `RHI.h:15-17` 在 `#if defined(Z_HAS_VULKAN)` 下无条件 `#include <vma/vk_mem_alloc.h>`。
+  而 Windows 默认 **DX12 与 Vulkan 同时定义**（`engine/CMakeLists.txt:20`），于是所有 include
+  `RHI.h` 的 50+ 个 TU（DX12 / Metal / WebGL2 / Editor / Lumen / DebugDraw / RenderGraph…）
+  都被迫拖入 VMA 头——这些后端与调用点根本不用 VMA。
+- RHI.h 本体**已不再引用任何 VMA 类型**：`CreateGlobalImage`/`CreateCubeMap` 的 image_allocation
+  参数早已改成 `void*`（原注释 "Changed from VmaAllocation& to void*&" 就是证据），
+  VMA 专属的 `CreateBuffer*VMA` 两个 override 也只在 Vulkan 后端实现（用 `void*` 签名）。
+  ⇒ 这个 include 是纯粹的泄漏，删掉即可。
+
+### 为什么不能顺手把"胖接口"也一起拆
+- RHI.h 实测 **124 个纯虚 + 11 个默认实现 = 139 个虚函数**，683 行。把命令录制 / 资源创建 /
+  销毁 / 查询拆成多个子接口（RHIDrawCommands / RHIResourceFactory / RHIDestroyable…）是正确方向，
+  但会**触碰全部 4 个后端 + 每个调用点**，属改动面大、易引入跨后端不一致的高风险 churn，
+  不符合阶段一"每步 Windows 可验证、风险可控"的原则 → 后置。
+- 顺带核实：`CreateCommandPool()`（无参重载，`:339`）**不是死代码**——4 个后端 init 路径都调它
+  （`VulkanRHI.cpp:243` 等），是 load-bearing 的，勿删。
+
+### 改动（单文件、纯删除）
+- `Function/Render/Interface/RHI.h`：删掉 `#if defined(Z_HAS_VULKAN) #include <vma/vk_mem_alloc.h>`
+  块，替换为一段说明"为何此处不再需要 VMA 头、Vulkan 后端自行 include、消费者各有 guarded fallback"
+  的注释（防回退）。
+
+### 下游消费者核实（删前逐一确认各有自己的 VMA 来源，不依赖 RHI.h 传递）
+- `RenderResource.h`：经 `RenderGpuResources.h`（含 `#if Z_HAS_VULKAN … #else VmaAllocation=void*`
+  guarded fallback）拿到 `VmaAllocation`。
+- `TextureStreamingManager.cpp` / `VirtualTextureTypes.cpp`：分别经 `TextureStreamingTypes.h`、
+  `VulkanRHI.h` 拿到 VMA 类型。
+- `DebugDrawFont.h`：自己 `#include <vma/vk_mem_alloc.h>`。
+- Vulkan 后端 `VulkanRHI.h:12` 本就 include VMA 并用 `VmaAllocator` 成员。
+
+### 验证（Windows Debug + Release 双配置端到端）
+- ZRuntime.lib **Debug + Release 均干净重建**（exit 0，零 error）；RHI.h 的 50+ 消费者
+  （DebugDraw / Lumen / RenderGraph / Texture / RenderResource…）obj 时间戳全部晚于 RHI.h 编辑
+  时刻 ⇒ 确由本次改动触发重编、非吃旧 obj。
+- 运行 `RHIFactoryRegistrySmokeTest`（#1+#4 的注册表路径）：**9/9 ALL CHECKS PASSED** ⇒
+  删 VMA 头不影响 RHIFactory 后端注册 / CreateRHI 路径。
+
+### 踩坑
+- 无（本次是纯删除，且删前已核实所有消费者的 VMA 来源独立于 RHI.h）。
+
+### 改动文件清单
+- `Function/Render/Interface/RHI.h`（删 VMA include 块 + 加防回退注释）
+- `doc/PHASE1_FOUNDATION_PLAN.md`：本 §3.13；#9 标"VMA 头泄漏已修复，胖接口拆分后置"。
+
+至此 #9 的**可安全落地部分（VMA 头泄漏）**完成：抽象 RHI 头不再向 50+ 消费者泄漏 Vulkan VMA 头；
+胖接口拆分作为独立的高风险重构后置。
+
+---
+
 ## 4. 后续落点预案（简述，动手前再展开）
 
 - ~~**#8 两阶段销毁**~~（✅ 已完成，见 §3.7）：在 `Object::~Object()` 前后真正调用
@@ -644,3 +696,11 @@ Linux 运行期确认待补（与 #2 一并）。
   单一消费者"补成强/弱双计数（保持 `SerializedFile` 兼容）；新增 `RefCounted<T>`（CRTP 基类，
   第二个真实消费者）与 `WeakObjectPtr<T>`（基于 instanceID 的弱句柄，访问死对象合法返回 null、
   不报 UAF）。Windows 双配置端到端（RefCounted 36/36、WeakObjectPtr 21/21）。
+- ~~**#9 VMA 头泄漏**~~（✅ 已修复，见 §3.13）：删 `RHI.h` 的 `#include <vma/vk_mem_alloc.h>`
+  （本体已全用 `void*`，Vulkan 后端自行 include，消费者各有 guarded fallback）。Windows 双配置
+  重建 + 注册表 smoke test 9/9 通过。
+- **#9 胖接口拆分（后置·高风险）**：124 纯虚 + 11 默认实现的胖接口，按职责（命令录制 / 资源创建 /
+  销毁 / 查询）拆成多个子接口。方向正确但触碰全部 4 个后端 + 每个调用点，需作为独立重构专项，
+  不在阶段一"每步 Windows 可验证、风险可控"范围内。
+- **#12 DX12 TODO / WebGL2 骨架**：DX12 有 15 处 `// TODO: Implement`；WebGL2 仅骨架
+  （`WEBGL2_TODO` 宏吞掉所有调用）。
