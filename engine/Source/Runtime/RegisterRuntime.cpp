@@ -23,7 +23,9 @@
 #if defined(Z_PLATFORM_ANDROID) || defined(__ANDROID__) || defined(Z_PLATFORM_OHOS) || defined(__OHOS__)
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
 #endif
-#if defined(Z_PLATFORM_LINUX) || defined(__linux__)
+#if (defined(Z_PLATFORM_LINUX) || defined(__linux__)) && !defined(__EMSCRIPTEN__)
+    // Desktop Linux uses Vulkan. Emscripten reports Z_PLATFORM_LINUX but has no
+    // Vulkan SDK and uses the WebGL2 backend, so it must not pull vulkan.h.
     #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
 #endif
 #if defined(Z_PLATFORM_WINDOWS) || defined(_WIN32)

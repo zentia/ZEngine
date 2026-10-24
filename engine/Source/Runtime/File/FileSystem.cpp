@@ -21,7 +21,11 @@
 #elif Z_PLATFORM_IOS || Z_PLATFORM_MACOS
     #include "Platform/Android/LocalFileSystemAndroid.h"
     #define OS_FILE_SYSTEM_HANDLER LocalFileSystemAndroid
-#elif Z_PLATFORM_LINUX
+#elif Z_PLATFORM_LINUX && !defined(__EMSCRIPTEN__)
+    // Emscripten 会继承 Z_PLATFORM_LINUX=1（顶层 CMake 的 UNIX 分支），但它有
+    // 专属的 Web 文件系统实现（LocalFileSystemWeb，基于 Emscripten FS）。若不
+    // 排除，这里会选中 LocalFileSystemLinux 导致 vtable 未定义（该 TU 未编入
+    // Web 目标）。与 RegisterRuntime.cpp 的 Vulkan 排除同旨。
     #include "Platform/Linux/LocalFileSystemLinux.h"
     #define OS_FILE_SYSTEM_HANDLER LocalFileSystemLinux
 #elif defined(__EMSCRIPTEN__)

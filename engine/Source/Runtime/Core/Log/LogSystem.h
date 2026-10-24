@@ -157,7 +157,10 @@ public:
             std::snprintf(buf, sizeof(buf), "%s", std::string_view(format_str).data());
         }
 #else
-        (void)args;
+        // Referencing the pack via sizeof(...) is valid even when it is empty
+        // and requires no expansion -- works on MSVC and clang (emcc). (A bare
+        // `(void)args...` is parsed as a C-cast `(void)args` plus an ellipsis.)
+        (void)sizeof...(args);
         std::snprintf(buf, sizeof(buf), "%s", std::string_view(format_str).data());
 #endif
         zengine::logtail::Record(lv, buf);

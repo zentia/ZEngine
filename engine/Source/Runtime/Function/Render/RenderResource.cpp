@@ -12,7 +12,13 @@
 // 注意守卫**不含 Emscripten**：WebGL2 后端的覆盖面和 Metal 差得远，而本机没法验证
 // 它，所以那里继续走文件末尾的 clear() 桩。想把 Web 也拉进来，得先把 WebGL2 的
 // buffer / descriptor 路径补齐再说。
-#if defined(Z_HAS_VULKAN) || defined(__APPLE__)
+//
+// 【更新】WebGL2 的命令录制/回放 + buffer/descriptor 路径已补齐（见 WebGL2RHI.cpp），
+// 于是把 Emscripten 也纳入本守卫：Web 现在走与 Metal 相同的**非 Vulkan 通用 RHI 路径**
+// （下面的 #else 分支），真正把我的 WebGL2 后端编进来跑，而不是只留 clear() 空壳。
+// Vulkan 专属代码仍被内部的 #if defined(Z_HAS_VULKAN) 二次排除，Emscripten 一律走
+// 通用 CreateBuffer 回退——这与 Metal 完全一致。
+#if defined(Z_HAS_VULKAN) || defined(__APPLE__) || defined(__EMSCRIPTEN__)
     #include "Runtime/Core/Base/Macro.h"
     #if defined(Z_HAS_VULKAN)
         #include "Runtime/Function/Render/Interface/Vulkan/VulkanRHI.h"
@@ -1403,22 +1409,22 @@ void RenderResource::CreateAndMapStorageBuffer(RHI* rhi)
 }
 #endif  // Z_HAS_VULKAN || __APPLE__
 
-#if defined(__EMSCRIPTEN__)
-// WebGL2 是唯一还走这条路的：上面的主体守卫刻意不含 Emscripten（见文件头注释），
-// 所以它一个 out-of-line 虚函数都没有，没有 TU 会 emit RenderResource 的
-// vtable/typeinfo。RenderPass::Initialize() 之类仍然要 dynamic_cast 到
-// RenderResource，所以在这里把 key function 定义出来，给这个类一个 home TU。
+// 【更新】主体守卫现已纳入 Emscripten（见文件头），clear() 已在上面的主体里定义，
+// 故本块的 clear() 桩不再需要——否则与主体重复定义。保留注释以记录这段历史：
+// 过去 Web 只走这里（key function 给 vtable/typeinfo 一个 home TU），现在主体
+// 的非 Vulkan 通用 RHI 路径已把 Web 编进来，clear() 随之产出，无需单独桩。
 //
 // 不含 Windows：RenderResourceDx12.cpp 在 Windows 上编，并且已经在自己的
 // !Z_HAS_VULKAN 块里定义了 clear()，这里再定义一次就是重复符号。
-void RenderResource::clear()
-{
-    ClearMeshGeometryCache();
-
-    if (m_TextureStreamingManager)
-    {
-        m_TextureStreamingManager->Shutdown();
-        m_TextureStreamingManager.reset();
-    }
-}
-#endif
+// #if defined(__EMSCRIPTEN__)   // 已并入主体守卫，桩移除
+// void RenderResource::clear()
+// {
+//     ClearMeshGeometryCache();
+//
+//     if (m_TextureStreamingManager)
+//     {
+//         m_TextureStreamingManager->Shutdown();
+//         m_TextureStreamingManager.reset();
+//     }
+// }
+// #endif

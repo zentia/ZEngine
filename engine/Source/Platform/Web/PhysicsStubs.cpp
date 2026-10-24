@@ -96,7 +96,7 @@ void PhysicsScene::RemoveRigidBody(uint32_t /*body_id*/) {}
 
 void PhysicsScene::UpdateRigidBodyGlobalTransform(uint32_t /*body_id*/, const TransformTRS& /*global_transform*/) {}
 
-bool PhysicsScene::GetRigidBodyMotionType(uint32_t /*body_id*/, RigidBodyActorType& out_motion_type)
+bool PhysicsScene::GetRigidBodyMotionType(uint32_t /*body_id*/, RigidBodyActorType& out_motion_type) const
 {
     out_motion_type = RigidBodyActorType::static_body;
     return false;
@@ -107,19 +107,19 @@ bool PhysicsScene::SetRigidBodyMotionType(uint32_t /*body_id*/, RigidBodyActorTy
     return false;
 }
 
-bool PhysicsScene::GetRigidBodyPosition(uint32_t /*body_id*/, Vector3& out_position)
+bool PhysicsScene::GetRigidBodyPosition(uint32_t /*body_id*/, Vector3& out_position) const
 {
     out_position = Vector3::ZERO;
     return false;
 }
 
-bool PhysicsScene::GetRigidBodyRotation(uint32_t /*body_id*/, Quaternion& out_rotation)
+bool PhysicsScene::GetRigidBodyRotation(uint32_t /*body_id*/, Quaternion& out_rotation) const
 {
     out_rotation = Quaternion::IDENTITY;
     return false;
 }
 
-bool PhysicsScene::GetLinearVelocity(uint32_t /*body_id*/, Vector3& out_velocity)
+bool PhysicsScene::GetLinearVelocity(uint32_t /*body_id*/, Vector3& out_velocity) const
 {
     out_velocity = Vector3::ZERO;
     return false;
@@ -130,7 +130,7 @@ bool PhysicsScene::SetLinearVelocity(uint32_t /*body_id*/, const Vector3& /*velo
     return false;
 }
 
-bool PhysicsScene::GetAngularVelocity(uint32_t /*body_id*/, Vector3& out_velocity)
+bool PhysicsScene::GetAngularVelocity(uint32_t /*body_id*/, Vector3& out_velocity) const
 {
     out_velocity = Vector3::ZERO;
     return false;
@@ -151,7 +151,7 @@ bool PhysicsScene::AddImpulse(uint32_t /*body_id*/, const Vector3& /*impulse*/)
     return false;
 }
 
-bool PhysicsScene::GetInverseMass(uint32_t /*body_id*/, float& out_inverse_mass)
+bool PhysicsScene::GetInverseMass(uint32_t /*body_id*/, float& out_inverse_mass) const
 {
     out_inverse_mass = 0.f;
     return false;

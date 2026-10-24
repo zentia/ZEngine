@@ -18,6 +18,7 @@
     #include "Runtime/Core/Base/Macro.h"
     #include "Runtime/Function/Render/WindowSystem.h"
 
+    #include <algorithm>
     #include <cstring>
     #include <emscripten/emscripten.h>
     #include <emscripten/html5.h>
@@ -71,6 +72,15 @@ namespace ZEngine
         bool WebGL2RHI::IsPointLightShadowEnabled()
         {
             return false;
+        }
+        void WebGL2RHI::NotifyWindowFocusGained()
+        {
+            // WebGL2 has no swapchain surface chain to invalidate (the drawable
+            // is canvas framebuffer 0, recomposited by the browser). The one
+            // thing worth doing on focus regain is re-sync the drawable size:
+            // the canvas may have been resized while the tab was backgrounded.
+            // CreateSwapchain() re-reads the canvas and re-issues glViewport.
+            CreateSwapchain();
         }
 
         // ---------- Allocation ----------
@@ -368,6 +378,12 @@ namespace ZEngine
             out = p;
             return true;
         }
+        void WebGL2RHI::DestroyRenderPass(RHIRenderPass* renderPass)
+        {
+            // RHIRenderPass has no virtual dtor; delete through the concrete
+            // type (same pattern as DX12RHI::DestroyRenderPass).
+            delete static_cast<WebGL2RenderPass*>(renderPass);
+        }
 
         bool WebGL2RHI::CreateSampler(const RHISamplerCreateInfo*, RHISampler*& out)
         {
@@ -405,6 +421,15 @@ namespace ZEngine
         {
             static_cast<WebGL2CommandBuffer*>(cb)->reset();
             m_CurrentCommandBuffer = static_cast<WebGL2CommandBuffer*>(cb);
+            // Reset the CPU-side GL binding mirror so a fresh command stream
+            // doesn't inherit stale vertex/index/descriptor bindings.
+            std::memset(m_BoundArrayBuffers, 0, sizeof(m_BoundArrayBuffers));
+            std::memset(m_BoundArrayOffsets, 0, sizeof(m_BoundArrayOffsets));
+            m_BoundIndexBuffer = 0;
+            m_BoundIndexOffset = 0;
+            m_BoundIndexType = GL_UNSIGNED_SHORT;
+            std::memset(m_BoundDescriptorSets, 0, sizeof(m_BoundDescriptorSets));
+            m_BoundDescriptorSetCount = 0;
             return true;
         }
         bool WebGL2RHI::EndCommandBufferPFN(RHICommandBuffer*)
@@ -412,49 +437,151 @@ namespace ZEngine
             return true;
         }
 
-        void WebGL2RHI::CmdBeginRenderPassPFN(RHICommandBuffer*, const RHIRenderPassBeginInfo*, RHISubpassContents)
+        void WebGL2RHI::CmdBeginRenderPassPFN(RHICommandBuffer* commandBuffer, const RHIRenderPassBeginInfo* p, RHISubpassContents)
         {
-            WEBGL2_TODO("record");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::BeginRenderPassPayload pl {};
+            // Bind the pass's framebuffer (0 = canvas) so replay issues GL calls
+            // against it. The clear values are recorded for replay too.
+            if (p != nullptr && p->framebuffer != nullptr)
+            {
+                pl.framebuffer = static_cast<WebGL2Framebuffer*>(p->framebuffer)->getHandle();
+                m_ActiveFramebuffer = static_cast<WebGL2Framebuffer*>(p->framebuffer);
+            }
+            else
+            {
+                pl.framebuffer = m_DefaultFramebuffer;  // canvas
+                m_ActiveFramebuffer = nullptr;
+            }
+            pl.render_area_x = p ? p->renderArea.offset.x : 0;
+            pl.render_area_y = p ? p->renderArea.offset.y : 0;
+            pl.render_area_w = p ? p->renderArea.extent.width : 0;
+            pl.render_area_h = p ? p->renderArea.extent.height : 0;
+            pl.clear_value_count = p ? std::min(p->clearValueCount, WebGL2CommandBuffer::k_max_clear_attachments) : 0;
+            for (uint32_t i = 0; i < pl.clear_value_count; ++i)
+            {
+                const RHIClearValue& cv = p->pClearValues[i];
+                WebGL2CommandBuffer::RecordedClearColor& rc = pl.clear_values[i];
+                rc.aspect = RHI_IMAGE_ASPECT_COLOR_BIT;
+                rc.attachment = i;
+                rc.color[0] = cv.color.float32[0];
+                rc.color[1] = cv.color.float32[1];
+                rc.color[2] = cv.color.float32[2];
+                rc.color[3] = cv.color.float32[3];
+                rc.depth = cv.depthStencil.depth;
+                rc.stencil = cv.depthStencil.stencil;
+            }
+            cb->record(WebGL2CommandBuffer::CommandKind::BeginRenderPass, pl);
         }
         void WebGL2RHI::CmdNextSubpassPFN(RHICommandBuffer*, RHISubpassContents)
         {
-            WEBGL2_NOOP();
+            // Single-subpass on WebGL2; nothing to advance.
         }
-        void WebGL2RHI::CmdEndRenderPassPFN(RHICommandBuffer*)
+        void WebGL2RHI::CmdEndRenderPassPFN(RHICommandBuffer* commandBuffer)
         {
-            WEBGL2_TODO("record");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::EndRenderPassPayload pl {};
+            cb->record(WebGL2CommandBuffer::CommandKind::EndRenderPass, pl);
+            m_ActiveFramebuffer = nullptr;
         }
-        void WebGL2RHI::CmdBindPipelinePFN(RHICommandBuffer*, RHIPipelineBindPoint, RHIPipeline*)
+        void WebGL2RHI::CmdBindPipelinePFN(RHICommandBuffer* commandBuffer, RHIPipelineBindPoint, RHIPipeline* pipeline)
         {
-            WEBGL2_TODO("record");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::BindPipelinePayload pl {};
+            pl.pipeline = static_cast<WebGL2Pipeline*>(pipeline);
+            cb->record(WebGL2CommandBuffer::CommandKind::BindPipeline, pl);
         }
-        void WebGL2RHI::CmdSetViewportPFN(RHICommandBuffer*, uint32_t, uint32_t, const RHIViewport*)
+        void WebGL2RHI::CmdSetViewportPFN(RHICommandBuffer* commandBuffer, uint32_t, uint32_t, const RHIViewport* pViewports)
         {
-            WEBGL2_TODO("record");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::SetViewportPayload pl {};
+            if (pViewports != nullptr)
+            {
+                pl.x = pViewports->x;
+                pl.y = pViewports->y;
+                pl.w = pViewports->width;
+                pl.h = pViewports->height;
+                pl.min_depth = pViewports->minDepth;
+                pl.max_depth = pViewports->maxDepth;
+            }
+            cb->record(WebGL2CommandBuffer::CommandKind::SetViewport, pl);
         }
-        void WebGL2RHI::CmdSetScissorPFN(RHICommandBuffer*, uint32_t, uint32_t, const RHIRect2D*)
+        void WebGL2RHI::CmdSetScissorPFN(RHICommandBuffer* commandBuffer, uint32_t, uint32_t, const RHIRect2D* pScissors)
         {
-            WEBGL2_TODO("record");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::SetScissorPayload pl {};
+            if (pScissors != nullptr)
+            {
+                pl.x = pScissors->offset.x;
+                pl.y = pScissors->offset.y;
+                pl.w = pScissors->extent.width;
+                pl.h = pScissors->extent.height;
+            }
+            cb->record(WebGL2CommandBuffer::CommandKind::SetScissor, pl);
         }
-        void WebGL2RHI::CmdBindVertexBuffersPFN(RHICommandBuffer*, uint32_t, uint32_t, RHIBuffer* const*, const RHIDeviceSize*)
+        void WebGL2RHI::CmdBindVertexBuffersPFN(RHICommandBuffer* commandBuffer, uint32_t firstBinding, uint32_t bindingCount, RHIBuffer* const* pBuffers, const RHIDeviceSize* pOffsets)
         {
-            WEBGL2_TODO("record");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::BindVertexBuffersPayload pl {};
+            pl.first_binding = firstBinding;
+            pl.binding_count = std::min(bindingCount, WebGL2CommandBuffer::k_max_vertex_bindings);
+            for (uint32_t i = 0; i < pl.binding_count; ++i)
+            {
+                RHIBuffer* buf = pBuffers ? pBuffers[i] : nullptr;
+                pl.bindings[i].buffer = buf ? static_cast<WebGL2Buffer*>(buf)->getHandle() : 0;
+                pl.bindings[i].offset = pOffsets ? static_cast<GLintptr>(pOffsets[i]) : 0;
+            }
+            cb->record(WebGL2CommandBuffer::CommandKind::BindVertexBuffers, pl);
         }
-        void WebGL2RHI::CmdBindIndexBufferPFN(RHICommandBuffer*, RHIBuffer*, RHIDeviceSize, RHIIndexType)
+        void WebGL2RHI::CmdBindIndexBufferPFN(RHICommandBuffer* commandBuffer, RHIBuffer* buffer, RHIDeviceSize offset, RHIIndexType indexType)
         {
-            WEBGL2_TODO("record");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::BindIndexBufferPayload pl {};
+            pl.buffer = buffer ? static_cast<WebGL2Buffer*>(buffer)->getHandle() : 0;
+            pl.offset = static_cast<GLintptr>(offset);
+            pl.index_type = ToGLIndexType(indexType);
+            cb->record(WebGL2CommandBuffer::CommandKind::BindIndexBuffer, pl);
         }
-        void WebGL2RHI::CmdBindDescriptorSetsPFN(RHICommandBuffer*, RHIPipelineBindPoint, RHIPipelineLayout*, uint32_t, uint32_t, const RHIDescriptorSet* const*, uint32_t, const uint32_t*)
+        void WebGL2RHI::CmdBindDescriptorSetsPFN(RHICommandBuffer* commandBuffer, RHIPipelineBindPoint, RHIPipelineLayout*, uint32_t firstSet, uint32_t descriptorSetCount, const RHIDescriptorSet* const* pDescriptorSets, uint32_t, const uint32_t*)
         {
-            WEBGL2_TODO("record");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::BindDescriptorSetsPayload pl {};
+            pl.first_set = firstSet;
+            pl.set_count = std::min(descriptorSetCount, WebGL2CommandBuffer::k_max_descriptor_sets);
+            for (uint32_t i = 0; i < pl.set_count; ++i)
+            {
+                pl.sets[i].set = pDescriptorSets ? pDescriptorSets[i] : nullptr;
+            }
+            cb->record(WebGL2CommandBuffer::CommandKind::BindDescriptorSets, pl);
         }
-        void WebGL2RHI::CmdDrawIndexedPFN(RHICommandBuffer*, uint32_t, uint32_t, uint32_t, int32_t, uint32_t)
+        void WebGL2RHI::CmdDrawIndexedPFN(RHICommandBuffer* commandBuffer, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
         {
-            WEBGL2_TODO("record");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::DrawIndexedPayload pl {};
+            pl.index_count = indexCount;
+            pl.instance_count = instanceCount;
+            pl.first_index = firstIndex;
+            pl.vertex_offset = vertexOffset;
+            pl.first_instance = firstInstance;
+            cb->record(WebGL2CommandBuffer::CommandKind::DrawIndexed, pl);
         }
-        void WebGL2RHI::CmdClearAttachmentsPFN(RHICommandBuffer*, uint32_t, const RHIClearAttachment*, uint32_t, const RHIClearRect*)
+        void WebGL2RHI::CmdClearAttachmentsPFN(RHICommandBuffer* commandBuffer, uint32_t attachmentCount, const RHIClearAttachment* pAttachments, uint32_t, const RHIClearRect*)
         {
-            WEBGL2_TODO("record");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::ClearAttachmentsPayload pl {};
+            pl.count = std::min(attachmentCount, WebGL2CommandBuffer::k_max_clear_attachments);
+            for (uint32_t i = 0; i < pl.count; ++i)
+            {
+                pl.attachments[i].aspect = pAttachments[i].aspectMask;
+                pl.attachments[i].attachment = pAttachments[i].colorAttachment;
+                pl.attachments[i].color[0] = pAttachments[i].clearValue.color.float32[0];
+                pl.attachments[i].color[1] = pAttachments[i].clearValue.color.float32[1];
+                pl.attachments[i].color[2] = pAttachments[i].clearValue.color.float32[2];
+                pl.attachments[i].color[3] = pAttachments[i].clearValue.color.float32[3];
+                pl.attachments[i].depth = pAttachments[i].clearValue.depthStencil.depth;
+                pl.attachments[i].stencil = pAttachments[i].clearValue.depthStencil.stencil;
+            }
+            cb->record(WebGL2CommandBuffer::CommandKind::ClearAttachments, pl);
         }
 
         bool WebGL2RHI::BeginCommandBuffer(RHICommandBuffer* cb, const RHICommandBufferBeginInfo* info)
@@ -462,25 +589,88 @@ namespace ZEngine
             return BeginCommandBufferPFN(cb, info);
         }
 
-        void WebGL2RHI::CmdCopyImageToBuffer(RHICommandBuffer*, RHIImage*, RHIImageLayout, RHIBuffer*, uint32_t, const RHIBufferImageCopy*)
+        void WebGL2RHI::CmdCopyImageToBuffer(RHICommandBuffer* commandBuffer, RHIImage* srcImage, RHIImageLayout, RHIBuffer* dstBuffer, uint32_t regionCount, const RHIBufferImageCopy* pRegions)
         {
-            WEBGL2_TODO("readback via FBO + glReadPixels");
+            // WebGL2 reads pixels back into a PBO via glReadPixels; the actual
+            // read happens at replay (needs an FBO bound to the source image).
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            auto* gi = static_cast<WebGL2Image*>(srcImage);
+            WebGL2CommandBuffer::CopyImageToBufferPayload pl {};
+            pl.src_texture = gi->GetTexture();
+            pl.src_target = gi->getTarget();
+            pl.dst_buffer = dstBuffer ? static_cast<WebGL2Buffer*>(dstBuffer)->getHandle() : 0;
+            if (pRegions != nullptr && regionCount > 0)
+            {
+                pl.dst_offset = static_cast<GLintptr>(pRegions[0].bufferOffset);
+                pl.level = pRegions[0].imageSubresource.mipLevel;
+                pl.x = pRegions[0].imageOffset.x;
+                pl.y = pRegions[0].imageOffset.y;
+                pl.w = pRegions[0].imageExtent.width;
+                pl.h = pRegions[0].imageExtent.height;
+            }
+            pl.fmt = gi->getFormat();
+            pl.type = gi->getType();
+            cb->record(WebGL2CommandBuffer::CommandKind::CopyImageToBuffer, pl);
         }
-        void WebGL2RHI::CmdCopyImageToImage(RHICommandBuffer*, RHIImage*, RHIImageAspectFlagBits, RHIImage*, RHIImageAspectFlagBits, uint32_t, uint32_t)
+        void WebGL2RHI::CmdCopyImageToImage(RHICommandBuffer* commandBuffer, RHIImage* srcImage, RHIImageAspectFlagBits, RHIImage* dstImage, RHIImageAspectFlagBits, uint32_t width, uint32_t height)
         {
-            WEBGL2_TODO("blit via FBO");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            auto* src = static_cast<WebGL2Image*>(srcImage);
+            auto* dst = static_cast<WebGL2Image*>(dstImage);
+            WebGL2CommandBuffer::CopyImageToImagePayload pl {};
+            pl.src_texture = src->GetTexture();
+            pl.src_target = src->getTarget();
+            pl.dst_texture = dst->GetTexture();
+            pl.dst_target = dst->getTarget();
+            pl.w = width;
+            pl.h = height;
+            cb->record(WebGL2CommandBuffer::CommandKind::CopyImageToImage, pl);
         }
-        void WebGL2RHI::CmdBlitImage(RHICommandBuffer*, RHIImage*, RHIImageLayout, RHIImage*, RHIImageLayout, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, RHIFilter)
+        void WebGL2RHI::CmdBlitImage(RHICommandBuffer* commandBuffer, RHIImage* srcImage, RHIImageLayout, RHIImage* dstImage, RHIImageLayout, uint32_t srcX0, uint32_t srcY0, uint32_t srcX1, uint32_t srcY1, uint32_t dstX0, uint32_t dstY0, uint32_t dstX1, uint32_t dstY1, RHIFilter filter)
         {
-            WEBGL2_TODO("glBlitFramebuffer");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            auto* src = static_cast<WebGL2Image*>(srcImage);
+            auto* dst = static_cast<WebGL2Image*>(dstImage);
+            WebGL2CommandBuffer::BlitImagePayload pl {};
+            pl.src_texture = src->GetTexture();
+            pl.src_target = src->getTarget();
+            pl.dst_texture = dst->GetTexture();
+            pl.dst_target = dst->getTarget();
+            pl.src_x0 = static_cast<int32_t>(srcX0);
+            pl.src_y0 = static_cast<int32_t>(srcY0);
+            pl.src_x1 = static_cast<int32_t>(srcX1);
+            pl.src_y1 = static_cast<int32_t>(srcY1);
+            pl.dst_x0 = static_cast<int32_t>(dstX0);
+            pl.dst_y0 = static_cast<int32_t>(dstY0);
+            pl.dst_x1 = static_cast<int32_t>(dstX1);
+            pl.dst_y1 = static_cast<int32_t>(dstY1);
+            pl.filter = ToGLFilter(filter);
+            cb->record(WebGL2CommandBuffer::CommandKind::BlitImage, pl);
         }
-        void WebGL2RHI::CmdCopyBuffer(RHICommandBuffer*, RHIBuffer*, RHIBuffer*, uint32_t, RHIBufferCopy*)
+        void WebGL2RHI::CmdCopyBuffer(RHICommandBuffer* commandBuffer, RHIBuffer* srcBuffer, RHIBuffer* dstBuffer, uint32_t regionCount, RHIBufferCopy* pRegions)
         {
-            WEBGL2_TODO("record copy ops");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::CopyBufferPayload pl {};
+            pl.region_count = std::min(regionCount, WebGL2CommandBuffer::k_max_buffer_copy_regions);
+            for (uint32_t i = 0; i < pl.region_count; ++i)
+            {
+                pl.regions[i].src = srcBuffer ? static_cast<WebGL2Buffer*>(srcBuffer)->getHandle() : 0;
+                pl.regions[i].dst = dstBuffer ? static_cast<WebGL2Buffer*>(dstBuffer)->getHandle() : 0;
+                pl.regions[i].src_offset = static_cast<GLintptr>(pRegions[i].srcOffset);
+                pl.regions[i].dst_offset = static_cast<GLintptr>(pRegions[i].dstOffset);
+                pl.regions[i].size = static_cast<GLsizeiptr>(pRegions[i].size);
+            }
+            cb->record(WebGL2CommandBuffer::CommandKind::CopyBuffer, pl);
         }
-        void WebGL2RHI::CmdDraw(RHICommandBuffer*, uint32_t, uint32_t, uint32_t, uint32_t)
+        void WebGL2RHI::CmdDraw(RHICommandBuffer* commandBuffer, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
         {
-            WEBGL2_TODO("record draw");
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::DrawPayload pl {};
+            pl.vertex_count = vertexCount;
+            pl.instance_count = instanceCount;
+            pl.first_vertex = firstVertex;
+            pl.first_instance = firstInstance;
+            cb->record(WebGL2CommandBuffer::CommandKind::Draw, pl);
         }
         void WebGL2RHI::CmdDispatch(RHICommandBuffer*, uint32_t, uint32_t, uint32_t)
         { /* unsupported */
@@ -506,9 +696,49 @@ namespace ZEngine
             return true;
         }
 
-        void WebGL2RHI::UpdateDescriptorSets(uint32_t, const RHIWriteDescriptorSet*, uint32_t, const RHICopyDescriptorSet*)
+        void WebGL2RHI::UpdateDescriptorSets(uint32_t descriptorWriteCount, const RHIWriteDescriptorSet* pDescriptorWrites, uint32_t, const RHICopyDescriptorSet*)
         {
-            WEBGL2_TODO("populate set bag");
+            // Populate the CPU-side descriptor-set bag. Each write targets one
+            // binding of one set; the binding's GL point is derived from the
+            // set's layout at replay time (BindDescriptorSets). A null resource
+            // leaves the binding untouched (matches Vulkan/DX12 skip semantics).
+            for (uint32_t i = 0; i < descriptorWriteCount; ++i)
+            {
+                const RHIWriteDescriptorSet& w = pDescriptorWrites[i];
+                if (w.dstSet == nullptr)
+                {
+                    continue;
+                }
+                auto* set = static_cast<WebGL2DescriptorSet*>(w.dstSet);
+                const uint32_t binding = w.dstBinding;
+                if (w.descriptorType == RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                    w.descriptorType == RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
+                {
+                    if (w.pBufferInfo == nullptr || w.pBufferInfo->buffer == nullptr)
+                    {
+                        continue;
+                    }
+                    WebGL2DescriptorSet::UniformBufferBinding ub;
+                    ub.buffer = static_cast<WebGL2Buffer*>(w.pBufferInfo->buffer);
+                    ub.offset = static_cast<GLintptr>(w.pBufferInfo->offset);
+                    ub.range = static_cast<GLsizeiptr>(w.pBufferInfo->range);
+                    set->uboBindings()[binding] = ub;
+                }
+                else if (w.descriptorType == RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+                         w.descriptorType == RHI_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+                         w.descriptorType == RHI_DESCRIPTOR_TYPE_SAMPLER)
+                {
+                    if (w.pImageInfo == nullptr || w.pImageInfo->imageView == nullptr)
+                    {
+                        continue;
+                    }
+                    WebGL2DescriptorSet::SampledImageBinding sib;
+                    sib.view = static_cast<WebGL2ImageView*>(w.pImageInfo->imageView);
+                    sib.sampler = w.pImageInfo->sampler
+                        ? static_cast<WebGL2Sampler*>(w.pImageInfo->sampler) : nullptr;
+                    set->imageBindings()[binding] = sib;
+                }
+            }
         }
 
         bool WebGL2RHI::QueueSubmit(RHIQueue*, uint32_t submitCount, const RHISubmitInfo* pSubmits, RHIFence*)
@@ -631,13 +861,21 @@ namespace ZEngine
             m_CurrentFrameIndex = (m_CurrentFrameIndex + 1) % k_max_frames_in_flight;
             m_CurrentCommandBuffer = &m_CommandBuffers[m_CurrentFrameIndex];
         }
-        void WebGL2RHI::PushEvent(RHICommandBuffer*, const char*, const float*)
+        void WebGL2RHI::PushEvent(RHICommandBuffer* commandBuffer, const char* name, const float*)
         {
-            WEBGL2_NOOP();
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::PushDebugGroupPayload pl {};
+            if (name != nullptr)
+            {
+                std::strncpy(pl.name, name, sizeof(pl.name) - 1);
+            }
+            cb->record(WebGL2CommandBuffer::CommandKind::PushDebugGroup, pl);
         }
-        void WebGL2RHI::PopEvent(RHICommandBuffer*)
+        void WebGL2RHI::PopEvent(RHICommandBuffer* commandBuffer)
         {
-            WEBGL2_NOOP();
+            auto* cb = static_cast<WebGL2CommandBuffer*>(commandBuffer);
+            WebGL2CommandBuffer::PopDebugGroupPayload pl {};
+            cb->record(WebGL2CommandBuffer::CommandKind::PopDebugGroup, pl);
         }
 
         // ---------- Destroy ----------
@@ -880,14 +1118,412 @@ namespace ZEngine
                 m_GlContextHandle = nullptr;
             }
         }
-        void WebGL2RHI::ExecuteCommandList(WebGL2CommandBuffer*)
-        { /* TODO */
+        void WebGL2RHI::ExecuteCommandList(WebGL2CommandBuffer* cb)
+        {
+            if (cb == nullptr)
+            {
+                return;
+            }
+            const std::vector<WebGL2CommandBuffer::Command>& cmds = cb->commands();
+            const uint8_t* arena = cmds.empty() ? nullptr : cb->arena().data();
+            for (const auto& cmd : cmds)
+            {
+                ReplayCommand(cb, cmd);
+            }
         }
-        void WebGL2RHI::FlushPipelineState(WebGL2Pipeline*)
-        { /* TODO */
+
+        void WebGL2RHI::ReplayCommand(WebGL2CommandBuffer* cb, const WebGL2CommandBuffer::Command& cmd)
+        {
+            // The arena base is cb->arena().data(); each payload is a fixed POD
+            // copied verbatim by record(), so the reinterpret cast is safe.
+            // arena().data() is a prvalue pointer, so we must dereference it to
+            // obtain a reference (reinterpret_cast to a reference type requires an
+            // lvalue).
+            #define PL(T) (*reinterpret_cast<const WebGL2CommandBuffer::T*>(cb->arena().data() + cmd.payload_offset))
+
+            switch (cmd.kind)
+            {
+                case WebGL2CommandBuffer::CommandKind::BeginRenderPass:
+                {
+                    const auto& p = PL(BeginRenderPassPayload);
+                    glBindFramebuffer(GL_FRAMEBUFFER, p.framebuffer);
+                    glViewport(p.render_area_x, p.render_area_y,
+                               static_cast<GLsizei>(p.render_area_w),
+                               static_cast<GLsizei>(p.render_area_h));
+                    // Clear the attachments the pass asked for.
+                    GLbitfield mask = 0;
+                    for (uint32_t i = 0; i < p.clear_value_count; ++i)
+                    {
+                        const auto& cv = p.clear_values[i];
+                        if (cv.aspect & RHI_IMAGE_ASPECT_COLOR_BIT)
+                        {
+                            glClearColor(cv.color[0], cv.color[1], cv.color[2], cv.color[3]);
+                            mask |= GL_COLOR_BUFFER_BIT;
+                        }
+                        if (cv.aspect & RHI_IMAGE_ASPECT_DEPTH_BIT)
+                        {
+                            glClearDepthf(cv.depth);
+                            mask |= GL_DEPTH_BUFFER_BIT;
+                        }
+                        if (cv.aspect & RHI_IMAGE_ASPECT_STENCIL_BIT)
+                        {
+                            glClearStencil(cv.stencil);
+                            mask |= GL_STENCIL_BUFFER_BIT;
+                        }
+                    }
+                    if (mask != 0)
+                    {
+                        glClear(mask);
+                    }
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::EndRenderPass:
+                {
+                    // Detach from the pass's framebuffer so subsequent draws
+                    // don't render into a destroyed FBO.
+                    glBindFramebuffer(GL_FRAMEBUFFER, m_DefaultFramebuffer);
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::BindPipeline:
+                {
+                    const auto& p = PL(BindPipelinePayload);
+                    m_CurrentPipeline = p.pipeline;
+                    if (p.pipeline != nullptr)
+                    {
+                        glUseProgram(p.pipeline->getProgram());
+                    }
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::SetViewport:
+                {
+                    const auto& p = PL(SetViewportPayload);
+                    glViewport(static_cast<GLint>(p.x), static_cast<GLint>(p.y),
+                               static_cast<GLsizei>(p.w), static_cast<GLsizei>(p.h));
+                    glDepthRangef(p.min_depth, p.max_depth);
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::SetScissor:
+                {
+                    const auto& p = PL(SetScissorPayload);
+                    glScissor(static_cast<GLint>(p.x), static_cast<GLint>(p.y),
+                              static_cast<GLsizei>(p.w), static_cast<GLsizei>(p.h));
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::BindVertexBuffers:
+                {
+                    const auto& p = PL(BindVertexBuffersPayload);
+                    for (uint32_t i = 0; i < p.binding_count; ++i)
+                    {
+                        const GLuint buf = p.bindings[i].buffer;
+                        const GLintptr off = p.bindings[i].offset;
+                        if (buf == 0)
+                        {
+                            continue;
+                        }
+                        const uint32_t binding = p.first_binding + i;
+                        // Mirror the binding so a later Draw can set attributes.
+                        if (binding < WebGL2CommandBuffer::k_max_vertex_bindings)
+                        {
+                            m_BoundArrayBuffers[binding] = buf;
+                            m_BoundArrayOffsets[binding] = off;
+                        }
+                        glBindBuffer(GL_ARRAY_BUFFER, buf);
+                    }
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::BindIndexBuffer:
+                {
+                    const auto& p = PL(BindIndexBufferPayload);
+                    m_BoundIndexBuffer = p.buffer;
+                    m_BoundIndexOffset = p.offset;
+                    m_BoundIndexType = p.index_type;
+                    if (p.buffer != 0)
+                    {
+                        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, p.buffer);
+                    }
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::BindDescriptorSets:
+                {
+                    const auto& p = PL(BindDescriptorSetsPayload);
+                    for (uint32_t i = 0; i < p.set_count; ++i)
+                    {
+                        const uint32_t set_idx = p.first_set + i;
+                        if (set_idx < WebGL2CommandBuffer::k_max_descriptor_sets)
+                        {
+                            m_BoundDescriptorSets[set_idx] = p.sets[i].set;
+                        }
+                    }
+                    m_BoundDescriptorSetCount = p.first_set + p.set_count;
+                    // Re-apply against the currently bound program's layout.
+                    if (m_CurrentPipeline != nullptr)
+                    {
+                        // The recorded sets are stored as RecordedDescriptorSet;
+                        // extract the base RHIDescriptorSet* pointers for the bind.
+                        const RHIDescriptorSet* ptrs[WebGL2CommandBuffer::k_max_descriptor_sets] {};
+                        for (uint32_t i = 0; i < p.set_count; ++i)
+                        {
+                            ptrs[i] = p.sets[i].set;
+                        }
+                        BindDescriptorSets(m_CurrentPipeline->getLayout(),
+                                           p.first_set, p.set_count, ptrs);
+                    }
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::Draw:
+                {
+                    const auto& p = PL(DrawPayload);
+                    FlushPipelineState(m_CurrentPipeline);
+                    glDrawArrays(m_CurrentPipeline ? m_CurrentPipeline->getPrimitiveTopology() : GL_TRIANGLES,
+                                 static_cast<GLint>(p.first_vertex),
+                                 static_cast<GLsizei>(p.vertex_count));
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::DrawIndexed:
+                {
+                    const auto& p = PL(DrawIndexedPayload);
+                    FlushPipelineState(m_CurrentPipeline);
+                    if (m_BoundIndexBuffer != 0)
+                    {
+                        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_BoundIndexBuffer);
+                    }
+                    const GLsizei index_stride = (m_BoundIndexType == GL_UNSIGNED_INT) ? 4 : 2;
+                    glDrawElements(m_CurrentPipeline ? m_CurrentPipeline->getPrimitiveTopology() : GL_TRIANGLES,
+                                   static_cast<GLsizei>(p.index_count),
+                                   m_BoundIndexType,
+                                   reinterpret_cast<void*>(static_cast<uintptr_t>(p.first_index * index_stride)));
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::ClearAttachments:
+                {
+                    const auto& p = PL(ClearAttachmentsPayload);
+                    for (uint32_t i = 0; i < p.count; ++i)
+                    {
+                        const auto& a = p.attachments[i];
+                        if (a.aspect & RHI_IMAGE_ASPECT_COLOR_BIT)
+                        {
+                            glClearColor(a.color[0], a.color[1], a.color[2], a.color[3]);
+                            glClear(GL_COLOR_BUFFER_BIT);
+                        }
+                        if (a.aspect & RHI_IMAGE_ASPECT_DEPTH_BIT)
+                        {
+                            glClearDepthf(a.depth);
+                            glClear(GL_DEPTH_BUFFER_BIT);
+                        }
+                        if (a.aspect & RHI_IMAGE_ASPECT_STENCIL_BIT)
+                        {
+                            glClearStencil(a.stencil);
+                            glClear(GL_STENCIL_BUFFER_BIT);
+                        }
+                    }
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::CopyBuffer:
+                {
+                    const auto& p = PL(CopyBufferPayload);
+                    for (uint32_t i = 0; i < p.region_count; ++i)
+                    {
+                        const auto& r = p.regions[i];
+                        glBindBuffer(GL_COPY_READ_BUFFER, r.src);
+                        glBindBuffer(GL_COPY_WRITE_BUFFER, r.dst);
+                        glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER,
+                                            r.src_offset, r.dst_offset, r.size);
+                    }
+                    glBindBuffer(GL_COPY_READ_BUFFER, 0);
+                    glBindBuffer(GL_COPY_WRITE_BUFFER, 0);
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::CopyImageToImage:
+                {
+                    const auto& p = PL(CopyImageToImagePayload);
+                    // Bind src to texture unit 0, dst to FBO color attachment.
+                    glActiveTexture(GL_TEXTURE0);
+                    glBindTexture(p.src_target, p.src_texture);
+                    GLint prev_fbo = 0;
+                    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+                    glBindFramebuffer(GL_FRAMEBUFFER, m_ActiveFramebuffer ? m_ActiveFramebuffer->getHandle() : m_DefaultFramebuffer);
+                    // Default draw/read buffer is GL_COLOR_ATTACHMENT0 on a
+                    // framebuffer with a single color attachment.
+                    glReadBuffer(GL_COLOR_ATTACHMENT0);
+                    glBlitFramebuffer(0, 0, static_cast<GLsizei>(p.w), static_cast<GLsizei>(p.h),
+                                      0, 0, static_cast<GLsizei>(p.w), static_cast<GLsizei>(p.h),
+                                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+                    glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+                    glBindTexture(p.src_target, 0);
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::BlitImage:
+                {
+                    const auto& p = PL(BlitImagePayload);
+                    GLint prev_fbo = 0;
+                    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+                    // Src -> read FBO, dst -> draw FBO (both default-attached for now).
+                    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_ActiveFramebuffer ? m_ActiveFramebuffer->getHandle() : m_DefaultFramebuffer);
+                    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_ActiveFramebuffer ? m_ActiveFramebuffer->getHandle() : m_DefaultFramebuffer);
+                    glBlitFramebuffer(p.src_x0, p.src_y0, p.src_x1, p.src_y1,
+                                      p.dst_x0, p.dst_y0, p.dst_x1, p.dst_y1,
+                                      GL_COLOR_BUFFER_BIT, p.filter);
+                    glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::CopyImageToBuffer:
+                {
+                    // Readback needs the source image bound to an FBO; record the
+                    // PBO + offset for a later glReadPixels path. For now flush
+                    // the pixels into the PBO from the default framebuffer.
+                    const auto& p = PL(CopyImageToBufferPayload);
+                    GLint prev_fbo = 0;
+                    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prev_fbo);
+                    glBindFramebuffer(GL_FRAMEBUFFER, m_ActiveFramebuffer ? m_ActiveFramebuffer->getHandle() : m_DefaultFramebuffer);
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER, p.dst_buffer);
+                    glReadPixels(p.x, p.y, static_cast<GLsizei>(p.w), static_cast<GLsizei>(p.h),
+                                 p.fmt, p.type, reinterpret_cast<void*>(static_cast<uintptr_t>(p.dst_offset)));
+                    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+                    glBindFramebuffer(GL_FRAMEBUFFER, prev_fbo);
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::PushDebugGroup:
+                {
+                    // GL ES 3.0 has no scoped debug marker (that's a GL 4.3+
+                    // / ARB_gl_spirv feature). The name is kept for tooling.
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::PopDebugGroup:
+                {
+                    break;
+                }
+                case WebGL2CommandBuffer::CommandKind::Dispatch:
+                case WebGL2CommandBuffer::CommandKind::PipelineBarrier:
+                {
+                    // Implicit in GL / unsupported on WebGL2.
+                    break;
+                }
+            }
+            #undef PL
         }
-        void WebGL2RHI::BindDescriptorSets(WebGL2PipelineLayout*, uint32_t, uint32_t, const RHIDescriptorSet* const*)
-        { /* TODO */
+
+        void WebGL2RHI::FlushPipelineState(WebGL2Pipeline* pipeline)
+        {
+            if (pipeline == nullptr)
+            {
+                return;
+            }
+            // Re-apply the vertex attribute pointers the pipeline layout expects
+            // from the most recently bound vertex buffers, then enable the
+            // fixed-function state baked into the pipeline.
+            for (const auto& attrib : pipeline->vertexAttributes())
+            {
+                if (attrib.binding >= WebGL2CommandBuffer::k_max_vertex_bindings)
+                {
+                    continue;
+                }
+                GLuint buf = m_BoundArrayBuffers[attrib.binding];
+                if (buf == 0)
+                {
+                    continue;
+                }
+                glBindBuffer(GL_ARRAY_BUFFER, buf);
+                glVertexAttribPointer(attrib.location, attrib.components, attrib.type,
+                                        attrib.normalized, static_cast<GLsizei>(attrib.offset),
+                                        reinterpret_cast<void*>(static_cast<uintptr_t>(m_BoundArrayOffsets[attrib.binding])));
+                glEnableVertexAttribArray(attrib.location);
+            }
+
+            // Depth test
+            if (pipeline->depth_test_enable)
+            {
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(pipeline->depth_func);
+                glDepthMask(pipeline->depth_write_enable ? GL_TRUE : GL_FALSE);
+            }
+            else
+            {
+                glDisable(GL_DEPTH_TEST);
+            }
+            // Cull
+            if (pipeline->cull_enable)
+            {
+                glEnable(GL_CULL_FACE);
+                glCullFace(pipeline->cull_face);
+                glFrontFace(pipeline->front_face);
+            }
+            else
+            {
+                glDisable(GL_CULL_FACE);
+            }
+            // Blend
+            if (pipeline->blend_enable)
+            {
+                glEnable(GL_BLEND);
+                glBlendFuncSeparate(pipeline->blend_src_rgb, pipeline->blend_dst_rgb,
+                                    pipeline->blend_src_a, pipeline->blend_dst_a);
+                glBlendEquationSeparate(pipeline->blend_op_rgb, pipeline->blend_op_a);
+            }
+            else
+            {
+                glDisable(GL_BLEND);
+            }
+        }
+
+        void WebGL2RHI::BindDescriptorSets(WebGL2PipelineLayout* layout,
+                                           uint32_t first_set,
+                                           uint32_t count,
+                                           const RHIDescriptorSet* const* sets)
+        {
+            if (layout == nullptr || sets == nullptr)
+            {
+                return;
+            }
+            const std::vector<WebGL2DescriptorSetLayout*>& layouts = layout->getLayouts();
+            for (uint32_t s = 0; s < count; ++s)
+            {
+                const RHIDescriptorSet* rset = sets[s];
+                if (rset == nullptr)
+                {
+                    continue;
+                }
+                auto* set = const_cast<WebGL2DescriptorSet*>(
+                    static_cast<const WebGL2DescriptorSet*>(rset));
+                // Map this set's layout bindings to GL binding points. The layout
+                // index (s + first_set) selects the GL binding base; each binding
+                // within it uses its declared binding number as the GL point.
+                const uint32_t set_binding_base = first_set + s;
+                for (const auto& lb : set->getLayout() ? set->getLayout()->getBindings() : std::vector<RHIDescriptorSetLayoutBinding>())
+                {
+                    const uint32_t gl_point = set_binding_base * 16 + lb.binding;
+                    if (lb.descriptorType == RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+                        lb.descriptorType == RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC)
+                    {
+                        auto it = set->uboBindings().find(lb.binding);
+                        if (it == set->uboBindings().end())
+                        {
+                            continue;
+                        }
+                        const WebGL2DescriptorSet::UniformBufferBinding& ub = it->second;
+                        glBindBufferRange(GL_UNIFORM_BUFFER, gl_point, ub.buffer->getHandle(),
+                                          ub.offset, ub.range);
+                    }
+                    else if (lb.descriptorType == RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+                             lb.descriptorType == RHI_DESCRIPTOR_TYPE_SAMPLED_IMAGE)
+                    {
+                        auto it = set->imageBindings().find(lb.binding);
+                        if (it == set->imageBindings().end())
+                        {
+                            continue;
+                        }
+                        const WebGL2DescriptorSet::SampledImageBinding& sib = it->second;
+                        const GLuint tex = sib.view ? sib.view->getImage()->GetTexture() : 0;
+                        const GLenum target = sib.view ? sib.view->getImage()->getTarget() : GL_TEXTURE_2D;
+                        const uint32_t unit = gl_point & 15u;  // GL active texture units
+                        glActiveTexture(GL_TEXTURE0 + unit);
+                        glBindTexture(target, tex);
+                        if (sib.sampler != nullptr && sib.sampler->getHandle() != 0)
+                        {
+                            glBindSampler(unit, sib.sampler->getHandle());
+                        }
+                    }
+                }
+            }
         }
 
         GLenum WebGL2RHI::ToGLInternalFormat(RHIFormat fmt)
@@ -960,6 +1596,138 @@ namespace ZEngine
                     return GL_UNSIGNED_INT;
                 default:
                     return GL_UNSIGNED_SHORT;
+            }
+        }
+        GLenum WebGL2RHI::ToGLCompareOp(RHICompareOp op)
+        {
+            switch (op)
+            {
+                case RHI_COMPARE_OP_NEVER:         return GL_NEVER;
+                case RHI_COMPARE_OP_LESS:          return GL_LESS;
+                case RHI_COMPARE_OP_EQUAL:         return GL_EQUAL;
+                case RHI_COMPARE_OP_LESS_OR_EQUAL: return GL_LEQUAL;
+                case RHI_COMPARE_OP_GREATER:       return GL_GREATER;
+                case RHI_COMPARE_OP_NOT_EQUAL:     return GL_NOTEQUAL;
+                case RHI_COMPARE_OP_GREATER_OR_EQUAL: return GL_GEQUAL;
+                case RHI_COMPARE_OP_ALWAYS:        return GL_ALWAYS;
+                default:                           return GL_ALWAYS;
+            }
+        }
+        GLenum WebGL2RHI::ToGLCullMode(RHICullModeFlags cull)
+        {
+            // GL's cull takes a single face; the RHI uses a flag set. Front-and-
+            // back culling has no GL equivalent in ES 3.0 (only GL_ARB), so we
+            // fall back to back-face culling (the most common case).
+            if (cull == RHI_CULL_MODE_FRONT_AND_BACK)
+                return GL_BACK;
+            if (cull & RHI_CULL_MODE_FRONT_BIT)
+                return GL_FRONT;
+            if (cull & RHI_CULL_MODE_BACK_BIT)
+                return GL_BACK;
+            return GL_BACK;  // RHI_CULL_MODE_NONE -> disabled by caller
+        }
+        GLenum WebGL2RHI::ToGLFrontFace(RHIFrontFace ff)
+        {
+            switch (ff)
+            {
+                case RHI_FRONT_FACE_COUNTER_CLOCKWISE: return GL_CCW;
+                case RHI_FRONT_FACE_CLOCKWISE:         return GL_CW;
+                default:                               return GL_CCW;
+            }
+        }
+        GLenum WebGL2RHI::ToGLPolygonMode(RHIPolygonMode pm)
+        {
+            // glPolygonMode is a desktop-GL feature; GL_FILL/GL_LINE/GL_POINT
+            // are not defined in GLES 3.0. WebGL2 can't change polygon mode, so
+            // this helper is a no-op default (the pipeline flush never consumes
+            // it). Kept for interface parity with the other ToGL* translators.
+            (void)pm;
+            return 0;
+        }
+        GLenum WebGL2RHI::ToGLBlendFactor(RHIBlendFactor f)
+        {
+            switch (f)
+            {
+                case RHI_BLEND_FACTOR_ZERO:                 return GL_ZERO;
+                case RHI_BLEND_FACTOR_ONE:                  return GL_ONE;
+                case RHI_BLEND_FACTOR_SRC_COLOR:            return GL_SRC_COLOR;
+                case RHI_BLEND_FACTOR_ONE_MINUS_SRC_COLOR:  return GL_ONE_MINUS_SRC_COLOR;
+                case RHI_BLEND_FACTOR_DST_COLOR:            return GL_DST_COLOR;
+                case RHI_BLEND_FACTOR_ONE_MINUS_DST_COLOR:  return GL_ONE_MINUS_DST_COLOR;
+                case RHI_BLEND_FACTOR_SRC_ALPHA:            return GL_SRC_ALPHA;
+                case RHI_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA:  return GL_ONE_MINUS_SRC_ALPHA;
+                case RHI_BLEND_FACTOR_DST_ALPHA:            return GL_DST_ALPHA;
+                case RHI_BLEND_FACTOR_ONE_MINUS_DST_ALPHA:  return GL_ONE_MINUS_DST_ALPHA;
+                case RHI_BLEND_FACTOR_CONSTANT_COLOR:       return GL_CONSTANT_COLOR;
+                case RHI_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR: return GL_ONE_MINUS_CONSTANT_COLOR;
+                case RHI_BLEND_FACTOR_CONSTANT_ALPHA:       return GL_CONSTANT_ALPHA;
+                case RHI_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA: return GL_ONE_MINUS_CONSTANT_ALPHA;
+                case RHI_BLEND_FACTOR_SRC_ALPHA_SATURATE:   return GL_SRC_ALPHA_SATURATE;
+                default:                                    return GL_ONE;
+            }
+        }
+        GLenum WebGL2RHI::ToGLBlendOp(RHIBlendOp op)
+        {
+            switch (op)
+            {
+                case RHI_BLEND_OP_ADD:            return GL_FUNC_ADD;
+                case RHI_BLEND_OP_SUBTRACT:       return GL_FUNC_SUBTRACT;
+                case RHI_BLEND_OP_REVERSE_SUBTRACT: return GL_FUNC_REVERSE_SUBTRACT;
+                case RHI_BLEND_OP_MIN:
+                    // GL_FUNC_MIN (0x8092) is an EXT on ES 3.0, not core; fall
+                    // back to ADD when the constant isn't defined.
+                #ifdef GL_FUNC_MIN
+                    return GL_FUNC_MIN;
+                #else
+                    return GL_FUNC_ADD;
+                #endif
+                case RHI_BLEND_OP_MAX:
+                #ifdef GL_FUNC_MAX
+                    return GL_FUNC_MAX;
+                #else
+                    return GL_FUNC_ADD;
+                #endif
+                default:                          return GL_FUNC_ADD;
+            }
+        }
+        GLenum WebGL2RHI::ToGLFilter(RHIFilter f)
+        {
+            switch (f)
+            {
+                case RHI_FILTER_NEAREST: return GL_NEAREST;
+                case RHI_FILTER_LINEAR:  return GL_LINEAR;
+                default:                 return GL_LINEAR;
+            }
+        }
+        GLenum WebGL2RHI::ToGLAddressMode(RHISamplerAddressMode a)
+        {
+            switch (a)
+            {
+                case RHI_SAMPLER_ADDRESS_MODE_REPEAT:            return GL_REPEAT;
+                case RHI_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT:   return GL_MIRRORED_REPEAT;
+                case RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE:     return GL_CLAMP_TO_EDGE;
+                case RHI_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER:
+                #ifdef GL_CLAMP_TO_BORDER
+                    return GL_CLAMP_TO_BORDER;
+                #else
+                    return GL_CLAMP_TO_EDGE;
+                #endif
+                case RHI_SAMPLER_ADDRESS_MODE_MIRROR_CLAMP_TO_EDGE:
+                #ifdef GL_MIRROR_CLAMP_TO_EDGE
+                    return GL_MIRROR_CLAMP_TO_EDGE;
+                #else
+                    return GL_CLAMP_TO_EDGE;
+                #endif
+                default:                                         return GL_CLAMP_TO_EDGE;
+            }
+        }
+        GLenum WebGL2RHI::ToGLMipmapMode(RHISamplerMipmapMode m)
+        {
+            switch (m)
+            {
+                case RHI_SAMPLER_MIPMAP_MODE_NEAREST: return GL_NEAREST_MIPMAP_NEAREST;
+                case RHI_SAMPLER_MIPMAP_MODE_LINEAR:  return GL_LINEAR_MIPMAP_LINEAR;
+                default:                              return GL_LINEAR_MIPMAP_LINEAR;
             }
         }
 

@@ -722,8 +722,11 @@ if(NOT EMSCRIPTEN)
     endforeach()
 endif()
 
-# Fallback: if minizip-ng target still doesn't exist, create it manually
-if(NOT TARGET minizip-ng)
+# Fallback: if minizip-ng target still doesn't exist, create it manually.
+# Skipped on Emscripten: minizip-ng is only linked by the Editor (XlsxImporter),
+# which is not built for Web, so the fallback would only produce a Win32-oriented
+# archive (windows.h / zlib-ng.h) that nothing consumes.
+if(NOT TARGET minizip-ng AND NOT EMSCRIPTEN)
     message(STATUS "minizip-ng target not found, creating manually")
     set(MINIZIP_NG_SRC
         ${CMAKE_CURRENT_SOURCE_DIR}/minizip-ng/mz_crypt.c

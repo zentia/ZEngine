@@ -127,7 +127,24 @@ if(EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
     list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
     list(FILTER REGULAR_HEADER_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*")
     list(FILTER REGULAR_SOURCE_FILES EXCLUDE REGEX "(^|.*/)Function/Render/Platform/Windows/.*\\.cpp$")
-    message(STATUS "Runtime(Web): Vulkan/DX12/Metal disabled; using WebGL2 RHI; excluded Passes/VirtualTexture/DebugDrawBuffer/Lumen/ShaderLab/physics sources")
+    # ----------------------------------------------------------------
+    # 上面把整个 Passes/ 目录都排除了，但**桌面渲染管线**（DesktopRenderPipelineModule /
+    # RenderPipelineBase / RenderScene，都在 Render/ 而非 Passes/，未被排除）仍然引用其中
+    # 几个 pass 的符号，于是链接期报 undefined symbol。
+    #
+    # 这里把**已解耦、平台无关**的两个 pass TU 放回来（与 Apple 分支同旨：ParticlePass
+    # 早已去掉 Vulkan 私有依赖，只用 RHI_ 前缀类型；MainCameraPassShaderCommon 是纯
+    # shader 名判定，无任何后端依赖）。二者在 Web 上用 emcc 实测编译通过，真正编进
+    # 桌面管线而非靠空桩掩盖缺口。
+    list(APPEND SOURCE_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/ParticlePass.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/MainCameraPassShaderCommon.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/MainCameraRp1Pass.cpp")
+    list(APPEND REGULAR_SOURCE_FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/ParticlePass.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/MainCameraPassShaderCommon.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/MainCameraRp1Pass.cpp")
+    message(STATUS "Runtime(Web): Vulkan/DX12/Metal disabled; using WebGL2 RHI; excluded Passes/VirtualTexture/DebugDrawBuffer/Lumen/ShaderLab/physics sources; re-included decoupled ParticlePass + MainCameraPassShaderCommon")
 else()
     set(ZENGINE_RHI_WEBGL2 OFF CACHE INTERNAL "WebGL2 RHI backend disabled (non-Emscripten build)")
     list(FILTER SOURCE_FILES         EXCLUDE REGEX "(^|.*/)Function/Render/Interface/WebGL2/.*\\.cpp$")

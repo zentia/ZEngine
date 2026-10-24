@@ -53,8 +53,11 @@
 
 #if defined(__EMSCRIPTEN__)
 
-    #include "bq_common/BqCommonPublicInclude.h"
-    #include "bq_log/Misc/BqLogDef.h"
+    // NOTE: the on-disk bqlog headers are lowercase; the PascalCase names this
+    // file originally used only resolved on case-insensitive Windows. Emscripten
+    // clang includes case-sensitively, so use the real lowercase paths.
+    #include "bq_common/bq_common_public_include.h"
+    #include "bq_log/misc/bq_log_def.h"
 
     #include <cstdint>
     #include <cstdio>
@@ -191,6 +194,18 @@ namespace bq
             // produces "disabled" for the masking AND-test.
             return kZeroCategoryMaskArray;
         }
+
+        // ---- 补桩（Web 链接缺口）----------------------------------------
+        // LogSystem.cpp 的崩溃/flush 路径会调这两个 API；此前 BqLogStubs 覆盖了
+        // 写入/枚举类 API，却漏了这两个运维型 API，导致 wasm-ld "undefined
+        // symbol"。Web 上无真实日志后端，二者均为 no-op：不写盘、不改控制台。
+
+        // 手动强制刷盘（log_id==0 表示全部）。信号安全承诺在 Web 沙箱里无落盘
+        // 目标，直接空转即可。
+        BQ_API void __api_force_flush(uint64_t /*log_id*/) {}
+
+        // 开/关控制台 appender 缓冲。Web 无控制台 appender，忽略即可。
+        BQ_API void __api_set_console_buffer_enable(bool /*enable*/) {}
 
     }  // namespace api
 }  // namespace bq

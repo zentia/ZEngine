@@ -660,10 +660,47 @@ inline LONG WINAPI ZEngineCrashHandler(EXCEPTION_POINTERS* ep)
     #include <dlfcn.h>
     #include <unistd.h>
     #include <fcntl.h>
+#elif defined(__EMSCRIPTEN__)
+    // WebAssembly / Emscripten：sysroot 里**没有** <execinfo.h>，因此无
+    // backtrace()；但 <unistd.h>/<fcntl.h>/<dlfcn.h> 都在，open/write/close/
+    // dladdr/Dl_info 全部可用（WASM 是单进程沙箱，这些只是内存/虚拟 FS 操作，
+    // 且 write/open/close 是 POSIX 保证的信号安全原语）。backtrace() 由本文件
+    // 下方命名空间内的 inline 兜底提供（返回 0 帧，快照仍保留 signal/platform/
+    // 日志尾，帧列表优雅降级——比 Windows/POSIX 少帧，但绝不二次踩内存）。
+    #include <unistd.h>              // open / write / close
+    #include <fcntl.h>               // O_* 标志
+    #include <dlfcn.h>               // dladdr / Dl_info
+    #include <emscripten/stack.h>    // 栈边界内建（backtrace 兜底预留）
 #endif
 
 namespace zcrash_posix
 {
+
+// ---- backtrace() 兜底（Emscripten / WebAssembly）-------------------------
+//
+// glibc 的 <execinfo.h> 在 Emscripten sysroot 里不存在，故本文件上方的 include
+// 分支拿不到 backtrace()。这里提供一个**信号安全**的同名 inline 定义：返回 0
+// 帧（buffer 保持全 null），让 WriteSnapshot 的既有循环自然跳过帧输出。
+//
+// 为什么是 0 帧而不是手撸栈扫描：崩溃处理器里做栈扫描（读 [sp] 找返回地址）在
+// 堆/栈可能已损坏时并不比 backtrace() 本身更安全，且 WASM 是线性内存、没有可
+// 可靠区分代码指针与数据的边界。宁可少给帧，也绝不冒二次踩内存的风险——崩溃
+// 快照的必达产物是 signal/platform/日志尾，帧只是锦上添花。等 Emscripten 上游
+// 补齐 <execinfo.h> 后可整段移除本兜底。
+#if defined(__EMSCRIPTEN__)
+inline int backtrace(void** buffer, int buffer_size)
+{
+    if (buffer != nullptr && buffer_size > 0)
+    {
+        // 全 null：告知调用方"无可用帧"，与 glibc 返回值的空帧语义一致。
+        for (int i = 0; i < buffer_size; ++i)
+        {
+            buffer[i] = nullptr;
+        }
+    }
+    return 0;
+}
+#endif
 
 // ---- 信号安全的定长整数格式化（栈上，无分配）----------------------------
 //

@@ -28,6 +28,11 @@ static std::unique_ptr<GenericApplication> CreatePlatformApplication()
     // (UIKit UIView / Android Surface / OHOS XComponent).
     // The platform RHI attaches to an externally-provided layer/surface at runtime.
     return nullptr;
+#elif defined(__EMSCRIPTEN__)
+    // Web (Emscripten): the drawable is the canvas, owned by the browser / mini-
+    // game host. WebGL2RHI acquires the GL context from the emscripten shim and
+    // reads the canvas size directly; there is no engine-owned window here.
+    return nullptr;
 #else
     #error "CreatePlatformApplication: unsupported platform"
 #endif

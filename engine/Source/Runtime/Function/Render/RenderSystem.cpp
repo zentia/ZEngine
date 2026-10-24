@@ -304,6 +304,7 @@ void RenderSystem::Tick(float delta_time)
 
                 m_Rhi->CmdBeginRenderPassPFN(command_buffer, &begin_info, RHI_SUBPASS_CONTENTS_INLINE);
 
+#if defined(__APPLE__)
                 // 场景 → swapchain：一次全屏采样。Metal 没有持久 swapchain image，
                 // 也没有 RP2，这是唯一能把 RP1 的离屏结果搬到屏幕上的路。
                 // 必须画在 UI **之前**，否则 UI 会被场景盖掉。
@@ -325,6 +326,7 @@ void RenderSystem::Tick(float delta_time)
                                        m_RenderPipeline ? m_RenderPipeline->GetSceneColorView() : nullptr,
                                        !already_tonemapped);
                 }
+#endif  // __APPLE__
 
                 // GPU-Spine（控制台 `spine.load` 才有东西画）：场景之后、编辑器 UI 之前 ⇒ 面板盖在它上面，
                 // 与 Vulkan（RP2 UI subpass 里画在 UI 之前）同一层次。swapchain pass 是 Apple 上唯一开着的 pass。

@@ -20,7 +20,10 @@
     #include "Runtime/Function/Render/Interface/RHIStruct.h"
 
     #include <GLES3/gl3.h>
+    #include <algorithm>
+    #include <array>
     #include <cstdint>
+    #include <cstring>
     #include <map>
     #include <string>
     #include <unordered_map>
@@ -30,6 +33,11 @@ namespace ZEngine
 {
     namespace WebGL2
     {
+
+        // Forward decls: the command-buffer payload structs below hold pointers
+        // to these types, which are defined further down in this header.
+        class WebGL2Pipeline;
+        class WebGL2PipelineLayout;
 
         // ---------------------------------------------------------------------------
         // Sync / queue / command primitives.
@@ -83,6 +91,78 @@ namespace ZEngine
                 size_t payload_size {0};
             };
 
+            // -- fixed-size slots used by the recorded payloads --
+            static constexpr uint32_t k_max_vertex_bindings = 16;
+            static constexpr uint32_t k_max_descriptor_sets = 8;
+            static constexpr uint32_t k_max_clear_attachments = 8;
+            static constexpr uint32_t k_max_buffer_copy_regions = 16;
+
+            // A single vertex-buffer binding as recorded (handle + offset). The
+            // stride/attribute layout lives on the pipeline and is resolved at
+            // replay time (see WebGL2RHI::FlushPipelineState).
+            struct RecordedVertexBinding
+            {
+                GLuint buffer {0};
+                GLintptr offset {0};
+            };
+
+            // A single descriptor set as recorded. The layout (which GL binding
+            // point each binding maps to) lives on the pipeline layout and is
+            // resolved at replay time (see WebGL2RHI::BindDescriptorSets).
+            struct RecordedDescriptorSet
+            {
+                const RHIDescriptorSet* set {nullptr};
+            };
+
+            struct RecordedClearColor
+            {
+                float color[4] {0, 0, 0, 0};
+                float depth {1.0f};
+                uint32_t stencil {0};
+                RHIImageAspectFlags aspect {RHI_IMAGE_ASPECT_COLOR_BIT};
+                uint32_t attachment {0};
+            };
+
+            // -- typed payload structs, one per command kind (all POD) --
+            struct BeginRenderPassPayload
+            {
+                GLuint framebuffer {0};
+                int32_t render_area_x {0};
+                int32_t render_area_y {0};
+                uint32_t render_area_w {0};
+                uint32_t render_area_h {0};
+                uint32_t clear_value_count {0};
+                RecordedClearColor clear_values[k_max_clear_attachments];
+            };
+            struct EndRenderPassPayload {};
+            struct BindPipelinePayload { WebGL2Pipeline* pipeline {nullptr}; };
+            struct SetViewportPayload { float x {0}; float y {0}; float w {0}; float h {0}; float min_depth {0}; float max_depth {1}; };
+            struct SetScissorPayload { int32_t x {0}; int32_t y {0}; uint32_t w {0}; uint32_t h {0}; };
+            struct BindVertexBuffersPayload
+            {
+                uint32_t first_binding {0};
+                uint32_t binding_count {0};
+                RecordedVertexBinding bindings[k_max_vertex_bindings];
+            };
+            struct BindIndexBufferPayload { GLuint buffer {0}; GLintptr offset {0}; GLenum index_type {GL_UNSIGNED_SHORT}; };
+            struct BindDescriptorSetsPayload
+            {
+                uint32_t first_set {0};
+                uint32_t set_count {0};
+                RecordedDescriptorSet sets[k_max_descriptor_sets];
+            };
+            struct DrawPayload { uint32_t vertex_count {0}; uint32_t instance_count {1}; uint32_t first_vertex {0}; uint32_t first_instance {0}; };
+            struct DrawIndexedPayload { uint32_t index_count {0}; uint32_t instance_count {1}; uint32_t first_index {0}; int32_t vertex_offset {0}; uint32_t first_instance {0}; };
+            struct CopyBufferRegion { GLuint src {0}; GLuint dst {0}; GLintptr src_offset {0}; GLintptr dst_offset {0}; GLsizeiptr size {0}; };
+            struct CopyBufferPayload { uint32_t region_count {0}; CopyBufferRegion regions[k_max_buffer_copy_regions]; };
+            struct CopyImageToBufferPayload { GLuint src_texture {0}; GLenum src_target {GL_TEXTURE_2D}; GLuint dst_buffer {0}; GLintptr dst_offset {0}; uint32_t level {0}; uint32_t x {0}; uint32_t y {0}; uint32_t w {0}; uint32_t h {0}; GLenum fmt {GL_RGBA}; GLenum type {GL_UNSIGNED_BYTE}; };
+            struct CopyImageToImagePayload { GLuint src_texture {0}; GLenum src_target {GL_TEXTURE_2D}; GLuint dst_texture {0}; GLenum dst_target {GL_TEXTURE_2D}; uint32_t src_level {0}; uint32_t dst_level {0}; uint32_t src_x {0}; uint32_t src_y {0}; uint32_t dst_x {0}; uint32_t dst_y {0}; uint32_t w {0}; uint32_t h {0}; };
+            struct BlitImagePayload { GLuint src_texture {0}; GLenum src_target {GL_TEXTURE_2D}; GLuint dst_texture {0}; GLenum dst_target {GL_TEXTURE_2D}; int32_t src_x0 {0}; int32_t src_y0 {0}; int32_t src_x1 {0}; int32_t src_y1 {0}; int32_t dst_x0 {0}; int32_t dst_y0 {0}; int32_t dst_x1 {0}; int32_t dst_y1 {0}; uint32_t level {0}; GLenum filter {GL_NEAREST}; };
+            struct ClearAttachmentsPayload { uint32_t count {0}; RecordedClearColor attachments[k_max_clear_attachments]; };
+            struct PipelineBarrierPayload {};
+            struct PushDebugGroupPayload { char name[64] {}; };
+            struct PopDebugGroupPayload {};
+
             void reset()
             {
                 m_Commands.clear();
@@ -92,6 +172,23 @@ namespace ZEngine
             const std::vector<Command>& commands() const { return m_Commands; }
             std::vector<uint8_t>& arena() { return m_Arena; }
             const std::vector<uint8_t>& arena() const { return m_Arena; }
+
+            // Append a typed command. The payload struct is copied into the arena
+            // (aligned to alignof(std::max_align_t)); the command records its
+            // offset/size so ExecuteCommandList() can reinterpret it.
+            template<typename T>
+            void record(CommandKind kind, const T& payload)
+            {
+                alignas(std::max_align_t) std::array<uint8_t, sizeof(T)> buf;
+                std::memcpy(buf.data(), &payload, sizeof(T));
+                const size_t off = m_Arena.size();
+                m_Arena.insert(m_Arena.end(), buf.begin(), buf.end());
+                Command c;
+                c.kind = kind;
+                c.payload_offset = off;
+                c.payload_size = sizeof(T);
+                m_Commands.push_back(c);
+            }
 
         private:
             std::vector<Command> m_Commands;

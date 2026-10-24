@@ -40,7 +40,7 @@
 | 9 | 🟡 Medium | `RHI.h` 抽象头泄漏 Vulkan VMA 头；124 个纯虚函数的胖接口 | `Function/Render/Interface/RHI.h:15-17, :179-682` | **VMA 头泄漏已修复（第八落点，见 3.13）；胖接口拆分后置** |
 | 10 | 🟡 Medium | 崩溃快照 `platform` 硬编码为 `"windows"`；agentkit 无法解析非 Windows 快照 | `CrashHandler.h:508`；`agentkit/zagent/zengine_snapshot.py:112` | **已修复（随 #2，platform 运行时派生，见 3.10）** |
 | 11 | 🟢 Low | `log.reliable_level=normal`；无崩溃安全环形缓冲，`force_flush` 失败则日志尾丢失 | `Runtime/Core/Log/LogSystem.cpp:165` | **已修复（第四落点）** |
-| 12 | 🟢 Low | DX12 有 15 处 `// TODO: Implement`；WebGL2 仅骨架（`WEBGL2_TODO` 宏吞掉所有调用） | `DX12RHI.cpp:2399,3675,...`；`WebGL2RHI.cpp:30,388-482` | **热路径真 bug 已修复（第九落点，见 3.14）；其余 TODO 多为 DX12 不走 generic API 的 Vulkan-ism，WebGL2 全后端后置** |
+| 12 | 🟢 Low | DX12 有 15 处 `// TODO: Implement`；WebGL2 仅骨架（`WEBGL2_TODO` 宏吞掉所有调用） | `DX12RHI.cpp:2399,3675,...`；`WebGL2RHI.cpp:30,388-482` | **DX12 热路径真 bug 已修复（第九落点，§3.14）；完整 WebGL2 后端已实现·待真机/浏览器验证（第十落点，§3.15）** |
 
 ---
 
@@ -776,7 +776,87 @@ WebGL2 后端（19 处 `WEBGL2_TODO`）作为全后端级大工程后置。
   `virtual ~RHIShader()`（修 UB）；②`PushEvent`/`PopEvent` 空桩导致 DX12 无 GPU 调试标记，改用
   `<pix.h>` 的 `PIXBeginEvent/PIXEndEvent` 发真实 PIX 标记（带颜色）。Windows 双配置**全量干净
   重建**（改基类布局必须干净重建，MSBuild 增量会漏检间接依赖）+ 注册表 smoke test 9/9 通过。
-- **#12 其余 TODO / 完整 WebGL2 后端（后置）**：核实后多数是 DX12 不走 generic API 的 Vulkan-ism
-  （`AllocateCommandBuffers`/`CreateCommandPool`/`CreateFence` 等——DX12 用自有内部对象，空桩语义
-  正确；`AllocateDescriptorSets` 其实早已实现、:2400 是错位注释；`Invalidate/FlushMappedMemoryRanges`
-  在 DX12 coherent heap 下本就该是 no-op）。完整 WebGL2 后端（19 处 `WEBGL2_TODO`）是全后端级大工程，后置。
+- ~~**#12 其余 TODO / 完整 WebGL2 后端**~~（✅ 已实现·待真机/浏览器验证，见 §3.15）：不再是"后置"——
+  WebGL2 的命令录制/回放引擎 + program/descriptor 绑定全部落地，整个 Web 目标（`ZWebLauncher`）
+  在 Emscripten 3.1.74 下**编译 + 链接通过**，产出可实例化的 `.wasm`（143 MB）。
+
+---
+
+## 3.15 第十落点：完整 WebGL2 后端（#12 后半）+ Web 目标打通
+
+### 背景与验证标准
+- 审计原文把"完整 WebGL2 后端（19 处 `WEBGL2_TODO`）"标为"全后端级大工程、后置"，因为
+  WebGL2 RHI 只在 Emscripten（WASM）+ 活体 WebGL2/GL 上下文下才能编译/运行，本机（Windows）
+  无法验证。用户决策：**装 Emscripten 再实现**——先补齐工具链，再落地后端，以"编译到链接通过"
+  为验证标准，运行期标"待真机/浏览器"（与 #2 POSIX / Linux RHI 同一标准）。
+
+### 环境：Emscripten 3.1.74（emsdk）
+- 装到 `C:\emsdk`；`emsdk install latest` + `ninja`；每新开 Bash shell 都要 `source /c/emsdk/emsdk_env.sh`
+  （脚本内固化 `EMSDK`/`EMSDK_PYTHON`/PATH/`ProgramFiles`，避免每次手敲）。
+- 构建流：`emcmake cmake -S . -B build-web` → `ninja`。**踩坑**：CMake bin 不在 PATH 时 emcmake
+  找不到 cmake；本机没有 `pwsh`（只有 PowerShell 5.1），写 `pwsh` 会报"不是内部或外部命令"。
+
+### 核心实现：WebGL2 命令录制/回放引擎（`WebGL2RHI.cpp/.h`、`WebGL2RHIResource.h`）
+- **CPU 侧命令缓冲模型**：录制命令进 arena 支撑的 list（`record<>()` 模板把 POD payload 拷进
+  arena，记 offset/size），在 `QueueSubmit`/`ExecuteCommandList` 时回放。
+- **回放引擎**：`ExecuteCommandList` → `ReplayCommand`（对全部命令类型 switch 分派）→ `FlushPipelineState`
+  → `BindDescriptorSets`。GL 状态翻译器：`ToGLCompareOp/CullMode/FrontFace/BlendFactor/BlendOp/Filter/AddressMode`。
+- **program-based 管线**：`glCreateProgram/glAttachShader/glLinkProgram`；fixed-function 状态烘进
+  `WebGL2Pipeline`。descriptor set 解析到 GL 绑定点（WebGL2 无 descriptor heap）。
+- 补齐骨架期漏掉的两个纯虚 override（`NotifyWindowFocusGained`/`DestroyRenderPass`）——骨架此前
+  **从未编译过**，故这两个抽象方法一直没被发现。
+
+### 关闭 Web 目标既有编译缺口（6 处，与后端无关的平台 glue）
+1. `LogSystem.h`：`(void)args;` → `(void)sizeof...(args);`（clang 要求 pack 展开；MSVC 容忍未展开）。
+2. `3rdparty/CMakeLists.txt`：minizip-ng fallback 加 `AND NOT EMSCRIPTEN`（该 fallback 编 Win32 源，Web 不用）。
+3. `RegisterRuntime.cpp`：Linux Vulkan include 分支加 `!defined(__EMSCRIPTEN__)`（Emscripten 继承 `Z_PLATFORM_LINUX=1`，否则 vulkan.h 泄漏）。
+4. `WindowSystem.cpp`：加 `__EMSCRIPTEN__` 分支返回 `nullptr`（canvas 由宿主管理）。
+5. `RenderSystem.cpp`：把 Apple/Metal 专属的 `m_SceneBlit` 用法块 gate 在 `__APPLE__`。
+6. `BqLogStubs.cpp`/`PhysicsStubs.cpp`：PascalCase include 改正磁盘小写路径；PhysicsStubs 6 个方法补 `const` 对齐当前声明。
+
+### 关闭 Web 目标链接缺口（18 处 undefined symbol）
+- **CrashHandler.h（#1 最后一处）**：实测 Emscripten 3.1.74 **提供** `open/write/close/dladdr/Dl_info/fcntl.h`，
+  **只缺** `<execinfo.h>`（`backtrace()`）。加 `__EMSCRIPTEN__` include 分支（含 3 个在的头、跳缺的头）
+  + 命名空间内信号安全 `backtrace()` 兜底（返回 0 帧，快照仍留 signal/platform/日志尾）。
+- **`vtable for LocalFileSystemLinux`**：`FileSystem.cpp` 的 Linux 分支加 `&& !defined(__EMSCRIPTEN__)`
+  （Emscripten 继承 `Z_PLATFORM_LINUX=1`，否则抢在 `__EMSCRIPTEN__` 分支前选中 Linux 文件系统）。
+- **`__api_force_flush`/`__api_set_console_buffer_enable`**：`BqLogStubs.cpp` 补两个 no-op 桩（已桩 12 个兄弟 API）。
+- **6 个 `RenderResource::*`**：作者原注释说守卫**刻意不含 Emscripten**（"要先把 WebGL2 buffer/descriptor
+  路径补齐再说"——正是本落点完成的）。把守卫扩到含 `__EMSCRIPTEN__`，Web 现在走**非 Vulkan 通用 RHI
+  真路径**（真正把我的 WebGL2 后端编进来跑），而非只留 `clear()` 空壳；注释掉冗余的专用 `clear()` 桩。
+- **`ParticlePass::*`+typeinfo / `MainCameraPassShaderCommon::IsSkyMaterial` / `MainCameraRp1Pass::*`**：
+  这些 pass TU 被 Web  blanket 排除，但桌面管线（`RenderSystem.cpp` 等）仍引用。逐一用 Web flags 实测
+  编译通过（作者早已把它们解耦成只用 `RHI_` 前缀类型），于是在 `Runtime/CMakeLists.txt` 的 Web 分支
+  `list(APPEND)` 放回这三个已解耦、平台无关的 TU（与 Apple 分支同机制），而非靠空桩掩盖缺口。
+
+### 验证结果（Emscripten 3.1.74，Debug）
+- **所有 TU 编译通过**（含 `WebGL2RHI.cpp.o`、`RenderResource.cpp.o`、`ParticlePass.cpp.o`、
+  `MainCameraRp1Pass.cpp.o`、全部 CrashHandler 消费者）。
+- **链接通过**：`ZWebLauncher.html` + `.js` + `.wasm`（143 MB）产出，ninja exit 0，18 处 undefined
+  symbol 全部解决。WASM magic `00 61 73 6d 01 00 00 00` 校验 OK。
+- **运行期**：待真机/浏览器（WebGL2 需活体 GL 上下文 + canvas/window 宿主，headless Node 无 WebGL）——
+  与 #2 POSIX / Linux RHI 同一验证标准。
+
+### 踩坑小结（本落点三条硬教训）
+1. **Emscripten 继承 `Z_PLATFORM_LINUX=1`**：顶层 CMake 的 `UNIX` 分支所致；凡"Linux 专属"选择块
+   （文件系统、Vulkan include）都要 `!defined(__EMSCRIPTEN__)` 排除，否则抢在 `__EMSCRIPTEN__` 分支前。
+2. **别信"未验证"就跳过**：作者把 RenderResource 主体 gate 掉、留 clear() 空壳，是**因为当时 WebGL2
+   路径没补齐**——一旦补齐，正确做法是把守卫扩过来走真路径，而不是继续用空桩。实测每个 pass TU 能否
+   编译，能编就用真的（`list(APPEND)` 放回），不要无脑 stub。
+3. **`backtrace()` 是 Emscripten 唯一缺的 POSIX 符号**：`<execinfo.h>` 不存在，但 `open/dladdr/fcntl`
+   都在——不要一刀切"Web 啥都没有"，逐一实测再决定 stub 面。
+
+### 改动文件清单
+- `Runtime/Function/Render/Interface/WebGL2/WebGL2RHI.cpp/.h`、`WebGL2RHIResource.h`（命令录制/回放 + program/descriptor）
+- `Runtime/Core/Base/CrashHandler.h`（`__EMSCRIPTEN__` include 分支 + `backtrace()` 兜底）
+- `Runtime/File/FileSystem.cpp`（Linux 分支排除 Emscripten）
+- `Platform/Web/BqLogStubs.cpp`（补 `__api_force_flush`/`__api_set_console_buffer_enable`）
+- `Runtime/Function/Render/RenderResource.cpp`（守卫扩含 Emscripten，走通用 RHI 真路径）
+- `Runtime/CMakeLists.txt`（Web 分支 `list(APPEND)` 放回 ParticlePass/MainCameraPassShaderCommon/MainCameraRp1Pass）
+- `Platform/Web/PhysicsStubs.cpp`、`Core/Log/LogSystem.h`、`3rdparty/CMakeLists.txt`、
+  `Runtime/RegisterRuntime.cpp`、`Function/Render/WindowSystem.cpp`、`Function/Render/RenderSystem.cpp`（既有 Web 缺口）
+- `doc/PHASE1_FOUNDATION_PLAN.md`：本 §3.15；#12 标"完整 WebGL2 后端已实现·待真机/浏览器验证"。
+
+至此 #12 全部完成：**DX12 热路径真 bug（§3.14）+ 完整 WebGL2 后端（§3.15）**。WebGL2 从"仅骨架、
+19 处 `WEBGL2_TODO` 吞掉所有调用"变成"命令录制/回放引擎 + program/descriptor 绑定，整个 Web 目标
+编译链接通过、产出可实例化 `.wasm`"；四个 RHI 后端（Vulkan/DX12/Metal/WebGL2）在各自目标上均可编译。
