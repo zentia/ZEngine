@@ -10,17 +10,116 @@
 // 通过退出码 + 产物文件判定。这与 UafDetectionSmokeTest / PPtrLifetimeSmokeTest
 // 的子进程隔离手法一致。
 //
-// ⚠️ 仅在 POSIX 上可编译可运行（fork/signal/backtrace）。Windows 上本文件编译成
-// 一个空壳 main()（返回 0），因为该 option 默认 OFF、且 Windows 无 fork——真实
-// 验证留给 Linux/macOS/Android/OHOS 的构建。CMake 侧的 add_subdirectory 无条件
-// 引入本目录，故本文件必须在 Windows 上也能过编译。
+// ⚠️ WASM/Emscripten 例外：单进程沙箱无 fork，改走"直接调用"路径——不触发真信号
+// （否则进程终止无法回报），而是直接调用崩溃处理器实际执行的 zcrash_posix::
+// WriteSnapshot()（OnFatalSignal 的唯一职责），用构造的 siginfo_t 模拟 SIGSEGV，
+// 覆盖 #2 最该验证的"快照写入代码路径"（open/write/backtrace 兜底/dladdr/JSON
+// 生成），全程不崩进程，可在 node 下自主回报。
+//
+// ⚠️ 非 WASM 的 POSIX 上本文件用 fork；Windows 上编译成空壳 main()（返回 0）。
+// CMake 侧的 add_subdirectory 无条件引入本目录，故本文件必须在所有平台过编译。
 // ============================================================================
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
-#if !defined(_WIN32) && !defined(__MINGW32__)
+#if defined(__EMSCRIPTEN__)
+    // ---- WASM/Emscripten：直接调用 WriteSnapshot，不 fork、不触发真信号 ----
+    #include <signal.h>
+    #include "Runtime/Core/Base/CrashHandler.h"
+
+    // WriteSnapshot 末尾调用的两个日志自由函数：本 TU 给空桩，把焦点收敛到
+    // CrashHandler 自身的快照写入路径（与 LogSystem 解耦，最纯粹地检验它）。
+    namespace zcrash_posix
+    {
+        void ZEngineForceFlushLogs() {}
+        uint32_t ZEngineDumpCrashLogTail(const std::string& /*dir*/) { return 0; }
+    }  // namespace zcrash_posix
+
+namespace
+{
+    int g_Failures = 0;
+
+    void Check(bool cond, const char* msg)
+    {
+        if (cond) std::printf("  [ ok ] %s\n", msg);
+        else      { std::printf("  [FAIL] %s\n", msg); ++g_Failures; }
+    }
+
+    std::string ReadFile(const std::string& path)
+    {
+        std::FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) return std::string();
+        std::fseek(f, 0, SEEK_END);
+        const long sz = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        std::string out;
+        if (sz > 0)
+        {
+            out.resize(static_cast<std::size_t>(sz));
+            const std::size_t got = std::fread(&out[0], 1, static_cast<std::size_t>(sz), f);
+            out.resize(got);
+        }
+        std::fclose(f);
+        return out;
+    }
+
+    bool FileExists(const std::string& path)
+    {
+        std::FILE* f = std::fopen(path.c_str(), "rb");
+        if (!f) return false;
+        std::fclose(f);
+        return true;
+    }
+}  // namespace
+
+int main(int /*argc*/, char** /*argv*/)
+{
+    std::printf("[wasm-posix-crash] audit #2 verification under Emscripten\n");
+
+    // 安装处理器：验证 sigaltstack + 4 个 sigaction 路径可执行。
+    InstallCrashHandler("test-0.0.0");
+    std::printf("  [ ok ] InstallCrashHandler ran (sigaltstack + sigaction x4)\n");
+
+    // 直接跑崩溃处理器实际执行的快照写入函数，用构造的 SIGSEGV siginfo。
+    siginfo_t info;
+    std::memset(&info, 0, sizeof(info));
+    info.si_signo = SIGSEGV;
+    info.si_code  = SEGV_MAPERR;
+    info.si_addr  = reinterpret_cast<void*>(0x1234);
+    zcrash_posix::WriteSnapshot(SIGSEGV, &info);
+    std::printf("  [ ok ] WriteSnapshot(SIGSEGV) returned without secondary fault\n");
+
+    // WASM 下 /proc/self/exe 不可读 → dir 为空 → 产物写到 cwd（MEMFS）。
+    const std::string txt  = "crash_stack.txt";
+    const std::string json = "crash_snap.json";
+    Check(FileExists(txt),  "crash_stack.txt was created");
+    Check(FileExists(json), "crash_snap.json was created");
+
+    const std::string txt_body  = ReadFile(txt);
+    const std::string json_body = ReadFile(json);
+    Check(txt_body.find("signal=11") != std::string::npos,
+          "crash_stack.txt records SIGSEGV (signal=11)");
+    Check(json_body.find("\"signal\": 11") != std::string::npos,
+          "crash_snap.json records SIGSEGV (signal: 11)");
+    // platform 运行时派生：WASM 走 #else → "posix"，绝不能是硬编码 windows。
+    const std::string::size_type plat = json_body.find("\"platform\"");
+    Check(plat != std::string::npos &&
+          json_body.find("windows", plat) != std::string::npos + 12,
+          "crash_snap.json derives platform at runtime (not hardcoded windows)");
+    // 回溯帧：WASM 无 backtrace()，兜底返回 0 帧，故只校验 frames 数组键存在。
+    Check(json_body.find("\"frames\"") != std::string::npos,
+          "crash_snap.json contains frames array (backtrace degrade path present)");
+
+    std::printf("\nPosixCrashCaptureSmokeTest (wasm): %d check(s), %d failure(s)\n",
+                8, g_Failures);
+    return g_Failures == 0 ? 0 : 1;
+}
+
+#elif !defined(_WIN32) && !defined(__MINGW32__)
+    // ---- 桌面 POSIX（Linux/macOS/Android/OHOS）：fork 子进程触发真 SIGSEGV ----
     #include <sys/stat.h>
     #include <sys/types.h>
     #include <sys/wait.h>

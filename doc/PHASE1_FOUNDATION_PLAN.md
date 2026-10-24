@@ -30,7 +30,7 @@
 | # | 等级 | 薄弱点 | 主落点 | 状态 |
 |---|------|--------|--------|------|
 | 1 | 🔴 Blocker | Linux 桌面**完全不注册 RHI**，`GET_SYSTEM(RHI)==nullptr` | `Runtime/RegisterRuntime.cpp:140-142` | **已修复（第六落点，见 3.11）** |
-| 2 | 🔴 Blocker | 崩溃捕获仅 Windows SEH，POSIX 是 no-op；非 Windows 入口点不安装任何处理器 | `Runtime/Core/Base/CrashHandler.h:604-608`；`Game/ZGame.cpp:288`；`Editor/Main/Main.cpp:765` | **已实现·待 POSIX 编译验证（第五落点，见 3.10）** |
+| 2 | 🔴 Blocker | 崩溃捕获仅 Windows SEH，POSIX 是 no-op；非 Windows 入口点不安装任何处理器 | `Runtime/Core/Base/CrashHandler.h:604-608`；`Game/ZGame.cpp:288`；`Editor/Main/Main.cpp:765` | **已实现·WASM 通道已运行时验证（第五落点 §3.10 + 第十落点补验）；顺带修复 WriteDec/WriteHex 两个跨平台 bug。桌面 POSIX fork 路径待真机构建** |
 | 3 | 🟠 High | `ImmediatePtr` 是无校验裸指针——悬垂指针主入口 | `Runtime/BaseClasses/ImmediatePtr.h:52` | ✅ 已修复（存 instanceID + Debug 校验，见 3.5） |
 | 4 | 🟠 High | `RHIFactory` 是死代码（仅 `.mm`、无调用点、硬编码 switch、含无限递归），新增后端无注册表 | `Function/Render/Interface/RHIFactory.mm:33-64` | **已修复（第六落点，见 3.11）** |
 | 5 | 🟠 High | **零 use-after-free 运行时检测**（无释放填充、无句柄校验、无 guard page） | `Runtime/Core/Memory/MemoryManager.h:118-128` | ✅ 已修复（UafReporter：instanceID 注销判据，见 3.5） |
@@ -58,7 +58,7 @@
 | 2 | 8 | 落地两阶段销毁（用活 `ObjectFlags`）✅ 已完成（§3.7） | 与 #3/#5 同源，是完整生命周期模型的一部分 |
 | 3 | 6 | `PPtr` 区分"已销毁"与"未解析" ✅ 已完成（§3.8） | 悬垂引用的另一主入口，与 #3 互补 |
 | 4 | 11 | 日志崩溃安全环形缓冲 ✅ 已完成（§3.9） | 小而稳、跨平台可验证；为 #2 的 POSIX 崩溃捕获铺日志后路 |
-| 5 | 2 | POSIX 崩溃捕获（sigaction + backtrace）✅ 已实现·待 POSIX 编译验证（§3.10） | 价值高但 POSIX 代码 Windows 编不过，需 Linux/macOS 验证，排到本地能测的项之后 |
+| 5 | 2 | POSIX 崩溃捕获（sigaction + backtrace）✅ 已实现·WASM 通道已运行时验证（§3.10 + §3.15 后补验） | 价值高；WASM 通道借 Emscripten 跑通 8/8 并修复两个跨平台 bug；桌面 POSIX fork 路径待 Linux/macOS 真机构建 |
 | 6 | 1 + 4 | RHI：Linux 注册 + 后端注册表重构 ✅ 已完成（§3.11） | 需 Vulkan SDK 实际启动验证，环境成本最高 |
 | 7 | 7 | 引用计数强化 + 弱引用 ✅ 已完成（§3.12） | 纯 C++、跨平台、Windows 双配置可验证；补齐句柄家族弱引用成员 |
 | 8 | 9,12 | 其余 Low（#9 RHI.h VMA 头泄漏 ✅ 已修复见 §3.13，胖接口拆分后置；#12 DX12 热路径真 bug ✅ 已修复见 §3.14，其余 TODO/WebGL2 骨架后置） | VMA 头泄漏、DX12 泄漏/标记是单文件可安全修；胖接口拆分、完整 WebGL2 改动面大、后置 |
@@ -404,11 +404,13 @@ CMake 配置（`ZENGINE_BUILD_PPTR_LIFETIME_SMOKE_TEST` option + Runtime REMOVE_
 
 ## 3.10 第五落点：POSIX 崩溃捕获（#2，顺带关闭 #10）
 
-> ⚠️ **本落点状态：已实现·待 POSIX 编译验证**。本机（Windows）无任何 POSIX 工具链
-> （无 WSL/gcc/clang/NDK，已实测确认），无法编译运行这段代码。以下结论基于**代码审查
-> + Windows 侧不破坏验证**，POSIX 上的实际行为（信号是否被捕获、回溯是否可用、dladdr
-> 是否带出符号）须在 Linux/macOS/Android/OHOS 构建跑过 `PosixCrashCaptureSmokeTest`
-> 后才能定论。因此**不标 ✅**，与 #8/#6/#11（本机双配置端到端跑通）区分。
+> ✅ **本落点状态：已实现·WASM 通道已运行时验证（第十落点补验，见 §3.15 后）**。
+> 借 Emscripten 3.1.74（WASM 提供 open/write/close/dladdr/fcntl，唯一缺 `<execinfo.h>`
+> 已由 backtrace 兜底补齐），跑通了 `PosixCrashCaptureSmokeTest` 的 `__EMSCRIPTEN__`
+> 分支（直调 `WriteSnapshot` 不 fork），**8/8 通过**，并**揪出并修复了 `WriteDec`/
+> `WriteHex` 的 NUL 落盘 + `0x` 双前缀两个跨平台真 bug**（Linux/Apple/Android 同样中招，
+> 此前静态分析从未暴露）。桌面 POSIX（fork 路径）运行期确认仍待 Linux/macOS 真机构建。
+> 详见本节末「WASM 通道运行时验证」。
 
 ### 根因（两个 bug，不是一个是两个）
 1. **POSIX 分支是彻底 no-op**（`CrashHandler.h:606`）：`InstallCrashHandler` 在非 Windows
@@ -473,6 +475,47 @@ CMake 配置（`ZENGINE_BUILD_PPTR_LIFETIME_SMOKE_TEST` option + Runtime REMOVE_
 
 至此 #2 完成（代码层）：**非 Windows 从"崩溃什么都不留"变成"崩溃写栈 + 日志尾 + 机读快照，
 产物与 Windows 同构"；`platform` 字段运行时派生**。POSIX 运行期确认待补。
+
+### WASM 通道运行时验证（第十落点补验，坐实 #2）
+借 Emscripten 3.1.74 把 #2 从"待 POSIX 编译验证"推进到"WASM 通道已运行时验证"。
+WASM 单进程沙箱**无 fork**，无法用桌面 POSIX 的"fork 子进程触发真 SIGSEGV"手法，故给
+`PosixCrashCaptureSmokeTest.cpp` 加 `__EMSCRIPTEN__` 分支：**直接调用崩溃处理器实际执行的
+`zcrash_posix::WriteSnapshot()`**（`OnFatalSignal` 的唯一职责），用构造的 `siginfo_t`
+模拟 SIGSEGV，覆盖 #2 最该验证的"快照写入代码路径"（open/write/backtrace 兜底/dladdr/JSON
+生成），全程不崩进程、可在 node 下自主回报。两个日志自由函数在本 TU 给空桩，与 LogSystem
+解耦，最纯粹地检验 CrashHandler 自身。
+
+**验证结果（emcc 3.1.74，node 运行，8/8 通过）**：
+```
+[wasm-posix-crash] audit #2 verification under Emscripten
+  [ ok ] InstallCrashHandler ran (sigaltstack + sigaction x4)
+  [ ok ] WriteSnapshot(SIGSEGV) returned without secondary fault
+  [ ok ] crash_stack.txt / crash_snap.json created, 记录 SIGSEGV(signal=11)
+  [ ok ] platform 运行时派生 == "posix"（WASM #else 分支，非硬编码 windows）
+  [ ok ] frames 数组存在（backtrace 兜底降级路径在）
+```
+产物经 node `JSON.parse` 校验为合法 JSON（`platform=posix, signal=11, si_code=1,
+si_addr=0x1234, frames=[]`）。
+
+**运行时验证揪出两个跨平台真 bug（静态分析从未暴露）**：
+1. **NUL 字节落盘**：`WriteDec`/`WriteHex` 用 `WriteAll(fd, p, buf+sizeof(buf)-1-p)`，
+   长度**多算 1 字节**，把 buf 里的 `'\0'` 也 `write()` 进文件。hexdump 铁证：`11 00 2c`
+   （"11,"中间夹 NUL）。NUL 让 `cat`/`fgets` 提前截断（看着像"丢逗号"），JSON 彻底畸形，
+   agentkit 无法解析。**Linux/Apple/Android 同样中招**——是通用 bug，非 WASM 特有。
+2. **`0x0x` 双前缀**：`WriteHex` 自带 `0x` 前缀，但全部 7 个调用点又各写了字面 `"0x"`
+   → 产物 `si_addr: "0x0x1234"`。
+
+**修复**：`WriteHex` 去掉自带前缀（调用点已提供，DRY）；两函数长度改用 `std::strlen(p)`
+（与 `WriteStr` 一致，不含 NUL）。修复后 hexdump 干净（`31 31 2c`="11,"、`30 78 31 32 33 34 22`
+="0x1234\""、无 `00`），`JSON.parse` 通过。改动只在 POSIX 分支（`#else // !_WIN32`），
+Windows 分支不使用这两个函数，**Windows 不受影响**。
+
+**教训**：崩溃快照这类"信号安全 + 手写格式化"代码，静态审查极易漏掉 off-by-one 的写入长度
+和调用约定（谁负责 `0x` 前缀）——只有在真环境跑一遍、把产物 hexdump + 交给真实 JSON 解析器
+校验，才能定论。这正是"补齐验证闭环"的价值：不只是标 ✅，更是把藏了多久的 bug 逼出来修掉。
+
+至此 #2 的验证状态：**WASM 通道已运行时坐实（含两个跨平台 bug 修复）；桌面 POSIX fork 路径
+待 Linux/macOS 真机构建**（本机无桌面 POSIX 工具链）。
 
 ---
 

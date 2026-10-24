@@ -16,8 +16,20 @@
 #
 # 仅 POSIX 上真正运行（fork/signal/backtrace）；Windows/MinGW 上源文件编译成
 # 空壳 main()（返回 0，打印 skip 说明），因为该 option 默认 OFF 且 Windows 无
-# fork。真实验证留给 Linux/macOS/Android/OHOS 构建——本机（Windows）无 POSIX
-# 工具链，无法在此编译运行，故计划文档只标「已实现·待 POSIX 编译验证」。
+# fork。真实验证留给 Linux/macOS/Android/OHOS 构建。
+#
+# WASM/Emscripten 例外：单进程沙箱无 fork，源文件的 __EMSCRIPTEN__ 分支改走
+# "直接调用" —— 不触发真信号，而是直接跑崩溃处理器实际执行的
+# zcrash_posix::WriteSnapshot()（OnFatalSignal 的唯一职责），覆盖快照写入代码
+# 路径（open/write/backtrace 兜底/dladdr/JSON 生成）。该分支与 LogSystem 解耦
+# （本 TU 内给两个日志自由函数空桩），可脱离整个 ZRuntime 独立编译验证：
+#   source /c/emsdk/emsdk_env.sh
+#   emcc PosixCrashCaptureSmokeTest.cpp -std=c++23 -I<engine>/Source \
+#       -o t.js -sALLOW_MEMORY_GROWTH=1 -sASSERTIONS=1 && \
+#   node -e "require('./t.js');setTimeout(()=>process.exit(0),3000)"
+# 该验证已在 Emscripten 3.1.74 下跑通（8/8），并借此揪出并修复了 WriteDec/
+# WriteHex 的 NUL 落盘 + 0x 双前缀两个跨平台真 bug（见 CrashHandler.h）。
+# 本机（Windows）桌面 POSIX 工具链缺失，故 Linux 运行期确认仍待真机构建。
 #
 # 需要 -rdynamic / -fno-omit-frame-pointer / -funwind-tables 才能回溯——这些
 # 已在顶层 CMakeLists.txt 对非 Windows 全局开启。

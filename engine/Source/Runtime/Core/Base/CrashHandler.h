@@ -732,7 +732,10 @@ inline void WriteStr(int fd, const char* s)
 
 inline void WriteHex(int fd, std::uint64_t v)
 {
-    char buf[24];  // "0x" + 16 hex + '\0'
+    // 只写裸十六进制数字，**不带 "0x" 前缀**：全部 7 个调用点已在前方各自写了
+    // 字面 "0x"（如 "si_addr=0x" / "\"address\": \"0x" / " +0x" / " base=0x"）。
+    // 若此处再加前缀，产物会得到 "0x0x1234" 这样的双前缀。
+    char buf[24];  // 16 hex + '\0'
     char* p = buf + sizeof(buf) - 1;
     *(--p) = '\0';
     if (v == 0)
@@ -744,9 +747,10 @@ inline void WriteHex(int fd, std::uint64_t v)
         *(--p) = "0123456789abcdef"[v & 0xF];
         v >>= 4;
     }
-    *(--p) = 'x';
-    *(--p) = '0';
-    WriteAll(fd, p, static_cast<unsigned>(buf + sizeof(buf) - 1 - p));
+    // 写到 null 终止符为止（不含 '\0'）。此前 buf+sizeof(buf)-1-p **多算 1 字节**，
+    // 把 buf 里的 '\0' 也 write() 进文件——产物嵌入 NUL，JSON 畸形、txt 被
+    // cat/fgets 提前截断（看似"丢逗号"）。改用 strlen 与 WriteStr 一致。
+    WriteAll(fd, p, static_cast<unsigned>(std::strlen(p)));
 }
 
 inline void WriteDec(int fd, std::uint64_t v)
@@ -763,7 +767,8 @@ inline void WriteDec(int fd, std::uint64_t v)
         *(--p) = static_cast<char>('0' + (v % 10));
         v /= 10;
     }
-    WriteAll(fd, p, static_cast<unsigned>(buf + sizeof(buf) - 1 - p));
+    // 同 WriteHex：用 strlen 只写真实字符数，不把 '\0' 落盘。
+    WriteAll(fd, p, static_cast<unsigned>(std::strlen(p)));
 }
 
 // 取可执行文件所在目录（末尾带 '/'），失败返回空串。
