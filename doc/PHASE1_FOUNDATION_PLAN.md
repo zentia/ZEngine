@@ -517,6 +517,15 @@ Windows 分支不使用这两个函数，**Windows 不受影响**。
 至此 #2 的验证状态：**WASM 通道已运行时坐实（含两个跨平台 bug 修复）；桌面 POSIX fork 路径
 待 Linux/macOS 真机构建**（本机无桌面 POSIX 工具链）。
 
+> **桌面 POSIX fork 路径验证已铺路（2026-10-25）**：本机已装 WSL（组件 3.0.3 + Ubuntu 24.04，
+> 待重启注册 distro）。重启后在 WSL 里跑 `scripts/wsl_verify_linux.sh` 即可一次性闭环 #2 桌面
+> POSIX fork 路径 + #1/#4 Linux RHI 运行期——脚本自动装 `libvulkan-dev`/`glslang-tools`/cmake/ninja/
+> python3，用 `zbuild.py` 构建两个 smoke test 并执行：`PosixCrashCaptureSmokeTest`（fork 子进程触发
+> 真 SIGSEGV，校验产物 + backtrace + dladdr）与 `RHIFactoryRegistrySmokeTest`（`GetDefaultAPI()==Vulkan`
+> + 后端注册）。支持 `--deps-only`/`--build-only`，幂等可反复跑。Linux 构建侧已确认：CMake 走 `UNIX`
+> 分支、`find_package(Vulkan REQUIRED)`（engine/CMakeLists.txt:179）+ `glslangValidator`；POSIX 崩溃
+> 捕获的 `-fno-omit-frame-pointer -funwind-tables -rdynamic`（CMakeLists.txt:256-258）在 Linux 生效。
+
 ---
 
 ## 3.11 第六落点：RHI 后端注册表 + Linux 注册（#1 + #4）
