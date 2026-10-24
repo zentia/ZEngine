@@ -46,6 +46,23 @@ public:
     bool Initialize() { return true; }
     int32_t GetInstanceID() const { return m_InstanceID; }
 
+    /// True once the two-phase teardown has started (BeginDestroy -> FinishDestroy
+    /// -> delete). See ObjectManager::Destroy / MemoryManager::DestroyObject.
+    bool IsDestroying() const { return m_ObjectFlags != ObjectFlags::OF_NoFlags; }
+
+    /// Run the two-phase destruction sequence: set OF_BeginDestroyed, call the
+    /// virtual BeginDestroy() hook, set OF_FinishDestroyed, call FinishDestroy().
+    /// The memory is NOT freed here -- the caller frees it afterwards (delete or
+    /// mimalloc Free depending on how the object was allocated).
+    ///
+    /// This is the single source of truth that BOTH destruction entry points
+    /// (ObjectManager::Destroy for `new`-allocated, MemoryManager::DestroyObject
+    /// for mimalloc-allocated) funnel through, so the flags are written no matter
+    /// which path an object was created on. Must be called while the object is
+    /// still the full most-derived type (before its destructor runs) so a subclass
+    /// override of BeginDestroy()/FinishDestroy() dispatches correctly.
+    void BeginDestroySequence();
+
     // PPtr<Object> support: PPtr<T>::GetTypeString() expands to T::GetPPtrTypeString().
     // REGISTER_CLASS injects this on every concrete subclass; Object itself isn't
     // registered through that macro path (it's bootstrapped by Type.h directly), so
@@ -88,6 +105,10 @@ public:
 protected:
     template<typename TransferFunction>
     void Transfer(TransferFunction& transfer);
+
+    /// Current destruction phase flags. Subclasses overriding BeginDestroy()/
+    /// FinishDestroy() can inspect this to know how far teardown has progressed.
+    ObjectFlags GetFlags() const { return m_ObjectFlags; }
 
 private:
     virtual const Type* GetTypeVirtualInternal() const { return TypeOf<Object>(); }

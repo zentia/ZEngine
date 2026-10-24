@@ -48,6 +48,14 @@ Object* ObjectManager::Produce(const Type* type, int32_t instanceID)
 
 void ObjectManager::Destroy(Object* object)
 {
+    if (object == nullptr)
+        return;
+
+    // Two-phase teardown (BeginDestroy -> FinishDestroy, writing ObjectFlags),
+    // then delete. See Object::BeginDestroySequence for why this is the single
+    // shared implementation used by both destruction entry points.
+    object->BeginDestroySequence();
+
     // Mirrors Produce(): that one uses `new`, so this one uses `delete`.
     // Do NOT "fix" this into MemoryManager::DestroyObject -- see the header.
     delete object;

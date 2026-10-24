@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Core/Base/Singleton.h"
+#include "Runtime/Core/Log/CrashLogTail.h"
 #include "generated/engine_log.h"
 
 #include <array>
@@ -77,6 +78,10 @@ public:
     template<typename CAT_INDEX, typename STR, typename... TARGS>
     void log(LogLevel level, const CAT_INDEX& category, const STR& log_content_cstr, TARGS&&... args)
     {
+        // 同步写入崩溃安全环形缓冲（#11）：独立于 BqLog 的异步缓冲，是
+        // force_flush_all_logs() 失败时的兜底——崩溃前最后 N 条预渲染日志不丢。
+        // 渲染与 BqLog 各自独立，渲染失败会退化为只记格式串（见 recordTail）。
+        recordTail(level, log_content_cstr, std::forward<TARGS>(args)...);
         switch (level)
         {
             case LogLevel::verbose:
@@ -130,6 +135,48 @@ public:
 #endif
     }
 
+    // 把一条日志渲染进崩溃安全环形缓冲（#11）。与上面的 fatalCallback 一样要处理
+    // 「有 std::format」与「没有」两条路；这里不抛异常——记录失败就退化为只记格式串，
+    // 因为崩溃路径上抛异常比丢一条记录糟得多。level 映射到 logtail::kLevel* 常量
+    // （数值与 LogLevel 声明顺序一致）。
+    template<typename STR, typename... TARGS>
+    void recordTail(LogLevel level, const STR& format_str, TARGS&&... args)
+    {
+        char buf[zengine::logtail::kMaxTextLen];
+        const uint8_t lv = toTailLevel(level);
+
+#if Z_LOG_HAS_STD_FORMAT
+        try
+        {
+            const std::string rendered = std::vformat(format_str, std::make_format_args(args...));
+            std::snprintf(buf, sizeof(buf), "%s", rendered.c_str());
+        }
+        catch (...)
+        {
+            // 渲染失败（如参数类型不可格式化）——至少把格式串本身记下来。
+            std::snprintf(buf, sizeof(buf), "%s", std::string_view(format_str).data());
+        }
+#else
+        (void)args;
+        std::snprintf(buf, sizeof(buf), "%s", std::string_view(format_str).data());
+#endif
+        zengine::logtail::Record(lv, buf);
+    }
+
+    static uint8_t toTailLevel(LogLevel level)
+    {
+        switch (level)
+        {
+            case LogLevel::verbose: return zengine::logtail::kLevelVerbose;
+            case LogLevel::debug:   return zengine::logtail::kLevelDebug;
+            case LogLevel::info:    return zengine::logtail::kLevelInfo;
+            case LogLevel::warning: return zengine::logtail::kLevelWarning;
+            case LogLevel::error:   return zengine::logtail::kLevelError;
+            case LogLevel::fatal:   return zengine::logtail::kLevelFatal;
+            default:                return zengine::logtail::kLevelInfo;
+        }
+    }
+
     void registerCallback(bq::type_func_ptr_console_callback callback)
     {
         m_Logger->register_console_callback(callback);
@@ -148,3 +195,11 @@ public:
 // header's EASTL / <format> dependencies. Safe to call before the LogSystem
 // singleton exists; no-op in that case.
 void ZEngineForceFlushLogs();
+
+// Free-function bridge to the crash-safe log-tail dump (#11). Writes the ring
+// buffer's most recent N pre-rendered log records to <dir>/crash_log_tail.txt.
+// Like ZEngineForceFlushLogs, this must work on a fatal path with the process
+// already compromised: it touches no singleton, allocates nothing on the heap,
+// and tolerates concurrent writes (torn slots are skipped). Returns the number
+// of records written. Empty dir => no-op, returns 0.
+uint32_t ZEngineDumpCrashLogTail(const std::string& dir);

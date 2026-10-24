@@ -238,6 +238,27 @@ elseif(Z_COMPILER_APPLE_CLANG)
     add_compile_definitions(Z_COMPILER_APPLE_CLANG=1)
 endif()
 
+# =============================================================================
+# 非 Windows 崩溃捕获（audit #2）所需的回溯支持
+# -----------------------------------------------------------------------------
+# POSIX 崩溃处理器用 backtrace() 扫栈、dladdr() 补符号。要让它们给出可用的
+# 调用栈，编译期必须保留帧指针并生成 unwind 表；链接期必须 -rdynamic 把符号表
+# 导出，dladdr 才能从可执行文件本身解析出函数名。这些标志只在非 Windows 生效，
+# Windows/MSVC 走 SEH + StackWalk64，不受影响。
+#
+#   -fno-omit-frame-pointer  保留帧指针，backtrace() 靠它逐帧上溯（尤其 Release
+#                            关掉优化时默认会省略，栈会断在第一个优化函数）。
+#   -funwind-tables          生成 DWARF unwind 信息，ARM64 上回溯必需，x86-64 上
+#                            让 dladdr/addr2line 的行号更准。
+#   -rdynamic                把符号表写进可执行文件，dladdr 才能解析本模块函数名；
+#                            否则 Release 下 dli_sname 全为空。
+if(NOT Z_PLATFORM_WINDOWS)
+    add_compile_options(-fno-omit-frame-pointer -funwind-tables)
+    # -rdynamic 是链接期标志：只加到可执行目标上，避免污染静态库归档。
+    add_link_options(-rdynamic)
+    message(STATUS "POSIX crash capture: -fno-omit-frame-pointer -funwind-tables -rdynamic")
+endif()
+
 # Print platform information
 message(STATUS "Platform: ${Z_PLATFORM_NAME}")
 message(STATUS "Architecture: ${Z_ARCH_NAME}")

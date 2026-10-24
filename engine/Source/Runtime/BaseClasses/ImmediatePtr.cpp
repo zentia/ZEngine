@@ -37,7 +37,7 @@ void ImmediatePtrResolveWrite(const Object* ptr, int32_t& outFileID, int64_t& ou
     outPathID = lsoi.localIdentifierInFile;
 }
 
-Object* ImmediatePtrResolveRead(int32_t fileID, int64_t pathID)
+Object* ImmediatePtrResolveRead(int32_t fileID, int64_t pathID, int32_t* out_instanceID)
 {
     int32_t instanceID = 0;
 
@@ -53,6 +53,12 @@ Object* ImmediatePtrResolveRead(int32_t fileID, int64_t pathID)
     {
         instanceID = (fileID == 0) ? static_cast<int32_t>(pathID) : 0;
     }
+
+    // 先回填 InstanceID（即便最终解析不到活对象也填），供 ImmediatePtr 缓存后做
+    // 运行期 UAF 校验：调用方拿到的 m_Ptr 若非空、但此 id 已从 ObjectManager 注销，
+    // 即为"对象已销毁仍被访问"。
+    if (out_instanceID != nullptr)
+        *out_instanceID = instanceID;
 
     if (instanceID == 0)
         return nullptr;

@@ -39,6 +39,18 @@ public:
     {
         if (ptr)
         {
+            // ── 两阶段销毁（阶段一 #8）──────────────────────────────────────
+            // 只对 Object 派生类型生效：写 ObjectFlags + 调 BeginDestroy/
+            // FinishDestroy 钩子。用 if constexpr + is_base_of 约束，保证非
+            // Object 的普通类型（这个模板同样会用来释放它们）不受影响、照常编译。
+            // 必须在 ~T() 之前调用——此刻对象仍是最派生完整类型，虚钩子才能正确
+            // 分发到子类 override。这是两条销毁入口（本函数 / ObjectManager::Destroy）
+            // 收敛到同一实现的关键，否则 mimalloc 路径（NewObject 的主流）不会写 flags。
+            if constexpr (std::is_base_of_v<Object, std::remove_pointer_t<T>>)
+            {
+                ptr->BeginDestroySequence();
+            }
+
             // ── 分配器配对守卫（§3.26）────────────────────────────────────────
             // 本函数只能用来释放 mi_malloc 出来的对象（MemoryManager::CreateObject
             // / ObjectManager::NewObject）。ObjectManager::Produce() 走的是普通

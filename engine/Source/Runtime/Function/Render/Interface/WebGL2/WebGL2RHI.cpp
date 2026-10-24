@@ -14,6 +14,7 @@
 
     #include "Runtime/Function/Render/Interface/WebGL2/WebGL2RHI.h"
 
+    #include "Runtime/Function/Render/Interface/RHIFactory.h"
     #include "Runtime/Core/Base/Macro.h"
     #include "Runtime/Function/Render/WindowSystem.h"
 
@@ -964,5 +965,19 @@ namespace ZEngine
 
     }  // namespace WebGL2
 }  // namespace ZEngine
+
+// ---- audit #4：WebGL2 后端自注册进 RHIFactory 注册表 ----
+// 本翻译单元只在 Emscripten 编译（整个文件包在 __EMSCRIPTEN__ 守卫里），
+// 故注册器放在命名空间外、守卫内。
+namespace {
+    struct WebGL2RHIBackendRegistrar
+    {
+        WebGL2RHIBackendRegistrar()
+        {
+            RHIFactory::RegisterBackend(GraphicsAPI::WebGL2,
+                [](WindowSystem* window_system) -> RHI* { return new ZEngine::WebGL2::WebGL2RHI(); });
+        }
+    } s_webgl2_rhi_registrar;
+}
 
 #endif  // __EMSCRIPTEN__

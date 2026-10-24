@@ -764,6 +764,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 #else
 int main(int argc, char** argv)
 {
+    // 崩溃捕获（#2）：非 Windows 过去是 no-op，POSIX main() 根本没装任何处理器。
+    // 与 WinMain 分支保持一致：优先用构建注入的版本宏，其次退回 CMake 版本。
+#ifdef ZENGINE_PRODUCT_VERSION
+    InstallCrashHandler(ZENGINE_PRODUCT_VERSION);
+#else
+    InstallCrashHandler("0.1.0");
+#endif
+
     // Initialize UTF-8 locale to handle filesystem error messages properly
     Encoding::InitializeUtf8Locale();
 

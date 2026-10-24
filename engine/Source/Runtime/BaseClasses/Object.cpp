@@ -19,6 +19,25 @@ Object::~Object()
 void Object::BeginDestroy() {}
 void Object::FinishDestroy() {}
 
+void Object::BeginDestroySequence()
+{
+    // Two-phase teardown, driven from here so BOTH destruction entry points
+    // (ObjectManager::Destroy for `new`-allocated objects, and
+    // MemoryManager::DestroyObject for mimalloc-allocated ones) funnel through a
+    // single implementation -- otherwise the flags would stay unwritten on the
+    // mimalloc path (the common case for NewObject), making ObjectFlags half-dead
+    // code exactly as it was before Phase-1 #8.
+    //
+    // Called while this is still the full most-derived type (the callers invoke
+    // this *before* delete / before ~T() runs), so a subclass override of
+    // BeginDestroy()/FinishDestroy() dispatches to the most-derived version.
+    m_ObjectFlags |= ObjectFlags::OF_BeginDestroyed;
+    BeginDestroy();
+
+    m_ObjectFlags |= ObjectFlags::OF_FinishDestroyed;
+    FinishDestroy();
+}
+
 void Object::InitializeRuntimeTypeInfo()
 {
     m_InstanceID = 0;

@@ -1,5 +1,6 @@
 #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
 
+#include "Runtime/Function/Render/Interface/RHIFactory.h"
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Core/Log/LogSystem.h"
 #include "Runtime/Core/Thread/ThreadManager.h"
@@ -6676,4 +6677,18 @@ RHI::ViewportRenderTexture* DX12RHI::GetViewportRenderTexture(const std::string&
         return &(it->second);
     }
     return nullptr;
+}
+
+// ---- audit #4：DX12 后端自注册进 RHIFactory 注册表 ----
+// 本翻译单元只在 Windows 编译（含 <d3d12.h>），故注册器无需额外平台守卫。
+namespace
+{
+    struct DX12RHIBackendRegistrar
+    {
+        DX12RHIBackendRegistrar()
+        {
+            RHIFactory::RegisterBackend(GraphicsAPI::DirectX12,
+                [](WindowSystem* window_system) -> RHI* { return new DX12RHI(); });
+        }
+    } s_dx12_rhi_registrar;
 }
