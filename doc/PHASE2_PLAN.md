@@ -45,7 +45,7 @@
 | C0 | **Vulkan `MainCameraPass` 崩溃根因修复** | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭 |
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **已实现·默认关闭**（165 编译+92 执行断言；`ZENGINE_RG_RP2=1` 门控，默认 off） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **仅提案**（doc 无落地标记） | **必须在 C1 之后** | ★★ 高价值/中风险 |
-| C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 | **部分实现**（真 GPU dispatch 已有；4 处 TODO=最硬的一半） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
+| C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 | **部分实现**（真 GPU dispatch 已有；**几何压缩已落地 2026-10-25**，见 §2 落地记录；剩 streaming + HiZ 两处 TODO） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
 | C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **已实现但零消费者**（6 文件无外部引用、无 CVar、3 处构建排除） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **部分实现**（CPU 探针网格已通；**无任何 Lumen shader**） | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（放最后） |
@@ -66,10 +66,43 @@
 | **2.2** | C1 | RenderGraph 扩面（ParticlePass / 后处理链） | 复用已验证机制；消除 `RENDER_GRAPH.md:15` 列举的手写屏障。 |
 | **2.3** | C2 | `render_pass_refactor`：RP1 三分 | **必须在 2.1 之后**——此时屏障/别名机制已在真机验证过，单独做它是高风险。 |
 | **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。 |
-| **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。 |
+| **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。剩 streaming（`UpdateStreaming` 仍是 TODO）与 HiZ（GPU 侧需真机）。 |
 | **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。9 处真 TODO（页上传/LRU 淘汰/页表更新）。 |
 | **2.7** | C6 | Lumen：SSR + 首个 Lumen shader | 依赖 2.4 的 GBuffer/depth 声明；放最后，**只取 SSR 一半**。**HWRT/BLAS-TLAS 明确移出 Phase 2**（需独立专项）。 |
 | **穿插** | C7 | 平台窗口化收尾 / Timeline 四类片段 / Prefab §9.4 follow-ups | 渲染项卡在真机验证时用来保持节奏；每项都可独立编译演示，低风险。 |
+
+---
+
+### 落地记录 · 2.5 几何压缩（2026-10-25）
+
+**做了什么**：把 `NaniteCluster.cpp` 里那个长期空转的 `TODO: 实现几何压缩` 兑现为一个**版本化、
+可选的几何编码格式** `GeometryCodec`（version `zengine-nanite-geom/1`，定义在 `NaniteTypes.h`）：
+
+- **`Raw`（默认）**：未压缩的 `Vector3`(12B) + `uint32`(4B) 布局，**既有字节契约完全不变**——
+  原有 54 项 smoke 断言一行未动、全绿。
+- **`Quantized`**：有界有损量化。位置按全局 AABB 线性映射到 `int16`（6B/顶点，另加 24B 解码头
+  `quant_min`+`quant_scale`），索引降到 `uint16`（2B/个）。解码 `pos ≈ quant_min + q·quant_scale`，
+  **每分量误差 ≤ quant_scale/2**（用四舍五入而非截断，把误差压到半级）。
+
+**关键设计约束（都写进了代码注释）**：
+1. **任意 32-bit float 无法无损压进更少比特** —— 这是**有界有损**量化，不是无损压缩。文档与断言
+   都如实标注了误差上界，不夸大。
+2. **层次/边界/error_metric 都在量化之前用全精度位置算好**（`RecursiveClusterSplit` 里），量化只
+   动存盘字节，不影响裁剪/LOD 用的边界与误差。
+3. **退化轴（range==0，如平铺在 XZ 平面的网格 Y 分量恒为 0）**：不能除零；这类轴量化成常量 0、
+   解码精确还原为 `quant_min`。
+
+**验证（headless WASM，无需浏览器/重启/真机）**：新增 `scripts/verify_nanite_wasm.sh` + 
+`scripts/nanite_wasm_prelude.h`，把 cluster builder + smoke test 作为独立 TU 用 emcc 编译、node 运行
+（绕开 #12 之后 `ZRuntime` 拖入的 WebGL2RHI/emmalloc 浏览器符号）。**67/67 全绿**：54 项 Raw 断言 +
+13 项新增 Quantized 断言（round-trip 误差界、字节数确实变小、层次与 Raw 一致、索引解码正确）。
+实测 vertex_data **10368→5208B**、index_data **3456→1728B**，最大位置误差 0.000183 = 契约上界。
+
+**验证过程揪出的 3 个真 bug**（正是运行时验证的价值）：① 退化轴除零 → NaN 灌进 int16；② 测试
+oracle 误设顶点按 `grid.indices` 顺序（实为空间深度优先序），改用 Raw build 自身 emitted 顶点作对照；
+③ 编码器用截断（误差达 1 级）改四舍五入（误差半级）。
+
+**剩下**：`UpdateStreaming`（流送，仍是 TODO）、HiZ 遮挡（GPU 侧，需真机）。
 
 ---
 

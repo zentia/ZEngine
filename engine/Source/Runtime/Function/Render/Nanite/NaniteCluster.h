@@ -14,6 +14,13 @@
 class RHI;
 class RenderResourceBase;
 
+// 按 mesh.geometry_codec 解码第 index 个顶点位置。Raw 直接读 Vector3；Quantized 用
+// quant_min/quant_scale 反量化。供渲染器与 smoke test 统一读取，屏蔽编码细节。
+Vector3 NaniteDecodeVertex(const NaniteMeshResource& mesh, uint32_t index);
+
+// 按 mesh.geometry_codec 解码第 index 个索引（Raw: uint32；Quantized: uint16）。
+uint32_t NaniteDecodeIndex(const NaniteMeshResource& mesh, uint32_t index);
+
 // 集群构建器 - 负责将传统网格转换为Nanite集群
 class NaniteClusterBuilder
 {
