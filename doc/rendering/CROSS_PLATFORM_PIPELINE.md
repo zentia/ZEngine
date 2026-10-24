@@ -135,10 +135,17 @@ sub-milestone):
   assembly initialized (`DesktopRenderPipelineModule(DX12): shadow passes +
   main camera initialized`), level loaded, scripts ticked, editor ran steadily
   with no crash.
-- **Vulkan**: blocked by a **pre-existing** crash in
+- **Vulkan**: ~~blocked by a **pre-existing** crash in
   `MainCameraPass::SetupModelGlobalDescriptorSet` (proven via A/B revert during
   Phase A -- same fault site on unmodified code). Unrelated to this milestone;
-  tracked separately.
+  tracked separately.~~
+  **已修复（2026-10-25 复核）**：该崩溃已被 commit `7e5d2521`
+  （"fix(vulkan): 空描述符资源与动态视口不再访问违例（MegaLights 关闭时必崩）"，2026-10-22）
+  修掉——根因是 MegaLights 默认关闭（`r.MegaLights.Enable=0`）时 binding 8..12 提交了空资源，
+  `UpdateDescriptorSets` 解引用空指针。修复在 `SetupModelGlobalDescriptorSet` / `UpdateMegaLights*
+  DescriptorSets` 加判空早退，并在 `VulkanRHI::UpdateDescriptorSets` 跳过空 write、
+  `CreateGraphicsPipelines` 空 viewport/scissor 不拷贝。commit 实测调试器下连续跑 240s 无 AV。
+  本文档写于 2026-06-02（早于修复），故原文已过时。**Vulkan 侧验证通路已恢复**。
 - **Manual-only** (cannot be checked headlessly): runtime UI toggle
   Desktop<->Mobile and a pixel-level diff of the two paths.
 

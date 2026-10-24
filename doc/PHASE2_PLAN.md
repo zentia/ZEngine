@@ -42,11 +42,12 @@
 
 | # | 候选 | 主题 | 成熟度 | 依赖 | 评级 |
 |---|------|------|--------|------|------|
+| C0 | **Vulkan `MainCameraPass` 崩溃根因修复** | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭 |
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **已实现·默认关闭**（165 编译+92 执行断言；`ZENGINE_RG_RP2=1` 门控，默认 off） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
 | C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **仅提案**（doc 无落地标记） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 | **部分实现**（真 GPU dispatch 已有；4 处 TODO=最硬的一半） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
 | C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **已实现但零消费者**（6 文件无外部引用、无 CVar、3 处构建排除） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
-| C5 | **Vulkan `MainCameraPass` 崩溃根因修复** | 跨切面阻塞：解除 Vulkan 侧验证能力 | **待复核**（两篇 doc 点名，A/B 已定位到 `MainCameraPass.cpp:2609`） | — | ★★★ 高杠杆/低中风险（建议前置·并行） |
+| C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **部分实现**（CPU 探针网格已通；**无任何 Lumen shader**） | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾** | — | ★★ 低风险填缝 |
 | — | **RHI 胖接口拆分**（阶段一 #9 遗留） | 124 纯虚 `RHI.h` 拆成职责子接口 | **未动手**（阶段一明确后置） | 触碰 4 后端 + 所有调用点 | ✗ **不建议进 Phase 2**（见 §3） |
@@ -60,7 +61,7 @@
 
 | 步骤 | 对应候选 | 子项 | 为什么排这里 |
 |------|----------|------|--------------|
-| **2.0**（前置·并行） | C5 | Vulkan `MainCameraPass::SetupModelGlobalDescriptorSet` 崩溃根因修复 | **跨切面阻塞**：两篇 doc 都点名它挡住了 Vulkan 侧对 RG / cook 管线 / Mobile 模块的验证。A/B revert 已把故障定位到 `MainCameraPass.cpp:2609`。**先跑、与 2.1 并行**——便宜，之后每步都快。**动手前先复核它是否已被近期 Metal/CSM 工作顺手修掉**（见 §4 注 3）。 |
+| **2.0**（✅ 已关闭） | C0 | Vulkan `MainCameraPass::SetupModelGlobalDescriptorSet` 崩溃根因修复 | **已被 `7e5d2521`（2026-10-22）修掉**，2026-10-25 复核确认关闭。根因：MegaLights 默认关闭时 binding 8..12 提交空资源 → `UpdateDescriptorSets` 解引用空指针；修复加判空早退 + RHI 跳过空 write。两篇文档（`CROSS_PLATFORM_PIPELINE.md` §5、`TEXTURE_COOK_PIPELINE.md` §8）写于 2026-06-02、早于修复，已加"已修复"标注。**Vulkan 验证通路已恢复，无需再动手**。 |
 | **2.1** | C1 | RenderGraph RP2 目视验证 → 默认打开 | 图与执行层已有 257 项断言；失败模式是"后处理不对"而非黑屏（`RENDER_GRAPH.md:136`）；一个环境变量可回滚。是所有后续渲染候选的地基。 |
 | **2.2** | C1 | RenderGraph 扩面（ParticlePass / 后处理链） | 复用已验证机制；消除 `RENDER_GRAPH.md:15` 列举的手写屏障。 |
 | **2.3** | C2 | `render_pass_refactor`：RP1 三分 | **必须在 2.1 之后**——此时屏障/别名机制已在真机验证过，单独做它是高风险。 |
@@ -96,9 +97,11 @@
 2. **Schema 演进可能已完成**：`doc/asset_management/SCHEMA_EVOLUTION_AND_TYPETREE.md:360,391` 标
    Stage 3/4 待做，但 `Core/Serialize/Test/SchemaEvolutionSmokeTest.cpp` 已存在、`TEXTURE_COOK_PIPELINE.md:83-84`
    引用其 T1/T2 覆盖 Texture2D 迁移。**排期前先核对**，别重复劳动。
-3. **Vulkan `MainCameraPass` 崩溃需先复核**：两篇 doc 断言其"pre-existing"，但都没给日期，近期
-   Metal/CSM 工作（git: `48445fac`/`d783599a`/`e9422487`）**可能已顺手修掉**。动手 step 2.0 前先验证
-   是否仍能复现——若已修，step 2.0 直接关闭，Vulkan 验证通路随之恢复。
+3. **Vulkan `MainCameraPass` 崩溃——已确认修复，无需再动手**：两篇 doc 断言其"pre-existing"，
+   复核（2026-10-25）确认已被 commit `7e5d2521`（2026-10-22，"fix(vulkan): 空描述符资源与动态
+   视口不再访问违例"）修掉——正是 §5 描述的同一故障点（`SetupModelGlobalDescriptorSet` 提交
+   MegaLights 空资源）。commit 实测调试器下连续跑 240s 无 AV。**step 2.0 直接关闭**，Vulkan 验证
+   通路随之恢复。两篇文档已加"已修复"标注。
 4. **vendored stb 污染 TODO 指标**：`Runtime/UI/Render/zstb_truetype.h` 贡献 152 处 TODO 里的 13 处，
    任何"TODO 消化率"统计应排除它。
 5. **WebGL2 残留仅 2 处真标记**：`WebGL2RHI.cpp:136`（挂深度/模板 rb）、`:885`（释放全部）——
