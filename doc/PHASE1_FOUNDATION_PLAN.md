@@ -40,7 +40,7 @@
 | 9 | 🟡 Medium | `RHI.h` 抽象头泄漏 Vulkan VMA 头；124 个纯虚函数的胖接口 | `Function/Render/Interface/RHI.h:15-17, :179-682` | **VMA 头泄漏已修复（第八落点，见 3.13）；胖接口拆分后置** |
 | 10 | 🟡 Medium | 崩溃快照 `platform` 硬编码为 `"windows"`；agentkit 无法解析非 Windows 快照 | `CrashHandler.h:508`；`agentkit/zagent/zengine_snapshot.py:112` | **已修复（随 #2，platform 运行时派生，见 3.10）** |
 | 11 | 🟢 Low | `log.reliable_level=normal`；无崩溃安全环形缓冲，`force_flush` 失败则日志尾丢失 | `Runtime/Core/Log/LogSystem.cpp:165` | **已修复（第四落点）** |
-| 12 | 🟢 Low | DX12 有 15 处 `// TODO: Implement`；WebGL2 仅骨架（`WEBGL2_TODO` 宏吞掉所有调用） | `DX12RHI.cpp:2399,3675,...`；`WebGL2RHI.cpp:30,388-482` | 待办 |
+| 12 | 🟢 Low | DX12 有 15 处 `// TODO: Implement`；WebGL2 仅骨架（`WEBGL2_TODO` 宏吞掉所有调用） | `DX12RHI.cpp:2399,3675,...`；`WebGL2RHI.cpp:30,388-482` | **热路径真 bug 已修复（第九落点，见 3.14）；其余 TODO 多为 DX12 不走 generic API 的 Vulkan-ism，WebGL2 全后端后置** |
 
 ---
 
@@ -61,7 +61,7 @@
 | 5 | 2 | POSIX 崩溃捕获（sigaction + backtrace）✅ 已实现·待 POSIX 编译验证（§3.10） | 价值高但 POSIX 代码 Windows 编不过，需 Linux/macOS 验证，排到本地能测的项之后 |
 | 6 | 1 + 4 | RHI：Linux 注册 + 后端注册表重构 ✅ 已完成（§3.11） | 需 Vulkan SDK 实际启动验证，环境成本最高 |
 | 7 | 7 | 引用计数强化 + 弱引用 ✅ 已完成（§3.12） | 纯 C++、跨平台、Windows 双配置可验证；补齐句柄家族弱引用成员 |
-| 8 | 9,12 | 其余 Low（#9 RHI.h VMA 头泄漏 ✅ 已修复见 §3.13，胖接口拆分后置；#12 DX12 TODO/WebGL2 骨架） | VMA 头泄漏单文件可安全修；胖接口拆分改动面大、后置 |
+| 8 | 9,12 | 其余 Low（#9 RHI.h VMA 头泄漏 ✅ 已修复见 §3.13，胖接口拆分后置；#12 DX12 热路径真 bug ✅ 已修复见 §3.14，其余 TODO/WebGL2 骨架后置） | VMA 头泄漏、DX12 泄漏/标记是单文件可安全修；胖接口拆分、完整 WebGL2 改动面大、后置 |
 
 ---
 
@@ -673,6 +673,74 @@ Linux 运行期确认待补（与 #2 一并）。
 
 ---
 
+## 3.14 第九落点：DX12 热路径真 bug 修复（#12 前半）
+
+### 动手前审计：15 处 "TODO" 名不副实，逐一核实可达性
+- 审计原文说 DX12 有 "15 处 `// TODO: Implement`"，但逐行读实现后发现**多数是 Vulkan-ism**——
+  DX12 用**自有的** `m_CommandLists[]` / `m_Fences[]` / descriptor heap（init 时自建、全程自用），
+  根本不路由 generic API，那些空桩**不是未完成功能**：
+  - `AllocateCommandBuffers` / `CreateCommandPool`（无参重载）/ `CreateFence`：DX12 自建内部对象，
+    generic 版本无调用点（`CreateFence` 的 generic 调用只在 ParticlePass，DX12 走自己的 pass）。
+  - `AllocateDescriptorSets`（:2403）：**其实早已完整实现**，:2400 的 TODO 是错位的注释
+    （属于上面的 `AllocateCommandBuffers`）。
+  - `CreateSemaphore` / `CreateViewportRenderTexture` 等：DX12 无对应类型 / 未走该路径。
+  - `Invalidate/FlushMappedMemoryRanges`：DX12 用 coherent upload heap，Vulkan 才需要手动 flush
+    （`vkFlushMappedMemoryRanges`）；DX12 的空桩语义正确。
+- **真正在 DX12 热路径上、且是"静默错/真 bug"的只有两处**（其余 WebGL2 全后端、胖接口另计）：
+
+### 修复一：`DestroyShaderModule` 是真内存泄漏（静默错，比崩溃更危险）
+- `CreateShaderModule` new 出 `DX12Shader`（持有 `ComPtr<ID3DBlob>`），但 `DestroyShaderModule`
+  是空桩、从不释放。**~50 个调用点**（每个 pass、DX12 bindless blit/tonemap 管线、editor overlay、
+  Nanite、Spine、debug draw）每次绘制都泄漏一个 shader 对象。
+- 对齐 Vulkan：`vkDestroyShaderModule + delete`。PSO 经 `CreateGraphicsPipelineState` 已把所需
+  bytecode 拷进管线状态，blob 可弃 ⇒ `delete` 安全。
+- **顺手修 UB**：`RHIShader` 基类**无虚析构**，`delete` 基类指针本是未定义行为（Vulkan/WebGL2
+  早就这么写、只是碰巧没炸）。给 `RHIShader` 加 `virtual ~RHIShader() = default;`——这是**正确的、
+  向后兼容的**修法，让所有后端的 teardown 都良定义。
+  - **踩坑（重要）**：加虚析构 = 给所有 shader 派生类型加 vptr = **改 ABI/布局**。MSBuild 的
+    头文件依赖扫描**漏检**了两个 DX12 Utility TU（`BindlessTonemapPipeline.cpp` /
+    `BindlessTextureBlitPipeline.cpp`，经 `RHI.h→RHIStruct.h` 间接依赖），增量构建没重编 ⇒
+    潜在 vtable 布局不一致。**解法**：删掉整个 `ZRuntime.dir/{Debug,Release}` 中间目录 + lib，
+    全量干净重建，逐一确认所有 `new DX12Shader/VulkanShader/...` 的 TU 都重编（obj 用嵌套
+    `Function/Render/Interface/DX12/Utility/*.cpp.obj` 路径 + `.cpp.obj` 后缀，扁平搜索会漏）。
+    **教训**：改基类布局（加/删虚函数、成员）后，别信增量构建，必须干净重建。
+
+### 修复二：`PushEvent`/`PopEvent` 是热路径空桩 ⇒ DX12 无任何 GPU 调试标记
+- 每个 pass（MainCameraPass/DirectionalLightPass/CombineUI/ColorGrading/Spine/ZSlate overlay…）
+  在热路径调 Push/PopEvent；空桩 ⇒ DX12 完全没有 PIX 标记，GPU 调试/性能分析是瞎的。
+- **踩坑（重要）**：`ID3D12GraphicsCommandList::BeginEvent` **不是**字符串标记 API——签名是
+  `BeginEvent(UINT Metadata, const void* pData, UINT Size)`（时间戳事件）。直接传字符串名会
+  C2660。**正确做法**：用 Windows SDK 自带的 `<pix.h>`（`PIXBeginEvent`/`PIXEndEvent`）——它是
+  **header-only 内联包装**，内部发 `BeginEvent(PIX_EVENT_ANSI_VERSION, name, size)`，D3D12 运行库
+  把该 metadata 常量识别为字符串标签（运行期解析、无需额外链接 DLL）。且能带 `PIX_COLOR(r,g,b)`
+  颜色 metadata，忠实对齐 Vulkan `(name, color)` 签名。
+- 与其它 recording PFN（`DrawIndexedInstanced`/`ResourceBarrier`）一致，操作
+  `getCurrentCommandList()`（= `m_CommandLists[m_CurrentFrameIndex]`），忽略传入的逻辑
+  `RHICommandBuffer*` 句柄。
+
+### 验证（Windows Debug + Release 双配置端到端）
+- ZRuntime.lib **Debug + Release 均干净全量重建**（exit 0，零 error）；所有 shader 派生类型 TU
+  确认重编（新 vtable 布局一致）。
+- 运行 `RHIFactoryRegistrySmokeTest`（含 DX12 后端 new/delete 路径）：**9/9 ALL CHECKS PASSED**
+  ⇒ 新 `RHIShader` 布局 + DX12 后端生命周期 OK。
+
+### 踩坑小结（本落点两条硬教训）
+1. **改基类布局必须干净重建**：MSBuild 头扫描漏检间接依赖，增量构建会留下布局不一致的 stale obj。
+2. **D3D12 `BeginEvent` ≠ 字符串标记**：那是时间戳事件 API；字符串作用域标记走 `<pix.h>` 的
+   `PIXBeginEvent/PIXEndEvent`（header-only、运行期经 D3D12 运行库解析、可带颜色）。
+
+### 改动文件清单
+- `Runtime/Function/Render/Interface/RHIStruct.h`（`RHIShader` 加 `virtual ~RHIShader() = default;`）
+- `Function/Render/Interface/DX12/DX12RHI.cpp`（`DestroyShaderModule` 实现 `delete`；
+  `PushEvent`/`PopEvent` 用 `<pix.h>` 发真实 PIX 标记；新增 `#include <pix.h>`）
+- `doc/PHASE1_FOUNDATION_PLAN.md`：本 §3.14；#12 标"热路径真 bug 已修复，其余后置"。
+
+至此 #12 的**热路径真 bug 部分**完成：修掉 DX12 每次绘制泄漏 shader 的静默内存泄漏 + 补齐 GPU
+调试标记。其余 "TODO" 经核实多为 DX12 不走 generic API 的 Vulkan-ism（空桩语义正确），完整
+WebGL2 后端（19 处 `WEBGL2_TODO`）作为全后端级大工程后置。
+
+---
+
 ## 4. 后续落点预案（简述，动手前再展开）
 
 - ~~**#8 两阶段销毁**~~（✅ 已完成，见 §3.7）：在 `Object::~Object()` 前后真正调用
@@ -702,5 +770,13 @@ Linux 运行期确认待补（与 #2 一并）。
 - **#9 胖接口拆分（后置·高风险）**：124 纯虚 + 11 默认实现的胖接口，按职责（命令录制 / 资源创建 /
   销毁 / 查询）拆成多个子接口。方向正确但触碰全部 4 个后端 + 每个调用点，需作为独立重构专项，
   不在阶段一"每步 Windows 可验证、风险可控"范围内。
-- **#12 DX12 TODO / WebGL2 骨架**：DX12 有 15 处 `// TODO: Implement`；WebGL2 仅骨架
-  （`WEBGL2_TODO` 宏吞掉所有调用）。
+- ~~**#12 DX12 热路径真 bug**~~（✅ 已修复，见 §3.14）：逐一核实 15 处 "TODO" 后，真正在 DX12
+  热路径且是静默错/真 bug 的只有两处——①`DestroyShaderModule` 空桩导致每次绘制泄漏一个
+  `DX12Shader`（~50 调用点），改为 `delete`（对齐 Vulkan）并顺手给无虚析构的 `RHIShader` 加
+  `virtual ~RHIShader()`（修 UB）；②`PushEvent`/`PopEvent` 空桩导致 DX12 无 GPU 调试标记，改用
+  `<pix.h>` 的 `PIXBeginEvent/PIXEndEvent` 发真实 PIX 标记（带颜色）。Windows 双配置**全量干净
+  重建**（改基类布局必须干净重建，MSBuild 增量会漏检间接依赖）+ 注册表 smoke test 9/9 通过。
+- **#12 其余 TODO / 完整 WebGL2 后端（后置）**：核实后多数是 DX12 不走 generic API 的 Vulkan-ism
+  （`AllocateCommandBuffers`/`CreateCommandPool`/`CreateFence` 等——DX12 用自有内部对象，空桩语义
+  正确；`AllocateDescriptorSets` 其实早已实现、:2400 是错位注释；`Invalidate/FlushMappedMemoryRanges`
+  在 DX12 coherent heap 下本就该是 no-op）。完整 WebGL2 后端（19 处 `WEBGL2_TODO`）是全后端级大工程，后置。
