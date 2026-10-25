@@ -67,7 +67,7 @@
 | **2.3** | C2 | `render_pass_refactor`：RP1 三分 | **必须在 2.1 之后**——此时屏障/别名机制已在真机验证过，单独做它是高风险。 |
 | **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。 |
 | **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。**streaming 已于 2026-10-25 落地**（见下方落地记录）：`UpdateStreaming` 从 TODO 兑现为基于距离的叶子驻留判据，WASM headless 验证 77/77 全绿（含 10 项新增 streaming 断言）。剩 HiZ（GPU 侧需真机）。 |
-| **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。9 处真 TODO（页上传/LRU 淘汰/页表更新）。 |
+| **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。**已于 2026-10-25 落地**（见下方落地记录）：9 处 TODO 里 6 处 CPU 侧填实（屏幕投影 mip/优先级重算/LRU 淘汰/统计/时间戳/世界足迹），3 处 GPU 侧（页上传/页表纹理）如实留作真机；加 `r.VirtualTexture.Enable` CVar 门控 + 帧循环 `UpdateVirtualTextureForFrame`（3 条 Tick 路径统一入口，默认关、Vulkan 编译门内、零回归）；headless WASM 验证 15/15 全绿。剩页上传/页表纹理（GPU 需真机）+ 2.4 的 RG 资源注册。 |
 | **2.7** | C6 | Lumen：SSR + 首个 Lumen shader | 依赖 2.4 的 GBuffer/depth 声明；放最后，**只取 SSR 一半**。**HWRT/BLAS-TLAS 明确移出 Phase 2**（需独立专项）。 |
 | **穿插** | C7 | 平台窗口化收尾 / Timeline 四类片段 / Prefab §9.4 follow-ups | 渲染项卡在真机验证时用来保持节奏；每项都可独立编译演示，低风险。 |
 
@@ -138,6 +138,49 @@ oracle 误设顶点按 `grid.indices` 顺序（实为空间深度优先序），
 
 **诚实定位**：这是**距离裁剪**，不是 UE 那套 streaming pool。它带来真能力（远处叶子不再进裁剪/
 渲染），但没有带宽预算、没有按需分页、没有物理显存回收。页池是明确的后续项。
+
+---
+
+### 落地记录 · 2.6 VirtualTexture 接线（2026-10-25）
+
+**做了什么**：把长期休眠的 VirtualTexture 子系统（6 个源文件能编译但**无任何渲染路径调用**、CMakeLists
+在 WebGL/Windows/Apple 三条路径整个排除）接上第一根线——填实 9 处 TODO 里 6 处 CPU 侧、加 CVar 门控、
+挂帧循环。
+
+**9 处 TODO 的分类**（按能否 headless 验）：
+- **CPU 侧 6 处（已填实）**：① `CalculatePageScreenSize`（针孔投影：页世界半幅 = 对象半幅 / 页网格，
+  投到屏幕高比例，带退化 fov/距离守卫）；② `RequestPages`（把真实 distance 传给 mip 选择、记录真实
+  时间戳、把对象世界 bounds 戳到页上）；③ `UpdatePagePriorities`（用页上存的世界足迹对每帧相机
+  重投影、按 `min_screen_size`/`max_distance` 门控、设优先级 + is_visible）；④ `EvictLRUPages`（超
+  预算时按 `last_access_time` 最旧优先卸载）；⑤ `Update` 统计（loaded/loading/unloaded 页数 + 已用
+  slot + 内存 + 使用率）；⑥ `LoadPage` 时间戳（给 LRU 一个真实排序键，原来所有 slot 都在 0 打平）。
+- **GPU 侧 3 处（如实留作真机）**：`LoadPage` 从磁盘读像素、`UploadPageToPhysicalPool`（Vulkan transfer）、
+  `UpdatePageTableTexture`（建页表 image）。`PhysicalTexturePool::Initialize` 是 Vulkan-only
+  （`static_cast<VulkanRHI*>` + `vmaCreateImage`），这三处没有真机/RHI 无法跑。
+
+**关键设计缺口修复**：骨架的 `VirtualTexturePage` **不存任何世界位置**——这正是 `UpdatePagePriorities`
+当年只能是 TODO 的原因（没有可重投影的东西）。给页加了 `object_position` + `object_bounds`，
+`RequestPages` 时戳入，`Update` 每帧重算。
+
+**CVar 门控**：新增 `r.VirtualTexture.Enable`（默认 0），仿 `NaniteSettings` 模式（`VirtualTextureSettings`
+只暴露一个 bool、不引用任何 VT 类型，所以全平台可编译）。帧循环新增 `RenderSystem::
+UpdateVirtualTextureForFrame`，与 `UpdateNaniteForFrame` 同址（3 条 Tick 路径统一入口），**定义里用
+`#if defined(Z_HAS_VULKAN)` 包住对 VT 的引用**（VT 只在 Vulkan 路径编译：Android/OHOS/Linux/
+Windows-with-vulkan；Apple/Emscripten 的 CMake 排除了 `VirtualTexture.*.cpp` 且未定义该宏），非 Vulkan
+构建下是 no-op。默认关 ⇒ 即便 VT 编译进来，不显式打开也零开销、零回归。
+
+**验证（headless WASM，无需浏览器/重启/真机）**：新增 `scripts/verify_vt_wasm.sh` + 影子头
+`scripts/vt_wasm_shadow/`。VT 比 Nanite 难缠得多：3 个 `.cpp` 硬 `#include "VulkanRHI.h"`（拉
+`<vulkan/vulkan.h>` + `<vma/vk_mem_alloc.h>`），还经 `RenderResourceBase.h` 拖入整个 Object 系统
+（`Component.generated.h` 等 codegen 产物）。影子树（放在 engine/Source 之前）提供：Vk/vma 类型桩 +
+一个完整的 `VulkanRHI` 桩子类（覆写 RHI 全部 ~60 纯虚，harness 从不调用）、轻量 `RenderResourceBase.h`
+（VT 只把它当不透明指针）、vma shim TU、平台三元组（`-DZ_PLATFORM_LINUX` 等，绕过 `Platform.h` 的
+`#error`）、复用 Nanite 的序列化 prelude。`PhysicalTexturePool::InitializeLogical()` 建 slot 网格而不建
+Vulkan image，让流送策略在无设备上断言。**15/15 全绿**：注册/mip0 全加载/统计一致/LRU 淘汰守预算
+（1024×1024=64 页=4MB 配 1MB 预算）/远距离门控标 not-visible/注销清空。
+
+**诚实定位**：这是**接线第一步**——把休眠子系统变成控制台可开、帧循环可驱动、策略可断言。页上传/
+页表纹理（GPU）+ 2.4 的 RG 资源注册是明确的后续项。它不是"VT 完成了"，是"VT 从死代码变成可推进"。
 
 ---
 

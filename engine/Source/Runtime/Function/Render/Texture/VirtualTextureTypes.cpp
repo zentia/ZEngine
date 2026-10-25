@@ -18,7 +18,8 @@
 
 PhysicalTexturePool::PhysicalTexturePool()
     : m_Rhi(nullptr), m_PhysicalTexture(nullptr), m_PhysicalTextureView(nullptr), m_Allocation(nullptr),
-      m_PoolWidthPages(0), m_PoolHeightPages(0), m_PageSize(0), m_Format(RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM)
+      m_PoolWidthPages(0), m_PoolHeightPages(0), m_PageSize(0), m_Format(RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM),
+      m_LogicalOnly(false)
 {
 }
 
@@ -142,6 +143,39 @@ bool PhysicalTexturePool::Initialize(RHI* rhi,
 
     return true;
 #endif
+}
+
+bool PhysicalTexturePool::InitializeLogical(uint32_t pool_width_pages,
+                                            uint32_t pool_height_pages,
+                                            uint32_t page_size)
+{
+    // Headless counterpart of Initialize(): build the slot grid and size the
+    // pool metadata, but create NO Vulkan image. Everything that is pure CPU
+    // (slot allocation, LRU, access-time tracking) works unchanged, so the
+    // streaming policy can be unit-tested under WASM with no RHI/device.
+    m_Rhi = nullptr;
+    m_PoolWidthPages = pool_width_pages;
+    m_PoolHeightPages = pool_height_pages;
+    m_PageSize = page_size;
+    m_Format = RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM;
+    m_LogicalOnly = true;
+    m_PhysicalTexture = nullptr;
+    m_PhysicalTextureView = nullptr;
+    m_Allocation = nullptr;
+
+    uint32_t total_slots = pool_width_pages * pool_height_pages;
+    m_Slots.resize(total_slots);
+    for (uint32_t i = 0; i < total_slots; ++i)
+    {
+        uint32_t x, y;
+        GetSlotCoordinates(i, x, y);
+        m_Slots[i].x = x;
+        m_Slots[i].y = y;
+        m_Slots[i].is_allocated = false;
+        m_Slots[i].last_access_time = 0;
+    }
+
+    return true;
 }
 
 void PhysicalTexturePool::Shutdown()
