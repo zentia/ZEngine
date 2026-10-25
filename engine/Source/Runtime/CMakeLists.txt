@@ -424,6 +424,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Timeline/Test/TimelineEvaluationTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Timeline/Test/TimelineEvaluationTest.cpp")
+# Headless VT streaming test (owns a main(); scripts/verify_vt_wasm.sh). Left in by
+# step 2.6, it put a second main() into libZRuntime.a, so every executable that links
+# ZRuntime --whole-archive (web / Linux / Apple smoke tests) failed with
+# "duplicate symbol: main".
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureStreamingSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Texture/Test/VirtualTextureStreamingSmokeTest.cpp")
 # PR5c: DX12 bindless smoke-test main. Same exclusion rationale as
 # shader_lab_test above. Built only when ZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
 # (see Function/Render/Interface/DX12/Test/CMakeLists.txt).

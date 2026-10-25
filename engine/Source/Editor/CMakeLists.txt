@@ -52,6 +52,8 @@ list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Undo/[Tt]est/.*")
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Build/[Tt]est/.*")
 # Editor/Launcher/Test/ carries ZEditorLauncherWiringSmokeTest.cpp (own main()).
 list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Launcher/[Tt]est/.*")
+# Editor/Prefab/Test/ carries PrefabEndToEndSmokeTest.cpp (own main()).
+list(FILTER EDITOR_SOURCES EXCLUDE REGEX ".*/Prefab/[Tt]est/.*")
 # LuaMemPreview is Windows-only: it pulls <windows.h> / <commdlg.h> / <shellapi.h>
 # for the open-file dialog and console attachment. The directory is self-contained
 # (nothing outside it calls in), so dropping it whole costs nothing elsewhere.
@@ -365,6 +367,7 @@ add_subdirectory(AssetPipeline/TextureImporter/Test)
 add_subdirectory(Undo/Test)
 add_subdirectory(Build/Test)
 add_subdirectory(Launcher/Test)
+add_subdirectory(Prefab/Test)
 
 set(_EDITOR_CONFIG_BIN "${BINARY_ROOT_DIR}/$<CONFIG>")
 set(POST_BUILD_COMMANDS

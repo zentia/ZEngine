@@ -301,74 +301,136 @@ GameObject* PrefabUtility::Instantiate(PrefabAsset* asset, bool invoke_post_load
     return root;
 }
 
-GameObject* PrefabUtility::InstantiateFromPath(const std::filesystem::path& prefab_path, bool invoke_post_load)
+PrefabAsset* PrefabUtility::LoadPrefabAsset(const std::filesystem::path& prefab_path, std::vector<GameObject*>* out_gameobjects)
 {
     auto&& asset_manager = GET_SYSTEM(AssetManager);
-
-    // .prefab -> YAML object graph; the PrefabAsset header is the entry whose
-    // class is PrefabAsset, its m_RootGameObject ImmediatePtr already resolved
-    // to the live root GameObject by the graph reader's shared resolver.
-    if (prefab_path.extension() == ".prefab")
+    if (asset_manager == nullptr)
     {
-        std::vector<std::pair<int64_t, Object*>> entries;
-        if (!asset_manager->ReadObjectsFromYaml(prefab_path, entries))
-        {
-            LOG_ERROR(ZPrefab, "Failed to load prefab (yaml) from {}", prefab_path.generic_string());
-            return nullptr;
-        }
-
-        PrefabAsset* asset = nullptr;
-        std::vector<GameObject*> graph_gameobjects;
-        graph_gameobjects.reserve(entries.size());
-        for (const auto& entry : entries)
-        {
-            if (entry.second == nullptr)
-            {
-                continue;
-            }
-            if (entry.second->GetType() == TypeOf<PrefabAsset>())
-            {
-                asset = static_cast<PrefabAsset*>(entry.second);
-            }
-            else if (entry.second->GetType() == TypeOf<GameObject>())
-            {
-                GameObject* go = static_cast<GameObject*>(entry.second);
-                // Rebuild each GameObject's runtime component list from its just-read
-                // ImmediatePtr container (binary ReadObject does this inside the asset
-                // pipeline; the YAML graph reader doesn't, so do it here).
-                go->RebuildRuntimeComponents();
-                graph_gameobjects.push_back(go);
-            }
-        }
-        if (asset == nullptr)
-        {
-            LOG_ERROR(ZPrefab, "Prefab (yaml) {} contained no PrefabAsset header", prefab_path.generic_string());
-            return nullptr;
-        }
-
-        GameObject* root = asset->GetRootGameObject();
-        if (root == nullptr)
-        {
-            LOG_ERROR(ZPrefab, "Prefab (yaml) {} PrefabAsset has no root GameObject", prefab_path.generic_string());
-            return nullptr;
-        }
-
-        // Seed the post-load driver with the COMPLETE GameObject set so arbitrary-depth
-        // child Transforms resolve their owners (lifts the binary path's single-level
-        // Phase-1 restriction for text prefabs).
-        PrefabPostLoadDriver driver;
-        driver.Run(root, graph_gameobjects, invoke_post_load);
-        return root;
+        return nullptr;
+    }
+    if (out_gameobjects != nullptr)
+    {
+        out_gameobjects->clear();
     }
 
-    std::filesystem::path mutable_path = prefab_path;
-    PrefabAsset* asset = asset_manager->ReadObject<PrefabAsset>(mutable_path);
-    if (asset == nullptr)
+    const bool is_yaml = AssetManager::IsYamlAuthoringAssetPath(prefab_path);
+    ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
+
+    // Binary graphs live under path-derived instance IDs: reading the file a second
+    // time would re-Produce objects under the same IDs and silently re-point every
+    // PPtr into the first copy. Reuse the hydrated graph instead.
+    if (!is_yaml)
+    {
+        const int32_t header_id = asset_manager->GetInstanceIDFromPathAndFileID(prefab_path, 1);
+        Object* cached = header_id != 0 ? object_manager->IDToPointer(header_id) : nullptr;
+        if (cached != nullptr && cached->GetType() == TypeOf<PrefabAsset>() &&
+            static_cast<PrefabAsset*>(cached)->GetRootGameObject() != nullptr)
+        {
+            if (out_gameobjects != nullptr)
+            {
+                // SaveAsPrefabAsset numbers the objects 1..N without gaps.
+                for (int64_t file_id = 2;; ++file_id)
+                {
+                    Object* object = object_manager->IDToPointer(asset_manager->GetInstanceIDFromPathAndFileID(prefab_path, file_id));
+                    if (object == nullptr)
+                    {
+                        break;
+                    }
+                    if (object->GetType() == TypeOf<GameObject>())
+                    {
+                        out_gameobjects->push_back(static_cast<GameObject*>(object));
+                    }
+                }
+            }
+            return static_cast<PrefabAsset*>(cached);
+        }
+    }
+
+    std::vector<std::pair<int64_t, Object*>> entries;
+    const bool read_ok = is_yaml ? asset_manager->ReadObjectsFromYaml(prefab_path, entries)
+                                 : asset_manager->ReadObjectsFromBinary(prefab_path, entries);
+    if (!read_ok)
     {
         LOG_ERROR(ZPrefab, "Failed to load prefab from {}", prefab_path.generic_string());
         return nullptr;
     }
-    return Instantiate(asset, invoke_post_load);
+
+    // The header is the PrefabAsset at fileID 1 (any PrefabAsset if a hand-edited
+    // file renumbered it); its m_RootGameObject resolved through the graph reader's
+    // shared resolver. Every GameObject gets its runtime component list rebuilt from
+    // the just-read ImmediatePtr container -- neither graph reader does that, and
+    // getComponents() / tryGetComponent() are empty until it happens (Level::Load
+    // does the same for scenes).
+    PrefabAsset* asset = nullptr;
+    for (const auto& entry : entries)
+    {
+        Object* object = entry.second;
+        if (object == nullptr)
+        {
+            continue;
+        }
+        if (object->GetType() == TypeOf<PrefabAsset>())
+        {
+            if (asset == nullptr || entry.first == 1)
+            {
+                asset = static_cast<PrefabAsset*>(object);
+            }
+        }
+        else if (object->GetType() == TypeOf<GameObject>())
+        {
+            GameObject* go = static_cast<GameObject*>(object);
+            go->RebuildRuntimeComponents();
+            // Owner back-pointers only (no PostLoadResource: this graph is a template,
+            // not a live scene object). Without them a child Transform cannot name its
+            // GameObject, so cloning (EditorPrefabCloner), re-saving
+            // (SaveAsPrefabAsset's flattener) and the post-load driver all stop at
+            // the root.
+            for (ImmediatePtr<Component>& component : go->getComponents())
+            {
+                if (Component* c = component)
+                {
+                    c->BindOwnerIfUnbound(go);
+                }
+            }
+            if (out_gameobjects != nullptr)
+            {
+                out_gameobjects->push_back(go);
+            }
+        }
+    }
+
+    if (asset == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "Prefab {} contained no PrefabAsset header", prefab_path.generic_string());
+        return nullptr;
+    }
+    if (asset->GetRootGameObject() == nullptr)
+    {
+        LOG_ERROR(ZPrefab, "Prefab {} PrefabAsset has no root GameObject", prefab_path.generic_string());
+        return nullptr;
+    }
+    return asset;
+}
+
+GameObject* PrefabUtility::InstantiateFromPath(const std::filesystem::path& prefab_path, bool invoke_post_load)
+{
+    // Whole-graph load for both formats. This used to read only the PrefabAsset
+    // header for binary .zasset prefabs (AssetManager::ReadObject<PrefabAsset>),
+    // which never produces the root GameObject the header points at -- so binary
+    // prefabs always failed with "PrefabAsset has no root GameObject".
+    std::vector<GameObject*> graph_gameobjects;
+    PrefabAsset* asset = LoadPrefabAsset(prefab_path, &graph_gameobjects);
+    if (asset == nullptr)
+    {
+        return nullptr;
+    }
+
+    // Seed the post-load driver with the COMPLETE GameObject set so arbitrary-depth
+    // child Transforms resolve their owners.
+    GameObject* root = asset->GetRootGameObject();
+    PrefabPostLoadDriver driver;
+    driver.Run(root, graph_gameobjects, invoke_post_load);
+    return root;
 }
 
 void PrefabUtility::SetInstantiatedRootParent(GameObject* instantiated_root, Transform* parent, bool worldPositionStays)

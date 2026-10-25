@@ -11,6 +11,8 @@
 #include <cstdio>
 #include <string>
 
+#include <sys/stat.h>
+
 namespace
 {
     const char* PermissionToMode(FilePermission p)
@@ -108,7 +110,19 @@ FileSize LocalFileSystemWeb::Size(const FileEntryData& data) const
 {
     auto* f = static_cast<std::FILE*>(data.accessorData);
     if (!f)
-        return FileSize();
+    {
+        // Callers ask for the size of entries they have NOT opened --
+        // FileCacherRead sizes its file with a bare FileSystemEntry(path).Size()
+        // before any read. The Linux / Windows handlers answer that with
+        // stat() / GetFileAttributesEx(); returning 0 here made every on-disk
+        // .zasset fail SerializedFile's header check (fileSize > actual size)
+        // on the web build.
+        struct stat file_stat {};
+        const std::string path_string = data.path.generic_string();
+        if (::stat(path_string.c_str(), &file_stat) != 0 || !S_ISREG(file_stat.st_mode))
+            return FileSize();
+        return FileSize(static_cast<uint64_t>(file_stat.st_size));
+    }
     const long cur = std::ftell(f);
     if (std::fseek(f, 0, SEEK_END) != 0)
         return FileSize();

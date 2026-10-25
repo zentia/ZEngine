@@ -464,10 +464,37 @@ public:
 
 ### 9.4 接下来可做（非阻塞）
 
-1. **`.zasset` 示例 Prefab + 端到端单测**：构造一个含 GO + Transform + 几个简单 Component 的 PrefabAsset，写入磁盘 → reload → Instantiate → 改字段 → ApplyAll → reload PrefabAsset 验证修改持久化。
-2. **PrefabInstance 自身序列化往返**：当前 PrefabInstance 已经 `IMPLEMENT_OBJECT_SERIALIZE`，但场景文件保存/加载链路还需要把 PrefabInstance 作为顶层 Object 落到 SerializedFile 里。
+1. ~~**`.zasset` 示例 Prefab + 端到端单测**~~ —— **已落地（2026-10-25）**，见下方 §9.4.1。
+2. **PrefabInstance 自身序列化往返** —— **对象图层已验证（2026-10-25）**：PrefabInstance 与它的克隆子树作为一张对象图写进 `.zasset`（二进制）和 `.scene`（YAML）再读回，覆盖列表、corresponding-source 映射、实例根引用、跨文件的源 PrefabAsset 引用都保留（§9.4.1 的 P6）。**剩余**：编辑器的场景保存/加载链路本身还没有把 PrefabInstance 收进场景对象图——`Level::save/load` 在 Runtime，PrefabInstance 是 Editor-only 类型，需要在编辑器侧的场景保存入口追加（不能直接改 Level）。
 3. **编辑器 UI 集成**：把 `RecordPropertyOverride` / `Apply` / `Revert` 接到 Inspector 的右键菜单。
 4. **Cook 阶段 flatten**：Player 构建时把 PrefabInstance flatten 成普通 GameObject 树（参见 §7.5）。
+
+#### 9.4.1 端到端测试落地记录（2026-10-25）
+
+`engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp`（58 项断言），走真实代码和真实磁盘：
+
+| 场景 | 内容 |
+|---|---|
+| P1 | 搭 root + child（各带 Transform）→ `PrefabUtility::SaveAsPrefabAsset` 写 `.zasset` |
+| P2 | `PrefabUtilityEditor::InstantiateAsPrefab(path)` 从磁盘读回 → 结构克隆：名字、层级、本地位置、corresponding-source 映射 |
+| P3 | 改实例字段 → `RecordCurrentValueAsOverride`（同一属性重录是覆盖不是追加）→ `ApplyAll` 写进源、清空覆盖列表、不碰未覆盖字段 |
+| P4 | 把应用后的源另存一份 `.zasset`，以全新对象读回：应用的值落盘了 |
+| P5 | `Revert` 把未应用的覆盖拉回源值，不改源 |
+| P6 | PrefabInstance + 克隆子树按场景对象图写二进制 / YAML 再读回（见上面第 2 条） |
+
+**运行方式**：`bash scripts/verify_prefab_e2e.sh`。无原生工具链时它用 `scripts/web_smoke_run.py`：借 build-web 里已配置的 smoke-test 目标的编译/链接命令，把测试和 `Editor/Prefab/*.cpp` 链到 web 版 `libZRuntime.a`（`--whole-archive`），补上 WebGL2 / emmalloc / NODERAWFS 链接参数后用 node 跑。原生构建可用 `-DZENGINE_BUILD_PREFAB_E2E_SMOKE_TEST=ON`。
+
+**这个测试第一次跑起来就暴露的真 bug（都已修，变异验证过测试能抓住）**：
+
+1. **磁盘上的 Prefab 根本无法实例化**：`InstantiateAsPrefab(path)` 和 `PrefabUtility::InstantiateFromPath`（二进制 `.zasset` 分支）都用 `AssetManager::ReadObject<PrefabAsset>`，它只读 fileID 1 这一个对象；头里的 `m_RootGameObject` 指向同文件的 fileID 2，单对象读永远不会产出它 ⇒ 根恒为 null。新增 `PrefabUtility::LoadPrefabAsset(path, out_gameobjects)` 读整张对象图（YAML / 二进制统一），两个入口都改走它。
+2. **克隆只克隆根**：`EditorPrefabCloner` 的遍历只认识"已访问过的 GameObject"的 Transform 归属，永远迈不出根到第一个子节点那一步。改为沿 `Component::m_ParentObject` 广度优先；`LoadPrefabAsset` 为读出的模板图只绑定归属指针（新增 `Component::BindOwnerIfUnbound`，不跑 PostLoadResource，避免把源资产注册成场景活对象）。
+3. **克隆的父节点子列表重复**：序列化拷贝把源的 `m_Father` / `m_Children` 一起带过来，`SetParent` 又往里追加 ⇒ 克隆父节点同时列出源子节点和克隆子节点。新增 `Transform::ClearCopiedHierarchyLinks()`，重连前清掉。
+4. **`Transform::Transfer` 读写不对称**：读时先 `m_LocalPosition` 后 `m_LocalPositionD`（写反过来），且读时多探测 `transform` / `m_parent` / `m_children` 三个旧字段。按名字查找的读取器（SafeBinaryRead / YAML / JSON）不受影响，但**按位置读的 StreamedBinaryRead**（Prefab 克隆、覆盖快照都用它）读错位 ⇒ 克隆的位置是垃圾。另外 GenerateTypeTreeTransfer 既非读也非写，会走"读"分支把旧字段写进 TypeTree。改为读写同序，旧字段只给按名字查找的读取器探测。
+5. **Apply / Revert / Merge 对 Transform 无效**：它们用 `ReadObjectFromVector` 原地覆写序列化字段，但不通知对象；Transform 的 TRS 实际读自层级缓冲区，覆写后看不到变化。三处统一改走 `ReadBackInto`：覆写后调 `Component::OnSerializedFieldsUpdated()`（Undo 和 Inspector 用的同一约定）。
+6. **外部引用的路径可能存空**：`StoreExternalAssetPath` 用 `std::filesystem::absolute`，取不到当前目录时返回空路径，跨文件引用下次加载就静默变 null（node/wasm 下必现，原生上 cwd 被删时也会）。改为回落到原路径。
+7. **web 构建读不了磁盘上的 `.zasset`**：`LocalFileSystemWeb::Size` 对未打开的条目返回 0，`FileCacherRead` 恰恰是先用未打开的条目取大小 ⇒ SerializedFile 头校验失败。改为未打开时 `stat()`（与 Linux / Windows 实现一致）。这也让既有的 `YamlRoundTripSmokeTest` Y9 二进制场景在 web 上转绿。
+
+**未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply（UI 链路本身是第 3 条，未接）。
 
 
 ---

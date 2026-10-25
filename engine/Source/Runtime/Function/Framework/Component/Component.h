@@ -40,6 +40,19 @@ public:
     ZFUNCTION()
     GameObject* GetParentObject() const { return m_ParentObject; }
 
+    /// Bind the owner back-pointer WITHOUT running PostLoadResource. For template
+    /// graphs -- a PrefabAsset loaded to be cloned, applied to or re-saved -- that must
+    /// be navigable child Transform -> GameObject but must not register with live
+    /// systems (scene roots, renderers, physics, scripts). Never overwrites an owner
+    /// that is already bound.
+    void BindOwnerIfUnbound(GameObject* owner)
+    {
+        if (m_ParentObject == nullptr)
+        {
+            m_ParentObject = owner;
+        }
+    }
+
     virtual void Tick(float delta_time) {};
     virtual void OnSerializedFieldsUpdated() {}
 

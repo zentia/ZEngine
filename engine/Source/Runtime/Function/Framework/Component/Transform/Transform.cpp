@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cassert>
 #include <climits>
+#include <type_traits>
 
 IMPLEMENT_OBJECT_SERIALIZE(Transform)
 INSTANTIATE_TEMPLATE_TRANSFER_EXPORTED(Transform)
@@ -66,6 +67,24 @@ TransformChangeSystemHandle Transform::GetPhysicsChangeSystem()
     return g_PhysicsChangeSystem;
 }
 
+class StreamedBinaryRead;
+
+namespace
+{
+    // Legacy field names can only be PROBED by readers that look fields up by name
+    // (SafeBinaryRead via the file's TypeTree, YAML, JSON): a missing name just leaves
+    // the value untouched. Every other transfer must see exactly the fields the writer
+    // emits, in the writer's order:
+    //   * StreamedBinaryRead is positional -- an extra or reordered Transfer() call
+    //     reads the wrong bytes (prefab clones and override snapshots go through it);
+    //   * GenerateTypeTreeTransfer (neither reading nor writing) DESCRIBES the written
+    //     data -- legacy entries in it make SafeBinaryRead compute every later offset
+    //     against bytes that were never written.
+    template<typename TransferFunction>
+    inline constexpr bool kProbesLegacyFields =
+        TransferFunction::IsReading() && !std::is_same_v<TransferFunction, StreamedBinaryRead>;
+}  // namespace
+
 template<typename TransferFunction>
 void Transform::Transfer(TransferFunction& transfer)
 {
@@ -74,8 +93,10 @@ void Transform::Transfer(TransferFunction& transfer)
     transfer.Transfer(m_LocalRotation, "m_LocalRotation");
     if constexpr (TransferFunction::IsReading())
     {
-        transfer.Transfer(m_LocalPositionLegacy, "m_LocalPosition");
+        // Same order as the writer below (m_LocalPositionD first): a positional reader
+        // depends on it. Name-addressed readers do not care.
         transfer.Transfer(m_LocalPosition, "m_LocalPositionD");
+        transfer.Transfer(m_LocalPositionLegacy, "m_LocalPosition");
         if (m_LocalPosition == Vector3d::ZERO && m_LocalPositionLegacy != Vector3::ZERO)
         {
             m_LocalPosition = Vector3d(m_LocalPositionLegacy);
@@ -89,7 +110,7 @@ void Transform::Transfer(TransferFunction& transfer)
     }
     transfer.Transfer(m_LocalScale, "m_LocalScale");
 
-    if constexpr (TransferFunction::IsWriting())
+    if constexpr (!kProbesLegacyFields<TransferFunction>)
     {
         transfer.Transfer(m_Father, "m_Father");
         transfer.Transfer(m_Children, "m_Children");

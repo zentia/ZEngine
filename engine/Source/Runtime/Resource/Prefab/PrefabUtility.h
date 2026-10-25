@@ -3,6 +3,7 @@
 #include "Runtime/BaseClasses/GameObject.h"
 
 #include <filesystem>
+#include <vector>
 
 class PrefabAsset;
 class Transform;
@@ -55,6 +56,24 @@ public:
     /// Convenience wrapper: load the prefab from disk, then Instantiate once.
     static GameObject* InstantiateFromPath(const std::filesystem::path& prefab_path,
                                            bool                        invoke_post_load = true);
+
+    /// Load a prefab file as its WHOLE object graph and return its PrefabAsset header,
+    /// with `GetRootGameObject()` resolved and every GameObject's runtime component
+    /// list rebuilt. `out_gameobjects` (optional) receives every GameObject of the
+    /// prefab -- what PrefabPostLoadDriver needs to resolve child Transforms at any depth.
+    ///
+    /// Why not `AssetManager::ReadObject<PrefabAsset>`: that reads ONE object (fileID 1).
+    /// The header's m_RootGameObject is an in-file reference to fileID 2, which a
+    /// single-object read never produces, so the root always came back null -- binary
+    /// prefabs could not be instantiated at all, and the editor's
+    /// InstantiateAsPrefab(path) failed for both formats.
+    ///
+    /// `.prefab` (YAML) is read fresh on every call, as before. A binary `.zasset` is
+    /// registered under path-derived instance IDs, so a second read would re-produce
+    /// the same IDs; it is therefore read once and the cached graph is returned after
+    /// that (the same caching ReadObject already applied to the header).
+    static PrefabAsset* LoadPrefabAsset(const std::filesystem::path& prefab_path,
+                                        std::vector<GameObject*>*    out_gameobjects = nullptr);
 
     /// Re-parent the freshly instantiated root under `parent` (Transform-based).
     /// `worldPositionStays` follows Unity semantics (see Transform::SetParent).

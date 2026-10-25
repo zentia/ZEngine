@@ -197,8 +197,16 @@ namespace
     std::string StoreExternalAssetPath(const std::filesystem::path& absolute_path)
     {
         std::error_code ec;
-        const std::filesystem::path normalized =
+        std::filesystem::path normalized =
             std::filesystem::absolute(absolute_path, ec).lexically_normal();
+        if (ec || normalized.empty())
+        {
+            // absolute() needs the current directory; when that is unavailable it
+            // returns an empty path, and an empty pathName silently turned the
+            // external reference into null on the next load. Keep the path we were
+            // given -- ResolveExternalAssetPath resolves relative paths as well.
+            normalized = absolute_path.lexically_normal();
+        }
 
         if (const auto project = GET_SYSTEM(ProjectInfo))
         {
