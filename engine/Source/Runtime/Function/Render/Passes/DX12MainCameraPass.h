@@ -2,6 +2,7 @@
 
 #include "Runtime/Function/Render/Interface/DX12/Utility/BindlessTextureBlitPipeline.h"
 #include "Runtime/Function/Render/Passes/BindlessTonemapPass.h"
+#include "Runtime/Function/Render/Passes/DX12RenderGraphAbCapture.h"
 #include "Runtime/Function/Render/Passes/MainCameraFramebufferResources.h"
 #include "Runtime/Function/Render/Passes/MainCameraRp1Pass.h"
 #include "Runtime/Function/Render/Passes/MainCameraRp2Pass.h"
@@ -108,6 +109,14 @@ private:
     void DrawSceneGrid();
 
     void TryLateInitializeSkybox();
+
+    /// RP1 as it runs every frame: graph path when enabled and accepted, hand-written
+    /// otherwise. Returns true when the graph drew it.
+    bool DrawRp1Chain(const std::array<bool, 2>& skybox_visible);
+    /// The A/B capture frame (ZENGINE_RG_AB_CAPTURE): each chain drawn hand-written then
+    /// graph, with readbacks in between. See DX12RenderGraphAbCapture.h.
+    void DrawRp1AbCapture(const std::array<bool, 2>& skybox_visible);
+    void DrawRp2AbCapture(uint32_t swapchain_index);
     void RefreshSkyboxCubemapDescriptor();
 
     // ---- Bindless production pipeline state ------------------------------
@@ -161,5 +170,7 @@ private:
 
     MainCameraRp2Pass m_Rp2Pass;
     bool m_Rp2Ready {false};
+
+    DX12RenderGraphAbCapture m_RgAbCapture;
     bool m_EnableFxaa {false};
 };

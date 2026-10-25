@@ -2383,26 +2383,45 @@ void MainCameraRp1Pass::SetupRenderGraphPath()
         return;
     }
 
-    // DX12 only. MainCameraRp1Pass also runs on Metal, but Metal's CmdPipelineBarrier is a
-    // no-op (it tracks hazards per encoder), so the graph would add nothing there. And the
-    // RP1 import states rely on DX12RHI::CmdPipelineBarrier transitioning from its OWN
-    // tracked state (see MainCameraRp1GraphDecl.h) -- not something to assume elsewhere.
-    if (m_Rhi == nullptr || m_Rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
+    if (!SetRenderGraphPathEnabled(true))
     {
         LOG_WARNING(ZRender,
                     "MainCameraRp1Pass: ZENGINE_RG_RP1 is set but the render graph path is DX12-only; "
                     "keeping the hand-written RP1 chain");
         return;
     }
-
-    m_RgDevice = std::make_unique<RGRhiDeviceAdapter>(m_Rhi);
-    m_RgPool = std::make_unique<RenderGraphResourcePool>(m_RgDevice.get());
-    m_RgExecutor = std::make_unique<RenderGraphExecutor>(m_Rhi, m_RgDevice.get(), m_RgPool.get());
-    m_Rp1Graph = std::make_unique<RenderGraph>("RP1");
-    m_RgFallbackLogged = false;
-    m_UseRenderGraph = true;
-
     LOG_INFO(ZRender, "MainCameraRp1Pass: RP1 is driven by the render graph (ZENGINE_RG_RP1=1)");
+}
+
+bool MainCameraRp1Pass::SetRenderGraphPathEnabled(bool enabled)
+{
+    if (!enabled)
+    {
+        // Keep the graph objects: the A/B capture flips this off and back on in one frame.
+        m_UseRenderGraph = false;
+        return true;
+    }
+
+    // DX12 only. MainCameraRp1Pass also runs on Metal, but Metal's CmdPipelineBarrier is a
+    // no-op (it tracks hazards per encoder), so the graph would add nothing there. And the
+    // RP1 import states rely on DX12RHI::CmdPipelineBarrier transitioning from its OWN
+    // tracked state (see MainCameraRp1GraphDecl.h) -- not something to assume elsewhere.
+    if (m_Rhi == nullptr || m_Rhi->getGraphicsAPI() != GraphicsAPI::DirectX12)
+    {
+        m_UseRenderGraph = false;
+        return false;
+    }
+
+    if (m_Rp1Graph == nullptr)
+    {
+        m_RgDevice = std::make_unique<RGRhiDeviceAdapter>(m_Rhi);
+        m_RgPool = std::make_unique<RenderGraphResourcePool>(m_RgDevice.get());
+        m_RgExecutor = std::make_unique<RenderGraphExecutor>(m_Rhi, m_RgDevice.get(), m_RgPool.get());
+        m_Rp1Graph = std::make_unique<RenderGraph>("RP1");
+        m_RgFallbackLogged = false;
+    }
+    m_UseRenderGraph = true;
+    return true;
 }
 
 bool MainCameraRp1Pass::DrawRP1WithGraph(const std::array<bool, 2>& skybox_visible)

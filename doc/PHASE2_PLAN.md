@@ -336,6 +336,13 @@ BackupOdd"钉成**编译期硬错误**（`RenderGraphBuilder::Declare` 拒绝；
 闸门是：DX12 编辑器带 `ZENGINE_RG_RP1=1` 与手写链逐帧目视对比 + D3D12 debug layer 无新报错（与 2.1a 同一道
 闸门，可以一次一起做：`ZENGINE_RG_RP1=1 ZENGINE_RG_RP2=1`）。
 
+**翻默认的闸门已工具化（2026-10-25 第四轮）**：新增同帧 A/B 抓帧（`ZENGINE_RG_AB_CAPTURE=<帧号>`，
+`Passes/DX12RenderGraphAbCapture`）+ `scripts/rg_ab_compare.py`。在同一帧里 RP1、RP2 各画两遍（手写 / 图），
+回读 backup_odd、backup_even、backbuffer，逐位比对；"图"那一遍若回落到手写链会判 INCONCLUSIVE 而不是 PASS。
+步骤见 `RENDER_GRAPH.md` §5「目视验证的工具」。2.1a 与 2.4 的闸门因此合成一次操作：DX12 编辑器抓一帧 →
+`python scripts/rg_ab_compare.py <dir>` 退出码 0 → 再开 D3D12 debug layer 跑一遍看无新报错 → 翻默认。
+工具链 headless 自测 `scripts/rg_ab_selftest.sh` 全绿；GPU 半边（拷贝/回读时机/状态恢复）仍只有真机能验。
+
 ---
 
 ## 3. 关于阶段一 #9（RHI 胖接口拆分）—— 建议**不**进 Phase 2

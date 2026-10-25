@@ -111,6 +111,11 @@ public:
     /// graph path still needs a per-frame visual diff before it can become the default.
     bool IsRenderGraphPathEnabled() const { return m_UseRenderGraph; }
 
+    /// Turns the graph path on / off at runtime (building the graph objects on first use).
+    /// Returns false when it cannot be enabled (non-DX12 backend). Used by the in-frame
+    /// A/B capture (DX12RenderGraphAbCapture), which forces each path once and restores.
+    bool SetRenderGraphPathEnabled(bool enabled);
+
     /// Declares GBuffer -> DeferredLighting -> ForwardLighting into the graph
     /// (MainCameraRp1GraphDecl.h) and executes it. Returns false when the graph cannot be
     /// used, in which case the caller runs the three Draw*Pass() calls itself. Every

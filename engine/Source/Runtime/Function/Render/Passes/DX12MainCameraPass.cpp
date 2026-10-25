@@ -1,4 +1,5 @@
 #include "Runtime/Function/Render/Passes/DX12MainCameraPass.h"
+#include "Runtime/Function/Render/MegaLights/MegaLightsSystem.h"
 
 #include "Runtime/Function/Render/Interface/DX12/DX12BindlessTextureManager.h"
 #include "Runtime/Function/Render/Interface/DX12/DX12RHI.h"
@@ -543,6 +544,7 @@ void DX12MainCameraPass::Initialize(const RenderPassInitInfo* init_info)
         try
         {
             m_Rp1Ready = m_Rp1Pass.Initialize();
+            m_RgAbCapture.Initialize(m_Rhi);
             LOG_INFO(ZRender, "DX12MainCameraPass: MainCameraRp1Pass.Initialize() returned {}", m_Rp1Ready);
             if (m_Rp1Ready)
             {
@@ -1894,26 +1896,15 @@ void DX12MainCameraPass::DrawEditorSkyboxOverlays(const std::array<bool, 2>& sky
     DrawSkyboxPreview();
 }
 
-void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbacks,
-                              const std::array<bool, 2>& skybox_visible)
+bool DX12MainCameraPass::DrawRp1Chain(const std::array<bool, 2>& skybox_visible)
 {
-    (void)skybox_visible;
-    TryLateInitializeSkybox();
-
-    if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi))
-    {
-        if (dx12_rhi->IsDeviceRemoved(" at start of MainCamera draw"))
-        {
-            return;
-        }
-    }
-
     if (m_Rp1Ready && m_Rp1Pass.DrawRP1WithGraph(skybox_visible))
     {
         // RP1 driven by the render graph (ZENGINE_RG_RP1=1): the same three Draw*Pass()
         // calls, with the graph's barriers in place of the hand-written group below.
         // DrawRP1WithGraph rejects before recording anything, so a false return falls
         // through to the hand-written chain with an untouched command buffer.
+        return true;
     }
     else if (m_Rp1Ready)
     {
@@ -1983,6 +1974,119 @@ void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbac
         // Pass 3: Forward Lighting (reads/writes BackupOdd, transparent objects).
         m_Rp1Pass.DrawForwardLightingPass(skybox_visible);
     }
+    return false;
+}
+
+void DX12MainCameraPass::DrawRp1AbCapture(const std::array<bool, 2>& skybox_visible)
+{
+    // Same frame, same per-frame data, RP1 drawn twice: A = hand-written, B = graph. A
+    // correct graph path makes the two backup_odd readbacks bit-identical.
+    RHIImage* backup_odd = m_FramebufferResources.getAttachmentImage(_main_camera_pass_backup_buffer_odd);
+    const RHIExtent2D extent = m_Rhi->GetSwapchainInfo().extent;
+    if (!m_Rp1Ready || backup_odd == nullptr)
+    {
+        m_RgAbCapture.RecordStage("rp1", false, false);
+        m_RgAbCapture.AddNote("rp1 skipped: RP1 not ready or backup_odd missing");
+        DrawRp1Chain(skybox_visible);
+        return;
+    }
+
+    const bool graph_was_enabled = m_Rp1Pass.IsRenderGraphPathEnabled();
+    MegaLights::MegaLightsSystem* megalights = m_Rp1Pass.m_MegaLightsSystem;
+    MegaLights::MegaLightsSystem::HistoryBookmark history {};
+    if (megalights != nullptr)
+    {
+        history = megalights->SaveHistoryBookmark();
+    }
+
+    // A: hand-written.
+    m_Rp1Pass.SetRenderGraphPathEnabled(false);
+    DrawRp1Chain(skybox_visible);
+    m_RgAbCapture.CopyImage("rp1.handwritten.backup_odd", backup_odd, RHI_FORMAT_R16G16B16A16_SFLOAT,
+                            extent.width, extent.height, RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    // B: graph, from the same temporal state.
+    if (megalights != nullptr)
+    {
+        megalights->RestoreHistoryBookmark(history);
+    }
+    const bool graph_available = m_Rp1Pass.SetRenderGraphPathEnabled(true);
+    const bool graph_used = graph_available && DrawRp1Chain(skybox_visible);
+    if (!graph_available)
+    {
+        DrawRp1Chain(skybox_visible);  // keep the frame drawn; the manifest says graph_used=false
+    }
+    m_RgAbCapture.CopyImage("rp1.graph.backup_odd", backup_odd, RHI_FORMAT_R16G16B16A16_SFLOAT,
+                            extent.width, extent.height, RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    m_RgAbCapture.RecordStage("rp1", true, graph_used);
+    if (megalights != nullptr)
+    {
+        m_RgAbCapture.AddNote("rp1: MegaLights temporal bookkeeping restored between the A and B runs");
+    }
+
+    m_Rp1Pass.SetRenderGraphPathEnabled(graph_was_enabled);
+}
+
+void DX12MainCameraPass::DrawRp2AbCapture(uint32_t swapchain_index)
+{
+    // RP2 drawn twice from the same backup_odd (RP1's B output): A = hand-written,
+    // B = graph. Captures the graded HDR (backup_even) and the composited backbuffer
+    // BEFORE the editor overlay (ImGui / ZSlate run later, outside this pass).
+    RHIImage* backup_even = m_FramebufferResources.getAttachmentImage(_main_camera_pass_backup_buffer_even);
+    const RHISwapChainDesc swapchain = m_Rhi->GetSwapchainInfo();
+    RHIImage* backbuffer = swapchain_index < swapchain.images.size() ? swapchain.images[swapchain_index] : nullptr;
+    const RHIExtent2D extent = swapchain.extent;
+
+    const auto capture = [&](const char* run) {
+        const std::string prefix = std::string("rp2.") + run;
+        m_RgAbCapture.CopyImage((prefix + ".backup_even").c_str(), backup_even, RHI_FORMAT_R16G16B16A16_SFLOAT,
+                                extent.width, extent.height, RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        // The backbuffer goes back to RENDER_TARGET: the editor overlay draws into it next.
+        m_RgAbCapture.CopyImage((prefix + ".backbuffer").c_str(), backbuffer, swapchain.image_format,
+                                extent.width, extent.height, RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    };
+
+    const bool graph_was_enabled = m_Rp2Pass.IsRenderGraphPathEnabled();
+
+    m_Rp2Pass.SetRenderGraphPathEnabled(false);
+    m_Rp2Pass.DrawRP2(swapchain_index, {});
+    capture("handwritten");
+
+    m_Rp2Pass.SetRenderGraphPathEnabled(true);
+    m_Rp2Pass.DrawRP2(swapchain_index, {});
+    const bool graph_used = m_Rp2Pass.LastDrawUsedRenderGraph();
+    capture("graph");
+    m_RgAbCapture.RecordStage("rp2", true, graph_used);
+
+    m_Rp2Pass.SetRenderGraphPathEnabled(graph_was_enabled);
+}
+
+void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbacks,
+                              const std::array<bool, 2>& skybox_visible)
+{
+    (void)skybox_visible;
+    TryLateInitializeSkybox();
+
+    if (auto* dx12_rhi = dynamic_cast<DX12RHI*>(m_Rhi))
+    {
+        if (dx12_rhi->IsDeviceRemoved(" at start of MainCamera draw"))
+        {
+            return;
+        }
+    }
+
+    // In-frame A/B capture (ZENGINE_RG_AB_CAPTURE=<frame>): on that one frame each stage is
+    // drawn twice, hand-written then graph, with a readback after each (see
+    // DX12RenderGraphAbCapture.h). Every other frame takes the normal path below.
+    const bool ab_capture_frame = m_RgAbCapture.BeginFrame();
+    if (ab_capture_frame)
+    {
+        DrawRp1AbCapture(skybox_visible);
+    }
+    else
+    {
+        DrawRp1Chain(skybox_visible);
+    }
 
     // =========================================================================
     // RP1→RP2 barrier: backup_odd is already in SHADER_READ_ONLY state after
@@ -2041,7 +2145,14 @@ void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbac
         // Editor ImGui must run after RP2 ends (swapchain overlay). Recording it
         // inside the UI subpass breaks the emulated render pass and leaves the
         // swapchain at the PrepareBeforePass clear color.
-        m_Rp2Pass.DrawRP2(swapchain_index, {});
+        if (ab_capture_frame)
+        {
+            DrawRp2AbCapture(swapchain_index);
+        }
+        else
+        {
+            m_Rp2Pass.DrawRP2(swapchain_index, {});
+        }
     }
 
     // Swapchain skybox overlay is drawn from EditorUIPass after the ZSlate batch.

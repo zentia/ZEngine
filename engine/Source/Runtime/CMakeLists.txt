@@ -414,6 +414,11 @@ list(REMOVE_ITEM HEADER_FILES "${CMAKE_CURRENT_SOURCE_DIR}/pch.h")
 # exe and trigger LNK2005 "main already defined".
 # ---------------------------------------------------------------------------
 list(REMOVE_ITEM SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/Function/ShaderLab/ShaderLabTest.cpp")
+# Headless producer for scripts/rg_ab_selftest.sh (owns a main(); built with emcc only).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/Test/RenderGraphAbCaptureFormatTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/Test/RenderGraphAbCaptureFormatTest.cpp")
 # PR5c: DX12 bindless smoke-test main. Same exclusion rationale as
 # shader_lab_test above. Built only when ZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
 # (see Function/Render/Interface/DX12/Test/CMakeLists.txt).

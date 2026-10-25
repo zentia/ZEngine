@@ -43,6 +43,21 @@ public:
     void ClearDebugLights();
     void InvalidateHistory();
 
+    /// CPU-side temporal bookkeeping (ping-pong index, validity, tracked layouts,
+    /// previous view-projection) of every viewport. The render-graph A/B capture renders
+    /// the deferred pass twice in one frame; restoring this between the two runs makes the
+    /// second run read the same history as the first (otherwise EndDeferredPass flips the
+    /// ping-pong and the second run temporally accumulates on top of the first).
+    struct HistoryBookmark
+    {
+        uint32_t ping_pong[kViewportHistoryCount] {};
+        uint32_t history_valid[kViewportHistoryCount] {};
+        RHIImageLayout layouts[kViewportHistoryCount][2] {};
+        Matrix4x4 prev_proj_view[kViewportHistoryCount] {};
+    };
+    HistoryBookmark SaveHistoryBookmark() const;
+    void RestoreHistoryBookmark(const HistoryBookmark& bookmark);
+
 private:
     struct ViewportHistory
     {

@@ -188,7 +188,7 @@ executor.Execute(graph, command_buffer);
 
 **`UI` Pass 是一处已知脆弱点**：它不声明任何资源，只有 `NeverCull`（是根，永不剔除）和拓扑排序"同分取最小声明下标"这两件事把它钉在 FXAA 与 CombineUI 之间。group 18 断言了执行序，但 Pass 声明顺序一旦变动就会失效。
 
-**仍需逐帧目视验证**（无头环境做不了）：带 `ZENGINE_RG_RP2=1` 跑起来，与老路径逐帧对比后处理链的输出。
+**仍需真机验证**（无头环境做不了）：用下面的同帧 A/B 抓帧（`ZENGINE_RG_AB_CAPTURE`）+ `scripts/rg_ab_compare.py` 客观比对。
 
 ### 第二个接入点：DX12 的 RP1（`DrawRP1WithGraph`，2026-10-25）
 
@@ -224,6 +224,60 @@ executor.Execute(graph, command_buffer);
 `scripts/syntax_check_dx12.py`（clang-cl `/Zs` + ZRuntime Debug|x64 的真实 include/define + PCH）类型检查
 通过；植入错别字的负对照能被抓住。**仍需**：带 `ZENGINE_RG_RP1=1` 跑 DX12 编辑器与手写链逐帧目视对比，
 并开 D3D12 debug layer 看一眼。
+
+### 目视验证的工具：同帧 A/B 抓帧（2026-10-25）
+
+"逐帧目视对比"已经可以变成一条命令的客观比对。**两次独立运行对比**会被与图无关的噪声淹没
+（时间、粒子、Spine dt、MegaLights 时间累积、相机漂移），所以做成**同一帧内 A/B**：
+`DX12MainCameraPass::Draw` 在抓帧那一帧把每一站画两遍，输入完全相同：
+
+| 顺序 | 内容 | 抓的图 |
+| --- | --- | --- |
+| 1 | RP1 手写链 | `rp1.handwritten.backup_odd`（RGBA16F） |
+| 2 | RP1 图路径（同一时间状态） | `rp1.graph.backup_odd` |
+| 3 | RP2 手写链（读第 2 步的 backup_odd） | `rp2.handwritten.backup_even` + `rp2.handwritten.backbuffer` |
+| 4 | RP2 图路径（读同一张 backup_odd） | `rp2.graph.backup_even` + `rp2.graph.backbuffer` |
+
+图路径正确时每一对应当**逐位相同**，所以比对默认容差是 0。
+
+**用法**：
+
+```bash
+# DX12 编辑器，等场景稳定后抓第 120 帧（不需要同时设 ZENGINE_RG_RP1/RP2，抓帧会自己强制两条路径再恢复）
+set ZENGINE_RG_AB_CAPTURE=120
+set ZENGINE_RG_AB_DIR=E:\tmp\rg_ab          # 可选，默认工作目录下 rg_ab_capture
+# ...启动编辑器，日志出现 "RenderGraph A/B capture: wrote 6/6 images + manifest" 即可退出
+python scripts/rg_ab_compare.py E:\tmp\rg_ab --png
+```
+
+退出码：`0` PASS（全部逐位相同 / 在容差内）、`1` FAIL（列出差异像素数、最大通道差、包围盒；`--png`
+写两边的预览图 + 放大的差异图）、`2` INCONCLUSIVE——**"图"那一遍实际回落到了手写链**（manifest 里
+`graph_used=false`，这时 A==B 是废话，绝不能算通过）、图缺失或写失败。
+
+**实现要点**（`Passes/DX12RenderGraphAbCapture.{h,cpp}`，文件格式 `Passes/RenderGraphAbCaptureFormat.h`）：
+- 回读完全异步、不让 GPU 停顿：拷贝录进抓帧那一帧的命令列表，等该 frame slot 再次轮到时（帧循环会先
+  `WaitForFences()` 当前 slot）再 map + 写盘；slot 一直不来（swapchain 重建改了帧号）时 8 帧后显式等待兜底。
+- 每次拷贝后把图转回下一个使用者期望的状态：backup_* 回 `SHADER_READ_ONLY`，backbuffer 回
+  `COLOR_ATTACHMENT`（编辑器 overlay 紧接着画进去）。
+- 两条路径用新增的 `MainCameraRp1Pass/Rp2Pass::SetRenderGraphPathEnabled()` 强制切换，抓完恢复原开关；
+  RP2 新增 `LastDrawUsedRenderGraph()`，用来如实填 `graph_used`。
+- MegaLights 的时间历史在两遍之间用 `MegaLightsSystem::SaveHistoryBookmark/RestoreHistoryBookmark` 复位，
+  否则第二遍会在第一遍刚写的历史上再累积一次（ping-pong 也会翻两次）。
+- `.zcap` = 52 字节头 + 紧密排列的行（去掉 DX12 的 256 字节行对齐）。比对脚本只用标准库；逐行先比原始字节，
+  只解码不同的行，1080p 三对全同约 0.1 s，全帧不同约 1.2 s（加 `--png` 约 13 s）。逐位相同的像素算相等
+  （包括两边同一个 NaN）。
+
+**已知的假差异来源**（若比对出差异，先排除这些再怀疑图）：
+- 第一遍画 RP1 时 Spine 世界实例消费了累积的 dt，第二遍 dt=0。姿态应当相同（"推进后的姿态"被两遍共用），
+  但若 Spine 在绘制里还有别的每帧状态，差异会落在 Spine 实例的包围盒里。
+- 两遍都从每帧 upload ring buffer 分配（上限没变）；场景极大时可能触顶，表现为第二遍缺物体。
+- 进程在抓帧后 3 帧内就退出时，几块 readback buffer 没释放（`DX12MainCameraPass` 没有 Shutdown 钩子）。
+
+**验证**：`scripts/rg_ab_selftest.sh`——用引擎同一份编码器（emcc + NODERAWFS）写出带真实 256 字节行对齐与
+垃圾填充的合成抓帧，跑比对脚本，断言 PASS/FAIL/INCONCLUSIVE 的退出码、单像素差的位置与数值、容差、
+`graph_used=false` 与缺图判成 INCONCLUSIVE、逐行去对齐、半精度往返、JSON 转义、PNG 合法、同 NaN 视为相等，
+共 7 个场景判定 + 15 项数值检查，全绿；把编码器的行步长改错（变异）立即 FAIL（单像素位置、容差块位置、像素解码都报错）。DX12 侧 5 个 TU 经
+`syntax_check_dx12.py` 类型检查通过。**GPU 那一半（拷贝、回读时机、状态恢复）只有真机能验**——抓一次帧就知道。
 
 ### 必须自己补的三块（RHI 不管）
 
