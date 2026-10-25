@@ -100,7 +100,23 @@ namespace
 
         return level_path;
     }
+
+    LevelSerializationHooks& SerializationHooksStorage()
+    {
+        static LevelSerializationHooks s_hooks;
+        return s_hooks;
+    }
 }  // namespace
+
+void Level::SetSerializationHooks(const LevelSerializationHooks& hooks)
+{
+    SerializationHooksStorage() = hooks;
+}
+
+const LevelSerializationHooks& Level::GetSerializationHooks()
+{
+    return SerializationHooksStorage();
+}
 
 void Level::FlushRenderDeletes()
 {
@@ -138,7 +154,10 @@ void Level::clear()
     m_DetachedCharacterObjectId = k_invalid_gobject_id;
     m_Gobjects.clear();
 
-    GET_SYSTEM(PhysicsManager)->DeletePhysicsScene(m_PhysicsScene);
+    if (PhysicsManager* physics_manager = GET_SYSTEM(PhysicsManager))
+    {
+        physics_manager->DeletePhysicsScene(m_PhysicsScene);
+    }
 }
 
 GObjectID Level::CreateObject(const GameObject& object_instance_res)
@@ -159,6 +178,15 @@ GObjectID Level::CreateObject(const GameObject& object_instance_res)
     bool is_loaded = gobject->load(object_instance_res);
     if (is_loaded)
     {
+        // A live GameObject needs an instance ID so a PPtr can name it: editor
+        // bookkeeping saved next to it (PrefabInstance root / source map) refers
+        // to it that way, and the scene writer maps instance ID -> fileID. The
+        // ObjectManager table is non-owning and ~Object unregisters the ID, so
+        // the shared_ptr stays the sole owner.
+        if (ObjectManager* object_manager = GET_SYSTEM(ObjectManager))
+        {
+            object_manager->AllocateAndAssignInstanceID(gobject.get());
+        }
         m_Gobjects.emplace(object_id, gobject);
 
         CameraComponent* camera_component = gobject->tryGetComponent(CameraComponent);
@@ -208,6 +236,16 @@ bool Level::load(const eastl::string& levelPath)
         return false;
     }
 
+    if (!LoadObjectGraph(entries, true))
+    {
+        return false;
+    }
+    LOG_INFO(ZLevel, "level load succeed ({})", is_binary ? "binary" : "yaml");
+    return true;
+}
+
+bool Level::LoadObjectGraph(const std::vector<std::pair<int64_t, Object*>>& entries, bool create_physics_scene)
+{
     LevelRes* header = nullptr;
     std::vector<GameObject*> loaded_objects;
     loaded_objects.reserve(entries.size());
@@ -229,13 +267,29 @@ bool Level::load(const eastl::string& levelPath)
     }
 
     const Vector3 gravity = (header != nullptr) ? header->m_Gravity : Vector3 {0.f, 0.f, -9.8f};
-    m_PhysicsScene = GET_SYSTEM(PhysicsManager)->CreatePhysicsScene(gravity);
+    if (create_physics_scene)
+    {
+        PhysicsManager* physics_manager = GET_SYSTEM(PhysicsManager);
+        if (physics_manager == nullptr)
+        {
+            LOG_ERROR(ZLevel, "cannot load level {}: PhysicsManager unavailable", m_LevelResUrl.c_str());
+            return false;
+        }
+        m_PhysicsScene = physics_manager->CreatePhysicsScene(gravity);
+    }
     ParticleEmitterIDAllocator::reset();
 
+    std::unordered_map<int32_t, GameObject*> file_to_live;
+    file_to_live.reserve(loaded_objects.size());
     for (GameObject* loaded_object : loaded_objects)
     {
         loaded_object->RebuildRuntimeComponents();
-        CreateObject(*loaded_object);
+        const GObjectID live_id = CreateObject(*loaded_object);
+        const auto live_it = m_Gobjects.find(live_id);
+        if (live_it != m_Gobjects.end() && live_it->second != nullptr && loaded_object->GetInstanceID() != 0)
+        {
+            file_to_live.emplace(loaded_object->GetInstanceID(), live_it->second.get());
+        }
     }
 
     if (header != nullptr && !header->m_CharacterName.empty())
@@ -253,12 +307,22 @@ bool Level::load(const eastl::string& levelPath)
     m_IsLoaded = true;
     m_IsDirty = false;
     RebuildAllTransformHierarchies();
-    LOG_INFO(ZLevel, "level load succeed ({} objects, {})", loaded_objects.size(), is_binary ? "binary" : "yaml");
+
+    if (const auto on_loaded = GetSerializationHooks().on_loaded)
+    {
+        on_loaded(*this, entries, file_to_live);
+    }
+
+    LOG_INFO(ZLevel, "level object graph built ({} objects)", loaded_objects.size());
     return true;
 }
 
 void Level::Unload()
 {
+    if (const auto on_unloading = GetSerializationHooks().on_unloading)
+    {
+        on_unloading(*this);
+    }
     FlushRenderDeletes();
     clear();
     BumpLoadSerial();
@@ -344,6 +408,20 @@ bool Level::save()
             if (component != nullptr)
             {
                 graph_objects.push_back(component);
+                graph_ids.push_back(next_file_id++);
+            }
+        }
+    }
+
+    if (const auto collect_extra_objects = GetSerializationHooks().collect_extra_objects)
+    {
+        std::vector<Object*> extra_objects;
+        collect_extra_objects(*this, extra_objects);
+        for (Object* extra_object : extra_objects)
+        {
+            if (extra_object != nullptr)
+            {
+                graph_objects.push_back(extra_object);
                 graph_ids.push_back(next_file_id++);
             }
         }

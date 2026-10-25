@@ -544,6 +544,21 @@ AssetManager::GetAssetsByType(const std::string& asset_type, const std::filesyst
     return result;
 }
 
+std::string AssetManager::CanonicalPathKey(const std::filesystem::path& path)
+{
+    std::filesystem::path key = path;
+    if (key.is_relative())
+    {
+        std::error_code ec;
+        const std::filesystem::path absolute = std::filesystem::absolute(key, ec);
+        if (!ec && !absolute.empty())
+        {
+            key = absolute;
+        }
+    }
+    return key.lexically_normal().generic_string();
+}
+
 Object* AssetManager::ReadObject(int32_t instanceID)
 {
     // PR-SE3a-migrate -- demand-load an object referenced by PPtr.
@@ -578,6 +593,36 @@ Object* AssetManager::ReadObject(int32_t instanceID)
         {
             return nullptr;
         }
+    }
+
+    // A PPtr into a multi-object file (prefab / scene / timeline graph) names ONE
+    // object of the graph. Every single-object reader below produces the file's
+    // header object (fileID 1), so for any other fileID they used to hand back the
+    // header -- an object of the wrong type, which PPtr<T> then static_casts.
+    // Hydrate the whole graph instead. That is only sound for a binary file whose
+    // graph is not loaded yet: ReadObjectsFromBinary produces under the same
+    // path-derived IDs, so re-reading a loaded graph would duplicate its objects;
+    // and YAML graphs are read under heap IDs, which never satisfy this ID.
+    if (ident.localIdentifierInFile != 1)
+    {
+        ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
+        if (!IsYamlAuthoringAssetPath(asset_path) &&
+            object_manager->IDToPointer(GetInstanceIDFromPathAndFileID(asset_path, 1)) == nullptr)
+        {
+            std::vector<std::pair<int64_t, Object*>> graph;
+            if (ReadObjectsFromBinary(asset_path, graph))
+            {
+                if (Object* object = object_manager->IDToPointer(instanceID))
+                {
+                    return object;
+                }
+            }
+        }
+        LOG_WARNING(ZAsset,
+                    "ReadObject: object {} of {} is not loaded and cannot be loaded on its own",
+                    ident.localIdentifierInFile,
+                    asset_path.generic_string());
+        return nullptr;
     }
 
     if (IsYamlAuthoringAssetPath(asset_path))

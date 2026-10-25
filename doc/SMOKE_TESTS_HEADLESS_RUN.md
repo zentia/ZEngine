@@ -51,6 +51,10 @@ commit 时 msync 报 EINVAL）。DDC 只在编辑器的贴图导入里用，web 
 
 另外新增 CVar 存盘/读盘（`cvar.save` / `cvar.load`，见 `CONSOLE_MANAGER_USAGE.md`），测试 41 项。
 
+2026-10-26 复跑（资产路径规范化 `AssetManager::CanonicalPathKey`、`Level` 序列化钩子、活 GameObject 分配实例 ID
+之后）：结果不变，PASS 35 / ENV 7 / SKIP 7 / FAIL 0。CVar 测试随启动文件功能增至 56 项；
+Prefab 端到端（`scripts/verify_prefab_e2e.sh`，不在本表的 49 个之内）增至 125 项。
+
 ## 局限
 
 - 这是 **wasm 单线程 + node** 环境：凡是被测对象本身要线程、子进程、GPU、真 mmap 的，只能标 ENV / SKIP，不能当成通过。

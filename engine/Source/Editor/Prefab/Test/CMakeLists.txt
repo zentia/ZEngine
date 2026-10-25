@@ -3,7 +3,8 @@
 # ---------------------------------------------------------------------
 # Save -> load from disk -> InstantiateAsPrefab -> override -> ApplyAll ->
 # re-save + reload -> Revert -> PrefabInstance scene round-trip (binary +
-# YAML). Links ZRuntime plus the Editor/Prefab TUs (they are not in
+# YAML) -> PrefabInstance through Level::save / LoadObjectGraph -> lazy
+# non-header PPtr -> one file one identity. Links ZRuntime plus the Editor/Prefab TUs (they are not in
 # libZRuntime). Default OFF; opt in with:
 #
 #   cmake -B build -DZENGINE_BUILD_PREFAB_E2E_SMOKE_TEST=ON

@@ -465,13 +465,13 @@ public:
 ### 9.4 接下来可做（非阻塞）
 
 1. ~~**`.zasset` 示例 Prefab + 端到端单测**~~ —— **已落地（2026-10-25）**，见下方 §9.4.1。
-2. **PrefabInstance 自身序列化往返** —— **对象图层已验证（2026-10-25）**：PrefabInstance 与它的克隆子树作为一张对象图写进 `.zasset`（二进制）和 `.scene`（YAML）再读回，覆盖列表、corresponding-source 映射、实例根引用、跨文件的源 PrefabAsset 引用都保留（§9.4.1 的 P6）。**剩余**：编辑器的场景保存/加载链路本身还没有把 PrefabInstance 收进场景对象图——`Level::save/load` 在 Runtime，PrefabInstance 是 Editor-only 类型，需要在编辑器侧的场景保存入口追加（不能直接改 Level）。
-3. **编辑器 UI 集成**：把 `RecordPropertyOverride` / `Apply` / `Revert` 接到 Inspector 的右键菜单。
+2. **PrefabInstance 自身序列化往返** —— **对象图层已验证（2026-10-25）**：PrefabInstance 与它的克隆子树作为一张对象图写进 `.zasset`（二进制）和 `.scene`（YAML）再读回，覆盖列表、corresponding-source 映射、实例根引用、跨文件的源 PrefabAsset 引用都保留（§9.4.1 的 P6）。**场景链路已接通（2026-10-26）**：`Level` 新增序列化钩子 `LevelSerializationHooks`（Runtime 侧只开扩展点，不认识 PrefabInstance），编辑器的 `PrefabSceneBinding`（`Editor/Prefab/PrefabSceneBinding.{h,cpp}`，`RegisterEditor()` 里 `Install()`）挂上三个钩子：`Level::save` 把根仍在关卡里的已登记实例写进同一个场景文件；`Level::LoadObjectGraph` 读回后把实例的 GameObject 引用从"文件里读出的 GameObject"改指到 Level 据此新建的活对象（组件是共享的，GameObject 不是）；`Level::Unload` 清登记。`PlaceInLevel(level, instance)` 是"把 Prefab 放进场景"那一步。见 §9.4.1 的 P7。
+3. **编辑器 UI 集成**：把 `RecordPropertyOverride` / `Apply` / `Revert` 接到 Inspector 的右键菜单；把内容浏览器拖 Prefab 进场景接到 `PrefabSceneBinding::PlaceInLevel`（现在拖放走的仍是旧的 `m_DefinitionUrl` 展开，不产生 PrefabInstance）。
 4. **Cook 阶段 flatten**：Player 构建时把 PrefabInstance flatten 成普通 GameObject 树（参见 §7.5）。
 
 #### 9.4.1 端到端测试落地记录（2026-10-25）
 
-`engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp`（58 项断言），走真实代码和真实磁盘：
+`engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp`（125 项断言；P1-P6 首版 58 项，P7-P9 于 2026-10-26 补），走真实代码和真实磁盘：
 
 | 场景 | 内容 |
 |---|---|
@@ -481,6 +481,9 @@ public:
 | P4 | 把应用后的源另存一份 `.zasset`，以全新对象读回：应用的值落盘了 |
 | P5 | `Revert` 把未应用的覆盖拉回源值，不改源 |
 | P6 | PrefabInstance + 克隆子树按场景对象图写二进制 / YAML 再读回（见上面第 2 条） |
+| P7 | 真实场景链路：`PlaceInLevel` → 改值录覆盖 → `Level::save`（YAML + 二进制）→ 读回 `Level::LoadObjectGraph`：实例重新绑定、根/子/映射全指向新关卡的活对象、覆盖值和覆盖列表在、**读回后 Revert 仍能拉到源值**；根被删（撤销缓冲区仍持有）时不写实例、恢复后又写；`Unload` 清登记 |
+| P8 | 对多对象文件里非头对象的惰性 PPtr 解引用：返回的是那个对象本身（以前返回文件头 PrefabAsset，类型都不对） |
+| P9 | 同一文件的相对路径 / 绝对路径 / `./` 写法得到同一个实例 ID |
 
 **运行方式**：`bash scripts/verify_prefab_e2e.sh`。无原生工具链时它用 `scripts/web_smoke_run.py`：借 build-web 里已配置的 smoke-test 目标的编译/链接命令，把测试和 `Editor/Prefab/*.cpp` 链到 web 版 `libZRuntime.a`（`--whole-archive`），补上 WebGL2 / emmalloc / NODERAWFS 链接参数后用 node 跑。原生构建可用 `-DZENGINE_BUILD_PREFAB_E2E_SMOKE_TEST=ON`。
 
@@ -494,7 +497,14 @@ public:
 6. **外部引用的路径可能存空**：`StoreExternalAssetPath` 用 `std::filesystem::absolute`，取不到当前目录时返回空路径，跨文件引用下次加载就静默变 null（node/wasm 下必现，原生上 cwd 被删时也会）。改为回落到原路径。
 7. **web 构建读不了磁盘上的 `.zasset`**：`LocalFileSystemWeb::Size` 对未打开的条目返回 0，`FileCacherRead` 恰恰是先用未打开的条目取大小 ⇒ SerializedFile 头校验失败。改为未打开时 `stat()`（与 Linux / Windows 实现一致）。这也让既有的 `YamlRoundTripSmokeTest` Y9 二进制场景在 web 上转绿。
 
-**未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply（UI 链路本身是第 3 条，未接）。
+**P7-P9 暴露并修掉的问题（2026-10-26，变异验证：5 处各撤一处，测试都转红）**：
+
+8. **同一文件两种写法 = 两个身份**：路径→序列化文件索引表按字符串原样查（`RuntimeAssetManager` 原样、`EditorAssetManager` 只做 lexically_normal），而索引是路径派生实例 ID 的一半。用相对路径加载的 Prefab，被 YAML 场景写成绝对路径的外部引用，读回时铸出另一个 ID ⇒ 指向一份不存在的副本，读回的场景里 Revert / Apply 找不到源。新增 `AssetManager::CanonicalPathKey`（纯词法：相对路径锚到当前目录 + 规范化），两个实现都按它查，不同写法登记为别名；存储的路径名不变（播放器里 bundle 按原写法查）。二进制场景没暴露是因为它存的是 `lexically_normal` 后的原写法，恰好一致。
+9. **惰性 PPtr 解引用多对象文件的非头对象，返回的是文件头**：`AssetManager::ReadObject(instanceID)` 的各分支都只读 fileID 1。改为 fileID≠1 时：二进制文件且整图未加载 ⇒ `ReadObjectsFromBinary` 加载整图后按 ID 取；否则返回 null 并告警（YAML 图用堆 ID，永远对不上路径派生 ID；整图已加载时再读会在同 ID 下重复 Produce）。
+10. **活 GameObject 没有实例 ID**：`Level::CreateObject` 用 `make_shared` 建的 GameObject 从不分配实例 ID，任何 PPtr 都无法指向它，场景写出时也映射不到 fileID。现在建好即 `AllocateAndAssignInstanceID`（ObjectManager 表不持有所有权，`~Object` 注销 ID，shared_ptr 仍是唯一所有者）。
+11. `Level::clear` 无条件解引用 `GET_SYSTEM(PhysicsManager)`，工具 / 无物理环境下卸载即崩；加空检查。`Level::load` 拆出 `LoadObjectGraph(entries, create_physics_scene)`，测试和工具可以不建物理场景（web 构建无线程，Jolt 的 job system 起不来）。
+
+**未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。
 
 
 ---

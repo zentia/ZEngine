@@ -16,6 +16,9 @@
 #
 # USAGE (repo root):
 #   python scripts/syntax_check_dx12.py engine/Source/Runtime/Function/Render/Passes/DX12MainCameraPass.cpp [...]
+#   python scripts/syntax_check_dx12.py --include engine/Libraries/ZAppShell/include engine/Source/Game/ZGame.cpp
+#     (--include DIR, repeatable: extra include dirs for TUs outside ZRuntime,
+#      e.g. the editor / game entry points)
 #
 # REQUIRES: build/ configured with the VS generator (ZRuntime.vcxproj present),
 #           VS 2022 with the "C++ Clang tools" component, Windows 10 SDK.
@@ -38,7 +41,14 @@ def latest(pattern):
     return hits[-1]
 
 
-def main(files):
+def main(argv):
+    files, extra_inc = [], []
+    it = iter(argv)
+    for a in it:
+        if a == '--include':
+            extra_inc.append(os.path.abspath(next(it)))
+        else:
+            files.append(a)
     if not files:
         sys.exit(__doc__ or 'usage: syntax_check_dx12.py <file.cpp>...')
     s = io.open(VCXPROJ, encoding='utf-8', errors='ignore').read()
@@ -61,7 +71,7 @@ def main(files):
 
     args = [clang_cl, '/nologo', '/Zs', '/std:c++latest', '/EHsc', '/MDd', '/utf-8', '-Wno-everything', '/D_DEBUG']
     args += ['/D' + d for d in defs]
-    args += ['/I' + i for i in inc]
+    args += ['/I' + i for i in inc + extra_inc]
     args += ['/imsvc' + p for p in (msvc + '/include', sdk + '/ucrt', sdk + '/um', sdk + '/shared', sdk + '/winrt')]
     if pch and os.path.exists(pch):
         args.append('/FI' + pch)
