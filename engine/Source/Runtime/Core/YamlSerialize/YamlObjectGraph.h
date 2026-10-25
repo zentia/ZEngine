@@ -66,6 +66,13 @@ namespace ZYaml
     using GraphReaderExternHook =
         std::function<int32_t(const FileIdentifier& ref, int64_t pathID)>;
 
+    // Instance-ID hook: the InstanceID to Produce the object at `fileID` under.
+    // AssetManager passes its path-derived ID (GetInstanceIDFromPathAndFileID), so
+    // the objects of a graph read from a file are the same identities a PPtr into
+    // that file names -- exactly what the binary reader does. Returning 0 (or no
+    // hook) falls back to a fresh heap ID: right for text that has no file.
+    using GraphInstanceIdHook = std::function<int32_t(int64_t fileID)>;
+
     // Serialize the given objects (each tagged with a unique fileID) to a YAML
     // string. InstanceIDs are assigned/registered for any object lacking one so
     // local references resolve. Returns false only on a hard internal error.
@@ -79,7 +86,8 @@ namespace ZYaml
     // object, in document order. Caller owns the produced objects.
     bool ReadObjectGraph(const char* text,
                          std::vector<ObjectGraphEntry>& out,
-                         GraphReaderExternHook readerHook = {});
+                         GraphReaderExternHook readerHook = {},
+                         GraphInstanceIdHook instanceIdHook = {});
 
     // Lightweight type sniff for AssetRegistry / GetAssetTypeName. Returns the
     // `type:` tag of the object with `preferredFileID`, or the first object.

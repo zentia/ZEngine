@@ -79,6 +79,17 @@ Object* ObjectManager::AllocateAndAssignInstanceID(Object* obj)
     return obj;
 }
 
+void ObjectManager::UnregisterInstanceID(int32_t instanceID, const Object* expected)
+{
+    if (instanceID == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(m_TableMutex);
+    const auto it = m_IDToPointer.find(instanceID);
+    if (it != m_IDToPointer.end() && it->second == expected)
+        m_IDToPointer.erase(it);
+}
+
 void ObjectManager::UnregisterInstanceID(int32_t instanceID)
 {
     if (instanceID == 0)

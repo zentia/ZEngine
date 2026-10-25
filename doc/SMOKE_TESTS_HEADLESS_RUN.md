@@ -55,6 +55,11 @@ commit 时 msync 报 EINVAL）。DDC 只在编辑器的贴图导入里用，web 
 之后）：结果不变，PASS 35 / ENV 7 / SKIP 7 / FAIL 0。CVar 测试随启动文件功能增至 56 项；
 Prefab 端到端（`scripts/verify_prefab_e2e.sh`，不在本表的 49 个之内）增至 125 项。
 
+2026-10-26 第二次复跑（YAML 资产改用路径派生实例 ID 之后）：34 PASS / 1 FAIL / 7 ENV / 7 SKIP，那 1 个 FAIL 是
+`PlayerSettingsSmokeTest`，原因是**宿主环境**而不是代码：WorkBuddy 给 node 注入的 safe-delete 拦截层对"同一轮删除超过
+50 个文件"抛异常（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`），全量跑到它的 `remove_all` 时正好触顶；单独
+`--filter PlayerSettingsSmokeTest` 复跑 PASS。在普通终端里跑全量不会遇到。Prefab 端到端增至 181 项。
+
 ## 局限
 
 - 这是 **wasm 单线程 + node** 环境：凡是被测对象本身要线程、子进程、GPU、真 mmap 的，只能标 ENV / SKIP，不能当成通过。

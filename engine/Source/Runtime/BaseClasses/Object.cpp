@@ -12,7 +12,7 @@ Object::~Object()
     if (m_InstanceID != 0)
     {
         if (auto&& manager = GET_SYSTEM(ObjectManager))
-            manager->UnregisterInstanceID(m_InstanceID);
+            manager->UnregisterInstanceID(m_InstanceID, this);
     }
 }
 

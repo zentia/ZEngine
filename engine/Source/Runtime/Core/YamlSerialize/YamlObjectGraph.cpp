@@ -214,7 +214,8 @@ namespace ZYaml
 
     bool ReadObjectGraph(const char* text,
                          std::vector<ObjectGraphEntry>& out,
-                         GraphReaderExternHook readerHook)
+                         GraphReaderExternHook readerHook,
+                         GraphInstanceIdHook instanceIdHook)
     {
         out.clear();
 
@@ -269,13 +270,17 @@ namespace ZYaml
                 continue;
             }
 
-            Object* obj = GET_SYSTEM(ObjectManager)->Produce(type, 0);
+            const int32_t instanceID = instanceIdHook ? instanceIdHook(fileID) : 0;
+            Object* obj = GET_SYSTEM(ObjectManager)->Produce(type, instanceID);
             if (obj == nullptr)
             {
                 LOG_WARNING(ZSerializer, "YamlObjectGraph: failed to Produce '{}' (fileID {})", typeName, fileID);
                 continue;
             }
-            GET_SYSTEM(ObjectManager)->AllocateAndAssignInstanceID(obj);
+            if (instanceID == 0)
+            {
+                GET_SYSTEM(ObjectManager)->AllocateAndAssignInstanceID(obj);
+            }
             resolver.RegisterLocalObject(obj->GetInstanceID(), fileID);
 
             out.push_back({fileID, obj});

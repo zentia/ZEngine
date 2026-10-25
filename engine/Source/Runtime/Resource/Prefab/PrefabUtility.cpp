@@ -301,6 +301,27 @@ GameObject* PrefabUtility::Instantiate(PrefabAsset* asset, bool invoke_post_load
     return root;
 }
 
+namespace
+{
+    /// Post-read preparation of a prefab template GameObject: rebuild the live
+    /// component list from the just-read ImmediatePtr container, and bind owner
+    /// back-pointers only (no PostLoadResource: the graph is a template, not a live
+    /// scene object). Without the owners a child Transform cannot name its
+    /// GameObject, so cloning (EditorPrefabCloner), re-saving (SaveAsPrefabAsset's
+    /// flattener) and the post-load driver all stop at the root.
+    void PrepareTemplateGameObject(GameObject* go)
+    {
+        go->RebuildRuntimeComponents();
+        for (ImmediatePtr<Component>& component : go->getComponents())
+        {
+            if (Component* c = component)
+            {
+                c->BindOwnerIfUnbound(go);
+            }
+        }
+    }
+}  // namespace
+
 PrefabAsset* PrefabUtility::LoadPrefabAsset(const std::filesystem::path& prefab_path, std::vector<GameObject*>* out_gameobjects)
 {
     auto&& asset_manager = GET_SYSTEM(AssetManager);
@@ -316,29 +337,39 @@ PrefabAsset* PrefabUtility::LoadPrefabAsset(const std::filesystem::path& prefab_
     const bool is_yaml = AssetManager::IsYamlAuthoringAssetPath(prefab_path);
     ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
 
-    // Binary graphs live under path-derived instance IDs: reading the file a second
-    // time would re-Produce objects under the same IDs and silently re-point every
-    // PPtr into the first copy. Reuse the hydrated graph instead.
-    if (!is_yaml)
+    // Graphs live under path-derived instance IDs (binary and, since 2026-10-26,
+    // YAML too): reading the file a second time would re-Produce objects under the
+    // same IDs and silently re-point every PPtr into the second copy. Reuse the
+    // hydrated graph instead.
     {
         const int32_t header_id = asset_manager->GetInstanceIDFromPathAndFileID(prefab_path, 1);
         Object* cached = header_id != 0 ? object_manager->IDToPointer(header_id) : nullptr;
         if (cached != nullptr && cached->GetType() == TypeOf<PrefabAsset>() &&
             static_cast<PrefabAsset*>(cached)->GetRootGameObject() != nullptr)
         {
-            if (out_gameobjects != nullptr)
+            // SaveAsPrefabAsset numbers the objects 1..N without gaps.
+            for (int64_t file_id = 2;; ++file_id)
             {
-                // SaveAsPrefabAsset numbers the objects 1..N without gaps.
-                for (int64_t file_id = 2;; ++file_id)
+                Object* object = object_manager->IDToPointer(asset_manager->GetInstanceIDFromPathAndFileID(prefab_path, file_id));
+                if (object == nullptr)
                 {
-                    Object* object = object_manager->IDToPointer(asset_manager->GetInstanceIDFromPathAndFileID(prefab_path, file_id));
-                    if (object == nullptr)
+                    break;
+                }
+                if (object->GetType() == TypeOf<GameObject>())
+                {
+                    GameObject* go = static_cast<GameObject*>(object);
+                    // The graph may have been hydrated by a lazy PPtr deref
+                    // (AssetManager::ReadObject) rather than by this function, in
+                    // which case the post-read preparation below never ran. Only
+                    // when the live list is still empty: a prepared graph may have
+                    // been edited since (Apply) and must not be reset.
+                    if (go->getComponents().empty())
                     {
-                        break;
+                        PrepareTemplateGameObject(go);
                     }
-                    if (object->GetType() == TypeOf<GameObject>())
+                    if (out_gameobjects != nullptr)
                     {
-                        out_gameobjects->push_back(static_cast<GameObject*>(object));
+                        out_gameobjects->push_back(go);
                     }
                 }
             }
@@ -379,19 +410,7 @@ PrefabAsset* PrefabUtility::LoadPrefabAsset(const std::filesystem::path& prefab_
         else if (object->GetType() == TypeOf<GameObject>())
         {
             GameObject* go = static_cast<GameObject*>(object);
-            go->RebuildRuntimeComponents();
-            // Owner back-pointers only (no PostLoadResource: this graph is a template,
-            // not a live scene object). Without them a child Transform cannot name its
-            // GameObject, so cloning (EditorPrefabCloner), re-saving
-            // (SaveAsPrefabAsset's flattener) and the post-load driver all stop at
-            // the root.
-            for (ImmediatePtr<Component>& component : go->getComponents())
-            {
-                if (Component* c = component)
-                {
-                    c->BindOwnerIfUnbound(go);
-                }
-            }
+            PrepareTemplateGameObject(go);
             if (out_gameobjects != nullptr)
             {
                 out_gameobjects->push_back(go);

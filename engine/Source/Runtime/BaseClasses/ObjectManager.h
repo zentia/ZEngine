@@ -77,6 +77,12 @@ public:
     /// Safe to call with id==0 (no-op).
     void UnregisterInstanceID(int32_t instanceID);
 
+    /// Drop `instanceID` only if the table still maps it to `expected`. A graph
+    /// read twice produces a second object under the same path-derived ID, which
+    /// takes over the table entry; destroying the first copy must not erase the
+    /// entry of the live second one. `Object::~Object()` uses this overload.
+    void UnregisterInstanceID(int32_t instanceID, const Object* expected);
+
     /// Heap-allocate a new Object of type `T` and give it a real InstanceID.
     ///
     /// IMPORTANT: MemoryManager::CreateObject<T>() only runs

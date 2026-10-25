@@ -471,7 +471,7 @@ public:
 
 #### 9.4.1 端到端测试落地记录（2026-10-25）
 
-`engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp`（125 项断言；P1-P6 首版 58 项，P7-P9 于 2026-10-26 补），走真实代码和真实磁盘：
+`engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp`（181 项断言；P1-P6 首版 58 项，P7-P12 于 2026-10-26 补），走真实代码和真实磁盘：
 
 | 场景 | 内容 |
 |---|---|
@@ -484,6 +484,9 @@ public:
 | P7 | 真实场景链路：`PlaceInLevel` → 改值录覆盖 → `Level::save`（YAML + 二进制）→ 读回 `Level::LoadObjectGraph`：实例重新绑定、根/子/映射全指向新关卡的活对象、覆盖值和覆盖列表在、**读回后 Revert 仍能拉到源值**；根被删（撤销缓冲区仍持有）时不写实例、恢复后又写；`Unload` 清登记 |
 | P8 | 对多对象文件里非头对象的惰性 PPtr 解引用：返回的是那个对象本身（以前返回文件头 PrefabAsset，类型都不对） |
 | P9 | 同一文件的相对路径 / 绝对路径 / `./` 写法得到同一个实例 ID |
+| P10 | P7 换成 YAML 源 Prefab（`.prefab`）：场景存读（YAML + 二进制）后实例仍连得上源、Revert 有效 |
+| P11 | YAML Prefab 的非头对象惰性解引用：整图加载、按 ID 取到；之后 `LoadPrefabAsset` 复用这张图而不是再读一份，且能直接实例化 |
+| P12 | 同一 ID 下先后 Produce 两个对象，销毁被取代的第一个不能注销第二个的表项 |
 
 **运行方式**：`bash scripts/verify_prefab_e2e.sh`。无原生工具链时它用 `scripts/web_smoke_run.py`：借 build-web 里已配置的 smoke-test 目标的编译/链接命令，把测试和 `Editor/Prefab/*.cpp` 链到 web 版 `libZRuntime.a`（`--whole-archive`），补上 WebGL2 / emmalloc / NODERAWFS 链接参数后用 node 跑。原生构建可用 `-DZENGINE_BUILD_PREFAB_E2E_SMOKE_TEST=ON`。
 
@@ -503,6 +506,12 @@ public:
 9. **惰性 PPtr 解引用多对象文件的非头对象，返回的是文件头**：`AssetManager::ReadObject(instanceID)` 的各分支都只读 fileID 1。改为 fileID≠1 时：二进制文件且整图未加载 ⇒ `ReadObjectsFromBinary` 加载整图后按 ID 取；否则返回 null 并告警（YAML 图用堆 ID，永远对不上路径派生 ID；整图已加载时再读会在同 ID 下重复 Produce）。
 10. **活 GameObject 没有实例 ID**：`Level::CreateObject` 用 `make_shared` 建的 GameObject 从不分配实例 ID，任何 PPtr 都无法指向它，场景写出时也映射不到 fileID。现在建好即 `AllocateAndAssignInstanceID`（ObjectManager 表不持有所有权，`~Object` 注销 ID，shared_ptr 仍是唯一所有者）。
 11. `Level::clear` 无条件解引用 `GET_SYSTEM(PhysicsManager)`，工具 / 无物理环境下卸载即崩；加空检查。`Level::load` 拆出 `LoadObjectGraph(entries, create_physics_scene)`，测试和工具可以不建物理场景（web 构建无线程，Jolt 的 job system 起不来）。
+
+**P10-P12 暴露并修掉的问题（2026-10-26，5 处变异全红）**：
+
+12. **YAML 资产读出的对象没有文件身份**：`ReadObjectsFromYaml` 用全新的堆 ID Produce 对象，于是 ①场景引用 `.prefab` 里的对象时写成 null（堆 ID 查不到所属文件），读回的场景 Revert / Apply 全部失效；②从文件铸出的 PPtr 永远对不上已加载的对象。`ZYaml::ReadObjectGraph` 加可选的实例 ID 钩子，`AssetManager::ReadObjectsFromYaml` 传路径派生 ID——与二进制读取器一致。纯文本（无文件）的读取不传钩子，行为不变。
+13. 随之：惰性解引用 YAML 图的非头对象改为整图加载（原先对 YAML 直接返回 null）；`LoadPrefabAsset` 的"已加载就复用"从只认二进制扩到 YAML，且复用时若图是被惰性解引用加载的（没走过模板准备：重建组件列表 + 绑定归属）就补做。
+14. `Object::~Object` 无条件注销自己的 ID：同一文件被读两次时第二份对象接管表项，销毁第一份会把第二份的表项删掉 ⇒ 之后对它的 PPtr 解引用失败或触发重读。改为只在表项仍指向自己时注销（`ObjectManager::UnregisterInstanceID(id, expected)`）。
 
 **未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。
 

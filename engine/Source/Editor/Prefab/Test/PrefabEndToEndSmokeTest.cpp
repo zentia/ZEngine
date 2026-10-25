@@ -27,6 +27,12 @@
 //      used to return the file's header, of the wrong type
 //   P9 one file, one identity: the same file named by a relative and by an
 //      absolute path yields the same instance ID
+//   P10 P7 with a YAML (.prefab) source prefab instead of a binary one: the
+//      scene must still reach the source objects after a reload
+//   P11 P8 for a YAML (.prefab) file: lazy deref of a non-header object of a
+//      YAML graph nothing has loaded yet; LoadPrefabAsset afterwards reuses it
+//   P12 a graph read twice puts a second object under the same path-derived ID;
+//      destroying the first copy must not unregister the second
 //
 // Standalone main(); links ZRuntime plus the Editor/Prefab TUs (which are not
 // in libZRuntime). Run headless on the web build with:
@@ -131,6 +137,10 @@ namespace
     const std::filesystem::path kLevelDeletedPath = "prefab_e2e_level_deleted.scene";
     const std::filesystem::path kLevelBinaryPath = "prefab_e2e_level.zasset";
     const std::filesystem::path kLazyPrefabPath = "prefab_e2e_lazy.zasset";
+    const std::filesystem::path kYamlPrefabPath = "prefab_e2e_source.prefab";
+    const std::filesystem::path kYamlLevelPath = "prefab_e2e_level_yamlsrc.scene";
+    const std::filesystem::path kYamlLevelBinaryPath = "prefab_e2e_level_yamlsrc.zasset";
+    const std::filesystem::path kLazyYamlPrefabPath = "prefab_e2e_lazy.prefab";
 
     // Shared between scenarios (each depends on the previous one).
     PrefabInstance* g_Instance = nullptr;
@@ -587,6 +597,114 @@ static void scenario_P9_one_file_one_identity()
     Check(am->GetInstanceIDFromPathAndFileID(dotted, 3) == rel_id, "P9", "./ spelling minted a second identity");
 }
 
+static void scenario_P10_yaml_source_prefab()
+{
+    std::fprintf(stderr, "[P10] YAML (.prefab) source prefab through Level::save / LoadObjectGraph\n");
+    if (g_Source == nullptr || g_Source->GetRootGameObject() == nullptr)
+    {
+        Check(false, "P10", "skipped: no source");
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::remove(kYamlPrefabPath, ec);
+    Check(PrefabUtility::SaveAsPrefabAsset(g_Source->GetRootGameObject(), kYamlPrefabPath), "P10", "saving the .prefab failed");
+    Check(ReadText(kYamlPrefabPath).find("PrefabAsset") != std::string::npos, "P10", "the .prefab is not a YAML graph");
+
+    PrefabSceneBinding::Install();
+    PrefabInstance* instance = PrefabUtilityEditor::InstantiateAsPrefab(kYamlPrefabPath);
+    Check(instance != nullptr, "P10", "InstantiateAsPrefab(.prefab) returned null");
+    if (instance == nullptr)
+        return;
+
+    Level level;
+    Check(PrefabSceneBinding::PlaceInLevel(level, instance), "P10", "PlaceInLevel failed");
+    Transform* tc = TransformOf(instance->GetRootGameObject());
+    if (tc == nullptr)
+    {
+        Check(false, "P10", "placed root has no Transform");
+        return;
+    }
+    tc->SetLocalScale(Vector3(3.0f, 1.0f, 4.0f));
+    Check(PrefabUtilityEditor::RecordCurrentValueAsOverride(instance, PPtr<Object>(tc), "m_LocalScale.z"), "P10",
+          "RecordCurrentValueAsOverride failed");
+
+    const std::pair<const std::filesystem::path*, bool> formats[] = {{&kYamlLevelPath, true}, {&kYamlLevelBinaryPath, false}};
+    for (const auto& format : formats)
+    {
+        const char* tag = format.second ? "P10/yaml" : "P10/binary";
+        std::filesystem::remove(*format.first, ec);
+        level.setLevelResUrl(AbsoluteUrl(*format.first));
+        Check(level.save(), tag, "Level::save failed");
+        Level reloaded;
+        Check(LoadLevel(reloaded, *format.first, format.second), tag, "reading the level back failed");
+        CheckReboundLevel(reloaded, instance, tag);
+    }
+    PrefabSceneBinding::Uninstall();
+}
+
+static void scenario_P11_lazy_yaml_non_header_pptr()
+{
+    std::fprintf(stderr, "[P11] lazy PPtr deref of a non-header object of a YAML graph\n");
+    if (g_Source == nullptr || g_Source->GetRootGameObject() == nullptr)
+    {
+        Check(false, "P11", "skipped: no source");
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::remove(kLazyYamlPrefabPath, ec);
+    Check(PrefabUtility::SaveAsPrefabAsset(g_Source->GetRootGameObject(), kLazyYamlPrefabPath), "P11", "save failed");
+
+    AssetManager* am = GET_SYSTEM(AssetManager);
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    const int32_t header_id = am->GetInstanceIDFromPathAndFileID(kLazyYamlPrefabPath, 1);
+    const int32_t object_id = am->GetInstanceIDFromPathAndFileID(kLazyYamlPrefabPath, 2);
+    const bool precondition = om->IDToPointer(header_id) == nullptr && om->IDToPointer(object_id) == nullptr;
+    Check(precondition, "P11", "precondition: nothing of the new file may be loaded yet");
+    if (!precondition)
+        return;
+
+    Object* object = static_cast<Object*>(PPtr<Object>(object_id));
+    Check(object != nullptr, "P11", "lazy deref of fileID 2 of a .prefab returned null");
+    if (object == nullptr)
+        return;
+    Check(object->GetInstanceID() == object_id, "P11", "lazy deref returned an object with a different instance ID");
+    Check(!object->Is(TypeOf<PrefabAsset>()), "P11", "lazy deref of fileID 2 returned the file header");
+    Object* header = om->IDToPointer(header_id);
+    Check(header != nullptr && header->Is(TypeOf<PrefabAsset>()), "P11",
+          "the rest of the YAML graph should be loaded under its path-derived IDs");
+
+    // Loading the prefab afterwards must reuse that graph, not produce a second copy
+    // under the same IDs (which would silently re-point every PPtr into it).
+    PrefabAsset* asset = PrefabUtility::LoadPrefabAsset(kLazyYamlPrefabPath);
+    Check(asset != nullptr && static_cast<Object*>(asset) == header, "P11",
+          "LoadPrefabAsset after the lazy load must return the already-loaded header");
+    Check(om->IDToPointer(object_id) == object, "P11", "the lazily loaded object was replaced by a second copy");
+
+    // ... and that graph is usable as a template although LoadPrefabAsset did not
+    // read it (the lazy deref skipped the template preparation).
+    PrefabInstance* instance = PrefabUtilityEditor::InstantiateAsPrefab(kLazyYamlPrefabPath);
+    GameObject* inst_root = instance != nullptr ? static_cast<GameObject*>(instance->GetRootGameObject()) : nullptr;
+    Check(inst_root != nullptr && TransformOf(inst_root) != nullptr, "P11",
+          "instantiating the lazily loaded prefab gave no root / no Transform");
+    Check(FirstChild(inst_root) != nullptr, "P11", "instantiating the lazily loaded prefab lost the child");
+}
+
+static void scenario_P12_duplicate_id_destroy()
+{
+    std::fprintf(stderr, "[P12] destroying a superseded copy keeps the live entry\n");
+    AssetManager* am = GET_SYSTEM(AssetManager);
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    const int32_t id = am->GetInstanceIDFromPathAndFileID("prefab_e2e_duplicate_probe.zasset", 1);
+    Object* first = om->Produce(TypeOf<GameObject>(), id);
+    Object* second = om->Produce(TypeOf<GameObject>(), id);  // what a second read of the file does
+    Check(first != nullptr && second != nullptr && om->IDToPointer(id) == second, "P12",
+          "the second Produce under the same ID should own the table entry");
+    om->Destroy(first);
+    Check(om->IDToPointer(id) == second, "P12", "destroying the superseded first copy unregistered the live second one");
+    om->Destroy(second);
+    Check(om->IDToPointer(id) == nullptr, "P12", "destroying the owner must unregister the ID");
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -611,10 +729,14 @@ int main()
     scenario_P7_level_save_load();
     scenario_P8_lazy_non_header_pptr();
     scenario_P9_one_file_one_identity();
+    scenario_P10_yaml_source_prefab();
+    scenario_P11_lazy_yaml_non_header_pptr();
+    scenario_P12_duplicate_id_destroy();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,
-                          kLevelBinaryPath, kLazyPrefabPath})
+                          kLevelBinaryPath, kLazyPrefabPath, kYamlPrefabPath, kYamlLevelPath,
+                          kYamlLevelBinaryPath, kLazyYamlPrefabPath})
         std::filesystem::remove(p, ec);
 
     SystemRegistry::GetInstance().ShutdownAll();

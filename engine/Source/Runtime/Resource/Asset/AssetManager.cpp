@@ -599,18 +599,18 @@ Object* AssetManager::ReadObject(int32_t instanceID)
     // object of the graph. Every single-object reader below produces the file's
     // header object (fileID 1), so for any other fileID they used to hand back the
     // header -- an object of the wrong type, which PPtr<T> then static_casts.
-    // Hydrate the whole graph instead. That is only sound for a binary file whose
-    // graph is not loaded yet: ReadObjectsFromBinary produces under the same
-    // path-derived IDs, so re-reading a loaded graph would duplicate its objects;
-    // and YAML graphs are read under heap IDs, which never satisfy this ID.
+    // Hydrate the whole graph instead (both readers produce under the same
+    // path-derived IDs this PPtr carries). Only when the graph is not loaded yet:
+    // re-reading a loaded graph would produce a second copy under the same IDs.
     if (ident.localIdentifierInFile != 1)
     {
         ObjectManager* object_manager = GET_SYSTEM(ObjectManager);
-        if (!IsYamlAuthoringAssetPath(asset_path) &&
-            object_manager->IDToPointer(GetInstanceIDFromPathAndFileID(asset_path, 1)) == nullptr)
+        if (object_manager->IDToPointer(GetInstanceIDFromPathAndFileID(asset_path, 1)) == nullptr)
         {
             std::vector<std::pair<int64_t, Object*>> graph;
-            if (ReadObjectsFromBinary(asset_path, graph))
+            const bool read = IsYamlAuthoringAssetPath(asset_path) ? ReadObjectsFromYaml(asset_path, graph)
+                                                                   : ReadObjectsFromBinary(asset_path, graph);
+            if (read)
             {
                 if (Object* object = object_manager->IDToPointer(instanceID))
                 {
@@ -1214,8 +1214,17 @@ bool AssetManager::ReadObjectsFromYaml(const std::filesystem::path& path, std::v
     AssetManager* self = this;
     auto readerHook = MakeYamlReaderHook(self);
 
+    // Same identities as the binary reader: object N of this file is produced under
+    // GetInstanceIDFromPathAndFileID(path, N). With fresh heap IDs instead, nothing
+    // outside this read could name these objects -- a scene referring to a .prefab
+    // wrote the reference as null (no file identity for a heap ID), and a PPtr
+    // minted from the file never matched the loaded object.
+    auto instanceIdHook = [self, &path](int64_t fileID) -> int32_t {
+        return self->GetInstanceIDFromPathAndFileID(path, fileID);
+    };
+
     std::vector<ZYaml::ObjectGraphEntry> entries;
-    if (!ZYaml::ReadObjectGraph(text.c_str(), entries, std::move(readerHook)))
+    if (!ZYaml::ReadObjectGraph(text.c_str(), entries, std::move(readerHook), std::move(instanceIdHook)))
         return false;
 
     out.reserve(entries.size());
