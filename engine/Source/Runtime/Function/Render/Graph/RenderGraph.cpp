@@ -126,6 +126,9 @@ RGTextureHandle RenderGraph::ImportTexture(const char* name, const RGExternalTex
     // even though nothing is allocated for it.
     resource.texture_desc.name = resource.name;
     resource.texture_desc.transient = false;
+    // The only descriptor field the executor reads for an import: it picks the
+    // barrier aspect (COLOR vs DEPTH[|STENCIL]) from it.
+    resource.texture_desc.format = external.format;
 
     m_Resources.push_back(std::move(resource));
     return RGTextureHandle {static_cast<uint32_t>(m_Resources.size()) - 1, m_Generation};

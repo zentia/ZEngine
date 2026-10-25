@@ -44,7 +44,7 @@
 |---|------|------|--------|------|------|
 | C0 | **Vulkan `MainCameraPass` 崩溃根因修复** | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭 |
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **已实现·默认关闭**（165 编译+92 执行断言；`ZENGINE_RG_RP2=1` 门控，默认 off） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
-| C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **代码已落地·编译器层已验**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 图化拓扑已断言 200/200，见 §2 落地记录·2.4。剩 execute 层两处真机缺口：INPUT_ATTACHMENT 描述符 + blend） | **必须在 C1 之后** | ★★ 高价值/中风险 |
+| C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **代码已落地·编译器层已验**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验，修掉导入深度图 aspect 的 executor bug，见 §2 落地记录·2.4。剩 `DrawRP1WithGraph` 本体，需显示器目视） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 | **部分实现**（真 GPU dispatch 已有；**几何压缩已落地 2026-10-25**，见 §2 落地记录；剩 streaming + HiZ 两处 TODO） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
 | C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **已实现但零消费者**（6 文件无外部引用、无 CVar、3 处构建排除） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
@@ -65,7 +65,7 @@
 | **2.1** | C1 | RenderGraph RP2 目视验证 → 默认打开（**前置调查已完成，见 `PHASE2_STEP2.1_RENDERGRAPH.md`**） | 图与执行层已有 257 项断言；失败模式是"后处理不对"而非黑屏（`RENDER_GRAPH.md:136`）；一个环境变量可回滚。是所有后续渲染候选的地基。**代码层面默认打开安全**（每处失败点录制前 `return false` 干净回落），但翻默认前须先目视 diff（需显示器）。 |
 | **2.2** | C1 | RenderGraph 扩面（ParticlePass / 后处理链） | 复用已验证机制；消除 `RENDER_GRAPH.md:15` 列举的手写屏障。 |
 | **2.3** | C2 | `render_pass_refactor`：RP1 三分 | **必须在 2.1 之后**——此时屏障/别名机制已在真机验证过，单独做它是高风险。 |
-| **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。**编译器层已于 2026-10-25 兑现**（见下方落地记录·2.4）：step 2.3（RP1 三分）此前已落地在代码（3 个独立 render pass，subpass 恒 0），本步骤把 RP1 真实拓扑声明进图（`BuildRp1Wiring`），`RenderGraphSmokeTest` group 19/20 断言执行序 + 9 条屏障（4+5+0）+ transient 生命周期，headless WASM 200/200 全绿；`RENDER_GRAPH.md:117`"图只能表达整段"的旧论断被推翻并加更新注记。**execute 层两处真机缺口**（GBuffer 的 INPUT_ATTACHMENT 描述符类型、ForwardLighting 的 blend）如实留作真机 + 显示器，未 fabricate。 |
+| **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。**编译器层已于 2026-10-25 兑现**（见下方落地记录·2.4）：step 2.3（RP1 三分）此前已落地在代码（3 个独立 render pass，subpass 恒 0），本步骤把 RP1 真实拓扑声明进图（`BuildRp1Wiring`），`RenderGraphSmokeTest` group 19/20 断言执行序 + 9 条屏障（4+5+0）+ transient 生命周期，headless WASM 200/200 全绿；`RENDER_GRAPH.md:117`"图只能表达整段"的旧论断被推翻并加更新注记。**executor 层二次复核**：撤回上一版的"两处语义缺口"（RP1 只在 DX12/Metal 跑，INPUT_ATTACHMENT 在那里就是 SRV；Forward 的 blend 是固定功能，本就是 RenderTarget），并修掉一个真 bug——导入的深度图拿到 COLOR aspect 屏障、D32 拿到 STENCIL aspect（executor group 13/14 回归，红绿验证）。剩 `DrawRP1WithGraph` 本体（按真实 finalLayout 导入），需显示器目视。 |
 | **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。**streaming 已于 2026-10-25 落地**（见下方落地记录）：`UpdateStreaming` 从 TODO 兑现为基于距离的叶子驻留判据，WASM headless 验证 77/77 全绿（含 10 项新增 streaming 断言）。剩 HiZ（GPU 侧需真机）。 |
 | **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。**已于 2026-10-25 落地**（见下方落地记录）：9 处 TODO 里 6 处 CPU 侧填实（屏幕投影 mip/优先级重算/LRU 淘汰/统计/时间戳/世界足迹），3 处 GPU 侧（页上传/页表纹理）如实留作真机；加 `r.VirtualTexture.Enable` CVar 门控 + 帧循环 `UpdateVirtualTextureForFrame`（3 条 Tick 路径统一入口，默认关、Vulkan 编译门内、零回归）；headless WASM 验证 15/15 全绿。剩页上传/页表纹理（GPU 需真机）+ 2.4 的 RG 资源注册。 |
 | **2.7**（✅ CPU 侧已完整·无需动手） | C6 | Lumen：SSR + 首个 Lumen shader | 依赖 2.4 的 GBuffer/depth 声明；放最后，**只取 SSR 一半**。**HWRT/BLAS-TLAS 明确移出 Phase 2**（需独立专项）。**已于 2026-10-25 复核：Lumen 的整个 CPU 侧（GI + 反射 + 接线 + CVar + 发布桥）此前就已完整落地并有 7 个 smoke test**，见下方落地记录。剩 SSR/HWRT/首个 shader 全是 GPU 侧（需真机 + 2.4 的 GBuffer/depth），本步骤的 CPU 部分无活可干。 |
@@ -236,7 +236,7 @@ render-pass wiring / per-frame bridge）。
 
 ---
 
-### 落地记录 · 2.4 RenderGraph 接管 RP1（2026-10-25，编译器层兑现 + 真实语义缺口如实标注）
+### 落地记录 · 2.4 RenderGraph 接管 RP1（2026-10-25，编译器层 + executor 层兑现；含勘误）
 
 **前置发现：step 2.3（RP1 三分）此前就已落地在代码里**。`MainCameraRp1Pass` 早已拆成 3 个**独立**
 render pass —— `DrawGBufferPass`/`DrawDeferredLightingPass`/`DrawForwardLightingPass`，各自一次
@@ -258,29 +258,67 @@ Deferred 把 GBuffer 三张 RenderTarget→ShaderResource、depth DepthStencilWr
 ShaderResource→RenderTarget 共 5 条；Forward 全同态（depth 已 DepthStencilRead、BackupOdd 已 RenderTarget）
 **0 条**（正是 DeriveBarriers "已在目标态不产生屏障" 那条）。另断言 GBuffer 三张 transient 生命周期
 （slot 0 产生 / slot 1 最后读 / 可别名回收）、BackupOdd 外部资源跨链不别名。group 20 把"同 pass 读写
-BackupOdd（Forward 的 blend）"钉成**编译期硬错误**（`RenderGraphBuilder::Declare` 拒绝），锁住图模型的边界。
+BackupOdd"钉成**编译期硬错误**（`RenderGraphBuilder::Declare` 拒绝；勘误见下：这拦的是"采样+渲染同一张图"，不是 Forward 的 blend）。
 
 **验证（headless WASM，无需浏览器/重启/真机）**：新增 `scripts/verify_graph_wasm.sh`。图编译器是**纯
 标准库**（`RenderGraph.cpp` 只 include `<algorithm>/<queue>/<set>/<utility>` + 自身头，无 RHI/bqlog/object
 系统），所以 harness 比 Nanite/VT 轻得多——**无 shadow 树、无 prelude**，emcc 独立编译 4 个 graph TU +
-测试、node 运行。200/200 全绿（含既有 165 项 + RP2 接线 0 项……实为既有 group 1-18 全绿 + 新增 35 项）。
+测试、node 运行。200/200 全绿（既有 group 1-18 的 165 项 + 新增 35 项）。
 
-**两处真实语义缺口（图模型不表达，属 RHI/execute 层，如实留作真机，不 fabricate）**：
-1. **GBuffer 在真机是 `INPUT_ATTACHMENT` 描述符**（Vulkan `subpassInput`/`subpassLoad`，
-   `deferred_lighting.frag.hlsl` 的 `register(t0,space1)`），图里建模成普通 `ShaderResource`。两者 layout
-   都是 `SHADER_READ_ONLY_OPTIMAL`，所以**layout 是对的**；但描述符类型（INPUT_ATTACHMENT vs
-   COMBINED_IMAGE_SAMPLER）与"跨独立 render pass 的 input-attachment 有效性"是 execute/RHI 层的事，图
-   编译器不建模。**注**：跨独立 render pass 用 input attachment 在 Vulkan 上本就非法——真机接线时要么
-   把 GBuffer 当普通采样纹理（shader 改 `Texture2D.Load` 而非 `subpassLoad`），要么把 GBuffer+Deferred
-   合回一个 multi-subpass render pass（那又回到 2.3 要拆掉的旧结构）。这是 2.4 真正留给真机的抉择。
-2. **ForwardLighting 对 BackupOdd 是 blend**（`loadOp=LOAD` 再写回，透明物体 alpha 混合）。图模型**禁止
-   同 pass 读写同一资源**，所以建模成纯写——blend 语义（读回旧值再混）图表达不了。这正是图模型的固有
-   边界，group 20 把它钉成编译错误，防止有人假装 blend 免费。
+**⚠️ 勘误（2026-10-25 二次复核，execute 层）**：上一版此处写的"两处真实语义缺口"**两处都不成立**，已撤回：
+1. ~~GBuffer 的 INPUT_ATTACHMENT 描述符是缺口~~ —— **错**。`MainCameraRp1Pass` 只在 **DX12**
+   （`DX12MainCameraPass` 成员）与 **Apple/Metal**（`DesktopRenderPipelineModule.cpp` 的 `#if defined(__APPLE__)`
+   块）构造；**Vulkan 走的是旧的多 subpass `MainCameraPass`**（GLSL `subpassLoad` 只在那条路上）。DX12 把
+   `RHI_DESCRIPTOR_TYPE_INPUT_ATTACHMENT` 直接映射成普通 SRV（`DX12RHI.cpp` 的 descriptor range 映射 +
+   `UpdateDescriptorSets`），HLSL 用 `Texture2D.Load`；Metal 经 SPIRV-Cross 得到 `[[texture(n)]]`（且 Metal
+   的 deferred 子 pass `inputAttachmentCount=0`）。⇒ 在真正跑这条 pass 的后端上，"图里建模成 ShaderResource"
+   **就是实际发生的事**。"跨独立 render pass 用 input attachment 在 Vulkan 非法"这句本身没错，但没有任何
+   代码路径在 Vulkan 上跑 `MainCameraRp1Pass`。
+2. ~~ForwardLighting 的 blend 图表达不了~~ —— **错**。透明混合是 colour attachment 上的**固定功能 blend**
+   （`loadOp=LOAD` + blend state），shader 从不采样 BackupOdd（`mesh_forward.frag.hlsl` 只读材质贴图）。这
+   本来就是 `RenderTarget` 状态，`WriteTexture(RenderTarget)` 是**忠实**声明，不是简化。group 20 拦的是
+   "同 pass 既**采样**又渲染进同一张图"（真·反馈环），与 Forward 无关——已改名为
+   "RP1 guard: sampling BackupOdd while rendering into it is a hard error"。
 
-**诚实定位**：step 2.4 的**编译器层已兑现并有 200/200 断言**——RP1 三分拓扑被证明可图化、屏障/顺序/
-生命周期与手写链一致。但"图驱动 RP1 真正上屏"仍要 execute 层把上述两处语义缺口在真机上解决（描述符
-类型 + blend），并需要显示器逐帧目视 diff（与 2.1a 同一道闸门）。它不是"RP1 已接入图并上屏"，是
-"RP1 的图化拓扑已被编译器验证、execute 层的两处真机缺口被精确定位"。
+**execute 层二次复核真正找到的东西**：
+- **真 bug（已修 + 回归测试）**：`RenderGraph::ImportTexture` 不记录格式（`texture_desc.format` 恒
+  `Unknown`），而 `RenderGraphExecutor::RecordBarriers` 靠格式判深度 aspect ⇒ **导入的深度图会拿到
+  COLOR aspect 的屏障**（Vulkan validation error；RP2 只导入颜色图所以从没暴露，RP1 是第一个导入
+  scene depth 的接线）。另外 transient `D32_SFLOAT` 拿到 `DEPTH|STENCIL`，而 D32 没有 stencil（同样非法，
+  且 D32 是 Vulkan `FindDepthFormat` 的首选）。修法：`RGExternalTexture` 加可选 `format` 字段（默认
+  `Unknown`，现有调用点零改动），`ImportTexture` 抄进 `texture_desc.format`；executor 只对
+  `D24_UNORM_S8_UINT` 加 STENCIL aspect。
+- **新增 executor 断言**（`RenderGraphExecuteSmokeTest` group 13/14，+29 项）：RP1 三 pass 经 executor 跑一遍，
+  断言执行回调顺序、5 条屏障分 2 次批量 `CmdPipelineBarrier`（Forward 0 条）、只有 GBufferA 走池分配、
+  导入资源解析回调用方自己的 image；depth 两条屏障 aspect 恰为 `DEPTH_BIT`、layout `UNDEFINED →
+  DEPTH_STENCIL_ATTACHMENT → DEPTH_STENCIL_READ_ONLY`；D24S8 transient 两条屏障均为 `DEPTH|STENCIL`。
+  **红绿验证**：用 HEAD 版 `RenderGraph.cpp`/`RenderGraphResources.cpp` 编译新测试 ⇒ 121 项里 2 项 FAIL
+  （恰是两条 depth aspect）；修复后 121/121。
+- `verify_graph_wasm.sh` 扩展为同时跑 compiler（200/200）+ executor（121/121），executor 只需 platform
+  三元组（`-DZ_PLATFORM_LINUX ...`）+ EASTL include，**仍无 shadow 树**（executor 只经 10 方法的
+  `IRGResourceDevice` 说话，测试用 FakeDevice）。
+
+**真正剩下的接线工作（`DrawRP1WithGraph`，DX12 编辑器，需显示器验）**：
+1. **导入态 = 上一个 render pass 的 finalLayout，不是"方便的 Undefined"**。RP1 的三个 render pass 自己用
+   `initialLayout/finalLayout` 转换附件（DX12 在 `CmdBeginRenderPassPFN` 的 `TransitionSubpassAttachments`
+   与 `CmdEndRenderPassPFN` 里按 finalLayout `TransitionImage`），所以图驱动时每个资源的"当前态"由 render
+   pass 推进，图只需补 render pass **之间**的那一段——与 `DrawRP2WithGraph` 的做法一致（它以 `ShaderResource`
+   导入 backup_*，因为那是上一个 render pass 的 finalLayout）。group 19 用的是理想导入态，接线时要按真实
+   finalLayout 重写一份断言（参考 RP2 的 group 18）。
+2. **DX12 上手写的那一组 4 条屏障本来就是 no-op**：GBuffer pass 的 finalLayout 已把三张 GBuffer 留在
+   SHADER_READ_ONLY、depth 留在 DEPTH_STENCIL_READ_ONLY，`DX12MainCameraPass::Draw` 里那组
+   `CmdPipelineBarrier` 的目标态等于当前跟踪态，`TransitionImage` 的 `old_state == new_state` 早退。图驱动后
+   这组手写屏障可以直接删（图在同一位置推导出 0 条），这是可以落地的简化，但仍需目视确认。
+3. depth 在 DX12 的 Deferred/Forward pass 里同时是 DSV 和 SRV：`ToDX12ResourceState` 把
+   `DEPTH_STENCIL_READ_ONLY_OPTIMAL` 映射成 `PIXEL_SHADER_RESOURCE`，而 render pass 开头又会把 depth 附件转成
+   `DEPTH_WRITE`（`TransitionSubpassAttachments` 不区分只读深度）。这是**既有**行为、与图无关，但图接线时
+   depth 的导入态必须照它实际所处的状态填，否则推导出的屏障会和 RHI 的私有跟踪态打架。**未验证是否触发
+   D3D12 debug layer 报错**——需真机开 debug layer 看一眼，列为待验证项。
+
+**诚实定位（修订）**：step 2.4 的 compiler + executor 两层都已 headless 验证（200 + 121 断言），并修掉一个
+只有 RP1 这种"导入深度图"的接线才会踩到的真 executor bug。剩下的是 `DrawRP1WithGraph` 本体（按真实
+finalLayout 导入、复用 RP2 的"先校验后录制 + env 门控回落"）——它和 2.1a 是同一道闸门：需要显示器逐帧
+目视 diff。
 
 ---
 

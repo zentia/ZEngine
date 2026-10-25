@@ -46,7 +46,7 @@ Execute（RHI 线程，录命令）
 | `RenderGraph.{h,cpp}` | 仅标准库 | 编译器：排序、剔除、生命周期、别名、屏障、校验 |
 | `RenderGraphResources.{h,cpp}` | **RHI** | transient 池、Registry、Executor、RG→RHI 枚举映射 |
 | `Test/RenderGraphSmokeTest.cpp` | 仅前 3 个 cpp | 200 项无头断言（Setup/Compile；含 step 2.4 的 RP1 三分链 35 项，见 §5 更新） |
-| `Test/RenderGraphExecuteSmokeTest.cpp` | 前 3 个 cpp + `RenderGraphResources.cpp` | 92 项无头断言（池 + Execute），见 §6 |
+| `Test/RenderGraphExecuteSmokeTest.cpp` | 前 3 个 cpp + `RenderGraphResources.cpp` | 121 项无头断言（池 + Execute，含 RP1 + depth aspect），见 §6 |
 
 ---
 
@@ -124,11 +124,13 @@ executor.Execute(graph, command_buffer);
 > RP1 拓扑**可以**在图里声明：`RenderGraphSmokeTest` 的 group 19/20（`BuildRp1Wiring`）断言了
 > `GBufferPass → DeferredLightingPass → ForwardLightingPass` 的执行序、9 条屏障（4+5+0）、以及 GBuffer
 > 三张 transient 的生命周期（slot 0 产生、slot 1 最后读、可别名回收）。`verify_graph_wasm.sh` headless
-> 跑通 200/200。**两处真实语义缺口**（图模型不表达，属 RHI/execute 层，非本层）：① GBuffer 在真机是
-> `INPUT_ATTACHMENT` 描述符（Vulkan subpassInput），图里建模成普通 `ShaderResource`——layout 一致，描述符
-> 类型与跨 pass input-attachment 有效性是 execute 层的事；② ForwardLighting 对 BackupOdd 是 blend
-> （loadOp=LOAD 再写），图模型禁止同 pass 读写同一资源，故建模成纯写——blend 语义（读回旧值）图表达
-> 不了，这正是图模型的固有边界（group 20 把它钉成编译错误，防止有人假装 blend 免费）。
+> 跑通 200/200。
+> **勘误（同日二次复核）**：上一版此处列的"两处语义缺口"不成立——`MainCameraRp1Pass` 只在 DX12 与
+> Metal 上构造（Vulkan 走旧的多 subpass `MainCameraPass`），DX12 把 `INPUT_ATTACHMENT` 映射成普通 SRV、
+> HLSL 用 `Texture2D.Load`，所以 `ShaderResource` 就是实际行为；Forward 的透明混合是固定功能 blend，本就是
+> `RenderTarget` 状态。group 20 拦的是"同 pass 既采样又渲染进同一张图"。复核反而在 **executor** 里找到一个
+> 真 bug：导入贴图不带格式，导入的深度图拿到 COLOR aspect 屏障，D32 transient 拿到 STENCIL aspect——已修
+> （`RGExternalTexture::format`），回归见 §7 executor group 13/14。
 
 **两个不能踩的时序点**（改错都不报错，只在特定帧才看得出来）：
 
@@ -244,9 +246,9 @@ cmake --build build --config Debug --target RenderGraphSmokeTest RenderGraphExec
 ctest -C Debug -R RenderGraph --output-on-failure
 ```
 
-**编译器（`RenderGraphSmokeTest`）200 项断言 / 0 失败**（含 step 2.4 新增的 RP1 三分链 35 项，group 19/20）：链式排序、剔除与反向传播、NeverCull/Extract 保活、生命周期、别名复用与重叠拒绝、屏障推导（含"已处于目标态不产生"）、重复声明拒绝、跨帧失效句柄、四类校验错误、WAR/WAW 顺序、缓冲资源、确定性、描述符尺寸、**RP2 后处理链**（§5，43 项）：FXAA 关/开两种拓扑的执行序与屏障条数、`backup_odd` 只搬一次状态、"SRV/RTV 必须异贴图"落成校验错误，以及**swapchain 往返**（15 项）：以 `Present` 导入 → 写 → 再写 → 读，断言首条是 `Present → RenderTarget` 而非 `Undefined → RenderTarget`、第二个连续写入者不产生屏障、外部资源不参与别名与预算、写外部资源的 Pass 天然是根所以不被剔除，以及**接线的真实导入态**（§5，29 项）：以 `ShaderResource/ShaderResource/RenderTarget` 导入，断言执行序为 `ColorGrading/UI/CombineUI`（开 FXAA 时中间插一个 `FXAA`）、`backup_odd` 全程不产生屏障、`backup_even` 往返 `ShaderResource → RenderTarget → ShaderResource`、backbuffer 一条屏障都没有（因为导入态已经是 `RenderTarget`）、屏障总数 2 / 4。**RP1 三分链**（§5 更新，step 2.4，group 19/20）：`GBufferPass → DeferredLightingPass → ForwardLightingPass` 执行序、9 条屏障（4+5+0：GBuffer 三张 + depth 首写 4 条、Deferred 把 GBuffer 翻成 ShaderResource + depth 翻成 DepthStencilRead + BackupOdd 写成 RenderTarget 5 条、Forward 全同态 0 条）、GBuffer 三张 transient 生命周期（slot 0 产生 / slot 1 最后读 / 可别名）、BackupOdd 外部资源跨链不别名，以及"同 pass 读写 BackupOdd（Forward 的 blend）是编译期硬错误"这条模型边界。`scripts/verify_graph_wasm.sh` headless 跑通（emcc 独立编译 4 个 graph TU + 测试，node 运行，无任何 shadow/prelude，因为图编译器只依赖标准库）。
+**编译器（`RenderGraphSmokeTest`）200 项断言 / 0 失败**（含 step 2.4 新增的 RP1 三分链 35 项，group 19/20）：链式排序、剔除与反向传播、NeverCull/Extract 保活、生命周期、别名复用与重叠拒绝、屏障推导（含"已处于目标态不产生"）、重复声明拒绝、跨帧失效句柄、四类校验错误、WAR/WAW 顺序、缓冲资源、确定性、描述符尺寸、**RP2 后处理链**（§5，43 项）：FXAA 关/开两种拓扑的执行序与屏障条数、`backup_odd` 只搬一次状态、"SRV/RTV 必须异贴图"落成校验错误，以及**swapchain 往返**（15 项）：以 `Present` 导入 → 写 → 再写 → 读，断言首条是 `Present → RenderTarget` 而非 `Undefined → RenderTarget`、第二个连续写入者不产生屏障、外部资源不参与别名与预算、写外部资源的 Pass 天然是根所以不被剔除，以及**接线的真实导入态**（§5，29 项）：以 `ShaderResource/ShaderResource/RenderTarget` 导入，断言执行序为 `ColorGrading/UI/CombineUI`（开 FXAA 时中间插一个 `FXAA`）、`backup_odd` 全程不产生屏障、`backup_even` 往返 `ShaderResource → RenderTarget → ShaderResource`、backbuffer 一条屏障都没有（因为导入态已经是 `RenderTarget`）、屏障总数 2 / 4。**RP1 三分链**（§5 更新，step 2.4，group 19/20）：`GBufferPass → DeferredLightingPass → ForwardLightingPass` 执行序、9 条屏障（4+5+0：GBuffer 三张 + depth 首写 4 条、Deferred 把 GBuffer 翻成 ShaderResource + depth 翻成 DepthStencilRead + BackupOdd 写成 RenderTarget 5 条、Forward 全同态 0 条）、GBuffer 三张 transient 生命周期（slot 0 产生 / slot 1 最后读 / 可别名）、BackupOdd 外部资源跨链不别名，以及"同 pass 既采样又渲染进 BackupOdd 是编译期硬错误"这条反馈环守卫。`scripts/verify_graph_wasm.sh` headless 跑通（emcc 独立编译，node 运行，无任何 shadow/prelude）。
 
-**执行层（`RenderGraphExecuteSmokeTest`）92 项断言 / 0 失败**：池的复用与 `MaxIdlePerKey` 溢出销毁、`Flush()` 只减一次（缺陷 1 回归）、Pass 按编译序执行、句柄解析与跨代失效句柄拒绝、每 Pass 一次 `CmdPipelineBarrier` 且转的是对的 image、transient 在最后一个读者之后立刻归还、buffer 走同一条路径、被剔除的 Pass 既不执行也不分配（缺陷 3 回归）、Extract 资源活过整张图并在下一次 `Execute()` 才回收（缺陷 2 回归）、缺 device / command buffer / 校验失败时的报错路径、无 device 的池是惰性而非崩。
+**执行层（`RenderGraphExecuteSmokeTest`）121 项断言 / 0 失败**（step 2.4 新增 group 13/14 共 29 项：RP1 三 pass 经 executor 的回调顺序、5 条屏障分 2 次批量调用、导入资源不走池、depth 屏障 aspect 恰为 `DEPTH_BIT`（D32）/ `DEPTH|STENCIL`（D24S8）——导入格式 bug 的回归；同样由 `verify_graph_wasm.sh` headless 跑）：池的复用与 `MaxIdlePerKey` 溢出销毁、`Flush()` 只减一次（缺陷 1 回归）、Pass 按编译序执行、句柄解析与跨代失效句柄拒绝、每 Pass 一次 `CmdPipelineBarrier` 且转的是对的 image、transient 在最后一个读者之后立刻归还、buffer 走同一条路径、被剔除的 Pass 既不执行也不分配（缺陷 3 回归）、Extract 资源活过整张图并在下一次 `Execute()` 才回收（缺陷 2 回归）、缺 device / command buffer / 校验失败时的报错路径、无 device 的池是惰性而非崩。
 
 两者都 `add_test` 注册进 CTest（根 `CMakeLists.txt:483` 有 `enable_testing()`）。
 

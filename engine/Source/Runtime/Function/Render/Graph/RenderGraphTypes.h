@@ -217,6 +217,10 @@ struct RGExternalTexture
     RHIImage* image {nullptr};
     RHIImageView* view {nullptr};
     RGResourceState state {RGResourceState::Undefined};
+    /// Optional. The graph never allocates an import, but the executor still has to
+    /// pick the barrier's aspect mask from the format: leave it Unknown and a depth
+    /// target gets a COLOR aspect (invalid on Vulkan). Set it for depth imports.
+    RGFormat format {RGFormat::Unknown};
 };
 
 struct RGExternalBuffer

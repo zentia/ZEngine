@@ -867,8 +867,11 @@ void RenderGraphExecutor::RecordBarriers(RHICommandBuffer* command_buffer,
 
         if (barrier.is_texture)
         {
-            const bool is_depth = resource.texture_desc.format == RGFormat::D32_SFLOAT ||
-                                  resource.texture_desc.format == RGFormat::D24_UNORM_S8_UINT;
+            // Stencil aspect only for formats that HAVE stencil: D32_SFLOAT with a STENCIL
+            // aspect is a Vulkan validation error (and the format Vulkan's FindDepthFormat
+            // prefers). Imports carry their format via RGExternalTexture::format.
+            const bool has_stencil = resource.texture_desc.format == RGFormat::D24_UNORM_S8_UINT;
+            const bool is_depth = has_stencil || resource.texture_desc.format == RGFormat::D32_SFLOAT;
             RHIImageMemoryBarrier rhi_barrier {};
             rhi_barrier.sType = RHI_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             rhi_barrier.pNext = nullptr;
@@ -879,10 +882,10 @@ void RenderGraphExecutor::RecordBarriers(RHICommandBuffer* command_buffer,
             rhi_barrier.srcQueueFamilyIndex = 0;
             rhi_barrier.dstQueueFamilyIndex = 0;
             rhi_barrier.image = m_Textures[barrier.resource_index].image;
-            rhi_barrier.subresourceRange.aspectMask = is_depth
-                                                          ? (RHI_IMAGE_ASPECT_DEPTH_BIT |
-                                                             RHI_IMAGE_ASPECT_STENCIL_BIT)
-                                                          : RHI_IMAGE_ASPECT_COLOR_BIT;
+            rhi_barrier.subresourceRange.aspectMask =
+                !is_depth    ? RHI_IMAGE_ASPECT_COLOR_BIT
+                : has_stencil ? (RHI_IMAGE_ASPECT_DEPTH_BIT | RHI_IMAGE_ASPECT_STENCIL_BIT)
+                              : RHI_IMAGE_ASPECT_DEPTH_BIT;
             rhi_barrier.subresourceRange.baseMipLevel = 0;
             rhi_barrier.subresourceRange.levelCount = resource.texture_desc.mip_levels;
             rhi_barrier.subresourceRange.baseArrayLayer = 0;

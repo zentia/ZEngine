@@ -291,18 +291,22 @@ namespace
     //   DeferredLighting   reads GBufferA/B/C + depth, writes BackupOdd (imported HDR output).
     //   ForwardLighting    writes BackupOdd (imported, blended), reads depth (imported).
     //
-    // Two honest semantic gaps the graph's model does NOT capture (real-machine work, see
-    // PHASE2_PLAN.md landing record 2.4) -- this test asserts the compiler-level contract only:
-    //   1. GBuffer is read by DeferredLighting as a Vulkan INPUT_ATTACHMENT (subpassInput,
-    //      register(t0,space1)); the graph models it as a plain ShaderResource sampled read.
-    //      Both map to SHADER_READ_ONLY_OPTIMAL, so the LAYOUT is right; the descriptor TYPE
-    //      (INPUT_ATTACHMENT vs COMBINED_IMAGE_SAMPLER) and the cross-pass input-attachment
-    //      validity on Vulkan are not modeled by the graph -- that is RHI/execute-layer work.
-    //   2. ForwardLighting blends INTO BackupOdd (loadOp=LOAD + write) -- a real read+write of
-    //      the same resource in one render pass. The graph's model forbids same-pass read+write
-    //      (RenderGraphBuilder::Declare), so the faithful declaration below models Forward as a
-    //      pure write (the graph's "pass produces the final color" view). The blend semantic
-    //      (reading the prior BackupOdd value) is not expressible -- that is the genuine limit.
+    // Where the graph's model and the real passes differ (re-verified 2026-10-25, see
+    // PHASE2_PLAN.md 落地记录·2.4 勘误). This test asserts the compiler-level contract only:
+    //   1. Descriptor type is NOT a gap on the backends that run this pass. MainCameraRp1Pass
+    //      is built only for DX12 (inside DX12MainCameraPass) and Apple/Metal; Vulkan uses the
+    //      older multi-subpass MainCameraPass. DX12 maps RHI_DESCRIPTOR_TYPE_INPUT_ATTACHMENT to
+    //      a plain SRV (DX12RHI.cpp ToDX12DescriptorRangeType) and the HLSL shader reads
+    //      Texture2D.Load(); Metal gets [[texture(n)]] via SPIRV-Cross. So "ShaderResource" is
+    //      exactly what happens. (Running THIS pass on Vulkan would be illegal -- input
+    //      attachments across independent render passes -- but no code path does that.)
+    //   2. ForwardLighting's blend is fixed-function (loadOp=LOAD + blend state on a colour
+    //      attachment), i.e. RenderTarget state. Declaring Forward as WriteTexture(RenderTarget)
+    //      is therefore faithful, not a simplification; group 20 only rejects SAMPLING the
+    //      same texture you render into (a real feedback-loop hazard).
+    //   The real wiring gap is elsewhere: the render passes' own initialLayout/finalLayout
+    //   already transition these attachments, so a graph-driven RP1 must import in the state
+    //   the previous render pass LEFT the texture in (as DrawRP2WithGraph does).
     // -------------------------------------------------------------------------------------
     struct Rp1WiredHandles
     {
@@ -369,9 +373,9 @@ namespace
             },
             nullptr);
 
-        // ForwardLightingPass: writes BackupOdd again (transparent objects blended in) + reads depth.
-        // Modeled as a pure write: the graph forbids same-pass read+write, so the blend (which on
-        // hardware reads the prior BackupOdd value via loadOp=LOAD) is not expressed here.
+        // ForwardLightingPass: blends transparent objects into BackupOdd + depth-tests against depth.
+        // The blend is fixed-function on a colour attachment (loadOp=LOAD + blend state), which IS
+        // the RenderTarget state -- so a plain WriteTexture(RenderTarget) is the faithful declaration.
         graph.AddPass(
             "ForwardLightingPass",
             RGPassType::Render,
@@ -1237,9 +1241,9 @@ int main()
     // RP1 three-way-split chain (step 2.4). The graph derives the same execution order
     // and the same inter-pass barriers the hand-written split passes rely on. This is
     // the compiler-level proof that the topology RENDER_GRAPH.md:117 flagged as
-    // "whole-segment only" IS expressible -- the two real semantic gaps (input-attachment
-    // vs sampled descriptor, ForwardLighting blend) are documented as RHI/execute-layer
-    // work, not modeled here.
+    // "whole-segment only" IS expressible. Note the import states here are the convenient
+    // Undefined/ShaderResource ones; a real wiring imports in whatever state the previous
+    // render pass's finalLayout left each texture in (see PHASE2_PLAN.md 落地记录·2.4).
     // ---------------------------------------------------------------------------------
     BeginGroup("RP1 three-way split: GBuffer -> DeferredLighting -> ForwardLighting");
     {
@@ -1311,14 +1315,14 @@ int main()
     }
 
     // ---------------------------------------------------------------------------------
-    // The graph's model cannot express a same-pass read+write (RenderGraphBuilder::Declare
-    // turns it into a setup error). ForwardLighting's real blend (loadOp=LOAD into
-    // BackupOdd) is exactly that, so the faithful RP1 declaration above models Forward as
-    // a pure write. This group locks that contract: asking for both states of BackupOdd
-    // in one pass must fail to compile, so nobody silently "fixes" the RP1 wiring by
-    // pretending the blend is free.
+    // What the graph DOES reject: sampling a texture (ShaderResource) in the same pass that
+    // renders into it (RenderTarget) -- a genuine feedback-loop hazard, and a validation
+    // error rather than UB (RenderGraphBuilder::Declare). This is NOT a limit for RP1:
+    // Forward's alpha blend is fixed-function on the attachment and needs no shader read
+    // (see BuildRp1Wiring). The group guards against someone "modelling" the blend as a
+    // sampled read + write, which would describe a different (illegal) pass.
     // ---------------------------------------------------------------------------------
-    BeginGroup("RP1 model limit: same-pass read+write of BackupOdd is a hard error");
+    BeginGroup("RP1 guard: sampling BackupOdd while rendering into it is a hard error");
     {
         RenderGraph graph("RP1-Blend-Hazard");
         Rp1WiredHandles h;
@@ -1336,7 +1340,7 @@ int main()
                 builder.ReadTexture(h.gbuffer_b, RGResourceState::ShaderResource);
                 builder.ReadTexture(h.gbuffer_c, RGResourceState::ShaderResource);
                 builder.ReadTexture(h.depth, RGResourceState::DepthStencilRead);
-                // The blend: read the prior BackupOdd value AND write the blended result.
+                // Illegal on purpose: sample BackupOdd AND render into it in the same pass.
                 builder.ReadTexture(h.backup_odd, RGResourceState::ShaderResource);
                 builder.WriteTexture(h.backup_odd, RGResourceState::RenderTarget);
             },
