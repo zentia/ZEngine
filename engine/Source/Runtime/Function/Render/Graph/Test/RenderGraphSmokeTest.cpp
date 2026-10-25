@@ -9,6 +9,7 @@
 // =====================================================================================
 
 #include "Runtime/Function/Render/Graph/RenderGraph.h"
+#include "Runtime/Function/Render/Passes/MainCameraRp1GraphDecl.h"
 
 #include <cstdio>
 #include <string>
@@ -1350,6 +1351,84 @@ int main()
         DumpErrors(compiled);
         CHECK(!compiled.valid);
         CHECK(!compiled.errors.empty());
+    }
+
+    // ---------------------------------------------------------------------------------
+    // The PRODUCTION RP1 declaration (Passes/MainCameraRp1GraphDecl.h, the exact code
+    // MainCameraRp1Pass::DrawRP1WithGraph runs) with its REAL import states -- groups 19/20
+    // above use convenient Undefined imports. Two topologies: with scene depth tracked
+    // (a backend that publishes the depth RHIImage) and without (DX12 today:
+    // GetDepthImageInfo().depth_image == nullptr).
+    // ---------------------------------------------------------------------------------
+    BeginGroup("production RP1 declaration (DeclareRp1Graph) with real import states");
+    {
+        for (const bool track_depth : {true, false})
+        {
+            RenderGraph graph(track_depth ? "RP1-Prod-Depth" : "RP1-Prod-NoDepth");
+            Rp1GraphTextures textures {};
+            const auto fake = [](RGFormat format) {
+                RGExternalTexture t;
+                t.image = FakeImage();
+                t.view = FakeView();
+                t.format = format;
+                return t;
+            };
+            textures.gbuffer_a = fake(RGFormat::R8G8B8A8_UNORM);
+            textures.gbuffer_b = fake(RGFormat::R8G8B8A8_UNORM);
+            textures.gbuffer_c = fake(RGFormat::R8G8B8A8_SRGB);
+            textures.backup_odd = fake(RGFormat::R16G16B16A16_SFLOAT);
+            if (track_depth)
+            {
+                textures.depth = fake(RGFormat::D32_SFLOAT);
+            }
+            const Rp1GraphHandles h =
+                DeclareRp1Graph(graph, MakeRp1GraphImportStates(textures), Rp1GraphCallbacks {});
+
+            const RGCompiledGraph& compiled = graph.Compile();
+            DumpErrors(compiled);
+            CHECK(compiled.valid);
+            CHECK(compiled.culled_passes.empty());
+            const std::vector<std::string> names = OrderNames(graph, compiled);
+            CHECK(names.size() == 3 && names[0] == "GBufferPass" && names[1] == "DeferredLightingPass" &&
+                  names[2] == "ForwardLightingPass");
+            CHECK(h.depth.IsValid() == track_depth);
+            // Every RP1 texture is imported: nothing transient, nothing for the pool.
+            CHECK(compiled.peak_live_bytes == 0);
+
+            // GBufferPass: GBuffer ShaderResource (last frame's finalLayout) -> RenderTarget.
+            for (const RGTextureHandle g : {h.gbuffer_a, h.gbuffer_b, h.gbuffer_c})
+            {
+                const RGBarrier* to_rt = FindBarrier(compiled, 0, g.index);
+                CHECK(to_rt != nullptr && to_rt->before == RGResourceState::ShaderResource &&
+                      to_rt->after == RGResourceState::RenderTarget);
+                const RGBarrier* to_srv = FindBarrier(compiled, 1, g.index);
+                CHECK(to_srv != nullptr && to_srv->before == RGResourceState::RenderTarget &&
+                      to_srv->after == RGResourceState::ShaderResource);
+                CHECK(FindBarrier(compiled, 2, g.index) == nullptr);
+            }
+            // BackupOdd: ShaderResource (RP2 sampled it last frame) -> RenderTarget once,
+            // before Deferred; Forward keeps rendering into it with no barrier.
+            CHECK(FindBarrier(compiled, 0, h.backup_odd.index) == nullptr);
+            const RGBarrier* backup_rt = FindBarrier(compiled, 1, h.backup_odd.index);
+            CHECK(backup_rt != nullptr && backup_rt->before == RGResourceState::ShaderResource &&
+                  backup_rt->after == RGResourceState::RenderTarget);
+            CHECK(FindBarrier(compiled, 2, h.backup_odd.index) == nullptr);
+
+            if (track_depth)
+            {
+                // Imported as DepthStencilWrite (Forward's finalLayout): GBuffer needs none.
+                CHECK(FindBarrier(compiled, 0, h.depth.index) == nullptr);
+                const RGBarrier* depth_read = FindBarrier(compiled, 1, h.depth.index);
+                CHECK(depth_read != nullptr && depth_read->before == RGResourceState::DepthStencilWrite &&
+                      depth_read->after == RGResourceState::DepthStencilRead);
+                CHECK(FindBarrier(compiled, 2, h.depth.index) == nullptr);
+                CHECK(compiled.barriers.size() == 8);  // 3 + 5 + 0
+            }
+            else
+            {
+                CHECK(compiled.barriers.size() == 7);  // 3 + 4 + 0
+            }
+        }
     }
 
     std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);

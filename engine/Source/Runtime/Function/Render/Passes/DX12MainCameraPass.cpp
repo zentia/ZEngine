@@ -1908,9 +1908,15 @@ void DX12MainCameraPass::Draw(const std::vector<RenderCallback>& post_ui_callbac
         }
     }
 
-    if (m_Rp1Ready)
+    if (m_Rp1Ready && m_Rp1Pass.DrawRP1WithGraph(skybox_visible))
     {
-        // Simplified: 3 independent render passes (no subpasses).
+        // RP1 driven by the render graph (ZENGINE_RG_RP1=1): the same three Draw*Pass()
+        // calls, with the graph's barriers in place of the hand-written group below.
+        // DrawRP1WithGraph rejects before recording anything, so a false return falls
+        // through to the hand-written chain with an untouched command buffer.
+    }
+    else if (m_Rp1Ready)
+    {
         // GBufferPass → DeferredLightingPass → ForwardLightingPass.
 
         // Pass 1: G-Buffer (writes GBufferA/B/C + Depth).

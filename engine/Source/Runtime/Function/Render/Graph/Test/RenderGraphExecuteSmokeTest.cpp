@@ -14,6 +14,7 @@
 // =====================================================================================
 
 #include "Runtime/Function/Render/Graph/RenderGraphResources.h"
+#include "Runtime/Function/Render/Passes/MainCameraRp1GraphDecl.h"
 
 #include <cstdio>
 #include <string>
@@ -841,6 +842,90 @@ int main()
     }
 
     // ---------------------------------------------------------------------------------
+    // ---------------------------------------------------------------------------------
+    // The PRODUCTION RP1 declaration through the executor, the way DrawRP1WithGraph runs
+    // it: real import states, debug events off, callbacks in order, no pool allocation,
+    // and the exact RHI barriers per pass (two batched calls; Forward needs none).
+    // ---------------------------------------------------------------------------------
+    BeginGroup("production RP1 declaration executes as DrawRP1WithGraph runs it");
+    {
+        FakeDevice device;
+        RenderGraphResourcePool pool(&device);
+        RenderGraph graph("RP1-Prod");
+
+        RHIImage* const ga = &s_Images[kSentinelCount - 10];
+        RHIImage* const gb = &s_Images[kSentinelCount - 11];
+        RHIImage* const gc = &s_Images[kSentinelCount - 12];
+        RHIImage* const bo = &s_Images[kSentinelCount - 13];
+        RHIImage* const dp = &s_Images[kSentinelCount - 14];
+        const auto ext = [](RHIImage* image, RGFormat format) {
+            RGExternalTexture t;
+            t.image = image;
+            t.view = &s_Views[0];
+            t.format = format;
+            return t;
+        };
+        Rp1GraphTextures textures {};
+        textures.gbuffer_a = ext(ga, RGFormat::R8G8B8A8_UNORM);
+        textures.gbuffer_b = ext(gb, RGFormat::R8G8B8A8_UNORM);
+        textures.gbuffer_c = ext(gc, RGFormat::R8G8B8A8_SRGB);
+        textures.backup_odd = ext(bo, RGFormat::R16G16B16A16_SFLOAT);
+        textures.depth = ext(dp, RGFormat::D32_SFLOAT);
+
+        std::vector<std::string> ran;
+        Rp1GraphCallbacks callbacks;
+        callbacks.gbuffer = [&](RenderGraphExecuteContext&) { ran.push_back("GBufferPass"); };
+        callbacks.deferred_lighting = [&](RenderGraphExecuteContext&) { ran.push_back("DeferredLightingPass"); };
+        callbacks.forward_lighting = [&](RenderGraphExecuteContext&) { ran.push_back("ForwardLightingPass"); };
+        DeclareRp1Graph(graph, MakeRp1GraphImportStates(textures), std::move(callbacks));
+
+        RenderGraphExecutor executor(nullptr, &device, &pool);
+        executor.SetDebugEventsEnabled(false);
+        CHECK(executor.Execute(graph, &s_CommandBuffer));
+        CHECK(ran.size() == 3 && ran[0] == "GBufferPass" && ran[1] == "DeferredLightingPass" &&
+              ran[2] == "ForwardLightingPass");
+        CHECK(device.images_created == 0);
+        CHECK(device.events_pushed == 0);
+        CHECK(device.barrier_calls == 2);
+        CHECK(executor.GetLastBarrierCount() == 8);
+
+        int call0 = 0;
+        int call1 = 0;
+        bool layouts_ok = true;
+        for (const FakeDevice::BarrierRecord& r : device.barriers)
+        {
+            (r.call_index == 0 ? call0 : call1)++;
+            if (r.image == ga || r.image == gb || r.image == gc)
+            {
+                layouts_ok = layouts_ok && r.aspect == RHI_IMAGE_ASPECT_COLOR_BIT &&
+                             (r.call_index == 0
+                                  ? (r.old_layout == RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                                     r.new_layout == RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+                                  : (r.old_layout == RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
+                                     r.new_layout == RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL));
+            }
+            else if (r.image == bo)
+            {
+                layouts_ok = layouts_ok && r.call_index == 1 && r.aspect == RHI_IMAGE_ASPECT_COLOR_BIT &&
+                             r.old_layout == RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                             r.new_layout == RHI_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            }
+            else if (r.image == dp)
+            {
+                layouts_ok = layouts_ok && r.call_index == 1 && r.aspect == RHI_IMAGE_ASPECT_DEPTH_BIT &&
+                             r.old_layout == RHI_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL &&
+                             r.new_layout == RHI_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+            }
+            else
+            {
+                layouts_ok = false;  // a barrier on something RP1 never declared
+            }
+        }
+        CHECK(call0 == 3);
+        CHECK(call1 == 5);
+        CHECK(layouts_ok);
+    }
+
     std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);
     return g_Failures == 0 ? 0 : 1;
 }

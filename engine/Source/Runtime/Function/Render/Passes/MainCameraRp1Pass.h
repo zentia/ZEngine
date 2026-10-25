@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Runtime/Function/Render/Graph/RenderGraphResources.h"
 #include "Runtime/Function/Render/Passes/MainCameraFramebufferResources.h"
 #include "Runtime/Function/Render/Passes/MainCameraPassShaderCommon.h"
 #include "Runtime/Function/Render/Passes/ParticlePass.h"
@@ -7,6 +8,7 @@
 
 #include <array>
 #include <map>
+#include <memory>
 
 class RenderResourceBase;
 class RenderResource;
@@ -104,6 +106,18 @@ public:
     void DrawDeferredLightingPass(const std::array<bool, 2>& skybox_visible);
     void DrawForwardLightingPass(const std::array<bool, 2>& skybox_visible);
 
+    /// True when RP1 is driven by the render graph (env ZENGINE_RG_RP1=1, DX12 only).
+    /// Off by default: the hand-written chain is the one that has been shipping, and the
+    /// graph path still needs a per-frame visual diff before it can become the default.
+    bool IsRenderGraphPathEnabled() const { return m_UseRenderGraph; }
+
+    /// Declares GBuffer -> DeferredLighting -> ForwardLighting into the graph
+    /// (MainCameraRp1GraphDecl.h) and executes it. Returns false when the graph cannot be
+    /// used, in which case the caller runs the three Draw*Pass() calls itself. Every
+    /// rejection happens BEFORE the first command is recorded, so a false return never
+    /// leaves a half-drawn frame behind (same contract as MainCameraRp2Pass).
+    bool DrawRP1WithGraph(const std::array<bool, 2>& skybox_visible);
+
     RHIDescriptorSetLayout* GetPerMeshDescriptorSetLayout() const
     {
         return m_DescriptorInfos[_per_mesh].layout;
@@ -131,6 +145,10 @@ public:
     size_t m_SelectedAxis {3};
 
 private:
+    /// Reads ZENGINE_RG_RP1 and, when it is on (and the backend is DX12), builds the
+    /// executor / pool / graph. Called from Initialize(); harmless when the switch is off.
+    void SetupRenderGraphPath();
+
     void SetupDescriptorSetLayouts();
     void SetupPipelines();
     void SetupAxisPipeline();
@@ -187,4 +205,16 @@ private:
     // "axis 一次都没画成功" 只打一次，别每帧刷屏。
     bool m_AxisSkippedLogged {false};
     bool m_AxisDrawnLogged {false};
+
+    // ---- render graph path (ZENGINE_RG_RP1) -----------------------------------------
+    // Nothing here allocates GPU memory: every RP1 texture is imported (the framebuffers
+    // are bound to specific views), so the pool only exists because the executor needs one.
+    bool m_UseRenderGraph {false};
+    std::unique_ptr<RGRhiDeviceAdapter> m_RgDevice;
+    std::unique_ptr<RenderGraphResourcePool> m_RgPool;
+    std::unique_ptr<RenderGraphExecutor> m_RgExecutor;
+    std::unique_ptr<RenderGraph> m_Rp1Graph;
+    /// Rejections are logged once; the graph is rebuilt identically every frame, so a
+    /// failure is permanent and repeating it would bury everything else in the log.
+    bool m_RgFallbackLogged {false};
 };

@@ -44,7 +44,7 @@
 |---|------|------|--------|------|------|
 | C0 | **Vulkan `MainCameraPass` 崩溃根因修复** | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭 |
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **已实现·默认关闭**（165 编译+92 执行断言；`ZENGINE_RG_RP2=1` 门控，默认 off） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
-| C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **代码已落地·编译器层已验**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验，修掉导入深度图 aspect 的 executor bug，见 §2 落地记录·2.4。剩 `DrawRP1WithGraph` 本体，需显示器目视） | **必须在 C1 之后** | ★★ 高价值/中风险 |
+| C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **代码已落地·编译器层已验**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 compiler 200/200 + executor 121/121 已验，修掉导入深度图 aspect 的 executor bug，见 §2 落地记录·2.4。`DrawRP1WithGraph` 已实现（`ZENGINE_RG_RP1=1`，DX12，默认关），剩目视 diff） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 | **部分实现**（真 GPU dispatch 已有；**几何压缩已落地 2026-10-25**，见 §2 落地记录；剩 streaming + HiZ 两处 TODO） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
 | C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **已实现但零消费者**（6 文件无外部引用、无 CVar、3 处构建排除） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
@@ -65,7 +65,7 @@
 | **2.1** | C1 | RenderGraph RP2 目视验证 → 默认打开（**前置调查已完成，见 `PHASE2_STEP2.1_RENDERGRAPH.md`**） | 图与执行层已有 257 项断言；失败模式是"后处理不对"而非黑屏（`RENDER_GRAPH.md:136`）；一个环境变量可回滚。是所有后续渲染候选的地基。**代码层面默认打开安全**（每处失败点录制前 `return false` 干净回落），但翻默认前须先目视 diff（需显示器）。 |
 | **2.2** | C1 | RenderGraph 扩面（ParticlePass / 后处理链） | 复用已验证机制；消除 `RENDER_GRAPH.md:15` 列举的手写屏障。 |
 | **2.3** | C2 | `render_pass_refactor`：RP1 三分 | **必须在 2.1 之后**——此时屏障/别名机制已在真机验证过，单独做它是高风险。 |
-| **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。**编译器层已于 2026-10-25 兑现**（见下方落地记录·2.4）：step 2.3（RP1 三分）此前已落地在代码（3 个独立 render pass，subpass 恒 0），本步骤把 RP1 真实拓扑声明进图（`BuildRp1Wiring`），`RenderGraphSmokeTest` group 19/20 断言执行序 + 9 条屏障（4+5+0）+ transient 生命周期，headless WASM 200/200 全绿；`RENDER_GRAPH.md:117`"图只能表达整段"的旧论断被推翻并加更新注记。**executor 层二次复核**：撤回上一版的"两处语义缺口"（RP1 只在 DX12/Metal 跑，INPUT_ATTACHMENT 在那里就是 SRV；Forward 的 blend 是固定功能，本就是 RenderTarget），并修掉一个真 bug——导入的深度图拿到 COLOR aspect 屏障、D32 拿到 STENCIL aspect（executor group 13/14 回归，红绿验证）。剩 `DrawRP1WithGraph` 本体（按真实 finalLayout 导入），需显示器目视。 |
+| **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。**编译器层已于 2026-10-25 兑现**（见下方落地记录·2.4）：step 2.3（RP1 三分）此前已落地在代码（3 个独立 render pass，subpass 恒 0），本步骤把 RP1 真实拓扑声明进图（`BuildRp1Wiring`），`RenderGraphSmokeTest` group 19/20 断言执行序 + 9 条屏障（4+5+0）+ transient 生命周期，headless WASM 200/200 全绿；`RENDER_GRAPH.md:117`"图只能表达整段"的旧论断被推翻并加更新注记。**executor 层二次复核**：撤回上一版的"两处语义缺口"（RP1 只在 DX12/Metal 跑，INPUT_ATTACHMENT 在那里就是 SRV；Forward 的 blend 是固定功能，本就是 RenderTarget），并修掉一个真 bug——导入的深度图拿到 COLOR aspect 屏障、D32 拿到 STENCIL aspect（executor group 13/14 回归，红绿验证）。`DrawRP1WithGraph` 已实现（`ZENGINE_RG_RP1=1`，DX12 only，默认关；生产声明 `MainCameraRp1GraphDecl.h` 与测试共用，compiler 239/239 + executor 130/130，DX12 TU clang-cl 类型检查通过）。剩 DX12 编辑器逐帧目视 diff + debug layer。 |
 | **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。**streaming 已于 2026-10-25 落地**（见下方落地记录）：`UpdateStreaming` 从 TODO 兑现为基于距离的叶子驻留判据，WASM headless 验证 77/77 全绿（含 10 项新增 streaming 断言）。剩 HiZ（GPU 侧需真机）。 |
 | **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。**已于 2026-10-25 落地**（见下方落地记录）：9 处 TODO 里 6 处 CPU 侧填实（屏幕投影 mip/优先级重算/LRU 淘汰/统计/时间戳/世界足迹），3 处 GPU 侧（页上传/页表纹理）如实留作真机；加 `r.VirtualTexture.Enable` CVar 门控 + 帧循环 `UpdateVirtualTextureForFrame`（3 条 Tick 路径统一入口，默认关、Vulkan 编译门内、零回归）；headless WASM 验证 15/15 全绿。剩页上传/页表纹理（GPU 需真机）+ 2.4 的 RG 资源注册。 |
 | **2.7**（✅ CPU 侧已完整·无需动手） | C6 | Lumen：SSR + 首个 Lumen shader | 依赖 2.4 的 GBuffer/depth 声明；放最后，**只取 SSR 一半**。**HWRT/BLAS-TLAS 明确移出 Phase 2**（需独立专项）。**已于 2026-10-25 复核：Lumen 的整个 CPU 侧（GI + 反射 + 接线 + CVar + 发布桥）此前就已完整落地并有 7 个 smoke test**，见下方落地记录。剩 SSR/HWRT/首个 shader 全是 GPU 侧（需真机 + 2.4 的 GBuffer/depth），本步骤的 CPU 部分无活可干。 |
@@ -315,10 +315,26 @@ BackupOdd"钉成**编译期硬错误**（`RenderGraphBuilder::Declare` 拒绝；
    depth 的导入态必须照它实际所处的状态填，否则推导出的屏障会和 RHI 的私有跟踪态打架。**未验证是否触发
    D3D12 debug layer 报错**——需真机开 debug layer 看一眼，列为待验证项。
 
-**诚实定位（修订）**：step 2.4 的 compiler + executor 两层都已 headless 验证（200 + 121 断言），并修掉一个
-只有 RP1 这种"导入深度图"的接线才会踩到的真 executor bug。剩下的是 `DrawRP1WithGraph` 本体（按真实
-finalLayout 导入、复用 RP2 的"先校验后录制 + env 门控回落"）——它和 2.1a 是同一道闸门：需要显示器逐帧
-目视 diff。
+**`DrawRP1WithGraph` 已实现（2026-10-25 第三轮，默认关闭）**：
+- 开关 `ZENGINE_RG_RP1=1`，**仅 DX12**（Metal 的 `CmdPipelineBarrier` 是空实现，图无事可做；非 DX12 打开只
+  WARNING、走手写链）。`DX12MainCameraPass::Draw` 里图路径替换"三个 `Draw*Pass()` + 中间 4 条手写屏障"，
+  `Draw*Pass()` 原样复用。拒绝点全部在录制前，回落日志只打一次（与 RP2 同契约）。
+- 声明单一源 `Passes/MainCameraRp1GraphDecl.h`：生产与测试调用同一个 `DeclareRp1Graph()`。全部 import、零
+  transient；导入态按上一帧 render pass 的 finalLayout（GBuffer `ShaderResource` / depth `DepthStencilWrite`
+  / BackupOdd `ShaderResource`）——上面"剩下的接线工作"第 1 条据此兑现。
+- depth 可选：DX12 `GetDepthImageInfo().depth_image` 今天是 nullptr，图不跟踪 depth（与手写链等价）；上面第 3 条
+  的 DSV/SRV 问题因此在图路径里不出现，仍是既有行为、待 debug layer 验证。第 2 条（手写 4 条屏障是 no-op）在
+  图路径里自然消失：图在同一位置推导出的 GBuffer 屏障同样退化成 `TransitionImage` 同态早退。
+- 验证：compiler group 21（生产声明，有/无 depth：8 / 7 条屏障）→ **239/239**；executor group 15（回调顺序、
+  0 次池分配、2 次批量 3+5 条、逐条 layout/aspect）→ **130/130**；变异（BackupOdd 导入态改 `Undefined`）立即
+  2 FAIL。`MainCameraRp1Pass.cpp` 在真实 web 构建（emcc + ninja）里编译通过并导出两个新符号；DX12 侧
+  `MainCameraRp1Pass.cpp`/`DX12MainCameraPass.cpp`/`MainCameraRp2Pass.cpp`/`RenderGraphResources.cpp` 用新增的
+  `scripts/syntax_check_dx12.py`（clang-cl `/Zs` + ZRuntime Debug|x64 真实 include/define + PCH）类型检查通过，
+  负对照（植入错别字）能抓住。**未做**：MSVC 全量构建与链接（沙箱拦了 MSBuild）、真机运行。
+
+**诚实定位（第三轮）**：`DrawRP1WithGraph` 代码已落地、默认关、headless 两层 + 编译层全验。翻成默认前唯一的
+闸门是：DX12 编辑器带 `ZENGINE_RG_RP1=1` 与手写链逐帧目视对比 + D3D12 debug layer 无新报错（与 2.1a 同一道
+闸门，可以一次一起做：`ZENGINE_RG_RP1=1 ZENGINE_RG_RP2=1`）。
 
 ---
 

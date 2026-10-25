@@ -15,9 +15,10 @@
 # No shadow tree, no serialization prelude.
 #
 # Coverage relevant to step 2.4 (RP1 GBuffer -> DeferredLighting -> Forward):
-#   * compiler groups 19-20: order, 9 abstract barriers, transient lifetimes,
-#     same-pass read+write rejected.
-#   * executor groups 13-14: what actually reaches the RHI -- batched calls,
+#   * compiler groups 19-21: order, abstract barriers, transient lifetimes,
+#     sampling+rendering one texture rejected; group 21 = the PRODUCTION
+#     declaration (Passes/MainCameraRp1GraphDecl.h) with real import states.
+#   * executor groups 13-15: what actually reaches the RHI -- batched calls,
 #     layouts, and the depth ASPECT (regression for the import-format bug).
 #
 # USAGE (from repo root, e.g. E:/Engine/ZEngine):
