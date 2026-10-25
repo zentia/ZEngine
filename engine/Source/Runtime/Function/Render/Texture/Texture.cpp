@@ -1,8 +1,1 @@
-#pragma once
-
-struct RenderTextureDesc
-{
-    int width;
-    int height;
-    int antiAliasing;
-};
+#include "Runtime/Function/Render/Texture/Texture.h"
