@@ -11,8 +11,17 @@ void TimelineComponent::PostLoadResource(GameObject* parent_object)
 {
     Component::PostLoadResource(parent_object);
 
+    // A reload replaces the director: stop the old one first so it restores what its
+    // active clips applied (activation flags, animation overrides, voices) instead of
+    // leaving them behind.
+    if (m_Director)
+    {
+        m_Director->Stop();
+    }
+
     // 创建Director
     m_Director = std::make_shared<TimelineDirector>();
+    m_Director->SetEventHandler(m_EventHandler);
 
     // 加载Timeline资源
     if (LoadTimelineAsset())
@@ -141,6 +150,15 @@ bool TimelineComponent::GetLoop() const
 TimelineAsset* TimelineComponent::GetTimelineAsset() const
 {
     return m_TimelineAsset;
+}
+
+void TimelineComponent::SetEventHandler(TimelineEventHandler handler)
+{
+    m_EventHandler = std::move(handler);
+    if (m_Director)
+    {
+        m_Director->SetEventHandler(m_EventHandler);
+    }
 }
 
 bool TimelineComponent::LoadTimelineAsset()

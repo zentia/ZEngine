@@ -62,6 +62,19 @@ public:
     ZFUNCTION()
     void SetClipLength(float seconds);
 
+    // ---- Timeline override --------------------------------------------------
+    // A Timeline animation clip drives the pose directly: while an override is set,
+    // Tick() samples `clip_path` at `phase` (in [0, 1)) through the component's own
+    // slot-0 bone map and does not advance anything itself -- the controller and the
+    // authored blend state are left untouched, and resume where they were once the
+    // override is cleared. Nothing here is serialized, so a Timeline playing in the
+    // editor never dirties the scene.
+    /// Returns false (and sets nothing) when the component has no slot-0 bone map to
+    /// sample through, or the path is empty.
+    bool SetTimelineOverride(const eastl::string& clip_path, float phase);
+    void ClearTimelineOverride();
+    bool HasTimelineOverride() const { return m_HasTimelineOverride; }
+
 protected:
     ZPROPERTY()
     AnimationComponentRes m_AnimationRes;
@@ -72,4 +85,8 @@ protected:
     /// system; the component must not free it.
     const AnimatorController* m_Controller {nullptr};
     AnimatorInstance m_Animator;
+
+    bool m_HasTimelineOverride {false};
+    /// Transient single-clip blend state the override samples (see SetTimelineOverride).
+    BlendState m_TimelineBlendState {};
 };

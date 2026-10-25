@@ -419,6 +419,11 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/Test/RenderGraphAbCaptureFormatTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Passes/Test/RenderGraphAbCaptureFormatTest.cpp")
+# Headless Timeline evaluation test (owns a main(); scripts/verify_timeline_wasm.sh).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Timeline/Test/TimelineEvaluationTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Timeline/Test/TimelineEvaluationTest.cpp")
 # PR5c: DX12 bindless smoke-test main. Same exclusion rationale as
 # shader_lab_test above. Built only when ZENGINE_BUILD_BINDLESS_SMOKE_TEST=ON
 # (see Function/Render/Interface/DX12/Test/CMakeLists.txt).
