@@ -44,7 +44,7 @@
 |---|------|------|--------|------|------|
 | C0 | **Vulkan `MainCameraPass` 崩溃根因修复** | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭 |
 | C1 | **RenderGraph 接管流水线** | 帧图编译器：自动屏障、瞬态 RT 别名、剔除 | **已实现·默认关闭**（165 编译+92 执行断言；`ZENGINE_RG_RP2=1` 门控，默认 off） | 阶段一 RHI 注册表 | ★★★ 高价值/低风险 |
-| C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **仅提案**（doc 无落地标记） | **必须在 C1 之后** | ★★ 高价值/中风险 |
+| C2 | **RenderGraph → RP1**（`render_pass_refactor`） | RP1 三子pass 拆成 3 独立 pass，纳入图管理 | **代码已落地·编译器层已验**（2.3 三分已在代码：3 独立 render pass/subpass 恒 0；2.4 图化拓扑已断言 200/200，见 §2 落地记录·2.4。剩 execute 层两处真机缺口：INPUT_ATTACHMENT 描述符 + blend） | **必须在 C1 之后** | ★★ 高价值/中风险 |
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 | **部分实现**（真 GPU dispatch 已有；**几何压缩已落地 2026-10-25**，见 §2 落地记录；剩 streaming + HiZ 两处 TODO） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
 | C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **已实现但零消费者**（6 文件无外部引用、无 CVar、3 处构建排除） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
@@ -65,7 +65,7 @@
 | **2.1** | C1 | RenderGraph RP2 目视验证 → 默认打开（**前置调查已完成，见 `PHASE2_STEP2.1_RENDERGRAPH.md`**） | 图与执行层已有 257 项断言；失败模式是"后处理不对"而非黑屏（`RENDER_GRAPH.md:136`）；一个环境变量可回滚。是所有后续渲染候选的地基。**代码层面默认打开安全**（每处失败点录制前 `return false` 干净回落），但翻默认前须先目视 diff（需显示器）。 |
 | **2.2** | C1 | RenderGraph 扩面（ParticlePass / 后处理链） | 复用已验证机制；消除 `RENDER_GRAPH.md:15` 列举的手写屏障。 |
 | **2.3** | C2 | `render_pass_refactor`：RP1 三分 | **必须在 2.1 之后**——此时屏障/别名机制已在真机验证过，单独做它是高风险。 |
-| **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。 |
+| **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。**编译器层已于 2026-10-25 兑现**（见下方落地记录·2.4）：step 2.3（RP1 三分）此前已落地在代码（3 个独立 render pass，subpass 恒 0），本步骤把 RP1 真实拓扑声明进图（`BuildRp1Wiring`），`RenderGraphSmokeTest` group 19/20 断言执行序 + 9 条屏障（4+5+0）+ transient 生命周期，headless WASM 200/200 全绿；`RENDER_GRAPH.md:117`"图只能表达整段"的旧论断被推翻并加更新注记。**execute 层两处真机缺口**（GBuffer 的 INPUT_ATTACHMENT 描述符类型、ForwardLighting 的 blend）如实留作真机 + 显示器，未 fabricate。 |
 | **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。**streaming 已于 2026-10-25 落地**（见下方落地记录）：`UpdateStreaming` 从 TODO 兑现为基于距离的叶子驻留判据，WASM headless 验证 77/77 全绿（含 10 项新增 streaming 断言）。剩 HiZ（GPU 侧需真机）。 |
 | **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。**已于 2026-10-25 落地**（见下方落地记录）：9 处 TODO 里 6 处 CPU 侧填实（屏幕投影 mip/优先级重算/LRU 淘汰/统计/时间戳/世界足迹），3 处 GPU 侧（页上传/页表纹理）如实留作真机；加 `r.VirtualTexture.Enable` CVar 门控 + 帧循环 `UpdateVirtualTextureForFrame`（3 条 Tick 路径统一入口，默认关、Vulkan 编译门内、零回归）；headless WASM 验证 15/15 全绿。剩页上传/页表纹理（GPU 需真机）+ 2.4 的 RG 资源注册。 |
 | **2.7**（✅ CPU 侧已完整·无需动手） | C6 | Lumen：SSR + 首个 Lumen shader | 依赖 2.4 的 GBuffer/depth 声明；放最后，**只取 SSR 一半**。**HWRT/BLAS-TLAS 明确移出 Phase 2**（需独立专项）。**已于 2026-10-25 复核：Lumen 的整个 CPU 侧（GI + 反射 + 接线 + CVar + 发布桥）此前就已完整落地并有 7 个 smoke test**，见下方落地记录。剩 SSR/HWRT/首个 shader 全是 GPU 侧（需真机 + 2.4 的 GBuffer/depth），本步骤的 CPU 部分无活可干。 |
@@ -233,6 +233,54 @@ render-pass wiring / per-frame bridge）。
 （SSR 需 depth/GBuffer、HWRT 已移出、首个 Lumen shader 需真机），与 2.4 的 RG 资源注册绑定，须等真机 +
 显示器。这再次印证 §0 第 1 条：**规划要看代码，不要看 `doc/lumen/LUMEN_SYSTEM_DESIGN.md` 那篇无状态标记的
 纯散文设计稿**，否则会把一个已 4000+ LOC、已接线、已有 7 个测试的系统误判成"只有探针网格通了"。
+
+---
+
+### 落地记录 · 2.4 RenderGraph 接管 RP1（2026-10-25，编译器层兑现 + 真实语义缺口如实标注）
+
+**前置发现：step 2.3（RP1 三分）此前就已落地在代码里**。`MainCameraRp1Pass` 早已拆成 3 个**独立**
+render pass —— `DrawGBufferPass`/`DrawDeferredLightingPass`/`DrawForwardLightingPass`，各自一次
+`CmdBeginRenderPassPFN`、subpass 恒 0（`MainCameraRp1Pass.cpp:2135/2202/2285`），`MainCameraFramebufferResources`
+也建好了 3 个独立 render pass + framebuffer（`SetupGBufferPass`/`SetupDeferredLightingPass`/
+`SetupForwardLightingPass`，GBuffer `storeOp=STORE` 保证跨 pass 可见）。**RP1 唯独没有 RenderGraph 接线**
+（只有 RP2 有 `DrawRP2WithGraph` + `m_UseRenderGraph`）。所以 step 2.4 的实质 = 证明拆分后的 RP1 拓扑
+能在图里声明并推导出正确的屏障/顺序。
+
+**做了什么（编译器层，headless 可验）**：仿 `BuildRp2Wiring` 给 `RenderGraphSmokeTest.cpp` 加了
+`BuildRp1Wiring()` + 两组断言（group 19/20），把 RP1 的真实资源拓扑声明进图：
+- `GBufferPass`：写 GBufferA/B/C（transient RT）+ 写 scene depth（import）。
+- `DeferredLightingPass`：读 GBufferA/B/C（ShaderResource）+ 读 depth（DepthStencilRead），写 BackupOdd（import，RenderTarget）。
+- `ForwardLightingPass`：读 depth + 写 BackupOdd（import，RenderTarget）。
+
+**断言（35 项新检查，200/200 全绿）**：执行序 `GBufferPass → DeferredLightingPass → ForwardLightingPass`；
+**9 条屏障 = 4+5+0**——GBuffer 三张 + depth 首写各 1 条（Undefined→RenderTarget/DepthStencilWrite）；
+Deferred 把 GBuffer 三张 RenderTarget→ShaderResource、depth DepthStencilWrite→DepthStencilRead、BackupOdd
+ShaderResource→RenderTarget 共 5 条；Forward 全同态（depth 已 DepthStencilRead、BackupOdd 已 RenderTarget）
+**0 条**（正是 DeriveBarriers "已在目标态不产生屏障" 那条）。另断言 GBuffer 三张 transient 生命周期
+（slot 0 产生 / slot 1 最后读 / 可别名回收）、BackupOdd 外部资源跨链不别名。group 20 把"同 pass 读写
+BackupOdd（Forward 的 blend）"钉成**编译期硬错误**（`RenderGraphBuilder::Declare` 拒绝），锁住图模型的边界。
+
+**验证（headless WASM，无需浏览器/重启/真机）**：新增 `scripts/verify_graph_wasm.sh`。图编译器是**纯
+标准库**（`RenderGraph.cpp` 只 include `<algorithm>/<queue>/<set>/<utility>` + 自身头，无 RHI/bqlog/object
+系统），所以 harness 比 Nanite/VT 轻得多——**无 shadow 树、无 prelude**，emcc 独立编译 4 个 graph TU +
+测试、node 运行。200/200 全绿（含既有 165 项 + RP2 接线 0 项……实为既有 group 1-18 全绿 + 新增 35 项）。
+
+**两处真实语义缺口（图模型不表达，属 RHI/execute 层，如实留作真机，不 fabricate）**：
+1. **GBuffer 在真机是 `INPUT_ATTACHMENT` 描述符**（Vulkan `subpassInput`/`subpassLoad`，
+   `deferred_lighting.frag.hlsl` 的 `register(t0,space1)`），图里建模成普通 `ShaderResource`。两者 layout
+   都是 `SHADER_READ_ONLY_OPTIMAL`，所以**layout 是对的**；但描述符类型（INPUT_ATTACHMENT vs
+   COMBINED_IMAGE_SAMPLER）与"跨独立 render pass 的 input-attachment 有效性"是 execute/RHI 层的事，图
+   编译器不建模。**注**：跨独立 render pass 用 input attachment 在 Vulkan 上本就非法——真机接线时要么
+   把 GBuffer 当普通采样纹理（shader 改 `Texture2D.Load` 而非 `subpassLoad`），要么把 GBuffer+Deferred
+   合回一个 multi-subpass render pass（那又回到 2.3 要拆掉的旧结构）。这是 2.4 真正留给真机的抉择。
+2. **ForwardLighting 对 BackupOdd 是 blend**（`loadOp=LOAD` 再写回，透明物体 alpha 混合）。图模型**禁止
+   同 pass 读写同一资源**，所以建模成纯写——blend 语义（读回旧值再混）图表达不了。这正是图模型的固有
+   边界，group 20 把它钉成编译错误，防止有人假装 blend 免费。
+
+**诚实定位**：step 2.4 的**编译器层已兑现并有 200/200 断言**——RP1 三分拓扑被证明可图化、屏障/顺序/
+生命周期与手写链一致。但"图驱动 RP1 真正上屏"仍要 execute 层把上述两处语义缺口在真机上解决（描述符
+类型 + blend），并需要显示器逐帧目视 diff（与 2.1a 同一道闸门）。它不是"RP1 已接入图并上屏"，是
+"RP1 的图化拓扑已被编译器验证、execute 层的两处真机缺口被精确定位"。
 
 ---
 
