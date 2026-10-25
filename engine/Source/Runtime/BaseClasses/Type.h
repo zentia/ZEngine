@@ -64,6 +64,13 @@ public:
     bool isAbstract;
     const ConstVariantRef* attributes;
     size_t attributeCount;
+    /// REGISTER_CLASS_TRAITS(kTypeIsEditorOnly): the type only exists in the editor
+    /// (e.g. PrefabInstance). The player cooks objects of such types out of the
+    /// data it ships. Last member with a default, so positional initialiser lists
+    /// that stop before it (TYPE_DEFAULT_INITIALIZER_LIST, tests) stay valid.
+    bool isEditorOnly = false;
+
+    bool IsEditorOnly() const { return isEditorOnly; }
 };
 
 template<typename T>

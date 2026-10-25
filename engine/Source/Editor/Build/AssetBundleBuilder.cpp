@@ -2,6 +2,7 @@
 
 #include "Editor/AssetPipeline/TextureImporter/TextureImporter.h"
 #include "Editor/Build/BuildCache.h"
+#include "Editor/Build/SceneCook.h"
 #include "Editor/AssetRegistry/AssetRegistry.h"
 #include "Editor/EditorAsset/EditorAssetManager.h"
 #include "Runtime/AssetBundle/AssetBundleFormat.h"
@@ -330,6 +331,30 @@ AssetBundleBuildResult AssetBundleBuilder::Build(const AssetBundleBuildOptions& 
         {
             const std::filesystem::path cooked_path = cooked_platform_root / asset;
             std::error_code exists_ec;
+
+            // Scenes: the player copy has the editor-only bookkeeping (PrefabInstance)
+            // cooked out (SceneCook). Re-cooked whenever the source is newer.
+            if (source_path.extension() == ".scene")
+            {
+                std::error_code time_ec;
+                const bool stale = !std::filesystem::exists(cooked_path, exists_ec) ||
+                                   std::filesystem::last_write_time(cooked_path, time_ec) <
+                                       std::filesystem::last_write_time(source_path, time_ec);
+                if (stale)
+                {
+                    const SceneCookResult cook = SceneCook::CookSceneFile(source_path, cooked_path);
+                    if (!cook.ok)
+                    {
+                        LOG_WARNING(ZPak, "AssetBundleBuilder: scene cook failed ({}); shipping the editor scene", cook.error);
+                    }
+                    else if (cook.removed_objects > 0)
+                    {
+                        LOG_INFO(ZPak, "AssetBundleBuilder: {}: cooked out {} editor-only object(s), {} external(s)", asset,
+                                 cook.removed_objects, cook.removed_externals);
+                    }
+                }
+            }
+
             if (std::filesystem::exists(cooked_path, exists_ec))
             {
                 read_path = cooked_path;

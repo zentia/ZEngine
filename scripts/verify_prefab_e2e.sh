@@ -24,6 +24,7 @@ REBUILD=()
 
 EXTRA=()
 for f in engine/Source/Editor/Prefab/*.cpp; do EXTRA+=(--extra "$f"); done
+EXTRA+=(--extra engine/Source/Editor/Build/SceneCook.cpp)
 
 status=0
 echo "==> PrefabEndToEndSmokeTest"

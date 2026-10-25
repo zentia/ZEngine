@@ -60,6 +60,10 @@ Prefab 端到端（`scripts/verify_prefab_e2e.sh`，不在本表的 49 个之内
 50 个文件"抛异常（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`），全量跑到它的 `remove_all` 时正好触顶；单独
 `--filter PlayerSettingsSmokeTest` 复跑 PASS。在普通终端里跑全量不会遇到。Prefab 端到端增至 181 项。
 
+2026-10-26 第三次复跑（`Type::isEditorOnly` 进入运行时类型、场景烘焙 SceneCook 之后，全库重编）：34 PASS / 7 ENV /
+7 SKIP / 1 BUILD，BUILD 是 PrefabEndToEnd 新依赖 `Editor/Build/SceneCook.cpp` 没登记进本脚本的额外源文件表，补登记后
+单独复跑 PASS（207 项），PlayerSettings 这次也 PASS。
+
 ## 局限
 
 - 这是 **wasm 单线程 + node** 环境：凡是被测对象本身要线程、子进程、GPU、真 mmap 的，只能标 ENV / SKIP，不能当成通过。

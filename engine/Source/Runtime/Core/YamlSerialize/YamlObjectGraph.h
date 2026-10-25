@@ -89,6 +89,25 @@ namespace ZYaml
                          GraphReaderExternHook readerHook = {},
                          GraphInstanceIdHook instanceIdHook = {});
 
+    // Text-level filter over a graph written by WriteObjectGraph: removes every
+    // object entry `drop(typeName)` returns true for, and keeps the rest of the
+    // document as is (no object is produced, so no instance ID is touched -- safe
+    // while the same file is loaded in the editor). Afterwards:
+    //   * externals no remaining object refers to are pruned, and the remaining
+    //     objects' m_FileID indices are renumbered to match;
+    //   * a remaining reference to a removed local object becomes null
+    //     (m_FileID 0 / m_PathID 0) and is counted in `danglingReferences`.
+    struct StripGraphStats
+    {
+        int removedObjects = 0;
+        int removedExternals = 0;
+        int danglingReferences = 0;
+    };
+    bool StripObjectsFromGraph(const char* text,
+                               const std::function<bool(const char* typeName)>& drop,
+                               eastl::string& out,
+                               StripGraphStats* stats = nullptr);
+
     // Lightweight type sniff for AssetRegistry / GetAssetTypeName. Returns the
     // `type:` tag of the object with `preferredFileID`, or the first object.
     bool PeekPrimaryObjectType(const char* text, int64_t preferredFileID, eastl::string& outType);

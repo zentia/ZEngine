@@ -33,6 +33,10 @@
 //      YAML graph nothing has loaded yet; LoadPrefabAsset afterwards reuses it
 //   P12 a graph read twice puts a second object under the same path-derived ID;
 //      destroying the first copy must not unregister the second
+//   P13 player cook (SceneCook): the editor-only PrefabInstance and the externals
+//      only it used leave the cooked scene; the cooked scene loads with the
+//      overridden values and binds no instance. Plus StripObjectsFromGraph on a
+//      hand-written graph: external renumbering and dangling-reference nulling
 //
 // Standalone main(); links ZRuntime plus the Editor/Prefab TUs (which are not
 // in libZRuntime). Run headless on the web build with:
@@ -41,6 +45,7 @@
 // Exit codes: 0 all passed; 1 a check failed; 77 environment bring-up failed.
 // =====================================================================
 
+#include "Editor/Build/SceneCook.h"
 #include "Editor/Prefab/PrefabInstance.h"
 #include "Editor/Prefab/PrefabSceneBinding.h"
 #include "Editor/Prefab/PrefabUtilityEditor.h"
@@ -49,6 +54,7 @@
 #include "Runtime/BaseClasses/ObjectManager.h"
 #include "Runtime/BaseClasses/Type.h"
 #include "Runtime/BaseClasses/TypeManager.h"
+#include "Runtime/Core/YamlSerialize/YamlObjectGraph.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
@@ -141,6 +147,8 @@ namespace
     const std::filesystem::path kYamlLevelPath = "prefab_e2e_level_yamlsrc.scene";
     const std::filesystem::path kYamlLevelBinaryPath = "prefab_e2e_level_yamlsrc.zasset";
     const std::filesystem::path kLazyYamlPrefabPath = "prefab_e2e_lazy.prefab";
+    const std::filesystem::path kCookSourcePath = "prefab_e2e_cook_source.scene";
+    const std::filesystem::path kCookedPath = "cooked/prefab_e2e_cook_source.scene";
 
     // Shared between scenarios (each depends on the previous one).
     PrefabInstance* g_Instance = nullptr;
@@ -716,6 +724,106 @@ static void scenario_P12_duplicate_id_destroy()
     Check(om->IDToPointer(id) == nullptr, "P12", "destroying the owner must unregister the ID");
 }
 
+static void scenario_P13_player_cook()
+{
+    std::fprintf(stderr, "[P13] player cook strips editor-only objects\n");
+    Check(TypeOf<PrefabInstance>()->IsEditorOnly(), "P13", "PrefabInstance must be flagged editor-only (kTypeIsEditorOnly)");
+    Check(!TypeOf<GameObject>()->IsEditorOnly() && !TypeOf<Transform>()->IsEditorOnly(), "P13",
+          "runtime types must not be flagged editor-only");
+    Check(SceneCook::IsEditorOnlyTypeName("PrefabInstance") && !SceneCook::IsEditorOnlyTypeName("GameObject") &&
+              !SceneCook::IsEditorOnlyTypeName("NoSuchType"),
+          "P13", "IsEditorOnlyTypeName: PrefabInstance yes, GameObject / unknown no");
+
+    // ---- a scene with a placed, overridden instance of the YAML prefab ----
+    PrefabSceneBinding::Install();
+    PrefabInstance* instance = PrefabUtilityEditor::InstantiateAsPrefab(kYamlPrefabPath);
+    Check(instance != nullptr, "P13", "InstantiateAsPrefab(.prefab) failed");
+    if (instance == nullptr)
+        return;
+    Level level;
+    PrefabSceneBinding::PlaceInLevel(level, instance);
+    Transform* tc = TransformOf(instance->GetRootGameObject());
+    if (tc == nullptr)
+    {
+        Check(false, "P13", "no root Transform");
+        return;
+    }
+    tc->SetLocalScale(Vector3(3.0f, 1.0f, 6.0f));
+    PrefabUtilityEditor::RecordCurrentValueAsOverride(instance, PPtr<Object>(tc), "m_LocalScale.z");
+    std::error_code ec;
+    std::filesystem::remove(kCookSourcePath, ec);
+    level.setLevelResUrl(AbsoluteUrl(kCookSourcePath));
+    Check(level.save(), "P13", "Level::save failed");
+    const std::string source_text = ReadText(kCookSourcePath);
+    Check(source_text.find("PrefabInstance") != std::string::npos && source_text.find(".prefab") != std::string::npos,
+          "P13", "precondition: the editor scene carries the instance and the external to the .prefab");
+
+    // ---- cook ----
+    std::filesystem::remove_all("cooked", ec);
+    const SceneCookResult cook = SceneCook::CookSceneFile(kCookSourcePath, kCookedPath);
+    Check(cook.ok && cook.stripped, "P13", "CookSceneFile failed");
+    Check(cook.removed_objects == 1, "P13", "exactly the one PrefabInstance should be removed");
+    Check(cook.removed_externals >= 1, "P13", "the external to the source .prefab should be pruned");
+    Check(cook.dangling_references == 0, "P13", "no player object refers to the PrefabInstance");
+    const std::string cooked_text = ReadText(kCookedPath);
+    Check(cooked_text.find("PrefabInstance") == std::string::npos, "P13", "the cooked scene still has a PrefabInstance");
+    Check(cooked_text.find(".prefab") == std::string::npos, "P13", "the cooked scene still refers to the source .prefab");
+
+    // ---- the cooked scene is a plain level: same objects, overridden values, no instance ----
+    {
+        Level reloaded;
+        Check(LoadLevel(reloaded, kCookedPath, true), "P13", "the cooked scene does not load");
+        Check(reloaded.getAllGObjects().size() == 2, "P13", "the cooked scene lost GameObjects");
+        Check(PrefabSceneBinding::GetInstances(reloaded).empty(), "P13", "the cooked scene still binds a PrefabInstance");
+        bool found_root = false;
+        for (const auto& pair : reloaded.getAllGObjects())
+        {
+            GameObject* go = pair.second.get();
+            if (go != nullptr && go->GetName() == eastl::string("E2ERoot"))
+            {
+                found_root = true;
+                Transform* root_tc = TransformOf(go);
+                Check(root_tc != nullptr && Near(root_tc->GetLocalScale().z, 6.0f), "P13",
+                      "the overridden value did not survive the cook");
+                Check(FirstChild(go) != nullptr, "P13", "the cooked root lost its child");
+            }
+        }
+        Check(found_root, "P13", "the cooked scene has no E2ERoot");
+    }
+    PrefabSceneBinding::Uninstall();
+
+    // ---- StripObjectsFromGraph on a hand-written graph ----
+    const char* graph =
+        "externals:\n"
+        "  - guid: aaa\n    type: PrefabAsset\n    path: only_dropped_uses_me.prefab\n"
+        "  - guid: bbb\n    type: MaterialRes\n    path: kept_uses_me.mat\n"
+        "objects:\n"
+        "  - fileID: 1\n    type: Keep\n    data:\n      Keep:\n"
+        "        mat:\n          m_FileID: 2\n          m_PathID: 1\n"
+        "        partner:\n          m_FileID: 0\n          m_PathID: 2\n"
+        "  - fileID: 2\n    type: Drop\n    data:\n      Drop:\n"
+        "        src:\n          m_FileID: 1\n          m_PathID: 1\n";
+    eastl::string out;
+    ZYaml::StripGraphStats stats;
+    const bool stripped = ZYaml::StripObjectsFromGraph(
+        graph, [](const char* type_name) { return std::string(type_name) == "Drop"; }, out, &stats);
+    Check(stripped, "P13/strip", "StripObjectsFromGraph failed on a valid graph");
+    Check(stats.removedObjects == 1 && stats.removedExternals == 1 && stats.danglingReferences == 1, "P13/strip",
+          "stats: 1 object, 1 external, 1 dangling reference expected");
+    const std::string text(out.c_str());
+    Check(text.find("only_dropped_uses_me") == std::string::npos && text.find("kept_uses_me.mat") != std::string::npos,
+          "P13/strip", "the external only the dropped object used must go, the other must stay");
+    Check(text.find("type: Drop") == std::string::npos && text.find("type: Keep") != std::string::npos, "P13/strip",
+          "the Drop object must go, the Keep object must stay");
+    // The kept external moved from index 2 to 1; the reference to the dropped local object is null.
+    const size_t mat = text.find("mat:");
+    const size_t partner = text.find("partner:");
+    Check(mat != std::string::npos && text.find("m_FileID: 1", mat) < partner, "P13/strip",
+          "the kept object's external reference was not renumbered 2 -> 1");
+    Check(partner != std::string::npos && text.find("m_PathID: 0", partner) != std::string::npos, "P13/strip",
+          "the reference to the dropped local object was not nulled");
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -743,13 +851,15 @@ int main()
     scenario_P10_yaml_source_prefab();
     scenario_P11_lazy_yaml_non_header_pptr();
     scenario_P12_duplicate_id_destroy();
+    scenario_P13_player_cook();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,
                           kLevelBinaryPath, kLazyPrefabPath, kYamlPrefabPath, kYamlLevelPath,
-                          kYamlLevelBinaryPath, kLazyYamlPrefabPath})
+                          kYamlLevelBinaryPath, kLazyYamlPrefabPath, kCookSourcePath})
         std::filesystem::remove(p, ec);
 
+    std::filesystem::remove_all("cooked", ec);
     SystemRegistry::GetInstance().ShutdownAll();
 
     std::fprintf(stderr, "\n%d checks, %d failures\n", g_Checks, g_Failures);

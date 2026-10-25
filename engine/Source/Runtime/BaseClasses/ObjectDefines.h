@@ -139,7 +139,8 @@ inline bool operator!=(ObjectFlags a, ObjectFlags b)
          },                                                                                                         \
          (static_cast<TypeFlags>(k##NAMESPACE_##TYPE_NAME_##TypeFlags) & kTypeIsAbstract) != 0,                     \
          nullptr,                                                                                                   \
-         0},                                                                                                        \
+         0,                                                                                                         \
+         (static_cast<TypeFlags>(k##NAMESPACE_##TYPE_NAME_##TypeFlags) & kTypeIsEditorOnly) != 0},                  \
         &TypeContainer<NAMESPACE_::TYPE_NAME_>::m_Type,                                                             \
         nullptr,                                                                                                    \
         nullptr,                                                                                                    \

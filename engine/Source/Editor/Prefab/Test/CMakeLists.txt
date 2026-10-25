@@ -27,6 +27,7 @@ file(GLOB PREFAB_EDITOR_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/..
 add_executable(PrefabEndToEndSmokeTest
     PrefabEndToEndSmokeTest.cpp
     ${PREFAB_EDITOR_SOURCES}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../Build/SceneCook.cpp
 )
 
 set_target_properties(PrefabEndToEndSmokeTest PROPERTIES
