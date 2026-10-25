@@ -70,6 +70,12 @@ def main():
     ap.add_argument('--extra', action='append', default=[],
                     help='additional .cpp compiled into the test (e.g. Editor TUs that are not in libZRuntime)')
     ap.add_argument('--rebuild-lib', action='store_true', help='bring bin/libZRuntime.a up to date first')
+    ap.add_argument('--include-dir', action='append', default=[],
+                    help='extra -I directory (what the CMake target adds with target_include_directories)')
+    ap.add_argument('--define', action='append', default=[],
+                    help='extra -D NAME=VALUE (what the CMake target adds with target_compile_definitions)')
+    ap.add_argument('--link', action='append', default=[],
+                    help='extra static library to link (e.g. bin/libbc7enc.a)')
     argv = sys.argv[1:]
     test_args = []
     if '--' in argv:
@@ -100,6 +106,10 @@ def main():
         if src not in cc or o not in cc:
             print('web_smoke_run: could not rewrite the template compile command', file=sys.stderr)
             return 3
+        extra_flags = ''.join(' -I"%s"' % os.path.abspath(d).replace(os.sep, '/') for d in a.include_dir)
+        extra_flags += ''.join(' "-D%s"' % d.replace('"', '\\"') for d in a.define)
+        if extra_flags:
+            cc = cc.replace(' -c ' + src, extra_flags + ' -c ' + src, 1)
         print(f'==> compiling {os.path.relpath(src, ROOT)}')
         if run(cc, BUILD).returncode != 0:
             return 3
@@ -109,12 +119,33 @@ def main():
     ld = unwrap_cmd(link_line)
     ld = re.sub(r'\S+' + re.escape(TEMPLATE_OBJECT), lambda _m: ' '.join(objects), ld, count=1)
     ld = re.sub(r' -o \S+\.js', ' -o ' + js, ld, count=1)
+    if a.link:
+        libs = ' '.join('"%s"' % os.path.abspath(l).replace(os.sep, '/') for l in a.link)
+        ld = ld.replace(' -o ' + js, ' ' + libs + ' -o ' + js, 1)
     # Emscripten's getenv() sees its own ENV table, not node's: there is no TMPDIR, so
     # std::filesystem::temp_directory_path() falls back to "/tmp", which does not exist
     # on a Windows host under NODERAWFS. Point it at the scratch working directory.
+    #
+    # NODERAWFS also returns node's process.cwd() verbatim; on Windows that is
+    # "E:<backslash>x<backslash>y", which the wasm side's POSIX path code cannot use:
+    # getcwd() fails with ENOENT, so std::filesystem::current_path() / absolute() throw
+    # (AssetBundle / ProjectInfoPaths smoke tests died on this). Present the cwd as
+    # "/x/y" instead: absolute for the wasm side, and node on Windows resolves a
+    # drive-less "/x/y" against the current drive, i.e. the same directory.
     pre_js = os.path.join(work, 'pre.js').replace(os.sep, '/')
     with open(pre_js, 'w') as f:
-        f.write("Module['preRun'] = (Module['preRun'] || []).concat([function () { ENV['TMPDIR'] = '.'; }]);\n")
+        f.write("Module['preRun'] = (Module['preRun'] || []).concat([function () {\n"
+                "  ENV['TMPDIR'] = '.';\n"
+                "  if (typeof process !== 'undefined' && process.platform === 'win32' && FS.cwd) {\n"
+                "    var raw = FS.cwd, sep = String.fromCharCode(92);\n"
+                "    FS.cwd = function () {\n"
+                "      var p = raw.apply(this, arguments);\n"
+                "      if (typeof p !== 'string') return p;\n"
+                "      p = p.split(sep).join('/');\n"
+                "      return /^[A-Za-z]:[/]/.test(p) ? p.slice(2) : p;\n"
+                "    };\n"
+                "  }\n"
+                "}]);\n")
     ld = ld.replace(' -rdynamic', ' -rdynamic' + NODE_LINK_FLAGS + ' --pre-js ' + pre_js, 1)
     print(f'==> linking {name}.js (ZRuntime --whole-archive)')
     r = run(ld, BUILD, capture_output=True, text=True)

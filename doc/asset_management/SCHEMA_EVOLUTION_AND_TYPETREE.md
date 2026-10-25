@@ -18,8 +18,8 @@
 |---|---|---|
 | Stage 1 — 写路径产出 TypeTree | ✅ 不需要做 | 现状已经在产：`SerializedFile::WriteObject` (line 143-152) 已经无条件给 `m_Types[i].m_OldType` 灌 TypeTree（`TypeTreeCache::GetTypeTree`），并通过 `BuildMetadataSection -> SerializedType::WriteType -> TypeTree::WriteTypeTree` 写进 metadata buffer |
 | Stage 2 — 读路径切到 SafeBinaryRead | ✅ **已落地（PR-SE1）** | `SerializedFile::ReadObject` 改成 `m_OldType != nullptr ? SafeBinaryRead : StreamedBinaryRead`。ZRuntime.lib 编译通过；ZEditor link 失败为预存 LNK1169（dx12/vulkan smoke test main 重定义），与本改动无关 |
-| Stage 3 — 端到端 schema-evolution smoke test | ⏸️ 待做 | 见 §5 修订版 |
-| Stage 4 — C 任务 `m_shader_guid` 接入 | ⏸️ 待做（依赖 Stage 3 验过） | |
+| Stage 3 — 端到端 schema-evolution smoke test | ✅ **已落地**（2026-10-25 对代码核对补记） | `Core/Serialize/Test/SchemaEvolutionSmokeTest.cpp`：S1-S4（往返 / 删字段 / 加字段 / 重排）+ M1-M3（真 `MaterialRes`：往返、老布局兼容、string→PPtr 演化）+ T1-T2（Texture2D mip/format），共 9 个场景；2026-10-25 在 web 构建下经 `scripts/web_smoke_run.py` 实跑 9/9 |
+| Stage 4 — C 任务 `m_shader_guid` 接入 | ✅ **已落地**（同上补记） | 实际字段名 `MaterialRes::m_ShaderGuid`，序列化键 `shader_guid`（`Resource/ResType/Data/Material.cpp:113`）；`m_ShaderPptr` 为空且 GUID 非空时经 `ShaderRegistry::FindByGuid` 解析（同文件 171 行起）。M1/M2 覆盖新旧两种布局 |
 | Stage 5（可选）— Resave All Assets | ⏸️ 待评估 | 因为现有 demo 项目 .zasset 不走 SerializedFile（见 §2.6 修订），这工具的实际收益比预想的低 |
 
 **关键事实修正（vs 本文档第一版）**：
@@ -428,8 +428,8 @@ V1 设计稿里 Stage 5 是给"跨大版本回退"留后门的批量降级工具
 |---|---|---|---|
 | Stage 1 | 写路径产 TypeTree | — | ✅ 已存在，无需改动 |
 | Stage 2 | 读路径走 SafeBinaryRead + fallback | 0.1 天 | ✅ 已落地 |
-| Stage 3 | schema 演化 e2e smoke test | 0.5 天 | ⏳ 待做 |
-| Stage 4 | C 任务（material `m_shader_guid`） | 0.2 天 | ⏳ 待做 |
+| Stage 3 | schema 演化 e2e smoke test | 0.5 天 | ✅ 已落地（9 场景） |
+| Stage 4 | C 任务（material `m_shader_guid`） | 0.2 天 | ✅ 已落地（`m_ShaderGuid`） |
 | Stage 5 | Re-save 工具 | — | ✗ 不做 |
 | **总计实际工作量** | | **~0.7 天** | |
 
@@ -460,13 +460,14 @@ V1 设计稿里 Stage 5 是给"跨大版本回退"留后门的批量降级工具
 ## 8. 验收标准（V2）
 
 - [x] **V1**：`ZRuntime` 在 debug 配置下编译干净（已通过）。
-- [ ] **V2**：Stage 3 的 smoke test 5 个场景全绿。
+- [x] **V2**：Stage 3 的 smoke test 全绿（实际 9 个场景，2026-10-25 web 构建实跑 9/9）。
 - [ ] **V3**：编辑器在不存在 SerializedFile 格式 `.zasset` 的项目下启动正常
   （目前 demo 项目就是这种情况——纯老格式 + JSON index，全部走 fallback）。
 - [ ] **V4**：编辑器在 demo 项目下启动正常，AssetRegistry 索引数与改动前一致。
-- [ ] **V5**：Stage 4 落地后，构造一个写有 `m_shader_guid` 的 material 资产
+- [x] **V5**：Stage 4 落地后，构造一个写有 `m_shader_guid` 的 material 资产
   能正确解析；不带 `m_shader_guid` 的老 material 能走 name fallback。
-- [ ] **V6**：现有 `engine/Tests/` 里所有序列化单测全绿。
+  （已验：SchemaEvolutionSmokeTest M1 带 GUID 往返、M2 老布局读入 GUID 为空走名字 fallback。）
+- [ ] **V6**：~~现有 `engine/Tests/` 里所有序列化单测全绿~~ —— `engine/Tests/` 目录已不存在；序列化相关测试现在是 `Core/Serialize/Test/` 下的 smoke test（YamlRoundTrip / SchemaEvolution / Pptr / ReflectionCodegen / ProjectInfoPaths），全量结果见 `scripts/run_all_smoke_tests_web.py`。
 
 ---
 

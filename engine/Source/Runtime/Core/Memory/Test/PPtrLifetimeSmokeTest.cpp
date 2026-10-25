@@ -169,6 +169,12 @@ static int RunProbe()
     return 0;
 }
 
+// POSIX fork 分支需要 argv[0]（无 /proc/self/exe 时的可执行路径回退）。
+// 必须声明在 RunChildProbe 之前：原先放在函数后面，非 Windows 平台根本编不过。
+#if !defined(_WIN32)
+static char* g_Argv0 = nullptr;
+#endif
+
 // spawn 自身带 --destroyed-probe 参数，等待结束，回填子进程退出码。
 bool RunChildProbe(int* exitCode)
 {
@@ -234,11 +240,6 @@ bool RunChildProbe(int* exitCode)
     return true;
 #endif
 }
-
-// POSIX fork 分支需要 argv[0]（无 /proc/self/exe 时的可执行路径回退）。
-#if !defined(_WIN32)
-static char* g_Argv0 = nullptr;
-#endif
 
 // =============================================================================
 // 父进程判据

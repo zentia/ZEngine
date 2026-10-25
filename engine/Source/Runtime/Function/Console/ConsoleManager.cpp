@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <fstream>
 
 std::string ConsoleManager::NormalizeKey(const std::string& name)
 {
@@ -105,6 +106,32 @@ bool ConsoleManager::Initialize()
                             return false;
                         }
                         return true;
+                    });
+
+    RegisterCommand("cvar.save",
+                    "Write every console variable to a file as name=value: cvar.save <file>",
+                    [this](const std::vector<std::string>& args) -> bool {
+                        if (args.empty())
+                        {
+                            LOG_ERROR(ZConsole, "Usage: cvar.save <file>");
+                            return false;
+                        }
+                        const int written = SaveVariablesToFile(args[0]);
+                        if (written < 0)
+                            return false;
+                        LOG_INFO(ZConsole, "cvar.save: wrote {} variable(s) to '{}'", written, args[0]);
+                        return true;
+                    });
+
+    RegisterCommand("cvar.load",
+                    "Apply name=value lines from a file (UE ConsoleVariables.ini style): cvar.load <file>",
+                    [this](const std::vector<std::string>& args) -> bool {
+                        if (args.empty())
+                        {
+                            LOG_ERROR(ZConsole, "Usage: cvar.load <file>");
+                            return false;
+                        }
+                        return LoadVariablesFromFile(args[0]) >= 0;
                     });
 
     RegisterRuntimeConsoleCommands(*this);
@@ -403,4 +430,135 @@ std::vector<std::string> ConsoleManager::ParseCommandLine(const std::string& com
     }
 
     return args;
+}
+
+// ============================================
+// CVar 配置文件
+// ============================================
+
+namespace
+{
+    std::string TrimCopy(const std::string& text)
+    {
+        size_t begin = 0;
+        size_t end = text.size();
+        while (begin < end && std::isspace(static_cast<unsigned char>(text[begin])))
+            ++begin;
+        while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])))
+            --end;
+        return text.substr(begin, end - begin);
+    }
+}  // namespace
+
+std::unordered_map<std::string, std::string> ConsoleManager::SnapshotVariableValues() const
+{
+    std::unordered_map<std::string, std::string> values;
+    values.reserve(m_Variables.size());
+    for (const auto& [key, var] : m_Variables)
+    {
+        if (var)
+            values[key] = var->getStringValue();
+    }
+    return values;
+}
+
+int ConsoleManager::SaveVariablesToFile(const std::string& path,
+                                        const std::unordered_map<std::string, std::string>* only_changed_from) const
+{
+    std::vector<std::pair<std::string, std::string>> lines;
+    lines.reserve(m_Variables.size());
+    for (const auto& [key, var] : m_Variables)
+    {
+        if (!var)
+            continue;
+        std::string value = var->getStringValue();
+        if (only_changed_from != nullptr)
+        {
+            const auto it = only_changed_from->find(key);
+            if (it != only_changed_from->end() && it->second == value)
+                continue;
+        }
+        // Load trims blanks around the value and strips ONE pair of surrounding
+        // double quotes. Quote any value that would otherwise change on the way back:
+        // edge whitespace, or a value that itself starts and ends with a quote.
+        const bool needs_quotes =
+            !value.empty() &&
+            (std::isspace(static_cast<unsigned char>(value.front())) ||
+             std::isspace(static_cast<unsigned char>(value.back())) ||
+             (value.size() >= 2 && value.front() == '"' && value.back() == '"'));
+        if (needs_quotes)
+            value = '"' + value + '"';
+        lines.emplace_back(var->GetName(), std::move(value));
+    }
+    std::sort(lines.begin(), lines.end(), [](const auto& a, const auto& b) {
+        return NormalizeKey(a.first) < NormalizeKey(b.first);
+    });
+
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out)
+    {
+        LOG_ERROR(ZConsole, "cvar.save: cannot open '{}' for writing", path);
+        return -1;
+    }
+    out << "; ZEngine console variables (name=value). Load with: cvar.load <file>\n";
+    for (const auto& [name, value] : lines)
+        out << name << '=' << value << '\n';
+    out.flush();
+    if (!out)
+    {
+        LOG_ERROR(ZConsole, "cvar.save: write to '{}' failed", path);
+        return -1;
+    }
+    return static_cast<int>(lines.size());
+}
+
+int ConsoleManager::LoadVariablesFromFile(const std::string& path, std::vector<std::string>* out_failed)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in)
+    {
+        LOG_ERROR(ZConsole, "cvar.load: cannot open '{}'", path);
+        return -1;
+    }
+
+    int applied = 0;
+    std::string raw;
+    int line_number = 0;
+    while (std::getline(in, raw))
+    {
+        ++line_number;
+        const std::string line = TrimCopy(raw);  // also drops a CR of CRLF files
+        if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[')
+            continue;
+
+        const size_t eq = line.find('=');
+        if (eq == std::string::npos || eq == 0)
+        {
+            LOG_WARNING(ZConsole, "cvar.load: {}:{}: expected name=value, got '{}'", path, line_number, line);
+            if (out_failed != nullptr)
+                out_failed->push_back(line);
+            continue;
+        }
+        const std::string name = TrimCopy(line.substr(0, eq));
+        std::string value = TrimCopy(line.substr(eq + 1));
+        if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+            value = value.substr(1, value.size() - 2);
+
+        auto var = FindVariable(name);
+        if (!var || !var->setStringValue(value))
+        {
+            LOG_WARNING(ZConsole,
+                        "cvar.load: {}:{}: {} '{}'",
+                        path,
+                        line_number,
+                        var ? "invalid value for" : "unknown variable",
+                        var ? line : name);
+            if (out_failed != nullptr)
+                out_failed->push_back(line);
+            continue;
+        }
+        ++applied;
+    }
+    LOG_INFO(ZConsole, "cvar.load: applied {} value(s) from '{}'", applied, path);
+    return applied;
 }

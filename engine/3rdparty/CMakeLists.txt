@@ -503,7 +503,11 @@ if(NOT TARGET lmdb)
 
         # Create static library
         add_library(lmdb STATIC ${LMDB_SOURCES})
-        if(Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS")
+        # No robust process-shared mutexes on OHOS, and none in Emscripten's libc
+        # either (pthread_mutexattr_setrobust is undefined at link time, so any web
+        # executable that pulls in LMDBDerivedDataCache failed to link).
+        if(Z_PLATFORM_OHOS OR OHOS OR CMAKE_SYSTEM_NAME STREQUAL "OHOS"
+           OR EMSCRIPTEN OR CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
             target_compile_definitions(lmdb PRIVATE MDB_USE_ROBUST=0)
         endif()
 

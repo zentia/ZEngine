@@ -190,6 +190,12 @@ ZEngine 材质编辑器是一个基于节点图的材质编辑工具，参考了
 
 ## 未来计划
 
+> **现状（2026-10-25 对代码核对）**：材质编辑器是 `Editor/EditorWindow/ZSlateMaterialEditorWindow/`
+> （ZSlate 绘制，约 1000 行），图只活在窗口内存里——`MatNode` / `MatLink` 没有序列化，也没有接到真实的材质编译。
+> 已有的节点类型：输入（Texture2D / TextureCube / Constant1-4 / Time / UV）、数学（Add / Subtract / Multiply /
+> Divide / Lerp / Clamp / Saturate）、向量（Combine / Split）、Texture Sample 2D、输出（BaseColor / Metallic /
+> Roughness / Normal）；节点上的常量在窗口里只读显示。下面各项都还没有做。
+
 - [ ] 材质图序列化和反序列化（保存/加载材质）
 - [ ] 实时材质预览渲染
 - [ ] 更多数学运算节点

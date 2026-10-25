@@ -149,7 +149,14 @@ int main()
           "CreateRHI(default) yields the default backend");
 
     // (4) 平台矩阵：按编译期宏断言哪些后端应注册、哪些不应。
-#if defined(_WIN32) || defined(Z_PLATFORM_WINDOWS)
+    // Emscripten 必须排在 Linux 前面：emcc 从 CMake 的 UNIX 分支继承了
+    // Z_PLATFORM_LINUX=1（DefaultAPI() 也是这个顺序）。原先 Web 分支排在 Linux 后面，
+    // web 构建永远走 Linux 分支去断言 Vulkan，Web 断言一次都没执行过。
+#if defined(__EMSCRIPTEN__)
+    Check(RHIFactory::IsAPIAvailable(GraphicsAPI::WebGL2), "Web: WebGL2 registered");
+    Check(!RHIFactory::IsAPIAvailable(GraphicsAPI::Vulkan), "Web: Vulkan NOT registered");
+    Check(CreateAndCheck(GraphicsAPI::WebGL2, true), "Web: CreateRHI(WebGL2)");
+#elif defined(_WIN32) || defined(Z_PLATFORM_WINDOWS)
     // Windows：DX12 与 Vulkan 都在（ZENGINE_USE_VULKAN 默认 ON）。
     Check(RHIFactory::IsAPIAvailable(GraphicsAPI::DirectX12), "Windows: DX12 registered");
     Check(RHIFactory::IsAPIAvailable(GraphicsAPI::Vulkan),    "Windows: Vulkan registered");
@@ -166,9 +173,6 @@ int main()
 #elif defined(__APPLE__)
     Check(RHIFactory::IsAPIAvailable(GraphicsAPI::Metal), "Apple: Metal registered");
     Check(CreateAndCheck(GraphicsAPI::Metal, true), "Apple: CreateRHI(Metal)");
-#elif defined(__EMSCRIPTEN__)
-    Check(RHIFactory::IsAPIAvailable(GraphicsAPI::WebGL2), "Web: WebGL2 registered");
-    Check(CreateAndCheck(GraphicsAPI::WebGL2, true), "Web: CreateRHI(WebGL2)");
 #elif defined(__ANDROID__) || defined(__OHOS__)
     Check(RHIFactory::IsAPIAvailable(GraphicsAPI::Vulkan), "Mobile: Vulkan registered");
     Check(CreateAndCheck(GraphicsAPI::Vulkan, true), "Mobile: CreateRHI(Vulkan)");
