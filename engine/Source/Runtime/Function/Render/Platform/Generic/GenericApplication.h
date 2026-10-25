@@ -87,13 +87,17 @@ public:
     virtual MonitorInfo GetMonitorWorkAreaForWindow(GenericWindow* window) const = 0;
 
     // ===== 键盘/鼠标状态维护（由 WindowSystem::OnKey/OnMouseButton 调用）=====
+    // action: 0 = RELEASE, 1 = PRESS, 2 = REPEAT (GLFW layout). Only RELEASE clears:
+    // an auto-repeat event means the key is still held. (Treating REPEAT as a release
+    // made IsKeyDown() drop a held key after the OS repeat delay -- macOS has always
+    // sent REPEAT, and Windows does now too.)
     void UpdateKeyState(int key, int action) {
-        if (action == 1) m_KeyDown.insert(key);       // PRESS
-        else m_KeyDown.erase(key);                        // RELEASE
+        if (action == 0) m_KeyDown.erase(key);
+        else m_KeyDown.insert(key);
     }
     void UpdateMouseState(int button, int action) {
-        if (action == 1) m_MouseDown.insert(button);
-        else m_MouseDown.erase(button);
+        if (action == 0) m_MouseDown.erase(button);
+        else m_MouseDown.insert(button);
     }
 
 protected:

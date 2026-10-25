@@ -48,12 +48,11 @@ namespace ZEngine
             }
             m_CurrentCommandBuffer = &m_CommandBuffers[0];
 
-            // Pick up the WebGL2 context that the emscripten GLFW shim created
-            // inside glfwCreateWindow(). WindowSystem is registered ahead of any
-            // RHI in RegisterRuntime.cpp so it has already run at this point.
+            // Adopt the current WebGL2 context if the host made one, otherwise
+            // create one on #canvas (see CreateGLContext).
             if (!CreateGLContext(GET_SYSTEM(WindowSystem)))
             {
-                LOG_FATAL(ZRender, "WebGL2RHI: failed to acquire current WebGL2 context");
+                LOG_FATAL(ZRender, "WebGL2RHI: failed to create / acquire a WebGL2 context on #canvas");
                 return false;
             }
             CreateSwapchain();
@@ -1083,17 +1082,32 @@ namespace ZEngine
 
         bool WebGL2RHI::CreateGLContext(WindowSystem* /*window_system*/)
         {
-            // The emscripten GLFW shim already created and made-current a WebGL2
-            // context inside glfwCreateWindow() (we set GLFW_OPENGL_ES_API + 3.0 in
-            // WindowSystem.cpp). All we need to do is read the handle so we can
-            // re-make-current it from any thread / re-entry point if needed.
+            // The engine no longer links GLFW (native Win32 / Cocoa window layer,
+            // doc/platform_windowing_plan.md), so nothing creates a context for us
+            // on Web: WindowSystem has no application there. Adopt a context the
+            // host page already made current (an embedding mini-game shell may do
+            // that); otherwise create a WebGL2 context on #canvas ourselves.
             EMSCRIPTEN_WEBGL_CONTEXT_HANDLE handle = emscripten_webgl_get_current_context();
             if (handle <= 0)
             {
-                // No GL context is current — most likely WindowSystem::Initialize()
-                // did not run, or the shim failed to honour the OPENGL_ES_API hint.
-                m_GlContextHandle = nullptr;
-                return false;
+                EmscriptenWebGLContextAttributes attributes;
+                emscripten_webgl_init_context_attributes(&attributes);
+                attributes.majorVersion = 2;
+                attributes.minorVersion = 0;
+                attributes.alpha = EM_FALSE;
+                attributes.depth = EM_TRUE;
+                attributes.stencil = EM_TRUE;
+                attributes.antialias = EM_FALSE;
+                handle = emscripten_webgl_create_context("#canvas", &attributes);
+                if (handle <= 0 || emscripten_webgl_make_context_current(handle) != EMSCRIPTEN_RESULT_SUCCESS)
+                {
+                    if (handle > 0)
+                    {
+                        emscripten_webgl_destroy_context(handle);
+                    }
+                    m_GlContextHandle = nullptr;
+                    return false;
+                }
             }
             m_GlContextHandle = reinterpret_cast<void*>(static_cast<uintptr_t>(handle));
 

@@ -134,7 +134,6 @@ sudo apt install cmake
 sudo apt install clang
 sudo apt install libc++-dev
 sudo apt install libglew-dev
-sudo apt install libglfw3-dev
 sudo apt install vulkan-validationlayers
 sudo apt install mesa-vulkan-drivers
 ```

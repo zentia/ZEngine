@@ -7,12 +7,12 @@
 //      now registers WebGL2RHI as RHI on Emscripten).
 //   2. RegisterPlatform() adds the asset manager.
 //   3. START_SYSTEM_WITHOUT_UI() runs InitializeAll(false) — skipping the
-//      desktop SplashScreen which is GLFW/ImGui-desktop-only.
+//      desktop SplashScreen (native-window / desktop-only).
 //      During this step:
-//        * WindowSystem creates a canvas-backed WebGL2 context via the
-//          emscripten GLFW shim (USE_GLFW=3 + OPENGL_ES_API hint).
-//        * WebGL2RHI picks up that current context with
-//          emscripten_webgl_get_current_context().
+//        * WindowSystem has no platform application on Web (the canvas is
+//          owned by the page), so it is only an input/event shell.
+//        * WebGL2RHI adopts the current WebGL2 context if the host made one,
+//          otherwise creates one on #canvas (WebGL2RHI::CreateGLContext).
 //        * RenderSystem builds a no-op render pipeline (Web takes the
 //          stub path because Z_HAS_VULKAN / _WIN32 / __APPLE__ are all off).
 //   4. emscripten_set_main_loop drives Application::TickOneFrame each
@@ -82,7 +82,7 @@ int main(int /*argc*/, char** /*argv*/)
     RegisterPlatform();
 
     // Stage 2: initialize all systems in dependency-topological order.
-    // We use the WITHOUT_UI variant: the desktop SplashScreen is GLFW+ImGui
+    // We use the WITHOUT_UI variant: the desktop SplashScreen is
     // desktop-only and has no Web bring-up.
     START_SYSTEM_WITHOUT_UI();
     g_engine_started = true;

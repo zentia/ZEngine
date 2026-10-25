@@ -36,8 +36,10 @@ endif()
 # CMAKE_MSVC_RUNTIME_LIBRARY for libraries that rely on the standard CMake
 # variable, but several vendored libs gate their CRT on per-library cache
 # options that we have to set here BEFORE add_subdirectory():
-#   - GLFW: USE_MSVC_RUNTIME_LIBRARY_DLL (ON=/MD by default)
 #   - cURL: CURL_STATIC_CRT (OFF by default)
+# (GLFW's USE_MSVC_RUNTIME_LIBRARY_DLL used to be flipped here too; GLFW is no
+# longer vendored -- the engine uses a native Win32 / Cocoa window layer, see
+# doc/platform_windowing_plan.md -- so that knob had no consumer and was removed.)
 # Jolt is handled inline below (it ignores CMAKE_MSVC_RUNTIME_LIBRARY and
 # pins itself via set_target_properties + /MD compile_options).
 # We FORCE-write the cache in both branches so flipping PAPI_TYPE between
@@ -47,10 +49,8 @@ endif()
 # See AGENTS.md 2.7 "Open issue (Win64 /MT vs /MD mismatch)".
 if(WIN32 AND PAPI_TYPE STREQUAL "v8")
     message(STATUS "PAPI_TYPE=v8 on Windows: flipping vendored 3rdparty CRT knobs to /MT")
-    set(USE_MSVC_RUNTIME_LIBRARY_DLL OFF CACHE BOOL "" FORCE)  # GLFW
     set(CURL_STATIC_CRT ON CACHE BOOL "" FORCE)                # cURL
 elseif(WIN32)
-    set(USE_MSVC_RUNTIME_LIBRARY_DLL ON  CACHE BOOL "" FORCE)  # GLFW (default)
     set(CURL_STATIC_CRT OFF CACHE BOOL "" FORCE)               # cURL (default)
 endif()
 
@@ -649,7 +649,7 @@ endif()
 # CMAKE_MSVC_RUNTIME_LIBRARY, so it picks up whatever CRT mode the top-level
 # build is using (/MD for the default quickjs path, /MT for PAPI_TYPE=v8;
 # see "Plan C" block in the top-level CMakeLists). No special handling like
-# Jolt / GLFW needed.
+# Jolt needed.
 #
 # Folder placement: nested under the third_party_folder. The importer's own
 # C++ TUs live in engine/Source/Editor/asset_pipeline/data_table_importer/

@@ -685,8 +685,10 @@ toolchain mismatch reappears.
    `CMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"` (plain `/MT`, no Debug
    variant) when `PAPI_TYPE=v8` on Windows, AND
    `engine/3rdparty/CMakeLists.txt` flips
-   `USE_MSVC_RUNTIME_LIBRARY_DLL=OFF` (GLFW), `CURL_STATIC_CRT=ON`
-   (cURL), and uses /MT Jolt knobs in the same condition. Both branches
+   `CURL_STATIC_CRT=ON` (cURL) and uses /MT Jolt knobs in the same
+   condition. (It used to flip GLFW's `USE_MSVC_RUNTIME_LIBRARY_DLL`
+   too; GLFW is gone -- native Win32/Cocoa window layer -- and that
+   knob was removed 2026-10-25.) Both branches
    of the gate use FORCE-cache so flipping `PAPI_TYPE` between v8 and
    quickjs in an existing `build/` tree resets cleanly. Stock `Debug`
    config is rejected (`wee8.lib` ships only `MT_StaticRelease`, no
@@ -1077,10 +1079,11 @@ window and not yet on disk.
 the OS file manager (Windows Explorer / Finder / Linux file manager) onto
 the editor window auto-imports it via the same code path as the right-click
 "Import…" entry. Wiring is single-direction and minimal:
-`WindowSystem` already calls `glfwSetDropCallback(...)` and forwards into
-the existing `registerOnDropFunc` listener vector; `ZSlateContentBrowserWindow`'s ctor
-subscribes one listener that copies the GLFW path strings (which are only
-valid for the duration of the callback per GLFW docs) into a
+the platform window turns `WM_DROPFILES` into `GenericWindow::OnDrop`
+(`WindowsWindow.cpp`; originally `glfwSetDropCallback`), `WindowSystem`
+forwards that into the existing `registerOnDropFunc` listener vector;
+`ZSlateContentBrowserWindow`'s ctor subscribes one listener that copies the
+path strings (only valid for the duration of the callback) into a
 mutex-guarded queue, and `executePendingOsDropImports()` drains the queue
 at the tail of `onGUI()` -- right after `executePendingDelete` /
 `executePendingPrefabCreate`, so we inherit the same UAF-avoidance
@@ -1132,7 +1135,7 @@ The cross-platform `FileSystemWatcher` infrastructure
 `Shaders/` (`m_shaders_watcher`), and `Intermediate/Scripts/`
 (`m_js_watcher`); PR-AI3 added no new watcher modules. The trigger
 model is **focus-driven, Unity-style** (not UE-style realtime
-`FContentDirectoryMonitor`): on GLFW window-focus-gained, the editor
+`FContentDirectoryMonitor`): on main-window focus-gained (`WM_SETFOCUS` -> `OnWindowFocus`), the editor
 walks a `(.zasset → source_abs_path, source_mtime_ns)` registry, stats
 each source, and enqueues changed entries into a throttled drain
 (`kReimportsPerFrame = 10`) running inside `EditorAssetManager::TickWatcher`.
@@ -1281,7 +1284,7 @@ shadow maps. Full design: **`doc/rendering/MEGALIGHTS_DESIGN.md`**.
 
 Symptom: dock panels squashed, large black regions, Game/Scene hints truncated
 (`Press Left Alt...` cut off). Usually stale `<Project>/saved/config/imgui.ini`
-or GLFW window size != ImGui `DisplaySize` after resize / DPI change.
+or platform window size != ImGui `DisplaySize` after resize / DPI change.
 
 **User recovery**: `Window` menu -> `Layouts` -> **Reset All Layouts** (or pick
 `Default`). Restart editor if needed.
