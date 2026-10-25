@@ -48,7 +48,7 @@
 | C3 | **Nanite 收尾** | 流送 → 几何压缩 → HiZ 遮挡 | **部分实现**（真 GPU dispatch 已有；**几何压缩已落地 2026-10-25**，见 §2 落地记录；剩 streaming + HiZ 两处 TODO） | C1/C2 给其 RG 管理的目标 | ★★★ 高价值/中风险 |
 | C4 | **Virtual Texture 接线** | 分页纹理虚拟化，从"孤儿"到可用 | **已实现但零消费者**（6 文件无外部引用、无 CVar、3 处构建排除） | C1/C2 的 RG 资源注册 | ★★ 高价值/中高风险 |
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
-| C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **部分实现**（CPU 探针网格已通；**无任何 Lumen shader**） | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（放最后） |
+| C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾** | — | ★★ 低风险填缝 |
 | — | **RHI 胖接口拆分**（阶段一 #9 遗留） | 124 纯虚 `RHI.h` 拆成职责子接口 | **未动手**（阶段一明确后置） | 触碰 4 后端 + 所有调用点 | ✗ **不建议进 Phase 2**（见 §3） |
 
@@ -68,7 +68,7 @@
 | **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。 |
 | **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。**streaming 已于 2026-10-25 落地**（见下方落地记录）：`UpdateStreaming` 从 TODO 兑现为基于距离的叶子驻留判据，WASM headless 验证 77/77 全绿（含 10 项新增 streaming 断言）。剩 HiZ（GPU 侧需真机）。 |
 | **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。**已于 2026-10-25 落地**（见下方落地记录）：9 处 TODO 里 6 处 CPU 侧填实（屏幕投影 mip/优先级重算/LRU 淘汰/统计/时间戳/世界足迹），3 处 GPU 侧（页上传/页表纹理）如实留作真机；加 `r.VirtualTexture.Enable` CVar 门控 + 帧循环 `UpdateVirtualTextureForFrame`（3 条 Tick 路径统一入口，默认关、Vulkan 编译门内、零回归）；headless WASM 验证 15/15 全绿。剩页上传/页表纹理（GPU 需真机）+ 2.4 的 RG 资源注册。 |
-| **2.7** | C6 | Lumen：SSR + 首个 Lumen shader | 依赖 2.4 的 GBuffer/depth 声明；放最后，**只取 SSR 一半**。**HWRT/BLAS-TLAS 明确移出 Phase 2**（需独立专项）。 |
+| **2.7**（✅ CPU 侧已完整·无需动手） | C6 | Lumen：SSR + 首个 Lumen shader | 依赖 2.4 的 GBuffer/depth 声明；放最后，**只取 SSR 一半**。**HWRT/BLAS-TLAS 明确移出 Phase 2**（需独立专项）。**已于 2026-10-25 复核：Lumen 的整个 CPU 侧（GI + 反射 + 接线 + CVar + 发布桥）此前就已完整落地并有 7 个 smoke test**，见下方落地记录。剩 SSR/HWRT/首个 shader 全是 GPU 侧（需真机 + 2.4 的 GBuffer/depth），本步骤的 CPU 部分无活可干。 |
 | **穿插** | C7 | 平台窗口化收尾 / Timeline 四类片段 / Prefab §9.4 follow-ups | 渲染项卡在真机验证时用来保持节奏；每项都可独立编译演示，低风险。 |
 
 ---
@@ -181,6 +181,58 @@ Vulkan image，让流送策略在无设备上断言。**15/15 全绿**：注册/
 
 **诚实定位**：这是**接线第一步**——把休眠子系统变成控制台可开、帧循环可驱动、策略可断言。页上传/
 页表纹理（GPU）+ 2.4 的 RG 资源注册是明确的后续项。它不是"VT 完成了"，是"VT 从死代码变成可推进"。
+
+---
+
+### 落地记录 · 2.7 Lumen（2026-10-25，复核：CPU 侧已完整，无需动手）
+
+**结论**：本步骤的 CPU 侧工作在进入前**就已经全部落地并有测试**。计划表里那句"部分实现（CPU 探针网格
+已通；无任何 Lumen shader）"是**过时评估**——它低估了代码现状（正是 §0 第 1 条警告的"别信过时设计稿
+估工作量"的翻版）。逐文件复核后，Lumen 的整个 CPU 数据路径 + 帧循环接线 + CVar + 发布桥**此前就已
+完整兑现**，7 个 smoke test 已在仓库里（reflections / GI / ray tracing / surface cache / scene geometry /
+render-pass wiring / per-frame bridge）。
+
+**已实现且已测试的部分**（都不是本次新写，是复核确认的既有事实）：
+- **GI（`LumenGlobalIllumination.cpp`）**：世界空间辐照度 probe 网格锚定在距离场世界盒上（不跟相机走，
+  否则历史全丢）；预算 + 轮转更新（一帧不追整网格）；时间累积（rate 0 冻结、大 rate 追上，帧率无关的
+  `1 - exp(-rate·dt)`）；三线性插值查询（`SampleProbeGrid`，跳过未更新 probe，避免 0 拉黑整片）；
+  多跳递归（`ComputeMultiBounceGI`）；"边查边填"回填网格（`TemporalAccumulation`）。
+- **反射（`LumenReflections.cpp`）**：镜面方向镜像；**粗糙度 = 锥角**（`SampleConeDirection` 按立体角
+  均匀采样、多光线平均），不再把 radiance 乘 `(1-roughness)` 压成纯黑；距离场反射（起点按体素对角线
+  抬出表面、显式传距离场）；`valid` 标志区分"命中黑色"与"未命中"；`BlendReflections` 按"哪份真命中"
+  选（HWRT > SSR > 距离场），**不再用 `max_trace_distance` 常量分支**（那会把已追到的命中换成恒空 SSR
+  的 black）。
+- **接线**：`RenderSystemFrameCommands.cpp` 的 `RenderLumenCmd` → `RenderPipelineBase::UpdateLumen` →
+  `LumenRenderPass::Render`（Update → ComputeGI → ComputeReflections → 发布）每帧驱动；`Z_HAS_LUMEN`
+  门控（Apple 剥离时类不存在，用 `dynamic_cast` 分发）。
+- **CVar**：`r.Lumen.Enable/GlobalIllumination/Reflections/ProbeBudget/ReflectionBudget/SampleCount/
+  ProbeSpacing/TemporalBlendRate/IndirectIntensity` 共 9 个，`RuntimeConsoleCommands.cpp:553` 注册，
+  `LumenRenderPass::ApplyConsoleVariables` 每帧热生效。
+- **发布桥**：`PublishIndirectLighting`/`PublishReflection` 写进 `RenderScene::m_IndirectLighting`
+  （GI 与反射两套独立权重），经 `SceneIndirectLighting::ToUniform()` 打包进 per-frame uniform（rgb=
+  辐照度、a=权重；"黑是数据不是缺失"），三份镜像（C++/GLSL/HLSL）布局由 `LumenPerFrameBridgeSmokeTest`
+  的 `static_assert` + 运行时断言钉死。
+
+**复核中逐一排除的"看似是活、实则是坑/已做"的项**（避免后来者重复劳动）：
+1. **`LumenGlobalIllumination.cpp:328` `view_direction = Vector3(0,0,1)` 的 `TODO: 从相机获取`——
+   是死参数，不是 bug**。它传进 `ComputeMultiBounceGI`，但函数体内**从不引用** `view_direction`（只有
+   签名那一行出现）；生产路径走 probe 网格的 `GetAverageIrradiance`，`GetIndirectLighting` 的直接调用者
+   全是 test，且都传了真实法线做半球采样。"修"它（把相机方向穿进来）是**零行为变化的纯 cosmetic churn**，
+   且没有 test 能钉住它 ⇒ 不动，如实标注为死参数。
+2. **`LumenGlobalIllumination.cpp:419` "更高级采样（重要性采样）" `TODO`**——当前是**余弦加权半球采样**
+   （`SampleIndirectDirection`），已是合法的物理采样；重要性采样是质量增强项，不是修 bug，且收益要真机
+   才能看 ⇒ 不属 CPU 可验。
+3. **`LumenReflections.cpp:138` SSR `TODO`**——函数注释已说明：CPU 路径**没有深度缓冲也没有 GBuffer**，
+   恒返回 `valid=false` 是**正确**行为（历史上它曾返回全零并靠常量分支拿到 100% 权重，把距离场命中换成
+   黑，已被 `BlendReflections` 的"按命中选"修复 + `LumenReflectionsSmokeTest` 第 3 组断言钉死）。真 SSR
+   依赖 2.4 的 GBuffer/depth ⇒ GPU 侧。
+4. **`LumenRayTracing.cpp:171` HWRT `TODO` + `InitializeHardwareRayTracing` 恒 false**——HWRT/BLAS-TLAS
+   已在 §5 明确移出 Phase 2（需 Vulkan RT 扩展 + 加速结构独立专项）。
+
+**诚实定位**：step 2.7 的 CPU 部分是**"复核确认已完成"，不是"本次做了"**。Lumen 剩下的全部是 GPU 侧
+（SSR 需 depth/GBuffer、HWRT 已移出、首个 Lumen shader 需真机），与 2.4 的 RG 资源注册绑定，须等真机 +
+显示器。这再次印证 §0 第 1 条：**规划要看代码，不要看 `doc/lumen/LUMEN_SYSTEM_DESIGN.md` 那篇无状态标记的
+纯散文设计稿**，否则会把一个已 4000+ LOC、已接线、已有 7 个测试的系统误判成"只有探针网格通了"。
 
 ---
 
