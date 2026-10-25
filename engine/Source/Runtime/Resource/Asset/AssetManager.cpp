@@ -79,7 +79,23 @@ namespace
 
     std::string DeterministicGuidFromPath(const std::filesystem::path& path)
     {
-        std::string s = path.lexically_normal().generic_string();
+        // The seed is documented as the ABSOLUTE path. A caller holding a relative
+        // spelling of the same file (a path name stored as first seen, a relative
+        // write target, an AssetRegistry scanning a relative folder) used to hash
+        // to a different GUID than one holding the absolute spelling. Anchor it at
+        // the current directory -- lexically, so the GUID does not depend on
+        // whether the file exists yet.
+        std::filesystem::path anchored = path;
+        if (anchored.is_relative())
+        {
+            std::error_code ec;
+            const std::filesystem::path absolute = std::filesystem::absolute(anchored, ec);
+            if (!ec && !absolute.empty())
+            {
+                anchored = absolute;
+            }
+        }
+        std::string s = anchored.lexically_normal().generic_string();
 #if defined(_WIN32)
         std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 #endif
@@ -556,7 +572,11 @@ std::string AssetManager::CanonicalPathKey(const std::filesystem::path& path)
             key = absolute;
         }
     }
-    return key.lexically_normal().generic_string();
+    std::string text = key.lexically_normal().generic_string();
+#if defined(_WIN32)
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+#endif
+    return text;
 }
 
 Object* AssetManager::ReadObject(int32_t instanceID)

@@ -5,6 +5,9 @@
 #include "Runtime/Core/Base/Macro.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 
+#include <algorithm>
+#include <filesystem>
+
 namespace
 {
     /// True when `in_candidate` ends with `in_suffix` on a path boundary, i.e.
@@ -52,12 +55,21 @@ bool AssetBundle::LoadFromFile(const std::filesystem::path& path, std::string& o
     return true;
 }
 
-const AssetBundles::BundleEntry* AssetBundle::FindEntry(const std::string& asset_path) const
+const AssetBundles::BundleEntry* AssetBundle::FindEntry(const std::string& in_asset_path) const
 {
-    if (!m_Loaded || asset_path.empty())
+    if (!m_Loaded || in_asset_path.empty())
     {
         return nullptr;
     }
+
+    // Entries are stored as normalised registry keys ("Models/hero.zasset"); a
+    // caller's "./Models/hero.zasset", "Models/x/../hero.zasset" or backslashed
+    // spelling names the same entry. Lexical only -- the file is not on disk.
+    // Backslashes are folded first: off Windows, path() treats them as filename
+    // characters, but a bundle key never contains one.
+    std::string asset_path = in_asset_path;
+    std::replace(asset_path.begin(), asset_path.end(), '\\', '/');
+    asset_path = std::filesystem::path(asset_path).lexically_normal().generic_string();
 
     auto found = m_EntryIndex.find(asset_path);
     if (found != m_EntryIndex.end())

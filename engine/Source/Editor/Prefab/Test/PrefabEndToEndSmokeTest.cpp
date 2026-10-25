@@ -595,6 +595,17 @@ static void scenario_P9_one_file_one_identity()
     Check(rel_id != 0, "P9", "no instance ID for the relative spelling");
     Check(am->GetInstanceIDFromPathAndFileID(absolute, 3) == rel_id, "P9", "absolute spelling minted a second identity");
     Check(am->GetInstanceIDFromPathAndFileID(dotted, 3) == rel_id, "P9", "./ spelling minted a second identity");
+    // The path-derived GUID (YAML assets, header-less writes) must not depend on the spelling either.
+    Check(AssetManager::DeriveDeterministicAssetGuid(kPrefabPath) == AssetManager::DeriveDeterministicAssetGuid(absolute),
+          "P9", "relative and absolute spellings derive different GUIDs");
+    Check(AssetManager::DeriveDeterministicAssetGuid(dotted) == AssetManager::DeriveDeterministicAssetGuid(absolute),
+          "P9", "./ spelling derives a different GUID");
+#if defined(_WIN32)
+    std::string upper = absolute.generic_string();
+    for (char& c : upper)
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    Check(am->GetInstanceIDFromPathAndFileID(upper, 3) == rel_id, "P9", "case-different spelling minted a second identity (NTFS)");
+#endif
 }
 
 static void scenario_P10_yaml_source_prefab()

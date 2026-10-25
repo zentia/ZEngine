@@ -313,6 +313,9 @@ int main()
     const std::vector<uint8_t>* served = hero_bundle->GetAssetBytes("Models/hero.zasset", bytes_error);
     Check(served != nullptr && *served == hero_bytes, "B5: served bytes are byte-identical to the source asset");
     Check(hero_bundle->GetAssetBytes("Models/nope.zasset", bytes_error) == nullptr, "B5: unknown asset is refused");
+    Check(hero_bundle->GetAssetBytes("./Models/hero.zasset", bytes_error) == served, "B5: './' spelling finds the entry");
+    Check(hero_bundle->GetAssetBytes("Models/x/../hero.zasset", bytes_error) == served, "B5: '..' spelling finds the entry");
+    Check(hero_bundle->GetAssetBytes("Models\\hero.zasset", bytes_error) == served, "B5: backslash spelling finds the entry");
 
     // ---- B6: the point of the whole exercise ------------------------------
     // Delete the Assets/ tree: from here on the ONLY copy is inside a bundle.

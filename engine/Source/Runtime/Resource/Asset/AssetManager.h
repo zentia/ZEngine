@@ -296,7 +296,8 @@ protected:
     /// paths absolute, so a prefab loaded by a relative path lost its identity).
     /// Purely lexical (no file-system query, so it is the same before and after
     /// the file is written): a relative path is anchored at the current
-    /// directory, then normalised, generic separators. Only the LOOKUP key --
+    /// directory, then normalised, generic separators, lower-cased on Windows
+    /// (NTFS is case-insensitive: "Foo.zasset" and "foo.zasset" are one file). Only the LOOKUP key --
     /// implementations keep storing the first spelling they saw as the path name
     /// (bundle-resident assets in a player are looked up by that spelling).
     static std::string CanonicalPathKey(const std::filesystem::path& path);

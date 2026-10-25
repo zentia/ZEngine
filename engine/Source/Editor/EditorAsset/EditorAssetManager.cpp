@@ -487,10 +487,19 @@ void EditorAssetManager::GetAssetGuidAndType(const std::filesystem::path& asset_
     if (!scan_root.empty())
     {
         std::error_code ec;
-        if (asset_path.is_absolute())
+        // A relative spelling is relative to the current directory (that is how
+        // every file API resolves it), not to the scan root; using it as the
+        // registry key directly missed the registry and fell through to the
+        // header / path-hash fallback.
+        std::filesystem::path absolute_path = asset_path;
+        if (absolute_path.is_relative())
         {
-            auto rel = std::filesystem::relative(asset_path, scan_root, ec);
-            if (!ec && !rel.empty())
+            absolute_path = std::filesystem::absolute(absolute_path, ec);
+        }
+        if (!ec && !absolute_path.empty())
+        {
+            auto rel = std::filesystem::relative(absolute_path, scan_root, ec);
+            if (!ec && !rel.empty() && rel.generic_string().rfind("..", 0) != 0)
             {
                 rel_key = rel.generic_string();
             }
