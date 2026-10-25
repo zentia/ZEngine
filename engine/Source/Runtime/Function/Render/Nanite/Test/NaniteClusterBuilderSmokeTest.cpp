@@ -473,6 +473,107 @@ int main()
     }
 
     // ---------------------------------------------------------------------
+    // Streaming (UpdateStreaming): distance-based leaf residency.
+    //
+    // UpdateStreaming used to be a `TODO` that cleared the queue and did nothing.
+    // Now it marks leaves resident/unresident by camera-to-cluster distance and
+    // keeps internal nodes resident (they are never drawn but the hierarchy must
+    // stay queryable). The flags are a policy/visibility gate, NOT physical
+    // memory回收 -- all clusters share one depth-first byte stream, so a middle
+    // cluster cannot be freed without breaking neighbour offsets. That is an
+    // honest limit, not a convenience: a real page pool is a step-2.5 follow-up.
+    // ---------------------------------------------------------------------
+    {
+        NaniteClusterManager manager;
+        manager.Initialize(nullptr, NaniteConfig());
+        const uint64_t mesh_id = 99;
+        Check(manager.RegisterMeshResource(mesh_id, mesh), "streaming: mesh registers");
+
+        // Count leaves/internal nodes and collect leaf bounds-center distances from
+        // the origin, so we can pick a camera that actually splits the leaves.
+        uint32_t leaf_count = 0;
+        uint32_t internal_count = 0;
+        std::vector<float> leaf_dists;
+        for (uint32_t i = 0; i < mesh.clusters.size(); ++i)
+        {
+            if (mesh.clusters[i].is_leaf)
+            {
+                ++leaf_count;
+                leaf_dists.push_back(mesh.clusters[i].bounds.getCenter().length());
+            }
+            else
+            {
+                ++internal_count;
+            }
+        }
+        Check(leaf_count > 0 && internal_count > 0, "streaming: the grid has both leaves and internal nodes");
+        std::sort(leaf_dists.begin(), leaf_dists.end());
+
+        auto count_loaded = [&](uint64_t id, bool leaves_only) {
+            uint32_t loaded = 0;
+            for (uint32_t i = 0; i < mesh.clusters.size(); ++i)
+            {
+                if (leaves_only && !mesh.clusters[i].is_leaf)
+                {
+                    continue;
+                }
+                if (manager.IsClusterLoaded(id, i))
+                {
+                    ++loaded;
+                }
+            }
+            return loaded;
+        };
+
+        // (1) Registration residents everything (UpdateStreaming not called yet).
+        Check(count_loaded(mesh_id, true) == leaf_count,
+              "streaming: a freshly registered mesh has all leaves resident");
+        Check(count_loaded(mesh_id, false) == leaf_count + internal_count,
+              "streaming: internal nodes are resident too (structure stays queryable)");
+
+        // (2) Huge streaming distance => every leaf resident.
+        manager.UpdateStreaming(Vector3(0.0f, 0.0f, 0.0f), 1e9f);
+        Check(count_loaded(mesh_id, true) == leaf_count,
+              "streaming: every leaf is resident when the streaming distance is huge");
+
+        // (3) Camera beyond the streaming distance => no leaf resident, but internal
+        // nodes survive (they are never culled by streaming).
+        manager.UpdateStreaming(Vector3(1e6f, 0.0f, 0.0f), 0.0f);
+        Check(count_loaded(mesh_id, true) == 0,
+              "streaming: no leaf is resident when the camera is beyond the streaming distance");
+        Check(count_loaded(mesh_id, false) == internal_count,
+              "streaming: internal nodes survive streaming even when every leaf is culled");
+
+        // (4) A distance between the nearest and the median leaf => genuine partial
+        // residency (proves the distance gradient sorts leaves, not a blob flip).
+        const float split = leaf_dists[leaf_dists.size() / 2];
+        manager.UpdateStreaming(Vector3(0.0f, 0.0f, 0.0f), split);
+        const uint32_t partial = count_loaded(mesh_id, true);
+        Check(partial > 0 && partial < leaf_count,
+              "streaming: a mid-range distance yields partial leaf residency (some loaded, some culled)");
+
+        // (5) enable_streaming == false keeps everything resident at any distance.
+        NaniteConfig no_stream = NaniteConfig();
+        no_stream.enable_streaming = false;
+        NaniteClusterManager manager2;
+        manager2.Initialize(nullptr, no_stream);
+        Check(manager2.RegisterMeshResource(mesh_id, mesh), "streaming: re-register under enable_streaming=false");
+        manager2.UpdateStreaming(Vector3(1e6f, 0.0f, 0.0f), 0.0f);
+        {
+            uint32_t loaded = 0;
+            for (uint32_t i = 0; i < mesh.clusters.size(); ++i)
+            {
+                if (manager2.IsClusterLoaded(mesh_id, i))
+                {
+                    ++loaded;
+                }
+            }
+            Check(loaded == leaf_count + internal_count,
+                  "streaming: enable_streaming=false keeps every cluster resident at any distance");
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // Quantized geometry codec: bounded-lossy round-trip + real size reduction.
     //
     // The codec (GeometryCodec::Quantized, version zengine-nanite-geom/1) stores

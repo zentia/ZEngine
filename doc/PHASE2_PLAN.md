@@ -66,7 +66,7 @@
 | **2.2** | C1 | RenderGraph 扩面（ParticlePass / 后处理链） | 复用已验证机制；消除 `RENDER_GRAPH.md:15` 列举的手写屏障。 |
 | **2.3** | C2 | `render_pass_refactor`：RP1 三分 | **必须在 2.1 之后**——此时屏障/别名机制已在真机验证过，单独做它是高风险。 |
 | **2.4** | C2 | RenderGraph 接管 RP1 | 2.3 的直接收益兑现；解锁 Nanite/Lumen/VT 的图管理资源。 |
-| **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。剩 streaming（`UpdateStreaming` 仍是 TODO）与 HiZ（GPU 侧需真机）。 |
+| **2.5** | C3 | Nanite：streaming → 几何压缩 → HiZ 遮挡 | 三个子项风险递增、各自独立可验（streaming/压缩是纯 CPU 数据、可 headless 验；HiZ 是 GPU 侧需真机）；已有真 GPU dispatch 作基线。**几何压缩已于 2026-10-25 落地**（见下方落地记录）：新增 `GeometryCodec::{Raw,Quantized}` 有界有损量化编码，WASM headless 验证 67/67 全绿，vertex_data 10368→5208B、index_data 3456→1728B。**streaming 已于 2026-10-25 落地**（见下方落地记录）：`UpdateStreaming` 从 TODO 兑现为基于距离的叶子驻留判据，WASM headless 验证 77/77 全绿（含 10 项新增 streaming 断言）。剩 HiZ（GPU 侧需真机）。 |
 | **2.6** | C4 | VirtualTexture 接线（CVar 门控） | 孤岛子系统，不会回归现有路径；需要 2.4 的 RG 资源注册。9 处真 TODO（页上传/LRU 淘汰/页表更新）。 |
 | **2.7** | C6 | Lumen：SSR + 首个 Lumen shader | 依赖 2.4 的 GBuffer/depth 声明；放最后，**只取 SSR 一半**。**HWRT/BLAS-TLAS 明确移出 Phase 2**（需独立专项）。 |
 | **穿插** | C7 | 平台窗口化收尾 / Timeline 四类片段 / Prefab §9.4 follow-ups | 渲染项卡在真机验证时用来保持节奏；每项都可独立编译演示，低风险。 |
@@ -102,7 +102,42 @@
 oracle 误设顶点按 `grid.indices` 顺序（实为空间深度优先序），改用 Raw build 自身 emitted 顶点作对照；
 ③ 编码器用截断（误差达 1 级）改四舍五入（误差半级）。
 
-**剩下**：`UpdateStreaming`（流送，仍是 TODO）、HiZ 遮挡（GPU 侧，需真机）。
+**剩下**：HiZ 遮挡（GPU 侧，需真机）。streaming 已落地，见下方落地记录。
+
+---
+
+### 落地记录 · 2.5 streaming（2026-10-25）
+
+**做了什么**：把 `NaniteClusterManager::UpdateStreaming` 里那个长期空转的 `TODO: 实现流式加载逻辑`
+兑现为**基于距离的叶子驻留判据**：
+
+- **判据**：叶子集群包围盒中心到相机的距离 ≤ `streaming_distance` ⇒ 驻留；否则未驻留。
+- **内部节点永远驻留**：它们不提交渲染（`IsClusterVisible` 对非叶子恒返回 false），卸载没有任何
+  渲染收益，只会让层次查询拿到空缺。保持"结构节点随时可读"的不变量。
+- **`enable_streaming == false`**：一切驻留，等价于"没有流式加载"，注册即整个驻留内存。是一等配置。
+- **驻留变化的转移**记入 `m_StreamingQueue`（`UpdateStreaming` 首次有真实写者）。
+
+**关键设计约束（都写进了代码注释）**：
+1. **`cluster_loaded_flags` 目前是策略/可见性闸门，不是物理显存回收**。所有集群共享**同一段**
+   `vertex_data`/`index_data` 字节流（深度优先连续窗口），卸载中间一个集群会破坏邻居的 offset。
+   真正的按页驻留要等**页池**落地（step 2.5 后续）；届时语义从"标不标"升级为"拷不拷得进页"。
+   这是架构事实逼出来的边界，不是偷懒。
+2. **没有网格简化器**：内部节点的几何窗口 == 子树几何的完整聚合（`CalculateClusterError` 返回
+   radius）。所以"用父节点几何回退"不省三角形（画父=重画整棵子树），父回退在无简化器时无意义。
+   流送因此只做**距离裁剪**，不做反馈式码率预算（那需要屏幕误差积分 + 真实页池）。
+
+**接线**：`NaniteRenderer::PrepareRenderData` 的逐叶子裁剪循环加了 `IsClusterLoaded` 闸门——未驻留
+的叶子本帧不提交渲染。**注册时 flags 全为 true、且 `UpdateStreaming` 此前无帧循环调用者**，所以这条
+在既有路径里恒放行，不影响任何现存行为（67 项旧断言 + 裁剪 smoke test 全不受影响），只在流送真正
+跑起来后生效。
+
+**验证（headless WASM，无需浏览器/重启/真机）**：复用 `scripts/verify_nanite_wasm.sh`，在
+`NaniteClusterBuilderSmokeTest.cpp` 加 10 项 streaming 断言。**77/77 全绿**（67 项旧 + 10 项新）：
+注册即全驻留、超大距离=全驻留、相机超出距离=叶子全卸载但内部节点存活、中距离=真·部分驻留
+（证明距离梯度在排序叶子、不是整块翻转）、`enable_streaming=false`=任意距离全驻留。
+
+**诚实定位**：这是**距离裁剪**，不是 UE 那套 streaming pool。它带来真能力（远处叶子不再进裁剪/
+渲染），但没有带宽预算、没有按需分页、没有物理显存回收。页池是明确的后续项。
 
 ---
 

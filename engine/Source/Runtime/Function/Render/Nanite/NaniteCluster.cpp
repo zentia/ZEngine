@@ -573,8 +573,58 @@ void NaniteClusterManager::UnregisterMeshResource(uint64_t mesh_id)
 
 void NaniteClusterManager::UpdateStreaming(const Vector3& camera_position, float streaming_distance)
 {
-    // TODO: 实现流式加载逻辑
+    // 流送开关关掉时：一切驻留 —— 等价于"没有流式加载"，注册即整个驻留内存。
+    if (!m_Config.enable_streaming)
+    {
+        for (auto& entry : m_MeshResources)
+        {
+            std::fill(entry.second.cluster_loaded_flags.begin(),
+                      entry.second.cluster_loaded_flags.end(), true);
+        }
+        m_StreamingQueue.clear();
+        return;
+    }
+
     m_StreamingQueue.clear();
+
+    for (auto& entry : m_MeshResources)
+    {
+        const NaniteMeshResource& mesh = entry.second.mesh_resource;
+        std::vector<bool>& loaded = entry.second.cluster_loaded_flags;
+
+        for (uint32_t cluster_index = 0; cluster_index < mesh.clusters.size(); ++cluster_index)
+        {
+            const NaniteCluster& cluster = mesh.clusters[cluster_index];
+
+            // 内部节点不提交渲染（IsClusterVisible 对非叶子恒返回 false），它的几何
+            // 窗口只是整棵子树的聚合。流送只决定**叶子**的驻留；内部节点永远保持
+            // 驻留，维持"结构节点随时可读"的不变量 —— 卸载它们没有任何渲染收益，
+            // 只会让层次查询拿到空缺。
+            if (!cluster.is_leaf)
+            {
+                loaded[cluster_index] = true;
+                continue;
+            }
+
+            // 驻留判据 = 集群包围盒中心到相机的距离。这里**没有**反馈式码率预算
+            // （那需要屏幕误差积分 + 一个真实的页池），所以这是**距离裁剪**，不是
+            // UE 那套 streaming pool。叶子中心在 streaming_distance 之内 ⇒ 驻留；
+            // 之外 ⇒ 未驻留（本帧不提交渲染）。
+            //
+            // 重要：cluster_loaded_flags 目前是**策略/可见性闸门**，不是物理显存
+            // 回收。所有集群共享同一段 vertex_data/index_data 字节流（深度优先连续
+            // 窗口），卸载中间一个集群会破坏邻居的 offset。真正的按页驻留要等页池
+            // 落地（step 2.5 后续）；届时这里的语义从"标不标"升级为"拷不拷得进页"。
+            const float dist = camera_position.distance(cluster.bounds.getCenter());
+            const bool resident = dist <= streaming_distance;
+
+            if (loaded[cluster_index] != resident)
+            {
+                loaded[cluster_index] = resident;
+                m_StreamingQueue.emplace_back(entry.first, cluster_index);
+            }
+        }
+    }
 }
 
 const std::vector<uint32_t>& NaniteClusterManager::GetVisibleClusters(uint64_t mesh_id) const
