@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <type_traits>
@@ -549,6 +550,30 @@ public:
 
     /// 当前所有变量的值快照（键为规范化小写名），配合 SaveVariablesToFile 只存改过的值。
     std::unordered_map<std::string, std::string> SnapshotVariableValues() const;
+
+    // ============================================
+    // 启动 CVar 文件（UE 的 Config/ConsoleVariables.ini）
+    // ============================================
+    // 启动顺序：所有系统 Initialize 完（CVar 都已注册）→ LoadStartupVariables() →
+    // 命令行 `--cvar name=value`。后者覆盖前者，和 UE 一样命令行优先。
+
+    static constexpr const char* k_startup_variables_file_name = "ConsoleVariables.ini";
+    static constexpr const char* k_startup_variables_env = "ZENGINE_CVAR_FILE";
+
+    /// 决定启动时读哪个文件。`override_spec` 来自 `--cvar-file` 或环境变量 ZENGINE_CVAR_FILE：
+    ///   nullptr / 空串                     → <project_root>/Config/ConsoleVariables.ini
+    ///   "none" / "off" / "0"（不分大小写） → 关闭，返回空路径
+    ///   其它                               → 当成文件路径（相对路径相对当前目录）
+    static std::filesystem::path ResolveStartupVariablesFile(const std::filesystem::path& project_root,
+                                                             const char* override_spec);
+
+    /// 应用启动文件。路径为空（已关闭）或文件不存在都不算错误，返回 0；
+    /// 存在时等同 LoadVariablesFromFile（返回应用条数，打不开 -1）。
+    int LoadStartupVariablesFile(const std::filesystem::path& file);
+
+    /// 一步到位：`override_spec` 为 nullptr 时读环境变量 ZENGINE_CVAR_FILE；项目根取
+    /// ProjectInfo::GetProjectRoot()，没有项目时取当前目录。
+    int LoadStartupVariables(const char* override_spec = nullptr);
 
 private:
     static std::string NormalizeKey(const std::string& name);

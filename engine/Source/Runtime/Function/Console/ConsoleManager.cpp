@@ -2,8 +2,11 @@
 
 #include "RuntimeConsoleCommands.h"
 
+#include "Runtime/Project/ProjectInfo.h"
+
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <fstream>
 
 std::string ConsoleManager::NormalizeKey(const std::string& name)
@@ -510,6 +513,58 @@ int ConsoleManager::SaveVariablesToFile(const std::string& path,
         return -1;
     }
     return static_cast<int>(lines.size());
+}
+
+std::filesystem::path ConsoleManager::ResolveStartupVariablesFile(const std::filesystem::path& project_root,
+                                                                 const char* override_spec)
+{
+    const std::string spec = TrimCopy(override_spec != nullptr ? std::string(override_spec) : std::string());
+    if (spec.empty())
+    {
+        return project_root / "Config" / k_startup_variables_file_name;
+    }
+    const std::string key = NormalizeKey(spec);
+    if (key == "none" || key == "off" || key == "0")
+    {
+        return {};
+    }
+    return std::filesystem::path(spec);
+}
+
+int ConsoleManager::LoadStartupVariablesFile(const std::filesystem::path& file)
+{
+    if (file.empty())
+    {
+        LOG_INFO(ZConsole, "startup cvar file disabled");
+        return 0;
+    }
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(file, ec))
+    {
+        // The common case (no project override yet), so not even a warning.
+        LOG_INFO(ZConsole, "no startup cvar file at '{}'", file.generic_string());
+        return 0;
+    }
+    return LoadVariablesFromFile(file.string());
+}
+
+int ConsoleManager::LoadStartupVariables(const char* override_spec)
+{
+    if (override_spec == nullptr)
+    {
+        override_spec = std::getenv(k_startup_variables_env);
+    }
+    std::filesystem::path project_root;
+    if (const auto project_info = GET_SYSTEM(ProjectInfo))
+    {
+        project_root = project_info->GetProjectRoot();
+    }
+    if (project_root.empty())
+    {
+        std::error_code ec;
+        project_root = std::filesystem::current_path(ec);
+    }
+    return LoadStartupVariablesFile(ResolveStartupVariablesFile(project_root, override_spec));
 }
 
 int ConsoleManager::LoadVariablesFromFile(const std::string& path, std::vector<std::string>* out_failed)

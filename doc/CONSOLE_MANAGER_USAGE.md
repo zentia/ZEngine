@@ -380,13 +380,30 @@ cvar.load Saved/ConsoleVariables.ini     # 逐行应用
   （原 `std::to_string` 固定 6 位小数，`1e-7` 会存成 `0.000000`）。
 - 数值解析改为整串校验：`12abc`、超出 int 范围、空串都判为非法（原 `std::stoi` 会把 `12abc` 当成 12；web 构建关闭了
   异常捕获，`stoi` 遇到非数字直接让进程 abort）。
-- 测试：`Function/Console/Test/ConsoleVariablesFileSmokeTest.cpp`（41 项，C1-C7），CMake 开关
+### 启动时自动加载（2026-10-26）
+
+编辑器（`Editor/Main/Main.cpp`）和 `ZGame` 在 `START_SYSTEM()` 之后、第一帧之前调用
+`ConsoleManager::LoadStartupVariables()`：
+
+| 来源（优先级从高到低） | 效果 |
+|---|---|
+| 命令行 `--cvar-file <path>` | 读这个文件；`none` / `off` / `0` 关闭 |
+| 环境变量 `ZENGINE_CVAR_FILE` | 同上 |
+| 默认 | `<项目根>/Config/ConsoleVariables.ini`（没有项目时取当前目录） |
+
+- 文件不存在不算错误（只记一条 INFO），关闭时同样返回 0。
+- 之后再应用命令行的 `--cvar name=value`，所以**命令行覆盖文件**（UE 同序）。
+- 只在所有系统初始化完之后读，此时各模块的 CVar 都已注册；之后才注册的变量（例如某些面板首次打开时才注册）
+  不会被启动文件命中，会记 `unknown variable` 警告。
+
+- 测试：`Function/Console/Test/ConsoleVariablesFileSmokeTest.cpp`（56 项，C1-C8；C8 为启动文件），CMake 开关
   `ZENGINE_BUILD_CONSOLE_VARIABLES_FILE_SMOKE_TEST`；无头运行 `python scripts/web_smoke_run.py <该文件>`。
 
 ## 未来改进
 
 - [x] 配置文件支持（保存/加载CVar值）——见下方“CVar 配置文件”
-- [ ] 启动时自动加载（项目 / 用户级 ConsoleVariables.ini）——当前需手动 `cvar.load`
+- [x] 启动时自动加载项目级 `Config/ConsoleVariables.ini`（2026-10-26，见上）
+- [ ] 用户级（不进版本库）的覆盖文件，例如 `Saved/Config/ConsoleVariables.ini`
 - [ ] 网络同步（多人游戏中同步CVar）
 - [ ] 命令权限系统（区分开发/发布命令）
 - [ ] 更强大的参数解析（支持命名参数等）

@@ -21,6 +21,7 @@
 #include "Runtime/Function/Console/ConsoleManager.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -70,6 +71,26 @@ namespace
         v.b = console.RegisterBoolVariable("t.Enable", "test bool", false);
         v.s = console.RegisterStringVariable("t.Name", "test string", "alpha");
         return v;
+    }
+
+    void SetEnv(const char* name, const char* value)
+    {
+#ifdef _WIN32
+        _putenv_s(name, value != nullptr ? value : "");
+#else
+        if (value != nullptr)
+            setenv(name, value, 1);
+        else
+            unsetenv(name);
+#endif
+    }
+
+    void WriteFile(const std::filesystem::path& path, const std::string& text)
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        out << text;
     }
 }  // namespace
 
@@ -217,6 +238,52 @@ int main()
     Check(cmd_var->getValue() == 123, "C7 value restored through the commands");
     Check(!full.ExecuteString("cvar.load"), "C7 'cvar.load' without a file fails");
     full.Shutdown();
+
+    // ---- C8 --------------------------------------------------------------------
+    // Startup file (UE Config/ConsoleVariables.ini): default location, overrides,
+    // disabling, missing file is not an error, the env var, --cvar wins.
+    std::printf("C8 startup cvar file\n");
+    {
+        const std::filesystem::path project = dir / "proj";
+        const std::filesystem::path expected = project / "Config" / "ConsoleVariables.ini";
+        Check(ConsoleManager::ResolveStartupVariablesFile(project, nullptr) == expected, "C8 default path");
+        Check(ConsoleManager::ResolveStartupVariablesFile(project, "") == expected, "C8 empty spec -> default path");
+        Check(ConsoleManager::ResolveStartupVariablesFile(project, "  ") == expected, "C8 blank spec -> default path");
+        Check(ConsoleManager::ResolveStartupVariablesFile(project, "none").empty(), "C8 'none' disables");
+        Check(ConsoleManager::ResolveStartupVariablesFile(project, "OFF").empty(), "C8 'OFF' disables (any case)");
+        Check(ConsoleManager::ResolveStartupVariablesFile(project, "0").empty(), "C8 '0' disables");
+        Check(ConsoleManager::ResolveStartupVariablesFile(project, "my.ini") == std::filesystem::path("my.ini"),
+              "C8 anything else is a path");
+
+        ConsoleManager boot;
+        auto count = boot.RegisterIntVariable("t.Count", "startup test", 3);
+        Check(boot.LoadStartupVariablesFile(expected) == 0 && count->getValue() == 3,
+              "C8 no file at the default location -> 0, nothing changes (not an error)");
+        Check(boot.LoadStartupVariablesFile({}) == 0 && count->getValue() == 3, "C8 disabled -> 0, nothing changes");
+
+        WriteFile(expected, "[Startup]\nt.Count=77\n");
+        Check(boot.LoadStartupVariablesFile(ConsoleManager::ResolveStartupVariablesFile(project, nullptr)) == 1 &&
+                  count->getValue() == 77,
+              "C8 default file applied");
+
+        const std::filesystem::path other = dir / "other.ini";
+        WriteFile(other, "t.Count=55\n");
+        Check(boot.LoadStartupVariables(other.generic_string().c_str()) == 1 && count->getValue() == 55,
+              "C8 explicit --cvar-file path applied");
+        count->SetValue(3);
+        Check(boot.LoadStartupVariables("none") == 0 && count->getValue() == 3, "C8 --cvar-file none -> nothing applied");
+
+        SetEnv(ConsoleManager::k_startup_variables_env, other.generic_string().c_str());
+        Check(boot.LoadStartupVariables() == 1 && count->getValue() == 55, "C8 ZENGINE_CVAR_FILE picked up");
+        count->SetValue(3);
+        Check(boot.LoadStartupVariables("none") == 0 && count->getValue() == 3,
+              "C8 an explicit spec wins over ZENGINE_CVAR_FILE");
+        SetEnv(ConsoleManager::k_startup_variables_env, nullptr);
+
+        // Startup order used by the editor / ZGame: file first, then --cvar.
+        boot.LoadStartupVariables(other.generic_string().c_str());
+        Check(boot.ExecuteString("t.Count=9") && count->getValue() == 9, "C8 a later --cvar overrides the file value");
+    }
 
     std::filesystem::remove_all(dir, ec);
     std::printf("\n%d checks, %d failures\n", g_Checks, g_Failures);
