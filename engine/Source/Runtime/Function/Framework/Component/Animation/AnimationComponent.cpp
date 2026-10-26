@@ -158,6 +158,11 @@ void AnimationComponent::SetSkeletonPath(const char* path)
     m_AnimationRes.skeleton_file_path = (path != nullptr) ? path : "";
 }
 
+void AnimationComponent::SetClipPath(const eastl::string& path)
+{
+    SetClipPath(path.c_str());
+}
+
 void AnimationComponent::SetClipPath(const char* path)
 {
     BlendState& blend_state = m_AnimationRes.blend_state;
