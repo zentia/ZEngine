@@ -50,6 +50,9 @@ void AbilitySystemComponent::Tick(float delta_time)
 
     // 更新能力
     UpdateAbilities(delta_time);
+
+    // 更新冷却时间
+    UpdateCooldowns(delta_time);
 }
 
 void AbilitySystemComponent::SetAttributeSet(AttributeSet* attr_set)
@@ -136,6 +139,11 @@ bool AbilitySystemComponent::TryActivateAbility(GameplayAbility* ability)
     ability->ActivateAbility(this, *spec);
     spec->setActive(true);
     m_ActiveAbilities.push_back(spec);
+
+    // 起冷却（仅当此能力配置了冷却时长）。剩余冷却存在 spec 上，由 UpdateCooldowns
+    // 每帧递减；CanActivateAbility 会在冷却未结束时拒绝再次激活。
+    if (ability->cooldown_duration > 0.0f)
+        spec->StartCooldown(ability->cooldown_duration);
 
     return true;
 }
@@ -381,6 +389,21 @@ void AbilitySystemComponent::UpdateAbilities(float delta_time)
         if (spec && spec->getAbility() && spec->isActive())
         {
             spec->getAbility()->tickAbility(delta_time, this, *spec);
+        }
+    }
+}
+
+void AbilitySystemComponent::UpdateCooldowns(float delta_time)
+{
+    // 冷却对所有已授予的能力递减（不论是否激活）——与 UE GAS 一致：能力结束后
+    // 冷却仍继续走，冷却未结束前 CanActivateAbility 会拒绝再次激活。
+    // 只对真正在冷却中的 spec 做写入，避免无谓地触碰其余 spec。
+    for (auto& pair : m_Abilities)
+    {
+        auto* spec = pair.second.get();
+        if (spec != nullptr && spec->IsOnCooldown())
+        {
+            spec->StepCooldown(delta_time);
         }
     }
 }

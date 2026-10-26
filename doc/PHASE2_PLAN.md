@@ -372,6 +372,30 @@ BackupOdd"钉成**编译期硬错误**（`RenderGraphBuilder::Declare` 拒绝；
 
 ---
 
+### 落地记录 · 穿插（2026-10-26）：GAS 冷却时间（主线卡真机时的本地可验 CPU 活）
+
+主线渲染候选（C3 HiZ / C4 GPU / C6 GPU / C7b Linux 实测）全部卡在真机验证时，挑了一件本机可闭环的
+CPU 能力缺口兑现——GAS 的冷却时间（此前 3 处 TODO：`GameplayAbility.cpp` 的冷却检查、
+`AbilitySystemComponent.h` 的冷却计时器、`AbilitySystemComponent.cpp` 的周期 tick）。
+
+- **设计**：冷却状态放在 **`GameplayAbilitySpec`**（per-ability 的实例化状态容器，已在
+  `m_Abilities` 里按能力键好），而非 ASC 的并行 map——避免两份会不同步的状态。把纯算术
+  （递减/钳制/判定）抽成 header-only 的 `Function/Gas/GasCooldown.h`（`gas_cooldown::StepCooldown /
+  IsOnCooldown / StartCooldown`），与 EnhancedInput 的 `ComputeFrameDelta` 同一手法：核心纯函数可脱离
+  ASC/GameplayAbility/AttributeSet 单测；spec 只做薄封装转发。
+- **接线**：`CanActivateAbility` 查 `spec.IsOnCooldown()` 拒绝冷却中的重复激活；
+  `TryActivateAbility` 激活后按 `cooldown_duration` 起表；`Tick` 新增 `UpdateCooldowns(dt)` 遍历递减
+  （只对冷却中的 spec 写入；冷却对所有已授予能力递减，不论激活态，与 UE GAS 一致）。删掉了 ASC.h
+  里那个被注释的 `m_CooldownTimers` map。
+- **验证**：新增 `Function/Gas/Test/GasCooldownSmokeTest.cpp`（header-only，只链 include root，开关
+  `ZENGINE_BUILD_GAS_COOLDOWN_SMOKE_TEST`），19 项 Check：StartCooldown 钳制、IsOnCooldown 边界、
+  StepCooldown 帧率无关性 + 负 dt/大 dt/过冲钳制、完整冷却周期到期、激活闸门语义。**19/19 全绿**。
+  ZRuntime 同步重建（ASC/spec 接线类型检查通过）。
+- **诚实边界**：纯 CPU 算术语义已验；ASC 层的端到端（真实激活→冷却→再激活的运行时流程）尚无驱动
+  它的游戏场景，属"接线已通、待真实内容"。
+
+---
+
 ## 3. 关于阶段一 #9（RHI 胖接口拆分）—— 建议**不**进 Phase 2
 
 阶段一已正确论证并后置（`PHASE1_FOUNDATION_PLAN.md:688-692, :822-824`）：`RHI.h` = **124 个纯虚、

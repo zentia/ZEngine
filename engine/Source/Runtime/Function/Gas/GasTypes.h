@@ -6,6 +6,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "GasCooldown.h"  // 冷却时间的纯算术核心（gas_cooldown::StepCooldown / IsOnCooldown）
+
 // Forward declarations
 class GameObject;
 class AbilitySystemComponent;
@@ -269,11 +271,31 @@ public:
     const GameplayTagContainer& getAbilityTags() const { return m_AbilityTags; }
     void setAbilityTags(const GameplayTagContainer& tags) { m_AbilityTags = tags; }
 
+    // ---- 冷却时间（per-spec，随帧递减；纯算术转发到 gas_cooldown）----------
+    // 冷却状态放在 spec 上（而非 ASC 的并行 map）：spec 本就是 per-ability 的
+    // 实例化状态容器，已在 AbilitySystemComponent::m_Abilities 里按能力键好，
+    // 无需再维护一份会与之不同步的 m_CooldownTimers。
+    // 激活成功后调用，把剩余冷却设为完整时长。
+    void StartCooldown(float duration) { m_CooldownRemaining = gas_cooldown::StartCooldown(duration); }
+
+    // 每帧递减（由 AbilitySystemComponent::UpdateCooldowns 统一驱动）。
+    void StepCooldown(float delta_time) { m_CooldownRemaining = gas_cooldown::StepCooldown(m_CooldownRemaining, delta_time); }
+
+    // 是否仍在冷却中（剩余 > 0）。CanActivateAbility 据此拒绝重复激活。
+    bool IsOnCooldown() const { return gas_cooldown::IsOnCooldown(m_CooldownRemaining); }
+
+    // 剩余冷却秒数（供 UI / 查询）。
+    float GetCooldownRemaining() const { return m_CooldownRemaining; }
+
+    // 强制清冷却（如能力被取消/重置）。
+    void ResetCooldown() { m_CooldownRemaining = 0.0f; }
+
 private:
     GameplayAbility* m_Ability;
     int32_t m_Level;
     bool m_IsActive;
     GameplayTagContainer m_AbilityTags;
+    float m_CooldownRemaining {0.0f};  // 剩余冷却秒数；> 0 表示在冷却中
 };
 
 // ============================================================================
