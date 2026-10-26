@@ -51,6 +51,10 @@
 //      revert / apply one field; apply writes the source file with the same
 //      fileIDs and refreshes the level's other instance (keeping its own
 //      override); a zero position survives the leaf-by-leaf splice
+//   P18 positional-stream symmetry: a MeshRenderer with sub-meshes instantiates
+//      from a .prefab (it crashed: TransformTRS / Material probed legacy fields on
+//      StreamedBinaryRead and misaligned the clone's stream); plus every
+//      producible runtime type: write -> clone -> write gives the same bytes
 //   P13 player cook (SceneCook): the editor-only PrefabInstance and the externals
 //      only it used leave the cooked scene; the cooked scene loads with the
 //      overridden values and binds no instance. Plus StripObjectsFromGraph on a
@@ -78,6 +82,8 @@
 #include "Runtime/BaseClasses/TypeManager.h"
 #include "Runtime/Core/YamlSerialize/YamlObjectGraph.h"
 #include "Runtime/Core/Base/SystemRegistry.h"
+#include "Runtime/Core/Serialize/TransferUtility.h"
+#include "Runtime/Function/Framework/Component/Mesh/MeshRenderer.h"
 #include "Runtime/Function/Framework/Level/Level.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/RegisterRuntime.h"
@@ -1222,6 +1228,89 @@ static void scenario_P17_inspector_override_model()
     std::filesystem::remove(copy, ec);
 }
 
+static void scenario_P18_positional_stream_symmetry()
+{
+    std::fprintf(stderr, "[P18] positional stream symmetry (prefab clone of a MeshRenderer, every type)\n");
+    std::error_code ec;
+    const std::filesystem::path prefab = "p18_mesh.prefab";
+    std::filesystem::remove(prefab, ec);
+
+    // ---- the reported crash: a prefab with a MeshRenderer ----
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    GameObject* go = MakeGameObject(om, "P18Sky");
+    auto* renderer = static_cast<MeshRenderer*>(om->Produce(TypeOf<MeshRenderer>(), 0));
+    if (go == nullptr || renderer == nullptr)
+    {
+        Check(false, "P18", "authoring failed");
+        return;
+    }
+    om->AllocateAndAssignInstanceID(renderer);
+    SubMeshRes sub;
+    sub.m_MeshAsset = "SkyDome.obj";
+    sub.m_Transform = TransformTRS(Vector3(1.0f, 2.0f, 3.0f), Quaternion::IDENTITY, Vector3(4.0f, 5.0f, 6.0f));
+    renderer->SetSubMeshes({sub, sub});
+    renderer->SetSharedMaterialAssets({"Sky.mat", "Other.mat"});
+    go->addComponent(renderer);
+    go->SyncSerializedComponents();
+    renderer->PostLoadResource(go);
+    Check(PrefabUtility::SaveAsPrefabAsset(go, prefab), "P18", "saving the MeshRenderer prefab failed");
+
+    PrefabInstance* instance = PrefabUtilityEditor::InstantiateAsPrefab(prefab);
+    Check(instance != nullptr, "P18", "InstantiateAsPrefab of a MeshRenderer prefab failed");
+    if (instance != nullptr)
+    {
+        GameObject* root = instance->GetRootGameObject();
+        MeshRenderer* clone = root != nullptr ? root->tryGetComponent(MeshRenderer) : nullptr;
+        Check(clone != nullptr, "P18", "the clone has no MeshRenderer");
+        if (clone != nullptr)
+        {
+            const auto& subs = clone->getSubMeshes();
+            const auto& mats = clone->getSharedMaterialAssets();
+            Check(subs.size() == 2 && mats.size() == 2, "P18", "clone: 2 sub-meshes, 2 materials");
+            if (subs.size() == 2)
+            {
+                Check(subs[1].m_MeshAsset == eastl::string("SkyDome.obj"), "P18", "clone: sub-mesh asset");
+                Check(Near(static_cast<float>(subs[1].m_Transform.m_Position.y), 2.0f) &&
+                          Near(subs[1].m_Transform.m_Scale.z, 6.0f),
+                      "P18", "clone: sub-mesh transform");
+            }
+            Check(mats.size() == 2 && mats[1] == eastl::string("Other.mat"), "P18", "clone: material list");
+        }
+    }
+    std::filesystem::remove(prefab, ec);
+
+    // ---- every producible runtime type: a positional read takes exactly the bytes
+    //      the writer emitted (write -> read into a fresh object -> write again) ----
+    RuntimeTypeArray& types = TypeManager::GetInstance().GetRuntimeTypes();
+    int checked = 0;
+    for (uint32_t i = 0; i < types.count; ++i)
+    {
+        const Type* type = types.types[i];
+        if (type == nullptr || type->isAbstract || type->GetFactory() == nullptr)
+            continue;
+        Object* a = om->Produce(type, 0);
+        Object* b = om->Produce(type, 0);
+        if (a == nullptr || b == nullptr)
+            continue;
+        std::vector<uint8_t> first;
+        TransferUtility::WriteObjectToVector(*a, first);
+        std::vector<uint8_t> copy = first;
+        TransferUtility::ReadObjectFromVector(*b, copy);
+        std::vector<uint8_t> second;
+        TransferUtility::WriteObjectToVector(*b, second);
+        if (first != second)
+        {
+            std::fprintf(stderr, "    asymmetric: %s (%zu -> %zu bytes)\n", type->GetName(), first.size(), second.size());
+            Check(false, "P18/types", "write -> positional read -> write changed the bytes");
+        }
+        ++checked;
+        om->Destroy(a);
+        om->Destroy(b);
+    }
+    std::fprintf(stderr, "    %d types round-tripped\n", checked);
+    Check(checked > 20, "P18/types", "expected to round-trip the registered runtime types");
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -1254,6 +1343,7 @@ int main()
     scenario_P15_drop_twice();
     scenario_P16_build_dependencies();
     scenario_P17_inspector_override_model();
+    scenario_P18_positional_stream_symmetry();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,
