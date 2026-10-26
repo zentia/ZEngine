@@ -177,19 +177,21 @@ bool MainCameraRp2Pass::Initialize(bool enable_fxaa)
 
 void MainCameraRp2Pass::SetupRenderGraphPath()
 {
-    // Opt-in. The hand-written path is the one that has been shipping, and the graph path
-    // still needs per-frame visual verification, so it stays off unless asked for.
+    // Default ON: the render-graph RP2 path was verified bit-identical to the hand-written
+    // chain by the in-frame A/B capture (DX12RenderGraphAbCapture + scripts/rg_ab_compare.py)
+    // on 2026-10-26 -- the RP2 readbacks matched to the byte, zero debug-layer errors.
+    // Set ZENGINE_RG_RP2=0 to force the hand-written chain (kept as the fallback and for
+    // A/B comparison; the capture drives both paths directly regardless of this).
     const char* env = std::getenv("ZENGINE_RG_RP2");
+    const bool disabled = (env != nullptr && env[0] == '0');
     m_UseRenderGraph = false;
-    if (env == nullptr || env[0] == '\0' || env[0] == '0')
+    if (disabled)
     {
         return;
     }
 
     SetRenderGraphPathEnabled(true);
-    LOG_INFO(ZRender,
-             "MainCameraRp2Pass: RP2 is driven by the render graph (ZENGINE_RG_RP2=1), fxaa={}",
-             m_EnableFxaa);
+    LOG_INFO(ZRender, "MainCameraRp2Pass: RP2 is driven by the render graph");
 }
 
 bool MainCameraRp2Pass::SetRenderGraphPathEnabled(bool enabled)
@@ -681,9 +683,9 @@ void MainCameraRp2Pass::DrawRP2(uint32_t swapchain_image_index,
     }
 
     m_LastDrawUsedGraph = false;
-    // Opt-in: ZENGINE_RG_RP2=1. DrawRP2WithGraph() returns false whenever the graph cannot
-    // take over -- most importantly when Compile() is invalid -- and the hand-written chain
-    // below then draws the frame exactly as it always has.
+    // Default ON (ZENGINE_RG_RP2=0 disables). DrawRP2WithGraph() returns false whenever the
+    // graph cannot take over -- most importantly when Compile() is invalid -- and the
+    // hand-written chain below then draws the frame exactly as it always has.
     if (m_UseRenderGraph && DrawRP2WithGraph(swapchain_image_index, post_ui_callbacks))
     {
         m_LastDrawUsedGraph = true;
