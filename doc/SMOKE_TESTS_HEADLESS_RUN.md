@@ -64,6 +64,22 @@ Prefab 端到端（`scripts/verify_prefab_e2e.sh`，不在本表的 49 个之内
 7 SKIP / 1 BUILD，BUILD 是 PrefabEndToEnd 新依赖 `Editor/Build/SceneCook.cpp` 没登记进本脚本的额外源文件表，补登记后
 单独复跑 PASS（207 项），PlayerSettings 这次也 PASS。
 
+### 多线程变体（2026-10-26）
+
+原先因"web 构建没有 pthreads"标 ENV 的 3 个（CrashLogTail、Pptr、Addressables）现在真跑并 PASS：
+`scripts/web_smoke_run.py --threads` 改用第二棵构建树 `build-web-mt`（`-pthread` 编译，库输出到 `bin/web-mt/`，不覆盖
+`bin/libZRuntime.a`），链接加 `-pthread -sPTHREAD_POOL_SIZE=8 -sPROXY_TO_PTHREAD=1`。共享内存的 wasm 要求**每个**目标文件
+都带 atomics / bulk-memory，所以必须是独立构建树而不是一个链接开关。`run_all_smoke_tests_web.py` 对这 3 个测试在
+`build-web-mt` 存在时自动加 `--threads`，不存在时退回单线程（仍报 ENV）。配置命令写在 `web_smoke_run.py` 的 `BUILD_MT` 注释里。
+CrashLogTail 的并发场景（多线程写环形缓冲、无丢失无撕裂）、Pptr 的 P7 并发、Addressables 的异步加载都在多线程下通过。
+
+**坑**：配置任一棵树都会重新生成 `engine_log.h`，让**另一棵**树的 PCH 失效（全量跑出 25 个 BUILD，全是
+"file has been modified since the precompiled header was built"）。在那棵树里 `ninja ZEnginePCH libZRuntime.a` 后恢复。
+
+2026-10-26 最终复跑：**37 PASS / 4 ENV / 7 SKIP / 1 FAIL**，那个 FAIL 仍是 PlayerSettings 撞上宿主 safe-delete 拦截（见上），
+单独复跑 PASS；本脚本现在把这条输出识别为 ENV。剩下的 4 个 ENV：PPtrLifetime、UafDetection（要起子进程）、
+LumenRenderPassWiring（web 库里 `UpdateLumen` 不带 `Z_HAS_LUMEN`）、DerivedDataCache（LMDB 要 MAP_SHARED）。
+
 ## 局限
 
 - 这是 **wasm 单线程 + node** 环境：凡是被测对象本身要线程、子进程、GPU、真 mmap 的，只能标 ENV / SKIP，不能当成通过。

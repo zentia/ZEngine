@@ -57,12 +57,22 @@ EXTRA = {
     'LumenPerFrameBridgeSmokeTest': [],
 }
 
+# Smoke tests whose subject is std::thread: run against the pthreads tree
+# (web_smoke_run.py --threads, build-web-mt -> bin/web-mt/libZRuntime.a). Without that
+# tree configured they fall back to the single-threaded build and report ENV.
+THREADED = {'CrashLogTailSmokeTest', 'PptrSmokeTest', 'AddressablesSmokeTest'}
+BUILD_MT_NINJA = os.path.join(ROOT, 'build-web-mt', 'build.ninja')
+
 # Smoke tests whose subject needs something node's single-threaded wasm cannot give:
 # std::thread (no -pthread in this build), a child process, or a GPU device. They
 # build and start; their failure says nothing about the code. Detected from output.
 ENV_LIMIT_MARKERS = {
     'thread constructor failed': 'needs std::thread (wasm build has no pthreads)',
     'child probe process spawned': 'spawns a child process (not possible under node)',
+    # Not the engine: the WorkBuddy host injects a node delete guard that throws once a
+    # single agent turn has deleted 50 files; a full sweep reaches it inside a test's
+    # remove_all. The test passes when re-run on its own (or from a plain terminal).
+    'SAFE_DELETE_BULK_CONFIRM_REQUIRED': 'host node safe-delete guard tripped (50 deletes per turn); re-run alone',
 }
 # Same, but recognised by test name because the failure has no distinctive text.
 ENV_LIMIT_TESTS = {
@@ -176,6 +186,8 @@ def main():
             print('SKIP    %-40s %s' % (name, PLATFORM_ONLY[name]), flush=True)
             continue
         cmd = [sys.executable, os.path.join(ROOT, 'scripts', 'web_smoke_run.py'), path]
+        if name in THREADED and os.path.isfile(BUILD_MT_NINJA):
+            cmd.append('--threads')
         for x in expand(EXTRA.get(name, [])):
             cmd += ['--extra', x]
         for d in INCLUDE_DIRS.get(name, []):

@@ -32,6 +32,19 @@ import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 BUILD = os.path.join(ROOT, 'build-web')
+# --threads: the pthreads build. Configure once (output lands in bin/web-mt/, so it
+# does not overwrite build-web's bin/libZRuntime.a):
+#   emcmake cmake -S . -B build-web-mt -G Ninja -DCMAKE_BUILD_TYPE=Debug
+#       -DZENGINE_OUTPUT_SUBDIR=web-mt -DCMAKE_C_FLAGS=-pthread -DCMAKE_CXX_FLAGS=-pthread
+#       -DCMAKE_EXE_LINKER_FLAGS=-pthread -DZENGINE_BUILD_NANITE_CLUSTER_SMOKE_TEST=ON
+#       -DZENGINE_BUILD_DATATABLE_COOK=ON
+#   ninja -C build-web-mt libZRuntime.a
+# Every object linked into a shared-memory wasm must be built with -pthread (atomics +
+# bulk-memory), which is why this is a separate build tree rather than a link flag.
+# NOTE: configuring either tree regenerates engine_log.h, which invalidates the OTHER
+# tree's PCH -- run `ninja ZEnginePCH libZRuntime.a` there before its next test run.
+BUILD_MT = os.path.join(ROOT, 'build-web-mt')
+THREAD_LINK_FLAGS = ' -pthread -sPTHREAD_POOL_SIZE=8 -sPROXY_TO_PTHREAD=1'
 NINJA = r'C:\emsdk\ninja\1.13.2_64bit\ninja.exe'
 TEMPLATE_TARGET = 'engine/Source/Runtime/Function/Render/Nanite/Test/NaniteClusterBuilderSmokeTest.js'
 TEMPLATE_SOURCE = 'Function/Render/Nanite/Test/NaniteClusterBuilderSmokeTest.cpp'
@@ -74,6 +87,8 @@ def main():
                     help='extra -I directory (what the CMake target adds with target_include_directories)')
     ap.add_argument('--define', action='append', default=[],
                     help='extra -D NAME=VALUE (what the CMake target adds with target_compile_definitions)')
+    ap.add_argument('--threads', action='store_true',
+                    help='build and run against the pthreads tree (build-web-mt, bin/web-mt/libZRuntime.a)')
     ap.add_argument('--link', action='append', default=[],
                     help='extra static library to link (e.g. bin/libbc7enc.a)')
     argv = sys.argv[1:]
@@ -82,6 +97,13 @@ def main():
         i = argv.index('--')
         argv, test_args = argv[:i], argv[i + 1:]
     a = ap.parse_args(argv)
+    global BUILD
+    if a.threads:
+        BUILD = BUILD_MT
+        if not os.path.isfile(os.path.join(BUILD, 'build.ninja')):
+            print('web_smoke_run: --threads needs the configured build-web-mt tree (see the comment at BUILD_MT)',
+                  file=sys.stderr)
+            return 3
 
     source = os.path.abspath(a.source).replace('\\', '/')
     name = a.name or os.path.splitext(os.path.basename(source))[0]
@@ -146,7 +168,8 @@ def main():
                 "    };\n"
                 "  }\n"
                 "}]);\n")
-    ld = ld.replace(' -rdynamic', ' -rdynamic' + NODE_LINK_FLAGS + ' --pre-js ' + pre_js, 1)
+    link_flags = NODE_LINK_FLAGS + (THREAD_LINK_FLAGS if a.threads else '')
+    ld = ld.replace(' -rdynamic', ' -rdynamic' + link_flags + ' --pre-js ' + pre_js, 1)
     print(f'==> linking {name}.js (ZRuntime --whole-archive)')
     r = run(ld, BUILD, capture_output=True, text=True)
     if r.returncode != 0:
