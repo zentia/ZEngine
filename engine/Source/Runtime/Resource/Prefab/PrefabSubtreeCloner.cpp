@@ -1,4 +1,4 @@
-#include "Editor/Prefab/EditorPrefabCloner.h"
+#include "Runtime/Resource/Prefab/PrefabSubtreeCloner.h"
 
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/BaseClasses/Object.h"
@@ -12,7 +12,7 @@
 #include <vector>
 #include "Runtime/BaseClasses/Cast.h"
 
-namespace prefab_editor
+namespace prefab_clone
 {
 
     namespace
@@ -92,7 +92,7 @@ namespace prefab_editor
                     if (child_go == nullptr)
                     {
                         LOG_WARNING(ZPrefab,
-                                    "EditorPrefabCloner: a child Transform of '{}' has no resolvable GameObject; "
+                                    "PrefabSubtreeCloner: a child Transform of '{}' has no resolvable GameObject; "
                                     "its subtree is not cloned",
                                     go->GetName().c_str());
                         continue;
@@ -163,7 +163,7 @@ namespace prefab_editor
         CloneResult result;
         if (source_root == nullptr)
         {
-            LOG_ERROR(ZPrefab, "EditorPrefabCloner::CloneSubtree: null source_root");
+            LOG_ERROR(ZPrefab, "PrefabSubtreeCloner::CloneSubtree: null source_root");
             return result;
         }
 
@@ -183,7 +183,7 @@ namespace prefab_editor
             Object* clone = TransferUtility::CloneObjectViaSerialization(*source);
             if (clone == nullptr)
             {
-                LOG_ERROR(ZPrefab, "EditorPrefabCloner: CloneObjectViaSerialization failed for type '{}'", source->GetTypeName());
+                LOG_ERROR(ZPrefab, "PrefabSubtreeCloner: CloneObjectViaSerialization failed for type '{}'", source->GetTypeName());
                 return nullptr;
             }
             result.sources.push_back(source);
@@ -256,13 +256,13 @@ namespace prefab_editor
         auto root_it = result.ptr_map.find(source_root);
         if (root_it == result.ptr_map.end())
         {
-            LOG_ERROR(ZPrefab, "EditorPrefabCloner: clone_root resolution failed (missing in ptr_map)");
+            LOG_ERROR(ZPrefab, "PrefabSubtreeCloner: clone_root resolution failed (missing in ptr_map)");
             return CloneResult {};
         }
         result.clone_root = static_cast<GameObject*>(root_it->second);
 
-        LOG_INFO(ZPrefab, "EditorPrefabCloner: cloned subtree — {} GameObjects, {} Components", static_cast<int>(walk.game_objects.size()), static_cast<int>(walk.components.size()));
+        LOG_INFO(ZPrefab, "PrefabSubtreeCloner: cloned subtree — {} GameObjects, {} Components", static_cast<int>(walk.game_objects.size()), static_cast<int>(walk.components.size()));
         return result;
     }
 
-}  // namespace prefab_editor
+}  // namespace prefab_clone

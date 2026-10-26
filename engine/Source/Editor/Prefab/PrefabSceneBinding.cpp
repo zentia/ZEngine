@@ -1,6 +1,7 @@
 #include "Editor/Prefab/PrefabSceneBinding.h"
 
 #include "Editor/Prefab/PrefabInstance.h"
+#include "Editor/Prefab/PrefabUtilityEditor.h"
 #include "Runtime/BaseClasses/Cast.h"
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/Core/Base/Macro.h"
@@ -149,6 +150,20 @@ bool PrefabSceneBinding::PlaceInLevel(Level& level, PrefabInstance* instance)
     level.MarkDirty();
     Register(level, instance);
     return true;
+}
+
+PrefabInstance* PrefabSceneBinding::InstantiateIntoLevel(Level& level, const std::filesystem::path& prefab_path)
+{
+    PrefabInstance* instance = PrefabUtilityEditor::InstantiateAsPrefab(prefab_path);
+    if (instance == nullptr)
+    {
+        return nullptr;
+    }
+    if (!PlaceInLevel(level, instance))
+    {
+        return nullptr;
+    }
+    return instance;
 }
 
 void PrefabSceneBinding::Register(const Level& level, PrefabInstance* instance)

@@ -466,14 +466,14 @@ public:
 
 1. ~~**`.zasset` 示例 Prefab + 端到端单测**~~ —— **已落地（2026-10-25）**，见下方 §9.4.1。
 2. **PrefabInstance 自身序列化往返** —— **对象图层已验证（2026-10-25）**：PrefabInstance 与它的克隆子树作为一张对象图写进 `.zasset`（二进制）和 `.scene`（YAML）再读回，覆盖列表、corresponding-source 映射、实例根引用、跨文件的源 PrefabAsset 引用都保留（§9.4.1 的 P6）。**场景链路已接通（2026-10-26）**：`Level` 新增序列化钩子 `LevelSerializationHooks`（Runtime 侧只开扩展点，不认识 PrefabInstance），编辑器的 `PrefabSceneBinding`（`Editor/Prefab/PrefabSceneBinding.{h,cpp}`，`RegisterEditor()` 里 `Install()`）挂上三个钩子：`Level::save` 把根仍在关卡里的已登记实例写进同一个场景文件；`Level::LoadObjectGraph` 读回后把实例的 GameObject 引用从"文件里读出的 GameObject"改指到 Level 据此新建的活对象（组件是共享的，GameObject 不是）；`Level::Unload` 清登记。`PlaceInLevel(level, instance)` 是"把 Prefab 放进场景"那一步。见 §9.4.1 的 P7。
-3. **编辑器 UI 集成**：把 `RecordPropertyOverride` / `Apply` / `Revert` 接到 Inspector 的右键菜单；把内容浏览器拖 Prefab 进场景接到 `PrefabSceneBinding::PlaceInLevel`（现在拖放走的仍是旧的 `m_DefinitionUrl` 展开，不产生 PrefabInstance）。
+3. **编辑器 UI 集成**：把 `RecordPropertyOverride` / `Apply` / `Revert` 接到 Inspector 的右键菜单（**未做**）。内容浏览器拖 Prefab 进场景**已接（2026-10-26）**：`EditorScenePlacement` 改走 `PrefabSceneBinding::InstantiateIntoLevel`（= `InstantiateAsPrefab` + `PlaceInLevel`），一个撤销步骤；以前那条路径（`InstantiateFromPath` + 只 `CreateObject` 根）只把根放进关卡，子 GameObject 挂在根的 Transform 下却不是关卡对象，也不留 Prefab 关联。
 4. ~~**Cook 阶段 flatten**~~ —— **已落地（2026-10-26）**。场景里的 GameObject 树本来就是实例化 + 覆盖后的实体（`PrefabSceneBinding` 保存的就是它），所以 flatten = 去掉簿记对象，不需要重新展开。`Editor/Build/SceneCook.{h,cpp}`：`CookSceneFile` 去掉所有 `kTypeIsEditorOnly` 类型的对象，并裁掉只被它们引用的外部引用（源 `.prefab`），其余对象里的外部引用索引随之重编号；指向被删对象的引用置空并计数。纯文本层（`ZYaml::StripObjectsFromGraph`），不 Produce 对象，编辑器里开着同一个场景时打包也不受影响。`AssetBundleBuilder` 对 `.scene` 在源文件比烘焙副本新时重烘焙到 `Intermediate/Cooked/<平台>/` 并打包烘焙副本。只处理 YAML 场景；二进制关卡原样拷贝并告警。
    - 顺带修：`REGISTER_CLASS_TRAITS(kTypeIsEditorOnly)` 以前是**死元数据**——`IMPLEMENT_REGISTER_CLASS` 只把 `kTypeIsAbstract` 传进运行时 `Type`。现在 `Type::isEditorOnly` / `IsEditorOnly()`（末位成员带默认值，既有的位置初始化列表不受影响）。
    - **未做**：打包器的依赖遍历仍按 AssetRegistry 对**源**场景扫出的依赖走，所以只被 PrefabInstance 引用的源 `.prefab` 仍会进包（多一份体积，不影响正确性）。
 
 #### 9.4.1 端到端测试落地记录（2026-10-25）
 
-`engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp`（207 项断言；P1-P6 首版 58 项，P7-P13 于 2026-10-26 补），走真实代码和真实磁盘：
+`engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp`（230 项断言；P1-P6 首版 58 项，P7-P15 于 2026-10-26 补），走真实代码和真实磁盘：
 
 | 场景 | 内容 |
 |---|---|
@@ -489,6 +489,8 @@ public:
 | P10 | P7 换成 YAML 源 Prefab（`.prefab`）：场景存读（YAML + 二进制）后实例仍连得上源、Revert 有效 |
 | P11 | YAML Prefab 的非头对象惰性解引用：整图加载、按 ID 取到；之后 `LoadPrefabAsset` 复用这张图而不是再读一份，且能直接实例化 |
 | P12 | 同一 ID 下先后 Produce 两个对象，销毁被取代的第一个不能注销第二个的表项 |
+| P14 | 运行时 `PrefabUtility::InstantiateFromPath` 每次返回独立的一棵树（YAML / 二进制 Prefab 都测）：两次调用不共享对象、不交出缓存的模板图、改一个不影响另一个；`m_DefinitionUrl` 展开（`invoke_post_load=false`）两次不拿到同一组组件 |
+| P15 | 内容浏览器拖放路径 `InstantiateIntoLevel`：同一 Prefab 拖两次 = 两个独立的关联实例，4 个 GameObject 都是关卡对象，两个都会保存；拖不存在的 Prefab 失败且不动关卡 |
 | P13 | Player 烘焙：`PrefabInstance` 带编辑器专属标志、运行时类型不带；带覆盖的场景烘焙后没有 PrefabInstance、没有指向源 `.prefab` 的外部引用，烘焙副本能加载、两个 GameObject 和覆盖值都在、不绑定实例；手写对象图验证外部引用裁剪 + 重编号、悬空引用置空（4 处变异全红） |
 
 **运行方式**：`bash scripts/verify_prefab_e2e.sh`。无原生工具链时它用 `scripts/web_smoke_run.py`：借 build-web 里已配置的 smoke-test 目标的编译/链接命令，把测试和 `Editor/Prefab/*.cpp` 链到 web 版 `libZRuntime.a`（`--whole-archive`），补上 WebGL2 / emmalloc / NODERAWFS 链接参数后用 node 跑。原生构建可用 `-DZENGINE_BUILD_PREFAB_E2E_SMOKE_TEST=ON`。
@@ -515,6 +517,10 @@ public:
 12. **YAML 资产读出的对象没有文件身份**：`ReadObjectsFromYaml` 用全新的堆 ID Produce 对象，于是 ①场景引用 `.prefab` 里的对象时写成 null（堆 ID 查不到所属文件），读回的场景 Revert / Apply 全部失效；②从文件铸出的 PPtr 永远对不上已加载的对象。`ZYaml::ReadObjectGraph` 加可选的实例 ID 钩子，`AssetManager::ReadObjectsFromYaml` 传路径派生 ID——与二进制读取器一致。纯文本（无文件）的读取不传钩子，行为不变。
 13. 随之：惰性解引用 YAML 图的非头对象改为整图加载（原先对 YAML 直接返回 null）；`LoadPrefabAsset` 的"已加载就复用"从只认二进制扩到 YAML，且复用时若图是被惰性解引用加载的（没走过模板准备：重建组件列表 + 绑定归属）就补做。
 14. `Object::~Object` 无条件注销自己的 ID：同一文件被读两次时第二份对象接管表项，销毁第一份会把第二份的表项删掉 ⇒ 之后对它的 PPtr 解引用失败或触发重读。改为只在表项仍指向自己时注销（`ObjectManager::UnregisterInstanceID(id, expected)`）。
+
+**P14 暴露并修掉的问题（2026-10-26）**：
+
+15. **运行时实例化交出的是模板本身**：`PrefabUtility::Instantiate` 的约定是"每次返回独立的新树"，实现却是"在资产的图上跑一遍 post-load 然后返回它的根"，靠的是"每次都从磁盘重读"。二进制 `.zasset` 早就被缓存（路径派生 ID 不能重读），所以**两次实例化同一个二进制 Prefab 拿到的是同一组对象**；`d1a51a5e` 把 YAML 也改成缓存后，`.prefab` 也一样——**这一步是我上一提交引入的回归**（`GameObject::ExpandDefinition` 让所有引用同一 `m_DefinitionUrl` 的场景对象共享同一组组件实例）。修：结构克隆器从 `Editor/Prefab/EditorPrefabCloner` 挪到 `Runtime/Resource/Prefab/PrefabSubtreeCloner`（它只用 Runtime 类型；命名空间 `prefab_clone`），`Instantiate` 克隆缓存的模板后再跑 post-load，模板不动；`InstantiateFromPath` = `LoadPrefabAsset` + `Instantiate`。变异（恢复成交出模板）⇒ P14 六项红。
 
 **未验证**：编辑器里真的拖一个 Prefab 进场景、在 Inspector 上改值后 Apply、保存场景再打开（UI 链路本身是第 3 条，未接）。`Level::load(url)` 带物理场景的完整路径未在无头环境跑过（它与 `LoadObjectGraph` 的差别只在建物理场景）。
 

@@ -33,6 +33,13 @@
 //      YAML graph nothing has loaded yet; LoadPrefabAsset afterwards reuses it
 //   P12 a graph read twice puts a second object under the same path-derived ID;
 //      destroying the first copy must not unregister the second
+//   P14 runtime PrefabUtility::InstantiateFromPath honours its contract: every
+//      call returns an independent tree (no object shared with another call or
+//      with the cached template graph), for YAML and binary prefabs; the same
+//      for a scene GameObject's m_DefinitionUrl expansion
+//   P15 the content-browser drop path (PrefabSceneBinding::InstantiateIntoLevel):
+//      dropping one prefab twice gives two independent linked instances, all
+//      their GameObjects are level objects, both are saved
 //   P13 player cook (SceneCook): the editor-only PrefabInstance and the externals
 //      only it used leave the cooked scene; the cooked scene loads with the
 //      overridden values and binds no instance. Plus StripObjectsFromGraph on a
@@ -824,6 +831,118 @@ static void scenario_P13_player_cook()
           "the reference to the dropped local object was not nulled");
 }
 
+namespace
+{
+    std::vector<Object*> SubtreeObjects(GameObject* root)
+    {
+        std::vector<Object*> out;
+        std::vector<GameObject*> pending {root};
+        while (!pending.empty())
+        {
+            GameObject* go = pending.back();
+            pending.pop_back();
+            if (go == nullptr)
+                continue;
+            out.push_back(go);
+            for (ImmediatePtr<Component>& c : go->getComponents())
+            {
+                if (Component* component = c)
+                    out.push_back(component);
+            }
+            if (Transform* tc = TransformOf(go))
+            {
+                for (uint32_t i = 0; i < tc->GetChildCount(); ++i)
+                {
+                    Transform* child = tc->GetChild(i);
+                    if (child != nullptr)
+                        pending.push_back(child->GetParentObject());
+                }
+            }
+        }
+        return out;
+    }
+
+    bool Disjoint(const std::vector<Object*>& a, const std::vector<Object*>& b)
+    {
+        for (Object* x : a)
+            for (Object* y : b)
+                if (x == y)
+                    return false;
+        return true;
+    }
+}  // namespace
+
+static void scenario_P14_runtime_instantiate_independent()
+{
+    std::fprintf(stderr, "[P14] InstantiateFromPath returns independent trees\n");
+    const std::pair<const std::filesystem::path*, const char*> prefabs[] = {{&kYamlPrefabPath, "P14/yaml"},
+                                                                           {&kPrefabPath, "P14/binary"}};
+    for (const auto& prefab : prefabs)
+    {
+        const char* tag = prefab.second;
+        PrefabAsset* template_asset = PrefabUtility::LoadPrefabAsset(*prefab.first);
+        GameObject* a = PrefabUtility::InstantiateFromPath(*prefab.first);
+        GameObject* b = PrefabUtility::InstantiateFromPath(*prefab.first);
+        Check(a != nullptr && b != nullptr, tag, "InstantiateFromPath returned null");
+        if (a == nullptr || b == nullptr || template_asset == nullptr)
+            continue;
+        const std::vector<Object*> objects_a = SubtreeObjects(a);
+        const std::vector<Object*> objects_b = SubtreeObjects(b);
+        const std::vector<Object*> objects_t = SubtreeObjects(template_asset->GetRootGameObject());
+        Check(objects_a.size() == 4 && objects_b.size() == 4, tag, "each instance should be 2 GameObjects + 2 Transforms");
+        Check(Disjoint(objects_a, objects_b), tag, "two InstantiateFromPath calls share objects");
+        Check(Disjoint(objects_a, objects_t) && Disjoint(objects_b, objects_t), tag,
+              "InstantiateFromPath returned (part of) the cached template graph");
+        if (TransformOf(a) != nullptr && TransformOf(b) != nullptr)
+        {
+            TransformOf(a)->SetLocalScale(Vector3(9.0f, 9.0f, 9.0f));
+            Check(!Near(TransformOf(b)->GetLocalScale().x, 9.0f), tag, "editing one instance changed the other");
+            Check(Near(TransformOf(a)->GetLocalPosition().z, 3.0f), tag, "instance lost the prefab's values");
+        }
+        GameObject* child_a = FirstChild(a);
+        Check(child_a != nullptr && TransformOf(child_a) != nullptr && TransformOf(child_a)->GetParentObject() == child_a,
+              tag, "instance child Transform owner is not the instance child");
+    }
+
+    // m_DefinitionUrl expansion (GameObject::ExpandDefinition) merges the prefab
+    // root's components into the scene object: two scene objects must not end up
+    // sharing one component instance.
+    GameObject* first = PrefabUtility::InstantiateFromPath(kYamlPrefabPath, false);
+    GameObject* second = PrefabUtility::InstantiateFromPath(kYamlPrefabPath, false);
+    Check(first != nullptr && second != nullptr && TransformOf(first) != TransformOf(second), "P14/definition",
+          "definition expansion (invoke_post_load=false) hands two callers the same components");
+}
+
+static void scenario_P15_drop_twice()
+{
+    std::fprintf(stderr, "[P15] dropping one prefab twice\n");
+    PrefabSceneBinding::Install();
+    Level level;
+    PrefabInstance* first = PrefabSceneBinding::InstantiateIntoLevel(level, kYamlPrefabPath);
+    PrefabInstance* second = PrefabSceneBinding::InstantiateIntoLevel(level, kYamlPrefabPath);
+    Check(first != nullptr && second != nullptr && first != second, "P15", "two drops should give two instances");
+    if (first == nullptr || second == nullptr)
+        return;
+    Check(level.getAllGObjects().size() == 4, "P15", "two drops of a 2-GameObject prefab should add 4 level objects");
+    GameObject* root_a = first->GetRootGameObject();
+    GameObject* root_b = second->GetRootGameObject();
+    Check(root_a != nullptr && root_b != nullptr && root_a != root_b, "P15", "the instances share a root");
+    Check(InLevel(level, root_a) && InLevel(level, root_b) && InLevel(level, FirstChild(root_a)) &&
+              InLevel(level, FirstChild(root_b)),
+          "P15", "every GameObject of both instances must be a level object");
+    if (TransformOf(root_a) != nullptr && TransformOf(root_b) != nullptr)
+    {
+        Check(TransformOf(root_a) != TransformOf(root_b), "P15", "the instances share a Transform");
+        const float before = TransformOf(root_b)->GetLocalScale().x;
+        TransformOf(root_a)->SetLocalScale(Vector3(before + 2.0f, 1.0f, 1.0f));
+        Check(Near(TransformOf(root_b)->GetLocalScale().x, before), "P15", "editing one dropped instance changed the other");
+    }
+    Check(PrefabSceneBinding::GetInstancesToSave(level).size() == 2, "P15", "both dropped instances must be saved");
+    Check(PrefabSceneBinding::InstantiateIntoLevel(level, "no_such_prefab.prefab") == nullptr && level.getAllGObjects().size() == 4,
+          "P15", "dropping a missing prefab must fail without touching the level");
+    PrefabSceneBinding::Uninstall();
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -852,6 +971,8 @@ int main()
     scenario_P11_lazy_yaml_non_header_pptr();
     scenario_P12_duplicate_id_destroy();
     scenario_P13_player_cook();
+    scenario_P14_runtime_instantiate_independent();
+    scenario_P15_drop_twice();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,

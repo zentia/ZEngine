@@ -10,6 +10,7 @@
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
+#include "Runtime/Resource/Prefab/PrefabSubtreeCloner.h"
 
 #include <filesystem>
 #include <unordered_map>
@@ -17,6 +18,27 @@
 #include <utility>
 #include <vector>
 #include "Runtime/BaseClasses/Cast.h"
+
+namespace
+{
+    /// Post-read preparation of a prefab template GameObject: rebuild the live
+    /// component list from the just-read ImmediatePtr container, and bind owner
+    /// back-pointers only (no PostLoadResource: the graph is a template, not a live
+    /// scene object). Without the owners a child Transform cannot name its
+    /// GameObject, so cloning (EditorPrefabCloner), re-saving (SaveAsPrefabAsset's
+    /// flattener) and the post-load driver all stop at the root.
+    void PrepareTemplateGameObject(GameObject* go)
+    {
+        go->RebuildRuntimeComponents();
+        for (ImmediatePtr<Component>& component : go->getComponents())
+        {
+            if (Component* c = component)
+            {
+                c->BindOwnerIfUnbound(go);
+            }
+        }
+    }
+}  // namespace
 
 namespace
 {
@@ -286,41 +308,47 @@ GameObject* PrefabUtility::Instantiate(PrefabAsset* asset, bool invoke_post_load
         return nullptr;
     }
 
-    // Phase 1 contract: the caller is responsible for ensuring the asset has been
-    // freshly loaded (i.e. not shared with another live instance). The dedicated
-    // `InstantiateFromPath` overload makes that explicit by always re-reading the
-    // .zasset from disk; calling Instantiate(asset*) directly with a cached
-    // PrefabAsset effectively just re-roots the existing tree.
-    //
-    // True in-memory deep cloning (so multiple independent instances can coexist
-    // without re-hitting the disk) is the responsibility of Phase 2/3 — see
-    // doc/PrefabSystem_Design.md §3.1 for the design.
-
-    PrefabPostLoadDriver driver;
-    driver.Run(root, {}, invoke_post_load);
-    return root;
-}
-
-namespace
-{
-    /// Post-read preparation of a prefab template GameObject: rebuild the live
-    /// component list from the just-read ImmediatePtr container, and bind owner
-    /// back-pointers only (no PostLoadResource: the graph is a template, not a live
-    /// scene object). Without the owners a child Transform cannot name its
-    /// GameObject, so cloning (EditorPrefabCloner), re-saving (SaveAsPrefabAsset's
-    /// flattener) and the post-load driver all stop at the root.
-    void PrepareTemplateGameObject(GameObject* go)
+    // `asset` is the TEMPLATE: a prefab file's graph is loaded once and cached under
+    // path-derived instance IDs (LoadPrefabAsset), so handing out its objects -- what
+    // this used to do, relying on "every load re-reads the file" -- gave every caller
+    // the same GameObject / components: two drops of one prefab shared one
+    // Transform, and every scene object expanding the same m_DefinitionUrl got the
+    // same component instances. Clone the template instead; it stays untouched.
+    if (root->getComponents().empty())
     {
-        go->RebuildRuntimeComponents();
-        for (ImmediatePtr<Component>& component : go->getComponents())
+        // Loaded by a lazy PPtr deref rather than LoadPrefabAsset.
+        PrepareTemplateGameObject(root);
+    }
+    prefab_clone::CloneResult clone = prefab_clone::CloneSubtree(root);
+    if (!clone.valid())
+    {
+        LOG_ERROR(ZPrefab, "PrefabUtility::Instantiate: cloning '{}' failed", root->GetName().c_str());
+        return nullptr;
+    }
+
+    std::vector<GameObject*> clone_gameobjects;
+    for (Object* object : clone.clones)
+    {
+        if (GameObject* go = Cast<GameObject>(object))
         {
-            if (Component* c = component)
+            clone_gameobjects.push_back(go);
+            // Owners for the post-load driver's child resolution; with
+            // invoke_post_load the driver's PostLoadResource sets them again.
+            for (ImmediatePtr<Component>& component : go->getComponents())
             {
-                c->BindOwnerIfUnbound(go);
+                if (Component* c = component)
+                {
+                    c->BindOwnerIfUnbound(go);
+                }
             }
         }
     }
-}  // namespace
+
+    PrefabPostLoadDriver driver;
+    driver.Run(clone.clone_root, clone_gameobjects, invoke_post_load);
+    return clone.clone_root;
+}
+
 
 PrefabAsset* PrefabUtility::LoadPrefabAsset(const std::filesystem::path& prefab_path, std::vector<GameObject*>* out_gameobjects)
 {
@@ -437,19 +465,13 @@ GameObject* PrefabUtility::InstantiateFromPath(const std::filesystem::path& pref
     // header for binary .zasset prefabs (AssetManager::ReadObject<PrefabAsset>),
     // which never produces the root GameObject the header points at -- so binary
     // prefabs always failed with "PrefabAsset has no root GameObject".
-    std::vector<GameObject*> graph_gameobjects;
-    PrefabAsset* asset = LoadPrefabAsset(prefab_path, &graph_gameobjects);
+    // The graph is cached after the first load; Instantiate clones it.
+    PrefabAsset* asset = LoadPrefabAsset(prefab_path);
     if (asset == nullptr)
     {
         return nullptr;
     }
-
-    // Seed the post-load driver with the COMPLETE GameObject set so arbitrary-depth
-    // child Transforms resolve their owners.
-    GameObject* root = asset->GetRootGameObject();
-    PrefabPostLoadDriver driver;
-    driver.Run(root, graph_gameobjects, invoke_post_load);
-    return root;
+    return Instantiate(asset, invoke_post_load);
 }
 
 void PrefabUtility::SetInstantiatedRootParent(GameObject* instantiated_root, Transform* parent, bool worldPositionStays)

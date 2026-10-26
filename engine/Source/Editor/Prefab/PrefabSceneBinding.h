@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <unordered_map>
 #include <vector>
 
@@ -50,6 +51,13 @@ public:
     /// `level` and the level is marked dirty. Returns false (and changes nothing) if
     /// `instance` has no root.
     static bool PlaceInLevel(Level& level, PrefabInstance* instance);
+
+    /// "Drop a prefab into the scene": PrefabUtilityEditor::InstantiateAsPrefab(path)
+    /// followed by PlaceInLevel. Returns the placed instance (its root GameObject is a
+    /// live object of `level`), or nullptr if the prefab cannot be loaded / placed.
+    /// The content-browser drop (EditorScenePlacement) goes through here; undo,
+    /// parenting and selection are the caller's.
+    static PrefabInstance* InstantiateIntoLevel(Level& level, const std::filesystem::path& prefab_path);
 
     static void Register(const Level& level, PrefabInstance* instance);
     static void Unregister(PrefabInstance* instance);

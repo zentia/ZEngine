@@ -1,6 +1,6 @@
 #include "Editor/Prefab/PrefabUtilityEditor.h"
 
-#include "Editor/Prefab/EditorPrefabCloner.h"
+#include "Runtime/Resource/Prefab/PrefabSubtreeCloner.h"
 #include "Editor/Prefab/PrefabInstance.h"
 #include "Editor/Prefab/PropertyPathResolver.h"
 #include "Editor/Prefab/PropertyValueLocator.h"
@@ -245,7 +245,7 @@ PrefabInstance* PrefabUtilityEditor::InstantiateAsPrefab(PrefabAsset* asset)
         return nullptr;
     }
 
-    prefab_editor::CloneResult clone = prefab_editor::CloneSubtree(source_root);
+    prefab_clone::CloneResult clone = prefab_clone::CloneSubtree(source_root);
     if (!clone.valid())
     {
         LOG_ERROR(ZPrefab, "InstantiateAsPrefab: structural clone failed");
