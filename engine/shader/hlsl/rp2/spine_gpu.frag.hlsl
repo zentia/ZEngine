@@ -1,6 +1,12 @@
-// GPU-Spine 片元（DX12 版）—— 与 glsl/spine_gpu.frag 同一套公式，改这边必须同步改那边。
-// 输出预乘 alpha；flags bit0 直 alpha 图集先预乘、bit1 加色（alpha 写 0）、bit4 tint black。
+// GPU-Spine 片元（DX12 版）—— 与 glsl/spine_gpu.frag **同一套公式**。
+// 着色公式本身在 include/spine_skinning.h 的 `SpineShade()`（与 GLSL 版共用同一份文件），
+// 这里只负责取址（读图集、读绘制项）与传参。
+// flags 语义见 spine_skinning.h 的 SPINE_FLAG_*：bit0 直 alpha 图集先预乘、bit1 加色（alpha 写 0）、
+// bit4 tint black、bit5 世界层（去预乘 → pow 2.2 → 再预乘）。
 // 寄存器映射见 spine_gpu.vert.hlsl 文件头。
+
+#define ZENGINE_HLSL 1
+#include "spine_skinning.h"
 
 struct SpineDraw
 {
@@ -38,25 +44,8 @@ float4 UnpackUnorm4x8(uint v)
 float4 main(PSInput input) : SV_TARGET
 {
     const SpineDraw d = draws[input.draw];
-    float4 tex = u_atlas.Sample(u_atlas_sampler, input.uv);
-    if ((d.flags & 1u) != 0u)
-    {
-        tex.rgb *= tex.a;
-    }
+    // 槽位色是直 alpha（§5.2）⇒ 预乘形式在 SpineShade() 内部做
     const float4 tint = UnpackUnorm4x8(d.tint);
-    float4 c = tex * float4(tint.rgb * tint.a, tint.a);
-    if ((d.flags & 16u) != 0u)
-    {
-        c.rgb += (float3(1.0, 1.0, 1.0) - tex.rgb) * float3(d.dark_r, d.dark_g, d.dark_b) * (tex.a * tint.a);
-    }
-    // bit5 = 世界层（线性 HDR 场景）：去预乘 → pow 2.2 → 再预乘；与 spine_gpu.frag 逐行同公式
-    if ((d.flags & 32u) != 0u && c.a > 0.0)
-    {
-        c.rgb = pow(max(c.rgb / c.a, float3(0.0, 0.0, 0.0)), float3(2.2, 2.2, 2.2)) * c.a;
-    }
-    if ((d.flags & 2u) != 0u)
-    {
-        c.a = 0.0;
-    }
-    return c;
+    return SpineShade(u_atlas.Sample(u_atlas_sampler, input.uv), tint,
+                      float3(d.dark_r, d.dark_g, d.dark_b), d.flags);
 }

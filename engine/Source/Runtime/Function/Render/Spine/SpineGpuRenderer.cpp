@@ -735,12 +735,14 @@ struct SpineGpuRenderer::Impl
         const bool dx12 = IsDx12();
         if (dx12)
         {
+            // 公式层在 shader/include/spine_skinning.h（GLSL 与 HLSL 共用），所以要带 include 路径。
+            const std::vector<std::string> include_paths = {ShaderRoot() + "/include"};
             std::vector<uint8_t> binary;
-            vs = rhi->CreateShaderModuleFromFile(ShaderRoot() + "/hlsl/rp2/spine_gpu.vert.hlsl", ShaderStage::Vertex, {},
-                                                 {}, binary);
+            vs = rhi->CreateShaderModuleFromFile(ShaderRoot() + "/hlsl/rp2/spine_gpu.vert.hlsl", ShaderStage::Vertex,
+                                                 include_paths, {}, binary);
             binary.clear();
             fs = rhi->CreateShaderModuleFromFile(ShaderRoot() + "/hlsl/rp2/spine_gpu.frag.hlsl", ShaderStage::Fragment,
-                                                 {}, {}, binary);
+                                                 include_paths, {}, binary);
         }
         else
         {

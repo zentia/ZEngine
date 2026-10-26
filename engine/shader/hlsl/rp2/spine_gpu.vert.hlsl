@@ -1,5 +1,7 @@
 // =====================================================================
-// GPU-Spine 蒙皮（DX12 版）—— 与 glsl/spine_gpu.vert **逐行同一套公式**，改这边必须同步改那边。
+// GPU-Spine 蒙皮（DX12 版）—— 与 glsl/spine_gpu.vert **逐行同一套公式**。
+// 公式本身在 include/spine_skinning.h（与 GLSL 版共用同一份文件），这里只负责取址。
+//
 // 数据布局、寻址、三条硬约束（混合的是变换后的位置；按影响存储顺序累加；不许 FMA 收缩 ⇒ precise）
 // 都见 GLSL 版文件头与 doc/GPU_SPINE_INTERCHANGE_FORMAT.md §3、§5、§6。
 //
@@ -13,6 +15,10 @@
 //   （TEXCOORD0，uint，CPU 侧绑一块 0,1,2,… 的顶点缓冲）：per-instance 属性的取址**会**加上
 //   StartInstanceLocation，于是 `draw_index` = 录制时传的 firstInstance，与 Vulkan 同一个语义。
 // =====================================================================
+
+// 方言标记：必须在 include 之前定义，否则会拿到 GLSL 的 vec2 分支（详见 spine_skinning.h）
+#define ZENGINE_HLSL 1
+#include "spine_skinning.h"
 
 struct SpineDraw
 {
@@ -64,11 +70,11 @@ VSOutput main(VSInput input)
 {
     const SpineDraw d = draws[input.draw_index];
     const uint vi = input.vertex_id;
-    const bool has_deform = (d.flags & 4u) != 0u;
+    const bool has_deform = (d.flags & SPINE_FLAG_HAS_DEFORM) != 0u;
     precise float2 p = float2(0.0, 0.0);
     float2 uv = float2(0.0, 0.0);
 
-    if ((d.flags & 8u) != 0u)
+    if ((d.flags & SPINE_FLAG_CPU_CLIPPED) != 0u)
     {
         const float4 cv = cpu_verts[d.deform_base + vi];
         p = cv.xy;
@@ -76,19 +82,21 @@ VSOutput main(VSInput input)
     }
     else if (d.vertex_format == 0u)
     {
+        // rigid：整块由槽位骨骼单矩阵变换（VertexAttachment.cpp:80-85）
         float2 bp = float2(asfloat(vertex_words[vi * 2u]), asfloat(vertex_words[vi * 2u + 1u]));
         if (has_deform)
         {
+            // rigid 的 deform 是绝对坐标：整体替换（不是加）
             const uint f = d.deform_base + vi * 2u;
-            bp = float2(deform[f], deform[f + 1u]);
+            bp = SpineApplyDeform(bp, float2(deform[f], deform[f + 1u]), true);
         }
         const uint b = (d.bone_base + d.slot_bone) * 6u;
-        precise float x = bp.x * bones[b + 0u] + bp.y * bones[b + 1u] + bones[b + 4u];
-        precise float y = bp.x * bones[b + 2u] + bp.y * bones[b + 3u] + bones[b + 5u];
-        p = float2(x, y);
+        p = SpineBoneApply(bp, bones[b + 0u], bones[b + 1u], bones[b + 2u], bones[b + 3u],
+                           bones[b + 4u], bones[b + 5u]);
     }
     else
     {
+        // weighted：Σ wᵢ·(Bᵢ·vᵢ)，按影响存储顺序（VertexAttachment.cpp:102-110）
         const uint w0 = d.weighted_base + vi * 2u;
         const uint off = vertex_words[w0];
         const uint cnt = vertex_words[w0 + 1u];
@@ -99,28 +107,32 @@ VSOutput main(VSInput input)
             precise float2 bp = infl_bind[off + k];
             if (has_deform)
             {
+                // weighted 的 deform 是偏移：先加到 bindPos 上再变换（参考实现 vx = vertices[b] + deform[f]）
                 const uint f = d.deform_base + (off + k) * 2u;
-                bp += float2(deform[f], deform[f + 1u]);
+                bp = SpineApplyDeform(bp, float2(deform[f], deform[f + 1u]), false);
             }
             const uint bw = infl_bone[off + k];
-            const uint b = (d.bone_base + (bw & 0xFFFFu)) * 6u;
-            const float w = float((bw >> 16u) & 0xFFu) / 255.0;
-            precise float tx = bp.x * bones[b + 0u] + bp.y * bones[b + 1u] + bones[b + 4u];
-            precise float ty = bp.x * bones[b + 2u] + bp.y * bones[b + 3u] + bones[b + 5u];
-            x += tx * w;
-            y += ty * w;
+            const uint b = (d.bone_base + SpineInfluenceBoneIndex(bw)) * 6u;
+            const float w = SpineInfluenceWeight(bw);
+            const float2 skinned = SpineBoneApply(bp, bones[b + 0u], bones[b + 1u], bones[b + 2u],
+                                                  bones[b + 3u], bones[b + 4u], bones[b + 5u]);
+            x += skinned.x * w;
+            y += skinned.y * w;
         }
         p = float2(x, y);
     }
 
+    // 根变换在蒙皮**之后**（§5.3）—— 乘进骨骼表会二次缩放
     const SpineInst inst = insts[d.inst_index];
-    precise float rx = inst.root_abcd.x * p.x + inst.root_abcd.y * p.y + inst.root_t.x;
-    precise float ry = inst.root_abcd.z * p.x + inst.root_abcd.w * p.y + inst.root_t.y;
+    const float2 root_p = SpineRootApply(p, inst.root_abcd.x, inst.root_abcd.y, inst.root_abcd.z,
+                                         inst.root_abcd.w, inst.root_t.x, inst.root_t.y);
+    const float rx = root_p.x;
+    const float ry = root_p.y;
 
     VSOutput o;
     // = GLSL `clip_from_world * vec4(rx, ry, 0, 1)`（列主序：Σ col[i] · v[i]）
     o.position = inst.clip_col[0] * rx + inst.clip_col[1] * ry + inst.clip_col[3];
-    o.uv = (d.flags & 8u) != 0u ? uv : uvs[d.uv_offset + vi];
+    o.uv = (d.flags & SPINE_FLAG_CPU_CLIPPED) != 0u ? uv : uvs[d.uv_offset + vi];
     o.draw = input.draw_index;
     return o;
 }

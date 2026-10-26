@@ -1,4 +1,10 @@
 #version 450
+
+#extension GL_GOOGLE_include_directive : enable
+
+// §6 / §8 的公式层：只含公式、不含任何取址 —— 与 hlsl/rp2/spine_gpu.*.hlsl 共用同一份文件。
+#include "spine_skinning.h"
+
 // =====================================================================
 // GPU-Spine 蒙皮（规格 doc/GPU_SPINE_INTERCHANGE_FORMAT.md §3、§5、§6）
 // ---------------------------------------------------------------------
@@ -69,11 +75,11 @@ void main()
 {
     const SpineDraw d = draws[gl_InstanceIndex];
     const uint vi = uint(gl_VertexIndex);
-    const bool has_deform = (d.flags & 4u) != 0u;
+    const bool has_deform = (d.flags & SPINE_FLAG_HAS_DEFORM) != 0u;
     precise vec2 p = vec2(0.0);
     vec2 uv = vec2(0.0);
 
-    if ((d.flags & 8u) != 0u)
+    if ((d.flags & SPINE_FLAG_CPU_CLIPPED) != 0u)
     {
         // CPU 裁剪过的项：位置已是骨架空间（与下面两支蒙皮的输出同一个空间）
         const vec4 cv = cpu_verts[d.deform_base + vi];
@@ -88,12 +94,11 @@ void main()
         {
             // rigid 的 deform 是绝对坐标：整体替换（不是加）
             const uint f = d.deform_base + vi * 2u;
-            bp = vec2(deform[f], deform[f + 1u]);
+            bp = SpineApplyDeform(bp, vec2(deform[f], deform[f + 1u]), true);
         }
         const uint b = (d.bone_base + d.slot_bone) * 6u;
-        precise float x = bp.x * bones[b + 0u] + bp.y * bones[b + 1u] + bones[b + 4u];
-        precise float y = bp.x * bones[b + 2u] + bp.y * bones[b + 3u] + bones[b + 5u];
-        p = vec2(x, y);
+        p = SpineBoneApply(bp, bones[b + 0u], bones[b + 1u], bones[b + 2u], bones[b + 3u],
+                           bones[b + 4u], bones[b + 5u]);
     }
     else
     {
@@ -110,25 +115,27 @@ void main()
             {
                 // weighted 的 deform 是偏移：先加到 bindPos 上再变换（参考实现 vx = vertices[b] + deform[f]）
                 const uint f = d.deform_base + (off + k) * 2u;
-                bp += vec2(deform[f], deform[f + 1u]);
+                bp = SpineApplyDeform(bp, vec2(deform[f], deform[f + 1u]), false);
             }
             const uint bw = infl_bone[off + k];
-            const uint b = (d.bone_base + (bw & 0xFFFFu)) * 6u;
-            const float w = float((bw >> 16u) & 0xFFu) / 255.0;
-            precise float tx = bp.x * bones[b + 0u] + bp.y * bones[b + 1u] + bones[b + 4u];
-            precise float ty = bp.x * bones[b + 2u] + bp.y * bones[b + 3u] + bones[b + 5u];
-            x += tx * w;
-            y += ty * w;
+            const uint b = (d.bone_base + SpineInfluenceBoneIndex(bw)) * 6u;
+            const float w = SpineInfluenceWeight(bw);
+            const vec2 skinned = SpineBoneApply(bp, bones[b + 0u], bones[b + 1u], bones[b + 2u],
+                                                bones[b + 3u], bones[b + 4u], bones[b + 5u]);
+            x += skinned.x * w;
+            y += skinned.y * w;
         }
         p = vec2(x, y);
     }
 
     // 根变换在蒙皮**之后**（§5.3）—— 乘进骨骼表会二次缩放
     const SpineInst inst = insts[d.inst_index];
-    precise float rx = inst.root_abcd.x * p.x + inst.root_abcd.y * p.y + inst.root_t.x;
-    precise float ry = inst.root_abcd.z * p.x + inst.root_abcd.w * p.y + inst.root_t.y;
+    const vec2 root_p = SpineRootApply(p, inst.root_abcd.x, inst.root_abcd.y, inst.root_abcd.z,
+                                       inst.root_abcd.w, inst.root_t.x, inst.root_t.y);
+    const float rx = root_p.x;
+    const float ry = root_p.y;
 
     gl_Position = inst.clip_from_world * vec4(rx, ry, 0.0, 1.0);
-    v_uv = (d.flags & 8u) != 0u ? uv : uvs[d.uv_offset + vi];
+    v_uv = (d.flags & SPINE_FLAG_CPU_CLIPPED) != 0u ? uv : uvs[d.uv_offset + vi];
     v_draw = uint(gl_InstanceIndex);
 }
