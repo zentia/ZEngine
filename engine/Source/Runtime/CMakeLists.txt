@@ -534,6 +534,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Console/Test/ConsoleVariablesFileSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Console/Test/ConsoleVariablesFileSmokeTest.cpp")
+# EnhancedInput frame-delta smoke-test main. Same carve-out rationale: it owns
+# main() and must not be whole-archived into ZRuntime. Built only when
+# ZENGINE_BUILD_ENHANCED_INPUT_DELTA_SMOKE_TEST=ON (see Function/Input/Test/
+# CMakeLists.txt). Header-only (ComputeFrameDelta + TriggerHold), links nothing.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Input/Test/EnhancedInputFrameDeltaSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Input/Test/EnhancedInputFrameDeltaSmokeTest.cpp")
 # PR-SK1: skeletal skinning smoke-test main. Same carve-out rationale as every
 # entry above: it owns main() and must not be whole-archived into ZRuntime.
 # Built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON (see
@@ -1782,6 +1790,10 @@ add_subdirectory(AssetBundle/Test)
 # work, so it runs headless on every host.
 add_subdirectory(Function/PlayerSettings/Test)
 add_subdirectory(Function/Console/Test)
+# EnhancedInput frame-delta smoke test. Own main(); carved out of the ZRuntime
+# glob above and built only when ZENGINE_BUILD_ENHANCED_INPUT_DELTA_SMOKE_TEST
+# =ON. Header-only (ComputeFrameDelta + TriggerHold), pure CPU, headless.
+add_subdirectory(Function/Input/Test)
 
 # Skeletal skinning smoke test (PR-SK1). Own main(); carved out of the ZRuntime
 # glob above and built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON. Pure

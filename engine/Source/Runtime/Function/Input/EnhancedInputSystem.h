@@ -5,6 +5,7 @@
 #include "Runtime/Function/Input/InputMappingContext.h"
 #include "Runtime/Function/Input/InputTriggers.h"
 
+#include <chrono>
 #include <cmath>
 #include <memory>
 #include <unordered_map>
@@ -40,6 +41,39 @@ public:
     bool Initialize() override;
     void Shutdown() override;
     void Tick();
+
+    // ---- Frame-delta computation (pure, unit-tested) ---------------------
+    //
+    // Computes the clamped wall-clock delta for one frame. `last_time_s` is
+    // the epoch-second stamp from the previous Tick (0.0 before the first),
+    // `has_ticked` whether a Tick has already happened, and `now_s` the current
+    // epoch-second reading. Returns the delta to feed the trigger evaluator,
+    // clamped to [0, k_MaxFrameDeltaS] so a stall can't fast-forward a Hold
+    // trigger, and 0 on the first frame / backwards-clock edge.
+    //
+    // Static + pure (no member access) so the smoke test can exercise the
+    // exact logic Tick() uses without spinning up WindowSystem. Tick() passes
+    // its own m_LastTickTimeS / m_HasTicked through here.
+    static constexpr float k_MaxFrameDeltaS = 0.25f; // 250ms cap
+    static inline float ComputeFrameDelta(double last_time_s, bool has_ticked, double now_s)
+    {
+        if (!has_ticked)
+        {
+            // First frame: report 0 so a long idle gap before the first tick
+            // can't spike a Hold trigger.
+            return 0.0f;
+        }
+
+        const double raw = now_s - last_time_s;
+        if (raw < 0.0)
+        {
+            // Monotonic clock should never go backwards; treat a backwards edge
+            // as a fresh frame rather than feeding a negative delta into Hold.
+            return 0.0f;
+        }
+        const float delta = static_cast<float>(raw);
+        return delta > k_MaxFrameDeltaS ? k_MaxFrameDeltaS : delta;
+    }
 
     // ---- Raw input callbacks (registered with WindowSystem) ----
     void OnKey(int key, int scancode, int action, int mods);
@@ -230,6 +264,14 @@ private:
     // Per-action accumulated value this frame (before trigger eval).
     // Action name -> accumulated value.
     std::unordered_map<std::string, InputActionValue> m_AccumulatedValues;
+
+    // ---- Frame timing ----
+    // Anchor for the real wall-clock delta between successive Tick() calls.
+    // Stores epoch-seconds from a monotonic steady_clock; 0.0 until the first
+    // Tick(). m_HasTicked=false makes the first frame report 0 delta so a long
+    // idle gap before the first tick can't spike a Hold trigger.
+    double m_LastTickTimeS = 0.0;
+    bool m_HasTicked = false;
 
     // Per-action trigger state (for default triggers).
     // Action name -> trigger instance.

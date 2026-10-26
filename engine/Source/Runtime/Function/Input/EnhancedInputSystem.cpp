@@ -567,7 +567,16 @@ std::shared_ptr<InputTrigger> EnhancedInputSystem::GetDefaultTrigger(InputAction
 
 void EnhancedInputSystem::Tick()
 {
-    const float delta_time = 1.0f / 60.0f; // TODO: use real delta time
+    // Real wall-clock delta since the previous Tick, from a monotonic clock.
+    // Triggers (notably TriggerHold: m_HoldElapsed += delta_time) need the
+    // actual elapsed time, not a fixed 1/60 guess — at 30fps a held key would
+    // otherwise register half as fast as it really is. Clamp so an occasional
+    // long stall (debugger break, hitch) can't fast-forward a Hold trigger.
+    const double now_s = std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const float delta_time = ComputeFrameDelta(m_LastTickTimeS, m_HasTicked, now_s);
+    m_LastTickTimeS = now_s;
+    m_HasTicked = true;
 
     if (m_ContextDirty)
     {
