@@ -445,6 +445,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Audio/Test/AudioMixerSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Audio/Test/AudioMixerSmokeTest.cpp")
+# P0-6: network layer smoke-test main. Same carve-out rationale as every entry
+# above: it owns main() and must not be whole-archived into ZRuntime. Built
+# only when ZENGINE_BUILD_NETWORK_SMOKE_TEST=ON (see Function/Network/Test/
+# CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Network/Test/NetworkSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Network/Test/NetworkSmokeTest.cpp")
 # PR-PAK1: AssetBundle smoke-test main. Same carve-out rationale as every
 # entry above: it owns main() and must not be whole-archived into ZRuntime.
 # Built only when ZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON (see
@@ -985,6 +993,41 @@ function(configure_runtime_library target)
         # MSVC library set.
         target_link_libraries(${target} PUBLIC Mmdevapi)
     endif()
+
+    # ---- Network (P0-6): HTTP / WebSocket / UDP ----------------------------
+    #
+    # libcurl is already vendored at 3rdparty/curl and built as libcurl_static,
+    # but nothing in Runtime linked it, so the network layer had no backend to
+    # talk to. Wiring it here is what turns NetworkSystem from "everything
+    # returns Unsupported" into a real transport.
+    #
+    # Emscripten has no curl target at all (3rdparty skips it), and a curl-less
+    # build is legal: HttpRequest/WebSocket then compile down to
+    # NetworkStatus::Unsupported instead of failing. That is exactly what
+    # ZENGINE_NETWORK_HAS_CURL gates, so it is only defined when the library is
+    # really there.
+    if(TARGET libcurl_static)
+        target_link_libraries(${target} PRIVATE libcurl_static)
+        target_compile_definitions(${target} PRIVATE ZENGINE_NETWORK_HAS_CURL=1)
+        if(WIN32)
+            # curl's own build puts CURL_STATICLIB on libcurl_static but not on
+            # its INTERFACE, so consumers still see __declspec(dllimport) in
+            # curl.h unless they define it themselves.
+            target_compile_definitions(${target} PRIVATE CURL_STATICLIB=1)
+            target_link_libraries(${target} PRIVATE crypt32 ws2_32 wldap32 normaliz)
+        elseif(APPLE)
+            # SystemConfiguration (proxy settings) and CoreFoundation (DNS
+            # configuration) are pulled in by curl's own build for its own
+            # objects; a static archive does not carry them along, so repeat
+            # them for the final link.
+            target_link_libraries(${target} PRIVATE
+                "-framework CoreFoundation" "-framework SystemConfiguration")
+        endif()
+        message(STATUS "Runtime: network layer linked against libcurl_static")
+    else()
+        message(STATUS "Runtime: libcurl unavailable; network layer degrades to NetworkStatus::Unsupported")
+    endif()
+
     target_link_libraries(${target} PUBLIC mimalloc-static)
     target_link_libraries(${target} PUBLIC lmdb)
 endfunction()
@@ -1564,6 +1607,12 @@ add_subdirectory(Function/Physics/Test)
 # for the target helper but exercises only the dependency-free DSP layer, so it
 # runs headless on every host -- including CI machines with no audio device.
 add_subdirectory(Function/Audio/Test)
+
+# Network layer smoke test (P0-6). Own main(); carved out of the ZRuntime glob
+# above and built only when ZENGINE_BUILD_NETWORK_SMOKE_TEST=ON. Offline by
+# construction -- every check stays in-process or on loopback, so it runs
+# headless on a CI machine with no internet and no DNS.
+add_subdirectory(Function/Network/Test)
 
 # AssetBundle smoke test (PR-PAK1). Own main(); carved out of the ZRuntime glob
 # above and built only when ZENGINE_BUILD_ASSET_BUNDLE_SMOKE_TEST=ON. Pure file

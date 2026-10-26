@@ -63,6 +63,7 @@
 #include "Runtime/Scripting/ScriptRegistry.h"
 #include "Runtime/Scripting/ScriptingManager.h"
 #include "Runtime/Function/Audio/AudioSystem.h"
+#include "Runtime/Function/Network/NetworkSystem.h"
 
 namespace
 {
@@ -166,6 +167,13 @@ namespace
         // of the startup sequence: AudioSystem::Initialize() degrades to the
         // null device rather than returning false.
         REGISTER_SYSTEM(AudioSystem);
+        // Network holds the same "never fail startup" contract as Audio: it owns
+        // curl_global_init()/curl_multi_init() and, when either fails (or the
+        // build has no libcurl at all), it still initializes and reports every
+        // request as NetworkStatus::Unsupported. Registered in the Core phase,
+        // before gameplay, so a game can fire requests from its own
+        // Initialize().
+        REGISTER_SYSTEM(NetworkSystem);
     }
 }  // namespace
 
