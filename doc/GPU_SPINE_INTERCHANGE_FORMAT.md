@@ -18,9 +18,54 @@ CPU 蒙皮下**每个实例必须持有自己的一份顶点缓冲**，因为各
 于是可以按 SkeletonData **共享一份**，N 份塌缩成 1 份。
 
 > **GPU 化不是"省算力"，而是"使共享成为可能"。** 只做 GPU 蒙皮但每个实例仍保留自己的 Mesh，
-> 内存几乎不变甚至略增（静态 VB 多了骨骼槽）。收益的来源是 **共享 + 实例化**。
+> 内存几乎不变甚至略增（静态 VB 多了骨骼槽）。收益的来源是 **共享** —— 实例化是另一件事，见 §0.1。
 
 因此本规格的核心不是"怎么把矩阵传到 GPU"，而是**如何把"与实例无关"的部分和"与实例有关"的部分切干净**。
+
+### 0.1 共享与实例化是两件事（不要捆在一起读）
+
+| | 省什么 | 地位 |
+|---|---|---|
+| **共享**（§3 静态 VB / §5 每实例数据） | **内存 + 每帧上传带宽**：静态几何按 asset 只有一份，实例只剩骨骼表（41 骨 × 24 B ≈ 1 KB）+ 可见绘制项列表（20 B/项）+ deform 增量（均值 122 B） | **收益主体** |
+| **实例化**（§4 合批键 → 一次 instanced draw 覆盖多个绘制项） | draw call | 可选优化 |
+
+> **实例化不是共享的前提，共享的成立条件是"GPU 蒙皮"，不是"实例化"。**
+> 不实例化 = 每个可见绘制项一次 `DrawIndexed`，draw call 涨回去；
+> 但顶点缓冲仍然只有一份、每帧仍然只传骨骼表 ⇒ **内存与带宽的收益一点不少**。
+> 上面那句"共享 + 实例化"应读作"共享（主体）**叠加**实例化（可选）"。
+
+### 0.2 硬前提：宿主渲染器必须允许 per-instance 骨骼参数
+
+⚠️ **整套收益只在"一次 draw 里不同实例可以取不同骨骼表"时成立** —— 即 §5 的
+`bone_base` / `root_index` 能被逐实例寻址。宿主一旦要求 Spine **交付顶点去参与合并**
+（UGUI Canvas 的 `OnPopulateMesh` / `CanvasRenderer::SetMesh` 模型），
+顶点就必须在 CPU 上蒙完皮，于是：
+
+| 收益项 | 走顶点合并后 |
+|---|---|
+| 共享（N 份 → 1 份） | **归零** —— 合并后的大 VB 本来就是一份，N 份塌缩的收益原本不存在 |
+| 上传少 2.62x / geo 快 2.34x（§17） | **归零** —— 每帧照写 posed 顶点，蒙皮回 CPU |
+| 资产内部去重（§3.2 linked mesh / 皮肤变体） | **存活** —— 与渲染路径无关，顶点池变小照样省 |
+| anim 段慢 1.43x（§17，anim 0.70x） | **仍然要付** |
+
+⇒ 收益全没、成本还在 = **净亏**。所以**接入前先确认渲染路径**，不要做完格式才发现宿主吃不下。
+唯一例外：宿主若肯用自定义 shader + 全局骨骼 buffer，则"几何不脏就不重建"能让
+**不带 deform 的资产**吃到"几何常驻 + 每帧只传 1 KB 骨骼表"；但 deform 覆盖 **93% 资产**
+（§14.1）—— deform 一动几何就变 ⇒ 每帧重建 ⇒ 这条路只对剩下一小部分成立。
+
+**OSGame 现状满足这条前提**（2026-10-26 核对 `G:/OSGame/unity-engine-source/Modules/Spine`）：
+`UnitySkeletonGraphic` 是 `Behaviour`（`UnitySkeletonGraphic.h:21`），几何走
+`m_MeshRenderer->SetSharedMesh(m_Mesh)`（`UnitySkeletonGraphic.cpp:377-390`，`m_Mesh` 是
+`MarkDynamic()` 的**每实例** Mesh）；`m_CanvasRenderer` 只在 `BakeMesh()` 里用于
+`EnableRectClipping`（`:432-451`），**从不 `SetMesh`** ⇒ 它挂在 UI 层级里（`RectTransform`）
+但**不参与 Canvas 合批**，本来就是"一个骨架一份世界空间动态 VB"
+（代价清单见 `doc/GPU_SPINE_V7_ANIMATION.md` §5.3）。
+⇒ **"走实例化会打断合批"在 OSGame 这条链上不成立 —— 没有合批可被打断。**
+若将来改成 Canvas 顶点合并路径，本规格的收益必须按上表重新评估。
+
+> 注：实例化真正的代价不是"打断合批"（宿主本来就没合批时无从打断），而是
+> **Spine 与其它 UI 元素交错遮挡时不能再按层级逐层排序**。这要按实际 UI 结构判断，
+> 不能一概而论 —— 它影响的是"要不要实例化"，不影响"要不要共享"。
 
 ### 范围
 - 静态几何（绑定姿势 + 骨骼槽 + 权重）的布局，以及**独立 UV 通道**（§3.2）
@@ -584,9 +629,34 @@ struct Bone { float a, b, c, d; float worldX, worldY; };   // 24 B 紧凑
   - `24` —— 紧凑（structured buffer / SSBO / instance buffer）**默认**
   - `32` —— std140 UBO 兼容（vec4 + vec4，第二组后两分量留空）
 
-> **不要用纹理传骨骼。** 纹理会额外吃显存，而本项目的痛点正是内存；
-> 且纹理采样路径（归一化坐标 + 滤波）会引入与 CPU 不一致的舍入。
-> 用 structured buffer / instance data。
+> **默认用 structured buffer / instance data（SSBO），不用纹理。** 两条理由要分开看：
+>
+> 1. **"纹理会额外吃显存"—— 成立（打包浪费，不是翻倍）。** RGBA32F 是 16 B/texel，
+>    与 SSBO 同量级，多出来的主要是**打包浪费**：骨骼 24 B/骨 落在 1.5 个 texel 上，
+>    按 2 texel 算就是 32 B/骨。本项目的痛点正是内存 ⇒ SSBO 优先。
+> 2. **"纹理采样会引入与 CPU 不一致的舍入"—— ⚠️ 只对"带滤波的采样"成立，对 `texelFetch` 不成立。**
+>    （2026-10-26 修正，原表述把两者混为一谈。）`texelFetch` 用**整数 texel 坐标、不滤波**，
+>    RGBA32F / R32UI 是**原值返回** ⇒ 与 SSBO 逐位一致，不引入任何舍入。
+>    前提：格式必须是 **fp32 / u32**（RGBA32F / R32UI / R32F），**不能退到 fp16**；
+>    ES3.0 core 里 RGBA32F 可采样，NEAREST 与 `texelFetch` 合法（线性滤波才需要
+>    `OES_texture_float_linear`）。
+>
+> ⇒ **准确的表述是：否决"纹理 + 归一化坐标 + 滤波"这条路径，不是否决纹理本身。**
+>
+> **SSBO 换成纹理要付的代价（跨资产合批）**：一次 draw 里 sampler 绑定的纹理是固定的
+> ⇒ 不同资产的实例不能再合进同一次 draw，§5.1 末尾那句"十万个角色少数几个 draw call"
+> 的前提没了。能救的是 **array texture**（ES3.0 core，`texelFetch(t, ivec3(x, y, layer), 0)`
+> 的 **layer 允许动态索引** —— 它是坐标的一部分，不是 sampler 索引），代价是
+> ①同 array 各层尺寸必须一致 ⇒ 按资产大小分桶 + padding 浪费；
+> ②`MAX_ARRAY_TEXTURE_LAYERS` 保证只有 **256**，781 个资产必须分桶 + 槽位分配；
+> ③动态数据（b7 deform / b8 cpu_verts）每帧要走 `TexSubImage` 而不是 `BufferSubData`。
+>
+> **没有 SSBO 时的备选（GLES3 / 移动端）**：静态几何（b0-b3）纹理化 + 骨骼表走 UBO
+> （41 骨 × 24 B ≈ 1 KB，远低于 ES3.0 保证的 16 KB `MAX_UNIFORM_BLOCK_SIZE`），
+> 每实例一次 draw。**UBO 装不下整份静态数据**（中位 33.7 KB / p90 97.7 KB，§17），
+> 所以静态部分只能走纹理，不能走 UBO；**顶点属性定长展开则不可行**
+> （每顶点影响数最大 15，§1.5 —— 定长 4 槽卡死 297 个资产）。
+> 这条路的取舍见 §5.4。
 
 - 所有实例的骨骼表**打包进同一个每帧大 buffer**，实例只带 `bone_base`（以骨为单位的下标）。
   这样不同骨架实例也能合进同一次绘制 —— 这是"十万个角色少数几个 draw call"的前提。
@@ -630,6 +700,107 @@ RootTransform { float a, b, c, d; float tx, ty; }   // 24 B 紧凑
 - 与骨骼**完全同构**（都是 2×3 仿射、都是 24 B），但**语义不同**：
   一个是骨骼世界变换、一个是实例根变换。`SpineGpuFormat.h` 里保持成两个类型，
   防止互相换用 —— 换用了能编译、能跑，只是角色整体位移/缩放悄悄错。
+
+### 5.4 无 SSBO 的备选（GLES3 / 移动端）—— 待验证，未拍板
+
+> **状态：2026-10-26 记为"备选方案"，不是已决策路线。** 只有 §5.1 默认的 SSBO 路径
+> 在目标平台上不可用时才走这里；**上 §5.1 的默认不变**。
+
+触发条件：目标后端没有 SSBO（GLES3 / ES 3.0 没有 SSBO；Unity 的 `StructuredBuffer` /
+`ByteAddressBuffer` 要 SM5.0+，GLES3 直接编译失败，不是降级）。
+
+**必须随机访问的东西只有一处**：weighted 附件的**变长影响流**（每顶点影响数最大 15，§1.5）
+⇒ 必须有一个"按计算下标随机读"的大缓冲。于是：
+
+| 通道 | 无 SSBO 时怎么放 | 说明 |
+|---|---|---|
+| b4 骨骼表 | **UBO** | 41 骨 × 24 B ≈ 1 KB，远低于 ES3.0 保证的 16 KB `MAX_UNIFORM_BLOCK_SIZE`。std140 下 `float[]` 的 stride 是 16 B ⇒ 按 `vec4` 数组存再手动取分量（或用 `bone_stride = 32` 变体），不要用 `float bones[]` |
+| b0-b3 静态几何（顶点 / 影响流 / UV） | **纹理 + `texelFetch`** | **UBO 装不下**（中位 33.7 KB / p90 97.7 KB，§17）；**顶点属性定长展开不可行**（影响数最大 15）。格式必须 **RGBA32F / R32UI**（fp32 / u32 原值，见 §5.1 的修正：不能退到 fp16） |
+| b5 绘制项 / b6 实例 | UBO（每帧）或纹理 | 每帧量小（20 B/项、96 B/实例），UBO 足够 |
+| b7 deform / b8 CPU 裁剪顶点 | 纹理 | 每帧更新走 `TexSubImage`（不是 `BufferSubData`） |
+
+**付掉的代价**：一次 draw 的 sampler 绑定是固定的 ⇒ **跨资产合批没了**。
+
+- 对 **OSGame 现状不亏**：§0.2 已确认它本来就是"一骨架一 MeshRenderer"，没有合批可丢；
+- 若仍要跨资产合批，只能上 **array texture**（ES3.0 core，layer 可动态索引），
+  代价是同 array 各层尺寸一致（分桶 + padding）、`MAX_ARRAY_TEXTURE_LAYERS` 保证只有 256
+  （781 个资产要分桶 + 槽位分配器）。
+
+**保留的收益**：静态几何仍按资产**共享**（内存收益完整）；每帧上传仍是"骨骼表 + 可见项 + deform"，
+不退化成全量 posed 顶点（§17 的 2.62x / 2.34x 保住）。
+
+⚠️ **落地前必须先做最小验证**（不要先改容器格式）。完整的门与对拍项见
+**`doc/GPU_SPINE_NO_SSBO_VERIFY.md`**（G0 平台探针 / G1 最小 `.shader` / G2 对拍项 / G3 代价量化 /
+Go-No-Go 判据）。最要紧的三件事：①RGBA32F / R32UI 在该机型确实可 `texelFetch`；
+②`texelFetch` 与 SSBO **逐位**一致；③array texture 的 layer 数上限实测值（ES3.0 只保证 256）。
+
+⚠️ **在 OSGame 上，本节的 `texelFetch` 属于"现网未使用"的特性 ⇒ 必须先走 §5.6 的例外申请（路线 B）。**
+批准前不要落地；驳回时的兜底是 §5.5 的 `tex2Dlod`。
+
+### 5.5 OSGame 可用特性集（2026-10-26 实测，硬约束）
+
+> **规则：GPU-Spine 在 OSGame 上只能使用 OSGame 现网 shader 已用到的特性；未用到的特性一律不可用。**
+> 下表是**实测结果，不是按平台文档推断**。
+>
+> 口径：`I:\OSGame\Client_proj\Project\Assets`（发布分支），递归 `*.shader`（**1784**）+
+> `*.cginc` / `*.hlsl` / `*.glslinc`（675）= **2459 个文件**。
+
+| 特性 | 现网用量 | 归属 | 判定 |
+|---|---|---|---|
+| `cbuffer` / `CBUFFER_START` | 209 / 70 | 通用 | ✅ UBO 可用 |
+| `tex2Dlod` | 274 处 / 199 个文件 | 遍布 | ✅ 纹理取数可用（**兜底通道**） |
+| GPU instancing：`multi_compile_instancing` 31 / `UNITY_VERTEX_INPUT_INSTANCE_ID` 67 / `UNITY_ACCESS_INSTANCED_PROP` 10 | 31 个 `.shader`，**含 UI 的 `Sprites-DefaultCustom.shader`** | UI / 场景 / PBR / Uber 特效 | ✅ 实例化可用 |
+| `#pragma target 3.0` | **1120** | 主流档 | ✅ |
+| `#pragma target 3.5` | 256 | 同上 | ✅（`SV_VertexID` / `SV_InstanceID` 需要的档位） |
+| **`texelFetch`** | **0** | —— | ❌ **需申请例外**（§5.6） |
+| `sampler2DArray` / `TEXTURE2D_ARRAY` / `sampler3D` | 0 | —— | ❌ |
+| `SV_VertexID` | 2 | 仅 `Yarp/.../VertexShaderMainOS.cginc`、`ShaderPassMetaOS.cginc` | ❌ 非通用路径 |
+| `#pragma kernel` / `numthreads`（compute） | 0 | —— | ❌（§0 已定动画解算在 CPU，本就不需要） |
+| `precise` | 0 | —— | ❌ **且无法申请**（GLSL ES 3.00 没有 `precise`） |
+| `StructuredBuffer` / `ByteAddressBuffer`（SSBO） | 31 处 / 9 文件 | `DecalHelper.cginc`(10)、UGC `GIBaker/*`(17)、`ScreenSpaceRayTrace.cginc`(1)、`PBRScene_SGameTerrain.cginc`(1)、Editor 工具(1) | ❌ 全在**离线烘焙 / 高端 / Editor** 路径，非通用运行时 |
+
+**决定性：目标后端配置**（`ProjectSettings\ProjectSettings.asset:709-719` + 枚举取自
+`unity-engine-source\Runtime\Export\Graphics\GraphicsEnums.cs:1436-1466`）：
+
+| 平台 | `m_APIs` 原始值 | 解码 | Unity 版本 |
+|---|---|---|---|
+| **AndroidPlayer** | `0b000000` | **OpenGLES3 = 11**（0x0b） | 2022.3.5f1 |
+| iOSSupport | `10000000` | Metal = 16（0x10，`m_Automatic: 1`） | 同上 |
+| WindowsStandaloneSupport | `02000000` | Direct3D11 = 2 | 同上 |
+
+⇒ 三条推论：
+① 移动端**没有 Vulkan** ⇒ `StructuredBuffer` / `ByteAddressBuffer` 在 Android 上确实不可用，
+§5.4「去 SSBO」的前提成立；② `texelFetch` 是 **ES3.0 core** 指令，而 Android 正是 ES3 ⇒
+申请有硬依据（不是"靠运气"）；③ `precise` 在 GLES3 与 Metal 上都没有 ⇒
+**移动端拿不到 bit-exact**（§5.6）。
+
+**另注（最保守的一档）**：OSGame 现网 **Spine 自身的 17 个 shader 全部未写 `#pragma target`**
+（仅 `Spine-SkeletonLit.shader` 显式写 2.0）⇒ Unity 默认 **2.5**，是全套 shader 里最保守的一档。
+⇒ 即使只申请 target 3.5，对 Spine 而言也是"提档" —— 需单独确认低端机不受影响。
+
+### 5.6 例外申请（路线 B，2026-10-26 选定）
+
+在 §5.5 的规则下，GPU-Spine 要在 OSGame 落地**必须申请以下例外**（未用到的特性不可直接用）：
+
+| 申请项 | 理由 | 状态 |
+|---|---|---|
+| `#pragma target 3.5` | 现网 **256 个** shader 已在用（3.0 更是 1120）⇒ 严格说不是"新特性"，只是 Spine 自己没声明。要 3.5 是因为 `SV_VertexID` / `SV_InstanceID` 需要它（Unity 口径，待 G0 实测确认） | 待批准 |
+| `texelFetch` | **ES3.0 core 指令**，target 3.5 起即可用；**不是扩展** —— 线性滤波才需要 `OES_texture_float_linear`，`texelFetch` 不需要。拿到它 §5.4 才成立 | 待批准 |
+| ~~`precise`~~ | **GLSL ES 3.00 没有 `precise`** ⇒ 无法申请 | 放弃 ⇒ 见下 |
+
+⚠️ **`precise` 放弃的后果**：FMA 收缩无法禁止 ⇒ **逐位一致无法保证** ⇒
+`SpineGpuEmulateVertex`（`SpineGpuBatch.h:140`）/ `SpineGpuRefParityTest` 的 bit-exact 判据
+在 GLES3 后端上不成立，需降级为**误差阈值**（底噪取法见 §17："无 deform"那格）。
+（2026-10-26 追加判定）Android = **OpenGLES3**、iOS = **Metal**（§5.5 实测），**移动端没有 Vulkan 后端**
+⇒ `precise` 在移动端**两个后端都拿不到** ⇒ bit-exact **只在 PC（D3D11）上维持**，移动端一律走误差阈值。
+
+**驳回时的降级顺序**：
+
+1. 例外全过 ⇒ §5.4 原样落地（静态几何 `texelFetch`，逐位性最好）；
+2. `texelFetch` 被否 ⇒ 静态几何改走 `tex2Dlod` + Point 采样 + 尺寸取 2 的幂（§5.5 合规），
+   逐位性更脆弱，**必须单独对拍**（`GPU_SPINE_NO_SSBO_VERIFY.md` G2 第 11 项）；
+3. 连兜底轨也不可用，或误差超出底噪 ⇒ **回退路线 A**：GPU-Spine 只做 ZEngine / PC / 编辑器，
+   OSGame 维持 CPU 蒙皮现状。
 
 ---
 
@@ -1305,10 +1476,18 @@ RHI、世界、资源系统，跑一个"读文件 → 算 → 写文件"的烘�
 | 13 | 执行顺序（chunk 19）落"结果"还是落"规则"？ | **落 `Skeleton::updateCache()` 算出来的结果**（`_updateCache` + `_updateCacheReset` 原样落盘），而不是让运行时按 `sortBone` 递归 + 三类约束共用的 `order` 重排一遍。重排再写一遍就是给自己多一次写反的机会，而写反的表现是"姿势略偏"，查不出来。落结果是唯一能对齐的 | §3.7.2 |
 | 14 | 3.7 与 3.8 的约束数学不一致怎么办？ | **按 3.8 实现**。逐文件 diff 出 2 处真差异（都是 3.8 修的 3.7 bug）：`Bone::updateWorldTransform()` 根骨骼分支把 `sx`/`sy` 用反；`IkConstraint::apply()` 单骨骼分支 `&&` 绑定优先级 ⇒ `b≈0` 且 compress 时 NaN。3.7 的错解算出来不报错，只是姿势错 | `doc/GPU_SPINE_V7_ANIMATION.md` §4.1 |
 | 15 | 同一槽位挂两条 path 附件算不算错？ | **不算，两条都烘焙。** 实测 6 / 781 资产这样（如 `K_Lubandashi_Spine` 的槽位 `EFFTAIYILIZI`）。参考实现 `sortPathConstraint` 会遍历**全部**；我最初加的"重复 ⇒ 报错"一次卡掉 12 个真资产（769/41 对不上 781/29 基线），已撤回 | §3.7.3 |
+| 16 | 宿主渲染路径（2026-10-26 拍板） | **列为硬前提：宿主必须允许 per-instance 骨骼参数（§5 的 `bone_base` / `root_index` 可逐实例寻址），Spine 不能走「交付顶点参与合并」的路径。** 共享与实例化**正交**：共享省内存+每帧带宽（收益主体），实例化只省 draw call（可选，**不是共享的前提** —— 不实例化时 VB 仍只有一份、每帧仍只传骨骼表）。宿主一旦走 Canvas 顶点合并（`OnPopulateMesh` / `CanvasRenderer::SetMesh`），顶点须回 CPU 蒙皮 ⇒ 共享归零、上传 2.62x 与 geo 2.34x 归零，而 anim 慢 1.43x 仍要付 ⇒ **净亏**（只有 §3.2 的资产内部去重存活）；不带 deform 的资产可借"几何不脏就不重建"吃到例外，但 deform 覆盖 93% 资产。**OSGame 现状满足**：`UnitySkeletonGraphic` 走 `m_MeshRenderer->SetSharedMesh(m_Mesh)`（`UnitySkeletonGraphic.cpp:377-390`），`m_CanvasRenderer` 只用于 `EnableRectClipping`（`:432-451`）、从不 `SetMesh` ⇒ 挂 UI 层级但不参与 Canvas 合批 ⇒ **"实例化会打断合批"不成立（没有合批可打断）**。实例化的真实代价是与其它 UI 元素的**交错遮挡排序**，按实际 UI 结构判断 | §0.1、§0.2 |
+| 17 | 骨骼表 / 静态几何走什么通道？（2026-10-26 拍板） | **默认 SSBO（structured buffer / instance data）；"不用纹理"的理由只保留"显存打包浪费"一条。** ⚠️ 同时**修正一条旧表述**：原文"纹理采样会引入与 CPU 不一致的舍入"只对**带滤波的归一化采样**成立，`texelFetch`（整数 texel 坐标、不滤波、RGBA32F / R32UI 原值返回）**与 SSBO 逐位一致** ⇒ 准确说法是"否决纹理 + 归一化坐标 + 滤波这条路径，不是否决纹理本身"。**触发备选的条件**：目标后端无 SSBO（GLES3 / ES 3.0 没有；Unity 的 `StructuredBuffer` / `ByteAddressBuffer` 要 SM5.0+，GLES3 直接编译失败而非降级）⇒ 走 §5.4：骨骼表 UBO（41 骨 × 24 B ≈ 1 KB，远低于 ES3.0 保证的 16 KB）+ 静态几何 `texelFetch` 纹理（UBO 装不下：中位 33.7 KB / p90 97.7 KB；顶点属性定长展开不可行：影响数最大 15）⇒ **付掉跨资产合批**（对 OSGame 不亏，§0.2：本来就没合批）。**未拍板的部分**：是否上 array texture 救回合批（256 层上限 / 分桶 / 槽位分配），以及 §5.4 整条路线本身 —— 都要先过三项实测（RGBA32F 可采样 / `texelFetch` 逐位一致 / array texture 层数上限）—— 完整清单见 `doc/GPU_SPINE_NO_SSBO_VERIFY.md` | §5.1、§5.4 |
+| 18 | OSGame 特性集 / 是否申请例外？（2026-10-26 拍板） | **规则：GPU-Spine 在 OSGame 上只能用现网 shader 已用到的特性** —— 实测口径 `I:\OSGame\...\Assets` 下 `*.shader`(1784) + `*.cginc/*.hlsl/*.glslinc`(675) = **2459 文件**（§5.5）。**路线选择 = B「申请例外」**：申请 `#pragma target 3.5`（现网 256 个 shader 已在用，Spine 自己未声明才需申请；要它是因为 `SV_VertexID` / `SV_InstanceID` 需要该档）+ `texelFetch`（**ES3.0 core 指令、非扩展**，线性滤波才需要 `OES_texture_float_linear`）⇒ 批则 §5.4 落地。**`precise` 放弃**（GLSL ES 3.00 没有，申请不到）⇒ FMA 收缩无法禁止 ⇒ bit-exact 判据在 GLES3 后端不成立，降级为**误差阈值**（§17 底噪取法）；Vulkan 后端能否保留 `precise` 待实测，保留则只在 Vulkan 上维持 bit-exact。**驳回降级顺序**：①`texelFetch` 被否 ⇒ 静态几何走 `tex2Dlod` + Point 采样 + W/H 取 2 的幂（§5.5 合规，199 文件在用，但逐位性更脆弱，需单独对拍 = 验证清单 G2 第 11 项）；②再否或误差超底噪 ⇒ **回退路线 A**（只做 ZEngine / PC / 编辑器，OSGame 维持 CPU 蒙皮） | §5.4、§5.5、§5.6 |
+| 19 | ShaderLab 能否同时兼容 ZEngine 与 Unity？（2026-10-26 拍板） | **结论：语法层"是 Unity 格式的子集"，工程上"还不能"，且对 Spine 而言两端都写不完整 ⇒ 不做全量 ShaderLab 化，改为"先抽公式层"。** 三条依据：①**两端都声明不了 Spine 的 9 个全局 buffer** —— Unity ShaderLab 的属性类型没有 Buffer，**ZEngine 的 `PropertyType` 也没有**（`ShaderLabAsset.h:15-26` 只有 Float / Int / Range / Color / Vector / 2D / Cube / 3D / FloatArray）⇒ b0-b8 只能靠**外部绑定契约**，`.shader` 文件本身不承载绑定信息；②**通道模型不可统一** —— ZEngine（Vulkan / DX12）走 SSBO，Unity 侧 Android = **GLES3**（§5.5）只能走纹理 + UBO ⇒ 同一份 HLSL 不能同时成立，必须 `#ifdef` 分叉或两个 SubShader；③⚠️ **ZEngine 的 ShaderLab 自身未完成** —— `ShaderLabParser.cpp:62-63` 明写 `ParsePragma()` **只有声明、没有实现、也从来没有调用者** ⇒ `#pragma vertex / fragment` 目前不解析，入口永远取默认 `"vert" / "frag"`；且 Spine 的 Vulkan / Metal 路径要**构建期**烘焙成 SPIR-V 头文件（`SpineGpuRenderer.cpp:32-37`），ShaderLab 侧尚无此步骤。**附一条好消息**：`ShaderLabHlslExtract` 会剥掉所有 `#pragma` 行（`.h:29-32`）⇒ Unity 需要的 `#pragma target 3.5` 在 ZEngine 侧被忽略而非报错，两者不冲突。**能统一的**：文件组织、渲染状态（4 种混合可从 `pipelines[layer][4]` 收敛进 `.shader`）、§6 公式文本；**不能统一的**：绑定、通道。**为什么不做**：真正的"两端一致"保证是 §6 公式 + `SpineGpuEmulateVertex` + 逐位对拍，**不是同一个文件**；且 OSGame 侧还在等 §5.6 例外结果 —— 若回退路线 A（只做 ZEngine），Unity 兼容这块白做。**改用便宜一个数量级的做法**：抽出**只含 §6 / §8 公式的公共层**，两端外壳各自写（ZEngine 继续 GLSL / HLSL 或以后再 ShaderLab 化，Unity 写自己的 `.shader`）。**已落地（2026-10-26）**：`engine/shader/include/spine_skinning.h`（跨 GLSL / HLSL，沿用 `gbuffer.h` 的 `ZENGINE_HLSL` 方言约定），导出 `SpineAffineApply` / `SpineBoneApply` / `SpineRootApply` / `SpineInfluenceBoneIndex` / `SpineInfluenceWeight` / `SpineApplyDeform` / `SpineShade` + `SPINE_FLAG_*` 常量；`glsl/spine_gpu.{vert,frag}`（`GL_GOOGLE_include_directive`）与 `hlsl/rp2/spine_gpu.*.hlsl`（DXC，`include_paths` 加 `shader/include`，`SpineGpuRenderer.cpp` / `SpineGpuDx12RasterTest.cpp` 两处）都改为 `#include` 它。**验证**：`SpineGpuDx12RasterTest` **6/6 PASS**（RTX 5080，用引擎真正加载的那两份 hlsl）；`SpineSkinningParityTest` **11/11 PASS**，max 7.629e-06 / 0.68 ulp（与改动前记录的基线一致）；GLSL 两侧 `glslangValidator -V100` 与 HLSL 两侧 `dxc` 均通过。⚠️ 已知差异：glslang 不内联 ⇒ SPIR-V 里出现真正的 `OpFunctionCall`（驱动会内联），`NoContraction`（`precise`）装饰在两版里都保留，除法 `/255.0` 未被改成乘倒数 | §5.5、§6、§8 |
 
 ### 13.2 仍待拍板
 
-**无。** 上表全部已拍板（#2 在 2026-10-22 因实测改判为"逐顶点变长"）；
+**路线层面无悬而未决项**（#2 在 2026-10-22 因实测改判为"逐顶点变长"）。
+#18 的两个例外项**待批准**，其路线与驳回降级顺序已拍板在 §5.6；
+#17 的 array texture 取舍与 §5.4 整条路线仍待 G0 / G0' 实测（清单见
+`doc/GPU_SPINE_NO_SSBO_VERIFY.md`）；#19 的公式层**已落地**（`engine/shader/include/spine_skinning.h`）；剩下的 Unity 侧外壳
+（走纹理 + UBO 通道）**依赖 §5.6 例外结果**，属于待排期行动项而非决策悬置。
 后续若再开新议题写在这里。
 
 （v7 设计内部的开放项，记在 `doc/GPU_SPINE_V7_ANIMATION.md` §7：
