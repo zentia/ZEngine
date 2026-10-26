@@ -121,9 +121,10 @@ public:
     // 画面和"没有 SSAO"完全一样，只有这个数能分辨）。
     bool IsAmbientOcclusionBound() const { return m_AmbientOcclusionBound; }
 
-    /// True when RP1 is driven by the render graph (env ZENGINE_RG_RP1=1, DX12 only).
-    /// Off by default: the hand-written chain is the one that has been shipping, and the
-    /// graph path still needs a per-frame visual diff before it can become the default.
+    /// True when RP1 is driven by the render graph (DX12 only). Default ON: the graph path
+    /// was verified bit-identical to the hand-written chain by the in-frame A/B capture on
+    /// 2026-10-26. Set env ZENGINE_RG_RP1=0 to force the hand-written chain (kept as the
+    /// fallback / A-B对照).
     bool IsRenderGraphPathEnabled() const { return m_UseRenderGraph; }
 
     /// Turns the graph path on / off at runtime (building the graph objects on first use).
@@ -165,8 +166,9 @@ public:
     size_t m_SelectedAxis {3};
 
 private:
-    /// Reads ZENGINE_RG_RP1 and, when it is on (and the backend is DX12), builds the
-    /// executor / pool / graph. Called from Initialize(); harmless when the switch is off.
+    /// Reads ZENGINE_RG_RP1 (default ON; set to 0 to force the hand-written chain) and,
+    /// when the graph path is active (and the backend is DX12), builds the executor / pool /
+    /// graph. Called from Initialize(); harmless when the switch is off.
     void SetupRenderGraphPath();
 
     void SetupDescriptorSetLayouts();
