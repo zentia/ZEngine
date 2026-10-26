@@ -29,6 +29,11 @@
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector3.h"
+// AIMoveIntent / AIActionRequest: deliberately the lightweight header that
+// MotorComponent also includes -- it pulls in math + object ids and nothing
+// else, so binding the two AI value structs does not drag behaviour trees or
+// perception into every generated .gen.cpp.
+#include "Runtime/Function/AI/AIMoveIntent.h"
 #include "pesapi.h"
 
 #include <eastl/string.h>
@@ -462,6 +467,56 @@ namespace ZScript
                         static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, name)));
                 }
             }
+            return out;
+        }
+    };
+
+    // --- AI value types --------------------------------------------------
+    //
+    // Both are plain value structs (no Object base, no ownership), which is
+    // exactly the shape a script can hold: they cross as flat objects and are
+    // copied, never referenced. Nested Vector3 goes through the converter above.
+
+    template <>
+    struct Converter<AIMoveIntent>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const AIMoveIntent& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "hasMoveTarget", Converter<bool>::ToJs(apis, env, v.has_move_target));
+            apis->set_property(env, o, "moveTarget", Converter<Vector3>::ToJs(apis, env, v.move_target));
+            apis->set_property(env, o, "speedRatio", Converter<float>::ToJs(apis, env, v.speed_ratio));
+            apis->set_property(env, o, "hasFaceTarget", Converter<bool>::ToJs(apis, env, v.has_face_target));
+            apis->set_property(env, o, "faceTarget", Converter<Vector3>::ToJs(apis, env, v.face_target));
+            return o;
+        }
+        static AIMoveIntent FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            AIMoveIntent out;
+            out.has_move_target = Converter<bool>::FromJs(apis, env, apis->get_property(env, v, "hasMoveTarget"));
+            out.move_target = Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "moveTarget"));
+            out.speed_ratio = Converter<float>::FromJs(apis, env, apis->get_property(env, v, "speedRatio"));
+            out.has_face_target = Converter<bool>::FromJs(apis, env, apis->get_property(env, v, "hasFaceTarget"));
+            out.face_target = Converter<Vector3>::FromJs(apis, env, apis->get_property(env, v, "faceTarget"));
+            return out;
+        }
+    };
+
+    template <>
+    struct Converter<AIActionRequest>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const AIActionRequest& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "actionName", Converter<eastl::string>::ToJs(apis, env, v.action_name));
+            apis->set_property(env, o, "targetId", Converter<GObjectID>::ToJs(apis, env, v.target_id));
+            return o;
+        }
+        static AIActionRequest FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            AIActionRequest out;
+            out.action_name = Converter<eastl::string>::FromJs(apis, env, apis->get_property(env, v, "actionName"));
+            out.target_id = Converter<GObjectID>::FromJs(apis, env, apis->get_property(env, v, "targetId"));
             return out;
         }
     };
