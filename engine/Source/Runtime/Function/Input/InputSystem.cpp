@@ -145,6 +145,13 @@ bool InputSystem::Initialize()
     auto toggle_trigger = std::make_shared<TriggerToggle>();
     gameplay_context->MapKey(FKey::F(), GameActions::ToggleFreeCamera, toggle_trigger);
 
+    // 鼠标移动 -> Look（Axis2D）。
+    // 这是伪键绑定：走的不是 m_KeyToMappings，而是 m_MouseMoveMappings（见
+    // EnhancedInputSystem::RebuildMappingTable / Tick Step 2）。必须在
+    // AddMappingContext 之前加完 —— 映射表缓存的是 FKeyMapping 的裸指针，
+    // 之后再 MapKey 会让 vector 重分配、指针全悬空。
+    gameplay_context->MapKey(FKey::MouseMove(), GameActions::Look, EInputAxis::X_Y);
+
     m_EnhancedInput->AddMappingContext(gameplay_context, 0);
 
     // No longer register separate callbacks — EnhancedInputSystem handles

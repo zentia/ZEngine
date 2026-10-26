@@ -112,6 +112,18 @@ namespace KeyCodes
     constexpr int MouseButton6 = 1105;
     constexpr int MouseButton7 = 1106;
     constexpr int MouseButton8 = 1107;
+
+    // ---- Pseudo-keys: 不是按键，是"连续的指针输入" ------------------------
+    //
+    // 按键有按下/抬起，可以查 m_PressedKeys；鼠标移动与滚轮没有，它们是每帧一个
+    // 增量，必须走单独的映射表（EnhancedInputSystem 的 m_MouseMoveMappings /
+    // m_MouseScrollMappings）。这两个值就是用来把它们和真按键区分开的。
+    //
+    // 不要用 -1：那是 Unknown（FKey::Invalid 的值）。过去伪键取 -1/-2，正好和
+    // Unknown 撞在一起，于是 RebuildMappingTable() 把它们当成"没绑定按键"直接
+    // continue 掉 —— 两个伪键映射表永远是空的，鼠标移动与滚轮的映射从未生效。
+    constexpr int MouseMoveXY   = -1001;
+    constexpr int MouseScrollXY = -1002;
 } // namespace KeyCodes
 
 // ============================================================
@@ -142,6 +154,10 @@ struct FKey
     static FKey MouseLeft()    { return FKey{KeyCodes::MouseButton1}; }
     static FKey MouseRight()   { return FKey{KeyCodes::MouseButton2}; }
     static FKey MouseMiddle()  { return FKey{KeyCodes::MouseButton3}; }
+
+    // 伪键：把鼠标移动 / 滚轮映射成动作（配合 EInputAxis::X_Y）。
+    static FKey MouseMove()    { return FKey{KeyCodes::MouseMoveXY}; }
+    static FKey MouseScroll()  { return FKey{KeyCodes::MouseScrollXY}; }
 };
 
 // ============================================================
@@ -152,6 +168,9 @@ enum class EInputAxis : uint8_t
     None = 0,
     X,    // horizontal (right positive)
     Y,    // vertical   (forward/up positive)
+    /// 两个分量都要。给鼠标移动 / 滚轮这类本身就是二维的输入用 —— 下面
+    /// MapKey 的示例里写的就是它。
+    X_Y,
 };
 
 // ============================================================
@@ -195,7 +214,8 @@ struct FKeyMapping
 //   gameplay->MapKey(FKey::D(),        GameActions::Move, EInputAxis::X,  1.0f);
 //   gameplay->MapKey(FKey::Space(),    GameActions::Jump);
 //   gameplay->MapKey(FKey::LeftShift(),GameActions::Sprint);
-//   gameplay->MapKey(FKey::Mouse(),    GameActions::Look,  EInputAxis::X_Y);
+//   gameplay->MapKey(FKey::MouseMove(),  GameActions::Look, EInputAxis::X_Y);
+//   gameplay->MapKey(FKey::MouseScroll(),GameActions::Zoom, EInputAxis::Y);
 //   gameplay->MapKey(FKey::F(),        GameActions::ToggleFreeCamera, {}, 1.0f, trigger_toggle);
 //
 //   system->AddMappingContext(gameplay, 0);

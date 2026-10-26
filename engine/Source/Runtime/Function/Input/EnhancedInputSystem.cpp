@@ -45,6 +45,12 @@ bool EnhancedInputSystem::Initialize()
         ->RegisterOnScrollFunc([this](double xoff, double yoff) {
             OnScroll(xoff, yoff);
         });
+    // 触摸：移动端宿主推入（WindowSystem::PushTouchEvent）。桌面永远不会有
+    // 这些事件，注册了也不占什么。
+    GET_SYSTEM(WindowSystem)
+        ->RegisterOnTouchFunc([this](int pointer_id, int action, float x, float y) {
+            OnTouch(pointer_id, action, x, y);
+        });
 
     // Initialize shared game actions
     GameActions::Init();
@@ -109,6 +115,204 @@ void EnhancedInputSystem::OnScroll(double xoffset, double yoffset)
 {
     m_ScrollAccumX += static_cast<float>(xoffset);
     m_ScrollAccumY += static_cast<float>(yoffset);
+}
+
+void EnhancedInputSystem::OnTouch(int pointer_id, int action, float x, float y)
+{
+    using TouchAction = WindowSystem::TouchAction;
+    const TouchAction touch_action = static_cast<TouchAction>(action);
+    const auto       it = m_Touches.find(pointer_id);
+
+    switch (touch_action)
+    {
+        case TouchAction::Down:
+            if (it == m_Touches.end())
+            {
+                m_Touches.emplace(pointer_id, TouchPoint{x, y, x, y});
+                // 第一根按下的手指成为 primary：之后它的移动被翻译成光标移动
+                // 与左键拖拽，UI 与相机就都走通了。
+                if (m_PrimaryTouchId < 0)
+                {
+                    m_PrimaryTouchId = pointer_id;
+                }
+            }
+            break;
+
+        case TouchAction::Move:
+            if (it != m_Touches.end())
+            {
+                // 帧内增量（转视角用）与累计位移（摇杆用）都要，所以两个都更新。
+                it->second.frame_dx += x - it->second.x;
+                it->second.frame_dy += y - it->second.y;
+                it->second.x = x;
+                it->second.y = y;
+            }
+            break;
+
+        case TouchAction::Up:
+        case TouchAction::Cancel:
+            if (it != m_Touches.end())
+            {
+                m_Touches.erase(it);
+            }
+            if (m_PrimaryTouchId == pointer_id)
+            {
+                // primary 抬起后把身份交给还按着的第一根手指，否则后续拖动
+                // （比如另一只手还在转相机）会被完全忽略。
+                m_PrimaryTouchId = m_Touches.empty() ? -1 : m_Touches.begin()->first;
+            }
+            break;
+
+        default:
+            break;
+    }
+
+    if (m_PrimaryTouchId != pointer_id)
+    {
+        return;  // 非 primary：只留状态供查询，不动光标
+    }
+
+    if (touch_action == TouchAction::Down)
+    {
+        // 先定锚点再按下，保证 UI 的按下命中测试落在手指真正按下的那一点。
+        FeedCursorFromPrimaryTouch(x, y, true);
+        OnMouseButton(0, KeyCodes::PRESS, 0);
+    }
+    else if (touch_action == TouchAction::Move)
+    {
+        FeedCursorFromPrimaryTouch(x, y, false);
+    }
+    else
+    {
+        // Up / Cancel：先更新到最终位置再抬起，抬起事件的命中测试才准。
+        FeedCursorFromPrimaryTouch(x, y, false);
+        OnMouseButton(0, KeyCodes::RELEASE, 0);
+    }
+}
+
+void EnhancedInputSystem::FeedCursorFromPrimaryTouch(float x, float y, bool reset_anchor)
+{
+    if (reset_anchor || !m_CursorInitialized)
+    {
+        // 刚按下（或本进程第一次收到触摸）：只定锚点，不产生 delta。
+        // 否则从屏幕另一边点过来会一次性产生一个巨大的 delta，相机瞬间转飞。
+        m_LastCursorX = x;
+        m_LastCursorY = y;
+        m_CursorInitialized = true;
+    }
+    else
+    {
+        m_CursorDeltaX += x - m_LastCursorX;
+        m_CursorDeltaY += y - m_LastCursorY;
+        m_LastCursorX = x;
+        m_LastCursorY = y;
+    }
+    m_CursorX = x;
+    m_CursorY = y;
+}
+
+bool EnhancedInputSystem::GetTouchPosition(int pointer_id, float& out_x, float& out_y) const
+{
+    const auto it = m_Touches.find(pointer_id);
+    if (it == m_Touches.end())
+    {
+        return false;
+    }
+    out_x = it->second.x;
+    out_y = it->second.y;
+    return true;
+}
+
+bool EnhancedInputSystem::GetTouchDelta(int pointer_id, float& out_dx, float& out_dy) const
+{
+    const auto it = m_Touches.find(pointer_id);
+    if (it == m_Touches.end())
+    {
+        return false;
+    }
+    // 相对按下点：虚拟摇杆要的就是这个（摇杆圆心 = 按下点）。
+    out_dx = it->second.x - it->second.start_x;
+    out_dy = it->second.y - it->second.start_y;
+    return true;
+}
+
+bool EnhancedInputSystem::GetTouchFrameDelta(int pointer_id, float& out_dx, float& out_dy) const
+{
+    const auto it = m_Touches.find(pointer_id);
+    if (it == m_Touches.end())
+    {
+        return false;
+    }
+    out_dx = it->second.frame_dx;
+    out_dy = it->second.frame_dy;
+    return true;
+}
+
+float EnhancedInputSystem::ResolveTouchStickRadius() const
+{
+    if (m_TouchStickRadiusPixels > 0.0f)
+    {
+        return m_TouchStickRadiusPixels;
+    }
+    // 没配就用屏幕短边的 1/4：手机横屏时大约是一个拇指的自然活动范围。
+    int width = 0;
+    int height = 0;
+    if (auto* window_system = GET_SYSTEM(WindowSystem); window_system != nullptr)
+    {
+        const auto size = window_system->GetWindowSize();
+        width  = size[0];
+        height = size[1];
+    }
+    if (width <= 0 || height <= 0)
+    {
+        return 100.0f;
+    }
+    return static_cast<float>(width < height ? width : height) * 0.25f;
+}
+
+void EnhancedInputSystem::ApplyTouchAxes()
+{
+    // 摇杆：相对按下点的位移归一化 → "Move" 的 Axis2D。
+    // 与键盘 WASD 写的是同一个 action，所以 InputSystem::SyncGameCommands()
+    // 不用改就能把它翻译成 forward/backward/left/right。
+    if (m_TouchStickEnabled && m_TouchStickPointerId >= 0)
+    {
+        float dx = 0.0f;
+        float dy = 0.0f;
+        if (GetTouchDelta(m_TouchStickPointerId, dx, dy))
+        {
+            const float radius = ResolveTouchStickRadius();
+            float nx = dx / radius;
+            // 屏幕 y 向下为正，"Move" 的 y 向前为正，所以要翻符号。
+            float ny = -dy / radius;
+
+            const float length = std::sqrt(nx * nx + ny * ny);
+            if (length > 1.0f)
+            {
+                nx /= length;
+                ny /= length;
+            }
+            m_AccumulatedValues["Move"] = InputActionValue(Vector2(nx, ny));
+        }
+    }
+
+    // 视角：本帧位移 → "Look"。与鼠标 delta 同一语义（都是帧内增量）。
+    if (m_TouchLookPointerId >= 0)
+    {
+        float dx = 0.0f;
+        float dy = 0.0f;
+        if (GetTouchFrameDelta(m_TouchLookPointerId, dx, dy))
+        {
+            m_AccumulatedValues["Look"] = InputActionValue(Vector2(dx, dy));
+        }
+    }
+
+    // 帧内增量用掉即清 —— 它是"这一帧移动了多少"，不是"从按下点移动了多少"。
+    for (auto& entry : m_Touches)
+    {
+        entry.second.frame_dx = 0.0f;
+        entry.second.frame_dy = 0.0f;
+    }
 }
 
 void EnhancedInputSystem::SetFocusMode(bool mode)
@@ -200,16 +404,26 @@ void EnhancedInputSystem::RebuildMappingTable()
     {
         for (const FKeyMapping& mapping : entry.context->GetMappings())
         {
-            // Determine the key category
-            if (mapping.key.code == KeyCodes::Unknown)
+            // 伪键先分流。它们不是按键，没有"按下"状态，进 m_KeyToMappings 会被
+            // m_PressedKeys 查询永远判 false —— 必须走各自的连续量表。
+            // 顺序上必须排在 KeyCodes::Unknown 判断之前：旧版伪键取 -1，正好等于
+            // Unknown，于是下面那句 continue 把它们全吞了，两张表恒为空。
+            if (mapping.key.code == kKeyMouseMove)
             {
-                // Could be a special mapping (mouse move, scroll)
+                m_MouseMoveMappings.push_back(const_cast<FKeyMapping*>(&mapping));
+                continue;
+            }
+            if (mapping.key.code == kKeyMouseScroll)
+            {
+                m_MouseScrollMappings.push_back(const_cast<FKeyMapping*>(&mapping));
                 continue;
             }
 
-            // Mouse move and scroll are handled separately via pseudo-keys
-            // For now, key-based mappings go into the key table.
-            // Mouse button mappings (1000+ range) also go here.
+            // Unbound / placeholder binding: nothing to look up.
+            if (mapping.key.code == KeyCodes::Unknown)
+                continue;
+
+            // Real keys and mouse buttons (1100+ range) go into the key table.
             m_KeyToMappings[mapping.key.code].push_back(const_cast<FKeyMapping*>(&mapping));
         }
     }
@@ -230,6 +444,89 @@ InputActionValue EnhancedInputSystem::ApplyModifiers(const FKeyMapping& mapping,
         result = mod->Modify(result);
     }
     return result;
+}
+
+// ============================================================
+// Internal: 连续型指针输入 (mouse move / scroll) -> action
+// ============================================================
+
+void EnhancedInputSystem::ApplyPointerMapping(const FKeyMapping& mapping, const Vector2& raw_delta)
+{
+    if (!mapping.action)
+        return;
+
+    const std::string&          action_name = mapping.action->GetName();
+    const EInputActionValueType value_type  = mapping.action->GetValueType();
+
+    // 按绑定声明的轴取分量：X_Y 给鼠标移动这种天然二维的输入；X / Y 只取一个分量
+    // （滚轮 -> Zoom 通常写 Y）。scale 在这里是方向与灵敏度。
+    float x = 0.0f;
+    float y = 0.0f;
+    switch (mapping.axis)
+    {
+        case EInputAxis::X:
+            x = raw_delta.x;
+            break;
+        case EInputAxis::Y:
+            y = raw_delta.y;
+            break;
+        case EInputAxis::X_Y:
+            x = raw_delta.x;
+            y = raw_delta.y;
+            break;
+        case EInputAxis::None:
+        default:
+            // 没声明轴：这类输入本身就是二维的，两个分量都给。
+            x = raw_delta.x;
+            y = raw_delta.y;
+            break;
+    }
+    x *= mapping.scale;
+    y *= mapping.scale;
+
+    InputActionValue contribution;
+    switch (value_type)
+    {
+        case EInputActionValueType::Axis2D:
+            contribution = InputActionValue(Vector2(x, y));
+            break;
+        case EInputActionValueType::Axis1D:
+            // 一维动作拿不了两个分量：取绑定声明的那个（X_Y 时取 y，符合滚轮语义）。
+            contribution = InputActionValue(mapping.axis == EInputAxis::X ? x : y);
+            break;
+        case EInputActionValueType::Boolean:
+        default:
+            contribution = InputActionValue(x != 0.0f || y != 0.0f);
+            break;
+    }
+
+    contribution = ApplyModifiers(mapping, contribution);
+
+    auto it = m_AccumulatedValues.find(action_name);
+    if (it == m_AccumulatedValues.end())
+    {
+        m_AccumulatedValues[action_name] = contribution;
+        return;
+    }
+
+    // 同一个动作可能被多个绑定喂（多 context、或多条伪键绑定）—— 与 Step 1 的
+    // 合并规则保持一致：Axis2D / Axis1D 相加，Boolean 取或。
+    switch (value_type)
+    {
+        case EInputActionValueType::Axis2D:
+            m_AccumulatedValues[action_name] =
+                InputActionValue(it->second.GetAxis2D() + contribution.GetAxis2D());
+            break;
+        case EInputActionValueType::Axis1D:
+            m_AccumulatedValues[action_name] =
+                InputActionValue(it->second.GetAxis1D() + contribution.GetAxis1D());
+            break;
+        case EInputActionValueType::Boolean:
+        default:
+            m_AccumulatedValues[action_name] =
+                InputActionValue(it->second.GetBoolean() || contribution.GetBoolean());
+            break;
+    }
 }
 
 // ============================================================
@@ -290,6 +587,11 @@ void EnhancedInputSystem::Tick()
         for (const FKeyMapping& mapping : entry.context->GetMappings())
         {
             if (!mapping.action)
+                continue;
+
+            // 伪键（鼠标移动 / 滚轮）不参与按键累积 —— 它们没有按下状态，由
+            // Step 2 经 ApplyPointerMapping() 处理。
+            if (mapping.key.code == kKeyMouseMove || mapping.key.code == kKeyMouseScroll)
                 continue;
 
             const std::string& action_name = mapping.action->GetName();
@@ -377,32 +679,48 @@ void EnhancedInputSystem::Tick()
         }
     }
 
-    // ---- Step 2: Add special continuous values (Look from mouse delta) ----
-    // Mouse delta is accumulated in OnCursorPos and converted to the Look action
+    // ---- Step 2: 连续型指针输入（鼠标移动 / 滚轮）----
+    //
+    // 鼠标 delta 在 OnCursorPos() 里累加，滚轮在 OnScroll() 里累加。它们不是按键，
+    // 走的是 RebuildMappingTable() 填出来的伪键表 —— 绑定写法：
+    //     ctx->MapKey(FKey::MouseMove(),   GameActions::Look, EInputAxis::X_Y);
+    //     ctx->MapKey(FKey::MouseScroll(), GameActions::Zoom, EInputAxis::Y);
     if (m_FocusMode)
     {
-        Vector2 look_delta(static_cast<float>(m_CursorDeltaX), static_cast<float>(m_CursorDeltaY));
-        if (look_delta != Vector2::ZERO)
+        const Vector2 move_delta(static_cast<float>(m_CursorDeltaX),
+                                 static_cast<float>(m_CursorDeltaY));
+        if (move_delta != Vector2::ZERO)
         {
-            auto it = m_AccumulatedValues.find("Look");
-            if (it != m_AccumulatedValues.end())
+            if (m_MouseMoveMappings.empty())
             {
-                Vector2 existing = it->second.GetAxis2D();
-                m_AccumulatedValues["Look"] = InputActionValue(existing + look_delta);
+                // 没有任何 context 绑定 FKey::MouseMove()：退回老行为直接喂
+                // "Look"，免得修完伪键后反而把鼠标视角改没了。
+                auto it = m_AccumulatedValues.find("Look");
+                if (it != m_AccumulatedValues.end())
+                    m_AccumulatedValues["Look"] = InputActionValue(it->second.GetAxis2D() + move_delta);
+                else
+                    m_AccumulatedValues["Look"] = InputActionValue(move_delta);
             }
             else
             {
-                m_AccumulatedValues["Look"] = InputActionValue(look_delta);
+                for (const FKeyMapping* mapping : m_MouseMoveMappings)
+                    ApplyPointerMapping(*mapping, move_delta);
             }
         }
     }
 
-    // Scroll
-    if (m_ScrollAccumY != 0.0f)
+    // 滚轮：同样走映射表。没有绑定就什么都不做（值在 Step 4 清掉）。
+    if (m_ScrollAccumX != 0.0f || m_ScrollAccumY != 0.0f)
     {
-        // Could map scroll to a Scroll action, but for now just clear it
-        // This is where you'd add scroll-based action accumulation
+        const Vector2 scroll_delta(m_ScrollAccumX, m_ScrollAccumY);
+        for (const FKeyMapping* mapping : m_MouseScrollMappings)
+            ApplyPointerMapping(*mapping, scroll_delta);
     }
+
+    // ---- Step 2b: 触摸摇杆 / 触摸视角（移动端）----
+    // 必须在 Tick 内部写：m_AccumulatedValues 在 Step 1 就清空了，而
+    // InputSystem::Tick() 紧接着要读，外部注入赶不上。
+    ApplyTouchAxes();
 
     // ---- Step 3: Evaluate triggers and fire delegates ----
     for (InputAction* action : m_RegisteredActions)
