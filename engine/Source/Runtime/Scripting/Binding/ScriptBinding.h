@@ -29,6 +29,7 @@
 #include "Runtime/Core/Math/Quaternion.h"
 #include "Runtime/Core/Math/Vector2.h"
 #include "Runtime/Core/Math/Vector3.h"
+#include "Runtime/Core/Math/Vector4.h"
 // AIMoveIntent / AIActionRequest: deliberately the lightweight header that
 // MotorComponent also includes -- it pulls in math + object ids and nothing
 // else, so binding the two AI value structs does not drag behaviour trees or
@@ -429,6 +430,31 @@ namespace ZScript
             Vector2 out;
             out.x = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "x")));
             out.y = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "y")));
+            return out;
+        }
+    };
+
+    // Vector4 crosses as x / y / z / w. Needed by the runtime material instance:
+    // the base-colour slot carries alpha in w, and a vec3 cannot hold it.
+    template <>
+    struct Converter<Vector4>
+    {
+        static pesapi_value ToJs(pesapi_ffi* apis, pesapi_env env, const Vector4& v)
+        {
+            pesapi_value o = apis->create_object(env);
+            apis->set_property(env, o, "x", apis->create_double(env, v.x));
+            apis->set_property(env, o, "y", apis->create_double(env, v.y));
+            apis->set_property(env, o, "z", apis->create_double(env, v.z));
+            apis->set_property(env, o, "w", apis->create_double(env, v.w));
+            return o;
+        }
+        static Vector4 FromJs(pesapi_ffi* apis, pesapi_env env, pesapi_value v)
+        {
+            Vector4 out;
+            out.x = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "x")));
+            out.y = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "y")));
+            out.z = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "z")));
+            out.w = static_cast<float>(apis->get_value_double(env, apis->get_property(env, v, "w")));
             return out;
         }
     };

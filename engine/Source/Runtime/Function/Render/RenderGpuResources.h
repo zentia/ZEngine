@@ -83,6 +83,16 @@ struct GpuPBRMaterial : RenderMaterialGPUResource
 
     RHIDescriptorSet* material_descriptor_set {RHI_NULL_HANDLE};
 
+    /// 五个槽位的采样器。材质实例要复用共享材质的纹理视图，而视图本身不带尺寸
+    /// 信息 —— 之前是拿上传时的 `width/height` 现算 `GetOrCreateMipmapSampler(w,h)`，
+    /// 实例手里没有那两个数，所以把采样器存下来。RHI 侧按 (w,h) 缓存，存指针和
+    /// 重新算拿到的是同一个对象。
+    RHISampler* base_color_sampler {RHI_NULL_HANDLE};
+    RHISampler* metallic_roughness_sampler {RHI_NULL_HANDLE};
+    RHISampler* normal_sampler {RHI_NULL_HANDLE};
+    RHISampler* occlusion_sampler {RHI_NULL_HANDLE};
+    RHISampler* emissive_sampler {RHI_NULL_HANDLE};
+
     std::string shader_name {"StandardLit"};
     std::string shader_asset_file;
     std::string vertex_shader_file;

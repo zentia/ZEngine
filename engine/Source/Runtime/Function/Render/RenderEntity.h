@@ -20,6 +20,14 @@ public:
 
     // material
     size_t m_MaterialAssetId {0};
+    /// 运行时材质实例 id。0 = 用 `m_MaterialAssetId` 那份**共享** GpuPBRMaterial；
+    /// 非 0 = 用 `m_MaterialInstances` 里这一份（== m_InstanceId，一个 part 一份）。
+    ///
+    /// 之所以不把实例塞进同一个 m_Materials：那边是按材质资产 id 索引的，两个
+    /// allocator 的 id 空间会撞。单独一个 map，键就是 per-part 的 m_InstanceId，
+    /// 而这个 id 由 m_InstanceIdAllocator 回收复用，所以 map 的规模上界是"同时带
+    /// override 的 part 数"，不会随关卡加载次数无限涨。
+    uint32_t m_MaterialInstanceId {0};
     bool m_Blend {false};
     bool m_DoubleSided {false};
     Vector4 m_BaseColorFactor {1.0f, 1.0f, 1.0f, 1.0f};

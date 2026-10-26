@@ -97,3 +97,18 @@ LumenRenderPassWiring（web 库里 `UpdateLumen` 不带 `Z_HAS_LUMEN`）、Deriv
 **36 PASS / 6 ENV / 7 SKIP / 0 FAIL**。6 个 ENV 里有 2 个（ConsoleVariablesFile、PlayerSettings）是宿主 safe-delete 拦截，
 单独复跑 PASS；其余 4 个同上。PrefabEndToEnd 276 项（多链接 `Editor/Build/BuildDependencyWalk.cpp`、
 `Editor/AssetRegistry/AssetRegistry.cpp`、`Editor/Undo/UndoSystem.cpp`，已登记）。
+
+> **2026-10-26 增补**：新增 `MaterialInstanceOverrideSmokeTest`（36 项，PASS）。测"运行时材质实例"的
+> CPU 半边：per-sub-mesh override 只落在自己的槽位上，且该槽位被置 `m_UseMaterialInstance`。
+> 判据的重点是**其它槽位与基线逐字段相同** —— 这个功能修的就是"改一个 part 的标量等于改全部"，
+> 单槽位测试看不出来。
+>
+> 与 EnhancedInput 那个不同，这个**不是 header-only**：它真的 `new` 出一个 `BaseRenderer` 并读
+> `BuildRenderParts` 产出的 `GameObjectPartDesc`，所以链接 ZRuntime（CMake 目标
+> `ZENGINE_BUILD_MATERIAL_INSTANCE_SMOKE_TEST`）。不碰 GPU / AssetManager / 工程：构造的 sub-mesh
+> 故意不带材质资产（`populateMaterialDesc` 在资产路径为空时提前返回，不会去够 AssetManager），
+> 且 `m_ParentObject == nullptr` 时 `SubmitRenderState` 直接返回。
+>
+> 已在本机原生 macOS 上跑通（用 `build/compile_commands.json` 的 flag 编两个 .o 再手动链
+> `bin/libZRuntime.a`，绕过缺失的 cmake/ninja）：**36 项，exit 0**。web runner 会自动发现
+> （在 `Test/` 目录、以 `SmokeTest.cpp` 结尾），但本机没有 emcc，web 侧未实测。

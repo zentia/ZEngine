@@ -107,6 +107,11 @@ void RenderResource::clear()
 {
     ClearMeshGeometryCache();
 
+    // 运行时材质实例跟着共享材质一起失效。RHI 没有单套描述符集的释放接口，这里的
+    // UBO / 描述符集随进程回收；map 的规模上界是"同时带 override 的 part 数"
+    // （instance id 由 RenderScene 的 allocator 回收复用），不会随关卡加载次数涨。
+    m_MaterialInstances.clear();
+
     if (m_TextureStreamingManager)
     {
         m_TextureStreamingManager->Shutdown();
@@ -766,28 +771,33 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
         base_color_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         base_color_image_info.imageView = now_material.base_color_image_view;
         base_color_image_info.sampler = rhi->GetOrCreateMipmapSampler(base_color_image_width, base_color_image_height);
+        now_material.base_color_sampler = base_color_image_info.sampler;
 
         RHIDescriptorImageInfo metallic_roughness_image_info = {};
         metallic_roughness_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         metallic_roughness_image_info.imageView = now_material.metallic_roughness_image_view;
         metallic_roughness_image_info.sampler =
             rhi->GetOrCreateMipmapSampler(metallic_roughness_width, metallic_roughness_height);
+        now_material.metallic_roughness_sampler = metallic_roughness_image_info.sampler;
 
         RHIDescriptorImageInfo normal_roughness_image_info = {};
         normal_roughness_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         normal_roughness_image_info.imageView = now_material.normal_image_view;
         normal_roughness_image_info.sampler =
             rhi->GetOrCreateMipmapSampler(normal_roughness_width, normal_roughness_height);
+        now_material.normal_sampler = normal_roughness_image_info.sampler;
 
         RHIDescriptorImageInfo occlusion_image_info = {};
         occlusion_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         occlusion_image_info.imageView = now_material.occlusion_image_view;
         occlusion_image_info.sampler = rhi->GetOrCreateMipmapSampler(occlusion_image_width, occlusion_image_height);
+        now_material.occlusion_sampler = occlusion_image_info.sampler;
 
         RHIDescriptorImageInfo emissive_image_info = {};
         emissive_image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         emissive_image_info.imageView = now_material.emissive_image_view;
         emissive_image_info.sampler = rhi->GetOrCreateMipmapSampler(emissive_image_width, emissive_image_height);
+        now_material.emissive_sampler = emissive_image_info.sampler;
 
         RHIWriteDescriptorSet mesh_descriptor_writes_info[6];
 
@@ -829,6 +839,134 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
 
         return now_material;
     }
+}
+
+void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, GpuPBRMaterial& instance)
+{
+    if (rhi == nullptr || m_MaterialDescriptorSetLayout == nullptr)
+    {
+        return;
+    }
+
+    // ---- 1. uniform buffer：没有就建，有就复用（重建 = 漏显存） ----
+    const RHIDeviceSize buffer_size = sizeof(MeshMaterialUniform);
+
+    if (instance.material_uniform_buffer == RHI_NULL_HANDLE)
+    {
+        RHIBufferCreateInfo buffer_info = {RHI_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        buffer_info.size = buffer_size;
+        buffer_info.usage = RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT | RHI_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+        CreateAssetBufferWithAlignment(rhi,
+                                       buffer_info,
+                                       m_GlobalRenderResource.m_StorageBuffer.m_MinUniformBufferOffsetAlignment,
+                                       instance.material_uniform_buffer,
+                                       (void**)&instance.material_uniform_buffer_allocation);
+    }
+
+    if (instance.material_uniform_buffer == RHI_NULL_HANDLE)
+    {
+        return;
+    }
+
+    {
+        RHIBuffer* staging_buffer = RHI_NULL_HANDLE;
+        RHIDeviceMemory* staging_buffer_memory = RHI_NULL_HANDLE;
+        rhi->CreateBuffer(buffer_size,
+                          RHI_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          staging_buffer,
+                          staging_buffer_memory);
+
+        void* staging_data = nullptr;
+        rhi->MapMemory(staging_buffer_memory, 0, buffer_size, 0, &staging_data);
+        if (staging_data != nullptr)
+        {
+            MeshMaterialUniform& uniform = *static_cast<MeshMaterialUniform*>(staging_data);
+            uniform.is_blend = entity.m_Blend;
+            uniform.is_double_sided = entity.m_DoubleSided;
+            uniform.baseColorFactor = entity.m_BaseColorFactor;
+            uniform.metallicFactor = entity.m_MetallicFactor;
+            uniform.roughnessFactor = entity.m_RoughnessFactor;
+            uniform.normalScale = entity.m_NormalScale;
+            uniform.occlusionStrength = entity.m_OcclusionStrength;
+            uniform.emissiveFactor = entity.m_EmissiveFactor;
+        }
+        rhi->UnmapMemory(staging_buffer_memory);
+
+        rhi->CopyBuffer(staging_buffer, instance.material_uniform_buffer, 0, 0, buffer_size);
+
+        rhi->DestroyBuffer(staging_buffer);
+        rhi->FreeMemory(staging_buffer_memory);
+    }
+
+    // ---- 2. 描述符集：没有就分配，有就复用 ----
+    if (instance.material_descriptor_set == RHI_NULL_HANDLE)
+    {
+        RHIDescriptorSetAllocateInfo alloc_info;
+        alloc_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.pNext = NULL;
+        alloc_info.descriptorPool = rhi->GetDescriptorPoor();
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = m_MaterialDescriptorSetLayout;
+
+        if (RHI_SUCCESS != rhi->AllocateDescriptorSets(&alloc_info, instance.material_descriptor_set))
+        {
+            instance.material_descriptor_set = RHI_NULL_HANDLE;
+            return;
+        }
+    }
+
+    // 6 个绑定**每次全量重写**：instance id 被回收后可能换了一个 part，纹理视图和
+    // 采样器也就换了；只写 UBO 会把上一任的纹理留在描述符集里。
+    RHIDescriptorBufferInfo uniform_buffer_info = {};
+    uniform_buffer_info.offset = 0;
+    uniform_buffer_info.range = buffer_size;
+    uniform_buffer_info.buffer = instance.material_uniform_buffer;
+
+    RHIDescriptorImageInfo image_infos[5] = {};
+    RHIImageView* views[5] = {instance.base_color_image_view,
+                              instance.metallic_roughness_image_view,
+                              instance.normal_image_view,
+                              instance.occlusion_image_view,
+                              instance.emissive_image_view};
+    RHISampler* samplers[5] = {instance.base_color_sampler,
+                               instance.metallic_roughness_sampler,
+                               instance.normal_sampler,
+                               instance.occlusion_sampler,
+                               instance.emissive_sampler};
+    for (uint32_t slot = 0; slot < 5; ++slot)
+    {
+        image_infos[slot].imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        image_infos[slot].imageView = views[slot];
+        image_infos[slot].sampler = samplers[slot];
+    }
+
+    RHIWriteDescriptorSet writes[6];
+
+    writes[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].pNext = NULL;
+    writes[0].dstSet = instance.material_descriptor_set;
+    writes[0].dstBinding = 0;
+    writes[0].dstArrayElement = 0;
+    writes[0].descriptorType = RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &uniform_buffer_info;
+
+    for (uint32_t slot = 0; slot < 5; ++slot)
+    {
+        RHIWriteDescriptorSet& write = writes[slot + 1];
+        write.sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        write.pNext = NULL;
+        write.dstSet = instance.material_descriptor_set;
+        write.dstBinding = slot + 1;
+        write.dstArrayElement = 0;
+        write.descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.descriptorCount = 1;
+        write.pImageInfo = &image_infos[slot];
+    }
+
+    rhi->UpdateDescriptorSets(6, writes, 0, nullptr);
 }
 
 void RenderResource::UpdateMeshData(RHI* rhi,
@@ -1318,6 +1456,18 @@ RenderMeshGPUResource& RenderResource::GetEntityMesh(RenderEntity entity)
 
 RenderMaterialGPUResource& RenderResource::GetEntityMaterial(RenderEntity entity)
 {
+    // 运行时材质实例优先。拿不到就回退到共享资产材质 —— 绝不能在这里抛：
+    // 这条路径在可见性剔除里每帧跑，抛一次整个帧就崩了。回退的代价只是"override
+    // 不生效"，与加这个功能之前的行为一致。
+    if (entity.m_MaterialInstanceId != 0)
+    {
+        auto instance_it = m_MaterialInstances.find(entity.m_MaterialInstanceId);
+        if (instance_it != m_MaterialInstances.end())
+        {
+            return instance_it->second;
+        }
+    }
+
     size_t assetid = entity.m_MaterialAssetId;
 
     auto it = m_Materials.find(assetid);

@@ -369,6 +369,16 @@ RenderEntity RenderScene::BuildRenderEntity(RHI* rhi,
         render_resource.UploadGameObjectRenderResource(rhi, render_entity, material_data);
     }
 
+    // 运行时材质实例。只有脚本在这个 part 上放了 override 才建：其余 part 继续用
+    // 共享材质，draw 才能按材质合批。
+    //
+    // 必须在共享材质上传之后 —— 实例是它的克隆（纹理视图 / 采样器 / shader 都从它来）。
+    if (game_object_part.m_MaterialDesc.m_UseMaterialInstance && render_entity.m_InstanceId != 0)
+    {
+        render_entity.m_MaterialInstanceId = render_entity.m_InstanceId;
+        render_resource.UploadGameObjectMaterialInstance(rhi, render_entity);
+    }
+
     if (ShouldTrackVisibilityDebug(mesh_source.m_MeshAsset))
     {
         const Vector3 model_position = render_entity.m_ModelMatrix.GetTrans();

@@ -542,6 +542,15 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Input/Test/EnhancedInputFrameDeltaSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Input/Test/EnhancedInputFrameDeltaSmokeTest.cpp")
+# Runtime material instance smoke-test main. Same carve-out rationale: it owns
+# main(). Built only when ZENGINE_BUILD_MATERIAL_INSTANCE_SMOKE_TEST=ON (see
+# Function/Framework/Component/Mesh/Test/CMakeLists.txt). Unlike the
+# EnhancedInput one this is NOT header-only -- it instantiates a BaseRenderer
+# and reads the GameObjectPartDescs it produces, so it links ZRuntime.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Component/Mesh/Test/MaterialInstanceOverrideSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Component/Mesh/Test/MaterialInstanceOverrideSmokeTest.cpp")
 # PR-SK1: skeletal skinning smoke-test main. Same carve-out rationale as every
 # entry above: it owns main() and must not be whole-archived into ZRuntime.
 # Built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON (see
@@ -1800,6 +1809,11 @@ add_subdirectory(Function/Console/Test)
 # glob above and built only when ZENGINE_BUILD_ENHANCED_INPUT_DELTA_SMOKE_TEST
 # =ON. Header-only (ComputeFrameDelta + TriggerHold), pure CPU, headless.
 add_subdirectory(Function/Input/Test)
+
+# Runtime material instance smoke test. Own main(); carved out of the ZRuntime
+# glob above and built only when ZENGINE_BUILD_MATERIAL_INSTANCE_SMOKE_TEST=ON.
+# Pure CPU (no GPU / AssetManager / project), headless; links ZRuntime.
+add_subdirectory(Function/Framework/Component/Mesh/Test)
 
 # Skeletal skinning smoke test (PR-SK1). Own main(); carved out of the ZRuntime
 # glob above and built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON. Pure

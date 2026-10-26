@@ -57,6 +57,21 @@ public:
                                                 RenderEntity render_entity,
                                                 RenderMaterialData material_data) = 0;
 
+    /// 给一个带运行时材质 override 的 part 准备**它自己的** GpuPBRMaterial。
+    ///
+    /// `render_entity.m_MaterialInstanceId != 0` 时才调。实例是 `m_MaterialAssetId`
+    /// 那份共享材质的克隆：CPU 字段、纹理视图、采样器全共享，只有 uniform buffer
+    /// 和描述符集是自己的 —— 所以改 baseColor / emissive / roughness 不影响用同一
+    /// 个资产的其它 part，而纹理不会为此多占一份显存。
+    ///
+    /// 默认空实现：别的 RenderResourceBase 实现不接这个功能时，描画会走
+    /// `GetEntityMaterial` 的回退（用共享材质），行为与加这个功能之前完全一致。
+    virtual void UploadGameObjectMaterialInstance(RHI* rhi, RenderEntity render_entity)
+    {
+        (void)rhi;
+        (void)render_entity;
+    }
+
     virtual void UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_scene,
                                       std::shared_ptr<RenderCamera> camera) = 0;
 

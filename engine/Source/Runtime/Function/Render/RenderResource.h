@@ -177,6 +177,11 @@ public:
                                                 RenderEntity render_entity,
                                                 RenderMaterialData material_data) override final;
 
+    /// 见 RenderResourceBase 上的注释。函数体在文件末尾（inline），因为
+    /// RenderResource.cpp / RenderResourceDx12.cpp 各自被平台宏守着，而这段逻辑
+    /// 与后端无关，必须两个平台都编到。
+    void UploadGameObjectMaterialInstance(RHI* rhi, RenderEntity render_entity) override;
+
     virtual void UpdatePerFrameBuffer(std::shared_ptr<RenderScene> render_scene,
                                       std::shared_ptr<RenderCamera> camera) override final;
 
@@ -228,6 +233,13 @@ public:
     std::map<size_t, GpuMesh> m_Meshes;
     std::map<size_t, GpuPBRMaterial> m_Materials;
 
+    /// 运行时材质实例，键是 `RenderEntity::m_InstanceId`（一个 part 一份）。
+    ///
+    /// 与 `m_Materials` 分开是必须的：那边按材质资产 id 索引，两个 allocator 的 id
+    /// 空间会撞。这里的 id 由 RenderScene 的 `m_InstanceIdAllocator` 回收复用，所以
+    /// map 规模的上界是"同时带 override 的 part 数"。
+    std::map<uint32_t, GpuPBRMaterial> m_MaterialInstances;
+
     // descriptor set layout in main camera pass will be used when uploading resource
     RHIDescriptorSetLayout* const* m_MeshDescriptorSetLayout {nullptr};
     RHIDescriptorSetLayout* const* m_MaterialDescriptorSetLayout {nullptr};
@@ -253,6 +265,15 @@ private:
     GpuPBRMaterial&
     GetOrCreateMaterial(RHI* rhi, RenderEntity entity, RenderMaterialData material_data);
 
+    /// 把 `instance`（已克隆好 CPU 字段 / 纹理视图 / 采样器）变成一份能上 GPU 的材质：
+    /// uniform buffer 和描述符集为空就建、已有就只重写内容，然后把 entity 的 8 个标量
+    /// 写进 UBO、把 5 个纹理槽 + UBO 写进描述符集。
+    ///
+    /// 后端相关（Vulkan 用 Vma 分配 + staging copy，DX12 用 CopyBufferImmediate），
+    /// 两个 RenderResource 实现各写一份。**必须幂等**：脚本每帧改动 override 时
+    /// UploadGameObjectMaterialInstance 会反复调到它，重建 buffer 就是漏显存。
+    void MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, GpuPBRMaterial& instance);
+
     void UpdateMeshData(RHI* rhi,
                         bool enable_vertex_blending,
                         uint32_t index_buffer_size,
@@ -277,3 +298,42 @@ private:
                            GpuMesh& now_mesh);
     void UpdateTextureImageData(RHI* rhi, const TextureDataToUpdate& texture_data);
 };
+
+// ---- 运行时材质实例 -------------------------------------------------------
+//
+// 这段刻意内联在头文件里：RenderResource.cpp（Vulkan / Metal / WebGL2）和
+// RenderResourceDx12.cpp 各自被平台宏守卫着，而"要不要建实例、建完怎么复用"这段
+// 逻辑与后端无关，必须两个平台都编到。真正与后端相关的只有下面两个私有方法。
+inline void RenderResource::UploadGameObjectMaterialInstance(RHI* rhi, RenderEntity render_entity)
+{
+    if (rhi == nullptr || render_entity.m_MaterialInstanceId == 0)
+    {
+        return;
+    }
+
+    // 共享材质必须先存在：实例是它的克隆 —— 纹理视图、采样器、shader 全从它来。
+    const auto base_it = m_Materials.find(render_entity.m_MaterialAssetId);
+    if (base_it == m_Materials.end())
+    {
+        return;
+    }
+
+    const uint32_t instance_id = render_entity.m_MaterialInstanceId;
+    GpuPBRMaterial& instance = m_MaterialInstances[instance_id];
+
+    // UBO 和描述符集是实例自己的，绝不能被下面那一赋值盖成共享材质的 —— 否则
+    // 写入实例标量会直接改到共享 UBO 上，所有用这个资产的 part 一起变色。
+    const RHIBuffer* own_uniform_buffer = instance.material_uniform_buffer;
+    const VmaAllocation own_uniform_allocation = instance.material_uniform_buffer_allocation;
+    const RHIDescriptorSet* own_descriptor_set = instance.material_descriptor_set;
+
+    instance = base_it->second;
+
+    instance.material_uniform_buffer = const_cast<RHIBuffer*>(own_uniform_buffer);
+    instance.material_uniform_buffer_allocation = const_cast<VmaAllocation>(own_uniform_allocation);
+    instance.material_descriptor_set = const_cast<RHIDescriptorSet*>(own_descriptor_set);
+
+    // 幂等：buffer / 描述符集为空就建，已有就只重写内容。基础资产换了（instance id
+    // 被回收后重新分配给另一个 part）也走同一条路 —— 6 个绑定每次全量重写。
+    MaterializeMaterialInstance(rhi, render_entity, instance);
+}

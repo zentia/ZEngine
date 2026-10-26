@@ -56,6 +56,17 @@ public:
     bool m_WithTexture {false};
 
     eastl::vector<eastl::string> m_EnabledShaderKeywords;
+
+    /// 运行时材质实例开关。BaseRenderer 在某个 slot 上有 override 时置 true。
+    ///
+    /// false（默认）= 这个 part 用**材质资产的共享 GpuPBRMaterial**。上面那 8 个标量
+    /// 虽然也是 per-part 带过来的，但共享材质的 MeshMaterialUniform 是第一次见到这个
+    /// 资产时烤进去的，后面同资产的 part 改这些值不会上 GPU。
+    ///
+    /// true = RenderScene 给这个 part 一份**自己的 GpuPBRMaterial**（克隆共享材质：
+    /// 复用纹理视图和采样器，自带 uniform buffer + 描述符集），于是上面那 8 个标量
+    /// 就是这个 part 独有的。代价是这个 part 不再能和同资产的其它 part 合批。
+    bool m_UseMaterialInstance {false};
 };
 
 class GameObjectTransformDesc
