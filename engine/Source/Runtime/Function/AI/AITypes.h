@@ -16,6 +16,12 @@
 // ============================================================
 
 /// Result of ticking a behaviour-tree node.
+///
+/// ZENUM: AIControllerComponent.GetLastTreeStatus() returns this, and a bare
+/// `number` is not a usable script API -- ZHeaderTool publishes the
+/// (name, value) table as a global and mirrors it with `declare enum`, so
+/// `BTNodeStatus.Running` both type-checks and evaluates on the TS side.
+ZENUM()
 enum class BTNodeStatus : unsigned char
 {
   invalid,  // never ticked this frame

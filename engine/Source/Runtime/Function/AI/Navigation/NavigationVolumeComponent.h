@@ -25,10 +25,14 @@ public:
 
     /// Assemble build settings from the authored fields and the object's
     /// world transform (so moving the volume in the editor moves the mesh).
+    /// 不导出：NavMeshBuildSettings 是个内部配置结构，没有 Converter。
     NavMeshBuildSettings BuildSettings() const;
 
     /// Ask NavigationSystem to (re)sample this volume.
     /// @return: walkable cell count, 0 on failure
+    ///
+    /// 刻意不导出（见文件头注释）：重建是对整个体素网格的重新采样，帧内开销不可
+    /// 控，设计上只允许编辑器 / 关卡加载触发，不能让一个脚本把帧拖垮。
     int RebuildNavMesh();
 
     // ---- authored settings (exposed to scripts like any other field) -------
