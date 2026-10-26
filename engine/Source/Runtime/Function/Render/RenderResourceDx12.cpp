@@ -67,6 +67,40 @@ namespace
         }
     }
 
+    /// 把 `src_data` 写进一个**已经存在**的 GPU buffer。材质实例的 UBO 要能被脚本
+    /// 反复改（受击闪白可能每帧写一次），每帧重建 buffer 会一直漏显存，所以这里只
+    /// 做 staging -> 既有 buffer 的拷贝。
+    void Dx12UpdateGpuBufferFromStaging(RHI* rhi,
+                                        RHIDeviceSize size,
+                                        const void* src_data,
+                                        RHIBuffer* dst_buffer)
+    {
+        if (rhi == nullptr || size == 0 || dst_buffer == nullptr || src_data == nullptr)
+        {
+            return;
+        }
+
+        RHIBuffer* staging_buffer = nullptr;
+        RHIDeviceMemory* staging_memory = nullptr;
+        rhi->CreateBuffer(size,
+                          RHI_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                          RHI_MEMORY_PROPERTY_HOST_VISIBLE_BIT | RHI_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                          staging_buffer,
+                          staging_memory);
+
+        void* mapped = nullptr;
+        rhi->MapMemory(staging_memory, 0, size, 0, &mapped);
+        if (mapped != nullptr)
+        {
+            std::memcpy(mapped, src_data, static_cast<size_t>(size));
+        }
+        rhi->UnmapMemory(staging_memory);
+
+        rhi->CopyBufferImmediate(staging_buffer, dst_buffer, 0, 0, size);
+        rhi->DestroyBuffer(staging_buffer);
+        rhi->FreeMemory(staging_memory);
+    }
+
     /// Uploads the three vertex streams (position / normal+tangent / texcoord)
     /// plus the index buffer. Shared by the rigid and the skinned path.
     bool Dx12UploadMeshVertexStreams(RHI* rhi, GpuMesh& now_mesh, RenderMeshData& mesh_data)
@@ -385,15 +419,20 @@ namespace
         base_color_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         base_color_info.imageView = material.base_color_image_view;
         base_color_info.sampler = rhi->GetOrCreateMipmapSampler(1, 1);
+        material.base_color_sampler = base_color_info.sampler;
 
         RHIDescriptorImageInfo metallic_info = base_color_info;
         metallic_info.imageView = material.metallic_roughness_image_view;
+        material.metallic_roughness_sampler = metallic_info.sampler;
         RHIDescriptorImageInfo normal_info = base_color_info;
         normal_info.imageView = material.normal_image_view;
+        material.normal_sampler = normal_info.sampler;
         RHIDescriptorImageInfo occlusion_info = base_color_info;
         occlusion_info.imageView = material.occlusion_image_view;
+        material.occlusion_sampler = occlusion_info.sampler;
         RHIDescriptorImageInfo emissive_info = base_color_info;
         emissive_info.imageView = material.emissive_image_view;
+        material.emissive_sampler = emissive_info.sampler;
 
         RHIWriteDescriptorSet writes[6] {};
         writes[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -443,6 +482,9 @@ void RenderResource::UploadGpuMeshDx12(RHI* rhi, GpuMesh& now_mesh, RenderMeshDa
 void RenderResource::clear()
 {
     ClearMeshGeometryCache();
+
+    // 运行时材质实例跟着共享材质一起失效（理由同 RenderResource.cpp 那份 clear）。
+    m_MaterialInstances.clear();
 
     if (m_TextureStreamingManager)
     {
@@ -717,6 +759,18 @@ RenderMeshGPUResource& RenderResource::GetEntityMesh(RenderEntity entity)
 
 RenderMaterialGPUResource& RenderResource::GetEntityMaterial(RenderEntity entity)
 {
+    // 运行时材质实例优先。拿不到就回退到共享资产材质 —— 绝不能在这里抛：这条路径
+    // 在可见性剔除里每帧跑，抛一次整个帧就崩了。回退的代价只是"override 不生效"，
+    // 与加这个功能之前的行为一致。
+    if (entity.m_MaterialInstanceId != 0)
+    {
+        auto instance_it = m_MaterialInstances.find(entity.m_MaterialInstanceId);
+        if (instance_it != m_MaterialInstances.end())
+        {
+            return instance_it->second;
+        }
+    }
+
     const size_t assetid = entity.m_MaterialAssetId;
     auto it = m_Materials.find(assetid);
     if (it != m_Materials.end())
@@ -906,6 +960,106 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
 
     Dx12UploadMaterialources(rhi, this, entity, material);
     return material;
+}
+
+void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, GpuPBRMaterial& instance)
+{
+    if (rhi == nullptr || m_MaterialDescriptorSetLayout == nullptr)
+    {
+        return;
+    }
+
+    // ---- 1. uniform buffer：没有就建，有就只重写（重建 = 漏显存） ----
+    MeshMaterialUniform ubo {};
+    ubo.is_blend = entity.m_Blend;
+    ubo.is_double_sided = entity.m_DoubleSided;
+    ubo.baseColorFactor = entity.m_BaseColorFactor;
+    ubo.metallicFactor = entity.m_MetallicFactor;
+    ubo.roughnessFactor = entity.m_RoughnessFactor;
+    ubo.normalScale = entity.m_NormalScale;
+    ubo.occlusionStrength = entity.m_OcclusionStrength;
+    ubo.emissiveFactor = entity.m_EmissiveFactor;
+
+    const RHIDeviceSize buffer_size = sizeof(MeshMaterialUniform);
+
+    if (instance.material_uniform_buffer == RHI_NULL_HANDLE)
+    {
+        Dx12CreateGpuBufferFromStaging(rhi,
+                                       buffer_size,
+                                       RHI_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                       &ubo,
+                                       instance.material_uniform_buffer);
+    }
+    else
+    {
+        Dx12UpdateGpuBufferFromStaging(rhi, buffer_size, &ubo, instance.material_uniform_buffer);
+    }
+
+    if (instance.material_uniform_buffer == RHI_NULL_HANDLE)
+    {
+        return;
+    }
+
+    // ---- 2. 描述符集：没有就分配，有就复用 ----
+    if (instance.material_descriptor_set == RHI_NULL_HANDLE)
+    {
+        RHIDescriptorSetAllocateInfo alloc_info {};
+        alloc_info.sType = RHI_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc_info.descriptorPool = rhi->GetDescriptorPoor();
+        alloc_info.descriptorSetCount = 1;
+        alloc_info.pSetLayouts = m_MaterialDescriptorSetLayout;
+
+        if (rhi->AllocateDescriptorSets(&alloc_info, instance.material_descriptor_set) != RHI_SUCCESS)
+        {
+            instance.material_descriptor_set = RHI_NULL_HANDLE;
+            return;
+        }
+    }
+
+    // 6 个绑定**每次全量重写**：instance id 被回收后可能换了一个 part，纹理视图也
+    // 就换了；只写 UBO 会把上一任的纹理留在描述符集里。
+    //
+    // 纹理（DX12 下目前是 5 张 1x1 白图）和采样器都从共享材质那里共享 —— 实例只有
+    // UBO 和描述符集是自己的。
+    RHIDescriptorBufferInfo ubo_info {};
+    ubo_info.offset = 0;
+    ubo_info.range = buffer_size;
+    ubo_info.buffer = instance.material_uniform_buffer;
+
+    RHIDescriptorImageInfo image_info {};
+    image_info.imageLayout = RHI_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    image_info.sampler = rhi->GetOrCreateMipmapSampler(1, 1);
+
+    RHIDescriptorImageInfo image_infos[5] {};
+    RHIImageView* views[5] = {instance.base_color_image_view,
+                              instance.metallic_roughness_image_view,
+                              instance.normal_image_view,
+                              instance.occlusion_image_view,
+                              instance.emissive_image_view};
+    for (uint32_t slot = 0; slot < 5; ++slot)
+    {
+        image_infos[slot] = image_info;
+        image_infos[slot].imageView = views[slot];
+    }
+
+    RHIWriteDescriptorSet writes[6] {};
+    writes[0].sType = RHI_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = instance.material_descriptor_set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorType = RHI_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].descriptorCount = 1;
+    writes[0].pBufferInfo = &ubo_info;
+
+    for (uint32_t i = 1; i < 6; ++i)
+    {
+        writes[i] = writes[0];
+        writes[i].dstBinding = i;
+        writes[i].descriptorType = RHI_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pBufferInfo = nullptr;
+        writes[i].pImageInfo = &image_infos[i - 1];
+    }
+
+    rhi->UpdateDescriptorSets(6, writes, 0, nullptr);
 }
 
 #endif  // !Z_HAS_VULKAN

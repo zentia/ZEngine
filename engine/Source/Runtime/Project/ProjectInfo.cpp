@@ -146,6 +146,15 @@ namespace
         "    z: number;\n"
         "}\n"
         "\n"
+        // Vector4 是运行时材质实例带进来的：SetBaseColor / GetBaseColor 要走
+        // ZScript::Converter<Vector4>，脚本侧得有个对应的结构类型。
+        "declare interface Vector4 {\n"
+        "    x: number;\n"
+        "    y: number;\n"
+        "    z: number;\n"
+        "    w: number;\n"
+        "}\n"
+        "\n"
         "declare interface Vector2 {\n"
         "    x: number;\n"
         "    y: number;\n"

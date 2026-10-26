@@ -44,6 +44,57 @@ namespace
             });
     }
 
+    /// 把 override 套到已经从资产 populate 过的 desc 上。
+    ///
+    /// 只动 `has_*` 为 true 的字段 —— 其余保持资产值。这也是为什么 override 结构体
+    /// 里不必存资产的副本：populate 每次都重跑，资产改了立刻生效。
+    void applyMaterialInstanceOverride(const MaterialInstanceOverride& override_data,
+                                       GameObjectMaterialDesc& material_desc)
+    {
+        if (override_data.has_base_color)
+        {
+            material_desc.m_BaseColorFactor = override_data.base_color;
+        }
+        if (override_data.has_emissive)
+        {
+            material_desc.m_EmissiveFactor = override_data.emissive;
+        }
+        if (override_data.has_metallic)
+        {
+            material_desc.m_MetallicFactor = override_data.metallic;
+        }
+        if (override_data.has_roughness)
+        {
+            material_desc.m_RoughnessFactor = override_data.roughness;
+        }
+        if (override_data.has_normal_scale)
+        {
+            material_desc.m_NormalScale = override_data.normal_scale;
+        }
+        if (override_data.has_occlusion)
+        {
+            material_desc.m_OcclusionStrength = override_data.occlusion;
+        }
+        if (override_data.has_blend)
+        {
+            material_desc.m_IsBlend = override_data.blend;
+        }
+        if (override_data.has_double_sided)
+        {
+            material_desc.m_IsDoubleSided = override_data.double_sided;
+        }
+    }
+
+    /// m_LastMaterialDescs 的安全下标。越界返回 nullptr（getter 走默认值分支）。
+    const GameObjectMaterialDesc* cachedMaterialDescAt(const std::vector<GameObjectMaterialDesc>& descs, int slot)
+    {
+        if (slot < 0 || static_cast<size_t>(slot) >= descs.size())
+        {
+            return nullptr;
+        }
+        return &descs[static_cast<size_t>(slot)];
+    }
+
     bool shouldLogMaterialDebug(const eastl::string& material_asset)
     {
         return material_asset.find("white.material.json") != eastl::string::npos;
@@ -123,6 +174,7 @@ void BaseRenderer::SetSubMeshes(const std::vector<SubMeshRes>& sub_meshes)
 {
     m_SubMeshes = sub_meshes;
     MigrateLegacyMaterialAssets();
+    SyncMaterialOverrideCount();
 
     if (m_ParentObject != nullptr)
     {
@@ -193,6 +245,7 @@ void BaseRenderer::PostLoadResource(GameObject* parent_object)
 {
     Component::PostLoadResource(parent_object);
     MigrateLegacyMaterialAssets();
+    SyncMaterialOverrideCount();
 
     EnsureRendererTransformDispatchRegistered();
     if (Transform* transform_component = parent_object != nullptr ? parent_object->tryGetComponent(Transform) : nullptr)
@@ -207,6 +260,7 @@ void BaseRenderer::PostLoadResource(GameObject* parent_object)
 void BaseRenderer::OnSerializedFieldsUpdated()
 {
     MigrateLegacyMaterialAssets();
+    SyncMaterialOverrideCount();
 
     if (m_ParentObject != nullptr)
     {
@@ -223,6 +277,11 @@ std::vector<GameObjectPartDesc> BaseRenderer::BuildRenderParts(const Transform* 
     std::vector<GameObjectPartDesc> render_parts;
     render_parts.reserve(m_SubMeshes.size());
 
+    // getter 用的一份缓存：BuildRenderParts 是 const 的，但"当前在画的值"只有这里
+    // 才算得出来（资产值要 loadAsset），所以缓存必须在这里刷。
+    m_LastMaterialDescs.clear();
+    m_LastMaterialDescs.reserve(m_SubMeshes.size());
+
     for (size_t sub_mesh_index = 0; sub_mesh_index < m_SubMeshes.size(); ++sub_mesh_index)
     {
         const SubMeshRes& sub_mesh = m_SubMeshes[sub_mesh_index];
@@ -234,7 +293,17 @@ std::vector<GameObjectPartDesc> BaseRenderer::BuildRenderParts(const Transform* 
         {
             render_part.m_MaterialDesc.m_IsDoubleSided = true;
         }
+
+        // override 套在 populate **之后**：没被覆盖的字段保持资产值，改资产立刻生效。
+        if (sub_mesh_index < m_MaterialOverrides.size())
+        {
+            const MaterialInstanceOverride& slot_override = m_MaterialOverrides[sub_mesh_index];
+            applyMaterialInstanceOverride(slot_override, render_part.m_MaterialDesc);
+            render_part.m_MaterialDesc.m_UseMaterialInstance = slot_override.IsActive();
+        }
+
         render_part.m_TransformDesc.m_TransformMatrix = object_transform * sub_mesh.m_Transform.getMatrix();
+        m_LastMaterialDescs.push_back(render_part.m_MaterialDesc);
         render_parts.push_back(render_part);
     }
 
@@ -295,4 +364,232 @@ void BaseRenderer::Tick(float delta_time)
 
     SubmitRenderState();
     transform_component->setDirtyFlag(false);
+}
+
+// ---- 运行时材质实例 --------------------------------------------------------
+
+void BaseRenderer::SyncMaterialOverrideCount()
+{
+    // resize 而不是 assign：缩减 sub-mesh 再扩回来时，中间那几帧不该把 override 丢掉，
+    // 而超出新长度的槽位自然被裁掉。
+    m_MaterialOverrides.resize(m_SubMeshes.size());
+}
+
+MaterialInstanceOverride* BaseRenderer::MutableOverrideAt(int slot)
+{
+    if (slot < 0 || static_cast<size_t>(slot) >= m_MaterialOverrides.size())
+    {
+        return nullptr;
+    }
+    return &m_MaterialOverrides[static_cast<size_t>(slot)];
+}
+
+const MaterialInstanceOverride* BaseRenderer::OverrideAt(int slot) const
+{
+    if (slot < 0 || static_cast<size_t>(slot) >= m_MaterialOverrides.size())
+    {
+        return nullptr;
+    }
+    return &m_MaterialOverrides[static_cast<size_t>(slot)];
+}
+
+void BaseRenderer::SetBaseColor(int slot, const Vector4& color)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return;
+    }
+    slot_override->has_base_color = true;
+    slot_override->base_color = color;
+    SubmitRenderState();
+}
+
+Vector4 BaseRenderer::GetBaseColor(int slot) const
+{
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr && slot_override->has_base_color)
+    {
+        return slot_override->base_color;
+    }
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    return desc != nullptr ? desc->m_BaseColorFactor : Vector4(1.f, 1.f, 1.f, 1.f);
+}
+
+void BaseRenderer::SetEmissive(int slot, const Vector3& emissive)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return;
+    }
+    slot_override->has_emissive = true;
+    slot_override->emissive = emissive;
+    SubmitRenderState();
+}
+
+Vector3 BaseRenderer::GetEmissive(int slot) const
+{
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr && slot_override->has_emissive)
+    {
+        return slot_override->emissive;
+    }
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    return desc != nullptr ? desc->m_EmissiveFactor : Vector3(0.f, 0.f, 0.f);
+}
+
+void BaseRenderer::SetMetallic(int slot, float metallic)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return;
+    }
+    slot_override->has_metallic = true;
+    slot_override->metallic = metallic;
+    SubmitRenderState();
+}
+
+float BaseRenderer::GetMetallic(int slot) const
+{
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr && slot_override->has_metallic)
+    {
+        return slot_override->metallic;
+    }
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    return desc != nullptr ? desc->m_MetallicFactor : 1.f;
+}
+
+void BaseRenderer::SetRoughness(int slot, float roughness)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return;
+    }
+    slot_override->has_roughness = true;
+    slot_override->roughness = roughness;
+    SubmitRenderState();
+}
+
+float BaseRenderer::GetRoughness(int slot) const
+{
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr && slot_override->has_roughness)
+    {
+        return slot_override->roughness;
+    }
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    return desc != nullptr ? desc->m_RoughnessFactor : 1.f;
+}
+
+void BaseRenderer::SetNormalScale(int slot, float normal_scale)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return;
+    }
+    slot_override->has_normal_scale = true;
+    slot_override->normal_scale = normal_scale;
+    SubmitRenderState();
+}
+
+float BaseRenderer::GetNormalScale(int slot) const
+{
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr && slot_override->has_normal_scale)
+    {
+        return slot_override->normal_scale;
+    }
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    return desc != nullptr ? desc->m_NormalScale : 1.f;
+}
+
+void BaseRenderer::SetOcclusionStrength(int slot, float occlusion_strength)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return;
+    }
+    slot_override->has_occlusion = true;
+    slot_override->occlusion = occlusion_strength;
+    SubmitRenderState();
+}
+
+float BaseRenderer::GetOcclusionStrength(int slot) const
+{
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr && slot_override->has_occlusion)
+    {
+        return slot_override->occlusion;
+    }
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    return desc != nullptr ? desc->m_OcclusionStrength : 1.f;
+}
+
+void BaseRenderer::SetBlend(int slot, bool blend)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return;
+    }
+    slot_override->has_blend = true;
+    slot_override->blend = blend;
+    SubmitRenderState();
+}
+
+bool BaseRenderer::GetBlend(int slot) const
+{
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr && slot_override->has_blend)
+    {
+        return slot_override->blend;
+    }
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    return desc != nullptr ? desc->m_IsBlend : false;
+}
+
+void BaseRenderer::SetDoubleSided(int slot, bool double_sided)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr)
+    {
+        return;
+    }
+    slot_override->has_double_sided = true;
+    slot_override->double_sided = double_sided;
+    SubmitRenderState();
+}
+
+bool BaseRenderer::GetDoubleSided(int slot) const
+{
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    if (slot_override != nullptr && slot_override->has_double_sided)
+    {
+        return slot_override->double_sided;
+    }
+    const GameObjectMaterialDesc* desc = cachedMaterialDescAt(m_LastMaterialDescs, slot);
+    return desc != nullptr ? desc->m_IsDoubleSided : false;
+}
+
+void BaseRenderer::ClearMaterialOverride(int slot)
+{
+    MaterialInstanceOverride* slot_override = MutableOverrideAt(slot);
+    if (slot_override == nullptr || !slot_override->IsActive())
+    {
+        return;
+    }
+    slot_override->Clear();
+    SubmitRenderState();
+}
+
+bool BaseRenderer::HasMaterialOverride(int slot) const
+{
+    const MaterialInstanceOverride* slot_override = OverrideAt(slot);
+    return slot_override != nullptr && slot_override->IsActive();
 }
