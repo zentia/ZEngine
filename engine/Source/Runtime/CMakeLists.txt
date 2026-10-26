@@ -550,6 +550,14 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Platform/Linux/Test/LinuxX11WindowLayerSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Render/Platform/Linux/Test/LinuxX11WindowLayerSmokeTest.cpp")
+# GAS cooldown smoke-test main. Same carve-out rationale: it owns main() and must
+# not be whole-archived into ZRuntime. Built only when
+# ZENGINE_BUILD_GAS_COOLDOWN_SMOKE_TEST=ON (see Function/Gas/Test/CMakeLists.txt).
+# Header-only (gas_cooldown arithmetic), links nothing but the include root.
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Gas/Test/GasCooldownSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Gas/Test/GasCooldownSmokeTest.cpp")
 # Physics character/joint smoke-test main. This one was NOT carved out, so its
 # unguarded main() ended up inside ZRuntime.lib and broke every other test that
 # links ZRuntime + defines its own main() with LNK2005 (e.g. the RHI factory
@@ -1832,6 +1840,10 @@ add_subdirectory(Function/Input/Test)
 # ZRuntime to instantiate LinuxApplication (X11 + XRandR multi-monitor); runs
 # headless (unset DISPLAY) or under Xvfb. See wsl_verify_linux.sh.
 add_subdirectory(Function/Render/Platform/Linux/Test)
+# GAS cooldown smoke test. Own main(); carved out of the ZRuntime glob above and
+# built only when ZENGINE_BUILD_GAS_COOLDOWN_SMOKE_TEST=ON. Header-only (the
+# gas_cooldown arithmetic core), pure CPU, headless on every host.
+add_subdirectory(Function/Gas/Test)
 
 # Runtime material instance smoke test. Own main(); carved out of the ZRuntime
 # glob above and built only when ZENGINE_BUILD_MATERIAL_INSTANCE_SMOKE_TEST=ON.

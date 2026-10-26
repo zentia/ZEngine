@@ -22,8 +22,9 @@ bool GameplayAbility::CanActivateAbility(AbilitySystemComponent* asc, const Game
             return false;
     }
 
-    // 检查冷却时间
-    // TODO: 实现冷却时间检查
+    // 检查冷却时间（剩余冷却 > 0 时拒绝激活；冷却状态存在 per-spec 上）
+    if (spec.IsOnCooldown())
+        return false;
 
     // 检查消耗
     if (!CheckCost(asc))

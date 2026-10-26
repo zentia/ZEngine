@@ -95,6 +95,9 @@ private:
     // 更新能力（调用tick）
     void UpdateAbilities(float delta_time);
 
+    // 更新冷却时间（递减所有能力的剩余冷却；冷却到 0 后自动可再次激活）
+    void UpdateCooldowns(float delta_time);
+
     // 属性集
     std::unique_ptr<AttributeSet> m_AttributeSet;
 
@@ -108,6 +111,7 @@ private:
     // 效果
     std::vector<std::unique_ptr<GameplayEffectSpec>> m_ActiveEffects;
 
-    // 冷却时间管理（TODO: 实现）
-    // std::unordered_map<GameplayAbility*, float> m_CooldownTimers;
+    // 冷却时间不再用这里的并行 map——它存在每个能力的 GameplayAbilitySpec 上
+    // （spec 本就 per-ability，已在 m_Abilities 里按能力键好），由 UpdateCooldowns
+    // 每帧递减。见 GasCooldown.h 的纯算术核心与 GameplayAbilitySpec::StartCooldown。
 };
