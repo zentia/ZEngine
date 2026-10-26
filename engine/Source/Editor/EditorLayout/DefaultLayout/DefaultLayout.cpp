@@ -600,16 +600,21 @@ bool DefaultLayout::HandleNativeDockInput(const UIRect& host_rect)
         if (!ChromeLeftDown())
         {
             bool changed = false;
+            // [tear-off diag] Capture the release decision so a failed Timeline drag
+            // pinpoints which branch fired (drop / tear-off / cancel).
+            const bool in_host = host_rect.Contains(mouse);
             if (m_TabDragActive && m_HasDrop && m_DropTargetLeaf != nullptr && node_in_tree(m_DropTargetLeaf))
             {
+                LOG_WARNING(ZEditor, "dock: tab '{}' released -> DOCK into leaf (drop target set)", m_TabDragId.c_str());
                 m_NativeDockTree.MovePanel(m_TabDragId, *m_DropTargetLeaf, m_DropDir, 0.5f);
                 changed = true;
             }
-            else if (m_TabDragActive && !host_rect.Contains(mouse))
+            else if (m_TabDragActive && !in_host)
             {
                 // P6 tear-off: the tab was dragged outside the dock host -> detach the
                 // panel into its own OS window centred under the cursor. Seed the window
                 // size from the panel's current dock leaf so it pops out at a sane size.
+                LOG_WARNING(ZEditor, "dock: tab '{}' released -> TEAR-OFF (dragged outside host)", m_TabDragId.c_str());
                 int spawn_w = 640;
                 int spawn_h = 420;
                 if (const EditorDock::DockNode* leaf = m_NativeDockTree.FindPanelLeaf(m_TabDragId))
@@ -621,6 +626,11 @@ bool DefaultLayout::HandleNativeDockInput(const UIRect& host_rect)
                 const int spawn_y = static_cast<int>(mouse.y) - 12;
                 FloatingPanelManager::Get().RequestFloatAt(m_TabDragId, spawn_x, spawn_y, spawn_w, spawn_h);
                 changed = true;  // ProcessPendingFloat pulls it from the tree next tick
+            }
+            else
+            {
+                LOG_WARNING(ZEditor, "dock: tab '{}' released -> CANCEL (dragActive={} inHost={})",
+                            m_TabDragId.c_str(), m_TabDragActive ? 1 : 0, in_host ? 1 : 0);
             }
             m_TabDragId.clear();
             m_TabDragActive = false;
@@ -803,6 +813,8 @@ bool DefaultLayout::HandleNativeDockInput(const UIRect& host_rect)
                     m_TabDragActive = false;
                     m_HasDrop = false;
                     m_DropTargetLeaf = nullptr;
+                    // [tear-off diag] Confirm the press armed a drag candidate for this tab.
+                    LOG_WARNING(ZEditor, "dock: tab '{}' pressed on strip -> drag armed", m_TabDragId.c_str());
                     break;
                 }
             }
