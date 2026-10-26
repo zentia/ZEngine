@@ -8,6 +8,8 @@
 #include "Runtime/Function/AI/Navigation/NavigationSystem.h"
 #include "Runtime/Function/Framework/Component/Motor/MotorComponent.h"
 #include "Runtime/Function/Framework/Component/Transform/Transform.h"
+#include "Runtime/Function/Framework/Level/Level.h"
+#include "Runtime/Function/Framework/World/WorldManager.h"
 
 #include <chrono>
 
@@ -643,6 +645,33 @@ AIActionRequest AIControllerComponent::TakeActionRequest()
   AIActionRequest request = m_Blackboard.GetActionRequest();
   m_Blackboard.ClearActionRequest();
   return request;
+}
+
+GameObject* AIControllerComponent::ResolveObject(GObjectID object_id) const
+{
+  if (object_id == k_invalid_gobject_id)
+  {
+    return nullptr;
+  }
+
+  WorldManager* world_manager = GET_SYSTEM(WorldManager);
+  if (world_manager == nullptr)
+  {
+    return nullptr;
+  }
+
+  Level* level = world_manager->getCurrentActiveLevel();
+  if (level == nullptr)
+  {
+    return nullptr;
+  }
+
+  return level->GetGObjectByID(object_id).lock().get();
+}
+
+GameObject* AIControllerComponent::GetPrimaryTarget() const
+{
+  return ResolveObject(m_Blackboard.GetPrimaryTargetId());
 }
 
 void AIControllerComponent::SetHealthRatio(float ratio)

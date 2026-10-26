@@ -103,8 +103,15 @@ public:
     void GetLocalPositionAndRotation(Vector3& local_position, Quaternion& local_rotation) const;
 
     // ---- matrices ----
+    //
+    // 这三个之前没导是因为 `Matrix4x4` 没有 Converter（批次 0 才补上），不是刻意不导。
+    // 矩阵本身对玩法脚本用处不大（要的是位置 / 方向），但它是"自己算点变换"的兜底：
+    // 有了它，脚本不必为了一次变换去引第二套数学库。
+    ZFUNCTION()
     Matrix4x4 GetLocalMatrix() const;
+    ZFUNCTION()
     Matrix4x4 GetLocalToWorldMatrix() const;
+    ZFUNCTION()
     Matrix4x4 GetWorldToLocalMatrix() const;
 
     // ---- space conversion ----
@@ -112,14 +119,24 @@ public:
     Vector3 TransformPoint(const Vector3& local_point) const;
     ZFUNCTION()
     Vector3 TransformDirection(const Vector3& local_direction) const;
+    /// 与 `TransformDirection` 的区别：**会带上缩放**。位移用 Point、朝向用 Direction、
+    /// 长度有意义的向量（速度、偏移）用 Vector。
+    ZFUNCTION()
     Vector3 TransformVector(const Vector3& local_vector) const;
+    ZFUNCTION()
     Vector3 InverseTransformPoint(const Vector3& world_point) const;
+    ZFUNCTION()
     Vector3 InverseTransformDirection(const Vector3& world_direction) const;
+    ZFUNCTION()
     Vector3 InverseTransformVector(const Vector3& world_vector) const;
 
     // ---- hierarchy ----
     ZFUNCTION()
     Transform* GetParent() const { return m_Father; }
+    /// 沿 `GetParent()` 一路向上到根。自己就是根时返回自己。
+    /// 只有非 const 那个标了 ZFUNCTION —— 同名的 const 重载如果也标，两个拼写会抢
+    /// 同一个脚本名（见上面 `SetLocalPosition` 的重载规则），而脚本拿不到 const 对象。
+    ZFUNCTION()
     Transform* GetRoot();
     const Transform* GetRoot() const;
 
@@ -155,7 +172,12 @@ public:
     int GetSiblingIndex() const;
     ZFUNCTION()
     void SetSiblingIndex(int new_index);
+    /// 排到父节点的第一个 / 最后一个。`SetSiblingIndex` 已经导出了，这两个只是它的
+    /// 具名特例 —— 导出来的理由是脚本不该为了"置顶"去知道"最后一个下标是多少"
+    /// （SetAsLastSibling 传的是 INT_MAX，不是 `GetChildrenCount() - 1`）。
+    ZFUNCTION()
     void SetAsFirstSibling() { SetSiblingIndex(0); }
+    ZFUNCTION()
     void SetAsLastSibling();
 
     void Tick(float delta_time) override;

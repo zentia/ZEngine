@@ -41,6 +41,38 @@ void AIPerceptionComponent::Tick(float delta_time)
   }
 }
 
+GameObject* AIPerceptionComponent::ResolveTargetObject(GObjectID object_id) const
+{
+  if (object_id == k_invalid_gobject_id)
+  {
+    return nullptr;
+  }
+
+  WorldManager* world_manager = GET_SYSTEM(WorldManager);
+  if (world_manager == nullptr)
+  {
+    return nullptr;
+  }
+
+  Level* level = world_manager->getCurrentActiveLevel();
+  if (level == nullptr)
+  {
+    return nullptr;
+  }
+
+  return level->GetGObjectByID(object_id).lock().get();
+}
+
+GameObject* AIPerceptionComponent::GetTargetObject(int32_t index) const
+{
+  const AIPerceptionTarget* target = TargetAt(index);
+  if (target == nullptr)
+  {
+    return nullptr;
+  }
+  return ResolveTargetObject(target->object_id);
+}
+
 void AIPerceptionComponent::ForceRefresh()
 {
   m_TimeSinceLastScan = 0.f;

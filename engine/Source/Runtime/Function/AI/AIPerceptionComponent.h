@@ -83,13 +83,20 @@ public:
   /// 本帧感知到的目标数量。
   ZFUNCTION()
   int32_t GetTargetCount() const { return static_cast<int32_t>(m_Targets.size()); }
-  /// 没有目标时 = k_invalid_gobject_id（一个很大的数）。
+
+  /// 目标对应的 GameObject；找不到 / 对象已被销毁 = null。
+  ///
+  /// 为什么给对象而不是给 `GObjectID`：GObjectID 是 `Level::m_Gobjects` 的键，
+  /// 一个为序列化和 PPtr 延迟解引用存在的**引擎内部句柄**。脚本 API 是引用式的
+  /// （Unity 那套：碰撞给你 Collider，射线给你 gameObject），脚本应该拿着活对象
+  /// 一直走下去 —— `obj.GetComponent(...)` / `obj.transform`。给一个整数只会逼
+  /// 脚本做"读感知拿 id → 把 id 传回来"的往返，而那个往返在 Unity 里根本不存在。
+  ///
+  /// 解析走 WorldManager 的当前关卡，和 RefreshTargets() 扫的是同一个 Level，
+  /// 所以对得上。对象被销毁后返回 null —— 与引擎里其它 `GameObject*` 绑定一致的
+  /// 悬垂风险（JS 不持有所有权）。
   ZFUNCTION()
-  GObjectID GetTargetObjectId(int32_t index) const
-  {
-    const AIPerceptionTarget* target = TargetAt(index);
-    return target != nullptr ? target->object_id : k_invalid_gobject_id;
-  }
+  GameObject* GetTargetObject(int32_t index) const;
   ZFUNCTION()
   Vector3 GetTargetPosition(int32_t index) const
   {
@@ -134,6 +141,9 @@ private:
     }
     return &m_Targets[static_cast<size_t>(index)];
   }
+
+  /// id -> 活对象。定义在 .cpp，因为要引 Level.h / WorldManager.h。
+  GameObject* ResolveTargetObject(GObjectID object_id) const;
 
   void RefreshTargets();
   void CollectCandidates(eastl::vector<AIPerceptionTarget>& out_candidates) const;

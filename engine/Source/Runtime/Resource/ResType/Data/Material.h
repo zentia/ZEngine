@@ -74,6 +74,21 @@ struct MaterialToggleProperty
 
 // Unity-style material asset: shader + saved properties + built-in PBR slots.
 // Texture and shader bindings are asset references (PPtr), not source file paths.
+//
+// 为什么一个方法都没标 ZFUNCTION（2026-10-26 核过一遍，别再重做）：
+//
+//  1. **脚本拿不到 Material 实例**。全仓库没有任何返回 `Material*` / `PPtr<Material>`
+//     的接口；`BaseRenderer` 只有 `m_SharedMaterialAssets`（一串 .zasset 路径），
+//     材质在 PostLoadResource 时按路径解析成渲染层的 `GpuPBRMaterial`。把一个脚本
+//     无从获得的类型的方法全导出去 = 一堆死 API。
+//  2. **没有 Unity 那种"每个 renderer 一份可运行时改的材质实例"**。想让脚本做
+//     受击闪白 / 溶解 / 改描边颜色，得先有"材质实例化 + 属性块上传"这条链路，那是
+//     功能开发，不是补绑定。
+//  3. `MaterialFloatProperty` / `MaterialColorProperty` / `MaterialTextureProperty` /
+//     `MaterialToggleProperty` 这四个 vector 是 Unity MaterialPropertyBlock 式的
+//     **资产侧**保存项，没有运行时 upsert 入口 —— 就算导出去也没有 SetFloat 可配。
+//
+// 结论：材质要进脚本，先做"运行时材质实例"，再谈绑定。
 ZCLASS(CustomTransfer)
 class Material : public Object
 {
