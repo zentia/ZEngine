@@ -34,9 +34,9 @@ public:
 
     bool isReady() const { return m_Initialized; }
 
-    /// True when RP2 is driven by the render graph (ZENGINE_RG_RP2=1). Off by default:
-    /// the hand-written path is the one that has been shipping, and the graph path still
-    /// needs per-frame visual verification.
+    /// True when RP2 is driven by the render graph. Default ON: the graph path was
+    /// verified bit-identical to the hand-written chain by the in-frame A/B capture on
+    /// 2026-10-26. Set ZENGINE_RG_RP2=0 to force the hand-written chain.
     bool IsRenderGraphPathEnabled() const { return m_UseRenderGraph; }
 
     /// Turns the graph path on / off at runtime (building the graph objects on first use).
