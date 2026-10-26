@@ -5,6 +5,7 @@
 #include "Runtime/Function/ShaderLab/ShaderLabDx12Compiler.h"
 #include "Runtime/Function/ShaderLab/ShaderLabParser.h"
 #include "Runtime/Function/ShaderLab/ShaderLabVariant.h"
+#include "Runtime/Function/ShaderLab/ShaderTextureSlot.h"
 #include "Runtime/Project/ProjectInfo.h"
 #include "Runtime/Resource/Asset/AssetManager.h"
 #include "Runtime/Resource/ResType/Data/Material.h"
@@ -197,6 +198,50 @@ namespace Runtime
                             out.m_Properties.size(),
                             layout.size,
                             layout.properties.size());
+            }
+        }
+
+        /// 2D 属性 -> 材质描述符集槽位（0..4）。
+        ///
+        /// 与 cbuffer 落点不同，这件事**不依赖 program 源码**：只数 Properties{}
+        /// 里 2D 属性出现的顺序。所以放在这里单独跑，不受"第一份带代码的 program
+        /// 找没找到"影响。
+        ///
+        /// 槽位复用内置那 5 个贴图 binding。超出 5 张的 2D 属性记 -1 并告警 ——
+        /// 静默丢掉比这更糟：脚本 SetTexture 会拿到 false，但没人知道为什么。
+        void FillTextureSlots(ShaderRes& out)
+        {
+            if (out.m_Properties.empty())
+            {
+                return;
+            }
+
+            std::vector<ZEngine::ShaderLab::ShaderTextureSlotInput> inputs;
+            inputs.reserve(out.m_Properties.size());
+            for (const ShaderPropertyDesc& property : out.m_Properties)
+            {
+                ZEngine::ShaderLab::ShaderTextureSlotInput input;
+                input.name = property.m_Name.c_str();
+                input.type = property.m_Type.c_str();
+                inputs.push_back(std::move(input));
+            }
+
+            const ZEngine::ShaderLab::ShaderTextureSlotTable table =
+                ZEngine::ShaderLab::AssignTextureSlots(inputs);
+            for (size_t i = 0; i < out.m_Properties.size(); ++i)
+            {
+                out.m_Properties[i].m_TextureSlot = table.SlotAt(i);
+            }
+
+            if (table.overflow > 0)
+            {
+                LOG_WARNING(ZShader,
+                            "ShaderImporter: shader '{}' declares {} 2D properties but a material descriptor set "
+                            "only has {} texture slots; the last {} will never bind",
+                            out.m_ShaderName.c_str(),
+                            table.assigned + table.overflow,
+                            ZEngine::ShaderLab::k_MaterialTextureSlotCount,
+                            table.overflow);
             }
         }
 
@@ -422,6 +467,10 @@ namespace Runtime
             // 属性名 -> UBO 偏移。必须在语言 / 入口点定下来之后跑，因为打包规则
             // 要跟着源语言走。
             FillCbufferOffsets(lab_asset, out);
+
+            // 2D 属性 -> 贴图槽。只数 Properties{} 的声明顺序，与 program 源码
+            // 无关，所以无条件跑（FillCbufferOffsets 找不到 program 会提前返回）。
+            FillTextureSlots(out);
         }
 
         bool doImportShaderLab(const std::filesystem::path& source_path,

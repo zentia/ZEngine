@@ -342,6 +342,55 @@ if(ZENGINE_BUILD_SHADERLAB_PROPERTY_BLOB_TEST)
 endif()
 
 # =====================================================================
+# ShaderLab texture-slot smoke-test
+# ---------------------------------------------------------------------
+# Pins down "2D property -> which of the 5 material texture bindings", the
+# CPU half of `SetTexture("_BumpMap", t)`. The rule is **declaration order**
+# in Properties{}: the material descriptor set has 6 bindings (0 = UBO,
+# 1..5 = the five PBR textures) and the pool is sized `3 + 5 *
+# m_MaxMaterialCount`, so custom shaders reuse 1..5 instead of adding
+# bindings. That caps a shader at 5 textures and makes reordering
+# properties move slots -- both pinned by the test.
+#
+#   cmake -B build -DZENGINE_BUILD_SHADERLAB_TEXTURE_SLOT_TEST=ON
+#   cmake --build build --target ShaderLabTextureSlotTest
+#
+# Like the cbuffer / property-blob tests it does NOT link ZRuntime --
+# ShaderTextureSlot.h is header-only and depends on nothing but
+# <cstdint> / <string> / <vector>.
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADERLAB_TEXTURE_SLOT_TEST
+       "Build the ShaderLab texture-slot smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADERLAB_TEXTURE_SLOT_TEST)
+    set(_texslot_target ShaderLabTextureSlotTest)
+
+    add_executable(${_texslot_target}
+        ShaderLabTextureSlotTest.cpp
+    )
+
+    set_target_properties(${_texslot_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # engine/Source is the root for "Runtime/Function/ShaderLab/..." includes.
+    target_include_directories(${_texslot_target} PRIVATE ${ENGINE_ROOT_DIR}/Source)
+
+    if(MSVC)
+        target_compile_options(${_texslot_target} PRIVATE /W4)
+    else()
+        target_compile_options(${_texslot_target} PRIVATE -Wall)
+    endif()
+
+    add_test(NAME ${_texslot_target} COMMAND ${_texslot_target})
+
+    message(STATUS "Configured ShaderLab texture-slot smoke-test: ${_texslot_target}")
+endif()
+
+# =====================================================================
 # ShaderLab program-extract smoke-test
 # ---------------------------------------------------------------------
 # Pins down "which program block does a backend actually compile". A `.shader`

@@ -39,6 +39,18 @@ struct ShaderPropertyDesc
 
     bool HasCbufferSlot() const { return m_CbufferOffset >= 0 && m_CbufferSize > 0; }
 
+    // ---- 贴图槽落点 ----
+    //
+    // 2D 属性绑到材质描述符集的哪个 binding（0..4，对应 binding 1..5）。
+    // -1 = 不占槽（不是 2D 属性，或者是第 6 张之后的 2D 属性）。
+    //
+    // 和 cbuffer 落点一样是**导入期**算好的，按 Properties{} 里 2D 属性的声明
+    // 顺序分配（见 ShaderLab/ShaderTextureSlot.h）。运行时不重算：重算意味着
+    // 每帧建材质数据时都要遍历属性表，而且同一份 shader 算出来的答案是一样的。
+    int32_t m_TextureSlot {-1};
+
+    bool HasTextureSlot() const { return m_TextureSlot >= 0; }
+
     static const char* GetTypeString() { return "ShaderPropertyDesc"; }
     static bool AllowTransferOptimization() { return false; }
 
@@ -59,6 +71,7 @@ struct ShaderPropertyDesc
         transfer.Transfer(m_CbufferSize, "cbuffer_size");
         transfer.Transfer(m_CbufferComponents, "cbuffer_components");
         transfer.Transfer(m_CbufferName, "cbuffer_name");
+        transfer.Transfer(m_TextureSlot, "texture_slot");
     }
 };
 
