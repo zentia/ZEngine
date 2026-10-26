@@ -1,6 +1,7 @@
 #include "Application.h"
 
 #include "Runtime/Core/Base/Macro.h"
+#include "Runtime/Core/Base/ScopedAutoreleasePool.h"
 #include "Runtime/Core/Memory/MemoryManager.h"
 #include "Runtime/Function/Console/RuntimeConsoleCommands.h"
 #include "Runtime/Function/Framework/World/WorldManager.h"
@@ -111,6 +112,12 @@ bool Application::TickOneFrame(float delta_time)
 
 bool Application::TickOneFrame(float simulation_delta_time, float frame_delta_time, bool should_update_logic)
 {
+    // 每帧一个 autorelease pool（Apple；其它平台空操作）。Metal 每帧都会产生一批
+    // autorelease 对象（command buffer / encoder / render pass descriptor ...），帧循环
+    // 是纯 C++、主线程上没有 pool 时它们全进 runtime 的隐式 pool —— 永不 drain，
+    // 每帧累积。必须是这一帧的第一条语句：渲染、UI、PollEvents 都在它的作用域里。
+    ScopedAutoreleasePool frame_autorelease_pool;
+
     TickDeferredConsoleCommands();   // exec.after（暂停时也走：它数的是帧，不是逻辑帧）
     if (should_update_logic)
     {

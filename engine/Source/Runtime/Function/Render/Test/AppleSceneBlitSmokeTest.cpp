@@ -2324,7 +2324,12 @@ int main()
 
     // =======================================================================
     // 3. 真的跑一遍（只有 Apple 有 Metal）
+    //
+    // 包一个 autorelease pool：MetalRHI 对 autorelease 的 command buffer / encoder
+    // 的所有权一旦算错（多 release 一次），这里的 drain 就会野指针崩溃。没有 pool 时
+    // 这类错永远看不出来（2026-10-26 修过一次，见 AppleSsaoSmokeTest §5）。
     // =======================================================================
+    @autoreleasepool
     {
         MetalRHI metal_rhi;
         RHI*     rhi = &metal_rhi;

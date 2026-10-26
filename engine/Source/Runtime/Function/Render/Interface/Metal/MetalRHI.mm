@@ -685,9 +685,8 @@ namespace
         }
         if (metal_buffer->computeEncoder == nil)
         {
-            id<MTLComputeCommandEncoder> encoder = [metal_buffer->commandBuffer computeCommandEncoder];
-            metal_buffer->computeEncoder = [encoder retain];
-            [encoder release];
+            // autorelease 对象：retain 的这一份归我们，收尾处 release（不要紧跟 release）。
+            metal_buffer->computeEncoder = [[metal_buffer->commandBuffer computeCommandEncoder] retain];
         }
         return metal_buffer->computeEncoder;
     }
@@ -2035,13 +2034,16 @@ void MetalRHI::CmdBeginRenderPassPFN(RHICommandBuffer*              commandBuffe
         }
     }
 
+    // 所有权（MRR）：commandBuffer / *CommandEncoder* 返回的是 autorelease 对象，
+    // **不归调用方所有** —— retain 一次就是我们持有的那一份，对应的 release 在收尾处。
+    // 以前这里紧跟一句 [x release]，等于把 pool 那一份也还了：收尾再 release 一次就是
+    // 净多一次。没有 drain 的 pool 时看不出来；每帧 pool 一 drain 就是野指针 SIGSEGV。
     id<MTLRenderCommandEncoder> encoder = [metal_buffer->commandBuffer renderCommandEncoderWithDescriptor:descriptor];
     if (metal_buffer->renderEncoder != nil)
     {
         [metal_buffer->renderEncoder release];
     }
     metal_buffer->renderEncoder = [encoder retain];
-    [encoder release];
 #endif
 }
 
@@ -2496,9 +2498,8 @@ bool MetalRHI::BeginCommandBuffer(RHICommandBuffer* commandBuffer, const RHIComm
     {
         [metal_buffer->commandBuffer release];
     }
-    id<MTLCommandBuffer> command_buffer = [m_CommandQueue commandBuffer];
-    metal_buffer->commandBuffer = [command_buffer retain];
-    [command_buffer release];
+    // autorelease 对象：retain 的这一份归 MetalCommandBuffer（见 CmdBeginRenderPassPFN 的说明）。
+    metal_buffer->commandBuffer = [[m_CommandQueue commandBuffer] retain];
     return metal_buffer->commandBuffer != nil;
 #else
     (void)commandBuffer;
@@ -2691,11 +2692,10 @@ void MetalRHI::CmdDispatchIndirect(RHICommandBuffer* commandBuffer, RHIBuffer* b
     {
         return;
     }
-    if (metal_buffer->computeEncoder == nil)
+    // 和 CmdDispatch / CmdBindDescriptorSets 共用同一个"按需开 encoder"（所有权见那里）。
+    if (BeginComputeEncoder(metal_buffer) == nil)
     {
-        id<MTLComputeCommandEncoder> encoder = [metal_buffer->commandBuffer computeCommandEncoder];
-        metal_buffer->computeEncoder = [encoder retain];
-        [encoder release];
+        return;
     }
     if (metal_buffer->computePipeline != nullptr && metal_buffer->computePipeline->computeState != nil)
     {
@@ -2949,9 +2949,8 @@ RHICommandBuffer* MetalRHI::BeginSingleTimeCommands()
         return nullptr;
     }
     auto* metal_buffer = new MetalCommandBuffer();
-    id<MTLCommandBuffer> command_buffer = [m_CommandQueue commandBuffer];
-    metal_buffer->commandBuffer = [command_buffer retain];
-    [command_buffer release];
+    // autorelease 对象：retain 的这一份由 ~MetalCommandBuffer 还（见 CmdBeginRenderPassPFN）。
+    metal_buffer->commandBuffer = [[m_CommandQueue commandBuffer] retain];
     return metal_buffer;
 #else
     return nullptr;
@@ -3054,12 +3053,8 @@ bool MetalRHI::PrepareBeforePass(std::function<void()> passUpdateAfterRecreateSw
         [metal_buffer->commandBuffer release];
         metal_buffer->commandBuffer = nil;
     }
-    id<MTLCommandBuffer> command_buffer = [m_CommandQueue commandBuffer];
-    metal_buffer->commandBuffer = command_buffer != nil ? [command_buffer retain] : nil;
-    if (command_buffer != nil)
-    {
-        [command_buffer release];
-    }
+    // autorelease 对象：retain 的这一份在 SubmitRendering commit 之后还（见 CmdBeginRenderPassPFN）。
+    metal_buffer->commandBuffer = [[m_CommandQueue commandBuffer] retain];
     metal_buffer->renderEncoder  = nil;
     metal_buffer->computeEncoder = nil;
     m_CurrentCommandBuffer       = metal_buffer;

@@ -1715,11 +1715,51 @@ NSLog 走 stderr）45 秒内**没有任何一条来自 SSAO 的三个函数**；
 15 个变异全部 KILL。`MetalSpirvShaderSmokeTest` 47 → 52（新增 SSAO 版延迟光照 blob：
 SPIR-V→MSL 成功、sampler 7 个 ≤ 15）。
 
-**顺带发现（未修，预存在）**：`MetalRHI::CmdBeginRenderPassPFN` 对
+**顺带发现（预存在，已在 §3.36 修掉）**：`MetalRHI::CmdBeginRenderPassPFN` 对
 `renderCommandEncoderWithDescriptor:`（autoreleased、不归调用方所有）做了 `retain` + `release`，
 `CmdEndRenderPassPFN` 再 `release` 一次 ⇒ 净多一次 release。没有 autorelease pool 时那条
 autorelease 永远不执行所以看不出来；冒烟测试一包 `@autoreleasepool`，pop 时 `objc_release` 野指针
 SIGSEGV（实测）。将来谁给帧循环加 pool，就会在这里崩。
+
+### 3.36 Metal 对 autorelease 对象多 release 一次 + 帧循环没有 autorelease pool
+
+**两件事是一体的，只修一半会更糟。**
+
+1. **多 release（6 处同型）**：`[queue commandBuffer]`、`computeCommandEncoder`、
+   `renderCommandEncoderWithDescriptor:` 返回的都是 autorelease 对象（不归调用方所有）。
+   MetalRHI 的写法是 `x = [obj retain]; [obj release];` —— 第二句把 pool 那一份也还了，收尾时
+   再 release 一次 ⇒ 净多一次。位置：`CmdBeginRenderPassPFN`（render encoder）、
+   `BeginComputeEncoder` 与 `CmdDispatchIndirect`（compute encoder，后者改为复用前者）、
+   `BeginCommandBuffer` / `BeginSingleTimeCommands` / `PrepareBeforePass`（command buffer）。
+   对比：`newRenderPipelineStateWithDescriptor` 等 `new*` 返回 +1，同样写法是**对的**（所有权转移）。
+2. **帧循环没有 pool**：主线程帧循环是纯 C++（`Application::TickOneFrame`），唯一的 pool 在
+   `PollEvents` 里。其余 autorelease 全进 runtime 的**隐式 pool —— 永不 drain**。正是它把 (1)
+   掩盖住了（被多 release 的对象在 pool 里只是一个永不被访问的悬垂指针），代价是每帧的
+   render pass descriptor / render context 等对象永远泄漏。
+
+**为什么不能只修一半**：只删 `release` ⇒ 每帧的 encoder / command buffer 被隐式 pool 永久持有 = 每帧泄漏；
+只加 pool ⇒ 第一次 drain 就 `objc_release` 野指针 SIGSEGV（冒烟测试实测）。
+
+**修法**：6 处改成 `x = [[... ] retain];`（retain 的那一份归我们，收尾处 release）；新增
+`Runtime/Core/Base/ScopedAutoreleasePool.{h,mm}`（MRR 下用 `NSAutoreleasePool`，非 Apple 空操作），
+`Application::TickOneFrame` 第一条语句开一个每帧 pool（Editor / GameEngine / 独立 Runtime 都走这里）。
+
+**验证**：
+- `OBJC_DEBUG_MISSING_POOLS=YES` 跑编辑器：修复前**第一帧**就在 `QueueSubmit` 里 SIGTRAP（ips：
+  `autoreleaseNoPage` ← FramePacing ← `-[AGXG16XFamilyCommandBuffer commit]` ← `ParticlePass::Simulate`）；
+  修复后跑满 40 秒。主线程每帧类对象的"无 pool"计数：`AGXG16XFamilyRenderContext` 13 → 0、
+  `MTLRenderPassDescriptorInternal` 13 → 0、`CAMetalDrawable` 1 → 0（剩下的是启动期一次性对象）。
+- 正常运行 ~106 秒到 frame=4561，`ssao bound=1`，0 条 [E]，无 ZEditor 崩溃报告。
+- Metal 校验层 45 秒：消息类别 16 → 16，**没有新增类别**。
+- 冒烟测试：`AppleSsaoSmokeTest` 99 → **108** checks（每次录制一个 `@autoreleasepool` + 外层 pool + 新 §5
+  所有权契约：扫描"retain 后立刻 release、且来源不是 alloc/new*/copy"的局部，带双向自检）；
+  `AppleSceneBlitSmokeTest` 的 GPU 段也包上 pool（332 checks）。ctest 30/30。
+- 变异 5 条全 KILL：render encoder / single-time command buffer 恢复多 release ⇒ 两个测试都**真崩**
+  （SIGSEGV / SIGTRAP）+ 契约红；compute encoder 多 release ⇒ 契约红（SceneBlit 不走 compute，
+  GPU 侧杀不到）；去掉每帧 pool / pool 不 drain ⇒ 契约红。
+
+**仍未覆盖**：系统 dispatch 线程（AppIntents / CAMetalLayer 帧节奏线程）上的无 pool autorelease 来自
+系统框架自身，不是引擎线程，未处理。
 
 ## 4. 已知限制（不是 bug，但先说清楚）
 

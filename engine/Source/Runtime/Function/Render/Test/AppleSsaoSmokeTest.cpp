@@ -400,6 +400,145 @@ namespace
 #endif
     }
 
+    // =========================================================================
+    // §5 Metal 对象所有权（MRR）+ 每帧 autorelease pool
+    // =========================================================================
+    //
+    // 扫描器：找"把一个局部变量 retain 之后紧跟着 release 它"的两行。这个写法只有在
+    // 该局部来自 alloc / new* / copy（+1，调用方本来就持有）时才对 —— 那是"把所有权
+    // 转给成员"。来自其它方法（`commandBuffer`、`computeCommandEncoder`、
+    // `renderCommandEncoderWithDescriptor:` ……）的是 autorelease 对象，不归调用方
+    // 所有，retain 后再 release 等于把 pool 那份也还了，收尾时再 release 就是多一次。
+    int CountAutoreleasedRetainRelease(const std::string& src, std::string* first_hit)
+    {
+        std::vector<std::string> lines;
+        {
+            std::istringstream in(src);
+            std::string        line;
+            while (std::getline(in, line))
+            {
+                lines.push_back(line);
+            }
+        }
+        auto trim = [](const std::string& l) {
+            const size_t a = l.find_first_not_of(" \t");
+            return a == std::string::npos ? std::string() : l.substr(a);
+        };
+        int hits = 0;
+        for (size_t i = 0; i + 1 < lines.size(); ++i)
+        {
+            const std::string cur = trim(lines[i]);
+            if (cur.rfind("//", 0) == 0)
+            {
+                continue;
+            }
+            // `= [name retain];`
+            const size_t open = cur.find("= [");
+            const size_t tail = cur.find(" retain]");
+            if (open == std::string::npos || tail == std::string::npos || tail < open)
+            {
+                continue;
+            }
+            const std::string name = cur.substr(open + 3, tail - open - 3);
+            if (name.empty() || name.find_first_of(" []") != std::string::npos)
+            {
+                continue;  // [[x foo] retain] 这类没有中间局部的写法不在此列
+            }
+            if (trim(lines[i + 1]) != "[" + name + " release];")
+            {
+                continue;
+            }
+            // 往回找这个局部的来源：`name = [receiver selector...`
+            std::string selector;
+            for (size_t back = 1; back <= 20 && back <= i; ++back)
+            {
+                const std::string prev = trim(lines[i - back]);
+                const size_t      at   = prev.find(name + " = [");
+                if (at == std::string::npos)
+                {
+                    continue;
+                }
+                std::string rhs = prev.substr(at + name.size() + 4);
+                // 跳过 receiver（可能是 [[X alloc] init] 这种嵌套，第一个词就是 X）
+                const size_t sp = rhs.find(' ');
+                if (sp != std::string::npos)
+                {
+                    rhs = rhs.substr(sp + 1);
+                }
+                selector = rhs;
+                if (prev.find("alloc]") != std::string::npos)
+                {
+                    selector = "alloc";
+                }
+                break;
+            }
+            const bool owned = selector.rfind("new", 0) == 0 || selector.rfind("alloc", 0) == 0 ||
+                               selector.rfind("copy", 0) == 0 || selector.rfind("mutableCopy", 0) == 0;
+            if (!owned)
+            {
+                ++hits;
+                if (first_hit != nullptr && first_hit->empty())
+                {
+                    *first_hit = cur + " / origin: " + (selector.empty() ? "<not found>" : selector.substr(0, 60));
+                }
+            }
+        }
+        return hits;
+    }
+
+    void CheckMetalOwnershipContracts()
+    {
+        // ---- 扫描器双向自检（扫描器自己写错会恒绿）----
+        const std::string bad =
+            "    id<MTLRenderCommandEncoder> encoder = [cb renderCommandEncoderWithDescriptor:d];\n"
+            "    x->renderEncoder = [encoder retain];\n"
+            "    [encoder release];\n";
+        const std::string good =
+            "    id<MTLRenderPipelineState> state = [m_Device newRenderPipelineStateWithDescriptor:d error:&e];\n"
+            "    p->renderState = [state retain];\n"
+            "    [state release];\n"
+            "    MTLDepthStencilDescriptor* dd = [[MTLDepthStencilDescriptor alloc] init];\n"
+            "    p->desc = [dd retain];\n"
+            "    [dd release];\n";
+        Check(CountAutoreleasedRetainRelease(bad, nullptr) == 1,
+              "selftest: ownership scanner flags retain+release of an autoreleased encoder");
+        Check(CountAutoreleasedRetainRelease(good, nullptr) == 0,
+              "selftest: ownership scanner accepts retain+release of new*/alloc'd (+1) objects");
+
+#if defined(ZENGINE_ENGINE_ROOT_DIR)
+        const std::string root  = ZENGINE_ENGINE_ROOT_DIR;
+        const std::string metal = ReadFileText(root + "/Source/Runtime/Function/Render/Interface/Metal/MetalRHI.mm");
+        const std::string app   = ReadFileText(root + "/Source/Runtime/Application/Application.cpp");
+        const std::string pool  = ReadFileText(root + "/Source/Runtime/Core/Base/ScopedAutoreleasePool.mm");
+        Check(!metal.empty() && !app.empty() && !pool.empty(), "selftest: ownership sources are readable");
+
+        std::string hit;
+        const int   hits = CountAutoreleasedRetainRelease(metal, &hit);
+        if (hits != 0)
+        {
+            std::printf("       first offending site: %s\n", hit.c_str());
+        }
+        Check(hits == 0, "MetalRHI.mm: no autoreleased Metal object is retained and then immediately released");
+        // 生效那一步：6 个取 autorelease 对象的地方都必须是"retain 这一份归我们"。
+        Check(CountCodeLines(metal, "= [[m_CommandQueue commandBuffer] retain];") == 3,
+              "MetalRHI.mm: the 3 frame / single-time / RHI command buffers keep exactly one retain");
+        Check(CountCodeLines(metal, "metal_buffer->computeEncoder = [[metal_buffer->commandBuffer computeCommandEncoder] retain];") == 1,
+              "MetalRHI.mm: compute encoder is created in exactly one place (BeginComputeEncoder) and retained once");
+        Check(CountCodeLines(metal, "metal_buffer->renderEncoder = [encoder retain];") == 1,
+              "MetalRHI.mm: render encoder retained once");
+
+        // 每帧 pool：TickOneFrame 的第一条语句。
+        {
+            const std::string body = BlockBetween(app, "bool Application::TickOneFrame(float simulation_delta_time",
+                                                  "TickDeferredConsoleCommands();");
+            Check(CodeLineFind(body, "ScopedAutoreleasePool frame_autorelease_pool;") != std::string::npos,
+                  "Application: TickOneFrame opens a per-frame autorelease pool before any frame work");
+        }
+        Check(CodeLineFind(pool, "[(NSAutoreleasePool*)m_Pool drain];") != std::string::npos,
+              "ScopedAutoreleasePool: destructor drains the pool");
+#endif
+    }
+
 #if defined(__APPLE__)
     // =========================================================================
     // §4 GPU
@@ -654,13 +793,19 @@ fragment float4 SceneFragmentMain(SsaoVertexOut in [[stage_in]])
             return result;
         }
         const std::vector<AppleSsaoViewport> viewports = MakeViewports(split);
-        if (RHICommandBuffer* cmd = rhi->BeginSingleTimeCommands())
+        // 每次录制一个 pool，录完立刻 drain（MetalRHI 还活着）：任何对 autorelease 的
+        // command buffer / encoder 多做一次 release，都会在这里的 drain 上野指针崩溃。
+        // 这正是 2026-10-26 修掉的那类问题的复现器 —— 没有 pool 时它永远看不出来。
+        @autoreleasepool
         {
-            DrawScene(rhi, cmd, depth, depth_pipeline, viewports);
-            DrawScene(rhi, cmd, normal, normal_pipeline, viewports);
-            result.recorded = pass.Record(cmd, depth.view, normal.view, {kSize, kSize}, viewports.data(),
-                                          static_cast<uint32_t>(viewports.size()), settings);
-            rhi->EndSingleTimeCommands(cmd);
+            if (RHICommandBuffer* cmd = rhi->BeginSingleTimeCommands())
+            {
+                DrawScene(rhi, cmd, depth, depth_pipeline, viewports);
+                DrawScene(rhi, cmd, normal, normal_pipeline, viewports);
+                result.recorded = pass.Record(cmd, depth.view, normal.view, {kSize, kSize}, viewports.data(),
+                                              static_cast<uint32_t>(viewports.size()), settings);
+                rhi->EndSingleTimeCommands(cmd);
+            }
         }
         if (result.recorded)
         {
@@ -881,13 +1026,15 @@ int main()
     CheckGpuParams();
     CheckMslSource();
     CheckWiringContracts();
+    CheckMetalOwnershipContracts();
 #if defined(__APPLE__)
-    // ⚠️ 不要包 @autoreleasepool：MetalRHI::CmdBeginRenderPassPFN 对
-    // renderCommandEncoderWithDescriptor:（autoreleased，不归调用方所有）做了
-    // retain + release，CmdEndRenderPassPFN 再 release 一次 ⇒ 净多 release 一次。
-    // 没有 pool 时那条 autorelease 永远不执行，所以看不出来；一包 pool，pop 时就
-    // objc_release 野指针 SIGSEGV（2026-10-23 实测）。和其它 Apple 冒烟测试保持一致。
-    CheckGpu();
+    // 外层再包一个 pool：MetalRHI 析构之后再 drain，覆盖"pool 比 RHI 活得久"的顺序。
+    // （2026-10-23 这里包 pool 会在 pop 时 SIGSEGV —— MetalRHI 对 autorelease 的
+    //  encoder / command buffer 多 release 了一次；2026-10-26 修掉，见 §5。）
+    @autoreleasepool
+    {
+        CheckGpu();
+    }
 #endif
     std::printf("\nAppleSsaoSmokeTest: %d checks, %d failures\n", g_Checks, g_Failures);
     return g_Failures == 0 ? 0 : 1;
