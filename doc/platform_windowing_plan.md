@@ -78,13 +78,55 @@ engine/Source/Runtime/Function/Render/Platform/
   的描述改为现状
 
 ### Step 6: 其他平台
-- [ ] Linux — **没有窗口层**：`CreatePlatformApplication` 返回 `nullptr`（无头可用），`VulkanRHI` 的 Linux surface 创建
-  （`CreateVulkanSurface`）仍返回 `VK_ERROR_FEATURE_NOT_PRESENT`。要做 Linux 桌面编辑器需 X11（或 Wayland）
-  `GenericApplication` + xlib/xcb surface，属独立工作。
+- [x] Linux — **X11 窗口层已落地**（2026-10-26，见下方"Linux X11 落地记录"）：`Platform/Linux/LinuxWindow.{h,cpp}`
+  + `LinuxApplication.{h,cpp}`，`CreatePlatformApplication` 返回 `LinuxApplication`，`VulkanRHI` 的 Linux surface 走
+  `vkCreateXlibSurfaceKHR`。多显示器枚举（XRandR）一并覆盖。**未真机实测**（本机 WSL 被安全策略拦、无 X11 SDK，
+  无法编译/运行）——实现按 Windows/MacOS 后端的接口契约镜像，需在 Linux 多屏机器上按下方"真机验证步骤"跑一遍。
 - [x] macOS — 已是完整 Cocoa 实现（不是 stub）：`MacOSWindow.mm` 约 810 行、`MacOSApplication.mm` 约 425 行
-- [x] Emscripten — 无引擎窗口，canvas 归页面；`WebGL2RHI::CreateGLContext` 原注释说“GLFW shim 已建好上下文”，
+- [x] Emscripten — 无引擎窗口，canvas 归页面；`WebGL2RHI::CreateGLContext` 原注释说"GLFW shim 已建好上下文"，
   但引擎早已不链接 GLFW（web 链接参数里也没有 `USE_GLFW`），于是没有任何人创建上下文。现改为：页面已有当前上下文就
   沿用，否则自己在 `#canvas` 上创建 WebGL2 上下文。**浏览器里未实测。**
+
+### Linux X11 落地记录（2026-10-26，未真机实测）
+
+**做了什么**：把 C7 的"Linux X11 窗口层"从 `CreatePlatformApplication` 返回 `nullptr` 兑现为完整 X11 后端，
+顺带用 XRandR 覆盖"多显示器枚举"子项（此前只有 Win32/macOS 有）。
+
+- `Platform/Linux/LinuxWindow.{h,cpp}`：`GenericWindow` 的 X11 实现。`XCreateSimpleWindow` + `WM_DELETE_WINDOW`
+  协议（点关闭走 `ShouldClose` 回调链，与 Windows `WM_CLOSE` 一致）；`ProcessEvent()` 集中处理
+  KeyPress/Release、ButtonPress/Release（左中右 + Button4/5 滚轮）、MotionNotify、Expose、ConfigureNotify、
+  FocusIn/Out、EnterNotify。键码映射 `MapKeySymToKeyCode`（X11 KeySym → 与 Windows `MapVkToKeyCode` 同一套
+  256+ 编号）、修饰键 `CurrentModifierBits`（XGetKeyboard keymap → `KeyCodes::MOD_*`），保证 EnhancedInput /
+  EditorInputManager 无需平台分支。
+- `Platform/Linux/LinuxApplication.{h,cpp}`：`GenericApplication` 的 X11 实现。`XOpenDisplay` 一次全应用共享
+  `Display*`；`PollEvents()` 走 `XPending`/`XNextEvent` 拉模型，按 Window 句柄把事件路由回各窗口；剪贴板走
+  CLIPBOARD selection + UTF8_STRING；光标走 X11 XCursor；`GetTime()` 走 `steady_clock`。
+- **多显示器枚举（XRandR）**：`GetMonitorCount` / `GetPrimaryMonitorWorkArea` / `GetMonitorWorkArea(index)` /
+  `GetMonitorWorkAreaForWindow`，索引序与 Win32/macOS 一致（0 = 主屏，其余按 XRandR connected output 顺序，
+  越界回落主屏）。
+- **Vulkan surface**：`VulkanRHI.cpp::CreateVulkanSurface` 的 Linux 分支从 `VK_ERROR_FEATURE_NOT_PRESENT`
+  改为 `vkCreateXlibSurfaceKHR`（`Display*` 经 `WindowSystem->GetApplication()->GetNativeDisplay()` 取回，
+  窗口句柄取 `GenericWindow::GetNativeHandle()`）。为此给 `GenericApplication` 加了非纯虚的
+  `GetNativeDisplay()`（默认 nullptr，只有 X11 后端覆写），保持该头无 X11 依赖。
+- **构建**：`engine/CMakeLists.txt` 的 Linux 分支 `find_package(X11 REQUIRED)` + `find_package(Xrandr REQUIRED)`，
+  设 `ZENGINE_LINUX_X11`；`Runtime/CMakeLists.txt` 在 Vulkan 链接处追加 `X11::X11 X11::Xrandr`（仅 Linux 且
+  find_package 成功时）。窗口层 .cpp 整体被 `Z_PLATFORM_LINUX && !__EMSCRIPTEN__` 守卫，非 Linux/Emscripten
+  构建里编译为空 TU，对 Windows/Apple/Web/Android 零影响。
+
+**⚠️ 未真机实测（诚实定位）**：本机 WSL 被安全策略拦（`wsl.exe` 在黑名单、无注册 distro）、Windows 上无 X11
+SDK，无法编译或运行这段代码。实现严格镜像已 shipping 的 Windows/MacOS 后端接口契约，但 X11 的事件语义、
+XRandR 的主屏判定、xlib surface 与具体合成器/驱动的交互仍属"待真机验证"。
+
+**真机验证步骤**（在有 X11 的 Linux 桌面机器上）：
+1. `apt install libx11-dev libxrandr-dev`（或等价），确保 `VULKAN_SDK` 已设。
+2. `./build_linux.sh debug`（或 `cmake -B build-linux -S . && cmake --build build-linux`）——确认
+   `find_package(X11/Xrandr)` 通过、窗口层 TU 编译、`X11::X11 X11::Xrandr` 链接成功。
+3. 跑一个带窗口的示例（Vulkan 交换链）：确认窗口出现、能移动/缩放、点关闭走正常关闭链、键盘鼠标滚轮有响应。
+4. 多显示器：接第二块屏，把窗口拖到另一块屏，确认 `GetMonitorWorkAreaForWindow` 返回正确的屏、
+   FloatingPanel 不跨屏错位。
+5. 跑 `scripts/wsl_verify_linux.sh`：`RHIFactoryRegistrySmokeTest`（含 Vulkan 分支）应 PASS。
+6. 无头回落：`unset DISPLAY` 后跑 headless 工具/冒烟测试，`XOpenDisplay` 失败 → `Initialize` 返回 false →
+   工厂仍建 application 但无窗口，headless 目标正常跑。
 
 ## 关键设计决策
 

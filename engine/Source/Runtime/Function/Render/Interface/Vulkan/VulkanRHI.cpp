@@ -19,6 +19,13 @@
     // VK_USE_PLATFORM_ANDROID_KHR on its own when __ANDROID__ is set, so the
     // surface entry point is available without an extra define.
     #include <android/native_window.h>
+#elif defined(Z_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__)
+    // X11 + vkCreateXlibSurfaceKHR. vulkan/vulkan.h auto-defines
+    // VK_USE_PLATFORM_XLIB_KHR on __linux__, so the xlib surface entry point is
+    // available without an extra define. LinuxApplication/LinuxWindow store their
+    // X11 handles opaquely (void* / unsigned long) in the GenericWindow, so we
+    // cast through WindowSystem here without pulling Xlib into this TU's header.
+    #include <X11/Xlib.h>
 #endif
 
 // https://gcc.gnu.org/onlinedocs/cpp/Stringizing.html
@@ -112,11 +119,26 @@ static VkResult CreateVulkanSurface(VkInstance instance, GenericWindow* window, 
     createInfo.hwnd = hwnd;
     createInfo.hinstance = hinstance;
     return vkCreateWin32SurfaceKHR(instance, &createInfo, nullptr, outSurface);
-#elif defined(Z_PLATFORM_LINUX)
-    // Linux: 需要 X11 或 Wayland 支持
-    (void)instance; (void)window; (void)outSurface;
-    LOG_ERROR(ZVulkan, "Linux Vulkan surface creation not yet implemented (need X11/Wayland)");
-    return VK_ERROR_FEATURE_NOT_PRESENT;
+#elif defined(Z_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__)
+    // X11 xlib surface：Display* 由 LinuxApplication 持有（XOpenDisplay 一次，全
+    // 应用共享），经 WindowSystem->GetApplication()->GetNativeDisplay() 取回；窗口
+    // 句柄是 GenericWindow::GetNativeHandle() 里的 Window（unsigned long）。
+    // VulkanRHI.h 在 __linux__ 上已带 VK_USE_PLATFORM_XLIB_KHR，vkCreateXlibSurfaceKHR 可用。
+    auto* window_system = GET_SYSTEM(WindowSystem);
+    GenericApplication* app = window_system ? window_system->GetApplication() : nullptr;
+    Display* display = app ? static_cast<Display*>(app->GetNativeDisplay()) : nullptr;
+    Window xwindow = static_cast<Window>(
+        reinterpret_cast<unsigned long>(window->GetNativeHandle()));
+    if (display == nullptr || xwindow == 0)
+    {
+        LOG_ERROR(ZVulkan, "Linux: no X11 display/window for xlib surface (headless?)");
+        return VK_ERROR_FEATURE_NOT_PRESENT;
+    }
+    VkXlibSurfaceCreateInfoKHR createInfo{};
+    createInfo.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+    createInfo.dpy = display;
+    createInfo.window = xwindow;
+    return vkCreateXlibSurfaceKHR(instance, &createInfo, nullptr, outSurface);
 #elif defined(Z_PLATFORM_ANDROID)
     // Android: the host owns the ANativeWindow (NativeActivity / GameActivity).
     // There is no engine GenericWindow here -- CreatePlatformApplication()

@@ -86,6 +86,12 @@ public:
     // 查找包含指定窗口中心的显示器
     virtual MonitorInfo GetMonitorWorkAreaForWindow(GenericWindow* window) const = 0;
 
+    // 平台原生的"应用级显示句柄"，供 RHI 建 surface 用（Windows 不需要——它从
+    // HWND + GetModuleHandle 建 win32 surface；Linux 需要 Display* 建 xlib
+    // surface）。默认 nullptr；只有持有共享显示连接的后端（Linux/X11）覆写。
+    // 返回 void* 以保持本头文件跨后端无 X11 依赖。
+    virtual void* GetNativeDisplay() const { return nullptr; }
+
     // ===== 键盘/鼠标状态维护（由 WindowSystem::OnKey/OnMouseButton 调用）=====
     // action: 0 = RELEASE, 1 = PRESS, 2 = REPEAT (GLFW layout). Only RELEASE clears:
     // an auto-repeat event means the key is still held. (Treating REPEAT as a release

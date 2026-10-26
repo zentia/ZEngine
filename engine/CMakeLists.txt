@@ -194,6 +194,14 @@ if(ZENGINE_USE_VULKAN)
         "Link Vulkan SDK glslang/SPIRV static libraries for in-process runtime shader compilation"
         FORCE)
     message(STATUS "Linux: using system Vulkan (include=${Vulkan_INCLUDE_DIRS})")
+
+    # X11 窗口层（Platform/Linux/）+ Vulkan xlib surface 都需要 X11 + Xrandr。
+    # find_package 失败不致命：窗口层 .cpp 有 Z_PLATFORM_LINUX && !__EMSCRIPTEN__
+    # 守卫，缺 X11 时该 TU 编译为空；但链接期需要这些库，故找到才启用窗口层。
+    find_package(X11 REQUIRED)
+    find_package(Xrandr REQUIRED)
+    set(ZENGINE_LINUX_X11 ON)
+    message(STATUS "Linux: X11 window layer + xlib surface (X11 ${X11_VERSION})")
   else()
     message(FATAL_ERROR "Critical configuration VULKAN_SDK environment variable not set")
   endif()

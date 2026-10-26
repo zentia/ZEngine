@@ -1138,6 +1138,12 @@ function(configure_runtime_library target)
         endif()
     elseif(ZENGINE_USE_VULKAN)
         target_link_libraries(${target} PUBLIC ${vulkan_lib})
+        # Linux X11 窗口层 + xlib surface：X11::X11（Xlib）+ X11::Xrandr（多显示器）。
+        # 仅在 Linux 且 find_package 成功时链接（ZENGINE_LINUX_X11 由 engine/CMakeLists.txt
+        # 的 Linux 分支设置）。Emscripten 不链（窗口层 TU 编译为空）。
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND ZENGINE_LINUX_X11)
+            target_link_libraries(${target} PUBLIC X11::X11 X11::Xrandr)
+        endif()
     endif()
     if(WIN32)
         # DirectX 12 runtime libraries (always needed on Windows, regardless of Vulkan toggle)

@@ -50,6 +50,7 @@
 | C5 | ~~**Vulkan `MainCameraPass` 崩溃根因修复**~~ | 跨切面阻塞：解除 Vulkan 侧验证能力 | **✅ 已被 `7e5d2521` 修掉（2026-10-25 复核关闭）** | — | ★★★ 已关闭（见 §2 step 2.0） |
 | C6 | **Lumen 收尾（SSR → GPU 化）** | 动态 GI + 反射；取 SSR 一半 + 首个 Lumen shader | **✅ CPU 侧已完整**（GI/反射/接线/CVar/发布桥全落地 + 7 smoke test；2026-10-25 复核，见 §2 落地记录·2.7）。剩 SSR/HWRT/首个 shader 全 GPU 侧 | C2 的 GBuffer/depth 声明 | ★★ 中价值/高风险（CPU 侧无活，剩 GPU 放最后） |
 | C7 | **编辑器/内容管线填充**（低风险稳态轨） | 平台窗口化收尾 / Timeline 四片段 / Prefab §9.4 | 各为**部分实现·机械收尾**（**Timeline 四片段 2026-10-25 已落地**，见 `doc/timeline/TIMELINE_IMPLEMENTATION.md`“片段语义”；**Prefab §9.4 第 1 条落地、第 2 条对象图层已验**，见 `doc/PrefabSystem_Design.md` §9.4.1，顺带修 7 个真 bug；平台窗口化未动；**平台窗口化 2026-10-25 对代码核对**：Step 1-5 早已兑现（零 GLFW 引用），计划文档勾选已按代码更新；核对时修了 Win32 修饰键恒 0 / 拖放不派发 / Linux 原生 #error / Web 启动空指针等，见 `doc/platform_windowing_plan.md`；剩 Linux X11 窗口层与多显示器枚举） | — | ★★ 低风险填缝 |
+| C7b | **Linux X11 窗口层 + 多显示器枚举**（C7 收尾） | 原生 X11 后端 + XRandR 多屏 | **代码已落地·未真机实测**（2026-10-26，见 `doc/platform_windowing_plan.md`「Linux X11 落地记录」）：`Platform/Linux/LinuxWindow`+`LinuxApplication`（xlib 窗口/事件/剪贴板/光标）+ `vkCreateXlibSurfaceKHR`；XRandR 多显示器枚举（顺带覆盖 C7 的多屏子项）。工厂返回 `LinuxApplication`，CMake `find_package(X11/Xrandr)`+链接，窗口层 TU 用 `Z_PLATFORM_LINUX && !__EMSCRIPTEN__` 守卫。**本机 WSL 被安全策略拦、无 X11 SDK，未编译/运行**——按 Windows/MacOS 接口契约镜像，待 Linux 多屏真机按 doc 步骤验 | — | ★★ 中风险（未验证） |
 | — | **RHI 胖接口拆分**（阶段一 #9 遗留） | 124 纯虚 `RHI.h` 拆成职责子接口 | **未动手**（阶段一明确后置） | 触碰 4 后端 + 所有调用点 | ✗ **不建议进 Phase 2**（见 §3） |
 
 ---

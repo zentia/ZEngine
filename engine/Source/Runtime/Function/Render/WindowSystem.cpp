@@ -9,6 +9,8 @@
     #include "Platform/Windows/WindowsApplication.h"
 #elif Z_PLATFORM_MACOS
     #include "Platform/MacOS/MacOSApplication.h"
+#elif Z_PLATFORM_LINUX
+    #include "Platform/Linux/LinuxApplication.h"
 #endif
 
 // ============================================================================
@@ -36,12 +38,14 @@ static std::unique_ptr<GenericApplication> CreatePlatformApplication()
     // Z_PLATFORM_LINUX=1 from CMake's UNIX branch.
     return nullptr;
 #elif Z_PLATFORM_LINUX
-    // Linux desktop: no native window layer yet (X11 / Wayland is Step 6 of
-    // doc/platform_windowing_plan.md, and VulkanRHI's Linux surface creation is
-    // still a stub). Run without an engine-owned window -- enough for headless
-    // tools and smoke tests that link ZRuntime. Previously this fell through to
-    // the #error below, so no Linux build compiled WindowSystem.cpp at all.
-    return nullptr;
+    // Linux desktop: native X11 window layer (LinuxApplication + LinuxWindow, see
+    // Platform/Linux/). Creates an engine-owned window so VulkanRHI can attach a
+    // surface to it (CreateVulkanSurface uses vkCreateXlibSurfaceKHR). The .cpp is
+    // guarded by Z_PLATFORM_LINUX && !__EMSCRIPTEN__; on Emscripten this branch is
+    // never reached (the __EMSCRIPTEN__ branch above returns nullptr first) and the
+    // TU compiles to nothing. If XOpenDisplay fails (headless), Initialize() returns
+    // false and the caller runs without a window -- enough for headless tools.
+    return std::make_unique<LinuxApplication>();
 #else
     #error "CreatePlatformApplication: unsupported platform"
 #endif
