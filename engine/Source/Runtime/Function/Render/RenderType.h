@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Runtime/Core/Base/Hash.h"
+#include "Runtime/Function/ShaderLab/ShaderPropertyBlob.h"
+#include "Runtime/Function/ShaderLab/ShaderTextureSlot.h"
 
 #include <EASTL/string.h>
 #include <EASTL/vector.h>
@@ -1901,13 +1903,34 @@ struct MaterialSourceDesc
     eastl::string m_EmissiveFile;
     eastl::vector<eastl::string> m_EnabledShaderKeywords;
 
+    /// ShaderLab 2D 属性按槽位解析出来的贴图路径（下标 = 槽位 0..4）。
+    ///
+    /// 空串 = 这个槽没有自定义贴图，GPU 侧回落用上面那张对应的 PBR 贴图。
+    /// 于是"没有自定义 2D 属性的材质"五个槽全空，行为和以前完全一致。
+    ///
+    /// 必须进 operator== 和 getHashValue：换一张贴图要拿到**另一份**共享材质
+    /// 变体（和 keyword 变体同理），否则改了 SetTexture 却仍然命中旧材质的
+    /// 描述符集，画面不动。
+    eastl::string m_TextureSlotFiles[ZEngine::ShaderLab::k_MaterialTextureSlotCount];
+
     bool operator==(const MaterialSourceDesc& rhs) const
     {
-        return m_MaterialAsset == rhs.m_MaterialAsset && m_Shader == rhs.m_Shader &&
-               m_BaseColorFile == rhs.m_BaseColorFile &&
-               m_MetallicRoughnessFile == rhs.m_MetallicRoughnessFile && m_NormalFile == rhs.m_NormalFile &&
-               m_OcclusionFile == rhs.m_OcclusionFile && m_EmissiveFile == rhs.m_EmissiveFile &&
-               m_EnabledShaderKeywords == rhs.m_EnabledShaderKeywords;
+        if (!(m_MaterialAsset == rhs.m_MaterialAsset && m_Shader == rhs.m_Shader &&
+              m_BaseColorFile == rhs.m_BaseColorFile &&
+              m_MetallicRoughnessFile == rhs.m_MetallicRoughnessFile && m_NormalFile == rhs.m_NormalFile &&
+              m_OcclusionFile == rhs.m_OcclusionFile && m_EmissiveFile == rhs.m_EmissiveFile &&
+              m_EnabledShaderKeywords == rhs.m_EnabledShaderKeywords))
+        {
+            return false;
+        }
+        for (uint32_t i = 0; i < ZEngine::ShaderLab::k_MaterialTextureSlotCount; ++i)
+        {
+            if (m_TextureSlotFiles[i] != rhs.m_TextureSlotFiles[i])
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     size_t getHashValue() const
@@ -1924,6 +1947,10 @@ struct MaterialSourceDesc
         for (const eastl::string& keyword : m_EnabledShaderKeywords)
         {
             hash_combine(hash, keyword);
+        }
+        for (const eastl::string& file : m_TextureSlotFiles)
+        {
+            hash_combine(hash, file);
         }
         return hash;
     }
@@ -1985,7 +2012,103 @@ struct RenderShaderPropertyDesc
     eastl::string m_CbufferName;
 
     bool HasCbufferSlot() const { return m_CbufferOffset >= 0 && m_CbufferSize > 0; }
+
+    /// 2D 属性占用的材质描述符集贴图槽（0..4）。<0 = 不占槽。
+    ///
+    /// 由导入期按 Properties{} 里 2D 属性的声明顺序分配（ShaderLab/ShaderTextureSlot.h）。
+    /// 槽位复用内置那 5 张 PBR 贴图的 binding —— 没有为自定义 shader 另开槽。
+    int32_t m_TextureSlot {ZEngine::ShaderLab::k_NoTextureSlot};
+
+    bool HasTextureSlot() const
+    {
+        return m_TextureSlot >= 0 && m_TextureSlot < static_cast<int32_t>(ZEngine::ShaderLab::k_MaterialTextureSlotCount);
+    }
 };
+
+/// 把导入期反射出的属性表翻译成运行时用的"落点表 + 资产默认值字节"。
+///
+/// 只有落在 UnityPerMaterial 里、且能吃标量写入的属性才进落点表 —— 矩阵和越界的
+/// 属性直接丢掉。这不是偷懒：给它们一个猜出来的偏移，后果是 SetFloat 静默写坏邻
+/// 居的属性；丢掉则只是 SetFloat 返回 false，脚本能立刻发现。
+///
+/// `out_defaults` 的掩码会被清成 0：资产默认值**不是**"用户显式设过"，per-renderer
+/// 的 override 才知道哪些分量该盖上来。
+inline void BuildShaderPropertySlots(const std::vector<RenderShaderPropertyDesc>& properties,
+                                     std::vector<ZEngine::ShaderLab::ShaderPropertySlot>& out_slots,
+                                     ZEngine::ShaderLab::ShaderPropertyBlob& out_defaults)
+{
+    out_slots.clear();
+    out_defaults.Clear();
+
+    for (const RenderShaderPropertyDesc& property : properties)
+    {
+        if (!property.HasCbufferSlot())
+        {
+            continue;
+        }
+
+        ZEngine::ShaderLab::ShaderPropertySlot slot;
+        slot.name = property.m_Name.c_str();
+        slot.offset = static_cast<uint32_t>(property.m_CbufferOffset);
+        slot.size = property.m_CbufferSize;
+        slot.components = property.m_CbufferComponents;
+        if (slot.FloatCount() == 0)
+        {
+            continue;
+        }
+
+        float values[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        uint32_t value_count = 1;
+        if (property.m_Type == "Color" || property.m_Type == "Vector")
+        {
+            value_count = 4;
+            values[0] = property.m_DefaultColor[0];
+            values[1] = property.m_DefaultColor[1];
+            values[2] = property.m_DefaultColor[2];
+            values[3] = property.m_DefaultColor[3];
+        }
+        else if (property.m_Type == "Toggle" || property.m_Type == "Int")
+        {
+            values[0] = property.m_DefaultToggle ? 1.0f : 0.0f;
+        }
+        else
+        {
+            values[0] = property.m_DefaultFloat;
+        }
+
+        const uint32_t capacity = slot.FloatCount();
+        if (value_count > capacity)
+        {
+            value_count = capacity;
+        }
+
+        ZEngine::ShaderLab::WriteSlot(out_defaults, slot, values, value_count);
+        out_slots.push_back(std::move(slot));
+    }
+
+    out_defaults.mask = 0;
+}
+
+/// 把导入期反射出的 2D 属性翻译成"名字 -> 贴图槽"表。
+///
+/// 只收真正拿到槽的属性（第 6 张及以后、以及 Cube / 3D 一律不进表）。这条
+/// 表是脚本 SetTexture 唯一的依据：名字不在表里就返回 false。
+inline void BuildShaderTextureSlots(const std::vector<RenderShaderPropertyDesc>& properties,
+                                    std::vector<ZEngine::ShaderLab::ShaderTextureSlotBinding>& out_bindings)
+{
+    out_bindings.clear();
+    for (const RenderShaderPropertyDesc& property : properties)
+    {
+        if (!property.HasTextureSlot())
+        {
+            continue;
+        }
+        ZEngine::ShaderLab::ShaderTextureSlotBinding binding;
+        binding.name = property.m_Name.c_str();
+        binding.slot = property.m_TextureSlot;
+        out_bindings.push_back(std::move(binding));
+    }
+}
 
 struct RenderMaterialData
 {
@@ -2030,6 +2153,39 @@ struct RenderMaterialData
     std::shared_ptr<TextureData> m_NormalTexture;
     std::shared_ptr<TextureData> m_OcclusionTexture;
     std::shared_ptr<TextureData> m_EmissiveTexture;
+
+    /// ShaderLab 2D 属性逐槽的贴图（下标 = 槽位 0..4）。
+    ///
+    /// null = 这个槽没有自定义贴图。GPU 侧绑定时按槽回落到上面那五张 PBR 贴图
+    /// 之一（见 RenderResource::ResolveSlotTexture）—— 因为描述符集的 binding
+    /// 1..5 就是那五张，槽位是复用的，不存在"空槽"这种绑定。
+    std::shared_ptr<TextureData> m_TextureSlotTextures[ZEngine::ShaderLab::k_MaterialTextureSlotCount];
+
+    /// 槽位 -> 实际要绑的贴图。自定义槽为空时回落 PBR。
+    std::shared_ptr<TextureData> ResolveSlotTexture(uint32_t slot) const
+    {
+        if (slot >= ZEngine::ShaderLab::k_MaterialTextureSlotCount)
+        {
+            return nullptr;
+        }
+        if (m_TextureSlotTextures[slot] != nullptr)
+        {
+            return m_TextureSlotTextures[slot];
+        }
+        switch (slot)
+        {
+            case 0:
+                return m_BaseColorTexture;
+            case 1:
+                return m_MetallicRoughnessTexture;
+            case 2:
+                return m_NormalTexture;
+            case 3:
+                return m_OcclusionTexture;
+            default:
+                return m_EmissiveTexture;
+        }
+    }
 };
 
 template<>

@@ -3,6 +3,7 @@
 #include "Runtime/Core/Math/AxisAligned.h"
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Function/Render/MaterialCustomParamSlots.h"
+#include "Runtime/Function/ShaderLab/ShaderPropertyBlob.h"
 
 #include <cstdint>
 #include <vector>
@@ -40,4 +41,11 @@ public:
 
     /// 运行时属性块槽位。见 GameObjectMaterialDesc::m_CustomParams。
     Vector4 m_CustomParams[k_MaterialCustomParamCount] {};
+
+    /// ShaderLab 具名属性的**覆盖**字节。见 GameObjectMaterialDesc::m_PropertyBlob：
+    /// 那份是资产值，这份是 per-renderer 的 override，上传时按 mask 盖在资产值上。
+    ///
+    /// 落点表不在这里 —— 它由共享材质的 GpuPBRMaterial::property_slots 携带（同一
+    /// 个材质资产的所有 part 共用一份，没必要每个 part 拷一遍 std::vector）。
+    ZEngine::ShaderLab::ShaderPropertyBlob m_PropertyBlob;
 };

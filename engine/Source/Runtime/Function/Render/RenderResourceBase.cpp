@@ -117,6 +117,7 @@ namespace
         property.m_CbufferSize = source.m_CbufferSize;
         property.m_CbufferComponents = source.m_CbufferComponents;
         property.m_CbufferName = source.m_CbufferName;
+        property.m_TextureSlot = source.m_TextureSlot;
         return property;
     }
 
@@ -610,6 +611,18 @@ RenderMaterialData RenderResourceBase::LoadMaterialData(const MaterialSourceDesc
     ret.m_OcclusionTexture = LoadTexture(source.m_OcclusionFile);
     ret.m_EmissiveTexture = LoadTexture(source.m_EmissiveFile);
     ret.m_EnabledShaderKeywords = source.m_EnabledShaderKeywords;
+
+    // ShaderLab 2D 属性逐槽的贴图。空路径的槽直接留 nullptr（不要去 LoadTexture：
+    // 它会把空路径当成一张加载失败的贴图，打一堆 noise 日志），GPU 侧按槽回落
+    // PBR 贴图。槽 0 按 sRGB 读 —— 它是"主贴图"，和 m_BaseColorTexture 一个待遇。
+    for (uint32_t slot = 0; slot < ZEngine::ShaderLab::k_MaterialTextureSlotCount; ++slot)
+    {
+        if (source.m_TextureSlotFiles[slot].empty())
+        {
+            continue;
+        }
+        ret.m_TextureSlotTextures[slot] = LoadTexture(source.m_TextureSlotFiles[slot], slot == 0);
+    }
 
     ShaderRes shader_asset;
     std::filesystem::path shader_asset_path;

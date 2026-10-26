@@ -370,22 +370,21 @@ namespace
     void Dx12UploadMaterialources(RHI* rhi,
                                      RenderResource* resource,
                                      RenderEntity entity,
-                                     GpuPBRMaterial& material)
+                                     GpuPBRMaterial& material,
+                                     const RenderMaterialData& material_data)
     {
         if (rhi == nullptr || resource == nullptr || resource->m_MaterialDescriptorSetLayout == nullptr)
         {
             return;
         }
 
+        // 与 Vulkan 侧同一条规则：有 ShaderLab 具名属性就用反射出来的布局，没有就
+        // 用 MeshMaterialUniform 那套固定布局。后端不同不能导致 UBO 解释不同。
+        BuildShaderPropertySlots(material_data.m_Properties, material.property_slots, material.property_defaults);
+        material.shaderlab_property_layout = !material.property_slots.empty();
+
         MeshMaterialUniform ubo {};
-        ubo.is_blend = entity.m_Blend;
-        ubo.is_double_sided = entity.m_DoubleSided;
-        ubo.baseColorFactor = entity.m_BaseColorFactor;
-        ubo.metallicFactor = entity.m_MetallicFactor;
-        ubo.roughnessFactor = entity.m_RoughnessFactor;
-        ubo.normalScale = entity.m_NormalScale;
-        ubo.occlusionStrength = entity.m_OcclusionStrength;
-        ubo.emissiveFactor = entity.m_EmissiveFactor;
+        FillMaterialUniformBytes(material, entity, reinterpret_cast<uint8_t*>(&ubo));
 
         Dx12CreateGpuBufferFromStaging(rhi,
                                        sizeof(MeshMaterialUniform),
@@ -393,6 +392,14 @@ namespace
                                        &ubo,
                                        material.material_uniform_buffer);
 
+        // DX12 后端目前**不上传真实贴图**：五个槽一律是 1x1 白图（见下面五行）。
+        // 于是 ShaderLab 2D 属性在 DX12 上还没有落点 —— material_data 里的
+        // m_TextureSlotTextures 在这条路径上被忽略。
+        //
+        // 不是"忘了加"：给 DX12 补一条和 Vulkan 等价的贴图上传链（staging →
+        // D3D12 texture → SRV）是独立的工作量，而这条链路上现在连 PBR 贴图都
+        // 还没接。等那条链有了，这里要做的就是把上面那五行换成
+        // ApplyShaderLabTextureSlots 的同款覆盖。
         Dx12CreateWhiteTexture(rhi, material.base_color_texture_image, material.base_color_image_view);
         Dx12CreateWhiteTexture(rhi, material.metallic_roughness_texture_image, material.metallic_roughness_image_view);
         Dx12CreateWhiteTexture(rhi, material.normal_texture_image, material.normal_image_view);
@@ -958,7 +965,7 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
         material.shader_passes.emplace_back(std::move(runtime_shader_pass));
     }
 
-    Dx12UploadMaterialources(rhi, this, entity, material);
+    Dx12UploadMaterialources(rhi, this, entity, material, material_data);
     return material;
 }
 
@@ -970,19 +977,9 @@ void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, 
     }
 
     // ---- 1. uniform buffer：没有就建，有就只重写（重建 = 漏显存） ----
+    // 共享材质的默认值 + 这个 part 的 override，与 Vulkan 侧同一个 helper。
     MeshMaterialUniform ubo {};
-    ubo.is_blend = entity.m_Blend;
-    ubo.is_double_sided = entity.m_DoubleSided;
-    ubo.baseColorFactor = entity.m_BaseColorFactor;
-    ubo.metallicFactor = entity.m_MetallicFactor;
-    ubo.roughnessFactor = entity.m_RoughnessFactor;
-    ubo.normalScale = entity.m_NormalScale;
-    ubo.occlusionStrength = entity.m_OcclusionStrength;
-    ubo.emissiveFactor = entity.m_EmissiveFactor;
-    for (uint32_t param_index = 0; param_index < k_MaterialCustomParamCount; ++param_index)
-    {
-        ubo.customParams[param_index] = entity.m_CustomParams[param_index];
-    }
+    FillMaterialUniformBytes(instance, entity, reinterpret_cast<uint8_t*>(&ubo));
 
     const RHIDeviceSize buffer_size = sizeof(MeshMaterialUniform);
 

@@ -175,3 +175,49 @@ LumenRenderPassWiring（web 库里 `UpdateLumen` 不带 `Z_HAS_LUMEN`）、Deriv
 > **写测试时踩的坑**：别把 parser 当局部变量、只把 `&pass.programs[i]` 交出去 —— 解析结果随 parser 一起
 > 析构，指针立刻悬垂，症状是 `language` 字段读到随机值、`source_code` 为空，看起来像"反射坏了"。
 > 把 `shared_ptr<ShaderLabAsset>` 一路传出调用方持有。
+>
+> **2026-10-26 第八次（ShaderLab 属性写入 UBO）**：再加一个 `ShaderLabPropertyBlobTest`（56 项，
+> `ZENGINE_BUILD_SHADERLAB_PROPERTY_BLOB_TEST`，**不**链接 ZRuntime）。它钉住的是"属性名 -> 材质 UBO
+> 的哪几个字节、以及哪些 float 算被显式设过" —— 反射给出 offset 之后真正动手写的那一半。
+>
+> 关键不变量是**掩码按 float 记、不按属性记**：`SetFloat("_Amount", v)` 只能改那一个 float，不能顺手
+> 把同属性的其它分量冲成 0；`ApplyOverride` 也只能搬掩码标记过的 float，没被覆盖的分量继续跟着资产走。
+> 用例 F/G/H 钉的就是这个。另外被钉住的还有：越界落点（尾巴伸出 128 字节）**拒绝**而不是截断、矩阵 /
+> 数组（size > 16）走不了标量路径、`size % 4 != 0` 的落点直接拒。
+>
+> `ShaderPropertyBlob.h` 是 **header-only**，只依赖 `<cstring> / <string> / <vector>`。这不是风格偏好：
+> `Runtime/CMakeLists.txt` 在 Web / Apple 等配置下会把 `Function/ShaderLab/*.cpp` 整目录从 ZRuntime 里
+> 剔除，而 `RenderResourceBase.cpp` / `RenderResource.h` 是全配置都要编的 —— 带 .cpp 就会在那些配置上
+> 链接不到符号。所以它一条 `clang++ -std=c++23 -I engine/Source` 就能编出来跑：
+>
+> ```bash
+> SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+> c++ -std=c++23 -isysroot $SDK -I engine/Source -Wall \
+>     -o /tmp/ShaderLabPropertyBlobTest \
+>     engine/Source/Runtime/Function/ShaderLab/Test/ShaderLabPropertyBlobTest.cpp
+> /tmp/ShaderLabPropertyBlobTest
+> ```
+>
+> **2026-10-26 第九次（ShaderLab 贴图槽）**：再加一个 `ShaderLabTextureSlotTest`（44 项，
+> `ZENGINE_BUILD_SHADERLAB_TEXTURE_SLOT_TEST`，同样**不**链接 ZRuntime）。它钉住的是"2D 属性名字 ->
+> 材质描述符集的哪个贴图 binding"，也就是 `SetTexture("_BumpMap", t)` 的 CPU 那一半。
+>
+> 被钉住的规则是**按 `Properties{}` 里 2D 属性的声明顺序分配 0..4**：非 2D 属性不占槽、也不推动计数器
+> （用例 B），Cube / 3D 同样不占槽（D），第 6 张及以后拿 `k_NoTextureSlot` 并计入 overflow（C），
+> 越界读取安全（F）。代价也被钉住了 —— 改声明顺序会换槽位（E），以及上限就是 5（C、H）。
+>
+> 为什么是"复用现有 binding 1..5"而不是另开槽：材质描述符集一共 6 个 binding（0 = UBO，1..5 = 那五张
+> PBR 贴图），`VulkanRHI::CreateDescriptorPool()` 里 `COMBINED_IMAGE_SAMPLER = 3 + 5 * m_MaxMaterialCount`
+> 是硬上限，bindless 又要求调用方先 `supportsBindlessTextures()` 守卫而不能拿来兜底。于是零描述符改动、
+> 零池改动，代价就是上面的 5 张上限。
+>
+> `ShaderTextureSlot.h` 和 `ShaderPropertyBlob.h` 一样是 header-only（`Function/ShaderLab/*.cpp` 在
+> Web / Apple 配置下会被整目录剔除），一条命令就能跑：
+>
+> ```bash
+> SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk
+> c++ -std=c++23 -isysroot $SDK -I engine/Source -Wall \
+>     -o /tmp/ShaderLabTextureSlotTest \
+>     engine/Source/Runtime/Function/ShaderLab/Test/ShaderLabTextureSlotTest.cpp
+> /tmp/ShaderLabTextureSlotTest
+> ```

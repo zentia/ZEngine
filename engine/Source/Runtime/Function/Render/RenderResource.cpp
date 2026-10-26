@@ -32,6 +32,7 @@
     #include "Runtime/Function/Render/RenderSystem.h"
     #include "Runtime/Profiler/Profiler.h"
 
+    #include <cstring>
     #include <stdexcept>
 
 namespace
@@ -101,6 +102,7 @@ namespace
 #endif
         CreateAssetBuffer(rhi, buffer_info, buffer, allocation);
     }
+
 }  // namespace
 
 void RenderResource::clear()
@@ -658,6 +660,15 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
             now_material.shader_passes.emplace_back(std::move(runtime_shader_pass));
         }
 
+        // ShaderLab 具名属性：shader 声明了哪些属性、各自落在 UBO 的第几个字节、
+        // 资产侧保存的值是多少。内置 StandardLit 的 m_Properties 为空，于是
+        // shaderlab_property_layout 保持 false，继续走 MeshMaterialUniform 那套
+        // 固定布局 —— 两种布局共用同一块 128 字节，绝不能同时生效。
+        BuildShaderPropertySlots(material_data.m_Properties,
+                                 now_material.property_slots,
+                                 now_material.property_defaults);
+        now_material.shaderlab_property_layout = !now_material.property_slots.empty();
+
         // similiarly to the vertex/index buffer, we should allocate the uniform
 
         // buffer in DEVICE_LOCAL memory and use the temp stage buffer to copy the
@@ -680,16 +691,12 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
             void* staging_buffer_data = nullptr;
             rhi->MapMemory(inefficient_staging_buffer_memory, 0, buffer_size, 0, &staging_buffer_data);
 
-            MeshMaterialUniform& material_uniform_buffer_info =
-                (*static_cast<MeshMaterialUniform*>(staging_buffer_data));
-            material_uniform_buffer_info.is_blend = entity.m_Blend;
-            material_uniform_buffer_info.is_double_sided = entity.m_DoubleSided;
-            material_uniform_buffer_info.baseColorFactor = entity.m_BaseColorFactor;
-            material_uniform_buffer_info.metallicFactor = entity.m_MetallicFactor;
-            material_uniform_buffer_info.roughnessFactor = entity.m_RoughnessFactor;
-            material_uniform_buffer_info.normalScale = entity.m_NormalScale;
-            material_uniform_buffer_info.occlusionStrength = entity.m_OcclusionStrength;
-            material_uniform_buffer_info.emissiveFactor = entity.m_EmissiveFactor;
+            // 共享材质走的是"资产默认值"这一档：per-part 的 override 属于材质实例，
+            // 见 MaterializeMaterialInstance 里同一个 helper。
+            if (staging_buffer_data != nullptr)
+            {
+                FillMaterialUniformBytes(now_material, entity, static_cast<uint8_t*>(staging_buffer_data));
+            }
 
             rhi->UnmapMemory(inefficient_staging_buffer_memory);
 
@@ -710,6 +717,45 @@ GpuPBRMaterial& RenderResource::GetOrCreateMaterial(RHI* rhi,
             // release staging buffer
             rhi->DestroyBuffer(inefficient_staging_buffer);
             rhi->FreeMemory(inefficient_staging_buffer_memory);
+        }
+
+        // ShaderLab 2D 属性逐槽覆盖上传源。槽位是复用 binding 1..5 的，所以这里
+        // 改的是"往哪个 image view 上传哪张图"，描述符集结构一点没动。空槽保留
+        // 上面那张 PBR 贴图（含 1x1 empty_image 兜底）。
+        {
+            MaterialSlotTextureSource slot_sources[ZEngine::ShaderLab::k_MaterialTextureSlotCount] {
+                {base_color_image_pixels, base_color_image_width, base_color_image_height, base_color_image_format},
+                {metallic_roughness_image_pixels,
+                 metallic_roughness_width,
+                 metallic_roughness_height,
+                 metallic_roughness_format},
+                {normal_roughness_image_pixels,
+                 normal_roughness_width,
+                 normal_roughness_height,
+                 normal_roughness_format},
+                {occlusion_image_pixels, occlusion_image_width, occlusion_image_height, occlusion_image_format},
+                {emissive_image_pixels, emissive_image_width, emissive_image_height, emissive_image_format}};
+            ApplyShaderLabTextureSlots(material_data, slot_sources);
+            base_color_image_pixels = slot_sources[0].pixels;
+            base_color_image_width = slot_sources[0].width;
+            base_color_image_height = slot_sources[0].height;
+            base_color_image_format = slot_sources[0].format;
+            metallic_roughness_image_pixels = slot_sources[1].pixels;
+            metallic_roughness_width = slot_sources[1].width;
+            metallic_roughness_height = slot_sources[1].height;
+            metallic_roughness_format = slot_sources[1].format;
+            normal_roughness_image_pixels = slot_sources[2].pixels;
+            normal_roughness_width = slot_sources[2].width;
+            normal_roughness_height = slot_sources[2].height;
+            normal_roughness_format = slot_sources[2].format;
+            occlusion_image_pixels = slot_sources[3].pixels;
+            occlusion_image_width = slot_sources[3].width;
+            occlusion_image_height = slot_sources[3].height;
+            occlusion_image_format = slot_sources[3].format;
+            emissive_image_pixels = slot_sources[4].pixels;
+            emissive_image_width = slot_sources[4].width;
+            emissive_image_height = slot_sources[4].height;
+            emissive_image_format = slot_sources[4].format;
         }
 
         // Mip counts come from the cooked TextureData (cooked Texture2D carries a
@@ -882,19 +928,10 @@ void RenderResource::MaterializeMaterialInstance(RHI* rhi, RenderEntity entity, 
         rhi->MapMemory(staging_buffer_memory, 0, buffer_size, 0, &staging_data);
         if (staging_data != nullptr)
         {
-            MeshMaterialUniform& uniform = *static_cast<MeshMaterialUniform*>(staging_data);
-            uniform.is_blend = entity.m_Blend;
-            uniform.is_double_sided = entity.m_DoubleSided;
-            uniform.baseColorFactor = entity.m_BaseColorFactor;
-            uniform.metallicFactor = entity.m_MetallicFactor;
-            uniform.roughnessFactor = entity.m_RoughnessFactor;
-            uniform.normalScale = entity.m_NormalScale;
-            uniform.occlusionStrength = entity.m_OcclusionStrength;
-            uniform.emissiveFactor = entity.m_EmissiveFactor;
-            for (uint32_t param_index = 0; param_index < k_MaterialCustomParamCount; ++param_index)
-            {
-                uniform.customParams[param_index] = entity.m_CustomParams[param_index];
-            }
+            // 与共享材质同一个 helper，但这里多一层 per-renderer 的 override：
+            // instance.property_defaults 是资产值，entity.m_PropertyBlob 是脚本
+            // SetFloat 设的，按 float 掩码盖上去。
+            FillMaterialUniformBytes(instance, entity, static_cast<uint8_t*>(staging_data));
         }
         rhi->UnmapMemory(staging_buffer_memory);
 

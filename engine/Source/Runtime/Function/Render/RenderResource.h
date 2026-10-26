@@ -11,6 +11,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <vector>
@@ -304,6 +305,85 @@ private:
 // 这段刻意内联在头文件里：RenderResource.cpp（Vulkan / Metal / WebGL2）和
 // RenderResourceDx12.cpp 各自被平台宏守卫着，而"要不要建实例、建完怎么复用"这段
 // 逻辑与后端无关，必须两个平台都编到。真正与后端相关的只有下面两个私有方法。
+
+/// 材质 UBO 只有 128 字节，ShaderLab 的具名属性就落在这同一块里 —— 改
+/// MeshMaterialUniform 必须同步改 k_ShaderPropertyBlobBytes，否则反射算出来的
+/// offset 会指到 buffer 外面去。
+static_assert(sizeof(MeshMaterialUniform) == ZEngine::ShaderLab::k_ShaderPropertyBlobBytes,
+              "MeshMaterialUniform and the ShaderLab property blob must be the same size");
+
+/// 把材质 UBO 的 128 个字节填进 `out_bytes`。
+///
+/// 两种布局二选一，由 `material.shaderlab_property_layout` 决定：
+///   · false（内置 StandardLit）= MeshMaterialUniform 那套固定字段；
+///   · true（自定义 ShaderLab）= shader 自己 CBUFFER_START(UnityPerMaterial) 声明
+///     出来的布局，属性按导入期反射出的 offset 落位，资产默认值打底、per-renderer
+///     的 override 盖在上面。
+///
+/// 同一块字节按两套布局解释会**静默**读错（比如把 `_Amount` 当成 metallicFactor
+/// 读走），所以这个开关只能由材质数据给，绝不能猜。
+inline void FillMaterialUniformBytes(const GpuPBRMaterial& material, const RenderEntity& entity, uint8_t* out_bytes)
+{
+    std::memset(out_bytes, 0, ZEngine::ShaderLab::k_ShaderPropertyBlobBytes);
+
+    if (material.shaderlab_property_layout)
+    {
+        ZEngine::ShaderLab::ShaderPropertyBlob final_blob = material.property_defaults;
+        ZEngine::ShaderLab::ApplyOverride(entity.m_PropertyBlob, final_blob);
+        std::memcpy(out_bytes, final_blob.bytes, ZEngine::ShaderLab::k_ShaderPropertyBlobBytes);
+        return;
+    }
+
+    MeshMaterialUniform& ubo = *reinterpret_cast<MeshMaterialUniform*>(out_bytes);
+    ubo.is_blend = entity.m_Blend;
+    ubo.is_double_sided = entity.m_DoubleSided;
+    ubo.baseColorFactor = entity.m_BaseColorFactor;
+    ubo.metallicFactor = entity.m_MetallicFactor;
+    ubo.roughnessFactor = entity.m_RoughnessFactor;
+    ubo.normalScale = entity.m_NormalScale;
+    ubo.occlusionStrength = entity.m_OcclusionStrength;
+    ubo.emissiveFactor = entity.m_EmissiveFactor;
+    for (uint32_t param_index = 0; param_index < k_MaterialCustomParamCount; ++param_index)
+    {
+        ubo.customParams[param_index] = entity.m_CustomParams[param_index];
+    }
+}
+
+/// 一个贴图槽的上传源：像素 + 尺寸 + 格式。
+struct MaterialSlotTextureSource
+{
+    void* pixels {nullptr};
+    uint32_t width {1};
+    uint32_t height {1};
+    RHIFormat format {RHIFormat::RHI_FORMAT_R8G8B8A8_UNORM};
+};
+
+/// ShaderLab 2D 属性逐槽盖在 PBR 五张贴图之上。
+///
+/// 槽位是**复用** binding 1..5 的（材质描述符集只有 6 个 binding，没有为自定义
+/// shader 另开槽，见 ShaderTextureSlot.h），所以覆盖必须发生在"上传源"这一层：
+/// 描述符集的 layout、绑定顺序、池大小全都不用动。
+///
+/// 空的槽不动 —— 那个槽继续用对应的 PBR 贴图。于是"没有 2D 属性的材质"五个槽
+/// 全空，行为和加这个功能之前一模一样。
+inline void ApplyShaderLabTextureSlots(const RenderMaterialData& material_data,
+                                       MaterialSlotTextureSource (&slots)[ZEngine::ShaderLab::k_MaterialTextureSlotCount])
+{
+    for (uint32_t slot = 0; slot < ZEngine::ShaderLab::k_MaterialTextureSlotCount; ++slot)
+    {
+        const std::shared_ptr<TextureData>& texture = material_data.m_TextureSlotTextures[slot];
+        if (texture == nullptr || texture->m_Pixels == nullptr)
+        {
+            continue;
+        }
+        slots[slot].pixels = texture->m_Pixels;
+        slots[slot].width = static_cast<uint32_t>(texture->m_Width);
+        slots[slot].height = static_cast<uint32_t>(texture->m_Height);
+        slots[slot].format = texture->m_Format;
+    }
+}
+
+
 inline void RenderResource::UploadGameObjectMaterialInstance(RHI* rhi, RenderEntity render_entity)
 {
     if (rhi == nullptr || render_entity.m_MaterialInstanceId == 0)

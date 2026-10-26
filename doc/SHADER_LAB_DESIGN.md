@@ -773,6 +773,101 @@ public:
 };
 ```
 
+### 8.4 运行时属性链路（属性名 -> UBO 字节）
+
+自定义 shader 的具名属性要在运行时真的能改，得走完下面这条链。缺任何一环，
+`SetFloat("_你自己写的属性", v)` 就只能靠引擎写死的名字表（`MaterialCustomParamNames.h`），
+项目加不了新属性名。
+
+```
+.shader 源码
+  │  ShaderImporter：解析 Properties{} + CBUFFER_START(UnityPerMaterial)
+  │  ShaderCbufferReflection：文本反射算出每个属性的字节偏移
+  ▼
+ShaderRes::ShaderPropertyDesc  —— m_CbufferOffset / m_CbufferSize / m_CbufferComponents
+  │  RenderResourceBase::LoadMaterialData
+  ▼
+RenderMaterialData::m_Properties  （RenderShaderPropertyDesc）
+  │  RenderResource::GetOrCreateMaterial → BuildShaderPropertySlots
+  ▼
+GpuPBRMaterial::property_slots / property_defaults / shaderlab_property_layout
+  │  FillMaterialUniformBytes：默认值打底 + per-renderer override 盖上去
+  ▼
+材质 UBO（set = 2, binding = 0，128 字节）
+```
+
+**UBO 契约**（写自定义 shader 时必须遵守，否则 CPU 写的字节会被 shader 按错的 offset 读走）：
+
+| 项 | 值 |
+|---|---|
+| 绑定 | `layout(set = 2, binding = 0)` （与内置 `MeshMaterialUniform` 同一个槽位）—— 自定义 shader 的 PSO 复用内置那条 pipeline layout，没有第二个材质 UBO |
+| 大小 | 128 字节（`sizeof(MeshMaterialUniform)`，两侧有 `static_assert` 钉住） |
+| 打包 | **std140**（GLSL）；同名声明在 HLSL cbuffer 规则下 offset 会不一样，反射按 `m_SourceLanguage` 选规则 |
+| 起始偏移 | 从 **0** 开始 —— 这块 UBO 全部由上面那张落点表解释，不再按 `MeshMaterialUniform` 的固定字段解释 |
+
+两种布局**互斥**，由 `GpuPBRMaterial::shaderlab_property_layout` 决定：内置 StandardLit 用固定
+字段布局，自定义 ShaderLab 用反射布局。同一块字节按两套布局解释会静默读错，所以这个开关只能
+由材质数据给（有带 cbuffer 落点的属性就为 true），不能猜。
+
+能被脚本直接写的属性是**标量 / 二维 / 三维 / 四维**（size ≤ 16 字节）。矩阵和数组走不了标量
+路径 —— 一次 `SetFloat` 表达不了它们的值，写前几个 float 只是写出个半截矩阵，所以落点直接丢掉，
+`SetFloat` 对它们返回 false（比写坏邻居好）。
+
+**两条名字表**：`BaseRenderer::SetFloat` 先查 ShaderLab 反射表（名字和偏移都来自 .shader 自己），
+没命中再回落 `MaterialCustomParamNames.h` 那张写死的表。于是项目加新属性名不用改引擎，改 .shader
+就行。时序前提：反射表要读 `m_LastMaterialDescs`（`BuildRenderParts` 刷的缓存），第一次
+`SubmitRenderState` 之前查不到，会暂时回落到写死的那张表。
+
+### 8.5 贴图属性链路（2D 属性 -> 描述符集槽位）
+
+`2D` 是 `Properties{}` 里最常见的类型，但它的落点与标量完全不同：贴图不在 UBO 里，在描述符集里。
+
+```
+.shader 的 Properties{}
+  │  ShaderImporter：按 **2D 属性的声明顺序**分配 0..4
+  ▼
+ShaderRes::ShaderPropertyDesc::m_TextureSlot   （-1 = 不占槽）
+  │  RenderResourceBase::LoadMaterialData
+  ▼
+RenderMaterialData::m_Properties（m_TextureSlot 跟着走）
+  │  BaseRenderer::populateMaterialDesc → BuildMaterialTextureSlots
+  │    名字 -> 槽位表进 GameObjectMaterialDesc::m_TextureProperties
+  │    槽位 -> 贴图路径进 GameObjectMaterialDesc::m_TextureSlotFiles
+  │      取值优先级：材质资产保存的同名贴图 PPtr > shader 的默认贴图 > 空
+  ▼
+RenderScene::BuildMaterialSourceDesc → MaterialSourceDesc::m_TextureSlotFiles[5]
+  │  进 operator== 与 getHashValue（换贴图 = 另一份共享材质变体）
+  ▼
+RenderResourceBase::LoadMaterialData → m_TextureSlotTextures[5]
+  │  GetOrCreateMaterial → ApplyShaderLabTextureSlots
+  ▼
+材质描述符集 binding 1..5（空槽回落那张对应的 PBR 贴图）
+```
+
+**为什么复用 binding 1..5 而不是另开槽**：
+
+| 约束 | 事实 |
+|---|---|
+| 描述符集 | 材质描述符集一共 6 个 binding：0 = UBO，1..5 = base_color / metallic_roughness / normal / occlusion / emissive，写死在 `MainCameraPass` |
+| 描述符池 | `VulkanRHI::CreateDescriptorPool()` 里 `COMBINED_IMAGE_SAMPLER = 3 + 5 * m_MaxMaterialCount` —— 加一个槽就要同步改这个乘数，而 layout 是所有材质共用的一份 |
+| bindless | `RHIBindlessTextureManager` 的注释要求调用方先 `supportsBindlessTextures()` 守卫，后端不一定支持，不能拿来兜底 |
+
+**代价（写自定义 shader 时必须知道）**：
+
+1. **一个 shader 最多 5 张 2D 贴图**。第 6 张及以后拿不到槽（`m_TextureSlot = -1`，导入期会
+   `LOG_WARNING`），脚本 `SetTexture` 对它们返回 false。
+2. **改 `Properties{}` 里 2D 属性的声明顺序会换槽位**。换槽不是静默错 —— 槽位是导入期算好存进
+   资产的，GLSL 侧的 binding 声明跟着同一张表走；但改了顺序就得重新导入，别指望热重载。
+3. **Cube / 3D 属性不占槽**（描述符集里没有对应的 binding）。
+
+**脚本侧完全具名**：`SetTexture("_BumpMap", "Textures/rock.asset")` 不用管它在第几槽。名字 -> 槽位
+的翻译两张表，与 `SetFloat` 同一套思路：先查 shader 自己声明的 2D 属性（导入期分配的槽位），没命中
+再查 `FindBuiltinTextureSlot` 的内置别名（`_MainTex` / `_BumpMap` / `_EmissionMap` ...）。两张表都不
+认识就返回 false。
+
+换贴图**不要** per-part 材质实例：`MaterialSourceDesc::getHashValue()` 已经把五槽路径计入，于是拿到
+另一份共享材质变体，与 keyword 变体同理，合批不受影响。
+
 ---
 
 ## 九、总结

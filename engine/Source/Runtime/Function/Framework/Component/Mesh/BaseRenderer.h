@@ -104,15 +104,28 @@ public:
 
     // ---- 运行时属性块 ----------------------------------------------------
     //
-    // Unity 的 `renderer.material.SetFloat("_DissolveAmount", v)`。差别是 ZEngine
-    // 这里**属性名是引擎写死的**（MaterialCustomParamNames.h 那张表），项目加不了
-    // 新名字 —— 名字到 UBO offset 的绑定本来该由 shader 反射数据给出，而现在没有
-    // 那条数据。想加新属性名得改那张表 + 在内置 shader 里写消费代码。
+    // Unity 的 `renderer.material.SetFloat("_DissolveAmount", v)`。
+    //
+    // 现在有**两条**名字 -> UBO 偏移的路：
+    //   1. ShaderLab 反射表 —— 名字和偏移都来自 .shader 自己声明的
+    //      `Properties {}` + `CBUFFER_START(UnityPerMaterial)`，导入期算好存进
+    //      ShaderRes，运行时由 populateMaterialDesc 搬到
+    //      GameObjectMaterialDesc::m_ShaderProperties。**项目加新属性名不用改引擎**，
+    //      改 .shader 就行。
+    //   2. MaterialCustomParamNames.h 那张写死的表 —— 内置 shader 的老路子，名字
+    //      加不了，只在第 1 条没命中时回落。
+    //
+    // 先查 1 再查 2，于是自定义 shader 的属性名不会撞上内置那几个写死的槽位。
     //
     // setter 返回 bool：**名字认不认识**。打错名字静默失败最难查，返回 bool 让
     // 脚本能立刻发现（Unity 的 SetFloat 返回 void，这里故意不一样）。
     //
     // 名字不认识 / slot 越界都是静默忽略，不崩不抛。
+    //
+    // 一个时序前提：第 1 条路要读 m_LastMaterialDescs（BuildRenderParts 刷的那份
+    // 缓存），所以第一次 SubmitRenderState 之前查不到 shader 属性名，会暂时回落
+    // 到第 2 条。PostLoadResource / SetSubMeshes 都会 SubmitRenderState，脚本能
+    // 拿到 renderer 时缓存已经在。
 
     ZFUNCTION()
     bool SetFloat(int slot, const eastl::string& name, float value);
@@ -133,9 +146,34 @@ public:
     ZFUNCTION()
     Vector4 GetColor(int slot, const eastl::string& name) const;
 
-    /// 撤掉这个槽位上全部自定义槽位的值（8 个标量不受影响）。
+    /// 撤掉这个槽位上全部自定义槽位的值（8 个标量不受影响，具名属性和贴图覆盖
+    /// 一并撤掉）。
     ZFUNCTION()
     void ClearCustomParams(int slot);
+
+    // ---- 贴图属性（per-renderer）----------------------------------------
+    //
+    // SetTexture("_MainTex", "Textures/rust.asset") —— 名字是 shader 在
+    // Properties{} 里声明的 2D 属性名（或内置 shader 的别名，见
+    // ShaderLab/ShaderTextureSlot.h 的 FindBuiltinTextureSlot）。
+    //
+    // 槽位是**复用**材质描述符集 binding 1..5 的：没有为自定义 shader 另开槽，
+    // 描述符池也就不用改（VulkanRHI 里 COMBINED_IMAGE_SAMPLER 是按 5 张算的）。
+    // 代价是一个 shader 最多 5 张 2D 贴图，且改 .shader 里属性的**声明顺序**会
+    // 换槽位（导入期重算，GLSL 侧的 binding 跟着变，不会静默读错）。
+    //
+    // 换贴图拿到的是另一份**共享**材质变体（MaterialSourceDesc::getHashValue 已
+    // 把五槽路径计入），不是 per-part 实例 —— 与 keyword 同一个道理，合批不受
+    // 影响。但每次换贴图都要重新上传一次贴图，别在每帧调用。
+
+    /// `texture_asset` 用项目相对路径（与 m_SharedMaterialAssets 同一套约定）。
+    /// 名字不认识返回 false；传空串表示"这个槽不要自定义贴图"（回落 PBR）。
+    ZFUNCTION()
+    bool SetTexture(int slot, const eastl::string& name, const eastl::string& texture_asset);
+    /// 当前生效的贴图路径。override 返回脚本设的原值，否则返回资产解析后的路径。
+    /// 名字不认识返回空串。
+    ZFUNCTION()
+    eastl::string GetTexture(int slot, const eastl::string& name) const;
 
     // ---- shader keyword（per-renderer）-----------------------------------
     //

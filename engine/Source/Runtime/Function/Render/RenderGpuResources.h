@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Function/Render/RenderGPUResource.h"
+#include "Runtime/Function/ShaderLab/ShaderPropertyBlob.h"
 
 #if defined(Z_HAS_VULKAN)
     #include <vma/vk_mem_alloc.h>
@@ -113,6 +114,20 @@ struct GpuPBRMaterial : RenderMaterialGPUResource
 
     std::map<std::string, std::string> shader_macros;
     std::vector<GpuShaderPassData> shader_passes;
+
+    // ---- ShaderLab 具名属性 ------------------------------------------------
+    //
+    // 内置 StandardLit 材质的 UBO 是 `MeshMaterialUniform` 那套固定布局（基础色 /
+    // 金属度 / ... / customParams[4]）；自定义 ShaderLab 材质的 UBO 则是
+    // **shader 自己 CBUFFER_START(UnityPerMaterial) 声明出来的布局**。两者互斥，
+    // 由 `shaderlab_property_layout` 区分 —— 同一块 128 字节按两套布局解释会静默
+    // 读错，所以这个开关必须由材质数据决定，不能猜。
+    //
+    // `property_defaults` 是"资产值打底"用的：材质实例每帧的 UBO = 它 + per-renderer
+    // override 盖上去（见 RenderResource::MaterializeMaterialInstance）。
+    bool shaderlab_property_layout {false};
+    std::vector<ZEngine::ShaderLab::ShaderPropertySlot> property_slots;
+    ZEngine::ShaderLab::ShaderPropertyBlob property_defaults;
 };
 
 inline GpuMesh* AsGpuMesh(RenderMeshGPUResource* resource)

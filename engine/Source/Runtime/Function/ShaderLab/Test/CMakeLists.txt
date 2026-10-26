@@ -294,6 +294,103 @@ if(ZENGINE_BUILD_SHADERLAB_CBUFFER_TEST)
 endif()
 
 # =====================================================================
+# ShaderLab property-blob smoke-test
+# ---------------------------------------------------------------------
+# Pins down "which bytes of the material UBO does this property name write",
+# the CPU half of `SetFloat("_WhateverYourShaderDeclared", v)`. Everything
+# downstream of it (staging buffer -> CopyBuffer -> descriptor set) needs a
+# GPU, so this is the only part of the write path verifiable without one.
+#
+#   cmake -B build -DZENGINE_BUILD_SHADERLAB_PROPERTY_BLOB_TEST=ON
+#   cmake --build build --target ShaderLabPropertyBlobTest
+#
+# Like the cbuffer test it does NOT link ZRuntime -- ShaderPropertyBlob.h is
+# header-only and depends on nothing but <cstring> / <string> / <vector>.
+# That is deliberate: it is pure CPU and must run on a host with no GPU and no
+# shader compiler. (It also has to survive the configurations that strip
+# Function/ShaderLab/*.cpp from ZRuntime -- see Runtime/CMakeLists.txt.)
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADERLAB_PROPERTY_BLOB_TEST
+       "Build the ShaderLab property-blob smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADERLAB_PROPERTY_BLOB_TEST)
+    set(_blob_target ShaderLabPropertyBlobTest)
+
+    add_executable(${_blob_target}
+        ShaderLabPropertyBlobTest.cpp
+    )
+
+    set_target_properties(${_blob_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # engine/Source is the root for "Runtime/Function/ShaderLab/..." includes.
+    target_include_directories(${_blob_target} PRIVATE ${ENGINE_ROOT_DIR}/Source)
+
+    if(MSVC)
+        target_compile_options(${_blob_target} PRIVATE /W4)
+    else()
+        target_compile_options(${_blob_target} PRIVATE -Wall)
+    endif()
+
+    add_test(NAME ${_blob_target} COMMAND ${_blob_target})
+
+    message(STATUS "Configured ShaderLab property-blob smoke-test: ${_blob_target}")
+endif()
+
+# =====================================================================
+# ShaderLab texture-slot smoke-test
+# ---------------------------------------------------------------------
+# Pins down "2D property -> which of the 5 material texture bindings", the
+# CPU half of `SetTexture("_BumpMap", t)`. The rule is **declaration order**
+# in Properties{}: the material descriptor set has 6 bindings (0 = UBO,
+# 1..5 = the five PBR textures) and the pool is sized `3 + 5 *
+# m_MaxMaterialCount`, so custom shaders reuse 1..5 instead of adding
+# bindings. That caps a shader at 5 textures and makes reordering
+# properties move slots -- both pinned by the test.
+#
+#   cmake -B build -DZENGINE_BUILD_SHADERLAB_TEXTURE_SLOT_TEST=ON
+#   cmake --build build --target ShaderLabTextureSlotTest
+#
+# Like the cbuffer / property-blob tests it does NOT link ZRuntime --
+# ShaderTextureSlot.h is header-only and depends on nothing but
+# <cstdint> / <string> / <vector>.
+# =====================================================================
+
+option(ZENGINE_BUILD_SHADERLAB_TEXTURE_SLOT_TEST
+       "Build the ShaderLab texture-slot smoke-test executable"
+       OFF)
+
+if(ZENGINE_BUILD_SHADERLAB_TEXTURE_SLOT_TEST)
+    set(_texslot_target ShaderLabTextureSlotTest)
+
+    add_executable(${_texslot_target}
+        ShaderLabTextureSlotTest.cpp
+    )
+
+    set_target_properties(${_texslot_target} PROPERTIES
+        CXX_STANDARD 23
+        FOLDER "Engine/Tests"
+    )
+
+    # engine/Source is the root for "Runtime/Function/ShaderLab/..." includes.
+    target_include_directories(${_texslot_target} PRIVATE ${ENGINE_ROOT_DIR}/Source)
+
+    if(MSVC)
+        target_compile_options(${_texslot_target} PRIVATE /W4)
+    else()
+        target_compile_options(${_texslot_target} PRIVATE -Wall)
+    endif()
+
+    add_test(NAME ${_texslot_target} COMMAND ${_texslot_target})
+
+    message(STATUS "Configured ShaderLab texture-slot smoke-test: ${_texslot_target}")
+endif()
+
+# =====================================================================
 # ShaderLab program-extract smoke-test
 # ---------------------------------------------------------------------
 # Pins down "which program block does a backend actually compile". A `.shader`
