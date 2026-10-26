@@ -140,3 +140,38 @@ LumenRenderPassWiring（web 库里 `UpdateLumen` 不带 `Z_HAS_LUMEN`）、Deriv
 >   链接时缺 `prefab_clone::CloneSubtree` / `logtail::Dump` / `NetworkSystem` 的 vtable。
 > - 链接**不要** `-force_load` 新归档：那会把 `RegisterRuntime.cpp.o` 拖进来，进而要
 >   `NetworkSystem` → curl 一整串外部符号。不加 `-force_load` 就能正常解析。
+
+> **2026-10-26 第七次（ShaderLab 运行时链路）**：新增 3 个 ShaderLab 测试，测"属性名 -> UBO 字节
+> 偏移"这条链路上此前完全没有被钉住的部分。
+>
+> | 测试 | 项数 | CMake 开关 | 链接 ZRuntime |
+> |---|---|---|---|
+> | `ShaderLabCbufferReflectionTest` | 49 | `ZENGINE_BUILD_SHADERLAB_CBUFFER_TEST` | **否**（只编 `ShaderCbufferReflection.cpp`） |
+> | `ShaderLabProgramExtractTest` | 18 | `ZENGINE_BUILD_SHADERLAB_PROGRAM_EXTRACT_TEST` | 是 |
+> | `ShaderLabPropertyLayoutTest` | 21 | `ZENGINE_BUILD_SHADERLAB_PROPERTY_LAYOUT_TEST` | 是 |
+>
+> 分别钉住：常量缓冲的文本反射（std140 与 HLSL cbuffer 两套规则在同一份声明上**必须**算出不同
+> offset）、program 块按语言过滤提取（HLSLPROGRAM 归 DX12、GLSLPROGRAM 归 Vulkan，且 Cg 输出语义
+> 改写只作用于 HLSL）、以及 ShaderLab `Properties{}` 块与 `CBUFFER_START(UnityPerMaterial)` 块的
+> **对接**（这是 `SetFloat("_你自己写的属性", v)` 的前提 —— 两块此前各自可达，但从没人把它们连起来）。
+>
+> 三个都以 `*Test.cpp` 结尾而不是 `*SmokeTest.cpp`，所以 **web runner 不会自动发现**它们（自动发现
+> 规则是"在 `Test/` 目录、以 `SmokeTest.cpp` 结尾"）；这是有意的，它们靠本机原生跑。
+>
+> **本机跑它们的坑（比全库重编便宜得多）**：后两个虽然链接 ZRuntime，但只用到 ShaderLab 那几个 TU，
+> 不必重编整个库。取 `build/compile_commands.json` 里 `ShaderLabParser.cpp` 那条的 flag，编译
+> `ShaderLabParser / ShaderLabLexer / ShaderLabHlslExtract / ShaderLabSemanticRewrite /
+> ShaderLabSurface / ShaderLabVariant / ShaderLabIncludeProcessor / ShaderLabCbufferReflection`
+> 加测试本体即可直接链出可执行文件。三个必须处理的 flag：
+> - 去掉 `-c`（多个源文件一起编时 clang 报 "cannot specify -o when generating multiple output files"）。
+> - 去掉 PCH：`-Xclang -include-pch -Xclang <...>.pch` **和** `-Xclang -include -Xclang <...>cmake_pch.hxx`。
+>   后者尤其隐蔽 —— 它强制 include PCH 的源文件，于是照样报 "file has been modified since the
+>   precompiled header was built"，哪怕你已经把 `-include-pch` 摘掉了。
+> - 加 `-isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`。用默认值会撞上
+>   `MacOSX27.0.sdk` 的坏 tbd（`unknown architecture arm64e.x1-macos`）。
+>
+> 第一个（CBUFFER 反射）连 ZRuntime 都不用，一条 `clang++ -std=c++23 -I engine/Source` 加那两个文件即可。
+>
+> **写测试时踩的坑**：别把 parser 当局部变量、只把 `&pass.programs[i]` 交出去 —— 解析结果随 parser 一起
+> 析构，指针立刻悬垂，症状是 `language` 字段读到随机值、`source_code` 为空，看起来像"反射坏了"。
+> 把 `shared_ptr<ShaderLabAsset>` 一路传出调用方持有。
