@@ -4,6 +4,7 @@
 #include "Runtime/Core/Math/Matrix4.h"
 #include "Runtime/Core/Math/Vector3.h"
 #include "Runtime/Core/Math/Vector4.h"
+#include "Runtime/Function/Render/MaterialCustomParamSlots.h"
 #include "Runtime/Function/Render/RenderGPUResource.h"
 #include "Runtime/Function/Render/RenderType.h"
 
@@ -160,18 +161,52 @@ struct MeshDrawPerDrawcallVertexBlending
     Matrix4x4 joint_matrices[s_MeshVertexBlendingMaxJointCount * s_MeshPerDrawcallMaxInstanceCount];
 };
 
+// 描画一个 part 时的材质常量。成员顺序 / padding 必须与三套内置 shader 里的镜像
+// 声明**逐字节**对上：
+//   - Vulkan / Metal / WebGL：engine/shader/glsl/mesh_gbuffer.frag（std140）
+//   - DX12：engine/shader/hlsl/common/render_storage_structs.hlsli（cbuffer 打包）
+//
+// 改这里必须同步改那两处，否则 CPU 写进 UBO 的字节会被 shader 按错的 offset 读走。
+//
+// 两个容易踩的点：
+//   1. C++ 侧 Vector4 的对齐是 4 而不是 16，而 std140 下 vec4 必须落在 16 字节边界。
+//      is_double_sided 结束在 52，下一个 vec4 在 GPU 上从 **64** 开始 —— 所以下面
+//      那三个 _padding 不是可选的装饰，是布局的一部分。
+//   2. 别把 customParams 写成 `float customParams[16]`：std140 里 **数组元素的
+//      stride 会被撑到 vec4**，16 个 float 会占 256 字节而不是 64。用 vec4 数组，
+//      stride 天然就是 16。
 struct MeshMaterialUniform
 {
-    Vector4 baseColorFactor {0.0f, 0.0f, 0.0f, 0.0f};
+    Vector4 baseColorFactor {0.0f, 0.0f, 0.0f, 0.0f};  // offset 0
 
-    float metallicFactor = 0.0f;
-    float roughnessFactor = 0.0f;
-    float normalScale = 0.0f;
-    float occlusionStrength = 0.0f;
+    float metallicFactor = 0.0f;      // 16
+    float roughnessFactor = 0.0f;     // 20
+    float normalScale = 0.0f;         // 24
+    float occlusionStrength = 0.0f;   // 28
 
-    Vector3 emissiveFactor = {0.0f, 0.0f, 0.0f};
-    uint32_t is_blend = 0;
-    uint32_t is_double_sided = 0;
+    Vector3 emissiveFactor = {0.0f, 0.0f, 0.0f};  // 32（vec3 起始要 16 对齐）
+    uint32_t is_blend = 0;                        // 44
+    uint32_t is_double_sided = 0;                 // 48
+
+    // 52 -> 64。见上面第 1 点。
+    uint32_t _padding_0 = 0;  // 52
+    uint32_t _padding_1 = 0;  // 56
+    uint32_t _padding_2 = 0;  // 60
+
+    /// 运行时属性块的落点：4 个 vec4 = 16 个标量槽。
+    ///
+    /// 内置 shader 按**约定**消费它们（[0].x 溶解阈值、[0].y 边缘宽度、[1] 边缘
+    /// 颜色，见 shader/include/material_custom_params.h 与它的 HLSL 镜像）。
+    /// [2] / [3] 是留给项目的自留槽，shader 不解释。
+    ///
+    /// 脚本侧不直接碰下标 —— 走 `BaseRenderer::SetFloat("_DissolveAmount", v)`，
+    /// 由 `MaterialCustomParamNames` 那张静态表把名字翻成 (槽位, 分量)。
+    ///
+    /// 这不是 Unity 那种"任意 shader 的任意具名属性"：名字是引擎写死的，用户加不
+    /// 了新属性名。要那个得先通 ShaderLab 运行时 + 拿到属性元数据（见报告）。
+    Vector4 customParams[k_MaterialCustomParamCount] {};  // 64 / 80 / 96 / 112
+
+    // total 128
 };
 
 struct PointLightShadowPerFrame

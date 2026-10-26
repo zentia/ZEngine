@@ -2,6 +2,7 @@
 
 #include "Runtime/Core/Math/AxisAligned.h"
 #include "Runtime/Core/Math/Matrix4.h"
+#include "Runtime/Function/Render/MaterialCustomParamSlots.h"
 
 #include <cstdint>
 #include <vector>
@@ -36,4 +37,7 @@ public:
     float m_NormalScale {1.0f};
     float m_OcclusionStrength {1.0f};
     Vector3 m_EmissiveFactor {0.0f, 0.0f, 0.0f};
+
+    /// 运行时属性块槽位。见 GameObjectMaterialDesc::m_CustomParams。
+    Vector4 m_CustomParams[k_MaterialCustomParamCount] {};
 };

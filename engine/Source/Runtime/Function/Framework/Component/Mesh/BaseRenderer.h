@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Runtime/Function/Framework/Component/Component.h"
+#include "Runtime/Function/Framework/Component/Mesh/MaterialCustomParamNames.h"
 #include "Runtime/Function/Framework/Component/Mesh/MaterialInstanceOverride.h"
 #include "Runtime/Function/Render/RenderObject.h"
 #include "Runtime/Resource/ResType/Components/Mesh.h"
@@ -101,6 +102,68 @@ public:
     ZFUNCTION()
     bool HasMaterialOverride(int slot) const;
 
+    // ---- 运行时属性块 ----------------------------------------------------
+    //
+    // Unity 的 `renderer.material.SetFloat("_DissolveAmount", v)`。差别是 ZEngine
+    // 这里**属性名是引擎写死的**（MaterialCustomParamNames.h 那张表），项目加不了
+    // 新名字 —— 名字到 UBO offset 的绑定本来该由 shader 反射数据给出，而现在没有
+    // 那条数据。想加新属性名得改那张表 + 在内置 shader 里写消费代码。
+    //
+    // setter 返回 bool：**名字认不认识**。打错名字静默失败最难查，返回 bool 让
+    // 脚本能立刻发现（Unity 的 SetFloat 返回 void，这里故意不一样）。
+    //
+    // 名字不认识 / slot 越界都是静默忽略，不崩不抛。
+
+    ZFUNCTION()
+    bool SetFloat(int slot, const eastl::string& name, float value);
+    /// 名字不认识返回 0。
+    ZFUNCTION()
+    float GetFloat(int slot, const eastl::string& name) const;
+
+    ZFUNCTION()
+    bool SetVector(int slot, const eastl::string& name, const Vector4& value);
+    /// 名字不认识返回 (0,0,0,0)。
+    ZFUNCTION()
+    Vector4 GetVector(int slot, const eastl::string& name) const;
+
+    /// 与 SetVector 是同一个东西（颜色在这里就是一个 vec4），留着是为了对齐
+    /// Unity 的 SetColor 习惯。
+    ZFUNCTION()
+    bool SetColor(int slot, const eastl::string& name, const Vector4& value);
+    ZFUNCTION()
+    Vector4 GetColor(int slot, const eastl::string& name) const;
+
+    /// 撤掉这个槽位上全部自定义槽位的值（8 个标量不受影响）。
+    ZFUNCTION()
+    void ClearCustomParams(int slot);
+
+    // ---- shader keyword（per-renderer）-----------------------------------
+    //
+    // 溶解 / 描边这类效果光有标量是不够的 —— shader 得先编译进那个分支。开
+    // keyword 会换 PSO（不是改个 UBO 那么便宜），所以别在每帧调用。
+    //
+    // 没被显式提过的 keyword 继续跟随材质资产，这也是 Unity 的语义。
+    //
+    // **当前生效范围（重要）**：CPU 侧链路是通的 —— keyword 并进
+    // MaterialSourceDesc 的 hash，会拿到另一份共享材质变体。但"换 PSO"只在材质
+    // 走 ShaderLab 资产时发生（MainCameraPassShaderCommon.cpp:CanUseRuntimePrimary
+    // ShaderPass 要求 vertex/fragment_shader_file 非空）。内置 StandardLit 那条路
+    // 恒返回内置 default_pipeline，keyword 改不到实际编译的 shader。
+    // 也就是说：今天要让效果真的出现在内置 shader 上，用上面的自定义槽位（动态
+    // 分支读 customParams）而不是 keyword。等 ShaderLab 运行时链路通了，keyword
+    // 这套不用改就能生效。
+
+    ZFUNCTION()
+    void EnableKeyword(int slot, const eastl::string& keyword);
+    ZFUNCTION()
+    void DisableKeyword(int slot, const eastl::string& keyword);
+    /// 这个 keyword 在这个槽位上**生效**吗（override 优先，否则看资产）。
+    ZFUNCTION()
+    bool HasKeyword(int slot, const eastl::string& keyword) const;
+    /// 撤掉全部 keyword 覆盖，回到"完全跟随资产"。
+    ZFUNCTION()
+    void ClearKeywords(int slot);
+
     void PostLoadResource(GameObject* parent_object) override;
     void OnSerializedFieldsUpdated() override;
     void Tick(float delta_time) override;
@@ -125,6 +188,9 @@ private:
     /// 越界返回 nullptr。const 版本给 getter 用，非 const 版本给 setter 用。
     MaterialInstanceOverride* MutableOverrideAt(int slot);
     const MaterialInstanceOverride* OverrideAt(int slot) const;
+
+    /// EnableKeyword / DisableKeyword 的公共实现。
+    void SetKeywordEnabled(int slot, const eastl::string& keyword, bool enabled);
 
     ZPROPERTY()
     std::vector<SubMeshRes> m_SubMeshes;

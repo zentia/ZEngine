@@ -58,6 +58,13 @@ struct ParticleCollisionPerFrame
     float4x4 proj_inv_matrix;
 };
 
+// 布局必须与 CPU 侧 MeshMaterialUniform（Runtime/Function/Render/RenderCommon.h）
+// 和 GLSL 版（engine/shader/glsl/mesh_gbuffer.frag）逐字节一致。
+//
+// padding 写成三个独立的 uint 而不是 uint3：HLSL cbuffer 的打包规则是"变量不能
+// 跨越 16 字节寄存器边界"，一个 uint3 会被整体挪到下一个寄存器（offset 64），
+// 于是 custom_params 落到 80 —— 和 GLSL 的 std140 布局就错开了。拆成三个 uint
+// 它们能连续塞进寄存器 3（48/52/56/60），custom_params 才停在 64。
 struct MeshMaterialUniform
 {
     float4 base_color_factor;
@@ -68,4 +75,8 @@ struct MeshMaterialUniform
     float3 emissive_factor;
     uint is_blend;
     uint is_double_sided;
+    uint _padding_0;
+    uint _padding_1;
+    uint _padding_2;
+    float4 custom_params[4];
 };

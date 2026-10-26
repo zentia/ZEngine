@@ -569,6 +569,13 @@ list(REMOVE_ITEM SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Component/Mesh/Test/MaterialInstanceOverrideSmokeTest.cpp")
 list(REMOVE_ITEM REGULAR_SOURCE_FILES
      "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Component/Mesh/Test/MaterialInstanceOverrideSmokeTest.cpp")
+# Runtime property-block smoke-test main. Same carve-out rationale again: it
+# owns main(). Built only when ZENGINE_BUILD_MATERIAL_CUSTOM_PARAM_SMOKE_TEST=ON
+# (see Function/Framework/Component/Mesh/Test/CMakeLists.txt).
+list(REMOVE_ITEM SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Component/Mesh/Test/MaterialCustomParamSmokeTest.cpp")
+list(REMOVE_ITEM REGULAR_SOURCE_FILES
+     "${CMAKE_CURRENT_SOURCE_DIR}/Function/Framework/Component/Mesh/Test/MaterialCustomParamSmokeTest.cpp")
 # PR-SK1: skeletal skinning smoke-test main. Same carve-out rationale as every
 # entry above: it owns main() and must not be whole-archived into ZRuntime.
 # Built only when ZENGINE_BUILD_ANIMATION_SMOKE_TEST=ON (see

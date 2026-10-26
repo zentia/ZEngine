@@ -112,3 +112,31 @@ LumenRenderPassWiring（web 库里 `UpdateLumen` 不带 `Z_HAS_LUMEN`）、Deriv
 > 已在本机原生 macOS 上跑通（用 `build/compile_commands.json` 的 flag 编两个 .o 再手动链
 > `bin/libZRuntime.a`，绕过缺失的 cmake/ninja）：**36 项，exit 0**。web runner 会自动发现
 > （在 `Test/` 目录、以 `SmokeTest.cpp` 结尾），但本机没有 emcc，web 侧未实测。
+>
+> **2026-10-26 第六次**：新增 `MaterialCustomParamSmokeTest`，测"动态属性块"链路的 CPU 半边
+> —— 具名属性（`SetFloat("_DissolveAmount", v)`）落到正确的 `(customParams 槽位, 分量)`，
+> 以及 per-renderer keyword 覆盖并进 `m_EnabledShaderKeywords`。
+> 重点断言：**同槽位的兄弟分量不被踩**（`_DissolveAmount` 与 `_DissolveEdgeWidth` 共用
+> `customParams[0]`，按分量记掩码就是为这个）、**只开 keyword 不置 `m_UseMaterialInstance`**
+> （keyword 换的是共享材质变体，算进实例会白丢合批）、**keyword 覆盖顺序无关**
+> （`MaterialSourceDesc::getHashValue` 按序遍历 hash_combine，不排序会让同一集合产出两份
+> 内容相同的共享材质）。
+>
+> CMake 开关 `ZENGINE_BUILD_MATERIAL_CUSTOM_PARAM_SMOKE_TEST`（与材质实例那个共用
+> `zengine_add_mesh_smoke_test()` helper）。
+>
+> 已在本机原生 macOS 跑通：**49 项，exit 0**；同时回归 `MaterialInstanceOverrideSmokeTest`
+> **36 项，exit 0**。
+>
+> **本机跑它的坑（下次照抄）**：`bin/libZRuntime.a` 会停在某一时刻（这次是 09:50），比当前源码老，
+> 只把改动的那一个 TU 换进旧归档会 ODR 不一致 —— 表现是 `SetSubMeshes` 里 `eastl::string` 被从
+> 错的 offset 读出来（`this=0xe3`），而且**已经提交过的旧测试用同样流程也挂**，很容易误判成自己的
+> 改动有问题。这台机器没有 cmake/ninja，解法是用 `build/compile_commands.json` 把 ZRuntime 的
+> **全部** TU 重编一遍（356 个 + 104 个 ZHeaderTool 生成的 `.gen.cpp`）再 `ar` 成新归档。
+> 三个细节：
+> - 并发别开 10，会卡死在 ~300/356；开 4 能跑完。
+> - `PrefabSubtreeCloner.cpp` / `CrashLogTail.cpp` / `NetworkSystem.cpp` 不在
+>   `compile_commands.json` 里（这次构建树没配置到），要借同目录兄弟 TU 的 flag 单独补编，否则
+>   链接时缺 `prefab_clone::CloneSubtree` / `logtail::Dump` / `NetworkSystem` 的 vtable。
+> - 链接**不要** `-force_load` 新归档：那会把 `RegisterRuntime.cpp.o` 拖进来，进而要
+>   `NetworkSystem` → curl 一整串外部符号。不加 `-force_load` 就能正常解析。
