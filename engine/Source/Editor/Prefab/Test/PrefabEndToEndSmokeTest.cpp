@@ -40,6 +40,17 @@
 //   P15 the content-browser drop path (PrefabSceneBinding::InstantiateIntoLevel):
 //      dropping one prefab twice gives two independent linked instances, all
 //      their GameObjects are level objects, both are saved
+//   P16 packaging dependencies (BuildDependencyWalk + AssetRegistry): a YAML scene's
+//      externals are indexed as dependencies (they were not: only binary
+//      SerializedFile headers were read, so a packed .scene took nothing with it);
+//      the player walk reads a scene's edges from its cooked copy, so a prefab only
+//      a PrefabInstance referred to is not packed while a GameObject's is.
+//      AssetRegistry::ScanAssets (was an empty stub) scans synchronously
+//   P17 Inspector override model (PrefabOverrideModel): an edit records only the
+//      leaves that differ from the source, editing back removes the override;
+//      revert / apply one field; apply writes the source file with the same
+//      fileIDs and refreshes the level's other instance (keeping its own
+//      override); a zero position survives the leaf-by-leaf splice
 //   P13 player cook (SceneCook): the editor-only PrefabInstance and the externals
 //      only it used leave the cooked scene; the cooked scene loads with the
 //      overridden values and binds no instance. Plus StripObjectsFromGraph on a
@@ -52,10 +63,14 @@
 // Exit codes: 0 all passed; 1 a check failed; 77 environment bring-up failed.
 // =====================================================================
 
+#include "Editor/AssetRegistry/AssetRegistry.h"
+#include "Editor/Build/BuildDependencyWalk.h"
 #include "Editor/Build/SceneCook.h"
 #include "Editor/Prefab/PrefabInstance.h"
+#include "Editor/Prefab/PrefabOverrideModel.h"
 #include "Editor/Prefab/PrefabSceneBinding.h"
 #include "Editor/Prefab/PrefabUtilityEditor.h"
+#include "Editor/Undo/UndoSystem.h"
 #include "Runtime/BaseClasses/Cast.h"
 #include "Runtime/BaseClasses/GameObject.h"
 #include "Runtime/BaseClasses/ObjectManager.h"
@@ -71,6 +86,7 @@
 #include "Runtime/Resource/Prefab/PrefabAsset.h"
 #include "Runtime/Resource/Prefab/PrefabUtility.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -943,6 +959,269 @@ static void scenario_P15_drop_twice()
     PrefabSceneBinding::Uninstall();
 }
 
+namespace
+{
+    bool Contains(const std::vector<std::string>& v, const std::string& x)
+    {
+        return std::find(v.begin(), v.end(), x) != v.end();
+    }
+}  // namespace
+
+static void scenario_P16_build_dependencies()
+{
+    std::fprintf(stderr, "[P16] packaging dependencies: YAML scene edges, player walk through the cooked copy\n");
+    std::error_code ec;
+    const std::filesystem::path cwd = std::filesystem::current_path(ec);
+    const std::filesystem::path content = cwd / "p16_assets";
+    const std::filesystem::path cooked_root = cwd / "p16_cooked";
+    std::filesystem::remove_all(content, ec);
+    std::filesystem::remove_all(cooked_root, ec);
+    std::filesystem::create_directories(content, ec);
+
+    // Two prefabs in the scan root: one binary, one YAML.
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    GameObject* hero = MakeGameObject(om, "P16Hero");
+    GameObject* villain = MakeGameObject(om, "P16Villain");
+    Check(hero != nullptr && PrefabUtility::SaveAsPrefabAsset(hero, content / "hero.zasset"), "P16",
+          "saving hero.zasset failed");
+    Check(villain != nullptr && PrefabUtility::SaveAsPrefabAsset(villain, content / "villain.prefab"), "P16",
+          "saving villain.prefab failed");
+
+    // A real editor scene: one linked instance of each (the only references to them
+    // are the PrefabInstance objects -- the GameObjects are concrete copies).
+    PrefabSceneBinding::Install();
+    {
+        Level level;
+        Check(PrefabSceneBinding::InstantiateIntoLevel(level, content / "hero.zasset") != nullptr &&
+                  PrefabSceneBinding::InstantiateIntoLevel(level, content / "villain.prefab") != nullptr,
+              "P16", "placing the two prefabs failed");
+        level.setLevelResUrl(eastl::string((content / "level.scene").generic_string().c_str()));
+        Check(level.save(), "P16", "Level::save failed");
+    }
+    PrefabSceneBinding::Uninstall();
+
+    // A hand-written scene where a player object (type Keep) uses hero and an
+    // editor-only PrefabInstance uses villain. Paths are registry-key spellings.
+    {
+        std::ofstream out(content / "keep.scene", std::ios::binary);
+        out << "externals:\n"
+               "  - guid: \"\"\n    type: PrefabAsset\n    path: hero.zasset\n"
+               "  - guid: \"\"\n    type: PrefabAsset\n    path: villain.prefab\n"
+               "objects:\n"
+               "  - fileID: 1\n    type: Keep\n    data:\n      Keep:\n"
+               "        asset:\n          m_FileID: 1\n          m_PathID: 1\n"
+               "  - fileID: 2\n    type: PrefabInstance\n    data:\n      PrefabInstance:\n"
+               "        m_SourcePrefab:\n          m_FileID: 2\n          m_PathID: 1\n";
+    }
+
+    AssetRegistry registry;
+    registry.ScanAssets(content);
+    Check(registry.GetAssetIndex("hero.zasset").has_value() && registry.GetAssetIndex("villain.prefab").has_value() &&
+              registry.GetAssetIndex("level.scene").has_value() && registry.GetAssetIndex("keep.scene").has_value(),
+          "P16", "ScanAssets did not index the four assets (synchronous scan)");
+
+    // ---- the registry's (editor) edges ----
+    const std::vector<std::string> level_deps = registry.GetDependencies("level.scene");
+    Check(Contains(level_deps, "hero.zasset"), "P16", "YAML scene -> binary prefab edge missing from the registry");
+    Check(Contains(level_deps, "villain.prefab"), "P16", "YAML scene -> YAML prefab edge missing from the registry");
+    const std::vector<std::string> keep_deps = registry.GetDependencies("keep.scene");
+    Check(Contains(keep_deps, "hero.zasset") && Contains(keep_deps, "villain.prefab"), "P16",
+          "hand-written scene: both externals should be registry edges (path spelling)");
+    Check(registry.GetReferencers("hero.zasset").size() == 2, "P16", "hero.zasset should be referenced by both scenes");
+
+    // ---- the player walk ----
+    const BuildDependencyWalk::DependencyFn player = [&](const std::string& key) {
+        return BuildDependencyWalk::PlayerDependencies(registry, key, content, cooked_root);
+    };
+    const BuildDependencyWalk::DependencyFn editor = [&](const std::string& key) { return registry.GetDependencies(key); };
+
+    const std::vector<std::string> level_player = BuildDependencyWalk::WalkFrom("level.scene", player);
+    Check(level_player.size() == 1 && level_player[0] == "level.scene", "P16",
+          "a scene whose prefabs are only referenced by PrefabInstances packs only itself");
+    Check(std::filesystem::exists(cooked_root / "level.scene", ec), "P16", "the walk did not cook the scene");
+    Check(BuildDependencyWalk::WalkFrom("level.scene", editor).size() == 3, "P16",
+          "precondition: the editor edges reach scene + 2 prefabs");
+
+    const std::vector<std::string> keep_player = BuildDependencyWalk::WalkFrom("keep.scene", player);
+    Check(Contains(keep_player, "keep.scene") && Contains(keep_player, "hero.zasset"), "P16",
+          "a prefab a player object uses must be packed");
+    Check(!Contains(keep_player, "villain.prefab"), "P16", "a prefab only a PrefabInstance used must not be packed");
+
+    // Fresh cooked copy: a second walk does not re-cook.
+    bool cooked_now = true;
+    BuildDependencyWalk::CookSceneIfStale(content / "keep.scene", cooked_root / "keep.scene", &cooked_now);
+    Check(!cooked_now, "P16", "an up-to-date cooked scene was cooked again");
+
+    // No cooked root (e.g. no project Intermediate/): fall back to the source edges.
+    const std::vector<std::string> no_cook = BuildDependencyWalk::WalkFrom(
+        "keep.scene", [&](const std::string& key) { return BuildDependencyWalk::PlayerDependencies(registry, key, content, {}); });
+    Check(no_cook.size() == 3, "P16", "without a cooked root the walk uses the source scene's edges");
+
+    std::filesystem::remove_all(content, ec);
+    std::filesystem::remove_all(cooked_root, ec);
+}
+
+namespace
+{
+    std::vector<std::string> FileIDsOf(const std::filesystem::path& file)
+    {
+        std::vector<std::string> ids;
+        std::istringstream in(ReadText(file));
+        std::string line;
+        while (std::getline(in, line))
+        {
+            const size_t at = line.find("- fileID:");
+            if (at != std::string::npos)
+                ids.push_back(line.substr(at));
+        }
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    }
+
+    Transform* SourceTransformOf(PrefabInstance* instance, Transform* instance_tc)
+    {
+        return Cast<Transform>(static_cast<Object*>(instance->FindSourceForInstance(PPtr<Object>(instance_tc))));
+    }
+}  // namespace
+
+static void scenario_P17_inspector_override_model()
+{
+    std::fprintf(stderr, "[P17] Inspector override model: sync / revert / apply + save + propagate\n");
+    namespace M = PrefabOverrideModel;
+    std::error_code ec;
+    const std::filesystem::path prefab = "p17_source.prefab";
+    const std::filesystem::path copy = "p17_copy.prefab";
+    std::filesystem::remove(prefab, ec);
+    std::filesystem::remove(copy, ec);
+
+    ObjectManager* om = GET_SYSTEM(ObjectManager);
+    GameObject* root = MakeGameObject(om, "P17Root");
+    GameObject* child = MakeGameObject(om, "P17Child");
+    if (root == nullptr || child == nullptr)
+    {
+        Check(false, "P17", "authoring failed");
+        return;
+    }
+    TransformOf(root)->SetLocalPosition(Vector3(1.0f, 2.0f, 3.0f));
+    TransformOf(child)->SetParent(TransformOf(root), false);
+    Check(PrefabUtility::SaveAsPrefabAsset(root, prefab), "P17", "saving the source prefab failed");
+    const std::vector<std::string> ids_before = FileIDsOf(prefab);
+
+    PrefabSceneBinding::Install();
+    Level level;
+    PrefabInstance* a = PrefabSceneBinding::InstantiateIntoLevel(level, prefab);
+    PrefabInstance* b = PrefabSceneBinding::InstantiateIntoLevel(level, prefab);
+    if (a == nullptr || b == nullptr)
+    {
+        Check(false, "P17", "placing two instances failed");
+        PrefabSceneBinding::Uninstall();
+        return;
+    }
+    GameObject* a_root = a->GetRootGameObject();
+    GameObject* b_root = b->GetRootGameObject();
+    Transform* ta = TransformOf(a_root);
+    Transform* tb = TransformOf(b_root);
+    Check(M::FindInstance(&level, a_root) == a && M::FindInstance(&level, FirstChild(b_root)) == b, "P17",
+          "FindInstance should map a root / a child to its instance");
+    Check(M::PathCovers("m_LocalScale", "m_LocalScale.x") && M::PathCovers("m_A", "m_A[2].b") &&
+              !M::PathCovers("m_LocalScale", "m_LocalScaleX") && !M::PathCovers("m_LocalScale.x", "m_LocalScale"),
+          "P17", "PathCovers");
+
+    // ---- implicit override: only the leaf that differs ----
+    ta->SetLocalScale(Vector3(2.0f, 1.0f, 1.0f));
+    Check(M::SyncFieldOverride(a, ta, "m_LocalScale") == 1, "P17/sync", "editing scale.x should give 1 override");
+    Check(a->GetModifications().size() == 1 && a->GetModifications()[0].property_path == eastl::string("m_LocalScale.x"),
+          "P17/sync", "the override should be the leaf m_LocalScale.x");
+    Check(M::IsOverridden(a, ta, "m_LocalScale") && M::IsOverridden(a, ta, "m_LocalScale.x") &&
+              !M::IsOverridden(a, ta, "m_LocalScale.y") && !M::IsOverridden(b, tb, "m_LocalScale"),
+          "P17/sync", "IsOverridden: compound + leaf yes, other leaf / other instance no");
+    Check(M::SyncFieldOverride(a, ta, "m_LocalScale") == 1 && a->GetModifications().size() == 1, "P17/sync",
+          "syncing again must not duplicate the override");
+    const std::vector<M::OverrideRow> rows = M::ListOverrides(a);
+    Check(rows.size() == 1 && rows[0].label.find("P17Root") != eastl::string::npos, "P17/sync", "ListOverrides label");
+    ta->SetLocalScale(Vector3(1.0f, 1.0f, 1.0f));
+    Check(M::SyncFieldOverride(a, ta, "m_LocalScale") == 0 && a->GetModifications().empty(), "P17/sync",
+          "editing back to the source value removes the override");
+    Check(M::SyncFieldOverride(a, ta, "m_NoSuchField") == -1, "P17/sync", "an unknown path reports -1");
+
+    // ---- the override list is undoable with the edit ----
+    {
+        UndoSystem undo;
+        undo.BeginTransaction("Set Scale");
+        undo.AddRecord(M::MakeOverrideListUndoRecord(a));
+        ta->SetLocalScale(Vector3(3.0f, 1.0f, 1.0f));
+        M::SyncFieldOverride(a, ta, "m_LocalScale");
+        undo.EndTransaction();
+        Check(a->GetModifications().size() == 1 && undo.GetUndoCount() == 1, "P17/undo", "precondition: 1 override, 1 step");
+        Check(undo.Undo() && a->GetModifications().empty(), "P17/undo", "undo must restore the empty override list");
+        Check(undo.Redo() && a->GetModifications().size() == 1, "P17/undo", "redo must bring the override back");
+        undo.BeginTransaction("No-op");
+        undo.AddRecord(M::MakeOverrideListUndoRecord(a));
+        undo.EndTransaction();
+        Check(undo.GetUndoCount() == 1, "P17/undo", "an unchanged override list must not make an undo step");
+        Check(M::OverrideListUndoKey(a) != 0 && M::OverrideListUndoKey(a) != M::OverrideListUndoKey(b), "P17/undo",
+              "per-instance coalesce key");
+        ta->SetLocalScale(Vector3(1.0f, 1.0f, 1.0f));
+        M::SyncFieldOverride(a, ta, "m_LocalScale");
+    }
+
+    // ---- revert one field, keep the other ----
+    ta->SetLocalScale(Vector3(1.0f, 4.0f, 1.0f));
+    M::SyncFieldOverride(a, ta, "m_LocalScale");
+    ta->SetLocalPosition(Vector3(0.0f, 0.0f, 0.0f));
+    const int pos_overrides = M::SyncFieldOverride(a, ta, "m_LocalPositionD");
+    Check(pos_overrides == 3, "P17/position", "a zero position from (1,2,3) is 3 leaf overrides");
+    Check(M::RevertField(a, ta, "m_LocalPositionD") == 3, "P17/revert", "reverting the position reverts its 3 leaves");
+    Check(Near(ta->GetLocalPosition().x, 1.0f) && Near(ta->GetLocalPosition().z, 3.0f), "P17/revert",
+          "revert did not restore the source position");
+    Check(Near(ta->GetLocalScale().y, 4.0f) && a->GetModifications().size() == 1, "P17/revert",
+          "reverting the position must not touch the scale override");
+
+    // ---- b has its own override; apply a's position to the source ----
+    tb->SetLocalScale(Vector3(1.0f, 1.0f, 7.0f));
+    M::SyncFieldOverride(b, tb, "m_LocalScale");
+    ta->SetLocalPosition(Vector3(0.0f, 0.0f, 0.0f));
+    M::SyncFieldOverride(a, ta, "m_LocalPositionD");
+    const M::ApplyReport applied = M::ApplyField(&level, a, ta, "m_LocalPositionD");
+    Check(applied.applied == 3 && applied.saved && applied.merged == 1, "P17/apply",
+          "apply position: 3 applied, source saved, the other instance merged");
+    Transform* src_tc = SourceTransformOf(a, ta);
+    // Zero is the interesting value: leaves are spliced one at a time, and Transform's
+    // positional read used to fall back to the (stale) legacy float copy whenever the
+    // double position came out all-zero.
+    Check(src_tc != nullptr && Near(src_tc->GetLocalPosition().x, 0.0f) && Near(src_tc->GetLocalPosition().y, 0.0f) &&
+              Near(src_tc->GetLocalPosition().z, 0.0f),
+          "P17/apply", "the source position must be the applied zero (not the legacy copy's old value)");
+    Check(a->GetModifications().size() == 1 && Near(ta->GetLocalScale().y, 4.0f), "P17/apply",
+          "applying one field keeps the instance's other override");
+    Check(Near(tb->GetLocalPosition().x, 0.0f) && Near(tb->GetLocalPosition().z, 0.0f), "P17/apply",
+          "the other instance did not pick up the applied value");
+    Check(Near(tb->GetLocalScale().z, 7.0f) && b->GetModifications().size() == 1, "P17/apply",
+          "the other instance lost its own override in the merge");
+
+    // ---- on disk: same fileIDs, applied value ----
+    Check(FileIDsOf(prefab) == ids_before, "P17/save", "saving the source renumbered its fileIDs");
+    std::filesystem::copy_file(prefab, copy, std::filesystem::copy_options::overwrite_existing, ec);
+    {
+        std::vector<GameObject*> gos;
+        PrefabAsset* fresh = PrefabUtility::LoadPrefabAsset(copy, &gos);
+        Transform* fresh_tc = (fresh != nullptr) ? TransformOf(fresh->GetRootGameObject()) : nullptr;
+        Check(fresh_tc != nullptr && Near(fresh_tc->GetLocalPosition().x, 0.0f) && Near(fresh_tc->GetLocalPosition().z, 0.0f),
+              "P17/save", "the file on disk does not have the applied position");
+        Check(gos.size() == 2, "P17/save", "the saved prefab lost a GameObject");
+    }
+
+    // ---- apply everything that is left ----
+    const M::ApplyReport all = M::ApplyAll(&level, a);
+    Check(all.applied == 1 && all.saved && a->GetModifications().empty(), "P17/applyall", "ApplyAll: the scale override");
+    Check(src_tc != nullptr && Near(src_tc->GetLocalScale().y, 4.0f), "P17/applyall", "the source scale was not applied");
+    Check(M::ApplyAll(&level, a).applied == 0, "P17/applyall", "nothing left to apply");
+
+    PrefabSceneBinding::Uninstall();
+    std::filesystem::remove(prefab, ec);
+    std::filesystem::remove(copy, ec);
+}
+
 int main()
 {
     std::fprintf(stderr, "ZEngine prefab end-to-end smoke test\n====================================\n");
@@ -973,6 +1252,8 @@ int main()
     scenario_P13_player_cook();
     scenario_P14_runtime_instantiate_independent();
     scenario_P15_drop_twice();
+    scenario_P16_build_dependencies();
+    scenario_P17_inspector_override_model();
 
     std::error_code ec;
     for (const auto& p : {kPrefabPath, kAppliedPath, kSceneBinaryPath, kSceneYamlPath, kLevelYamlPath, kLevelDeletedPath,

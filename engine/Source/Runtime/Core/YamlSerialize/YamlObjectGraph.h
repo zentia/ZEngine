@@ -108,6 +108,12 @@ namespace ZYaml
                                eastl::string& out,
                                StripGraphStats* stats = nullptr);
 
+    // Text-level read of the externals table (guid / type / path per entry, in
+    // table order). No object is produced -- AssetRegistry indexes a YAML
+    // asset's dependencies from it the way it reads a binary file's
+    // SerializedFile::GetExternalRefs(). False if `text` is not a graph document.
+    bool ReadExternalRefs(const char* text, std::vector<FileIdentifier>& out);
+
     // Lightweight type sniff for AssetRegistry / GetAssetTypeName. Returns the
     // `type:` tag of the object with `preferredFileID`, or the first object.
     bool PeekPrimaryObjectType(const char* text, int64_t preferredFileID, eastl::string& outType);

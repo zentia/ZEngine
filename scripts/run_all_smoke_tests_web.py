@@ -45,7 +45,8 @@ EXTRA = {
     'TextureCompressorSmokeTest': ['Editor/AssetPipeline/TextureImporter/TextureCompressor.cpp'],
     'BuildCacheSmokeTest': ['Editor/Build/BuildCache.cpp'],
     'UndoSystemSmokeTest': ['Editor/Undo/UndoSystem.cpp'],
-    'PrefabEndToEndSmokeTest': ['Editor/Prefab/*.cpp', 'Editor/Build/SceneCook.cpp'],
+    'PrefabEndToEndSmokeTest': ['Editor/Prefab/*.cpp', 'Editor/Build/SceneCook.cpp', 'Editor/Build/BuildDependencyWalk.cpp',
+                                'Editor/AssetRegistry/AssetRegistry.cpp', 'Editor/Undo/UndoSystem.cpp'],
     # Lumen and VirtualTexture sources are stripped from the web libZRuntime
     # (Runtime/CMakeLists.txt); the tests compile them in, with Z_HAS_LUMEN (below).
     'LumenGlobalIlluminationSmokeTest': ['Runtime/Function/Render/Lumen/*.cpp'],

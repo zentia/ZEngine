@@ -435,6 +435,50 @@ namespace ZYaml
         return true;
     }
 
+    bool ReadExternalRefs(const char* text, std::vector<FileIdentifier>& out)
+    {
+        out.clear();
+        if (text == nullptr)
+        {
+            return false;
+        }
+
+        JSONAllocator allocator;
+        GraphDocument master(&allocator, 1024, &allocator);
+        if (!ZYaml::ParseYaml(text, master) || !master.IsObject() || !master.HasMember("objects"))
+        {
+            return false;
+        }
+
+        auto extIt = master.FindMember("externals");
+        if (extIt == master.MemberEnd() || !extIt->value.IsArray())
+        {
+            return true;  // a graph with only local references
+        }
+        for (const GraphValue& r : extIt->value.GetArray())
+        {
+            FileIdentifier ref;
+            if (r.IsObject())
+            {
+                if (r.HasMember("guid") && r["guid"].IsString())
+                {
+                    ref.guid = r["guid"].GetString();
+                }
+                if (r.HasMember("type") && r["type"].IsString())
+                {
+                    ref.type = r["type"].GetString();
+                }
+                if (r.HasMember("path") && r["path"].IsString())
+                {
+                    ref.pathName = r["path"].GetString();
+                }
+            }
+            // Kept even when empty: positions are m_FileID - 1.
+            out.push_back(ref);
+        }
+        return true;
+    }
+
     bool PeekPrimaryObjectType(const char* text, int64_t preferredFileID, eastl::string& outType)
     {
         outType.clear();

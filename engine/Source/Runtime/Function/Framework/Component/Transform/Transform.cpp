@@ -97,7 +97,14 @@ void Transform::Transfer(TransferFunction& transfer)
         // depends on it. Name-addressed readers do not care.
         transfer.Transfer(m_LocalPosition, "m_LocalPositionD");
         transfer.Transfer(m_LocalPositionLegacy, "m_LocalPosition");
-        if (m_LocalPosition == Vector3d::ZERO && m_LocalPositionLegacy != Vector3::ZERO)
+        // Old data without m_LocalPositionD: only a name-addressed reader can meet it
+        // (the double field is simply absent). A positional read always gets the
+        // writer's pair, where the double copy is authoritative -- falling back there
+        // turned a spliced zero position (prefab Apply / Revert / Merge splice one
+        // leaf at a time, the legacy copy still holding the old value) back into the
+        // old position.
+        if (kProbesLegacyFields<TransferFunction> && m_LocalPosition == Vector3d::ZERO &&
+            m_LocalPositionLegacy != Vector3::ZERO)
         {
             m_LocalPosition = Vector3d(m_LocalPositionLegacy);
         }

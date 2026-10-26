@@ -85,3 +85,8 @@ LumenRenderPassWiring（web 库里 `UpdateLumen` 不带 `Z_HAS_LUMEN`）、Deriv
 - 这是 **wasm 单线程 + node** 环境：凡是被测对象本身要线程、子进程、GPU、真 mmap 的，只能标 ENV / SKIP，不能当成通过。
 - Lumen 测试是把 `Function/Render/Lumen/*.cpp` 额外编进测试、定义 `Z_HAS_LUMEN=1` 跑的（web 的 libZRuntime 剥掉了 Lumen）。
 - 原生 Windows / Linux / macOS 构建的结果以各自工具链为准；这里只能证明"逻辑在 wasm 上成立"。
+
+2026-10-26 第五次复跑（YAML 依赖索引、BuildDependencyWalk、Transform 位置回退修正、PrefabOverrideModel 之后）：
+**36 PASS / 6 ENV / 7 SKIP / 0 FAIL**。6 个 ENV 里有 2 个（ConsoleVariablesFile、PlayerSettings）是宿主 safe-delete 拦截，
+单独复跑 PASS；其余 4 个同上。PrefabEndToEnd 276 项（多链接 `Editor/Build/BuildDependencyWalk.cpp`、
+`Editor/AssetRegistry/AssetRegistry.cpp`、`Editor/Undo/UndoSystem.cpp`，已登记）。

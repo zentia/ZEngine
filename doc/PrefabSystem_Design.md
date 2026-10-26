@@ -466,14 +466,22 @@ public:
 
 1. ~~**`.zasset` 示例 Prefab + 端到端单测**~~ —— **已落地（2026-10-25）**，见下方 §9.4.1。
 2. **PrefabInstance 自身序列化往返** —— **对象图层已验证（2026-10-25）**：PrefabInstance 与它的克隆子树作为一张对象图写进 `.zasset`（二进制）和 `.scene`（YAML）再读回，覆盖列表、corresponding-source 映射、实例根引用、跨文件的源 PrefabAsset 引用都保留（§9.4.1 的 P6）。**场景链路已接通（2026-10-26）**：`Level` 新增序列化钩子 `LevelSerializationHooks`（Runtime 侧只开扩展点，不认识 PrefabInstance），编辑器的 `PrefabSceneBinding`（`Editor/Prefab/PrefabSceneBinding.{h,cpp}`，`RegisterEditor()` 里 `Install()`）挂上三个钩子：`Level::save` 把根仍在关卡里的已登记实例写进同一个场景文件；`Level::LoadObjectGraph` 读回后把实例的 GameObject 引用从"文件里读出的 GameObject"改指到 Level 据此新建的活对象（组件是共享的，GameObject 不是）；`Level::Unload` 清登记。`PlaceInLevel(level, instance)` 是"把 Prefab 放进场景"那一步。见 §9.4.1 的 P7。
-3. **编辑器 UI 集成**：把 `RecordPropertyOverride` / `Apply` / `Revert` 接到 Inspector 的右键菜单（**未做**）。内容浏览器拖 Prefab 进场景**已接（2026-10-26）**：`EditorScenePlacement` 改走 `PrefabSceneBinding::InstantiateIntoLevel`（= `InstantiateAsPrefab` + `PlaceInLevel`），一个撤销步骤；以前那条路径（`InstantiateFromPath` + 只 `CreateObject` 根）只把根放进关卡，子 GameObject 挂在根的 Transform 下却不是关卡对象，也不留 Prefab 关联。
+3. **编辑器 UI 集成** —— **Inspector 已接（2026-10-26）**。逻辑层 `Editor/Prefab/PrefabOverrideModel.{h,cpp}`（无 UI，端到端测试 P17 直接驱动）：
+   - **隐式覆盖**（Unity 模型）：Inspector 每次提交字段后调 `SyncFieldOverride(instance, target, path)`，复合字段（如 `m_LocalScale`）拆成叶子，只给和源不同的叶子记覆盖，改回源值即删除覆盖；
+   - `IsOverridden` 给行标签上色，`ListOverrides` 列出覆盖；`RevertField` / `ApplyField` / `ApplyAll`；
+   - Apply 之后 `SaveSourcePrefab` 按**原 fileID** 重写源 `.prefab` / `.zasset`（场景对 Prefab 内对象的引用是 (文件, fileID)，重编号会悄悄指错），再对关卡里同源的其它实例 `MergeFromSource`（它们自己的覆盖保留）；
+   - 覆盖列表进撤销：`MakeOverrideListUndoRecord`，和字段的 `RecordComponent` 同一个撤销步骤，列表没变时自动丢弃。
+   
+   ZSlate Inspector（`ZSlateInspectorWindow.cpp`）：选中 Prefab 实例里的物体时顶部出现 "Prefab <源文件>  N overrides" + Apply All / Revert All，下面每条覆盖一行带 Revert / Apply；被覆盖字段的标签是蓝色；Transform 的位置 / 旋转 / 缩放和通用字段的提交都走同步。**界面只做了 clang-cl 类型检查，没上机看过**。ZSlate 没有右键菜单设施，所以没做成右键菜单。Apply 改的是源文件，和 Unity 一样不进撤销。
+   
+   内容浏览器拖 Prefab 进场景**已接（2026-10-26）**：`EditorScenePlacement` 改走 `PrefabSceneBinding::InstantiateIntoLevel`（= `InstantiateAsPrefab` + `PlaceInLevel`），一个撤销步骤；以前那条路径（`InstantiateFromPath` + 只 `CreateObject` 根）只把根放进关卡，子 GameObject 挂在根的 Transform 下却不是关卡对象，也不留 Prefab 关联。
 4. ~~**Cook 阶段 flatten**~~ —— **已落地（2026-10-26）**。场景里的 GameObject 树本来就是实例化 + 覆盖后的实体（`PrefabSceneBinding` 保存的就是它），所以 flatten = 去掉簿记对象，不需要重新展开。`Editor/Build/SceneCook.{h,cpp}`：`CookSceneFile` 去掉所有 `kTypeIsEditorOnly` 类型的对象，并裁掉只被它们引用的外部引用（源 `.prefab`），其余对象里的外部引用索引随之重编号；指向被删对象的引用置空并计数。纯文本层（`ZYaml::StripObjectsFromGraph`），不 Produce 对象，编辑器里开着同一个场景时打包也不受影响。`AssetBundleBuilder` 对 `.scene` 在源文件比烘焙副本新时重烘焙到 `Intermediate/Cooked/<平台>/` 并打包烘焙副本。只处理 YAML 场景；二进制关卡原样拷贝并告警。
    - 顺带修：`REGISTER_CLASS_TRAITS(kTypeIsEditorOnly)` 以前是**死元数据**——`IMPLEMENT_REGISTER_CLASS` 只把 `kTypeIsAbstract` 传进运行时 `Type`。现在 `Type::isEditorOnly` / `IsEditorOnly()`（末位成员带默认值，既有的位置初始化列表不受影响）。
-   - **未做**：打包器的依赖遍历仍按 AssetRegistry 对**源**场景扫出的依赖走，所以只被 PrefabInstance 引用的源 `.prefab` 仍会进包（多一份体积，不影响正确性）。
+   - ~~打包器的依赖遍历仍按源场景走~~ —— **已改（2026-10-26）**：依赖遍历抽成 `Editor/Build/BuildDependencyWalk`，`.scene` 先烘焙、再从烘焙副本读依赖（`AssetRegistry::GetDependenciesOfFile`），只被 PrefabInstance 引用的 `.prefab` 不再进包。做这一步时发现 **YAML 场景在 AssetRegistry 里根本没有依赖**：依赖索引只认二进制 SerializedFile 头，YAML 文件读失败就当成零依赖——也就是打包一个 `.scene` 时它引用的 Prefab / 材质 / 网格**都不会**跟着进包。现在 YAML 资产从 externals 表取依赖（`ZYaml::ReadExternalRefs`）。另外两处：扫描时边扫边建依赖，场景排在它引用的资产前面时（目录序）那条边被永久丢掉，改为整轮扫完再建；`AssetRegistry::ScanAssets` 原来是空函数，现在是同步扫描。见 P16。
 
 #### 9.4.1 端到端测试落地记录（2026-10-25）
 
-`engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp`（230 项断言；P1-P6 首版 58 项，P7-P15 于 2026-10-26 补），走真实代码和真实磁盘：
+`engine/Source/Editor/Prefab/Test/PrefabEndToEndSmokeTest.cpp`（276 项断言；P1-P6 首版 58 项，P7-P17 于 2026-10-26 补），走真实代码和真实磁盘：
 
 | 场景 | 内容 |
 |---|---|
@@ -491,6 +499,8 @@ public:
 | P12 | 同一 ID 下先后 Produce 两个对象，销毁被取代的第一个不能注销第二个的表项 |
 | P14 | 运行时 `PrefabUtility::InstantiateFromPath` 每次返回独立的一棵树（YAML / 二进制 Prefab 都测）：两次调用不共享对象、不交出缓存的模板图、改一个不影响另一个；`m_DefinitionUrl` 展开（`invoke_post_load=false`）两次不拿到同一组组件 |
 | P15 | 内容浏览器拖放路径 `InstantiateIntoLevel`：同一 Prefab 拖两次 = 两个独立的关联实例，4 个 GameObject 都是关卡对象，两个都会保存；拖不存在的 Prefab 失败且不动关卡 |
+| P16 | 打包依赖：YAML 场景到二进制 / YAML Prefab 的边进了 AssetRegistry；Player 遍历经烘焙副本，只被 PrefabInstance 引用的 Prefab 不进、被普通对象引用的进；新鲜的烘焙副本不重烘；没有烘焙目录时退回源依赖；`ScanAssets` 同步扫描（4 处变异全红） |
+| P17 | Inspector 覆盖模型：只记和源不同的叶子、改回即删、重复同步不重复记；覆盖列表撤销 / 重做 / 无变化不成步；单字段 Revert 不碰别的覆盖；单字段 Apply：源值、源文件（fileID 不变）、另一个实例合并到新值且保留它自己的覆盖；ApplyAll（6 处变异全红） |
 | P13 | Player 烘焙：`PrefabInstance` 带编辑器专属标志、运行时类型不带；带覆盖的场景烘焙后没有 PrefabInstance、没有指向源 `.prefab` 的外部引用，烘焙副本能加载、两个 GameObject 和覆盖值都在、不绑定实例；手写对象图验证外部引用裁剪 + 重编号、悬空引用置空（4 处变异全红） |
 
 **运行方式**：`bash scripts/verify_prefab_e2e.sh`。无原生工具链时它用 `scripts/web_smoke_run.py`：借 build-web 里已配置的 smoke-test 目标的编译/链接命令，把测试和 `Editor/Prefab/*.cpp` 链到 web 版 `libZRuntime.a`（`--whole-archive`），补上 WebGL2 / emmalloc / NODERAWFS 链接参数后用 node 跑。原生构建可用 `-DZENGINE_BUILD_PREFAB_E2E_SMOKE_TEST=ON`。
@@ -541,3 +551,9 @@ public:
 | Variant base 链 | PrefabAsset 自身字段 | `PrefabAsset.variantBase` |
 
 > 本文档以 Unity 2023.1 在 `e:/Engine/unity2023.1` 的源码为参考；具体到 ZEngine 上的语义有调整（去除历史 API、合并 Editor-only/Runtime 边界、`.zasset` 二进制取代 YAML）。
+
+**P16-P17 暴露并修掉的问题（2026-10-26）**：
+
+16. **YAML 场景没有依赖**（见 §9.4 第 4 条）：AssetRegistry 的依赖索引只读二进制头。
+17. **AssetRegistry 依赖边与扫描顺序有关**：扫描循环里每个文件一入表就解析它的外部引用，引用目录序更靠后的资产时查不到、边被丢弃。改为整轮登记完再建边（异步扫描与 `IncrementalUpdate` 两处）。
+18. **零位置经 Apply / Revert / Merge 回不去**：覆盖按叶子逐个拼进字节流再读回，`Transform::Transfer` 的读取分支在双精度位置为零、旧 float 副本非零时回退到旧副本——而拼完最后一个叶子时旧副本还是上一次的值，结果位置变回原值。这条回退只对按名字查找的读取器有意义（旧数据里根本没有 `m_LocalPositionD` 字段），按位置读的 StreamedBinaryRead 拿到的总是写入器成对写出的两份，现在只在前者上回退。
